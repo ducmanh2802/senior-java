@@ -1,8 +1,12 @@
 # T16 — Nội dung: Tình huống thực tế (production scenarios)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/q-scenario.js`
+
+> **Quan trọng — ghi theo lô nhỏ:** model miễn phí sẽ timeout (lỗi 504) nếu sinh cả file trong một lần.
+> Viết **3–4 câu mỗi lần edit**, nối vào cuối danh sách (trước dòng `);`), rồi chạy `node --check <file>` sau mỗi lô.
+> Lặp lại cho đến đủ số lượng. Không cần web search dài dòng; chỉ tra cứu khi thực sự không chắc về API.
 
 ## Mục tiêu
 Sưu tầm và viết **≥ 24 câu hỏi tình huống thực tế**, là loại câu mà interviewer Senior/Lead ở Việt Nam và công ty nước ngoài hay hỏi:
@@ -60,4 +64,7 @@ nhưng **phải tự viết lại** nội dung, không copy.
 - Chịu tải ngày lương / giờ cao điểm: hạn mức, rate limiting, queue
 
 ## Notes
-(agent ghi chú ở đây)
+- Viết **31 câu** `scenario-001`…`scenario-031`, bao phủ toàn bộ danh sách bắt buộc (database 8, file & batch 5, hiệu năng & sự cố 6, tính đúng đắn & tích hợp 5, fintech 7).
+- Level: 18 senior, 10 lead, 3 mid; đáp án theo đúng format 6 phần (Tóm tắt / Làm rõ yêu cầu / Điều tra / Giải pháp / Trade-off & pitfall / Senior tip), độ dài ~1500–3500 ký tự mỗi câu.
+- `node scripts/validate.js q-scenario.js` và `node scripts/validate.js` (toàn bộ) đều in `OK — không có lỗi.` (tổng repo: 226 câu hỏi, 54 trắc nghiệm, 48 bài thuật toán).
+- Không sửa file nào ngoài `js/data/q-scenario.js` và file task này; không commit/push.

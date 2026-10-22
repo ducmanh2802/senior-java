@@ -1,12 +1,15 @@
 # T09 — View: Tổng quan (dashboard) + Ngân hàng câu hỏi (bank)
 
-Status: TODO
+Status: DONE
 Agent: cline
 Owns: `js/views/dashboard.js`, `js/views/bank.js`, `css/views/dashboard.css`, `css/views/bank.css`
 
 Đọc `AGENTS.md` mục 7 (contract View + App API) và `js/core/app.js`, `css/base.css` trước khi bắt đầu.
 Trong lúc bạn làm, dữ liệu câu hỏi có thể chỉ có 1–2 câu (các agent khác đang viết song song).
 Code phải chạy được với bất kỳ số lượng câu nào, kể cả 0, và nên hiển thị trạng thái rỗng thân thiện.
+
+> **Quan trọng — giới hạn output:** model của bạn có giới hạn token cho mỗi lượt trả lời. KHÔNG viết cả file trong một lần.
+> Hãy tạo file với khung tối thiểu trước, rồi thêm từng hàm/phần bằng nhiều lần edit nhỏ (mỗi lần ≤ 120 dòng).
 
 ## dashboard (`#/`)
 1. **Hero**: tiêu đề "Ôn luyện phỏng vấn Senior Java", 1 dòng mô tả, nút "Phỏng vấn thử" (primary → `#/mock`)
@@ -39,3 +42,5 @@ Code phải chạy được với bất kỳ số lượng câu nào, kể cả 
 
 ## Notes
 (agent ghi chú ở đây)
+
+- [integrator] Agent Cline dừng do hết hạn mức free trước khi tự đánh dấu. View đã được kiểm tra bằng trình duyệt headless (render đủ route, không lỗi console) và chấp nhận; phần còn thiếu do integrator hoàn thiện.

@@ -1,11 +1,14 @@
 # T11 — View: Phỏng vấn thử (mock)
 
-Status: TODO
+Status: DONE
 Agent: cline
 Owns: `js/views/mock.js`, `css/views/mock.css`
 
 Đọc `AGENTS.md` mục 7 và `js/core/app.js`, `css/base.css` trước khi bắt đầu.
 Dữ liệu có thể đang rất ít (agent khác viết song song), nên phải xử lý tốt khi không đủ câu.
+
+> **Quan trọng — giới hạn output:** model của bạn có giới hạn token cho mỗi lượt trả lời. KHÔNG viết cả file trong một lần.
+> Hãy tạo file với khung tối thiểu trước, rồi thêm từng hàm/phần bằng nhiều lần edit nhỏ (mỗi lần ≤ 120 dòng).
 
 ## Luồng
 ### 1. Thiết lập
@@ -53,3 +56,5 @@ Dữ liệu có thể đang rất ít (agent khác viết song song), nên phả
 
 ## Notes
 (agent ghi chú ở đây)
+
+- [integrator] Agent Cline dừng do hết hạn mức free trước khi tự đánh dấu. View đã được kiểm tra bằng trình duyệt headless (render đủ route, không lỗi console) và chấp nhận; phần còn thiếu do integrator hoàn thiện.

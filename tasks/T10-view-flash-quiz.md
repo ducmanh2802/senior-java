@@ -1,11 +1,14 @@
 # T10 — View: Flashcard (flash) + Trắc nghiệm (quiz)
 
-Status: TODO
+Status: DONE
 Agent: cline
 Owns: `js/views/flash.js`, `js/views/quiz.js`, `css/views/flash.css`, `css/views/quiz.css`
 
 Đọc `AGENTS.md` mục 7 và `js/core/app.js`, `css/base.css` trước khi bắt đầu.
 Dữ liệu có thể đang rất ít (agent khác viết song song), nên phải xử lý tốt trường hợp 0 hoặc 1 câu.
+
+> **Quan trọng — giới hạn output:** model của bạn có giới hạn token cho mỗi lượt trả lời. KHÔNG viết cả file trong một lần.
+> Hãy tạo file với khung tối thiểu trước, rồi thêm từng hàm/phần bằng nhiều lần edit nhỏ (mỗi lần ≤ 120 dòng).
 
 ## flash (`#/flash` và `#/flash/<topicId>`)
 1. **Thiết lập** (ở đầu trang, gọn): select topic (Tất cả + từng topic; mặc định lấy từ param), chế độ bộ bài:
@@ -34,3 +37,5 @@ Dữ liệu: `App.quiz()` (schema ở `AGENTS.md` mục 4).
 
 ## Notes
 (agent ghi chú ở đây)
+
+- [integrator] Agent Cline dừng do hết hạn mức free trước khi tự đánh dấu. View đã được kiểm tra bằng trình duyệt headless (render đủ route, không lỗi console) và chấp nhận; phần còn thiếu do integrator hoàn thiện.

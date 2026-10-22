@@ -1,11 +1,14 @@
 # T17 — View: Lộ trình 6 tháng + nhật ký học hằng ngày
 
-Status: TODO
+Status: DONE
 Agent: cline
 Owns: `js/views/roadmap.js`, `css/views/roadmap.css`
 
 Đọc `AGENTS.md` mục 7 (đặc biệt các API SRS và nhật ký), `js/core/app.js`, `css/base.css` và **`js/data/roadmap.js`** (dữ liệu `window.ROADMAP`).
 Mục tiêu người dùng: phỏng vấn đậu Senior Java ở ngân hàng / big tech Việt Nam sau 6 tháng.
+
+> **Quan trọng — giới hạn output:** model của bạn có giới hạn token cho mỗi lượt trả lời. KHÔNG viết cả file trong một lần.
+> Hãy tạo file với khung tối thiểu trước, rồi thêm từng hàm/phần bằng nhiều lần edit nhỏ (mỗi lần ≤ 120 dòng).
 
 ## `#/roadmap`
 1. **Header**: `ROADMAP.goal`. Nếu `App.store.data.roadmap.start` chưa có, hiển thị ô chọn ngày (`<input type="date">`, mặc định hôm nay)
@@ -32,3 +35,5 @@ Mục tiêu người dùng: phỏng vấn đậu Senior Java ở ngân hàng / b
 
 ## Notes
 (agent ghi chú ở đây)
+
+- [integrator] Agent Cline dừng do hết hạn mức free trước khi tự đánh dấu. View đã được kiểm tra bằng trình duyệt headless (render đủ route, không lỗi console) và chấp nhận; phần còn thiếu do integrator hoàn thiện.
