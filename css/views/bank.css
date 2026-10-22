@@ -1,1 +1,62 @@
-/* Styles for view "bank" — owner: task T9. Scope every rule under .view-bank */
+/* Styles for view "bank" — owner: task T09. Scope every rule under .view-bank */
+
+.view-bank { display: flex; flex-direction: column; gap: 16px; }
+
+/* ---------- thanh lọc ---------- */
+.view-bank .bank-filters { display: flex; flex-direction: column; gap: 12px; }
+.view-bank .bank-search-row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+.view-bank .bank-search { flex: 1 1 260px; min-width: 0; }
+.view-bank .bank-field { flex: 0 0 160px; }
+.view-bank .bank-topic-chips { padding-top: 2px; }
+.view-bank .bank-status-chips { padding-top: 2px; }
+.view-bank .bank-head-actions { justify-content: flex-end; }
+
+/* ---------- danh sách ---------- */
+.view-bank .bank-list { display: flex; flex-direction: column; gap: 10px; }
+.view-bank .bank-card { padding: 0; overflow: hidden; }
+.view-bank .bank-card.is-open { border-color: var(--accent); }
+
+.view-bank .bank-head {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 14px 16px; cursor: pointer; user-select: none;
+}
+.view-bank .bank-head:hover { background: var(--surface-2); }
+.view-bank .bank-idx {
+  flex: none; min-width: 28px; text-align: right;
+  font-variant-numeric: tabular-nums; color: var(--muted); font-size: .85rem; padding-top: 2px;
+}
+.view-bank .bank-q { flex: 1 1 auto; min-width: 0; font-weight: 500; overflow-wrap: anywhere; }
+.view-bank .bank-q p { margin: 0; }
+.view-bank .bank-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; flex: none; }
+.view-bank .bank-dot-wrap { display: inline-flex; align-items: center; }
+.view-bank .bank-caret { flex: none; color: var(--muted); transition: transform .2s ease; }
+.view-bank .bank-card.is-open .bank-caret { transform: rotate(180deg); }
+
+.view-bank .bank-star {
+  flex: none; background: none; border: 0; cursor: pointer; padding: 0 2px;
+  font-size: 1.05rem; line-height: 1; color: var(--warn);
+}
+.view-bank .bank-star:hover { color: var(--accent); }
+
+/* ---------- phần mở rộng ---------- */
+.view-bank .bank-body { padding: 0 16px 16px 54px; border-top: 1px solid var(--border); padding-top: 14px; }
+.view-bank .bank-follow { margin-top: 14px; }
+.view-bank .bank-follow h4 { margin: 0 0 6px; font-size: .95rem; color: var(--accent); }
+.view-bank .bank-follow ul { margin: 0; padding-left: 1.3em; }
+.view-bank .bank-follow li { margin: .25em 0; }
+.view-bank .bank-grade {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-top: 16px; padding-top: 12px; border-top: 1px dashed var(--border);
+}
+.view-bank .bank-due { margin-left: auto; }
+
+.view-bank .bank-more { display: flex; justify-content: center; padding: 8px 0 4px; }
+
+@media (max-width: 560px) {
+  .view-bank .bank-head { flex-wrap: wrap; }
+  .view-bank .bank-meta { order: 3; width: 100%; }
+  .view-bank .bank-body { padding-left: 16px; }
+  .view-bank .bank-field { flex: 1 1 100%; }
+  .view-bank .bank-due { margin-left: 0; width: 100%; }
+}
+

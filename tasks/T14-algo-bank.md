@@ -1,6 +1,6 @@
 # T14 — Nội dung: Bài luyện thuật toán (coding interview)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/algo.js`
 
@@ -39,4 +39,11 @@ Phân bổ độ khó khoảng 30% easy, 55% medium, 15% hard. Bao phủ **các 
 Chạy `node scripts/validate.js` cho đến khi OK.
 
 ## Notes
-(agent ghi chú ở đây)
+- Đã thêm `algo-002` … `algo-048` (48 bài, giữ nguyên `algo-001`): 14 easy (29%), 28 medium (58%), 6 hard (13%).
+- Bao phủ 13 pattern, mỗi pattern 2–4 bài: Hash Map, Two Pointers, Sliding Window, Stack, Binary Search,
+  Linked List, Tree, Graph, Heap, Dynamic Programming, Backtracking, Greedy, Practical (Java/concurrency).
+  Riêng nhóm thực tế gồm token bucket rate limiter, bounded blocking queue, đối soát giao dịch và top-K từ log.
+- Đã kiểm tra code: `javac 17` compile thành công toàn bộ 48 snippet Java (tách từ `~~~java`), đồng thời chạy
+  harness 85 assertion cho các bài then chốt (MinStack, LRU Cache, Dijkstra, Koko, bounded queue, reconcile, top-K) — pass hết.
+- `node scripts/validate.js` toàn repo in ra `OK — không có lỗi.`
+- Chỉ sửa `js/data/algo.js` và file task này; không commit.

@@ -1,1 +1,66 @@
 /* Styles for view "flash" — owner: task T10. Scope every rule under .view-flash */
+
+/* ---------- setup ---------- */
+.view-flash .flash-setup { margin-bottom: 16px; }
+.view-flash .flash-setup-row { display: flex; gap: 14px; align-items: flex-end; flex-wrap: wrap; }
+.view-flash .flash-field { flex: 0 1 220px; }
+.view-flash .flash-setup-info { flex: 1 1 260px; min-width: 0; }
+.view-flash .flash-hint { font-size: .9rem; color: var(--muted); }
+.view-flash .flash-deck-info { margin-top: 4px; }
+
+/* ---------- card ---------- */
+.view-flash .flash-wrap { max-width: 860px; }
+.view-flash .flash-card {
+  margin-top: 16px; min-height: 260px; display: flex; align-items: stretch;
+  animation: flashFade .18s ease-out;
+}
+.view-flash .flash-card.is-flipped { animation: flashFlip .22s ease-out; }
+.view-flash .flash-card-inner { display: flex; flex-direction: column; width: 100%; }
+.view-flash .flash-card-meta { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+.view-flash .flash-q { font-size: 1.25rem; line-height: 1.6; font-weight: 500; }
+.view-flash .flash-q-back { font-size: 1rem; font-weight: 600; color: var(--muted); margin-bottom: 10px; }
+.view-flash .flash-a { margin-top: 4px; }
+.view-flash .flash-a h4 { margin-top: 1em; }
+.view-flash .flash-follow { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
+.view-flash .flash-follow h4 { margin: 0 0 .5em; font-size: .95rem; color: var(--accent); }
+.view-flash .flash-follow ul { margin: 0; padding-left: 1.3em; }
+.view-flash .flash-follow li { margin: .35em 0; }
+.view-flash .flash-card-foot { margin-top: auto; padding-top: 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.view-flash .flash-grade { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+@keyframes flashFade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes flashFlip { from { opacity: .35; transform: rotateX(-8deg); } to { opacity: 1; transform: none; } }
+
+/* ---------- progress + keys ---------- */
+.view-flash .flash-progress { padding: 14px 18px; }
+.view-flash .flash-progress-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.view-flash .flash-count { font-family: var(--mono); font-weight: 600; font-variant-numeric: tabular-nums; }
+.view-flash .flash-counts { display: flex; gap: 6px; flex-wrap: wrap; }
+.view-flash .flash-keys { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 14px; }
+
+/* ---------- summary / empty ---------- */
+.view-flash .flash-summary, .view-flash .flash-empty { max-width: 860px; margin-top: 16px; }
+.view-flash .flash-sum-stats { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); margin: 16px 0; }
+.view-flash .flash-sum-actions { margin-top: 8px; }
+
+/* ---------- toast ---------- */
+.view-flash .flash-toast {
+  position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 12px);
+  background: var(--text); color: var(--bg); padding: 9px 16px; border-radius: 999px;
+  font-size: .9rem; opacity: 0; pointer-events: none; transition: opacity .18s, transform .18s; z-index: 50;
+}
+.view-flash .flash-toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* ---------- responsive ---------- */
+@media (max-width: 640px) {
+  .view-flash .flash-field { flex: 1 1 100%; }
+  .view-flash .flash-q { font-size: 1.1rem; }
+  .view-flash .flash-card { padding: 16px; }
+  .view-flash .flash-grade .btn { flex: 1 1 100%; padding: 14px 12px; font-size: 1rem; }
+  .view-flash .flash-grade .small { flex: 1 1 100%; }
+  .view-flash .flash-keys { gap: 10px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .view-flash .flash-card, .view-flash .flash-card.is-flipped { animation: none; }
+}
+

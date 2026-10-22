@@ -1,1 +1,71 @@
-/* Styles for view "dashboard" — owner: task T9. Scope every rule under .view-dashboard */
+/* Styles for view "dashboard" — owner: task T09. Scope every rule under .view-dashboard */
+
+.view-dashboard { display: flex; flex-direction: column; gap: 18px; }
+
+/* ---------- hero ---------- */
+.view-dashboard .hero { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
+.view-dashboard .hero-txt { flex: 1 1 320px; min-width: 0; }
+.view-dashboard .hero-txt h1 { margin-bottom: .35em; }
+.view-dashboard .hero-txt p { margin: 0 0 16px; max-width: 60ch; }
+.view-dashboard .hero-actions { gap: 10px; }
+.view-dashboard .hero-ring { flex: 0 0 auto; }
+
+.view-dashboard .ring { width: 132px; height: 132px; display: block; }
+.view-dashboard .ring-bg { fill: none; stroke: var(--surface-2); stroke-width: 10; }
+.view-dashboard .ring-fg {
+  fill: none; stroke: var(--accent); stroke-width: 10; stroke-linecap: round;
+  transform: rotate(-90deg); transform-origin: 60px 60px;
+  transition: stroke-dashoffset .4s ease;
+}
+.view-dashboard .ring-val { text-anchor: middle; font-size: 26px; font-weight: 700; fill: var(--text); }
+.view-dashboard .ring-lbl { text-anchor: middle; font-size: 11px; fill: var(--muted); }
+
+/* ---------- kế hoạch hôm nay ---------- */
+.view-dashboard .plan-card { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.view-dashboard .plan-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.view-dashboard .plan-head h2 { margin: 0; }
+.view-dashboard .streak { font-weight: 600; color: var(--accent); white-space: nowrap; }
+.view-dashboard .plan-row {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 12px 0; border-top: 1px solid var(--border);
+}
+.view-dashboard .plan-num { font-size: 1.6rem; font-weight: 700; color: var(--accent); min-width: 44px; text-align: center; font-variant-numeric: tabular-nums; }
+.view-dashboard .plan-den { font-size: .8rem; color: var(--muted); font-weight: 500; }
+.view-dashboard .plan-txt { flex: 1 1 260px; min-width: 0; }
+.view-dashboard .plan-txt strong { font-size: 1rem; }
+.view-dashboard .plan-activity { padding-top: 12px; border-top: 1px solid var(--border); }
+
+/* ---------- stat tiles ---------- */
+.view-dashboard .stat-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.view-dashboard .stat .num.ok { color: var(--ok); }
+.view-dashboard .stat .num.warn { color: var(--warn); }
+.view-dashboard .stat .num.bad { color: var(--bad); }
+
+/* ---------- chủ đề ---------- */
+.view-dashboard .group + .group { margin-top: 20px; }
+.view-dashboard .group-title { font-size: .95rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin-bottom: 10px; }
+.view-dashboard .topic-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
+.view-dashboard .topic-card {
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 12px; background: var(--surface); display: flex; flex-direction: column; gap: 10px;
+}
+.view-dashboard .topic-head { display: flex; align-items: center; gap: 8px; }
+.view-dashboard .topic-icon { font-size: 1.1rem; }
+.view-dashboard .topic-name { font-weight: 600; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.view-dashboard .topic-links { display: flex; gap: 8px; flex-wrap: wrap; }
+.view-dashboard .topic-links .btn { flex: 1 1 auto; }
+
+/* ---------- lịch sử ---------- */
+.view-dashboard .hist-list { list-style: none; margin: 0; padding: 0; }
+.view-dashboard .hist-item { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 9px 0; border-top: 1px solid var(--border); }
+.view-dashboard .hist-item:first-child { border-top: 0; }
+.view-dashboard .hist-meta { font-weight: 500; }
+.view-dashboard .hist-date { margin-left: auto; }
+
+@media (max-width: 520px) {
+  .view-dashboard .hero { text-align: left; }
+  .view-dashboard .hero-ring { margin: 0 auto; }
+  .view-dashboard .plan-row .btn { width: 100%; }
+  .view-dashboard .hist-date { margin-left: 0; width: 100%; }
+}
+

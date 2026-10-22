@@ -1,1 +1,116 @@
 /* Styles for view "roadmap" — owner: task T17. Scope every rule under .view-roadmap */
+
+/* ---------- hero / header ---------- */
+.view-roadmap .rm-hero { margin-bottom: 20px; }
+.view-roadmap .rm-goal { margin-bottom: 12px; font-size: clamp(1.25rem, 3.2vw, 1.75rem); }
+.view-roadmap .rm-hero-meta { margin-bottom: 12px; gap: 8px; }
+.view-roadmap .rm-hero-bar { margin-bottom: 12px; }
+.view-roadmap .rm-hero-actions { margin-top: 4px; }
+.view-roadmap .rm-start { align-items: flex-end; margin-top: 14px; }
+.view-roadmap .rm-date-field { flex: 0 1 220px; }
+.view-roadmap .rm-start .btn { flex: none; }
+
+/* ---------- hôm nay ---------- */
+.view-roadmap .rm-sub { margin: 22px 0 10px; font-size: 1rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.view-roadmap .rm-due { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.view-roadmap .rm-due-chip {
+  padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border);
+  background: var(--surface-2); font-size: .9rem;
+}
+.view-roadmap .rm-due-chip b { color: var(--accent); font-size: 1.05rem; }
+.view-roadmap .rm-due-none { color: var(--muted); }
+.view-roadmap .rm-hint { margin: 12px 0 0; font-size: .88rem; line-height: 1.55; }
+.view-roadmap .rm-stats { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+.view-roadmap .rm-stat { padding: 12px; }
+.view-roadmap .rm-stat .num { font-size: 1.5rem; }
+.view-roadmap .rm-streak .num { color: var(--accent); }
+
+/* ---------- tuần hiện tại ---------- */
+.view-roadmap .rm-week-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.view-roadmap .rm-week-head h3 { margin: 0; font-size: 1.05rem; }
+.view-roadmap .rm-topics { margin: 8px 0; }
+.view-roadmap .rm-topic { text-decoration: none; }
+.view-roadmap .rm-topic:hover { border-color: var(--accent); text-decoration: none; }
+.view-roadmap .rm-algo-goal { margin: 8px 0; font-size: .92rem; }
+.view-roadmap .rm-tasks { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 8px; }
+.view-roadmap .rm-task label { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
+.view-roadmap .rm-task input { margin-top: 4px; flex: none; width: 16px; height: 16px; accent-color: var(--accent); }
+.view-roadmap .rm-task span { font-size: .95rem; }
+.view-roadmap .rm-task.is-done span { text-decoration: line-through; color: var(--muted); }
+
+/* ---------- heatmap ---------- */
+.view-roadmap .rm-heat-scroll { overflow-x: auto; padding-bottom: 6px; }
+.view-roadmap .rm-heat {
+  display: grid; grid-auto-flow: column; grid-template-rows: repeat(7, 13px);
+  gap: 3px; width: max-content; padding: 4px 0;
+}
+.view-roadmap .rm-cell {
+  width: 13px; height: 13px; border-radius: 3px; background: var(--surface-2);
+  border: 1px solid var(--border); cursor: pointer; display: block;
+}
+.view-roadmap .rm-cell:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.view-roadmap .rm-cell.rm-lv0 { background: var(--surface-2); }
+.view-roadmap .rm-cell.rm-lv1 { background: color-mix(in srgb, var(--accent) 22%, var(--surface-2)); border-color: transparent; }
+.view-roadmap .rm-cell.rm-lv2 { background: color-mix(in srgb, var(--accent) 45%, var(--surface-2)); border-color: transparent; }
+.view-roadmap .rm-cell.rm-lv3 { background: color-mix(in srgb, var(--accent) 72%, var(--surface-2)); border-color: transparent; }
+.view-roadmap .rm-cell.rm-lv4 { background: var(--accent); border-color: transparent; }
+.view-roadmap .rm-cell.rm-future { opacity: .35; border-style: dashed; }
+.view-roadmap .rm-cell.sel { outline: 2px solid var(--text); outline-offset: 1px; }
+.view-roadmap .rm-heat-legend { display: flex; align-items: center; gap: 4px; margin-top: 8px; }
+.view-roadmap .rm-heat-legend .rm-cell { cursor: default; width: 12px; height: 12px; }
+.view-roadmap .rm-day-detail {
+  margin: 14px 0; padding: 12px 14px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border); background: var(--surface-2);
+}
+.view-roadmap .rm-day-detail h4 { margin: 0 0 8px; font-size: .95rem; color: var(--accent); }
+.view-roadmap .rm-day-grid { display: grid; gap: 6px 14px; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); font-size: .9rem; }
+.view-roadmap .rm-day-note { margin: 10px 0 0; font-size: .9rem; white-space: pre-wrap; }
+.view-roadmap .rm-note-form { margin: 16px 0 4px; display: grid; gap: 10px; }
+.view-roadmap .rm-table-scroll { overflow-x: auto; }
+.view-roadmap .rm-table { border-collapse: collapse; width: 100%; font-size: .88rem; min-width: 520px; }
+.view-roadmap .rm-table th, .view-roadmap .rm-table td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; vertical-align: top; }
+.view-roadmap .rm-table th { background: var(--surface-2); white-space: nowrap; }
+.view-roadmap .rm-note-cell { max-width: 260px; white-space: pre-wrap; font-size: .85rem; }
+
+/* ---------- lộ trình 26 tuần ---------- */
+.view-roadmap .rm-phases { display: grid; gap: 20px; margin-top: 14px; }
+.view-roadmap .rm-phase {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 16px; box-shadow: var(--shadow);
+}
+.view-roadmap .rm-phase-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.view-roadmap .rm-phase-head h3 { margin: 0; font-size: 1.05rem; }
+.view-roadmap .rm-phase-bar { margin: 10px 0 12px; }
+.view-roadmap .rm-weeks { display: grid; gap: 8px; }
+.view-roadmap .rm-week {
+  border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface);
+  overflow: hidden;
+}
+.view-roadmap .rm-week-cur { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-soft); }
+.view-roadmap .rm-week > summary {
+  cursor: pointer; padding: 10px 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  list-style: none;
+}
+.view-roadmap .rm-week > summary::-webkit-details-marker { display: none; }
+.view-roadmap .rm-week > summary::before { content: "▸"; color: var(--muted); }
+.view-roadmap .rm-week[open] > summary::before { content: "▾"; }
+.view-roadmap .rm-week-no { font-weight: 700; color: var(--accent); font-size: .9rem; white-space: nowrap; }
+.view-roadmap .rm-week-title { flex: 1 1 200px; font-weight: 500; }
+.view-roadmap .rm-week-body { padding: 0 12px 14px; }
+.view-roadmap .rm-week-bar { margin-bottom: 10px; }
+.view-roadmap .rm-targets { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+.view-roadmap .rm-target h4 { margin-bottom: 6px; }
+.view-roadmap .rm-target ul { margin: 8px 0 0; padding-left: 1.2em; font-size: .92rem; }
+.view-roadmap .rm-target li { margin: .25em 0; }
+.view-roadmap .rm-project { border-color: var(--accent); }
+.view-roadmap .rm-project p { margin: 0; font-size: .93rem; }
+
+/* ---------- responsive ---------- */
+@media (max-width: 640px) {
+  .view-roadmap .rm-stats { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); }
+  .view-roadmap .rm-phase { padding: 12px; }
+  .view-roadmap .rm-week > summary { padding: 10px; gap: 8px; }
+  .view-roadmap .rm-week-title { flex: 1 1 100%; order: 3; font-size: .95rem; }
+  .view-roadmap .rm-date-field { flex: 1 1 100%; }
+  .view-roadmap .rm-start .btn { flex: 1 1 auto; }
+}
