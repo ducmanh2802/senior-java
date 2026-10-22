@@ -64,7 +64,9 @@ Vào **Project → Settings → Environment Variables** trên Vercel, thêm các
 
 | Biến | Bắt buộc | Ý nghĩa |
 |---|---|---|
-| `APP_PASSCODE` | ✅ | Mật mã tự đặt. Nhập nó trong ⚙️ trên web, để người khác có link cũng không tiêu tiền API của bạn được |
+| `SUPABASE_URL` | ✅ cho tài khoản | URL project Supabase, ví dụ `https://xxxx.supabase.co` |
+| `SUPABASE_SECRET_KEY` | ✅ cho tài khoản | **Secret key** (`sb_secret_…`) trong Supabase → Project Settings → API Keys. Chỉ đặt ở Vercel, không bao giờ đưa vào code. Người dùng đăng nhập sẽ được chấm AI theo hạn mức mỗi ngày (`profiles.ai_daily_limit`, mặc định 10) |
+| `APP_PASSCODE` | tuỳ chọn | Mật mã của chủ app: nhập trong ⚙️ để dùng AI không bị giới hạn hạn mức |
 | `ANTHROPIC_API_KEY` | ✅ cho AI chấm | Lấy tại [platform.claude.com](https://platform.claude.com). Mỗi lần chấm tốn khoảng $0.03–0.05 |
 | `CLAUDE_MODEL` | | Mặc định `claude-opus-5-5` |
 | `JUDGE0_KEY` | cho nút ▶ Chạy test | RapidAPI key của [Judge0 CE](https://rapidapi.com/judge0-official/api/judge0-ce), gói free khoảng 50 lần/ngày. Chưa có key thì dùng "AI review code" |

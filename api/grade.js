@@ -12,7 +12,7 @@
  */
 'use strict';
 
-const { send, guard, str } = require('./_lib');
+const { send, guard, charge, str } = require('./_lib');
 
 const MODEL = process.env.CLAUDE_MODEL || 'claude-opus-5-5';
 
@@ -130,13 +130,15 @@ function codePrompt(b) {
 }
 
 module.exports = async function handler(req, res) {
-  const body = guard(req, res, { maxPerMinute: 15 });
-  if (!body) return;
   if (!process.env.ANTHROPIC_API_KEY) return send(res, 503, { error: 'Server chưa cấu hình ANTHROPIC_API_KEY', code: 'not_configured' });
+  const ctx = await guard(req, res, { maxPerMinute: 15 });
+  if (!ctx) return;
+  const body = ctx.body;
 
   const isCode = body.kind === 'code';
   const content = isCode ? str(body.code, 12000) : str(body.answer, 8000);
   if (content.trim().length < 5) return send(res, 400, { error: isCode ? 'Chưa có code để review' : 'Câu trả lời trống' });
+  if (!(await charge(res, ctx.user, isCode ? 'review' : 'grade'))) return;
 
   const { default: Anthropic } = await import('@anthropic-ai/sdk');
   const client = new Anthropic();

@@ -7,7 +7,7 @@
  */
 'use strict';
 
-const { send, guard, str } = require('./_lib');
+const { send, guard, charge, str } = require('./_lib');
 
 const URL_BASE = (process.env.JUDGE0_URL || 'https://judge0-ce.p.rapidapi.com').replace(/\/$/, '');
 const JAVA_ID = Number(process.env.JUDGE0_JAVA_ID) || 62;
@@ -16,13 +16,14 @@ const b64 = s => Buffer.from(String(s || ''), 'utf8').toString('base64');
 const unb64 = s => (s ? Buffer.from(s, 'base64').toString('utf8') : '');
 
 module.exports = async function handler(req, res) {
-  const body = guard(req, res, { maxPerMinute: 10 });
-  if (!body) return;
   if (!process.env.JUDGE0_KEY && !process.env.JUDGE0_URL) {
     return send(res, 200, { configured: false, error: 'Chưa cấu hình máy chạy code (JUDGE0_KEY)' });
   }
-  const source = str(body.source, 60000);
+  const ctx = await guard(req, res, { maxPerMinute: 10 });
+  if (!ctx) return;
+  const source = str(ctx.body.source, 60000);
   if (!/public\s+class\s+Main\b/.test(source)) return send(res, 400, { error: 'Thiếu public class Main' });
+  if (!(await charge(res, ctx.user, 'run'))) return;
 
   const headers = { 'Content-Type': 'application/json' };
   if (process.env.JUDGE0_KEY) {

@@ -11,13 +11,15 @@
     "smoke": "node scripts/smoke.mjs",
     "test-algos": "node scripts/test-algos.js",
     "check": "node scripts/validate.js && node scripts/test-algos.js && node scripts/test-rls.mjs && node scripts/smoke.mjs",
-    "test-rls": "node scripts/test-rls.mjs"
+    "test-rls": "node scripts/test-rls.mjs",
+    "test-sync": "node scripts/test-sync.js"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "0.137.0"
+    "@anthropic-ai/sdk": "0.137.0",
+    "@vercel/speed-insights": "^2.0.0"
   },
   "devDependencies": {
-    "playwright": "1.64.0",
-    "@electric-sql/pglite": "0.5.8"
+    "@electric-sql/pglite": "0.5.8",
+    "playwright": "1.64.0"
   }
 }

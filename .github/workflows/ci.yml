@@ -36,6 +36,12 @@ jobs:
       - name: Algorithm harnesses compile and pass with reference solutions
         run: node scripts/test-algos.js
 
+      - name: Sync merge + API auth/quota gate
+        run: node scripts/test-sync.js
+
+      - name: Supabase RLS attack tests (PGlite)
+        run: node scripts/test-rls.mjs
+
       - name: Browser smoke test
         run: |
           npx playwright install --with-deps chromium

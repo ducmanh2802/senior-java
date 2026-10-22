@@ -1,6 +1,6 @@
 /*
  * AI + speech + code-run helpers shared by views (loaded after js/core/app.js).
- *   App.ai      — calls /api/* serverless functions (passcode in x-app-passcode)
+ *   App.ai      — calls /api/* serverless functions (session token, or passcode in x-app-passcode)
  *   App.speech  — Web Speech API dictation with fluency metrics
  *   App.code    — assemble user code + test harness into a runnable Main, parse results
  *   App.ui      — shared renderers for AI feedback
@@ -24,12 +24,18 @@
     if (location.protocol === 'file:') {
       throw new AiError('Tính năng AI cần chạy trên bản deploy (Vercel) hoặc `vercel dev`, không chạy khi mở file trực tiếp.', 'no_server');
     }
-    if (!getPasscode()) throw new AiError('Chưa nhập mật mã truy cập — bấm ⚙️ để cài đặt.', 'no_passcode');
+    // signed-in users authenticate with their session (per-user AI quota); the passcode is the owner/admin fallback
+    const headers = { 'Content-Type': 'application/json' };
+    const token = App.auth && App.auth.user ? await App.auth.token() : null;
+    if (token) headers.Authorization = 'Bearer ' + token;
+    else if (getPasscode()) headers['x-app-passcode'] = getPasscode();
+    else if (App.auth && App.auth.enabled) throw new AiError('Đăng nhập để dùng AI chấm điểm (miễn phí, có hạn mức mỗi ngày).', 'no_auth');
+    else throw new AiError('Chưa nhập mật mã truy cập — bấm ⚙️ để cài đặt.', 'no_passcode');
     let res;
     try {
       res = await fetch('/api/' + path, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-app-passcode': getPasscode() },
+        headers,
         body: JSON.stringify(body || {}),
       });
     } catch (e) {
@@ -230,7 +236,10 @@
     },
     /** Friendly message for an AiError, with a settings hint when relevant. */
     error(e) {
-      const hint = e && (e.code === 'no_passcode' || e.code === 'bad_passcode') ? ' <button type="button" class="link-btn" data-open-settings>Mở cài đặt</button>' : '';
+      const code = e && e.code;
+      const hint = code === 'no_passcode' || code === 'bad_passcode' ? ' <button type="button" class="link-btn" data-open-settings>Mở cài đặt</button>'
+        : code === 'no_auth' || code === 'bad_token' ? ' <a class="link-btn" href="#/account">Đăng nhập</a>'
+        : code === 'quota_exceeded' ? ' <a class="link-btn" href="#/account">Xem hạn mức</a>' : '';
       return '<div class="ai-error">⚠️ ' + esc(e && e.message || 'Lỗi không xác định') + hint + '</div>';
     },
   };
