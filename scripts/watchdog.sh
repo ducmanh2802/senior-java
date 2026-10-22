@@ -13,7 +13,7 @@ declare -A tries=()
 
 agents() {  # lines: "<pid> <task>" for opencode.exe processes started by run-agents.sh
   powershell.exe -NoProfile -Command \
-    "Get-CimInstance Win32_Process -Filter \"Name='opencode.exe'\" | ForEach-Object { if (\$_.CommandLine -match '--title (T\d+)') { '{0} {1}' -f \$_.ProcessId, \$matches[1] } }" \
+    "Get-CimInstance Win32_Process | Where-Object { \$_.Name -in 'opencode.exe','node.exe' } | ForEach-Object { if (\$_.CommandLine -match '--title (T\d+)' -or \$_.CommandLine -match 'task (T\d+) ') { '{0} {1}' -f \$_.ProcessId, \$matches[1] } }" \
     2>/dev/null | tr -d '\r'
 }
 

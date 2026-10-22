@@ -73,7 +73,13 @@ Sau đó thực hiện ĐẦY ĐỦ task: chỉ sửa các file mà task sở h�
 không git commit, và cuối cùng cập nhật Status: DONE kèm ghi chú vào $file. Làm việc tự động đến khi xong, không hỏi lại. Nếu file của bạn đã có nội dung từ lần chạy trước bị gián đoạn: đọc lại, giữ phần tốt, sửa lỗi cú pháp và làm tiếp phần còn thiếu. Tuân thủ tuyệt đối luật 8-9 trong AGENTS.md: không kill tiến trình theo tên, không mở trình duyệt, không npm install."
   echo "[$(date +%T)] start $id ($agent ${MODEL[$id]:-cline-free/minimax-m3.1-flash})"
   case "$agent" in
-    opencode) opencode run --auto -m "${MODEL[$id]}" --title "$id" "$prompt" > "logs/$id.log" 2>&1 ;;
+    opencode)
+      case "${MODEL[$id]}" in
+        gemini/*)   # Gemini CLI (own free quota). The prompt carries "task $id" so watchdog/queue can find the process.
+          local gm="${MODEL[$id]#gemini/}"; [ "$gm" = default ] && gm=""
+          GEMINI_CLI_TRUST_WORKSPACE=true gemini -y ${gm:+-m "$gm"} -p "$prompt" > "logs/$id.log" 2>&1 ;;
+        *) opencode run --auto -m "${MODEL[$id]}" --title "$id" "$prompt" > "logs/$id.log" 2>&1 ;;
+      esac ;;
     cline)    cline -y -P cline-pass -m cline-free/minimax-m3.1-flash -c "$PWD" "$prompt" > "logs/$id.log" 2>&1 ;;
     *)        echo "unknown agent '$agent' in $file"; return 1 ;;
   esac
