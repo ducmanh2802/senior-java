@@ -1,6 +1,6 @@
 # T04 — Nội dung: Microservices
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/q-microservices.js`
 
@@ -29,4 +29,7 @@ Ví dụ minh hoạ dùng Spring Boot 3 / Spring Cloud / Resilience4j / Kafka. V
 - Config & secret tập trung, 12-factor app
 
 ## Notes
-(agent ghi chú ở đây)
+- Đã viết 18 câu (`microservices-001` … `microservices-018`), phủ đủ 18 chủ đề bắt buộc; level: 4 mid / 10 senior / 4 lead (~22/56/22%).
+- Mỗi đáp án mở đầu `**Tóm tắt:**`, đi sâu bằng `###` (cơ chế + vì sao, bảng trade-off, sơ đồ ASCII, pitfall production), code ≤ 30 dòng (Spring Boot 3, Spring Cloud Gateway, Resilience4j, Spring Kafka, Debezium/outbox, Flyway/expand-contract), kết thúc `> Senior tip:`; độ dài 2300–3370 ký tự/câu; mỗi câu có 3 follow-up + tags.
+- `node scripts/validate.js q-microservices.js` → `OK — không có lỗi.` (0 cảnh báo). Lưu ý: lúc chạy full `node scripts/validate.js`, các file của task khác (`q-concurrency-jvm.js`, `q-aws.js`) đang được agent khác ghi dở nên báo lỗi cú pháp tạm thời — không thuộc quyền sở hữu của T04, không sửa.
+- Không sửa file nào ngoài `js/data/q-microservices.js` và file task này; không commit.
