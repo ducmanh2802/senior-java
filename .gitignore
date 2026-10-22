@@ -2,3 +2,4 @@ logs/
 node_modules/
 .vercel/
 .DS_Store
+logs-runner.txt

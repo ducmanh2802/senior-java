@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Monitor</title>
+<style>
+  :root {
+    --bg: #f7f6f3; --surface: #fff; --surface-2: #f0eee9; --border: #e3e0d8;
+    --text: #1d1b16; --muted: #6b675d; --accent: #d9620b; --accent-soft: #fbe7d6;
+    --ok: #1f8a4c; --ok-soft: #dcf2e4; --warn: #b7791f; --warn-soft: #fbefd5;
+    --bad: #c43d3d; --bad-soft: #fbe0e0; --info: #2f6fd0; --info-soft: #e0ebfb;
+    --code-bg: #1e1f24; --code-text: #d8d8d8;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141412; --surface: #1d1c1a; --surface-2: #262522; --border: #34322e;
+      --text: #ecebe6; --muted: #a29e93; --accent: #f08a3c; --accent-soft: #3a2616;
+      --ok: #4cc27f; --ok-soft: #173525; --warn: #e2b04a; --warn-soft: #3a2f15;
+      --bad: #ef7070; --bad-soft: #3d1c1c; --info: #79a8f0; --info-soft: #1a2a42;
+      --code-bg: #0f0f11; color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 24px 16px 48px; }
+  header { display: flex; gap: 24px; align-items: center; flex-wrap: wrap; margin-bottom: 20px; }
+  h1 { margin: 0; font-size: 1.5rem; }
+  .sub { color: var(--muted); font-size: .9rem; }
+  .ring { position: relative; width: 96px; height: 96px; flex: none; }
+  .ring svg { transform: rotate(-90deg); }
+  .ring b { position: absolute; inset: 0; display: grid; place-items: center; font-size: 1.4rem; font-variant-numeric: tabular-nums; }
+  .counters { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  .pill { padding: 3px 10px; border-radius: 999px; font-size: .8rem; font-weight: 600; background: var(--surface-2); color: var(--muted); }
+  .pill.running { background: var(--info-soft); color: var(--info); }
+  .pill.done { background: var(--ok-soft); color: var(--ok); }
+  .pill.failed, .pill.stalled { background: var(--bad-soft); color: var(--bad); }
+  .pill.stopped { background: var(--warn-soft); color: var(--warn); }
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
+  @media (max-width: 400px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  .card.running { border-color: var(--info); }
+  .card.failed, .card.stalled { border-color: var(--bad); }
+  .top { display: flex; gap: 8px; align-items: baseline; }
+  .id { font-family: ui-monospace, Consolas, monospace; font-weight: 700; color: var(--accent); }
+  .title { font-weight: 600; flex: 1; min-width: 0; }
+  .meta { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; color: var(--muted); font-size: .8rem; }
+  .tag { padding: 1px 8px; border-radius: 6px; background: var(--surface-2); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: currentColor; }
+  .pill.running .dot { animation: pulse 1.2s infinite; }
+  @keyframes pulse { 50% { opacity: .25; } }
+  .bar { height: 10px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--accent); border-radius: 999px; transition: width .6s ease; }
+  .card.done .bar > i { background: var(--ok); }
+  .card.running .bar > i { background: linear-gradient(90deg, var(--info), var(--accent)); background-size: 200% 100%; animation: flow 2s linear infinite; }
+  @keyframes flow { to { background-position: -200% 0; } }
+  .pct { display: flex; justify-content: space-between; align-items: baseline; }
+  .pct b { font-size: 1.3rem; font-variant-numeric: tabular-nums; }
+  .parts { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 10px; align-items: center; font-size: .8rem; color: var(--muted); }
+  .parts .mini { height: 5px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+  .parts .mini > i { display: block; height: 100%; background: var(--accent); }
+  .parts span:last-child, .parts .num { font-variant-numeric: tabular-nums; text-align: right; }
+  .err { font-size: .8rem; color: var(--bad); background: var(--bad-soft); border-radius: 8px; padding: 6px 10px; overflow-wrap: anywhere; }
+  .warnline { font-size: .8rem; color: var(--warn); }
+  details summary { cursor: pointer; color: var(--muted); font-size: .8rem; }
+  pre { margin: 6px 0 0; background: var(--code-bg); color: var(--code-text); padding: 8px 10px; border-radius: 8px; font: 11.5px/1.45 ui-monospace, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; }
+  .notes { font-size: .8rem; color: var(--muted); white-space: pre-wrap; }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+  .toolbar button { font: inherit; font-size: .85rem; padding: 4px 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer; }
+  .toolbar button.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="ring">
+      <svg width="96" height="96" viewBox="0 0 96 96" aria-hidden="true">
+        <circle cx="48" cy="48" r="40" fill="none" stroke="var(--surface-2)" stroke-width="10"/>
+        <circle id="ringFg" cx="48" cy="48" r="40" fill="none" stroke="var(--accent)" stroke-width="10" stroke-linecap="round" stroke-dasharray="251.3" stroke-dashoffset="251.3" style="transition: stroke-dashoffset .6s"/>
+      </svg>
+      <b id="overall">0%</b>
+    </div>
+    <div>
+      <h1>Agent Monitor — Senior Java Prep</h1>
+      <div class="sub" id="updated">Đang tải…</div>
+      <div class="counters" id="counters"></div>
+    </div>
+  </header>
+  <div class="toolbar" id="toolbar">
+    <button data-f="all" class="active">Tất cả</button>
+    <button data-f="content">Nội dung (opencode)</button>
+    <button data-f="view">Giao diện (cline)</button>
+    <button data-f="running">Đang chạy</button>
+    <button data-f="problem">Có vấn đề</button>
+  </div>
+  <div class="grid" id="grid"></div>
+</div>
+<script>
+  const STATE = {
+    queued: 'Chờ', running: 'Đang chạy', done: 'Hoàn thành', stopped: 'Dừng — chưa xong', failed: 'Lỗi', stalled: 'Treo (>10 phút không log)'
+  };
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  let filter = 'all', last = null;
+  const open = new Set();
+
+  document.getElementById('toolbar').addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    filter = b.dataset.f;
+    document.querySelectorAll('#toolbar button').forEach(x => x.classList.toggle('active', x === b));
+    if (last) render(last);
+  });
+  document.getElementById('grid').addEventListener('toggle', e => {
+    const d = e.target; if (d.tagName !== 'DETAILS') return;
+    d.open ? open.add(d.dataset.k) : open.delete(d.dataset.k);
+  }, true);
+
+  function elapsed(t) {
+    if (!t.run || !t.run.started) return '';
+    const [h, m, s] = t.run.started.split(':').map(Number);
+    let end = new Date();
+    if (t.run.ended) { const [a, b, c] = t.run.ended.split(':').map(Number); end = new Date(); end.setHours(a, b, c, 0); }
+    const st = new Date(); st.setHours(h, m, s, 0);
+    const sec = Math.max(0, Math.round((end - st) / 1000));
+    return Math.floor(sec / 60) + 'm' + String(sec % 60).padStart(2, '0') + 's';
+  }
+
+  function card(t) {
+    const parts = t.parts.map(p => {
+      const pct = p.target ? Math.min(100, p.done / p.target * 100) : 0;
+      const label = t.kind === 'view' ? (p.stub ? 'chưa bắt đầu' : p.lines + ' dòng') : p.done + '/' + p.target;
+      return `<span>${esc(p.label)}</span><div class="mini"><i style="width:${pct}%"></i></div><span class="num">${label}</span>`;
+    }).join('');
+    const problems = [];
+    if (t.syntax) problems.push('Lỗi cú pháp: ' + t.syntax);
+    if (t.errors.length) problems.push(t.errors.length + ' lỗi validate: ' + t.errors.slice(0, 3).join(' · ') + (t.errors.length > 3 ? ' …' : ''));
+    const log = t.log.exists ? t.log.tail.join('\n') : '(chưa có log)';
+    return `<article class="card ${t.state}">
+      <div class="top"><span class="id">${t.id}</span><span class="title">${esc(t.title)}</span></div>
+      <div class="meta">
+        <span class="pill ${t.state}"><span class="dot"></span> ${STATE[t.state]}</span>
+        <span class="tag">${esc(t.agent)}</span>
+        ${t.run && t.run.model ? `<span class="tag">${esc(t.run.model.replace('opencode/', ''))}</span>` : ''}
+        ${elapsed(t) ? `<span>⏱ ${elapsed(t)}</span>` : ''}
+        ${t.status === 'DONE' ? '<span class="tag">Status: DONE</span>' : ''}
+      </div>
+      <div class="pct"><span class="sub">${t.kind === 'content' ? 'Nội dung đã viết' : 'Code giao diện'}</span><b>${t.pct}%</b></div>
+      <div class="bar"><i style="width:${t.pct}%"></i></div>
+      <div class="parts">${parts}</div>
+      ${problems.map(p => `<div class="err">${esc(p)}</div>`).join('')}
+      ${t.warns ? `<div class="warnline">⚠ ${t.warns} cảnh báo (vd. đáp án còn ngắn)</div>` : ''}
+      <details data-k="log-${t.id}" ${open.has('log-' + t.id) ? 'open' : ''}><summary>Log gần nhất</summary><pre>${esc(log)}</pre></details>
+      ${t.notes ? `<details data-k="n-${t.id}" ${open.has('n-' + t.id) ? 'open' : ''}><summary>Ghi chú của agent</summary><div class="notes">${esc(t.notes)}</div></details>` : ''}
+    </article>`;
+  }
+
+  function render(d) {
+    last = d;
+    document.getElementById('overall').textContent = d.overall + '%';
+    document.getElementById('ringFg').style.strokeDashoffset = 251.3 * (1 - d.overall / 100);
+    document.getElementById('updated').textContent = 'Cập nhật ' + new Date(d.at).toLocaleTimeString('vi-VN') + (d.allDone ? ' · runner đã kết thúc' : ' · tự làm mới mỗi 3 giây');
+    const c = {}; d.tasks.forEach(t => { c[t.state] = (c[t.state] || 0) + 1; });
+    document.getElementById('counters').innerHTML = Object.keys(STATE).filter(k => c[k]).map(k => `<span class="pill ${k}"><span class="dot"></span> ${STATE[k]}: ${c[k]}</span>`).join('');
+    const list = d.tasks.filter(t =>
+      filter === 'all' || t.kind === filter || (filter === 'running' && t.state === 'running') ||
+      (filter === 'problem' && (['failed', 'stalled', 'stopped'].includes(t.state) || t.errors.length || t.syntax)));
+    document.getElementById('grid').innerHTML = list.map(card).join('') || '<p class="sub">Không có task nào.</p>';
+  }
+
+  async function tick() {
+    try { render(await (await fetch('/api/status', { cache: 'no-store' })).json()); }
+    catch (e) { document.getElementById('updated').textContent = 'Mất kết nối tới monitor server — chạy lại: node scripts/monitor.js'; }
+  }
+  tick(); setInterval(tick, 3000);
+</script>
+</body>
+</html>
