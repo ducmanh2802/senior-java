@@ -1,1 +1,129 @@
-/* Styles for view "labs". Scope every rule under .view-labs */
+/* Styles for view "labs" — owner: task T45. Scope every rule under .view-labs */
+
+/* ---------- danh sách ---------- */
+.view-labs .lab-filters { display: grid; gap: 12px; margin-bottom: 18px; }
+.view-labs .lab-chiprow { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.view-labs .lab-chiplabel {
+  flex: none; width: 84px; padding-top: 6px; font-size: .8rem; font-weight: 600;
+  color: var(--muted); text-transform: uppercase; letter-spacing: .04em;
+}
+
+.view-labs .lab-grid { grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
+.view-labs .lab-card {
+  display: flex; flex-direction: column; gap: 10px; color: var(--text);
+  transition: border-color .15s, transform .1s;
+}
+.view-labs .lab-card:hover {
+  border-color: var(--accent); text-decoration: none; transform: translateY(-2px);
+}
+.view-labs .lab-card-top {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 8px; flex-wrap: wrap;
+}
+.view-labs .lab-card h3 { margin: 0; font-size: 1.05rem; }
+.view-labs .lab-card-sub { margin: 0; }
+.view-labs .lab-card-foot { gap: 6px; margin-top: auto; }
+
+/* ---------- màn làm bài ---------- */
+.view-labs .lab-head { align-items: flex-start; }
+.view-labs .lab-title-row { gap: 10px; }
+.view-labs .lab-title { margin: 0; font-size: clamp(1.3rem, 3vw, 1.7rem); }
+.view-labs .lab-meta { gap: 6px; margin-top: 8px; }
+.view-labs .lab-nav { gap: 8px; }
+.view-labs .lab-nav .btn { max-width: 100%; overflow-wrap: anywhere; }
+
+.view-labs .lab-layout { display: grid; grid-template-columns: 1fr; gap: 16px; }
+@media (min-width: 960px) {
+  .view-labs .lab-layout {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: start;
+  }
+}
+.view-labs .lab-left, .view-labs .lab-right { min-width: 0; }
+
+/* ---------- artifact viewer ---------- */
+.view-labs .lab-artifacts { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+.view-labs .lab-art-head { gap: 10px; margin-bottom: 10px; }
+.view-labs .lab-art-head h3 { margin: 0; font-size: 1rem; }
+.view-labs .lab-tabs { margin-bottom: 10px; }
+.view-labs .lab-tabs .chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.view-labs .lab-art-tools { gap: 8px; align-items: stretch; margin-bottom: 8px; }
+.view-labs .lab-search { flex: 1 1 180px; width: auto; min-width: 0; }
+.view-labs .lab-art-tools .btn { flex: none; }
+
+.view-labs .lab-viewer {
+  background: var(--code-bg); color: var(--code-text);
+  border-radius: var(--radius-sm); padding: 10px 0;
+  font: 12.5px/1.6 var(--mono);
+  max-height: 460px; overflow: auto;
+}
+.view-labs .lab-viewer:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.view-labs .lab-line { display: flex; min-width: max-content; }
+.view-labs .lab-ln {
+  flex: none; width: 3.4em; padding: 0 10px 0 8px; text-align: right;
+  opacity: .45; user-select: none; font-variant-numeric: tabular-nums;
+}
+.view-labs .lab-code { white-space: pre; padding: 0 14px; }
+.view-labs .lab-code mark {
+  background: var(--warn); color: var(--code-bg);
+  border-radius: 2px; padding: 0 1px; font-weight: 600;
+}
+.view-labs .lab-match { margin: 8px 0 0; }
+
+/* ---------- câu hỏi + trả lời ---------- */
+.view-labs .lab-right h2 { font-size: 1.15rem; margin-bottom: 12px; }
+.view-labs .lab-questions { margin: 0 0 16px; padding-left: 1.3em; display: grid; gap: 6px; overflow-wrap: anywhere; }
+.view-labs .lab-left .md { overflow-wrap: anywhere; }
+.view-labs .lab-textarea { min-height: 180px; }
+
+.view-labs .lab-answer-actions { gap: 8px; margin-top: 10px; }
+.view-labs .lab-kbd-tip { margin: 8px 0 0; }
+
+.view-labs .lab-hints { display: grid; gap: 10px; margin-top: 12px; }
+.view-labs .lab-hint {
+  padding: 10px 12px; border-radius: var(--radius-sm);
+  background: var(--surface-2); border-left: 3px solid var(--accent);
+}
+.view-labs .lab-hint > b {
+  font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; color: var(--accent);
+}
+.view-labs .lab-fb { margin-top: 12px; display: grid; gap: 10px; }
+.view-labs .lab-speech:not(:empty) { margin-top: 8px; }
+
+.view-labs .lab-answer-box:empty { display: none; }
+.view-labs .lab-answer-wrap { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+.view-labs .lab-answer-wrap > h3 { margin: 0 0 8px; font-size: 1rem; }
+.view-labs .lab-answer-wrap > h3 + .md + h3 { margin-top: 16px; }
+.view-labs .lab-rubric {
+  list-style: none; margin: 0; padding: 0; display: grid; gap: 6px;
+}
+.view-labs .lab-rubric li > label {
+  display: flex; align-items: flex-start; gap: 8px; cursor: pointer;
+}
+.view-labs .lab-rubric input { flex: none; margin-top: .4em; accent-color: var(--accent); }
+.view-labs .lab-rubric .md p { margin: 0; }
+
+/* ---------- tự đánh giá ---------- */
+.view-labs .lab-self {
+  margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border);
+  display: grid; gap: 8px;
+}
+.view-labs .lab-self-row { gap: 8px; }
+.view-labs .lab-self-note { margin: 0; }
+.view-labs .lab-self .btn.is-active {
+  box-shadow: 0 0 0 2px var(--accent), 0 0 0 4px var(--accent-soft);
+}
+
+/* ---------- responsive ---------- */
+@media (max-width: 640px) {
+  .view-labs .lab-chiprow { flex-direction: column; gap: 4px; }
+  .view-labs .lab-chiplabel { width: auto; padding-top: 0; }
+  .view-labs .lab-viewer { max-height: 360px; }
+  .view-labs .lab-head { align-items: flex-start; }
+  .view-labs .lab-nav { width: 100%; }
+  .view-labs .lab-nav .btn { flex: 1 1 auto; justify-content: center; }
+  .view-labs .lab-answer-actions .btn { flex: 1 1 auto; }
+  .view-labs .lab-answer-actions .mic-btn { flex: 0 0 auto; }
+  .view-labs .lab-textarea { min-height: 150px; }
+  .view-labs .lab-self .btn { flex: 1 1 auto; }
+}

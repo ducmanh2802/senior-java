@@ -1,6 +1,6 @@
 # T21 — View: Lộ trình theo công ty + điểm sẵn sàng
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/views/companies.js`, `css/views/companies.css`
 
@@ -43,4 +43,18 @@ Tính trong view, hàm thuần `readiness(company)`:
 - `node --check` OK. Không có lỗi console khi `COMPANIES` rỗng và khi có dữ liệu. Responsive tới 360px. Dark mode chỉ dùng biến CSS.
 
 ## Notes
-(agent ghi chú ở đây)
+- Viết xong đủ 2 màn hình: `#/companies` (lọc loại + lưới card với vòng SVG điểm, badge confidence, 3 topic trọng tâm)
+  và `#/companies/<id>` (header + stack, điểm sẵn sàng kèm 4 thanh K/A/M/E và giải thích, timeline quy trình,
+  trọng tâm cần ôn với nhãn "Ưu tiên" cho topic yếu nhất + link bank/flash, câu hỏi chia sẻ với khối luyện trả lời
+  textarea + 🎤 + "🤖 Chấm bằng AI" (`App.ai.grade`, reference đúng chuỗi spec), mẹo, nguồn `rel="noopener"`
+  + disclaimer, nút lưu `sjp.mock.preset` rồi navigate `#/mock`).
+- `readiness()` là hàm thuần đúng công thức spec (K/A/M/E, trọng số `wA=algoWeight*0.4`, `wM=0.2`,
+  `wE=englishRequired?0.1:0`, `wK=1-wA-wM-wE`), trả kèm số liệu thô để hiển thị giải thích.
+- Chạy được với `window.COMPANIES` rỗng (empty state ở cả list và detail), question chấp nhận cả string lẫn
+  `{q, lang}`; ẩn section khi mảng rỗng.
+- Cleanup đúng: gỡ listener delegation trên `#main` và dừng mọi mic đang chạy khi rời view (luật chống rò listener).
+- Kiểm chứng: `node --check js/views/companies.js` OK; smoke test Node (vm + DOM stub, 27 assertions — list/detail/
+  empty/not-found/readiness K=50) ALL PASS; `node scripts/validate.js` → `OK — không có lỗi.` (lần chạy đầu còn lỗi
+  `algo.js` do agent T18 đang ghi song song — không thuộc file của task này, đã chạy lại tới khi OK).
+- CSS: mọi selector bắt đầu bằng `.view-companies`, chỉ dùng biến `var(--…)` (dark mode tự hoạt động),
+  responsive có media query ≤640px (grid card ≥250px vẫn vừa 360px).

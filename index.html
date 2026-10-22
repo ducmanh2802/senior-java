@@ -32,13 +32,23 @@
       <nav class="nav" aria-label="Điều hướng chính">
         <a href="#/" data-route="dashboard">Tổng quan</a>
         <a href="#/roadmap" data-route="roadmap">Lộ trình</a>
-        <a href="#/bank" data-route="bank">Câu hỏi</a>
-        <a href="#/flash" data-route="flash">Flashcard</a>
-        <a href="#/quiz" data-route="quiz">Trắc nghiệm</a>
-        <a href="#/algo" data-route="algo">Thuật toán</a>
-        <a href="#/mock" data-route="mock">Phỏng vấn thử</a>
-        <a href="#/companies" data-route="companies">Công ty</a>
-        <a href="#/labs" data-route="labs">Debug lab</a>
+        <details class="nav-group">
+          <summary>Ôn tập</summary>
+          <div class="nav-menu">
+            <a href="#/bank" data-route="bank">📚 Câu hỏi</a>
+            <a href="#/flash" data-route="flash">🃏 Flashcard</a>
+            <a href="#/quiz" data-route="quiz">✅ Trắc nghiệm</a>
+          </div>
+        </details>
+        <details class="nav-group">
+          <summary>Luyện tập</summary>
+          <div class="nav-menu">
+            <a href="#/algo" data-route="algo">🧠 Thuật toán</a>
+            <a href="#/labs" data-route="labs">🔧 Debug lab</a>
+            <a href="#/mock" data-route="mock">🎤 Phỏng vấn thử</a>
+            <a href="#/companies" data-route="companies">🏢 Theo công ty</a>
+          </div>
+        </details>
       </nav>
       <a class="icon-btn account-btn" href="#/account" data-route="account" title="Tài khoản" aria-label="Tài khoản">👤</a>
       <button class="icon-btn" data-open-settings title="Cài đặt AI" aria-label="Cài đặt AI">⚙️</button>

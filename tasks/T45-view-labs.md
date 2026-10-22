@@ -1,6 +1,6 @@
 # T45 — View: Debug lab
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/views/labs.js`, `css/views/labs.css`
 
@@ -23,3 +23,17 @@ Layout 2 cột trên desktop, 1 cột trên mobile:
 `node --check`, `npm run smoke` OK. Responsive tới 360px, dark mode chỉ dùng biến CSS.
 
 ## Notes
+- Đã làm `js/views/labs.js` + `css/views/labs.css`: danh sách lọc theo category/level/trạng thái (kèm "Đến hạn ôn");
+  card có category, level, badge trạng thái.
+- Màn làm bài 2 cột (>=960px) / 1 cột mobile: artifact viewer dạng terminal có tab theo `artifacts[].name`, số dòng,
+  tìm kiếm highlight bằng `App.esc`, nút Copy (có fallback `execCommand`).
+- Trả lời có ô nháp `sjp.lab.<id>` (try/catch), micro `App.speech`, gợi ý từng bước, chấm AI bằng
+  `App.ai.grade({question, reference: answer + rubric, topic: 'lab-<category>', level, speech})` → `App.ui.feedback`,
+  xem đáp án (confirm khi chưa hết gợi ý) + rubric checklist, tự đánh giá `setStatus`, điều hướng trước/sau.
+- Cleanup: dừng micro, clear timer Copy, gỡ listener + phím tắt `H`/`S`. Có empty state khi `window.LABS` rỗng hoặc id sai.
+- Kiểm tra: `node --check js/views/labs.js` → OK.
+- **Blocker ngoài phạm vi:** tại thời điểm kết thúc, `node scripts/validate.js` chỉ báo lỗi ở `js/data/labs-gc.js`
+  (T42 đang viết dở — có backtick bên trong template literal ở scenario/answer, dòng ~144, gây `Unexpected identifier 'toByteArray'`).
+  Không sửa file này vì T45 không sở hữu. Đề xuất T42 bỏ/escape backtick rồi chạy lại `node scripts/validate.js`.
+  Các file của T45 không tạo lỗi nào; sau khi T42 hoàn tất cần validate lại để đạt `OK — không có lỗi.`
+- Không chạy `npm run smoke` để tuân thủ luật 9 (không tự mở trình duyệt/headless); người tích hợp test UI.

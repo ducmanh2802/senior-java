@@ -16,6 +16,7 @@
   const CODING_COUNTS = [1, 2, 3];
   const DIFFS = ['easy', 'medium', 'hard'];
   const CODING_MINUTES = 25;
+  const MAX_FOLLOWUPS = 2; // tối đa 2 lượt hỏi đào sâu cho mỗi câu
 
   const VI = {
     setup: 'Thiết lập phỏng vấn thử',
@@ -33,7 +34,7 @@
     start: 'Bắt đầu phỏng vấn',
     noMatch: 'Không có câu nào phù hợp với lựa chọn hiện tại. Hãy nới lọc hoặc bổ sung câu hỏi.',
     all: 'Tất cả',
-    notes: 'Ghi chú / dàn ý câu trả lời của bạn',
+    notes: 'Câu trả lời của bạn',
     showAnswer: 'Xem đáp án mẫu',
     hideAnswer: 'Ẩn đáp án mẫu',
     selfRate: 'Tự chấm điểm',
@@ -54,12 +55,21 @@
     backSetup: 'Quay lại thiết lập',
     codingRound: 'Vòng coding',
     perQuestion: 'mỗi câu',
-    rateHelp: 'Nhấn 1–5 để chấm nhanh (khi không gõ trong ô ghi chú).',
+    rateHelp: 'Nhấn 1–5 để chấm nhanh (khi không gõ trong ô trả lời).',
     scored: 'Điểm',
     topic: 'Chủ đề',
     difficulty: 'Độ khó',
     mic: 'Đọc chính tả',
     micStop: 'Dừng ghi âm',
+    voice: 'Trả lời bằng giọng nói',
+    voiceHint: 'Mục tiêu: 1–2 phút, 110–160 từ/phút, ít từ đệm',
+    gradeAI: 'Chấm bằng AI',
+    grading: 'AI đang chấm…',
+    followup: 'Trả lời câu hỏi đào sâu',
+    followupTitle: 'Câu hỏi đào sâu',
+    aiSuggest: 'AI gợi ý {n}/5 — bấm nút để xác nhận',
+    aiAvg: 'Điểm AI trung bình',
+    aiCol: 'AI',
     score: 'Điểm',
     time: 'Thời gian',
     algoCount: 'Bài coding',
@@ -88,7 +98,7 @@
     start: 'Start interview',
     noMatch: 'No question matches the current selection. Relax the filters or add more questions.',
     all: 'All',
-    notes: 'Your notes / answer outline',
+    notes: 'Your answer',
     showAnswer: 'Show sample answer',
     hideAnswer: 'Hide sample answer',
     selfRate: 'Self rate',
@@ -109,12 +119,21 @@
     backSetup: 'Back to setup',
     codingRound: 'Coding round',
     perQuestion: 'per question',
-    rateHelp: 'Press 1-5 to score quickly (when not typing in the notes box).',
+    rateHelp: 'Press 1-5 to score quickly (when not typing in the answer box).',
     scored: 'Score',
     topic: 'Topic',
     difficulty: 'Difficulty',
     mic: 'Dictate',
-    micStop: 'Stop dictation',
+    micStop: 'Stop recording',
+    voice: 'Answer with voice',
+    voiceHint: 'Target: 1-2 minutes, 110-160 words/min, few filler words',
+    gradeAI: 'Grade with AI',
+    grading: 'AI is grading…',
+    followup: 'Answer follow-up',
+    followupTitle: 'Follow-up question',
+    aiSuggest: 'AI suggests {n}/5 — click the button to confirm',
+    aiAvg: 'Average AI score',
+    aiCol: 'AI',
     score: 'Score',
     time: 'Time',
     algoCount: 'Coding problems',
@@ -146,6 +165,8 @@
     items: [],
     idx: 0,
     notes: {},
+    speech: {},      // id -> metrics {seconds, words, wpm, fillers}
+    aiState: {},    // id -> { result, error, busy, followups: [] }
     results: [],
     sessionStart: 0,
     qStart: 0,
@@ -154,7 +175,7 @@
     timer: null,
     keyCleanup: null,
     beforeUnload: null,
-    mic: null,
+    rec: null,      // phiên ghi âm đang chạy: { handle, btn, ta, base, box, id, fuIdx, label }
     lastFocus: null
   };
 
@@ -326,6 +347,8 @@
     S.phase = 'session';
     S.idx = 0;
     S.notes = {};
+    S.speech = {};
+    S.aiState = {};
     S.results = [];
     S.sessionStart = Date.now();
     showQuestion(root);
@@ -357,6 +380,7 @@
 
   function showQuestion(root) {
     const L = t();
+    stopRecording();
     const it = current();
     const isAlgo = it.kind === 'algo';
     const d = it.data;
@@ -365,7 +389,7 @@
     const tp = isAlgo ? { id: 'algorithm', name: L.codingName, icon: '💻' } : App.topic(d.topic);
     const lvl = isAlgo ? d.difficulty : (App.LEVELS[d.level] || d.level);
     const noteVal = S.notes[d.id] || '';
-    const speechSupported = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+    const speechSupported = !!App.speech.supported;
 
     root.innerHTML =
       '<div class="mock-session">' +
@@ -390,10 +414,14 @@
           '<label class="field mock-notes"><span>' + App.esc(isAlgo ? L.editor : L.notes) + '</span>' +
             '<textarea class="textarea' + (isAlgo ? ' mock-editor' : '') + '" id="mockNote" rows="6" placeholder="">' + App.esc(noteVal) + '</textarea>' +
           '</label>' +
+          (isAlgo ? '' : '<p class="mock-voice-hint muted small">🎯 ' + App.esc(L.voiceHint) + '</p>') +
           '<div class="row mock-tools">' +
             (isAlgo ? '' : '<button type="button" class="btn" id="mockAnswer">' + App.esc(L.showAnswer) + '</button>') +
-            '<button type="button" class="btn" id="mockMic"' + (speechSupported ? '' : ' hidden') + '>🎤 ' + App.esc(L.mic) + '</button>' +
+            '<button type="button" class="btn mic-btn" id="mockMic"' + (speechSupported ? '' : ' hidden') + '>🎤 ' + App.esc(isAlgo ? L.mic : L.voice) + '</button>' +
+            (isAlgo ? '' : '<button type="button" class="btn primary" id="mockAi" disabled>🤖 ' + App.esc(L.gradeAI) + '</button>') +
           '</div>' +
+          '<div id="mockSpeechBox" class="mock-speech"></div>' +
+          (isAlgo ? '' : '<div id="mockAiBox" class="mock-ai"></div><div id="mockFollowups" class="mock-followups"></div>') +
           '<div id="mockAnswerBox" class="mock-answer" hidden></div>' +
         '</section>' +
 
@@ -406,6 +434,14 @@
       '</div>';
 
     bindSession(root);
+    renderAiPanel(root);
+    renderFollowups(root);
+    updateAiButtons(root);
+    // Quay lại câu đã chấm => khôi phục gợi ý điểm tự chấm.
+    if (!isAlgo) {
+      const st = aiStateFor(d.id);
+      if (st.result) suggestRate(root, st.result.score);
+    }
     startTimer(root);
   }
 
@@ -424,7 +460,8 @@
     }
     return '<section class="card mock-rate-box"><div class="row"><strong>' + App.esc(L.selfRate) + '</strong>' +
       '<span class="spacer"></span><span class="muted small">' + App.esc(L.rateHelp) + '</span></div>' +
-      '<div class="mock-rate-row">' + btns + '</div></section>';
+      '<div class="mock-rate-row">' + btns + '</div>' +
+      '<p class="mock-ai-suggest small" id="mockAiSuggest"></p></section>';
   }
 
   // ---------- session events ----------
@@ -435,7 +472,7 @@
 
     const note = root.querySelector('#mockNote');
     if (note) {
-      note.addEventListener('input', () => { S.notes[d.id] = note.value; });
+      note.addEventListener('input', () => { S.notes[d.id] = note.value; updateAiButtons(root); });
       note.addEventListener('keydown', e => {
         if (e.key === 'Tab' && it.kind === 'algo') {
           e.preventDefault();
@@ -458,6 +495,30 @@
 
     const mic = root.querySelector('#mockMic');
     if (mic) mic.addEventListener('click', () => toggleMic(root, mic));
+
+    const aiBtn = root.querySelector('#mockAi');
+    if (aiBtn) aiBtn.addEventListener('click', () => gradeAnswer(root));
+
+    // Vùng hỏi đào sâu: delegation (container được dựng lại mỗi câu) => không tích luỹ listener.
+    const fuBox = root.querySelector('#mockFollowups');
+    if (fuBox) {
+      fuBox.addEventListener('click', e => {
+        const add = e.target.closest('#mockAddFu');
+        if (add) { addFollowup(root); return; }
+        const g = e.target.closest('[data-fu-grade]');
+        if (g) { gradeFollowup(root, +g.dataset.fuGrade); return; }
+        const m = e.target.closest('[data-fu-mic]');
+        if (m) { toggleMic(root, m, +m.dataset.fuMic); }
+      });
+      fuBox.addEventListener('input', e => {
+        const ta = e.target.closest('[data-fu-note]');
+        if (!ta) return;
+        const st = aiStateFor(d.id);
+        const fu = st.followups[+ta.dataset.fuNote];
+        if (fu) fu.answer = ta.value;
+        updateAiButtons(root);
+      });
+    }
 
     const rateBox = root.querySelector('.mock-rate-box');
     if (rateBox) {
@@ -531,50 +592,284 @@
     box.hidden = false;
   }
 
-  // ---------- speech (optional) ----------
-  function toggleMic(root, btn) {
+  // ---------- speech: trả lời bằng giọng nói ----------
+  /** 'en' khi câu hỏi tiếng Anh hoặc phiên đang ở chế độ English. */
+  function answerLang() {
+    const it = current();
+    if (!it) return 'vi';
+    if (it.kind === 'algo') return S.cfg.english ? 'en' : 'vi';
+    if (it.data.lang === 'en' || S.cfg.english) return 'en';
+    return 'vi';
+  }
+
+  function toggleMic(root, btn, fuIdx) {
+    if (S.rec) {
+      if (S.rec.btn === btn) { stopRecording(); return; }
+      stopRecording(); // bấm mic khác => dừng lượt đang ghi rồi ghi lượt mới
+    }
+    if (!App.speech.supported) return;
+    const it = current();
+    if (!it) return;
+    const ta = fuIdx === undefined
+      ? root.querySelector('#mockNote')
+      : root.querySelector('[data-fu-note="' + fuIdx + '"]');
+    const box = fuIdx === undefined
+      ? root.querySelector('#mockSpeechBox')
+      : root.querySelector('[data-fu-speech="' + fuIdx + '"]');
+    if (!ta) return;
+    startRecording(btn, ta, box, it.data.id, fuIdx);
+  }
+
+  function startRecording(btn, ta, box, id, fuIdx) {
     const L = t();
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) return;
-    const note = root.querySelector('#mockNote');
-    if (S.mic) {
-      try { S.mic.stop(); } catch (e) { /* ignore */ }
-      stopMic(btn, L);
+    const base = ta.value || '';
+    const label = btn.textContent;
+    let handle = null;
+    try {
+      handle = App.speech.start({
+        lang: answerLang(),
+        onText: (final, interim) => {
+          // final đã chốt + interim nối tạm => câu chữ hiện dần trong textarea.
+          const tail = [final, interim].filter(Boolean).join(' ').trim();
+          ta.value = (base ? base + ' ' : '') + tail;
+          saveAnswer(id, fuIdx, ta.value);
+        },
+        onError: (msg) => {
+          if (box) box.innerHTML = '<div class="ai-error">⚠️ ' + App.esc(msg) + '</div>';
+        },
+      });
+    } catch (e) {
+      if (box) box.innerHTML = App.ui.error(e);
       return;
     }
+    S.rec = { handle: handle, btn: btn, ta: ta, box: box, id: id, fuIdx: fuIdx, base: base, label: label };
+    btn.textContent = '⏹ ' + L.micStop;
+    btn.classList.add('recording');
+  }
+
+  function stopRecording() {
+    const r = S.rec;
+    if (!r) return;
+    S.rec = null;
+    let metrics = null;
+    try { metrics = r.handle.stop(); } catch (e) { metrics = null; }
+    if (r.btn) {
+      r.btn.textContent = r.label;
+      r.btn.classList.remove('recording');
+    }
+    if (!metrics) return;
+    r.ta.value = (r.base ? r.base + ' ' : '') + (metrics.text || '');
+    saveAnswer(r.id, r.fuIdx, r.ta.value);
+    if (r.fuIdx === undefined) {
+      S.speech[r.id] = metrics;
+    } else {
+      const st = aiStateFor(r.id);
+      const fu = st.followups[r.fuIdx];
+      if (fu) fu.speech = metrics;
+    }
+    if (r.box) r.box.innerHTML = App.ui.speechStats(metrics);
+  }
+
+  /** Lưu câu trả lời (ô chính hoặc ô đào sâu) vào state của câu đang xét. */
+  function saveAnswer(id, fuIdx, value) {
+    if (fuIdx === undefined) { S.notes[id] = value; return; }
+    const st = aiStateFor(id);
+    const fu = st.followups[fuIdx];
+    if (fu) fu.answer = value;
+  }
+
+  // ---------- AI chấm câu trả lời ----------
+  function aiStateFor(id) {
+    if (!S.aiState[id]) S.aiState[id] = { result: null, error: null, busy: false, followups: [] };
+    return S.aiState[id];
+  }
+
+  function isCurrent(id) {
+    const it = current();
+    return !!it && it.data.id === id;
+  }
+
+  function updateAiButtons(root) {
+    const it = current();
+    if (!it || it.kind === 'algo') return;
+    const d = it.data;
+    const st = aiStateFor(d.id);
+    const btn = root.querySelector('#mockAi');
+    if (btn) btn.disabled = st.busy || !((S.notes[d.id] || '').trim());
+    st.followups.forEach((fu, i) => {
+      const b = root.querySelector('[data-fu-grade="' + i + '"]');
+      if (b) b.disabled = st.busy || !((fu.answer || '').trim());
+    });
+  }
+
+  function renderAiPanel(root) {
+    const it = current();
+    if (!it || it.kind === 'algo') return;
+    const box = root.querySelector('#mockAiBox');
+    if (!box) return;
+    const st = aiStateFor(it.data.id);
+    if (st.error) { box.innerHTML = App.ui.error(st.error); return; }
+    box.innerHTML = st.result ? App.ui.feedback(st.result, answerLang()) : '';
+  }
+
+  /** Gợi ý điểm tự chấm 1–5 theo điểm AI (người dùng vẫn phải bấm để xác nhận). */
+  function suggestRate(root, score) {
+    const L = t();
+    const box = root.querySelector('.mock-rate-box');
+    if (!box) return;
+    const n = Math.min(5, Math.max(1, Math.round(Number(score) || 0)));
+    box.querySelectorAll('.mock-rate').forEach(b => b.classList.remove('suggested'));
+    const btn = box.querySelector('.mock-rate[data-rate="' + n + '"]');
+    if (btn) btn.classList.add('suggested');
+    const hint = box.querySelector('#mockAiSuggest');
+    if (hint) hint.textContent = L.aiSuggest.replace('{n}', () => String(n));
+  }
+
+  async function gradeAnswer(root) {
+    const L = t();
+    const it = current();
+    if (!it || it.kind === 'algo') return;
+    const d = it.data;
+    const answer = (S.notes[d.id] || '').trim();
+    if (!answer) return;
+    const st = aiStateFor(d.id);
+    const box = root.querySelector('#mockAiBox');
+    st.busy = true;
+    if (box) box.innerHTML = '<span class="ai-loading">' + App.esc(L.grading) + '</span>';
+    updateAiButtons(root);
     try {
-      const rec = new SR();
-      rec.lang = S.cfg.english ? 'en-US' : 'vi-VN';
-      rec.continuous = true;
-      rec.interimResults = false;
-      rec.onresult = e => {
-        let txt = '';
-        for (let i = e.resultIndex; i < e.results.length; i++) txt += e.results[i][0].transcript + ' ';
-        if (!note) return;
-        note.value = (note.value ? note.value + ' ' : '') + txt.trim();
-        S.notes[current().data.id] = note.value;
-      };
-      rec.onend = () => stopMic(btn, L);
-      rec.onerror = () => stopMic(btn, L);
-      rec.start();
-      S.mic = rec;
-      btn.textContent = '⏹ ' + L.micStop;
-      btn.classList.add('warn');
+      const res = await App.ai.grade({
+        question: d.q,
+        reference: d.a,
+        answer: answer,
+        lang: answerLang(),
+        topic: d.topic,
+        level: d.level,
+        speech: S.speech[d.id] || undefined
+      });
+      st.result = res;
+      st.error = null;
+      if (isCurrent(d.id)) { renderAiPanel(root); renderFollowups(root); suggestRate(root, res.score); }
     } catch (e) {
-      stopMic(btn, L);
+      st.result = null;
+      st.error = e;
+      if (isCurrent(d.id) && box) box.innerHTML = App.ui.error(e);
+    } finally {
+      st.busy = false;
+      if (isCurrent(d.id)) updateAiButtons(root);
     }
   }
 
-  function stopMic(btn, L) {
-    S.mic = null;
-    if (btn) { btn.textContent = '🎤 ' + L.mic; btn.classList.remove('warn'); }
+  // ---------- hỏi đào sâu ----------
+  /** Câu hỏi đào sâu kế tiếp (lấy từ follow_up của kết quả AI gần nhất). */
+  function nextFollowupQuestion(st) {
+    let last = null;
+    if (st.followups.length) {
+      const lastRound = st.followups[st.followups.length - 1];
+      // Lượt cuối chưa được chấm => chưa có câu đào sâu mới để trả lời.
+      if (!lastRound.result) return '';
+      last = lastRound.result;
+    } else {
+      last = st.result;
+    }
+    return last && last.follow_up ? String(last.follow_up) : '';
+  }
+
+  function renderFollowups(root) {
+    const L = t();
+    const box = root.querySelector('#mockFollowups');
+    if (!box) return;
+    const it = current();
+    if (!it || it.kind === 'algo') { box.innerHTML = ''; return; }
+    const d = it.data;
+    const st = aiStateFor(d.id);
+    const en = answerLang() === 'en' ? ' lang="en"' : '';
+    let html = '';
+    st.followups.forEach((fu, i) => {
+      html += '<section class="mock-fu">' +
+        '<div class="mock-fu-head"><span class="badge accent">' + App.esc(L.followupTitle) + ' ' + (i + 1) + '</span></div>' +
+        '<div class="md mock-fu-q"' + en + '>' + App.md(fu.question) + '</div>' +
+        '<textarea class="textarea mock-fu-note" rows="4" data-fu-note="' + i + '" placeholder="">' + App.esc(fu.answer || '') + '</textarea>' +
+        '<div class="row mock-fu-tools">' +
+          '<button type="button" class="btn mic-btn" data-fu-mic="' + i + '"' + (App.speech.supported ? '' : ' hidden') + '>🎤 ' + App.esc(L.voice) + '</button>' +
+          '<button type="button" class="btn primary" data-fu-grade="' + i + '" disabled>🤖 ' + App.esc(L.gradeAI) + '</button>' +
+        '</div>' +
+        '<div class="mock-fu-speech" data-fu-speech="' + i + '">' + (fu.speech ? App.ui.speechStats(fu.speech) : '') + '</div>' +
+        '<div class="mock-fu-ai" data-fu-ai="' + i + '">' + (fu.result ? App.ui.feedback(fu.result, answerLang()) : '') + (fu.error ? App.ui.error(fu.error) : '') + '</div>' +
+        '</section>';
+    });
+    if (st.followups.length < MAX_FOLLOWUPS && nextFollowupQuestion(st)) {
+      html += '<button type="button" class="btn mock-fu-add" id="mockAddFu">🎤 ' + App.esc(L.followup) + '</button>';
+    }
+    box.innerHTML = html;
+  }
+
+  function addFollowup(root) {
+    const it = current();
+    if (!it || it.kind === 'algo') return;
+    const st = aiStateFor(it.data.id);
+    if (st.followups.length >= MAX_FOLLOWUPS) return;
+    const q = nextFollowupQuestion(st);
+    if (!q) return;
+    st.followups.push({ question: q, answer: '', speech: null, result: null, error: null });
+    renderFollowups(root);
+    updateAiButtons(root);
+  }
+
+  async function gradeFollowup(root, i) {
+    const L = t();
+    const it = current();
+    if (!it || it.kind === 'algo') return;
+    const d = it.data;
+    const st = aiStateFor(d.id);
+    const fu = st.followups[i];
+    if (!fu) return;
+    const answer = (fu.answer || '').trim();
+    if (!answer) return;
+    // Lịch sử: lượt đầu + các lượt đào sâu trước đó.
+    const history = [];
+    const main = (S.notes[d.id] || '').trim();
+    if (main) history.push({ question: d.q, answer: main });
+    for (let k = 0; k < i; k++) {
+      const prev = st.followups[k];
+      if (prev && (prev.answer || '').trim()) history.push({ question: prev.question, answer: prev.answer.trim() });
+    }
+    const box = root.querySelector('[data-fu-ai="' + i + '"]');
+    st.busy = true;
+    if (box) box.innerHTML = '<span class="ai-loading">' + App.esc(L.grading) + '</span>';
+    updateAiButtons(root);
+    try {
+      const res = await App.ai.grade({
+        question: fu.question,
+        reference: d.a,
+        answer: answer,
+        lang: answerLang(),
+        topic: d.topic,
+        level: d.level,
+        history: history,
+        speech: fu.speech || undefined
+      });
+      fu.result = res;
+      fu.error = null;
+      if (isCurrent(d.id)) renderFollowups(root);
+    } catch (e) {
+      fu.result = null;
+      fu.error = e;
+      if (isCurrent(d.id) && box) box.innerHTML = App.ui.error(e);
+    } finally {
+      st.busy = false;
+      if (isCurrent(d.id)) updateAiButtons(root);
+    }
   }
 
   // ---------- flow ----------
   function rate(root, score) {
     if (S.phase !== 'session') return;
+    // Dừng ghi âm (nếu đang ghi) để lưu metrics trước khi chốt kết quả câu này.
+    stopRecording();
     const it = current();
     const spent = Math.round((Date.now() - S.qStart) / 1000);
+    const st = it.kind === 'algo' ? null : aiStateFor(it.data.id);
     S.results.push({
       id: it.data.id,
       kind: it.kind,
@@ -582,7 +877,11 @@
       score: score,
       seconds: Math.max(0, spent),
       seen: !!it.seen,
-      note: S.notes[it.data.id] || ''
+      note: S.notes[it.data.id] || '',
+      ai: st ? st.result : null,
+      aiScore: st && st.result ? st.result.score : null,
+      speech: S.speech[it.data.id] || null,
+      followups: st ? st.followups.slice() : []
     });
     if (score >= 4) App.store.setStatus(it.data.id, 'known');
     else if (score === 3) App.store.setStatus(it.data.id, 'review');
@@ -601,7 +900,7 @@
   // ---------- summary ----------
   function finish(root) {
     stopTimer();
-    if (S.mic) { try { S.mic.stop(); } catch (e) { /* ignore */ } S.mic = null; }
+    stopRecording();
     S.phase = 'summary';
 
     const res = S.results;
@@ -610,6 +909,11 @@
     const avg = scored.length ? scored.reduce((s, r) => s + r.score, 0) / scored.length : 0;
     const totalSec = res.reduce((s, r) => s + r.seconds, 0);
     const seen = res.filter(r => r.seen).length;
+
+    // Điểm AI (chỉ những câu đã được chấm) => null nếu chưa có câu nào được chấm.
+    const aiScores = res.filter(r => typeof r.aiScore === 'number').map(r => r.aiScore);
+    const aiAvg = aiScores.length ? aiScores.reduce((s, x) => s + x, 0) / aiScores.length : null;
+    const aiCount = aiScores.length;
 
     // per topic
     const byTopic = {};
@@ -641,26 +945,46 @@
       avg: Math.round(avg * 10) / 10,
       topics: topicRows.map(x => x.id),
       seconds: totalSec,
-      english: !!S.cfg.english
+      english: !!S.cfg.english,
+      aiAvg: aiAvg === null ? null : Math.round(aiAvg * 10) / 10
     });
 
-    renderSummary(root, { res: res, avg: avg, totalSec: totalSec, seen: seen, topicRows: topicRows, weak: weak, coding: coding, codingAvg: codingAvg });
+    renderSummary(root, {
+      res: res, avg: avg, totalSec: totalSec, seen: seen,
+      topicRows: topicRows, weak: weak, coding: coding, codingAvg: codingAvg,
+      aiAvg: aiAvg, aiCount: aiCount
+    });
   }
 
   function renderSummary(root, sum) {
     const L = t();
+    const fbLang = S.cfg.english ? 'en' : 'vi';
     const rows = sum.res.map(r => {
       const d = r.kind === 'algo'
         ? App.algos().find(a => a.id === r.id)
         : App.questions().find(q => q.id === r.id);
       const tname = r.kind === 'algo' ? t().codingName : App.topic(r.topic).name;
       const badge = r.score >= 4 ? 'ok' : r.score === 3 ? 'warn' : r.score > 0 ? 'bad' : '';
+      const aiBadge = (typeof r.aiScore === 'number')
+        ? '<span class="badge mock-ai-badge ' + (r.aiScore >= 4 ? 'ok' : r.aiScore === 3 ? 'warn' : 'bad') + '">' + App.esc(L.aiCol) + ' ' + r.aiScore + '/5</span>'
+        : '';
+      const fus = (r.followups || []).map((fu, i) => {
+        let h = '<div class="mock-recap-fu"><strong>' + App.esc(L.followupTitle) + ' ' + (i + 1) + ':</strong> ' + App.esc(fu.question);
+        if (fu.answer) h += '<div class="mock-recap-note">' + App.esc(fu.answer) + '</div>';
+        if (fu.speech) h += '<div class="mock-recap-speech">' + App.ui.speechStats(fu.speech) + '</div>';
+        if (fu.result) h += '<div class="mock-recap-ai">' + App.ui.feedback(fu.result, fbLang) + '</div>';
+        if (fu.error) h += '<div class="mock-recap-ai">' + App.ui.error(fu.error) + '</div>';
+        return h + '</div>';
+      }).join('');
       return '<details class="card mock-recap-item"><summary>' +
-        '<span class="badge ' + badge + '">' + r.score + '/5</span> ' +
+        '<span class="badge ' + badge + '">' + r.score + '/5</span>' + aiBadge +
         '<span class="mock-recap-q">' + App.esc(d ? (d.q || d.title) : r.id) + '</span>' +
         '<span class="muted small">' + App.esc(tname) + ' · ' + fmtClock(r.seconds) + '</span>' +
         '</summary>' +
         (r.note ? '<div class="mock-recap-note"><strong>' + App.esc(L.notes) + ':</strong> ' + App.esc(r.note) + '</div>' : '') +
+        (r.speech ? '<div class="mock-recap-speech">' + App.ui.speechStats(r.speech) + '</div>' : '') +
+        (r.ai ? '<div class="mock-recap-ai">' + App.ui.feedback(r.ai, fbLang) + '</div>' : '') +
+        fus +
         (d && d.a ? '<div class="md">' + App.md(d.a) + '</div>' : '') +
         (d && d.solution ? '<div class="md">' + App.md(d.solution) + '</div>' : '') +
         '</details>';
@@ -688,6 +1012,9 @@
         '<div class="stat"><div class="num">' + fmtClock(sum.totalSec) + '</div><div class="lbl">' + App.esc(L.totalTime) + '</div></div>' +
         '<div class="stat"><div class="num">' + sum.seen + '</div><div class="lbl">' + App.esc(L.seenAnswers) + '</div></div>' +
         '<div class="stat"><div class="num">' + sum.res.length + '</div><div class="lbl">' + App.esc(L.count) + '</div></div>' +
+        (sum.aiAvg === null ? '' :
+          '<div class="stat mock-ai-stat"><div class="num">' + sum.aiAvg.toFixed(1) + '/5</div>' +
+          '<div class="lbl">' + App.esc(L.aiAvg) + ' (' + sum.aiCount + ')</div></div>') +
       '</div>' +
 
       (sum.coding.length ? '<section class="card mock-coding-summary"><h3>' + App.esc(L.codingRound) + '</h3>' +
@@ -726,6 +1053,8 @@
     S.items = items;
     S.idx = 0;
     S.notes = {};
+    S.speech = {};
+    S.aiState = {};
     S.results = [];
     S.sessionStart = Date.now();
     S.phase = 'session';
@@ -752,7 +1081,7 @@
 
       return () => {
         stopTimer();
-        if (S.mic) { try { S.mic.stop(); } catch (e) { /* ignore */ } S.mic = null; }
+        stopRecording();
         if (S.keyCleanup) { S.keyCleanup(); S.keyCleanup = null; }
         window.removeEventListener('beforeunload', onBeforeUnload);
       };

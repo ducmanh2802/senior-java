@@ -1,6 +1,6 @@
 # T19 — Phỏng vấn thử: trả lời bằng giọng nói + AI chấm + hỏi đào sâu
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/views/mock.js`, `css/views/mock.css`
 
@@ -37,4 +37,33 @@ Trong phiên phỏng vấn, mỗi câu hỏi tự luận (không phải bài cod
 - Không gọi AI tự động. Không phá luồng tự chấm, timer và vòng coding hiện có.
 
 ## Notes
-(agent ghi chú ở đây)
+Đã làm (chỉ sửa `js/views/mock.js` + `css/views/mock.css`):
+
+1. **Giọng nói** — thay code `SpeechRecognition` tự viết bằng `App.speech.start({lang, onText})`.
+   Nút `.btn.mic-btn` (ẩn khi `!App.speech.supported`), `lang = 'en'` nếu câu hỏi có `lang:'en'` hoặc phiên chế độ English.
+   Text `final` + `interim` nối tạm vào textarea; bấm lần 2 để dừng → lưu metrics vào `S.speech[id]` và hiện `App.ui.speechStats()`.
+   Dưới ô trả lời có dòng gợi ý "Mục tiêu: 1–2 phút, 110–160 từ/phút, ít từ đệm".
+   Ô ghi chú đổi nhãn thành **"Câu trả lời của bạn"** (bài coding vẫn giữ ô "Code của bạn" + nút đọc chính tả như cũ).
+2. **Chấm AI** — nút "🤖 Chấm bằng AI", disable khi ô trả lời rỗng, chỉ gọi khi người dùng bấm.
+   `App.ai.grade({question, reference, answer, lang, topic, level, speech})` → `App.ui.feedback(result, lang)`; lỗi → `App.ui.error(e)`; lúc chờ hiện `<span class="ai-loading">`.
+   Điểm AI chỉ **gợi ý**: nút tự chấm tương ứng được highlight (`.mock-rate.suggested`) + dòng nhắc "AI gợi ý n/5 — bấm nút để xác nhận"; người dùng vẫn phải bấm mới chấm.
+3. **Hỏi đào sâu** — tối đa 2 lượt/câu (`MAX_FOLLOWUPS`). Nếu kết quả có `follow_up` hiện nút "Trả lời câu hỏi đào sâu";
+   mở thêm ô trả lời (có mic riêng) dưới câu hỏi đào sâu, nút "Chấm" gọi `App.ai.grade` với
+   `question = follow_up`, `history = [{question, answer} của lượt đầu + các lượt đào sâu trước]`, `reference = q.a`.
+4. **State theo câu** — `S.notes` (answer), `S.speech` (metrics), `S.aiState[id] = {result, error, busy, followups[]}`; giữ nguyên khi qua lại giữa các câu (khi quay lại câu đã chấm, feedback + gợi ý điểm được khôi phục).
+5. **Tổng kết** — badge "AI n/5" cạnh điểm tự chấm, thẻ "Điểm AI trung bình" (chỉ hiện khi có ít nhất 1 câu được chấm),
+   phần mở rộng từng câu hiện lại speech stats + feedback AI + từng lượt đào sâu.
+   `App.store.addMockResult({..., aiAvg})` — `aiAvg` = null nếu chưa có câu nào được chấm.
+6. Bản tiếng Anh đầy đủ: "Answer with voice", "Grade with AI", "Answer follow-up", "AI is grading…", …
+7. `css/views/mock.css`: style cho `.mock-voice-hint`, `.mock-speech`, `.mock-ai`, `.mock-fu*`, `.mock-rate.suggested`,
+   `.mock-ai-badge`, `.mock-recap-fu/-speech/-ai`; ở ≤640px nút mic + nút chấm AI (kể cả trong lượt đào sâu) full-width.
+
+Kiểm tra: `node --check js/views/mock.js` OK; `node scripts/validate.js` → `OK — không có lỗi.`
+Ngoài ra đã chạy 1 smoke test tạm (DOM giả lập, file nằm ngoài repo) để kiểm tra luồng: setup → phiên → trả lời →
+chấm AI (cả nhánh lỗi `no_server` khi mở `file://`) → gợi ý điểm → thêm & chấm lượt đào sâu (kiểm tra `history`) →
+tổng kết (`aiAvg`) → chế độ English → mic (`lang='en'`, speech stats). Tất cả pass.
+
+Lưu ý cho integrator:
+- `App.store.addMockResult` đã lưu nguyên mọi field nên `aiAvg` không cần sửa `js/core/app.js`.
+- `App.ui.speechStats()` (core) hiển thị nhãn tiếng Việt cố định ("từ", "từ/phút") kể cả ở chế độ English — nếu muốn bản EN thì sửa ở `js/core/ai.js` (không thuộc phạm vi T19).
+- Không đụng vào vòng coding: AI chấm câu trả lời chỉ dành cho câu tự luận; bài coding giữ nguyên luồng cũ (hint/solution/editor).

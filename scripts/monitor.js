@@ -33,6 +33,23 @@ const CONTENT = {
   T18: { files: ['algo.js'], algoTests: 48 },
   T41: { files: ['labs-thread.js'], labs: 5 }, T42: { files: ['labs-gc.js'], labs: 5 },
   T43: { files: ['labs-sql.js'], labs: 5 }, T44: { files: ['labs-incident.js'], labs: 5 },
+  // đợt 2 câu hỏi: target = tổng số câu của topic sau khi thêm
+  T46: { files: ['q-java.js'], topics: { core: 19, collections: 14, modern: 14 } },
+  T47: { files: ['q-concurrency-jvm.js'], topics: { concurrency: 20, jvm: 18 } },
+  T48: { files: ['q-spring-data.js'], topics: { spring: 21, jpa: 17, db: 19 } },
+  T49: { files: ['q-microservices.js'], topics: { microservices: 28 } },
+  T50: { files: ['q-system-design.js'], topics: { design: 21, architecture: 14 } },
+  T51: { files: ['q-aws.js', 'q-ai.js'], topics: { aws: 22, ai: 20 } },
+  T52: { files: ['q-soft.js'], topics: { testing: 16, behavioral: 20 } },
+  T53: { files: ['q-english.js'], topics: { english: 31 } },
+  T54: { files: ['q-scenario.js'], topics: { scenario: 41 } },
+  // đợt 3: câu hay gặp; T59–T62 tự chạy sau khi task đợt 2 cùng file xong
+  T55: { files: ['q-api.js'], topics: { api: 14 } }, T56: { files: ['q-security.js'], topics: { security: 14 } },
+  T57: { files: ['q-sql.js'], topics: { sql: 14 } }, T58: { files: ['q-devops.js'], topics: { devops: 14 } },
+  T59: { files: ['q-java.js'], topics: { core: 26, collections: 18, modern: 17 } },
+  T60: { files: ['q-concurrency-jvm.js'], topics: { concurrency: 27, jvm: 22 } },
+  T61: { files: ['q-spring-data.js'], topics: { spring: 27, jpa: 21, db: 25 } },
+  T62: { files: ['q-system-design.js'], topics: { architecture: 22 } },
 };
 const VIEWS = {
   T09: ['dashboard', 'bank'], T10: ['flash', 'quiz'], T11: ['mock'], T15: ['algo'], T17: ['roadmap'],

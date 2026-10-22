@@ -263,6 +263,7 @@
     const name = views[parts[0]] ? parts[0] : 'dashboard';
     if (cleanup) { try { cleanup(); } catch (e) { console.error(e); } cleanup = null; }
     document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('active', a.dataset.route === name));
+    document.querySelectorAll('.nav-group[open]').forEach(d => d.removeAttribute('open'));
     const root = document.getElementById('main');
     root.innerHTML = '';
     root.className = 'container view-' + name;
@@ -286,6 +287,13 @@
   }
 
   function initChrome() {
+    // nav dropdowns: one open at a time, close on outside click / Escape
+    const groups = () => document.querySelectorAll('.nav-group[open]');
+    document.addEventListener('click', e => groups().forEach(d => { if (!d.contains(e.target)) d.removeAttribute('open'); }));
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') groups().forEach(d => d.removeAttribute('open')); });
+    document.querySelectorAll('.nav-group').forEach(d => d.addEventListener('toggle', () => {
+      if (d.open) groups().forEach(o => { if (o !== d) o.removeAttribute('open'); });
+    }));
     applyTheme();
     const btn = document.getElementById('themeToggle');
     if (btn) btn.addEventListener('click', () => {

@@ -31,6 +31,23 @@ declare -A MODEL=(
   [T43]=opencode/minimax-m3.1-flash-free
   [T44]=opencode/mimo-v2.6-flash-free
   [T45]=opencode/deepseek-v4.1-flash-free
+  [T46]=opencode/deepseek-v4.1-flash-free
+  [T47]=opencode/glm-5.3-flash-free
+  [T48]=opencode/minimax-m3.1-flash-free
+  [T49]=opencode/mimo-v2.6-flash-free
+  [T50]=opencode/deepseek-v4.1-flash-free
+  [T51]=opencode/glm-5.3-flash-free
+  [T52]=opencode/minimax-m3.1-flash-free
+  [T53]=opencode/mimo-v2.6-flash-free
+  [T54]=opencode/deepseek-v4.1-flash-free
+  [T55]=opencode/glm-5.3-flash-free
+  [T56]=opencode/deepseek-v4.1-flash-free
+  [T57]=opencode/minimax-m3.1-flash-free
+  [T58]=opencode/mimo-v2.6-flash-free
+  [T59]=opencode/glm-5.3-flash-free
+  [T60]=opencode/deepseek-v4.1-flash-free
+  [T61]=opencode/minimax-m3.1-flash-free
+  [T62]=opencode/mimo-v2.6-flash-free
 )
 
 run_task() {
