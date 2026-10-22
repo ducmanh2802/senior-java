@@ -1,6 +1,6 @@
 # T71 — View: Phỏng vấn AI bằng giọng nói (`#/interview`)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/views/interview.js`, `css/views/interview.css`
 
@@ -33,3 +33,4 @@ Owns: `js/views/interview.js`, `css/views/interview.css`
 `node --check`, `node scripts/validate.js` OK. Cleanup: dừng mic, `speechSynthesis.cancel()`, clearInterval khi rời view. Responsive 360px, dark mode chỉ dùng biến CSS, phím tắt có `<kbd>`.
 
 ## Notes
+- Integrator viết lại toàn bộ (agent nemotron bị 504 giữa chừng). Test E2E với API giả lập: desktop + 360px, không lỗi console, kết quả lưu vào mockHistory (kind ai-interview).
