@@ -800,16 +800,17 @@ jmap -histo <pid> | head -30
   topic: 'jvm',
   level: 'lead',
   q: 'CPU 100% trên production: quy trình điều tra của bạn (top -H, jstack, async-profiler, JFR) như thế nào?',
-  a: `**Tóm tắt:** tìm thread đốt CPU: top -H -p PID lấy thread id nóng nhất → đổi hex → grep trong jstack, đọc frame đầu (hàm nóng). Cần phân sâu hơn thì dùng async-profiler/flame graph hoặc JFR. Phải trả lời được: đốt CPU vì code nghiệp vụ, JIT compiler, GC thread, hay native (TLS/deflate).
+  a: `**Tóm tắt:** tìm thread đốt CPU: top -H -p PID lấy thread id nóng nhất → grep nid trong jstack (JDK 18+ in nid thập phân; JDK 8–17 phải đổi sang hex trước), đọc frame đầu (hàm nóng). Cần phân sâu hơn thì dùng async-profiler/flame graph hoặc JFR. Phải trả lời được: đốt CPU vì code nghiệp vụ, JIT compiler, GC thread, hay native (TLS/deflate).
 
 ### Quy trình tiêu chuẩn
 1. Xác định process đốt CPU nhất (top/htop).
 2. Lấy thread nóng nhất của process đó:
 
 ~~~bash
-top -H -p <pid>                          # threads, xem %CPU
-printf %x 4321                           # 4321 -> 10e1 (hex)
-jstack <pid> | grep -A 12 "nid=0x10e1"   # frame của thread đó
+top -H -p <pid>                          # threads, xem %CPU; giả sử TID nóng nhất là 4321
+jstack <pid> | grep -A 12 "nid=4321"     # JDK 18+: nid in dạng thập phân (kèm [4321] sau #N)
+printf %x 4321                           # JDK 8–17: nid là hex → 10e1
+jstack <pid> | grep -A 12 "nid=0x10e1"
 ~~~
 
 Frame đầu cùng thread RUNNABLE thường chỉ ra method đang đốt CPU.

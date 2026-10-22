@@ -838,7 +838,7 @@ Bộ công cụ chẩn đoán JVM đi kèm JDK giải quyết đúng các tình 
 
 ### Quy trình chuẩn khi ứng dụng treo
 1. Chụp **nhiều** thread dump cách nhau 5–10 giây: một lần chưa đủ, phải so sánh để xem luồng nào đang chạy và đang ở dòng nào.
-2. Với CPU 100%: dùng {{top -H -p <pid>}} để tìm thread id tốn CPU nhất, đổi sang hex rồi khớp với trường {{nid}} trong thread dump để biết thread đó đang chạy ở đâu (hoặc xem cột cpu= trong dump của JDK mới).
+2. Với CPU 100%: dùng {{top -H -p <pid>}} để tìm thread id tốn CPU nhất rồi khớp với trường {{nid}} trong thread dump (JDK 18+ in nid dạng thập phân; JDK 8–17 in dạng hex nên phải đổi sang hex trước) để biết thread đó đang chạy ở đâu (hoặc xem cột cpu= trong dump của JDK mới).
 3. Với heap tăng: lấy heap dump rồi phân tích dominator tree và các đối tượng bị giữ lại.
 
 > Senior tip: bật sẵn {{-XX:+HeapDumpOnOutOfMemoryError}} và {{-XX:+ExitOnOutOfMemoryError}} trong môi trường staging, và ưu tiên {{jcmd}} vì nó gom mọi lệnh chẩn đoán vào một công cụ được Oracle khuyến nghị. Nhớ rằng thread dump cần một safepoint (thường chỉ vài ms), còn heap dump dừng ứng dụng lâu hơn nhiều (vài giây tới vài chục giây với heap lớn) — đừng chụp heap dump trên instance đang nhận traffic nếu không rút nó khỏi load balancer trước. Khi ứng dụng chạy trong container, hãy bật {{shareProcessNamespace}} hoặc dùng công cụ của nền tảng (CloudWatch, Grafana) để lấy metric liên tục thay vì chỉ chụp dump khi sự cố đã xảy ra.`
