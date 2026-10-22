@@ -1,6 +1,6 @@
 # T02 — Nội dung: Concurrency, JVM & GC
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/q-concurrency-jvm.js`
 
@@ -36,4 +36,9 @@ Xem `js/data/q-java.js` (`core-001`) để biết văn phong và format mẫu.
 - String deduplication, compressed oops, object header layout (ước lượng size object)
 
 ## Notes
-(agent ghi chú ở đây)
+- DONE: đã viết 13 câu `concurrency-001..013` (đủ 100% danh mục bắt buộc: JMM/volatile, locks, ThreadPoolExecutor, Executors pitfall, CompletableFuture, deadlock/livelock, virtual threads/pinning, ThreadLocal leak, CAS/ABA/LongAdder, DCL, latch/barrier/semaphore/phaser, thiết kế 1 triệu record có rate limit + không mất data, structured concurrency/scoped values).
+- Đã viết 11 câu `jvm-001..011` (memory areas, GC so sánh + G1 region/mixed GC, container tuning MaxRAMPercentage, OOME types + MAT, memory leak, CPU 100% điều tra, classloader + leak redeploy, JIT + GraalVM trade-off, STW/safepoint/GC log, compressed oops/object header/String dedup, chiến lược ZGC generational cho p99 < 10 ms).
+- Level mix: 5 mid / 15 senior / 4 lead (~22/65/17), gần guideline 25/55/20.
+- Mỗi đáp án theo format: Tóm tắt + mục ### + code block ~~~java/~~~bash/~~~text ngắn + Senior tip; theo park 1200–2500 ký tự, không dùng backtick, không `${`, markup chỉ kiểu AGENTS.md mục 5.
+- `node scripts/validate.js` → OK — không có lỗi; topic của task này có đủ 13 + 11 = 24 câu.
+- Không git commit; chỉ thay đổi 1 file sở hữu: `js/data/q-concurrency-jvm.js`.
