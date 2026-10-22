@@ -8,7 +8,7 @@ for m in $CANDIDATES; do
   ( timeout "${PROBE_TIMEOUT:-75}" opencode run -m "opencode/$m" "Reply with exactly: PONG" 2>/dev/null | grep -q PONG && touch "$dir/$m" ) &
 done
 # Gemini CLI has its own free quota (Gemini API key configured in ~/.gemini)
-if command -v gemini >/dev/null 2>&1 && [ -z "${NO_GEMINI:-}" ]; then
+if command -v gemini >/dev/null 2>&1 && [ -n "${USE_GEMINI:-}" ]; then   # opt-in: an API key allows ~20 requests/day, an agent dies mid-file
   ( GEMINI_CLI_TRUST_WORKSPACE=true timeout "${PROBE_TIMEOUT:-75}" gemini -p "Reply with exactly: PONG" 2>/dev/null | grep -q PONG && touch "$dir/gemini" ) &
 fi
 wait
