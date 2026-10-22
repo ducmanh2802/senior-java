@@ -3,13 +3,14 @@
  * Network-first for everything same-origin (content changes often, so online users always get the
  * latest), falling back to the cache when offline or when the network takes longer than 4 s.
  * /api/* is never cached. CDN scripts and fonts are cached after first use.
- * Bump VERSION to drop old caches.
+ * Bump VERSION to drop old caches. Do not list /index.html: Vercel cleanUrls answers it with a 308,
+ * and a cached redirect breaks navigations.
  */
 'use strict';
 
-const VERSION = 'v1';
+const VERSION = 'v2';
 const CACHE = 'sjp-' + VERSION;
-const SHELL = ['/', '/index.html', '/css/base.css', '/js/core/app.js', '/manifest.json', '/icons/icon-192.png'];
+const SHELL = ['/', '/css/base.css', '/js/core/app.js', '/manifest.json', '/icons/icon-192.png'];
 const CDN = /^https:\/\/(cdn\.jsdelivr\.net|fonts\.googleapis\.com|fonts\.gstatic\.com)\//;
 const NETWORK_TIMEOUT_MS = 4000;
 
