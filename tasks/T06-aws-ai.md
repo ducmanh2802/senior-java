@@ -1,8 +1,12 @@
 # T06 — Nội dung: AWS & Cloud, AI/LLM cho Java dev
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/q-aws.js`, `js/data/q-ai.js`
+
+> **Quan trọng — ghi theo lô nhỏ:** model miễn phí sẽ timeout (lỗi 504) nếu sinh cả file trong một lần.
+> Viết **3–4 câu mỗi lần edit**, nối vào cuối danh sách (trước dòng `);`), rồi chạy `node --check <file>` sau mỗi lô.
+> Lặp lại cho đến đủ số lượng. Không cần web search dài dòng; chỉ tra cứu khi thực sự không chắc về API.
 
 ## Mục tiêu
 Viết câu hỏi kèm đáp án mẫu cho topic `aws` (file `q-aws.js`, ID từ `aws-001`) và `ai` (file `q-ai.js`, ID từ `ai-001`) theo `AGENTS.md` mục 4–6.
@@ -41,4 +45,8 @@ Văn phong theo mẫu `core-001` trong `js/data/q-java.js`. Chỉ dùng dịch v
 - Observability cho LLM app: trace prompt/response, token usage, feedback loop
 
 ## Notes
-(agent ghi chú ở đây)
+- Đã hoàn thành `js/data/q-aws.js` (16 câu, `aws-001`…`aws-016`) và `js/data/q-ai.js` (13 câu, `ai-001`…`ai-013`), phủ toàn bộ danh sách bắt buộc.
+- Level: aws 2 mid / 11 senior / 3 lead; ai 2 mid / 9 senior / 2 lead. Đáp án dài 2.675–3.900 ký tự, có `**Tóm tắt:**`, ví dụ/code khi phù hợp và `> Senior tip:`.
+- Nội dung dùng API/dịch vụ thật (Spring AI `ChatClient`/`entity`, LangChain4j `AiServices`, MCP, SnapStart, IRSA/EKS Pod Identity, Aurora Global Database, HNSW…). Không có backtick thô trong template literal, không dùng `${`.
+- Đã chạy `node --check` cho cả hai file và `node scripts/validate.js`: **OK — không có lỗi**, không có cảnh báo.
+- Không sửa file ngoài quyền sở hữu; không commit/push.

@@ -1,8 +1,12 @@
 # T08 — Nội dung: Phỏng vấn tiếng Anh
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/q-english.js`
+
+> **Quan trọng — ghi theo lô nhỏ:** model miễn phí sẽ timeout (lỗi 504) nếu sinh cả file trong một lần.
+> Viết **3–4 câu mỗi lần edit**, nối vào cuối danh sách (trước dòng `);`), rồi chạy `node --check <file>` sau mỗi lô.
+> Lặp lại cho đến đủ số lượng. Không cần web search dài dòng; chỉ tra cứu khi thực sự không chắc về API.
 
 ## Mục tiêu
 Viết câu hỏi phỏng vấn **bằng tiếng Anh** cho topic `english` (ID từ `english-001`), theo schema ở `AGENTS.md` mục 4–5.
@@ -43,4 +47,8 @@ Viết câu hỏi phỏng vấn **bằng tiếng Anh** cho topic `english` (ID t
 - Salary expectation & notice period conversation
 
 ## Notes
-(agent ghi chú ở đây)
+- Đã viết **19 câu** (`english-001` … `english-019`), đủ toàn bộ danh sách bắt buộc: giới thiệu/động lực (5), behavioral STAR (5), giải thích kỹ thuật (6), kỹ năng phỏng vấn (3).
+- Mỗi câu có `lang: 'en'`, `follow` 3 câu tiếng Anh; `a` gồm `**Tóm tắt:**` (VI) → `### Sample answer` (EN, 183–241 từ) → `### Useful phrases` (6 cụm) → `> Tip:` (VI, lỗi phát âm/ngữ pháp thường gặp).
+- Level: 5 mid / 11 senior / 3 lead (~26/58/16). Độ dài đáp án 2.033–2.643 ký tự.
+- Không sửa file nào khác. `node --check js/data/q-english.js` → OK; `node scripts/validate.js q-english.js` → OK.
+- `node scripts/validate.js` toàn repo cuối cùng → `OK — không có lỗi.` (trong lúc chạy có lỗi tạm thời từ file của agent khác đang ghi song song; đã chờ và kiểm tra lại sau khi họ hoàn tất).
