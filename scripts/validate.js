@@ -45,6 +45,9 @@ function checkMarkup(file, id, field, s) {
   if (typeof s !== 'string') return;
   const opens = (s.match(/\{\{/g) || []).length, closes = (s.match(/\}\}/g) || []).length;
   if (opens !== closes) err(file, `${id}.${field}: số {{ và }} không khớp (${opens}/${closes})`);
+  for (const m of s.replace(/~~~[\s\S]*?~~~/g, '').matchAll(/\{\{([\s\S]+?)\}\}/g)) {
+    if (/[{}]/.test(m[1])) err(file, `${id}.${field}: inline code {{${m[1].slice(0, 30)}…}} chứa dấu { } lồng nhau — sẽ hiển thị sai; đưa vào code block ~~~ hoặc viết lại`);
+  }
   const fences = s.split('\n').filter(l => l.startsWith('~~~')).length;
   if (fences % 2) err(file, `${id}.${field}: code fence ~~~ chưa đóng`);
   if (/```/.test(s)) err(file, `${id}.${field}: dùng ~~~ thay cho \`\`\``);
