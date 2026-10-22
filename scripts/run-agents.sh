@@ -28,7 +28,7 @@ run_task() {
   agent="$(grep -m1 '^Agent:' "$file" | awk '{print $2}')"
   prompt="Bạn là agent thực hiện task $id của dự án này. Trước tiên hãy đọc kỹ AGENTS.md và $file. \
 Sau đó thực hiện ĐẦY ĐỦ task: chỉ sửa các file mà task sở hữu, chạy 'node scripts/validate.js' tới khi OK, \
-không git commit, và cuối cùng cập nhật Status: DONE kèm ghi chú vào $file. Làm việc tự động đến khi xong, không hỏi lại."
+không git commit, và cuối cùng cập nhật Status: DONE kèm ghi chú vào $file. Làm việc tự động đến khi xong, không hỏi lại. Nếu file của bạn đã có nội dung từ lần chạy trước bị gián đoạn: đọc lại, giữ phần tốt, sửa lỗi cú pháp và làm tiếp phần còn thiếu. Tuân thủ tuyệt đối luật 8-9 trong AGENTS.md: không kill tiến trình theo tên, không mở trình duyệt, không npm install."
   echo "[$(date +%T)] start $id ($agent ${MODEL[$id]:-cline-free/minimax-m3.1-flash})"
   case "$agent" in
     opencode) opencode run --auto -m "${MODEL[$id]}" --title "$id" "$prompt" > "logs/$id.log" 2>&1 ;;

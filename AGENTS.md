@@ -34,6 +34,11 @@ Deploy: site tĩnh trên **Vercel** (import repo GitHub, không có build comman
 5. Không xoá hoặc ghi đè nội dung của người khác. File dữ liệu chỉ được **thêm** câu hỏi.
 6. Làm xong phải chạy `node scripts/validate.js` cho đến khi in ra `OK — không có lỗi.`
 7. Cuối cùng, cập nhật trạng thái trong file task của bạn: `Status: DONE`, kèm ghi chú ngắn.
+8. **TUYỆT ĐỐI KHÔNG kill tiến trình theo tên** (`taskkill /IM`, `Stop-Process -Name`, `Get-Process node | Stop-Process`, `pkill`, `killall`…).
+   Máy này đang chạy nhiều agent và công cụ khác dùng `node`/`chrome`; kill theo tên sẽ tắt hết chúng và cả trình duyệt của người dùng.
+   Chỉ được dừng tiến trình **do chính bạn khởi động**, theo PID cụ thể.
+9. **Không mở trình duyệt / Chrome / CDP / headless browser để tự test.** Kiểm tra bằng `node --check <file>` và `node scripts/validate.js`;
+   người tích hợp sẽ test UI bằng trình duyệt sau. Không khởi động server chạy nền.
 
 ## 3. Cấu trúc & quyền sở hữu file
 
