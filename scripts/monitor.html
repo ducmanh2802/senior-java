@@ -3,129 +3,409 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Agent Monitor</title>
+<title>Agent HQ</title>
 <style>
   :root {
-    --bg: #f7f6f3; --surface: #fff; --surface-2: #f0eee9; --border: #e3e0d8;
+    --bg: #eef6ea; --surface: #ffffff; --surface-2: #f2f0ea; --border: #dcd8cc;
     --text: #1d1b16; --muted: #6b675d; --accent: #d9620b; --accent-soft: #fbe7d6;
     --ok: #1f8a4c; --ok-soft: #dcf2e4; --warn: #b7791f; --warn-soft: #fbefd5;
     --bad: #c43d3d; --bad-soft: #fbe0e0; --info: #2f6fd0; --info-soft: #e0ebfb;
+    --grass: #7cc36a; --grass-2: #6db85b; --track: #c9774a; --track-2: #bd6c40; --lane-line: rgba(255,255,255,.75);
     --code-bg: #1e1f24; --code-text: #d8d8d8;
     color-scheme: light;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #141412; --surface: #1d1c1a; --surface-2: #262522; --border: #34322e;
+      --bg: #0f1a12; --surface: #1d1c1a; --surface-2: #262522; --border: #34322e;
       --text: #ecebe6; --muted: #a29e93; --accent: #f08a3c; --accent-soft: #3a2616;
       --ok: #4cc27f; --ok-soft: #173525; --warn: #e2b04a; --warn-soft: #3a2f15;
       --bad: #ef7070; --bad-soft: #3d1c1c; --info: #79a8f0; --info-soft: #1a2a42;
+      --grass: #2f5a2a; --grass-2: #2a5125; --track: #7a4529; --track-2: #6e3d23; --lane-line: rgba(255,255,255,.35);
       --code-bg: #0f0f11; color-scheme: dark;
     }
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }
-  .wrap { max-width: 1200px; margin: 0 auto; padding: 24px 16px 48px; }
-  header { display: flex; gap: 24px; align-items: center; flex-wrap: wrap; margin-bottom: 20px; }
-  h1 { margin: 0; font-size: 1.5rem; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 'Segoe UI', system-ui, -apple-system, Roboto, sans-serif; }
+  .wrap { max-width: 1280px; margin: 0 auto; padding: 20px 16px 48px; }
+
+  /* ---------- header ---------- */
+  header { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+  h1 { margin: 0; font-size: 1.6rem; letter-spacing: -.01em; }
+  h1 .flag { display: inline-block; animation: wave 1.6s ease-in-out infinite; transform-origin: 20% 90%; }
+  @keyframes wave { 50% { transform: rotate(-12deg); } }
   .sub { color: var(--muted); font-size: .9rem; }
-  .ring { position: relative; width: 96px; height: 96px; flex: none; }
+  .ring { position: relative; width: 92px; height: 92px; flex: none; }
   .ring svg { transform: rotate(-90deg); }
-  .ring b { position: absolute; inset: 0; display: grid; place-items: center; font-size: 1.4rem; font-variant-numeric: tabular-nums; }
-  .counters { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
-  .pill { padding: 3px 10px; border-radius: 999px; font-size: .8rem; font-weight: 600; background: var(--surface-2); color: var(--muted); }
+  .ring b { position: absolute; inset: 0; display: grid; place-items: center; font-size: 1.35rem; font-variant-numeric: tabular-nums; }
+  .counters { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+  .pill { padding: 2px 10px; border-radius: 999px; font-size: .78rem; font-weight: 600; background: var(--surface-2); color: var(--muted); white-space: nowrap; }
   .pill.running { background: var(--info-soft); color: var(--info); }
   .pill.done { background: var(--ok-soft); color: var(--ok); }
   .pill.failed, .pill.stalled { background: var(--bad-soft); color: var(--bad); }
   .pill.stopped { background: var(--warn-soft); color: var(--warn); }
-  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
-  @media (max-width: 400px) { .grid { grid-template-columns: 1fr; } }
-  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-  .card.running { border-color: var(--info); }
-  .card.failed, .card.stalled { border-color: var(--bad); }
-  .top { display: flex; gap: 8px; align-items: baseline; }
-  .id { font-family: ui-monospace, Consolas, monospace; font-weight: 700; color: var(--accent); }
-  .title { font-weight: 600; flex: 1; min-width: 0; }
-  .meta { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; color: var(--muted); font-size: .8rem; }
-  .tag { padding: 1px 8px; border-radius: 6px; background: var(--surface-2); }
-  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: currentColor; }
-  .pill.running .dot { animation: pulse 1.2s infinite; }
-  @keyframes pulse { 50% { opacity: .25; } }
-  .bar { height: 10px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
-  .bar > i { display: block; height: 100%; background: var(--accent); border-radius: 999px; transition: width .6s ease; }
-  .card.done .bar > i { background: var(--ok); }
-  .card.running .bar > i { background: linear-gradient(90deg, var(--info), var(--accent)); background-size: 200% 100%; animation: flow 2s linear infinite; }
-  @keyframes flow { to { background-position: -200% 0; } }
-  .pct { display: flex; justify-content: space-between; align-items: baseline; }
-  .pct b { font-size: 1.3rem; font-variant-numeric: tabular-nums; }
-  .parts { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 10px; align-items: center; font-size: .8rem; color: var(--muted); }
-  .parts .mini { height: 5px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+
+  /* ---------- commentary ---------- */
+  .ticker { display: flex; gap: 10px; align-items: center; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 8px 14px; margin-bottom: 14px; overflow: hidden; }
+  .ticker .mic { font-size: 1.3rem; }
+  .ticker .msg { font-weight: 600; animation: slidein .5s ease; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  @keyframes slidein { from { transform: translateY(100%); opacity: 0; } }
+
+  .layout { display: grid; grid-template-columns: 1fr 280px; gap: 16px; align-items: start; }
+  @media (max-width: 960px) { .layout { grid-template-columns: 1fr; } }
+
+  /* ---------- race track ---------- */
+  .stadium { background: repeating-linear-gradient(90deg, var(--grass) 0 40px, var(--grass-2) 40px 80px); border-radius: 16px; padding: 12px; border: 1px solid var(--border); }
+  .team { margin-bottom: 10px; }
+  .team-name { color: #fff; font-weight: 700; text-shadow: 0 1px 2px rgba(0,0,0,.4); margin: 2px 4px 6px; font-size: .9rem; }
+  .lanes { border-radius: 10px; overflow: hidden; box-shadow: inset 0 0 0 2px rgba(255,255,255,.25); }
+  .lane {
+    position: relative; display: grid; grid-template-columns: 150px 1fr; align-items: center;
+    height: 54px; cursor: pointer;
+    background: var(--track);
+    border-bottom: 2px dashed var(--lane-line);
+  }
+  .lane:nth-child(even) { background: var(--track-2); }
+  .lane:last-child { border-bottom: 0; }
+  .lane:hover { filter: brightness(1.06); }
+  .lane.sel { box-shadow: inset 0 0 0 3px var(--accent); }
+  .lane-label { padding: 0 8px 0 10px; color: #fff; line-height: 1.2; text-shadow: 0 1px 2px rgba(0,0,0,.45); min-width: 0; }
+  .lane-label b { font-family: ui-monospace, Consolas, monospace; font-size: .85rem; }
+  .lane-label span { display: block; font-size: .72rem; opacity: .92; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  @media (max-width: 560px) { .lane { grid-template-columns: 64px 1fr; } .lane-label span { display: none; } }
+  .run { position: relative; height: 100%; margin-right: 34px; }
+  .run::before { /* start line */ content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: rgba(255,255,255,.85); }
+  .finish {
+    position: absolute; right: -34px; top: 0; bottom: 0; width: 22px;
+    background: conic-gradient(#111 25%, #fff 0 50%, #111 0 75%, #fff 0) 0 0 / 11px 11px;
+    opacity: .9;
+  }
+  .racer {
+    position: absolute; top: 50%; left: 0; transform: translate(-50%, -50%);
+    transition: left 1.2s cubic-bezier(.25,.8,.3,1);
+    display: flex; flex-direction: column; align-items: center; z-index: 2;
+  }
+  .racer .body { font-size: 30px; line-height: 1; display: inline-block; transform: scaleX(-1); filter: drop-shadow(0 2px 1px rgba(0,0,0,.35)); }
+  .racer .tag {
+    position: absolute; bottom: 100%; margin-bottom: -6px; background: var(--surface); color: var(--text);
+    font-size: .7rem; font-weight: 700; padding: 0 6px; border-radius: 999px; white-space: nowrap; box-shadow: 0 1px 3px rgba(0,0,0,.25);
+    font-variant-numeric: tabular-nums;
+  }
+  .racer .fx { position: absolute; left: 100%; top: -6px; font-size: 18px; }
+  .running .racer .body { animation: gallop .35s ease-in-out infinite alternate; }
+  @keyframes gallop { from { transform: scaleX(-1) translateY(0) rotate(0); } to { transform: scaleX(-1) translateY(-5px) rotate(-6deg); } }
+  .running .racer::after { /* dust */
+    content: '💨'; position: absolute; right: 100%; top: 8px; font-size: 16px; opacity: .8;
+    animation: dust .6s linear infinite; transform: scaleX(1);
+  }
+  @keyframes dust { from { opacity: .9; transform: translateX(0); } to { opacity: 0; transform: translateX(-14px); } }
+  .stalled .racer .body { animation: snooze 2s ease-in-out infinite; }
+  @keyframes snooze { 50% { transform: scaleX(-1) rotate(8deg); } }
+  .failed .racer .body, .stopped .racer .body { transform: scaleX(-1) rotate(80deg); filter: grayscale(.6); }
+  .done .racer .body { animation: hop 1.2s ease-in-out infinite; }
+  @keyframes hop { 0%, 60%, 100% { transform: scaleX(-1) translateY(0); } 30% { transform: scaleX(-1) translateY(-10px); } }
+  .queued .racer .body { opacity: .6; }
+
+  /* ---------- side panels ---------- */
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 14px; }
+  .panel h2 { font-size: 1rem; margin: 0 0 10px; }
+  .board { list-style: none; margin: 0; padding: 0; counter-reset: r; }
+  .board li { display: grid; grid-template-columns: 28px 26px 1fr auto; gap: 6px; align-items: center; padding: 5px 0; border-bottom: 1px solid var(--surface-2); cursor: pointer; }
+  .board li:last-child { border-bottom: 0; }
+  .board .pos { font-weight: 700; color: var(--muted); text-align: center; font-variant-numeric: tabular-nums; }
+  .board .ch { font-size: 20px; transform: scaleX(-1); display: inline-block; }
+  .board .nm { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .board .pc { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .board .up { color: var(--ok); font-size: .75rem; }
+
+  .detail { margin-top: 16px; }
+  .detail .head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+  .detail .big { font-size: 40px; transform: scaleX(-1); display: inline-block; }
+  .bar { height: 10px; border-radius: 999px; background: var(--surface-2); overflow: hidden; margin: 6px 0 10px; }
+  .bar > i { display: block; height: 100%; background: var(--accent); transition: width .6s; }
+  .parts { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 10px; align-items: center; font-size: .82rem; color: var(--muted); }
+  .parts .mini { height: 6px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
   .parts .mini > i { display: block; height: 100%; background: var(--accent); }
-  .parts span:last-child, .parts .num { font-variant-numeric: tabular-nums; text-align: right; }
-  .err { font-size: .8rem; color: var(--bad); background: var(--bad-soft); border-radius: 8px; padding: 6px 10px; overflow-wrap: anywhere; }
-  .warnline { font-size: .8rem; color: var(--warn); }
-  details summary { cursor: pointer; color: var(--muted); font-size: .8rem; }
-  pre { margin: 6px 0 0; background: var(--code-bg); color: var(--code-text); padding: 8px 10px; border-radius: 8px; font: 11.5px/1.45 ui-monospace, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; }
-  .notes { font-size: .8rem; color: var(--muted); white-space: pre-wrap; }
-  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
-  .toolbar button { font: inherit; font-size: .85rem; padding: 4px 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer; }
-  .toolbar button.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .parts .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .err { font-size: .8rem; color: var(--bad); background: var(--bad-soft); border-radius: 8px; padding: 6px 10px; margin-top: 8px; overflow-wrap: anywhere; }
+  .warnline { font-size: .8rem; color: var(--warn); margin-top: 6px; }
+  pre { margin: 8px 0 0; background: var(--code-bg); color: var(--code-text); padding: 8px 10px; border-radius: 8px; font: 11.5px/1.45 ui-monospace, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 200px; overflow: auto; }
+  .notes { font-size: .82rem; color: var(--muted); white-space: pre-wrap; margin-top: 8px; }
+  .hint { font-size: .8rem; color: var(--muted); margin-top: 8px; }
+
+  /* ---------- tabs ---------- */
+  .tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+  .tabs button { font: inherit; font-weight: 600; padding: 6px 14px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer; }
+  .tabs button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  /* ---------- virtual office ---------- */
+  .office {
+    display: grid; gap: 10px; padding: 10px; border-radius: 16px; border: 1px solid var(--border);
+    grid-template-columns: 1fr 1fr; grid-template-areas: "content content" "ui review" "lounge clinic";
+    background: var(--surface-2);
+  }
+  @media (max-width: 700px) { .office { grid-template-columns: 1fr; grid-template-areas: "content" "ui" "review" "lounge" "clinic"; } }
+  .room {
+    position: relative; border-radius: 12px; padding: 64px 10px 12px; min-height: 150px;
+    background:
+      linear-gradient(var(--floor-line) 1px, transparent 1px) 0 0 / 28px 28px,
+      linear-gradient(90deg, var(--floor-line) 1px, transparent 1px) 0 0 / 28px 28px,
+      var(--floor);
+    border: 3px solid var(--wall);
+  }
+  .room h3 { position: absolute; top: 6px; left: 10px; margin: 0; font-size: .82rem; color: var(--wall-text); }
+  .room .deco { position: absolute; top: 4px; right: 10px; font-size: 18px; letter-spacing: 4px; opacity: .85; }
+  .room.content { grid-area: content; --floor: #f6ead7; --floor-line: rgba(160,120,70,.12); --wall: #b98a55; --wall-text: #7a5226; }
+  .room.ui      { grid-area: ui;      --floor: #e4eefb; --floor-line: rgba(60,100,170,.12); --wall: #6f93c9; --wall-text: #2f548e; }
+  .room.review  { grid-area: review;  --floor: #e2f4e6; --floor-line: rgba(40,120,70,.12);  --wall: #5aa874; --wall-text: #24693d; }
+  .room.lounge  { grid-area: lounge;  --floor: #f9edd9; --floor-line: rgba(180,120,40,.12); --wall: #d1a14d; --wall-text: #8a5f12; }
+  .room.clinic  { grid-area: clinic;  --floor: #fbe6e6; --floor-line: rgba(180,60,60,.12);  --wall: #d27878; --wall-text: #8f2f2f; }
+  @media (prefers-color-scheme: dark) {
+    .room.content { --floor: #2b2419; --wall-text: #e0b680; }
+    .room.ui      { --floor: #1b2433; --wall-text: #9fbde8; }
+    .room.review  { --floor: #182a1e; --wall-text: #8fd4a6; }
+    .room.lounge  { --floor: #2d2516; --wall-text: #e6c27a; }
+    .room.clinic  { --floor: #2e1b1b; --wall-text: #ec9c9c; }
+  }
+  .desks { display: flex; flex-wrap: wrap; gap: 40px 10px; }
+  .agent {
+    position: relative; width: 112px; display: flex; flex-direction: column; align-items: center; cursor: pointer;
+    padding: 6px 4px 4px; border-radius: 10px; transition: background .2s;
+  }
+  .agent:hover, .agent.sel { background: rgba(255,255,255,.55); }
+  @media (prefers-color-scheme: dark) { .agent:hover, .agent.sel { background: rgba(255,255,255,.08); } }
+  .agent.sel { box-shadow: 0 0 0 2px var(--accent); }
+  .agent .desk { position: relative; height: 54px; width: 100%; display: flex; align-items: flex-end; justify-content: center; }
+  .agent .who { font-size: 30px; line-height: 1; position: relative; z-index: 1; }
+  .agent .pc { font-size: 22px; position: absolute; bottom: 0; right: 14px; z-index: 2; }
+  .agent .table { position: absolute; bottom: -2px; left: 8px; right: 8px; height: 10px; border-radius: 4px; background: #a8743f; box-shadow: 0 2px 0 #7d532a; }
+  .agent .name { font-size: .72rem; font-weight: 700; margin-top: 6px; text-align: center; line-height: 1.2; }
+  .agent .name small { display: block; font-weight: 500; color: var(--muted); }
+  .agent .mini-bar { width: 84px; height: 5px; border-radius: 999px; background: rgba(0,0,0,.1); overflow: hidden; margin-top: 3px; }
+  .agent .mini-bar > i { display: block; height: 100%; background: var(--accent); transition: width .6s; }
+  .agent.done .mini-bar > i { background: var(--ok); }
+  .bubble {
+    position: absolute; bottom: calc(100% - 8px); left: 50%; transform: translateX(-50%); z-index: 3;
+    background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 10px;
+    font-size: .66rem; line-height: 1.25; padding: 3px 7px; width: max-content; max-width: 150px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-shadow: 0 2px 6px rgba(0,0,0,.15);
+  }
+  .bubble::after { content: ''; position: absolute; top: 100%; left: 50%; margin-left: -5px; border: 5px solid transparent; border-top-color: var(--surface); }
+  .agent.running .who { animation: typing .5s ease-in-out infinite alternate; }
+  @keyframes typing { to { transform: translateY(-3px) rotate(-4deg); } }
+  .agent.running .pc { animation: glow 1s ease-in-out infinite alternate; }
+  @keyframes glow { to { filter: drop-shadow(0 0 4px var(--info)); } }
+  .agent.stalled .who { animation: snooze2 2.4s ease-in-out infinite; }
+  @keyframes snooze2 { 50% { transform: rotate(12deg) translateY(2px); } }
+  .agent.done .who { animation: cheer 1.4s ease-in-out infinite; }
+  @keyframes cheer { 30% { transform: translateY(-8px); } 60% { transform: translateY(0); } }
+  .agent.failed .who, .agent.stopped .who { filter: grayscale(.5); }
+  .agent .status-fx { position: absolute; top: -2px; right: 10px; font-size: 16px; z-index: 3; }
+  .empty-room { font-size: .78rem; color: var(--muted); padding: 6px 2px; }
+
+  /* ---------- confetti ---------- */
+  .confetti { position: fixed; top: -20px; font-size: 20px; pointer-events: none; z-index: 50; animation: fall 2.6s linear forwards; }
+  @keyframes fall { to { transform: translateY(105vh) rotate(720deg); opacity: .4; } }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
     <div class="ring">
-      <svg width="96" height="96" viewBox="0 0 96 96" aria-hidden="true">
+      <svg width="92" height="92" viewBox="0 0 96 96" aria-hidden="true">
         <circle cx="48" cy="48" r="40" fill="none" stroke="var(--surface-2)" stroke-width="10"/>
-        <circle id="ringFg" cx="48" cy="48" r="40" fill="none" stroke="var(--accent)" stroke-width="10" stroke-linecap="round" stroke-dasharray="251.3" stroke-dashoffset="251.3" style="transition: stroke-dashoffset .6s"/>
+        <circle id="ringFg" cx="48" cy="48" r="40" fill="none" stroke="var(--accent)" stroke-width="10" stroke-linecap="round" stroke-dasharray="251.3" stroke-dashoffset="251.3" style="transition: stroke-dashoffset .8s"/>
       </svg>
       <b id="overall">0%</b>
     </div>
     <div>
-      <h1>Agent Monitor — Senior Java Prep</h1>
+      <h1><span class="flag">🏁</span> Agent Grand Prix — Senior Java Prep</h1>
       <div class="sub" id="updated">Đang tải…</div>
       <div class="counters" id="counters"></div>
     </div>
   </header>
-  <div class="toolbar" id="toolbar">
-    <button data-f="all" class="active">Tất cả</button>
-    <button data-f="content">Nội dung (opencode)</button>
-    <button data-f="view">Giao diện (cline)</button>
-    <button data-f="running">Đang chạy</button>
-    <button data-f="problem">Có vấn đề</button>
+
+  <div class="ticker"><span class="mic">🎙️</span><span class="msg" id="ticker">Các tay đua đang vào vạch xuất phát…</span></div>
+
+  <div class="layout">
+    <div>
+      <div class="tabs" role="tablist">
+        <button data-mode="race" role="tab">🏁 Đường đua</button>
+        <button data-mode="office" role="tab">🏢 Văn phòng ảo</button>
+      </div>
+      <div id="stage"></div>
+      <div class="panel detail" id="detail"><div class="hint">👆 Bấm vào một tay đua / nhân viên hoặc tên trên bảng xếp hạng để xem chi tiết task.</div></div>
+    </div>
+    <aside class="panel">
+      <h2>🏆 Bảng xếp hạng</h2>
+      <ol class="board" id="board"></ol>
+    </aside>
   </div>
-  <div class="grid" id="grid"></div>
 </div>
+
 <script>
-  const STATE = {
-    queued: 'Chờ', running: 'Đang chạy', done: 'Hoàn thành', stopped: 'Dừng — chưa xong', failed: 'Lỗi', stalled: 'Treo (>10 phút không log)'
+  // Racer roster: opencode team = animals, Cline team = vehicles
+  const RACERS = {
+    T01: ['🐆', 'Báo Đốm'], T02: ['🐇', 'Thỏ Ngọc'], T03: ['🦊', 'Cáo Lửa'], T04: ['🐎', 'Ngựa Ô'],
+    T05: ['🦄', 'Kỳ Lân'], T06: ['🐉', 'Rồng Mây'], T07: ['🐢', 'Rùa Thần'], T08: ['🦜', 'Vẹt Anh Ngữ'],
+    T12: ['🐿️', 'Sóc Trắc Nghiệm'], T14: ['🦖', 'Khủng Long Code'], T16: ['🐺', 'Sói Production'],
+    T09: ['🏎️', 'Xe F1'], T10: ['🛵', 'Vespa'], T11: ['🚓', 'Xe Tuần Tra'], T15: ['🛸', 'Đĩa Bay'], T17: ['🚂', 'Tàu Lộ Trình'],
   };
+  const STATE = { queued: 'Chờ xuất phát', running: 'Đang chạy', done: 'Về đích', stopped: 'Bỏ cuộc — chưa xong', failed: 'Gặp nạn', stalled: 'Ngủ gật (>20 phút im lặng)' };
+  const FX = { stalled: '💤', failed: '💥', stopped: '🛑' };
+  const MEDALS = ['🥇', '🥈', '🥉'];
   const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  let filter = 'all', last = null;
-  const open = new Set();
+  const racer = id => RACERS[id] || ['🏃', id];
 
-  document.getElementById('toolbar').addEventListener('click', e => {
-    const b = e.target.closest('button'); if (!b) return;
-    filter = b.dataset.f;
-    document.querySelectorAll('#toolbar button').forEach(x => x.classList.toggle('active', x === b));
-    if (last) render(last);
-  });
-  document.getElementById('grid').addEventListener('toggle', e => {
-    const d = e.target; if (d.tagName !== 'DETAILS') return;
-    d.open ? open.add(d.dataset.k) : open.delete(d.dataset.k);
-  }, true);
+  let selected = null, last = null, prevRank = null, prevState = {};
+  let finishOrder = [];
+  try { finishOrder = JSON.parse(localStorage.getItem('gp.finish') || '[]'); } catch (e) {}
+  const saveFinish = () => { try { localStorage.setItem('gp.finish', JSON.stringify(finishOrder)); } catch (e) {} };
 
-  function elapsed(t) {
-    if (!t.run || !t.run.started) return '';
-    const [h, m, s] = t.run.started.split(':').map(Number);
-    let end = new Date();
-    if (t.run.ended) { const [a, b, c] = t.run.ended.split(':').map(Number); end = new Date(); end.setHours(a, b, c, 0); }
-    const st = new Date(); st.setHours(h, m, s, 0);
-    const sec = Math.max(0, Math.round((end - st) / 1000));
-    return Math.floor(sec / 60) + 'm' + String(sec % 60).padStart(2, '0') + 's';
+  function say(msg) {
+    const el = document.getElementById('ticker');
+    el.textContent = msg; el.style.animation = 'none'; void el.offsetWidth; el.style.animation = '';
   }
 
-  function card(t) {
+  function confetti() {
+    const bits = ['🎉', '🎊', '✨', '⭐', '🏆'];
+    for (let i = 0; i < 28; i++) {
+      const s = document.createElement('span');
+      s.className = 'confetti'; s.textContent = bits[i % bits.length];
+      s.style.left = Math.random() * 100 + 'vw'; s.style.animationDelay = Math.random() * .8 + 's';
+      document.body.appendChild(s); setTimeout(() => s.remove(), 3600);
+    }
+  }
+
+  function medal(id) { const i = finishOrder.indexOf(id); return i >= 0 ? (MEDALS[i] || '🏅') : ''; }
+
+  function lane(t) {
+    const [ch, name] = racer(t.id);
+    const fx = FX[t.state] || (t.state === 'done' ? medal(t.id) || '🏅' : '');
+    return `<div class="lane ${t.state} ${selected === t.id ? 'sel' : ''}" data-id="${t.id}" title="${esc(t.title)}">
+      <div class="lane-label"><b>${t.id}</b> ${esc(name)}<span>${esc(t.title)}</span></div>
+      <div class="run">
+        <div class="racer" data-flip="r-${t.id}" style="left:${Math.max(2, t.pct)}%">
+          <span class="tag">${t.pct}%</span>
+          <span class="body">${ch}</span>
+          ${fx ? `<span class="fx">${fx}</span>` : ''}
+        </div>
+        <div class="finish"></div>
+      </div>
+    </div>`;
+  }
+
+  function renderStadium(tasks) {
+    const teams = [
+      ['🐾 Đội opencode — viết nội dung', tasks.filter(t => t.kind === 'content')],
+      ['🏎️ Đội Cline — xây giao diện', tasks.filter(t => t.kind === 'view')],
+    ];
+    document.getElementById('stage').innerHTML = '<div class="stadium">' + teams.map(([n, list]) =>
+      `<div class="team"><div class="team-name">${n}</div><div class="lanes">${list.map(lane).join('')}</div></div>`).join('') + '</div>';
+  }
+
+  // ---------- virtual office ----------
+  const ROOMS = [
+    ['content', '🐾 Phòng Nội dung — đội opencode', '📚 🖨️ 🪴'],
+    ['ui', '🏎️ Phòng Giao diện — đội Cline', '🎨 🖼️ 🪴'],
+    ['review', '✅ Phòng Review — đã xong việc', '🏆 📋 🎉'],
+    ['lounge', '☕ Phòng nghỉ — chờ / ngủ gật', '🛋️ ☕ 🎮'],
+    ['clinic', '🚑 Phòng sự cố — lỗi / bỏ dở', '🧰 🩹 📟'],
+  ];
+  function roomOf(t) {
+    if (t.state === 'done') return 'review';
+    if (t.state === 'queued' || t.state === 'stalled') return 'lounge';
+    if (t.state === 'failed' || t.state === 'stopped') return 'clinic';
+    return t.kind === 'content' ? 'content' : 'ui';
+  }
+  function bubbleText(t) {
+    if (t.state === 'stalled') return 'Zzz… 💤';
+    if (t.state === 'queued') return 'Đợi tới lượt…';
+    if (t.state === 'done') return 'Xong rồi! ' + (medal(t.id) || '🎉');
+    if (t.state === 'failed') return 'Cứu với! 💥';
+    if (t.state === 'stopped') return 'Mình chưa xong 😢';
+    // last log line that reads like prose / an action, not a code fragment
+    const lines = (t.log && t.log.tail || [])
+      .map(l => l.replace(/^[\s>│└├─•*\-\[\]]+/, '').trim())
+      .filter(l => l.length >= 8 && /[A-Za-zÀ-ỹ]{3,}/.test(l) && !/^[{}();=\/|*0-9\s.,'"`]+$/.test(l) && !/^\d+\s+total$/.test(l));
+    const l = lines[lines.length - 1];
+    if (!l) return t.kind === 'content' ? 'Đang viết nội dung… ✍️' : 'Đang code giao diện… ⌨️';
+    if (/^(→\s*)?Read/i.test(l)) return '📖 ' + l.slice(0, 55);
+    if (/search/i.test(l)) return '🔎 ' + l.slice(0, 55);
+    return l.slice(0, 60);
+  }
+  function agentCard(t) {
+    const [ch, name] = racer(t.id);
+    const fx = FX[t.state] || (t.state === 'done' ? medal(t.id) : '');
+    return `<div class="agent ${t.state} ${selected === t.id ? 'sel' : ''}" data-id="${t.id}" data-flip="a-${t.id}" title="${esc(t.title)}">
+      <div class="bubble">${esc(bubbleText(t))}</div>
+      <div class="desk"><span class="who">${ch}</span>${t.state === 'running' ? '<span class="pc">💻</span>' : ''}<div class="table"></div></div>
+      ${fx ? `<span class="status-fx">${fx}</span>` : ''}
+      <div class="name">${esc(name)}<small>${t.id} · ${t.pct}%</small></div>
+      <div class="mini-bar"><i style="width:${t.pct}%"></i></div>
+    </div>`;
+  }
+  function renderOffice(tasks) {
+    document.getElementById('stage').innerHTML = '<div class="office">' + ROOMS.map(([key, title, deco]) => {
+      const people = tasks.filter(t => roomOf(t) === key);
+      return `<section class="room ${key}"><h3>${title}</h3><span class="deco">${deco}</span>
+        <div class="desks">${people.map(agentCard).join('') || '<div class="empty-room">Trống</div>'}</div></section>`;
+    }).join('') + '</div>';
+  }
+
+  let mode = 'race';
+  try { mode = localStorage.getItem('gp.mode') || 'race'; } catch (e) {}
+  /**
+   * Re-render the stage, then FLIP-animate every [data-flip] element from its old position to the new one,
+   * so racers glide along the track and office workers walk between rooms instead of jumping.
+   */
+  function renderStage(tasks) {
+    const stage = document.getElementById('stage');
+    const before = {};
+    stage.querySelectorAll('[data-flip]').forEach(el => { before[el.dataset.flip] = el.getBoundingClientRect(); });
+    mode === 'office' ? renderOffice(tasks) : renderStadium(tasks);
+    stage.querySelectorAll('[data-flip]').forEach(el => {
+      const b = before[el.dataset.flip]; if (!b) return;
+      const a = el.getBoundingClientRect(), dx = b.left - a.left, dy = b.top - a.top;
+      if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+      const base = el.classList.contains('racer') ? 'translate(-50%, -50%) ' : '';
+      el.style.transition = 'none'; el.style.transform = base + `translate(${dx}px, ${dy}px)`; el.style.zIndex = 5;
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        el.style.transition = 'transform 1.4s cubic-bezier(.3,.7,.3,1)'; el.style.transform = '';
+        setTimeout(() => { el.style.zIndex = ''; el.style.transition = ''; }, 1500);
+      }));
+    });
+  }
+  function setMode(m) {
+    mode = m;
+    try { localStorage.setItem('gp.mode', m); } catch (e) {}
+    document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
+    document.getElementById('stage').innerHTML = '';
+    if (last) renderStage(last.tasks);
+  }
+  document.querySelector('.tabs').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setMode(b.dataset.mode); });
+  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+
+  function renderBoard(tasks) {
+    const ranked = tasks.slice().sort((a, b) => {
+      const fa = finishOrder.indexOf(a.id), fb = finishOrder.indexOf(b.id);
+      if (fa >= 0 || fb >= 0) return (fa < 0 ? 1e9 : fa) - (fb < 0 ? 1e9 : fb);
+      return b.pct - a.pct;
+    });
+    document.getElementById('board').innerHTML = ranked.map((t, i) => {
+      const [ch, name] = racer(t.id);
+      const moved = prevRank && prevRank[t.id] != null && prevRank[t.id] > i ? `<span class="up">▲${prevRank[t.id] - i}</span>` : '';
+      return `<li data-id="${t.id}"><span class="pos">${medal(t.id) || i + 1}</span><span class="ch">${ch}</span>
+        <span class="nm">${esc(name)} <small class="sub">${t.id}</small> ${moved}</span><span class="pc">${t.pct}%</span></li>`;
+    }).join('');
+    return ranked;
+  }
+
+  function renderDetail() {
+    const box = document.getElementById('detail');
+    const t = last && last.tasks.find(x => x.id === selected);
+    if (!t) return;
+    const [ch, name] = racer(t.id);
     const parts = t.parts.map(p => {
       const pct = p.target ? Math.min(100, p.done / p.target * 100) : 0;
       const label = t.kind === 'view' ? (p.stub ? 'chưa bắt đầu' : p.lines + ' dòng') : p.done + '/' + p.target;
@@ -133,43 +413,71 @@
     }).join('');
     const problems = [];
     if (t.syntax) problems.push('Lỗi cú pháp: ' + t.syntax);
-    if (t.errors.length) problems.push(t.errors.length + ' lỗi validate: ' + t.errors.slice(0, 3).join(' · ') + (t.errors.length > 3 ? ' …' : ''));
-    const log = t.log.exists ? t.log.tail.join('\n') : '(chưa có log)';
-    return `<article class="card ${t.state}">
-      <div class="top"><span class="id">${t.id}</span><span class="title">${esc(t.title)}</span></div>
-      <div class="meta">
-        <span class="pill ${t.state}"><span class="dot"></span> ${STATE[t.state]}</span>
-        <span class="tag">${esc(t.agent)}</span>
-        ${t.run && t.run.model ? `<span class="tag">${esc(t.run.model.replace('opencode/', ''))}</span>` : ''}
-        ${elapsed(t) ? `<span>⏱ ${elapsed(t)}</span>` : ''}
-        ${t.status === 'DONE' ? '<span class="tag">Status: DONE</span>' : ''}
-      </div>
-      <div class="pct"><span class="sub">${t.kind === 'content' ? 'Nội dung đã viết' : 'Code giao diện'}</span><b>${t.pct}%</b></div>
+    if (t.errors.length) problems.push(t.errors.length + ' lỗi validate: ' + t.errors.slice(0, 4).join(' · '));
+    box.innerHTML = `<div class="head"><span class="big">${ch}</span>
+        <div><b>${t.id} · ${esc(name)}</b><div class="sub">${esc(t.title)}</div></div>
+        <span class="pill ${t.state}">${STATE[t.state]}</span>
+        <span class="pill">${esc(t.agent)}${t.run && t.run.model ? ' · ' + esc(t.run.model.replace('opencode/', '')) : ''}</span>
+        ${t.status === 'DONE' ? '<span class="pill done">Status: DONE</span>' : ''}</div>
+      <div class="sub">${t.kind === 'content' ? 'Nội dung đã viết' : 'Code giao diện (ước lượng)'} — <b>${t.pct}%</b></div>
       <div class="bar"><i style="width:${t.pct}%"></i></div>
       <div class="parts">${parts}</div>
       ${problems.map(p => `<div class="err">${esc(p)}</div>`).join('')}
       ${t.warns ? `<div class="warnline">⚠ ${t.warns} cảnh báo (vd. đáp án còn ngắn)</div>` : ''}
-      <details data-k="log-${t.id}" ${open.has('log-' + t.id) ? 'open' : ''}><summary>Log gần nhất</summary><pre>${esc(log)}</pre></details>
-      ${t.notes ? `<details data-k="n-${t.id}" ${open.has('n-' + t.id) ? 'open' : ''}><summary>Ghi chú của agent</summary><div class="notes">${esc(t.notes)}</div></details>` : ''}
-    </article>`;
+      <pre>${esc(t.log.exists ? t.log.tail.join('\n') : '(chưa có log)')}</pre>
+      ${t.notes ? `<div class="notes">📝 ${esc(t.notes)}</div>` : ''}`;
+  }
+
+  function commentary(d, ranked) {
+    const msgs = [];
+    d.tasks.forEach(t => {
+      const p = prevState[t.id], [, name] = racer(t.id);
+      if (p && p !== t.state) {
+        if (t.state === 'done') msgs.push(`${name} (${t.id}) đã cán đích ${medal(t.id)}! Xin chúc mừng!`);
+        else if (t.state === 'stalled') msgs.push(`Ôi không, ${name} (${t.id}) có vẻ đang ngủ gật bên đường 💤`);
+        else if (t.state === 'failed') msgs.push(`Tai nạn! ${name} (${t.id}) gặp sự cố 💥`);
+      }
+    });
+    if (prevRank) ranked.forEach((t, i) => {
+      if (prevRank[t.id] != null && prevRank[t.id] > i && i < 3) {
+        const passed = ranked[i + 1];
+        msgs.push(`${racer(t.id)[1]} vượt lên vị trí ${i + 1}${passed ? ', bỏ lại ' + racer(passed.id)[1] + ' phía sau' : ''}!`);
+      }
+    });
+    if (!msgs.length && !prevRank) {
+      const lead = ranked[0];
+      msgs.push(lead && lead.pct > 0 ? `${racer(lead.id)[1]} đang dẫn đầu với ${lead.pct}%!` : 'Súng hiệu đã nổ, các tay đua đang khởi động!');
+    }
+    if (msgs.length) say(msgs[msgs.length - 1]);
   }
 
   function render(d) {
+    // new finishers get medals in arrival order
+    let celebrate = false;
+    d.tasks.forEach(t => { if (t.state === 'done' && !finishOrder.includes(t.id)) { finishOrder.push(t.id); celebrate = true; } });
+    if (celebrate) { saveFinish(); if (last) confetti(); }
     last = d;
     document.getElementById('overall').textContent = d.overall + '%';
     document.getElementById('ringFg').style.strokeDashoffset = 251.3 * (1 - d.overall / 100);
-    document.getElementById('updated').textContent = 'Cập nhật ' + new Date(d.at).toLocaleTimeString('vi-VN') + (d.allDone ? ' · runner đã kết thúc' : ' · tự làm mới mỗi 3 giây');
+    document.getElementById('updated').textContent = 'Cập nhật ' + new Date(d.at).toLocaleTimeString('vi-VN') + (d.allDone ? ' · cuộc đua đã kết thúc' : ' · trực tiếp, làm mới mỗi 3 giây');
     const c = {}; d.tasks.forEach(t => { c[t.state] = (c[t.state] || 0) + 1; });
-    document.getElementById('counters').innerHTML = Object.keys(STATE).filter(k => c[k]).map(k => `<span class="pill ${k}"><span class="dot"></span> ${STATE[k]}: ${c[k]}</span>`).join('');
-    const list = d.tasks.filter(t =>
-      filter === 'all' || t.kind === filter || (filter === 'running' && t.state === 'running') ||
-      (filter === 'problem' && (['failed', 'stalled', 'stopped'].includes(t.state) || t.errors.length || t.syntax)));
-    document.getElementById('grid').innerHTML = list.map(card).join('') || '<p class="sub">Không có task nào.</p>';
+    document.getElementById('counters').innerHTML = Object.keys(STATE).filter(k => c[k]).map(k => `<span class="pill ${k}">${STATE[k]}: ${c[k]}</span>`).join('');
+    renderStage(d.tasks);
+    const ranked = renderBoard(d.tasks);
+    commentary(d, ranked);
+    renderDetail();
+    prevRank = {}; ranked.forEach((t, i) => { prevRank[t.id] = i; });
+    d.tasks.forEach(t => { prevState[t.id] = t.state; });
+    if (d.overall >= 100 && !sessionStorage.getItem('gp.allDone')) { sessionStorage.setItem('gp.allDone', 1); confetti(); say('🏁 Tất cả tay đua đã về đích! Cuộc đua kết thúc!'); }
   }
+
+  function select(id) { selected = id; if (last) { renderStage(last.tasks); renderDetail(); } document.getElementById('detail').scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
+  document.getElementById('stage').addEventListener('click', e => { const l = e.target.closest('.lane, .agent'); if (l) select(l.dataset.id); });
+  document.getElementById('board').addEventListener('click', e => { const l = e.target.closest('li'); if (l) select(l.dataset.id); });
 
   async function tick() {
     try { render(await (await fetch('/api/status', { cache: 'no-store' })).json()); }
-    catch (e) { document.getElementById('updated').textContent = 'Mất kết nối tới monitor server — chạy lại: node scripts/monitor.js'; }
+    catch (e) { document.getElementById('updated').textContent = 'Mất kết nối tới server — chạy lại: node scripts/monitor.js'; }
   }
   tick(); setInterval(tick, 3000);
 </script>

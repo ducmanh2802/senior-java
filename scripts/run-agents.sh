@@ -29,10 +29,10 @@ run_task() {
   prompt="Bạn là agent thực hiện task $id của dự án này. Trước tiên hãy đọc kỹ AGENTS.md và $file. \
 Sau đó thực hiện ĐẦY ĐỦ task: chỉ sửa các file mà task sở hữu, chạy 'node scripts/validate.js' tới khi OK, \
 không git commit, và cuối cùng cập nhật Status: DONE kèm ghi chú vào $file. Làm việc tự động đến khi xong, không hỏi lại."
-  echo "[$(date +%T)] start $id ($agent ${MODEL[$id]:-default})"
+  echo "[$(date +%T)] start $id ($agent ${MODEL[$id]:-cline-free/minimax-m3.1-flash})"
   case "$agent" in
     opencode) opencode run --auto -m "${MODEL[$id]}" --title "$id" "$prompt" > "logs/$id.log" 2>&1 ;;
-    cline)    cline -y -c "$PWD" "$prompt" > "logs/$id.log" 2>&1 ;;
+    cline)    cline -y -P cline-pass -m cline-free/minimax-m3.1-flash -c "$PWD" "$prompt" > "logs/$id.log" 2>&1 ;;
     *)        echo "unknown agent '$agent' in $file"; return 1 ;;
   esac
   echo "[$(date +%T)] end   $id exit=$?"

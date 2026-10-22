@@ -76,9 +76,13 @@ function taskMeta(id) {
 function runnerState() {
   const txt = read('logs-runner.txt') || '';
   const st = {};
-  for (const m of txt.matchAll(/\[(\d\d:\d\d:\d\d)\] start (T\d+) \(([^)]*)\)/g)) st[m[2]] = { started: m[1], model: m[3].split(' ').slice(1).join(' ') };
-  for (const m of txt.matchAll(/\[(\d\d:\d\d:\d\d)\] end\s+(T\d+) exit=(\d+)/g)) Object.assign(st[m[2]] = st[m[2]] || {}, { ended: m[1], exit: Number(m[3]) });
-  return { st, allDone: /All agents finished/.test(txt) };
+  // events in file order, so a re-run (new "start" after an "end") resets that task
+  for (const m of txt.matchAll(/\[(\d\d:\d\d:\d\d)\] (start|end)\s+(T\d+) (?:\(([^)]*)\)|exit=(\d+))/g)) {
+    if (m[2] === 'start') st[m[3]] = { started: m[1], model: (m[4] || '').split(' ').slice(1).join(' ') };
+    else Object.assign(st[m[3]] = st[m[3]] || {}, { ended: m[1], exit: Number(m[5]) });
+  }
+  const running = Object.values(st).some(r => r.started && r.ended == null);
+  return { st, allDone: !running && /All agents finished/.test(txt) };
 }
 
 function logInfo(id) {
@@ -99,7 +103,15 @@ function status() {
     let done = 0, target = 0, syntax = null;
     for (const f of spec.files) {
       const r = loadFile(f);
-      if (!r.ok) { syntax = f + ': ' + r.err; continue; }
+      if (!r.ok) {
+        // file is mid-write: count ids textually so progress still shows
+        syntax = f + ': ' + r.err;
+        const src = read('js/data/' + f) || '';
+        for (const m of src.matchAll(/id:\s*'([a-z]+)-\d{3}'/g)) counts[m[1]] = (counts[m[1]] || 0) + 1;
+        counts.__quiz = (counts.__quiz || 0) + (src.match(/id:\s*'qz-[a-z]+-\d{3}'/g) || []).length;
+        counts.__algo = (counts.__algo || 0) + (src.match(/id:\s*'algo-\d{3}'/g) || []).length;
+        continue;
+      }
       (r.w.QUESTIONS || []).forEach(q => { counts[q.topic] = (counts[q.topic] || 0) + 1; });
       counts.__quiz = (counts.__quiz || 0) + (r.w.QUIZ || []).length;
       counts.__algo = (counts.__algo || 0) + (r.w.ALGOS || []).length;
@@ -137,14 +149,14 @@ function status() {
     t.state = !r ? 'queued'
       : r.ended != null ? (t.status === 'DONE' || t.pct >= 100 ? 'done' : (r.exit ? 'failed' : 'stopped'))
       : 'running';
-    if (t.state === 'running' && t.log.mtime && Date.now() - t.log.mtime > 10 * 60000) t.state = 'stalled';
+    if (t.state === 'running' && t.log.mtime && Date.now() - t.log.mtime > 20 * 60000) t.state = 'stalled';
   });
   const overall = Math.round(tasks.reduce((a, t) => a + t.pct, 0) / tasks.length);
   return { at: Date.now(), overall, allDone, tasks };
 }
 
-const PAGE = fs.readFileSync(path.join(__dirname, 'monitor.html'), 'utf8');
 http.createServer((req, res) => {
+  const PAGE = fs.readFileSync(path.join(__dirname, 'monitor.html'), 'utf8'); // re-read so UI edits apply live
   if (req.url.startsWith('/api/status')) {
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
     return res.end(JSON.stringify(status()));
