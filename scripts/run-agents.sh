@@ -51,10 +51,23 @@ declare -A MODEL=(
   [T71]=opencode/deepseek-v4.1-flash-free
 )
 
+# FORCE_MODELS="m1 m2": ignore the map and spread tasks over these models (set by run-queue.sh
+# from scripts/probe-models.sh when some free models are exhausted)
+pick_model() {
+  local id="$1" n
+  if [ -n "${FORCE_MODELS:-}" ]; then
+    local models=($FORCE_MODELS); n=$((10#${id#T} % ${#models[@]}))
+    echo "${models[$n]}"
+  else
+    echo "${MODEL[$id]}"
+  fi
+}
+
 run_task() {
   local file="$1" id agent prompt
   id="$(basename "$file" | cut -d- -f1)"
   agent="$(grep -m1 '^Agent:' "$file" | awk '{print $2}')"
+  MODEL[$id]="$(pick_model "$id")"
   prompt="Bạn là agent thực hiện task $id của dự án này. Trước tiên hãy đọc kỹ AGENTS.md và $file. \
 Sau đó thực hiện ĐẦY ĐỦ task: chỉ sửa các file mà task sở hữu, chạy 'node scripts/validate.js' tới khi OK, \
 không git commit, và cuối cùng cập nhật Status: DONE kèm ghi chú vào $file. Làm việc tự động đến khi xong, không hỏi lại. Nếu file của bạn đã có nội dung từ lần chạy trước bị gián đoạn: đọc lại, giữ phần tốt, sửa lỗi cú pháp và làm tiếp phần còn thiếu. Tuân thủ tuyệt đối luật 8-9 trong AGENTS.md: không kill tiến trình theo tên, không mở trình duyệt, không npm install."

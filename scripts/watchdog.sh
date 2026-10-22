@@ -5,6 +5,7 @@
 # $STALL seconds is stopped BY PID (never by name — other tools use node/opencode too) and started
 # again through scripts/run-agents.sh, at most $RETRIES times per task. The agent prompt tells it to
 # continue partial work. Events go to stdout (append to logs-runner.txt).
+# Before a retry the free models are probed again (scripts/probe-models.sh) so the retry lands on one that answers.
 cd "$(dirname "$0")/.."
 STALL=${STALL:-900}
 RETRIES=${RETRIES:-2}
@@ -33,7 +34,7 @@ while true; do
       tries[$task]=$((n + 1))
       echo "[$(date +%T)] retry $task ($((n + 1))/$RETRIES)"
       cp "$log" "logs/$task.stall$((n + 1)).log"
-      ( sleep 30; scripts/run-agents.sh "$task" ) &
+      ( sleep 30; FORCE_MODELS="$(scripts/probe-models.sh | tr '\n' ' ')" scripts/run-agents.sh "$task" ) &
     else
       echo "[$(date +%T)] giving up on $task after $RETRIES retries"
     fi

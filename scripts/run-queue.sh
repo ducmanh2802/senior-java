@@ -22,10 +22,15 @@ busy() {
 }
 ready() {
   local dep; dep="$(after "$1")"
-  [ -z "$dep" ] || grep -q "end   $dep " logs-runner.txt 2>/dev/null
+  [ -z "$dep" ] || grep -q '^Status: DONE' tasks/"$dep"-*.md || grep -q "end   $dep " logs-runner.txt 2>/dev/null
 }
 
-echo "[$(date +%T)] queue (max $MAX): ${queue[*]}"
+if [ -z "${FORCE_MODELS:-}" ]; then
+  FORCE_MODELS="$(scripts/probe-models.sh | tr '\n' ' ')"
+  [ -n "${FORCE_MODELS// /}" ] || { echo "[$(date +%T)] no free model answers right now"; exit 1; }
+fi
+export FORCE_MODELS
+echo "[$(date +%T)] queue (max $MAX, models: $FORCE_MODELS): ${queue[*]}"
 while [ ${#queue[@]} -gt 0 ] || [ ${#pid_of[@]} -gt 0 ]; do
   for t in "${!pid_of[@]}"; do kill -0 "${pid_of[$t]}" 2>/dev/null || unset "pid_of[$t]"; done
   if [ ${#pid_of[@]} -lt "$MAX" ]; then
