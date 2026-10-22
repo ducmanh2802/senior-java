@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - run: npm ci
+
+      - name: Syntax check (all JS)
+        run: for f in $(git ls-files '*.js'); do node --check "$f" || exit 1; done
+
+      - name: Validate content schema & markup
+        run: node scripts/validate.js
+
+      - name: Algorithm harnesses compile and pass with reference solutions
+        run: node scripts/test-algos.js
+
+      - name: Browser smoke test
+        run: |
+          npx playwright install --with-deps chromium
+          npm run smoke

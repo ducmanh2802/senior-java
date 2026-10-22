@@ -113,7 +113,7 @@ for (const z of sandbox.window.ALGOS || []) {
   if (!z.solution || !/~~~java/.test(z.solution)) err(f, `${id}: solution phải có code ~~~java`);
   if (!z.complexity) err(f, `${id}: thiếu complexity`);
   if (z.tests != null) {
-    if (typeof z.tests !== 'string' || !/public\s+class\s+Main/.test(z.tests)) err(f, `${id}: tests phải là chuỗi Java chứa public class Main`);
+    if (typeof z.tests !== 'string' || !/public\s+class\s+Main\b/.test(z.tests)) err(f, `${id}: tests phải là chuỗi Java chứa public class Main`);
     else if (!/RESULT/.test(z.tests)) err(f, `${id}: tests phải in dòng "RESULT passed/total"`);
   }
   const allowed = new Set(['id', 'title', 'difficulty', 'pattern', 'tags', 'prompt', 'hints', 'solution', 'complexity', 'follow', 'tests', 'starter', '__file']);
