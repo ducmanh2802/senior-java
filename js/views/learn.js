@@ -1,11 +1,215 @@
-/* View "learn" — stub; owner: see tasks/T87-view-learn.md. Contract: AGENTS.md sections 7, 9, 12. */
+/*
+ * View "learn" — lessons with self-graded Java exercises (AGENTS.md section 12).
+ *   #/learn             table of contents grouped by track, progress, "continue"
+ *   #/learn/<lessonId>  theory → exercises (run tests / AI review / hints / solution) → quick check → done
+ * Progress: lesson done = store status 'known' on the lesson id; exercise solved = 'known' on "<lessonId>#<n>".
+ */
 (function () {
   'use strict';
+
+  const esc = App.esc;
+  const draftKey = (id, i) => 'sjp.lesson.' + id + '.' + i;
+  const loadDraft = (id, i) => { try { return localStorage.getItem(draftKey(id, i)); } catch (e) { return null; } };
+  const saveDraft = (id, i, v) => { try { localStorage.setItem(draftKey(id, i), v); } catch (e) { /* private mode */ } };
+  const exId = (l, i) => l.id + '#' + (i + 1);
+  const isDone = l => App.store.getStatus(l.id) === 'known';
+  const solved = l => (l.exercises || []).filter((x, i) => App.store.getStatus(exId(l, i)) === 'known').length;
+  const state = l => isDone(l) ? 'done' : solved(l) ? 'doing' : 'new';
+  const STATE = { done: ['✅', 'Đã hoàn thành'], doing: ['🟡', 'Đang học'], new: ['○', 'Chưa học'] };
+
+  function tracks() {
+    const by = new Map();
+    App.lessons().forEach(l => { if (!by.has(l.track)) by.set(l.track, []); by.get(l.track).push(l); });
+    return [...by.entries()];
+  }
+
+  // ---------- table of contents ----------
+  function toc(root) {
+    const all = App.lessons();
+    if (!all.length) {
+      root.innerHTML = '<div class="page-head"><h1>Bài học</h1></div><div class="empty"><h2>Chưa có bài học</h2><p>Bài học đang được biên soạn.</p></div>';
+      return;
+    }
+    const next = all.find(l => !isDone(l));
+    const done = all.filter(isDone).length;
+    root.innerHTML = `
+      <div class="page-head"><h1>Bài học</h1>
+        <p class="muted">Học lại nền tảng theo lộ trình: lý thuyết có ví dụ, bài tập Java chạy test thật, câu kiểm tra nhanh. ${done}/${all.length} bài đã xong.</p></div>
+      ${next ? `<div class="card ln-next"><div><span class="muted small">Học tiếp</span><div><b>${esc(next.title)}</b></div>
+        <span class="muted small">${esc(App.topic(next.track).name)} · ${next.minutes} phút · ${(next.exercises || []).length} bài tập</span></div>
+        <a class="btn primary" href="#/learn/${esc(next.id)}">Học tiếp →</a></div>` : '<div class="card ln-next"><b>🎉 Bạn đã hoàn thành tất cả bài học hiện có.</b></div>'}
+      ${tracks().map(([track, ls]) => {
+        const t = App.topic(track), d = ls.filter(isDone).length;
+        return `<section class="card ln-track">
+          <div class="ln-track-head"><h2>${esc(t.icon + ' ' + t.name)}</h2><span class="muted small">${d}/${ls.length}</span></div>
+          <div class="progress" aria-label="Tiến độ ${esc(t.name)}"><i style="width:${Math.round(d / ls.length * 100)}%"></i></div>
+          <ol class="ln-list">${ls.map(l => {
+            const s = STATE[state(l)];
+            return `<li><a href="#/learn/${esc(l.id)}"><span class="ln-state" title="${s[1]}" aria-label="${s[1]}">${s[0]}</span>
+              <span class="ln-title">${esc(l.title)}</span>
+              <span class="muted small">${esc(App.LEVELS[l.level] || l.level)} · ${l.minutes} phút · ${(l.exercises || []).length} bài tập</span></a></li>`;
+          }).join('')}</ol></section>`;
+      }).join('')}`;
+  }
+
+  // ---------- lesson ----------
+  function lesson(root, l) {
+    const same = App.lessons().filter(x => x.track === l.track);
+    const idx = same.indexOf(l), prev = same[idx - 1], next = same[idx + 1];
+    const qs = App.questions();
+    const related = (l.related || []).map(id => qs.find(q => q.id === id)).filter(Boolean);
+    root.innerHTML = `
+      <a class="link-btn" href="#/learn">← Mục lục bài học</a>
+      <div class="page-head"><h1>${esc(l.title)}</h1>
+        <div class="row ln-meta"><span class="badge">${esc(App.topic(l.track).icon + ' ' + App.topic(l.track).name)}</span>
+          <span class="badge">${esc(App.LEVELS[l.level] || l.level)}</span><span class="badge">${l.minutes} phút</span>
+          ${isDone(l) ? '<span class="badge ok">✅ Đã hoàn thành</span>' : ''}</div></div>
+      <div class="card ln-goals"><b>Sau bài này bạn sẽ:</b><ul>${(l.goals || []).map(g => '<li>' + App.md(g).replace(/^<p>|<\/p>$/g, '') + '</li>').join('')}</ul></div>
+      <article class="card md ln-body">${App.md(l.body)}</article>
+      <h2 class="ln-h">Bài tập</h2>
+      ${(l.exercises || []).map((x, i) => exerciseCard(l, x, i)).join('')}
+      ${(l.check || []).length ? `<h2 class="ln-h">Kiểm tra nhanh</h2>${l.check.map((c, i) => `
+        <div class="card ln-check" data-check="${i}"><div class="md">${App.md(c.q)}</div>
+          <div class="ln-options">${c.options.map((o, j) => `<button type="button" class="btn ln-opt" data-opt="${j}">${esc(String.fromCharCode(65 + j))}. ${App.md(o).replace(/^<p>|<\/p>$/g, '')}</button>`).join('')}</div>
+          <div class="ln-explain"></div></div>`).join('')}` : ''}
+      ${related.length ? `<div class="card"><b>Câu hỏi phỏng vấn liên quan</b><ul>${related.map(q => `<li><a href="#/bank/${esc(q.topic)}">${App.md(q.q).replace(/^<p>|<\/p>$/g, '')}</a></li>`).join('')}</ul></div>` : ''}
+      <div class="row ln-footer">
+        ${prev ? `<a class="btn" href="#/learn/${esc(prev.id)}">← ${esc(prev.title)}</a>` : '<span></span>'}
+        <button class="btn ${isDone(l) ? '' : 'primary'}" data-act="done">${isDone(l) ? '✅ Đã hoàn thành — ôn lại sau' : 'Hoàn thành bài'}</button>
+        ${next ? `<a class="btn" href="#/learn/${esc(next.id)}">${esc(next.title)} →</a>` : '<span></span>'}
+      </div>`;
+  }
+
+  function exerciseCard(l, x, i) {
+    const code = loadDraft(l.id, i) ?? x.starter;
+    const ok = App.store.getStatus(exId(l, i)) === 'known';
+    return `<section class="card ln-ex" data-ex="${i}">
+      <div class="ln-ex-head"><h3>${i + 1}. ${esc(x.title)}</h3>${ok ? '<span class="badge ok">✅ Đã pass</span>' : ''}</div>
+      <div class="md">${App.md(x.prompt)}</div>
+      <textarea class="textarea ln-editor" spellcheck="false" autocapitalize="off" autocorrect="off" wrap="off" aria-label="Code bài tập ${i + 1}">${esc(code)}</textarea>
+      <div class="row ln-ex-actions">
+        <button class="btn primary" data-act="run">▶ Chạy test</button>
+        <button class="btn" data-act="review">🤖 AI review</button>
+        <button class="btn" data-act="hint">💡 Gợi ý <span class="ln-hint-count">0/${(x.hints || []).length}</span></button>
+        <button class="btn" data-act="solution">Xem lời giải</button>
+        <button class="btn sm" data-act="reset" title="Khôi phục code ban đầu">↺</button>
+        <span class="muted small"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> chạy</span>
+      </div>
+      <div class="ln-hints"></div><div class="ln-result"></div><div class="ln-solution"></div>
+    </section>`;
+  }
+
   App.registerView('learn', {
     title: 'Bài học',
-    render(root) {
-      root.innerHTML = '<div class="empty"><h2>Đang xây dựng</h2><p>Tính năng này đang được phát triển và sẽ sớm có mặt.</p></div>';
-      return () => {};
+    render(root, params) {
+      const l = params && params[0] ? App.lessons().find(x => x.id === params[0]) : null;
+      if (params && params[0] && !l) { root.innerHTML = '<div class="empty"><h2>Không tìm thấy bài học</h2><p><a href="#/learn">Về mục lục</a></p></div>'; return () => {}; }
+      if (!l) { toc(root); return () => {}; }
+      lesson(root, l);
+
+      const runs = {};          // exercise index → last {run, parsed}
+      const hintsShown = {};
+      const card = el => el.closest('.ln-ex');
+      const ex = c => l.exercises[Number(c.dataset.ex)];
+
+      async function run(c) {
+        const i = Number(c.dataset.ex), x = ex(c), btn = c.querySelector('[data-act="run"]'), out = c.querySelector('.ln-result');
+        if (btn.disabled) return;
+        btn.disabled = true;
+        out.innerHTML = '<span class="ai-loading">Đang biên dịch và chạy test…</span>';
+        try {
+          const r = await App.ai.run(App.code.assemble(c.querySelector('.ln-editor').value, x.tests));
+          if (r.configured === false) {
+            out.innerHTML = '<div class="ai-error">Server chưa bật máy chạy code. Dùng <b>🤖 AI review</b> để AI đọc và chấm code của bạn.</div>';
+            return;
+          }
+          const parsed = App.code.parse(r.stdout);
+          runs[i] = { run: r, parsed };
+          out.innerHTML = App.ui.runResult(r, parsed);
+          if (parsed.allPassed && parsed.total) {
+            if (App.store.getStatus(exId(l, i)) !== 'known') { App.store.setStatus(exId(l, i), 'known'); App.store.log('algo'); }
+            out.insertAdjacentHTML('beforeend', '<p class="ln-pass">🎉 Pass hết test!</p>');
+            const head = c.querySelector('.ln-ex-head');
+            if (!head.querySelector('.badge')) head.insertAdjacentHTML('beforeend', '<span class="badge ok">✅ Đã pass</span>');
+          }
+        } catch (e) { out.innerHTML = App.ui.error(e); }
+        finally { btn.disabled = false; }
+      }
+
+      async function review(c) {
+        const i = Number(c.dataset.ex), x = ex(c), btn = c.querySelector('[data-act="review"]'), out = c.querySelector('.ln-result');
+        if (btn.disabled) return;
+        btn.disabled = true;
+        out.innerHTML = '<span class="ai-loading">AI đang review…</span>';
+        const last = runs[i];
+        try {
+          const r = await App.ai.review({
+            title: x.title, prompt: x.prompt, reference: x.reference, code: c.querySelector('.ln-editor').value,
+            run: last ? { passed: last.parsed.passed, total: last.parsed.total, output: String(last.run.stdout || '').slice(0, 3000) } : undefined,
+          });
+          out.innerHTML = App.ui.codeFeedback(r);
+        } catch (e) { out.innerHTML = App.ui.error(e); }
+        finally { btn.disabled = false; }
+      }
+
+      function onClick(e) {
+        const opt = e.target.closest('.ln-opt');
+        if (opt) {
+          const box = opt.closest('.ln-check'), c = l.check[Number(box.dataset.check)], pick = Number(opt.dataset.opt);
+          box.querySelectorAll('.ln-opt').forEach((b, j) => { b.disabled = true; b.classList.toggle('ok', j === c.answer); b.classList.toggle('bad', j === pick && pick !== c.answer); });
+          box.querySelector('.ln-explain').innerHTML = `<p><b>${pick === c.answer ? '✅ Chính xác' : '❌ Chưa đúng'}</b></p><div class="md">${App.md(c.explain)}</div>`;
+          return;
+        }
+        const act = e.target.closest('[data-act]');
+        if (!act) return;
+        const c = card(act);
+        switch (act.dataset.act) {
+          case 'run': run(c); break;
+          case 'review': review(c); break;
+          case 'hint': {
+            const i = Number(c.dataset.ex), hs = ex(c).hints || [], n = Math.min(hs.length, (hintsShown[i] || 0) + 1);
+            hintsShown[i] = n;
+            c.querySelector('.ln-hints').innerHTML = hs.slice(0, n).map((h, j) => `<div class="ln-hint"><b>Gợi ý ${j + 1}:</b> ${App.md(h).replace(/^<p>|<\/p>$/g, '')}</div>`).join('');
+            act.querySelector('.ln-hint-count').textContent = n + '/' + hs.length;
+            break;
+          }
+          case 'solution': {
+            const i = Number(c.dataset.ex), x = ex(c);
+            if (!runs[i] && !confirm('Bạn chưa chạy thử lần nào. Vẫn xem lời giải?')) return;
+            c.querySelector('.ln-solution').innerHTML = `<h4>Lời giải</h4><pre class="code" data-lang="java"><code>${App.highlight(x.reference, 'java')}</code></pre><div class="md">${App.md(x.explain)}</div>`;
+            break;
+          }
+          case 'reset':
+            if (confirm('Khôi phục code ban đầu? Code bạn đang viết sẽ mất.')) {
+              const i = Number(c.dataset.ex);
+              c.querySelector('.ln-editor').value = ex(c).starter;
+              saveDraft(l.id, i, ex(c).starter);
+            }
+            break;
+          case 'done':
+            App.store.setStatus(l.id, 'known');
+            App.route();
+            break;
+        }
+      }
+      function onInput(e) {
+        if (e.target.matches('.ln-editor')) saveDraft(l.id, Number(card(e.target).dataset.ex), e.target.value);
+      }
+      function onKeydown(e) {
+        if (!e.target.matches('.ln-editor')) return;
+        if (e.key === 'Tab' && !e.shiftKey) {            // Tab inserts 4 spaces instead of leaving the editor
+          e.preventDefault();
+          const t = e.target, s = t.selectionStart;
+          t.setRangeText('    ', s, t.selectionEnd, 'end');
+          onInput(e);
+        } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault(); run(card(e.target));
+        }
+      }
+      root.addEventListener('click', onClick);
+      root.addEventListener('input', onInput);
+      root.addEventListener('keydown', onKeydown);
+      return () => { root.removeEventListener('click', onClick); root.removeEventListener('input', onInput); root.removeEventListener('keydown', onKeydown); };
     },
   });
 })();

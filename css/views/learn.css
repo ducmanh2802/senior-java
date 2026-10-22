@@ -1,1 +1,43 @@
 /* Styles for view "learn". Scope every rule under .view-learn */
+
+/* table of contents */
+.view-learn .ln-next { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; border-color: var(--accent); background: var(--accent-soft); }
+.view-learn .ln-track { margin-bottom: 16px; }
+.view-learn .ln-track-head { display: flex; align-items: baseline; justify-content: space-between; }
+.view-learn .ln-track-head h2 { margin: 0 0 8px; font-size: 1.1rem; }
+.view-learn .ln-list { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 2px; }
+.view-learn .ln-list a { display: grid; grid-template-columns: 24px 1fr auto; gap: 10px; align-items: center; padding: 8px 10px; border-radius: var(--radius-sm); color: var(--text); }
+.view-learn .ln-list a:hover { background: var(--surface-2); text-decoration: none; }
+.view-learn .ln-state { text-align: center; }
+
+/* lesson */
+.view-learn .ln-meta { gap: 6px; flex-wrap: wrap; }
+.view-learn .ln-goals ul { margin: 8px 0 0; }
+.view-learn .ln-body { margin-top: 16px; }
+.view-learn .ln-h { margin: 28px 0 12px; }
+.view-learn .ln-ex, .view-learn .ln-check { margin-bottom: 16px; }
+.view-learn .ln-ex-head { display: flex; align-items: center; gap: 10px; justify-content: space-between; }
+.view-learn .ln-ex-head h3 { margin: 0; }
+.view-learn .ln-editor {
+  width: 100%; min-height: 260px; margin-top: 12px; font-family: var(--mono); font-size: 13px; line-height: 1.5;
+  tab-size: 4; white-space: pre; background: var(--code-bg); color: var(--code-text); resize: vertical;
+}
+.view-learn .ln-ex-actions { gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
+.view-learn .ln-ex-actions .muted { margin-left: auto; }
+.view-learn .ln-hint { margin-top: 8px; padding: 8px 12px; border-left: 3px solid var(--warn); background: var(--warn-soft); border-radius: var(--radius-sm); }
+.view-learn .ln-result:not(:empty), .view-learn .ln-solution:not(:empty) { margin-top: 12px; }
+.view-learn .ln-pass { color: var(--ok); font-weight: 600; }
+.view-learn .ln-options { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; margin-top: 10px; }
+.view-learn .ln-opt { justify-content: flex-start; text-align: left; white-space: normal; min-width: 0; overflow-wrap: anywhere; }
+.view-learn .ln-opt.ok { border-color: var(--ok); background: var(--ok-soft); }
+.view-learn .ln-opt.bad { border-color: var(--bad); background: var(--bad-soft); }
+.view-learn .ln-opt:disabled { cursor: default; opacity: 1; }
+.view-learn .ln-explain:not(:empty) { margin-top: 10px; }
+.view-learn .ln-footer { justify-content: space-between; gap: 10px; flex-wrap: wrap; margin: 24px 0; }
+
+@media (max-width: 640px) {
+  .view-learn .ln-list a { grid-template-columns: 24px 1fr; }
+  .view-learn .ln-list a .muted { grid-column: 2; }
+  .view-learn .ln-ex-actions .muted { display: none; }
+  .view-learn .ln-footer .btn { flex: 1 1 100%; }
+}

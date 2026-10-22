@@ -1,6 +1,6 @@
 # T87 — View: Bài học (`#/learn`)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/views/learn.js`, `css/views/learn.css`
 
@@ -23,3 +23,4 @@ Owns: `js/views/learn.js`, `css/views/learn.css`
 `node --check`, `node scripts/validate.js` OK. Responsive 360px, dark mode chỉ dùng biến CSS. Mọi dữ liệu escape bằng `App.esc` (code hiển thị trong `<pre>` phải escape).
 
 ## Notes
+- Integrator viết (agent free hết suất). Test E2E với runner giả lập: hint, chạy test → lưu exercise pass, quick check, hoàn thành bài; desktop + 360px không tràn.
