@@ -26,20 +26,80 @@ Output: [0, 1]
 Duyệt một lượt, dùng {{HashMap<value, index>}} lưu các số đã gặp. Với mỗi phần tử, kiểm tra phần bù {{target - x}} đã có trong map chưa.
 
 ~~~java
-public int[] twoSum(int[] nums, int target) {
-    Map<Integer, Integer> seen = new HashMap<>();
-    for (int i = 0; i < nums.length; i++) {
-        Integer j = seen.get(target - nums[i]);
-        if (j != null) return new int[]{j, i};
-        seen.put(nums[i], i);
+class Solution {
+    public int[] twoSum(int[] nums, int target) {
+        Map<Integer, Integer> seen = new HashMap<>();
+        for (int i = 0; i < nums.length; i++) {
+            Integer j = seen.get(target - nums[i]);
+            if (j != null) return new int[]{j, i};
+            seen.put(nums[i], i);
+        }
+        throw new IllegalArgumentException("no solution");
     }
-    throw new IllegalArgumentException("no solution");
 }
 ~~~
 
 ### Lưu ý khi phỏng vấn
 - Hỏi lại: mảng đã sort chưa? Nếu đã sort thì dùng **two pointers** để đạt O(1) space.
 - Cẩn thận overflow khi tính {{target - nums[i]}} nếu ràng buộc lớn hơn (dùng {{long}}).`,
+  starter: "class Solution {\n    public int[] twoSum(int[] nums, int target) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example", new int[]{0, 1}, () -> new Solution().twoSum(new int[]{2, 7, 11, 15}, 9));
+        run("two equal", new int[]{0, 1}, () -> new Solution().twoSum(new int[]{3, 3}, 6));
+        run("negatives", new int[]{0, 2}, () -> new Solution().twoSum(new int[]{-3, 4, 3, 90}, 0));
+        run("middle", new int[]{1, 2}, () -> new Solution().twoSum(new int[]{1, 5, 9}, 14));
+        run("duplicates", new int[]{2, 3}, () -> new Solution().twoSum(new int[]{1, 2, 2, 3}, 5));
+        run("large", new int[]{9998, 9999}, () -> {
+            int[] a = new int[10000];
+            for (int i = 0; i < a.length; i++) a[i] = i + 1;
+            return new Solution().twoSum(a, 19999);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n), Space O(n)',
   follow: ['Nếu mảng đã được sắp xếp thì sao?', 'Trả về tất cả các cặp không trùng (3Sum dẫn xuất)?']
 },
@@ -74,14 +134,16 @@ Dùng {{HashSet}} để ghi nhớ các giá trị đã gặp. Khi gặp lại m�
 Cách này đánh đổi bộ nhớ O(n) để lấy thời gian trung bình O(n). Nếu ưu tiên bộ nhớ, sort tại chỗ rồi so sánh kề nhau: O(n log n) time, O(1) space (với mảng đầu vào được phép sửa).
 
 ~~~java
-public boolean containsDuplicate(int[] nums) {
-    Set<Integer> seen = new HashSet<>();
-    for (int x : nums) {
-        if (!seen.add(x)) {   // add trả false nếu đã có
-            return true;
+class Solution {
+    public boolean containsDuplicate(int[] nums) {
+        Set<Integer> seen = new HashSet<>();
+        for (int x : nums) {
+            if (!seen.add(x)) {   // add returns false if already present
+                return true;
+            }
         }
+        return false;
     }
-    return false;
 }
 ~~~
 
@@ -91,6 +153,69 @@ public boolean containsDuplicate(int[] nums) {
 - Đừng dùng {{HashSet<int[]>}} hay so sánh mảng bằng {{==}} — với primitive thì ổn, nhưng với object cần hiểu {{equals/hashCode}}.
 
 > Senior tip: Trong pipeline ingest log, tôi thường dùng cách sort + so sánh kề khi batch khoảng vài triệu ID và cần tiết kiệm heap; còn với stream realtime thì hash set kèm giới hạn kích thước hoặc cửa sổ thời gian để tránh OOM.`,
+  starter: "class Solution {\n    public boolean containsDuplicate(int[] nums) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example true", true, () -> new Solution().containsDuplicate(new int[]{1, 2, 3, 1}));
+        run("no duplicate", false, () -> new Solution().containsDuplicate(new int[]{1, 2, 3, 4}));
+        run("single", false, () -> new Solution().containsDuplicate(new int[]{1}));
+        run("negative duplicate", true, () -> new Solution().containsDuplicate(new int[]{-5, 0, -5}));
+        run("large unique", false, () -> {
+            int[] a = new int[100000];
+            for (int i = 0; i < a.length; i++) a[i] = i;
+            return new Solution().containsDuplicate(a);
+        });
+        run("large duplicate", true, () -> {
+            int[] a = new int[100000];
+            for (int i = 0; i < a.length; i++) a[i] = i;
+            a[0] = 99999;
+            return new Solution().containsDuplicate(a);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n) average, Space O(n)',
   follow: ['Nếu yêu cầu O(1) bộ nhớ thì làm thế nào?', 'Làm sao tìm tất cả các giá trị bị trùng thay vì chỉ true/false?']
 },
@@ -123,17 +248,19 @@ Output: false
 Đếm tần số từng ký tự của {{s}} vào mảng 26 phần tử, rồi trừ đi theo {{t}}. Nếu có bất kỳ ô nào khác 0, hai chuỗi không phải hoán vị.
 
 ~~~java
-public boolean isAnagram(String s, String t) {
-    if (s.length() != t.length()) return false;
-    int[] count = new int[26];
-    for (int i = 0; i < s.length(); i++) {
-        count[s.charAt(i) - 'a']++;
-        count[t.charAt(i) - 'a']--;
+class Solution {
+    public boolean isAnagram(String s, String t) {
+        if (s.length() != t.length()) return false;
+        int[] count = new int[26];
+        for (int i = 0; i < s.length(); i++) {
+            count[s.charAt(i) - 'a']++;
+            count[t.charAt(i) - 'a']--;
+        }
+        for (int c : count) {
+            if (c != 0) return false;
+        }
+        return true;
     }
-    for (int c : count) {
-        if (c != 0) return false;
-    }
-    return true;
 }
 ~~~
 
@@ -143,6 +270,60 @@ public boolean isAnagram(String s, String t) {
 - Hỏi lại xem có phân biệt hoa/thường và có bỏ qua khoảng trắng hay không — đề thực tế thường khác đề LeetCode.
 
 > Senior tip: Với so khớp chữ ký (signature) trong hệ thống search, đếm tần số 26 ô nhanh hơn tạo sorted key rất nhiều; nhưng nếu cần key bền vững để cache thì nên chuẩn hoá thành mảng byte rồi băm.`,
+  starter: "class Solution {\n    public boolean isAnagram(String s, String t) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example", true, () -> new Solution().isAnagram("anagram", "nagaram"));
+        run("not anagram", false, () -> new Solution().isAnagram("rat", "car"));
+        run("empty", true, () -> new Solution().isAnagram("", ""));
+        run("single same", true, () -> new Solution().isAnagram("a", "a"));
+        run("different length", false, () -> new Solution().isAnagram("ab", "a"));
+        run("long", true, () -> new Solution().isAnagram("a".repeat(50000), "a".repeat(50000)));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n), Space O(1)',
   follow: ['Nếu chuỗi có Unicode thì sửa thế nào?', 'Làm sao nhóm một danh sách chuỗi thành các nhóm anagram?']
 },
@@ -175,15 +356,17 @@ Với mỗi chuỗi, tạo key bằng cách sắp xếp các ký tự. Mọi ana
 Độ phức tạp: mỗi chuỗi dài k cần O(k log k) để sort, tổng O(n * k log k). Nếu k lớn, có thể đếm tần số và mã hoá key trong O(k), đổi lại key dài hơn và dễ va chạm nếu nối chuỗi không cẩn thận.
 
 ~~~java
-public List<List<String>> groupAnagrams(String[] strs) {
-    Map<String, List<String>> groups = new HashMap<>();
-    for (String s : strs) {
-        char[] chars = s.toCharArray();
-        Arrays.sort(chars);
-        String key = new String(chars);
-        groups.computeIfAbsent(key, k -> new ArrayList<>()).add(s);
+class Solution {
+    public List<List<String>> groupAnagrams(String[] strs) {
+        Map<String, List<String>> groups = new HashMap<>();
+        for (String s : strs) {
+            char[] chars = s.toCharArray();
+            Arrays.sort(chars);
+            String key = new String(chars);
+            groups.computeIfAbsent(key, k -> new ArrayList<>()).add(s);
+        }
+        return new ArrayList<>(groups.values());
     }
-    return new ArrayList<>(groups.values());
 }
 ~~~
 
@@ -193,6 +376,78 @@ public List<List<String>> groupAnagrams(String[] strs) {
 - Trình bày thêm phương án sort: đơn giản, dễ đọc; phương án đếm tần số nhanh hơn với chuỗi dài nhưng code phức tạp hơn.
 
 > Senior tip: Khi nhóm dữ liệu lớn trong batch job, tôi thường chọn key là mảng byte đã sort rồi băm bằng một hash ổn định; điều này tránh cấp phát String tạm cho hàng chục triệu bản ghi.`,
+  starter: "class Solution {\n    public List<List<String>> groupAnagrams(String[] strs) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    static List<List<String>> normStr(List<List<String>> x) {
+        List<List<String>> copy = new ArrayList<>();
+        for (List<String> row : x) {
+            List<String> r = new ArrayList<>(row);
+            Collections.sort(r);
+            copy.add(r);
+        }
+        Collections.sort(copy, (a, b) -> String.join("|", a).compareTo(String.join("|", b)));
+        return copy;
+    }
+
+    public static void main(String[] args) {
+        run("example", normStr(Arrays.asList(
+                Arrays.asList("ate", "eat", "tea"),
+                Arrays.asList("nat", "tan"),
+                Arrays.asList("bat"))),
+            () -> normStr(new Solution().groupAnagrams(new String[]{"eat", "tea", "tan", "ate", "nat", "bat"})));
+        run("single", normStr(Arrays.asList(Arrays.asList("a"))),
+            () -> normStr(new Solution().groupAnagrams(new String[]{"a"})));
+        run("two empty", normStr(Arrays.asList(Arrays.asList("", ""))),
+            () -> normStr(new Solution().groupAnagrams(new String[]{"", ""})));
+        run("distinct", normStr(Arrays.asList(Arrays.asList("abc"), Arrays.asList("def"))),
+            () -> normStr(new Solution().groupAnagrams(new String[]{"abc", "def"})));
+        run("all same", normStr(Arrays.asList(Arrays.asList("a", "a", "a"))),
+            () -> normStr(new Solution().groupAnagrams(new String[]{"a", "a", "a"})));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n * k log k), Space O(n * k)',
   follow: ['Nếu chuỗi dài hàng nghìn ký tự thì tối ưu key thế nào?', 'Làm sao xử lý anagram có phân biệt hoa thường?']
 },
@@ -230,19 +485,21 @@ Hai con trỏ {{left}} và {{right}} tiến vào giữa. Mỗi bước, bỏ qua
 Cách này không cấp phát chuỗi mới, phù hợp với input lớn.
 
 ~~~java
-public boolean isPalindrome(String s) {
-    int left = 0, right = s.length() - 1;
-    while (left < right) {
-        while (left < right && !Character.isLetterOrDigit(s.charAt(left))) left++;
-        while (left < right && !Character.isLetterOrDigit(s.charAt(right))) right--;
-        if (Character.toLowerCase(s.charAt(left)) !=
-            Character.toLowerCase(s.charAt(right))) {
-            return false;
+class Solution {
+    public boolean isPalindrome(String s) {
+        int left = 0, right = s.length() - 1;
+        while (left < right) {
+            while (left < right && !Character.isLetterOrDigit(s.charAt(left))) left++;
+            while (left < right && !Character.isLetterOrDigit(s.charAt(right))) right--;
+            if (Character.toLowerCase(s.charAt(left)) !=
+                Character.toLowerCase(s.charAt(right))) {
+                return false;
+            }
+            left++;
+            right--;
         }
-        left++;
-        right--;
+        return true;
     }
-    return true;
 }
 ~~~
 
@@ -252,6 +509,60 @@ public boolean isPalindrome(String s) {
 - Cách tạo chuỗi chuẩn hoá dễ đọc hơn nhưng O(n) bộ nhớ; nêu trade-off trước khi code.
 
 > Senior tip: Với kiểm tra palindrome trong luồng xử lý văn bản lớn, tránh {{toLowerCase()}} trên toàn chuỗi vì có thể nhân đôi bộ nhớ; so sánh từng ký tự tại chỗ như trên thường nhanh và ít GC hơn.`,
+  starter: "class Solution {\n    public boolean isPalindrome(String s) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example", true, () -> new Solution().isPalindrome("A man, a plan, a canal: Panama"));
+        run("not palindrome", false, () -> new Solution().isPalindrome("race a car"));
+        run("space only", true, () -> new Solution().isPalindrome(" "));
+        run("digits and letter", false, () -> new Solution().isPalindrome("0P"));
+        run("punctuation only", true, () -> new Solution().isPalindrome(".,"));
+        run("underscore", true, () -> new Solution().isPalindrome("ab_a"));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n), Space O(1)',
   follow: ['Nếu bỏ qua tối đa một ký tự thì kiểm tra thế nào?', 'Xử lý Unicode và emoji cần lưu ý gì?']
 },
@@ -285,27 +596,29 @@ Sort mảng. Cố định {{nums[i]}}, dùng hai con trỏ {{lo = i + 1}}, {{hi 
 - Nếu bằng 0, ghi nhận bộ ba rồi bỏ qua mọi giá trị trùng của {{lo}} và {{hi}}.
 
 ~~~java
-public List<List<Integer>> threeSum(int[] nums) {
-    Arrays.sort(nums);
-    List<List<Integer>> res = new ArrayList<>();
-    for (int i = 0; i < nums.length - 2; i++) {
-        if (i > 0 && nums[i] == nums[i - 1]) continue;   // bỏ trùng vòng ngoài
-        int lo = i + 1, hi = nums.length - 1;
-        while (lo < hi) {
-            int sum = nums[i] + nums[lo] + nums[hi];
-            if (sum < 0) {
-                lo++;
-            } else if (sum > 0) {
-                hi--;
-            } else {
-                res.add(List.of(nums[i], nums[lo], nums[hi]));
-                int a = nums[lo], b = nums[hi];
-                while (lo < hi && nums[lo] == a) lo++;
-                while (lo < hi && nums[hi] == b) hi--;
+class Solution {
+    public List<List<Integer>> threeSum(int[] nums) {
+        Arrays.sort(nums);
+        List<List<Integer>> res = new ArrayList<>();
+        for (int i = 0; i < nums.length - 2; i++) {
+            if (i > 0 && nums[i] == nums[i - 1]) continue;   // skip duplicate outer values
+            int lo = i + 1, hi = nums.length - 1;
+            while (lo < hi) {
+                int sum = nums[i] + nums[lo] + nums[hi];
+                if (sum < 0) {
+                    lo++;
+                } else if (sum > 0) {
+                    hi--;
+                } else {
+                    res.add(List.of(nums[i], nums[lo], nums[hi]));
+                    int a = nums[lo], b = nums[hi];
+                    while (lo < hi && nums[lo] == a) lo++;
+                    while (lo < hi && nums[hi] == b) hi--;
+                }
             }
         }
+        return res;
     }
-    return res;
 }
 ~~~
 
@@ -315,6 +628,84 @@ public List<List<Integer>> threeSum(int[] nums) {
 - Trình bày rõ tại sao sort không làm mất nghiệm: ta tìm theo giá trị, không theo thứ tự ban đầu.
 
 > Senior tip: 3Sum là bài rất hay bị hỏi tiếp "nếu mảng streaming thì sao?". Câu trả lời: không thể sort streaming; phải dùng hash theo cặp hoặc chấp nhận lưu toàn bộ.`,
+  starter: "class Solution {\n    public List<List<Integer>> threeSum(int[] nums) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    static List<List<Integer>> norm(List<List<Integer>> x) {
+        List<List<Integer>> copy = new ArrayList<>();
+        for (List<Integer> row : x) {
+            List<Integer> r = new ArrayList<>(row);
+            Collections.sort(r);
+            copy.add(r);
+        }
+        Collections.sort(copy, (a, b) -> {
+            int n = Math.min(a.size(), b.size());
+            for (int i = 0; i < n; i++) {
+                int c = Integer.compare(a.get(i), b.get(i));
+                if (c != 0) return c;
+            }
+            return Integer.compare(a.size(), b.size());
+        });
+        return copy;
+    }
+
+    public static void main(String[] args) {
+        run("example", norm(Arrays.asList(ints(-1, -1, 2), ints(-1, 0, 1))),
+            () -> norm(new Solution().threeSum(new int[]{-1, 0, 1, 2, -1, -4})));
+        run("no triplet", norm(new ArrayList<List<Integer>>()),
+            () -> norm(new Solution().threeSum(new int[]{0, 1, 2})));
+        run("three zeros", norm(Arrays.asList(ints(0, 0, 0))),
+            () -> norm(new Solution().threeSum(new int[]{0, 0, 0})));
+        run("two answers", norm(Arrays.asList(ints(-2, 0, 2), ints(-2, 1, 1))),
+            () -> norm(new Solution().threeSum(new int[]{-2, 0, 1, 1, 2})));
+        run("no solution", norm(new ArrayList<List<Integer>>()),
+            () -> norm(new Solution().threeSum(new int[]{1, 2, -2, -1})));
+        run("many zeros", norm(Arrays.asList(ints(0, 0, 0))),
+            () -> norm(new Solution().threeSum(new int[1000])));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n^2), Space O(1) ngoài kết quả',
   follow: ['Nếu yêu cầu 4Sum thì mở rộng thế nào?', 'Làm sao tránh trùng lặp nếu không sort?']
 },
@@ -348,19 +739,21 @@ khoảng cách 7, chiều cao 7 -> 49.
 Đây là lập luận greedy quan trọng cần nói rõ khi phỏng vấn: mọi cặp bị bỏ qua đều có diện tích không lớn hơn phương án hiện tại.
 
 ~~~java
-public int maxArea(int[] height) {
-    int left = 0, right = height.length - 1;
-    int best = 0;
-    while (left < right) {
-        int h = Math.min(height[left], height[right]);
-        best = Math.max(best, h * (right - left));
-        if (height[left] < height[right]) {
-            left++;
-        } else {
-            right--;
+class Solution {
+    public int maxArea(int[] height) {
+        int left = 0, right = height.length - 1;
+        int best = 0;
+        while (left < right) {
+            int h = Math.min(height[left], height[right]);
+            best = Math.max(best, h * (right - left));
+            if (height[left] < height[right]) {
+                left++;
+            } else {
+                right--;
+            }
         }
+        return best;
     }
-    return best;
 }
 ~~~
 
@@ -370,6 +763,64 @@ public int maxArea(int[] height) {
 - Đừng nhầm với bài Trapping Rain Water: bài này chỉ chọn hai vách, không tính nước bị chặn ở giữa.
 
 > Senior tip: Câu hỏi tiếp hay gặp là "chứng minh greedy đúng". Hãy nói: khi bỏ vách thấp hơn, mọi cặp chứa nó đều có chiều cao tối đa bằng chính nó, mà khoảng cách đã lớn nhất tại thời điểm xét, nên không thể tốt hơn.`,
+  starter: "class Solution {\n    public int maxArea(int[] height) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example", 49, () -> new Solution().maxArea(new int[]{1, 8, 6, 2, 5, 4, 8, 3, 7}));
+        run("two bars", 2, () -> new Solution().maxArea(new int[]{2, 4}));
+        run("equal one", 1, () -> new Solution().maxArea(new int[]{1, 1}));
+        run("decreasing", 6, () -> new Solution().maxArea(new int[]{5, 4, 3, 2, 1}));
+        run("zeros", 0, () -> new Solution().maxArea(new int[]{0, 0, 0}));
+        run("large plateau", 99990000, () -> {
+            int[] a = new int[10000];
+            Arrays.fill(a, 10000);
+            return new Solution().maxArea(a);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n), Space O(1)',
   follow: ['Chứng minh tại sao luôn di chuyển vách thấp hơn.', 'Nếu cần trả về cả hai chỉ số thì sửa thế nào?']
 },
@@ -404,21 +855,23 @@ Tại cột {{i}}, nước giữ được là {{min(leftMax, rightMax) - height[
 Nếu {{leftMax < rightMax}}, thì với cột bên trái, {{min(leftMax, rightMax)}} chính là {{leftMax}} — không cần biết chính xác rightMax. Ngược lại xử lý bên phải.
 
 ~~~java
-public int trap(int[] height) {
-    int left = 0, right = height.length - 1;
-    int leftMax = 0, rightMax = 0, water = 0;
-    while (left < right) {
-        if (height[left] < height[right]) {
-            leftMax = Math.max(leftMax, height[left]);
-            water += leftMax - height[left];
-            left++;
-        } else {
-            rightMax = Math.max(rightMax, height[right]);
-            water += rightMax - height[right];
-            right--;
+class Solution {
+    public int trap(int[] height) {
+        int left = 0, right = height.length - 1;
+        int leftMax = 0, rightMax = 0, water = 0;
+        while (left < right) {
+            if (height[left] < height[right]) {
+                leftMax = Math.max(leftMax, height[left]);
+                water += leftMax - height[left];
+                left++;
+            } else {
+                rightMax = Math.max(rightMax, height[right]);
+                water += rightMax - height[right];
+                right--;
+            }
         }
+        return water;
     }
-    return water;
 }
 ~~~
 
@@ -428,6 +881,60 @@ public int trap(int[] height) {
 - Nêu thêm cách prefix/suffix max dễ hiểu hơn, và cách stack monotonic để so sánh.
 
 > Senior tip: Bài này là ví dụ kinh điển cho việc "giảm bộ nhớ nhưng không đổi độ phức tạp". Trong phỏng vấn, tôi đánh giá cao ứng viên biết vẽ hình và giải thích bất biến của hai con trỏ hơn là chỉ đọc thuộc code.`,
+  starter: "class Solution {\n    public int trap(int[] height) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example", 6, () -> new Solution().trap(new int[]{0, 1, 0, 2, 1, 0, 1, 3, 2, 1, 2, 1}));
+        run("second example", 9, () -> new Solution().trap(new int[]{4, 2, 0, 3, 2, 5}));
+        run("single", 0, () -> new Solution().trap(new int[]{0}));
+        run("flat", 0, () -> new Solution().trap(new int[]{3, 3, 3}));
+        run("valley", 5, () -> new Solution().trap(new int[]{5, 0, 5}));
+        run("small valley", 1, () -> new Solution().trap(new int[]{4, 2, 3}));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n), Space O(1)',
   follow: ['Nếu dùng stack monotonic thì cài đặt thế nào?', 'Làm sao trả về lượng nước tại từng cột, không chỉ tổng?']
 }
@@ -466,14 +973,16 @@ Duyệt mảng một lượt. Tại mỗi ngày, {{minPrice}} là giá thấp nh
 Đây là dạng sliding window tối giản: cửa sổ chỉ cần nhớ một giá trị min, không cần lưu cả cửa sổ.
 
 ~~~java
-public int maxProfit(int[] prices) {
-    int minPrice = Integer.MAX_VALUE;
-    int best = 0;
-    for (int price : prices) {
-        minPrice = Math.min(minPrice, price);
-        best = Math.max(best, price - minPrice);
+class Solution {
+    public int maxProfit(int[] prices) {
+        int minPrice = Integer.MAX_VALUE;
+        int best = 0;
+        for (int price : prices) {
+            minPrice = Math.min(minPrice, price);
+            best = Math.max(best, price - minPrice);
+        }
+        return best;
     }
-    return best;
 }
 ~~~
 
@@ -483,6 +992,64 @@ public int maxProfit(int[] prices) {
 - Hỏi lại: có được giao dịch nhiều lần không? Nếu có, bài toán chuyển thành cộng các đoạn tăng (Best Time II).
 
 > Senior tip: Bài này thường được dùng để kiểm tra tư duy trạng thái. Ứng viên hay viết vòng lặp hai lớp; hãy chỉ ra rằng trạng thái chỉ gồm "min đến hiện tại" và "best đến hiện tại", nên O(n) là đủ.`,
+  starter: "class Solution {\n    public int maxProfit(int[] prices) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example", 5, () -> new Solution().maxProfit(new int[]{7, 1, 5, 3, 6, 4}));
+        run("decreasing", 0, () -> new Solution().maxProfit(new int[]{7, 6, 4, 3, 1}));
+        run("single", 0, () -> new Solution().maxProfit(new int[]{1}));
+        run("rise then fall", 2, () -> new Solution().maxProfit(new int[]{2, 4, 1}));
+        run("flat", 0, () -> new Solution().maxProfit(new int[]{3, 3, 3}));
+        run("large ramp", 9999, () -> {
+            int[] a = new int[10000];
+            for (int i = 0; i < a.length; i++) a[i] = i + 1;
+            return new Solution().maxProfit(a);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n), Space O(1)',
   follow: ['Nếu được giao dịch nhiều lần thì làm thế nào?', 'Nếu có phí giao dịch hoặc cooldown thì sao?']
 },
@@ -522,19 +1089,21 @@ Mở rộng cửa sổ bằng con trỏ {{right}}. Nếu ký tự {{s[right]}} �
 Điểm dễ sai: {{left}} phải lấy max với giá trị cũ, vì vị trí lặp có thể nằm trước cửa sổ hiện tại.
 
 ~~~java
-public int lengthOfLongestSubstring(String s) {
-    int[] lastSeen = new int[128];
-    Arrays.fill(lastSeen, -1);
-    int left = 0, best = 0;
-    for (int right = 0; right < s.length(); right++) {
-        char c = s.charAt(right);
-        if (lastSeen[c] >= left) {
-            left = lastSeen[c] + 1;   // nhảy qua ký tự lặp
+class Solution {
+    public int lengthOfLongestSubstring(String s) {
+        int[] lastSeen = new int[128];
+        Arrays.fill(lastSeen, -1);
+        int left = 0, best = 0;
+        for (int right = 0; right < s.length(); right++) {
+            char c = s.charAt(right);
+            if (lastSeen[c] >= left) {
+                left = lastSeen[c] + 1;   // jump past the repeated char
+            }
+            lastSeen[c] = right;
+            best = Math.max(best, right - left + 1);
         }
-        lastSeen[c] = right;
-        best = Math.max(best, right - left + 1);
+        return best;
     }
-    return best;
 }
 ~~~
 
@@ -544,6 +1113,61 @@ public int lengthOfLongestSubstring(String s) {
 - Có thể dùng {{Set}} và while để thu hẹp — dễ hiểu hơn nhưng có thể O(2n) thao tác; vẫn là O(n).
 
 > Senior tip: Với dữ liệu log, tôi hay gặp biến thể "cửa sổ không có ID lặp trong 5 phút". Cùng một khung sliding window, nhưng cần thêm chiều thời gian và eviction theo timestamp; hãy hỏi rõ trước khi lao vào code.`,
+  starter: "class Solution {\n    public int lengthOfLongestSubstring(String s) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example 1", 3, () -> new Solution().lengthOfLongestSubstring("abcabcbb"));
+        run("example 2", 1, () -> new Solution().lengthOfLongestSubstring("bbbbb"));
+        run("example 3", 3, () -> new Solution().lengthOfLongestSubstring("pwwkew"));
+        run("empty", 0, () -> new Solution().lengthOfLongestSubstring(""));
+        run("space", 1, () -> new Solution().lengthOfLongestSubstring(" "));
+        run("dvdf", 3, () -> new Solution().lengthOfLongestSubstring("dvdf"));
+        run("alphabet", 26, () -> new Solution().lengthOfLongestSubstring("abcdefghijklmnopqrstuvwxyz"));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n), Space O(1) với ASCII',
   follow: ['Nếu cần trả về cả chuỗi con dài nhất thì sửa thế nào?', 'Nếu cho phép tối đa k ký tự lặp thì sao?']
 },
@@ -580,20 +1204,22 @@ Duy trì cửa sổ và tần số các ký tự. Gọi {{maxCount}} là tần s
 Có một tối ưu kinh điển: không cần giảm {{maxCount}} khi thu hẹp, vì nếu sau này có cửa sổ dài hơn thì {{maxCount}} sẽ được cập nhật lại; giá trị cũ chỉ làm điều kiện khó hơn, không tạo kết quả sai.
 
 ~~~java
-public int characterReplacement(String s, int k) {
-    int[] count = new int[26];
-    int left = 0, maxCount = 0, best = 0;
-    for (int right = 0; right < s.length(); right++) {
-        int idx = s.charAt(right) - 'A';
-        count[idx]++;
-        maxCount = Math.max(maxCount, count[idx]);
-        while (right - left + 1 - maxCount > k) {
-            count[s.charAt(left) - 'A']--;
-            left++;
+class Solution {
+    public int characterReplacement(String s, int k) {
+        int[] count = new int[26];
+        int left = 0, maxCount = 0, best = 0;
+        for (int right = 0; right < s.length(); right++) {
+            int idx = s.charAt(right) - 'A';
+            count[idx]++;
+            maxCount = Math.max(maxCount, count[idx]);
+            while (right - left + 1 - maxCount > k) {
+                count[s.charAt(left) - 'A']--;
+                left++;
+            }
+            best = Math.max(best, right - left + 1);
         }
-        best = Math.max(best, right - left + 1);
+        return best;
     }
-    return best;
 }
 ~~~
 
@@ -603,6 +1229,60 @@ public int characterReplacement(String s, int k) {
 - Hỏi lại bảng chữ cái có cố định 26 ký tự không; nếu Unicode thì dùng HashMap.
 
 > Senior tip: Đây là bài rất hợp để thể hiện khả năng chứng minh tính đúng đắn thay vì chỉ code. Trong production, biến thể "ít nhất k lần sửa" xuất hiện khi chuẩn hoá dữ liệu người dùng trước khi so khớp.`,
+  starter: "class Solution {\n    public int characterReplacement(String s, int k) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example 1", 4, () -> new Solution().characterReplacement("ABAB", 2));
+        run("example 2", 4, () -> new Solution().characterReplacement("AABABBA", 1));
+        run("no replacement", 1, () -> new Solution().characterReplacement("ABCD", 0));
+        run("all same", 4, () -> new Solution().characterReplacement("AAAA", 2));
+        run("single", 1, () -> new Solution().characterReplacement("A", 0));
+        run("three b", 4, () -> new Solution().characterReplacement("ABBB", 2));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n), Space O(1)',
   follow: ['Nếu thay ký tự tốn chi phí khác nhau thì sao?', 'Nếu phải trả về chuỗi con cụ thể thì làm thế nào?']
 },
@@ -640,26 +1320,28 @@ Output: ""
 Lưu ý: {{need[c]}} có thể âm với ký tự không thuộc {{t}}; điều đó bình thường và giúp việc thu hẹp xử lý đúng.
 
 ~~~java
-public String minWindow(String s, String t) {
-    int[] need = new int[128];
-    for (int i = 0; i < t.length(); i++) need[t.charAt(i)]++;
-    int missing = t.length();
-    int left = 0, bestStart = 0, bestLen = Integer.MAX_VALUE;
-    for (int right = 0; right < s.length(); right++) {
-        char c = s.charAt(right);
-        if (need[c] > 0) missing--;
-        need[c]--;
-        while (missing == 0) {
-            if (right - left + 1 < bestLen) {
-                bestLen = right - left + 1;
-                bestStart = left;
+class Solution {
+    public String minWindow(String s, String t) {
+        int[] need = new int[128];
+        for (int i = 0; i < t.length(); i++) need[t.charAt(i)]++;
+        int missing = t.length();
+        int left = 0, bestStart = 0, bestLen = Integer.MAX_VALUE;
+        for (int right = 0; right < s.length(); right++) {
+            char c = s.charAt(right);
+            if (need[c] > 0) missing--;
+            need[c]--;
+            while (missing == 0) {
+                if (right - left + 1 < bestLen) {
+                    bestLen = right - left + 1;
+                    bestStart = left;
+                }
+                char d = s.charAt(left++);
+                need[d]++;
+                if (need[d] > 0) missing++;
             }
-            char d = s.charAt(left++);
-            need[d]++;
-            if (need[d] > 0) missing++;
         }
+        return bestLen == Integer.MAX_VALUE ? "" : s.substring(bestStart, bestStart + bestLen);
     }
-    return bestLen == Integer.MAX_VALUE ? "" : s.substring(bestStart, bestStart + bestLen);
 }
 ~~~
 
@@ -669,6 +1351,60 @@ public String minWindow(String s, String t) {
 - Với Unicode, mảng 128 không đủ; dùng HashMap và cẩn thận với surrogate pair.
 
 > Senior tip: Bài này là bài "kể chuyện" rất tốt: nói rõ mỗi ký tự được thêm và bớt tối đa một lần, nên dù có vòng while bên trong, tổng thời gian vẫn O(n). Đừng để người phỏng vấn nghĩ đó là O(n²).`,
+  starter: "class Solution {\n    public String minWindow(String s, String t) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example", "BANC", () -> new Solution().minWindow("ADOBECODEBANC", "ABC"));
+        run("single", "a", () -> new Solution().minWindow("a", "a"));
+        run("impossible", "", () -> new Solution().minWindow("a", "aa"));
+        run("same string", "aa", () -> new Solution().minWindow("aa", "aa"));
+        run("one char", "b", () -> new Solution().minWindow("ab", "b"));
+        run("long", "cwae", () -> new Solution().minWindow("cabwefgewcwaefgcf", "cae"));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n + m), Space O(1) với ASCII',
   follow: ['Nếu cần tìm tất cả cửa sổ ngắn nhất thì sao?', 'Nếu {{t}} rất lớn và chỉ cần kiểm tra tồn tại thì có cách nào nhanh hơn?']
 },
@@ -706,19 +1442,22 @@ Duyệt chuỗi. Khi gặp ngoặc mở, đẩy ngoặc đóng tương ứng và
 Cách push ngoặc đóng giúp code ngắn và tránh một bảng ánh xạ.
 
 ~~~java
-public boolean isValid(String s) {
-    Deque<Character> stack = new ArrayDeque<>();
-    for (char c : s.toCharArray()) {
-        switch (c) {
-            case '(' -> stack.push(')');
-            case '[' -> stack.push(']');
-            case '{' -> stack.push('}');
-            default -> {
+class Solution {
+    public boolean isValid(String s) {
+        Deque<Character> stack = new ArrayDeque<>();
+        for (char c : s.toCharArray()) {
+            if (c == '(') {
+                stack.push(')');
+            } else if (c == '[') {
+                stack.push(']');
+            } else if (c == '{') {
+                stack.push('}');
+            } else {
                 if (stack.isEmpty() || stack.pop() != c) return false;
             }
         }
+        return stack.isEmpty();
     }
-    return stack.isEmpty();
 }
 ~~~
 
@@ -728,6 +1467,66 @@ public boolean isValid(String s) {
 - Nếu gặp ký tự lạ, cần hỏi lại đề: bỏ qua hay coi là không hợp lệ?
 
 > Senior tip: Trong parser cấu hình hoặc kiểm tra JSON fragment, stack ngoặc là bước đầu; nhưng đừng quên rằng ngoặc trong chuỗi (string literal) phải được bỏ qua — đó là câu hỏi follow-up rất hay gặp.`,
+  starter: "class Solution {\n    public boolean isValid(String s) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example", true, () -> new Solution().isValid("()[]{}"));
+        run("wrong pair", false, () -> new Solution().isValid("(]"));
+        run("wrong order", false, () -> new Solution().isValid("([)]"));
+        run("closing only", false, () -> new Solution().isValid("]"));
+        run("nested", true, () -> new Solution().isValid("{[]}"));
+        run("unclosed", false, () -> new Solution().isValid("((("));
+        run("long nested", true, () -> {
+            StringBuilder b = new StringBuilder();
+            for (int i = 0; i < 5000; i++) b.append('(');
+            for (int i = 0; i < 5000; i++) b.append(')');
+            return new Solution().isValid(b.toString());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n), Space O(n)',
   follow: ['Nếu cần bỏ qua ngoặc nằm trong string literal thì sửa thế nào?', 'Làm sao trả về vị trí lỗi đầu tiên?']
 },
@@ -796,6 +1595,104 @@ class MinStack {
 - Hỏi thêm: có cần thread-safe không? Nếu có, phải đồng bộ hoặc dùng cấu trúc khoá riêng.
 
 > Senior tip: Trong phỏng vấn senior, tôi hay hỏi tiếp "nếu stack có hàng triệu phần tử và 99% là số dương tăng dần thì tối ưu bộ nhớ thế nào?". Câu trả lời tốt là dùng kỹ thuật lưu delta hoặc chỉ lưu min khi thay đổi, kèm giải thích đánh đổi.`,
+  starter: "class MinStack {\n    public MinStack() {\n        \n    }\n    public void push(int val) {\n        \n    }\n    public void pop() {\n        \n    }\n    public int top() {\n        return 0;\n    }\n    public int getMin() {\n        return 0;\n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        runSteps("example", () -> {
+            MinStack st = new MinStack();
+            st.push(-2);
+            st.push(0);
+            st.push(-3);
+            eq("min after pushes", -3, st.getMin());
+            st.pop();
+            eq("top after pop", 0, st.top());
+            eq("min after pop", -2, st.getMin());
+        });
+        runSteps("duplicates", () -> {
+            MinStack st = new MinStack();
+            st.push(1);
+            st.push(0);
+            st.push(0);
+            eq("min 1", 0, st.getMin());
+            st.pop();
+            eq("min 2", 0, st.getMin());
+            st.pop();
+            eq("min 3", 1, st.getMin());
+        });
+        runSteps("decreasing", () -> {
+            MinStack st = new MinStack();
+            st.push(3);
+            st.push(2);
+            st.push(1);
+            eq("min 1", 1, st.getMin());
+            st.pop();
+            eq("min 2", 2, st.getMin());
+        });
+        runSteps("integer min", () -> {
+            MinStack st = new MinStack();
+            st.push(Integer.MIN_VALUE);
+            eq("min", Integer.MIN_VALUE, st.getMin());
+            eq("top", Integer.MIN_VALUE, st.top());
+        });
+        runSteps("top order", () -> {
+            MinStack st = new MinStack();
+            st.push(5);
+            st.push(6);
+            eq("top 6", 6, st.top());
+            st.pop();
+            eq("top 5", 5, st.top());
+        });
+        runSteps("single", () -> {
+            MinStack st = new MinStack();
+            st.push(42);
+            eq("top", 42, st.top());
+            eq("min", 42, st.getMin());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(1) mỗi thao tác, Space O(n)',
   follow: ['Tối ưu bộ nhớ của stack min thế nào?', 'Nếu cần hỗ trợ cả getMax thì sao?']
 },
@@ -827,18 +1724,20 @@ Duy trì stack monotonic giảm: các chỉ số trong stack có nhiệt độ g
 Mỗi chỉ số được push và pop tối đa một lần, nên tổng thời gian O(n).
 
 ~~~java
-public int[] dailyTemperatures(int[] temperatures) {
-    int n = temperatures.length;
-    int[] answer = new int[n];
-    Deque<Integer> stack = new ArrayDeque<>();   // chỉ số, nhiệt độ giảm dần
-    for (int i = 0; i < n; i++) {
-        while (!stack.isEmpty() && temperatures[i] > temperatures[stack.peek()]) {
-            int j = stack.pop();
-            answer[j] = i - j;
+class Solution {
+    public int[] dailyTemperatures(int[] temperatures) {
+        int n = temperatures.length;
+        int[] answer = new int[n];
+        Deque<Integer> stack = new ArrayDeque<>();   // indices, temperatures decreasing
+        for (int i = 0; i < n; i++) {
+            while (!stack.isEmpty() && temperatures[i] > temperatures[stack.peek()]) {
+                int j = stack.pop();
+                answer[j] = i - j;
+            }
+            stack.push(i);
         }
-        stack.push(i);
+        return answer;
     }
-    return answer;
 }
 ~~~
 
@@ -848,6 +1747,69 @@ public int[] dailyTemperatures(int[] temperatures) {
 - Có thể duyệt từ phải sang trái với next greater; hãy chọn một hướng và giải thích nhất quán.
 
 > Senior tip: Monotonic stack là pattern xuất hiện rất nhiều trong bài toán tài chính (thời điểm giá vượt đỉnh cũ) và observability (thời điểm latency vượt ngưỡng). Hãy nhớ bất biến của stack thay vì học thuộc code.`,
+  starter: "class Solution {\n    public int[] dailyTemperatures(int[] temperatures) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example", new int[]{1, 1, 4, 2, 1, 1, 0, 0},
+            () -> new Solution().dailyTemperatures(new int[]{73, 74, 75, 71, 69, 72, 76, 73}));
+        run("all equal", new int[]{0, 0, 0},
+            () -> new Solution().dailyTemperatures(new int[]{1, 1, 1}));
+        run("single", new int[]{0},
+            () -> new Solution().dailyTemperatures(new int[]{30}));
+        run("increasing", new int[]{1, 1, 0},
+            () -> new Solution().dailyTemperatures(new int[]{30, 40, 50}));
+        run("decreasing", new int[]{0, 0, 0},
+            () -> new Solution().dailyTemperatures(new int[]{50, 40, 30}));
+        run("large decreasing", new int[100000], () -> {
+            int[] a = new int[100000];
+            for (int i = 0; i < a.length; i++) a[i] = 100000 - i;
+            return new Solution().dailyTemperatures(a);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n), Space O(n)',
   follow: ['Nếu cần tìm ngày ấm hơn gần nhất cả hai phía thì sao?', 'Nếu mảng được cập nhật streaming thì cấu trúc dữ liệu nào phù hợp?']
 },
@@ -883,20 +1845,22 @@ Duy trì stack các chỉ số có chiều cao tăng dần. Khi gặp cột {{i}
 Dùng sentinel {{i == n}} với chiều cao 0 để xử lý phần còn lại sau vòng lặp.
 
 ~~~java
-public int largestRectangleArea(int[] heights) {
-    int n = heights.length;
-    Deque<Integer> stack = new ArrayDeque<>();
-    int best = 0;
-    for (int i = 0; i <= n; i++) {
-        int cur = (i == n) ? 0 : heights[i];   // sentinel
-        while (!stack.isEmpty() && heights[stack.peek()] > cur) {
-            int h = heights[stack.pop()];
-            int left = stack.isEmpty() ? 0 : stack.peek() + 1;
-            best = Math.max(best, h * (i - left));
+class Solution {
+    public int largestRectangleArea(int[] heights) {
+        int n = heights.length;
+        Deque<Integer> stack = new ArrayDeque<>();
+        int best = 0;
+        for (int i = 0; i <= n; i++) {
+            int cur = (i == n) ? 0 : heights[i];   // sentinel
+            while (!stack.isEmpty() && heights[stack.peek()] > cur) {
+                int h = heights[stack.pop()];
+                int left = stack.isEmpty() ? 0 : stack.peek() + 1;
+                best = Math.max(best, h * (i - left));
+            }
+            if (i < n) stack.push(i);
         }
-        if (i < n) stack.push(i);
+        return best;
     }
-    return best;
 }
 ~~~
 
@@ -906,6 +1870,65 @@ public int largestRectangleArea(int[] heights) {
 - Đừng quên cột có chiều cao 0 — chúng vẫn là biên hợp lệ.
 
 > Senior tip: Bài này thường xuất hiện dưới dạng "largest rectangle in binary matrix". Khi đó mỗi hàng là một histogram và bạn cộng dồn chiều cao theo cột; pattern stack giữ nguyên, chỉ thêm một vòng lặp ngoài.`,
+  starter: "class Solution {\n    public int largestRectangleArea(int[] heights) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example", 10, () -> new Solution().largestRectangleArea(new int[]{2, 1, 5, 6, 2, 3}));
+        run("two bars", 4, () -> new Solution().largestRectangleArea(new int[]{2, 4}));
+        run("zero", 0, () -> new Solution().largestRectangleArea(new int[]{0}));
+        run("one", 1, () -> new Solution().largestRectangleArea(new int[]{1}));
+        run("flat", 6, () -> new Solution().largestRectangleArea(new int[]{2, 2, 2}));
+        run("mixed", 12, () -> new Solution().largestRectangleArea(new int[]{6, 2, 5, 4, 5, 1, 6}));
+        run("large flat", 100000, () -> {
+            int[] a = new int[100000];
+            Arrays.fill(a, 1);
+            return new Solution().largestRectangleArea(a);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n), Space O(n)',
   follow: ['Mở rộng sang ma trận nhị phân tìm hình chữ nhật lớn nhất.', 'Nếu cần trả về toạ độ hình chữ nhật thì sửa thế nào?']
 }
@@ -944,18 +1967,20 @@ Duy trì khoảng tìm kiếm {{[lo, hi]}}. So sánh {{nums[mid]}} với target:
 Chọn một quy ước khoảng rõ ràng và giữ nhất quán. Ở đây dùng khoảng đóng nên {{lo = mid + 1}} và {{hi = mid - 1}}.
 
 ~~~java
-public int search(int[] nums, int target) {
-    int lo = 0, hi = nums.length - 1;
-    while (lo <= hi) {
-        int mid = lo + (hi - lo) / 2;
-        if (nums[mid] == target) return mid;
-        if (nums[mid] < target) {
-            lo = mid + 1;
-        } else {
-            hi = mid - 1;
+class Solution {
+    public int search(int[] nums, int target) {
+        int lo = 0, hi = nums.length - 1;
+        while (lo <= hi) {
+            int mid = lo + (hi - lo) / 2;
+            if (nums[mid] == target) return mid;
+            if (nums[mid] < target) {
+                lo = mid + 1;
+            } else {
+                hi = mid - 1;
+            }
         }
+        return -1;
     }
-    return -1;
 }
 ~~~
 
@@ -965,6 +1990,60 @@ public int search(int[] nums, int target) {
 - Hỏi lại mảng có phần tử trùng không; nếu có, bài toán có thể cần tìm biên trái/phải.
 
 > Senior tip: Binary search là nơi lỗi off-by-one xuất hiện nhiều nhất trong phỏng vấn. Tôi luôn yêu cầu ứng viên viết ra bất biến "target nằm trong [lo, hi] nếu tồn tại" và kiểm tra với mảng 1 phần tử, 2 phần tử trước khi kết luận.`,
+  starter: "class Solution {\n    public int search(int[] nums, int target) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example found", 4, () -> new Solution().search(new int[]{-1, 0, 3, 5, 9, 12}, 9));
+        run("example missing", -1, () -> new Solution().search(new int[]{-1, 0, 3, 5, 9, 12}, 2));
+        run("single found", 0, () -> new Solution().search(new int[]{5}, 5));
+        run("single missing", -1, () -> new Solution().search(new int[]{5}, 4));
+        run("last", 1, () -> new Solution().search(new int[]{1, 3}, 3));
+        run("first", 0, () -> new Solution().search(new int[]{1, 3, 5, 7, 9}, 1));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(log n), Space O(1)',
   follow: ['Tìm vị trí chèn (lower bound) thì sửa thế nào?', 'Nếu có phần tử trùng, làm sao tìm biên trái và biên phải?']
 },
@@ -1003,26 +2082,28 @@ Vẫn dùng binary search. Tại mỗi vòng, xác định nửa trái hay nửa
 Nhờ vậy mỗi bước loại được một nửa, giữ O(log n).
 
 ~~~java
-public int search(int[] nums, int target) {
-    int lo = 0, hi = nums.length - 1;
-    while (lo <= hi) {
-        int mid = lo + (hi - lo) / 2;
-        if (nums[mid] == target) return mid;
-        if (nums[lo] <= nums[mid]) {              // nửa trái sorted
-            if (target >= nums[lo] && target < nums[mid]) {
-                hi = mid - 1;
-            } else {
-                lo = mid + 1;
-            }
-        } else {                                   // nửa phải sorted
-            if (target > nums[mid] && target <= nums[hi]) {
-                lo = mid + 1;
-            } else {
-                hi = mid - 1;
+class Solution {
+    public int search(int[] nums, int target) {
+        int lo = 0, hi = nums.length - 1;
+        while (lo <= hi) {
+            int mid = lo + (hi - lo) / 2;
+            if (nums[mid] == target) return mid;
+            if (nums[lo] <= nums[mid]) {              // left half sorted
+                if (target >= nums[lo] && target < nums[mid]) {
+                    hi = mid - 1;
+                } else {
+                    lo = mid + 1;
+                }
+            } else {                                   // right half sorted
+                if (target > nums[mid] && target <= nums[hi]) {
+                    lo = mid + 1;
+                } else {
+                    hi = mid - 1;
+                }
             }
         }
+        return -1;
     }
-    return -1;
 }
 ~~~
 
@@ -1032,6 +2113,60 @@ public int search(int[] nums, int target) {
 - Kiểm tra nhanh với mảng không xoay, xoay 1 phần tử, target ở hai đầu.
 
 > Senior tip: Bài này kiểm tra khả năng giữ bất biến khi điều kiện phức tạp. Trong thực tế, dữ liệu "sorted rồi append" rất hay gặp (log theo thời gian, ring buffer); hiểu bài này giúp bạn chọn đúng cấu trúc thay vì tìm kiếm tuyến tính.`,
+  starter: "class Solution {\n    public int search(int[] nums, int target) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example found", 4, () -> new Solution().search(new int[]{4, 5, 6, 7, 0, 1, 2}, 0));
+        run("example missing", -1, () -> new Solution().search(new int[]{4, 5, 6, 7, 0, 1, 2}, 3));
+        run("single", 0, () -> new Solution().search(new int[]{1}, 1));
+        run("two rotated", 1, () -> new Solution().search(new int[]{3, 1}, 1));
+        run("pivot first", 0, () -> new Solution().search(new int[]{5, 1, 3}, 5));
+        run("not rotated", 2, () -> new Solution().search(new int[]{1, 2, 3}, 3));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(log n), Space O(1)',
   follow: ['Nếu mảng có phần tử trùng thì độ phức tạp thay đổi thế nào?', 'Tìm phần tử nhỏ nhất trong mảng xoay thì làm sao?']
 },
@@ -1067,27 +2202,29 @@ Binary search trên giá trị {{k}}, không phải trên chỉ số. Với mỗ
 Đây là dạng "binary search on answer": miền kết quả đơn điệu, mỗi lần kiểm tra tốn O(n).
 
 ~~~java
-public int minEatingSpeed(int[] piles, int h) {
-    int lo = 1, hi = 0;
-    for (int p : piles) hi = Math.max(hi, p);
-    while (lo < hi) {
-        int mid = lo + (hi - lo) / 2;
-        if (canFinish(piles, mid, h)) {
-            hi = mid;
-        } else {
-            lo = mid + 1;
+class Solution {
+    public int minEatingSpeed(int[] piles, int h) {
+        int lo = 1, hi = 0;
+        for (int p : piles) hi = Math.max(hi, p);
+        while (lo < hi) {
+            int mid = lo + (hi - lo) / 2;
+            if (canFinish(piles, mid, h)) {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
         }
+        return lo;
     }
-    return lo;
-}
 
-private boolean canFinish(int[] piles, int speed, int h) {
-    long hours = 0;
-    for (int p : piles) {
-        hours += (p + (long) speed - 1) / speed;   // ceil(p / speed)
-        if (hours > h) return false;
+    private boolean canFinish(int[] piles, int speed, int h) {
+        long hours = 0;
+        for (int p : piles) {
+            hours += (p + (long) speed - 1) / speed;   // ceil(p / speed)
+            if (hours > h) return false;
+        }
+        return true;
     }
-    return true;
 }
 ~~~
 
@@ -1097,6 +2234,60 @@ private boolean canFinish(int[] piles, int speed, int h) {
 - Hỏi lại: có được bỏ dở giờ khi ăn hết đống không? Đề chuẩn là mỗi giờ chỉ ăn một đống, phần dư không chuyển sang đống khác.
 
 > Senior tip: Dạng binary search on answer rất hữu ích cho tuning: tìm batch size nhỏ nhất đạt throughput, tìm timeout nhỏ nhất mà error rate vẫn ổn. Điều kiện tiên quyết luôn là tính đơn điệu — hãy chứng minh trước khi code.`,
+  starter: "class Solution {\n    public int minEatingSpeed(int[] piles, int h) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example 1", 4, () -> new Solution().minEatingSpeed(new int[]{3, 6, 7, 11}, 8));
+        run("example 2", 30, () -> new Solution().minEatingSpeed(new int[]{30, 11, 23, 4, 20}, 5));
+        run("single pile one hour", 1, () -> new Solution().minEatingSpeed(new int[]{1}, 1));
+        run("large pile", 500000000, () -> new Solution().minEatingSpeed(new int[]{1000000000}, 2));
+        run("huge single", 312884470, () -> new Solution().minEatingSpeed(new int[]{312884470}, 1));
+        run("three equal", 3, () -> new Solution().minEatingSpeed(new int[]{805306368, 805306368, 805306368}, 1000000000));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n log maxPile), Space O(1)',
   follow: ['Nếu mỗi giờ được ăn nhiều đống thì bài toán thay đổi thế nào?', 'Làm sao tìm tốc độ nhỏ nhất và cả danh sách tốc độ tối ưu?']
 },
@@ -1116,7 +2307,9 @@ Output: 5 -> 4 -> 3 -> 2 -> 1
 
 ### Ràng buộc
 - {{0 <= số node <= 5000}}
-- {{-5000 <= Node.val <= 5000}}`,
+- {{-5000 <= Node.val <= 5000}}
+
+{{ListNode}} đã được định nghĩa sẵn trong harness (kèm helper dựng và so sánh danh sách).`,
   hints: [
     'Cần đổi hướng từng cạnh {{next}}. Nhưng nếu đổi ngay, bạn sẽ mất phần còn lại của danh sách.',
     'Dùng ba con trỏ: {{prev}}, {{cur}}, {{next}}; lưu {{next}} trước khi đổi {{cur.next}}.',
@@ -1128,16 +2321,18 @@ Duyệt danh sách một lượt. Ở mỗi node, lưu node kế tiếp, trỏ {
 Đây là thao tác tại chỗ, không cấp phát node mới.
 
 ~~~java
-public ListNode reverseList(ListNode head) {
-    ListNode prev = null;
-    ListNode cur = head;
-    while (cur != null) {
-        ListNode next = cur.next;   // giữ phần còn lại
-        cur.next = prev;            // đảo cạnh
-        prev = cur;
-        cur = next;
+class Solution {
+    public ListNode reverseList(ListNode head) {
+        ListNode prev = null;
+        ListNode cur = head;
+        while (cur != null) {
+            ListNode next = cur.next;   // keep the rest
+            cur.next = prev;            // reverse link
+            prev = cur;
+            cur = next;
+        }
+        return prev;
     }
-    return prev;
 }
 ~~~
 
@@ -1147,6 +2342,101 @@ public ListNode reverseList(ListNode head) {
 - Hỏi lại: có được phép đổi giá trị thay vì liên kết không? Thường đề yêu cầu đổi liên kết để thể hiện hiểu con trỏ.
 
 > Senior tip: Trong code production, reverse linked list xuất hiện khi đảo chiều lịch sử sự kiện hoặc xử lý đệ quy ngược. Nhưng với danh sách rất lớn, hãy cân nhắc mảng hoặc cấu trúc có truy cập ngẫu nhiên thay vì linked list vì cache locality kém.`,
+  starter: "class Solution {\n    public ListNode reverseList(ListNode head) {\n        \n    }\n}",
+  tests: `
+class ListNode {
+    int val;
+    ListNode next;
+    ListNode(int v) { val = v; }
+}
+public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    static ListNode build(int... vals) {
+        ListNode dummy = new ListNode(0);
+        ListNode tail = dummy;
+        for (int v : vals) {
+            tail.next = new ListNode(v);
+            tail = tail.next;
+        }
+        return dummy.next;
+    }
+    static ListNode range(int a, int b) {
+        ListNode dummy = new ListNode(0);
+        ListNode tail = dummy;
+        for (int i = a; i <= b; i++) {
+            tail.next = new ListNode(i);
+            tail = tail.next;
+        }
+        return dummy.next;
+    }
+    static List<Integer> toList(ListNode h) {
+        List<Integer> r = new ArrayList<>();
+        while (h != null) { r.add(h.val); h = h.next; }
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("empty", ints(), () -> toList(new Solution().reverseList(null)));
+        run("single", ints(7), () -> toList(new Solution().reverseList(build(7))));
+        run("example", ints(5, 4, 3, 2, 1), () -> toList(new Solution().reverseList(build(1, 2, 3, 4, 5))));
+        run("two", ints(2, 1), () -> toList(new Solution().reverseList(build(1, 2))));
+        run("duplicates", ints(2, 2, 1), () -> toList(new Solution().reverseList(build(1, 2, 2))));
+        runSteps("large", () -> {
+            ListNode h = range(1, 5000);
+            ListNode r = new Solution().reverseList(h);
+            int count = 0;
+            ListNode p = r;
+            while (p != null) { count++; p = p.next; }
+            eq("size", 5000, count);
+            eq("head", 5000, r.val);
+            ListNode tail = r;
+            while (tail.next != null) tail = tail.next;
+            eq("tail", 1, tail.val);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n), Space O(1)',
   follow: ['Đảo ngược đoạn từ vị trí m đến n thì làm thế nào?', 'Kiểm tra palindrome trên linked list ra sao?']
 },
@@ -1170,7 +2460,9 @@ Output: 0
 ### Ràng buộc
 - {{0 <= số node mỗi danh sách <= 50}}
 - {{-100 <= Node.val <= 100}}
-- Cả hai danh sách đã sắp xếp tăng dần.`,
+- Cả hai danh sách đã sắp xếp tăng dần.
+
+{{ListNode}} đã được định nghĩa sẵn trong harness (kèm helper dựng và so sánh danh sách).`,
   hints: [
     'Giống bước merge trong merge sort: so sánh hai đầu danh sách và lấy node nhỏ hơn.',
     'Dùng node giả (dummy) để tránh phải xử lý đặc biệt cho phần tử đầu tiên.',
@@ -1180,21 +2472,23 @@ Output: 0
 Tạo {{dummy}} và con trỏ {{tail}}. Mỗi bước so sánh {{l1.val}} và {{l2.val}}, nối node nhỏ hơn vào sau {{tail}}, rồi tiến con trỏ tương ứng. Khi một bên hết, nối phần còn lại của bên kia.
 
 ~~~java
-public ListNode mergeTwoLists(ListNode l1, ListNode l2) {
-    ListNode dummy = new ListNode(0);
-    ListNode tail = dummy;
-    while (l1 != null && l2 != null) {
-        if (l1.val <= l2.val) {
-            tail.next = l1;
-            l1 = l1.next;
-        } else {
-            tail.next = l2;
-            l2 = l2.next;
+class Solution {
+    public ListNode mergeTwoLists(ListNode l1, ListNode l2) {
+        ListNode dummy = new ListNode(0);
+        ListNode tail = dummy;
+        while (l1 != null && l2 != null) {
+            if (l1.val <= l2.val) {
+                tail.next = l1;
+                l1 = l1.next;
+            } else {
+                tail.next = l2;
+                l2 = l2.next;
+            }
+            tail = tail.next;
         }
-        tail = tail.next;
+        tail.next = (l1 != null) ? l1 : l2;
+        return dummy.next;
     }
-    tail.next = (l1 != null) ? l1 : l2;
-    return dummy.next;
 }
 ~~~
 
@@ -1204,6 +2498,92 @@ public ListNode mergeTwoLists(ListNode l1, ListNode l2) {
 - Hỏi lại danh sách có được phép sửa tại chỗ không; đề chuẩn cho phép nối node.
 
 > Senior tip: Merge hai danh sách sorted là nền tảng của external merge sort. Khi merge các file log đã sort, cùng logic này áp dụng với iterator/buffer thay vì node, nhưng nguyên tắc "lấy nhỏ hơn, nối phần còn lại" không đổi.`,
+  starter: "class Solution {\n    public ListNode mergeTwoLists(ListNode l1, ListNode l2) {\n        \n    }\n}",
+  tests: `
+class ListNode {
+    int val;
+    ListNode next;
+    ListNode(int v) { val = v; }
+}
+public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    static ListNode build(int... vals) {
+        ListNode dummy = new ListNode(0);
+        ListNode tail = dummy;
+        for (int v : vals) {
+            tail.next = new ListNode(v);
+            tail = tail.next;
+        }
+        return dummy.next;
+    }
+    static ListNode range(int a, int b) {
+        ListNode dummy = new ListNode(0);
+        ListNode tail = dummy;
+        for (int i = a; i <= b; i++) {
+            tail.next = new ListNode(i);
+            tail = tail.next;
+        }
+        return dummy.next;
+    }
+    static List<Integer> toList(ListNode h) {
+        List<Integer> r = new ArrayList<>();
+        while (h != null) { r.add(h.val); h = h.next; }
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example", ints(1, 1, 2, 3, 4, 4),
+            () -> toList(new Solution().mergeTwoLists(build(1, 2, 4), build(1, 3, 4))));
+        run("one empty", ints(0), () -> toList(new Solution().mergeTwoLists(null, build(0))));
+        run("both empty", ints(), () -> toList(new Solution().mergeTwoLists(null, null)));
+        run("left empty", ints(1, 2, 3), () -> toList(new Solution().mergeTwoLists(null, build(1, 2, 3))));
+        run("duplicates", ints(1, 1, 2, 2, 3),
+            () -> toList(new Solution().mergeTwoLists(build(1, 2, 2), build(1, 3))));
+        run("large", seq(1, 100), () -> toList(new Solution().mergeTwoLists(range(1, 50), range(51, 100))));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(m + n), Space O(1)',
   follow: ['Merge k danh sách sorted thì tối ưu thế nào?', 'Nếu danh sách rất dài và không vừa RAM thì sao?']
 },
@@ -1306,6 +2686,101 @@ class LRUCache {
 - Nếu cần thread-safe, phải thêm khoá; LRU đơn giản không an toàn đa luồng.
 
 > Senior tip: Trong hệ thống cache thật, LRU thuần có thể bị "cache pollution" bởi quét tuần tự. Các biến thể như LRU-K, ARC hoặc TinyLFU (Caffeine) thường tốt hơn. Khi phỏng vấn, nêu trade-off này sẽ ghi điểm.`,
+  starter: "class LRUCache {\n    public LRUCache(int capacity) {\n        \n    }\n    public int get(int key) {\n        return -1;\n    }\n    public void put(int key, int value) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        runSteps("example", () -> {
+            LRUCache cache = new LRUCache(2);
+            cache.put(1, 1);
+            cache.put(2, 2);
+            eq("get 1", 1, cache.get(1));
+            cache.put(3, 3);
+            eq("evicted 2", -1, cache.get(2));
+            cache.put(4, 4);
+            eq("evicted 1", -1, cache.get(1));
+            eq("get 3", 3, cache.get(3));
+            eq("get 4", 4, cache.get(4));
+        });
+        runSteps("capacity one", () -> {
+            LRUCache cache = new LRUCache(1);
+            cache.put(1, 1);
+            eq("first", 1, cache.get(1));
+            cache.put(2, 2);
+            eq("evicted", -1, cache.get(1));
+            eq("second", 2, cache.get(2));
+        });
+        runSteps("update existing", () -> {
+            LRUCache cache = new LRUCache(2);
+            cache.put(1, 1);
+            cache.put(2, 2);
+            cache.put(1, 10);
+            eq("updated", 10, cache.get(1));
+            cache.put(3, 3);
+            eq("evict 2", -1, cache.get(2));
+            eq("keep 3", 3, cache.get(3));
+        });
+        runSteps("get refreshes", () -> {
+            LRUCache cache = new LRUCache(2);
+            cache.put(1, 1);
+            cache.put(2, 2);
+            eq("get 1", 1, cache.get(1));
+            cache.put(3, 3);
+            eq("evict 2", -1, cache.get(2));
+            eq("get 3", 3, cache.get(3));
+        });
+        runSteps("miss", () -> {
+            LRUCache cache = new LRUCache(2);
+            cache.put(1, 1);
+            eq("miss", -1, cache.get(9));
+            cache.put(2, 2);
+            eq("still 1", 1, cache.get(1));
+            eq("still 2", 2, cache.get(2));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(1) mỗi thao tác, Space O(capacity)',
   follow: ['Làm sao làm LRU thread-safe?', 'Khi nào nên dùng LFU thay vì LRU?']
 },
@@ -1329,7 +2804,9 @@ Output: []
 ### Ràng buộc
 - {{0 <= k <= 10^4}}
 - {{0 <= tổng số node <= 10^4}}
-- {{-10^4 <= Node.val <= 10^4}}`,
+- {{-10^4 <= Node.val <= 10^4}}
+
+{{ListNode}} đã được định nghĩa sẵn trong harness (kèm helper dựng và so sánh danh sách).`,
   hints: [
     'Nếu merge tuần tự từng danh sách, mỗi lần phải duyệt lại phần đã merge — chậm.',
     'Cần cấu trúc luôn lấy được node nhỏ nhất trong {{k}} đầu danh sách: min-heap (PriorityQueue).',
@@ -1341,21 +2818,23 @@ Output: []
 Mỗi node được push/pop đúng một lần, mỗi thao tác heap O(log k), nên tổng O(N log k) với N là tổng số node.
 
 ~~~java
-public ListNode mergeKLists(ListNode[] lists) {
-    PriorityQueue<ListNode> pq =
-        new PriorityQueue<>((a, b) -> Integer.compare(a.val, b.val));
-    for (ListNode node : lists) {
-        if (node != null) pq.add(node);
+class Solution {
+    public ListNode mergeKLists(ListNode[] lists) {
+        PriorityQueue<ListNode> pq =
+            new PriorityQueue<>((a, b) -> Integer.compare(a.val, b.val));
+        for (ListNode node : lists) {
+            if (node != null) pq.add(node);
+        }
+        ListNode dummy = new ListNode(0);
+        ListNode tail = dummy;
+        while (!pq.isEmpty()) {
+            ListNode node = pq.poll();
+            tail.next = node;
+            tail = node;
+            if (node.next != null) pq.add(node.next);
+        }
+        return dummy.next;
     }
-    ListNode dummy = new ListNode(0);
-    ListNode tail = dummy;
-    while (!pq.isEmpty()) {
-        ListNode node = pq.poll();
-        tail.next = node;
-        tail = node;
-        if (node.next != null) pq.add(node.next);
-    }
-    return dummy.next;
 }
 ~~~
 
@@ -1365,6 +2844,99 @@ public ListNode mergeKLists(ListNode[] lists) {
 - Hỏi lại danh sách có thể rỗng; xử lý null từng phần tử trước khi add.
 
 > Senior tip: Với external merge (file lớn hơn RAM), bạn không thể giữ tất cả head trong heap nếu số file quá lớn; khi đó dùng multi-pass merge với fan-in giới hạn, ví dụ 64 file mỗi lượt. Đây là câu follow-up rất thực tế.`,
+  starter: "class Solution {\n    public ListNode mergeKLists(ListNode[] lists) {\n        \n    }\n}",
+  tests: `
+class ListNode {
+    int val;
+    ListNode next;
+    ListNode(int v) { val = v; }
+}
+public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    static ListNode build(int... vals) {
+        ListNode dummy = new ListNode(0);
+        ListNode tail = dummy;
+        for (int v : vals) {
+            tail.next = new ListNode(v);
+            tail = tail.next;
+        }
+        return dummy.next;
+    }
+    static ListNode range(int a, int b) {
+        ListNode dummy = new ListNode(0);
+        ListNode tail = dummy;
+        for (int i = a; i <= b; i++) {
+            tail.next = new ListNode(i);
+            tail = tail.next;
+        }
+        return dummy.next;
+    }
+    static List<Integer> toList(ListNode h) {
+        List<Integer> r = new ArrayList<>();
+        while (h != null) { r.add(h.val); h = h.next; }
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example", ints(1, 1, 2, 3, 4, 4, 5, 6),
+            () -> toList(new Solution().mergeKLists(new ListNode[]{
+                build(1, 4, 5), build(1, 3, 4), build(2, 6)})));
+        run("empty array", ints(), () -> toList(new Solution().mergeKLists(new ListNode[]{})));
+        run("only nulls", ints(), () -> toList(new Solution().mergeKLists(new ListNode[]{null, null})));
+        run("single list", ints(1, 2, 3),
+            () -> toList(new Solution().mergeKLists(new ListNode[]{build(1, 2, 3)})));
+        run("four singles", ints(1, 2, 3, 4),
+            () -> toList(new Solution().mergeKLists(new ListNode[]{
+                build(4), build(1), build(3), build(2)})));
+        run("large", seq(1, 100), () -> {
+            ListNode[] lists = new ListNode[10];
+            for (int i = 0; i < 10; i++) lists[i] = range(i * 10 + 1, i * 10 + 10);
+            return toList(new Solution().mergeKLists(lists));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(N log k), Space O(k)',
   follow: ['So sánh heap và divide-and-conquer khi k rất lớn.', 'Nếu tổng dữ liệu lớn hơn RAM thì thiết kế thế nào?']
 }
@@ -1390,7 +2962,9 @@ Output: 0
 
 ### Ràng buộc
 - {{0 <= số node <= 10^4}}
-- {{-100 <= Node.val <= 100}}`,
+- {{-100 <= Node.val <= 100}}
+
+{{TreeNode}} đã được định nghĩa sẵn trong harness (kèm helper dựng cây từ mảng level-order).`,
   hints: [
     'Độ sâu của một cây bằng 1 cộng với độ sâu lớn hơn của hai cây con.',
     'Đây là định nghĩa đệ quy tự nhiên; base case là node null.',
@@ -1400,9 +2974,11 @@ Output: 0
 Đệ quy: cây rỗng có độ sâu 0; ngược lại lấy 1 + max(độ sâu trái, độ sâu phải). Mỗi node được thăm đúng một lần.
 
 ~~~java
-public int maxDepth(TreeNode root) {
-    if (root == null) return 0;
-    return 1 + Math.max(maxDepth(root.left), maxDepth(root.right));
+class Solution {
+    public int maxDepth(TreeNode root) {
+        if (root == null) return 0;
+        return 1 + Math.max(maxDepth(root.left), maxDepth(root.right));
+    }
 }
 ~~~
 
@@ -1412,6 +2988,114 @@ public int maxDepth(TreeNode root) {
 - Cây rỗng trả 0, không phải 1.
 
 > Senior tip: Trong production, độ sâu cây thường dùng để đánh giá rủi ro stack khi serialize/deserialize JSON lồng nhau. Với dữ liệu không kiểm soát, luôn đặt giới hạn độ sâu thay vì tin vào đệ quy vô hạn.`,
+  starter: "class Solution {\n    public int maxDepth(TreeNode root) {\n        \n    }\n}",
+  tests: `
+class TreeNode {
+    int val;
+    TreeNode left, right;
+    TreeNode(int v) { val = v; }
+}
+public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    static TreeNode buildTree(Integer... vals) {
+        if (vals.length == 0 || vals[0] == null) return null;
+        TreeNode root = new TreeNode(vals[0]);
+        Queue<TreeNode> q = new ArrayDeque<>();
+        q.add(root);
+        int i = 1;
+        while (!q.isEmpty() && i < vals.length) {
+            TreeNode cur = q.poll();
+            if (i < vals.length && vals[i] != null) {
+                cur.left = new TreeNode(vals[i]);
+                q.add(cur.left);
+            }
+            i++;
+            if (i < vals.length && vals[i] != null) {
+                cur.right = new TreeNode(vals[i]);
+                q.add(cur.right);
+            }
+            i++;
+        }
+        return root;
+    }
+    static List<Integer> level(TreeNode root) {
+        List<Integer> out = new ArrayList<>();
+        if (root == null) return out;
+        Queue<TreeNode> q = new LinkedList<>();
+        q.add(root);
+        while (!q.isEmpty()) {
+            TreeNode n = q.poll();
+            if (n == null) {
+                out.add(null);
+            } else {
+                out.add(n.val);
+                q.add(n.left);
+                q.add(n.right);
+            }
+        }
+        while (!out.isEmpty() && out.get(out.size() - 1) == null) {
+            out.remove(out.size() - 1);
+        }
+        return out;
+    }
+    static TreeNode find(TreeNode root, int val) {
+        if (root == null) return null;
+        if (root.val == val) return root;
+        TreeNode l = find(root.left, val);
+        if (l != null) return l;
+        return find(root.right, val);
+    }
+
+    public static void main(String[] args) {
+        run("example", 3, () -> new Solution().maxDepth(buildTree(3, 9, 20, null, null, 15, 7)));
+        run("empty", 0, () -> new Solution().maxDepth(buildTree()));
+        run("single", 1, () -> new Solution().maxDepth(buildTree(1)));
+        run("balanced", 3, () -> new Solution().maxDepth(buildTree(1, 2, 3, 4, 5, 6, 7)));
+        run("skewed", 4, () -> new Solution().maxDepth(buildTree(1, 2, null, 3, null, 4)));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n), Space O(h)',
   follow: ['Tính độ sâu bằng BFS thì làm thế nào?', 'Kiểm tra cây cân bằng thì cần thêm gì?']
 },
@@ -1440,7 +3124,9 @@ Output:      4
 
 ### Ràng buộc
 - {{0 <= số node <= 100}}
-- {{-100 <= Node.val <= 100}}`,
+- {{-100 <= Node.val <= 100}}
+
+{{TreeNode}} đã được định nghĩa sẵn trong harness (kèm helper dựng cây từ mảng level-order).`,
   hints: [
     'Tại mỗi node, chỉ cần hoán đổi con trỏ trái và phải.',
     'Sau khi hoán đổi, tiếp tục đảo hai cây con — thứ tự đảo trước hay sau đều được.',
@@ -1450,12 +3136,14 @@ Output:      4
 Duyệt cây và tại mỗi node hoán đổi {{left}} với {{right}}. Có thể làm đệ quy (DFS) hoặc BFS với queue. Đệ quy ngắn gọn và tự nhiên nhất.
 
 ~~~java
-public TreeNode invertTree(TreeNode root) {
-    if (root == null) return null;
-    TreeNode tmp = root.left;
-    root.left = invertTree(root.right);
-    root.right = invertTree(tmp);
-    return root;
+class Solution {
+    public TreeNode invertTree(TreeNode root) {
+        if (root == null) return null;
+        TreeNode tmp = root.left;
+        root.left = invertTree(root.right);
+        root.right = invertTree(tmp);
+        return root;
+    }
 }
 ~~~
 
@@ -1465,6 +3153,117 @@ public TreeNode invertTree(TreeNode root) {
 - Với cây rất sâu, dùng BFS để tránh đệ quy sâu.
 
 > Senior tip: Bài này đơn giản nhưng hay được dùng để kiểm tra ứng viên có thực sự hiểu con trỏ hay chỉ nhớ code. Hãy vẽ từng bước với cây 3 node và nói rõ thời điểm hoán đổi.`,
+  starter: "class Solution {\n    public TreeNode invertTree(TreeNode root) {\n        \n    }\n}",
+  tests: `
+class TreeNode {
+    int val;
+    TreeNode left, right;
+    TreeNode(int v) { val = v; }
+}
+public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    static TreeNode buildTree(Integer... vals) {
+        if (vals.length == 0 || vals[0] == null) return null;
+        TreeNode root = new TreeNode(vals[0]);
+        Queue<TreeNode> q = new ArrayDeque<>();
+        q.add(root);
+        int i = 1;
+        while (!q.isEmpty() && i < vals.length) {
+            TreeNode cur = q.poll();
+            if (i < vals.length && vals[i] != null) {
+                cur.left = new TreeNode(vals[i]);
+                q.add(cur.left);
+            }
+            i++;
+            if (i < vals.length && vals[i] != null) {
+                cur.right = new TreeNode(vals[i]);
+                q.add(cur.right);
+            }
+            i++;
+        }
+        return root;
+    }
+    static List<Integer> level(TreeNode root) {
+        List<Integer> out = new ArrayList<>();
+        if (root == null) return out;
+        Queue<TreeNode> q = new LinkedList<>();
+        q.add(root);
+        while (!q.isEmpty()) {
+            TreeNode n = q.poll();
+            if (n == null) {
+                out.add(null);
+            } else {
+                out.add(n.val);
+                q.add(n.left);
+                q.add(n.right);
+            }
+        }
+        while (!out.isEmpty() && out.get(out.size() - 1) == null) {
+            out.remove(out.size() - 1);
+        }
+        return out;
+    }
+    static TreeNode find(TreeNode root, int val) {
+        if (root == null) return null;
+        if (root.val == val) return root;
+        TreeNode l = find(root.left, val);
+        if (l != null) return l;
+        return find(root.right, val);
+    }
+
+    public static void main(String[] args) {
+        run("example", Arrays.asList(4, 7, 2, 9, 6, 3, 1),
+            () -> level(new Solution().invertTree(buildTree(4, 2, 7, 1, 3, 6, 9))));
+        run("empty", ints(), () -> level(new Solution().invertTree(null)));
+        run("single", ints(1), () -> level(new Solution().invertTree(buildTree(1))));
+        run("one child", Arrays.asList(1, null, 2),
+            () -> level(new Solution().invertTree(buildTree(1, 2))));
+        run("mixed", Arrays.asList(1, 3, 2, 5, null, null, 4),
+            () -> level(new Solution().invertTree(buildTree(1, 2, 3, 4, null, null, 5))));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n), Space O(h)',
   follow: ['Đảo cây bằng BFS thì viết thế nào?', 'Kiểm tra hai cây có phải ảnh gương của nhau ra sao?']
 },
@@ -1484,7 +3283,9 @@ Output: [[3], [9,20], [15,7]]
 
 ### Ràng buộc
 - {{0 <= số node <= 2000}}
-- {{-1000 <= Node.val <= 1000}}`,
+- {{-1000 <= Node.val <= 1000}}
+
+{{TreeNode}} đã được định nghĩa sẵn trong harness (kèm helper dựng cây từ mảng level-order).`,
   hints: [
     'Duyệt theo tầng là bài toán BFS kinh điển với queue.',
     'Cần tách từng tầng: ghi lại {{size = queue.size()}} trước khi xử lý tầng đó.',
@@ -1494,23 +3295,25 @@ Output: [[3], [9,20], [15,7]]
 Dùng queue khởi tạo với root. Mỗi vòng lặp, lấy kích thước hiện tại của queue — đó chính là số node của tầng đang xét. Xử lý đúng {{size}} node, thêm con của chúng vào queue cho tầng sau.
 
 ~~~java
-public List<List<Integer>> levelOrder(TreeNode root) {
-    List<List<Integer>> result = new ArrayList<>();
-    if (root == null) return result;
-    Queue<TreeNode> queue = new ArrayDeque<>();
-    queue.add(root);
-    while (!queue.isEmpty()) {
-        int size = queue.size();
-        List<Integer> level = new ArrayList<>(size);
-        for (int i = 0; i < size; i++) {
-            TreeNode node = queue.poll();
-            level.add(node.val);
-            if (node.left != null) queue.add(node.left);
-            if (node.right != null) queue.add(node.right);
+class Solution {
+    public List<List<Integer>> levelOrder(TreeNode root) {
+        List<List<Integer>> result = new ArrayList<>();
+        if (root == null) return result;
+        Queue<TreeNode> queue = new ArrayDeque<>();
+        queue.add(root);
+        while (!queue.isEmpty()) {
+            int size = queue.size();
+            List<Integer> level = new ArrayList<>(size);
+            for (int i = 0; i < size; i++) {
+                TreeNode node = queue.poll();
+                level.add(node.val);
+                if (node.left != null) queue.add(node.left);
+                if (node.right != null) queue.add(node.right);
+            }
+            result.add(level);
         }
-        result.add(level);
+        return result;
     }
-    return result;
 }
 ~~~
 
@@ -1520,6 +3323,119 @@ public List<List<Integer>> levelOrder(TreeNode root) {
 - Hỏi thêm: duyệt từ dưới lên (bottom-up) chỉ cần đảo kết quả hoặc thêm vào đầu danh sách.
 
 > Senior tip: BFS theo tầng là nền tảng cho nhiều bài thực tế: lan truyền trạng thái trong graph, tính khoảng cách ngắn nhất không trọng số, hoặc render cây tổ chức theo cấp. Nhớ rằng BFS cần bộ nhớ O(width), có thể lớn hơn DFS O(height) rất nhiều.`,
+  starter: "class Solution {\n    public List<List<Integer>> levelOrder(TreeNode root) {\n        \n    }\n}",
+  tests: `
+class TreeNode {
+    int val;
+    TreeNode left, right;
+    TreeNode(int v) { val = v; }
+}
+public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    static TreeNode buildTree(Integer... vals) {
+        if (vals.length == 0 || vals[0] == null) return null;
+        TreeNode root = new TreeNode(vals[0]);
+        Queue<TreeNode> q = new ArrayDeque<>();
+        q.add(root);
+        int i = 1;
+        while (!q.isEmpty() && i < vals.length) {
+            TreeNode cur = q.poll();
+            if (i < vals.length && vals[i] != null) {
+                cur.left = new TreeNode(vals[i]);
+                q.add(cur.left);
+            }
+            i++;
+            if (i < vals.length && vals[i] != null) {
+                cur.right = new TreeNode(vals[i]);
+                q.add(cur.right);
+            }
+            i++;
+        }
+        return root;
+    }
+    static List<Integer> level(TreeNode root) {
+        List<Integer> out = new ArrayList<>();
+        if (root == null) return out;
+        Queue<TreeNode> q = new LinkedList<>();
+        q.add(root);
+        while (!q.isEmpty()) {
+            TreeNode n = q.poll();
+            if (n == null) {
+                out.add(null);
+            } else {
+                out.add(n.val);
+                q.add(n.left);
+                q.add(n.right);
+            }
+        }
+        while (!out.isEmpty() && out.get(out.size() - 1) == null) {
+            out.remove(out.size() - 1);
+        }
+        return out;
+    }
+    static TreeNode find(TreeNode root, int val) {
+        if (root == null) return null;
+        if (root.val == val) return root;
+        TreeNode l = find(root.left, val);
+        if (l != null) return l;
+        return find(root.right, val);
+    }
+
+    public static void main(String[] args) {
+        run("example", Arrays.asList(ints(3), ints(9, 20), ints(15, 7)),
+            () -> new Solution().levelOrder(buildTree(3, 9, 20, null, null, 15, 7)));
+        run("empty", new ArrayList<List<Integer>>(),
+            () -> new Solution().levelOrder(buildTree()));
+        run("single", Arrays.asList(ints(1)),
+            () -> new Solution().levelOrder(buildTree(1)));
+        run("skewed", Arrays.asList(ints(1), ints(2), ints(3)),
+            () -> new Solution().levelOrder(buildTree(1, 2, null, 3)));
+        run("balanced", Arrays.asList(ints(1), ints(2, 3), ints(4, 5, 6, 7)),
+            () -> new Solution().levelOrder(buildTree(1, 2, 3, 4, 5, 6, 7)));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n), Space O(n)',
   follow: ['Duyệt zigzag theo tầng thì sửa thế nào?', 'Tính độ rộng lớn nhất của cây thì làm sao?']
 },
@@ -1543,7 +3459,9 @@ Output: 5
 ### Ràng buộc
 - {{2 <= số node <= 10^5}}
 - {{-10^9 <= Node.val <= 10^9}}
-- Các giá trị node là duy nhất.`,
+- Các giá trị node là duy nhất.
+
+{{TreeNode}} đã được định nghĩa sẵn trong harness (kèm helper dựng cây từ mảng level-order).`,
   hints: [
     'Nếu tìm thấy p hoặc q ở một nhánh, nhánh đó có thể chứa tổ tiên chung.',
     'Nếu p và q nằm ở hai nhánh khác nhau của một node, node đó chính là LCA.',
@@ -1553,12 +3471,14 @@ Output: 5
 DFS từ gốc. Nếu node hiện tại là null, p hoặc q thì trả về node đó. Đệ quy hai nhánh. Nếu cả hai nhánh đều trả về node khác null, p và q nằm hai bên nên node hiện tại là LCA. Nếu chỉ một nhánh có kết quả, trả về kết quả đó.
 
 ~~~java
-public TreeNode lowestCommonAncestor(TreeNode root, TreeNode p, TreeNode q) {
-    if (root == null || root == p || root == q) return root;
-    TreeNode left = lowestCommonAncestor(root.left, p, q);
-    TreeNode right = lowestCommonAncestor(root.right, p, q);
-    if (left != null && right != null) return root;
-    return (left != null) ? left : right;
+class Solution {
+    public TreeNode lowestCommonAncestor(TreeNode root, TreeNode p, TreeNode q) {
+        if (root == null || root == p || root == q) return root;
+        TreeNode left = lowestCommonAncestor(root.left, p, q);
+        TreeNode right = lowestCommonAncestor(root.right, p, q);
+        if (left != null && right != null) return root;
+        return (left != null) ? left : right;
+    }
 }
 ~~~
 
@@ -1568,6 +3488,116 @@ public TreeNode lowestCommonAncestor(TreeNode root, TreeNode p, TreeNode q) {
 - Với BST, có thể tận dụng thứ tự để tìm O(h) mà không cần đệ quy hai nhánh.
 
 > Senior tip: LCA xuất hiện trong bài toán quyền truy cập theo cây tổ chức, hoặc tìm phạm vi chung của hai prefix trong trie. Hãy nắm cả biến thể BST để trả lời follow-up nhanh.`,
+  starter: "class Solution {\n    public TreeNode lowestCommonAncestor(TreeNode root, TreeNode p, TreeNode q) {\n        \n    }\n}",
+  tests: `
+class TreeNode {
+    int val;
+    TreeNode left, right;
+    TreeNode(int v) { val = v; }
+}
+public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    static TreeNode buildTree(Integer... vals) {
+        if (vals.length == 0 || vals[0] == null) return null;
+        TreeNode root = new TreeNode(vals[0]);
+        Queue<TreeNode> q = new ArrayDeque<>();
+        q.add(root);
+        int i = 1;
+        while (!q.isEmpty() && i < vals.length) {
+            TreeNode cur = q.poll();
+            if (i < vals.length && vals[i] != null) {
+                cur.left = new TreeNode(vals[i]);
+                q.add(cur.left);
+            }
+            i++;
+            if (i < vals.length && vals[i] != null) {
+                cur.right = new TreeNode(vals[i]);
+                q.add(cur.right);
+            }
+            i++;
+        }
+        return root;
+    }
+    static List<Integer> level(TreeNode root) {
+        List<Integer> out = new ArrayList<>();
+        if (root == null) return out;
+        Queue<TreeNode> q = new LinkedList<>();
+        q.add(root);
+        while (!q.isEmpty()) {
+            TreeNode n = q.poll();
+            if (n == null) {
+                out.add(null);
+            } else {
+                out.add(n.val);
+                q.add(n.left);
+                q.add(n.right);
+            }
+        }
+        while (!out.isEmpty() && out.get(out.size() - 1) == null) {
+            out.remove(out.size() - 1);
+        }
+        return out;
+    }
+    static TreeNode find(TreeNode root, int val) {
+        if (root == null) return null;
+        if (root.val == val) return root;
+        TreeNode l = find(root.left, val);
+        if (l != null) return l;
+        return find(root.right, val);
+    }
+
+    public static void main(String[] args) {
+        TreeNode root = buildTree(3, 5, 1, 6, 2, 0, 8, null, null, 7, 4);
+        run("p5 q1", 3, () -> new Solution().lowestCommonAncestor(root, find(root, 5), find(root, 1)).val);
+        run("p5 q4", 5, () -> new Solution().lowestCommonAncestor(root, find(root, 5), find(root, 4)).val);
+        run("p1 q2", 3, () -> new Solution().lowestCommonAncestor(root, find(root, 1), find(root, 2)).val);
+        run("p6 q7", 5, () -> new Solution().lowestCommonAncestor(root, find(root, 6), find(root, 7)).val);
+        run("p2 q4", 2, () -> new Solution().lowestCommonAncestor(root, find(root, 2), find(root, 4)).val);
+        run("p1 q8", 1, () -> new Solution().lowestCommonAncestor(root, find(root, 1), find(root, 8)).val);
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n), Space O(h)',
   follow: ['Nếu là BST thì tối ưu thế nào?', 'Nếu p hoặc q có thể không tồn tại thì xử lý ra sao?']
 },
@@ -1608,27 +3638,29 @@ Output: 3
 Duyệt từng ô. Khi gặp {{1}}, tăng biến đếm và gọi DFS để "chìm" toàn bộ đảo bằng cách đổi các ô đã thăm thành {{0}}. Nhờ vậy mỗi ô chỉ được xử lý một lần.
 
 ~~~java
-public int numIslands(char[][] grid) {
-    int count = 0;
-    for (int i = 0; i < grid.length; i++) {
-        for (int j = 0; j < grid[0].length; j++) {
-            if (grid[i][j] == '1') {
-                count++;
-                sink(grid, i, j);
+class Solution {
+    public int numIslands(char[][] grid) {
+        int count = 0;
+        for (int i = 0; i < grid.length; i++) {
+            for (int j = 0; j < grid[0].length; j++) {
+                if (grid[i][j] == '1') {
+                    count++;
+                    sink(grid, i, j);
+                }
             }
         }
+        return count;
     }
-    return count;
-}
 
-private void sink(char[][] grid, int i, int j) {
-    if (i < 0 || i >= grid.length || j < 0 || j >= grid[0].length) return;
-    if (grid[i][j] != '1') return;
-    grid[i][j] = '0';   // đánh dấu đã thăm
-    sink(grid, i + 1, j);
-    sink(grid, i - 1, j);
-    sink(grid, i, j + 1);
-    sink(grid, i, j - 1);
+    private void sink(char[][] grid, int i, int j) {
+        if (i < 0 || i >= grid.length || j < 0 || j >= grid[0].length) return;
+        if (grid[i][j] != '1') return;
+        grid[i][j] = '0';   // mark visited
+        sink(grid, i + 1, j);
+        sink(grid, i - 1, j);
+        sink(grid, i, j + 1);
+        sink(grid, i, j - 1);
+    }
 }
 ~~~
 
@@ -1639,6 +3671,68 @@ private void sink(char[][] grid, int i, int j) {
 - Với lưới cực lớn, Union-Find cũng là lựa chọn tốt, đặc biệt khi dữ liệu đến dần.
 
 > Senior tip: Bài này là ví dụ rõ nhất cho việc "visited chính là input đã bị biến đổi". Trong phỏng vấn, hãy nói rõ bạn đang sửa input và hỏi xem có được phép không — đó là chi tiết đánh giá sự cẩn thận.`,
+  starter: "class Solution {\n    public int numIslands(char[][] grid) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    static char[][] grid(String... rows) {
+        char[][] g = new char[rows.length][];
+        for (int i = 0; i < rows.length; i++) g[i] = rows[i].toCharArray();
+        return g;
+    }
+
+    public static void main(String[] args) {
+        run("example 1", 1, () -> new Solution().numIslands(grid(
+            "11110", "11010", "11000", "00000")));
+        run("example 2", 3, () -> new Solution().numIslands(grid(
+            "11000", "11000", "00100", "00011")));
+        run("all water", 0, () -> new Solution().numIslands(grid("000", "000")));
+        run("single land", 1, () -> new Solution().numIslands(grid("1")));
+        run("all land", 1, () -> new Solution().numIslands(grid("111", "111", "111")));
+        run("diagonal not connected", 2, () -> new Solution().numIslands(grid("10", "01")));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(m * n), Space O(m * n) worst case',
   follow: ['Nếu lưới được cập nhật động (thêm nước/đất) thì dùng cấu trúc gì?', 'Đếm số đảo có diện tích lớn nhất thì sửa thế nào?']
 },
@@ -1672,27 +3766,29 @@ Output: false
 Xây adjacency list và mảng indegree. Đưa mọi khoá có indegree 0 vào queue. Lần lượt lấy ra, giảm indegree của các node kề; node nào về 0 thì đưa vào queue. Đếm số node đã xử lý; nếu bằng {{numCourses}} thì không có chu trình.
 
 ~~~java
-public boolean canFinish(int numCourses, int[][] prerequisites) {
-    List<List<Integer>> adj = new ArrayList<>();
-    for (int i = 0; i < numCourses; i++) adj.add(new ArrayList<>());
-    int[] indegree = new int[numCourses];
-    for (int[] p : prerequisites) {
-        adj.get(p[1]).add(p[0]);   // học p[1] trước p[0]
-        indegree[p[0]]++;
-    }
-    Queue<Integer> queue = new ArrayDeque<>();
-    for (int i = 0; i < numCourses; i++) {
-        if (indegree[i] == 0) queue.add(i);
-    }
-    int processed = 0;
-    while (!queue.isEmpty()) {
-        int cur = queue.poll();
-        processed++;
-        for (int next : adj.get(cur)) {
-            if (--indegree[next] == 0) queue.add(next);
+class Solution {
+    public boolean canFinish(int numCourses, int[][] prerequisites) {
+        List<List<Integer>> adj = new ArrayList<>();
+        for (int i = 0; i < numCourses; i++) adj.add(new ArrayList<>());
+        int[] indegree = new int[numCourses];
+        for (int[] p : prerequisites) {
+            adj.get(p[1]).add(p[0]);   // take p[1] before p[0]
+            indegree[p[0]]++;
         }
+        Queue<Integer> queue = new ArrayDeque<>();
+        for (int i = 0; i < numCourses; i++) {
+            if (indegree[i] == 0) queue.add(i);
+        }
+        int processed = 0;
+        while (!queue.isEmpty()) {
+            int cur = queue.poll();
+            processed++;
+            for (int next : adj.get(cur)) {
+                if (--indegree[next] == 0) queue.add(next);
+            }
+        }
+        return processed == numCourses;
     }
-    return processed == numCourses;
 }
 ~~~
 
@@ -1702,6 +3798,61 @@ public boolean canFinish(int numCourses, int[][] prerequisites) {
 - Cạnh trùng hoặc self-loop: self-loop bị cấm bởi ràng buộc, nhưng cạnh trùng vẫn có thể xảy ra trong dữ liệu thật.
 
 > Senior tip: Đây là mô hình của dependency graph trong build system, module Spring, hoặc pipeline dữ liệu. Khi graph lớn, Kahn cho phép xử lý song song các node indegree 0 — hãy nêu ý tưởng này vì nó thể hiện tư duy hệ thống.`,
+  starter: "class Solution {\n    public boolean canFinish(int numCourses, int[][] prerequisites) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("simple chain", true, () -> new Solution().canFinish(2, new int[][]{{1, 0}}));
+        run("cycle", false, () -> new Solution().canFinish(2, new int[][]{{1, 0}, {0, 1}}));
+        run("no prerequisites", true, () -> new Solution().canFinish(1, new int[][]{}));
+        run("long chain", true, () -> new Solution().canFinish(4, new int[][]{{1, 0}, {2, 1}, {3, 2}}));
+        run("disconnected cycle", false,
+            () -> new Solution().canFinish(4, new int[][]{{1, 0}, {0, 1}, {2, 3}, {3, 2}}));
+        run("many isolated", true, () -> new Solution().canFinish(5, new int[][]{}));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(V + E), Space O(V + E)',
   follow: ['Nếu cần in ra một thứ tự học hợp lệ thì làm thế nào?', 'Phát hiện chu trình bằng DFS màu thì cài đặt ra sao?']
 },
@@ -1737,33 +3888,35 @@ Dùng Dijkstra. Khởi tạo {{dist[k] = 0}}, các node khác vô cực. Priorit
 Vì Java không có decrease-key, ta đẩy bản ghi mới và bỏ qua bản ghi cũ khi pop (lazy deletion).
 
 ~~~java
-public int networkDelayTime(int[][] times, int n, int k) {
-    List<List<int[]>> adj = new ArrayList<>();
-    for (int i = 0; i <= n; i++) adj.add(new ArrayList<>());
-    for (int[] t : times) adj.get(t[0]).add(new int[]{t[1], t[2]});
-    int[] dist = new int[n + 1];
-    Arrays.fill(dist, Integer.MAX_VALUE);
-    dist[k] = 0;
-    PriorityQueue<int[]> pq = new PriorityQueue<>((a, b) -> Integer.compare(a[0], b[0]));
-    pq.add(new int[]{0, k});
-    while (!pq.isEmpty()) {
-        int[] cur = pq.poll();
-        int d = cur[0], u = cur[1];
-        if (d > dist[u]) continue;   // bản ghi cũ
-        for (int[] edge : adj.get(u)) {
-            int v = edge[0], w = edge[1];
-            if (d + w < dist[v]) {
-                dist[v] = d + w;
-                pq.add(new int[]{dist[v], v});
+class Solution {
+    public int networkDelayTime(int[][] times, int n, int k) {
+        List<List<int[]>> adj = new ArrayList<>();
+        for (int i = 0; i <= n; i++) adj.add(new ArrayList<>());
+        for (int[] t : times) adj.get(t[0]).add(new int[]{t[1], t[2]});
+        int[] dist = new int[n + 1];
+        Arrays.fill(dist, Integer.MAX_VALUE);
+        dist[k] = 0;
+        PriorityQueue<int[]> pq = new PriorityQueue<>((a, b) -> Integer.compare(a[0], b[0]));
+        pq.add(new int[]{0, k});
+        while (!pq.isEmpty()) {
+            int[] cur = pq.poll();
+            int d = cur[0], u = cur[1];
+            if (d > dist[u]) continue;   // stale entry
+            for (int[] edge : adj.get(u)) {
+                int v = edge[0], w = edge[1];
+                if (d + w < dist[v]) {
+                    dist[v] = d + w;
+                    pq.add(new int[]{dist[v], v});
+                }
             }
         }
+        int answer = 0;
+        for (int i = 1; i <= n; i++) {
+            if (dist[i] == Integer.MAX_VALUE) return -1;
+            answer = Math.max(answer, dist[i]);
+        }
+        return answer;
     }
-    int answer = 0;
-    for (int i = 1; i <= n; i++) {
-        if (dist[i] == Integer.MAX_VALUE) return -1;
-        answer = Math.max(answer, dist[i]);
-    }
-    return answer;
 }
 ~~~
 
@@ -1773,6 +3926,64 @@ public int networkDelayTime(int[][] times, int n, int k) {
 - Độ phức tạp O(E log V) với heap; với đồ thị dày, có thể cân nhắc Fibonacci heap (hiếm dùng trong phỏng vấn).
 
 > Senior tip: Trong hệ thống microservices, Dijkstra/bellman tương ứng bài toán chọn đường đi theo latency thấp nhất, nhưng latency thay đổi liên tục. Các hệ thống thật thường dùng thuật toán thích nghi hoặc load balancer dựa trên số liệu realtime thay vì chạy Dijkstra mỗi request.`,
+  starter: "class Solution {\n    public int networkDelayTime(int[][] times, int n, int k) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example", 2, () -> new Solution().networkDelayTime(
+            new int[][]{{2, 1, 1}, {2, 3, 1}, {3, 4, 1}}, 4, 2));
+        run("unreachable", -1, () -> new Solution().networkDelayTime(new int[][]{{1, 2, 1}}, 2, 2));
+        run("single node", 0, () -> new Solution().networkDelayTime(new int[][]{}, 1, 1));
+        run("star", 4, () -> new Solution().networkDelayTime(
+            new int[][]{{1, 2, 2}, {1, 3, 3}, {1, 4, 4}}, 4, 1));
+        run("two paths", 3, () -> new Solution().networkDelayTime(
+            new int[][]{{1, 2, 1}, {2, 3, 2}, {1, 3, 4}}, 3, 1));
+        run("zero weights", 0, () -> new Solution().networkDelayTime(
+            new int[][]{{1, 2, 0}, {2, 3, 0}}, 3, 1));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(E log V), Space O(V + E)',
   follow: ['Nếu có cạnh trọng số âm thì dùng thuật toán nào?', 'Tìm đường đi ngắn nhất giữa mọi cặp node thì sao?']
 }
@@ -1814,15 +4025,17 @@ Output: 1
 Dùng max-heap chứa khối lượng các viên đá. Mỗi vòng lấy ra hai viên lớn nhất, tính chênh lệch; nếu khác 0 thì đẩy lại. Cuối cùng trả về phần tử còn lại hoặc 0.
 
 ~~~java
-public int lastStoneWeight(int[] stones) {
-    PriorityQueue<Integer> maxHeap = new PriorityQueue<>(Comparator.reverseOrder());
-    for (int s : stones) maxHeap.add(s);
-    while (maxHeap.size() > 1) {
-        int a = maxHeap.poll();   // nặng nhất
-        int b = maxHeap.poll();   // nặng thứ hai
-        if (a != b) maxHeap.add(a - b);
+class Solution {
+    public int lastStoneWeight(int[] stones) {
+        PriorityQueue<Integer> maxHeap = new PriorityQueue<>(Comparator.reverseOrder());
+        for (int s : stones) maxHeap.add(s);
+        while (maxHeap.size() > 1) {
+            int a = maxHeap.poll();   // heaviest
+            int b = maxHeap.poll();   // second heaviest
+            if (a != b) maxHeap.add(a - b);
+        }
+        return maxHeap.isEmpty() ? 0 : maxHeap.poll();
     }
-    return maxHeap.isEmpty() ? 0 : maxHeap.poll();
 }
 ~~~
 
@@ -1832,6 +4045,60 @@ public int lastStoneWeight(int[] stones) {
 - Hỏi lại: có cần giữ lịch sử các lần đập không? Nếu có, cần thêm cấu trúc.
 
 > Senior tip: Bài này nhỏ nhưng thể hiện đúng tư duy chọn cấu trúc dữ liệu. Trong phỏng vấn, hãy nói rõ chi phí: heap O(n log n) time, O(n) space; so với sort mỗi vòng thì heap thắng khi số phần tử lớn.`,
+  starter: "class Solution {\n    public int lastStoneWeight(int[] stones) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example", 1, () -> new Solution().lastStoneWeight(new int[]{2, 7, 4, 1, 8, 1}));
+        run("single", 1, () -> new Solution().lastStoneWeight(new int[]{1}));
+        run("equal pair", 0, () -> new Solution().lastStoneWeight(new int[]{2, 2}));
+        run("three ones", 1, () -> new Solution().lastStoneWeight(new int[]{1, 1, 1}));
+        run("two tens", 2, () -> new Solution().lastStoneWeight(new int[]{10, 4, 2, 10}));
+        run("mix", 2, () -> new Solution().lastStoneWeight(new int[]{3, 7, 2}));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n log n), Space O(n)',
   follow: ['Nếu mỗi lần đập tốn thêm chi phí tỉ lệ khối lượng thì sao?', 'Làm sao trả về toàn bộ diễn biến các lần đập?']
 },
@@ -1866,15 +4133,17 @@ Dùng min-heap kích thước {{k}}. Với mỗi phần tử, thêm vào heap; n
 Cách này đặc biệt phù hợp với stream vì không cần lưu toàn bộ mảng.
 
 ~~~java
-public int findKthLargest(int[] nums, int k) {
-    PriorityQueue<Integer> minHeap = new PriorityQueue<>();
-    for (int x : nums) {
-        minHeap.add(x);
-        if (minHeap.size() > k) {
-            minHeap.poll();   // loại phần tử nhỏ nhất
+class Solution {
+    public int findKthLargest(int[] nums, int k) {
+        PriorityQueue<Integer> minHeap = new PriorityQueue<>();
+        for (int x : nums) {
+            minHeap.add(x);
+            if (minHeap.size() > k) {
+                minHeap.poll();   // remove smallest
+            }
         }
+        return minHeap.peek();
     }
-    return minHeap.peek();
 }
 ~~~
 
@@ -1884,6 +4153,64 @@ public int findKthLargest(int[] nums, int k) {
 - Nếu {{k}} gần bằng n, sort có thể đơn giản hơn và hằng số nhỏ hơn; hãy hỏi ràng buộc thực tế.
 
 > Senior tip: Với top-K trong hệ thống monitoring, min-heap kích thước k là lựa chọn mặc định vì bộ nhớ O(k). Nếu k rất lớn hoặc phân tán, hãy cân nhắc Count-Min Sketch kèm heap xấp xỉ.`,
+  starter: "class Solution {\n    public int findKthLargest(int[] nums, int k) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example 1", 5, () -> new Solution().findKthLargest(new int[]{3, 2, 1, 5, 6, 4}, 2));
+        run("example 2", 4, () -> new Solution().findKthLargest(new int[]{3, 2, 3, 1, 2, 4, 5, 5, 6}, 4));
+        run("single", 1, () -> new Solution().findKthLargest(new int[]{1}, 1));
+        run("duplicates", 2, () -> new Solution().findKthLargest(new int[]{2, 2, 2}, 2));
+        run("negatives", -1, () -> new Solution().findKthLargest(new int[]{-1, -2, -3}, 1));
+        run("large", 50001, () -> {
+            int[] a = new int[100000];
+            for (int i = 0; i < a.length; i++) a[i] = 100000 - i;
+            return new Solution().findKthLargest(a, 50000);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n log k), Space O(k)',
   follow: ['Cài quickselect và phân tích worst case.', 'Nếu dữ liệu là stream vô hạn thì thiết kế thế nào?']
 },
@@ -1918,18 +4245,20 @@ Sort các khoảng theo điểm bắt đầu. Duyệt từng khoảng: nếu dan
 Sau khi sort, mỗi khoảng chỉ được xử lý một lần, nên tổng O(n log n).
 
 ~~~java
-public int[][] merge(int[][] intervals) {
-    Arrays.sort(intervals, (a, b) -> Integer.compare(a[0], b[0]));
-    List<int[]> merged = new ArrayList<>();
-    for (int[] cur : intervals) {
-        if (merged.isEmpty() || merged.get(merged.size() - 1)[1] < cur[0]) {
-            merged.add(cur);
-        } else {
-            int[] last = merged.get(merged.size() - 1);
-            last[1] = Math.max(last[1], cur[1]);
+class Solution {
+    public int[][] merge(int[][] intervals) {
+        Arrays.sort(intervals, (a, b) -> Integer.compare(a[0], b[0]));
+        List<int[]> merged = new ArrayList<>();
+        for (int[] cur : intervals) {
+            if (merged.isEmpty() || merged.get(merged.size() - 1)[1] < cur[0]) {
+                merged.add(cur);
+            } else {
+                int[] last = merged.get(merged.size() - 1);
+                last[1] = Math.max(last[1], cur[1]);
+            }
         }
+        return merged.toArray(new int[0][]);
     }
-    return merged.toArray(new int[0][]);
 }
 ~~~
 
@@ -1939,6 +4268,66 @@ public int[][] merge(int[][] intervals) {
 - Hàm sort sửa trực tiếp mảng đầu vào — hỏi xem có được phép không.
 
 > Senior tip: Merge intervals là nền tảng của bài toán lịch (calendar), cấp phát tài nguyên theo thời gian, và nén dải IP. Với dữ liệu streaming, không thể sort toàn bộ; khi đó dùng interval tree hoặc cấu trúc cân bằng theo start.`,
+  starter: "class Solution {\n    public int[][] merge(int[][] intervals) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example", new int[][]{{1, 6}, {8, 10}, {15, 18}},
+            () -> new Solution().merge(new int[][]{{1, 3}, {2, 6}, {8, 10}, {15, 18}}));
+        run("touching", new int[][]{{1, 5}},
+            () -> new Solution().merge(new int[][]{{1, 4}, {4, 5}}));
+        run("single", new int[][]{{1, 2}},
+            () -> new Solution().merge(new int[][]{{1, 2}}));
+        run("nested", new int[][]{{1, 10}},
+            () -> new Solution().merge(new int[][]{{1, 10}, {2, 3}}));
+        run("unsorted", new int[][]{{1, 4}, {5, 7}},
+            () -> new Solution().merge(new int[][]{{5, 7}, {1, 3}, {2, 4}}));
+        run("disjoint", new int[][]{{1, 2}, {3, 4}},
+            () -> new Solution().merge(new int[][]{{1, 2}, {3, 4}}));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n log n), Space O(n)',
   follow: ['Chèn một interval vào danh sách đã merge thì làm thế nào?', 'Nếu dữ liệu đến streaming thì xử lý ra sao?']
 },
@@ -1973,26 +4362,28 @@ Tách tất cả start và end, sort riêng. Dùng hai con trỏ: nếu cuộc h
 Đây là cách O(n log n) time, O(n) space, dễ giải thích và ít lỗi.
 
 ~~~java
-public int minMeetingRooms(int[][] intervals) {
-    int n = intervals.length;
-    int[] starts = new int[n];
-    int[] ends = new int[n];
-    for (int i = 0; i < n; i++) {
-        starts[i] = intervals[i][0];
-        ends[i] = intervals[i][1];
-    }
-    Arrays.sort(starts);
-    Arrays.sort(ends);
-    int rooms = 0, best = 0, e = 0;
-    for (int s : starts) {
-        if (s < ends[e]) {
-            rooms++;            // chưa có phòng trống
-        } else {
-            e++;                // tái sử dụng phòng đã xong
+class Solution {
+    public int minMeetingRooms(int[][] intervals) {
+        int n = intervals.length;
+        int[] starts = new int[n];
+        int[] ends = new int[n];
+        for (int i = 0; i < n; i++) {
+            starts[i] = intervals[i][0];
+            ends[i] = intervals[i][1];
         }
-        best = Math.max(best, rooms);
+        Arrays.sort(starts);
+        Arrays.sort(ends);
+        int rooms = 0, best = 0, e = 0;
+        for (int s : starts) {
+            if (s < ends[e]) {
+                rooms++;            // no free room
+            } else {
+                e++;                // reuse a finished room
+            }
+            best = Math.max(best, rooms);
+        }
+        return best;
     }
-    return best;
 }
 ~~~
 
@@ -2002,6 +4393,63 @@ public int minMeetingRooms(int[][] intervals) {
 - Đừng nhầm với Merge Intervals: ở đây chỉ đếm số phòng, không cần gộp khoảng.
 
 > Senior tip: Bài này mô hình hoá capacity planning: số worker, connection pool, hay slot trong scheduler. Trong thực tế, bạn còn phải tính buffer và thời gian chuyển ca; hãy nêu rằng mô hình lý thuyết chỉ là cận dưới.`,
+  starter: "class Solution {\n    public int minMeetingRooms(int[][] intervals) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example 1", 2, () -> new Solution().minMeetingRooms(
+            new int[][]{{0, 30}, {5, 10}, {15, 20}}));
+        run("example 2", 1, () -> new Solution().minMeetingRooms(new int[][]{{7, 10}, {2, 4}}));
+        run("single", 1, () -> new Solution().minMeetingRooms(new int[][]{{0, 5}}));
+        run("touching", 1, () -> new Solution().minMeetingRooms(new int[][]{{0, 5}, {5, 10}}));
+        run("triple", 2, () -> new Solution().minMeetingRooms(
+            new int[][]{{0, 10}, {1, 2}, {2, 3}}));
+        run("all overlap", 4, () -> new Solution().minMeetingRooms(
+            new int[][]{{0, 5}, {1, 6}, {2, 7}, {3, 8}}));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n log n), Space O(n)',
   follow: ['Cài bằng min-heap và so sánh với cách hai mảng.', 'Nếu cần gán từng cuộc họp vào phòng cụ thể thì làm thế nào?']
 },
@@ -2035,15 +4483,17 @@ Giải thích: 1+1+1, 1+2, 2+1.
 Gọi {{f(n)}} là số cách tới bậc n. Ta có {{f(n) = f(n-1) + f(n-2)}}, với {{f(0) = 1}} và {{f(1) = 1}}. Dùng hai biến để tính lặp, tiết kiệm bộ nhớ.
 
 ~~~java
-public int climbStairs(int n) {
-    int prev = 1;   // f(0)
-    int cur = 1;    // f(1)
-    for (int i = 2; i <= n; i++) {
-        int next = prev + cur;
-        prev = cur;
-        cur = next;
+class Solution {
+    public int climbStairs(int n) {
+        int prev = 1;   // f(0)
+        int cur = 1;    // f(1)
+        for (int i = 2; i <= n; i++) {
+            int next = prev + cur;
+            prev = cur;
+            cur = next;
+        }
+        return cur;
     }
-    return cur;
 }
 ~~~
 
@@ -2053,6 +4503,60 @@ public int climbStairs(int n) {
 - Hỏi lại: nếu được leo 1, 2 hoặc 3 bậc thì công thức thay đổi thế nào? Tổng ba giá trị trước.
 
 > Senior tip: Bài này là cửa ngõ vào DP. Điểm tôi hay hỏi tiếp là "nếu n = 10^9 thì sao?" — câu trả lời là dùng ma trận lũy thừa hoặc công thức Binet, nhưng cần xử lý số lớn và độ chính xác.`,
+  starter: "class Solution {\n    public int climbStairs(int n) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("one", 1, () -> new Solution().climbStairs(1));
+        run("two", 2, () -> new Solution().climbStairs(2));
+        run("three", 3, () -> new Solution().climbStairs(3));
+        run("ten", 89, () -> new Solution().climbStairs(10));
+        run("twenty", 10946, () -> new Solution().climbStairs(20));
+        run("forty five", 1836311903, () -> new Solution().climbStairs(45));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n), Space O(1)',
   follow: ['Nếu được leo 1, 2, 3 bậc thì sửa thế nào?', 'Tính với n rất lớn bằng ma trận lũy thừa ra sao?']
 },
@@ -2091,17 +4595,19 @@ Tìm vị trí đầu tiên có {{nums[pos] >= target}}. Nếu target lớn hơn
 Dùng khoảng nửa mở {{[lo, hi)}}: {{hi}} ban đầu là {{nums.length}}, vòng lặp chạy khi {{lo < hi}}, và cập nhật {{hi = mid}} khi không chắc chắn.
 
 ~~~java
-public int searchInsert(int[] nums, int target) {
-    int lo = 0, hi = nums.length;
-    while (lo < hi) {
-        int mid = lo + (hi - lo) / 2;
-        if (nums[mid] < target) {
-            lo = mid + 1;
-        } else {
-            hi = mid;
+class Solution {
+    public int searchInsert(int[] nums, int target) {
+        int lo = 0, hi = nums.length;
+        while (lo < hi) {
+            int mid = lo + (hi - lo) / 2;
+            if (nums[mid] < target) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
         }
+        return lo;   // lower bound
     }
-    return lo;   // lower bound
 }
 ~~~
 
@@ -2111,6 +4617,61 @@ public int searchInsert(int[] nums, int target) {
 - Đây là nền tảng để cài đặt {{lower_bound}}/{{ceiling}} trong các bài tìm khoảng, chèn vào danh sách đã sort.
 
 > Senior tip: Trong production, lower bound xuất hiện khi tìm bucket thời gian, chọn partition trong Kafka, hoặc chèn vào danh sách cấu hình đã sort. Hãy nhớ quy ước nửa mở để tránh lỗi khi target lớn hơn toàn bộ mảng.`,
+  starter: "class Solution {\n    public int searchInsert(int[] nums, int target) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("found", 2, () -> new Solution().searchInsert(new int[]{1, 3, 5, 6}, 5));
+        run("middle", 1, () -> new Solution().searchInsert(new int[]{1, 3, 5, 6}, 2));
+        run("after end", 4, () -> new Solution().searchInsert(new int[]{1, 3, 5, 6}, 7));
+        run("before start", 0, () -> new Solution().searchInsert(new int[]{1, 3, 5, 6}, 0));
+        run("single before", 0, () -> new Solution().searchInsert(new int[]{1}, 0));
+        run("single after", 1, () -> new Solution().searchInsert(new int[]{1}, 2));
+        run("two middle", 1, () -> new Solution().searchInsert(new int[]{1, 3}, 2));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(log n), Space O(1)',
   follow: ['Tìm upper bound (phần tử đầu tiên lớn hơn target) thì sửa thế nào?', 'Nếu mảng có phần tử trùng thì kết quả thay đổi ra sao?']
 },
@@ -2150,18 +4711,20 @@ DP từ 0 đến {{amount}}. Với mỗi số tiền, thử dùng từng đồng
 Độ phức tạp O(amount * số loại xu), bộ nhớ O(amount).
 
 ~~~java
-public int coinChange(int[] coins, int amount) {
-    int[] dp = new int[amount + 1];
-    Arrays.fill(dp, amount + 1);   // sentinel: không thể
-    dp[0] = 0;
-    for (int x = 1; x <= amount; x++) {
-        for (int c : coins) {
-            if (c <= x) {
-                dp[x] = Math.min(dp[x], dp[x - c] + 1);
+class Solution {
+    public int coinChange(int[] coins, int amount) {
+        int[] dp = new int[amount + 1];
+        Arrays.fill(dp, amount + 1);   // sentinel: impossible
+        dp[0] = 0;
+        for (int x = 1; x <= amount; x++) {
+            for (int c : coins) {
+                if (c <= x) {
+                    dp[x] = Math.min(dp[x], dp[x - c] + 1);
+                }
             }
         }
+        return dp[amount] > amount ? -1 : dp[amount];
     }
-    return dp[amount] > amount ? -1 : dp[amount];
 }
 ~~~
 
@@ -2171,6 +4734,60 @@ public int coinChange(int[] coins, int amount) {
 - Greedy chỉ đúng với một số hệ mệnh giá (như 1,5,10,25 với điều kiện nhất định), không đúng tổng quát.
 
 > Senior tip: Bài này là unbounded knapsack cơ bản. Trong toán tiền tệ thực tế, còn có ràng buộc số lượng từng mệnh giá và hao hụt; khi đó phải dùng DP có chiều số lượng hoặc thuật toán tối ưu hoá tuyến tính nguyên.`,
+  starter: "class Solution {\n    public int coinChange(int[] coins, int amount) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example", 3, () -> new Solution().coinChange(new int[]{1, 2, 5}, 11));
+        run("impossible", -1, () -> new Solution().coinChange(new int[]{2}, 3));
+        run("zero amount", 0, () -> new Solution().coinChange(new int[]{1}, 0));
+        run("exact coins", 2, () -> new Solution().coinChange(new int[]{2}, 4));
+        run("huge coin", 2, () -> new Solution().coinChange(new int[]{1, 2147483647}, 2));
+        run("mixed", 20, () -> new Solution().coinChange(new int[]{186, 419, 83, 408}, 6249));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(amount * coins.length), Space O(amount)',
   follow: ['Đếm số cách tạo amount thì sửa thế nào?', 'Nếu mỗi mệnh giá có số lượng giới hạn thì sao?']
 },
@@ -2206,23 +4823,25 @@ Dùng patience sorting. Mảng {{tails}} lưu phần tử kết thúc nhỏ nh�
 Lưu ý {{tails}} không phải dãy con thực tế, chỉ dùng để tính độ dài.
 
 ~~~java
-public int lengthOfLIS(int[] nums) {
-    int[] tails = new int[nums.length];
-    int len = 0;
-    for (int x : nums) {
-        int lo = 0, hi = len;
-        while (lo < hi) {
-            int mid = lo + (hi - lo) / 2;
-            if (tails[mid] < x) {
-                lo = mid + 1;
-            } else {
-                hi = mid;
+class Solution {
+    public int lengthOfLIS(int[] nums) {
+        int[] tails = new int[nums.length];
+        int len = 0;
+        for (int x : nums) {
+            int lo = 0, hi = len;
+            while (lo < hi) {
+                int mid = lo + (hi - lo) / 2;
+                if (tails[mid] < x) {
+                    lo = mid + 1;
+                } else {
+                    hi = mid;
+                }
             }
+            tails[lo] = x;
+            if (lo == len) len++;
         }
-        tails[lo] = x;
-        if (lo == len) len++;
+        return len;
     }
-    return len;
 }
 ~~~
 
@@ -2232,6 +4851,64 @@ public int lengthOfLIS(int[] nums) {
 - DP O(n²) dễ hiểu hơn và cần thiết nếu bài toán yêu cầu thêm ràng buộc phức tạp.
 
 > Senior tip: Trong bài toán tìm chuỗi tăng dài nhất của version/deploy, O(n log n) rất quan trọng vì log deploy có thể hàng triệu dòng. Hãy nhớ tails chỉ là công cụ tính độ dài; đừng cố in nó ra như đáp án.`,
+  starter: "class Solution {\n    public int lengthOfLIS(int[] nums) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example", 4, () -> new Solution().lengthOfLIS(new int[]{10, 9, 2, 5, 3, 7, 101, 18}));
+        run("all equal", 1, () -> new Solution().lengthOfLIS(new int[]{7, 7, 7, 7}));
+        run("single", 1, () -> new Solution().lengthOfLIS(new int[]{1}));
+        run("increasing", 4, () -> new Solution().lengthOfLIS(new int[]{1, 2, 3, 4}));
+        run("decreasing", 1, () -> new Solution().lengthOfLIS(new int[]{4, 3, 2, 1}));
+        run("large increasing", 2500, () -> {
+            int[] a = new int[2500];
+            for (int i = 0; i < a.length; i++) a[i] = i;
+            return new Solution().lengthOfLIS(a);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n log n), Space O(n)',
   follow: ['Cài DP O(n²) và so sánh.', 'Tìm dãy con tăng dài nhất thực tế thì cần thêm gì?']
 },
@@ -2270,24 +4947,26 @@ DP hai chiều. {{dp[i][j]}} là số phép ít nhất để biến {{word1[0..i
 Base case: biến chuỗi rỗng thành j ký tự tốn j phép chèn; ngược lại tốn i phép xoá.
 
 ~~~java
-public int minDistance(String word1, String word2) {
-    int m = word1.length(), n = word2.length();
-    int[][] dp = new int[m + 1][n + 1];
-    for (int i = 0; i <= m; i++) dp[i][0] = i;
-    for (int j = 0; j <= n; j++) dp[0][j] = j;
-    for (int i = 1; i <= m; i++) {
-        for (int j = 1; j <= n; j++) {
-            if (word1.charAt(i - 1) == word2.charAt(j - 1)) {
-                dp[i][j] = dp[i - 1][j - 1];
-            } else {
-                int replace = dp[i - 1][j - 1];
-                int delete = dp[i - 1][j];
-                int insert = dp[i][j - 1];
-                dp[i][j] = 1 + Math.min(replace, Math.min(delete, insert));
+class Solution {
+    public int minDistance(String word1, String word2) {
+        int m = word1.length(), n = word2.length();
+        int[][] dp = new int[m + 1][n + 1];
+        for (int i = 0; i <= m; i++) dp[i][0] = i;
+        for (int j = 0; j <= n; j++) dp[0][j] = j;
+        for (int i = 1; i <= m; i++) {
+            for (int j = 1; j <= n; j++) {
+                if (word1.charAt(i - 1) == word2.charAt(j - 1)) {
+                    dp[i][j] = dp[i - 1][j - 1];
+                } else {
+                    int replace = dp[i - 1][j - 1];
+                    int delete = dp[i - 1][j];
+                    int insert = dp[i][j - 1];
+                    dp[i][j] = 1 + Math.min(replace, Math.min(delete, insert));
+                }
             }
         }
+        return dp[m][n];
     }
-    return dp[m][n];
 }
 ~~~
 
@@ -2297,6 +4976,60 @@ public int minDistance(String word1, String word2) {
 - Với Unicode, {{charAt}} theo code unit có thể sai với emoji; dùng code point nếu cần chính xác.
 
 > Senior tip: Edit distance là nền tảng của fuzzy matching, spell checker và diff. Trong production, với chuỗi rất dài người ta dùng giới hạn ngưỡng kết hợp banded DP để giảm từ O(mn) xuống gần O(k * min(m,n)).`,
+  starter: "class Solution {\n    public int minDistance(String word1, String word2) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("horse to ros", 3, () -> new Solution().minDistance("horse", "ros"));
+        run("intention", 5, () -> new Solution().minDistance("intention", "execution"));
+        run("both empty", 0, () -> new Solution().minDistance("", ""));
+        run("insert all", 3, () -> new Solution().minDistance("", "abc"));
+        run("delete all", 3, () -> new Solution().minDistance("abc", ""));
+        run("same", 0, () -> new Solution().minDistance("abc", "abc"));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(m * n), Space O(m * n)',
   follow: ['Tối ưu bộ nhớ xuống O(n) thì làm thế nào?', 'Nếu chỉ cần kiểm tra khoảng cách <= k thì tối ưu ra sao?']
 }
@@ -2332,19 +5065,21 @@ Backtracking theo chỉ số bắt đầu. Mỗi lần gọi hàm, đường đi
 Cây quyết định có 2^n lá; mỗi tập con được copy khi ghi nhận nên tổng chi phí O(n * 2^n).
 
 ~~~java
-public List<List<Integer>> subsets(int[] nums) {
-    List<List<Integer>> result = new ArrayList<>();
-    backtrack(0, new ArrayList<>(), nums, result);
-    return result;
-}
+class Solution {
+    public List<List<Integer>> subsets(int[] nums) {
+        List<List<Integer>> result = new ArrayList<>();
+        backtrack(0, new ArrayList<>(), nums, result);
+        return result;
+    }
 
-private void backtrack(int start, List<Integer> path, int[] nums,
-                       List<List<Integer>> result) {
-    result.add(new ArrayList<>(path));   // mọi trạng thái đều hợp lệ
-    for (int i = start; i < nums.length; i++) {
-        path.add(nums[i]);
-        backtrack(i + 1, path, nums, result);
-        path.remove(path.size() - 1);
+    private void backtrack(int start, List<Integer> path, int[] nums,
+                           List<List<Integer>> result) {
+        result.add(new ArrayList<>(path));   // every state is valid
+        for (int i = start; i < nums.length; i++) {
+            path.add(nums[i]);
+            backtrack(i + 1, path, nums, result);
+            path.remove(path.size() - 1);
+        }
     }
 }
 ~~~
@@ -2355,6 +5090,86 @@ private void backtrack(int start, List<Integer> path, int[] nums,
 - Có thể giải bằng bitmask từ 0 đến {{(1 << n) - 1}}; với n <= 10 thì cả hai cách đều ổn.
 
 > Senior tip: Bài này là mẫu để học "backtracking template". Khi gặp bài tổ hợp, hãy xác định rõ: trạng thái ghi nhận khi nào, tham số start là gì, và điều kiện cắt tỉa. Ba câu hỏi đó quyết định code đúng hay sai.`,
+  starter: "class Solution {\n    public List<List<Integer>> subsets(int[] nums) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    static List<List<Integer>> norm(List<List<Integer>> x) {
+        List<List<Integer>> copy = new ArrayList<>();
+        for (List<Integer> row : x) {
+            List<Integer> r = new ArrayList<>(row);
+            Collections.sort(r);
+            copy.add(r);
+        }
+        Collections.sort(copy, (a, b) -> {
+            int n = Math.min(a.size(), b.size());
+            for (int i = 0; i < n; i++) {
+                int c = Integer.compare(a.get(i), b.get(i));
+                if (c != 0) return c;
+            }
+            return Integer.compare(a.size(), b.size());
+        });
+        return copy;
+    }
+
+    public static void main(String[] args) {
+        run("example", norm(Arrays.asList(
+                new ArrayList<Integer>(), ints(1), ints(2), ints(3),
+                ints(1, 2), ints(1, 3), ints(2, 3), ints(1, 2, 3))),
+            () -> norm(new Solution().subsets(new int[]{1, 2, 3})));
+        run("zero", norm(Arrays.asList(new ArrayList<Integer>(), ints(0))),
+            () -> norm(new Solution().subsets(new int[]{0})));
+        run("two", norm(Arrays.asList(
+                new ArrayList<Integer>(), ints(1), ints(2), ints(1, 2))),
+            () -> norm(new Solution().subsets(new int[]{1, 2})));
+        run("negative", norm(Arrays.asList(
+                new ArrayList<Integer>(), ints(-1), ints(0), ints(-1, 0))),
+            () -> norm(new Solution().subsets(new int[]{-1, 0})));
+        run("single", norm(Arrays.asList(new ArrayList<Integer>(), ints(5))),
+            () -> norm(new Solution().subsets(new int[]{5})));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n * 2^n), Space O(n) ngoài kết quả',
   follow: ['Nếu nums có phần tử trùng thì sửa thế nào?', 'Sinh tập con có tổng bằng target thì làm sao?']
 },
@@ -2387,26 +5202,28 @@ Backtracking với mảng {{used}}. Tại mỗi bước, thử mọi phần tử
 Có n! hoán vị; chi phí copy mỗi hoán vị là O(n).
 
 ~~~java
-public List<List<Integer>> permute(int[] nums) {
-    List<List<Integer>> result = new ArrayList<>();
-    boolean[] used = new boolean[nums.length];
-    backtrack(new ArrayList<>(), nums, used, result);
-    return result;
-}
-
-private void backtrack(List<Integer> path, int[] nums, boolean[] used,
-                       List<List<Integer>> result) {
-    if (path.size() == nums.length) {
-        result.add(new ArrayList<>(path));
-        return;
+class Solution {
+    public List<List<Integer>> permute(int[] nums) {
+        List<List<Integer>> result = new ArrayList<>();
+        boolean[] used = new boolean[nums.length];
+        backtrack(new ArrayList<>(), nums, used, result);
+        return result;
     }
-    for (int i = 0; i < nums.length; i++) {
-        if (used[i]) continue;
-        used[i] = true;
-        path.add(nums[i]);
-        backtrack(path, nums, used, result);
-        path.remove(path.size() - 1);
-        used[i] = false;
+
+    private void backtrack(List<Integer> path, int[] nums, boolean[] used,
+                           List<List<Integer>> result) {
+        if (path.size() == nums.length) {
+            result.add(new ArrayList<>(path));
+            return;
+        }
+        for (int i = 0; i < nums.length; i++) {
+            if (used[i]) continue;
+            used[i] = true;
+            path.add(nums[i]);
+            backtrack(path, nums, used, result);
+            path.remove(path.size() - 1);
+            used[i] = false;
+        }
     }
 }
 ~~~
@@ -2417,6 +5234,86 @@ private void backtrack(List<Integer> path, int[] nums, boolean[] used,
 - Khi n tăng, số hoán vị bùng nổ; hãy hỏi có cần sinh tất cả hay chỉ đếm/duyệt theo thứ tự.
 
 > Senior tip: Với bài toán lịch trình nhỏ, hoán vị + kiểm tra ràng buộc là cách nhanh để prototype. Nhưng trong production, n > 10 gần như không thể duyệt hết; hãy chuyển sang heuristic hoặc quy hoạch động trên tập con (bitmask DP).`,
+  starter: "class Solution {\n    public List<List<Integer>> permute(int[] nums) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    static List<List<Integer>> norm(List<List<Integer>> x) {
+        List<List<Integer>> copy = new ArrayList<>();
+        for (List<Integer> row : x) {
+            List<Integer> r = new ArrayList<>(row);
+            Collections.sort(r);
+            copy.add(r);
+        }
+        Collections.sort(copy, (a, b) -> {
+            int n = Math.min(a.size(), b.size());
+            for (int i = 0; i < n; i++) {
+                int c = Integer.compare(a.get(i), b.get(i));
+                if (c != 0) return c;
+            }
+            return Integer.compare(a.size(), b.size());
+        });
+        return copy;
+    }
+
+    public static void main(String[] args) {
+        run("example", norm(Arrays.asList(
+                ints(1, 2, 3), ints(1, 3, 2), ints(2, 1, 3),
+                ints(2, 3, 1), ints(3, 1, 2), ints(3, 2, 1))),
+            () -> norm(new Solution().permute(new int[]{1, 2, 3})));
+        run("two", norm(Arrays.asList(ints(0, 1), ints(1, 0))),
+            () -> norm(new Solution().permute(new int[]{0, 1})));
+        run("single", norm(Arrays.asList(ints(1))),
+            () -> norm(new Solution().permute(new int[]{1})));
+        run("one two", norm(Arrays.asList(ints(1, 2), ints(2, 1))),
+            () -> norm(new Solution().permute(new int[]{1, 2})));
+        run("negative", norm(Arrays.asList(
+                ints(-1, 0, 1), ints(-1, 1, 0), ints(0, -1, 1),
+                ints(0, 1, -1), ints(1, -1, 0), ints(1, 0, -1))),
+            () -> norm(new Solution().permute(new int[]{-1, 0, 1})));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n * n!), Space O(n)',
   follow: ['Xử lý hoán vị có phần tử trùng thế nào?', 'Sinh hoán vị thứ k theo thứ tự từ điển ra sao?']
 },
@@ -2452,24 +5349,26 @@ Backtracking với {{start}} và số tiền còn lại {{remain}}. Chọn {{can
 Sort trước để có thể break sớm khi phần tử lớn hơn remain.
 
 ~~~java
-public List<List<Integer>> combinationSum(int[] candidates, int target) {
-    Arrays.sort(candidates);
-    List<List<Integer>> result = new ArrayList<>();
-    backtrack(0, target, candidates, new ArrayList<>(), result);
-    return result;
-}
-
-private void backtrack(int start, int remain, int[] candidates,
-                       List<Integer> path, List<List<Integer>> result) {
-    if (remain == 0) {
-        result.add(new ArrayList<>(path));
-        return;
+class Solution {
+    public List<List<Integer>> combinationSum(int[] candidates, int target) {
+        Arrays.sort(candidates);
+        List<List<Integer>> result = new ArrayList<>();
+        backtrack(0, target, candidates, new ArrayList<>(), result);
+        return result;
     }
-    for (int i = start; i < candidates.length; i++) {
-        if (candidates[i] > remain) break;   // đã sort
-        path.add(candidates[i]);
-        backtrack(i, remain - candidates[i], candidates, path, result);
-        path.remove(path.size() - 1);
+
+    private void backtrack(int start, int remain, int[] candidates,
+                           List<Integer> path, List<List<Integer>> result) {
+        if (remain == 0) {
+            result.add(new ArrayList<>(path));
+            return;
+        }
+        for (int i = start; i < candidates.length; i++) {
+            if (candidates[i] > remain) break;   // sorted
+            path.add(candidates[i]);
+            backtrack(i, remain - candidates[i], candidates, path, result);
+            path.remove(path.size() - 1);
+        }
     }
 }
 ~~~
@@ -2480,6 +5379,82 @@ private void backtrack(int start, int remain, int[] candidates,
 - Có thể cắt nhánh mạnh hơn bằng remain và giá trị nhỏ nhất; break sau sort là đủ cho bài này.
 
 > Senior tip: Combination Sum là bài học về "tránh trùng lặp bằng thứ tự". Rất nhiều ứng viên code đúng tổng nhưng trả về hoán vị trùng; hãy vẽ cây đệ quy và chỉ ra tham số start đã loại bỏ nhánh quay lui thế nào.`,
+  starter: "class Solution {\n    public List<List<Integer>> combinationSum(int[] candidates, int target) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    static List<List<Integer>> norm(List<List<Integer>> x) {
+        List<List<Integer>> copy = new ArrayList<>();
+        for (List<Integer> row : x) {
+            List<Integer> r = new ArrayList<>(row);
+            Collections.sort(r);
+            copy.add(r);
+        }
+        Collections.sort(copy, (a, b) -> {
+            int n = Math.min(a.size(), b.size());
+            for (int i = 0; i < n; i++) {
+                int c = Integer.compare(a.get(i), b.get(i));
+                if (c != 0) return c;
+            }
+            return Integer.compare(a.size(), b.size());
+        });
+        return copy;
+    }
+
+    public static void main(String[] args) {
+        run("example 1", norm(Arrays.asList(ints(2, 2, 3), ints(7))),
+            () -> norm(new Solution().combinationSum(new int[]{2, 3, 6, 7}, 7)));
+        run("example 2", norm(Arrays.asList(ints(2, 2, 2, 2), ints(2, 3, 3), ints(3, 5))),
+            () -> norm(new Solution().combinationSum(new int[]{2, 3, 5}, 8)));
+        run("impossible", norm(new ArrayList<List<Integer>>()),
+            () -> norm(new Solution().combinationSum(new int[]{2}, 1)));
+        run("only ones", norm(Arrays.asList(ints(1, 1))),
+            () -> norm(new Solution().combinationSum(new int[]{1}, 2)));
+        run("unsorted", norm(Arrays.asList(ints(2, 2, 3), ints(7))),
+            () -> norm(new Solution().combinationSum(new int[]{7, 3, 2}, 7)));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n^(target/minCoin)) worst case, Space O(target/minCoin)',
   follow: ['Nếu mỗi phần tử chỉ dùng một lần thì sửa thế nào?', 'Đếm số tổ hợp thay vì liệt kê thì tối ưu ra sao?']
 },
@@ -2516,14 +5491,16 @@ Greedy: duy trì vị trí xa nhất có thể tới. Tại mỗi vị trí tron
 Đây là O(n) time, O(1) space, tốt hơn DP O(n²).
 
 ~~~java
-public boolean canJump(int[] nums) {
-    int farthest = 0;
-    for (int i = 0; i < nums.length; i++) {
-        if (i > farthest) return false;          // không tới được i
-        farthest = Math.max(farthest, i + nums[i]);
-        if (farthest >= nums.length - 1) return true;
+class Solution {
+    public boolean canJump(int[] nums) {
+        int farthest = 0;
+        for (int i = 0; i < nums.length; i++) {
+            if (i > farthest) return false;          // cannot reach i
+            farthest = Math.max(farthest, i + nums[i]);
+            if (farthest >= nums.length - 1) return true;
+        }
+        return true;
     }
-    return true;
 }
 ~~~
 
@@ -2533,6 +5510,64 @@ public boolean canJump(int[] nums) {
 - Câu hỏi tiếp: tìm số bước nhảy ít nhất (Jump Game II) — khi đó dùng BFS/greedy theo tầng, không chỉ farthest đơn thuần.
 
 > Senior tip: Greedy đúng ở đây vì khả năng tới vị trí xa hơn luôn tốt hơn hoặc bằng, không có lý do chọn bước ngắn. Khi gặp bài greedy, hãy luôn tự hỏi "có phản ví dụ nào mà chọn xa hơn lại tệ hơn không?" — nếu không, đó là dấu hiệu tốt.`,
+  starter: "class Solution {\n    public boolean canJump(int[] nums) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example true", true, () -> new Solution().canJump(new int[]{2, 3, 1, 1, 4}));
+        run("example false", false, () -> new Solution().canJump(new int[]{3, 2, 1, 0, 4}));
+        run("single", true, () -> new Solution().canJump(new int[]{0}));
+        run("stuck", false, () -> new Solution().canJump(new int[]{0, 1}));
+        run("jump over", true, () -> new Solution().canJump(new int[]{2, 0, 0}));
+        run("large all ones", true, () -> {
+            int[] a = new int[10000];
+            Arrays.fill(a, 1);
+            return new Solution().canJump(a);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n), Space O(1)',
   follow: ['Tìm số bước nhảy ít nhất thì làm thế nào?', 'Nếu có thể nhảy lùi thì bài toán thay đổi ra sao?']
 },
@@ -2568,19 +5603,21 @@ Sort theo end tăng dần. Giữ khoảng đầu tiên, sau đó duyệt: nếu 
 Đây là greedy chuẩn cho activity selection, chứng minh bằng trao đổi: chọn khoảng kết thúc sớm nhất luôn không tệ hơn bất kỳ lựa chọn nào khác.
 
 ~~~java
-public int eraseOverlapIntervals(int[][] intervals) {
-    if (intervals.length == 0) return 0;
-    Arrays.sort(intervals, (a, b) -> Integer.compare(a[1], b[1]));
-    int removed = 0;
-    int lastEnd = intervals[0][1];
-    for (int i = 1; i < intervals.length; i++) {
-        if (intervals[i][0] < lastEnd) {
-            removed++;                 // giao với khoảng đã giữ
-        } else {
-            lastEnd = intervals[i][1];
+class Solution {
+    public int eraseOverlapIntervals(int[][] intervals) {
+        if (intervals.length == 0) return 0;
+        Arrays.sort(intervals, (a, b) -> Integer.compare(a[1], b[1]));
+        int removed = 0;
+        int lastEnd = intervals[0][1];
+        for (int i = 1; i < intervals.length; i++) {
+            if (intervals[i][0] < lastEnd) {
+                removed++;                 // overlaps kept interval
+            } else {
+                lastEnd = intervals[i][1];
+            }
         }
+        return removed;
     }
-    return removed;
 }
 ~~~
 
@@ -2590,6 +5627,71 @@ public int eraseOverlapIntervals(int[][] intervals) {
 - Comparator dùng {{a[1] - b[1]}} có thể tràn với giá trị lớn; dùng {{Integer.compare}}.
 
 > Senior tip: Activity selection xuất hiện trong lập lịch job, chọn phòng họp, và tối ưu batch window. Khi có trọng số (mỗi job lợi nhuận khác nhau), greedy không còn đúng — phải chuyển sang weighted interval scheduling với DP + binary search.`,
+  starter: "class Solution {\n    public int eraseOverlapIntervals(int[][] intervals) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example", 1, () -> new Solution().eraseOverlapIntervals(
+            new int[][]{{1, 2}, {2, 3}, {3, 4}, {1, 3}}));
+        run("all same", 2, () -> new Solution().eraseOverlapIntervals(
+            new int[][]{{1, 2}, {1, 2}, {1, 2}}));
+        run("single", 0, () -> new Solution().eraseOverlapIntervals(new int[][]{{1, 2}}));
+        run("touching", 0, () -> new Solution().eraseOverlapIntervals(
+            new int[][]{{1, 2}, {2, 3}}));
+        run("classic", 2, () -> new Solution().eraseOverlapIntervals(
+            new int[][]{{1, 100}, {11, 22}, {1, 11}, {2, 12}}));
+        run("large disjoint", 0, () -> {
+            int[][] a = new int[100000][2];
+            for (int i = 0; i < a.length; i++) {
+                a[i][0] = 2 * i;
+                a[i][1] = 2 * i + 1;
+            }
+            return new Solution().eraseOverlapIntervals(a);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n log n), Space O(1) ngoài sort',
   follow: ['Nếu mỗi khoảng có trọng số thì giải thế nào?', 'Tìm số khoảng tối đa không giao thay vì số cần xoá thì sao?']
 },
@@ -2663,6 +5765,98 @@ public final class TokenBucket {
 - Rate limiter phân tán cần trạng thái chia sẻ (Redis + Lua) hoặc thuật toán sliding window; token bucket cục bộ chỉ giới hạn theo từng instance.
 
 > Senior tip: Trong API gateway, token bucket thường được cấu hình theo burst và sustained rate. Tôi từng gặp sự cố khi dùng {{System.currentTimeMillis()}} và NTP chỉnh giờ làm token nhảy vọt; {{nanoTime()}} là lựa chọn an toàn hơn cho khoảng thời gian.`,
+  starter: "class TokenBucket {\n    public TokenBucket(long capacity, double tokensPerSecond) {\n        \n    }\n    public synchronized boolean tryAcquire(int n) {\n        return false;\n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    static void sleep(long ms) {
+        try { Thread.sleep(ms); }
+        catch (InterruptedException e) { throw new RuntimeException(e); }
+    }
+    static void join(Thread t) {
+        try { t.join(3000); }
+        catch (InterruptedException e) { throw new RuntimeException(e); }
+    }
+
+    public static void main(String[] args) {
+        runSteps("initial capacity", () -> {
+            TokenBucket b = new TokenBucket(10, 2);
+            eq("first burst", true, b.tryAcquire(10));
+            eq("empty", false, b.tryAcquire(1));
+        });
+        runSteps("partial drain", () -> {
+            TokenBucket b = new TokenBucket(5, 1);
+            eq("take 3", true, b.tryAcquire(3));
+            eq("take 2", true, b.tryAcquire(2));
+            eq("take 1", false, b.tryAcquire(1));
+        });
+        runSteps("oversize request", () -> {
+            TokenBucket b = new TokenBucket(5, 1);
+            eq("too many", false, b.tryAcquire(6));
+            eq("still full", true, b.tryAcquire(5));
+        });
+        runSteps("refill after wait", () -> {
+            TokenBucket b = new TokenBucket(10, 1000);
+            eq("drain", true, b.tryAcquire(10));
+            sleep(40);
+            eq("refilled", true, b.tryAcquire(10));
+        });
+        runSteps("capacity cap", () -> {
+            TokenBucket b = new TokenBucket(2, 10000);
+            sleep(40);
+            eq("two", true, b.tryAcquire(2));
+            eq("third", false, b.tryAcquire(1));
+        });
+        runSteps("sequential", () -> {
+            TokenBucket b = new TokenBucket(3, 1);
+            eq("first", true, b.tryAcquire(1));
+            eq("second", true, b.tryAcquire(1));
+            eq("third", true, b.tryAcquire(1));
+            eq("fourth", false, b.tryAcquire(1));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(1) mỗi lần gọi, Space O(1)',
   follow: ['So sánh token bucket với sliding window log.', 'Làm sao triển khai rate limiter phân tán cho nhiều instance?']
 },
@@ -2701,6 +5895,9 @@ Dùng {{ReentrantLock}} và hai {{Condition}}. Producer chờ trên {{notFull}} 
 Mảng vòng giúp thao tác O(1) và không cấp phát node.
 
 ~~~java
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.ReentrantLock;
+
 public final class BoundedBlockingQueue<T> {
     private final Object[] items;
     private int head, tail, size;
@@ -2731,7 +5928,7 @@ public final class BoundedBlockingQueue<T> {
         try {
             while (size == 0) notEmpty.await();
             T item = (T) items[head];
-            items[head] = null;   // tránh giữ reference
+            items[head] = null;   // avoid retaining a reference
             head = (head + 1) % items.length;
             size--;
             notFull.signal();
@@ -2750,6 +5947,145 @@ public final class BoundedBlockingQueue<T> {
 - Hỏi thêm về shutdown: cần "poison pill" hoặc cờ dừng để consumer thoát an toàn.
 
 > Senior tip: Đây là bài kiểm tra hiểu biết thực sự về {{Condition}} và memory visibility. Đừng trả lời bằng {{wait/notify}} trên object nếu có thể dùng {{ReentrantLock}}; code dễ đọc hơn và ít lỗi hơn. Trong production, hãy dùng {{ArrayBlockingQueue}} trừ khi có lý do đặc biệt để tự viết.`,
+  starter: "class BoundedBlockingQueue<T> {\n    public BoundedBlockingQueue(int capacity) {\n        \n    }\n    public void put(T item) throws InterruptedException {\n        \n    }\n    public T take() throws InterruptedException {\n        return null;\n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    static <T> void put(BoundedBlockingQueue<T> q, T v) {
+        try { q.put(v); }
+        catch (InterruptedException e) { throw new RuntimeException(e); }
+    }
+    static <T> T take(BoundedBlockingQueue<T> q) {
+        try { return q.take(); }
+        catch (InterruptedException e) { throw new RuntimeException(e); }
+    }
+
+    static void sleep(long ms) {
+        try { Thread.sleep(ms); }
+        catch (InterruptedException e) { throw new RuntimeException(e); }
+    }
+    static void join(Thread t) {
+        try { t.join(3000); }
+        catch (InterruptedException e) { throw new RuntimeException(e); }
+    }
+
+    public static void main(String[] args) {
+        runSteps("fifo", () -> {
+            BoundedBlockingQueue<String> q = new BoundedBlockingQueue<>(3);
+            put(q, "a");
+            put(q, "b");
+            put(q, "c");
+            eq("first", "a", take(q));
+            eq("second", "b", take(q));
+            eq("third", "c", take(q));
+        });
+        runSteps("take blocks until put", () -> {
+            BoundedBlockingQueue<String> q = new BoundedBlockingQueue<>(1);
+            AtomicReference<String> got = new AtomicReference<>();
+            Thread c = new Thread(() -> got.set(take(q)));
+            c.start();
+            sleep(80);
+            eq("blocked", null, got.get());
+            put(q, "x");
+            join(c);
+            eq("got", "x", got.get());
+        });
+        runSteps("put blocks until take", () -> {
+            BoundedBlockingQueue<String> q = new BoundedBlockingQueue<>(1);
+            put(q, "a");
+            AtomicBoolean done = new AtomicBoolean(false);
+            Thread p = new Thread(() -> { put(q, "b"); done.set(true); });
+            p.start();
+            sleep(80);
+            eq("blocked", false, done.get());
+            eq("first", "a", take(q));
+            join(p);
+            eq("done", true, done.get());
+            eq("second", "b", take(q));
+        });
+        runSteps("single producer order", () -> {
+            BoundedBlockingQueue<Integer> q = new BoundedBlockingQueue<>(10);
+            List<Integer> out = new ArrayList<>();
+            Thread prod = new Thread(() -> {
+                for (int i = 1; i <= 100; i++) put(q, i);
+            });
+            Thread cons = new Thread(() -> {
+                for (int i = 0; i < 100; i++) out.add(take(q));
+            });
+            prod.start();
+            cons.start();
+            join(prod);
+            join(cons);
+            eq("count", 100, out.size());
+            eq("order", seq(1, 100), out);
+        });
+        runSteps("multiple producers", () -> {
+            BoundedBlockingQueue<String> q = new BoundedBlockingQueue<>(8);
+            ConcurrentHashMap<String, Integer> counts = new ConcurrentHashMap<>();
+            Thread[] ps = new Thread[3];
+            for (int p = 0; p < 3; p++) {
+                final int id = p;
+                ps[p] = new Thread(() -> {
+                    for (int i = 0; i < 40; i++) put(q, "p" + id + "-" + i);
+                });
+                ps[p].start();
+            }
+            Thread cons = new Thread(() -> {
+                for (int i = 0; i < 120; i++) {
+                    String v = take(q);
+                    counts.merge(v, 1, Integer::sum);
+                }
+            });
+            cons.start();
+            for (Thread t : ps) join(t);
+            join(cons);
+            eq("distinct", 120, counts.size());
+            eq("first", 1, counts.get("p0-0"));
+            eq("last", 1, counts.get("p2-39"));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(1) mỗi thao tác, Space O(capacity)',
   follow: ['Làm sao hỗ trợ timeout cho put/take?', 'Thiết kế shutdown an toàn cho producer-consumer thế nào?']
 },
@@ -2774,7 +6110,9 @@ T3: expected=0, actual=700
 ### Ràng buộc
 - {{0 <= số giao dịch mỗi bên <= 10^6}}
 - {{-10^12 <= amountCents <= 10^12}}
-- {{id}} là chuỗi không rỗng, tối đa 64 ký tự.`,
+- {{id}} là chuỗi không rỗng, tối đa 64 ký tự.
+
+Class {{Txn}} đã được định nghĩa sẵn trong harness.`,
   hints: [
     'Cần so sánh tổng tiền theo từng id giữa hai nguồn.',
     'Cộng dồn vào hai {{HashMap<String, Long>}} rồi hợp các key lại để so sánh.',
@@ -2786,26 +6124,26 @@ Cộng dồn số tiền theo id cho từng nguồn bằng {{merge}}. Sau đó h
 Đây là bài đối soát cơ bản trong fintech: idempotent, có thể chạy lại, và không phụ thuộc thứ tự giao dịch.
 
 ~~~java
-public record Txn(String id, long amountCents) {}
+class Solution {
+    public List<String> reconcile(List<Txn> ledger, List<Txn> bank) {
+        Map<String, Long> expected = new HashMap<>();
+        for (Txn t : ledger) expected.merge(t.id, t.amountCents, Long::sum);
+        Map<String, Long> actual = new HashMap<>();
+        for (Txn t : bank) actual.merge(t.id, t.amountCents, Long::sum);
 
-public static List<String> reconcile(List<Txn> ledger, List<Txn> bank) {
-    Map<String, Long> expected = new HashMap<>();
-    for (Txn t : ledger) expected.merge(t.id(), t.amountCents(), Long::sum);
-    Map<String, Long> actual = new HashMap<>();
-    for (Txn t : bank) actual.merge(t.id(), t.amountCents(), Long::sum);
-
-    Set<String> ids = new HashSet<>(expected.keySet());
-    ids.addAll(actual.keySet());
-    List<String> diffs = new ArrayList<>();
-    for (String id : ids) {
-        long e = expected.getOrDefault(id, 0L);
-        long a = actual.getOrDefault(id, 0L);
-        if (e != a) {
-            diffs.add(id + ": expected=" + e + ", actual=" + a);
+        Set<String> ids = new HashSet<>(expected.keySet());
+        ids.addAll(actual.keySet());
+        List<String> diffs = new ArrayList<>();
+        for (String id : ids) {
+            long e = expected.getOrDefault(id, 0L);
+            long a = actual.getOrDefault(id, 0L);
+            if (e != a) {
+                diffs.add(id + ": expected=" + e + ", actual=" + a);
+            }
         }
+        Collections.sort(diffs);
+        return diffs;
     }
-    Collections.sort(diffs);
-    return diffs;
 }
 ~~~
 
@@ -2816,6 +6154,81 @@ public static List<String> reconcile(List<Txn> ledger, List<Txn> bank) {
 - Cần hỏi rõ quy tắc: giao dịch bị huỷ, hoàn tiền, hay chênh lệch tỷ giá xử lý thế nào.
 
 > Senior tip: Đối soát thật không chỉ là so tổng; phải xử lý trạng thái giao dịch, thời gian hiệu lực và tiền tệ. Một mẹo tôi dùng: lưu thêm checksum/version để phát hiện bản ghi bị sửa, và chạy đối soát theo cửa sổ thời gian thay vì toàn bộ lịch sử.`,
+  starter: "class Solution {\n    public List<String> reconcile(List<Txn> ledger, List<Txn> bank) {\n        \n    }\n}",
+  tests: `class Txn {
+    String id;
+    long amountCents;
+    Txn(String id, long amountCents) {
+        this.id = id;
+        this.amountCents = amountCents;
+    }
+}
+public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example", Arrays.asList("T2: expected=2000, actual=0", "T3: expected=0, actual=700"),
+            () -> new Solution().reconcile(
+                Arrays.asList(new Txn("T1", 1000), new Txn("T1", 500), new Txn("T2", 2000)),
+                Arrays.asList(new Txn("T1", 1500), new Txn("T3", 700))));
+        run("empty", Arrays.asList(), () -> new Solution().reconcile(
+            new ArrayList<Txn>(), new ArrayList<Txn>()));
+        run("balanced", Arrays.asList(), () -> new Solution().reconcile(
+            Arrays.asList(new Txn("A", 100), new Txn("B", -50)),
+            Arrays.asList(new Txn("B", -50), new Txn("A", 100))));
+        run("negative diff", Arrays.asList("B: expected=250, actual=200"),
+            () -> new Solution().reconcile(
+                Arrays.asList(new Txn("A", -500), new Txn("B", 250)),
+                Arrays.asList(new Txn("A", -500), new Txn("B", 200))));
+        run("aggregated equal", Arrays.asList(), () -> new Solution().reconcile(
+            Arrays.asList(new Txn("X", 100), new Txn("X", 200)),
+            Arrays.asList(new Txn("X", 300))));
+        run("one side only", Arrays.asList("Z: expected=5, actual=0"),
+            () -> new Solution().reconcile(
+                Arrays.asList(new Txn("Z", 5)), new ArrayList<Txn>()));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n + m + u log u), Space O(u)',
   follow: ['Nếu dữ liệu lớn hơn RAM thì đối soát thế nào?', 'Làm sao xử lý giao dịch bị trùng hoặc gửi lại (idempotency)?']
 },
@@ -2851,26 +6264,28 @@ cùng 1 lần nên lấy theo thứ tự từ điển tăng dần.
 Bộ nhớ O(số giá trị phân biệt), thời gian O(n + u log k).
 
 ~~~java
-public List<String> topK(Stream<String> logs, int k) {
-    Map<String, Integer> freq = new HashMap<>();
-    logs.forEach(s -> freq.merge(s, 1, Integer::sum));
+class Solution {
+    public List<String> topK(Stream<String> logs, int k) {
+        Map<String, Integer> freq = new HashMap<>();
+        logs.forEach(s -> freq.merge(s, 1, Integer::sum));
 
-    PriorityQueue<Map.Entry<String, Integer>> heap =
-        new PriorityQueue<>((a, b) -> {
-            int byCount = Integer.compare(a.getValue(), b.getValue());
-            if (byCount != 0) return byCount;
-            return b.getKey().compareTo(a.getKey());   // key lớn bị loại trước
-        });
+        PriorityQueue<Map.Entry<String, Integer>> heap =
+            new PriorityQueue<>((a, b) -> {
+                int byCount = Integer.compare(a.getValue(), b.getValue());
+                if (byCount != 0) return byCount;
+                return b.getKey().compareTo(a.getKey());   // larger key is evicted first
+            });
 
-    for (Map.Entry<String, Integer> e : freq.entrySet()) {
-        heap.add(e);
-        if (heap.size() > k) heap.poll();
+        for (Map.Entry<String, Integer> e : freq.entrySet()) {
+            heap.add(e);
+            if (heap.size() > k) heap.poll();
+        }
+
+        List<String> result = new ArrayList<>(k);
+        while (!heap.isEmpty()) result.add(heap.poll().getKey());
+        Collections.reverse(result);
+        return result;
     }
-
-    List<String> result = new ArrayList<>(k);
-    while (!heap.isEmpty()) result.add(heap.poll().getKey());
-    Collections.reverse(result);
-    return result;
 }
 ~~~
 
@@ -2881,6 +6296,67 @@ public List<String> topK(Stream<String> logs, int k) {
 - Hỏi lại: "log entry" là cả dòng hay đã tách thành field? Việc tách field ảnh hưởng lớn đến cardinality.
 
 > Senior tip: Trong hệ thống log thật, top-k thường chạy theo cửa sổ thời gian (5 phút, 1 giờ) và theo chiều dimension (service, endpoint). Hãy nêu rõ bạn sẽ partition theo service trước khi đếm để tránh một node phải giữ toàn bộ cardinality.`,
+  starter: "class Solution {\n    public List<String> topK(Stream<String> logs, int k) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example", Arrays.asList("ERROR db", "INFO ok"),
+            () -> new Solution().topK(Stream.of(
+                "ERROR db", "ERROR db", "WARN cache", "ERROR db", "INFO ok"), 2));
+        run("all distinct", Arrays.asList("a", "b", "c"),
+            () -> new Solution().topK(Stream.of("b", "a", "c"), 3));
+        run("most frequent", Arrays.asList("x"),
+            () -> new Solution().topK(Stream.of("x", "y", "x", "z", "x", "y"), 1));
+        run("tie", Arrays.asList("a", "b"),
+            () -> new Solution().topK(Stream.of("b", "a", "b", "a", "c"), 2));
+        run("k equals size", Arrays.asList("a", "b", "c"),
+            () -> new Solution().topK(Stream.of("c", "b", "a"), 3));
+        run("large", Arrays.asList("k0", "k1", "k2"), () -> new Solution().topK(
+            IntStream.range(0, 100000).mapToObj(i -> "k" + (i % 10)), 3));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
   complexity: 'Time O(n + u log k), Space O(u)',
   follow: ['Nếu dữ liệu không vừa RAM thì thiết kế MapReduce thế nào?', 'Làm sao tìm top-k theo từng cửa sổ thời gian?']
 }

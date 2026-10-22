@@ -1,6 +1,6 @@
 # T18 — Test harness + starter code cho 48 bài thuật toán
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/algo.js` (chỉ THÊM field `starter` và `tests` vào từng bài; được sửa tối thiểu `solution` nếu cần để compile chung với harness)
 
@@ -62,4 +62,19 @@ tests: `public class Main {
 - `node scripts/validate.js` → OK.
 
 ## Notes
-(agent ghi chú ở đây)
+
+- Đã thêm `starter` và `tests` cho cả 48 bài trong `js/data/algo.js`; mỗi harness có 5–7 case, in `PASS`/`FAIL`/`RESULT`.
+- Harness dùng helper `run`/`runSteps` bọc từng case trong `try/catch (Throwable)`, so sánh bằng `Objects.deepEquals`
+  (mảng primitive, mảng 2 chiều, `List`) và chuẩn hoá thứ tự cho bài có nhiều đáp án hợp lệ (Group Anagrams, 3Sum,
+  Subsets, Permutations, Combination Sum).
+- `ListNode`/`TreeNode` được định nghĩa trong harness kèm helper dựng/so sánh; đã thêm ghi chú vào `prompt` của
+  algo-020/021/023/024/025/026/027. `Txn` của algo-047 cũng do harness định nghĩa (đã ghi chú trong prompt).
+- Sửa tối thiểu `solution` để chạy chung harness:
+  - Bọc thân method trong `class Solution { … }` cho 44 bài dạng hàm.
+  - algo-013: thay switch expression (Java 14) bằng if/else để hợp Java 13.
+  - algo-047: bỏ `record` (Java 16), dùng `class Txn` của harness và chuyển `reconcile` thành instance method.
+  - algo-046: thêm `import java.util.concurrent.locks.{Condition,ReentrantLock}` (assemble sẽ hoist import).
+  - Chuyển các comment tiếng Việt trong block `~~~java` sang ASCII để `javac` mặc định trên Windows
+    (encoding windows-1258) không báo "unmappable character".
+- Kiểm chứng: `node scripts/test-algos.js` → `Harness OK: 48 · lỗi: 0 · chưa có tests: 0`;
+  `node scripts/validate.js` → `OK — không có lỗi.`
