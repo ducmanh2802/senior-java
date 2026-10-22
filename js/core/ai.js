@@ -142,7 +142,7 @@
   };
 
   // ---------- code assembly ----------
-  const DEFAULT_IMPORTS = ['import java.util.*;', 'import java.util.function.*;', 'import java.util.stream.*;', 'import java.util.concurrent.*;', 'import java.util.concurrent.atomic.*;'];
+  const DEFAULT_IMPORTS = ['import java.util.*;', 'import java.util.function.*;', 'import java.util.stream.*;', 'import java.util.concurrent.*;', 'import java.util.concurrent.atomic.*;', 'import java.math.*;'];
 
   const code = {
     /** True if this algo problem has a runnable test harness. */

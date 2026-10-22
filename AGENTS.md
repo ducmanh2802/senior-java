@@ -305,7 +305,7 @@ Mỗi bài học dạy một khái niệm cho người hổng nền tảng: lý 
   tags: ['…']                       // tuỳ chọn
 }
 ```
-- Code bài tập **chỉ dùng JDK chuẩn** (không Spring, không thư viện ngoài), **không class public** ngoài `Main` (code được ghép vào một file), import `java.util.*`, `java.util.function.*`, `java.util.concurrent.*`… được tự thêm (xem `App.code.assemble`). Với chủ đề framework (Spring, JPA), bài tập **mô phỏng cơ chế bằng Java thuần** (ví dụ: tự viết một DI container nhỏ, một dynamic proxy bọc transaction, đếm số query để thấy N+1).
+- Code bài tập **chỉ dùng JDK chuẩn** (không Spring, không thư viện ngoài), **không class public** ngoài `Main` (code được ghép vào một file), import `java.util.*`, `java.util.function.*`, `java.util.stream.*`, `java.util.concurrent.*` (+ `.atomic`), `java.math.*` được tự thêm (xem `App.code.assemble`). Với chủ đề framework (Spring, JPA), bài tập **mô phỏng cơ chế bằng Java thuần** (ví dụ: tự viết một DI container nhỏ, một dynamic proxy bọc transaction, đếm số query để thấy N+1).
 - Test phải **xác định (deterministic)**: không phụ thuộc thời gian thực hay thứ tự lập lịch thread; với concurrency hãy dùng `CountDownLatch`/`ExecutorService` + `join`/`awaitTermination` có timeout và lặp đủ nhiều lần để lỗi race lộ ra ổn định ở code sai.
 - Bài tập phải biên dịch với **Java 17** (JDK trên máy và CI là 17; Judge0 còn cũ hơn): tính năng Java 21 (virtual threads, switch pattern) chỉ được dạy trong `body`/`explain`.
 - Chạy `node scripts/test-lessons.js` (biên dịch thật bằng JDK 17): reference phải pass hết, starter phải biên dịch được và **không** pass hết. Và `node scripts/validate.js` → OK.

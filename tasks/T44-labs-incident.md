@@ -1,6 +1,6 @@
 # T44 — Nội dung: Debug lab — Sự cố production (log + metric + trace)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/labs-incident.js`
 

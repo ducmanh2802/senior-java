@@ -1,6 +1,6 @@
 # T58 — Nội dung: Docker, Kubernetes, Linux & Git
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/q-devops.js`
 

@@ -20,6 +20,7 @@ window.TOPICS = [
   { id: 'scenario',      name: 'Tình huống thực tế',          icon: '🔥', group: 'Architecture', file: 'q-scenario.js' },
   { id: 'aws',           name: 'AWS & Cloud',                icon: '☁️', group: 'Cloud & AI',   file: 'q-aws.js' },
   { id: 'ai',            name: 'AI / LLM cho Java dev',      icon: '🤖', group: 'Cloud & AI',   file: 'q-ai.js' },
+  { id: 'devops',        name: 'Docker, K8s, Linux & Git',   icon: '🐳', group: 'Cloud & AI',   file: 'q-devops.js' },
   { id: 'testing',       name: 'Testing & Quality',          icon: '🧪', group: 'Soft skills',  file: 'q-soft.js' },
   { id: 'behavioral',    name: 'Leadership & Behavioral',    icon: '🤝', group: 'Soft skills',  file: 'q-soft.js' },
   { id: 'english',       name: 'Phỏng vấn tiếng Anh',        icon: '🇬🇧', group: 'Soft skills',  file: 'q-english.js' },

@@ -1,6 +1,6 @@
 # T42 — Nội dung: Debug lab — GC log / heap / OOM
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/labs-gc.js`
 
