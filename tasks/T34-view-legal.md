@@ -1,10 +1,12 @@
 # T34 — Trang Quyền riêng tư, Điều khoản, Giới thiệu
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/views/legal.js`, `css/views/legal.css`
 
 > **Ghi theo lô nhỏ.** Đọc `AGENTS.md` mục 7 và 10, thư mục `api/`, `supabase/schema.sql` và `js/core/ai.js` để mô tả **đúng sự thật** những gì hệ thống làm.
+
+**Ghi chú:** File `js/views/legal.js` và `css/views/legal.css` đã được triển khai đầy đủ với 3 trang (privacy, terms, about), có tab chuyển đổi, phím tắt 1/2/3, ngày cập nhật 22/10/2026, nội dung tiếng Việt mô tả chính xác những gì app thực sự làm (localStorage khi chưa đăng nhập, Supabase khi đăng nhập, AI chấm qua Anthropic, chạy code qua Judge0, Web Speech API cho giọng nói, quyền xuất/xoá dữ liệu, điều khoản sử dụng, giới thiệu app và cách tạo nội dung). CSS được scope đúng `.view-legal`. `node --check js/views/legal.js` pass.
 
 Route: `#/legal/privacy`, `#/legal/terms`, `#/legal/about` (`params[0]`; không có thì mặc định `about`). Có tab chuyển giữa 3 trang.
 Viết tiếng Việt, rõ ràng, không dùng văn phong pháp lý rườm rà. Đầu mỗi trang ghi "Cập nhật lần cuối: 22/10/2026".
@@ -28,3 +30,4 @@ Viết tiếng Việt, rõ ràng, không dùng văn phong pháp lý rườm rà.
 `node --check`, `npm run smoke` OK. Integrator sẽ review nội dung trước khi publish.
 
 ## Notes
+- Integrator review: sửa mô tả xác thực (đăng nhập + hạn mức thay cho passcode), thêm Phỏng vấn AI, nói đúng là fact-check bằng AI.
