@@ -58,6 +58,20 @@ npx serve .
 2. Framework Preset chọn **Other**, để trống Build Command, Output Directory là `./`.
 3. Bấm **Deploy**. Từ đó mỗi lần `git push` lên `main` sẽ tự deploy lại.
 
+### Bật tính năng AI (chấm điểm, hỏi đào sâu, chạy code)
+
+Vào **Project → Settings → Environment Variables** trên Vercel, thêm các biến sau rồi **Redeploy**:
+
+| Biến | Bắt buộc | Ý nghĩa |
+|---|---|---|
+| `APP_PASSCODE` | ✅ | Mật mã tự đặt. Nhập nó trong ⚙️ trên web, để người khác có link cũng không tiêu tiền API của bạn được |
+| `ANTHROPIC_API_KEY` | ✅ cho AI chấm | Lấy tại [platform.claude.com](https://platform.claude.com). Mỗi lần chấm tốn khoảng $0.03–0.05 |
+| `CLAUDE_MODEL` | | Mặc định `claude-opus-5-5` |
+| `JUDGE0_KEY` | cho nút ▶ Chạy test | RapidAPI key của [Judge0 CE](https://rapidapi.com/judge0-official/api/judge0-ce), gói free khoảng 50 lần/ngày. Chưa có key thì dùng "AI review code" |
+| `JUDGE0_URL` / `JUDGE0_JAVA_ID` | | Dùng khi tự host Judge0 (mặc định CE qua RapidAPI, Java id 62) |
+
+Luyện nói dùng Web Speech API của trình duyệt (Chrome hoặc Edge), miễn phí và không cần cấu hình.
+
 ## Cấu trúc
 
 ```
