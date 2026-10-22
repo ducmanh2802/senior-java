@@ -41,6 +41,9 @@ while [ ${#queue[@]} -gt 0 ] || [ ${#pid_of[@]} -gt 0 ]; do
   if [ ${#pid_of[@]} -lt "$MAX" ]; then
     for i in "${!queue[@]}"; do
       t=${queue[$i]}; o=$(owns "$t")
+      if grep -q '^Status: DONE' tasks/"$t"-*.md; then   # finished meanwhile (e.g. by a watchdog retry)
+        echo "[$(date +%T)] skip $t (already DONE)"; unset "queue[$i]"; queue=("${queue[@]}"); break
+      fi
       if ! busy "$o" && ready "$t"; then
         scripts/run-agents.sh "$t" & pid_of[$t]=$!; owns_of[$t]=$o
         unset "queue[$i]"; queue=("${queue[@]}")
