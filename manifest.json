@@ -1,0 +1,22 @@
+{
+  "name": "Senior Java Prep — ôn phỏng vấn Senior Java",
+  "short_name": "Java Prep",
+  "description": "Ôn luyện phỏng vấn Senior Java: câu hỏi, flashcard, trắc nghiệm, thuật toán, debug lab, phỏng vấn AI.",
+  "lang": "vi",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f6f4ef",
+  "theme_color": "#d9620b",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ],
+  "shortcuts": [
+    { "name": "Ôn hôm nay", "url": "/#/flash/due" },
+    { "name": "Phỏng vấn AI", "url": "/#/interview" },
+    { "name": "Câu hỏi", "url": "/#/bank" }
+  ]
+}

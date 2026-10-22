@@ -336,6 +336,10 @@
 
   window.addEventListener('hashchange', route);
   document.addEventListener('DOMContentLoaded', () => { initChrome(); route(); });
+  // installable + offline (sw.js); http(s) only — service workers do not exist on file://
+  if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
+    window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(e => console.warn('SW:', e.message)));
+  }
 
   // Study-time tracking: +1 minute for each minute the tab is visible and the user interacted recently.
   let lastActive = Date.now();
