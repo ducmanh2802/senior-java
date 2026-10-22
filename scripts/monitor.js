@@ -50,6 +50,7 @@ const CONTENT = {
   T60: { files: ['q-concurrency-jvm.js'], topics: { concurrency: 27, jvm: 22 } },
   T61: { files: ['q-spring-data.js'], topics: { spring: 27, jpa: 21, db: 25 } },
   T62: { files: ['q-system-design.js'], topics: { architecture: 22 } },
+  T72: { files: ['quiz.js'], quiz: 130 },
 };
 const VIEWS = {
   T09: ['dashboard', 'bank'], T10: ['flash', 'quiz'], T11: ['mock'], T15: ['algo'], T17: ['roadmap'],
