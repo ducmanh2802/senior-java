@@ -17,6 +17,18 @@ agents() {  # lines: "<pid> <task>" for opencode.exe processes started by run-ag
     2>/dev/null | tr -d '\r'
 }
 
+owns() { grep -m1 '^Owns:' tasks/"$1"-*.md | grep -o '`[^`]*`' | tr -d '`' | tr '\n' ' '; }
+# true when another live agent (not $1) owns one of $1's files — retrying then would make two
+# agents write the same file
+conflict() {
+  local mine other f g; mine="$(owns "$1")"
+  for other in $(agents | awk '{print $2}' | sort -u); do
+    [ "$other" = "$1" ] && continue
+    for f in $(owns "$other"); do for g in $mine; do [ "$f" = "$g" ] && { echo "$other"; return 0; }; done; done
+  done
+  return 1
+}
+
 echo "[$(date +%T)] watchdog: stall ${STALL}s, retries ${RETRIES}"
 while true; do
   now=$(date +%s)
@@ -30,7 +42,9 @@ while true; do
     n=${tries[$task]:-0}
     echo "[$(date +%T)] stalled $task (pid $pid, idle ${idle}s) — stopping"
     powershell.exe -NoProfile -Command "Stop-Process -Id $pid -Force" >/dev/null 2>&1
-    if [ "$n" -lt "$RETRIES" ]; then
+    if busy_with="$(conflict "$task")"; then
+      echo "[$(date +%T)] not retrying $task: $busy_with is writing the same file (re-queue it later)"
+    elif [ "$n" -lt "$RETRIES" ]; then
       tries[$task]=$((n + 1))
       echo "[$(date +%T)] retry $task ($((n + 1))/$RETRIES)"
       cp "$log" "logs/$task.stall$((n + 1)).log"
