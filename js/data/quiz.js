@@ -3153,5 +3153,1265 @@ Và **warm-up** là bắt buộc: JVM cần vài phút JIT để đạt hiệu n
 4. Chạy **soak test** (hàng giờ) để phát hiện rò rỉ bộ nhớ và connection.
 
 > Senior tip: hãy dùng định luật Little để kiểm tra kết quả: {{concurrency = throughput x latency}}. Nếu bạn dùng 200 user ảo không có think time mà độ trễ **trung bình** là 5 giây, thì throughput thực tế chỉ khoảng {{200 / 5 = 40 request/giây}} (Little dùng giá trị trung bình, không dùng p99) — con số này thường làm sốc và chỉ ra "vấn đề" thật là độ trễ chứ không phải thiếu tài nguyên.`
+},
+{
+  id: 'qz-sql-001',
+  topic: 'sql',
+  q: `Trên PostgreSQL 15, câu truy vấn cuối trả về gì?
+~~~sql
+CREATE TABLE customers (id int PRIMARY KEY, name text);
+CREATE TABLE orders (id int PRIMARY KEY, customer_id int);
+INSERT INTO customers VALUES (1, 'An'), (2, 'Binh'), (3, 'Chi');
+INSERT INTO orders VALUES (10, 1), (11, NULL);
+
+SELECT name FROM customers
+WHERE id NOT IN (SELECT customer_id FROM orders);
+~~~`,
+  options: [
+    'Binh, Chi',
+    '0 dòng (kết quả rỗng)',
+    'Binh, Chi và thêm một dòng có name là NULL',
+    'Lỗi runtime vì subquery trả về giá trị NULL'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: 0 dòng.** Chỉ cần subquery có một giá trị NULL là {{NOT IN}} không bao giờ trả về TRUE.
+
+### Vì sao đúng
+{{x NOT IN (a, b)}} được định nghĩa là {{x <> a AND x <> b}}. Subquery trả về tập {{(1, NULL)}}. Xét từng khách:
+- id = 1: {{1 <> 1}} là FALSE, nên cả biểu thức FALSE → loại.
+- id = 2: {{2 <> 1}} là TRUE, nhưng {{2 <> NULL}} là **UNKNOWN**. {{TRUE AND UNKNOWN = UNKNOWN}}.
+- id = 3: tương tự, UNKNOWN.
+
+Mệnh đề {{WHERE}} chỉ giữ dòng có điều kiện **TRUE**; UNKNOWN bị loại giống FALSE. Kết quả: rỗng.
+
+Cách viết đúng ý định "khách chưa có đơn":
+~~~sql
+SELECT c.name FROM customers c
+WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id);
+-- trả về Binh, Chi
+~~~
+{{NOT EXISTS}} chỉ hỏi "có dòng khớp không", không so sánh với NULL nên không bị bẫy. Ngoài ra PostgreSQL lập plan **anti join** cho {{NOT EXISTS}}, thường nhanh hơn {{NOT IN}} với subquery lớn.
+
+### Vì sao các phương án còn lại sai
+- **Binh, Chi**: đó là kết quả bạn *mong đợi*, và cũng là kết quả nếu dòng {{(11, NULL)}} không tồn tại hoặc subquery có {{WHERE customer_id IS NOT NULL}}. Đây chính là bẫy logic ba giá trị.
+- **Thêm dòng name NULL**: không có khách nào có name NULL; NULL trong subquery không sinh ra dòng mới ở bảng ngoài.
+- **Lỗi runtime**: SQL hoàn toàn hợp lệ; NULL trong subquery là chuyện bình thường, chỉ làm kết quả "âm thầm" sai chứ không báo lỗi. Chính vì không báo lỗi nên bug này rất khó phát hiện.
+
+> Senior tip: bug này hay xuất hiện khi cột FK được cho phép NULL sau một migration (ví dụ đơn hàng khách vãng lai). Query báo cáo đang chạy đúng nhiều năm bỗng trả về rỗng. Quy tắc team: cấm {{NOT IN (subquery)}} trong code review, luôn dùng {{NOT EXISTS}}.`
+},
+{
+  id: 'qz-sql-002',
+  topic: 'sql',
+  q: `Kết quả của câu SELECT cuối là gì (theo thứ tự 4 cột)?
+~~~sql
+CREATE TABLE employees (id int PRIMARY KEY, dept text, manager_id int);
+INSERT INTO employees VALUES
+  (1, 'A', NULL),
+  (2, 'A', 1),
+  (3, 'B', 1),
+  (4, NULL, 2);
+
+SELECT COUNT(*), COUNT(manager_id), COUNT(DISTINCT manager_id), COUNT(dept)
+FROM employees;
+~~~`,
+  options: [
+    '4 | 4 | 3 | 4',
+    '4 | 3 | 3 | 3',
+    '3 | 3 | 2 | 3',
+    '4 | 3 | 2 | 3'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: 4 | 3 | 2 | 3.**
+
+### Vì sao đúng
+Quy tắc: {{COUNT(*)}} đếm **dòng**; {{COUNT(expr)}} đếm số dòng mà **expr khác NULL**; {{COUNT(DISTINCT expr)}} đếm số giá trị **khác nhau và khác NULL**.
+
+| Biểu thức | Giá trị xét | Kết quả |
+|---|---|---|
+| COUNT(*) | 4 dòng | 4 |
+| COUNT(manager_id) | NULL, 1, 1, 2 → bỏ NULL | 3 |
+| COUNT(DISTINCT manager_id) | tập khác nhau của 1, 1, 2 | 2 |
+| COUNT(dept) | A, A, B, NULL → bỏ NULL | 3 |
+
+### Vì sao các phương án còn lại sai
+- **4 | 4 | 3 | 4**: coi {{COUNT(col)}} như {{COUNT(*)}}, tức quên rằng NULL bị bỏ qua.
+- **4 | 3 | 3 | 3**: coi NULL là một "giá trị khác biệt" trong {{COUNT(DISTINCT)}}. Thực tế {{SELECT DISTINCT manager_id}} sẽ trả về 3 dòng (có dòng NULL), nhưng {{COUNT(DISTINCT manager_id)}} vẫn là 2. Đây là khác biệt hay bị hỏi.
+- **3 | 3 | 2 | 3**: nghĩ {{COUNT(*)}} cũng bỏ dòng có NULL. {{COUNT(*)}} không nhìn vào cột nào, nên luôn đếm đủ 4 dòng.
+
+### Hệ quả thực tế
+- {{AVG(col)}} cũng bỏ NULL: trung bình của (10, NULL) là 10, không phải 5. Nếu nghiệp vụ coi NULL là 0 thì phải viết {{AVG(COALESCE(col, 0))}}.
+- {{SUM}} trên tập toàn NULL (hoặc rỗng) trả về NULL, không phải 0.
+
+> Senior tip: khi review query báo cáo, hỏi ngay "cột này có nullable không?". Một dashboard đếm {{COUNT(email)}} để ra "số user" sẽ thiếu đúng số user đăng ký bằng số điện thoại, và không ai phát hiện vì con số trông vẫn hợp lý.`
+},
+{
+  id: 'qz-sql-003',
+  topic: 'sql',
+  q: `Với dữ liệu sau, cặp giá trị (r, dr) của dòng **Dung** là gì?
+~~~sql
+CREATE TABLE scores (name text, score int);
+INSERT INTO scores VALUES ('An', 90), ('Binh', 90), ('Chi', 85), ('Dung', 80);
+
+SELECT name,
+       RANK()       OVER (ORDER BY score DESC) AS r,
+       DENSE_RANK() OVER (ORDER BY score DESC) AS dr
+FROM scores
+ORDER BY score DESC, name;
+~~~`,
+  options: [
+    '(4, 3)',
+    '(3, 3)',
+    '(4, 4)',
+    '(3, 2)'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: (4, 3).**
+
+### Vì sao đúng
+An và Binh cùng 90 điểm nên là **peer** (đồng hạng) theo {{ORDER BY score DESC}}.
+
+| name | score | ROW_NUMBER | RANK | DENSE_RANK |
+|---|---|---|---|---|
+| An | 90 | 1 | 1 | 1 |
+| Binh | 90 | 2 | 1 | 1 |
+| Chi | 85 | 3 | 3 | 2 |
+| Dung | 80 | 4 | 4 | 3 |
+
+- {{RANK()}} = 1 + số dòng đứng **trước** (không tính peer). Hai người đồng hạng 1 chiếm chỗ, nên Chi là 3, Dung là 4: có **khoảng trống** (bỏ hạng 2).
+- {{DENSE_RANK()}} = số nhóm giá trị khác nhau tính tới dòng hiện tại: 90 → 1, 85 → 2, 80 → 3. **Không** có khoảng trống.
+
+### Vì sao các phương án còn lại sai
+- **(3, 3)**: nhầm RANK thành DENSE_RANK ở cột r nhưng lại tính đúng dr; RANK luôn để lại khoảng trống sau nhóm đồng hạng.
+- **(4, 4)**: coi DENSE_RANK giống ROW_NUMBER/RANK; DENSE_RANK chỉ tăng khi giá trị đổi, nên tối đa bằng số giá trị phân biệt (3).
+- **(3, 2)**: đó là giá trị của **Chi**, không phải Dung (lệch một dòng).
+
+### Khi nào dùng cái nào
+- "Top 3 sản phẩm bán chạy, đồng hạng thì lấy hết": {{DENSE_RANK() <= 3}} có thể ra hơn 3 dòng; {{RANK() <= 3}} cũng có thể hơn 3 nhưng bỏ qua hạng bị "nhảy".
+- "Lấy đúng 1 dòng mới nhất mỗi nhóm" (dedup): {{ROW_NUMBER()}} với ORDER BY có tie-breaker, ví dụ {{ORDER BY updated_at DESC, id DESC}}.
+
+> Senior tip: ROW_NUMBER mà ORDER BY không duy nhất thì thứ tự giữa các peer là không xác định, kết quả dedup có thể đổi giữa hai lần chạy. Luôn thêm khoá duy nhất làm tie-breaker.`
+},
+{
+  id: 'qz-sql-004',
+  topic: 'sql',
+  q: `Hai query A và B trả về lần lượt bao nhiêu dòng?
+~~~sql
+-- customers: (1,'An'), (2,'Binh'), (3,'Chi')
+-- orders(id, customer_id, status):
+--   (10, 1, 'PAID'), (11, 1, 'CANCELLED'), (12, 2, 'CANCELLED')
+
+-- Query A
+SELECT c.name, o.id
+FROM customers c
+LEFT JOIN orders o ON o.customer_id = c.id AND o.status = 'PAID';
+
+-- Query B
+SELECT c.name, o.id
+FROM customers c
+LEFT JOIN orders o ON o.customer_id = c.id
+WHERE o.status = 'PAID';
+~~~`,
+  options: [
+    'A: 1 dòng, B: 1 dòng',
+    'A: 3 dòng, B: 3 dòng',
+    'A: 3 dòng, B: 1 dòng',
+    'A: 4 dòng, B: 1 dòng'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: A trả về 3 dòng, B trả về 1 dòng.**
+
+### Vì sao đúng
+**Query A**: điều kiện {{status = 'PAID'}} nằm trong {{ON}}, tức là một phần của *điều kiện ghép*. LEFT JOIN giữ **mọi** khách; khách nào không có đơn PAID thì phần orders là NULL.
+~~~text
+An   | 10
+Binh | NULL   (đơn 12 là CANCELLED nên không ghép)
+Chi  | NULL   (không có đơn)
+~~~
+**Query B**: JOIN chỉ theo customer_id trước, ra 4 dòng: (An,10), (An,11), (Binh,12), (Chi,NULL). Sau đó {{WHERE}} lọc {{o.status = 'PAID'}}: dòng của Chi có status NULL → UNKNOWN → bị loại. Còn lại đúng 1 dòng (An, 10). WHERE trên cột của bảng bên phải đã biến LEFT JOIN thành **INNER JOIN** về mặt kết quả (planner PostgreSQL cũng tự đổi như vậy).
+
+### Vì sao các phương án còn lại sai
+- **A: 1, B: 1**: nghĩ điều kiện ở ON lọc cả bảng bên trái. Với LEFT JOIN, ON chỉ quyết định dòng bên phải nào được ghép; bảng trái không bao giờ bị ON loại.
+- **A: 3, B: 3**: nghĩ WHERE và ON tương đương. Chúng chỉ tương đương với INNER JOIN.
+- **A: 4, B: 1**: nhầm A với kết quả JOIN chưa lọc (4 dòng). Đơn 11 và 12 không thoả ON nên không sinh dòng; Binh chỉ xuất hiện một lần với NULL.
+
+> Senior tip: đây là bug báo cáo kinh điển: "danh sách tất cả khách kèm đơn đã thanh toán" bị mất khách chưa mua vì filter đặt ở WHERE. Quy tắc nhớ: điều kiện lọc **bảng bên phải** của LEFT JOIN đặt ở ON; điều kiện lọc **kết quả cuối** (kể cả {{WHERE o.id IS NULL}} để tìm dòng không khớp) đặt ở WHERE.`
+},
+{
+  id: 'qz-sql-005',
+  topic: 'sql',
+  q: `Câu SELECT sau trả về gì?
+~~~sql
+CREATE TABLE orders (customer_id int, amount numeric);
+INSERT INTO orders VALUES (1, 100), (1, 300), (2, 50), (2, NULL), (3, 500);
+
+SELECT customer_id, SUM(amount) AS total
+FROM orders
+WHERE amount > 60
+GROUP BY customer_id
+HAVING COUNT(*) >= 2;
+~~~`,
+  options: [
+    '1 dòng: (1, 400)',
+    '2 dòng: (1, 400) và (2, 50)',
+    'Lỗi: COUNT(*) dùng trong HAVING nhưng không có trong SELECT',
+    '2 dòng: (1, 400) và (2, NULL)'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: 1 dòng (1, 400).**
+
+### Vì sao đúng
+Thứ tự xử lý logic của một câu SELECT: {{FROM → WHERE → GROUP BY → HAVING → SELECT → ORDER BY}}.
+1. **WHERE amount > 60** chạy trên từng dòng, *trước* khi gom nhóm: giữ (1,100), (1,300), (3,500). Dòng (2,50) không thoả; dòng (2,NULL) cho {{NULL > 60}} = UNKNOWN nên cũng bị loại.
+2. **GROUP BY**: nhóm 1 có 2 dòng (tổng 400), nhóm 3 có 1 dòng. Khách 2 không còn dòng nào nên **không có nhóm**.
+3. **HAVING COUNT(*) >= 2** lọc trên nhóm: chỉ nhóm 1 thoả.
+
+### Vì sao các phương án còn lại sai
+- **(1, 400) và (2, 50)**: tư duy như thể HAVING chạy trên dữ liệu gốc (khách 2 có 2 dòng) rồi mới áp WHERE. Sai thứ tự: WHERE đã loại hết dòng của khách 2 trước khi HAVING đếm.
+- **Lỗi vì COUNT(*) không có trong SELECT**: HAVING được dùng bất kỳ aggregate nào, không cần xuất hiện trong danh sách SELECT. Quy tắc thật sự là: cột **không** aggregate trong SELECT/HAVING phải nằm trong GROUP BY (hoặc phụ thuộc hàm vào primary key được group).
+- **(1, 400) và (2, NULL)**: nhầm với kiểu LEFT JOIN, nơi "nhóm" vẫn tồn tại với giá trị NULL. GROUP BY không tạo nhóm cho khách không còn dòng nào sau WHERE; hơn nữa nhóm đó cũng không qua được HAVING.
+
+### Quy tắc chọn WHERE hay HAVING
+- Điều kiện trên **từng dòng** → WHERE (giảm dữ liệu sớm, dùng được index).
+- Điều kiện trên **kết quả gộp** ({{SUM}}, {{COUNT}}…) → HAVING.
+- Đặt điều kiện dòng vào HAVING (ví dụ {{HAVING customer_id > 100}}) vẫn chạy đúng nhưng thường làm aggregate trên nhiều dữ liệu hơn cần thiết.
+
+> Senior tip: khi nghiệp vụ nói "khách có ít nhất 2 đơn trên 60 nghìn" và "khách có ít nhất 2 đơn, tổng trên 60 nghìn" là hai query khác nhau: cái đầu là WHERE + HAVING COUNT, cái sau là HAVING COUNT + HAVING SUM. Hỏi lại product trước khi viết, đừng đoán.`
+},
+{
+  id: 'qz-sql-006',
+  topic: 'sql',
+  q: `Cột running của **hai dòng ngày 2024-01-02** có giá trị gì?
+~~~sql
+CREATE TABLE sales (day date, amount int);
+INSERT INTO sales VALUES
+  ('2024-01-01', 100),
+  ('2024-01-02', 50),
+  ('2024-01-02', 30),
+  ('2024-01-03', 20);
+
+SELECT day, amount,
+       SUM(amount) OVER (ORDER BY day) AS running
+FROM sales
+ORDER BY day, amount;
+~~~`,
+  options: [
+    '50 và 30 (mỗi dòng chỉ là amount của chính nó)',
+    '130 và 180 (hoặc 150 và 180), tuỳ thứ tự hai dòng',
+    'Lỗi: ORDER BY trong OVER có giá trị trùng nên kết quả không xác định',
+    '180 và 180'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: cả hai dòng đều là 180.**
+
+### Vì sao đúng
+Khi {{OVER}} có {{ORDER BY}} mà không ghi frame, frame mặc định là:
+~~~sql
+RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+~~~
+Với **RANGE**, "CURRENT ROW" nghĩa là dòng hiện tại **cùng mọi peer** của nó (các dòng có cùng giá trị ORDER BY). Hai dòng ngày 01-02 là peer nên frame của cả hai đều gồm: 100 + 50 + 30 = **180**.
+~~~text
+day        amount running
+2024-01-01    100     100
+2024-01-02     30     180
+2024-01-02     50     180
+2024-01-03     20     200
+~~~
+
+### Vì sao các phương án còn lại sai
+- **50 và 30**: nghĩ window SUM chỉ nhìn dòng hiện tại. Với {{ORDER BY}} trong OVER, frame bắt đầu từ {{UNBOUNDED PRECEDING}} nên luôn cộng dồn từ dòng đầu tiên (100 của ngày 01-01 đã có sẵn trong tổng).
+- **130/180 hoặc 150/180**: đây là hành vi của **ROWS** frame ({{ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW}}), cộng từng dòng một. Khi đó thứ tự giữa hai peer không xác định (ORDER BY ngoài cùng không ảnh hưởng thứ tự bên trong window). Nhưng frame mặc định là RANGE, không phải ROWS.
+- **Lỗi**: giá trị trùng trong ORDER BY của window là hoàn toàn hợp lệ; RANGE xử lý chúng một cách tất định bằng khái niệm peer.
+
+### Muốn running total từng dòng thì sao?
+~~~sql
+SUM(amount) OVER (ORDER BY day, id
+                  ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+~~~
+Thêm cột duy nhất làm tie-breaker để kết quả tất định, và ghi rõ ROWS.
+
+> Senior tip: bug "số dư lũy kế nhảy cóc" trong sao kê thường đến từ frame mặc định khi nhiều giao dịch cùng timestamp. Ngoài đúng/sai, ROWS còn thường nhanh hơn RANGE vì không phải tìm peer. Quy tắc team: window có ORDER BY thì luôn ghi frame tường minh.`
+},
+{
+  id: 'qz-sql-007',
+  topic: 'sql',
+  q: `Kết quả (id, a, b) là gì?
+~~~sql
+-- customers: id = 1, 2, 3
+-- orders(id, customer_id): (10, 1), (11, 1)
+
+SELECT c.id, COUNT(*) AS a, COUNT(o.id) AS b
+FROM customers c
+LEFT JOIN orders o ON o.customer_id = c.id
+GROUP BY c.id
+ORDER BY c.id;
+~~~`,
+  options: [
+    '(1,2,2), (2,0,0), (3,0,0)',
+    '(1,2,2), (2,1,0), (3,1,0)',
+    'Chỉ có (1,2,2); khách 2 và 3 bị loại vì không có đơn',
+    '(1,2,2), (2,1,1), (3,1,1)'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: (1,2,2), (2,1,0), (3,1,0).**
+
+### Vì sao đúng
+Kết quả LEFT JOIN trước khi gom nhóm:
+~~~text
+c.id | o.id
+1    | 10
+1    | 11
+2    | NULL
+3    | NULL
+~~~
+- {{COUNT(*)}} đếm **dòng**: khách 2 và 3 vẫn có 1 dòng (dòng "đệm" NULL do LEFT JOIN tạo) nên a = 1.
+- {{COUNT(o.id)}} chỉ đếm giá trị khác NULL: khách 2 và 3 có b = 0.
+
+### Vì sao các phương án còn lại sai
+- **a = 0 cho khách 2, 3**: nghĩ COUNT(*) biết rằng dòng đó là "không có đơn". COUNT(*) không nhìn vào cột nào, nó chỉ thấy có một dòng.
+- **Khách 2, 3 bị loại**: đó là hành vi của INNER JOIN. LEFT JOIN giữ mọi dòng bảng trái, và GROUP BY không loại nhóm nào khi không có HAVING.
+- **b = 1 cho khách 2, 3**: nhầm COUNT(cột) với COUNT(*); NULL không được đếm.
+
+### Cách viết đúng cho báo cáo "số đơn mỗi khách"
+Luôn đếm một cột **NOT NULL của bảng bên phải**, thường là primary key: {{COUNT(o.id)}}. Nếu muốn đếm đơn đã thanh toán, có thể dùng {{COUNT(*) FILTER (WHERE o.status = 'PAID')}} (cú pháp FILTER có trong PostgreSQL).
+
+> Senior tip: lỗi "khách chưa mua hiện 1 đơn" lọt qua test rất dễ vì dữ liệu test thường khách nào cũng có đơn. Khi viết test cho query báo cáo, luôn có ít nhất một bản ghi "rỗng" ở bảng bên phải.`
+},
+{
+  id: 'qz-sql-008',
+  topic: 'sql',
+  q: `Câu đếm sau trả về bao nhiêu?
+~~~sql
+CREATE TABLE orders (id int PRIMARY KEY, status text);
+INSERT INTO orders VALUES
+  (1, 'PAID'), (2, 'CANCELLED'), (3, NULL), (4, 'PENDING');
+
+SELECT COUNT(*) FROM orders WHERE status <> 'CANCELLED';
+~~~`,
+  options: [
+    '3 (đơn 1, 3 và 4)',
+    '4 (toàn bộ bảng)',
+    '2 (đơn 1 và 4)',
+    '0, vì một giá trị NULL trong cột làm cả điều kiện thành UNKNOWN cho mọi dòng'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: 2 (đơn 1 và 4).**
+
+### Vì sao đúng
+WHERE đánh giá điều kiện **trên từng dòng**:
+- Đơn 1: {{'PAID' <> 'CANCELLED'}} → TRUE, giữ.
+- Đơn 2: FALSE, loại.
+- Đơn 3: {{NULL <> 'CANCELLED'}} → **UNKNOWN**, loại (WHERE chỉ giữ TRUE).
+- Đơn 4: TRUE, giữ.
+
+Mọi so sánh {{=}}, {{<>}}, {{<}}, {{>}} với NULL đều cho UNKNOWN, kể cả {{NULL = NULL}}.
+
+### Vì sao các phương án còn lại sai
+- **3 (tính cả đơn 3)**: theo trực giác "NULL đâu phải CANCELLED", nhưng SQL dùng logic ba giá trị: NULL là "không biết", nên không thể khẳng định nó khác CANCELLED.
+- **4**: bỏ qua cả điều kiện lọc; đơn 2 chắc chắn bị loại.
+- **0**: nhầm với bẫy {{NOT IN}} có NULL trong *danh sách so sánh* (khi đó mọi dòng bị UNKNOWN). Ở đây NULL nằm trong *dữ liệu* của một dòng nên chỉ ảnh hưởng dòng đó.
+
+### Viết đúng ý định
+Nếu nghiệp vụ muốn tính cả đơn chưa có trạng thái:
+~~~sql
+SELECT COUNT(*) FROM orders WHERE status IS DISTINCT FROM 'CANCELLED';
+-- hoặc: WHERE status <> 'CANCELLED' OR status IS NULL
+~~~
+{{IS DISTINCT FROM}} coi NULL là một giá trị so sánh được, nên trả về 3.
+
+> Senior tip: cách bền vững nhất là đừng để cột trạng thái nullable: khai báo {{NOT NULL}} kèm default (ví dụ 'NEW') và CHECK constraint. Mỗi cột nullable trong điều kiện lọc là một chỗ báo cáo có thể lệch số.`
+},
+{
+  id: 'qz-api-001',
+  topic: 'api',
+  q: 'Client đã cache {{GET /products/42}} với {{ETag: "a1b2"}}. Lần sau nó gửi lại GET kèm {{If-None-Match: "a1b2"}} và resource **chưa thay đổi**. Server nên trả gì theo RFC 9110?',
+  options: [
+    '200 OK với body rỗng',
+    '304 Not Modified, không kèm body',
+    '412 Precondition Failed',
+    '204 No Content'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: 304 Not Modified, không kèm body.**
+
+### Vì sao đúng
+Đây là **conditional GET** để tái sử dụng cache:
+1. Lần đầu server trả {{200}} kèm {{ETag: "a1b2"}} (một "phiên bản" của representation).
+2. Lần sau client hỏi: "nếu ETag hiện tại **khác** a1b2 thì gửi bản mới". Header {{If-None-Match}} chứa ETag client đang có.
+3. ETag vẫn khớp → điều kiện "none match" là **false**. Với GET/HEAD, RFC 9110 quy định server trả **304**: không có body, client dùng lại bản cache. Server vẫn nên gửi lại {{ETag}}, {{Cache-Control}} để client cập nhật metadata.
+
+Lợi ích: tiết kiệm băng thông và thời gian serialize; với payload lớn hoặc mobile, đây là khác biệt đáng kể.
+
+### Vì sao các phương án còn lại sai
+- **200 với body rỗng**: client sẽ hiểu representation hiện tại là rỗng và **ghi đè cache** bằng dữ liệu rỗng. 200 luôn nghĩa là body là representation đầy đủ.
+- **412 Precondition Failed**: đúng cho **các method khác GET/HEAD** khi If-None-Match thất bại (ví dụ {{PUT}} với {{If-None-Match: *}} để "chỉ tạo nếu chưa tồn tại"). Với GET/HEAD thì là 304.
+- **204 No Content**: nghĩa là request thành công và không có nội dung để trả, thường dùng sau PUT/DELETE. Nó không nói gì về cache, client không biết được phải dùng lại bản cũ.
+
+> Senior tip: ETag sinh từ hash của entity (hoặc cột {{version}} của JPA) là đủ. Spring có {{ShallowEtagHeaderFilter}} tự tính ETag từ body, tiết kiệm băng thông nhưng **không** tiết kiệm CPU/DB vì server vẫn phải dựng response đầy đủ rồi mới so sánh. Muốn tiết kiệm cả DB thì kiểm tra version trước khi load dữ liệu nặng.`
+},
+{
+  id: 'qz-api-002',
+  topic: 'api',
+  q: 'Endpoint {{POST /reports/exports}} tạo file báo cáo mất khoảng 10 phút. Thiết kế response nào đúng ngữ nghĩa HTTP nhất?',
+  options: [
+    '201 Created kèm Location trỏ tới file báo cáo',
+    '200 OK, giữ kết nối mở cho tới khi file xong rồi trả file',
+    '202 Accepted kèm URL của job để client theo dõi trạng thái',
+    '102 Processing trước, rồi 200 OK khi file xong'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: 202 Accepted kèm URL của job.**
+
+### Vì sao đúng
+RFC 9110 định nghĩa **202 Accepted**: request đã được chấp nhận để xử lý nhưng **chưa hoàn tất**, và có thể sẽ không bao giờ hoàn tất (job lỗi). Đây đúng là tình huống xử lý bất đồng bộ:
+~~~text
+POST /reports/exports            → 202 Accepted
+                                   Location: /reports/exports/jobs/7f3c
+GET  /reports/exports/jobs/7f3c  → 200 {"status":"RUNNING","progress":40}
+GET  /reports/exports/jobs/7f3c  → 200 {"status":"DONE","file":"/files/abc.csv"}
+~~~
+Server có thể thêm {{Retry-After}} để gợi ý chu kỳ polling, hoặc gọi webhook / đẩy qua WebSocket khi xong.
+
+### Vì sao các phương án còn lại sai
+- **201 Created trỏ tới file**: 201 nghĩa là resource **đã được tạo xong** tại thời điểm trả response. File chưa tồn tại, client GET Location sẽ nhận 404. (Có biến thể hợp lệ: trả 201 cho **resource job** vừa tạo; nhưng "trỏ tới file báo cáo" thì sai.)
+- **Giữ kết nối 10 phút**: về mặt cú pháp HTTP vẫn được, nhưng sẽ bị load balancer, API gateway hoặc proxy cắt (ALB mặc định idle timeout 60 giây), chiếm thread/connection của server và client retry sẽ tạo job trùng.
+- **102 Processing**: là status của WebDAV (RFC 2518), đã bị loại khỏi RFC 4918 và hầu như client/framework không hỗ trợ. Nó cũng không giúp client theo dõi tiến độ sau khi kết nối đứt.
+
+> Senior tip: job bất đồng bộ phải có **idempotency** (người dùng bấm xuất 3 lần không nên tạo 3 job), có TTL dọn file cũ và trạng thái FAILED kèm lý do. Lưu trạng thái job ở DB/Redis chứ đừng giữ trong bộ nhớ một instance, vì request polling có thể đi tới instance khác.`
+},
+{
+  id: 'qz-api-003',
+  topic: 'api',
+  q: 'A và B cùng {{GET /docs/9}} và nhận {{ETag: "v7"}}. A gửi {{PUT}} kèm {{If-Match: "v7"}}, thành công, ETag mới là "v8". Sau đó B gửi {{PUT}} kèm {{If-Match: "v7"}}. Server nên trả gì?',
+  options: [
+    '409 Conflict',
+    '428 Precondition Required',
+    '304 Not Modified',
+    '412 Precondition Failed'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: 412 Precondition Failed.**
+
+### Vì sao đúng
+Đây là **optimistic concurrency control** ở tầng HTTP, chống "lost update":
+1. B nói: "chỉ ghi nếu phiên bản hiện tại vẫn là v7" ({{If-Match: "v7"}}).
+2. Phiên bản hiện tại là v8 → điều kiện **false**.
+3. RFC 9110: khi điều kiện {{If-Match}} không thoả, server **không được** thực hiện method và trả **412 Precondition Failed**.
+
+B sau đó phải GET lại bản v8, merge/hỏi người dùng, rồi PUT với {{If-Match: "v8"}}. Đây chính là cơ chế tương đương cột {{@Version}} của JPA nhưng lộ ra cho client.
+
+### Vì sao các phương án còn lại sai
+- **409 Conflict**: dùng khi request xung đột với **trạng thái** resource (ví dụ chuyển đơn đã huỷ sang "đang giao", tạo username đã tồn tại). Nhiều API dùng 409 cho optimistic lock khi **không** dùng header điều kiện (version nằm trong body). Nhưng khi client đã gửi {{If-Match}}, status chuẩn là 412.
+- **428 Precondition Required** (RFC 6585): dùng khi client **không gửi** header điều kiện mà server bắt buộc phải có. B có gửi If-Match.
+- **304 Not Modified**: chỉ dùng cho GET/HEAD có điều kiện (If-None-Match / If-Modified-Since) để báo dùng cache. Không áp dụng cho PUT.
+
+> Senior tip: kết hợp cả hai tầng: trả 428 nếu PUT/PATCH thiếu {{If-Match}} (ép mọi client phải xử lý concurrency) và map {{OptimisticLockException}} của JPA thành 412. Ở các ứng dụng sửa tài liệu cộng tác, cách này loại bỏ hẳn lớp bug "người sau ghi đè người trước mà không ai biết".`
+},
+{
+  id: 'qz-api-004',
+  topic: 'api',
+  q: 'SPA chạy ở {{https://app.example.com}} gọi {{fetch}} tới {{https://api.example.com/orders/1}} với method {{PUT}}, header {{Content-Type: application/json}} và {{Authorization: Bearer ...}}. Phát biểu nào đúng?',
+  options: [
+    'Trình duyệt gửi preflight OPTIONS trước; server phải trả Access-Control-Allow-Origin, Access-Control-Allow-Methods có PUT và Access-Control-Allow-Headers có authorization, content-type',
+    'Không có preflight vì app và api cùng domain gốc example.com nên được coi là same-origin',
+    'Preflight chỉ xảy ra khi request gửi kèm cookie; header Authorization không ảnh hưởng',
+    'Nếu server không trả header CORS thì mọi client, kể cả curl và service backend khác, đều bị chặn'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: có preflight OPTIONS, server phải cho phép đúng origin, method và header.**
+
+### Vì sao đúng
+**Origin** = scheme + host + port. {{app.example.com}} và {{api.example.com}} khác host nên là **cross-origin**.
+
+Request bị coi là "không đơn giản" (cần preflight) nếu thoả bất kỳ điều kiện nào:
+- method khác GET/HEAD/POST → **PUT** ✔
+- có header ngoài danh sách an toàn → **Authorization** ✔
+- Content-Type khác {{text/plain}}, {{multipart/form-data}}, {{application/x-www-form-urlencoded}} → **application/json** ✔
+
+Luồng:
+~~~text
+OPTIONS /orders/1
+Origin: https://app.example.com
+Access-Control-Request-Method: PUT
+Access-Control-Request-Headers: authorization, content-type
+
+204 No Content
+Access-Control-Allow-Origin: https://app.example.com
+Access-Control-Allow-Methods: GET, PUT, DELETE
+Access-Control-Allow-Headers: authorization, content-type
+Access-Control-Max-Age: 600
+~~~
+Chỉ khi preflight đạt, trình duyệt mới gửi PUT thật.
+
+### Vì sao các phương án còn lại sai
+- **Cùng domain gốc nên same-origin**: đây là nhầm "same-site" (cùng registrable domain, liên quan cookie SameSite) với "same-origin". CORS dùng origin.
+- **Chỉ khi có cookie**: cookie quyết định việc cần {{Access-Control-Allow-Credentials: true}} (và khi đó không được dùng {{*}} cho origin), chứ không quyết định có preflight hay không. Authorization là header không an toàn nên luôn kích hoạt preflight.
+- **Chặn mọi client**: CORS do **trình duyệt** thực thi để bảo vệ người dùng. curl hay service backend bỏ qua CORS hoàn toàn. CORS không phải cơ chế xác thực hay phân quyền.
+
+> Senior tip: đặt {{Access-Control-Max-Age}} để cache preflight, nếu không mỗi request PUT/DELETE tốn thêm một round-trip (rất rõ trên mobile). Và trong Spring Security nhớ cấu hình {{http.cors(...)}}, nếu không request OPTIONS (vốn không mang token) sẽ bị filter xác thực chặn trước khi được xử lý CORS.`
+},
+{
+  id: 'qz-api-005',
+  topic: 'api',
+  q: 'Resource {{/users/42}} có các trường name, email, phone. Phát biểu nào về {{PUT}} và {{PATCH}} là đúng theo RFC 9110 / RFC 5789?',
+  options: [
+    'PUT và PATCH tương đương, khác nhau chỉ ở quy ước đặt tên của từng team',
+    'PATCH luôn idempotent nên client có thể retry thoải mái giống PUT',
+    'PUT không được phép tạo resource mới; chỉ POST mới tạo được',
+    'PUT thay thế toàn bộ trạng thái resource bằng body gửi lên; muốn sửa riêng email thì dùng PATCH, ví dụ với JSON Merge Patch'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: PUT thay thế toàn bộ trạng thái, PATCH sửa một phần.**
+
+### Vì sao đúng
+- **PUT** (RFC 9110): "thay trạng thái của resource đích bằng representation trong body". Gửi {{PUT /users/42}} với body chỉ có email thì về ngữ nghĩa, name và phone bị **xoá/về mặc định** (hoặc server từ chối vì thiếu trường bắt buộc). Vì kết quả chỉ phụ thuộc body, gửi lại N lần cho cùng trạng thái → PUT **idempotent**.
+- **PATCH** (RFC 5789): gửi một **tập lệnh thay đổi** theo một media type cụ thể:
+  - {{application/merge-patch+json}} (RFC 7396): body giống một phần của resource; trường có giá trị null nghĩa là xoá trường.
+  - {{application/json-patch+json}} (RFC 6902): danh sách thao tác {{op/path/value}}, ví dụ {{replace /email}}.
+
+### Vì sao các phương án còn lại sai
+- **Tương đương**: sai ngữ nghĩa, và sai trong thực tế: cache, proxy, client generator và retry policy đều dựa vào việc PUT idempotent.
+- **PATCH luôn idempotent**: RFC 5789 nói rõ PATCH **không** bắt buộc idempotent. Ví dụ JSON Patch {{add /tags/-}} (thêm vào cuối mảng) gửi 2 lần sẽ thêm 2 phần tử; {{"balance": +10}} kiểu increment cũng vậy. Merge Patch đặt giá trị tuyệt đối thì thường idempotent, nhưng đó là tính chất của *body cụ thể*, không phải của method.
+- **PUT không được tạo mới**: PUT được tạo resource khi client biết URI (ví dụ {{PUT /buckets/photos/cat.jpg}}), server trả **201 Created**. POST dùng khi server quyết định URI.
+
+> Senior tip: với Java, phân biệt "trường không gửi" và "trường gửi null" là chỗ hay vỡ khi làm PATCH: DTO thường không phân biệt được. Dùng {{JsonNode}}/{{JsonMergePatch}} hoặc {{Optional}} ba trạng thái, và test riêng ca "xoá phone" với ca "không đụng phone".`
+},
+{
+  id: 'qz-api-006',
+  topic: 'api',
+  q: 'Mobile app gọi {{POST /payments}}, bị timeout sau 10 giây và không biết server đã trừ tiền hay chưa. Cách thiết kế nào giúp client retry an toàn?',
+  options: [
+    'Client không bao giờ retry POST; báo lỗi để người dùng tự bấm thanh toán lại',
+    'Server nhận diện request trùng dựa trên HTTP keep-alive connection',
+    'Client gửi header Idempotency-Key (UUID sinh một lần cho mỗi ý định thanh toán); server lưu key cùng kết quả và trả lại đúng kết quả cũ khi gặp key trùng',
+    'Mỗi lần retry, client sinh Idempotency-Key mới để server phân biệt các lần thử'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: Idempotency-Key cố định cho một ý định thanh toán, server lưu kết quả theo key.**
+
+### Vì sao đúng
+POST không idempotent theo định nghĩa, nên ta **tự tạo** tính idempotent ở tầng ứng dụng:
+1. Client sinh UUID **một lần** khi người dùng bấm "Thanh toán", gửi trong header {{Idempotency-Key}} ở mọi lần retry.
+2. Server, trong cùng transaction với việc tạo payment, insert key vào bảng có **unique constraint** (key + client/merchant).
+3. Gặp key đã có: nếu đã xong → trả lại **response đã lưu**; nếu đang xử lý → trả {{409}} hoặc yêu cầu thử lại sau; nếu cùng key nhưng body khác → báo lỗi (422).
+
+Header {{Idempotency-Key}} đang là IETF draft nhưng đã được dùng rộng rãi (Stripe, Adyen, PayPal dùng mẫu tương tự).
+
+### Vì sao các phương án còn lại sai
+- **Không bao giờ retry**: chuyển rủi ro sang người dùng: họ bấm lại và bị **trừ tiền hai lần** nếu lần đầu thực ra đã thành công. Vấn đề "không biết kết quả" không biến mất.
+- **Dựa vào keep-alive connection**: timeout thường làm connection bị đóng, retry đi trên connection mới, có thể qua load balancer tới instance khác. Connection không phải danh tính của ý định nghiệp vụ.
+- **Key mới mỗi lần retry**: phá hỏng mục đích, server thấy mỗi lần là một yêu cầu mới → trừ tiền nhiều lần.
+
+> Senior tip: lưu key ở **DB cùng transaction** với nghiệp vụ, không chỉ ở Redis: nếu ghi payment thành công mà ghi key vào Redis thất bại, retry vẫn tạo bản trùng. Đặt TTL cho key (ví dụ 24–72 giờ) và đảm bảo cả downstream (cổng thanh toán) cũng nhận idempotency key của bạn.`
+},
+{
+  id: 'qz-api-007',
+  topic: 'api',
+  q: 'Phát biểu nào về {{401 Unauthorized}} và {{403 Forbidden}} là đúng theo RFC 9110?',
+  options: [
+    '401 nghĩa là thiếu hoặc sai credentials và response phải có header WWW-Authenticate; 403 nghĩa là server hiểu request nhưng từ chối, gửi lại cùng credentials cũng không giúp',
+    '401 dùng khi user đã đăng nhập nhưng không có quyền; 403 dùng khi token hết hạn',
+    '403 bắt buộc kèm header WWW-Authenticate để client biết cách đăng nhập lại',
+    'Token hết hạn nên trả 400 Bad Request vì request chứa dữ liệu không hợp lệ'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: 401 = chưa xác thực được (kèm WWW-Authenticate), 403 = đã hiểu nhưng từ chối.**
+
+### Vì sao đúng
+- **401**: request thiếu credentials hợp lệ (không có token, token sai chữ ký, **hết hạn**). RFC 9110 quy định server **MUST** gửi {{WWW-Authenticate}} cho biết scheme, ví dụ {{Bearer error="invalid_token"}} (RFC 6750). Tên "Unauthorized" là di sản lịch sử; nghĩa thực là *unauthenticated*.
+- **403**: server đã hiểu request và từ chối. Nếu request có credentials, server coi chúng **không đủ** để truy cập; client không nên gửi lại với cùng credentials. Ví dụ: user thường gọi endpoint chỉ dành cho ADMIN.
+
+Luồng client hợp lý: nhận 401 → refresh token rồi thử lại một lần; nhận 403 → không refresh, hiển thị "không có quyền".
+
+### Vì sao các phương án còn lại sai
+- **Đảo ngược 401/403**: lỗi rất phổ biến. Nếu trả 401 cho "thiếu quyền", client sẽ refresh token và retry vô ích, thậm chí tạo vòng lặp.
+- **403 kèm WWW-Authenticate**: header này là yêu cầu của 401, không phải 403.
+- **400 cho token hết hạn**: 400 dành cho request sai cú pháp/không hợp lệ về cấu trúc. Token hết hạn là vấn đề xác thực → 401, để client biết cần lấy token mới.
+
+> Senior tip: với resource thuộc người khác (IDOR), nhiều API trả **404** thay vì 403 để không tiết lộ resource có tồn tại; RFC 9110 cho phép điều này. Chọn một quy ước và áp dụng nhất quán, ghi rõ trong API guideline của team.`
+},
+{
+  id: 'qz-api-008',
+  topic: 'api',
+  q: '{{DELETE /orders/5}} lần đầu trả {{204 No Content}}, lần thứ hai trả {{404 Not Found}}. Điều này có vi phạm tính idempotent của DELETE không?',
+  options: [
+    'Có, vì idempotent nghĩa là mọi lần gọi phải trả về cùng một response',
+    'Không, idempotent nói về hiệu ứng lên trạng thái server; response của các lần sau được phép khác',
+    'Có, nên DELETE phải luôn trả 204 kể cả khi resource không tồn tại',
+    'Không, vì DELETE là safe method nên không cần quan tâm idempotent'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: không vi phạm; idempotent là về hiệu ứng, không phải về response.**
+
+### Vì sao đúng
+RFC 9110: một method là idempotent nếu **hiệu ứng dự định lên server** của N request giống hệt nhau bằng hiệu ứng của 1 request. Sau lần 1, đơn 5 đã bị xoá; lần 2 không xoá thêm gì, trạng thái server vẫn là "đơn 5 không tồn tại". Response 404 chỉ phản ánh trạng thái hiện tại.
+
+Ý nghĩa thực tế: client/proxy được phép **tự động retry** DELETE (và PUT) khi lỗi mạng mà không sợ tác dụng phụ nhân lên.
+
+Phân loại theo RFC 9110:
+| Method | Safe | Idempotent |
+|---|---|---|
+| GET, HEAD, OPTIONS | có | có |
+| PUT, DELETE | không | có |
+| POST, PATCH | không | không đảm bảo |
+
+### Vì sao các phương án còn lại sai
+- **Phải cùng response**: nhầm idempotent với "deterministic response". Ngay cả GET cũng trả response khác nhau khi dữ liệu đổi.
+- **Luôn trả 204**: đây là một *lựa chọn thiết kế* hợp lệ (một số API làm vậy để client đơn giản hơn), nhưng không phải là bắt buộc; 404 không vi phạm gì.
+- **DELETE là safe**: sai. Safe nghĩa là chỉ đọc, không thay đổi trạng thái; DELETE rõ ràng thay đổi trạng thái.
+
+> Senior tip: idempotent không có nghĩa là an toàn trước race condition. Hai request DELETE và POST đan xen vẫn cần xử lý concurrency. Và nếu DELETE kích hoạt side effect như gửi email "đơn đã huỷ", bạn phải tự đảm bảo email không bị gửi lại ở lần retry.`
+},
+{
+  id: 'qz-security-001',
+  topic: 'security',
+  q: 'Một auth service phát JWT cho 15 microservice khác nhau (một số do team ngoài viết). Cách ký và verify token nào hợp lý nhất?',
+  options: [
+    'HS256 với cùng một secret chia sẻ cho cả 15 service, vì HMAC nhanh hơn chữ ký bất đối xứng',
+    'RS256 hoặc ES256: auth service giữ private key, các service lấy public key qua JWKS để verify; service bị lộ cũng không tự ký được token',
+    'Không cần ký; chỉ cần base64url payload vì token đi qua HTTPS',
+    'RS256, nhưng verifier đọc thuật toán từ field alg trong header token để linh hoạt khi đổi thuật toán'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: chữ ký bất đối xứng (RS256/ES256) + JWKS.**
+
+### Vì sao đúng
+- **HS256** là HMAC: cùng một secret dùng để **ký** và **verify**. Ai verify được thì cũng ký được.
+- **RS256** (RSA) / **ES256** (ECDSA): private key chỉ nằm ở auth service; các service khác chỉ cần **public key** để verify.
+
+Với 15 service, nếu dùng HS256 thì bất kỳ service nào bị lộ secret (log, env, repo) đều cho kẻ tấn công **tạo token admin cho toàn hệ thống**. Với RS256, lộ public key chẳng hại gì.
+
+Public key được công bố ở endpoint **JWKS** (ví dụ {{/.well-known/jwks.json}}), mỗi key có {{kid}}. Token mang {{kid}} trong header để verifier chọn đúng key → **xoay key** không cần redeploy service. Spring Security: {{spring.security.oauth2.resourceserver.jwt.jwk-set-uri}}.
+
+### Vì sao các phương án còn lại sai
+- **HS256 chia sẻ secret**: nhanh hơn thật, nhưng chi phí verify RSA/ECDSA chỉ cỡ micro giây đến vài chục micro giây, không đáng kể so với một request. Đổi lại là rủi ro bảo mật lớn. HS256 chỉ hợp lý khi bên ký và bên verify là **cùng một** hệ thống.
+- **Không ký**: base64url không phải mã hoá, ai cũng sửa được payload (đổi {{role}} thành ADMIN). HTTPS chỉ bảo vệ đường truyền, không chứng minh token do ai phát.
+- **Tin field alg trong header**: đây là lỗ hổng **algorithm confusion** nổi tiếng: kẻ tấn công đổi alg thành {{none}}, hoặc thành HS256 rồi ký bằng chính public key RSA (vốn công khai) làm secret HMAC. Verifier phải **cố định** thuật toán được chấp nhận ở phía server.
+
+> Senior tip: cấu hình resource server với danh sách thuật toán cho phép tường minh, cache JWKS và tự refresh khi gặp {{kid}} lạ (có rate limit để tránh bị spam). Khi xoay key, công bố key mới trên JWKS **trước** khi bắt đầu ký bằng nó, và giữ key cũ tới khi token cuối cùng hết hạn.`
+},
+{
+  id: 'qz-security-002',
+  topic: 'security',
+  q: 'Về việc lưu token cho một SPA (React/Angular), phát biểu nào **đúng**?',
+  options: [
+    'Lưu access token trong localStorage là an toàn vì same-origin policy ngăn script của domain khác đọc nó',
+    'Cookie HttpOnly miễn nhiễm hoàn toàn với XSS nên có thể bỏ qua CSP và output encoding',
+    'Cookie HttpOnly; Secure; SameSite khiến JavaScript (kể cả script XSS) không đọc được token, nhưng vẫn cần chống CSRF, và XSS vẫn có thể gửi request thay người dùng',
+    'Implicit flow (token trả thẳng trên URL fragment) là cách được khuyến nghị cho SPA vì không cần backend'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: cookie HttpOnly chống được việc đánh cắp token, nhưng không chống được mọi thứ.**
+
+### Vì sao đúng
+- **HttpOnly**: JavaScript không đọc được cookie qua {{document.cookie}} → script XSS không thể *lấy cắp* token mang đi dùng ở nơi khác.
+- **Secure**: chỉ gửi qua HTTPS. **SameSite=Lax/Strict**: giảm rủi ro CSRF.
+- Nhưng cookie được trình duyệt **tự động đính kèm** → phải có chống CSRF (SameSite + CSRF token hoặc kiểm tra Origin cho request thay đổi dữ liệu).
+- Và nếu trang đã bị XSS, script vẫn gọi API **ngay trong trình duyệt nạn nhân** (cookie tự đi kèm). HttpOnly giảm thiệt hại (token không bị mang đi, hết phiên là hết), không xoá được lỗ hổng.
+
+Kiến trúc thường được khuyến nghị: **BFF (Backend for Frontend)** giữ access/refresh token phía server, trình duyệt chỉ có session cookie HttpOnly.
+
+### Vì sao các phương án còn lại sai
+- **localStorage an toàn**: same-origin policy chặn domain *khác*, nhưng script XSS chạy **trong origin của bạn** (qua input không được escape, thư viện npm bị chèn mã…) nên đọc được localStorage và gửi token đi.
+- **HttpOnly miễn nhiễm XSS**: như trên, XSS vẫn thao tác được thay người dùng, đọc dữ liệu hiển thị trên trang, giả lập form. CSP và encoding vẫn là lớp phòng thủ chính.
+- **Implicit flow**: OAuth 2.0 Security BCP (RFC 9700) khuyến nghị **không** dùng implicit grant vì token lộ trên URL (history, log, Referer) và không thể sender-constrain. SPA nên dùng **Authorization Code + PKCE**.
+
+> Senior tip: nếu buộc phải giữ token trong JavaScript (không có BFF), giữ access token **trong bộ nhớ** (biến JS), thời hạn ngắn 5–15 phút, refresh token có **rotation** và phát hiện tái sử dụng. Đừng để access token sống hàng ngày trong localStorage.`
+},
+{
+  id: 'qz-security-003',
+  topic: 'security',
+  q: 'Bạn thiết kế lưu mật khẩu người dùng cho hệ thống mới. Lựa chọn nào đúng với khuyến nghị hiện hành (OWASP Password Storage Cheat Sheet)?',
+  options: [
+    'SHA-256 với salt ngẫu nhiên riêng cho mỗi user',
+    'Mã hoá AES-256-GCM với key lưu trong KMS để có thể giải mã khi cần hỗ trợ user',
+    'MD5 lặp hai lần kèm một pepper bí mật trong cấu hình',
+    'Argon2id (hoặc bcrypt với cost đủ cao), salt riêng cho từng user, tham số được tune để mỗi lần hash chậm có chủ đích'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: Argon2id hoặc bcrypt, salt riêng, chậm có chủ đích.**
+
+### Vì sao đúng
+Mối đe doạ chính: DB bị dump, kẻ tấn công **brute-force offline** với GPU. Hàm hash mật khẩu phải:
+1. **Chậm và tốn tài nguyên có thể điều chỉnh**: Argon2id tốn cả CPU lẫn **bộ nhớ** (memory-hard), làm GPU/ASIC mất lợi thế. OWASP gợi ý cấu hình tối thiểu cho Argon2id là 19 MiB bộ nhớ, 2 vòng lặp, parallelism 1; bcrypt thì work factor từ 10 trở lên.
+2. **Salt ngẫu nhiên mỗi user**: hai người cùng mật khẩu có hash khác nhau, vô hiệu hoá rainbow table. Argon2/bcrypt tự sinh salt và lưu nó ngay trong chuỗi hash.
+
+Spring Security có sẵn {{Argon2PasswordEncoder}}, {{BCryptPasswordEncoder}} và {{DelegatingPasswordEncoder}} (chuỗi hash có tiền tố như {{bcrypt}} trong ngoặc nhọn để biết thuật toán, hỗ trợ nâng cấp dần).
+
+### Vì sao các phương án còn lại sai
+- **SHA-256 + salt**: salt chống rainbow table nhưng SHA-256 được thiết kế để **nhanh**: một GPU tính hàng tỉ hash mỗi giây, mật khẩu 8 ký tự thường bị phá trong vài giờ.
+- **AES mã hoá**: mã hoá là **hai chiều**. Lộ key (qua app server, quyền KMS bị lạm dụng, insider) là lộ toàn bộ mật khẩu gốc. Hệ thống không bao giờ cần biết mật khẩu gốc; "hỗ trợ user" phải là luồng reset.
+- **MD5 hai lần + pepper**: MD5 còn nhanh hơn SHA-256; lặp 2 lần chẳng làm chậm đáng kể. Pepper là lớp bổ sung tốt nhưng không thay được hàm hash chậm.
+
+> Senior tip: bcrypt chỉ dùng **72 byte** đầu của mật khẩu (passphrase dài bị cắt). Đo thời gian hash trên đúng máy production (mục tiêu khoảng vài trăm ms), và nhớ endpoint login trở thành mục tiêu DoS CPU: cần rate limit trước khi gọi hàm hash. Khi đổi thuật toán, re-hash dần lúc user đăng nhập thành công.`
+},
+{
+  id: 'qz-security-004',
+  topic: 'security',
+  q: 'Session cookie của bank.example được đặt {{SameSite=Lax}} (tường minh). Phát biểu nào đúng về CSRF?',
+  options: [
+    'Cookie không được gửi kèm form POST từ trang cross-site, nhưng vẫn được gửi khi người dùng điều hướng top-level bằng GET; vì vậy endpoint thay đổi dữ liệu bằng GET vẫn bị CSRF',
+    'SameSite=Lax chặn cookie ở mọi request cross-site nên có thể tắt CSRF token hoàn toàn',
+    'Nên đặt SameSite=None để cookie được kiểm soát chặt nhất',
+    'CSRF chủ yếu đe doạ API xác thực bằng header Authorization: Bearer, vì header này được trình duyệt gửi tự động'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Lax chặn POST cross-site nhưng vẫn gửi cookie cho điều hướng GET top-level.**
+
+### Vì sao đúng
+CSRF hoạt động vì trình duyệt **tự đính cookie** vào request tới bank.example, kể cả khi request xuất phát từ evil.example. SameSite điều khiển việc này:
+| Giá trị | Cookie gửi trong request cross-site |
+|---|---|
+| Strict | không bao giờ |
+| Lax | chỉ điều hướng top-level với method an toàn (GET qua link, redirect) |
+| None (bắt buộc kèm Secure) | luôn gửi |
+
+Với Lax: form tự submit POST từ evil.example → **không** có cookie → bị chặn. Nhưng nếu có endpoint kiểu {{GET /transfer?to=attacker&amount=1000}}, chỉ cần dụ người dùng bấm link là cookie đi kèm. Đó là lý do GET phải **safe** (không thay đổi dữ liệu).
+
+### Vì sao các phương án còn lại sai
+- **Tắt CSRF token**: SameSite chỉ xét **site** (registrable domain), không xét origin. Subdomain bị chiếm (ví dụ {{blog.bank.example}} có XSS) vẫn là same-site và gửi được request kèm cookie. Trình duyệt cũ cũng có thể không hỗ trợ. OWASP coi SameSite là lớp **bổ sung**, không thay CSRF token.
+- **SameSite=None**: ngược lại, đó là mức lỏng nhất: cookie đi kèm mọi request cross-site, chỉ dùng cho tình huống nhúng thật sự (iframe bên thứ ba, SSO).
+- **Bearer header**: header Authorization **không** được trình duyệt tự đính; JavaScript phải tự thêm, và script của evil.example không đọc được token. Vì vậy API thuần Bearer gần như không bị CSRF; cookie mới là đối tượng.
+
+> Senior tip: Chrome áp **Lax mặc định** cho cookie không khai báo SameSite, kèm ngoại lệ "Lax+POST" cho phép POST top-level trong 2 phút đầu sau khi cookie được set. Đừng dựa vào mặc định: luôn khai báo tường minh, giữ CSRF token của Spring Security cho ứng dụng dùng session cookie, và kiểm tra header {{Origin}} cho request thay đổi dữ liệu.`
+},
+{
+  id: 'qz-security-005',
+  topic: 'security',
+  q: 'Pentest phát hiện: user đã đăng nhập gọi {{GET /api/invoices/1043}} rồi đổi thành 1044, 1045… và xem được hoá đơn của công ty khác. Cách sửa gốc rễ là gì?',
+  options: [
+    'Đổi id tuần tự sang UUID để kẻ tấn công không đoán được id',
+    'Bật HTTPS cho mọi endpoint và thêm rate limit',
+    'Kiểm tra quyền ở mức đối tượng cho mỗi truy vấn: invoice phải thuộc user/tenant hiện tại (ví dụ WHERE id = ? AND tenant_id = ?), không thuộc thì trả 404 hoặc 403',
+    'Thêm @PreAuthorize kiểm tra user có role USER trước khi vào method'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: kiểm tra quyền ở mức đối tượng (object-level authorization).**
+
+### Vì sao đúng
+Đây là **IDOR** (Insecure Direct Object Reference), thuộc **A01: Broken Access Control** của OWASP Top 10 2021 (hạng 1), và là **API1: Broken Object Level Authorization** trong OWASP API Security Top 10 2023. Bản chất: server tin id client gửi lên mà không hỏi "**người này có quyền với đúng đối tượng này không?**".
+
+Sửa đúng là ràng buộc quyền sở hữu ngay trong truy vấn:
+~~~java
+// tenantId lấy từ token đã xác thực, KHÔNG lấy từ request
+Invoice inv = invoiceRepo
+    .findByIdAndTenantId(id, currentUser.tenantId())
+    .orElseThrow(NotFoundException::new);   // 404: không tiết lộ id có tồn tại
+~~~
+Đưa điều kiện vào query (thay vì load rồi mới so sánh) giúp không quên ở các đường đi khác như export, search, bulk API.
+
+### Vì sao các phương án còn lại sai
+- **UUID**: chỉ làm id khó đoán hơn (security through obscurity). UUID vẫn bị lộ qua URL chia sẻ, log, email, response của API khác; khi đã có id thì lỗ hổng vẫn nguyên. Nên dùng như lớp bổ sung, không phải cách sửa.
+- **HTTPS + rate limit**: HTTPS bảo vệ đường truyền, kẻ tấn công ở đây là user hợp lệ trên kết nối HTTPS hợp lệ. Rate limit chỉ làm chậm việc dò, không ngăn truy cập trái phép.
+- **@PreAuthorize role USER**: kiểm tra quyền **chức năng** (được gọi endpoint không), không kiểm tra **dữ liệu** (được xem hoá đơn nào). Attacker vốn đã có role USER.
+
+> Senior tip: với hệ thống multi-tenant, đừng trông vào việc mọi dev nhớ thêm {{tenant_id}}: dùng Hibernate {{@TenantId}} (Hibernate 6) hoặc filter, hay PostgreSQL Row-Level Security, và viết test tự động "user tenant A gọi id của tenant B phải nhận 404" cho mọi endpoint có id trên path.`
+},
+{
+  id: 'qz-security-006',
+  topic: 'security',
+  q: `API danh sách sản phẩm cho phép client chọn cột sắp xếp. Code hiện tại bị SQL injection. Cách sửa nào đúng?
+~~~java
+String sql = "SELECT id, name, price FROM products ORDER BY " + sort;
+return jdbcTemplate.query(sql, rowMapper);
+~~~`,
+  options: [
+    'Dùng PreparedStatement với ORDER BY ? rồi setString(1, sort)',
+    'Escape dấu nháy đơn trong tham số sort trước khi nối chuỗi',
+    'Chặn bằng WAF hoặc regex các từ khoá như SELECT, UNION, dấu --',
+    'Map giá trị client gửi vào whitelist cố định (ví dụ price ứng với p.price, hướng chỉ ASC hoặc DESC), giá trị khác trả 400'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: whitelist ánh xạ giá trị client sang tên cột cố định.**
+
+### Vì sao đúng
+Bind parameter ({{?}}) chỉ thay được **giá trị**, không thay được **định danh** (tên cột, tên bảng) hay từ khoá (ASC/DESC). Vì vậy với ORDER BY, cách an toàn duy nhất là client chỉ gửi một **khoá logic**, server tra trong bảng ánh xạ do mình kiểm soát:
+~~~java
+private static final Map<String, String> SORT = Map.of(
+    "name",  "name",
+    "price", "price",
+    "newest", "created_at");
+
+String col = SORT.get(sortParam);
+if (col == null) throw new BadRequestException("sort không hợp lệ");
+String dir = "desc".equalsIgnoreCase(dirParam) ? "DESC" : "ASC";
+String sql = "SELECT id, name, price FROM products ORDER BY " + col + " " + dir + ", id";
+~~~
+Chuỗi nối vào SQL giờ chỉ có thể là hằng số do dev viết.
+
+### Vì sao các phương án còn lại sai
+- **ORDER BY ?**: tham số được bind thành một **giá trị hằng** (chuỗi 'price'), không phải tên cột. Câu lệnh sắp xếp theo một hằng số, tức là **không sắp xếp gì**. Không lỗi, nhưng tính năng hỏng.
+- **Escape nháy đơn**: payload ở vị trí ORDER BY không cần dấu nháy nào, ví dụ {{(CASE WHEN (SELECT ascii(substr(password,1,1)) FROM users LIMIT 1) = 97 THEN price ELSE id END)}}. Quan sát thứ tự kết quả thay đổi, kẻ tấn công dò được từng ký tự dữ liệu nhạy cảm (blind injection).
+- **WAF/regex blacklist**: luôn có cách vượt (đổi hoa thường, comment {{/**/}}, hàm thay thế, encoding). Blacklist là lớp giám sát, không phải cách sửa.
+
+> Senior tip: Spring Data {{Sort}} / {{Pageable}} với JPA kiểm tra property theo entity nên an toàn hơn nối chuỗi, nhưng {{JpaSort.unsafe(...)}} và native query thì không. Thêm luôn cột duy nhất ({{id}}) vào cuối ORDER BY để phân trang ổn định.`
+},
+{
+  id: 'qz-security-007',
+  topic: 'security',
+  q: 'Hai service nội bộ giao tiếp qua **mTLS**. Phát biểu nào đúng?',
+  options: [
+    'Trong handshake cả client và server đều trình certificate và chứng minh sở hữu private key; server xác định được service nào đang gọi, nhưng vẫn cần authorization riêng cho từng hành động',
+    'mTLS mã hoá payload hai lần (một lần mỗi phía) nên an toàn gấp đôi TLS thường',
+    'mTLS thay thế hoàn toàn nhu cầu phân quyền vì server đã biết chính xác ai gọi',
+    'Với mTLS, client không cần kiểm tra certificate của server nữa vì server đã kiểm tra client'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: mTLS xác thực hai chiều, nhưng xác thực không phải phân quyền.**
+
+### Vì sao đúng
+TLS thường: chỉ **server** trình certificate, client verify. mTLS (mutual TLS): server gửi thêm **CertificateRequest**, client trình certificate của mình và ký dữ liệu handshake bằng private key (**CertificateVerify**) để chứng minh sở hữu. Kết quả:
+- Mỗi bên biết chắc danh tính phía kia (ví dụ SAN chứa {{spiffe://prod/ns/billing/sa/billing-api}} trong service mesh dùng SPIFFE).
+- Credentials không phải bí mật gửi qua mạng (khác API key), private key không bao giờ rời máy.
+
+Nhưng "biết là billing-api đang gọi" chưa trả lời "billing-api có được **xoá tài khoản khách** không". Vẫn cần policy (ví dụ Istio AuthorizationPolicy, OPA) hoặc token mang quyền của người dùng cuối.
+
+### Vì sao các phương án còn lại sai
+- **Mã hoá hai lần**: mTLS dùng **một** kênh TLS với một bộ khoá phiên như TLS thường. Khác biệt chỉ nằm ở bước xác thực trong handshake.
+- **Thay thế phân quyền**: nhầm authentication với authorization. Nếu một service bị chiếm, kẻ tấn công kế thừa danh tính đó; không có policy thì nó gọi được mọi API.
+- **Client bỏ kiểm tra server**: xác thực phải đủ **hai chiều**. Bỏ verify server cert mở đường cho man-in-the-middle: kẻ giả mạo server nhận luôn request đã được client ký.
+
+> Senior tip: phần khó của mTLS là **vận hành certificate**: cấp phát tự động, thời hạn ngắn (giờ/ngày), xoay vòng không downtime, thu hồi. Đừng tự làm bằng tay với cert hạn 2 năm; dùng service mesh (Istio, Linkerd) hoặc SPIRE / AWS Private CA. RFC 8705 còn cho phép **ràng buộc OAuth token với client cert**, nên token bị đánh cắp không dùng được ở máy khác.`
+},
+{
+  id: 'qz-security-008',
+  topic: 'security',
+  q: 'Resource server nhận access token JWT từ authorization server. Tối thiểu nó phải kiểm tra những gì?',
+  options: [
+    'Chỉ cần decode payload và kiểm tra exp; chữ ký đã được API gateway kiểm tra ở mọi trường hợp',
+    'Chữ ký với thuật toán cố định phía server (không tin alg trong header), exp và nbf, iss đúng authorization server, aud có chứa chính service này',
+    'Chữ ký là đủ; iss và aud chỉ mang tính thông tin, không ảnh hưởng an toàn',
+    'Gọi introspection endpoint ở mọi request vì JWT không thể verify cục bộ'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: verify chữ ký (thuật toán cố định) + thời hạn + iss + aud.**
+
+### Vì sao đúng
+Mỗi kiểm tra chặn một kiểu tấn công khác nhau:
+| Kiểm tra | Chặn được |
+|---|---|
+| Chữ ký, thuật toán cố định | token giả, sửa payload, algorithm confusion ({{alg: none}}, HS256 với public key) |
+| exp, nbf (cho phép lệch giờ nhỏ, ví dụ 30–60 giây) | token cũ bị đánh cắp dùng mãi |
+| iss | token do một issuer khác (môi trường test, tenant khác) ký |
+| aud | token cấp cho service A đem sang dùng ở service B (token replay giữa các service) |
+
+Spring Security resource server mặc định kiểm tra chữ ký, exp/nbf và iss (nếu cấu hình {{issuer-uri}}); **aud** từ Spring Boot 3.x có thể khai báo bằng {{spring.security.oauth2.resourceserver.jwt.audiences}}, hoặc tự thêm validator.
+
+### Vì sao các phương án còn lại sai
+- **Chỉ decode + exp**: tin rằng gateway luôn chặn trước là giả định nguy hiểm: traffic nội bộ, service mesh, job batch hoặc cấu hình route sai có thể đi vòng qua gateway. Zero trust: mỗi service tự verify.
+- **iss/aud chỉ là thông tin**: nếu nhiều service cùng tin một issuer, thiếu kiểm tra aud cho phép service độc hại (hoặc bị chiếm) lấy token người dùng gửi cho nó rồi gọi sang service khác.
+- **Bắt buộc introspection**: JWT có chữ ký chính là để verify **cục bộ** bằng public key. Introspection (RFC 7662) hữu ích khi cần thu hồi tức thời hoặc dùng opaque token, nhưng không bắt buộc và thêm một round-trip mỗi request.
+
+> Senior tip: JWT không thu hồi được trước exp, nên giữ access token ngắn (5–15 phút). Với thao tác rủi ro cao (đổi mật khẩu, chuyển tiền) có thể kiểm tra thêm danh sách thu hồi theo {{jti}} hoặc introspection riêng cho các endpoint đó.`
+},
+{
+  id: 'qz-behavioral-001',
+  topic: 'behavioral',
+  q: 'Interviewer: "Kể về một lần bạn bất đồng với đồng nghiệp về một quyết định kỹ thuật." Câu trả lời nào tốt nhất?',
+  options: [
+    'Anh lead cũ muốn dùng MongoDB chỉ vì thích công nghệ mới, trong khi rõ ràng không hiểu bài toán. Tôi phải escalate lên CTO và cuối cùng tôi đã đúng.',
+    'Team chúng tôi thường tranh luận, nhưng luôn thảo luận cởi mở và cùng nhau tìm ra giải pháp tốt nhất cho dự án.',
+    'Tôi và một senior khác bất đồng giữa MongoDB và PostgreSQL cho module billing, cần chốt trong 1 tuần. Tôi đề xuất thống nhất tiêu chí trước (transaction, báo cáo, vận hành), mỗi người làm spike 2 ngày trên dữ liệu thật, và ghi nhận điểm mạnh về schema linh hoạt của phương án kia. Team chọn PostgreSQL kèm cột JSONB, cả hai đồng thuận, module lên production đúng hạn và 6 tháng không có lỗi đối soát. Bài học: thống nhất tiêu chí trước khi tranh luận giải pháp.',
+    'Nếu có bất đồng, tôi sẽ lắng nghe, đưa ra dữ liệu và luôn tôn trọng quyết định cuối cùng của team.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: câu trả lời về MongoDB và PostgreSQL có spike, tiêu chí chung và kết quả đo được.**
+
+### Vì sao đúng
+Câu này đủ cấu trúc **STAR**:
+- **S/T**: bối cảnh cụ thể (module billing), áp lực thật (chốt trong 1 tuần).
+- **A**: hành động của **chính ứng viên** ("tôi đề xuất", "tôi ghi nhận"), thể hiện cách giải quyết bất đồng bằng **dữ liệu và tiêu chí**, không bằng cái tôi.
+- **R**: kết quả có số (đúng hạn, 6 tháng không lỗi), cả hai bên đồng thuận, phương án cuối kết hợp ưu điểm của cả hai (JSONB).
+- **Bài học**: cho thấy khả năng tự rút kinh nghiệm, điều interviewer cấp Senior/Lead rất tìm kiếm.
+
+### Vì sao các phương án còn lại sai
+- **"Anh lead cũ… tôi đã đúng"**: lỗi kinh điển: **đổ lỗi và hạ thấp đồng nghiệp**, escalate thay vì tự giải quyết, và đo thành công bằng "tôi thắng". Interviewer sẽ nghĩ: người này sẽ nói về team mình y như vậy.
+- **"Team chúng tôi… cởi mở"**: chung chung, dùng "chúng tôi" nên không biết ứng viên làm gì, không có tình huống cụ thể, không có kết quả. Đây là câu trả lời "không kể chuyện".
+- **"Nếu có bất đồng, tôi sẽ…"**: trả lời **giả định** cho câu hỏi hành vi. Câu hỏi "kể về một lần" cần một sự kiện đã xảy ra; trả lời "tôi sẽ" thường bị hiểu là ứng viên không có ví dụ thật.
+
+> Senior tip: chuẩn bị sẵn 6–8 câu chuyện STAR từ dự án thật, mỗi câu dài 1,5–2 phút, rồi tái sử dụng cho nhiều câu hỏi (xung đột, thất bại, ảnh hưởng không cần quyền hạn…). Khoảng 60% thời lượng nên dành cho phần Action.`
+},
+{
+  id: 'qz-behavioral-002',
+  topic: 'behavioral',
+  q: 'Interviewer: "Kể về một lần bạn không kịp deadline." Câu trả lời nào tốt nhất?',
+  options: [
+    'Dự án trễ 3 tuần vì team QA test quá chậm và product liên tục đổi requirement. Phần việc của tôi thì đã xong đúng hạn.',
+    'Chúng tôi migrate từ Oracle sang PostgreSQL bằng Flyway, phải viết lại 200 stored procedure, xử lý sequence, collation và kiểu NUMBER; về mặt kỹ thuật phần này rất phức tạp.',
+    'Tôi chưa bao giờ trễ deadline vì tôi luôn sẵn sàng làm thêm buổi tối và cuối tuần để kịp tiến độ.',
+    'Tôi ước lượng tích hợp cổng thanh toán mất 2 tuần, nhưng giữa sprint phát hiện sandbox của đối tác thiếu webhook hoàn tiền. Ngay hôm đó tôi báo PM ước lượng mới kèm 2 lựa chọn: lùi 1 tuần, hoặc go-live đúng hạn và tạm xử lý hoàn tiền thủ công. PM chọn phương án 2; chúng tôi go-live đúng ngày, hoàn tiền tự động bổ sung sau 8 ngày. Từ đó tôi luôn làm spike tích hợp bên thứ ba trong tuần đầu.'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: câu chuyện tích hợp cổng thanh toán.**
+
+### Vì sao đúng
+Interviewer không chấm việc bạn "chưa từng trễ", mà chấm **cách bạn xử lý khi trễ**:
+- **Thừa nhận** ước lượng của chính mình sai, nêu nguyên nhân khách quan nhưng không đổ lỗi.
+- **Báo sớm** ("ngay hôm đó"), không giấu tới ngày cuối.
+- Đưa ra **lựa chọn có trade-off** để người ra quyết định chọn, thay vì chỉ báo tin xấu.
+- **Kết quả** cụ thể (go-live đúng ngày, 8 ngày sau đủ tính năng) và **thay đổi quy trình** để không lặp lại.
+
+### Vì sao các phương án còn lại sai
+- **"Vì QA chậm và product đổi requirement… phần tôi xong đúng hạn"**: đổ lỗi và tách mình khỏi kết quả chung. Với vị trí Senior, interviewer muốn thấy bạn chịu trách nhiệm cho kết quả của **team**, và đã làm gì khi thấy QA chậm hay requirement đổi.
+- **Chi tiết migrate Oracle**: sa đà vào kỹ thuật, không có Action liên quan tới deadline (báo ai, thương lượng gì) và không có Result. Câu hỏi về hành vi nhưng câu trả lời là mô tả dự án.
+- **"Chưa bao giờ trễ, luôn làm thêm"**: né câu hỏi, và "làm thêm giờ" không phải chiến lược: cho thấy ước lượng kém và nguy cơ burnout. Interviewer gần như luôn hỏi tiếp và ứng viên lộ ra là không chuẩn bị.
+
+> Senior tip: câu then chốt nên có trong câu trả lời này là "tôi báo sớm kèm phương án". Nhiều hiring manager coi đây là tín hiệu quan trọng nhất của một senior: tin xấu đến sớm thì vẫn còn lựa chọn, tin xấu đến muộn chỉ còn hậu quả.`
+},
+{
+  id: 'qz-behavioral-003',
+  topic: 'behavioral',
+  q: 'Interviewer: "Kể về một feedback khó nghe mà bạn từng nhận." Câu trả lời nào tốt nhất?',
+  options: [
+    'Manager nói tài liệu thiết kế của tôi quá dài nên stakeholder không đọc. Ban đầu tôi hơi khó chịu, nhưng tôi xin 2 ví dụ cụ thể và 2 tài liệu mẫu được đánh giá tốt. Tôi chuyển sang format 1 trang: vấn đề, phương án, trade-off, quyết định cần chốt, chi tiết đưa vào phụ lục, và nhờ manager review 3 tài liệu tiếp theo. Thời gian chốt design giảm từ khoảng 2 tuần xuống 4 ngày, và format này trở thành template của team.',
+    'Tôi giải thích với manager rằng tài liệu dài là cần thiết vì hệ thống phức tạp, và sau buổi đó anh ấy đã hiểu ra quan điểm của tôi.',
+    'Feedback khó nhất tôi từng nhận là tôi quá cầu toàn và làm việc quá chăm chỉ.',
+    'Tôi luôn đón nhận mọi feedback một cách tích cực, vì feedback giúp tôi phát triển mỗi ngày.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: câu chuyện về tài liệu thiết kế quá dài.**
+
+### Vì sao đúng
+- **Trung thực về cảm xúc** ("ban đầu hơi khó chịu") làm câu chuyện đáng tin, đồng thời cho thấy ứng viên tự kiểm soát được phản ứng.
+- **Hành động chủ động**: hỏi ví dụ cụ thể (làm rõ feedback thay vì phòng thủ), tìm mẫu tốt, thay đổi cách làm, và **mời người góp ý kiểm tra lại**.
+- **Kết quả đo được** (2 tuần → 4 ngày) và tác động lan ra cả team (template). Đây là dấu hiệu của tầm ảnh hưởng cấp Senior/Lead.
+
+### Vì sao các phương án còn lại sai
+- **"Tôi giải thích… anh ấy hiểu ra"**: phản ứng **phòng thủ**: câu chuyện thực chất là ứng viên bác bỏ feedback. Interviewer sẽ lo người này khó coach.
+- **"Quá cầu toàn, quá chăm chỉ"**: "điểm yếu giả" (humble-brag) mà interviewer đã nghe hàng trăm lần; bị coi là né tránh và thiếu tự nhận thức.
+- **"Luôn đón nhận tích cực"**: tuyên bố chung chung, không có tình huống, hành động hay kết quả. Không phải câu chuyện nên không chấm được.
+
+> Senior tip: chọn feedback **thật sự có giá trị** và về kỹ năng không phải cốt lõi tuyệt đối của vị trí (giao tiếp, ước lượng, uỷ quyền), rồi chứng minh đã thay đổi bằng số. Kết thúc bằng việc bạn giờ chủ động **xin** feedback thế nào (ví dụ hỏi sau mỗi design review) sẽ ghi điểm thêm.`
+},
+{
+  id: 'qz-behavioral-004',
+  topic: 'behavioral',
+  q: 'Interviewer: "Kể về một sự cố production do chính bạn gây ra." Câu trả lời nào tốt nhất?',
+  options: [
+    'Lỗi đó thực ra do môi trường staging khác production nên không ai có thể phát hiện trước, không phải lỗi của cá nhân nào.',
+    'Tôi deploy một migration tạo index không dùng CONCURRENTLY trên bảng orders 80 triệu dòng, chặn ghi khoảng 12 phút giờ cao điểm. Tôi nhận trách nhiệm incident: dừng pipeline, cùng on-call huỷ câu lệnh, cập nhật kênh incident 5 phút một lần, rồi tạo lại index bằng CREATE INDEX CONCURRENTLY ngoài giờ cao điểm. Sau đó tôi viết postmortem blameless và thêm rule lint chặn tạo index không CONCURRENTLY trên bảng lớn; một năm sau lỗi này không lặp lại.',
+    'Chúng tôi gặp một sự cố lớn, cả team họp khẩn và fix rất nhanh, sau đó mọi thứ hoạt động ổn định trở lại.',
+    'Tôi luôn test rất kỹ trước khi deploy nên tôi sẽ không để xảy ra sự cố production do mình gây ra.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: câu chuyện migration tạo index trên bảng 80 triệu dòng.**
+
+### Vì sao đúng
+- **Ownership rõ ràng**: "tôi deploy", "tôi nhận trách nhiệm". Không né, không đổ lỗi.
+- **Chi tiết kỹ thuật vừa đủ và chính xác**: {{CREATE INDEX}} thường giữ lock chặn INSERT/UPDATE/DELETE trên bảng suốt thời gian build; {{CREATE INDEX CONCURRENTLY}} không chặn ghi (đổi lại build chậm hơn và không chạy được trong transaction block). Interviewer kỹ thuật sẽ tin câu chuyện thật.
+- **Xử lý incident bài bản**: giảm thiểu tác động trước, giao tiếp định kỳ, rồi mới sửa gốc.
+- **Phòng ngừa hệ thống** (lint rule) thay vì "lần sau tôi cẩn thận hơn", kèm kết quả theo thời gian.
+
+### Vì sao các phương án còn lại sai
+- **"Do staging khác production… không phải lỗi của ai"**: câu hỏi yêu cầu sự cố *do bạn gây ra*; trả lời bằng cách phủ nhận trách nhiệm là tín hiệu xấu. "Blameless" trong postmortem nghĩa là không quy tội cá nhân, không có nghĩa là không ai sở hữu vấn đề.
+- **"Chúng tôi… fix rất nhanh"**: không biết sự cố là gì, ứng viên làm gì, tác động bao nhiêu, rút ra gì. Dùng "chúng tôi" để che vai trò cá nhân.
+- **"Tôi luôn test kỹ… sẽ không để xảy ra"**: vừa giả định, vừa thiếu thực tế. Mọi kỹ sư làm production đủ lâu đều từng gây sự cố; khẳng định ngược lại khiến interviewer nghi ngờ kinh nghiệm hoặc sự trung thực.
+
+> Senior tip: kể sự cố theo khung postmortem: **tác động** (bao nhiêu user, bao lâu) → **phát hiện** (alert hay khách báo) → **giảm thiểu** → **nguyên nhân gốc** → **hành động phòng ngừa**. Interviewer cấp Lead đặc biệt chú ý phần "phát hiện": nếu khách hàng báo trước monitoring thì bạn cũng nên kể bạn đã bổ sung alert gì.`
+},
+{
+  id: 'qz-behavioral-005',
+  topic: 'behavioral',
+  q: 'Interviewer: "Kể về một lần bạn thuyết phục product/stakeholder ưu tiên xử lý technical debt." Câu trả lời nào tốt nhất?',
+  options: [
+    'Chúng tôi có rất nhiều technical debt: code cũ viết bằng Java 8, gần như không có test, deploy thủ công, log rời rạc. Team đã nhiều lần nêu vấn đề này trong retro và mọi người đều đồng ý rằng đây là việc quan trọng cần được giải quyết.',
+    'PM chỉ quan tâm tính năng nên tôi âm thầm refactor trong các ticket tính năng mà không báo, vì nếu hỏi chắc chắn sẽ bị từ chối.',
+    'Tôi sẽ giải thích cho PM rằng technical debt rất nguy hiểm, nếu không xử lý thì sớm muộn hệ thống cũng sập.',
+    'Service checkout không có test tích hợp, mỗi release mất 2 ngày regression thủ công và quý trước có 3 hotfix. Thay vì xin "refactor" chung chung, tôi gom số liệu: thời gian release, số incident, giờ dev bị kéo vào hotfix, quy ra khoảng 15% capacity của team. Tôi đề xuất dành 20% mỗi sprint trong 2 sprint với mốc đo được. PM đồng ý; sau 6 tuần, release còn nửa ngày và quý sau không có hotfix nào.'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: câu chuyện service checkout với số liệu capacity.**
+
+### Vì sao đúng
+Thuyết phục stakeholder không có quyền quyết định thay họ, nên ứng viên phải **nói ngôn ngữ của họ**:
+- Quy technical debt ra **chi phí kinh doanh** (15% capacity, ngày release, số hotfix) thay vì thuật ngữ kỹ thuật.
+- Đề xuất **có giới hạn** (20%, 2 sprint) và **có mốc đo**, giảm rủi ro cho PM khi nói "có".
+- Kết quả cụ thể, chứng minh khoản đầu tư đáng giá, tạo niềm tin cho lần đề xuất sau.
+
+### Vì sao các phương án còn lại sai
+- **"Chúng tôi có rất nhiều technical debt…"**: dài nhưng chỉ là **mô tả vấn đề**. Không có hành động thuyết phục của cá nhân ứng viên, không có kết quả; "mọi người đều đồng ý" nhưng chẳng có gì thay đổi.
+- **"Âm thầm refactor"**: phá vỡ niềm tin và minh bạch, làm sai lệch ước lượng tính năng, và cho thấy ứng viên **né** xung đột thay vì xử lý. Với vị trí Senior/Lead đây là red flag rõ ràng.
+- **"Tôi sẽ giải thích…"**: giả định, không phải trải nghiệm thật; và lập luận "hệ thống sẽ sập" là dọa dẫm không có dữ liệu, đúng kiểu thuyết phục kém hiệu quả nhất.
+
+> Senior tip: duy trì một "debt register" đơn giản (vấn đề, chi phí ước tính mỗi tháng, đề xuất, effort). Khi có số liệu tích luỹ, việc xin ngân sách xử lý nợ trở thành một quyết định đầu tư bình thường, không còn là cuộc tranh cãi giữa dev và product.`
+},
+{
+  id: 'qz-behavioral-006',
+  topic: 'behavioral',
+  q: 'Interviewer: "Kể về lần bạn giúp một thành viên trong team đang gặp khó khăn về hiệu suất." Câu trả lời nào tốt nhất?',
+  options: [
+    'Một junior vào được 3 tháng, PR thường bị trả lại 4–5 vòng và hay trễ task. Tôi hẹn 1-1 và nhận ra bạn ngại hỏi, chưa hiểu domain thanh toán. Tôi viết checklist review, pair programming 2 buổi mỗi tuần trong một tháng, và giao task nhỏ có phạm vi rõ trước. Sau 2 tháng, số vòng review trung bình còn 1–2 và bạn tự làm một feature nhỏ end-to-end. Tôi rút ra: vấn đề thường nằm ở bối cảnh hơn là năng lực.',
+    'Bạn ấy làm chậm nên tôi nhận lại các task khó và tự làm cho nhanh, để bạn ấy làm việc dễ hơn; nhờ vậy sprint của team luôn đúng hạn.',
+    'Tôi báo với manager rằng bạn ấy không đủ năng lực và đề nghị chuyển bạn sang team khác để không ảnh hưởng tiến độ.',
+    'Tôi rất thích mentor. Tôi thường chia sẻ kiến thức về Spring, JPA, Kafka, clean code và design pattern cho các bạn junior, đồng thời tổ chức tech talk hằng tháng để cả team cùng học hỏi.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: câu chuyện 1-1, checklist và pair programming với junior.**
+
+### Vì sao đúng
+- **Chẩn đoán trước khi hành động**: 1-1 để tìm nguyên nhân (ngại hỏi, thiếu domain), không mặc định là "kém".
+- **Hành động có cấu trúc, phù hợp nguyên nhân**: checklist (giảm lỗi lặp lại), pair programming (truyền domain), task nhỏ (tạo thành công sớm).
+- **Kết quả đo được** (4–5 vòng → 1–2 vòng, tự làm feature) và **bài học** về cách nhìn người.
+
+### Vì sao các phương án còn lại sai
+- **"Nhận lại task khó và tự làm"**: hero mode. Sprint đúng hạn ngắn hạn nhưng junior không tiến bộ, senior thành nút thắt cổ chai. Interviewer cấp Lead xem đây là thiếu năng lực phát triển người khác.
+- **"Báo manager chuyển team"**: bỏ qua mọi nỗ lực hỗ trợ, gán nhãn "không đủ năng lực" khi chưa tìm nguyên nhân. Thể hiện thiếu sự đồng cảm và tinh thần team.
+- **"Tôi rất thích mentor… tech talk"**: nghe tích cực nhưng **lạc đề**: câu hỏi về một người cụ thể đang gặp khó khăn, câu trả lời lại liệt kê hoạt động chung chung, không có tình huống, không có kết quả.
+
+> Senior tip: khi kể chuyện về người khác, giữ tôn trọng (không nêu tên, không chê bai) và nhấn mạnh **kết quả của họ**, không phải công lao của bạn. Nếu câu chuyện kết thúc bằng việc người đó vẫn không tiến bộ, hãy kể bạn đã phối hợp với manager minh bạch và công bằng ra sao; đó cũng là câu trả lời tốt.`
+},
+{
+  id: 'qz-behavioral-007',
+  topic: 'behavioral',
+  q: 'Interviewer: "Kể về lần hai stakeholder cùng yêu cầu việc gấp mà bạn chỉ làm kịp một việc." Câu trả lời nào tốt nhất?',
+  options: [
+    'Tôi nhận cả hai và làm thêm giờ cả tuần để hoàn thành, vì tôi không muốn làm ai thất vọng.',
+    'Sales cần API báo giá cho một khách lớn trong 5 ngày, cùng lúc Ops yêu cầu sửa job đối soát đang lệch số. Tôi ước lượng cả hai và hỏi mỗi bên tác động nếu chậm 1 tuần: báo giá có thể mất hợp đồng khoảng 200 nghìn USD, đối soát có thể xử lý tay tạm thời. Tôi đưa bảng so sánh cho engineering manager và hai bên cùng chốt: làm API trước, Ops chạy script tạm tôi viết trong 2 giờ. Cả hai việc xong trong 8 ngày và không mất hợp đồng nào.',
+    'Tôi chọn làm việc của Sales vì họ mang lại doanh thu, còn với Ops thì tôi trả lời là đang bận và để họ tự xoay xở.',
+    'Tôi luôn ưu tiên theo ma trận Eisenhower: việc khẩn cấp và quan trọng làm trước, việc quan trọng nhưng không khẩn cấp thì lên lịch, còn lại uỷ quyền hoặc loại bỏ.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: câu chuyện API báo giá và job đối soát.**
+
+### Vì sao đúng
+- **Ra quyết định dựa trên tác động**, không theo ai nói to hơn: hỏi cụ thể "chậm 1 tuần thì mất gì".
+- **Minh bạch và đúng người quyết định**: đưa dữ liệu cho engineering manager và hai bên cùng chốt, nên không bên nào cảm thấy bị gạt.
+- **Giảm thiệt hại cho bên bị lùi** (script tạm 2 giờ), cho thấy tư duy giải pháp chứ không chỉ chọn A bỏ B.
+- **Kết quả cụ thể**.
+
+### Vì sao các phương án còn lại sai
+- **"Nhận cả hai, làm thêm giờ"**: không biết nói "không" hay thương lượng; không bền vững, chất lượng dễ giảm, và che giấu vấn đề capacity với quản lý.
+- **"Chọn Sales, để Ops tự xoay xở"**: lý do có thể đúng nhưng **tự quyết đơn phương** và giao tiếp kém, làm hỏng quan hệ với Ops. Không có kết quả về tác động của việc đối soát lệch.
+- **"Ma trận Eisenhower"**: lý thuyết chung, không phải một tình huống đã xảy ra. Interviewer sẽ hỏi "cho ví dụ cụ thể" và bạn mất điểm vì chưa chuẩn bị.
+
+> Senior tip: ở cấp Senior trở lên, câu "không phải tôi một mình quyết định ưu tiên, nhưng tôi chịu trách nhiệm đưa đủ dữ liệu để người có thẩm quyền quyết định nhanh" thể hiện đúng tầm. Kể thêm bạn đã cập nhật lại cho bên bị lùi lịch thế nào sẽ là điểm cộng.`
+},
+{
+  id: 'qz-behavioral-008',
+  topic: 'behavioral',
+  q: 'Interviewer: "Kể về một dự án bạn dẫn dắt mà kết quả không như mong đợi." Câu trả lời nào tốt nhất?',
+  options: [
+    'Dự án thất bại vì công ty cắt ngân sách giữa chừng, nằm ngoài tầm kiểm soát của tôi, nên thật ra không có gì nhiều để rút kinh nghiệm.',
+    'Chúng tôi xây dựng hệ thống event-driven với Kafka, Debezium và Kubernetes. Dự án có rất nhiều thách thức về kỹ thuật lẫn con người, nhưng qua đó chúng tôi đã học được rất nhiều điều.',
+    'Tôi dẫn dắt việc tách module thông báo thành microservice để giảm thời gian deploy, nhưng đã đánh giá thấp chi phí vận hành: sau 3 tháng, team 4 người phải lo thêm pipeline, monitoring và lỗi phân tán, thời gian deploy chỉ giảm 10% thay vì 50%. Tôi trình bày số liệu với manager, đề xuất đưa nó về thành một module tách biệt trong monolith và hoàn tất trong 2 sprint. Từ đó, trước mỗi thay đổi kiến trúc tôi viết ADR có tiêu chí thành công đo được và điểm dừng.',
+    'Thật ra mọi dự án tôi dẫn dắt đều đạt mục tiêu, vì tôi luôn lên kế hoạch rất chi tiết ngay từ đầu.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: câu chuyện tách module thông báo thành microservice.**
+
+### Vì sao đúng
+- **Nhận sai lầm của chính mình** ("tôi đã đánh giá thấp…") với nguyên nhân cụ thể, không đổ cho hoàn cảnh.
+- **Đo lường trung thực** (10% so với mục tiêu 50%) và có **dũng khí đảo ngược quyết định** (rollback kiến trúc). Đây là phẩm chất interviewer cấp Lead/Architect đánh giá rất cao, vì sunk cost fallacy là lỗi phổ biến.
+- **Bài học thành quy trình** (ADR với tiêu chí thành công và điểm dừng), không chỉ là "lần sau cẩn thận hơn".
+
+### Vì sao các phương án còn lại sai
+- **"Công ty cắt ngân sách… không có gì để rút kinh nghiệm"**: đổ cho yếu tố bên ngoài và từ chối học hỏi. Ngay cả khi nguyên nhân là ngân sách, một Lead vẫn có thể rút ra bài học về giao hàng theo từng phần có giá trị sớm.
+- **"Chúng tôi xây dựng hệ thống event-driven…"**: liệt kê công nghệ, dùng "chúng tôi", không nói kết quả gì không như mong đợi, ứng viên đã làm gì, và "học được rất nhiều" là gì.
+- **"Mọi dự án đều đạt mục tiêu"**: né câu hỏi. Ở cấp Lead, chưa từng thất bại thường có nghĩa là chưa từng nhận rủi ro thật hoặc thiếu tự nhận thức.
+
+> Senior tip: câu chuyện thất bại tốt nhất là câu chuyện mà quyết định ban đầu **hợp lý với thông tin lúc đó**, nhưng bạn phát hiện sai sớm nhờ đo lường và sửa kịp. Nó cho thấy cả khả năng phán đoán lẫn khả năng tự điều chỉnh.`
+},
+{
+  id: 'qz-english-001',
+  topic: 'english',
+  q: 'Interviewer hỏi sâu về một công nghệ bạn **chưa dùng thực tế** (ví dụ Kafka transactions). Câu trả lời tiếng Anh nào tự nhiên và chuyên nghiệp nhất?',
+  options: [
+    "I don't know.",
+    'Sorry, I am not knowing about this topic.',
+    'That is not my responsibility in my current team, so I never touch it.',
+    "I haven't used Kafka transactions in production, but let me reason through how I'd expect them to work, and please correct me if I'm off."
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: "I haven't used Kafka transactions in production, but let me reason through…"**
+
+### Vì sao đúng
+- **Trung thực** về giới hạn kinh nghiệm ("haven't used… in production") nhưng **không đóng cuộc trò chuyện**.
+- Chuyển sang thể hiện **cách tư duy** ("let me reason through"), đó mới là điều interviewer muốn đánh giá.
+- "Please correct me if I'm off" lịch sự, mời interviewer tương tác; "off" ở đây nghĩa là "sai, lệch".
+- Ngữ pháp: thì **present perfect** ({{haven't used}}) đúng cho trải nghiệm tính đến hiện tại, không gắn mốc thời gian.
+
+### Vì sao các phương án còn lại sai
+- **"I don't know."**: đúng ngữ pháp nhưng quá cụt, kết thúc câu hỏi và không cho interviewer thấy gì. Nếu thật sự không biết, nên nói thêm điều bạn biết ở mức liên quan hoặc cách bạn sẽ tìm hiểu.
+- **"I am not knowing"**: sai ngữ pháp. {{know}} là **stative verb** (động từ chỉ trạng thái), không dùng ở thì tiếp diễn. Đúng là "I don't know much about…". Đây là lỗi rất hay gặp của người Việt do dịch từ "đang không biết".
+- **"That is not my responsibility…"**: đúng ngữ pháp nhưng **sai thái độ/register**: nghe phòng thủ, thiếu tò mò. "Never touch it" còn khiến interviewer nghĩ bạn khép mình trong phạm vi hẹp.
+
+> Senior tip: học thuộc vài câu "cứu nguy" để không bị đứng hình: "I haven't worked with that directly, but…", "My understanding is… — is that in line with what you've seen?", "I'd need to check the docs on the exact API, but conceptually…". Nói được câu mở đầu trôi chảy giúp bạn có thêm vài giây để nghĩ.`
+},
+{
+  id: 'qz-english-002',
+  topic: 'english',
+  q: 'Bạn chưa chắc interviewer đang hỏi về khía cạnh nào. Câu nào là cách **hỏi lại để làm rõ** tự nhiên và lịch sự nhất?',
+  options: [
+    'Just to make sure I understand: are you asking about the read path or the write path?',
+    'Can you repeat again the question?',
+    'What do you mean? Your question is not clear.',
+    'Please explain me the question.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: "Just to make sure I understand: are you asking about the read path or the write path?"**
+
+### Vì sao đúng
+- "Just to make sure I understand" là cụm mở đầu chuẩn, nhận trách nhiệm hiểu về phía mình, rất lịch sự.
+- Câu hỏi **cụ thể**, đưa ra hai lựa chọn: cho interviewer thấy bạn đã phân tích được câu hỏi có hai hướng, và giúp họ trả lời nhanh.
+- Ngữ pháp chuẩn: "are you asking about…" đúng thì hiện tại tiếp diễn cho hành động đang diễn ra.
+
+### Vì sao các phương án còn lại sai
+- **"Can you repeat again the question?"**: hai lỗi. "Repeat" đã mang nghĩa "lại" nên thêm "again" là thừa; và trật tự từ không tự nhiên (tân ngữ phải đứng sát động từ: "repeat the question"). Câu tự nhiên: "Could you repeat the question, please?"
+- **"What do you mean? Your question is not clear."**: đúng ngữ pháp nhưng **đổ lỗi** cho người hỏi, giọng gay gắt. Trong phỏng vấn, register này gây ấn tượng xấu.
+- **"Please explain me the question."**: sai cấu trúc. {{explain}} không dùng cấu trúc hai tân ngữ như "give me something"; phải là "explain something **to** me": "Could you explain the question to me?" hoặc tốt hơn "Could you clarify what you mean by…?"
+
+> Senior tip: hỏi lại để làm rõ là **điểm cộng** chứ không phải điểm trừ, đặc biệt với câu system design mơ hồ. Interviewer bản ngữ thường cố tình để câu hỏi mở. Dùng "Could you clarify…", "When you say X, do you mean…?" và nhắc lại giả định: "I'll assume… unless you'd like me to consider…".`
+},
+{
+  id: 'qz-english-003',
+  topic: 'english',
+  q: 'Interviewer: "Why did you choose eventual consistency?" Câu nào giải thích **trade-off** tự nhiên và đúng nhất?',
+  options: [
+    'Eventual consistency is more better for scaling, so we used it.',
+    "We went with eventual consistency because it let us scale writes, at the cost of users occasionally seeing data that's a few seconds stale.",
+    'Despite of the stale data, we chose eventual consistency.',
+    'We chose eventual consistency because it is the best approach.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: "We went with eventual consistency because it let us scale writes, at the cost of…"**
+
+### Vì sao đúng
+- Nêu **cả lợi ích lẫn cái giá**: đúng bản chất của một câu trả lời trade-off.
+- "**at the cost of** + danh từ/V-ing" là cụm chuẩn để nói cái giá phải trả. Các cụm tương tự: "the trade-off is…", "the downside is…", "in exchange for…".
+- "**went with**" tự nhiên trong văn nói khi nói về một lựa chọn; "let us scale" dùng {{let + object + bare infinitive}} đúng ngữ pháp.
+- Có con số cụ thể ("a few seconds stale") giúp câu trả lời đáng tin.
+
+### Vì sao các phương án còn lại sai
+- **"more better"**: lỗi **so sánh kép**. "Better" đã là dạng so sánh hơn của "good"; không thêm "more". Đúng: "better for scaling".
+- **"Despite of"**: sai giới từ. Dùng "**despite** the stale data" hoặc "**in spite of** the stale data". Ngoài ra câu này chỉ nêu nhược điểm, không nói lý do chọn.
+- **"because it is the best approach"**: đúng ngữ pháp nhưng **không có nội dung**: không nói tốt hơn ở điểm gì, đánh đổi gì. Interviewer sẽ đánh giá ứng viên không hiểu trade-off; trong system design không có "best", chỉ có "best for these constraints".
+
+> Senior tip: luyện khung câu "We chose **X** over **Y** because **[constraint]**. The trade-off is **[cost]**, which we mitigated by **[action]**." Ví dụ thêm: "…which we mitigated by reading your own writes from the primary for the user who just made the change."`
+},
+{
+  id: 'qz-english-004',
+  topic: 'english',
+  q: 'Bạn muốn kể một thành tích **đã hoàn thành năm ngoái**. Câu nào đúng ngữ pháp và tự nhiên nhất?',
+  options: [
+    'I have led the migration to Kubernetes last year.',
+    'Last year I am responsible for lead the migration to Kubernetes.',
+    'I led our migration to Kubernetes last year, which cut deployment time from 40 minutes to 8.',
+    'I was leaded the migration to Kubernetes last year.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: "I led our migration to Kubernetes last year, which cut deployment time from 40 minutes to 8."**
+
+### Vì sao đúng
+- Có mốc thời gian quá khứ xác định ("last year") → dùng **past simple**: {{led}} (quá khứ bất quy tắc của {{lead}}).
+- Mệnh đề quan hệ "**, which cut…**" nối kết quả vào ngay sau hành động, đúng tinh thần STAR (action + result).
+- Chủ ngữ "I" và động từ mạnh "led" cho thấy vai trò cá nhân rõ ràng.
+
+### Vì sao các phương án còn lại sai
+- **"I have led… last year"**: sai thì. Present perfect **không** đi với mốc thời gian quá khứ xác định (last year, in 2023, two months ago). Có thể nói "I have led two migrations" (không có mốc), nhưng có "last year" thì phải là "I led".
+- **"Last year I am responsible for lead…"**: hai lỗi: thì hiện tại cho sự việc năm ngoái (phải là "was"), và sau giới từ "for" phải dùng V-ing ("responsible for **leading**"). Ngoài ra "was responsible for" yếu hơn "led" vì chỉ nói trách nhiệm, không nói hành động.
+- **"I was leaded"**: "lead" là động từ bất quy tắc (lead – led – led), không có "leaded" ở nghĩa này; và cấu trúc "was + V3" là **bị động**, nghĩa thành "tôi bị dẫn dắt".
+
+> Senior tip: khi kể thành tích bằng tiếng Anh, ưu tiên động từ mạnh ở past simple (led, designed, cut, reduced, migrated, introduced) thay vì "was responsible for" hay "was involved in". Câu ngắn, có số đo kết quả, nghe tự tin hơn nhiều.`
+},
+{
+  id: 'qz-english-005',
+  topic: 'english',
+  q: 'Trong vòng system design, interviewer gợi ý cho hai service dùng chung một database và bạn **không đồng ý**. Câu nào thể hiện bất đồng lịch sự và chuyên nghiệp nhất?',
+  options: [
+    "I see your point. My concern is that a shared database would couple the two services' release cycles. Would an outbox-based approach work here instead?",
+    'You are wrong, a shared database is a bad idea.',
+    'I am agree with you, but I think a shared database is not good.',
+    'With all due respect, that idea makes no sense at all.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: "I see your point. My concern is that… Would an outbox-based approach work here instead?"**
+
+### Vì sao đúng
+Khung bất đồng lịch sự gồm 3 bước, câu này có đủ:
+1. **Ghi nhận** quan điểm người kia: "I see your point."
+2. **Nêu mối lo cụ thể** thay vì phán xét: "My concern is that…" (tập trung vào vấn đề kỹ thuật: coupling release cycles).
+3. **Đề xuất thay thế dưới dạng câu hỏi**: "Would… work here instead?" mở ra thảo luận, không ép.
+
+Ngữ pháp: sở hữu cách số nhiều "the two services' release cycles" (dấu nháy sau s) đúng.
+
+### Vì sao các phương án còn lại sai
+- **"You are wrong…"**: đúng ngữ pháp nhưng **quá thẳng**, công kích người thay vì bàn ý tưởng. Trong văn hoá làm việc quốc tế, đặc biệt khi nói với interviewer, register này rất thiếu khéo léo.
+- **"I am agree"**: sai ngữ pháp. {{agree}} là động từ, không phải tính từ, nên không đi với "am". Đúng: "I agree with you". Câu này còn mâu thuẫn: "agree" rồi lại "not good"; muốn đồng ý một phần thì nói "I partly agree, but…".
+- **"With all due respect, that idea makes no sense"**: "with all due respect" trong tiếng Anh bản ngữ thường báo hiệu một lời chỉ trích sắp tới, kết hợp với "makes no sense at all" nghe **mỉa mai**. Không đưa ra lý do hay phương án thay thế.
+
+> Senior tip: trong phỏng vấn system design, interviewer đôi khi cố tình đưa gợi ý chưa tốt để xem bạn có dám phản biện có lý lẽ không. Cụm nên thuộc: "My concern with that is…", "One risk I see is…", "Have we considered…?", "I'd lean towards X because…".`
+},
+{
+  id: 'qz-english-006',
+  topic: 'english',
+  q: 'Cuối buổi phỏng vấn, interviewer hỏi "Do you have any questions for us?". Câu hỏi nào tốt nhất cả về ngữ pháp lẫn nội dung?',
+  options: [
+    'How much holidays do I get per year?',
+    'What does your company do?',
+    'Can you tell me what is the on-call process?',
+    'How does the team decide when to pay down technical debt versus ship new features?'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: "How does the team decide when to pay down technical debt versus ship new features?"**
+
+### Vì sao đúng
+- **Nội dung**: hỏi về cách team ra quyết định, cho thấy bạn quan tâm tới chất lượng kỹ thuật và văn hoá làm việc, đúng tầm một ứng viên Senior. Câu trả lời của interviewer cũng giúp bạn đánh giá công ty.
+- **Ngữ pháp**: câu hỏi thì hiện tại đơn với trợ động từ "does" đúng; "pay down technical debt" là collocation tự nhiên; "versus" dùng để đối chiếu hai lựa chọn.
+
+### Vì sao các phương án còn lại sai
+- **"How much holidays"**: sai ngữ pháp: "holidays" là danh từ **đếm được** số nhiều nên phải dùng "how many". Tự nhiên hơn: "How much paid time off do we get?" (PTO là danh từ không đếm được). Về nội dung, câu này nên để dành cho vòng HR, hỏi interviewer kỹ thuật dễ gây ấn tượng chỉ quan tâm quyền lợi.
+- **"What does your company do?"**: đúng ngữ pháp nhưng cho thấy bạn **không tìm hiểu** công ty trước buổi phỏng vấn, một điểm trừ lớn.
+- **"Can you tell me what is the on-call process?"**: lỗi **câu hỏi gián tiếp** (embedded question). Sau "Can you tell me…", phần câu hỏi phải dùng trật tự câu khẳng định: "Can you tell me what **the on-call process is**?" Người Việt rất hay mắc lỗi này. Nội dung câu hỏi thì tốt.
+
+> Senior tip: chuẩn bị 3–4 câu hỏi theo từng người phỏng vấn: với engineer hỏi về code review, deploy, incident; với manager hỏi về kỳ vọng 6 tháng đầu, cách đánh giá hiệu suất. "What would success look like for this role in the first six months?" là câu luôn dùng được.`
+},
+{
+  id: 'qz-english-007',
+  topic: 'english',
+  q: 'Interviewer: "Tell me about a mistake you made." Câu nào **đúng ngữ pháp và thể hiện ownership** tốt nhất?',
+  options: [
+    'The mistake was happened because of the QA team.',
+    'Mistakes were made, but finally everything was okay.',
+    'I made a mistake in a migration script that caused 20 minutes of downtime. I owned the incident, rolled back, and added a dry-run step to our pipeline.',
+    'I did a big mistake in the migration script, but I fixed it very fast.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: "I made a mistake in a migration script that caused 20 minutes of downtime. I owned the incident…"**
+
+### Vì sao đúng
+- Collocation chuẩn: **make a mistake**.
+- Chủ ngữ "I" ở thể **chủ động**, thể hiện trách nhiệm rõ ràng; "I owned the incident" là cách nói rất tự nhiên trong môi trường kỹ thuật.
+- Chuỗi động từ past simple song song "owned, rolled back, and added" gọn và mạch lạc, có tác động cụ thể (20 phút) và hành động phòng ngừa.
+
+### Vì sao các phương án còn lại sai
+- **"The mistake was happened"**: sai ngữ pháp. {{happen}} là **nội động từ**, không có dạng bị động. Đúng: "The mistake happened…". Thêm nữa, "because of the QA team" là đổ lỗi.
+- **"Mistakes were made"**: đúng ngữ pháp, nhưng đây là cụm bị động **nổi tiếng vì né trách nhiệm** (không nói ai gây ra). Người bản ngữ nghe là nhận ra ngay. "Finally" cũng dùng chưa chuẩn: muốn nói "rốt cuộc mọi thứ ổn" thì "in the end" tự nhiên hơn; "finally" thường nhấn mạnh việc xảy ra sau thời gian chờ đợi.
+- **"I did a big mistake"**: sai collocation, tiếng Anh nói "**make** a mistake", không nói "do a mistake" (lỗi do dịch từ "làm sai"). Ngoài ra "fixed it very fast" không có tác động, không có phòng ngừa.
+
+> Senior tip: một số collocation hay sai khi phỏng vấn: **make** a decision / a mistake / progress; **do** research / a review / your best; **take** ownership / responsibility / a risk; **raise** a concern; **meet** a deadline (không phải "catch a deadline").`
+},
+{
+  id: 'qz-english-008',
+  topic: 'english',
+  q: 'Bạn cần vài giây suy nghĩ trước khi trả lời một câu khó. Câu nào tự nhiên và chuyên nghiệp nhất?',
+  options: [
+    'Wait me a second.',
+    "That's an interesting one. Let me take a moment to think it through.",
+    'Give me a time to think.',
+    'Ehh... uhm... so... yeah, well...'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: "That's an interesting one. Let me take a moment to think it through."**
+
+### Vì sao đúng
+- "**Let me take a moment**" là cách xin thời gian lịch sự, chủ động, cho interviewer biết sự im lặng tiếp theo là có chủ đích.
+- "**think it through**" (phrasal verb: suy nghĩ thấu đáo) cho thấy bạn sẽ trả lời có cấu trúc.
+- "That's an interesting one" thừa nhận câu hỏi, tạo thêm một nhịp tự nhiên.
+
+### Vì sao các phương án còn lại sai
+- **"Wait me a second"**: sai ngữ pháp. {{wait}} cần giới từ **for**: "wait for me". Nhưng ngay cả "Wait for me a second" cũng nghe như ra lệnh. Tự nhiên hơn: "Give me a second" hoặc "Just a second".
+- **"Give me a time to think"**: sai mạo từ. "Time" (thời gian) là danh từ không đếm được, nên không dùng "a". Đúng: "Give me **some** time" hoặc "Give me **a moment**". Câu mệnh lệnh trần này cũng hơi cộc.
+- **"Ehh... uhm... so... yeah, well..."**: chuỗi filler word kéo dài làm bạn nghe lúng túng và thiếu tự tin. Im lặng 3–5 giây có chủ đích sau một câu xin thời gian tốt hơn nhiều so với lấp đầy bằng âm vô nghĩa.
+
+> Senior tip: với câu system design, có thể xin thời gian một cách tự nhiên bằng việc nói ra cấu trúc: "Let me first clarify the requirements, then sketch the high-level design." Bạn vừa có thời gian nghĩ, vừa cho thấy tư duy có phương pháp.`
 }
 );

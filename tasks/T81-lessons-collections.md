@@ -1,6 +1,6 @@
 # T81 — Bài học: Collections
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/lessons-collections.js`
 
@@ -25,3 +25,4 @@ Viết **4 bài học** cho track `collections`, `order` từ 2, ID `lesson-coll
 `node scripts/validate.js` → OK và `node scripts/test-lessons.js` → tất cả bài tập OK. Integrator sẽ fact-check.
 
 ## Notes
+- Hoàn thành bởi agent Claude: lesson-collections-002..005, 9/9 bài tập pass (chạy 3 lần, không flaky).

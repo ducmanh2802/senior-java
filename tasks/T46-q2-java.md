@@ -1,6 +1,6 @@
 # T46 — Nội dung: Core Java, Collections, Java 8 → 21 (đợt 2)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/q-java.js`
 
@@ -49,3 +49,4 @@ ID tiếp nối số lớn nhất đang có trong topic (ví dụ đang có `cor
 `node scripts/validate.js` → OK và số câu mỗi topic đạt mục tiêu. Integrator sẽ fact-check sau.
 
 ## Notes
+- Hoàn thành bởi agent Claude (model free hết suất). modern dừng ở 16 vì scoped values/structured concurrency đã có ở topic concurrency.

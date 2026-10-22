@@ -1,6 +1,6 @@
 # T72 — Nội dung: trắc nghiệm cho các chủ đề mới (sql, api, security, behavioral, english)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/quiz.js`
 
@@ -25,3 +25,4 @@ Mỗi topic dưới đây hiện chưa có câu trắc nghiệm nào. Thêm **8 
 `node scripts/validate.js` → OK, mỗi topic trên có 8 câu trắc nghiệm. Integrator sẽ fact-check.
 
 ## Notes
+- Hoàn thành bởi agent Claude: 40 câu, đáp án rải đều 10/10/10/10. Integrator chạy thật 8 câu SQL trên PGlite: đúng hết.

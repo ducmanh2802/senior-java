@@ -1,6 +1,6 @@
 # T59 — Nội dung: Core Java hay gặp
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/q-java.js`
 After: T46
@@ -47,3 +47,4 @@ ID tiếp nối số lớn nhất đang có trong topic (ví dụ đang có `cor
 `node scripts/validate.js` → OK và số câu mỗi topic đạt mục tiêu. Integrator sẽ fact-check sau.
 
 ## Notes
+- Hoàn thành bởi agent Claude: 17 câu (core-020..026, collections-015..018, modern-011..016), đã tự kiểm output từng đoạn predict-output.

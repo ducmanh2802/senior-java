@@ -889,6 +889,357 @@ class LruCache<K, V> extends LinkedHashMap<K, V> {
   tags: ['memory', 'boxing', 'primitive collections', 'fastutil']
 },
 {
+  id: 'collections-009',
+  topic: 'collections',
+  level: 'senior',
+  q: '{{PriorityQueue}}: heap bên trong, bài toán top-K trên stream dữ liệu lớn, độ phức tạp.',
+  a: `**Tóm tắt:** {{PriorityQueue}} là min-heap (binary heap) dựa trên mảng, O(log n) cho offer/poll, O(1) peek; dùng cho top-K (giữ K phần tử lớn nhất/nhỏ nhất) trên stream lớn với bộ nhớ O(K); không thread-safe, không cho null, iterator không đảm bảo thứ tự.
+ 
+### Cấu trúc heap
+- Mảng {{Object[] queue}}; parent tại i, children tại 2i+1, 2i+2.
+- {{offer}}: thêm cuối, sift-up (bubble up) so sánh với parent.
+- {{poll}}: lấy root, đổi cuối lên root, sift-down (trickle down).
+- {{peek}}: trả root không xoá.
+- Không phải BST — chỉ đảm bảo parent ≤ children (min-heap), không sắp xếp toàn bộ.
+
+### Top-K trên stream lớn
+- Bài toán: tìm K phần tử lớn nhất từ stream N phần tử (N >> K, ví dụ N=1 tỷ, K=100).
+- Giải pháp: min-heap size K. Duyệt stream:
+  - Heap size < K: {{offer}} trực tiếp.
+  - Heap size = K: nếu phần tử mới > root (min), {{poll}} rồi {{offer}} mới.
+- Kết quả: heap chứa K phần tử lớn nhất, root là nhỏ nhất trong top-K.
+- Độ phức tạp: O(N log K) thời gian, O(K) bộ nhớ — tốt hơn sort O(N log N) khi K << N.
+
+~~~java
+// Top 100 số lớn nhất
+PriorityQueue<Long> minHeap = new PriorityQueue<>(100);
+for (long v : stream) {
+    if (minHeap.size() < 100) minHeap.offer(v);
+    else if (v > minHeap.peek()) { minHeap.poll(); minHeap.offer(v); }
+}
+List<Long> top100 = minHeap.stream().sorted(Comparator.reverseOrder()).toList();
+~~~
+
+### Độ phức tạp
+| Thao tác | Độ phức tạp |
+|---|---|
+| {{offer}}/{{add}} | O(log n) |
+| {{poll}}/{{remove}} | O(log n) |
+| {{peek}} | O(1) |
+| {{contains}} | O(n) (duyệt mảng) |
+| {{size}}/{{isEmpty}} | O(1) |
+| Xây heap từ collection | O(n) (heapify) |
+
+### Pitfall
+- **Không cho null**: ném NPE ngay khi {{offer(null)}}.
+- **Không thread-safe**: dùng {{PriorityBlockingQueue}} cho đa luồng.
+- **Iterator không sorted**: {{iterator()}} duyệt theo mảng heap, không theo thứ tự ưu tiên; muốn sorted phải {{stream().sorted()}} hoặc poll hết.
+- **Comparator phức tạp**: nếu comparator chậm, log n nhân thêm hằng số lớn; cân nhắc pre-compute key.
+- **Memory**: mảng mở rộng 2x khi đầy; presize {{new PriorityQueue<>(initialCapacity)}} nếu biết K.
+
+> Senior tip: với top-K thực tế (log analytics, monitoring), dùng {{PriorityQueue}} + stream processing; nếu cần top-K phân tán, mỗi node tính local top-K rồi merge. Với K rất lớn, cân nhắc {{TreeSet}} (O(log n) nhưng memory cao hơn) hoặc approximate algorithm (Count-Min Sketch, t-Digest).`,
+  follow: [
+    'Vì sao {{PriorityQueue}} dùng min-heap cho bài toán top-K lớn nhất?',
+    '{{PriorityBlockingQueue}} khác {{PriorityQueue}} ở đâu?',
+    'Khi nào nên dùng {{TreeSet}} thay vì {{PriorityQueue}}?'
+  ],
+  tags: ['PriorityQueue', 'heap', 'top-K', 'stream']
+},
+{
+  id: 'collections-010',
+  topic: 'collections',
+  level: 'mid',
+  q: '{{ArrayDeque}} vs {{Stack}}/{{LinkedList}} làm stack/queue; vì sao {{Stack}} bị khuyên tránh?',
+  a: `**Tóm tắt:** {{ArrayDeque}} là lựa chọn hiện đại cho stack/queue: mảng vòng (circular array), O(1) amortized cho push/pop/offer/poll, cache-friendly, không đồng bộ, không cho null; {{Stack}} extends {{Vector}} (sync, legacy), {{LinkedList}} tốn memory và cache miss — đều không khuyến khích.
+ 
+### Stack — legacy, không dùng
+- Extends {{Vector}}: mọi method {{synchronized}} ⇒ chi phí lock không cần thiết cho single-thread.
+- Kế thừa {{Vector}} kéo theo {{get}}, {{set}}, {{insert}} ở giữa — phá vỡ ngữ nghĩa stack (LIFO).
+- {{push}}/{{pop}} đồng bộ hóa từng method, không hỗ trợ atomic batch.
+- JavaDoc khuyến nghị: **"A more complete and consistent set of LIFO stack operations is provided by the Deque interface and its implementations."**
+
+### LinkedList — tốn kém cho stack/queue
+- Node object riêng: header + 2 reference + data ≈ 32-40 byte/entry (vs 4-8 byte reference trong mảng).
+- Pointer chasing: mỗi {{pop}}/{{poll}} truy cập {{next}}/{{prev}} — cache miss nhiều.
+- Implement cả {{List}} và {{Deque}}; dùng làm {{Deque}} thì thừa thừa method {{get(i)}}, {{add(i, e)}} O(n).
+- Chỉ ưu tiên khi cần {{ListIterator}} xoá giữa O(1) **và** đã có con trỏ tại vị trí.
+
+### ArrayDeque — lựa chọn chuẩn
+- Mảng vòng {{Object[] elements}} + {{head}}, {{tail}} index.
+- {{push}}/{{addFirst}}/{{offerFirst}}: giảm head, ghi.
+- {{pop}}/{{removeFirst}}/{{pollFirst}}: đọc head, tăng head.
+- {{offerLast}}/{{pollLast}} tương tự cho queue.
+- Resize: mảng gấp đôi khi đầy (copy 2 mảng do vòng).
+- **Không cho null** (để phân biệt empty slot và null value).
+- **Không thread-safe**: dùng {{ConcurrentLinkedDeque}} hoặc sync ngoài nếu cần.
+- Implement {{Deque}}, {{Queue}}, {{Cloneable}}, {{Serializable}}.
+
+### So sánh nhanh
+| | Stack | LinkedList | ArrayDeque |
+|---|---|---|---|
+| Push/Pop | O(1) sync | O(1) | O(1) amortized |
+| Memory/entry | ~40 byte (Vector) | ~32-40 byte | 4-8 byte (ref) |
+| Cache locality | Tốt (mảng) | Tệ (node) | Rất tốt (mảng) |
+| Null allowed | Có | Có | **Không** |
+| Thread-safe | Có (sync) | Không | Không |
+
+### Khi nào dùng gì
+- Stack/Queue single-thread: **ArrayDeque**.
+- Queue đa luồng bounded: **ArrayBlockingQueue**.
+- Queue đa luồng unbounded: **LinkedBlockingQueue** (có bound!).
+- Cần priority: **PriorityQueue** / **PriorityBlockingQueue**.
+- Cần blocking + priority: **PriorityBlockingQueue**.
+- Handoff trực tiếp: **SynchronousQueue**.
+
+> Senior tip: trong code review, thấy {{new Stack()}} hoặc {{new LinkedList()}} dùng làm stack/queue là cơ hội refactor sang {{ArrayDeque}} — nhanh hơn, nhẹ hơn, API hiện đại ({{push}}/{{pop}}/{{peek}} cho stack, {{offer}}/{{poll}}/{{peek}} cho queue).`,
+  follow: [
+    'Vì sao {{ArrayDeque}} không cho null trong khi {{LinkedList}} cho phép?',
+    '{{ArrayDeque}} resize như thế nào khi mảng vòng đầy?',
+    'Khi nào {{ConcurrentLinkedDeque}} thích hợp hơn {{ArrayBlockingQueue}}?'
+  ],
+  tags: ['ArrayDeque', 'Stack', 'LinkedList', 'Deque', 'Queue']
+},
+{
+  id: 'collections-011',
+  topic: 'collections',
+  level: 'senior',
+  q: '{{List.of}} vs {{Collections.unmodifiableList}} vs copy: immutable thật hay chỉ là view; null và NPE.',
+  a: `**Tóm tắt:** {{List.of}} (Java 9+) tạo list **immutable thật** (không thêm/xoá/sửa được, cấm null); {{Collections.unmodifiableList}} chỉ là **view** bao list gốc (list gốc sửa thì view thay đổi); copy thủ công ({{new ArrayList<>(src)}}) tạo bản sao mutable. Chọn theo nhu cầu: immutable API dùng {{List.of}}/{{List.copyOf}}, defensive copy dùng {{new ArrayList<>}}, read-only view dùng {{unmodifiableList}}.
+ 
+### List.of / List.copyOf (Java 9/10)
+- {{List.of(a, b, c)}}: immutable, fixed-size, **cấm null** (ném NPE), không hỗ trợ {{add}}/{{remove}}/{{set}}/{{sort}}.
+- {{List.copyOf(list)}}: copy bản gốc thành immutable list; nếu list gốc đã immutable thì có thể trả về chính nó (optimization).
+- Internal: dùng {{ImmutableCollections.ListN}} (compact, không field thừa), serialization hỗ trợ.
+- Null: bất kỳ phần tử null nào ⇒ NPE ngay khi tạo — phát hiện sớm bug data.
+
+### Collections.unmodifiableList
+~~~java
+List<String> mutable = new ArrayList<>(List.of("a", "b"));
+List<String> view = Collections.unmodifiableList(mutable);
+mutable.add("c");           // OK
+System.out.println(view);   // [a, b, c] — view thấy thay đổi!
+~~~
+- Chỉ **wrap** list gốc, không copy; method mutating ({{add}}, {{set}}, {{remove}}, {{sort}}) ném {{UnsupportedOperationException}}.
+- List gốc vẫn mutable ⇒ view không an toàn nếu list gốc bị chia sẻ và sửa.
+- Cho phép null nếu list gốc cho phép.
+- Dùng khi: muốn expose read-only view cho caller nhưng nội bộ vẫn cần mutate; hoặc tạm bọc legacy API.
+
+### Copy thủ công
+~~~java
+List<String> copy = new ArrayList<>(source);   // shallow copy, mutable
+List<String> copy = List.copyOf(source);       // immutable copy (Java 10)
+~~~
+- {{new ArrayList<>(source)}}: shallow copy, hoàn toàn độc lập, mutable, cho phép null.
+- Dùng cho defensive copy trong constructor/setter khi cần sở hữu dữ liệu.
+
+### So sánh nhanh
+| Tính chất | List.of/copyOf | unmodifiableList | new ArrayList() |
+|---|---|---|---|
+| Immutable | **Có** | View (gốc mutable) | Không |
+| Null allowed | **Không** | Theo list gốc | Có |
+| Bản sao hay view | Bản sao | View | Bản sao |
+| Memory | Tối ưu (compact) | Wrapper nhẹ | Mảng mới + ref |
+| Serialization | Hỗ trợ | Hỗ trợ | Hỗ trợ |
+
+### Pitfall
+- Dùng {{List.of}} cho DTO/response mà dữ liệu có null ⇒ NPE lúc runtime; lọc null trước hoặc dùng {{new ArrayList<>}}.
+- Truyền {{unmodifiableList}} cho API bên ngoài mà quên list gốc còn bị mutate nội bộ ⇒ caller thấy dữ liệu "immutable" vẫn thay đổi.
+- {{List.copyOf(null)}} ném NPE; {{Collections.unmodifiableList(null)}} ném NPE.
+- {{List.of}} không implement {{RandomAccess}} (đánh giá tuần tự), nhưng truy cập index O(1) do mảng backing.
+
+> Senior tip: API public trả về collection **luôn dùng {{List.copyOf}}/{{Set.copyOf}}/{{Map.copyOf}}** (Java 10+) để đảm bảo immutable thực sự; nội bộ dùng {{ArrayList}}/{{HashMap}} mutable. Đừng dùng {{unmodifiableList}} cho API public trừ khi có lý do mạnh (performance cực đoan, list lớn, không muốn copy).`,
+  follow: [
+    'Vì sao {{List.of}} cấm null trong khi {{ArrayList}} cho phép?',
+    '{{List.copyOf}} có tối ưu khi list gốc đã immutable không?',
+    'Làm sao tạo immutable list có null được (nếu thực sự cần)?'
+  ],
+  tags: ['List.of', 'unmodifiableList', 'immutable', 'defensive copy']
+},
+{
+  id: 'collections-012',
+  topic: 'collections',
+  level: 'senior',
+  q: '{{WeakHashMap}}, {{IdentityHashMap}}: cơ chế và use case thật (cache theo key class, graph traversal).',
+  a: `**Tóm tắt:** {{WeakHashMap}} key là {{WeakReference}} — entry tự biến mất khi key không còn strong reference (phù hợp cache metadata theo class/object); {{IdentityHashMap}} dùng {{==}} thay vì {{equals}}/{{hashCode}} (phù hợp graph traversal, object identity). Cả hai không thread-safe.
+ 
+### WeakHashMap
+- Entry: key wrap trong {{WeakReference}}, value strong reference.
+- GC: khi key chỉ còn weak reference (không ai strong reference tới), GC sẽ clear weak reference ⇒ entry bị xoá ở lần truy cập tiếp theo (hoặc {{expungeStaleEntries}}).
+- **Không** tự dọn dẹp ngay lập tức; size() có thể tính entry đang chờ dọn.
+- Value **không** được weak — nếu value giữ strong reference ngược về key thì key không bao giờ bị GC.
+
+~~~java
+// Cache metadata cho Class (ClassLoader có thể unload)
+Map<Class<?>, Meta> cache = new WeakHashMap<>();
+Meta getMeta(Class<?> clazz) {
+    return cache.computeIfAbsent(clazz, Meta::new);
+}
+~~~
+
+### Use case WeakHashMap
+- **Class/ClassLoader metadata cache**: khi class unload, entry tự dọn.
+- **Observer/Listener registry**: listener là key, value là callback; listener GC ⇒ entry tự mất (tránh memory leak).
+- **Cache cho object ngắn hạn**: key là object do caller quản lý lifecycle.
+- **Không dùng cho**: cache dữ liệu chung (value có thể giữ key), caching nặng (dùng Caffeine/Guava).
+
+### IdentityHashMap
+- So sánh key bằng **{{==}}** (identity), không dùng {{equals}}/{{hashCode}}.
+- Hash bằng {{System.identityHashCode(key)}} (thường dựa trên address).
+- Violation {{Map}} contract (equals/hashCode) — dùng có chủ đích.
+- Iterator order không xác định, nhưng ổn định trong một lần duyệt.
+
+### Use case IdentityHashMap
+- **Graph traversal**: visited set cho object graph (cycle detection), key là object node — cần identity vì node có thể equals nhau nhưng khác instance.
+- **Object-to-metadata mapping**: gắn metadata cho object không kiểm soát {{equals}}/{{hashCode}} (thư viện thứ ba, entity JPA proxy).
+- **Serialization/Deep copy**: tracking object đã xử lý.
+- **Proxy/Wrapper**: key là proxy instance, equals delegate nhưng identity khác nhau.
+
+### So sánh
+| | WeakHashMap | IdentityHashMap |
+|---|---|---|
+| Key equality | {{equals}} (trên referent) | **{{==}}** (identity) |
+| Key reference | {{WeakReference}} | Strong |
+| Auto cleanup | Khi key GC | Không |
+| Thread-safe | Không | Không |
+| Null key | Cho phép | Cho phép |
+
+### Pitfall
+- {{WeakHashMap}} size() không chính xác (tính entry stale); dùng {{expungeStaleEntries}} nếu cần.
+- {{WeakHashMap}} value giữ key ⇒ leak (circular reference); dùng {{WeakReference}} cho value nếu cần.
+- {{IdentityHashMap}} vi phạm contract Map — không dùng cho key có equals/hashCode logic business.
+- Cả hai không thread-safe; bọc {{Collections.synchronizedMap}} hoặc dùng concurrent alternative.
+
+> Senior tip: {{WeakHashMap}} là "lưới an toàn" cho metadata cache nhẹ, không thay thế cache production (Caffeine). {{IdentityHashMap}} hiếm dùng nhưng không thể thay thế khi cần identity semantics — đừng cố gắng hack {{equals}}/{{hashCode}} để làm được việc này.`,
+  follow: [
+    'Vì sao {{WeakHashMap}} value không nên giữ reference ngược về key?',
+    '{{IdentityHashMap}} dùng {{System.identityHashCode}} — collision xử lý thế nào?',
+    'Khi nào dùng {{WeakHashMap}} thay vì {{ReferenceQueue}} + {{WeakReference}} thủ công?'
+  ],
+  tags: ['WeakHashMap', 'IdentityHashMap', 'weak reference', 'identity', 'cache']
+},
+{
+  id: 'collections-013',
+  topic: 'collections',
+  level: 'senior',
+  q: 'Sort trong Java: TimSort ổn định, {{Comparator.comparing().thenComparing()}}, {{nullsFirst}}, lỗi "Comparison method violates its general contract".',
+  a: `**Tóm tắt:** Java dùng **TimSort** (hybrid merge/insertion) cho {{Arrays.sort}}/{{Collections.sort}} — ổn định (stable), O(n log n) worst-case, O(n) cho mảng gần đã sort; {{Comparator.composing}} cho phép chain so sánh; {{nullsFirst}}/{{nullsLast}} xử lý null an toàn; vi phạm contract (transitivity, symmetry) ném {{IllegalArgumentException}}.
+ 
+### TimSort
+- Kết hợp **merge sort** (ổn định, tốt cho run có sẵn) và **insertion sort** (tốt cho mảng nhỏ/gần sort).
+- Tìm "run" (dãy đã sort) tự nhiên, merge chúng; tận dụng data gần sort ⇒ O(n) best case.
+- **Stable**: phần tử bằng nhau giữ thứ tự tương đối — quan trọng cho multi-key sort (sort bằng key phụ rồi key chính).
+- Từ Java 8: {{Arrays.sort}} primitive dùng dual-pivot quicksort (không stable); object arrays dùng TimSort.
+
+### Comparator chain
+~~~java
+// Sắp xếp: status ASC, createdAt DESC, name ASC
+Comparator<Order> cmp = Comparator
+    .comparing(Order::getStatus)
+    .thenComparing(Order::getCreatedAt, Comparator.reverseOrder())
+    .thenComparing(Order::getName, Comparator.nullsFirst(String::compareTo));
+orders.sort(cmp);
+~~~
+- {{comparing}}: key extractor + optional key comparator.
+- {{thenComparing}}: chain thêm comparator cho tie-break.
+- {{nullsFirst}}/{{nullsLast}}: wrapper cho comparator con, null coi là nhỏ/lớn nhất.
+
+### Comparator tĩnh hữu ích
+- {{Comparator.naturalOrder()}}, {{reverseOrder()}}
+- {{Comparator.nullsFirst(naturalOrder())}}, {{nullsLast(...)}}
+- {{comparingInt}}/{{comparingLong}}/{{comparingDouble}} tránh boxing.
+
+### Lỗi "Comparison method violates its general contract"
+- Ném khi TimSort phát hiện comparator **không transitive** hoặc **không symmetric**.
+- Nguyên nhân thường gặp:
+  1. **Comparator dựa trên field nullable** mà không xử lý null: {{a.getName().compareTo(b.getName())}} ném NPE hoặc vi phạm transitivity khi null xen vào.
+  2. **Logic so sánh phức tạp sai**: {{(a, b) -> a.x < b.x ? -1 : 1}} (quên case bằng nhau trả 0).
+  3. **So sánh float/double** với NaN: {{Double.compare}} xử lý NaN, nhưng tự viết {{a < b ? -1 : 1}} sai với NaN.
+
+~~~java
+// Sai: vi phạm transitivity khi có null
+Comparator<Person> bad = (a, b) -> a.getName().compareTo(b.getName());
+
+// Đúng: xử lý null tường minh
+Comparator<Person> good = Comparator
+    .comparing(Person::getName, Comparator.nullsFirst(String::compareTo));
+~~~
+
+### Pitfall
+- **Primitive array sort không stable**: {{Arrays.sort(int[])}} dùng quicksort; muốn stable dùng {{Integer[]}} hoặc {{List.sort}}.
+- **Comparator không consistent với equals**: {{TreeSet}}/{{TreeMap}} dùng comparator, không dùng {{equals}} — nếu comparator trả 0 cho 2 object khác nhau, TreeSet coi là trùng và loại bỏ.
+- **Null trong stream sort**: {{stream.sorted()}} ném NPE nếu phần tử null; dùng {{Comparator.nullsFirst}} hoặc lọc trước.
+- **Performance**: comparator phức tạp trong hot path — cache key extractor, tránh lambda capture.
+
+> Senior tip: luôn test comparator với {{Collections.sort}} trên dữ liệu có null, trùng giá trị, và kiểm tra stability bằng cách sort 2 lần với key khác nhau. Với data lớn, dùng {{comparingInt}}/{{comparingLong}} để tránh boxing. Đừng tự viết logic so sánh phức tạp — chain các comparator có sẵn.`,
+  follow: [
+    'Vì sao TimSort ổn định (stable) quan trọng cho multi-key sort?',
+    'Primitive array sort ({{Arrays.sort(int[])}}) không stable — làm sao sort stable cho int?',
+    'Làm sao debug lỗi "Comparison method violates its general contract" khi stack trace không rõ dòng nào sai?'
+  ],
+  tags: ['TimSort', 'Comparator', 'sort', 'stable', 'nullsFirst']
+},
+{
+  id: 'collections-014',
+  topic: 'collections',
+  level: 'lead',
+  q: 'Hash collision và tấn công HashDoS; vì sao treeify giúp; thiết kế {{hashCode}} tốt cho composite key.',
+  a: `**Tóm tắt:** hash collision là 2 key khác nhau có {{hashCode}} trùng bucket; HashDoS khai thác collision để biến {{HashMap}} O(1) thành O(n) gây DoS; Java 8 **treeify** chuyển bucket dài ≥ 8 thành cây đỏ-đen O(log n); {{hashCode}} tốt cho composite key dùng {{Objects.hash}} hoặc mix bit thủ công (prime multiplier).
+ 
+### Hash collision cơ bản
+- {{HashMap}} index = {{(n-1) & spread(hashCode())}}; capacity luỹ thừa 2 ⇒ chỉ dùng bit thấp.
+- Collision: 2 key khác bucket nhưng index trùng ⇒ chuỗi linked list (Java 7) hoặc cây (Java 8+).
+- Tần suất collision phụ thuộc chất lượng {{hashCode}} và capacity.
+
+### Tấn công HashDoS (Algorithmic Complexity Attack)
+- Kẻ tấn công gửi nhiều key gây collision cố ý ({{hashCode}} trả về cùng giá trị hoặc cùng bucket).
+- Ví dụ: {{String}} hash = {{s[0]*31^(n-1) + ...}}; có thể tạo nhiều string khác nhau cùng hash.
+- Kết quả: {{put}}/{{get}} degrade thành O(n) ⇒ CPU 100%, request timeout.
+- Thực tế: tấn công qua JSON payload, form parameter, header — server parse vào {{HashMap}}.
+
+### Treeify (Java 8) — chống HashDoS
+- Ngưỡng: bucket size ≥ {{TREEIFY_THRESHOLD = 8}} **VÀ** capacity ≥ {{MIN_TREEIFY_CAPACITY = 64}} ⇒ chuyển linked list → {{TreeNode}} (red-black tree).
+- Tìm kiếm trong cây: O(log n) thay vì O(n).
+- Nếu capacity < 64: **resize** gấp đôi thay vì treeify (resize làm bucket phân tán lại, có thể giảm collision).
+- Untreeify: bucket size ≤ {{UNTREEIFY_THRESHOLD = 6}} ⇒ chuyển lại list.
+- Key trong cây so sánh: trước {{hashCode}}, sau {{Comparable}} (nếu implement), cuối {{tieBreakOrder}} (identity hash) để đảm bảo total order.
+
+### Thiết kế hashCode tốt cho composite key
+~~~java
+// Cách 1: Objects.hash (Java 7+) — tiện nhưng tạo varargs array
+@Override public int hashCode() { return Objects.hash(id, name, category); }
+
+// Cách 2: Thủ công (nhanh hơn, không allocation) — Effective Java
+@Override public int hashCode() {
+    int result = 17;
+    result = 31 * result + (id == null ? 0 : id.hashCode());
+    result = 31 * result + (name == null ? 0 : name.hashCode());
+    result = 31 * result + (category == null ? 0 : category.hashCode());
+    return result;
+}
+
+// Cách 3: Record (Java 14+) — tự sinh hashCode đúng contract
+record Key(Long id, String name, String category) {}
+~~~
+- Nguyên tắc: **prime multiplier** (31, 37, 1000003) để phân tán bit; mix bit cao xuống thấp ({{h ^ (h >>> 16)}} như {{HashMap.spread}}).
+- {{equals}} phải khớp: so sánh cùng các field.
+- Immutable field cho key — key mutable trong map là bug.
+
+### Phòng thủ HashDoS production
+- Giới hạn request size, parameter count (Spring: {{spring.mvc.max-request-parameters}}).
+- Dùng {{ConcurrentHashMap}} (treeify cũng có) hoặc key không do user kiểm soát (UUID, Long).
+- Với input user làm key: hash salt (Java 9+ {{String.hashCode}} không salt, nhưng có thể wrap key).
+- Monitoring: theo dõi {{HashMap}} bucket size max qua JMX/heap dump.
+
+> Senior tip: HashDoS hiếm nhưng khi xảy ra rất đau; treeify là lưới an toàn cuối, không phải giải pháp gốc. Gốc là: **không bao giờ dùng input user trực tiếp làm key của HashMap/HashSet không giới hạn**. Dùng UUID/Long ID, hoặc giới hạn số entry, hoặc dùng Caffeine/Guava cache có eviction. Với composite key, dùng record — trình biên dịch sinh {{hashCode}}/{{equals}} chuẩn và không bao giờ sai.`,
+  follow: [
+    'Vì sao treeify threshold là 8 và untreeify là 6 (không dùng cùng ngưỡng)?',
+    '{{Objects.hash}} có allocation varargs — khi nào nên viết thủ công?',
+    'Làm sao phát hiện HashDoS đang diễn ra trên production?'
+  ],
+  tags: ['HashDoS', 'hash collision', 'treeify', 'hashCode', 'composite key']
+}
+,
+{
   id: 'modern-001',
   topic: 'modern',
   level: 'senior',
@@ -1341,5 +1692,1864 @@ Map<String, User> byEmail = users.stream()
     '{{teeing}} dùng trong tình huống nào?'
   ],
   tags: ['Collectors', 'groupingBy', 'toMap', 'Stream']
+},
+{
+  id: 'modern-009',
+  topic: 'modern',
+  level: 'senior',
+  q: '{{SequencedCollection}} / {{SequencedMap}} (Java 21): giải quyết vấn đề gì, {{getFirst}}/{{getLast}}/{{reversed}}.',
+  a: `**Tóm tắt:** Java 21 thêm interface {{SequencedCollection}} và {{SequencedMap}} để thống nhất API truy cập đầu/cuối và đảo ngược cho các collection có thứ tự ({{List}}, {{Deque}}, {{LinkedHashSet}}, {{LinkedHashMap}}, {{TreeSet}}, {{TreeMap}}); trước đây mỗi loại có method riêng ({{getFirst}}/{{getLast}}, {{first}}/{{last}}, {{peekFirst}}/{{peekLast}}).
+ 
+### Vấn đề trước Java 21
+| Collection | First | Last | Reversed |
+|---|---|---|---|
+| {{List}} | {{get(0)}} | {{get(size-1)}} | {{Collections.reverse}} (mutate) hoặc {{ListIterator}} |
+| {{Deque}} | {{getFirst}}/{{peekFirst}} | {{getLast}}/{{peekLast}} | {{descendingIterator}} |
+| {{LinkedHashSet}} | Không có | Không có | Không có |
+| {{SortedSet}}/{{TreeSet}} | {{first}} | {{last}} | {{descendingSet}} |
+| {{LinkedHashMap}} | Không có | Không có | Không có |
+| {{SortedMap}}/{{TreeMap}} | {{firstKey}} | {{lastKey}} | {{descendingMap}} |
+
+- API không thống nhất, khó viết code generic cho "collection có thứ tự".
+- {{Collections.reverse}} mutate list gốc; muốn view reversed phải tự viết wrapper.
+
+### SequencedCollection (extends Collection)
+- {{getFirst()}} / {{getLast()}}: lấy phần tử đầu/cuối (ném {{NoSuchElementException}} nếu rỗng).
+- {{addFirst(E)}} / {{addLast(E)}}: thêm đầu/cuối (optional, {{UnsupportedOperationException}} nếu immutable).
+- {{removeFirst()}} / {{removeLast()}}: xoá đầu/cuối (optional).
+- {{reversed()}}: trả **view** đảo ngược (read-only, không copy, thay đổi gốc ảnh hưởng view).
+
+~~~java
+List<String> list = new ArrayList<>(List.of("a", "b", "c"));
+list.getFirst();           // "a"
+list.getLast();            // "c"
+for (String s : list.reversed()) { ... }  // c, b, a
+~~~
+
+### SequencedMap (extends Map)
+- {{firstEntry()}} / {{lastEntry()}}: {{Map.Entry}} đầu/cuối.
+- {{firstKey()}} / {{lastKey()}}: key đầu/cuối.
+- {{putFirst}}, {{putLast}}: thêm đầu/cuối (optional).
+- {{reversed()}}: view đảo ngược (entry set reversed).
+- {{sequencedKeySet()}}, {{sequencedValues()}}, {{sequencedEntrySet()}}: view có thứ tự.
+
+~~~java
+LinkedHashMap<String, Integer> map = new LinkedHashMap<>();
+map.put("a", 1); map.put("b", 2);
+map.firstKey();           // "a"
+map.lastEntry();          // b=2
+for (var e : map.reversed().entrySet()) { ... }  // b=2, a=1
+~~~
+
+### Implementer chính
+- {{List}}, {{ArrayList}}, {{LinkedList}}, {{Vector}}, {{Stack}}
+- {{Deque}}, {{ArrayDeque}}, {{LinkedList}}, {{ConcurrentLinkedDeque}}
+- {{LinkedHashSet}}, {{LinkedHashMap}}
+- {{SortedSet}}/{{NavigableSet}}, {{TreeSet}}
+- {{SortedMap}}/{{NavigableMap}}, {{TreeMap}}
+- **Không implement**: {{HashSet}}, {{HashMap}}, {{ConcurrentHashMap}}, {{CopyOnWriteArrayList}} (vì không đảm bảo thứ tự ổn định).
+
+### Pitfall
+- {{reversed()}} trả **view**, không phải bản copy — sửa collection gốc thì view thay đổi, và ngược lại (nếu mutable).
+- {{getFirst}} ném exception nếu rỗng; dùng {{isEmpty()}} check trước hoặc {{stream().findFirst()}}.
+- {{SequencedCollection}} không extends {{Deque}} — không có {{push}}/{{pop}}.
+- Immutable collections ({{List.of}}, {{Set.of}}) implement {{SequencedCollection}} nhưng {{addFirst}}/{{removeFirst}} ném {{UnsupportedOperationException}}.
+
+> Senior tip: khi viết method nhận collection có thứ tự, dùng {{SequencedCollection}} làm tham số thay vì {{List}}/{{Deque}} — chấp nhận được nhiều loại hơn và có API thống nhất. {{reversed()}} view rất tiện cho duyệt ngược không cần index math.`,
+  follow: [
+    'Vì sao {{HashSet}}/{{HashMap}} không implement {{SequencedCollection}}/{{SequencedMap}}?',
+    '{{reversed()}} view có thread-safe không?',
+    'Làm sao viết code generic in ra collection có thứ tự trước Java 21?'
+  ],
+  tags: ['SequencedCollection', 'SequencedMap', 'Java 21', 'reversed', 'getFirst']
+},
+{
+  id: 'modern-010',
+  topic: 'modern',
+  level: 'senior',
+  q: 'Record patterns và nested deconstruction trong switch (Java 21), guard {{when}}.',
+  a: `**Tóm tắt:** Java 21 cho phép **record pattern** destructure ngay trong {{instanceof}} và {{switch}}; lồng nhau (nested) để tách dữ liệu sâu; {{when}} guard thêm điều kiện boolean cho case — thay thế visitor pattern và if-else chain phức tạp.
+ 
+### Record pattern cơ bản
+~~~java
+record Point(int x, int y) {}
+record Rectangle(Point topLeft, Point bottomRight) {}
+
+Object obj = new Rectangle(new Point(0, 0), new Point(10, 10));
+
+if (obj instanceof Rectangle(Point(int x1, int y1), Point(int x2, int y2))) {
+    System.out.println(x1 + "," + y1 + " -> " + x2 + "," + y2); // 0,0 -> 10,10
+}
+~~~
+- Pattern: {{Rectangle(Point(int x1, int y1), Point(int x2, int y2))}} khớp type và destructure component lồng nhau.
+- Biến pattern ({{int x1}}) khai báo ngay trong pattern, scope là block {{if}}/{{case}}.
+
+### Nested deconstruction trong switch
+~~~java
+sealed interface Expr permits Const, Add, Mul {}
+record Const(int value) implements Expr {}
+record Add(Expr left, Expr right) implements Expr {}
+record Mul(Expr left, Expr right) implements Expr {}
+
+int eval(Expr e) {
+    return switch (e) {
+        case Const(int v)            -> v;
+        case Add(Expr l, Expr r)     -> eval(l) + eval(r);
+        case Mul(Expr l, Expr r)     -> eval(l) * eval(r);
+    };
+}
+~~~
+- {{Add(Expr l, Expr r)}}: destructure 2 component là {{Expr}}, đệ quy xử lý.
+- Không cần visitor pattern, không cần cast, compiler kiểm tra exhaustive (vì {{Expr}} sealed).
+
+### Guard {{when}}
+~~~java
+String classify(Object o) {
+    return switch (o) {
+        case String s when s.length() > 10 -> "long string";
+        case String s                       -> "short string";
+        case Integer i when i > 0           -> "positive int";
+        case Integer i                      -> "non-positive int";
+        case null                           -> "null";
+        default                             -> "other";
+    };
+}
+~~~
+- {{when}}: boolean expression sau pattern, chỉ match nếu true.
+- Thứ tự case quan trọng: case có guard cụ thể phải **trước** case tổng quát cùng type (compiler báo "dominated" nếu ngược).
+- {{case null}} tách biệt — không match {{default}}.
+
+### Kết hợp record pattern + guard
+~~~java
+record Order(String id, Customer customer, List<Item> items) {}
+record Customer(String name, boolean vip) {}
+
+String priority(Order o) {
+    return switch (o) {
+        case Order(_, Customer(_, true), var items) when items.size() > 5 -> "VIP_BULK";
+        case Order(_, Customer(_, true), _)                              -> "VIP";
+        case Order(_, _, var items) when items.size() > 100              -> "BULK";
+        default                                                            -> "NORMAL";
+    };
+}
+~~~
+- {{_}} (unnamed pattern, Java 22+ preview / Java 21 unnamed variable): bỏ qua component không cần.
+- {{var items}}: pattern variable declaration (type inference).
+
+### So sánh với visitor pattern
+| | Visitor | Record pattern + switch |
+|---|---|---|
+| Boilerplate | Cao (interface + accept + impl) | Thấp (chỉ record + switch) |
+| Exhaustiveness | Runtime (quên impl ném exception) | **Compile-time** (sealed) |
+| Thêm operation | Thêm method visitor (sửa nhiều class) | Thêm switch method (một chỗ) |
+| Thêm type | Sửa visitor interface + tất cả impl | Thêm record + sửa switch (compiler nhắc) |
+| Performance | Double dispatch | Single dispatch, JIT tốt |
+
+### Pitfall
+- Sealed hierarchy bắt buộc: không sealed ⇒ cần {{default}} ⇒ mất exhaustive check.
+- Guard {{when}} không được truy cập biến pattern từ case khác.
+- Unnamed pattern {{_}} chỉ Java 22+ (preview), Java 21 dùng {{var _}} hoặc tên biến rồi không dùng.
+- Performance: pattern matching switch compile thành {{tableswitch}}/{{lookupswitch}} + type check, nhanh hơn visitor.
+
+> Senior tip: record pattern + sealed + switch exhaustive là "killer feature" cho domain modeling (AST, command, event, state). Thay thế visitor pattern hoàn toàn cho hierarchy ổn định. Nếu domain mở (plugin), dùng {{non-sealed}} hoặc interface thường.`,
+  follow: [
+    'Vì sao record pattern + sealed switch an toàn hơn visitor pattern?',
+    'Unnamed pattern {{_}} khác {{var _}} ở điểm nào?',
+    'Khi nào không nên dùng record pattern (ví dụ hierarchy thay đổi thường xuyên)?'
+  ],
+  tags: ['record pattern', 'nested deconstruction', 'switch', 'when', 'Java 21']
+}
+,
+{
+  id: 'core-012',
+  topic: 'core',
+  level: 'senior',
+  q: 'Xử lý tiền tệ bằng {{BigDecimal}}: scale, {{RoundingMode}}, {{equals}} vs {{compareTo}}, và vì sao tuyệt đối không dùng {{double}}?',
+  a: `**Tóm tắt:** tiền tệ **bắt buộc** dùng {{BigDecimal}} vì {{double}}/{{float}} không biểu diễn chính xác số thập phân (0.1 + 0.2 ≠ 0.3); {{BigDecimal}} cho phép kiểm soát scale và {{RoundingMode}}, dùng {{compareTo}} để so sánh thay vì {{equals}} (vì {{equals}} còn so sánh scale).
+
+### Vì sao không dùng double
+- {{double}} tuân theo IEEE 754 nhị phân: số thập phân hữu hạn (0.1, 0.01, 19.99) thường thành số lặp vô hạn trong nhị phân ⇒ sai số tròn tích lũy.
+- Ví dụ kinh điển: {{0.1 + 0.2 = 0.30000000000000004}}; tính lãi, chiết khấu, tiền tệ ngoại tệ sẽ lệch cent và cộng dồn qua ngàn giao dịch thành số lớn.
+- Các chuẩn kế toán/ngân hàng (ISO 4217, PCI DSS) yêu cầu độ chính xác tuyệt đối; {{double}} không đáp ứng được.
+
+### BigDecimal cơ bản
+~~~java
+// Tạo từ String — AN TOÀN
+BigDecimal price = new BigDecimal("19.99");
+
+// Tạo từ double — CẤM (giữ sai số nhị phân)
+BigDecimal bad = new BigDecimal(0.1);   // 0.10000000000000000555...
+BigDecimal good = BigDecimal.valueOf(0.1); // dùng Double.toString -> "0.1"
+~~~
+- Luôn dùng constructor nhận {{String}} hoặc {{BigDecimal.valueOf(double)}}.
+- {{scale}} = số chữ số sau dấu phẩy; âm nghĩa là nhân 10^|scale| (dùng cho số lớn tròn hàng chục/trăm).
+
+### RoundingMode
+- Cần thiết khi chia hoặc chuyển đổi scale: {{divide(divisor, scale, RoundingMode.HALF_UP)}}.
+- Các mode phổ biến: {{HALF_UP}} (toán học), {{HALF_EVEN}} (banker's rounding, chuẩn IEEE 754R), {{DOWN}}/{{UP}}/{{CEILING}}/{{FLOOR}}.
+- Không đặt scale cho {{divide}} sẽ ném {{ArithmeticException}} nếu không chia hết (non-terminating decimal).
+
+### equals vs compareTo
+~~~java
+new BigDecimal("1.0").equals(new BigDecimal("1.00"));  // false (scale khác)
+new BigDecimal("1.0").compareTo(new BigDecimal("1.00")); // 0 (giá trị bằng)
+~~~
+- {{equals}} so sánh cả **scale** và giá trị; {{compareTo}} chỉ so sánh giá trị số học.
+- Dùng {{compareTo}} cho logic nghiệp vụ (so sánh giá, kiểm tra âm/dương); dùng {{equals}} chỉ khi cần biết chính xác định dạng (ví dụ serial hóa).
+- {{signum()}} trả -1/0/1 tiện cho điều kiện.
+
+### Pitfall production
+- Quên {{divide}} kèm scale + rounding ⇒ exception lúc runtime khi chia 10/3.
+- Dùng {{double}} trung gian trong công thức ({{bd.add(BigDecimal.valueOf(0.1))}}) rồi convert về {{BigDecimal}} — sai số vẫn lạ.
+- Lưu DB: cột {{NUMERIC(19,4)}} hoặc {{DECIMAL}}; đừng dùng {{FLOAT}}/{{DOUBLE}}. Hibernate mapping {{@Column(precision = 19, scale = 4)}}.
+- Tiền tệ đa ngoại tệ: luôn kèm {{Currency}} (ISO 4217), không cộng/trừ tiền tệ khác nhau.
+
+> Senior tip: viết wrapper {{Money}} (record {{Money(BigDecimal amount, Currency currency)}}) với validation ở constructor; tập trung logic làm tròn, chuyển đổi, so sánh vào một chỗ để tránh rải rác {{RoundingMode.HALF_UP}} khắp codebase.`,
+  follow: [
+    'Vì sao {{BigDecimal("0.1")}} an toàn mà {{new BigDecimal(0.1)}} không?',
+    'Khi nào dùng {{RoundingMode.HALF_EVEN}} thay vì {{HALF_UP}}?',
+    'Làm sao xử lý tiền tệ đa ngoại tệ trong một hệ thống thanh toán?'
+  ],
+  tags: ['BigDecimal', 'money', 'RoundingMode', 'floating point']
+},
+{
+  id: 'core-013',
+  topic: 'core',
+  level: 'senior',
+  q: 'Java Date/Time API: phân biệt {{Instant}}, {{LocalDateTime}}, {{ZonedDateTime}}, {{OffsetDateTime}}; lưu thời gian trong DB thế nào để tránh bug timezone lúc nửa đêm (cut-off ngân hàng)?',
+  a: `**Tóm tắt:** {{Instant}} là điểm trên timeline (UTC, không timezone), {{LocalDateTime}} là ngày giờ địa phương **không** có offset, {{OffsetDateTime}} có offset cố định, {{ZonedDateTime}} có quy tắc timezone (DST). Lưu DB luôn dùng {{Instant}} (UTC) hoặc {{TIMESTAMP WITH TIME ZONE}}; chuyển về múi giờ người dùng **chỉ ở tầng hiển thị**.
+
+### Bốn kiểu chính
+| Kiểu | Mô tả | Dùng khi |
+|---|---|---|
+| {{Instant}} | UTC nanosecond, không timezone | Lưu trữ, log, so sánh, truyền giữa service |
+| {{LocalDateTime}} | Năm-tháng-ngày-giờ-phút-giây, **không** offset | Giao diện người dùng, lịch hẹn, sinh nhật |
+| {{OffsetDateTime}} | LocalDateTime + offset cố định (+07:00) | Giao tiếp với hệ thống ngoài chỉ gửi offset |
+| {{ZonedDateTime}} | LocalDateTime + ZoneId (IANA, có DST) | Business logic liên quan múi giờ, quy tắc mùa hè |
+
+### Chuyển đổi an toàn
+~~~java
+Instant now = Instant.now();                    // UTC
+ZonedDateTime vn = now.atZone(ZoneId.of("Asia/Ho_Chi_Minh")); // +07, có DST lịch sử
+OffsetDateTime odt = vn.toOffsetDateTime();     // offset tại thời điểm đó
+LocalDateTime ldt = vn.toLocalDateTime();       // mất timezone
+Instant back = vn.toInstant();                  // ngược về UTC
+~~~
+- Không bao giờ dùng {{LocalDateTime}} để lưu timestamp sự kiện (log, order time, payment time) — mất ngữ cảnh timezone.
+- {{ZonedDateTime}} khác {{OffsetDateTime}} ở chỗ nó biết **quy tắc DST** (ngày chuyển giờ mùa hè); {{OffsetDateTime}} chỉ là offset tĩnh.
+
+### Bug cut-off ngân hàng (thực tế)
+- Hệ thống cut-off giao dịch lúc 23:59:59 **theo múi giờ ngân hàng (ví dụ +07)**.
+- Nếu lưu {{LocalDateTime}} "2024-03-10 23:59:59" mà không lưu offset, ngày chuyển DST (nếu có) hoặc khi server đổi múi giờ, thời điểm thực tế sai lệch 1 tiếng.
+- Giải pháp: lưu {{Instant}} (UTC) trong DB cột {{TIMESTAMP WITH TIME ZONE}} (PostgreSQL) hoặc {{DATETIME}} (MySQL 8.0+ với {{TIMESTAMP}} tự convert). Khi query cut-off: {{WHERE created_at < '2024-03-11 00:00:00+07'}} (đã có offset).
+- Spring Boot: cấu hình {{spring.jpa.properties.hibernate.jdbc.time_zone=UTC}} và dùng {{@Column(columnDefinition = "TIMESTAMP WITH TIME ZONE")}}.
+
+### Các lỗi hay gặp
+- {{LocalDateTime.now()}} lấy theo múi giờ JVM ({{ZoneId.systemDefault()}}); container Docker thường để UTC ⇒ sai so với múi giờ VN.
+- Parse string không có offset bằng {{LocalDateTime.parse}} rồi gán cho cột {{TIMESTAMP WITH TIME ZONE}} ⇒ DB dùng múi giờ session, không ổn định.
+- So sánh {{ZonedDateTime}} khác zone: phải {{toInstant()}} rồi so sánh, không so sánh field trực tiếp.
+- {{Period}} vs {{Duration}}: {{Period}} cho ngày/tháng/năm (date-based), {{Duration}} cho giờ/phút/giây/nano (time-based).
+
+> Senior tip: quy tắc vàng — **luôn lưu UTC (Instant) trong DB**, **luôn hiển thị theo timezone người dùng ở frontend**, **không bao giờ để business logic tính toán trên LocalDateTime**. Với batch job cut-off, dùng {{ZonedDateTime}} có ZoneId cố định của ngân hàng để xác định ranh giới ngày.`,
+  follow: [
+    'Vì sao {{ZonedDateTime}} an toàn hơn {{OffsetDateTime}} cho logic cut-off?',
+    'Làm sao migrate cột {{TIMESTAMP}} cũ sang {{TIMESTAMP WITH TIME ZONE}} không mất dữ liệu?',
+    'Khi nào dùng {{LocalDate}} thay vì {{LocalDateTime}} cho ngày sinh/ngày hết hạn?'
+  ],
+  tags: ['Date/Time', 'Instant', 'ZonedDateTime', 'timezone', 'cut-off']
+},
+{
+  id: 'core-014',
+  topic: 'core',
+  level: 'mid',
+  q: 'Autoboxing: Integer cache (-128..127), {{==}} trên wrapper, NPE khi unboxing, và chi phí boxing trong vòng lặp nóng.',
+  a: `**Tóm tắt:** autoboxing tự chuyển primitive ↔ wrapper; {{Integer.valueOf}} cache -128..127 nên {{==}} đúng trên cache nhưng sai ngoài phạm vi; unboxing {{null}} ném NPE; boxing trong vòng lặp tạo rác GC lớn — dùng primitive hoặc primitive collection.
+ 
+### Cache Integer
+- {{Integer.valueOf(int)}} cache [-128, 127] (có thể mở rộng bằng {{-XX:AutoBoxCacheMax}}); {{new Integer()}} đã deprecated (Java 9) và không dùng cache.
+- {{Long}}, {{Short}}, {{Byte}}, {{Character}} cũng có cache tương tự.
+- {{Boolean}} cache {{TRUE}}/{{FALSE}} singleton.
+
+~~~java
+Integer a = 127, b = 127;        // cache -> same object
+Integer c = 128, d = 128;        // mới tạo -> khác object
+System.out.println(a == b);      // true
+System.out.println(c == d);      // false (so sánh reference!)
+System.out.println(c.equals(d)); // true (so sánh giá trị)
+~~~
+
+### NPE khi unboxing
+~~~java
+Integer wrapper = null;
+int primitive = wrapper;         // NPE tại dòng này (unboxing ngầm)
+~~~
+- Xảy ra khi: map.get(key) trả null rồi gán cho primitive; ternary operator {{condition ? 1 : null}} ép kiểu primitive; stream {{reduce}} với identity null.
+- Phòng thủ: dùng {{Objects.requireNonNull}}, {{Optional}}, hoặc kiểm tra null trước khi unbox.
+
+### Chi phí boxing trong hot path
+- Mỗi boxing tạo object mới (trừ cache), gây allocation rate cao ⇒ young GC nhiều, pause tăng.
+- Ví dụ: {{Long sum = 0L; for (long v : values) sum += v;}} — {{sum}} bị box/unbox mỗi vòng.
+- Khắc phục: dùng primitive local ({{long sum = 0;}}), hoặc primitive stream ({{LongStream}}, {{IntStream}}), hoặc primitive collection (fastutil/Eclipse Collections).
+- JIT có thể escape analysis loại bỏ boxing nếu object không thoát method, nhưng không đảm bảo.
+
+### So sánh wrapper
+- Luôn dùng {{equals}} cho wrapper; {{==}} chỉ đúng nhờ cache và là bug ngầm.
+- {{Comparator.naturalOrder()}} an toàn cho wrapper null (ném NPE), {{Comparator.nullsFirst}} xử lý null tường minh.
+
+> Senior tip: bật {{-XX:+PrintCompilation}} và {{-XX:+PrintInlining}} để xem JIT có loại bỏ boxing không; trong code quan trọng (low latency), viết thủ công dùng primitive hoặc dùng thư viện primitive collection. Đừng tin rằng "JIT sẽ lo" — đo bằng JMH.`,
+  follow: [
+    'Vì sao {{Integer}} cache mặc định -128..127 và làm sao mở rộng?',
+    'Ternary operator {{flag ? 1 : null}} ném NPE khi gán cho {{int}} — tại sao?',
+    'Khi nào nên dùng {{OptionalInt}} thay vì {{Optional<Integer>}}?'
+  ],
+  tags: ['autoboxing', 'Integer cache', 'NPE', 'performance']
+},
+{
+  id: 'core-015',
+  topic: 'core',
+  level: 'senior',
+  q: 'try-with-resources: thứ tự đóng, suppressed exception, và cách viết {{AutoCloseable}} đúng.',
+  a: `**Tóm tắt:** try-with-resources đóng tài nguyên theo thứ tự **ngược lại khai báo**, exception khi close bị gắn vào {{getSuppressed()}} của exception chính; tự viết {{AutoCloseable}} phải idempotent, không ném exception trong {{close()}} trừ khi không thể khôi phục.
+ 
+### Thứ tự đóng
+~~~java
+try (var in = new FileInputStream("a.txt");
+     var out = new FileOutputStream("b.txt")) {
+    // dùng in, out
+} // out.close() chạy trước, rồi in.close()
+~~~
+- Đóng theo LIFO (last in, first out) — giống stack; resource khai báo sau đóng trước.
+- Nếu constructor resource sau ném exception, resource trước vẫn được đóng (Java 9+ hỗ trợ resource final/effectively final).
+
+### Suppressed exception
+- Nếu block try ném exception **và** close() cũng ném exception: exception close bị **suppressed** (gắn vào {{primary.getSuppressed()}}), exception chính vẫn là exception từ try block.
+- Trước Java 7 (dùng finally), exception close sẽ **ghi đè** exception chính — mất nguyên nhân gốc.
+- Luôn log {{getSuppressed()}} khi bắt exception để không mất lỗi đóng tài nguyên.
+
+~~~java
+try (var rs = stmt.executeQuery()) {
+    // xử lý
+} catch (SQLException e) {
+    for (Throwable s : e.getSuppressed()) {
+        log.warn("Suppressed: {}", s.getMessage());
+    }
+    throw e;
+}
+~~~
+
+### Viết AutoCloseable đúng
+~~~java
+public final class DbResource implements AutoCloseable {
+    private final Connection conn;
+    private volatile boolean closed = false;
+ 
+    public DbResource(Connection conn) { this.conn = conn; }
+ 
+    @Override
+    public void close() {
+        if (closed) return;                 // idempotent
+        closed = true;
+        try {
+            if (conn != null && !conn.isClosed()) conn.close();
+        } catch (SQLException e) {
+            // log và nuốt, hoặc wrap thành unchecked nếu caller cần biết
+            // KHÔNG ném checked exception mới nếu không cần thiết
+        }
+    }
+}
+~~~
+- **Idempotent**: gọi {{close()}} nhiều lần an toàn.
+- **Không ném exception** trong {{close()}} trừ khi lỗi nghiêm trọng không thể bỏ qua (ví dụ flush buffer thất bại khi ghi log quan trọng). Nếu ném, caller không xử lý được dễ dàng.
+- **Thread-safe** nếu resource chia sẻ: dùng {{volatile}} hoặc {{synchronized}}.
+- Resource có state ({{InputStream}}, {{Connection}}) nên {{final}} class để tránh subclass phá vỡ logic đóng.
+
+### Java 9+: resource final/effectively final
+~~~java
+var in = Files.newInputStream(path);
+try (in) { ... }  // không cần khai báo mới trong try
+~~~
+
+> Senior tip: trong code review, tìm mọi {{close()}} thủ công trong finally — hãy chuyển sang try-with-resources. Với resource pool (DB connection), {{close()}} trả về pool chứ không đóng vật lý; đảm bảo {{AutoCloseable}} của wrapper pool đúng ngữ nghĩa.`,
+  follow: [
+    'Vì sao exception trong close() bị suppressed thay vì ghi đè exception chính?',
+    'Resource khai báo trong try-with-resources có thể là null không?',
+    'Làm sao viết AutoCloseable cho resource cần flush trước khi đóng (ví dụ BufferedWriter)?'
+  ],
+  tags: ['try-with-resources', 'AutoCloseable', 'suppressed exception', 'resource management']
+},
+{
+  id: 'core-016',
+  topic: 'core',
+  level: 'senior',
+  q: 'Enum nâng cao: {{EnumMap}}/{{EnumSet}}, enum singleton, enum làm state machine, và vì sao không persist bằng {{ordinal()}}.',
+  a: `**Tóm tắt:** enum là class final với tập instance cố định; {{EnumMap}}/{{EnumSet}} nhanh hơn HashMap/HashSet nhờ mảng index theo {{ordinal()}}; enum singleton thread-safe miễn phí; enum state machine gọn nhẹ; **không persist ordinal()** vì thêm/sửa enum làm lệch dữ liệu — dùng name() hoặc code tự định nghĩa.
+ 
+### EnumMap / EnumSet
+- {{EnumMap<K,V>}}: key là enum, backing là mảng {{V[]}} index = {{key.ordinal()}}; O(1) không hash, không collision, memory nhỏ, duyệt theo thứ tự khai báo.
+- {{EnumSet}}: bitset (long cho ≤ 64 enum, mảng long cho > 64); {{EnumSet.allOf}}, {{noneOf}}, {{range}}, {{complement}} cực nhanh.
+- So với {{HashMap}}/{{HashSet}}: nhanh hơn 2-10x, ít GC, không cần hashCode/equals.
+
+~~~java
+enum Status { NEW, PROCESSING, DONE, FAILED }
+EnumMap<Status, Integer> counter = new EnumMap<>(Status.class);
+EnumSet<Status> active = EnumSet.of(Status.NEW, Status.PROCESSING);
+~~~
+
+### Enum singleton
+~~~java
+enum Singleton { INSTANCE; void doWork() {} }
+~~~
+- Thread-safe, serialization-safe (JVM đảm bảo), reflection-safe (constructor private), lazy init.
+- Cách đơn giản nhất và được khuyến nghị (Effective Java Item 3).
+
+### Enum state machine
+~~~java
+enum OrderState {
+    CREATED { @Override OrderState next() { return PAID; } },
+    PAID { @Override OrderState next() { return SHIPPED; } },
+    SHIPPED { @Override OrderState next() { return DELIVERED; } },
+    DELIVERED { @Override OrderState next() { return this; } };
+    abstract OrderState next();
+}
+~~~
+- Mỗi state là instance, method abstract ép buộc implement chuyển tiếp.
+- Dễ thêm validation, logging, side effect trong từng state.
+- Không dùng cho state machine phức tạp với nhiều transition điều kiện — dùng thư viện hoặc pattern khác.
+
+### Vì sao không persist ordinal()
+- {{ordinal()}} trả về index khai báo (0-based). Thêm enum ở giữa hoặc đổi thứ tự ⇒ tất cả dữ liệu cũ sai nghĩa.
+- Ví dụ: {{Status.NEW=0, PROCESSING=1}}; thêm {{PENDING}} ở giữa ⇒ PROCESSING thành 2, dữ liệu cũ PROCESSING (1) giờ thành PENDING.
+- Giải pháp: persist {{name()}} (String) hoặc code tự định nghĩa {{code}} (String/Int) trong enum field.
+- {{name()}} ổn định miễn là không đổi tên enum; đổi tên enum vẫn cần migration script.
+
+### Pitfall
+- {{EnumMap}} không thread-safe; dùng {{ConcurrentHashMap}} nếu chia sẻ.
+- {{EnumSet}} không serializable tốt qua một số framework cũ; test kỹ.
+- Switch trên enum: thêm case mới mà quên cập nhật switch ⇒ bug; dùng switch expression (exhaustive) để compiler bắt.
+
+> Senior tip: trong JPA, map enum bằng {{@Enumerated(EnumType.STRING)}} (lưu name) hoặc {{AttributeConverter}} cho code tùy chỉnh; **không bao giờ** dùng {{EnumType.ORDINAL}}. Với state machine phức tạp, cân nhắc thư viện như Squirrel hoặc tự viết nhưng tách logic transition ra class riêng.`,
+  follow: [
+    'Vì sao {{EnumMap}} nhanh hơn {{HashMap}} cho key enum?',
+    'Enum singleton có nhược điểm gì so với static holder?',
+    'Làm sao migrate dữ liệu đã lưu ordinal() sang code/name an toàn?'
+  ],
+  tags: ['enum', 'EnumMap', 'EnumSet', 'singleton', 'state machine']
+},
+{
+  id: 'core-017',
+  topic: 'core',
+  level: 'senior',
+  q: 'Interface default/static/private method, diamond problem, và khi nào chọn abstract class thay vì interface?',
+  a: `**Tóm tắt:** Java 8+ cho phép default/static/private method trong interface; diamond problem giải quyết bằng quy tắc "class win" và bắt buộc override khi conflict; chọn abstract class khi cần state chung, constructor, hoặc non-public member; interface cho contract và multiple implementation.
+
+### Default method
+~~~java
+default void log() { System.out.println("log"); }
+~~~
+- Cung cấp implementation mặc định, class implement có thể override.
+- Dùng để **mở rộng interface cũ** mà không phá binary compatibility (ví dụ {{Collection.stream()}}, {{Iterable.forEach()}}).
+- Không thể truy cập private field của class implement (chỉ dùng method public/protected khác).
+
+### Static method
+~~~java
+static void helper() { ... }
+~~~
+- Tiện cho utility method gắn liền interface ({{Stream.of}}, {{Comparator.naturalOrder()}}).
+- Không kế thừa được; gọi qua {{InterfaceName.helper()}}.
+
+### Private method (Java 9)
+~~~java
+private void shared() { ... }
+private static void util() { ... }
+~~~
+- Chia sẻ code giữa default method, không lộ ra ngoài.
+
+### Diamond problem
+~~~java
+interface A { default void m() { System.out.println("A"); } }
+interface B { default void m() { System.out.println("B"); } }
+class C implements A, B { 
+    @Override public void m() { A.super.m(); } // bắt buộc override, chọn A hoặc B
+}
+~~~
+- Quy tắc: **class win** — nếu class (hoặc cha) có method cụ thể (non-abstract), dùng của class.
+- Nếu hai interface có default method trùng tên và class không override ⇒ compile error.
+- Dùng {{A.super.m()}} để gọi default method cụ thể.
+
+### Interface vs Abstract class
+| Tiêu chí | Interface | Abstract class |
+|---|---|---|
+| Kế thừa | multiple (implements) | single (extends) |
+| Field | chỉ {{static final}} | instance field, constructor |
+| Access modifier | public (default method) | bất kỳ (protected, package) |
+| State | không | có |
+| Binary compat | thêm default method an toàn | thêm method abstract phá vỡ subclass |
+
+### Khi nào chọn abstract class
+- Cần **state chung** (field) hoặc **constructor** khởi tạo state.
+- Cần **non-public method** (protected helper cho subclass).
+- Thiết kế template method pattern ({{final}} method gọi abstract hook).
+- Base class cho hierarchy chặt (entity base, handler base).
+
+### Khi nào chọn interface
+- Định nghĩa **contract** (capability), không quan tâm implementation.
+- Cần multiple implementation ({{Comparable}}, {{Serializable}}, {{AutoCloseable}}).
+- API công khai muốn binary compatibility khi mở rộng.
+
+> Senior tip: mặc định dùng **interface** cho API mới; chỉ dùng abstract class khi thực sự cần state/constructor. Nếu thấy interface có quá nhiều default method phức tạp, cân nhắc tách thành abstract class helper + interface mảnh.`,
+  follow: [
+    'Default method có thể override {{Object}} method (equals, hashCode, toString) không?',
+    'Static method trong interface có được kế thừa không?',
+    'Vì sao Java không cho phép interface có instance field non-final?'
+  ],
+  tags: ['interface', 'default method', 'diamond problem', 'abstract class']
+},
+{
+  id: 'core-018',
+  topic: 'core',
+  level: 'senior',
+  q: 'Java I/O vs NIO: buffer, channel, {{Files}} API, đọc file lớn theo stream, zero-copy {{transferTo}}.',
+  a: `**Tóm tắt:** I/O truyền thống (stream) blocking, byte-by-byte; NIO (New I/O) dùng **buffer + channel**, non-blocking, memory-mapped, zero-copy. {{Files}} API (Java 7+) tiện cho thao tác file hệ thống; đọc file lớn dùng {{Files.lines}}/{{Files.newInputStream}} + stream; {{transferTo}} truyền dữ liệu kernel-to-kernel không copy qua user space.
+ 
+### I/O truyền thống vs NIO
+| Đặc điểm | java.io (Stream) | java.nio (Buffer/Channel) |
+|---|---|---|
+| Mô hình | Blocking, byte/char stream | Buffer + Channel, non-blocking (Selector) |
+| Đơn vị đọc/ghi | Byte/char đơn lẻ hoặc mảng | Buffer ({{ByteBuffer}}, {{CharBuffer}}...) |
+| Memory-mapped | Không | {{FileChannel.map}} ({{MappedByteBuffer}}) |
+| Zero-copy | Không | {{transferTo}}/{{transferFrom}} |
+| File system | {{File}} (hạn chế) | {{Path}}, {{Files}} (bộ API đầy đủ) |
+
+### Buffer cơ bản
+~~~java
+ByteBuffer buf = ByteBuffer.allocateDirect(8192); // off-heap, zero-copy ready
+buf.put(data);        // write mode
+buf.flip();           // chuyển sang read mode (limit=position, position=0)
+channel.read(buf);    // đọc vào buffer
+buf.compact();        // dời unread data về đầu, chuẩn bị đọc tiếp
+~~~
+- {{allocateDirect}}: off-heap, dùng cho zero-copy, GC ít hơn nhưng allocation chậm hơn.
+- {{flip()}}, {{clear()}}, {{compact()}}, {{rewind()}} quản trị position/limit/capacity.
+
+### Files API (Java 7+)
+- {{Files.readAllLines}}, {{Files.write}}, {{Files.copy}}, {{Files.move}}, {{Files.delete}}, {{Files.walk}}.
+- {{Files.lines(path)}} trả {{Stream<String>}} lazy, tự đóng stream khi xong (try-with-resources).
+- {{Files.newInputStream}}/{{newOutputStream}} trả stream chuẩn, dùng với NIO channel.
+
+### Đọc file lớn (GB) không OOM
+~~~java
+// Cách 1: Files.lines + stream processing (line by line)
+try (Stream<String> lines = Files.lines(Paths.get("huge.log"))) {
+    lines.filter(s -> s.contains("ERROR"))
+         .forEach(System.out::println);
+}
+
+// Cách 2: BufferedReader thủ công
+try (var br = Files.newBufferedReader(path)) {
+    String line;
+    while ((line = br.readLine()) != null) { ... }
+}
+~~~
+- Không bao giờ {{Files.readAllBytes}} hoặc {{readAllLines}} file lớn — load hết vào heap.
+
+### Zero-copy transferTo
+~~~java
+try (var in = FileChannel.open(src, StandardOpenOption.READ);
+     var out = FileChannel.open(dest, StandardOpenOption.CREATE, StandardOpenOption.WRITE)) {
+    long transferred = in.transferTo(0, in.size(), out); // kernel copy, không qua user buffer
+}
+~~~
+- {{transferTo}} nhờ OS copy trực tiếp giữa 2 file descriptor (sendfile trên Linux), nhanh hơn và không tiêu tốn heap.
+- Yêu cầu: source là {{FileChannel}}, destination có thể là {{FileChannel}} hoặc {{SocketChannel}}.
+- Java 9+: {{transferTo}} trả về số byte đã transfer; có thể gọi lặp nếu không transfer hết.
+
+> Senior tip: với log processing lớn, dùng {{Files.lines}} + parallel stream (nếu CPU-bound) hoặc {{BufferedReader}} tuần tự (nếu I/O-bound). Với copy file lớn hoặc gửi file qua network, luôn ưu tiên {{transferTo}}. Tránh {{MappedByteBuffer}} cho file > 2GB trên 32-bit hoặc khi cần đóng gấp (unmap khó khăn, dùng {{Cleaner}} hoặc reflection hack).`,
+  follow: [
+    'Vì sao {{transferTo}} nhanh hơn đọc vào buffer rồi ghi ra?',
+    'Khi nào dùng {{ByteBuffer.allocateDirect}} thay vì {{allocate}}?',
+    '{{MappedByteBuffer}} có nhược điểm gì và làm sao unmap an toàn?'
+  ],
+  tags: ['NIO', 'Buffer', 'Channel', 'Files', 'transferTo', 'zero-copy']
+},
+{
+  id: 'core-019',
+  topic: 'core',
+  level: 'senior',
+  q: 'String concat bằng {{+}} sau Java 9 (invokedynamic), {{StringBuilder}} khi nào thực sự cần, {{String.format}} chậm ra sao?',
+  a: `**Tóm tắt:** từ Java 9, {{+}} dùng {{invokedynamic}} + {{StringConcatFactory}} sinh bytecode tối ưu tại runtime, nhanh ngang {{StringBuilder}} cho các phép concat đơn giản; {{StringBuilder}} vẫn cần cho vòng lặp, concat có điều kiện, hoặc tùy chỉnh capacity; {{String.format}} chậm do parse format string và tạo {{Formatter}} mỗi lần.
+ 
+### String concat sau Java 9 (JEP 280)
+- Trước Java 9: {{a + b + c}} biên dịch thành chuỗi {{new StringBuilder().append(a).append(b).append(c).toString()}}.
+- Java 9+: compiler sinh lời gọi {{invokedynamic}} bootstrap method {{StringConcatFactory.makeConcatWithConstants}}; runtime chọn chiến lược tối ưu ({{StringBuilder}}, {{String.join}}, {{Arrays.copyOf}}, thậm chí {{StringConcatHelper}}).
+- Lợi ích: JIT có thể inline, tối ưu theo profile thực tế; không tạo {{StringBuilder}} trung gian trong bytecode tĩnh.
+- Kết quả: {{s1 + s2 + s3}} nhanh như {{StringBuilder}} thủ công, code dễ đọc hơn.
+
+### Khi nào vẫn cần StringBuilder
+- **Vòng lặp**: concat trong loop tạo nhiều lời gọi {{invokedynamic}} riêng lẻ, không gộp được.
+~~~java
+// Chậm: mỗi vòng một invokedynamic
+String s = "";
+for (String part : parts) s += part; 
+
+// Nhanh: một StringBuilder
+StringBuilder sb = new StringBuilder(estimatedSize);
+for (String part : parts) sb.append(part);
+String s = sb.toString();
+~~~
+- **Concat có điều kiện/phân nhánh**: logic phức tạp mà bootstrap method không gộp được.
+- **Cần kiểm soát capacity**: tránh resize nội bộ ({{new StringBuilder(1024)}}).
+- **Thread-local buffer**: tái dùng {{StringBuilder}} trong hot path (cẩn thận thread-safety).
+
+### String.format chậm ra sao
+- Parse format string ({{%d}}, {{%s}}, {{%.2f}}...) mỗi lần gọi — regex/internal parser.
+- Tạo {{Formatter}} object mới mỗi lần (allocation).
+- Boxing/unboxing cho primitive argument.
+- Locale handling mặc định.
+
+~~~java
+// Chậm
+String msg = String.format("User %s has %d orders", name, count);
+
+// Nhanh: concat đơn giản
+String msg = "User " + name + " has " + count + " orders";
+
+// Hoặc StringBuilder cho nhiều phần
+String msg = new StringBuilder("User ").append(name).append(" has ").append(count).append(" orders").toString();
+~~~
+
+### Benchmark gợi ý (JMH)
+- {{+}} / {{StringConcatFactory}}: ~1-2 ns/op cho 3-4 string ngắn.
+- {{StringBuilder}} thủ công: ~1-2 ns/op (tương đương).
+- {{String.format}}: ~50-100 ns/op (chậm 50-100x).
+- {{MessageFormat}}: còn chậm hơn.
+
+### Pitfall
+- Concat trong log statement: {{log.info("Processing " + id + " for " + user)}} — chuỗi được tạo **trước** khi kiểm tra log level; dùng code block dưới (SLF4J placeholder) để lazy evaluation.
+~~~java
+log.info("Processing {} for {}", id, user);
+~~~
+- {{String.join}} cho collection: tiện nhưng tạo mảng trung gian nếu truyền varargs; dùng {{StringJoiner}} cho stream.
+
+> Senior tip: mặc định viết {{+}} cho concat đơn giản (Java 9+), chỉ dùng {{StringBuilder}} khi có vòng lặp hoặc cần capacity. Bật {{-XX:+PrintStringConcat}} để xem chiến lược JIT chọn. Với logging, **luôn dùng placeholder SLF4J** — đây là lỗi performance hay gặp nhất trong production.`,
+  follow: [
+    'Vì sao {{invokedynamic}} giúp concat nhanh hơn bytecode tĩnh?',
+    '{{String.join}} khác {{Collectors.joining}} ở điểm nào?',
+    'Khi nào {{StringBuilder}} thread-local là ý tưởng tốt/hay?'
+  ],
+  tags: ['String', 'concat', 'invokedynamic', 'StringBuilder', 'String.format']
+},
+{
+  id: 'core-020',
+  topic: 'core',
+  level: 'mid',
+  q: 'Giải thích 4 tính chất OOP bằng ví dụ thật trong code nghiệp vụ bạn từng viết (không đọc định nghĩa). Tính chất nào bạn thấy hay bị dùng sai nhất?',
+  a: `**Tóm tắt:** Encapsulation là giấu state và chỉ cho đổi qua method giữ được invariant (ví dụ {{Account.withdraw}} không cho số dư âm). Abstraction là caller chỉ biết "cái gì" qua interface ({{PaymentProcessor.pay}}), không biết "làm thế nào". Inheritance là tái sử dụng hành vi theo quan hệ "is-a" thật sự. Polymorphism là cùng một lời gọi chạy implementation khác nhau theo object thực tế, nhờ đó thêm cổng thanh toán mới không phải sửa if/else. Hay bị dùng sai nhất là inheritance: kế thừa chỉ để dùng lại code.
+
+### Encapsulation: bảo vệ invariant, không phải "getter/setter cho mọi field"
+~~~java
+public class Account {
+    private BigDecimal balance;                 // không ai sửa trực tiếp
+    private final List<Txn> history = new ArrayList<>();
+
+    public void withdraw(BigDecimal amount) {
+        if (amount.signum() <= 0) throw new IllegalArgumentException("amount <= 0");
+        if (balance.compareTo(amount) < 0) throw new InsufficientFundsException();
+        balance = balance.subtract(amount);     // invariant: balance >= 0 luôn đúng
+        history.add(Txn.debit(amount));         // state đổi cùng nhau, không lệch
+    }
+    public BigDecimal getBalance() { return balance; }   // không có setBalance
+    public List<Txn> history() { return List.copyOf(history); } // không lộ list nội bộ
+}
+~~~
+Vì sao quan trọng: nếu có {{setBalance}}, bất kỳ service nào cũng có thể ghi số dư âm hoặc quên ghi lịch sử. Rule nghiệp vụ nằm rải rác thì không ai kiểm soát được.
+
+### Abstraction + Polymorphism: bỏ chuỗi if/else theo loại
+~~~java
+public interface PaymentProcessor {             // abstraction: chỉ nói "thanh toán"
+    PaymentMethod method();
+    PaymentResult pay(Order order);
+}
+
+@Service
+public class CheckoutService {
+    private final Map<PaymentMethod, PaymentProcessor> processors;
+
+    public CheckoutService(List<PaymentProcessor> all) {  // Spring inject mọi bean
+        this.processors = all.stream()
+            .collect(Collectors.toMap(PaymentProcessor::method, p -> p));
+    }
+    public PaymentResult checkout(Order o) {
+        return processors.get(o.method()).pay(o); // dynamic dispatch theo object thật
+    }
+}
+~~~
+Thêm VNPay, MoMo hay ZaloPay chỉ cần thêm một class {{@Component}} mới; {{CheckoutService}} không đổi (Open/Closed). Đó là lợi ích thật của polymorphism, đáng nói hơn ví dụ Dog/Cat.
+
+### Inheritance: dùng khi có "is-a" và khung chung
+Ví dụ hợp lý là template method: {{AbstractStatementExporter}} có method {{final export()}} gọi lần lượt {{header()}}, {{rows()}}, {{footer()}}; lớp con PDF và Excel chỉ override từng bước. Kế thừa sai là {{class OrderService extends BaseDao}} chỉ để gọi được {{save()}}: nó gắn chặt hai lớp, lộ method không mong muốn và vi phạm Liskov. Nên dùng composition (inject {{OrderRepository}}).
+
+| Tính chất | Câu hỏi nó trả lời | Dấu hiệu dùng sai |
+|---|---|---|
+| Encapsulation | Ai được đổi state, theo rule nào? | Entity toàn setter public, rule nằm ở service |
+| Abstraction | Caller cần biết gì tối thiểu? | Interface lộ chi tiết của provider (HTTP status, SQL) |
+| Inheritance | Có thật là "is-a" không? | Kế thừa để dùng lại helper, cây sâu hơn 2–3 tầng |
+| Polymorphism | Có thể thay implementation không? | {{instanceof}}/switch theo type rải khắp nơi |
+
+### Câu trả lời sai phổ biến
+- Đọc định nghĩa sách giáo khoa và lấy ví dụ Animal/Dog, không liên hệ được với code thật.
+- Nhầm encapsulation với "field private + getter/setter đầy đủ". Có setter cho mọi field thì vẫn là phá encapsulation.
+- Nhầm abstraction (thiết kế mức khái niệm, interface) với encapsulation (giấu dữ liệu và bảo vệ invariant).
+- Chỉ nói đến runtime polymorphism (overriding) mà quên overloading là compile-time polymorphism.
+
+> Senior tip: khi trả lời, chọn một ví dụ xuyên suốt (thanh toán, tài khoản) rồi chỉ ra trade-off: "tôi ưu tiên composition, chỉ kế thừa khi có khung template rõ ràng". Interviewer ngân hàng thường hỏi tiếp sang SOLID và Strategy pattern, nên chuẩn bị sẵn ví dụ {{Map<Type, Strategy>}} như trên.`,
+  follow: [
+    'Composition over inheritance: cho một ví dụ bạn đã refactor từ kế thừa sang composition.',
+    'JPA entity cần no-arg constructor và setter thì làm sao vẫn giữ được encapsulation?',
+    'Liskov Substitution Principle bị vi phạm trong ví dụ nào bạn từng gặp?'
+  ],
+  tags: ['OOP', 'encapsulation', 'polymorphism', 'inheritance', 'abstraction']
+},
+{
+  id: 'core-021',
+  topic: 'core',
+  level: 'senior',
+  q: 'Overloading vs overriding: quy tắc với {{static}}, {{private}}, {{final}}, kiểu trả về covariant và exception là gì? Dự đoán output khi gọi static method qua reference kiểu cha.',
+  a: `**Tóm tắt:** Overloading là nhiều method cùng tên nhưng khác danh sách tham số; compiler chọn method lúc **compile time** dựa trên **kiểu khai báo** của argument. Overriding là lớp con định nghĩa lại method instance cùng chữ ký; JVM chọn lúc **runtime** dựa trên **object thật**. {{static}} method không override được mà chỉ bị **hiding**; {{private}} và {{final}} không override được.
+
+### Bảng quy tắc
+| Quy tắc | Overloading | Overriding |
+|---|---|---|
+| Khi nào chọn | Compile time, theo static type | Runtime, theo dynamic type (vtable) |
+| Chữ ký | Cùng tên, khác parameter list | Cùng tên và parameter list |
+| Return type | Tuỳ ý, nhưng không thể chỉ khác return type | Giống hệt, hoặc subtype (covariant) nếu là reference type |
+| Access modifier | Tuỳ ý | Không được hẹp hơn (protected lên public được, ngược lại không) |
+| Checked exception | Tuỳ ý | Không được ném checked exception mới hoặc rộng hơn; unchecked thì thoải mái |
+| static / private / final | Overload được | Không override được (static thì hiding) |
+
+### Dự đoán output: static hiding vs dynamic dispatch
+~~~java
+class Parent {
+    static String who()  { return "Parent.static"; }
+    String name()        { return "Parent.instance"; }
+}
+class Child extends Parent {
+    static String who()  { return "Child.static"; }      // hiding
+    @Override String name() { return "Child.instance"; } // overriding
+}
+
+Parent p = new Child();
+System.out.println(p.who());   // Parent.static  (chọn theo kiểu khai báo Parent)
+System.out.println(p.name());  // Child.instance (chọn theo object thật)
+~~~
+Vì sao: lời gọi static được compiler bind sẵn thành {{invokestatic Parent.who}}, nên object thật không liên quan. Method instance được compile thành {{invokevirtual}} và JVM tra bảng method của class thật lúc chạy.
+
+### Dự đoán output: overload resolution
+~~~java
+static void print(Object o)  { System.out.println("Object"); }
+static void print(String s)  { System.out.println("String"); }
+static void print(long x)    { System.out.println("long"); }
+static void print(Integer x) { System.out.println("Integer"); }
+
+Object obj = "hello";
+print(obj);   // Object: chọn theo static type, không phải runtime type
+print("hi");  // String: method cụ thể nhất
+print(5);     // long: widening (phase 1) thắng boxing (phase 2)
+// print(null); -> lỗi compile "ambiguous": String và Integer ngang nhau
+~~~
+Compiler tìm theo 3 phase: (1) không boxing, không varargs; (2) cho phép boxing/unboxing; (3) cho phép varargs. Phase nào tìm thấy thì dừng, sau đó chọn method cụ thể nhất.
+
+### private và final
+- {{private}} method không được kế thừa. Lớp con viết method cùng tên là method **mới**; thêm {{@Override}} sẽ lỗi compile. Code trong lớp cha gọi method đó vẫn chạy bản của lớp cha.
+- {{final}} method thì không cho override, dùng để khoá thuật toán (ví dụ bước kiểm tra chữ ký trong template method).
+
+### Câu trả lời sai phổ biến
+- "Chỉ khác return type cũng là overload": sai, lỗi compile.
+- "Static method override được vì gọi được qua instance": sai, đó là hiding và gọi qua instance chỉ là cú pháp gây hiểu nhầm.
+- "Overloading chọn theo object thật": sai, nó chọn theo kiểu khai báo.
+
+### Pitfall production
+- Viết {{public boolean equals(Account other)}}: đây là **overload**, không phải override {{equals(Object)}}. {{HashSet}} và {{List.contains}} gọi bản {{Object}} nên không bao giờ dùng method của bạn. Luôn gắn {{@Override}}.
+- {{List<Integer>}} có {{remove(int index)}} và {{remove(Object o)}}: gọi {{list.remove(1)}} sẽ xoá phần tử ở **index 1**, không phải giá trị 1. Muốn xoá giá trị thì gọi {{list.remove(Integer.valueOf(1))}}.
+- Hai overload {{f(List<String>)}} và {{f(List<Integer>)}} lỗi compile "name clash" vì sau type erasure có cùng chữ ký.
+
+> Senior tip: bật cảnh báo thiếu {{@Override}} trong IDE/Sonar và coi đó là lỗi. Với API public, hạn chế overload có cùng số tham số mà kiểu dễ autobox lẫn nhau (int/Integer/long/Object), vì người gọi rất dễ trỏ nhầm method mà không hề biết.`,
+  follow: [
+    'Vì sao field không có polymorphism? {{p.field}} với {{p}} khai báo kiểu cha trả về giá trị nào?',
+    'Gọi một method overridable trong constructor lớp cha thì nguy hiểm thế nào?',
+    'Bridge method do compiler sinh ra khi override method generic là gì?'
+  ],
+  tags: ['overloading', 'overriding', 'method hiding', 'polymorphism', 'covariant return']
+},
+{
+  id: 'core-022',
+  topic: 'core',
+  level: 'mid',
+  q: 'Dự đoán output: so sánh {{==}} và {{equals}} với String literal, {{new String}}, chuỗi nối lúc runtime và {{Integer}}. Vì sao so sánh ID kiểu {{Long}} bằng {{==}} chạy đúng ở dev nhưng hỏng ở production?',
+  a: `**Tóm tắt:** {{==}} so sánh **reference** (hai biến có trỏ cùng một object không), còn {{equals}} so sánh **nội dung**, với điều kiện class đã override nó. String literal và hằng số compile-time được đưa vào String pool nên {{==}} tình cờ ra true; chuỗi tạo lúc runtime thì không. {{Integer}}/{{Long}} cache từ -128 đến 127, nên {{==}} đúng với ID nhỏ ở môi trường dev và sai khi ID lớn hơn 127 trên production.
+
+### Dự đoán output: String
+~~~java
+String a = "hello";
+String b = "hello";
+String c = new String("hello");
+String d = "hel" + "lo";         // hằng compile-time: compiler gộp thành "hello"
+String part = "hel";
+String e = part + "lo";          // part không phải hằng: nối lúc runtime, object mới
+final String fpart = "hel";
+String f = fpart + "lo";         // fpart là constant variable: lại được gộp
+
+System.out.println(a == b);          // true
+System.out.println(a == c);          // false
+System.out.println(a.equals(c));     // true
+System.out.println(a == d);          // true
+System.out.println(a == e);          // false
+System.out.println(a == e.intern()); // true
+System.out.println(a == f);          // true
+~~~
+Vì sao:
+- Mọi literal giống nhau trong cùng JVM dùng chung một object trong String pool, nên {{a == b}}.
+- {{new String(...)}} luôn tạo object mới trên heap, kể cả khi pool đã có "hello".
+- {{"hel" + "lo"}} và {{fpart + "lo"}} là **constant expression** (JLS 15.29), được tính ngay lúc compile và intern như literal. Bỏ {{final}} đi thì {{part + "lo"}} chạy lúc runtime (qua {{StringConcatFactory}}) và tạo object mới.
+- {{intern()}} trả về object trong pool có cùng nội dung.
+
+### Dự đoán output: wrapper
+~~~java
+Integer x = 127, y = 127;
+Integer m = 128, n = 128;
+Long id = 127L;
+System.out.println(x == y);         // true: cùng object trong cache
+System.out.println(m == n);         // false: ngoài cache, 2 object khác nhau
+System.out.println(m.equals(n));    // true
+System.out.println(m == 128);       // true: m bị unbox, so sánh giá trị int
+System.out.println(x.equals(127L)); // false: 127L box thành Long, khác class
+System.out.println(id.equals(127)); // false: 127 box thành Integer
+~~~
+Kết quả trên đúng với cấu hình mặc định; cờ {{-XX:AutoBoxCacheMax}} có thể nới cache của {{Integer}}, nên càng không được dựa vào {{==}}.
+
+### equals không phải lúc nào cũng so nội dung
+{{Object.equals}} mặc định chính là {{==}}. {{StringBuilder}} **không** override {{equals}}, nên {{new StringBuilder("a").equals(new StringBuilder("a"))}} trả về false. Muốn so nội dung thì dùng {{sb1.compareTo(sb2) == 0}} (Java 11+) hoặc so {{toString()}}. {{BigDecimal.equals}} lại so cả scale: {{2.0}} khác {{2.00}}.
+
+### Câu trả lời sai phổ biến
+- "Với String thì {{==}} so sánh giá trị": nó chỉ đúng tình cờ khi cả hai cùng là literal.
+- "{{equals}} luôn so sánh nội dung": chỉ đúng khi class override nó.
+- Quên rằng {{Integer.equals(Long)}} luôn false dù cùng giá trị.
+
+### Pitfall production
+- {{if (order.getUserId() == currentUser.getId())}} với {{Long}}: test bằng user ID 1, 2, 3 đều pass; lên production ID 10 523 thì false, gây lỗi phân quyền "không phải chủ đơn hàng". Dùng {{Objects.equals(a, b)}} (an toàn với null) hoặc so primitive.
+- {{status == "ACTIVE"}} với status đọc từ DB hoặc JSON: chuỗi được tạo runtime nên luôn false. Dùng {{"ACTIVE".equals(status)}} để tránh luôn NPE, hoặc tốt hơn là enum (enum so bằng {{==}} là đúng và nhanh).
+
+> Senior tip: bật rule Sonar/ErrorProne "reference comparison of boxed types / strings" ở mức blocker. Bug {{Long ==}} là loại lỗi chỉ lộ ra khi dữ liệu đủ lớn, nên test unit với ID nhỏ không bao giờ bắt được; khi viết test hãy cố ý dùng ID lớn hơn 127.`,
+  follow: [
+    '{{new String("hello")}} tạo ra bao nhiêu object? Phụ thuộc vào điều gì?',
+    'Vì sao enum so sánh bằng {{==}} lại an toàn, kể cả khi deserialize?',
+    '{{switch}} trên String hoạt động thế nào bên trong ({{hashCode}} rồi {{equals}})?'
+  ],
+  tags: ['equals', 'String pool', 'Integer cache', 'predict output', 'wrapper']
+},
+{
+  id: 'core-023',
+  topic: 'core',
+  level: 'senior',
+  q: 'Dự đoán output: {{return}} trong {{try}} rồi sửa biến trong {{finally}}, {{return}} trong {{finally}}, exception trong {{finally}}, và {{System.exit}} trong {{try}}. Những tình huống này gây bug production thế nào?',
+  a: `**Tóm tắt:** Khi {{try}} chạy {{return expr}}, giá trị của {{expr}} được tính và lưu tạm **trước** khi {{finally}} chạy; sửa biến primitive trong {{finally}} không đổi giá trị trả về, nhưng sửa object mà reference trỏ tới thì có. {{return}} hoặc {{throw}} trong {{finally}} **thay thế** kết quả của {{try}} và nuốt mất exception gốc. {{System.exit}} dừng JVM nên {{finally}} không chạy.
+
+### 1. Thứ tự thực thi
+~~~java
+static int order() {
+    try {
+        System.out.println("try");
+        return value("return-expr");   // biểu thức return được tính trước
+    } finally {
+        System.out.println("finally");
+    }
+}
+static int value(String s) { System.out.println(s); return 1; }
+// Output:
+// try
+// return-expr
+// finally
+~~~
+
+### 2. Sửa biến trong finally
+~~~java
+static int primitive() {
+    int x = 1;
+    try {
+        return x;          // giá trị 1 được copy vào một slot tạm
+    } finally {
+        x = 2;             // đổi biến local, không đổi slot tạm
+    }
+}                          // primitive() trả về 1
+
+static StringBuilder reference() {
+    StringBuilder sb = new StringBuilder("a");
+    try {
+        return sb;         // copy reference, cùng trỏ một object
+    } finally {
+        sb.append("b");    // sửa chính object đó
+    }
+}                          // reference() trả về "ab"
+~~~
+Vì sao: compiler sinh bytecode lưu giá trị return vào một biến local ẩn, chạy code {{finally}} (được nhân bản inline vào từng lối ra), rồi mới {{ireturn}}/{{areturn}} giá trị ẩn đó. Với reference, thứ được copy là con trỏ chứ không phải object.
+
+### 3. return trong finally nuốt exception
+~~~java
+static int swallow() {
+    try {
+        throw new RuntimeException("boom");
+    } finally {
+        return 2;          // compiler chỉ cảnh báo: finally không kết thúc bình thường
+    }
+}                          // swallow() trả về 2, "boom" biến mất không dấu vết
+~~~
+
+### 4. Exception trong finally thay thế exception gốc
+~~~java
+try {
+    try {
+        throw new IllegalStateException("A");
+    } finally {
+        throw new RuntimeException("B");
+    }
+} catch (RuntimeException e) {
+    System.out.println(e.getMessage() + " suppressed=" + e.getSuppressed().length);
+}
+// Output: B suppressed=0   -> "A" mất hẳn, không có trong suppressed
+~~~
+Chỉ try-with-resources mới tự gắn exception lúc đóng resource vào {{getSuppressed()}}; {{finally}} viết tay thì không.
+
+### 5. System.exit
+~~~java
+try {
+    System.out.println("try");
+    System.exit(0);
+} finally {
+    System.out.println("finally");   // không bao giờ in
+}
+// Output: try
+~~~
+{{System.exit}} không return; JVM chạy shutdown hook rồi dừng. {{finally}} cũng không chạy khi gọi {{Runtime.halt}}, khi process bị {{kill -9}}, JVM crash, hay khi thread daemon đang dở mà JVM tắt.
+
+### Câu trả lời sai phổ biến
+- "finally chạy sau return nên giá trị trả về là 2": sai với primitive.
+- "finally luôn luôn chạy": sai với {{System.exit}}, halt, kill -9.
+- "Exception trong finally sẽ được nối vào exception cũ": sai, exception cũ mất hẳn.
+
+### Pitfall production
+- Gọi {{conn.close()}} trong {{finally}} mà {{close()}} ném lỗi sẽ che mất lỗi SQL thật, log chỉ còn "connection already closed". Dùng try-with-resources.
+- {{return}} trong {{finally}} làm method báo thành công trong khi giao dịch đã lỗi, nên caller không rollback hay retry. Rất khó điều tra vì log sạch.
+- Gọi {{System.exit}} trong code thư viện hoặc job Spring sẽ bỏ qua {{finally}} và có thể bỏ dở batch đang ghi dở dang.
+
+> Senior tip: cấm {{return}}/{{throw}} trong {{finally}} bằng static analysis (Sonar có rule "jump statements should not occur in finally blocks"). Trong {{finally}} chỉ nên dọn dẹp, không xử lý nghiệp vụ; nếu dọn dẹp có thể lỗi thì bọc try/catch riêng và log lỗi đó, đừng để nó đè lên lỗi chính.`,
+  follow: [
+    'try-with-resources sinh ra bytecode thế nào để giữ được suppressed exception?',
+    'Shutdown hook có chạy khi container bị SIGTERM không? Còn SIGKILL thì sao?',
+    'Nếu {{catch}} cũng có {{return}} và {{finally}} cũng có {{return}} thì giá trị nào được trả về?'
+  ],
+  tags: ['finally', 'exception', 'predict output', 'System.exit', 'try-catch']
+},
+{
+  id: 'core-024',
+  topic: 'core',
+  level: 'senior',
+  q: 'Dự đoán output: thứ tự chạy static block, instance block, field initializer và constructor khi có kế thừa. Vì sao gọi method overridable trong constructor lớp cha lại nguy hiểm?',
+  a: `**Tóm tắt:** Static block và static field chạy **một lần**, khi class được khởi tạo lần đầu, theo thứ tự cha trước con. Mỗi lần {{new}}: constructor con gọi {{super()}} trước; sau khi constructor cha xong mới chạy field initializer và instance block của lớp con (theo thứ tự xuất hiện trong code), rồi tới thân constructor con. Vì vậy method bị override mà được gọi từ constructor cha sẽ thấy field lớp con **chưa được gán** (null/0).
+
+### Dự đoán output: cơ bản
+~~~java
+class Parent {
+    static { System.out.println("Parent static"); }
+    { System.out.println("Parent instance block"); }
+    Parent() { System.out.println("Parent constructor"); }
+}
+class Child extends Parent {
+    static { System.out.println("Child static"); }
+    { System.out.println("Child instance block"); }
+    Child() { System.out.println("Child constructor"); }
+}
+new Child();
+new Child();
+~~~
+~~~text
+Parent static
+Child static
+Parent instance block
+Parent constructor
+Child instance block
+Child constructor
+Parent instance block
+Parent constructor
+Child instance block
+Child constructor
+~~~
+Vì sao: muốn khởi tạo {{Child}} thì JVM phải khởi tạo {{Parent}} trước (JLS 12.4). Lần {{new}} thứ hai class đã được khởi tạo nên không còn dòng static. Compiler chép field initializer và instance block vào **mỗi constructor**, ngay sau lệnh gọi {{super(...)}}, nên chúng luôn chạy sau constructor cha.
+
+### Bẫy 1: method override gọi từ constructor cha
+~~~java
+class Base {
+    Base() { init(); }                 // gọi method có thể bị override
+    void init() { }
+}
+class Derived extends Base {
+    private String name = "derived";   // chỉ được gán SAU khi Base() xong
+    private final int size = 10;       // constant variable: compiler inline số 10
+    @Override void init() {
+        System.out.println(name + " " + size);
+    }
+}
+new Derived();
+// Output: null 10
+~~~
+{{name}} vẫn là giá trị mặc định null vì initializer của {{Derived}} chưa chạy. {{size}} in ra 10 vì nó là {{final}} primitive gán bằng hằng compile-time, nên mọi chỗ dùng đều được thay bằng số 10. Bỏ {{final}} thì sẽ in {{null 0}}.
+
+### Bẫy 2: thứ tự static field
+~~~java
+class Config {
+    static Config INSTANCE = new Config();   // chạy trước
+    static int counter = 0;                  // chạy sau, ghi đè
+    Config() { counter++; }
+}
+System.out.println(Config.counter);          // Output: 0
+~~~
+Khi khởi tạo class, mọi static field có giá trị mặc định (counter = 0). Dòng 1 tạo object và tăng counter lên 1, sau đó dòng 2 gán lại counter = 0. Đổi thứ tự hai dòng thì output là 1.
+
+### Khi nào class được khởi tạo
+- Lần đầu {{new}}, gọi static method, đọc/ghi static field (không phải hằng), {{Class.forName}}, hoặc khởi tạo lớp con.
+- Đọc một {{static final}} hằng compile-time (ví dụ {{static final int MAX = 5}}) **không** kích hoạt static block, vì giá trị đã được inline vào class gọi.
+- Đây là nền tảng của pattern Holder: {{static class Holder}} chứa instance singleton, được khởi tạo lazy và thread-safe nhờ JVM khoá quá trình class init.
+
+### Câu trả lời sai phổ biến
+- "Instance block chạy trước constructor cha": sai, nó chạy sau {{super()}}.
+- "Static block chạy mỗi lần new": sai, chỉ một lần cho mỗi class loader.
+- Cho rằng {{final}} field luôn có giá trị khi được gọi từ constructor cha: chỉ đúng với hằng compile-time.
+
+### Pitfall production
+- Lớp cha gọi {{init()}} hoặc {{validate()}} trong constructor, lớp con override và dùng field chưa gán, gây NPE khó hiểu. Effective Java khuyên: constructor không được gọi method overridable (trực tiếp hay gián tiếp).
+- Exception trong static block làm lần đầu thấy {{ExceptionInInitializerError}}, các lần sau thấy {{NoClassDefFoundError}}. Ai chỉ đọc log mới nhất sẽ tưởng thiếu jar.
+- Hai class có static init phụ thuộc vòng nhau và được khởi tạo từ hai thread khác nhau có thể deadlock ngay lúc khởi động.
+
+> Senior tip: giữ static block thật mỏng (không gọi network/DB, không đọc config phức tạp). Trong Spring, dùng constructor injection và {{@PostConstruct}} thay vì logic trong static/instance block; khi gặp {{NoClassDefFoundError}} trên production, hãy tìm {{ExceptionInInitializerError}} đầu tiên trong log.`,
+  follow: [
+    'Vì sao static nested Holder là cách lazy singleton thread-safe mà không cần {{synchronized}}?',
+    'Phân biệt {{ExceptionInInitializerError}} và {{NoClassDefFoundError}} khi điều tra lỗi khởi động.',
+    'Record và enum có thứ tự khởi tạo đặc biệt gì không?'
+  ],
+  tags: ['initialization order', 'static block', 'constructor', 'predict output', 'class loading']
+},
+{
+  id: 'core-025',
+  topic: 'core',
+  level: 'senior',
+  q: 'Stack vs heap trong JVM: biến local, object, reference, static field và String pool nằm ở đâu? {{StackOverflowError}} xảy ra khi nào trên production và xử lý thế nào?',
+  a: `**Tóm tắt:** Mỗi thread có một **JVM stack** riêng gồm các frame; mỗi lần gọi method sinh một frame chứa biến local (primitive và **reference**) và operand stack, method return thì frame bị huỷ. Mọi **object** (kể cả mảng và field bên trong object) nằm trên **heap** dùng chung, do GC quản lý. Static field nằm cùng đối tượng {{Class}} trên heap, metadata của class nằm ở Metaspace, String pool nằm trên heap từ Java 7. {{StackOverflowError}} xảy ra khi chuỗi lời gọi sâu vượt quá kích thước stack ({{-Xss}}), thường do đệ quy vô hạn.
+
+### Ví dụ: cái gì nằm ở đâu
+~~~java
+class TransferService {
+    static final Map<String, BigDecimal> LIMITS = new HashMap<>(); // reference trong Class mirror, map trên heap
+
+    void transfer(Account from, long amount) {   // 'from': reference, nằm trong frame
+        int fee = 1_000;                          // primitive local: nằm trong frame
+        Receipt r = new Receipt(amount, fee);     // 'r' trong frame, object Receipt trên heap
+        from.debit(amount + fee);                 // frame mới cho debit() được push
+    }   // frame bị pop: fee và r biến mất; Receipt thành rác nếu không ai giữ reference
+}
+~~~
+Lưu ý: field {{int}} của một object nằm trên **heap** cùng object đó, không phải trên stack.
+
+### So sánh
+| | Stack (mỗi thread) | Heap (dùng chung) |
+|---|---|---|
+| Chứa gì | Frame: biến local, reference, operand stack | Object, mảng, field của object, String pool |
+| Vòng đời | Theo lời gọi method (LIFO) | Đến khi không còn reference và GC thu hồi |
+| Kích thước | {{-Xss}} (Linux 64-bit mặc định khoảng 1 MB) | {{-Xms}}/{{-Xmx}} |
+| Lỗi khi hết | {{StackOverflowError}} | {{OutOfMemoryError: Java heap space}} |
+| Thread-safety | Biến local tự nhiên thread-confined | Cần đồng bộ khi chia sẻ |
+
+### Vì sao thiết kế như vậy
+- Stack cấp phát/giải phóng chỉ bằng dịch con trỏ, cực rẻ, và không cần GC; nhưng kích thước phải biết theo method và sống ngắn.
+- Object có vòng đời không đoán trước (được trả về, lưu vào cache) nên phải nằm ở vùng chung có GC.
+- JIT có **escape analysis**: object không thoát khỏi method có thể được scalar replacement (tách field thành biến local) nên không cấp phát trên heap. Đây là tối ưu, không phải đảm bảo.
+- Virtual thread (Java 21): khi bị unmount, stack của nó được lưu thành các chunk object trên heap, nhờ vậy tạo hàng triệu virtual thread được.
+
+### StackOverflowError trên production
+- Entity JPA hai chiều ({{Order}} có list {{OrderItem}}, {{OrderItem}} trỏ ngược lại {{Order}}) dùng Lombok {{@Data}}: {{toString()}}/{{hashCode()}} gọi nhau vô hạn. Jackson serialize quan hệ hai chiều cũng vậy.
+- Đệ quy trên dữ liệu do người dùng kiểm soát: cây danh mục sâu, JSON lồng nhau hàng nghìn tầng, regex có backtracking lớn.
+- Xử lý: sửa thuật toán thành vòng lặp + {{ArrayDeque}} làm stack tường minh; loại field quan hệ khỏi {{toString}}/{{equals}}; dùng {{@JsonManagedReference}}/{{@JsonBackReference}} hoặc DTO; giới hạn độ sâu input. Tăng {{-Xss}} chỉ là giải pháp tạm và tốn bộ nhớ nhân với số thread.
+
+### Câu trả lời sai phổ biến
+- "Primitive luôn nằm trên stack": sai, primitive là field của object thì nằm trên heap.
+- "Static nằm trên stack" hoặc "String pool nằm trong PermGen": PermGen đã bị bỏ từ Java 8, String pool chuyển lên heap từ Java 7.
+- "Java truyền object theo reference": Java luôn pass-by-value; giá trị được copy là reference.
+
+> Senior tip: khi thấy {{StackOverflowError}}, đọc stack trace để tìm đoạn lặp lại (thường là {{toString}} hoặc {{hashCode}} lặp xen kẽ giữa 2 class). Đừng bắt {{StackOverflowError}} để xử lý tiếp, vì trạng thái lúc đó có thể dở dang. Với {{OutOfMemoryError: unable to create native thread}}, nguyên nhân là quá nhiều thread (mỗi thread tốn stack riêng) chứ không phải thiếu heap.`,
+  follow: [
+    'Escape analysis và scalar replacement hoạt động thế nào? Làm sao biết nó có xảy ra?',
+    'Metaspace khác PermGen ở đâu? Khi nào gặp {{OutOfMemoryError: Metaspace}}?',
+    'Vì sao virtual thread vẫn có thể bị pin vào carrier thread trong Java 21?'
+  ],
+  tags: ['stack', 'heap', 'StackOverflowError', 'JVM memory', 'String pool']
+},
+{
+  id: 'core-026',
+  topic: 'core',
+  level: 'lead',
+  q: 'Access modifier: {{protected}} và package-private thực sự hoạt động thế nào (kể cả bẫy khi truy cập qua reference kiểu cha)? Vì sao field nên {{private}}, và bạn dùng visibility để giữ ranh giới module trong codebase lớn thế nào?',
+  a: `**Tóm tắt:** Có 4 mức: {{private}} (chỉ trong class), package-private/không ghi gì (cùng package), {{protected}} (cùng package **cộng** lớp con ở package khác, nhưng lớp con chỉ truy cập được qua reference kiểu của chính nó), {{public}} (mọi nơi, nếu module export package). Field nên {{private}} để class tự giữ invariant và đổi được cách lưu trữ mà không làm vỡ code khác. Ở mức kiến trúc, package-private là công cụ rẻ nhất để giấu implementation của một module nghiệp vụ.
+
+### Bảng truy cập
+| Modifier | Cùng class | Cùng package | Lớp con khác package | Nơi khác |
+|---|---|---|---|---|
+| private | Có | Không | Không | Không |
+| (package-private) | Có | Có | Không | Không |
+| protected | Có | Có | Có (qua kiểu của chính lớp con) | Không |
+| public | Có | Có | Có | Có |
+
+Điều nhiều người không biết: {{protected}} **rộng hơn** package-private, vì nó bao gồm cả cùng package.
+
+### Bẫy protected khi khác package (JLS 6.6.2)
+~~~java
+package com.bank.core;
+public class Account {
+    protected long balance;
+    void audit() { }                         // package-private
+}
+
+package com.bank.saving;
+public class SavingAccount extends Account {
+    void applyInterest(Account other, SavingAccount same) {
+        this.balance += 10;                  // OK: qua chính object này
+        same.balance += 10;                  // OK: reference kiểu SavingAccount
+        // other.balance += 10;              // LỖI compile: Account không phải kiểu của mình
+        // audit();                          // LỖI compile: package-private, khác package
+    }
+}
+~~~
+Vì sao: {{protected}} nghĩa là "lớp con được dùng phần kế thừa **của chính nó**", không phải "được đọc protected field của mọi object kiểu cha". Nếu không, bất kỳ ai cũng có thể viết một lớp con giả để đọc state của object khác.
+
+### Vì sao field nên private
+- **Invariant**: chỉ method của class mới đổi được state, nên kiểm tra nằm một chỗ ({{balance >= 0}}).
+- **Đổi representation**: đổi {{long cents}} sang {{BigDecimal}} mà caller không phải sửa.
+- **Thread-safety**: class không thể đảm bảo đồng bộ hay visibility cho field mà ai cũng ghi trực tiếp được.
+- **Hibernate proxy**: trong {{equals}} mà đọc {{other.id}} trực tiếp, nếu {{other}} là lazy proxy thì field của proxy là null; gọi {{other.getId()}} mới đúng. Đây là bug thật hay gặp khi so sánh entity.
+
+### Dùng visibility làm ranh giới module (góc nhìn Lead)
+- Tổ chức **package-by-feature** ({{payment}}, {{loan}}, {{customer}}) thay vì package-by-layer ({{controller}}, {{service}}, {{repository}}). Khi đó chỉ class facade/API là {{public}}, còn repository, mapper, helper để package-private, nên module khác không thể gọi tắt vào repository của bạn.
+- Spring vẫn inject được bean package-private, và test đặt cùng package vẫn test được.
+- Dùng ArchUnit (hoặc Spring Modulith) để viết test kiểm tra rule "module loan không được phụ thuộc vào package internal của payment" trong CI.
+- Java 9 JPMS: {{public}} không còn nghĩa là ai cũng thấy; package phải được {{exports}} trong {{module-info.java}}. Từ Java 16/17, JDK chặn mặc định reflection vào API nội bộ (JEP 403), nên các thư viện cũ dùng {{setAccessible}} vào {{sun.*}} có thể lỗi khi nâng cấp.
+
+### Câu trả lời sai phổ biến
+- "protected chỉ dành cho lớp con": sai, cùng package cũng truy cập được.
+- "Không ghi modifier thì mặc định là private" (nhầm với C#/C++ class member).
+- "Field private + getter/setter public là đủ encapsulation": setter cho mọi field vẫn phá invariant.
+
+### Pitfall trong Spring
+- {{@Transactional}} hoặc {{@Cacheable}} đặt trên method {{private}} không bao giờ có hiệu lực, vì proxy không chặn được lời gọi đó; gọi nội bộ qua {{this}} cũng bỏ qua proxy. Từ Spring 6, proxy dạng class (CGLIB) hỗ trợ thêm method protected và package-private, nhưng private thì vẫn không.
+
+> Senior tip: trong code review, mặc định mọi class mới là package-private và chỉ nâng lên {{public}} khi có lý do. Với monolith lớn đang tính tách microservice, việc siết visibility theo package-by-feature trước là bước rẻ nhất để lộ ra phụ thuộc chéo và chuẩn bị cắt module.`,
+  follow: [
+    'Package-by-feature và package-by-layer: bạn chọn cái nào và vì sao?',
+    'Làm sao test method package-private mà không phải mở thành public?',
+    'Spring Modulith hoặc ArchUnit giúp giữ ranh giới module như thế nào?'
+  ],
+  tags: ['access modifier', 'protected', 'package-private', 'encapsulation', 'modularity']
+},
+{
+  id: 'collections-015',
+  topic: 'collections',
+  level: 'senior',
+  q: 'So sánh {{HashMap}}, {{Hashtable}}, {{Collections.synchronizedMap}} và {{ConcurrentHashMap}}. Trong service xử lý đồng thời bạn chọn cái nào, và vì sao "đã thread-safe" vẫn có thể sai?',
+  a: `**Tóm tắt:** {{HashMap}} không thread-safe, cho phép một key null và nhiều value null. {{Hashtable}} là class legacy từ Java 1.0, mọi method {{synchronized}} trên chính object, không cho null. {{synchronizedMap}} là wrapper bọc một map bất kỳ, khoá một mutex cho mọi thao tác; về bản chất giống {{Hashtable}}. {{ConcurrentHashMap}} khoá theo từng bin (CAS + {{synchronized}} trên node đầu), đọc không khoá, có thao tác nguyên tử {{compute}}/{{merge}}, không cho null. Trong code mới nên dùng {{ConcurrentHashMap}}; nhưng thread-safe từng method không có nghĩa là chuỗi thao tác check-then-act của bạn cũng an toàn.
+
+### Bảng so sánh
+| | HashMap | Hashtable | synchronizedMap | ConcurrentHashMap |
+|---|---|---|---|---|
+| Thread-safe | Không | Có (1 lock) | Có (1 lock) | Có (lock theo bin) |
+| Null key/value | 1 key null, nhiều value null | Không | Theo map gốc | Không |
+| Đọc đồng thời | Không an toàn | Bị khoá | Bị khoá | Không khoá |
+| Iterator | Fail-fast | Enumeration/fail-fast | Fail-fast, phải tự synchronized | Weakly consistent, không ném CME |
+| Thao tác nguyên tử | Không | Không (ngoài từng method) | Không | {{putIfAbsent}}, {{compute}}, {{merge}} |
+| Ghi chú | Mặc định cho code đơn luồng | Legacy, tránh dùng | Bọc TreeMap/LinkedHashMap khi cần | Lựa chọn mặc định cho đa luồng |
+
+### Vì sao HashMap dùng chung giữa thread là nguy hiểm
+Hai thread cùng {{put}} có thể ghi đè node của nhau (mất dữ liệu), hoặc thấy {{size}} sai trong lúc resize. Ở Java 7, resize đồng thời còn có thể tạo vòng lặp trong linked list và làm CPU 100%. Java 8 đã đổi cách chuyển node nên không còn vòng lặp kiểu đó, nhưng vẫn mất dữ liệu.
+
+### "Thread-safe" vẫn sai: compound action
+~~~java
+Map<String, Integer> counts = Collections.synchronizedMap(new HashMap<>());
+
+// SAI: hai thread cùng thấy chưa có key, cùng put 1 -> mất một lần đếm
+if (!counts.containsKey(user)) counts.put(user, 1);
+else counts.put(user, counts.get(user) + 1);
+
+// ĐÚNG: một thao tác nguyên tử trên ConcurrentHashMap
+ConcurrentMap<String, Integer> safe = new ConcurrentHashMap<>();
+safe.merge(user, 1, Integer::sum);
+
+// Duyệt synchronizedMap: bắt buộc tự khoá trên chính wrapper
+synchronized (counts) {
+    for (var e : counts.entrySet()) { /* ... */ }
+}
+~~~
+Mỗi method riêng lẻ có khoá, nhưng giữa {{containsKey}} và {{put}} thread khác vẫn chen vào được.
+
+### Vì sao ConcurrentHashMap không cho null
+Nếu {{get(k)}} trả về null, trong môi trường đồng thời ta không thể phân biệt "không có key" với "key có value null" (gọi thêm {{containsKey}} thì kết quả có thể đã thay đổi). Cấm null loại bỏ sự mơ hồ này.
+
+### Câu trả lời sai phổ biến
+- "ConcurrentHashMap chia 16 segment": đó là Java 7; từ Java 8 khoá theo bin.
+- "synchronizedMap nhanh hơn Hashtable": cả hai đều một lock toàn cục, hiệu năng tương đương.
+- "Dùng ConcurrentHashMap là hết race condition": vẫn sai nếu dùng {{get}} rồi {{put}} thay vì {{compute}}/{{merge}}.
+
+### Pitfall production
+- Gọi API ngoài hoặc query DB bên trong {{computeIfAbsent}}: bin bị khoá suốt thời gian đó, các thread khác ghi vào cùng bin bị chặn. Cache nặng nên dùng Caffeine.
+- Trong hàm mapping của {{computeIfAbsent}} lại sửa chính map đó có thể ném {{IllegalStateException: Recursive update}} hoặc treo.
+- {{size()}} chỉ là ước lượng khi đang ghi; dùng {{mappingCount()}} cho map lớn và đừng dựa vào nó để ra quyết định nghiệp vụ.
+
+> Senior tip: khi review code thấy {{Collections.synchronizedMap}} hay {{Hashtable}} trong code mới, gần như luôn thay được bằng {{ConcurrentHashMap}} và {{merge}}/{{compute}}. Nếu cần map có thứ tự và đồng thời, dùng {{ConcurrentSkipListMap}} thay vì bọc {{TreeMap}} bằng một lock toàn cục.`,
+  follow: [
+    'Vì sao iterator của {{ConcurrentHashMap}} không ném {{ConcurrentModificationException}}? Nó thấy được dữ liệu nào?',
+    'Khi nào {{ConcurrentHashMap}} vẫn chưa đủ và bạn cần lock bên ngoài hoặc cache như Caffeine?',
+    'Đếm số request theo user ở throughput cao: {{merge}} hay {{LongAdder}} trong map?'
+  ],
+  tags: ['HashMap', 'Hashtable', 'ConcurrentHashMap', 'synchronizedMap', 'thread-safety']
+},
+{
+  id: 'collections-016',
+  topic: 'collections',
+  level: 'senior',
+  q: '{{HashSet}} hoạt động thế nào bên trong? Chuyện gì xảy ra nếu bạn sửa field tham gia {{hashCode}} của một object sau khi đã đưa nó vào {{HashSet}} hoặc làm key của {{HashMap}}?',
+  a: `**Tóm tắt:** {{HashSet}} thực chất là một {{HashMap}} bên trong: phần tử là key, value là một object giả dùng chung ({{PRESENT}}). {{add}} trả về true khi {{map.put}} trả về null (key chưa có). Vì vậy mọi quy tắc của {{HashMap}} đều áp dụng: tìm bucket theo {{hashCode}}, xác nhận bằng {{equals}}. Nếu sửa field tham gia {{hashCode}} sau khi đã add, object bị "lạc" trong bucket cũ: {{contains}} và {{remove}} đều trả về false, add lại thì thành bản ghi trùng, và object cũ không bao giờ được xoá (memory leak).
+
+### Bên trong
+~~~java
+// Rút gọn từ mã nguồn JDK
+public class HashSet<E> {
+    private transient HashMap<E, Object> map;
+    private static final Object PRESENT = new Object();
+
+    public boolean add(E e)      { return map.put(e, PRESENT) == null; }
+    public boolean contains(Object o) { return map.containsKey(o); }
+    public boolean remove(Object o)   { return map.remove(o) == PRESENT; }
+}
+~~~
+- {{LinkedHashSet}} dựa trên {{LinkedHashMap}} nên giữ thứ tự chèn.
+- {{TreeSet}} dựa trên {{TreeMap}}, so trùng bằng {{compareTo}}/{{Comparator}} chứ **không** dùng {{equals}}/{{hashCode}}. Ví dụ {{new BigDecimal("2.0")}} và {{new BigDecimal("2.00")}}: {{HashSet}} giữ 2 phần tử (equals so cả scale), {{TreeSet}} chỉ giữ 1 (compareTo bằng 0).
+
+### Dự đoán output: key bị đổi sau khi add
+~~~java
+class Key {
+    String no;
+    Key(String no) { this.no = no; }
+    @Override public boolean equals(Object o) { return o instanceof Key k && k.no.equals(no); }
+    @Override public int hashCode() { return no.hashCode(); }
+}
+
+Set<Key> set = new HashSet<>();
+Key a = new Key("001");
+set.add(a);
+a.no = "002";                                  // đổi field dùng trong hashCode
+
+System.out.println(set.contains(a));           // false
+System.out.println(set.contains(new Key("001"))); // false
+System.out.println(set.remove(a));             // false
+set.add(a);
+System.out.println(set.size());                // 2
+~~~
+Vì sao: node trong bucket lưu **hash cũ** (tính từ "001"). Tìm {{a}} thì hash mới (từ "002") không khớp với node đó. Tìm {{new Key("001")}} thì đúng bucket và hash khớp, nhưng {{equals}} so "001" với field hiện tại "002" nên vẫn false. Object vẫn nằm trong set nhưng không ai tìm thấy, và add lại tạo node thứ hai trỏ cùng object.
+
+### Tình huống thật hay gặp
+- **JPA entity** có {{hashCode}} dựa trên id tự sinh: thêm entity mới (id null) vào {{Set<OrderItem>}}, sau {{persist}} id được gán, hash đổi, rồi {{remove}} không xoá được, orphanRemoval không chạy. Cách phổ biến: dùng business key bất biến, hoặc cho {{hashCode}} trả về hằng theo class và {{equals}} so id khi id khác null.
+- Dùng {{List}} hay {{StringBuilder}} mutable làm key của cache: ai đó sửa list sau khi put là cache không bao giờ hit và phình to dần.
+- Lombok {{@Data}} sinh {{hashCode}} theo mọi field: entity bị sửa field là lạc khỏi set.
+
+### Cách phòng tránh
+| Cách | Ghi chú |
+|---|---|
+| Key bất biến ({{record}}, String, field final) | Lựa chọn tốt nhất |
+| {{hashCode}} chỉ dựa trên field không đổi | Ví dụ mã tài khoản, không dùng số dư |
+| Muốn đổi key: remove, sửa, rồi add lại | Phải làm khi object chưa đổi |
+| Defensive copy khi nhận key từ ngoài | {{List.copyOf}} trước khi dùng làm key |
+
+### Câu trả lời sai phổ biến
+- "HashSet dùng equals để kiểm tra trùng": chưa đủ, nó dùng {{hashCode}} chọn bucket trước, sau đó mới {{equals}}.
+- "Sửa key thì set tự cập nhật": collection không biết object bị sửa.
+- "TreeSet cũng dựa vào equals": sai, nó dựa vào compareTo.
+
+> Senior tip: khi gặp bug "đã add vào set mà contains trả false" hoặc memory leak ở cache map, việc đầu tiên là kiểm tra key có bị sửa sau khi put không. Quy tắc team nên có: mọi class dùng làm key của Map/Set phải bất biến, tốt nhất là {{record}}.`,
+  follow: [
+    'Viết {{equals}}/{{hashCode}} cho JPA entity thế nào để an toàn với Set và Hibernate proxy?',
+    'Vì sao {{TreeSet}} với comparator không nhất quán với {{equals}} lại vi phạm contract của {{Set}}?',
+    'Nếu {{hashCode}} luôn trả về cùng một hằng số thì {{HashSet}} chạy thế nào từ Java 8?'
+  ],
+  tags: ['HashSet', 'hashCode', 'mutable key', 'HashMap', 'JPA entity']
+},
+{
+  id: 'collections-017',
+  topic: 'collections',
+  level: 'mid',
+  q: 'Bạn cần xoá các phần tử thoả điều kiện khỏi một {{ArrayList}} (hoặc {{Map}}) đang duyệt. For-each, {{Iterator.remove}}, {{removeIf}} và vòng for theo index khác nhau thế nào? Dự đoán output của vài trường hợp bẫy.',
+  a: `**Tóm tắt:** Gọi {{list.remove}} trong vòng for-each thường ném {{ConcurrentModificationException}} vì iterator phát hiện {{modCount}} bị đổi ngoài nó. Cách đúng: {{Iterator.remove()}} khi cần logic phức tạp, {{removeIf}} (Java 8+) là ngắn gọn và nhanh nhất với {{ArrayList}}, còn map thì dùng {{map.entrySet().removeIf(...)}}. Vòng for theo index thì phải duyệt ngược hoặc chỉnh index cẩn thận.
+
+### Vì sao for-each ném CME
+For-each trên {{List}} được compiler dịch thành {{Iterator}}. {{ArrayList}} có biến {{modCount}} tăng mỗi lần thay đổi cấu trúc; iterator lưu {{expectedModCount}} khi tạo và so lại trong mỗi lần {{next()}}. Gọi {{list.remove}} trực tiếp làm {{modCount}} lệch, lần {{next()}} kế tiếp ném CME. Lỗi này xảy ra ngay cả với **một thread**.
+
+### Dự đoán output: hai trường hợp bẫy
+~~~java
+List<String> l1 = new ArrayList<>(List.of("a", "b", "c"));
+for (String s : l1) {
+    if (s.equals("a")) l1.remove(s);
+}
+// Ném ConcurrentModificationException
+
+List<String> l2 = new ArrayList<>(List.of("a", "b", "c"));
+for (String s : l2) {
+    if (s.equals("b")) l2.remove(s);
+}
+System.out.println(l2);
+// Output: [a, c]   -> KHÔNG ném lỗi, và "c" không bao giờ được kiểm tra
+~~~
+Vì sao trường hợp 2 không lỗi: sau khi xoá "b", size còn 2, con trỏ {{cursor}} của iterator cũng là 2. {{hasNext()}} chỉ kiểm tra {{cursor != size}} nên trả về false và vòng lặp kết thúc trước khi {{next()}} kịp kiểm tra {{modCount}}. Code "chạy được" nhưng bỏ sót phần tử cuối, một bug im lặng nguy hiểm hơn cả CME.
+
+### Các cách đúng
+~~~java
+// 1. Iterator.remove: xoá phần tử vừa next(), iterator tự cập nhật trạng thái
+Iterator<Order> it = orders.iterator();
+while (it.hasNext()) {
+    Order o = it.next();
+    if (o.isExpired()) {
+        audit.log(o);            // cần logic thêm trước khi xoá
+        it.remove();
+    }
+}
+
+// 2. removeIf: gọn và O(n) với ArrayList
+orders.removeIf(Order::isExpired);
+
+// 3. Map: xoá trên view entrySet / values
+balances.entrySet().removeIf(e -> e.getValue().signum() == 0);
+
+// 4. Index: duyệt ngược để việc dịch phần tử không làm bỏ sót
+for (int i = list.size() - 1; i >= 0; i--) {
+    if (shouldRemove(list.get(i))) list.remove(i);
+}
+~~~
+
+### So sánh
+| Cách | Độ phức tạp với ArrayList | Ghi chú |
+|---|---|---|
+| for-each + list.remove | CME hoặc bỏ sót | Không bao giờ dùng |
+| Iterator.remove | O(n) mỗi lần xoá, tổng có thể O(n^2) | Linh hoạt, dùng được với LinkedList (O(1)) |
+| removeIf | O(n) tổng, dịch mảng một lần | Lựa chọn mặc định |
+| for index xuôi + remove(i) | Bỏ sót phần tử kế tiếp nếu quên i-- | Dễ sai |
+| stream().filter().toList() | O(n), tạo list mới | Khi muốn giữ list gốc |
+
+### Câu trả lời sai phổ biến
+- "CME chỉ xảy ra khi nhiều thread": sai, một thread vẫn bị.
+- "Đổi sang {{CopyOnWriteArrayList}} là xong": nó không ném CME vì duyệt trên snapshot, nhưng mỗi lần remove copy toàn bộ mảng, và {{iterator().remove()}} của nó ném {{UnsupportedOperationException}}.
+- "CME luôn được ném khi sửa": tài liệu JDK nói fail-fast chỉ là best-effort, như ví dụ "b" ở trên.
+
+> Senior tip: trong code review, thấy {{remove}} bên trong for-each là chặn ngay. Với batch lớn (hàng trăm nghìn phần tử), chuyển từ vòng {{Iterator.remove}} sang {{removeIf}} có thể giảm thời gian từ vài giây xuống vài mili-giây vì tránh dịch mảng lặp lại.`,
+  follow: [
+    'Vì sao {{ConcurrentHashMap}} cho phép xoá trong lúc duyệt mà không ném CME?',
+    'Sửa value (không đổi cấu trúc) trong lúc duyệt {{HashMap}} có ném CME không?',
+    '{{removeIf}} của {{ArrayList}} được cài đặt thế nào để đạt O(n)?'
+  ],
+  tags: ['ConcurrentModificationException', 'Iterator', 'removeIf', 'ArrayList', 'predict output']
+},
+{
+  id: 'collections-018',
+  topic: 'collections',
+  level: 'senior',
+  q: '{{Arrays.asList}} có những bẫy gì (fixed-size, là view của mảng, mảng primitive)? Dự đoán output và cho biết bạn chọn gì thay thế trong từng tình huống.',
+  a: `**Tóm tắt:** {{Arrays.asList}} không tạo {{java.util.ArrayList}} mà trả về một class nội bộ {{Arrays$ArrayList}} bọc **chính mảng gốc**. Vì vậy nó có kích thước cố định ({{add}}/{{remove}} ném {{UnsupportedOperationException}}), {{set}} ghi xuyên xuống mảng và ngược lại, và truyền vào mảng primitive thì nhận được list **một phần tử** là cả mảng. Cần list sửa được thì bọc {{new ArrayList<>(...)}}; cần bất biến thì dùng {{List.of}}/{{List.copyOf}}.
+
+### Dự đoán output
+~~~java
+String[] arr = {"b", "a", "c"};
+List<String> list = Arrays.asList(arr);
+
+list.set(0, "z");
+System.out.println(arr[0]);                 // z          (list ghi xuyên xuống mảng)
+arr[1] = "y";
+System.out.println(list);                   // [z, y, c]  (mảng đổi thì list thấy ngay)
+Collections.sort(list);
+System.out.println(Arrays.toString(arr));   // [c, y, z]  (sort list là sort mảng)
+list.add("d");                              // UnsupportedOperationException
+
+int[] nums = {1, 2, 3};
+System.out.println(Arrays.asList(nums).size());    // 1 -> kiểu là List<int[]>
+Integer[] boxed = {1, 2, 3};
+System.out.println(Arrays.asList(boxed).size());   // 3
+~~~
+
+### Vì sao lại như vậy
+- **View, không phải copy**: {{Arrays$ArrayList}} chỉ giữ reference tới mảng, nên tạo list là O(1) và không tốn bộ nhớ. Đổi lại, mảng không thể giãn ra, nên mọi thao tác đổi kích thước bị cấm. Class này kế thừa {{AbstractList}}, mà {{add}}/{{remove}} mặc định ở đó ném UOE; {{clear()}} hay {{removeIf}} khớp phần tử nào đó cũng ném UOE vì cuối cùng gọi {{remove}}.
+- **Mảng primitive**: chữ ký là {{asList(T... a)}}; generic không nhận primitive, nên {{int[]}} không thể khớp thành {{T[]}} mà chính {{int[]}} trở thành một {{T}}. Kết quả là {{List<int[]>}} có 1 phần tử. Cần list số thì dùng {{Arrays.stream(nums).boxed().toList()}} hoặc khai báo {{Integer[]}}.
+- **Null**: {{Arrays.asList}} chấp nhận null, còn {{List.of}} ném NPE khi tạo, và cả {{List.of(...).contains(null)}} cũng ném NPE.
+
+### Chọn gì thay thế
+| Nhu cầu | Dùng | Ghi chú |
+|---|---|---|
+| List sửa được, thêm/xoá | {{new ArrayList<>(Arrays.asList(arr))}} | Copy, tách khỏi mảng |
+| List bất biến, không null | {{List.of(...)}} / {{List.copyOf(c)}} | Ném UOE với cả {{set}} |
+| Xem mảng như list, có sort/set | {{Arrays.asList(arr)}} | Chấp nhận việc ghi xuyên |
+| Từ mảng primitive | {{IntStream.of(...).boxed().toList()}} | Hoặc thư viện primitive collection |
+
+### Câu trả lời sai phổ biến
+- "Arrays.asList trả về ArrayList": đúng tên class nhưng là class lồng trong {{Arrays}}, không phải {{java.util.ArrayList}}.
+- "Arrays.asList là immutable": sai, {{set}} và {{sort}} vẫn chạy và còn sửa luôn mảng gốc.
+- "Arrays.asList(intArray) cho ra List<Integer>": sai, ra {{List<int[]>}}.
+
+### Pitfall production
+- Hàm A trả về {{Arrays.asList(...)}}, hàm B ở module khác nhận {{List}} và gọi {{add}}: test của A pass, lỗi chỉ xuất hiện ở luồng kết hợp trên production với {{UnsupportedOperationException}} rất khó hiểu.
+- Truyền {{Arrays.asList(arr)}} cho một component rồi sau đó tái sử dụng hoặc sửa mảng {{arr}} (buffer dùng lại): component kia đột nhiên thấy dữ liệu thay đổi.
+- Gán {{Arrays.asList(...)}} vào collection của JPA entity lúc khởi tạo, sau này code nghiệp vụ gọi {{getItems().add(...)}} thì vỡ. Khởi tạo collection của entity bằng {{new ArrayList<>()}}.
+
+> Senior tip: quy ước API nội bộ: method public trả về {{List}} thì hoặc là bất biến rõ ràng ({{List.copyOf}}), hoặc ghi rõ trong Javadoc là caller được sửa. Đừng trả về {{Arrays.asList}} ra ngoài ranh giới module, vì nó là trạng thái "nửa sửa được" khó đoán nhất.`,
+  follow: [
+    '{{List.of}} khác {{Collections.unmodifiableList}} ở điểm nào khi list gốc thay đổi?',
+    'Vì sao {{Arrays.asList(1, 2, 3).contains(1L)}} trả về false?',
+    'Làm sao chuyển {{int[]}} sang {{List<Integer>}} hiệu quả với mảng vài triệu phần tử?'
+  ],
+  tags: ['Arrays.asList', 'UnsupportedOperationException', 'immutable', 'List.of', 'predict output']
+},
+{
+  id: 'modern-011',
+  topic: 'modern',
+  level: 'senior',
+  q: '{{Stream.toList()}} (Java 16) khác {{collect(Collectors.toList())}} và {{Collectors.toUnmodifiableList()}} thế nào về mutability, null và kiểu trả về? Thay hàng loạt bằng IDE có an toàn không?',
+  a: `**Tóm tắt:** {{collect(Collectors.toList())}} (Java 8) trả về list mà spec **không hứa** gì về kiểu hay mutability (thực tế hiện nay là {{ArrayList}}, sửa được). {{Collectors.toUnmodifiableList()}} (Java 10) trả về list bất biến và **ném NPE nếu có null**. {{Stream.toList()}} (Java 16) trả về list bất biến nhưng **cho phép null**. Thay hàng loạt {{collect(toList())}} bằng {{toList()}} không an toàn: code nào sau đó {{add}}/{{sort}}/{{set}} trên list kết quả sẽ ném {{UnsupportedOperationException}} lúc runtime.
+
+### Dự đoán output
+~~~java
+List<String> a = Stream.of("x", "y").collect(Collectors.toList());
+a.add("z");                 // chạy được (đang là ArrayList), nhưng spec không đảm bảo
+
+List<String> b = Stream.of("x", "y").toList();
+b.add("z");                 // UnsupportedOperationException
+
+List<String> c = Stream.of("x", null).toList();     // OK: [x, null]
+
+List<String> d = Stream.of("x", null)
+        .collect(Collectors.toUnmodifiableList());  // NullPointerException
+~~~
+
+### Bảng so sánh
+| | collect(toList()) | toUnmodifiableList() | Stream.toList() |
+|---|---|---|---|
+| Từ phiên bản | Java 8 | Java 10 | Java 16 |
+| Sửa được | Không đảm bảo (thực tế có) | Không | Không |
+| Phần tử null | Cho phép | NPE | Cho phép |
+| Suy luận kiểu | Theo target type | Theo target type | Cố định theo kiểu phần tử của stream |
+| Độ dài code | Dài | Dài | Ngắn nhất |
+
+### Khác biệt về kiểu trả về (bẫy khi migrate)
+~~~java
+// Compile được: T của collector được suy ra là Number từ target type
+List<Number> ok = Stream.of(1, 2).collect(Collectors.toList());
+
+// Lỗi compile: toList() của Stream<Integer> trả về đúng List<Integer>
+// List<Number> err = Stream.of(1, 2).toList();
+~~~
+{{toList()}} là method của {{Stream<T>}} và trả về {{List<T>}}, nên không có chỗ cho compiler suy luận kiểu rộng hơn. Muốn vậy thì phải {{map}} sang kiểu cha hoặc dùng {{Stream.<Number>of(1, 2)}}.
+
+### Vì sao Java thêm toList()
+- Pattern {{collect(Collectors.toList())}} xuất hiện khắp nơi và dài dòng.
+- Đa số trường hợp list kết quả chỉ để đọc; trả về bất biến giúp tránh bug chia sẻ state.
+- Cho phép null để thay thế được phần lớn code cũ mà không vỡ ngay vì NPE (khác với {{toUnmodifiableList}}).
+
+### Khi nào dùng cái nào
+- Mặc định code mới: {{toList()}}.
+- Cần list sửa được (sẽ sort, add tiếp): {{collect(Collectors.toCollection(ArrayList::new))}}, đảm bảo kiểu rõ ràng thay vì dựa vào hành vi ngầm của {{Collectors.toList()}}.
+- Muốn phát hiện sớm dữ liệu null (ví dụ danh sách mã giao dịch không được null): {{toUnmodifiableList()}}.
+
+### Câu trả lời sai phổ biến
+- "toList() chỉ là cách viết tắt của collect(Collectors.toList())": sai, khác cả mutability lẫn suy luận kiểu.
+- "toList() và toUnmodifiableList() giống hệt": khác ở chỗ xử lý null.
+- "List bất biến thì phần tử cũng bất biến": sai, chỉ cấu trúc list bất biến; object bên trong vẫn sửa được.
+
+### Pitfall production
+- Sonar/IDE gợi ý "Replace with toList()", dev bấm áp dụng cho cả project; một service ở xa gọi {{result.sort(...)}} hoặc {{removeIf}} và nổ UOE trên production, vì test không cover nhánh đó.
+- Trả list bất biến cho Jackson thì không sao, nhưng gán vào collection của JPA entity rồi để code khác gọi {{add}} thì lỗi.
+
+> Senior tip: khi migrate, làm theo từng module và grep các chỗ list kết quả bị sửa ({{add}}, {{sort}}, {{remove}}, {{set}}) trước khi thay. Đưa vào coding convention: "list trả ra từ stream là bất biến; cần sửa thì dùng {{toCollection(ArrayList::new)}}" để ý đồ được thể hiện ngay trong code.`,
+  follow: [
+    'Vì sao {{Collectors.toList()}} không hứa trả về {{ArrayList}}? Điều đó ảnh hưởng gì khi nâng cấp JDK?',
+    '{{Collectors.toMap}} và {{Collectors.toUnmodifiableMap}} xử lý duplicate key và null thế nào?',
+    'Khi nào bạn chủ động muốn list chứa null bị chặn sớm thay vì cho qua?'
+  ],
+  tags: ['Stream.toList', 'Collectors', 'immutable', 'Java 16', 'migration']
+},
+{
+  id: 'modern-012',
+  topic: 'modern',
+  level: 'lead',
+  q: 'Service của bạn cần gọi API core banking/đối tác qua HTTP. {{java.net.http.HttpClient}} (Java 11+) dùng thế nào cho đúng (sync/async, timeout, HTTP/2)? So với RestTemplate, RestClient, WebClient bạn chọn gì và vì sao?',
+  a: `**Tóm tắt:** {{HttpClient}} là HTTP client chuẩn của JDK từ Java 11: immutable, thread-safe, có connection pool bên trong nên **tạo một lần và dùng chung**; hỗ trợ HTTP/2 (tự fallback HTTP/1.1), {{send}} đồng bộ và {{sendAsync}} trả về {{CompletableFuture}}. Mặc định **không có timeout** nên phải đặt {{connectTimeout}} và {{timeout}} cho từng request. Trong ứng dụng Spring Boot 3.2+, tôi chọn {{RestClient}} (có thể chạy trên chính JDK HttpClient) để có message converter, xử lý lỗi và observability; dùng HttpClient trực tiếp cho thư viện hoặc tool không phụ thuộc Spring.
+
+### Dùng HttpClient đúng cách
+~~~java
+private static final HttpClient CLIENT = HttpClient.newBuilder()
+        .version(HttpClient.Version.HTTP_2)        // ưu tiên HTTP/2, server không hỗ trợ thì dùng 1.1
+        .connectTimeout(Duration.ofSeconds(2))     // timeout mở kết nối TCP/TLS
+        .build();                                  // immutable, thread-safe: dùng chung
+
+HttpRequest req = HttpRequest.newBuilder(URI.create("https://core-bank.internal/api/accounts/123"))
+        .timeout(Duration.ofSeconds(5))            // tối đa 5s chờ response, quá thì HttpTimeoutException
+        .header("Accept", "application/json")
+        .GET()
+        .build();
+
+// Sync: ném IOException, InterruptedException; rất hợp với virtual thread
+HttpResponse<String> res = CLIENT.send(req, HttpResponse.BodyHandlers.ofString());
+if (res.statusCode() >= 400) {                     // 4xx/5xx KHÔNG tự ném exception
+    throw new UpstreamException(res.statusCode(), res.body());
+}
+
+// Async: không chặn thread gọi
+CompletableFuture<String> body = CLIENT.sendAsync(req, HttpResponse.BodyHandlers.ofString())
+        .thenApply(HttpResponse::body);
+~~~
+
+### Vì sao phải dùng chung một instance
+Mỗi {{HttpClient}} có connection pool và thread quản lý selector riêng. Tạo mới cho mỗi request làm mất keep-alive (lại bắt tay TLS mỗi lần, tốn hàng chục ms) và có thể rò thread/kết nối. Từ Java 21, {{HttpClient}} implement {{AutoCloseable}} ({{close}}, {{shutdown}}) để giải phóng tài nguyên chủ động khi thật sự cần client ngắn hạn.
+
+### So sánh lựa chọn
+| | JDK HttpClient | RestTemplate | RestClient (Spring 6.1) | WebClient |
+|---|---|---|---|---|
+| Kiểu | Sync + async (CompletableFuture) | Sync | Sync, API fluent | Reactive |
+| Phụ thuộc | Chỉ JDK | Spring | Spring | Spring WebFlux, Reactor |
+| JSON mapping | Tự làm | Có | Có | Có |
+| Lỗi 4xx/5xx | Tự kiểm tra status | Ném exception | {{retrieve()}} ném exception | Ném khi {{retrieve()}} |
+| Observability | Tự làm | Có (Micrometer) | Có | Có |
+| Tình trạng | Chuẩn JDK | Maintenance mode | Khuyến nghị cho code sync mới | Dùng khi đã reactive |
+
+~~~java
+RestClient client = RestClient.builder()
+        .requestFactory(new JdkClientHttpRequestFactory(CLIENT)) // tái dùng JDK HttpClient
+        .baseUrl("https://core-bank.internal")
+        .build();
+
+AccountDto dto = client.get().uri("/api/accounts/{id}", id)
+        .retrieve()                                // 4xx/5xx -> RestClientResponseException
+        .body(AccountDto.class);
+~~~
+
+### Tiêu chí chọn (góc nhìn Lead)
+- Codebase Spring MVC, Java 21 + virtual thread: {{RestClient}} sync là đủ đơn giản và scale tốt; không cần kéo Reactor vào chỉ để gọi HTTP.
+- Cần kiểm soát chi tiết connection pool (max per route, idle eviction): đặt Apache HttpClient 5 làm request factory, vì JDK HttpClient chỉ cấu hình pool qua system property như {{jdk.httpclient.keepalive.timeout}}.
+- Thư viện SDK nội bộ dùng cho nhiều team: JDK HttpClient để không áp đặt phiên bản Spring.
+
+### Câu trả lời sai phổ biến
+- "HttpClient tự ném exception khi 500": sai, phải tự kiểm tra {{statusCode()}}.
+- "connectTimeout là đủ": nó chỉ bao phần mở kết nối; server nhận kết nối rồi treo thì vẫn chờ mãi nếu không có request {{timeout}}.
+- "Async thì nhanh hơn": async chỉ giải phóng thread gọi, không làm upstream trả lời nhanh hơn.
+
+### Pitfall production
+- Không có timeout: upstream treo làm cạn thread pool Tomcat và cả service chết theo (cascading failure).
+- Retry mù quáng với lệnh chuyển tiền: phải có idempotency key và chỉ retry lỗi an toàn; bọc thêm circuit breaker (Resilience4j).
+- Log nguyên body response chứa số tài khoản hoặc CCCD: phải mask.
+
+> Senior tip: đặt timeout theo SLA của upstream (ví dụ p99 là 800 ms thì timeout khoảng 2 s) và tổng timeout của chuỗi gọi phải nhỏ hơn timeout mà client của bạn chờ bạn. Mọi client HTTP ra ngoài nên đi qua một bean dùng chung có sẵn timeout, tracing header và metric, thay vì để mỗi dev tự tạo client.`,
+  follow: [
+    'Bạn đặt connect timeout, read timeout và tổng deadline cho một chuỗi gọi 3 service thế nào?',
+    'Retry một API chuyển tiền bị timeout: làm sao tránh trừ tiền hai lần?',
+    'Khi chạy trên virtual thread, gọi HTTP đồng bộ có còn là vấn đề về scalability không?'
+  ],
+  tags: ['HttpClient', 'RestClient', 'WebClient', 'timeout', 'HTTP/2']
+},
+{
+  id: 'modern-013',
+  topic: 'modern',
+  level: 'mid',
+  q: 'Helpful NullPointerException và pattern matching cho {{instanceof}} giúp gì khi debug và viết code hằng ngày? Ngoài ra, những cải tiến nhỏ nào từ Java 9 đến 21 bạn thực sự dùng?',
+  a: `**Tóm tắt:** Từ Java 14 (bật mặc định từ Java 15), NPE có thông báo chỉ rõ **biểu thức nào** bị null, ví dụ "because the return value of getAddress() is null", nên không còn phải đoán trong chuỗi gọi dài. Pattern matching cho {{instanceof}} (chính thức Java 16) vừa kiểm tra kiểu vừa khai báo biến đã ép kiểu, bỏ được bước cast thủ công. Cùng với đó là nhiều API nhỏ như {{List.of}}, {{String.isBlank}}, {{Files.readString}}, {{Stream.toList}} giúp code ngắn và ít lỗi hơn.
+
+### Helpful NullPointerException
+~~~java
+String city = customer.getAddress().getCity().toUpperCase();
+~~~
+~~~text
+// Java 8:
+java.lang.NullPointerException
+    at CustomerService.format(CustomerService.java:42)
+
+// Java 17 (dạng thông báo):
+java.lang.NullPointerException: Cannot invoke "Address.getCity()"
+    because the return value of "Customer.getAddress()" is null
+~~~
+- JVM phân tích bytecode tại vị trí lỗi để biết giá trị null đến từ đâu (field, phần tử mảng, kết quả method, biến local).
+- Tên biến local chỉ hiện nếu class được compile kèm thông tin debug ({{-g}}, Maven và Gradle mặc định có); nếu không sẽ thấy dạng {{<local4>}}.
+- Thông báo chỉ được tính khi gọi {{getMessage()}}, nên không tốn chi phí cho NPE bị bắt và bỏ qua. Có thể tắt bằng {{-XX:-ShowCodeDetailsInExceptionMessages}} nếu lo lộ thông tin cấu trúc code.
+
+### Pattern matching cho instanceof
+~~~java
+// Trước Java 16
+if (event instanceof PaymentEvent) {
+    PaymentEvent p = (PaymentEvent) event;      // cast lặp lại, dễ cast nhầm kiểu
+    process(p.amount());
+}
+
+// Java 16+
+if (event instanceof PaymentEvent p && p.amount().signum() > 0) {
+    process(p.amount());                         // p chỉ tồn tại khi match
+}
+
+// Flow scoping: biến dùng được sau khi loại trường hợp không match
+if (!(obj instanceof Account other)) return false;
+return accountNo.equals(other.accountNo);        // hay dùng trong equals()
+~~~
+Biến pattern có phạm vi theo luồng điều khiển: dùng được ở nhánh mà compiler chắc chắn đã match. Dùng {{||}} thay vì {{&&}} thì không truy cập được {{p}} ở vế sau.
+
+### Các cải tiến nhỏ đáng biết
+| Phiên bản | Tính năng | Dùng khi nào |
+|---|---|---|
+| 9 | {{List.of}}, {{Set.of}}, {{Map.of}} | Hằng số, dữ liệu test |
+| 9 | {{Optional.ifPresentOrElse}}, {{Optional.stream}}, {{Stream.takeWhile}} | Xử lý Optional, cắt stream theo điều kiện |
+| 10 | {{var}}, {{List.copyOf}}, {{Optional.orElseThrow()}} | Biến local kiểu dài, defensive copy |
+| 11 | {{String.isBlank}}, {{strip}}, {{lines}}, {{repeat}}; {{Files.readString}}; {{Predicate.not}} | Validate input, đọc file nhỏ |
+| 12 | {{Collectors.teeing}} | Tính hai kết quả trong một lần duyệt |
+| 14–16 | Switch expression, text block, record, {{Stream.toList}} | DTO, SQL/JSON nhiều dòng |
+| 17 | Sealed class | Mô hình hoá trạng thái đóng |
+| 21 | SequencedCollection, record pattern, virtual thread, {{Math.clamp}} | Lấy phần tử đầu/cuối, IO-bound |
+
+### Câu trả lời sai phổ biến
+- "Phải bật cờ mới có helpful NPE": từ Java 15 đã bật mặc định.
+- "Pattern instanceof chỉ là cú pháp đẹp": nó còn loại bỏ lỗi cast nhầm kiểu, vì kiểm tra và ép kiểu là cùng một bước.
+- Kể tính năng mà không nói đã dùng ở đâu: interviewer muốn nghe ví dụ thật.
+
+### Pitfall
+- Log chỉ ghi {{e.toString()}} hoặc custom message mà nuốt stack trace: thông báo hay đến đâu cũng thiếu dòng code; luôn log cả exception.
+- Helpful NPE giúp tìm chỗ null, không thay được việc thiết kế để tránh null: validate ở biên (Bean Validation), dùng {{Optional}} cho giá trị trả về có thể vắng.
+
+> Senior tip: khi kể "cải tiến hay dùng", hãy gắn với tác động: "sau khi lên 17, thời gian điều tra NPE từ log production giảm rõ vì thông báo chỉ thẳng getter nào trả null". Câu trả lời có kết quả đo được luôn ghi điểm hơn danh sách tính năng.`,
+  follow: [
+    'Vì sao helpful NPE ban đầu bị tắt mặc định ở Java 14?',
+    'Pattern variable trong {{instanceof}} có thể là {{final}} không? Gán lại được không?',
+    '{{Collectors.teeing}} giải quyết bài toán gì? Cho ví dụ tính min và max cùng lúc.'
+  ],
+  tags: ['helpful NPE', 'instanceof', 'pattern matching', 'Java 11', 'Java 17']
+},
+{
+  id: 'modern-014',
+  topic: 'modern',
+  level: 'mid',
+  q: '"Java 8 có gì mới và bạn dùng tính năng nào nhiều nhất?" Trả lời câu mở đầu kinh điển này thế nào cho ăn điểm, và interviewer thường vặn tiếp những gì?',
+  a: `**Tóm tắt:** Java 8 đưa lập trình hàm vào Java: **lambda + functional interface + method reference**, **Stream API**, **Optional**, **default/static method trong interface**, **java.time** thay {{Date}}/{{Calendar}}, và **CompletableFuture**. Tôi dùng nhiều nhất là Stream để xử lý dữ liệu nghiệp vụ, java.time cho mọi logic ngày giờ (cut-off, kỳ hạn), và CompletableFuture để gọi song song nhiều service. Sau đó nêu luôn một ví dụ cụ thể và một điều bạn cẩn thận khi dùng.
+
+### Cấu trúc câu trả lời ăn điểm
+1. Liệt kê ngắn 5–6 nhóm tính năng (15 giây).
+2. Chọn 2–3 cái bạn dùng thật, mỗi cái kèm một ví dụ nghiệp vụ.
+3. Nói một trade-off hoặc pitfall, cho thấy bạn hiểu sâu chứ không chỉ biết dùng.
+4. Nếu dự án đã lên 17/21, nhắc ngắn những gì bạn dùng thêm (record, switch expression, virtual thread).
+
+### Ví dụ: Stream thay vòng lặp gom nhóm
+~~~java
+// Java 7: tổng tiền giao dịch thành công theo loại
+Map<String, BigDecimal> totals = new HashMap<>();
+for (Txn t : txns) {
+    if (t.getStatus() == Status.SUCCESS) {
+        BigDecimal cur = totals.get(t.getType());
+        totals.put(t.getType(), cur == null ? t.getAmount() : cur.add(t.getAmount()));
+    }
+}
+
+// Java 8: khai báo "muốn gì" thay vì "làm thế nào"
+Map<String, BigDecimal> totals8 = txns.stream()
+        .filter(t -> t.getStatus() == Status.SUCCESS)
+        .collect(Collectors.groupingBy(Txn::getType,
+                 Collectors.reducing(BigDecimal.ZERO, Txn::getAmount, BigDecimal::add)));
+~~~
+
+### Ví dụ: CompletableFuture gọi song song
+~~~java
+// Duyệt khoản vay cần hồ sơ khách hàng và điểm tín dụng từ 2 hệ thống
+CompletableFuture<Profile> profile =
+        CompletableFuture.supplyAsync(() -> profileApi.get(id), ioPool);
+CompletableFuture<Score> score =
+        CompletableFuture.supplyAsync(() -> creditApi.score(id), ioPool);
+LoanOffer offer = profile.thenCombine(score, LoanOffer::of).join(); // ~max(t1, t2) thay vì t1 + t2
+~~~
+Truyền executor riêng ({{ioPool}}) vì mặc định {{supplyAsync}} dùng {{ForkJoinPool.commonPool()}}, vốn có số thread khoảng số core và dùng chung cả JVM; gọi IO chặn trên đó sẽ làm nghẽn các phần khác.
+
+### Những câu interviewer hay vặn tiếp
+| Câu hỏi | Ý chính cần nói |
+|---|---|
+| Vì sao cần default method? | Để thêm {{stream()}}, {{forEach}} vào {{Collection}}/{{Iterable}} mà không làm vỡ hàng triệu class đã implement interface đó |
+| Lambda khác anonymous class? | Không tạo file .class riêng, dùng {{invokedynamic}}; {{this}} trỏ tới class bao ngoài; chỉ capture biến effectively final |
+| Vì sao bỏ Date/SimpleDateFormat? | {{Date}} mutable, {{SimpleDateFormat}} không thread-safe; java.time bất biến và tách rõ {{Instant}}/{{LocalDate}}/{{ZonedDateTime}} |
+| Optional dùng ở đâu? | Kiểu trả về có thể vắng; không dùng cho field, tham số, collection |
+| Stream có nhanh hơn for? | Không mặc định nhanh hơn; lợi ích chính là dễ đọc và dễ compose |
+
+Ngoài ra Java 8 còn có: {{HashMap}} treeify bucket khi nhiều collision, Metaspace thay PermGen, {{StringJoiner}}, {{Base64}}, {{Map.computeIfAbsent}}/{{merge}}.
+
+### Câu trả lời sai phổ biến
+- Kể nhầm tính năng của bản sau: {{var}} (Java 10), {{List.of}} (Java 9), record (Java 16), module (Java 9) đều **không** có ở Java 8.
+- Chỉ liệt kê như đọc release note, không có ví dụ đã dùng.
+- Nói "stream luôn nhanh hơn" hoặc "dùng parallel stream cho nhanh" mà không nói về chi phí.
+
+### Pitfall khi dùng thực tế
+- Stream lồng nhau dài 15 dòng, khó debug; tách thành method có tên rõ ràng.
+- {{Optional.get()}} không kiểm tra, hoặc {{orElse(expensiveCall())}} luôn gọi hàm tốn kém ngay cả khi có giá trị (dùng {{orElseGet}}).
+- {{CompletableFuture}} quên xử lý lỗi ({{exceptionally}}/{{handle}}) hoặc quên timeout ({{orTimeout}} có từ Java 9).
+
+> Senior tip: chuẩn bị sẵn một câu chuyện "trước/sau": ví dụ "API tổng hợp thông tin khách hàng gọi tuần tự 3 service mất khoảng 900 ms, chuyển sang CompletableFuture song song còn khoảng 350 ms". Một con số thật từ dự án của bạn đáng giá hơn mọi định nghĩa.`,
+  follow: [
+    'Default method có gây diamond problem không? Java giải quyết thế nào?',
+    'Vì sao {{SimpleDateFormat}} dùng làm biến static lại gây lỗi khi chạy đa luồng?',
+    'CompletableFuture chạy trên thread nào nếu không truyền executor? Rủi ro gì?'
+  ],
+  tags: ['Java 8', 'lambda', 'Stream', 'Optional', 'CompletableFuture']
+},
+{
+  id: 'modern-015',
+  topic: 'modern',
+  level: 'senior',
+  q: 'Phân biệt {{map}} vs {{flatMap}}, {{reduce}} vs {{collect}}, và {{peek}} trong Stream. Cho ví dụ nghiệp vụ và những lỗi hay gặp, kể cả dự đoán output với {{peek}}.',
+  a: `**Tóm tắt:** {{map}} biến mỗi phần tử thành **đúng một** phần tử; {{flatMap}} biến mỗi phần tử thành **một stream** rồi nối phẳng các stream đó lại (một thành nhiều hoặc không). {{reduce}} gộp các giá trị **bất biến** thành một (tổng, max), còn {{collect}} là mutable reduction, gom vào container như list, map. {{peek}} chỉ để debug: nó lazy và JVM được phép bỏ qua, nên không được dùng để thay đổi state.
+
+### map vs flatMap
+~~~java
+// Stream<List<OrderItem>>: mỗi order thành một list, vẫn lồng nhau
+List<List<OrderItem>> nested = orders.stream()
+        .map(Order::getItems)
+        .toList();
+
+// Stream<OrderItem>: làm phẳng thành danh sách mọi item của mọi order
+List<OrderItem> items = orders.stream()
+        .flatMap(o -> o.getItems().stream())
+        .toList();
+
+// Optional: mapper đã trả về Optional thì dùng flatMap để tránh Optional<Optional<...>>
+Optional<String> city = findCustomer(id)
+        .flatMap(Customer::getAddress)       // getAddress() trả về Optional<Address>
+        .map(Address::getCity);
+~~~
+Java 16 có thêm {{mapMulti}} để phát 0..n phần tử mà không phải tạo stream con, hữu ích khi mỗi phần tử chỉ sinh vài kết quả.
+
+### reduce vs collect
+~~~java
+// reduce: đúng chỗ, gộp giá trị bất biến
+BigDecimal total = txns.stream()
+        .map(Txn::amount)
+        .reduce(BigDecimal.ZERO, BigDecimal::add);   // ZERO là identity thật
+
+// SAI: dùng reduce để gom vào container mutable
+List<String> ids = txns.stream().reduce(new ArrayList<>(),
+        (acc, t) -> { acc.add(t.id()); return acc; },
+        (a, b) -> { a.addAll(b); return a; });       // parallel: nhiều thread cùng sửa một ArrayList
+
+// ĐÚNG: collect tạo container riêng cho từng nhánh rồi mới gộp
+List<String> ids2 = txns.stream().map(Txn::id).collect(Collectors.toList());
+~~~
+Vì sao: {{reduce}} giả định identity và các kết quả trung gian là giá trị bất biến; trong parallel stream, cùng một identity được dùng cho mọi nhánh. {{collect}} gọi supplier để tạo container **mới** cho mỗi nhánh, nên an toàn.
+
+Thêm một bẫy: identity phải đúng là phần tử trung hoà. {{Stream.of(1, 2, 3).reduce(10, Integer::sum)}} trả về 16 khi chạy tuần tự, nhưng chạy {{parallel()}} có thể ra 36 vì 10 được cộng cho mỗi phần (tách 3 phần là cộng 3 lần).
+
+### peek: dự đoán output
+~~~java
+long n = List.of("a", "b", "c").stream()
+        .peek(s -> System.out.println("peek " + s))
+        .count();
+System.out.println(n);
+// Java 9+: chỉ in "3", không có dòng "peek" nào
+~~~
+Từ Java 9, {{count()}} có thể tính thẳng từ kích thước của nguồn (SIZED) khi pipeline không có {{filter}}/{{flatMap}}, nên bỏ qua việc duyệt và {{peek}} không chạy. Ngoài ra không có terminal operation thì {{peek}} cũng không bao giờ chạy.
+
+### Bảng tóm tắt
+| Operation | Đầu vào → đầu ra | Dùng cho |
+|---|---|---|
+| map | 1 → 1 | Đổi kiểu, trích field |
+| flatMap | 1 → 0..n (stream) | Làm phẳng quan hệ cha-con, Optional lồng nhau |
+| reduce | n → 1 giá trị bất biến | Tổng, min/max, nối giá trị |
+| collect | n → container | List, Map, groupingBy, joining |
+| peek | Không đổi | Log debug, không side effect quan trọng |
+
+### Câu trả lời sai phổ biến
+- "flatMap dùng để làm phẳng Map": sai, nó làm phẳng stream lồng nhau.
+- "reduce và collect như nhau": khác về mutability và tính an toàn khi parallel.
+- "peek giống forEach nhưng không kết thúc stream": peek không đảm bảo chạy, còn forEach là terminal và luôn chạy.
+
+### Pitfall production
+- Dùng {{peek(o -> o.setStatus(PROCESSED))}} để cập nhật trạng thái đơn hàng: một ngày ai đó đổi terminal operation sang {{count()}} hoặc thêm {{limit}} và một phần đơn không được cập nhật.
+- {{flatMap}} trên quan hệ lazy của JPA trong vòng lặp gây N+1 query; fetch join trước khi stream.
+
+> Senior tip: quy ước team: lambda trong stream phải **không có side effect** (trừ {{forEach}} cuối cùng). Thấy {{peek}} chứa setter hoặc {{reduce}} với {{ArrayList}} trong code review là dấu hiệu cần viết lại ngay.`,
+  follow: [
+    '{{reduce}} có 3 tham số (identity, accumulator, combiner): combiner dùng khi nào?',
+    'Khi nào nên dùng {{mapMulti}} thay vì {{flatMap}}?',
+    'Vì sao lambda trong stream nên stateless? Cho ví dụ stateful lambda gây sai kết quả khi parallel.'
+  ],
+  tags: ['Stream', 'flatMap', 'reduce', 'collect', 'peek']
+},
+{
+  id: 'modern-016',
+  topic: 'modern',
+  level: 'lead',
+  q: 'Stream hay vòng for: so sánh hiệu năng, khả năng đọc và bảo trì. Khi nào bạn không dùng stream, và bạn đặt guideline gì cho team?',
+  a: `**Tóm tắt:** Về hiệu năng, với phần lớn code nghiệp vụ (vài trăm đến vài nghìn phần tử, có gọi DB/network), khác biệt giữa stream và for là không đáng kể so với IO. Stream có chi phí cố định (tạo pipeline, lambda) và dễ dính boxing, nên trong vòng lặp nóng trên dữ liệu lớn thì for với primitive thường nhanh hơn hoặc ngang bằng; phải đo bằng JMH chứ không đoán. Lợi ích chính của stream là **dễ đọc** với các phép filter/map/group. Tôi dùng for khi cần break phức tạp, ném checked exception, cập nhật nhiều biến, hay làm việc theo index.
+
+### Vì sao stream không "tự nhanh hơn"
+- Mỗi pipeline tạo vài object (stage, spliterator, sink), và lambda có capture biến tạo object mỗi lần chạy. Với list 10 phần tử gọi hàng triệu lần/giây, chi phí cố định này chiếm phần lớn.
+- {{Stream<Integer>}} phải box/unbox từng phần tử; {{IntStream}}/{{LongStream}} tránh được việc này.
+- JIT tối ưu vòng for đơn giản rất tốt (loop unrolling, vector hoá). Pipeline stream nhiều tầng khó inline hết hơn; nhưng khi JIT inline được thì chênh lệch nhỏ.
+- {{parallel()}} không miễn phí: chia việc, gộp kết quả, và chạy trên {{ForkJoinPool.commonPool()}} dùng chung cả JVM.
+
+~~~java
+// Ba cách tính tổng: khác biệt nằm ở boxing, không phải ở "stream hay for"
+long s1 = 0;
+for (long v : amounts) s1 += v;                       // primitive, nhanh nhất ổn định
+long s2 = Arrays.stream(amounts).sum();               // LongStream: gần tương đương
+long s3 = list.stream().reduce(0L, Long::sum);        // Stream<Long>: box từng phần tử
+~~~
+
+### Khi for rõ ràng hơn stream
+~~~java
+// Checked exception trong lambda: phải bọc, mất tính gọn
+List<String> contents = paths.stream().map(p -> {
+    try { return Files.readString(p); }
+    catch (IOException e) { throw new UncheckedIOException(e); }
+}).toList();
+
+// Nhiều biến kết quả + dừng sớm theo điều kiện: for tự nhiên hơn
+BigDecimal total = BigDecimal.ZERO;
+int failed = 0;
+for (Txn t : txns) {
+    if (t.isCutOffMarker()) break;              // dừng sớm theo logic nghiệp vụ
+    if (t.isFailed()) { failed++; continue; }
+    total = total.add(t.amount());              // lambda không gán lại được biến local
+}
+~~~
+
+### Bảng quyết định
+| Tình huống | Chọn | Lý do |
+|---|---|---|
+| Lọc, biến đổi, gom nhóm dữ liệu nghiệp vụ | Stream | Ngắn, khai báo rõ ý định |
+| Tìm phần tử đầu tiên / kiểm tra tồn tại | Stream ({{anyMatch}}, {{findFirst}}) | Có short-circuit |
+| Vòng lặp nóng trên mảng primitive lớn | For (hoặc {{IntStream}}) | Tránh boxing và chi phí pipeline |
+| Cần index, duyệt hai list song song | For | Stream không có index tự nhiên |
+| Ném checked exception, break nhiều điều kiện | For | Lambda không hợp |
+| Nhiều accumulator cùng lúc | For (hoặc collector riêng) | Lambda chỉ capture biến effectively final |
+| Xử lý CPU-heavy, dữ liệu rất lớn, tách được | Cân nhắc parallel, có đo | Đừng dùng trong request handler |
+
+### Câu trả lời sai phổ biến
+- "Stream nhanh hơn vì chạy song song": stream mặc định là tuần tự.
+- "Stream chậm, nên cấm dùng": với code có IO, khác biệt là nhiễu; cấm stream chỉ làm code dài và dễ lỗi hơn.
+- "Dùng {{parallelStream}} cho API chậm": nếu chậm do gọi DB/HTTP thì parallel stream chỉ chiếm commonPool và làm nghẽn phần khác.
+
+### Pitfall production
+- {{parallelStream()}} gọi repository bên trong request handler: dưới tải cao commonPool bị chặn bởi IO, cả {{CompletableFuture}} mặc định cũng chậm theo.
+- Pipeline dài 20 dòng với lambda nhiều tầng: stack trace khó đọc, debug khó; tách thành method có tên.
+- Tái sử dụng một {{Stream}} đã được tiêu thụ sẽ ném {{IllegalStateException}}; stream không phải collection.
+
+> Senior tip: guideline tôi hay đặt cho team: (1) stream là mặc định cho biến đổi dữ liệu, mỗi lambda ngắn, không side effect; (2) for cho logic điều khiển phức tạp và hot path đã được profiler chỉ ra; (3) cấm {{parallelStream}} trong code xử lý request nếu không có benchmark JMH và review riêng. Quy tắc "đo trước khi tối ưu" quan trọng hơn mọi tranh luận stream hay for.`,
+  follow: [
+    'Bạn sẽ viết benchmark JMH thế nào để so sánh stream và for cho đúng (warmup, dead-code elimination)?',
+    'Parallel stream chia việc dựa trên gì? Vì sao {{LinkedList}} hay {{Stream.iterate}} chia việc kém?',
+    'Lambda không capture biến thì có tạo object mới mỗi lần không?'
+  ],
+  tags: ['Stream', 'performance', 'for loop', 'parallel stream', 'JMH']
 }
 );
