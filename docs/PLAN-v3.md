@@ -12,6 +12,7 @@ Mọi tính năng đều phải trả lời được câu hỏi: tính năng nà
 - `scripts/watchdog.sh` dừng agent nào im lặng quá 15 phút và cho chạy lại, tối đa 2 lần.
 - **Integrator** (Claude Code) giữ hạ tầng: `api/*`, `js/core/*`, `supabase/*`, `index.html`, `base.css`, schema và contract.
   Integrator review và fact-check mọi nội dung trước khi commit. Push lên `main` thì Vercel tự deploy.
+- `scripts/autopilot.sh` chạy nền: task xong → Codex review → `verify-staged` → tự commit + push. Nhờ vậy nội dung vẫn lên web khi integrator vắng hoặc bị giới hạn.
 - **Khi hàng đợi trống**, integrator làm theo thứ tự:
   1. chạy `npm run check` và smoke test, rồi sửa bug;
   2. fact-check nội dung mới;
