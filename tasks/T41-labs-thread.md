@@ -1,6 +1,6 @@
 # T41 — Nội dung: Debug lab — Thread dump (jstack)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/labs-thread.js`
 
