@@ -1,6 +1,6 @@
 # T61 — Nội dung: Spring, JPA, DB hay gặp
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/q-spring-data.js`
 After: T48
@@ -49,3 +49,4 @@ ID tiếp nối số lớn nhất đang có trong topic (ví dụ đang có `cor
 `node scripts/validate.js` → OK và số câu mỗi topic đạt mục tiêu. Integrator sẽ fact-check sau.
 
 ## Notes
+Đã thêm 16 câu hỏi mới (spring: 6, jpa: 4, db: 6) đạt mục tiêu: spring 27/≥27, jpa 21/≥21, db 25/≥25. Tất cả câu hỏi tuân thủ schema, markup, chuẩn chất lượng theo AGENTS.md. Validate pass.
