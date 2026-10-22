@@ -59,7 +59,24 @@
   tab-size: 4; white-space: pre; overflow-wrap: normal; overflow-x: auto;
 }
 .view-algo .algo-tip { margin: 8px 0 0; }
+.view-algo .algo-run-note { margin: 2px 0 0; }
 .view-algo .algo-actions { margin-top: 12px; gap: 8px; }
+
+/* ---------- chạy test + AI review ---------- */
+.view-algo .algo-ai-panel:empty { display: none; }
+.view-algo .algo-ai-panel { margin-top: 12px; display: grid; gap: 10px; }
+.view-algo .algo-ai-panel .run-box { background: var(--surface-2); }
+.view-algo .algo-ai-panel .ai-error { margin: 0; }
+.view-algo .algo-pass-hint {
+  margin: 8px 0 0; padding: 8px 12px; border-radius: var(--radius-sm);
+  background: var(--ok-soft); color: var(--ok); font-size: .88rem;
+}
+.view-algo .algo-actions .btn.is-suggest {
+  box-shadow: 0 0 0 2px var(--accent), 0 0 0 4px var(--accent-soft);
+}
+@media (max-width: 640px) {
+  .view-algo .algo-actions .btn { flex: 1 1 auto; }
+}
 
 .view-algo .algo-solution {
   margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border);

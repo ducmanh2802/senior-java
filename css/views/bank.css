@@ -10,6 +10,11 @@
 .view-bank .bank-topic-chips { padding-top: 2px; }
 .view-bank .bank-status-chips { padding-top: 2px; }
 .view-bank .bank-head-actions { justify-content: flex-end; }
+.view-bank .bank-toggle {
+  display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
+  font-size: .88rem; color: var(--muted); user-select: none;
+}
+.view-bank .bank-toggle input { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
 
 /* ---------- danh sách ---------- */
 .view-bank .bank-list { display: flex; flex-direction: column; gap: 10px; }
@@ -40,6 +45,32 @@
 
 /* ---------- phần mở rộng ---------- */
 .view-bank .bank-body { padding: 0 16px 16px 54px; border-top: 1px solid var(--border); padding-top: 14px; }
+/* ---------- luyện trả lời với AI ---------- */
+.view-bank .bank-practice { margin-bottom: 14px; }
+.view-bank .bank-practice-box {
+  border: 1px dashed var(--border); border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.view-bank .bank-practice-box > summary {
+  padding: 10px 12px; cursor: pointer; font-weight: 600; font-size: .9rem;
+  color: var(--accent);
+}
+.view-bank .bank-practice-body { display: grid; gap: 8px; padding: 0 12px 12px; }
+.view-bank .bank-practice-body .field { margin: 0; }
+.view-bank .bank-answer { min-height: 96px; resize: vertical; font-size: .92rem; }
+.view-bank .bank-practice-actions { gap: 8px; align-items: center; flex-wrap: wrap; }
+.view-bank .bank-speech:empty, .view-bank .bank-ai-result:empty { display: none; }
+.view-bank .bank-ai-result .ai-fb { margin-top: 4px; }
+.view-bank .bank-answer-hidden {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
+  padding: 14px; border-radius: var(--radius-sm); background: var(--surface-2);
+  border: 1px dashed var(--border);
+}
+.view-bank .bank-answer-hidden p { margin: 0; }
+.view-bank .bank-grade .btn.is-suggest {
+  box-shadow: 0 0 0 2px var(--accent), 0 0 0 4px var(--accent-soft);
+}
+
 .view-bank .bank-follow { margin-top: 14px; }
 .view-bank .bank-follow h4 { margin: 0 0 6px; font-size: .95rem; color: var(--accent); }
 .view-bank .bank-follow ul { margin: 0; padding-left: 1.3em; }

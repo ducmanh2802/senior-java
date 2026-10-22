@@ -68,11 +68,11 @@ Quyết định thiết kế:
 | T12 | Ngân hàng trắc nghiệm (≥80 câu) | opencode | mimo-v2.6-flash-free | `quiz.js` |
 | T14 | Bài thuật toán (≥40 bài, lời giải Java) | opencode | deepseek-v4.1-flash-free | `algo.js` |
 | T16 | Tình huống thực tế (≥24 câu) | opencode | glm-5.3-flash-free | `q-scenario.js` |
-| T09 | View Tổng quan + Câu hỏi | cline | (model mặc định của Cline) | `views/dashboard*`, `views/bank*` |
-| T10 | View Flashcard + Trắc nghiệm | cline | (model mặc định của Cline) | `views/flash*`, `views/quiz*` |
-| T11 | View Phỏng vấn thử (+ vòng coding) | cline | (model mặc định của Cline) | `views/mock*` |
-| T15 | View Luyện thuật toán | cline | (model mặc định của Cline) | `views/algo*` |
-| T17 | View Lộ trình 6 tháng + nhật ký học | cline | (model mặc định của Cline) | `views/roadmap*` |
+| T09 | View Tổng quan + Câu hỏi | cline | cline-free/minimax-m3.1-flash | `views/dashboard*`, `views/bank*` |
+| T10 | View Flashcard + Trắc nghiệm | cline | cline-free/minimax-m3.1-flash | `views/flash*`, `views/quiz*` |
+| T11 | View Phỏng vấn thử (+ vòng coding) | cline | cline-free/minimax-m3.1-flash | `views/mock*` |
+| T15 | View Luyện thuật toán | cline | cline-free/minimax-m3.1-flash | `views/algo*` |
+| T17 | View Lộ trình 6 tháng + nhật ký học | cline | cline-free/minimax-m3.1-flash | `views/roadmap*` |
 | T13 | Tích hợp: review, sửa lỗi, kiểm tra trình duyệt, commit/push, deploy Vercel | Claude Code | — | toàn repo |
 
 Đặc tả chi tiết từng task nằm trong `tasks/Txx-*.md`.

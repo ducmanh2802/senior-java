@@ -17,6 +17,9 @@
   <link rel="stylesheet" href="css/views/algo.css">
   <link rel="stylesheet" href="css/views/mock.css">
   <link rel="stylesheet" href="css/views/companies.css">
+  <link rel="stylesheet" href="css/views/labs.css">
+  <link rel="stylesheet" href="css/views/account.css">
+  <link rel="stylesheet" href="css/views/legal.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>☕</text></svg>">
 </head>
 <body>
@@ -35,7 +38,9 @@
         <a href="#/algo" data-route="algo">Thuật toán</a>
         <a href="#/mock" data-route="mock">Phỏng vấn thử</a>
         <a href="#/companies" data-route="companies">Công ty</a>
+        <a href="#/labs" data-route="labs">Debug lab</a>
       </nav>
+      <a class="icon-btn account-btn" href="#/account" data-route="account" title="Tài khoản" aria-label="Tài khoản">👤</a>
       <button class="icon-btn" data-open-settings title="Cài đặt AI" aria-label="Cài đặt AI">⚙️</button>
       <button class="icon-btn" id="themeToggle" title="Đổi giao diện sáng/tối" aria-label="Đổi giao diện">◐</button>
     </div>
@@ -47,7 +52,8 @@
     Tiến độ được lưu trong trình duyệt (localStorage).
     <button class="link-btn" id="exportBtn">Xuất tiến độ</button> ·
     <button class="link-btn" id="importBtn">Nhập tiến độ</button> ·
-    <button class="link-btn danger" id="resetBtn">Xoá tiến độ</button>
+    <button class="link-btn danger" id="resetBtn">Xoá tiến độ</button> ·
+    <a href="#/legal/privacy">Quyền riêng tư</a> · <a href="#/legal/terms">Điều khoản</a> · <a href="#/legal/about">Giới thiệu</a>
     <input type="file" id="importFile" accept="application/json" hidden>
   </footer>
 
@@ -67,9 +73,14 @@
   <script src="js/data/algo.js"></script>
   <script src="js/data/roadmap.js"></script>
   <script src="js/data/companies.js"></script>
+  <script src="js/data/labs-thread.js"></script>
+  <script src="js/data/labs-gc.js"></script>
+  <script src="js/data/labs-sql.js"></script>
+  <script src="js/data/labs-incident.js"></script>
   <!-- core + views -->
   <script src="js/core/app.js"></script>
   <script src="js/core/ai.js"></script>
+  <script src="js/core/auth.js"></script>
   <script src="js/views/dashboard.js"></script>
   <script src="js/views/roadmap.js"></script>
   <script src="js/views/bank.js"></script>
@@ -78,5 +89,8 @@
   <script src="js/views/algo.js"></script>
   <script src="js/views/mock.js"></script>
   <script src="js/views/companies.js"></script>
+  <script src="js/views/labs.js"></script>
+  <script src="js/views/account.js"></script>
+  <script src="js/views/legal.js"></script>
 </body>
 </html>

@@ -31,6 +31,10 @@
 .view-mock .mock-notes { margin-top: 18px; }
 .view-mock .mock-editor { font-family: var(--mono); font-size: .9rem; min-height: 180px; white-space: pre; overflow-wrap: normal; overflow-x: auto; }
 .view-mock .mock-tools { margin-top: 12px; }
+.view-mock .mock-voice-hint { margin: 10px 0 0; }
+.view-mock .mock-speech { margin-top: 10px; }
+.view-mock .mock-ai { margin-top: 14px; }
+.view-mock .mock-ai:empty { display: none; }
 
 .view-mock .mock-answer {
   margin-top: 16px; padding: 16px; border-radius: var(--radius-sm);
@@ -53,7 +57,27 @@
 .view-mock .mock-rate-box { margin-top: 16px; }
 .view-mock .mock-rate-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-top: 12px; }
 .view-mock .mock-rate { padding: 14px 0; font-size: 1.15rem; font-weight: 700; }
+.view-mock .mock-rate.suggested {
+  border-color: var(--accent); color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft); font-weight: 800;
+}
+.view-mock .mock-ai-suggest { margin: 10px 0 0; color: var(--accent); min-height: 1em; }
 .view-mock .mock-actions-row { margin-top: 16px; }
+
+/* ---------- hỏi đào sâu ---------- */
+.view-mock .mock-followups { margin-top: 14px; display: grid; gap: 14px; }
+.view-mock .mock-followups:empty { display: none; }
+.view-mock .mock-fu {
+  padding: 14px; border-radius: var(--radius-sm);
+  background: var(--surface-2); border: 1px solid var(--border);
+}
+.view-mock .mock-fu-head { margin-bottom: 8px; }
+.view-mock .mock-fu-q { font-size: .98rem; margin-bottom: 10px; }
+.view-mock .mock-fu-note { width: 100%; }
+.view-mock .mock-fu-tools { margin-top: 10px; }
+.view-mock .mock-fu-speech, .view-mock .mock-fu-ai { margin-top: 10px; }
+.view-mock .mock-fu-ai:empty, .view-mock .mock-fu-speech:empty { display: none; }
+.view-mock .mock-fu-add { justify-self: start; }
 
 /* ---------- summary ---------- */
 .view-mock .mock-stats { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin-bottom: 16px; }
@@ -72,6 +96,15 @@
   margin-top: 10px; padding: 10px 12px; border-radius: var(--radius-sm);
   background: var(--surface-2); font-size: .92rem; white-space: pre-wrap;
 }
+.view-mock .mock-ai-badge { margin-right: 2px; }
+.view-mock .mock-ai-stat .num { color: var(--accent); }
+.view-mock .mock-recap-speech { margin-top: 8px; }
+.view-mock .mock-recap-ai { margin-top: 10px; }
+.view-mock .mock-recap-fu {
+  margin-top: 12px; padding: 12px; border-radius: var(--radius-sm);
+  background: var(--surface-2); border-left: 3px solid var(--accent); font-size: .95rem;
+}
+.view-mock .mock-recap-fu .mock-recap-note { background: var(--surface); }
 
 /* ---------- responsive ---------- */
 @media (max-width: 640px) {
@@ -81,8 +114,16 @@
   .view-mock .mock-rate-row { gap: 6px; }
   .view-mock .mock-rate { padding: 16px 0; font-size: 1.05rem; }
   .view-mock .mock-bar-row { grid-template-columns: 96px 1fr 36px; }
+  /* Nút mic + nút chấm AI chiếm hết bề ngang trên mobile */
+  .view-mock .mock-tools .mic-btn,
+  .view-mock .mock-tools #mockAi,
+  .view-mock .mock-fu-tools .mic-btn,
+  .view-mock .mock-fu-tools [data-fu-grade] {
+    width: 100%; flex: 1 1 100%;
+  }
 }
 @media (max-width: 380px) {
   .view-mock .mock-rate-row { grid-template-columns: repeat(5, 1fr); gap: 4px; }
   .view-mock .mock-rate { padding: 14px 0; }
+  .view-mock .mock-fu { padding: 12px 10px; }
 }

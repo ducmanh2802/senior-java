@@ -35,6 +35,7 @@ for (const f of files) {
   (sandbox.window.QUESTIONS || []).slice(qBefore).forEach(q => { owner[q.id] = f; q.__file = f; });
   (sandbox.window.QUIZ || []).slice(zBefore).forEach(q => { q.__file = f; });
   (sandbox.window.ALGOS || []).forEach(q => { q.__file = q.__file || f; });
+  (sandbox.window.LABS || []).forEach(q => { q.__file = q.__file || f; });
 }
 
 const TOPICS = sandbox.window.TOPICS || [];
@@ -122,6 +123,28 @@ for (const z of sandbox.window.ALGOS || []) {
   (z.hints || []).forEach((x, i) => checkMarkup(f, id, `hints[${i}]`, x));
 }
 
+// ---- debug labs ----
+const LAB_CATS = new Set(['thread', 'gc', 'sql', 'incident']);
+const seenLab = new Set();
+for (const z of sandbox.window.LABS || []) {
+  const f = z.__file || 'labs', id = z.id || '(no id)';
+  if (!/^lab-(thread|gc|sql|incident)-\d{3}$/.test(z.id || '') || seenLab.has(z.id)) err(f, `lab id thiếu/trùng/sai dạng lab-<category>-NNN: ${id}`);
+  seenLab.add(z.id);
+  if (!LAB_CATS.has(z.category) || !String(z.id).startsWith('lab-' + z.category + '-')) err(f, `${id}: category phải khớp id (thread|gc|sql|incident)`);
+  if (!LEVELS.has(z.level)) err(f, `${id}: level phải là mid|senior|lead`);
+  ['title', 'scenario', 'answer'].forEach(k => { if (!z[k] || typeof z[k] !== 'string') err(f, `${id}: thiếu ${k}`); });
+  if (!Array.isArray(z.artifacts) || !z.artifacts.length) err(f, `${id}: cần ≥ 1 artifact`);
+  else z.artifacts.forEach((a, i) => {
+    if (!a || !a.name || typeof a.content !== 'string' || a.content.length < 200) err(f, `${id}.artifacts[${i}]: cần name và content ≥ 200 ký tự`);
+  });
+  if (!Array.isArray(z.questions) || !z.questions.length) err(f, `${id}: cần ≥ 1 câu hỏi (questions)`);
+  if (!Array.isArray(z.hints) || z.hints.length < 2) err(f, `${id}: cần ≥ 2 hints`);
+  if (!Array.isArray(z.rubric) || z.rubric.length < 3) err(f, `${id}: cần ≥ 3 ý trong rubric`);
+  const allowed = new Set(['id', 'category', 'title', 'level', 'scenario', 'artifacts', 'questions', 'hints', 'answer', 'rubric', 'tags', '__file']);
+  Object.keys(z).forEach(k => { if (!allowed.has(k)) err(f, `${id}: field lạ "${k}"`); });
+  ['scenario', 'answer'].forEach(k => checkMarkup(f, id, k, z[k]));
+}
+
 // ---- summary ----
 const Q = sandbox.window.QUESTIONS || [], Z = sandbox.window.QUIZ || [];
 console.log('Questions per topic:');
@@ -132,6 +155,8 @@ for (const t of TOPICS) {
 const A = sandbox.window.ALGOS || [];
 console.log(`Tổng: ${Q.length} câu hỏi, ${Z.length} trắc nghiệm, ${A.length} bài thuật toán (` +
   ['easy', 'medium', 'hard'].map(d => d + ' ' + A.filter(a => a.difficulty === d).length).join(', ') + ')');
+const L = sandbox.window.LABS || [];
+console.log(`Debug lab: ${L.length} bài (` + [...LAB_CATS].map(c => c + ' ' + L.filter(l => l.category === c).length).join(', ') + ')');
 if (warns.length) console.log('\nCảnh báo:\n  ' + warns.join('\n  '));
 if (errors.length) { console.error('\nLỖI:\n  ' + errors.join('\n  ')); process.exit(1); }
 console.log('\nOK — không có lỗi.');

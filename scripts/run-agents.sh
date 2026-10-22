@@ -24,6 +24,13 @@ declare -A MODEL=(
   [T19]=opencode/minimax-m3.1-flash-free
   [T20]=opencode/deepseek-v4.1-flash-free
   [T21]=opencode/mimo-v2.6-flash-free
+  [T33]=opencode/minimax-m3.1-flash-free
+  [T34]=opencode/glm-5.3-flash-free
+  [T41]=opencode/deepseek-v4.1-flash-free
+  [T42]=opencode/glm-5.3-flash-free
+  [T43]=opencode/minimax-m3.1-flash-free
+  [T44]=opencode/mimo-v2.6-flash-free
+  [T45]=opencode/deepseek-v4.1-flash-free
 )
 
 run_task() {

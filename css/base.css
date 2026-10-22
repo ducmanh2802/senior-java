@@ -217,3 +217,6 @@ pre.code[data-lang]::after { content: attr(data-lang); position: absolute; top: 
 dialog.ai-settings { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); padding: 20px; width: min(520px, calc(100vw - 32px)); box-shadow: var(--shadow); }
 dialog.ai-settings::backdrop { background: rgba(0, 0, 0, .4); }
 dialog.ai-settings h3 { margin: 0; }
+
+a.icon-btn { display: grid; place-items: center; text-decoration: none; }
+a.icon-btn.active { border-color: var(--accent); }

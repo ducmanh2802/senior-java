@@ -223,3 +223,44 @@ Quy ước UI:
 ### ALGOS: field mới
 - `starter`: code khởi đầu hiển thị trong editor, gồm class và chữ ký method, ví dụ `class Solution {\n    public int[] twoSum(int[] nums, int target) {\n        \n    }\n}`.
 - `tests`: test harness Java, xem `tasks/T18-algo-tests.md`. Kiểm tra bằng `node scripts/test-algos.js`.
+
+## 10. Tài khoản, đồng bộ & Debug lab
+
+### `App.auth` / `App.sync` (`js/core/auth.js`, integrator sở hữu)
+Hiện file này là **contract**: các hàm đã có đủ nhưng báo "chưa cấu hình". Integrator đang viết phần thật. View phải xử lý được cả 3 trạng thái: chưa cấu hình (`App.auth.enabled === false`), chưa đăng nhập, đã đăng nhập.
+
+| API | Mô tả |
+|---|---|
+| `App.auth.enabled` / `App.auth.user` | `user = {id, email, name, avatar}` hoặc `null` |
+| `App.auth.onChange(fn)` | đăng ký theo dõi đăng nhập/đăng xuất; trả về hàm huỷ (nhớ gọi trong cleanup) |
+| `App.auth.signInWithGoogle()` / `signInWithEmail(email)` / `signOut()` | đăng nhập Google; email gửi magic link |
+| `await App.auth.profile()` / `updateDisplayName(name)` | `{display_name, role, ai_daily_limit}` |
+| `await App.auth.usageToday()` | `{used, limit, byKind}` |
+| `await App.auth.exportData()` / `deleteAccount({clearLocal})` | xuất toàn bộ dữ liệu; xoá tài khoản (bắt buộc confirm 2 bước) |
+| `App.sync.status` / `lastSyncAt` / `lastError` / `onStatus(fn)` / `now()` | `status`: `off \| idle \| syncing \| error` |
+
+Mọi hàm async có thể ném lỗi, nên luôn bọc `try/catch` và hiển thị lỗi thân thiện.
+
+### Debug lab: `window.LABS` (`js/data/labs-<category>.js`)
+Mỗi bài cho người học dữ liệu thật (dump, log, plan…). Người học tìm nguyên nhân gốc và đề xuất cách sửa, AI chấm theo rubric.
+
+```js
+{
+  id: 'lab-thread-001',              // lab-<category>-NNN
+  category: 'thread',                // 'thread' | 'gc' | 'sql' | 'incident' (khớp với id và file)
+  title: 'API treo sau giờ cao điểm',
+  level: 'senior',                   // mid | senior | lead
+  scenario: `markup: bối cảnh hệ thống, triệu chứng, số liệu (người học đọc trước)`,
+  artifacts: [                       // giống THẬT: đúng định dạng jstack, GC log JDK 17+, EXPLAIN PostgreSQL…
+    { name: 'jstack-1.txt', lang: 'text', content: `...` },   // content ≥ 200 ký tự, thường 30–150 dòng
+  ],
+  questions: ['Nguyên nhân gốc là gì? Dẫn chứng từ artifact.', 'Bạn sẽ sửa thế nào, ngắn hạn và dài hạn?'],
+  hints: ['gợi ý 1', 'gợi ý 2'],     // ≥ 2, tăng dần
+  answer: `markup: ### Nguyên nhân gốc / ### Dẫn chứng (trích dòng cụ thể trong artifact) / ### Cách sửa / ### Phòng ngừa`,
+  rubric: ['ý bắt buộc 1', 'ý 2', 'ý 3'],   // ≥ 3 ý AI dùng để chấm
+  tags: ['deadlock']
+}
+```
+- Artifact phải **tự nhất quán**: tên thread, lock id (`<0x...>`), timestamp và số liệu phải khớp nhau và khớp với `answer`.
+- Không dùng backtick và `${` trong template literal. Trong artifact được dùng `{` `}` thoải mái, vì artifact không phải markup.
+- Khi chấm, view gọi `App.ai.grade({question: questions.join(' '), reference: answer + '\nRubric: ' + rubric.join('; '), answer, topic: 'lab-' + category, level})`.
