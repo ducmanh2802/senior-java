@@ -1,6 +1,6 @@
 # T54 — Nội dung: Tình huống thực tế (đợt 2)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/q-scenario.js`
 

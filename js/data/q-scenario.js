@@ -1303,4 +1303,271 @@ ON CONFLICT (account_id, accrual_date) DO NOTHING;
   ],
   tags: ['payday', 'rate-limiting', 'queue', 'fintech', 'quota']
 }
+,
+{
+  id: 'scenario-032',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Sau DB failover, app vẫn báo lỗi kết nối vài phút: nguyên nhân JVM DNS cache và connection pool giữ connection chết, xử lý thế nào?',
+  a: `**Tóm tắt:** Sau failover, client có thể còn dùng địa chỉ DNS cũ hoặc JDBC connection đã bị đóng; đây là hai cache độc lập và không phải mọi lỗi đều do JVM DNS cache. Kiểm tra DNS, driver, pool và thời điểm lỗi trước khi chọn cách phục hồi.
+
+### Cơ chế
+- Java lưu kết quả phân giải theo security property networkaddress.cache.ttl; mặc định phụ thuộc runtime/cấu hình, không có mặc định phổ quát 30 giây. Driver, resolver và proxy cũng có thể cache riêng.
+- HikariCP dùng JDBC4 Connection.isValid() nếu driver hỗ trợ. Mặc định pool không ping mọi connection ở mỗi lần borrow; connection được kiểm tra khi pool nghi là idle đủ lâu hoặc khi keepalive được cấu hình.
+
+### Giải pháp
+- Cấu hình networkaddress.cache.ttl bằng security properties phù hợp JDK; không mặc định -Dnetworkaddress.cache.ttl được hỗ trợ. Kiểm tra resolver thực tế sau thay đổi.
+- Chỉ đặt connectionTestQuery nếu driver không hỗ trợ JDBC4; validationTimeout phải nhỏ hơn connectionTimeout. Đặt maxLifetime ngắn hơn tuổi connection do DB/proxy áp đặt; nó không xử lý ngay connection đang được mượn.
+- Sau failover, loại bỏ connection lỗi qua soft eviction để pool tạo connection mới. PostgreSQL targetServerType=primary chỉ chọn primary trong URL multi-host phù hợp, không tự cung cấp failover hoặc refresh DNS.
+- Health check DB endpoint trả 503 để LB không route traffic tới instance đang fail.
+
+### Trade-off & pitfall
+- DNS TTL ngắn tăng DNS lookup overhead; cân bằng với tần suất failover.
+- Connection pool recreation là heavy operation; chỉ làm khi cần, không mỗi request.
+
+> Senior tip: ghi nhận hostname, IP đã resolve, SQLState và tuổi connection để phân biệt DNS cũ với socket chết trước khi chỉnh TTL.
+`,
+  follow: ['Làm sao detect DB failover từ app side?', 'Khi nào nên dùng failover-aware JDBC driver?'],
+  tags: ['db-failover', 'dns-cache', 'connection-pool', 'hikari']
+},
+{
+  id: 'scenario-033',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'RSS của container tăng dù heap ổn định: glibc malloc arenas, direct memory, thread — chẩn đoán và xử lý?',
+  a: `**Tóm tắt:** RSS tăng trong khi heap ổn định thường do off-heap: glibc malloc arenas giữ memory cho thread, direct ByteBuffer, thread stacks, Metaspace. Chẩn đoán bằng native memory tracking và /proc, xử lý bằng MALLOC_ARENA_MAX, direct memory limit, thread pool sizing.
+
+### Cơ chế
+- glibc malloc dùng nhiều arena để giảm tranh chấp; arena không phải mỗi thread một arena. Giới hạn phụ thuộc kiến trúc/cấu hình (trên 64-bit thường theo số CPU), không phải hằng số 8x cores. Bộ nhớ free có thể được giữ để tái sử dụng nên RSS chưa giảm ngay.
+- Direct memory: ByteBuffer.allocateDirect, Netty, NIO buffers không trong heap.
+- Thread stack có vùng reserved và committed khác nhau; -Xss không đồng nghĩa RSS tăng đúng 1 MB cho mỗi thread.
+- Metaspace: class loading, thường tăng theo thời gian.
+
+### Giải pháp
+- Thử MALLOC_ARENA_MAX=2 hoặc 4 nếu tiến trình dùng glibc; benchmark vì giảm arena có thể tăng contention.
+- Đối chiếu MaxDirectMemorySize với nhu cầu direct buffer. NMT hữu ích cho vùng native JVM được theo dõi nhưng không bao quát mọi malloc từ thư viện native bên thứ ba; đối chiếu với smaps và buffer pool.
+- Thread pool: giới hạn thread count, dùng virtual threads (Java 21) cho I/O-bound.
+- Monitor: jcmd <pid> VM.native_memory summary, /proc/<pid>/smaps.
+
+### Trade-off & pitfall
+- MALLOC_ARENA_MAX thấp có thể tăng contention trên arena → throughput giảm; test performance.
+- Direct memory limit quá thấp gây OOM khi Netty buffer pool lớn.
+
+> Senior tip: so sánh NMT, smaps và số thread; NMT không giải thích hết RSS thì tiếp tục kiểm tra allocator và native library thay vì kết luận là leak Java.
+`,
+  follow: ['Native memory tracking overhead là bao nhiêu?', 'Khi nào nên dùng virtual threads?'],
+  tags: ['rss', 'native-memory', 'malloc-arenas', 'direct-memory', 'container']
+}
+,
+{
+  id: 'scenario-034',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Batch import tạo bản ghi trùng do 2 request chạy song song: race condition, unique constraint, upsert — xử lý thế nào?',
+  a: `**Tóm tắt:** race condition khi insert cùng key từ 2 thread → duplicate. Giải pháp: unique constraint ở DB + upsert (INSERT ... ON CONFLICT) hoặc pessimistic lock; application-level check không đủ vì TOCTOU.
+
+### Cơ chế
+- TOCTOU: check exists → insert có gap giữa 2 bước; 2 thread cùng pass check → duplicate.
+- DB unique constraint là safety net; vi phạm ném DataIntegrityViolationException.
+
+### Giải pháp
+- Schema: unique index trên business key (email, external_id).
+- PostgreSQL INSERT ... ON CONFLICT cần unique constraint/index phù hợp. MERGE có từ PostgreSQL 15 nhưng semantics cạnh tranh khác ON CONFLICT; chọn theo yêu cầu và kiểm thử dưới tải.
+- PostgreSQL đánh dấu transaction failed sau unique violation cho tới rollback/savepoint; xử lý ở transaction boundary phù hợp rồi mới đọc lại nếu nghiệp vụ cho phép.
+- SELECT ... FOR UPDATE chỉ khóa row đã tồn tại; khóa parent hoặc dùng advisory lock nếu cần tuần tự hóa key mới, vẫn giữ unique constraint làm bảo vệ cuối.
+
+### Trade-off & pitfall
+- Upsert có thể overwrite data không mong muốn; dùng DO UPDATE SET chỉ field cần update.
+- Retry logic phải idempotent; nếu không sẽ tạo duplicate ở layer khác.
+
+> Senior tip: xác định semantics khi payload khác nhau cùng key (first-write-wins, last-write-wins hay reject); ON CONFLICT thực thi đúng semantics bạn viết.
+`,
+  follow: ['Idempotency key pattern cho API import?', 'Khi nào dùng pessimistic vs optimistic lock?'],
+  tags: ['race-condition', 'upsert', 'unique-constraint', 'idempotency']
+},
+{
+  id: 'scenario-035',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Bug lệch tiền do làm tròn khi chia phí/lãi cho nhiều kỳ: phân bổ phần dư, BigDecimal — xử lý thế nào?',
+  a: `**Tóm tắt:** chia tiền cho N kỳ bằng round từng kỳ sẽ mất/gain vài đồng do làm tròn. Giải pháp: tính tổng, phân bổ phần dư vào kỳ cuối hoặc phân bổ round-robin; luôn dùng BigDecimal với scale và RoundingMode.
+
+### Cơ chế
+- 100.00 / 3 = 33.333 → round 33.33 × 3 = 99.99, mất 0.01.
+- Phân bổ: tính mỗi kỳ = floor/round, phần dư = total - sum, cộng vào kỳ cuối (hoặc phân bổ round-robin cho công bằng).
+
+### Giải pháp
+- Dùng BigDecimal khởi tạo từ chuỗi hoặc integer theo minor unit; chọn scale theo currency và quy tắc nghiệp vụ. HALF_UP không phải quy tắc chung; HALF_EVEN hoặc quy định hợp đồng có thể cần thiết.
+- Chọn quy tắc phân bổ rõ ràng: chia đến đơn vị nhỏ nhất, tính phần dư chính xác rồi phân bổ cho một số kỳ. Quy định cả amount âm và hướng làm tròn để tổng luôn khớp.
+- Lưu input, quy tắc/phiên bản làm tròn và kết quả để audit; tổng các kỳ phải bằng tổng nguồn theo cùng đơn vị.
+
+### Trade-off & pitfall
+- Làm tròn HALF_UP vs HALF_EVEN (banker's) khác nhau ở .5; fintech thường HALF_UP.
+- Audit trail phải lưu input + output để reconcile.
+
+> Senior tip: test amount không chia hết, amount âm và nhiều currency; assertion quan trọng là tổng phân bổ bằng chính xác tổng nguồn.
+`,
+  follow: ['BigDecimal vs double cho tiền?', 'Làm sao reconcile tổng tiền với ledger?'],
+  tags: ['money', 'rounding', 'bigdecimal', 'financial']
+},
+{
+  id: 'scenario-036',
+  topic: 'scenario',
+  level: 'mid',
+  q: 'Chứng chỉ SSL của đối tác hết hạn / đổi CA làm sập tích hợp: truststore, giám sát hạn chứng chỉ — xử lý thế nào?',
+  a: `**Tóm tắt:** truststore chứa CA cert của đối tác; khi cert hết hạn hoặc đổi CA, TLS handshake fail. Giải pháp: truststore được quản lý tập trung, giám sát expiry, rotation không downtime, và fallback trust all trong dev only.
+
+### Cơ chế
+- JVM truststore (cacerts) chứa trusted CA certs. Khi server cert chain không match truststore → SSLHandshakeException.
+- Cert có notBefore/notAfter; JVM không tự refresh.
+
+### Giải pháp
+- Dùng truststore được quản lý và phân phối an toàn; truststore riêng hữu ích khi cần giới hạn CA nhưng không bắt buộc cho mọi app. Không commit private key/secret vào repo.
+- Monitor expiry: alert khi còn 30/14/7 ngày; script check bằng openssl s_client.
+- Rotation: phân phối trust anchor mới trước khi đối tác chuyển nếu CA thay đổi. JSSE không có cơ chế reload chung cho mọi client; chỉ dùng reload nếu client cụ thể hỗ trợ thay SSLContext, còn lại rolling restart.
+- Dev: trust all chỉ ở local/test profile.
+
+### Trade-off & pitfall
+- Reload truststore runtime phức tạp; rolling restart đơn giản hơn và an toàn.
+- Pin cert (certificate pinning) tăng security nhưng rotation khó; cân nhắc.
+
+> Senior tip: theo dõi cả chuỗi và hostname/SAN, không chỉ ngày hết hạn leaf; diễn tập rotation trên staging trước cửa sổ thay cert.
+`,
+  follow: ['Certificate pinning có nên dùng không?', 'Làm sao reload truststore không restart?'],
+  tags: ['ssl', 'tls', 'truststore', 'certificate', 'expiry']
+},
+{
+  id: 'scenario-037',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'JWT bị từ chối ngẫu nhiên do lệch đồng hồ giữa các server: clock skew, NTP, leeway — xử lý thế nào?',
+  a: `**Tóm tắt:** JWT có exp/iat/nbf; nếu server clock lệch, token hợp lệ bị reject ngẫu nhiên. Giải pháp: NTP sync tất cả server, thêm leeway (clockSkew) trong validator, và dùng short-lived token với refresh.
+
+### Cơ chế
+- Validator thường kiểm tra exp và nbf; iat không luôn được kiểm tra như điều kiện thời gian nếu ứng dụng không thêm validator. Clock lệch có thể khiến token bị coi là hết hạn hoặc chưa có hiệu lực.
+
+### Giải pháp
+- NTP sync tất cả server (chrony/systemd-timesyncd), monitor offset.
+- JJWT bản mới dùng clockSkewSeconds(...); setAllowedClockSkewSeconds(...) đã deprecated. Spring Security dùng JwtTimestampValidator(Duration.ofSeconds(...)), không có thuộc tính chung clockSkew=60s.
+- Chọn leeway theo sai số đo được; nó nới chấp nhận exp/nbf và kéo dài cửa sổ nhận token hết hạn. Token lifetime/refresh là quyết định riêng, không sửa lệch đồng hồ.
+- Log rejection reason để debug.
+
+### Trade-off & pitfall
+- Leeway quá lớn giảm security (token hết hạn vẫn chấp nhận thêm N giây).
+- NTP failure → clock drift; monitor NTP sync status.
+
+> Senior tip: log clock offset và claim thời gian đã kiểm tra (không log token); đặt skew theo độ lệch đo được và xác nhận với validator thực tế.
+`,
+  follow: ['Access token lifetime nên bao lâu?', 'Refresh token rotation pattern?'],
+  tags: ['jwt', 'clock-skew', 'ntp', 'authentication']
+}
+,
+{
+  id: 'scenario-038',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Redis đầy bộ nhớ, eviction xoá mất session/lock: maxmemory-policy, tách cluster theo mục đích — xử lý thế nào?',
+  a: `**Tóm tắt:** một Redis instance chia sẻ cho session, cache, lock → khi đầy, eviction xoá session/lock gây logout/mất lock. Giải pháp: tách Redis theo mục đích, đặt maxmemory-policy phù hợp từng loại, và monitor memory.
+
+### Cơ chế
+- Redis có noeviction, allkeys-lru/lfu/random và volatile-lru/lfu/random/ttl; volatile chỉ chọn key có TTL. Với noeviction, lệnh ghi cần thêm bộ nhớ sẽ lỗi khi chạm giới hạn.
+- Session/lock không nên bị evict; cache có thể.
+
+### Giải pháp
+- Tách deployment theo yêu cầu mất dữ liệu, độ trễ và eviction. Session có thể cần persistence/HA theo chính sách, nhưng persistence không thay backup. Lock cần TTL, fencing/nhất quán phù hợp và xử lý lỗi ghi.
+- Đặt maxmemory và maxmemory-policy per instance.
+- Monitor memory, evicted_keys, lỗi OOM và hit rate; đặt ngưỡng theo headroom và tốc độ tăng, không xem 80% là ngưỡng đúng cho mọi workload.
+- Session: dùng Redis với persistence (RDB/AOF) và replica.
+
+### Trade-off & pitfall
+- Nhiều deployment tăng độ phức tạp. Redis Cluster chỉ hỗ trợ database 0; logical DB index không cách ly tài nguyên, còn key prefix không tạo policy eviction riêng.
+- noeviction instance đầy → write fail; phải scale trước khi đầy.
+
+> Senior tip: volatile policy vẫn có thể evict session/lock có TTL; key prefix không bảo vệ key khỏi eviction.
+`,
+  follow: ['Redis Cluster vs Sentinel cho HA?', 'Distributed lock với Redis Redlock?'],
+  tags: ['redis', 'eviction', 'session', 'distributed-lock', 'memory']
+},
+{
+  id: 'scenario-039',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Dữ liệu Elasticsearch lệch so với DB: đồng bộ bằng CDC (Debezium), reindex không downtime — xử lý thế nào?',
+  a: `**Tóm tắt:** ES index lệch DB do write path kép (write DB + write ES) fail một bên. Giải pháp: single source of truth là DB, CDC (Debezium) stream changes sang ES; reindex không downtime bằng alias swap.
+
+### Cơ chế
+- Dual write: app write DB rồi write ES; nếu ES fail → lệch; nếu retry → duplicate.
+- CDC: DB transaction log (binlog/WAL) → Debezium → Kafka → ES sink connector → ES. At-least-once, idempotent by document id.
+
+### Giải pháp
+- App chỉ write DB; Debezium capture changes.
+- ES document id = DB primary key → idempotent upsert.
+- Reindex không downtime: tạo index mới với mapping/settings mới, bắt kịp thay đổi trong lúc backfill bằng CDC offset/checkpoint, xác nhận đủ dữ liệu rồi chuyển alias atomically qua một _aliases request; chỉ xóa index cũ sau rollback window.
+- Xử lý delete theo contract connector: Debezium có thể phát delete event và Kafka tombstone; cấu hình sink phải map chúng thành xóa document, nếu không dữ liệu đã xóa còn sót trong ES.
+
+### Trade-off & pitfall
+- CDC lag → ES eventual consistent; UI phải tolerate stale.
+- Schema evolution: mapping changes cần reindex; version mapping carefully.
+- Debezium connector failure → lag tăng; monitor lag.
+
+> Senior tip: CDC giảm rủi ro dual write nhưng vẫn cần reconciliation, rebuild procedure, monitoring lag và kế hoạch chuyển alias khi có thay đổi đồng thời.
+`,
+  follow: ['Debezium vs application-level outbox?', 'ES index alias swap procedure?'],
+  tags: ['elasticsearch', 'cdc', 'debezium', 'reindex', 'data-sync']
+},
+{
+  id: 'scenario-040',
+  topic: 'scenario',
+  level: 'mid',
+  q: 'Chi phí log tăng vọt sau một release: log level, sampling, structured logging, PII trong log — xử lý thế nào?',
+  a: `**Tóm tắt:** log volume tăng do debug level còn bật, log mọi request, hoặc log object lớn. Giải pháp: structured logging (JSON), sampling cho high-volume, PII redaction, và log level theo environment.
+
+### Cơ chế
+- Các facade/backend phổ biến có TRACE < DEBUG < INFO < WARN < ERROR; production chọn level theo tín hiệu cần giữ và chi phí, không có một level đúng cho mọi package.
+- High-volume endpoint (health check, polling) log mỗi request → volume lớn.
+- PII trong log → compliance risk + storage cost.
+
+### Giải pháp
+- Logback/Log4j2: profile-based level (dev DEBUG, prod INFO).
+- Structured JSON logging (logstash encoder) cho parse dễ.
+- Sampling: log 1/N request cho high-volume endpoint; full log khi error.
+- PII redaction: mask email/phone/card; không log password/token.
+- Đặt retention theo nhu cầu điều tra, quy định lưu trữ và ngân sách; thời hạn hot/warm/cold phụ thuộc workload.
+
+### Trade-off & pitfall
+- Sampling có thể miss rare errors; giữ full log khi status >= 500.
+- Structured logging giúp truy vấn theo field nhưng chi phí serialize, ingest và lưu trữ phụ thuộc payload/volume; tránh body lớn và đo overhead.
+
+> Senior tip: đo bytes/ngày và chi phí theo service trước/sau thay đổi; thiết kế sampling để vẫn giữ lỗi và trace cần cho điều tra.
+`,
+  follow: ['Structured logging với MDC context?', 'Log aggregation pipeline (ELK/Loki)?'],
+  tags: ['logging', 'structured-logging', 'sampling', 'pii', 'cost']
+},
+{
+  id: 'scenario-041',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Thread pool của Tomcat cạn vì gọi blocking tới service chậm: chẩn đoán và cách cô lập — xử lý thế nào?',
+  a: `**Tóm tắt:** Khi request thread bị giữ trong lời gọi downstream chậm, Tomcat có thể hết worker để xử lý request mới; giá trị mặc định phụ thuộc cấu hình. Chẩn đoán bằng thread dump và metrics hàng đợi, rồi giới hạn thời gian chờ và cô lập dependency.
+
+### Cơ chế
+- Tomcat: mỗi request một thread; thread block trên I/O (HTTP call, DB) → pool cạn.
+- Trong thread dump, lời gọi socket blocking thường hiện RUNNABLE ở native socket read; xem stack trace và dump lặp lại để xác nhận nhiều worker cùng chờ một dependency. WAITING/TIMED_WAITING cũng có thể là lock/queue khác.
+
+### Giải pháp
+- Cấu hình connect, response/read và pool-acquire timeout trên HTTP client cụ thể; chọn theo latency budget/SLO thay vì mặc định 2s/5s cho mọi hệ thống.
+- Circuit breaker: Resilience4j CB mở khi failure rate cao → fail fast.
+- Bulkhead giới hạn concurrency mỗi dependency; thread-pool bulkhead cô lập blocking call, còn semaphore bulkhead giới hạn lời gọi nhưng không tạo pool riêng.
+- Retry với backoff + jitter; idempotency.
+- Spring Boot 3.2+ hỗ trợ virtual threads với JDK 21 và cấu hình phù hợp. Chúng giảm chi phí thread chờ I/O nhưng không tăng năng lực downstream; WebFlux phù hợp khi toàn chuỗi non-blocking/reactive.
+
+### Trade-off & pitfall
+- Virtual threads không giải quyết downstream chậm; vẫn cần timeout + CB.
+- Thread-pool bulkhead tiêu thụ worker/queue; semaphore bulkhead không cách ly thread đang block. Chọn theo loại lời gọi và giới hạn queue để tránh tích request.
+
+> Senior tip: đối chiếu active/max threads, request queue, latency và timeout theo route; dump cho biết worker đang chờ ở đâu, metrics cho biết mức độ và thời điểm nghẽn.
+`,
+  follow: ['Virtual threads vs reactive cho Spring Boot?', 'Resilience4j bulkhead config?'],
+  tags: ['tomcat', 'thread-pool', 'blocking', 'bulkhead', 'circuit-breaker']
+}
 );
