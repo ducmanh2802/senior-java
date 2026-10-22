@@ -1,6 +1,6 @@
 # T43 — Nội dung: Debug lab — SQL & database (PostgreSQL ưu tiên, có 1 bài MySQL)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/labs-sql.js`
 
@@ -26,3 +26,19 @@ Viết **5 lab** với `category: 'sql'`, ID từ `lab-sql-001`, mỗi lab một
 `node scripts/validate.js` → OK với 5 lab. Sau đó integrator sẽ review fact-check.
 
 ## Notes
+
+Đã xong 5 lab (`category: 'sql'`, `lab-sql-001` … `lab-sql-005`), viết trong `js/data/labs-sql.js`:
+
+| Lab | Chủ đề | Level | Artifact |
+|---|---|---|---|
+| 001 | PG: `date_trunc` bọc cột + cast `::bigint` → Seq Scan 42 triệu dòng | senior | 3 file (EXPLAIN ANALYZE ×2, `\d` schema) |
+| 002 | MySQL 8.0: composite index `(created_at, status)` sai thứ tự → đọc 318.204 dòng | mid | 3 file (EXPLAIN, EXPLAIN ANALYZE, SHOW INDEX, slow log) |
+| 003 | Hibernate N+1: 101 câu SQL / request (log show_sql + `pg_stat_statements` + actuator) | senior | 3 file |
+| 004 | PG deadlock: 2 đơn mua chéo cập nhật 2 dòng `wallet_balance` ngược thứ tự | lead | 3 file (log server, `pg_locks` snapshot, log app) |
+| 005 | PG `idle in transaction` giữ khoá → chuỗi chờ 46 phiên (flash sale) | senior | 4 file (`pg_stat_activity`, `pg_blocking_pids`, `pg_settings`, log app) |
+
+- Đáp án dài 5.8k–7.4 ký tự, có đủ: nguyên nhân gốc → dẫn chứng (trích dòng cụ thể trong artifact) → sửa ngắn hạn → sửa dài hạn → phòng ngừa/monitoring → `> Senior tip:`.
+- Số liệu trong artifact tự nhất quán (PID, xid, tuple/page, số dòng, timestamp, epoch của slow log) và khớp với phần `answer`.
+- Bài MySQL là lab 002; lab 005 trong `answer` có nêu tương đương MySQL (`SHOW ENGINE INNODB STATUS`, `performance_schema.data_lock_waits`, `innodb_lock_wait_timeout`).
+- Inline code dùng `{{...}}`, code block dùng `~~~sql` / `~~~java`; trong artifact dùng ký tự `{}` tự do (artifact không phải markup).
+- Đã chạy `node --check js/data/labs-sql.js` và `node scripts/validate.js labs-sql.js` → `OK — không có lỗi.` (`validate` toàn repo đang báo lỗi ở `js/data/labs-gc.js` của T42 — dấu backtick chưa escape trong template literal quanh `toByteArray()`; không thuộc file của task này nên không tự sửa).
