@@ -15,9 +15,14 @@ declare -A pid_of=() owns_of=()
 
 owns()  { grep -m1 '^Owns:' tasks/"$1"-*.md | grep -o '`[^`]*`' | tr -d '`' | tr '\n' ' '; }
 after() { grep -m1 '^After:' tasks/"$1"-*.md | awk '{print $2}'; }
+live() {  # tasks of every opencode agent running on this machine (also ones started outside the queue)
+  powershell.exe -NoProfile -Command \
+    "Get-CimInstance Win32_Process -Filter \"Name='opencode.exe'\" | ForEach-Object { if (\$_.CommandLine -match '--title (T\d+)') { \$matches[1] } }" \
+    2>/dev/null | tr -d '\r' | sort -u
+}
 busy() {
   local t f g
-  for t in "${!pid_of[@]}"; do for f in ${owns_of[$t]}; do for g in $1; do [ "$f" = "$g" ] && return 0; done; done; done
+  for t in "${!pid_of[@]}" $(live); do for f in $(owns "$t"); do for g in $1; do [ "$f" = "$g" ] && return 0; done; done; done
   return 1
 }
 ready() {
