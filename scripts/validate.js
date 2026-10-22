@@ -53,6 +53,9 @@ function checkMarkup(file, id, field, s) {
   if (fences % 2) err(file, `${id}.${field}: code fence ~~~ chưa đóng`);
   if (/```/.test(s)) err(file, `${id}.${field}: dùng ~~~ thay cho \`\`\``);
   if (/<\/?(div|span|br|b|i|p|code|pre)\b/i.test(s.replace(/~~~[\s\S]*?~~~/g, ''))) warn(file, `${id}.${field}: có thẻ HTML thô — sẽ hiển thị nguyên văn`);
+  // free models sometimes leak Chinese / Japanese / Cyrillic words into Vietnamese or English text
+  const foreign = s.match(/[぀-ヿ㐀-鿿가-힯Ѐ-ӿ]+/);
+  if (foreign) err(file, `${id}.${field}: có ký tự lạ "${foreign[0].slice(0, 12)}" (Trung/Nhật/Hàn/Nga) — model viết lẫn ngôn ngữ, hãy viết lại câu đó`);
 }
 
 // ---- questions ----
