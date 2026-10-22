@@ -1,0 +1,13 @@
+{
+  "name": "senior-java-prep",
+  "private": true,
+  "description": "Static study site + Vercel serverless functions (api/) for AI grading and code running",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "validate": "node scripts/validate.js",
+    "monitor": "node scripts/monitor.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.137.0"
+  }
+}

@@ -182,3 +182,38 @@ pre.code[data-lang]::after { content: attr(data-lang); position: absolute; top: 
 .footer { padding-top: 0; color: var(--muted); font-size: .85rem; text-align: center; }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* ---------- AI feedback, speech, code run (App.ui in js/core/ai.js) ---------- */
+.ai-fb { border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; background: var(--surface); }
+.ai-fb-head { display: flex; gap: 14px; align-items: center; margin-bottom: 8px; }
+.ai-fb-head p { margin: 0; font-weight: 500; }
+.ai-score { flex: none; display: grid; place-items: center; width: 54px; height: 54px; border-radius: 50%; font-size: 1.5rem; font-weight: 700; line-height: 1; }
+.ai-score small { font-size: .6em; font-weight: 500; opacity: .7; }
+.ai-score.ok { background: var(--ok-soft); color: var(--ok); }
+.ai-score.warn { background: var(--warn-soft); color: var(--warn); }
+.ai-score.bad { background: var(--bad-soft); color: var(--bad); }
+.ai-fb-sec { margin-top: 10px; }
+.ai-fb-sec h5, .ai-fb-sec > summary { margin: 0 0 4px; font-size: .82rem; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); cursor: default; }
+.ai-fb-sec > summary { cursor: pointer; }
+.ai-fb-sec ul { margin: 0; padding-left: 1.2em; }
+.ai-fb-sec p { margin: 4px 0 0; }
+.ai-fb-sec.ok h5 { color: var(--ok); }
+.ai-fb-sec.warn h5 { color: var(--warn); }
+.ai-fb-sec.bad h5 { color: var(--bad); }
+.ai-fb s { color: var(--bad); }
+.ai-follow { margin-top: 12px; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--accent-soft); border-left: 3px solid var(--accent); }
+.ai-error { padding: 10px 12px; border-radius: var(--radius-sm); background: var(--bad-soft); color: var(--bad); font-size: .9rem; }
+.ai-loading { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); }
+.ai-loading::before { content: ''; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--border); border-top-color: var(--accent); animation: ai-spin .8s linear infinite; }
+@keyframes ai-spin { to { transform: rotate(360deg); } }
+.ai-speech-stats { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: .82rem; color: var(--muted); margin: 6px 0; }
+.mic-btn.recording { background: var(--bad); border-color: var(--bad); color: var(--surface); animation: mic-pulse 1.2s ease-in-out infinite; }
+@keyframes mic-pulse { 50% { box-shadow: 0 0 0 6px var(--bad-soft); } }
+.run-box { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; background: var(--surface); }
+.run-box b.ok, .run-cases .ok { color: var(--ok); }
+.run-box b.bad, .run-cases .bad, .run-box.bad b { color: var(--bad); }
+.run-cases { list-style: none; margin: 8px 0 0; padding: 0; font-family: var(--mono); font-size: .82rem; }
+.run-box pre.code { margin-top: 8px; max-height: 260px; }
+dialog.ai-settings { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); padding: 20px; width: min(520px, calc(100vw - 32px)); box-shadow: var(--shadow); }
+dialog.ai-settings::backdrop { background: rgba(0, 0, 0, .4); }
+dialog.ai-settings h3 { margin: 0; }

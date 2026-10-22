@@ -112,7 +112,11 @@ for (const z of sandbox.window.ALGOS || []) {
   if (!Array.isArray(z.hints) || z.hints.length < 2) err(f, `${id}: cần ≥ 2 hints`);
   if (!z.solution || !/~~~java/.test(z.solution)) err(f, `${id}: solution phải có code ~~~java`);
   if (!z.complexity) err(f, `${id}: thiếu complexity`);
-  const allowed = new Set(['id', 'title', 'difficulty', 'pattern', 'tags', 'prompt', 'hints', 'solution', 'complexity', 'follow', '__file']);
+  if (z.tests != null) {
+    if (typeof z.tests !== 'string' || !/public\s+class\s+Main/.test(z.tests)) err(f, `${id}: tests phải là chuỗi Java chứa public class Main`);
+    else if (!/RESULT/.test(z.tests)) err(f, `${id}: tests phải in dòng "RESULT passed/total"`);
+  }
+  const allowed = new Set(['id', 'title', 'difficulty', 'pattern', 'tags', 'prompt', 'hints', 'solution', 'complexity', 'follow', 'tests', 'starter', '__file']);
   Object.keys(z).forEach(k => { if (!allowed.has(k)) err(f, `${id}: field lạ "${k}"`); });
   ['prompt', 'solution'].forEach(k => checkMarkup(f, id, k, z[k]));
   (z.hints || []).forEach((x, i) => checkMarkup(f, id, `hints[${i}]`, x));

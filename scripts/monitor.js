@@ -30,9 +30,11 @@ const CONTENT = {
   T16: { files: ['q-scenario.js'], topics: { scenario: 24 } },
   T12: { files: ['quiz.js'], quiz: 80 },
   T14: { files: ['algo.js'], algo: 40 },
+  T18: { files: ['algo.js'], algoTests: 48 },
 };
 const VIEWS = {
   T09: ['dashboard', 'bank'], T10: ['flash', 'quiz'], T11: ['mock'], T15: ['algo'], T17: ['roadmap'],
+  T19: ['mock'], T20: ['algo', 'bank'], T21: ['companies'],
 };
 const EXPECTED_VIEW_LINES = 300; // rough size of a finished view (js + css)
 
@@ -115,10 +117,12 @@ function status() {
       (r.w.QUESTIONS || []).forEach(q => { counts[q.topic] = (counts[q.topic] || 0) + 1; });
       counts.__quiz = (counts.__quiz || 0) + (r.w.QUIZ || []).length;
       counts.__algo = (counts.__algo || 0) + (r.w.ALGOS || []).length;
+      counts.__algoTests = (counts.__algoTests || 0) + (r.w.ALGOS || []).filter(a => typeof a.tests === 'string' && /class Main/.test(a.tests)).length;
     }
     const list = Object.entries(spec.topics || {}).map(([t, n]) => ({ label: t, done: counts[t] || 0, target: n }));
     if (spec.quiz) list.push({ label: 'trắc nghiệm', done: counts.__quiz || 0, target: spec.quiz });
     if (spec.algo) list.push({ label: 'bài thuật toán', done: counts.__algo || 0, target: spec.algo });
+    if (spec.algoTests) list.push({ label: 'bài có test', done: counts.__algoTests || 0, target: spec.algoTests });
     list.forEach(p => { done += Math.min(p.done, p.target); target += p.target; });
     const val = spec.files.map(validate);
     const errors = val.flatMap(v => v.errors || []);

@@ -14,12 +14,16 @@ declare -A MODEL=(
   [T03]=opencode/minimax-m3.1-flash-free
   [T04]=opencode/mimo-v2.6-flash-free
   [T05]=opencode/deepseek-v4.1-flash-free
-  [T06]=opencode/glm-5.3-flash-free
+  [T06]=opencode/deepseek-v4.1-flash-free
   [T07]=opencode/minimax-m3.1-flash-free
-  [T08]=opencode/nemotron-3-ultra-free
-  [T12]=opencode/mimo-v2.6-flash-free
+  [T08]=opencode/deepseek-v4.1-flash-free
+  [T12]=opencode/minimax-m3.1-flash-free
   [T14]=opencode/deepseek-v4.1-flash-free
   [T16]=opencode/glm-5.3-flash-free
+  [T18]=opencode/deepseek-v4.1-flash-free
+  [T19]=opencode/minimax-m3.1-flash-free
+  [T20]=opencode/deepseek-v4.1-flash-free
+  [T21]=opencode/mimo-v2.6-flash-free
 )
 
 run_task() {

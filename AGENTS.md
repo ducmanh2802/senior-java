@@ -196,3 +196,30 @@ Quy ước UI:
 - [ ] `node scripts/validate.js` → OK
 - [ ] Mở `index.html` không có lỗi trong console; view chạy được ở cả light và dark mode, ở cả 360px và desktop
 - [ ] File task đã ghi `Status: DONE` kèm ghi chú
+
+## 9. AI, speech & code run (`js/core/ai.js`, `api/`)
+
+Phần server gồm các Vercel function trong `api/` (integrator sở hữu). Trình duyệt gọi qua `App.ai`, có kèm mật mã truy cập.
+**Không gọi `fetch('/api/...')` trực tiếp trong view**, chỉ dùng các API dưới đây:
+
+| API | Mô tả |
+|---|---|
+| `await App.ai.grade({question, reference, answer, lang, topic, level, history?, speech?})` | AI chấm câu trả lời tự luận → `{score 1-5, verdict, strengths[], missing[], mistakes[], follow_up, improved_answer, language:{grammar[{wrong,right,note}], phrasing_tips[], fluency}}` |
+| `await App.ai.review({title, prompt, reference, code, complexity, run?})` | AI review code → `{score, verdict, correct, bugs[], failing_cases[], complexity, style[], follow_up, improved_answer}` |
+| `await App.ai.run(source)` | Chạy chương trình Java (có `public class Main`) → `{configured, status, stdout, stderr, compile_output, time, memory}`; nếu `configured === false` thì gợi ý dùng AI review |
+| `App.ai.AiError` | Lỗi ném ra có thêm `.code` (`no_server`, `no_passcode`, `bad_passcode`, `not_configured`, …). Luôn bọc `try/catch` và hiển thị bằng `App.ui.error(e)` |
+| `App.speech.supported` / `App.speech.start({lang:'vi'\|'en', onText(final, interim), onError(msg)})` | Đọc chính tả. Trả về handle; gọi `handle.stop()` để nhận `{text, seconds, words, wpm, fillers}` |
+| `App.code.hasTests(algo)` / `App.code.assemble(userCode, algo.tests)` / `App.code.parse(stdout)` | Ghép code người dùng với test harness; `parse` trả về `{cases[{ok,name,detail}], passed, total, allPassed}` |
+| `App.ui.feedback(result, lang)` / `App.ui.codeFeedback(r)` / `App.ui.runResult(run, parsed)` / `App.ui.speechStats(metrics)` / `App.ui.scoreBadge(n)` / `App.ui.error(e)` | HTML dựng sẵn, **dùng thống nhất ở mọi view** |
+| `App.openSettings()` / phần tử có `data-open-settings` | Mở hộp cài đặt mật mã |
+
+Quy ước UI:
+- Nút micro dùng class `.btn.mic-btn`, khi đang ghi âm thêm class `.recording`.
+- Khi đang chờ AI, hiển thị `<span class="ai-loading">AI đang chấm…</span>` và disable nút để tránh gửi hai lần.
+- Ẩn nút micro khi `!App.speech.supported`.
+- Mỗi lần gọi AI đều tốn tiền của người dùng: **không bao giờ gọi tự động**, chỉ gọi khi người dùng bấm nút.
+- Để test logic trong Node mà không cần trình duyệt: `const App = require('./scripts/browser-shim.js')`.
+
+### ALGOS: field mới
+- `starter`: code khởi đầu hiển thị trong editor, gồm class và chữ ký method, ví dụ `class Solution {\n    public int[] twoSum(int[] nums, int target) {\n        \n    }\n}`.
+- `tests`: test harness Java, xem `tasks/T18-algo-tests.md`. Kiểm tra bằng `node scripts/test-algos.js`.
