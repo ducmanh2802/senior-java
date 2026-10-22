@@ -33,7 +33,7 @@ for (const a of algos) {
   fs.mkdirSync(dir);
   fs.writeFileSync(path.join(dir, 'Main.java'), App.code.assemble(m[1], a.tests));
   try {
-    execFileSync('javac', ['--release', '17', '-nowarn', 'Main.java'], { cwd: dir, stdio: 'pipe' });
+    execFileSync('javac', ['--release', '17', '-encoding', 'UTF-8', '-nowarn', 'Main.java'], { cwd: dir, stdio: 'pipe' });
   } catch (e) {
     failed++;
     failures.push(`${a.id}: COMPILE ERROR\n${String(e.stderr || e.message).split('\n').slice(0, 8).join('\n')}`);

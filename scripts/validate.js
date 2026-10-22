@@ -36,6 +36,7 @@ for (const f of files) {
   (sandbox.window.QUIZ || []).slice(zBefore).forEach(q => { q.__file = f; });
   (sandbox.window.ALGOS || []).forEach(q => { q.__file = q.__file || f; });
   (sandbox.window.LABS || []).forEach(q => { q.__file = q.__file || f; });
+  (sandbox.window.LESSONS || []).forEach(q => { q.__file = q.__file || f; });
 }
 
 const TOPICS = sandbox.window.TOPICS || [];
@@ -151,6 +152,48 @@ for (const z of sandbox.window.LABS || []) {
   ['scenario', 'answer'].forEach(k => checkMarkup(f, id, k, z[k]));
 }
 
+// ---- lessons (AGENTS.md section 12) ----
+const seenLesson = new Set();
+const questionIds = new Set((sandbox.window.QUESTIONS || []).map(q => q.id));
+for (const z of sandbox.window.LESSONS || []) {
+  const f = z.__file || 'lessons', id = z.id || '(no id)';
+  if (!/^lesson-[a-z]+-\d{3}$/.test(z.id || '') || seenLesson.has(z.id)) err(f, `lesson id thiếu/trùng/sai dạng lesson-<track>-NNN: ${id}`);
+  seenLesson.add(z.id);
+  if (!topicIds.has(z.track) || !String(z.id).startsWith('lesson-' + z.track + '-')) err(f, `${id}: track phải là topic id có trong topics.js và khớp với id`);
+  if (f !== 'lessons-' + z.track + '.js') err(f, `${id}: bài của track "${z.track}" phải nằm trong lessons-${z.track}.js`);
+  if (!LEVELS.has(z.level)) err(f, `${id}: level phải là mid|senior|lead`);
+  if (!Number.isInteger(z.order) || z.order < 1) err(f, `${id}: order phải là số nguyên ≥ 1`);
+  if (!Number.isInteger(z.minutes) || z.minutes < 5 || z.minutes > 90) err(f, `${id}: minutes phải trong 5..90`);
+  if (!z.title || typeof z.title !== 'string') err(f, `${id}: thiếu title`);
+  if (!Array.isArray(z.goals) || z.goals.length < 2 || z.goals.length > 5) err(f, `${id}: goals cần 2–5 mục`);
+  if (typeof z.body !== 'string' || z.body.length < 2500) err(f, `${id}: body cần ≥ 2500 ký tự (hiện ${String(z.body || '').length})`);
+  if (!Array.isArray(z.exercises) || z.exercises.length < 1 || z.exercises.length > 3) err(f, `${id}: exercises cần 1–3 bài`);
+  else z.exercises.forEach((x, i) => {
+    const xid = `${id}.exercises[${i}]`;
+    ['title', 'prompt', 'starter', 'tests', 'reference', 'explain'].forEach(k => { if (!x || typeof x[k] !== 'string' || !x[k].trim()) err(f, `${xid}: thiếu ${k}`); });
+    if (x && !/public\s+class\s+Main\b/.test(x.tests || '')) err(f, `${xid}: tests phải chứa public class Main`);
+    if (x && !/RESULT/.test(x.tests || '')) err(f, `${xid}: tests phải in dòng RESULT passed/total`);
+    if (x && (!Array.isArray(x.hints) || !x.hints.length)) err(f, `${xid}: cần ≥ 1 hint`);
+    const ok = new Set(['title', 'prompt', 'starter', 'tests', 'reference', 'hints', 'explain']);
+    Object.keys(x || {}).forEach(k => { if (!ok.has(k)) err(f, `${xid}: field lạ "${k}"`); });
+    ['prompt', 'explain'].forEach(k => checkMarkup(f, xid, k, x && x[k]));
+    (x && x.hints || []).forEach((h, j) => checkMarkup(f, xid, `hints[${j}]`, h));
+  });
+  if (!Array.isArray(z.check) || z.check.length < 2 || z.check.length > 4) err(f, `${id}: check cần 2–4 câu hỏi nhanh`);
+  else z.check.forEach((c, i) => {
+    const cid = `${id}.check[${i}]`;
+    if (!c || !c.q || !Array.isArray(c.options) || c.options.length !== 4 || new Set(c.options).size !== 4) err(f, `${cid}: cần q và đúng 4 options khác nhau`);
+    if (!c || !Number.isInteger(c.answer) || c.answer < 0 || c.answer > 3) err(f, `${cid}: answer phải là 0..3`);
+    if (!c || !c.explain) err(f, `${cid}: thiếu explain`);
+    checkMarkup(f, cid, 'q', c && c.q); checkMarkup(f, cid, 'explain', c && c.explain);
+  });
+  (z.related || []).forEach(r => { if (!questionIds.has(r)) err(f, `${id}: related "${r}" không phải id câu hỏi có thật`); });
+  const allowed = new Set(['id', 'track', 'order', 'title', 'level', 'minutes', 'goals', 'body', 'exercises', 'check', 'related', 'tags', '__file']);
+  Object.keys(z).forEach(k => { if (!allowed.has(k)) err(f, `${id}: field lạ "${k}"`); });
+  checkMarkup(f, id, 'body', z.body);
+  (z.goals || []).forEach((g, i) => checkMarkup(f, id, `goals[${i}]`, g));
+}
+
 // ---- summary ----
 const Q = sandbox.window.QUESTIONS || [], Z = sandbox.window.QUIZ || [];
 console.log('Questions per topic:');
@@ -163,6 +206,9 @@ console.log(`Tổng: ${Q.length} câu hỏi, ${Z.length} trắc nghiệm, ${A.le
   ['easy', 'medium', 'hard'].map(d => d + ' ' + A.filter(a => a.difficulty === d).length).join(', ') + ')');
 const L = sandbox.window.LABS || [];
 console.log(`Debug lab: ${L.length} bài (` + [...LAB_CATS].map(c => c + ' ' + L.filter(l => l.category === c).length).join(', ') + ')');
+const LS = sandbox.window.LESSONS || [];
+if (LS.length) console.log(`Bài học: ${LS.length} bài, ${LS.reduce((n, l) => n + (l.exercises || []).length, 0)} bài tập (` +
+  [...new Set(LS.map(l => l.track))].map(t => t + ' ' + LS.filter(l => l.track === t).length).join(', ') + ')');
 if (warns.length) console.log('\nCảnh báo:\n  ' + warns.join('\n  '));
 if (errors.length) { console.error('\nLỖI:\n  ' + errors.join('\n  ')); process.exit(1); }
 console.log('\nOK — không có lỗi.');

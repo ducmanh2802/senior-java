@@ -51,11 +51,15 @@ const CONTENT = {
   T61: { files: ['q-spring-data.js'], topics: { spring: 27, jpa: 21, db: 25 } },
   T62: { files: ['q-system-design.js'], topics: { architecture: 22 } },
   T72: { files: ['quiz.js'], quiz: 130 },
+  // P4 bài học: target = tổng số bài trong file (collections đã có 1 bài mẫu)
+  T81: { files: ['lessons-collections.js'], lessons: 5 }, T82: { files: ['lessons-core.js'], lessons: 5 },
+  T83: { files: ['lessons-modern.js'], lessons: 5 }, T84: { files: ['lessons-concurrency.js'], lessons: 5 },
+  T85: { files: ['lessons-spring.js'], lessons: 5 }, T86: { files: ['lessons-jpa.js'], lessons: 5 },
 };
 const VIEWS = {
   T09: ['dashboard', 'bank'], T10: ['flash', 'quiz'], T11: ['mock'], T15: ['algo'], T17: ['roadmap'],
   T19: ['mock'], T20: ['algo', 'bank'], T21: ['companies'],
-  T33: ['account'], T34: ['legal'], T45: ['labs'], T71: ['interview'],
+  T33: ['account'], T34: ['legal'], T45: ['labs'], T71: ['interview'], T87: ['learn'],
 };
 const EXPECTED_VIEW_LINES = 300; // rough size of a finished view (js + css)
 
@@ -133,18 +137,21 @@ function status() {
         for (const m of src.matchAll(/id:\s*'([a-z]+)-\d{3}'/g)) counts[m[1]] = (counts[m[1]] || 0) + 1;
         counts.__quiz = (counts.__quiz || 0) + (src.match(/id:\s*'qz-[a-z]+-\d{3}'/g) || []).length;
         counts.__algo = (counts.__algo || 0) + (src.match(/id:\s*'algo-\d{3}'/g) || []).length;
+        counts.__lessons = (counts.__lessons || 0) + (src.match(/id:\s*'lesson-[a-z]+-\d{3}'/g) || []).length;
         continue;
       }
       (r.w.QUESTIONS || []).forEach(q => { counts[q.topic] = (counts[q.topic] || 0) + 1; });
       counts.__quiz = (counts.__quiz || 0) + (r.w.QUIZ || []).length;
       counts.__algo = (counts.__algo || 0) + (r.w.ALGOS || []).length;
       counts.__labs = (counts.__labs || 0) + (r.w.LABS || []).length;
+      counts.__lessons = (counts.__lessons || 0) + (r.w.LESSONS || []).length;
       counts.__algoTests = (counts.__algoTests || 0) + (r.w.ALGOS || []).filter(a => typeof a.tests === 'string' && /class Main/.test(a.tests)).length;
     }
     const list = Object.entries(spec.topics || {}).map(([t, n]) => ({ label: t, done: counts[t] || 0, target: n }));
     if (spec.quiz) list.push({ label: 'trắc nghiệm', done: counts.__quiz || 0, target: spec.quiz });
     if (spec.algo) list.push({ label: 'bài thuật toán', done: counts.__algo || 0, target: spec.algo });
     if (spec.labs) list.push({ label: 'lab', done: counts.__labs || 0, target: spec.labs });
+    if (spec.lessons) list.push({ label: 'bài học', done: counts.__lessons || 0, target: spec.lessons });
     if (spec.algoTests) list.push({ label: 'bài có test', done: counts.__algoTests || 0, target: spec.algoTests });
     list.forEach(p => { done += Math.min(p.done, p.target); target += p.target; });
     const val = spec.files.map(validate);

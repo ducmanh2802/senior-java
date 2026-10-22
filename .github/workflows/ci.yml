@@ -36,6 +36,9 @@ jobs:
       - name: Algorithm harnesses compile and pass with reference solutions
         run: node scripts/test-algos.js
 
+      - name: Lesson exercises compile and pass with reference solutions
+        run: node scripts/test-lessons.js
+
       - name: Sync merge + API auth/quota gate
         run: node scripts/test-sync.js
 

@@ -112,6 +112,11 @@
   function questions() { return window.QUESTIONS || []; }
   function quiz() { return window.QUIZ || []; }
   function algos() { return window.ALGOS || []; }
+  /** Lessons sorted by track order then lesson order (AGENTS.md section 12). */
+  function lessons() {
+    const order = topics().map(t => t.id);
+    return (window.LESSONS || []).slice().sort((a, b) => order.indexOf(a.track) - order.indexOf(b.track) || a.order - b.order);
+  }
   function topics() { return window.TOPICS || []; }
   /** Questions + algo problems due for spaced-repetition review today, most overdue first. */
   function dueItems() {
@@ -330,7 +335,7 @@
 
   window.App = {
     LEVELS, STATUS, store, esc, md, highlight, shuffle, onKey, fmtDate,
-    questions, quiz, algos, topics, dueItems, dayKey, startOfDay, DAY, topic, filterQuestions, stats,
+    questions, quiz, algos, lessons, topics, dueItems, dayKey, startOfDay, DAY, topic, filterQuestions, stats,
     registerView, navigate, route,
   };
 

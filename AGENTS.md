@@ -279,3 +279,33 @@ Claude đóng vai interviewer, hội thoại nhiều lượt. **Một phiên ch�
 - Lỗi `code`: `bad_session` (hết hạn: mời bắt đầu phiên mới, vẫn cho xem tổng kết nếu có), `session_full`, `quota_exceeded`, `no_auth`.
 - Giọng nói: STT dùng `App.speech.start({lang})`. TTS dùng `window.speechSynthesis` với `SpeechSynthesisUtterance`, `lang` là `'vi-VN'` hoặc `'en-US'` (chọn voice khớp nếu có). Khi `speechSynthesis` không có thì chỉ hiện chữ. Luôn có chế độ **gõ phím** thay cho mic.
 - Không gọi `turn` tự động liên tục: mỗi lượt chỉ được gửi khi người dùng kết thúc câu trả lời (bấm "Trả lời xong", hoặc tự dừng sau khi im lặng ≥ 2.5 giây và đang bật chế độ rảnh tay).
+
+## 12. Bài học + bài tập Java tự chấm: `window.LESSONS` (`js/data/lessons-<track>.js`)
+
+Mỗi bài học dạy một khái niệm cho người hổng nền tảng: lý thuyết có ví dụ, rồi **bài tập Java chạy và tự chấm** bằng test harness (giống ALGOS), rồi 2–4 câu kiểm tra nhanh. **Bài mẫu: `lesson-collections-001` trong `js/data/lessons-collections.js`; đọc kỹ trước khi viết.**
+
+```js
+{
+  id: 'lesson-collections-002',     // lesson-<track>-NNN; track = topic id trong topics.js; file lessons-<track>.js
+  track: 'collections', order: 2,   // thứ tự trong track (1, 2, 3…)
+  title: '…', level: 'mid',         // mid | senior | lead
+  minutes: 25,                      // 5..90
+  goals: ['…', '…'],                // 2–5 mục "sau bài này bạn làm được gì"
+  body: `markup ≥ 2500 ký tự`,      // ### các phần, ~~~java ví dụ ngắn có comment, bảng, > lưu ý; kết bằng "### Liên hệ phỏng vấn"
+  exercises: [{                     // 1–3 bài
+    title, prompt: `markup`,
+    starter: 'Java',                // PHẢI biên dịch được; phần chưa làm: throw new UnsupportedOperationException("TODO")
+    tests: 'public class Main { … in "PASS name" / "FAIL name: chi tiết" … cuối cùng "RESULT passed/total" }',  // ≥ 3 case
+    reference: 'Java',              // lời giải mẫu: phải pass 100% test
+    hints: ['…'],                   // ≥ 1
+    explain: `markup`               // giải thích lời giải + lỗi hay gặp
+  }],
+  check: [{ q, options: [4], answer: 0..3, explain }],   // 2–4 câu
+  related: ['collections-001'],     // id câu hỏi có thật trong ngân hàng (tuỳ chọn)
+  tags: ['…']                       // tuỳ chọn
+}
+```
+- Code bài tập **chỉ dùng JDK chuẩn** (không Spring, không thư viện ngoài), **không class public** ngoài `Main` (code được ghép vào một file), import `java.util.*`, `java.util.function.*`, `java.util.concurrent.*`… được tự thêm (xem `App.code.assemble`). Với chủ đề framework (Spring, JPA), bài tập **mô phỏng cơ chế bằng Java thuần** (ví dụ: tự viết một DI container nhỏ, một dynamic proxy bọc transaction, đếm số query để thấy N+1).
+- Test phải **xác định (deterministic)**: không phụ thuộc thời gian thực hay thứ tự lập lịch thread; với concurrency hãy dùng `CountDownLatch`/`ExecutorService` + `join`/`awaitTermination` có timeout và lặp đủ nhiều lần để lỗi race lộ ra ổn định ở code sai.
+- Bài tập phải biên dịch với **Java 17** (JDK trên máy và CI là 17; Judge0 còn cũ hơn): tính năng Java 21 (virtual threads, switch pattern) chỉ được dạy trong `body`/`explain`.
+- Chạy `node scripts/test-lessons.js` (biên dịch thật bằng JDK 17): reference phải pass hết, starter phải biên dịch được và **không** pass hết. Và `node scripts/validate.js` → OK.
