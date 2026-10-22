@@ -66,6 +66,15 @@
     review: p => call('grade', Object.assign({ kind: 'code' }, p)),
     /** Run a complete Java program (must contain public class Main). */
     run: source => call('run', { source }),
+    /**
+     * Continuous mock interview (AGENTS.md section 11). One session = one quota unit.
+     * turn({session_token?, config, transcript, elapsed_seconds}) → {say, intent, topic, seed_index, last_answer{score,note}, done, session_token}
+     * summary({session_token, config, transcript}) → {overall_score, hire_signal, verdict, by_question[], strengths[], improvements[], study_next[], communication}
+     */
+    interview: {
+      turn: p => call('interview', Object.assign({ action: 'turn' }, p)),
+      summary: p => call('interview', Object.assign({ action: 'summary' }, p)),
+    },
   };
 
   // ---------- speech ----------

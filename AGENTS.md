@@ -48,7 +48,7 @@ css/base.css               # design tokens + component dùng chung (integrator)
 css/views/<view>.css       # style riêng từng view                (task view tương ứng)
 js/core/app.js             # App core: store, router, md, helpers (integrator)
 js/data/topics.js          # danh sách chủ đề                    (integrator)
-js/data/q-*.js             # câu hỏi tự luận                       (task nội dung)
+js/data/q-*.js             # câu hỏi tự luận, mỗi topic thuộc đúng 1 file (xem topics.js) (task nội dung)
 js/data/quiz.js            # câu trắc nghiệm                       (T12)
 js/data/algo.js            # bài thuật toán (window.ALGOS)         (T14)
 js/data/roadmap.js         # lộ trình 26 tuần (window.ROADMAP)     (integrator)
@@ -264,3 +264,18 @@ Mỗi bài cho người học dữ liệu thật (dump, log, plan…). Người 
 - Artifact phải **tự nhất quán**: tên thread, lock id (`<0x...>`), timestamp và số liệu phải khớp nhau và khớp với `answer`.
 - Không dùng backtick và `${` trong template literal. Trong artifact được dùng `{` `}` thoải mái, vì artifact không phải markup.
 - Khi chấm, view gọi `App.ai.grade({question: questions.join(' '), reference: answer + '\nRubric: ' + rubric.join('; '), answer, topic: 'lab-' + category, level})`.
+
+## 11. Phỏng vấn AI bằng giọng nói (`#/interview`)
+
+Claude đóng vai interviewer, hội thoại nhiều lượt. **Một phiên chỉ tốn 1 lượt hạn mức**: lượt đầu không có `session_token`, server trừ hạn mức rồi trả token; các lượt sau và phần tổng kết phải gửi lại token đó (hết hạn sau 90 phút, tối đa 24 câu trả lời).
+
+| API | Mô tả |
+|---|---|
+| `await App.ai.interview.turn({session_token?, config, transcript, elapsed_seconds})` | → `{say, intent, topic, seed_index, last_answer:{score 0-5, note}, done, session_token}`. `say` là lời interviewer (đọc to bằng TTS); `intent` ∈ `question\|follow_up\|clarify\|hint\|wrap_up`; `last_answer.score = 0` ở lượt đầu |
+| `await App.ai.interview.summary({session_token, config, transcript})` | → `{overall_score 1-5, hire_signal, verdict, by_question[{question, score, comment, better_answer}], strengths[], improvements[], study_next[], communication}`; `hire_signal` ∈ `strong_no\|no\|lean_no\|lean_yes\|yes\|strong_yes` |
+
+- `config = {lang: 'vi'|'en', level: 'mid'|'senior'|'lead', minutes: 10-60, persona: 'friendly'|'strict', focus: 'mô tả ngắn trọng tâm', seeds: [{topic, q, ref}]}`. `seeds` là ≤ 12 câu lấy từ `App.questions()` theo chủ đề hoặc công ty đã chọn; `ref` là đoạn `**Tóm tắt:**` của đáp án (≤ 600 ký tự), **không gửi cả đáp án**.
+- `transcript = [{role: 'interviewer'|'candidate', text}]` là toàn bộ hội thoại. Client giữ transcript và gửi lại mỗi lượt.
+- Lỗi `code`: `bad_session` (hết hạn: mời bắt đầu phiên mới, vẫn cho xem tổng kết nếu có), `session_full`, `quota_exceeded`, `no_auth`.
+- Giọng nói: STT dùng `App.speech.start({lang})`. TTS dùng `window.speechSynthesis` với `SpeechSynthesisUtterance`, `lang` là `'vi-VN'` hoặc `'en-US'` (chọn voice khớp nếu có). Khi `speechSynthesis` không có thì chỉ hiện chữ. Luôn có chế độ **gõ phím** thay cho mic.
+- Không gọi `turn` tự động liên tục: mỗi lượt chỉ được gửi khi người dùng kết thúc câu trả lời (bấm "Trả lời xong", hoặc tự dừng sau khi im lặng ≥ 2.5 giây và đang bật chế độ rảnh tay).

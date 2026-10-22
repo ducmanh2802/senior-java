@@ -48,6 +48,7 @@ declare -A MODEL=(
   [T60]=opencode/deepseek-v4.1-flash-free
   [T61]=opencode/minimax-m3.1-flash-free
   [T62]=opencode/mimo-v2.6-flash-free
+  [T71]=opencode/deepseek-v4.1-flash-free
 )
 
 run_task() {

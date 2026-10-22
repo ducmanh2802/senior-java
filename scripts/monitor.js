@@ -54,7 +54,7 @@ const CONTENT = {
 const VIEWS = {
   T09: ['dashboard', 'bank'], T10: ['flash', 'quiz'], T11: ['mock'], T15: ['algo'], T17: ['roadmap'],
   T19: ['mock'], T20: ['algo', 'bank'], T21: ['companies'],
-  T33: ['account'], T34: ['legal'], T45: ['labs'],
+  T33: ['account'], T34: ['legal'], T45: ['labs'], T71: ['interview'],
 };
 const EXPECTED_VIEW_LINES = 300; // rough size of a finished view (js + css)
 

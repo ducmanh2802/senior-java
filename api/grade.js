@@ -13,8 +13,7 @@
 'use strict';
 
 const { send, guard, charge, str } = require('./_lib');
-
-const MODEL = process.env.CLAUDE_MODEL || 'claude-opus-5-5';
+const { askJson, reply, clampScore } = require('./_claude');
 
 const RUBRIC = `Thang điểm (giống thang tự chấm trong app):
 1 = không trả lời được / sai cơ bản
@@ -140,39 +139,10 @@ module.exports = async function handler(req, res) {
   if (content.trim().length < 5) return send(res, 400, { error: isCode ? 'Chưa có code để review' : 'Câu trả lời trống' });
   if (!(await charge(res, ctx.user, isCode ? 'review' : 'grade'))) return;
 
-  const { default: Anthropic } = await import('@anthropic-ai/sdk');
-  const client = new Anthropic();
-  try {
-    const response = await client.beta.messages.create({
-      model: MODEL,
-      max_tokens: 16000,
-      betas: ['server-side-fallback-2026-07-01'],
-      fallbacks: 'default', // re-run on Anthropic's recommended model if a safety classifier declines
-      system: isCode ? SYSTEM_CODE : SYSTEM_ANSWER,
-      output_config: {
-        effort: 'medium',
-        format: { type: 'json_schema', schema: isCode ? CODE_SCHEMA : ANSWER_SCHEMA },
-      },
-      messages: [{ role: 'user', content: isCode ? codePrompt(body) : answerPrompt(body) }],
-    });
-
-    if (response.stop_reason === 'refusal') {
-      return send(res, 422, { error: 'Model từ chối chấm câu trả lời này', code: 'refusal' });
-    }
-    if (response.stop_reason === 'max_tokens') {
-      return send(res, 502, { error: 'Phản hồi bị cắt do quá dài, thử lại', code: 'max_tokens' });
-    }
-    const text = response.content.filter(b => b.type === 'text').map(b => b.text).join('');
-    let result;
-    try { result = JSON.parse(text); } catch (e) { return send(res, 502, { error: 'Không đọc được kết quả chấm', code: 'bad_json' }); }
-    result.score = Math.min(5, Math.max(1, Math.round(Number(result.score) || 1)));
-    return send(res, 200, Object.assign(result, { model: response.model }));
-  } catch (error) {
-    if (error instanceof Anthropic.AuthenticationError) return send(res, 503, { error: 'ANTHROPIC_API_KEY không hợp lệ', code: 'bad_key' });
-    if (error instanceof Anthropic.RateLimitError) return send(res, 429, { error: 'Claude API đang giới hạn tốc độ, thử lại sau' });
-    if (error instanceof Anthropic.BadRequestError) return send(res, 400, { error: 'Yêu cầu không hợp lệ: ' + error.message });
-    if (error instanceof Anthropic.APIError) return send(res, 502, { error: `Claude API lỗi ${error.status}` });
-    console.error(error);
-    return send(res, 500, { error: 'Lỗi server khi chấm' });
-  }
+  const outcome = await askJson({
+    system: isCode ? SYSTEM_CODE : SYSTEM_ANSWER,
+    prompt: isCode ? codePrompt(body) : answerPrompt(body),
+    schema: isCode ? CODE_SCHEMA : ANSWER_SCHEMA,
+  });
+  return reply(res, outcome, r => Object.assign(r, { score: clampScore(r.score) }));
 };
