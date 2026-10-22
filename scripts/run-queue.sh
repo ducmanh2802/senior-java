@@ -31,14 +31,20 @@ ready() {
 }
 
 if [ -z "${FORCE_MODELS:-}" ]; then
-  FORCE_MODELS="$(scripts/probe-models.sh | tr '\n' ' ')"
-  [ -n "${FORCE_MODELS// /}" ] || { echo "[$(date +%T)] no free model answers right now"; exit 1; }
+  # free tiers stall when saturated or exhausted: wait for at least one model instead of giving up
+  for attempt in $(seq 1 24); do
+    FORCE_MODELS="$(scripts/probe-models.sh | tr '\n' ' ')"
+    [ -n "${FORCE_MODELS// /}" ] && break
+    echo "[$(date +%T)] no free model answers right now (try $attempt/24), waiting 5 min"
+    sleep 300
+  done
+  [ -n "${FORCE_MODELS// /}" ] || { echo "[$(date +%T)] giving up: no model for 2 hours"; exit 1; }
 fi
 export FORCE_MODELS
 echo "[$(date +%T)] queue (max $MAX, models: $FORCE_MODELS): ${queue[*]}"
 while [ ${#queue[@]} -gt 0 ] || [ ${#pid_of[@]} -gt 0 ]; do
   for t in "${!pid_of[@]}"; do kill -0 "${pid_of[$t]}" 2>/dev/null || unset "pid_of[$t]"; done
-  if [ ${#pid_of[@]} -lt "$MAX" ]; then
+  if [ "$(live | wc -l)" -lt "$MAX" ]; then   # count every agent on the machine, not only ours
     for i in "${!queue[@]}"; do
       t=${queue[$i]}; o=$(owns "$t")
       if grep -q '^Status: DONE' tasks/"$t"-*.md; then   # finished meanwhile (e.g. by a watchdog retry)
