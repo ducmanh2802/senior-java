@@ -823,5 +823,468 @@ Flux<String> chat(@RequestParam String q) {
     'Những cảnh báo nào phát hiện sớm việc model đổi hành vi?'
   ],
   tags: ['observability', 'LLM', 'token', 'feedback']
+},
+{
+  id: 'ai-014',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Chatbot RAG về biểu phí và điều khoản ngân hàng trả lời sai khi người dùng hỏi "phí thường niên thẻ Visa Platinum" hoặc gõ không dấu. Bạn cải thiện retrieval bằng hybrid search, chunking tiếng Việt và metadata filter thế nào?',
+  a: `**Tóm tắt:** Vector search giỏi bắt ý nghĩa nhưng kém với từ khoá chính xác (tên sản phẩm, mã biểu phí, "Điều 15"), còn BM25 thì ngược lại. **Hybrid search** chạy cả hai rồi hợp nhất bằng Reciprocal Rank Fusion, sau đó re-rank. Với tiếng Việt cần thêm: analyzer xử lý cả có dấu và không dấu, chunk theo cấu trúc văn bản (Chương/Điều/Khoản, bảng phí) kèm đường dẫn tiêu đề, và lọc metadata theo sản phẩm, phiên bản, ngày hiệu lực trước khi tìm.
+
+### Vì sao vector search một mình chưa đủ
+- Embedding nén cả đoạn thành một vector, nên "Visa Platinum" và "Visa Gold" nằm rất gần nhau: hệ thống trả về biểu phí của thẻ khác, model đọc và trả lời tự tin nhưng sai.
+- Mã số, số điều khoản, viết tắt (TKTT, OTP) ít mang nghĩa ngữ cảnh, embedding xử lý kém.
+- BM25 chấm điểm theo tần suất từ khoá có điều chỉnh độ dài văn bản, khớp chính xác "Platinum" nhưng không hiểu "phí duy trì hằng năm" đồng nghĩa với "phí thường niên".
+
+### Hợp nhất kết quả: Reciprocal Rank Fusion
+Điểm BM25 và cosine không cùng thang đo nên không cộng trực tiếp được. RRF chỉ dùng **thứ hạng**: score(d) = tổng 1/(k + rank) qua các danh sách, k thường là 60.
+
+~~~java
+// Hợp nhất kết quả BM25 và vector theo thứ hạng, không cần chuẩn hoá điểm
+static List<String> rrf(List<List<String>> rankings, int k, int topN) {
+    Map<String, Double> score = new HashMap<>();
+    for (List<String> ranking : rankings) {
+        for (int i = 0; i < ranking.size(); i++) {
+            score.merge(ranking.get(i), 1.0 / (k + i + 1), Double::sum); // rank bắt đầu từ 1
+        }
+    }
+    return score.entrySet().stream()
+        .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
+        .limit(topN).map(Map.Entry::getKey).toList();
+}
+// rrf(List.of(bm25Ids, vectorIds), 60, 20) rồi đưa 20 ứng viên qua cross-encoder re-rank, lấy 5
+~~~
+OpenSearch/Elasticsearch có sẵn cơ chế hybrid query và RRF ở các bản mới; PostgreSQL có thể ghép full-text search với pgvector, nhưng {{ts_rank}} không phải BM25 thật.
+
+### Tiếng Việt: những điểm riêng
+- **Không dấu**: người dùng gõ "phi thuong nien". Index thêm một field đã bỏ dấu (filter ascii folding) bên cạnh field gốc, query cả hai, ưu tiên khớp có dấu.
+- **Từ ghép nhiều âm tiết**: "ngân hàng", "lãi suất". Analyzer mặc định tách theo khoảng trắng nên khớp từng âm tiết; dùng phrase/shingle hoặc công cụ tách từ tiếng Việt để tăng độ chính xác.
+- **Embedding**: chọn model đa ngôn ngữ có hỗ trợ tiếng Việt (ví dụ họ multilingual-e5, BGE-M3) và **tự đo** trên bộ câu hỏi thật, đừng tin bảng xếp hạng chung.
+- Nhiều tokenizer tiêu tốn token cho tiếng Việt hơn tiếng Anh với cùng nội dung: kích thước chunk tính bằng token thật, không ước lượng theo số từ.
+
+### Chunking theo cấu trúc
+- Văn bản pháp lý/điều khoản: cắt theo Điều, Khoản; không cắt giữa một khoản.
+- Bảng biểu phí: giữ nguyên hàng, mỗi chunk lặp lại header của bảng, nếu không model không biết con số thuộc cột nào.
+- Gắn **đường dẫn tiêu đề** vào đầu chunk: "Biểu phí thẻ tín dụng > Visa Platinum > Phí thường niên". Cả BM25 và embedding đều hưởng lợi.
+- Overlap nhỏ (10–15%) chỉ cho văn bản xuôi; với bảng và điều khoản thì cắt theo ranh giới tự nhiên.
+
+### Metadata filter
+- Lưu: sản phẩm, loại tài liệu, **ngày hiệu lực, phiên bản**, phân khúc khách hàng, quyền truy cập.
+- Lọc trước khi tìm (pre-filter) để biểu phí cũ hết hiệu lực không bao giờ lọt vào context.
+- Trích xuất bộ lọc từ câu hỏi (tên sản phẩm) bằng từ điển sản phẩm hoặc một bước LLM nhỏ, có fallback khi không nhận ra.
+
+### Bẫy production
+- Biểu phí cũ và mới cùng nằm trong index: câu trả lời trộn hai phiên bản.
+- Chunk quá nhỏ mất ngữ cảnh ("Mức phí: 1.500.000" mà không biết của thẻ nào).
+- Thay đổi analyzer hoặc embedding model mà không reindex toàn bộ.
+
+> Senior tip: hãy làm bộ 100–200 câu hỏi thật kèm chunk đúng, rồi đo recall@k cho từng cấu hình: chỉ vector, chỉ BM25, hybrid, hybrid + re-rank. Với tài liệu nhiều mã và tên sản phẩm như ngân hàng, hybrid thường tăng recall rõ rệt, nhưng chỉ số liệu trên dữ liệu của bạn mới đủ thuyết phục.`,
+  follow: [
+    'Vì sao không thể cộng trực tiếp điểm BM25 với cosine similarity?',
+    'Pre-filter và post-filter metadata khác nhau thế nào về recall và hiệu năng với HNSW?',
+    'Bạn phát hiện và xử lý tài liệu hết hiệu lực trong index thế nào?'
+  ],
+  tags: ['RAG', 'hybrid search', 'BM25', 'RRF', 'chunking', 'tiếng Việt']
+},
+{
+  id: 'ai-015',
+  topic: 'ai',
+  level: 'lead',
+  q: 'Ba đội đề xuất ba hướng cho ba bài toán: trả lời câu hỏi chính sách tín dụng, phân loại 1 triệu khiếu nại mỗi tháng vào 40 nhóm, sinh email phản hồi đúng giọng văn ngân hàng. Bạn chọn prompt engineering, RAG hay fine-tuning cho từng bài và vì sao?',
+  a: `**Tóm tắt:** Ba kỹ thuật giải ba vấn đề khác nhau: **prompting** điều chỉnh hành vi nhanh và rẻ nhất, **RAG** cung cấp **kiến thức** thay đổi thường xuyên kèm trích dẫn và phân quyền, **fine-tuning** dạy **hành vi/định dạng/phân loại** lặp lại với khối lượng lớn, không phải cách tốt để nạp kiến thức. Luôn bắt đầu bằng prompting và eval; chính sách tín dụng dùng RAG, phân loại khiếu nại khối lượng lớn đáng cân nhắc fine-tune model nhỏ, email giọng văn thường chỉ cần prompt + few-shot.
+
+### Mỗi kỹ thuật thay đổi cái gì
+- **Prompting**: không đổi model, chỉ đổi đầu vào. Vòng lặp cải tiến tính bằng phút.
+- **RAG**: không đổi model, đưa tài liệu liên quan vào context lúc chạy. Kiến thức cập nhật bằng cách reindex, trả lời trích được nguồn, lọc theo quyền người hỏi.
+- **Fine-tuning**: đổi trọng số (toàn phần hoặc adapter như LoRA) bằng hàng trăm đến hàng nghìn ví dụ có nhãn. Model "nhớ" cách làm nhưng không nhớ sự thật một cách đáng tin; muốn sửa phải huấn luyện lại.
+
+### Bảng đánh đổi
+| Tiêu chí | Prompting | RAG | Fine-tuning |
+|---|---|---|---|
+| Chi phí ban đầu | Rất thấp | Trung bình (pipeline, index) | Cao (dữ liệu nhãn, huấn luyện, eval) |
+| Chi phí mỗi request | Prompt dài thì đắt | Thêm token context | Có thể rẻ nhất nếu dùng model nhỏ |
+| Cập nhật kiến thức | Sửa prompt | Reindex trong phút | Huấn luyện lại |
+| Trích dẫn nguồn, phân quyền | Không | Có | Không |
+| Ổn định định dạng/hành vi | Khá | Khá | Tốt |
+| Rủi ro | Prompt phình to | Retrieval sai | Dữ liệu huấn luyện lẫn PII, model lỗi thời khi nhà cung cấp ra bản mới |
+
+### Áp vào ba bài toán
+1. **Chính sách tín dụng**: thay đổi theo quý, cần trích dẫn điều khoản, phải đúng phiên bản. **RAG** với metadata ngày hiệu lực. Fine-tune ở đây là sai: chính sách đổi thì model vẫn nói theo bản cũ, và không trích dẫn được.
+2. **Phân loại 1 triệu khiếu nại/tháng**: bước đầu dùng model lớn + prompt + few-shot để có baseline và **sinh nhãn**, cho người kiểm tra một mẫu. Khi đã có vài nghìn nhãn tốt, fine-tune (hoặc distill) một model nhỏ: rẻ và nhanh hơn nhiều ở khối lượng này. Thậm chí một classifier truyền thống trên embedding cũng có thể đủ; hãy so trên cùng bộ test.
+3. **Email đúng giọng văn**: prompt có hướng dẫn văn phong + 3–5 ví dụ mẫu thường đạt yêu cầu. Chỉ fine-tune khi khối lượng lớn và prompt dài tới mức chi phí đáng kể.
+
+### Quy trình quyết định
+1. Viết bộ eval trước (50–200 case có đáp án/rubric).
+2. Prompting tốt nhất có thể, đo.
+3. Lỗi do **thiếu kiến thức** → RAG. Lỗi do **hành vi/định dạng không ổn định** ở khối lượng lớn → cân nhắc fine-tune.
+4. Fine-tune chỉ khi có dữ liệu sạch, có người sở hữu pipeline huấn luyện lại, và lợi ích đo được vượt chi phí vận hành.
+
+### Bẫy
+- Fine-tune trên tài liệu nội bộ để "model biết chính sách": vẫn hallucinate, lại khó sửa hơn.
+- Dữ liệu huấn luyện chứa thông tin khách hàng: thành rủi ro rò rỉ và vướng quy định bảo vệ dữ liệu.
+- Không có baseline nên không chứng minh được fine-tune tốt hơn.
+- Quên chi phí ẩn: hosting model tuỳ biến, huấn luyện lại khi đổi model nền, eval mỗi lần.
+
+> Senior tip: khi đội muốn fine-tune, hãy hỏi ba câu: lỗi hiện tại là thiếu kiến thức hay sai hành vi, có bao nhiêu ví dụ nhãn sạch, và ai huấn luyện lại sau 6 tháng. Không trả lời được câu thứ ba thì chưa nên làm.`,
+  follow: [
+    'Distillation từ model lớn sang model nhỏ hoạt động thế nào và rủi ro gì?',
+    'Kết hợp RAG với model đã fine-tune khi nào hợp lý?',
+    'Bạn ước tính chi phí mỗi tháng của ba phương án cho bài toán phân loại ra sao?'
+  ],
+  tags: ['fine-tuning', 'RAG', 'prompt engineering', 'LoRA', 'distillation', 'cost']
+},
+{
+  id: 'ai-016',
+  topic: 'ai',
+  level: 'mid',
+  q: 'Service Java dùng LLM trích xuất thông tin lệnh chuyển tiền từ tin nhắn khách hàng ra JSON, nhưng thỉnh thoảng model trả JSON hỏng, thiếu field hoặc sai kiểu. Bạn thiết kế lớp structured output, validate và retry thế nào?',
+  a: `**Tóm tắt:** Đừng tin output của model là đúng định dạng. Thiết kế nhiều lớp: (1) dùng cơ chế ép schema của nhà cung cấp nếu có (structured output theo JSON Schema hoặc tool calling), (2) parse bằng Jackson vào record với cấu hình nghiêm ngặt, (3) validate ngữ nghĩa bằng Bean Validation và luật nghiệp vụ, (4) retry có giới hạn kèm thông báo lỗi cụ thể cho model, (5) hết lượt thì chuyển người xử lý, không bao giờ đoán.
+
+### Các mức đảm bảo định dạng
+| Mức | Cách làm | Đảm bảo |
+|---|---|---|
+| Chỉ dặn trong prompt | "Trả về JSON với các field..." | Không đảm bảo gì |
+| JSON mode | Bật tuỳ chọn của API | Là JSON hợp lệ, nhưng không chắc đúng schema |
+| Structured output theo schema | Gửi JSON Schema, model bị ràng buộc khi sinh | Đúng cấu trúc với các model hỗ trợ |
+| Tool calling | Khai báo tool có input schema | Gần như structured output |
+
+Kể cả khi cấu trúc đúng, **nội dung** vẫn có thể sai: số tài khoản bịa ra, số tiền đọc nhầm "5 triệu" thành 5000. Vì vậy validate ngữ nghĩa là bắt buộc.
+
+### Thiết kế kiểu dữ liệu
+- Dùng record + enum thay vì String tự do: model chỉ được chọn trong tập hợp hợp lệ.
+- Tiền dùng {{BigDecimal}}, không dùng double.
+- Có field cho trường hợp "không chắc": cho phép model trả null thay vì bịa.
+
+### Parse, validate, retry
+~~~java
+enum Ccy { VND, USD }
+record TransferIntent(@NotBlank @Pattern(regexp = "[0-9]{6,19}") String toAccount,
+                      @NotNull @Positive BigDecimal amount,
+                      @NotNull Ccy currency) {}
+
+TransferIntent extract(String message) {
+    String feedback = "";
+    for (int attempt = 1; attempt <= 2; attempt++) {           // giới hạn số lần thử
+        String raw = chatClient.prompt()
+            .system(SYSTEM_PROMPT_WITH_SCHEMA)
+            .user(message + feedback)
+            .call().content();
+        try {
+            TransferIntent t = strictMapper.readValue(raw, TransferIntent.class);
+            Set<ConstraintViolation<TransferIntent>> errs = validator.validate(t);
+            if (errs.isEmpty()) return t;                       // đúng cấu trúc và ràng buộc
+            feedback = "\\nKết quả trước vi phạm: " + errs.iterator().next().getMessage();
+        } catch (JsonProcessingException e) {                   // JSON hỏng, sai kiểu, enum lạ
+            feedback = "\\nKết quả trước không đúng JSON schema: " + e.getOriginalMessage();
+        }
+    }
+    throw new NeedsHumanReviewException(message);              // không đoán, chuyển người xử lý
+}
+~~~
+
+### Vì sao từng chi tiết quan trọng
+- **ObjectMapper nghiêm ngặt**: ObjectMapper do Spring Boot tự cấu hình tắt {{FAIL_ON_UNKNOWN_PROPERTIES}}, nên field thừa hoặc gõ sai tên bị lặng lẽ bỏ qua. Dùng một mapper riêng bật lại, và bật {{FAIL_ON_NULL_FOR_PRIMITIVES}} nếu có kiểu nguyên thuỷ.
+- **Feedback cụ thể**: gửi lại lỗi đúng chỗ giúp lần thử sau sửa được; retry mù chỉ tốn thêm tiền.
+- **Giới hạn 1–2 lần retry**: nếu model sai hai lần thì đầu vào thật sự mơ hồ; retry thêm làm tăng latency và chi phí.
+- **Kiểm tra nghiệp vụ sau validate**: tài khoản đích có tồn tại, số tiền trong hạn mức, và với lệnh chuyển tiền luôn để người dùng xác nhận trước khi thực hiện.
+- Một số model bọc JSON trong khối markdown: xử lý bằng cách bật structured output, hoặc cắt chuỗi từ dấu ngoặc nhọn đầu tiên tới cuối trước khi parse.
+
+### Spring AI và LangChain4j
+Cả hai đều có cơ chế map output sang class Java (Spring AI: {{entity(Class)}}; LangChain4j: AI Service trả về kiểu POJO). Chúng tạo hướng dẫn định dạng và parse giúp bạn, nhưng **không thay thế** Bean Validation, kiểm tra nghiệp vụ và chính sách retry của riêng bạn.
+
+### Metric cần theo dõi
+- Tỷ lệ parse lỗi, tỷ lệ phải retry, tỷ lệ chuyển người theo phiên bản prompt/model.
+- Tỷ lệ này tăng đột ngột thường là dấu hiệu nhà cung cấp đổi model hoặc prompt bị sửa.
+
+> Senior tip: hãy coi output của LLM như input từ người dùng không tin cậy: parse nghiêm ngặt, validate đầy đủ, không bao giờ đưa thẳng vào câu lệnh SQL hoặc lệnh chuyển tiền. Schema tốt nhất là schema nhỏ và phẳng; mỗi cấp lồng nhau thêm vào là thêm một nguồn lỗi.`,
+  follow: [
+    'Structured output theo schema có làm giảm chất lượng suy luận của model không, xử lý thế nào?',
+    'Khi model trả về amount null vì tin nhắn không rõ, luồng UX nên thế nào?',
+    'Bạn viết test cho lớp trích xuất này ra sao mà không gọi model thật?'
+  ],
+  tags: ['structured output', 'JSON schema', 'Jackson', 'Bean Validation', 'retry', 'Spring AI']
+},
+{
+  id: 'ai-017',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Agent hỗ trợ khách hàng có các tool tra cứu giao dịch, khoá thẻ và tạo yêu cầu hoàn tiền. Trên staging nó từng gọi một tool 40 lần liên tiếp và có lần định hoàn tiền sai. Bạn làm agent đáng tin cậy thế nào?',
+  a: `**Tóm tắt:** Agent là vòng lặp "model chọn hành động → chạy tool → đưa kết quả lại cho model", nên phải có giới hạn cứng do code kiểm soát, không do model: số bước tối đa, ngân sách token/chi phí/thời gian, phát hiện lặp. Tool chia theo mức rủi ro: tool đọc chạy tự do, tool có side effect phải idempotent và đi qua **human-in-the-loop** (khách hoặc nhân viên xác nhận). Lỗi tool trả về có cấu trúc để model xử lý, và mọi bước đều được trace, audit.
+
+### Vì sao agent mất kiểm soát
+- Model không có khái niệm "đã thử đủ": tool trả lỗi mơ hồ thì nó gọi lại với cùng tham số.
+- Context dài dần, chỉ dẫn ban đầu bị loãng.
+- Model có thể bị prompt injection qua nội dung tool trả về (ví dụ ghi chú giao dịch do người khác nhập).
+
+### Giới hạn cứng trong vòng lặp
+~~~java
+// Vòng lặp agent tự viết: điều kiện dừng nằm trong code, không phụ thuộc model
+AgentResult run(Conversation conv) {
+    Budget budget = new Budget(8, 20_000, Duration.ofSeconds(45)); // bước, token, thời gian
+    Map<String, Integer> callCount = new HashMap<>();
+    while (true) {
+        if (budget.exceeded()) return AgentResult.handoff("vượt ngân sách");
+        ModelTurn turn = llm.next(conv);                   // lớp bọc client LLM của bạn
+        budget.consume(turn.tokens());
+        if (turn.isFinalAnswer()) return AgentResult.answer(turn.text());
+
+        ToolCall call = turn.toolCall();
+        String key = call.name() + call.argsJson();
+        if (callCount.merge(key, 1, Integer::sum) > 2)      // cùng tool cùng tham số lần thứ 3
+            return AgentResult.handoff("lặp tool " + call.name());
+
+        Tool tool = registry.get(call.name());
+        if (tool.risk() == Risk.WRITE)                      // side effect: dừng lại xin xác nhận
+            return AgentResult.needsApproval(call);
+        conv.addToolResult(call, safeExecute(tool, call));  // lỗi được trả về dạng có cấu trúc
+    }
+}
+~~~
+
+### Phân loại tool theo rủi ro
+| Loại | Ví dụ | Chính sách |
+|---|---|---|
+| Đọc | Tra cứu giao dịch, tra biểu phí | Tự chạy, vẫn kiểm tra quyền theo khách đang đăng nhập |
+| Ghi đảo ngược được | Khoá thẻ tạm thời | Khách xác nhận trên UI, có audit |
+| Ghi khó đảo ngược | Hoàn tiền, chuyển tiền | Nhân viên duyệt hoặc xác thực mạnh, hạn mức, idempotency key |
+
+- Tool nhận định danh khách từ **session đã xác thực**, không từ tham số do model điền, để model không thể tra cứu tài khoản người khác.
+- Tool ghi phải idempotent: retry hay model gọi lặp cũng không hoàn tiền hai lần.
+
+### Xử lý lỗi tool
+- Trả lỗi dạng có cấu trúc, gợi ý hành động: {{NOT_FOUND: không có giao dịch trong 30 ngày, đừng gọi lại}} tốt hơn stack trace.
+- Phân biệt lỗi tạm thời (code tự retry có backoff, không để model retry) và lỗi vĩnh viễn (báo model để nó đổi hướng hoặc hỏi lại khách).
+- Timeout riêng cho từng tool; tool chậm không được kéo cả phiên.
+
+### Human-in-the-loop đúng cách
+- Hiện cho người duyệt **chính xác hành động** sẽ chạy (tool, tham số, số tiền), không phải lời tóm tắt của model.
+- Lưu trạng thái hội thoại để tiếp tục sau khi duyệt, không bắt model suy luận lại từ đầu.
+
+### Quan sát và kiểm thử
+- Trace từng bước: prompt version, tool call, tham số, kết quả, token, thời gian.
+- Bộ test kịch bản: khách yêu cầu hoàn tiền giao dịch không tồn tại, tool trả lỗi liên tục, tin nhắn chứa chỉ dẫn độc hại. Chạy lại mỗi khi đổi prompt hoặc model.
+
+> Senior tip: phần lớn bài toán "agent" ở ngân hàng nên là workflow cố định với vài điểm ra quyết định bằng LLM. Chỉ trao quyền tự chọn bước cho model ở phần đọc dữ liệu; mọi hành động động đến tiền của khách đi qua đường có xác nhận, hạn mức và audit như giao dịch thường.`,
+  follow: [
+    'Làm sao phát hiện agent đang lặp khi tham số thay đổi chút ít mỗi lần?',
+    'Prompt injection qua nội dung ghi chú giao dịch: bạn phòng thủ ở tầng nào?',
+    'Ngân sách mỗi phiên nên đặt dựa trên số liệu gì?'
+  ],
+  tags: ['agent', 'tool calling', 'human-in-the-loop', 'budget', 'guardrails', 'idempotency']
+},
+{
+  id: 'ai-018',
+  topic: 'ai',
+  level: 'mid',
+  q: 'Bạn cần stream câu trả lời của LLM từ Spring Boot tới trình duyệt từng đoạn một. Bạn dùng SSE thế nào, xử lý khi người dùng bấm dừng, timeout và proxy ở giữa ra sao?',
+  a: `**Tóm tắt:** Dùng **Server-Sent Events**: một HTTP response giữ mở, server đẩy từng sự kiện dạng text/event-stream. Trong Spring Boot, trả về {{Flux<ServerSentEvent<String>>}} (chạy được cả trên Spring MVC nếu có Reactor, hoặc WebFlux) hoặc dùng {{SseEmitter}}. Phải xử lý: client ngắt thì huỷ lời gọi tới nhà cung cấp, timeout khi model ngừng sinh token, heartbeat để proxy không cắt kết nối, tắt buffering ở proxy, và lưu câu trả lời đầy đủ khi kết thúc.
+
+### Vì sao streaming
+- Model sinh vài chục token mỗi giây; câu trả lời 500 token mất nhiều giây. Không stream, người dùng nhìn màn hình trống suốt thời gian đó.
+- Stream không làm tổng thời gian ngắn lại, nhưng **thời gian tới token đầu tiên** giảm còn khoảng một giây, cảm nhận tốt hơn hẳn.
+
+### SSE hay WebSocket
+| Tiêu chí | SSE | WebSocket |
+|---|---|---|
+| Hướng | Server tới client | Hai chiều |
+| Giao thức | HTTP thường, đi qua proxy/LB dễ | Cần upgrade, cấu hình riêng |
+| Tự reconnect | Có (EventSource) | Tự viết |
+| Hợp với | Stream câu trả lời | Chat realtime nhiều chiều, voice |
+
+Với chatbot, SSE gần như luôn đủ: câu hỏi gửi bằng POST, câu trả lời stream về.
+
+### Code Spring Boot
+~~~java
+@PostMapping(value = "/api/chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+Flux<ServerSentEvent<String>> chat(@RequestBody Ask ask, Principal user) {
+    StringBuilder full = new StringBuilder();
+    Flux<ServerSentEvent<String>> tokens = chatClient.prompt()
+        .user(ask.question())
+        .stream().content()                                   // Flux<String> từng đoạn
+        .timeout(Duration.ofSeconds(20))                      // 20s không có đoạn mới thì lỗi
+        .doOnNext(full::append)
+        .map(chunk -> ServerSentEvent.builder(chunk).event("token").build())
+        .concatWith(Flux.just(ServerSentEvent.builder("").event("done").build()));
+    Flux<ServerSentEvent<String>> heartbeat = Flux.interval(Duration.ofSeconds(15))
+        .map(i -> ServerSentEvent.<String>builder().comment("ping").build());
+    return Flux.merge(tokens, heartbeat)
+        .takeUntil(e -> "done".equals(e.event()))            // gặp done thì dừng cả heartbeat
+        .doFinally(signal -> audit.save(user, ask, full.toString(), signal)); // COMPLETE/CANCEL/ERROR
+}
+~~~
+Chú ý không subscribe {{tokens}} hai lần (ví dụ vừa merge vừa dùng làm tín hiệu dừng): mỗi lần subscribe là một lần gọi model và trả tiền.
+
+### Khi người dùng bấm dừng
+- Client đóng kết nối → Spring huỷ subscription → Reactor lan tín hiệu cancel ngược lên, client HTTP tới nhà cung cấp đóng request, model ngừng sinh và thường ngừng tính tiền phần chưa sinh.
+- Với {{SseEmitter}} trên thread blocking, bạn phải tự bắt {{onCompletion}}/{{onError}} và tự dừng vòng đọc stream, nếu không thread tiếp tục đọc và trả tiền token cho không ai.
+- Lưu câu trả lời dở dang với trạng thái "đã huỷ" để audit.
+
+### Phía trình duyệt
+- {{EventSource}} chỉ hỗ trợ GET và không gửi được header Authorization tuỳ ý. Với POST + bearer token, dùng {{fetch}} rồi đọc {{response.body}} bằng reader, tự tách sự kiện theo dòng trống.
+- Huỷ bằng {{AbortController}} khi người dùng bấm dừng hoặc rời trang.
+
+### Proxy, load balancer, timeout
+- Nginx mặc định buffer response, làm stream đến dồn một cục: tắt {{proxy_buffering}} hoặc trả header {{X-Accel-Buffering: no}}.
+- ALB mặc định idle timeout 60 giây: heartbeat mỗi 15–30 giây giữ kết nối sống.
+- Spring MVC có timeout cho async request ({{spring.mvc.async.request-timeout}}); đặt lớn hơn thời gian trả lời dài nhất.
+- Bật gzip cho text/event-stream có thể gây buffer; kiểm tra lại cấu hình nén.
+
+### Bẫy production
+- Mỗi stream giữ một connection lâu: với Spring MVC truyền thống, cân nhắc virtual thread ({{spring.threads.virtual.enabled}}) hoặc WebFlux.
+- Rate limit theo số request mà quên số stream đồng thời.
+- Hiển thị markdown từng đoạn có thể vỡ định dạng giữa chừng; render lại toàn bộ đoạn đã nhận.
+
+> Senior tip: đo hai chỉ số riêng: time to first token và tổng thời gian. Người dùng chịu được câu trả lời 10 giây nếu chữ đầu tiên xuất hiện sau dưới 1 giây; ngược lại, chặn guardrail đầu ra chờ đủ câu trả lời sẽ phá mất lợi ích của streaming, nên thiết kế kiểm tra đầu ra theo từng đoạn hoặc sau khi xong kèm khả năng thu hồi.`,
+  follow: [
+    'Guardrail kiểm tra nội dung đầu ra kết hợp với streaming thế nào?',
+    'Kết nối SSE rớt giữa chừng: client nối lại và tiếp tục từ đâu?',
+    'SseEmitter và Flux khác nhau thế nào về thread và backpressure?'
+  ],
+  tags: ['SSE', 'streaming', 'Spring Boot', 'Reactor', 'Spring AI', 'timeout']
+},
+{
+  id: 'ai-019',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Sếp hỏi "chatbot RAG của mình đúng bao nhiêu phần trăm, bản mới có tốt hơn bản cũ không?". Bạn đo chất lượng RAG bằng những metric nào và dựng bộ test hồi quy ra sao?',
+  a: `**Tóm tắt:** Tách RAG thành hai phần và đo riêng. **Retrieval**: tài liệu đúng có được lấy về không (context recall, recall@k, MRR, context precision). **Generation**: câu trả lời có bám context không (**faithfulness**), có trả lời đúng câu hỏi không (**answer relevance**), có đúng so với đáp án chuẩn không (answer correctness). Đo trên golden dataset cố định, chạy trong CI, so với baseline, và hiệu chỉnh LLM-as-judge bằng nhãn của người.
+
+### Vì sao phải tách
+Câu trả lời sai có hai nguyên nhân khác hẳn nhau: không tìm được tài liệu đúng, hoặc tìm được nhưng model diễn giải sai/bịa thêm. Một con số "đúng 78%" không cho biết phải sửa chunking hay sửa prompt.
+
+### Metric retrieval
+| Metric | Câu hỏi nó trả lời | Cách tính ngắn gọn |
+|---|---|---|
+| Recall@k / context recall | Thông tin cần thiết có nằm trong top k không? | Số chunk/ý cần thiết lấy được chia tổng số cần |
+| Context precision | Trong top k, bao nhiêu chunk thật sự liên quan, có xếp trên không? | Tỷ lệ chunk liên quan, có trọng số theo vị trí |
+| MRR | Chunk đúng đầu tiên nằm ở hạng mấy? | Trung bình 1/hạng |
+
+Retrieval đo được **không cần LLM** nếu dataset có nhãn chunk đúng: rẻ, nhanh, chạy mọi commit.
+
+~~~java
+// recall@k và MRR cho một câu hỏi; trung bình trên toàn bộ dataset
+record RetrievalScore(double recallAtK, double reciprocalRank) {}
+
+static RetrievalScore score(List<String> retrieved, Set<String> relevant, int k) {
+    long hit = retrieved.stream().limit(k).filter(relevant::contains).count();
+    double rr = 0;
+    for (int i = 0; i < retrieved.size(); i++) {
+        if (relevant.contains(retrieved.get(i))) { rr = 1.0 / (i + 1); break; }
+    }
+    return new RetrievalScore((double) hit / relevant.size(), rr);
+}
+~~~
+
+### Metric generation
+- **Faithfulness**: tách câu trả lời thành các khẳng định, kiểm tra từng khẳng định có được context hỗ trợ không; điểm = số khẳng định được hỗ trợ / tổng. Đây là metric chống hallucination, quan trọng nhất với ngân hàng.
+- **Answer relevance**: câu trả lời có đi đúng câu hỏi không, hay lan man, né tránh.
+- **Answer correctness**: so với đáp án chuẩn do chuyên gia viết; cần cho câu hỏi có đáp án rõ (mức phí, điều kiện).
+- **Từ chối đúng**: với câu hỏi ngoài phạm vi, bot có nói "không tìm thấy" thay vì bịa không.
+
+Các thư viện như RAGAS (Python) cài sẵn các metric này bằng LLM-as-judge; có thể dùng trực tiếp hoặc tự viết judge với rubric tương tự.
+
+### Đọc kết quả để biết sửa đâu
+| Context recall | Faithfulness | Chẩn đoán |
+|---|---|---|
+| Thấp | bất kỳ | Sửa retrieval: chunking, hybrid search, metadata filter |
+| Cao | Thấp | Sửa generation: prompt, yêu cầu trích dẫn, model |
+| Cao | Cao nhưng correctness thấp | Tài liệu nguồn sai/cũ, hoặc đáp án chuẩn cần xem lại |
+
+### Bộ test hồi quy
+1. **Golden dataset** 150–300 câu từ log thật (đã ẩn PII), phân tầng theo chủ đề và độ khó, gồm cả câu ngoài phạm vi và câu bẫy.
+2. Mỗi câu có: chunk đúng, đáp án chuẩn hoặc các ý bắt buộc.
+3. CI: thay đổi chunking/embedding/prompt/model đều chạy eval; chặn merge nếu metric chính giảm quá ngưỡng so với baseline.
+4. Lưu kết quả từng câu để xem câu nào tệ đi, không chỉ nhìn trung bình.
+
+### Bẫy
+- Judge chưa được hiệu chỉnh: lấy 50–100 câu cho người chấm, đo mức đồng thuận với judge trước khi tin.
+- Judge có độ dao động: cố định temperature thấp, chạy lặp, so sánh khác biệt có ý nghĩa chứ không phải chênh 1%.
+- Dataset đóng băng quá lâu trong khi tài liệu và hành vi người dùng đã đổi.
+
+> Senior tip: trả lời sếp bằng ba con số có ngữ cảnh: "tìm đúng tài liệu 92% câu hỏi, câu trả lời bám tài liệu 96%, đúng hoàn toàn theo chuyên gia 85%, bản mới tăng recall 6 điểm và không giảm faithfulness". Một con số duy nhất không ai hành động được.`,
+  follow: [
+    'Bạn hiệu chỉnh LLM-as-judge với nhãn của người thế nào?',
+    'Làm sao lấy câu hỏi từ log thật vào golden set mà vẫn đúng quy định dữ liệu cá nhân?',
+    'Faithfulness cao nhưng người dùng vẫn chê câu trả lời: bạn điều tra gì tiếp?'
+  ],
+  tags: ['RAG evaluation', 'faithfulness', 'context recall', 'MRR', 'RAGAS', 'regression']
+},
+{
+  id: 'ai-020',
+  topic: 'ai',
+  level: 'lead',
+  q: 'Ngân hàng muốn dùng LLM tóm tắt hội thoại tổng đài và hỗ trợ nhân viên tra cứu hồ sơ khách hàng. Với vai trò kiến trúc sư, bạn xử lý dữ liệu khách hàng, masking PII, data residency và audit thế nào?',
+  a: `**Tóm tắt:** Coi mọi lời gọi LLM là **chuyển dữ liệu cho bên thứ ba** cho tới khi chứng minh được ngược lại. Kiến trúc nên có một **LLM gateway** nội bộ duy nhất: phân loại dữ liệu, masking/pseudonymization PII trước khi gửi, chỉ cho phép model và region đã duyệt, kiểm soát quyền theo người dùng, ghi audit đầy đủ nhưng chính log cũng được bảo vệ như dữ liệu khách hàng. Dữ liệu nhạy cảm nhất dùng model chạy trong hạ tầng được duyệt; quyết định ảnh hưởng tới khách luôn có người chịu trách nhiệm.
+
+### Bắt đầu từ phân loại dữ liệu
+| Mức | Ví dụ | Được gửi tới đâu |
+|---|---|---|
+| Công khai | Biểu phí đã công bố | Mọi model đã duyệt |
+| Nội bộ | Quy trình nghiệp vụ | Model có hợp đồng xử lý dữ liệu, không dùng để huấn luyện |
+| Bí mật khách hàng | Tên, CCCD, số tài khoản, số dư, nội dung cuộc gọi | Chỉ sau masking, hoặc model trong hạ tầng được duyệt |
+| Cấm | PIN, OTP, dữ liệu xác thực, số thẻ đầy đủ | Không bao giờ |
+
+### Kiến trúc LLM gateway
+~~~text
+App tổng đài / CRM -> LLM Gateway -> [PII detect + pseudonymize] -> Model đã duyệt
+                         |                                              |
+                    policy theo use case                     response -> [re-identify] -> App
+                    quota, audit log (mã hoá)
+~~~
+- Ứng dụng không giữ API key của nhà cung cấp; chỉ gateway gọi được ra ngoài, egress bị chặn ở tầng mạng.
+- Policy theo use case: use case nào được dùng model nào, mức dữ liệu nào, giới hạn token.
+
+### Masking và pseudonymization
+- Phát hiện PII bằng kết hợp: regex cho mẫu cố định (CCCD 12 chữ số, số điện thoại, số tài khoản, email), NER cho tên người và địa chỉ tiếng Việt, và từ điển khách hàng đã biết trong phiên.
+- Thay bằng nhãn ổn định trong phạm vi một request ({{KH_1}}, {{TK_1}}) để model vẫn hiểu quan hệ; bảng ánh xạ chỉ nằm trong gateway, dùng để khôi phục khi trả kết quả.
+
+~~~java
+// Pseudonymize trong phạm vi một request; bảng map không bao giờ rời gateway
+final class Pseudonymizer {
+    private static final Pattern CCCD = Pattern.compile("\\\\b\\\\d{12}\\\\b");
+    private static final Pattern PHONE = Pattern.compile("\\\\b0\\\\d{9}\\\\b");
+    private final Map<String, String> map = new LinkedHashMap<>();
+
+    String mask(String text) {
+        text = replace(text, CCCD, "CCCD");
+        return replace(text, PHONE, "SDT");
+    }
+    private String replace(String text, Pattern p, String label) {
+        return p.matcher(text).replaceAll(m -> {
+            String token = "[" + label + "_" + (map.size() + 1) + "]";
+            map.put(token, m.group());                       // giữ để khôi phục
+            return Matcher.quoteReplacement(token);
+        });
+    }
+    String unmask(String text) {                            // khôi phục trước khi trả cho nhân viên
+        for (var e : map.entrySet()) text = text.replace(e.getKey(), e.getValue());
+        return text;
+    }
+}
+~~~
+Regex không bắt được hết (số đọc thành chữ trong transcript, tên riêng): masking là lớp giảm rủi ro, không phải bảo đảm tuyệt đối, nên vẫn cần hợp đồng và lựa chọn nhà cung cấp phù hợp.
+
+### Data residency và hợp đồng
+- Xác định với pháp chế: dữ liệu có được chuyển ra nước ngoài không, cần hồ sơ đánh giá tác động chuyển dữ liệu ra nước ngoài theo quy định bảo vệ dữ liệu cá nhân (Nghị định 13/2023 và Luật Bảo vệ dữ liệu cá nhân), yêu cầu của NHNN và đơn vị kiểm toán.
+- Kiểm tra với nhà cung cấp: region xử lý, thời gian lưu prompt, có dùng dữ liệu để huấn luyện không, có cam kết bằng hợp đồng không. Các dịch vụ như Amazon Bedrock hay API doanh nghiệp của các hãng công bố chính sách riêng; đọc điều khoản hiện hành thay vì dựa vào trí nhớ.
+- Dữ liệu không được rời khỏi hạ tầng được duyệt: dùng model mở tự host trong datacenter hoặc tài khoản cloud đã được phê duyệt.
+
+### Audit
+- Ghi: ai gọi, use case, thời điểm, prompt version, model và version, tài liệu đã retrieve, output, hành động tiếp theo của nhân viên.
+- Log chứa dữ liệu nhạy cảm: lưu bản đã pseudonymize, mã hoá, phân quyền đọc chặt, thời hạn lưu theo quy định, không đẩy vào hệ thống log chung.
+- Kiểm soát quyền tại retrieval: nhân viên chi nhánh A không tra được hồ sơ khách chi nhánh B qua chatbot, dù hỏi khéo đến đâu.
+
+### Quản trị rủi ro model
+- LLM chỉ **hỗ trợ**: tóm tắt cuộc gọi được nhân viên xác nhận; không tự ra quyết định tín dụng hay khiếu nại.
+- Đánh giá định kỳ: tỷ lệ tóm tắt sai, bịa thông tin, rò PII lọt masking (quét output và log).
+- Kill switch cho từng use case.
+
+> Senior tip: hội đồng rủi ro sẽ không duyệt "chúng tôi dùng ChatGPT", nhưng thường duyệt "mọi lời gọi đi qua một gateway, dữ liệu được phân loại, PII được thay thế trước khi gửi, model chạy ở region đã duyệt, có audit và người chịu trách nhiệm". Hãy làm gateway trước use case đầu tiên; mỗi use case sau đó chỉ còn là một policy mới.`,
+  follow: [
+    'Masking làm giảm chất lượng tóm tắt (model không biết ai là ai): bạn cân bằng thế nào?',
+    'Khi nào bắt buộc phải tự host model thay vì dùng API của nhà cung cấp?',
+    'Bạn chứng minh với kiểm toán rằng không có PII nào bị gửi ra ngoài thế nào?'
+  ],
+  tags: ['banking', 'PII', 'pseudonymization', 'data residency', 'audit', 'LLM gateway']
 }
 );

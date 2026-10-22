@@ -1,6 +1,6 @@
 # T51 — Nội dung: AWS & AI (đợt 2)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/q-aws.js`, `js/data/q-ai.js`
 
@@ -40,3 +40,4 @@ ID tiếp nối số lớn nhất đang có trong topic (ví dụ đang có `cor
 `node scripts/validate.js` → OK và số câu mỗi topic đạt mục tiêu. Integrator sẽ fact-check sau.
 
 ## Notes
+- Hoàn thành bởi agent Claude: sửa aws-017/018 (model free viết sai), thêm aws-019..022, ai-014..020.

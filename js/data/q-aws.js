@@ -840,5 +840,393 @@ Chọn CloudFormation khi đội thuần AWS và muốn ít công cụ. Chọn C
     'Sustainability thực sự thay đổi quyết định kiến trúc nào?'
   ],
   tags: ['Well-Architected', 'review', 'architecture', 'pillars']
+},
+{
+  id: 'aws-017',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Bạn định đưa một nhóm API lên API Gateway + Lambda. Giới hạn timeout, payload và concurrency ảnh hưởng thiết kế thế nào? REST API hay HTTP API, và khi nào không nên dùng Lambda làm backend?',
+  a: `**Tóm tắt:** API Gateway + Lambda hợp cho API nhẹ, traffic biến động. Ba giới hạn quyết định thiết kế: integration timeout mặc định **29 giây** (HTTP API tối đa 30 giây), payload thực tế **6 MB** vì Lambda gọi đồng bộ chỉ nhận/trả 6 MB, và mỗi execution environment chỉ xử lý một request tại một thời điểm. HTTP API rẻ và đơn giản hơn; REST API đủ tính năng hơn (usage plan, WAF, cache, canary, private endpoint).
+
+### Timeout: chuyện gì xảy ra khi vượt 29 giây
+- API Gateway ngắt kết nối và trả **504** cho client, nhưng **Lambda vẫn chạy tiếp** (tối đa 15 phút) và vẫn tính tiền. Nếu hàm đã trừ tiền xong thì client nhận 504, bấm lại, và giao dịch bị chạy hai lần → API có side effect bắt buộc có idempotency key.
+- Từ 2024, REST API loại Regional/Private có thể xin tăng integration timeout quá 29 giây qua Service Quotas, đổi lại có thể bị giảm throttle quota của account. Edge-optimized và HTTP API không có lựa chọn này. Kiểm tra tài liệu hiện hành trước khi dựa vào nó.
+- Việc dài vẫn nên làm bất đồng bộ: trả **202 + jobId**, xử lý qua SQS/Step Functions, client poll hoặc nhận webhook.
+
+~~~java
+// Nhận request, đẩy vào SQS, trả 202 ngay: không phụ thuộc timeout của API Gateway
+public APIGatewayV2HTTPResponse handleRequest(APIGatewayV2HTTPEvent event, Context ctx) {
+    String jobId = UUID.randomUUID().toString();
+    sqs.sendMessage(b -> b.queueUrl(queueUrl)
+        .messageBody(jobId + "\\n" + event.getBody()));   // worker đọc jobId, xử lý, ghi trạng thái
+    return APIGatewayV2HTTPResponse.builder()
+        .withStatusCode(202)
+        .withHeaders(Map.of("Location", "/jobs/" + jobId))
+        .build();
+}
+~~~
+
+### Payload
+- API Gateway nhận tới 10 MB, nhưng Lambda invoke đồng bộ giới hạn **6 MB** cho cả request lẫn response, nên với Lambda proxy thì 6 MB mới là trần thật.
+- Binary đi qua dạng base64 nên phình khoảng 33%. Upload/download file: cấp **S3 presigned URL**, đừng cho file đi xuyên Lambda.
+
+### REST API vs HTTP API
+| Tính năng | REST API | HTTP API |
+|---|---|---|
+| Giá bậc đầu (us-east-1) | khoảng 3.5 USD/triệu request | khoảng 1 USD/triệu request |
+| Usage plan, API key, throttle theo client | Có | Không |
+| Gắn AWS WAF trực tiếp | Có | Không (đặt CloudFront + WAF phía trước) |
+| Response cache, request validation, mapping template | Có | Không |
+| Canary ở stage | Có | Không |
+| Loại endpoint | Edge, Regional, Private | Regional |
+| Authorizer | IAM, Cognito, Lambda | IAM, JWT có sẵn, Lambda |
+| CORS | Tự cấu hình OPTIONS | Cấu hình sẵn |
+
+WebSocket là một loại API thứ ba, không thuộc bảng này. Chọn HTTP API cho API nội bộ/BFF đơn giản xác thực bằng JWT; chọn REST API cho API công khai cần WAF, usage plan cho đối tác, hoặc private API chỉ gọi từ VPC.
+
+### Khi nào không nên dùng Lambda làm backend
+1. Request đồng bộ thường xuyên dài hơn vài giây, hoặc cần streaming lâu: ECS Fargate sau ALB (idle timeout tới 4000 giây) tự nhiên hơn.
+2. Traffic nền cao và đều suốt ngày: trả theo GB-giây thường đắt hơn container chạy liên tục; hãy tính với số liệu thật.
+3. Gọi RDS: 1.000 request đồng thời = 1.000 execution environment = tới 1.000 connection. Connection được tái sử dụng giữa các lần gọi trong cùng environment, nhưng tổng số vẫn bùng nổ khi scale → cần **RDS Proxy** và pool size 1.
+4. Spring Boot nặng, cold start lớn mà không dùng được SnapStart/tối ưu.
+5. Cần GPU, hoặc tiến trình chạy nền lâu.
+
+### Bẫy production
+- Throttle mặc định của API Gateway là 10.000 RPS, burst 5.000, **chia chung cho mọi API trong account/region**; Lambda concurrency mặc định 1.000/region. Một API bị spam kéo sập API khác → đặt throttle theo stage/route và reserved concurrency.
+- Retry phía client cộng retry phía SDK khi gặp 504 → nhân bản request.
+- Log API Gateway và Lambda tách nhau: bật access log có requestId để nối trace.
+
+> Senior tip: ghi rõ trong ADR "endpoint nào được phép chạy quá 3 giây". Nếu danh sách đó không rỗng, tách chúng sang luồng bất đồng bộ ngay từ đầu; đợi đến khi client gặp 504 rồi mới sửa thì phải đổi cả contract API.`,
+  follow: [
+    'Client nhận 504 nhưng Lambda vẫn trừ tiền thành công: bạn thiết kế idempotency thế nào?',
+    'Vì sao Lambda gọi RDS cần RDS Proxy, connection pool trong hàm nên đặt bao nhiêu?',
+    'Khi nào bạn đặt CloudFront phía trước HTTP API?'
+  ],
+  tags: ['API Gateway', 'Lambda', 'REST API', 'HTTP API', 'timeout', 'idempotency']
+},
+{
+  id: 'aws-018',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Quy trình mở tài khoản gồm eKYC, chấm điểm, duyệt tay và tạo tài khoản core banking. Bạn điều phối bằng Step Functions hay tự viết Saga trong Java, và vì sao?',
+  a: `**Tóm tắt:** Step Functions là orchestrator được quản lý: trạng thái mỗi bước, retry/backoff, catch, chờ duyệt tay (task token) và lịch sử thực thi đều có sẵn, đổi lại bị khoá vào AWS và giới hạn payload 256 KB. Tự viết Saga trong Java cho toàn quyền kiểm soát nhưng phải tự lo lưu trạng thái, retry, timeout, compensation và audit. Quy trình dài, nhiều bước chờ người như mở tài khoản rất hợp với Step Functions Standard.
+
+### Step Functions làm gì thay bạn
+- **Standard workflow**: chạy tối đa 1 năm, mỗi bước được ghi vào execution history (giữ 90 ngày), tính tiền theo **state transition**. Hợp cho quy trình nghiệp vụ dài, cần audit.
+- **Express workflow**: tối đa 5 phút, tính theo số request và thời gian chạy, history chỉ có nếu bật CloudWatch Logs. Hợp cho xử lý event khối lượng lớn, ngắn.
+- **Retry/Catch khai báo**: retry theo loại lỗi với backoff, lỗi nghiệp vụ thì nhảy sang bước bù trừ.
+- **Callback**: bước dùng {{.waitForTaskToken}} gửi token cho hệ thống ngoài rồi tạm dừng (không tốn compute) đến khi ai đó gọi {{SendTaskSuccess}} hoặc {{SendTaskFailure}}. Đây là cách làm bước "duyệt tay".
+
+~~~json
+"Scoring": {
+  "Type": "Task",
+  "Resource": "arn:aws:states:::lambda:invoke",
+  "Parameters": { "FunctionName": "credit-scoring", "Payload.$": "$" },
+  "Retry": [{ "ErrorEquals": ["Lambda.TooManyRequestsException", "States.Timeout"],
+              "IntervalSeconds": 2, "BackoffRate": 2, "MaxAttempts": 3 }],
+  "Catch": [{ "ErrorEquals": ["ScoreRejected"], "Next": "NotifyRejected" }],
+  "TimeoutSeconds": 30,
+  "Next": "ManualReview"
+}
+~~~
+
+### Tự viết Saga: phải tự làm những gì
+~~~java
+// Orchestrator tự viết: commit trạng thái sau MỖI bước, không bọc @Transactional quanh lời gọi remote
+public void advance(UUID sagaId) {
+    Saga s = sagas.load(sagaId);
+    try {
+        if (s.step() == Step.KYC_PASSED) {
+            scoring.score(s.customerId(), s.key("score"));   // API đích phải idempotent theo key
+            s = sagas.moveTo(sagaId, Step.SCORED);           // transaction ngắn, chỉ ghi DB local
+        }
+        if (s.step() == Step.APPROVED) {
+            coreBanking.openAccount(s.customerId(), s.key("open"));
+            sagas.moveTo(sagaId, Step.DONE);
+        }
+    } catch (BusinessRejectException e) {
+        sagas.moveTo(sagaId, Step.COMPENSATING);              // job khác chạy bù trừ, cũng idempotent
+    }   // lỗi tạm thời: không làm gì, scheduler gọi lại advance() sau
+}
+~~~
+Ngoài đoạn trên còn cần: scheduler quét saga treo, timeout từng bước, bảng audit, màn hình tra cứu, cơ chế chạy lại thủ công. Đó chính là phần Step Functions cho sẵn.
+
+### So sánh
+| Tiêu chí | Step Functions | Saga tự viết |
+|---|---|---|
+| Lưu trạng thái, history | Có sẵn | Tự thiết kế bảng + audit |
+| Chờ người duyệt nhiều ngày | Task token, không tốn compute | Bảng pending + scheduler |
+| Quan sát | Console hiển thị từng bước, input/output | Tự dựng dashboard |
+| Payload mỗi bước | Tối đa 256 KB | Tuỳ DB |
+| Test | TestState API cho từng state, test tích hợp trên account sandbox | Unit test thuần Java |
+| Lock-in, chạy on-prem | Chỉ AWS | Portable |
+
+### Bẫy production
+- Payload vượt 256 KB (ảnh CCCD, kết quả OCR) làm execution fail: lưu S3, chỉ truyền key.
+- Standard giới hạn 25.000 event trong history: vòng lặp hoặc Map lớn phải dùng Distributed Map hoặc execution con.
+- Step Functions retry không làm bước của bạn idempotent: Lambda/API đích vẫn phải chống trùng.
+- Đặt tên execution theo mã hồ sơ để tránh khởi động trùng một quy trình.
+- Không nhét logic nghiệp vụ vào ASL (Choice lồng nhau phức tạp): ASL là khung điều phối, logic để trong code.
+
+> Senior tip: ở ngân hàng, lý do mạnh nhất chọn Step Functions thường là audit: kiểm toán hỏi "hồ sơ này ai duyệt, lúc nào, input là gì" thì có ngay execution history. Nhưng history chỉ giữ 90 ngày, nên vẫn phải đẩy sự kiện quan trọng sang kho audit riêng có thời hạn lưu theo quy định.`,
+  follow: [
+    'Standard hay Express cho quy trình mở tài khoản, và cho xử lý 5.000 event/giây?',
+    'Bước duyệt tay chờ 3 ngày rồi quá hạn: bạn thiết kế timeout và bù trừ thế nào?',
+    'Khi nào choreography qua Kafka hợp hơn orchestration?'
+  ],
+  tags: ['Step Functions', 'Saga', 'orchestration', 'workflow', 'task token']
+},
+{
+  id: 'aws-019',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Aurora PostgreSQL failover xong sau khoảng 30 giây, nhưng service Spring Boot vẫn lỗi ghi suốt vài phút. Vì sao, và bạn cấu hình JVM, connection pool, driver thế nào để hồi phục nhanh?',
+  a: `**Tóm tắt:** Failover của Aurora đổi bản ghi DNS của cluster endpoint sang writer mới, nhưng ứng dụng Java có thể vẫn dùng IP cũ (DNS cache của JVM) và connection pool vẫn giữ connection tới instance cũ, nay đã thành reader, nên ghi bị lỗi "read-only". Cách sửa: TTL DNS của JVM ngắn, pool biết loại bỏ connection hỏng, và tốt nhất dùng **AWS Advanced JDBC Wrapper** với plugin failover để chuyển sang writer mới theo topology thay vì chờ DNS; ứng dụng phải retry transaction.
+
+### Chuyện gì xảy ra khi failover
+~~~text
+t=0     writer A chết / bị failover
+t=~5s   Aurora promote replica B thành writer
+t=~30s  cluster endpoint (CNAME, TTL 5s) trỏ sang B; A khởi động lại thành reader
+App:    pool vẫn giữ 20 connection tới A
+        JVM còn cache IP của A -> connection mới cũng tới A
+        INSERT -> ERROR: cannot execute INSERT in a read-only transaction
+~~~
+Ba lớp cùng gây trễ: **DNS cache của JVM**, **connection cũ trong pool** và **TCP treo** khi instance cũ chết hẳn mà không gửi RST (socket chờ tới timeout của hệ điều hành).
+
+### Lớp 1: DNS cache của JVM
+- Thuộc tính {{networkaddress.cache.ttl}}: nếu có SecurityManager thì mặc định cache mãi mãi; không có thì mặc định khoảng 30 giây (tuỳ implementation). AWS khuyên đặt không quá 60 giây.
+- Đặt sớm lúc khởi động, trước lần resolve đầu tiên: {{Security.setProperty("networkaddress.cache.ttl", "5")}}, hoặc sửa file java.security trong image.
+
+### Lớp 2: connection pool
+- HikariCP không tự biết connection đang trỏ tới reader. Đặt {{max-lifetime}} vài phút để connection được làm mới định kỳ, {{connection-timeout}} ngắn để fail nhanh.
+- Đặt socket timeout của driver (PostgreSQL: {{socketTimeout}}) để query không treo vô hạn trên TCP chết.
+
+### Lớp 3: AWS Advanced JDBC Wrapper
+Wrapper bọc driver PostgreSQL/MySQL gốc và thêm plugin:
+- **failover**: đọc topology cluster từ chính DB, khi mất writer thì kết nối thẳng tới writer mới, không phụ thuộc DNS. Sau khi chuyển xong, ném {{FailoverSuccessSQLException}} để báo transaction hiện tại đã mất, ứng dụng phải chạy lại.
+- **efm** (Enhanced Failure Monitoring): theo dõi host ở luồng riêng, phát hiện instance chết nhanh hơn TCP timeout.
+- Ngoài ra có plugin IAM authentication, Secrets Manager, read/write splitting. Bản mới có failover2/efm2; tên plugin mặc định thay đổi theo version, kiểm tra tài liệu hiện hành.
+
+~~~yaml
+spring:
+  datasource:
+    url: jdbc:aws-wrapper:postgresql://core.cluster-xxxx.ap-southeast-1.rds.amazonaws.com:5432/core
+    driver-class-name: software.amazon.jdbc.Driver
+    hikari:
+      maximum-pool-size: 20
+      max-lifetime: 300000          # 5 phút
+      connection-timeout: 3000      # fail nhanh thay vì treo thread
+      # để Hikari không coi lỗi failover là connection hỏng hàng loạt (theo hướng dẫn của wrapper)
+      exception-override-class-name: software.amazon.jdbc.util.HikariCPSQLException
+      data-source-properties:
+        wrapperPlugins: failover,efm
+        wrapperDialect: aurora-pg
+~~~
+
+### Ứng dụng vẫn phải retry
+- Failover luôn làm mất transaction đang chạy. Bao service method bằng retry 1–2 lần cho lỗi failover, **chỉ khi thao tác idempotent** hoặc toàn bộ transaction được chạy lại từ đầu.
+- Lỗi xảy ra lúc commit có thể để trạng thái không rõ (wrapper có {{TransactionStateUnknownSQLException}}): phải kiểm tra lại bằng idempotency key trước khi chạy lại, nhất là giao dịch tiền.
+
+### Lựa chọn khác: RDS Proxy
+RDS Proxy giữ kết nối phía client và tự chuyển sang writer mới, giảm thời gian failover mà không đổi driver. Đổi lại: thêm chi phí, thêm một hop, và pinning làm giảm hiệu quả multiplexing khi dùng prepared statement/session state.
+
+### Bẫy production
+- Chỉ test failover trên giấy. Hãy chạy {{aws rds failover-db-cluster}} trên staging dưới tải và đo thời gian ghi lỗi.
+- Ứng dụng dùng instance endpoint cứng thay vì cluster endpoint.
+- Retry vô hạn với backoff nhỏ trong lúc failover: tạo bão connection vào writer mới.
+
+> Senior tip: mục tiêu đo được nên là "thời gian không ghi được" từ góc nhìn ứng dụng, không phải thời gian failover trên console. Với cấu hình mặc định con số này hay là vài phút; sau khi chỉnh DNS TTL, pool và wrapper, nhiều đội đưa được về dưới một phút. Hãy diễn tập hằng quý và ghi số liệu vào runbook.`,
+  follow: [
+    'FailoverSuccessSQLException xảy ra giữa một giao dịch chuyển tiền: bạn xử lý thế nào để không trừ tiền hai lần?',
+    'Read/write splitting với Aurora reader endpoint có bẫy gì về replica lag?',
+    'Khi nào chọn RDS Proxy thay vì AWS Advanced JDBC Wrapper?'
+  ],
+  tags: ['Aurora', 'failover', 'JDBC', 'HikariCP', 'DNS', 'RDS Proxy']
+},
+{
+  id: 'aws-020',
+  topic: 'aws',
+  level: 'senior',
+  q: 'API công khai của ví điện tử bị bot dò mật khẩu và thỉnh thoảng bị DDoS. Bạn dựng lớp biên với CloudFront, AWS WAF và Shield thế nào, cái gì nên cache?',
+  a: `**Tóm tắt:** Đặt **CloudFront** trước ALB/API Gateway để kết thúc TLS ở edge, hấp thụ tấn công tầng mạng và cache phần công khai; gắn **AWS WAF** web ACL với managed rules, rate-based rule và Bot Control/ATP cho endpoint đăng nhập; **Shield Standard** miễn phí chống DDoS L3/L4, **Shield Advanced** khi cần đội phản ứng DDoS và bảo vệ chi phí. Quan trọng không kém: khoá origin để chỉ nhận traffic từ CloudFront.
+
+### Vì sao lại là edge
+Tấn công càng bị chặn gần người dùng thì càng rẻ: SYN flood, UDP reflection bị hạ tầng edge của AWS hấp thụ; request L7 xấu bị WAF chặn trước khi tạo connection tới ALB, không tốn CPU của service Java, không kích hoạt auto scaling vô ích.
+
+~~~text
+Client -> CloudFront (TLS, cache, WAF, Shield) -> ALB (chỉ nhận từ CloudFront) -> ECS
+~~~
+
+### CloudFront: cache gì
+- **Nên cache**: static asset, cấu hình công khai, danh sách tỉnh/ngân hàng, tỷ giá công bố (TTL ngắn 10–60 giây). Cache key chỉ gồm query/header thật sự làm đổi nội dung, cache key thừa làm tỷ lệ hit về 0.
+- **Không cache**: response cá nhân hoá (số dư, lịch sử giao dịch), mọi thứ phụ thuộc token. Dùng cache policy CachingDisabled cho các path đó.
+- Origin response timeout mặc định 30 giây; endpoint chạy lâu hơn phải đổi thiết kế, không chỉ tăng timeout.
+
+### Khoá origin
+- Security group của ALB chỉ cho phép managed prefix list {{com.amazonaws.global.cloudfront.origin-facing}}.
+- Thêm custom header bí mật từ CloudFront và rule ALB từ chối request thiếu header (vì prefix list là của mọi khách hàng CloudFront, không riêng bạn).
+- Hoặc dùng CloudFront VPC origin để ALB nằm hoàn toàn trong private subnet.
+
+### AWS WAF: các lớp rule
+| Lớp | Rule | Mục đích |
+|---|---|---|
+| Danh tiếng | Amazon IP reputation, Anonymous IP list | Chặn IP botnet, proxy ẩn danh |
+| Lỗ hổng | Core rule set, Known bad inputs, SQL database | Payload SQLi, XSS, Log4Shell |
+| Tần suất | Rate-based rule theo IP hoặc khoá tuỳ chỉnh | Chống flood, dò mật khẩu |
+| Bot | Bot Control, Challenge/CAPTCHA | Phân biệt bot với trình duyệt thật |
+| Gian lận | Account Takeover Prevention (ATP) | Phát hiện credential stuffing ở endpoint login |
+
+- Web ACL cho CloudFront phải tạo ở scope CloudFront (region us-east-1).
+- Bot Control và ATP tính phí thêm theo request: chỉ áp cho path cần như /login, /otp bằng scope-down statement.
+- Rule mới luôn chạy **Count** vài ngày, xem log rồi mới chuyển Block.
+
+### Shield
+- **Standard**: miễn phí, tự động, chống L3/L4.
+- **Advanced**: phí cố định hằng tháng (khoảng 3.000 USD/tháng cho cả organization, cam kết 1 năm, kiểm tra tài liệu hiện hành), có Shield Response Team, tự động giảm thiểu DDoS L7 bằng WAF, bảo vệ chi phí khi bị DDoS làm scale. Hợp với ngân hàng/ví có SLA và rủi ro danh tiếng lớn.
+
+### Bẫy production
+- Rate limit theo IP ở Việt Nam: nhà mạng di động dùng CGNAT, hàng nghìn người dùng chung một IP. Giới hạn quá chặt sẽ chặn khách thật; nên kết hợp khoá theo header/thiết bị và ngưỡng riêng cho /login.
+- Ứng dụng đọc nhầm IP client: phía sau CloudFront + ALB phải lấy từ X-Forwarded-For (Spring: {{server.forward-headers-strategy}}) hoặc header {{CloudFront-Viewer-Address}}, nếu không log và rate limit trong app đều thấy IP của proxy.
+- Chặn theo quốc gia làm khách đi nước ngoài không đăng nhập được.
+
+> Senior tip: đo hiệu quả bằng số liệu WAF log trong Athena: tỷ lệ request bị chặn theo rule, top IP/ASN, false positive do CSKH báo. Một đợt credential stuffing thực tế thường dùng hàng chục nghìn IP, mỗi IP vài request; rate limit theo IP gần như vô dụng, phải dựa vào Bot Control/ATP và tín hiệu thiết bị.`,
+  follow: [
+    'Bạn tránh cache nhầm dữ liệu cá nhân của người dùng này cho người dùng khác thế nào?',
+    'Credential stuffing dùng 50.000 IP khác nhau: rate-based rule có đủ không?',
+    'Khi nào chi phí Shield Advanced là đáng?'
+  ],
+  tags: ['CloudFront', 'WAF', 'Shield', 'DDoS', 'bot', 'edge']
+},
+{
+  id: 'aws-021',
+  topic: 'aws',
+  level: 'lead',
+  q: 'Ngân hàng của bạn đang chạy mọi thứ trong 2 AWS account dùng chung. Bạn thiết kế lại theo mô hình multi-account với Organizations, Control Tower và SCP thế nào, chuyển đổi ra sao?',
+  a: `**Tóm tắt:** Account là ranh giới cách ly mạnh nhất trên AWS: tách IAM, quota, chi phí và phạm vi sự cố. Dùng **AWS Organizations** chia account theo OU (Security, Infrastructure, Workloads prod/non-prod, Sandbox), **Control Tower** dựng landing zone chuẩn (log archive, audit, IAM Identity Center, controls), và **SCP** làm hàng rào "không ai được vượt", kể cả admin của account con. Chuyển đổi dần theo từng workload, không big bang.
+
+### Vì sao không ở chung account
+- Một IAM policy sai trong account chung có thể cho dev đọc dữ liệu prod.
+- Quota (Lambda concurrency, API Gateway throttle) chia chung: môi trường test chạy load test làm prod bị throttle.
+- Kiểm toán PCI DSS: account chứa dữ liệu thẻ nằm trong phạm vi kiểm toán; nếu mọi thứ chung một account thì toàn bộ hệ thống thành phạm vi kiểm toán.
+- Chi phí khó phân bổ theo team/sản phẩm.
+
+### Cấu trúc gợi ý
+~~~text
+Root (management account: chỉ billing + Organizations, không chạy workload)
+├── Security OU:   log-archive, security-tooling (GuardDuty, Security Hub admin)
+├── Infrastructure OU: network (Transit Gateway, egress, DNS), shared-services (CI/CD)
+├── Workloads OU
+│   ├── Prod OU:     payments-prod, lending-prod, cards-prod (CDE tách riêng)
+│   └── NonProd OU:  payments-dev, payments-uat, ...
+├── Sandbox OU:    thử nghiệm, có budget và tự dọn
+└── Suspended OU:  account chờ đóng, SCP chặn mọi thứ
+~~~
+Nguyên tắc: một workload một account cho mỗi môi trường; policy gắn ở OU, không gắn lẻ từng account.
+
+### Control Tower làm gì
+- Dựng landing zone: account log archive và audit, CloudTrail cấp organization, AWS Config, IAM Identity Center.
+- **Controls**: preventive (triển khai bằng SCP), detective (Config rule), proactive (kiểm tra template CloudFormation trước khi tạo tài nguyên).
+- **Account Factory** (hoặc AFT với Terraform) tạo account mới đã có sẵn baseline: VPC chuẩn, role, log, budget.
+
+### SCP: hiểu đúng cơ chế
+- SCP **không cấp quyền**, chỉ giới hạn quyền tối đa. Quyền hiệu lực = IAM policy cho phép VÀ SCP không chặn.
+- Áp cho mọi principal trong account con, kể cả root user, nhưng **không áp cho management account**, nên không chạy workload ở đó.
+- Không ảnh hưởng service-linked role.
+
+~~~json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    { "Sid": "ProtectAuditTrail", "Effect": "Deny",
+      "Action": ["cloudtrail:StopLogging", "cloudtrail:DeleteTrail",
+                 "organizations:LeaveOrganization", "guardduty:DeleteDetector"],
+      "Resource": "*" },
+    { "Sid": "DenyRootUser", "Effect": "Deny", "Action": "*", "Resource": "*",
+      "Condition": { "StringLike": { "aws:PrincipalArn": "arn:aws:iam::*:root" } } }
+  ]
+}
+~~~
+Giới hạn region (ví dụ chỉ ap-southeast-1) nên dùng control có sẵn của Control Tower thay vì tự viết, vì phải miễn trừ đúng các dịch vụ global như IAM, CloudFront, Route 53.
+
+### Danh tính và mạng
+- Người dùng đăng nhập qua **IAM Identity Center** nối với IdP công ty, quyền theo permission set; không tạo IAM user. Có quy trình break-glass được giám sát.
+- Mạng: Transit Gateway hoặc chia sẻ subnet qua RAM; quy hoạch CIDR không trùng ngay từ đầu; egress tập trung qua firewall.
+
+### Lộ trình chuyển đổi
+1. Dựng landing zone mới song song, chưa động vào workload.
+2. Bật CloudTrail organization, GuardDuty, Security Hub cho mọi account.
+3. Chuyển workload ít rủi ro trước (non-prod), rồi đến prod theo từng hệ thống.
+4. Account cũ thu hẹp dần, cuối cùng vào Suspended OU.
+
+### Bẫy
+- Áp SCP thẳng vào Prod OU mà chưa thử: chặn luôn pipeline deploy. Luôn có OU thử nghiệm policy.
+- SCP có giới hạn kích thước và số policy gắn trên mỗi node (kiểm tra tài liệu hiện hành); viết gọn, gom nhóm.
+- Account dễ tạo nhưng khó đóng: phải có quy trình vòng đời account và tag chủ sở hữu.
+
+> Senior tip: khi trình bày với ban lãnh đạo, đừng nói "best practice của AWS". Hãy nói bằng rủi ro và tiền: thu hẹp phạm vi kiểm toán PCI, một sự cố ở dev không thể chạm prod, và chi phí hiện rõ theo sản phẩm. Đó là ba lý do giúp dự án landing zone được duyệt.`,
+  follow: [
+    'Vì sao SCP không áp cho management account, và hệ quả về vận hành?',
+    'Bạn cho team tự tạo tài nguyên nhưng vẫn giữ được guardrail thế nào?',
+    'Chia sẻ VPC qua RAM so với mỗi account một VPC nối Transit Gateway: chọn cái nào?'
+  ],
+  tags: ['Organizations', 'Control Tower', 'SCP', 'landing zone', 'multi-account', 'IAM Identity Center']
+},
+{
+  id: 'aws-022',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Hệ thống thanh toán thẻ chạy trên AWS cần đạt PCI DSS và tuân thủ yêu cầu lưu trữ dữ liệu tại Việt Nam. Trách nhiệm của AWS dừng ở đâu, bạn mã hoá, kiểm soát truy cập và audit thế nào?',
+  a: `**Tóm tắt:** Theo **shared responsibility model**, AWS chịu trách nhiệm bảo mật "của" cloud (datacenter, phần cứng, hạ tầng dịch vụ) và có chứng nhận PCI DSS Level 1; bạn chịu trách nhiệm bảo mật "trong" cloud: cấu hình, IAM, mã hoá, dữ liệu, ứng dụng, log. Chiến lược: thu nhỏ phạm vi dữ liệu thẻ (tokenization, account riêng), mã hoá bằng KMS với phân tách quyền, ghi mọi thao tác bằng CloudTrail vào kho log bất biến, và xác định với bộ phận pháp chế dữ liệu nào bắt buộc nằm tại Việt Nam.
+
+### Shared responsibility trong thực tế
+| Thành phần | AWS | Bạn |
+|---|---|---|
+| Datacenter, phần cứng, hypervisor | Có | Không |
+| Patch OS của EC2 | Không | Có |
+| Patch engine RDS/Aurora | AWS thực hiện | Bạn chọn maintenance window, version |
+| Security group, IAM, mã hoá | Cung cấp công cụ | Cấu hình đúng |
+| Dữ liệu và ứng dụng | Không | Có |
+
+Dùng dịch vụ "PCI compliant" không làm hệ thống của bạn compliant. Báo cáo của AWS (AOC, SOC) lấy từ **AWS Artifact** chỉ chứng minh phần trách nhiệm của AWS.
+
+### Thu nhỏ phạm vi kiểm toán (CDE)
+- **Tokenization**: chỉ một service vault lưu PAN; các service khác chỉ thấy token. Phạm vi kiểm toán co lại còn vault và những gì kết nối tới nó.
+- Đặt vault trong account và VPC riêng, chỉ mở qua PrivateLink; các account khác ngoài phạm vi.
+- Không bao giờ lưu dữ liệu xác thực nhạy cảm (CVV, track data) sau khi authorize.
+
+### Mã hoá
+- At rest: **KMS customer managed key** cho RDS, S3, EBS, mỗi loại dữ liệu một key. Key policy tách quyền: người quản trị key không dùng được key để giải mã; ứng dụng chỉ có Decrypt.
+- Bật rotation tự động; với PAN dùng thêm mã hoá cấp ứng dụng (envelope encryption) để DBA đọc bảng cũng chỉ thấy ciphertext.
+- Cần HSM đơn thuê bao, tự kiểm soát hoàn toàn: **CloudHSM**; đổi lại tự vận hành cluster, đắt hơn nhiều.
+- In transit: TLS 1.2 trở lên ở mọi chặng, kể cả trong VPC (PostgreSQL bật {{rds.force_ssl}}).
+
+### Audit với CloudTrail
+- **Organization trail** ghi management event của mọi account vào S3 ở account log archive, bật **log file integrity validation** (file digest để chứng minh log không bị sửa) và **S3 Object Lock**.
+- Data event (đọc/ghi object S3 chứa dữ liệu nhạy cảm, gọi Lambda) không bật mặc định và tính phí thêm: chỉ bật cho bucket/hàm trong CDE.
+- Event history miễn phí trên console chỉ giữ 90 ngày; PCI DSS yêu cầu giữ log audit ít nhất 12 tháng, 3 tháng gần nhất truy xuất được ngay.
+- Truy vấn bằng Athena hoặc CloudTrail Lake; cảnh báo theo thời gian thực qua EventBridge cho thao tác nhạy cảm (tắt trail, sửa key policy, đăng nhập root).
+
+### Kiểm soát liên tục
+- **AWS Config** conformance pack cho PCI DSS, **Security Hub** chạy standard PCI DSS, **GuardDuty** phát hiện bất thường, **Macie** quét S3 tìm dữ liệu thẻ/PII lọt ra ngoài phạm vi.
+- MFA cho mọi truy cập vào CDE (yêu cầu của PCI DSS v4).
+
+### Dữ liệu tại Việt Nam
+- Các văn bản cần đối chiếu: Luật An ninh mạng 2018 và Nghị định 53/2022 (lưu trữ dữ liệu tại Việt Nam với một số loại doanh nghiệp/dữ liệu), quy định bảo vệ dữ liệu cá nhân (Nghị định 13/2023 và luật mới), quy định của NHNN về an toàn hệ thống thông tin. Diễn giải phải do pháp chế/compliance chốt, kỹ sư không tự kết luận.
+- AWS chưa có region đầy đủ tại Việt Nam (chỉ có Local Zone Hà Nội, kiểm tra hiện hành). Mô hình hay gặp: dữ liệu gốc khách hàng ở on-prem trong nước, workload trên AWS chỉ xử lý dữ liệu đã token hoá/ẩn danh; hoặc chỉ dùng cloud cho hệ thống không chứa dữ liệu bị ràng buộc.
+- Chặn tạo tài nguyên ngoài region được duyệt bằng SCP để dữ liệu không vô tình đi sai nơi.
+
+### Bẫy production
+- PAN lọt vào log ứng dụng, stack trace, message queue: phạm vi kiểm toán lan ra cả hệ thống log. Cần masking ở logger và quét định kỳ.
+- Shared service (CI/CD, monitoring) có quyền vào CDE: tự động nằm trong phạm vi.
+- Account log archive mà ai cũng có quyền xoá thì audit vô giá trị.
+
+> Senior tip: thứ tiết kiệm nhiều tiền kiểm toán nhất không phải là thêm công cụ bảo mật mà là giảm số hệ thống chạm vào dữ liệu thẻ. Mỗi service bạn đưa ra khỏi CDE nhờ tokenization là bớt một hạng mục phải chứng minh hằng năm.`,
+  follow: [
+    'Tokenization khác mã hoá thế nào về phạm vi PCI DSS?',
+    'Bạn chứng minh với kiểm toán rằng log CloudTrail không bị sửa thế nào?',
+    'Pháp chế yêu cầu dữ liệu khách hàng phải ở Việt Nam: kiến trúc hybrid của bạn ra sao?'
+  ],
+  tags: ['PCI DSS', 'compliance', 'CloudTrail', 'KMS', 'shared responsibility', 'data residency']
 }
 );
