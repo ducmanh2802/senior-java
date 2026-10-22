@@ -1,6 +1,6 @@
 # T47 — Nội dung: Concurrency & JVM (đợt 2)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/q-concurrency-jvm.js`
 
@@ -41,3 +41,4 @@ ID tiếp nối số lớn nhất đang có trong topic (ví dụ đang có `cor
 `node scripts/validate.js` → OK và số câu mỗi topic đạt mục tiêu. Integrator sẽ fact-check sau.
 
 ## Notes
+Đã thêm 7 câu cho concurrency (014-020) và 7 câu cho jvm (012-018). Tổng cộng concurrency: 20 câu, jvm: 18 câu. Validator OK.

@@ -1,6 +1,6 @@
-# T82 — Bài học: Core Java
+﻿# T82 — Bài học: Core Java
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/lessons-core.js`
 
@@ -26,3 +26,6 @@ Viết **5 bài học** cho track `core`, `order` từ 1, ID `lesson-core-001` t
 `node scripts/validate.js` → OK và `node scripts/test-lessons.js` → tất cả bài tập OK. Integrator sẽ fact-check.
 
 ## Notes
+- Đã thêm đủ 5 bài học core và bài tập/câu hỏi kiểm tra; `node --check` và kiểm tra lesson riêng đạt.
+- Validator toàn repo chưa đạt: `q-scenario.js` báo `Unexpected end of input`, file ngoài phạm vi sở hữu T82.
+- Viết bởi Codex CLI (ChatGPT). Integrator: test-lessons pass.

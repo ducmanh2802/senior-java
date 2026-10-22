@@ -1,6 +1,6 @@
 # T84 — Bài học: Concurrency
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/lessons-concurrency.js`
 
@@ -26,3 +26,4 @@ Viết **5 bài học** cho track `concurrency`, `order` từ 1, ID `lesson-conc
 `node scripts/validate.js` → OK và `node scripts/test-lessons.js` → tất cả bài tập OK. Integrator sẽ fact-check.
 
 ## Notes
+- Hoàn thành bởi agent Claude: 5 bài, 16 bài tập (3 lần chạy đều pass; đã thử lời giải sai: test bắt được deadlock và race).
