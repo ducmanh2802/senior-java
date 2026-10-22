@@ -48,7 +48,10 @@ while true; do
       tries[$task]=$((n + 1))
       echo "[$(date +%T)] retry $task ($((n + 1))/$RETRIES)"
       cp "$log" "logs/$task.stall$((n + 1)).log"
-      ( sleep 30; FORCE_MODELS="$(scripts/probe-models.sh | tr '\n' ' ')" scripts/run-agents.sh "$task" ) &
+      ( sleep 30
+        models="$(scripts/probe-models.sh | tr '\n' ' ')"
+        if [ -n "${models// /}" ]; then FORCE_MODELS="$models" scripts/run-agents.sh "$task"
+        else echo "[$(date +%T)] no model answers — leaving $task to run-queue.sh"; fi ) &
     else
       echo "[$(date +%T)] giving up on $task after $RETRIES retries"
     fi
