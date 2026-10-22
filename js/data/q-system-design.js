@@ -2064,5 +2064,1695 @@ order.recalculateTotal();     // luôn suy ra từ lines
     'Làm sao chuyển từ shared database sang DB per service mà không downtime?'
   ],
   tags: ['anti-pattern', 'god class', 'anemic model', 'distributed monolith']
+},
+{
+  id: 'design-014',
+  topic: 'design',
+  level: 'senior',
+  q: 'Thiết kế hệ thống chuyển tiền liên ngân hàng 24/7 (kiểu NAPAS). Mô tả luồng giao dịch, trạng thái, cơ chế timeout và quy trình đối soát.',
+  a: `**Tóm tắt:** Đây là bài toán **đúng tuyệt đối hơn là nhanh**: mỗi giao dịch đi qua một state machine chặt chẽ (khởi tạo → giữ tiền → gửi switch → kết quả), ghi bút toán kép vào ledger, chống gửi trùng bằng idempotency key và mã tham chiếu. Điểm khó nhất là **timeout: trạng thái "không biết" (UNKNOWN), không phải thất bại**, phải truy vấn lại switch và đối soát cuối ngày chứ không được tự hoàn tiền.
+
+### Làm rõ yêu cầu và quy mô
+- Chức năng: truy vấn tên người nhận, chuyển tiền nhanh 24/7 qua switch (NAPAS), xem trạng thái, tra soát/khiếu nại, đối soát hằng ngày.
+- Phi chức năng: không mất giao dịch, không "tạo tiền ảo", audit đầy đủ, chạy 24/7 không có cửa sổ bảo trì; tuân thủ hạn mức và quy định xác thực của NHNN (ví dụ từ 07/2024, giao dịch chuyển tiền trên 10 triệu đồng phải xác thực sinh trắc học).
+- Ước lượng (giả định ngân hàng lớn): 5 triệu giao dịch/ngày → 5.000.000 / 86.400 ≈ 58 TPS trung bình; giờ cao điểm (ngày lương, trước Tết) giả sử gấp 10 → ~600 TPS. Không lớn về throughput; cái khó là tính đúng.
+- Bản tin với switch: NAPAS 247 lâu nay dùng chuẩn ISO 8583 và đang chuyển dần sang ISO 20022; chi tiết mã lỗi, timeout lấy từ **đặc tả kết nối của switch**, không tự đặt.
+
+### Kiến trúc tổng thể
+~~~text
+App/Internet Banking -> API Gateway -> Transfer Service (stateless)
+                                            |
+                         +------------------+------------------+
+                         |                                     |
+                  PostgreSQL (txn + ledger)            Outbox -> Kafka
+                         |                                     |
+                  Core Banking (hold/post)          Switch Connector (ISO 8583)
+                                                               |
+                                                         NAPAS switch
+                                                               |
+                                                     Ngân hàng thụ hưởng
+~~~
+
+### State machine
+~~~text
+INITIATED -> HELD (đã giữ tiền) -> SENT -> SUCCESS -> POSTED
+                    |                |
+                    |                +-> FAILED (từ chối rõ ràng) -> RELEASED (nhả tiền giữ)
+                    |                +-> UNKNOWN (timeout) -> inquiry -> SUCCESS | FAILED
+                    +-> REJECTED (không đủ số dư / vượt hạn mức)
+~~~
+Mỗi chuyển trạng thái là **conditional update** để hai worker không cùng xử lý:
+~~~sql
+UPDATE transfer SET status = 'SUCCESS', updated_at = now()
+ WHERE id = :id AND status IN ('SENT', 'UNKNOWN');   -- 0 dòng = đã có người xử lý
+~~~
+
+### Luồng chi tiết
+1. **Idempotency:** client gửi {{Idempotency-Key}}; unique index trên (customer_id, idempotency_key). Request trùng trả lại kết quả cũ, không tạo giao dịch mới.
+2. **Giữ tiền (hold):** gọi core banking tạo hold, giảm số dư khả dụng nhưng chưa hạch toán. Nếu không đủ tiền → REJECTED.
+3. **Gửi switch:** ghi outbox trong cùng transaction với trạng thái SENT; connector gửi bản tin kèm mã tham chiếu duy nhất (trace/reference number). Mã này là khoá để truy vấn và đối soát.
+4. **Nhận kết quả:** thành công thì hạch toán Nợ tài khoản khách hàng / Có tài khoản trung gian thanh toán NAPAS, nhả hold, thông báo khách. Từ chối rõ ràng (sai tài khoản, ngân hàng nhận từ chối) thì nhả hold, chuyển FAILED.
+5. **Quyết toán (settlement):** tiền giữa các ngân hàng được bù trừ theo phiên qua tài khoản thanh toán tại NHNN; tài khoản trung gian phải về đúng số sau mỗi phiên.
+
+### Timeout: phần interviewer chấm điểm
+- Hết thời gian chờ mà không có phản hồi → **UNKNOWN**, giữ nguyên hold. Không tự hoàn tiền: switch có thể đã chuyển thành công và người nhận đã được cộng tiền, chỉ là phản hồi bị mất. Nếu hoàn cho người gửi, ngân hàng mất đúng số tiền đó.
+- **Không gửi lại bản tin chuyển tiền mới** (có thể chuyển hai lần). Thay vào đó gửi bản tin truy vấn trạng thái theo mã tham chiếu (hoặc quy trình reversal nếu đặc tả switch yêu cầu), retry có backoff.
+- Vẫn chưa rõ sau N lần → hàng đợi tra soát, cuối ngày đối soát với file của switch sẽ quyết định. Khách thấy "Giao dịch đang xử lý", không phải "Thất bại".
+
+### Đối soát
+| Lệch | Ý nghĩa | Xử lý |
+|---|---|---|
+| Ta SUCCESS, switch không có | Ghi nhận sai phía ta | Điều tra, đảo bút toán có phê duyệt |
+| Ta UNKNOWN, switch thành công | Phản hồi bị mất | Hạch toán thành công |
+| Ta UNKNOWN/FAILED, switch không có | Giao dịch chưa tới switch | Nhả hold, FAILED |
+| Lệch số tiền | Lỗi nghiêm trọng | Cảnh báo P1, không tự sửa |
+
+Khớp theo (mã tham chiếu, số tiền, ngày). Chiều ngược lại (ngân hàng ta là bên nhận) cũng phải đối soát: switch báo đã ghi có mà ta chưa cộng tiền cho khách.
+
+### Hoàn tiền / chuyển nhầm
+Ngân hàng gửi **không thể tự trừ tiền tài khoản ở ngân hàng khác**. Chuyển nhầm phải đi theo quy trình tra soát qua switch; ngân hàng nhận liên hệ người thụ hưởng và chỉ hoàn khi có cơ sở. Hệ thống chỉ cần lưu yêu cầu tra soát, trạng thái và giao dịch hoàn (nếu có) tham chiếu giao dịch gốc.
+
+### Failure modes
+| Sự cố | Xử lý |
+|---|---|
+| Switch/ngân hàng nhận chậm | Circuit breaker theo ngân hàng nhận, báo khách sớm thay vì treo |
+| Connector crash sau khi gửi | Outbox + mã tham chiếu giúp truy vấn lại, không gửi trùng |
+| Core banking chậm khi giữ tiền | Timeout ngắn ở bước hold; hold là thao tác có thể truy vấn lại |
+| Kafka trễ | Dữ liệu nguồn ở DB; job quét SENT/UNKNOWN quá hạn |
+
+> Senior tip: lỗi đắt nhất trong hệ thống chuyển tiền thường không nằm ở lúc tải cao mà ở **xử lý timeout**: một job "dọn dẹp" tự chuyển UNKNOWN thành FAILED và nhả hold sẽ làm ngân hàng mất tiền mỗi khi mạng chập chờn. Hãy đo số giao dịch UNKNOWN theo phút làm metric hàng đầu và có runbook tra soát rõ ràng.`,
+  follow: [
+    'Bạn thiết kế cơ chế truy vấn trạng thái khi switch không trả kết quả thế nào để không gây chuyển trùng?',
+    'Nếu switch đổi format file đối soát, bạn quản lý version parser ra sao?',
+    'Ngân hàng ta là bên nhận: làm sao đảm bảo không cộng tiền hai lần khi switch gửi lại bản tin?'
+  ],
+  tags: ['IBFT', 'NAPAS', 'banking', 'reconciliation', 'ledger', 'timeout']
+},
+{
+  id: 'design-015',
+  topic: 'design',
+  level: 'senior',
+  q: 'So sánh Snowflake, ULID và DB sequence theo block cho distributed ID generator. Xử lý clock skew và thứ tự toàn cục thế nào?',
+  a: `**Tóm tắt:** Snowflake cho ID 64-bit gần đúng theo thời gian, sinh cục bộ rất nhanh nhưng phải quản lý worker ID và chống đồng hồ chạy lùi. ULID 128-bit không cần worker ID, vẫn sort được theo thời gian nhưng to gấp đôi. DB sequence cấp theo block đơn giản, không phụ thuộc đồng hồ, nhưng cần DB HA và không cho thứ tự thời gian giữa các instance. Không cách nào cho **thứ tự toàn cục tuyệt đối**; cần điều đó thì phải có một sequencer duy nhất.
+
+### Snowflake: cấu trúc 64 bit
+~~~text
+| 1 bit = 0 | 41 bit timestamp (ms từ custom epoch) | 10 bit worker | 12 bit sequence |
+2^41 ms ≈ 69,7 năm;  2^10 = 1024 worker;  2^12 = 4096 ID / ms / worker
+~~~
+- Custom epoch (ví dụ 2024-01-01) để kéo dài tuổi thọ 69 năm tính từ mốc đó.
+- Sequence tăng trong cùng 1 ms; hết 4096 thì chờ sang ms kế tiếp.
+- ID là {{long}} tăng dần theo thời gian → insert vào B-tree luôn ở mép phải, index gọn.
+
+### So sánh
+| Tiêu chí | Snowflake | ULID | DB block |
+|---|---|---|---|
+| Kích thước | 64 bit ({{long}}) | 128 bit (26 ký tự Base32 hoặc cột UUID) | 64 bit |
+| Sort theo thời gian | Gần đúng (ms) | Gần đúng (ms) | Chỉ trong một instance |
+| Cần điều phối | Worker ID duy nhất | Không | DB cấp block |
+| Phụ thuộc đồng hồ | Có, rất nhạy | Có, nhưng phần random giữ tính duy nhất | Không |
+| Lộ thông tin | Thời điểm tạo, worker | Thời điểm tạo | Tốc độ tăng trưởng |
+| Rủi ro chính | Trùng worker ID, clock lùi | Kích thước index | DB down khi hết block |
+
+ULID = 48 bit timestamp + 80 bit random; timestamp nằm ở đầu nên đọc ngược ra thời điểm rất dễ và B-tree vẫn insert gần cuối. Nhược điểm thật là kích thước: khoá chính 16 byte (hoặc 26 byte nếu lưu chuỗi) làm mọi index phụ to hơn. Thư viện ULID thường có chế độ monotonic: cùng 1 ms thì tăng phần random lên 1 để giữ thứ tự trong một process.
+
+### Clock skew: vì sao nguy hiểm
+NTP có thể **step** đồng hồ lùi lại, VM bị pause rồi đồng bộ lại thời gian. Nếu {{currentTimeMillis}} quay về một ms đã dùng, generator có thể sinh lại đúng timestamp + sequence cũ → **trùng ID**.
+
+Cách phòng:
+1. Giữ {{lastTimestamp}} trong generator; nếu thời gian hiện tại nhỏ hơn: lùi ít (vài ms) thì chờ, lùi nhiều thì **từ chối sinh ID và alert** (fail-fast tốt hơn sinh trùng).
+2. Cấu hình đồng bộ giờ theo kiểu slew (chỉnh từ từ) thay vì step khi đang chạy; với chrony chỉ cho phép {{makestep}} lúc khởi động.
+3. Khi khởi động lại, đừng sinh ngay nếu không chắc đồng hồ đã ổn; một số hệ thống lưu mốc thời gian cuối cùng để so sánh.
+
+~~~java
+public synchronized long nextId() {
+    long now = System.currentTimeMillis();
+    if (now < lastTs) {
+        long drift = lastTs - now;
+        if (drift > 5) throw new IllegalStateException("Clock moved back " + drift + " ms");
+        now = waitUntil(lastTs);                // lùi rất ít: chờ đồng hồ đuổi kịp
+    }
+    if (now == lastTs) {
+        seq = (seq + 1) & 0xFFF;                // 12 bit sequence
+        if (seq == 0) now = waitUntil(lastTs + 1); // hết 4096 ID trong ms này
+    } else {
+        seq = 0;
+    }
+    lastTs = now;
+    return ((now - EPOCH) << 22) | (workerId << 12) | seq;
 }
+~~~
+Ngưỡng 5 ms là ví dụ; chọn theo SLA vì luồng gọi bị block trong lúc chờ.
+
+### Gán worker ID: nguồn bug thật hay gặp hơn clock skew
+Hash IP hoặc hostname để ra 10 bit dễ trùng khi Kubernetes tái sử dụng IP hoặc scale lên. Cách an toàn: lease worker ID từ etcd/ZooKeeper/Redis có TTL và gia hạn; StatefulSet dùng ordinal của pod; hoặc bảng DB {{worker_lease}} với unique constraint. Mất lease thì ngừng sinh ID.
+
+### DB block allocation
+~~~sql
+UPDATE id_block SET next_id = next_id + 1000
+ WHERE name = 'order'
+RETURNING next_id - 1000 AS start_id, next_id - 1 AS end_id;
+~~~
+Mỗi instance giữ một block trong RAM. Ước lượng: 10.000 ID/s với block 1.000 → chỉ 10 lần gọi DB/s. Crash thì mất phần còn lại của block (lỗ hổng số, chấp nhận được). Hai instance dùng hai block khác nhau nên ID **không** phản ánh thứ tự thời gian giữa các instance. Trong PostgreSQL, {{CREATE SEQUENCE ... INCREMENT BY 1000}} cũng làm được điều tương tự.
+
+### Thứ tự toàn cục
+ID theo thời gian chỉ là "gần đúng": hai node sinh trong cùng ms có thể đảo thứ tự, và đồng hồ hai máy luôn lệch vài ms. Cần thứ tự tuyệt đối (sổ lệnh chứng khoán, ledger) thì dùng một **sequencer đơn luồng** cho mỗi phạm vi (mỗi mã chứng khoán, mỗi tài khoản) hoặc offset của một Kafka partition. Đừng sắp xếp nghiệp vụ quan trọng bằng timestamp từ nhiều máy.
+
+### Khi nào chọn gì
+| Tình huống | Chọn |
+|---|---|
+| Khoá chính {{bigint}}, throughput cao, team vận hành được lease worker | Snowflake |
+| Polyglot, không muốn điều phối, chấp nhận 128 bit | ULID (hoặc UUIDv7) |
+| Hệ thống vừa phải, đã có PostgreSQL HA | DB sequence/block |
+| Cần thứ tự tuyệt đối | Sequencer đơn luồng theo partition |
+
+> Senior tip: khi review một Snowflake tự viết, tôi hỏi hai câu trước tiên: "worker ID được cấp thế nào khi scale từ 3 lên 30 pod?" và "đồng hồ lùi 1 giây thì chuyện gì xảy ra?". Phần lớn implementation tự viết trả lời sai ít nhất một câu. Nếu không thật sự cần {{long}}, UUIDv7 (cùng ý tưởng time-ordered như ULID, chuẩn hoá trong RFC 9562) bớt được cả hai rủi ro.`,
+  follow: [
+    'Nếu cần ID 64-bit nhưng không muốn lo clock skew, bạn thiết kế thế nào?',
+    'Khi migrate khoá chính từ bigint auto-increment sang Snowflake hoặc ULID, lộ trình ra sao?',
+    'So sánh kích thước index giữa bigint, UUID và chuỗi ULID 26 ký tự trong PostgreSQL.'
+  ],
+  tags: ['Snowflake', 'ULID', 'UUIDv7', 'distributed ID', 'clock skew', 'sequence']
+},
+{
+  id: 'design-016',
+  topic: 'design',
+  level: 'senior',
+  q: 'Thiết kế hệ thống đặt vé concert/rạp phim cho phép chọn chỗ ngồi: 500.000 người vào cùng lúc khi mở bán, tuyệt đối không bán một ghế cho hai người. Giữ chỗ tạm và thanh toán xử lý thế nào?',
+  a: `**Tóm tắt:** Mỗi ghế là một bản ghi có trạng thái AVAILABLE → HELD (có hạn, ví dụ 10 phút) → SOLD. Giữ chỗ bằng **một conditional UPDATE nguyên tử** (hoặc Redis SET NX có TTL) nên hai người không thể cùng giữ một ghế; unique constraint trên vé là chốt chặn cuối. Thanh toán chỉ được xác nhận nếu hold còn hiệu lực; phòng tải đột biến bằng phòng chờ ảo (virtual waiting room), không phải bằng việc scale DB vô hạn.
+
+### Làm rõ yêu cầu
+- Chọn ghế cụ thể (không phải vé đứng), tối đa 4 ghế/người, giữ chỗ 10 phút để thanh toán.
+- Quy mô: sân vận động 40.000 ghế, 500.000 người vào trong 5 phút đầu. Giả sử mỗi người tải sơ đồ ghế 3 lần và thử giữ 2 lần: đọc ≈ 1,5 triệu request, ghi ≈ 1 triệu lần thử nhưng **tối đa chỉ 40.000 lần thành công**. Bài toán là contention cực cao trên tập dữ liệu nhỏ.
+- Không overbooking là yêu cầu cứng; hiển thị sơ đồ ghế được phép trễ vài giây.
+
+### API
+~~~text
+GET  /events/{id}/seats            -> sơ đồ ghế (cache, trễ 1-2 s chấp nhận được)
+POST /events/{id}/holds            {seatIds:[...]} -> holdId, expiresAt | 409 ghế đã bị giữ
+POST /holds/{holdId}/payment       Idempotency-Key -> chuyển sang cổng thanh toán
+POST /payments/callback            cổng thanh toán gọi về -> xác nhận vé
+~~~
+
+### Mô hình dữ liệu
+~~~sql
+CREATE TABLE seat (
+  event_id bigint, seat_id text, status text NOT NULL,   -- AVAILABLE | HELD | SOLD
+  hold_id uuid, hold_until timestamptz, version int,
+  PRIMARY KEY (event_id, seat_id));
+CREATE TABLE ticket (
+  event_id bigint, seat_id text, order_id uuid,
+  UNIQUE (event_id, seat_id));                            -- chốt chặn cuối cùng
+~~~
+
+### Giữ chỗ nguyên tử
+~~~sql
+UPDATE seat SET status = 'HELD', hold_id = :holdId, hold_until = now() + interval '10 minutes'
+ WHERE event_id = :eventId AND seat_id = ANY(:seatIds)
+   AND (status = 'AVAILABLE' OR (status = 'HELD' AND hold_until < now()));
+-- số dòng cập nhật != số ghế yêu cầu  => ROLLBACK, trả 409
+~~~
+Vì sao đúng: PostgreSQL khoá từng dòng khi UPDATE; transaction thứ hai chờ, rồi đánh giá lại điều kiện WHERE trên phiên bản mới và thấy ghế đã HELD nên bỏ qua. Không có "đọc rồi mới ghi" nên không có race. Điều kiện hold_until < now() giúp ghế hết hạn tự quay lại mà không cần job dọn ngay lập tức (job chỉ để sơ đồ ghế hiển thị đúng). Khi giữ nhiều ghế, sắp xếp seat_id để giảm deadlock giữa hai người cùng chọn một cặp ghế.
+
+### Kiến trúc
+~~~text
+Users -> CDN (sơ đồ tĩnh) -> Waiting Room (token theo lượt, vào 2.000 người/phút)
+                                  |
+                           Booking Service --(hold/confirm)--> PostgreSQL (primary)
+                                  |                                  |
+                           Redis (cache trạng thái ghế, TTL 1s)   Outbox -> Kafka -> Email/vé điện tử
+                                  |
+                           Payment Gateway (redirect + callback)
+~~~
+Phòng chờ ảo là thành phần quan trọng nhất: thay vì để 500.000 request đập vào DB, chỉ cho một lượng người dùng tương ứng với năng lực xử lý vào trang chọn ghế, số còn lại thấy vị trí trong hàng đợi. Nó vừa bảo vệ hệ thống vừa công bằng hơn "ai F5 nhanh hơn".
+
+### Thanh toán và hết hạn giữ chỗ
+- Khi chuyển sang thanh toán, đặt **hạn thanh toán ở cổng ngắn hơn hold** (ví dụ hold 10 phút, link thanh toán hết hạn sau 8 phút) để giảm ca "đã trả tiền nhưng hold đã hết".
+- Callback xác nhận bằng conditional update: chỉ chuyển SOLD khi hold_id khớp. Callback xử lý idempotent theo mã giao dịch cổng thanh toán.
+- Ca xấu: tiền về sau khi hold đã hết và ghế đã bị người khác giữ → không được ép bán; tự động hoàn tiền và thông báo. Đây là chính sách phải chốt với business từ đầu.
+- Callback có thể không đến: job đối soát truy vấn cổng thanh toán cho các hold đang chờ.
+
+### So sánh cách khoá
+| Cách | Ưu | Nhược |
+|---|---|---|
+| Conditional UPDATE trên PostgreSQL | Đúng tuyệt đối, đơn giản, transactional | Một DB primary chịu toàn bộ ghi; cần phòng chờ |
+| Redis SET NX EX theo ghế | Rất nhanh, TTL tự nhả | Redis không phải nguồn sự thật; vẫn cần DB constraint khi bán |
+| SELECT ... FOR UPDATE SKIP LOCKED | Hợp với "chọn giúp ghế tốt nhất", vé đứng | Không hợp khi người dùng chọn ghế cụ thể |
+| Optimistic lock (version) | Không giữ khoá lâu | Tỉ lệ conflict cao khi tranh chấp mạnh, retry nhiều |
+
+### Failure modes
+- Redis cache sai lệch: chỉ ảnh hưởng hiển thị, quyết định cuối luôn ở DB.
+- Bot giữ chỗ hàng loạt rồi bỏ: giới hạn số hold/người, CAPTCHA ở phòng chờ, hold ngắn.
+- DB primary quá tải: phòng chờ giảm nhịp vào; partition theo event nếu nhiều sự kiện mở bán cùng lúc.
+
+> Senior tip: interviewer thường gài câu "dùng distributed lock cho từng ghế được không?". Được, nhưng thừa: một UPDATE có điều kiện trong DB đã là lock đúng nghĩa và có transaction đi kèm. Thứ thật sự cứu bạn ngày mở bán là phòng chờ và cache sơ đồ ghế, vì hơn 90% traffic là đọc.`,
+  follow: [
+    'Nếu muốn hiển thị trạng thái ghế realtime cho 50.000 người đang xem cùng một sơ đồ, bạn làm thế nào?',
+    'Thanh toán thành công nhưng callback đến sau khi hold hết hạn: bạn xử lý theo những bước nào?',
+    'Với vé không đánh số ghế (vé đứng, 10.000 vé), thiết kế giữ chỗ thay đổi ra sao?'
+  ],
+  tags: ['booking', 'overbooking', 'hold', 'TTL', 'waiting room', 'concurrency']
+},
+{
+  id: 'design-017',
+  topic: 'design',
+  level: 'lead',
+  q: 'Thiết kế order matching engine cho một sàn giao dịch chứng khoán/crypto: khớp lệnh theo giá rồi thời gian, độ trễ thấp, không mất lệnh khi crash. Vì sao các engine thường chạy đơn luồng?',
+  a: `**Tóm tắt:** Lệnh đi qua gateway và kiểm tra rủi ro, rồi vào một **sequencer** gán số thứ tự và ghi journal bền vững. Sau đó **một luồng duy nhất cho mỗi nhóm mã** khớp lệnh trên order book trong RAM theo nguyên tắc giá tốt nhất trước, cùng giá thì lệnh đến trước khớp trước. Đơn luồng giúp engine **deterministic**: replay cùng journal luôn ra cùng kết quả, nên phục hồi và HA trở thành bài toán phát lại journal, đồng thời không tốn chi phí lock.
+
+### Làm rõ yêu cầu
+- Loại lệnh: limit, market, huỷ, sửa. Phiên khớp liên tục (phiên định kỳ ATO/ATC của sàn VN là mở rộng sau).
+- Lưu ý bối cảnh VN: khớp lệnh do Sở giao dịch thực hiện; công ty chứng khoán chủ yếu làm OMS (nhận lệnh, kiểm tra sức mua, đẩy lên sàn). Bài này giả định ta xây chính engine (sàn crypto hoặc engine nội bộ).
+- Ước lượng: 3 triệu lệnh/ngày trong 4,5 giờ giao dịch → 3.000.000 / 16.200 s ≈ 185 lệnh/s trung bình; đầu và cuối phiên có thể gấp 20–50 lần → vài nghìn lệnh/s. Một luồng xử lý thuần trong RAM chịu được mức này dư dả; thứ cần tối ưu là **độ trễ ổn định (p99)**, không phải throughput.
+
+### Kiến trúc
+~~~text
+Client -> Gateway (auth, validate) -> Pre-trade risk (sức mua, hạn mức)
+                                          |
+                                     Sequencer: gán seq, ghi journal (fsync + replicate)
+                                          |
+                     +--------------------+--------------------+
+                     |                    |                    |
+              Engine shard A        Engine shard B       Engine standby (replay cùng journal)
+              (mã 1..N, 1 luồng)    (mã N+1..M)
+                     |
+              Output events: ack, trade, cancel  ->  Market data feed
+                                                ->  Clearing/settlement, OMS, lịch sử (DB)
+~~~
+Database không nằm trên đường nóng: trade được ghi xuống DB bất đồng bộ từ output events.
+
+### Order book
+- Mỗi mã: hai phía. Bid sắp giảm dần theo giá, ask tăng dần; mỗi mức giá là hàng đợi FIFO.
+- {{HashMap<Long, Order>}} theo orderId để huỷ lệnh O(1) (mỗi Order biết mức giá của nó).
+- Giá lưu dạng {{long}} theo đơn vị bước giá, không dùng {{double}}; {{BigDecimal}} quá chậm và sinh rác ở đường nóng.
+
+~~~java
+// Khớp một lệnh mua limit với phía bán (asks: TreeMap<Long, ArrayDeque<Order>> tăng dần)
+void matchBuy(Order buy) {
+    while (buy.remaining > 0 && !asks.isEmpty()) {
+        var best = asks.firstEntry();                 // giá bán thấp nhất
+        if (best.getKey() > buy.price) break;         // không còn giá khớp được
+        ArrayDeque<Order> level = best.getValue();
+        Order sell = level.peekFirst();               // lệnh đến trước khớp trước
+        long qty = Math.min(buy.remaining, sell.remaining);
+        buy.remaining -= qty; sell.remaining -= qty;
+        out.trade(buy.id, sell.id, best.getKey(), qty); // giá khớp = giá lệnh đang chờ
+        if (sell.remaining == 0) { level.pollFirst(); byId.remove(sell.id); }
+        if (level.isEmpty()) asks.pollFirstEntry();
+    }
+    if (buy.remaining > 0) restOnBook(buy);           // phần còn lại vào sổ bên mua
+}
+~~~
+
+### Vì sao đơn luồng
+| Đa luồng có lock | Đơn luồng theo shard |
+|---|---|
+| Phải khoá order book; contention ngay ở mã nóng | Không lock, cache CPU nóng |
+| Thứ tự khớp phụ thuộc lập lịch thread, khó tái hiện | Deterministic: cùng input → cùng output |
+| Phục hồi cần snapshot nhất quán phức tạp | Snapshot + replay journal từ seq cuối |
+
+Mô hình này giống kiến trúc LMAX (business logic đơn luồng, giao tiếp qua ring buffer Disruptor). Mở rộng bằng cách **shard theo mã**, không bao giờ chia một mã cho hai luồng.
+
+### Bền vững và HA
+- Lệnh chỉ được ack "đã nhận" sau khi sequencer ghi journal và nhân bản sang ít nhất một node khác.
+- Engine chính và standby cùng đọc journal, cùng khớp; standby chỉ không phát output. Primary chết → standby đã ở đúng trạng thái, chuyển vai trong vài giây (bảo vệ split-brain bằng lease/fencing).
+- Snapshot order book định kỳ để không phải replay từ đầu ngày.
+
+### Độ trễ trong Java
+- Tránh tạo object ở đường nóng (pool Order, tái sử dụng buffer) để giảm GC; cân nhắc ZGC hoặc Generational ZGC (Java 21) cho pause ngắn, nhưng tốt nhất là ít rác.
+- Pin luồng engine vào core riêng, busy-spin thay vì block khi chờ input.
+- Đo p99/p99.9 từ gateway tới ack bằng histogram (HdrHistogram), không đo trung bình.
+
+### Failure modes
+- Mã quá nóng làm nghẽn shard: tách mã đó ra shard riêng.
+- Lệnh bất thường (fat finger): kiểm tra biên độ giá, khối lượng tối đa ở pre-trade risk.
+- Journal disk chậm: group commit (gom nhiều lệnh một lần fsync) đổi vài trăm micro giây lấy throughput.
+
+> Senior tip: ở cấp lead, điểm cộng lớn nhất là nói được "engine là một state machine deterministic, journal là nguồn sự thật". Từ câu đó suy ra mọi thứ: HA bằng replay, audit bằng journal, debug bằng cách phát lại đúng ngày lỗi trên máy dev. Ứng viên bắt đầu bằng "dùng Kafka + nhiều consumer + Redis lock" thường tự đào hố về thứ tự khớp.`,
+  follow: [
+    'Bạn hỗ trợ phiên khớp lệnh định kỳ (ATO/ATC) thế nào: thuật toán xác định giá khớp?',
+    'Làm sao kiểm tra sức mua trước khi khớp mà không biến risk check thành điểm nghẽn?',
+    'Primary và standby lệch nhau một lệnh khi failover: làm sao phát hiện và xử lý?'
+  ],
+  tags: ['matching engine', 'order book', 'sequencer', 'low latency', 'LMAX', 'determinism']
+},
+{
+  id: 'design-018',
+  topic: 'design',
+  level: 'mid',
+  q: 'Thiết kế tính năng gợi ý từ khoá (autocomplete/typeahead) cho ô tìm kiếm của một sàn thương mại điện tử 10 triệu người dùng/ngày. Gõ "dien th" phải ra "điện thoại" trong vòng 100 ms.',
+  a: `**Tóm tắt:** Không tính gợi ý lúc người dùng gõ. Một pipeline offline đếm tần suất từ khoá từ log tìm kiếm, dựng sẵn bảng **prefix → top-K từ khoá** (trie có cache top-K ở mỗi node), nạp vào RAM của service gợi ý. Mỗi request chỉ là một phép tra cứu O(độ dài prefix). Thêm chuẩn hoá tiếng Việt bỏ dấu, debounce ở client, cache cho prefix ngắn và một lớp "trending" cập nhật vài phút một lần.
+
+### Làm rõ yêu cầu và ước lượng
+- Trả về 10 gợi ý, xếp theo độ phổ biến; hỗ trợ gõ không dấu; lọc từ khoá nhạy cảm.
+- 10 triệu người dùng × 5 lần tìm/ngày × khoảng 6 request mỗi lần gõ (đã debounce) = 300 triệu request/ngày → 300.000.000 / 86.400 ≈ 3.500 QPS trung bình; cao điểm (sale 12.12) giả sử gấp 5 → ~17.000 QPS.
+- Độ tươi: từ khoá mới nổi xuất hiện trong vài phút là đủ; không cần realtime từng giây.
+
+### Kiến trúc
+~~~text
+Search box --debounce 150ms--> CDN/edge cache (prefix 1-2 ký tự)
+                                   |
+                           Suggest Service (n instance, dữ liệu trong RAM)
+                                   ^
+            nạp snapshot mới, swap nguyên tử (mỗi giờ)
+                                   |
+Search logs -> Kafka -> Job tổng hợp (đếm, decay theo thời gian, lọc) -> Snapshot trên S3
+                   \-> Stream đếm trending (cửa sổ 10 phút) -> Redis (lớp trending)
+~~~
+
+### Cấu trúc dữ liệu
+Trie thuần phải duyệt toàn bộ cây con để tìm top-K, quá chậm với prefix ngắn. Cách làm thực tế: **lưu sẵn top-K ở mỗi node** khi build offline. Truy vấn = đi theo prefix rồi trả list có sẵn.
+
+Ước lượng bộ nhớ: chỉ giữ từ khoá được tìm ≥ 20 lần trong 30 ngày, giả sử còn 1 triệu từ khoá; giới hạn prefix 20 ký tự. Số prefix khác nhau giả sử ~5 triệu (chia sẻ nhiều). Mỗi prefix giữ 10 con trỏ/ID (~40–80 byte) cộng overhead → cỡ 500 MB–1 GB. Vừa RAM một instance, nên mỗi instance giữ bản đầy đủ, scale ngang đơn giản. Nếu lớn hơn, có thể shard theo ký tự đầu, nhưng dễ lệch tải (prefix "a" nóng hơn "x").
+
+Một cách thay thế ít code: Elasticsearch/OpenSearch có kiểu field {{completion}} (completion suggester) dựng cấu trúc FST trong bộ nhớ, hỗ trợ trọng số. Hợp khi đã vận hành ES; tự build trie hợp khi cần kiểm soát xếp hạng và độ trễ.
+
+### Chuẩn hoá tiếng Việt
+~~~java
+static String normalize(String s) {
+    String n = Normalizer.normalize(s.toLowerCase(Locale.ROOT), Normalizer.Form.NFD);
+    n = n.replaceAll("\\\\p{M}", "");          // bỏ dấu thanh, dấu mũ (combining marks)
+    n = n.replace('đ', 'd');                  // 'đ' không tách được bằng NFD, phải thay tay
+    return n.trim().replaceAll("\\\\s+", " ");  // gộp khoảng trắng
+}
+// normalize("Điện Thoại ") -> "dien thoai"
+~~~
+Index theo dạng đã chuẩn hoá, nhưng **hiển thị** dạng có dấu phổ biến nhất của từ khoá đó.
+
+### Xếp hạng và độ tươi
+- Điểm = tổng lượt tìm có **decay** (ví dụ mỗi ngày nhân 0,9) để từ khoá cũ không bám top mãi; có thể cộng thêm tỉ lệ click/mua.
+- Lớp trending: đếm theo cửa sổ 10 phút, chỉ áp cho từ khoá tăng đột biến; service trộn kết quả hai lớp khi trả về.
+- Lọc: blacklist từ ngữ nhạy cảm, tên thương hiệu bị cấm, và chống bơm từ khoá bằng cách chỉ đếm một lần mỗi user trong một khoảng thời gian.
+
+### Tối ưu phía client và cache
+- Debounce 100–200 ms, huỷ request cũ khi người dùng gõ tiếp.
+- Prefix 1–2 ký tự chỉ có vài nghìn tổ hợp nhưng chiếm phần lớn traffic → cache ở CDN/trình duyệt vài phút.
+- Cá nhân hoá (lịch sử tìm của chính user) trộn ở client hoặc một lớp riêng, để phần chung vẫn cache được.
+
+### Trade-off
+| Phương án | Ưu | Nhược |
+|---|---|---|
+| Trie top-K trong RAM | Nhanh nhất, kiểm soát hoàn toàn | Phải tự build, deploy snapshot |
+| Redis sorted set mỗi prefix | Dễ cập nhật tăng dần | Rất nhiều key, tốn RAM Redis, thêm network hop |
+| ES completion suggester | Ít code, có fuzzy | Phụ thuộc cluster ES, khó tuỳ biến xếp hạng |
+| SQL LIKE 'prefix%' | Đơn giản | Không chịu được 17.000 QPS, không xếp hạng tốt |
+
+> Senior tip: phần lớn độ trễ cảm nhận được nằm ở client và mạng, không ở server. Đo từ lúc gõ tới lúc hiện gợi ý; thường debounce hợp lý cộng cache prefix ngắn đã giảm hơn một nửa số request mà chẳng cần đụng tới thuật toán.`,
+  follow: [
+    'Làm sao hỗ trợ gõ sai chính tả (ví dụ "dien thaoi") mà không làm chậm truy vấn?',
+    'Bạn cập nhật snapshot trie mới vào các instance thế nào để không tăng độ trễ khi swap?',
+    'Cá nhân hoá gợi ý theo lịch sử người dùng mà vẫn tận dụng được cache?'
+  ],
+  tags: ['typeahead', 'autocomplete', 'trie', 'top-K', 'tiếng Việt', 'cache']
+},
+{
+  id: 'design-019',
+  topic: 'design',
+  level: 'senior',
+  q: 'Công ty có khoảng 1.000 pod Spring Boot. Thiết kế hệ thống thu thập log và metrics tập trung: ingest, lưu trữ, truy vấn, retention và kiểm soát chi phí. Bạn tránh những sai lầm nào?',
+  a: `**Tóm tắt:** Log và metrics là hai bài toán khác nhau. Log: agent trên node đọc log JSON có traceId, đẩy qua Kafka làm bộ đệm, xử lý (parse, **che dữ liệu nhạy cảm**), lưu hot vài ngày để tìm kiếm và cold trên object storage cho retention dài. Metrics: Prometheus scrape, remote write về kho time-series dài hạn, và **kiểm soát cardinality**. Chi phí chủ yếu đến từ lượng dữ liệu được index, nên quyết định "index gì, giữ bao lâu" quan trọng hơn chọn công cụ nào.
+
+### Ước lượng quy mô (giả định)
+- Log: 1.000 pod × 100 dòng/s × 400 byte = 40 MB/s → 40 × 86.400 ≈ 3,5 TB/ngày dữ liệu thô. Giả sử nén được 5–10 lần → 350–700 GB/ngày trên storage.
+- Metrics: 1.000 pod × 2.000 series (JVM, HTTP, pool, Kafka client) = 2 triệu active series; scrape 15 s → 2.000.000 / 15 ≈ 133.000 sample/s.
+- Con số đó cho thấy: index full-text toàn bộ 3,5 TB/ngày trong 90 ngày là rất đắt; phải phân tầng.
+
+### Kiến trúc
+~~~text
+Pod (JSON log -> stdout)        Pod (/actuator/prometheus)
+      |                                  |
+Node agent (Fluent Bit / OTel Collector) Prometheus (scrape, giữ 1-2 ngày)
+      |                                  |
+    Kafka (bộ đệm, chống spike)    remote_write -> Mimir/Thanos/VictoriaMetrics (S3)
+      |                                  |
+Processor: parse, mask PII,          Grafana + Alertmanager
+ lọc DEBUG, gắn metadata
+      |
+ +----+-----------------------+
+ |                            |
+Hot: OpenSearch/Loki (7 ngày)  Cold: S3 (nén, phân vùng theo ngày) -> lifecycle sang Glacier
+~~~
+
+### Phía ứng dụng
+- Log dạng JSON có {{traceId}}/{{spanId}}: Spring Boot 3 với Micrometer Tracing tự đưa traceId vào MDC; từ Spring Boot 3.4 có sẵn structured logging (ECS, GELF, Logstash format) qua cấu hình.
+- Ghi ra stdout, để agent thu gom; không để app gửi log thẳng qua mạng (app chậm theo hệ thống log).
+- Không log toàn bộ request/response; không log số thẻ, CCCD, số dư, OTP. Masking ở processor chỉ là lớp thứ hai.
+
+### Vì sao cần Kafka ở giữa
+Khi có sự cố, lượng log tăng vọt (stack trace, retry) đúng lúc hệ thống lưu trữ cũng đang chịu tải. Kafka hấp thụ spike, cho phép backend lưu trữ chậm lại mà không mất log, và cho nhiều consumer (SIEM của bộ phận bảo mật, kho dữ liệu) đọc cùng luồng. Agent cũng cần buffer ra disk khi Kafka không với tới.
+
+### Lưu trữ và retention phân tầng
+| Tầng | Nội dung | Thời gian | Ghi chú |
+|---|---|---|---|
+| Hot | Log có thể tìm kiếm | 7–14 ngày | Phục vụ điều tra sự cố |
+| Cold | Toàn bộ log nén trên S3 | 90 ngày–vài năm | Truy vấn bằng Athena khi cần |
+| Archive | Audit log | Theo quy định | S3 Object Lock (WORM), tách khỏi log ứng dụng |
+| Metrics | Raw 15 s | 15–30 ngày | Downsample 5 phút cho dữ liệu cũ |
+
+So sánh lưu trữ log hot: Elasticsearch/OpenSearch index full-text, tìm kiếm mạnh nhưng tốn CPU, RAM, disk; Loki chỉ index label (service, namespace, level) còn nội dung lưu chunk nén trên object storage, rẻ hơn nhiều nhưng tìm theo nội dung chậm hơn. Nhiều nơi chọn Loki cho log ứng dụng, ES cho các luồng cần tìm kiếm phức tạp.
+
+### Cardinality: sai lầm đắt nhất với metrics
+~~~java
+// SAI: mỗi userId tạo một time series mới -> hàng triệu series, Prometheus OOM
+Counter.builder("payment.requests").tag("userId", userId).register(registry).increment();
+
+// ĐÚNG: tag có tập giá trị nhỏ, cố định
+Counter.builder("payment.requests")
+       .tag("channel", channel)        // APP, WEB, POS
+       .tag("result", result)          // SUCCESS, FAILED, TIMEOUT
+       .register(registry).increment();
+~~~
+Tương tự với tag {{uri}} chứa ID thật thay vì template. Đặt giới hạn series mỗi job ở phía lưu trữ và cảnh báo khi số series tăng đột biến.
+
+### Kiểm soát chi phí
+- Chỉ bật DEBUG theo service, theo thời gian; sample log thành công lặp lại, giữ 100% log lỗi.
+- Tính chi phí theo team (theo namespace) và cho họ xem; chi phí giảm ngay khi team thấy hoá đơn của mình.
+- Trace dùng tail-based sampling: giữ trace lỗi hoặc chậm, sample phần còn lại.
+
+### Failure modes
+- Hệ thống log chết đúng lúc cần nhất: monitoring của chính hệ thống log phải độc lập (ít nhất alert cơ bản không đi qua nó).
+- Một service log vòng lặp lỗi làm ngập Kafka: rate limit theo nguồn ở agent.
+- Clock lệch giữa node làm sai thứ tự log: dựa vào traceId để ghép, không chỉ timestamp.
+
+> Senior tip: trước khi bàn công cụ, hãy hỏi "bao nhiêu % log chúng ta từng tìm tới?". Câu trả lời thường rất nhỏ. Phân tầng hot/cold và sample log thành công thường giảm chi phí mạnh hơn nhiều so với đổi từ ES sang công cụ khác.`,
+  follow: [
+    'Bạn đảm bảo log không chứa dữ liệu nhạy cảm (số thẻ, CCCD) ở tầng ứng dụng thế nào, ngoài masking ở pipeline?',
+    'Prometheus bị OOM vì cardinality tăng đột biến lúc 2 giờ sáng: bạn điều tra và xử lý ra sao?',
+    'So sánh head-based và tail-based sampling cho distributed tracing.'
+  ],
+  tags: ['logging', 'metrics', 'observability', 'Kafka', 'cardinality', 'retention']
+},
+{
+  id: 'design-020',
+  topic: 'design',
+  level: 'lead',
+  q: 'Thiết kế hệ thống phát hiện gian lận thời gian thực cho giao dịch thẻ/ví điện tử: phải ra quyết định chấp nhận, yêu cầu xác thực thêm hay từ chối trong khoảng 100 ms. Bạn kết hợp rule engine, feature store và model thế nào?',
+  a: `**Tóm tắt:** Tách hai đường: **đường đồng bộ** nằm trong luồng thanh toán, chỉ đọc feature đã tính sẵn (Redis) rồi chạy rule + model trong ngân sách thời gian cố định và có chính sách dự phòng khi quá hạn; **đường bất đồng bộ** dùng stream processing (Kafka + Flink) tính các velocity feature theo cửa sổ thời gian, cập nhật feature store, phát hiện mẫu phức tạp và đưa case cho analyst. Rule cho phép phản ứng trong vài phút với kiểu gian lận mới; model bắt các mẫu tinh vi; nhãn (chargeback, khiếu nại) quay lại để huấn luyện.
+
+### Làm rõ yêu cầu
+- Quyết định: APPROVE, CHALLENGE (yêu cầu OTP/sinh trắc), DECLINE, kèm lý do để giải thích cho khách và analyst.
+- Quy mô giả định: 20 triệu giao dịch/ngày → 20.000.000 / 86.400 ≈ 230 TPS trung bình; cao điểm (ngày sale, lương) gấp 10 → ~2.300 TPS.
+- Ngân sách độ trễ: p99 ≤ 100 ms cho toàn bộ fraud check, vì nó cộng thẳng vào thời gian thanh toán.
+- Hai chỉ số kinh doanh mâu thuẫn: **tỉ lệ bắt gian lận** và **tỉ lệ chặn nhầm** (khách thật bị từ chối, chịu ma sát). Phải thống nhất với business mức nào chấp nhận được.
+
+### Kiến trúc
+~~~text
+Payment Service --(sync, timeout 100ms)--> Fraud Decision Service
+                                            | 1. đọc feature (Redis)      ~5 ms
+                                            | 2. rule engine              ~2 ms
+                                            | 3. model score              ~10 ms
+                                            | 4. kết hợp -> quyết định + lý do
+                                            v
+                                     Kafka: txn + decision events
+                                            |
+              +-----------------------------+-----------------------------+
+              |                             |                             |
+     Flink: velocity / window      Case management (analyst)      Data lake (S3)
+     -> cập nhật Redis features    xác nhận gian lận -> nhãn      -> training, backtest rule
+~~~
+
+### Feature: phần quyết định chất lượng
+| Nhóm | Ví dụ | Tính ở đâu |
+|---|---|---|
+| Velocity | Số giao dịch của thẻ trong 10 phút, tổng tiền 24 giờ | Counter theo bucket, cập nhật đồng bộ |
+| Thiết bị/mạng | Thiết bị mới, IP thuộc dải nghi vấn, emulator | Lúc request |
+| Hành vi | Lệch so với số tiền trung bình 90 ngày, giờ giao dịch bất thường | Flink/batch, lưu Redis |
+| Quan hệ | Người nhận mới, người nhận đã bị nhiều tài khoản báo cáo | Graph/batch |
+| Địa lý | Hai giao dịch cách nhau 1.000 km trong 30 phút | Lưu vị trí cuối cùng |
+
+Velocity cho giao dịch hiện tại phải tính **ngay trong đường đồng bộ** (Flink trễ vài giây; kẻ gian bắn 20 giao dịch trong 10 giây sẽ lọt):
+~~~java
+// Đếm số giao dịch của thẻ trong 10 phút gần nhất bằng bucket 1 phút
+long countLast10Min(String cardHash) {
+    long minute = Instant.now().getEpochSecond() / 60;
+    String key = "vel:" + cardHash + ":" + minute;
+    redis.opsForValue().increment(key);                   // tính cả giao dịch hiện tại
+    redis.expire(key, Duration.ofMinutes(11));
+    List<String> keys = LongStream.range(minute - 9, minute + 1)
+            .mapToObj(m -> "vel:" + cardHash + ":" + m).toList();
+    return redis.opsForValue().multiGet(keys).stream()    // 1 round-trip cho 10 bucket
+            .filter(Objects::nonNull).mapToLong(Long::parseLong).sum();
+}
+~~~
+Feature dùng lúc huấn luyện và lúc phục vụ phải được tính **cùng một định nghĩa**; nếu không model sẽ tốt trên giấy nhưng kém trên production (training-serving skew). Đó là lý do có feature store với hai mặt online/offline.
+
+### Rule và model
+- Rule engine (tự viết DSL hoặc Drools) cấu hình được không cần deploy: "người nhận mới AND số tiền > 50 triệu AND thiết bị mới → CHALLENGE". Rule giải thích được, phản ứng nhanh với kiểu lừa đảo mới.
+- Model (gradient boosting phổ biến với dữ liệu dạng bảng) cho điểm rủi ro; chạy in-process (ONNX Runtime có Java API) để tránh thêm network hop.
+- Kết hợp: rule chặn cứng luôn thắng; còn lại theo ngưỡng điểm. Rule mới chạy **shadow mode** (chỉ ghi log, không chặn) vài ngày để đo tỉ lệ chặn nhầm trước khi bật.
+
+### Khi fraud service chậm hoặc chết
+| Chính sách | Khi nào |
+|---|---|
+| Fail-open (cho qua) | Giao dịch nhỏ, khách lâu năm |
+| Step-up (CHALLENGE) | Mặc định khi không chắc |
+| Fail-closed (từ chối) | Số tiền lớn, người nhận mới |
+Quyết định dự phòng phải được ghi nhận và kiểm tra lại bất đồng bộ.
+
+### Bottleneck và rủi ro
+- Hot key Redis cho merchant lớn: tách counter theo shard rồi cộng.
+- Nhãn đến muộn (chargeback sau vài tuần) → đánh giá model phải tính độ trễ của nhãn.
+- Kẻ gian dò ngưỡng: không trả lý do chi tiết cho client; thay đổi rule định kỳ.
+- Dữ liệu cá nhân: hash số thẻ (tokenization), phân quyền truy cập case.
+
+> Senior tip: ở ngân hàng, trận chiến lớn nhất hiện nay là lừa đảo khách tự chuyển tiền (social engineering), không phải thẻ bị đánh cắp: chính chủ, đúng thiết bị, đúng OTP. Feature thật sự hữu ích là về **người nhận** (tài khoản mới mở, nhận tiền từ nhiều nạn nhân) và hành vi bất thường như đang trong cuộc gọi. Hãy đưa ví dụ này vào câu trả lời, interviewer ngân hàng sẽ đánh giá cao.`,
+  follow: [
+    'Làm sao backtest một rule mới trên dữ liệu 6 tháng trước khi bật?',
+    'Model cho điểm tốt khi huấn luyện nhưng kém trên production: bạn kiểm tra những gì?',
+    'Thiết kế phát hiện tài khoản "money mule" nhận tiền từ nhiều nạn nhân như thế nào?'
+  ],
+  tags: ['fraud detection', 'streaming', 'feature store', 'rule engine', 'Flink', 'Redis']
+},
+{
+  id: 'design-021',
+  topic: 'design',
+  level: 'senior',
+  q: 'Thiết kế OTP/2FA service cho ngân hàng: sinh, lưu, hết hạn, chống brute force và gửi SMS qua nhiều nhà mạng có dự phòng. Ngoài SMS OTP còn lựa chọn nào an toàn hơn?',
+  a: `**Tóm tắt:** OTP 6 chữ số sinh bằng {{SecureRandom}}, **chỉ lưu HMAC của OTP** trong Redis với TTL ngắn (2–5 phút), gắn chặt với mục đích và ngữ cảnh giao dịch. Xác minh bằng một thao tác nguyên tử (Lua) vừa so sánh, vừa đếm số lần sai, vừa xoá khi đúng để không dùng lại được. Giới hạn số lần thử, số lần gửi lại, và gửi qua nhiều SMS provider có failover dựa trên delivery report. SMS OTP dễ bị SIM swap và đánh cắp qua lừa đảo, nên với giao dịch giá trị lớn, ngân hàng dùng Smart OTP (TOTP trong app gắn thiết bị) hoặc sinh trắc học.
+
+### Yêu cầu
+- Mục đích: đăng nhập thiết bị mới, xác nhận giao dịch, đổi thông tin bảo mật.
+- Quy mô giả định: 2 triệu OTP/ngày → ~23/s trung bình, cao điểm vài trăm/s. Tải không lớn; thứ quan trọng là **bảo mật và tỉ lệ SMS đến nơi**.
+- OTP dùng một lần, hết hạn nhanh, không thể đem OTP của giao dịch A dùng cho giao dịch B.
+
+### API
+~~~text
+POST /otp/challenges   {purpose, userId, context:{txnId, amount, beneficiary}} -> challengeId
+POST /otp/verify       {challengeId, code} -> OK | WRONG(còn n lần) | EXPIRED | LOCKED
+~~~
+
+### Sinh và lưu
+- {{SecureRandom}}, không dùng {{Random}} hay {{Math.random}} (đoán được).
+- Lưu {{HMAC-SHA256(serverKey, challengeId + code)}} chứ không lưu code thô: lộ dump Redis hoặc log cũng không lộ OTP đang hiệu lực.
+- Key Redis: {{otp:<challengeId>}} là một hash gồm h (HMAC), n (số lần thử), bản tóm tắt ngữ cảnh giao dịch; TTL 3 phút.
+- Nội dung SMS ghi rõ hành động: "OTP xác nhận chuyển 5.000.000đ tới ...123. Không cung cấp OTP cho bất kỳ ai". Khách đọc được mình đang xác nhận gì là lớp chống lừa đảo rẻ nhất.
+
+### Xác minh nguyên tử
+~~~text
+-- KEYS[1] = otp:<challengeId>, ARGV[1] = HMAC của code người dùng nhập, ARGV[2] = số lần tối đa
+local h = redis.call('HGET', KEYS[1], 'h')
+if not h then return -1 end                      -- hết hạn hoặc đã dùng
+local n = redis.call('HINCRBY', KEYS[1], 'n', 1)
+if n > tonumber(ARGV[2]) then redis.call('DEL', KEYS[1]) return -2 end   -- khoá
+if h == ARGV[1] then redis.call('DEL', KEYS[1]) return 1 end            -- đúng: xoá, không dùng lại
+return 0                                          -- sai, còn lượt
+~~~
+Vì sao phải nguyên tử: nếu đọc rồi mới so sánh và xoá ở Java, hai request song song cùng một code đúng có thể cùng thành công (dùng OTP hai lần), hoặc kẻ tấn công gửi song song nhiều đoán mà bộ đếm không kịp tăng.
+
+### Chống brute force: làm phép tính
+OTP 6 số có 10^6 khả năng. Cho phép 5 lần thử mỗi OTP → xác suất đoán trúng 5 / 1.000.000 = 0,0005%. Nếu giới hạn tối đa 10 OTP/ngày cho một tài khoản thì xác suất ngày ≈ 50 / 1.000.000 = 0,005%. Thiếu giới hạn số lần gửi lại, kẻ tấn công chỉ việc xin OTP mới liên tục và con số này mất ý nghĩa. Vì vậy cần:
+- Giới hạn thử theo OTP, giới hạn gửi theo user, theo số điện thoại, theo IP/thiết bị; cooldown 60 s giữa hai lần gửi.
+- Khoá tạm tài khoản khi vượt ngưỡng và thông báo cho chủ tài khoản.
+- Chống **SMS pumping**: kẻ gian dùng form gửi OTP để bắn SMS tới số quốc tế giá cao, chia doanh thu với nhà mạng. Chặn đầu số quốc tế không cần thiết, CAPTCHA cho luồng không cần đăng nhập.
+
+### Gửi SMS nhiều nhà cung cấp
+~~~text
+OTP Service -> Kafka topic sms.otp (ưu tiên cao, tách khỏi SMS marketing)
+                  |
+            SMS Router: chọn provider theo nhà mạng của số + tỉ lệ thành công gần đây
+                  |-- Provider A (brandname)   --DLR-->
+                  |-- Provider B (dự phòng)    --DLR-->
+            Không nhận DLR thành công sau ~20 s -> gửi lại qua provider khác (CÙNG OTP)
+~~~
+- Gửi lại phải dùng **cùng mã** trong cùng challenge, nếu không khách nhận 2 mã khác nhau và nhập nhầm.
+- Theo dõi tỉ lệ giao thành công và độ trễ theo provider/nhà mạng; circuit breaker khi một provider xuống.
+
+### Phương án mạnh hơn SMS
+| Phương thức | Ưu | Nhược |
+|---|---|---|
+| SMS OTP | Ai cũng dùng được | SIM swap, bị lừa đọc OTP, phụ thuộc nhà mạng, tốn tiền |
+| TOTP (RFC 6238) / Smart OTP trong app | Không qua mạng, rẻ, gắn với thiết bị đã đăng ký | Mất máy cần quy trình kích hoạt lại an toàn |
+| Push xác nhận trong app | UX tốt, hiển thị ngữ cảnh giao dịch | Cần chống bấm đồng ý theo phản xạ |
+| Sinh trắc học (khuôn mặt) đối chiếu dữ liệu CCCD | Khó mạo danh | Chi phí, quy trình eKYC |
+
+Ở Việt Nam, giao dịch chuyển tiền giá trị lớn hiện phải xác thực sinh trắc học theo quy định của NHNN; SMS OTP ngày càng chỉ còn vai trò phụ.
+
+> Senior tip: lỗ hổng OTP trong thực tế hiếm khi là thuật toán sinh mã mà là **luồng nghiệp vụ**: endpoint xác minh không giới hạn số lần, OTP không gắn với giao dịch (dùng OTP đăng nhập để chuyển tiền), hoặc mã OTP lọt vào log ứng dụng. Khi review, tôi grep log của service OTP trước tiên.`,
+  follow: [
+    'Triển khai TOTP trong app: thiết bị mới kích hoạt Smart OTP thế nào để kẻ gian không chiếm được?',
+    'Một nhà mạng gửi SMS chậm 2 phút trong giờ cao điểm: hệ thống của bạn phát hiện và phản ứng ra sao?',
+    'Làm sao chống tấn công dò OTP phân tán từ hàng nghìn IP khác nhau?'
+  ],
+  tags: ['OTP', '2FA', 'TOTP', 'SMS', 'brute force', 'Redis', 'security']
+},
+{
+  id: 'architecture-009',
+  topic: 'architecture',
+  level: 'mid',
+  q: 'Viết Singleton thread-safe trong Java có những cách nào? Vì sao nhiều người coi Singleton là anti-pattern, và singleton scope của Spring khác gì Singleton của GoF?',
+  a: `**Tóm tắt:** Cách gọn và an toàn nhất là **enum singleton** hoặc **holder idiom** (lazy, thread-safe nhờ cơ chế khởi tạo class của JVM). Double-checked locking chỉ đúng khi field là {{volatile}}. Singleton GoF bị chê vì nó là **global state ẩn**: phụ thuộc không lộ ra ở constructor, khó mock, khó test song song. Spring singleton thì khác: **một instance cho mỗi bean definition trong một ApplicationContext**, được inject qua constructor, nên giữ được lợi ích "một instance" mà không mang các nhược điểm trên. Và Spring singleton **không tự thread-safe**.
+
+### Các cách viết
+~~~java
+// 1. Eager: đơn giản, khởi tạo khi class được nạp
+public final class Eager {
+    private static final Eager INSTANCE = new Eager();
+    private Eager() {}
+    public static Eager getInstance() { return INSTANCE; }
+}
+
+// 2. Holder idiom: lazy + thread-safe, không cần synchronized
+public final class Config {
+    private Config() {}
+    private static class Holder { static final Config INSTANCE = new Config(); }
+    public static Config getInstance() { return Holder.INSTANCE; } // Holder chỉ nạp khi gọi lần đầu
+}
+
+// 3. Double-checked locking: BẮT BUỘC volatile
+public final class Dcl {
+    private static volatile Dcl instance;
+    public static Dcl getInstance() {
+        Dcl local = instance;
+        if (local == null) {
+            synchronized (Dcl.class) {
+                local = instance;
+                if (local == null) instance = local = new Dcl();
+            }
+        }
+        return local;
+    }
+}
+
+// 4. Enum: chống cả reflection lẫn serialization tạo instance thứ hai
+public enum IdGenerator { INSTANCE; public long next() { return 0L; } }
+~~~
+
+### Vì sao DCL cần volatile
+{{new Dcl()}} gồm cấp phát bộ nhớ, chạy constructor, gán tham chiếu. Không có {{volatile}}, JIT/CPU được phép sắp xếp để gán tham chiếu **trước** khi constructor chạy xong. Thread khác thấy {{instance != null}} ở lần check đầu (ngoài khối synchronized) và dùng một object chưa khởi tạo xong. {{volatile}} tạo quan hệ happens-before giữa lần ghi và lần đọc, cấm việc này.
+
+Holder idiom an toàn vì JLS đảm bảo khởi tạo class chỉ chạy một lần và có đồng bộ; class lồng {{Holder}} chỉ được khởi tạo khi {{getInstance}} truy cập nó.
+
+### Phá Singleton
+| Cách phá | Phòng |
+|---|---|
+| Reflection gọi constructor private | Ném exception trong constructor nếu đã có instance; hoặc dùng enum |
+| Deserialize tạo object mới | Thêm {{readResolve}} trả về INSTANCE; enum tự xử lý |
+| Nhiều classloader (app server, plugin) | Mỗi classloader có một "singleton" riêng; GoF không giải được |
+| Clone | Không implement {{Cloneable}} |
+
+### Vì sao bị coi là anti-pattern
+- **Phụ thuộc ẩn:** {{PaymentService}} gọi {{AuditLogger.getInstance()}} bên trong; đọc constructor không biết nó cần logger.
+- **Khó test:** không thay được bằng mock nếu không dùng mock static; trạng thái bên trong rò rỉ giữa các test, test song song chập chờn.
+- **Global mutable state:** ai cũng sửa được, bug phụ thuộc thứ tự chạy.
+- **Vòng đời cứng:** không đổi được cấu hình theo môi trường, không đóng tài nguyên gọn.
+
+### Spring singleton khác gì
+| | GoF Singleton | Spring singleton scope |
+|---|---|---|
+| Phạm vi | Một instance mỗi classloader | Một instance mỗi bean definition trong một context |
+| Lấy instance | {{getInstance()}} static | Container inject qua constructor |
+| Có thể có 2 instance cùng class | Không | Có, nếu khai báo 2 bean (ví dụ 2 DataSource) |
+| Test | Khó thay thế | Truyền mock vào constructor |
+
+### Câu trả lời sai phổ biến
+- "Spring singleton nên thread-safe." Sai: Spring chỉ đảm bảo một instance; nếu bean có field mutable (đếm, cache {{HashMap}}, {{SimpleDateFormat}}) thì nhiều request đồng thời sẽ đụng nhau. Bean singleton nên stateless.
+- "Inject prototype vào singleton thì mỗi lần gọi có object mới." Sai: chỉ inject một lần; cần {{ObjectProvider}} hoặc lookup method.
+- "DCL không cần volatile vì đã synchronized." Sai như phân tích trên.
+
+> Senior tip: trong code nghiệp vụ dùng Spring, gần như không có lý do viết {{getInstance()}}. Khi review thấy static singleton giữ cache hay config, tôi yêu cầu chuyển thành bean. Ngoại lệ hợp lý là thứ không phụ thuộc gì và không có state, ví dụ một mapper hay comparator dùng chung.`,
+  follow: [
+    'Holder idiom và enum singleton: khi nào bạn chọn cái nào?',
+    'Một bean singleton có field SimpleDateFormat gây lỗi ngày tháng ngẫu nhiên trên production. Giải thích và sửa.',
+    'Làm sao lấy instance mới của prototype bean mỗi lần gọi từ một singleton bean?'
+  ],
+  tags: ['Singleton', 'design pattern', 'volatile', 'Spring scope', 'thread-safety']
+},
+{
+  id: 'architecture-010',
+  topic: 'architecture',
+  level: 'mid',
+  q: 'Phân biệt Simple Factory, Factory Method và Abstract Factory bằng ví dụ tích hợp nhiều cổng thanh toán (VNPay, MoMo, thẻ quốc tế). Trong Spring, bạn còn cần tự viết factory không?',
+  a: `**Tóm tắt:** **Simple Factory** là một hàm (thường static) chọn class để {{new}} dựa vào tham số; không phải pattern GoF. **Factory Method** là một method trừu tượng trong lớp cha, lớp con quyết định tạo object nào, còn lớp cha dùng object đó trong thuật toán chung. **Abstract Factory** là một interface tạo ra **một họ object liên quan** phải dùng cùng nhau (client + signer + parser của cùng một đối tác). Trong Spring, phần lớn việc "chọn implementation" làm bằng inject {{Map}}/{{List}} bean; tự viết factory chỉ cần khi object được tạo theo tham số runtime.
+
+### Simple Factory
+~~~java
+public final class PaymentClients {
+    public static PaymentClient of(Provider p) {
+        return switch (p) {                    // switch expression (Java 14+): compiler báo lỗi nếu enum thêm giá trị mà thiếu nhánh
+            case VNPAY -> new VnpayClient();
+            case MOMO  -> new MomoClient();
+            case CARD  -> new CardClient();
+        };
+    }
+}
+~~~
+Đủ dùng khi tập lựa chọn nhỏ và ổn định. Nhược: thêm provider phải sửa hàm này.
+
+### Factory Method
+Lớp cha nắm quy trình, để lớp con quyết định "tạo cái gì":
+~~~java
+public abstract class StatementImporter {
+    public final ImportResult importFile(Path file) {   // thuật toán chung, không cho override
+        StatementParser parser = createParser();          // factory method
+        List<Txn> txns = parser.parse(file);
+        validate(txns);
+        return save(txns);
+    }
+    protected abstract StatementParser createParser();    // lớp con chọn parser
+}
+
+class VcbImporter extends StatementImporter {
+    protected StatementParser createParser() { return new CsvStatementParser(";"); }
+}
+class NapasImporter extends StatementImporter {
+    protected StatementParser createParser() { return new FixedWidthParser(); }
+}
+~~~
+Factory Method thường đi kèm Template Method. Ví dụ trong JDK: {{Collection.iterator()}}; mỗi collection trả về iterator của riêng nó.
+
+### Abstract Factory
+Mỗi đối tác có **bộ** thành phần phải khớp nhau: client HTTP, cách ký request, cách parse callback. Trộn signer của VNPay với parser của MoMo là bug.
+~~~java
+public interface PaymentKit {                 // một "họ" sản phẩm
+    PaymentClient client();
+    RequestSigner signer();
+    CallbackParser callbackParser();
+}
+@Component("VNPAY") class VnpayKit implements PaymentKit { /* trả về 3 object của VNPay */ }
+@Component("MOMO")  class MomoKit  implements PaymentKit { /* trả về 3 object của MoMo */ }
+~~~
+Ví dụ JDK: {{DocumentBuilderFactory}}, {{XMLInputFactory}}.
+
+### So sánh
+| | Simple Factory | Factory Method | Abstract Factory |
+|---|---|---|---|
+| Hình thức | Một hàm chọn class | Method abstract, override ở lớp con | Interface với nhiều method tạo |
+| Cơ chế mở rộng | Sửa hàm | Kế thừa | Thêm implementation của interface |
+| Tạo ra | Một object | Một object trong một quy trình | Một họ object nhất quán |
+| GoF | Không | Có | Có |
+
+### Trong Spring
+- Container chính là một factory khổng lồ; {{@Bean}} method thực chất là factory method.
+- Chọn theo key lúc runtime: inject {{Map<String, PaymentKit>}} (key = tên bean) rồi tra cứu, không cần switch.
+- {{FactoryBean}} dùng khi việc tạo bean phức tạp (ví dụ các {{*FactoryBean}} của Spring tạo proxy, client).
+- Vẫn cần factory tự viết khi object phụ thuộc **tham số runtime** (ví dụ tạo {{RetryPolicy}} theo cấu hình của từng merchant đọc từ DB): một bean factory nhận tham số và trả object mới.
+
+### Câu trả lời sai phổ biến
+- Gọi mọi static method {{of}}/{{valueOf}} là "Factory Method pattern". Đó là static factory method (Effective Java), không phải pattern GoF.
+- Mô tả Abstract Factory là "factory tạo ra factory". Điểm cốt lõi là **họ object nhất quán**, không phải số tầng.
+- Viết factory + interface cho thứ chỉ có một implementation: thêm lớp vô ích.
+
+> Senior tip: khi tích hợp đối tác, Abstract Factory (hay "kit" theo đối tác) đáng giá nhất ở chỗ gom mọi thứ của một đối tác vào một package; thêm đối tác mới là thêm một package, không đụng code cũ. Tôi dùng test kiến trúc để đảm bảo package của đối tác này không import package của đối tác khác.`,
+  follow: [
+    'Khi nào bạn chọn Factory Method (kế thừa) thay vì truyền Strategy qua constructor?',
+    'Inject Map<String, Bean> trong Spring: key lấy từ đâu và xử lý khi key không tồn tại thế nào?',
+    'Cho ví dụ FactoryBean trong Spring và khi nào bạn tự viết một FactoryBean.'
+  ],
+  tags: ['Factory Method', 'Abstract Factory', 'design pattern', 'Spring', 'payment']
+},
+{
+  id: 'architecture-011',
+  topic: 'architecture',
+  level: 'mid',
+  q: 'Khi nào bạn dùng Builder pattern? Team dùng Lombok @Builder khắp nơi, kể cả trên JPA entity. Những pitfall nào bạn sẽ chỉ ra khi review?',
+  a: `**Tóm tắt:** Builder hợp khi object có **nhiều tham số, nhiều tham số tuỳ chọn** và nên **immutable**: thay cho telescoping constructor và tránh nhầm thứ tự tham số cùng kiểu. Lombok {{@Builder}} tiện nhưng có bẫy: bỏ qua giá trị khởi tạo mặc định của field (cần {{@Builder.Default}}), không kiểm tra field bắt buộc, phá constructor không tham số mà JPA cần, {{toBuilder}} copy nông, và không xử lý kế thừa. Với DTO đơn giản, Java {{record}} thường là lựa chọn tốt hơn.
+
+### Vấn đề Builder giải quyết
+~~~java
+// Telescoping constructor: 4 tham số String liên tiếp, đổi chỗ fromAcc/toAcc compiler không phát hiện
+new TransferRequest("0011001", "0022002", "VND", "Chuyen tien", amount, true, false);
+
+// Builder: tự mô tả, tham số tuỳ chọn có thể bỏ qua
+TransferRequest.builder()
+    .fromAccount("0011001").toAccount("0022002")
+    .amount(amount).currency("VND")
+    .note("Chuyen tien")
+    .build();
+~~~
+
+### Pitfall của Lombok @Builder
+**1. Giá trị mặc định bị bỏ qua**
+~~~java
+@Builder
+public class Order {
+    private String status = "NEW";              // builder KHÔNG dùng giá trị này -> status = null
+    @Builder.Default
+    private List<Item> items = new ArrayList<>(); // phải có @Builder.Default mới giữ mặc định
+}
+~~~
+Đây là bug NPE kinh điển; Lombok có cảnh báo lúc compile nhưng nhiều team bỏ qua warning.
+
+**2. Không kiểm tra field bắt buộc.** {{build()}} vui vẻ tạo object thiếu {{amount}}. Đặt validation trong constructor (Lombok gọi constructor all-args) hoặc dùng record với compact constructor:
+~~~java
+@Builder
+public record TransferCommand(String fromAccount, String toAccount, BigDecimal amount, String note) {
+    public TransferCommand {                              // compact constructor: chạy với mọi cách tạo
+        Objects.requireNonNull(fromAccount, "fromAccount");
+        if (amount == null || amount.signum() <= 0) throw new IllegalArgumentException("amount > 0");
+    }
+}
+~~~
+
+**3. @Builder trên JPA entity.** Nếu class không có constructor nào, {{@Builder}} sinh constructor all-args và class **mất constructor không tham số** mà JPA/Hibernate cần. Thêm {{@NoArgsConstructor(access = AccessLevel.PROTECTED)}} và {{@AllArgsConstructor}} sẽ chạy được, nhưng vấn đề lớn hơn là builder cho phép tạo entity ở trạng thái không hợp lệ và set cả {{id}}, {{version}}. Với entity, tôi thích **static factory method có tên nghiệp vụ** ({{Account.open(...)}}) giữ invariant.
+
+**4. @Builder + @Data.** {{@Data}} sinh setter, nên object vẫn mutable; builder không còn ý nghĩa immutable. Dùng {{@Value}} hoặc record.
+
+**5. toBuilder copy nông.** {{order.toBuilder().build()}} chia sẻ cùng {{List}} với object gốc; sửa list của bản sao làm đổi bản gốc. Dùng {{@Singular}} cho collection (Lombok tạo list immutable) hoặc copy phòng thủ trong constructor.
+
+**6. Kế thừa.** {{@Builder}} không biết field của lớp cha; cần {{@SuperBuilder}} trên cả cha và con, và hai annotation không trộn được.
+
+**7. Jackson.** Deserialize object chỉ có builder cần {{@Jacksonized}} cùng {{@Builder}}, nếu không Jackson không biết tạo object.
+
+### Khi nào KHÔNG dùng Builder
+- Object 2–3 field: constructor hoặc static factory rõ hơn.
+- DTO bất biến nhỏ: {{record}} đã có constructor, equals, hashCode, toString.
+- Object có invariant phức tạp giữa các field: factory method có tên nghiệp vụ diễn đạt ý định tốt hơn builder "set gì cũng được".
+
+### Câu trả lời sai phổ biến
+- "Builder giúp code nhanh hơn." Không; nó tạo thêm object builder, chỉ giúp đọc và an toàn hơn.
+- "Lombok @Builder thì object immutable." Chỉ khi field final và không có setter.
+
+> Senior tip: khi review, tôi tìm {{@Builder}} đi cùng {{@Data}} hoặc {{@Entity}} trước tiên; đó là hai tổ hợp sinh bug nhiều nhất. Quy ước tốt cho team: record cho DTO, factory method có tên cho entity, Builder cho object cấu hình nhiều tham số tuỳ chọn.`,
+  follow: [
+    'Record trong Java 17 có thay thế hoàn toàn Builder được không? Khi nào vẫn cần Builder?',
+    'Bạn xử lý field bắt buộc trong builder thế nào để lỗi lộ ra lúc compile thay vì runtime (step builder)?',
+    'Vì sao JPA cần constructor không tham số và Hibernate dùng nó vào lúc nào?'
+  ],
+  tags: ['Builder', 'Lombok', 'record', 'JPA', 'immutability']
+},
+{
+  id: 'architecture-012',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Proxy pattern là gì và Spring dùng nó thế nào cho @Transactional, @Async, @Cacheable, @Lazy? Vì sao gọi một method @Transactional từ chính class đó lại không có transaction?',
+  a: `**Tóm tắt:** Proxy là object đứng trước object thật, **cùng interface**, chặn lời gọi để thêm hành vi (mở transaction, chạy async, đọc cache, khởi tạo trễ) rồi chuyển tiếp. Spring tạo proxy lúc khởi tạo bean (BeanPostProcessor), dùng **JDK dynamic proxy** khi theo interface hoặc **CGLIB subclass** (mặc định trong Spring Boot). Vì proxy nằm **bên ngoài** object, lời gọi {{this.method()}} bên trong class đi thẳng vào object thật, bỏ qua proxy, nên annotation không có hiệu lực.
+
+### Proxy viết tay để hiểu cơ chế
+~~~java
+public interface TransferService { void transfer(String from, String to, BigDecimal amt); }
+
+TransferService target = new TransferServiceImpl();
+TransferService proxy = (TransferService) Proxy.newProxyInstance(
+    TransferService.class.getClassLoader(),
+    new Class<?>[] { TransferService.class },
+    (p, method, args) -> {
+        long start = System.nanoTime();
+        try {
+            return method.invoke(target, args);           // gọi object thật
+        } finally {
+            log.info("{} took {} us", method.getName(), (System.nanoTime() - start) / 1000);
+        }
+    });
+~~~
+{{@Transactional}} cũng vậy: interceptor mở transaction trước {{invoke}}, commit nếu thành công, rollback nếu có RuntimeException (mặc định), rồi trả kết quả.
+
+### Spring dùng proxy ở đâu
+| Tính năng | Proxy làm gì |
+|---|---|
+| {{@Transactional}} | TransactionInterceptor: begin, commit/rollback |
+| {{@Async}} | Đẩy lời gọi sang executor, trả về ngay |
+| {{@Cacheable}} | Tra cache theo key; hit thì không gọi method |
+| {{@Lazy}} tại điểm inject | Inject proxy; bean thật chỉ tạo ở lần gọi đầu |
+| {{@Configuration}} | Class được CGLIB enhance để gọi {{@Bean}} method nhiều lần vẫn trả về cùng singleton |
+| Spring Data repository | Interface không có class implement; proxy sinh query |
+| Hibernate lazy loading | {{getReferenceById}} và quan hệ LAZY trả về proxy, truy cập mới query |
+
+### JDK proxy và CGLIB
+| | JDK dynamic proxy | CGLIB |
+|---|---|---|
+| Cách làm | Implement interface | Sinh subclass của class |
+| Yêu cầu | Bean có interface | Class và method không {{final}} |
+| Inject theo class impl | Lỗi (proxy không phải kiểu đó) | Được |
+Spring Boot mặc định {{spring.aop.proxy-target-class=true}} nên dùng CGLIB kể cả khi có interface, tránh lỗi inject theo class.
+
+### Self-invocation
+~~~java
+@Service
+public class StatementService {
+    public void importAll(List<File> files) {
+        for (File f : files) importOne(f);    // this.importOne -> KHÔNG qua proxy, không có transaction riêng
+    }
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void importOne(File f) { ... }
+}
+~~~
+Cách sửa, theo thứ tự ưu tiên:
+1. Tách {{importOne}} sang bean khác (thường là thiết kế tốt hơn).
+2. Dùng {{TransactionTemplate}} để quản lý transaction bằng code, rõ ràng.
+3. Tự inject chính mình qua {{@Lazy}} hoặc {{ObjectProvider}} (chạy được nhưng khó đọc).
+4. AspectJ weaving (compile/load time) không dùng proxy nên không có vấn đề này, nhưng tăng độ phức tạp build.
+
+### Các bẫy khác cùng gốc
+- Method {{private}} không bao giờ được proxy chặn. Từ Spring 6, với proxy kiểu class, method protected/package-private cũng được hỗ trợ cho {{@Transactional}}, nhưng public vẫn là cách an toàn nhất.
+- Method {{final}} (hoặc class final, ví dụ Kotlin mặc định) thì CGLIB không override được: annotation im lặng không chạy.
+- Gọi method trong constructor hoặc {{@PostConstruct}}: lúc đó proxy chưa bọc hoặc đang gọi trên object thật.
+- {{new MyService()}} thủ công: không phải bean, không có proxy.
+
+### Câu trả lời sai phổ biến
+- "Spring sửa bytecode class của tôi để thêm transaction." Không, mặc định là proxy bọc bên ngoài (trừ khi cấu hình AspectJ).
+- "Đánh {{@Transactional}} lên private method cũng được." Không có tác dụng và không báo lỗi.
+
+> Senior tip: khi debug "transaction không rollback" hay "cache không ăn", tôi đặt breakpoint xem class của bean được inject: thấy tên có {{$$SpringCGLIB$$}} là có proxy. Rồi kiểm tra lời gọi có đi qua tham chiếu bean đó không. Chín trên mười lần lỗi là self-invocation hoặc exception bị catch nuốt mất.`,
+  follow: [
+    'Exception checked có làm @Transactional rollback không? Cấu hình rollbackFor thế nào?',
+    'Thứ tự áp dụng khi một method có cả @Transactional và @Cacheable: proxy nào bọc ngoài?',
+    'Vì sao @Async trên method trả về void làm exception biến mất, và bạn xử lý thế nào?'
+  ],
+  tags: ['Proxy', 'Spring AOP', '@Transactional', 'CGLIB', 'self-invocation']
+},
+{
+  id: 'architecture-013',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Phân biệt Adapter, Facade và Decorator qua một tình huống tích hợp đối tác: hệ thống cần gọi SDK của một ví điện tử, thêm retry/metrics, và cung cấp một API mở tài khoản gọi 4 hệ thống phía sau.',
+  a: `**Tóm tắt:** Phân biệt bằng **ý định và interface**. **Adapter** đổi interface của thứ có sẵn (SDK đối tác) sang interface mà code của ta mong đợi. **Decorator** giữ nguyên interface, bọc thêm hành vi (retry, metrics, log) và có thể xếp chồng. **Facade** tạo một interface mới, đơn giản, đứng trước nhiều hệ thống con (eKYC, core banking, phát hành thẻ, thông báo). Proxy cũng giữ nguyên interface như Decorator nhưng mục đích là kiểm soát truy cập (lazy, bảo mật, remote), không phải thêm tính năng.
+
+### Adapter: SDK đối tác sang port của ta
+~~~java
+public interface WalletGateway {                       // port do domain của ta định nghĩa
+    PaymentResult charge(PaymentCommand cmd);
+}
+
+@Component
+class AcmeWalletAdapter implements WalletGateway {    // AcmeWalletSdk: SDK giả định của đối tác
+    private final AcmeWalletSdk sdk;
+    AcmeWalletAdapter(AcmeWalletSdk sdk) { this.sdk = sdk; }
+
+    public PaymentResult charge(PaymentCommand cmd) {
+        AcmeRequest req = new AcmeRequest(cmd.orderId(), cmd.amount().longValueExact()); // VND -> long
+        AcmeResponse res = sdk.createPayment(req);
+        return switch (res.code()) {                    // dịch mã lỗi của đối tác sang ngôn ngữ của ta
+            case "0"  -> PaymentResult.success(res.transId());
+            case "9"  -> PaymentResult.pending(res.transId());
+            default   -> PaymentResult.failed(res.code(), res.message());
+        };
+    }
+}
+~~~
+Lợi ích: kiểu dữ liệu, mã lỗi, exception của đối tác **không rò** vào domain. Đổi đối tác = viết adapter mới.
+
+### Decorator: thêm hành vi, giữ interface
+~~~java
+class MeteredWalletGateway implements WalletGateway {
+    private final WalletGateway inner;            // bọc một WalletGateway bất kỳ
+    private final MeterRegistry registry;
+    MeteredWalletGateway(WalletGateway inner, MeterRegistry registry) { this.inner = inner; this.registry = registry; }
+
+    public PaymentResult charge(PaymentCommand cmd) {
+        return Timer.builder("wallet.charge").register(registry)
+                    .record(() -> inner.charge(cmd));   // thêm đo thời gian, không đổi kết quả
+    }
+}
+// Xếp chồng: new MeteredWalletGateway(new RetryingWalletGateway(adapter), registry)
+~~~
+**Thứ tự xếp chồng có ý nghĩa:** metrics bọc ngoài retry đo tổng thời gian kể cả retry; bọc trong thì đo từng lần gọi. Retry chỉ an toàn khi đối tác hỗ trợ idempotency (cùng orderId không trừ tiền hai lần). Trong thực tế, các decorator dạng này thường dùng thư viện như Resilience4j thay vì tự viết.
+
+### Facade: một API cho nhiều hệ thống
+~~~java
+@Service
+public class AccountOpeningFacade {
+    // eKyc, coreBanking, cardIssuing, notifier: 4 client đến 4 hệ thống
+    public OpeningResult open(OpeningRequest req) {
+        KycResult kyc = eKyc.verify(req.idCard(), req.selfie());
+        String cif = coreBanking.createCustomer(kyc);
+        String accountNo = coreBanking.openAccount(cif, req.product());
+        cardIssuing.requestDebitCard(cif, accountNo);
+        notifier.welcome(req.phone(), accountNo);
+        return new OpeningResult(cif, accountNo);
+    }
+}
+~~~
+Client (mobile app, BFF) chỉ biết {{open()}}. Facade không cấm gọi trực tiếp hệ thống con; nó chỉ cung cấp đường đi đơn giản. Lưu ý: facade gọi 4 hệ thống tuần tự là chỗ phải nghĩ về lỗi từng phần (đã tạo CIF nhưng mở thẻ lỗi) → cần saga/bước bù hoặc trạng thái hồ sơ để làm tiếp.
+
+### Bảng phân biệt
+| | Adapter | Decorator | Facade | Proxy |
+|---|---|---|---|---|
+| Interface | Đổi sang interface khác | Giữ nguyên | Tạo interface mới, đơn giản hơn | Giữ nguyên |
+| Bọc bao nhiêu | Một object | Một object, xếp chồng nhiều lớp | Nhiều hệ thống con | Một object |
+| Mục đích | Tương thích | Thêm hành vi | Che độ phức tạp | Kiểm soát truy cập |
+| Ví dụ JDK/Spring | {{InputStreamReader}}, {{HandlerAdapter}} | {{BufferedInputStream}} | {{JdbcTemplate}} che JDBC thô | Proxy của {{@Transactional}} |
+
+### Câu trả lời sai phổ biến
+- "Adapter và Facade đều là wrapper nên như nhau." Khác ở số lượng và mục đích: adapter làm khớp một interface, facade đơn giản hoá cả một hệ thống.
+- "Decorator thì dùng kế thừa." Decorator dùng **composition**; kế thừa để thêm hành vi sẽ bùng nổ số lớp con cho mỗi tổ hợp (retry + metrics, chỉ metrics...).
+- Facade phình thành god service chứa cả logic nghiệp vụ: facade chỉ nên điều phối.
+
+> Senior tip: trong tích hợp ngân hàng, tôi yêu cầu adapter là nơi **duy nhất** biết mã lỗi đối tác và mọi mapping có test với response mẫu thật (lấy từ sandbox của đối tác). Khi đối tác thêm mã lỗi mới, bug sẽ nằm gọn ở một class thay vì rải khắp code.`,
+  follow: [
+    'Bạn đặt retry ở decorator, ở HTTP client hay ở message queue? Tiêu chí chọn?',
+    'Facade mở tài khoản lỗi ở bước thứ 3: bạn thiết kế để khách có thể tiếp tục thay vì làm lại từ đầu thế nào?',
+    'Spring có cách nào khai báo chuỗi decorator gọn gàng thay vì new lồng nhau?'
+  ],
+  tags: ['Adapter', 'Facade', 'Decorator', 'Proxy', 'integration', 'design pattern']
+},
+{
+  id: 'architecture-014',
+  topic: 'architecture',
+  level: 'mid',
+  q: 'IoC, Dependency Injection và Dependency Inversion Principle khác nhau thế nào? Có thể dùng DI mà vẫn vi phạm DIP không?',
+  a: `**Tóm tắt:** **IoC** (Inversion of Control) là ý tưởng rộng: framework điều khiển luồng và gọi code của bạn ("đừng gọi tôi, tôi sẽ gọi bạn"). **DI** là một kỹ thuật cụ thể để hiện thực IoC cho việc tạo phụ thuộc: object nhận phụ thuộc từ bên ngoài thay vì tự {{new}}. **DIP** là nguyên lý thiết kế (chữ D trong SOLID): module cấp cao không phụ thuộc module cấp thấp, cả hai phụ thuộc abstraction, và **abstraction thuộc về phía cấp cao**. Có thể dùng DI mà vẫn vi phạm DIP: inject thẳng class cụ thể của tầng hạ tầng vào domain.
+
+### IoC: rộng hơn DI
+Ví dụ IoC không liên quan đến DI:
+- Servlet container gọi {{doGet}} của bạn; bạn không viết vòng lặp nhận request.
+- {{@KafkaListener}}: framework poll và gọi method của bạn.
+- Template Method: lớp cha gọi hook của lớp con.
+Điểm chung: quyền điều khiển luồng thuộc về framework/khung, code của bạn chỉ được "cắm vào".
+
+### DI: kỹ thuật cung cấp phụ thuộc
+~~~java
+// Không DI: tự tạo phụ thuộc, không thay được khi test
+class TransferService {
+    private final AccountRepository repo = new JdbcAccountRepository(dataSource);
+}
+
+// DI qua constructor: ai tạo TransferService thì quyết định repo nào
+class TransferService {
+    private final AccountRepository repo;
+    TransferService(AccountRepository repo) { this.repo = repo; }
+}
+~~~
+DI **không cần container**: tự wiring trong {{main}} hoặc trong test bằng {{new TransferService(fakeRepo)}} vẫn là DI. Spring chỉ tự động hoá việc này.
+
+Ưu tiên constructor injection: field {{final}}, phụ thuộc bắt buộc rõ ràng, test không cần Spring, constructor quá dài là tín hiệu class làm quá nhiều việc. Field injection ({{@Autowired}} trên field) ẩn phụ thuộc và chỉ chạy được trong container. Từ Spring Boot 2.6, vòng phụ thuộc giữa bean bị cấm mặc định ({{spring.main.allow-circular-references=false}}), gặp lỗi đó nên sửa thiết kế thay vì bật lại.
+
+### DIP: hướng của phụ thuộc
+~~~text
+VI PHẠM DIP (dù có DI):                 TUÂN THỦ DIP:
+domain.TransferService                   domain.TransferService
+   | inject                                 | phụ thuộc
+   v                                        v
+infra.JdbcAccountRepository              domain.AccountRepository (interface, domain sở hữu)
+                                            ^
+                                            | implements
+                                         infra.JdbcAccountRepository
+~~~
+Ở bên trái, Spring vẫn inject (có DI) nhưng domain import package hạ tầng: đổi JDBC sang JPA phải sửa domain. Ở bên phải, mũi tên phụ thuộc từ hạ tầng **chỉ vào** domain; đó là "inversion". Chi tiết quan trọng mà nhiều ứng viên bỏ qua: interface nằm ở **package của domain** và được đặt tên theo nhu cầu của domain ({{AccountRepository.findForUpdate}}), không phải một interface chung chung do tầng hạ tầng định nghĩa.
+
+### Bảng so sánh
+| | IoC | DI | DIP |
+|---|---|---|---|
+| Loại | Nguyên tắc/kiểu kiến trúc framework | Kỹ thuật | Nguyên lý thiết kế |
+| Trả lời câu hỏi | Ai điều khiển luồng? | Phụ thuộc đến từ đâu? | Phụ thuộc trỏ về hướng nào? |
+| Cần container | Không | Không | Không |
+| Ví dụ | Servlet, listener, template method | Constructor injection | Port trong domain, adapter ở infra |
+
+### Câu trả lời sai phổ biến
+- "IoC, DI là một, chính là Spring." Spring là một container IoC dùng DI; hai khái niệm có trước và độc lập với Spring.
+- "Có interface là đạt DIP." Không, nếu interface nằm ở tầng hạ tầng và domain import nó, hướng phụ thuộc vẫn sai.
+- "Phải tạo interface cho mọi service." DIP áp dụng ở **ranh giới** (domain với hạ tầng, với đối tác); service nội bộ chỉ có một implementation không cần interface.
+
+> Senior tip: kiểm tra DIP nhanh nhất là nhìn phần import của package domain: thấy {{org.springframework.jdbc}}, {{jakarta.persistence}} hay SDK đối tác là có vấn đề. Tôi đưa luật đó vào test kiến trúc (ArchUnit) để không ai phải nhớ.`,
+  follow: [
+    'Constructor của một service có 9 tham số: bạn xử lý thế nào?',
+    'Vì sao field injection khó test và có rủi ro gì với bean bị null?',
+    'Trong Hexagonal Architecture, port và adapter liên hệ với DIP thế nào?'
+  ],
+  tags: ['IoC', 'Dependency Injection', 'DIP', 'SOLID', 'Spring']
+},
+{
+  id: 'architecture-015',
+  topic: 'architecture',
+  level: 'senior',
+  q: '"Composition over inheritance" nghĩa là gì trong thực tế? Cho ví dụ một cây kế thừa gây hại trong code nghiệp vụ và cách bạn refactor nó.',
+  a: `**Tóm tắt:** Kế thừa gắn chặt lớp con với **chi tiết cài đặt** của lớp cha (fragile base class) và chỉ mở rộng được theo một chiều; khi nghiệp vụ thay đổi theo nhiều chiều độc lập (loại sản phẩm × phí × hạn mức × kênh), số lớp con bùng nổ. Composition tách mỗi chiều thay đổi thành một object (policy/strategy) được ghép lại, thay được lúc runtime và test riêng. Kế thừa vẫn đúng khi có quan hệ "là một" thật và lớp cha **được thiết kế để kế thừa**; Java 17 sealed interface + record là cách mô hình hoá cây kiểu dữ liệu an toàn.
+
+### Ví dụ hại: cây kế thừa sản phẩm tiền gửi
+~~~text
+AbstractAccount
+ |-- SavingsAccount
+ |    |-- OnlineSavingsAccount          (phí khác)
+ |    |-- OnlineSavingsWithdrawAnytime  (cho rút trước hạn)
+ |-- CurrentAccount
+      |-- CurrentAccountOverdraft
+      |-- CurrentAccountOverdraftPremium (miễn phí + thấu chi)
+~~~
+Mỗi sản phẩm mới là tổ hợp của: cách tính lãi, biểu phí, quy tắc rút, hạn mức. Kế thừa chỉ cho chọn **một** trục, các trục khác bị copy-paste hoặc nhồi vào lớp cha bằng cờ {{if (isPremium)}}. Sửa {{AbstractAccount.withdraw()}} cho một sản phẩm có thể làm vỡ năm sản phẩm khác.
+
+### Fragile base class: ví dụ kinh điển
+~~~java
+class CountingSet<E> extends HashSet<E> {
+    int added = 0;
+    @Override public boolean add(E e) { added++; return super.add(e); }
+    @Override public boolean addAll(Collection<? extends E> c) { added += c.size(); return super.addAll(c); }
+}
+// addAll(3 phần tử) -> added = 6, vì HashSet.addAll bên trong gọi lại add() đã bị override
+~~~
+Lớp con phụ thuộc vào việc lớp cha **tự gọi** method nào bên trong, điều không có trong hợp đồng công khai và có thể đổi giữa các phiên bản.
+
+### Refactor sang composition
+~~~java
+public interface InterestPolicy { BigDecimal monthlyInterest(BigDecimal balance); }
+public interface FeePolicy      { Money withdrawalFee(Money amount, Channel channel); }
+public interface WithdrawalRule { void check(Account acc, Money amount); }   // ném exception nếu vi phạm
+
+public final class Account {                       // final: không cần kế thừa nữa
+    private final InterestPolicy interest;
+    private final FeePolicy fee;
+    private final WithdrawalRule withdrawalRule;
+    private Money balance;
+
+    public void withdraw(Money amount, Channel ch) {
+        withdrawalRule.check(this, amount);          // mỗi trục thay đổi là một object riêng
+        balance = balance.minus(amount).minus(fee.withdrawalFee(amount, ch));
+    }
+}
+// Sản phẩm = cấu hình tổ hợp: new Account(new TieredInterest(...), new FreeOnline(), new AnytimeWithdrawal())
+~~~
+Lợi ích: thêm sản phẩm mới phần lớn là **cấu hình** (đọc từ bảng product), policy được unit test độc lập, và đổi policy không ảnh hưởng sản phẩm khác.
+
+### Khi kế thừa vẫn đúng
+- Quan hệ "là một" ổn định và lớp con tuân thủ hoàn toàn hợp đồng lớp cha (LSP).
+- Lớp cha được **thiết kế để kế thừa**: có tài liệu hook nào được override, method còn lại {{final}} (Template Method).
+- Mô hình hoá các biến thể dữ liệu đóng: {{sealed interface PaymentMethod permits Card, Wallet, BankTransfer}} với các {{record}}, xử lý bằng switch pattern matching (Java 21). Ở đây không có state chia sẻ hay hành vi bị override, nên không có fragile base class.
+- Extension point của framework ({{OncePerRequestFilter}}, {{AbstractRoutingDataSource}}).
+
+### So sánh
+| | Kế thừa | Composition |
+|---|---|---|
+| Ghép nhiều chiều thay đổi | Bùng nổ lớp con | Ghép object |
+| Thay hành vi lúc runtime | Không | Có |
+| Phụ thuộc chi tiết nội bộ | Có (fragile) | Chỉ qua interface |
+| Lượng code ban đầu | Ít | Nhiều hơn một chút |
+| Tái sử dụng code chung | Tự nhiên | Cần delegate |
+
+### Câu trả lời sai phổ biến
+- "Không bao giờ dùng kế thừa." Quá cực đoan; record + sealed, template method, framework hook là kế thừa hợp lý.
+- Kế thừa chỉ để **tái sử dụng code** (ví dụ {{BaseService}} chứa tiện ích log, mapper): đó là dấu hiệu nên dùng helper/composition.
+
+> Senior tip: dấu hiệu sớm nhất của cây kế thừa sai là lớp cha bắt đầu có cờ boolean hoặc method protected chỉ một lớp con dùng. Khi thấy hai dấu hiệu đó trong review, tôi đề xuất tách trục thay đổi ra policy trước khi thêm lớp con kế tiếp; càng để lâu, chi phí tách càng lớn.`,
+  follow: [
+    'Sealed interface với record khác gì kế thừa truyền thống, vì sao không gặp fragile base class?',
+    'Bạn refactor một cây kế thừa đang chạy production mà không phá dữ liệu đã lưu bằng JPA inheritance thế nào?',
+    'Delegation trong composition có tốn hiệu năng đáng kể không?'
+  ],
+  tags: ['composition', 'inheritance', 'fragile base class', 'sealed', 'refactoring']
+},
+{
+  id: 'architecture-016',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Khi review code, bạn hay gặp những code smell nào nhất (long method, primitive obsession, feature envy...)? Với từng smell, bạn refactor thế nào mà không gây lỗi production?',
+  a: `**Tóm tắt:** Code smell là dấu hiệu bề mặt cho thấy thiết kế khó thay đổi, không phải bug. Những smell gặp nhiều nhất trong code nghiệp vụ Java: **long method**, **large class**, **primitive obsession** (tiền là {{BigDecimal}} + {{String}} currency rời rạc), **feature envy** (method dùng dữ liệu của class khác nhiều hơn của mình), **long parameter list/data clumps**, **shotgun surgery** và cờ boolean truyền vào method. Refactor an toàn: viết characterization test trước, dùng refactoring tự động của IDE, bước nhỏ, và **tách PR refactor khỏi PR đổi hành vi**.
+
+### Các smell và cách sửa
+| Smell | Dấu hiệu | Refactoring |
+|---|---|---|
+| Long method | Hơn ~50 dòng, nhiều comment phân đoạn "// bước 1" | Extract Method theo từng bước, đặt tên bằng nghiệp vụ |
+| Large class | Hàng nghìn dòng, nhiều nhóm field ít liên quan | Extract Class theo nhóm field/method dùng chung |
+| Primitive obsession | {{String accountNo}}, {{BigDecimal}} + {{String}} currency | Value object ({{record}}) có validation |
+| Feature envy | {{a.getB().getC()...}} rồi tính toán | Move Method về class sở hữu dữ liệu |
+| Data clumps / long params | Bộ (fromDate, toDate) hoặc (amount, currency) đi cùng nhau mọi nơi | Introduce Parameter Object |
+| Shotgun surgery | Thêm một loại phí phải sửa 7 file | Gom logic về một chỗ (Move Method, Strategy) |
+| Divergent change | Một class đổi vì nhiều lý do khác nhau | Tách theo lý do thay đổi (SRP) |
+| Flag argument | {{transfer(cmd, true, false)}} | Tách method có tên, hoặc enum |
+| Switch theo type lặp lại | Cùng một switch ở nhiều nơi | Polymorphism hoặc sealed + switch tập trung |
+| Speculative generality | Interface, tham số "để sau này dùng" | Xoá (YAGNI) |
+
+### Primitive obsession: ví dụ đáng sửa nhất
+~~~java
+// Trước: dễ cộng VND với USD, dễ quên làm tròn, số âm lọt vào
+BigDecimal fee = amount.multiply(rate);
+if (currency.equals("VND")) fee = fee.setScale(0, RoundingMode.HALF_UP);
+
+// Sau: invariant nằm ở một chỗ, mọi nơi dùng được bảo vệ
+public record Money(BigDecimal amount, Currency currency) {
+    public Money {
+        Objects.requireNonNull(currency);
+        if (amount.signum() < 0) throw new IllegalArgumentException("Số tiền âm");
+        amount = amount.setScale(currency.getDefaultFractionDigits(), RoundingMode.HALF_UP); // VND: 0 chữ số lẻ
+    }
+    public Money plus(Money o) {
+        if (!currency.equals(o.currency)) throw new IllegalArgumentException("Khác loại tiền");
+        return new Money(amount.add(o.amount), currency);
+    }
+}
+~~~
+{{java.util.Currency.getInstance("VND").getDefaultFractionDigits()}} trả về 0, nên làm tròn đúng theo đơn vị tiền.
+
+### Feature envy
+~~~java
+// Trước: service "ghen tị" với dữ liệu của Loan
+BigDecimal remaining = loan.getPrincipal().subtract(loan.getPaid());
+boolean overdue = loan.getDueDate().isBefore(today) && remaining.signum() > 0;
+
+// Sau: hành vi về đúng chỗ dữ liệu
+boolean overdue = loan.isOverdue(today);
+~~~
+Đây cũng là cách chữa anemic domain model từng bước, không cần viết lại.
+
+### Refactor an toàn trên production
+1. **Characterization test:** trước khi đụng code cũ, viết test chụp lại hành vi hiện tại (kể cả hành vi kỳ quặc), dùng input từ log thật đã che dữ liệu.
+2. **Dùng refactoring của IDE** (Extract Method, Rename, Change Signature, Move): nó cập nhật mọi chỗ gọi chính xác hơn sửa tay.
+3. **Bước nhỏ, commit nhỏ**, test xanh sau mỗi bước.
+4. **Tách PR**: PR refactor không đổi hành vi, reviewer chỉ cần xác nhận "tương đương"; PR tính năng đi sau.
+5. Với thay đổi rủi ro (đổi cách tính tiền), chạy song song cũ và mới, so sánh kết quả, log chênh lệch trước khi chuyển hẳn.
+
+### Câu trả lời sai phổ biến
+- Liệt kê tên smell mà không nói **vì sao** nó gây hại (khó thay đổi, khó test, bug lặp lại).
+- "Thấy smell là refactor ngay." Refactor có chi phí; ưu tiên code hay bị sửa và hay có bug (hotspot), code không ai đụng thì để yên.
+- Trộn refactor lớn vào PR tính năng: reviewer không thể kiểm tra, rủi ro cao.
+
+> Senior tip: tôi ưu tiên refactor theo dữ liệu: kết hợp số lần thay đổi file (git log) với số bug liên quan; vài file đứng đầu cả hai danh sách thường là nơi refactor đem lại nhiều giá trị nhất. "Boy scout rule" (để code sạch hơn một chút mỗi lần chạm vào) hiệu quả hơn một dự án refactor lớn không ai dám merge.`,
+  follow: [
+    'Làm sao viết characterization test cho một method 500 dòng phụ thuộc DB và đối tác?',
+    'Bạn thuyết phục PO dành thời gian refactor bằng số liệu nào?',
+    'Static analysis (Sonar, PMD) bắt được những smell nào, và những smell nào chỉ người review mới thấy?'
+  ],
+  tags: ['code smell', 'refactoring', 'primitive obsession', 'feature envy', 'code review']
+},
+{
+  id: 'architecture-017',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'So sánh event notification và event-carried state transfer trong event-driven architecture. Vì sao hệ thống event-driven khó debug, và bạn làm gì để giảm rủi ro đó?',
+  a: `**Tóm tắt:** **Event notification** chỉ báo "có chuyện xảy ra" kèm ID; consumer cần thêm dữ liệu thì gọi ngược lại service nguồn. **Event-carried state transfer** gửi kèm đủ dữ liệu để consumer tự lưu bản sao và không cần gọi lại. Cách thứ nhất ít coupling về schema nhưng tạo coupling lúc runtime; cách thứ hai tách runtime nhưng schema event trở thành hợp đồng công khai và dữ liệu nhân bản nhiều nơi. EDA khó debug vì luồng nghiệp vụ **không nằm ở một chỗ nào trong code**: nó phân tán qua các consumer, bất đồng bộ, có trùng lặp và sai thứ tự. Giảm rủi ro bằng trace ID xuyên suốt, schema có quản lý, consumer idempotent, DLQ có quy trình, và dùng orchestration cho luồng dài cần nhìn thấy trạng thái.
+
+### Ba kiểu dùng event (theo cách phân loại của Martin Fowler)
+| Kiểu | Payload | Consumer làm gì | Rủi ro |
+|---|---|---|---|
+| Event notification | {{orderId}}, loại sự kiện | Gọi API nguồn lấy chi tiết | Nguồn chết thì consumer kẹt; bão request ngược |
+| Event-carried state transfer | Toàn bộ trạng thái cần thiết | Lưu bản sao cục bộ | Schema thành hợp đồng; dữ liệu cũ (stale) |
+| Event sourcing | Chuỗi event là nguồn sự thật | Dựng lại trạng thái từ event | Phức tạp, khó đổi schema event cũ |
+
+Ví dụ thương mại điện tử: {{OrderPlaced}} dạng notification thì kho, khuyến mãi, thông báo đều gọi lại Order Service lúc cao điểm, nhân tải lên nhiều lần. Dạng state transfer mang sẵn item, địa chỉ, tổng tiền; Order Service chậm cũng không ảnh hưởng consumer. Đổi lại, thêm/xoá field phải tính đến mọi consumer.
+
+### Event-carried state transfer: thiết kế payload
+~~~json
+{
+  "eventId": "9f1c...", "type": "OrderPlaced", "version": 2,
+  "occurredAt": "2026-10-23T09:15:02Z",
+  "orderId": "ORD-1001", "customerId": "C-77",
+  "items": [{"sku": "SKU-1", "qty": 2, "price": 150000}],
+  "total": 300000, "currency": "VND"
+}
+~~~
+{{eventId}} để consumer khử trùng, {{version}} để tiến hoá schema, {{occurredAt}} để xử lý event đến muộn, {{orderId}} làm Kafka key để giữ thứ tự theo đơn hàng.
+
+### Vì sao khó debug
+- **Luồng ẩn:** đọc code Order Service không biết ai đang nghe {{OrderPlaced}}; thêm một consumer mới có thể đổi hành vi toàn hệ thống.
+- **Bất đồng bộ và eventual consistency:** người dùng thấy đơn đã đặt nhưng điểm thưởng chưa cộng; là bug hay chỉ đang trễ?
+- **Trùng và sai thứ tự:** at-least-once nên event có thể đến hai lần; khác partition thì không có thứ tự.
+- **Chuỗi phản ứng:** event A kích hoạt B, B kích hoạt C; lỗi ở C rất khó lần ngược về A.
+- **Poison message:** một event lỗi format chặn cả partition nếu consumer retry vô hạn.
+
+### Biện pháp
+1. **Trace ID trong header** Kafka, nối liền HTTP → producer → consumer. Spring Boot 3 + Micrometer Tracing hỗ trợ khi bật observation ({{spring.kafka.template.observation-enabled}}, {{spring.kafka.listener.observation-enabled}}).
+2. **Schema có quản lý:** Schema Registry với chế độ tương thích (backward), quy tắc chỉ thêm field optional; tài liệu hoá event bằng AsyncAPI hoặc một event catalog để biết ai produce, ai consume.
+3. **Outbox** để event và thay đổi DB nhất quán; **consumer idempotent** (bảng {{processed_event}} với unique eventId).
+4. **Retry có giới hạn + DLQ** (Spring Kafka {{DefaultErrorHandler}} với {{DeadLetterPublishingRecoverer}}), có dashboard và người chịu trách nhiệm xử lý DLQ.
+5. **Orchestration cho luồng dài:** quy trình nhiều bước có bù trừ (mở tài khoản, hoàn tiền) nên có một orchestrator giữ trạng thái để trả lời được "hồ sơ này đang ở bước nào". Choreography hợp với phản ứng độc lập, ít bước.
+
+### Khi nào KHÔNG nên event-driven
+- Cần kết quả ngay để trả lời người dùng (kiểm tra số dư trước khi chuyển tiền): gọi đồng bộ.
+- Team nhỏ, một service: event nội bộ trong process ({{ApplicationEventPublisher}}) đủ dùng, chưa cần Kafka.
+
+> Senior tip: quy tắc tôi áp cho mọi event: phải trả lời được "nếu event này đến hai lần, đến muộn 1 giờ, hoặc không bao giờ đến thì sao?". Nếu team không trả lời được câu thứ ba, hệ thống thiếu cơ chế đối soát, và đó là chỗ tiền hoặc dữ liệu sẽ lệch âm thầm.`,
+  follow: [
+    'Bạn tiến hoá schema event (đổi tên field, tách field) thế nào khi có 6 consumer của 4 team?',
+    'Consumer cần dữ liệu khách hàng mới nhất nhưng chỉ nhận event-carried state: xử lý dữ liệu stale ra sao?',
+    'Làm sao xây một màn hình "theo dõi trạng thái đơn hàng" trong hệ thống choreography?'
+  ],
+  tags: ['event-driven', 'Kafka', 'event notification', 'event-carried state transfer', 'observability']
+},
+{
+  id: 'architecture-018',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Team muốn chuyển từ monolith lộn xộn sang microservices. Bạn đề xuất modular monolith với Spring Modulith: ranh giới module được định nghĩa và kiểm tra thế nào, module giao tiếp ra sao, và khi nào mới tách thành service?',
+  a: `**Tóm tắt:** Modular monolith là một deployable duy nhất nhưng chia thành các module theo bounded context, với **ranh giới được kiểm tra tự động**. Spring Modulith coi mỗi **package con trực tiếp của package gốc ứng dụng** là một module; chỉ package gốc của module là API công khai, package con là internal. Test {{ApplicationModules.verify()}} báo lỗi khi có vòng phụ thuộc hoặc truy cập internal của module khác. Module giao tiếp qua gọi API công khai hoặc qua **application event** được lưu bền (Event Publication Registry). Chỉ tách thành service khi có lý do đo được: scale khác biệt, nhịp deploy khác, team độc lập, yêu cầu cô lập (bảo mật, compliance).
+
+### Cấu trúc
+~~~text
+com.bank.lending                  <- package gốc (@SpringBootApplication)
+ |-- application/                 <- module "application": hồ sơ vay
+ |    |-- LoanApplicationService  (public API của module)
+ |    |-- internal/               (chỉ module này dùng)
+ |-- scoring/                     <- module "scoring"
+ |    |-- ScoringService
+ |    |-- internal/
+ |-- disbursement/                <- module "disbursement": giải ngân
+~~~
+
+### Kiểm tra ranh giới
+~~~java
+class ModularityTests {
+    ApplicationModules modules = ApplicationModules.of(LendingApplication.class);
+
+    @Test
+    void verifiesModularStructure() {
+        modules.verify();      // lỗi nếu có cycle giữa module hoặc dùng class trong internal của module khác
+    }
+
+    @Test
+    void writesDocumentation() {
+        new Documenter(modules).writeDocumentation();   // sinh sơ đồ module (PlantUML/C4) và tài liệu
+    }
+}
+~~~
+Có thể giới hạn chặt hơn bằng {{@ApplicationModule(allowedDependencies = ...)}} trong {{package-info.java}}, hoặc mở thêm package con làm API bằng {{@NamedInterface}}. Test chạy trong CI nên vi phạm bị chặn ở PR, không phụ thuộc trí nhớ của reviewer.
+
+### Giao tiếp giữa module bằng event
+~~~java
+// module application: publish trong cùng transaction với việc lưu hồ sơ
+@Transactional
+public void approve(LoanId id) {
+    loan.approve();
+    events.publishEvent(new LoanApproved(id, loan.amount()));
+}
+
+// module disbursement
+@ApplicationModuleListener                         // = @Async + @Transactional(REQUIRES_NEW) + @TransactionalEventListener
+void on(LoanApproved event) { disbursementService.schedule(event.loanId(), event.amount()); }
+~~~
+Với starter lưu trữ (ví dụ {{spring-modulith-starter-jpa}}), mỗi lần publish được ghi vào bảng event publication trong cùng transaction; listener chạy xong mới đánh dấu hoàn tất. App crash giữa chừng thì publication còn dang dở được gửi lại (cấu hình gửi lại khi khởi động hoặc gửi lại chủ động). Đây chính là outbox pattern nội bộ. Khi cần, event có thể được đẩy ra Kafka ({{@Externalized}}) mà không đổi code module, bước đệm tự nhiên trước khi tách service.
+
+### Test theo module
+{{@ApplicationModuleTest}} chỉ khởi động bean của một module (và phụ thuộc cho phép), giúp test nhanh và lộ ra phụ thuộc ẩn.
+
+### So sánh
+| | Monolith lộn xộn | Modular monolith | Microservices |
+|---|---|---|---|
+| Ranh giới | Không có | Package + kiểm tra tự động | Mạng + API |
+| Transaction | Một DB, tuỳ tiện | Một DB, khuyến khích mỗi module bảng riêng | Phân tán, saga |
+| Vận hành | Đơn giản | Đơn giản | Phức tạp (deploy, observability, network) |
+| Refactor ranh giới | Đắt | Rẻ (đổi package) | Rất đắt |
+| Scale độc lập | Không | Không | Có |
+
+### Khi nào tách module thành service
+- Module cần scale khác hẳn phần còn lại (scoring tốn CPU vào cuối tháng).
+- Team riêng muốn release độc lập và module đã ổn định ranh giới (ít đổi API).
+- Yêu cầu cô lập: PCI DSS cho dữ liệu thẻ, công nghệ khác.
+Nếu module chưa sạch phụ thuộc ở trong monolith, tách ra chỉ tạo distributed monolith.
+
+### Pitfall
+- Module chia theo tầng kỹ thuật (controller, service, repository) thay vì theo nghiệp vụ: Modulith không cứu được.
+- Các module join bảng của nhau trong query: ranh giới code sạch nhưng ranh giới dữ liệu vẫn dính.
+- Event mang entity JPA thay vì dữ liệu bất biến (record).
+
+> Senior tip: tôi chỉ đồng ý tách microservice khi modular monolith đã chạy vài tháng mà {{verify()}} xanh và các module chỉ nói chuyện qua event hoặc API công khai. Lúc đó tách là việc cơ học. Ngược lại, nếu không giữ nổi ranh giới trong một codebase, team sẽ không giữ nổi nó qua mạng.`,
+  follow: [
+    'Module A cần dữ liệu của module B để hiển thị: gọi API của B, join bảng, hay giữ bản sao qua event?',
+    'Event publication bị kẹt ở trạng thái chưa hoàn tất: bạn giám sát và xử lý thế nào?',
+    'Lộ trình đưa một monolith 300.000 dòng không có ranh giới sang modular monolith?'
+  ],
+  tags: ['Spring Modulith', 'modular monolith', 'bounded context', 'events', 'architecture']
+},
+{
+  id: 'architecture-019',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Ngân hàng xây kênh số mới (app, open API) nhưng phải tích hợp core banking legacy (T24, Flexcube...). Bạn thiết kế anti-corruption layer thế nào để mô hình legacy không lan vào hệ thống mới?',
+  a: `**Tóm tắt:** Anti-corruption layer (ACL, khái niệm từ DDD) là lớp **dịch** giữa bounded context mới và hệ thống legacy: domain mới chỉ nói chuyện qua một **port** bằng ngôn ngữ của mình ({{holdFunds}}, {{postTransfer}}, {{Money}}, {{AccountStatus}}); ACL lo phần còn lại: giao thức và định dạng của core, mapping mã lỗi và mã sản phẩm, idempotency, timeout/retry, cache dữ liệu tham chiếu, và xử lý lúc core đóng sổ cuối ngày. Mục tiêu: đổi core (hoặc nâng cấp phiên bản core) chỉ phải sửa ACL, không phải sửa mọi kênh.
+
+### Vấn đề nếu không có ACL
+- Field, mã giao dịch, mã lỗi riêng của core xuất hiện trong app, open API, service khuyến mãi... Mười team cùng phải hiểu cùng một mô hình legacy.
+- Hành vi đặc thù của core (định dạng ngày, field nhiều giá trị, số tài khoản kèm mã chi nhánh, giờ đóng sổ) rò rỉ thành if/else ở khắp nơi.
+- Đổi core (dự án chuyển đổi core thường kéo dài nhiều năm) thành viết lại toàn bộ kênh.
+
+### Kiến trúc
+~~~text
+Mobile App / Open API / Internet Banking
+                |
+        Channel services (domain mới: Transfer, Account, Card)
+                |  port: CoreBankingPort (ngôn ngữ của domain mới)
+                v
+   +-------------------- Anti-Corruption Layer --------------------+
+   | Facade: API nghiệp vụ thô -> chuỗi lệnh của core               |
+   | Translator: domain <-> model legacy, mã lỗi, mã sản phẩm       |
+   | Adapter: giao thức của core (message, web service, MQ, DB view)|
+   | Idempotency store, retry/timeout, circuit breaker              |
+   | Store-and-forward khi core đang đóng sổ cuối ngày              |
+   +----------------------------------------------------------------+
+                |
+        Core banking (T24, Flexcube, ...)
+~~~
+
+### Port nằm ở domain mới
+~~~java
+public interface CoreBankingPort {                       // domain sở hữu, không có kiểu dữ liệu của core
+    HoldId holdFunds(AccountNo acc, Money amount, String reference);
+    PostingResult postTransfer(TransferPosting posting);   // reference duy nhất -> idempotent
+    AccountSnapshot getAccount(AccountNo acc);
+}
+
+public sealed interface PostingResult {
+    record Posted(String coreRef) implements PostingResult {}
+    record Rejected(RejectReason reason) implements PostingResult {}  // INSUFFICIENT_FUNDS, ACCOUNT_BLOCKED...
+    record Unknown(String reference) implements PostingResult {}       // timeout: phải truy vấn lại
+}
+~~~
+Kết quả {{Unknown}} là điểm then chốt: ACL không được giả định thất bại khi core không trả lời; nó phải truy vấn lại theo reference trước khi kết luận.
+
+### Translator: phần tốn công nhất
+| Legacy | Domain mới |
+|---|---|
+| Mã lỗi riêng của core (hàng trăm mã) | Enum {{RejectReason}} vài chục giá trị; mã lạ → {{UNKNOWN_CORE_ERROR}} + alert |
+| Mã sản phẩm, loại giao dịch nội bộ | {{ProductType}} theo nghiệp vụ |
+| Ngày, số tiền dạng chuỗi theo format của core | {{LocalDate}}, {{Money}} |
+| Trạng thái tài khoản dạng cờ | {{AccountStatus}} (ACTIVE, DORMANT, BLOCKED) |
+Bảng mapping nên là cấu hình có version và có test dựa trên message mẫu thật lấy từ môi trường test của core.
+
+### Các vấn đề vận hành
+- **Đóng sổ cuối ngày (COB/EOD):** trong cửa sổ batch, core có thể từ chối hoặc chậm. ACL chuyển sang chế độ nhận lệnh, lưu hàng đợi bền và hạch toán sau (store-and-forward) cho loại giao dịch cho phép; loại không cho phép thì trả lỗi rõ ràng.
+- **Bảo vệ core:** core thường không scale ngang được. ACL đặt rate limit/bulkhead theo loại lệnh, cache dữ liệu ít đổi (danh mục chi nhánh, sản phẩm, tỉ giá theo phiên) để kênh số không đổ hết truy vấn đọc vào core.
+- **Đọc nhiều:** truy vấn lịch sử giao dịch nên đi qua read model (CDC từ DB core hoặc file/sự kiện core phát ra) thay vì gọi core mỗi lần mở app.
+- **Đối soát:** mọi lệnh qua ACL có reference; đối soát hằng ngày giữa log ACL và báo cáo của core.
+
+### Thiết kế tổ chức
+- ACL là **service riêng** do một team sở hữu khi nhiều kênh dùng chung; là **module/thư viện** khi chỉ một ứng dụng dùng. Service riêng giúp tập trung kiến thức core, nhưng dễ thành nút cổ chai về tổ chức.
+- Pitfall lớn nhất: ACL phình thành nơi chứa logic nghiệp vụ ("tính phí ở ACL cho nhanh"). ACL chỉ dịch và bảo vệ; nghiệp vụ ở domain.
+- Kết hợp **strangler fig**: chức năng mới viết ở domain mới, chức năng cũ dần chuyển qua; ACL là đường biên giữa hai thế giới.
+
+### Trade-off
+| Lợi | Chi phí |
+|---|---|
+| Đổi/nâng cấp core chỉ sửa một chỗ | Thêm một hop, thêm độ trễ |
+| Kênh mới phát triển nhanh, model sạch | Mapping phải bảo trì liên tục |
+| Bảo vệ core khỏi tải kênh số | Rủi ro thành bottleneck tổ chức |
+
+> Senior tip: thước đo một ACL tốt là grep codebase của các kênh: không được thấy mã lỗi, tên field hay mã giao dịch của core ở bất kỳ đâu ngoài ACL. Tôi đưa điều đó thành test kiến trúc, và yêu cầu mọi mã lỗi lạ từ core sinh alert thay vì bị map âm thầm thành "lỗi hệ thống".`,
+  follow: [
+    'Core banking không có API idempotent: ACL đảm bảo không hạch toán hai lần khi timeout thế nào?',
+    'Bạn xây read model lịch sử giao dịch từ core bằng CDC hay bằng file cuối ngày? Trade-off?',
+    'Lộ trình chuyển đổi core banking (core migration) trong khi kênh số vẫn chạy 24/7?'
+  ],
+  tags: ['anti-corruption layer', 'DDD', 'core banking', 'legacy', 'integration', 'strangler fig']
+},
+{
+  id: 'architecture-020',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Cho ví dụ dùng Template Method, Observer và Chain of Responsibility trong code nghiệp vụ thật (không phải ví dụ sách giáo khoa). Mỗi pattern có bẫy gì khi dùng với Spring?',
+  a: `**Tóm tắt:** **Template Method** cố định khung quy trình ở lớp cha, cho lớp con thay từng bước (import file sao kê của nhiều ngân hàng). **Observer** cho phép phát sự kiện mà không biết ai nghe (đơn hàng thanh toán xong → tích điểm, gửi email); trong Spring là {{ApplicationEventPublisher}} + {{@EventListener}}/{{@TransactionalEventListener}}. **Chain of Responsibility** chuyển request qua chuỗi handler, mỗi handler xử lý hoặc chặn (chuỗi kiểm tra trước khi chuyển tiền). Bẫy chính: Template Method dựa vào kế thừa nên dễ cứng; listener mặc định chạy **đồng bộ trong cùng transaction**; chuỗi handler phụ thuộc thứ tự cần khai báo rõ.
+
+### Template Method: import sao kê đối soát
+~~~java
+public abstract class StatementImportJob {
+    public final ImportReport run(Path file) {           // final: khung không đổi
+        List<RawLine> lines = read(file);
+        List<StatementTxn> txns = lines.stream().map(this::parseLine).toList(); // bước thay đổi
+        validate(txns);                                    // bước chung
+        ImportReport report = reconcile(txns);             // bước chung
+        afterImport(report);                               // hook tuỳ chọn
+        return report;
+    }
+    protected abstract StatementTxn parseLine(RawLine line); // mỗi ngân hàng một format
+    protected void afterImport(ImportReport r) {}           // mặc định không làm gì
+}
+~~~
+Bẫy: thêm nhiều hook và cờ dần biến lớp cha thành god class; lớp con override nhầm bước không nên override. Cách hiện đại hơn là **callback/strategy** truyền vào (đúng như {{JdbcTemplate}}, {{TransactionTemplate}}, {{RestClient}} của Spring làm): khung cố định, phần thay đổi là lambda, không cần kế thừa.
+
+### Observer: Spring application event
+~~~java
+@Transactional
+public void markPaid(OrderId id) {
+    order.markPaid();
+    publisher.publishEvent(new OrderPaid(id, order.total()));
+}
+
+@Component
+class LoyaltyListener {
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)   // chỉ chạy khi đơn đã commit
+    @Transactional(propagation = Propagation.REQUIRES_NEW)              // cần transaction mới để ghi DB
+    public void on(OrderPaid e) { loyalty.addPoints(e.orderId(), e.total()); }
+}
+~~~
+Bẫy thực tế:
+- {{@EventListener}} thường chạy **đồng bộ, cùng thread, cùng transaction**: listener ném exception làm rollback cả đơn hàng; listener chậm làm API chậm.
+- {{@TransactionalEventListener}} AFTER_COMMIT: transaction gốc đã commit, ghi DB trong listener phải dùng transaction mới (REQUIRES_NEW), nếu không thay đổi có thể không được lưu.
+- Event trong bộ nhớ **mất khi app crash** sau commit: việc quan trọng (gửi tiền, gửi sang hệ thống khác) cần outbox hoặc Event Publication Registry của Spring Modulith.
+- Thêm {{@Async}} thì listener chạy thread khác, mất context (transaction, security, MDC) nếu không cấu hình truyền.
+
+### Chain of Responsibility: kiểm tra trước khi chuyển tiền
+~~~java
+public interface TransferCheck { void check(TransferContext ctx); }  // ném exception để chặn
+
+@Component @Order(10) class AccountStatusCheck implements TransferCheck { ... }
+@Component @Order(20) class DailyLimitCheck     implements TransferCheck { ... }
+@Component @Order(30) class BlacklistCheck      implements TransferCheck { ... }
+@Component @Order(40) class FraudScoreCheck     implements TransferCheck { ... } // gọi service ngoài, đặt cuối
+
+@Service
+class TransferValidator {
+    private final List<TransferCheck> checks;      // Spring inject theo thứ tự @Order
+    TransferValidator(List<TransferCheck> checks) { this.checks = checks; }
+    void validate(TransferContext ctx) { checks.forEach(c -> c.check(ctx)); }
+}
+~~~
+Thêm kiểm tra mới = thêm một bean, không sửa validator. Đặt check rẻ và hay chặn lên trước, check đắt (gọi mạng) xuống cuối. Spring Security {{SecurityFilterChain}} và Servlet {{Filter}} là CoR cùng ý tưởng (handler có thể gọi tiếp hoặc dừng chuỗi).
+
+Bẫy: quên {{@Order}} thì thứ tự không được đảm bảo; handler có side effect (trừ hạn mức) ở giữa chuỗi mà handler sau chặn thì phải hoàn tác. Giữ handler **thuần kiểm tra**, side effect làm sau khi cả chuỗi qua.
+
+### Khi nào KHÔNG dùng
+| Pattern | Không dùng khi |
+|---|---|
+| Template Method | Chỉ có một biến thể; hoặc nhiều trục thay đổi độc lập (dùng strategy) |
+| Observer | Bên phát cần kết quả của bên nghe, hoặc thứ tự giữa listener quan trọng |
+| CoR | Chỉ 2 bước cố định; if tuần tự rõ ràng hơn |
+
+> Senior tip: Observer trong process là thứ tôi thấy gây sự cố nhiều nhất: dev nghĩ "phát event là tách rời rồi" nhưng listener lỗi vẫn làm rollback giao dịch chính, hoặc ngược lại event mất khi pod restart. Luôn hỏi: listener này chạy trong transaction nào, thread nào, và nếu app chết ngay sau commit thì sao?`,
+  follow: [
+    'Thứ tự giữa nhiều @EventListener cho cùng một event được xác định thế nào?',
+    'Template Method và Strategy: bạn chọn cái nào cho bài import file nhiều định dạng, vì sao?',
+    'Làm sao trả về tất cả lỗi kiểm tra thay vì dừng ở lỗi đầu tiên trong chuỗi CoR?'
+  ],
+  tags: ['Template Method', 'Observer', 'Chain of Responsibility', 'Spring events', 'design pattern']
+},
+{
+  id: 'architecture-021',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Sau hai năm, kiến trúc Hexagonal của dự án đã "mục": domain import JPA, controller gọi thẳng repository, package vòng tròn. Bạn dùng ArchUnit và các quy tắc phụ thuộc thế nào để giữ kiến trúc không bị xói mòn?',
+  a: `**Tóm tắt:** Quy tắc kiến trúc chỉ nằm trong wiki thì sẽ bị vi phạm; phải biến nó thành **test chạy trong CI**. ArchUnit đọc bytecode và cho viết luật bằng Java: domain không phụ thuộc Spring/JPA, tầng nào được gọi tầng nào, không có vòng phụ thuộc giữa các package/slice, quy ước đặt tên. Với codebase đã vi phạm, dùng **FreezingArchRule** để ghi nhận vi phạm hiện có và chỉ chặn vi phạm mới, rồi giảm dần. Kết hợp thêm ranh giới cứng hơn (Maven/Gradle multi-module) cho những luật quan trọng nhất.
+
+### Vì sao kiến trúc xói mòn
+- Deadline: "gọi repository từ controller cho nhanh".
+- Người mới không biết quy ước; reviewer không nhìn thấy import ở file không được sửa trong diff.
+- IDE tự động import class đầu tiên tìm thấy.
+Mỗi vi phạm nhỏ trông vô hại; sau 200 vi phạm, việc đổi persistence hay tách module trở thành không thể.
+
+### Bộ luật ArchUnit cơ bản
+~~~java
+@AnalyzeClasses(packages = "com.bank.payment", importOptions = ImportOption.DoNotIncludeTests.class)
+class ArchitectureTest {
+
+    @ArchTest   // domain thuần: không biết Spring, JPA, web
+    static final ArchRule domainIsPure = noClasses().that().resideInAPackage("..domain..")
+        .should().dependOnClassesThat()
+        .resideInAnyPackage("org.springframework..", "jakarta.persistence..", "..adapter..");
+
+    @ArchTest   // tầng: web -> application -> domain; adapter chỉ đi vào qua port
+    static final ArchRule layers = layeredArchitecture().consideringAllDependencies()
+        .layer("Web").definedBy("..adapter.web..")
+        .layer("Persistence").definedBy("..adapter.persistence..")
+        .layer("Application").definedBy("..application..")
+        .layer("Domain").definedBy("..domain..")
+        .whereLayer("Web").mayNotBeAccessedByAnyLayer()
+        .whereLayer("Persistence").mayNotBeAccessedByAnyLayer()
+        .whereLayer("Application").mayOnlyBeAccessedByLayers("Web")
+        .whereLayer("Domain").mayOnlyBeAccessedByLayers("Application", "Web", "Persistence");
+
+    @ArchTest   // không vòng phụ thuộc giữa các feature package
+    static final ArchRule noCycles = slices().matching("com.bank.payment.(*)..").should().beFreeOfCycles();
+}
+~~~
+Persistence adapter được truy cập Domain vì nó **implement port** của domain (DIP); không ai được gọi ngược vào adapter.
+
+### Codebase đã vi phạm: freeze rồi giảm dần
+~~~java
+@ArchTest
+static final ArchRule domainIsPureFrozen = FreezingArchRule.freeze(domainIsPure);
+~~~
+Lần chạy đầu, ArchUnit lưu danh sách vi phạm hiện có vào một "violation store" (mặc định là thư mục file text, commit vào repo). Từ đó test chỉ fail khi có **vi phạm mới**; vi phạm cũ được sửa sẽ tự rời khỏi store. Team thấy rõ số vi phạm giảm theo thời gian, không cần "big bang".
+
+### Luật hay dùng khác
+- Controller không truy cập repository trực tiếp.
+- Class có {{@Transactional}} chỉ nằm ở tầng application.
+- Không dùng {{java.util.Date}}, {{LocalDateTime.now()}} không có Clock trong domain (để test được thời gian).
+- Package của đối tác A không import package của đối tác B.
+- Tên: class trong {{..adapter.web..}} kết thúc bằng {{Controller}}.
+
+### So sánh các cơ chế giữ ranh giới
+| Cơ chế | Mức chặn | Ưu | Nhược |
+|---|---|---|---|
+| Quy ước + review | Người | Không tốn gì | Không bền |
+| ArchUnit | Test trong CI | Linh hoạt, luật tuỳ ý, freeze được | Chỉ phát hiện khi chạy test |
+| Maven/Gradle multi-module | Compiler | Không thể vi phạm (không có trên classpath) | Cứng, nhiều module tốn công build |
+| Spring Modulith verify | Test | Hiểu khái niệm module, sinh tài liệu | Theo quy ước package của Modulith |
+| JPMS (module-info) | Compiler + runtime | Chặt nhất | Ma sát với reflection, framework |
+
+Cách thực dụng: luật quan trọng nhất (domain không phụ thuộc hạ tầng) có thể đẩy lên mức module build; phần còn lại dùng ArchUnit.
+
+### Pitfall
+- Luật viết sai package pattern nên luôn pass (không match class nào). ArchUnit mặc định báo lỗi khi {{should}} không áp vào class nào ({{archRule.failOnEmptyShould}}), đừng tắt nó cho tiện.
+- Viết quá nhiều luật chi li, team bắt đầu thêm ngoại lệ hàng loạt. Bắt đầu với 3–5 luật có lý do rõ ràng, ghi lý do trong {{because(...)}}.
+
+> Senior tip: tôi luôn kèm {{.because("...")}} vào từng luật, viết bằng ngôn ngữ nghiệp vụ ("domain phải test được không cần DB"). Khi test fail, dev đọc được lý do thay vì nghĩ đây là luật quan liêu và tìm cách lách.`,
+  follow: [
+    'Bạn áp dụng ArchUnit cho một codebase có 500 vi phạm sẵn mà không làm team nản thế nào?',
+    'Khi nào nên nâng một luật từ ArchUnit lên thành ranh giới Maven module?',
+    'Viết luật ArchUnit cấm gọi LocalDateTime.now() trong domain và giải thích vì sao luật đó hữu ích.'
+  ],
+  tags: ['ArchUnit', 'architecture test', 'hexagonal', 'dependency rules', 'package cycle']
+},
+{
+  id: 'architecture-022',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Bạn xây nền tảng SaaS (ví dụ phần mềm quản lý bán hàng hoặc core cho nhiều quỹ tín dụng) phục vụ 2.000 khách hàng doanh nghiệp. So sánh database-per-tenant, schema-per-tenant và discriminator column; triển khai với Hibernate 6 thế nào và những bẫy rò rỉ dữ liệu giữa tenant?',
+  a: `**Tóm tắt:** Ba mức cô lập đánh đổi giữa **an toàn/linh hoạt** và **chi phí/vận hành**. Database-per-tenant cô lập mạnh nhất, dễ đáp ứng yêu cầu khách lớn nhưng tốn tài nguyên và khó migrate hàng nghìn DB. Schema-per-tenant là trung gian. Discriminator column (một cột {{tenant_id}} trên mọi bảng) rẻ và dễ scale số tenant nhất nhưng một câu query quên điều kiện là lộ dữ liệu của khách khác. Hibernate 6 hỗ trợ cả hai kiểu: {{MultiTenantConnectionProvider}} cho DB/schema riêng, {{@TenantId}} cho discriminator. Thực tế thường **lai**: đa số tenant nhỏ dùng chung (discriminator + Row Level Security), tenant lớn hoặc yêu cầu đặc biệt có DB riêng.
+
+### So sánh
+| Tiêu chí | DB per tenant | Schema per tenant | Discriminator column |
+|---|---|---|---|
+| Cô lập dữ liệu | Mạnh nhất | Khá (chung instance) | Phụ thuộc code + RLS |
+| Noisy neighbor | Ít | Chung CPU/IO instance | Chung tất cả |
+| Chi phí với 2.000 tenant | Cao | Trung bình | Thấp |
+| Migration schema | 2.000 lần chạy | 2.000 lần chạy | 1 lần |
+| Backup/restore một tenant | Dễ | Khá dễ | Khó (phải lọc dữ liệu) |
+| Connection pool | Pool theo DB, bùng nổ connection | Dùng chung pool, đổi schema | Dùng chung |
+| Tuỳ biến theo khách | Dễ | Khá | Khó |
+
+Ước lượng vì sao DB-per-tenant khó với nhiều tenant: 2.000 DB × pool tối thiểu 5 connection = 10.000 connection mỗi instance ứng dụng; với 10 instance là 100.000, vượt xa mức PostgreSQL chịu nổi nếu không có PgBouncer và pool lười (tạo khi cần, đóng khi rảnh).
+
+### Xác định tenant hiện tại
+Tenant lấy từ token (claim trong JWT) hoặc subdomain, **không bao giờ từ tham số do client tự gửi**. Lưu trong context theo request:
+~~~java
+@Component
+class TenantResolver implements CurrentTenantIdentifierResolver<String>, HibernatePropertiesCustomizer {
+    @Override public String resolveCurrentTenantIdentifier() {
+        return TenantContext.current().orElse("system");     // lúc khởi động/batch không có request
+    }
+    @Override public boolean validateExistingCurrentSessions() { return true; }
+    @Override public void customize(Map<String, Object> props) {
+        props.put(AvailableSettings.MULTI_TENANT_IDENTIFIER_RESOLVER, this); // đăng ký với Hibernate
+    }
+}
+// TenantContext: ThreadLocal set trong filter sau khi xác thực, clear trong finally
+~~~
+(Interface có generic từ Hibernate 6.4, đi kèm Spring Boot 3.2+; bản 6.x cũ hơn trả về {{String}} trực tiếp.)
+
+### Discriminator với @TenantId
+~~~java
+@Entity
+class Invoice {
+    @Id Long id;
+    @TenantId String tenantId;   // Hibernate tự gán khi insert và tự thêm điều kiện tenant vào truy vấn HQL/Criteria
+    BigDecimal amount;
+}
+~~~
+**Không bao phủ native SQL** và truy vấn qua {{JdbcTemplate}}; đó là chỗ rò rỉ hay gặp. Lớp bảo vệ thứ hai: **PostgreSQL Row Level Security**: bật RLS trên bảng, policy so {{tenant_id}} với một biến phiên được set khi mượn connection; quên điều kiện ở code thì DB vẫn chặn. Lưu ý RLS không áp cho owner của bảng trừ khi bật {{FORCE ROW LEVEL SECURITY}}, nên ứng dụng phải chạy bằng user không phải owner.
+
+### Schema/DB per tenant
+Cài {{MultiTenantConnectionProvider}}: với schema-per-tenant, lấy connection từ pool chung rồi {{connection.setSchema(tenant)}}, trả về thì đặt lại schema mặc định; với DB-per-tenant, tra map tenant → DataSource (tạo lười). Migration: chạy Flyway lần lượt cho từng schema/DB, theo đợt, có theo dõi tenant nào lỗi để chạy lại.
+
+### Các bẫy rò rỉ dữ liệu
+- **Thread pool, {{@Async}}, CompletableFuture:** ThreadLocal không tự đi theo; tenant của request trước còn sót lại nếu quên clear. Dùng TaskDecorator để truyền và xoá context.
+- **Cache:** key Redis/Caffeine thiếu tenant → khách A thấy dữ liệu khách B. Bắt buộc prefix tenant.
+- **Kafka/batch:** message phải mang tenant trong header; consumer set context trước khi xử lý.
+- **Search index, file trên S3, log:** cùng nguyên tắc, mỗi kho dữ liệu đều cần phân tách tenant.
+- **Báo cáo tổng hợp toàn hệ thống:** chạy bằng tài khoản riêng, có audit.
+
+### Lộ trình gợi ý
+Bắt đầu với discriminator + RLS cho đa số; thiết kế sẵn khả năng "chuyển tenant lớn sang DB riêng" (routing theo tenant, dữ liệu export/import theo tenant). Khách hàng yêu cầu cô lập (ngân hàng, quỹ có quy định) thì cấp DB riêng ngay, tính phí tương ứng.
+
+> Senior tip: tôi viết một bộ test tự động "tenant isolation": tạo dữ liệu cho hai tenant, gọi mọi API list/search/export bằng token tenant A và khẳng định không có bản ghi nào của B. Bộ test này chạy trong CI cho mọi endpoint mới, vì lỗi rò rỉ giữa tenant là loại sự cố làm mất khách nhanh nhất của một SaaS.`,
+  follow: [
+    'Một tenant lớn chiếm 40% tải và làm chậm các tenant khác trên cùng DB: bạn xử lý thế nào?',
+    'Cách migrate một tenant từ shared schema sang database riêng mà không downtime?',
+    'Truyền tenant context qua virtual thread và @Async trong Spring Boot 3 thế nào cho an toàn?'
+  ],
+  tags: ['multi-tenancy', 'Hibernate', '@TenantId', 'Row Level Security', 'SaaS', 'PostgreSQL']
+},
 );

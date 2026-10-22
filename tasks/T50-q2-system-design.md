@@ -1,6 +1,6 @@
 # T50 — Nội dung: System Design & Architecture (đợt 2)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/q-system-design.js`
 
@@ -41,3 +41,4 @@ ID tiếp nối số lớn nhất đang có trong topic (ví dụ đang có `cor
 `node scripts/validate.js` → OK và số câu mỗi topic đạt mục tiêu. Integrator sẽ fact-check sau.
 
 ## Notes
+- Hoàn thành bởi agent Claude: sửa design-014/015, thêm design-016..021.

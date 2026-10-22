@@ -1,6 +1,6 @@
 # T62 — Nội dung: Design pattern hay gặp
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/q-system-design.js`
 After: T50
@@ -37,3 +37,4 @@ ID tiếp nối số lớn nhất đang có trong topic (ví dụ đang có `cor
 `node scripts/validate.js` → OK và số câu mỗi topic đạt mục tiêu. Integrator sẽ fact-check sau.
 
 ## Notes
+- Hoàn thành bởi agent Claude: architecture-009..022.
