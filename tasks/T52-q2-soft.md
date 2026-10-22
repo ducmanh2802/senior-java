@@ -1,6 +1,6 @@
 # T52 — Nội dung: Testing & Behavioral (đợt 2)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/q-soft.js`
 
@@ -41,3 +41,12 @@ ID tiếp nối số lớn nhất đang có trong topic (ví dụ đang có `cor
 `node scripts/validate.js` → OK và số câu mỗi topic đạt mục tiêu. Integrator sẽ fact-check sau.
 
 ## Notes
+- Đã thêm **14 câu** (chỉ thêm ở cuối mảng, không sửa câu cũ):
+  - `testing-011` … `testing-016` (6 câu, đúng 6 chủ đề task yêu cầu) → topic `testing` nay có **16** câu (mục tiêu ≥ 16).
+  - `behavioral-013` … `behavioral-020` (8 câu, đúng 8 chủ đề task yêu cầu) → topic `behavioral` nay có **20** câu (mục tiêu ≥ 20).
+- Level của 14 câu mới: `testing` = 1 mid / 4 senior / 1 lead; `behavioral` = 2 mid / 4 senior / 2 lead (tương đương 25% mid, 55% senior, 20% lead).
+- Mọi đáp án mới nằm trong khoảng **3.700–4.000 ký tự**, mở đầu bằng `**Tóm tắt:**`, có các mục `###`, bảng trade-off, ví dụ code/sql, và kết bằng `> Senior tip:`. Mỗi câu có 2–3 `follow`.
+- Nguyên tắc kỹ thuật đã kiểm lại: `@WithMockUser` (roles → `ROLE_`, authorities → `SCOPE_`), `@EnableMethodSecurity` (Spring Security 6), `@DataJpaTest` mặc định thay DataSource bằng DB embedded (`@AutoConfigureTestDatabase(replace = Replace.NONE)` để dùng Postgres thật), `spring.test.context.cache.maxSize` mặc định 32, `@EmbeddedKafka` + `Awaitility.untilAsserted`, `CREATE INDEX CONCURRENTLY` không chạy được trong transaction, Flyway checksum mismatch khi sửa file đã apply, expand–contract cho rolling deploy, jqwik (`@Property/@ForAll/@Provide`, `Combinators`, `Assume`), WireMock `Fault.CONNECTION_RESET_BY_PEER`/`withFixedDelay`, Resilience4j circuit breaker, Toxiproxy toxic types, APPI/GDPR/CCPA.
+- Kiểm tra: `node --check js/data/q-soft.js` OK; `node scripts/validate.js` → **OK — không có lỗi** (không có cảnh báo nào cho `q-soft.js`).
+- Lưu ý cho integrator: trong lúc task chạy, `js/data/labs-gc.js` (thuộc T42) đang có lỗi cú pháp làm `validate.js` toàn repo đỏ; tôi **không** sửa file đó theo luật 3. Lỗi đã được agent T42 sửa xong trong lúc tôi hoàn tất, và `validate.js` toàn repo hiện in `OK — không có lỗi.`
+- Không chạy `git commit`/`git push`, không mở trình duyệt, không cài dependency.

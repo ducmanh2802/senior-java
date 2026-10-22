@@ -1,6 +1,6 @@
 # T53 — Nội dung: Phỏng vấn tiếng Anh (đợt 2)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/q-english.js`
 
@@ -37,3 +37,4 @@ ID tiếp nối số lớn nhất đang có trong topic (ví dụ đang có `cor
 `node scripts/validate.js` → OK và số câu mỗi topic đạt mục tiêu. Integrator sẽ fact-check sau.
 
 ## Notes
+Added 12 questions (english-020 through english-031). English topic now has 31 questions (was 19). All 6 validation batches passed. Level distribution: 4 mid, 7 senior, 1 lead added (total: 8 mid, 19 senior, 4 lead ≈ 26%/61%/13%).

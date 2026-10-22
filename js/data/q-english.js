@@ -617,4 +617,456 @@ If the offer is below my range, I do not negotiate emotionally. I say what would
   tags: ['salary', 'negotiation', 'notice-period'],
   lang: 'en',
 },
+{
+  id: 'english-020',
+  topic: 'english',
+  level: 'senior',
+  q: 'Explain the CAP theorem and eventual consistency to the interviewer with a concrete example from a system you have worked on.',
+  a: `**Tóm tắt:** CAP nói rằng khi mạng bị chia cắt (partition), hệ thống phân tán phải chọn giữa Consistency (mọi lần đọc thấy bản ghi mới nhất — linearizable) và Availability (mọi request tới node còn sống đều nhận phản hồi). Partition là không tránh được, nên lựa chọn thực tế là CP hay AP **trong lúc có partition**. Eventual consistency là chọn AP: dữ liệu sẽ nhất quán sau một khoảng thời gian, không phải ngay lập tức.
+
+### Sample answer
+The CAP theorem says that when a network partition happens, a distributed system has to choose between consistency and availability. Since partitions **will** happen in production, the real choice is CP, where some requests fail so that nobody reads stale data, or AP, where every node keeps answering even if some answers are stale.
+
+Eventual consistency means that if no new writes come in, all replicas will eventually converge to the same value. There is no fixed bound on how long that takes, and the trade-off is that readers may see stale data in the meantime.
+
+In our payment gateway, we had a service that routed transactions to acquirers based on a rules engine stored in PostgreSQL and cached in Redis across two regions. We chose AP for the rules cache: reads from Redis were always available even if the cross-region link was down. If a rule changed in region A, it propagated to region B via a Kafka topic with at-least-once delivery. The cache TTL was five seconds, so the maximum inconsistency window was about five seconds plus replication lag.
+
+One incident showed the cost: a rule disabling a high-risk acquirer was updated in region A, but the cache in region B still served the old rule for four seconds. During those four seconds, twenty transactions were routed to the disabled acquirer and failed. We fixed it by adding a synchronous invalidation webhook for critical rules, and by making the acquirer adapter idempotent so retries did not double-charge.
+
+### Useful phrases
+- **the real choice is CP or AP**: lựa chọn thực tế là CP hay AP
+- **partition tolerance is mandatory**: chịu đựng partition là bắt buộc
+- **stale data during that window**: dữ liệu cũ trong khoảng thời gian đó
+- **at-least-once delivery**: giao ít nhất một lần (có thể trùng)
+- **maximum inconsistency window**: cửa sổ không nhất quán tối đa
+- **synchronous invalidation**: vô hiệu hóa đồng bộ
+
+> Senior tip: Đừng giải thích CAP bằng hình vẽ tam giác rồi dừng — interviewer muốn nghe **bạn đã chọn gì và tại sao**. Cảnh báo: "eventually consistent" **không** có nghĩa là "sẽ nhất quán trong 1 giây"; có thể là phút, thậm chí giờ nếu bị lỗi. Luôn hỏi: "What is the maximum staleness your business can tolerate?" rồi thiết kế theo con số đó.`,
+  follow: [
+    'How would you handle a financial transaction that cannot tolerate any inconsistency?',
+    'What happens if the eventual consistency window is violated — say, the replica is down for an hour?',
+    'Can you give an example where you chose CP over AP and why?',
+  ],
+  tags: ['cap-theorem', 'eventual-consistency', 'distributed-systems', 'system-design'],
+  lang: 'en',
+},
+{
+  id: 'english-021',
+  topic: 'english',
+  level: 'lead',
+  q: 'Walk me through how you would design a URL shortener. Explain your choices for storage, encoding, and scaling.',
+  a: `**Tóm tắt:** URL shortener cần: **mapping key → URL gốc** (độc nhất), **redirect nhanh** (p99 < 50ms), **tạo key không trùng**, **hệ thống scale ngang**. Cốt lõi là thiết kế key space, chọn storage, và xử lý hot key.
+
+### Sample answer
+**Functional requirements:** shorten a long URL to a short key (e.g., short.ly/abc123), redirect with {{301/302}}, optionally track clicks. **Non-functional:** high read throughput (100M+ redirects/day), low latency, durable, custom aliases optional.
+
+**Key generation:** I would use base62 (a-z, A-Z, 0-9) with length 7, giving {{62^7}} ≈ 3.5 trillion combinations — enough for years. Two approaches: (1) generate random keys and rely on the unique index, retrying on the rare collision; (2) use a distributed ID generator like Snowflake and encode the ID in base62. I prefer (1) because it is simpler, the keys are not guessable, and with a good random source collisions are rare enough that a single retry handles them. For custom aliases, validate uniqueness at write time.
+
+**Storage:** The mapping table is simple ({{key}}, {{long_url}}, {{created_at}}, {{owner_id}}, {{expires_at}}). A single PostgreSQL instance with a unique index on {{key}} easily handles hundreds of millions of rows. For the read-heavy redirect path, I would put a Redis cache in front with a 24-hour TTL. Cache key = short key, value = long URL. On cache miss, query Postgres and populate cache. Write path: insert to Postgres, invalidate cache (or rely on TTL).
+
+**Scaling reads:** Redis Cluster shards by key (CRC16 of the key, mapped to 16,384 hash slots), so normal traffic is spread evenly across shards. If a specific URL goes viral (hot key), add a local in-memory cache (Caffeine) on the API instances for the top 1000 keys — this absorbs the spike without touching Redis.
+
+**Scaling writes:** The write QPS is low (creating short URLs). Single Postgres writer with connection pooling is fine. If needed, shard by {{owner_id}}.
+
+**Analytics:** Fire click events to Kafka, aggregate in Flink/Spark to a time-series DB (TimescaleDB) or OLAP (ClickHouse). Do not update a counter on every redirect — that creates a hot row and lock contention.
+
+**Failure modes:** If Redis is down, fall back to Postgres directly (slightly higher latency but available). If Postgres is down, creating new short URLs fails, but redirects for links that are already cached keep working.
+
+### Useful phrases
+- **base62 encoding**: mã hóa base62
+- **collision probability**: xác suất va chạm
+- **cache aside pattern**: mẫu cache aside
+- **hot key problem**: vấn đề hot key
+- **write path vs read path**: đường ghi vs đường đọc
+- **time-series database**: cơ sở dữ liệu chuỗi thời gian
+
+> Senior tip: Câu hỏi này kiểm tra **system design communication** — hãy nói theo cấu trúc: Requirements → API contract → Data model → Storage → Scaling → Failure handling. Đừng chỉ nêu công nghệ. Phân biệt **301 (Moved Permanently)** — browser cache redirect, phù hợp URL ngắn bền vững — và **302 (Found)** — không cache, dùng khi cần tracking chính xác mỗi click.`,
+  follow: [
+    'How would you handle a custom alias that a user wants but is already taken?',
+    'What if the short URL needs to expire after a certain number of clicks or a date?',
+    'How do you prevent abuse (spam, phishing) without slowing down legitimate users?',
+  ],
+  tags: ['system-design', 'url-shortener', 'scaling', 'caching'],
+  lang: 'en',
+},
+{
+  id: 'english-022',
+  topic: 'english',
+  level: 'senior',
+  q: 'Explain how Kafka guarantees ordering and what happens when a consumer crashes.',
+  a: `**Tóm tắt:** Kafka đảm bảo ordering **trong một partition** bằng offset tăng dần. Producer gửi cùng key → cùng partition → thứ tự được bảo toàn (với {{enable.idempotence=true}}, mặc định từ Kafka 3.0, retry không làm đảo thứ tự). Consumer crash: group rebalance xảy ra, partition được assign lại cho consumer khác, tiếp tục từ offset đã commit. Message đã xử lý nhưng chưa commit offset sẽ bị xử lý lại (at-least-once). Cần idempotent consumer hoặc Kafka transactions để tránh duplicate.
+
+### Sample answer
+Kafka ordering guarantee is per partition. When you send messages with the same key, Kafka hashes the key to determine the partition, so all messages for that key go to the same partition and are appended in order. The broker assigns a monotonically increasing offset to each message within that partition, and consumers read the partition in offset order. On the producer side, idempotence (enabled by default since Kafka 3.0) makes sure retries do not reorder or duplicate messages.
+
+If a consumer crashes, the group coordinator (a broker) detects it when heartbeats stop arriving within {{session.timeout.ms}} (45 seconds by default since Kafka 3.0; heartbeats are sent every 3 seconds). A consumer that is alive but stuck is kicked out when it exceeds {{max.poll.interval.ms}} (5 minutes by default). It triggers a rebalance: the partitions owned by the crashed consumer are reassigned to the remaining consumers in the group. The new consumer starts reading from the last committed offset of that partition.
+
+The critical question is: **when do you commit offsets?** With {{enable.auto.commit=true}} (the default in the plain Kafka client, while Spring Kafka turns it off and commits for you), offsets are committed periodically during {{poll()}}, every 5 seconds by default. If the consumer crashes between processing and auto-commit, the new consumer will reprocess those messages — this is at-least-once delivery. If you commit before processing and the consumer crashes after commit but before finishing, you lose messages — at-most-once.
+
+To get effectively-once processing, you have two options: (1) make the consumer idempotent — store processed message IDs in the database with a unique constraint and skip duplicates; (2) if the output goes back to Kafka, use Kafka transactions: produce the output and commit the consumed offsets in one transaction, and have downstream consumers read with {{isolation.level=read_committed}}. Note that Kafka transactions do not cover writes to an external database.
+
+In our payment system, we used the idempotent approach: each payment event has a unique {{event_id}}. The consumer writes the payment record with {{event_id}} as a unique key. When a duplicate arrives, the insert hits the unique constraint ({{ON CONFLICT DO NOTHING}} in Postgres), so we skip it and just increment a metric. This is simpler than transactions and works well for high-throughput event processing.
+
+### Useful phrases
+- **per-partition ordering**: đảm bảo thứ tự theo partition
+- **consumer group rebalance**: cân bằng lại nhóm consumer
+- **heartbeat timeout**: thời gian chờ heartbeat
+- **at-least-once vs at-most-once**: ít nhất một lần vs nhiều nhất một lần
+- **effectively-once processing**: xử lý coi như đúng một lần
+- **idempotent consumer**: consumer lũy đẳng (nhận trùng vẫn cho cùng kết quả)
+
+> Senior tip: Đừng nói "Kafka đảm bảo ordering" mà quên thêm **"trong một partition"**. Đó là bẫy kinh điển. Cũng nhớ: **tăng số partition** sẽ đổi ánh xạ key → partition, nên thứ tự của một key có thể bị phá trong lúc chuyển. Và nếu mỗi consumer là một group riêng thì mỗi consumer nhận **toàn bộ** message — không chia tải được. Về offset: **commit sau khi xử lý xong + idempotent** là an toàn nhất cho hầu hết use case. Spring Kafka mặc định {{AckMode.BATCH}} (commit sau khi listener xử lý xong batch); {{RECORD}} commit sau từng record; {{MANUAL_IMMEDIATE}} thì bạn tự gọi {{Acknowledgment.acknowledge()}} trong {{@KafkaListener}}.
+`,
+  follow: [
+    'How would you handle ordering across multiple partitions for the same business entity?',
+    'What is the difference between {{enable.auto.commit}} and manual commit with {{AckMode.MANUAL_IMMEDIATE}}?',
+    'How does Kafka exactly-once-semantics (EOS) work internally with the transaction coordinator?',
+  ],
+  tags: ['kafka', 'messaging', 'ordering', 'consumer-group'],
+  lang: 'en',
+},
+{
+  id: 'english-023',
+  topic: 'english',
+  level: 'senior',
+  q: 'Explain transaction isolation levels and a bug you saw because of them.',
+  a: `**Tóm tắt:** SQL định nghĩa 4 mức isolation: Read Uncommitted, Read Committed, Repeatable Read, Serializable. Mức càng cao càng an toàn nhưng càng kém throughput do lock/contention. PostgreSQL mặc định Read Committed, MySQL/InnoDB mặc định Repeatable Read. Bug thường gặp: lost update (Read Committed), phantom read (Repeatable Read theo chuẩn SQL), write skew (snapshot isolation như Repeatable Read của Postgres vẫn cho phép; chỉ Serializable hoặc lock tường minh mới ngăn được).
+
+### Sample answer
+The four standard isolation levels, from weakest to strongest:
+1. **Read Uncommitted** — can read uncommitted changes from other transactions (dirty reads). Rarely used.
+2. **Read Committed** (Postgres default) — only reads committed data. Prevents dirty reads, but allows non-repeatable reads (reading the same row twice returns different values) and phantom reads (a re-run query returns new rows).
+3. **Repeatable Read** (MySQL default) — the SQL standard only requires it to prevent non-repeatable reads. In practice, **PostgreSQL implements it as snapshot isolation**, which also prevents phantom reads but still allows write skew. MySQL InnoDB uses a snapshot for plain reads and next-key locks for locking reads.
+4. **Serializable** — fully serializable execution, typically via predicate locking or serializable snapshot isolation (SSI). Highest contention.
+
+The bug I saw: we had a **wallet balance** table with {{user_id}}, {{balance}}, {{version}} (for optimistic locking). A transfer service did: {{SELECT balance FROM wallet WHERE user_id = ?}} (check sufficient funds), then {{UPDATE wallet SET balance = balance - amount WHERE user_id = ? AND version = ?}}. This ran at Read Committed.
+
+Under load, two concurrent transfers of 60 from the same wallet both read a balance of 100, both passed the check, and both tried to update with the same version. One succeeded; the other updated zero rows, which we treated as an optimistic-lock failure and retried. On retry, the balance was 40, so the second transfer should have been rejected. **But** the retry logic had a bug: it re-read the balance and version but did not re-run the sufficient-funds check. So the second transfer went through and the balance ended up at -20.
+
+The fix: move the business rule check **inside** the retry loop, or better, use a single {{UPDATE ... SET balance = balance - ? WHERE user_id = ? AND balance >= ?}} which is atomic and needs no retry. We also added a database check constraint {{balance >= 0}} as a safety net.
+
+Another case: **write skew** at Repeatable Read in PostgreSQL. A user had two sub-accounts with 50 each, and the rule was that their combined balance must not go below zero. Two transactions each read the total (100) from their own snapshot; one withdrew 60 from account A, the other withdrew 60 from account B. They updated different rows, so there was no conflict, both committed, and the total became -20. Serializable would have aborted one of them, at the cost of retries. We fixed it by locking all of the user's account rows with {{SELECT ... FOR UPDATE}} before computing the total.
+
+### Useful phrases
+- **dirty read / non-repeatable read / phantom read**: đọc bẩn / đọc không lặp lại / đọc ảo
+- **write skew**: ghi chéo
+- **optimistic locking with version**: khóa lạc quan với version
+- **atomic update**: cập nhật nguyên tử
+- **check constraint**: ràng buộc kiểm tra
+- **select for update**: khóa các dòng ngay khi đọc
+
+> Senior tip: Đừng chỉ liệt kê 4 mức — interviewer muốn nghe **bạn chọn mức nào cho use case nào và tại sao**. Quy tắc tay: Read Committed cho hầu hết OLTP, Repeatable Read khi cần snapshot nhất quán (reporting), Serializable dùng có chọn lọc vì contention cao hơn và ứng dụng phải retry khi gặp serialization failure. Luôn có **check constraint** ở DB cho quy tắc nghiệp vụ quan trọng (balance >= 0, quantity >= 0) — đó là lớp phòng thủ cuối cùng.`,
+  follow: [
+    'How does PostgreSQL Repeatable Read differ from MySQL Repeatable Read regarding phantom reads?',
+    'When would you use {{SELECT FOR UPDATE}} vs optimistic locking?',
+    'Can you explain write skew with a concrete example where Serializable would help?',
+  ],
+  tags: ['database', 'transaction', 'isolation', 'concurrency', 'bug'],
+  lang: 'en',
+},
+{
+  id: 'english-024',
+  topic: 'english',
+  level: 'senior',
+  q: 'Tell me about a difficult bug you fixed. How did you find the root cause?',
+  a: `**Tóm tắt:** Dùng cấu trúc STAR nhưng tập trung vào **quy trình debug có hệ thống**: tái tạo → thu thập bằng chứng → giả thuyết → kiểm chứng → sửa → phòng ngừa. Nêu công cụ cụ thể (log, trace, metric, heap dump) và một bài học về quy trình.
+
+### Sample answer
+**Situation:** In our payment reconciliation job, we started seeing duplicate settlement records for the same transaction — about 0.1% of volume but financially unacceptable. The job runs nightly, reads from Kafka, and writes to PostgreSQL.
+
+**Task:** Find why duplicates occur and fix it without delaying the month-end close.
+
+**Action:** First, I checked whether it was a Kafka redelivery issue. The consumer commits offsets after processing each batch, so a crash mid-batch could cause reprocessing. But there had been no consumer restarts or rebalances on the nights the duplicates appeared, so I ruled that out.
+
+I added correlation IDs to the logs and traced a specific duplicate pair. Both had the same {{payment_id}} but different {{reconciliation_id}}. The timestamps were 3 seconds apart. The application logs showed that two instances of the reconciliation service had processed the same payment event. We had recently scaled to two replicas for throughput, and **because of a bug in our Helm chart, each replica got a different {{group.id}}**, so they were not in the same consumer group. Each replica consumed the whole topic independently.
+
+I confirmed it by listing the consumer groups in Kafka: there were two groups, each with one member, and both were consuming every partition. I fixed the Helm chart to use a shared {{group.id}}. Then I wrote a one-time cleanup script to delete duplicates based on {{payment_id}} + {{settlement_date}}, keeping the earliest {{reconciliation_id}}.
+
+**Result:** Duplicates stopped immediately. We added a unique constraint on ({{payment_id}}, {{settlement_date}}) as a safety net. I also added an integration test that starts two consumers with the same group.id and verifies that each event is processed only once.
+
+**Root cause analysis method:** I used the **5 Whys** — why duplicates? Two consumers. Why two consumers? Different group.id. Why different group.id? The Helm template built it from the pod name instead of using a fixed value. Why? It was copied from another chart where each pod really did need its own group, and nobody questioned it in review.
+
+### Useful phrases
+- **reproduce the issue**: tái tạo vấn đề
+- **correlation ID**: ID tương quan
+- **consumer group lag**: độ trễ nhóm consumer
+- **exactly-once processing**: xử lý đúng một lần
+- **safety net**: lưới an toàn
+- **5 Whys technique**: kỹ thuật 5 cái tại sao
+
+> Senior tip: Đừng chỉ nói "tôi đọc log và tìm ra bug". Interviewer muốn nghe **bạn dùng công cụ gì, theo thứ tự nào, và loại trừ giả thuyết như thế nào**. Một kỹ sư giỏi debug có **checklist**: 1) Tái tạo được không? 2) Log/trace có correlation ID không? 3) Metric/alert có bắt được không? 4) Có phải race condition / config / data không? 5) Fix xong có test hồi quy không? Cũng hãy nhắc **postmortem** — viết tài liệu chia sẻ cho team để tránh lặp lại.`,
+  follow: [
+    'What would you do if you could not reproduce the bug in staging?',
+    'How do you distinguish between a data bug and a logic bug?',
+    'Have you ever spent days debugging only to find it was a config error?',
+  ],
+  tags: ['debugging', 'behavioral', 'star', 'root-cause'],
+  lang: 'en',
+},
+{
+  id: 'english-025',
+  topic: 'english',
+  level: 'mid',
+  q: 'Give a daily stand-up update, including a blocker, in clear English.',
+  a: `**Tóm tắt:** Stand-up update chuẩn: **hôm qua làm gì → hôm nay làm gì → blocker (có hỏi giúp cụ thể)**. Ngắn gọn (< 60 giây), tập trung vào **kết quả bàn giao (outcome)** chứ không phải hoạt động. Blocker nêu rõ **ai có thể giúp** và **hạn chót**.
+
+### Sample answer
+"Yesterday I finished the idempotency key validation for the refund API and opened PR #3421. Today I'll finish the webhook retry with exponential backoff. The code is done, but I can't test it end to end in staging until the dead-letter topic exists.
+
+**Blocker:** The DLQ topic doesn't exist in the staging cluster yet. I need the platform team to create it with a 7-day retention period and monitoring alerts. @platform-team, could you pick this up today? We need it by tomorrow morning to unblock the deployment."
+
+### Useful phrases
+- **yesterday I finished**: hôm qua tôi hoàn thành
+- **today I will focus on**: hôm nay tôi tập trung vào
+- **blocker**: điểm chặn / trở ngại
+- **waiting on**: đang chờ
+- **unblock the deployment**: gỡ chặn việc deploy
+- **pick this up**: nhận việc này
+
+> Senior tip: Đừng biến stand-up thành **báo cáo trạng thái chi tiết** ("tôi đã mở file, đọc code, chạy test..."). Chỉ nói **outcome** và **blocker**. Nếu blocker cần quyết định, nói rõ: "I need a decision from @PO by 2pm on whether to cut scope or delay." Nếu không có blocker, nói "No blockers" — đừng im lặng. Phát âm **blocker** /ˈblɒkə/ (Anh) hoặc /ˈblɑːkər/ (Mỹ), nhấn âm đầu.`,
+  follow: [
+    'How do you handle a blocker that the team cannot resolve internally?',
+    'What do you do when a stand-up runs long because someone starts a technical discussion?',
+    'How would you give a stand-up update if you spent the whole day in meetings?',
+  ],
+  tags: ['standup', 'communication', 'agile', 'blocker'],
+  lang: 'en',
+},
+{
+  id: 'english-026',
+  topic: 'english',
+  level: 'mid',
+  q: 'How do you explain a delay to a foreign client or product owner?',
+  a: `**Tóm tắt:** Nguyên tắc: **trung thực, sớm, có phương án, không đổ lỗi**. Cấu trúc: sự thật (delay bao lâu) → nguyên nhân gốc (ngắn gọn, không kỹ thuật quá sâu) → tác động → phương án khắc phục (có timeline) → cam kết báo cáo tiến độ. Luôn chủ động liên lạc trước khi deadline.
+
+### Sample answer
+"Hi [Client Name], I want to give you an early heads-up. The payment reconciliation feature we planned to release this Friday will be delayed by approximately one week.
+
+**Root cause:** During load testing, we found a race condition in the idempotency layer that could cause duplicate settlements under high concurrency. It does not show up in functional tests, only when many requests for the same payment arrive at the same time.
+
+**Impact:** The new target date is next Friday, January 19. No other deliverables are affected.
+
+**Mitigation:** We have identified the fix — adding a database-level unique constraint and making the consumer idempotent. The code change is ready and in review (PR #3456). We will deploy to staging by Wednesday, run a 48-hour soak test, and release on Friday. I will send you a daily status update at 4 PM UTC until release.
+
+We take reliability seriously, especially for financial features, and we would rather ship a week late than risk incorrect settlements. Please let me know if you have questions or need to adjust downstream plans."
+
+### Useful phrases
+- **early heads-up**: cảnh báo sớm
+- **root cause**: nguyên nhân gốc
+- **race condition**: điều kiện đua
+- **soak test**: kiểm tra ngâm (chạy lâu để bắt lỗi ngẫu nhiên)
+- **take reliability seriously**: coi trọng độ tin cậy
+- **downstream plans**: kế hoạch của các bên liên quan
+
+> Senior tip: Đừng gửi email "we are delayed" rồi im lặng. Khách hàng quốc tế đánh giá cao **proactive communication**: báo trước, cho timeline cụ thể, cam kết update hằng ngày. Nếu delay do thay đổi requirement từ phía khách, hãy nói thẳng nhưng lịch sự: "The scope change requested on January 10 added three days to the critical path." Không dùng từ "fault" hay "blame" — dùng "root cause" hoặc "contributing factor".`,
+  follow: [
+    'What if the client pushes back and demands the original date?',
+    'How do you communicate a delay when the root cause is a third-party vendor?',
+    'How do you handle a delay that keeps growing (unknown unknowns)?',
+  ],
+  tags: ['communication', 'client', 'delay', 'stakeholder'],
+  lang: 'en',
+},
+{
+  id: 'english-027',
+  topic: 'english',
+  level: 'mid',
+  q: 'How do you write and respond to code review comments politely in English?',
+  a: `**Tóm tắt:** Code review không phải chỉ trích cá nhân — là **cải tiến code cùng nhau**. Nguyên tắc: hỏi thay vì chỉ trích, giải thích lý do, đề xuất thay vì ra lệnh, cảm ơn reviewer. Khi nhận review: không phản ứng phòng thủ, hỏi rõ nếu mơ hồ, công nhận điểm tốt.
+
+### Sample answer
+**Writing comments (as reviewer):**
+- Instead of: "This is wrong. Fix it." → **Say:** "I think this might have a race condition if two requests come in simultaneously. Could we use a {{ConcurrentHashMap}} or add synchronization here?"
+- Instead of: "Variable name is bad." → **Say:** "Would {{paymentId}} be clearer than {{pid}}? It reads better in the logs."
+- Instead of: "Why did you do it this way?" → **Say:** "I am curious about the design choice here — was there a reason to use composition over inheritance?"
+- Always add: "Thanks for the PR!" or "Good catch on the edge case!"
+
+**Responding to comments (as author):**
+- Agree: "Great point. I will update to use {{ConcurrentHashMap}}."
+- Disagree politely: "I considered that, but this map is only written once at startup and is read-only afterwards, so there are no concurrent writes. I'll add a comment to make that explicit. What do you think?"
+- Clarify: "I am not sure I follow — could you elaborate on the race condition scenario?"
+- Partial: "Good catch on the null check. I will add that. For the naming, I prefer {{pid}} because it matches the database column, but happy to change if the team has a convention."
+
+**Useful templates:**
+- "Nit: {{...}}" — minor style suggestion (non-blocking)
+- "Question: {{...}}" — asking for clarification
+- "Suggestion: {{...}}" — optional improvement
+- "Blocking: {{...}}" — must fix before merge
+
+### Useful phrases
+- **nitpick / nit**: góp ý nhỏ về style
+- **blocking comment**: ý kiến bắt buộc sửa
+- **trade-off**: đánh đổi
+- **elaborate**: giải thích chi tiết hơn
+- **happy to change**: sẵn sàng thay đổi
+- **thanks for catching that**: cảm ơn đã bắt lỗi đó
+
+> Senior tip: Nhiều người Việt hay viết comment kiểu **"You should..."** — nghe như ra lệnh. Hãy dùng **"Could we..."**, **"Would it be better to..."**, **"Have you considered..."**. Khi phản biện, tránh **"I agree, but..."** — người nghe chỉ nhớ phần sau chữ "but". Hãy tách thành hai câu: **"That makes sense. One concern I have is..."** hoặc **"Good point. Have we also considered...?"**. Luôn kết thúc bằng **"Thanks!"** hoặc **"Appreciate the review!"**.`,
+  follow: [
+    'How do you handle a reviewer who is consistently rude or dismissive?',
+    'What do you do when you strongly disagree with a senior engineer\'s comment?',
+    'How do you review code in a language or framework you are not familiar with?',
+  ],
+  tags: ['code-review', 'communication', 'teamwork', 'english'],
+  lang: 'en',
+},
+{
+  id: 'english-028',
+  topic: 'english',
+  level: 'mid',
+  q: 'How do you answer when you do not know the answer to a technical question?',
+  a: `**Tóm tắt:** Đừng bịa, đừng im lặng. Cấu trúc: **thừa nhận không biết → nêu cách bạn sẽ tìm ra → đưa ra hướng đi tạm thời (nếu có) → cam kết follow-up**. Điều này thể hiện sự trung thực, tư duy giải quyết vấn đề và trách nhiệm.
+
+### Sample answer
+"That is a great question, and I want to be honest — I have not worked directly with {{eBPF}} in production, so I cannot give you a confident answer on the performance overhead.
+
+Here is how I would approach it: First, I would check our internal wiki and the team's architecture decision records to see if anyone has evaluated it. Second, I would run a quick benchmark in a test environment with our workload profile. Third, I would reach out to the platform team — they have experience with {{Cilium}} which uses eBPF under the hood.
+
+In the meantime, if we need to unblock the design discussion, I can share what I know about the setup we use today, iptables-based kube-proxy, and its trade-offs. I can have a concrete answer with data by the end of the day tomorrow. Would that work for you?"
+
+### Useful phrases
+- **that is a great question**: đó là một câu hỏi hay
+- **I want to be honest**: tôi muốn nói thật
+- **I have not worked directly with**: tôi chưa từng làm việc trực tiếp với
+- **here is how I would approach it**: đây là cách tôi sẽ tiếp cận
+- **in the meantime**: trong lúc chờ đợi
+- **unblock the design discussion**: gỡ chặn cuộc thảo luận thiết kế
+- **I can have a concrete answer by**: tôi có thể có câu trả lời cụ thể vào lúc
+
+> Senior tip: Interviewer hỏi câu này để test **integrity** và **problem-solving**, không phải knowledge. Tuyệt đối **không nói "I don't know" rồi dừng**. Cũng đừng nói "I would Google it" — quá lười. Hãy nêu **các bước cụ thể**: tài liệu nào, ai để hỏi, benchmark như thế nào, khi nào có kết quả. Nếu có kiến thức lân cận, hãy chia sẻ ngắn gọn để cho thấy bạn không hoàn toàn mù. **follow-up** (có gạch nối) là danh từ/tính từ, nhấn âm đầu /ˈfɒləʊ ʌp/; động từ viết rời **follow up** ("I will follow up tomorrow"). Đừng đọc thành "fô-lô-úp".`,
+  follow: [
+    'What if the interviewer pressures you to guess anyway?',
+    'How do you handle a question about a fundamental concept you should know (e.g., "How does HashMap work?")?',
+    'Have you ever pretended to know something and got caught? What did you learn?',
+  ],
+  tags: ['interview-skills', 'honesty', 'problem-solving', 'communication'],
+  lang: 'en',
+},
+{
+  id: 'english-029',
+  topic: 'english',
+  level: 'senior',
+  q: 'Explain how garbage collection works in the JVM to a junior developer.',
+  a: `**Tóm tắt:** Giải thích theo mô hình **generational hypothesis**: object trẻ chết sớm, object già sống lâu. Heap chia thành Young (Eden + 2 Survivor) và Old. Minor GC (Young) nhanh, thường xuyên; Major/Full GC (Old) chậm, hiếm. G1/ZGC/Shenandoah dùng region-based, concurrent marking để giảm pause.
+
+### Sample answer
+Think of the heap as two generations: **Young** and **Old**. The generational hypothesis says: most objects die young, so we should collect the young generation often and the old generation rarely.
+
+**Young Generation:** Split into Eden (where new objects are born) and two Survivor spaces (S0, S1). When Eden fills up, a **Minor GC** runs: live objects are copied to a Survivor space, dead objects are discarded. Objects that survive several Minor GCs (the tenuring threshold, at most 15) are **promoted** to the Old Generation.
+
+**Old Generation:** Holds long-lived objects. When it fills up, the old generation has to be collected too. A **Full GC** is the worst case: it stops the application and compacts the whole heap, which can take seconds on a large heap.
+
+**GC Algorithms:**
+- **Serial/Parallel (throughput collectors):** Stop-the-world, single or multi-threaded. Good for batch, bad for low-latency.
+- **CMS (Concurrent Mark Sweep):** Deprecated in Java 9 and removed in Java 14. It marked concurrently but did not compact, so the old generation fragmented over time.
+- **G1 (Garbage First, default since Java 9):** Heap divided into ~2000 regions. Prioritizes regions with most garbage. Concurrent marking, stop-the-world evacuation pauses. Target pause time configurable (default 200ms).
+- **ZGC / Shenandoah (low-latency, production-ready since Java 15):** They move objects concurrently using load barriers (ZGC also uses colored pointers). Pauses are typically around a millisecond, even for multi-terabyte heaps. Generational ZGC arrived in Java 21. Trade-off: more CPU and memory overhead.
+
+**Key concepts for a junior:**
+- **Allocation is fast** (a pointer bump in Eden). **Freeing dead young objects is almost free**, because a copying collector only touches the live ones.
+- **Finalizers are evil** — unpredictable, delay GC. Use {{try-with-resources}} or {{Cleaner}} API.
+- **Memory leak in Java** = unintentional object retention (static collections, listeners not removed, ThreadLocal). GC cannot collect reachable objects.
+
+**Production tips:** Monitor {{GC pause time (p99)}}, {{allocation rate}}, {{promotion rate}}. A high promotion rate often means medium-lived objects are promoted too early and then die in the Old Gen; give the Young Gen more room or reduce those allocations. Use {{-Xlog:gc*}} for unified logging (Java 9+).
+
+### Useful phrases
+- **generational hypothesis**: giả thuyết thế hệ
+- **pointer bump**: cấp phát bằng cách dịch con trỏ (rất nhanh)
+- **promotion**: thăng cấp (sang Old Gen)
+- **stop-the-world**: dừng thế giới (pause tất cả thread)
+- **colored pointers**: con trỏ có màu (ZGC)
+- **allocation rate**: tốc độ cấp phát bộ nhớ
+
+> Senior tip: Đừng liệt kê tên GC (Serial, Parallel, CMS, G1, ZGC) rồi dừng. Giải thích **tại sao chọn cái nào cho use case nào**: Low-latency trading → ZGC/Shenandoah; High-throughput batch → Parallel/G1; General web app → G1 (default). Cảnh báo: với G1, **humongous object** (≥ 50% kích thước region) được cấp phát thẳng vào các region liên tiếp và không được di chuyển khi evacuation — nhiều object kiểu này gây phân mảnh và có thể dẫn tới Full GC; cân nhắc tăng {{-XX:G1HeapRegionSize}} hoặc giảm mảng/buffer lớn. Luôn test với production-like data size, không chỉ hello world.`,
+  follow: [
+    'How does G1 decide which regions to collect first?',
+    'What is a "humongous object" in G1 and why is it problematic?',
+    'When would you choose ZGC over G1, and what is the CPU cost?',
+  ],
+  tags: ['jvm', 'garbage-collection', 'g1', 'zgc', 'shenandoah'],
+  lang: 'en',
+},
+{
+  id: 'english-030',
+  topic: 'english',
+  level: 'senior',
+  q: 'Describe your role in Agile/Scrum ceremonies and how you improve the process.',
+  a: `**Tóm tắt:** Không chỉ liệt kê các buổi meeting. Hãy nói: **bạn đóng vai trò gì** (facilitator, contributor, challenger), **bạn cải tiến gì** (cắt meeting, đổi format, đưa metric), **kết quả đo được**. Senior engineer chủ động cải tiến quy trình, không chỉ tuân thủ.
+
+### Sample answer
+In my current team of eight (5 devs, 1 QA, 1 PO, 1 SM), I act as the **tech lead**. My role in each ceremony:
+
+**Sprint Planning:** I prepare the technical breakdown *before* the meeting — each story has a design note, API contract draft, and effort estimate. During planning, I challenge scope: "This story has two independent parts; can we split so we deliver value earlier?" I also flag dependencies on other teams early. As a result, planning went down from three hours to about an hour and a half, and we commit to fewer but clearer stories.
+
+**Daily Stand-up (15 min):** I keep it strictly to the three prompts. If a technical discussion starts, I say "Let's take it offline after stand-up" and note it on the board. I also surface blockers proactively: "I see the API contract with the fraud team is not finalized — I will sync with their tech lead today."
+
+**Sprint Review (1h):** I demo the *behavior*, not the code. I prepare a one-pager: what changed, how to test, known limitations. I invite stakeholders to try the feature in staging during the review. This catches UX issues early.
+
+**Retrospective (1h):** I bring data — cycle time, bug count, deployment frequency, team happiness survey. Last quarter, the data showed that PRs spent more than half of our cycle time waiting for review. We agreed on three things: (1) keep PRs under 400 lines, (2) a reviewer picks up every PR within two working hours, and (3) pair programming for complex stories. Cycle time dropped from 3.2 days to 1.8 days.
+
+**Backlog Refinement (weekly, 1h):** I write spike tickets for technical unknowns *before* refinement, so the team discusses solutions, not questions. I also push for **Definition of Ready** — a story must have acceptance criteria, a design note, and no unresolved external dependencies.
+
+**Process improvements I initiated:**
+1. **Async stand-up twice a week** (Tue/Thu) via a Slack bot, which gave people longer blocks of focus time.
+2. **Definition of Done** includes: unit test coverage > 80%, integration test for happy path, runbook updated, feature flag documented.
+3. **Tech debt Friday** — last Friday of sprint, 2h dedicated to refactoring, no feature work. Paid down 40% of high-priority tech debt in 6 months.
+
+### Useful phrases
+- **tech lead**: dẫn dắt kỹ thuật
+- **challenge scope**: đặt câu hỏi về phạm vi
+- **flag dependencies**: nêu rõ sự phụ thuộc
+- **take it offline**: thảo luận riêng sau
+- **cycle time**: thời gian chu kỳ (từ bắt đầu code đến deploy)
+- **definition of ready / done**: định nghĩa sẵn sàng / xong
+- **tech debt Friday**: thứ sáu trả nợ kỹ thuật
+
+> Senior tip: Interviewer muốn nghe **bạn chủ động cải tiến**, không chỉ "tôi tham gia đầy đủ". Hãy nêu **metric trước/sau** (cycle time, bug rate, meeting hours). Cũng đừng sùng bái Scrum — nói thẳng: "We dropped estimation in story points because it was noisy; we use throughput (stories/week) instead." Điều đó thể hiện **pragmatism**.`,
+  follow: [
+    'How do you handle a PO who keeps adding scope mid-sprint?',
+    'What would you do if the team resists a process change you propose?',
+    'How do you measure whether a retrospective action item actually worked?',
+  ],
+  tags: ['agile', 'scrum', 'process-improvement', 'tech-lead', 'leadership'],
+  lang: 'en',
+},
+{
+  id: 'english-031',
+  topic: 'english',
+  level: 'lead',
+  q: 'Tell me about a time you led a technical initiative across teams.',
+  a: `**Tóm tắt:** Dẫn dắt across-team: **xây dựng consensus → thiết kế chung → chia nhỏ task → theo dõi tiến độ → giao tiếp liên tục**. Cần thể hiện influence without authority, xử lý conflict ưu tiên, và deliver kết quả.
+
+### Sample answer
+**Context:** Our company ran three separate payment services (Vietnam, Singapore, Indonesia), each with its own reconciliation logic, acquirer adapters, and settlement flow. The same bugs had to be fixed three times, onboarding a new acquirer took six weeks per country, and each country team had almost no visibility into the other two codebases.
+
+**Initiative:** I proposed a **Payment Platform Unification** — extract common domain (reconciliation, settlement, idempotency, webhook delivery) into a shared library, and build a **Payment Orchestrator** service that all three countries call. The orchestrator handles routing, retry, and settlement; country-specific logic stays in thin adapters.
+
+**How I led it:**
+1. **Build the coalition:** I met 1:1 with each country's tech lead and the EMs and listened to their concerns (Singapore worried about latency, Indonesia about compliance). Documented a **shared vision doc** with success criteria: onboarding time < 2 weeks, zero duplicate bugs, single on-call rotation.
+2. **Design together:** Ran a 2-day design workshop (RFC process). We agreed on: shared library in Java 17, gRPC for orchestrator communication, feature flags for gradual rollout. I wrote the RFC, received 15 comments, and revised it twice.
+3. **Slice the work:** Broke into 3 phases — (a) shared library + contract tests, (b) orchestrator service + Vietnam migration, (c) Singapore + Indonesia migration. Each phase had clear exit criteria and a rollback plan.
+4. **Governance:** We held a weekly sync with all tech leads. A Jira epic tracked migration progress, and a shared Grafana dashboard showed error rate and p99 latency. If a country team was blocked for more than a week, I escalated to the EMs with data.
+5. **Communication:** We ran a demo for stakeholders every two weeks and sent a monthly update to all engineers with progress and lessons learned.
+
+**Result:** Nine months later, all three countries had migrated. Onboarding a new acquirer dropped from six weeks to ten days. We no longer fixed the same reconciliation bug three times, and on-call was consolidated into a single rotation with shared runbooks.
+
+**What I learned:** I'd say technical design was maybe 30% of the work; **alignment and trust were the other 70%**. If I had pushed the design without 1:1s, Singapore would have blocked. The feature flag strategy let us prove value incrementally without big-bang risk.
+
+### Useful phrases
+- **influence without authority**: ảnh hưởng không cần quyền lực
+- **consensus building**: xây dựng sự đồng thuận
+- **feature flag**: cờ tính năng
+- **gradual rollout**: triển khai dần
+- **rollback plan**: kế hoạch quay lui
+- **big-bang risk**: rủi ro triển khai một lần
+
+> Senior tip: Across-team initiative thất bại thường do **không có executive sponsor** hoặc **không có exit criteria rõ ràng**. Luôn có: (1) sponsor từ VP/CTO, (2) success metrics có số, (3) rollback plan cho từng phase. Đừng cố gắng "chuẩn hóa mọi thứ" — để từng team giữ autonomy ở adapter, chỉ thống nhất core domain. Phát âm **initiative** /ɪˈnɪʃətɪv/ nhấn âm thứ hai (-ni-).`,
+  follow: [
+    'How did you handle a team that refused to migrate?',
+    'What would you do differently if you had to do it again?',
+    'How do you balance standardization with team autonomy?',
+  ],
+  tags: ['leadership', 'cross-team', 'initiative', 'influence', 'technical-strategy'],
+  lang: 'en',
+},
 );
