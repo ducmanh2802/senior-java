@@ -8,7 +8,14 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="css/styles.css">
+  <link rel="stylesheet" href="css/base.css">
+  <link rel="stylesheet" href="css/views/dashboard.css">
+  <link rel="stylesheet" href="css/views/roadmap.css">
+  <link rel="stylesheet" href="css/views/bank.css">
+  <link rel="stylesheet" href="css/views/flash.css">
+  <link rel="stylesheet" href="css/views/quiz.css">
+  <link rel="stylesheet" href="css/views/algo.css">
+  <link rel="stylesheet" href="css/views/mock.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>☕</text></svg>">
 </head>
 <body>
@@ -20,9 +27,11 @@
       </a>
       <nav class="nav" aria-label="Điều hướng chính">
         <a href="#/" data-route="dashboard">Tổng quan</a>
+        <a href="#/roadmap" data-route="roadmap">Lộ trình</a>
         <a href="#/bank" data-route="bank">Câu hỏi</a>
         <a href="#/flash" data-route="flash">Flashcard</a>
         <a href="#/quiz" data-route="quiz">Trắc nghiệm</a>
+        <a href="#/algo" data-route="algo">Thuật toán</a>
         <a href="#/mock" data-route="mock">Phỏng vấn thử</a>
       </nav>
       <button class="icon-btn" id="themeToggle" title="Đổi giao diện sáng/tối" aria-label="Đổi giao diện">◐</button>
@@ -39,12 +48,29 @@
     <input type="file" id="importFile" accept="application/json" hidden>
   </footer>
 
+  <!-- data (window.TOPICS / QUESTIONS / QUIZ) -->
   <script src="js/data/topics.js"></script>
   <script src="js/data/q-java.js"></script>
   <script src="js/data/q-concurrency-jvm.js"></script>
   <script src="js/data/q-spring-data.js"></script>
-  <script src="js/data/q-system.js"></script>
+  <script src="js/data/q-microservices.js"></script>
+  <script src="js/data/q-system-design.js"></script>
+  <script src="js/data/q-scenario.js"></script>
+  <script src="js/data/q-aws.js"></script>
+  <script src="js/data/q-ai.js"></script>
+  <script src="js/data/q-soft.js"></script>
+  <script src="js/data/q-english.js"></script>
   <script src="js/data/quiz.js"></script>
-  <script src="js/app.js"></script>
+  <script src="js/data/algo.js"></script>
+  <script src="js/data/roadmap.js"></script>
+  <!-- core + views -->
+  <script src="js/core/app.js"></script>
+  <script src="js/views/dashboard.js"></script>
+  <script src="js/views/roadmap.js"></script>
+  <script src="js/views/bank.js"></script>
+  <script src="js/views/flash.js"></script>
+  <script src="js/views/quiz.js"></script>
+  <script src="js/views/algo.js"></script>
+  <script src="js/views/mock.js"></script>
 </body>
 </html>
