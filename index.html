@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Senior Java Prep</title>
+  <meta name="description" content="Ôn luyện phỏng vấn Senior Java: ngân hàng câu hỏi, flashcard, trắc nghiệm và phỏng vấn thử.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>☕</text></svg>">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="#/">
+        <span class="brand-mark">J</span>
+        <span class="brand-text">Senior Java <b>Prep</b></span>
+      </a>
+      <nav class="nav" aria-label="Điều hướng chính">
+        <a href="#/" data-route="dashboard">Tổng quan</a>
+        <a href="#/bank" data-route="bank">Câu hỏi</a>
+        <a href="#/flash" data-route="flash">Flashcard</a>
+        <a href="#/quiz" data-route="quiz">Trắc nghiệm</a>
+        <a href="#/mock" data-route="mock">Phỏng vấn thử</a>
+      </nav>
+      <button class="icon-btn" id="themeToggle" title="Đổi giao diện sáng/tối" aria-label="Đổi giao diện">◐</button>
+    </div>
+  </header>
+
+  <main id="main" class="container"></main>
+
+  <footer class="footer container">
+    Tiến độ được lưu trong trình duyệt (localStorage).
+    <button class="link-btn" id="exportBtn">Xuất tiến độ</button> ·
+    <button class="link-btn" id="importBtn">Nhập tiến độ</button> ·
+    <button class="link-btn danger" id="resetBtn">Xoá tiến độ</button>
+    <input type="file" id="importFile" accept="application/json" hidden>
+  </footer>
+
+  <script src="js/data/topics.js"></script>
+  <script src="js/data/q-java.js"></script>
+  <script src="js/data/q-concurrency-jvm.js"></script>
+  <script src="js/data/q-spring-data.js"></script>
+  <script src="js/data/q-system.js"></script>
+  <script src="js/data/quiz.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
