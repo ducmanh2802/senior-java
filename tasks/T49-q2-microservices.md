@@ -1,6 +1,6 @@
 # T49 — Nội dung: Microservices (đợt 2)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/q-microservices.js`
 
@@ -35,3 +35,16 @@ ID tiếp nối số lớn nhất đang có trong topic (ví dụ đang có `cor
 `node scripts/validate.js` → OK và số câu mỗi topic đạt mục tiêu. Integrator sẽ fact-check sau.
 
 ## Notes
+Đã thêm 10 câu hỏi mới (microservices-019 đến microservices-028) đạt mục tiêu 28 câu. Tất cả 10 chủ đề yêu cầu đều được覆盖:
+1. Kafka partition, rebalance (cooperative sticky, max.poll.interval.ms, static membership)
+2. Spring Kafka @RetryableTopic blocking vs non-blocking retry, DLQ, ordering
+3. Schema evolution: Avro/Protobuf + Schema Registry, backward/forward compatibility
+4. Inbox pattern vs Outbox pattern, idempotent consumer với processed_message table
+5. Choreography vs Orchestration (Temporal, Camunda), khi nào cần workflow engine
+6. Kubernetes probes (liveness/readiness/startup), resource request/limit, graceful shutdown preStop
+7. Timeout budget, deadline propagation, tapered timeout theo chiều sâu
+8. Bulkhead pattern: thread pool isolation vs semaphore isolation, Little's Law sizing
+9. Bounded context decomposition: chatty services, distributed monolith signs, merge/split strategy
+10. Cross-service query: API Composition vs CQRS Read Model vs Data Lake trade-off
+
+Validation OK, syntax check OK.

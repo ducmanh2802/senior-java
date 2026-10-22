@@ -44,7 +44,8 @@ const LEVELS = new Set(['mid', 'senior', 'lead']);
 
 function checkMarkup(file, id, field, s) {
   if (typeof s !== 'string') return;
-  const opens = (s.match(/\{\{/g) || []).length, closes = (s.match(/\}\}/g) || []).length;
+  const prose = s.replace(/~~~[\s\S]*?~~~/g, '');   // App.md does not parse {{…}} inside code fences
+  const opens = (prose.match(/\{\{/g) || []).length, closes = (prose.match(/\}\}/g) || []).length;
   if (opens !== closes) err(file, `${id}.${field}: số {{ và }} không khớp (${opens}/${closes})`);
   for (const m of s.replace(/~~~[\s\S]*?~~~/g, '').matchAll(/\{\{([\s\S]+?)\}\}/g)) {
     if (/[{}]/.test(m[1])) err(file, `${id}.${field}: inline code {{${m[1].slice(0, 30)}…}} chứa dấu { } lồng nhau — sẽ hiển thị sai; đưa vào code block ~~~ hoặc viết lại`);
@@ -53,6 +54,8 @@ function checkMarkup(file, id, field, s) {
   if (fences % 2) err(file, `${id}.${field}: code fence ~~~ chưa đóng`);
   if (/```/.test(s)) err(file, `${id}.${field}: dùng ~~~ thay cho \`\`\``);
   if (/<\/?(div|span|br|b|i|p|code|pre)\b/i.test(s.replace(/~~~[\s\S]*?~~~/g, ''))) warn(file, `${id}.${field}: có thẻ HTML thô — sẽ hiển thị nguyên văn`);
+  if (/\\?`/.test(prose)) err(file, `${id}.${field}: có dấu backtick — inline code phải viết {{code}}`);
+  if (/^[ \t]+### /m.test(prose)) err(file, `${id}.${field}: tiêu đề ### bị thụt đầu dòng — sẽ không hiển thị thành tiêu đề`);
   // free models sometimes leak Chinese / Japanese / Cyrillic words into Vietnamese or English text
   const foreign = s.match(/[぀-ヿ㐀-鿿가-힯Ѐ-ӿ]+/);
   if (foreign) err(file, `${id}.${field}: có ký tự lạ "${foreign[0].slice(0, 12)}" (Trung/Nhật/Hàn/Nga) — model viết lẫn ngôn ngữ, hãy viết lại câu đó`);

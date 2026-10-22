@@ -1,6 +1,6 @@
 # T57 — Nội dung: SQL thực hành (viết query)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/q-sql.js`
 
@@ -42,3 +42,20 @@ File đang rỗng: ID bắt đầu từ `sql-001`.
 `node scripts/validate.js` → OK và số câu mỗi topic đạt mục tiêu. Integrator sẽ fact-check sau.
 
 ## Notes
+Đã thêm 14 câu hỏi cho topic `sql` (từ sql-001 đến sql-014):
+- sql-001: Lương cao thứ 2 theo phòng ban (DENSE_RANK vs RANK vs ROW_NUMBER)
+- sql-002: Xoá bản ghi trùng (ROW_NUMBER, DELETE USING, ctid/ROWID)
+- sql-003: Anti-join (NOT EXISTS vs NOT IN vs LEFT JOIN IS NULL, bẫy NULL)
+- sql-004: WHERE vs HAVING, thứ tự thực thi, lỗi GROUP BY thường gặp
+- sql-005: Top N mỗi nhóm (3 giao dịch lớn nhất mỗi khách hàng)
+- sql-006: Sao kê tài khoản (running balance với SUM OVER ROWS UNBOUNDED PRECEDING)
+- sql-007: Gaps and Islands (streak ngày đăng nhập liên tiếp)
+- sql-008: Pivot doanh số theo tháng + YoY (CASE WHEN, crosstab, pivot ở Java)
+- sql-009: Recursive CTE (cây danh mục nhiều cấp, cycle detection)
+- sql-010: UPSERT (ON CONFLICT, MERGE, race condition SELECT-INSERT/UPDATE)
+- sql-011: NULL trong SQL (COUNT(*) vs COUNT(col), SUM trả NULL, ORDER BY NULLS FIRST/LAST)
+- sql-012: DELETE vs TRUNCATE vs DROP, View vs Materialized View
+- sql-013: Phát hiện giao dịch bất thường (AVG OVER RANGE INTERVAL 30 days)
+- sql-014: Lọc khoảng thời gian đúng cách (half-open interval, timezone, SARGable)
+
+`node scripts/validate.js` → OK (sql: 14 câu hỏi). Các lỗi hiển thị thuộc file q-api.js (không trong quyền sở hữu).

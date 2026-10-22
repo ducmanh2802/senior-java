@@ -1,6 +1,6 @@
 # T55 — Nội dung: REST API & Web
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/q-api.js`
 
@@ -42,3 +42,20 @@ File đang rỗng: ID bắt đầu từ `api-001`.
 `node scripts/validate.js` → OK và số câu mỗi topic đạt mục tiêu. Integrator sẽ fact-check sau.
 
 ## Notes
+Đã thêm 14 câu hỏi cho topic `api` (api-001 đến api-014), bao gồm:
+1. Safe vs Idempotent method, PUT vs PATCH vs POST trong banking
+2. HTTP status code selection (201, 202, 400, 422, 401, 403, 409, 429, 502/503/504)
+3. REST resource design: naming, nested, filter/sort/pagination (page vs cursor)
+4. Spring MVC request flow: DispatcherServlet, HandlerMapping, HandlerAdapter, HttpMessageConverter, ExceptionResolver
+5. Filter vs HandlerInterceptor vs AOP: execution order, use cases (MDC, auth, timing)
+6. @RequestParam vs @PathVariable vs @RequestBody vs @ModelAttribute, validation & RFC 7807 ProblemDetail
+7. CORS preflight, browser enforcement, Spring Security 6 config
+8. Session/cookie vs JWT, HttpOnly cookie, refresh token rotation, stateless myth
+9. ETag & conditional requests (If-None-Match, If-Match) cho cache & optimistic locking
+10. Long-running tasks: 202 Accepted + polling vs webhook, Spring Boot @Async implementation
+11. Partner webhook design: HMAC, exponential backoff retry, idempotency, ordering, outbox pattern
+12. Tomcat embedded config: maxThreads, acceptCount, connectionTimeout, virtual threads, troubleshooting
+13. REST vs gRPC vs GraphQL: khi nào dùng cái nào cho mobile, internal service, partner
+14. API-first với OpenAPI: springdoc, generator, contract test, CI breaking change detection
+
+Tất cả đáp án ≥1500 ký tự, có **Tóm tắt**, các mục `###` giải thích cơ chế, code ví dụ, bảng trade-off, `> Senior tip:`. Level xen kẽ: 3 mid, 8 senior, 3 lead. `node scripts/validate.js` → OK.
