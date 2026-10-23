@@ -1,6 +1,6 @@
 # T109 — Track bài học `design`: tự cài các building block system design bằng Java thuần
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/lessons-design.js`, `index.html` (đã gắn sẵn script tag, KHÔNG sửa index.html)
 
@@ -16,3 +16,8 @@ Body nói rõ khi nào dùng trong production (Resilience4j, Redis, Bucket4j…)
 `node scripts/test-lessons.js` (reference pass, starter compile + fail) và `node scripts/validate.js` → OK.
 
 ## Notes
+
+- Đã thêm đủ 5 bài `lesson-design-001..005` và 5 bài tập Java 17; các bài tập qua `node scripts/test-lessons.js lesson-design-001` đến `lesson-design-005` (reference pass, starter compile nhưng không pass hết).
+- `node --check js/data/lessons-design.js` thành công.
+- `node scripts/validate.js` còn báo lỗi có sẵn ngoài phạm vi sở hữu: `js/data/quiz.js`, `qz-kotlin-001.q` có dấu backtick. Không sửa file ngoài task.
+Reviewed-by: codex (T109R)
