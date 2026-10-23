@@ -1,6 +1,6 @@
 # T85 — Bài học: Spring & Spring Boot
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/lessons-spring.js`
 
@@ -26,3 +26,6 @@ Viết **5 bài học** cho track `spring`, `order` từ 1, ID `lesson-spring-00
 `node scripts/validate.js` → OK và `node scripts/test-lessons.js` → tất cả bài tập OK. Integrator sẽ fact-check.
 
 ## Notes
+`node --check js/data/lessons-spring.js` đạt. Mỗi bài đã chạy riêng qua `node scripts/test-lessons.js lesson-spring-001` đến `lesson-spring-005`; tất cả reference pass và starter không pass hết. Chạy full `node scripts/test-lessons.js` cho kết quả 30/31, lỗi còn lại ở `lesson-modern-002` ngoài phạm vi task. `node scripts/validate.js` còn báo các lỗi nội dung trong `lessons-modern.js` (body ngắn, backtick trong explain, markup prompt lệch ngoặc và thiếu câu check). Không sửa file của task khác theo quy định quyền sở hữu.
+- Codex: 5 bài học Spring; reference/starter đã kiểm tra bằng JDK 17.
+Reviewed-by: codex (T85R)
