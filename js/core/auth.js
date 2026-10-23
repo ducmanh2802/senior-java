@@ -313,6 +313,15 @@
   // supabase-js warns against awaiting its own calls inside this callback → defer
   client.auth.onAuthStateChange((event, session) => { setTimeout(() => onSession(session), 0); });
 
+  // OAuth / magic-link failures come back as ?error=…&error_description=… (or in the hash): show them
+  const qs = new URLSearchParams(location.search + '&' + location.hash.replace(/^#\/?[^?&]*[?&]?/, ''));
+  if (qs.get('error_description') || qs.get('error')) {
+    const msg = (qs.get('error_description') || qs.get('error')).replace(/\+/g, ' ');
+    sync.lastError = 'Đăng nhập thất bại: ' + msg;
+    setTimeout(() => alert('Đăng nhập thất bại: ' + msg + '\n\nKiểm tra cấu hình Google provider và Redirect URLs trong Supabase.'), 300);
+    history.replaceState(null, '', location.pathname + '#/account');
+  }
+
   // which sign-in methods are switched on (so the account page can hide e.g. a disabled Google button)
   fetch(cfg.supabaseUrl.replace(/\/+$/, '') + '/auth/v1/settings', { headers: { apikey: cfg.supabaseKey } })
     .then(r => (r.ok ? r.json() : null))
