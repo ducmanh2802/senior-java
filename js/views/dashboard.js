@@ -325,7 +325,7 @@
       };
       const onClick = e => {
         if (!e.target.closest('[data-interview-plan-delete]')) return;
-        delete App.store.data.interviewPlan;
+        App.store.data.interviewPlan = { deleted: true, updatedAt: Date.now() };   // a marker, so sync doesn't bring it back
         App.store.save();
         const card = root.querySelector('.interview-plan-card');
         if (card) card.outerHTML = interviewPlanCard();

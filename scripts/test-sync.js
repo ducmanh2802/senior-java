@@ -70,6 +70,15 @@ const plain = x => JSON.parse(JSON.stringify(x));
     assert.deepStrictEqual(plain(merge(m, m)).daily, m.daily, 'idempotent');
   });
 
+  await test('interviewPlan: newer updatedAt wins, deletion marker propagates', () => {
+    const old = { date: '2026-11-01', updatedAt: 1 }, nu = { date: '2026-11-05', updatedAt: 2 }, del = { deleted: true, updatedAt: 3 };
+    assert.strictEqual(merge({ interviewPlan: old }, { interviewPlan: nu }).interviewPlan.date, '2026-11-05');
+    assert.strictEqual(merge({ interviewPlan: nu }, { interviewPlan: old }).interviewPlan.date, '2026-11-05');
+    assert.strictEqual(merge({ interviewPlan: del }, { interviewPlan: nu }).interviewPlan.deleted, true);
+    assert.strictEqual(merge({}, { interviewPlan: nu }).interviewPlan.date, '2026-11-05');
+    assert.ok(!('interviewPlan' in merge({}, {})));
+  });
+
   await test('local device prefs win; empty / null remote is safe', () => {
     const local = { theme: 'dark', progress: { a: { s: 'known', t: 1 } } };
     assert.strictEqual(merge(local, { theme: 'light' }).theme, 'dark');

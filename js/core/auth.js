@@ -77,6 +77,11 @@
       if (by.size || a[k] || b[k]) out[k] = [...by.values()].sort((p, q) => (q.updatedAt || 0) - (p.updatedAt || 0));
     });
 
+    // single user-authored objects (upcoming interview plan): the newer updatedAt wins; deletion is { deleted: true }
+    ['interviewPlan'].forEach(k => {
+      if (a[k] || b[k]) out[k] = ((a[k] && a[k].updatedAt) || 0) >= ((b[k] && b[k].updatedAt) || 0) ? a[k] || b[k] : b[k];
+    });
+
     const ra = a.roadmap || {}, rb = b.roadmap || {};
     const starts = [ra.start, rb.start].filter(Boolean).sort();
     out.roadmap = { start: starts[0] || null, done: Object.assign({}, rb.done, ra.done) };
