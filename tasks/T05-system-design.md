@@ -42,3 +42,4 @@ Sơ đồ vẽ bằng ASCII trong block `~~~text`.
 - Level: 5 mid, 13 senior, 3 lead. Đáp án dài ~3.600–6.700 ký tự, có `**Tóm tắt:**`, sơ đồ ASCII trong `~~~text`, bảng trade-off, pitfall production và `> Senior tip:`.
 - `node --check js/data/q-system-design.js` OK; `node scripts/validate.js q-system-design.js` in `OK — không có lỗi.` (không có cảnh báo nào cho file này).
 - Lưu ý cho integrator: tại thời điểm hoàn thành, `node scripts/validate.js` toàn repo vẫn báo lỗi cú pháp ở `js/data/q-concurrency-jvm.js` (backtick trong template literal tại dòng 64, thuộc T02) nên chưa thể in OK toàn cục. Không sửa file ngoài quyền sở hữu; cần T02 xử lý rồi chạy lại validator.
+Reviewed-by: codex (T05R)

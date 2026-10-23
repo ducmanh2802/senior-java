@@ -68,6 +68,12 @@ Luôn trả lời được: "Nếu Redis chết thì sao?", "Nếu traffic tăng
     'Làm sao chứng minh thiết kế của bạn chịu được peak mà không cần load test thật?'
   ],
   tags: ['system design', 'interview framework', 'estimation']
+,
+  refs: [
+    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
+    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
+    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+  ]
 },
 {
   id: 'design-002',
@@ -173,6 +179,12 @@ Khi vượt 1 tỷ URL: shard theo {{hash(code)}} với consistent hashing, ho�
     'Custom alias có thể bị chiếm dụng; bạn thiết kế quy tắc đặt và thu hồi thế nào?'
   ],
   tags: ['URL shortener', 'base62', 'cache', 'Kafka']
+,
+  refs: [
+    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
+    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
+    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+  ]
 },
 {
   id: 'design-003',
@@ -258,6 +270,12 @@ Ngoài 429, nên trả thêm thời gian chờ và hướng dẫn. Client tốt 
     'Làm sao test rate limiter dưới tải đồng thời cao mà không bị flaky?'
   ],
   tags: ['rate limiter', 'token bucket', 'Redis', 'Lua']
+,
+  refs: [
+    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
+    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
+    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+  ]
 }
 ,
 {
@@ -652,6 +670,12 @@ Tách ranking khỏi storage; cache kết quả ngắn hạn. Không chạy mode
     'Làm sao cá nhân hoá feed mà vẫn giữ p99 dưới 300 ms?'
   ],
   tags: ['news feed', 'fan-out', 'Redis sorted set', 'celebrity']
+,
+  refs: [
+    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
+    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
+    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+  ]
 },
 {
   id: 'design-008',
@@ -745,6 +769,12 @@ Nhóm 100k thành viên (kênh cộng đồng) không thể fan-out từng ngư�
     'Nếu cần tìm kiếm toàn văn trong lịch sử chat, bạn tích hợp kho nào và đồng bộ ra sao?'
   ],
   tags: ['chat', 'WebSocket', 'presence', 'message ordering']
+,
+  refs: [
+    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
+    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
+    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+  ]
 },
 {
   id: 'design-009',
@@ -984,6 +1014,12 @@ Với hệ replicated N node: ghi thành công khi W node xác nhận, đọc t�
     'Giải thích cách DynamoDB đạt được conditional write mạnh dù là hệ AP.'
   ],
   tags: ['CAP', 'PACELC', 'consistency', 'database selection']
+,
+  refs: [
+    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
+    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
+    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+  ]
 },
 {
   id: 'design-012',
@@ -1202,6 +1238,12 @@ Job có thể chạy lại do retry, lease hết hạn, hoặc chạy tay. Mọi
     'So sánh scheduler tự xây với Temporal cho quy mô 50.000 job/ngày.'
   ],
   tags: ['job scheduler', 'batch', 'SKIP LOCKED', 'idempotency']
+,
+  refs: [
+    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
+    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
+    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+  ]
 }
 ,
 {
@@ -1628,6 +1670,12 @@ Service không biết thanh toán là Stripe hay Momo, không biết lưu bằng
     'ArchUnit nên kiểm tra những quy tắc nào cho cấu trúc này?'
   ],
   tags: ['clean architecture', 'hexagonal', 'package structure', 'ArchUnit']
+,
+  refs: [
+    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
+    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
+    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+  ]
 }
 ,
 {
@@ -1753,6 +1801,12 @@ Hệ CRUD, báo cáo, admin tool: entity + service là đủ. DDD có chi phí n
     'Khi nào nên dùng process manager thay vì choreography bằng event?'
   ],
   tags: ['DDD', 'aggregate', 'value object', 'domain event']
+,
+  refs: [
+    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
+    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
+    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+  ]
 },
 {
   id: 'architecture-006',
@@ -1853,6 +1907,12 @@ Rewrite big-bang thường mất 2–3 lần ước tính và bỏ sót business
     'Khi nào bạn quyết định xoá hẳn module cũ sau khi chuyển traffic?'
   ],
   tags: ['technical debt', 'legacy', 'strangler fig', 'refactoring']
+,
+  refs: [
+    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
+    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
+    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+  ]
 },
 {
   id: 'architecture-007',
@@ -1954,6 +2014,12 @@ Một quyết định lớn có thể có RFC trước, ADR sau khi chốt, và 
     'Khi nào một quyết định không cần ADR mà chỉ cần ghi trong PR?'
   ],
   tags: ['ADR', 'architecture decision', 'trade-off', 'documentation']
+,
+  refs: [
+    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
+    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
+    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+  ]
 },
 {
   id: 'architecture-008',
@@ -2079,9 +2145,9 @@ order.recalculateTotal();     // luôn suy ra từ lines
 
 ### Làm rõ yêu cầu và quy mô
 - Chức năng: truy vấn tên người nhận, chuyển tiền nhanh 24/7 qua switch (NAPAS), xem trạng thái, tra soát/khiếu nại, đối soát hằng ngày.
-- Phi chức năng: không mất giao dịch, không "tạo tiền ảo", audit đầy đủ, chạy 24/7 không có cửa sổ bảo trì; tuân thủ hạn mức và quy định xác thực của NHNN (ví dụ từ 07/2024, giao dịch chuyển tiền trên 10 triệu đồng phải xác thực sinh trắc học).
+- Phi chức năng: không mất giao dịch, không "tạo tiền ảo", audit đầy đủ, chạy 24/7 không có cửa sổ bảo trì; tuân thủ hạn mức và quy định xác thực của NHNN. Theo Quyết định 2345/QĐ-NHNN áp dụng từ 01/07/2024, sinh trắc học được yêu cầu với giao dịch trên 10 triệu đồng/lần hoặc tổng giao dịch online trên 20 triệu đồng/ngày; kiểm tra văn bản và quy định hiện hành khi triển khai thực tế.
 - Ước lượng (giả định ngân hàng lớn): 5 triệu giao dịch/ngày → 5.000.000 / 86.400 ≈ 58 TPS trung bình; giờ cao điểm (ngày lương, trước Tết) giả sử gấp 10 → ~600 TPS. Không lớn về throughput; cái khó là tính đúng.
-- Bản tin với switch: NAPAS 247 lâu nay dùng chuẩn ISO 8583 và đang chuyển dần sang ISO 20022; chi tiết mã lỗi, timeout lấy từ **đặc tả kết nối của switch**, không tự đặt.
+- Giao thức bản tin, chuẩn (ví dụ ISO 8583/ISO 20022), mã lỗi và timeout phụ thuộc dịch vụ, phiên bản và đặc tả kết nối của switch; không suy đoán từ tên dịch vụ.
 
 ### Kiến trúc tổng thể
 ~~~text
@@ -2117,7 +2183,7 @@ UPDATE transfer SET status = 'SUCCESS', updated_at = now()
 2. **Giữ tiền (hold):** gọi core banking tạo hold, giảm số dư khả dụng nhưng chưa hạch toán. Nếu không đủ tiền → REJECTED.
 3. **Gửi switch:** ghi outbox trong cùng transaction với trạng thái SENT; connector gửi bản tin kèm mã tham chiếu duy nhất (trace/reference number). Mã này là khoá để truy vấn và đối soát.
 4. **Nhận kết quả:** thành công thì hạch toán Nợ tài khoản khách hàng / Có tài khoản trung gian thanh toán NAPAS, nhả hold, thông báo khách. Từ chối rõ ràng (sai tài khoản, ngân hàng nhận từ chối) thì nhả hold, chuyển FAILED.
-5. **Quyết toán (settlement):** tiền giữa các ngân hàng được bù trừ theo phiên qua tài khoản thanh toán tại NHNN; tài khoản trung gian phải về đúng số sau mỗi phiên.
+5. **Quyết toán (settlement):** tách trạng thái ghi có tức thời của giao dịch khỏi quy trình quyết toán liên ngân hàng. Cơ chế, chu kỳ và tài khoản quyết toán do scheme/switch cùng quy định áp dụng quyết định; đối soát phải khớp số liệu giao dịch và settlement report tương ứng.
 
 ### Timeout: phần interviewer chấm điểm
 - Hết thời gian chờ mà không có phản hồi → **UNKNOWN**, giữ nguyên hold. Không tự hoàn tiền: switch có thể đã chuyển thành công và người nhận đã được cộng tiền, chỉ là phản hồi bị mất. Nếu hoàn cho người gửi, ngân hàng mất đúng số tiền đó.
@@ -2152,6 +2218,12 @@ Ngân hàng gửi **không thể tự trừ tiền tài khoản ở ngân hàng 
     'Ngân hàng ta là bên nhận: làm sao đảm bảo không cộng tiền hai lần khi switch gửi lại bản tin?'
   ],
   tags: ['IBFT', 'NAPAS', 'banking', 'reconciliation', 'ledger', 'timeout']
+,
+  refs: [
+    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
+    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
+    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+  ]
 },
 {
   id: 'design-015',
@@ -2218,7 +2290,7 @@ UPDATE id_block SET next_id = next_id + 1000
  WHERE name = 'order'
 RETURNING next_id - 1000 AS start_id, next_id - 1 AS end_id;
 ~~~
-Mỗi instance giữ một block trong RAM. Ước lượng: 10.000 ID/s với block 1.000 → chỉ 10 lần gọi DB/s. Crash thì mất phần còn lại của block (lỗ hổng số, chấp nhận được). Hai instance dùng hai block khác nhau nên ID **không** phản ánh thứ tự thời gian giữa các instance. Trong PostgreSQL, {{CREATE SEQUENCE ... INCREMENT BY 1000}} cũng làm được điều tương tự.
+Mỗi instance giữ một block trong RAM. Ước lượng: 10.000 ID/s với block 1.000 → chỉ 10 lần gọi DB/s. Crash thì mất phần còn lại của block (lỗ hổng số, chấp nhận được). Hai instance dùng hai block khác nhau nên ID **không** phản ánh thứ tự thời gian giữa các instance. Trong PostgreSQL có thể dùng sequence để cấp **đầu block**: mỗi instance gọi {{nextval}} một lần, dùng giá trị nhận được làm đầu block và dành 1.000 số kế tiếp cho riêng mình; cấu hình {{INCREMENT BY 1000}} khiến các đầu block không chồng nhau. Đảm bảo các số trong block không được cấp lại bởi đường khác.
 
 ### Thứ tự toàn cục
 ID theo thời gian chỉ là "gần đúng": hai node sinh trong cùng ms có thể đảo thứ tự, và đồng hồ hai máy luôn lệch vài ms. Cần thứ tự tuyệt đối (sổ lệnh chứng khoán, ledger) thì dùng một **sequencer đơn luồng** cho mỗi phạm vi (mỗi mã chứng khoán, mỗi tài khoản) hoặc offset của một Kafka partition. Đừng sắp xếp nghiệp vụ quan trọng bằng timestamp từ nhiều máy.
@@ -2238,6 +2310,12 @@ ID theo thời gian chỉ là "gần đúng": hai node sinh trong cùng ms có t
     'So sánh kích thước index giữa bigint, UUID và chuỗi ULID 26 ký tự trong PostgreSQL.'
   ],
   tags: ['Snowflake', 'ULID', 'UUIDv7', 'distributed ID', 'clock skew', 'sequence']
+,
+  refs: [
+    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
+    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
+    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+  ]
 },
 {
   id: 'design-016',
@@ -2317,6 +2395,12 @@ Phòng chờ ảo là thành phần quan trọng nhất: thay vì để 500.000 
     'Với vé không đánh số ghế (vé đứng, 10.000 vé), thiết kế giữ chỗ thay đổi ra sao?'
   ],
   tags: ['booking', 'overbooking', 'hold', 'TTL', 'waiting room', 'concurrency']
+,
+  refs: [
+    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
+    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
+    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+  ]
 },
 {
   id: 'design-017',
@@ -2324,7 +2408,7 @@ Phòng chờ ảo là thành phần quan trọng nhất: thay vì để 500.000 
   level: 'lead',
   refs: [{"type": "doc", "title": "System Design Primer", "url": "https://github.com/donnemartin/system-design-primer"}, {"type": "doc", "title": "High Scalability", "url": "https://highscalability.com/"}],
   q: 'Thiết kế order matching engine cho một sàn giao dịch chứng khoán/crypto: khớp lệnh theo giá rồi thời gian, độ trễ thấp, không mất lệnh khi crash. Vì sao các engine thường chạy đơn luồng?',
-  a: `**Tóm tắt:** Lệnh đi qua gateway và kiểm tra rủi ro, rồi vào một **sequencer** gán số thứ tự và ghi journal bền vững. Sau đó **một luồng duy nhất cho mỗi nhóm mã** khớp lệnh trên order book trong RAM theo nguyên tắc giá tốt nhất trước, cùng giá thì lệnh đến trước khớp trước. Đơn luồng giúp engine **deterministic**: replay cùng journal luôn ra cùng kết quả, nên phục hồi và HA trở thành bài toán phát lại journal, đồng thời không tốn chi phí lock.
+  a: `**Tóm tắt:** Lệnh đi qua gateway và kiểm tra rủi ro, rồi vào một **sequencer** gán số thứ tự và ghi journal bền vững. Sau đó **một luồng duy nhất cho mỗi nhóm mã** khớp lệnh trên order book trong RAM theo nguyên tắc giá tốt nhất trước, cùng giá thì lệnh đến trước khớp trước. Đơn luồng giúp engine **deterministic** nếu journal ghi đủ input có thứ tự, timestamp và kết quả phụ thuộc bên ngoài; khi đó replay tái tạo được trạng thái, phục hồi/HA đơn giản hơn và không cần lock trên order book.
 
 ### Làm rõ yêu cầu
 - Loại lệnh: limit, market, huỷ, sửa. Phiên khớp liên tục (phiên định kỳ ATO/ATC của sàn VN là mở rộng sau).
@@ -2374,7 +2458,7 @@ void matchBuy(Order buy) {
 | Đa luồng có lock | Đơn luồng theo shard |
 |---|---|
 | Phải khoá order book; contention ngay ở mã nóng | Không lock, cache CPU nóng |
-| Thứ tự khớp phụ thuộc lập lịch thread, khó tái hiện | Deterministic: cùng input → cùng output |
+| Thứ tự khớp phụ thuộc lập lịch thread, khó tái hiện | Deterministic khi toàn bộ input, thứ tự, timestamp và quyết định ngoại vi được ghi vào journal |
 | Phục hồi cần snapshot nhất quán phức tạp | Snapshot + replay journal từ seq cuối |
 
 Mô hình này giống kiến trúc LMAX (business logic đơn luồng, giao tiếp qua ring buffer Disruptor). Mở rộng bằng cách **shard theo mã**, không bao giờ chia một mã cho hai luồng.
@@ -2461,7 +2545,7 @@ Index theo dạng đã chuẩn hoá, nhưng **hiển thị** dạng có dấu ph
 | Trie top-K trong RAM | Nhanh nhất, kiểm soát hoàn toàn | Phải tự build, deploy snapshot |
 | Redis sorted set mỗi prefix | Dễ cập nhật tăng dần | Rất nhiều key, tốn RAM Redis, thêm network hop |
 | ES completion suggester | Ít code, có fuzzy | Phụ thuộc cluster ES, khó tuỳ biến xếp hạng |
-| SQL LIKE 'prefix%' | Đơn giản | Không chịu được 17.000 QPS, không xếp hạng tốt |
+| SQL LIKE 'prefix%' | Đơn giản, prefix search có thể tận dụng index phù hợp | Khó giữ 17.000 QPS và xếp hạng tốt nếu không thiết kế index/cache phù hợp |
 
 > Senior tip: phần lớn độ trễ cảm nhận được nằm ở client và mạng, không ở server. Đo từ lúc gõ tới lúc hiện gợi ý; thường debounce hợp lý cộng cache prefix ngắn đã giảm hơn một nửa số request mà chẳng cần đụng tới thuật toán.`,
   follow: [
@@ -2505,7 +2589,7 @@ Hot: OpenSearch/Loki (7 ngày)  Cold: S3 (nén, phân vùng theo ngày) -> lifec
 - Không log toàn bộ request/response; không log số thẻ, CCCD, số dư, OTP. Masking ở processor chỉ là lớp thứ hai.
 
 ### Vì sao cần Kafka ở giữa
-Khi có sự cố, lượng log tăng vọt (stack trace, retry) đúng lúc hệ thống lưu trữ cũng đang chịu tải. Kafka hấp thụ spike, cho phép backend lưu trữ chậm lại mà không mất log, và cho nhiều consumer (SIEM của bộ phận bảo mật, kho dữ liệu) đọc cùng luồng. Agent cũng cần buffer ra disk khi Kafka không với tới.
+Khi có sự cố, lượng log tăng vọt (stack trace, retry) đúng lúc hệ thống lưu trữ cũng đang chịu tải. Kafka hấp thụ spike trong giới hạn dung lượng và retention đã cấu hình, cho backend thời gian bắt kịp và cho nhiều consumer (SIEM của bộ phận bảo mật, kho dữ liệu) đọc cùng luồng. Đây không phải bảo đảm không mất log: cần theo dõi consumer lag/disk và có buffer ra disk ở agent khi Kafka không tới được; khi buffer đầy phải có chính sách rõ ràng.
 
 ### Lưu trữ và retention phân tầng
 | Tầng | Nội dung | Thời gian | Ghi chú |
@@ -2547,6 +2631,12 @@ Tương tự với tag {{uri}} chứa ID thật thay vì template. Đặt giới
     'So sánh head-based và tail-based sampling cho distributed tracing.'
   ],
   tags: ['logging', 'metrics', 'observability', 'Kafka', 'cardinality', 'retention']
+,
+  refs: [
+    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
+    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
+    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+  ]
 },
 {
   id: 'design-020',
@@ -2589,12 +2679,13 @@ Payment Service --(sync, timeout 100ms)--> Fraud Decision Service
 
 Velocity cho giao dịch hiện tại phải tính **ngay trong đường đồng bộ** (Flink trễ vài giây; kẻ gian bắn 20 giao dịch trong 10 giây sẽ lọt):
 ~~~java
-// Đếm số giao dịch của thẻ trong 10 phút gần nhất bằng bucket 1 phút
+// Phác thảo: production cần gộp INCR + TTL thành thao tác nguyên tử và khử trùng theo transactionId.
+// Bucket 1 phút là xấp xỉ cửa sổ trượt; giao dịch retry phải dùng idempotency key.
 long countLast10Min(String cardHash) {
     long minute = Instant.now().getEpochSecond() / 60;
     String key = "vel:" + cardHash + ":" + minute;
     redis.opsForValue().increment(key);                   // tính cả giao dịch hiện tại
-    redis.expire(key, Duration.ofMinutes(11));
+    redis.expire(key, Duration.ofMinutes(11));            // minh hoạ; gộp hai lệnh trong production
     List<String> keys = LongStream.range(minute - 9, minute + 1)
             .mapToObj(m -> "vel:" + cardHash + ":" + m).toList();
     return redis.opsForValue().multiGet(keys).stream()    // 1 round-trip cho 10 bucket
@@ -2669,7 +2760,7 @@ Vì sao phải nguyên tử: nếu đọc rồi mới so sánh và xoá ở Java
 ### Chống brute force: làm phép tính
 OTP 6 số có 10^6 khả năng. Cho phép 5 lần thử mỗi OTP → xác suất đoán trúng 5 / 1.000.000 = 0,0005%. Nếu giới hạn tối đa 10 OTP/ngày cho một tài khoản thì xác suất ngày ≈ 50 / 1.000.000 = 0,005%. Thiếu giới hạn số lần gửi lại, kẻ tấn công chỉ việc xin OTP mới liên tục và con số này mất ý nghĩa. Vì vậy cần:
 - Giới hạn thử theo OTP, giới hạn gửi theo user, theo số điện thoại, theo IP/thiết bị; cooldown 60 s giữa hai lần gửi.
-- Khoá tạm tài khoản khi vượt ngưỡng và thông báo cho chủ tài khoản.
+- Không khoá cứng tài khoản chỉ dựa trên request chưa xác thực (dễ bị DoS); áp dụng cooldown/rate limit, step-up challenge và quy trình khóa có tín hiệu rủi ro phù hợp, đồng thời thông báo cho chủ tài khoản.
 - Chống **SMS pumping**: kẻ gian dùng form gửi OTP để bắn SMS tới số quốc tế giá cao, chia doanh thu với nhà mạng. Chặn đầu số quốc tế không cần thiết, CAPTCHA cho luồng không cần đăng nhập.
 
 ### Gửi SMS nhiều nhà cung cấp
@@ -2701,6 +2792,12 @@ OTP Service -> Kafka topic sms.otp (ưu tiên cao, tách khỏi SMS marketing)
     'Làm sao chống tấn công dò OTP phân tán từ hàng nghìn IP khác nhau?'
   ],
   tags: ['OTP', '2FA', 'TOTP', 'SMS', 'brute force', 'Redis', 'security']
+,
+  refs: [
+    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
+    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
+    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+  ]
 },
 {
   id: 'architecture-009',
@@ -3016,6 +3113,12 @@ Cách sửa, theo thứ tự ưu tiên:
     'Vì sao @Async trên method trả về void làm exception biến mất, và bạn xử lý thế nào?'
   ],
   tags: ['Proxy', 'Spring AOP', '@Transactional', 'CGLIB', 'self-invocation']
+,
+  refs: [
+    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
+    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
+    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+  ]
 },
 {
   id: 'architecture-013',
@@ -3101,6 +3204,12 @@ Client (mobile app, BFF) chỉ biết {{open()}}. Facade không cấm gọi tr�
     'Spring có cách nào khai báo chuỗi decorator gọn gàng thay vì new lồng nhau?'
   ],
   tags: ['Adapter', 'Facade', 'Decorator', 'Proxy', 'integration', 'design pattern']
+,
+  refs: [
+    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
+    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
+    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+  ]
 },
 {
   id: 'architecture-014',
@@ -3244,6 +3353,12 @@ Lợi ích: thêm sản phẩm mới phần lớn là **cấu hình** (đọc t�
     'Delegation trong composition có tốn hiệu năng đáng kể không?'
   ],
   tags: ['composition', 'inheritance', 'fragile base class', 'sealed', 'refactoring']
+,
+  refs: [
+    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
+    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
+    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+  ]
 },
 {
   id: 'architecture-016',
@@ -3317,6 +3432,12 @@ boolean overdue = loan.isOverdue(today);
     'Static analysis (Sonar, PMD) bắt được những smell nào, và những smell nào chỉ người review mới thấy?'
   ],
   tags: ['code smell', 'refactoring', 'primitive obsession', 'feature envy', 'code review']
+,
+  refs: [
+    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
+    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
+    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+  ]
 },
 {
   id: 'architecture-017',
@@ -3371,6 +3492,12 @@ Ví dụ thương mại điện tử: {{OrderPlaced}} dạng notification thì k
     'Làm sao xây một màn hình "theo dõi trạng thái đơn hàng" trong hệ thống choreography?'
   ],
   tags: ['event-driven', 'Kafka', 'event notification', 'event-carried state transfer', 'observability']
+,
+  refs: [
+    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
+    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
+    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+  ]
 },
 {
   id: 'architecture-018',
@@ -3454,6 +3581,12 @@ Nếu module chưa sạch phụ thuộc ở trong monolith, tách ra chỉ tạo
     'Lộ trình đưa một monolith 300.000 dòng không có ranh giới sang modular monolith?'
   ],
   tags: ['Spring Modulith', 'modular monolith', 'bounded context', 'events', 'architecture']
+,
+  refs: [
+    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
+    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
+    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+  ]
 },
 {
   id: 'architecture-019',
@@ -3616,6 +3749,12 @@ Bẫy: quên {{@Order}} thì thứ tự không được đảm bảo; handler c�
     'Làm sao trả về tất cả lỗi kiểm tra thay vì dừng ở lỗi đầu tiên trong chuỗi CoR?'
   ],
   tags: ['Template Method', 'Observer', 'Chain of Responsibility', 'Spring events', 'design pattern']
+,
+  refs: [
+    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
+    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
+    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+  ]
 },
 {
   id: 'architecture-021',
@@ -3655,7 +3794,7 @@ class ArchitectureTest {
     static final ArchRule noCycles = slices().matching("com.bank.payment.(*)..").should().beFreeOfCycles();
 }
 ~~~
-Persistence adapter được truy cập Domain vì nó **implement port** của domain (DIP); không ai được gọi ngược vào adapter.
+Domain được Application, Web và Persistence truy cập theo chiều phụ thuộc vào trong; Persistence adapter **implement port** do domain sở hữu (DIP), còn domain không phụ thuộc ngược vào adapter.
 
 ### Codebase đã vi phạm: freeze rồi giảm dần
 ~~~java
@@ -3683,7 +3822,7 @@ Lần chạy đầu, ArchUnit lưu danh sách vi phạm hiện có vào một "v
 Cách thực dụng: luật quan trọng nhất (domain không phụ thuộc hạ tầng) có thể đẩy lên mức module build; phần còn lại dùng ArchUnit.
 
 ### Pitfall
-- Luật viết sai package pattern nên luôn pass (không match class nào). ArchUnit mặc định báo lỗi khi {{should}} không áp vào class nào ({{archRule.failOnEmptyShould}}), đừng tắt nó cho tiện.
+- Luật viết sai package pattern nên luôn pass (không match class nào). ArchUnit mặc định báo lỗi khi phần {{should}} không nhận class nào; cấu hình {{archRule.failOnEmptyShould=false}} sẽ tắt bảo vệ này, nên chỉ dùng {{allowEmptyShould(true)}} khi rỗng là có chủ ý.
 - Viết quá nhiều luật chi li, team bắt đầu thêm ngoại lệ hàng loạt. Bắt đầu với 3–5 luật có lý do rõ ràng, ghi lý do trong {{because(...)}}.
 
 > Senior tip: tôi luôn kèm {{.because("...")}} vào từng luật, viết bằng ngôn ngữ nghiệp vụ ("domain phải test được không cần DB"). Khi test fail, dev đọc được lý do thay vì nghĩ đây là luật quan liêu và tìm cách lách.`,
@@ -3693,6 +3832,12 @@ Cách thực dụng: luật quan trọng nhất (domain không phụ thuộc h�
     'Viết luật ArchUnit cấm gọi LocalDateTime.now() trong domain và giải thích vì sao luật đó hữu ích.'
   ],
   tags: ['ArchUnit', 'architecture test', 'hexagonal', 'dependency rules', 'package cycle']
+,
+  refs: [
+    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
+    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
+    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+  ]
 },
 {
   id: 'architecture-022',
@@ -3716,12 +3861,12 @@ Cách thực dụng: luật quan trọng nhất (domain không phụ thuộc h�
 Ước lượng vì sao DB-per-tenant khó với nhiều tenant: 2.000 DB × pool tối thiểu 5 connection = 10.000 connection mỗi instance ứng dụng; với 10 instance là 100.000, vượt xa mức PostgreSQL chịu nổi nếu không có PgBouncer và pool lười (tạo khi cần, đóng khi rảnh).
 
 ### Xác định tenant hiện tại
-Tenant lấy từ token (claim trong JWT) hoặc subdomain, **không bao giờ từ tham số do client tự gửi**. Lưu trong context theo request:
+Tenant lấy từ claim đã xác thực hoặc subdomain/host sau khi đối chiếu tenant đó với quyền của người dùng; host cũng là dữ liệu do client gửi nên không được tin cậy một mình. Lưu trong context theo request:
 ~~~java
 @Component
 class TenantResolver implements CurrentTenantIdentifierResolver<String>, HibernatePropertiesCustomizer {
     @Override public String resolveCurrentTenantIdentifier() {
-        return TenantContext.current().orElse("system");     // lúc khởi động/batch không có request
+        return TenantContext.current().orElseThrow(() -> new IllegalStateException("Tenant context is required"));
     }
     @Override public boolean validateExistingCurrentSessions() { return true; }
     @Override public void customize(Map<String, Object> props) {
@@ -3730,7 +3875,7 @@ class TenantResolver implements CurrentTenantIdentifierResolver<String>, Hiberna
 }
 // TenantContext: ThreadLocal set trong filter sau khi xác thực, clear trong finally
 ~~~
-(Interface có generic từ Hibernate 6.4, đi kèm Spring Boot 3.2+; bản 6.x cũ hơn trả về {{String}} trực tiếp.)
+(Resolver có generic từ Hibernate 6.4; Hibernate 6.2 dùng interface không generic và trả về {{String}}. Không nên dùng tenant mặc định kiểu "system" để né lỗi thiếu context; batch/admin phải chọn tenant tường minh.)
 
 ### Discriminator với @TenantId
 ~~~java
@@ -3741,10 +3886,10 @@ class Invoice {
     BigDecimal amount;
 }
 ~~~
-**Không bao phủ native SQL** và truy vấn qua {{JdbcTemplate}}; đó là chỗ rò rỉ hay gặp. Lớp bảo vệ thứ hai: **PostgreSQL Row Level Security**: bật RLS trên bảng, policy so {{tenant_id}} với một biến phiên được set khi mượn connection; quên điều kiện ở code thì DB vẫn chặn. Lưu ý RLS không áp cho owner của bảng trừ khi bật {{FORCE ROW LEVEL SECURITY}}, nên ứng dụng phải chạy bằng user không phải owner.
+**Không bao phủ native SQL** và truy vấn qua {{JdbcTemplate}}; đó là chỗ rò rỉ hay gặp. Lớp bảo vệ thứ hai: **PostgreSQL Row Level Security**: bật RLS trên bảng, policy so {{tenant_id}} với tenant trong cấu hình DB. Với connection pool, đặt tenant trong transaction bằng {{SET LOCAL}} hoặc {{set_config(..., true)}} để trạng thái không rò sang lần mượn connection sau; nếu dùng session setting thì phải reset chắc chắn. RLS không áp cho owner của bảng trừ khi bật {{FORCE ROW LEVEL SECURITY}}, nên ứng dụng phải chạy bằng role không phải owner và không có quyền bypass RLS.
 
 ### Schema/DB per tenant
-Cài {{MultiTenantConnectionProvider}}: với schema-per-tenant, lấy connection từ pool chung rồi {{connection.setSchema(tenant)}}, trả về thì đặt lại schema mặc định; với DB-per-tenant, tra map tenant → DataSource (tạo lười). Migration: chạy Flyway lần lượt cho từng schema/DB, theo đợt, có theo dõi tenant nào lỗi để chạy lại.
+Cài {{MultiTenantConnectionProvider}}: với schema-per-tenant, lấy connection từ pool chung rồi {{connection.setSchema(schema)}}, trả về thì đặt lại schema mặc định; chỉ chọn schema từ registry đã kiểm soát, không ghép trực tiếp tenant tùy ý. Với DB-per-tenant, tra map tenant → DataSource (tạo lười). Migration: chạy Flyway lần lượt cho từng schema/DB, theo đợt, có theo dõi tenant nào lỗi để chạy lại.
 
 ### Các bẫy rò rỉ dữ liệu
 - **Thread pool, {{@Async}}, CompletableFuture:** ThreadLocal không tự đi theo; tenant của request trước còn sót lại nếu quên clear. Dùng TaskDecorator để truyền và xoá context.
