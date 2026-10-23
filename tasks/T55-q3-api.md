@@ -59,3 +59,4 @@ File đang rỗng: ID bắt đầu từ `api-001`.
 14. API-first với OpenAPI: springdoc, generator, contract test, CI breaking change detection
 
 Tất cả đáp án ≥1500 ký tự, có **Tóm tắt**, các mục `###` giải thích cơ chế, code ví dụ, bảng trade-off, `> Senior tip:`. Level xen kẽ: 3 mid, 8 senior, 3 lead. `node scripts/validate.js` → OK.
+Reviewed-by: codex (T55R)

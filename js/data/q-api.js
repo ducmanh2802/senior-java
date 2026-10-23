@@ -819,7 +819,11 @@ ResponseEntity<String> receive(
       'Outbox relay: polling publisher vs CDC (Debezium) khác nhau như thế nào?',
       'Làm sao handle partner down lâu (circuit breaker cho webhook dispatcher)?'
     ],
-    tags: ['Webhook', 'Partner Integration', 'HMAC', 'Retry', 'Outbox', 'Banking']
+    tags: ['Webhook', 'Partner Integration', 'HMAC', 'Retry', 'Outbox', 'Banking'],
+    refs: [
+      { type: 'doc', title: 'RFC 9110: HTTP Semantics', url: 'https://www.rfc-editor.org/rfc/rfc9110' },
+      { type: 'doc', title: 'OWASP API Security Project', url: 'https://owasp.org/API-Security/' },
+    ],
   },
   {
     id: 'api-012',
@@ -976,7 +980,12 @@ histogram_quantile(0.99, rate(http_server_requests_seconds_bucket[5m])) > 5
       'GraphQL N+1 problem: DataLoader hoạt động như thế nào, khi nào không đủ?',
       'gRPC error handling: rich error model (google.rpc.Status) vs HTTP status code?'
     ],
-    tags: ['REST', 'gRPC', 'GraphQL', 'Architecture', 'Microservices', 'Mobile', 'Banking']
+    tags: ['REST', 'gRPC', 'GraphQL', 'Architecture', 'Microservices', 'Mobile', 'Banking'],
+    refs: [
+      { type: 'doc', title: 'RFC 9110: HTTP Semantics', url: 'https://www.rfc-editor.org/rfc/rfc9110' },
+      { type: 'doc', title: 'gRPC Core Concepts', url: 'https://grpc.io/docs/what-is-grpc/core-concepts/' },
+      { type: 'doc', title: 'GraphQL: Learn', url: 'https://graphql.org/learn/' },
+    ],
   },
   {
     id: 'api-014',
