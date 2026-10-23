@@ -326,3 +326,9 @@ refs: [
 ## 14. Phỏng vấn theo JD: `App.ai.jd(text)`
 
 `await App.ai.jd(jdText)` (1 lượt hạn mức) → `{role, company, level: mid|senior|lead, domain, summary, must_have: [{skill, topic, weight 1-3}], nice_to_have: [...], likely_questions: [{q, topic, why}], prep_tips: [], questions_to_ask: []}`. `topic` là id trong `App.topics()` hoặc `""` (server đã lọc id lạ). JD < 200 ký tự bị từ chối (400). Lỗi hiển thị bằng `App.ui.error(e)`.
+
+## 15. Sự nghiệp: STAR, CV và nhật ký phỏng vấn
+
+- `await App.ai.coach.star({situation, theme?, lang?})` → `{title, themes[], situation, task, action, result, spoken, gaps[], follow_ups[]}` (ghi chú < 80 ký tự → 400).
+- `await App.ai.coach.cv({cv, target?})` → `{score 1-5, verdict, strengths[], issues[{where, problem, fix}], missing_keywords[], likely_questions[]}` (CV < 300 ký tự → 400). Mỗi lần gọi = 1 lượt hạn mức.
+- Dữ liệu người dùng lưu trong `App.store.data.stories` và `App.store.data.interviewLog`: **mảng object có `id` (chuỗi duy nhất) và `updatedAt` (ms)**; sửa xong gọi `App.store.save()`. Sync gộp theo id, bản `updatedAt` mới hơn thắng — luôn cập nhật `updatedAt` khi sửa, xoá thì đặt `deleted: true` (không xoá khỏi mảng, để thiết bị khác biết).

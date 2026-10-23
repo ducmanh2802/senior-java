@@ -66,6 +66,17 @@
     }));
     out.daily = daily;
 
+    // user-authored lists (STAR stories, real interview log): union by id, the newer updatedAt wins
+    ['stories', 'interviewLog'].forEach(k => {
+      const by = new Map();
+      [].concat(b[k] || [], a[k] || []).forEach(x => {
+        if (!x || !x.id) return;
+        const cur = by.get(x.id);
+        if (!cur || (x.updatedAt || 0) >= (cur.updatedAt || 0)) by.set(x.id, x);
+      });
+      if (by.size || a[k] || b[k]) out[k] = [...by.values()].sort((p, q) => (q.updatedAt || 0) - (p.updatedAt || 0));
+    });
+
     const ra = a.roadmap || {}, rb = b.roadmap || {};
     const starts = [ra.start, rb.start].filter(Boolean).sort();
     out.roadmap = { start: starts[0] || null, done: Object.assign({}, rb.done, ra.done) };

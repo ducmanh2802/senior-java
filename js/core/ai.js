@@ -76,6 +76,11 @@
      * → {role, company, level, domain, summary, must_have[{skill, topic, weight}], nice_to_have[], likely_questions[{q, topic, why}], prep_tips[], questions_to_ask[]}
      */
     jd: text => call('jd', { jd: text, topics: (App.topics() || []).map(t => ({ id: t.id, name: t.name })) }),
+    /** Career coach (AGENTS.md section 15): star({situation, theme?, lang?}) / cv({cv, target?}). 1 quota unit each. */
+    coach: {
+      star: p => call('coach', Object.assign({ mode: 'star' }, p)),
+      cv: p => call('coach', Object.assign({ mode: 'cv' }, p)),
+    },
     interview: {
       turn: p => call('interview', Object.assign({ action: 'turn' }, p)),
       summary: p => call('interview', Object.assign({ action: 'summary' }, p)),
