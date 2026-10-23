@@ -21,3 +21,4 @@ Body nói rõ khi nào dùng trong production (Resilience4j, Redis, Bucket4j…)
 - `node --check js/data/lessons-design.js` thành công.
 - `node scripts/validate.js` còn báo lỗi có sẵn ngoài phạm vi sở hữu: `js/data/quiz.js`, `qz-kotlin-001.q` có dấu backtick. Không sửa file ngoài task.
 Reviewed-by: codex (T109R)
+Verify-failed: 2026-10-23 21:51:24
