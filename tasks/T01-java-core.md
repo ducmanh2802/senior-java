@@ -43,5 +43,6 @@ Trong file đã có sẵn `core-001` làm mẫu. Giữ nguyên câu đó và th�
 - Đã thêm **27 câu** vào `js/data/q-java.js`: `core` 11 (giữ nguyên `core-001`, thêm `core-002`…`core-011`), `collections` 8, `modern` 8. Mỗi câu có `follow` 3 gợi ý, tags, level xen kẽ mid/senior/lead; đáp án dài 2.1k–3.4k ký tự, có code block và Senior tip.
 - Đã kiểm tra markup: không có backtick ngoài template literal, không có `${`, không có thẻ HTML thô, `{{`/`}}` cân bằng.
 - `node scripts/validate.js q-java.js` → **OK — không có lỗi.**
-- `node scripts/validate.js` (toàn repo) hiện vẫn báo lỗi **của file khác**: `q-concurrency-jvm.js` syntax error tại dòng 64 (`Unexpected identifier 'notFull'`) do nội dung dùng backtick `` ` `` bên trong template literal. File này thuộc T02 nên tôi không sửa; đề nghị T02/integrator thay backtick bằng `{{...}}` hoặc bỏ backtick. Sau khi file đó hợp lệ, full validate sẽ OK.
+- `node scripts/validate.js` (toàn repo) lúc kết thúc vẫn báo lỗi **của các file khác** (không thuộc T01), ví dụ `q-concurrency-jvm.js` (T02), `q-spring-data.js` (T03), `q-aws.js` (T06), `quiz.js` (T12): inline code `{{...}}` chứa dấu `{` `}` lồng nhau, vi phạm rule mới của validator (sẽ hiển thị sai). Đề nghị chủ các file đó đưa đoạn code vào block `~~~` hoặc viết lại. `q-java.js` của T01 không còn lỗi/cảnh báo nào.
 - Chỉ thay đổi `js/data/q-java.js` và file task này.
+Reviewed-by: codex (T01R)
