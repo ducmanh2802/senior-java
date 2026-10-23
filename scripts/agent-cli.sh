@@ -22,4 +22,7 @@ case "$runner" in
   gemini) GEMINI_CLI_TRUST_WORKSPACE=true gemini -y -p "$prompt" > "logs/$id.log" 2>&1 ;;
   *) echo "unknown runner $runner"; exit 1 ;;
 esac
-echo "[$(date +%T)] end   $id exit=$? ($runner)"
+code=$?
+# agents often write "Status: DONE — notes…"; autopilot needs the bare line
+sed -i 's/^Status: DONE[ —:-].*$/Status: DONE/' "$file"
+echo "[$(date +%T)] end   $id exit=$code ($runner)"
