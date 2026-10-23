@@ -14,9 +14,10 @@
   const CONF_CLS = { high: 'ok', medium: 'warn', low: 'bad' };
 
   // Bộ lọc loại công ty giữ giữa các lần render.
-  const state = { type: 'all' };
+  const state = { type: 'all', sort: 'desc' };
   // Listener trên #main tái sử dụng giữa các lần render — chỉ gắn một lần.
   let listHandler = null;
+  let listChangeHandler = null;
 
   function companies() { return window.COMPANIES || []; }
 
@@ -28,47 +29,52 @@
   function qText(x) { return typeof x === 'string' ? x : (x && x.q) || String(x); }
   function qLang(x) { return (typeof x === 'object' && x && x.lang) || null; }
 
-  /** Tỉ lệ đã thuộc của một topic: (known + 0.5*review)/total, null nếu không có câu. */
-  function topicRatio(topicId) {
-    const s = App.stats(topicId);
-    if (!s.total) return null;
-    return (s.known + 0.5 * s.review) / s.total;
+  const RECENT_DAYS = 90;
+
+  function timeOf(entry) {
+    const value = entry && (entry.at || entry.date || entry.updatedAt);
+    const time = typeof value === 'number' ? value : Date.parse(value || '');
+    return Number.isFinite(time) ? time : 0;
+  }
+
+  /** Lịch sử phù hợp trong 90 ngày: điểm mock chung theo topic, interview AI theo company id. */
+  function recentInterviewScore(c) {
+    const cutoff = Date.now() - RECENT_DAYS * 86400000;
+    const history = App.store.data.mockHistory || [];
+    const mockRows = history.filter(x => {
+      if (timeOf(x) < cutoff) return false;
+      const topics = x.topics || [];
+      const companyMatches = x.kind === 'ai-interview' && x.company === c.id;
+      const topicMatches = topics.length > 0 && (c.focus || []).some(id => topics.indexOf(id) >= 0);
+      return companyMatches || topicMatches;
+    }).map(x => {
+      const value = x.kind === 'ai-interview' ? x.score : (x.aiAvg || x.avg);
+      return { at: timeOf(x), score: Number(value) };
+    }).filter(x => Number.isFinite(x.score) && x.score >= 1 && x.score <= 5);
+    const rows = mockRows.sort((a, b) => b.at - a.at);
+    if (!rows.length) return null;
+    const values = rows.slice(0, 5).map(x => Math.max(0, Math.min(1, x.score / 5)));
+    return values.reduce((a, b) => a + b, 0) / values.length;
   }
 
   /**
-   * Điểm sẵn sàng 0–100 cho một công ty. Hàm thuần (không side-effect).
-   * K = kiến thức các topic focus · A = thuật toán · M = phỏng vấn thử · E = tiếng Anh (nếu bắt buộc).
+   * Điểm readiness: độ thuộc theo tổng số câu của từng topic, kèm lịch sử phỏng vấn gần đây nếu có.
    */
   function readiness(c) {
-    // K — trung bình (known + 0.5*review)/total trên các topic focus có câu.
-    const ratios = (c.focus || []).map(topicRatio).filter(r => r != null);
-    const K = ratios.length ? ratios.reduce((a, b) => a + b, 0) / ratios.length : 0;
-
-    // A — số bài known / min(40, tổng số bài), tối đa 1.
-    const algos = App.algos();
-    const knownAlgo = algos.filter(a => App.store.getStatus(a.id) === 'known').length;
-    const A = algos.length ? Math.min(1, knownAlgo / Math.min(40, algos.length)) : 0;
-
-    // M — trung bình avg (1–5) của tối đa 5 phiên gần nhất, đổi sang 0–1.
-    const hist = (App.store.data.mockHistory || []).slice(0, 5);
-    const M = hist.length
-      ? hist.reduce((s, r) => s + (Math.max(1, Math.min(5, r.avg || 0)) - 1) / 4, 0) / hist.length
-      : 0;
-
-    // E — chỉ tính khi bắt buộc tiếng Anh: tỉ lệ đã thuộc topic english.
-    const E = c.englishRequired ? (App.stats('english').known / Math.max(1, App.stats('english').total)) : 0;
-
-    const wA = (c.algoWeight || 0) * 0.4;
-    const wM = 0.2;
-    const wE = c.englishRequired ? 0.1 : 0;
-    const wK = 1 - wA - wM - wE;
-
-    const score = 100 * (wK * K + wA * A + wM * M + wE * E);
+    // Cân trọng số từng topic theo số câu trong ngân hàng, để topic lớn đóng góp tương ứng.
+    const topics = (c.focus || []).map(id => ({ id: id, stats: App.stats(id) })).filter(x => x.stats.total > 0);
+    const total = topics.reduce((sum, x) => sum + x.stats.total, 0);
+    const knownEquivalent = topics.reduce((sum, x) =>
+      sum + x.stats.known + 0.5 * x.stats.review, 0);
+    const knowledge = total ? knownEquivalent / total : 0;
+    const interview = recentInterviewScore(c);
+    // Khi có phiên gần đây, dành 20% trọng số cho điểm phiên; nếu không thì readiness phản ánh kiến thức.
+    const score = 100 * (interview == null ? knowledge : knowledge * 0.8 + interview * 0.2);
     return {
       score: Math.max(0, Math.min(100, Math.round(score))),
-      K, A, M, E, wK, wA, wM, wE,
-      // Giải thích thô dùng cho hiển thị.
-      knownAlgo: knownAlgo, algoTotal: algos.length, mockN: hist.length,
+      knowledge: knowledge, interview: interview, topicCount: topics.length,
+      topics: topics.map(x => ({ id: x.id, stats: x.stats,
+        ratio: (x.stats.known + 0.5 * x.stats.review) / x.stats.total })),
     };
   }
 
@@ -107,7 +113,8 @@
       return () => {};
     }
 
-    const filtered = state.type === 'all' ? all : all.filter(c => c.type === state.type);
+    const filtered = (state.type === 'all' ? all : all.filter(c => c.type === state.type))
+      .slice().sort((a, b) => (readiness(a).score - readiness(b).score) * (state.sort === 'asc' ? 1 : -1));
     const chips = TYPES.map(t =>
       '<button type="button" class="chip' + (state.type === t.id ? ' active' : '') + '" data-type="' + t.id + '"' +
       ' aria-pressed="' + (state.type === t.id ? 'true' : 'false') + '">' + App.esc(t.label) + '</button>').join('');
@@ -123,6 +130,8 @@
           ring(r.score, 64) +
         '</div>' +
         '<h3 class="co-card-name">' + App.esc(c.name) + '</h3>' +
+        '<div class="co-card-readiness"><div class="co-ready-label"><b>Readiness</b><span>' + r.score + '%</span></div>' +
+          '<div class="progress" role="progressbar" aria-label="Readiness ' + App.esc(c.name) + '" aria-valuenow="' + r.score + '" aria-valuemin="0" aria-valuemax="100"><i class="accent" style="width:' + r.score + '%"></i></div></div>' +
         '<div class="row co-card-meta">' +
           '<span class="badge accent">' + App.esc(TYPE_LABEL[c.type] || c.type || '') + '</span>' +
           '<span class="badge ' + conf + '">Dữ liệu: ' + App.esc(CONF_LABEL[c.confidence] || c.confidence || '?') + '</span>' +
@@ -136,55 +145,35 @@
         '<div><h1>Lộ trình theo công ty</h1>' +
         '<p>Thông tin tổng hợp từ nguồn công khai — có thể đã cũ, nên luôn kiểm tra lại.</p></div>' +
       '</div>' +
-      '<div class="chips co-type-chips" role="group" aria-label="Lọc theo loại công ty">' + chips + '</div>' +
+      '<div class="row co-list-controls"><div class="chips co-type-chips" role="group" aria-label="Lọc theo loại công ty">' + chips + '</div>' +
+      '<label class="co-sort-label">Sắp xếp readiness <select class="select co-sort" aria-label="Sắp xếp theo điểm readiness">' +
+        '<option value="desc"' + (state.sort === 'desc' ? ' selected' : '') + '>Cao đến thấp</option>' +
+        '<option value="asc"' + (state.sort === 'asc' ? ' selected' : '') + '>Thấp đến cao</option></select></label></div>' +
       (filtered.length
         ? '<div class="grid co-grid">' + cards + '</div>'
         : '<div class="empty"><p>Không có công ty nào thuộc loại này.</p></div>');
 
     const onClick = e => {
       const chip = e.target.closest('[data-type]');
-      if (!chip) return;
-      state.type = chip.dataset.type;
+      if (chip) { state.type = chip.dataset.type; renderList(root); }
+    };
+    const onChange = e => {
+      if (!e.target.matches('.co-sort')) return;
+      state.sort = e.target.value;
       renderList(root);
     };
     if (listHandler) root.removeEventListener('click', listHandler);
+    if (listChangeHandler) root.removeEventListener('change', listChangeHandler);
     listHandler = onClick;
+    listChangeHandler = onChange;
     root.addEventListener('click', onClick);
+    root.addEventListener('change', onChange);
     return () => {
-      root.removeEventListener('click', onClick);
-      if (listHandler === onClick) listHandler = null;
+      if (listHandler) root.removeEventListener('click', listHandler);
+      if (listChangeHandler) root.removeEventListener('change', listChangeHandler);
+      listHandler = null;
+      listChangeHandler = null;
     };
-  }
-
-  /** Thanh thành phần điểm (K/A/M/E) kèm giải thích. */
-  function partRow(label, ratio, weight, explain) {
-    const pct = Math.round(ratio * 100);
-    const pts = Math.round(ratio * weight * 100);
-    return '<div class="co-part">' +
-      '<div class="co-part-head"><b>' + App.esc(label) + '</b>' +
-        '<span class="muted small">' + pct + '% × trọng số ' + Math.round(weight * 100) + '% = ' + pts + 'đ</span></div>' +
-      '<div class="progress" role="progressbar" aria-label="' + App.esc(label) + '" aria-valuenow="' + pct + '" aria-valuemin="0" aria-valuemax="100">' +
-        '<i class="accent" style="width:' + pct + '%"></i></div>' +
-      '<p class="small muted co-part-note">' + App.esc(explain) + '</p>' +
-    '</div>';
-  }
-
-  /** Giải thích thô từng thành phần để người dùng hiểu vì sao được điểm. */
-  function explainParts(c, r) {
-    const focusN = (c.focus || []).length;
-    const kExpl = focusN
-      ? 'Trung bình tỉ lệ đã thuộc/cần ôn trên ' + focusN + ' chủ đề trọng tâm.'
-      : 'Công ty này chưa gắn chủ đề trọng tâm.';
-    const aExpl = r.algoTotal
-      ? 'Đã đánh dấu "Đã giải" ' + r.knownAlgo + '/' + r.algoTotal + ' bài thuật toán (mục tiêu ít nhất 40 bài).'
-      : 'Chưa có bài thuật toán nào trong ngân hàng.';
-    const mExpl = r.mockN
-      ? 'Trung bình ' + r.mockN + ' phiên phỏng vấn thử gần nhất (thang 1–5 → 0–1).'
-      : 'Bạn chưa làm phiên phỏng vấn thử nào.';
-    const eExpl = c.englishRequired
-      ? 'Công ty yêu cầu tiếng Anh — tỉ lệ đã thuộc topic Phỏng vấn tiếng Anh.'
-      : '';
-    return { kExpl: kExpl, aExpl: aExpl, mExpl: mExpl, eExpl: eExpl };
   }
 
   /** Timeline dọc quy trình phỏng vấn. */
@@ -202,34 +191,29 @@
       '<ol class="co-timeline">' + items + '</ol></section>';
   }
 
-  /** Trọng tâm cần ôn: thanh tiến độ + link bank/flash; topic yếu nhất gắn nhãn "Ưu tiên". */
+  /** Ba topic yếu nhất: thanh tiến độ + link bank/flash để bắt đầu ôn ngay. */
   function focusHtml(c) {
-    const ids = c.focus || [];
-    if (!ids.length) return '';
-    const rows = ids.map(id => {
-      const s = App.stats(id);
-      const ratio = s.total ? (s.known + 0.5 * s.review) / s.total : null;
-      const pct = ratio != null ? Math.round(ratio * 100) : 0;
-      const t = App.topic(id);
-      return { id: id, name: (t.icon ? t.icon + ' ' : '') + t.name, pct: pct, ratio: ratio, s: s };
-    });
-    // Topic tỉ lệ thuộc thấp nhất (chỉ tính topic có câu) được đánh dấu Ưu tiên.
-    const withQ = rows.filter(x => x.ratio != null);
-    const weakest = withQ.length ? withQ.reduce((a, b) => (b.ratio < a.ratio ? b : a)) : null;
-    const items = rows.map(x =>
-      '<li class="co-focus' + (weakest && x.id === weakest.id ? ' co-priority' : '') + '">' +
+    const r = readiness(c);
+    const rows = r.topics.slice().sort((a, b) => a.ratio - b.ratio).slice(0, 3);
+    if (!rows.length) return '<section class="card co-section"><h2>Trọng tâm cần ôn</h2><p class="muted">Chưa có câu hỏi trong các topic trọng tâm.</p></section>';
+    const items = rows.map(x => {
+      const s = x.stats;
+      const pct = Math.round(x.ratio * 100);
+      const t = App.topic(x.id);
+      return '<li class="co-focus co-priority">' +
         '<div class="co-focus-head">' +
-          '<b>' + App.esc(x.name) + '</b>' +
-          (weakest && x.id === weakest.id ? '<span class="badge accent">Ưu tiên</span>' : '') +
-          '<span class="small muted">' + x.s.known + '/' + x.s.total + ' câu đã thuộc</span>' +
+          '<b>' + App.esc((t.icon ? t.icon + ' ' : '') + t.name) + '</b>' +
+          '<span class="badge accent">' + pct + '% thuộc</span>' +
+          '<span class="small muted">' + s.known + '/' + s.total + ' câu đã thuộc</span>' +
         '</div>' +
-        '<div class="progress" role="progressbar" aria-label="' + App.esc(x.name) + '" aria-valuenow="' + x.pct + '" aria-valuemin="0" aria-valuemax="100">' +
-          '<i class="accent" style="width:' + x.pct + '%"></i></div>' +
+        '<div class="progress" role="progressbar" aria-label="' + App.esc(t.name) + '" aria-valuenow="' + pct + '" aria-valuemin="0" aria-valuemax="100">' +
+          '<i class="accent" style="width:' + pct + '%"></i></div>' +
         '<div class="row co-focus-links">' +
-          '<a class="btn sm" href="#/bank/' + App.esc(x.id) + '">Câu hỏi</a>' +
-          '<a class="btn sm" href="#/flash/' + App.esc(x.id) + '">Flashcard</a>' +
+          '<a class="btn sm" href="#/bank/' + App.esc(x.id) + '">Ôn câu hỏi</a>' +
+          '<a class="btn sm" href="#/flash/' + App.esc(x.id) + '">Ôn flashcard</a>' +
         '</div>' +
-      '</li>').join('');
+      '</li>';
+    }).join('');
     return '<section class="card co-section"><h2>Trọng tâm cần ôn</h2>' +
       '<ul class="co-focus-list">' + items + '</ul></section>';
   }
@@ -244,7 +228,6 @@
     }
 
     const r = readiness(c);
-    const ex = explainParts(c, r);
     const stack = (c.stack || []).map(s => '<span class="badge">' + App.esc(s) + '</span>').join('');
     const conf = CONF_CLS[c.confidence] || '';
 
@@ -268,14 +251,11 @@
       '</section>' +
       '<section class="card co-ready">' +
         '<div class="co-ready-top">' + ring(r.score, 96) +
-          '<div class="co-ready-parts">' +
-            partRow('Kiến thức (K)', r.K, r.wK, ex.kExpl) +
-            partRow('Thuật toán (A)', r.A, r.wA, ex.aExpl) +
-            partRow('Phỏng vấn thử (M)', r.M, r.wM, ex.mExpl) +
-            (c.englishRequired ? partRow('Tiếng Anh (E)', r.E, r.wE, ex.eExpl) : '') +
-          '</div>' +
+          '<div class="co-ready-parts"><b>Readiness: ' + r.score + '%</b>' +
+            '<div class="progress" role="progressbar" aria-label="Readiness ' + App.esc(c.name) + '" aria-valuenow="' + r.score + '" aria-valuemin="0" aria-valuemax="100"><i class="accent" style="width:' + r.score + '%"></i></div>' +
+            '<p class="small muted">Tiến độ kiến thức tính theo số câu trong ' + r.topicCount + ' topic trọng tâm. ' +
+            (r.interview == null ? 'Chưa có mock/interview phù hợp trong 90 ngày gần đây.' : 'Điểm mock/interview gần đây chiếm 20% readiness.') + '</p></div>' +
         '</div>' +
-        '<p class="small muted">Điểm = 100 × (trọng số × tỉ lệ của từng thành phần). Học thêm và chấm mock để cải thiện.</p>' +
       '</section>' +
       '<div id="coBody"></div>';
 
