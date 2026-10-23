@@ -1,6 +1,6 @@
 # T111 — Thêm 40 câu trắc nghiệm + sửa thiên lệch đáp án behavioral
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/quiz.js`
 
@@ -9,3 +9,5 @@ Owns: `js/data/quiz.js`
 `node scripts/validate.js` → OK.
 
 ## Notes
+Đã bổ sung đủ 40 câu trong nhóm topic được giao (4 câu còn thiếu cho devops và kotlin); answer indices của các câu mới phân bổ 1, 2, 2, 1. `node --check js/data/quiz.js` thành công. `node scripts/validate.js` bị chặn bởi file ngoài phạm vi task còn thiếu: `js/data/lessons-design.js` (ENOENT). Không thể sửa file đó theo quyền sở hữu.
+Reviewed-by: codex (T111R)

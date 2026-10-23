@@ -1,6 +1,86 @@
 /* Multiple-choice bank for the "Trắc nghiệm" view — owner: task T12. Format: see AGENTS.md */
 (window.QUIZ = window.QUIZ || []).push(
 {
+  id: 'qz-devops-001',
+  topic: 'devops',
+  q: 'Trong CI/CD, vì sao nên tạo immutable artifact một lần rồi promote cùng artifact qua staging và production?',
+  options: [
+    'Mỗi môi trường có thể build lại từ source để tối ưu dependency riêng, miễn là cùng commit hash',
+    'Artifact giữ nguyên checksum giữa các môi trường, giảm khác biệt do build và giúp truy vết chính xác bản đã kiểm thử',
+    'Production không cần kiểm tra cấu hình vì artifact đã được build ở staging',
+    'Immutable artifact tự động rollback database schema nếu deployment mới gặp lỗi'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: promote cùng artifact đã kiểm thử.** Build có thể không tái lập hoàn toàn do dependency, base image hoặc thời điểm tải gói; dùng cùng digest giúp biết chính xác binary nào đã qua kiểm thử và đang chạy.
+
+### Vì sao các phương án còn lại sai
+- **Build lại từng môi trường**: cùng commit chưa đảm bảo cùng binary; khác dependency hoặc toolchain có thể tạo kết quả khác.
+- **Bỏ kiểm tra cấu hình production**: artifact không chứa đảm bảo cho secret, quyền, network hay cấu hình runtime.
+- **Tự rollback schema**: artifact không thể tự đảo ngược thay đổi dữ liệu; migration cần kế hoạch tương thích và phục hồi riêng.
+
+> Senior tip: publish image theo digest và ghi digest đó vào deployment record; tag như latest có thể bị trỏ sang nội dung khác.`
+},
+{
+  id: 'qz-devops-002',
+  topic: 'devops',
+  q: 'Một Kubernetes Deployment liên tục restart container do liveness probe thất bại khi ứng dụng đang khởi động lâu. Bạn nên xử lý thế nào?',
+  options: [
+    'Tăng failureThreshold của liveness thật lớn để probe gần như không bao giờ restart container',
+    'Tắt cả liveness và readiness vì orchestrator đã tự theo dõi trạng thái tiến trình',
+    'Dùng startupProbe với ngưỡng phù hợp cho giai đoạn khởi động, sau đó để liveness kiểm tra sức khỏe lâu dài',
+    'Chuyển liveness sang endpoint readiness để mọi lần probe đều kiểm tra dependency bên ngoài'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: thêm startupProbe.** Kubernetes trì hoãn liveness và readiness cho tới khi startup probe thành công. Điều này cho ứng dụng thời gian khởi động hữu hạn mà vẫn giữ kiểm tra liveness sau đó.
+
+### Vì sao các phương án còn lại sai
+- **Ngưỡng liveness quá lớn**: làm phục hồi chậm nếu tiến trình thực sự deadlock sau khi chạy ổn định.
+- **Tắt cả hai probe**: Pod có thể được xem là sẵn sàng dù chưa phục vụ được traffic, và tiến trình treo không được restart.
+- **Readiness cho liveness**: readiness thường phản ánh khả năng nhận traffic; gắn dependency thoáng chốc vào liveness có thể tạo restart loop và khuếch đại sự cố.
+
+> Senior tip: đặt startupProbe theo percentile khởi động thực tế cộng biên an toàn, rồi cảnh báo riêng khi thời gian khởi động tăng.`
+},
+{
+  id: 'qz-kotlin-001',
+  topic: 'kotlin',
+  q: 'Trong Kotlin, khi nào nên dùng {{val}} thay vì {{var}} cho thuộc tính của một data class được chia sẻ giữa nhiều thread?',
+  options: [
+    'Dùng val luôn làm toàn bộ object immutable sâu, kể cả các list mutable được truyền vào',
+    'Dùng var vì Kotlin tự đồng bộ mọi setter của thuộc tính trên JVM',
+    'Dùng val để không cho gán lại tham chiếu qua thuộc tính; vẫn cần kiểm soát mutable state bên trong và công bố object an toàn',
+    'Dùng lateinit var vì JVM đảm bảo khởi tạo lazy thread-safe cho mọi thuộc tính'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: val ngăn thay đổi tham chiếu, nhưng không đảm bảo bất biến sâu hay an toàn chia sẻ hoàn toàn.** Một thuộc tính val chỉ có getter ở mức Kotlin; nếu nó trỏ tới MutableList thì nội dung list vẫn có thể thay đổi.
+
+### Vì sao các phương án còn lại sai
+- **Immutable sâu**: val không biến collection mutable thành read-only và cũng không tự sao chép dữ liệu đầu vào.
+- **Setter tự đồng bộ**: var tạo khả năng gán lại, không thêm monitor hay cơ chế volatile.
+- **lateinit thread-safe lazy**: lateinit chỉ trì hoãn khởi tạo và đòi hỏi gán trước khi đọc; nó không cung cấp lazy initialization đồng bộ.
+
+> Senior tip: API nhận collection nên cân nhắc defensive copy và expose kiểu read-only; khi chia sẻ giữa thread, đánh giá cả safe publication lẫn mutation sau khởi tạo.`
+},
+{
+  id: 'qz-kotlin-002',
+  topic: 'kotlin',
+  q: 'Một hàm Kotlin trả về {{String?}} và Java gọi hàm đó. Ranh giới nullability này nên được hiểu thế nào?',
+  options: [
+    'Java compiler bắt buộc mọi caller kiểm tra null như Kotlin compiler làm với String?',
+    'Kotlin có thể trả null; Java thường thấy kiểu platform hoặc annotation tùy metadata/tooling nên caller Java vẫn phải xử lý null rõ ràng',
+    'Kotlin tự đổi null thành chuỗi rỗng khi đi qua JVM boundary',
+    'Nullable type không thể xuất hiện trong bytecode JVM nên hàm không gọi được từ Java'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Kotlin cho phép trả null, còn mức kiểm tra tại Java phụ thuộc chữ ký bytecode, annotation và tooling.** Nullability của Kotlin được biểu diễn qua metadata/annotation, nhưng Java không có cùng hệ kiểu bắt buộc như Kotlin.
+
+### Vì sao các phương án còn lại sai
+- **Java bắt buộc check**: Java compiler không cưỡng chế null check chỉ vì Kotlin khai báo nullable.
+- **Đổi null thành chuỗi rỗng**: không có chuyển đổi ngầm như vậy; caller có thể gặp null thực tế.
+- **Không thể ở JVM**: cả String và null đều biểu diễn bình thường trong bytecode JVM; metadata hỗ trợ công cụ hiểu thêm nullability.
+
+> Senior tip: ở API dùng chung Java/Kotlin, giữ nullability nhất quán, dùng annotation phù hợp và kiểm thử caller Java để tránh platform type lọt null sâu vào hệ thống.`
+},
+{
   id: 'qz-collections-001',
   topic: 'collections',
   q: 'Từ Java 8, khi một bucket của {{HashMap}} có quá nhiều phần tử, điều gì xảy ra?',
