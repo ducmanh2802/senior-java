@@ -62,3 +62,4 @@ ID bắt đầu từ `spring-001`, `jpa-001`, `db-001`. Văn phong theo mẫu `c
 - Trong lúc task này chạy, validator toàn repo có lúc báo lỗi ở `q-concurrency-jvm.js` (T02) và `q-aws.js`/`q-ai.js` (T06) do các agent đó đang ghi dở; các lỗi này **không** thuộc file của T03 và đã tự hết sau khi agent tương ứng sửa. File `q-spring-data.js` luôn sạch.
 - `db-011` dài ~4.4k ký tự (hơn mốc 4000 của `AGENTS.md`) vì là câu so sánh Oracle/PostgreSQL có bảng + 7 khác biệt "gây bug" — chấp nhận để đáp án đủ sâu; có thể cắt nếu muốn đồng đều.
 - Không sửa file nào ngoài `js/data/q-spring-data.js` và file task này; không commit/push.
+Reviewed-by: codex (T03R)

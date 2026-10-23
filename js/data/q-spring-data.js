@@ -606,7 +606,7 @@ spring:
 Khi đó Tomcat xử lý mỗi request bằng một virtual thread: **code blocking vẫn viết như MVC thông thường**, nhưng không còn giới hạn "số thread = số request đồng thời". Đây là lựa chọn mặc định rất hợp lý cho hệ thống CRUD dùng JPA.
 
 ### Pitfall production
-- **Thread pinning**: {{synchronized}}, {{Object.wait/notify}} và một số lời gọi native có thể giữ chặn carrier thread của virtual thread (Java 21). Nên dùng {{ReentrantLock}} thay {{synchronized}} trong code I/O-bound. (JEP 491 ở Java 24 đã sửa phần lớn trường hợp này.)
+- **Thread pinning**: trên Java 21, virtual thread có thể pin carrier khi blocking trong một số vùng {{synchronized}} hoặc native method. Tránh giữ monitor qua thao tác I/O blocking dài; không cần thay mọi {{synchronized}} bằng {{ReentrantLock}}. JEP 491 (Java 24) loại bỏ pinning do monitor trong các trường hợp này.
 - ThreadLocal trong virtual thread vẫn hoạt động nhưng bộ nhớ phụ thuộc số thread đang sống → tránh giữ dữ liệu lớn trong ThreadLocal.
 - Với virtual thread, **connection pool phải nhỏ lại** (pool là tài nguyên hữu hạn của DB), không phải lớn lên.
 - Kiểm thử: MVC dùng {{MockMvc}}, WebFlux dùng {{WebTestClient}} – test sai loại là nguồn lỗi phổ biến.
@@ -642,19 +642,12 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return pd;
     }
 
-    @ExceptionHandler(MethodArgumentNotValidException.class)
-    ProblemDetail handleInvalid(MethodArgumentNotValidException ex) {
-        ProblemDetail pd = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
-        pd.setProperty("errors", ex.getBindingResult().getFieldErrors().stream()
-                .map(e -> e.getField() + " " + e.getDefaultMessage())
-                .toList());
-        return pd;
-    }
+    // Với lỗi validation, override handleMethodArgumentNotValid nếu cần format riêng.
 }
 ~~~
 
-### Vì sao nên kế thừa ResponseEntityExceptionHandler
-Lớp này đã xử lý sẵn các lỗi do Spring MVC sinh ra (400 do body sai, 404, 405, 415…) và trả về đúng format. Kế thừa để bạn chỉ cần chuẩn hoá lỗi nghiệp vụ, tránh mỗi endpoint tự bắt lỗi.
+### Khi nào kế thừa ResponseEntityExceptionHandler
+Lớp này xử lý nhiều lỗi do Spring MVC sinh ra như 400, 405 và 415. Nếu kế thừa, hãy override các hook tương ứng (ví dụ {{handleMethodArgumentNotValid}}) thay vì khai báo một {{@ExceptionHandler}} trùng với exception đã được lớp cha ánh xạ. Lỗi 404 không được bảo đảm đi qua advice; việc xử lý phụ thuộc cấu hình resource/dispatcher.
 
 ### Định dạng response chuẩn
 ~~~json
@@ -685,7 +678,12 @@ Lớp này đã xử lý sẵn các lỗi do Spring MVC sinh ra (400 do body sai
     'Sự khác biệt giữa {{@ExceptionHandler}} và {{@ResponseStatus}} là gì?',
     'Tại sao lỗi phát sinh trong filter không được xử lý bởi {{@ControllerAdvice}}?'
   ],
-  tags: ['ControllerAdvice', 'ProblemDetail', 'RFC 7807', 'exception handling']
+  tags: ['ControllerAdvice', 'ProblemDetail', 'RFC 7807', 'exception handling'],
+  refs: [
+    { type: 'doc', title: 'Spring Framework REST Exceptions', url: 'https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-ann-rest-exceptions.html' },
+    { type: 'doc', title: 'Spring Problem Details', url: 'https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-ann-rest-exceptions.html' },
+    { type: 'doc', title: 'RFC 9457 Problem Details', url: 'https://www.rfc-editor.org/rfc/rfc9457.html' }
+  ]
 },
 {
   id: 'spring-014',
@@ -3095,6 +3093,7 @@ ALTER TABLE transaction_log SET (
     autovacuum_vacuum_scale_factor = 0.02,
     autovacuum_vacuum_threshold  = 1000,
     autovacuum_analyze_scale_factor = 0.01
+
 );
 ~~~
 - Đo bloat: {{pg_stat_user_tables.n_dead_tup}} (ước tính), hoặc extension {{pgstattuple}}; tiến trình vacuum đang chạy xem ở {{pg_stat_progress_vacuum}}.
@@ -4268,5 +4267,205 @@ Với dữ liệu tài chính/critical: {{appendfsync always}} + replica + backu
     'Khi nào nên chọn RDB only, AOF only, hay cả hai?'
   ],
   tags: ['Redis', 'single-threaded', 'RDB', 'AOF', 'persistence', 'durability', 'fsync']
+},
+{
+  id: 'db-026',
+  topic: 'db',
+  level: 'senior',
+  q: 'Một nghiệp vụ Oracle chỉ được cung cấp qua PL/SQL package/procedure trả về REF CURSOR. Bạn gọi từ Spring JDBC thế nào, quản lý transaction và mapping kết quả ra sao?',
+  a: `**Tóm tắt:** Với procedure Oracle, giữ ranh giới DB rõ ràng: khai báo đúng parameter, gọi qua Spring JDBC, consume cursor khi connection còn mở và map sang DTO. {{SimpleJdbcCall}} hỗ trợ khai báo procedure/function và metadata, nhưng package, overload, REF CURSOR thường cần khai báo tường minh để tránh phụ thuộc metadata driver.
+
+### Luồng gọi
+1. Xác định package, tên procedure, thứ tự/kiểu IN và OUT, kiểu cursor, quyền EXECUTE.
+2. Dùng {{JdbcTemplate}} hoặc {{SimpleJdbcCall}} cùng {{SqlOutParameter}} có kiểu cursor phù hợp Oracle JDBC; cấu hình package name và bỏ qua metadata discovery nếu schema phức tạp.
+3. Thực thi trong transaction Spring phù hợp. ResultSet/cursor tiêu thụ trước khi đóng connection; không trả cursor ra khỏi DAO.
+
+~~~java
+var call = new SimpleJdbcCall(jdbcTemplate)
+    .withSchemaName("BANK_APP")
+    .withCatalogName("ACCOUNT_PKG") // Oracle package
+    .withProcedureName("find_entries")
+    .withoutProcedureColumnMetaDataAccess()
+    .declareParameters(
+        new SqlParameter("p_account_id", Types.NUMERIC),
+        new SqlOutParameter("p_rows", OracleTypes.CURSOR,
+            (rs, row) -> new Entry(rs.getLong("ID"), rs.getBigDecimal("AMOUNT"))));
+var result = call.execute(Map.of("p_account_id", accountId));
+~~~
+
+### Trade-off
+| Cách | Hợp khi | Lưu ý |
+|---|---|---|
+| JdbcTemplate | Cần kiểm soát bind và mapping | Ít abstraction, code tường minh |
+| SimpleJdbcCall | Procedure ổn định, nhiều OUT param | Metadata có thể sai với package/overload |
+| JPA native call | Tích hợp entity đơn giản | Cursor/bulk result thường kém tự nhiên |
+
+### Pitfall production
+- Oracle package không tương đương schema name trong mọi abstraction; kiểm tra generated call trên đúng Oracle JDBC version.
+- Đừng đưa {{ResultSet}} hoặc vendor cursor ra khỏi callback: transaction/connection có thể đã đóng.
+- Bind parameter, không nối chuỗi SQL. Đo thời gian DB riêng với thời gian mapping.
+- Procedure lỗi có thể trả vendor error code; chuyển thành exception nghiệp vụ ổn định, nhưng giữ SQLState/code trong telemetry đã lọc dữ liệu nhạy cảm.
+
+> Senior tip: viết integration test trên Oracle tương thích môi trường thật cho REF CURSOR và overload; H2 không xác nhận được semantics Oracle.
+`,
+  follow: ['Khi nào SimpleJdbcCall cần khai báo parameter tường minh?', 'Bạn kiểm thử procedure Oracle trong pipeline CI thế nào?'],
+  tags: ['Oracle', 'PL/SQL', 'SimpleJdbcCall', 'REF CURSOR']
+},
+{
+  id: 'db-027',
+  topic: 'db',
+  level: 'senior',
+  q: 'Procedure Oracle trả hàng trăm nghìn dòng để Java xử lý. Khi nào dùng REF CURSOR, BULK COLLECT/FORALL hoặc JDBC fetch batching, và kiểm soát bộ nhớ thế nào?',
+  a: `**Tóm tắt:** Chọn nơi xử lý theo dữ liệu và nghiệp vụ: cursor streaming/JDBC fetch size khi Java cần đọc tuần tự với bộ nhớ giới hạn; {{BULK COLLECT}}/{{FORALL}} khi phép biến đổi nên chạy gần dữ liệu. Không tải vô hạn vào collection hoặc List chỉ để giảm số round trip.
+
+### Cơ chế và lựa chọn
+- REF CURSOR trả một result set; JDBC fetch size gợi ý số dòng lấy mỗi lượt, không đảm bảo mọi driver triển khai giống nhau.
+- {{BULK COLLECT ... LIMIT}} gom từng lô PL/SQL để giảm context switch giữa PL/SQL và SQL mà vẫn giới hạn bộ nhớ.
+- {{FORALL}} bind một collection cho DML hàng loạt, giảm round trip; exception theo từng phần cần thiết kế rõ (ví dụ SAVE EXCEPTIONS).
+
+~~~sql
+LOOP
+  FETCH c_entries BULK COLLECT INTO l_entries LIMIT 500;
+  EXIT WHEN l_entries.COUNT = 0;
+  FORALL i IN 1 .. l_entries.COUNT
+    INSERT INTO archive_entry(id, amount) VALUES (l_entries(i).id, l_entries(i).amount);
+  COMMIT; -- chỉ nếu ranh giới commit theo lô được nghiệp vụ cho phép
+END LOOP;
+~~~
+
+### Trade-off
+| Phương án | Round trip | Bộ nhớ | Dùng khi |
+|---|---:|---:|---|
+| Java đọc cursor theo fetch size | Theo lô | Thấp | Java cần xử lý/đẩy downstream |
+| BULK COLLECT giới hạn | Ít hơn PL/SQL từng dòng | Giới hạn bởi LIMIT | Logic và DML nằm trong Oracle |
+| BULK COLLECT toàn bộ | Ít | Có thể rất lớn | Chỉ tập nhỏ, giới hạn được |
+
+### Pitfall production
+- Fetch size không phải kích thước trang nghiệp vụ; driver có thể buffer khác kỳ vọng. Đo heap và network với driver thật.
+- Commit từng lô đổi semantics atomicity: job lỗi giữa chừng để lại phần đã commit. Cần checkpoint/idempotency và quy trình resume.
+- DML hàng loạt bỏ qua một số hành vi ORM/callback; cập nhật version/audit/counter theo thiết kế rõ.
+- Cursor mở lâu giữ session, snapshot và tài nguyên DB; đóng ResultSet/statement bằng try-with-resources và đặt timeout.
+
+> Senior tip: đo rows/sec, PGA/heap, round trips và thời gian lock trên batch đại diện; tăng LIMIT/fetch size chỉ khi phép đo cho thấy round trip là nút thắt.
+`,
+  follow: ['Vì sao BULK COLLECT LIMIT tốt hơn gom toàn bộ?', 'Commit theo chunk ảnh hưởng khả năng chạy lại ra sao?'],
+  tags: ['Oracle', 'BULK COLLECT', 'FORALL', 'JDBC', 'batch']
+},
+{
+  id: 'db-028',
+  topic: 'db',
+  level: 'mid',
+  q: 'Một bảng Oracle cần khóa chính sinh tự động và có thể triển khai cả Oracle lẫn PostgreSQL. Bạn chọn sequence hay identity thế nào, đặc biệt với insert batch và thứ tự ID?',
+  a: `**Tóm tắt:** Sequence là object độc lập, cấp giá trị trước insert và linh hoạt cho nhiều bảng; identity gắn generator với cột, đơn giản cho một bảng. Sequence/identity thường có khoảng trống khi rollback, cache hoặc restart; ID không phải số thứ tự nghiệp vụ và không đảm bảo thứ tự commit.
+
+### Cách hoạt động
+Oracle hỗ trợ identity column và sequence; PostgreSQL identity cũng dựa trên sequence. Sequence cấp số độc lập transaction nên rollback không trả số đã lấy. Cache tăng throughput nhưng có thể tạo gap sau sự cố. Với sequence, ứng dụng có thể lấy ID trước khi insert; identity thường lấy qua generated keys/returning theo driver.
+
+~~~sql
+-- Oracle: dùng sequence tường minh khi cần tương thích/multiple consumers
+CREATE SEQUENCE payment_seq CACHE 100;
+INSERT INTO payment(id, amount) VALUES (payment_seq.NEXTVAL, :amount);
+
+-- PostgreSQL: identity cho khóa kỹ thuật gắn với một cột
+CREATE TABLE payment (
+  id bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+  amount numeric(19,2) NOT NULL
+);
+~~~
+
+### Trade-off
+| Tiêu chí | Sequence | Identity |
+|---|---|---|
+| Dùng chung nhiều bảng | Có | Không trực tiếp |
+| Lấy ID trước insert | Thuận tiện | Thường lấy khi insert |
+| DDL đơn giản | Thêm object | Gắn với cột |
+| Portability | Syntax/cấu hình khác DB | Syntax khác DB, ý nghĩa gần nhau |
+
+### Khi migrate
+- Không giả định sequence name, cách lấy generated key hay cú pháp DDL giống nhau. Dùng migration riêng theo dialect và test driver.
+- JPA {{GenerationType.IDENTITY}} có thể làm Hibernate phải insert sớm để lấy ID, ảnh hưởng batching; sequence generator cho phép cấp trước và batch thuận lợi hơn tùy dialect.
+- Không expose ID để suy ra thời điểm giao dịch; dùng timestamp có semantics phù hợp hoặc business sequence được serialize riêng nếu thật sự cần.
+
+### Pitfall production
+- Gap không phải bằng chứng mất giao dịch. Không dùng ID làm số hóa đơn liên tục nếu yêu cầu đánh số pháp lý/nghiệp vụ riêng.
+- Sequence cache lớn tăng hiệu năng nhưng restart/failover có thể bỏ qua vùng cache; không hạ cache nếu chỉ vì thấy gap.
+- Bulk import: cấu hình allocation size của ORM phải tương thích increment của sequence.
+
+> Senior tip: khóa chính là định danh kỹ thuật. Thiết kế số tham chiếu khách hàng riêng, có unique constraint và quy trình cấp số được audit.
+`,
+  follow: ['Vì sao rollback làm sequence có gap?', 'IDENTITY ảnh hưởng JDBC batching và Hibernate thế nào?'],
+  tags: ['Oracle', 'PostgreSQL', 'sequence', 'identity', 'migration']
+},
+{
+  id: 'db-029',
+  topic: 'db',
+  level: 'senior',
+  q: 'Query Oracle chậm sau khi dữ liệu tăng mạnh. Bạn đọc execution plan và đánh giá optimizer hint thế nào trước khi sửa SQL hoặc thêm index?',
+  a: `**Tóm tắt:** Bắt đầu từ plan thực tế, bind values và thống kê: so sánh estimated rows với actual rows, access path, join order, predicate và I/O. Hint chỉ là chỉ dẫn có điều kiện, không thay thế mô hình dữ liệu hay thống kê; ép plan có thể chữa một bind nhưng làm các bind khác chậm.
+
+### Quy trình
+1. Thu SQL, bind, elapsed/CPU, logical reads và số dòng thực tế; xác nhận cùng SQL_ID/cursor.
+2. Xem actual plan (ví dụ DBMS_XPLAN.DISPLAY_CURSOR với thống kê phù hợp), không chỉ explain plan ước lượng.
+3. Tìm nơi estimated rows lệch actual, full scan không hợp lý, implicit conversion, join nổ cardinality, sort/hash spill.
+4. Kiểm tra stats/histogram, phân bố skew, index leading columns, partition pruning; thử sửa và đo trên dữ liệu đại diện.
+
+### Hint và index
+| Biện pháp | Có ích khi | Rủi ro |
+|---|---|---|
+| Cập nhật stats | Estimate cũ/sai | Stats mới gây plan khác, cần quan sát |
+| Index | Predicate chọn lọc, truy cập lặp | Tốn storage và làm chậm ghi |
+| Hint | Có bằng chứng optimizer chọn sai ổn định | Dính version/data/bind, khó bảo trì |
+| SQL rewrite | Biểu thức che cột/logic khó tối ưu | Cần giữ semantics |
+
+~~~sql
+-- Tránh hàm trên cột nếu cần index thường
+SELECT id, amount FROM txn
+WHERE account_id = :account_id
+  AND booked_at >= :from_ts AND booked_at < :to_ts;
+-- Chỉ cân nhắc function-based index nếu biểu thức là yêu cầu ổn định
+~~~
+
+### Pitfall production
+- Bind peeking/adaptive cursor sharing khiến một plan không tối ưu cho mọi giá trị bind; kiểm tra nhiều account với cardinality khác nhau.
+- Hint có thể bị bỏ qua hoặc diễn giải khác theo phiên bản; ghi lại lý do, plan baseline/giám sát regression và cách gỡ.
+- Đừng tạo index chỉ dựa trên một query; xem write rate, locking, storage, thống kê và workload tổng thể.
+
+> Senior tip: lưu plan hash, buffer gets và p95 trước/sau; mục tiêu là giảm công việc DB cho workload thật, không phải làm plan trông đẹp.
+`,
+  follow: ['Estimated rows sai thường gợi ý vấn đề gì?', 'Khi nào function-based index đáng dùng?'],
+  tags: ['Oracle', 'execution plan', 'optimizer', 'hint', 'index']
+},
+{
+  id: 'db-030',
+  topic: 'db',
+  level: 'lead',
+  q: 'Migrate ứng dụng ngân hàng từ Oracle sang PostgreSQL nhưng vẫn phải chạy song song và đối soát. Bạn lập kế hoạch xử lý khác biệt SQL, transaction và dữ liệu thế nào?',
+  a: `**Tóm tắt:** Không coi migration là đổi JDBC URL. Lập inventory schema, SQL, procedure, sequence, kiểu dữ liệu, isolation và workload; chạy chuyển đổi theo expand/contract, backfill có checkpoint, CDC hoặc dual-read có kiểm soát, rồi đối soát trước cutover và giữ đường rollback.
+
+### Khác biệt cần kiểm kê
+| Vùng | Ví dụ rủi ro | Cách xác minh |
+|---|---|---|
+| SQL | {{NVL}}/{{DECODE}}, {{ROWNUM}}, package, hint | Static scan + test kết quả |
+| Kiểu dữ liệu | NUMBER, DATE/TIMESTAMP, empty string/NULL | Mapping và boundary test |
+| Sinh ID | sequence/identity, allocation | Test concurrency và batch |
+| Transaction | isolation, locking, deadlock code | Contract test dưới tải |
+| Tìm kiếm/sort | collation, case, timezone | Bộ dữ liệu ký tự/ngày thực tế |
+
+### Chiến lược chuyển đổi
+1. Chia workload theo bounded context; xác định nguồn dữ liệu có thẩm quyền tại từng giai đoạn.
+2. Tạo schema mới, backfill theo khóa ổn định và checkpoint; ghi thay đổi phát sinh qua CDC/outbox hoặc dual-write có cơ chế phát hiện lệch.
+3. So sánh count, tổng tiền theo partition, hash/canonical rows và các invariant ledger. Mọi mismatch phải có queue xử lý, không chỉ báo cáo tổng.
+4. Canary read/write theo cohort; cutover có tiêu chí lag, error rate, reconciliation và rollback window.
+
+### Pitfall production
+- Oracle treats empty string as NULL cho kiểu ký tự; PostgreSQL phân biệt. Kiểm tra dữ liệu và predicate.
+- Sequence values không đồng nghĩa bản ghi commit; CDC order, retry và thời điểm snapshot phải được thiết kế.
+- Một lượt tổng checksum có thể che hai sai lệch bù trừ; đối soát theo khóa, ngày, currency và trạng thái.
+- Không để hai DB cùng ghi độc lập mà không có quy tắc conflict; dual-write không atomic giữa hai hệ.
+
+> Senior tip: với ledger, cutover chỉ sau khi cân bằng debit/credit và reconcile được theo từng partition/ngày; đặt ngưỡng mismatch bằng zero cho dữ liệu tài chính cốt lõi.
+`,
+  follow: ['Bạn xử lý khác biệt empty string và NULL ra sao?', 'Làm sao dual-write tránh tạo hai nguồn sự thật?'],
+  tags: ['Oracle', 'PostgreSQL', 'migration', 'CDC', 'reconciliation']
 },
 );
