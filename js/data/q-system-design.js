@@ -3909,4 +3909,281 @@ Bắt đầu với discriminator + RLS cho đa số; thiết kế sẵn khả n�
   ],
   tags: ['multi-tenancy', 'Hibernate', '@TenantId', 'Row Level Security', 'SaaS', 'PostgreSQL']
 },
+{
+  id: 'design-022', topic: 'design', level: 'lead',
+  q: 'Thiết kế ledger cho ví có nhiều transfer đồng thời từ cùng tài khoản. Làm sao ghi bút toán kép, giữ số dư không âm, xử lý retry và đối soát số dư materialized?',
+  a: `**Tóm tắt:** Ledger là nguồn sự thật bất biến: một transfer ghi debit và credit cân bằng trong một transaction DB; số dư khả dụng được bảo vệ bằng khóa hoặc conditional update tại DB. Idempotency key duy nhất xử lý retry, còn projection số dư được đối chiếu và dựng lại từ posting thay vì sửa lịch sử.
+
+### Yêu cầu và giả định tải
+- Giả định 5 triệu ví hoạt động, 2 triệu transfer/ngày (23/s trung bình), peak 1.000/s vào ngày nhận lương. Đây là giả định sizing, cần thay bằng telemetry.
+- Transfer nội bộ all-or-nothing, tổng debit bằng tổng credit theo từng currency, không âm, có lịch sử truy vết. Lịch sử đọc có thể trễ vài giây; xác nhận và kiểm tra hạn mức cần nhất quán mạnh.
+- API ghi phải chịu retry của mobile/client sau timeout mà không tạo bút toán thứ hai.
+
+### API và mô hình dữ liệu
+- {{POST /transfers}} nhận {{Idempotency-Key}}, source, destination, amountMinor, currency; trả transferId/status. Cùng key, cùng payload trả kết quả đã lưu; cùng key khác payload trả conflict.
+- {{GET /transfers/:id}} xem trạng thái; {{GET /accounts/:id/balance}} trả posted, reserved và available balance.
+~~~text
+transfer(id, client_id, idem_key, payload_hash, status)  UNIQUE(client_id, idem_key)
+ledger_txn(id, transfer_id UNIQUE, currency, created_at)
+posting(id, txn_id, account_id, side, amount_minor, currency)
+account_balance(account_id, currency, posted, reserved, version)
+~~~
+Amount là integer minor units, không floating point. Idempotency key scope theo client: unique toàn cục khiến hai client trùng key nhận nhầm kết quả của nhau. Balance là projection để đọc nhanh, có thể tái dựng. Constraint kiểm tra amount dương và side hợp lệ; cân bằng nhiều posting phải được đảm bảo trong transaction boundary/service đã kiểm soát.
+
+### Luồng ghi
+~~~text
+Client -> Transfer API -> DB transaction
+                           | insert idempotency + txn
+                           | lock accounts theo ID tăng dần
+                           | conditional debit + credit postings
+                           | update balance + outbox
+                           v
+                         COMMIT -> event relay
+~~~
+1. Insert idempotency record bằng {{INSERT ... ON CONFLICT DO NOTHING}} (unique violation thường sẽ abort cả transaction PostgreSQL); nếu đã có, so payload hash và trả kết quả cũ.
+2. Khóa hai account theo thứ tự ID tăng dần ({{SELECT ... FOR UPDATE}}) để A→B và B→A song song không deadlock. Debit chỉ thành công khi available >= amount: kiểm tra trên dòng đã khóa, hoặc conditional update {{UPDATE ... WHERE posted - reserved >= :amount}} rồi kiểm tra số dòng = 1. Đọc số dư bằng SELECT thường (không khóa) rồi kiểm tra ở Java và ghi sau là race: hai request cùng thấy đủ tiền.
+3. Ghi debit, credit, balance projection, transfer state và outbox event cùng transaction. Chỉ báo thành công sau commit. Không publish Kafka rồi mới commit DB vì hai hệ thống có thể lệch nhau.
+4. Outbox relay at-least-once; consumer deduplicate event ID. Với liên ngân hàng, tạo hold rồi gọi network ngoài transaction; sau đó capture hoặc release.
+
+### Nhất quán và lỗi
+- Timeout sau commit nhưng trước response: client retry cùng key; unique constraint tìm ra kết quả gốc. Không tạo key mới khi chưa biết kết quả.
+- Hai rút tiền song song: row lock hoặc conditional update là chốt chặn; Redis/cache chỉ phục vụ đọc, không quyết định overdraft.
+- Một account quá nóng serialize throughput. Shard theo account giữ thứ tự cục bộ; transfer xuyên shard cần state machine/compensation rõ ràng, không giả định transaction phân tán.
+- Đối soát kiểm tra tổng debit-credit từng txn và tính lại balance projection theo account. Sai lệch tạo case; điều chỉnh bằng reversal/adjustment posting mới có audit, không UPDATE dòng cũ.
+- Cần lưu currency và quy tắc làm tròn rõ ràng; không cộng các currency khác nhau vào một tổng.
+
+### Trade-off và câu hỏi đào sâu
+- Balance snapshot giúp đọc O(1) nhưng tăng write coupling; ledger-only read đơn giản hơn về nguồn sự thật nhưng tốn kém khi lịch sử dài.
+- Row lock đơn giản, dễ hiểu nhưng account hot giới hạn throughput. Optimistic version giảm lock khi ít tranh chấp, song phải retry transaction và vẫn cần xử lý exhaustion.
+- Bạn xử lý refund bằng sửa transfer cũ hay bút toán đảo? Một giao dịch có nhiều account ở shard khác bảo đảm invariant ra sao? DB commit thành công mà response mất thì API retry làm gì?
+
+> Senior tip: monitor idempotency retries, lock wait/deadlock (hoặc version conflict nếu dùng optimistic), outbox age và chênh lệch balance projection. Ledger “cân theo ngày” nhưng không drill-down được tới transfer vẫn khó vận hành.`,
+  follow: ['Làm sao ngăn overdraft khi hai request cùng lúc?', 'Có được sửa posting đã ghi không?', 'Bạn rebuild projection thế nào khi ledger liên tục được ghi?'],
+  tags: ['ledger', 'double-entry', 'idempotency', 'balance', 'reconciliation']
+},
+{
+  id: 'design-023', topic: 'design', level: 'senior',
+  q: 'Thiết kế adapter chuyển khoản nhanh 24/7 qua Napas khi timeout khiến không rõ lệnh đã hoàn tất chưa. Làm sao tránh gửi trùng, quản lý trạng thái và xử lý tra soát?',
+  a: `**Tóm tắt:** Timeout ở payment rail là {{UNKNOWN}}, không phải thất bại. Lưu state machine bền vững, reference ổn định, giữ tiền theo chính sách và tra cứu/đối soát trước khi retry lệnh mơ hồ; chỉ trả kết quả cuối khi có bằng chứng xác nhận.
+
+### Yêu cầu và sizing giả định
+- Giả định 8 triệu lệnh/ngày (93/s trung bình), peak 1.500/s. Nội bộ cần nhận lệnh nhanh; rail có thể phản hồi trễ nhiều giây. Các số này chỉ dùng sizing, không đại diện số liệu đối tác.
+- Giả định về rail: có bản tin gửi lệnh mang reference duy nhất, bản tin tra cứu trạng thái và file đối soát định kỳ. Định dạng bản tin, mã lỗi, timeout và quy trình/thời hạn tra soát cụ thể lấy theo tài liệu kỹ thuật Napas cấp cho ngân hàng thành viên, không tự suy đoán.
+- Không ghi nợ hai lần, không báo thất bại khi người nhận đã nhận tiền, không giữ tiền vô hạn. Cần trạng thái cho khách, lịch sử audit và công cụ tra soát.
+- Tách “đã nhận lệnh” khỏi “đã thanh toán cuối cùng”.
+
+### API và mô hình
+- {{POST /bank-transfers}} nhận clientRequestId duy nhất, beneficiary, amountMinor, currency; trả {{ACCEPTED}} + transferId. Status endpoint và webhook cung cấp cập nhật sau đó.
+- Transfer lưu key, payload hash, rail reference, version, state, timestamps/deadline. Attempt là bảng append-only chứa provider, correlation ID, request hash, response code và payload phản hồi đã mask dữ liệu nhạy cảm. Ledger ghi hold/capture/reversal riêng.
+- Cùng key, cùng payload trả cùng transfer; cùng key payload khác là conflict. Không log số tài khoản đầy đủ.
+
+### Luồng và state machine
+~~~text
+RECEIVED -> VALIDATED -> HELD -> SUBMITTED
+                                   |
+                                   +-- success rõ ràng ----> COMPLETED (capture hold)
+                                   +-- reject rõ ràng -----> REJECTED -> RELEASED
+                                   +-- timeout/reset/lỗi --> UNKNOWN -> INQUIRY
+INQUIRY -> CONFIRMED_SUCCESS -> COMPLETED (capture hold)
+INQUIRY -> CONFIRMED_FAILED  -> RELEASED
+INQUIRY -> vẫn mơ hồ        -> giữ hold, mở case tra soát
+~~~
+1. Validate hạn mức và beneficiary; ghi transfer, idempotency và hold trong transaction.
+2. Outbox tạo command cho worker. Worker gọi rail ngoài transaction với reference cố định.
+3. Response rõ ràng cập nhật state bằng optimistic version. Timeout, socket reset hoặc response hỏng chuyển sang UNKNOWN; giữ hold trong policy window và tạo inquiry.
+4. Inquiry dùng API tra cứu hoặc settlement file. Thành công thì capture, thất bại xác nhận thì release; vẫn mơ hồ thì giữ case mở, báo khách đang xử lý và chuyển tra soát.
+5. Phản hồi muộn, kết quả tra cứu và file đối soát có thể lặp hoặc đảo thứ tự: xác thực nguồn, dedupe theo reference, chỉ cho phép transition hợp lệ; event cũ không được ghi lùi trạng thái terminal.
+
+### Nhất quán, lỗi và trade-off
+- Không có transaction phân tán giữa DB và rail. Outbox tránh mất command sau commit; worker at-least-once cần idempotency phía đối tác. Nếu rail không hỗ trợ idempotency, không retry mù khi kết quả unknown.
+- Client timeout không hủy lệnh đã nhận. Retry cùng request ID trả transfer hiện hữu. API đồng bộ chờ rail đơn giản nhưng giữ connection và khuếch đại lỗi; accepted async cần UX polling/callback và vận hành state machine.
+- Circuit breaker giảm tải khi rail lỗi: lệnh bị chặn lúc breaker mở chắc chắn chưa gửi nên có thể từ chối hoặc xếp hàng an toàn, nhưng không dùng breaker để đánh dấu lệnh đã SUBMITTED/UNKNOWN là thất bại. Theo dõi unknown count/age, tiền đang hold và inquiry backlog, không chỉ HTTP 5xx.
+- Reconciliation ghép internal reference, rail reference, amount, account và status; phân loại thiếu phía mình/đối tác, mismatch, duplicate. Mỗi exception có owner, SLA và bằng chứng.
+- Không tự release hold của lệnh UNKNOWN theo timer: chỉ release khi có xác nhận thất bại (tra cứu hoặc file đối soát). Nếu business vẫn chọn release sau deadline thì cần quy trình duyệt trước cho trường hợp xác nhận thành công đến muộn (ghi nợ có thể làm số dư âm, thu hồi, case tra soát), không để số dư âm âm thầm.
+
+### Câu hỏi đào sâu
+- Không có inquiry API thì thời điểm nào dùng settlement file để kết luận?
+- Làm sao chuyển provider trong lúc lệnh đang chạy mà giữ reference?
+- Ai xử lý case unknown vượt SLA và bằng chứng nào được lưu?
+
+> Senior tip: alert theo tuổi UNKNOWN và tổng tiền bị hold. Timeout ngắn có thể tạo backlog lớn dù phần lớn lệnh cuối cùng thành công.`,
+  follow: ['State nào khách hàng nhìn thấy khi rail còn mơ hồ?', 'Callback cũ có thể ghi lùi state thế nào?', 'Bạn giải quyết case tra soát kéo dài ra sao?'],
+  tags: ['Napas', 'payment rail', 'timeout', 'state machine', 'reconciliation']
+},
+{
+  id: 'design-024', topic: 'design', level: 'senior',
+  q: 'Thiết kế vòng đời Smart OTP trong ứng dụng ngân hàng: liên kết thiết bị, xác nhận giao dịch, đổi điện thoại và khôi phục tài khoản thế nào để chống chiếm quyền?',
+  a: `**Tóm tắt:** Smart OTP là credential gắn với thiết bị và tài khoản, không chỉ là mã số. Enrollment phải xác thực mạnh; challenge ký phải ràng buộc nội dung giao dịch, chống replay và giới hạn thử; quy trình recovery/revoke không được yếu hơn đăng ký ban đầu.
+
+### Yêu cầu và tải giả định
+- Giả định 3 triệu user, một triệu xác thực/ngày, peak 500/s. Cần hỗ trợ đăng ký, ký giao dịch, thu hồi khi mất máy và audit.
+- Offline OTP có thể có ích nhưng giao dịch vẫn phải kiểm tra challenge phía server. Không ghi seed bí mật vào log/analytics.
+- Hạn chế approve nhầm người nhận/số tiền do malware thay nội dung giữa màn hình và server.
+
+### API và dữ liệu
+- {{POST /otp-devices/enroll}} tạo challenge; {{POST /otp-devices/confirm}} kích hoạt; {{POST /transactions/:id/challenge}} trả nonce, amount, currency, beneficiary digest và expiry; {{POST /transactions/:id/approve}} gửi proof.
+- Device lưu userId, trạng thái PENDING/ACTIVE/REVOKED, encrypted secret reference hoặc public key, timestamps/version. Secret mã hóa bằng KMS/HSM key; chỉ verifier có quyền giải mã.
+- Challenge lưu nonce, transactionId, payload hash, expiry, attempt count, consumedAt. Consume bằng conditional update ({{UPDATE ... SET consumed_at = now() WHERE id = :id AND consumed_at IS NULL AND expires_at > now()}}, kiểm tra số dòng = 1), thêm unique constraint trên approval(transaction_id) để không approve hai lần.
+
+### Kiến trúc và luồng
+~~~text
+Enrollment:  Bank App -> Auth API -> Device Registry -> KMS/HSM (bọc secret)
+Giao dịch:   Payment API -> Challenge Store (digest bất biến + nonce + expiry)
+                                 |
+             Bank App --proof--> OTP Verify <- Device Registry + KMS/HSM
+                                 |
+                                 v
+             consume challenge + approval (idempotent) -> Payment API thực thi
+~~~
+1. Enrollment yêu cầu factor hiện hữu, risk checks, trạng thái pending; xác nhận qua kênh độc lập/cooling period với thao tác rủi ro cao.
+2. Tạo giao dịch thì server đóng băng digest của amount, currency, beneficiary và sinh nonce dùng một lần. App hiển thị nội dung đó; thiết bị tạo OTP/MAC/chữ ký trên challenge.
+3. Verify nguyên tử: challenge chưa hết hạn/chưa consume, device active, proof hợp lệ, attempts dưới ngưỡng; consume challenge và tạo approval idempotent cùng transaction boundary. Lần thử sai phải tăng attempt count bằng atomic update và được commit, đừng để rollback xoá mất lần thử sai (attacker thử vô hạn).
+4. Đổi máy: revoke cũ, step-up đăng ký mới, cảnh báo kênh cũ và áp hạn chế theo risk policy. Mất máy khẩn cấp cần quy trình xác minh danh tính có audit.
+
+### Chống abuse và failure mode
+- TOTP (RFC 6238: HMAC trên bước thời gian, mặc định 30 giây) chỉ chứng minh có seed trong cửa sổ thời gian, không ràng buộc giao dịch khách nhìn thấy. Nếu vẫn dùng thì chỉ chấp nhận lệch tối đa ±1 bước và ghi nhớ bước đã dùng để mã không replay được. Transaction signing/challenge-response giúp chống đổi nội dung, nhưng cần bảo vệ thiết bị và UX hiển thị đáng tin.
+- Rate limit theo user, device, IP, transaction và resend; counter phải atomic. Khóa mềm/cooldown tránh attacker gây khóa tài khoản vô thời hạn.
+- KMS/HSM lỗi: không tự hạ cấp SMS cho giao dịch rủi ro cao. Từ chối an toàn hoặc dùng fallback được risk policy phê duyệt.
+- Push approve tiện nhưng có push fatigue; hiển thị đầy đủ giao dịch, giới hạn push và không dùng nút approve chung cho nhiều request.
+- Recovery thường là lỗ hổng lớn: không tắt Smart OTP chỉ dựa trên dữ liệu dễ đoán; mọi enrollment/revoke có thông báo, audit và review bất thường.
+
+### Trade-off và câu hỏi đào sâu
+- Offline TOTP dễ triển khai, nhưng challenge response ràng buộc transaction tốt hơn. Public key signing tránh lưu shared secret phía server song cần quản trị key lifecycle.
+- Cooling period giảm chiếm quyền nhưng cản khách hợp pháp. Tuning theo amount, device reputation và hành vi, có quy trình hỗ trợ rõ.
+- Điện thoại bị malware nhưng seed còn trong keystore thì threat còn gì? Có thể revoke khi registry lỗi? Khách mất cả máy và SIM khôi phục thế nào?
+
+> Senior tip: theo dõi approve rồi reversal, enrollment theo kênh, challenge expiry và lockout false positive. Đo ma sát khách thật cùng hiệu quả chống fraud.`,
+  follow: ['TOTP khác transaction signing ở rủi ro nào?', 'Bạn backup secret mà không làm lộ thế nào?', 'Recovery cần kiểm soát nào để tránh social engineering?'],
+  tags: ['Smart OTP', 'device binding', 'transaction signing', 'recovery', 'security']
+},
+{
+  id: 'design-025', topic: 'design', level: 'senior',
+  q: 'Thiết kế sinh sao kê tháng cho 10 triệu tài khoản. Sao kê phải khớp ledger, chạy lại an toàn, tải riêng tư và không làm ảnh hưởng giao dịch online.',
+  a: `**Tóm tắt:** Chốt snapshot nhất quán theo kỳ và watermark, chia workload ổn định, sinh artifact bất biến kèm manifest/checksum. Retry dùng cùng logical job và chỉ publish atomically sau validation; ledger correction phát hành version điều chỉnh thay vì sửa file cũ âm thầm.
+
+### Yêu cầu và sizing giả định
+- Giả định 10 triệu tài khoản, 20% hoạt động, 40 posting/tài khoản: 80 triệu dòng. Với 150 byte/dòng là khoảng 12 GB dữ liệu thô chưa tính PDF/nén. Cần benchmark trên schema thật.
+- Hoàn thành trong 6 giờ sau chốt kỳ; query không làm cạn primary. Opening + posting trong kỳ = closing theo cùng cut-off, timezone và currency.
+- API cho biết trạng thái, khách chỉ tải statement thuộc quyền của mình; bucket private và URL ngắn hạn.
+
+### API và data model
+- {{POST /statement-jobs}} tạo job period; {{GET /statements/:account/:period}} trả metadata/status; download API authorize rồi tạo signed URL.
+- Job lưu period, watermark, partition, attempt/status. Manifest lưu account, period, ledger watermark, row count, checksum, object key, version/generatedAt.
+- Ledger index theo (account_id, booking_time, entry_id); partition thời gian giúp pruning nhưng query account vẫn cần index. Tránh quá nhiều partition nhỏ.
+
+### Kiến trúc và luồng
+~~~text
+Scheduler -> Job table -> workers -> read replica / snapshot
+                              | validate totals
+                              v
+                    temp object -> checksum -> manifest publish
+~~~
+1. Chốt kỳ bằng watermark xác định sau khi đóng kỳ kế toán: không nhận thêm posting có booking date thuộc kỳ cũ và chờ các transaction đang chạy commit xong. Không chỉ dựa vào timestamp hay {{max(id)}}: giao dịch đến muộn có thể mang booking time cũ, còn sequence PostgreSQL cấp số trước khi commit nên id nhỏ có thể commit sau id lớn.
+2. Chia theo hash(accountId) hoặc range cân bằng; worker claim job bằng lease có expiry, đọc keyset pagination thay OFFSET lớn.
+3. Nhất quán nhờ lọc theo watermark của kỳ đã đóng (dữ liệu kỳ cũ không đổi), nên mỗi account đọc bằng transaction ngắn; tránh một transaction REPEATABLE READ kéo dài hàng giờ vì nó giữ xmin, gây bloat hoặc bị hủy do conflict with recovery trên replica. Nếu replica chưa replay tới watermark (so {{pg_last_wal_replay_lsn()}} với {{pg_current_wal_lsn()}} ghi lại lúc chốt kỳ) thì chờ hoặc chọn nguồn khác; không trộn opening và closing của thời điểm khác nhau.
+4. Render vào object key tạm theo job+attempt. Kiểm row count/arithmetic/checksum rồi publish manifest version; file dở không bao giờ lộ.
+5. API xác minh ownership, ký URL TTL ngắn; encryption, access audit và lifecycle cleanup cho file tạm.
+
+### Retry, consistency và vận hành
+- Worker chết: lease hết hạn, worker mới chạy lại logical job; object attempt cũ được dọn. Unique (account, period, version) giữ lịch sử version; partial unique index (account, period) WHERE is_current mới ngăn hai statement current. Publish kiểm tra fencing token (attempt hiện hành) để worker cũ đã mất lease nhưng vẫn chạy không ghi đè.
+- Sửa ledger sau phát hành: tạo version điều chỉnh có reason và link bản trước. Không xóa dấu vết hoặc ghi đè âm thầm.
+- Điều tiết concurrency theo replica CPU/IO và queue age; pause khi online workload vượt ngưỡng. Checkpoint theo account để retry không cần chạy lại cả kỳ.
+- Checksum chứng minh file không đổi, không chứng minh đúng nội dung; cần đối chiếu arithmetic, count và tổng ledger. Dữ liệu PII cần retention/access policy đã được business xác nhận.
+- Snapshot vật lý tốn storage nhưng tái lập được; query động rẻ hơn nhưng kết quả đổi theo correction. Chọn theo audit/business requirement, không tự đoán thời hạn lưu.
+
+### Câu hỏi đào sâu
+- Giao dịch booking muộn qua ranh giới tháng được phản ánh thế nào?
+- PDF phát hành rồi phát hiện thiếu posting thì versioning ra sao?
+- Account doanh nghiệp lớn không được làm chậm mọi partition thế nào?
+
+> Senior tip: dashboard cần completion percentile theo partition, replica lag tại watermark, mismatch count và tuổi job lớn nhất. Tổng số job thành công che mất một partition luôn trễ.`,
+  follow: ['Snapshot isolation nào phù hợp khi ledger liên tục ghi?', 'Bạn dọn object tạm khi worker chết ra sao?', 'Làm sao tái lập chính xác statement đã phát hành?'],
+  tags: ['statement', 'batch', 'partitioning', 'snapshot', 'object storage']
+},
+{
+  id: 'design-026', topic: 'design', level: 'lead',
+  q: 'Fraud model chặn nhầm nhiều khách thật sau một lần đổi rule. Thiết kế quản trị rule, rollout, đo false positive và analyst override mà vẫn giữ quyết định realtime dưới 100 ms.',
+  a: `**Tóm tắt:** Runtime realtime dùng rule bundle bất biến, version hóa và đã warm; quản trị/rollout nằm ngoài request path. Replay, shadow và canary phát hiện tác động trước khi mở rộng; quyết định lưu reason, feature freshness và version để giải thích, rollback hoặc kill switch nhanh.
+
+### Yêu cầu và tải giả định
+- Giả định 15 triệu giao dịch/ngày, peak 2.000 TPS, toàn bộ fraud check p99 ≤100 ms, phần engine 30 ms. Đây là sizing giả định.
+- Output approve/challenge/decline. False positive gây mất khách, false negative gây tổn thất; không tối ưu một metric như AUC đơn lẻ.
+- Decision phải truy nguyên input, model/rule version, ngưỡng và người phát hành.
+
+### Data và API
+- Payment gọi {{POST /risk/decision}} với transactionId, amount, beneficiary/merchant và device context; trả action, reason codes, decisionId, policy version.
+- Rule bundle bất biến gồm version, effectiveAt, owner, approvals, checksum. Decision log lưu version, feature freshness, latency và action; hạn chế PII.
+- Online feature store giữ velocity theo account/device/beneficiary, có event-time window và updatedAt. Missing/stale feature phải biểu diễn riêng, không tự coi null là zero.
+
+### Kiến trúc và rollout
+~~~text
+Payment -> Risk gateway -> bounded feature read -> rules + model -> decision
+Events -> stream aggregates -> online feature store
+Analyst labels -> case system -> evaluation -> approved bundle
+~~~
+1. Online path có timeout chặt và local cached bundle. Không gọi warehouse hoặc service có latency không giới hạn.
+2. Hard safety rules trước, scoring/rule tiếp theo; map score sang action. Decision log gửi async durable buffer, không để log sink treo payment.
+3. Offline replay phải tái tạo point-in-time feature (tránh label leakage), rồi shadow mode, canary cohort nhỏ, tăng dần. So latency, approval, challenge, complaint và matured loss.
+4. Analyst review case theo SLA; label có nguồn và confidence. Chargeback (thẻ) và khiếu nại/tra soát (chuyển khoản) đến muộn nhiều tuần nên dashboard tách proxy sớm (challenge rate) khỏi loss đã trưởng thành.
+
+### False positive và failure mode
+- Không coi mọi decline là fraud. Đo trên mẫu xác minh/label, cohort theo kênh, merchant, device, khách mới/cũ; báo confidence interval và label delay.
+- Bundle có kill switch/rollback theo version. Fallback khi feature store chậm là chính sách risk owner phê duyệt: challenge, decline hoặc capped approval theo exposure; platform không tự chọn.
+- Analyst override cần role access, reason, audit, expiry; không cho phép bỏ qua hard control vô hạn.
+- Shadow mode tốn compute; giới hạn traffic. Dữ liệu replay phải dùng feature tại thời điểm quyết định. Theo dõi drift, missingness và thay đổi mùa vụ.
+- Rule dễ giải thích/cập nhật, nhưng bị né; model bắt tổ hợp tinh vi nhưng khó giải thích. Kết hợp hai loại và đo kết quả theo cohort.
+
+### Trade-off và câu hỏi đào sâu
+- Ngưỡng challenge dựa trên expected loss, chi phí ma sát và năng lực review, không chỉ precision.
+- Nếu audit sink không ghi được, policy có thể yêu cầu fail closed ở một số giao dịch; quyết định phụ thuộc risk appetite và quy định nội bộ đã xác minh.
+- Làm sao phân biệt drift với mùa vụ? Fallback approve có cap exposure nào? Analyst tự tạo rule thế nào mà vẫn có kiểm soát?
+
+> Senior tip: guardrail rollout gồm tỷ lệ challenge/decline theo cohort và p99 latency. Model AUC tốt hơn nhưng chặn nhầm khách nhận lương vào ngày cố định vẫn là rollout xấu.`,
+  follow: ['False positive đo thế nào khi nhãn đến sau nhiều tuần?', 'Bạn rollback rule mà không restart toàn hệ thống ra sao?', 'Khi nào feature thiếu khiến quyết định phải fail closed?'],
+  tags: ['fraud', 'false positive', 'rule engine', 'model rollout', 'risk']
+},
+{
+  id: 'design-027', topic: 'design', level: 'senior',
+  q: 'Thiết kế loyalty points và cashback giữa ngân hàng, merchant và đối tác. Làm sao chống cộng điểm trùng, xử lý hết hạn, refund và đối soát khi file đối tác đến muộn?',
+  a: `**Tóm tắt:** Điểm thưởng cần ledger append-only riêng, với pending/available lots và event accrual, redemption, expiry, reversal. Dedupe theo business event ID, version hóa earn rule, và đối soát settlement batch; webhook lặp không được cộng điểm hai lần.
+
+### Yêu cầu và sizing giả định
+- Giả định 4 triệu thành viên, 10 triệu giao dịch/ngày (~116/s, peak 2.000/s), mỗi event tạo 1–3 posting. Đây là giả định sizing.
+- Điểm có giá trị kinh tế: cần audit, policy hạn dùng minh bạch, balance giải thích được. Tách pending points khỏi available points; cashback tiền thật dùng ledger tiền riêng.
+- Refund có thể xảy ra sau redemption; policy cần chốt negative balance/thu hồi kỳ sau/manual review.
+
+### API và mô hình dữ liệu
+- {{POST /loyalty/events}} nhận eventId, memberId, merchantId, orderId, type, amountMinor, currency; {{GET /points/balance}} trả available/pending/expiringSoon; redemption có idempotency key.
+- {{points_event}} unique (partner, event_id), lưu payload hash để phát hiện cùng ID khác nội dung; {{points_lot}} lưu earned/remaining/expiresAt/source; {{points_posting}} append accrue/redeem/expire/reverse; {{partner_batch}} lưu checksum/period/status.
+- Earn rule version gồm tỷ lệ, làm tròn, category eligible, cap; posting ghi ruleVersion. Không tin số điểm do merchant tự gửi nếu chưa validate.
+
+### Luồng
+~~~text
+Merchant -> adapter -> inbox dedupe -> pending points lot
+Settlement file -> matcher -> activate / exception case
+Redemption -> reserve lots -> confirm -> posting
+Refund -> reversal posting -> balance policy
+~~~
+1. Nhận webhook/file vào durable inbox; verify signature, dedupe event ID/hash. Cùng ID khác payload là exception/security alert.
+2. Tạo pending lot theo rule tại thời điểm giao dịch; activate sau settlement hoặc khi hết thời hạn đổi trả. Không phụ thuộc event đến đúng thứ tự.
+3. Redemption chọn lot theo policy (ví dụ hết hạn sớm dùng trước), reserve bằng conditional update/transaction, rồi confirm/cancel. Retry cùng key không tạo redemption mới.
+4. Expiry worker xử lý theo ngày hết hạn; chỉ expire remaining bằng lock/conditional update. Unique expiry reference làm retry an toàn.
+5. Refund tạo reversal liên kết source transaction; nếu điểm đã tiêu, áp dụng chính sách negative balance/thu hồi/manual case, không xóa posting cũ.
+
+### Nhất quán, đối soát và trade-off
+- Consumer at-least-once; unique constraint và transaction inbox+posting giúp mỗi event chỉ accrue một lần. Outbox phát balance-changed; app cache là projection.
+- Match batch theo partner, order, amount và points expected. File muộn giữ pending; mismatch tạo exception có SLA, không tự suy đoán thành công.
+- Expiry index/bucket tránh quét mọi lot. Partition theo member hash hỗ trợ balance; expiry theo thời gian cần index/queue riêng.
+- Rate/velocity cap theo member/merchant, refund ratio và fraud review chống farming. Materialized balance đọc nhanh nhưng cần reconciliation/rebuild; tính lại từ ledger đơn giản hơn nhưng đắt.
+- Batch ID lặp checksum khác phải vào quarantine. Partner settlement có thể thiếu, trùng hoặc đến sai kỳ; lưu raw file bất biến và kết quả matcher để audit.
+
+### Câu hỏi đào sâu
+- Đơn hoàn sau 30 ngày nhưng khách đã tiêu điểm thì xử lý sao?
+- Batch ID giống nhau nhưng checksum khác thì ai quyết định?
+- Expiry và redemption đồng thời tranh cùng lot được tuần tự hóa thế nào?
+
+> Senior tip: theo dõi liability theo expiry bucket, orphan event, batch mismatch và negative balance. Spike điểm sắp hết hạn có thể do lỗi timezone/job retry chứ không phải chiến dịch marketing.`,
+  follow: ['Pending points giữ bao lâu khi settlement trễ?', 'Balance âm có được phép không và ai duyệt?', 'Bạn dựng lại balance sau bug earn rule thế nào?'],
+  tags: ['loyalty', 'cashback', 'points ledger', 'idempotency', 'reconciliation']
+},
 );
