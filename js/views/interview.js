@@ -7,6 +7,8 @@
   'use strict';
 
   const STORE_KEY = 'sjp.interview.current';
+  const JD_KEY = 'sjp.interview.jd';
+  const JD_RESULT_KEY = 'sjp.interview.jdResult';
   const SESSION_MS = 90 * 60000;          // server-side session token lifetime
   const SILENCE_MS = 2500;                // hands-free: send after this much silence
   const esc = App.esc;
@@ -78,6 +80,8 @@
         const chips = (name, opts, cur) => '<div class="chips" data-pref="' + name + '">' + Object.entries(opts).map(([v, l]) =>
           '<button type="button" class="chip' + (String(cur) === v ? ' active' : '') + '" data-v="' + esc(v) + '">' + esc(l) + '</button>').join('') + '</div>';
         const needLogin = App.auth.enabled && !App.auth.user && !App.ai.getPasscode();
+        let jd = ''; let jdResult = null;
+        try { jd = localStorage.getItem(JD_KEY) || ''; jdResult = JSON.parse(localStorage.getItem(JD_RESULT_KEY) || 'null'); } catch (e) { /* storage unavailable */ }
         root.innerHTML = `
           <div class="page-head"><h1>Phỏng vấn AI</h1>
             <p class="muted">Hội thoại liên tục với interviewer AI bằng giọng nói: hỏi, nghe bạn trả lời, đào sâu như vòng phỏng vấn thật, rồi chấm và nhận xét cuối buổi.</p></div>
@@ -88,19 +92,56 @@
             <div class="iv-field"><label>Level</label>${chips('level', LEVELS, pref.level)}</div>
             <div class="iv-field"><label>Thời lượng</label>${chips('minutes', { 10: '10 phút', 20: '20 phút', 30: '30 phút', 45: '45 phút' }, pref.minutes)}</div>
             <div class="iv-field"><label>Phong cách interviewer</label>${chips('persona', { friendly: 'Thân thiện', strict: 'Khó tính, hỏi dồn' }, pref.persona)}</div>
-            <div class="iv-field"><label>Trọng tâm</label>${chips('mode', companies.length ? { topics: 'Theo chủ đề', company: 'Theo công ty' } : { topics: 'Theo chủ đề' }, pref.mode)}
+            <div class="iv-field"><label>Trọng tâm</label>${chips('mode', { topics: 'Theo chủ đề', company: 'Theo công ty', jd: 'Theo JD' }, pref.mode)}
               ${pref.mode === 'company' && companies.length
                 ? `<select class="select iv-company" aria-label="Công ty">${companies.map(c => `<option value="${esc(c.id)}"${c.id === pref.company ? ' selected' : ''}>${esc((c.icon || '') + ' ' + c.name)}</option>`).join('')}</select>`
+                : pref.mode === 'jd'
+                ? `<div class="iv-jd"><label for="iv-jd-text">Mô tả công việc (JD)</label><textarea id="iv-jd-text" class="textarea" rows="7" placeholder="Dán JD (ít nhất 200 ký tự)…">${esc(jd)}</textarea><div class="row"><button type="button" class="btn" data-act="analyze-jd">🔎 Phân tích JD</button><span class="iv-jd-status muted small" aria-live="polite"></span></div>${jdResult ? renderJD(jdResult) : ''}</div>`
                 : `<div class="chips iv-topics">${App.topics().filter(t => t.id !== 'english').map(t =>
                     `<button type="button" class="chip${pref.topics.includes(t.id) ? ' active' : ''}" data-topic="${esc(t.id)}">${esc(t.icon + ' ' + t.name)}</button>`).join('')}</div>`}
             </div>
             <div class="row iv-start">
-              <button class="btn primary lg" data-act="start"${needLogin ? ' disabled' : ''}>🎙️ Bắt đầu phỏng vấn</button>
+              ${pref.mode === 'jd' ? `<button class="btn primary lg" data-act="start-jd"${needLogin || !jdResult ? ' disabled' : ''}>🎙️ Phỏng vấn theo JD này</button>` : `<button class="btn primary lg" data-act="start"${needLogin ? ' disabled' : ''}>🎙️ Bắt đầu phỏng vấn</button>`}
               <span class="muted small">Mỗi buổi tốn 1 lượt AI trong hạn mức ngày.${App.speech.supported ? '' : ' Trình duyệt này không nhận dạng giọng nói — bạn sẽ gõ câu trả lời (dùng Chrome/Edge để nói).'}</span>
             </div>
             ${needLogin ? '<p class="iv-note">Cần <a href="#/account">đăng nhập</a> để dùng AI.</p>' : ''}
           </div>`;
         if (!pref.company && companies.length) pref.company = companies[0].id;
+      }
+
+      function renderJD(r) {
+        const skills = x => (x || []).map(i => { const topic = i.topic || ''; const stats = topic ? App.stats(topic) : null; const pct = stats && stats.total ? Math.round(stats.known * 100 / stats.total) : 0; const state = !topic ? 'Chưa có trong ngân hàng' : `${pct >= 60 ? '🟢' : pct >= 30 ? '🟡' : '🔴'} ${stats.known}/${stats.total} (${pct}%)`; return `<tr><td>${esc(i.skill)}</td><td>${'●'.repeat(Math.max(1, Math.min(3, Number(i.weight) || 1)))}${'○'.repeat(3 - Math.max(1, Math.min(3, Number(i.weight) || 1)))}</td><td>${topic ? `<a href="#/bank/${esc(topic)}">${state}</a>` : state}</td></tr>`; }).join('');
+        const table = (title, items) => `<section class="iv-jd-section"><h3>${title}</h3>${items && items.length ? `<div class="iv-jd-table-wrap"><table class="iv-jd-table"><thead><tr><th>Kỹ năng</th><th>Nhấn mạnh</th><th>Mức sẵn sàng</th></tr></thead><tbody>${skills(items)}</tbody></table></div>` : '<p class="muted">Không có mục nào.</p>'}</section>`;
+        const list = (title, items, why) => items && items.length ? `<section class="iv-jd-section"><h3>${title}</h3><ul>${items.map(x => `<li>${esc(typeof x === 'string' ? x : x.q || x.skill || '')}${why && x.why ? `<small class="muted"> — ${esc(x.why)}</small>` : ''}</li>`).join('')}</ul></section>` : '';
+        return `<div class="iv-jd-result"><h3>${esc(r.role || 'Vai trò')} · ${esc(r.company || 'Công ty chưa rõ')} · ${esc(LEVELS[r.level] || r.level || '')} · ${esc(r.domain || '')}</h3><p>${esc(r.summary || '')}</p>${table('Must have', r.must_have)}${table('Nice to have', r.nice_to_have)}${list('Câu hỏi có thể gặp', r.likely_questions, true)}${list('Mẹo chuẩn bị', r.prep_tips)}${list('Câu nên hỏi nhà tuyển dụng', r.questions_to_ask)}</div>`;
+      }
+
+      async function analyzeJD() {
+        const ta = root.querySelector('#iv-jd-text'), button = root.querySelector('[data-act="analyze-jd"]'), status = root.querySelector('.iv-jd-status');
+        const text = ta ? ta.value.trim() : '';
+        try { localStorage.setItem(JD_KEY, text); } catch (e) { /* storage unavailable */ }
+        if (text.length < 200) { if (status) status.innerHTML = '<span class="ai-error">JD cần có ít nhất 200 ký tự.</span>'; return; }
+        button.disabled = true; if (status) status.innerHTML = '<span class="ai-loading">Đang phân tích JD…</span>';
+        try {
+          const r = await App.ai.jd(text);
+          if ((ta.value || '').trim() !== text) { if (status) status.textContent = 'JD đã thay đổi; hãy phân tích lại.'; return; }
+          try { localStorage.setItem(JD_RESULT_KEY, JSON.stringify(r)); } catch (e) { /* storage unavailable */ }
+          setup();
+        }
+        catch (e) { if (status) status.innerHTML = App.ui.error(e); }
+        finally { const b = root.querySelector('[data-act="analyze-jd"]'); if (b) b.disabled = false; }
+      }
+
+      function startFromJD() {
+        let r; try { r = JSON.parse(localStorage.getItem(JD_RESULT_KEY) || 'null'); } catch (e) { r = null; }
+        if (!r) return;
+        const topics = [...new Set((r.must_have || []).map(x => x.topic).filter(Boolean))];
+        const must = (r.must_have || []).map(x => x.skill).filter(Boolean);
+        s = { config: { lang: pref.lang, level: LEVELS[r.level] ? r.level : 'senior', minutes: Number(pref.minutes), persona: pref.persona,
+          focus: (r.company ? r.company + ' — ' : '') + (r.role || 'Vai trò') + ' (' + (r.domain || 'chưa rõ lĩnh vực') + '): ' + must.join(', '),
+          seeds: [...(r.likely_questions || []).slice(0, 6).map(x => ({ topic: x.topic || '', q: x.q || '', ref: '' })), ...pickSeeds(topics, null, pref.lang)].slice(0, 12) },
+          topics, companyId: null, transcript: [], token: null, startedAt: Date.now(), scores: [], done: false };
+        save(s); session(); next();
       }
 
       function startNew() {
@@ -332,6 +373,8 @@
         const act = e.target.closest('[data-act]');
         if (!act) return;
         switch (act.dataset.act) {
+          case 'analyze-jd': analyzeJD(); break;
+          case 'start-jd': startFromJD(); break;
           case 'start': startNew(); break;
           case 'resume': s = load(); session(); if (s.transcript.length && s.transcript[s.transcript.length - 1].role === 'candidate') next(); break;
           case 'discard': clear(); setup(); break;
@@ -346,13 +389,24 @@
           case 'handsfree': handsFree = !handsFree; session(); if (handsFree && !busy) listen(); break;
         }
       }
+      function onInput(e) {
+        if (!e.target.matches('#iv-jd-text')) return;
+        try { localStorage.setItem(JD_KEY, e.target.value); localStorage.removeItem(JD_RESULT_KEY); } catch (err) { /* storage unavailable */ }
+        const result = root.querySelector('.iv-jd-result');
+        if (result) result.remove();
+        const start = root.querySelector('[data-act="start-jd"]');
+        if (start) start.disabled = true;
+        const message = root.querySelector('.iv-jd-status');
+        if (message) message.textContent = 'JD đã thay đổi; hãy phân tích lại.';
+      }
       function onChange(e) { if (e.target.matches('.iv-company')) pref.company = e.target.value; }
       function onKeydown(e) { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && e.target.matches('.iv-compose textarea')) { e.preventDefault(); send(); } }
 
       root.addEventListener('click', onClick);
       root.addEventListener('change', onChange);
       root.addEventListener('keydown', onKeydown);
-      cleanups.push(() => { root.removeEventListener('click', onClick); root.removeEventListener('change', onChange); root.removeEventListener('keydown', onKeydown); });
+      root.addEventListener('input', onInput);
+      cleanups.push(() => { root.removeEventListener('click', onClick); root.removeEventListener('change', onChange); root.removeEventListener('keydown', onKeydown); root.removeEventListener('input', onInput); });
       if (tts.ok) speechSynthesis.getVoices();   // warm up the voice list (loads async in Chrome)
 
       setup();
