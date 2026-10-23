@@ -12,6 +12,7 @@ cp -r node_modules "$tmp/" 2>/dev/null
 cd "$tmp" || exit 1
 node scripts/validate.js > validate.log 2>&1 || { tail -20 validate.log; echo "verify: validate FAILED"; exit 1; }
 node scripts/test-lessons.js > lessons.log 2>&1 || { tail -20 lessons.log; echo "verify: test-lessons FAILED"; exit 1; }
+node scripts/check-links.mjs > links.log 2>&1 || { grep "❌" links.log | head -10; echo "verify: broken learn-more links"; exit 1; }
 out=$(timeout 300 node scripts/smoke.mjs 2>&1); code=$?
 echo "$out" | tail -5
 [ $code -eq 0 ] && echo "$out" | grep -q "OK — không có lỗi" || { echo "verify: smoke FAILED"; exit 1; }

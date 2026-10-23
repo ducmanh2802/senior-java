@@ -42,6 +42,7 @@ for (const f of files) {
 const TOPICS = sandbox.window.TOPICS || [];
 const topicIds = new Set(TOPICS.map(t => t.id));
 const LEVELS = new Set(['mid', 'senior', 'lead']);
+const REF_TYPES = new Set(['video', 'doc', 'article', 'book', 'course']);
 
 function checkMarkup(file, id, field, s) {
   if (typeof s !== 'string') return;
@@ -84,8 +85,17 @@ for (const q of sandbox.window.QUESTIONS || []) {
   if (q.follow && !Array.isArray(q.follow)) err(f, `${id}: follow phải là mảng`);
   if (q.tags && !Array.isArray(q.tags)) err(f, `${id}: tags phải là mảng`);
   if (q.lang && q.lang !== 'en') err(f, `${id}: lang chỉ nhận 'en'`);
-  const allowed = new Set(['id', 'topic', 'level', 'q', 'a', 'follow', 'tags', 'lang', '__file']);
+  const allowed = new Set(['id', 'topic', 'level', 'q', 'a', 'follow', 'tags', 'lang', 'refs', '__file']);
   Object.keys(q).forEach(k => { if (!allowed.has(k)) err(f, `${id}: field lạ "${k}"`); });
+  if (q.refs !== undefined) {   // learn-more links; existence is checked by scripts/check-links.mjs
+    if (!Array.isArray(q.refs) || q.refs.length > 5) err(f, `${id}: refs phải là mảng ≤ 5 mục`);
+    else q.refs.forEach((r, i) => {
+      if (!r || !REF_TYPES.has(r.type)) err(f, `${id}.refs[${i}]: type phải là ${[...REF_TYPES].join('|')}`);
+      if (!r || typeof r.title !== 'string' || r.title.length < 3 || /[[\]]/.test(r.title)) err(f, `${id}.refs[${i}]: title thiếu hoặc chứa [ ]`);
+      if (!r || !/^https:\/\/[^\s()]+$/.test(r.url || '')) err(f, `${id}.refs[${i}]: url phải là https và không chứa khoảng trắng/ngoặc`);
+      Object.keys(r || {}).forEach(k => { if (!['type', 'title', 'url', 'note'].includes(k)) err(f, `${id}.refs[${i}]: field lạ "${k}"`); });
+    });
+  }
   checkMarkup(f, id, 'q', q.q);
   checkMarkup(f, id, 'a', q.a);
   (q.follow || []).forEach((x, i) => checkMarkup(f, id, `follow[${i}]`, x));

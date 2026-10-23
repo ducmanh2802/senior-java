@@ -1,6 +1,6 @@
 # T86 — Bài học: JPA / Hibernate
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/lessons-jpa.js`
 
@@ -26,3 +26,8 @@ Viết **5 bài học** cho track `jpa`, `order` từ 1, ID `lesson-jpa-001` tr�
 `node scripts/validate.js` → OK và `node scripts/test-lessons.js` → tất cả bài tập OK. Integrator sẽ fact-check.
 
 ## Notes
+
+- Đã hoàn thành 5 bài `lesson-jpa-001`…`005`, mỗi bài có body ≥ 2500 ký tự, exercise Java 17 và check nhanh.
+- `node --check js/data/lessons-jpa.js` thành công. Validator không báo lỗi cho lessons-jpa; toàn repo vẫn lỗi cú pháp có sẵn tại `js/data/lessons-modern.js:466` (dấu nháy thừa trong `explain`). Vì vậy `node scripts/validate.js` chưa thể in OK.
+- `node scripts/test-lessons.js` cũng dừng khi require cùng file lessons-modern.js. Đã kiểm tra riêng cả 5 bài: reference biên dịch và qua toàn bộ test; starter của cả 5 bài biên dịch.
+Reviewed-by: codex (T86R)

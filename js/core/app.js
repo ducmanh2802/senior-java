@@ -109,7 +109,21 @@
     return a;
   }
 
-  function questions() { return window.QUESTIONS || []; }
+  // optional q.refs [{type, title, url, note?}] are appended once as a "learn more" section of the answer
+  const REF_ICON = { video: '🎬', doc: '📘', article: '📝', book: '📕', course: '🎓' };
+  let refsAppended = false;
+  function questions() {
+    const qs = window.QUESTIONS || [];
+    if (!refsAppended) {
+      refsAppended = true;
+      qs.forEach(q => {
+        if (!Array.isArray(q.refs) || !q.refs.length) return;
+        q.a += '\n\n### 📚 Tìm hiểu sâu hơn\n' + q.refs.map(r => '- ' + (REF_ICON[r.type] || '🔗') + ' [' +
+          String(r.title).replace(/[[\]]/g, '') + '](' + r.url + ')' + (r.note ? ' — ' + r.note : '')).join('\n');
+      });
+    }
+    return qs;
+  }
   function quiz() { return window.QUIZ || []; }
   function algos() { return window.ALGOS || []; }
   /** Lessons sorted by track order then lesson order (AGENTS.md section 12). */
@@ -198,7 +212,9 @@
     // {{code}} first so bold markers inside code stay literal
     return raw.split(/(\{\{[\s\S]+?\}\})/).map(part => {
       if (part.startsWith('{{') && part.endsWith('}}')) return '<code>' + esc(part.slice(2, -2)) + '</code>';
-      return esc(part).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+      return esc(part).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        // [text](https://…) — https only; esc() already neutralised quotes, so the href cannot break out
+        .replace(/\[([^\]]+)\]\((https:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
     }).join('');
   }
 

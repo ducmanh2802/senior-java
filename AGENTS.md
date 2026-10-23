@@ -309,3 +309,16 @@ Mỗi bài học dạy một khái niệm cho người hổng nền tảng: lý 
 - Test phải **xác định (deterministic)**: không phụ thuộc thời gian thực hay thứ tự lập lịch thread; với concurrency hãy dùng `CountDownLatch`/`ExecutorService` + `join`/`awaitTermination` có timeout và lặp đủ nhiều lần để lỗi race lộ ra ổn định ở code sai.
 - Bài tập phải biên dịch với **Java 17** (JDK trên máy và CI là 17; Judge0 còn cũ hơn): tính năng Java 21 (virtual threads, switch pattern) chỉ được dạy trong `body`/`explain`.
 - Chạy `node scripts/test-lessons.js` (biên dịch thật bằng JDK 17): reference phải pass hết, starter phải biên dịch được và **không** pass hết. Và `node scripts/validate.js` → OK.
+
+## 13. Nguồn học thêm: `refs` cho câu hỏi
+
+Câu hỏi khó có thể có `refs` (≤ 5): app tự hiện mục "📚 Tìm hiểu sâu hơn" cuối đáp án.
+```js
+refs: [
+  { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
+  { type: 'video', title: 'Tên video đúng như trên YouTube', url: 'https://www.youtube.com/watch?v=…', note: 'phút 12–25 nói về pinning' },
+]
+```
+- `type`: `doc | video | article | book | course`. `title` không chứa `[` `]`. `url` https.
+- **Chỉ dùng link bạn chắc chắn tồn tại.** `node scripts/check-links.mjs <file>` gọi thật từng link (YouTube qua oEmbed, in ra tên video thật để đối chiếu); link 404/không tồn tại sẽ bị chặn, không được commit. Không chắc thì bỏ, đừng đoán ID video.
+- Ưu tiên: tài liệu chính thức (docs.oracle.com, openjdk.org/jeps, docs.spring.io, docs.jboss.org/hibernate, postgresql.org/docs, kafka.apache.org, docs.aws.amazon.com, kubernetes.io, owasp.org), bài kinh điển (martinfowler.com, vladmihalcea.com, baeldung.com, highscalability), sách (link trang nhà xuất bản), video hội thảo chính thống (Devoxx, Spring I/O, JavaOne/Java YouTube channel, InfoQ, GOTO).
