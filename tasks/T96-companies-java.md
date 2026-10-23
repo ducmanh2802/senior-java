@@ -1,6 +1,6 @@
 # T96 — Công ty mục tiêu cho dev Java/Spring Boot: cập nhật + bổ sung hồ sơ
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/companies.js`
 
@@ -20,3 +20,9 @@ Người dùng là dev **Java/Spring Boot** muốn đậu Senior. Công ty mục
 - `node --check js/data/companies.js` và `node scripts/validate.js` → OK.
 
 ## Notes
+
+- Đã cập nhật Techcombank với case study AWS/annual report; VPBank theo JD Senior Java chính thức; NAB bổ sung review interview 2026, đồng thời ghi rõ review đó thuộc role khác và quy trình thay đổi theo team.
+- Đã thêm GoTymeX, EPAM Vietnam, Money Forward Vietnam và đề xuất GFT Technologies Vietnam, NAVER VIETNAM, Rakuten Fintech Vietnam. Các điểm ITviec/recommend đều có nguồn; không thêm tỷ lệ đỗ.
+- Không tìm thấy dữ liệu phỏng vấn Java Việt Nam mới, đủ tin cậy cho một số công ty; ghi rõ chưa xác minh và không tuyên bố interview dễ/chắc chắn minh bạch. Câu hỏi luyện tập được đánh dấu là gợi ý domain khi phù hợp.
+- Kiểm tra: `node --check js/data/companies.js` và `node scripts/validate.js` đều thành công; validator in `OK — không có lỗi.`
+Reviewed-by: codex (T96R)
