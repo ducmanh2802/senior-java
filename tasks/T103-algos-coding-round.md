@@ -1,6 +1,6 @@
-# T103 — +20 bài thuật toán kiểu vòng coding (HackerRank/Codility) có test
+﻿# T103 — +20 bài thuật toán kiểu vòng coding (HackerRank/Codility) có test
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/algo.js`
 
@@ -10,3 +10,6 @@ Owns: `js/data/algo.js`
 - `node scripts/validate.js algo.js` → OK và **`node scripts/test-algos.js` → tất cả OK** (lời giải tham chiếu pass mọi test). Không backtick, không `${`.
 
 ## Notes
+
+- Đã thêm algo-049 đến algo-068 (6 easy, 11 medium, 3 hard), mỗi bài có starter và harness với 5 case; kiểm tra cú pháp JS, `node scripts/test-algos.js` toàn repo (68 bài sau khi sửa expected case) và `node scripts/validate.js` đều đạt.
+Reviewed-by: codex (T103R)
