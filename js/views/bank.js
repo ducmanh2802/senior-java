@@ -27,14 +27,28 @@
     status: 'all',
     q: '',
     shown: PAGE_SIZE,
-    expanded: {},   // id -> true (đã mở)
-    loaded: {},     // id -> true (đáp án đã render)
+    expanded: {},     // id -> true (đã mở)
+    loaded: {},       // id -> true (đáp án đã render)
+    answers: {},      // id -> câu trả lời đang gõ (giữ khi đổi bộ lọc)
+    practiceOpen: {}, // id -> true (khối luyện trả lời đang mở)
+    revealed: {},     // id -> true (đã bấm xem đáp án khi bật chế độ ẩn)
+    aiResult: {},     // id -> kết quả App.ai.grade
+    speech: {},       // id -> metrics của lần đọc gần nhất
   };
 
+  const HIDE_KEY = 'sjp.bank.hideAnswer';
   let rootEl = null;
   let searchTimer = null;
+  let mic = null;   // { id, handle } — chỉ một phiên ghi âm tại một thời điểm
 
   function esc(s) { return App.esc(s); }
+
+  function hideAnswer() {
+    try { return localStorage.getItem(HIDE_KEY) === '1'; } catch (e) { return false; }
+  }
+  function setHideAnswer(on) {
+    try { localStorage.setItem(HIDE_KEY, on ? '1' : '0'); } catch (e) { /* private mode */ }
+  }
 
   /** Câu hỏi sau khi áp dụng filter. */
   function filtered() {
@@ -88,15 +102,67 @@
     '</div>';
   }
 
+  /** Khối "✍️ Luyện trả lời" (mặc định thu gọn). */
+  function practiceHtml(q) {
+    const openAttr = S.practiceOpen[q.id] ? ' open' : '';
+    const enAttr = q.lang === 'en' ? ' lang="en"' : '';
+    const value = S.answers[q.id] || '';
+    const micBtn = App.speech.supported
+      ? '<button type="button" class="btn sm mic-btn" data-mic="' + esc(q.id) +
+        '" aria-label="Đọc câu trả lời bằng giọng nói">🎤 Nói</button>'
+      : '';
+    const stats = S.speech[q.id] ? App.ui.speechStats(S.speech[q.id]) : '';
+    const result = S.aiResult[q.id] ? App.ui.feedback(S.aiResult[q.id], q.lang) : '';
+    return '<section class="bank-practice">' +
+      '<details class="bank-practice-box" data-practice="' + esc(q.id) + '"' + openAttr + '>' +
+        '<summary>✍️ Luyện trả lời</summary>' +
+        '<div class="bank-practice-body">' +
+          '<label class="field"><span>Câu trả lời của bạn</span>' +
+            '<textarea class="textarea bank-answer" data-answer="' + esc(q.id) + '"' + enAttr +
+              ' rows="4" placeholder="Trả lời bằng lời của bạn rồi nhờ AI chấm…">' + esc(value) + '</textarea></label>' +
+          '<div class="row bank-practice-actions">' +
+            '<button type="button" class="btn sm primary" data-grade-ai="' + esc(q.id) + '">🤖 Chấm bằng AI</button>' +
+            micBtn +
+            '<span class="spacer"></span>' +
+            '<span class="small muted">Điểm ≥ 4 → Đã thuộc · 3 → Cần ôn · ≤ 2 → Chưa biết</span>' +
+          '</div>' +
+          '<div class="bank-speech" data-speech="' + esc(q.id) + '">' + stats + '</div>' +
+          '<div class="bank-ai-result" data-feedback="' + esc(q.id) + '">' + result + '</div>' +
+        '</div>' +
+      '</details>' +
+    '</section>';
+  }
+
+  /** Đáp án mẫu, có thể bị che khi bật "Ẩn đáp án cho tới khi tự trả lời". */
+  function answerHtml(q) {
+    if (hideAnswer() && !S.revealed[q.id]) {
+      return '<div class="bank-answer-hidden">' +
+        '<p class="small muted">Đang bật chế độ ẩn đáp án — hãy tự trả lời trước khi xem.</p>' +
+        '<button type="button" class="btn sm" data-reveal="' + esc(q.id) + '">Xem đáp án mẫu</button>' +
+      '</div>';
+    }
+    return '<div class="md">' + App.md(q.a) + '</div>';
+  }
+
+  /** Mức tự đánh giá mà AI gợi ý (chỉ để highlight, người dùng tự bấm). */
+  function suggestedMark(q) {
+    const r = S.aiResult[q.id];
+    if (!r || typeof r.score !== 'number') return '';
+    return r.score >= 4 ? 'known' : r.score === 3 ? 'review' : 'unknown';
+  }
+
   /** Thân câu hỏi khi đang mở (expanded). */
   function bodyHtml(q) {
     const follow = (q.follow || []).map(f => '<li>' + App.md(f) + '</li>').join('');
+    const suggest = suggestedMark(q);
     return '<div class="bank-body">' +
-      '<div class="md">' + App.md(q.a) + '</div>' +
+      practiceHtml(q) +
+      answerHtml(q) +
       (follow ? '<div class="bank-follow"><h4>Interviewer có thể hỏi tiếp</h4><ul>' + follow + '</ul></div>' : '') +
       '<div class="bank-grade">' +
         '<span class="small muted">Tự đánh giá:</span>' +
-        GRADES.map(g => '<button type="button" class="btn ' + g.cls + ' sm" data-grade="' + g.id + '" data-id="' +
+        GRADES.map(g => '<button type="button" class="btn ' + g.cls + ' sm' +
+          (suggest === g.id ? ' is-suggest' : '') + '" data-grade="' + g.id + '" data-id="' +
           esc(q.id) + '">' + g.label + '</button>').join('') +
       '</div>' +
     '</div>';
@@ -150,6 +216,8 @@
           esc(S.q) + '" autocomplete="off"></label>' +
         levelSelect() +
       '</div>' +
+      '<label class="bank-toggle"><input type="checkbox" id="bankHideAnswer"' +
+        (hideAnswer() ? ' checked' : '') + '> <span>Ẩn đáp án cho tới khi tự trả lời</span></label>' +
       topicChips() +
       statusChips() +
     '</section>';
@@ -178,6 +246,8 @@
     const all = filtered();
     const count = document.getElementById('bankCount');
     if (count) count.textContent = all.length + ' câu hỏi đang hiển thị';
+    // Dừng ghi âm trước khi thay DOM, tránh ghi vào textarea đã bị gỡ.
+    if (mic) stopMic();
     listWrap.innerHTML = listHtml();
     syncExpandButtons(all);
   }
@@ -214,6 +284,8 @@
     if (rootEl.dataset.bankBound !== '1') {
       rootEl.dataset.bankBound = '1';
       rootEl.addEventListener('click', onRootClick);
+      rootEl.addEventListener('input', onRootInput);
+      rootEl.addEventListener('toggle', onRootToggle, true);
     }
 
     // Ô tìm kiếm / select được tạo lại mỗi lần render -> gắn lại listener.
@@ -236,6 +308,24 @@
       S.shown = PAGE_SIZE;
       renderList();
     });
+
+    const hide = document.getElementById('bankHideAnswer');
+    if (hide) hide.addEventListener('change', () => {
+      setHideAnswer(hide.checked);
+      renderList();
+    });
+  }
+
+  /** Lưu câu trả lời đang gõ vào bộ nhớ (không lưu bền vững). */
+  function onRootInput(e) {
+    const ta = e.target.closest('[data-answer]');
+    if (ta) S.answers[ta.dataset.answer] = ta.value;
+  }
+
+  /** Ghi nhớ khối "Luyện trả lời" đang mở hay đóng. */
+  function onRootToggle(e) {
+    const det = e.target && e.target.closest ? e.target.closest('[data-practice]') : null;
+    if (det) S.practiceOpen[det.dataset.practice] = det.open;
   }
 
   /** Xử lý click trong view bank (event delegation). */
@@ -275,6 +365,28 @@
         star.setAttribute('aria-pressed', on ? 'true' : 'false');
         star.setAttribute('aria-label', on ? 'Bỏ đánh dấu câu hỏi' : 'Đánh dấu câu hỏi');
         star.title = on ? 'Bỏ đánh dấu' : 'Đánh dấu';
+        return;
+      }
+
+      const reveal = e.target.closest('[data-reveal]');
+      if (reveal) {
+        e.stopPropagation();
+        S.revealed[reveal.dataset.reveal] = true;
+        refreshCard(reveal.dataset.reveal);
+        return;
+      }
+
+      const micBtn = e.target.closest('[data-mic]');
+      if (micBtn) {
+        e.stopPropagation();
+        toggleMic(micBtn.dataset.mic);
+        return;
+      }
+
+      const aiBtn = e.target.closest('[data-grade-ai]');
+      if (aiBtn) {
+        e.stopPropagation();
+        gradeAnswer(aiBtn.dataset.gradeAi, aiBtn);
         return;
       }
 
@@ -318,6 +430,122 @@
       (open ? bodyHtml(q) : '');
   }
 
+  /** Render lại thân một card đang mở (giữ nguyên câu trả lời đang gõ). */
+  function refreshCard(id) {
+    if (!rootEl || !S.expanded[id]) return;
+    const card = rootEl.querySelector('.bank-card[data-id="' + CSS.escape(id) + '"]');
+    if (!card) return;
+    const q = App.questions().find(x => x.id === id);
+    if (!q) return;
+    const idx = card.querySelector('.bank-idx') ? Number(card.querySelector('.bank-idx').textContent) : 0;
+    card.innerHTML = headHtml(q, idx) + bodyHtml(q);
+  }
+
+  /** Chấm câu trả lời tự luận bằng AI; chỉ highlight mức tự đánh giá gợi ý. */
+  async function gradeAnswer(id, btn) {
+    const q = App.questions().find(x => x.id === id);
+    if (!q || !rootEl) return;
+    const viewRoot = rootEl;
+    const ta = rootEl.querySelector('textarea[data-answer="' + CSS.escape(id) + '"]');
+    const answer = (ta ? ta.value : S.answers[id] || '').trim();
+    const box = rootEl.querySelector('[data-feedback="' + CSS.escape(id) + '"]');
+    if (!box) return;
+    if (!answer) {
+      box.innerHTML = '<div class="ai-error">⚠️ Hãy viết câu trả lời (hoặc dùng micro) trước khi nhờ AI chấm.</div>';
+      return;
+    }
+    const buttons = rootEl.querySelectorAll('[data-grade-ai="' + CSS.escape(id) + '"]');
+    buttons.forEach(b => { b.disabled = true; });
+    box.innerHTML = '<span class="ai-loading">AI đang chấm…</span>';
+    try {
+      const r = await App.ai.grade({
+        question: q.q,
+        reference: q.a,
+        answer: answer,
+        lang: q.lang === 'en' ? 'en' : 'vi',
+        topic: q.topic,
+        level: q.level,
+        speech: S.speech[id] || undefined,
+      });
+      S.aiResult[id] = r;
+      if (rootEl !== viewRoot) return;
+      const currentBox = viewRoot.querySelector('[data-feedback="' + CSS.escape(id) + '"]');
+      if (currentBox) currentBox.innerHTML = App.ui.feedback(r, q.lang);
+      const suggest = r.score >= 4 ? 'known' : r.score === 3 ? 'review' : 'unknown';
+      const card = viewRoot.querySelector('.bank-card[data-id="' + CSS.escape(id) + '"]');
+      if (card) card.querySelectorAll('[data-grade]').forEach(b => {
+        b.classList.toggle('is-suggest', b.dataset.grade === suggest);
+      });
+    } catch (e) {
+      if (rootEl === viewRoot) {
+        const currentBox = viewRoot.querySelector('[data-feedback="' + CSS.escape(id) + '"]');
+        if (currentBox) currentBox.innerHTML = App.ui.error(e);
+      }
+    } finally {
+      buttons.forEach(b => { b.disabled = false; });
+    }
+  }
+
+  function setMicBtn(id, recording) {
+    if (!rootEl) return;
+    const btn = rootEl.querySelector('[data-mic="' + CSS.escape(id) + '"]');
+    if (!btn) return;
+    btn.classList.toggle('recording', recording);
+    btn.textContent = recording ? '⏹ Dừng' : '🎤 Nói';
+    btn.setAttribute('aria-label', recording ? 'Dừng ghi âm' : 'Đọc câu trả lời bằng giọng nói');
+  }
+
+  function micError(id, msg) {
+    if (!rootEl) return;
+    const box = rootEl.querySelector('[data-feedback="' + CSS.escape(id) + '"]');
+    if (box) box.innerHTML = '<div class="ai-error">⚠️ ' + esc(msg) + '</div>';
+  }
+
+  function stopMic() {
+    if (!mic) return;
+    const id = mic.id;
+    const handle = mic.handle;
+    mic = null;
+    let metrics = null;
+    try { metrics = handle.stop(); } catch (e) { /* ignore */ }
+    setMicBtn(id, false);
+    if (!metrics) return;
+    S.speech[id] = metrics;
+    if (!rootEl) return;
+    const ta = rootEl.querySelector('textarea[data-answer="' + CSS.escape(id) + '"]');
+    if (ta) S.answers[id] = ta.value;
+    const stats = rootEl.querySelector('[data-speech="' + CSS.escape(id) + '"]');
+    if (stats) stats.innerHTML = App.ui.speechStats(metrics);
+  }
+
+  function toggleMic(id) {
+    if (mic && mic.id === id) { stopMic(); return; }
+    if (mic) stopMic();
+    const q = App.questions().find(x => x.id === id);
+    if (!q || !rootEl) return;
+    const ta = rootEl.querySelector('textarea[data-answer="' + CSS.escape(id) + '"]');
+    if (!ta) return;
+    try {
+      const handle = App.speech.start({
+        lang: q.lang === 'en' ? 'en' : 'vi',
+        onText(finalText, interim) {
+          const v = finalText + (interim ? (finalText ? ' ' : '') + interim : '');
+          ta.value = v;
+          S.answers[id] = v;
+        },
+        onError(msg) {
+          mic = null;
+          setMicBtn(id, false);
+          micError(id, msg);
+        },
+      });
+      mic = { id: id, handle: handle };
+      setMicBtn(id, true);
+    } catch (e) {
+      micError(id, e && e.message ? e.message : 'Không mở được micro.');
+    }
+  }
+
   /** Cập nhật chấm trạng thái sau khi tự đánh giá. */
   function updateStatusDot(id) {
     const card = rootEl.querySelector('.bank-card[data-id="' + CSS.escape(id) + '"]');
@@ -359,6 +587,7 @@
 
       return () => {
         clearTimeout(searchTimer);
+        if (mic) stopMic();
         rootEl = null;
       };
     },
