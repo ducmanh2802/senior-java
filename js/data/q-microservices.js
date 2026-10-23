@@ -1537,5 +1537,295 @@ Concurrency = Throughput (req/s) * Latency (s) p99
     { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
     { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
   ]
+},
+{
+  id: 'microservices-029', topic: 'microservices', level: 'senior',
+  q: 'Một topic có 12 partition nhưng team kỳ vọng mọi event của cùng một đơn hàng giữ đúng thứ tự. Bạn chọn key và số partition thế nào, và giới hạn thứ tự của Kafka là gì?',
+  a: `**Tóm tắt:** Kafka chỉ đảm bảo thứ tự trong một partition. Dùng {{orderId}} làm key để các event cùng đơn hàng vào cùng partition; tăng partition có thể đổi mapping key→partition, nên phải cân nhắc khi yêu cầu thứ tự kéo dài qua thời gian.
+
+### Từ key đến thứ tự
+Producer serialize key rồi partitioner chọn partition (thường hash key modulo số partition). Broker append record vào log partition đó; consumer đọc theo offset tăng dần. Hai event cùng key vì vậy cùng một log và được quan sát theo thứ tự ghi.
+
+~~~text
+order-42: Created -> Paid -> Shipped   (partition 7)
+order-99: Created -> Paid             (partition 2)
+~~~
+
+Thứ tự chỉ áp dụng trong partition, không có total order giữa partition 7 và 2. Nếu gửi record không key, load được chia đều nhưng event của cùng aggregate có thể chạy đồng thời và đảo thứ tự.
+
+### Chọn key và partition count
+- Chọn key theo đơn vị cần serialize: {{accountId}} cho số dư tài khoản, {{orderId}} cho lifecycle đơn hàng. Tránh key thời gian hoặc hằng số vì tạo hot partition.
+- Partition là đơn vị song song đọc tối đa trong một consumer group; 12 partition không đem lại 12 consumer hữu ích nếu phần lớn traffic rơi vào một key.
+- Thêm partition tăng khả năng song song nhưng thay đổi hash mapping của key mới. Record cũ ở partition cũ, record mới có thể sang partition khác; không còn một dòng thứ tự xuyên suốt cho key đó.
+- Nếu cần thay đổi partition count có kiểm soát, dùng topic version mới và migration/replay có kế hoạch, hoặc custom partitioning có phiên bản ổn định; đừng giả định tăng partition luôn trong suốt.
+
+### Lỗi thường gặp
+Một consumer xử lý record bất đồng bộ rồi commit offset cao hơn record chưa xong: broker giữ thứ tự phát nhưng hiệu ứng nghiệp vụ bị đảo. Hoặc nhiều producer đồng thời gửi cùng key mà không phối hợp retry, làm thứ tự theo thời gian nghiệp vụ không được đảm bảo như mong đợi.
+
+> Senior tip: đo phân bố record theo partition trước khi tăng partition. Với payment, theo dõi key nóng và độ trễ partition; tăng tổng partition không chữa được một merchant chiếm phần lớn tải.`,
+  follow: ['Nếu một key chiếm 30% traffic, bạn giữ thứ tự mà giảm hot partition thế nào?', 'Tăng partition giữa lúc chạy ảnh hưởng consumer và thứ tự ra sao?'],
+  tags: ['Kafka', 'partition', 'key', 'ordering'],
+  refs: [{ type: 'doc', title: 'Kafka documentation: Introduction', url: 'https://kafka.apache.org/documentation/#intro' }]
+},
+{
+  id: 'microservices-030', topic: 'microservices', level: 'senior',
+  q: 'Consumer group thường xuyên rebalance khi deploy và autoscale. Bạn phân biệt cooperative sticky assignment với static membership, và chọn cấu hình nào để giảm thời gian ngừng xử lý?',
+  a: `**Tóm tắt:** Cooperative sticky rebalance chuyển partition theo từng bước, tránh thu hồi toàn bộ assignment cùng lúc; static membership giữ danh tính member qua restart ngắn để tránh rebalance không cần thiết. Chúng giải quyết hai vấn đề khác nhau và có thể kết hợp.
+
+### Rebalance gây dừng ở đâu
+Trong consumer group, mỗi partition chỉ được gán cho một member tại một thời điểm. Khi member vào/ra hoặc subscription đổi, coordinator tính assignment mới. Với eager protocol, consumer thu hồi tất cả partition, rồi nhận assignment mới; lúc đó không xử lý record. Deploy đồng loạt vì thế tạo một khoảng trống đồng bộ.
+
+### Cooperative sticky
+Sticky cố giữ assignment cũ để giảm chuyển partition; cooperative protocol thu hồi chỉ những partition cần chuyển. Rebalance có thể cần nhiều vòng: vòng đầu báo phần cần nhả, consumer dừng xử lý partition đó rồi vòng sau giao cho member mới. Đây là giảm phạm vi gián đoạn, không loại bỏ rebalance.
+
+### Static membership
+Gán {{group.instance.id}} ổn định cho mỗi instance. Nếu instance restart trong khoảng {{session.timeout.ms}}, coordinator chờ member quay lại thay vì lập tức coi nó là member mới và chia lại toàn bộ. Giá trị phải duy nhất trong group; trùng ID khiến member bị fencing. Static membership không phù hợp nếu autoscaler tạo nhiều pod dùng chung ID hoặc instance cũ có thể sống song song.
+
+### Cách vận hành
+- Dùng cooperative sticky assignor tương thích trên toàn group; rolling upgrade cần tránh protocol mismatch giữa client cũ và mới.
+- Chọn static ID theo ordinal/stateful identity, hoặc chỉ bật khi nền tảng đảm bảo identity duy nhất và ổn định. Với pod ephemeral, cooperative thường an toàn hơn.
+- Tuning {{session.timeout.ms}}, {{heartbeat.interval.ms}} và {{max.poll.interval.ms}} theo thời gian xử lý thực. Nếu xử lý batch quá lâu không gọi poll, member bị loại dù broker vẫn khỏe.
+- Khi rebalance, đóng consumer, commit phần đã xử lý an toàn, rồi khởi tạo lại resource. Không commit offset của batch còn chạy.
+
+> Senior tip: theo dõi rebalance count, thời gian rebalance và partition assignment theo deployment. Nếu rebalance do {{max.poll.interval.ms}}, tăng timeout đơn thuần có thể che batch treo; ưu tiên chia nhỏ batch hoặc chuyển xử lý dài ra worker có checkpoint.`,
+  follow: ['Static member bị treo nhưng chưa hết session timeout sẽ ảnh hưởng availability ra sao?', 'Rolling deploy client Kafka cần kiểm soát assignor version thế nào?'],
+  tags: ['Kafka', 'consumer group', 'rebalance', 'static membership'],
+  refs: [{ type: 'doc', title: 'Kafka consumer configuration', url: 'https://kafka.apache.org/documentation/#consumerconfigs' }]
+},
+{
+  id: 'microservices-031', topic: 'microservices', level: 'lead',
+  q: 'Bạn cần không mất record và tránh xử lý nghiệp vụ lặp khi consumer ghi database. Hãy giải thích at-least-once, idempotent producer và Kafka transactions, cùng giới hạn của exactly-once.',
+  a: `**Tóm tắt:** Commit offset sau khi xử lý cho at-least-once: có thể chạy lại nhưng tránh mất record; commit trước xử lý đổi lại có thể mất dữ liệu. Idempotent producer loại duplicate do retry ở phía ghi Kafka; transaction + {{read_committed}} hỗ trợ exactly-once trong luồng Kafka-to-Kafka, nhưng không tự tạo transaction nguyên tử với database ngoài.
+
+### At-least-once và idempotency
+Giả sử consumer đọc offset 10, ghi DB thành công rồi chết trước khi commit. Sau restart, offset 10 được đọc lại. Đây là duplicate có chủ đích để không mất event. Bảo vệ DB bằng khóa idempotency (event ID duy nhất) hoặc unique constraint và cập nhật trạng thái trong cùng DB transaction.
+
+Nếu commit offset trước khi ghi DB, crash ở giữa khiến offset tiến lên nhưng thay đổi DB chưa có: mất hiệu ứng. Với batch, chỉ commit offset cao nhất khi mọi record trước đó đã hoàn tất liên tục; xử lý song song cần quản lý completion theo từng offset.
+
+### Producer idempotence và transaction
+Idempotent producer dùng producer ID và sequence theo partition để broker loại duplicate do retry; cấu hình producer an toàn như {{acks=all}} và retry phù hợp. Nó không ngăn ứng dụng chủ động gửi cùng event hai lần bằng hai lần gọi send độc lập.
+
+Kafka transaction có thể ghi nhiều record và offset consumer thành một đơn vị. Consumer downstream đặt {{isolation.level=read_committed}} sẽ bỏ qua record thuộc transaction chưa commit hoặc đã abort. Đây là nền tảng cho consume-transform-produce không lặp trong Kafka.
+
+~~~text
+consume input -> transform -> begin transaction
+                         write output + sendOffsetsToTransaction
+                    commit transaction
+~~~
+
+### Biên giới exactly-once
+Nếu bước giữa là gọi payment API hay ghi PostgreSQL, Kafka transaction không bao trùm được side effect đó. Dùng idempotency key tại đích, inbox/dedup table cùng transaction với business write, hoặc outbox cho publish ngược lại. “Exactly once” cần nêu rõ phạm vi và lỗi nào được bao phủ.
+
+> Senior tip: trong production thường chọn at-least-once cộng consumer idempotent. Đặt event ID xuyên suốt log, DB và trace để đội trực có thể chứng minh retry nào tạo duplicate và replay an toàn.`,
+  follow: ['Vì sao idempotent producer không chống được lần publish nghiệp vụ trùng?', 'Khi consumer ghi DB, bạn thiết kế inbox table và commit offset ra sao?'],
+  tags: ['Kafka', 'offset', 'exactly once', 'idempotency', 'transactions'],
+  refs: [{ type: 'doc', title: 'Kafka design: Message delivery semantics', url: 'https://kafka.apache.org/documentation/#semantics' }]
+},
+{
+  id: 'microservices-032', topic: 'microservices', level: 'senior',
+  q: 'Một cluster Kafka mới cần bỏ ZooKeeper. KRaft thay đổi kiến trúc và quy trình vận hành thế nào, và bạn lên kế hoạch migration cluster đang chạy ra sao?',
+  a: `**Tóm tắt:** KRaft đưa metadata quorum vào Kafka bằng Raft, bỏ ZooKeeper và giảm số hệ thống phải vận hành. Migration cần theo đúng quy trình hỗ trợ của phiên bản Kafka, kiểm tra metadata và khả năng rollback; không đổi mode tùy tiện trên production.
+
+### KRaft làm gì
+Trước đây ZooKeeper lưu metadata cluster và điều phối controller; broker giữ data log. KRaft dùng một nhóm controller Kafka bầu leader bằng Raft, ghi metadata vào replicated metadata log. Broker vẫn lưu partition data như trước. Controller quorum nên có số node lẻ, thường ba hoặc năm, phân bố failure domain phù hợp.
+
+~~~text
+KRaft controllers: leader <-> followers (metadata log)
+                         |
+                    Kafka brokers (partition logs)
+~~~
+
+Không có ZooKeeper không có nghĩa Kafka tự phục hồi mọi lỗi. Controller quorum mất majority thì metadata mutation bị ảnh hưởng; broker có thể tiếp tục phục vụ một phần dữ liệu hiện có nhưng thay đổi cluster không diễn ra bình thường.
+
+### Migration có kiểm soát
+- Kiểm tra phiên bản nguồn/đích, tính năng đang dùng và hướng dẫn migration chính thức đúng bản phát hành; không dựa vào một lệnh chung cho mọi phiên bản.
+- Sao lưu cấu hình và metadata, xác nhận replication factor, controller quorum, disk, network ACL và monitoring.
+- Thực hiện các bước chuyển metadata mode theo tài liệu; giữ cluster ổn định qua từng bước, xác minh controller quorum và trạng thái partition trước khi tiếp tục.
+- Chuẩn bị rollback có điều kiện và thời hạn. Một khi metadata đã chuyển theo hướng không tương thích, downgrade có thể không còn là thao tác an toàn.
+
+### Pitfall production
+Đặt controller và broker chung máy có thể tiết kiệm tài nguyên nhưng tranh chấp CPU/disk đúng lúc bầu lại leader. Alert chỉ nhìn broker up mà bỏ qua quorum health sẽ phát hiện quá muộn. Cũng cần bảo đảm quy trình backup/restore hiểu metadata KRaft, không chỉ copy data directory.
+
+> Senior tip: diễn tập mất một controller và restore trên môi trường staging có dữ liệu gần production. Tiêu chí là đo được thời gian metadata operation phục hồi, không chỉ thấy process chạy.`,
+  follow: ['Controller quorum mất majority thì broker và client nhìn thấy hiện tượng gì?', 'Bạn xác minh khả năng restore metadata KRaft bằng bài diễn tập nào?'],
+  tags: ['Kafka', 'KRaft', 'ZooKeeper', 'operations'],
+  refs: [{ type: 'doc', title: 'Kafka KRaft documentation', url: 'https://kafka.apache.org/documentation/#kraft' }]
+},
+{
+  id: 'microservices-033', topic: 'microservices', level: 'mid',
+  q: 'Topic audit cần giữ lịch sử để replay, còn topic trạng thái khách hàng chỉ cần giá trị mới nhất theo key. Bạn chọn retention hay compaction, và cấu hình chúng ảnh hưởng gì?',
+  a: `**Tóm tắt:** Retention xóa segment theo thời gian hoặc dung lượng, phù hợp event history có thời hạn. Compaction giữ giá trị mới nhất theo key (cùng tombstone trong thời gian cấu hình), phù hợp changelog trạng thái; nó không phải một bản snapshot tức thời.
+
+### Retention
+Kafka ghi append-only theo segment. Khi segment đủ cũ theo {{retention.ms}} hoặc vượt giới hạn dung lượng theo {{retention.bytes}}, broker có thể xóa cả segment. Consumer offline lâu hơn retention sẽ mất khả năng đọc phần đã xóa. Dùng cho telemetry, audit có policy lưu trữ, hoặc event replay trong cửa sổ xác định.
+
+### Compaction
+Cleaner quét log và loại bỏ bản ghi cũ hơn cùng key, nhưng chạy bất đồng bộ; đọc từ đầu có thể thấy nhiều phiên bản trước khi cleanup hoàn tất. Một record value null là tombstone, biểu thị xóa key; tombstone chỉ được giữ trong {{delete.retention.ms}} rồi cũng bị dọn.
+
+~~~text
+key=c42 value=Gold   -> key=c42 value=Platinum -> compacted: Platinum
+key=c77 value=Basic  -> key=c77 value=null    -> compacted: tombstone, rồi bị xóa
+~~~
+
+Topic có thể bật cả {{cleanup.policy=compact,delete}}: compaction giữ trạng thái cuối theo key, retention giới hạn tuổi/dung lượng log. Nhưng retention theo thời gian có thể xóa dữ liệu cần cho rebuild, nên phải khớp với yêu cầu khôi phục.
+
+### Chọn và vận hành
+- Event sourcing/audit: retention đủ dài và archive nếu chính sách yêu cầu lâu hơn.
+- Changelog/cache state: compact; key phải ổn định, cùng một logical entity luôn cùng key.
+- Compaction không đảm bảo chỉ còn đúng một record ngay lập tức; consumer bootstrap phải xử lý tombstone và record cũ an toàn.
+- Đừng dùng compaction thay database nếu cần query tùy ý, transaction đa bản ghi hoặc lịch sử đầy đủ.
+
+> Senior tip: thử dựng lại state store từ topic sau khi cleaner chạy và tombstone hết hạn. Nếu rebuild vẫn cần “bản ghi đã xóa” để hiểu nghiệp vụ, phải lưu deletion marker hoặc history ở nơi khác.`,
+  follow: ['Nếu consumer mới cần khôi phục lịch sử đầy đủ, compaction có đáp ứng không?', 'Tombstone hết hạn trước khi consumer offline quay lại tạo rủi ro nào?'],
+  tags: ['Kafka', 'retention', 'compaction', 'tombstone'],
+  refs: [{ type: 'doc', title: 'Kafka log compaction', url: 'https://kafka.apache.org/documentation/#compaction' }]
+},
+{
+  id: 'microservices-034', topic: 'microservices', level: 'senior',
+  q: 'Spring Kafka listener gặp lỗi dữ liệu không hợp lệ lặp lại. Bạn cấu hình retry, DefaultErrorHandler và DeadLetterPublishingRecoverer thế nào để tránh poison message chặn partition?',
+  a: `**Tóm tắt:** Phân loại lỗi trước: lỗi tạm thời có retry hữu hạn và backoff; lỗi vĩnh viễn được recover sang DLT sau khi ghi kèm metadata. {{DefaultErrorHandler}} điều phối retry/recover, {{DeadLetterPublishingRecoverer}} publish record lỗi; chỉ xác nhận offset sau khi recovery thành công.
+
+### Luồng xử lý
+Listener ném exception. Error handler có thể retry đồng bộ trên consumer thread theo backoff. Nếu vượt số lần, recoverer gửi record sang DLT; khi publish DLT thành công handler mới được phép coi input đã xử lý. Nếu DLT publish thất bại, không nên âm thầm commit offset vì record sẽ mất khỏi luồng chính.
+
+~~~java
+var recoverer = new DeadLetterPublishingRecoverer(template);
+var handler = new DefaultErrorHandler(recoverer,
+    new FixedBackOff(1_000L, 3L)); // ba lần retry sau lần đầu
+handler.addNotRetryableExceptions(InvalidPayloadException.class);
+factory.setCommonErrorHandler(handler);
+~~~
+
+Số lần thử, backoff và exception classification phải phù hợp phiên bản Spring Kafka đang dùng. Với lỗi schema/validation vĩnh viễn, retry chỉ làm tăng lag. Với timeout DB tạm thời, retry ngắn có ích; retry dài vô hạn giữ partition hostage.
+
+### DLT cần hợp đồng
+- Đặt DLT theo convention nhất quán; {{DeadLetterPublishingRecoverer}} mặc định thường thêm hậu tố, nhưng cần định rõ routing và partition strategy.
+- Giữ original topic/partition/offset, exception class/message và timestamp trong header để replay và điều tra.
+- Chọn serializer có thể xử lý cả payload hỏng; nếu producer DLT không serialize được record gốc, recovery lại thất bại.
+- DLT cần alert, owner và quy trình replay có idempotency. Đừng tự động replay liên tục khiến vòng lặp lỗi.
+
+### Ordering và offset
+Retry chặn consumer thread nên các record sau cùng partition chờ; đây là lựa chọn bảo toàn thứ tự. Nếu bật retry topic/asynchronous retry, throughput tốt hơn nhưng thứ tự theo key có thể đổi. Cấu hình ack mode và container phải bảo đảm offset chỉ tiến khi record đã xử lý hoặc được recover chắc chắn.
+
+> Senior tip: dashboard riêng số retry, DLT rate và tuổi record cũ nhất. DLT bằng 0 không đồng nghĩa khỏe nếu consumer đang retry cùng poison record hàng nghìn lần.`,
+  follow: ['Retry topic khác blocking retry về thứ tự và lag ra sao?', 'Bạn replay DLT thế nào để không gửi lại payment đã thành công?'],
+  tags: ['Spring Kafka', 'DefaultErrorHandler', 'DLT', 'retry'],
+  refs: [{ type: 'doc', title: 'Spring for Apache Kafka reference', url: 'https://docs.spring.io/spring-kafka/reference/kafka/annotation-error-handling.html' }]
+},
+{
+  id: 'microservices-035', topic: 'microservices', level: 'senior',
+  q: 'Consumer lag tăng liên tục sau khi traffic nhân ba. Bạn tìm bottleneck và áp dụng backpressure thế nào, kể cả khi đã tăng số consumer?',
+  a: `**Tóm tắt:** Lag là khoảng cách giữa log end offset và offset consumer; tăng consumer chỉ giúp khi còn partition để chia và bottleneck nằm ở xử lý consumer. Đo tốc độ vào/ra, độ trễ record và tài nguyên downstream; áp dụng giới hạn concurrency, pause/resume và kiểm soát tải thay vì mở worker vô hạn.
+
+### Chẩn đoán trước khi scale
+- Nếu số consumer trong group lớn hơn partition, consumer dư không nhận việc. Tăng partition có thể tăng parallelism nhưng ảnh hưởng key ordering và broker load.
+- So sánh producer bytes/records per second với consumer throughput; xem lag theo partition để tìm hot key, không chỉ tổng lag.
+- Kiểm tra thời gian xử lý mỗi record, batch size, poll duration, DB pool wait, downstream latency, rebalance và GC.
+- Lag tăng nhưng record age thấp có thể là burst đang được bắt kịp; record age tăng là tín hiệu SLA bị vi phạm.
+
+### Backpressure
+Kafka lưu buffer bền vững trong retention, nhưng không vô hạn. Consumer nên dừng nhận thêm khi downstream cạn: pause partition/container, giới hạn concurrency hoặc điều chỉnh poll batch. Tiếp tục poll định kỳ để heartbeat/group membership không bị timeout, đồng thời không commit offset của phần chưa xử lý.
+
+Nếu DB chỉ chịu 500 write/s, đặt worker concurrency theo connection pool và quota DB. Nếu traffic kéo dài vượt capacity, cần giảm producer rate, shed noncritical work hoặc tăng capacity downstream; queue chỉ trì hoãn sự cố và tiêu tốn disk.
+
+~~~text
+lag = log end offset - committed offset
+oldest event age + per-partition lag + DB pool wait -> diagnosis
+~~~
+
+### Autoscaling và an toàn
+Scale theo lag/lag age cùng throughput, nhưng giới hạn replica theo partition và capacity downstream. Scale up/down quá nhanh kích rebalance liên tục; cooldown và min replica giúp. Alert theo lag age thường gần hơn với user impact so với offset count khi partition rates khác nhau.
+
+> Senior tip: đặt SLO “99% event được xử lý trong 30 giây” rồi alert theo event age. Một triệu lag trên topic chậm có thể vô hại; vài nghìn payment event già 10 phút thì không.`,
+  follow: ['Lag thấp nhưng event age cao có thể do đâu?', 'Làm sao phối hợp autoscaling consumer với giới hạn connection pool DB?'],
+  tags: ['Kafka', 'consumer lag', 'backpressure', 'autoscaling']
+},
+{
+  id: 'microservices-036', topic: 'microservices', level: 'senior',
+  q: 'Nhiều team cùng đọc event Avro và cần deploy producer/consumer độc lập. Bạn chọn Schema Registry compatibility và quy trình thay đổi schema thế nào?',
+  a: `**Tóm tắt:** Schema Registry lưu phiên bản schema và kiểm tra compatibility khi publish schema mới. Với consumer có thể đọc dữ liệu cũ, backward compatibility thường là lựa chọn thực dụng; thay đổi phải theo quy tắc default, nullable và rollout consumer/producer có thứ tự.
+
+### Vì sao schema registry
+Producer ghi schema ID trong wire format thay vì lặp toàn bộ schema. Consumer lấy writer schema theo ID rồi kết hợp reader schema để deserialize. Registry giúp kiểm tra tiến hóa có tương thích, nhưng không tự bảo đảm ý nghĩa business của field đúng.
+
+### Quy tắc thay đổi
+- Thêm field: với backward compatibility, reader schema mới cần default để đọc record cũ thiếu field. Reader cũ thường bỏ qua field mới trong writer schema, nhưng phải kiểm tra theo format và mode registry.
+- Xóa/đổi tên field: có thể cần alias hoặc giai đoạn deprecation; không tái sử dụng field name/meaning một cách âm thầm.
+- Đổi type: chỉ làm khi schema compatibility cho phép và ứng dụng cũ/mới đều hiểu giá trị.
+- Compatibility modes khác nhau: backward kiểm tra reader mới đọc writer cũ; forward kiểm tra reader cũ đọc writer mới; full yêu cầu cả hai. Transitive còn kiểm tra với nhiều phiên bản trước đó, không chỉ bản gần nhất.
+
+### Trình tự rollout an toàn
+1. Thêm field optional/default, publish schema.
+2. Deploy consumer đọc được cả dạng cũ và mới.
+3. Bắt đầu producer ghi field mới.
+4. Chờ retention/replay window và xác minh mọi consumer đã cập nhật.
+5. Chỉ sau đó mới bỏ field cũ bằng migration version tiếp theo.
+
+Đừng bật compatibility chỉ để pipeline xanh: schema có thể tương thích cú pháp nhưng đổi ý nghĩa (đơn vị USD thành cents) vẫn phá hệ thống. Test contract bằng payload mẫu cũ/mới và kiểm tra replay từ topic.
+
+> Senior tip: ownership schema cần gồm owner nghiệp vụ, policy breaking change và contact khi compatibility check fail. Registry không thay thế review ngữ nghĩa hoặc consumer inventory.`,
+  follow: ['Backward và full transitive khác nhau thế nào khi replay topic lâu ngày?', 'Đổi đơn vị một field nhưng giữ nguyên kiểu số có bị registry phát hiện không?'],
+  tags: ['Kafka', 'Avro', 'Schema Registry', 'schema evolution'],
+  refs: [{ type: 'doc', title: 'Confluent Schema Evolution', url: 'https://docs.confluent.io/platform/current/schema-registry/fundamentals/schema-evolution.html' }]
+},
+{
+  id: 'microservices-037', topic: 'microservices', level: 'lead',
+  q: 'Ngân hàng đang có Kafka, RabbitMQ và IBM MQ. Bạn phân vai ba broker cho event stream, work queue và giao dịch legacy thay vì ép mọi workload lên một nền tảng thế nào?',
+  a: `**Tóm tắt:** Kafka phù hợp log phân tán, fan-out nhiều consumer và replay; RabbitMQ phù hợp routing queue/task với ack và các pattern messaging linh hoạt; IBM MQ thường gắn với hệ thống enterprise/legacy cần interoperability và vận hành theo hợp đồng hiện hữu. Chọn theo semantics, SLA, kỹ năng và chi phí vận hành, không theo benchmark đơn lẻ.
+
+### So sánh theo workload
+| Nhu cầu | Kafka | RabbitMQ | IBM MQ |
+|---|---|---|---|
+| Replay nhiều lần, nhiều consumer độc lập | Mạnh: log retained, offset riêng | Queue thường tiêu thụ rồi ack/xóa; cần topology/plug-in riêng | Có cơ chế phù hợp tích hợp enterprise nhưng mô hình vận hành khác |
+| Task queue và routing | Có thể làm nhưng cần tự thiết kế | Routing exchange, competing consumers là thế mạnh | Hợp tích hợp hệ thống MQ hiện hữu |
+| Thứ tự | Trong partition | Theo queue, concurrency/requeue có thể ảnh hưởng | Tùy cấu hình queue và consumer |
+| Tích hợp legacy tài chính | Qua connector/API | Tùy estate | Thường đã là chuẩn kết nối trong tổ chức |
+
+### Quyết định kiến trúc
+- Domain event cần nhiều subscriber, replay để rebuild projection: Kafka.
+- Job ngắn cần ack, retry/dead-letter routing và queue semantics: RabbitMQ.
+- Mainframe/core banking đã kết nối IBM MQ với SLA, audit và support contract: giữ MQ ở boundary tương ứng; bridge sang Kafka nếu cần analytics/event fan-out.
+- Không dùng ba broker cho cùng một luồng nếu chưa có lý do: mỗi bridge thêm duplicate, ordering, tracing và ownership.
+
+### Ngân hàng: ưu tiên kiểm soát
+Xác định data classification, encryption, audit trail, retention, DR/RPO/RTO, replay quyền hạn và cách xử lý poison message. Không coi broker là ledger tài chính duy nhất nếu nghiệp vụ yêu cầu đối soát, tính toán số dư và audit bất biến; nguồn dữ liệu chuẩn phải được xác định riêng.
+
+> Senior tip: chọn một broker mặc định cho workload mới, ngoại lệ cần ADR nêu owner và chi phí trực on-call. Số nền tảng có thể tồn tại vì legacy, nhưng không nên để mỗi team tự chọn broker thứ tư.`,
+  follow: ['Bạn thiết kế bridge Kafka–IBM MQ sao cho duplicate không tạo hai giao dịch?', 'Khi nào replay Kafka không đủ để đáp ứng audit tài chính?'],
+  tags: ['Kafka', 'RabbitMQ', 'IBM MQ', 'banking', 'messaging']
+},
+{
+  id: 'microservices-038', topic: 'microservices', level: 'senior',
+  q: 'API ghi order vào database rồi cần phát Kafka event. Bạn thiết kế outbox với Debezium thế nào để không mất event, giữ thứ tự theo aggregate và vận hành được khi connector restart?',
+  a: `**Tóm tắt:** Ghi business row và outbox row trong cùng DB transaction; Debezium đọc transaction log rồi publish qua Kafka Connect. Đây là atomic write ở database cộng at-least-once delivery qua CDC, vì vậy consumer vẫn cần idempotency và thứ tự cần gắn với aggregate key.
+
+### Luồng dữ liệu
+Ứng dụng tạo order và event outbox trong một local transaction. Khi commit, cả hai cùng tồn tại hoặc cùng rollback. Debezium connector đọc WAL/binlog từ vị trí đã checkpoint, chuyển outbox row thành Kafka record; Kafka key nên là aggregate ID để giữ thứ tự trong partition.
+
+~~~text
+Spring transaction -> orders + outbox
+                           |
+                    DB WAL/binlog
+                           v
+              Debezium / Kafka Connect -> topic
+~~~
+
+Outbox thường có event ID, aggregate type/ID, event type, payload, created time và schema version. Dùng Debezium Outbox Event Router SMT theo phiên bản connector đã pin; kiểm tra mapping topic/key/header trong integration test.
+
+### Restart, duplicate và thứ tự
+Connector lưu offset CDC. Sau restart nó tiếp tục từ checkpoint; tùy crash window, publish có thể lặp lại. Consumer deduplicate bằng event ID hoặc idempotent business update. Đừng xóa outbox row trước khi CDC chắc chắn đã đọc; với CDC thường cần policy cleanup riêng và retention phù hợp.
+
+Order theo aggregate phụ thuộc transaction log order, connector routing và cùng Kafka key/partition. Nếu nhiều transaction đồng thời cập nhật một aggregate, database locking/versioning quyết định thứ tự commit; không tạo thứ tự nghiệp vụ bằng timestamp của app.
+
+### Production controls
+- Monitor connector task state, source lag, replication slot/binlog retention, topic publish errors và outbox growth.
+- Replication slot bị bỏ lâu có thể làm WAL phình và đầy disk; đặt alert và runbook cho connector outage.
+- Payload schema cần version hóa; outbox không nên chứa dữ liệu nhạy cảm không cần thiết.
+- Chạy replay test, duplicate test và restore connector offset trong staging; xác nhận retention DB log đủ cho thời gian khôi phục dự kiến.
+
+> Senior tip: đặt ngưỡng cảnh báo cho tuổi event chưa publish và dung lượng WAL. “DB commit thành công” chỉ là nửa SLA; outbox đến Kafka trong bao lâu mới là điều consumer và khách hàng cảm nhận.`,
+  follow: ['Replication slot Debezium bị giữ lâu gây tác động gì đến PostgreSQL?', 'Bạn dọn outbox table mà không xóa event chưa publish bằng cách nào?'],
+  tags: ['outbox', 'Debezium', 'CDC', 'Kafka', 'ordering'],
+  refs: [{ type: 'doc', title: 'Debezium Outbox Event Router', url: 'https://debezium.io/documentation/reference/stable/transformations/outbox-event-router.html' }]
 }
 );
