@@ -1,4 +1,4 @@
-/* View "algo" — owner: task T15. Contract: see AGENTS.md "Views". */
+﻿/* View "algo" — owner: task T15. Contract: see AGENTS.md "Views". */
 (function () {
   'use strict';
 
@@ -17,6 +17,7 @@
   ];
   const GOALS = [15, 25, 45];
   const DEFAULT_CODE = 'class Solution {\n    \n}';
+  const runCache = {};
 
   // Bộ lọc giữ nguyên giữa các lần render (mở bài chi tiết rồi quay lại danh sách).
   const state = { q: '', diff: 'all', pattern: 'all', status: 'all' };
@@ -199,7 +200,12 @@
 
     const hints = algo.hints || [];
     const draft = loadDraft(algo.id);
-    const code = draft || DEFAULT_CODE;
+    const baseCode = algo.starter || DEFAULT_CODE;
+    const code = draft || baseCode;
+    const canRun = App.code.hasTests(algo);
+    const cache = runCache[algo.id] || (runCache[algo.id] = { code: '', run: null, parsed: null, runHtml: '', reviewHtml: '' });
+    if (cache.code !== code) Object.assign(cache, { code: '', run: null, parsed: null, runHtml: '', reviewHtml: '' });
+    let lastRun = cache.run, lastParsed = cache.parsed;
     let hintsUsed = 0;
     let solutionShown = false;
     const timer = { elapsed: 0, running: false, goal: GOALS[1], tick: null };
@@ -245,7 +251,9 @@
           '</div>' +
           '<textarea id="algoCode" class="textarea algo-editor" spellcheck="false" autocapitalize="off" autocorrect="off" wrap="off"' +
             ' aria-label="Editor Java" placeholder="Viết code Java ở đây">' + App.esc(code) + '</textarea>' +
-          '<p class="small muted algo-tip">Viết ra giấy/editor như phỏng vấn thật, sau đó so với lời giải. Không chạy được Java trong trình duyệt.</p>' +
+          '<p class="small muted algo-tip">Viết lời giải như phỏng vấn thật. ' + (canRun ? 'Ctrl+Enter để chạy test trên Judge0 (Java 13).' : 'Bài này chưa có test tự động.') + '</p>' +
+          (canRun ? '<button type="button" class="btn sm primary" id="algoRun">▶ Chạy test</button>' : '') +
+          '<button type="button" class="btn sm" id="algoAiReview">AI review code</button>' +
           '<div class="row algo-actions">' +
             '<button type="button" class="btn sm" id="algoCopy">Sao chép code</button>' +
             '<button type="button" class="btn sm" id="algoResetCode">Xoá code</button>' +
@@ -255,6 +263,7 @@
             '<button type="button" class="btn sm warn" data-mark="review">Cần ôn</button>' +
             '<button type="button" class="btn sm bad" data-mark="unknown">Chưa giải được</button>' +
           '</div>' +
+          '<div id="algoRunPanel" class="algo-ai-panel" aria-live="polite"></div><div id="algoReviewPanel" class="algo-ai-panel" aria-live="polite"></div>' +
           '<div id="algoSolutionBox"></div>' +
         '</section>' +
       '</div>';
@@ -267,6 +276,42 @@
     const timerGoalEl = root.querySelector('#algoTimerGoal');
     const timerToggle = root.querySelector('#algoTimerToggle');
     const solutionBox = root.querySelector('#algoSolutionBox');
+    const runPanel = root.querySelector('#algoRunPanel'), reviewPanel = root.querySelector('#algoReviewPanel');
+    const runBtn = root.querySelector('#algoRun'), reviewBtn = root.querySelector('#algoAiReview');
+    runPanel.innerHTML = cache.runHtml; reviewPanel.innerHTML = cache.reviewHtml;
+    async function runTests() {
+      if (!canRun || runBtn.disabled) return;
+      const submitted = editor.value;
+      runBtn.disabled = true;
+      runPanel.innerHTML = '<span class="ai-loading">Đang chạy test…</span>';
+      try {
+        const run = await App.ai.run(App.code.assemble(submitted, algo.tests));
+        if (editor.value !== submitted) return;
+        lastRun = cache.run = run; cache.code = submitted;
+        if (run.configured === false) {
+          runPanel.innerHTML = '<div class="run-box">Máy chạy code chưa được cấu hình. Bạn có thể dùng AI review code.</div>';
+        } else {
+          lastParsed = cache.parsed = App.code.parse(run.stdout);
+          runPanel.innerHTML = App.ui.runResult(run, lastParsed);
+        }
+        cache.runHtml = runPanel.innerHTML;
+      } catch (e) { if (editor.value === submitted) runPanel.innerHTML = App.ui.error(e); }
+      finally { runBtn.disabled = false; }
+    }
+    async function reviewCode() {
+      if (reviewBtn.disabled) return;
+      const submitted = editor.value;
+      reviewBtn.disabled = true;
+      reviewPanel.innerHTML = '<span class="ai-loading">AI đang review code…</span>';
+      try {
+        const run = lastRun ? { passed: lastParsed ? lastParsed.passed : 0, total: lastParsed ? lastParsed.total : 0, output: (lastRun.stdout || '').slice(0, 2000) } : undefined;
+        const result = await App.ai.review({ title: algo.title, prompt: algo.prompt, reference: algo.solution, code: submitted, complexity: algo.complexity, run });
+        if (editor.value === submitted) { cache.code = submitted; cache.reviewHtml = App.ui.codeFeedback(result); reviewPanel.innerHTML = cache.reviewHtml; }
+      } catch (e) { if (editor.value === submitted) reviewPanel.innerHTML = App.ui.error(e); }
+      finally { reviewBtn.disabled = false; }
+    }
+    if (runBtn) runBtn.addEventListener('click', runTests);
+    reviewBtn.addEventListener('click', reviewCode);
 
     function showHint() {
       if (hintsUsed >= hints.length) return;
@@ -320,6 +365,7 @@
 
     // ---- editor: Tab = 4 space, Enter = giữ indent
     editor.addEventListener('keydown', e => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); runTests(); return; }
       if (e.key === 'Tab') {
         e.preventDefault();
         const s = editor.selectionStart, en = editor.selectionEnd;
@@ -336,7 +382,7 @@
         editor.selectionStart = editor.selectionEnd = s + ins.length;
       }
     });
-    editor.addEventListener('input', () => saveDraft(algo.id, editor.value));
+    editor.addEventListener('input', () => { saveDraft(algo.id, editor.value); Object.assign(cache, { code: '', run: null, parsed: null, runHtml: '', reviewHtml: '' }); lastRun = lastParsed = null; runPanel.innerHTML = ''; reviewPanel.innerHTML = ''; });
 
     // ---- buttons
     hintBtn.addEventListener('click', showHint);
@@ -369,8 +415,10 @@
     });
     root.querySelector('#algoResetCode').addEventListener('click', () => {
       if (!editor.value.trim() || confirm('Xoá toàn bộ code đang soạn?')) {
-        editor.value = DEFAULT_CODE;
-        saveDraft(algo.id, DEFAULT_CODE);
+        editor.value = baseCode;
+        saveDraft(algo.id, baseCode);
+        Object.assign(cache, { code: '', run: null, parsed: null, runHtml: '', reviewHtml: '' });
+        lastRun = lastParsed = null; runPanel.innerHTML = ''; reviewPanel.innerHTML = '';
         editor.focus();
       }
     });
