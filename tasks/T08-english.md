@@ -52,3 +52,4 @@ Viết câu hỏi phỏng vấn **bằng tiếng Anh** cho topic `english` (ID t
 - Level: 5 mid / 11 senior / 3 lead (~26/58/16). Độ dài đáp án 2.033–2.643 ký tự.
 - Không sửa file nào khác. `node --check js/data/q-english.js` → OK; `node scripts/validate.js q-english.js` → OK.
 - `node scripts/validate.js` toàn repo cuối cùng → `OK — không có lỗi.` (trong lúc chạy có lỗi tạm thời từ file của agent khác đang ghi song song; đã chờ và kiểm tra lại sau khi họ hoàn tất).
+Reviewed-by: codex (T08R)

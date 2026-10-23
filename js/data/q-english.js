@@ -1069,4 +1069,524 @@ In my current team of eight (5 devs, 1 QA, 1 PO, 1 SM), I act as the **tech lead
   tags: ['leadership', 'cross-team', 'initiative', 'influence', 'technical-strategy'],
   lang: 'en',
 },
+{
+  id: 'english-032',
+  topic: 'english',
+  level: 'senior',
+  q: 'Tell me about a project where you had measurable impact.',
+  a: `**T?m t?t:** I describe the problem, my contribution, and a measured outcome. I identify the metric and time window, distinguish my work from the team?s work, and explain the trade-off. I never invent impact figures.
+
+### Sample answer
+I describe the problem, my contribution, and a measured outcome. I identify the metric and time window, distinguish my work from the team?s work, and explain the trade-off. I never invent impact figures.
+
+### Practice
+Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+
+> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+
+### Build a natural spoken answer
+Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+
+### Follow-up practice
+Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+
+> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
+  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
+  tags: ['fluency', 'speaking', 'interview'],
+  lang: 'en',
+},
+{
+  id: 'english-033',
+  topic: 'english',
+  level: 'senior',
+  q: 'How do you explain a recommendation clearly?',
+  a: `**T?m t?t:** I state the recommendation first, connect it to the key constraint, and explain one benefit and one cost. For example, I would keep a request synchronous when its caller needs the result immediately; otherwise I would evaluate asynchronous processing and its recovery requirements.
+
+### Sample answer
+I state the recommendation first, connect it to the key constraint, and explain one benefit and one cost. For example, I would keep a request synchronous when its caller needs the result immediately; otherwise I would evaluate asynchronous processing and its recovery requirements.
+
+### Practice
+Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+
+> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+
+### Build a natural spoken answer
+Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+
+### Follow-up practice
+Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+
+> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
+  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
+  tags: ['fluency', 'speaking', 'interview'],
+  lang: 'en',
+},
+{
+  id: 'english-034',
+  topic: 'english',
+  level: 'senior',
+  q: 'When would you choose synchronous or asynchronous processing?',
+  a: `**T?m t?t:** I use synchronous processing when the caller needs an immediate result and latency and availability budgets permit it. I consider asynchronous processing for deferrable work, while planning for eventual consistency, duplicate delivery, bounded retries, idempotency, and queue monitoring.
+
+### Sample answer
+I use synchronous processing when the caller needs an immediate result and latency and availability budgets permit it. I consider asynchronous processing for deferrable work, while planning for eventual consistency, duplicate delivery, bounded retries, idempotency, and queue monitoring.
+
+### Practice
+Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+
+> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+
+### Build a natural spoken answer
+Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+
+### Follow-up practice
+Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+
+> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
+  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
+  tags: ['fluency', 'speaking', 'interview'],
+  lang: 'en',
+},
+{
+  id: 'english-035',
+  topic: 'english',
+  level: 'senior',
+  q: 'How do you structure an answer when you need a moment?',
+  a: `**T?m t?t:** I take a brief pause and say, ?Let me organize my thoughts. I would look at this from two angles.? Then I answer directly, explain my reasoning, and stop when I have addressed the question. A short pause is better than filling the silence with repeated fillers.
+
+### Sample answer
+I take a brief pause and say, ?Let me organize my thoughts. I would look at this from two angles.? Then I answer directly, explain my reasoning, and stop when I have addressed the question. A short pause is better than filling the silence with repeated fillers.
+
+### Practice
+Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+
+> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+
+### Build a natural spoken answer
+Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+
+### Follow-up practice
+Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+
+> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
+  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
+  tags: ['fluency', 'speaking', 'interview'],
+  lang: 'en',
+},
+{
+  id: 'english-036',
+  topic: 'english',
+  level: 'senior',
+  q: 'How do you keep a technical explanation easy to follow?',
+  a: `**T?m t?t:** I start with the conclusion, give only the necessary context, and explain the mechanism in ordered steps. For caching, for example, I explain that a stored copy can reduce repeated database reads, then cover freshness and invalidation because they are the main trade-offs.
+
+### Sample answer
+I start with the conclusion, give only the necessary context, and explain the mechanism in ordered steps. For caching, for example, I explain that a stored copy can reduce repeated database reads, then cover freshness and invalidation because they are the main trade-offs.
+
+### Practice
+Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+
+> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+
+### Build a natural spoken answer
+Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+
+### Follow-up practice
+Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+
+> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
+  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
+  tags: ['fluency', 'speaking', 'interview'],
+  lang: 'en',
+},
+{
+  id: 'english-037',
+  topic: 'english',
+  level: 'senior',
+  q: 'What would you say if you did not hear a question?',
+  a: `**T?m t?t:** I say, ?Could you repeat the last part of the question, please?? If I caught part of it, I paraphrase it: ?Are you asking how I would handle duplicate messages after a consumer restart?? I confirm before answering rather than guessing.
+
+### Sample answer
+I say, ?Could you repeat the last part of the question, please?? If I caught part of it, I paraphrase it: ?Are you asking how I would handle duplicate messages after a consumer restart?? I confirm before answering rather than guessing.
+
+### Practice
+Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+
+> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+
+### Build a natural spoken answer
+Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+
+### Follow-up practice
+Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+
+> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
+  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
+  tags: ['fluency', 'speaking', 'interview'],
+  lang: 'en',
+},
+{
+  id: 'english-038',
+  topic: 'english',
+  level: 'senior',
+  q: 'How do you respond about a technology you have not used?',
+  a: `**T?m t?t:** I am transparent that I have not used the technology in production. I connect relevant experience to its underlying concepts, explain how I would evaluate it through documentation and a small proof of concept, and state what I would need to learn.
+
+### Sample answer
+I am transparent that I have not used the technology in production. I connect relevant experience to its underlying concepts, explain how I would evaluate it through documentation and a small proof of concept, and state what I would need to learn.
+
+### Practice
+Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+
+> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+
+### Build a natural spoken answer
+Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+
+### Follow-up practice
+Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+
+> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
+  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
+  tags: ['fluency', 'speaking', 'interview'],
+  lang: 'en',
+},
+{
+  id: 'english-039',
+  topic: 'english',
+  level: 'senior',
+  q: 'What if you realize you misstated a technical detail?',
+  a: `**T?m t?t:** I correct the detail promptly: ?I want to correct one point. I said exactly-once delivery, but I meant at-least-once delivery.? I then explain that duplicate delivery is possible and consumers need idempotent processing, and clarify whether my conclusion changes.
+
+### Sample answer
+I correct the detail promptly: ?I want to correct one point. I said exactly-once delivery, but I meant at-least-once delivery.? I then explain that duplicate delivery is possible and consumers need idempotent processing, and clarify whether my conclusion changes.
+
+### Practice
+Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+
+> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+
+### Build a natural spoken answer
+Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+
+### Follow-up practice
+Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+
+> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
+  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
+  tags: ['fluency', 'speaking', 'interview'],
+  lang: 'en',
+},
+{
+  id: 'english-040',
+  topic: 'english',
+  level: 'senior',
+  q: 'How would you begin an English interview naturally?',
+  a: `**T?m t?t:** I greet the interviewer, thank them for their time, and give a short introduction tied to the role: ?I am a backend engineer focused on Java services and reliability. I was interested in this role because ?? I use genuine details rather than a memorized biography.
+
+### Sample answer
+I greet the interviewer, thank them for their time, and give a short introduction tied to the role: ?I am a backend engineer focused on Java services and reliability. I was interested in this role because ?? I use genuine details rather than a memorized biography.
+
+### Practice
+Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+
+> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+
+### Build a natural spoken answer
+Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+
+### Follow-up practice
+Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+
+> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
+  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
+  tags: ['fluency', 'speaking', 'interview'],
+  lang: 'en',
+},
+{
+  id: 'english-041',
+  topic: 'english',
+  level: 'senior',
+  q: 'How would you close an interview professionally?',
+  a: `**T?m t?t:** I thank the interviewer, refer to one specific topic from our discussion, briefly reinforce my interest, and ask about next steps and timing. I keep it warm and professional without presuming the outcome.
+
+### Sample answer
+I thank the interviewer, refer to one specific topic from our discussion, briefly reinforce my interest, and ask about next steps and timing. I keep it warm and professional without presuming the outcome.
+
+### Practice
+Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+
+> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+
+### Build a natural spoken answer
+Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+
+### Follow-up practice
+Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+
+> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
+  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
+  tags: ['fluency', 'speaking', 'interview'],
+  lang: 'en',
+},
+{
+  id: 'english-042',
+  topic: 'english',
+  level: 'senior',
+  q: 'What questions would you ask the interviewer?',
+  a: `**T?m t?t:** I ask about success in the first six months, the team?s current technical challenge, and how it balances feature delivery with reliability work. I choose questions not already answered and use follow-ups to understand the real expectations.
+
+### Sample answer
+I ask about success in the first six months, the team?s current technical challenge, and how it balances feature delivery with reliability work. I choose questions not already answered and use follow-ups to understand the real expectations.
+
+### Practice
+Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+
+> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+
+### Build a natural spoken answer
+Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+
+### Follow-up practice
+Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+
+> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
+  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
+  tags: ['fluency', 'speaking', 'interview'],
+  lang: 'en',
+},
+{
+  id: 'english-043',
+  topic: 'english',
+  level: 'senior',
+  q: 'How would you discuss salary expectations?',
+  a: `**T?m t?t:** I explain that I am seeking compensation appropriate to the role?s scope and market, ask about the full package, and share a researched range if appropriate. I clarify currency and pay period, stay open to discussion, and do not invent figures.
+
+### Sample answer
+I explain that I am seeking compensation appropriate to the role?s scope and market, ask about the full package, and share a researched range if appropriate. I clarify currency and pay period, stay open to discussion, and do not invent figures.
+
+### Practice
+Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+
+> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+
+### Build a natural spoken answer
+Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+
+### Follow-up practice
+Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+
+> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
+  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
+  tags: ['fluency', 'speaking', 'interview'],
+  lang: 'en',
+},
+{
+  id: 'english-044',
+  topic: 'english',
+  level: 'senior',
+  q: 'How would you discuss your start date?',
+  a: `**T?m t?t:** I state my actual notice period and earliest realistic date, including any handover commitments. I distinguish the earliest date from a preferred date and confirm the timing before promising it.
+
+### Sample answer
+I state my actual notice period and earliest realistic date, including any handover commitments. I distinguish the earliest date from a preferred date and confirm the timing before promising it.
+
+### Practice
+Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+
+> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+
+### Build a natural spoken answer
+Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+
+### Follow-up practice
+Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+
+> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
+  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
+  tags: ['fluency', 'speaking', 'interview'],
+  lang: 'en',
+},
+{
+  id: 'english-045',
+  topic: 'english',
+  level: 'senior',
+  q: 'Could you walk me through a recent Java project?',
+  a: `**T?m t?t:** I give the project purpose and users, clarify my scope versus the team?s work, then explain one decision, its constraint and trade-off, and an outcome supported by a real metric. I can then invite questions about design or delivery.
+
+### Sample answer
+I give the project purpose and users, clarify my scope versus the team?s work, then explain one decision, its constraint and trade-off, and an outcome supported by a real metric. I can then invite questions about design or delivery.
+
+### Practice
+Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+
+> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+
+### Build a natural spoken answer
+Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+
+### Follow-up practice
+Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+
+> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
+  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
+  tags: ['fluency', 'speaking', 'interview'],
+  lang: 'en',
+},
+{
+  id: 'english-046',
+  topic: 'english',
+  level: 'senior',
+  q: 'Tell me about a production incident you helped resolve.',
+  a: `**T?m t?t:** I describe customer impact, my role, the evidence used to find the cause, mitigation, and the signal that confirmed recovery. I finish with a concrete prevention action, distinguish team work from my contribution, and protect confidential details.
+
+### Sample answer
+I describe customer impact, my role, the evidence used to find the cause, mitigation, and the signal that confirmed recovery. I finish with a concrete prevention action, distinguish team work from my contribution, and protect confidential details.
+
+### Practice
+Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+
+> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+
+### Build a natural spoken answer
+Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+
+### Follow-up practice
+Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+
+> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
+  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
+  tags: ['fluency', 'speaking', 'interview'],
+  lang: 'en',
+},
+{
+  id: 'english-047',
+  topic: 'english',
+  level: 'senior',
+  q: 'How would you explain an architecture decision to a business stakeholder?',
+  a: `**T?m t?t:** I translate the architecture choice into customer and business effects. For background report generation, for example, asynchronous work can make requests responsive, while requiring job tracking, safe retries, and a clear failure experience. I name the measure we monitor.
+
+### Sample answer
+I translate the architecture choice into customer and business effects. For background report generation, for example, asynchronous work can make requests responsive, while requiring job tracking, safe retries, and a clear failure experience. I name the measure we monitor.
+
+### Practice
+Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+
+> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+
+### Build a natural spoken answer
+Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+
+### Follow-up practice
+Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+
+> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
+  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
+  tags: ['fluency', 'speaking', 'interview'],
+  lang: 'en',
+},
+{
+  id: 'english-048',
+  topic: 'english',
+  level: 'senior',
+  q: 'How do you make plural and past tense endings clearer?',
+  a: `**T?m t?t:** I practice endings in short pairs: ?one request? and ?several requests?; ?we deploy? and ?we deployed.? Final s and regular past-tense endings vary by surrounding sounds. I slow slightly, finish the sound, then return to a natural pace without exaggerating it.
+
+### Sample answer
+I practice endings in short pairs: ?one request? and ?several requests?; ?we deploy? and ?we deployed.? Final s and regular past-tense endings vary by surrounding sounds. I slow slightly, finish the sound, then return to a natural pace without exaggerating it.
+
+### Practice
+Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+
+> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+
+### Build a natural spoken answer
+Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+
+### Follow-up practice
+Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+
+> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
+  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
+  tags: ['fluency', 'speaking', 'interview'],
+  lang: 'en',
+},
+{
+  id: 'english-049',
+  topic: 'english',
+  level: 'senior',
+  q: 'How do you pronounce unfamiliar technical terms?',
+  a: `**T?m t?t:** I check a reliable dictionary or the product?s own material, notice the stressed syllable, and practice the term in a sentence. If usage is team-specific, I ask how colleagues say it. Clear, consistent speech matters more than imitating an accent.
+
+### Sample answer
+I check a reliable dictionary or the product?s own material, notice the stressed syllable, and practice the term in a sentence. If usage is team-specific, I ask how colleagues say it. Clear, consistent speech matters more than imitating an accent.
+
+### Practice
+Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+
+> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+
+### Build a natural spoken answer
+Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+
+### Follow-up practice
+Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+
+> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
+  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
+  tags: ['fluency', 'speaking', 'interview'],
+  lang: 'en',
+},
+{
+  id: 'english-050',
+  topic: 'english',
+  level: 'senior',
+  q: 'How do you describe completed work and current responsibilities?',
+  a: `**T?m t?t:** I use present tense for current responsibilities and past tense for completed work. I give a concrete example for each, make ownership clear, and verify the project timeline so my wording does not imply ongoing work is finished.
+
+### Sample answer
+I use present tense for current responsibilities and past tense for completed work. I give a concrete example for each, make ownership clear, and verify the project timeline so my wording does not imply ongoing work is finished.
+
+### Practice
+Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+
+> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+
+### Build a natural spoken answer
+Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+
+### Follow-up practice
+Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+
+> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
+  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
+  tags: ['fluency', 'speaking', 'interview'],
+  lang: 'en',
+},
+{
+  id: 'english-051',
+  topic: 'english',
+  level: 'senior',
+  q: 'How do you avoid common article mistakes?',
+  a: `**T?m t?t:** I check whether a noun is singular and countable, already identified, or general. I introduce one item with a or an, use the for a specific known item, and often use no article for plural or uncountable nouns discussed generally, such as ?information.?
+
+### Sample answer
+I check whether a noun is singular and countable, already identified, or general. I introduce one item with a or an, use the for a specific known item, and often use no article for plural or uncountable nouns discussed generally, such as ?information.?
+
+### Practice
+Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+
+> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+
+### Build a natural spoken answer
+Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+
+### Follow-up practice
+Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+
+> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
+  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
+  tags: ['fluency', 'speaking', 'interview'],
+  lang: 'en',
+}
 );
