@@ -165,6 +165,7 @@ for (const z of sandbox.window.LABS || []) {
 // ---- lessons (AGENTS.md section 12) ----
 const seenLesson = new Set();
 const questionIds = new Set((sandbox.window.QUESTIONS || []).map(q => q.id));
+const lessonIds = new Set((sandbox.window.LESSONS || []).map(l => l.id));
 for (const z of sandbox.window.LESSONS || []) {
   const f = z.__file || 'lessons', id = z.id || '(no id)';
   if (!/^lesson-[a-z]+-\d{3}$/.test(z.id || '') || seenLesson.has(z.id)) err(f, `lesson id thiếu/trùng/sai dạng lesson-<track>-NNN: ${id}`);
@@ -204,6 +205,39 @@ for (const z of sandbox.window.LESSONS || []) {
   (z.goals || []).forEach((g, i) => checkMarkup(f, id, `goals[${i}]`, g));
 }
 
+// ---- pet projects ----
+const projects = sandbox.window.PROJECTS || [];
+const seenProject = new Set();
+for (const p of projects) {
+  const f = 'projects.js', id = p.id || '(no id)';
+  if (!/^proj-[a-z0-9-]+$/.test(p.id || '') || seenProject.has(p.id)) err(f, `id dự án thiếu/trùng/sai dạng: ${id}`);
+  seenProject.add(p.id);
+  if (!p.title || !LEVELS.has(p.level) || !Number.isInteger(p.weeks) || p.weeks < 1) err(f, `${id}: thiếu title/level/weeks hợp lệ`);
+  if (!Array.isArray(p.skills) || !p.skills.length) err(f, `${id}: cần skills`);
+  ['pitch', 'requirements', 'architecture', 'readme'].forEach(k => {
+    if (typeof p[k] !== 'string' || !p[k].trim()) err(f, `${id}: thiếu ${k}`);
+    checkMarkup(f, id, k, p[k]);
+  });
+  if (!Array.isArray(p.milestones) || p.milestones.length < 4 || p.milestones.length > 7) err(f, `${id}: milestones cần 4–7 mục`);
+  else p.milestones.forEach((m, i) => {
+    if (!m || !m.title || typeof m.tasks !== 'string' || typeof m.done !== 'string') err(f, `${id}.milestones[${i}]: thiếu title/tasks/done`);
+    ['tasks', 'done'].forEach(k => checkMarkup(f, id, `milestones[${i}].${k}`, m && m[k]));
+    Object.keys(m || {}).forEach(k => { if (!['title', 'tasks', 'done'].includes(k)) err(f, `${id}.milestones[${i}]: field lạ "${k}"`); });
+  });
+  if (!Array.isArray(p.challenges) || p.challenges.length < 3) err(f, `${id}: challenges cần ít nhất 3 mục`);
+  (Array.isArray(p.challenges) ? p.challenges : []).forEach((x, i) => checkMarkup(f, id, `challenges[${i}]`, x));
+  if (!p.interview || typeof p.interview.story !== 'string' || !Array.isArray(p.interview.questions) || p.interview.questions.length < 5) err(f, `${id}: interview cần story và ít nhất 5 questions`);
+  if (p.interview) {
+    checkMarkup(f, id, 'interview.story', p.interview.story);
+    (Array.isArray(p.interview.questions) ? p.interview.questions : []).forEach((x, i) => checkMarkup(f, id, `interview.questions[${i}]`, x));
+    Object.keys(p.interview).forEach(k => { if (!['story', 'questions'].includes(k)) err(f, `${id}.interview: field lạ "${k}"`); });
+  }
+  if (p.related != null && !Array.isArray(p.related)) err(f, `${id}: related phải là mảng`);
+  (Array.isArray(p.related) ? p.related : []).forEach(r => { if (!questionIds.has(r) && !lessonIds.has(r)) err(f, `${id}: related "${r}" không phải question/lesson có thật`); });
+  const allowed = new Set(['id', 'title', 'level', 'weeks', 'skills', 'pitch', 'requirements', 'architecture', 'milestones', 'challenges', 'readme', 'interview', 'related']);
+  Object.keys(p).forEach(k => { if (!allowed.has(k)) err(f, `${id}: field lạ "${k}"`); });
+}
+
 // ---- summary ----
 const Q = sandbox.window.QUESTIONS || [], Z = sandbox.window.QUIZ || [];
 console.log('Questions per topic:');
@@ -219,6 +253,7 @@ console.log(`Debug lab: ${L.length} bài (` + [...LAB_CATS].map(c => c + ' ' + L
 const LS = sandbox.window.LESSONS || [];
 if (LS.length) console.log(`Bài học: ${LS.length} bài, ${LS.reduce((n, l) => n + (l.exercises || []).length, 0)} bài tập (` +
   [...new Set(LS.map(l => l.track))].map(t => t + ' ' + LS.filter(l => l.track === t).length).join(', ') + ')');
+console.log(`Pet project: ${projects.length} dự án`);
 if (warns.length) console.log('\nCảnh báo:\n  ' + warns.join('\n  '));
 if (errors.length) { console.error('\nLỖI:\n  ' + errors.join('\n  ')); process.exit(1); }
 console.log('\nOK — không có lỗi.');

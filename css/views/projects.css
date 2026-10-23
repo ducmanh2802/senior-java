@@ -1,0 +1,28 @@
+/* Pet project view. Every selector is scoped to this route. */
+.view-projects .pr-filter-label { display: block; margin: 0 0 6px; font-weight: 600; }
+.view-projects .pr-filter { width: 100%; max-width: 420px; margin-bottom: 16px; }
+.view-projects .pr-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 330px), 1fr)); gap: 14px; }
+.view-projects .pr-card { min-width: 0; }
+.view-projects .pr-card[hidden] { display: none; }
+.view-projects .pr-card-head, .view-projects .pr-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.view-projects .pr-card-head h2 { margin: 0; font-size: 1.15rem; }
+.view-projects .pr-card .chips, .view-projects .pr-skills { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.view-projects .pr-card .md { margin: 12px 0; }
+.view-projects .pr-milestones, .view-projects .pr-challenges { margin-top: 24px; }
+.view-projects .pr-milestones > h2, .view-projects .pr-challenges > h2 { margin-bottom: 10px; }
+.view-projects .pr-milestone { margin: 12px 0; }
+.view-projects .pr-check { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
+.view-projects .pr-check input { width: 18px; height: 18px; flex: 0 0 auto; accent-color: var(--accent); }
+.view-projects .pr-milestone > .md, .view-projects .pr-milestone details { margin: 12px 0 0 28px; }
+.view-projects .pr-milestone details > summary, .view-projects .pr-challenges summary { cursor: pointer; font-weight: 600; }
+.view-projects .pr-challenges details { margin: 10px 0; }
+.view-projects .pr-readme { margin-top: 16px; }
+.view-projects .pr-readme h2 { margin-top: 0; }
+.view-projects .pr-readme-text { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; padding: 12px; border-radius: var(--radius-sm); background: var(--surface-2); }
+.view-projects .pr-copy-fallback { position: fixed; left: -10000px; top: 0; }
+.view-projects .pr-readme [data-copy-status] { margin-left: 10px; }
+.view-projects .card > .md:first-child { margin-top: 0; }
+@media (max-width: 480px) {
+  .view-projects .pr-milestone > .md, .view-projects .pr-milestone details { margin-left: 0; }
+  .view-projects .pr-card-head { align-items: flex-start; }
+}

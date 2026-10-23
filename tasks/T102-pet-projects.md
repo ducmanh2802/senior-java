@@ -1,6 +1,6 @@
 # T102 — Pet project cho Senior Java: dữ liệu + view `#/projects`
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/projects.js`, `js/views/projects.js`, `css/views/projects.css`, `index.html`, `scripts/validate.js`
 
@@ -34,3 +34,5 @@ Thêm khối kiểm tra PROJECTS theo mẫu khối LABS/LESSONS có sẵn: id `p
 `node --check` các file JS, `node scripts/validate.js` → OK (in "Pet project: 6 dự án").
 
 ## Notes
+Đã thêm 6 blueprint dự án, view danh sách/chi tiết với lọc skill, checklist lưu tiến độ, challenges thu gọn, copy README và liên kết ôn tập. Đã khai báo asset/route trong index, bổ sung validator cho schema và related IDs. `node --check` cho các file JS và `node scripts/validate.js` đều đạt; validator in `Pet project: 6 dự án` và `OK — không có lỗi.`
+Reviewed-by: codex (T102R)
