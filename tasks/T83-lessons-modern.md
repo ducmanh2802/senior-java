@@ -1,6 +1,6 @@
 # T83 — Bài học: Java 8 → 21
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/lessons-modern.js`
 
@@ -26,3 +26,5 @@ Viết **5 bài học** cho track `modern`, `order` từ 1, ID `lesson-modern-00
 `node scripts/validate.js` → OK và `node scripts/test-lessons.js` → tất cả bài tập OK. Integrator sẽ fact-check.
 
 ## Notes
+Đã viết 5 bài học track modern (lesson-modern-001..005): Stream+lazy+Collectors, Optional, Record/sealed/pattern matching, Lambda+compose, java.time+cut-off. Mỗi bài có body ≥ 2500 ký tự, 1 bài tập có test ≥ 3 case (reference pass 100%, starter compile được nhưng trượt test), 2–4 câu check nhanh, related chỉ dùng id câu hỏi thực. Chạy được `node --check`, `validate.js` OK, `test-lessons.js` 36/36 OK.
+Reviewed-by: codex (T83R)
