@@ -1,6 +1,6 @@
 # T108 — View `#/career`: câu chuyện STAR, góp ý CV, nhật ký phỏng vấn thật
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/views/career.js`, `css/views/career.css`, `index.html`
 
@@ -29,3 +29,7 @@ Owns: `js/views/career.js`, `css/views/career.css`, `index.html`
 `node --check`, `node scripts/validate.js` → OK.
 
 ## Notes
+
+- Đã thêm view STAR (AI tạo/chỉnh sửa/lưu/xoá/luyện kể), CV review có lưu nháp/kết quả, và nhật ký phỏng vấn có đối chiếu câu hỏi/xuất câu chưa có; thêm stylesheet, menu và đăng ký asset trong `index.html`.
+- Kiểm tra: `node --check js/views/career.js` và `node scripts/validate.js` đều đạt (`OK — không có lỗi.`).
+Reviewed-by: codex (T108R)
