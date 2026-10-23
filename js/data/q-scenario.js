@@ -5,7 +5,7 @@
   topic: 'scenario',
   level: 'senior',
   q: 'API list của bạn đang chạy 5 giây. Trace cho thấy nguyên nhân là một query chậm trên bảng 50 triệu dòng. Bạn xử lý thế nào, từng bước ra sao?',
-  a: `**Tóm tắt:** đo trước khi sửa — chạy {{EXPLAIN (ANALYZE)}} trên plan thật để tìm loại bước chậm (Seq Scan trên 50 triệu dòng, Sort spill ra disk, nested loop nhân số dòng), rồi sửa nguyên nhân gốc; thực tế 80–90% trường hợp chỉ cần thêm đúng 1–2 index hoặc viết lại query cho khớp index.
+  a: `**Tóm tắt:** đo trước khi sửa — chạy {{EXPLAIN (ANALYZE)}} trên plan thật để tìm loại bước chậm (Seq Scan trên 50 triệu dòng, Sort spill ra disk, nested loop nhân số dòng), rồi sửa nguyên nhân gốc; nhiều trường hợp được giải quyết bằng index phù hợp hoặc viết lại query, nhưng cần xác nhận bằng plan và workload thực tế.
 
 ### Làm rõ yêu cầu
 - Endpoint lấy loại gì: filter theo cột nào, sort theo cột nào, người dùng hay dùng tổ hợp lọc nào nhất? Có cần đếm tổng số dòng để phân trang không?
@@ -40,13 +40,14 @@ CREATE INDEX CONCURRENTLY idx_txn_tenant_status_time
     'Làm sao phát hiện sớm query chậm trước khi user phàn nàn?'
   ],
   tags: ['SQL', 'index', 'EXPLAIN', 'performance-tuning']
+,
 },
 {
   id: 'scenario-002',
   topic: 'scenario',
   level: 'mid',
   q: 'Phân trang trang thứ 10.000 tải rất chậm, mỗi request dùng {{OFFSET}} 300.000 dòng. Bạn xử lý thế nào?',
-  a: `**Tóm tắt:** {{OFFSET}} lớn buộc DB đọc và vứt toàn bộ các dòng trước đó nên càng về sau càng chậm — chuyển sang keyset pagination ({{WHERE id < :last_id ORDER BY id DESC LIMIT 20}}), mỗi trang đều O(log n) thay vì O(offset).
+  a: `**Tóm tắt:** {{OFFSET}} lớn buộc DB đọc và vứt toàn bộ các dòng trước đó nên càng về sau càng chậm — chuyển sang keyset pagination ({{WHERE id < :last_id ORDER BY id DESC LIMIT 20}}), với index khớp thứ tự, mỗi trang cần O(log n + pageSize) thay vì phải duyệt O(offset + pageSize).
 
 ### Làm rõ yêu cầu
 - User có cần nhảy tới trang bất kỳ không, hay chủ yếu kéo tiếp (infinite scroll / nút Next)?
@@ -163,6 +164,7 @@ REFRESH MATERIALIZED VIEW CONCURRENTLY daily_revenue;
     'Materialized view nên refresh bao lâu một lần với báo cáo doanh thu?'
   ],
   tags: ['OLAP', 'read-replica', 'materialized-view', 'warehouse']
+,
 },
 {
   id: 'scenario-005',
@@ -200,12 +202,13 @@ COMMIT;
 - Retry vô hạn khi xung đột rất nóng làm tăng CPU — đặt max attempts + alert.
 - Đừng vội chuyển Serializable: giảm concurrency nặng; ưu tiên sửa thứ tự khóa trong code.
 
-> Senior tip: khoảng 90% deadlock tôi gặp do transaction giữ lock khi gọi HTTP. Quy tắc thiết kế: mọi cuộc gọi mạng phải nằm ngoài khối BEGIN/COMMIT; bên trong transaction chỉ có đọc và ghi DB. Thêm retry với jitter giúp hệ thống sống sót giờ cao điểm.`,
+> Senior tip: nếu deadlock log cho thấy transaction giữ lock trong lúc gọi HTTP, chuyển network call ra ngoài transaction hoặc dùng outbox; thêm retry có giới hạn, backoff và jitter cho lỗi deadlock có thể retry.`,
   follow: [
     'Deadlock với lock wait timeout: phân biệt và xử lý hai loại này khác nhau thế nào?',
     'Khi nào bạn chọn Serializable isolation thay vì sửa thứ tự khóa mà chấp nhận chi phí?'
   ],
   tags: ['deadlock', 'locking', 'transaction', 'InnoDB']
+,
 },
 {
   id: 'scenario-006',
@@ -228,7 +231,7 @@ COMMIT;
 ### Giải pháp
 - Sửa leak: try-with-resources, không giữ Connection thủ công mà không đóng, native query trả connection đúng chỗ; mọi cảnh báo từ leakDetectionThreshold phải fix root cause.
 - Thu ngắn transaction: chuyển HTTP/Kafka call ra ngoài; pattern ghi bảng outbox trong tx rồi gửi sau bằng worker.
-- Pool size theo công thức Hikari (brettwooldridge): {{connections = cores * 2 + effective_spindle_count}} — chỉ vài chục connection; tăng size chỉ che triệu chứng.
+- HikariCP gợi ý một heuristic khởi điểm {{connections = (core_count * 2) + effective_spindle_count}}, không phải công thức sizing phổ quát; đo giới hạn DB và thời gian giữ connection trước khi chốt pool.
 - Tách pool cho batch/report so với OLTP để một nguồn không đè chết hai nguồn còn lại.
 - Giảm {{connectionTimeout}} còn 3–5s để fail fast, tầng trên retry hoặc queue thay vì ôm chờ 30s.
 
@@ -237,12 +240,13 @@ COMMIT;
 - {{maxLifetime}} phải ngắn hơn {{wait_timeout}} MySQL và idle timeout của LB/proxy, nếu không connection trong pool chết bên dưới gây lỗi lẻ khó debug.
 - Không thu thập metrics Hikari là mù mát — sự cố như thế thường đã có sóng cảnh báo nhỏ cả tuần trước đó.
 
-> Senior tip: khi pool cạn, câu hỏi đầu tiên là 'connection đang đi đâu': dùng pg_stat_activity để thấy query nào đang chạy và stack-dump Java từ PID để biết luồng kẹt ở đoạn code nào. Khoảng 90% trường hợp là một endpoint mới chậm 3s chiếm hết kết nối — sửa endpoint đó chứ không tăng pool.`,
+> Senior tip: khi pool cạn, tìm connection đang ở đâu: dùng pg_stat_activity để xem query và thời gian chạy, rồi thread dump/APM để nối connection với luồng ứng dụng. Phân biệt query chậm, transaction giữ connection lâu và leak trước khi đổi pool size.`,
   follow: [
     'HikariCP report apparent connection leak là sao, cấu hình nào giúp phát hiện?',
     'Khi nào nên tách connection pool cho consumer batch so với API online?'
   ],
   tags: ['HikariCP', 'connection-pool', 'troubleshooting']
+,
 },
 {
   id: 'scenario-007',
@@ -268,6 +272,7 @@ COMMIT;
 DELETE FROM logs WHERE id IN (
   SELECT id FROM logs WHERE created_at < now() - interval '24 months'
   ORDER BY id LIMIT 5000
+
 );
 -- MySQL: DELETE ... LIMIT 5000; chạy lặp cho đến khi 0 dòng, sleep 200ms mỗi vòng
 ~~~
@@ -281,7 +286,7 @@ DELETE FROM logs WHERE id IN (
 - DELETE khối lượng lớn mà chưa VACUUM làm dead tuples phình, làm chậm mọi query kế tiếp.
 - Bảng archive cũng cần thiết kế schema/index từ đầu để phục vụ audit truy vấn cái cần về sau.
 
-> Senior tip: với retention 5 năm theo NHNN, tôi thiết kế ba tầng storage: hot (3 tháng gần nhất trong DB), warm (12 tháng bảng archive), cold (5 năm S3 Glacier + Athena). Truy vấn thường xuyên chỉ trên hot, hiếm khi xuyên suốt — không để cả 5 năm trong DB chính tiếp tục phình ra.`,
+> Senior tip: thời hạn lưu trữ phụ thuộc loại hồ sơ và quy định áp dụng; chốt retention với pháp chế/tuân thủ trước khi xóa. Có thể phân tầng hot, archive và object storage, nhưng phải giữ khả năng tra cứu, kiểm soát truy cập và bằng chứng toàn vẹn theo yêu cầu.`,
   follow: [
     'So sánh DELETE theo batch và CREATE TABLE AS SELECT + rename trên bảng 300 triệu dòng?',
     'Nếu bảng chưa phân vùng, chuyển sang partition theo tháng thế nào mà không downtime?'
@@ -328,6 +333,7 @@ WHERE sku = :sku AND qty >= :take;
     'Optimistic lock vs pessimistic lock — so sánh chi phí, khi nào dùng cái nào?'
   ],
   tags: ['lost-update', 'race-condition', 'optimistic-lock', 'row-lock']
+,
 },
 {
   id: 'scenario-009',
@@ -375,6 +381,7 @@ try (Reader r = new BufferedReader(new InputStreamReader(in, UTF_8), 1 << 16)) {
     'Tiến độ worker báo về client sao cho ổn khi nhiều node?'
   ],
   tags: ['CSV', 'batch-insert', 'COPY', 'async', 'idempotency']
+,
 },
 {
   id: 'scenario-010',
@@ -422,13 +429,14 @@ s3.putObject(req, RequestBody.fromFile(tmpFile)); // SDK v2, upload từ file: R
     'Làm sao bảo đảm file export phản ánh dữ liệu nhất quán tại thời điểm tạo?'
   ],
   tags: ['CSV', 'streaming', 'S3', 'async']
+,
 },
 {
   id: 'scenario-011',
   topic: 'scenario',
   level: 'senior',
   q: 'User cần upload file 2GB lên hệ thống. Thiết kế luồng upload thế nào cho ổn định và có thể upload lại khi lỗi mạng?',
-  a: `**Tóm tắt:** không cho file 2GB đi qua JVM (multipart tốn RAM/disk, dễ bị cắt timeout) — client upload thẳng S3 bằng presigned URL với multipart upload; mỗi part 100–200MB, tải song song, part lỗi retry riêng (resumable); sau khi complete, dùng S3 event để quét virus (Lambda + ClamAV) trước khi file vào bucket chính.
+  a: `**Tóm tắt:** không cho file 2GB đi qua JVM (multipart tốn RAM/disk, dễ bị cắt timeout) — client upload thẳng S3 bằng presigned URL với multipart upload; part size và concurrency chọn theo giới hạn S3, throughput và khả năng retry; tải song song có giới hạn, part lỗi retry riêng (resumable); sau khi complete, dùng S3 event để quét virus (Lambda + ClamAV) trước khi file vào bucket chính.
 
 ### Làm rõ yêu cầu
 - Kích thước max, loại file, mạng người dùng (4G văn phòng)? Có cần resumable khi ngắt giữa chừng?
@@ -452,12 +460,13 @@ s3.putObject(req, RequestBody.fromFile(tmpFile)); // SDK v2, upload từ file: R
 - CORS phải cấu hình cho presigned upload; phải test bằng trình duyệt thật, không chỉ Postman/curl.
 - Tách ba bucket: upload-raw / quarantine / clean; chỉ bucket clean được app đọc — fail-safe khi quét lỗi.
 
-> Senior tip: chuyển upload thẳng S3 giảm tới 90% CPU/RAM của service khi xử lý file lớn. Kinh nghiệm chọn part: 100–200MB mỗi part, 4–6 luồng song song là tối ưu cho hầu hết mạng ở VN; từng part retry riêng quyết định thành bại — retry cả file là trải nghiệm tệ nhất cho người dùng 4G.`,
+> Senior tip: chuyển upload thẳng S3 giảm tới 90% CPU/RAM của service khi xử lý file lớn. Chọn part size/concurrency bằng đo đạc trên client và mạng mục tiêu; giới hạn số part đồng thời để không làm cạn băng thông/connection của thiết bị. Retry từng part giúp tiếp tục upload mà không gửi lại toàn file.`,
   follow: [
     'Client mất mạng khi đã upload 5 trên 12 part — luồng resume thiết kế thế nào?',
     'Dùng S3 ListParts để biết client đã xong part nào và bắt đầu retry từ đâu ra sao?'
   ],
   tags: ['S3', 'multipart-upload', 'presigned-url', 'virus-scan']
+,
 },
 {
   id: 'scenario-012',
@@ -500,6 +509,7 @@ public void run() { ... }
     'Thiết kế checkpoint cho job tự viết (không Spring Batch) thế nào để restart từ chunk cuối?'
   ],
   tags: ['ShedLock', 'cron', 'checkpoint', 'idempotency', 'Spring-Batch']
+,
 },
 {
   id: 'scenario-013',
@@ -573,6 +583,7 @@ public void run() { ... }
     'Nếu có canary deployment, quy trình dần dần roll out đảm bảo như nào để phát hiện regression trước?'
   ],
   tags: ['p99', 'rollback', 'APM', 'GC', 'troubleshooting']
+,
 },
 {
   id: 'scenario-015',
@@ -610,6 +621,7 @@ public void run() { ... }
     'ZGC hay G1 giúp gì cho OOMKilled trên K8s?'
   ],
   tags: ['Kubernetes', 'OOMKilled', 'JVM', 'heap', 'NativeMemoryTracking']
+,
 },
 {
   id: 'scenario-016',
@@ -642,12 +654,13 @@ public void run() { ... }
 - Cache TTL dài mà key sinh ra vô hạn là menu với leak rất kín đáo, monitor eviction và size để catch early.
 - Leak rất chậm (10MB/ngày) khó tái hiện trong chu kỳ sprint ngắn — soak test ít nhất một tuần là bắt buộc trước release.
 
-> Senior tip: 90% heap leak chỉ ra đúng một collection trong Dominator Tree; khó nhất là leak ~10MB/ngày nên soak test ≥1 tuần luôn là bước bắt buộc tôi làm trước khi release. Trước đó, đặt scheduled restart pod mỗi Tuesday là giải pháp tạm chấp nhận được trong khi chờ fix.`,
+> Senior tip: Dominator Tree thường giúp lần theo object giữ retained heap lớn, nhưng native leak cần công cụ khác. Nếu buộc phải restart định kỳ để giảm tác động, coi đó là biện pháp tạm có cảnh báo và thời hạn; vẫn cần tìm nguyên nhân và theo dõi xu hướng bộ nhớ.`,
   follow: [
     'Phân biệt heap leak với native/off-heap leak thế nào để tránh đi nhầm hướng?',
     'Caffeine cache nên đặt ttl và max size sao cho vừa xài được mà không leak?'
   ],
   tags: ['memory-leak', 'heap-dump', 'MAT', 'jcmd']
+,
 },
 {
   id: 'scenario-017',
@@ -692,6 +705,7 @@ Retry rt = Retry.of("partnerA", retryCfg);                  // 2 lần, backoff 
     'Circuit breaker mở mà traffic vẫn đến — fallback nào tránh sinh queue vô hạn?'
   ],
   tags: ['resilience', 'CircuitBreaker', 'bulkhead', 'Resilience4j', 'timeout']
+,
 },
 {
   id: 'scenario-018',
@@ -734,6 +748,7 @@ Object v = localCache.get(key, k -> loadWithRedisLock(k));
     'Cho trường hợp Redis Cluster failover (cache trống): warm-up cache thế nào để DB không phải gánh toàn thiếu?'
   ],
   tags: ['cache-stampede', 'Redis', 'single-flight', 'TTL', 'Caffeine']
+,
 },
 {
   id: 'scenario-019',
@@ -822,6 +837,7 @@ WHERE id = :pid AND status = 'PENDING';
     'Request hash xử lý sao khi client gửi cùng intent nhưng đổi vài trường vô hại (header)?'
   ],
   tags: ['idempotency', 'payment', 'DB-constraint', 'state-machine']
+,
 },
 {
   id: 'scenario-021',
@@ -864,6 +880,7 @@ ON CONFLICT (event_id) DO NOTHING;
     'Resequencer buffer theo key có timeout — thiết kế chi tiết?'
   ],
   tags: ['Kafka', 'idempotent-consumer', 'partition-key', 'DLT']
+,
 },
 {
   id: 'scenario-022',
@@ -943,6 +960,7 @@ LEFT JOIN partner_tx p USING (ref_no) WHERE p.ref_no IS NULL;
     'Partner đổi schema file — quy trình nào để detect sớm trước khi import trúng?'
   ],
   tags: ['reconciliation', 'match-engine', 'suspense', 'OPS']
+,
 },
 {
   id: 'scenario-024',
@@ -984,6 +1002,7 @@ LEFT JOIN partner_tx p USING (ref_no) WHERE p.ref_no IS NULL;
     'PII trong log: mask ở layer nào (logback pattern so với Jackson serializer)?'
   ],
   tags: ['security-incident', 'PII', 'git', 'rotation', 'GDPR']
+,
 },
 {
   id: 'scenario-025',
@@ -1186,7 +1205,7 @@ CREATE INDEX idx_audit_entity ON audit_log (entity_type, entity_id, ts DESC);
 - Cách bắt bằng app-only (AOP) bỏ lỡ update từ job hay SQL-direct edits — CDC từ WAL là chắc nhất về WHAT/WHEN, nhưng WAL **không biết WHO** (user cuối, IP): app phải ghi actor vào cột ({{updated_by}}, {{request_id}}) để CDC mang theo, hoặc kết hợp audit tầng app; update SQL trực tiếp thì chỉ biết DB user.
 - Hash chain cần verify job hàng ngày; nếu chain đứt mà không phát hiện sớm thì tính toàn vẹn mất.
 
-> Senior tip: câu hỏi tôi luôn hỏi khi thiết kế audit: "khi kiểm toán viên đến, bạn trả lời trong bao lâu?" — thiết kế query theo entity + user + thời gian với index tương ứng; NHNN VN đòi lưu 5 năm, tôi luôn snapshot hash theo ngày vào vault để chứng minh dữ liệu không bị chỉnh sửa.
+> Senior tip: câu hỏi tôi luôn hỏi khi thiết kế audit: "khi kiểm toán viên đến, bạn trả lời trong bao lâu?" — thiết kế query theo entity + user + thời gian với index tương ứng; thời hạn lưu phải được xác định theo loại hồ sơ và quy định áp dụng; snapshot hash chỉ hỗ trợ phát hiện sửa đổi, không thay thế kiểm soát truy cập và quy trình lưu trữ.
 `,
   follow: [
     'CDC audit log với Debezium: phục hồi khi topic lag quá và có trường hợp mất event không?',
@@ -1339,6 +1358,7 @@ ON CONFLICT (account_id, accrual_date) DO NOTHING;
 `,
   follow: ['Làm sao detect DB failover từ app side?', 'Khi nào nên dùng failover-aware JDBC driver?'],
   tags: ['db-failover', 'dns-cache', 'connection-pool', 'hikari']
+,
 },
 {
   id: 'scenario-033',
@@ -1395,6 +1415,7 @@ ON CONFLICT (account_id, accrual_date) DO NOTHING;
 `,
   follow: ['Idempotency key pattern cho API import?', 'Khi nào dùng pessimistic vs optimistic lock?'],
   tags: ['race-condition', 'upsert', 'unique-constraint', 'idempotency']
+,
 },
 {
   id: 'scenario-035',
@@ -1420,6 +1441,7 @@ ON CONFLICT (account_id, accrual_date) DO NOTHING;
 `,
   follow: ['BigDecimal vs double cho tiền?', 'Làm sao reconcile tổng tiền với ledger?'],
   tags: ['money', 'rounding', 'bigdecimal', 'financial']
+,
 },
 {
   id: 'scenario-036',
@@ -1471,6 +1493,7 @@ ON CONFLICT (account_id, accrual_date) DO NOTHING;
 `,
   follow: ['Access token lifetime nên bao lâu?', 'Refresh token rotation pattern?'],
   tags: ['jwt', 'clock-skew', 'ntp', 'authentication']
+,
 }
 ,
 {
@@ -1498,6 +1521,7 @@ ON CONFLICT (account_id, accrual_date) DO NOTHING;
 `,
   follow: ['Redis Cluster vs Sentinel cho HA?', 'Distributed lock với Redis Redlock?'],
   tags: ['redis', 'eviction', 'session', 'distributed-lock', 'memory']
+,
 },
 {
   id: 'scenario-039',
@@ -1581,5 +1605,570 @@ ON CONFLICT (account_id, accrual_date) DO NOTHING;
 `,
   follow: ['Virtual threads vs reactive cho Spring Boot?', 'Resilience4j bulkhead config?'],
   tags: ['tomcat', 'thread-pool', 'blocking', 'bulkhead', 'circuit-breaker']
+,
+},
+{
+  id: 'scenario-042',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Một dịch vụ Spring cần gọi core banking T24/Flexcube nhưng model và trạng thái giao dịch của đối tác khác hẳn domain nội bộ. Bạn thiết kế Anti-Corruption Layer thế nào để tránh rò rỉ legacy model?',
+  a: `**Tóm tắt:** Đặt adapter tại ranh giới tích hợp: chuyển request/response và mã lỗi của core banking sang model nghiệp vụ nội bộ, giữ protocol/vendor detail trong một module. ACL không che được semantic khác nhau; cần contract, observability và quy tắc xử lý trạng thái chưa rõ.
+
+### Ranh giới
+~~~java
+interface FundsGateway {
+    TransferResult transfer(TransferCommand command);
 }
+
+final class T24FundsAdapter implements FundsGateway {
+    private final T24Client client;
+    public TransferResult transfer(TransferCommand command) {
+        var wire = client.debit(toLegacyRequest(command));
+        return mapResult(wire); // status/code vendor không thoát khỏi adapter
+    }
+}
+~~~
+Application service chỉ dùng {{TransferCommand}}/{{TransferResult}}. Adapter đảm nhiệm protocol, field mapping, timeout, correlation ID, code mapping và chuyển đổi đơn vị/thời gian. Nếu vendor trả accepted/pending thay vì success/fail, domain model phải giữ trạng thái pending thay vì ép thành boolean.
+
+### Hợp đồng và lỗi
+- Lập mapping bảng mã lỗi có owner: lỗi nghiệp vụ, lỗi xác thực, lỗi tạm thời và kết quả chưa xác định.
+- Consumer-driven contract test hoặc sandbox test xác nhận wire format, charset, decimal scale, timezone và version.
+- Timeout sau khi request gửi đi không chứng minh lệnh thất bại; tra cứu trạng thái theo reference trước khi retry.
+
+### Trade-off & pitfall
+| Lựa chọn | Lợi ích | Chi phí |
+|---|---|---|
+| Adapter mỏng | Ít code | Model vendor dễ rò rỉ |
+| ACL rõ domain | Cô lập thay đổi legacy | Mapping cần được duy trì |
+| Dùng DTO vendor toàn hệ thống | Nhanh ban đầu | Vendor schema thành domain contract |
+
+Đừng retry mọi lỗi giống nhau; giữ raw response đã redacted để điều tra, nhưng không log credential/PII. Đặt timeout theo latency budget và circuit breaker để bảo vệ thread, vẫn cần reconciliation cho pending.
+
+> Senior tip: ghi metric theo operation, kết quả chuẩn hóa và version adapter; khi core nâng version, canary một luồng trước khi mở toàn bộ traffic.
+`,
+  follow: ['Bạn biểu diễn trạng thái UNKNOWN/PENDING trong domain ra sao?', 'Làm thế nào version hóa adapter mà không downtime?'],
+  tags: ['core banking', 'ACL', 'T24', 'integration', 'domain']
+},
+{
+  id: 'scenario-043',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Ứng dụng gửi lệnh chuyển tiền tới core banking, client timeout trước khi nhận response. Làm sao phân biệt retry an toàn với nguy cơ ghi nợ hai lần?',
+  a: `**Tóm tắt:** Timeout là kết quả chưa biết, không phải thất bại. Gửi idempotency/reference duy nhất xuyên suốt, lưu trạng thái lệnh cục bộ trước khi gọi, sau timeout truy vấn cùng reference hoặc chờ callback/reconciliation; chỉ retry nếu core đảm bảo idempotent theo contract.
+
+### State machine
+{{CREATED → SENT → ACCEPTED/REJECTED}}; timeout tạo trạng thái {{UNKNOWN}}, không chuyển thẳng về {{FAILED}}. API client nhận cùng key thì trả kết quả đã lưu hoặc trạng thái đang xử lý. Unique constraint bảo vệ key trong DB; key gắn với hash payload để cùng key nhưng nội dung khác bị từ chối.
+
+~~~java
+@Transactional
+TransferRecord reserve(String key, String payloadHash) {
+    return repository.insertIfAbsent(key, payloadHash, "CREATED");
+}
+// Gọi partner ngoài transaction; cập nhật SENT/UNKNOWN/FINAL bằng CAS/version.
+~~~
+
+### Phục hồi
+1. Persist intent/outbox trong transaction nghiệp vụ.
+2. Worker gửi với partner reference ổn định; ghi attempt và timestamp.
+3. Timeout: query status API hoặc chờ message; không sinh reference mới.
+4. Job đối soát tìm lệnh UNKNOWN quá ngưỡng và đưa vào xử lý có audit.
+
+### Trade-off & pitfall
+- Idempotency retention phía partner phải dài hơn retry/reconciliation window.
+- Không giữ DB transaction mở trong lúc gọi mạng; tránh giữ lock/connection lâu.
+- Exactly-once qua hai hệ độc lập không thể đạt chỉ bằng retry; cần dedup và trạng thái bền vững ở cả hai đầu.
+- Nếu partner không có query/idempotency, retry tự động có thể tạo duplicate; chuyển sang hàng chờ xử lý thủ công có kiểm soát.
+
+> Senior tip: dashboard phải tách timeout, reject và unknown; theo dõi số UNKNOWN theo tuổi và đảm bảo mọi record cuối cùng có trạng thái terminal hoặc case điều tra.
+`,
+  follow: ['Nếu partner không hỗ trợ idempotency key, phương án giảm rủi ro là gì?', 'Vì sao không giữ transaction DB mở trong lúc gọi core?'],
+  tags: ['idempotency', 'core banking', 'timeout', 'unknown state']
+},
+{
+  id: 'scenario-044',
+  topic: 'scenario',
+  level: 'mid',
+  q: 'Bạn nhận yêu cầu sửa mapping một bản tin ISO 8583 và một API ISO 20022. Dev cần hiểu những khác biệt nào để tránh hiểu nhầm field, amount và trạng thái giao dịch?',
+  a: `**Tóm tắt:** ISO 8583 là họ thông điệp giao dịch thẻ/tài chính thường dùng bitmap và data element theo profile; ISO 20022 định nghĩa mô hình thông điệp và schema, thường được triển khai bằng XML, còn JSON thường là biểu diễn riêng của API/đối tác. Không suy semantics chỉ từ tên field hay tiêu chuẩn tổng quát: phải theo profile, version và quy ước của đối tác.
+
+### Điều cần xác minh
+- ISO 8583: MTI, bitmap, data element, processing code, STAN/RRN, response code; độ dài/encoding có thể thay theo profile.
+- ISO 20022: message definition, business component, identifier và status reason; schema/version và usage guideline xác định field bắt buộc. JSON mapping, nếu có, phải theo hợp đồng API cụ thể chứ không mặc định từ chuẩn.
+- Amount: đơn vị minor/major, currency exponent, sign và rounding. Không parse qua floating point.
+- Trạng thái: authorization, clearing, settlement, reversal/return là các pha khác nhau; response thành công không luôn đồng nghĩa tiền đã quyết toán cuối cùng.
+
+### Thiết kế mapping
+Tạo canonical command/result nội bộ chỉ chứa khái niệm cần cho use case. Adapter giữ raw field có kiểm soát, validate schema/length, map code table và lưu correlation identifiers. Test fixture gồm message chuẩn, optional field vắng mặt, unknown code, duplicate và malformed payload.
+
+### Pitfall production
+- Không hardcode offset ISO 8583 nếu message dùng bitmap/variable length; dùng parser theo profile đã chọn.
+- Không giả định mọi ISO 20022 bên đối tác dùng cùng schema hoặc transport.
+- Giữ version của profile, không log PAN/PII nguyên dạng; log masked identifiers và correlation ID.
+- Unknown response code phải được xử lý an toàn và cảnh báo, không map mặc định thành approved.
+
+> Senior tip: trong review tích hợp, yêu cầu sample đã anonymize từ đối tác và xác nhận bằng test vector; tiêu chuẩn không thay thế đặc tả triển khai hai bên.
+`,
+  follow: ['Một ISO 8583 response approved có nghĩa settlement đã xong không?', 'Bạn xử lý response code mới chưa có mapping thế nào?'],
+  tags: ['ISO 8583', 'ISO 20022', 'payments', 'message mapping']
+},
+{
+  id: 'scenario-045',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Giao dịch được ghi nhận trong DB nhưng không được gửi qua IBM MQ/Kafka sau khi process crash. Bạn thiết kế luồng messaging nào để không mất và xử lý trùng có kiểm soát?',
+  a: `**Tóm tắt:** Không dual-write DB và broker trong cùng code path rồi hy vọng cả hai cùng thành công. Ghi business change và outbox event trong cùng DB transaction; publisher gửi lặp có thể xảy ra, consumer deduplicate/idempotent theo event ID. Chọn IBM MQ hoặc Kafka theo semantics, vận hành và hệ sinh thái hiện có.
+
+### Luồng outbox
+1. Transaction ghi ledger/business row và outbox row cùng commit.
+2. Publisher claim các row chưa gửi, gửi event, rồi đánh dấu published; crash giữa send và mark có thể gửi lại.
+3. Consumer ghi inbox/dedup key và cập nhật nghiệp vụ trong cùng transaction.
+4. Theo dõi backlog, tuổi event, retry/dead-letter và có replay procedure.
+
+~~~text
+DB transaction: debit + credit + outbox(event_id, account_id, sequence)
+                    ↓ publisher
+              MQ/Kafka → consumer dedup(event_id) → effect
+~~~
+
+### MQ và Kafka
+| Cân nhắc | IBM MQ | Kafka |
+|---|---|---|
+| Mô hình phổ biến | Queue, delivery/ack, enterprise integration | Partitioned append log, replay/retention |
+| Thứ tự | Theo queue/configuration | Theo partition, key quyết định locality |
+| Dùng hợp | Tích hợp core legacy, queue semantics hiện có | Event stream, nhiều consumer/replay |
+
+Không chọn theo khẩu hiệu. Kiểm tra HA, transaction support, ordering, retention, throughput, security và năng lực vận hành của tổ chức.
+
+### Pitfall production
+- Broker transaction không tự tạo atomic commit với DB ngoài nó.
+- Partition key account giữ thứ tự một account nhưng có thể tạo hot partition.
+- Retry vô hạn giữ poison message; DLQ cần owner và thao tác replay an toàn.
+- Outbox cleanup chỉ xóa sau retention/audit policy; đừng xóa event chưa được xác nhận.
+
+> Senior tip: đo outbox oldest age và consumer lag; đặt SLO cho thời gian phát tán, kèm đối soát DB với event để phát hiện lỗi publisher lâu ngày.
+`,
+  follow: ['Crash sau broker publish nhưng trước khi đánh dấu outbox sẽ gây gì?', 'Chọn partition key Kafka theo account có trade-off nào?'],
+  tags: ['outbox', 'IBM MQ', 'Kafka', 'messaging', 'idempotency']
+},
+{
+  id: 'scenario-046',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Job EOD áp biểu phí mới cho hàng triệu tài khoản nhưng bị dừng giữa chừng tại cut-off. Bạn thiết kế checkpoint, khóa nghiệp vụ và chạy lại để không tính hai lần thế nào?',
+  a: `**Tóm tắt:** Xác định business date và cut-off rõ, tạo batch run có version/range/checkpoint bền vững, và làm từng item idempotent bằng unique key (account, fee type, business date, rule version). Chạy lại tiếp tục phần chưa hoàn tất hoặc recompute theo quy tắc; không dựa vào việc process chỉ chạy một lần.
+
+### Thiết kế run
+- Chốt input snapshot/as-of time và timezone; late-arriving transaction có quy tắc kỳ sau hay adjustment.
+- Chia partition theo account range/hash, checkpoint sau chunk commit cùng kết quả và execution context.
+- Ghi ledger fee với business key unique; duplicate attempt trả về kết quả đã tạo.
+- Lưu trạng thái nghiệp vụ của run (đang chạy, hoàn tất, lỗi); Spring Batch dùng JobExecution status riêng, còn khả năng restart phụ thuộc trạng thái kết thúc, JobRepository và cùng JobParameters. Chỉ cho một run active cùng business date/rule version bằng lock/lease có fencing.
+
+~~~text
+run(2026-10-22, fee-rule-v3)
+partition 0: accounts 0000–0999 → checkpoint 1000
+partition 1: accounts 1000–1999 → retry từ item chưa commit
+fee unique key: account_id + fee_type + business_date + rule_version
+~~~
+
+### Lock và cut-off
+Lock toàn bảng làm nghẽn giao dịch; ưu tiên partition ownership, lease có expiry/fencing và DB constraint làm bảo vệ cuối. Nếu chạy đồng thời với giao dịch online, định nghĩa snapshot semantics hoặc khóa theo account trong thời gian ngắn. Cut-off là chính sách nghiệp vụ, không chỉ là cron time.
+
+### Pitfall production
+- Checkpoint tiến trước commit làm mất item; tiến sau commit nhưng không idempotent gây lặp.
+- Job restart cùng parameters có thể được xem là cùng instance trong Spring Batch; run ID mới không thay thế idempotency ở dữ liệu đích.
+- Thay đổi rule giữa lần chạy phải tạo rule version mới hoặc cố định version cũ.
+- Reversal/correction cần entry bù có audit, không sửa âm thầm kết quả đã chốt.
+
+> Senior tip: dashboard EOD theo expected/processed/failed count và tổng amount; chặn bước tiếp theo nếu invariant tổng hoặc số account không khớp.
+`,
+  follow: ['Điều gì phải commit atomically với checkpoint?', 'Xử lý giao dịch đến muộn sau cut-off theo nguyên tắc nào?'],
+  tags: ['EOD', 'Spring Batch', 'cut-off', 'checkpoint', 'idempotency']
+},
+{
+  id: 'scenario-047',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Một giao dịch lớn cần được lập bởi maker và duyệt bởi checker; cùng lúc operator có quyền DB muốn sửa trạng thái trực tiếp. Bạn thiết kế kiểm soát maker-checker và audit trail thế nào?',
+  a: `**Tóm tắt:** Tách quyền tạo và quyền phê duyệt, bắt buộc người duyệt độc lập với maker, lưu quyết định bất biến kèm actor/time/reason/version, và chỉ chuyển trạng thái qua workflow được phân quyền. DB access đặc quyền phải có kiểm soát và audit riêng; ứng dụng không thể tự tuyên bố audit đáng tin nếu admin sửa được cùng bảng.
+
+### Workflow
+{{DRAFT → PENDING_APPROVAL → APPROVED/REJECTED → EXECUTED}}. Lưu command snapshot/hash để checker duyệt đúng nội dung; nếu maker sửa amount/beneficiary sau duyệt thì hủy approval và yêu cầu duyệt lại. Enforce separation-of-duty ở server, không chỉ ẩn nút trên UI.
+
+~~~java
+if (command.makerId().equals(actor.id())) {
+    throw new ForbiddenException("maker cannot approve own change");
+}
+approvalRepository.insert(command.id(), actor.id(), command.version(), reason);
+~~~
+
+### Kiểm soát
+- RBAC/ABAC theo vai trò, hạn mức, sản phẩm, đơn vị; quyền tối thiểu và MFA theo policy.
+- Audit append-only: actor, action, object ID, before/after hoặc hash, correlation ID, thời gian và nguồn xác thực.
+- Ghi audit cùng transaction cho quyết định nghiệp vụ; chuyển bản sao tới hệ thống log bất biến/độc lập theo kiến trúc.
+- Break-glass có ticket, thời hạn, người phê duyệt, thu hồi tự động và rà soát hậu kiểm.
+
+### Pitfall production
+- Không log secret, OTP, full account/card number; masking phải ở trước sink, không chỉ dashboard.
+- Audit ghi sau commit có thể mất nếu process crash; ghi cùng transaction hoặc outbox.
+- Đồng hồ máy lệch làm thứ tự mơ hồ; giữ sequence/version và đồng bộ thời gian.
+- DBA có quyền sửa audit DB; tách quyền, export sang storage kiểm soát độc lập và cảnh báo tamper.
+
+> Senior tip: kiểm thử cả đường API trực tiếp và batch/admin path; mỗi đường thay đổi trạng thái phải chịu cùng policy, audit và maker-checker rule.
+`,
+  follow: ['Nếu maker sửa giao dịch sau khi checker duyệt thì sao?', 'Làm sao bảo vệ audit khỏi DBA có quyền trên DB nghiệp vụ?'],
+  tags: ['maker-checker', 'authorization', 'audit', 'banking']
+},
+{
+  id: 'scenario-048',
+  topic: 'scenario',
+  level: 'mid',
+  q: 'Log production cần đủ thông tin để tra soát giao dịch nhưng chứa tên, số tài khoản và token. Bạn thiết kế masking và correlation thế nào để vừa điều tra được vừa giảm lộ dữ liệu?',
+  a: `**Tóm tắt:** Log chỉ những field tối thiểu cần cho vận hành; loại bỏ credential và dữ liệu nhạy cảm, mask/tokenize định danh trước khi ghi, dùng correlation ID không mang ý nghĩa bí mật để nối các service. Thiết lập quyền truy cập, retention và kiểm tra log như một kho dữ liệu nhạy cảm.
+
+### Thiết kế
+- Allowlist field cho event log: event type, status, duration, partner code, correlation ID, account surrogate.
+- Không serialize nguyên request/response; annotation masking sau serialization dễ bị bỏ sót ở log khác.
+- Với tra soát cần tìm cùng khách hàng, dùng token HMAC có key được quản lý riêng hoặc surrogate ID; không dùng hash thường cho giá trị có không gian đoán nhỏ.
+- Tách audit record nghiệp vụ khỏi diagnostic log; mỗi loại có schema, quyền truy cập và retention riêng.
+
+~~~text
+Không log: Authorization, OTP, PAN đầy đủ, password, raw payload
+Log: trace_id, transaction_ref, account_token, outcome, latency_ms
+~~~
+
+### Kiểm soát vòng đời
+Mask ở logger/appender boundary và kiểm thử bằng payload canary chứa chuỗi nhạy cảm. Cấu hình access theo role, ghi lại truy cập khi cần, mã hóa khi truyền/lưu và đặt retention theo mục đích/chính sách nội bộ. Có quy trình purge/index cleanup và xử lý sự cố khi phát hiện leak.
+
+### Pitfall production
+- MDC/correlation context có thể rò rỉ giữa thread nếu không được truyền/xóa đúng cách trong executor.
+- Regex masking không đáng tin với JSON lồng, encoding khác nhau hoặc field mới; schema allowlist an toàn hơn.
+- Masking {{123456789}} thành {{******789}} vẫn là dữ liệu có thể nhận diện; áp dụng đúng phân loại.
+- Log aggregation, APM trace và exception message đều là đường rò rỉ, không chỉ application log.
+
+> Senior tip: chạy kiểm tra tự động trên log test và truy vấn production để phát hiện pattern cấm; mọi field mới cần owner và lý do vận hành.
+`,
+  follow: ['Hash thường và HMAC khác nhau thế nào khi token hóa account ID?', 'MDC hoạt động ra sao với async executor?'],
+  tags: ['PII', 'masking', 'logging', 'correlation', 'security']
+},
+{
+  id: 'scenario-049',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Flash sale còn 30 vé nhưng nhiều request cùng lúc: Redis đã trừ stock và Kafka đã nhận lệnh, trong khi DB chỉ xác nhận được 27 đơn. Bạn thiết kế thế nào để không oversell và xử lý 3 vé lệch mà không trả kết quả sai cho khách?',
+  a: `**Tóm tắt:** chọn một nguồn quyết định cuối cùng cho việc bán (thường là DB), còn Redis chỉ giúp admission/reject sớm. Nếu giữ quota trước ở Redis, cần reservation có mã duy nhất, trạng thái rõ ràng và quy trình reconcile; không thể coi decrement Redis rồi publish Kafka là giao dịch nguyên tử.
+
+### Luồng đề xuất
+- Mỗi yêu cầu mang idempotency key duy nhất theo user, campaign và sản phẩm; DB có unique constraint để chặn lặp.
+- Redis Lua có thể atomically kiểm tra quota và cấp reservation token, giảm số request vào DB. Token có TTL, nhưng hết TTL không tự động chứng minh đơn chưa được xác nhận.
+- Ghi order intent và outbox trong một DB transaction, publish bằng relay. Consumer thực hiện conditional update {{stock >= quantity}}, lưu kết quả xử lý cùng transaction.
+- Khi DB từ chối vì hết hàng, đánh dấu reservation thất bại và hoàn quota Redis đúng một lần bằng state transition/idempotency key; trường hợp timeout thì truy vấn trạng thái order trước khi hoàn.
+
+~~~java
+@Transactional
+public Result confirm(OrderCommand c) {
+    if (!dedup.insertIfAbsent(c.idempotencyKey())) return orders.resultFor(c.idempotencyKey());
+    int changed = stock.decreaseIfAvailable(c.sku(), c.quantity());
+    if (changed == 0) return Result.soldOut();
+    orders.confirm(c);
+    outbox.add(new OrderConfirmed(c.orderId()));
+    return Result.confirmed(c.orderId());
+}
+~~~
+
+### Đối soát và phục hồi
+Định kỳ so sánh reservation Redis, order DB và lượng stock gốc theo campaign; phát hiện mismatch, đưa vào hàng xử lý có audit thay vì tự cộng/trừ mù. Chấp nhận trạng thái {{PENDING}} ngắn hạn và trả mã tra cứu; chỉ báo thành công sau khi nguồn quyết định commit.
+
+| Lựa chọn | Ưu điểm | Rủi ro |
+|---|---|---|
+| DB conditional update | Quyết định bền vững, đơn giản | DB là điểm nóng |
+| Redis reservation + async DB | Hấp thụ burst tốt | Reconcile, timeout và compensation phức tạp |
+
+### Pitfall production
+- Redis failover có thể làm mất write đã xác nhận; replication không biến Redis thành ledger bền vững.
+- Consumer retry sau timeout có thể tạo đơn trùng nếu dedup không nằm cùng transaction nghiệp vụ.
+- Không hoàn quota theo exception chung: lỗi mạng không chứng minh consumer chưa commit.
+
+> Senior tip: theo dõi gap giữa reserved, confirmed, rejected và expired theo campaign; alert theo số tuyệt đối và tỷ lệ, rồi có thao tác freeze campaign để dừng nhận đơn khi invariant bị phá.
+`,
+  follow: ['Nếu Redis restart làm quota tăng lại trong khi order DB đã commit thì reconcile ra sao?', 'Khi nào bạn bỏ Redis reservation và chỉ dùng conditional update ở DB?'],
+  tags: ['flash-sale', 'inventory', 'Redis', 'Kafka', 'reconciliation'],
+},
+{
+  id: 'scenario-050',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Một endpoint cấp coupon bị bot gọi hàng nghìn lần/giây; giới hạn theo IP làm chặn nhầm cả văn phòng dùng chung NAT, còn giới hạn theo user lại bỏ lọt tài khoản rác. Bạn thiết kế lớp phòng thủ thế nào?',
+  a: `**Tóm tắt:** rate limit cần nhiều chiều và đặt trước tài nguyên đắt: IP/network, account, device/session và campaign; kết hợp quota nghiệp vụ atomic để mỗi user chỉ nhận một coupon. Rate limit giảm abuse nhưng không thay thế authorization, chống Sybil hay giới hạn tồn kho.
+
+### Luồng xử lý
+1. Gateway áp giới hạn thô theo IP/subnet để bảo vệ server, với burst nhỏ và response {{429}} kèm {{Retry-After}}.
+2. Sau xác thực, áp sliding window/token bucket theo account và device; ngưỡng khác nhau cho user mới, tài khoản uy tín và endpoint nhạy cảm.
+3. Trong service, thao tác claim coupon dùng unique constraint (campaign_id, user_id) và conditional decrement quota trong transaction. Redis có thể làm admission nhanh, DB bảo vệ invariant cuối.
+4. Tạo rule nâng challenge (captcha/step-up auth) thay vì khóa cứng khi tín hiệu rủi ro vừa phải; block dài cần audit và cơ chế khiếu nại.
+
+~~~java
+@PostMapping("/campaigns/{id}/claim")
+ResponseEntity<?> claim(@PathVariable long id, Principal user) {
+    limiter.check(user.getName(), requestIp()); // ném 429 nếu vượt ngưỡng
+    return ResponseEntity.ok(couponService.claimOnce(id, user.getName()));
+}
+~~~
+
+### Trade-off và đo lường
+| Key | Lợi ích | Hạn chế |
+|---|---|---|
+| IP | Có trước authentication | NAT, proxy, IPv6 rotation |
+| Account | Gắn với quota nghiệp vụ | Tạo account hàng loạt |
+| Device/risk signal | Bắt pattern phối hợp | False positive, dữ liệu riêng tư |
+
+Đo tỷ lệ claim thành công, 429, challenge pass/fail, latency Redis và tỷ lệ user hợp lệ bị chặn. Giữ bucket key có TTL; khi Redis lỗi, chọn degraded policy rõ ràng (quota DB vẫn bắt buộc, endpoint có thể từ chối có kiểm soát).
+
+### Pitfall production
+- Chỉ dùng IP dễ gây outage diện rộng ở mạng carrier/NAT; tin {{X-Forwarded-For}} từ mọi nguồn cho phép giả IP.
+- Redis {{INCR}} rồi {{EXPIRE}} riêng biệt có crash window; dùng Lua hoặc cấu trúc có TTL atomic.
+- Ngưỡng cứng toàn cục không thích ứng campaign; phát hành limit config có version và rollback.
+
+> Senior tip: thử rule trên traffic shadow trước khi enforce; phân tích false positive theo ASN, account age và conversion để chỉnh ngưỡng thay vì chọn con số đẹp trên giấy.
+`,
+  follow: ['Bạn tin header client IP thế nào khi có nhiều proxy/CDN?', 'Nếu Redis rate limiter không truy cập được thì endpoint coupon nên fail-open hay fail-closed?'],
+  tags: ['rate-limit', 'abuse', 'coupon', 'security'],
+},
+{
+  id: 'scenario-051',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Một nhóm sản phẩm trong campaign rất nóng và mọi request tranh cùng một Redis key tồn kho. Team định bọc thao tác bằng Redisson lock để “an toàn hơn”. Bạn chọn giữa Lua, distributed lock và phân bucket quota thế nào?',
+  a: `**Tóm tắt:** nếu quyết định chỉ là đọc tồn và trừ có điều kiện trong Redis, một Lua script ngắn thường phù hợp vì kiểm tra-cập nhật nguyên tử tại nơi giữ dữ liệu. Distributed lock không tự bảo vệ invariant nếu lease hết hoặc client cũ tiếp tục chạy; bucket quota giảm hot key nhưng cần quản lý tổng quota và hoàn trả.
+
+### So sánh cơ chế
+- Lua gom {{GET}}, kiểm tra {{stock >= qty}} và {{DECRBY}} vào một lần thực thi; không có request khác xen giữa trên primary. Giữ script ngắn vì Redis chặn xử lý lệnh khác trong thời gian script chạy.
+- Lock hữu ích khi critical section gồm tài nguyên không thể gộp thành một atomic operation. Cần lease, token sở hữu để unlock an toàn, timeout, và fencing/version ở tài nguyên đích nếu công việc có thể sống lâu hơn lease.
+- Chia stock thành bucket/queue partition theo SKU giúp giảm contention trên một key nhưng quota bị phân mảnh: bucket A hết trong khi bucket B còn. Có thể rebalance theo batch, với chính sách không bao giờ cấp vượt tổng.
+
+~~~lua
+local n = tonumber(redis.call('GET', KEYS[1]) or '-1')
+local take = tonumber(ARGV[1])
+if n < take then return 0 end
+redis.call('DECRBY', KEYS[1], take)
+return 1
+~~~
+
+Spring Data Redis có {{RedisScript}} và executor quản lý serialization/cache script. Đừng truyền tên key động trong source; truyền qua KEYS/ARGV để dùng lại script và tương thích cluster key-slot.
+
+### Khi nào chọn
+| Tình huống | Chọn |
+|---|---|
+| Một key và phép kiểm tra/cập nhật gọn | Lua / atomic command |
+| Nhiều bước không thể biểu diễn trong Redis | Lock có fencing, hoặc đổi thiết kế |
+| Hot SKU vượt khả năng một partition | Quota bucket/queue, đo skew |
+
+### Pitfall production
+- Lua atomicity không đồng nghĩa durability: failover/asynchronous replication có thể mất acknowledged write theo cấu hình.
+- Script chạy lâu làm tăng latency toàn Redis; không quét collection lớn trong Lua.
+- Lock timeout ngắn tạo lỗi giả; timeout dài giữ waiter và gây queueing. Đừng lock quanh HTTP/DB chậm.
+
+> Senior tip: benchmark phân phối theo SKU, không chỉ tổng QPS; p99 của một hot key quyết định trải nghiệm flash sale nhiều hơn throughput trung bình.
+`,
+  follow: ['Lease hết khi JVM bị pause dài; fencing token phải được kiểm tra ở đâu?', 'Redis Cluster yêu cầu các key của script cùng slot thì thiết kế key bucket thế nào?'],
+  tags: ['Redis', 'Lua', 'distributed-lock', 'hot-key'],
+},
+{
+  id: 'scenario-052',
+  topic: 'scenario',
+  level: 'mid',
+  q: 'Giỏ hàng lưu thành một JSON String trong Redis. Hai request đồng thời đổi quantity của hai sản phẩm khác nhau; đôi khi một thay đổi bị mất. Bạn sửa cấu trúc và xác định nguồn giá/stock thế nào?',
+  a: `**Tóm tắt:** read-modify-write trên cả JSON String tạo lost update vì mỗi request ghi đè snapshot của request kia. Hash theo cart/product cho phép cập nhật field độc lập hơn, nhưng thao tác nhiều field vẫn cần atomic script/transaction; giá và tồn kho lúc checkout phải đọc từ nguồn nghiệp vụ đáng tin cậy, không lấy từ cart.
+
+### Mô hình dữ liệu
+- Key cart theo user là Redis Hash, field là product ID, value là quantity hoặc JSON nhỏ có version; dùng {{HINCRBY}} cho tăng/giảm quantity atomically.
+- Với yêu cầu đổi quantity tuyệt đối, gửi expected version hoặc dùng Lua đọc version rồi cập nhật để phát hiện xung đột.
+- Cart có TTL/ownership rõ ràng; khi user đăng nhập nhiều thiết bị, quyết định merge theo product thay vì ghi đè toàn bộ.
+- Cart chỉ là ý định mua. Checkout xác thực product còn bán, giá hiện hành, promotion và stock trong transaction nghiệp vụ.
+
+~~~java
+public long addItem(String userId, String sku, long delta) {
+    String key = "cart:" + userId;
+    Long value = redis.opsForHash().increment(key, sku, delta);
+    if (value <= 0) redis.opsForHash().delete(key, sku);
+    redis.expire(key, Duration.ofDays(30));
+    return Math.max(value, 0);
+}
+~~~
+
+### String và Hash
+| Kiểu | Hợp khi | Chi phí/rủi ro |
+|---|---|---|
+| JSON String | Đọc/ghi nguyên document, ít cạnh tranh | Serialize toàn bộ, lost update |
+| Hash | Update từng SKU, field độc lập | Nhiều field, schema/TTL cần quản lý |
+
+Nếu cần cập nhật quantity và refreshed TTL đồng bộ, dùng Lua thay vì nhiều lệnh có crash window. Spring Data Redis hỗ trợ hash operations; cân nhắc serializer nhất quán giữa app và script.
+
+### Pitfall production
+- Redis key hash tag trong cluster có thể gom cart vào một slot; tránh tag quá rộng gây hotspot.
+- Không tin price gửi từ browser hoặc lưu trong cart; client có thể sửa payload.
+- Xóa cart khi quantity về 0 phải xử lý race với request thêm cùng lúc.
+
+> Senior tip: test song song hai request trên cùng user và SKU, rồi nhiều thiết bị trên các SKU khác nhau; kiểm tra dữ liệu sau khi Redis reconnect, không chỉ unit test tuần tự.
+`,
+  follow: ['Khi user sửa cart trên hai thiết bị offline rồi reconnect, bạn merge ra sao?', 'Bạn đặt TTL và xử lý cart của user chưa đăng nhập thế nào?'],
+  tags: ['Redis', 'shopping-cart', 'race-condition'],
+},
+{
+  id: 'scenario-053',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Một request cập nhật MySQL rồi ghi Redis cache; khi có hai instance, cache lúc cũ lúc mới và đôi khi giá trị cũ ghi đè sau invalidation. Bạn thiết kế consistency protocol nào?',
+  a: `**Tóm tắt:** không có transaction chung đáng tin cậy giữa MySQL và Redis, nên xác định DB là source of truth và chọn mức stale-data chấp nhận được. Với cache-aside, commit DB rồi invalidate; để xử lý race của loader cũ, dùng version/fencing hoặc cache ngắn hạn, và phát invalidation qua outbox nếu cần lan truyền bền vững.
+
+### Race điển hình
+1. Loader A đọc DB version 7 nhưng bị pause.
+2. Writer B commit version 8 và xóa cache.
+3. A tiếp tục ghi version 7 vào cache sau khi cache đã bị xóa.
+Kết quả là cache cũ tồn tại sau update mới. TTL đơn thuần chỉ giới hạn thời gian sai, không ngăn ghi đè.
+
+~~~java
+@Transactional
+public void changePrice(long id, BigDecimal price) {
+    Product p = repository.findByIdForUpdate(id).orElseThrow();
+    p.changePrice(price); // tăng version trong entity
+    outbox.save(CacheInvalidated.product(id, p.version()));
+}
+// Consumer xóa key; loader chỉ ghi nếu version không cũ hơn bản đang cache.
+~~~
+
+Outbox đảm bảo event invalidation không mất giữa DB commit và publish; consumer idempotent. Với cache Redis, Lua có thể chỉ SET nếu incoming version >= cached version. Khi dùng cache-aside đơn giản, invalidate sau commit và TTL ngắn có thể đủ nếu SLA chấp nhận stale window.
+
+### Trade-off
+| Cách | Nhất quán | Độ phức tạp |
+|---|---|---|
+| TTL | stale tối đa gần TTL | Thấp |
+| Commit rồi invalidate | Tốt thường ngày, còn crash/race | Thấp-vừa |
+| Outbox + version | Invalidation bền, chống event cũ | Cao hơn |
+| Không cache dữ liệu quyết định tiền | Mạnh hơn | Tải DB cao |
+
+### Pitfall production
+- Invalidate trước commit có thể để loader đọc giá trị cũ và cache lại.
+- Dual write DB+Redis trực tiếp có cửa sổ crash; retry một phần không bảo đảm atomicity.
+- Đừng dùng cache làm nguồn tồn kho/giá khi quyết định thanh toán; kiểm tra lại trong transaction.
+
+> Senior tip: gắn version vào metrics/log cache hit để quan sát stale read; đo tỷ lệ và thời lượng lệch trước khi chọn giải pháp phức tạp hơn.
+`,
+  follow: ['Bạn làm gì nếu outbox consumer bị lag 10 phút?', 'Khi nào stale cache là lỗi nghiệp vụ nghiêm trọng thay vì chỉ lỗi hiển thị?'],
+  tags: ['Redis', 'MySQL', 'cache-consistency', 'outbox'],
+},
+{
+  id: 'scenario-054',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Consumer Kafka xử lý nhiều event cho cùng một order bằng nhiều luồng; trạng thái CREATED đôi khi ghi sau PAID. Bạn giữ thứ tự theo aggregate mà vẫn scale consumer thế nào?',
+  a: `**Tóm tắt:** Kafka chỉ bảo đảm thứ tự trong một partition; dùng aggregate ID làm record key để mọi event của order vào cùng partition, rồi bảo đảm consumer không xử lý đồng thời phá thứ tự trong partition. Nếu event có thể đến muộn từ nguồn khác, mang sequence/version và chỉ áp dụng transition hợp lệ ở DB.
+
+### Producer và partition
+- Publish với key ổn định như {{orderId}}; không dùng random key hoặc key thay đổi giữa các event.
+- Chọn số partition theo throughput song song và chấp nhận rằng tăng partition có thể đổi mapping key-partition, cần đánh giá quá trình mở rộng.
+- Nếu nhiều producer phát cùng aggregate, cần sequencing/outbox theo aggregate; Kafka không tự sắp thứ tự giữa producer theo ý nghĩa nghiệp vụ.
+
+### Consumer và DB
+~~~java
+@KafkaListener(topics = "order-events")
+public void handle(OrderEvent e) {
+    tx.executeWithoutResult(status -> {
+        int updated = orders.applyIfNextVersion(e.orderId(), e.version(), e.type());
+        if (updated == 0) throw new RetryableOutOfOrderEvent();
+        inbox.markProcessed(e.eventId());
+    });
+}
+~~~
+Inbox unique theo eventId chặn duplicate trong cùng transaction. Version guard giúp từ chối event trùng/lệch thứ tự ngay cả khi replay hoặc có đường ghi ngoài Kafka. Retry phải không làm partition bị kẹt vô hạn; lỗi poison message cần DLQ/quarantine và công cụ replay có kiểm soát.
+
+| Thiết kế | Ưu điểm | Hạn chế |
+|---|---|---|
+| Một luồng mỗi partition | Dễ giữ thứ tự | Ít parallelism trên partition |
+| Parallel theo key trong partition | Tăng throughput | Phải serialize cùng key |
+| Version tại DB | Phòng thủ cuối | Cần xử lý gap/retry |
+
+### Pitfall production
+- Retry topic riêng có thể đảo thứ tự: event sau chạy trước event đang retry.
+- Commit offset trước DB commit có thể mất event; commit sau DB có thể giao trùng, vì vậy handler phải idempotent.
+- Không tăng concurrency listener vượt mức partition rồi kỳ vọng cùng key vẫn tuần tự nếu tự dispatch async.
+
+> Senior tip: log aggregate ID, event ID, partition/offset và version; khi điều tra lệch trạng thái có thể dựng lại chính xác chuỗi đã apply.
+`,
+  follow: ['Bạn xử lý version gap khi event version 12 tới trước version 11 thế nào?', 'Khi cần tăng số partition, làm sao hạn chế đổi thứ tự của một aggregate đang chạy?'],
+  tags: ['Kafka', 'ordering', 'partition', 'consumer'],
+},
+{
+  id: 'scenario-055',
+  topic: 'scenario',
+  level: 'mid',
+  q: 'API upload 1 GB hiện giữ toàn bộ multipart file trong heap, khiến pod OOM; người dùng phải gửi lại từ đầu khi mạng đứt. Bạn thiết kế upload resumable và an toàn thế nào?',
+  a: `**Tóm tắt:** không gom file lớn vào heap của ứng dụng. Dùng upload theo part có session ID, giới hạn kích thước/concurrency, lưu part vào object storage (hoặc disk tạm có quota), cho client retry từng part, rồi finalize sau khi kiểm tra đủ part và checksum.
+
+### Giao thức
+1. {{POST /uploads}} tạo upload session gắn với user, object key, kích thước dự kiến, checksum và hạn dùng.
+2. Server trả presigned multipart URLs hoặc endpoint nhận part; mỗi part có index, checksum và idempotent identity.
+3. Client upload đồng thời có giới hạn, hỏi server phần nào đã nhận để resume sau timeout.
+4. Finalize xác thực session ownership, part manifest, tổng kích thước/checksum; chuyển object sang trạng thái READY rồi phát event xử lý nền.
+5. Job cleanup abort session dang dở và xóa temp data quá hạn.
+
+~~~java
+public UploadPartResult acceptPart(UploadId id, int partNo, InputStream in) {
+    UploadSession s = sessions.requireOwned(id, currentUser());
+    validatePartNumber(partNo, s.expectedParts());
+    return objectStore.putPart(s.storageKey(), partNo, in, MAX_PART_BYTES);
+}
+~~~
+
+Ưu tiên upload trực tiếp từ client đến S3 multipart để giảm băng thông và memory của app; backend cấp quyền ngắn hạn theo đúng object/session. Nếu phải proxy qua Spring, stream qua {{InputStream}} và enforce backpressure, không gọi {{MultipartFile.getBytes()}}.
+
+### Trade-off và bảo vệ
+| Luồng | Ưu điểm | Hạn chế |
+|---|---|---|
+| Proxy qua backend | Kiểm soát tập trung | App chịu network/CPU |
+| Presigned multipart | Scale tốt, resume tự nhiên | Cần policy IAM và finalize chặt |
+
+Giới hạn tổng dung lượng/user, số session đồng thời, loại file theo nội dung chứ không tin extension; scan malware trước khi publish/download. Dùng checksum để phát hiện part sai và mã hóa storage theo policy.
+
+### Pitfall production
+- Presigned URL bị lộ vẫn có thể dùng đến hết hạn; TTL ngắn và key không đoán được.
+- Gọi finalize hai lần phải idempotent; đừng tạo hai processing job.
+- Multipart upload chưa hoàn tất vẫn tốn storage; bắt buộc lifecycle cleanup.
+
+> Senior tip: dashboard theo dõi số session orphan, bytes dang dở, retry rate và checksum failure; đây thường là nguồn tăng storage âm thầm sau khi feature chạy lâu.
+`,
+  follow: ['Làm sao ngăn user finalize một upload session của user khác?', 'Bạn kiểm tra checksum toàn file khi dùng multipart object storage ra sao?'],
+  tags: ['upload', 'streaming', 'S3', 'resumable'],
+},
+{
+  id: 'scenario-056',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Một dịch vụ cấp coupon chạy ở nhiều region trong đợt mở bán toàn cầu. Mỗi region có Redis cache quota; khi mạng liên vùng bị chia cắt, làm sao đảm bảo tổng coupon phát ra không vượt số lượng?',
+  a: `**Tóm tắt:** không thể để nhiều region cùng cấp phát từ bản sao quota eventual-consistent rồi vẫn hứa không vượt tổng khi mất liên lạc. Cần chọn invariant và availability: phân bổ trước quota độc quyền theo region (escrow), hoặc route quyết định về một authority/quorum; khi hết quota cục bộ thì từ chối/chờ thay vì mượn quota chưa được cấp.
+
+### Phân bổ quota kiểu escrow
+- Tổng 10.000 coupon được chia thành quota không chồng lấn, ví dụ region A 4.000, B 3.000, C 3.000. Mỗi region chỉ cấp trong quota được cấp.
+- Lưu allocation có version và ledger chuyển quota. Transfer chỉ có hiệu lực sau khi authority xác nhận; không dùng timeout để tự thu hồi quota nếu region cũ có thể vẫn hoạt động.
+- Khi region mất kết nối, region còn lại giữ quota của mình và có thể trả “tạm hết”; đây là lựa chọn availability có chủ đích để bảo toàn invariant.
+- Reconciliation sau phục hồi đối chiếu coupon claims với allocation ledger; không sửa trực tiếp số đã cấp.
+
+| Mô hình | Không oversell khi partition | Availability |
+|---|---|---|
+| Local quota escrow | Có, nếu không vượt quota | Region hết quota có thể từ chối |
+| Một authority | Có nếu authority nhất quán | Partition tới authority làm từ chối |
+| Replicate quota eventual | Không bảo đảm | Cao nhưng có thể oversell |
+
+### Spring/Redis implementation boundary
+Redis Lua atomicity chỉ bảo đảm trong phạm vi một Redis primary, không tạo atomicity xuyên region. Region quota phải được cấp từ durable control plane, ghi version/epoch, và token claim cần unique business key. Nếu coupon có giá trị tiền, DB transaction vẫn enforce uniqueness và redemption rules.
+
+### Pitfall production
+- Failover/restore từ snapshot cũ có thể làm region tin rằng còn quota đã dùng; fencing epoch giúp từ chối epoch cũ ở authority.
+- “TTL quota lease” nguy hiểm nếu region bị pause dài rồi hoạt động lại sau khi quota đã tái cấp nơi khác.
+- Đồng bộ đồng hồ không đủ để chứng minh lease cũ đã dừng; dùng epoch/coordination có fencing.
+
+> Senior tip: viết invariant số coupon phát hành ≤ campaign cap thành reconciliation query và alert độc lập với dashboard ứng dụng; chuẩn bị nút đóng campaign toàn cục trước ngày mở bán.
+`,
+  follow: ['Bạn thiết kế giao thức chuyển quota giữa region sao cho retry không cấp hai lần?', 'Nếu business chấp nhận oversell tối đa 0,1% thì bạn lượng hóa và giám sát điều khoản đó thế nào?'],
+  tags: ['multi-region', 'quota', 'consistency', 'coupon'],
+},
 );
