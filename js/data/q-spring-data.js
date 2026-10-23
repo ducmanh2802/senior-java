@@ -4468,4 +4468,270 @@ WHERE account_id = :account_id
   follow: ['Bạn xử lý khác biệt empty string và NULL ra sao?', 'Làm sao dual-write tránh tạo hai nguồn sự thật?'],
   tags: ['Oracle', 'PostgreSQL', 'migration', 'CDC', 'reconciliation']
 },
+{
+  id: 'spring-028', topic: 'spring', level: 'senior',
+  q: 'Vì sao gọi method {{@Transactional}} từ method khác trong cùng bean thường không mở transaction? Bạn xử lý self-invocation thế nào, và JDK proxy với CGLIB có khác gì?',
+  a: `**Tóm tắt:** Spring transaction thường được áp dụng qua AOP proxy: caller gọi proxy, interceptor mở transaction rồi mới delegate vào target. Khi method trong target gọi {{this.otherMethod()}}, lời gọi đi thẳng vào object thật nên bỏ qua proxy; annotation trên method được gọi không được interceptor xử lý. JDK proxy chỉ expose interface, còn CGLIB tạo subclass để override method, nhưng cả hai đều không sửa được self-invocation.
+
+### Luồng gọi
+Với lời gọi bên ngoài, luồng là Controller → proxy → transaction interceptor → service target. Interceptor đọc metadata, lấy transaction manager, quyết định join/tạo transaction, rồi commit hoặc rollback theo exception. Trong nội bộ target, {{this.saveAudit()}} không quay lại proxy nên propagation, isolation hay timeout của method đó không được áp dụng độc lập.
+
+### JDK proxy và CGLIB
+| | JDK dynamic proxy | CGLIB subclass |
+|---|---|---|
+| Proxy type | Interface | Subclass của class cụ thể |
+| Điều kiện | Có interface | Class không final, method không final/private |
+| Gọi qua interface | Có | Có thể |
+| Tự gọi nội bộ | Bypass interceptor | Bypass interceptor |
+
+Boot mặc định thường dùng CGLIB cho Spring AOP, nhưng không nên dựa vào loại proxy để chữa self-call. Final class/method và private method vẫn không thể override để advice.
+
+### Cách sửa có thể bảo trì
+Tách phần cần transaction thành bean riêng, để lời gọi đi qua dependency proxy. Hoặc đặt transaction ở public entry point bao trọn use case. Self-injection hoặc {{AopContext.currentProxy()}} có thể làm proxy được gọi lại nhưng tạo coupling và làm flow khó đọc; chỉ dùng khi ranh giới class không thể thay đổi.
+
+### Pitfall production
+Test gọi method trực tiếp trên object tạo bằng {{new}} không có transaction proxy. Cũng vậy, gọi annotated method qua private method hoặc constructor không kích hoạt advice. Kiểm tra bằng integration test có transaction manager thật và quan sát commit/rollback, không chỉ assert annotation tồn tại.
+
+> Senior tip: coi transaction boundary là ranh giới use case công khai. Một service method ngắn, được gọi qua bean proxy, thường an toàn hơn việc rải annotation lên helper nội bộ.`,
+  follow: ['Vì sao {{@Transactional}} trên method private không có tác dụng với proxy?', 'Nếu tách bean không phù hợp, bạn kiểm chứng proxy thực tế của bean bằng cách nào?'],
+  tags: ['@Transactional', 'AOP', 'JDK proxy', 'CGLIB', 'self-invocation']
+},
+{
+  id: 'spring-029', topic: 'spring', level: 'senior',
+  q: 'Một service dùng {{Propagation.REQUIRES_NEW}} để ghi audit trong lúc transaction ngoài cập nhật đơn hàng. Vì sao connection pool có thể cạn, và bạn định lượng rủi ro ra sao?',
+  a: `**Tóm tắt:** {{REQUIRES_NEW}} suspend transaction hiện tại và chạy transaction độc lập. Nếu transaction ngoài đang giữ connection, transaction mới cần một connection khác; nhiều request đồng thời có thể giữ gần hết pool ở transaction ngoài rồi cùng chờ connection thứ hai, gây pool starvation hoặc timeout.
+
+### Connection và transaction
+Với {{REQUIRED}}, method trong cùng thread thường tham gia transaction đang chạy, nên không cần connection thứ hai. Với {{REQUIRES_NEW}}, Spring giữ resource transaction ngoài trong trạng thái suspended, bind resource mới cho transaction trong, rồi khôi phục resource ngoài khi transaction trong kết thúc. Transaction độc lập có thể commit audit dù outer rollback, nhưng trả giá bằng connection đồng thời và semantics tách rời.
+
+Giả sử pool có 20 connection và 20 request đều đã lấy mỗi request một connection cho outer transaction. Nếu mỗi request gọi {{REQUIRES_NEW}}, không còn connection nào cho inner transaction; tất cả chờ và không thể giải phóng outer connection cho đến khi inner xong. Đây là deadlock tài nguyên ở cấp ứng dụng dù DB không có deadlock lock graph.
+
+### Đánh giá và lựa chọn
+- Ước lượng số request đồng thời tối đa nhân với số connection giữ ở outer scope; cân nhắc các luồng có lồng nhiều {{REQUIRES_NEW}}.
+- Giữ transaction ngắn, không gọi dịch vụ chậm hoặc network khi đang giữ connection.
+- Nếu audit phải cùng commit với nghiệp vụ, dùng cùng transaction; nếu chấp nhận eventual consistency, cân nhắc outbox được ghi trong outer transaction rồi worker chuyển tiếp.
+- Nếu thực sự cần independent transaction, đặt timeout, theo dõi active/idle/pending của pool và load test với pool size giới hạn.
+
+### Pitfall production
+Tăng pool vô hạn chỉ chuyển nghẽn sang DB, nơi số session, memory và lock contention cũng hữu hạn. Một transaction ngoài đã suspend vẫn giữ connection, không có nghĩa connection được trả về pool. Cũng cần nhớ inner commit không rollback theo outer transaction, nên audit có thể ghi nhận hành động mà đơn hàng cuối cùng không được commit.
+
+> Senior tip: dùng metric pending borrowers, acquisition latency và transaction duration để phát hiện trước khi timeout. Nếu pool cỡ N và mọi request có thể nested một tầng, kiểm tra kịch bản đồng thời gần N; headroom phải được thiết kế và thử tải, không đoán theo traffic trung bình.`,
+  follow: ['Khi nào audit nên cùng transaction với dữ liệu nghiệp vụ?', 'Outbox giải quyết bài toán ghi event sau commit thế nào?'],
+  tags: ['transaction propagation', 'REQUIRES_NEW', 'connection pool', 'HikariCP']
+},
+{
+  id: 'spring-030', topic: 'spring', level: 'senior',
+  q: 'Spring Boot 3 tìm auto-configuration từ đâu, và bạn lần theo một bean bất ngờ xuất hiện hoặc không xuất hiện thế nào?',
+  a: `**Tóm tắt:** Spring Boot 3 khám phá auto-configuration qua metadata {{META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports}} trong các jar trên classpath. Các class được import vẫn phải qua điều kiện như {{@ConditionalOnClass}}, {{@ConditionalOnMissingBean}} hay {{@ConditionalOnProperty}}; vì vậy dependency, property và bean do ứng dụng định nghĩa cùng quyết định kết quả.
+
+### Cơ chế
+{{@SpringBootApplication}} bao gồm component scan, auto-configuration enablement và configuration. Auto-configuration không phải magic quét mọi class: danh sách ứng viên được import, sau đó các condition đánh giá môi trường lúc tạo context. Ví dụ cấu hình datasource chỉ phù hợp khi có class JDBC cần thiết, cấu hình property hợp lệ và ứng dụng chưa cung cấp bean thay thế. Thứ tự/quan hệ {{before}} và {{after}} giúp các cấu hình phối hợp.
+
+### Debug có hệ thống
+1. Xác nhận dependency thực sự nằm trên runtime classpath, không chỉ compile scope.
+2. Chạy ứng dụng với {{--debug}} để xem condition evaluation report: matched và negative match kèm lý do.
+3. Kiểm tra property, profile active, classpath và bean cùng kiểu được định nghĩa thủ công.
+4. Nếu viết starter nội bộ, khai báo class trong {{AutoConfiguration.imports}}, dùng điều kiện hẹp và cung cấp {{@ConditionalOnMissingBean}} để cho phép override.
+
+Không dùng component scan để đăng ký auto-configuration từ thư viện như component thông thường. Boot 3 chuyển khỏi file {{spring.factories}} cho danh sách auto-configuration; file imports là cơ chế cần kiểm tra khi migrate starter cũ.
+
+### Pitfall production
+{{@ConditionalOnProperty}} mặc định cần property tồn tại và giá trị không phải false; cấu hình {{matchIfMissing}} thay đổi mặc định này. Điều kiện dựa trên class có thể khác giữa test và production do dependency transitively khác nhau. Exclude một auto-config để chữa triệu chứng có thể làm mất cả nhóm bean liên quan.
+
+> Senior tip: khi bean thiếu, tìm negative match đầu tiên trong report thay vì thêm một {{@Bean}} nữa. Với starter dùng chung, viết context test cho cả trường hợp dependency có/không và bean ứng dụng override để hợp đồng auto-config được kiểm tra rõ.`,
+  follow: ['Vì sao Boot 3 starter không nên đăng ký auto-configuration bằng component scan?', 'Bạn thiết kế điều kiện để app override bean mặc định ra sao?'],
+  tags: ['Spring Boot 3', 'AutoConfiguration.imports', 'ConditionalOn', 'starter']
+},
+{
+  id: 'spring-031', topic: 'spring', level: 'senior',
+  q: 'Bạn thiết kế observability cho một request đi qua nhiều service thế nào để nối log, metric và distributed trace bằng Micrometer Tracing?',
+  a: `**Tóm tắt:** Dùng Micrometer Observation làm abstraction cho instrumentation, Micrometer Tracing để tạo và truyền trace/span context, cùng registry/exporter phù hợp để gửi dữ liệu đến backend. Trace trả lời một request đã đi qua đâu và chậm ở span nào; metric cho biết xu hướng tổng thể, còn log chứa chi tiết sự kiện và nên mang trace ID để tra cứu liên kết.
+
+### Trace context
+Một inbound request tạo hoặc tiếp tục trace, mỗi lời gọi outbound tạo child span. HTTP instrumentation truyền context qua header chuẩn như W3C Trace Context; consumer message cần propagate context qua message metadata riêng. Nếu một service không instrument hoặc header bị proxy loại bỏ, trace bị đứt. Micrometer Tracing hỗ trợ bridge sang tracer như OpenTelemetry hoặc Brave tùy dependency.
+
+### Thiết kế tín hiệu
+- **Metrics:** latency histogram, request/error count, saturation; label phải có cardinality thấp.
+- **Traces:** instrument boundary quan trọng như HTTP, DB và messaging; sampling cân bằng chi phí với khả năng điều tra.
+- **Logs:** structured fields, trace/span ID; không ghi token, PII hoặc payload nhạy cảm.
+- **Baggage:** chỉ truyền metadata nhỏ, đã kiểm soát; không dùng làm nơi chứa dữ liệu nghiệp vụ lớn.
+
+### Pitfall production
+Gắn userId, orderId hoặc URL đầy đủ làm metric tag sẽ tạo cardinality nổ và tăng bộ nhớ/chi phí. Sampling thấp có thể bỏ mất lỗi hiếm; tail-based sampling cần pipeline tương thích. Trace export đồng bộ hoặc queue exporter đầy có thể ảnh hưởng app, nên theo dõi drop và exporter health. Instrument thủ công lặp lại cùng span còn làm trace nhiễu.
+
+Đo latency giữa các service cần đồng bộ clock tương đối tốt, nhưng duration của span cục bộ đáng tin hơn so timestamp tuyệt đối. Không xem trace là audit log: sampling và retention khiến trace không đảm bảo lưu mọi request.
+
+> Senior tip: bắt đầu với RED metrics (rate, errors, duration), rồi trace các đường đi có giá trị điều tra. Theo dõi cả chi phí ingest và cardinality; dashboard đẹp nhưng tag không giới hạn sẽ biến observability thành sự cố vận hành.`,
+  follow: ['Khi nào chọn head sampling và tail sampling?', 'Vì sao không nên đặt orderId làm label của metric?'],
+  tags: ['Micrometer', 'Tracing', 'Observation', 'OpenTelemetry', 'observability']
+},
+{
+  id: 'spring-032', topic: 'spring', level: 'senior',
+  q: 'Ứng dụng Spring Boot 3 chạy workload blocking muốn bật virtual thread bằng {{spring.threads.virtual.enabled}}. Bạn đánh giá lợi ích, giới hạn và kế hoạch rollout thế nào?',
+  a: `**Tóm tắt:** Trên Java 21+, cấu hình {{spring.threads.virtual.enabled=true}} yêu cầu Spring Boot dùng virtual thread ở các integration được hỗ trợ. Virtual thread giảm chi phí thread cho nhiều tác vụ blocking đồng thời, nhưng không làm CPU nhanh hơn, không tăng giới hạn connection hay tự biến code blocking thành non-blocking; cần kiểm tra version Boot, pinning và tài nguyên downstream.
+
+### Mô hình
+Platform thread gắn với OS thread, nên lượng lớn thread chờ I/O tốn stack và scheduling resource. Virtual thread được runtime mount lên carrier thread khi chạy, thường unmount khi blocking operation tương thích. Khi hoàn thành, nó trả kết quả như thread thông thường, giúp code imperative dễ giữ. Nó hữu ích khi số tác vụ đồng thời lớn và phần lớn thời gian chờ I/O.
+
+### Giới hạn và rollout
+- CPU-bound workload vẫn bị giới hạn bởi core; hàng triệu virtual thread không tăng throughput tính toán.
+- JDBC pool, remote API quota, file descriptor và memory vẫn là giới hạn. Throttle bằng semaphore/bulkhead và pool phù hợp.
+- Pinning có thể xảy ra trong một số vùng synchronized/native khi virtual thread blocking; kiểm tra tài liệu JDK và diagnostic JFR của runtime.
+- Xác minh Boot version và component nào dùng executor virtual thread; không giả định mọi scheduler/third-party library tự chuyển đổi.
+- Benchmark latency, throughput, heap, carrier utilization và downstream saturation trước/sau dưới tải đại diện.
+
+### Pitfall production
+Tối ưu thread count nhưng bỏ qua connection pool có thể tạo hàng chục nghìn tác vụ cùng chờ lấy connection và làm latency đuôi tăng. Thread-local cache có thể nhân memory theo virtual thread nếu tạo quá nhiều task. Không dùng synchronized block dài quanh I/O mà không đánh giá runtime/JDK cụ thể.
+
+> Senior tip: virtual thread giúp mở rộng concurrency của blocking I/O, không phải nút tăng tốc tổng quát. Rollout theo canary, giữ giới hạn concurrency ở biên phụ thuộc và so p95/p99 cùng pool wait time, không chỉ nhìn CPU thấp hơn.`,
+  follow: ['Virtual thread khác reactive programming ở điểm nào?', 'Làm sao phát hiện virtual thread bị pinning trong môi trường thật?'],
+  tags: ['Java 21', 'virtual threads', 'Spring Boot', 'concurrency']
+},
+{
+  id: 'spring-033', topic: 'spring', level: 'lead',
+  q: 'Khi deploy phiên bản mới, bạn thiết kế graceful shutdown cho Spring Boot để không làm mất request đang xử lý và vẫn đáp ứng thời hạn của orchestrator thế nào?',
+  a: `**Tóm tắt:** Graceful shutdown ngừng nhận request mới, cho request đang xử lý một khoảng thời gian hoàn tất, rồi đóng các resource theo thứ tự. Spring Boot hỗ trợ graceful shutdown cho embedded web server; cần phối hợp readiness/load balancer, timeout của nền tảng và việc dừng consumer/job để giới hạn tổng thời gian thoát.
+
+### Trình tự
+Khi nhận tín hiệu shutdown, instance phải sớm rời khỏi endpoint nhận traffic (readiness false), load balancer cần thời gian cập nhật, sau đó server ngừng nhận kết nối/request mới theo cơ chế graceful. Request đang chạy được drain trong thời hạn cấu hình. Bean lifecycle dừng các worker và giải phóng tài nguyên; cuối cùng process thoát trước khi orchestrator gửi SIGKILL.
+
+### Thiết kế
+- Bật graceful shutdown của Boot và đặt shutdown phase timeout dựa trên thời lượng request thực tế.
+- Tổng grace period của orchestrator phải lớn hơn readiness propagation + drain window + dừng consumer/cleanup, có buffer.
+- Với queue consumer, pause nhận message, hoàn tất hoặc nack để broker redeliver; xử lý idempotent để tránh duplicate.
+- Dừng scheduled jobs và executor có timeout; tránh cleanup gọi dịch vụ ngoài không giới hạn.
+- Theo dõi termination reason, request bị cắt, thời gian drain và số message in-flight.
+
+### Pitfall production
+Readiness chỉ đổi sau khi process bắt đầu tắt có thể khiến load balancer tiếp tục gửi traffic một khoảng ngắn. Timeout quá ngắn làm request bị kill; quá dài giữ rollout treo hoặc vượt ngân sách deployment. Web server drain không tự xử lý transaction đang chạy ở background executor hay message listener. Shutdown hook không đảm bảo chạy khi process bị SIGKILL hoặc host mất điện.
+
+> Senior tip: lấy p99 thời lượng request và thời gian deregistration thực tế để đặt grace period, sau đó diễn tập rolling deploy dưới tải. Graceful shutdown giảm gián đoạn, nhưng retry an toàn và idempotency vẫn là lớp bảo vệ cuối cho client.`,
+  follow: ['Kubernetes readiness và Spring graceful shutdown cần thứ tự phối hợp ra sao?', 'Consumer đang xử lý message khi shutdown thì đảm bảo không mất message thế nào?'],
+  tags: ['graceful shutdown', 'Spring Boot', 'Kubernetes', 'readiness']
+},
+{
+  id: 'jpa-022', topic: 'jpa', level: 'senior',
+  q: 'Persistence context của Hibernate theo dõi entity thế nào, dirty checking diễn ra lúc nào, và flush order có ý nghĩa gì khi một transaction vừa insert vừa update?',
+  a: `**Tóm tắt:** Persistence context là identity map và đơn vị theo dõi entity managed trong một transaction/session. Hibernate giữ trạng thái ban đầu (snapshot), dirty checking so sánh entity khi flush để tạo SQL; flush đồng bộ thay đổi xuống DB nhưng không đồng nghĩa commit. Hibernate dùng thứ tự action xác định, không nhất thiết đúng thứ tự câu lệnh Java.
+
+### Vòng đời và dirty checking
+Entity transient chưa được quản lý; sau {{persist}} trở thành managed. Khi load entity, Hibernate lưu snapshot cùng entry trong persistence context. Thay đổi field Java chưa lập tức phát SQL; tại flush (thường trước query cần đồng bộ hoặc trước commit), Hibernate phát hiện khác biệt, tạo update và bind giá trị. Entity detached không còn được tự theo dõi.
+
+Một context chỉ có một instance cho mỗi entity type và primary key: hai lần load cùng khóa trả về cùng object managed. Điều này đảm bảo identity nhất quán trong transaction nhưng làm context lớn giữ nhiều object và snapshot.
+
+### Flush order
+Hibernate thực thi action queue theo nhóm (ví dụ insert, update, collection actions, delete) thay vì giữ nguyên thứ tự source code. Constraint DB vẫn là nguồn sự thật. Nếu cần thứ tự phụ thuộc, thiết kế FK/association đúng, flush có chủ đích hoặc tách transaction theo nghiệp vụ; đừng dựa vào thứ tự gọi repository.
+
+### Pitfall production
+Bulk JPQL update/delete chạy trực tiếp ở DB và bỏ qua dirty checking của entity đang nằm trong context, nên object managed có thể stale; clear/refresh phù hợp sau bulk operation. Flush không làm dữ liệu durable: rollback vẫn hoàn tác SQL. Thay đổi collection lớn có thể tạo nhiều snapshot/SQL và tăng heap.
+
+> Senior tip: với batch lớn, flush rồi clear theo chunk để giới hạn persistence context; kiểm tra SQL thực phát và transaction log thay vì suy ra từ số lần gọi {{save}}.`,
+  follow: ['Query auto-flush xảy ra khi nào và có thể gây bất ngờ gì?', 'Bulk update ảnh hưởng entity đang managed ra sao?'],
+  tags: ['persistence context', 'dirty checking', 'flush', 'Hibernate']
+},
+{
+  id: 'jpa-023', topic: 'jpa', level: 'senior',
+  q: 'Bạn gặp {{LazyInitializationException}} sau khi trả entity từ service. Open Session in View giải quyết triệu chứng thế nào, và vì sao thường nên thay bằng fetch plan rõ ràng?',
+  a: `**Tóm tắt:** Lazy association chỉ tải khi truy cập trong lúc persistence context còn mở. Nếu service kết thúc transaction và entity detached trước khi serializer đọc association, Hibernate không thể query thêm và ném {{LazyInitializationException}}. Open Session in View giữ session trong suốt request để truy cập lazy vẫn chạy, nhưng dễ phát sinh SQL ngoài service và N+1 không nhìn thấy.
+
+### Nguyên nhân theo luồng
+Repository load entity cùng association lazy chưa khởi tạo. Transaction service commit, persistence context đóng hoặc entity detached. Controller/Jackson serialize quan hệ; proxy cần session để query, nhưng session không còn. Đây không phải lỗi mapping ngẫu nhiên mà là fetch plan không khớp với nơi dữ liệu được tiêu thụ.
+
+### Lựa chọn
+- Dùng DTO projection cho response API: chỉ lấy cột cần thiết, tránh để serialization quyết định SQL.
+- Dùng fetch join hoặc {{@EntityGraph}} cho use case cụ thể, kiểm tra số query và pagination.
+- Khởi tạo association bên trong transaction nếu logic thực sự cần nó.
+- Open Session in View có thể hữu ích ở ứng dụng server-rendered đơn giản, nhưng nên hiểu rõ query phát sinh ở view và kiểm soát bằng metric/log.
+
+### Pitfall production
+Bật OSIV không đảm bảo transaction nghiệp vụ kéo dài; nó chỉ giữ persistence context mở, nên lazy query có thể chạy sau commit với transaction khác/autocommit tùy cấu hình. Serialize danh sách 100 entity rồi đọc mỗi collection có thể tạo 101 query. Trả entity cũng làm lộ cấu trúc nội bộ và nguy cơ recursion trong hai chiều association.
+
+> Senior tip: API service nên trả DTO với fetch plan được review. Bật thống kê SQL hoặc datasource proxy trong test để phát hiện N+1; việc hết exception chưa chứng minh endpoint hiệu quả.`,
+  follow: ['OSIV có giữ transaction DB mở suốt HTTP request không?', 'Bạn phát hiện N+1 phát sinh trong quá trình JSON serialization thế nào?'],
+  tags: ['LazyInitializationException', 'Open Session in View', 'N+1', 'DTO']
+},
+{
+  id: 'jpa-024', topic: 'jpa', level: 'senior',
+  q: 'Hai request cùng sửa một entity có {{@Version}}. Optimistic locking hoạt động ra sao, và retry nên đặt ở đâu để không ghi đè dữ liệu mới?',
+  a: `**Tóm tắt:** Hibernate dùng cột version trong câu update: update chỉ thành công nếu version DB vẫn bằng version entity đã đọc. Nếu request khác commit trước, row count bằng 0 và Hibernate báo optimistic lock conflict. Retry phải chạy lại toàn bộ use case trong transaction mới, đọc lại dữ liệu mới và quyết định nghiệp vụ; không chỉ gửi lại câu update cũ.
+
+### Ví dụ cơ chế
+Hai transaction cùng đọc số dư version 7. T1 cập nhật với điều kiện {{where id=? and version=7}}, tăng version lên 8 và commit. T2 cũng update version 7; điều kiện không match, Hibernate phát hiện conflict thay vì âm thầm overwrite. Version có thể là số nguyên hoặc timestamp; numeric version thường biểu đạt thứ tự rõ hơn.
+
+### Retry an toàn
+- Chỉ retry lỗi transient/conflict có giới hạn lần, backoff có jitter.
+- Bắt exception ở ranh giới ngoài transaction để transaction lỗi đã rollback; mỗi lần thử mở transaction mới.
+- Đọc lại state và kiểm tra invariant nghiệp vụ trước khi áp dụng lại lệnh.
+- Với lệnh không idempotent (trừ tiền, cộng điểm), cần idempotency key hoặc ghi nhận command để retry không nhân đôi tác dụng.
+
+### Pitfall production
+Retry bên trong cùng transaction đã marked rollback-only thường không cứu được transaction. Retry mù có thể tạo livelock khi nhiều client tranh cùng hot row; cần giới hạn và phản hồi conflict cho caller khi không thể tự hòa giải. Bulk update/native SQL thường không tự áp dụng version semantics như entity update.
+
+> Senior tip: dùng optimistic lock khi conflict tương đối hiếm; nếu một row nóng bị tranh chấp liên tục, đo tỷ lệ conflict và cân nhắc serialize theo key hoặc atomic update có điều kiện thay vì retry vô hạn.`,
+  follow: ['Vì sao retry cần transaction mới?', 'Khi nào pessimistic lock hợp lý hơn optimistic locking?'],
+  tags: ['@Version', 'optimistic locking', 'retry', 'concurrency']
+},
+{
+  id: 'jpa-025', topic: 'jpa', level: 'senior',
+  q: 'Bulk insert bằng Hibernate không đạt throughput mong muốn. Bạn cấu hình batching thế nào, và vì sao generation strategy {{IDENTITY}} thường phá JDBC insert batching?',
+  a: `**Tóm tắt:** Hibernate JDBC batching gom nhiều prepared statement cùng dạng để gửi theo batch; cấu hình {{hibernate.jdbc.batch_size}} và flush/clear theo chunk giúp giảm round trip và memory. Với {{IDENTITY}}, DB phải tạo row để trả generated key cho từng insert, khiến Hibernate thường phải insert ngay để lấy ID, nên batching insert bị hạn chế hoặc vô hiệu.
+
+### Cấu hình và ghi dữ liệu
+Đặt batch size phù hợp (thường bắt đầu khoảng vài chục, sau đó đo), đảm bảo driver hỗ trợ batch rewrite nếu có, và tránh SQL statement shape thay đổi liên tục. Persistence context vẫn giữ entity nên xử lý theo chunk: persist N entity, flush, clear rồi tiếp tục. Hibernate có thể sắp xếp insert/update theo entity để tăng batch tương thích; kiểm tra config và SQL log trên DB/driver thật.
+
+### ID generation
+Sequence cho phép lấy ID trước insert, nên Hibernate có thể gom insert; sequence allocation/block size cần cân đối round trip và khoảng trống ID. {{IDENTITY}} cần giá trị do DB sinh sau từng row insert để gán vào entity, vì thế thường buộc insert sớm. Không đổi strategy chỉ vì batch: cân nhắc portability, schema và semantics ID.
+
+### Pitfall production
+Batching giảm network round trip nhưng không giảm số index update, WAL hay constraint check. Batch quá lớn tăng transaction duration, lock và khả năng rollback tốn kém. Mixed inserts cho nhiều entity type có thể chia nhỏ batch. Batching không hoạt động như mong đợi nếu code gọi query giữa chừng gây flush hoặc cấu hình driver không hỗ trợ.
+
+> Senior tip: đo batch execution count, heap, transaction time và DB write latency; so với insert thường ở cùng dữ liệu. Luôn thử trên đúng JDBC driver/version và xác nhận generated IDs đúng, vì benchmark H2 không đại diện production database.`,
+  follow: ['Tại sao phải clear persistence context khi import hàng triệu dòng?', 'Sequence allocation ảnh hưởng round trip và khoảng trống ID ra sao?'],
+  tags: ['hibernate.jdbc.batch_size', 'JDBC batching', 'IDENTITY', 'sequence']
+},
+{
+  id: 'jpa-026', topic: 'jpa', level: 'senior',
+  q: 'Một màn hình cần danh sách entity có quan hệ lazy và phân trang. Bạn chọn {{@EntityGraph}} hay JOIN FETCH thế nào, và xử lý cảnh báo HHH000104 ra sao?',
+  a: `**Tóm tắt:** {{@EntityGraph}} khai báo fetch plan theo use case, còn JOIN FETCH viết trực tiếp join trong JPQL; cả hai có thể giảm N+1 nhưng collection fetch join kết hợp pagination làm row SQL nhân bản. Hibernate có thể lấy toàn bộ result rồi phân trang trong memory, phát cảnh báo HHH000104, gây tải lớn thay vì giới hạn ở DB.
+
+### Cách chọn
+EntityGraph phù hợp khi muốn giữ query repository dễ đọc và chọn association cần fetch ở runtime; kiểm tra graph là fetch hay load semantics theo mapping. JOIN FETCH hữu ích khi query cần điều kiện/sắp xếp gắn với association, nhưng không thể fetch nhiều bag collection một cách tùy ý do duplicate/cartesian explosion.
+
+### Pagination an toàn
+1. Page ID của root entity bằng query có giới hạn và thứ tự ổn định.
+2. Query thứ hai fetch các association cần thiết cho tập ID đó, dùng IN.
+3. Khôi phục thứ tự trang nếu query thứ hai không giữ thứ tự, và cân nhắc count query riêng.
+
+Có thể cấu hình Hibernate fail khi pagination collection fetch thay vì âm thầm paginate memory. Với to-many, batch fetching hoặc DTO projection cũng là lựa chọn tùy shape response.
+
+### Pitfall production
+Một trang 20 root có thể thành hàng nghìn SQL rows nếu mỗi root có nhiều child; phân trang trên rows không đồng nghĩa phân trang root. Cảnh báo bị bỏ qua trong môi trường dữ liệu nhỏ nhưng production heap/latency tăng đột biến. Sorting theo cột child cũng cần định nghĩa rõ một root có nhiều giá trị thì thứ tự tính thế nào.
+
+> Senior tip: test với volume và fan-out gần production, assert query count lẫn SQL có LIMIT/OFFSET ở DB. Khi thấy HHH000104, xử lý fetch plan trước khi tăng heap hoặc tắt cảnh báo.`,
+  follow: ['Vì sao fetch join một collection vẫn có thể làm page sai?', 'Bạn thiết kế count query cho trang dữ liệu có quan hệ to-many thế nào?'],
+  tags: ['@EntityGraph', 'JOIN FETCH', 'pagination', 'HHH000104']
+},
+{
+  id: 'jpa-027', topic: 'jpa', level: 'lead',
+  q: 'Second-level cache Hibernate có thể giảm tải database, nhưng khi nào bạn quyết định không bật hoặc chỉ cache một số entity?',
+  a: `**Tóm tắt:** Second-level cache sống ngoài persistence context, chia sẻ cache entity/collection giữa các Session. Nó phù hợp với dữ liệu đọc nhiều, ít thay đổi và có chiến lược invalidation nhất quán; không nên bật rộng cho dữ liệu mutable/hot hoặc yêu cầu consistency nghiêm ngặt nếu chi phí đồng bộ và stale read lớn hơn lợi ích.
+
+### Phân biệt cache
+First-level cache là persistence context của một Session và luôn gắn với identity map. Second-level cache thuộc SessionFactory và có provider/configuration riêng. Query cache lưu kết quả truy vấn (thường tham chiếu ID), không thay thế entity cache và phải invalidate khi dữ liệu liên quan thay đổi. Cache hit vẫn cần kiểm tra mapping, version và provider semantics.
+
+### Khi nên cân nhắc
+- Danh mục tham chiếu nhỏ, được đọc thường xuyên và cập nhật ít.
+- Có thể chấp nhận freshness theo chính sách rõ ràng, hoặc provider hỗ trợ coherence phù hợp topology.
+- Đo được cache hit ratio, eviction, heap/network cost và DB load giảm.
+
+Tránh hoặc rất thận trọng với số dư, trạng thái đơn hàng thay đổi liên tục, dữ liệu tenant nhạy cảm, entity có payload lớn, hoặc nhiều node không có invalidation đáng tin. Cache vùng phân tán thêm network hop và vận hành; cache local từng node có thể trả dữ liệu khác nhau.
+
+### Pitfall production
+Bulk SQL hoặc cập nhật từ ứng dụng khác có thể làm cache stale nếu Hibernate không biết invalidation. Cache stampede khi key hết hạn đồng loạt tạo tải DB đột biến. Entity cache không tự làm query nhanh nếu query vẫn quét DB để tìm ID. Không cache để che một query thiếu index hoặc N+1 chưa được sửa.
+
+> Senior tip: bắt đầu bằng một entity danh mục có SLA freshness cụ thể, bật statistics và thử invalidate khi ghi từ mọi đường đi. Nếu không thể mô tả ai invalidate, khi nào stale được chấp nhận và cách đo hit ratio, chưa nên bật cache đó.`,
+  follow: ['Bulk update/native SQL ảnh hưởng second-level cache thế nào?', 'Local cache và distributed cache khác nhau ra sao khi chạy nhiều node?'],
+  tags: ['second-level cache', 'Hibernate', 'cache invalidation', 'consistency']
+},
+
 );

@@ -70,3 +70,4 @@ Bối cảnh ưu tiên ngân hàng/fintech/e-commerce Việt Nam. Không dùng b
 
 Nghiệm thu: `node --check js/data/q-spring-data.js` OK; `node scripts/validate.js` → **OK — không có lỗi.** (đã chạy nhiều lần trong quá trình thêm từng lô 2 câu).
 Không sửa file nào ngoài `js/data/q-spring-data.js` và file task này; không commit/push.
+Reviewed-by: codex (T48R)
