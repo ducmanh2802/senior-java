@@ -264,6 +264,7 @@ Ngoài 429, nên trả thêm thời gian chờ và hướng dẫn. Client tốt 
   id: 'design-004',
   topic: 'design',
   level: 'lead',
+  refs: [{"type": "doc", "title": "System Design Primer", "url": "https://github.com/donnemartin/system-design-primer"}, {"type": "doc", "title": "High Scalability", "url": "https://highscalability.com/"}],
   q: 'Thiết kế hệ thống flash sale: 100.000 request trong 1 giây cho 1.000 sản phẩm, mỗi người chỉ mua 1, tuyệt đối không oversell. Trình bày cả luồng và cách xử lý sự cố.',
   a: `**Tóm tắt:** Flash sale là bài toán **tranh chấp tài nguyên hữu hạn dưới tải cực lớn**. Nguyên tắc: chặn và quyết định càng sớm càng tốt, trừ kho bằng thao tác **nguyên tử có điều kiện**, tạo đơn bất đồng bộ, và luôn có tầng DB làm chốt chặn cuối cùng chống oversell.
 
@@ -369,6 +370,7 @@ Với 1.000 sản phẩm, sharding theo bucket thường thắng vì tính đún
   id: 'design-005',
   topic: 'design',
   level: 'lead',
+  refs: [{"type": "doc", "title": "System Design Primer", "url": "https://github.com/donnemartin/system-design-primer"}, {"type": "doc", "title": "High Scalability", "url": "https://highscalability.com/"}],
   q: 'Thiết kế hệ thống thanh toán / ví điện tử. Làm sao đảm bảo idempotency, ledger không sai lệch và reconciliation với đối tác?',
   a: `**Tóm tắt:** Thanh toán là bài toán **đúng đắn và truy vết**, không phải bài toán tốc độ. Ba trụ cột: idempotency key cho mọi lệnh ghi, **double-entry ledger** bất biến làm nguồn sự thật, và **reconciliation** hằng ngày với sao kê đối tác. Không có "exactly-once" thần kỳ — chỉ có at-least-once cộng với xử lý idempotent.
 
@@ -838,6 +840,7 @@ Một key được đọc hàng trăm nghìn lần/giây làm một node Redis q
   id: 'design-010',
   topic: 'design',
   level: 'lead',
+  refs: [{"type": "doc", "title": "System Design Primer", "url": "https://github.com/donnemartin/system-design-primer"}, {"type": "doc", "title": "High Scalability", "url": "https://highscalability.com/"}],
   q: 'Distributed lock: Redis Redlock có thực sự an toàn? Khi nào dùng ZooKeeper/etcd, và fencing token giải quyết vấn đề gì?',
   a: `**Tóm tắt:** Distributed lock chỉ an toàn tuyệt đối khi có **fencing token** — một số thứ tự tăng dần mà tài nguyên đích kiểm tra được. Redis single-node với SET NX PX + token là đủ cho phần lớn nhu cầu "tránh làm trùng". Redlock nhiều node giảm rủi ro mất lock nhưng vẫn phụ thuộc đồng hồ và không cứu được client bị dừng (GC pause) sau khi lock hết hạn. Với tính đúng đắn cao, ưu tiên ràng buộc DB/optimistic lock hơn là lock phân tán.
 
@@ -986,6 +989,7 @@ Với hệ replicated N node: ghi thành công khi W node xác nhận, đọc t�
   id: 'design-012',
   topic: 'design',
   level: 'lead',
+  refs: [{"type": "doc", "title": "System Design Primer", "url": "https://github.com/donnemartin/system-design-primer"}, {"type": "doc", "title": "High Scalability", "url": "https://highscalability.com/"}],
   q: 'Hệ thống hiện có 1.000 người dùng, sếp muốn chuẩn bị cho 1 triệu. Bạn vạch lộ trình kiến trúc theo từng mốc, mỗi mốc gắn với tín hiệu nào cần scale?',
   a: `**Tóm tắt:** Scale không phải là làm kiến trúc của Google ngay từ đầu, mà là **giải quyết điểm nghẽn tiếp theo** ở mỗi mốc. 1k user cần một monolith gọn gàng và backup; 100k cần stateless + cache + replica; 1M cần shard, tách async, multi-region. Mỗi bước phải có **tín hiệu đo được** và chi phí vận hành tương xứng.
 
@@ -1955,6 +1959,7 @@ Một quyết định lớn có thể có RFC trước, ADR sau khi chốt, và 
   id: 'architecture-008',
   topic: 'architecture',
   level: 'lead',
+  refs: [{"type": "doc", "title": "System Design Primer", "url": "https://github.com/donnemartin/system-design-primer"}, {"type": "doc", "title": "High Scalability", "url": "https://highscalability.com/"}],
   q: 'Phân tích các anti-pattern kiến trúc hay gặp: God class, anemic domain model, distributed monolith. Nhận diện và sửa thế nào?',
   a: `**Tóm tắt:** Anti-pattern là giải pháp **có vẻ đúng lúc đầu nhưng gây chi phí tăng dần**. Ba cái phổ biến nhất: God class (một class biết quá nhiều), anemic domain model (dữ liệu và hành vi tách rời, invariant không được bảo vệ), và distributed monolith (nhiều service nhưng vẫn phụ thuộc chặt như monolith). Nhận diện bằng dấu hiệu đo được, sửa bằng thay đổi tăng dần — không rewrite.
 
@@ -2317,6 +2322,7 @@ Phòng chờ ảo là thành phần quan trọng nhất: thay vì để 500.000 
   id: 'design-017',
   topic: 'design',
   level: 'lead',
+  refs: [{"type": "doc", "title": "System Design Primer", "url": "https://github.com/donnemartin/system-design-primer"}, {"type": "doc", "title": "High Scalability", "url": "https://highscalability.com/"}],
   q: 'Thiết kế order matching engine cho một sàn giao dịch chứng khoán/crypto: khớp lệnh theo giá rồi thời gian, độ trễ thấp, không mất lệnh khi crash. Vì sao các engine thường chạy đơn luồng?',
   a: `**Tóm tắt:** Lệnh đi qua gateway và kiểm tra rủi ro, rồi vào một **sequencer** gán số thứ tự và ghi journal bền vững. Sau đó **một luồng duy nhất cho mỗi nhóm mã** khớp lệnh trên order book trong RAM theo nguyên tắc giá tốt nhất trước, cùng giá thì lệnh đến trước khớp trước. Đơn luồng giúp engine **deterministic**: replay cùng journal luôn ra cùng kết quả, nên phục hồi và HA trở thành bài toán phát lại journal, đồng thời không tốn chi phí lock.
 
@@ -2546,6 +2552,7 @@ Tương tự với tag {{uri}} chứa ID thật thay vì template. Đặt giới
   id: 'design-020',
   topic: 'design',
   level: 'lead',
+  refs: [{"type": "doc", "title": "System Design Primer", "url": "https://github.com/donnemartin/system-design-primer"}, {"type": "doc", "title": "High Scalability", "url": "https://highscalability.com/"}],
   q: 'Thiết kế hệ thống phát hiện gian lận thời gian thực cho giao dịch thẻ/ví điện tử: phải ra quyết định chấp nhận, yêu cầu xác thực thêm hay từ chối trong khoảng 100 ms. Bạn kết hợp rule engine, feature store và model thế nào?',
   a: `**Tóm tắt:** Tách hai đường: **đường đồng bộ** nằm trong luồng thanh toán, chỉ đọc feature đã tính sẵn (Redis) rồi chạy rule + model trong ngân sách thời gian cố định và có chính sách dự phòng khi quá hạn; **đường bất đồng bộ** dùng stream processing (Kafka + Flink) tính các velocity feature theo cửa sổ thời gian, cập nhật feature store, phát hiện mẫu phức tạp và đưa case cho analyst. Rule cho phép phản ứng trong vài phút với kiểu gian lận mới; model bắt các mẫu tinh vi; nhãn (chargeback, khiếu nại) quay lại để huấn luyện.
 
@@ -3452,6 +3459,7 @@ Nếu module chưa sạch phụ thuộc ở trong monolith, tách ra chỉ tạo
   id: 'architecture-019',
   topic: 'architecture',
   level: 'lead',
+  refs: [{"type": "doc", "title": "System Design Primer", "url": "https://github.com/donnemartin/system-design-primer"}, {"type": "doc", "title": "High Scalability", "url": "https://highscalability.com/"}],
   q: 'Ngân hàng xây kênh số mới (app, open API) nhưng phải tích hợp core banking legacy (T24, Flexcube...). Bạn thiết kế anti-corruption layer thế nào để mô hình legacy không lan vào hệ thống mới?',
   a: `**Tóm tắt:** Anti-corruption layer (ACL, khái niệm từ DDD) là lớp **dịch** giữa bounded context mới và hệ thống legacy: domain mới chỉ nói chuyện qua một **port** bằng ngôn ngữ của mình ({{holdFunds}}, {{postTransfer}}, {{Money}}, {{AccountStatus}}); ACL lo phần còn lại: giao thức và định dạng của core, mapping mã lỗi và mã sản phẩm, idempotency, timeout/retry, cache dữ liệu tham chiếu, và xử lý lúc core đóng sổ cuối ngày. Mục tiêu: đổi core (hoặc nâng cấp phiên bản core) chỉ phải sửa ACL, không phải sửa mọi kênh.
 
@@ -3690,6 +3698,7 @@ Cách thực dụng: luật quan trọng nhất (domain không phụ thuộc h�
   id: 'architecture-022',
   topic: 'architecture',
   level: 'lead',
+  refs: [{"type": "doc", "title": "System Design Primer", "url": "https://github.com/donnemartin/system-design-primer"}, {"type": "doc", "title": "High Scalability", "url": "https://highscalability.com/"}],
   q: 'Bạn xây nền tảng SaaS (ví dụ phần mềm quản lý bán hàng hoặc core cho nhiều quỹ tín dụng) phục vụ 2.000 khách hàng doanh nghiệp. So sánh database-per-tenant, schema-per-tenant và discriminator column; triển khai với Hibernate 6 thế nào và những bẫy rò rỉ dữ liệu giữa tenant?',
   a: `**Tóm tắt:** Ba mức cô lập đánh đổi giữa **an toàn/linh hoạt** và **chi phí/vận hành**. Database-per-tenant cô lập mạnh nhất, dễ đáp ứng yêu cầu khách lớn nhưng tốn tài nguyên và khó migrate hàng nghìn DB. Schema-per-tenant là trung gian. Discriminator column (một cột {{tenant_id}} trên mọi bảng) rẻ và dễ scale số tenant nhất nhưng một câu query quên điều kiện là lộ dữ liệu của khách khác. Hibernate 6 hỗ trợ cả hai kiểu: {{MultiTenantConnectionProvider}} cho DB/schema riêng, {{@TenantId}} cho discriminator. Thực tế thường **lai**: đa số tenant nhỏ dùng chung (discriminator + Row Level Security), tenant lớn hoặc yêu cầu đặc biệt có DB riêng.
 

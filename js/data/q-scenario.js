@@ -85,6 +85,7 @@ CREATE INDEX idx_t_order ON t (created_at DESC, id DESC);
   id: 'scenario-003',
   topic: 'scenario',
   level: 'lead',
+  refs: [{"type": "doc", "title": "System Design Primer", "url": "https://github.com/donnemartin/system-design-primer"}, {"type": "doc", "title": "High Scalability", "url": "https://highscalability.com/"}],
   q: 'Cần thêm một cột và một index vào bảng 200 triệu dòng đang chạy production. Làm sao làm không downtime?',
   a: `**Tóm tắt:** phân loại DDL trước — loại chỉ sửa metadata (chạy tức thì) và loại phải rebuild bảng (hàng giờ, khoá lâu). PostgreSQL: {{ADD COLUMN}} với default hằng là metadata-only, index dùng {{CREATE INDEX CONCURRENTLY}}; MySQL 8: {{ALGORITHM=INSTANT/INPLACE}}; backfill dữ liệu luôn chạy batch nhỏ có checkpoint để chạy lại được.
 
@@ -738,6 +739,7 @@ Object v = localCache.get(key, k -> loadWithRedisLock(k));
   id: 'scenario-019',
   topic: 'scenario',
   level: 'lead',
+  refs: [{"type": "doc", "title": "System Design Primer", "url": "https://github.com/donnemartin/system-design-primer"}, {"type": "doc", "title": "High Scalability", "url": "https://highscalability.com/"}],
   q: 'Hệ thống sắp đón traffic tăng 10 lần trong sự kiện khuyến mãi lớn. Bạn chuẩn bị những gì?',
   a: `**Tóm tắt:** đúng thứ tự chuẩn bị: load test ở 10x để tìm nút chốt từng tầng (app, pool, DB, bên thứ ba); pre-scale theo schedule trước giờ G (HPA reactive không kịp); kiểm soát tải vào (rate limiting, queue, waiting room); degraded mode có sẵn (tắt tính năng phụ); runbook và game day diễn tập trước.
 
@@ -867,6 +869,7 @@ ON CONFLICT (event_id) DO NOTHING;
   id: 'scenario-022',
   topic: 'scenario',
   level: 'lead',
+  refs: [{"type": "doc", "title": "System Design Primer", "url": "https://github.com/donnemartin/system-design-primer"}, {"type": "doc", "title": "High Scalability", "url": "https://highscalability.com/"}],
   q: 'Trong lúc migrate sang hệ mới, bạn phải đồng bộ dữ liệu giữa hệ legacy và hệ mới chạy song song. Thiết kế sao cho không lệch?',
   a: `**Tóm tắt:** không dùng dual-write thủ công (rất dễ lệch khi một bên fail) — dùng CDC (Debezium) làm đường chính một chiều, hoặc outbox nếu buộc dual-write; đối soát định kỳ theo bucket để phát hiện và sửa lệch; chuyển dần theo cohort user với feature flag; freeze window ngắn ở cutover cuối.
 
@@ -986,6 +989,7 @@ LEFT JOIN partner_tx p USING (ref_no) WHERE p.ref_no IS NULL;
   id: 'scenario-025',
   topic: 'scenario',
   level: 'lead',
+  refs: [{"type": "doc", "title": "System Design Primer", "url": "https://github.com/donnemartin/system-design-primer"}, {"type": "doc", "title": "High Scalability", "url": "https://highscalability.com/"}],
   q: 'Thiết kế ledger kế toán kép (double-entry) cho ví/tài khoản: bảng, ràng buộc, và vì sao không update số dư trực tiếp?',
   a: `**Tóm tắt:** hai bảng: entry_groups (một giao dịch) và ledger_entries (dòng debit/credit, append-only), thêm bảng account_balances không cần thiết nếu có thể derive; ràng buộc: tổng debit = tổng credit trong group, amount > 0, unique txn_ref (idempotency); không update số dư trực tiếp vì mất audit, sai không truy vết được, và không dựng lại số dư lịch sử được.
 
@@ -1054,6 +1058,7 @@ FROM ledger_entries GROUP BY 1 HAVING sum(
   id: 'scenario-026',
   topic: 'scenario',
   level: 'lead',
+  refs: [{"type": "doc", "title": "System Design Primer", "url": "https://github.com/donnemartin/system-design-primer"}, {"type": "doc", "title": "High Scalability", "url": "https://highscalability.com/"}],
   q: 'Đối soát cuối ngày (end-of-day) với NAPAS / đối tác: file đối soát có giao dịch treo và lệch. Thiết kế quy trình xử lý thế nào?',
   a: `**Tóm tắt:** quy trình 4 bước: (1) load file đối soát có checksum + control total; (2) match theo ref_no + amount + date, phân loại 4 nhóm (matched, amount mismatch, ours-only, theirs-only); (3) các case treo ghi suspense account và đưa queue OPS với SLA aging; (4) cuối ngày suspense phải về 0 hoặc có lý do giải thích; dashboard theo dõi tỷ lệ match.
 
@@ -1094,6 +1099,7 @@ FROM ledger_entries GROUP BY 1 HAVING sum(
   id: 'scenario-027',
   topic: 'scenario',
   level: 'lead',
+  refs: [{"type": "doc", "title": "System Design Primer", "url": "https://github.com/donnemartin/system-design-primer"}, {"type": "doc", "title": "High Scalability", "url": "https://highscalability.com/"}],
   q: 'Giao dịch chuyển tiền qua partner timeout, chưa biết kết quả (unknown state). Quy trình xử lý thế nào?',
   a: `**Tóm tắt:** nguyên tắc cốt lõi: timeout không đồng nghĩa thất bại — ghi PENDING vào ledger và sau đó gọi inquiry API của đối tác với backoff; nếu đối tác không có inquiry, dùng file đối soát làm nguồn xác thật; chỉ ghi SETTLED khi đối tác xác nhận; FAILED và refund chỉ khi có confirmation từ đối tác; alarm khi có PENDING treo quá lâu.
 
@@ -1141,6 +1147,7 @@ for (Tx t : job.repoPending()) {
   id: 'scenario-028',
   topic: 'scenario',
   level: 'lead',
+  refs: [{"type": "doc", "title": "System Design Primer", "url": "https://github.com/donnemartin/system-design-primer"}, {"type": "doc", "title": "High Scalability", "url": "https://highscalability.com/"}],
   q: 'Audit log và truy vết thay đổi dữ liệu (ai sửa gì, khi nào) đáp ứng yêu cầu kiểm toán / NHNN. Thiết kế thế nào?',
   a: `**Tóm tắt:** 3 thuộc tính cơ bản: WHO (user/service, IP), WHAT (entity, field before/after), WHEN (UTC) — lưu vào bảng append-only không sửa được (hash-chain hoặc WORM storage), truy vết nhanh theo entity + thời gian; cách bắt: Hibernate interceptor/AOP tự tính diff, hoặc CDC (Debezium) capture từ WAL — CDC sạch hơn, không sót.
 
@@ -1191,6 +1198,7 @@ CREATE INDEX idx_audit_entity ON audit_log (entity_type, entity_id, ts DESC);
   id: 'scenario-029',
   topic: 'scenario',
   level: 'lead',
+  refs: [{"type": "doc", "title": "System Design Primer", "url": "https://github.com/donnemartin/system-design-primer"}, {"type": "doc", "title": "High Scalability", "url": "https://highscalability.com/"}],
   q: 'Yêu cầu bảo mật dữ liệu khách hàng trong ngân hàng: mã hóa at-rest/in-transit, masking, phân quyền, OTP/2FA, PCI DSS. Thiết kế tổng thể thế nào?',
   a: `**Tóm tắt:** phân loại dữ liệu trước (PII, tài chính, credential) rồi thiết kế theo lớp: mã hóa at-rest (KMS + TDE, envelope cho field nhạy cảm), in-transit (TLS 1.2+ mọi hop, mTLS optional), tokenization cho số thẻ (thu hẹp PCI scope), masking ở UI/log, RBAC least-privilege + audit, OTP/2FA risk-based. Không một lớp nào là đủ — phải xếp nhiều lớp phòng thủ.
 
@@ -1229,6 +1237,7 @@ CREATE INDEX idx_audit_entity ON audit_log (entity_type, entity_id, ts DESC);
   id: 'scenario-030',
   topic: 'scenario',
   level: 'lead',
+  refs: [{"type": "doc", "title": "System Design Primer", "url": "https://github.com/donnemartin/system-design-primer"}, {"type": "doc", "title": "High Scalability", "url": "https://highscalability.com/"}],
   q: 'Batch final tính lãi/phí cuối ngày cho hàng triệu tài khoản: cần đúng, chạy lại được (re-runnable), không trùng. Thiết kế thế nào?',
   a: `**Tóm tắt:** 3 thuộc tính: đúng (key = account_id + accrual_date unique — chạy lại không trùng), re-runnable (checkpoint theo partition, restart từ phần chưa xong), đối soát (dry-run + tổng đối chỉnh báo cáo kế toán). Implement bằng Spring Batch chunk theo partition, UPSERT với ON CONFLICT DO NOTHING, business_date cấp từ scheduler chứ không now() từng JVM.
 
@@ -1271,6 +1280,7 @@ ON CONFLICT (account_id, accrual_date) DO NOTHING;
   id: 'scenario-031',
   topic: 'scenario',
   level: 'lead',
+  refs: [{"type": "doc", "title": "System Design Primer", "url": "https://github.com/donnemartin/system-design-primer"}, {"type": "doc", "title": "High Scalability", "url": "https://highscalability.com/"}],
   q: 'Ngày trả lương: traffic tăng đột biến trên cả API chuyển tiền của ngân hàng đối tác cap giới hạn. Chuẩn bị và xử lý thế nào?',
   a: `**Tóm tắt:** không thể giải quyết bằng scale đơn lẻ — chuẩn bị ba khớp: (1) pre-scale infra theo schedule trước giờ G; (2) kiểm soát tải vào: rate limit per-user, queue cho các luồng không chặn, waiting room khi gần saturation; (3) degraded mode có feature flag tắt tính năng phụ; quan trọng nhất là tôn trọng quota của đối tác (gateway ngân hàng/napas) vì đó là cap cứng.
 
@@ -1334,6 +1344,7 @@ ON CONFLICT (account_id, accrual_date) DO NOTHING;
   id: 'scenario-033',
   topic: 'scenario',
   level: 'lead',
+  refs: [{"type": "doc", "title": "System Design Primer", "url": "https://github.com/donnemartin/system-design-primer"}, {"type": "doc", "title": "High Scalability", "url": "https://highscalability.com/"}],
   q: 'RSS của container tăng dù heap ổn định: glibc malloc arenas, direct memory, thread — chẩn đoán và xử lý?',
   a: `**Tóm tắt:** RSS tăng trong khi heap ổn định thường do off-heap: glibc malloc arenas giữ memory cho thread, direct ByteBuffer, thread stacks, Metaspace. Chẩn đoán bằng native memory tracking và /proc, xử lý bằng MALLOC_ARENA_MAX, direct memory limit, thread pool sizing.
 
@@ -1492,6 +1503,7 @@ ON CONFLICT (account_id, accrual_date) DO NOTHING;
   id: 'scenario-039',
   topic: 'scenario',
   level: 'lead',
+  refs: [{"type": "doc", "title": "System Design Primer", "url": "https://github.com/donnemartin/system-design-primer"}, {"type": "doc", "title": "High Scalability", "url": "https://highscalability.com/"}],
   q: 'Dữ liệu Elasticsearch lệch so với DB: đồng bộ bằng CDC (Debezium), reindex không downtime — xử lý thế nào?',
   a: `**Tóm tắt:** ES index lệch DB do write path kép (write DB + write ES) fail một bên. Giải pháp: single source of truth là DB, CDC (Debezium) stream changes sang ES; reindex không downtime bằng alias swap.
 

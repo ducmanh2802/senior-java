@@ -138,6 +138,7 @@ Order Service                   Payment Service
   id: 'microservices-004',
   topic: 'microservices',
   level: 'lead',
+  refs: [{"type": "doc", "title": "Microservices - Martin Fowler", "url": "https://martinfowler.com/articles/microservices.html"}, {"type": "doc", "title": "microservices.io patterns", "url": "https://microservices.io/patterns/"}, {"type": "doc", "title": "Enterprise Integration Patterns", "url": "https://www.enterpriseintegrationpatterns.com/"}],
   q: 'Một nghiệp vụ phải ghi dữ liệu ở 3 service khác nhau. Vì sao không dùng 2PC? Bạn thiết kế Saga theo choreography và orchestration như thế nào, và compensation xử lý failure ra sao?',
   a: `**Tóm tắt:** 2PC (two-phase commit) bắt tất cả participant giữ lock và chờ coordinator - trong môi trường phân tán có partition, ta **hy sinh availability để lấy độ nhất quán**; chi phí performance và rủi ro kẹt lock quá lớn với workload online. Thay vào dùng **Saga**: chuỗi transaction cục bộ, mỗi bước có compensation để lùi lại.
 
@@ -604,6 +605,7 @@ Dấu hiệu: số series tăng không ngừng, query Prometheus lag, container 
   id: 'microservices-013',
   topic: 'microservices',
   level: 'lead',
+  refs: [{"type": "doc", "title": "Microservices - Martin Fowler", "url": "https://martinfowler.com/articles/microservices.html"}, {"type": "doc", "title": "microservices.io patterns", "url": "https://microservices.io/patterns/"}, {"type": "doc", "title": "Enterprise Integration Patterns", "url": "https://www.enterpriseintegrationpatterns.com/"}],
   q: 'Hai service nội bộ gọi nhau. Bạn chọn OAuth2 client credentials, mTLS hay service mesh? Giải thích trade-off và cách phân quyền từng phía.',
   a: `**Tóm tắt:** **mTLS** trả lời "đây là service nào" (identity ở mức workload), **OAuth2 client credentials** trả lời "service này được làm gì" (quyền theo scope/audience). Cặp đôi này bổ sung: mesh lo transport + identity, app lo authorization + audit; mesh không thay app.
 
@@ -695,6 +697,7 @@ Luôn deploy theo thứ tự: **producer mở rộng trước → consumer chuy�
   id: 'microservices-015',
   topic: 'microservices',
   level: 'lead',
+  refs: [{"type": "doc", "title": "Microservices - Martin Fowler", "url": "https://martinfowler.com/articles/microservices.html"}, {"type": "doc", "title": "microservices.io patterns", "url": "https://microservices.io/patterns/"}, {"type": "doc", "title": "Enterprise Integration Patterns", "url": "https://www.enterpriseintegrationpatterns.com/"}],
   q: 'Khi nào áp CQRS và khi nào thêm cả event sourcing? Liệt kê lợi ích, chi phí thật và những cái bẫy gặp phải trên production.',
   a: `**Tóm tắt:** **CQRS** tách mô hình ghi và mô hình đọc (có thể chỉ là 2 bảng, 2 service, 2 database); **Event sourcing** lưu **chuỗi sự kiện** làm nguồn sự thật thay vì state hiện tại. CQRS không đòi hỏi ES; ES hầu như luôn đi kèm CQRS. Cả hai đều là **trade-off complexity lấy query/scale/audit**, không phải mặc định đúng.
 
@@ -787,6 +790,7 @@ ALTER TABLE orders DROP COLUMN status;
   id: 'microservices-017',
   topic: 'microservices',
   level: 'lead',
+  refs: [{"type": "doc", "title": "Microservices - Martin Fowler", "url": "https://martinfowler.com/articles/microservices.html"}, {"type": "doc", "title": "microservices.io patterns", "url": "https://microservices.io/patterns/"}, {"type": "doc", "title": "Enterprise Integration Patterns", "url": "https://www.enterpriseintegrationpatterns.com/"}],
   q: 'Bạn dẫn dắt chuyển một monolith 500k dòng sang microservices mà không downtime. Kế hoạch strangler fig từng bước, gồm cả migration data và anti-corruption layer.',
   a: `**Tóm tắt:** **Strangler fig** = đặt một facade/proxy trước monolith, từng bước "bao vây" rồi nuốt chửng các module cũ bằng service mới, traffic chuyển dần qua feature flag/canary. Mục tiêu không phải "viết lại cho sạch" mà là **giảm dần module cũ trong khi sản phẩm vẫn chạy**.
 
@@ -1112,6 +1116,7 @@ Các mode {{*_TRANSITIVE}} kiểm tra với **mọi** version cũ, không chỉ 
   id: 'microservices-023',
   topic: 'microservices',
   level: 'lead',
+  refs: [{"type": "doc", "title": "Microservices - Martin Fowler", "url": "https://martinfowler.com/articles/microservices.html"}, {"type": "doc", "title": "microservices.io patterns", "url": "https://microservices.io/patterns/"}, {"type": "doc", "title": "Enterprise Integration Patterns", "url": "https://www.enterpriseintegrationpatterns.com/"}],
   q: 'Hệ thống dùng choreography (event-driven) nhưng flow đơn hàng qua 6 service, debug khó, timeout lẫn nhau. Bạn chuyển sang orchestration (Temporal/Camunda) khi nào, và so sánh hai cách về observability, compensation, versioning.',
   a: `**Tóm tắt:** **Choreography**: service tự phát event, không ai điều phối - đơn giản lúc đầu, nhưng flow dài (>3–4 service) thành "spaghetti event", khó thấy toàn cảnh, compensation rải rác. **Orchestration**: một **workflow engine** (Temporal, Camunda, Spring StateMachine) điều phối từng bước, state tập trung, observability tốt, compensation có hướng. Chuyển khi flow phức tạp, cross-team, cần timeout/retry tập trung, hoặc audit trail bắt buộc.
  
@@ -1348,6 +1353,7 @@ Concurrency = Throughput (req/s) * Latency (s) p99
   id: 'microservices-027',
   topic: 'microservices',
   level: 'lead',
+  refs: [{"type": "doc", "title": "Microservices - Martin Fowler", "url": "https://martinfowler.com/articles/microservices.html"}, {"type": "doc", "title": "microservices.io patterns", "url": "https://microservices.io/patterns/"}, {"type": "doc", "title": "Enterprise Integration Patterns", "url": "https://www.enterpriseintegrationpatterns.com/"}],
   q: 'Hệ thống 15 service, team phàn nàn "mọi thay đổi phải deploy 5 service cùng lúc", latency cao do gọi lặp qua HTTP. Dấu hiệu chia sai bounded context (chatty, distributed monolith) là gì, và bạn gộp/tách lại như thế nào?',
   a: `**Tóm tắt:** **Chatty services** = nhiều call qua network cho một nghiệp vụ đơn giản; **Distributed monolith** = service tách vật lý nhưng coupling logic (share DB, sync call chuỗi, deploy cùng lúc). Dấu hiệu: fan-out > 3 cho 1 use case, shared DB, cyclic dependency, team phải align release. Giải pháp: gộp service có coupling chặt, tách service có boundary rõ, dùng API composition/CQRS cho query xuyên service.
  

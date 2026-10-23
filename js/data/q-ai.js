@@ -517,6 +517,7 @@ Flux<String> chat(@RequestParam String q) {
   id: 'ai-009',
   topic: 'ai',
   level: 'lead',
+  refs: [{"type": "doc", "title": "OpenAI API Docs", "url": "https://platform.openai.com/docs/"}, {"type": "doc", "title": "Anthropic Research", "url": "https://www.anthropic.com/research"}],
   q: 'Thiết kế hệ chatbot hỏi đáp tài liệu nội bộ cho doanh nghiệp (RAG) — kiến trúc, phân quyền, chất lượng, chi phí và lộ trình triển khai?',
   a: `**Tóm tắt:** hệ gồm pipeline ingest (tài liệu → chunk → embedding → index có metadata quyền), lớp truy vấn (hiểu câu hỏi → hybrid retrieval → re-rank), lớp sinh câu trả lời có trích dẫn, cùng các lớp quanh nó: xác thực/phân quyền, đánh giá, quan sát, chi phí. Điểm khó nhất không phải gọi LLM mà là dữ liệu, quyền truy cập và cập nhật.
 
@@ -698,6 +699,7 @@ Flux<String> chat(@RequestParam String q) {
   id: 'ai-012',
   topic: 'ai',
   level: 'lead',
+  refs: [{"type": "doc", "title": "OpenAI API Docs", "url": "https://platform.openai.com/docs/"}, {"type": "doc", "title": "Anthropic Research", "url": "https://www.anthropic.com/research"}],
   q: 'Amazon Bedrock, OpenAI API hay self-host model: doanh nghiệp nên chọn thế nào? Phân tích theo dữ liệu, chi phí, độ trễ, tuân thủ và năng lực vận hành.',
   a: `**Tóm tắt:** Bedrock phù hợp doanh nghiệp đã ở AWS, cần tích hợp IAM/VPC và nhiều model qua một API; OpenAI API cho chất lượng/model mới nhanh và hệ sinh thái công cụ mạnh; self-host (vLLM trên EC2/EKS hoặc SageMaker) cho kiểm soát dữ liệu và chi phí ở quy mô lớn nhưng đòi hỏi năng lực vận hành GPU. Không có lựa chọn đúng cho mọi trường hợp.
 
@@ -890,6 +892,7 @@ OpenSearch/Elasticsearch có sẵn cơ chế hybrid query và RRF ở các bản
   id: 'ai-015',
   topic: 'ai',
   level: 'lead',
+  refs: [{"type": "doc", "title": "OpenAI API Docs", "url": "https://platform.openai.com/docs/"}, {"type": "doc", "title": "Anthropic Research", "url": "https://www.anthropic.com/research"}],
   q: 'Ba đội đề xuất ba hướng cho ba bài toán: trả lời câu hỏi chính sách tín dụng, phân loại 1 triệu khiếu nại mỗi tháng vào 40 nhóm, sinh email phản hồi đúng giọng văn ngân hàng. Bạn chọn prompt engineering, RAG hay fine-tuning cho từng bài và vì sao?',
   a: `**Tóm tắt:** Ba kỹ thuật giải ba vấn đề khác nhau: **prompting** điều chỉnh hành vi nhanh và rẻ nhất, **RAG** cung cấp **kiến thức** thay đổi thường xuyên kèm trích dẫn và phân quyền, **fine-tuning** dạy **hành vi/định dạng/phân loại** lặp lại với khối lượng lớn, không phải cách tốt để nạp kiến thức. Luôn bắt đầu bằng prompting và eval; chính sách tín dụng dùng RAG, phân loại khiếu nại khối lượng lớn đáng cân nhắc fine-tune model nhỏ, email giọng văn thường chỉ cần prompt + few-shot.
 
@@ -1213,6 +1216,7 @@ Các thư viện như RAGAS (Python) cài sẵn các metric này bằng LLM-as-j
   id: 'ai-020',
   topic: 'ai',
   level: 'lead',
+  refs: [{"type": "doc", "title": "OpenAI API Docs", "url": "https://platform.openai.com/docs/"}, {"type": "doc", "title": "Anthropic Research", "url": "https://www.anthropic.com/research"}],
   q: 'Ngân hàng muốn dùng LLM tóm tắt hội thoại tổng đài và hỗ trợ nhân viên tra cứu hồ sơ khách hàng. Với vai trò kiến trúc sư, bạn xử lý dữ liệu khách hàng, masking PII, data residency và audit thế nào?',
   a: `**Tóm tắt:** Coi mọi lời gọi LLM là **chuyển dữ liệu cho bên thứ ba** cho tới khi chứng minh được ngược lại. Kiến trúc nên có một **LLM gateway** nội bộ duy nhất: phân loại dữ liệu, masking/pseudonymization PII trước khi gửi, chỉ cho phép model và region đã duyệt, kiểm soát quyền theo người dùng, ghi audit đầy đủ nhưng chính log cũng được bảo vệ như dữ liệu khách hàng. Dữ liệu nhạy cảm nhất dùng model chạy trong hạ tầng được duyệt; quyết định ảnh hưởng tới khách luôn có người chịu trách nhiệm.
 

@@ -1,6 +1,6 @@
 # T91 — Nguồn học thêm cho câu khó (đợt 1b: Microservices, System Design, Tình huống, AWS, AI, DevOps, Soft skills)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/q-microservices.js`, `js/data/q-system-design.js`, `js/data/q-scenario.js`, `js/data/q-aws.js`, `js/data/q-ai.js`, `js/data/q-devops.js`, `js/data/q-soft.js`
 
@@ -17,3 +17,6 @@ Sau mỗi file: `node --check <file>`, `node scripts/validate.js <file>`, rồi 
 `node scripts/validate.js` → OK và `node scripts/check-links.mjs` → hỏng 0.
 
 ## Notes
+
+Added refs (2 per lead question) to all 45 lead questions across 7 files. Links verified: hỏng 0.
+Reviewed-by: codex (T91R)

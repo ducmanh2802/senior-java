@@ -500,6 +500,7 @@ export default function () {
   id: 'testing-009',
   topic: 'testing',
   level: 'lead',
+  refs: [{"type": "doc", "title": "MindTools Leadership", "url": "https://www.mindtools.com/"}, {"type": "doc", "title": "Harvard Business Review", "url": "https://hbr.org/"}],
   q: 'Ở vai trò lead, bạn thiết kế quality gate trong pipeline CI/CD thế nào? Làm sao xử lý test flaky mà không làm team mất niềm tin vào pipeline?',
   a: `**Tóm tắt:** Pipeline phải **fail nhanh và fail đúng**: lint → compile → unit → integration → contract → E2E → deploy, mỗi tầng có ngân sách thời gian riêng. Test flaky là **sự cố hạ tầng, không phải sự cố của tác giả** — xử lý bằng cách đo, cô lập, đặt hạn chót sửa và cấm "retry cho xanh".
 
@@ -649,6 +650,7 @@ class OrderFixtures {
   id: 'behavioral-002',
   topic: 'behavioral',
   level: 'lead',
+  refs: [{"type": "doc", "title": "MindTools Leadership", "url": "https://www.mindtools.com/"}, {"type": "doc", "title": "Harvard Business Review", "url": "https://hbr.org/"}],
   q: 'Bạn đã bất đồng với tech lead, architect hoặc PM ở đâu? Bạn xử lý nó như thế nào, và kết quả ra sao?',
   a: `**Tóm tắt:** Interviewer không hỏi "bạn có bao giờ bất đồng không" mà đánh giá **bạn tranh luận bằng dữ liệu và lợi ích sản phẩm chứ không bằng bản tính cá nhân**, và quan trọng nhất là **bạn vẫn cam kết với quyết định cuối cùng** sau khi thảo luận. Câu trả lời mạnh thể hiện sự trưởng thành: tôi đã thuyết phục, hoặc tôi đã thuyết phục không được nhưng vẫn thực hiện đầy đủ và vẫn đề xuất cách đo lại.
 
@@ -814,6 +816,7 @@ class OrderFixtures {
   id: 'behavioral-006',
   topic: 'behavioral',
   level: 'lead',
+  refs: [{"type": "doc", "title": "MindTools Leadership", "url": "https://www.mindtools.com/"}, {"type": "doc", "title": "Harvard Business Review", "url": "https://hbr.org/"}],
   q: 'Business chỉ muốn ship feature, còn đội bạn đang chôn dưới technical debt. Bạn xử lý tình huống này như thế nào?',
   a: `**Tóm tắt:** Ở vai trò lead, điểm mấu chốt là **định giá technical debt bằng đơn vị business** (tiền, thời gian, rủi ro), không bằng "code khó đọc". Sau đó bạn phải đề xuất một **cơ chế tài nguyên cố định** — thường là ngân sách 20% mỗi sprint — để việc giảm nợ trở thành quy trình, không phụ thuộc vào việc ai đủ nhiệt huyết.
 
@@ -857,6 +860,7 @@ class OrderFixtures {
   id: 'behavioral-007',
   topic: 'behavioral',
   level: 'lead',
+  refs: [{"type": "doc", "title": "MindTools Leadership", "url": "https://www.mindtools.com/"}, {"type": "doc", "title": "Harvard Business Review", "url": "https://hbr.org/"}],
   q: 'Kể lại một dự án hoặc migration lớn mà bạn dẫn dắt từ đầu đến cuối. Bạn đã làm gì để nó thành công?',
   a: `**Tóm tắt:** Câu hỏi này là bài kiểm tra năng lực **leadership ở tầng dự án**: khả năng chia nhỏ, lập kế hoạch có rủi ro, giữ thông tin, và — yếu tố hay bị bỏ sót — **xử lý khi kế hoạch đi sai**. Câu trả lời mạnh luôn có một phần "kế hoạch ban đầu sai ở đâu và tôi đã sửa ra sao".
 
@@ -1473,6 +1477,7 @@ Ba thứ cần chú ý:
   id: 'testing-016',
   topic: 'testing',
   level: 'lead',
+  refs: [{"type": "doc", "title": "MindTools Leadership", "url": "https://www.mindtools.com/"}, {"type": "doc", "title": "Harvard Business Review", "url": "https://hbr.org/"}],
   q: 'Làm sao test tính bền vững (resilience) của hệ thống — tiêm lỗi mạng, timeout, downstream chết, mất kết nối Kafka? Bạn làm gì ở môi trường staging, và tooling nào dùng (WireMock, Resilience4j, Toxiproxy)?',
   a: `**Tóm tắt:** Resilience test có **ba tầng**: unit test logic fallback/retry với dependency giả, integration test với **WireMock** để tái hiện timeout, 5xx và connection reset thật, và **chaos test ở staging** với Toxiproxy để cắt mạng và giết pod. Nguyên tắc bắt buộc: mọi lần tiêm lỗi phải gắn với một **giả thuyết trạng thái ổn định (steady-state hypothesis)** và một **điều kiện dừng (abort condition)** — không có hai thứ đó thì chaos test chỉ là gây rối.
 
@@ -1697,6 +1702,7 @@ Nêu **hành vi** (S: bối cảnh, B: hành vi, I: tác động), rồi mở đ
   id: 'behavioral-016',
   topic: 'behavioral',
   level: 'lead',
+  refs: [{"type": "doc", "title": "MindTools Leadership", "url": "https://www.mindtools.com/"}, {"type": "doc", "title": "Harvard Business Review", "url": "https://hbr.org/"}],
   q: 'Tiến độ dự án của bạn bị chặn bởi một team khác mà bạn không thể tự quyết định. Bạn làm gì để gỡ tình huống mà không làm hỏng quan hệ và không mất uy tín?',
   a: `**Tóm tắt:** Ở vai trò lead, bị chặn bởi team khác là chuyện thường ngày, và câu hỏi thật là bạn có **gọi đúng tên vấn đề** không. Quy trình hiệu quả: **định lượng mức chặn → tìm đúng người chịu trách nhiệm → hiểu ràng buộc của họ → đề xuất phương án có lợi cho họ → tách phần bạn tự làm được → leo thang có bằng chứng và mốc quyết định**. Điểm mấu chốt: leo thang để **xin một quyết định**, không phải để tố cáo.
 
@@ -1852,6 +1858,7 @@ Hãy coi đây là **xu hướng để thích nghi**, không phải quy luật v
   id: 'behavioral-019',
   topic: 'behavioral',
   level: 'lead',
+  refs: [{"type": "doc", "title": "MindTools Leadership", "url": "https://www.mindtools.com/"}, {"type": "doc", "title": "Harvard Business Review", "url": "https://hbr.org/"}],
   q: 'Ở vai trò senior/lead, bạn phỏng vấn ứng viên thế nào? Bạn thiết kế vòng phỏng vấn ra sao, và đánh giá ứng viên dựa trên những tiêu chí gì?',
   a: `**Tóm tắt:** Vai trò của interviewer là **đánh giá năng lực bằng bằng chứng quan sát được**, không phải trả lời câu hỏi cho xong. Một vòng phỏng vấn tốt có **tiêu chí chấm điểm viết trước**, mỗi câu hỏi gắn với một **tín hiệu cần tìm**, và điểm số dựa trên bằng chứng. Điều khó nhất là **giữ tính nhất quán giữa nhiều interviewer** trong cùng một quyết định.
 

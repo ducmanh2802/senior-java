@@ -418,6 +418,7 @@ EventBridge hợp khi cần lọc theo nội dung sự kiện ({{source}}, {{det
   id: 'aws-009',
   topic: 'aws',
   level: 'lead',
+  refs: [{"type": "doc", "title": "AWS Documentation", "url": "https://docs.aws.amazon.com/"}, {"type": "doc", "title": "AWS Well-Architected", "url": "https://aws.amazon.com/architecture/well-architected/"}],
   q: 'Thiết kế HA và DR: multi-AZ khác multi-region thế nào? RTO/RPO là gì và các chiến lược DR (backup, pilot light, warm standby, active-active) đánh đổi ra sao?',
   a: `**Tóm tắt:** multi-AZ bảo vệ trước lỗi một AZ trong cùng region, thường tự động và RTO phút; multi-region bảo vệ trước lỗi cả region, đắt và phức tạp hơn nhiều. RTO là thời gian chấp nhận mất dịch vụ, RPO là lượng dữ liệu chấp nhận mất. Chọn chiến lược DR theo hai con số này, không theo cảm tính.
 
@@ -687,6 +688,7 @@ Với Spring Boot có thể dùng {{spring-cloud-aws-secrets-manager-config}} ho
   id: 'aws-014',
   topic: 'aws',
   level: 'lead',
+  refs: [{"type": "doc", "title": "AWS Documentation", "url": "https://docs.aws.amazon.com/"}, {"type": "doc", "title": "AWS Well-Architected", "url": "https://aws.amazon.com/architecture/well-architected/"}],
   q: 'Tối ưu chi phí AWS cho hệ Java: những đòn bẩy nào hiệu quả nhất, đo lường ra sao và bẫy nào khiến chi phí tăng ngược?',
   a: `**Tóm tắt:** chi phí AWS thường tập trung ở compute, database, storage và data transfer. Đòn bẩy lớn nhất là chọn đúng kích thước (rightsizing), cam kết dài hạn (Savings Plans/Reserved), dùng Spot cho workload chịu được gián đoạn, Graviton để giảm giá/hiệu năng, và kiểm soát data transfer + log.
 
@@ -797,6 +799,7 @@ Chọn CloudFormation khi đội thuần AWS và muốn ít công cụ. Chọn C
   id: 'aws-016',
   topic: 'aws',
   level: 'lead',
+  refs: [{"type": "doc", "title": "AWS Documentation", "url": "https://docs.aws.amazon.com/"}, {"type": "doc", "title": "AWS Well-Architected", "url": "https://aws.amazon.com/architecture/well-architected/"}],
   q: 'Well-Architected Framework gồm những trụ cột nào? Bạn dùng nó thế nào để review kiến trúc thay vì chỉ trả lời lý thuyết?',
   a: `**Tóm tắt:** Well-Architected Framework có 6 trụ cột: Operational Excellence, Security, Reliability, Performance Efficiency, Cost Optimization, Sustainability. Giá trị thực nằm ở quy trình review có câu hỏi cụ thể, xác định risk, gán owner và theo dõi hành động — không phải ở việc học thuộc tên.
 
@@ -1102,6 +1105,7 @@ Client -> CloudFront (TLS, cache, WAF, Shield) -> ALB (chỉ nhận từ CloudFr
   id: 'aws-021',
   topic: 'aws',
   level: 'lead',
+  refs: [{"type": "doc", "title": "AWS Documentation", "url": "https://docs.aws.amazon.com/"}, {"type": "doc", "title": "AWS Well-Architected", "url": "https://aws.amazon.com/architecture/well-architected/"}],
   q: 'Ngân hàng của bạn đang chạy mọi thứ trong 2 AWS account dùng chung. Bạn thiết kế lại theo mô hình multi-account với Organizations, Control Tower và SCP thế nào, chuyển đổi ra sao?',
   a: `**Tóm tắt:** Account là ranh giới cách ly mạnh nhất trên AWS: tách IAM, quota, chi phí và phạm vi sự cố. Dùng **AWS Organizations** chia account theo OU (Security, Infrastructure, Workloads prod/non-prod, Sandbox), **Control Tower** dựng landing zone chuẩn (log archive, audit, IAM Identity Center, controls), và **SCP** làm hàng rào "không ai được vượt", kể cả admin của account con. Chuyển đổi dần theo từng workload, không big bang.
 
