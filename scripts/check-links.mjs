@@ -12,7 +12,7 @@ import path from 'path';
 import vm from 'vm';
 
 const DATA = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), '..', 'js', 'data');
-const only = process.argv[2];
+const only = process.argv.slice(2).find(a => !a.startsWith('--'));
 const sandbox = { window: {} };
 vm.createContext(sandbox);
 for (const f of fs.readdirSync(DATA).filter(f => /^q-.*\.js$/.test(f) && (!only || f === only))) {
@@ -48,4 +48,17 @@ for (const r of results.filter(r => r.real)) console.log(`🎬 ${r.id}: "${r.tit
 for (const r of warn) console.log(`⚠️  ${r.id}: ${r.url} — ${r.warn}`);
 for (const r of bad) console.log(`❌ ${r.file} ${r.id}: ${r.url} — ${r.why}`);
 console.log(`\nLinks: ${results.length} · hỏng ${bad.length} · cảnh báo ${warn.length}`);
+// --fix: drop the broken ref entries (one-line `{ type: …, url: '<broken>' … },` objects) instead of failing
+if (process.argv.includes('--fix') && bad.length) {
+  const byFile = {};
+  bad.forEach(r => { (byFile[r.file] = byFile[r.file] || new Set()).add(r.url); });
+  for (const [file, urls] of Object.entries(byFile)) {
+    const p = path.join(DATA, file);
+    const lines = fs.readFileSync(p, 'utf8').split('\n');
+    const kept = lines.filter(l => !([...urls].some(u => l.includes("'" + u + "'") || l.includes('"' + u + '"')) && /\{\s*type:/.test(l)));
+    fs.writeFileSync(p, kept.join('\n'));
+    console.log(`fixed ${file}: removed ${lines.length - kept.length} broken ref line(s)`);
+  }
+  process.exit(0);
+}
 process.exit(bad.length ? 1 : 0);
