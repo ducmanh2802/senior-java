@@ -222,6 +222,51 @@
       '<ul class="hist-list">' + rows.map(historyRow).join('') + '</ul></section>';
   }
 
+  function localDateValue(date) {
+    const d = date || new Date();
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+
+  function interviewPlanCard() {
+    const plan = App.store.data.interviewPlan || {};
+    const companies = window.COMPANIES || [];
+    const company = companies.find(c => c.name === plan.company) || companies.find(c => c.id === plan.company);
+    const focusIds = company && Array.isArray(company.focus) && company.focus.length
+      ? company.focus.filter(id => App.topics().some(t => t.id === id))
+      : App.topics().map(t => t.id);
+    const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(plan.date || '');
+    const parsedDate = dateMatch ? new Date(Number(dateMatch[1]), Number(dateMatch[2]) - 1, Number(dateMatch[3])) : null;
+    const validDate = !!dateMatch && parsedDate.getFullYear() === Number(dateMatch[1]) &&
+      parsedDate.getMonth() === Number(dateMatch[2]) - 1 && parsedDate.getDate() === Number(dateMatch[3]);
+    const days = validDate ? Math.ceil((parsedDate.getTime() - new Date(localDateValue() + 'T00:00:00').getTime()) / DAY) : null;
+    const totalUnlearned = focusIds.reduce((sum, id) => {
+      const s = App.stats(id);
+      return sum + s.total - s.known;
+    }, 0);
+    const daily = days == null ? null : Math.ceil(totalUnlearned / Math.max(1, days));
+    const weakest = focusIds.map(id => {
+      const t = App.topic(id), s = App.stats(id);
+      return { t, s, ratio: s.total ? s.known / s.total : 1 };
+    }).filter(x => x.s.total).sort((a, b) => a.ratio - b.ratio).slice(0, 3);
+    const companyOptions = companies.map(c => '<option value="' + App.esc(c.name) + '"></option>').join('');
+    const summary = validDate
+      ? '<div class="interview-plan-summary"><div class="interview-count"><strong>' + (days < 0 ? 'Đã qua ' + Math.abs(days) + ' ngày' : days === 0 ? 'Hôm nay' : 'Còn ' + days + ' ngày') + '</strong><span>' + (days < 0 ? 'Ngày phỏng vấn đã qua' : daily + ' câu chưa thuộc/ngày') + '</span></div>' +
+        '<div class="interview-plan-topics"><strong>3 chủ đề cần ưu tiên</strong>' +
+          (weakest.length ? '<ol>' + weakest.map(x => '<li><a href="#/flash/' + encodeURIComponent(x.t.id) + '">' + App.esc(x.t.name) + '</a><span>' + (x.s.total - x.s.known) + ' câu chưa thuộc</span></li>').join('') + '</ol>' : '<p class="muted small">Chưa có câu hỏi trong các chủ đề này.</p>') +
+        '</div></div>' +
+        '<div class="interview-last-day"><strong>Checklist ngày cuối</strong><ul><li><a href="#/career">Đọc lại STAR stories</a></li><li><a href="#/interview">Làm một phiên mock</a></li><li>Chuẩn bị 2–3 câu hỏi ngược cho interviewer</li></ul></div>'
+      : '<p class="muted small">Chọn ngày để tính ngược số câu cần ôn mỗi ngày và các chủ đề ưu tiên.</p>';
+
+    return '<section class="card interview-plan-card"><div class="interview-plan-head"><div><h2>🎯 Buổi phỏng vấn sắp tới</h2><p class="muted small">Lập kế hoạch ôn tập theo ngày phỏng vấn.</p></div>' +
+      (plan.date || plan.company || plan.round ? '<button type="button" class="btn sm" data-interview-plan-delete>Xoá kế hoạch</button>' : '') + '</div>' +
+      '<form class="interview-plan-form" data-interview-plan-form>' +
+        '<label>Ngày phỏng vấn<input class="input" type="date" name="date" required value="' + App.esc(plan.date || '') + '"></label>' +
+        '<label>Công ty<input class="input" type="text" name="company" list="interview-company-list" placeholder="Tên công ty (không bắt buộc)" value="' + App.esc(plan.company || '') + '"><datalist id="interview-company-list">' + companyOptions + '</datalist></label>' +
+        '<label>Vòng<select class="select" name="round"><option value="HR"' + (plan.round === 'HR' ? ' selected' : '') + '>HR</option><option value="technical"' + (plan.round === 'technical' ? ' selected' : '') + '>Technical</option><option value="final"' + (plan.round === 'final' ? ' selected' : '') + '>Final</option></select></label>' +
+        '<button type="submit" class="btn primary">Lưu kế hoạch</button>' +
+      '</form>' + summary + '</section>';
+  }
+
   App.registerView('dashboard', {
     title: 'Tổng quan',
     render(root, params) {
@@ -257,12 +302,40 @@
 
       root.innerHTML =
         hero +
+        interviewPlanCard() +
         todayCard() +
         stats +
         topicsSection +
         historyCard();
 
-      return () => {}; // cleanup: remove timers / key handlers here
+      const onSubmit = e => {
+        const form = e.target.closest('[data-interview-plan-form]');
+        if (!form) return;
+        e.preventDefault();
+        const values = new FormData(form);
+        App.store.data.interviewPlan = {
+          date: String(values.get('date') || ''),
+          company: String(values.get('company') || '').trim(),
+          round: String(values.get('round') || 'HR'),
+          updatedAt: Date.now(),
+        };
+        App.store.save();
+        const card = root.querySelector('.interview-plan-card');
+        if (card) card.outerHTML = interviewPlanCard();
+      };
+      const onClick = e => {
+        if (!e.target.closest('[data-interview-plan-delete]')) return;
+        delete App.store.data.interviewPlan;
+        App.store.save();
+        const card = root.querySelector('.interview-plan-card');
+        if (card) card.outerHTML = interviewPlanCard();
+      };
+      root.addEventListener('submit', onSubmit);
+      root.addEventListener('click', onClick);
+      return () => {
+        root.removeEventListener('submit', onSubmit);
+        root.removeEventListener('click', onClick);
+      };
     },
   });
 })();

@@ -35,6 +35,24 @@
 .view-dashboard .plan-txt strong { font-size: 1rem; }
 .view-dashboard .plan-activity { padding-top: 12px; border-top: 1px solid var(--border); }
 
+/* ---------- kế hoạch phỏng vấn sắp tới ---------- */
+.view-dashboard .interview-plan-card { border-color: var(--accent); }
+.view-dashboard .interview-plan-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.view-dashboard .interview-plan-head h2 { margin: 0 0 4px; }
+.view-dashboard .interview-plan-head p { margin: 0; }
+.view-dashboard .interview-plan-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; align-items: end; gap: 10px; margin: 14px 0; }
+.view-dashboard .interview-plan-form label { display: grid; gap: 5px; font-size: .88rem; font-weight: 600; min-width: 0; }
+.view-dashboard .interview-plan-summary { display: grid; grid-template-columns: minmax(160px, .7fr) minmax(0, 1.3fr); gap: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
+.view-dashboard .interview-count { display: flex; flex-direction: column; justify-content: center; gap: 5px; padding: 14px; border-radius: var(--radius-sm); background: var(--surface-2); }
+.view-dashboard .interview-count strong { color: var(--accent); font-size: 1.35rem; }
+.view-dashboard .interview-count span, .view-dashboard .interview-plan-topics li span { color: var(--muted); font-size: .88rem; }
+.view-dashboard .interview-plan-topics > strong, .view-dashboard .interview-last-day > strong { display: block; margin-bottom: 7px; }
+.view-dashboard .interview-plan-topics ol, .view-dashboard .interview-last-day ul { margin: 0; padding-left: 1.25rem; }
+.view-dashboard .interview-plan-topics li { padding: 3px 0; }
+.view-dashboard .interview-plan-topics li span { margin-left: 8px; }
+.view-dashboard .interview-last-day { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.view-dashboard .interview-last-day li { padding: 2px 0; }
+
 /* ---------- stat tiles ---------- */
 .view-dashboard .stat-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
 .view-dashboard .stat .num.ok { color: var(--ok); }
@@ -67,5 +85,7 @@
   .view-dashboard .hero-ring { margin: 0 auto; }
   .view-dashboard .plan-row .btn { width: 100%; }
   .view-dashboard .hist-date { margin-left: 0; width: 100%; }
+  .view-dashboard .interview-plan-form { grid-template-columns: 1fr; }
+  .view-dashboard .interview-plan-summary { grid-template-columns: 1fr; }
 }
 
