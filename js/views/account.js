@@ -144,11 +144,13 @@
         benefit('🗂', 'Giữ lịch sử lâu dài', 'Lịch sử trắc nghiệm và phỏng vấn thử nằm trên cloud, không mất khi xoá dữ liệu trình duyệt.') +
         benefit('🔒', 'Bạn chủ dữ liệu', 'Tải toàn bộ dữ liệu về máy hoặc xoá tài khoản bất cứ lúc nào.') +
       '</div>' +
-      '<div class="row acc-actions">' +
-        '<button type="button" class="btn primary lg" id="accGoogle">Đăng nhập với Google</button>' +
-      '</div>' +
+      // hide Google when it is switched off in Supabase (App.auth.providers comes from /auth/v1/settings)
+      (App.auth.providers && !App.auth.providers.google ? '' :
+        '<div class="row acc-actions">' +
+          '<button type="button" class="btn primary lg" id="accGoogle">Đăng nhập với Google</button>' +
+        '</div>') +
       '<form class="acc-email" id="accEmailForm" novalidate>' +
-        '<label class="field"><span>Hoặc nhận link đăng nhập qua email</span>' +
+        '<label class="field"><span>' + (App.auth.providers && !App.auth.providers.google ? 'Nhận link đăng nhập qua email' : 'Hoặc nhận link đăng nhập qua email') + '</span>' +
           '<input class="input" type="email" id="accEmail" placeholder="ban@example.com" autocomplete="email">' +
         '</label>' +
         '<button type="submit" class="btn" id="accEmailBtn">Gửi link đăng nhập</button>' +

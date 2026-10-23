@@ -111,6 +111,8 @@
   const auth = {
     /** true when Supabase is configured (js/config.js). When false, the site works fully offline/local. */
     enabled,
+    /** Sign-in methods switched on in Supabase ({ google, email }); filled from /auth/v1/settings, null until known. */
+    providers: null,
     /** Current user or null: { id, email, name, avatar } */
     user: null,
     /** Subscribe to sign-in / sign-out. Returns unsubscribe. fn(user|null) */
@@ -118,6 +120,7 @@
     /** Redirects to Google sign-in. */
     async signInWithGoogle() {
       if (!enabled) throw new Error(NOT_CONFIGURED);
+      if (auth.providers && !auth.providers.google) throw new Error('Đăng nhập Google chưa được bật — hãy dùng link đăng nhập qua email.');
       const { error } = await client.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: redirectTo() } });
       if (error) throw friendly(error);
     },
@@ -298,4 +301,10 @@
 
   // supabase-js warns against awaiting its own calls inside this callback → defer
   client.auth.onAuthStateChange((event, session) => { setTimeout(() => onSession(session), 0); });
+
+  // which sign-in methods are switched on (so the account page can hide e.g. a disabled Google button)
+  fetch(cfg.supabaseUrl.replace(/\/+$/, '') + '/auth/v1/settings', { headers: { apikey: cfg.supabaseKey } })
+    .then(r => (r.ok ? r.json() : null))
+    .then(s => { if (s && s.external) { auth.providers = { google: !!s.external.google, email: s.external.email !== false }; auth._emit(); } })
+    .catch(() => { /* offline: keep showing all options */ });
 })();
