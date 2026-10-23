@@ -1,4 +1,4 @@
-/* Topics: concurrency, jvm — owner: task T2. Format: see AGENTS.md */
+﻿/* Topics: concurrency, jvm — owner: task T2. Format: see AGENTS.md */
 (window.QUESTIONS = window.QUESTIONS || []).push(
 {
   id: 'concurrency-001',
@@ -2846,5 +2846,143 @@ Hai ví dụ chỉ để học; đừng chạy kiểu "tạo thread vô hạn" (
     'Tăng -Xss ảnh hưởng gì khi service có 500 thread?'
   ],
   tags: ['StackOverflowError', 'OutOfMemoryError', 'Xss', 'heap dump']
+},
+{
+  id: 'concurrency-028',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Một thread publish dữ liệu qua cờ ready nhưng reader đôi lúc thấy cờ mới và value cũ. Bạn giải thích happens-before và sửa thế nào?',
+  a: `**Tóm tắt:** Không có happens-before thì chương trình có data race; compiler và CPU có thể reorder, nên reader không được đảm bảo thấy các write trước đó. Dùng volatile cho cờ publish, hoặc đồng bộ cả hai phía bằng cùng monitor hay primitive concurrency.
+
+### Cơ chế
+- Volatile write có ngữ nghĩa release; volatile read có ngữ nghĩa acquire. Nếu reader thấy write đó, các write trước cờ happens-before các read sau cờ.
+- Vì vậy writer ghi payload trước rồi mới bật cờ. Reader kiểm tra cờ rồi mới đọc payload.
+- Sleep/yield không tạo quan hệ happens-before; test stress cũng không chứng minh chương trình đúng.
+
+### Giới hạn
+- Volatile không làm phép cộng hay read-modify-write thành atomic. Dùng AtomicLong, lock hoặc LongAdder tùy yêu cầu.
+- Nếu invariant gồm nhiều field cần snapshot thống nhất, dùng lock hoặc publish một immutable object qua volatile reference.
+- Nhiều writer cần giao thức ownership rõ; cờ volatile đơn lẻ không cộng dồn cập nhật.
+
+~~~java
+int value;
+volatile boolean ready;
+void publish() { value = 42; ready = true; }
+int read() { return ready ? value : -1; }
+~~~
+
+Để kiểm tra litmus test khó tái hiện, dùng jcstress; thread.sleep không thay thế synchronization.
+
+> Senior tip: khi review concurrent code, hãy chỉ ra cạnh happens-before nối writer với reader. Nếu không chỉ ra được cạnh cụ thể, đừng dựa vào việc “máy x86 chạy ổn”.`,
+  follow: ['Vì sao volatile không bảo vệ count++?', 'Khi nào cần immutable snapshot thay vì nhiều volatile field?'],
+  tags: ['JMM', 'happens-before', 'volatile']
+},
+{
+  id: 'concurrency-029',
+  topic: 'concurrency',
+  level: 'lead',
+  q: 'Parallel stream trong endpoint làm nghẽn các tác vụ ForkJoin khác. Bạn giải thích common pool và thiết kế lại thế nào?',
+  a: `**Tóm tắt:** Parallel stream thường dùng ForkJoinPool.commonPool, vốn được chia sẻ trong JVM. Blocking I/O giữ worker trong lúc chờ và có thể làm task không liên quan bị đói; tách workload vào executor hữu hạn hoặc dùng async client với giới hạn concurrency.
+
+### Vì sao common pool dễ thành bẫy
+- ForkJoinPool tối ưu cho task CPU-bound nhỏ bằng work stealing: worker rảnh lấy task từ deque của worker bận.
+- Khi worker chờ socket/DB, nó không steal được việc khác. Compensation cho blocking không phải bảo đảm để dùng pool làm I/O executor.
+- Một parallel stream ở endpoint có thể cạnh tranh với CompletableFuture async stage không truyền executor.
+
+### Cách sửa
+- Dùng executor chuyên cho dependency, thread/queue hữu hạn, rejection policy rõ ràng và timeout.
+- Đặt semaphore theo quota đối tác và số connection DB; song song không có nghĩa là không giới hạn.
+- Truyền executor cho supplyAsync/thenApplyAsync. Với parallel stream, cân nhắc vòng lặp tuần tự hoặc đổi sang API cho phép chỉ định executor.
+- Queue phải hữu hạn: queue vô hạn biến quá tải thành latency và memory tăng liên tục.
+
+### Vận hành
+- Theo dõi queue depth, active worker, rejection, dependency latency và saturation của common pool.
+- Không tạo executor mỗi request. Shutdown executor cùng lifecycle ứng dụng.
+- Virtual thread giúp viết blocking code dễ scale, nhưng không tăng quota DB hay capacity đối tác.
+
+> Senior tip: đặt bulkhead theo từng dependency. Khi queue đã đầy, fail fast thường tốt hơn xếp thêm việc chắc chắn hết deadline.`,
+  follow: ['Vì sao virtual thread vẫn cần semaphore?', 'CompletableFuture stage nào mặc định có thể chạy trên common pool?'],
+  tags: ['ForkJoinPool', 'parallel stream', 'backpressure']
+},
+{
+  id: 'jvm-023',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'Service có heap lớn và p99 nhạy: bạn chọn G1 hay Generational ZGC, và benchmark nào đủ tin cậy?',
+  a: `**Tóm tắt:** G1 cân bằng throughput và pause với mục tiêu pause mềm; Generational ZGC hướng tới pause rất ngắn bằng cách làm nhiều việc concurrent. Quyết định dựa trên SLO, CPU/RSS headroom và benchmark với đúng runtime, không dựa vào một con số pause duy nhất.
+
+### Trade-off
+- G1 chia heap thành regions, có young/mixed collection và concurrent marking; một số pha vẫn stop-the-world. MaxGCPauseMillis là mục tiêu, không phải SLA.
+- Generational ZGC tận dụng tuổi object; ZGC dùng load barrier để làm nhiều công việc khi ứng dụng chạy. JEP 439 đưa generational mode vào JDK 21.
+- Concurrent work tiêu thụ CPU. Nếu CPU quota đã sát trần, giảm pause có thể đổi thành throughput thấp hơn.
+
+### Quy trình chọn
+1. Chạy cùng heap limit, JDK build, container quota, dataset và request mix.
+2. Warm-up ổn định; đo nhiều lần cả peak lẫn burst và cold deploy.
+3. So p99/p999, throughput, CPU, RSS, allocation rate, pause distribution và thời gian GC.
+4. Canary một nhóm instance, giữ cấu hình rollback.
+
+~~~bash
+-Xlog:gc*,safepoint:file=/logs/gc.log:time,uptime,level,tags
+~~~
+
+Đọc log cùng JFR; lưu ý metaspace, direct memory và thread stack cũng nằm trong RSS ngoài heap.
+
+> Senior tip: nếu mục tiêu pause đạt nhưng CPU headroom cạn ở peak, collector đó chưa phù hợp production. Đừng tăng Xmx bằng toàn bộ memory limit của container.`,
+  follow: ['Vì sao MaxGCPauseMillis không phải cam kết?', 'Bạn theo dõi gì để biết ZGC đang lấy CPU khỏi ứng dụng?'],
+  tags: ['G1', 'Generational ZGC', 'GC', 'latency'],
+  refs: [{ type: 'doc', title: 'JEP 439: Generational ZGC', url: 'https://openjdk.org/jeps/439' }]
+},
+{
+  id: 'jvm-024',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'Benchmark cho thấy allocation của object biến mất sau warm-up. Escape analysis và scalar replacement giải thích gì, và vì sao không phải hợp đồng?',
+  a: `**Tóm tắt:** JIT có thể chứng minh object không escape khỏi phạm vi cần thiết rồi thay field bằng scalar, loại allocation và lock không cần. Đây là tối ưu runtime phụ thuộc profile, không phải cam kết của ngôn ngữ hay bytecode.
+
+### Quá trình
+- Interpreter/C1 thu thập profile; tiered compilation có thể chuyển method nóng cho C2.
+- Escape analysis tìm reference bị return, lưu vào field/static hoặc truyền tới call không thể phân tích.
+- Nếu object không escape, scalar replacement có thể giữ từng field trong registers; lock elimination cũng có thể bỏ monitor không quan sát được.
+- Giả định profile đổi có thể khiến deoptimization và biên dịch lại.
+
+### Đo đúng
+- Dùng JFR hoặc async-profiler allocation mode để tìm hot allocation trên workload thật.
+- JMH cần warm-up, fork và chống dead-code elimination; benchmark một vòng lạnh thường đo interpreter.
+- Object escape hoặc code quá phức tạp có thể ngăn tối ưu. Không kết luận rằng record luôn được stack allocate.
+
+> Senior tip: tối ưu allocation khi allocation flame graph chứng minh nó chiếm đáng kể CPU/GC. Thiết kế code rõ ràng trước, đừng phụ thuộc vào một tối ưu JIT khó tái lập giữa JDK.`,
+  follow: ['Escape qua field static tác động phân tích ra sao?', 'Vì sao JMH cần warm-up và fork?'],
+  tags: ['JIT', 'escape analysis', 'scalar replacement']
+},
+{
+  id: 'jvm-025',
+  topic: 'jvm',
+  level: 'lead',
+  q: 'Latency tăng vài phút sau deploy rồi giảm; compilation và deoptimization tăng. Bạn giải thích tiered compilation và điều tra thế nào?',
+  a: `**Tóm tắt:** HotSpot khởi động bằng interpreter/C1, thu profile rồi biên dịch method nóng với C2; warm-up và deoptimization có thể làm latency thay đổi sau deploy. Cần đối chiếu JIT activity, code cache, class loading và GC trước khi đổi compiler flags.
+
+### Tiered compilation
+- Interpreter chạy bytecode và ghi nhận invocation/back-edge counters.
+- C1 biên dịch nhanh ở các mức tối ưu và có thể gắn instrumentation.
+- C2 dùng profile để inline và tối ưu mạnh. Khi giả định kiểu hoặc hierarchy không còn đúng, code có thể deoptimize về mức thấp hơn.
+- Code cache lưu machine code; đầy code cache có thể làm compilation ngừng hoặc suy giảm.
+
+### Điều tra
+- Ghi JFR và compilation/deoptimization log ngắn hạn ở canary; xem CPU của compiler thread, code cache usage, class loading.
+- Tách warm-up khỏi khởi tạo connection pool, cache, CDS và GC; các hiện tượng này thường cùng xảy ra sau deploy.
+- Warm-up có kiểm soát trước khi nhận traffic, nhưng phải chạy code path thật.
+- Không tắt tiered compilation chỉ dựa vào tương quan. Thay đổi có thể làm throughput ổn định thấp hơn.
+
+### Pitfall
+- Health check thường không làm nóng hot path.
+- Benchmark cần đủ warm-up và cùng image/runtime với production.
+- CDS/AOT có thể giảm startup/class loading nhưng không loại mọi JIT warm-up.
+
+> Senior tip: giữ một nhóm instance đã warm làm đối chứng khi rollout. So p99 cùng CPU, compilation, error rate để phân biệt JIT với dependency cold start.`,
+  follow: ['Deoptimization khác compilation failure thế nào?', 'Code cache đầy có biểu hiện gì?'],
+  tags: ['tiered compilation', 'C1', 'C2', 'deoptimization']
 }
 );
+
+
