@@ -67,3 +67,4 @@ Lưu ý cho integrator:
 - `App.store.addMockResult` đã lưu nguyên mọi field nên `aiAvg` không cần sửa `js/core/app.js`.
 - `App.ui.speechStats()` (core) hiển thị nhãn tiếng Việt cố định ("từ", "từ/phút") kể cả ở chế độ English — nếu muốn bản EN thì sửa ở `js/core/ai.js` (không thuộc phạm vi T19).
 - Không đụng vào vòng coding: AI chấm câu trả lời chỉ dành cho câu tự luận; bài coding giữ nguyên luồng cũ (hint/solution/editor).
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

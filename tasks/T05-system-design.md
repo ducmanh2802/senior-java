@@ -43,3 +43,4 @@ Sơ đồ vẽ bằng ASCII trong block `~~~text`.
 - `node --check js/data/q-system-design.js` OK; `node scripts/validate.js q-system-design.js` in `OK — không có lỗi.` (không có cảnh báo nào cho file này).
 - Lưu ý cho integrator: tại thời điểm hoàn thành, `node scripts/validate.js` toàn repo vẫn báo lỗi cú pháp ở `js/data/q-concurrency-jvm.js` (backtick trong template literal tại dòng 64, thuộc T02) nên chưa thể in OK toàn cục. Không sửa file ngoài quyền sở hữu; cần T02 xử lý rồi chạy lại validator.
 Reviewed-by: codex (T05R)
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

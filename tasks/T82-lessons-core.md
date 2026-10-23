@@ -29,3 +29,4 @@ Viết **5 bài học** cho track `core`, `order` từ 1, ID `lesson-core-001` t
 - Đã thêm đủ 5 bài học core và bài tập/câu hỏi kiểm tra; `node --check` và kiểm tra lesson riêng đạt.
 - Validator toàn repo chưa đạt: `q-scenario.js` báo `Unexpected end of input`, file ngoài phạm vi sở hữu T82.
 - Viết bởi Codex CLI (ChatGPT). Integrator: test-lessons pass.
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

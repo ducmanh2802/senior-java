@@ -27,3 +27,4 @@ Viết **5 bài học** cho track `concurrency`, `order` từ 1, ID `lesson-conc
 
 ## Notes
 - Hoàn thành bởi agent Claude: 5 bài, 16 bài tập (3 lần chạy đều pass; đã thử lời giải sai: test bắt được deadlock và race).
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

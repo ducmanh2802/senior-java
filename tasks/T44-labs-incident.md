@@ -26,3 +26,4 @@ Viết **5 lab** với `category: 'incident'`, ID từ `lab-incident-001`, mỗi
 `node scripts/validate.js` → OK với 5 lab. Sau đó integrator sẽ review fact-check.
 
 ## Notes
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

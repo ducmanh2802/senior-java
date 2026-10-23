@@ -42,3 +42,4 @@ ID tiếp nối số lớn nhất đang có trong topic (ví dụ đang có `cor
 
 ## Notes
 - Hoàn thành bởi agent Claude: sửa design-014/015, thêm design-016..021.
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

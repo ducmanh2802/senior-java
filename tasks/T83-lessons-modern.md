@@ -28,3 +28,4 @@ Viết **5 bài học** cho track `modern`, `order` từ 1, ID `lesson-modern-00
 ## Notes
 Đã viết 5 bài học track modern (lesson-modern-001..005): Stream+lazy+Collectors, Optional, Record/sealed/pattern matching, Lambda+compose, java.time+cut-off. Mỗi bài có body ≥ 2500 ký tự, 1 bài tập có test ≥ 3 case (reference pass 100%, starter compile được nhưng trượt test), 2–4 câu check nhanh, related chỉ dùng id câu hỏi thực. Chạy được `node --check`, `validate.js` OK, `test-lessons.js` 36/36 OK.
 Reviewed-by: codex (T83R)
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

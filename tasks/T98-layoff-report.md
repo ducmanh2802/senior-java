@@ -14,3 +14,4 @@ Không bịa số liệu; không tìm thấy thì ghi "không tìm thấy nguồ
 
 ## Notes
 Reviewed-by: codex (T98R)
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

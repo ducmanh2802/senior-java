@@ -3,6 +3,7 @@
 #   scripts/agent-cli.sh T83 kilo     -> Kilo Code CLI, model kilo/kilo-auto/free (free router)
 #   scripts/agent-cli.sh T82 codex    -> OpenAI Codex CLI (uses the ChatGPT login on this machine)
 #   scripts/agent-cli.sh T58 gemini   -> Gemini CLI (Gemini API key in ~/.gemini)
+#   scripts/agent-cli.sh T90 agy      -> Antigravity CLI (Google login; AGY_MODEL, see: agy models)
 # Log: logs/<task>.log; start/end lines on stdout (append to logs-runner.txt).
 set -u
 cd "$(dirname "$0")/.."
@@ -20,6 +21,7 @@ case "$runner" in
   kilo)   kilo run --auto -m "${KILO_MODEL:-kilo/kilo-auto/free}" --title "$id" "$prompt" > "logs/$id.log" 2>&1 ;;
   codex)  codex ${CODEX_ARGS:-} exec -s workspace-write --skip-git-repo-check "$prompt" > "logs/$id.log" 2>&1 ;;
   gemini) GEMINI_CLI_TRUST_WORKSPACE=true gemini -y -p "$prompt" > "logs/$id.log" 2>&1 ;;
+  agy)    /c/Users/Windows/AppData/Local/Microsoft/WinGet/Links/agy.exe --print-timeout 0 --model "${AGY_MODEL:-claude-opus-4-6-thinking}" -p "$prompt" > "logs/$id.log" 2>&1 ;;   # shell commands limited to the allowlist in ~/.gemini/antigravity-cli/settings.json
   *) echo "unknown runner $runner"; exit 1 ;;
 esac
 code=$?

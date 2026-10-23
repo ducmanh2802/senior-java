@@ -42,3 +42,4 @@ ID tiếp nối số lớn nhất đang có trong topic (ví dụ đang có `cor
 
 ## Notes
 Đã thêm 7 câu cho concurrency (014-020) và 7 câu cho jvm (012-018). Tổng cộng concurrency: 20 câu, jvm: 18 câu. Validator OK.
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

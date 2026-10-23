@@ -78,3 +78,4 @@ tests: `public class Main {
     (encoding windows-1258) không báo "unmappable character".
 - Kiểm chứng: `node scripts/test-algos.js` → `Harness OK: 48 · lỗi: 0 · chưa có tests: 0`;
   `node scripts/validate.js` → `OK — không có lỗi.`
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

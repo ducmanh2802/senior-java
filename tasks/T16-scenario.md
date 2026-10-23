@@ -68,3 +68,4 @@ nhưng **phải tự viết lại** nội dung, không copy.
 - Level: 18 senior, 10 lead, 3 mid; đáp án theo đúng format 6 phần (Tóm tắt / Làm rõ yêu cầu / Điều tra / Giải pháp / Trade-off & pitfall / Senior tip), độ dài ~1500–3500 ký tự mỗi câu.
 - `node scripts/validate.js q-scenario.js` và `node scripts/validate.js` (toàn bộ) đều in `OK — không có lỗi.` (tổng repo: 226 câu hỏi, 54 trắc nghiệm, 48 bài thuật toán).
 - Không sửa file nào ngoài `js/data/q-scenario.js` và file task này; không commit/push.
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

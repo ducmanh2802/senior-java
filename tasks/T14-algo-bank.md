@@ -47,3 +47,4 @@ Chạy `node scripts/validate.js` cho đến khi OK.
   harness 85 assertion cho các bài then chốt (MinStack, LRU Cache, Dijkstra, Koko, bounded queue, reconcile, top-K) — pass hết.
 - `node scripts/validate.js` toàn repo in ra `OK — không có lỗi.`
 - Chỉ sửa `js/data/algo.js` và file task này; không commit.
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

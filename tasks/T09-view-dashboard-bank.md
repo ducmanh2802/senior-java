@@ -45,3 +45,4 @@ Code phải chạy được với bất kỳ số lượng câu nào, kể cả 
 
 - [integrator] Agent Cline dừng do hết hạn mức free trước khi tự đánh dấu. View đã được kiểm tra bằng trình duyệt headless (render đủ route, không lỗi console) và chấp nhận; phần còn thiếu do integrator hoàn thiện.
 Reviewed-by: codex (T09R)
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

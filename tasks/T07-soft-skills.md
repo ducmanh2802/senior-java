@@ -82,3 +82,4 @@ Mỗi câu behavioral có đủ 4 phần theo yêu cầu task:
   `~~~java|xml|javascript|bash|text`. Không dùng markdown đầy đủ, không HTML.
 - Với câu behavioral, phần "Câu trả lời mẫu" là một blockquote dài nhiều đoạn — `App.md()` gộp các
   dòng `> ` liên tiếp thành **một** `<blockquote>` (đã kiểm tra).
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

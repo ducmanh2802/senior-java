@@ -24,3 +24,4 @@ Owns: `js/views/learn.js`, `css/views/learn.css`
 
 ## Notes
 - Integrator viết (agent free hết suất). Test E2E với runner giả lập: hint, chạy test → lưu exercise pass, quick check, hoàn thành bài; desktop + 360px không tràn.
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

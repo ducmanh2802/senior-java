@@ -31,3 +31,4 @@ Viết **5 bài học** cho track `jpa`, `order` từ 1, ID `lesson-jpa-001` tr�
 - `node --check js/data/lessons-jpa.js` thành công. Validator không báo lỗi cho lessons-jpa; toàn repo vẫn lỗi cú pháp có sẵn tại `js/data/lessons-modern.js:466` (dấu nháy thừa trong `explain`). Vì vậy `node scripts/validate.js` chưa thể in OK.
 - `node scripts/test-lessons.js` cũng dừng khi require cùng file lessons-modern.js. Đã kiểm tra riêng cả 5 bài: reference biên dịch và qua toàn bộ test; starter của cả 5 bài biên dịch.
 Reviewed-by: codex (T86R)
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

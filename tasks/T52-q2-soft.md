@@ -50,3 +50,4 @@ ID tiếp nối số lớn nhất đang có trong topic (ví dụ đang có `cor
 - Kiểm tra: `node --check js/data/q-soft.js` OK; `node scripts/validate.js` → **OK — không có lỗi** (không có cảnh báo nào cho `q-soft.js`).
 - Lưu ý cho integrator: trong lúc task chạy, `js/data/labs-gc.js` (thuộc T42) đang có lỗi cú pháp làm `validate.js` toàn repo đỏ; tôi **không** sửa file đó theo luật 3. Lỗi đã được agent T42 sửa xong trong lúc tôi hoàn tất, và `validate.js` toàn repo hiện in `OK — không có lỗi.`
 - Không chạy `git commit`/`git push`, không mở trình duyệt, không cài dependency.
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

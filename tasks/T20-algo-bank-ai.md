@@ -1,6 +1,6 @@
 # T20 — Thuật toán: Run tests + AI review · Câu hỏi: luyện trả lời với AI
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/views/algo.js`, `css/views/algo.css`, `js/views/bank.js`, `css/views/bank.css`
 
@@ -35,4 +35,6 @@ Trong phần mở rộng của mỗi câu hỏi, **trên** đáp án mẫu, thê
 - Không gọi API tự động. Không phá tính năng cũ (lọc, SRS, timer, gợi ý, lời giải, lưu nháp).
 
 ## Notes
-(agent ghi chú ở đây)
+- Hoàn thiện Run tests/AI review trong algo và luyện trả lời AI, speech, hide-answer, giữ nháp trong bank; kết quả algo cũ bị xóa khi nội dung editor thay đổi.
+- `node --check js/views/algo.js`, `node --check js/views/bank.js` và `node scripts/validate.js` đều OK.
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

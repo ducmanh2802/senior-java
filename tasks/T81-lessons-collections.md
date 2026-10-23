@@ -26,3 +26,4 @@ Viết **4 bài học** cho track `collections`, `order` từ 2, ID `lesson-coll
 
 ## Notes
 - Hoàn thành bởi agent Claude: lesson-collections-002..005, 9/9 bài tập pass (chạy 3 lần, không flaky).
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

@@ -1,6 +1,6 @@
 # T99 — Phỏng vấn AI: chế độ "Theo JD"
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/views/interview.js`, `css/views/interview.css`
 
@@ -19,3 +19,5 @@ Owns: `js/views/interview.js`, `css/views/interview.css`
 `node --check`, `node scripts/validate.js` OK.
 
 ## Notes
+Đã thêm chế độ Theo JD vào setup, lưu JD/kết quả trong localStorage, hiển thị phân tích và mức sẵn sàng theo topic, đồng thời tạo phiên interview với level/focus/seeds theo JD. `node --check js/views/interview.js` và `node scripts/validate.js` đều đạt.
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

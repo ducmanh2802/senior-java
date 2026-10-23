@@ -42,3 +42,4 @@ Viết **5 lab** với `category: 'sql'`, ID từ `lab-sql-001`, mỗi lab một
 - Bài MySQL là lab 002; lab 005 trong `answer` có nêu tương đương MySQL (`SHOW ENGINE INNODB STATUS`, `performance_schema.data_lock_waits`, `innodb_lock_wait_timeout`).
 - Inline code dùng `{{...}}`, code block dùng `~~~sql` / `~~~java`; trong artifact dùng ký tự `{}` tự do (artifact không phải markup).
 - Đã chạy `node --check js/data/labs-sql.js` và `node scripts/validate.js labs-sql.js` → `OK — không có lỗi.` (`validate` toàn repo đang báo lỗi ở `js/data/labs-gc.js` của T42 — dấu backtick chưa escape trong template literal quanh `toByteArray()`; không thuộc file của task này nên không tự sửa).
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

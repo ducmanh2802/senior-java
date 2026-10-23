@@ -50,3 +50,4 @@ ID tiếp nối số lớn nhất đang có trong topic (ví dụ đang có `cor
 
 ## Notes
 - Hoàn thành bởi agent Claude (model free hết suất). modern dừng ở 16 vì scoped values/structured concurrency đã có ở topic concurrency.
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

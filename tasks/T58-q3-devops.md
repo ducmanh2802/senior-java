@@ -42,3 +42,4 @@ File đang rỗng: ID bắt đầu từ `devops-001`.
 `node scripts/validate.js` → OK và số câu mỗi topic đạt mục tiêu. Integrator sẽ fact-check sau.
 
 ## Notes
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

@@ -43,3 +43,4 @@ Xem `js/data/q-java.js` (`core-001`) để biết văn phong và format mẫu.
 - `node scripts/validate.js` → OK — không có lỗi; topic của task này có đủ 13 + 11 = 24 câu.
 - Không git commit; chỉ thay đổi 1 file sở hữu: `js/data/q-concurrency-jvm.js`.
 Reviewed-by: codex (T02R)
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

@@ -60,3 +60,4 @@ File đang rỗng: ID bắt đầu từ `api-001`.
 
 Tất cả đáp án ≥1500 ký tự, có **Tóm tắt**, các mục `###` giải thích cơ chế, code ví dụ, bảng trade-off, `> Senior tip:`. Level xen kẽ: 3 mid, 8 senior, 3 lead. `node scripts/validate.js` → OK.
 Reviewed-by: codex (T55R)
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

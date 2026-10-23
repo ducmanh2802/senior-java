@@ -36,3 +36,4 @@ Thêm khối kiểm tra PROJECTS theo mẫu khối LABS/LESSONS có sẵn: id `p
 ## Notes
 Đã thêm 6 blueprint dự án, view danh sách/chi tiết với lọc skill, checklist lưu tiến độ, challenges thu gọn, copy README và liên kết ôn tập. Đã khai báo asset/route trong index, bổ sung validator cho schema và related IDs. `node --check` cho các file JS và `node scripts/validate.js` đều đạt; validator in `Pet project: 6 dự án` và `OK — không có lỗi.`
 Reviewed-by: codex (T102R)
+Verify-failed: 2026-10-23 18:29:50

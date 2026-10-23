@@ -50,3 +50,4 @@ Văn phong theo mẫu `core-001` trong `js/data/q-java.js`. Chỉ dùng dịch v
 - Nội dung dùng API/dịch vụ thật (Spring AI `ChatClient`/`entity`, LangChain4j `AiServices`, MCP, SnapStart, IRSA/EKS Pod Identity, Aurora Global Database, HNSW…). Không có backtick thô trong template literal, không dùng `${`.
 - Đã chạy `node --check` cho cả hai file và `node scripts/validate.js`: **OK — không có lỗi**, không có cảnh báo.
 - Không sửa file ngoài quyền sở hữu; không commit/push.
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

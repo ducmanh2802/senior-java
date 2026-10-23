@@ -48,3 +48,4 @@ ID tiếp nối số lớn nhất đang có trong topic (ví dụ đang có `cor
 10. Cross-service query: API Composition vs CQRS Read Model vs Data Lake trade-off
 
 Validation OK, syntax check OK.
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

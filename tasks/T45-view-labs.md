@@ -37,3 +37,4 @@ Layout 2 cột trên desktop, 1 cột trên mobile:
   Không sửa file này vì T45 không sở hữu. Đề xuất T42 bỏ/escape backtick rồi chạy lại `node scripts/validate.js`.
   Các file của T45 không tạo lỗi nào; sau khi T42 hoàn tất cần validate lại để đạt `OK — không có lỗi.`
 - Không chạy `npm run smoke` để tuân thủ luật 9 (không tự mở trình duyệt/headless); người tích hợp test UI.
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

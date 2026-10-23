@@ -43,3 +43,4 @@ ID tiếp nối số lớn nhất đang có trong topic (ví dụ đang có `cor
 
 ## Notes
 - Hoàn thành bởi agent Claude: viết lại 14 câu của T47 (model free viết sai gần hết), thêm concurrency-021..027, jvm-019..022.
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

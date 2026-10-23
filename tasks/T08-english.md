@@ -53,3 +53,4 @@ Viết câu hỏi phỏng vấn **bằng tiếng Anh** cho topic `english` (ID t
 - Không sửa file nào khác. `node --check js/data/q-english.js` → OK; `node scripts/validate.js q-english.js` → OK.
 - `node scripts/validate.js` toàn repo cuối cùng → `OK — không có lỗi.` (trong lúc chạy có lỗi tạm thời từ file của agent khác đang ghi song song; đã chờ và kiểm tra lại sau khi họ hoàn tất).
 Reviewed-by: codex (T08R)
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

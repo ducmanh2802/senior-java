@@ -59,3 +59,4 @@ File đang rỗng: ID bắt đầu từ `sql-001`.
 - sql-014: Lọc khoảng thời gian đúng cách (half-open interval, timezone, SARGable)
 
 `node scripts/validate.js` → OK (sql: 14 câu hỏi). Các lỗi hiển thị thuộc file q-api.js (không trong quyền sở hữu).
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

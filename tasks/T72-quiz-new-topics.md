@@ -26,3 +26,4 @@ Mỗi topic dưới đây hiện chưa có câu trắc nghiệm nào. Thêm **8 
 
 ## Notes
 - Hoàn thành bởi agent Claude: 40 câu, đáp án rải đều 10/10/10/10. Integrator chạy thật 8 câu SQL trên PGlite: đúng hết.
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

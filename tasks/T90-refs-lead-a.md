@@ -1,6 +1,6 @@
 # T90 — Nguồn học thêm cho câu khó (đợt 1a: Java, JVM, Spring/DB, SQL, API, Security)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/q-java.js`, `js/data/q-concurrency-jvm.js`, `js/data/q-spring-data.js`, `js/data/q-sql.js`, `js/data/q-api.js`, `js/data/q-security.js`
 
@@ -17,3 +17,6 @@ Sau mỗi file: `node --check <file>`, `node scripts/validate.js <file>`, rồi 
 `node scripts/validate.js` → OK và `node scripts/check-links.mjs` → hỏng 0.
 
 ## Notes
+Added two references to every `level: 'lead'` question in the owned files (8 Java, 7 concurrency/JVM, 13 Spring/DB, 2 API, 1 Security). `q-sql.js` has no lead questions. `node scripts/validate.js` prints `OK — không có lỗi.` and `node --check` passes for each changed JavaScript file. Link checks were attempted per file, but this environment blocks outbound requests (`EACCES`) for all URLs, so the checker reports them as failures and link existence could not be confirmed here.
+Reviewed-by: codex (T90R)
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

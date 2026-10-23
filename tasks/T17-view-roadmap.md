@@ -37,3 +37,4 @@ Mục tiêu người dùng: phỏng vấn đậu Senior Java ở ngân hàng / b
 (agent ghi chú ở đây)
 
 - [integrator] Agent Cline dừng do hết hạn mức free trước khi tự đánh dấu. View đã được kiểm tra bằng trình duyệt headless (render đủ route, không lỗi console) và chấp nhận; phần còn thiếu do integrator hoàn thiện.
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

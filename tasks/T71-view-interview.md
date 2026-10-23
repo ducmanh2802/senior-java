@@ -35,3 +35,4 @@ Owns: `js/views/interview.js`, `css/views/interview.css`
 ## Notes
 - Integrator viết lại toàn bộ (agent nemotron bị 504 giữa chừng). Test E2E với API giả lập: desktop + 360px, không lỗi console, kết quả lưu vào mockHistory (kind ai-interview).
 Reviewed-by: codex (T71R)
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

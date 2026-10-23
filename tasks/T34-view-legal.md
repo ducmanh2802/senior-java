@@ -31,3 +31,4 @@ Viết tiếng Việt, rõ ràng, không dùng văn phong pháp lý rườm rà.
 
 ## Notes
 - Integrator review: sửa mô tả xác thực (đăng nhập + hạn mức thay cho passcode), thêm Phỏng vấn AI, nói đúng là fact-check bằng AI.
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

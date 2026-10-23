@@ -1,6 +1,6 @@
 # T104 — Gói câu hỏi stack ngân hàng Việt Nam
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/q-spring-data.js`, `js/data/q-scenario.js`
 
@@ -12,3 +12,5 @@ Owns: `js/data/q-spring-data.js`, `js/data/q-scenario.js`
 Chuẩn chất lượng đầy đủ (≥ 1500 ký tự, Tóm tắt, ###, code ngắn, bảng, pitfall, Senior tip, follow 2–3). Không bịa API/quy định; quy định NHNN chỉ nêu chung nếu không chắc số hiệu. `node scripts/validate.js` → OK.
 
 ## Notes
+Reviewed-by: codex (T104R)
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

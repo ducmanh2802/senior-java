@@ -26,3 +26,4 @@ Viết **5 lab** với `category: 'gc'`, ID từ `lab-gc-001`, mỗi lab một t
 `node scripts/validate.js` → OK với 5 lab. Sau đó integrator sẽ review fact-check.
 
 ## Notes
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

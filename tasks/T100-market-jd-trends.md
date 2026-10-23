@@ -11,3 +11,4 @@ Owns: `docs/market-jd-trends.md`
 - Tạo mới `docs/market-jd-trends.md` vì file chưa tồn tại; không có tháng cũ cần giữ.
 - Đã chạy `node scripts/validate.js`: OK — không có lỗi.
 Reviewed-by: codex (T100R)
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

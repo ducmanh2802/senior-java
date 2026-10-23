@@ -38,3 +38,4 @@ ID tiếp nối số lớn nhất đang có trong topic (ví dụ đang có `cor
 
 ## Notes
 - Hoàn thành bởi agent Claude: architecture-009..022.
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

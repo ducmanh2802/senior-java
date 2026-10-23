@@ -66,3 +66,4 @@ Xử lý đủ 3 trạng thái:
   markup `{{code}}` chuẩn của AGENTS.md mục 5 (8 dòng, dòng 143–175). Đây là sửa ngoài phạm vi task —
   nếu agent T42 chạy lại và ghi đè file thì cần kiểm tra lại lỗi backtick này.
 
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

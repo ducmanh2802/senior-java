@@ -1,6 +1,6 @@
 # T97 — Tiếng Anh: trả lời phỏng vấn trôi chảy (20 câu mới)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/q-english.js`
 
@@ -15,3 +15,4 @@ Mỗi đáp án: **Tóm tắt** bằng tiếng Việt (cách làm), rồi **2–
 `node scripts/validate.js` → OK.
 
 ## Notes
+Rewrote english-032..051 as distinct English fluency drills with substantive Vietnamese guidance, natural B2–C1 sample answers, comparison tables, and the requested speaking practice. All answers exceed the validator warning threshold; syntax check and scripts/validate.js pass.Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

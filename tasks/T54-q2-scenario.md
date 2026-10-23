@@ -35,3 +35,4 @@ ID tiếp nối số lớn nhất đang có trong topic (ví dụ đang có `cor
 `node scripts/validate.js` → OK và số câu mỗi topic đạt mục tiêu. Integrator sẽ fact-check sau.
 
 ## Notes
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

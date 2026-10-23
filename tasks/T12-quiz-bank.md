@@ -46,3 +46,4 @@ Chạy `node scripts/validate.js` cho đến khi OK.
   hay ký tự `undefined`.
 - Không sửa file nào ngoài `js/data/quiz.js` và file task này. Không commit.
 
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

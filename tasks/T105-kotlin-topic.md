@@ -12,3 +12,4 @@ Chuẩn chất lượng đầy đủ (AGENTS.md mục 4–6), code ví dụ dùn
 ## Notes
 
 Reviewed-by: codex (T105R)
+Verify-failed: 2026-10-23 18:34:39

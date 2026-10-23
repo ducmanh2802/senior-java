@@ -10,3 +10,4 @@ Owns: `js/data/q-java.js`, `js/data/q-concurrency-jvm.js`, `js/data/q-spring-dat
 - Đã bổ sung refs cho các câu senior còn thiếu; hiện cả 180 câu senior trong sáu file đều có nguồn. Không thay nội dung câu hỏi/đáp án.
 - `node scripts/validate.js` và `node --check` cho sáu file đều đạt. `node scripts/check-links.mjs` đã chạy nhưng môi trường chặn mọi yêu cầu mạng (`EACCES`); dùng URL tài liệu chính thức/ổn định theo hướng dẫn.
 Reviewed-by: codex (T106R)
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

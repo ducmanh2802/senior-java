@@ -50,3 +50,4 @@ ID tiếp nối số lớn nhất đang có trong topic (ví dụ đang có `cor
 
 ## Notes
 Đã thêm 16 câu hỏi mới (spring: 6, jpa: 4, db: 6) đạt mục tiêu: spring 27/≥27, jpa 21/≥21, db 25/≥25. Tất cả câu hỏi tuân thủ schema, markup, chuẩn chất lượng theo AGENTS.md. Validate pass.
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

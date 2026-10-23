@@ -26,3 +26,4 @@ Người dùng là dev **Java/Spring Boot** muốn đậu Senior. Công ty mục
 - Không tìm thấy dữ liệu phỏng vấn Java Việt Nam mới, đủ tin cậy cho một số công ty; ghi rõ chưa xác minh và không tuyên bố interview dễ/chắc chắn minh bạch. Câu hỏi luyện tập được đánh dấu là gợi ý domain khi phù hợp.
 - Kiểm tra: `node --check js/data/companies.js` và `node scripts/validate.js` đều thành công; validator in `OK — không có lỗi.`
 Reviewed-by: codex (T96R)
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

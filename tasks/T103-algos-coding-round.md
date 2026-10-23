@@ -13,3 +13,4 @@ Owns: `js/data/algo.js`
 
 - Đã thêm algo-049 đến algo-068 (6 easy, 11 medium, 3 hard), mỗi bài có starter và harness với 5 case; kiểm tra cú pháp JS, `node scripts/test-algos.js` toàn repo (68 bài sau khi sửa expected case) và `node scripts/validate.js` đều đạt.
 Reviewed-by: codex (T103R)
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

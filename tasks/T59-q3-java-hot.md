@@ -48,3 +48,4 @@ ID tiếp nối số lớn nhất đang có trong topic (ví dụ đang có `cor
 
 ## Notes
 - Hoàn thành bởi agent Claude: 17 câu (core-020..026, collections-015..018, modern-011..016), đã tự kiểm output từng đoạn predict-output.
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

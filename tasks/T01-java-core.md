@@ -46,3 +46,4 @@ Trong file đã có sẵn `core-001` làm mẫu. Giữ nguyên câu đó và th�
 - `node scripts/validate.js` (toàn repo) lúc kết thúc vẫn báo lỗi **của các file khác** (không thuộc T01), ví dụ `q-concurrency-jvm.js` (T02), `q-spring-data.js` (T03), `q-aws.js` (T06), `quiz.js` (T12): inline code `{{...}}` chứa dấu `{` `}` lồng nhau, vi phạm rule mới của validator (sẽ hiển thị sai). Đề nghị chủ các file đó đưa đoạn code vào block `~~~` hoặc viết lại. `q-java.js` của T01 không còn lỗi/cảnh báo nào.
 - Chỉ thay đổi `js/data/q-java.js` và file task này.
 Reviewed-by: codex (T01R)
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua

@@ -33,3 +33,4 @@ Owns: `js/views/career.js`, `css/views/career.css`, `index.html`
 - Đã thêm view STAR (AI tạo/chỉnh sửa/lưu/xoá/luyện kể), CV review có lưu nháp/kết quả, và nhật ký phỏng vấn có đối chiếu câu hỏi/xuất câu chưa có; thêm stylesheet, menu và đăng ký asset trong `index.html`.
 - Kiểm tra: `node --check js/views/career.js` và `node scripts/validate.js` đều đạt (`OK — không có lỗi.`).
 Reviewed-by: codex (T108R)
+Verify-failed: 2026-10-23 19:07:46

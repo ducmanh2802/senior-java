@@ -58,3 +58,4 @@ Tính trong view, hàm thuần `readiness(company)`:
   `algo.js` do agent T18 đang ghi song song — không thuộc file của task này, đã chạy lại tới khi OK).
 - CSS: mọi selector bắt đầu bằng `.view-companies`, chỉ dùng biến `var(--…)` (dark mode tự hoạt động),
   responsive có media query ≤640px (grid card ≥250px vẫn vừa 360px).
+Verify-failed: legacy — đã commit từ trước, autopilot bỏ qua
