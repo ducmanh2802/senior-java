@@ -6,6 +6,7 @@ window.TOPICS = [
   { id: 'core',          name: 'Core Java',                  icon: '☕', group: 'Java',         file: 'q-java.js' },
   { id: 'collections',   name: 'Collections',                icon: '🗂️', group: 'Java',         file: 'q-java.js' },
   { id: 'modern',        name: 'Java 8 → 21',                icon: '✨', group: 'Java',         file: 'q-java.js' },
+  { id: 'kotlin',        name: 'Kotlin cho dev Java',         icon: '🟣', group: 'Java',         file: 'q-kotlin.js' },
   { id: 'concurrency',   name: 'Concurrency',                icon: '🧵', group: 'Java',         file: 'q-concurrency-jvm.js' },
   { id: 'jvm',           name: 'JVM & GC',                   icon: '⚙️', group: 'Java',         file: 'q-concurrency-jvm.js' },
   { id: 'spring',        name: 'Spring & Spring Boot',       icon: '🌱', group: 'Framework',    file: 'q-spring-data.js' },

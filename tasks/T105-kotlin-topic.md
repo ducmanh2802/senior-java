@@ -1,6 +1,7 @@
 # T105 — Chủ đề mới: Kotlin cho dev Java (10 câu)
 
-Status: TODO
+Status: DONE
+Ghi chú: Đã đăng ký topic Kotlin và script dữ liệu; bổ sung 10 câu Kotlin, node --check và validate đều đạt.
 Agent: opencode
 Owns: `js/data/q-kotlin.js`, `js/data/topics.js`, `index.html`
 
@@ -9,3 +10,5 @@ Owns: `js/data/q-kotlin.js`, `js/data/topics.js`, `index.html`
 Chuẩn chất lượng đầy đủ (AGENTS.md mục 4–6), code ví dụ dùng ~~~text cho Kotlin (chỉ java/sql/yaml/json/bash/text được tô màu). `node scripts/validate.js` → OK.
 
 ## Notes
+
+Reviewed-by: codex (T105R)
