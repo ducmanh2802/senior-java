@@ -184,6 +184,8 @@ function status() {
       : r.ended != null ? (t.status === 'DONE' || t.pct >= 100 ? 'done' : (r.exit ? 'failed' : 'stopped'))
       : 'running';
     if (t.state === 'running' && t.log.mtime && Date.now() - t.log.mtime > 20 * 60000) t.state = 'stalled';
+    // finished outside the runner (integrator, Claude/Codex agents, autopilot): trust the task file
+    if (t.state !== 'running' && /^DONE/.test(t.status || '')) t.state = 'done';
   });
   const overall = Math.round(tasks.reduce((a, t) => a + t.pct, 0) / tasks.length);
   return { at: Date.now(), overall, allDone, tasks };
