@@ -18,7 +18,7 @@ for f in $(grep -m1 '^Owns:' "$file" | grep -o '`[^`]*`' | tr -d '`'); do [ -f "
 echo "[$(date +%T)] start $id ($runner) backup=$bak"
 case "$runner" in
   kilo)   kilo run --auto -m "${KILO_MODEL:-kilo/kilo-auto/free}" --title "$id" "$prompt" > "logs/$id.log" 2>&1 ;;
-  codex)  codex exec -s workspace-write --skip-git-repo-check ${CODEX_ARGS:-} "$prompt" > "logs/$id.log" 2>&1 ;;
+  codex)  codex ${CODEX_ARGS:-} exec -s workspace-write --skip-git-repo-check "$prompt" > "logs/$id.log" 2>&1 ;;
   gemini) GEMINI_CLI_TRUST_WORKSPACE=true gemini -y -p "$prompt" > "logs/$id.log" 2>&1 ;;
   *) echo "unknown runner $runner"; exit 1 ;;
 esac
