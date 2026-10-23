@@ -62,7 +62,7 @@ commit_task() {   # $1 = task file, $2 = task id
 
 $(head -1 "$1" | sed 's/^# //')
 
-Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>" && git push -q && log "committed + pushed $2 ($(git log --oneline -1 | cut -c1-7))"
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>" -- $files && git push -q && log "committed + pushed $2 ($(git log --oneline -1 | cut -c1-7))"
   else
     git reset -q
     log "verify FAILED for $2 — left uncommitted: $(echo "$out" | tail -3 | tr '\n' ' ')"
