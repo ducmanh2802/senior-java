@@ -33,3 +33,4 @@ Ví dụ minh hoạ dùng Spring Boot 3 / Spring Cloud / Resilience4j / Kafka. V
 - Mỗi đáp án mở đầu `**Tóm tắt:**`, đi sâu bằng `###` (cơ chế + vì sao, bảng trade-off, sơ đồ ASCII, pitfall production), code ≤ 30 dòng (Spring Boot 3, Spring Cloud Gateway, Resilience4j, Spring Kafka, Debezium/outbox, Flyway/expand-contract), kết thúc `> Senior tip:`; độ dài 2300–3370 ký tự/câu; mỗi câu có 3 follow-up + tags.
 - `node scripts/validate.js q-microservices.js` → `OK — không có lỗi.` (0 cảnh báo). Lưu ý: lúc chạy full `node scripts/validate.js`, các file của task khác (`q-concurrency-jvm.js`, `q-aws.js`) đang được agent khác ghi dở nên báo lỗi cú pháp tạm thời — không thuộc quyền sở hữu của T04, không sửa.
 - Không sửa file nào ngoài `js/data/q-microservices.js` và file task này; không commit.
+Reviewed-by: codex (T04R)

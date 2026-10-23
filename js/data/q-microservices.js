@@ -92,7 +92,12 @@ Order Service                   Payment Service
     'API composition và CQRS read model khác nhau khi nào, chi phí nào lớn hơn?',
     'Làm sao phát hiện một service đang âm thầm truy cập DB của service khác trong production?'
   ],
-  tags: ['DDD', 'bounded context', 'database per service', 'API composition']
+  tags: ['DDD', 'bounded context', 'database per service', 'API composition'],
+  refs: [
+    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
+    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
+    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+  ]
 },
 {
   id: 'microservices-003',
@@ -236,7 +241,12 @@ App ─► [orders DB] ─(logical replication)─► Debezium (Kafka Connect)
     'Debezium publish ra broker mà broker đang sập thì xử lý tiếp ra sao?',
     'Polling outbox với SKIP LOCKED hoạt động thế nào khi có nhiều instance app?'
   ],
-  tags: ['outbox', 'CDC', 'Debezium', 'dual-write']
+  tags: ['outbox', 'CDC', 'Debezium', 'dual-write'],
+  refs: [
+    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
+    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
+    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+  ]
 },
 {
   id: 'microservices-006',
@@ -291,7 +301,12 @@ ON CONFLICT (order_id) DO NOTHING;   -- MySQL: ON DUPLICATE KEY UPDATE id=id
     'Nếu side effect là gọi REST phía thứ ba không hỗ trợ idempotency, bạn làm gì?',
     'Offset commit trước hay sau khi xử lý? Chọn từng lựa chọn thì đánh đổi gì?'
   ],
-  tags: ['idempotency', 'delivery semantics', 'exactly-once', 'retry']
+  tags: ['idempotency', 'delivery semantics', 'exactly-once', 'retry'],
+  refs: [
+    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
+    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
+    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+  ]
 },
 {
   id: 'microservices-007',
@@ -362,7 +377,12 @@ resilience4j:
     'Bulkhead theo semaphore khác thread pool khi nào, và nhược điểm từng loại?',
     'Fallback cache cũ có rủi ro gì với dữ liệu tài chính?'
   ],
-  tags: ['Resilience4j', 'circuit breaker', 'bulkhead', 'timeout']
+  tags: ['Resilience4j', 'circuit breaker', 'bulkhead', 'timeout'],
+  refs: [
+    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
+    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
+    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+  ]
 },
 {
   id: 'microservices-008',
@@ -401,7 +421,12 @@ resilience4j:
     'Vì sao timeout quá dài còn nguy hiểm hơn timeout quá ngắn?',
     'Làm sao phân biệt retry storm với lưu lượng thật sự tăng trong dashboard?'
   ],
-  tags: ['retry storm', 'cascading failure', 'backpressure', 'thundering herd']
+  tags: ['retry storm', 'cascading failure', 'backpressure', 'thundering herd'],
+  refs: [
+    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
+    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
+    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+  ]
 },
 {
   id: 'microservices-009',
@@ -451,7 +476,12 @@ containerFactory.setCommonErrorHandler(handler);
     'Khi nào commit offset trước xử lý lại là lựa chọn đúng?',
     'So sánh eager và cooperative rebalance trong lúc rolling deploy.'
   ],
-  tags: ['Kafka', 'partition', 'consumer group', 'DLQ']
+  tags: ['Kafka', 'partition', 'consumer group', 'DLQ'],
+  refs: [
+    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
+    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
+    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+  ]
 },
 {
   id: 'microservices-010',
@@ -548,7 +578,12 @@ spring:
     'BFF của web và mobile dùng chung token thì rủi ro gì?',
     'Headless service khác gì service thường, khi nào cần?'
   ],
-  tags: ['API Gateway', 'BFF', 'service discovery', 'load balancing']
+  tags: ['API Gateway', 'BFF', 'service discovery', 'load balancing'],
+  refs: [
+    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
+    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
+    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+  ]
 },
 {
   id: 'microservices-012',
@@ -599,7 +634,12 @@ Dấu hiệu: số series tăng không ngừng, query Prometheus lag, container 
     'Vì sao tail sampling tốt hơn head sampling cho incident, và chi phí của nó?',
     'Bạn alert theo error budget burn rate cụ thể ra sao?'
   ],
-  tags: ['observability', 'OpenTelemetry', 'RED/USE', 'tracing']
+  tags: ['observability', 'OpenTelemetry', 'RED/USE', 'tracing'],
+  refs: [
+    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
+    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
+    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+  ]
 },
 {
   id: 'microservices-013',
@@ -691,7 +731,12 @@ Luôn deploy theo thứ tự: **producer mở rộng trước → consumer chuy�
     'Pact và Spring Cloud Contract chọn cái nào, vì sao?',
     'Làm sao ngừng hỗ trợ API version cũ mà không làm hỏng client đang ngủ yên?'
   ],
-  tags: ['API versioning', 'backward compatibility', 'contract testing', 'Pact']
+  tags: ['API versioning', 'backward compatibility', 'contract testing', 'Pact'],
+  refs: [
+    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
+    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
+    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+  ]
 },
 {
   id: 'microservices-015',
@@ -784,7 +829,12 @@ ALTER TABLE orders DROP COLUMN status;
     'Flag bật cho 1% user nhưng migration đã chạy cho 100% data thì vấn đề gì?',
     'Bạn kiểm tra migration backward compatible trong CI bằng cách nào?'
   ],
-  tags: ['blue-green', 'canary', 'feature flag', 'database migration']
+  tags: ['blue-green', 'canary', 'feature flag', 'database migration'],
+  refs: [
+    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
+    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
+    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+  ]
 },
 {
   id: 'microservices-017',
@@ -924,7 +974,12 @@ spring:
     'Cooperative sticky hoạt động thế nào khi consumer join/leave đồng thời?',
     'Static membership + K8s rolling update: preStop delay nên đặt bao nhiêu so với session.timeout.ms?'
   ],
-  tags: ['Kafka', 'partition', 'rebalance', 'cooperative sticky', 'static membership']
+  tags: ['Kafka', 'partition', 'rebalance', 'cooperative sticky', 'static membership'],
+  refs: [
+    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
+    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
+    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+  ]
 },
 {
   id: 'microservices-020',
@@ -985,7 +1040,12 @@ public void dlt(OrderCreatedEvent evt) { /* log + alert */ }
     'Khi nào nên dùng blocking retry thay vì non-blocking?',
     'Consumer làm sao chịu được việc event cùng key đến sai thứ tự sau retry?'
   ],
-  tags: ['Kafka', 'Spring Kafka', '@RetryableTopic', 'DLQ', 'non-blocking retry']
+  tags: ['Kafka', 'Spring Kafka', '@RetryableTopic', 'DLQ', 'non-blocking retry'],
+  refs: [
+    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
+    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
+    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+  ]
 },
 {
   id: 'microservices-021',
@@ -1039,7 +1099,12 @@ Các mode {{*_TRANSITIVE}} kiểm tra với **mọi** version cũ, không chỉ 
     'Khi nào chọn FORWARD thay vì BACKWARD?',
     'Schema Registry HA thế nào, producer fetch schema ID cache như thế nào?'
   ],
-  tags: ['Schema Registry', 'Avro', 'Protobuf', 'backward compatibility', 'forward compatibility']
+  tags: ['Schema Registry', 'Avro', 'Protobuf', 'backward compatibility', 'forward compatibility'],
+  refs: [
+    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
+    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
+    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+  ]
 },
 {
   id: 'microservices-022',
@@ -1110,7 +1175,12 @@ Các mode {{*_TRANSITIVE}} kiểm tra với **mọi** version cũ, không chỉ 
     'Inbox pattern xử lý transaction timeout (DB lock) khi volume cao ra sao?',
     'Khi nào natural key upsert thay thế processed_message table được, khi nào không?'
   ],
-  tags: ['Inbox pattern', 'Outbox pattern', 'idempotent consumer', 'exactly-once']
+  tags: ['Inbox pattern', 'Outbox pattern', 'idempotent consumer', 'exactly-once'],
+  refs: [
+    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
+    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
+    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+  ]
 },
 {
   id: 'microservices-023',
@@ -1229,7 +1299,12 @@ Các mode {{*_TRANSITIVE}} kiểm tra với **mọi** version cũ, không chỉ 
     'Readiness probe check downstream service có nguy hiểm như thế nào?',
     '{{terminationGracePeriodSeconds}} mặc định 30s, bạn tăng bao nhiêu cho app xử lý request lâu?'
   ],
-  tags: ['Kubernetes', 'Spring Boot 3', 'probe', 'graceful shutdown', 'resource limit']
+  tags: ['Kubernetes', 'Spring Boot 3', 'probe', 'graceful shutdown', 'resource limit'],
+  refs: [
+    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
+    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
+    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+  ]
 },
 {
   id: 'microservices-025',
@@ -1276,7 +1351,12 @@ if (remaining <= 0) return ResponseEntity.status(504).build(); // hết budget: 
     'Khi nào nên dùng absolute deadline timestamp thay vì remaining time?',
     'Service leaf (external API) timeout ngắn mà fail nhiều - bạn handle retry ở đâu?'
   ],
-  tags: ['timeout budget', 'deadline propagation', 'tapered timeout', 'distributed systems']
+  tags: ['timeout budget', 'deadline propagation', 'tapered timeout', 'distributed systems'],
+  refs: [
+    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
+    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
+    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+  ]
 },
 {
   id: 'microservices-026',
@@ -1347,7 +1427,12 @@ Concurrency = Throughput (req/s) * Latency (s) p99
     'Semaphore bulkhead reject request khi full - bạn fallback ra sao cho graceful?',
     'Bulkhead kết hợp với Circuit Breaker: breaker mở thì bulkhead permits có bị giải phóng không?'
   ],
-  tags: ['Bulkhead', 'thread pool isolation', 'semaphore isolation', 'Resilience4j', 'concurrency limit']
+  tags: ['Bulkhead', 'thread pool isolation', 'semaphore isolation', 'Resilience4j', 'concurrency limit'],
+  refs: [
+    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
+    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
+    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+  ]
 },
 {
   id: 'microservices-027',
@@ -1446,6 +1531,11 @@ Concurrency = Throughput (req/s) * Latency (s) p99
     'CQRS projection lag monitor bằng metric gì, alert threshold thế nào?',
     'Data Lake cho dashboard real-time: feasible không, tại sao?'
   ],
-  tags: ['API Composition', 'CQRS', 'read model', 'data lake', 'query federation']
+  tags: ['API Composition', 'CQRS', 'read model', 'data lake', 'query federation'],
+  refs: [
+    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
+    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
+    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+  ]
 }
 );
