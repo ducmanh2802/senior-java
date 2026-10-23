@@ -43,3 +43,4 @@ File đang rỗng: ID bắt đầu từ `security-001`.
 
 ## Notes
 Đã thêm 14 câu hỏi cho topic `security` (security-001 đến security-014). Tất cả pass validation (`node scripts/validate.js q-security.js` → OK). Các câu hỏi bao gồm: OWASP Top 10, SQL Injection, JWT/Refresh Token Rotation, OAuth2/OIDC/PKCE, Password Hashing (bcrypt/Argon2id), CSRF/SameSite, XSS/CSP, IDOR/Ownership Check, Cryptography (AES-GCM/RSA/Key Management), TLS/mTLS, Request Signing (HMAC/Digital Signature), SSRF/XXE/Deserialization, Brute Force Protection, Log4Shell/SCA/SBOM. Level distribution: 3 mid, 8 senior, 3 lead (gần đúng tỷ lệ 25/55/20).
+Reviewed-by: codex (T56R)

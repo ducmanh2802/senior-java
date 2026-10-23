@@ -1089,7 +1089,11 @@ mapper.activateDefaultTyping(ptv, ObjectMapper.DefaultTyping.NON_FINAL);
     'SBOM CycloneDX vs SPDX — chọn cái nào cho compliance ngân hàng VN?',
     'Làm sao detect Log4Shell exploit attempt trong production log real-time?'
   ],
-  tags: ['Log4Shell', 'CVE-2021-44228', 'SCA', 'SBOM', 'Supply Chain Security', 'Vulnerability Management', 'JNDI']
+  tags: ['Log4Shell', 'CVE-2021-44228', 'SCA', 'SBOM', 'Supply Chain Security', 'Vulnerability Management', 'JNDI'],
+  refs: [
+    { type: 'doc', title: 'OWASP Top 10', url: 'https://owasp.org/Top10/' },
+    { type: 'doc', title: 'OWASP Cheat Sheet Series', url: 'https://cheatsheetseries.owasp.org/' },
+  ],
 },
 {
   id: 'security-014',
