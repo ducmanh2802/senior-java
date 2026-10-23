@@ -1059,4 +1059,37 @@ ALTER ROLE inventory_svc SET lock_timeout = '3s';
   ],
   tags: ['postgresql', 'lock-wait', 'idle-in-transaction', 'blocking', 'flash-sale'],
 }
+,{id:'lab-sql-006',category:'sql',title:'PostgreSQL bỏ index do cast và function trên cột',level:'senior',scenario:`PostgreSQL 15 bảng orders có 8 triệu dòng và index B-tree trên customer_id (bigint). API nhận customer_id dưới dạng chuỗi; truy vấn cast cột thành text, latency tăng lên 4 giây.`,artifacts:[{name:'explain.txt',lang:'text',content:`EXPLAIN (ANALYZE, BUFFERS): SELECT * FROM orders WHERE customer_id::text = '42017'; Seq Scan on orders (actual time=0.04..3912.6 rows=18 loops=1); Rows Removed by Filter: 7999982; shared hit=14500 read=51800; Planning Time=0.4 ms; Execution Time=3913.1 ms. Index: CREATE INDEX orders_customer_id_idx ON orders(customer_id); customer_id type bigint.`}],questions:['Vì sao index không dùng và sửa theo hướng nào?','Khi nào functional index phù hợp?'],hints:['Predicate áp function/cast lên cột.','Ép kiểu đầu vào thành bigint thay vì biến đổi cột.'],answer:`**Tóm tắt:** Predicate {{customer_id::text}} biến đổi giá trị cột nên B-tree trên bigint không khớp biểu thức; planner quét tuần tự 8 triệu dòng. Chuyển input thành bigint và so sánh trực tiếp sẽ giữ predicate sargable.
+### Bằng chứng và sửa
+EXPLAIN cho thấy Seq Scan, gần 8 triệu rows removed, hơn 51.800 buffer read và 3.9 giây. Parse/validate input thành bigint ở ứng dụng rồi bind BIGINT cho predicate {{customer_id = $1}}. Nếu nghiệp vụ thực sự tìm theo biểu thức chuẩn hóa, expression index phải dùng đúng biểu thức truy vấn; mọi function trong index expression phải IMMUTABLE. Xác nhận bằng EXPLAIN ANALYZE.
+Không tạo index tùy tiện trước khi sửa predicate; function phải immutable để dùng trong index. So sánh cardinality, statistics và buffers trước/sau.
+> Senior tip: Đọc predicate thực thi và kiểu bind từ plan/log, không chỉ nhìn index đã tồn tại.`,rubric:['Nhận ra cast trên cột làm lệch index key','Dẫn Seq Scan/rows removed/buffers/time','Đề xuất tham số bigint và predicate trực tiếp','Nêu functional index chỉ khi cần, đúng expression/immutable','Xác nhận bằng EXPLAIN ANALYZE'],tags:['postgresql','index','implicit-cast']},
+{id:'lab-sql-007',category:'sql',title:'Deadlock do cập nhật hai hàng theo thứ tự ngược',level:'senior',scenario:`Hai request chuyển tồn kho giữa SKU A và B trong PostgreSQL 15. Transaction T1 khóa A rồi B; T2 khóa B rồi A. Một transaction bị PostgreSQL hủy.`,artifacts:[{name:'postgresql-2026-10-22.log',lang:'text',content:`2026-10-22 10:12:01.004 +07 [18422] ERROR: deadlock detected
+2026-10-22 10:12:01.004 +07 [18422] DETAIL: Process 18422 waits for ShareLock on transaction 99011; blocked by process 18439.
+Process 18439 waits for ShareLock on transaction 99012; blocked by process 18422.
+Process 18422: UPDATE inventory SET qty=qty-1 WHERE sku='B'
+Process 18439: UPDATE inventory SET qty=qty-1 WHERE sku='A'
+2026-10-22 10:12:01.004 +07 [18422] HINT: See server log for query details.
+T1 pid=18422 first updated A; T2 pid=18439 first updated B; deadlock_timeout=1s.`}],questions:['Dựng wait-for cycle từ log.','Sửa thứ tự khóa và xử lý transaction bị abort thế nào?'],hints:['T1 giữ A chờ B, T2 giữ B chờ A.','PostgreSQL chọn victim; retry toàn transaction với backoff.'],answer:`**Tóm tắt:** T1 giữ khóa A và chờ B; T2 giữ B và chờ A, tạo chu trình deadlock. PostgreSQL phát hiện sau deadlock_timeout và hủy một transaction (SQLSTATE 40P01).
+### Bằng chứng
+Log nêu pid 18422 chờ transaction 99011 của 18439, còn 18439 chờ 99012 của 18422; câu UPDATE cho thấy hai tài nguyên ngược chiều.
+### Khắc phục
+- Mọi luồng cập nhật nhiều SKU khóa theo thứ tự ổn định (ví dụ sku tăng dần), trong một transaction.
+- Bắt lỗi deadlock và retry toàn transaction giới hạn lần với backoff/jitter; không retry riêng câu lệnh giữa transaction đã aborted.
+- Giữ transaction ngắn, index điều kiện UPDATE, theo dõi log_lock_waits/deadlock rate. Deadlock có thể xảy ra dù ứng dụng đúng; cần retry an toàn/idempotent.
+> Senior tip: Thứ tự khóa toàn hệ thống là hợp đồng; một code path đảo thứ tự đủ tạo deadlock hiếm khó tái hiện.`,rubric:['Dựng đúng chu trình 18422↔18439 theo transaction IDs','Nêu deadlock detector hủy transaction với 40P01','Đề xuất thứ tự khóa nhất quán','Retry toàn transaction giới hạn và idempotent','Nêu monitoring và giảm transaction duration'],tags:['postgresql','deadlock','locking']},
+{id:'lab-sql-008',category:'sql',title:'Bảng orders phình do autovacuum không theo kịp',level:'senior',scenario:`PostgreSQL 15 orders nhận 2.000 update/s từ trạng thái xử lý. Autovacuum chạy nhưng n_dead_tup tăng liên tục, index/table lớn và query chậm.`,artifacts:[{name:'pg_stat_user_tables.txt',lang:'text',content:`snapshot 2026-10-22 11:00 UTC, database=shop
+relname | n_live_tup | n_dead_tup | last_autovacuum | autovacuum_count | n_mod_since_analyze
+orders | 12000000 | 8400000 | 2026-10-22 10:52:01 | 144 | 2700000
+pg_stat_activity: autovacuum worker active on orders since 10:52; wait_event=IO; query vacuum (to prevent wraparound) orders
+long transaction xmin age=6400000 xid; oldest logical slot catalog_xmin age=6200000 xid; oldest replica slot restart_lsn lag=96GB (WAL retention metric)
+table size=18GB; indexes=29GB; update rate=2000/s.`}],questions:['Nêu nguyên nhân khả năng cao và điều tra thêm.','Kế hoạch xử lý bloat an toàn, không làm mất dữ liệu.'],hints:['Dead tuples 8.4M; điều tra transaction xmin lâu và catalog_xmin của logical slot.','restart_lsn lag giữ WAL; chỉ xmin/catalog_xmin horizon mới trực tiếp giữ dead tuples.'],answer:`**Tóm tắt:** Bảng có 8.4 triệu dead tuples và vacuum có thể bị chặn bởi snapshot lâu hoặc catalog_xmin của logical replication slot. restart_lsn lag 96GB cho thấy WAL bị giữ lại, nhưng tự nó không chứng minh tuple bị giữ; cần kiểm tra xmin horizon.
+### Đọc số liệu
+pg_stat_user_tables báo 12M live, 8.4M dead; autovacuum vẫn active chờ IO. Transaction xmin age 6.4M xid và logical slot catalog_xmin age 6.2M xid là hai ứng viên giữ horizon cần xác minh. restart_lsn lag 96GB là vấn đề giữ WAL riêng, không đồng nghĩa với giữ dead tuples. VACUUM thường làm không gian tái sử dụng trong relation, không mặc định trả file về OS.
+### Khắc phục
+- Tìm transaction lâu và slot có catalog_xmin; xác nhận chủ sở hữu rồi kết thúc transaction hoặc khắc phục consumer an toàn. Xử lý restart_lsn/WAL lag riêng; tránh drop slot tùy tiện vì consumer có thể cần resync lớn.
+- Giảm write amplification, tránh update cột indexed không cần thiết, batch update; đảm bảo autovacuum có I/O và worker phù hợp.
+- Điều chỉnh per-table vacuum/analyze scale factor và cost limit theo tốc độ churn; kiểm tra n_dead_tup, vacuum progress, bloat và wraparound age.
+- VACUUM thường không cần khóa độc quyền nhưng không compact file; cân nhắc pg_repack/maintenance window cho reclaim, có kiểm thử dung lượng và replica.
+> Senior tip: Trước khi tuning autovacuum, kiểm tra xmin horizon và catalog_xmin của logical slots; restart_lsn lag chủ yếu giữ WAL, không tự nó chứng minh vacuum cleanup bị chặn.`,rubric:['Dẫn n_dead_tup 8.4M, autovacuum active/IO và table/index size','Nêu long xmin và catalog_xmin của slot logical có thể giữ dead tuple; phân biệt restart_lsn giữ WAL','Điều tra pg_stat_activity/slots trước khi xử lý','Tuning per-table theo churn, analyze, IO và giảm update amplification','Phân biệt vacuum reuse với reclaim OS; nêu pg_repack/maintenance thận trọng'],tags:['postgresql','autovacuum','bloat']}
 );

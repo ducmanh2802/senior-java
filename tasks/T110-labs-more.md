@@ -1,6 +1,6 @@
 # T110 — Thêm Debug lab: incident + sql
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/labs-incident.js`, `js/data/labs-sql.js`
 
@@ -8,3 +8,6 @@ Owns: `js/data/labs-incident.js`, `js/data/labs-sql.js`
 Artifact giống thật, tự nhất quán (timestamp, thread name, số liệu khớp answer). `node scripts/validate.js` → OK.
 
 ## Notes
+
+Status: DONE
+Reviewed-by: codex (T110R)

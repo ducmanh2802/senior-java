@@ -981,5 +981,36 @@ Trong lúc chờ deploy: tạm dừng gửi webhook tới M-0042 (circuit breake
   ],
   tags: ['close-wait', 'file-descriptor', 'httpclient', 'connection-leak', 'webhook', 'linux']
 }
+,{id:'lab-incident-006',category:'incident',title:'Hikari pool cạn do transaction chờ HTTP',level:'senior',scenario:`@Transactional cập nhật tồn kho rồi gọi risk API chậm 28 giây. Hikari pool 20 connection cạn, cả endpoint đọc cũng lỗi dù DB CPU 18%.`,artifacts:[{name:'app.log',lang:'text',content:`14:00:01.108 INFO [http-nio-8080-exec-17] UPDATE stock sku=A-17; 14:00:01.111 POST risk /score; 14:00:29.113 timeout 28000ms; 14:03 Hikari total=20 active=20 idle=0 waiting=31; 17 PostgreSQL sessions idle in transaction wait_event=Client; request rate=1.8/s; risk p99=28s; CPU=18%.`}],questions:['Vì sao pool cạn dù DB CPU thấp?','Đề xuất sửa luồng và ứng phó.'],hints:['HTTP nằm trong transaction.','Little law: 1.8×28≈50 connection.'],answer:`**Tóm tắt:** Transaction giữ connection suốt lời gọi risk API; 20 request chờ lâu làm pool cạn và 31 request xếp hàng.
+### Bằng chứng
+Log ghi UPDATE rồi HTTP, PostgreSQL idle in transaction; Hikari active 20, idle 0. Theo Little law 1.8 req/s × 28s cần khoảng 50 connection.
+### Sửa
+- Tách transaction: ghi PENDING/outbox rồi commit, gọi risk ngoài transaction, transaction mới chốt kết quả; dùng saga/bù tồn kho.
+- Giới hạn tải, timeout, circuit breaker và bulkhead; xử lý idempotent.
+- Theo dõi connection hold time, pending và transaction age.
+> Senior tip: Query time thấp nhưng connection hold time cao thường là I/O ngoài DB trong transaction.`,rubric:['Nêu transaction giữ connection và idle in transaction','Tính ~50 nhu cầu so với pool 20','Đề xuất transaction ngắn/outbox','Nêu idempotency và timeout/breaker','Nêu metrics pending/hold time'],tags:['hikari','transaction']},
+{id:'lab-incident-007',category:'incident',title:'Kafka rebalance do batch vượt max poll interval',level:'senior',scenario:`Kafka consumer xử lý tuần tự batch 500 record, mỗi record có thể chờ tax API 30 giây. Lag tăng và group rebalance liên tục.`,artifacts:[{name:'consumer.log',lang:'text',content:`09:14:02 poll returned 500 records; 09:14:32 timeout INV-8801; 09:15:02 timeout INV-8802; 09:17:02 poll interval exceeded; revoked invoice-0,invoice-1; 09:17:04 assigned invoice-2,invoice-3; lag=184220; max.poll.records=500 max.poll.interval.ms=300000 session.timeout.ms=45000 heartbeat.interval.ms=15000.`}],questions:['Giải thích rebalance và phân biệt heartbeat.','Sửa batch, offset, lỗi downstream.'],hints:['500×30s vượt 300s.','Heartbeat không thay thế poll.'],answer:`**Tóm tắt:** Batch có thể mất 15.000 giây giữa hai poll, vượt max.poll.interval.ms 300 giây. Consumer bị loại, partition revoke và rebalance; record chưa commit có thể phát lại.
+### Phân tích
+Log thể hiện poll 500 record, timeout rồi cảnh báo interval. Heartbeat giữ session sống; max poll interval giới hạn thời gian ứng dụng không poll.
+### Sửa
+- Giảm batch theo p99, giới hạn timeout/retry.
+- Worker bounded có backpressure; commit offset theo thứ tự partition.
+- Side effect idempotent, lỗi dai dẳng chuyển retry topic/DLQ; tăng interval chỉ sau đo đạc.
+- Theo dõi poll interval, rebalance, lag và offset chưa commit.
+> Senior tip: Định cỡ batch theo worst case, không chỉ latency trung bình.`,rubric:['Tính 500×30s vượt 300s','Phân biệt heartbeat/max poll','Nêu replay do offset chưa commit','Giảm batch/worker bounded/commit đúng thứ tự','Idempotency và retry topic'],tags:['kafka','rebalance']},
+{id:'lab-incident-008',category:'incident',title:'ThreadLocal MDC giữ payload trên worker pool',level:'senior',scenario:`Heap tăng sau deploy, log mang requestId cũ. Filter đặt MDC và RequestContext ThreadLocal nhưng không dọn ở mọi nhánh.`,artifacts:[{name:'heap.log',lang:'text',content:`After Full GC: dominator Thread -> threadLocals -> Entry -> RequestContext retained=612MiB entries=184 body=2.8MiB; 16:19:55 [http-nio-8080-exec-7] requestId=R-9812 /upload; 16:19:56 same thread /health header absent but requestId=R-9812; filter has try chain.doFilter catch rethrow and no finally.`}],questions:['Giải thích leak và requestId cũ.','Sửa exception và async thế nào?'],hints:['Worker thread sống lâu hơn request.','Dọn trong finally.'],answer:`**Tóm tắt:** ThreadLocal value gắn với worker sống lâu; thiếu cleanup giữ payload và MDC rò requestId qua request kế tiếp.
+### Bằng chứng
+MAT chỉ đường Thread→threadLocals→RequestContext, retained 612MiB/184 entries; cùng worker ghi requestId cũ dù header vắng mặt.
+### Sửa
+Đặt {{MDC.clear()}} và {{RequestContextHolder.reset()}} trong finally, không lưu body/credential. Async cần truyền context tường minh hoặc capture/restore/clear bằng executor decorator. Test exception rồi request mới trên worker tái sử dụng.
+> Senior tip: Context thread pool cần quy ước capture, restore, clear; MDC contamination có thể rò dữ liệu.`,rubric:['Nêu lifecycle ThreadLocal và thiếu finally','Dẫn heap dump và log cũ cùng worker','Cleanup finally','Async propagation an toàn, tránh PII','Đề xuất worker reuse test'],tags:['threadlocal','mdc']},
+{id:'lab-incident-009',category:'incident',title:'Retry storm khuếch đại lỗi catalog',level:'lead',scenario:`Order, pricing và DB proxy cho phép tối đa ba attempts mỗi tầng, tính cả lần gọi đầu. Catalog chậm; attempts tăng mạnh dù user traffic không đổi.`,artifacts:[{name:'retry-metrics.txt',lang:'text',content:`max attempts per layer=3 (including initial attempt); no jitter/budget/breaker; 14:00 user=100/s catalog=100/s p99=80ms errors=.2%; 14:02 user=101/s catalog=901/s p99=1500ms errors=31%; 14:03 user=98/s catalog=1044/s p99=1800ms errors=42%; 14:06 user=100/s catalog=109/s.`}],questions:['Tính retry amplification.','Thiết kế lại retry và bảo vệ downstream.'],hints:['Ba tầng, tối đa 3 attempts mỗi tầng: 3×3×3=27 downstream calls cho một logical request nếu mọi lần đều retry.','Ingress ổn định, downstream tăng >10 lần; số đo thực tế không nhất thiết đạt worst case.'],answer:`**Tóm tắt:** Ba tầng cho phép tối đa 3 attempts mỗi tầng, tính cả lần đầu, nên một logical request có thể tạo tới 27 downstream calls. Khi catalog chậm, retry không có jitter/budget góp phần đẩy catalog từ 100 lên 1.044 attempts/s dù user traffic ổn định.
+### Phân tích
+P99 tăng 80ms lên 1.8s, lỗi 42%; retry chồng request làm concurrency và queue tăng.
+### Sửa
+- Chỉ một tầng retry, tối đa 2–3 attempt, exponential backoff full jitter, lỗi transient và thao tác idempotent.
+- Truyền deadline, retry budget, bulkhead, circuit breaker và load shedding.
+- Dùng idempotency key; dashboard tách logical request khỏi physical attempt.
+> Senior tip: Theo dõi amplification ratio để phát hiện retry storm sớm.`,rubric:['Tính 27 attempts','Dẫn user traffic ổn định/cat 1044/s','Một tầng retry, jitter, giới hạn','Deadline/budget/bulkhead/breaker','Idempotency và metrics logical/physical'],tags:['retry-storm','circuit-breaker']}
 );
 // APPEND_END
