@@ -164,8 +164,14 @@ const plain = x => JSON.parse(JSON.stringify(x));
   console.log('api/interview');
   const claudePath = require.resolve('../api/_claude.js');
   const asked = [];
+  let nextResult = null;   // a test may set the next mocked Claude result; default is an interview turn
   require.cache[claudePath] = { id: claudePath, filename: claudePath, loaded: true, exports: Object.assign({}, require('../api/_claude.js'), {
-    askJson: async opts => { asked.push(opts); return { ok: true, model: 'mock', result: { say: 'Xin chào', intent: 'question', topic: 'core', seed_index: -1, last_answer: { score: 9, note: '' }, done: false } }; },
+    askJson: async opts => {
+      asked.push(opts);
+      const result = nextResult || { say: 'Xin chào', intent: 'question', topic: 'core', seed_index: -1, last_answer: { score: 9, note: '' }, done: false };
+      nextResult = null;
+      return { ok: true, model: 'mock', result };
+    },
   }) };
   process.env.ANTHROPIC_API_KEY = 'test';
   const interview = require('../api/interview.js');
@@ -215,6 +221,33 @@ const plain = x => JSON.parse(JSON.stringify(x));
     const res = await call(auth, { action: 'turn', config: {}, transcript: [] });
     assert.strictEqual(res.body.code, 'quota_exceeded');
     assert.strictEqual(asked.length, 0);
+  });
+
+  // ---------- /api/jd ----------
+  console.log('api/jd');
+  const jdMod = require('../api/jd.js');
+  const callJd = async (headers, body) => { const res = mockRes(); await jdMod(req(headers, body), res); return res; };
+  const JD_TEXT = 'Senior Java Developer (Spring Boot, Microservices) — Banking. '.repeat(6);
+
+  await test('rejects a too-short JD before charging quota', async () => {
+    quotaLeft = 5; calls.length = 0;
+    const res = await callJd(auth, { jd: 'Java dev', topics: [] });
+    assert.strictEqual(res.statusCode, 400);
+    assert.strictEqual(calls.filter(c => c.url.endsWith('consume_ai_quota')).length, 0);
+  });
+
+  await test('charges one unit, sends JD as data, drops topic ids the model invented', async () => {
+    quotaLeft = 5; calls.length = 0; asked.length = 0;
+    nextResult = {
+      role: 'Senior Java', company: '', level: 'senior', domain: 'banking', summary: 's',
+      must_have: [{ skill: 'Spring Boot', topic: 'spring', weight: 3 }, { skill: 'Kafka', topic: 'kafka-made-up', weight: 2 }],
+      nice_to_have: [], likely_questions: [{ q: 'x', topic: 'nope', why: 'y' }], prep_tips: [], questions_to_ask: [] };
+    const res = await callJd(auth, { jd: JD_TEXT, topics: [{ id: 'spring', name: 'Spring' }, { id: 'microservices', name: 'MS' }] });
+    assert.strictEqual(res.statusCode, 200, JSON.stringify(res.body));
+    assert.strictEqual(calls.filter(c => c.url.endsWith('consume_ai_quota')).length, 1);
+    assert.ok(/<jd>[\s\S]*Senior Java Developer[\s\S]*<\/jd>/.test(asked[0].prompt));
+    assert.deepStrictEqual(res.body.must_have.map(m => m.topic), ['spring', '']);
+    assert.strictEqual(res.body.likely_questions[0].topic, '');
   });
 
   console.log('\n' + passed + ' passed, ' + failed + ' failed');

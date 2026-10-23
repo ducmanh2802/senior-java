@@ -71,6 +71,11 @@
      * turn({session_token?, config, transcript, elapsed_seconds}) → {say, intent, topic, seed_index, last_answer{score,note}, done, session_token}
      * summary({session_token, config, transcript}) → {overall_score, hire_signal, verdict, by_question[], strengths[], improvements[], study_next[], communication}
      */
+    /**
+     * Analyse a pasted job description (AGENTS.md section 14). One call = 1 AI quota unit.
+     * → {role, company, level, domain, summary, must_have[{skill, topic, weight}], nice_to_have[], likely_questions[{q, topic, why}], prep_tips[], questions_to_ask[]}
+     */
+    jd: text => call('jd', { jd: text, topics: (App.topics() || []).map(t => ({ id: t.id, name: t.name })) }),
     interview: {
       turn: p => call('interview', Object.assign({ action: 'turn' }, p)),
       summary: p => call('interview', Object.assign({ action: 'summary' }, p)),

@@ -322,3 +322,7 @@ refs: [
 - `type`: `doc | video | article | book | course`. `title` không chứa `[` `]`. `url` https.
 - **Chỉ dùng link bạn chắc chắn tồn tại.** `node scripts/check-links.mjs <file>` gọi thật từng link (YouTube qua oEmbed, in ra tên video thật để đối chiếu); link 404/không tồn tại sẽ bị chặn, không được commit. Không chắc thì bỏ, đừng đoán ID video.
 - Ưu tiên: tài liệu chính thức (docs.oracle.com, openjdk.org/jeps, docs.spring.io, docs.jboss.org/hibernate, postgresql.org/docs, kafka.apache.org, docs.aws.amazon.com, kubernetes.io, owasp.org), bài kinh điển (martinfowler.com, vladmihalcea.com, baeldung.com, highscalability), sách (link trang nhà xuất bản), video hội thảo chính thống (Devoxx, Spring I/O, JavaOne/Java YouTube channel, InfoQ, GOTO).
+
+## 14. Phỏng vấn theo JD: `App.ai.jd(text)`
+
+`await App.ai.jd(jdText)` (1 lượt hạn mức) → `{role, company, level: mid|senior|lead, domain, summary, must_have: [{skill, topic, weight 1-3}], nice_to_have: [...], likely_questions: [{q, topic, why}], prep_tips: [], questions_to_ask: []}`. `topic` là id trong `App.topics()` hoặc `""` (server đã lọc id lạ). JD < 200 ký tự bị từ chối (400). Lỗi hiển thị bằng `App.ui.error(e)`.
