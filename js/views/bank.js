@@ -141,7 +141,13 @@
         '<button type="button" class="btn sm" data-reveal="' + esc(q.id) + '">Xem đáp án mẫu</button>' +
       '</div>';
     }
-    return '<div class="md">' + App.md(q.a) + '</div>';
+    const reportUrl = 'https://github.com/ducmanh2802/senior-java/issues/new?title=' +
+      encodeURIComponent('Sai nội dung: ' + q.id) + '&body=' +
+      encodeURIComponent('ID: ' + q.id + '\nTrang: ' + location.href + '\n\nSai ở đâu / nên sửa thế nào:\n') +
+      '&labels=content';
+    return '<div class="md">' + App.md(q.a) + '</div>' +
+      '<div class="bank-report"><a class="btn sm" target="_blank" rel="noopener noreferrer" href="' +
+      App.esc(reportUrl) + '">🚩 Báo sai</a></div>';
   }
 
   /** Mức tự đánh giá mà AI gợi ý (chỉ để highlight, người dùng tự bấm). */
