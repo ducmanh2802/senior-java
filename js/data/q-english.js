@@ -1589,4 +1589,294 @@ Record a short response, listen once for whether the main point appears early, a
   tags: ['fluency', 'speaking', 'interview'],
   lang: 'en',
 }
+,
+{
+  id: 'english-052',
+  topic: 'english',
+  level: 'senior',
+  q: 'Walk me through a system you designed recently. (2-3 minutes)',
+  a: `**Tóm tắt:** I will describe the problem, the key constraints, the architecture, and one trade-off I made.
+
+### Sample answer
+For a real example, I would state the measured baseline, peak load, and latency objective, then explain which calls could safely become asynchronous. In one hypothetical design, the API records the order and an outbox entry in one database transaction; a publisher sends the event to Kafka, and payment and inventory consumers process it idempotently. A saga coordinates the steps and defines compensating actions, but those actions do not make the workflow an ACID transaction. Fraud checks stay synchronous only if the business must decide before accepting the order; otherwise they can be an explicit pending step. The trade-off is that the customer may see a pending state while downstream work completes, and operations must handle retries, duplicate delivery, lag, and reconciliation. In your own answer, use verified before-and-after measurements and explain how you measured them.
+
+### Cụm từ hữu ích
+- "The main bottleneck was..."
+- "The key constraint was..."
+- "I traded X for Y because..."
+- "The result was..."
+
+### Lỗi người Việt hay mắc
+- Nói theo thứ tự thời gian thay vì theo vấn đề → giải pháp → kết quả; người nghe mất mạch.
+- Dùng "we did" cho mọi việc, không nêu rõ vai trò của bạn.
+- Bỏ qua trade-off, nghe như quảng cáo.`,
+  follow: ['What would you change if traffic doubled?', 'How did you test consistency?'],
+  tags: ['system-design', 'speaking', 'interview'],
+  lang: 'en',
+},
+{
+  id: 'english-053',
+  topic: 'english',
+  level: 'senior',
+  q: 'Tell me about a production incident you handled. (STAR, past tense)',
+  a: `**Tóm tắt:** Use STAR with concrete numbers and your own action, then end with the prevention you added.
+
+### Sample answer
+Use a real incident and verify every number against the incident timeline. Structure it as: Situation and user impact; Task and your responsibility; Action, including the evidence that identified the cause and why you chose mitigation; Result, including recovery time and any data impact. For example, if database connections were exhausted, check pool metrics and database activity before concluding that a query or missing index caused it. A rollback may restore service faster than a schema change, but confirm compatibility and reversibility first. Follow up with a prevention tied to the cause, such as a representative query plan review or an alert based on sustained pool saturation and request failures. Do not claim “no data loss” unless reconciliation or other evidence supports it.
+
+### Cụm từ hữu ích
+- "The symptom was..."
+- "I first checked..."
+- "The root cause turned out to be..."
+- "To prevent recurrence, we..."
+
+### Lỗi người Việt hay mắc
+- Dùng hiện tại thay vì quá khứ cho sự cố đã xử lý.
+- Nói "we fixed" mà không nói bạn làm gì cụ thể.
+- Bỏ phần prevention, interviewer không thấy bạn học được gì.`,
+  follow: ['How did you communicate during the incident?', 'What would you do differently?'],
+  tags: ['incident', 'star', 'speaking'],
+  lang: 'en',
+},
+{
+  id: 'english-054',
+  topic: 'english',
+  level: 'senior',
+  q: 'Explain the trade-off between Kafka and REST to a non-technical manager.',
+  a: `**Tóm tắt:** Compare by business impact: speed, coupling, and failure handling, using a simple analogy.
+
+### Sample answer
+REST is like asking a colleague a question and waiting for the reply: it fits when the caller needs an immediate result, but the caller depends on the other service being reachable and responsive. Kafka is closer to leaving a durable message for another team to process: the producer and consumer can work at different times, which can absorb bursts when the system is provisioned and monitored for them. It does not guarantee that either service cannot fail, and it adds operational work such as retries, duplicate handling, lag monitoring, and eventual consistency. I would choose based on whether the business needs an immediate answer and whether asynchronous processing is acceptable, not on traffic peaks alone.
+
+### Cụm từ hữu ích
+- "Think of it as..."
+- "The benefit is...; the cost is..."
+- "For this case, X fits because..."
+- "We can revisit if..."
+
+### Lỗi người Việt hay mắc
+- Dùng thuật ngữ kỹ thuật (throughput, partition, consumer group) với người không chuyên.
+- Chỉ nói ưu điểm, không nói chi phí.
+- Không đưa ví dụ cụ thể từ hệ thống của công ty.`,
+  follow: ['How do you monitor Kafka lag?', 'When would you switch back to REST?'],
+  tags: ['communication', 'kafka', 'tradeoff'],
+  lang: 'en',
+},
+{
+  id: 'english-055',
+  topic: 'english',
+  level: 'senior',
+  q: 'How would you politely disagree with your tech lead?',
+  a: `**Tóm tắt:** Acknowledge, state your concern with evidence, and offer a small experiment to decide.
+
+### Sample answer
+I would say: "I see your point about shipping faster. My concern is that this migration may hold a lock on the orders table during peak traffic, based on the behavior we saw in testing. Could we check its lock behavior and duration on production-like data, then choose a rollout window or a safer migration plan? We could also put the application change behind a flag if that is compatible with the schema." This keeps respect, brings evidence, and proposes concrete ways to reduce risk without promising that a flag or maintenance window removes it.
+
+### Cụm từ hữu ích
+- "I see your point, and..."
+- "My concern is..."
+- "Based on..."
+- "Could we try... and measure..."
+
+### Lỗi người Việt hay mắc
+- Nói "I disagree" thẳng thừng, nghe như thách thức.
+- Chỉ nêu ý kiến, không có bằng chứng hoặc phương án thay thế.
+- Im lặng rồi phàn nàn sau cuộc họp.`,
+  follow: ['What if the lead insists?', 'How do you handle being wrong?'],
+  tags: ['soft-skills', 'communication', 'teamwork'],
+  lang: 'en',
+},
+{
+  id: 'english-056',
+  topic: 'english',
+  level: 'mid',
+  q: 'Why are you leaving your current role, and why this bank?',
+  a: `**Tóm tắt:** Connect past growth to a future goal that this role offers; avoid complaining.
+
+### Sample answer
+I have learned a lot in my current role, especially about [relevant skill or domain]. I am now looking for [specific responsibility or challenge], and this role interests me because [verified detail from the job description or company research]. I would like to understand how the team approaches [relevant goal]. Keep the reason for moving truthful and constructive; do not invent a project, roadmap, or career path you have not verified.
+
+### Cụm từ hữu ích
+- "I have learned a lot, but..."
+- "What excites me about this role is..."
+- "I am looking for..."
+- "This role fits because..."
+
+### Lỗi người Việt hay mắc
+- Phàn nàn sếp hoặc công ty cũ, nghe tiêu cực.
+- Nói "for higher salary" là lý do chính.
+- Không nghiên cứu công ty, trả lời chung chung.`,
+  follow: ['What would make you stay at your current job?', 'Where do you see yourself in 3 years?'],
+  tags: ['career', 'interview', 'motivation'],
+  lang: 'en',
+},
+{
+  id: 'english-057',
+  topic: 'english',
+  level: 'senior',
+  q: 'How do you answer salary expectation and negotiation questions?',
+  a: `**Tóm tắt:** Give a researched range, anchor on total compensation, and ask about their band before committing.
+
+### Sample answer
+I would say: "Based on comparable roles, my experience, and the responsibilities we have discussed, I am targeting a total compensation range of [your researched range]. I am open to discussing the mix of base pay and any benefits or variable compensation that apply to this role. Could you share the budgeted range for the position?" Research the relevant location and level; do not assume equity or a bonus is part of the package.
+
+### Cụm từ hữu ích
+- "Based on market data..."
+- "I am targeting a range of..."
+- "I am flexible on the mix..."
+- "Could you share the band?"
+
+### Lỗi người Việt hay mắc
+- Đưa số quá thấp vì ngại, sau đó hối hận.
+- Nói "whatever you think is fair" → mất đòn bẩy.
+- Chỉ nói lương cơ bản, bỏ qua bonus, equity, remote allowance.`,
+  follow: ['How do you handle a low offer?', 'When do you negotiate beyond salary?'],
+  tags: ['negotiation', 'career', 'interview'],
+  lang: 'en',
+},
+{
+  id: 'english-058',
+  topic: 'english',
+  level: 'mid',
+  q: 'What questions should you ask the interviewer at the end?',
+  a: `**Tóm tắt:** Ask about success metrics, team health, and the real challenge; avoid questions answered on the website.
+
+### Sample answer
+Choose questions that are still unanswered and fit the interview stage. For example: "What would success look like in the first few months?" or "What technical challenge is the team prioritizing?" Ask about on-call expectations, compensation, or leave when the interviewer or process makes those topics appropriate; none is inherently off limits. You can close with: "Is there anything about my experience you would like me to clarify?" That invites useful discussion without pressuring the interviewer.
+
+### Cụm từ hữu ích
+- "What does success look like..."
+- "What is the biggest challenge..."
+- "How do you measure..."
+- "Is there anything that concerns you..."
+
+### Lỗi người Việt hay mắc
+- Nói "I have no questions" → thiếu chủ động.
+- Hỏi lương/ngày nghỉ ở vòng đầu.
+- Hỏi câu trả lời có sẵn trên website.`,
+  follow: ['How do you close an interview professionally?', 'What follow-up email should you send?'],
+  tags: ['interview', 'closing', 'soft-skills'],
+  lang: 'en',
+},
+{
+  id: 'english-059',
+  topic: 'english',
+  level: 'senior',
+  q: 'How do you clarify an ambiguous requirement with a stakeholder?',
+  a: `**Tóm tắt:** Restate the goal, list assumptions, and propose a small validation step before building.
+
+### Sample answer
+I would say: "Let me make sure I understand. The goal is to reduce failed payments by 20% this quarter. I assume we mean failed due to timeout, not fraud, and that we can change the retry policy. Before I build, I will run a 2-day analysis of failure reasons and share a one-page proposal. Does that match your expectation?" This avoids building the wrong thing and shows ownership.
+
+### Cụm từ hữu ích
+- "Let me make sure I understand..."
+- "I assume that..."
+- "Before I build, I will..."
+- "Does that match..."
+
+### Lỗi người Việt hay mắc
+- Giả định rồi code luôn, sau đó làm lại.
+- Hỏi "what do you want?" mà không đề xuất phương án.
+- Không ghi lại quyết định, tranh cãi sau này.`,
+  follow: ['How do you handle conflicting stakeholders?', 'What if requirements change mid-sprint?'],
+  tags: ['requirements', 'communication', 'stakeholders'],
+  lang: 'en',
+},
+{
+  id: 'english-060',
+  topic: 'english',
+  level: 'senior',
+  q: 'How do you give and receive code review feedback?',
+  a: `**Tóm tắt:** Focus on code and impact, ask questions, and separate blocking from non-blocking comments.
+
+### Sample answer
+When giving feedback, focus on correctness, maintainability, and risk; let configured automation handle style where practical. Explain the impact and suggest a path forward, for example: "Could this query load more rows than expected? What does the plan look like for the largest tenant?" Mark severity using the team's review conventions rather than assuming every team uses the same labels. When receiving feedback, ask about the underlying concern, verify it, and explain your reasoning with evidence if you still disagree.
+
+### Cụm từ hữu ích
+- "Could this... become an issue..."
+- "Nit: ..."
+- "Blocking: ..."
+- "The reason I chose... is..."
+
+### Lỗi người Việt hay mắc
+- Comment "this is wrong" không giải thích.
+- Nhận xét cá nhân thay vì code.
+- Im lặng khi không đồng ý, rồi làm theo không vui.`,
+  follow: ['How do you review a large PR?', 'How do you handle a stubborn reviewer?'],
+  tags: ['code-review', 'teamwork', 'communication'],
+  lang: 'en',
+},
+{
+  id: 'english-061',
+  topic: 'english',
+  level: 'mid',
+  q: 'Describe a weakness honestly in an interview.',
+  a: `**Tóm tắt:** Name a real but non-fatal weakness, show evidence of improvement, and avoid humble-brag.
+
+### Sample answer
+I used to [truthful, relevant weakness]. In [brief real example], it affected [specific outcome]. I changed my approach by [concrete action], and I check whether it is working through [evidence you can support]. I am still improving, especially when [honest context]. Avoid claiming a weakness or result that is not yours; choose something real that does not undermine a core requirement of the role.
+
+### Cụm từ hữu ích
+- "I used to..."
+- "The impact was..."
+- "I now..."
+- "Evidence of progress is..."
+
+### Lỗi người Việt hay mắc
+- Nói "I work too hard" → humble-brag, interviewer không tin.
+- Chọn điểm yếu chí mạng cho vị trí (ví dụ backend nói không thích database).
+- Không có hành động cải thiện.`,
+  follow: ['What is your greatest strength?', 'How do you handle feedback about a weakness?'],
+  tags: ['self-awareness', 'interview', 'soft-skills'],
+  lang: 'en',
+},
+{
+  id: 'english-062',
+  topic: 'english',
+  level: 'senior',
+  q: 'Tell me about a time you mentored a junior developer.',
+  a: `**Tóm tắt:** Describe the gap, your approach, and measurable growth of the mentee.
+
+### Sample answer
+A junior teammate was building confidence in [specific skill]. I asked what they had tried, then paired on a real task and made my reasoning visible. Next I gave them an appropriately scoped task with a runbook and review support, so they could take ownership without being left alone with production risk. We checked progress through [specific evidence, with permission to share it]. The lesson was to adjust support to the person and create safe opportunities to practice; use a real example and do not disclose confidential details.
+
+### Cụm từ hữu ích
+- "The gap was..."
+- "I paired with them on..."
+- "I gave them ownership of..."
+- "The result was..."
+
+### Lỗi người Việt hay mắc
+- Nói "I taught them everything" → thiếu khiêm tốn.
+- Không có số liệu chứng minh tiến bộ.
+- Chỉ nói lý thuyết, không có ví dụ cụ thể.`,
+  follow: ['How do you handle a mentee who resists feedback?', 'How do you balance mentoring with delivery?'],
+  tags: ['mentoring', 'leadership', 'soft-skills'],
+  lang: 'en',
+},
+{
+  id: 'english-063',
+  topic: 'english',
+  level: 'senior',
+  q: 'Describe a time you missed a deadline and how you handled it.',
+  a: `**Tóm tắt:** Own the miss early, communicate, renegotiate scope, and add a prevention.
+
+### Sample answer
+I underestimated [real task] and realized [when] that the date was at risk. I told the relevant people as soon as I had evidence, explained the remaining uncertainty, and offered options such as reducing scope, changing sequencing, or moving the date. We agreed on [actual outcome and impact]. Afterward I changed [estimation or discovery practice] and checked whether it reduced surprises on later work. Take responsibility for your estimate while being clear about external dependencies; do not promise that no customer was affected unless that is known.
+
+### Cụm từ hữu ích
+- "I realized early that..."
+- "I communicated immediately..."
+- "I proposed..."
+- "To prevent this..."
+
+### Lỗi người Việt hay mắc
+- Giấu đến phút cuối rồi báo cáo.
+- Đổ lỗi cho người khác hoặc yêu cầu.
+- Không có hành động ngăn chặn lặp lại.`,
+  follow: ['How do you estimate work more accurately?', 'How do you push back on an unrealistic deadline?'],
+  tags: ['delivery', 'communication', 'ownership'],
+  lang: 'en',
+}
+,
 );
