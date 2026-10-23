@@ -1,6 +1,6 @@
 # T112 — Nút "Báo sai nội dung" trên câu hỏi, quiz, bài học
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/views/bank.js`, `js/views/quiz.js`, `js/views/learn.js`
 
@@ -9,3 +9,6 @@ Owns: `js/views/bank.js`, `js/views/quiz.js`, `js/views/learn.js`
 (`target="_blank" rel="noopener noreferrer"`, class `btn sm`). Không gọi fetch, không đổi logic khác. Escape bằng App.esc. `node --check` từng file + `node scripts/validate.js` → OK.
 
 ## Notes
+- Added 🚩 Báo sai link in bank.js answer, quiz.js explain (question + wrong result), learn.js lesson body.
+- node --check passed for all 3 files. validate.js reports a pre-existing unrelated error: quiz.js qz-kotlin-001 has backtick (data file not owned by this task).
+Reviewed-by: codex (T112R)

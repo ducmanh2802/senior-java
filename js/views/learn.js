@@ -66,6 +66,7 @@
           ${isDone(l) ? '<span class="badge ok">✅ Đã hoàn thành</span>' : ''}</div></div>
       <div class="card ln-goals"><b>Sau bài này bạn sẽ:</b><ul>${(l.goals || []).map(g => '<li>' + App.md(g).replace(/^<p>|<\/p>$/g, '') + '</li>').join('')}</ul></div>
       <article class="card md ln-body">${App.md(l.body)}</article>
+      <div class="ln-report"><a class="btn sm" target="_blank" rel="noopener noreferrer" href="${esc('https://github.com/ducmanh2802/senior-java/issues/new?title=' + encodeURIComponent('Sai nội dung: ' + l.id) + '&body=' + encodeURIComponent('ID: ' + l.id + '\nTrang: ' + location.href + '\n\nSai ở đâu / nên sửa thế nào:\n') + '&labels=content')}">🚩 Báo sai</a></div>
       <h2 class="ln-h">Bài tập</h2>
       ${(l.exercises || []).map((x, i) => exerciseCard(l, x, i)).join('')}
       ${(l.check || []).length ? `<h2 class="ln-h">Kiểm tra nhanh</h2>${l.check.map((c, i) => `

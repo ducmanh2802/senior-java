@@ -164,6 +164,9 @@
         (answered ? '<div class="quiz-explain">' +
           '<h4>' + (answered.picked === item.answer ? 'Chính xác!' : 'Chưa đúng') + '</h4>' +
           '<div class="md">' + App.md(item.q.explain) + '</div>' +
+          '<div class="quiz-report"><a class="btn sm" target="_blank" rel="noopener noreferrer" href="' +
+          App.esc('https://github.com/ducmanh2802/senior-java/issues/new?title=' + encodeURIComponent('Sai nội dung: ' + item.q.id) + '&body=' + encodeURIComponent('ID: ' + item.q.id + '\nTrang: ' + location.href + '\n\nSai ở đâu / nên sửa thế nào:\n') + '&labels=content') +
+          '">🚩 Báo sai</a></div>' +
           '<div class="row quiz-nav">' +
             '<button type="button" class="btn primary" id="quizNext">' +
               (Q.idx + 1 >= Q.list.length ? 'Xem kết quả' : 'Câu tiếp theo') + ' <kbd>Enter</kbd></button>' +
@@ -208,10 +211,13 @@
       const ansText = item ? item.options[item.answer] : '';
       return '<details class="card quiz-wrong-item">' +
         '<summary><span class="quiz-wrong-q">' + (i + 1) + '. ' + App.esc(a.q.q) + '</span></summary>' +
-        '<div class="quiz-wrong-body">' +
-          '<p class="small"><strong>Đáp án đúng:</strong> ' + App.esc(ansText) + '</p>' +
-          '<div class="md">' + App.md(a.q.explain) + '</div>' +
-        '</div>' +
+          '<div class="quiz-wrong-body">' +
+            '<p class="small"><strong>Đáp án đúng:</strong> ' + App.esc(ansText) + '</p>' +
+            '<div class="md">' + App.md(a.q.explain) + '</div>' +
+            '<div class="quiz-report"><a class="btn sm" target="_blank" rel="noopener noreferrer" href="' +
+            App.esc('https://github.com/ducmanh2802/senior-java/issues/new?title=' + encodeURIComponent('Sai nội dung: ' + a.q.id) + '&body=' + encodeURIComponent('ID: ' + a.q.id + '\nTrang: ' + location.href + '\n\nSai ở đâu / nên sửa thế nào:\n') + '&labels=content') +
+            '">🚩 Báo sai</a></div>' +
+          '</div>' +
       '</details>';
     }).join('');
 
