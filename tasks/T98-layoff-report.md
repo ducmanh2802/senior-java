@@ -1,6 +1,6 @@
 # T98 — Báo cáo: tình hình layoff / thị trường tuyển dụng IT (Việt Nam + công ty mục tiêu), 2025–2026
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `docs/market-layoffs-2026.md`
 
@@ -13,3 +13,4 @@ Viết `docs/market-layoffs-2026.md` (tiếng Việt), **mọi số liệu/sự 
 Không bịa số liệu; không tìm thấy thì ghi "không tìm thấy nguồn đáng tin".
 
 ## Notes
+Reviewed-by: codex (T98R)
