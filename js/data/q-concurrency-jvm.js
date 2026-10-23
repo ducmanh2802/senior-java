@@ -266,7 +266,11 @@ synchronized (a) { synchronized (b) { transfer(from, to, amount); } }
     'Thread dump không báo deadlock nhưng service treo — điều tra tiếp thế nào?',
     'synchronized không có timeout — implement "chờ tối đa X ms" bằng cách nào?'
   ],
-  tags: ['deadlock', 'thread dump', 'livelock', 'starvation']
+  tags: ['deadlock', 'thread dump', 'livelock', 'starvation'],
+  refs: [
+    { type: 'doc', title: 'Java ThreadMXBean API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.management/java/lang/management/ThreadMXBean.html' },
+    { type: 'book', title: 'Java Concurrency in Practice', url: 'https://jcip.net/' },
+  ],
 }
 ,
 {
@@ -549,7 +553,11 @@ Kafka topic (hoặc bảng job có cursor)
     'Vì sao checkpoint sau toàn batch chứ không sau từng record?',
     '429/Retry-After: worker retry cùng luồng hay đẩy sang topic riêng? Vì sao?'
   ],
-  tags: ['rate limit', 'backpressure', 'idempotency', 'DLQ']
+  tags: ['rate limit', 'backpressure', 'idempotency', 'DLQ'],
+  refs: [
+    { type: 'doc', title: 'Java Concurrency Package Documentation', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/package-summary.html' },
+    { type: 'book', title: 'Java Concurrency in Practice', url: 'https://jcip.net/' },
+  ],
 }
 ,
 {
@@ -1001,7 +1009,11 @@ public class FalseSharingBench {
     'Vì sao padding bằng field thừa trong cùng một class không đáng tin, còn padding qua kế thừa thì có?',
     'LongAdder tránh false sharing và contention thế nào, đánh đổi gì so với AtomicLong?'
   ],
-  tags: ['false sharing', 'cache line', '@Contended', 'JMH']
+  tags: ['false sharing', 'cache line', '@Contended', 'JMH'],
+  refs: [
+    { type: 'doc', title: 'JEP 142: Reduce Cache Contention on Modern Hardware', url: 'https://openjdk.org/jeps/142' },
+    { type: 'book', title: 'Java Concurrency in Practice', url: 'https://jcip.net/' },
+  ],
 },
 {
   id: 'concurrency-020',
@@ -1311,7 +1323,11 @@ Frame đầu cùng thread RUNNABLE thường chỉ ra method đang đốt CPU.
     'CPU 100% mà hot thread nằm ở native — xác định thế nào?',
     'async-profiler khác JFR như thế nào, chọn cái nào?'
   ],
-  tags: ['CPU', 'jstack', 'async-profiler', 'JFR']
+  tags: ['CPU', 'jstack', 'async-profiler', 'JFR'],
+  refs: [
+    { type: 'doc', title: 'Java Flight Recorder Runtime Guide', url: 'https://docs.oracle.com/en/java/javase/21/troubleshoot/diagnostic-tools.html' },
+    { type: 'doc', title: 'Java ThreadMXBean API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.management/java/lang/management/ThreadMXBean.html' },
+  ],
 },
 {
   id: 'jvm-007',
@@ -1535,7 +1551,11 @@ byte[100]: 12 + 4 (length) + 100 = 116 -> 120 B
     'ZGC generational khác ZGC non-generation thế nào, vì sao thêm?',
     'Các nguồn STW ngoài GC bạn đã gặp trong production?'
   ],
-  tags: ['ZGC', 'latency', 'p99', 'safepoint']
+  tags: ['ZGC', 'latency', 'p99', 'safepoint'],
+  refs: [
+    { type: 'doc', title: 'JEP 439: Generational ZGC', url: 'https://openjdk.org/jeps/439' },
+    { type: 'doc', title: 'JEP 333: ZGC', url: 'https://openjdk.org/jeps/333' },
+  ],
 },
 {
   id: 'jvm-012',
@@ -1756,7 +1776,11 @@ Thường truyền qua biến môi trường {{JAVA_TOOL_OPTIONS}} hoặc ENTRYP
     'Pod bị OOMKilled (exit 137) trong khi heap chưa đầy — bạn điều tra thế nào?',
     'Vì sao JVM trong pod 1 vCPU lại chạy SerialGC?'
   ],
-  tags: ['JVM flags', 'container', 'Spring Boot', 'GC log', 'OOM']
+  tags: ['JVM flags', 'container', 'Spring Boot', 'GC log', 'OOM'],
+  refs: [
+    { type: 'doc', title: 'Java Launcher Command Reference', url: 'https://docs.oracle.com/en/java/javase/21/docs/specs/man/java.html' },
+    { type: 'doc', title: 'Java Garbage Collection Tuning Guide', url: 'https://docs.oracle.com/en/java/javase/21/gctuning/' },
+  ],
 },
 {
   id: 'jvm-016',
@@ -2266,7 +2290,11 @@ return 0
     'Optimistic locking và UPDATE có điều kiện: chọn cái nào cho flash sale?',
     'Distributed lock có TTL hết hạn giữa chừng vì GC pause — bạn phòng thế nào?'
   ],
-  tags: ['race condition', 'AtomicInteger', 'LongAdder', 'optimistic locking', 'Redis', 'lost update']
+  tags: ['race condition', 'AtomicInteger', 'LongAdder', 'optimistic locking', 'Redis', 'lost update'],
+  refs: [
+    { type: 'doc', title: 'AtomicInteger API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/atomic/AtomicInteger.html' },
+    { type: 'doc', title: 'LongAdder API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/atomic/LongAdder.html' },
+  ],
 },
 {
   id: 'concurrency-026',

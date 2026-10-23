@@ -42,3 +42,4 @@ Xem `js/data/q-java.js` (`core-001`) để biết văn phong và format mẫu.
 - Mỗi đáp án theo format: Tóm tắt + mục ### + code block ~~~java/~~~bash/~~~text ngắn + Senior tip; theo park 1200–2500 ký tự, không dùng backtick, không `${`, markup chỉ kiểu AGENTS.md mục 5.
 - `node scripts/validate.js` → OK — không có lỗi; topic của task này có đủ 13 + 11 = 24 câu.
 - Không git commit; chỉ thay đổi 1 file sở hữu: `js/data/q-concurrency-jvm.js`.
+Reviewed-by: codex (T02R)
