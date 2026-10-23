@@ -1,4 +1,4 @@
-/* Topics: core, collections, modern — owner: task T1. Format: see AGENTS.md */
+﻿/* Topics: core, collections, modern — owner: task T1. Format: see AGENTS.md */
 (window.QUESTIONS = window.QUESTIONS || []).push(
 {
   id: 'core-001',
@@ -3736,5 +3736,159 @@ for (Txn t : txns) {
     'Lambda không capture biến thì có tạo object mới mỗi lần không?'
   ],
   tags: ['Stream', 'performance', 'for loop', 'parallel stream', 'JMH']
+},
+{
+  id: 'core-027',
+  topic: 'core',
+  level: 'senior',
+  q: 'Một record chứa {{List}} được dùng làm key trong cache: record có bảo đảm bất biến sâu và hash ổn định không? Bạn sẽ thiết kế value object cho domain thế nào?',
+  a: `**Tóm tắt:** Record chỉ làm field component thành final và sinh equals/hashCode theo component; nó không biến object được tham chiếu thành bất biến. Nếu component là collection mutable, caller vẫn có thể đổi nội dung và làm key đổi hash sau khi đưa vào cache.
+
+### Record bảo đảm điều gì
+- Record là data carrier: component được lưu vào field final, accessor và equals/hashCode/toString được sinh theo header. Compact constructor cho phép validate và chuẩn hoá dữ liệu.
+- Final reference không có nghĩa nội dung bất biến. {{List<String>}} có thể bị sửa; record giữ đúng reference đã nhận.
+- Một record không thể extends class khác và tự động kế thừa {{java.lang.Record}}; hợp với value object đóng, không hợp với entity cần identity/vòng đời ORM.
+
+~~~java
+record OrderKey(String tenant, List<String> regions) {
+    OrderKey {
+        // Copy để caller không thể sửa list sau khi tạo key.
+        regions = List.copyOf(regions);
+    }
+}
+~~~
+
+### Chọn record hay sealed hierarchy
+- Dùng record cho giá trị nhỏ, có equality theo toàn bộ dữ liệu: tọa độ, money đã chuẩn hoá, command bất biến.
+- Dùng sealed interface khi miền trạng thái có số biến thể hữu hạn, như {{PaymentResult}} gồm {{Accepted}}, {{Declined}}, {{Pending}}. Khi thêm biến thể, compiler giúp rà các switch exhaustiveness.
+- Không ép mọi domain object vào record: entity thường cần identity ổn định theo vòng đời và ORM cần proxy/lazy loading; inheritance mapping với record cũng không phù hợp.
+
+### Pitfall
+- {{List.copyOf}} tạo collection không sửa được và snapshot cấu trúc, nhưng nếu phần tử mutable thì không tạo deep copy.
+- Equality theo toàn bộ component có thể làm record key quá rộng; hai phiên bản logic giống nhau nhưng metadata khác sẽ thành key khác.
+- Chuẩn hoá trước khi tạo record, chẳng hạn scale của tiền và chữ hoa/thường của mã; {{BigDecimal.equals}} phân biệt scale.
+
+> Senior tip: trước khi dùng value object làm map key, kiểm tra mọi component có bất biến sâu không và chạy thử tình huống caller sửa dữ liệu đầu vào. Với entity JPA, xác định equality theo identity nghiệp vụ trước, đừng để generated id null rồi đổi hash sau persist.`,
+  follow: ['Vì sao record không tự phù hợp làm JPA entity?', 'Sealed interface có lợi gì khi model kết quả nghiệp vụ có tập trạng thái hữu hạn?'],
+  tags: ['record', 'sealed', 'immutability', 'domain model']
+},
+{
+  id: 'core-028',
+  topic: 'core',
+  level: 'lead',
+  q: 'Một cache giữ hàng triệu String lặp lại và heap dump cho thấy nhiều mảng byte giống nhau. Bạn cân nhắc compact strings, String deduplication hay intern thế nào?',
+  a: `**Tóm tắt:** Compact Strings giảm byte lưu cho nội dung Latin-1 ngay trong mỗi String; G1 String dedup chia sẻ mảng byte giống nhau giữa các String khác object; {{intern()}} canonicalize cả object và có chi phí tra bảng. Chọn bằng heap profile và benchmark theo workload, không bật cả ba theo cảm tính.
+
+### Ba cơ chế khác nhau
+- Từ Java 9, {{String}} lưu nội dung bằng {{byte[]}} và coder: nội dung Latin-1 thường cần một byte mỗi ký tự, còn nội dung cần UTF-16 dùng hai byte. Đây là cách biểu diễn mặc định của String, không phải flag bật riêng.
+- G1 có thể tìm các String bằng nhau rồi cho chúng dùng chung backing array; các String object vẫn riêng. Tùy chọn {{-XX:+UseStringDeduplication}} có overhead CPU và cần G1.
+- {{String.intern()}} trả về canonical instance từ string table. Mọi caller dùng đúng instance đó, nhưng tra và quản lý pool cũng tốn chi phí; với dữ liệu cardinality cao có thể biến thành nút tranh chấp và giữ thêm cấu trúc.
+
+### Khi nào cân nhắc
+1. Đo retained heap: nếu phần lớn dung lượng là nội dung Latin-1, compact strings vốn đã có tác dụng.
+2. Nếu nhiều object String khác nhau cùng nội dung, thử dedup trên staging, đo CPU, pause và heap sau GC.
+3. Chỉ dùng intern cho tập chuỗi nhỏ, lặp cao và có ranh giới rõ như tên schema; tránh với request id hoặc dữ liệu người dùng có cardinality lớn.
+
+~~~bash
+-Xlog:gc+stringdedup=debug
+jcmd <pid> GC.heap_info
+~~~
+
+Log dedup cho biết số chuỗi khảo sát, deduplicate và byte tiết kiệm; đối chiếu với throughput và p99 thay vì chỉ nhìn heap giảm.
+
+### Bẫy vận hành
+- Dedup không giảm số object String, chỉ chia sẻ mảng nội dung; nếu overhead object và reference chiếm phần lớn, lợi ích thấp.
+- Chạy dedup có thể tăng CPU và làm GC thêm việc. Snapshot heap ở một thời điểm cũng dễ gây kết luận sai nếu workload chưa ổn định.
+- Không dựa vào chi tiết triển khai layout object cố định giữa các bản JDK; compressed oops, alignment và header ảnh hưởng kích thước thực.
+
+> Senior tip: đặt mục tiêu đo được, ví dụ giảm retained heap 10% mà CPU tăng dưới ngưỡng đã thống nhất; thử với traffic đại diện và giữ phương án rollback bằng JVM flag.`,
+  follow: ['String dedup chia sẻ điều gì nhưng không chia sẻ điều gì?', 'Vì sao intern không phải giải pháp cache chuỗi tổng quát?'],
+  tags: ['String', 'compact strings', 'deduplication', 'intern', 'G1']
+},
+{
+  id: 'core-029',
+  topic: 'core',
+  level: 'senior',
+  q: 'Thiết kế equals/hashCode cho JPA entity có generated id thế nào để không làm entity biến mất khỏi HashSet sau persist?',
+  a: `**Tóm tắt:** Equality của entity phải giữ ổn định qua vòng đời transient → managed → detached. Nếu hashCode dựa vào generated id đang null rồi đổi sau persist, entity đã nằm trong HashSet sẽ ở sai bucket; chọn business key bất biến hoặc chiến lược class-stable có cân nhắc va chạm.
+
+### Hai chiến lược thường gặp
+- **Business key**: dùng thuộc tính duy nhất, bất biến và có sẵn từ lúc tạo entity, như mã quốc gia. Equality ổn định nhưng không phải entity nào cũng có key như vậy.
+- **Generated id**: dễ nghĩ tới nhưng id null trước persist. Nếu equals xem hai id null là bằng nhau hoặc hashCode đổi khi id được cấp, collection bị lỗi.
+- Một số hệ thống dùng equality theo id chỉ khi id khác null, còn hashCode ổn định theo class. Cách này giữ bucket ổn định nhưng nhiều entity cùng class va chạm; đo trước khi coi đó là vấn đề.
+
+### Hibernate proxy
+- Proxy có thể là subclass hoặc wrapper tùy mapping/enhancement. Kiểm tra bằng getClass() cứng nhắc có thể làm proxy và entity cùng hàng bị coi khác nhau.
+- Dùng API Hibernate như persistentClass khi cần xử lý proxy, nhưng tránh phụ thuộc Hibernate trong domain thuần nếu không cần.
+- Không đưa association/lazy collection vào equals/hashCode: dễ kích hoạt query bất ngờ, đệ quy hai chiều, hoặc N+1.
+
+### Quyết định
+Viết test cho entity mới, sau persist, proxy, detached và hai instance cùng id. Không dùng mutable field, timestamp hay toàn bộ object graph.
+
+> Senior tip: chọn quy tắc một lần cho toàn hệ thống và kiểm tra bằng test với HashSet trước/sau persist; equality của entity là quyết định identity, không chỉ là boilerplate.`,
+  follow: ['Vì sao association lazy không nên nằm trong hashCode?', 'HashCode theo class ổn định có trade-off gì?'],
+  tags: ['JPA', 'Hibernate', 'equals', 'hashCode', 'entity']
+},
+{
+  id: 'core-030',
+  topic: 'core',
+  level: 'lead',
+  q: 'Một domain có ba trạng thái kết quả hữu hạn và team muốn switch exhaustive. Bạn model bằng sealed interface/record ra sao, và giữ tương thích phiên bản thế nào?',
+  a: `**Tóm tắt:** Sealed interface giới hạn trực tiếp các subtype được phép; record phù hợp làm từng variant dữ liệu bất biến. Pattern matching switch có thể kiểm tra exhaustive theo kiểu đã biết, nhưng thêm variant là thay đổi source/binary đáng quản lý và preview feature cần ghi rõ mức hỗ trợ.
+
+### Model
+- Khai báo sealed interface với permits rõ ràng, rồi tạo record cho các kết quả như Accepted, Rejected và Pending.
+- Consumer switch trên kiểu cha phải xử lý toàn bộ nhánh đã biết; compiler báo thiếu nhánh khi biên dịch lại.
+- Record component cần immutable sâu nếu object được chia sẻ; record chỉ đảm bảo field reference final.
+
+~~~java
+sealed interface Result permits Accepted, Rejected {}
+record Accepted(String id) implements Result {}
+record Rejected(String reason) implements Result {}
+~~~
+
+### Ranh giới module
+- Cùng module có thể giới hạn subtype theo quy tắc permits; khác module/package có thêm yêu cầu về named module và modifier subtype.
+- Khi thêm subtype, compile lại consumer để phát hiện switch thiếu nhánh. Consumer đã biên dịch cũ không tự nhận ra domain mới; thiết kế fallback nếu protocol/version có thể mở rộng độc lập.
+- Java 21 pattern matching for switch là tính năng chuẩn; StructuredTaskScope ở Java 21 mới là preview. Không gộp hai mức ổn định này.
+
+### Khi dùng
+Hợp với algebraic data type có tập biến thể hữu hạn trong một bounded context. Không hợp khi plugin bên thứ ba cần tự thêm subtype hoặc hierarchy là API extension mở.
+
+> Senior tip: ghi rõ ai sở hữu tập biến thể và chính sách versioning. Exhaustive switch rất hữu ích trong codebase đồng bộ, nhưng message từ hệ thống ngoài vẫn cần xử lý giá trị chưa biết.`,
+  follow: ['Thêm subtype mới ảnh hưởng consumer đã biên dịch ra sao?', 'Phân biệt feature chuẩn Java 21 và API preview bằng cách nào?'],
+  tags: ['sealed', 'record', 'pattern matching', 'domain model']
+},
+{
+  id: 'core-031',
+  topic: 'core',
+  level: 'senior',
+  q: 'Một API trả List nhưng bên trong giữ mutable list của caller. Bạn thiết kế defensive copy và contract collection thế nào?',
+  a: `**Tóm tắt:** Copy ở biên nhận dữ liệu để caller không thể sửa trạng thái nội bộ; nếu getter trả collection, trả snapshot immutable hoặc view chỉ khi contract nói rõ. Shallow copy không bảo vệ object mutable nằm bên trong phần tử.
+
+### Constructor và accessor
+- Constructor nhận list cần kiểm tra null/giá trị rồi dùng List.copyOf để tạo snapshot cấu trúc và từ chối phần tử null.
+- Getter có thể trả chính snapshot immutable đó; nếu phần tử mutable và phải cô lập sâu thì copy từng phần tử hoặc dùng kiểu phần tử bất biến.
+- Collections.unmodifiableList chỉ là wrapper: ai còn reference tới list gốc vẫn sửa được nội dung.
+
+~~~java
+final class Batch {
+    private final List<String> ids;
+    Batch(List<String> ids) { this.ids = List.copyOf(ids); }
+    List<String> ids() { return ids; }
+}
+~~~
+
+### Trade-off
+- Copy tốn O(n) thời gian và bộ nhớ; với list lớn, cân nhắc ownership transfer rõ ràng hoặc API streaming.
+- Không trả mutable internal state chỉ để tránh copy; bug concurrency và invariant thường đắt hơn.
+- Defensive copy không thay transaction semantics: snapshot dữ liệu không đảm bảo nhiều field được đọc cùng một thời điểm.
+
+> Senior tip: kiểm tra collection ở cả hai chiều: caller sửa input sau constructor và caller thử sửa output. Nếu phần tử mutable, thêm test cho mutation lồng sâu.`,
+  follow: ['Unmodifiable view khác immutable snapshot thế nào?', 'Khi nào deep copy không đáng chi phí?'],
+  tags: ['immutability', 'defensive copy', 'collections', 'API design']
 }
 );
+
+
+
