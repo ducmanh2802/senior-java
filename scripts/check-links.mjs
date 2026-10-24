@@ -37,7 +37,10 @@ async function check(r) {
     if (res.status >= 400) return { ...r, warn: 'HTTP ' + res.status + ' (có thể chặn bot)' };
     return r;
   } catch (e) {
-    return { ...r, bad: true, why: (e.cause && e.cause.code) || e.name || String(e) };
+    const why = (e.cause && e.cause.code) || e.name || String(e);
+    // flaky network (timeout, reset) says nothing about the link; only a missing domain does
+    if (why !== 'ENOTFOUND') return { ...r, warn: why + ' (lỗi mạng, chưa kiểm tra được)' };
+    return { ...r, bad: true, why };
   }
 }
 

@@ -956,5 +956,540 @@ Một RFC tốt có: phạm vi, artifact digest và version, kết quả test UA
       'Bạn thuyết phục CAB chuyển một loại thay đổi thành standard change như thế nào?'
     ],
     tags: ['On-premise', 'Nexus', 'Harbor', 'Change management', 'Air-gapped']
+  },
+  {
+    id: 'devops-015',
+    topic: 'devops',
+    level: 'mid',
+    q: 'Service Spring Boot chạy trong Pod có CPU limit 2 và memory limit 4Gi. Khi tải tăng, CPU trung bình mới khoảng 40% nhưng p99 tăng vọt và GC log dày lên. Bạn kiểm tra JVM đã đọc đúng giới hạn container chưa, rồi cấu hình MaxRAMPercentage, GC thread và ActiveProcessorCount thế nào?',
+    a: `**Tóm tắt:** JVM 17/21 đọc giới hạn CPU và RAM từ cgroup, nhưng cách nó quy đổi ra {{availableProcessors}}, heap và số GC thread tạo ra những bẫy rất khác nhau. Với Pod 2 CPU/4Gi, đặt {{MaxRAMPercentage}} khoảng 75, giữ CPU request bằng limit cho service nhạy latency, và xác minh bằng GC log cùng metric CFS throttling thay vì chỉ nhìn CPU trung bình.
+
+### JVM nhìn thấy tài nguyên như thế nào
+- **CPU**: JVM lấy {{cpu.max}} (cgroup v2) hoặc quota/period (v1) để tính số processor khả dụng, không lấy số core của node. Với {{cpu.max = 200000 100000}} (chu kỳ 100 ms), JVM thấy khoảng 2 CPU. Nếu limit là 1 CPU, JVM coi đây không phải máy server-class.
+- **RAM**: {{memory.max}} là mức JVM dùng để tính heap mặc định. Từ JDK 10, {{UseContainerSupport}} bật mặc định; JDK 15 trở lên đọc được cgroup v2, còn các bản 11/8 phải đủ mới.
+- **Hệ quả chọn GC**: HotSpot chọn G1 khi có từ 2 CPU và từ 1792 MB; dưới ngưỡng đó thường rơi về SerialGC. Một Pod limit 1 CPU vì thế vừa ít thread xử lý, vừa dùng GC single-thread, p99 tệ đi rất nhanh khi tải tăng.
+
+### Vì sao CPU trung bình thấp mà p99 vẫn tăng
+CFS quota được nạp lại mỗi chu kỳ 100 ms. Nếu 8 thread cùng chạy trong 25 ms, chúng tiêu thụ 200 ms CPU trong 25 ms; quota 2 CPU bị cạn và toàn bộ container bị **throttle** cho tới chu kỳ sau. CPU trung bình trên dashboard chỉ khoảng 40%, nhưng request bị treo hàng chục mili giây mỗi lần. GC song song càng làm nặng thêm vì lúc stop-the-world, nhiều GC worker cùng tranh quota với application thread.
+
+~~~bash
+# Xem JVM thực sự thấy gì trong container
+java -XshowSettings:system -version
+java -XX:+PrintFlagsFinal -version | grep -E "MaxHeapSize|ActiveProcessorCount|ParallelGCThreads|ConcGCThreads|UseG1GC|UseSerialGC"
+jcmd 1 GC.heap_info
+~~~
+
+### Cấu hình mẫu
+~~~yaml
+resources:
+  requests: { cpu: "2", memory: "4Gi" }
+  limits:   { cpu: "2", memory: "4Gi" }
+env:
+  - name: JAVA_TOOL_OPTIONS
+    value: >-
+      -XX:MaxRAMPercentage=75
+      -XX:InitialRAMPercentage=50
+      -XX:+ExitOnOutOfMemoryError
+      -Xlog:gc*:stdout:time,uptime,level,tags
+~~~
+- {{MaxRAMPercentage=75}} cho heap khoảng 3 GiB, chừa 1 GiB cho metaspace, code cache, thread stack, direct buffer của Netty và GC overhead.
+- {{ActiveProcessorCount}} chỉ nên dùng khi **không** đặt CPU limit nhưng node có nhiều core: nó giới hạn số processor JVM dùng để tính thread pool, không giới hạn CPU thật. Đặt thấp hơn nhu cầu sẽ làm app thiếu thread; đặt cao hơn quota sẽ làm throttling nặng hơn.
+- Service nhạy latency nên đặt request bằng limit (QoS Guaranteed) để scheduler không dồn quá nhiều Pod lên một node. Nếu bỏ limit, phải chấp nhận rủi ro noisy neighbor và theo dõi sát.
+- Không đặt {{-Xmx}} cứng song song với {{MaxRAMPercentage}}: nếu {{-Xmx}} được đặt tường minh thì JVM dùng giá trị đó và **bỏ qua** {{MaxRAMPercentage}} bất kể thứ tự. Chọn một trong hai, đừng để cả hai cùng tồn tại trong manifest.
+
+### Đo và tinh chỉnh
+| Chỉ số | Ý nghĩa | Ngưỡng đáng lo |
+|---|---|---|
+| {{container_cpu_cfs_throttled_periods_total / container_cpu_cfs_periods_total}} | Tỷ lệ chu kỳ bị chặn | Trên 5–10% khi tải bình thường |
+| GC pause p99 | Thời gian stop-the-world | Trên 200–300 ms với API online |
+| {{jvm_gc_live_data_size}} sau full GC | Heap sống thật | Gần bằng Xmx |
+
+Tăng CPU limit hoặc giảm số thread đồng thời thường hiệu quả hơn việc ép {{ParallelGCThreads}} xuống. Nếu buộc phải chỉnh, đặt {{-XX:ParallelGCThreads=2}} và {{-XX:ConcGCThreads=1}} cho Pod 2 CPU, nhưng luôn đo lại: GC thread quá ít làm pause dài, quá nhiều làm throttle.
+
+### Pitfall production
+- Limit 500m cho service Java: JVM thấy 1 CPU, SerialGC, Tomcat ít thread; đây là cấu hình sai phổ biến nhất khi copy manifest từ service Node.js sang.
+- Chỉ đặt memory limit mà quên CPU limit: JVM thấy toàn bộ core của node, bật hàng chục GC thread và pool thread, sau đó tranh CPU với các Pod khác.
+
+> Senior tip: Trước khi tăng limit, hãy load test và xem tỷ lệ throttling; nhiều đội tăng limit gấp đôi mà p99 không cải thiện vì nút cổ chai là DB pool. Với JDK 21, virtual thread giúp giảm thread stack nhưng không miễn nhiễm CFS throttling: carrier thread vẫn bị chặn theo quota.`,
+    follow: [
+      'Pod 2 CPU nhưng app chạy 200 thread: nên giảm thread, tăng CPU hay đổi sang virtual thread? Vì sao?',
+      'Làm sao phân biệt throttling do CPU limit với GC pause dài khi chỉ có dashboard latency?',
+      'Bạn có bật -XX:+UseSerialGC cho service nhỏ 1 CPU không? Trade-off là gì?'
+    ],
+    tags: ['JVM', 'Container', 'cgroups', 'GC', 'CPU throttling']
+  },
+  {
+    id: 'devops-016',
+    topic: 'devops',
+    level: 'mid',
+    q: 'Thiết kế liveness, readiness và startup probe cho service Spring Boot khởi động 90 giây, phụ thuộc PostgreSQL và Kafka. Vì sao không nên trỏ cả ba vào /actuator/health? Cấu hình health group của Actuator thế nào để sự cố DB không gây restart dây chuyền?',
+    a: `**Tóm tắt:** Ba probe có ba nhiệm vụ khác nhau: startup bảo vệ quá trình khởi động chậm, liveness restart khi process treo, readiness gỡ Pod khỏi traffic khi chưa phục vụ được. Dùng health group của Actuator để tách tuyệt đối: liveness chỉ kiểm tra trạng thái nội tại, readiness mới được phép kiểm tra dependency. Trỏ liveness vào {{/actuator/health}} tổng hợp là cách nhanh nhất để biến một sự cố DB thành chuỗi restart toàn hệ thống.
+
+### Actuator chia health group thế nào
+Khi chạy trên Kubernetes, Spring Boot tự bật probe; vẫn nên khai báo tường minh:
+~~~yaml
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when_authorized
+      group:
+        readiness:
+          include: readinessState,db,paymentWarmup
+          show-details: always
+        liveness:
+          include: livenessState
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  server:
+    port: 8081
+~~~
+- {{livenessState}} chỉ chuyển sang {{BROKEN}} khi application context hỏng; đây là tín hiệu "restart có ích".
+- {{readinessState}} là {{ACCEPTING_TRAFFIC}} sau {{ApplicationReadyEvent}} và {{REFUSING_TRAFFIC}} khi bắt đầu shutdown.
+- Nếu tự đặt {{include}}, phải liệt kê cả {{readinessState}}, nếu không nó bị thay thế và probe chỉ còn dependency.
+- {{db}} là DataSourceHealthIndicator có sẵn. Kafka không có indicator mặc định trong Boot; nếu cần, viết {{HealthIndicator}} riêng có timeout ngắn và cache kết quả.
+
+### Chọn dependency nào cho readiness
+Câu hỏi không phải "có kiểm tra DB không" mà là "khi DB chậm, gỡ toàn bộ Pod khỏi traffic có giúp gì không".
+- Nếu service **không thể** xử lý request nào khi DB chết: đưa {{db}} vào readiness. Pod bị gỡ, người dùng nhận lỗi nhanh thay vì treo.
+- Nếu service vẫn phục vụ được một phần (đọc cache, ghi outbox rồi xử lý sau): **không** đưa Kafka/DB vào readiness, hoặc chỉ đưa khi tỷ lệ lỗi vượt ngưỡng. Gỡ hết Pod sẽ biến sự cố cục bộ thành sập toàn bộ.
+- Không bao giờ đưa dependency vào **liveness**. DB chậm 30 giây làm mọi Pod restart cùng lúc, mất cache, tăng tải DB, tạo vòng xoáy chết.
+- Health check phải rẻ: {{SELECT 1}} qua pool, timeout 1–2 giây, có cache 5–10 giây. Đừng chạy truy vấn nghiệp vụ nặng mỗi 5 giây.
+
+### Timing cho service khởi động 90 giây
+| Probe | Path | Period | failureThreshold | Ý nghĩa |
+|---|---|---|---|---|
+| startup | /actuator/health/liveness | 5 s | 30 | Cho tối đa 150 s để boot |
+| readiness | /actuator/health/readiness | 5 s | 3 | Gỡ traffic sau khoảng 15 s lỗi |
+| liveness | /actuator/health/liveness | 10 s | 3 | Restart sau khoảng 30 s treo |
+
+Khi có startupProbe, Kubernetes **không chạy** liveness và readiness cho tới khi startup thành công, nên không cần {{initialDelaySeconds}} lớn. Đặt startup quá ngắn sẽ tạo CrashLoopBackOff oan cho app chỉ chậm Flyway hoặc JIT.
+
+### Warm-up trước khi nhận traffic
+Khởi động xong context không có nghĩa là phục vụ tốt: connection pool chưa mở, cache rỗng, JIT chưa nóng. Có hai cách:
+- Chạy warm-up trong {{ApplicationRunner}} trước khi phát {{ACCEPTING_TRAFFIC}}; readiness tự nhiên bị chặn.
+- Dùng một {{HealthIndicator}} trả {{DOWN}} cho tới khi cờ {{warm}} được bật; nhớ đặt timeout để không treo mãi.
+
+Đừng gọi chính API public để warm-up nếu nó ghi dữ liệu; dùng endpoint nội bộ hoặc gọi các truy vấn đọc đại diện.
+
+### Pitfall production
+- Đặt management port 8081 nhưng probe vẫn trỏ 8080: probe nhận 404, Pod không bao giờ Ready.
+- {{server.servlet.context-path}} làm đường dẫn actuator đổi theo; kiểm tra lại path thực tế.
+- Security filter chặn {{/actuator/health/**}} vì chỉ mở cho role ADMIN: kubelet không có token, probe fail.
+- Probe timeout 1 giây nhưng DB health timeout 5 giây: probe fail trước khi health kịp trả lời.
+
+> Senior tip: Trong staging, hãy chủ động chặn DB/Kafka rồi quan sát: liveness phải xanh, readiness phải đỏ, không có Pod nào restart. Đây là bài test bắt buộc trước khi lên production; nếu liveness đỏ, bạn đang tự tạo thảm hoạ.`,
+    follow: [
+      'Readiness probe nên kiểm tra DB bằng SELECT 1 hay chỉ trạng thái connection pool? Vì sao?',
+      'Khi Kafka chết nhưng service vẫn ghi outbox được, bạn có gỡ Pod khỏi traffic không?',
+      'Làm sao tránh tất cả Pod cùng restart khi node hoặc DB gặp sự cố?'
+    ],
+    tags: ['Kubernetes', 'Actuator', 'Probe', 'Readiness', 'Liveness']
+  },
+  {
+    id: 'devops-017',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Bạn đã bật server.shutdown=graceful nhưng mỗi lần deploy vẫn có Pod bị SIGKILL sau 30 giây và mất message Kafka. Hãy giải thích đầy đủ trình tự tắt Pod trên Kubernetes, những gì Spring Boot graceful shutdown không xử lý, và cấu hình đúng để không mất request lẫn message.',
+    a: `**Tóm tắt:** Tắt Pod là một chuỗi sự kiện chạy song song, không tuần tự: endpoint bị gỡ, preStop chạy, SIGTERM được gửi, hết grace period thì SIGKILL. {{server.shutdown=graceful}} chỉ lo phần HTTP: ngừng nhận request mới và chờ request đang chạy; nó không tự chờ executor tự tạo, tác vụ định kỳ, consumer Kafka hay thread non-daemon. Muốn không mất dữ liệu, phải drain từng thành phần và đặt tổng thời gian bé hơn {{terminationGracePeriodSeconds}}.
+
+### Trình tự thực tế
+~~~text
+t=0    API server đánh dấu Pod Terminating, bắt đầu gỡ khỏi EndpointSlice
+t=0    kubelet chạy preStop (sleep 10) - app vẫn phục vụ bình thường
+t=10   SIGTERM tới PID 1 (java)
+t=10   Spring: đóng cổng nhận request mới, chờ request đang chạy
+t=10   ReadinessState chuyển sang REFUSING_TRAFFIC
+t=10+  ContextClosedEvent, các bean SmartLifecycle dừng dần
+t=30   hết timeout-per-shutdown-phase (20 s), đóng context
+t=60   hết terminationGracePeriodSeconds, SIGKILL nếu JVM còn sống
+~~~
+Hai nhánh gỡ endpoint và gửi SIGTERM **không đồng bộ**. Vì vậy luôn cần preStop sleep vài giây để kube-proxy/Ingress kịp quên Pod trước khi cổng đóng.
+
+### Spring graceful shutdown làm gì
+- Tomcat/Jetty/Undertow ngừng nhận connection mới, đóng keep-alive, chờ request đang xử lý tối đa {{spring.lifecycle.timeout-per-shutdown-phase}} (mặc định 30 giây; Boot 3.4 bật graceful mặc định nhưng vẫn nên khai báo rõ).
+- Request dài hơn timeout bị cắt; client nhận lỗi kết nối hoặc 503. Với upload/report chạy hàng phút, phải chủ động trả 503 sớm hoặc tách sang async job.
+
+### Những thứ Spring không tự xử lý
+| Thành phần | Vấn đề | Cách xử lý |
+|---|---|---|
+| {{ThreadPoolExecutor}} tự tạo | Không phải bean, không ai shutdown | Đăng ký bean, gọi {{shutdown()}} và {{awaitTermination()}} trong {{@PreDestroy}} |
+| {{ThreadPoolTaskExecutor}} | Mặc định không chờ task đang chạy | {{setWaitForTasksToCompleteOnShutdown(true)}} + {{setAwaitTerminationSeconds(20)}} |
+| {{@Scheduled}} | Task đang chạy có thể bị interrupt | Cấu hình scheduler chờ hoặc kiểm tra cờ shutdown trong task |
+| Kafka listener | Có thể còn record đang xử lý, commit sau khi context đóng | Dừng container chủ động, chờ record hiện tại, commit, rồi mới đóng pool |
+| Thread non-daemon | JVM không thoát dù context đã đóng | Tìm qua thread dump, đặt daemon hoặc join có timeout |
+
+### Cấu hình mẫu
+~~~yaml
+spec:
+  terminationGracePeriodSeconds: 60
+  containers:
+    - name: payment
+      lifecycle:
+        preStop:
+          httpGet: { path: /internal/drain, port: 8081 }
+~~~
+~~~properties
+server.shutdown=graceful
+spring.lifecycle.timeout-per-shutdown-phase=20s
+spring.task.execution.shutdown.await-termination=true
+spring.task.execution.shutdown.await-termination-period=15s
+~~~
+Endpoint {{/internal/drain}} bật cờ để readiness trả {{OUT_OF_SERVICE}} và từ chối request mới, sau đó sleep phần còn lại. Nếu image không có {{sleep}} (distroless), dùng {{httpGet}} thay vì {{exec}}.
+
+### Canh thời gian
+{{terminationGracePeriodSeconds}} phải lớn hơn {{preStop + timeout-per-shutdown-phase + buffer}}. Ví dụ preStop 10 s, Spring chờ 20 s, buffer 10 s thì đặt 45–60 s. Nếu đặt grace 30 s mà preStop đã 20 s, app chỉ còn 10 s để tắt, rất dễ SIGKILL.
+
+Với Kafka, thời gian còn phụ thuộc rebalance và commit. Chia nhỏ batch, commit theo lô, dùng idempotent consumer; đừng tắt {{enable.auto.commit}} rồi quên commit thủ công.
+
+### Cách kiểm chứng
+- Chạy load test liên tục trong lúc rolling update; yêu cầu 0 lỗi 5xx và không có message trùng.
+- Xem log có {{Commencing graceful shutdown}} và {{Graceful shutdown complete}}; nếu chỉ thấy dòng đầu rồi Pod biến mất, nhiều khả năng SIGKILL.
+
+### Pitfall production
+- preStop dùng {{sh -c sleep}} trên image distroless: không có shell, hook fail ngay, mất tác dụng che race.
+
+> Senior tip: Đo rollout thật bằng load test và đếm lỗi theo từng giây; đừng tin cảm giác "đã bật graceful". Với service thanh toán, tôi thường đặt grace 60 s, preStop 10 s, Spring timeout 20 s, và theo dõi SIGKILL trong 24 giờ sau release.`,
+    follow: [
+      'Kafka listener nên dừng trước hay sau khi web server ngừng nhận request? Vì sao?',
+      'Làm sao phát hiện thread non-daemon nào đang giữ JVM sống trong lúc shutdown?',
+      'Với request upload kéo dài 3 phút, bạn xử lý graceful shutdown thế nào?'
+    ],
+    tags: ['Graceful shutdown', 'Kubernetes', 'Kafka', 'preStop', 'SIGTERM']
+  },
+  {
+    id: 'devops-018',
+    topic: 'devops',
+    level: 'senior',
+    q: 'HPA theo CPU không phản ứng với service I/O-bound. Bạn đưa custom metric như RPS, độ sâu queue hoặc lag Kafka vào HPA thế nào? Trình bày kiến trúc metrics pipeline, cách chọn metric và các bẫy khi scale service Java.',
+    a: `**Tóm tắt:** metrics-server chỉ cung cấp CPU/memory; muốn HPA scale theo RPS, độ sâu queue hay lag Kafka phải đưa metric vào API {{custom.metrics.k8s.io}} hoặc {{external.metrics.k8s.io}} qua Prometheus Adapter, hoặc dùng KEDA. Chọn metric càng gần tải thật càng tốt, nhưng HPA vẫn là vòng điều khiển chậm: scrape, sync 15 giây, rồi thời gian JVM khởi động, nên phải kết hợp minReplicas và scale theo lịch.
+
+### Kiến trúc đưa custom metric vào HPA
+~~~text
+Pod /actuator/prometheus
+        | scrape
+   Prometheus ---> prometheus-adapter ---> custom.metrics.k8s.io
+        |                                        |
+        +------> KEDA (external metrics) --------+--> HPA --> Deployment
+~~~
+- {{metrics-server}} chỉ phục vụ {{metrics.k8s.io}} (CPU/RAM từ kubelet), không đọc Prometheus.
+- {{prometheus-adapter}} biến PromQL thành metric API. Rule ánh xạ tên metric, selector và công thức.
+- {{KEDA}} mạnh ở scaler có sẵn (Kafka, RabbitMQ, SQS, cron), hỗ trợ scale về 0; bên dưới KEDA vẫn tạo HPA.
+
+Ví dụ HPA theo RPS trung bình mỗi Pod:
+~~~yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: { name: payment }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: payment }
+  minReplicas: 4
+  maxReplicas: 30
+  metrics:
+    - type: Pods
+      pods:
+        metric: { name: http_requests_per_second }
+        target: { type: AverageValue, averageValue: "300" }
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies: [{ type: Percent, value: 100, periodSeconds: 30 }]
+    scaleDown:
+      stabilizationWindowSeconds: 600
+      policies: [{ type: Pods, value: 1, periodSeconds: 60 }]
+~~~
+{{AverageValue}} nghĩa là mỗi Pod nên phục vụ trung bình 300 RPS. Nếu dùng {{External}} với {{AverageValue}}, HPA chia tổng giá trị cho số replica; với {{Value}} thì không chia, phù hợp metric kiểu "có bao nhiêu job đang chờ".
+
+### Công thức và độ trễ
+~~~text
+desired = ceil(currentReplicas * currentMetric / target)
+ví dụ: 6 Pod * 450 RPS / 300 = 9 Pod
+~~~
+Mỗi vòng HPA gồm: Prometheus scrape (10–30 s), adapter, HPA sync (mặc định 15 s), scheduler, pull image, Spring Boot khởi động 30–90 s và JIT warm-up. Từ lúc tải tăng tới lúc Pod mới phục vụ tốt có thể là 2–4 phút.
+
+### KEDA cho consumer Kafka
+KEDA có scaler Kafka sẵn: khai báo {{ScaledObject}} với {{lagThreshold}} và {{maxReplicaCount}}; bên dưới nó vẫn tạo HPA và có thể scale về 0. Đặt maxReplicaCount không vượt số partition, scale down chậm để tránh rebalance storm, và chỉ scale về 0 cho worker/batch vì API Java khởi động chậm.
+
+### Bẫy khi scale service Java
+| Bẫy | Hậu quả | Cách tránh |
+|---|---|---|
+| Đếm cả Pod chưa Ready | Chia nhỏ mẫu số, scale quá tay | Lọc {{ready="true"}} trong PromQL hoặc dùng resource metric |
+| Dùng latency làm target | Vòng phản hồi trễ, dao động | Scale theo RPS/concurrency/queue; latency chỉ để alert |
+| CPU lúc JIT/khởi động | Pod mới bị tính là quá tải | startupProbe + readiness đúng, bỏ qua giai đoạn đầu |
+
+Chọn metric gần tải thật: RPS/concurrency cho API I/O-bound, queue depth hoặc lag cho consumer, CPU cho service tính toán nặng. Tránh memory vì heap Java ít trả lại sau GC, và tránh latency vì đây là chỉ số phản hồi trễ, dễ gây dao động. Luôn load test để biết năng lực một Pod, rồi đặt target thấp hơn 20–30% và giữ {{minReplicas}} đủ gánh tải nền.
+
+### Pitfall production
+- Metric thiếu hoặc PromQL sai: HPA báo {{FailedGetExternalMetric}} và không scale; phải alert trên điều kiện này.
+- Consumer scale lên 20 khi topic chỉ có 6 partition: 14 Pod idle, rebalance liên tục, lag còn tăng.
+- Quên {{requests.cpu}} trên container: HPA theo CPU không tính được, metric hiển thị {{unknown}}.
+
+> Senior tip: HPA không thay thế năng lực dự báo. Với hệ thống ngân hàng, tôi giữ minReplicas theo đỉnh lịch (ngày lương, cuối tháng), dùng KEDA cron nâng trước 30 phút, và chỉ để HPA xử lý phần bất thường. Đo {{container_cpu_cfs_throttled_periods_total}} cùng lúc với HPA để biết scale có thực sự giúp hay chỉ làm DB căng hơn.`,
+    follow: [
+      'Vì sao scale consumer Kafka vượt số partition không tăng throughput? Bạn xử lý backlog thế nào?',
+      'Metric RPS do adapter trả về là tổng hay trung bình mỗi Pod? Cấu hình HPA khác nhau ra sao?',
+      'HPA scale lên 20 Pod nhưng p99 không giảm: bạn kiểm tra những điểm nghẽn nào?'
+    ],
+    tags: ['Kubernetes', 'HPA', 'KEDA', 'Prometheus Adapter', 'Autoscaling']
+  },
+  {
+    id: 'devops-019',
+    topic: 'devops',
+    level: 'lead',
+    q: 'Với hệ thống core banking và thanh toán, bạn chọn rolling update, blue-green hay canary? So sánh chi phí, blast radius, rollback và ràng buộc dữ liệu; khi nào dùng từng chiến lược và ai được quyền quyết định rollback?',
+    a: `**Tóm tắt:** Rolling update là mặc định vì rẻ và đơn giản nhưng trộn hai version trong thời gian deploy; blue-green đổi toàn bộ traffic sang môi trường mới, rollback tức thì nhưng gấp đôi tài nguyên; canary giảm blast radius bằng cách đưa một phần traffic qua version mới, đổi lại cần hạ tầng chia traffic và metric đủ tin cậy. Với core banking, tôi dùng rolling cho thay đổi nhỏ, canary có phân tích tự động cho thay đổi rủi ro, và blue-green cho thay đổi lớn về hạ tầng hoặc version nền tảng.
+
+### So sánh
+| Tiêu chí | Rolling | Blue-green | Canary |
+|---|---|---|---|
+| Tài nguyên dư | Ít (surge 1–25%) | Gần gấp đôi | Ít đến vừa |
+| Rollback | Rollout undo, vài chục giây | Đổi selector/DNS, gần tức thì | Giảm weight về 0 |
+| Blast radius | Toàn bộ nếu version lỗi | 0 nếu chưa cutover | Nhỏ, theo phần trăm |
+| Độ phức tạp | Thấp | Trung bình | Cao |
+| Yêu cầu dữ liệu | Schema tương thích hai chiều | Như rolling | Như rolling + metric |
+| Phù hợp | Stateless, thay đổi nhỏ | Release lớn, cần cutover sạch | Thay đổi rủi ro, traffic đủ lớn |
+
+### Rolling update
+- Kiểm soát bằng {{maxSurge}}, {{maxUnavailable}}, {{minReadySeconds}}, probe và graceful shutdown.
+- Version cũ và mới chạy song song nên API, message schema và DB phải tương thích ngược.
+- Không có "cửa sổ vàng" để so sánh hai version; nếu version mới lỗi, một phần người dùng đã chịu ảnh hưởng trước khi rollout dừng.
+- {{kubectl rollout undo}} quay về ReplicaSet trước; nhưng nếu migration DB đã chạy thì rollback app có thể vỡ.
+
+### Blue-green
+- Hai môi trường (blue/green) chạy song song, Service hoặc Ingress chỉ trỏ vào một bên.
+- Green được warm-up và smoke test trước; cutover đổi selector hoặc weight 100%.
+- Rollback chỉ là đổi lại selector, rất nhanh, nhưng **không** giải quyết được dữ liệu đã ghi bởi version mới.
+- Chi phí: gấp đôi Pod, gấp đôi connection pool tới DB, gấp đôi cache; phải kiểm tra DB chịu được.
+- DNS TTL và connection keep-alive làm cutover không tức thì với một số client; session phải externalized hoặc stateless.
+
+### Canary
+- Đưa 1% → 5% → 25% → 50% → 100% traffic qua version mới, dừng lại phân tích ở mỗi bước.
+- Công cụ: Argo Rollouts, Flagger, Istio/Gateway API weight, hoặc ingress controller hỗ trợ weighted routing.
+- Phân tích tự động dựa trên Prometheus: tỷ lệ lỗi 5xx, p99, tỷ lệ timeout, và metric nghiệp vụ như tỷ lệ giao dịch thành công. So sánh canary với baseline cùng thời điểm, không so với hôm qua.
+- Cần đủ mẫu: 1% của 100 RPS là 1 RPS, không đủ để phát hiện lỗi hiếm.
+- Không chia được traffic theo phần trăm cho Kafka consumer; dùng consumer group riêng, shadow topic hoặc chạy version mới trên một tập partition.
+
+### Ràng buộc dữ liệu là trên hết
+Cả ba chiến lược đều yêu cầu **expand-contract** khi đổi schema: thêm cột/table mới, dual-write, backfill, chuyển đọc, rồi mới xoá cột cũ sau vài release. Canary không cứu được một migration phá vỡ version cũ. Đừng để app tự chạy migration mỗi Pod khởi động; chạy migration như một bước riêng trước khi deploy.
+
+### Ai quyết định rollback
+- Trước release, chốt **tiêu chí định lượng**: lỗi 5xx trên 1% trong 5 phút, p99 trên 800 ms, tỷ lệ thanh toán thành công giảm trên 2%, hoặc alert SLO burn rate.
+- Release owner và SRE on-call cùng có quyền dừng. Với canary, Argo Rollouts có thể tự abort khi analysis fail.
+
+### Pitfall production
+- Canary so sánh Pod mới (chưa warm JIT) với Pod cũ (đã chạy vài ngày): kết luận sai là version mới chậm hơn.
+- Blue-green nhưng dùng chung DB connection pool tối đa: green khởi động làm cạn connection, blue sập theo.
+- Ingress weight nhưng client giữ kết nối HTTP/2 lâu: traffic không thực sự chia theo phần trăm.
+
+> Senior tip: Đừng chọn công cụ trước khi có SLO và metric tin cậy. Một canary 5% chỉ đáng tin khi bạn có dashboard so sánh baseline/canary theo cùng cửa sổ thời gian và đủ traffic; nếu không, blue-green với cutover có kiểm soát và rollback một nút bấm còn an toàn hơn. Ở ngân hàng, tôi luôn canary cho nhân viên nội bộ trước, rồi mới mở cho khách hàng theo cohort.`,
+    follow: [
+      'Canary cho Kafka consumer khác gì canary cho API? Bạn chia traffic theo partition thế nào?',
+      'Blue-green gấp đôi connection pool: bạn tính toán và cấu hình DB ra sao để không sập?',
+      'Tiêu chí rollback tự động của bạn gồm những metric nào và cửa sổ thời gian bao lâu?'
+    ],
+    tags: ['Kubernetes', 'Blue-green', 'Canary', 'Rolling update', 'Release strategy']
+  },
+  {
+    id: 'devops-020',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Bạn dựng pipeline CI/CD cho một service Spring Boot mới. Các stage nào nên có, stage nào chặn merge, làm sao build một lần và promote đúng artifact qua nhiều môi trường, và đặt migration DB ở đâu trong pipeline?',
+    a: `**Tóm tắt:** Pipeline tốt cho service Java phải cho feedback nhanh ở các bước rẻ, build artifact **một lần** rồi promote đúng digest qua các môi trường, và chặn merge bằng những kiểm tra bắt buộc. Đừng rebuild cho từng môi trường, đừng để app tự chạy migration trên mọi Pod, và đừng đánh đổi tốc độ bằng cách bỏ test integration.
+
+### Các stage
+| Stage | Thời gian mục tiêu | Chặn merge | Ghi chú |
+|---|---|---|---|
+| Compile + checkstyle | Dưới 2 phút | Có | Fail fast, cache dependency |
+| Unit test | Dưới 5 phút | Có | Chạy song song, không cần DB thật |
+| Integration test | Dưới 10 phút | Có | Testcontainers cho PostgreSQL/Kafka |
+| SAST + dependency scan | Dưới 5 phút | Có với lỗi critical | SBOM, CVE, license |
+| Build image + scan | Dưới 5 phút | Có | Một lần, tag theo commit SHA |
+| Deploy DEV/SIT | — | Không | Tự động |
+| E2E/smoke | — | Có trước PROD | Chạy trên môi trường giống prod |
+| Deploy PROD | — | Có phê duyệt | Promote đúng digest |
+
+### Build một lần, promote nhiều lần
+~~~text
+commit abc123
+   -> image registry/payment:abc123  (digest sha256:...)
+   -> DEV  dùng digest đó
+   -> SIT  dùng đúng digest đó
+   -> PROD dùng đúng digest đó
+~~~
+Nếu mỗi môi trường rebuild, bạn không chứng minh được artifact đã test chính là artifact chạy prod. Tag theo {{git SHA}} và ghi digest vào biên bản release; registry bật immutable tag để không ai ghi đè.
+
+### Cache và tốc độ
+- Cache thư mục {{.m2}} theo hash của {{pom.xml}}; cache Docker layer bằng {{--mount=type=cache}}.
+- Tách job unit và integration; unit chạy trên mọi push, integration chạy trên merge request để tiết kiệm runner.
+- Dùng matrix/shard để chia test; đặt timeout cho từng job để job treo không giữ runner.
+
+### Test integration đúng cách
+Testcontainers khởi động PostgreSQL/Kafka thật trong CI, chạy migration Flyway rồi test repository. Điều này bắt được lỗi SQL, kiểu dữ liệu, transaction mà mock không thấy.
+~~~java
+@Testcontainers
+class PaymentRepositoryTest {
+    @Container
+    static PostgreSQLContainer<?> db = new PostgreSQLContainer<>("postgres:15-alpine");
+
+    @DynamicPropertySource
+    static void props(DynamicPropertyRegistry r) {
+        r.add("spring.datasource.url", db::getJdbcUrl);
+        r.add("spring.datasource.username", db::getUsername);
+        r.add("spring.datasource.password", db::getPassword);
+    }
+}
+~~~
+Không dùng chung một database staging cho mọi job: test song song sẽ giẫm dữ liệu và trở nên flaky.
+
+### Migration và deploy
+- Chạy Flyway như một job/initContainer riêng trước khi rollout, không để mỗi Pod tự migrate. Flyway có lock nhưng nhiều Pod cùng chờ làm thời gian khởi động tăng và khó quan sát.
+- Migration phải tương thích ngược: version cũ và mới cùng chạy trong lúc rolling.
+- Pipeline lưu {{flyway_schema_history}} hoặc log migration vào artifact release.
+- Rollback app bằng cách deploy lại digest cũ; rollback DB bằng migration bù trừ hoặc restore có kiểm soát, không dựa vào {{flyway clean}}.
+
+### Bảo mật và tái lập
+- Secret lấy từ vault/OIDC ngắn hạn, không nằm trong repo hay image.
+- Pin JDK (17 hoặc 21), Maven/Gradle wrapper, plugin version; bật {{maven-enforcer-plugin}} để chặn dependency trùng hoặc không mong muốn.
+- Image chạy non-root, đọc từ registry nội bộ, quét CVE trước khi promote.
+- SBOM (CycloneDX) và chữ ký image giúp trả lời "image này có gì" khi có CVE mới.
+
+### Pitfall production
+- Dùng tag {{latest}}: không biết prod đang chạy bản nào, rollback không chính xác.
+- Chạy migration trong lúc app khởi động với 10 replica: Flyway lock làm 9 Pod chờ, readiness fail, deploy kéo dài.
+- Test chỉ dùng H2: SQL PostgreSQL chạy được trên H2 không có nghĩa là chạy được trên PostgreSQL.
+
+> Senior tip: Mục tiêu thực tế là pipeline dưới 15 phút từ push tới môi trường dev, và mọi gate trên merge request phải tái lập được trên máy dev bằng một lệnh. Đo lead time và tỷ lệ pipeline đỏ; nếu pipeline đỏ vì test flaky, sửa test ngay trong ngày thay vì cho retry vô hạn, vì retry vô hạn dạy cả team bỏ qua tín hiệu.`,
+    follow: [
+      'Bạn đặt quality gate nào cho dependency scan mà không làm pipeline chậm và hay fail vặt?',
+      'Làm sao đảm bảo image chạy ở prod đúng là image đã test ở SIT?',
+      'Migration DB nên chạy trước hay sau khi deploy app? Vì sao?'
+    ],
+    tags: ['CI/CD', 'Pipeline', 'Testcontainers', 'Flyway', 'Artifact']
+  },
+  {
+    id: 'devops-021',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Deploy cuốn chiếu không downtime nhưng migration DB làm rollback app thất bại. Bạn thiết kế migration theo expand-contract với Flyway thế nào, và rollback DB ra sao khi Flyway Community không có undo?',
+    a: `**Tóm tắt:** Flyway Community không có undo trong production (undo thuộc bản Teams/Enterprise), và rollback DB thường không thể vì dữ liệu đã ghi. Cách đúng là thiết kế migration theo **expand-contract**: thêm cấu trúc mới tương thích ngược, dual-write và backfill, chuyển đọc, rồi mới xoá cấu trúc cũ sau vài release. Khi cần quay lui, rollback app là đủ; DB đi tiếp bằng migration bù trừ, chỉ restore snapshot khi thật sự mất dữ liệu.
+
+### Vì sao rollback DB khó
+- {{DROP COLUMN}}, {{RENAME}}, đổi kiểu dữ liệu không thể hoàn tác dữ liệu đã mất.
+- Trong rolling deploy, version cũ và mới chạy **cùng lúc**; schema phải phục vụ cả hai.
+- Flyway đánh dấu migration đã áp dụng bằng checksum; sửa file cũ làm {{flyway validate}} fail. Không được sửa migration đã chạy.
+- Backup/PITR là lưới an toàn cuối cùng, không phải quy trình rollback thường ngày: mất dữ liệu phát sinh sau thời điểm backup.
+
+### Năm pha expand-contract
+| Pha | Việc làm | Version app |
+|---|---|---|
+| Expand | Thêm cột/table/index mới, cho phép NULL | App cũ vẫn chạy |
+| Dual-write | App mới ghi cả cột cũ và mới, đọc cột cũ | App mới |
+| Backfill | Job nền copy dữ liệu cũ sang mới theo lô | App mới |
+| Switch | App đọc cột mới; giữ ghi cả hai | App mới |
+| Contract | Xoá cột cũ sau khi không còn version nào đọc | Sau 1–2 release |
+
+~~~sql
+-- V10: expand, chỉ thêm, không đổi cột cũ
+ALTER TABLE payment ADD COLUMN status_new varchar(20);
+CREATE INDEX CONCURRENTLY idx_payment_status_new ON payment(status_new);
+
+-- Job backfill chạy ngoài Flyway, theo lô và idempotent
+UPDATE payment
+SET status_new = status
+WHERE status_new IS NULL
+  AND id BETWEEN :from_id AND :to_id;
+~~~
+- {{CREATE INDEX CONCURRENTLY}} không được chạy trong transaction. Flyway tự nhận diện lệnh này (PostgreSQLParser) và tự chạy migration đó ngoài transaction; nếu phiên bản cũ chưa làm vậy, ép bằng script config {{executeInTransaction=false}} đi kèm. Mặc định Flyway dùng advisory lock kiểu transactional trên PostgreSQL, dễ gây treo quanh loại lệnh như vậy: đặt {{flyway.postgresql.transactional.lock=false}} để chuyển sang lock cấp session.
+- Backfill theo lô 1.000–10.000 dòng, nghỉ giữa các lô, theo dõi replication lag và lock wait. UPDATE toàn bảng 50 triệu dòng sẽ giữ lock lâu và bloat WAL.
+- Với PostgreSQL, thêm cột có default không volatile thường nhanh từ bản 11; thêm {{NOT NULL}} vẫn cần kiểm tra toàn bảng. Dùng {{CHECK ... NOT VALID}} rồi {{VALIDATE CONSTRAINT}} để tránh lock dài.
+
+### Flyway trong pipeline
+- Đặt tên {{V<version>__mô_tả.sql}}; không sửa file đã áp dụng.
+- Chạy {{flyway validate}} trong CI, {{flyway info}} trước khi deploy; đặt {{cleanDisabled=true}}.
+- Chạy migration bằng Job/initContainer riêng, không để mỗi Pod tự chạy. Nếu app tự chạy, đặt {{spring.flyway.enabled=false}} khi Job đã lo.
+- Đặt {{lock_timeout}} và {{statement_timeout}} cho session migration để một lệnh sai không khoá bảng vô hạn.
+
+### Khi buộc phải quay lui
+- **App rollback**: deploy lại digest cũ. Với expand-contract, version cũ vẫn đọc được schema mới.
+- **DB forward-fix**: viết migration mới sửa sai. Cách này nhanh hơn restore.
+- **Restore/PITR**: chỉ khi mất dữ liệu nghiêm trọng; chấp nhận mất cửa sổ dữ liệu sau backup, cần dừng ghi và thông báo.
+- Không dùng {{flyway clean}} trên prod: nó xoá sạch schema.
+
+### Kiểm thử migration
+- Chạy trên bản snapshot có kích thước và phân bố dữ liệu giống prod, đo thời gian lock và thời gian chạy.
+- Theo dõi lock trong lúc migrate qua {{pg_locks}} và {{pg_stat_activity}}; alert khi có lock chờ quá ngưỡng.
+
+### Pitfall production
+- Backfill chạy trong một transaction khổng lồ: WAL phình, autovacuum không theo kịp, DB chậm toàn hệ thống.
+- Thêm index thường trên bảng lớn trong giờ cao điểm: lock ghi, timeout hàng loạt.
+- Sửa migration đã áp dụng để "sửa nhanh": checksum mismatch, pipeline dừng, hoặc tệ hơn là môi trường lệch nhau.
+
+> Senior tip: Hãy coi mỗi migration là một API công khai giữa các version app. Tôi luôn yêu cầu migration chạy trên snapshot prod trong staging, có số đo thời gian lock và kế hoạch forward-fix trước khi deploy. Một migration "chỉ mất 2 giây" trên bảng 100.000 dòng có thể mất 20 phút trên 100 triệu dòng.`,
+    follow: [
+      'Bạn dual-write và backfill thế nào để không tăng tải DB trong giờ cao điểm?',
+      'Vì sao không nên dùng flyway undo dù có bản Teams? Khi nào restore là lựa chọn đúng?',
+      'Làm sao chạy migration an toàn khi có 20 Pod cùng khởi động?'
+    ],
+    tags: ['Flyway', 'Database migration', 'Expand-contract', 'PostgreSQL', 'Rollback']
+  },
+  {
+    id: 'devops-022',
+    topic: 'devops',
+    level: 'lead',
+    q: 'Bạn thiết kế observability cho 20 microservice Spring Boot: metrics, distributed tracing và log tương quan. Micrometer, Micrometer Tracing/OpenTelemetry và OTel Collector chia việc thế nào, cấu hình ra sao, và bẫy nào làm chi phí tăng vọt?',
+    a: `**Tóm tắt:** Observability không phải cài thật nhiều tool, mà là trả lời được "hệ thống đang làm gì và vì sao" từ tín hiệu đủ tốt. Với Spring Boot, Micrometer là facade cho metric, Micrometer Tracing/OpenTelemetry lo trace, log JSON có traceId/spanId để nối ba trụ cột. Ở quy mô 20 service, chi phí và cardinality mới là ràng buộc chính, nên phải chuẩn hoá qua một starter chung và lọc tại OTel Collector.
+
+### Kiến trúc tham chiếu
+~~~text
+Spring Boot
+  metrics -> /actuator/prometheus <- Prometheus -> Mimir/Thanos
+  traces  -> OTLP -> OTel Collector (batch, tail sampling) -> Tempo/Jaeger
+  logs    -> stdout JSON -> Promtail/Fluent Bit -> Loki/ELK
+                traceId, spanId nằm trong MDC để nối ba tín hiệu
+~~~
+- Metric: {{micrometer-registry-prometheus}} + Actuator; endpoint chỉ mở nội bộ.
+- Trace: {{micrometer-tracing-bridge-otel}} + {{opentelemetry-exporter-otlp}}, hoặc OTel Java agent. Không bật cả hai cho cùng một ứng dụng nếu không kiểm soát, tránh span trùng.
+- Log: JSON encoder, traceId/spanId tự động trong MDC nhờ Micrometer Tracing; log aggregation gắn nhãn {{service.name}}, {{environment}}, {{version}}.
+
+### Metric: ít nhưng đúng
+- Bật histogram cho HTTP để tính percentile và SLO, ví dụ {{management.metrics.distribution.percentiles-histogram.http.server.requests=true}} và các bucket quanh 100/300/500/1000 ms.
+- Dùng tag có cardinality thấp: {{service}}, {{method}}, {{uri}} đã template hoá, {{status}}. **Không** gắn {{userId}}, {{accountId}}, {{requestId}} hay raw path vào metric.
+- Kiểm soát bằng {{MeterFilter}}: giới hạn số meter, deny tag nguy hiểm, đổi tên metric theo chuẩn.
+- Metric nghiệp vụ quan trọng hơn metric hạ tầng: số giao dịch thành công, số giao dịch chờ, tỷ lệ lỗi theo kênh. Đặt tên và đơn vị rõ ràng.
+
+### Trace: nối các service
+- Lan truyền {{traceparent}} (W3C) qua HTTP header, Kafka header, message, và client DB nếu được hỗ trợ.
+- Đặt tên span theo nghiệp vụ ở biên (ví dụ {{POST /payments}}) và giữ span con cho DB, HTTP client, cache.
+- Sampling: head-based 5–10% ở production; lỗi và request chậm nên được giữ 100% bằng tail sampling tại Collector.
+- Collector chịu trách nhiệm batch, retry, memory limiter, redact dữ liệu nhạy cảm, và routing theo môi trường. Đừng để mỗi app tự gửi thẳng tới vendor.
+- Với async/CompletableFuture/virtual thread, context có thể mất; kiểm tra span bị đứt và bổ sung propagation.
+
+### Log tương quan
+- Log JSON có {{timestamp}}, {{level}}, {{service}}, {{traceId}}, {{spanId}}, {{message}}; không log số thẻ, CCCD, token, mật khẩu.
+- Log lỗi phải kèm context đủ để tái hiện: mã giao dịch, mã lỗi nghiệp vụ, không kèm toàn bộ payload.
+
+### SLO, alert và chi phí
+- Chọn 2–4 SLI cho mỗi service: availability, latency p99, tỷ lệ lỗi nghiệp vụ. Đặt SLO và error budget; alert theo burn rate thay vì alert từng lần lỗi.
+- Dashboard chuẩn: RED cho API (rate, errors, duration), USE cho hạ tầng (utilization, saturation, errors), và một dashboard nghiệp vụ.
+- Cardinality là chi phí số một: mỗi tổ hợp tag là một time series. Một tag {{userId}} có thể nhân số series lên hàng triệu.
+- Trace và log cũng tốn tiền: tail sampling, giới hạn attribute, lọc log debug tại Collector, không gửi span của health check.
+- Đo chi phí theo service và theo team; tối ưu trước khi tăng hạn mức.
+
+### Pitfall production
+- Dùng {{http_server_requests_seconds_count}} với tag URI chứa ID thật: cardinality nổ, Prometheus OOM.
+- Bật OTel agent và Micrometer Tracing cùng lúc: span trùng, trace không liền mạch.
+- Log không có traceId vì dùng async appender hoặc thread pool tự tạo làm mất MDC.
+- Trace sampling 100% ở production: chi phí tăng gấp nhiều lần, exporter nghẽn.
+
+> Senior tip: Bắt đầu từ SLO và ba dashboard, rồi mới chọn tool. Chuẩn hoá bằng một starter nội bộ (metric naming, log format, trace propagation, tag bắt buộc) để 20 service không mỗi nơi một kiểu. Mỗi quý rà lại top metric theo cardinality và top log theo volume; cắt 20% tín hiệu ít dùng thường không làm mất khả năng điều tra mà giảm hoá đơn rõ rệt.`,
+    follow: [
+      'Cardinality của metric HTTP tăng vọt vì path chứa ID: bạn sửa ở app hay ở Prometheus?',
+      'Tail sampling ở OTel Collector hoạt động thế nào và vì sao cần cho trace lỗi?',
+      'Làm sao giữ traceId xuyên qua Kafka và thread pool để log tương quan đúng?'
+    ],
+    tags: ['Observability', 'Micrometer', 'OpenTelemetry', 'Tracing', 'SLO']
   }
 );

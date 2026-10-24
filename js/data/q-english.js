@@ -1873,7 +1873,23 @@ I underestimated [real task] and realized [when] that the date was at risk. I to
 ### Lỗi người Việt hay mắc
 - Giấu đến phút cuối rồi báo cáo.
 - Đổ lỗi cho người khác hoặc yêu cầu.
-- Không có hành động ngăn chặn lặp lại.`,
+- Không có hành động ngăn chặn lặp lại.
+
+### Cấu trúc STAR gợi ý
+| Phần | Nói gì | Thời lượng |
+|---|---|---|
+| Situation | Dự án, deadline, ai phụ thuộc vào nó | 15 giây |
+| Task | Phần việc bạn chịu trách nhiệm, vì sao trễ | 15 giây |
+| Action | Lúc nào phát hiện, báo ai, đưa phương án gì | 60 giây |
+| Result | Kết quả thật, bài học, thay đổi quy trình | 30 giây |
+
+### Interviewer muốn nghe gì
+- **Ownership:** dùng "I" cho phần lỗi của mình, không "we" để né trách nhiệm.
+- **Phát hiện sớm:** bạn có tín hiệu cảnh báo (burndown, spike kỹ thuật) chứ không bất ngờ ở ngày cuối.
+- **Trade-off:** đưa lựa chọn có hệ quả rõ ràng, ví dụ "ship the core flow on time and move reporting to the next sprint".
+- **Prevention có số liệu:** ví dụ "since then I add a one-day spike for unknown integrations, and our estimate error dropped from about 40% to 15%".
+
+> Senior tip: Chọn câu chuyện mà hậu quả vừa phải và bạn đã kiểm soát được; tránh sự cố mất tiền khách hàng nếu không kể được phần khắc phục. Luyện nói thành tiếng dưới 2 phút.`,
   follow: ['How do you estimate work more accurately?', 'How do you push back on an unrealistic deadline?'],
   tags: ['delivery', 'communication', 'ownership'],
   lang: 'en',
