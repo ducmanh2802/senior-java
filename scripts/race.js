@@ -73,49 +73,104 @@ function status() {
 const PAGE = `<!doctype html><html lang="vi"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Task Race</title>
 <style>
-:root{--bg:#f4f5f7;--fg:#1d2330;--muted:#6b7280;--track:#3b4252;--lane:#4c566a;--line:#e5e9f0;--ok:#16a34a;--bad:#dc2626;--card:#fff}
-@media (prefers-color-scheme:dark){:root{--bg:#11141b;--fg:#e6e9ef;--muted:#9aa3b2;--track:#2a2f3a;--lane:#363c4a;--line:#5b6578;--card:#1a1e27}}
-body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.4 system-ui,sans-serif;padding:16px}
-h1{margin:0 0 4px;font-size:20px}.sub{color:var(--muted);margin-bottom:16px}
-.track{background:var(--track);border-radius:12px;padding:8px 0;overflow:hidden}
-.lane{position:relative;height:58px;border-bottom:2px dashed var(--line)}.lane:last-child{border-bottom:0}
-.finish{position:absolute;right:0;top:0;bottom:0;width:14px;background:repeating-conic-gradient(#000 0 25%,#fff 0 50%) 0 0/14px 14px}
-.car{position:absolute;top:6px;left:0;transition:left 1.5s ease;display:flex;align-items:center;gap:6px;white-space:nowrap}
-.car .emoji{font-size:30px;transform:scaleX(-1);display:inline-block}
-.car.run .emoji{animation:bump .4s infinite alternate}@keyframes bump{to{transform:scaleX(-1) translateY(-3px)}}
-.tag{background:var(--card);color:var(--fg);border-radius:8px;padding:2px 8px;font-size:12px;box-shadow:0 1px 3px #0004}
-.tag b{margin-right:4px}.tag small{color:var(--muted)}
-.empty{color:var(--muted);padding:24px}
-</style></head><body>
-<h1>🏁 Task Race</h1><div class="sub" id="sub">đang tải…</div>
-<div class="track" id="track"></div>
+:root{--bg:#eef1f6;--fg:#1d2330;--muted:#667085;--card:#fff;--border:#dde3ec;--asphalt:#2b303b;--asphalt2:#323844;--stripe:#f5f5f5;--kerb1:#e53935;--kerb2:#fafafa;
+--write:#3b82f6;--review:#a855f7;--wait:#f59e0b;--done:#16a34a;--bad:#ef4444;--pit:#94a3b8}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--muted:#8b949e;--card:#161b22;--border:#30363d;--asphalt:#1c2129;--asphalt2:#222832;--stripe:#c9d1d9}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;padding:20px 16px 40px}
+.wrap{max-width:1200px;margin:0 auto}
+header{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+h1{margin:0;font-size:26px;letter-spacing:-.02em}h1 span{display:inline-block;animation:wave 2s ease-in-out infinite}
+@keyframes wave{50%{transform:rotate(-12deg)}}
+.sub{color:var(--muted);font-size:13px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:16px}
+.stat{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:12px 14px;position:relative;overflow:hidden}
+.stat b{display:block;font-size:24px;line-height:1.1}.stat small{color:var(--muted)}
+.stat::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--c)}
+.overall{height:10px;border-radius:99px;background:var(--border);overflow:hidden;margin:0 0 18px}
+.overall i{display:block;height:100%;background:linear-gradient(90deg,var(--write),var(--review),var(--done));transition:width 1.5s ease}
+.track{background:var(--asphalt);border-radius:18px;padding:14px 0;position:relative;box-shadow:0 10px 30px #0003;
+  border-top:8px solid transparent;border-bottom:8px solid transparent;
+  border-image:repeating-linear-gradient(90deg,var(--kerb1) 0 24px,var(--kerb2) 24px 48px) 8}
+.marks{position:absolute;top:0;bottom:0;left:var(--l);right:var(--r);pointer-events:none}
+.mark{position:absolute;top:0;bottom:0;border-left:2px dashed #ffffff22}
+.mark span{position:absolute;top:-2px;left:4px;font-size:10px;color:#ffffff88;text-transform:uppercase;letter-spacing:.08em;white-space:nowrap}
+.finish{position:absolute;top:0;bottom:0;right:var(--r);width:16px;background:repeating-conic-gradient(#111 0 25%,#fff 0 50%) 0 0/16px 16px;opacity:.9}
+.lane{position:relative;height:64px;display:flex;align-items:center}
+.lane:nth-child(odd){background:var(--asphalt2)}
+.lane+.lane{border-top:2px dashed #ffffff18}
+.label{position:absolute;left:12px;width:64px;font:700 13px ui-monospace,Consolas,monospace;color:#fff;opacity:.85}
+.road{position:absolute;left:var(--l);right:var(--r);top:0;bottom:0}
+.car{position:absolute;top:50%;left:0;transform:translate(-50%,-50%);transition:left 1.6s cubic-bezier(.3,.8,.3,1);display:flex;flex-direction:column;align-items:center}
+.car .emoji{font-size:32px;line-height:1;transform:scaleX(-1);filter:drop-shadow(0 3px 2px #0006)}
+.car.run .emoji{animation:bump .35s infinite alternate}
+@keyframes bump{to{transform:scaleX(-1) translateY(-3px) rotate(-2deg)}}
+.car.run::after{content:"";position:absolute;right:70%;top:46%;width:46px;height:3px;border-radius:3px;background:linear-gradient(90deg,transparent,#ffffff70);animation:speed .5s linear infinite}
+@keyframes speed{from{opacity:.2;transform:translateX(8px)}to{opacity:.8;transform:translateX(0)}}
+.tag{position:absolute;bottom:calc(100% - 2px);background:var(--card);color:var(--fg);border-radius:10px;padding:3px 9px;font-size:12px;white-space:nowrap;
+  box-shadow:0 2px 8px #0005;border-left:4px solid var(--c);max-width:min(340px,60vw);overflow:hidden;text-overflow:ellipsis}
+.tag small{color:var(--muted)}
+.car.right .tag{right:0}.car.left .tag{left:0}
+.legend{display:flex;flex-wrap:wrap;gap:14px;margin-top:14px;color:var(--muted);font-size:12px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--c);margin-right:5px;vertical-align:-1px}
+.podium{margin-top:20px;background:var(--card);border:1px solid var(--border);border-radius:14px;padding:12px 14px}
+.podium h2{margin:0 0 8px;font-size:15px}.podium .chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{border:1px solid var(--border);border-radius:99px;padding:3px 10px;font-size:12px}.chip b{font-family:ui-monospace,Consolas,monospace}
+.empty{color:#fff9;padding:28px;text-align:center}
+@media (max-width:640px){.label{width:44px;font-size:11px}.tag{font-size:11px}.car .emoji{font-size:26px}}
+</style></head><body><div class="wrap">
+<header><div><h1><span>🏁</span> Task Race</h1><div class="sub" id="sub">đang tải…</div></div></header>
+<div class="stats" id="stats"></div>
+<div class="overall"><i id="overall" style="width:0"></i></div>
+<div class="track" id="track" style="--l:84px;--r:28px"></div>
+<div class="legend">
+  <span style="--c:var(--pit)"><i></i>Chờ / pit</span><span style="--c:var(--write)"><i></i>Đang viết</span>
+  <span style="--c:var(--wait)"><i></i>Chờ review / commit</span><span style="--c:var(--review)"><i></i>Đang review</span>
+  <span style="--c:var(--done)"><i></i>Về đích</span><span style="--c:var(--bad)"><i></i>Verify hỏng</span></div>
+<div class="podium" id="podium" hidden><h2>🏆 Đã về đích</h2><div class="chips" id="chips"></div></div>
+</div>
 <script>
-const EMOJI={'Về đích':'🏆','Tai nạn (verify hỏng)':'💥','Vào pit (chờ thử lại)':'🔧','Chờ xuất phát':'🚗'};
+const STAGE={'Về đích':['🏆','--done'],'Tai nạn (verify hỏng)':['💥','--bad'],'Chờ verify + commit':['🏎️','--wait'],'Đang review':['🏎️','--review'],
+  'Viết xong, chờ review':['🏎️','--wait'],'Đang viết':['🏎️','--write'],'Vào pit (chờ thử lại)':['🔧','--pit'],'Chờ xuất phát':['🚗','--pit']};
+const esc=s=>String(s).replace(/[&<>"]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]));
+const MARKS=[[8,'Viết'],[62,'Review'],[90,'Commit']];
 async function tick(){
-  try{
-    const d=await (await fetch('/api/race',{cache:'no-store'})).json();
-    const track=document.getElementById('track');
-    document.getElementById('sub').textContent='Cập nhật '+d.at+' · '+d.cars.filter(c=>c.pct===100).length+'/'+d.cars.length+' về đích';
-    if(!d.cars.length){track.innerHTML='<div class="empty">Không có task nào đang chạy.</div>';return}
-    const seen=new Set();
-    d.cars.forEach((c,i)=>{
-      seen.add(c.id);
-      let lane=document.getElementById('l-'+c.id);
-      if(!lane){lane=document.createElement('div');lane.className='lane';lane.id='l-'+c.id;
-        lane.innerHTML='<div class="finish"></div><div class="car"><span class="emoji"></span><span class="tag"></span></div>';track.appendChild(lane)}
-      track.appendChild(lane);
-      const car=lane.querySelector('.car');
-      car.className='car'+(/Đang/.test(c.stage)?' run':'');
-      car.querySelector('.emoji').textContent=EMOJI[c.stage]||'🏎️';
-      const esc=s=>String(s).replace(/[&<>"]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]));
-      car.querySelector('.tag').innerHTML='<b>'+esc(c.id)+'</b>'+esc(c.title)+'<br><small>'+esc(c.stage)+' · '+c.pct+'%'+(c.runner?' · '+esc(c.runner):'')+(c.since?' · từ '+esc(c.since):'')+'</small>';
-      const w=lane.clientWidth-car.offsetWidth-20;
-      car.style.left=Math.max(0,w*c.pct/100)+'px';
-    });
-    [...track.children].forEach(l=>{if(l.id&&!seen.has(l.id.slice(2)))l.remove()});
-  }catch(e){document.getElementById('sub').textContent='Mất kết nối tới race.js'}
+  let d;try{d=await (await fetch('/api/race',{cache:'no-store'})).json()}catch(e){document.getElementById('sub').textContent='⚠️ Mất kết nối tới race.js';return}
+  const cars=d.cars, done=cars.filter(c=>c.pct===100), racing=cars.filter(c=>c.pct<100);
+  const count=f=>cars.filter(f).length;
+  document.getElementById('sub').textContent='Cập nhật '+d.at+' · tự làm mới mỗi 5 giây';
+  document.getElementById('stats').innerHTML=[
+    ['Về đích',done.length+'/'+cars.length,'--done'],['Đang viết',count(c=>c.stage==='Đang viết'),'--write'],
+    ['Đang review',count(c=>c.stage==='Đang review'),'--review'],['Chờ',count(c=>/chờ|Chờ/.test(c.stage)&&c.pct<100),'--wait'],
+    ['Hỏng / pit',count(c=>/Tai nạn|pit/.test(c.stage)),'--bad']]
+    .map(([k,v,c])=>'<div class="stat" style="--c:var('+c+')"><b>'+v+'</b><small>'+k+'</small></div>').join('');
+  const avg=cars.length?cars.reduce((s,c)=>s+c.pct,0)/cars.length:0;
+  document.getElementById('overall').style.width=avg.toFixed(1)+'%';
+  const track=document.getElementById('track');
+  if(!track.querySelector('.marks')){track.innerHTML='<div class="marks">'+MARKS.map(([p,t])=>'<div class="mark" style="left:'+p+'%"><span>'+t+'</span></div>').join('')+'</div><div class="finish"></div>'}
+  const seen=new Set();
+  racing.forEach(c=>{
+    seen.add(c.id);
+    let lane=document.getElementById('l-'+c.id);
+    if(!lane){lane=document.createElement('div');lane.className='lane';lane.id='l-'+c.id;
+      lane.innerHTML='<div class="label"></div><div class="road"><div class="car"><span class="emoji"></span><span class="tag"></span></div></div>'}
+    track.appendChild(lane);
+    const [emoji,color]=STAGE[c.stage]||['🏎️','--write'];
+    const car=lane.querySelector('.car');
+    lane.querySelector('.label').textContent=c.id;
+    car.className='car'+(/Đang/.test(c.stage)?' run':'')+(c.pct>55?' right':' left');
+    car.style.setProperty('--c','var('+color+')');
+    car.querySelector('.emoji').textContent=emoji;
+    car.querySelector('.tag').innerHTML=esc(c.title)+' <small>· '+esc(c.stage)+' · '+c.pct+'%'+(c.runner?' · '+esc(c.runner):'')+(c.since?' · từ '+esc(c.since):'')+'</small>';
+    car.style.left=c.pct+'%';
+  });
+  [...track.querySelectorAll('.lane')].forEach(l=>{if(!seen.has(l.id.slice(2)))l.remove()});
+  if(!racing.length&&!track.querySelector('.empty'))track.insertAdjacentHTML('beforeend','<div class="empty">🎉 Tất cả đã về đích!</div>');
+  if(racing.length)track.querySelector('.empty')?.remove();
+  document.getElementById('podium').hidden=!done.length;
+  document.getElementById('chips').innerHTML=done.map(c=>'<span class="chip">🏆 <b>'+esc(c.id)+'</b> '+esc(c.title)+'</span>').join('');
 }
-tick();setInterval(tick,5000);addEventListener('resize',tick);
+tick();setInterval(tick,5000);
 </script></body></html>`;
 
 http.createServer((req, res) => {

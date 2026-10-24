@@ -4,7 +4,7 @@
  * Week ids are stable keys for progress tracking: 'w01'..'w26', task key = '<weekId>-<index>'.
  */
 window.ROADMAP = {
-  goal: 'Pass phỏng vấn Senior Java tại ngân hàng hoặc big tech Việt Nam trong 6 tháng',
+  goal: 'Senior Java Interview Prep — Big Tech & Banking, 26 tuần',
   targets: [
     { name: 'Ngân hàng / Fintech', examples: 'Techcombank, VPBank, MB, VIB, TPBank, ACB, MoMo, VNPay, ZaloPay',
       focus: ['Transaction & consistency, locking, isolation level', 'Bảo mật, audit log, compliance (PCI DSS, NHNN)', 'Oracle/PostgreSQL, tối ưu SQL, batch & đối soát', 'Kafka, idempotency, Saga/Outbox', 'Tình huống production & ổn định hệ thống'] },
