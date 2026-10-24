@@ -1,8 +1,10 @@
 # T166 — Dịch sang tiếng Anh: q-kotlin (10 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-kotlin-1.en.js`
+
+Notes: Đã dịch 10 mục kotlin-001..kotlin-010 vào `js/i18n/q-kotlin-1.en.js` theo định dạng `App.i18n.content({ ... })`: các field `q`, `a`, `follow` được dịch kỹ thuật, giữ nguyên markup (`**`, `{{code}}`, `###`, bảng, code block) và thuật ngữ chuyên ngành; comment trong code block đã dịch. Không thêm field ngoài `q`, `a`, `follow`. `node --check`, `node scripts/check-i18n.js q-kotlin-1` và `node scripts/validate.js` đều OK. Không commit.
 
 Người dùng bấm EN thì **cả trang** chuyển sang tiếng Anh: file này phủ bản dịch lên dữ liệu gốc theo `id` (đọc comment "content translation" trong `js/core/i18n.js`). Đọc AGENTS.md mục 5 (markup) và các mục sau trong `js/data/q-kotlin.js`: **kotlin-001, kotlin-002, kotlin-003, kotlin-004, kotlin-005, kotlin-006, kotlin-007, kotlin-008, kotlin-009, kotlin-010**.
 
@@ -16,3 +18,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-kotlin-1.en.js` và `node scripts/check-i18n.js q-kotlin-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
