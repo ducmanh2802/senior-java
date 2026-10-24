@@ -13,7 +13,6 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execFileSync } = require('child_process');
 
 const App = require('./browser-shim.js');
 global.window.ALGOS = [];
@@ -21,41 +20,36 @@ require(path.join(__dirname, '..', 'js', 'data', 'algo.js'));
 const only = process.argv[2];
 const algos = window.ALGOS.filter(a => (!only || a.id === only));
 
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'algo-'));
-let ok = 0, failed = 0, skipped = 0;
-const failures = [];
+const { compileAndRun, pool, openCache, tempRoot, cleanup } = require('./java-runner.js');
 
-for (const a of algos) {
-  if (!App.code.hasTests(a)) { skipped++; continue; }
-  const m = (a.solution || '').match(/~~~java\n([\s\S]*?)~~~/);
-  if (!m) { failed++; failures.push(`${a.id}: solution không có block ~~~java`); continue; }
-  const dir = path.join(tmpRoot, a.id);
-  fs.mkdirSync(dir);
-  fs.writeFileSync(path.join(dir, 'Main.java'), App.code.assemble(m[1], a.tests));
-  try {
-    execFileSync('javac', ['--release', '17', '-encoding', 'UTF-8', '-nowarn', 'Main.java'], { cwd: dir, stdio: 'pipe' });
-  } catch (e) {
-    failed++;
-    failures.push(`${a.id}: COMPILE ERROR\n${String(e.stderr || e.message).split('\n').slice(0, 8).join('\n')}`);
-    continue;
-  }
-  let out = '';
-  try {
-    out = execFileSync('java', ['-Xss16m', 'Main'], { cwd: dir, stdio: 'pipe', timeout: 15000 }).toString();
-  } catch (e) {
-    out = String(e.stdout || '') + '\n' + String(e.stderr || e.message);
-  }
-  const r = App.code.parse(out);
-  if (only) console.log(out);
-  if (r.allPassed && r.total >= 4) ok++;
-  else {
-    failed++;
-    failures.push(`${a.id}: ${r.passed}/${r.total} pass` + (r.total < 4 ? ' (cần ≥ 4 test)' : '') + '\n' +
-      r.cases.filter(c => !c.ok).map(c => '  FAIL ' + c.name + ': ' + c.detail).join('\n') +
-      (r.total === 0 ? '\n' + out.split('\n').slice(0, 6).join('\n') : ''));
-  }
-}
+(async () => {
+  const tmpRoot = tempRoot('algo-');
+  const cache = openCache('algos');
+  let ok = 0, failed = 0, skipped = 0, cached = 0;
+  const failures = [];
 
-fs.rmSync(tmpRoot, { recursive: true, force: true });
-console.log(`Harness OK: ${ok}  ·  lỗi: ${failed}  ·  chưa có tests: ${skipped}  (tổng ${algos.length})`);
-if (failures.length) { console.log('\n' + failures.join('\n\n')); process.exit(1); }
+  await pool(algos, async a => {
+    if (!App.code.hasTests(a)) { skipped++; return; }
+    const m = (a.solution || '').match(/~~~java\n([\s\S]*?)~~~/);
+    if (!m) { failed++; return failures.push(`${a.id}: solution không có block ~~~java`); }
+    const src = App.code.assemble(m[1], a.tests);
+    const key = cache.key(src);
+    if (!only && cache.has(key)) { ok++; cached++; return; }
+    const res = await compileAndRun(tmpRoot, a.id, src);
+    if (res.compileError) { failed++; return failures.push(`${a.id}: COMPILE ERROR\n${res.compileError}`); }
+    const r = App.code.parse(res.out);
+    if (only) console.log(res.out);
+    if (r.allPassed && r.total >= 4) { ok++; cache.add(key); }
+    else {
+      failed++;
+      failures.push(`${a.id}: ${r.passed}/${r.total} pass` + (r.total < 4 ? ' (cần ≥ 4 test)' : '') + '\n' +
+        r.cases.filter(c => !c.ok).map(c => '  FAIL ' + c.name + ': ' + c.detail).join('\n') +
+        (r.total === 0 ? '\n' + res.out.split('\n').slice(0, 6).join('\n') : ''));
+    }
+  });
+
+  cache.save();
+  cleanup(tmpRoot);
+  console.log(`Harness OK: ${ok}  ·  lỗi: ${failed}  ·  chưa có tests: ${skipped}  (tổng ${algos.length}${cached ? `, ${cached} từ cache` : ''})`);
+  if (failures.length) { console.log('\n' + failures.join('\n\n')); process.exit(1); }
+})();

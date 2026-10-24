@@ -13,7 +13,6 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execFileSync } = require('child_process');
 
 const App = require('./browser-shim.js');
 global.window.LESSONS = [];
@@ -22,45 +21,42 @@ for (const m of html.matchAll(/src="js\/data\/(lessons-[a-z]+\.js)"/g)) require(
 const only = process.argv[2];
 const lessons = window.LESSONS.filter(l => !only || l.id === only);
 
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'lesson-'));
-let ok = 0;
-const failures = [];
+const { compileAndRun, pool, openCache, tempRoot, cleanup } = require('./java-runner.js');
 
-for (const l of lessons) {
-  (l.exercises || []).forEach((x, i) => {
-    const name = `${l.id}#${i + 1}`;
-    const dir = path.join(tmpRoot, `${l.id}-${i}`);
-    fs.mkdirSync(dir);
-    fs.writeFileSync(path.join(dir, 'Main.java'), App.code.assemble(x.reference, x.tests));
-    // the starter must compile too, so learners start from code that builds
-    const sdir = path.join(tmpRoot, `${l.id}-${i}-starter`);
-    fs.mkdirSync(sdir);
-    fs.writeFileSync(path.join(sdir, 'Main.java'), App.code.assemble(x.starter, x.tests));
-    for (const [d, what] of [[dir, 'reference'], [sdir, 'starter']]) {
-      try { execFileSync('javac', ['--release', '17', '-encoding', 'UTF-8', '-nowarn', 'Main.java'], { cwd: d, stdio: 'pipe' }); }
-      catch (e) {
-        failures.push(`${name}: ${what} + tests COMPILE ERROR\n${String(e.stderr || e.message).split('\n').slice(0, 8).join('\n')}`);
-        return;
-      }
-    }
-    let out = '';
-    try { out = execFileSync('java', ['-Xss16m', 'Main'], { cwd: dir, stdio: 'pipe', timeout: 15000 }).toString(); }
-    catch (e) { out = String(e.stdout || '') + '\n' + String(e.stderr || e.message); }
-    const r = App.code.parse(out);
-    if (only) console.log(out);
-    // the untouched starter must NOT pass — otherwise the tests check nothing
-    let sout = '';
-    try { sout = execFileSync('java', ['-Xss16m', 'Main'], { cwd: sdir, stdio: 'pipe', timeout: 15000 }).toString(); }
-    catch (e) { sout = String(e.stdout || ''); }
-    if (App.code.parse(sout).allPassed) { failures.push(`${name}: starter đã pass hết test — test không kiểm tra gì`); return; }
-    if (r.allPassed && r.total >= 3) ok++;
-    else failures.push(`${name}: reference ${r.passed}/${r.total} pass` + (r.total < 3 ? ' (cần ≥ 3 test)' : '') + '\n' +
+(async () => {
+  const tmpRoot = tempRoot('lesson-');
+  const cache = openCache('lessons');
+  const jobs = [];
+  for (const l of lessons) (l.exercises || []).forEach((x, i) => jobs.push({ name: `${l.id}#${i + 1}`, x }));
+  let ok = 0, cached = 0;
+  const failures = [];
+
+  const check = async ({ name, x }) => {
+    const ref = App.code.assemble(x.reference, x.tests), start = App.code.assemble(x.starter, x.tests);
+    const key = cache.key(ref, start);
+    if (!only && cache.has(key)) { ok++; cached++; return; }
+    // the starter must compile too (learners start from code that builds) and must NOT pass, or the tests check nothing
+    const [r1, r2] = await Promise.all([compileAndRun(tmpRoot, name, ref), compileAndRun(tmpRoot, name + '-starter', start)]);
+    if (r1.compileError) return fail(`${name}: reference + tests COMPILE ERROR\n${r1.compileError}`);
+    if (r2.compileError) return fail(`${name}: starter + tests COMPILE ERROR\n${r2.compileError}`);
+    const r = App.code.parse(r1.out);
+    if (only) console.log(r1.out);
+    if (App.code.parse(r2.out).allPassed) return fail(`${name}: starter đã pass hết test — test không kiểm tra gì`);
+    if (r.allPassed && r.total >= 3) { ok++; cache.add(key); }
+    else fail(`${name}: reference ${r.passed}/${r.total} pass` + (r.total < 3 ? ' (cần ≥ 3 test)' : '') + '\n' +
       r.cases.filter(c => !c.ok).map(c => '  FAIL ' + c.name + ': ' + c.detail).join('\n') +
-      (r.total === 0 ? '\n' + out.split('\n').slice(0, 6).join('\n') : ''));
-  });
-}
+      (r.total === 0 ? '\n' + r1.out.split('\n').slice(0, 6).join('\n') : ''));
+  };
+  // parallel first; a failure is re-run once on its own, since timing-sensitive concurrency tests can lose under load
+  let fail = msg => { retry.push(msg); };
+  const retry = [];
+  const firstFailed = [];
+  await pool(jobs, async job => { const before = retry.length; await check(job); if (retry.length > before) firstFailed.push(job); });
+  fail = msg => failures.push(msg);
+  await pool(firstFailed, check, 1);
 
-fs.rmSync(tmpRoot, { recursive: true, force: true });
-const total = lessons.reduce((n, l) => n + (l.exercises || []).length, 0);
-console.log(`Lesson exercises OK: ${ok}/${total}  (${lessons.length} bài học)`);
-if (failures.length) { console.log('\n' + failures.join('\n\n')); process.exit(1); }
+  cache.save();
+  cleanup(tmpRoot);
+  console.log(`Lesson exercises OK: ${ok}/${jobs.length}  (${lessons.length} bài học${cached ? `, ${cached} từ cache` : ''})`);
+  if (failures.length) { console.log('\n' + failures.join('\n\n')); process.exit(1); }
+})();
