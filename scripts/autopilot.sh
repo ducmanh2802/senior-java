@@ -16,13 +16,21 @@ log() { echo "[$(date +%T)] autopilot: $*"; }
 
 owns()  { grep -m1 '^Owns:' "$1" | grep -o '`[^`]*`' | tr -d '`'; }
 dirty() { local f; for f in $(owns "$1"); do [ -n "$(git status --porcelain -- "$f")" ] && return 0; done; return 1; }
-# a file also owned by an unfinished task holds that task's half-done work: never commit it
-open_owner() {
+# a file also owned by an unfinished task holds that task's half-done work: never commit it.
+# OPEN[file]="ids of unfinished tasks owning it", rebuilt once per round (scanning ~400 task files per check was minutes on Windows)
+declare -A OPEN
+scan_open() {
+  OPEN=()
+  local t id o
+  for t in $(grep -L '^Status: DONE' tasks/T*.md); do
+    id=$(basename "$t" | cut -d- -f1)
+    for o in $(owns "$t"); do OPEN[$o]+=" $id"; done
+  done
+}
+open_owner() {   # $1 = task file, $2 = task id; its own review task <id>R does not count (a dead review must not block it)
   local f t; for f in $(owns "$1"); do
-    for t in tasks/T*.md; do
-      [ "$t" = "$1" ] && continue
-      grep -q '^Status: DONE' "$t" && continue
-      owns "$t" | grep -qx "$f" && { echo "$(basename "$t" | cut -d- -f1)"; return 0; }
+    for t in ${OPEN[$f]}; do
+      [ "$t" = "$2" ] || [ "$t" = "${2}R" ] || { echo "$t"; return 0; }
     done
   done; return 1
 }
@@ -86,13 +94,14 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>" -- $files 
 
 log "started (every ${EVERY}s, reviewer ${REVIEWER})"
 while true; do
+  scan_open
   for f in tasks/T*.md; do
     id=$(basename "$f" | cut -d- -f1)
     case "$id" in *R) continue ;; esac
     grep -q '^Status: DONE$' "$f" || continue
     grep -q '^Verify-failed:' "$f" && continue
     dirty "$f" || continue
-    open_owner "$f" >/dev/null && continue
+    open_owner "$f" "$id" >/dev/null && continue
     if grep -q '^Reviewed-by:' "$f"; then
       commit_task "$f" "$id"
     elif [[ "$f" == *-en-* ]]; then
