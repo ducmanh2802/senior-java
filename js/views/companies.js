@@ -2,15 +2,118 @@
 (function () {
   'use strict';
 
+  App.i18n.add({
+    vi: {
+      'companies.title': 'Lộ trình theo công ty',
+      'companies.all': 'Tất cả',
+      'companies.bank': 'Ngân hàng',
+      'companies.fintech': 'Fintech',
+      'companies.bigtech': 'Big tech',
+      'companies.product': 'Product',
+      'companies.conf.high': 'Cao',
+      'companies.conf.medium': 'Trung bình',
+      'companies.conf.low': 'Thấp',
+      'companies.dataSource': 'Thông tin tổng hợp từ nguồn công khai — có thể đã cũ, nên luôn kiểm tra lại.',
+      'companies.noData': 'Chưa có dữ liệu công ty',
+      'companies.noDataDesc': 'Kho dữ liệu đang được cập nhật. Quay lại sau nhé.',
+      'companies.filterByType': 'Lọc theo loại công ty',
+      'companies.sortReadiness': 'Sắp xếp readiness',
+      'companies.sortDesc': 'Cao đến thấp',
+      'companies.sortAsc': 'Thấp đến cao',
+      'companies.noCompaniesInType': 'Không có công ty nào thuộc loại này.',
+      'companies.process': 'Quy trình phỏng vấn',
+      'companies.round': 'Vòng',
+      'companies.focusNeed': 'Trọng tâm cần ôn',
+      'companies.focusNone': 'Chưa có câu hỏi trong các topic trọng tâm.',
+      'companies.percentKnown': '% thuộc',
+      'companies.knownOfTotal': '/ câu đã thuộc',
+      'companies.practiceQuestion': 'Ôn câu hỏi',
+      'companies.practiceFlashcard': 'Ôn flashcard',
+      'companies.backToList': '← Danh sách',
+      'companies.mockBtn': 'Phỏng vấn thử theo công ty này',
+      'companies.stack': 'Stack:',
+      'companies.readiness': 'Readiness',
+      'companies.knowledgeProgress': 'Tiến độ kiến thức tính theo số câu trong {n} topic trọng tâm. ',
+      'companies.noRecentMock': 'Chưa có mock/interview phù hợp trong 90 ngày gần đây.',
+      'companies.recentMockWeight': 'Điểm mock/interview gần đây chiếm 20% readiness.',
+      'companies.sharedQuestions': 'Câu hỏi được chia sẻ công khai',
+      'companies.noSampleAnswer': 'Không có đáp án mẫu — AI chấm theo kỳ vọng interviewer tại công ty này.',
+      'companies.practiceThis': '✍️ Luyện câu này',
+      'companies.yourAnswer': 'Câu trả lời của bạn',
+      'companies.answerPlaceholder': 'Trả lời thành tiếng rồi ghi lại đây…',
+      'companies.speakAnswer': 'Đọc trả lời bằng giọng nói',
+      'companies.gradeAi': '🤖 Chấm bằng AI',
+      'companies.enterAnswerFirst': 'Hãy nhập hoặc nói câu trả lời trước khi chấm.',
+      'companies.aiGrading': 'AI đang chấm…',
+      'companies.tips': 'Mẹo chuẩn bị',
+      'companies.sources': 'Nguồn',
+      'companies.dataMayChange': 'Dữ liệu tổng hợp từ nguồn công khai, có thể đã thay đổi.',
+      'companies.englishRequired': 'Yêu cầu tiếng Anh',
+      'companies.notFound': 'Không tìm thấy công ty',
+      'companies.notFoundDesc': 'Mã <code>{id}</code> không có trong dữ liệu.',
+      'companies.backToCompanies': '← Về danh sách',
+    },
+    en: {
+      'companies.title': 'Roadmap by Company',
+      'companies.all': 'All',
+      'companies.bank': 'Bank',
+      'companies.fintech': 'Fintech',
+      'companies.bigtech': 'Big Tech',
+      'companies.product': 'Product',
+      'companies.conf.high': 'High',
+      'companies.conf.medium': 'Medium',
+      'companies.conf.low': 'Low',
+      'companies.dataSource': 'Aggregated from public sources — may be outdated, always verify.',
+      'companies.noData': 'No company data yet',
+      'companies.noDataDesc': 'Data is being updated. Check back later.',
+      'companies.filterByType': 'Filter by company type',
+      'companies.sortReadiness': 'Sort readiness',
+      'companies.sortDesc': 'High to low',
+      'companies.sortAsc': 'Low to high',
+      'companies.noCompaniesInType': 'No companies of this type.',
+      'companies.process': 'Interview Process',
+      'companies.round': 'Round',
+      'companies.focusNeed': 'Focus Areas to Review',
+      'companies.focusNone': 'No questions in focus topics yet.',
+      'companies.percentKnown': '% Known',
+      'companies.knownOfTotal': '/ questions known',
+      'companies.practiceQuestion': 'Practice Questions',
+      'companies.practiceFlashcard': 'Practice Flashcards',
+      'companies.backToList': '← Back to List',
+      'companies.mockBtn': 'Mock Interview for This Company',
+      'companies.stack': 'Stack:',
+      'companies.readiness': 'Readiness',
+      'companies.knowledgeProgress': 'Knowledge progress based on questions in {n} focus topics. ',
+      'companies.noRecentMock': 'No relevant mock/interview in the last 90 days.',
+      'companies.recentMockWeight': 'Recent mock/interview score counts for 20% of readiness.',
+      'companies.sharedQuestions': 'Publicly Shared Questions',
+      'companies.noSampleAnswer': 'No sample answer — AI grades per interviewer expectations at this company.',
+      'companies.practiceThis': '✍️ Practice This',
+      'companies.yourAnswer': 'Your Answer',
+      'companies.answerPlaceholder': 'Speak your answer then write it here…',
+      'companies.speakAnswer': 'Speak answer',
+      'companies.gradeAi': '🤖 Grade with AI',
+      'companies.enterAnswerFirst': 'Please enter or speak an answer before grading.',
+      'companies.aiGrading': 'AI is grading…',
+      'companies.tips': 'Preparation Tips',
+      'companies.sources': 'Sources',
+      'companies.dataMayChange': 'Aggregated from public sources, may have changed.',
+      'companies.englishRequired': 'English Required',
+      'companies.notFound': 'Company Not Found',
+      'companies.notFoundDesc': 'Code <code>{id}</code> not found in data.',
+      'companies.backToCompanies': '← Back to Companies',
+    }
+  });
+
   const TYPES = [
-    { id: 'all', label: 'Tất cả' },
-    { id: 'bank', label: 'Ngân hàng' },
-    { id: 'fintech', label: 'Fintech' },
-    { id: 'bigtech', label: 'Big tech' },
-    { id: 'product', label: 'Product' },
+    { id: 'all', label: App.t('companies.all') },
+    { id: 'bank', label: App.t('companies.bank') },
+    { id: 'fintech', label: App.t('companies.fintech') },
+    { id: 'bigtech', label: App.t('companies.bigtech') },
+    { id: 'product', label: App.t('companies.product') },
   ];
-  const TYPE_LABEL = { bank: 'Ngân hàng', fintech: 'Fintech', bigtech: 'Big tech', product: 'Product' };
-  const CONF_LABEL = { high: 'Cao', medium: 'Trung bình', low: 'Thấp' };
+  const TYPE_LABEL = { bank: App.t('companies.bank'), fintech: App.t('companies.fintech'), bigtech: App.t('companies.bigtech'), product: App.t('companies.product') };
+  const CONF_LABEL = { high: App.t('companies.conf.high'), medium: App.t('companies.conf.medium'), low: App.t('companies.conf.low') };
   const CONF_CLS = { high: 'ok', medium: 'warn', low: 'bad' };
 
   // Bộ lọc loại công ty giữ giữa các lần render.
@@ -86,7 +189,7 @@
     const off = circ * (1 - s / 100);
     const cls = scoreCls(s);
     return '<svg class="co-ring co-ring-' + cls + '" width="' + size + '" height="' + size + '"' +
-      ' viewBox="0 0 ' + size + ' ' + size + '" role="img" aria-label="Điểm sẵn sàng ' + s + ' trên 100">' +
+      ' viewBox="0 0 ' + size + ' ' + size + '" role="img" aria-label="' + App.t('companies.readiness') + ' ' + s + ' trên 100">' +
       '<circle class="co-ring-bg" cx="' + (size / 2) + '" cy="' + (size / 2) + '" r="' + r + '" fill="none" stroke-width="6"/>' +
       '<circle class="co-ring-fg" cx="' + (size / 2) + '" cy="' + (size / 2) + '" r="' + r + '" fill="none" stroke-width="6"' +
       ' stroke-linecap="round" stroke-dasharray="' + circ.toFixed(1) + '" stroke-dashoffset="' + off.toFixed(1) + '"' +
@@ -96,7 +199,7 @@
   }
 
   App.registerView('companies', {
-    title: 'Lộ trình theo công ty',
+    get title() { return App.t('companies.title'); },
     render(root, params) {
       if (params && params.length) return renderDetail(root, params[0]);
       return renderList(root);
@@ -106,10 +209,10 @@
   function renderList(root) {
     const all = companies();
     if (!all.length) {
-      root.innerHTML = '<div class="page-head"><div><h1>Lộ trình theo công ty</h1>' +
-        '<p>Thông tin tổng hợp từ nguồn công khai — có thể đã cũ, nên luôn kiểm tra lại.</p></div></div>' +
-        '<div class="empty"><h2>Chưa có dữ liệu công ty</h2>' +
-        '<p>Kho dữ liệu đang được cập nhật. Quay lại sau nhé.</p></div>';
+      root.innerHTML = '<div class="page-head"><div><h1>' + App.t('companies.title') + '</h1>' +
+        '<p>' + App.t('companies.dataSource') + '</p></div></div>' +
+        '<div class="empty"><h2>' + App.t('companies.noData') + '</h2>' +
+        '<p>' + App.t('companies.noDataDesc') + '</p></div>';
       return () => {};
     }
 
@@ -130,11 +233,11 @@
           ring(r.score, 64) +
         '</div>' +
         '<h3 class="co-card-name">' + App.esc(c.name) + '</h3>' +
-        '<div class="co-card-readiness"><div class="co-ready-label"><b>Readiness</b><span>' + r.score + '%</span></div>' +
-          '<div class="progress" role="progressbar" aria-label="Readiness ' + App.esc(c.name) + '" aria-valuenow="' + r.score + '" aria-valuemin="0" aria-valuemax="100"><i class="accent" style="width:' + r.score + '%"></i></div></div>' +
+        '<div class="co-card-readiness"><div class="co-ready-label"><b>' + App.t('companies.readiness') + '</b><span>' + r.score + '%</span></div>' +
+          '<div class="progress" role="progressbar" aria-label="' + App.t('companies.readiness') + ' ' + App.esc(c.name) + '" aria-valuenow="' + r.score + '" aria-valuemin="0" aria-valuemax="100"><i class="accent" style="width:' + r.score + '%"></i></div></div>' +
         '<div class="row co-card-meta">' +
           '<span class="badge accent">' + App.esc(TYPE_LABEL[c.type] || c.type || '') + '</span>' +
-          '<span class="badge ' + conf + '">Dữ liệu: ' + App.esc(CONF_LABEL[c.confidence] || c.confidence || '?') + '</span>' +
+          '<span class="badge ' + conf + '">' + App.t('companies.dataSource').split(' ')[0] + ': ' + App.esc(CONF_LABEL[c.confidence] || c.confidence || '?') + '</span>' +
         '</div>' +
         (focus ? '<div class="row co-card-focus">' + focus + '</div>' : '') +
       '</a>';
@@ -142,16 +245,16 @@
 
     root.innerHTML =
       '<div class="page-head">' +
-        '<div><h1>Lộ trình theo công ty</h1>' +
-        '<p>Thông tin tổng hợp từ nguồn công khai — có thể đã cũ, nên luôn kiểm tra lại.</p></div>' +
+        '<div><h1>' + App.t('companies.title') + '</h1>' +
+        '<p>' + App.t('companies.dataSource') + '</p></div>' +
       '</div>' +
-      '<div class="row co-list-controls"><div class="chips co-type-chips" role="group" aria-label="Lọc theo loại công ty">' + chips + '</div>' +
-      '<label class="co-sort-label">Sắp xếp readiness <select class="select co-sort" aria-label="Sắp xếp theo điểm readiness">' +
-        '<option value="desc"' + (state.sort === 'desc' ? ' selected' : '') + '>Cao đến thấp</option>' +
-        '<option value="asc"' + (state.sort === 'asc' ? ' selected' : '') + '>Thấp đến cao</option></select></label></div>' +
+      '<div class="row co-list-controls"><div class="chips co-type-chips" role="group" aria-label="' + App.t('companies.filterByType') + '">' + chips + '</div>' +
+      '<label class="co-sort-label">' + App.t('companies.sortReadiness') + ' <select class="select co-sort" aria-label="' + App.t('companies.sortReadiness') + '">' +
+        '<option value="desc"' + (state.sort === 'desc' ? ' selected' : '') + '>' + App.t('companies.sortDesc') + '</option>' +
+        '<option value="asc"' + (state.sort === 'asc' ? ' selected' : '') + '>' + App.t('companies.sortAsc') + '</option></select></label></div>' +
       (filtered.length
         ? '<div class="grid co-grid">' + cards + '</div>'
-        : '<div class="empty"><p>Không có công ty nào thuộc loại này.</p></div>');
+        : '<div class="empty"><p>' + App.t('companies.noCompaniesInType') + '</p></div>');
 
     const onClick = e => {
       const chip = e.target.closest('[data-type]');
@@ -183,11 +286,11 @@
     const items = steps.map((s, i) =>
       '<li class="co-step">' +
         '<span class="co-step-no" aria-hidden="true">' + (i + 1) + '</span>' +
-        '<div class="co-step-body"><b>' + App.esc(s.round || 'Vòng ' + (i + 1)) + '</b>' +
+        '<div class="co-step-body"><b>' + App.esc(s.round || App.t('companies.round') + ' ' + (i + 1)) + '</b>' +
         (s.detail ? '<div class="md">' + App.md(s.detail) + '</div>' : '') +
         '</div>' +
       '</li>').join('');
-    return '<section class="card co-section"><h2>Quy trình phỏng vấn</h2>' +
+    return '<section class="card co-section"><h2>' + App.t('companies.process') + '</h2>' +
       '<ol class="co-timeline">' + items + '</ol></section>';
   }
 
@@ -195,7 +298,7 @@
   function focusHtml(c) {
     const r = readiness(c);
     const rows = r.topics.slice().sort((a, b) => a.ratio - b.ratio).slice(0, 3);
-    if (!rows.length) return '<section class="card co-section"><h2>Trọng tâm cần ôn</h2><p class="muted">Chưa có câu hỏi trong các topic trọng tâm.</p></section>';
+    if (!rows.length) return '<section class="card co-section"><h2>' + App.t('companies.focusNeed') + '</h2><p class="muted">' + App.t('companies.focusNone') + '</p></section>';
     const items = rows.map(x => {
       const s = x.stats;
       const pct = Math.round(x.ratio * 100);
@@ -203,27 +306,27 @@
       return '<li class="co-focus co-priority">' +
         '<div class="co-focus-head">' +
           '<b>' + App.esc((t.icon ? t.icon + ' ' : '') + t.name) + '</b>' +
-          '<span class="badge accent">' + pct + '% thuộc</span>' +
-          '<span class="small muted">' + s.known + '/' + s.total + ' câu đã thuộc</span>' +
+          '<span class="badge accent">' + pct + App.t('companies.percentKnown') + '</span>' +
+          '<span class="small muted">' + s.known + App.t('companies.knownOfTotal') + '</span>' +
         '</div>' +
         '<div class="progress" role="progressbar" aria-label="' + App.esc(t.name) + '" aria-valuenow="' + pct + '" aria-valuemin="0" aria-valuemax="100">' +
           '<i class="accent" style="width:' + pct + '%"></i></div>' +
         '<div class="row co-focus-links">' +
-          '<a class="btn sm" href="#/bank/' + App.esc(x.id) + '">Ôn câu hỏi</a>' +
-          '<a class="btn sm" href="#/flash/' + App.esc(x.id) + '">Ôn flashcard</a>' +
+          '<a class="btn sm" href="#/bank/' + App.esc(x.id) + '">' + App.t('companies.practiceQuestion') + '</a>' +
+          '<a class="btn sm" href="#/flash/' + App.esc(x.id) + '">' + App.t('companies.practiceFlashcard') + '</a>' +
         '</div>' +
       '</li>';
     }).join('');
-    return '<section class="card co-section"><h2>Trọng tâm cần ôn</h2>' +
+    return '<section class="card co-section"><h2>' + App.t('companies.focusNeed') + '</h2>' +
       '<ul class="co-focus-list">' + items + '</ul></section>';
   }
 
   function renderDetail(root, id) {
     const c = byId(id);
     if (!c) {
-      root.innerHTML = '<div class="empty"><h2>Không tìm thấy công ty</h2>' +
-        '<p>Mã <code>' + App.esc(id) + '</code> không có trong dữ liệu.</p>' +
-        '<p><a class="btn" href="#/companies">← Về danh sách</a></p></div>';
+      root.innerHTML = '<div class="empty"><h2>' + App.t('companies.notFound') + '</h2>' +
+        '<p>' + App.t('companies.notFoundDesc', { id: id }) + '</p>' +
+        '<p><a class="btn" href="#/companies">' + App.t('companies.backToCompanies') + '</a></p></div>';
       return () => {};
     }
 
@@ -234,27 +337,27 @@
     root.innerHTML =
       '<div class="page-head co-head">' +
         '<div class="row">' +
-          '<a class="link-btn" href="#/companies">← Danh sách</a>' +
+          '<a class="link-btn" href="#/companies">' + App.t('companies.backToList') + '</a>' +
           '<span class="co-icon co-icon-lg" aria-hidden="true">' + App.esc(c.icon || '🏢') + '</span>' +
           '<div><h1>' + App.esc(c.name) + '</h1>' +
           '<div class="row co-head-meta">' +
             '<span class="badge accent">' + App.esc(TYPE_LABEL[c.type] || c.type || '') + '</span>' +
-            '<span class="badge ' + conf + '">Dữ liệu: ' + App.esc(CONF_LABEL[c.confidence] || c.confidence || '?') + '</span>' +
-            (c.englishRequired ? '<span class="badge info">Yêu cầu tiếng Anh</span>' : '') +
+            '<span class="badge ' + conf + '">' + App.t('companies.dataSource').split(' ')[0] + ': ' + App.esc(CONF_LABEL[c.confidence] || c.confidence || '?') + '</span>' +
+            (c.englishRequired ? '<span class="badge info">' + App.t('companies.englishRequired') + '</span>' : '') +
           '</div></div>' +
         '</div>' +
-        '<button type="button" class="btn primary" id="coMockBtn">Phỏng vấn thử theo công ty này</button>' +
+        '<button type="button" class="btn primary" id="coMockBtn">' + App.t('companies.mockBtn') + '</button>' +
       '</div>' +
       '<section class="card co-summary">' +
         (c.summary ? '<div class="md">' + App.md(c.summary) + '</div>' : '') +
-        (stack ? '<div class="row co-stack"><span class="small muted">Stack:</span>' + stack + '</div>' : '') +
+        (stack ? '<div class="row co-stack"><span class="small muted">' + App.t('companies.stack') + '</span>' + stack + '</div>' : '') +
       '</section>' +
       '<section class="card co-ready">' +
         '<div class="co-ready-top">' + ring(r.score, 96) +
-          '<div class="co-ready-parts"><b>Readiness: ' + r.score + '%</b>' +
-            '<div class="progress" role="progressbar" aria-label="Readiness ' + App.esc(c.name) + '" aria-valuenow="' + r.score + '" aria-valuemin="0" aria-valuemax="100"><i class="accent" style="width:' + r.score + '%"></i></div>' +
-            '<p class="small muted">Tiến độ kiến thức tính theo số câu trong ' + r.topicCount + ' topic trọng tâm. ' +
-            (r.interview == null ? 'Chưa có mock/interview phù hợp trong 90 ngày gần đây.' : 'Điểm mock/interview gần đây chiếm 20% readiness.') + '</p></div>' +
+          '<div class="co-ready-parts"><b>' + App.t('companies.readiness') + ': ' + r.score + '%</b>' +
+            '<div class="progress" role="progressbar" aria-label="' + App.t('companies.readiness') + ' ' + App.esc(c.name) + '" aria-valuenow="' + r.score + '" aria-valuemin="0" aria-valuemax="100"><i class="accent" style="width:' + r.score + '%"></i></div>' +
+            '<p class="small muted">' + App.t('companies.knowledgeProgress', { n: r.topicCount }) +
+            (r.interview == null ? App.t('companies.noRecentMock') : App.t('companies.recentMockWeight')) + '</p></div>' +
         '</div>' +
       '</section>' +
       '<div id="coBody"></div>';
@@ -272,22 +375,22 @@
       const lang = qLang(x);
       return '<li class="co-q" data-qi="' + i + '">' +
         '<p class="co-q-text"' + (lang === 'en' ? ' lang="en"' : '') + '>' + App.esc(text) + '</p>' +
-        '<button type="button" class="btn sm" data-practice="' + i + '">✍️ Luyện câu này</button>' +
+        '<button type="button" class="btn sm" data-practice="' + i + '">' + App.t('companies.practiceThis') + '</button>' +
         '<div class="co-practice" data-practice-box="' + i + '" hidden>' +
-          '<label class="field"><span>Câu trả lời của bạn</span>' +
-            '<textarea class="textarea" data-answer="' + i + '" rows="5" placeholder="Trả lời thành tiếng rồi ghi lại đây…"' +
+          '<label class="field"><span>' + App.t('companies.yourAnswer') + '</span>' +
+            '<textarea class="textarea" data-answer="' + i + '" rows="5" placeholder="' + App.t('companies.answerPlaceholder') + '"' +
             (lang === 'en' ? ' lang="en"' : '') + '></textarea></label>' +
           '<div class="row co-practice-actions">' +
             '<button type="button" class="btn mic-btn" data-mic="' + i + '"' + (App.speech.supported ? '' : ' hidden') +
-              ' aria-label="Đọc trả lời bằng giọng nói">🎤</button>' +
-            '<button type="button" class="btn primary" data-grade="' + i + '">🤖 Chấm bằng AI</button>' +
+              ' aria-label="' + App.t('companies.speakAnswer') + '">🎤</button>' +
+            '<button type="button" class="btn primary" data-grade="' + i + '">' + App.t('companies.gradeAi') + '</button>' +
           '</div>' +
           '<div class="co-practice-out" data-out="' + i + '"></div>' +
         '</div>' +
       '</li>';
     }).join('');
-    return '<section class="card co-section"><h2>Câu hỏi được chia sẻ công khai</h2>' +
-      '<p class="small muted">Không có đáp án mẫu — AI chấm theo kỳ vọng interviewer tại công ty này.</p>' +
+    return '<section class="card co-section"><h2>' + App.t('companies.sharedQuestions') + '</h2>' +
+      '<p class="small muted">' + App.t('companies.noSampleAnswer') + '</p>' +
       '<ul class="co-q-list">' + items + '</ul></section>';
   }
 
@@ -295,7 +398,7 @@
     const tips = c.tips || [];
     if (!tips.length) return '';
     const items = tips.map(t => '<li>' + App.md(t).replace(/^<p>|<\/p>/g, '') + '</li>').join('');
-    return '<section class="card co-section"><h2>Mẹo chuẩn bị</h2><ul class="co-tips">' + items + '</ul></section>';
+    return '<section class="card co-section"><h2>' + App.t('companies.tips') + '</h2><ul class="co-tips">' + items + '</ul></section>';
   }
 
   function sourcesHtml(c) {
@@ -304,8 +407,8 @@
     const items = src.map(s =>
       '<li><a href="' + App.esc(s.url || '#') + '" target="_blank" rel="noopener">' +
       App.esc(s.title || s.url || 'Nguồn') + '</a></li>').join('');
-    return '<section class="card co-section"><h2>Nguồn</h2><ul class="co-sources">' + items + '</ul>' +
-      '<p class="small muted">Dữ liệu tổng hợp từ nguồn công khai, có thể đã thay đổi.</p></section>';
+    return '<section class="card co-section"><h2>' + App.t('companies.sources') + '</h2><ul class="co-sources">' + items + '</ul>' +
+      '<p class="small muted">' + App.t('companies.dataMayChange') + '</p></section>';
   }
 
   function renderBody(body, c, r) {
@@ -382,7 +485,7 @@
         const ta = box.querySelector('[data-answer="' + i + '"]');
         const out = box.querySelector('[data-out="' + i + '"]');
         const answer = ta.value.trim();
-        if (!answer) { out.innerHTML = '<div class="ai-error">Hãy nhập hoặc nói câu trả lời trước khi chấm.</div>'; return; }
+        if (!answer) { out.innerHTML = '<div class="ai-error">' + App.t('companies.enterAnswerFirst') + '</div>'; return; }
         const q = (c.questions || [])[+i];
         const lang = qLang(q) === 'en' ? 'en' : 'vi';
         let speech;
@@ -393,7 +496,7 @@
           if (mb) mb.classList.remove('recording');
         }
         gradeBtn.disabled = true;
-        out.innerHTML = '<span class="ai-loading">AI đang chấm…</span>';
+        out.innerHTML = '<span class="ai-loading">' + App.t('companies.aiGrading') + '</span>';
         try {
           const res = await App.ai.grade({
             question: qText(q),
