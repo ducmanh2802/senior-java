@@ -3,7 +3,7 @@
 #   scripts/autopilot.sh >> logs-runner.txt 2>&1 &      (loops every $EVERY seconds, default 600)
 # Each round:
 #   1. a task with "Status: DONE", uncommitted changes in its owned files and no "Reviewed-by:" line
-#      gets a review task <id>R (fact-check its new content) run by $REVIEWER (codex|kilo) — one at a time;
+#      gets a review task <id>R (fact-check its new content) run by $REVIEWER — up to $PARALLEL at once;
 #   2. when <id>R is DONE, the original task is marked "Reviewed-by: <reviewer> (<id>R)";
 #   3. a reviewed task's owned files (+ both task files) are staged alone, checked with
 #      scripts/verify-staged.sh (validate + lesson exercises on the JDK + browser smoke) and,
@@ -26,8 +26,21 @@ open_owner() {
     done
   done; return 1
 }
-LOCK=logs/review.lock   # one review at a time; removed when the reviewer exits (stale after 2 h)
-reviewing() { [ -f "$LOCK" ] && [ $(( $(date +%s) - $(date -r "$LOCK" +%s) )) -lt 7200 ]; }
+# $PARALLEL reviews at once, one lock per slot (holds the task id; removed when the reviewer exits, stale after 2 h).
+# Slot n uses the n-th model of $REVIEW_MODELS (opencode runner) so parallel reviews don't share one free quota.
+PARALLEL=${PARALLEL:-3}
+REVIEW_MODELS=(${REVIEW_MODELS:-opencode/glm-5.3-flash-free openrouter/nvidia/nemotron-3-ultra-550b-a55b:free openrouter/thinkingmachines/inkling:free})
+fresh() { [ -f "$1" ] && [ $(( $(date +%s) - $(date -r "$1" +%s) )) -lt "$2" ]; }
+free_slot() {   # prints a free slot number; the legacy single lock (logs/review.lock) still counts as busy
+  local n busy=0; fresh logs/review.lock 7200 && busy=1
+  for n in $(seq 1 "$PARALLEL"); do
+    fresh "logs/review-$n.lock" 7200 && continue
+    [ "$busy" = 1 ] && { busy=0; continue; }
+    echo "$n"; return 0
+  done; return 1
+}
+# a review counts as running when a slot holds its id or its log was written in the last 2 minutes
+review_running() { grep -qx "$1" logs/review-*.lock 2>/dev/null || fresh "logs/${1}R.log" 120; }
 
 make_review() {   # $1 = task file, $2 = task id
   local r="tasks/${2}R-review.md"
@@ -85,10 +98,12 @@ while true; do
     elif [ -f "tasks/${id}R-review.md" ] && grep -q '^Status: DONE' "tasks/${id}R-review.md"; then
       echo "Reviewed-by: ${REVIEWER} (${id}R)" >> "$f"
       commit_task "$f" "$id"
-    elif ! reviewing; then
+    elif ! review_running "$id" && slot=$(free_slot); then
       make_review "$f" "$id"
-      touch "$LOCK"
-      ( scripts/agent-cli.sh "${id}R" "$REVIEWER" >> logs-runner.txt 2>&1; rm -f "$LOCK" ) &
+      echo "$id" > "logs/review-$slot.lock"
+      model=${REVIEW_MODELS[$(( (slot - 1) % ${#REVIEW_MODELS[@]} ))]}
+      log "review ${id}R in slot $slot ($model)"
+      ( OPENCODE_MODEL="$model" scripts/agent-cli.sh "${id}R" "$REVIEWER" >> logs-runner.txt 2>&1; rm -f "logs/review-$slot.lock" ) &
       sleep 5
     fi
   done
