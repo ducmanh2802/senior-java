@@ -326,5 +326,417 @@ Lập bảng theo hệ thống: Spring Boot/Kotlin plugin versions, JPA/proxy, s
 > Senior tip: tiêu chí thành công nên là defect escape, lead time và thời gian build/review. Một pilot 1–2 module qua vài release cho dữ liệu đáng tin hơn rewrite kéo dài không có đường lui.`,
   follow: ['Bạn chọn metric nào để đánh giá pilot Kotlin?', 'Làm sao giữ Java/Kotlin interop dễ bảo trì trong giai đoạn chuyển tiếp?', 'Khi nào bạn dừng pilot và quyết định không mở rộng?'],
   tags: ['migration', 'team leadership', 'Java', 'Kotlin']
+},
+{
+  id: 'kotlin-011', topic: 'kotlin', level: 'mid',
+  q: 'Khi nhận JSON vào DTO Kotlin, null-safety của compiler có bảo vệ bạn không? Bạn cấu hình Jackson và validation thế nào để không biến lỗi dữ liệu thành NPE trong service?',
+  a: `**Tóm tắt:** Kotlin null-safety chỉ là ràng buộc compile-time; JSON đi qua Jackson bằng reflection nên null vẫn có thể lọt vào nếu thiếu cấu hình hoặc DTO khai báo sai. Hãy dùng jackson-module-kotlin, phân biệt rõ "thiếu field" với "null", validate ở biên và map sang domain type không nullable.
+
+### Vì sao null-safety không tự động qua JSON
+JVM không mang đầy đủ thông tin non-null trong bytecode mà Jackson có thể dùng mặc định. Với data class không có constructor rỗng, Jackson thiếu cách khởi tạo và thường báo {{InvalidDefinitionException}} nếu không có Kotlin module. Khi có module, Jackson dùng Kotlin reflection để gọi primary constructor và kiểm tra nullability của từng tham số.
+
+Điều này khác với framework dùng reflection/field access: Hibernate, một số mapper hoặc code dùng {{Unsafe}} có thể gán null vào field Kotlin non-null. Vì vậy đừng coi null-safety là lớp bảo vệ runtime ở mọi biên.
+
+~~~kotlin
+data class CreateUserRequest(
+    val email: String,              // bắt buộc: thiếu hoặc null đều lỗi
+    val age: Int?,                  // cho phép thiếu -> null
+    val newsletter: Boolean = false // thiếu -> dùng default
+)
+~~~
+
+### Hành vi cần kiểm chứng
+- Thiếu {{email}} hoặc gửi {{"email": null}} thường ném {{MissingKotlinParameterException}} (một dạng bind error); hãy map thành 400 thay vì để rơi vào 500.
+- {{age}} vắng mặt và {{age: null}} đều thành {{null}}: Kotlin không phân biệt được nếu chỉ dùng {{Int?}}. Với PATCH, cần wrapper như {{JsonNullable}}, {{Optional}} hoặc một kiểu {{FieldUpdate}} có trạng thái missing.
+- {{newsletter}} vắng mặt nhận default; gửi null tường minh vẫn là lỗi vì kiểu không nullable.
+- Spring Boot tự đăng ký {{jackson-module-kotlin}} khi có trên classpath, nhưng nếu tự tạo {{ObjectMapper}} thì phải đăng ký thủ công.
+
+### Validation và DTO
+Bean Validation trên property Kotlin cần đúng annotation target. Mặc định annotation có thể rơi vào constructor parameter, trong khi validator đọc field/getter:
+
+~~~kotlin
+data class CreateUserRequest(
+    @field:NotBlank val email: String,
+    @field:Min(0) val age: Int?
+)
+~~~
+
+- {{@JsonProperty(required = true)}} không thay thế validation nghiệp vụ.
+- Không dùng {{Double}} cho tiền; dùng {{Long}} đơn vị nhỏ nhất hoặc {{BigDecimal}} và cấu hình serializer rõ ràng.
+- Cân nhắc {{FAIL_ON_UNKNOWN_PROPERTIES}}: bật để bắt typo, tắt để tương thích tiến hóa; chọn theo hợp đồng API và ghi vào tài liệu.
+- Response nên dùng DTO tường minh, không serialize entity JPA vì lazy loading và vòng tham chiếu.
+
+### Pitfall production
+- DTO nullable lan xuống service rồi mọi nơi phải {{?.}}; hãy validate một lần ở controller và trả domain type chắc chắn.
+- Dùng {{!!}} sau khi bind để "cho gọn" sẽ biến lỗi dữ liệu thành 500 mất context.
+- Log payload có PII; chỉ log request id, mã lỗi và tên field lỗi.
+- Test các tổ hợp: thiếu field, null, sai kiểu, default, unknown field; dùng JSON fixture thay vì tự dựng object.
+
+> Senior tip: hãy coi JSON payload là untrusted input như form HTML. Một bộ contract test với fixture thật, bật fail-fast và thống nhất mã lỗi 400 giúp tránh phần lớn sự cố "NPE trong service" mà nguyên nhân thật nằm ở deserialization.`,
+  follow: ['Sự khác nhau giữa field thiếu và field null ảnh hưởng API PATCH thế nào?', 'Vì sao {{@field:NotBlank}} cần thiết thay vì {{@NotBlank}}?', 'Bạn cấu hình Jackson fail-fast cho môi trường production ra sao?'],
+  tags: ['null safety', 'Jackson', 'DTO', 'validation']
+},
+{
+  id: 'kotlin-012', topic: 'kotlin', level: 'senior',
+  q: 'Bạn dùng {{suspend fun}} trong controller Spring. Điều gì xảy ra với transaction, SecurityContext và MDC khi coroutine resume trên thread khác, và bạn xử lý thế nào?',
+  a: `**Tóm tắt:** Spring MVC và WebFlux đều gọi được {{suspend fun}} trong controller, nhưng cơ chế khác nhau: MVC chạy trên servlet async, WebFlux chạy trên event loop với chuỗi non-blocking. Điểm nguy hiểm là state gắn với thread như {{@Transactional}} JDBC, {{SecurityContext}}, MDC và request attributes không tự theo coroutine khi nó resume ở thread khác.
+
+### Spring chạy suspend function thế nào
+Spring MVC từ 5.2 hỗ trợ method controller là suspend: framework gọi qua cầu coroutine, trả về async result và giải phóng request thread tại điểm suspend. Nhưng nó không biến JDBC thành non-blocking; số request đồng thời vẫn bị giới hạn bởi Tomcat thread pool, DB connection pool và các tài nguyên khác.
+
+WebFlux hỗ trợ {{suspend fun}} và {{Flow}}; {{kotlinx-coroutines-reactor}} chuyển đổi qua lại với {{Mono}}/{{Flux}}. Trên event loop, một lời gọi JDBC blocking có thể chặn toàn bộ luồng xử lý của nhiều request, nên phải chuyển sang {{Dispatchers.IO}} hoặc dùng driver reactive.
+
+~~~kotlin
+@RestController
+class OrderController(private val service: OrderService) {
+    @GetMapping("/orders/{id}")
+    suspend fun get(@PathVariable id: Long): OrderDto =
+        withContext(Dispatchers.IO) {   // chỉ bọc phần blocking
+            service.load(id)
+        }
+}
+~~~
+
+### Transaction: chỗ dễ sai nhất
+{{@Transactional}} của Spring với JDBC/JPA dựa trên transaction gắn với thread hiện tại ({{ThreadLocal}}). Khi coroutine suspend rồi resume trên thread khác, connection/transaction đang mở không tự đi theo. Mức hỗ trợ coroutine-aware transaction phụ thuộc phiên bản Spring và loại {{TransactionManager}} (JDBC thread-bound so với R2DBC reactive), nên đừng suy ra từ việc code biên dịch được.
+
+Cách an toàn:
+- Viết integration test có rollback thật, cho method suspend đi qua proxy Spring, kiểm tra dữ liệu sau khi lỗi.
+- Với JDBC, gói toàn bộ thao tác DB trong một suspend function chạy trên cùng dispatcher và dùng {{TransactionTemplate}} nếu cần kiểm soát biên.
+- Không gọi {{runBlocking}} trong controller hay filter; nó giữ thread và dễ gây starvation.
+- Với WebFlux + R2DBC, dùng {{TransactionalOperator}} và kiểm tra lifecycle của transaction qua suspension.
+
+### Context propagation
+- MDC: thêm {{MDCContext}} từ {{kotlinx-coroutines-slf4j}}, hoặc truyền request id tường minh trong context.
+- Security: {{SecurityContextHolder}} mặc định là thread-local; sau khi resume ở thread khác có thể mất authentication. Dùng cơ chế context propagation của Spring 6/Micrometer hoặc capture/restore tường minh, và test endpoint yêu cầu quyền.
+- Tenant, locale, request attributes cũng cùng vấn đề; đừng giả định chúng "tự nhiên" còn đó.
+
+### Cancellation và lỗi
+- WebFlux có thể cancel khi client ngắt kết nối; đừng nuốt {{CancellationException}}.
+- {{withTimeout}} hủy coroutine nhưng không rollback side effect bên ngoài; cần idempotency hoặc compensation.
+- Không dùng {{runCatching}} quanh suspend call mà không rethrow {{CancellationException}}.
+
+### Chọn MVC hay WebFlux
+- MVC + coroutine chủ yếu để code tuần tự dễ đọc, không phải để tăng throughput.
+- WebFlux chỉ có lợi khi cả chuỗi non-blocking: WebClient, R2DBC, Kafka reactive; một JDBC call blocking có thể phá mô hình.
+- Đo p95/p99, queue time và connection wait trước khi kết luận.
+
+> Senior tip: sau khi thêm suspend, hãy chạy lại test bảo mật và test rollback; hai lỗi này thường không lộ ra ở unit test mà chỉ xuất hiện khi coroutine resume trên thread khác trong môi trường thật.`,
+  follow: ['Vì sao {{@Transactional}} JDBC có thể mất transaction sau khi coroutine resume?', 'Bạn propagate SecurityContext và MDC qua dispatcher bằng cách nào?', 'Khi nào MVC + coroutine không giúp tăng throughput?'],
+  tags: ['coroutines', 'Spring MVC', 'WebFlux', 'transaction', 'MDC']
+},
+{
+  id: 'kotlin-013', topic: 'kotlin', level: 'lead',
+  q: 'Bạn thiết kế tầng gọi song song nhiều dependency bằng coroutine. Structured concurrency, cancellation và {{Dispatchers.IO}} cần được giới hạn thế nào để không sập DB pool?',
+  a: `**Tóm tắt:** Structured concurrency buộc mọi coroutine con nằm trong một scope có lifecycle rõ: cha chờ con, con lỗi thì cả nhóm bị hủy (trừ {{supervisorScope}}). {{Dispatchers.IO}} không phải pool vô hạn — mặc định khoảng 64 thread — nên phải giới hạn concurrency theo DB pool, HTTP client và rate limit của downstream.
+
+### Cây scope và lan truyền lỗi
+{{coroutineScope}} tạo scope con: nếu một nhánh ném lỗi, các nhánh anh em bị cancel và lỗi được ném ra ngoài. {{supervisorScope}} cô lập lỗi từng nhánh, phù hợp khi một widget lỗi không được làm hỏng cả dashboard.
+
+~~~kotlin
+suspend fun dashboard(userId: Long): Dashboard = coroutineScope {
+    val profile = async { profileClient.fetch(userId) }
+    val orders = async { orderClient.recent(userId) }
+    Dashboard(profile.await(), orders.await()) // lỗi một nhánh -> hủy nhánh còn lại
+}
+~~~
+
+Với {{launch}}, exception không được ném ở call site mà đi tới {{CoroutineExceptionHandler}} (hoặc làm hỏng scope). Với {{async}}, exception được giữ lại và ném khi {{await}}. Đây là lý do phải {{await}} hoặc join mọi {{Deferred}} trước khi scope kết thúc.
+
+### Cancellation là hợp tác
+Coroutine chỉ dừng ở điểm suspend hoặc khi gọi {{ensureActive()}}; vòng lặp CPU chặt không tự dừng. Blocking JDBC cũng không bị cancel; {{runInterruptible}} chỉ hữu ích nếu driver tôn trọng interrupt. Dọn dẹp trong {{finally}} nên tránh suspend, hoặc bọc {{withContext(NonCancellable)}} cho phần cleanup bắt buộc.
+
+Không bắt {{CancellationException}} rồi trả kết quả bình thường: điều đó phá vỡ structured concurrency và khiến request bị hủy vẫn tiếp tục ghi dữ liệu.
+
+### Dispatchers.IO
+{{Dispatchers.IO}} là pool elastic có giới hạn mặc định 64 thread (có thể đổi bằng system property {{kotlinx.coroutines.io.parallelism}}), không phải "bao nhiêu cũng được". Nếu DB pool có 20 connection mà mở 500 coroutine gọi DB, phần lớn sẽ chờ connection; latency tăng và timeout dây chuyền.
+
+- Dùng {{Dispatchers.Default}} cho CPU, {{Dispatchers.IO}} cho blocking IO.
+- Đặt bulkhead bằng {{Semaphore}} hoặc {{limitedParallelism}} cho từng dependency.
+- Không tăng số thread IO để che DB chậm; hãy đo connection wait, pool saturation và p99.
+- Mỗi lần chuyển dispatcher có chi phí; gom {{withContext}} một lần thay vì bọc từng lời gọi nhỏ.
+
+### So với Java 21 StructuredTaskScope
+{{StructuredTaskScope}} (preview ở JDK 21, cần {{--enable-preview}}) cũng đảm bảo con không sống lâu hơn cha, với {{ShutdownOnFailure}}/{{ShutdownOnSuccess}}. Coroutine có hệ sinh thái cancellation, Flow và tích hợp suspend rộng hơn; virtual thread + structured concurrency phù hợp code Java blocking.
+
+Không trộn hai mô hình tùy tiện: nếu đã dùng coroutine, giữ scope xuyên suốt; nếu gọi API Java trả {{CompletableFuture}}, bridge bằng {{await()}} của {{kotlinx-coroutines-jdk8}} thay vì tự tạo thread.
+
+### Observability
+Đặt {{CoroutineName}} theo request/job, bật {{-Dkotlinx.coroutines.debug}} ở staging để thread dump hiện tên coroutine, và log khi scope bị cancel. Thiếu tên và context là lý do phổ biến khiến debug coroutine khó hơn thread.
+
+> Senior tip: concurrency limit nên là một con số được review cùng capacity của downstream, không phải giá trị mặc định của dispatcher. Một bulkhead 20 cho DB 20 connection thường ổn định hơn 64 thread IO tranh nhau vài connection.`,
+  follow: ['Vì sao {{launch}} và {{async}} xử lý exception khác nhau?', 'Bạn đặt bulkhead cho từng dependency ở đâu trong code?', 'Cancellation của coroutine có rollback giao dịch bên ngoài không?'],
+  tags: ['structured concurrency', 'Dispatchers.IO', 'cancellation', 'virtual threads']
+},
+{
+  id: 'kotlin-014', topic: 'kotlin', level: 'senior',
+  q: 'Vì sao không nên dùng {{data class}} làm JPA entity? Bạn thiết kế {{equals}}/{{hashCode}}/{{toString}} cho entity Kotlin thế nào để không phá {{HashSet}} và lazy loading?',
+  a: `**Tóm tắt:** Không dùng {{data class}} làm JPA entity. Hàm {{equals}}/{{hashCode}} sinh tự động bao gồm mọi property trong primary constructor — kể cả id còn null trước khi persist và collection lazy — nên hash thay đổi sau khi insert, làm hỏng {{HashSet}}/{{HashMap}} và có thể kích hoạt truy vấn ngoài ý muốn. Hãy dùng class thường với business key bất biến hoặc id được xử lý cẩn thận.
+
+### Cơ chế sinh equals/hashCode
+{{data class}} sinh {{equals}}, {{hashCode}}, {{toString}}, {{copy}} từ các property khai báo trong primary constructor. Với entity mới, {{id}} thường null; hai entity khác nhau có thể bằng nhau nếu các field còn lại giống. Sau khi Hibernate gán id, {{hashCode}} đổi, nên object đã nằm trong {{Set}} không còn tìm thấy.
+
+Collection lazy trong {{equals}} biến một phép so sánh thành truy vấn DB; quan hệ hai chiều có thể đệ quy vô hạn. {{toString}} còn tệ hơn: log một entity có thể kéo cả đồ thị object và làm lộ dữ liệu nhạy cảm.
+
+{{copy()}} của data class tạo object mới cùng id nhưng state khác; Hibernate coi đó là detached/duplicate, dễ dẫn tới {{merge}} ngoài ý muốn.
+
+### Vì sao entity phải "open"
+Hibernate tạo proxy bằng subclass cho lazy loading. Class/method final chặn subclass, nên entity phải được mở bằng plugin all-open (hoặc khai báo {{open}} thủ công cả class và property); plugin {{kotlin-spring}} chỉ mở class có annotation Spring, không mở entity. Plugin {{kotlin-jpa}} sinh constructor không tham số; từ Kotlin 2.3.20 plugin này còn bật all-open preset JPA, còn phiên bản trước chỉ no-arg — kiểm tra version trước khi dựa vào hành vi.
+
+Constructor không tham số của Kotlin có thể gán default/0/null ở mức bytecode, không chạy logic domain. Đừng đặt invariant quan trọng trong {{init}} và hy vọng Hibernate chạy nó.
+
+### Cách làm an toàn
+~~~kotlin
+@Entity
+open class Order protected constructor() {
+    @Id
+    var id: UUID? = null                    // gán trước khi save
+
+    lateinit var code: String               // business key bất biến, unique
+
+    constructor(code: String) : this() {
+        this.code = code
+        this.id = UUID.randomUUID()
+    }
+
+    override fun equals(other: Any?): Boolean =
+        this === other || (other is Order && code == other.code)
+
+    override fun hashCode(): Int = code.hashCode()
+
+    override fun toString(): String = "Order(" + code + ")"
+}
+~~~
+
+- Business key phải immutable, unique và có ý nghĩa nghiệp vụ; nếu không có, dùng id nhưng xử lý null nhất quán.
+- Không đưa collection, quan hệ lazy, timestamp audit hay field thay đổi vào {{equals}}/{{hashCode}}.
+- Dùng {{Hibernate.getClass(other)}} khi cần so sánh qua proxy; {{other is Order}} có thể đúng với proxy nhưng truy cập field sẽ trigger load.
+- Với id do application gán, Spring Data thấy id khác null nên coi là entity cũ và gọi {{merge}} (SELECT trước). Cài {{Persistable}} với cờ {{isNew}} để {{save}} dùng {{persist}}.
+
+### Pitfall production
+- Test bằng cách thêm entity vào {{HashSet}}, flush, rồi {{contains}} lại; nếu hash đổi, test sẽ lộ ngay.
+- {{equals}} dựa trên id: hai entity mới cùng null id có thể bị coi là bằng nhau; trả về false trừ khi cùng instance.
+- Kế thừa entity: proxy subclass làm {{getClass()}} khác nhau; dùng {{canEqual}} hoặc business key.
+- Đừng dùng data class cho entity chỉ để giảm boilerplate; chi phí debug lớn hơn nhiều.
+
+> Senior tip: chọn identity trước khi viết entity. Nếu nghiệp vụ đã có mã đơn hàng/mã giao dịch bất biến, dùng nó làm business key và viết test hash ổn định sau persist; nếu không, dùng id với {{Persistable}} và chấp nhận rằng entity mới chưa có identity.`,
+  follow: ['Business key nào phù hợp để tính {{equals}}/{{hashCode}}?', 'Vì sao {{toString}} trên entity lazy có thể gây N+1?', '{{Persistable}} giải quyết vấn đề gì khi id do application gán?'],
+  tags: ['JPA', 'Hibernate', 'data class', 'equals', 'hashCode']
+},
+{
+  id: 'kotlin-015', topic: 'kotlin', level: 'senior',
+  q: 'Bạn mô hình hóa lỗi nghiệp vụ bằng sealed class. Làm sao map sang HTTP an toàn, serialize ổn định và không làm client cũ vỡ khi thêm nhánh mới?',
+  a: `**Tóm tắt:** Dùng sealed hierarchy cho các kết quả nghiệp vụ hữu hạn (validation, not found, conflict) và để exception cho lỗi hạ tầng/bất ngờ. Sealed giúp {{when}} exhaustive trong module, nhưng đừng biến nó thành JSON contract công khai: thêm subtype có thể làm client đã compile sẵn ném {{NoWhenBranchMatchedException}} hoặc lỗi deserialize.
+
+### Phân loại trước khi chọn kiểu
+- Lỗi nghiệp vụ dự kiến: người gọi buộc phải xử lý, không nên dùng exception làm luồng điều khiển.
+- Lỗi hạ tầng: DB timeout, mất mạng, bug — exception + boundary handler, retry/circuit breaker ở tầng ngoài.
+- Lỗi lập trình: {{IllegalStateException}}, fail fast; không nuốt thành result.
+
+Sealed phù hợp khi số nhánh nhỏ và ổn định. Nếu mỗi tuần thêm một mã lỗi HTTP, hierarchy sẽ phình và mọi consumer phải sửa.
+
+~~~kotlin
+sealed interface PaymentError {
+    data class InvalidAmount(val amount: Long) : PaymentError
+    data class InsufficientFunds(val available: Long) : PaymentError
+    data class DuplicateRequest(val key: String) : PaymentError
+    data class GatewayTimeout(val retryAfterSeconds: Long) : PaymentError
+}
+
+fun retryable(e: PaymentError): Boolean = when (e) {
+    is PaymentError.GatewayTimeout -> true
+    is PaymentError.InvalidAmount,
+    is PaymentError.InsufficientFunds,
+    is PaymentError.DuplicateRequest -> false
+}
+~~~
+
+### Exhaustiveness và tiến hóa
+{{when}} trên sealed không cần {{else}} nên compiler báo khi thiếu nhánh. Nhưng đừng dùng {{else}} trong code nghiệp vụ: nó vô hiệu hóa cảnh báo và âm thầm bỏ qua subtype mới.
+
+Trong đa module, consumer đã compile với danh sách subtype cũ có thể nhận subtype mới từ provider và ném {{NoWhenBranchMatchedException}} ở runtime. Vì vậy: giữ sealed type {{internal}} trong module, hoặc nếu public thì luôn có nhánh fallback và test tương thích.
+
+Subtype của sealed phải nằm cùng package và module (Kotlin 1.5+). Điều này hữu ích để giới hạn phạm vi nhưng cũng có nghĩa không thể mở rộng từ module khác.
+
+### Serialization
+- Jackson cần {{@JsonTypeInfo}} + {{@JsonSubTypes}} hoặc cấu hình tương đương; đừng để tên class nội bộ thành discriminator.
+- Kotlin serialization hỗ trợ sealed với {{classDiscriminator}}; client phải biết trước các type.
+- Tốt nhất là map sang DTO ổn định {{ErrorResponse}} với code/message/fields ở adapter; domain không phụ thuộc HTTP và client không thấy thay đổi nội bộ.
+- Với API công khai, thêm subtype là thay đổi contract; cần version hoặc fallback.
+
+### Map sang HTTP
+Dùng {{@RestControllerAdvice}} trả {{ProblemDetail}} (RFC 9457) với type, title, status, detail và property mở rộng cho field errors. Map:
+| Nhánh | HTTP |
+|---|---|
+| InvalidAmount | 400 |
+| InsufficientFunds | 409 |
+| DuplicateRequest | 409/200 idempotent |
+| GatewayTimeout | 503 + Retry-After |
+
+Log expected error ở mức info/warn kèm mã lỗi; unexpected mới log stack và alert.
+
+### Pitfall
+- {{runCatching}} bắt cả {{CancellationException}}; trong coroutine phải rethrow.
+- Dùng {{Result}} của Kotlin cho lỗi nghiệp vụ sẽ mất kiểu lỗi; sealed riêng rõ hơn.
+- Sealed type lồng quá sâu hoặc mang state mutable khiến so sánh/pattern matching khó.
+- Trả thẳng exception message ra API làm lộ thông tin nội bộ.
+
+> Senior tip: coi sealed result là hợp đồng nội bộ, còn mã lỗi công khai là hợp đồng với client. Giữ hai lớp này tách nhau, và có contract test cho từng nhánh sang HTTP; như vậy bạn có thể refactor domain mà không phá client.`,
+  follow: ['Vì sao thêm subtype sealed có thể gây lỗi ở consumer đã compile?', 'Bạn serialize sealed type sang JSON ổn định bằng cách nào?', 'Khi nào nên dùng exception thay cho sealed result?'],
+  tags: ['sealed classes', 'error handling', 'ProblemDetail', 'API evolution']
+},
+{
+  id: 'kotlin-016', topic: 'kotlin', level: 'mid',
+  q: 'Extension function rất tiện nhưng dễ bị lạm dụng. Bạn đặt quy ước nào để tránh "API ma", xung đột import và DSL khó đọc trong codebase Spring?',
+  a: `**Tóm tắt:** Extension function là static dispatch, tiện cho helper thuần nhưng dễ tạo "API ma" trên type của người khác, che giấu dependency và đổi hành vi âm thầm khi thư viện thêm member cùng tên. Giới hạn chúng trong module, ưu tiên {{internal}}, và dùng {{@DslMarker}} khi viết DSL.
+
+### Dispatch tĩnh và bẫy shadowing
+Extension được biên dịch thành hàm static nhận receiver. Nó không override, không dispatch theo runtime type, và member thật luôn thắng nếu cùng tên/signature.
+
+Hệ quả nguy hiểm: hôm nay bạn viết {{fun String.slugify()}}, mai thư viện thêm member {{slugify()}}; call site không đổi nhưng hành vi đổi. Vì vậy đừng đặt extension public lên type phổ biến như {{String}}, {{List}}, {{Any}} trong module dùng chung.
+
+Hai module cùng định nghĩa một extension giống nhau có thể gây ambiguity khi import; IDE chọn một, người review khó thấy. Đặt tên cụ thể theo domain và tránh wildcard import.
+
+### DSL và @DslMarker
+Không có marker, lambda lồng nhau có thể truy cập nhầm receiver ngoài:
+
+~~~kotlin
+@DslMarker
+annotation class RouteDsl
+
+@RouteDsl
+class RouteBuilder {
+    fun get(path: String, block: RouteBuilder.() -> Unit) { /* ... */ }
+}
+
+fun routes(block: RouteBuilder.() -> Unit) = RouteBuilder().block()
+~~~
+
+Với {{@DslMarker}}, receiver cùng marker bị ẩn trong lambda con; muốn dùng receiver ngoài phải gọi rõ {{this@routes}}. Điều này ngăn cấu hình route con ghi nhầm vào route cha.
+
+### Operator và infix
+Chỉ overload operator khi nghĩa hiển nhiên: {{plus}}, {{get}}, {{contains}}, {{compareTo}}. {{invoke}} trên service làm code trông như gọi hàm nhưng che dependency; {{get}} trên thứ không phải collection gây khó hiểu. Infix như {{to}} ổn, nhưng đừng tạo ký hiệu mới khó tìm.
+
+### Side effect và testability
+Extension không có constructor nên không nhận dependency qua DI. Nếu extension đọc {{SecurityContext}}, gọi repository, mở transaction hoặc gửi HTTP, nó trở thành dependency ẩn, khó mock và khó thay policy. Hãy chuyển thành service/interface tường minh.
+
+Extension property không có backing field; nếu dùng delegate như {{by lazy}}, delegate không gắn với từng receiver. Đừng dùng extension để cache state theo instance.
+
+### Interop
+Java thấy extension như static method trong facade {{TenFileKt}}; đổi tên file đổi binary API. Dùng {{@file:JvmName}} để ổn định, {{@JvmName}} khi có xung đột signature. Default parameter cần {{@JvmOverloads}} nếu muốn Java gọi overload.
+
+### Quy ước review
+- Helper thuần, ngắn, không IO, tên nói rõ domain.
+- {{internal}} theo mặc định; public chỉ khi thật sự là API dùng chung.
+- Không extension lên {{Any}}/{{Any?}}.
+- Có test cho nullable receiver và trường hợp member trùng tên.
+
+> Senior tip: nếu một extension cần mock, transaction hoặc cấu hình môi trường, nó không còn là extension — hãy biến nó thành bean. Quy tắc này giữ code dễ test và tránh tranh chấp tên khi nâng cấp thư viện.`,
+  follow: ['Chuyện gì xảy ra nếu thư viện thêm member trùng tên extension?', '{{@DslMarker}} ngăn lỗi gì trong DSL lồng nhau?', 'Vì sao extension có side effect khó test hơn service?'],
+  tags: ['extension functions', 'DSL', 'API design', 'readability']
+},
+{
+  id: 'kotlin-017', topic: 'kotlin', level: 'senior',
+  q: 'Bạn chọn {{Flow}} hay {{Flux}}/{{Mono}} cho pipeline streaming? So sánh backpressure, context propagation, interop và trường hợp nên giữ nguyên Reactor.',
+  a: `**Tóm tắt:** {{Flow}} và {{Flux}}/{{Mono}} đều là stream lazy có backpressure, nhưng Flow dựa trên suspend và structured concurrency, còn Reactor dựa trên Reactive Streams với scheduler và {{Context}} riêng. Chọn theo stack end-to-end (WebFlux/R2DBC hay coroutine/JDBC), bridge ở adapter và đừng trộn context một cách ngầm hiểu.
+
+### Mô hình chạy
+{{flow}} builder với {{emit}} là cold: mỗi collector chạy lại nguồn. {{emit}} là suspend nên producer tự bị chặn khi consumer chậm — backpressure bằng suspension. Mặc định pipeline chạy tuần tự trong coroutine của collector; {{flowOn}} đổi dispatcher cho phía upstream, {{buffer}}/{{conflate}} tách tốc độ, {{collectLatest}} hủy xử lý cũ khi có phần tử mới.
+
+{{Flux}}/{{Mono}} implement Reactive Streams: consumer request(n), operator trả demand; {{subscribeOn}} đặt nguồn, {{publishOn}} đổi scheduler cho downstream. Reactor có {{Context}} bất biến, {{Sinks}} cho hot stream, {{share}}/{{replay}}/{{cache}} để chia sẻ.
+
+Cả hai đều cold mặc định; collect/subscribe nhiều lần sẽ chạy lại nguồn nếu không share.
+
+~~~kotlin
+fun prices(id: String): Flow<Price> = flow {
+    while (true) {
+        emit(client.fetch(id))   // suspend -> backpressure tự nhiên
+        delay(1_000)
+    }
+}
+
+@GetMapping("/prices/{id}", produces = [MediaType.TEXT_EVENT_STREAM_VALUE])
+fun stream(@PathVariable id: String): Flow<Price> = service.prices(id)
+~~~
+
+### Backpressure và lỗi
+- Flow: {{buffer(capacity)}}, {{conflate}}, {{collectLatest}}; buffer vô hạn chỉ che triệu chứng và có thể OOM.
+- Reactor: {{onBackpressureBuffer}}/{{onBackpressureDrop}}/{{onBackpressureLatest}}, {{limitRate}}, {{flatMap}} có tham số concurrency (mặc định 256) — đặt tường minh theo downstream.
+- Flow dùng {{catch}} cho upstream; lỗi ở downstream không được catch bởi operator đó. Reactor dùng {{onErrorResume}}, {{retryWhen}}, {{timeout}}.
+- Cancellation: Flow hủy theo scope; Reactor hủy qua {{Disposable}}/subscription. Cả hai đều không tự rollback side effect.
+
+### Context và interop
+{{kotlinx-coroutines-reactive}}/{{kotlinx-coroutines-reactor}} cung cấp {{Flow.asFlux()}}, {{Publisher.asFlow()}}, {{awaitSingle()}}, {{awaitFirst()}} và {{ReactorContext}} để bridge context. Bridge không tự đồng bộ mọi {{ThreadLocal}}; MDC, security, tenant phải xử lý riêng.
+
+Trong WebFlux, trả {{Flow}} từ controller được adapt sang {{Flux}}. Trong Spring MVC, {{suspend fun}} được hỗ trợ, còn {{Flow}} không nên mặc định coi là được adapt; hãy kiểm tra phiên bản và kiểu trả về.
+
+### Chọn cái nào
+| Bối cảnh | Lựa chọn |
+|---|---|
+| WebFlux + R2DBC + WebClient | Reactor |
+| Service Kotlin thuần, JDBC, suspend | Flow |
+| Kafka | reactor-kafka hoặc consumer loop có kiểm soát |
+| Cần backpressure phức tạp, hot stream | Reactor/Sinks |
+
+Đừng convert qua lại nhiều lần trong hot path; chọn biên (adapter) và giữ một mô hình xuyên suốt.
+
+### Pitfall
+- Blocking trong {{map}} của Flow hoặc trên event loop của Reactor.
+- Dùng {{GlobalScope}}/{{Sinks}} không lifecycle, gây leak.
+- Test: {{runTest}} + Turbine cho Flow, {{StepVerifier}} + {{reactor-test}} cho Reactor; nhớ virtual time.
+- Flow vô hạn không có cancellation sẽ treo test; luôn đặt timeout.
+
+> Senior tip: đừng chọn Flow chỉ vì đang viết Kotlin. Nếu hệ sinh thái là WebFlux/R2DBC, Reactor cho bạn backpressure và tooling đồng bộ hơn; nếu team chủ yếu viết suspend service và JDBC, Flow dễ đọc hơn. Đo bằng load test thật và theo dõi lag của consumer.`,
+  follow: ['{{flowOn}} ảnh hưởng phần nào của pipeline?', 'Bạn bridge Reactor Context và CoroutineContext thế nào?', 'Vì sao Flow vô hạn có thể treo test?'],
+  tags: ['Flow', 'Reactor', 'backpressure', 'WebFlux']
+},
+{
+  id: 'kotlin-018', topic: 'kotlin', level: 'lead',
+  q: 'Bạn chuyển dần một hệ Spring Boot nhiều module từ Java sang Kotlin. Những điểm kỹ thuật nào trong build, annotation processing và biên API quyết định thành bại?',
+  a: `**Tóm tắt:** Chuyển dần theo module/bounded context, giữ biên Java rõ ràng và ưu tiên module mới hoặc ít thay đổi. Phần khó không phải cú pháp Kotlin mà là build nhiều ngôn ngữ, annotation processing (kapt/KSP), proxy của Spring/JPA, nullability ở biên và binary compatibility của API công khai.
+
+### Chiến lược module
+- Chọn module lá hoặc module mới ít coupling; tránh vòng phụ thuộc Java ↔ Kotlin giữa các module.
+- Trong cùng module, Kotlin compiler chạy trước và đọc được Java source; javac chạy sau, thấy class Kotlin. Java source do annotation processor sinh ra không tự xuất hiện cho Kotlin ở cùng vòng.
+- Giữ package/API biên ổn định; expose facade Java-friendly nếu consumer là Java.
+- Không rewrite service đang ổn chỉ để tăng tỷ lệ Kotlin; chọn theo mức độ thay đổi thực tế.
+
+### Build và annotation processing
+- kapt chạy Java annotation processor, sinh stub, làm chậm build và phá incremental; cần cho processor chưa hỗ trợ KSP.
+- KSP nhanh hơn và Kotlin-first nhưng chỉ dùng được với processor hỗ trợ; kiểm tra MapStruct, Hibernate metamodel, Dagger/Hilt trước khi chuyển.
+- Bật {{javaParameters = true}} để Spring MVC đọc tên parameter; thiếu nó có thể lỗi 400 khi bind.
+- Cấu hình {{kotlin("plugin.spring")}}, {{kotlin("plugin.jpa")}}, all-open/no-arg; kiểm tra version plugin khớp compiler.
+- {{jvm-default}} phải nhất quán giữa các module; thay đổi nó ảnh hưởng interface default method khi Java gọi.
+- Pin Kotlin stdlib, dùng BOM, đo build time trước/sau; kapt thường là chi phí lớn nhất.
+
+### API biên Java ↔ Kotlin
+- Tránh đưa default argument, suspend, inline/value class vào API public cho Java nếu không có bridge; Java không thấy default argument trừ {{@JvmOverloads}}.
+- Dùng {{@JvmStatic}}, {{@JvmName}}, {{@Throws}} khi cần; checked exception của Java không tự xuất hiện trong Kotlin.
+- Gắn {{@NullMarked}}/JSpecify cho package Java; nếu compiler Kotlin của bạn hỗ trợ JSpecify thì nullability được hiểu đúng, còn không vẫn là platform type — kiểm tra phiên bản.
+- Kotlin {{List}} là read-only view, không đảm bảo immutable khi sang Java; đừng chia sẻ collection mutable qua biên.
+- Giữ DTO/API trong module riêng nếu cả hai ngôn ngữ cùng dùng.
+
+### Spring/JPA và test
+- Entity cần open/no-arg đúng cách; {{@Transactional}} trên class final hoặc self-invocation vẫn bị bypass.
+- Jackson cần Kotlin module; kiểm tra {{ObjectMapper}} tự tạo.
+- Test integration thật cho proxy, rollback, lazy loading và serialization; đừng chỉ test gọi trực tiếp class.
+- MockK thường thuận hơn Mockito với final class; dùng {{runTest}} thay {{runBlocking}} trong test coroutine.
+- Đo APM/agent có hỗ trợ coroutine context không trước khi rollout.
+
+### Vận hành và đội ngũ
+- Coding convention, ktlint/detekt, review checklist cho interop; tránh "Kotlin viết như Java" và DSL quá thông minh.
+- Pair programming, owner cho build plugin, tài liệu rollback.
+- Đo lead time, defect escape, build time, p95; không đo bằng số dòng.
+- Giữ khả năng quay lại: module mới có thể revert mà không ảnh hưởng module cũ.
+
+### Pitfall
+- Big-bang rewrite; trộn kapt và KSP trong cùng module gây lỗi khó hiểu.
+- Quên {{javaParameters}} hoặc Kotlin module → lỗi runtime chỉ xuất hiện ở môi trường thật.
+- Nâng Kotlin compiler nhưng quên plugin Spring/JPA; proxy và no-arg hỏng.
+- Public API Kotlin đổi signature ngầm khi thêm default parameter hoặc đổi nullability.
+
+> Senior tip: hãy chọn một bounded context có API rõ, chuyển nó cùng test và observability, rồi so sánh số liệu với baseline trước khi mở rộng. Đầu tư sớm vào build/annotation processing và quy ước biên Java sẽ rẻ hơn nhiều so với sửa lỗi proxy/deserialization rải rác về sau.`,
+  follow: ['Vì sao Java source do annotation processor sinh ra khó thấy từ Kotlin trong cùng vòng?', 'Bạn chọn kapt hay KSP dựa trên tiêu chí nào?', 'Những construct Kotlin nào không nên xuất hiện trong API public cho Java?'],
+  tags: ['migration', 'Gradle', 'kapt', 'KSP', 'Java interop']
 }
 );
