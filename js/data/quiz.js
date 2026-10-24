@@ -4493,5 +4493,538 @@ Ngữ pháp: sở hữu cách số nhiều "the two services' release cycles" (d
 - **"Ehh... uhm... so... yeah, well..."**: chuỗi filler word kéo dài làm bạn nghe lúng túng và thiếu tự tin. Im lặng 3–5 giây có chủ đích sau một câu xin thời gian tốt hơn nhiều so với lấp đầy bằng âm vô nghĩa.
 
 > Senior tip: với câu system design, có thể xin thời gian một cách tự nhiên bằng việc nói ra cấu trúc: "Let me first clarify the requirements, then sketch the high-level design." Bạn vừa có thời gian nghĩ, vừa cho thấy tư duy có phương pháp.`
+},
+{
+  id: 'qz-devops-003',
+  topic: 'devops',
+  q: 'Deployment chạy bình thường nhưng HPA không bao giờ scale dù CPU của Pod tăng cao. Nguyên nhân phổ biến nhất và cách sửa đúng là gì?',
+  options: [
+    'HPA chỉ hoạt động khi có Prometheus, nên phải cài Prometheus thay cho metrics-server',
+    'Deployment phải dùng chiến lược Recreate thay vì RollingUpdate thì HPA mới đọc được metric',
+    'Phải đặt minReplicas bằng 0 thì HPA mới bật chế độ scale theo tải',
+    'Container không khai báo CPU request nên HPA không có mẫu số để tính phần trăm utilization; cần khai báo requests hợp lý và kiểm tra metrics-server'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: thiếu CPU request làm HPA không tính được utilization.**
+
+HPA loại dùng metric tài nguyên tính theo công thức: **utilization = mức dùng thực tế / request trung bình của container**. Nếu container không khai báo {{resources.requests.cpu}}, mẫu số không tồn tại, HPA không thể tính phần trăm và thường báo trạng thái không lấy được metric thay vì scale. Ngoài ra cluster phải có **metrics-server** (hoặc adapter cho custom metric) và Pod phải còn chạy đủ lâu để metric ổn định.
+
+### Vì sao các phương án còn lại sai
+- **Cần Prometheus thay metrics-server**: không bắt buộc. HPA đọc metric tài nguyên qua metrics API; Prometheus + prometheus-adapter chỉ cần khi bạn scale theo custom metric như độ dài queue.
+- **minReplicas bằng 0**: HPA thông thường yêu cầu tối thiểu 1 replica. Scale về 0 cần feature gate riêng và metric bên ngoài, không liên quan tới việc CPU không được nhận.
+- **Phải dùng Recreate**: chiến lược rollout không ảnh hưởng việc HPA đọc metric. Recreate còn gây downtime, không phải điều kiện của HPA.
+
+### Kiểm tra nhanh trên cluster
+~~~bash
+kubectl top pods -n my-ns
+kubectl describe hpa my-api -n my-ns
+kubectl get deployment my-api -o jsonpath="{.spec.template.spec.containers[0].resources}"
+~~~
+Nếu {{kubectl top}} lỗi thì lỗi ở metrics-server; nếu top chạy nhưng HPA báo unknown thì thường do thiếu request hoặc container vừa restart.
+
+> Senior tip: đừng đặt CPU request quá thấp chỉ để HPA "nhạy" hơn — request còn quyết định scheduling và QoS. Hãy right-size theo p95 thực tế, dùng VPA ở chế độ recommend để lấy số liệu, và với workload nghẽn I/O thì scale theo độ trễ hoặc độ dài queue thay vì chỉ CPU.`
+},
+{
+  id: 'qz-devops-004',
+  topic: 'devops',
+  q: 'Mỗi lần sửa một dòng Java, Docker build lại mất gần 10 phút vì tải lại toàn bộ dependency Maven. Cách cải thiện đúng nhất là gì?',
+  options: [
+    'Đặt COPY toàn bộ source trước rồi mới chạy mvn package để Docker cache được source',
+    'Luôn build với --no-cache để tránh dùng layer cũ và bảo đảm build sạch',
+    'Tách layer: copy pom.xml và tải dependency trước, sau đó mới copy source và build; dùng multi-stage để image cuối chỉ chứa JRE và jar',
+    'Build sẵn trên máy dev rồi copy cả thư mục target vào image để CI không phải build'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: tách layer theo tần suất thay đổi và dùng multi-stage build.**
+
+Docker cache vô hiệu hóa một layer và **mọi layer sau nó** khi nội dung đầu vào đổi. Nếu copy source trước rồi mới chạy Maven, chỉ cần một file Java đổi là bước tải dependency chạy lại từ đầu. Đảo thứ tự: copy {{pom.xml}} (hoặc cả pom của multi-module) và chạy bước tải dependency trước; source đổi chỉ làm invalidate các layer phía sau, nên dependency vẫn nằm trong cache. Multi-stage giúp image runtime không chứa Maven, JDK và source, giảm kích thước và bề mặt tấn công.
+
+### Vì sao các phương án còn lại sai
+- **Copy source trước**: đúng là nguyên nhân gây chậm. Mọi thay đổi source đều làm mất cache dependency.
+- **--no-cache**: bỏ cache là đi ngược mục tiêu, build còn chậm hơn và không tái lập được lợi ích.
+- **Build trên máy dev rồi copy target**: image phụ thuộc môi trường người build, không tái lập được trên CI, dễ lẫn file rác và không kiểm soát được toolchain.
+
+### Mẫu Dockerfile rút gọn
+~~~text
+FROM maven:3.9-eclipse-temurin-17 AS build
+WORKDIR /app
+COPY pom.xml .
+RUN mvn -B dependency:go-offline
+COPY src ./src
+RUN mvn -B package -DskipTests
+
+FROM eclipse-temurin:17-jre
+COPY --from=build /app/target/app.jar /app.jar
+ENTRYPOINT ["java","-jar","/app.jar"]
+~~~
+
+> Senior tip: với BuildKit, dùng cache mount cho thư mục {{/root/.m2}} để dependency dùng lại giữa các lần build kể cả khi pom đổi. Và ghim image base theo digest hoặc tag cụ thể, đừng dùng {{latest}}, nếu không build "sạch" vẫn có thể khác nhau giữa các lần.`
+},
+{
+  id: 'qz-devops-005',
+  topic: 'devops',
+  q: 'Bạn muốn chuyển từ blue-green sang canary cho một service có thay đổi schema database. Điều kiện tiên quyết quan trọng nhất là gì?',
+  options: [
+    'Xóa dữ liệu cũ trước khi deploy canary để tránh xung đột schema',
+    'Canary chỉ dùng được khi service không có database',
+    'Phải deploy tất cả instance cùng lúc để schema luôn đồng bộ',
+    'Migration phải tương thích ngược theo expand-contract để version cũ và mới cùng chạy trên schema trong thời gian chuyển, kèm metric và rollback tự động'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: migration tương thích ngược theo expand-contract.**
+
+Trong canary, phiên bản cũ và mới **cùng chạy đồng thời** trên cùng database. Vì vậy schema phải là giao của hai phiên bản: thêm cột/table mới (expand), backfill dữ liệu, cho code mới đọc/ghi tương thích, chỉ khi version cũ đã biến mất mới xóa cột/thứ không dùng (contract). Thay đổi phá vỡ tương thích như đổi tên cột, đổi kiểu, thêm NOT NULL không default sẽ làm version cũ lỗi ngay khi canary nhận traffic.
+
+### Vì sao các phương án còn lại sai
+- **Xóa dữ liệu cũ trước**: phá hủy dữ liệu và không giải quyết tương thích; version cũ vẫn đang chạy và sẽ lỗi.
+- **Canary không dùng với database**: sai, canary vẫn dùng được miễn là schema tương thích ngược; đây là bài toán migration chứ không phải giới hạn của canary.
+- **Deploy tất cả cùng lúc**: đó là big-bang, mất chính lợi ích giảm rủi ro của canary, và vẫn có khoảng thời gian hai version chạy song song trong lúc rollout.
+
+### Trình tự an toàn
+1. **Expand**: thêm cột nullable hoặc bảng mới, không đổi cột đang dùng.
+2. **Dual write/read** và backfill theo batch, theo dõi lag.
+3. **Rollout canary** 1–5–25–100%, so sánh error rate, latency, business metric với baseline.
+4. **Contract**: sau khi version cũ ngừng hoàn toàn mới xóa phần dư.
+
+> Senior tip: luôn thiết kế migration theo hướng **rollback được trong vài phút**. Với PostgreSQL, thêm cột nullable gần như tức thời, còn thêm default cho bảng lớn có thể rewrite bảng ở version cũ — hãy kiểm tra phiên bản cụ thể. Đừng gộp migration và deploy code vào một bước không thể tách rời.`
+},
+{
+  id: 'qz-devops-006',
+  topic: 'devops',
+  q: 'Bộ test trên CI lúc xanh lúc đỏ, chạy lại thì pass. Cách xử lý đúng nhất là gì?',
+  options: [
+    'Cô lập test: mỗi test tự tạo dữ liệu riêng với id duy nhất hoặc rollback transaction, không phụ thuộc thứ tự; thay sleep bằng chờ có điều kiện; tái hiện bằng cách chạy lặp rồi sửa gốc, không retry mù',
+    'Bật retry 3 lần trong CI để pipeline luôn xanh',
+    'Tăng timeout của toàn bộ test lên 10 phút',
+    'Chạy test song song nhiều hơn để nhanh hơn và ít gặp lỗi hơn'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: tìm và loại bỏ nguyên nhân gốc của flaky test.**
+
+Flaky test thường đến từ **trạng thái chia sẻ** giữa các test (cùng database, cùng user, cùng file), **phụ thuộc thứ tự chạy**, **thời gian thật** (sleep, múi giờ), **bất đồng bộ** (thread, message đến muộn), **cổng/port cố định**, hoặc **dữ liệu ngẫu nhiên không seed**. Cách sửa là làm test độc lập và xác định: dữ liệu riêng, transaction rollback hoặc dọn dẹp, inject {{Clock}}, dùng {{Awaitility}} thay sleep, cấp port động. Sau đó chạy lặp nhiều lần để xác nhận đã hết flake.
+
+### Vì sao các phương án còn lại sai
+- **Retry trong CI**: che giấu lỗi thật, làm pipeline xanh giả và tăng thời gian; người dùng vẫn gặp lỗi ở production.
+- **Tăng timeout**: chỉ làm test chậm hơn, không sửa nguyên nhân; có lỗi còn trở nên khó thấy hơn.
+- **Chạy song song nhiều hơn**: với test đang chia sẻ trạng thái, song song làm xung đột nhiều hơn và flake nặng hơn.
+
+### Quy trình xử lý
+- Gắn nhãn **flaky** và đưa vào danh sách theo dõi, không xóa âm thầm.
+- Chạy riêng test đó lặp 50–100 lần để tái hiện.
+- Đọc log thời điểm fail, tìm tài nguyên chia sẻ hoặc giả định về thời gian.
+- Sửa gốc, sau đó chạy lại nhiều lần trước khi bỏ nhãn.
+
+> Senior tip: hãy đo **tỉ lệ flake** theo tuần và đặt ngưỡng cảnh báo. Một test flaky 1% trong bộ 100 test làm pipeline đỏ khoảng 63% số lần chạy (1 - 0.99^100), nên flake nhỏ vẫn rất tốn kém. Và đừng dùng {{Thread.sleep}} trong test — nếu buộc phải chờ, hãy chờ theo điều kiện với timeout rõ ràng.`
+},
+{
+  id: 'qz-devops-007',
+  topic: 'devops',
+  q: 'Pod Java bị OOMKilled dù đã đặt -Xmx thấp hơn memory limit của container. Nguyên nhân và cách xử lý đúng là gì?',
+  options: [
+    'OOMKilled chỉ liên quan heap, nên chỉ cần tăng -Xmx bằng đúng memory limit là đủ',
+    'Phải tắt swap trong container vì swap là nguyên nhân duy nhất gây OOMKilled',
+    'Ngoài heap còn metaspace, code cache, thread stack, direct/native memory và overhead của JVM; cần đặt limit có biên, dùng MaxRAMPercentage hợp lý và theo dõi RSS/NMT',
+    'Đặt -Xms lớn hơn -Xmx để JVM giữ trước toàn bộ bộ nhớ'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: memory limit của container bao gồm nhiều vùng nhớ ngoài Java heap.**
+
+{{-Xmx}} chỉ giới hạn **heap**. Tiến trình Java còn dùng **metaspace**, **code cache**, **thread stack** (mỗi thread thường 512 KB–1 MB), **direct buffer** (Netty, NIO, JDBC driver), **memory-mapped file**, cấu trúc nội bộ JVM, thư viện native và allocator. Nếu tổng vượt limit, kernel gửi SIGKILL và Kubernetes ghi {{OOMKilled}} — không có heap dump vì JVM không kịp phản ứng. Vì vậy cần đặt limit có biên (thường heap chiếm 60–75% limit), dùng {{-XX:MaxRAMPercentage}} để JVM tự tính theo limit container, giới hạn direct memory nếu dùng Netty, và theo dõi RSS thực tế bằng metric.
+
+### Vì sao các phương án còn lại sai
+- **Chỉ tăng -Xmx bằng limit**: bỏ lại toàn bộ vùng nhớ ngoài heap, càng dễ bị kill hơn.
+- **Tắt swap**: swap không phải nguyên nhân OOMKilled của container; tắt swap không giải quyết việc tiến trình vượt limit.
+- **-Xms lớn hơn -Xmx**: cấu hình không hợp lệ, JVM từ chối khởi động.
+
+### Cách điều tra
+~~~bash
+kubectl describe pod my-api | grep -A3 "Last State"
+kubectl exec my-api -- jcmd 1 VM.native_memory summary
+~~~
+So sánh **RSS** với limit, xem direct buffer và số thread. Nếu RSS tăng dần theo tải thì tìm leak (buffer, ThreadLocal, cache không giới hạn) trước khi chỉ tăng limit.
+
+> Senior tip: đặt {{-XX:MaxRAMPercentage=75}} thay vì hard-code {{-Xmx}} để cùng một image chạy được với nhiều mức limit. Với Netty, đặt thêm {{-XX:MaxDirectMemorySize}} và kiểm tra leak detector. Đừng đặt limit sát mức dùng trung bình — cần biên cho đỉnh tải và cho phần native.`
+},
+{
+  id: 'qz-devops-008',
+  topic: 'devops',
+  q: 'Bạn phát hiện một API key bị bake vào Docker image đã push lên registry. Hành động nào đúng và đủ nhất?',
+  options: [
+    'Xóa tag latest, image cũ sẽ tự động không tải được nữa',
+    'Đổi và thu hồi key ngay, ngừng dùng image đó, chuyển secret sang runtime (secret manager/env), thêm scan secret vào CI và coi key đã lộ là compromised',
+    'Thêm một layer mới ghi đè file chứa secret là đủ vì layer cũ đã bị che',
+    'Chỉ cần đổi tên biến môi trường trong Dockerfile'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: xoay vòng key trước, sau đó sửa quy trình để secret không vào image.**
+
+Image và registry lưu **tất cả layer**, kể cả layer đã bị layer sau ghi đè. Ai pull được image đều có thể dùng {{docker history}} hoặc giải nén layer để lấy secret. Xóa tag không xóa các digest đã tồn tại; người đã pull hoặc cache vẫn giữ bản sao. Vì vậy việc đầu tiên là **thu hồi key** (coi như đã bị lộ), sau đó xóa image/digest theo chính sách, và sửa cách inject secret: đọc từ secret manager hoặc biến môi trường lúc chạy, không COPY file hay dùng {{ARG}} cho secret.
+
+### Vì sao các phương án còn lại sai
+- **Xóa tag latest**: chỉ bỏ một nhãn; digest cũ vẫn tồn tại và bản đã pull vẫn dùng được. Key vẫn bị lộ.
+- **Thêm layer ghi đè**: layer cũ vẫn nằm trong image; không xóa được dữ liệu đã ghi.
+- **Đổi tên biến môi trường**: giá trị secret vẫn còn trong image/history, không giảm rủi ro.
+
+### Phòng ngừa
+- Bật **secret scanning** cho repo, image và lịch sử commit.
+- Dùng BuildKit secret mount hoặc secret manager, không dùng {{ARG}}/{{ENV}} cho bí mật.
+- Thêm bước chặn CI khi phát hiện pattern khoá.
+- Giới hạn quyền registry và audit ai đã pull image.
+
+> Senior tip: khi secret lọt vào image, thời gian sống của nó bắt đầu từ lúc push, không phải lúc bạn phát hiện. Hãy thiết kế key ngắn hạn, có thể xoay vòng, và ghi log việc sử dụng key để phát hiện bất thường. Đừng chỉ xóa commit hoặc xóa tag rồi coi như xong.`
+},
+{
+  id: 'qz-kotlin-003',
+  topic: 'kotlin',
+  q: 'Một coroutine gọi JDBC blocking trong launch(Dispatchers.Default) làm giảm throughput của toàn ứng dụng. Cách sửa đúng nhất là gì?',
+  options: [
+    'Chuyển sang GlobalScope.launch để không bị giới hạn bởi dispatcher',
+    'Thêm Thread.sleep(0) sau lời gọi để nhường CPU cho coroutine khác',
+    'Tăng số thread của Dispatchers.Default bằng system property',
+    'Bọc lời gọi blocking trong withContext(Dispatchers.IO) hoặc dùng client async phù hợp, vẫn giữ structured concurrency và xử lý hủy'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: chuyển phần blocking sang dispatcher dành cho I/O.**
+
+{{Dispatchers.Default}} được thiết kế cho công việc **CPU-bound**, số thread bị giới hạn theo số core (tối thiểu 2). Một lời gọi JDBC blocking sẽ **chiếm một thread** suốt thời gian chờ I/O, làm cạn pool và khiến các coroutine khác đói thread dù CPU rảnh. {{Dispatchers.IO}} có pool lớn hơn và co giãn, phù hợp cho blocking I/O; hoặc dùng driver reactive/async nếu có. Quan trọng không kém là giữ **structured concurrency**: dùng {{withContext}} bên trong scope hiện tại để lỗi và hủy lan truyền đúng.
+
+### Vì sao các phương án còn lại sai
+- **GlobalScope.launch**: thoát khỏi scope cha nên không bị hủy khi request kết thúc, dễ leak coroutine và mất lan truyền lỗi.
+- **Thread.sleep(0)**: không nhường thread một cách có ý nghĩa; thread vẫn bận và coroutine khác vẫn chờ.
+- **Tăng thread Default**: che triệu chứng, tạo quá nhiều thread, tốn bộ nhớ và tranh chấp; Default vốn không dành cho blocking.
+
+### Lưu ý khi dùng Dispatchers.IO
+- Pool IO cũng có giới hạn (mặc định 64 thread hoặc số core, lấy mức lớn hơn), nên nếu database pool chỉ có 10 connection thì chạy 64 lời gọi song song cũng vô ích. Dùng {{limitedParallelism(10)}} để khớp connection pool.
+- JDBC không hỗ trợ hủy; có thể bọc bằng {{runInterruptible}} nếu driver phản ứng với interrupt, nhưng phải kiểm tra thực tế.
+- Trên Java 21 có thể dùng virtual thread cho tác vụ blocking, nhưng vẫn cần giới hạn theo tài nguyên thật.
+
+> Senior tip: quy tắc là **blocking đi với IO, tính toán đi với Default**. Hãy đặt timeout cho mọi lời gọi ra ngoài và đo thời gian chờ; nếu thấy coroutine chờ thread thay vì chờ I/O thì đó là dấu hiệu dispatcher bị dùng sai.`
+},
+{
+  id: 'qz-kotlin-004',
+  topic: 'kotlin',
+  q: 'Khi nào nên dùng Sequence thay vì List trong Kotlin?',
+  options: [
+    'Khi chuỗi biến đổi dài trên collection lớn và chỉ cần kết quả cuối, để tránh tạo collection trung gian; nhưng không dùng khi cần duyệt nhiều lần hoặc truy cập theo index',
+    'Luôn dùng Sequence vì nó nhanh hơn List trong mọi trường hợp',
+    'Sequence lưu kết quả vào cache nên chỉ tính toán một lần',
+    'Sequence chỉ dùng được với collection nhỏ vì nó chậm hơn List'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Sequence hợp cho pipeline lười trên dữ liệu lớn, dùng một lần.**
+
+{{Sequence}} thực hiện các phép biến đổi **lazy**: mỗi phần tử đi qua toàn bộ chuỗi {{map/filter}} rồi mới sang phần tử tiếp theo, không tạo list trung gian. Với dữ liệu lớn hoặc chuỗi nhiều bước, cách này tiết kiệm bộ nhớ và có thể **dừng sớm** khi gặp {{first()}}, {{find()}}, {{take(n)}}. Nhưng sequence là **cold**: mỗi lần duyệt sẽ tính lại từ đầu, và truy cập theo index không hiệu quả vì phải duyệt tuần tự.
+
+### Vì sao các phương án còn lại sai
+- **Luôn nhanh hơn List**: với collection nhỏ, chi phí tạo lambda và iterator của sequence có thể lớn hơn vòng lặp trên list; list còn được tối ưu tốt hơn.
+- **Cache kết quả**: sequence không cache; muốn dùng lại phải gọi {{toList()}} và giữ kết quả.
+- **Chỉ dùng cho collection nhỏ**: ngược lại, sequence phát huy lợi thế với dữ liệu lớn hoặc nguồn vô hạn.
+
+### Khi nào chọn gì
+| Tình huống | Nên dùng |
+|---|---|
+| Dữ liệu lớn, nhiều bước, chỉ lấy kết quả cuối | Sequence |
+| Cần duyệt nhiều lần, truy cập index, kích thước nhỏ | List |
+| Nguồn vô hạn hoặc đọc dần từ file | Sequence |
+| Cần song song hóa | Java parallel stream hoặc coroutine, không phải Sequence |
+
+> Senior tip: đừng tối ưu hóa sớm. Hãy đo trước; nếu profiler cho thấy nhiều collection trung gian và bộ nhớ tăng vọt thì mới chuyển sang sequence. Và nhớ rằng Sequence khác {{Stream}} của Java: stream chỉ dùng một lần, còn sequence có thể lặp lại (dù phải tính lại).`
+},
+{
+  id: 'qz-kotlin-005',
+  topic: 'kotlin',
+  q: 'Bạn cần viết hàm generic nhận kiểu T và biết Class của T lúc runtime để deserialize JSON. Cách đúng trong Kotlin là gì?',
+  options: [
+    'Dùng reified type parameter trong inline function để compiler chèn kiểu thật; nếu không thể inline thì truyền KClass hoặc TypeReference tường minh',
+    'Dùng T::class trực tiếp trong mọi hàm generic, kể cả hàm không inline',
+    'Ép kiểu (T) Any() rồi đọc javaClass để lấy kiểu thật',
+    'Kotlin tự giữ type token cho mọi generic nên không cần làm gì thêm'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: dùng reified trong inline function, hoặc truyền type token tường minh.**
+
+Trên JVM, generic bị **type erasure**: bên trong hàm, {{T}} không còn tồn tại lúc runtime. Kotlin cho phép {{inline fun <reified T> ...}} để compiler **chèn kiểu thật** tại điểm gọi, nhờ đó dùng được {{T::class}}, {{is T}}, hoặc {{typeOf<T>()}}. Đổi lại, inline làm tăng bytecode và không dùng được cho hàm ảo/interface method. Khi không inline được, hãy truyền rõ {{KClass<T>}} hoặc dùng {{TypeReference}}/{{ParameterizedTypeReference}} của thư viện JSON để giữ thông tin generic.
+
+### Vì sao các phương án còn lại sai
+- **T::class trong mọi hàm generic**: chỉ hợp lệ khi {{T}} là reified trong inline function; nếu không, compiler báo lỗi.
+- **Ép kiểu (T) Any()**: tạo object kiểu Any, không mang thông tin T; đọc {{javaClass}} chỉ ra {{Any}}, và ép kiểu còn có thể ném ClassCastException.
+- **Kotlin tự giữ type token**: không đúng; Kotlin cũng chịu type erasure như Java.
+
+### Ví dụ
+~~~kotlin
+inline fun <reified T> fromJson(json: String): T =
+    jacksonObjectMapper().readValue(json, T::class.java)
+
+// Không inline được: truyền token tường minh
+fun <T> fromJson(json: String, type: TypeReference<T>): T =
+    jacksonObjectMapper().readValue(json, type)
+~~~
+
+Với generic lồng nhau như {{List<Order>}}, {{T::class.java}} không đủ; cần {{TypeReference}} hoặc {{typeOf<List<Order>>()}}.
+
+> Senior tip: ưu tiên truyền type token ở **ranh giới** (HTTP client, repository) thay vì rải reified khắp nơi. Reified tiện nhưng làm code phình to và khó debug; với Jackson, một {{TypeReference}} đặt đúng chỗ thường rõ ràng hơn.`
+},
+{
+  id: 'qz-kotlin-006',
+  topic: 'kotlin',
+  q: 'Một property lateinit var trong singleton được đọc từ nhiều thread. Rủi ro chính là gì?',
+  options: [
+    'lateinit tự động thread-safe nhờ từ khóa lateinit',
+    'lateinit không cho phép kiểu nullable nên không có rủi ro nào',
+    'Không có bảo đảm visibility hay khởi tạo một lần: thread khác có thể đọc trước khi gán và ném UninitializedPropertyAccessException, hoặc thấy giá trị chưa công bố an toàn',
+    'lateinit chỉ gây lỗi khi property là kiểu primitive'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: lateinit không đồng bộ hóa và không bảo đảm safe publication.**
+
+{{lateinit var}} được biên dịch thành một field thường kèm kiểm tra null mỗi lần đọc; nó **không thêm** {{volatile}}, khóa hay cơ chế khởi tạo một lần. Nếu thread A gán giá trị trong khi thread B đọc, B có thể:
+- đọc trước khi A gán và nhận {{UninitializedPropertyAccessException}}, hoặc
+- thấy tham chiếu nhưng chưa thấy đầy đủ trạng thái bên trong object do thiếu quan hệ happens-before.
+
+Kiểm tra {{isInitialized}} cũng không nguyên tử với lần đọc ngay sau đó.
+
+### Vì sao các phương án còn lại sai
+- **Tự động thread-safe**: không có cơ chế đồng bộ nào được sinh ra.
+- **Không nullable nên không rủi ro**: nullability của kiểu không liên quan tới an toàn đa luồng; rủi ro nằm ở thời điểm gán và visibility.
+- **Chỉ lỗi với primitive**: lateinit không áp dụng cho primitive; lỗi xảy ra với mọi kiểu tham chiếu chưa được gán.
+
+### Cách làm đúng
+- Khởi tạo trong constructor hoặc trong hàm khởi tạo chạy trước khi chia sẻ object.
+- Dùng {{by lazy}} (mặc định SYNCHRONIZED) cho khởi tạo một lần an toàn.
+- Nếu buộc phải gán muộn, dùng {{@Volatile}} kèm double-checked locking hoặc một cơ chế publish an toàn.
+- Với dependency injection, để framework quản lý vòng đời thay vì tự gán trong singleton.
+
+> Senior tip: lateinit hợp cho **test setup** hoặc framework gọi lifecycle rõ ràng, không hợp cho trạng thái chia sẻ tùy tiện. Nếu bạn thấy mình phải kiểm tra {{isInitialized}} trong code production, đó thường là dấu hiệu nên đổi sang constructor injection hoặc lazy có kiểm soát.`
+},
+{
+  id: 'qz-kotlin-007',
+  topic: 'kotlin',
+  q: 'by lazy mặc định dùng chế độ đồng bộ nào và khi nào nên đổi sang chế độ khác?',
+  options: [
+    'PUBLICATION, an toàn cho mọi trường hợp và không bao giờ tính hai lần',
+    'SYNCHRONIZED: chỉ một thread tính, các thread khác chờ; dùng NONE khi chắc chắn chỉ một thread truy cập để bỏ chi phí khóa, nhưng có thể tính nhiều lần nếu đa luồng',
+    'NONE là mặc định và không thread-safe',
+    'Lazy chỉ hỗ trợ NONE nên phải tự đồng bộ bên ngoài'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: mặc định là SYNCHRONIZED; NONE chỉ dùng khi chắc chắn đơn luồng.**
+
+Kotlin cung cấp ba chế độ:
+- **SYNCHRONIZED** (mặc định): khóa quanh lần khởi tạo, chỉ một thread tính, các thread khác chờ. An toàn nhưng có chi phí khóa ở lần truy cập đầu.
+- **PUBLICATION**: nhiều thread có thể cùng tính, thread nào công bố trước thì thắng; các thread khác có thể đã tính xong và bỏ kết quả. Không khóa nên nhanh hơn trong tranh chấp, nhưng initializer có thể chạy nhiều lần — chỉ dùng khi initializer không có side effect và chấp nhận được.
+- **NONE**: không đồng bộ; nhanh nhất nhưng không an toàn nếu nhiều thread truy cập.
+
+### Vì sao các phương án còn lại sai
+- **PUBLICATION mặc định và không tính hai lần**: sai cả hai ý; PUBLICATION có thể tính nhiều lần.
+- **NONE là mặc định**: sai, mặc định là SYNCHRONIZED.
+- **Chỉ hỗ trợ NONE**: sai, có đủ ba chế độ.
+
+### Lưu ý thực tế
+- Nếu initializer ném exception, lần truy cập sau sẽ **thử lại** (với SYNCHRONIZED) chứ không cache exception.
+- Với singleton do DI container quản lý, thường không cần lazy; hãy để container quyết định scope.
+- Đo trước khi đổi sang NONE: chi phí khóa một lần thường không đáng kể so với rủi ro race.
+
+> Senior tip: đừng chọn NONE chỉ vì "nhanh hơn". Trong Android, lazy gắn với UI thread thường dùng NONE có chủ đích; trong backend đa luồng, hãy giữ SYNCHRONIZED trừ khi đã chứng minh được chỉ một thread truy cập. Và nhớ rằng lazy chỉ giải quyết khởi tạo, không bảo vệ object khỏi bị mutate sau đó.`
+},
+{
+  id: 'qz-kotlin-008',
+  topic: 'kotlin',
+  q: 'Một data class được dùng làm key trong HashMap, sau đó một property var của nó bị thay đổi. Điều gì xảy ra?',
+  options: [
+    'hashCode được cache nên map vẫn tìm thấy bình thường',
+    'HashMap tự rehash lại khi object thay đổi',
+    'Chỉ ảnh hưởng nếu property là nullable',
+    'hashCode thay đổi nên object rơi vào bucket khác; get/contains trả về null/false dù object vẫn nằm trong map, vì vậy key phải immutable hoặc không mutate sau khi đưa vào hash-based collection'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: thay đổi property làm hỏng hợp đồng hashCode/equals của key.**
+
+{{data class}} sinh {{equals}}, {{hashCode}} và {{toString}} từ **tất cả property trong primary constructor**. Khi object được đưa vào {{HashMap}}, vị trí bucket được tính từ hashCode tại thời điểm đó. Nếu một property tham gia hashCode bị thay đổi, hashCode mới dẫn tới bucket khác; {{get}} sẽ tìm sai chỗ và trả về null dù object vẫn còn trong map. Đây là **memory leak logic**: entry không truy cập được nhưng vẫn chiếm chỗ.
+
+### Vì sao các phương án còn lại sai
+- **hashCode được cache**: {{HashMap}} không cache hashCode của key; nó gọi lại mỗi lần cần.
+- **HashMap tự rehash**: chỉ rehash khi số phần tử vượt ngưỡng và bảng resize, không theo dõi thay đổi nội dung object.
+- **Chỉ ảnh hưởng nếu nullable**: kiểu của property không liên quan; bất kỳ property nào trong hashCode đổi giá trị đều gây lỗi.
+
+### Cách phòng tránh
+- Dùng **immutable key**: val cho mọi property tham gia equals/hashCode, và collection bên trong cũng không bị mutate.
+- Nếu cần key có trạng thái thay đổi, dùng **ID ổn định** làm key thay vì cả object.
+- Cẩn thận với {{Array}} trong data class: equals/hashCode dùng tham chiếu, không so nội dung; cần wrapper hoặc lớp riêng.
+- Với JPA entity, không dùng entity managed làm key vì hashCode có thể đổi khi id được gán.
+
+> Senior tip: hãy coi key của hash-based collection là **bất biến theo hợp đồng**, kể cả khi ngôn ngữ không cưỡng chế. Nếu buộc phải dùng object mutable, hãy tạo một key riêng chỉ chứa các trường ổn định. Đây là lớp bug rất khó tìm vì test đơn giản vẫn xanh.`
+},
+{
+  id: 'qz-testing-007',
+  topic: 'testing',
+  q: 'Test tích hợp chờ message từ Kafka bằng Thread.sleep(5000) rồi assert. Vấn đề và cách sửa đúng là gì?',
+  options: [
+    'Không sao nếu CI đủ nhanh, chỉ cần giữ nguyên',
+    'Sleep vừa làm test chậm vừa vẫn flaky khi message đến muộn; dùng Awaitility hoặc chờ có điều kiện với timeout và poll, kiểm tra trạng thái thay vì chờ thời gian cố định',
+    'Tăng sleep lên 30 giây để chắc chắn message đã đến',
+    'Bỏ hẳn test bất đồng bộ vì không thể test ổn định'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: thay sleep cố định bằng chờ có điều kiện.**
+
+{{Thread.sleep(5000)}} là một giả định về thời gian, không phải về hành vi. Trên CI tải cao, message có thể đến sau 5 giây → test đỏ dù code đúng. Trên máy nhanh, test lại chờ thừa 5 giây mỗi lần. Cách đúng là chờ **điều kiện** với timeout và khoảng poll, ví dụ {{Awaitility.await().atMost(10, SECONDS).untilAsserted(...)}}, hoặc dùng {{CountDownLatch}}/listener của consumer để biết chắc message đã xử lý. Test sẽ nhanh khi mọi thứ sẵn sàng và vẫn đủ kiên nhẫn khi chậm.
+
+### Vì sao các phương án còn lại sai
+- **Giữ nguyên nếu CI nhanh**: CI không ổn định; đây chính là nguồn flaky test phổ biến.
+- **Tăng lên 30 giây**: làm test rất chậm mà vẫn có thể flaky khi tải cao; không giải quyết gốc.
+- **Bỏ test bất đồng bộ**: mất lớp bảo vệ quan trọng nhất của hệ thống message; có thể test ổn định nếu dùng đúng công cụ.
+
+### Mẫu với Awaitility
+~~~java
+await().atMost(Duration.ofSeconds(10))
+       .pollInterval(Duration.ofMillis(200))
+       .untilAsserted(() -> assertEquals("PAID", orderRepo.findById(id).orElseThrow().getStatus()));
+~~~
+
+Với Kafka, có thể dùng {{ContainerTestUtils.waitForAssignment}} để chờ consumer nhận partition trước khi gửi message, tránh race lúc khởi động.
+
+> Senior tip: mỗi lần thấy {{Thread.sleep}} trong test, hãy coi đó là mùi code cần sửa. Nếu buộc phải chờ một tác vụ không có tín hiệu, hãy ít nhất dùng vòng lặp poll có timeout và ghi log lý do. Và đo thời gian test để phát hiện test chậm bất thường trước khi chúng thành nút cổ chai của pipeline.`
+},
+{
+  id: 'qz-testing-008',
+  topic: 'testing',
+  q: 'Bạn dùng @SpringBootTest cho mọi test và bộ test mất gần 20 phút. Cách cải thiện đúng nhất là gì?',
+  options: [
+    'Xóa bớt các test chậm để pipeline nhanh hơn',
+    'Chuyển tất cả sang mock để không cần khởi động Spring',
+    'Tăng timeout và chạy song song trên một máy để bù thời gian',
+    'Dùng test slice phù hợp như @WebMvcTest hoặc @DataJpaTest, unit test cho logic thuần, chỉ dùng @SpringBootTest cho luồng tích hợp; giữ cấu hình context nhất quán để cache có hiệu lực'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: phân tầng test và tận dụng context cache.**
+
+{{@SpringBootTest}} khởi động gần như toàn bộ application context, tốn vài giây đến vài chục giây mỗi lần. Spring cache context theo **cấu hình** (properties, mock bean, slice type); nếu mỗi test class có cấu hình khác nhau, cache bị phân mảnh và context được dựng lại liên tục. Cách đúng:
+- **Unit test** cho logic thuần, không cần Spring — chạy mili giây.
+- **Slice test**: {{@WebMvcTest}} chỉ load web layer, {{@DataJpaTest}} chỉ load JPA, nhanh hơn nhiều.
+- **@SpringBootTest** chỉ cho luồng tích hợp thật sự cần nhiều tầng.
+- Giữ cấu hình test nhất quán và tránh {{@MockBean}}/{{@MockitoBean}}/{{@DirtiesContext}} tràn lan vì chúng tạo context mới (từ Spring Boot 3.4, {{@MockitoBean}} thay cho {{@MockBean}} đã deprecated).
+
+### Vì sao các phương án còn lại sai
+- **Xóa test chậm**: mất độ phủ, đặc biệt ở các luồng quan trọng; không giải quyết kiến trúc test.
+- **Mock tất cả**: mất khả năng bắt lỗi tích hợp thật, dễ tạo test xanh giả.
+- **Tăng timeout và chạy song song**: chỉ che triệu chứng; song song còn tranh chấp tài nguyên và có thể làm chậm/flaky hơn.
+
+### Cách kiểm tra context cache
+Bật log {{org.springframework.test.context.cache}} ở mức DEBUG để xem số context được tạo và lý do miss. Nếu thấy hàng chục context, hãy gom cấu hình test về một vài biến thể.
+
+> Senior tip: mục tiêu không phải "test nhanh bằng mọi giá" mà là **vòng phản hồi nhanh cho phần lớn thay đổi**. Hãy giữ unit test dưới vài giây, slice test dưới một phút, và để integration test chạy ở pipeline trước merge. Đo thời gian theo từng tầng để biết tối ưu ở đâu.`
+},
+{
+  id: 'qz-aws-007',
+  topic: 'aws',
+  q: 'Consumer SQS xử lý message lâu hơn visibility timeout. Điều gì xảy ra và cách sửa đúng?',
+  options: [
+    'SQS giữ message cho đến khi consumer gọi delete nên không có vấn đề gì',
+    'Message hiện lại và có thể được consumer khác nhận, gây xử lý trùng; cần đặt visibility timeout lớn hơn thời gian xử lý tối đa, hoặc gia hạn bằng ChangeMessageVisibility, và làm consumer idempotent',
+    'SQS tự động tăng visibility timeout theo thời gian xử lý thực tế',
+    'Chỉ cần chuyển sang FIFO queue là hết trùng'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: message bị redeliver, nên phải tăng visibility timeout và làm consumer idempotent.**
+
+Khi consumer nhận message, SQS ẩn message trong **visibility timeout**. Hết thời gian đó mà chưa có {{DeleteMessage}}, message trở lại visible và consumer khác (hoặc chính consumer đó) có thể nhận lại. SQS là **at-least-once**, nên xử lý trùng là chuyện bình thường, không phải ngoại lệ. Cách xử lý:
+- Đặt visibility timeout **lớn hơn thời gian xử lý tối đa** (đo theo p99 rồi cộng biên; với Lambda, AWS khuyến nghị khoảng 6 lần timeout của function).
+- Với job dài, gọi {{ChangeMessageVisibility}} định kỳ để gia hạn (heartbeat).
+- Dùng **idempotency key** ở consumer (bảng dedup, unique constraint, conditional write).
+- Cấu hình **DLQ** với {{maxReceiveCount}} để tránh message độc lặp vô hạn.
+
+### Vì sao các phương án còn lại sai
+- **SQS giữ đến khi delete**: sai; message hiện lại sau visibility timeout dù chưa delete.
+- **SQS tự tăng timeout**: sai; visibility timeout là cấu hình, SQS không tự điều chỉnh theo thời gian xử lý.
+- **FIFO hết trùng**: FIFO chỉ dedup theo {{MessageDeduplicationId}} trong một cửa sổ 5 phút và bảo đảm thứ tự trong group; nó không ngăn redelivery sau visibility timeout và không thay thế idempotency.
+
+> Senior tip: hãy thiết kế consumer **idempotent trước**, rồi mới chỉnh visibility timeout. Đừng đặt timeout quá lớn một cách mù quáng vì message lỗi sẽ nằm lâu trước khi vào DLQ. Theo dõi {{ApproximateReceiveCount}} để phát hiện message bị xử lý lặp và cảnh báo sớm.`
+},
+{
+  id: 'qz-aws-008',
+  topic: 'aws',
+  q: 'Bảng DynamoDB có partition key là userId, một vài user nổi bật tạo lưu lượng rất lớn gây hot partition. Cách thiết kế lại hợp lý nhất là gì?',
+  options: [
+    'Thêm suffix ngẫu nhiên vào partition key để phân tán ghi/đọc theo shard, hoặc chọn composite key phù hợp access pattern; dùng cache/retry backoff cho đọc nóng và tránh scan',
+    'Chỉ cần tăng read/write capacity là đủ cho mọi trường hợp',
+    'Đổi sang scan toàn bảng để tránh hot partition',
+    'Đặt partition key là timestamp để mọi item rải đều'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: phân tán dữ liệu nóng bằng write sharding hoặc khóa tổng hợp phù hợp truy vấn.**
+
+DynamoDB giới hạn tài nguyên **theo từng partition** (khoảng 3000 RCU và 1000 WCU, cùng giới hạn dung lượng). Một userId có lưu lượng áp đảo sẽ dồn vào một partition và bị throttle dù bảng còn nhiều capacity. Cách xử lý:
+- **Write sharding**: thêm hậu tố ngẫu nhiên (0..N-1) vào partition key, ghi rải đều; khi đọc phải đọc N shard rồi gộp.
+- **Composite key** theo access pattern: ví dụ {{PK = TENANT#id}}, {{SK = TYPE#timestamp}} để phân bố đều hơn.
+- Với đọc nóng, dùng **DAX** hoặc cache tầng ứng dụng, và retry với exponential backoff.
+- Tránh {{Scan}} vì tốn capacity và chậm.
+
+### Vì sao các phương án còn lại sai
+- **Chỉ tăng capacity**: capacity tổng không giúp nếu một partition vẫn vượt giới hạn; adaptive capacity chỉ giảm nhẹ, không xử lý hot key cực đoan.
+- **Scan toàn bảng**: đọc toàn bộ dữ liệu, tốn kém và chậm hơn nhiều, càng tệ khi bảng lớn.
+- **Partition key là timestamp**: ghi có thể rải đều theo thời gian nhưng truy vấn theo user sẽ phải scan; đồng thời ghi cùng một giây vẫn tạo hot partition.
+
+> Senior tip: thiết kế DynamoDB bắt đầu từ **access pattern**, không phải từ mô hình quan hệ. Nếu một key tự nhiên có thể nóng, hãy chấp nhận thêm shard và xử lý gộp ở tầng ứng dụng. Đo {{ConsumedWriteCapacityUnits}} theo partition key để phát hiện sớm trước khi user thấy lỗi throttle.`
+},
+{
+  id: 'qz-ai-007',
+  topic: 'ai',
+  q: 'Bạn đổi mô hình embedding của pipeline RAG từ model A sang model B. Điều gì bắt buộc phải làm?',
+  options: [
+    'Chỉ cần đổi cấu hình model, vector cũ vẫn dùng được vì cùng số chiều',
+    'Tăng temperature để bù cho khác biệt giữa hai model',
+    'Phải re-embed toàn bộ tài liệu bằng model B và dùng cùng model B cho query, vì không gian vector khác nhau kể cả khi cùng số chiều; lưu version model cùng vector để tránh trộn',
+    'Chỉ cần re-embed các tài liệu mới thêm sau khi đổi model'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: re-embed toàn bộ corpus và query bằng cùng một model.**
+
+Mỗi mô hình embedding học một **không gian vector riêng**. Hai vector cùng số chiều nhưng từ hai model khác nhau không có ý nghĩa so sánh — khoảng cách cosine giữa chúng gần như vô nghĩa. Nếu chỉ embed tài liệu mới bằng model B trong khi tài liệu cũ vẫn là model A, truy vấn sẽ trộn hai không gian và kết quả retrieval tệ đi một cách khó chẩn đoán. Vì vậy phải:
+- Re-embed **toàn bộ** chunk bằng model B.
+- Dùng **cùng model B** cho query lúc truy vấn.
+- Lưu {{embedding_model}} và version cùng mỗi vector để tránh trộn.
+- Chạy **blue-green index**: dựng index mới, đánh giá, rồi chuyển traffic.
+
+### Vì sao các phương án còn lại sai
+- **Cùng số chiều là dùng được**: số chiều không quyết định không gian vector; đây là hiểu nhầm nguy hiểm.
+- **Tăng temperature**: temperature chỉ ảnh hưởng sinh văn bản, không liên quan embedding hay retrieval.
+- **Chỉ re-embed tài liệu mới**: tạo hỗn hợp hai không gian, làm retrieval sai lệch.
+
+> Senior tip: hãy coi embedding model như một phần của **schema dữ liệu**, không phải tham số cấu hình. Khi nâng cấp, đo recall trên bộ eval trước và sau, và giữ khả năng rollback về index cũ trong thời gian chuyển. Chi phí re-embed có thể lớn, nên lên kế hoạch batch và theo dõi tiến độ.`
+},
+{
+  id: 'qz-ai-008',
+  topic: 'ai',
+  q: 'LLM trả JSON cho pipeline nhưng thỉnh thoảng thiếu field hoặc sai kiểu. Cách xử lý production đúng nhất là gì?',
+  options: [
+    'Tin vào JSON vì đã yêu cầu định dạng rõ trong prompt',
+    'Dùng structured output/JSON schema khi API hỗ trợ, vẫn validate schema ở server, retry có giới hạn với lỗi cụ thể, và có fallback hoặc human review',
+    'Tăng temperature để đầu ra đa dạng hơn và dễ parse hơn',
+    'Bọc JSON.parse trong try/catch rồi bỏ qua message lỗi'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: ràng buộc đầu ra bằng schema và vẫn validate ở server.**
+
+Prompt chỉ là **hướng dẫn mềm**; mô hình có thể sinh JSON thiếu field, sai kiểu, hoặc thêm chữ ngoài JSON. Các API hiện đại có **structured output** hoặc JSON schema để giảm mạnh lỗi định dạng, nhưng không loại bỏ hoàn toàn — vẫn phải:
+- **Validate** bằng JSON Schema (field bắt buộc, kiểu, enum, giới hạn độ dài) ở server.
+- **Retry có giới hạn** khi lỗi, gửi kèm thông tin lỗi cụ thể để model sửa; tránh vòng lặp vô hạn.
+- **Fallback** rõ ràng: trả lỗi có kiểm soát, đưa vào hàng đợi review, hoặc dùng rule-based.
+- Ghi log và metric theo loại lỗi để phát hiện model drift.
+
+### Vì sao các phương án còn lại sai
+- **Tin vào prompt**: không có bảo đảm; đây là nguồn lỗi production phổ biến.
+- **Tăng temperature**: làm đầu ra ngẫu nhiên hơn, càng dễ sai định dạng.
+- **try/catch rồi bỏ qua**: mất dữ liệu âm thầm, không có cảnh báo, và pipeline tiếp tục với trạng thái thiếu.
+
+### Mẫu xử lý
+~~~text
+1. Gọi model với response_format = json_schema
+2. Parse JSON, validate schema
+3. Nếu lỗi: retry tối đa 2 lần kèm mô tả lỗi
+4. Nếu vẫn lỗi: đưa vào dead-letter kèm input gốc để review
+5. Ghi metric: tỉ lệ lỗi theo schema version và model
+~~~
+
+> Senior tip: đừng bao giờ để LLM là nguồn dữ liệu duy nhất cho hành động không thể hoàn tác. Với pipeline quan trọng, hãy dùng **schema versioning** và kiểm thử với bộ input đa dạng, gồm cả trường hợp model trả về rỗng hoặc JSON không hợp lệ.`
 }
 );
