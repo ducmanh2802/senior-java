@@ -1,7 +1,8 @@
 # T172 — Dịch sang tiếng Anh: q-concurrency-jvm (6 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
+Notes: Đã kiểm tra file `js/i18n/q-concurrency-jvm-6.en.js`: 6 mục jvm-022, concurrency-028, concurrency-029, jvm-023, jvm-024, jvm-025 đã dịch đầy đủ q/a/follow. Sửa lỗi duy nhất: xóa `refs` ở jvm-023 vì validator chỉ cho phép field q/a/follow. `node scripts/check-i18n.js q-concurrency-jvm-6` → OK, `node scripts/validate.js` → OK, không sửa file khác, không git commit.
 Owns: `js/i18n/q-concurrency-jvm-6.en.js`
 
 Người dùng bấm EN thì **cả trang** chuyển sang tiếng Anh: file này phủ bản dịch lên dữ liệu gốc theo `id` (đọc comment "content translation" trong `js/core/i18n.js`). Đọc AGENTS.md mục 5 (markup) và các mục sau trong `js/data/q-concurrency-jvm.js`: **jvm-022, concurrency-028, concurrency-029, jvm-023, jvm-024, jvm-025**.
@@ -16,3 +17,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-concurrency-jvm-6.en.js` và `node scripts/check-i18n.js q-concurrency-jvm-6` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
