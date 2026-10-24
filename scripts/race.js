@@ -185,7 +185,6 @@ h1 b{color:var(--bad)}
 .toast.show{transform:translate(-50%,0)}
 .confetti{position:fixed;top:-12px;width:9px;height:14px;border-radius:2px;z-index:19;pointer-events:none;animation:fall linear forwards}
 @keyframes fall{to{transform:translateY(105vh) rotate(720deg);opacity:.2}}
-@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 @media (max-width:900px){.grid,.foot{grid-template-columns:1fr}.stats{grid-template-columns:repeat(3,1fr)}.tower{max-height:none}}
 @media (max-width:520px){.stats{grid-template-columns:repeat(2,1fr)}h1{font-size:18px}.car .emoji{font-size:24px}.label{font-size:10px}}
 </style></head><body><div class="wrap">
@@ -294,6 +293,6 @@ http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
     return res.end(JSON.stringify(status()));
   }
-  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(PAGE);
 }).listen(PORT, () => console.log('Task race: http://localhost:' + PORT));
