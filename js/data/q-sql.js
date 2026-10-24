@@ -1044,5 +1044,451 @@ List<Txn> txns = jdbc.query(
     'Làm thế nào để tạo functional index cho WHERE DATE(created_at) = ? trên PostgreSQL?'
   ],
   tags: ['half-open interval', 'timezone', 'SARGable', 'index', 'BETWEEN', 'MONTH()'],
+},
+{
+  id: 'sql-015',
+  topic: 'sql',
+  level: 'mid',
+  q: 'Bạn chạy {{EXPLAIN (ANALYZE, BUFFERS)}} cho câu query lọc đơn hàng và nhận được plan in {{Seq Scan on orders}} kèm dòng {{Rows Removed by Filter: 19980000}}, chỗ khác lại là {{Index Only Scan}}. Đọc plan giúp tôi: từng dòng trong plan nói lên điều gì, khi nào {{Seq Scan}} lại là lựa chọn đúng, và {{Index Only Scan}} khác {{Index Scan}} ở đâu?',
+  a: `**Tóm tắt:** {{EXPLAIN}} in ra **cây node**, thực thi từ lá lên gốc; mỗi node có hai hàng: cost/rows/width (ước lượng trước khi chạy) và actual time/rows (đo khi chạy thật). {{Seq Scan}} đọc tuần tự toàn bộ bảng, {{Index Scan}} seek theo index rồi lấy dòng từ heap, {{Index Only Scan}} chỉ đọc index. Dòng {{Rows Removed by Filter: X}} là số dòng **đã đọc rồi bị vứt** ⇒ X rất lớn nghĩa là "đọc gần cả bảng để trả về vài chục nghìn dòng".
+
+### Đọc một plan cụ thể
+~~~sql
+Seq Scan on orders (cost=0.00..486320.00 rows=19980000 width=64)
+                (actual time=0.42..15230.8 rows=20000 loops=1)
+  Filter: ((status = 'PAID'::text) AND (created_at >= '2026-01-01'::date))
+  Rows Removed by Filter: 19980000
+  Buffers: shared hit=121000 read=198000
+~~~
+| Dòng trong plan | Ý nghĩa |
+|---|---|
+| {{cost=0.00..486320 rows=19980000}} | chi phí ước lượng và **số dòng ước tính** |
+| {{actual time=.. rows=20000 loops=1}} | thời gian thật (ms) và **số dòng thực** |
+| {{loops=1}} | node này chạy bao nhiêu lần; nested loop con có {{loops}} lớn thì actual {{rows}} chỉ là trung bình mỗi vòng ⇒ tổng = {{rows}} × {{loops}} |
+| {{Rows Removed by Filter}} | số dòng bị đọc rồi bỏ đi – chỉ hiện ở node có Filter (Seq Scan / Index Scan / Bitmap Heap Scan) |
+| {{Buffers: shared hit / read}} | đọc từ RAM / đọc từ đĩa – thước đo I/O thật |
+
+Ở ví dụ trên planner **ước khoảng 20 triệu dòng trả về nhưng thực tế chỉ 20.000** ⇒ selectivity thật chỉ ~0,1% ⇒ index đúng cột có lý do tồn tại. Nhưng kết luận cuối cùng vẫn phải lấy từ {{actual time}} và {{Buffers}} trước/sau, không phải từ cái tên node.
+
+### Index Scan và Index Only Scan khác nhau thế nào
+- **Index Scan**: seek trong B-tree theo điều kiện, mỗi dòng phù hợp lại đọc một bản ghi ở **heap** (I/O ngẫu nhiên) ⇒ hợp khi trả về ít dòng trên bảng rộng.
+- **Index Only Scan**: mọi cột query cần đều nằm trong index (dùng {{INCLUDE}} hoặc đặt đúng thứ tự) ⇒ bỏ qua heap. Nhưng PostgreSQL vẫn phải kiểm tra dòng đã "visible" với snapshot hiện tại, bằng **visibility map**: trang heap nào còn recent update thì phải đọc heap ⇒ cột {{Heap Fetches}} lớn hơn 0, khi đó index-only chỉ là "nửa mùa".
+- Chi phí: với random read PostgreSQL coi nặng gấp ~4 lần read tuần tự ({{random_page_cost}} mặc định 4) ⇒ seek + random đọc có thể đắt hơn một lần quét liên tục.
+
+### Khi nào Seq Scan là lựa chọn đúng
+1. Query cần phần lớn dòng bảng (planner ước > vài % tổng): đọc liên tục rẻ hơn tìm ngẫu nhiên.
+2. Bảng nhỏ (vài MB): chi phí quản lý index không bù lại.
+3. Index không chứa đủ cột cần ⇒ vẫn phải chạm heap, đôi khi seq scan nhanh hơn.
+4. {{Buffers}} cho thấy phần lớn là {{hit}} (đã nằm trong RAM) ⇒ seq scan chỉ tốn CPU, không tốn đĩa.
+
+### Cách kiểm chứng
+- So **node gốc** (tổng thời gian) và {{Buffers}} trước/sau khi thêm index; đừng tối ưu theo cảm giác.
+- {{Rows Removed by Filter}} khổng lồ ⇒ cân nhắc đưa cột lọc vào index hoặc index bao phủ để loại sớm ngay từ index.
+- Node con có {{loops}} lớn ⇒ thiếu index cho vế trong của nested loop.
+
+### Pitfall production
+- {{EXPLAIN ANALYZE}} trên câu {{UPDATE}}/{{DELETE}} là **thực thi thật** ⇒ luôn bọc {{BEGIN}} rồi {{ROLLBACK}}.
+- Plan trên staging khác production (thống kê, phân bố dữ liệu) – luôn đo lại trên dữ liệu thật.
+- Thấy chữ {{Seq Scan}} chưa phải lỗi; thêm index chỉ vì "tôi không thích seq scan" là cách làm chậm ghi vô ích.
+
+> Senior tip: quy tắc đọc plan của tôi: nhìn node gốc trước (tổng thời gian), tìm node con tốn nhất, rồi so rows ước tính với rows thực tế. Chữ "Seq Scan" không phải lỗi; lỗi thật là "Rows Removed by Filter: 19980000" cộng thời gian 15 giây trong khi ứng dụng chỉ cần 20.000 dòng.
+`,
+  follow: [
+    'Vì sao index-only scan vẫn có thể phải đọc heap ({{Heap Fetches}} > 0)?',
+    'Khi nào bạn quyết định **không** thêm index dù plan vẫn là {{Seq Scan}}?'
+  ],
+  tags: ['EXPLAIN', 'Seq Scan', 'Index Only Scan', 'execution plan', 'visibility map'],
+},
+{
+  id: 'sql-016',
+  topic: 'sql',
+  level: 'mid',
+  q: 'Hai hệ thống export đơn hàng ra {{staging_order_a}} và {{staging_order_b}} với cùng khoá {{order_id}}. Bạn cần đối soát và tách đúng 4 nhóm: khớp nhau, chỉ có ở A, chỉ có ở B, có cả hai nhưng **số tiền lệch**. Viết query thế nào, vì sao {{FULL OUTER JOIN}} tiện hơn hai lần anti-join, và khi nào thì dùng {{EXCEPT}}?',
+  a: `**Tóm tắt:** {{FULL OUTER JOIN}} hai bảng theo khóa, {{COALESCE}} hai khóa lại (dòng thiếu một phía thì khóa bên kia là NULL) rồi phân loại bằng {{CASE}} – cả **4 nhóm ra trong một lần quét**. Hai lần anti-join chỉ cho hai nhóm "thiếu", muốn so giá trị lại phải join thêm lần nữa.
+
+### Query
+~~~sql
+SELECT COALESCE(a.order_id, b.order_id) AS order_id,
+       CASE
+         WHEN a.order_id IS NULL THEN 'ONLY_B'
+         WHEN b.order_id IS NULL THEN 'ONLY_A'
+         WHEN a.amount IS DISTINCT FROM b.amount THEN 'MISMATCH'
+         ELSE 'MATCHED'
+       END AS status,
+       a.amount AS amount_a,
+       b.amount AS amount_b
+FROM staging_order_a a
+FULL OUTER JOIN staging_order_b b
+  ON b.order_id = a.order_id;
+~~~
+- {{FULL OUTER JOIN}} = {{LEFT JOIN}} (giữ hết dòng A kể cả không khớp) **ghép** {{RIGHT JOIN}} (giữ hết dòng B).
+- {{IS DISTINCT FROM}} là so sánh không quan tâm NULL: {{NULL}} với {{NULL}} là **bằng**, {{100}} với {{NULL}} là **khác**. MySQL có toán tử tương đương {{a <=> b}}; DB nào không có thì viết ngược lại: {{NOT (a = b OR (a IS NULL AND b IS NULL))}}.
+- Đếm 4 nhóm bằng CTE rồi {{GROUP BY status}}:
+~~~sql
+WITH diff AS ( /* query đối soát ở trên */ )
+SELECT status, COUNT(*) AS orders FROM diff GROUP BY status ORDER BY orders DESC;
+~~~
+
+### So với anti-join và EXCEPT
+| Cách | Trả được gì | Hạn chế |
+|---|---|---|
+| {{NOT EXISTS}} hai chiều | nhóm chỉ A, nhóm chỉ B | quét hai lần, không so được giá trị từng cột |
+| {{FULL OUTER JOIN}} | cả 4 nhóm, kèm giá trị cả hai phía | phải chắc khóa bên trong là duy nhất |
+| {{EXCEPT}} / {{INTERSECT}} | danh sách khóa thiếu / phần chung | không mang cột bên kia sang so sánh |
+
+{{EXCEPT}} tiện khi chỉ cần **danh sách ID** (EXCEPT tự loại bản sao):
+~~~sql
+SELECT order_id FROM staging_order_a
+EXCEPT
+SELECT order_id FROM staging_order_b;   -- chỉ có ở A
+~~~
+
+### Hiệu năng
+- Cả hai bảng cần index (hoặc unique) trên {{order_id}}; planner thường làm hash join: quét A xây hash, quét B probe, tốn bộ nhớ theo cỡ bảng A.
+- Staging hàng triệu dòng: nên đếm theo nhóm trước, hoặc so **tổng theo ngày** ({{SUM(amount)}} {{GROUP BY}} ngày) để phát hiện lệch rồi mới đối soát chi tiết.
+- Thu hẹp khoảng ngày trước khi join để giảm quét; chỉ đọc thì thêm {{WHERE}} ở hai vế.
+
+### Pitfall production
+- {{order_id}} bị import lặp trong staging ⇒ join **nhân đôi** dòng, báo "mismatch" ảo. Dedupe hoặc tạo unique index trước.
+- Kiểu dữ liệu hai bên lệch ({{BIGINT}} vs {{VARCHAR}}) ⇒ hash join không khớp được, phải {{CAST}} cùng kiểu (ép kiểu có thể làm mất index của vế kia).
+- So tiền: dùng {{NUMERIC}} hoặc số nguyên minor units, không dùng {{double}} – phép tính dấu phẩy động sẽ sinh lệch ảo.
+- So chuỗi thì để ý collation và khoảng trắng cuối chuỗi ({{TRIM}} khi source là hệ legacy).
+
+> Senior tip: khi được hỏi "đối soát hai nguồn thế nào", tôi nói luôn "tôi tách 4 nhóm: khớp, thiếu trái, thiếu phải, lệch giá trị" rồi mới viết SQL – interviewer thấy bạn nghĩ bằng **kết quả nghiệp vụ** trước, cú pháp sau. Tôi còn hỏi ngược lại: "khóa có unique không, nguồn có import lặp không?" – đó là câu quyết định báo cáo đối soát có đúng không.`,
+  follow: [
+    '{{FULL OUTER JOIN}} được thực thi thế nào (hash join) trên dữ liệu lớn?',
+    'Nếu staging có hàng trăm triệu dòng, bạn đối soát theo lô ra sao?'
+  ],
+  tags: ['FULL OUTER JOIN', 'anti-join', 'EXCEPT', 'data reconciliation', 'IS DISTINCT FROM'],
+},
+{
+  id: 'sql-017',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Plan của bạn ghi {{rows=12000000}} nhưng {{actual rows=20000}} – planner ước lượng sai gấp 600 lần và chọn sai plan, trong khi bạn đã chạy {{ANALYZE}}. Giải thích planner PostgreSQL ước số dòng bằng những thống kê nào ({{pg_stats}}), những tình huống nào khiến estimate lệch dù statistics mới, và bạn xử lý ra sao?',
+  a: `**Tóm tắt:** Planner ước **selectivity** cho từng điều kiện WHERE từ thống kê do {{ANALYZE}} sinh ra ({{most_common_vals}}, {{histogram_bounds}}, {{n_distinct}}, {{null_frac}}, {{correlation}} trong {{pg_stats}}), **nhân các tỉ lệ lại** rồi nhân với {{reltuples}} của bảng. Lệch lớn thường do cột **tương quan** (mất giả định độc lập), phân phối **lệch mạnh** (giá trị cần tìm nằm ngoài top giá trị hay gặp), thống kê cũ giữa hai lần nạp dữ liệu, và **generic plan** với {{PreparedStatement}}.
+
+### Planner tính thế nào
+Với {{WHERE status = 'PAID' AND amount > 1000000}} trên bảng {{reltuples}} = 20 triệu:
+1. {{status = 'PAID'}}: nếu 'PAID' nằm trong most common values thì lấy đúng tỉ lệ (vd 30%); nếu không nằm thì ước bằng histogram, xem thêm {{null_frac}} và {{n_distinct}}.
+2. {{amount > 1000000}}: tìm mốc trong histogram rồi lấy tỉ lệ khoảng chia.
+3. Nhân hai tỉ lệ: {{20.000.000 x 0,3 x 0,01 = 60.000}} – giả định **hai cột độc lập**. Nếu 90% đơn PAID đều có amount > 1.000.000 thì con số thật là 5.400.000, tức ước lượng 60.000 **thấp hơn thực tế 90 lần**.
+
+### Tình huống lệch dù statistics mới
+| Tình huống | Vì sao estimate sai | Cách xử lý |
+|---|---|---|
+| Hai cột **tương quan** (PAID luôn đi với amount lớn) | nhân độc lập ⇒ sai số tích luỹ | {{CREATE STATISTICS st_pair (dependencies) ON status, amount FROM sales;}} rồi {{ANALYZE sales;}} |
+| Phân phối lệch: 99% dòng là giá trị phổ biến, giá trị cần tìm nằm ngoài top MCV | giá trị ngoài MCV chỉ ước được bằng histogram trung bình | tăng {{default_statistics_target}} cho bảng hot rồi {{ANALYZE}} |
+| Bulk load / đổi pattern giữa hai lần {{ANALYZE}} | thống kê mô tả quá khứ | {{ANALYZE}} sau ETL; kiểm tra {{pg_stats}} theo bảng con của partition |
+| {{PreparedStatement}} thành **generic plan** | planner không biết giá trị tham số | {{SET plan_cache_mode = force_custom_plan;}} cho câu critical, hoặc viết lại bằng literal/JOIN |
+| Điều kiện bọc hàm / ép kiểu ({{lower(email) = ...}}) | không có thống kê cho biểu thức đó | viết lại query SARGable, hoặc tạo index biểu thức riêng cho {{lower(email)}} |
+| Join nhiều bảng | sai số **nhân dồn** qua từng bước | thống kê cho cột join, viết lại query gộp, đổi thứ tự join |
+
+- Tăng {{default_statistics_target}} (100 → 500) cho bảng truy vấn đa dạng: histogram dày hơn nhưng {{ANALYZE}} lâu hơn và catalog to hơn – chỉ làm cho vài bảng nóng.
+- {{CREATE STATISTICS st_pair (dependencies, ndistinct) ON status, amount FROM sales;}} (kinds ra mắt là {{dependencies}} và {{ndistinct}} từ PostgreSQL 10, {{mcv}} từ PostgreSQL 12) cho tổ hợp cột hay xuất hiện cùng nhau, rồi {{ANALYZE sales;}} để planner đọc lại.
+- Xem nhanh thống kê: {{SELECT attname, n_distinct, most_common_vals FROM pg_stats WHERE tablename = 'sales';}}
+
+### Ước sai có nhất dẫn đến plan sai?
+Không hẳn. Cost cũng được tính trên chính ước lượng đó, nên planner vẫn chọn "plan tốt nhất **theo mô hình của nó**". Vấn đề là estimate lệch lớn ⇒ plan tốt với dữ liệu giả định, đến khi dữ liệu thật đổi thì sập. Chỉ xử lý khi đồng thời thấy: lệch mạnh ở node quan trọng **và** thời gian thực tế cao.
+
+### Pitfall production
+- Chạy {{ANALYZE}} giữa chừng bulk insert ⇒ thống kê nửa vời, plan "nửa vời" theo.
+- Tăng statistics target cho toàn bộ database ⇒ catalog phình, planning time tăng không đáng có.
+- Sau khi đổi index hay thêm trigger, plan có thể đổi dù câu SQL không đổi – luôn đo lại sau mỗi thay đổi hạ tầng.
+
+> Senior tip: tôi chẩn đoán theo thứ tự: (1) so {{rows}} ước với {{actual}} ở node gốc; (2) mở {{pg_stats}} của các cột trong WHERE – có MCV không, {{n_distinct}} bao nhiêu, tương quan ra sao; (3) thử {{CREATE STATISTICS}} cho cặp cột hay đi kèm rồi {{ANALYZE}}. Khoảng 70% ca lệch estimate lớn tôi gặp là do cột tương quan hoặc giá trị hiếm, chứ không phải do "statistics cũ".`,
+  follow: [
+    '{{CREATE STATISTICS}} thay đổi plan của planner như thế nào sau {{ANALYZE}}?',
+    'Generic plan và custom plan khác nhau ra sao và chỉnh bằng tham số nào?'
+  ],
+  tags: ['EXPLAIN', 'statistics', 'estimate', 'pg_stats', 'ANALYZE', 'query optimization'],
+},
+{
+  id: 'sql-018',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Bảng {{message(id, thread_id, recipient_id, is_read, created_at, preview)}} hàng trăm triệu dòng với hai query hot: inbox của một user chỉ lấy tin **chưa đọc**, và báo cáo theo thread chỉ cần {{thread_id}} + {{created_at}}. Bạn thiết kế index nào, {{partial index}} và {{covering index (INCLUDE)}} hoạt động thế nào, vì sao query bind parameter không dùng được partial index, và kiểm chứng ra sao?',
+  a: `**Tóm tắt:** Query (1) chỉ chạm khoảng 1% dòng tin chưa đọc ⇒ **partial index** (index chỉ chứa dòng thoả {{WHERE is_read = false}}) vừa nhỏ vừa đúng mục đích. Query (2) chỉ cần hai cột ⇒ **covering index** với {{INCLUDE (created_at)}} để chạy {{Index Only Scan}}, không cần chạm bảng.
+
+### Index đề xuất
+~~~sql
+-- (1) inbox chưa đọc của một user
+CREATE INDEX CONCURRENTLY idx_msg_unread
+  ON message (recipient_id, created_at DESC)
+  WHERE is_read = false;
+
+-- (2) báo cáo theo thread, chỉ cần thread_id + created_at
+CREATE INDEX CONCURRENTLY idx_msg_thread_cover
+  ON message (thread_id) INCLUDE (created_at);
+~~~
+
+### Partial index hoạt động thế nào
+- Index chỉ lưu những dòng khớp predicate **tại thời điểm build** (và các dòng mới được chèn thêm khi match). Nếu 98% tin đã đọc thì index chỉ cỡ 2–5% bảng ⇒ tốn ít RAM, ít lần đọc trang, và ghi cũng rẻ hơn index full.
+- Planner dùng được chỉ khi **WHERE của query bào hàm được predicate của index**:
+  - {{WHERE recipient_id = $1 AND is_read = false}} → đúng, dùng được.
+  - {{WHERE recipient_id = $1 AND is_read = $2}} với {{is_read = false}}: ở **generic plan** planner không biết giá trị của {{is_read}} ⇒ không chứng minh được ⇒ **bỏ qua index**; custom plan (vài lần chạy đầu với giá trị cụ thể) thì có thể dùng.
+  - Thực tế: giữ predicate là **hằng số trong SQL** (viết {{is_read = false}} trực tiếp) dù phần còn lại vẫn bind tham số.
+- {{is_read}} nằm trong predicate nên không cần làm cột khóa; cột khóa đầu tiên phải là {{recipient_id}} vì hầu hết query đều theo user.
+
+### Covering index và Index Only Scan
+- {{INCLUDE (created_at)}} đặt cột **phụ** vào lá index: không tham gia seek (không làm đổi bài toán chọn key) nhưng cho phép trả lời query hoàn toàn từ index.
+- Điều kiện còn lại là **visibility map**: planner chỉ chắc không cần heap khi mọi trang liên quan đã được {{VACUUM}} đánh dấu visible ⇒ xem {{Heap Fetches}} trong plan.
+- Không cover cột lớn như {{preview}} hay cột {{jsonb}} chứa JSON dài – index phình thì mọi {{INSERT}}/{{UPDATE}} trên bảng hot đều mang theo gánh nặng đó.
+
+### Kiểm chứng
+~~~sql
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT thread_id, created_at FROM message
+WHERE thread_id = 42 ORDER BY created_at DESC LIMIT 50;
+-- mong đợi: Index Only Scan using idx_msg_thread_cover ... Heap Fetches: 0
+~~~
+- Lượt dùng index: {{SELECT relname, idx_scan FROM pg_stat_user_indexes WHERE relname = 'message';}} – {{idx_scan}} đứng yên ở 0 kéo dài thì index đó nên bị drop.
+- Trước/sau: so {{actual time}}, {{Buffers}} của query đọc **và** độ trễ ghi (INSERT/UPDATE) trên bảng ghi nhiều.
+
+### Pitfall production
+- Partial index bị bỏ qua khi WHERE của query không **bào hàm** được predicate của index: {{WHERE is_read = false OR recipient_id = $1}}, {{WHERE COALESCE(is_read, false) = false}}… planner không chứng minh được ⇒ đành quét full.
+- Chưa {{ANALYZE}} sau khi tạo partial index ⇒ planner ước số dòng trong index sai, vẫn chọn seq scan.
+- {{CREATE INDEX}} khoá ghi; bảng đang chạy phải dùng {{CONCURRENTLY}} (chạy nền, không khoá) – đổi lại, nếu bị ngắt nó để lại index INVALID phải drop và làm lại.
+- Covering index thay được {{SELECT *}} cho cột đã cover, **không** thay được cột filter/orderBy không có trong index.
+
+> Senior tip: "inbox chưa đọc của một user chậm" là câu kinh điển. Câu trả lời mạnh gồm hai phần: partial index trên {{(recipient_id, created_at)}} {{WHERE is_read = false}} – nhỏ gấp vài chục lần; và giải thích được **vì sao query bind parameter lại không dùng được partial index**. Chi tiết thứ hai mới là thứ tách người từng dùng index khỏi người từng debug plan.`,
+  follow: [
+    '{{INCLUDE}} khác gì cột thường trong composite index, khi nào chọn cái nào?',
+    'Khi predicate của partial index là giá trị người dùng chọn (vd theo tenant) thì xử lý ra sao?'
+  ],
+  tags: ['partial index', 'covering index', 'INCLUDE', 'index-only scan', 'visibility map'],
+},
+{
+  id: 'sql-019',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Bảng {{app_session(user_id, start_ts, end_ts)}} ghi phiên dùng app; các phiên **có thể chồng lên nhau** (nhiều thiết bị, client gửi sai thứ tự). Cần gộp các khoảng chồng lấp thành phiên thống nhất cho mỗi user ({{MIN(start_ts)}}, {{MAX(end_ts)}}) rồi tính tổng thời gian online. Viết query thế nào, và nó khác gì so với gaps-and-islands cho chuỗi ngày liên tiếp?',
+  a: `**Tóm tắt:** Với khoảng **chồng lấp** thì mẹo {{ngày - row_number}} không dùng được. Thay vào đó dùng **island marker bằng max tích luỹ**: nếu {{start_ts}} của dòng hiện tại vượt quá {{MAX(end_ts)}} của **mọi dòng trước nó** thì mở đảo mới, ngược lại gộp vào đảo đang mở. Cộng cờ rồi {{SUM}} tích luỹ thành số đảo ({{grp}}), cuối cùng {{GROUP BY user_id, grp}}.
+
+### Query (PostgreSQL)
+~~~sql
+WITH seq AS (
+  SELECT s.user_id, s.start_ts, s.end_ts,
+         -- max end_ts của MỌI dòng đứng trước (frame loại dòng hiện tại)
+         MAX(s.end_ts) OVER (
+           PARTITION BY s.user_id
+           ORDER BY s.start_ts, s.end_ts
+           ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+         ) AS prev_max_end
+  FROM app_session s
+),
+flagged AS (
+  SELECT f.*,
+         CASE WHEN f.prev_max_end IS NULL
+                   OR f.start_ts > f.prev_max_end
+              THEN 1 ELSE 0 END AS new_island
+  FROM seq f
+),
+islands AS (
+  SELECT g.*,
+         SUM(g.new_island) OVER (
+           PARTITION BY g.user_id ORDER BY g.start_ts, g.end_ts
+           ROWS UNBOUNDED PRECEDING) AS grp
+  FROM flagged g
+)
+SELECT user_id, grp,
+       MIN(start_ts) AS session_start,
+       MAX(end_ts)   AS session_end,
+       -- duration của đảo gộp = bề rộng nửa mở [min start, max end)
+       -- (KHÔNG cộng duration từng dòng – sẽ đếm đúp phần chồng)
+       EXTRACT(EPOCH FROM (MAX(end_ts) - MIN(start_ts))) AS online_seconds
+FROM islands
+GROUP BY user_id, grp
+ORDER BY user_id, session_start;
+~~~
+
+### Tại sao marker lại đúng
+Giả sử ba phiên chồng nhau rồi một phiên rời: [1,10], [2,3], [5,6], [11,12].
+| start | prev_max_end | start > prev_max_end | đảo |
+|---|---|---|---|
+| 1 | NULL | – | 1 (mở) |
+| 2 | 10 | không | 1 (gộp) |
+| 5 | 10 | không | 1 (gộp) |
+| 11 | 10 | có | 2 (mở) |
+
+{{prev_max_end}} là max **của mọi dòng trước**, nên khi một khoảng bắt đầu sau giá trị đó thì nó không chồng với bất kỳ khoảng nào đã thấy ⇒ bắt đầu đảo mới. Frame {{ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING}} là điểm then chốt: nó **loại dòng hiện tại** ra khỏi max, nếu không thì dòng nào cũng "trùng" với chính nó.
+
+### So với gaps-and-islands chuỗi ngày liên tiếp
+| | Streak ngày liên tiếp (câu sql-007) | Khoảng chồng lấp |
+|---|---|---|
+| Đầu vào | mốc ngày rời, không chồng | interval có thể chồng nhau |
+| Grouping key | {{ngày - row_number}} | cờ {{start > max(end) trước đó}} |
+| Vì sao dùng cách đó | mọi island cách đều đúng 1 đơn vị | độ dài và độ lệch đều bất kỳ |
+| Hàm window chính | {{ROW_NUMBER}} | {{MAX(end_ts)}} với frame {{... AND 1 PRECEDING}} |
+
+### Edge cases
+- {{end_ts IS NULL}} (phiên đang mở): chuẩn hoá **trước** khi chạy window ({{COALESCE(end_ts, now())}} hoặc loại dòng), vì {{MAX}} của PostgreSQL bỏ qua NULL sẽ làm {{prev_max_end}} nhỏ sai.
+- Client gửi {{start_ts > end_ts}}: lọc {{WHERE end_ts >= start_ts}} và báo cáo lỗi dữ liệu nguồn.
+- Dòng trùng y hệt: {{SELECT DISTINCT}} hoặc unique index {{(user_id, start_ts)}}.
+- **Cộng duration từng dòng là sai** vì phần chồng bị đếm 2 lần – phải gộp trước rồi mới cộng (đúng như query trên).
+- Muốn gộp theo thiết bị thì thêm {{device_id}} vào {{PARTITION BY}}.
+
+### Hiệu năng
+- Index {{(user_id, start_ts, end_ts)}}: vừa phục vụ sort cho window (bỏ sort), vừa cover đủ cột cho {{Index Only Scan}}.
+- Window buộc sort theo {{PARTITION BY}} + {{ORDER BY}}; với hàng trăm triệu phiên, hãy gộp theo ngày rồi merge, hoặc pre-compute phiên đã gộp vào bảng riêng.
+
+> Senior tip: câu hỏi quan trọng nhất khi gặp "bài toán chuỗi liên tiếp" là **các khoảng có chồng nhau không**. Nếu có, mọi công thức {{date - row_number}} đều sai. Tôi luôn vẽ ba interval lên bảng trắng rồi tính {{max(end)}} tích luỹ để interviewer thấy mình nắm bản chất: island marker nghĩa là "đầu khoảng mới đã vượt quá bề rộng mình từng thấy".`,
+  follow: [
+    'Nếu {{end_ts}} có thể NULL thì sửa query thế nào?',
+    'Làm sao tính thời gian online theo **ngày** khi một phiên rơi sang nửa đêm?'
+  ],
+  tags: ['gaps and islands', 'sessionization', 'overlapping intervals', 'window function', 'frame'],
+},
+{
+  id: 'sql-020',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Bảng {{sales(region, product, sale_date, amount)}}: phòng kinh doanh cần báo cáo gồm tổng theo {{(region, product)}}, tổng theo {{region}}, tổng theo {{product}} và tổng cộng – tất cả trong **một** lần quét thay vì bốn câu {{UNION ALL}}. Bạn viết thế nào, {{GROUPING()}} dùng để làm gì, và {{ROLLUP}} khác {{GROUPING SETS}}/{{CUBE}} ra sao?',
+  a: `**Tóm tắt:** Dùng {{GROUP BY GROUPING SETS (...)}}, {{ROLLUP}} hoặc {{CUBE}} – planner gom **nhiều cấp tổng hợp vào một lần đọc dữ liệu**, thay vì quét bốn lần. Cột nào bị gộp thì giá trị là NULL ⇒ phân biệt NULL "tổng" với NULL thật bằng {{GROUPING(col)}}.
+
+### Query
+~~~sql
+SELECT CASE WHEN GROUPING(region)  = 1 THEN 'Tất cả' ELSE region  END AS region_label,
+       CASE WHEN GROUPING(product) = 1 THEN 'Tất cả' ELSE product END AS product_label,
+       GROUPING(region)  AS g_region,
+       GROUPING(product) AS g_product,
+       SUM(amount) AS amount
+FROM sales
+WHERE sale_date >= DATE '2026-01-01'
+GROUP BY GROUPING SETS (
+  (region, product),   -- chi tiết
+  (region),            -- tổng theo region
+  (product),           -- tổng theo product
+  ()                   -- tổng cộng
+)
+ORDER BY region_label, product_label;
+~~~
+Bốn cấp số liệu trong **một** câu, điều kiện lọc {{sale_date}} viết một lần. Cách cũ là 4 câu {{UNION ALL}}: điều kiện lặp 4 lần, code dài, planner cũng phải đọc/aggregate nhiều lượt.
+
+### ROLLUP, CUBE và GROUPING SETS
+| Cú pháp | Các cấp sinh ra | Số nhóm với n cột |
+|---|---|---|
+| {{GROUPING SETS ((a,b),(a),())}} | đúng theo danh sách bạn liệt kê | theo liệt kê |
+| {{ROLLUP(a, b)}} | {{((a,b), (a), ())}} – tổng **phân cấp** từ trái sang phải | n + 1 |
+| {{CUBE(a, b)}} | mọi tổ hợp: {{(a,b), (a), (b), ()}} | 2^n |
+- {{ROLLUP(region, product)}} có cấp {{(region)}} nhưng **không** có cấp {{(product)}} – đó chính là khác biệt lớn nhất với {{CUBE}}.
+- {{GROUPING(region, product)}} trả về bitmask của các cột **bị** gộp, với bit thấp nhất ứng với cột&nbsp;**cuối cùng** của danh sách ({{product}}): 0 = cả hai có mặt (dòng chi tiết), 1 = {{product}} bị gộp (dòng tổng theo {{region}}), 2 = {{region}} bị gộp (dòng tổng theo {{product}}), 3 = cả hai bị gộp (tổng cộng).
+- Hỗ trợ: PostgreSQL/Oracle có cả ba; MySQL 8 có {{WITH ROLLUP}} và {{GROUPING()}} nhưng **không** có {{CUBE}}/{{GROUPING SETS}}.
+
+### Hiệu năng và giới hạn
+- Xem trong {{EXPLAIN}}: dữ liệu được đọc **một lần** rồi nuôi các cấp aggregate (planner có thể chạy {{GroupAggregate}} nhiều lần trên cùng thứ tự sort, hoặc dùng {{HashAggregate}}), không phải quét bảng bốn lần như bốn câu {{UNION ALL}}.
+- Dữ liệu lớn và báo cáo chạy giờ cao điểm: {{GROUPING SETS}} tiết kiệm code và một lần quét, **không** tiết kiệm I/O nếu mỗi ngày cần quét 500 triệu dòng ⇒ pre-aggregate theo ngày vào bảng tổng hợp / materialized view rồi union từ bảng nhỏ.
+- {{CUBE}} với 6 cột sinh **64** grouping set ({{2^n}}) – chỉ dùng khi thật sự cần mọi chiều.
+
+### Pitfall production
+- **NULL thật vs NULL tổng**: không có {{GROUPING()}} thì không phân biệt được "khách không rõ vùng" với "dòng tổng của cả vùng" – lỗi số liệu kinh điển khi xuất JSON thẳng cho frontend.
+- {{ORDER BY}} sau {{GROUP BY}}: dùng cột {{GROUPING(...)}} để đặt nhóm chi tiết trước dòng tổng, đừng sort theo label nếu label đã bị thay bằng "Tất cả".
+- Nhầm {{ROLLUP}} hai chiều: muốn tổng theo {{product}} riêng lẻ thì phải viết {{GROUPING SETS}} hoặc {{CUBE}}, {{ROLLUP(region, product)}} không sinh ra.
+- Query báo cáo không có {{WHERE}} ngày trên bảng lịch sử ⇒ quét toàn bộ dữ liệu dù planner có aggregate giỏi đến đâu.
+
+> Senior tip: khi khách hỏi "cho tôi tổng theo vùng và tổng cộng trong một câu", tôi viết ngay {{GROUPING SETS}} kèm {{CASE WHEN GROUPING(x) = 1}} rồi nói thêm giới hạn của nó: "câu này tiết kiệm code và một lần quét; với bảng 500 triệu dòng/ngày tôi sẽ tách bảng tổng hợp". Phỏng vấn senior/lead thích nghe bạn nêu được **giới hạn** của giải pháp, không chỉ cú pháp.`,
+  follow: [
+    '{{CUBE}} với 6 cột sinh ra bao nhiêu nhóm, có nên dùng không?',
+    'Làm sao phân biệt NULL thật với NULL do {{ROLLUP}} sinh ra khi trả JSON cho frontend?'
+  ],
+  tags: ['ROLLUP', 'GROUPING SETS', 'CUBE', 'GROUPING()', 'reporting', 'aggregate'],
+},
+{
+  id: 'sql-021',
+  topic: 'sql',
+  level: 'lead',
+  q: 'Bạn viết query có nhiều {{WITH}} (CTE) và thấy nó chậm hẳn so với cách viết bằng subquery; trường hợp khác thì CTE lại nhanh hơn. Giải thích PostgreSQL xử lý {{WITH}} trong planner thế nào – optimization fence, inline từ bản 12, {{MATERIALIZED}}/{{NOT MATERIALIZED}} – và khi nào bạn chủ động ép hay không ép, đặc biệt với CTE tham chiếu hai lần hay chứa aggregate nặng.',
+  a: `**Tóm tắt:** Trước PostgreSQL 12, **mọi CTE là optimization fence**: planner không nhìn vào bên trong, thực thi đúng một lần, lưu kết quả (materialized) rồi dùng lại. Từ PostgreSQL 12, planner **được phép inline** CTE thành subquery (giống viết lồng) nếu nó chỉ được tham chiếu một lần và là SELECT thuần ⇒ điều kiện lọc của query ngoài đẩy được vào trong, planner tự do chọn join order. {{MATERIALIZED}} / {{NOT MATERIALIZED}} là công tắc bắt buộc ép planner theo ý bạn.
+
+### Quy tắc inline từ PostgreSQL 12
+CTE được inline khi **đủ mọi** điều kiện sau:
+1. Không phải {{WITH RECURSIVE}}.
+2. Được tham chiếu **đúng một lần** ở query cha (hai lần thì planner materialize để không tính lại).
+3. **Không có side-effect**: là SELECT không chứa hàm volatile, và không chứa câu ghi dữ liệu ({{WITH x AS (INSERT ... RETURNING ...)}} luôn được thực thi riêng đúng một lần).
+4. Bạn không ghi {{MATERIALIZED}}.
+
+### Khi nào giữ CTE materialized
+- CTE tham chiếu **hai lần** (join hai nhánh): planner tự materialize, tính một lần rồi dùng lại – đây là công dụng "thực sự" của CTE, và trước PostgreSQL 12 mọi CTE đều như vậy.
+- Ép {{MATERIALIZED}} khi bạn muốn **chốt hành vi**: CTE chứa việc tính tốn kém ({{DISTINCT}}, aggregate, window trên tập lớn) và bạn không muốn nâng cấp hay đổi statistics làm nó bị lồng/tính lại – mục tiêu là plan **ổn định**, không phải nhanh hơn.
+- Trung thực một điểm: CTE chỉ tham chiếu một lần mà chủ yếu là lớp lọc thì materialize thường **chậm hơn**, vì planner không đẩy được điều kiện của query ngoài vào trong.
+
+### Khi nào nên để planner inline
+- CTE chỉ là **lớp đặt tên** cho phần lọc/sắp xếp phức tạp, rồi query ngoài thêm điều kiện nữa ⇒ inline cho planner gộp điều kiện và chọn join order tốt hơn.
+- Viết {{NOT MATERIALIZED}} để ép inline kể cả khi CTE tham chiếu hai lần: planner có thể đẩy điều kiện vào từng chỗ dùng (ví dụ CTE join với chính nó) – đổi lại có thể tính CTE nhiều lần, nên chỉ làm khi đã đo thấy lợi.
+- Đừng mặc định coi CTE là "nhanh hơn subquery": cả hai chỉ là **cấu trúc code**; điểm khác thật sự nằm ở fence và inline.
+
+### Cách kiểm chứng
+~~~sql
+EXPLAIN (ANALYZE, BUFFERS) WITH x AS (...) SELECT ...;
+-- CTE Scan on x        -> đã materialize (tính một lần, lưu tạm)
+-- node bên trong hiện thẳng (vd Seq Scan) và điều kiện ngoài được
+--   đẩy vào trong, không còn CTE Scan  -> đã inline
+~~~
+- Chạy cả hai cách viết và so node, {{actual rows}} của CTE, cùng {{Planning Time}} – CTE lồng sâu làm planning lâu hơn.
+- Với ORM (Hibernate/JPA) hay sinh {{WITH}} tham chiếu hai lần ⇒ luôn materialized; đừng giả định nó sẽ inline.
+
+### Pitfall production
+- **Nâng cấp PostgreSQL 12+ làm plan đổi**: query cũ có thể nhanh hơn hoặc chậm hơn dù SQL không đổi. Sau nâng cấp phải đo lại các query trọng yếu.
+- Ép {{MATERIALIZED}} sai chỗ: planner phải tính toàn bộ tập con dù query ngoài chỉ cần 1% ⇒ tốn CPU và RAM (CTE materialized nằm trong work_mem, lớn thì spill ra đĩa).
+- CTE tham chiếu 2 lần + tập kết quả lớn: nhân mức tiêu thụ bộ nhớ; cân nhắc viết lại thành join với tập đã lọc.
+- Plan không ổn định còn do generic/custom plan và statistics – phải loại từng nguyên nhân, đừng đổ lỗi cho CTE ngay.
+
+> Senior tip: nguyên tắc của tôi là "CTE là công cụ **đọc code**, không phải công cụ tối ưu". Tôi viết CTE cho rõ ràng rồi đo bằng {{EXPLAIN (ANALYZE)}}; khi plan bị đổi sau nâng cấp hoặc ước lượng sai, tôi dùng {{MATERIALIZED}}/{{NOT MATERIALIZED}} để chốt hành vi và ghi chú **lý do** ngay trong SQL. Khi trao đổi với interviewer, câu trả lời ấn tượng là: "từ PostgreSQL 12 CTE không còn là fence mặc định, nên tôi luôn nhìn node {{CTE Scan}} hay {{Subquery Scan}} trong plan trước khi kết luận".`,
+  follow: [
+    'Làm sao kiểm tra CTE của bạn đã được inline hay chưa?',
+    'Vì sao CTE tham chiếu hai lần khiến planner materialize?'
+  ],
+  tags: ['CTE', 'optimization fence', 'MATERIALIZED', 'PostgreSQL', 'query planner'],
+},
+{
+  id: 'sql-022',
+  topic: 'sql',
+  level: 'lead',
+  q: 'Báo cáo trên bảng 400 triệu dòng của bạn luôn chạy bằng một worker duy nhất dù máy còn nhiều core rảnh. Giải thích PostgreSQL quyết định chạy song song thế nào (mô hình chi phí, node {{Gather}}), những điều kiện planner không thể chạy song song, bạn chỉnh gì – và khi nào thì **không** nên ép song song.',
+  a: `**Tóm tắt:** Parallel query là **cost-based**, không phải công tắc bật/tắt: planner tính chi phí cho phương án chia việc ({{parallel_setup_cost}} + {{parallel_tuple_cost}} + lợi ích chia nhỏ bước quét) rồi so với phương án tuần tự. Chọn song song thì plan có node {{Gather}} (hoặc {{Gather Merge}} khi phải gộp kết quả theo thứ tự). Số core rảnh **không tự nhiên** làm plan song song – nếu bạn thấy một worker duy nhất thì hoặc chi phí không đủ, hoặc có điều kiện cấm parallel.
+
+### Plan song song trông thế nào
+~~~sql
+Gather  (cost=1000.00..412000.00 rows=3800000 width=48)
+             (actual time=84.2..1210.5 rows=3760000 loops=1)
+  Workers Planned: 2
+  Workers Launched: 2
+  -> Parallel Seq Scan on sales (cost=0.00..411000.00 rows=...)
+~~~
+- {{Workers Planned}} / {{Workers Launched}}: số worker dự kiến và **đã chạy thật**.
+- {{Gather Merge}}: gộp output từ nhiều worker mà vẫn giữ đúng thứ tự, dùng khi phía trên có {{ORDER BY}}/{{LIMIT}}.
+- Worker là process riêng đọc chung snapshot; có chi phí spawn + giao tiếp nên query nhỏ luôn rẻ hơn khi chạy tuần tự.
+
+### Điều kiện và tham số quyết định
+| Yếu tố | Chi tiết |
+|---|---|
+| Chi phí | {{parallel_setup_cost}} (mặc định 1000), {{parallel_tuple_cost}} (0,1); bảng phải lớn hơn {{min_parallel_table_scan_size}} (8MB) |
+| Node trong parallel portion | {{Parallel Seq Scan}}, {{Parallel Bitmap Heap Scan}}, {{Parallel Index Scan}} (chỉ btree), {{Parallel Hash Join}}; aggregate chia {{Partial Aggregate}} rồi {{Finalize Aggregate}} trên leader |
+| GUC | {{max_parallel_workers_per_gather}} = 2, {{max_parallel_workers}} = 8, {{max_worker_processes}} = 8 (dùng chung cho mọi backend) |
+| Hàm tuỳ chỉnh | mặc định là {{PARALLEL UNSAFE}} ⇒ planner phải chạy tuần tự; chỉ đánh dấu {{PARALLEL SAFE}} khi chắc chắn an toàn |
+| Câu ghi dữ liệu hoặc khoá dòng | {{UPDATE}}/{{DELETE}}, câu có {{FOR UPDATE}}/{{FOR SHARE}}, hoặc CTE chứa câu ghi dữ liệu ⇒ không sinh plan song song |
+| Aggregate có {{DISTINCT}}/{{ORDER BY}}, ordered-set aggregate, {{GROUPING SETS}} | không chia được bước aggregate (không có partial aggregate), dù phần quét vẫn có thể song song |
+| Bảng nhỏ / {{LIMIT 5}} | chi phí setup worker đắt hơn lợi ích thu được |
+
+- Plan song song nhưng **không lấy được worker** lúc chạy (hết {{max_worker_processes}}/{{max_parallel_workers}}) thì leader tự chạy phần dưới {{Gather}}: kết quả vẫn đúng mà bạn không được lợi gì.
+- Override theo bảng khi bạn **đã đo**: {{ALTER TABLE sales SET (parallel_workers = 4);}}.
+- Thúc planner dùng parallel hơn bằng cách giảm cost ({{SET parallel_setup_cost = 250;}}) – nhưng đó là can thiệp, phải kèm bằng chứng đo lường.
+
+### Khi nào **không** nên ép song song
+- Query trả vài nghìn dòng và đã chạy dưới ~100ms: overhead spawn + {{Gather}} có thể ăn hết phần lợi ích.
+- Đĩa chậm hoặc IOPS có hạn: nhiều worker cùng đọc làm **nội tranh** I/O, tổng thời gian tệ hơn.
+- **Oversubscription**: 32 connection mỗi câu spawn 4 worker trên 8 core ⇒ hàng trăm process tranh CPU/đĩa, p99 tăng. Đây là tai nạn tôi thấy nhiều nhất khi team "bật parallel cho mọi thứ".
+
+### Quy trình làm việc
+1. {{EXPLAIN (ANALYZE, BUFFERS)}}: có node {{Gather}} không, {{Workers Launched}} bao nhiêu, thời gian node gốc là bao nhiêu.
+2. Thử có kiểm soát: {{SET max_parallel_workers_per_gather = 4;}} rồi so {{actual time}}; không tốt hơn thì trả về mặc định, và xem {{pg_stat_activity}} để biết bao nhiêu worker đang chạy song song.
+3. Nếu query chậm vì quét **quá nhiều dòng** thì parallel chỉ chia nỗi khổ – hướng đúng là thu hẹp dữ liệu: filter đúng cột, partition pruning, index, pre-aggregate.
+
+> Senior tip: "nhiều core rảnh" chưa bao giờ là lý do để ép parallel. Tôi từng chứng kiến đội hạ tầng đặt chi phí parallel về 0 cho hệ 32 connection trên 8 core ⇒ mỗi câu bung worker, tổng process vượt sức máy, p99 chậm gấp đôi. Nguyên tắc của tôi: đo bằng {{EXPLAIN (ANALYZE)}}, theo dõi số worker chạy đồng thời, và nhớ rằng parallel query là **thuật toán chia việc** chứ không phải đòn bẩy tăng tốc tất yếu.`,
+  follow: [
+    '{{Gather}} và {{Gather Merge}} khác nhau khi nào, vì sao cần bản merge?',
+    'Khi nào thì việc đánh dấu hàm {{PARALLEL SAFE}} là sai lầm?'
+  ],
+  tags: ['parallel query', 'Gather', 'PostgreSQL', 'performance', 'planner'],
 }
 );
