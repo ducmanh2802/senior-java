@@ -240,3 +240,19 @@ dialog.ai-settings h3 { margin: 0; }
 
 a.icon-btn { display: grid; place-items: center; text-decoration: none; }
 a.icon-btn.active { border-color: var(--accent); }
+
+/* ---------- motivational backdrop: a dotted path climbing to a flag on the summit ("road to the offer") ---------- */
+body::before {
+  content: ''; position: fixed; left: 0; right: 0; bottom: 0; height: min(42vh, 380px); z-index: -1; pointer-events: none;
+  background: linear-gradient(to top, var(--accent), color-mix(in srgb, var(--accent) 55%, transparent));
+  opacity: .13;
+  -webkit-mask: var(--summit) bottom center / cover no-repeat; mask: var(--summit) bottom center / cover no-repeat;
+  --summit: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1440 380' preserveAspectRatio='xMidYMax slice'%3E%3Cpath fill-opacity='.45' d='M0 380V250l120-60 110 50 150-110 130 80 120-40 160 90 140-120 150 70 140-50 120 60 100-30v190z'/%3E%3Cpath d='M0 380V300l180-70 160 60 190-150 120 70L900 40l170 160 130-60 240 120v120z'/%3E%3Cpath d='M900 40v-34h3v34z'/%3E%3Cpath d='M903 6l46 12-46 12z'/%3E%3Ccircle cx='1250' cy='70' r='34' fill-opacity='.55'/%3E%3C/svg%3E");
+}
+body::after {   /* the trail: dots climbing from the bottom-left to the summit */
+  content: ''; position: fixed; left: 0; right: 0; bottom: 0; height: min(42vh, 380px); z-index: -1; pointer-events: none;
+  background: var(--bg); opacity: .9;
+  -webkit-mask: var(--trail) bottom center / cover no-repeat; mask: var(--trail) bottom center / cover no-repeat;
+  --trail: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1440 380' preserveAspectRatio='xMidYMax slice'%3E%3Cpath fill='none' stroke='%23000' stroke-width='5' stroke-linecap='round' stroke-dasharray='1 16' d='M140 380C260 340 380 330 470 300S600 250 650 225 760 190 800 150 860 80 900 44'/%3E%3C/svg%3E");
+}
+@media print { body::before, body::after { display: none; } }
