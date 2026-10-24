@@ -1147,5 +1147,672 @@ jobs:
       'Làm sao version API khi có multiple team deploy độc lập (monorepo vs polyrepo)?'
     ],
     tags: ['OpenAPI', 'API First', 'Contract Test', 'springdoc', 'CI/CD', 'Breaking Change']
+  },
+  {
+    id: 'api-015',
+    topic: 'api',
+    level: 'mid',
+    q: 'POST /payments không idempotent: khách bấm "Thanh toán" hai lần hoặc mobile retry sau timeout. Thiết kế Idempotency-Key để không trừ tiền hai lần — lưu ở đâu, xử lý request song song, TTL bao lâu?',
+    a: `**Tóm tắt:** Client sinh một {{Idempotency-Key}} (UUID) cho mỗi lần thanh toán và **giữ nguyên** key khi retry. Server lưu key + fingerprint của request + response đã trả; request thứ hai cùng key được **replay response cũ**, không gọi lại PSP/lõi thẻ. Unique index trên {{(merchant_id, idempotency_key)}} trong PostgreSQL là cơ chế chống race, TTL thường 24 giờ.
+
+### Vì sao không thể dựa vào HTTP
+- POST **không idempotent** theo RFC 9110: gửi lại nghĩa là tạo thêm giao dịch.
+- Timeout không cho biết server đã xử lý hay chưa: client thấy lỗi mạng, PSP đã trừ tiền, retry mù = trừ hai lần.
+- {{Idempotency-Key}} đang được chuẩn hóa (IETF draft) và đã được Stripe, PayPal, Adyen dùng. Key do **client** sinh vì chỉ client biết hai request là cùng một ý định.
+
+### Bảng trạng thái
+| Trạng thái record | Request mới cùng key | Trả về |
+|---|---|---|
+| IN_PROGRESS | Đến khi request đầu chưa xong | 409 Conflict kèm Retry-After ngắn |
+| COMPLETED | Bất kỳ lúc nào trong TTL | Replay đúng status + body cũ |
+| FAILED (lỗi nghiệp vụ đã chốt) | Trong TTL | Replay lỗi cũ, không thử lại |
+| Không có | Request đầu tiên | 200/201 + lưu kết quả |
+
+> Chỉ **lỗi hệ thống** (5xx, timeout khi gọi PSP) mới nên cho phép thử lại cùng key; lỗi nghiệp vụ đã chốt thì replay nguyên trạng.
+
+### Lưu ở đâu
+~~~sql
+create table payment_idempotency (
+  merchant_id      varchar(32)  not null,
+  idem_key         varchar(64)  not null,
+  request_hash     char(64)     not null,   -- SHA-256 của method + path + body
+  status           varchar(16)  not null,   -- IN_PROGRESS | COMPLETED | FAILED
+  response_status  int,
+  response_body    jsonb,
+  created_at       timestamptz  not null default now(),
+  primary key (merchant_id, idem_key)
+);
+create index on payment_idempotency (created_at);  -- job dọn dữ liệu cũ
+~~~
+
+### Luồng xử lý (insert-first)
+1. **Reserve**: {{insert ... on conflict do nothing}}. Nếu insert được 0 dòng, đọc record cũ và so {{request_hash}}.
+2. Hash khác → 422: client dùng lại key cho payload khác, không được replay nhầm.
+3. Record đang IN_PROGRESS → 409 để client backoff, hoặc chờ ngắn rồi đọc lại.
+4. Record COMPLETED → trả lại đúng status/body cũ, thêm header {{Idempotent-Replayed: true}}.
+5. Nếu là request đầu: gọi PSP (truyền **cùng key** xuống PSP nếu họ hỗ trợ), ghi kết quả, đổi status.
+
+~~~java
+// reserve/complete là 2 transaction ngắn; KHÔNG giữ transaction trong lúc gọi PSP
+public ResponseEntity<String> pay(String key, PayRequest req) {
+    String hash = sha256(canonicalJson(req));
+    int inserted = repo.reserve(merchantId, key, hash);   // INSERT ... ON CONFLICT DO NOTHING
+    if (inserted == 0) {
+        IdemRow row = repo.find(merchantId, key);
+        if (!row.requestHash.equals(hash)) {
+            return ResponseEntity.unprocessableEntity().body("key reused with different payload");
+        }
+        if ("IN_PROGRESS".equals(row.status)) {
+            return ResponseEntity.status(409).header("Retry-After", "1").build();
+        }
+        return ResponseEntity.status(row.responseStatus)
+                .header("Idempotent-Replayed", "true").body(row.responseBody);
+    }
+    try {
+        PspResult r = psp.charge(req, key);               // idempotent ở cả phía PSP
+        repo.complete(merchantId, key, r.status(), r.body());
+        return ResponseEntity.status(r.status()).body(r.body());
+    } catch (PspTimeout e) {
+        repo.fail(merchantId, key);                        // cho phép retry cùng key
+        throw e;
+    }
+}
+~~~
+
+### Pitfall production
+- **Ghi key sau khi gọi PSP**: process chết giữa hai bước → tiền đã trừ, key chưa có, retry trừ lần nữa. Luôn reserve trước.
+- **Key scope sai**: dùng key toàn cục thay vì theo merchant/API key → hai merchant trùng UUID là hiếm nhưng vẫn có, và một merchant có thể đọc response của merchant khác.
+- **Không hash body**: client dùng lại key cho đơn khác, server replay đơn cũ → trừ tiền oan và rất khó truy vết.
+- **TTL quá ngắn**: đối tác có thể retry tới 24 giờ; đặt TTL 7 ngày an toàn hơn, dọn bằng job theo batch để không khóa bảng.
+- **Retry tự động bên trong**: không được tự retry 5xx khi chưa chắc PSP đã xử lý; retry phải đi qua cùng key.
+- **Record IN_PROGRESS bị treo**: process chết sau reserve nhưng trước khi ghi kết quả. Dùng lease ngắn và job đối soát trạng thái với PSP; không tự động gọi lại PSP cho record đang treo.
+
+> Senior tip: Ở cổng thanh toán lớn, bảng idempotency tăng vài triệu dòng/ngày — partition theo tháng và drop partition cũ thay vì DELETE. Theo dõi tỉ lệ {{Idempotent-Replayed}}: tăng vọt thường là dấu hiệu client timeout hàng loạt hoặc PSP chậm, không phải bug idempotency. Với chuyển tiền nội bộ, dùng thêm **reference id do hệ thống sinh** và đối soát cuối ngày để bắt các ca "đã trừ nhưng response mất".`,
+    follow: [
+      'Nếu PSP không hỗ trợ idempotency key thì xử lý thế nào?',
+      'Idempotency-Key nên gắn với user session hay với ý định thanh toán? Vì sao?'
+    ],
+    tags: ['Idempotency', 'Payment', 'POST', 'Distributed', 'PostgreSQL']
+  },
+  {
+    id: 'api-016',
+    topic: 'api',
+    level: 'mid',
+    q: 'API công khai cho đối tác cần đổi schema. Chọn versioning URI hay header? Quy trình deprecation và sunset một version sao cho không làm sập tích hợp của khách hàng?',
+    a: `**Tóm tắt:** Chỉ tăng **major version** khi có breaking change. Với API public cho đối tác, URI versioning ({{/v1/}}, {{/v2/}}) thường thắng vì dễ route ở gateway, dễ đọc trong log/metric, dễ test bằng curl; header/media-type versioning "sạch" hơn về REST nhưng đòi hỏi {{Vary}}, gateway predicate và dễ bị proxy/cache bỏ qua. Deprecation là một quy trình có **telemetry, thông báo, thời gian chờ và brownout**, không phải một ngày tắt endpoint.
+
+### URI vs header
+| Tiêu chí | URI ({{/v2/accounts}}) | Header / media type |
+|---|---|---|
+| Debug, log, metric | Rất rõ, tách series theo path | Phải parse header, dễ mất khi qua proxy |
+| Cache/CDN | Key tự nhiên theo URL | Cần {{Vary: Accept}} hoặc custom header, dễ cache sai |
+| Gateway routing | Prefix match đơn giản | Predicate theo header, cấu hình phức tạp hơn |
+| "REST purity" | Bị coi là lẫn version vào resource | Resource ổn định, version nằm ở representation |
+| Client SDK | Sinh theo path, dễ hiểu | SDK phải set header mặc định |
+| Rủi ro | URL phình version | Client quên header → rơi về version mặc định |
+
+Với API nội bộ giữa các service, tốt nhất là **không version hóa URL**: thêm field optional, giữ tolerant reader (Spring Boot mặc định bỏ qua field lạ), chỉ tạo endpoint mới khi ngữ nghĩa đổi.
+
+### Breaking hay không?
+- **Breaking**: xóa/đổi tên field, đổi type, thêm field **bắt buộc** trong request, đổi status code, siết validation, đổi ý nghĩa đơn vị (VND → USD), đổi cách phân trang.
+- **Không breaking**: thêm field optional vào response, thêm endpoint, thêm enum value **nếu client đã được dặn chịu được giá trị lạ** (nhiều client switch-case cứng nên thực tế vẫn phải thông báo trước).
+- Đổi default (page size, timezone, cách làm tròn) cũng là breaking dù schema không đổi — đây là loại hay bị bỏ sót nhất.
+
+### Vòng đời deprecation
+~~~text
+T0  thông báo + ghi tài liệu + email/portal cho đối tác
+T0  response của /v1 thêm header Deprecation + Sunset + Link tới migration guide
+T1  (song song) /v2 chạy ổn định, có parity test giữa hai version
+T2  brownout: /v1 trả 503/410 theo cửa sổ ngắn (ví dụ 5 phút mỗi giờ) để buộc client lộ ra
+T3  đo usage theo consumer; chỉ sunset khi không còn traffic quan trọng
+T4  tắt hẳn, giữ 410 Gone + Link migration ít nhất một chu kỳ
+~~~
+
+- Header gợi ý: {{Deprecation}} (RFC 9745), {{Sunset}} (RFC 8594, HTTP-date), {{Link: <https://api.bank.vn/migrate/v2>; rel="deprecation"}}.
+- Đừng trả 404 ngay: 404 khiến client tưởng endpoint chưa từng tồn tại (URL sai, lệnh gọi vào môi trường chưa có route) và không biết phải làm tiếp thế nào; 410 Gone nói rõ "đã bỏ vĩnh viễn", kèm Link dẫn tới migration guide.
+
+~~~java
+// Spring MVC: cùng logic, hai mặt tiền version
+@RestController
+@RequestMapping({"/v1/accounts", "/v2/accounts"})
+class AccountController {
+    @GetMapping("/{id}")
+    AccountDtoV2 get(@PathVariable long id,
+                     @RequestHeader(value = "X-Api-Version", required = false) String v) {
+        AccountDtoV2 dto = service.get(id);                    // v2 là canonical
+        return "1".equals(v) ? dto.withoutNewFields() : dto;  // facade giữ shape cũ
+    }
+}
+~~~
+
+Trong thực tế nên tách controller/facade theo version và dùng chung service; đừng rải điều kiện {{if v1}} khắp code.
+
+### Đo lường trước khi tắt
+- Đếm request theo {{api_key}} + version trong access log/Micrometer; dashboard "consumer còn gọi v1".
+- Với đối tác lớn: thỏa thuận ngày sunset bằng văn bản; giữ ngoại lệ có thời hạn thay vì trì hoãn cả hệ thống.
+- Theo dõi 4xx tăng sau khi đổi default — dấu hiệu client phụ thuộc hành vi cũ.
+
+> Senior tip: Ngân hàng thường cam kết hỗ trợ 12–24 tháng cho API đối tác, nhưng chi phí thật nằm ở **hai bộ test và hai bug surface**. Cách giảm: giữ version cũ như một **adapter mỏng** trên model mới (map field, không copy business logic), và bật brownout sớm — đội đối tác sẽ migrate nhanh hơn nhiều so với email nhắc nhở. Đừng để client không gửi version rơi vào "latest" một cách âm thầm; hãy ghim về một version mặc định đã công bố.`,
+    follow: [
+      'Versioning bằng media type có thật sự "sạch" hơn URI khi vận hành không?',
+      'Làm sao phát hiện breaking change tự động trong CI?'
+    ],
+    tags: ['API Versioning', 'Deprecation', 'Sunset', 'Gateway', 'Compatibility']
+  },
+  {
+    id: 'api-017',
+    topic: 'api',
+    level: 'senior',
+    q: 'Bảng transactions có 80 triệu dòng, API lịch sử giao dịch cần phân trang ổn định khi có insert liên tục. Thiết kế cursor (keyset) pagination: SQL, index, định dạng cursor, và các cạm bẫy khiến client thấy trùng hoặc mất dòng?',
+    a: `**Tóm tắt:** Cursor pagination nghĩa là "lấy tiếp sau bản ghi cuối cùng đã thấy", dùng keyset {{WHERE (created_at, id) < (?, ?) ORDER BY created_at DESC, id DESC LIMIT ?}}. Không có OFFSET nên chi phí mỗi trang là O(log n + page size) và kết quả ổn định khi có insert. Cursor phải **opaque + ký**, mang đúng độ chính xác của cột sắp xếp, và gắn với bộ lọc/sort đã dùng.
+
+### Vì sao OFFSET chết ở trang sâu
+~~~sql
+-- Trang 5000: PostgreSQL vẫn phải đi qua 100.000 dòng index rồi bỏ
+select id, created_at, amount, status
+from transactions
+where account_id = 42
+order by created_at desc, id desc
+offset 100000 limit 20;
+~~~
+- Chi phí tăng tuyến tính theo offset, p99 nổ ở trang sâu.
+- Insert/delete giữa hai lần gọi làm dòng **dịch chỗ**: client thấy trùng hoặc mất dòng.
+- UI infinite scroll chỉ cần next, không cần nhảy trang, nên OFFSET không đem lại gì.
+
+### Keyset SQL
+~~~sql
+create index idx_txn_acct_created_id
+  on transactions (account_id, created_at desc, id desc);
+
+-- Trang đầu
+select id, created_at, amount, status
+from transactions
+where account_id = :acct
+order by created_at desc, id desc
+limit :size + 1;              -- lấy dư 1 để biết has_more
+
+-- Trang tiếp: row-wise comparison, dùng đúng composite index
+select id, created_at, amount, status
+from transactions
+where account_id = :acct
+  and (created_at, id) < (:cursorTs, :cursorId)
+order by created_at desc, id desc
+limit :size + 1;
+~~~
+
+PostgreSQL so sánh row-wise theo đúng thứ tự cột và dùng được composite index. {{id}} là tie-breaker bắt buộc: nhiều giao dịch cùng {{created_at}} (batch import) sẽ bị nhảy hoặc lặp nếu cursor chỉ có timestamp.
+
+### Định dạng cursor
+~~~java
+record Cursor(Instant createdAt, long id, String filterHash) {}
+
+String encode(Cursor c) throws Exception {
+    String json = mapper.writeValueAsString(c);
+    String body = Base64.getUrlEncoder().withoutPadding()
+                        .encodeToString(json.getBytes(StandardCharsets.UTF_8));
+    return body + "." + hmacSha256(body, cursorSecret);   // chống sửa cursor
+}
+~~~
+- **Opaque**: client không được tự dựng cursor; để lộ base64 của id là mở đường cho client dò dữ liệu tài khoản khác.
+- **Ký HMAC**: nếu không ký, client có thể sửa timestamp/id để đọc vượt phạm vi.
+- **filterHash**: hash của (accountId, from, to, status, sort). Cursor của bộ lọc A dùng cho bộ lọc B sẽ trả kết quả vô nghĩa; server phải từ chối bằng 400.
+- Trả {{next_cursor}} và {{has_more}}; không trả {{total}} trừ khi có yêu cầu thật.
+
+### Những cạm bẫy làm trùng hoặc mất dòng
+| Cạm bẫy | Hậu quả | Cách tránh |
+|---|---|---|
+| Cursor chỉ có timestamp | Mất dòng cùng giây/microsecond | Thêm id làm tie-breaker |
+| Mất độ chính xác thời gian | Postgres lưu microsecond, JS Date chỉ milli → lệch | Serialize epoch micro hoặc chuỗi ISO đầy đủ |
+| Sort theo cột bị update | Dòng nhảy sang trang khác | Sort theo cột immutable, hoặc ghi rõ hệ quả |
+| Trộn OFFSET với cursor | Trang sâu vẫn chậm, vẫn lệch | Chọn một cơ chế |
+| Page size không giới hạn | {{size=100000}} gây OOM/DoS | Cap 100, validate input |
+| Cursor sống quá lâu | Dữ liệu đã đổi nhiều | TTL 24h, trả 400 kèm hướng dẫn |
+
+### Đếm tổng và prev page
+- Đừng chạy {{count(*)}} mỗi trang. Nếu UI cần, dùng ước lượng ({{reltuples}} sau ANALYZE) hoặc job count chạy nền.
+- Prev page: đảo điều kiện và đảo thứ tự rồi reverse kết quả; hoặc trả cả {{prev_cursor}}.
+- Với export toàn bộ: chạy trong transaction {{repeatable read}} hoặc snapshot để các trang nhất quán.
+
+> Senior tip: Hãy test phân trang bằng cách chèn dữ liệu **trong lúc** client đang lật trang — đó là lúc bug lộ ra. Spring Data 3.1+ có {{Window}} và {{ScrollPosition}} để bớt phải tự viết SQL, nhưng phần ký cursor và filterHash vẫn phải tự lo. Đừng đưa cursor vào query string rồi log nguyên văn nếu nó chứa dữ liệu nhạy cảm; hãy ký và mã hóa đủ để lộ cũng vô hại.`,
+    follow: [
+      'Keyset pagination hỗ trợ sắp xếp theo nhiều cột động như thế nào?',
+      'Làm sao phân trang ổn định khi sort theo cột có thể NULL?'
+    ],
+    tags: ['Pagination', 'Cursor', 'Keyset', 'PostgreSQL', 'Index']
+  },
+  {
+    id: 'api-018',
+    topic: 'api',
+    level: 'senior',
+    q: 'Thiết kế error model cho API ngân hàng trên Spring Boot 3 theo RFC 9457 Problem Details: type/title/detail/instance, lỗi validation nhiều field, lỗi nghiệp vụ và 5xx — làm sao để client xử lý bằng máy mà không phải parse chuỗi?',
+    a: `**Tóm tắt:** RFC 9457 (thay RFC 7807) định nghĩa body lỗi chuẩn {{application/problem+json}} với {{type}} (URI định danh loại lỗi), {{title}}, {{status}}, {{detail}}, {{instance}}, cộng các field mở rộng. Spring Boot 3 có sẵn class {{ProblemDetail}}; bật {{spring.mvc.problemdetails.enabled=true}} để exception của framework cũng trả cùng format. Client nên switch trên {{type}} + {{status}}, không bao giờ parse {{detail}}.
+
+### Vì sao cần chuẩn
+- Mỗi team tự định nghĩa {{code}}/{{message}}/{{errorCode}} → SDK đối tác phải xử lý N format.
+- {{detail}} là văn bản cho người, có thể đổi ngôn ngữ, không phải hợp đồng.
+- {{type}} là **mã lỗi máy đọc được**, ổn định, có thể trỏ tới trang tài liệu giải thích cách sửa.
+
+~~~json
+HTTP/1.1 422 Unprocessable Content
+Content-Type: application/problem+json
+
+{
+  "type": "https://api.bank.vn/problems/insufficient-funds",
+  "title": "Số dư không đủ",
+  "status": 422,
+  "detail": "Tài khoản 0123456 cần 5.200.000 VND nhưng chỉ còn 5.000.000 VND.",
+  "instance": "/v1/transfers/9f2c",
+  "traceId": "4bf92f3577b34da6",
+  "balance": 5000000,
+  "required": 5200000
+}
+~~~
+
+### Spring Boot 3: cấu hình và handler
+~~~yaml
+spring:
+  mvc:
+    problemdetails:
+      enabled: true   # framework exception (404, 405, lỗi binding) -> problem+json
+~~~
+
+~~~java
+@RestControllerAdvice
+class ApiExceptionHandler extends ResponseEntityExceptionHandler {
+
+    @ExceptionHandler(InsufficientFundsException.class)
+    ProblemDetail insufficient(InsufficientFundsException e) {
+        ProblemDetail p = ProblemDetail.forStatusAndDetail(
+                HttpStatus.UNPROCESSABLE_ENTITY, e.getMessage());
+        p.setType(URI.create("https://api.bank.vn/problems/insufficient-funds"));
+        p.setTitle("Số dư không đủ");
+        p.setInstance(URI.create("/v1/transfers/" + e.transferId()));
+        p.setProperty("balance", e.balance());      // extension member
+        p.setProperty("required", e.required());
+        p.setProperty("traceId", MDC.get("traceId"));
+        return p;                                    // Spring tự set status + content-type
+    }
+
+    @Override   // lỗi @Valid: gom theo field
+    protected ResponseEntity<Object> handleMethodArgumentNotValid(
+            MethodArgumentNotValidException ex, HttpHeaders h,
+            HttpStatusCode code, WebRequest req) {
+        ProblemDetail p = ProblemDetail.forStatusAndDetail(
+                HttpStatus.BAD_REQUEST, "Dữ liệu không hợp lệ");
+        p.setType(URI.create("https://api.bank.vn/problems/validation-failed"));
+        p.setProperty("errors", ex.getBindingResult().getFieldErrors().stream()
+                .map(f -> Map.of("field", f.getField(), "message", f.getDefaultMessage()))
+                .toList());
+        return ResponseEntity.badRequest()
+                .contentType(MediaType.APPLICATION_PROBLEM_JSON).body(p);
+    }
+}
+~~~
+
+### Phân loại lỗi
+| Nhóm | Status | type ví dụ | Ghi chú |
+|---|---|---|---|
+| Validation | 400 | validation-failed | Kèm mảng {{errors}} theo field |
+| Authn | 401 | unauthenticated | Kèm {{WWW-Authenticate}}, không tiết lộ chi tiết token |
+| Authz | 403 | forbidden | Không nói tài nguyên có tồn tại hay không |
+| Không tìm thấy | 404 | not-found | |
+| Xung đột nghiệp vụ | 409/422 | duplicate-transfer, insufficient-funds | Mỗi case một type riêng |
+| Quá tải | 429 | rate-limited | Kèm {{Retry-After}} |
+| Hệ thống | 500 | internal-error | detail chung chung, không lộ stack/SQL |
+
+### Quy tắc nội dung
+- {{detail}} nói **người dùng cần làm gì**, không lộ tên bảng, câu SQL, stack trace, hostname.
+- 5xx: log đầy đủ ở server, trả {{traceId}} để support tra cứu; không trả exception message.
+- 401 phải kèm header {{WWW-Authenticate}}; 405 kèm {{Allow}}; 429 kèm {{Retry-After}}.
+- Đa ngôn ngữ: giữ {{type}} cố định, dịch {{title}}/{{detail}} bằng MessageSource theo {{Accept-Language}}.
+- Trang tài liệu cho từng {{type}} URL: đối tác đọc được cách xử lý, giảm ticket support.
+
+### Pitfall
+- **Trộn hai format**: endpoint mới trả problem+json, endpoint cũ trả {{error/message}} → SDK phải parse hai kiểu. Chuyển đổi có version, công bố rõ.
+- **Status trong body khác HTTP status** (body 500 nhưng HTTP 200, hoặc ngược lại) → client tin cái nào? Luôn khớp.
+- **type là URL chết** (404) → mất giá trị tài liệu; host tĩnh trên docs portal.
+- **Trả {{errors}} dạng chuỗi nối** → client không highlight được field.
+- **Lộ thông tin qua 404/409**: kẻ tấn công dò được mã giao dịch có tồn tại hay không.
+
+> Senior tip: Hãy chốt bộ {{type}} như một **enum trong OpenAPI** và review như public API — thêm type mới là thay đổi hợp đồng cần thông báo. Đặt tên theo **nguyên nhân/hành động** (insufficient-funds, card-expired) chứ không theo tầng (db-error, service-exception): client cần biết phải làm gì, không cần biết lỗi phát sinh ở đâu. Và luôn có một contract test kiểm tra mọi lỗi 4xx/5xx đều là problem+json.`,
+    follow: [
+      'Làm sao để Spring Security cũng trả problem+json thay vì body mặc định?',
+      'Có nên đưa danh sách lỗi validation vào type hay vào extension member?'
+    ],
+    tags: ['RFC 9457', 'Problem Details', 'Error Handling', 'Spring Boot 3', 'API Design']
+  },
+  {
+    id: 'api-019',
+    topic: 'api',
+    level: 'senior',
+    q: 'Rate limiting cho API công khai chạy nhiều instance sau load balancer: chọn thuật toán nào, đếm ở đâu để không bị "mỗi instance một hạn mức", và trả 429 thế nào cho client đúng chuẩn?',
+    a: `**Tóm tắt:** Dùng **token bucket** (cho phép burst có kiểm soát) hoặc sliding-window counter, đếm tập trung trong **Redis bằng Lua script nguyên tử**; mỗi instance chỉ giữ cache cục bộ để chặn sớm. Trả 429 Too Many Requests kèm {{Retry-After}} và các header {{RateLimit-*}}; key theo API key/consumer, không theo IP đơn thuần.
+
+### Chọn thuật toán
+| Thuật toán | Burst | Bộ nhớ | Nhược điểm |
+|---|---|---|---|
+| Fixed window | Cho burst gấp đôi ở ranh giới cửa sổ | 1 counter | 2x limit tại giây chuyển |
+| Sliding window log | Chính xác | 1 entry mỗi request trong cửa sổ | Tốn RAM với limit lớn |
+| Sliding window counter | Gần đúng, mượt | 2 counter | Sai số nhỏ ở ranh giới |
+| **Token bucket** | Đúng bằng capacity | 2 số mỗi key | Cần refill theo thời gian |
+| Leaky bucket | Làm phẳng hoàn toàn | 1 hàng đợi | Tăng latency, không hợp API |
+
+Token bucket hợp API nhất: mỗi consumer có {{capacity}} token, nạp {{rate}} token/giây; request tiêu 1 (hoặc nhiều theo "cost"). Nó cho phép client dồn 100 request trong 1 giây rồi nghỉ — đúng hành vi thực tế của batch job.
+
+### Vì sao phải đếm tập trung
+Nếu mỗi pod giữ bucket riêng với limit 100/phút và có 10 pod, client thực tế được 1000/phút — hạn mức thành vô nghĩa và phụ thuộc autoscaling. Redis (hoặc gateway dùng Redis) là nguồn sự thật; local bucket chỉ là bộ lọc thô (ví dụ 10% limit) để giảm tải Redis khi bị flood.
+
+### Lua script nguyên tử
+~~~lua
+-- KEYS[1] = rl:{consumerId}:{endpoint}
+-- ARGV = capacity, refillPerSec, nowMs, cost
+local cap  = tonumber(ARGV[1])
+local rate = tonumber(ARGV[2])
+local now  = tonumber(ARGV[3])
+local cost = tonumber(ARGV[4])
+local d = redis.call('HMGET', KEYS[1], 'tokens', 'ts')
+local tokens = tonumber(d[1])
+local ts = tonumber(d[2])
+if tokens == nil then tokens = cap; ts = now end
+local delta = math.max(0, now - ts) / 1000.0
+tokens = math.min(cap, tokens + delta * rate)
+local allowed = 0
+if tokens >= cost then
+  tokens = tokens - cost
+  allowed = 1
+end
+redis.call('HSET', KEYS[1], 'tokens', tokens, 'ts', now)
+redis.call('PEXPIRE', KEYS[1], math.ceil(cap / rate * 1000) + 60000)
+return { allowed, math.floor(tokens) }
+~~~
+- Toàn bộ read-modify-write nằm trong một lần chạy Lua; Redis đơn luồng nên không có race.
+- Đừng làm GET rồi SET từ Java: hai request chen nhau sẽ cùng thấy token còn và cùng cho qua.
+- Script chỉ chạm một key nên an toàn trên Redis Cluster.
+
+~~~java
+public Decision check(String consumer, String endpoint, int cost) {
+    List<?> r = redis.execute(SCRIPT, List.of("rl:" + consumer + ":" + endpoint),
+            String.valueOf(capacity), String.valueOf(refillPerSec),
+            String.valueOf(clock.millis()), String.valueOf(cost));
+    long allowed   = ((Number) r.get(0)).longValue();
+    long remaining = ((Number) r.get(1)).longValue();
+    return new Decision(allowed == 1, remaining);
+}
+~~~
+
+### Trả lỗi đúng chuẩn
+~~~http
+HTTP/1.1 429 Too Many Requests
+Retry-After: 7
+RateLimit-Limit: 100
+RateLimit-Remaining: 0
+RateLimit-Reset: 7
+Content-Type: application/problem+json
+
+{"type":"https://api.bank.vn/problems/rate-limited","title":"Quá nhiều yêu cầu","status":429}
+~~~
+- {{Retry-After}} tính bằng giây (hoặc HTTP-date) — client biết chờ bao lâu thay vì retry ngay.
+- {{RateLimit-*}} theo IETF draft; nhiều client cũ chỉ đọc {{X-RateLimit-*}}, có thể phát cả hai trong giai đoạn chuyển.
+- Client retry phải thêm **jitter**, nếu không toàn bộ client cùng quay lại đúng một giây và tạo sóng thứ hai.
+
+### Key và chính sách
+- Key theo **consumer/API key** là chính; thêm chiều theo endpoint và theo user để chặn một tài khoản phá hoại.
+- IP chỉ là fallback: NAT công ty, IPv6 /64 khiến nhiều người chung một "IP".
+- Cost-based: endpoint nặng (báo cáo, export) tiêu 10 token; endpoint nhẹ tiêu 1.
+- Hạn mức khác nhau theo gói dịch vụ; lưu cấu hình theo consumer, không hard-code.
+
+### Khi Redis chết
+- API đọc/tra cứu: **fail-open** với local bucket giới hạn chặt — ưu tiên availability.
+- Thanh toán/đăng nhập: **fail-closed** hoặc hạn mức local rất thấp — ưu tiên an toàn.
+- Ghi rõ quyết định này vào runbook; đừng để on-call tự đoán lúc 2 giờ sáng.
+
+> Senior tip: Rate limit không thay thế **bulkhead** và timeout. Một consumer hợp lệ vẫn có thể đốt hết connection pool; hãy giới hạn đồng thời (semaphore) cho từng loại tài nguyên. Đặt alert trên tỉ lệ 429 theo consumer: tăng đột biến thường là client retry loop hoặc key bị lộ, không phải "hệ thống chậm". Và hãy đo bằng một con số: nếu limit 100/phút thì 1% traffic bị 429 là bình thường, 30% là sự cố cần gọi cho đối tác.`,
+    follow: [
+      'Rate limit theo user và theo IP nên kết hợp thế nào để chống cả bot lẫn lạm dụng tài khoản?',
+      'Có nên đặt rate limit ở gateway hay trong từng service?'
+    ],
+    tags: ['Rate Limiting', 'Token Bucket', 'Redis', '429', 'Retry-After']
+  },
+  {
+    id: 'api-020',
+    topic: 'api',
+    level: 'senior',
+    q: 'Hai thiết bị cùng sửa một beneficiary: A lưu trước, B ghi đè làm mất thay đổi của A. Thiết kế optimistic concurrency bằng If-Match/@Version trong Spring Boot 3 + JPA, và trả 412/409/428 thế nào để client xử lý đúng?',
+    a: `**Tóm tắt:** Mỗi resource có **version tăng đơn điệu** (cột {{@Version}} hoặc service quản lý) và trả về qua {{ETag}}. Client gửi {{If-Match}} khi PUT/PATCH; server chỉ ghi nếu version hiện tại vẫn khớp, ngược lại 412 Precondition Failed. Thiếu If-Match ở endpoint bắt buộc → 428; xung đột ngữ nghĩa nghiệp vụ (trùng mã, sai trạng thái) → 409. Check-and-update phải nằm trong **một câu UPDATE có điều kiện** hoặc transaction có {{@Version}}, không phải "đọc version rồi so sánh trong Java".
+
+### Lost update xảy ra thế nào
+~~~text
+t0  A GET beneficiary  -> version 7, dailyLimit 10tr
+t1  B GET beneficiary  -> version 7, dailyLimit 10tr
+t2  A PUT {limit: 20tr} If-Match 7 -> OK, version 8
+t3  B PUT {limit: 15tr} If-Match 7 -> phải 412; nếu server bỏ qua If-Match
+                                      thì thay đổi 20tr của A biến mất
+~~~
+Đây là lost update kinh điển; không có version thì "last write wins" một cách âm thầm — với hạn mức chuyển tiền, đó là lỗi nghiệp vụ.
+
+### Ba status code, ba ý nghĩa
+| Code | Khi nào | Client làm gì |
+|---|---|---|
+| 428 Precondition Required | Endpoint yêu cầu If-Match nhưng request không có | Thêm If-Match rồi gọi lại |
+| 412 Precondition Failed | If-Match không khớp version hiện tại | GET lại, merge, hỏi người dùng nếu xung đột thật |
+| 409 Conflict | Xung đột nghiệp vụ: trùng số beneficiary, sai state machine | Hiển thị lỗi nghiệp vụ, không retry mù |
+
+Đừng dùng 409 cho version mismatch: client không phân biệt được "thử lại sau khi GET" với "nghiệp vụ từ chối".
+
+### Spring Boot 3 + JPA
+~~~java
+@Entity
+class Beneficiary {
+    @Id Long id;
+    @Version Long version;        // JPA tự tăng, kiểm tra ở flush
+    String name;
+    BigDecimal dailyLimit;
+}
+~~~
+
+~~~java
+@PutMapping("/beneficiaries/{id}")
+public ResponseEntity<?> update(@PathVariable long id,
+        @RequestHeader(value = "If-Match", required = false) String ifMatch,
+        @Valid @RequestBody BeneficiaryRequest req) {
+    if (ifMatch == null) {
+        return ResponseEntity.status(428).header("ETag", currentEtag(id))
+            .body(problem("precondition-required", 428, "Gửi If-Match với version hiện tại"));
+    }
+    long expected = parseEtag(ifMatch);          // bỏ W/ và 2 dấu nháy, parse số
+    try {
+        Beneficiary saved = service.update(id, expected, req);
+        String etag = '"' + String.valueOf(saved.getVersion()) + '"';
+        return ResponseEntity.ok().eTag(etag).body(saved);
+    } catch (OptimisticLockingFailureException e) {
+        return ResponseEntity.status(412).eTag(currentEtag(id))
+            .body(problem("version-conflict", 412, "Dữ liệu đã thay đổi, hãy tải lại"));
+    }
+}
+~~~
+
+Cách service dùng version mong đợi:
+- **Cách A (khuyến nghị)**: câu UPDATE có điều kiện, kiểm tra số dòng:
+~~~java
+@Modifying(clearAutomatically = true)   // bulk update bỏ qua persistence context
+@Query("update Beneficiary b set b.name = :name, b.dailyLimit = :limit, " +
+       "b.version = b.version + 1 where b.id = :id and b.version = :expected")
+int updateIfVersion(long id, long expected, String name, BigDecimal limit);
+~~~
+  Trả 0 dòng → ném {{OptimisticLockingFailureException}}. Một câu lệnh, atomic, không có cửa sổ race.
+- **Cách B**: load entity trong transaction, set field, để {{@Version}} kiểm tra lúc flush/commit. Gọn hơn nhưng entity phải được load **trong cùng transaction** với lần ghi, và exception chỉ ném ở commit.
+
+### Pitfall
+- **Đọc version ở controller rồi so sánh**: hai request vẫn có thể chen giữa lúc so và lúc ghi. Phải để DB làm trọng tài.
+- **ETag sinh từ {{hashCode()}} hoặc serialize JSON**: thứ tự field/map thay đổi giữa các lần chạy → 412 giả. Dùng version số hoặc hash **ổn định** của nội dung.
+- **ETag lấy từ cột updated_at độ chính xác giây**: hai update trong cùng giây dùng chung ETag → mất một thay đổi. Dùng microsecond hoặc version counter.
+- **Quên trả ETag sau khi ghi**: client không có version mới, lần sau chắc chắn 412.
+- **{{If-Match: *}}**: nghĩa là "resource phải tồn tại", không phải "khớp mọi version"; đừng dùng cho update.
+- **Multi-instance**: version trong DB hoạt động cluster-wide; cache version trong memory thì không.
+
+### Client xử lý 412 cho tử tế
+- GET lại, so với bản local; nếu hai bên sửa **field khác nhau** thì merge tự động rồi PUT với version mới.
+- Nếu cùng field → hiện diff cho người dùng chọn, không tự ghi đè.
+- Retry có backoff + giới hạn số lần; mỗi lần retry phải GET lại, không giữ If-Match cũ.
+- Với PATCH từng phần, cân nhắc JSON Merge Patch và vẫn giữ If-Match; JSON Patch có op "test" nhưng không thay thế được version check ở DB.
+
+> Senior tip: Với dữ liệu tiền, tôi thường **không** cho client chọn "ghi đè" khi 412 — bắt buộc tải lại và xác nhận. Đo tỉ lệ 412 theo endpoint: cao bất thường nghĩa là UI cache quá lâu hoặc nhiều tab cùng sửa. Và đừng dùng pessimistic lock cho form người dùng: giữ row lock qua một request HTTP là cách nhanh nhất để cạn connection pool.`,
+    follow: [
+      'Khi nào optimistic locking không đủ và phải dùng pessimistic lock?',
+      'Làm sao trả 412 kèm đủ thông tin để client tự merge?'
+    ],
+    tags: ['Optimistic Locking', 'ETag', 'If-Match', 'JPA', 'Concurrency']
+  },
+  {
+    id: 'api-021',
+    topic: 'api',
+    level: 'lead',
+    q: 'Với hệ thống gồm app mobile, web admin, đối tác ngân hàng và 30 microservice nội bộ: khi nào chọn REST, gRPC, GraphQL cho từng biên? Vẽ kiến trúc protocol và nêu chi phí vận hành của việc nuôi nhiều protocol cùng lúc.',
+    a: `**Tóm tắt:** Chọn protocol theo **biên**, không theo sở thích: đối tác/public dùng REST + JSON + OpenAPI (tương thích firewall, cache, debug, SDK rộng); service nội bộ đồng bộ dùng gRPC (schema chặt, payload nhỏ, streaming, deadline lan truyền); client đa dạng cần tổng hợp dữ liệu dùng GraphQL ở tầng BFF. Kiến trúc thực tế là **hybrid**: mobile/web → BFF → gRPC nội bộ → Kafka cho bất đồng bộ. Cái giá là ba bộ tooling, ba cách version và ba cách quan sát — chỉ đáng khi mỗi biên có lý do rõ ràng.
+
+### Bảng chọn theo biên
+| Biên | Chọn | Vì sao | Không chọn gì |
+|---|---|---|---|
+| Đối tác ngân hàng | REST/JSON, OpenAPI | Firewall mở 443, curl được, SDK mọi ngôn ngữ, dễ cache | gRPC (nhiều đối tác không có HTTP/2 client), GraphQL (khó giới hạn chi phí) |
+| Mobile app | REST hoặc GraphQL BFF | GraphQL giảm over-fetching cho màn hình phức tạp | gRPC trực tiếp (cần gRPC-Web + proxy) |
+| Web admin | REST | CRUD đơn giản, cache HTTP, ít query đa dạng | GraphQL nếu màn hình thật sự phức tạp |
+| Service nội bộ sync | gRPC | Protobuf nhỏ, HTTP/2 multiplex, deadline, codegen | REST/JSON cho high-throughput |
+| Service nội bộ async | Kafka (event) | Decouple, replay, backpressure | Gọi sync dây chuyền |
+| Tích hợp đối tác realtime | Webhook hoặc SSE | Đơn giản, qua được proxy | GraphQL subscription |
+
+### Kiến trúc tham chiếu
+~~~text
+Android/iOS ──┐
+              ├─► API Gateway ──► GraphQL BFF ──┐
+Web admin ────┘        │                        ├─► account-svc (gRPC)
+                       └─► REST /v1 (admin) ────┤
+Partner ──► API Gateway ──► REST /partner/v1 ───┤─► transfer-svc (gRPC)
+                                                └─► ledger-svc (gRPC)
+                                                          │
+                                                    Kafka (events)
+~~~
+- BFF (Backend for Frontend) giữ **schema theo màn hình**, gọi nhiều service gRPC phía sau, gộp và cắt field.
+- Gateway làm authn, rate limit, routing; có thể transcoding gRPC-JSON cho vài client đặc biệt nhưng đừng biến nó thành lớp dịch phức tạp.
+
+### gRPC: được gì, mất gì
+- Được: file {{.proto}} là hợp đồng và sinh code; payload nhỏ hơn JSON đáng kể; multiplexing trên một connection; streaming hai chiều; deadline tự lan truyền qua metadata.
+- Mất: debug bằng mắt khó (cần grpcurl), browser phải qua gRPC-Web proxy, load balancing cần L7 hiểu HTTP/2 (mesh hoặc client-side LB), CDN/cache gần như không dùng được, lỗi trả về là status code số + detail nhị phân.
+- Tiến hóa schema: chỉ thêm field với number mới, **reserve** number/name đã xóa, không đổi type; đây là kỷ luật bắt buộc, không phải tùy chọn.
+
+### GraphQL: được gì, mất gì
+- Được: client tự chọn field, một request cho nhiều resource, giảm kiểu versioning "v2 vì mobile cần thêm field".
+- Mất: N+1 nếu resolver ngây thơ (phải batch/DataLoader), query độc hại có thể đắt gấp nghìn lần (phải giới hạn depth/complexity, timeout, persisted query), cache HTTP khó (chỉ cache được persisted GET), authorization phải kiểm ở **từng field**, observability phải theo field.
+- Federation hợp cho nhiều team sở hữu schema, nhưng gateway federation là một hệ thống riêng cần người trực.
+
+### REST: đừng bỏ khi chưa cần
+- REST thắng ở tính phổ quát: cache, CDN, HTTP semantics, tooling, người mới đọc hiểu ngay.
+- Nhược điểm thật: chatty khi một màn hình cần 8 resource, over-fetching, streaming phải bọc bằng SSE/WebSocket riêng chứ không native như gRPC.
+- Nếu chỉ có một client và CRUD, REST là lựa chọn rẻ nhất để vận hành đúng.
+
+### Chi phí vận hành nhiều protocol (lead phải nói)
+1. **Quan sát**: trace phải xuyên qua HTTP/JSON, gRPC (metadata) và GraphQL (field-level) — chuẩn hóa W3C traceparent + OpenTelemetry, không tự chế.
+2. **Định danh và phân quyền**: cùng một danh tính nhưng ba cách truyền (Bearer header, gRPC metadata, GraphQL context) → một thư viện dùng chung.
+3. **Versioning**: REST dùng URI/header, gRPC dùng field number, GraphQL dùng deprecation field — viết guideline riêng cho từng cái.
+4. **Test**: contract test cho REST (OpenAPI), buf breaking cho proto, persisted query cho GraphQL.
+5. **Con người**: đội trực phải debug được cả ba; nếu không, sự cố sẽ kéo dài.
+
+### Cách migrate không big-bang
+- Đặt gateway trước, chuyển từng route (strangler), chạy song song, so sánh kết quả (shadow traffic) trước khi cắt.
+- Bắt đầu bằng **một** protocol mới ở một biên có pain rõ ràng; đừng chuyển toàn bộ chỉ vì "gRPC nhanh hơn".
+
+> Senior tip: Trong ngân hàng, ràng buộc lớn nhất thường không phải hiệu năng mà là **khả năng chứng minh tuân thủ và debug khi có sự cố**. REST/JSON để lại access log đọc được, đó là lý do nó vẫn là mặc định ở biên đối tác. gRPC tiết kiệm payload thật (thường thấy 30–60% với DTO lớn) nhưng chỉ đáng ở nội bộ nơi bạn kiểm soát toàn bộ client. GraphQL chỉ nên xuất hiện khi số màn hình và biến thể client đủ lớn để chi phí N+1/complexity được bù lại.`,
+    follow: [
+      'GraphQL BFF nên gọi REST hay gRPC phía sau? Vì sao?',
+      'Làm sao giữ trace xuyên suốt khi client dùng GraphQL và backend dùng gRPC?'
+    ],
+    tags: ['REST', 'gRPC', 'GraphQL', 'Architecture', 'BFF', 'Protocol']
+  },
+  {
+    id: 'api-022',
+    topic: 'api',
+    level: 'lead',
+    q: 'Bạn là bên **nhận** webhook từ ngân hàng đối tác: họ giao at-least-once, có thể gửi trùng, gửi sai thứ tự, retry trong 72 giờ. Thiết kế endpoint nhận đảm bảo không xử lý trùng, không mất event, và không bị retry storm làm sập hệ thống.',
+    a: `**Tóm tắt:** Nhận webhook phải **ack nhanh, xử lý sau**: xác thực chữ ký trên raw body, ghi event vào bảng có unique {{(provider, event_id)}} (insert-first để chặn trùng), trả 2xx trong khoảng 1 giây, rồi xử lý bất đồng bộ. Mọi xử lý phải idempotent; lỗi tạm thời đẩy vào DLQ nội bộ và retry theo lịch của mình, không phụ thuộc vào việc để đối tác retry. Đừng tin thứ tự event — hãy dùng version/sequence hoặc gọi lại API đối tác để lấy trạng thái chuẩn.
+
+### Vì sao at-least-once là bài toán của **bạn**
+Bên gửi chỉ cam kết "giao ít nhất một lần": timeout, mất ACK, deploy giữa lúc gửi đều tạo bản trùng. Nếu endpoint xử lý đồng bộ 5 giây, đối tác timeout sau 3 giây và retry → hai worker cùng cộng tiền. Vì vậy kiến trúc đúng là:
+
+~~~text
+POST /webhooks/bank
+  │
+  ├─ 1. verify HMAC + timestamp + key id        (rẻ, đồng bộ)
+  ├─ 2. INSERT event (unique provider+event_id) ← chặn trùng ở DB
+  ├─ 3. trả 200/202 ngay (chưa xử lý nghiệp vụ)
+  │
+  └─ worker (async, retry riêng)
+        ├─ xử lý idempotent theo event_id
+        ├─ lỗi tạm thời → retry backoff
+        └─ lỗi vĩnh viễn → DLQ + alert
+~~~
+
+### Xác thực chữ ký đúng cách
+- Ký trên **raw body bytes** nhận được, không phải object đã parse rồi serialize lại (thứ tự field/khoảng trắng đổi là chữ ký sai).
+- So sánh **constant-time** ({{MessageDigest.isEqual}}), không dùng {{equals}} chuỗi.
+- Kiểm tra timestamp trong cửa sổ ±5 phút để chặn replay; kết hợp lưu {{event_id}} đã thấy.
+- Hỗ trợ **key rotation**: header chứa key id, server giữ hai secret cùng lúc; nếu chỉ một secret, ngày đối tác xoay key là ngày bạn mất event.
+- Trả 401 khi chữ ký sai, và **không** log raw body chứa dữ liệu khách hàng.
+
+~~~java
+@PostMapping("/webhooks/bank")
+public ResponseEntity<Void> receive(
+        @RequestHeader("X-Signature") String sig,
+        @RequestHeader("X-Timestamp") long ts,
+        @RequestHeader("X-Key-Id") String keyId,
+        @RequestBody byte[] raw) {
+
+    if (Math.abs(clock.millis() - ts) > Duration.ofMinutes(5).toMillis()) {
+        return ResponseEntity.badRequest().build();
+    }
+    if (!verifier.valid(keyId, ts, raw, sig)) {            // HMAC-SHA256, constant-time
+        return ResponseEntity.status(401).build();
+    }
+    try {
+        inbox.insertIfAbsent(provider, eventIdOf(raw), raw);   // unique constraint
+    } catch (DuplicateKeyException dup) {
+        return ResponseEntity.ok().build();                // đã nhận trước đó, ack lại
+    }
+    worker.wakeUp();                                       // xử lý async
+    return ResponseEntity.accepted().build();
+}
+~~~
+
+### Chống trùng ở tầng DB, không ở tầng code
+- {{existsBy... rồi save}} có race: hai request song song cùng thấy chưa tồn tại.
+- Dùng unique index {{(provider_id, event_id)}} và bắt {{DuplicateKeyException}} — DB là trọng tài.
+- Bảng inbox lưu cả trạng thái: RECEIVED, PROCESSING, DONE, FAILED, kèm số lần thử và lỗi cuối.
+- Nếu payload đến trước khi bản ghi nghiệp vụ tồn tại (event về nhanh hơn transaction tạo đơn), worker retry có backoff thay vì đánh FAILED ngay.
+
+### Thứ tự event
+- Không giả định event tới đúng thứ tự. Dùng {{sequence}}/{{version}} của đối tác: chỉ áp dụng nếu lớn hơn version đang lưu, bỏ qua bản cũ.
+- Với state machine (PENDING → PAID → REFUNDED), kiểm tra transition hợp lệ; transition lùi là dấu hiệu out-of-order, cần đối soát.
+- Cách chắc nhất: khi nghi ngờ, gọi API đối tác lấy trạng thái hiện tại (source of truth) thay vì suy luận từ chuỗi event.
+
+### 2xx, 4xx hay 5xx?
+| Tình huống | Trả | Lý do |
+|---|---|---|
+| Đã ghi inbox thành công | 200/202 | Đối tác dừng retry |
+| Trùng event | 200 | Vẫn là "đã nhận", tránh retry vô ích |
+| Chữ ký sai / thiếu header | 401/400 | Lỗi cấu hình, cần lộ ra |
+| Payload sai schema | 400 | Đối tác cần sửa, retry không giúp |
+| DB/Redis tạm thời lỗi | 5xx | Để đối tác retry theo lịch của họ |
+| Nghiệp vụ từ chối (đơn không tồn tại) | 200 + DLQ nội bộ | Tránh retry storm 72 giờ vô nghĩa |
+
+### Vận hành
+- Alert trên: độ sâu DLQ, tuổi event lâu nhất chưa DONE, tỉ lệ chữ ký sai, tỉ lệ trùng.
+- Rate limit riêng cho endpoint webhook theo provider — retry storm là chuyện sẽ xảy ra, phải có van.
+- Đối soát cuối ngày với sao kê/ledger đối tác để bắt event bị mất hoàn toàn (at-least-once không bảo đảm không mất nếu bên gửi bỏ cuộc).
+- Load test bằng cách replay 10.000 event trùng trong 1 phút: hệ thống đúng phải ack hết mà không tạo bút toán trùng.
+
+> Senior tip: Đừng bao giờ để endpoint webhook gọi thẳng service nghiệp vụ nặng. Tôi đã thấy một đợt retry của đối tác biến 3.000 event thành 40.000 request trong 10 phút và làm nghẽn luôn API người dùng — vì endpoint vừa xử lý đồng bộ vừa không có rate limit. Inbox + worker + DLQ là mô hình tối thiểu; phần khó nhất không phải code mà là **đối soát**: phải có job so khớp với đối tác, nếu không bạn chỉ biết mất event khi khách hàng gọi lên.`,
+    follow: [
+      'Nếu đối tác không gửi sequence thì làm sao xử lý out-of-order?',
+      'Webhook receiver nên dùng chung hàng đợi với event nội bộ hay tách riêng?'
+    ],
+    tags: ['Webhook', 'At-least-once', 'Idempotency', 'HMAC', 'Reliability']
   }
 );
