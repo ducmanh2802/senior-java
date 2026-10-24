@@ -1,6 +1,6 @@
 # T139 — Track bài học `devops`: Docker, JVM trong container, CI/CD nền tảng
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/lessons-devops.js`
 
@@ -8,3 +8,8 @@ Owns: `js/data/lessons-devops.js`
 Mỗi bài: body ≥ 2500 ký tự kết bằng `### Liên hệ phỏng vấn`, 1–2 bài tập Java 17 chỉ dùng JDK chuẩn, mô phỏng cơ chế bằng Java thuần (starter biên dịch được + `throw new UnsupportedOperationException("TODO")`, tests deterministic ≥ 3 case in PASS/FAIL/RESULT, reference pass 100%), 2–4 câu `check`, `related` trỏ tới id câu hỏi có thật topic `devops`. Chạy `node scripts/test-lessons.js` và `node scripts/validate.js` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- 3 bài `lesson-devops-001..003` đã viết vào `js/data/lessons-devops.js` (JVM sizing trong container; liveness/readiness/startup + state machine DRAINING; canary hash ổn định + auto-rollback). Mỗi bài 1 exercise Java 17 JDK chuẩn, body ≥ 2500 ký tự, 3 câu check, related trỏ devops-002/004/005/015/016/017/019/021.
+- `node scripts/test-lessons.js` cho 3 lesson: reference 9/9, 6/6, 7/7 pass; starter biên dịch được và không pass hết.
+- `node scripts/validate.js` → OK — không có lỗi.
+Reviewed-by: opencode (T139R)
