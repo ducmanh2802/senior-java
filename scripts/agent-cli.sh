@@ -25,6 +25,7 @@ run_agent() {
     sleep 30
     if [ $(( $(date +%s) - $(date -r "logs/$id.log" +%s) )) -gt "${STALL:-900}" ]; then
       echo "[$(date +%T)] stalled $id — no output for ${STALL:-900}s, stopping its process"
+      [ -n "${OPENCODE_MODEL:-}" ] && grep -vxF "$OPENCODE_MODEL" logs/live-models.txt > logs/live-models.tmp && mv -f logs/live-models.tmp logs/live-models.txt 2>/dev/null   # a hung model is skipped until the next probe
       taskkill //PID "$(cat /proc/$pid/winpid 2>/dev/null)" //T //F > /dev/null 2>&1 || kill "$pid" 2>/dev/null
       break
     fi

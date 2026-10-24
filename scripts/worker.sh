@@ -29,6 +29,11 @@ next_task() {
 log "started (backoff ${BACKOFF}s${ONLY:+, only: $ONLY})"
 while true; do
   if id=$(next_task); then
+    if [ -n "${MODEL_POOL:-}" ]; then            # pick a random live model matching the pool regex for every task
+      m=$(scripts/live-models.sh "$MODEL_POOL" | shuf -n1)
+      if [ -z "$m" ]; then rmdir "logs/claim/$id"; log "no live model for '$MODEL_POOL' — retry in ${BACKOFF}s"; sleep "$BACKOFF"; continue; fi
+      export OPENCODE_MODEL="$m"
+    fi
     scripts/agent-cli.sh "$id" "$runner"
     if grep -q '^Status: TODO$' tasks/"$id"-*.md; then
       rmdir "logs/claim/$id"; log "$id still TODO (limit or crash) — retry in ${BACKOFF}s"; sleep "$BACKOFF"

@@ -37,6 +37,7 @@ open_owner() {   # $1 = task file, $2 = task id; its own review task <id>R does 
 # $PARALLEL reviews at once, one lock per slot (holds the task id; removed when the reviewer exits, stale after 2 h).
 # Slot n uses the n-th model of $REVIEW_MODELS (opencode runner) so parallel reviews don't share one free quota.
 PARALLEL=${PARALLEL:-3}
+REVIEW_POOL=${REVIEW_POOL:-nemotron|glm|deepseek|mimo|minimax|inkling:free|north}   # with REVIEW_MODELS=auto; small models only translate
 REVIEW_MODELS=(${REVIEW_MODELS:-opencode/glm-5.3-flash-free openrouter/nvidia/nemotron-3-ultra-550b-a55b:free openrouter/thinkingmachines/inkling:free})
 fresh() { [ -f "$1" ] && [ $(( $(date +%s) - $(date -r "$1" +%s) )) -lt "$2" ]; }
 free_slot() {   # prints a free slot number; the legacy single lock (logs/review.lock) still counts as busy
@@ -122,9 +123,14 @@ while true; do
       echo "Reviewed-by: ${REVIEWER} (${id}R)" >> "$f"
       commit_task "$f" "$id"
     elif ! review_running "$id" && slot=$(free_slot); then
+      if [ "${REVIEW_MODELS[0]}" = auto ]; then   # a random live model big enough to fact-check (scripts/live-models.sh)
+        model=$(scripts/live-models.sh "$REVIEW_POOL" | shuf -n1)
+        [ -z "$model" ] && { log "no live review model — waiting"; continue; }
+      else
+        model=${REVIEW_MODELS[$(( (slot - 1) % ${#REVIEW_MODELS[@]} ))]}
+      fi
       make_review "$f" "$id"
       echo "$id" > "logs/review-$slot.lock"
-      model=${REVIEW_MODELS[$(( (slot - 1) % ${#REVIEW_MODELS[@]} ))]}
       log "review ${id}R in slot $slot ($model)"
       ( OPENCODE_MODEL="$model" scripts/agent-cli.sh "${id}R" "$REVIEWER" >> logs-runner.txt 2>&1; rm -f "logs/review-$slot.lock" ) &
       sleep 5
