@@ -1,8 +1,10 @@
 # T161 — Dịch sang tiếng Anh: q-java (10 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-java-3.en.js`
+
+Ghi chú: Đã dịch đầy đủ 10 mục (collections-013, collections-014, modern-001..modern-008) vào `js/i18n/q-java-3.en.js`. Không sửa file khác. `node --check` và `node scripts/check-i18n.js q-java-3` OK; `node scripts/validate.js` OK (không lỗi).
 
 Người dùng bấm EN thì **cả trang** chuyển sang tiếng Anh: file này phủ bản dịch lên dữ liệu gốc theo `id` (đọc comment "content translation" trong `js/core/i18n.js`). Đọc AGENTS.md mục 5 (markup) và các mục sau trong `js/data/q-java.js`: **collections-013, collections-014, modern-001, modern-002, modern-003, modern-004, modern-005, modern-006, modern-007, modern-008**.
 
@@ -16,3 +18,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-java-3.en.js` và `node scripts/check-i18n.js q-java-3` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
