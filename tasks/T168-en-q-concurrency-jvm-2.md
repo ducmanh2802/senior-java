@@ -1,8 +1,10 @@
 # T168 — Dịch sang tiếng Anh: q-concurrency-jvm (8 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-concurrency-jvm-2.en.js`
+
+Đã dịch đủ 8 mục (concurrency-014…020, jvm-001). `node --check` OK, `node scripts/check-i18n.js q-concurrency-jvm-2` → OK — 8 mục đã dịch, `node scripts/validate.js` → OK — không có lỗi.
 
 Người dùng bấm EN thì **cả trang** chuyển sang tiếng Anh: file này phủ bản dịch lên dữ liệu gốc theo `id` (đọc comment "content translation" trong `js/core/i18n.js`). Đọc AGENTS.md mục 5 (markup) và các mục sau trong `js/data/q-concurrency-jvm.js`: **concurrency-014, concurrency-015, concurrency-016, concurrency-017, concurrency-018, concurrency-019, concurrency-020, jvm-001**.
 
@@ -16,3 +18,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-concurrency-jvm-2.en.js` và `node scripts/check-i18n.js q-concurrency-jvm-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
