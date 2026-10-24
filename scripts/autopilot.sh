@@ -95,6 +95,20 @@ while true; do
     open_owner "$f" >/dev/null && continue
     if grep -q '^Reviewed-by:' "$f"; then
       commit_task "$f" "$id"
+    elif [[ "$f" == *-en-* ]]; then
+      # translation chunk: no LLM review — scripts/check-i18n.js (structure, leftover Vietnamese, copied code)
+      # + verify are the gate; a failing chunk goes back to TODO with the errors (at most twice)
+      chunk=$(owns "$f" | sed 's#js/i18n/##; s#\.en\.js$##')
+      if out=$(node scripts/check-i18n.js "$chunk" 2>&1); then
+        echo "Reviewed-by: check-i18n (translation, no LLM review)" >> "$f"
+        commit_task "$f" "$id"
+      elif [ "$(grep -c '^check-i18n failed' "$f")" -ge 2 ]; then
+        echo "Verify-failed: $(date +%F\ %T) check-i18n" >> "$f"; log "check-i18n FAILED for $id (3rd time) — left for a human"
+      else
+        sed -i 's/^Status: DONE$/Status: TODO/' "$f"
+        { echo "check-i18n failed $(date +%F\ %T) — sửa các lỗi sau rồi chạy lại:"; echo "$out" | head -15 | sed 's/^/    /'; } >> "$f"
+        log "check-i18n failed for $id — back to TODO"
+      fi
     elif [ -f "tasks/${id}R-review.md" ] && grep -q '^Status: DONE' "tasks/${id}R-review.md"; then
       echo "Reviewed-by: ${REVIEWER} (${id}R)" >> "$f"
       commit_task "$f" "$id"
