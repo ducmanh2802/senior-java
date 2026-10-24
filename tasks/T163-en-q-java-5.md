@@ -1,8 +1,13 @@
 # T163 — Dịch sang tiếng Anh: q-java (8 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-java-5.en.js`
+
+## Notes
+- Đã dịch 8 mục (core-020 … core-026, collections-015) vào `js/i18n/q-java-5.en.js`, giữ nguyên markup, code block chỉ dịch comment tiếng Việt, thuật ngữ giữ nguyên.
+- `node --check` và `node scripts/check-i18n.js q-java-5` → OK; `node scripts/validate.js` → OK — không có lỗi.
+- Không sửa file khác, không dùng git commit, không kill tiến trình, không mở trình duyệt.
 
 Người dùng bấm EN thì **cả trang** chuyển sang tiếng Anh: file này phủ bản dịch lên dữ liệu gốc theo `id` (đọc comment "content translation" trong `js/core/i18n.js`). Đọc AGENTS.md mục 5 (markup) và các mục sau trong `js/data/q-java.js`: **core-020, core-021, core-022, core-023, core-024, core-025, core-026, collections-015**.
 
@@ -16,3 +21,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-java-5.en.js` và `node scripts/check-i18n.js q-java-5` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
