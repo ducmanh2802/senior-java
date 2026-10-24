@@ -64,7 +64,17 @@ function status() {
     else if (run.end) { stage = 'Vào pit (chờ thử lại)'; pct = 4; }
     else { stage = 'Chờ xuất phát'; pct = 0; }
     cars.push({ id, title, stage, pct: Math.round(pct), runner: rev.start && !rev.end ? rev.runner : run.runner || '',
-                since: rev.start && !rev.end ? rev.start : run.start && !run.end ? run.start : '' });
+                since: rev.start && !rev.end ? rev.start : run.start && !run.end ? run.start : '', group: m[2].startsWith('en-') ? 'en' : '' });
+  }
+  // translation chunks (tasks *-en-*) would flood the track: fold them into one car, keep only the active ones as lanes
+  const en = cars.filter(c => c.group === 'en');
+  if (en.length > 5) {
+    const active = c => /Đang|Tai nạn/.test(c.stage);
+    const done = en.filter(c => c.pct === 100).length, running = en.filter(active).length;
+    for (const c of en) if (!active(c)) cars.splice(cars.indexOf(c), 1);
+    cars.push({ id: 'EN', title: `Dịch tiếng Anh — ${done}/${en.length} phần xong` + (running ? `, ${running} đang chạy` : ''),
+                stage: done === en.length ? 'Về đích' : running ? 'Đang viết' : 'Chờ xuất phát',
+                pct: done === en.length ? 100 : Math.min(99, Math.round(en.reduce((s, c) => s + c.pct, 0) / en.length)), runner: '', since: '' });
   }
   cars.sort((a, b) => b.pct - a.pct || a.id.localeCompare(b.id, 'en', { numeric: true }));
   return { at: new Date().toLocaleTimeString('vi-VN'), cars };
