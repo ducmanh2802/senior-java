@@ -1,9 +1,8 @@
 # T146 — Từ điển thuật ngữ: tự gạch chân từ khó + modal giải thích
 
-Status: TODO
+Status: DONE
 Agent: opencode
-After: T141
-Owns: `js/core/glossary.js`, `css/glossary.css`, `scripts/validate.js`, `scripts/check-links.mjs`
+Owns: `js/core/glossary.js`, `css/glossary.css`, `scripts/check-links.mjs`
 
 Người học gặp từ khó trong đáp án (ví dụ "idempotency key", "payment intent") mà không hiểu. Đọc AGENTS.md mục 2, 5, 7, 13 và comment schema đầu `js/data/glossary-dist.js` (`window.GLOSSARY`, có thể đang rỗng — code phải chạy với 0..n mục). File stub đã gắn index.html (css sau base.css, js sau auth.js, trước các view). KHÔNG sửa `js/core/app.js`, `index.html` hay view nào.
 
@@ -15,8 +14,15 @@ Người học gặp từ khó trong đáp án (ví dụ "idempotency key", "pay
    - Expose `App.glossary = { find(id), open(id), entries() }` (gắn vào `window.App` sau khi App tồn tại).
    - Hiệu năng: bỏ qua nếu GLOSSARY rỗng; không làm treo trang với đáp án dài (≤ 5ms/khối điển hình).
 2. `css/glossary.css`: `.gl-term` trông như link chấm gạch chân (border-bottom dotted, màu `var(--accent)`, không đổi font/kích thước, reset style button), `.gl-modal` theo phong cách `dialog.ai-settings` trong base.css; chỉ dùng biến CSS, dark mode, responsive 360px (modal gần full màn hình trên mobile, cuộn được).
-3. `scripts/validate.js` (chỉ THÊM): kiểm tra GLOSSARY — id kebab duy nhất, term/short/body bắt buộc, body ≥ 600 ký tự, aliases lowercase không trùng giữa các entry, related trỏ id có thật, refs đúng schema mục 13, không backtick.
+3. (Bỏ — phần kiểm tra GLOSSARY trong validate.js do T141 làm.)
 4. `scripts/check-links.mjs` (chỉ THÊM): kiểm tra cả `refs` của GLOSSARY như refs câu hỏi.
 5. `node --check` các file + `node scripts/validate.js` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- `js/core/glossary.js`: alias index (lowercase, dài trước), regex có kiểm tra ranh giới chữ/số thủ công (không cần lookbehind), `TreeWalker` bỏ qua `code, pre, a, button, kbd, h1, h2, input, textarea, .gl-term`; mỗi entry chỉ link lần đầu trong từng `.md`, đánh dấu `data-gl="1"`. `MutationObserver` (debounce 100ms) chỉ bật khi `GLOSSARY` có mục; `.md` lồng nhau xử lý riêng.
+- Modal dùng chung `<dialog class="gl-modal">`: term/short/`App.md(body)`, refs mở tab mới (`target="_blank" rel="noopener noreferrer"`, video có icon + note, không iframe), related mở tiếp trong modal kèm nút ← quay lại, Esc/✕/backdrop đóng và trả focus về term đã bấm. Body modal cũng được link term (trừ chính nó).
+- `App.glossary = { find, open, entries }`; chạy an toàn khi `GLOSSARY` rỗng (no-op, không gắn observer).
+- `css/glossary.css`: `.gl-term` reset button + dotted underline `var(--accent)`; modal theo style `dialog.ai-settings`, sticky header, cuộn được, responsive 360px, chỉ dùng biến CSS.
+- `scripts/check-links.mjs`: thêm nạp `glossary-*.js` và kiểm tra `GLOSSARY[].refs` như refs câu hỏi (kèm `__file` để `--fix` hoạt động). Đã chạy thử `node scripts/check-links.mjs glossary-java.js` → 0 link, exit 0.
+- Kiểm tra: `node --check js/core/glossary.js`, `node --check scripts/check-links.mjs`, `node scripts/validate.js` → `OK — không có lỗi.` Hiện 3 file glossary data còn rỗng nên chưa có term nào được link cho tới khi task nội dung điền vào.

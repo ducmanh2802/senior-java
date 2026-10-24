@@ -51,10 +51,74 @@
     if (btn) btn.textContent = lang === 'vi' ? 'EN' : 'VI';
   }
 
-  function setLang(l) {
+  // ---------- content translation ----------
+  // js/i18n/<data file>.en.js call App.i18n.content({ '<item id>': { q, a, follow, … } }); listed in
+  // js/i18n/manifest.js (window.I18N_FILES) and only loaded when English is chosen. Fields are deep-merged
+  // over the Vietnamese item (arrays of objects by index), originals kept in item.__vi for switching back.
+  // Special id '__roadmap' merges into window.ROADMAP. Untranslated items simply stay Vietnamese.
+  const overlay = {};
+  let loading = null;
+  function content(map) { Object.assign(overlay, map || {}); }
+
+  function loadContent() {
+    if (loading) return loading;
+    const files = window.I18N_FILES || [];
+    loading = Promise.all(files.map(name => new Promise(resolve => {
+      const s = document.createElement('script');
+      s.src = 'js/i18n/' + name + '.en.js';
+      s.onload = s.onerror = resolve;          // a missing file must not block the switch
+      document.head.appendChild(s);
+    })));
+    return loading;
+  }
+
+  function merge(base, over) {
+    if (Array.isArray(over)) {
+      if (!Array.isArray(base)) return over;
+      return base.map((b, i) => (i < over.length && over[i] != null ? merge(b, over[i]) : b));
+    }
+    if (over && typeof over === 'object') {
+      const out = Object.assign({}, base);
+      Object.keys(over).forEach(k => { out[k] = merge(base && base[k], over[k]); });
+      return out;
+    }
+    return over;
+  }
+
+  function collections() {
+    return [window.TOPICS, window.QUESTIONS, window.QUIZ, window.ALGOS, window.LESSONS, window.LABS,
+      window.GLOSSARY, window.PATH, window.ROADMAP && [Object.assign(window.ROADMAP, { id: '__roadmap' })]];
+  }
+
+  function swapContent() {
+    if (App.questions) App.questions();         // append refs to the Vietnamese answers first (once)
+    collections().forEach(list => (list || []).forEach(item => {
+      const over = overlay[item.id];
+      if (!over) return;
+      if (lang === 'en' && !item.__vi) {
+        item.__vi = {};
+        Object.keys(over).forEach(k => {
+          item.__vi[k] = item[k];
+          let v = merge(item[k], over[k]);
+          if (k === 'a' && typeof v === 'string' && Array.isArray(item.refs) && item.refs.length) {
+            const i = String(item[k]).indexOf('\n\n### 📚 ');
+            if (i >= 0) v += '\n\n### 📚 Learn more' + item[k].slice(item[k].indexOf('\n', i + 2));
+          }
+          item[k] = v;
+        });
+      } else if (lang === 'vi' && item.__vi) {
+        Object.assign(item, item.__vi);
+        delete item.__vi;
+      }
+    }));
+  }
+
+  async function setLang(l) {
     lang = l === 'en' ? 'en' : 'vi';
     try { localStorage.setItem(KEY, lang); } catch (e) { /* storage blocked */ }
     App.lang = lang;
+    if (lang === 'en') await loadContent();
+    swapContent();
     applyLabels();
     applyStatic();
     if (App.route) App.route();
@@ -63,7 +127,7 @@
 
   add({
     vi: {
-      'nav.main': 'Điều hướng chính', 'nav.dashboard': 'Tổng quan', 'nav.roadmap': 'Lộ trình',
+      'nav.main': 'Điều hướng chính', 'nav.dashboard': 'Tổng quan', 'nav.roadmap': 'Lộ trình', 'nav.news': '📰 Tin tức mỗi sáng',
       'nav.study': 'Ôn tập', 'nav.path': '🗺️ Lộ trình học', 'nav.learn': '📖 Bài học', 'nav.bank': '📚 Câu hỏi',
       'nav.flash': '🃏 Flashcard', 'nav.quiz': '✅ Trắc nghiệm', 'nav.practice': 'Luyện tập',
       'nav.algo': '🧠 Thuật toán', 'nav.labs': '🔧 Debug lab', 'nav.projects': '🛠️ Pet project',
@@ -76,7 +140,7 @@
       'footer.terms': 'Điều khoản', 'footer.about': 'Giới thiệu',
     },
     en: {
-      'nav.main': 'Main navigation', 'nav.dashboard': 'Dashboard', 'nav.roadmap': 'Roadmap',
+      'nav.main': 'Main navigation', 'nav.dashboard': 'Dashboard', 'nav.roadmap': 'Roadmap', 'nav.news': '📰 Morning news',
       'nav.study': 'Study', 'nav.path': '🗺️ Learning path', 'nav.learn': '📖 Lessons', 'nav.bank': '📚 Questions',
       'nav.flash': '🃏 Flashcards', 'nav.quiz': '✅ Quiz', 'nav.practice': 'Practice',
       'nav.algo': '🧠 Algorithms', 'nav.labs': '🔧 Debug lab', 'nav.projects': '🛠️ Pet projects',
@@ -90,7 +154,7 @@
     },
   });
 
-  App.i18n = { add, dict };
+  App.i18n = { add, dict, content, overlay };
   App.t = t;
   App.lang = lang;
   App.setLang = setLang;
@@ -98,6 +162,7 @@
 
   function init() {
     applyStatic();
+    if (lang === 'en') setLang('en');           // saved choice: load translations, then re-render
     const btn = document.getElementById('langToggle');
     if (btn) btn.addEventListener('click', () => setLang(lang === 'vi' ? 'en' : 'vi'));
   }
