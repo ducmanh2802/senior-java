@@ -39,6 +39,14 @@ function logSize(id) {
   try { return fs.statSync(path.join(ROOT, 'logs', id + '.log')).size; } catch { return 0; }
 }
 
+// latest notable lines of logs-runner.txt for the radio ticker
+function events() {
+  let txt = '';
+  try { txt = fs.readFileSync(path.join(ROOT, 'logs-runner.txt'), 'utf8').slice(-40000); } catch {}
+  return txt.split('\n').filter(l => /committed|FAILED|failed|stalled|review T\d+R in slot|finished/.test(l)).slice(-12)
+    .map(l => l.replace(/^\[(\d\d:\d\d):\d\d\] (autopilot: |worker-\w+: )?/, '$1 ').replace(/ \(auto-committed.*$/, '').slice(0, 110));
+}
+
 function status() {
   const dir = path.join(ROOT, 'tasks');
   const runs = runnerLog();
@@ -77,7 +85,7 @@ function status() {
                 pct: done === en.length ? 100 : Math.min(99, Math.round(en.reduce((s, c) => s + c.pct, 0) / en.length)), runner: '', since: '' });
   }
   cars.sort((a, b) => b.pct - a.pct || a.id.localeCompare(b.id, 'en', { numeric: true }));
-  return { at: new Date().toLocaleTimeString('vi-VN'), cars };
+  return { at: new Date().toLocaleTimeString('vi-VN'), cars, events: events() };
 }
 
 const PAGE = `<!doctype html><html lang="vi"><head><meta charset="utf-8">
@@ -151,15 +159,45 @@ h1 b{color:var(--bad)}
 .chip b{color:var(--done)}
 .legend{display:flex;flex-wrap:wrap;gap:12px;color:var(--muted);font-size:12px;padding:12px 14px}
 .legend i{display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--c);margin-right:5px;vertical-align:-1px}
+/* start lights: one per 20% of overall progress */
+.lights{display:flex;gap:6px;padding:8px 10px;background:#05070b;border:1px solid var(--line);border-radius:12px}
+.lights span{width:18px;height:18px;border-radius:50%;background:#2a0d0d;box-shadow:inset 0 2px 4px #000;transition:.6s}
+.lights span.on{background:radial-gradient(circle at 35% 35%,#ff8a8a,#e11d48 60%);box-shadow:0 0 12px #e11d48,0 0 24px #e11d4866}
+.lights.go span.on{background:radial-gradient(circle at 35% 35%,#bbf7d0,#22c55e 60%);box-shadow:0 0 12px #22c55e,0 0 24px #22c55e66}
+/* panels: subtle animated gradient border */
+.panel{position:relative;background:linear-gradient(var(--panel),var(--panel)) padding-box,linear-gradient(130deg,#3b82f655,#a855f733,#22c55e44,#3b82f655) border-box;border:1px solid transparent;background-size:100% 100%,300% 300%;animation:edge 12s linear infinite}
+@keyframes edge{to{background-position:0 0,300% 0}}
+/* moving centre line on the asphalt = sense of speed */
+.lane::before{content:"";position:absolute;left:var(--l,70px);right:26px;top:50%;height:2px;margin-top:-1px;background:repeating-linear-gradient(90deg,#ffffff16 0 26px,transparent 26px 52px);animation:road 1.2s linear infinite}
+@keyframes road{to{background-position:-52px 0}}
+/* position change arrows in the tower */
+.mv{font-size:10px;margin-left:3px}.mv.up{color:var(--done)}.mv.down{color:var(--bad)}
+.row.flash{animation:flash 1.4s}
+@keyframes flash{0%{background:#22c55e33}100%{background:transparent}}
+/* radio ticker */
+.radio{display:flex;align-items:center;gap:10px;background:#05070bcc;border:1px solid var(--line);border-radius:12px;padding:7px 12px;margin-bottom:16px;overflow:hidden}
+.radio b{color:var(--wait);font-size:11px;letter-spacing:.14em;white-space:nowrap}
+.radio .feed{flex:1;overflow:hidden;white-space:nowrap;mask:linear-gradient(90deg,transparent,#000 4%,#000 96%,transparent)}
+.radio .feed span{display:inline-block;padding-left:100%;animation:ticker 45s linear infinite;color:#cbd5e1;font-size:12px}
+@keyframes ticker{to{transform:translateX(-100%)}}
+/* finish toast + confetti */
+.toast{position:fixed;top:18px;left:50%;transform:translate(-50%,-140%);background:linear-gradient(135deg,#14532d,#166534);border:1px solid #22c55e;color:#fff;padding:10px 18px;border-radius:12px;font-weight:700;box-shadow:0 10px 30px #000a;transition:transform .5s cubic-bezier(.2,1.4,.4,1);z-index:20}
+.toast.show{transform:translate(-50%,0)}
+.confetti{position:fixed;top:-12px;width:9px;height:14px;border-radius:2px;z-index:19;pointer-events:none;animation:fall linear forwards}
+@keyframes fall{to{transform:translateY(105vh) rotate(720deg);opacity:.2}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 @media (max-width:900px){.grid,.foot{grid-template-columns:1fr}.stats{grid-template-columns:repeat(3,1fr)}.tower{max-height:none}}
 @media (max-width:520px){.stats{grid-template-columns:repeat(2,1fr)}h1{font-size:18px}.car .emoji{font-size:24px}.label{font-size:10px}}
 </style></head><body><div class="wrap">
 <header>
   <div class="brand"><div class="flag"></div><div><h1>Task <b>Grand Prix</b></h1>
     <div class="sub"><span class="live"><i></i>LIVE</span><span id="sub">đang tải…</span></div></div></div>
+  <div class="lights" id="lights" title="Mỗi đèn = 20% tiến độ tổng; đủ 5 đèn chuyển xanh"><span></span><span></span><span></span><span></span><span></span></div>
   <div class="ring" id="ring"><div><span><b id="ringv">0%</b><br><small>TỔNG</small></span></div></div>
 </header>
+<div class="radio"><b>📻 RADIO</b><div class="feed"><span id="feed">đang chờ tin từ pit…</span></div></div>
 <div class="stats" id="stats"></div>
+<div class="toast" id="toast"></div>
 <div class="grid">
   <div class="panel"><h2><span>Bảng xếp hạng</span><span id="cnt"></span></h2><div class="tower" id="tower"></div></div>
   <div class="panel"><h2><span>Đường đua</span><span>Viết → Review → Commit</span></h2><div class="track" id="track" style="--l:70px;--r:26px"></div></div>
@@ -180,6 +218,16 @@ const STAGE={'Về đích':['🏆','--done','Về đích'],'Tai nạn (verify h�
   'Vào pit (chờ thử lại)':['🔧','--pit','Pit, thử lại'],'Chờ xuất phát':['','--pit','Chờ xuất phát']};
 const esc=s=>String(s).replace(/[&<>"]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]));
 const MARKS=[[8,'Viết'],[62,'Review'],[90,'Commit']];
+let prevPos=null,prevDone=null,feedText='';
+function celebrate(ids){
+  const t=document.getElementById('toast');t.textContent='🏆 '+ids.join(', ')+' về đích!';t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'),4000);
+  const colors=['#22c55e','#fbbf24','#3b82f6','#a855f7','#ef4444','#f8fafc'];
+  for(let i=0;i<70;i++){const c=document.createElement('i');c.className='confetti';
+    c.style.left=Math.random()*100+'vw';c.style.background=colors[i%colors.length];
+    c.style.animationDuration=(2+Math.random()*2.5)+'s';c.style.animationDelay=Math.random()*.6+'s';
+    document.body.appendChild(c);setTimeout(()=>c.remove(),5500)}
+}
 async function tick(){
   let d;try{d=await (await fetch('/api/race',{cache:'no-store'})).json()}catch(e){document.getElementById('sub').textContent='⚠️ Mất kết nối tới race.js';return}
   const cars=d.cars,done=cars.filter(c=>c.pct===100),racing=cars.filter(c=>c.pct<100);
@@ -188,6 +236,15 @@ async function tick(){
   const avg=cars.length?cars.reduce((s,c)=>s+c.pct,0)/cars.length:0;
   document.getElementById('ring').style.setProperty('--p',avg.toFixed(1));
   document.getElementById('ringv').textContent=Math.round(avg)+'%';
+  const lights=document.getElementById('lights');
+  [...lights.children].forEach((l,i)=>l.classList.toggle('on',avg>=(i+1)*20-10));
+  lights.classList.toggle('go',avg>=90);
+  const ft=(d.events||[]).slice().reverse().join('   ·   ');
+  if(ft&&ft!==feedText){feedText=ft;document.getElementById('feed').textContent=ft}
+  const nowDone=new Set(done.map(c=>c.id));
+  if(prevDone){const fresh=[...nowDone].filter(id=>!prevDone.has(id));if(fresh.length)celebrate(fresh)}
+  prevDone=nowDone;
+  const pos={};cars.forEach((c,i)=>pos[c.id]=i);
   document.getElementById('stats').innerHTML=[
     ['Về đích',done.length+'/'+cars.length,'--done'],['Đang viết',count(c=>c.stage==='Đang viết'),'--write'],
     ['Đang review',count(c=>c.stage==='Đang review'),'--review'],['Chờ',count(c=>/chờ|Chờ/.test(c.stage)&&c.pct<100),'--wait'],
@@ -196,9 +253,11 @@ async function tick(){
   // timing tower: everyone, leader first
   document.getElementById('cnt').textContent=cars.length+' xe';
   document.getElementById('tower').innerHTML=cars.map((c,i)=>{const [em,col,lab]=STAGE[c.stage]||['','--write',c.stage];
-    return '<div class="row" style="--c:var('+col+')" title="'+esc(c.title)+'"><span class="pos mono">'+(i+1)+'</span><span class="bar"></span>'+
-      '<span class="tid mono">'+(em||ride(c.id))+' '+esc(c.id)+'</span><span class="tname"><div>'+esc(c.title)+'</div><small>'+esc(lab)+(c.runner?' · '+esc(c.runner):'')+(c.since?' · '+esc(c.since):'')+'</small></span>'+
+    const was=prevPos&&prevPos[c.id]!=null?prevPos[c.id]:i, mv=was>i?'<span class="mv up">▲'+(was-i)+'</span>':was<i?'<span class="mv down">▼'+(i-was)+'</span>':'';
+    return '<div class="row'+(was>i?' flash':'')+'" style="--c:var('+col+')" title="'+esc(c.title)+'"><span class="pos mono">'+(i+1)+'</span><span class="bar"></span>'+
+      '<span class="tid mono">'+(em||ride(c.id))+' '+esc(c.id)+mv+'</span><span class="tname"><div>'+esc(c.title)+'</div><small>'+esc(lab)+(c.runner?' · '+esc(c.runner):'')+(c.since?' · '+esc(c.since):'')+'</small></span>'+
       '<span class="pct mono">'+c.pct+'%</span></div>'}).join('');
+  prevPos=pos;
   // track: only cars still racing
   const track=document.getElementById('track');
   if(!track.querySelector('.marks'))track.innerHTML='<div class="marks">'+MARKS.map(([p,t])=>'<div class="mark" style="left:'+p+'%"><span>'+t+'</span></div>').join('')+'</div><div class="finish"></div>';
