@@ -16,13 +16,28 @@ không git commit, và cuối cùng cập nhật Status: DONE kèm ghi chú vào
 # back up the files this task owns: a dying free model can leave them half-written or garbled
 bak="logs/backup/$id-$(date +%Y%m%d-%H%M%S)"; mkdir -p "$bak"
 for f in $(grep -m1 '^Owns:' "$file" | grep -o '`[^`]*`' | tr -d '`'); do [ -f "$f" ] && cp "$f" "$bak/"; done
+# Free models sometimes hang silently (process alive, no output). Run the agent in the background and stop it BY PID
+# when logs/<id>.log has not changed for $STALL seconds; the caller then sees the task still TODO and retries later.
+run_agent() {
+  "$@" > "logs/$id.log" 2>&1 &
+  local pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 30
+    if [ $(( $(date +%s) - $(date -r "logs/$id.log" +%s) )) -gt "${STALL:-900}" ]; then
+      echo "[$(date +%T)] stalled $id — no output for ${STALL:-900}s, stopping its process"
+      taskkill //PID "$(cat /proc/$pid/winpid 2>/dev/null)" //T //F > /dev/null 2>&1 || kill "$pid" 2>/dev/null
+      break
+    fi
+  done
+  wait "$pid"
+}
 echo "[$(date +%T)] start $id ($runner) backup=$bak"
 case "$runner" in
-  kilo)   kilo run --auto -m "${KILO_MODEL:-kilo/kilo-auto/free}" --title "$id" "$prompt" > "logs/$id.log" 2>&1 ;;
-  opencode) opencode run -m "${OPENCODE_MODEL:-opencode/deepseek-v4.1-flash-free}" --title "$id" "$prompt" > "logs/$id.log" 2>&1 ;;
-  codex)  codex ${CODEX_ARGS:-} exec -s workspace-write --skip-git-repo-check "$prompt" > "logs/$id.log" 2>&1 ;;
-  gemini) GEMINI_CLI_TRUST_WORKSPACE=true gemini -y -p "$prompt" > "logs/$id.log" 2>&1 ;;
-  agy)    /c/Users/Windows/AppData/Local/Microsoft/WinGet/Links/agy.exe --print-timeout 0 --model "${AGY_MODEL:-claude-opus-4-6-thinking}" -p "$prompt" > "logs/$id.log" 2>&1 ;;   # shell commands limited to the allowlist in ~/.gemini/antigravity-cli/settings.json
+  kilo)   run_agent kilo run --auto -m "${KILO_MODEL:-kilo/kilo-auto/free}" --title "$id" "$prompt" ;;
+  opencode) run_agent opencode run -m "${OPENCODE_MODEL:-opencode/deepseek-v4.1-flash-free}" --title "$id" "$prompt" ;;
+  codex)  run_agent codex ${CODEX_ARGS:-} exec -s workspace-write --skip-git-repo-check "$prompt" ;;
+  gemini) run_agent env GEMINI_CLI_TRUST_WORKSPACE=true gemini -y -p "$prompt" ;;
+  agy)    run_agent /c/Users/Windows/AppData/Local/Microsoft/WinGet/Links/agy.exe --print-timeout 0 --model "${AGY_MODEL:-claude-opus-4-6-thinking}" -p "$prompt" ;;   # shell commands limited to the allowlist in ~/.gemini/antigravity-cli/settings.json
   *) echo "unknown runner $runner"; exit 1 ;;
 esac
 code=$?
