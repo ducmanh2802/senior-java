@@ -1964,6 +1964,463 @@ Mỗi tiêu chí cần **3 mức** mô tả bằng hành vi quan sát được.
     'Làm sao bạn đưa một việc bạn tự làm trở thành việc chung của team?'
   ],
   tags: ['ownership', 'initiative', 'leadership', 'collaboration']
+},
+{
+  id: 'testing-017',
+  topic: 'testing',
+  level: 'mid',
+  q: 'Test transaction rollback trong Spring Boot hoạt động thế nào? Khi nào rollback không xảy ra, và bạn thường gặp bẫy gì khi viết test JPA?',
+  a: `**Tóm tắt:** Mặc định, {{@Transactional}} trên test class sẽ rollback transaction sau mỗi test — dữ liệu DB trở lại trạng thái ban đầu mà không cần xóa thủ công. Rollback chỉ xảy ra khi transaction được Spring quản lý; nếu bạn dùng native JDBC, JPA EntityManager mở tay, hoặc gọi service từ thread khác mà không truyền transaction context, rollback sẽ không áp dụng và dữ liệu bị rò rỉ giữa các test.
+
+### Cơ chế rollback trong test
+- Khi dùng {{@Transactional}} (từ {{org.springframework.transaction.annotation}}) trên test class, Spring tạo một proxy transaction bao quanh mỗi {{@Test}}. Sau khi test kết thúc, proxy gọi {{rollback()}} trên transaction đang mở — mọi dòng được ghi trong transaction đó bị hủy, dù test pass hay fail.
+- Mặc định Spring dùng {{PlatformTransactionManager}} phù hợp (ví dụ {{JpaTransactionManager}} cho JPA). Rollback xảy ra ở tầng DB: SQL {{ROLLBACK}} được gửi, không phải xóa từng dòng.
+- Với JPA/Hibernate, các thay đổi trên entity được flush xuống DB khi transaction commit (hoặc khi flush thủ công). Nếu rollback xảy ra trước commit, các dòng chưa bao giờ được commit thực sự.
+
+### Khi rollback KHÔNG xảy ra — 4 trường hợp
+1. **Native JDBC / không có transaction manager**: nếu bạn dùng {{JdbcTemplate}} trực tiếp mà không có {{DataSourceTransactionManager}} cấu hình, hoặc dùng JPA native query qua {{EntityManager.createNativeQuery()}} rồi tự commit, Spring không có transaction để rollback.
+2. **Transaction không lan qua thread**: nếu bạn gọi {{@Async}} hoặc tạo thread mới bên trong test, transaction context ({{TransactionSynchronizationManager}}) không tự động truyền. Thread mới thấy DB ở trạng thái đã commit từ thread chính và không thể rollback.
+3. **Flush thủ công trước rollback**: nếu bạn gọi {{entityManager.flush()}} hoặc {{repository.saveAndFlush()}} rồi sau đó ném exception, rollback vẫn xảy ra — nhưng nếu bạn đọc kết quả từ DB bằng native query trước rollback, bạn có thể thấy dữ liệu "tạm thời" mà test sau đó sẽ không còn.
+4. **Transaction bị commit sớm**: một số service gọi {{TransactionTemplate.execute()}} với {{REQUIRES_NEW}} — transaction con sẽ commit độc lập và không bị rollback bởi transaction cha (dù cha bị rollback sau đó).
+
+### Bẫy thường gặp và cách tránh
+| Bẫy | Biểu hiện | Cách xử lý |
+|---|---|---|
+| Test phụ thuộc thứ tự | test A tạo dữ liệu, test B đọc dữ liệu đó | luôn dùng {{@Transactional}} hoặc {{@Sql("classpath:clean.sql")}} để reset |
+| Dùng {{@DirtiesContext}} để "vá" ô nhiễm | mỗi test xóa context Spring | chậm gấp 3–5 lần; hãy dùng rollback thay vì xóa context |
+| Native query sau flush | đọc bằng SQL rồi assert trước rollback | đọc qua repository/JPA query, không qua native query |
+| Async không rollback | tạo thread mới, ghi DB, test pass nhưng dữ liệu còn | truyền {{Propagation.REQUIRED}} và dùng {{await().until...}} thay vì thread tay |
+
+### Ví dụ sai và đúng
+~~~java
+@SpringBootTest
+@Transactional                    // rollback sau mỗi test
+class OrderServiceIT {
+    @Autowired OrderService service;
+
+    @Test void creates_order() {
+        Order o = service.create(cmd);   // ghi DB
+        assertThat(o.status()).isEqualTo(CREATED);
+        // sau @Test, rollback tự động hủy dòng order
+    }
+}
+~~~
+
+> Senior tip: đừng dùng {{@DirtiesContext}} như thuốc chữa bách bệnh — nó làm CI chậm và che giấu lỗi thiết kế test. Nếu một test phải dựa vào dữ liệu của test khác để pass, đó là dấu hiệu bạn cần viết lại test đó để tự tạo dữ liệu, chứ không phải cần rollback mạnh hơn.`,
+  follow: [
+    'Nếu bạn dùng {{EntityManager.flush()}} trong service logic, rollback còn hiệu quả không?',
+    'Làm sao kiểm soát transaction khi gọi service từ một thread mới trong test?',
+    'Có nên dùng {{@Rollback(false)}} trong một số test để kiểm tra dữ liệu thực sự được ghi không?'
+  ],
+  tags: ['transaction', 'rollback', 'JPA', 'flaky-test']
+},
+{
+  id: 'testing-018',
+  topic: 'testing',
+  level: 'mid',
+  q: 'Phân biệt stub, mock, spy và fake trong unit test. Khi nào mock quá nhiều là dấu hiệu code smell, bạn nhận ra thế nào và xử lý ra sao?',
+  a: `**Tóm tắt:** Bốn loại test double khác nhau ở mức độ "giả": stub chỉ trả dữ liệu cố định, spy là object thật được ghi lại lời gọi, mock vừa trả dữ liệu vừa kiểm chứng hành vi (verify), còn fake là bản triển khai nhẹ nhưng chạy thật. Mock quá nhiều là smell vì test đang khẳng định cấu trúc nội bộ thay vì hành vi quan sát được — mọi refactor đều làm test đỏ dù hệ thống vẫn đúng.
+
+### Bốn loại test double
+| Loại | Mục đích | Trong Mockito / thủ công |
+|---|---|---|
+| Stub | cấu hình đầu ra cố định | {{when(...).thenReturn(...)}} |
+| Spy | object thật, ghi lại lời gọi | {{spy()}} hoặc {{Mockito.spy()}} |
+| Mock | định nghĩa kỳ vọng + verify | {{mock()}} + {{verify(...)}} |
+| Fake | implementation nhẹ nhưng thật | class tự viết, ví dụ repo in-memory |
+
+### Mock quá nhiều — 5 dấu hiệu
+1. **Quan sát số lần gọi thay vì kết quả**: test đầy {{verify(mock, times(3))}} mà không có assertion nào về giá trị trả về hay trạng thái cuối cùng.
+2. **Phải sửa mock mỗi khi đổi implementation**: nếu bạn thêm một lớp trung gian hoặc đổi tên method private mà test đỏ, test đang kiểm tra "cách làm" chứ không phải "kết quả".
+3. **Mock lan truyền nhiều tầng**: mock của mock — dấu hiệu thiếu abstraction hoặc service có quá nhiều dependency không cần thiết.
+4. **Test rỗng về nghiệp vụ**: đổi toàn bộ logic trong service mà test vẫn xanh vì chỉ kiểm tra mock được gọi đúng thứ tự.
+5. **Test chậm bất thường**: mock nhiều thường đi kèm setup phức tạp; nếu một unit test chạy > 200 ms, hãy xem lại có nên dùng integration test thay không.
+6. **Không có assertion thực sự**: test chỉ có {{verify}} mà không có bất kỳ {{assertThat}} nào về kết quả quan sát được — đây là dấu hiệu rõ nhất rằng mock đã thay thế logic.
+
+### Cách xử lý
+- **Thay mock bằng fake khi có thể**: repository in-memory, clock cố định ({{Clock.fixed()}}), JSON fixture thay cho HTTP client thật.
+- **Chỉ mock ở ranh giới hệ thống ngoài**: HTTP client, message broker, random generator, clock — nơi bạn không kiểm soát.
+- **Chuyển assertion sang output quan sát được**: trạng thái entity, giá trị trả về từ method public, event đã publish.
+- **Để tầng dưới chạy thật**: nếu bạn test một service, đừng mock repository — dùng Testcontainers hoặc H2 đúng cấu hình để repository chạy thật.
+
+> Senior tip: quy tắc cá nhân tôi dùng khi review PR là **một test chỉ nên fail khi hành vi quan sát được thay đổi**. Nếu bạn đổi tên biến private, thêm một lớp trung gian, hoặc tách một hàm phụ mà test đỏ — test đó đang khẳng định cấu trúc nội bộ, và sẽ khiến cả team ghét viết test.`,
+  follow: [
+    'Bạn có dùng {{@ExtendWith(MockitoExtension.class)}} không? {{@Mock}} với {{@InjectMocks}} có những vấn đề gì?',
+    'Fluent assertion library (AssertJ) giúp gì so với JUnit {{assertEquals}} thuần?',
+    'Khi nào nên dùng {{@Spy}} thay vì {{@Mock}}?'
+  ],
+  tags: ['mockito', 'unit-test', 'test-double', 'code-smell']
+},
+{
+  id: 'testing-019',
+  topic: 'testing',
+  level: 'senior',
+  q: 'Bạn thiết kế chiến lược test cho một Spring Boot service (đơn hàng + thanh toán) thế nào? Test pyramid hay testing trophy? Khi nào dùng unit test, slice test ({{@WebMvcTest}}, {{@DataJpaTest}}) và full context ({{@SpringBootTest}})?',
+  a: `**Tóm tắt:** Với Spring Boot, dùng **hình kim tự tháp có phần giữa dày**: nhiều unit test cho logic nghiệp vụ, slice test làm tầng giữa (Web / JPA / Redis), và rất ít E2E. Tỉ lệ thực tế 70% unit, 25% slice, 5% E2E — và CI dưới 10 phút là mục tiêu. Nếu team bắt đầu bỏ qua test đỏ, đó là dấu hiệu bạn đang dùng quá nhiều full context hoặc E2E.
+
+### Test pyramid vs testing trophy
+| | Test pyramid (Mike Cohn) | Testing trophy (Kent C. Dodds) |
+|---|---|---|
+| Hình dạng | rất nhiều unit, ít integration, rất ít E2E | unit mỏng, integration dày, E2E mỏng |
+| Quan điểm chính | bug tập trung ở logic nghiệp vụ | phần lớn bug nằm ở **đường biên** tích hợp |
+| Khi nào đúng | domain phức tạp, nhiều quy tắc | app có ít logic, nhiều I/O (Spring Boot điển hình) |
+
+Với Spring Boot, **trophy là mặc định hợp lý** vì framework đã cấp sẵn các tầng giữa rẻ tiền: {{@WebMvcTest}} chỉ nạp tầng web (1–2 giây), {{@DataJpaTest}} chỉ nạp JPA (2–4 giây). Không cần dựng hạ tầng riêng cho integration.
+
+### Ánh xạ layer → loại test
+| Layer | Loại test | Annotation | Thời gian điển hình |
+|---|---|---|---|
+| Domain / service thuần | Unit | – (JUnit thuần) | < 50 ms |
+| Controller + validation + JSON | Slice web | {{@WebMvcTest}} | 1–2 s |
+| Repository + JPQL | Slice JPA | {{@DataJpaTest}} | 2–4 s |
+| Security, filter, async, message | Full context | {{@SpringBootTest}} + {{@AutoConfigureMockMvc}} | 10–30 s |
+| Nhiều service + DB + broker | E2E | Testcontainers + compose | theo phút |
+
+### Context caching — bẫy và cách tận dụng
+- Spring cache lại {{ApplicationContext}} theo cấu hình; mỗi lần đổi annotation hoặc cấu hình là dựng context mới. Nếu bạn có 20 lớp test với {{@SpringBootTest}} khác cấu hình, CI sẽ dựng 20 context và chậm gấp nhiều lần.
+- **Cách tối ưu**: gom test cùng cấu hình vào một lớp hoặc module; dùng slice test thay vì full context cho các test không cần cả ứng dụng; tránh {{@DirtiesContext}} trừ khi thực sự cần reset bean singleton.
+
+### Ví dụ 3 tầng cho module Order
+~~~java
+// 1. Unit: logic thuần, không mock gì
+class OrderPricingTest {
+    @Test void vip_gets_10_percent_off() {
+        var pricing = new OrderPricing(new VipTierRepositoryStub());
+        assertThat(pricing.total(basePrice(1_000_000), Tier.VIP)).isEqualTo(900_000);
+    }
+}
+
+// 2. Slice web: chỉ nạp tầng web, service bị thay bằng mock
+@WebMvcTest(OrderController.class)
+class OrderControllerTest {
+    @Autowired MockMvc mvc;
+    @MockitoBean OrderService service;
+    @Test void create_returns_201() throws Exception {
+        given(service.create(any())).willReturn(OrderResponse.of("OD-1"));
+        mvc.perform(post("/api/orders").contentType(APPLICATION_JSON).content("{}"))
+           .andExpect(status().isCreated());
+    }
+}
+~~~
+
+> Senior tip: bắt đầu bằng câu hỏi "bug gần đây của team đến từ tầng nào?". Nếu phần lớn bug đến từ mapping HTTP↔domain hoặc từ SQL, hãy đầu tư slice test — đừng viết thêm unit test cho domain chỉ để lấy số đẹp. Đó là hướng hoàn đảo của "test nhiều hơn".`,
+  follow: [
+    'Bạn có dùng {{@SpringBootTest}} với {{webEnvironment = RANDOM_PORT}} và {{TestRestTemplate}} không? Khi nào cách đó tốt hơn {{MockMvc}}?',
+    'Context cache của Spring hoạt động thế nào, và làm sao để tận dụng nó trong CI?',
+    'Với một microservice có Kafka, bạn kiểm thử consumer như thế nào mà vẫn giữ được tốc độ?'
+  ],
+  tags: ['test-pyramid', 'SpringBootTest', 'WebMvcTest', 'DataJpaTest', 'context-cache']
+},
+{
+  id: 'testing-020',
+  topic: 'testing',
+  level: 'senior',
+  q: 'Testcontainers (reuse, @ServiceConnection Boot 3.1+, singleton pattern) giúp gì cho integration test? Làm sao để bộ test chạy đủ nhanh mà vẫn đáng tin?',
+  a: `**Tóm tắt:** Testcontainers chạy **đúng engine của production** (Postgres 16, Redis 7, Kafka) trong Docker, loại bỏ hẳn lớp bug "chạy được trên H2, chết trên production". Nhược điểm là mỗi lần khởi động container tốn vài giây — khắc phục bằng **singleton container** (dùng chung cho cả suite), **reuse** (giữ container sống giữa các lần chạy local), và **warm image** (tag cụ thể để tận dụng layer cache).
+
+### H2 sai ở đâu — những khác biệt đã từng gây sự cố
+| Hành vi | H2 | Postgres thật |
+|---|---|---|
+| Kiểu JSON | không có | {{jsonb}} + index GIN |
+| Auto increment | sequence | identity/sequence khác hành vi |
+| {{ON CONFLICT DO UPDATE}} | hỗ trợ giới hạn | đầy đủ, kèm {{RETURNING}} |
+| Timezone | theo JVM | theo cột {{timestamptz}} + session |
+| So sánh chuỗi / sort | mode tương thích đơn giản | theo collation của DB, {{ILIKE}}, {{citext}} |
+| Constraint / trigger | thiếu hoặc khác | đầy đủ, gồm cả trigger |
+
+Bất kỳ câu query nào phụ thuộc index, unique hay transaction isolation đều **không đáng tin** khi chạy trên H2.
+
+### Dùng Testcontainers trong Spring Boot 3
+~~~java
+@Testcontainers
+@SpringBootTest
+class OrderRepositoryIT {
+    @Container
+    @ServiceConnection                    // Boot 3.1+: tự nối vào spring.datasource.*
+    static PostgreSQLContainer<?> postgres =
+        new PostgreSQLContainer<>("postgres:16-alpine")
+            .withDatabaseName("orders")
+            .withInitScript("db/seed.sql");
+
+    @Autowired OrderRepository repo;
+    @Test void query_by_status_uses_index() { ... }
+}
+~~~
+- Nếu chưa có {{@ServiceConnection}}, dùng {{@DynamicPropertySource}} trỏ URL/username/password của container.
+- Container cho mọi thứ: Redis, Kafka, MongoDB, LocalStack (test AWS SDK không cần tài khoản thật).
+
+### Tăng tốc — ba kỹ thuật
+1. **Singleton pattern**: một container {{static}} dùng chung cho toàn bộ suite, khởi động một lần thay vì mỗi lớp test. Nếu mỗi lớp tạo container riêng, suite 50 test sẽ khởi động 50 lần và mất nhiều phút.
+2. **Reuse**: {{withReuse(true)}} + đặt {{testcontainers.reuse.enable=true}} trong {{~/.testcontainers.properties}} → container sống qua nhiều lần chạy {{mvn test}} trên máy dev. Chỉ nên bật ở local; CI nên tắt vì mỗi job là môi trường sạch.
+3. **Warm image**: pull sẵn image, đặt tag cụ thể (không dùng {{latest}}) để tận dụng Docker layer cache. Nếu dùng {{postgres:16-alpine}} thay vì {{postgres:latest}}, Docker sẽ không phải kiểm tra layer mới mỗi lần.
+
+### Bẫy thường gặp
+- **Không có Docker trong CI**: phải chọn runner có Docker hoặc dùng remote service container. Nếu không, đừng giả vờ H2 là tương đương — hãy ghi rõ giới hạn vào README.
+- **Container không được dừng** khi test fail: Testcontainers dùng "Ryuk" để dọn, nhưng nếu tắt Ryuk (ví dụ {{testcontainers.reuse.enable=true}}) thì bạn phải dọn bằng tay.
+- **Port bị chiếm** khi chạy song song: luôn để container tự cấp port động ({{withExposedPorts}}), đừng hardcode.
+- **Test chậm do chờ database**: mỗi test lại chạy migration. Hãy gom migration vào một lần (chạy Flyway một lần trước suite) thay vì mỗi test.
+
+> Senior tip: hãy đo trước khi tối ưu. Một suite 400 test với Postgres container dùng chung thường chạy ~3–5 phút — nhanh hơn nhiều so với việc mỗi dev phải debug một lỗi chỉ xuất hiện trên Postgres mà cả team không ai tái hiện được. Nếu CI vẫn chậm, hãy xem xét sharding (chia suite theo module) thay vì giảm số test.`,
+  follow: [
+    'Làm sao dùng chung một container cho cả module mà vẫn giữ được tính độc lập của dữ liệu giữa các test?',
+    'Bạn có nên bật {{@ServiceConnection}} cho cả Redis và Kafka không, hay chỉ Postgres?',
+    'Nếu CI runner không có Docker thì bạn giải quyết bài toán "test trên DB thật" bằng cách nào?'
+  ],
+  tags: ['Testcontainers', 'integration-test', 'PostgreSQL', 'reuse', 'service-connection']
+},
+{
+  id: 'testing-021',
+  topic: 'testing',
+  level: 'senior',
+  q: 'Contract testing (Spring Cloud Contract / Pact) giải quyết vấn đề gì khi hai service gọi nhau? Khi nào nên dùng, chi phí vận hành là gì?',
+  a: `**Tóm tắt:** Contract test kiểm tra **hợp đồng giữa consumer và provider** ở mức API, thay vì test tích hợp toàn bộ. Có hai hướng: **consumer-driven** (Pact — consumer viết kỳ vọng rồi publish lên Pact Broker) và **provider-driven** (Spring Cloud Contract — provider định nghĩa contract, framework sinh test cho consumer). Đây là câu trả lời đúng khi team bị mắc kẹt ở "deploy nhanh nhưng không dám đổi API".
+
+### Hai hướng tiếp cận
+| | Pact (consumer-driven) | Spring Cloud Contract (provider-driven) |
+|---|---|---|
+| Ai viết contract | consumer mô tả điều mình cần | provider mô tả điều mình cung cấp |
+| Artefact | file pact JSON/YAML, publish lên Pact Broker | file contract trong repo provider (DSL Groovy) |
+| Kiểm chứng | provider chạy {{pactVerify}} trên CI | provider sinh test, consumer chạy test với stub server |
+| Rủi ro | nhiều consumer ⇒ nhiều phiên bản contract | provider đổi contract là vỡ consumer |
+
+### Ví dụ contract của consumer (Pact)
+~~~java
+@ExtendWith(PactConsumerTestExt.class)
+@PactTestFor(providerName = "order-service")
+class PaymentConsumerPactTest {
+    @Pact(consumer = "payment-service")
+    public RequestResponsePact orderNotFound(PactDslWithProvider builder) {
+        return builder.given("order 999 does not exist")
+            .uponReceiving("get order 999")
+                .path("/api/orders/999").method("GET")
+            .willRespondWith().status(404)
+                .body(new PactDslJsonBody()
+                    .stringValue("code", "ORDER_NOT_FOUND"))
+            .toPact();
+    }
+}
+~~~
+
+### Quy trình trong CI
+1. Consumer chạy test → sinh pact file → publish lên Pact Broker theo nhánh/commit.
+2. Provider pipeline kéo pact tương ứng và chạy {{pactVerify}} → **fail build nếu API đã lệch**.
+3. Breaking change được chặn ở CI, không phải lúc deploy production.
+
+Với Spring Cloud Contract, provider viết contract trong Groovy DSL và framework sinh cả stub server cho consumer, lẫn test xác minh phía provider.
+
+### Khi nào dùng, khi nào không
+- **Nên dùng**: nhiều service, tần suất deploy lệch nhau, hợp đồng API thay đổi thường xuyên, cần deploy độc lập.
+- **Không cần**: 2 service nhỏ, đã có integration test E2E ở staging, hoặc team chưa đủ năng lực vận hành thêm Pact Broker (một hạ tầng nữa cần deploy, backup, giám sát).
+
+### Bẫy thường gặp
+- **Contract test không thay thế integration test**: nó bảo đảm "hình dạng API", không bảo đảm "ngữ nghĩa nghiệp vụ".
+- **Pact phình to** nếu mỗi test sinh một interaction; hãy gom các case quan trọng thành một pact, xoá các interaction cũ sau khi consumer đã deploy.
+- **Breaking change âm thầm**: provider đổi response nhưng consumer chưa kịp deploy — cần chính sách version và deprecation window rõ ràng.
+- **Chỉ test happy path** trong contract: hãy mô tả cả lỗi (4xx) vì đó là phần hay vỡ nhất.
+
+> Senior tip: contract test có giá trị nhất khi nó **chạy trong CI của cả hai bên** và failure thật sự chặn deploy. Nếu chỉ tồn tại trên giấy, nó chỉ là tài liệu đẹp. Hãy chứng minh bằng cách cố tình đổi response một lần và cho xem build đỏ thế nào — đó là cách duy nhất để team tin rằng contract test không phải là "thêm một bước thủ tục".`,
+  follow: [
+    'Pact Broker lưu phiên bản contract thế nào, và làm sao xử lý khi consumer đã bị xoá?',
+    'Bạn có nên dùng OpenAPI + request/response validator thay vì Pact khi hệ thống không quá lớn?',
+    'Làm sao bảo đảm contract test bắt được lỗi **semantic** (khác kiểu dữ liệu) chứ không chỉ khác shape?'
+  ],
+  tags: ['contract-testing', 'Pact', 'SpringCloudContract', 'microservices', 'CI']
+},
+{
+  id: 'testing-022',
+  topic: 'testing',
+  level: 'lead',
+  q: 'Làm sao test được code phụ thuộc thời gian ({{Clock}}, {{LocalDateTime}}) và code chạy đồng thời mà không bị flaky? Bạn dùng Awaitility, {{CountDownLatch}} hay gì khác?',
+  a: `**Tóm tắt:** Nguyên tắc là **đẩy phụ thuộc thời gian và phụ thuộc lịch trình ra khỏi code qua interface**, rồi trong test thay bằng đồng hồ giả và điều kiện chờ có timeout. Tuyệt đối tránh {{Thread.sleep}} trong test: đó là nguồn gốc của 90% test flaky.
+
+### Vấn đề 1 — phụ thuộc thời gian
+Nếu service gọi {{Instant.now()}} trực tiếp, test sẽ phụ thuộc giờ hệ thống, múi giờ máy dev và giờ CI — cùng một code vừa pass vừa fail theo ngẫu nhiên.
+
+~~~java
+@Service
+public class VoucherService {
+    private final Clock clock;                       // inject, không new Date()
+    VoucherService(Clock clock) { this.clock = clock; }
+    public boolean isExpired(Voucher v) {
+        return Instant.now(clock).isAfter(v.expiresAt());
+    }
+}
+// production
+@Bean Clock clock() { return Clock.systemDefaultZone(); }
+// test: thời gian cố định, không cần chờ
+Clock fixed = Clock.fixed(Instant.parse("2026-03-01T10:00:00Z"), ZoneOffset.UTC);
+~~~
+- Với {{LocalDate.now()}} (ngày theo múi giờ địa phương), dùng {{Clock}} + {{ZoneId}} cụ thể để tránh lệch ngày ở vùng UTC-7 so với UTC+7.
+- Với cron/scheduler: **không test điểm thời gian cụ thể**, hãy tách phần "tính ra danh sách việc cần làm" thành hàm thuần nhận {{Instant}} rồi gọi trực tiếp trong test.
+
+### Vấn đề 2 — chờ một trạng thái (Awaitility)
+~~~java
+await().atMost(Duration.ofSeconds(3))
+       .pollInterval(Duration.ofMillis(50))
+       .untilAsserted(() ->
+           assertThat(orderRepository.findById(id).orElseThrow().getStatus())
+               .isEqualTo(Status.PAID));
+~~~
+- {{await()}} **poll** trong khoảng thời gian cho phép và **fail nhanh** khi hết thời gian — khác biệt so với {{Thread.sleep}}.
+- Luôn đặt timeout **vừa đủ**: timeout quá dài khiến CI chậm, quá ngắn thì fail giả.
+- Với future/batch job, dùng {{Awaitility}} + cờ trạng thái trong DB, đừng đo bằng cách "đợi cho tới khi thấy log".
+
+### Vấn đề 3 — test concurrency
+~~~java
+@Test void concurrent_deduct_has_no_lost_update() throws Exception {
+    var barrier = new CyclicBarrier(8);            // 8 thread cùng xuất phát
+    var pool = Executors.newFixedThreadPool(8);
+    var futures = new ArrayList<Future<?>>();
+    for (int i = 0; i < 8; i++) {
+        futures.add(pool.submit(() -> {
+            barrier.await();                         // đồng bộ điểm bắt đầu
+            accountRepository.deduct(100);
+            return null;
+        }));
+    }
+    for (var f : futures) f.get(10, TimeUnit.SECONDS);
+    pool.shutdown();
+    assertThat(accountRepository.findById(1).orElseThrow().getBalance()).isEqualTo(200);
+}
+~~~
+- **Barrier/latch để tạo race thật**: nếu không đồng bộ điểm bắt đầu, race hiếm khi xảy ra và test "xanh giả".
+- Với Java 21 có thể dùng **virtual thread** để mô phỏng hàng nghìn request đồng thời mà test vẫn nhanh.
+- Cần **timeout** cho mọi test concurrency: test treo làm treo cả pipeline.
+
+### Bẫy thường gặp
+- **Dùng {{@TestMethodOrder}}** để "ép" thứ tự → che giấu test phụ thuộc trạng thái. Viết lại để mỗi test tự tạo dữ liệu.
+- **Random không seed** → fail không tái hiện được. Luôn truyền seed cố định.
+- **Locale/TZ khác giữa máy dev và CI**: format ngày theo locale mặc định là nguồn bug "chạy ở máy tôi thì đúng".
+- **Test async không chờ**: kết quả được assert trước khi tác vụ nền kịp chạy.
+
+> Senior tip: nếu một test fail khoảng 1/20 lần, đừng "chạy lại cho tới khi xanh" — hãy tìm tầng không xác định (thời gian, thứ tự, dữ liệu dùng chung, race). Nguyên tắc: **test phải xác định**, cùng một commit phải cho cùng một kết quả. Nếu bạn không thể tái hiện lỗi trên CI, đừng để nó ở lại trong suite — hãy cô lập nó vào một job riêng có deadline sửa rõ ràng.`,
+  follow: [
+    'Bạn có dùng {{@RepeatedTest}} hoặc công cụ nào để săn race condition không?',
+    'Làm sao test được logic "retry với backoff" mà không phải chờ thật?',
+    'Với hệ thống event-driven, bạn kiểm soát thời gian bằng cách nào ngoài việc dùng {{Clock}}?'
+  ],
+  tags: ['Awaitility', 'Clock', 'concurrency-testing', 'flaky-test', 'race-condition']
+},
+{
+  id: 'testing-023',
+  topic: 'testing',
+  level: 'lead',
+  q: 'Mutation testing (PIT) khác coverage ở chỗ nào và bạn dùng nó thế nào trong CI? Bao nhiêu mutation score là đủ?',
+  a: `**Tóm tắt:** Coverage đo **dòng code đã được thực thi**, chứ không đo "test có bắt được lỗi không". 80% coverage vẫn có thể đi kèm 0% assertion có ý nghĩa. Mutation test đo giá trị thật bằng cách **cố tình làm hỏng code** rồi xem test có phát hiện không — nên nó là metric bổ trợ, không thay thế coverage.
+
+### Coverage nào là đủ?
+| Mức | Ý nghĩa thực tế |
+|---|---|
+| < 50% | team chưa nghiêm túc với test; cần hỗ trợ, không cần phê phán |
+| 60–70% line | mức tối thiểu chấp nhận được cho business logic |
+| 80% line + 70% branch | mục tiêu hợp lý cho phần lõi nghiệp vụ |
+| 100% | thường là **mục tiêu sai** — dễ dẫn tới test vô nghĩa để lấy số đẹp |
+
+Đừng áp một ngưỡng chung cho cả repo: DTO, entity, config, generated code không cần coverage; phần lõi nghiệp vụ thì ngược lại.
+
+### Vì sao coverage cao vẫn có bug
+- Test chỉ assert "không ném exception" → dòng code chạy hết nhưng kết quả sai vẫn pass.
+- **Assertion bị bỏ sót ở nhánh lỗi**: nhánh {{catch}} trả về giá trị mặc định, không ai kiểm tra → coverage vẫn xanh.
+- Test phụ thuộc thứ tự làm một phần test "bị tính coverage" một cách gián tiếp.
+- Coverage là **hàm của code**, không phải của chất lượng test: chỉ cần gọi hết các method là đạt 100%.
+
+### Mutation test (PIT) hoạt động thế nào
+PIT sinh ra các **mutant** — phiên bản sai của code — rồi chạy lại test:
+- Mutant bị **killed** (test đỏ) → assertion của bạn có ý nghĩa.
+- Mutant **survived** (test xanh) → bạn đang thiếu một test quan trọng.
+
+Ví dụ mutant điển hình: đổi {{>=}} thành {{>}}, xoá một nhánh {{if}}, đổi hằng số, thay {{null}} bằng giá trị mặc định.
+
+~~~xml
+<plugin>
+  <groupId>org.pitest</groupId>
+  <artifactId>pitest-maven</artifactId>
+  <configuration>
+    <targetClasses>
+      <param>com.acme.order.domain.*</param>
+    </targetClasses>
+    <mutationThreshold>70</mutationThreshold>
+    <outputFormats><param>HTML</param></outputFormats>
+  </configuration>
+</plugin>
+~~~
+
+### Dùng trong CI thế nào
+- Chạy **PIT cho phần lõi nghiệp vụ** (module domain), không chạy cho toàn bộ repo — thời gian chạy tăng gấp nhiều lần so với test thường.
+- Đặt **mutation threshold** làm quality gate (ví dụ 70% trên domain), và **chỉ chạy trên PR hoặc nightly** tùy tốc độ pipeline.
+- Báo cáo HTML để team xem mutant nào sống sót — đây chính là danh sách "test cần bổ sung".
+
+### Bẫy thường gặp
+- **Tối ưu theo số liệu**: viết test rỗng để đạt ngưỡng coverage. Đây là lý do nhiều team bỏ hẳn metric.
+- **Tính mutation score trên toàn bộ code** kể cả code không có logic → tụt số điểm vô nghĩa.
+- **Coverage gate làm chậm PR** nếu chạy lại toàn bộ suite; nên dùng cơ chế "coverage delta" (chặn khi phần code mới làm giảm chất lượng) thay vì chặn tổng.
+
+> Senior tip: hãy dùng coverage như **cảm biến sớm** (module nào chưa được test, ai vừa viết code mà không test) chứ không phải như mục tiêu. Khi cần một con số duy nhất để tranh luận với sếp, mutation score trên domain thuyết phục hơn coverage tổng. Và đừng bao giờ dùng mutation score như mục tiêu duy nhất — nó chỉ có ý nghĩa khi kết hợp với code review và design review.`,
+  follow: [
+    'Coverage "ratchet" (chặn khi phần code mới làm giảm chất lượng) hoạt động thế nào trong pipeline?',
+    'Mutation testing có tốn nhiều thời gian không, và bạn ước lượng ra sao khi thêm vào CI?',
+    'Bạn có dùng công cụ nào để loại bỏ test bị trùng lặp (duplicate test) không?'
+  ],
+  tags: ['coverage', 'PIT', 'mutation-testing', 'JaCoCo', 'quality-gate']
+},
+{
+  id: 'testing-024',
+  topic: 'testing',
+  level: 'lead',
+  q: 'Bạn thiết kế chiến lược test cho Kafka consumer như thế nào? Làm sao kiểm thử retry, dead-letter và offset management mà vẫn giữ tốc độ?',
+  a: `**Tóm tắt:** Với Kafka consumer, chiến lược test phải bao phủ **ba tầng**: unit (logic xử lý từng message không phụ thuộc Kafka), integration (consumer với Kafka thật qua Testcontainers), và contract (hợp đồng message schema giữa producer và consumer). Retry và dead-letter phải được kiểm thử bằng cách mô phỏng lỗi có thể tái hiện, không phải bằng lỗi ngẫu nhiên từ mạng.
+
+### Ba tầng test cho Kafka consumer
+| Tầng | Công cụ / cách | Mục tiêu | Tốc độ |
+|---|---|---|---|
+| Unit | Mockito + handler đơn | logic xử lý từng message, tính toán kết quả | < 50 ms |
+| Integration | Testcontainers (Kafka container) + {{EmbeddedKafkaBroker}} | offset commit, retry, dead-letter thực sự hoạt động | 5–30 s |
+| Contract | Schema Registry + Avro schema | consumer không bị vỡ khi producer đổi schema | 1–2 s |
+
+### Kiểm thử retry
+- Đừng mô phỏng retry bằng cách "cho một lần fail rồi pass" — điều đó không kiểm tra được logic backoff hay số lần retry tối đa.
+- Thay vào đó, tạo một **stub handler** ném exception có chủ đích (ví dụ {{RetryableException}}) và kiểm tra rằng:
+  1. Message được retry đúng số lần cấu hình ({{max.attempts}}).
+  2. Sau khi hết retry, message được gửi đến dead-letter topic (DLP) với đúng metadata (topic gốc, partition, offset, stack trace).
+  3. Consumer không dừng lại (không crash toàn bộ poll loop) khi một message lỗi.
+
+### Kiểm thử dead-letter
+- DLP phải được kiểm tra cả về **nội dung** (message gốc còn nguyên vẹn) và **metadata** (thời gian gửi, lý do lỗi, số lần retry đã thử).
+- Nếu bạn dùng Kafka Connect hoặc custom consumer, hãy kiểm tra rằng DLP không bị tràn (có retention policy phù hợp) và có alert khi số message trong DLP vượt ngưỡng.
+
+### Offset management
+- Với consumer tự quản lý offset (manual commit), test phải kiểm tra rằng offset chỉ được commit **sau khi message đã được xử lý thành công** — nếu xử lý thất bại và message được retry, offset cũ phải không bị ghi đè.
+- Nếu dùng {{enable.auto.commit=false}} và commit thủ công, hãy kiểm tra rằng một lỗi ở message thứ 10 không làm mất offset của 9 message trước đó (tức là bạn không commit theo batch mà không kiểm soát).
+
+### Testcontainers cho Kafka
+~~~java
+@Testcontainers
+@SpringBootTest
+class OrderConsumerIT {
+    @Container
+    static KafkaContainer kafka = new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.5.0"));
+
+    @DynamicPropertySource
+    static void kafkaProps(DynamicPropertyRegistry registry) {
+        registry.add("spring.kafka.bootstrap-servers", kafka::getBootstrapServers);
+    }
+    // ... test retry, DLP, offset
+}
+~~~
+- Đừng dùng embedded broker cho test retry/DLP vì một số tính năng (như dead-letter với Kafka Connect) không hoạt động giống hệt production.
+
+### Bẫy thường gặp
+- **Dùng random để tạo lỗi** → không tái hiện được. Luôn dùng seed cố định hoặc stub có chủ đích.
+- **Không kiểm tra DLP** → bạn chỉ phát hiện khi production có lỗi thật và team không biết tại sao message "biến mất".
+- **Mock Kafka hoàn toàn** cho test integration → bạn sẽ không phát hiện ra lỗi liên quan đến partition assignment, rebalance, hoặc offset management.
+- **Quên kiểm tra schema evolution**: nếu producer thêm field mới với default value, consumer cũ phải vẫn đọc được; nếu thêm field bắt buộc, consumer phải được cập nhật trước khi producer deploy.
+
+> Senior tip: chiến lược tốt nhất cho Kafka consumer là **"test như production" nhưng nhanh hơn**: dùng container cho Kafka và Schema Registry, stub cho dependency ngoài (DB, HTTP), và giữ mỗi test độc lập bằng cách tạo topic mới hoặc dùng tên topic có prefix theo test id. Nếu bạn phải chạy lại một test vì dữ liệu còn lại từ lần trước, đó là dấu hiệu bạn chưa cô lập đúng — đừng dùng retry cho test, hãy sửa thiết kế test.`,
+  follow: [
+    'Làm sao kiểm soát offset khi consumer chạy nhiều instance (scaling) mà vẫn đảm bảo mỗi message chỉ được xử lý một lần?',
+    'Bạn dùng Avro hay JSON cho message schema, và vì sao?',
+    'Khi nào nên dùng Kafka Streams thay vì consumer thủ công cho bài toán retry và dead-letter?'
+  ],
+  tags: ['kafka', 'consumer', 'dead-letter', 'retry', 'testcontainers', 'offset-management']
 }
 );
-
