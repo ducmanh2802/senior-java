@@ -140,8 +140,10 @@ h1{margin:0;font-size:26px;letter-spacing:-.02em}h1 span{display:inline-block;an
 <div class="podium" id="podium" hidden><h2>🏆 Đã về đích</h2><div class="chips" id="chips"></div></div>
 </div>
 <script>
-const STAGE={'Về đích':['🏆','--done'],'Tai nạn (verify hỏng)':['💥','--bad'],'Chờ verify + commit':['🏎️','--wait'],'Đang review':['🏎️','--review'],
-  'Viết xong, chờ review':['🏎️','--wait'],'Đang viết':['🏎️','--write'],'Vào pit (chờ thử lại)':['🔧','--pit'],'Chờ xuất phát':['🚗','--pit']};
+const RIDES=['🏎️','🚗','🚙','🚕','🚓','🚑','🚒','🚐','🛻','🚚','🚛','🚌','🚎','🏍️','🛵','🚜','🚘','🛺'];
+const ride=id=>RIDES[[...id].reduce((h,ch)=>(h*31+ch.charCodeAt(0))>>>0,7)%RIDES.length];
+const STAGE={'Về đích':['🏆','--done'],'Tai nạn (verify hỏng)':['💥','--bad'],'Chờ verify + commit':['','--wait'],'Đang review':['','--review'],
+  'Viết xong, chờ review':['','--wait'],'Đang viết':['','--write'],'Vào pit (chờ thử lại)':['🔧','--pit'],'Chờ xuất phát':['','--pit']};
 const esc=s=>String(s).replace(/[&<>"]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]));
 const MARKS=[[8,'Viết'],[62,'Review'],[90,'Commit']];
 async function tick(){
@@ -165,12 +167,12 @@ async function tick(){
     if(!lane){lane=document.createElement('div');lane.className='lane';lane.id='l-'+c.id;
       lane.innerHTML='<div class="label"></div><div class="road"><div class="car"><span class="emoji"></span><span class="tag"></span></div></div>'}
     track.appendChild(lane);
-    const [emoji,color]=STAGE[c.stage]||['🏎️','--write'];
+    const [emoji,color]=STAGE[c.stage]||['','--write'];
     const car=lane.querySelector('.car');
     lane.querySelector('.label').textContent=c.id;
     car.className='car'+(/Đang/.test(c.stage)?' run':'')+(c.pct>55?' right':' left');
     car.style.setProperty('--c','var('+color+')');
-    car.querySelector('.emoji').textContent=emoji;
+    car.querySelector('.emoji').textContent=emoji||ride(c.id);   // each task keeps its own vehicle; trophy/crash/pit override
     car.querySelector('.tag').innerHTML=esc(c.title)+' <small>· '+esc(c.stage)+' · '+c.pct+'%'+(c.runner?' · '+esc(c.runner):'')+(c.since?' · từ '+esc(c.since):'')+'</small>';
     car.style.left=c.pct+'%';
   });
