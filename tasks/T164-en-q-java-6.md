@@ -1,6 +1,6 @@
 # T164 — Dịch sang tiếng Anh: q-java (8 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-java-6.en.js`
 
@@ -16,3 +16,8 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-java-6.en.js` và `node scripts/check-i18n.js q-java-6` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã dịch đầy đủ 8 mục: collections-016/017/018, modern-011/012/013/014/015.
+- Chỉ dùng các field q, a, follow; không thêm tags/refs.
+- `node --check` OK; `node scripts/check-i18n.js q-java-6` OK; `node scripts/validate.js` OK.
+- Không sửa file khác, không commit, không kill process.
+Reviewed-by: check-i18n (translation, no LLM review)
