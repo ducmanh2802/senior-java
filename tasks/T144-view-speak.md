@@ -13,4 +13,6 @@ Owns: `js/views/speak.js`, `css/views/speak.css`
 
 Thống kê đầu trang: số câu đã luyện hôm nay (`App.store.log('review')` mỗi lần chấm), streak. Phím tắt: Space = nghe, R = ghi âm/dừng, N = tiếp (có `<kbd>`, dùng `App.onKey`). Khi `!App.speech.supported` ẩn mic, vẫn cho nghe + tự đánh giá. Gắn `lang="en"` lên phần tử chứa tiếng Anh. Cleanup: dừng TTS (`speechSynthesis.cancel()`), dừng mic, clearInterval. CSS chỉ dùng biến, selector `.view-speak`, responsive 360px, dark mode. `node --check js/views/speak.js` + `node scripts/validate.js` → OK, rồi `Status: DONE`.
 
+- **Song ngữ (bắt buộc):** mọi chuỗi giao diện qua `App.t(key, vars)`; đăng ký từ điển ở đầu IIFE bằng `App.i18n.add({ vi: {...}, en: {...} })` (key dạng `<view>.<tên>`), `title` của view viết dạng `get title() { return App.t("<view>.title"); }`. Xem comment đầu `js/core/i18n.js`. Nội dung dữ liệu (câu hỏi, đáp án, bài học, drill) giữ nguyên, không dịch.
+
 ## Notes

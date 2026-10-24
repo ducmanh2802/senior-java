@@ -12,4 +12,6 @@ Owns: `js/views/path.js`, `css/views/path.css`
 - Mọi dữ liệu qua `App.esc()`/`App.md()`. CSS chỉ dùng biến, selector bắt đầu `.view-path`, responsive 360px, dark mode. Không sửa file khác; đề xuất (ví dụ link từ dashboard/roadmap sang #/path) ghi vào `## Notes`.
 - `node --check js/views/path.js` + `node scripts/validate.js` → OK, rồi `Status: DONE`.
 
+- **Song ngữ (bắt buộc):** mọi chuỗi giao diện qua `App.t(key, vars)`; đăng ký từ điển ở đầu IIFE bằng `App.i18n.add({ vi: {...}, en: {...} })` (key dạng `<view>.<tên>`), `title` của view viết dạng `get title() { return App.t("<view>.title"); }`. Xem comment đầu `js/core/i18n.js`. Nội dung dữ liệu (câu hỏi, đáp án, bài học, drill) giữ nguyên, không dịch.
+
 ## Notes
