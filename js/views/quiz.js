@@ -2,6 +2,91 @@
 (function () {
   'use strict';
 
+App.i18n.add({
+  vi: {
+    'quiz.title': 'Trắc nghiệm',
+    'quiz.subtitle': 'Chọn chủ đề và số câu, trả lời 4 lựa chọn rồi xem giải thích ngay.',
+    'quiz.topicTitle': 'Chủ đề',
+    'quiz.topicHint': 'Bỏ chọn tất cả = làm toàn bộ câu trắc nghiệm.',
+    'quiz.topicNone': 'Chưa có câu trắc nghiệm nào được thêm.',
+    'quiz.topicAll': 'Tất cả',
+    'quiz.countTitle': 'Số câu',
+    'quiz.countNone': 'Không có câu nào khớp chủ đề đã chọn.',
+    'quiz.startBtn': 'Bắt đầu',
+    'quiz.startDisabled': 'Bắt đầu',
+    'quiz.available': 'câu khả dụng',
+    'quiz.countLabel10': '10',
+    'quiz.countLabel20': '20',
+    'quiz.countLabel30': '30',
+    'quiz.countLabelAll': 'Tất cả ({n})',
+    'quiz.bestScore': 'Điểm cao nhất',
+    'quiz.noHistory': 'Chưa có phiên trắc nghiệm nào. Hãy làm bài đầu tiên!',
+    'quiz.historyTitle': 'Lịch sử gần đây',
+    'quiz.resultTitle': 'Kết quả',
+    'quiz.resultSubtitle': 'Bạn trả lời đúng {correct}/{total} câu trong {time}.',
+    'quiz.resultScore': '{pct}%',
+    'quiz.resultCorrect': '{correct}/{total} câu đúng · {time}',
+    'quiz.resultActionsRetry': 'Làm lại câu sai ({n})',
+    'quiz.resultActionsNew': 'Bài mới',
+    'quiz.resultActionsBank': 'Ngân hàng câu hỏi',
+    'quiz.resultByTopic': 'Điểm theo chủ đề',
+    'quiz.resultByTopicNone': 'Không có dữ liệu.',
+    'quiz.resultWrongTitle': 'Các câu sai ({n})',
+    'quiz.resultCorrectText': 'Chính xác!',
+    'quiz.resultWrongText': 'Chưa đúng',
+    'quiz.resultCorrectAnswer': 'Đáp án đúng:',
+    'quiz.resultWrongAnswer': 'Đáp án đúng:',
+    'quiz.resultReportBtn': '🚩 Báo sai',
+    'quiz.quizNavNext': 'Câu tiếp theo',
+    'quiz.quizNavResult': 'Xem kết quả',
+    'quiz.quizNavHint': 'Nhấn 1–4 để chọn đáp án.',
+    'quiz.quizWrongItem': '{i}. {q}',
+    'quiz.quizScoreLabel': 'Điểm: <strong>{n}</strong>',
+    'quiz.timerLabel': '{m}:{s}',
+  },
+  en: {
+    'quiz.title': 'Quiz',
+    'quiz.subtitle': 'Select topics and number of questions, pick from 4 choices, then see explanations.',
+    'quiz.topicTitle': 'Topics',
+    'quiz.topicHint': 'Deselect all = take the full quiz.',
+    'quiz.topicNone': 'No quiz questions added yet.',
+    'quiz.topicAll': 'All',
+    'quiz.countTitle': 'Questions',
+    'quiz.countNone': 'No questions match the selected topics.',
+    'quiz.startBtn': 'Start',
+    'quiz.startDisabled': 'Start',
+    'quiz.available': 'available',
+    'quiz.countLabel10': '10',
+    'quiz.countLabel20': '20',
+    'quiz.countLabel30': '30',
+    'quiz.countLabelAll': 'All ({n})',
+    'quiz.bestScore': 'Best score',
+    'quiz.noHistory': 'No quiz sessions yet. Take your first quiz!',
+    'quiz.historyTitle': 'Recent history',
+    'quiz.resultTitle': 'Results',
+    'quiz.resultSubtitle': 'You answered {correct}/{total} correctly in {time}.',
+    'quiz.resultScore': '{pct}%',
+    'quiz.resultCorrect': '{correct}/{total} correct · {time}',
+    'quiz.resultActionsRetry': 'Retry wrong ({n})',
+    'quiz.resultActionsNew': 'New quiz',
+    'quiz.resultActionsBank': 'Question bank',
+    'quiz.resultByTopic': 'Score by topic',
+    'quiz.resultByTopicNone': 'No data.',
+    'quiz.resultWrongTitle': 'Wrong answers ({n})',
+    'quiz.resultCorrectText': 'Correct!',
+    'quiz.resultWrongText': 'Not correct',
+    'quiz.resultCorrectAnswer': 'Correct answer:',
+    'quiz.resultWrongAnswer': 'Correct answer:',
+    'quiz.resultReportBtn': '🚩 Report error',
+    'quiz.quizNavNext': 'Next question',
+    'quiz.quizNavResult': 'Show results',
+    'quiz.quizNavHint': 'Press 1–4 to select.',
+    'quiz.quizWrongItem': '{i}. {q}',
+    'quiz.quizScoreLabel': 'Score: <strong>{n}</strong>',
+    'quiz.timerLabel': '{m}:{s}',
+  },
+});
+
   const COUNTS = [10, 20, 30];
 
   // State của phiên trắc nghiệm.
@@ -74,7 +159,7 @@
   /** Chips chọn topic (bỏ chọn hết = tất cả topic có câu). */
   function topicChips() {
     const topics = topicsWithQuiz();
-    if (!topics.length) return '<p class="muted small">Chưa có câu trắc nghiệm nào được thêm.</p>';
+    if (!topics.length) return '<p class="muted small">' + App.t('quiz.topicNone') + '</p>';
     const chips = topics.map(t =>
       '<button type="button" class="chip' + (Q.topics.indexOf(t.id) >= 0 ? ' active' : '') + '" data-topic="' + App.esc(t.id) + '">' +
       App.esc((t.icon ? t.icon + ' ' : '') + t.name) + ' <span class="badge">' + t.n + '</span></button>').join('');
@@ -107,19 +192,19 @@
     return '<div class="page-head"><div><h1>Trắc nghiệm</h1>' +
       '<p>Chọn chủ đề và số câu, trả lời 4 lựa chọn rồi xem giải thích ngay.</p></div></div>' +
       '<section class="card quiz-setup">' +
-        '<h3>Chủ đề</h3>' +
-        '<p class="small muted">Bỏ chọn tất cả = làm toàn bộ câu trắc nghiệm.</p>' +
+        '<h3>' + App.t('quiz.topicTitle') + '</h3>' +
+        '<p class="small muted">' + App.t('quiz.topicHint') + '</p>' +
         topicChips() +
-        '<h3 class="quiz-h3">Số câu</h3>' +
-        (available ? countChips(available) : '<p class="muted small">Không có câu nào khớp chủ đề đã chọn.</p>') +
+        '<h3 class="quiz-h3">' + App.t('quiz.countTitle') + '</h3>' +
+        (available ? countChips(available) : '<p class="muted small">' + App.t('quiz.countNone') + '</p>') +
         '<div class="quiz-actions">' +
           '<button type="button" class="btn primary lg" id="quizStart"' + (available ? '' : ' disabled') + '>Bắt đầu</button>' +
-          '<span class="small muted">' + available + ' câu khả dụng</span>' +
+          '<span class="small muted">' + available + ' ' + App.t('quiz.available') + '</span>' +
         '</div>' +
       '</section>' +
       '<section class="card quiz-history">' +
-        '<h3>Điểm cao nhất' + (best && best.pct >= 0 ? ': ' + best.pct + '% (' + best.correct + '/' + best.total + ')' : '') + '</h3>' +
-        (histRows ? '<ul class="quiz-hist">' + histRows + '</ul>' : '<p class="muted small">Chưa có phiên trắc nghiệm nào. Hãy làm bài đầu tiên!</p>') +
+        '<h3>' + App.t('quiz.bestScore') + (best && best.pct >= 0 ? ': ' + best.pct + '% (' + best.correct + '/' + best.total + ')' : '') + '</h3>' +
+        (histRows ? '<ul class="quiz-hist">' + histRows + '</ul>' : '<p class="muted small">' + App.t('quiz.noHistory') + '</p>') +
       '</section>';
   }
 
@@ -232,7 +317,7 @@
           '<a class="btn ghost" href="#/bank">Ngân hàng câu hỏi</a>' +
         '</div>' +
       '</section>' +
-      '<section class="card quiz-by-topic"><h3>Điểm theo chủ đề</h3>' + (rows || '<p class="muted small">Không có dữ liệu.</p>') + '</section>' +
+      '<section class="card quiz-by-topic"><h3>Điểm theo chủ đề</h3>' + (rows || '<p class="muted small">' + App.t('quiz.resultByTopicNone') + '</p>') + '</section>' +
       (wrongHtml ? '<section class="quiz-wrong"><h3>Các câu sai (' + wrong.length + ')</h3>' + wrongHtml + '</section>' :
         '<section class="card"><div class="empty"><p>Không có câu nào sai. Tuyệt vời!</p></div></section>');
   }
@@ -387,7 +472,7 @@
   }
 
   App.registerView('quiz', {
-    title: 'Trắc nghiệm',
+    get title() { return App.t('quiz.title'); },
     render(root, params) {
       stopTimer();
       Q.phase = 'setup';

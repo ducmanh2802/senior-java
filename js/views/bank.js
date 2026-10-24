@@ -2,22 +2,92 @@
 (function () {
   'use strict';
 
+  App.i18n.add({
+    vi: {
+      'bank.title': 'Ngân hàng câu hỏi',
+      'bank.subtitle': 'Lọc theo chủ đề, level, trạng thái; mở đáp án mẫu và tự đánh giá để lên lịch ôn SRS.',
+      'bank.searchLabel': 'Tìm kiếm',
+      'bank.searchPlaceholder': 'Từ khoá trong câu hỏi, đáp án, tag…',
+      'bank.levelLabel': 'Level',
+      'bank.allLevel': 'Mọi level',
+      'bank.hideAnswerLabel': 'Ẩn đáp án cho tới khi tự trả lời',
+      'bank.topicFilterAria': 'Lọc theo chủ đề',
+      'bank.statusFilterAria': 'Lọc theo trạng thái',
+      'bank.all': 'Tất cả', 'bank.due': 'Đến hạn ôn', 'bank.unseen': 'Chưa học', 'bank.unknown': 'Chưa biết', 'bank.review': 'Cần ôn', 'bank.known': 'Đã thuộc', 'bank.bookmarked': 'Đã đánh dấu',
+      'bank.dueLabel': 'ôn lại:', 'bank.topicAll': 'Tất cả',
+      'bank.bookmarkRemoveLabel': 'Bỏ đánh dấu câu hỏi', 'bank.bookmarkAddLabel': 'Đánh dấu câu hỏi',
+      'bank.bookmarkRemoveTitle': 'Bỏ đánh dấu', 'bank.bookmarkAddTitle': 'Đánh dấu',
+      'bank.practiceTitle': '✍️ Luyện trả lời', 'bank.answerLabel': 'Câu trả lời của bạn',
+      'bank.answerPlaceholder': 'Trả lời bằng lời của bạn rồi nhờ AI chấm…',
+      'bank.gradeAiBtn': '🤖 Chấm bằng AI', 'bank.micBtn': '🎤 Nói',
+      'bank.micAria': 'Đọc câu trả lời bằng giọng nói', 'bank.micStopAria': 'Dừng ghi âm', 'bank.micStopLabel': 'Dừng',
+      'bank.scoreHint': 'Điểm ≥ 4 → Đã thuộc · 3 → Cần ôn · ≤ 2 → Chưa biết',
+      'bank.hiddenAnswerMsg': 'Đang bật chế độ ẩn đáp án — hãy tự trả lời trước khi xem.',
+      'bank.revealBtn': 'Xem đáp án mẫu',
+      'bank.followTitle': 'Interviewer có thể hỏi tiếp',
+      'bank.selfAssessLabel': 'Tự đánh giá:',
+      'bank.gradeKnown': 'Đã thuộc', 'bank.gradeReview': 'Cần ôn', 'bank.gradeUnknown': 'Chưa biết',
+      'bank.expandAll': 'Mở tất cả', 'bank.collapseAll': 'Thu gọn tất cả',
+      'bank.moreBtn': 'Xem thêm (', 'bank.moreRemaining': ' câu còn lại)',
+      'bank.countDisplay': '{n} câu hỏi đang hiển thị',
+      'bank.emptyTitle': 'Không có câu hỏi nào khớp bộ lọc hiện tại.',
+      'bank.emptyHint': 'Thử bỏ bớt điều kiện lọc hoặc xem tất cả chủ đề.',
+      'bank.noMicMsg': 'Không mở được micro.',
+      'bank.aiWait': 'AI đang chấm…',
+      'bank.hiddenAnswerTitle': 'Ẩn đáp án cho tới khi tự trả lời',
+    },
+    en: {
+      'bank.title': 'Question Bank',
+      'bank.subtitle': 'Filter by topic, level, status; open model answers and self-rate to schedule SRS reviews.',
+      'bank.searchLabel': 'Search',
+      'bank.searchPlaceholder': 'Keywords in questions, answers, tags…',
+      'bank.levelLabel': 'Level',
+      'bank.allLevel': 'All levels',
+      'bank.hideAnswerLabel': 'Hide answers until you respond',
+      'bank.topicFilterAria': 'Filter by topic',
+      'bank.statusFilterAria': 'Filter by status',
+      'bank.all': 'All', 'bank.due': 'Due for review', 'bank.unseen': 'Not studied', 'bank.unknown': 'Don\'t know', 'bank.review': 'Review', 'bank.known': 'Known', 'bank.bookmarked': 'Bookmarked',
+      'bank.dueLabel': 'review:', 'bank.topicAll': 'All',
+      'bank.bookmarkRemoveLabel': 'Remove bookmark', 'bank.bookmarkAddLabel': 'Bookmark question',
+      'bank.bookmarkRemoveTitle': 'Unbookmark', 'bank.bookmarkAddTitle': 'Bookmark',
+      'bank.practiceTitle': '✍️ Practice your answer', 'bank.answerLabel': 'Your answer',
+      'bank.answerPlaceholder': 'Answer in your own words, then ask AI to grade…',
+      'bank.gradeAiBtn': '🤖 Grade with AI', 'bank.micBtn': '🎤 Speak',
+      'bank.micAria': 'Speak your answer aloud', 'bank.micStopAria': 'Stop recording', 'bank.micStopLabel': 'Stop',
+      'bank.scoreHint': 'Score ≥ 4 → Known · 3 → Review · ≤ 2 → Don\'t know',
+      'bank.hiddenAnswerMsg': 'Hidden-answer mode is on — respond first before viewing.',
+      'bank.revealBtn': 'Show model answer',
+      'bank.followTitle': 'Interviewer may follow up',
+      'bank.selfAssessLabel': 'Self-assess:',
+      'bank.gradeKnown': 'Known', 'bank.gradeReview': 'Review', 'bank.gradeUnknown': 'Don\'t know',
+      'bank.expandAll': 'Open all', 'bank.collapseAll': 'Collapse all',
+      'bank.moreBtn': 'Show more (', 'bank.moreRemaining': ' remaining)',
+      'bank.countDisplay': '{n} questions shown',
+      'bank.emptyTitle': 'No questions match the current filter.',
+      'bank.emptyHint': 'Try removing some filter conditions or view all topics.',
+      'bank.noMicMsg': 'Could not open microphone.',
+      'bank.aiWait': 'AI is grading…',
+      'bank.hiddenAnswerTitle': 'Hide answers until you respond',
+    },
+  });
+
+
   const PAGE_SIZE = 150;
   const DEBOUNCE_MS = 150;
 
   const STATUS_CHIPS = [
-    { id: 'all', label: 'Tất cả' },
-    { id: 'due', label: 'Đến hạn ôn' },
-    { id: 'unseen', label: 'Chưa học' },
-    { id: 'unknown', label: 'Chưa biết' },
-    { id: 'review', label: 'Cần ôn' },
-    { id: 'known', label: 'Đã thuộc' },
-    { id: 'bookmarked', label: 'Đã đánh dấu' },
+    { id: 'all', label: 'all' },
+    { id: 'due', label: 'due' },
+    { id: 'unseen', label: 'unseen' },
+    { id: 'unknown', label: 'unknown' },
+    { id: 'review', label: 'review' },
+    { id: 'known', label: 'known' },
+    { id: 'bookmarked', label: 'bookmarked' },
   ];
   const GRADES = [
-    { id: 'known', label: 'Đã thuộc', cls: 'ok' },
-    { id: 'review', label: 'Cần ôn', cls: 'warn' },
-    { id: 'unknown', label: 'Chưa biết', cls: 'bad' },
+    { id: 'known', label: 'gradeKnown', cls: 'ok' },
+    { id: 'review', label: 'gradeReview', cls: 'warn' },
+    { id: 'unknown', label: 'gradeUnknown', cls: 'bad' },
   ];
 
   /** Trạng thái filter giữ giữa các lần render. */
@@ -84,8 +154,8 @@
   function bookmarkBtn(id) {
     const on = App.store.isBookmarked(id);
     return '<button type="button" class="bank-star" data-bookmark="' + esc(id) + '" aria-label="' +
-      (on ? 'Bỏ đánh dấu câu hỏi' : 'Đánh dấu câu hỏi') + '" aria-pressed="' + (on ? 'true' : 'false') +
-      '" title="' + (on ? 'Bỏ đánh dấu' : 'Đánh dấu') + '">' + (on ? '★' : '☆') + '</button>';
+      (on ? App.t('bank.bookmarkRemoveLabel') : App.t('bank.bookmarkAddLabel')) + '" aria-pressed="' + (on ? 'true' : 'false') +
+      '" title="' + (on ? App.t('bank.bookmarkRemoveTitle') : App.t('bank.bookmarkAddTitle')) + '">' + (on ? '★' : '☆') + '</button>';
   }
 
   /** Thân câu hỏi khi đang đóng (collapsed). */
@@ -109,22 +179,22 @@
     const value = S.answers[q.id] || '';
     const micBtn = App.speech.supported
       ? '<button type="button" class="btn sm mic-btn" data-mic="' + esc(q.id) +
-        '" aria-label="Đọc câu trả lời bằng giọng nói">🎤 Nói</button>'
+        ' aria-label="' + App.t('bank.micAria') + '">' + App.t('bank.micBtn') + '</button>'
       : '';
     const stats = S.speech[q.id] ? App.ui.speechStats(S.speech[q.id]) : '';
     const result = S.aiResult[q.id] ? App.ui.feedback(S.aiResult[q.id], q.lang) : '';
     return '<section class="bank-practice">' +
       '<details class="bank-practice-box" data-practice="' + esc(q.id) + '"' + openAttr + '>' +
-        '<summary>✍️ Luyện trả lời</summary>' +
+        '<summary>' + App.t('bank.practiceTitle') + '</summary>' +
         '<div class="bank-practice-body">' +
-          '<label class="field"><span>Câu trả lời của bạn</span>' +
+          '<label class="field"><span>' + App.t('bank.answerLabel') + '</span>' +
             '<textarea class="textarea bank-answer" data-answer="' + esc(q.id) + '"' + enAttr +
               ' rows="4" placeholder="Trả lời bằng lời của bạn rồi nhờ AI chấm…">' + esc(value) + '</textarea></label>' +
           '<div class="row bank-practice-actions">' +
-            '<button type="button" class="btn sm primary" data-grade-ai="' + esc(q.id) + '">🤖 Chấm bằng AI</button>' +
+            '<button type="button" class="btn sm primary" data-grade-ai="' + esc(q.id) + '">' + App.t('bank.gradeAiBtn') + '</button>' +
             micBtn +
             '<span class="spacer"></span>' +
-            '<span class="small muted">Điểm ≥ 4 → Đã thuộc · 3 → Cần ôn · ≤ 2 → Chưa biết</span>' +
+            '<span class="small muted">' + App.t('bank.scoreHint') + '</span>' +
           '</div>' +
           '<div class="bank-speech" data-speech="' + esc(q.id) + '">' + stats + '</div>' +
           '<div class="bank-ai-result" data-feedback="' + esc(q.id) + '">' + result + '</div>' +
@@ -138,7 +208,7 @@
     if (hideAnswer() && !S.revealed[q.id]) {
       return '<div class="bank-answer-hidden">' +
         '<p class="small muted">Đang bật chế độ ẩn đáp án — hãy tự trả lời trước khi xem.</p>' +
-        '<button type="button" class="btn sm" data-reveal="' + esc(q.id) + '">Xem đáp án mẫu</button>' +
+        '<button type="button" class="btn sm" data-reveal="' + esc(q.id) + '">' + App.t('bank.revealBtn') + '</button>' +
       '</div>';
     }
     const reportUrl = 'https://github.com/ducmanh2802/senior-java/issues/new?title=' +
@@ -164,12 +234,12 @@
     return '<div class="bank-body">' +
       practiceHtml(q) +
       answerHtml(q) +
-      (follow ? '<div class="bank-follow"><h4>Interviewer có thể hỏi tiếp</h4><ul>' + follow + '</ul></div>' : '') +
+      (follow ? '<div class="bank-follow"><h4>' + App.t('bank.followTitle') + '</h4><ul>' + follow + '</ul></div>' : '') +
       '<div class="bank-grade">' +
-        '<span class="small muted">Tự đánh giá:</span>' +
+        '<span class="small muted">' + App.t('bank.selfAssessLabel') + '</span>' +
         GRADES.map(g => '<button type="button" class="btn ' + g.cls + ' sm' +
           (suggest === g.id ? ' is-suggest' : '') + '" data-grade="' + g.id + '" data-id="' +
-          esc(q.id) + '">' + g.label + '</button>').join('') +
+          esc(q.id) + '">' + App.t('bank.' + g.label) + '</button>').join('') +
       '</div>' +
     '</div>';
   }
@@ -198,7 +268,7 @@
     return '<div class="chips bank-status-chips" role="group" aria-label="Lọc theo trạng thái">' +
       STATUS_CHIPS.map(s => '<button type="button" class="chip' + (S.status === s.id ? ' active' : '') +
         '" data-status="' + s.id + '" aria-pressed="' + (S.status === s.id ? 'true' : 'false') + '">' +
-        esc(s.label) + '</button>').join('') +
+        esc(App.t('bank.' + s.label)) + '</button>').join('') +
       '</div>';
   }
 
@@ -217,13 +287,13 @@
   function filterBar() {
     return '<section class="card bank-filters">' +
       '<div class="bank-search-row">' +
-        '<label class="field bank-search"><span>Tìm kiếm</span>' +
-          '<input class="input" id="bankSearch" type="search" placeholder="Từ khoá trong câu hỏi, đáp án, tag…" value="' +
+        '<label class="field bank-search"><span>' + App.t('bank.searchLabel') + '</span>' +
+          '<input class="input" id="bankSearch" type="search" placeholder="' + App.t('bank.searchPlaceholder') + '" value="' +
           esc(S.q) + '" autocomplete="off"></label>' +
         levelSelect() +
       '</div>' +
       '<label class="bank-toggle"><input type="checkbox" id="bankHideAnswer"' +
-        (hideAnswer() ? ' checked' : '') + '> <span>Ẩn đáp án cho tới khi tự trả lời</span></label>' +
+        (hideAnswer() ? ' checked' : '') + '> <span>' + App.t('bank.hideAnswerLabel') + '</span></label>' +
       topicChips() +
       statusChips() +
     '</section>';
@@ -233,8 +303,8 @@
   function listHtml() {
     const all = filtered();
     if (!all.length) {
-      return '<div class="empty"><p>Không có câu hỏi nào khớp bộ lọc hiện tại.</p>' +
-        '<p class="small">Thử bỏ bớt điều kiện lọc hoặc xem tất cả chủ đề.</p></div>';
+      return '<div class="empty"><p>' + App.t('bank.emptyTitle') + '</p>' +
+        '<p class="small">' + App.t('bank.emptyHint') + '</p></div>';
     }
     const slice = all.slice(0, S.shown);
     const cards = slice.map((q, i) => cardHtml(q, i + 1)).join('');
@@ -251,7 +321,7 @@
     if (!listWrap) return;
     const all = filtered();
     const count = document.getElementById('bankCount');
-    if (count) count.textContent = all.length + ' câu hỏi đang hiển thị';
+    if (count) count.textContent = App.t('bank.countDisplay', {n: all.length});
     // Dừng ghi âm trước khi thay DOM, tránh ghi vào textarea đã bị gỡ.
     if (mic) stopMic();
     listWrap.innerHTML = listHtml();
@@ -369,8 +439,8 @@
         const on = App.store.toggleBookmark(star.dataset.bookmark);
         star.textContent = on ? '★' : '☆';
         star.setAttribute('aria-pressed', on ? 'true' : 'false');
-        star.setAttribute('aria-label', on ? 'Bỏ đánh dấu câu hỏi' : 'Đánh dấu câu hỏi');
-        star.title = on ? 'Bỏ đánh dấu' : 'Đánh dấu';
+        star.setAttribute('aria-label', on ? App.t('bank.bookmarkRemoveLabel') : App.t('bank.bookmarkAddLabel'));
+        star.title = on ? App.t('bank.bookmarkRemoveTitle') : App.t('bank.bookmarkAddTitle');
         return;
       }
 
@@ -462,7 +532,7 @@
     }
     const buttons = rootEl.querySelectorAll('[data-grade-ai="' + CSS.escape(id) + '"]');
     buttons.forEach(b => { b.disabled = true; });
-    box.innerHTML = '<span class="ai-loading">AI đang chấm…</span>';
+    box.innerHTML = '<span class="ai-loading">' + App.t('bank.aiWait') + '</span>';
     try {
       const r = await App.ai.grade({
         question: q.q,
@@ -497,8 +567,8 @@
     const btn = rootEl.querySelector('[data-mic="' + CSS.escape(id) + '"]');
     if (!btn) return;
     btn.classList.toggle('recording', recording);
-    btn.textContent = recording ? '⏹ Dừng' : '🎤 Nói';
-    btn.setAttribute('aria-label', recording ? 'Dừng ghi âm' : 'Đọc câu trả lời bằng giọng nói');
+    btn.textContent = recording ? '⏹ ' + App.t('bank.micStopLabel') : '🎤 ' + App.t('bank.micBtn');
+    btn.setAttribute('aria-label', recording ? App.t('bank.micStopAria') : App.t('bank.micAria'));
   }
 
   function micError(id, msg) {
@@ -559,13 +629,13 @@
     const dotWrap = card.querySelector('.bank-dot-wrap');
     if (!dotWrap) return;
     const s = App.store.getStatus(id);
-    const info = s && App.STATUS[s] ? App.STATUS[s] : { label: 'Chưa học', cls: '' };
+    const info = s && App.STATUS[s] ? App.STATUS[s] : { label: App.t('bank.unknown'), cls: '' };
     dotWrap.innerHTML = '<span class="dot ' + info.cls + '"></span>';
     dotWrap.title = info.label;
   }
 
   App.registerView('bank', {
-    title: 'Ngân hàng câu hỏi',
+    get title() { return App.t('bank.title'); },
     render(root, params) {
       // Topic lấy từ route (#/bank/core), mặc định "all".
       const topicParam = (params && params[0]) || 'all';
@@ -580,7 +650,7 @@
           '<p class="muted">Lọc theo chủ đề, level, trạng thái; mở đáp án mẫu và tự đánh giá để lên lịch ôn SRS.</p></div>' +
           '<div class="row bank-head-actions">' +
             '<span class="small muted" id="bankCount">' + all.length + ' câu hỏi đang hiển thị</span>' +
-            '<button type="button" class="btn sm" id="bankExpandAll">Mở tất cả</button>' +
+            '<button type="button" class="btn sm" id="bankExpandAll">' + App.t('bank.expandAll') + '</button>' +
           '</div>' +
         '</div>';
 
