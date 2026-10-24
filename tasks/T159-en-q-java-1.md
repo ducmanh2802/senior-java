@@ -1,6 +1,7 @@
 # T159 — Dịch sang tiếng Anh: q-java (12 mục)
 
-Status: TODO
+Status: DONE
+Notes: Đã dịch đủ 12 mục (core-001..core-011, collections-001) vào js/i18n/q-java-1.en.js. node --check OK, scripts/check-i18n.js OK (12 mục), validate.js không báo lỗi từ file này. Không sửa file khác, không commit.
 Agent: opencode
 Owns: `js/i18n/q-java-1.en.js`
 
@@ -16,3 +17,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-java-1.en.js` và `node scripts/check-i18n.js q-java-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
