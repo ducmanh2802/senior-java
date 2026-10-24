@@ -1,6 +1,6 @@
 # T169 — Dịch sang tiếng Anh: q-concurrency-jvm (12 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-concurrency-jvm-3.en.js`
 
@@ -16,3 +16,9 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-concurrency-jvm-3.en.js` và `node scripts/check-i18n.js q-concurrency-jvm-3` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đầy đủ 12 mục jvm-002 → jvm-013 vào `js/i18n/q-concurrency-jvm-3.en.js`.
+- Giữ nguyên markup, thuật ngữ chuyên ngành, dịch phần `q`, `a`, `follow`; không thêm/sửa field khác.
+- `node --check` OK; `node scripts/check-i18n.js q-concurrency-jvm-3` → OK (12 mục); `node scripts/validate.js` → OK.
+- Không kill tiến trình, không mở trình duyệt, không git commit.
+Reviewed-by: check-i18n (translation, no LLM review)
