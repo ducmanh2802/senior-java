@@ -1187,4 +1187,514 @@ public boolean isPwned(String password) {
   ],
   tags: ['Brute Force', 'Rate Limiting', 'Account Lockout', 'CAPTCHA', 'Credential Stuffing', 'PwnedPasswords', 'Redis', 'MFA']
 },
+{
+  id: 'security-015',
+  topic: 'security',
+  level: 'mid',
+  q: 'Spring Security 6: cấu hình SecurityFilterChain bằng lambda DSL thế nào? Khi nào cần nhiều filter chain, thứ tự ra sao và các bẫy thường gặp?',
+  a: `**Tóm tắt:** Từ Spring Security 6, mỗi nhóm endpoint được bảo vệ bởi một bean {{SecurityFilterChain}} dựng theo **lambda DSL**. Khi bạn tự khai báo bean này, Spring Boot **tắt** cấu hình bảo mật mặc định, nên bạn phải khai báo đầy đủ mọi rule. Hệ thống lớn nên tách nhiều chain theo {{securityMatcher()}} và {{@Order}}; chain nào khớp **đầu tiên** sẽ xử lý request.
+
+### Vì sao dùng lambda DSL
+- DSL cũ nối bằng {{and()}} khó đọc. Lịch sử API: Spring Security 6.0 xoá hẳn {{antMatchers()}}/{{mvcMatchers()}}/{{regexMatchers()}} (thay bằng {{requestMatchers()}}) và đánh dấu {{authorizeRequests()}} deprecated; 7.0 xoá nốt cả {{authorizeRequests()}} và {{and()}}. Lambda DSL vốn có từ 5.2.
+- Cách viết {{http.csrf(c -> c.disable())}} là **type-safe**: IDE gợi ý đúng method của từng phần, không phải nhớ API trả về {{HttpSecurity}}.
+
+### Nhiều chain và thứ tự
+- {{securityMatcher(...)}} đặt ở **cấp chain**: request không khớp thì Spring thử chain tiếp theo. Không có matcher nghĩa là chain đó nhận **mọi** request.
+- {{@Order}} nhỏ hơn chạy trước. Không đặt order thì chain rơi vào cuối, rất dễ bị chain phía trên "nuốt" mất.
+- Tách chain hợp lý: API stateless cho mobile/SPA, chain form-login cho trang quản trị nội bộ, chain riêng cho actuator.
+
+~~~java
+@Configuration
+@EnableWebSecurity
+public class SecurityConfig {
+
+    @Bean
+    @Order(1)
+    SecurityFilterChain apiChain(HttpSecurity http) throws Exception {
+        return http
+            .securityMatcher("/api/**")
+            .csrf(AbstractHttpConfigurer::disable)              // API không dùng cookie session
+            .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+            .authorizeHttpRequests(a -> a
+                .requestMatchers("/api/public/**").permitAll()
+                .anyRequest().hasAuthority("SCOPE_read"))
+            .oauth2ResourceServer(o -> o.jwt(Customizer.withDefaults()))
+            .exceptionHandling(e -> e.authenticationEntryPoint(
+                new BearerTokenAuthenticationEntryPoint()))     // 401 kèm WWW-Authenticate
+            .build();
+    }
+
+    @Bean
+    @Order(2)
+    SecurityFilterChain webChain(HttpSecurity http) throws Exception {
+        return http
+            .authorizeHttpRequests(a -> a
+                .requestMatchers("/login", "/css/**").permitAll()
+                .anyRequest().authenticated())
+            .formLogin(Customizer.withDefaults())
+            .build();
+    }
+}
+~~~
+
+### CORS, CSRF và mã lỗi
+- **CORS**: nếu có bean {{CorsConfigurationSource}}, hãy gọi {{http.cors(Customizer.withDefaults())}}. Thiếu bước này, preflight {{OPTIONS}} có thể bị chặn với 401 trước khi tới controller.
+- **CSRF**: chain dùng cookie/session phải giữ CSRF. API stateless xác thực bằng header {{Authorization}} thì tắt được. SPA dùng cookie có thể dùng {{CookieCsrfTokenRepository.withHttpOnlyFalse()}} và gửi token qua header.
+- **401 vs 403**: chưa xác thực → {{AuthenticationEntryPoint}} trả 401; đã xác thực nhưng thiếu quyền → {{AccessDeniedHandler}} trả 403. Đừng trả 500 cho hai trường hợp này.
+
+### Bẫy production
+- Viết {{anyRequest().permitAll()}} để "chạy được trước" rồi quên — đây là lỗi cấu hình bảo mật phổ biến nhất.
+- Chain không có {{securityMatcher}} đứng trước khiến các chain sau không bao giờ chạy.
+- Quên siết actuator: chỉ mở {{/actuator/health}}, còn {{env}}, {{heapdump}}, {{beans}} phải chặn hoặc đặt sau quyền admin.
+- {{permitAll()}} không có nghĩa là bỏ qua toàn bộ filter; nó chỉ bỏ qua bước **authorization**, các filter khác vẫn chạy.
+- Method security là lớp riêng: URL rule không bảo vệ lời gọi nội bộ giữa các service.
+
+> Senior tip: hãy viết test âm tính cho **từng chain**: không token → 401, token sai scope → 403, token đúng → 200, và kiểm tra actuator. Dùng {{MockMvc}} + {{spring-security-test}} ({{jwt()}}, {{@WithMockUser}}). Khi điều tra trên môi trường thật, bật {{logging.level.org.springframework.security=DEBUG}} để thấy filter nào chặn request; nhớ tắt lại vì log có thể chứa thông tin nhạy cảm. Nguyên tắc thiết kế: **deny by default**, mỗi endpoint mới phải được thêm rule một cách có ý thức.`,
+  follow: [
+    'Vì sao chain không có securityMatcher lại có thể vô hiệu hoá các chain phía sau?',
+    'Khi nào nên tách nhiều SecurityFilterChain thay vì dùng một chain với requestMatchers?',
+    'Làm sao trả lỗi 401/403 dạng JSON thống nhất cho cả REST API và trang web?'
+  ],
+  tags: ['Spring Security 6', 'SecurityFilterChain', 'lambda DSL', 'CORS', 'CSRF', 'authorization']
+},
+{
+  id: 'security-016',
+  topic: 'security',
+  level: 'mid',
+  q: 'Mass assignment (over-posting) là gì? Vì sao bind JSON trực tiếp vào entity nguy hiểm, và cách chặn bằng DTO/record trong Spring Boot?',
+  a: `**Tóm tắt:** Mass assignment xảy ra khi ứng dụng **bind toàn bộ field từ request vào entity** thay vì chỉ những field được phép. Attacker thêm {{role: ADMIN}}, {{balance: 999999}}, {{ownerId: 1}} hoặc {{enabled: true}} vào JSON và ghi đè dữ liệu mà business không hề cho phép. Cách chặn chuẩn là dùng **DTO/record allowlist**, mapping tường minh, và luôn lấy danh tính/tenant từ principal chứ không từ body.
+
+### Vì sao lỗi này phổ biến
+- Spring Boot đặt Jackson ở chế độ bỏ qua property lạ ({{FAIL_ON_UNKNOWN_PROPERTIES=false}}). Điều này giúp API tiến hoá dễ, nhưng field **có thật trên entity** vẫn được bind bình thường.
+- Viết {{@PostMapping public User update(@RequestBody User user)}} là mở cửa: mọi setter public của {{User}} đều là bề mặt tấn công.
+- Form binding {{@ModelAttribute Account account}} cũng vậy qua {{WebDataBinder}}; field không hiện trên form vẫn có thể được gửi thêm.
+
+~~~json
+// Request hợp lệ của client
+{ "fullName": "Nguyen Van A", "phone": "0901234567" }
+
+// Request của attacker gửi thêm field nhạy cảm
+{ "fullName": "Nguyen Van A", "phone": "0901234567",
+  "role": "ADMIN", "balance": 999999, "ownerId": 1, "status": "ACTIVE" }
+~~~
+
+### Cách chặn: DTO là allowlist
+~~~java
+// Chỉ những field client được phép gửi
+public record UpdateProfileRequest(
+        @NotBlank @Size(max = 120) String fullName,
+        @Pattern(regexp = "^0[0-9]{9}$") String phone) { }
+
+@PutMapping("/me")
+public ProfileResponse update(@Valid @RequestBody UpdateProfileRequest req,
+                              @AuthenticationPrincipal Jwt jwt) {
+    User user = userRepo.getReferenceById(Long.valueOf(jwt.getSubject()));
+    user.setFullName(req.fullName());       // mapping tường minh
+    user.setPhone(req.phone());
+    // role, balance, ownerId KHÔNG có trong DTO nên không thể bị ghi đè
+    return mapper.toResponse(userRepo.save(user));
+}
+~~~
+
+- DTO nên là {{record}} hoặc class chỉ có getter; không expose setter cho field không cho phép.
+- Dùng MapStruct với {{@Mapping(target = "role", ignore = true)}} nếu map entity; luôn review mapping generated.
+- Với form MVC: thêm {{@InitBinder("account")}} và gọi {{b.setAllowedFields("name", "email")}} trên {{WebDataBinder}}.
+- Với field chỉ đọc như {{id}}, {{createdAt}}, có thể dùng {{@JsonProperty(access = Access.READ_ONLY)}} để Jackson không deserialize.
+- Hiểu đúng {{@JsonIgnore}}: nó áp cho **cả logical property** (getter/setter/field liên kết), tức tắt luôn chiều deserialize chứ không phải chỉ ẩn field trong response. Muốn field vẫn trả ra nhưng không bind từ request, dùng đúng {{@JsonProperty(access = Access.READ_ONLY)}} như trên và viết test chứng minh.
+- {{tenantId}}, {{ownerId}} phải lấy từ token/principal; nếu bắt buộc nhận từ request thì đối chiếu lại với quyền hiện tại.
+
+### Pitfall nâng cao
+- **PATCH**: nếu dùng {{Map<String,Object>}} rồi reflection set field, bạn vừa tái tạo mass assignment. Hãy whitelist key hoặc dùng DTO có {{Optional}}/patch riêng.
+- **Enum/role**: attacker gửi {{role: "ADMIN"}}; nếu entity có setter nhận enum, Jackson convert được. Kiểm tra cả field lồng trong object con.
+- **JPA dirty checking**: bind vào entity đang managed thì commit ghi luôn, không cần gọi save. Đây là lý do lỗi hay lọt qua test.
+- **API3:2023 Broken Object Property Level Authorization**: OWASP gọi đây là lỗi ở cấp **property**, khác với BOLA/IDOR ở cấp object.
+- Thêm {{@Version}} (optimistic locking) để tránh lost update khi hai request sửa cùng bản ghi.
+
+> Senior tip: đặt rule code review "controller không bao giờ nhận entity JPA", grep {{@RequestBody}} trong CI là bắt được phần lớn. Viết test contract gửi {{"role":"ADMIN"}} và assert role **không đổi**; test này rẻ hơn nhiều so với sự cố leo thang quyền. Với API công khai, log các field bị bỏ qua ở môi trường staging để phát hiện client gửi thừa, nhưng đừng log toàn bộ body vì có PII.`,
+  follow: [
+    'Vì sao Spring Boot mặc định bỏ qua JSON property lạ, và trade-off với việc fail-fast là gì?',
+    'Mass assignment khác IDOR/BOLA ở điểm nào theo OWASP API Security Top 10?',
+    'Làm sao áp dụng allowlist khi thiết kế API PATCH chỉ cập nhật một phần field?'
+  ],
+  tags: ['Mass Assignment', 'Over-posting', 'DTO', 'Jackson', 'Spring Boot', 'BOPLA', 'OWASP API']
+},
+{
+  id: 'security-017',
+  topic: 'security',
+  level: 'senior',
+  q: 'JWT self-contained và opaque token: chọn cái nào? Thu hồi token tức thời ở quy mô lớn (logout, đổi mật khẩu, khóa tài khoản) triển khai thế nào?',
+  a: `**Tóm tắt:** **JWT** tự chứa claim nên service verify offline, nhanh và không cần gọi auth server mỗi request — nhưng **khó thu hồi** vì token đã phát ra vẫn hợp lệ tới khi hết hạn. **Opaque token** chỉ là chuỗi ngẫu nhiên, mỗi request phải introspection hoặc tra store, đổi lại **thu hồi tức thời** và không lộ claim. Thực tế hay dùng **hybrid**: access token JWT ngắn hạn (5–15 phút) + refresh token opaque có rotation, kèm denylist cho các sự kiện rủi ro cao.
+
+### So sánh
+| Tiêu chí | JWT | Opaque token |
+|---|---|---|
+| Verify | Offline bằng public key/JWKS | Gọi introspection/store mỗi request (có cache) |
+| Kích thước | Lớn (nhiều claim, có thể vài KB) | Nhỏ, cố định |
+| Thu hồi | Khó, cần denylist/version | Tức thời, xoá record |
+| Lộ dữ liệu | Claim chỉ **base64**, ai có token đều đọc được | Không lộ gì ngoài chuỗi |
+| Phụ thuộc | Auth server chỉ lúc phát/rotate key | Auth server/store là điểm nghẽn runtime |
+| Phù hợp | Nhiều service, cần scale đọc | Ít service, cần thu hồi chặt, tải thấp |
+
+### Thu hồi JWT — các mức
+1. **Giảm TTL**: access token 5–15 phút. Đây là biện pháp rẻ nhất; cửa sổ rủi ro bằng TTL.
+2. **Denylist theo {{jti}}** trong Redis: khi logout/khoá tài khoản, ghi {{jti}} với TTL bằng thời gian còn lại của token. Mọi service kiểm tra Redis trước khi chấp nhận. Chi phí: thêm một lookup mỗi request.
+3. **Token version/session version**: lưu {{tokenVersion}} theo user; JWT mang version; tăng version khi đổi mật khẩu/khoá → **toàn bộ** token cũ chết. Cần đọc version từ cache/DB, nên vẫn là state.
+4. **Refresh token rotation + reuse detection**: mỗi refresh token chỉ dùng một lần; nếu token cũ bị dùng lại, revoke cả họ token (dấu hiệu bị đánh cắp).
+5. **Key rotation**: xoá {{kid}} cũ khỏi JWKS sẽ vô hiệu token ký bằng key đó, nhưng đây là biện pháp thô, ảnh hưởng mọi user.
+
+~~~java
+// Kiểm tra denylist sau khi đã verify chữ ký + exp
+public boolean isRevoked(Jwt jwt, RedisTemplate<String, String> redis) {
+    String jti = jwt.getId();
+    return jti != null && Boolean.TRUE.equals(redis.hasKey("jwt:deny:" + jti));
+}
+
+// Khi logout: TTL = thời gian còn lại, không giữ mãi
+public void revoke(Jwt jwt, RedisTemplate<String, String> redis) {
+    Duration ttl = Duration.between(Instant.now(), jwt.getExpiresAt());
+    if (!ttl.isNegative() && !ttl.isZero()) {
+        redis.opsForValue().set("jwt:deny:" + jwt.getId(), "1", ttl);
+    }
+}
+~~~
+
+### Opaque token và introspection
+- Theo RFC 7662, resource server gọi introspection endpoint, nhận {{active: true/false}} cùng metadata. Có thể cache kết quả **ngắn hơn hoặc bằng** revocation SLA; không cache response lỗi.
+- Token store thường là Redis/DB do auth server quản lý; logout xoá key là xong, nhưng mọi request phụ thuộc auth server/store — cần HA, timeout, circuit breaker. Scope lấy từ introspection rồi map sang authority.
+
+### Chọn theo yêu cầu thực tế
+- Nếu yêu cầu khoá tài khoản có hiệu lực **dưới 30 giây**, JWT thuần không đáp ứng khi TTL dài; dùng TTL ngắn + denylist hoặc opaque.
+- Nếu có hàng chục service đọc token với lưu lượng rất cao, JWT giảm tải introspection đáng kể.
+- Với thao tác rủi ro cao như chuyển tiền, yêu cầu **step-up**: token mới TTL 2–5 phút kèm MFA.
+
+### Pitfall
+- Nhét PII, số tài khoản, role nhạy cảm vào JWT — base64 không phải mã hoá. Cần giấu thì dùng JWE, nhưng cân nhắc kích thước.
+- Denylist không có TTL → Redis phình to.
+- Chỉ revoke access token mà quên refresh token.
+- Kiểm tra denylist **sau** khi verify chữ ký; đừng tra Redis bằng dữ liệu chưa xác thực.
+- Log token, đặt token vào query URL (lọt access log/referer) hoặc để cả localStorage khi còn rủi ro XSS.
+
+> Senior tip: chốt **revocation SLA** với bên nghiệp vụ trước khi chọn kiến trúc, vì nó quyết định TTL và chi phí hạ tầng. Cấu hình thực tế hay dùng: access 10 phút, refresh 8 giờ có rotation, denylist cho logout và khoá khẩn cấp, version check cho đổi mật khẩu. Đo tỉ lệ cache hit của introspection; đặt alert khi auth server chậm, và luôn có đường fallback đọc JWKS cache khi auth server down.`,
+  follow: [
+    'Denylist JWT trong Redis chịu được bao nhiêu request/giây, và nút thắt nằm ở đâu?',
+    'Refresh token rotation phát hiện reuse như thế nào mà không cần lưu toàn bộ token?',
+    'Khi nào nên dùng DPoP hoặc mTLS-bound token thay vì bearer token thông thường?'
+  ],
+  tags: ['JWT', 'Opaque Token', 'Token Revocation', 'Introspection', 'Refresh Token Rotation', 'Redis']
+},
+{
+  id: 'security-018',
+  topic: 'security',
+  level: 'senior',
+  q: 'Cấu hình OAuth2 Resource Server nâng cao: validate audience, nhiều issuer, map scope sang authority, JWKS rotation và xử lý lỗi 401 đúng chuẩn?',
+  a: `**Tóm tắt:** Resource server **chỉ xác thực** token, không phát token. Ngoài chữ ký và {{exp}}, production bắt buộc kiểm tra **audience** (token cấp cho API khác không được dùng), map scope/role sang authority đúng, xử lý **nhiều issuer** nếu có nhiều auth server, và chịu được **JWKS rotation** cùng sự cố auth server. Lỗi phải trả 401 kèm header {{WWW-Authenticate}} đúng chuẩn.
+
+### Validate bắt buộc
+- Mặc định {{NimbusJwtDecoder}} kiểm tra chữ ký và timestamp ({{exp}}, {{nbf}} với clock skew 60 giây). {{iss}} chỉ được kiểm tra khi bạn cấu hình {{issuer-uri}} hoặc validator.
+- **Audience** thường **không** được kiểm tra tự động. Đây là lỗ hổng hay bị bỏ sót: token của dịch vụ A vẫn dùng được ở dịch vụ B nếu cùng issuer và cùng key.
+- Nên kiểm tra cả {{azp}}/{{client_id}} nếu token do nhiều client lấy.
+
+~~~java
+@Bean
+JwtDecoder jwtDecoder(OAuth2ResourceServerProperties props) {
+    NimbusJwtDecoder decoder = NimbusJwtDecoder
+        .withJwkSetUri(props.getJwt().getJwkSetUri())
+        .build();
+
+    OAuth2TokenValidator<Jwt> withIssuer =
+        JwtValidators.createDefaultWithIssuer("https://auth.bank.vn");
+    OAuth2TokenValidator<Jwt> withAudience = new JwtClaimValidator<List<String>>(
+        "aud", aud -> aud != null && aud.contains("payments-api"));
+
+    decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(withIssuer, withAudience));
+    return decoder;
+}
+~~~
+
+### Map scope và role
+- Mặc định scope {{read:account}} thành authority {{SCOPE_read:account}}; dùng {{hasAuthority("SCOPE_read:account")}}.
+- Token nội bộ thường có claim {{roles}} hoặc {{groups}}. Viết {{JwtAuthenticationConverter}} để gộp cả hai, thêm prefix {{ROLE_}} cho role để {{hasRole("ADMIN")}} hoạt động.
+- Không map mù mọi giá trị {{groups}} thành authority nếu IdP cho phép user tự tạo group — phải whitelist.
+- Phân biệt **scope** (quyền của client) và **role** (vai trò người dùng). API nên kiểm tra cả hai khi cần.
+
+### Nhiều issuer
+- Dùng {{JwtIssuerAuthenticationManagerResolver}} với map issuer → {{AuthenticationManager}}, chỉ nhận các issuer nằm trong **allowlist**. Tuyệt đối không lấy issuer từ token rồi gọi URL bất kỳ (nguy cơ SSRF).
+- Với opaque token, cấu hình {{introspection-uri}} + client credentials; cache kết quả ngắn và không cache lỗi.
+
+### JWKS rotation và độ sẵn sàng
+- {{issuer-uri}} khiến app gọi {{/.well-known/openid-configuration}} lúc khởi động; auth server down có thể làm app không start. Với hệ thống cần khởi động độc lập, dùng thẳng {{jwk-set-uri}}.
+- Decoder cache JWKS (mặc định khoảng 5 phút). Khi auth server xoay key, cần cửa sổ **overlap**: public key mới được publish trước, token cũ vẫn verify được bằng key cũ tới khi hết TTL.
+- Đặt timeout ngắn cho việc tải JWKS và có retry; đừng để request treo theo auth server.
+
+### 401 đúng chuẩn
+- Trả {{401}} với {{WWW-Authenticate: Bearer error="invalid_token"}}; không trả 500, không trả stack trace.
+- Không tiết lộ token hết hạn hay sai audience cho client không tin cậy; log chi tiết ở server với correlation id.
+- Dispatch ERROR cũng cần authorize: Boot forward exception sang {{/error}} và từ chuỗi 6.x rule áp cho cả ERROR dispatch — nếu không permitAll cho {{/error}} (hoặc {{dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()}}), lỗi gốc bị thay bằng 401/403, che mất dấu vết điều tra.
+
+### Pitfall
+- Chỉ cấu hình {{issuer-uri}} rồi tưởng đã đủ — thiếu audience check.
+- Forward nguyên token người dùng xuống service nội bộ; nên dùng token exchange (RFC 8693) hoặc client credentials, và **không log** header {{Authorization}}.
+- Đặt claim {{role}} từ client trong token mà không kiểm soát IdP.
+- Dùng chung signing key cho mọi môi trường.
+
+> Senior tip: viết bộ test cho decoder với 5 ca: token hợp lệ, hết hạn, sai audience, sai issuer, chữ ký sai. Kiểm tra thêm trường hợp JWKS trả 500 và assert app vẫn dùng cache. Trong ngân hàng, mỗi API nên có audience riêng và scope tối thiểu; rà soát định kỳ xem client nào đang xin scope thừa. Đừng bao giờ bật tính năng nhận token không chữ ký (alg none) — Nimbus mặc định từ chối, nhưng đừng tự viết decoder.`,
+  follow: [
+    'Vì sao chỉ kiểm tra issuer mà không kiểm tra audience lại nguy hiểm?',
+    'JwtIssuerAuthenticationManagerResolver xử lý nhiều IdP thế nào và cần chặn rủi ro gì?',
+    'Khi auth server down lúc khởi động, làm sao resource server vẫn start được?'
+  ],
+  tags: ['OAuth2 Resource Server', 'JWT Decoder', 'Audience', 'JWKS', 'Scope', 'JwtAuthenticationConverter']
+},
+{
+  id: 'security-019',
+  topic: 'security',
+  level: 'senior',
+  q: 'Quản lý secret production bằng AWS Secrets Manager: tích hợp Spring Boot, tự động rotation và bẫy cache credential cũ khiến app ngừng kết nối DB?',
+  a: `**Tóm tắt:** Secret phải nằm trong kho tập trung có mã hoá, phân quyền và audit — **không** trong repo, image, biến môi trường hay file cấu hình. AWS Secrets Manager mã hoá bằng KMS, ghi CloudTrail mỗi lần đọc, và hỗ trợ **rotation tự động** (thường qua Lambda). Ứng dụng phải đọc secret qua SDK/IRSA, cache có TTL, và đặc biệt **xử lý đúng lúc credential đổi** — nếu không, connection pool giữ mật khẩu cũ và app chết sau rotation.
+
+### Nguyên tắc nền
+- **Secret zero**: app lấy quyền đọc secret bằng workload identity (IRSA trên EKS, instance profile trên EC2), không nhúng access key tĩnh.
+- IAM least privilege: chỉ được {{secretsmanager:GetSecretValue}} đúng ARN, không {{ListSecrets}} toàn bộ.
+- Bật encryption bằng CMK riêng cho môi trường; bật CloudTrail **data events** để biết ai đọc secret nào.
+- Không đưa secret vào env var nếu tránh được: env lộ qua {{/proc}}, crash dump, child process, actuator/env. Ưu tiên đọc qua SDK hoặc CSI volume.
+
+### Tích hợp Spring Boot
+Spring Cloud AWS 3.x hỗ trợ import trực tiếp; các key trong JSON secret trở thành property:
+
+~~~yaml
+spring:
+  config:
+    import: aws-secretsmanager:prod/payments/db
+  cloud:
+    aws:
+      region:
+        static: ap-southeast-1
+~~~
+
+- Không dùng {{optional:}} cho secret bắt buộc — app phải fail-fast nếu không đọc được, thay vì chạy với cấu hình rỗng.
+- Với ứng dụng không dùng Spring Cloud AWS, gọi {{GetSecretValueRequest}} lúc khởi tạo và map thủ công; đừng gọi API này trên mỗi request.
+- Secret chứa nhiều key (username, password, host) thường là JSON; parse một lần rồi tạo {{DataSource}}.
+
+### Rotation hoạt động thế nào
+1. Lambda rotation được gắn vào secret, chạy theo lịch (ví dụ 30 ngày).
+2. Với RDS, Lambda dùng **alternating users** ({{app_user}} và {{app_user_clone}}): tạo user mới/mật khẩu mới, cập nhật secret thành {{AWSPENDING}}, test kết nối, rồi chuyển {{AWSCURRENT}}.
+3. Consumer đọc {{AWSCURRENT}}; secret có thêm {{AWSPREVIOUS}} trong thời gian chuyển tiếp để app còn đang giữ credential cũ vẫn hoạt động.
+4. Kết thúc: credential cũ bị vô hiệu hoá. Cửa sổ chuyển tiếp chính là thời gian app phải refresh.
+
+### Bẫy lớn nhất: connection pool giữ credential cũ
+- HikariCP tạo connection với mật khẩu tại thời điểm tạo; connection sống lâu sẽ tiếp tục dùng session đã mở. Khi DB đổi mật khẩu, connection **mới** sẽ fail nếu app chưa đọc secret mới.
+- Giải pháp: đọc lại secret theo lịch ngắn (vài phút) và đặt {{maxLifetime}} thấp hơn nhiều so với chu kỳ rủi ro (rotation 30 ngày, maxLifetime 20–30 phút là đủ dư). {{validationTimeout}} (mặc định 5 giây, kiểm tra lúc borrow connection) cứ để khoảng mặc định, đừng kéo dài.
+- Khi refresh, tạo {{HikariDataSource}} mới và đóng cái cũ sau khi connection đang dùng xong; hoặc evict pool. Không chỉ gán lại biến password.
+- Với RDS, cân nhắc **IAM database authentication**: token ngắn hạn (15 phút) sinh từ role, không cần password rotation — nhưng vẫn cần refresh token trước khi hết hạn.
+
+### Các secret khác cần rotation
+- JWT signing key: xoay theo {{kid}}, publish public key mới trước, giữ key cũ trong JWKS tới khi token cũ hết hạn.
+- API key đối tác: hỗ trợ **hai key song song** trong thời gian đối tác chuyển đổi.
+- Encryption key dữ liệu: envelope encryption, xoay DEK, giữ KEK cũ để giải mã dữ liệu cũ.
+
+### Vận hành và sự cố
+- Alert khi secret sắp quá hạn rotation hoặc rotation fail; theo dõi {{AWSCURRENT}} version age.
+- Diễn tập rotation trên staging trước, đo thời gian app phục hồi.
+- Không log giá trị secret, kể cả khi lỗi; che trong exception và actuator.
+- Quét secret trong git bằng gitleaks/trufflehog, chặn ở pre-commit và CI.
+- Multi-region: dùng replica secret, nhưng nhớ replica có thể trễ; không hard-code region.
+
+> Senior tip: sự cố production điển hình không phải "không đọc được secret" mà là **rotation thành công nhưng app vẫn dùng mật khẩu cũ** vài giờ sau đó. Hãy coi rotation là một thay đổi hạ tầng có test: chạy rotation ở staging, theo dõi tỉ lệ lỗi đăng nhập DB, và có runbook rollback. Nếu dùng RDS IAM auth thì đơn giản hơn nhiều — không còn password để xoay, chỉ cần cấp token ngắn hạn.`,
+  follow: [
+    'Vì sao HikariCP vẫn lỗi sau khi Secrets Manager đã rotation thành công?',
+    'RDS IAM database authentication thay thế password rotation như thế nào và có hạn chế gì?',
+    'Làm sao xoay JWT signing key mà người dùng không bị đăng xuất hàng loạt?'
+  ],
+  tags: ['AWS Secrets Manager', 'Rotation', 'Spring Boot', 'HikariCP', 'KMS', 'IRSA', 'Secret Zero']
+},
+{
+  id: 'security-020',
+  topic: 'security',
+  level: 'senior',
+  q: 'Method security trong Spring Security 6: @PreAuthorize, AuthorizationManager và cách chặn leo thang quyền giữa các tenant khi service gọi nội bộ?',
+  a: `**Tóm tắt:** URL rule chỉ bảo vệ request đi qua HTTP; **method security** bảo vệ tầng service, nơi mọi lời gọi nội bộ, scheduled job và message consumer đều đi qua. Spring Security 6 dùng {{@EnableMethodSecurity}} và **{{AuthorizationManager}}** thay cho {{AccessDecisionManager}} cũ. Nguyên tắc quan trọng: kiểm tra quyền **theo đối tượng và tenant**, không chỉ theo role, và không tin tham số {{tenantId}} do client gửi.
+
+### @EnableMethodSecurity
+- {{@EnableMethodSecurity}} bật {{@PreAuthorize}}, {{@PostAuthorize}}, {{@PreFilter}}, {{@PostFilter}}; mặc định {{prePostEnabled = true}}.
+- Method security là **AOP proxy**: lời gọi từ bên ngoài bean mới bị chặn. Gọi {{this.method()}} trong cùng class sẽ **bỏ qua** kiểm tra. Đây là lỗi kinh điển.
+- {{private}}, {{final}}, method trên class {{final}} không proxy được (CGLIB); đặt annotation ở public method của bean được inject.
+- Có thể đặt ở controller hoặc service; nên đặt ở **service** vì đó là biên giới nghiệp vụ, controller có thể bị bỏ qua bởi consumer nội bộ.
+
+### SpEL: mạnh nhưng dễ lạm dụng
+~~~java
+// So sánh cùng kiểu: tham số username (String) với authentication.name (String)
+@PreAuthorize("hasRole('ADMIN') or #username == authentication.name")
+public UserProfile getProfile(String username) { ... }
+~~~
+- SpEL gọi được bean ({{@authz.canRead(...)}}), tiện nhưng khó test và có thể gây N+1.
+- Đừng nhét logic phức tạp vào SpEL; đóng gói thành bean rõ ràng, có test.
+- {{@PostAuthorize}} kiểm tra **sau** khi method chạy, dùng khi quyền phụ thuộc kết quả trả về; exception vẫn rollback nếu trong transaction.
+- {{@PostFilter}} vẫn load toàn bộ rồi mới lọc — dữ liệu lớn hãy lọc ở query.
+
+### AuthorizationManager
+- {{AuthorizationManager<T>}} có method {{check(Supplier<Authentication>, T)}} trả {{AuthorizationDecision}}. Nó thay thế {{AccessDecisionVoter}}/{{AccessDecisionManager}}.
+- Có thể đăng ký interceptor cho method cụ thể hoặc dùng {{RequestMatcherDelegatingAuthorizationManager}} cho HTTP; ưu điểm là type-safe, unit test được và compose tốt.
+
+~~~java
+@Component("authz")
+@RequiredArgsConstructor
+public class AccountAuthorization {
+    private final AccountRepository repo;
+
+    public boolean canRead(Long accountId, Authentication auth) {
+        if (auth == null || !auth.isAuthenticated()) return false;
+        String tenant = auth.getAuthorities().stream()
+            .filter(a -> a.getAuthority().startsWith("TENANT_"))
+            .map(a -> a.getAuthority().substring(7)).findFirst().orElse(null);
+        return tenant != null && repo.existsByIdAndTenantId(accountId, tenant);
+    }
+}
+
+@PreAuthorize("@authz.canRead(#accountId, authentication)")
+public AccountView getAccount(Long accountId) { ... }
+~~~
+
+### Cô lập tenant
+- Tenant phải lấy từ token đã xác thực (claim {{tenant_id}}) và được đưa vào {{SecurityContext}}; không nhận từ header/body do client tự khai.
+- Mọi query phải có điều kiện tenant, tốt nhất ở repository hoặc Hibernate filter; đừng chỉ kiểm tra ở controller.
+- Với job nền/consumer, dựng {{Authentication}} có tenant trước khi gọi service; cache phải có tenant trong key, nếu không sẽ rò rỉ dữ liệu rất khó phát hiện.
+
+### Async và reactive
+- {{@Async}} mặc định **không** truyền {{SecurityContext}}. Dùng {{DelegatingSecurityContextExecutor}} hoặc bọc task bằng {{DelegatingSecurityContextRunnable}}; với WebFlux thì dựa vào context propagation của Reactor, không dùng thread-local.
+
+### Test
+- Dùng {{@WithMockUser}}, {{@WithUserDetails}} hoặc {{SecurityMockMvcRequestPostProcessors.jwt()}}.
+- Test **âm tính** bắt buộc: tenant A gọi account của tenant B phải 403/404; thiếu role phải 403; và phải có ca phát hiện self-invocation.
+
+> Senior tip: đừng coi {{@PreAuthorize}} là bùa hộ mệnh. Trong review, tôi luôn hỏi "nếu bỏ annotation này thì dữ liệu có còn được bảo vệ bởi query không?" — lớp phòng thủ tốt nhất là **query có tenant + ownership**, annotation chỉ là lớp thứ hai. Trả 404 thay vì 403 khi tài nguyên thuộc tenant khác để tránh dò ID. Và nhớ rằng method security không bảo vệ code chạy trong cùng bean nếu gọi qua {{this}}.`,
+  follow: [
+    'Vì sao @PreAuthorize bị bỏ qua khi gọi method nội bộ trong cùng bean?',
+    'AuthorizationManager khác AccessDecisionManager cũ ở điểm nào?',
+    'Làm sao truyền SecurityContext sang @Async và scheduled job an toàn?'
+  ],
+  tags: ['Spring Security 6', 'Method Security', 'AuthorizationManager', 'Multi-tenant', '@PreAuthorize', 'SecurityContext']
+},
+{
+  id: 'security-021',
+  topic: 'security',
+  level: 'lead',
+  q: 'Thiết kế audit log cho ngân hàng: đảm bảo đầy đủ, bất biến, chống sửa và tra soát được khi kiểm toán. Kiến trúc, lưu trữ và các điểm thất bại?',
+  a: `**Tóm tắt:** Audit log là **bằng chứng pháp lý**, không phải app log. Nó phải trả lời ai làm gì, khi nào, từ đâu, trên đối tượng nào, kết quả ra sao — và phải **append-only, chống sửa, đủ dài để tra soát**. Kiến trúc thực tế: ghi cùng transaction qua **outbox**, lưu Postgres partition theo tháng, chuỗi hash + neo định kỳ vào **WORM storage** (S3 Object Lock), phân quyền tách biệt và có job kiểm tra toàn vẹn.
+
+### Nội dung event
+- **Actor**: user id, loại chủ thể (user/service/admin), tenant, phiên đăng nhập.
+- **Hành động**: mã sự kiện có version ({{TRANSFER_APPROVE_V1}}), kênh (mobile, API, batch).
+- **Đối tượng**: loại + id, **trước/sau** hoặc diff, hạn chế raw PII.
+- **Bối cảnh**: thời gian UTC, trace id, IP, device id, kết quả (success/deny/error), lý do từ chối.
+- **Toàn vẹn**: id tăng dần, hash bản ghi trước và hiện tại, chữ ký/neo theo lô.
+
+### Ghi audit không được mất giao dịch
+- **Outbox pattern**: trong cùng transaction nghiệp vụ, ghi event vào bảng {{audit_outbox}}; worker đọc và đẩy sang kho audit. Tránh dual-write (ghi DB rồi gọi Kafka) vì một trong hai có thể fail.
+- Với sự kiện rủi ro cao (chuyển tiền, đổi quyền), nên **fail-closed**: không ghi được audit thì không cho giao dịch thành công. Sự kiện ít rủi ro hơn có thể buffer nhưng phải alert khi backlog tăng.
+- Ghi **intent log** trước hành động nhạy cảm và ghi kết quả sau; nếu crash giữa chừng vẫn biết đã có ý định.
+
+### Bất biến và chống sửa
+- Bảng audit chỉ cấp quyền {{INSERT}} và {{SELECT}} cho app; **revoke UPDATE/DELETE**. Dùng role riêng, không dùng chung credential với app DB.
+- Partition theo tháng, detach partition cũ sang storage lạnh.
+- **Hash chain**: {{h_n = SHA-256(h_n-1 || canonical_json(event))}}. Sửa một bản ghi sẽ làm gãy toàn bộ chuỗi phía sau.
+- **Neo (anchor)**: định kỳ ký số root hash và đẩy lên S3 Object Lock (compliance mode) hoặc dịch vụ notarize độc lập; kẻ có quyền DB vẫn không sửa được bản neo.
+- Job định kỳ phát hiện gap về id, hash mismatch, bản ghi thiếu so với outbox; alert ngay, không tự "sửa" dữ liệu.
+
+~~~sql
+CREATE TABLE audit_event (
+    seq          BIGSERIAL PRIMARY KEY,
+    event_id     UUID NOT NULL UNIQUE,
+    occurred_at  TIMESTAMPTZ NOT NULL,
+    actor_id     TEXT,
+    tenant_id    TEXT,
+    action       TEXT NOT NULL,
+    object_type  TEXT NOT NULL,
+    object_id    TEXT,
+    outcome      TEXT NOT NULL,
+    payload      JSONB NOT NULL,
+    prev_hash    BYTEA NOT NULL,
+    hash         BYTEA NOT NULL
+);
+GRANT INSERT, SELECT ON audit_event TO app_role;   -- KHÔNG cấp UPDATE/DELETE cho role nào
+REVOKE ALL ON audit_event FROM PUBLIC;             -- phòng khi PUBLIC từng được cấp quyền
+~~~
+- Postgres production: nghiệp vụ nên PARTITION BY RANGE theo occurred_at từng tháng; lưu ý trong bảng phân khoá, PK/unique phải gồm cả cột phân khoá, ví dụ PRIMARY KEY (occurred_at, seq).
+
+### Lưu trữ, retention và PII
+- Retention theo quy định nội bộ và NHNN; xác định thời hạn, legal hold và quy trình xoá. Với PII, che hoặc mã hoá số tài khoản, CCCD.
+- Không ghi mật khẩu, token, CVV, full PAN; audit log cũng là mục tiêu tấn công nên phải mã hoá at-rest. Mọi truy cập vào audit phải được log lại (audit the auditors), dùng break-glass có phê duyệt.
+
+### Tra soát và vận hành
+- Index theo {{occurred_at}}, {{actor_id}}, {{object_id}}, {{trace_id}}; đồng bộ giờ bằng NTP/chrony và lưu UTC, vì lệch giờ làm bằng chứng mất giá trị.
+- Dashboard cần có: backlog outbox, tỉ lệ verify fail, độ trễ tới kho audit; và diễn tập restore từ cold storage để verify hash chain.
+
+### Điểm thất bại thường gặp
+- Ghi audit bằng {{@Async}} rồi mất event khi pod bị kill — không có giao dịch bảo đảm.
+- Chỉ lưu "thành công", bỏ qua lần bị từ chối — kiểm toán cần cả deny để phát hiện dò quyền.
+- Retention ngắn hơn yêu cầu, hoặc xoá partition mà không kiểm tra legal hold.
+- Hash chain nhưng root hash nằm cùng DB — kẻ sửa DB sửa được cả neo.
+
+> Senior tip: câu hỏi kiểm toán khó nhất không phải "có log không" mà là **"chứng minh không ai sửa được log"**. Hash chain + WORM + tách quyền là bộ ba tối thiểu; hãy test bằng cách cố sửa một bản ghi trong môi trường staging và xem alert có nổ. Đừng biến audit thành nút thắt hiệu năng: outbox + partition giữ được throughput, còn fail-closed chỉ nên áp cho giao dịch tài chính và thay đổi quyền.`,
+  follow: [
+    'Vì sao không nên ghi audit trực tiếp vào Kafka trong cùng transaction nghiệp vụ?',
+    'Hash chain phát hiện sửa đổi nhưng làm sao chứng minh không bị xoá cả một đoạn ở cuối?',
+    'Retention nhiều năm xung đột với yêu cầu xoá dữ liệu cá nhân như thế nào?'
+  ],
+  tags: ['Audit Log', 'WORM', 'Hash Chain', 'Outbox', 'Banking', 'Compliance', 'PCI DSS', 'Immutable Storage']
+},
+{
+  id: 'security-022',
+  topic: 'security',
+  level: 'lead',
+  q: 'Threat modeling luồng chuyển tiền bằng STRIDE: vẽ trust boundary, liệt kê abuse case và biến thành security requirement/control cụ thể như thế nào?',
+  a: `**Tóm tắt:** Threat modeling là hoạt động **thiết kế**, không phải tài liệu để đối phó audit. Với luồng chuyển tiền, ta vẽ luồng dữ liệu + **trust boundary**, soi từng thành phần bằng **STRIDE**, viết abuse case rồi chuyển thành security requirement có test. Giá trị nằm ở việc phát hiện sớm replay, double-spend, sửa số tiền và leo thang quyền — thứ scanner không tìm ra.
+
+### 1. Xác định tài sản và phạm vi
+- Tài sản: tiền, hạn mức, danh tính, thiết bị tin cậy, khoá ký, dữ liệu giao dịch.
+- Actor gồm khách hàng, giao dịch viên, admin, đối tác, service nội bộ và **insider**.
+
+### 2. Luồng dữ liệu và trust boundary
+~~~text
+[App mobile] --TLS--> [API Gateway/WAF] --mTLS/JWT--> [Payment service]
+      |                                                      |
+   (1) user session                                    (2) core banking (SOAP/REST)
+                                                             |
+                                                     (3) PostgreSQL ledger
+                                                             |
+                                                     (4) Kafka + audit WORM
+~~~
+Boundary gồm thiết bị ↔ Internet, DMZ ↔ nội bộ, service ↔ core banking, ứng dụng ↔ kho audit; mỗi boundary cần xác thực, mã hoá, rate limit và logging riêng.
+
+### 3. STRIDE cho từng thành phần
+| Mối đe doạ | Ví dụ trong chuyển tiền | Control điển hình |
+|---|---|---|
+| **Spoofing** | Giả mạo app, đánh cắp phiên, giả service nội bộ | MFA/step-up, device binding, mTLS, token ngắn hạn |
+| **Tampering** | Sửa số tiền, số tài khoản nhận trong request | Server-side intent, ký request, kiểm tra lại hạn mức |
+| **Repudiation** | Khách phủ nhận đã lệnh chuyển tiền | Audit log bất biến, OTP evidence, timestamp |
+| **Information disclosure** | Lộ số dư, PII qua log/response lỗi | Mã hoá, masking, không trả stack trace |
+| **Denial of service** | Bão request làm nghẽn payment | Rate limit, queue, circuit breaker, timeout |
+| **Elevation of privilege** | IDOR sang tài khoản khác, mass assignment role | Ownership check, DTO allowlist, 4-eyes |
+
+### 4. Abuse case cụ thể
+- **Replay**: attacker bắt lại request chuyển tiền và gửi lại. Control: idempotency key + nonce + timestamp ngắn hạn, server lưu key đã dùng; request ký HMAC gồm cả nonce và số tiền.
+- **Double-spend/race**: hai request đồng thời vượt hạn mức. Control: khoá lạc quan {{@Version}} hoặc bi quan trên tài khoản, ràng buộc số dư ở DB, ledger một chiều, đối soát cuối ngày.
+- **Sửa số tiền phía client**: client gửi {{amount}} đã bị sửa. Control: tính lại từ intent đã lưu server-side; không tin bất kỳ con số nào từ client cho bước quyết toán.
+- **Insider/4-eyes bypass**: một người vừa tạo vừa duyệt. Control: tách vai trò maker/checker ở DB + workflow, audit bất biến, giới hạn quyền DB trực tiếp.
+
+### 5. Từ threat sang requirement có test
+- Requirement: "Mọi lệnh chuyển tiền phải idempotent theo {{(customerId, idempotencyKey)}} trong 24 giờ." Test: gửi cùng key 2 lần, chỉ một bút toán.
+- Requirement: "Số tiền cuối cùng lấy từ intent server-side, không từ payload." Test: sửa amount trong request, assert giao dịch dùng số đã lưu.
+- Requirement: "Audit ghi cả lần từ chối kèm trace id, và khoá tài khoản có hiệu lực ≤ 30 giây." Test: force deny rồi đo thời gian từ lệnh khoá tới lần từ chối token.
+
+### 6. Ưu tiên và theo dõi
+- Chấm điểm theo khả năng xảy ra × tác động (tiền, pháp lý, uy tín); gắn owner, hạn xử lý và residual risk có chấp thuận. Threat model là tài liệu sống: cập nhật khi thêm kênh, đối tác hoặc luồng tiền; đo bằng số threat phát hiện sớm.
+
+> Senior tip: đừng cố liệt kê mọi threat — hãy chọn **5 abuse case** tốn tiền nhất và biến chúng thành test tự động. Trong ngân hàng, một buổi threat model 90 phút trước khi code rẻ hơn nhiều so với việc vá sau khi lên production. Tôi luôn yêu cầu có mặt cả dev, BA, security và ops, vì threat hay nằm ở chỗ giao nhau giữa nghiệp vụ và hạ tầng — ví dụ quy trình hoàn tiền hoặc job đối soát mà không ai nghĩ tới.`,
+  follow: [
+    'Làm sao đảm bảo idempotency cho chuyển tiền mà không biến bảng idempotency thành điểm nghẽn?',
+    'STRIDE có bỏ sót loại tấn công nào phổ biến trong ngân hàng (fraud, social engineering)?',
+    'Làm sao đo hiệu quả của threat modeling thay vì chỉ đếm số tài liệu đã viết?'
+  ],
+  tags: ['Threat Modeling', 'STRIDE', 'Payment', 'Idempotency', 'Double Spending', 'Trust Boundary', 'Banking']
+},
 );
