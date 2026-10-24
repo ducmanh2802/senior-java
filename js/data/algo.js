@@ -6435,7 +6435,7 @@ class Solution {
 {
  id:'algo-058',title:'Minimum Meeting Rooms',difficulty:'medium',pattern:'Heap / Intervals',tags:['heap','scheduling'],
  prompt:`Cho các cuộc họp [start,end), tìm số phòng tối thiểu để không cuộc nào chồng lấn trong cùng phòng.\n\n### Ví dụ\n~~~text\n[[0,30],[5,10],[15,20]] -> 2\n~~~\n### Ràng buộc\nstart < end; n ≤ 100000.`, hints:['Sắp theo giờ bắt đầu.','Min-heap lưu giờ kết thúc sớm nhất của mỗi phòng đang bận.','Nếu phòng sớm nhất đã kết thúc, tái sử dụng phòng đó.'],
- solution:`### Ý tưởng\nHeap kích thước biểu diễn số phòng đang cần; end bằng start được tái sử dụng theo khoảng nửa mở.\n~~~java\nclass Solution { public int rooms(int[][] a){ Arrays.sort(a,Comparator.comparingInt(v->v[0])); PriorityQueue<Integer> q=new PriorityQueue<>(); for(int[] m:a){while(!q.isEmpty()&&q.peek()<=m[0])q.poll(); q.offer(m[1]);} return q.size();} }\n~~~\n### Lưu ý khi phỏng vấn\nNếu cần gán phòng cụ thể, heap nên lưu cả roomId; complexity vẫn O(n log n).`, complexity:'Time O(n log n), Space O(n)', starter:'class Solution { public int rooms(int[][] a) { return 0; } }',
+ solution:`### Ý tưởng\nHeap kích thước biểu diễn số phòng đang cần; end bằng start được tái sử dụng theo khoảng nửa mở.\n~~~java\nclass Solution { public int rooms(int[][] a){ Arrays.sort(a,Comparator.comparingInt(v->v[0])); PriorityQueue<Integer> q=new PriorityQueue<>(); int best=0; for(int[] m:a){while(!q.isEmpty()&&q.peek()<=m[0])q.poll(); q.offer(m[1]); best=Math.max(best,q.size());} return best;} }\n~~~\n### Lưu ý khi phỏng vấn\nNếu cần gán phòng cụ thể, heap nên lưu cả roomId; complexity vẫn O(n log n).`, complexity:'Time O(n log n), Space O(n)', starter:'class Solution { public int rooms(int[][] a) { return 0; } }',
  tests:`public class Main {static int p=0,t=0;static void c(String n,int e,int a){t++;if(e==a){p++;System.out.println("PASS "+n);}else System.out.println("FAIL "+n+": expected "+e+" got "+a);}public static void main(String[]x){Solution s=new Solution();c("example",2,s.rooms(new int[][]{{0,30},{5,10},{15,20}}));c("empty",0,s.rooms(new int[][]{}));c("sequential",1,s.rooms(new int[][]{{0,2},{2,4},{4,5}}));c("same start",3,s.rooms(new int[][]{{1,3},{1,4},{1,5}}));c("unordered",2,s.rooms(new int[][]{{5,7},{0,6},{7,8}}));c("reuse all ended",2,s.rooms(new int[][]{{0,1},{0,2},{2,3},{2,4}}));System.out.println("RESULT "+p+"/"+t);}}`, follow:['Bạn sẽ trả về lịch gán từng meeting vào phòng ra sao?']
 },
 {
@@ -6796,5 +6796,422 @@ class RateLimiter { static class State {long start;int count;State(long s){start
   tests: `public class Main {static int p=0,t=0;interface C{boolean go();}static void c(String n,boolean e,C f){t++;try{boolean a=f.go();if(e==a){p++;System.out.println("PASS "+n);}else System.out.println("FAIL "+n+": expected "+e+" got "+a);}catch(Throwable x){System.out.println("FAIL "+n+": threw "+x);}}public static void main(String[]z){c("limit boundary",true,()->{RateLimiter r=new RateLimiter(2,10);return r.allow("u",0)&&r.allow("u",5)&&!r.allow("u",9)&&r.allow("u",10);});c("separate users",true,()->{RateLimiter r=new RateLimiter(1,10);return r.allow("a",0)&&r.allow("b",0)&&!r.allow("a",1);});c("reset",true,()->{RateLimiter r=new RateLimiter(1,10);r.allow("u",2);return r.allow("u",12);});c("window not elapsed",true,()->{RateLimiter r=new RateLimiter(1,10);r.allow("u",2);return !r.allow("u",11);});c("fresh",true,()->new RateLimiter(3,5).allow("new",100));System.out.println("RESULT "+p+"/"+t);}}`,
   complexity: 'Time O(1) average per request, Space O(number of users)',
   follow: ['Bạn xử lý nhiều server cùng limit và request đồng thời thế nào?']
+},
+{
+  id: 'algo-079',
+  title: 'Sliding Window Maximum',
+  difficulty: 'hard',
+  pattern: 'Sliding Window / Deque',
+  tags: ['array', 'deque', 'monotonic'],
+  prompt: `Cho mảng số nguyên {{nums}} và kích thước cửa sổ {{k}}, trả về giá trị lớn nhất trong mỗi cửa sổ trượt từ trái sang phải.
+
+### Ví dụ
+~~~text
+Input:  nums = [1,3,-1,-3,5,3,6,7], k = 3
+Output: [3,3,5,5,6,7]
+Giải thích: cửa sổ 1: [1,3,-1] max=3; cửa sổ 2: [3,-1,-3] max=3...
+~~~
+
+### Ràng buộc
+- {{1 <= nums.length <= 10^5}}
+- {{1 <= k <= nums.length}}
+- {{-10^4 <= nums[i] <= 10^4}}`,
+  hints: [
+    'Brute force duyệt từng cửa sổ là O(n*k). Cần cấu trúc cho phép thêm và xoá phần tử ở hai đầu cửa sổ trong O(1).',
+    'Dùng deque (hàng đợi hai đầu): giữ chỉ số theo thứ tự giảm dần giá trị. Đầu deque luôn là max của cửa sổ hiện tại.',
+    'Khi thêm phần tử mới, xoá từ cuối deque các phần tử nhỏ hơn nó; khi cửa sổ trượt, xoá phần tử rời khỏi cửa sổ từ đầu deque nếu cần.'
+  ],
+  solution: `### Ý tưởng
+Duy trì deque chứa các chỉ số theo thứ tự giảm dần {{nums[i]}}. Với mỗi vị trí phải:
+1. Xoá từ cuối các chỉ số có giá trị nhỏ hơn {{nums[i]}}.
+2. Thêm {{i}} vào cuối.
+3. Xoá từ đầu các chỉ số đã rời khỏi cửa sổ ({{i - k + 1 > deque.peek()}}).
+4. Khi {{i >= k - 1}}, đầu deque là max của cửa sổ.
+
+~~~java
+class Solution {
+    public int[] maxSlidingWindow(int[] nums, int k) {
+        if (nums == null || k <= 0) return new int[0];
+        Deque<Integer> dq = new ArrayDeque<>();
+        int[] res = new int[nums.length - k + 1];
+        int idx = 0;
+        for (int i = 0; i < nums.length; i++) {
+            // Smaller values can never be the maximum while nums[i] stays in the window
+            while (!dq.isEmpty() && nums[dq.peekLast()] <= nums[i]) dq.pollLast();
+            dq.offerLast(i);
+            // Remove the index that just fell out of the window
+            if (!dq.isEmpty() && dq.peekFirst() <= i - k) dq.pollFirst();
+            // First full window ends at i == k - 1
+            if (i >= k - 1) res[idx++] = nums[dq.peekFirst()];
+        }
+        return res;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Deque giữ chỉ số chứ không phải giá trị trực tiếp, để dễ kiểm tra phần tử nào đã rời khỏi cửa sổ.
+- Nếu k = 1 thì kết quả chính là bản sao của nums; nếu tất cả phần tử bằng nhau thì deque chỉ còn một phần tử.
+
+> Senior tip: Với stream dữ liệu liên tục, deque giữ tối đa k phần tử; bộ nhớ O(k) và không thể giảm thêm vì phải biết phần tử nào sắp rời cửa sổ.`,
+  starter: 'class Solution {\n    public int[] maxSlidingWindow(int[] nums, int k) {\n        return new int[0];\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (java.util.Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + java.util.Arrays.deepToString(new Object[]{expected}) + " got " + java.util.Arrays.deepToString(new Object[]{actual}));
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        Solution s = new Solution();
+        run("example", new int[]{3,3,5,5,6,7}, () -> s.maxSlidingWindow(new int[]{1,3,-1,-3,5,3,6,7}, 3));
+        run("k=1", new int[]{1,2,3}, () -> s.maxSlidingWindow(new int[]{1,2,3}, 1));
+        run("all same", new int[]{5,5,5}, () -> s.maxSlidingWindow(new int[]{5,5,5,5}, 2));
+        run("decreasing", new int[]{4,3,2}, () -> s.maxSlidingWindow(new int[]{4,3,2,1}, 2));
+        run("single", new int[]{9}, () -> s.maxSlidingWindow(new int[]{9}, 1));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n), Space O(k)',
+  follow: ['Nếu k rất lớn (gần n) thì có thể dùng cấu trúc khác không?', 'Làm sao xử lý stream không biết trước độ dài?']
+},
+{
+  id: 'algo-080',
+  title: 'Word Ladder',
+  difficulty: 'hard',
+  pattern: 'BFS / Graph',
+  tags: ['string', 'bfs', 'graph'],
+  prompt: `Cho hai từ {{beginWord}} và {{endWord}}, cùng danh sách từ {{wordList}}. Tìm độ dài đường ngắn nhất từ {{beginWord}} đến {{endWord}} bằng cách chỉ thay đổi một ký tự ở mỗi bước và các từ trung gian phải có trong {{wordList}}. Nếu không có đường thì trả về 0.
+
+### Ví dụ
+~~~text
+Input: beginWord = "hit", endWord = "cog", wordList = ["hot","dot","dog","lot","log","cog"]
+Output: 5
+Giải thích: hit -> hot -> dot -> dog -> cog (5 từ, 4 bước) -> trả 5.
+~~~
+
+### Ràng buộc
+- {{1 <= wordList.length <= 5000}}
+- {{beginWord.length == endWord.length == wordList[i].length == 10}}`,
+  hints: [
+    'Xem mỗi từ là một đỉnh; hai từ nối nhau nếu khác đúng một ký tự. Cần đường đi ngắn nhất trên đồ thị không trọng số.',
+    'Thay vì xây đồ thị tường minh, tạo các từ láng giềng bằng cách thay từng ký tự bằng 26 chữ cái và kiểm tra trong wordList.',
+    'BFS từ beginWord, mỗi bước duyệt các từ láng giềng chưa thăm; dùng HashSet để tra cứu nhanh và đánh dấu đã thăm.'
+  ],
+  solution: `### Ý tưởng
+BFS từ {{beginWord}}. Để tìm láng giềng nhanh, lưu {{wordList}} trong {{HashSet}}. Với mỗi từ, duyệt từng vị trí và thay bằng từng chữ cái từ 'a' đến 'z'; nếu từ mới có trong set và chưa thăm thì thêm vào hàng đợi.
+
+~~~java
+class Solution {
+    public int ladderLength(String beginWord, String endWord, List<String> wordList) {
+        Set<String> words = new HashSet<>(wordList); // O(1) lookup, also acts as visited set
+        if (!words.contains(endWord)) return 0;
+        Queue<String> q = new ArrayDeque<>();
+        q.offer(beginWord);
+        words.remove(beginWord);
+        int steps = 1; // number of words on the current BFS path
+        while (!q.isEmpty()) {
+            int size = q.size();
+            for (int i = 0; i < size; i++) {
+                String w = q.poll();
+                if (w.equals(endWord)) return steps;
+                char[] chars = w.toCharArray();
+                for (int j = 0; j < chars.length; j++) {
+                    char orig = chars[j];
+                    // Generate neighbors by trying all 26 letters at position j
+                    for (char c = 'a'; c <= 'z'; c++) {
+                        chars[j] = c;
+                        String next = new String(chars);
+                        if (words.contains(next)) {
+                            words.remove(next); // mark visited before enqueue
+                            q.offer(next);
+                        }
+                    }
+                    chars[j] = orig;
+                }
+            }
+            steps++;
+        }
+        return 0;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Nếu wordList rất lớn, tạo đồ thị tường minh sẽ tốn O(n²); tạo láng giềng động giảm bộ nhớ nhưng tăng thời gian tạo láng giềng.
+- Nếu beginWord bằng endWord thì đường đi là chính nó (1 từ) nhưng đề thường yêu cầu có đường đi thực sự.
+
+> Senior tip: Trong production, nếu từ điển là từ thực tế tiếng Anh, có thể dùng index theo pattern (*ot) để tìm láng giềng nhanh hơn duyệt 26 chữ cái; điều này giảm từ O(L*26) xuống O(số láng giềng trung bình).`,
+  starter: 'class Solution {\n    public int ladderLength(String beginWord, String endWord, java.util.List<String> wordList) {\n        return 0;\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (java.util.Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        Solution s = new Solution();
+        java.util.List<String> w1 = java.util.Arrays.asList("hot","dot","dog","lot","log","cog");
+        run("example", 5, () -> s.ladderLength("hit", "cog", w1));
+        java.util.List<String> w2 = java.util.Arrays.asList("hot","dot","dog","lot","log");
+        run("no path", 0, () -> s.ladderLength("hit", "cog", w2));
+        java.util.List<String> w3 = java.util.Arrays.asList("hot","dot","dog","cog");
+        run("same start end", 1, () -> s.ladderLength("hot", "hot", w3));
+        java.util.List<String> w4 = java.util.Arrays.asList("a","b","c");
+        run("short", 2, () -> s.ladderLength("a", "c", w4));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n * L * 26), Space O(n)',
+  follow: ['Nếu từ điển là tiếng Việt (Unicode), cấu trúc láng giềng cần điều chỉnh thế nào?', 'Có thể dùng bidirectional BFS để tăng tốc không?']
+},
+{
+  id: 'algo-081',
+  title: 'Median of Two Sorted Arrays',
+  difficulty: 'hard',
+  pattern: 'Binary Search',
+  tags: ['array', 'binary-search', 'divide-conquer'],
+  prompt: `Cho hai mảng đã sắp xếp {{nums1}} và {{nums2}}, tìm giá trị trung vị (median) của toàn bộ các phần tử đã hợp nhất. Độ phức tạp phải là O(log(min(m,n))).
+
+### Ví dụ
+~~~text
+Input: nums1 = [1,3], nums2 = [2]  -> Output: 2.0
+Input: nums1 = [1,2], nums2 = [3,4] -> Output: 2.5
+~~~
+
+### Ràng buộc
+- {{0 <= nums1.length, nums2.length <= 1000}}
+- {{-10^6 <= nums1[i], nums2[i] <= 10^6}}`,
+  hints: [
+    'Nếu hợp nhất hai mảng rồi tìm median thì O(m+n), không đạt yêu cầu.',
+    'Dùng binary search trên mảng ngắn hơn để tìm điểm chia sao cho nửa trái và nửa phải có tổng số phần tử bằng nhau.',
+    'Với mỗi điểm chia, kiểm tra điều kiện {{max(leftA, leftB) <= min(rightA, rightB)}}; điều chỉnh binary search dựa trên so sánh giá trị tại ranh giới.'
+  ],
+  solution: `### Ý tưởng
+Chia cả hai mảng thành hai nửa sao cho số phần tử ở nửa trái bằng hoặc nhiều hơn nửa phải đúng một phần tử (khi tổng lẻ). Dùng binary search trên mảng ngắn hơn để tìm điểm chia {{i}}; điểm chia tương ứng trên mảng dài là {{(m+n+1)//2 - i}}.
+
+Nếu {{max(leftA, leftB) <= min(rightA, rightB)}} thì đã tìm được; nếu không thì điều chỉnh binary search dựa trên giá trị ranh giới.
+
+~~~java
+class Solution {
+    public double findMedianSortedArrays(int[] nums1, int[] nums2) {
+        int m = nums1.length, n = nums2.length;
+        if (m > n) { int[] tmpA = nums1; nums1 = nums2; nums2 = tmpA; m = nums1.length; n = nums2.length; }
+        int left = 0, right = m, halfLen = (m + n + 1) / 2;
+        while (left <= right) {
+            int i = (left + right) / 2; // cut in the shorter array
+            int j = halfLen - i;        // cut in the longer array
+            // Sentinels avoid extra branches when a cut is at an array edge
+            int maxLeftA = (i == 0) ? Integer.MIN_VALUE : nums1[i - 1];
+            int minRightA = (i == m) ? Integer.MAX_VALUE : nums1[i];
+            int maxLeftB = (j == 0) ? Integer.MIN_VALUE : nums2[j - 1];
+            int minRightB = (j == n) ? Integer.MAX_VALUE : nums2[j];
+            if (maxLeftA <= minRightB && maxLeftB <= minRightA) {
+                if ((m + n) % 2 == 0) return (Math.max(maxLeftA, maxLeftB) + Math.min(minRightA, minRightB)) / 2.0;
+                else return Math.max(maxLeftA, maxLeftB);
+            } else if (maxLeftA > minRightB) right = i - 1; // too many from nums1 on the left
+            else left = i + 1;
+        }
+        throw new IllegalArgumentException("invalid input");
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Luôn đảm bảo tìm trên mảng ngắn hơn để binary search có log(min(m,n)).
+- Khi tổng chẵn, median là trung bình của hai giá trị ở giữa; khi lẻ, là giá trị ở giữa.
+- Cẩn thận overflow khi tính trung bình; dùng double ngay từ đầu.
+
+> Senior tip: Bài này thường bị hỏi tiếp "nếu một mảng là stream vô hạn" — câu trả lời là phải dùng cấu trúc khác (ví dụ heap hai chiều) và không thể áp dụng binary search trực tiếp.`,
+  starter: 'class Solution {\n    public double findMedianSortedArrays(int[] nums1, int[] nums2) {\n        return 0.0;\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            Double a = (actual instanceof Double) ? (Double) actual : Double.valueOf(String.valueOf(actual));
+            Double e = (expected instanceof Double) ? (Double) expected : Double.valueOf(String.valueOf(expected));
+            if (Math.abs(a - e) < 1e-6) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + e + " got " + a);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        Solution s = new Solution();
+        run("odd", 2.0, () -> s.findMedianSortedArrays(new int[]{1,3}, new int[]{2}));
+        run("even", 2.5, () -> s.findMedianSortedArrays(new int[]{1,2}, new int[]{3,4}));
+        run("one empty", 1.0, () -> s.findMedianSortedArrays(new int[]{}, new int[]{1}));
+        run("same values", 3.0, () -> s.findMedianSortedArrays(new int[]{3,3}, new int[]{3,3,3}));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(log(min(m,n))), Space O(1)',
+  follow: ['Nếu một mảng rất dài và một mảng rất ngắn, binary search có còn hiệu quả không?', 'Có thể mở rộng cho k median trong nhiều mảng không?']
+},
+{
+  id: 'algo-082',
+  title: 'Basic Calculator',
+  difficulty: 'hard',
+  pattern: 'Stack',
+  tags: ['string', 'stack', 'math'],
+  prompt: `Tính giá trị biểu thức toán học chứa các ký tự số nguyên, dấu cộng (+), trừ (-), và dấu ngoặc đơn ( ). Biểu thức có thể bắt đầu bằng dấu trừ. Không có dấu nhân hoặc chia.
+
+### Ví dụ
+~~~text
+Input: s = "(1+(4+5+2)-3)+(6+8)"
+Output: 23
+Input: s = "- (3 + (4 + 5))"
+Output: -12
+~~~
+
+### Ràng buộc
+- {{1 <= s.length <= 3 * 10^4}}
+- {{s chỉ gồm chữ số, '+', '-', '(', ')', và khoảng trắng}}`,
+  hints: [
+    'Dấu ngoặc thay đổi dấu của các số bên trong. Cần lưu dấu hiện tại và tổng tích luỹ cho từng cấp độ ngoặc.',
+    'Dùng stack để đẩy tổng tích luỹ và dấu hiện tại khi gặp dấu mở ngoặc; khi gặp dấu đóng, tính tổng con và cộng vào tổng cha.',
+    'Khoảng trắng không ảnh hưởng; có thể bỏ qua hoặc xử lý trực tiếp bằng cách đọc từng ký tự.'
+  ],
+  solution: `### Ý tưởng
+Duyệt từng ký tự. Khi gặp số, tính giá trị hoàn chỉnh (có thể nhiều chữ số). Khi gặp dấu '+', thêm số với dấu hiện tại; khi gặp '-', trừ số với dấu hiện tại; khi gặp '(', đẩy tổng hiện tại và dấu hiện tại vào stack, reset tổng và dấu; khi gặp ')', tính tổng con và cộng vào tổng cha.
+
+~~~java
+class Solution {
+    public int calculate(String s) {
+        Stack<Integer> stack = new Stack<>();
+        int result = 0, sign = 1, number = 0;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            // Multi-digit number: keep accumulating until a non-digit appears
+            if (Character.isDigit(c)) { number = number * 10 + (c - '0'); continue; }
+            // Apply the pending term, then switch sign for the next one
+            if (c == '+' || c == '-') { result += sign * number; sign = (c == '+') ? 1 : -1; number = 0; continue; }
+            // Save the outer sum and sign, then start a fresh inner expression
+            if (c == '(') { stack.push(result); stack.push(sign); result = 0; sign = 1; }
+            // Close inner expression: apply its sign, then add it to the saved outer sum
+            if (c == ')') { result += sign * number; number = 0; result = stack.pop() * result + stack.pop(); }
+        }
+        return result + sign * number;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Đảm bảo reset số sau mỗi dấu hoặc sau khi đóng ngoặc; nếu không, số sẽ bị nhân 10 sai.
+- Dấu trừ trước ngoặc phải được áp dụng cho toàn bộ biểu thức bên trong; stack lưu đúng cả tổng và dấu.
+
+> Senior tip: Nếu mở rộng cho dấu nhân/chia, cần thêm stack cho toán tử và xử lý ưu tiên toán tử; bài này chỉ có cộng/trừ nên đơn giản hơn nhiều.`,
+  starter: 'class Solution {\n    public int calculate(String s) {\n        return 0;\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (java.util.Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        Solution s = new Solution();
+        run("example", 23, () -> s.calculate("(1+(4+5+2)-3)+(6+8)"));
+        run("negative inside", -12, () -> s.calculate("-(3+(4+5))"));
+        run("single", 1, () -> s.calculate("1"));
+        run("with spaces", 3, () -> s.calculate(" 2-1 + 2 "));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n), Space O(n)',
+  follow: ['Nếu thêm dấu nhân và chia, bạn sẽ điều chỉnh stack thế nào?', 'Có thể giải bằng đệ quy thay vì stack không?']
+},
+{
+  id: 'algo-083',
+  title: 'Longest Valid Parentheses',
+  difficulty: 'hard',
+  pattern: 'Stack / Dynamic Programming',
+  tags: ['string', 'stack', 'dp'],
+  prompt: `Cho chuỗi chỉ gồm ký tự mở và đóng ngoặc {{'('}} và {{')'}}, tìm độ dài chuỗi con hợp lệ dài nhất (các ngoặc khớp đúng và liên tục).
+
+### Ví dụ
+~~~text
+Input: s = "(()"
+Output: 2
+Input: s = ")()())"
+Output: 4
+Input: s = ""
+Output: 0
+~~~
+
+### Ràng buộc
+- {{0 <= s.length <= 3 * 10^4}}`,
+  hints: [
+    'Một chuỗi con hợp lệ phải bắt đầu bằng ( và kết thúc bằng ), và bên trong cũng phải hợp lệ.',
+    'Dùng stack để lưu chỉ số các dấu mở chưa khớp; khi gặp dấu đóng, nếu có dấu mở tương ứng thì tính độ dài.',
+    'Nếu stack rỗng khi gặp dấu đóng, đẩy chỉ số hiện tại vào stack làm mốc mới; độ dài hợp lệ là chỉ số hiện tại trừ đỉnh stack.'
+  ],
+  solution: `### Ý tưởng
+Dùng stack chứa chỉ số các dấu mở chưa khớp. Khi gặp {{')'}}:
+- Nếu stack không rỗng: tính độ dài từ đỉnh stack (chỉ số mở tương ứng) đến hiện tại.
+- Nếu stack rỗng: đẩy chỉ số hiện tại vào stack làm mốc mới cho chuỗi hợp lệ tiếp theo.
+
+~~~java
+class Solution {
+    public int longestValidParentheses(String s) {
+        Stack<Integer> stack = new Stack<>();
+        stack.push(-1); // base index before the first valid substring
+        int maxLen = 0;
+        for (int i = 0; i < s.length(); i++) {
+            if (s.charAt(i) == '(') stack.push(i);
+            else {
+                stack.pop();
+                if (stack.isEmpty()) stack.push(i); // unmatched closing bracket: new base
+                else maxLen = Math.max(maxLen, i - stack.peek());
+            }
+        }
+        return maxLen;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Stack ban đầu chứa -1 để xử lý trường hợp chuỗi bắt đầu bằng dấu đóng; điều này đảm bảo tính độ dài đúng từ mốc đầu tiên.
+- Độ phức tạp thời gian O(n) vì mỗi ký tự chỉ được đẩy và lấy ra một lần từ stack.
+
+> Senior tip: Biến thể thường gặp là "đếm số chuỗi con hợp lệ" hoặc "tìm chuỗi con hợp lệ có độ dài tối thiểu"; cùng một khung stack hoặc DP, chỉ cần điều chỉnh cách tính kết quả cuối.`,
+  starter: 'class Solution {\n    public int longestValidParentheses(String s) {\n        return 0;\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (java.util.Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        Solution s = new Solution();
+        run("example", 2, () -> s.longestValidParentheses("(()"));
+        run("mixed", 4, () -> s.longestValidParentheses(")()())"));
+        run("empty", 0, () -> s.longestValidParentheses(""));
+        run("full", 6, () -> s.longestValidParentheses("()(())"));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n), Space O(n)',
+  follow: ['Nếu thêm dấu ngoặc vuông và nhọn thì sửa thế nào?', 'Có thể dùng DP thay vì stack không? Độ phức tạp thế nào?']
 }
 );
+

@@ -11,3 +11,4 @@ Owns: `js/data/algo.js`
 - Đã thêm algo-069–078 với prompt, lời giải, starter và 5 test/case cho mỗi bài; chủ đề được đặt biến thể để tránh trùng tiêu đề có sẵn.
 - `node --check js/data/algo.js` và harness riêng cho cả 10 bài đều pass; `node scripts/validate.js` → OK.
 - Harness toàn bộ hiện còn lỗi có sẵn ở algo-058: case `unordered` kỳ vọng 2 nhưng trả 1. Không sửa bài ngoài phần bổ sung của T119.Reviewed-by: codex (T119R)
+Reviewed-by: opencode (T119R)
