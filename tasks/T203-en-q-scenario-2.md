@@ -1,6 +1,6 @@
 # T203 — Dịch sang tiếng Anh: q-scenario (12 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-scenario-2.en.js`
 
@@ -16,3 +16,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-scenario-2.en.js` và `node scripts/check-i18n.js q-scenario-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
