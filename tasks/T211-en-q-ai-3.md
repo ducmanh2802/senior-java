@@ -1,6 +1,6 @@
 # T211 — Dịch sang tiếng Anh: q-ai (8 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-ai-3.en.js`
 
@@ -16,3 +16,7 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-ai-3.en.js` và `node scripts/check-i18n.js q-ai-3` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã dịch đầy đủ 8 mục ai-019..ai-026: q, a (đầy đủ các phần giải thích, bảng, code, tip), follow.
+- Đã kiểm tra `node --check` OK, `node scripts/check-i18n.js q-ai-3` OK, `node scripts/validate.js` OK.
+- Không sửa file khác ngoài `js/i18n/q-ai-3.en.js` và file task.
+Reviewed-by: check-i18n (translation, no LLM review)
