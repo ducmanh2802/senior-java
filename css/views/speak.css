@@ -1,1 +1,83 @@
 /* T144: styles for the speaking-practice view; every selector starts with .view-speak */
+
+.view-speak .sp-keys { display: flex; gap: 10px; flex-wrap: wrap; }
+.view-speak .sp-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 0 0 16px; }
+.view-speak .sp-stats .stat { display: flex; flex-direction: column; gap: 2px; }
+.view-speak .sp-stats .num { font-size: 1.55rem; font-weight: 700; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.view-speak .sp-stats .lbl { font-size: .82rem; color: var(--muted); }
+.view-speak .sp-tabs { margin: 0 0 14px; }
+.view-speak .sp-filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin-bottom: 16px; }
+.view-speak .sp-filter { display: flex; flex-direction: column; gap: 4px; min-width: 150px; }
+.view-speak .sp-filter > span { font-size: .8rem; font-weight: 600; color: var(--muted); }
+.view-speak .sp-stage { display: grid; gap: 14px; }
+.view-speak .sp-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.view-speak .sp-pos { margin-left: auto; color: var(--muted); font-size: .85rem; white-space: nowrap; }
+.view-speak .sp-hint { margin: 0; }
+.view-speak .sp-en { font-size: 1.2rem; line-height: 1.65; font-weight: 600; overflow-wrap: anywhere; }
+.view-speak .sp-word.ok { color: var(--ok); }
+.view-speak .sp-word.bad { color: var(--bad); text-decoration: underline wavy; text-underline-offset: 3px; }
+.view-speak .sp-meaning { min-height: 1.5em; }
+.view-speak .sp-vi { margin: 6px 0 0; color: var(--muted); overflow-wrap: anywhere; }
+.view-speak .sp-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.view-speak .sp-rate { display: flex; align-items: center; gap: 6px; font-size: .85rem; color: var(--muted); }
+.view-speak .sp-rate .select { width: auto; padding: 6px 10px; }
+.view-speak .sp-qa-question {
+  min-height: 3.4em; padding: 12px 14px; border-radius: var(--radius-sm);
+  background: var(--surface-2); font-size: 1.15rem; line-height: 1.6; font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.view-speak .sp-hidden-q { font-weight: 500; }
+.view-speak .sp-timer-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.view-speak .sp-timer {
+  font-family: var(--mono); font-size: 1.1rem; font-weight: 700;
+  padding: 5px 12px; border-radius: var(--radius-sm);
+  background: var(--surface-2); border: 1px solid var(--border);
+}
+.view-speak .sp-timer.warn { color: var(--warn); border-color: var(--warn); background: var(--warn-soft); }
+.view-speak .sp-timer.bad { color: var(--bad); border-color: var(--bad); background: var(--bad-soft); }
+.view-speak .sp-interim { min-height: 1.4em; overflow-wrap: anywhere; }
+.view-speak .sp-rec { margin: 0; color: var(--bad); font-size: .85rem; }
+.view-speak .sp-result {
+  display: grid; gap: 10px; padding: 14px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.view-speak .sp-score { font-size: 1.6rem; font-weight: 700; line-height: 1.1; }
+.view-speak .sp-score.ok { color: var(--ok); }
+.view-speak .sp-score.warn { color: var(--warn); }
+.view-speak .sp-score.bad { color: var(--bad); }
+.view-speak .sp-transcript p { margin: 4px 0 0; overflow-wrap: anywhere; }
+.view-speak .sp-sample {
+  margin: 0; padding: 12px 14px; border-radius: var(--radius-sm);
+  background: var(--surface); border: 1px solid var(--border); overflow-wrap: anywhere;
+}
+.view-speak .sp-phrases h4, .view-speak .sp-assess h4 {
+  margin: 0 0 6px; font-size: .82rem; text-transform: uppercase;
+  letter-spacing: .03em; color: var(--muted);
+}
+.view-speak .sp-phrases .chips { gap: 6px; }
+.view-speak .sp-term { font-size: 2rem; font-weight: 700; line-height: 1.2; overflow-wrap: anywhere; }
+.view-speak .sp-term-info {
+  display: grid; grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 14px; margin: 0;
+}
+.view-speak .sp-term-info dt { font-weight: 600; color: var(--muted); }
+.view-speak .sp-term-info dd { margin: 0; overflow-wrap: anywhere; }
+.view-speak .sp-nav { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-top: 2px; }
+.view-speak .btn.is-selected { outline: 2px solid var(--accent); outline-offset: 1px; }
+.view-speak .sp-empty { display: grid; gap: 8px; }
+.view-speak .sp-empty p { margin: 0; }
+
+@media (max-width: 560px) {
+  .view-speak .sp-stats { grid-template-columns: 1fr; }
+  .view-speak .sp-filter { flex: 1 1 100%; min-width: 0; }
+  .view-speak .sp-pos { width: 100%; margin-left: 0; }
+  .view-speak .sp-term-info { grid-template-columns: 1fr; gap: 2px; }
+  .view-speak .sp-term-info dd { margin-bottom: 8px; }
+}
+
+@media (max-width: 360px) {
+  .view-speak .sp-controls .btn { flex: 1 1 auto; }
+  .view-speak .sp-en, .view-speak .sp-qa-question { font-size: 1.05rem; }
+  .view-speak .sp-term { font-size: 1.6rem; }
+}
