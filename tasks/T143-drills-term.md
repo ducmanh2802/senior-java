@@ -1,6 +1,6 @@
 # T143 — Drills phát âm thuật ngữ kỹ thuật
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/drills-term.js`
 
@@ -9,3 +9,4 @@ Owns: `js/data/drills-term.js`
 Thêm **~80 thuật ngữ** `kind: 'term'` mà dev Việt hay đọc sai hoặc ngập ngừng: cache, queue, idempotent, asynchronous, Kubernetes, PostgreSQL, Nginx, OAuth, JSON, YAML, SQL ("sequel"/"S-Q-L"), schema, throughput, latency, scalability, concurrency, deterministic, hierarchy, architecture, Hibernate, Lombok, Gradle, Maven, Kafka, Redis, microservice, payload, legacy, entity, null, char, enum, tuple, suite, height/width, data, gauge, archive… `say`: gợi ý đọc cho người Việt (âm tiết, trọng âm viết HOA, ví dụ "ai-DEM-po-tần"), `wrong`: lỗi hay gặp ("đọc 'cát-chê' cho cache"), `example`: 1 câu tiếng Anh dùng từ đó trong ngữ cảnh phỏng vấn. Chỉ ghi cách đọc bạn chắc chắn đúng (theo từ điển Cambridge/Merriam-Webster). `node scripts/validate.js` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: opencode (T143R)
