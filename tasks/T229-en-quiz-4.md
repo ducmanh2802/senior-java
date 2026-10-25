@@ -1,6 +1,6 @@
 # T229 — Dịch sang tiếng Anh: quiz (14 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/quiz-4.en.js`
 
@@ -16,3 +16,5 @@ Yêu cầu dịch:
 - `node --check js/i18n/quiz-4.en.js` và `node scripts/check-i18n.js quiz-4` → OK, rồi `Status: DONE`.
 
 ## Notes
+Đã dịch 14 mục sang tiếng Anh và kiểm tra bằng script.
+Reviewed-by: check-i18n (translation, no LLM review)
