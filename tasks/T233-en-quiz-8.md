@@ -1,6 +1,7 @@
 # T233 — Dịch sang tiếng Anh: quiz (16 mục)
 
-Status: TODO
+Status: DONE
+Note: Translated 16 quiz items (qz-security-001 to qz-security-008 and qz-behavioral-001 to qz-behavioral-008) into English in js/i18n/quiz-8.en.js. Verified with scripts.
 Agent: opencode
 Owns: `js/i18n/quiz-8.en.js`
 
@@ -16,3 +17,5 @@ Yêu cầu dịch:
 - `node --check js/i18n/quiz-8.en.js` và `node scripts/check-i18n.js quiz-8` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
+Reviewed-by: check-i18n (translation, no LLM review)
