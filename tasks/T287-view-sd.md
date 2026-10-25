@@ -11,4 +11,6 @@ Owns: `js/views/sd.js`, `css/views/sd.css`
 - **Song ngữ:** chuỗi UI qua `App.t` + `App.i18n.add({vi, en})` (giữ key `sd.title`), `get title()`.
 - Phím tắt `n` sang pha, `p` tạm dừng (`<kbd>`, `App.onKey`). Escape dữ liệu, CSS chỉ dùng biến, selector `.view-sd`, responsive 360px, dark mode. Cleanup interval/speech. `node --check` + `node scripts/validate.js` → OK, rồi `Status: DONE`.
 
+- Nếu `App.ui.relatedQuestions` tồn tại (js/core/related.js, task T289): cuối trang đề hiển thị `App.ui.relatedQuestions({ ids: problem.related, topic: "design", limit: 4 })`.
+
 ## Notes
