@@ -37,6 +37,7 @@ open_owner() {   # $1 = task file, $2 = task id; its own review task <id>R does 
 # $PARALLEL reviews at once, one lock per slot (holds the task id; removed when the reviewer exits, stale after 2 h).
 # Slot n uses the n-th model of $REVIEW_MODELS (opencode runner) so parallel reviews don't share one free quota.
 PARALLEL=${PARALLEL:-3}
+PUSH_EVERY=${PUSH_EVERY:-1800}
 REVIEW_FILES=${REVIEW_FILES:-js/data/(q-|lessons-|labs-|glossary-|sd-problems|quiz|drills-|path)|js/i18n/}   # files whose content needs an LLM fact-check
 REVIEW_POOL=${REVIEW_POOL:-nemotron|glm|deepseek|mimo|minimax|inkling:free|north|xing}   # with REVIEW_MODELS=auto; small models only translate
 REVIEW_MODELS=(${REVIEW_MODELS:-opencode/glm-5.3-flash-free openrouter/nvidia/nemotron-3-ultra-550b-a55b:free openrouter/thinkingmachines/inkling:free})
@@ -86,7 +87,7 @@ commit_task() {   # $1 = task file, $2 = task id
 
 $(head -1 "$1" | sed 's/^# //')
 
-Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>" -- $files && git push -q && log "committed + pushed $2 ($(git log --oneline -1 | cut -c1-7))"
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>" -- $files && touch logs/push-pending && log "committed $2 ($(git log --oneline -1 | cut -c1-7))"
   else
     git reset -q
     log "verify FAILED for $2 — left uncommitted: $(echo "$out" | tail -3 | tr '\n' ' ')"
@@ -142,5 +143,9 @@ while true; do
       sleep 5
     fi
   done
+  # Vercel Hobby allows ~100 deployments a day and every push deploys: push batched commits at most every $PUSH_EVERY s
+  if [ -f logs/push-pending ] && ! fresh logs/last-push "$PUSH_EVERY"; then
+    git push -q && { rm -f logs/push-pending; touch logs/last-push; log "pushed $(git log --oneline -1 | cut -c1-7) (batched)"; }
+  fi
   sleep "$EVERY"
 done
