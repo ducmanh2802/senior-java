@@ -1,7 +1,9 @@
 # T242 — Dịch sang tiếng Anh: algo (6 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
+
+Đã dịch các bài thuật toán algo-042 đến algo-047 sang tiếng Anh và lưu vào `js/i18n/algo-7.en.js`. Kiểm tra bằng `scripts/check-i18n.js` đã OK.
 Owns: `js/i18n/algo-7.en.js`
 
 Người dùng bấm EN thì **cả trang** chuyển sang tiếng Anh: file này phủ bản dịch lên dữ liệu gốc theo `id` (đọc comment "content translation" trong `js/core/i18n.js`). Đọc AGENTS.md mục 5 (markup) và các mục sau trong `js/data/algo.js`: **algo-042, algo-043, algo-044, algo-045, algo-046, algo-047**.
@@ -16,3 +18,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/algo-7.en.js` và `node scripts/check-i18n.js algo-7` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
