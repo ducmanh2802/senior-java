@@ -2,6 +2,91 @@
 (function () {
   'use strict';
 
+App.i18n.add({
+  vi: {
+    'flash.title': 'Flashcard',
+    'flash.subtitle': 'Lật thẻ, tự chấm điểm — lịch ôn được lên tự động theo lặp lại ngắt quãng.',
+    'flash.topicLabel': 'Chủ đề',
+    'flash.modeLabel': 'Chế độ',
+    'flash.topicAll': 'Tất cả chủ đề',
+    'flash.modeDue': 'Đến hạn ôn (lặp lại ngắt quãng)',
+    'flash.modeSmart': 'Thông minh (ưu tiên câu yếu)',
+    'flash.modeWeak': 'Chỉ câu chưa thuộc',
+    'flash.modeBookmarked': 'Đã đánh dấu',
+    'flash.modeAll': 'Tất cả (ngẫu nhiên)',
+    'flash.flipBtn': 'Lật thẻ',
+    'flash.flipHint': 'Nghĩ trước khi lật thẻ',
+    'flash.gradeTitle': 'Chấm để tự đánh giá:',
+    'flash.gradeUnknown': 'Chưa biết',
+    'flash.gradeReview': 'Cần ôn',
+    'flash.gradeKnown': 'Đã thuộc',
+    'flash.emptyTitle': 'Chưa có câu nào trong bộ bài này',
+    'flash.emptyHint': 'Bộ bài đang chọn không có câu phù hợp. Hãy đổi chủ đề hoặc chế độ ôn.',
+    'flash.newDeckBtn': 'Bộ bài mới',
+    'flash.viewBankBtn': 'Xem ngân hàng câu hỏi',
+    'flash.summaryTitle': 'Hết bộ bài',
+    'flash.summaryText': 'Bạn đã chấm {n} câu trong phiên này.',
+    'flash.weakBtn': 'Ôn lại câu chưa thuộc',
+    'flash.toastSaved': 'Đã lưu tiến độ',
+    'flash.toastDueDays': 'Ôn lại sau {n} ngày',
+    'flash.followTitle': 'Câu hỏi đào sâu thường gặp',
+    'flash.bookmarkedBadge': '★ Đã đánh dấu',
+    'flash.keysFlip': 'lật thẻ',
+    'flash.keysUnknown': 'chưa biết',
+    'flash.keysReview': 'cần ôn',
+    'flash.keysKnown': 'đã thuộc',
+    'flash.keysNav': 'điều hướng',
+    'flash.keysBookmark': 'đánh dấu',
+      'flash.toastBookmarked': 'Đã đánh dấu câu hỏi', 'flash.toastUnmarked': 'Đã bỏ đánh dấu',
+      'flash.hint.due': 'Câu chưa vững sẽ quay lại sau 1–2 ngày, câu đã thuộc giãn dần 3 → 8 → 20+ ngày.',
+      'flash.hint.smart': 'Ưu tiên: đến hạn → chưa biết → chưa học → cần ôn → đã thuộc.',
+      'flash.hint.weak': 'Chỉ luyện những câu bạn chưa thuộc (chưa biết / cần ôn / chưa học).',
+      'flash.hint.bookmarked': 'Chỉ những câu bạn đã đánh dấu sao.',
+      'flash.hint.all': 'Toàn bộ câu hỏi trong bộ, xáo trộn ngẫu nhiên.',
+  },
+  en: {
+    'flash.title': 'Flashcards',
+    'flash.subtitle': 'Flip cards, self-rate — reviews are scheduled automatically with spaced repetition.',
+    'flash.topicLabel': 'Topic',
+    'flash.modeLabel': 'Mode',
+    'flash.topicAll': 'All topics',
+    'flash.modeDue': 'Due (spaced review)',
+    'flash.modeSmart': 'Smart (prioritize weak)',
+    'flash.modeWeak': 'Only unlearned',
+    'flash.modeBookmarked': 'Bookmarked',
+    'flash.modeAll': 'All (random)',
+    'flash.flipBtn': 'Flip <kbd>Space</kbd>',
+    'flash.flipHint': 'Think before flipping',
+    'flash.gradeTitle': 'Self-rate:',
+    'flash.gradeUnknown': "Don't know",
+    'flash.gradeReview': 'Review',
+    'flash.gradeKnown': 'Known',
+    'flash.emptyTitle': 'No cards in this deck',
+    'flash.emptyHint': 'The selected deck has no matching questions. Try changing the topic or mode.',
+    'flash.newDeckBtn': 'New deck',
+    'flash.viewBankBtn': 'View question bank',
+    'flash.summaryTitle': 'Deck complete',
+    'flash.summaryText': 'You rated {n} cards in this session.',
+    'flash.weakBtn': 'Review weak cards',
+    'flash.toastSaved': 'Progress saved',
+    'flash.toastDueDays': 'Review in {n} days',
+    'flash.followTitle': 'Common follow-up questions',
+    'flash.bookmarkedBadge': '★ Bookmarked',
+    'flash.keysFlip': 'flip',
+    'flash.keysUnknown': "don't know",
+    'flash.keysReview': 'review',
+    'flash.keysKnown': 'known',
+    'flash.keysNav': 'navigate',
+    'flash.keysBookmark': 'bookmark',
+      'flash.toastBookmarked': 'Bookmarked', 'flash.toastUnmarked': 'Unbookmarked',
+      'flash.hint.due': 'Weak questions return after 1–2 days, known questions stretch 3 → 8 → 20+ days.',
+      'flash.hint.smart': 'Priority: due → unknown → unseen → review → known.',
+      'flash.hint.weak': 'Only practice questions you haven\'t learned (unknown / review / unseen).',
+      'flash.hint.bookmarked': 'Only bookmarked questions.',
+      'flash.hint.all': 'All questions in the set, randomly shuffled.',
+  },
+});
+
   const MODES = [
     { id: 'due', label: 'Đến hạn ôn (lặp lại ngắt quãng)' },
     { id: 'smart', label: 'Thông minh (ưu tiên câu yếu)' },
@@ -97,7 +182,7 @@
   function statusBadge(id) {
     const s = App.store.getStatus(id);
     if (s && App.STATUS[s]) return '<span class="badge ' + App.STATUS[s].cls + '">' + App.STATUS[s].label + '</span>';
-    return '<span class="badge">Chưa học</span>';
+    return '<span class="badge">' + App.t('flash.gradeUnknown') + '</span>';
   }
 
   /** Select chủ đề (mặc định lấy từ param của route). */
@@ -137,11 +222,11 @@
       '<div class="flash-card-meta">' +
         '<span class="badge">' + App.esc((t.icon ? t.icon + ' ' : '') + t.name) + '</span>' +
         levelBadge(q) + statusBadge(q.id) +
-        (App.store.isBookmarked(q.id) ? '<span class="badge accent">★ Đã đánh dấu</span>' : '') +
+        (App.store.isBookmarked(q.id) ? '<span class="badge accent">' + App.t('flash.bookmarkedBadge') + '</span>' : '') +
       '</div>' +
       '<div class="flash-q"' + (q.lang === 'en' ? ' lang="en"' : '') + '>' + App.md(q.q) + '</div>' +
       '<div class="flash-card-foot"><span class="small muted">Nghĩ trước khi lật thẻ</span>' +
-        '<button type="button" class="btn primary" id="flashFlip">Lật thẻ <kbd>Space</kbd></button>' +
+        '<button type="button" class="btn primary" id="flashFlip">' + App.t('flash.flipBtn') + '</button>' +
       '</div>' +
     '</div>';
   }
@@ -158,7 +243,7 @@
       '<div class="flash-a md">' + App.md(q.a) + '</div>' +
       (follow ? '<div class="flash-follow"><h4>Câu hỏi đào sâu thường gặp</h4><ul>' + follow + '</ul></div>' : '') +
       '<div class="flash-grade">' +
-        '<span class="small muted">Chấm để tự đánh giá:</span>' +
+        '<span class="small muted">' + App.t('flash.gradeTitle') + '</span>' +
         GRADES.map(g => '<button type="button" class="btn ' + g.cls + '" data-grade="' + g.id + '">' +
           g.label + ' <kbd>' + g.key + '</kbd></button>').join('') +
       '</div>' +
@@ -186,9 +271,9 @@
       '<div class="flash-progress-top">' +
         '<span class="flash-count">' + done + ' / ' + S.deck.length + '</span>' +
         '<span class="flash-counts">' +
-          '<span class="badge bad">Chưa biết: ' + c.unknown + '</span>' +
-          '<span class="badge warn">Cần ôn: ' + c.review + '</span>' +
-          '<span class="badge ok">Đã thuộc: ' + c.known + '</span>' +
+          '<span class="badge bad">' + App.t('flash.gradeUnknown') + ': ' + c.unknown + '</span>' +
+          '<span class="badge warn">' + App.t('flash.gradeReview') + ': ' + c.review + '</span>' +
+          '<span class="badge ok">' + App.t('flash.gradeKnown') + ': ' + c.known + '</span>' +
         '</span>' +
       '</div>' +
       '<div class="progress"><i class="accent" style="width:' + pct + '%"></i></div>' +
@@ -198,12 +283,12 @@
   /** Gợi ý phím tắt. */
   function keysHtml() {
     return '<div class="flash-keys small muted">' +
-      '<span><kbd>Space</kbd> lật thẻ</span>' +
-      '<span><kbd>1</kbd> chưa biết</span>' +
-      '<span><kbd>2</kbd> cần ôn</span>' +
-      '<span><kbd>3</kbd> đã thuộc</span>' +
-      '<span><kbd>←</kbd> <kbd>→</kbd> điều hướng</span>' +
-      '<span><kbd>B</kbd> đánh dấu</span>' +
+      '<span><kbd>Space</kbd> ' + App.t('flash.keysFlip') + '</span>' +
+      '<span><kbd>1</kbd> ' + App.t('flash.keysUnknown') + '</span>' +
+      '<span><kbd>2</kbd> ' + App.t('flash.keysReview') + '</span>' +
+      '<span><kbd>3</kbd> ' + App.t('flash.keysKnown') + '</span>' +
+      '<span><kbd>←</kbd> <kbd>→</kbd> ' + App.t('flash.keysNav') + '</span>' +
+      '<span><kbd>B</kbd> ' + App.t('flash.keysBookmark') + '</span>' +
     '</div>';
   }
 
@@ -216,18 +301,18 @@
       return s === 'unknown' || s === 'review';
     });
     return '<section class="card flash-summary">' +
-      '<h2>Hết bộ bài</h2>' +
-      '<p class="muted">Bạn đã chấm ' + graded + ' câu trong phiên này.</p>' +
+      '<h2>' + App.t('flash.summaryTitle') + '</h2>' +
+      '<p class="muted">' + App.t('flash.summaryText', {n: graded}) + '</p>' +
       '<div class="flash-sum-stats">' +
-        '<div class="stat"><div class="num bad">' + c.unknown + '</div><div class="lbl">Chưa biết</div></div>' +
-        '<div class="stat"><div class="num warn">' + c.review + '</div><div class="lbl">Cần ôn</div></div>' +
-        '<div class="stat"><div class="num ok">' + c.known + '</div><div class="lbl">Đã thuộc</div></div>' +
+        '<div class="stat"><div class="num bad">' + c.unknown + '</div><div class="lbl">' + App.t('flash.gradeUnknown') + '</div></div>' +
+        '<div class="stat"><div class="num warn">' + c.review + '</div><div class="lbl">' + App.t('flash.gradeReview') + '</div></div>' +
+        '<div class="stat"><div class="num ok">' + c.known + '</div><div class="lbl">' + App.t('flash.gradeKnown') + '</div></div>' +
       '</div>' +
       '<div class="row flash-sum-actions">' +
         '<button type="button" class="btn primary" id="flashRetryWeak"' + (weak.length ? '' : ' disabled') + '>' +
           'Ôn lại câu chưa thuộc (' + weak.length + ')</button>' +
         '<button type="button" class="btn" id="flashNewDeck">Bộ bài mới</button>' +
-        '<a class="btn ghost" href="#/bank">Xem ngân hàng câu hỏi</a>' +
+        '<a class="btn ghost" href="#/bank">' + App.t('flash.viewBankBtn') + '</a>' +
       '</div>' +
     '</section>';
   }
@@ -247,7 +332,7 @@
     S.counts[status] = (S.counts[status] || 0) + 1;
     S.graded[q.id] = status;
     const days = nextDueDays(q.id);
-    showToast(days == null ? 'Đã lưu tiến độ' : 'Ôn lại sau ' + days + ' ngày');
+    showToast(days == null ? App.t('flash.toastSaved') : App.t('flash.toastDueDays', {n: days}));
     goNext();
   }
 
@@ -299,11 +384,11 @@
   /** Bộ bài rỗng: hướng dẫn đổi chế độ/topic. */
   function emptyHtml() {
     return '<section class="card flash-empty">' +
-      '<h2>Chưa có câu nào trong bộ bài này</h2>' +
-      '<p class="muted">Bộ bài đang chọn không có câu phù hợp. Hãy đổi chủ đề hoặc chế độ ôn.</p>' +
+      '<h2>' + App.t('flash.emptyTitle') + '</h2>' +
+      '<p class="muted">' + App.t('flash.emptyHint') + '</p>' +
       '<div class="row">' +
-        '<button type="button" class="btn primary" id="flashNewDeck">Bộ bài mới</button>' +
-        '<a class="btn ghost" href="#/bank">Xem ngân hàng câu hỏi</a>' +
+        '<button type="button" class="btn primary" id="flashNewDeck">' + App.t('flash.newDeckBtn') + '</button>' +
+        '<a class="btn ghost" href="#/bank">' + App.t('flash.viewBankBtn') + '</a>' +
       '</div>' +
     '</section>';
   }
@@ -396,13 +481,13 @@
       const q = S.deck[S.idx];
       if (!q) return;
       const on = App.store.toggleBookmark(q.id);
-      showToast(on ? 'Đã đánh dấu câu hỏi' : 'Đã bỏ đánh dấu');
+      showToast(on ? App.t('flash.toastBookmarked') : App.t('flash.toastUnmarked'));
       renderCard();
     }
   }
 
   App.registerView('flash', {
-    title: 'Flashcard',
+    get title() { return App.t('flash.title'); },
     render(root, params) {
       const p = (params && params[0]) || '';
       // Route #/flash/due => chế độ đến hạn; #/flash/<topicId> => chủ đề đó.

@@ -1,6 +1,6 @@
 # T151 — Song ngữ EN/VI cho giao diện: bank, flash, quiz
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/views/bank.js`, `js/views/flash.js`, `js/views/quiz.js`
 
@@ -13,3 +13,10 @@ Với từng file được giao:
 4. `node --check` từng file, `grep` lại để chắc không sót chuỗi tiếng Việt hiển thị (comment thì giữ), `node scripts/validate.js` → OK, rồi `Status: DONE` + ghi chú số key đã thêm.
 
 ## Notes
+
+## Notes
+- `bank`: thêm ~35 key (title, subtitle, search, level, hide answer, status chips, grades, practice, answer hidden/reveal, follow, self-assess, expand/collapse, more, count, empty, mic, ai wait, bookmark, due label, filter aria, topic all). Title đổi thành getter `get title() { return App.t('bank.title'); }`.
+- `flash`: thêm ~25 key (title, subtitle, mode labels/chips, flip/grade/empty/new deck/bank links, summary, weak retry, toast saved/due, bookmark badge, keys, follow title, hint). Title đổi thành getter.
+- `quiz`: thêm ~20 key (title, subtitle, topic/count setup, start/history/result titles/actions, timer label, result breakdown, wrong items, score badge, nav buttons, topic chips). Title đổi thành getter.
+- Không sửa file khác (core/app/i18n giữ nguyên). `node --check` OK cho cả 3 file. `node scripts/validate.js` → OK.
+Reviewed-by: verify-only (code/UI task)
