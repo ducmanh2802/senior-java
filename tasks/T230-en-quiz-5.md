@@ -1,6 +1,7 @@
 # T230 — Dịch sang tiếng Anh: quiz (14 mục)
 
-Status: TODO
+Status: DONE
+Notes: Translated 14 quiz items to English in js/i18n/quiz-5.en.js. Verified with scripts/check-i18n.js and scripts/validate.js.
 Agent: opencode
 Owns: `js/i18n/quiz-5.en.js`
 
@@ -16,3 +17,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/quiz-5.en.js` và `node scripts/check-i18n.js quiz-5` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
