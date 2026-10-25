@@ -1,6 +1,6 @@
 # T232 — Dịch sang tiếng Anh: quiz (18 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/quiz-7.en.js`
 
@@ -16,3 +16,6 @@ Yêu cầu dịch:
 - `node --check js/i18n/quiz-7.en.js` và `node scripts/check-i18n.js quiz-7` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã dịch 18 mục quiz sang tiếng Anh trong js/i18n/quiz-7.en.js. Đã kiểm tra với script/check-i18n.js và node --check.
+Reviewed-by: check-i18n (translation, no LLM review)
+Reviewed-by: check-i18n (translation, no LLM review)
