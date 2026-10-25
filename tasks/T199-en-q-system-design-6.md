@@ -1,6 +1,6 @@
 # T199 — Dịch sang tiếng Anh: q-system-design (7 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-system-design-6.en.js`
 
@@ -16,3 +16,6 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-system-design-6.en.js` và `node scripts/check-i18n.js q-system-design-6` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+Ghi chú: Đã viết đầy đủ 7 mục (architecture-012 đến architecture-018) vào `js/i18n/q-system-design-6.en.js`. Dịch chính xác, giữ nguyên markup, `node --check` OK, `node scripts/check-i18n.js q-system-design-6` OK (7 mục), `node scripts/validate.js` OK.
+Reviewed-by: check-i18n (translation, no LLM review)
