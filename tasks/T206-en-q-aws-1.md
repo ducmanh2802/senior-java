@@ -1,6 +1,6 @@
 # T206 — Dịch sang tiếng Anh: q-aws (11 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-aws-1.en.js`
 
@@ -16,3 +16,5 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-aws-1.en.js` và `node scripts/check-i18n.js q-aws-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Dịch xong 11 mục aws-001..aws-011; giữ nguyên markup, không có tags/field thừa, syntax OK, check-i18n OK, validate OK.
+Reviewed-by: check-i18n (translation, no LLM review)
