@@ -1,6 +1,7 @@
 # T249 — Dịch sang tiếng Anh: labs-thread (1 mục)
 
-Status: TODO
+Status: DONE
+Note: Translated lab-thread-003 to English in js/i18n/labs-thread-3.en.js. Verified with scripts/check-i18n.js labs-thread-3.
 Agent: opencode
 Owns: `js/i18n/labs-thread-3.en.js`
 
@@ -16,3 +17,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/labs-thread-3.en.js` và `node scripts/check-i18n.js labs-thread-3` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
