@@ -1,6 +1,7 @@
 # T179 — Dịch sang tiếng Anh: q-spring-data (9 mục)
 
-Status: TODO
+Status: DONE
+Ghi chú: Đã hoàn thành dịch 9 mục (db-016, db-017, db-018, db-019, spring-022, spring-023, spring-024, spring-025, spring-026) vào `js/i18n/q-spring-data-7.en.js`; sửa lỗi cú pháp (backtick sai trong bảng rollback và chuỗi `q`); `node --check` và `node scripts/check-i18n.js q-spring-data-7` OK; `node scripts/validate.js` OK.
 Agent: opencode
 Owns: `js/i18n/q-spring-data-7.en.js`
 
@@ -16,3 +17,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-spring-data-7.en.js` và `node scripts/check-i18n.js q-spring-data-7` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
