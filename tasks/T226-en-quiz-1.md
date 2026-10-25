@@ -1,6 +1,7 @@
 # T226 — Dịch sang tiếng Anh: quiz (20 mục)
 
-Status: TODO
+Status: DONE
+Note: Translated 20 quiz questions to English in `js/i18n/quiz-1.en.js`. Validation OK for i18n.
 Agent: opencode
 Owns: `js/i18n/quiz-1.en.js`
 
@@ -16,3 +17,5 @@ Yêu cầu dịch:
 - `node --check js/i18n/quiz-1.en.js` và `node scripts/check-i18n.js quiz-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
+Reviewed-by: check-i18n (translation, no LLM review)
