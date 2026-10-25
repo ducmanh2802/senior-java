@@ -1,6 +1,6 @@
 # T201 — Dịch sang tiếng Anh: q-system-design (3 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-system-design-8.en.js`
 
@@ -16,3 +16,5 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-system-design-8.en.js` và `node scripts/check-i18n.js q-system-design-8` → OK, rồi `Status: DONE`.
 
 ## Notes
+Đã dịch đầy đủ design-025, design-026, design-027 giữ nguyên markup và chi tiết kỹ thuật; chạy node --check và check-i18n OK; validate.js OK.
+Reviewed-by: check-i18n (translation, no LLM review)
