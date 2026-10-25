@@ -1,6 +1,6 @@
 # T157 — View "Tin tức mỗi sáng" (#/news)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 After: T156
 Owns: `js/views/news.js`, `css/views/news.css`
@@ -15,3 +15,11 @@ Owns: `js/views/news.js`, `css/views/news.css`
 - Escape mọi dữ liệu bằng `App.esc()`, CSS chỉ dùng biến, selector `.view-news`, responsive 360px, dark mode. `node --check` + `node scripts/validate.js` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Implemented full news view with category tabs (tech/hiring/company/all), day range (1/3/7), search, source filter.
+- Items grouped by day with "Hôm nay"/"Hôm qua" labels; unread items bold; mark-read and save/unsave with localStorage (max 2000 IDs).
+- Skeleton loading, proper error handling for no_server/configured:false, empty state.
+- Keyboard shortcuts: `r` refresh, `/` focus search via App.onKey.
+- Full bilingual support via App.i18n, date formatting via App.lang.
+- All data escaped with App.esc(), CSS uses variables with .view-news prefix, responsive to 360px, dark mode compatible.
+- node --check and node scripts/validate.js both pass.
+Reviewed-by: verify-only (code/UI task)
