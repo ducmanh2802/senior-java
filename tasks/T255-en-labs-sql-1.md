@@ -1,6 +1,6 @@
 # T255 — Dịch sang tiếng Anh: labs-sql (2 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/labs-sql-1.en.js`
 
@@ -16,3 +16,5 @@ Yêu cầu dịch:
 - `node --check js/i18n/labs-sql-1.en.js` và `node scripts/check-i18n.js labs-sql-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+Translated lab-sql-001 and lab-sql-002 to English in `js/i18n/labs-sql-1.en.js`. Validated with `scripts/check-i18n.js`.
+Reviewed-by: check-i18n (translation, no LLM review)
