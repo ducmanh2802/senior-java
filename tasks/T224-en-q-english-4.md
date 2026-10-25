@@ -1,6 +1,7 @@
 # T224 — Dịch sang tiếng Anh: q-english (18 mục)
 
-Status: TODO
+Status: DONE
+Note: Translated questions english-040 to english-057 into js/i18n/q-english-4.en.js. Expanded answers for 055-057 to satisfy validator warnings.
 Agent: opencode
 Owns: `js/i18n/q-english-4.en.js`
 
@@ -16,3 +17,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-english-4.en.js` và `node scripts/check-i18n.js q-english-4` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
