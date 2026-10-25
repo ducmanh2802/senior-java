@@ -1,6 +1,6 @@
 # T140 — View "Lộ trình học" (#/path)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/views/path.js`, `css/views/path.css`
 
@@ -15,3 +15,11 @@ Owns: `js/views/path.js`, `css/views/path.css`
 - **Song ngữ (bắt buộc):** mọi chuỗi giao diện qua `App.t(key, vars)`; đăng ký từ điển ở đầu IIFE bằng `App.i18n.add({ vi: {...}, en: {...} })` (key dạng `<view>.<tên>`), `title` của view viết dạng `get title() { return App.t("<view>.title"); }`. Xem comment đầu `js/core/i18n.js`. Nội dung dữ liệu (câu hỏi, đáp án, bài học, drill) giữ nguyên, không dịch.
 
 ## Notes
+- View hoàn chỉnh: timeline dọc theo `phase`, thẻ `<details>/<summary>` (mở/đóng semantic, có caret), chặng "Đang học" tự mở lại khi tiến độ đổi trừ khi người dùng tự đóng; trạng thái `done | current | ready | locked` (thêm nhãn thứ 4 "Sẵn sàng" cho chặng song song: requires xong nhưng chưa phải chặng đầu chưa xong — task chỉ liệt kê 3 trạng thái, song song cần phân biệt).
+- "Học trước vẫn được": bấm mở chặng locked + bỏ mờ (`is-peeked`), ẩn luôn nút; `preventDefault` để không toggle `<details>` hai lần.
+- Quy tắc chặng xong đúng spec: mọi lesson `known` + ≥ 70% câu chốt `known` (chặng không có câu chốt → điều kiện câu mặc định xong); tiến độ tổng đếm id duy nhất (Set); id không tồn tại hiển thị đúng id, không crash.
+- i18n: 30 key `path.*` (vi/en) đăng ký đầu IIFE, `get title()` dùng `App.t`, mọi chuỗi UI qua `App.t`, dữ liệu giữ nguyên.
+- Phím tắt `c` = Tiếp tục (`App.onKey`, có `<kbd>c</kbd>`); ẩn nút khi không còn bài học chưa xong trong chặng hiện tại.
+- Đã chạy: `node --check js/views/path.js`, `node scripts/validate.js` → OK, và smoke test Node qua browser-shim (không mở trình duyệt): 46/46 pass — render vi/en, 4 trạng thái chặng, ngưỡng 60%/75% câu chốt, PATH rỗng, id lesson/question không tồn tại.
+- **Đề xuất integrator** (không tự sửa file khác): thêm link nội dung sang `#/path` từ dashboard/roadmap (nav menu đã có sẵn `#/path`).
+Reviewed-by: opencode (T140R)
