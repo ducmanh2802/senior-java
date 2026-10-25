@@ -1,6 +1,6 @@
 # T220 — Dịch sang tiếng Anh: q-soft (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-soft-5.en.js`
 
@@ -16,3 +16,6 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-soft-5.en.js` và `node scripts/check-i18n.js q-soft-5` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã dịch behavioral-020: q, a, follow. Giữ nguyên markup, thuật ngữ, bảng, quote, senior tip. Chạy `node --check` OK, `node scripts/check-i18n.js q-soft-5` OK, `node scripts/validate.js` OK.
+Reviewed-by: check-i18n (translation, no LLM review)
+Reviewed-by: check-i18n (translation, no LLM review)
