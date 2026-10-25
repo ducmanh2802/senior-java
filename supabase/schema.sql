@@ -108,3 +108,24 @@ with (security_invoker = true) as
     and u.day = (now() at time zone 'Asia/Ho_Chi_Minh')::date;
 
 grant select on public.my_ai_usage_today to authenticated;
+
+-- ---------- news_items: public news fetched by cron (T156) ----------
+create table if not exists public.news_items (
+  id          bigint generated always as identity primary key,
+  url         text unique not null,
+  category    text not null check (category in ('tech','hiring','company')),
+  source      text not null,
+  title       text not null,
+  summary     text,
+  published   timestamptz not null,
+  fetched_at  timestamptz not null default now()
+);
+
+create index if not exists news_items_published_desc on public.news_items (published desc);
+
+alter table public.news_items enable row level security;
+
+drop policy if exists "news_items: public read" on public.news_items;
+create policy "news_items: public read" on public.news_items
+  for select using (true);
+-- no insert/update/delete policy for anon/authenticated: only server (service role) writes
