@@ -1,7 +1,9 @@
 # T253 — Dịch sang tiếng Anh: labs-gc (2 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
+
+Đã dịch xong lab-gc-003 và lab-gc-004 sang tiếng Anh. Kiểm tra qua validate và check-i18n đều OK.
 Owns: `js/i18n/labs-gc-2.en.js`
 
 Người dùng bấm EN thì **cả trang** chuyển sang tiếng Anh: file này phủ bản dịch lên dữ liệu gốc theo `id` (đọc comment "content translation" trong `js/core/i18n.js`). Đọc AGENTS.md mục 5 (markup) và các mục sau trong `js/data/labs-gc.js`: **lab-gc-003, lab-gc-004**.
@@ -16,3 +18,5 @@ Yêu cầu dịch:
 - `node --check js/i18n/labs-gc-2.en.js` và `node scripts/check-i18n.js labs-gc-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
+Reviewed-by: check-i18n (translation, no LLM review)
