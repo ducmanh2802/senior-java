@@ -1,6 +1,7 @@
 # T204 — Dịch sang tiếng Anh: q-scenario (17 mục)
 
-Status: TODO
+Status: DONE
+Ghi chú: Đã dịch đủ 17 mục scenario-027 đến scenario-043 trong js/i18n/q-scenario-3.en.js; giữ nguyên markup, thuật ngữ kỹ thuật, code block và cấu trúc follow. Đã chạy node --check và node scripts/check-i18n.js q-scenario-3 (OK 17 mục) và node scripts/validate.js (OK, không lỗi liên quan).
 Agent: opencode
 Owns: `js/i18n/q-scenario-3.en.js`
 
@@ -16,3 +17,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-scenario-3.en.js` và `node scripts/check-i18n.js q-scenario-3` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
