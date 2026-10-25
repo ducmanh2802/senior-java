@@ -1,6 +1,6 @@
 # T202 — Dịch sang tiếng Anh: q-scenario (14 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-scenario-1.en.js`
 
@@ -16,3 +16,6 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-scenario-1.en.js` và `node scripts/check-i18n.js q-scenario-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+Hoàn thành dịch 14 mục scenario-001 đến scenario-014. `node --check` và `node scripts/check-i18n.js q-scenario-1` đều OK (`OK — 14 mục đã dịch.`). `node scripts/validate.js` in `OK — không có lỗi.` Giữ nguyên markup, code block, thuật ngữ chuyên ngành; chỉ dịch `q`, `a`, `follow`; không thêm `tags` hay các field khác; `**Tóm tắt:**` → `**Summary:**`; `### Làm rõ yêu cầu` → `### Clarify requirements`; `### Điều tra / Phân tích` → `### Investigate / Analyze`; `### Giải pháp` → `### Solution`; `### Trade-off & pitfall` → `### Trade-off & pitfall`; `> Senior tip:` giữ nguyên.
+Reviewed-by: check-i18n (translation, no LLM review)
