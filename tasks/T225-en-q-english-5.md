@@ -1,6 +1,10 @@
 # T225 — Dịch sang tiếng Anh: q-english (6 mục)
 
-Status: TODO
+Status: DONE
+
+## Notes
+- Translated questions english-058 to english-063 into js/i18n/q-english-5.en.js.
+- Note: `node scripts/validate.js` reports that questions english-058 through english-062 have answers that are too short (< 1500 characters). Since I am only responsible for translation and not the original content, I have left the original content as is.
 Agent: opencode
 Owns: `js/i18n/q-english-5.en.js`
 
@@ -16,3 +20,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-english-5.en.js` và `node scripts/check-i18n.js q-english-5` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
