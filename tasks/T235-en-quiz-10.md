@@ -1,7 +1,9 @@
 # T235 — Dịch sang tiếng Anh: quiz (7 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
+
+Đã dịch 7 câu hỏi quiz sang tiếng Anh trong js/i18n/quiz-10.en.js: qz-kotlin-008, qz-testing-007, qz-testing-008, qz-aws-007, qz-aws-008, qz-ai-007, qz-ai-008. Đã validate và check-i18n thành công.
 Owns: `js/i18n/quiz-10.en.js`
 
 Người dùng bấm EN thì **cả trang** chuyển sang tiếng Anh: file này phủ bản dịch lên dữ liệu gốc theo `id` (đọc comment "content translation" trong `js/core/i18n.js`). Đọc AGENTS.md mục 5 (markup) và các mục sau trong `js/data/quiz.js`: **qz-kotlin-008, qz-testing-007, qz-testing-008, qz-aws-007, qz-aws-008, qz-ai-007, qz-ai-008**.
@@ -16,3 +18,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/quiz-10.en.js` và `node scripts/check-i18n.js quiz-10` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
