@@ -1,8 +1,10 @@
 # T223 — Dịch sang tiếng Anh: q-english (13 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-english-3.en.js`
+
+Đã dịch xong 13 mục (english-027 → english-039) vào `js/i18n/q-english-3.en.js`. Giữ nguyên markup, thuật ngữ kỹ thuật, dịch đúng `**Summary:**`/`> Senior tip:`/`### Interview notes` và các nhãn cố định. `node scripts/check-i18n.js q-english-3` → OK; `node --check` → OK. Không sửa file khác, không git commit.
 
 Người dùng bấm EN thì **cả trang** chuyển sang tiếng Anh: file này phủ bản dịch lên dữ liệu gốc theo `id` (đọc comment "content translation" trong `js/core/i18n.js`). Đọc AGENTS.md mục 5 (markup) và các mục sau trong `js/data/q-english.js`: **english-027, english-028, english-029, english-030, english-031, english-032, english-033, english-034, english-035, english-036, english-037, english-038, english-039**.
 
@@ -16,3 +18,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-english-3.en.js` và `node scripts/check-i18n.js q-english-3` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
