@@ -1,6 +1,6 @@
 # T183 — Dịch sang tiếng Anh: q-sql (8 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-sql-2.en.js`
 
@@ -16,3 +16,6 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-sql-2.en.js` và `node scripts/check-i18n.js q-sql-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+Translated 8 questions (sql-009 through sql-016) to English. Both validation checks passed: `node --check js/i18n/q-sql-2.en.js` (no syntax errors) and `node scripts/check-i18n.js q-sql-2` (OK — 8 items translated). Full `node scripts/validate.js` also passes.
+Reviewed-by: check-i18n (translation, no LLM review)
