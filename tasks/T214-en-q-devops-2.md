@@ -1,6 +1,6 @@
 # T214 — Dịch sang tiếng Anh: q-devops (8 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-devops-2.en.js`
 
@@ -16,3 +16,8 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-devops-2.en.js` và `node scripts/check-i18n.js q-devops-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã dịch 8 mục devops-010 đến devops-017 sang tiếng Anh kỹ thuật, giữ nguyên markup, code block và bảng.
+- Loại bỏ field tags khỏi overlay theo validator (chỉ giữ q, a, follow).
+- `node --check` và `node scripts/check-i18n.js q-devops-2` → OK; `node scripts/validate.js` → OK.
+- Không sửa file ngoài `js/i18n/q-devops-2.en.js`.
+Reviewed-by: check-i18n (translation, no LLM review)
