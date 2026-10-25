@@ -1,7 +1,9 @@
 # T257 — Dịch sang tiếng Anh: labs-sql (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
+
+Đã dịch `lab-sql-004` sang `js/i18n/labs-sql-3.en.js`. Chạy validate OK cho mục được dịch.
 Owns: `js/i18n/labs-sql-3.en.js`
 
 Người dùng bấm EN thì **cả trang** chuyển sang tiếng Anh: file này phủ bản dịch lên dữ liệu gốc theo `id` (đọc comment "content translation" trong `js/core/i18n.js`). Đọc AGENTS.md mục 5 (markup) và các mục sau trong `js/data/labs-sql.js`: **lab-sql-004**.
@@ -16,3 +18,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/labs-sql-3.en.js` và `node scripts/check-i18n.js labs-sql-3` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
