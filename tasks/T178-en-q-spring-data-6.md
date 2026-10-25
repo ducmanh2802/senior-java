@@ -1,6 +1,6 @@
 # T178 — Dịch sang tiếng Anh: q-spring-data (8 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-spring-data-6.en.js`
 
@@ -16,3 +16,5 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-spring-data-6.en.js` và `node scripts/check-i18n.js q-spring-data-6` → OK, rồi `Status: DONE`.
 
 ## Notes
+Translated 8 questions (jpa-018..jpa-021, db-012..db-015): JPA/Hibernate/Spring Data JPA layering, save vs persist/merge/findById/getReferenceById, CascadeType and FetchType defaults with the ManyToMany REMOVE trap, derived queries vs @Query vs native SQL with Pageable count query, PostgreSQL MVCC/VACUUM/bloat/wraparound, index types (B-tree, partial, expression, GIN, BRIN), partitioning with pruning and constraints, and the three join algorithms. Kept all markup ({{code}}, tables, ###, > Senior tip), translated SQL/Java comments only. Checks pass: node --check, check-i18n q-spring-data-6 → OK (8/8), validate.js → OK.
+Reviewed-by: check-i18n (translation, no LLM review)
