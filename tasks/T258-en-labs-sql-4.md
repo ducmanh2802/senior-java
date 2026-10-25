@@ -1,6 +1,8 @@
 # T258 — Dịch sang tiếng Anh: labs-sql (4 mục)
 
-Status: TODO
+Status: DONE
+
+Ghi chú: js/i18n/labs-sql-4.en.js đã có bản dịch hoàn chỉnh cho 4 mục (lab-sql-005..008): node --check + scripts/check-i18n.js đều OK.
 Agent: opencode
 Owns: `js/i18n/labs-sql-4.en.js`
 
@@ -16,3 +18,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/labs-sql-4.en.js` và `node scripts/check-i18n.js labs-sql-4` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
