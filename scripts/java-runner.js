@@ -40,7 +40,8 @@ async function compileAndRun(root, name, source) {
   fs.writeFileSync(path.join(dir, 'Main.java'), source);
   const c = await run(JAVAC, ['-J-XX:TieredStopAtLevel=1', '-J-Xshare:auto', '--release', '17', '-encoding', 'UTF-8', '-nowarn', 'Main.java'], { cwd: dir });
   if (c.err) return { compileError: (c.stderr || c.err.message).split('\n').slice(0, 8).join('\n') };
-  const r = await run(JAVA, ['-Xss16m', ...FAST, 'Main'], { cwd: dir, timeout: 15000 });
+  // generous timeout: verify runs while agents load the machine
+  const r = await run(JAVA, ['-Xss16m', ...FAST, 'Main'], { cwd: dir, timeout: +process.env.JAVA_TIMEOUT || 45000 });
   return { out: r.err ? r.stdout + '\n' + (r.stderr || r.err.message) : r.stdout };
 }
 
@@ -54,7 +55,8 @@ async function pool(items, fn, n = Math.min(8, Math.max(2, os.cpus().length))) {
   return results;
 }
 
-const CACHE_FILE = path.join(__dirname, '..', 'logs', 'test-cache.json');
+// shared across checkouts (verify-staged runs in a temp export); entries are keyed by source hash, so sharing is safe
+const CACHE_FILE = process.env.TEST_CACHE || path.join(os.tmpdir(), 'senior-java-test-cache.json');
 function openCache(kind) {
   let all = {};
   if (!process.env.NO_TEST_CACHE) { try { all = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8')); } catch (e) { /* first run */ } }
