@@ -1,6 +1,6 @@
 # T177 — Dịch sang tiếng Anh: q-spring-data (8 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-spring-data-5.en.js`
 
@@ -16,3 +16,5 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-spring-data-5.en.js` và `node scripts/check-i18n.js q-spring-data-5` → OK, rồi `Status: DONE`.
 
 ## Notes
+Translated 8 JPA questions (jpa-010 through jpa-017) covering fetch strategies, pagination with EntityGraph, bulk updates with @Modifying, bulk insert strategies (StatelessSession vs JdbcTemplate), DTO projections, inheritance strategies, @Transactional(readOnly), and auditing/Envers/soft delete. All validations pass: node --check, check-i18n, and validate.js → OK.
+Reviewed-by: check-i18n (translation, no LLM review)
