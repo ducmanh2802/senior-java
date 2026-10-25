@@ -1,7 +1,8 @@
 # T217 — Dịch sang tiếng Anh: q-soft (9 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
+Notes: Đã viết đầy đủ 9 mục behavioral-001..009 vào js/i18n/q-soft-2.en.js (q, a, follow) với bản dịch kỹ thuật, giữ nguyên markup, không tóm tắt. node scripts/check-i18n.js q-soft-2 → OK; node scripts/validate.js → OK. Không sửa file khác, không git commit.
 Owns: `js/i18n/q-soft-2.en.js`
 
 Người dùng bấm EN thì **cả trang** chuyển sang tiếng Anh: file này phủ bản dịch lên dữ liệu gốc theo `id` (đọc comment "content translation" trong `js/core/i18n.js`). Đọc AGENTS.md mục 5 (markup) và các mục sau trong `js/data/q-soft.js`: **behavioral-001, behavioral-002, behavioral-003, behavioral-004, behavioral-005, behavioral-006, behavioral-007, behavioral-008, behavioral-009**.
@@ -16,3 +17,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-soft-2.en.js` và `node scripts/check-i18n.js q-soft-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
