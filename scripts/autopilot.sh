@@ -37,6 +37,7 @@ open_owner() {   # $1 = task file, $2 = task id; its own review task <id>R does 
 # $PARALLEL reviews at once, one lock per slot (holds the task id; removed when the reviewer exits, stale after 2 h).
 # Slot n uses the n-th model of $REVIEW_MODELS (opencode runner) so parallel reviews don't share one free quota.
 PARALLEL=${PARALLEL:-3}
+REVIEW_FILES=${REVIEW_FILES:-js/data/(q-|lessons-|labs-|glossary-|sd-problems|quiz|drills-|path)|js/i18n/}   # files whose content needs an LLM fact-check
 REVIEW_POOL=${REVIEW_POOL:-nemotron|glm|deepseek|mimo|minimax|inkling:free|north}   # with REVIEW_MODELS=auto; small models only translate
 REVIEW_MODELS=(${REVIEW_MODELS:-opencode/glm-5.3-flash-free openrouter/nvidia/nemotron-3-ultra-550b-a55b:free openrouter/thinkingmachines/inkling:free})
 fresh() { [ -f "$1" ] && [ $(( $(date +%s) - $(date -r "$1" +%s) )) -lt "$2" ]; }
@@ -104,6 +105,11 @@ while true; do
     dirty "$f" || continue
     open_owner "$f" "$id" >/dev/null && continue
     if grep -q '^Reviewed-by:' "$f"; then
+      commit_task "$f" "$id"
+    elif ! owns "$f" | grep -qE "$REVIEW_FILES"; then
+      # code/UI task (views, css, core, api, algo with tests…): verify-staged (validate + Java tests + browser smoke)
+      # checks it better than a free model reading it; only knowledge content needs an LLM fact-check
+      echo "Reviewed-by: verify-only (code/UI task)" >> "$f"
       commit_task "$f" "$id"
     elif [[ "$f" == *-en-* ]]; then
       # translation chunk: no LLM review — scripts/check-i18n.js (structure, leftover Vietnamese, copied code)
