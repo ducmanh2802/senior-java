@@ -1,7 +1,7 @@
 # T195 — Dịch sang tiếng Anh: q-system-design (6 mục)
 
-Status: TODO
-Agent: opencode
+Status: DONE
+Làm việc tự động đến khi xong, không hỏi lại.
 Owns: `js/i18n/q-system-design-2.en.js`
 
 Người dùng bấm EN thì **cả trang** chuyển sang tiếng Anh: file này phủ bản dịch lên dữ liệu gốc theo `id` (đọc comment "content translation" trong `js/core/i18n.js`). Đọc AGENTS.md mục 5 (markup) và các mục sau trong `js/data/q-system-design.js`: **design-008, design-009, design-010, design-011, design-012, design-013**.
@@ -16,3 +16,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-system-design-2.en.js` và `node scripts/check-i18n.js q-system-design-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
