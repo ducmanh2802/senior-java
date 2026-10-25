@@ -1,6 +1,6 @@
 # T175 — Dịch sang tiếng Anh: q-spring-data (11 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-spring-data-3.en.js`
 
@@ -16,3 +16,9 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-spring-data-3.en.js` và `node scripts/check-i18n.js q-spring-data-3` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đủ 11 mục: jpa-008, jpa-009, db-001…db-009 vào `js/i18n/q-spring-data-3.en.js` (overlay `q, a, follow` theo id, giữ nguyên markup `**`, `{{code}}`, `###`, bảng `|`, `~~~lang`; "**Tóm tắt:**" → "**Summary:**", "> Senior tip:" giữ nguyên; chỉ dịch comment tiếng Việt trong code block).
+- File trống skeleton từ lần chạy trước → đã viết lại nội dung đầy đủ (11/11 mục).
+- `node --check` OK; `node scripts/check-i18n.js q-spring-data-3` → OK — 11 mục đã dịch; `node scripts/validate.js` → OK — không có lỗi (cảnh báo q-english.js tồn tại trước, thuộc file khác).
+- Không gọi AI, không git commit, không kill tiến trình.
+Reviewed-by: check-i18n (translation, no LLM review)
