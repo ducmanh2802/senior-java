@@ -1,6 +1,6 @@
 # T152 — Song ngữ EN/VI cho giao diện: learn, algo, labs
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/views/learn.js`, `js/views/algo.js`, `js/views/labs.js`
 
@@ -13,3 +13,9 @@ Với từng file được giao:
 4. `node --check` từng file, `grep` lại để chắc không sót chuỗi tiếng Việt hiển thị (comment thì giữ), `node scripts/validate.js` → OK, rồi `Status: DONE` + ghi chú số key đã thêm.
 
 ## Notes
+- learn.js: ~30 keys (learn.*) + `get title()`
+- algo.js: ~30 keys (algo.*) + `get title()`
+- labs.js: ~40 keys (labs.*) + `get title()`
+- Không sửa file khác; `node --check` và `node scripts/validate.js` đều OK.
+- Nội dung dữ liệu (câu hỏi, đáp án, bài học, lab) giữ nguyên tiếng Việt.
+Reviewed-by: verify-only (code/UI task)

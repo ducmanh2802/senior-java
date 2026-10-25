@@ -2,33 +2,172 @@
 (function () {
   'use strict';
 
+  App.i18n.add({
+    vi: {
+      'labs.title': 'Debug lab',
+      'labs.subtitle': 'Luyện chẩn đoán sự cố như Senior thật: đọc thread dump, GC log, query plan và log production.',
+      'labs.emptyTitle': 'Chưa có bài debug lab',
+      'labs.emptyHint': 'Kho bài đang được bổ sung (thread dump, GC log, SQL, sự cố production). Quay lại sau nhé.',
+      'labs.emptyFilterTitle': 'Không có bài nào khớp bộ lọc',
+      'labs.emptyFilterHint': 'Thử bỏ bớt điều kiện lọc để xem các bài khác.',
+      'labs.filterAll': 'Tất cả',
+      'labs.filterAllCat': 'Tất cả',
+      'labs.filterAllLevel': 'Mọi level',
+      'labs.filterAllStatus': 'Mọi trạng thái',
+      'labs.filterCategory': 'Nhóm',
+      'labs.filterLevel': 'Level',
+      'labs.filterStatus': 'Trạng thái',
+      'labs.filterUnseen': 'Chưa làm',
+      'labs.filterDue': 'Đến hạn ôn',
+      'labs.filterKnown': 'Đã giải',
+      'labs.filterReview': 'Cần ôn',
+      'labs.filterUnknown': 'Chưa giải',
+      'labs.clearFilterBtn': 'Xoá bộ lọc',
+      'labs.countText': '{n}/{total} bài',
+      'labs.artifactCount': '{n} artifact',
+      'labs.questionsCount': '{n} câu hỏi',
+      'labs.readHint': 'đọc kỹ trước khi trả lời',
+      'labs.notFoundTitle': 'Không tìm thấy bài',
+      'labs.notFoundHint': 'Bài {id} không có trong dữ liệu.',
+      'labs.notFoundBack': '← Về danh sách',
+      'labs.artifactTitle': 'Artifact',
+      'labs.artifactAria': 'Chọn artifact',
+      'labs.searchPlaceholder': 'Tìm trong artifact…',
+      'labs.searchAria': 'Tìm trong artifact',
+      'labs.copyBtn': 'Copy',
+      'labs.copyDone': 'Đã copy ✓',
+      'labs.noArtifact': 'Không có artifact.',
+      'labs.searchMatch': '{matches} chỗ khớp trong {lines} dòng',
+      'labs.searchNoMatch': 'Không tìm thấy "{term}" trong artifact này.',
+      'labs.searchLines': '{n} dòng',
+      'labs.questionsTitle': 'Câu hỏi cần trả lời',
+      'labs.answerLabel': 'Câu trả lời của bạn',
+      'labs.answerPlaceholder': 'Phân tích nguyên nhân gốc, dẫn chứng từ artifact, cách sửa ngắn hạn và dài hạn…',
+      'labs.micBtnTitle': 'Đọc bằng giọng nói',
+      'labs.micAria': 'Đọc câu trả lời bằng giọng nói',
+      'labs.micStopAria': 'Dừng ghi âm',
+      'labs.hintBtn': '💡 Gợi ý {n}/{total}',
+      'labs.hintDone': 'Đã hết gợi ý',
+      'labs.gradeBtn': '🤖 Chấm bằng AI',
+      'labs.showAnswerBtn': 'Xem đáp án',
+      'labs.showAnswerDone': 'Đã xem đáp án',
+      'labs.kbdTip': 'Phím tắt: <kbd>H</kbd> gợi ý · <kbd>S</kbd> xem đáp án.',
+      'labs.selfTitle': 'Tự đánh giá',
+      'labs.selfMarkKnown': 'Đã giải',
+      'labs.selfMarkReview': 'Cần ôn',
+      'labs.selfMarkUnknown': 'Chưa giải',
+      'labs.selfSaved': 'Đã lưu',
+      'labs.selfSavedDue': 'Đã lưu · ôn lại từ {date}',
+      'labs.selfNote': 'Đánh giá sẽ tự lên lịch ôn lặp lại (SRS).',
+      'labs.gradeError': 'Hãy nhập hoặc nói câu trả lời trước khi chấm.',
+      'labs.gradeLoading': 'AI đang chấm…',
+      'labs.hintItem': 'Gợi ý {n}',
+      'labs.answerTitle': 'Đáp án mẫu',
+      'labs.rubricTitle': 'Rubric tự chấm',
+      'labs.solutionConfirm': 'Bạn mới dùng {n}/{total} gợi ý. Xem đáp án luôn? (Nên tự phân tích artifact trước đã)',
+      'labs.catThread': 'Thread dump',
+      'labs.catGc': 'GC & bộ nhớ',
+      'labs.catSql': 'SQL',
+      'labs.catIncident': 'Sự cố production',
+      'labs.artifactLabel': 'Artifact',
+    },
+    en: {
+      'labs.title': 'Debug Lab',
+      'labs.subtitle': 'Practice senior-level incident diagnosis: thread dumps, GC logs, query plans, production logs.',
+      'labs.emptyTitle': 'No debug lab exercises yet',
+      'labs.emptyHint': 'Exercises are being added (thread dump, GC log, SQL, production incident). Check back later.',
+      'labs.emptyFilterTitle': 'No exercises match the filter',
+      'labs.emptyFilterHint': 'Try removing some filter conditions to see other exercises.',
+      'labs.filterAll': 'All',
+      'labs.filterAllCat': 'All',
+      'labs.filterAllLevel': 'All levels',
+      'labs.filterAllStatus': 'All statuses',
+      'labs.filterCategory': 'Category',
+      'labs.filterLevel': 'Level',
+      'labs.filterStatus': 'Status',
+      'labs.filterUnseen': 'Not done',
+      'labs.filterDue': 'Due for review',
+      'labs.filterKnown': 'Solved',
+      'labs.filterReview': 'Needs review',
+      'labs.filterUnknown': 'Can\'t solve',
+      'labs.clearFilterBtn': 'Clear filters',
+      'labs.countText': '{n}/{total} exercises',
+      'labs.artifactCount': '{n} artifact',
+      'labs.questionsCount': '{n} questions',
+      'labs.readHint': 'read carefully before answering',
+      'labs.notFoundTitle': 'Exercise not found',
+      'labs.notFoundHint': 'Exercise {id} is not in the data.',
+      'labs.notFoundBack': '← Back to list',
+      'labs.artifactTitle': 'Artifact',
+      'labs.artifactAria': 'Select artifact',
+      'labs.searchPlaceholder': 'Search in artifact…',
+      'labs.searchAria': 'Search in artifact',
+      'labs.copyBtn': 'Copy',
+      'labs.copyDone': 'Copied ✓',
+      'labs.noArtifact': 'No artifact.',
+      'labs.searchMatch': '{matches} matches in {lines} lines',
+      'labs.searchNoMatch': '"{term}" not found in this artifact.',
+      'labs.searchLines': '{n} lines',
+      'labs.questionsTitle': 'Questions to answer',
+      'labs.answerLabel': 'Your answer',
+      'labs.answerPlaceholder': 'Analyze root cause, evidence from artifact, short-term and long-term fixes…',
+      'labs.micBtnTitle': 'Read aloud',
+      'labs.micAria': 'Read your answer aloud',
+      'labs.micStopAria': 'Stop recording',
+      'labs.hintBtn': '💡 Hint {n}/{total}',
+      'labs.hintDone': 'No more hints',
+      'labs.gradeBtn': '🤖 Grade with AI',
+      'labs.showAnswerBtn': 'Show answer',
+      'labs.showAnswerDone': 'Answer shown',
+      'labs.kbdTip': 'Shortcuts: <kbd>H</kbd> hint · <kbd>S</kbd> answer.',
+      'labs.selfTitle': 'Self-assess',
+      'labs.selfMarkKnown': 'Solved',
+      'labs.selfMarkReview': 'Review',
+      'labs.selfMarkUnknown': 'Can\'t solve',
+      'labs.selfSaved': 'Saved',
+      'labs.selfSavedDue': 'Saved · review from {date}',
+      'labs.selfNote': 'Self-assessment schedules spaced repetition (SRS).',
+      'labs.gradeError': 'Enter or say your answer before grading.',
+      'labs.gradeLoading': 'AI grading…',
+      'labs.hintItem': 'Hint {n}',
+      'labs.answerTitle': 'Model answer',
+      'labs.rubricTitle': 'Self-grade rubric',
+      'labs.solutionConfirm': 'You used {n}/{total} hints. Still view the answer? (Analyze the artifact first)',
+      'labs.catThread': 'Thread dump',
+      'labs.catGc': 'GC & memory',
+      'labs.catSql': 'SQL',
+      'labs.catIncident': 'Production incident',
+      'labs.artifactLabel': 'Artifact',
+    },
+  });
+
   const CATS = {
-    thread: { label: 'Thread dump', icon: '🧵' },
-    gc: { label: 'GC & bộ nhớ', icon: '♻️' },
-    sql: { label: 'SQL', icon: '🗄️' },
-    incident: { label: 'Sự cố production', icon: '🔥' },
+    thread: { label: App.t('labs.catThread'), icon: '🧵' },
+    gc: { label: App.t('labs.catGc'), icon: '♻️' },
+    sql: { label: App.t('labs.catSql'), icon: '🗄️' },
+    incident: { label: App.t('labs.catIncident'), icon: '🔥' },
   };
   const CAT_ORDER = ['thread', 'gc', 'sql', 'incident'];
-  const CAT_FILTERS = [{ id: 'all', label: 'Tất cả' }].concat(
+  const CAT_FILTERS = [{ id: 'all', label: App.t('labs.filterAllCat') }].concat(
     CAT_ORDER.map(id => ({ id: id, label: CATS[id].icon + ' ' + CATS[id].label })));
   const LEVEL_FILTERS = [
-    { id: 'all', label: 'Mọi level' },
-    { id: 'mid', label: 'Middle' },
+    { id: 'all', label: App.t('labs.filterAllLevel') },
+    { id: 'mid', label: 'Mid-level' },
     { id: 'senior', label: 'Senior' },
     { id: 'lead', label: 'Lead / Architect' },
   ];
   const STATUS_FILTERS = [
-    { id: 'all', label: 'Mọi trạng thái' },
-    { id: 'unseen', label: 'Chưa làm' },
-    { id: 'known', label: 'Đã giải' },
-    { id: 'review', label: 'Cần ôn' },
-    { id: 'unknown', label: 'Chưa giải' },
-    { id: 'due', label: 'Đến hạn ôn' },
+    { id: 'all', label: App.t('labs.filterAllStatus') },
+    { id: 'unseen', label: App.t('labs.filterUnseen') },
+    { id: 'known', label: App.t('labs.filterKnown') },
+    { id: 'review', label: App.t('labs.filterReview') },
+    { id: 'unknown', label: App.t('labs.filterUnknown') },
+    { id: 'due', label: App.t('labs.filterDue') },
   ];
   const LAB_STATUS = {
-    known: { label: 'Đã giải', cls: 'ok' },
-    review: { label: 'Cần ôn', cls: 'warn' },
-    unknown: { label: 'Chưa giải', cls: 'bad' },
+    known: { label: App.t('labs.filterKnown'), cls: 'ok' },
+    review: { label: App.t('labs.filterReview'), cls: 'warn' },
+    unknown: { label: App.t('labs.filterUnknown'), cls: 'bad' },
   };
   const LEVEL_CLS = { mid: '', senior: 'accent', lead: 'info' };
 
@@ -56,10 +195,10 @@
   function statusBadge(l) {
     const s = App.store.getStatus(l.id);
     if (s && LAB_STATUS[s]) return '<span class="badge ' + LAB_STATUS[s].cls + '">' + LAB_STATUS[s].label + '</span>';
-    return '<span class="badge">Chưa làm</span>';
+    return '<span class="badge">' + App.t('labs.filterUnseen') + '</span>';
   }
   function dueBadge(l) {
-    return App.store.isDue(l.id) ? '<span class="badge accent">Đến hạn ôn</span>' : '';
+    return App.store.isDue(l.id) ? '<span class="badge accent">' + App.t('labs.filterDue') + '</span>' : '';
   }
 
   function filtered() {
@@ -107,10 +246,10 @@
     if (!all.length) {
       if (listHandler) { root.removeEventListener('click', listHandler); listHandler = null; }
       root.innerHTML =
-        '<div class="page-head"><div><h1>Debug lab</h1>' +
-          '<p>Luyện chẩn đoán sự cố như Senior thật: đọc thread dump, GC log, query plan và log production.</p></div></div>' +
-        '<div class="empty"><h2>Chưa có bài debug lab</h2>' +
-          '<p>Kho bài đang được bổ sung (thread dump, GC log, SQL, sự cố production). Quay lại sau nhé.</p></div>';
+        '<div class="page-head"><div><h1>' + App.t('labs.title') + '</h1>' +
+          '<p>' + App.t('labs.subtitle') + '</p></div></div>' +
+        '<div class="empty"><h2>' + App.t('labs.emptyTitle') + '</h2>' +
+          '<p>' + App.t('labs.emptyHint') + '</p></div>';
       return () => {};
     }
 
@@ -121,7 +260,7 @@
       return '<a class="card lab-card" href="#/labs/' + App.esc(l.id) + '">' +
         '<div class="lab-card-top">' + catBadge(l) + levelBadge(l) + '</div>' +
         '<h3>' + App.esc(l.title) + '</h3>' +
-        '<p class="small muted lab-card-sub">' + artN + ' artifact · ' + qN + ' câu hỏi' +
+        '<p class="small muted lab-card-sub">' + App.t('labs.artifactCount', {n: artN}) + ' · ' + App.t('labs.questionsCount', {n: qN}) +
           (tags ? ' · ' + App.esc(tags) : '') + '</p>' +
         '<div class="row lab-card-foot">' + statusBadge(l) + dueBadge(l) + '</div>' +
         '</a>';
@@ -129,20 +268,20 @@
 
     root.innerHTML =
       '<div class="page-head">' +
-        '<div><h1>Debug lab</h1>' +
-          '<p>Luyện chẩn đoán sự cố như Senior thật: đọc thread dump, GC log, query plan và log production.</p></div>' +
-        '<span class="badge accent">' + list.length + '/' + all.length + ' bài</span>' +
+        '<div><h1>' + App.t('labs.title') + '</h1>' +
+          '<p>' + App.t('labs.subtitle') + '</p></div>' +
+        '<span class="badge accent">' + App.t('labs.countText', {n: list.length, total: all.length}) + '</span>' +
       '</div>' +
       '<div class="card lab-filters">' +
-        chipRow('Nhóm', CAT_FILTERS, state.cat, 'cat') +
-        chipRow('Level', LEVEL_FILTERS, state.level, 'level') +
-        chipRow('Trạng thái', STATUS_FILTERS, state.status, 'status') +
+        chipRow(App.t('labs.filterCategory'), CAT_FILTERS, state.cat, 'cat') +
+        chipRow(App.t('labs.filterLevel'), LEVEL_FILTERS, state.level, 'level') +
+        chipRow(App.t('labs.filterStatus'), STATUS_FILTERS, state.status, 'status') +
       '</div>' +
       (list.length
         ? '<div class="grid lab-grid">' + cards + '</div>'
-        : '<div class="empty"><h2>Không có bài nào khớp bộ lọc</h2>' +
-            '<p>Thử bỏ bớt điều kiện lọc để xem các bài khác.</p>' +
-            '<p><button type="button" class="btn sm" data-clear>Xoá bộ lọc</button></p></div>');
+        : '<div class="empty"><h2>' + App.t('labs.emptyFilterTitle') + '</h2>' +
+            '<p>' + App.t('labs.emptyFilterHint') + '</p>' +
+            '<p><button type="button" class="btn sm" data-clear>' + App.t('labs.clearFilterBtn') + '</button></p></div>');
 
     if (listHandler) root.removeEventListener('click', listHandler);
     listHandler = handleListClick;
@@ -191,9 +330,9 @@
   function renderDetail(root, id) {
     const lab = labById(id);
     if (!lab) {
-      root.innerHTML = '<div class="empty"><h2>Không tìm thấy bài</h2>' +
-        '<p>Bài <code>' + App.esc(id) + '</code> không có trong dữ liệu.</p>' +
-        '<p><a class="btn" href="#/labs">← Về danh sách</a></p></div>';
+      root.innerHTML = '<div class="empty"><h2>' + App.t('labs.notFoundTitle') + '</h2>' +
+        '<p>' + App.t('labs.notFoundHint', {id: App.esc(id)}) + '</p>' +
+        '<p><a class="btn" href="#/labs">' + App.t('labs.notFoundBack') + '</a></p></div>';
       return () => {};
     }
 
@@ -229,7 +368,7 @@
     root.innerHTML =
       '<div class="page-head lab-head">' +
         '<div>' +
-          '<div class="row lab-title-row"><a class="link-btn" href="#/labs">← Danh sách</a>' +
+          '<div class="row lab-title-row"><a class="link-btn" href="#/labs">' + App.t('labs.notFoundBack') + '</a>' +
             '<h1 class="lab-title">' + App.esc(lab.title) + '</h1></div>' +
           '<div class="row lab-meta" id="labMeta"></div>' +
         '</div>' +
@@ -242,47 +381,47 @@
         '<section class="card lab-left">' +
           '<div class="md">' + App.md(lab.scenario || '') + '</div>' +
           '<div class="lab-artifacts">' +
-            '<div class="row lab-art-head"><h3>Artifact</h3>' +
-              '<span class="small muted">' + artifacts.length + ' file · đọc kỹ trước khi trả lời</span></div>' +
-            '<div class="chips lab-tabs" id="labTabs" role="tablist" aria-label="Chọn artifact">' + tabs + '</div>' +
+            '<div class="row lab-art-head"><h3>' + App.t('labs.artifactTitle') + '</h3>' +
+              '<span class="small muted">' + artifacts.length + ' ' + App.t('labs.artifactCount', {n: artifacts.length}) + ' · ' + App.t('labs.readHint') + '</span></div>' +
+            '<div class="chips lab-tabs" id="labTabs" role="tablist" aria-label="' + App.t('labs.artifactAria') + '">' + tabs + '</div>' +
             '<div class="row lab-art-tools">' +
-              '<input class="input lab-search" id="labSearch" type="search" placeholder="Tìm trong artifact…" aria-label="Tìm trong artifact">' +
-              '<button type="button" class="btn sm" id="labCopy">Copy</button>' +
+              '<input class="input lab-search" id="labSearch" type="search" placeholder="' + App.t('labs.searchPlaceholder') + '" aria-label="' + App.t('labs.searchAria') + '">' +
+              '<button type="button" class="btn sm" id="labCopy">' + App.t('labs.copyBtn') + '</button>' +
             '</div>' +
-            '<div class="lab-viewer" id="labViewer" role="region" aria-label="Nội dung artifact" tabindex="0"></div>' +
+            '<div class="lab-viewer" id="labViewer" role="region" aria-label="' + App.t('labs.artifactTitle') + '" tabindex="0"></div>' +
             '<p class="small muted lab-match" id="labMatch" aria-live="polite"></p>' +
           '</div>' +
         '</section>' +
         '<section class="card lab-right">' +
-          '<h2>Câu hỏi cần trả lời</h2>' +
+          '<h2>' + App.t('labs.questionsTitle') + '</h2>' +
           '<ol class="lab-questions">' + questions.map(q => '<li>' + App.esc(q) + '</li>').join('') + '</ol>' +
-          '<label class="field"><span>Câu trả lời của bạn</span>' +
+          '<label class="field"><span>' + App.t('labs.answerLabel') + '</span>' +
             '<textarea class="textarea lab-textarea" id="labAnswer" rows="8"' +
-              ' placeholder="Phân tích nguyên nhân gốc, dẫn chứng từ artifact, cách sửa ngắn hạn và dài hạn…">' +
+              ' placeholder="' + App.t('labs.answerPlaceholder') + '">' +
               App.esc(loadDraft(lab.id)) + '</textarea></label>' +
           '<div class="row lab-answer-actions">' +
             (App.speech.supported
-              ? '<button type="button" class="btn mic-btn" id="labMic" title="Đọc bằng giọng nói"' +
-                ' aria-label="Đọc câu trả lời bằng giọng nói">🎤</button>'
+              ? '<button type="button" class="btn mic-btn" id="labMic" title="' + App.t('labs.micBtnTitle') + '"' +
+                ' aria-label="' + App.t('labs.micAria') + '">🎤</button>'
               : '') +
             '<button type="button" class="btn" id="labHint"' + (hints.length ? '' : ' disabled') + '>' +
-              (hints.length ? '💡 Gợi ý 1/' + hints.length : 'Không có gợi ý') + '</button>' +
-            '<button type="button" class="btn primary" id="labGrade">🤖 Chấm bằng AI</button>' +
-            '<button type="button" class="btn" id="labShowAnswer">Xem đáp án</button>' +
+              (hints.length ? App.t('labs.hintBtn', {n: 1, total: hints.length}) : App.t('labs.hintDone')) + '</button>' +
+            '<button type="button" class="btn primary" id="labGrade">' + App.t('labs.gradeBtn') + '</button>' +
+            '<button type="button" class="btn" id="labShowAnswer">' + App.t('labs.showAnswerBtn') + '</button>' +
           '</div>' +
-          '<p class="small muted lab-kbd-tip">Phím tắt: <kbd>H</kbd> gợi ý · <kbd>S</kbd> xem đáp án.</p>' +
+          '<p class="small muted lab-kbd-tip">' + App.t('labs.kbdTip') + '</p>' +
           '<div class="lab-speech" id="labSpeech"></div>' +
           '<div class="lab-hints" id="labHints"></div>' +
           '<div class="lab-fb" id="labFb" aria-live="polite"></div>' +
           '<div class="lab-answer-box" id="labAnswerBox"></div>' +
           '<div class="lab-self" id="labSelf">' +
-            '<div class="row lab-self-row"><b>Tự đánh giá</b>' +
-              '<button type="button" class="btn sm ok" data-mark="known" aria-pressed="false">Đã giải</button>' +
-              '<button type="button" class="btn sm warn" data-mark="review" aria-pressed="false">Cần ôn</button>' +
-              '<button type="button" class="btn sm bad" data-mark="unknown" aria-pressed="false">Chưa giải</button>' +
+            '<div class="row lab-self-row"><b>' + App.t('labs.selfTitle') + '</b>' +
+              '<button type="button" class="btn sm ok" data-mark="known" aria-pressed="false">' + App.t('labs.selfMarkKnown') + '</button>' +
+              '<button type="button" class="btn sm warn" data-mark="review" aria-pressed="false">' + App.t('labs.selfMarkReview') + '</button>' +
+              '<button type="button" class="btn sm bad" data-mark="unknown" aria-pressed="false">' + App.t('labs.selfMarkUnknown') + '</button>' +
               '<span class="small muted" id="labSaved" aria-live="polite"></span>' +
             '</div>' +
-            '<p class="small muted lab-self-note">Đánh giá sẽ tự lên lịch ôn lặp lại (SRS).</p>' +
+            '<p class="small muted lab-self-note">' + App.t('labs.selfNote') + '</p>' +
           '</div>' +
         '</section>' +
       '</div>';
@@ -310,7 +449,7 @@
     function renderArtifact() {
       const a = artifacts[artIdx];
       if (!a) {
-        els.viewer.innerHTML = '<div class="lab-line"><span class="lab-code">Không có artifact.</span></div>';
+        els.viewer.innerHTML = '<div class="lab-line"><span class="lab-code">' + App.t('labs.noArtifact') + '</span></div>';
         els.match.textContent = '';
         return;
       }
@@ -327,10 +466,10 @@
       els.viewer.scrollLeft = 0;
       if (term) {
         els.match.textContent = matches
-          ? matches + ' chỗ khớp trong ' + lines.length + ' dòng'
-          : 'Không tìm thấy "' + term + '" trong artifact này.';
+          ? App.t('labs.searchMatch', {matches: matches, lines: lines.length})
+          : App.t('labs.searchNoMatch', {term: term});
       } else {
-        els.match.textContent = lines.length + ' dòng';
+        els.match.textContent = App.t('labs.searchLines', {n: lines.length});
       }
     }
 
@@ -352,28 +491,27 @@
       hintsUsed++;
       const item = document.createElement('div');
       item.className = 'lab-hint';
-      item.innerHTML = '<b>Gợi ý ' + hintsUsed + '</b><div class="md">' + App.md(text) + '</div>';
+      item.innerHTML = '<b>' + App.t('labs.hintItem', {n: hintsUsed}) + '</b><div class="md">' + App.md(text) + '</div>';
       els.hints.appendChild(item);
       els.hint.textContent = hintsUsed < hints.length
-        ? '💡 Gợi ý ' + (hintsUsed + 1) + '/' + hints.length
-        : 'Đã hết gợi ý';
+        ? App.t('labs.hintBtn', {n: hintsUsed + 1, total: hints.length})
+        : App.t('labs.hintDone');
       els.hint.disabled = hintsUsed >= hints.length;
     }
 
     function showAnswer() {
       if (answerShown) return;
-      if (hintsUsed < hints.length && !confirm('Bạn mới dùng ' + hintsUsed + '/' + hints.length +
-        ' gợi ý. Xem đáp án luôn? (Nên tự phân tích artifact trước đã)')) return;
+      if (hintsUsed < hints.length && !confirm(App.t('labs.solutionConfirm', {n: hintsUsed, total: hints.length}))) return;
       answerShown = true;
       const checks = rubric.map(r =>
         '<li><label><input type="checkbox"><span class="md">' +
         App.md(r).replace(/<\/?p>/g, '') + '</span></label></li>').join('');
       els.answerBox.innerHTML = '<div class="lab-answer-wrap">' +
-        '<h3>Đáp án mẫu</h3><div class="md">' + App.md(lab.answer || '') + '</div>' +
-        (checks ? '<h3>Rubric tự chấm</h3><ul class="lab-rubric">' + checks + '</ul>' : '') +
+        '<h3>' + App.t('labs.answerTitle') + '</h3><div class="md">' + App.md(lab.answer || '') + '</div>' +
+        (checks ? '<h3>' + App.t('labs.rubricTitle') + '</h3><ul class="lab-rubric">' + checks + '</ul>' : '') +
         '</div>';
       els.answerBtn.disabled = true;
-      els.answerBtn.textContent = 'Đã xem đáp án';
+      els.answerBtn.textContent = App.t('labs.showAnswerDone');
       els.answerBox.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
 
@@ -381,7 +519,7 @@
       if (els.grade.disabled) return;
       const answer = els.answer.value.trim();
       if (!answer) {
-        els.fb.innerHTML = '<div class="ai-error">Hãy nhập hoặc nói câu trả lời trước khi chấm.</div>';
+        els.fb.innerHTML = '<div class="ai-error">' + App.t('labs.gradeError') + '</div>';
         els.answer.focus();
         return;
       }
@@ -390,12 +528,12 @@
         mic = null;
         if (els.mic) {
           els.mic.classList.remove('recording');
-          els.mic.setAttribute('aria-label', 'Đọc câu trả lời bằng giọng nói');
+          els.mic.setAttribute('aria-label', App.t('labs.micAria'));
+          els.speech.innerHTML = App.ui.speechStats(lastSpeech);
         }
-        els.speech.innerHTML = App.ui.speechStats(lastSpeech);
       }
       els.grade.disabled = true;
-      els.fb.innerHTML = '<span class="ai-loading">AI đang chấm…</span>';
+      els.fb.innerHTML = '<span class="ai-loading">' + App.t('labs.gradeLoading') + '</span>';
       try {
         const res = await App.ai.grade({
           question: questions.join(' '),
@@ -437,7 +575,7 @@
       if (!a) return;
       copyText(String(a.content || ''), () => {
         const old = els.copy.textContent;
-        els.copy.textContent = 'Đã copy ✓';
+        els.copy.textContent = App.t('labs.copyDone');
         if (copyTimer) clearTimeout(copyTimer);
         copyTimer = setTimeout(() => { els.copy.textContent = old; }, 1500);
       });
@@ -452,13 +590,13 @@
           try { lastSpeech = mic.stop(); } catch (e) { /* ignore */ }
           mic = null;
           els.mic.classList.remove('recording');
-          els.mic.setAttribute('aria-label', 'Đọc câu trả lời bằng giọng nói');
+          els.mic.setAttribute('aria-label', App.t('labs.micAria'));
           els.speech.innerHTML = App.ui.speechStats(lastSpeech);
           return;
         }
         try {
           els.mic.classList.add('recording');
-          els.mic.setAttribute('aria-label', 'Dừng ghi âm');
+          els.mic.setAttribute('aria-label', App.t('labs.micStopAria'));
           mic = App.speech.start({
             lang: 'vi',
             onText: (finalText, interim) => {
@@ -468,7 +606,7 @@
             onError: msg => {
               mic = null;
               els.mic.classList.remove('recording');
-              els.mic.setAttribute('aria-label', 'Đọc câu trả lời bằng giọng nói');
+              els.mic.setAttribute('aria-label', App.t('labs.micAria'));
               els.fb.innerHTML = '<div class="ai-error">⚠️ ' + App.esc(msg) + '</div>';
             },
           });
@@ -491,7 +629,7 @@
       App.store.setStatus(lab.id, btn.dataset.mark);
       refreshMeta();
       const due = App.store.getDue(lab.id);
-      els.saved.textContent = due ? 'Đã lưu · ôn lại từ ' + App.fmtDate(due) : 'Đã lưu';
+      els.saved.textContent = due ? App.t('labs.selfSavedDue', {date: App.fmtDate(due)}) : App.t('labs.selfSaved');
     });
 
     // ---- phím tắt: H = gợi ý, S = xem đáp án (bỏ qua khi đang gõ)
@@ -513,7 +651,7 @@
 
   // ------------------------------------------------------------------ register
   App.registerView('labs', {
-    title: 'Debug lab',
+    get title() { return App.t('labs.title'); },
     render(root, params) {
       if (params && params.length) return renderDetail(root, params[0]);
       return renderList(root);

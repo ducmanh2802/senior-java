@@ -2,18 +2,154 @@
 (function () {
   'use strict';
 
+  App.i18n.add({
+    vi: {
+      'algo.title': 'Luyện thuật toán',
+      'algo.subtitle': 'Luyện thuật toán: đề, gợi ý từng bước, editor, timer, lời giải Java.',
+      'algo.emptyTitle': 'Chưa có bài nào trong ngân hàng.',
+      'algo.emptyHint': 'Quay lại sau khi kho bài được thêm.',
+      'algo.filterAll': 'Tất cả',
+      'algo.filterDue': 'Đến hạn giải lại',
+      'algo.filterUnseen': 'Chưa làm',
+      'algo.filterUnknown': 'Chưa giải được',
+      'algo.filterReview': 'Cần làm lại',
+      'algo.filterKnown': 'Đã giải',
+      'algo.filterAllDiff': 'Mọi độ khó',
+      'algo.filterAllPattern': 'Mọi pattern',
+      'algo.filterAllStatus': 'Mọi trạng thái',
+      'algo.searchPlaceholder': 'Tìm theo tên, pattern, tag…',
+      'algo.searchAria': 'Tìm bài',
+      'algo.searchLabel': 'Độ khó',
+      'algo.patternLabel': 'Pattern',
+      'algo.statusLabel': 'Trạng thái',
+      'algo.randomBtn': 'Bài ngẫu nhiên',
+      'algo.viewAllBtn': 'Xem tất cả',
+      'algo.emptyFilterTitle': 'Không có bài nào khớp bộ lọc',
+      'algo.emptyFilterHint': 'Thử bỏ bớt điều kiện lọc hoặc xoá ô tìm kiếm.',
+      'algo.progressAria': 'Tiến độ',
+      'algo.solvedText': '{n} bài đã giải',
+      'algo.matchedText': '{n} bài khớp bộ lọc',
+      'algo.notFoundTitle': 'Không tìm thấy bài',
+      'algo.notFoundHint': 'Bài {id} không có trong ngân hàng.',
+      'algo.notFoundBack': 'Về danh sách',
+      'algo.hintTitle': 'Gợi ý',
+      'algo.hintBtn': 'Gợi ý',
+      'algo.hintDone': 'Đã hết gợi ý',
+      'algo.hintNext': 'Gợi ý {n}/{total}',
+      'algo.hintShortcut': 'Phím tắt <kbd>H</kbd> để mở gợi ý tiếp theo.',
+      'algo.timerGoal': 'Mục tiêu {n} phút',
+      'algo.timerOver': 'Đã vượt mục tiêu {n} phút',
+      'algo.timerStart': 'Bắt đầu',
+      'algo.timerPause': 'Tạm dừng',
+      'algo.timerResume': 'Tiếp tục',
+      'algo.timerReset': 'Đặt lại',
+      'algo.minuteUnit': 'phút',
+      'algo.editorPlaceholder': 'Viết code Java ở đây',
+      'algo.editorAria': 'Editor Java',
+      'algo.editorTip': 'Viết lời giải như phỏng vấn thật.',
+      'algo.editorRunTip': 'Ctrl+Enter để chạy test trên Judge0 (Java 13).',
+      'algo.editorNoTest': 'Bài này chưa có test tự động.',
+      'algo.runBtn': '▶ Chạy test',
+      'algo.reviewBtn': 'AI review code',
+      'algo.copyBtn': 'Sao chép code',
+      'algo.copyDone': 'Đã sao chép',
+      'algo.resetBtn': 'Xoá code',
+      'algo.resetConfirm': 'Xoá toàn bộ code đang soạn?',
+      'algo.solutionBtn': 'Xem lời giải',
+      'algo.solutionConfirm': 'Bạn mới dùng {n}/{total} gợi ý. Xem lời giải luôn? (Nên tự viết lại trước đã)',
+      'algo.solutionTitle': 'Lời giải',
+      'algo.runTesting': 'Đang chạy test…',
+      'algo.runNotConfigured': 'Máy chạy code chưa được cấu hình. Bạn có thể dùng AI review code.',
+      'algo.reviewTesting': 'AI đang review code…',
+      'algo.markKnown': 'Đã giải',
+      'algo.markReview': 'Cần ôn',
+      'algo.markUnknown': 'Chưa giải được',
+      'algo.savedLabel': 'Đã lưu ✓',
+      'algo.savedLabels': 'saved',
+      'algo.complexityLabel': 'Độ phức tạp:',
+      'algo.followUpTitle': 'Câu hỏi follow-up',
+    },
+    en: {
+      'algo.title': 'Algorithm Practice',
+      'algo.subtitle': 'Algorithm practice: prompt, step hints, editor, timer, Java solution.',
+      'algo.emptyTitle': 'No algorithm exercises yet.',
+      'algo.emptyHint': 'Check back once the bank is added.',
+      'algo.filterAll': 'All',
+      'algo.filterDue': 'Due for review',
+      'algo.filterUnseen': 'Not done',
+      'algo.filterUnknown': 'Can\'t solve',
+      'algo.filterReview': 'Needs redo',
+      'algo.filterKnown': 'Solved',
+      'algo.filterAllDiff': 'All difficulties',
+      'algo.filterAllPattern': 'All patterns',
+      'algo.filterAllStatus': 'All statuses',
+      'algo.searchPlaceholder': 'Search by name, pattern, tag…',
+      'algo.searchAria': 'Find exercise',
+      'algo.searchLabel': 'Difficulty',
+      'algo.patternLabel': 'Pattern',
+      'algo.statusLabel': 'Status',
+      'algo.randomBtn': 'Random exercise',
+      'algo.viewAllBtn': 'View all',
+      'algo.emptyFilterTitle': 'No exercises match the filter',
+      'algo.emptyFilterHint': 'Try removing some filter conditions or clearing the search.',
+      'algo.progressAria': 'Progress',
+      'algo.solvedText': '{n} solved',
+      'algo.matchedText': '{n} matched',
+      'algo.notFoundTitle': 'Exercise not found',
+      'algo.notFoundHint': 'Exercise {id} is not in the bank.',
+      'algo.notFoundBack': 'Back to list',
+      'algo.listBack': '← List',
+      'algo.hintTitle': 'Hints',
+      'algo.hintBtn': 'Hint',
+      'algo.hintDone': 'No more hints',
+      'algo.hintNext': 'Hint {n}/{total}',
+      'algo.hintShortcut': 'Shortcut <kbd>H</kbd> for next hint.',
+      'algo.timerGoal': 'Goal: {n} min',
+      'algo.timerOver': 'Over goal {n} min',
+      'algo.timerStart': 'Start',
+      'algo.timerPause': 'Pause',
+      'algo.timerResume': 'Resume',
+      'algo.timerReset': 'Reset',
+      'algo.minuteUnit': 'min',
+      'algo.editorPlaceholder': 'Write your Java code here',
+      'algo.editorAria': 'Java editor',
+      'algo.editorTip': 'Write your solution like a real interview.',
+      'algo.editorRunTip': 'Ctrl+Enter to run tests on Judge0 (Java 13).',
+      'algo.editorNoTest': 'This exercise has no automatic tests.',
+      'algo.runBtn': '▶ Run tests',
+      'algo.reviewBtn': 'AI review code',
+      'algo.copyBtn': 'Copy code',
+      'algo.copyDone': 'Copied',
+      'algo.resetBtn': 'Clear code',
+      'algo.resetConfirm': 'Clear all code? Current work will be lost.',
+      'algo.solutionBtn': 'Show solution',
+      'algo.solutionConfirm': 'You used {n}/{total} hints. Still view the solution? (Write it again first)',
+      'algo.solutionTitle': 'Solution',
+      'algo.runTesting': 'Running tests…',
+      'algo.runNotConfigured': 'Code-run server not configured. You can use AI review.',
+      'algo.reviewTesting': 'AI reviewing code…',
+      'algo.markKnown': 'Solved',
+      'algo.markReview': 'Review',
+      'algo.markUnknown': 'Can\'t solve',
+      'algo.savedLabel': 'Saved ✓',
+      'algo.savedLabels': { known: 'Solved', review: 'Review', unknown: 'Can\'t solve' },
+      'algo.complexityLabel': 'Complexity:',
+      'algo.followUpTitle': 'Follow-up questions',
+    },
+  });
+
   const DIFF = {
     easy: { label: 'Easy', cls: 'ok' },
     medium: { label: 'Medium', cls: 'warn' },
     hard: { label: 'Hard', cls: 'bad' },
   };
   const FILTERS = [
-    { id: 'all', label: 'Tất cả' },
-    { id: 'unseen', label: 'Chưa làm' },
-    { id: 'known', label: 'Đã giải' },
-    { id: 'review', label: 'Cần làm lại' },
-    { id: 'unknown', label: 'Chưa giải được' },
-    { id: 'due', label: 'Đến hạn giải lại' },
+    { id: 'all', label: App.t('algo.filterAll') },
+    { id: 'unseen', label: App.t('algo.filterUnseen') },
+    { id: 'known', label: App.t('algo.filterKnown') },
+    { id: 'review', label: App.t('algo.filterReview') },
+    { id: 'unknown', label: App.t('algo.filterUnknown') },
+    { id: 'due', label: App.t('algo.filterDue') },
   ];
   const GOALS = [15, 25, 45];
   const DEFAULT_CODE = 'class Solution {\n    \n}';
@@ -60,11 +196,11 @@
   function statusBadge(a) {
     const s = App.store.getStatus(a.id);
     if (s && App.STATUS[s]) return '<span class="badge ' + App.STATUS[s].cls + '">' + App.STATUS[s].label + '</span>';
-    return '<span class="badge">Chưa làm</span>';
+    return '<span class="badge">' + (App.t('algo.filterUnseen') || 'Not done') + '</span>';
   }
 
   function dueBadge(a) {
-    return App.store.isDue(a.id) ? '<span class="badge accent">Đến hạn giải lại</span>' : '';
+    return App.store.isDue(a.id) ? '<span class="badge accent">' + App.t('algo.filterDue') + '</span>' : '';
   }
 
   function chipRow(label, items, current, attr) {
@@ -103,8 +239,8 @@
     const pct = all.length ? Math.round((solved / all.length) * 100) : 0;
 
     if (!all.length) {
-      root.innerHTML = '<div class="empty"><h2>Luyện thuật toán</h2>' +
-        '<p>Chưa có bài nào trong ngân hàng. Quay lại sau khi kho bài được thêm.</p></div>';
+      root.innerHTML = '<div class="empty"><h2>' + App.t('algo.emptyTitle') + '</h2>' +
+        '<p>' + App.t('algo.emptyHint') + '</p></div>';
       return () => {};
     }
 
@@ -125,22 +261,22 @@
 
     root.innerHTML =
       '<div class="page-head">' +
-        '<div><h1>Luyện thuật toán</h1>' +
-        '<p>' + solved + '/' + all.length + ' bài đã giải · ' + list.length + ' bài khớp bộ lọc</p></div>' +
-        '<div class="row"><button type="button" class="btn primary" id="algoRandom">Bài ngẫu nhiên</button>' +
-        '<a class="btn" href="#/algo">Xem tất cả</a></div>' +
+        '<div><h1>' + App.t('algo.title') + '</h1>' +
+        '<p>' + solved + '/' + all.length + ' ' + App.t('algo.solvedText', {n: solved}) + ' · ' + list.length + ' ' + App.t('algo.matchedText', {n: list.length}) + '</p></div>' +
+        '<div class="row"><button type="button" class="btn primary" id="algoRandom">' + App.t('algo.randomBtn') + '</button>' +
+        '<a class="btn" href="#/algo">' + App.t('algo.viewAllBtn') + '</a></div>' +
       '</div>' +
-      '<div class="progress algo-progress" role="progressbar" aria-label="Tiến độ" aria-valuenow="' + pct + '" aria-valuemin="0" aria-valuemax="100">' +
+      '<div class="progress algo-progress" role="progressbar" aria-label="' + App.t('algo.progressAria') + '" aria-valuenow="' + pct + '" aria-valuemin="0" aria-valuemax="100">' +
         '<i class="accent" style="width:' + pct + '%"></i></div>' +
       '<div class="card algo-filters">' +
-        '<div class="row"><input class="input algo-search" id="algoSearch" type="search" placeholder="Tìm theo tên, pattern, tag…" value="' + App.esc(state.q) + '" aria-label="Tìm bài"></div>' +
-        chipRow('Độ khó', diffItems, state.diff, 'diff') +
-        chipRow('Pattern', patItems, state.pattern, 'pattern') +
-        chipRow('Trạng thái', FILTERS, state.status, 'status') +
+        '<div class="row"><input class="input algo-search" id="algoSearch" type="search" placeholder="' + App.t('algo.searchPlaceholder') + '" value="' + App.esc(state.q) + '" aria-label="' + App.t('algo.searchAria') + '"></div>' +
+        chipRow(App.t('algo.searchLabel'), diffItems, state.diff, 'diff') +
+        chipRow(App.t('algo.patternLabel'), patItems, state.pattern, 'pattern') +
+        chipRow(App.t('algo.statusLabel'), FILTERS, state.status, 'status') +
       '</div>' +
       (list.length
         ? '<div class="card algo-list">' + rows + '</div>'
-        : '<div class="empty"><h2>Không có bài nào khớp bộ lọc</h2><p>Thử bỏ bớt điều kiện lọc hoặc xoá ô tìm kiếm.</p></div>');
+        : '<div class="empty"><h2>' + App.t('algo.emptyFilterTitle') + '</h2><p>' + App.t('algo.emptyFilterHint') + '</p></div>');
 
     // ---- events
     const search = root.querySelector('#algoSearch');
@@ -185,9 +321,9 @@
   function renderDetail(root, id) {
     const algo = App.algos().find(a => a.id === id);
     if (!algo) {
-      root.innerHTML = '<div class="empty"><h2>Không tìm thấy bài</h2>' +
-        '<p>Bài <code>' + App.esc(id) + '</code> không có trong ngân hàng.</p>' +
-        '<p><a class="btn" href="#/algo">Về danh sách</a></p></div>';
+      root.innerHTML = '<div class="empty"><h2>' + App.t('algo.notFoundTitle') + '</h2>' +
+        '<p>' + App.t('algo.notFoundHint', {id: App.esc(id)}) + '</p>' +
+        '<p><a class="btn" href="#/algo">' + App.t('algo.notFoundBack') + '</a></p></div>';
       return () => {};
     }
 
@@ -213,7 +349,7 @@
     root.innerHTML =
       '<div class="page-head algo-head">' +
         '<div>' +
-          '<div class="row algo-title-row"><a class="link-btn" href="#/algo">← Danh sách</a>' +
+          '<div class="row algo-title-row"><a class="link-btn" href="#/algo">' + App.t('algo.listBack') + '</a>' +
             '<h1 class="algo-title">' + App.esc(algo.title) + '</h1></div>' +
           '<div class="row algo-meta">' + diffBadge(algo) +
             '<span class="badge accent">' + App.esc(algo.pattern) + '</span>' +
@@ -231,37 +367,37 @@
         '<section class="card algo-prompt">' +
           '<div class="md">' + App.md(algo.prompt) + '</div>' +
           '<div class="algo-hints">' +
-            '<h3>Gợi ý <span class="algo-hint-count" id="algoHintCount">0/' + hints.length + '</span></h3>' +
+            '<h3>' + App.t('algo.hintTitle') + ' <span class="algo-hint-count" id="algoHintCount">0/' + hints.length + '</span></h3>' +
             '<div id="algoHints"></div>' +
             '<button type="button" class="btn sm" id="algoHintBtn"' + (hints.length ? '' : ' disabled') + '>' +
-              (hints.length ? 'Gợi ý 1/' + hints.length : 'Không có gợi ý') + '</button>' +
-            '<p class="small muted">Phím tắt <kbd>H</kbd> để mở gợi ý tiếp theo.</p>' +
+              (hints.length ? App.t('algo.hintNext', {n: 1, total: hints.length}) : App.t('algo.hintDone')) + '</button>' +
+            '<p class="small muted">' + App.t('algo.hintShortcut') + '</p>' +
           '</div>' +
         '</section>' +
         '<section class="card algo-work">' +
           '<div class="row algo-work-head">' +
             '<span class="algo-timer" id="algoTimer" role="timer" aria-live="off">00:00</span>' +
-            '<span class="small muted" id="algoTimerGoal">Mục tiêu 25 phút</span>' +
+            '<span class="small muted" id="algoTimerGoal">' + App.t('algo.timerGoal', {n: timer.goal}) + '</span>' +
             '<span class="spacer"></span>' +
-            '<button type="button" class="btn sm" id="algoTimerToggle">Bắt đầu</button>' +
-            '<button type="button" class="btn sm" id="algoTimerReset">Đặt lại</button>' +
+            '<button type="button" class="btn sm" id="algoTimerToggle">' + App.t('algo.timerStart') + '</button>' +
+            '<button type="button" class="btn sm" id="algoTimerReset">' + App.t('algo.timerReset') + '</button>' +
           '</div>' +
           '<div class="chips algo-goals" id="algoGoals">' +
-            GOALS.map(g => '<button type="button" class="chip' + (g === GOALS[1] ? ' active' : '') + '" data-goal="' + g + '">' + g + ' phút</button>').join('') +
+            GOALS.map(g => '<button type="button" class="chip' + (g === GOALS[1] ? ' active' : '') + '" data-goal="' + g + '">' + g + ' ' + App.t('algo.minuteUnit') + '</button>').join('') +
           '</div>' +
           '<textarea id="algoCode" class="textarea algo-editor" spellcheck="false" autocapitalize="off" autocorrect="off" wrap="off"' +
-            ' aria-label="Editor Java" placeholder="Viết code Java ở đây">' + App.esc(code) + '</textarea>' +
-          '<p class="small muted algo-tip">Viết lời giải như phỏng vấn thật. ' + (canRun ? 'Ctrl+Enter để chạy test trên Judge0 (Java 13).' : 'Bài này chưa có test tự động.') + '</p>' +
-          (canRun ? '<button type="button" class="btn sm primary" id="algoRun">▶ Chạy test</button>' : '') +
-          '<button type="button" class="btn sm" id="algoAiReview">AI review code</button>' +
+            ' aria-label="' + App.t('algo.editorAria') + '" placeholder="' + App.t('algo.editorPlaceholder') + '">' + App.esc(code) + '</textarea>' +
+          '<p class="small muted algo-tip">' + App.t('algo.editorTip') + ' ' + (canRun ? App.t('algo.editorRunTip') : App.t('algo.editorNoTest')) + '</p>' +
+          (canRun ? '<button type="button" class="btn sm primary" id="algoRun">' + App.t('algo.runBtn') + '</button>' : '') +
+          '<button type="button" class="btn sm" id="algoAiReview">' + App.t('algo.reviewBtn') + '</button>' +
           '<div class="row algo-actions">' +
-            '<button type="button" class="btn sm" id="algoCopy">Sao chép code</button>' +
-            '<button type="button" class="btn sm" id="algoResetCode">Xoá code</button>' +
-            '<button type="button" class="btn sm primary" id="algoSolution">Xem lời giải</button>' +
+            '<button type="button" class="btn sm" id="algoCopy">' + App.t('algo.copyBtn') + '</button>' +
+            '<button type="button" class="btn sm" id="algoResetCode">' + App.t('algo.resetBtn') + '</button>' +
+            '<button type="button" class="btn sm primary" id="algoSolution">' + App.t('algo.solutionBtn') + '</button>' +
             '<span class="spacer"></span>' +
-            '<button type="button" class="btn sm ok" data-mark="known">Đã giải</button>' +
-            '<button type="button" class="btn sm warn" data-mark="review">Cần ôn</button>' +
-            '<button type="button" class="btn sm bad" data-mark="unknown">Chưa giải được</button>' +
+            '<button type="button" class="btn sm ok" data-mark="known">' + App.t('algo.markKnown') + '</button>' +
+            '<button type="button" class="btn sm warn" data-mark="review">' + App.t('algo.markReview') + '</button>' +
+            '<button type="button" class="btn sm bad" data-mark="unknown">' + App.t('algo.markUnknown') + '</button>' +
           '</div>' +
           '<div id="algoRunPanel" class="algo-ai-panel" aria-live="polite"></div><div id="algoReviewPanel" class="algo-ai-panel" aria-live="polite"></div>' +
           '<div id="algoSolutionBox"></div>' +
@@ -283,13 +419,13 @@
       if (!canRun || runBtn.disabled) return;
       const submitted = editor.value;
       runBtn.disabled = true;
-      runPanel.innerHTML = '<span class="ai-loading">Đang chạy test…</span>';
+      runPanel.innerHTML = '<span class="ai-loading">' + App.t('algo.runTesting') + '</span>';
       try {
         const run = await App.ai.run(App.code.assemble(submitted, algo.tests));
         if (editor.value !== submitted) return;
         lastRun = cache.run = run; cache.code = submitted;
         if (run.configured === false) {
-          runPanel.innerHTML = '<div class="run-box">Máy chạy code chưa được cấu hình. Bạn có thể dùng AI review code.</div>';
+          runPanel.innerHTML = '<div class="run-box">' + App.t('algo.runNotConfigured') + '</div>';
         } else {
           lastParsed = cache.parsed = App.code.parse(run.stdout);
           runPanel.innerHTML = App.ui.runResult(run, lastParsed);
@@ -302,7 +438,7 @@
       if (reviewBtn.disabled) return;
       const submitted = editor.value;
       reviewBtn.disabled = true;
-      reviewPanel.innerHTML = '<span class="ai-loading">AI đang review code…</span>';
+      reviewPanel.innerHTML = '<span class="ai-loading">' + App.t('algo.reviewTesting') + '</span>';
       try {
         const run = lastRun ? { passed: lastParsed ? lastParsed.passed : 0, total: lastParsed ? lastParsed.total : 0, output: (lastRun.stdout || '').slice(0, 2000) } : undefined;
         const result = await App.ai.review({ title: algo.title, prompt: algo.prompt, reference: algo.solution, code: submitted, complexity: algo.complexity, run });
@@ -319,10 +455,10 @@
       hintsUsed++;
       const item = document.createElement('div');
       item.className = 'algo-hint';
-      item.innerHTML = '<b>Gợi ý ' + hintsUsed + '</b><div class="md">' + App.md(h) + '</div>';
+      item.innerHTML = '<b>' + App.t('algo.hintTitle') + ' ' + hintsUsed + '</b><div class="md">' + App.md(h) + '</div>';
       hintsBox.appendChild(item);
       hintCount.textContent = hintsUsed + '/' + hints.length;
-      hintBtn.textContent = hintsUsed < hints.length ? 'Gợi ý ' + (hintsUsed + 1) + '/' + hints.length : 'Đã hết gợi ý';
+      hintBtn.textContent = hintsUsed < hints.length ? App.t('algo.hintNext', {n: hintsUsed + 1, total: hints.length}) : App.t('algo.hintDone');
       if (hintsUsed >= hints.length) hintBtn.disabled = true;
     }
 
@@ -331,34 +467,33 @@
       const over = timer.elapsed > timer.goal * 60000;
       timerEl.classList.toggle('algo-over', over);
       timerGoalEl.textContent = over
-        ? 'Đã vượt mục tiêu ' + timer.goal + ' phút'
-        : 'Mục tiêu ' + timer.goal + ' phút';
+        ? App.t('algo.timerOver', {n: timer.goal})
+        : App.t('algo.timerGoal', {n: timer.goal});
     }
 
     function startTimer() {
       if (timer.running) return;
       timer.running = true;
-      timerToggle.textContent = 'Tạm dừng';
+      timerToggle.textContent = App.t('algo.timerPause');
       timer.tick = setInterval(() => { timer.elapsed += 1000; updateTimer(); }, 1000);
     }
     function pauseTimer() {
       timer.running = false;
-      timerToggle.textContent = 'Tiếp tục';
+      timerToggle.textContent = App.t('algo.timerResume');
       if (timer.tick) { clearInterval(timer.tick); timer.tick = null; }
     }
 
     function showSolution() {
       if (solutionShown) return;
-      if (hintsUsed < hints.length && !confirm('Bạn mới dùng ' + hintsUsed + '/' + hints.length +
-        ' gợi ý. Xem lời giải luôn? (Nên tự viết lại trước đã)')) return;
+      if (hintsUsed < hints.length && !confirm(App.t('algo.solutionConfirm', {n: hintsUsed, total: hints.length}))) return;
       solutionShown = true;
       const follow = (algo.follow || []).map(f => '<li>' + App.md(f) + '</li>').join('');
       solutionBox.innerHTML =
         '<div class="algo-solution">' +
-          '<h3>Lời giải</h3>' +
+          '<h3>' + App.t('algo.solutionTitle') + '</h3>' +
           '<div class="md">' + App.md(algo.solution) + '</div>' +
-          '<p class="small"><b>Độ phức tạp:</b> ' + App.esc(algo.complexity || '') + '</p>' +
-          (follow ? '<h4>Câu hỏi follow-up</h4><ul class="algo-follow">' + follow + '</ul>' : '') +
+          '<p class="small"><b>' + App.t('algo.complexityLabel') + '</b> ' + App.esc(algo.complexity || '') + '</p>' +
+          (follow ? '<h4>' + App.t('algo.followUpTitle') + '</h4><ul class="algo-follow">' + follow + '</ul>' : '') +
         '</div>';
       solutionBox.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
@@ -390,7 +525,7 @@
     root.querySelector('#algoTimerReset').addEventListener('click', () => {
       pauseTimer();
       timer.elapsed = 0;
-      timerToggle.textContent = 'Bắt đầu';
+      timerToggle.textContent = App.t('algo.timerStart');
       updateTimer();
     });
     root.querySelector('#algoGoals').addEventListener('click', e => {
@@ -406,7 +541,7 @@
       const done = () => {
         const btn = root.querySelector('#algoCopy');
         const old = btn.textContent;
-        btn.textContent = 'Đã sao chép';
+        btn.textContent = App.t('algo.copyDone');
         setTimeout(() => { btn.textContent = old; }, 1500);
       };
       if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -414,7 +549,7 @@
       } else fallbackCopy(text, done);
     });
     root.querySelector('#algoResetCode').addEventListener('click', () => {
-      if (!editor.value.trim() || confirm('Xoá toàn bộ code đang soạn?')) {
+      if (!editor.value.trim() || confirm(App.t('algo.resetConfirm'))) {
         editor.value = baseCode;
         saveDraft(algo.id, baseCode);
         Object.assign(cache, { code: '', run: null, parsed: null, runHtml: '', reviewHtml: '' });
@@ -435,11 +570,11 @@
         '<span class="badge">' + App.esc(algo.id) + '</span>' +
         (algo.tags || []).map(t => '<span class="badge">' + App.esc(t) + '</span>').join('') +
         '<span class="badge ' + (App.STATUS[fresh] ? App.STATUS[fresh].cls : '') + '">' +
-        (App.STATUS[fresh] ? App.STATUS[fresh].label : 'Chưa làm') + '</span>' +
-        (App.store.isDue(algo.id) ? '<span class="badge accent">Đến hạn giải lại</span>' : '');
-      btn.textContent = 'Đã lưu ✓';
+        (App.STATUS[fresh] ? App.STATUS[fresh].label : App.t('algo.filterUnseen')) + '</span>' +
+        (App.store.isDue(algo.id) ? '<span class="badge accent">' + App.t('algo.filterDue') + '</span>' : '');
+      btn.textContent = App.t('algo.savedLabel');
       setTimeout(() => {
-        const labels = { known: 'Đã giải', review: 'Cần ôn', unknown: 'Chưa giải được' };
+        const labels = { known: App.t('algo.markKnown'), review: App.t('algo.markReview'), unknown: App.t('algo.markUnknown') };
         btn.textContent = labels[s] || btn.textContent;
       }, 1200);
     });
@@ -461,7 +596,7 @@
 
   // ------------------------------------------------------------------ register
   App.registerView('algo', {
-    title: 'Luyện thuật toán',
+    get title() { return App.t('algo.title'); },
     render(root, params) {
       if (params && params.length) return renderDetail(root, params[0]);
       return renderList(root);
