@@ -28,6 +28,7 @@ next_task() {
   return 1
 }
 
+sleep $(( RANDOM % 20 ))   # workers started together would race for the same stale claim
 log "started (backoff ${BACKOFF}s${ONLY:+, only: $ONLY})"
 while true; do
   if id=$(next_task); then
