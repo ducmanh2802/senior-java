@@ -1,6 +1,6 @@
 # T208 — Dịch sang tiếng Anh: q-aws (2 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-aws-3.en.js`
 
@@ -16,3 +16,7 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-aws-3.en.js` và `node scripts/check-i18n.js q-aws-3` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã viết bản dịch cho `aws-021` (multi-account / Organizations / Control Tower / SCP / migration) và `aws-022` (PCI DSS / shared responsibility / encryption / audit / Vietnam data residency) vào `js/i18n/q-aws-3.en.js`.
+- Giữ nguyên markup (`**`, `###`, bảng `|`, `~~~json/text/yaml`, `> Senior tip:`), dịch comment trong code block, không có backtick hay `${` không escape.
+- `node --check` OK; `node scripts/check-i18n.js q-aws-3` → OK (2 mục); `node scripts/validate.js` → OK.
+Reviewed-by: check-i18n (translation, no LLM review)
