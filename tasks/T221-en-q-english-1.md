@@ -1,6 +1,7 @@
 # T221 — Dịch sang tiếng Anh: q-english (14 mục)
 
-Status: TODO
+Status: DONE
+Note: Translated 14 items (english-001 to english-014) into English in `js/i18n/q-english-1.en.js`. Validated with `scripts/check-i18n.js`.
 Agent: opencode
 Owns: `js/i18n/q-english-1.en.js`
 
@@ -16,3 +17,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-english-1.en.js` và `node scripts/check-i18n.js q-english-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
