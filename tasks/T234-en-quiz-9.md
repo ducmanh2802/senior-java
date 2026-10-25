@@ -1,8 +1,10 @@
 # T234 — Dịch sang tiếng Anh: quiz (19 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/quiz-9.en.js`
+
+Đã dịch xong 19 mục yêu cầu sang tiếng Anh. Syntax đã kiểm tra OK.
 
 Người dùng bấm EN thì **cả trang** chuyển sang tiếng Anh: file này phủ bản dịch lên dữ liệu gốc theo `id` (đọc comment "content translation" trong `js/core/i18n.js`). Đọc AGENTS.md mục 5 (markup) và các mục sau trong `js/data/quiz.js`: **qz-english-001, qz-english-002, qz-english-003, qz-english-004, qz-english-005, qz-english-006, qz-english-007, qz-english-008, qz-devops-003, qz-devops-004, qz-devops-005, qz-devops-006, qz-devops-007, qz-devops-008, qz-kotlin-003, qz-kotlin-004, qz-kotlin-005, qz-kotlin-006, qz-kotlin-007**.
 
@@ -16,3 +18,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/quiz-9.en.js` và `node scripts/check-i18n.js quiz-9` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
