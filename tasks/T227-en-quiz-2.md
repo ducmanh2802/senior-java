@@ -1,6 +1,6 @@
 # T227 — Dịch sang tiếng Anh: quiz (15 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/quiz-2.en.js`
 
@@ -16,3 +16,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/quiz-2.en.js` và `node scripts/check-i18n.js quiz-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+Translated 15 quiz items to English in `js/i18n/quiz-2.en.js`. Verified with `node scripts/check-i18n.js quiz-2`.
