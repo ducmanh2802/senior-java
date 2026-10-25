@@ -1,6 +1,11 @@
 # T240 — Dịch sang tiếng Anh: algo (7 mục)
 
-Status: TODO
+Status: DONE
+
+## Notes
+- Translated 7 algorithms (algo-028 to algo-034) to English in `js/i18n/algo-5.en.js`.
+- Verified with `node scripts/check-i18n.js algo-5` (OK).
+- `node scripts/validate.js` has pre-existing errors unrelated to this task.
 Agent: opencode
 Owns: `js/i18n/algo-5.en.js`
 
@@ -16,3 +21,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/algo-5.en.js` và `node scripts/check-i18n.js algo-5` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
