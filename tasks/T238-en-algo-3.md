@@ -1,7 +1,11 @@
 # T238 — Dịch sang tiếng Anh: algo (7 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
+
+Đã dịch các bài thuật toán algo-015 đến algo-021 sang tiếng Anh trong js/i18n/algo-3.en.js.
+Đã chạy node scripts/check-i18n.js algo-3 -> OK.
+Đã chạy node scripts/validate.js (các lỗi hiện tại không liên quan đến task này).
 Owns: `js/i18n/algo-3.en.js`
 
 Người dùng bấm EN thì **cả trang** chuyển sang tiếng Anh: file này phủ bản dịch lên dữ liệu gốc theo `id` (đọc comment "content translation" trong `js/core/i18n.js`). Đọc AGENTS.md mục 5 (markup) và các mục sau trong `js/data/algo.js`: **algo-015, algo-016, algo-017, algo-018, algo-019, algo-020, algo-021**.
@@ -16,3 +20,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/algo-3.en.js` và `node scripts/check-i18n.js algo-3` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
