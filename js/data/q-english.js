@@ -1893,6 +1893,182 @@ I underestimated [real task] and realized [when] that the date was at risk. I to
   follow: ['How do you estimate work more accurately?', 'How do you push back on an unrealistic deadline?'],
   tags: ['delivery', 'communication', 'ownership'],
   lang: 'en',
-}
-,
+},
+{
+  id: 'english-064',
+  topic: 'english',
+  level: 'senior',
+  q: 'Explain how virtual threads work in Java 21. When would you use them, and what are the trade-offs compared to platform threads?',
+  a: `**Tóm tắt:** Virtual threads (Project Loom) là thread nhẹ, do JVM quản lý thay vì OS. Khi bị block (ví dụ I/O), JVM suspend và resume tự động, không chặn platform thread. Tốt cho high-concurrency I/O-bound; không phù hợp CPU-bound vì cooperative scheduling và có thể pin carrier khi dùng synchronized.
+
+### Sample answer
+Virtual threads in Java 21 are lightweight threads managed by the JVM rather than the operating system. A platform thread maps to an OS thread and costs about one megabyte of stack memory; a virtual thread uses a few kilobytes of heap-allocated continuation stack. When a virtual thread reaches a blocking operation, the JVM parks its continuation on the heap and frees the underlying platform thread (carrier) to run another virtual thread. This is implemented via JEP 444 and a work-stealing ForkJoinPool.
+
+When to use them: high-concurrency, blocking-I/O workloads such as a Spring Boot service calling multiple downstream APIs. Trade-offs: CPU-bound work does not benefit; synchronized blocks can pin the carrier and reduce scalability; debugging is more complex because a virtual thread may mount on different carriers over its lifetime. My recommendation: use virtual threads for I/O-heavy services and platform threads for CPU-intensive batch work.
+
+### Useful phrases
+- **managed by the JVM rather than the OS**
+- **park the continuation on the heap**
+- **pinned to its carrier**
+- **cooperative, not preemptive**
+
+> Senior tip: Đừng chỉ nói "virtual threads nhanh hơn" — nói rõ cho use case nào và vì sao không phù hợp CPU-bound. Cảnh báo: synchronized trong virtual thread pin carrier. Dùng ReentrantLock thay thế.
+
+### Lỗi người Việt hay mắc
+- Nhầm virtual thread với thread pool.
+- Bỏ qua vấn đề pinned carrier.`,
+  follow: [
+    'How does a virtual thread interact with ThreadLocal variables?',
+    'What is a "pinned" virtual thread, and how do you avoid it?',
+    'Can you replace all platform threads in a Spring Boot service with virtual threads?',
+  ],
+  tags: ['java-21', 'virtual-threads', 'loom', 'jvm', 'concurrency'],
+  lang: 'en',
+},
+{
+  id: 'english-065',
+  topic: 'english',
+  level: 'lead',
+  q: 'In a system design round, how do you politely clarify ambiguous requirements before you start designing?',
+  a: `**Tóm tắt:** Đừng bắt đầu thiết kế khi chưa hiểu rõ yêu cầu. Cấu trúc: xác nhận lại bằng lời mình → hỏi 1-2 câu có lý do → nêu giả định → đề xuất bước tiếp theo.
+
+### Sample answer
+Before drawing any box, I repeat the problem: "So, a system processing one thousand orders per second, multi-region within six months, budget under fifty thousand dollars — did I miss anything?" That buys time and catches misunderstandings. Then I ask at most two clarifying questions with reasons: "Is order processing idempotent by design? That affects whether I need an idempotency layer." I state assumptions explicitly: "I assume peak load, latency priority, existing Kubernetes cluster." Then I propose a high-level structure and ask to confirm.
+
+### Useful phrases
+- **repeat the problem in my own words**
+- **that buys me ten seconds**
+- **each question comes with a reason**
+
+> Senior tip: Đừng bắt đầu từ công cụ. Hỏi scope, scale, latency, budget, constraints trước. Nếu không hiểu, nói: "Could you clarify what you mean by 'scalable'?"
+
+### Lỗi người Việt hay mắc
+- Nói "Can you repeat again?" (sai, đúng "Could you say that again?").`,
+  follow: [
+    'What if the interviewer says "just design it"?',
+    'How many clarifying questions is too many?',
+    'How do you handle a wrong assumption?',
+  ],
+  tags: ['system-design', 'communication', 'interview-skills', 'clarify'],
+  lang: 'en',
+},
+{
+  id: 'english-066',
+  topic: 'english',
+  level: 'senior',
+  q: 'How do you explain a trade-off between two technical options to a non-technical stakeholder?',
+  a: `**Tóm tắt:** Đừng nói thuật ngữ kỹ thuật. Dùng ẩn dụ hoặc ví dụ từ đời sống + chi phí rõ ràng + đề xuất cụ thể. Kết thúc bằng một khuyến nghị, không phải "it depends" rồi dừng. Stakeholder cần ra quyết định, không học kiến trúc.
+
+### Sample answer
+I use a concrete analogy: "A monolith is one kitchen; microservices are food trucks. Trucks scale but cost more to manage." Then I put numbers: "With our team of eight and six deployments a week, splitting adds 20-30% overhead before any feature. The split pays off with separate teams or ten-times scale differences. We are not there. I recommend keeping the monolith with clear module boundaries so splitting is a two-week change, not a two-year rewrite."
+
+### Useful phrases
+- **put numbers on it**
+- **operational overhead**
+- **clear module boundaries**
+- **not a two-year rewrite**
+
+> Senior tip: Đừng nói "it depends" rồi dừng — stakeholder cần một khuyến nghị. Nếu bạn thực sự không chắc, nói: "Based on the data I have, I recommend X. If the team size doubles, we should revisit Y." Cũng đừng dạy lại định nghĩa — họ đã thuê bạn để ra quyết định, không phải để học kiến trúc. Luôn kết thúc bằng câu hỏi: "Does that match your understanding of the business priority?"
+
+### Lỗi người Việt hay mắc
+- Dùng từ tiếng Việt xen lẫn tiếng Anh khi giải thích cho người nước ngoài.
+- Chỉ nói ưu điểm, không nói chi phí rõ ràng.
+- Kết thúc bằng "it depends" mà không đưa khuyến nghị.`,
+  follow: [
+    'How do you explain latency to a PM?',
+    'What if the stakeholder insists on microservices?',
+    'How do you handle a wrong technical term?',
+  ],
+  tags: ['communication', 'stakeholder', 'trade-off', 'system-design'],
+  lang: 'en',
+},
+{
+  id: 'english-067',
+  topic: 'english',
+  level: 'lead',
+  q: 'How do you handle interviewer pushback or challenge during system design?',
+  a: `**Tóm tắt:** Đừng phòng thủ. Cấu trúc: thừa nhận điểm hợp lý → hỏi rõ thách thức → điều chỉnh hoặc đưa bằng chứng → đề xuất kiểm tra. Điều này cho thấy bạn có thể hợp tác dưới áp lực và sẵn sàng điều chỉnh thiết kế dựa trên dữ liệu mới.
+
+### Sample answer
+First, I listen fully and acknowledge the valid point: "That is a fair challenge — if we only have one database node, my read-replica idea does not solve anything." Then I ask for clarification: "Are you concerned about cost, complexity, or a specific failure mode? Because my recommendation would differ depending on the primary risk."
+
+Next, I bring evidence or adjust: "If the primary concern is cost, I would keep the single database but add a read cache with a 30-second TTL and a write-through pattern. If the concern is availability during database downtime, then a second zone with automatic failover is worth the cost. Here is the trade-off table I would use." Then I ask: "Given that our budget is limited and the business requires 99.9% uptime, does the single-zone approach with a clear upgrade path satisfy the requirement?" If pushed further: "I see your point. Let me adjust: add connection pool limit, circuit breaker, manual failover runbook. Revisit multi-region after real traffic data. Would that work?"
+
+### Useful phrases
+- **that is a fair challenge**
+- **does that match your understanding of the risk?**
+- **I will adjust the design**
+- **revisit after real traffic data**
+- **clear upgrade path**
+
+> Senior tip: Đừng nói "you are wrong" hoặc "that will not work" — đó là cách nhanh nhất để mất điểm. Luôn dùng "That is a valid concern", "Let me think about that", hoặc "I had not considered that failure mode". Nếu bạn thực sự không biết, nói: "That is an interesting scenario. I would test it with a load test before committing, and note it as a risk." Interviewer đánh giá khả năng học và điều chỉnh.
+
+### Lỗi người Việt hay mắc
+- Nói "no, that is wrong" hoặc "you do not understand" (rất nguy hiểm)
+- Phòng thủ quá nhiều, không điều chỉnh thiết kế
+- Không đưa bằng chứng cụ thể khi bị thách thức`,
+  follow: [
+    'What if the interviewer keeps challenging every part?',
+    'How do you know when to stand firm and when to adjust?',
+    'What is the best way to say you do not know?',
+  ],
+  tags: ['system-design', 'interview-skills', 'pushback', 'communication'],
+  lang: 'en',
+},
+{
+  id: 'english-068',
+  topic: 'english',
+  level: 'senior',
+  q: 'How do you politely say you do not understand the technical question or you do not know the answer?',
+  a: `**Tóm tắt:** Đừng bịa, đừng im lặng. Dùng cấu trúc: thừa nhận + giải thích lý do ngắn + nêu cách bạn sẽ tìm ra + đưa hướng đi tạm thời (nếu có). Điều này thể hiện trung thực, khả năng giải quyết vấn đề và trách nhiệm.\n\n### Sample answer\nIf unclear: "Could you please clarify what you mean by 'scalable'? Vertical, horizontal, or over time? Once confirmed, I can design concretely." If unknown technology: "Great question — I have not worked directly with eBPF in production, so I cannot give confident data. Here is my approach: read docs, benchmark, ask platform team. Meanwhile, I share our current iptables approach. Would that work?" Always show a method: document, benchmark, ask expert, propose temporary solution. That turns a gap into evidence of problem-solving.\n\n### Useful phrases\n- **could you please clarify**\n- **I want to be honest**\n- **here is how I would approach it**\n- **would that work for you?**\n- **in the meantime**\n\n> Senior tip: Đừng nói "I would Google it" — nghe thiếu chuyên nghiệp. Hãy nói các bước cụ thể và thời gian dự kiến: "Concrete answer by tomorrow morning." Nếu kiến thức cơ bản bạn nên biết (ví dụ "How does a HashMap work?"), đừng nói không biết — hãy nêu phần bạn nhớ và nói phần còn lại bạn sẽ kiểm tra lại: "I know the spread function and load factor; I will verify the exact treeify threshold and confirm with the Java 21 source."\n\n### Lỗi người Việt hay mắc\n- Nói "I do not know" rồi dừng, không nói thêm gì\n- Bịa câu trả lời rồi bị bắt — mất hoàn toàn uy tín\n- Dùng "Can you repeat again?" (sai, đúng là "Could you say that again?")`,
+  follow: [
+    'How do you handle it when the interviewer insists you guess anyway?',
+    'How do you handle a question about a fundamental concept you should know?',
+    'Have you ever pretended to know something and got caught? What did you learn?',
+  ],
+  tags: ['interview-skills', 'communication', 'honesty', 'problem-solving'],
+  lang: 'en',
+},
+{
+  id: 'english-069',
+  topic: 'english',
+  level: 'senior',
+  q: 'Walk me through how you explain the concept of eventual consistency to a product manager, using a concrete example.',
+  a: `**Tóm tắt:** Tránh thuật ngữ phân tán. Dùng ví dụ từ đời sống (mua hàng online), giải thích cơ chế đơn giản (bản sao đồng bộ dần), nêu chi phí và lợi ích cụ thể, rồi kết thúc bằng câu hỏi xác nhận hiểu biết từ phía PM.\n\n### Sample answer\nI would start with a real-world analogy: "Imagine you and a friend both update the same shared shopping list from different phones at the same time. Your phone shows 'milk' and your friend's shows 'bread.' For a few seconds, each of you sees a slightly different list. But as soon as both phones sync, you both see 'milk and bread.' That is eventual consistency: everyone sees the same list eventually, but not instantly."\n\nThen I explain the business implication: "In our payment system, we have two data centers — one in Vietnam and one in Singapore. When a user updates their profile in Vietnam, the Singapore copy might lag by about two seconds. That means if the same user tries to log in from Singapore immediately after the update, they might see the old profile for a moment. The benefit is that the system stays available even if the network link between Vietnam and Singapore is temporarily down. The cost is that we must design features that can tolerate a brief delay."\n\nThen I make it concrete: "For a financial transaction, eventual consistency is dangerous — you never want a payment to appear completed in Vietnam but missing in Singapore. That is why we use a strong consistency model for payments, with a single source of truth database. But for user preferences, notifications, or analytics, eventual consistency is fine because a two-second delay does not affect the business."\n\nFinally, I ask: "Does that match the kind of delay your feature can tolerate?" This turns the explanation into a design decision rather than a lecture.\n\n### Useful phrases\n- **everyone sees the same list eventually**\n- **the system stays available even if**\n- **a brief delay does not affect the business**\n- **does that match the kind of delay**\n- **turn the explanation into a design decision**\n\n> Senior tip: Đừng nói "eventual consistency means data will be consistent eventually" rồi dừng — PM cần biết thời gian cụ thể, rủi ro nghiệp vụ, và phần nào của hệ thống dùng nó. Luôn nói rõ: "For payments, we need immediate consistency; for notifications, a 5-second delay is acceptable." Nếu PM hỏi "Can we make it faster?", đừng chỉ nói "yes" hoặc "no" — nói chi phí: "Yes, but it requires a synchronous cross-region write, which increases latency by 150ms and costs twice as much."\n\n### Lỗi người Việt hay mắc\n- Dùng thuật ngữ "partition tolerance", "replica", "CAP theorem" với người không chuyên\n- Không nêu ví dụ cụ thể từ hệ thống công ty\n- Kết thúc bằng "it depends" mà không đưa khuyến nghị`,
+  follow: [
+    'How would you explain strong consistency to the same manager?',
+    'What is the business cost if the consistency window is violated?',
+    'How do you decide which parts of the system need strong consistency?',
+  ],
+  tags: ['communication', 'eventual-consistency', 'system-design', 'stakeholder'],
+  lang: 'en',
+},
+{
+  id: 'english-070',
+  topic: 'english',
+  level: 'lead',
+  q: 'How do you estimate the number of servers or services needed for a new feature and explain the numbers to the team?',
+  a: `**Tóm tắt:** Đừng đoán. Dùng số liệu thực tế từ hệ thống hiện tại (QPS, latency, data size) → tính toán theo công thức đơn giản → thêm buffer 30% → nêu giả định rõ ràng. Giải thích bằng ngôn ngữ dễ hiểu.\n\n### Sample answer\nFirst, I collect baseline metrics from our current system: peak QPS, average request latency, CPU and memory usage per request, and database connection pool size. If we are adding a new feature that processes orders, I look at the current order rate: say, 200 orders per second at peak, with an average processing time of 50 milliseconds per request.\n\nThen I calculate: one server with 4 CPU cores and 8 GB of memory can handle roughly 200 concurrent requests at 50ms each (using Little's Law). So if the new feature needs to handle 1,000 orders per second, I need at least 5 servers for processing. I add 30% buffer for spikes, maintenance windows, and future growth: 5 times 1.3 = 6.5, so 7 servers. For the database, I check the current connection pool: if each server uses 20 connections, 7 servers need 140 connections; our database can handle 500, so we are safe.\n\nThen I explain it to the team: "We need 7 processing servers based on peak load with a 30% buffer. The cost is about X dollars per month. If traffic grows 50% in the next quarter, we need 10 servers. If we want to reduce that, we can optimize the processing time from 50ms to 20ms, which would cut the server count almost in half. What is the priority: lower cost now, or lower cost long term?"\n\nThis approach shows that I based the number on data, not guesswork, and it invites collaboration on the trade-off rather than presenting a final number.\n\n### Useful phrases\n- **peak QPS and average latency**\n- **using Little's Law**\n- **30% buffer for spikes**\n- **what is the priority**\n- **invites collaboration on the trade-off**\n\n> Senior tip: Đừng nói "we need 5 servers" mà không giải thích từ đâu ra. Interviewer muốn nghe công thức, giả định, và buffer. Nếu bạn không có dữ liệu thực tế, nói rõ: "Based on similar services in our system, I estimate 5 servers. Once we deploy to staging, I will measure actual CPU and latency and adjust within one week." Luôn có kế hoạch điều chỉnh sau khi có dữ liệu thực tế.\n\n### Lỗi người Việt hay mắc\n- Đưa số "5 servers" mà không giải thích từ đâu ra\n- Quên thêm buffer cho đột biến và bảo trì\n- Nói "it depends" mà không đưa con số tạm thời`,
+  follow: [
+    'How would you adjust the estimate if processing time improved by 50%?',
+    'What if the database becomes the bottleneck before the servers?',
+    'How do you explain this to a manager who only cares about cost?',
+  ],
+  tags: ['system-design', 'estimation', 'scaling', 'communication'],
+  lang: 'en',
+},
+{
+  id: 'english-071',
+  topic: 'english',
+  level: 'mid',
+  q: 'How do you politely ask for clarification when you do not understand an English interview question?',
+  a: `**Tóm tắt:** Đừng nói "What?" hoặc im lặng. Dùng câu hỏi lịch sự + lý do để cho interviewer thấy bạn đang cố gắng hiểu, không phải lười nghe. Luôn nhắc lại phần bạn hiểu trước để xác nhận.\n\n### Sample answer\nIf I miss part of the question, I say: "Could you please repeat the last part? I want to make sure I answer the right thing." If the vocabulary is unfamiliar, I say: "Could you clarify what you mean by 'idempotency'? I understand it as a property where the same operation produces the same result, but I want to confirm you are referring to the API design aspect or the database transaction aspect."\n\nThen I repeat the full question back: "So just to make sure I understand: you want me to explain how I would make a POST endpoint idempotent, considering both the client-sent key and the server-side state. Is that correct?" That shows I listened, I am precise, and I value accuracy over speed.\n\nIf the interviewer uses an idiom I do not know, I ask politely: "I am not familiar with that phrase — could you explain what 'move the needle' means in this context?" This is better than pretending to understand and answering the wrong question.\n\n### Useful phrases\n- **could you please repeat the last part**\n- **I want to make sure I answer the right thing**\n- **could you clarify what you mean by**\n- **just to make sure I understand**\n- **I am not familiar with that phrase**\n\n> Senior tip: Đừng nói "Can you repeat again?" — đó là lỗi ngữ pháp phổ biến (dùng "repeat" và "again" cùng lúc). Đúng là "Could you say that again?" hoặc "Could you repeat that?". Cũng đừng nói "Sorry, my English is not good" — điều đó làm giảm uy tín. Hãy nói: "Could you speak a little slower? I want to make sure I understand every detail."\n\n### Lỗi người Việt hay mắc\n- Nói "Can you repeat again?" (sai ngữ pháp)\n- Nói "Sorry, my English is bad" (giảm uy tín)\n- Im lặng rồi đoán và trả lời sai hoàn toàn`,
+  follow: [
+    'How do you handle a very fast-talking interviewer?',
+    'What if the interviewer uses a lot of idioms?',
+    'How do you confirm your understanding without sounding slow?',
+  ],
+  tags: ['interview-skills', 'communication', 'clarify', 'english'],
+  lang: 'en',
+},
 );
