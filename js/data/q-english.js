@@ -1668,9 +1668,21 @@ REST is like asking a colleague a question and waiting for the reply: it fits wh
   level: 'senior',
   q: 'How would you politely disagree with your tech lead?',
   a: `**Tóm tắt:** Acknowledge, state your concern with evidence, and offer a small experiment to decide.
-
+  
 ### Sample answer
 I would say: "I see your point about shipping faster. My concern is that this migration may hold a lock on the orders table during peak traffic, based on the behavior we saw in testing. Could we check its lock behavior and duration on production-like data, then choose a rollout window or a safer migration plan? We could also put the application change behind a flag if that is compatible with the schema." This keeps respect, brings evidence, and proposes concrete ways to reduce risk without promising that a flag or maintenance window removes it.
+
+### Chi tiết và VÌ SAO
+Việc bất đồng với tech lead là chuyện bình thường trong một môi trường kỹ thuật lành mạnh. Tech lead thường ưu tiên tính toàn vẹn của hệ thống, nhưng đôi khi họ cũng bị áp lực về tiến độ từ cấp quản lý hoặc khách hàng. Điểm mấu chốt là cách bạn trình bày sự bất đồng: không phải "tôi đúng - anh sai", mà là "tôi có một mối lo ngại về rủi ro kỹ thuật, chúng ta hãy cùng giải quyết nó".
+
+Nếu bạn cảm thấy tech lead đang ra quyết định quá vội vàng hoặc thiếu bằng chứng, hãy sử dụng chiến thuật "Evidence-based disagreement":
+- **Ghi nhận quan điểm (Acknowledge):** Bắt đầu bằng việc xác nhận rằng bạn hiểu lý do của họ (ví dụ: cần gấp tính năng, cần tiết kiệm chi phí). Điều này giúp tech lead cảm thấy họ được lắng nghe.
+- **Nêu mối lo ngại (State concern):** Trình bày sự bất đồng dựa trên dữ liệu kỹ thuật, không phải cảm tính cá nhân.
+- **Đề xuất thử nghiệm (Propose experiment):** Thay vì tranh luận kéo dài, hãy đề xuất một cách đo lường cụ thể hoặc một thử nghiệm nhỏ (spike) để kiểm chứng sự lo ngại của bạn.
+
+Việc này giúp bảo vệ tiêu chuẩn kỹ thuật của team mà vẫn giữ được mối quan hệ tốt. Nếu tech lead vẫn kiên quyết, hãy yêu cầu ghi chú rủi ro đó vào thiết kế hoặc Jira để cùng theo dõi trong tương lai. Đó là cách bạn thể hiện trách nhiệm mà vẫn tôn trọng thẩm quyền của tech lead.
+
+> Senior tip: Đừng bao giờ tranh luận gay gắt trong cuộc họp có nhiều stakeholder. Nếu bất đồng trở nên căng thẳng, hãy chủ động đề nghị thảo luận riêng sau đó: "Let's take this offline and compare the data."
 
 ### Cụm từ hữu ích
 - "I see your point, and..."
@@ -1696,6 +1708,14 @@ I would say: "I see your point about shipping faster. My concern is that this mi
 ### Sample answer
 I have learned a lot in my current role, especially about [relevant skill or domain]. I am now looking for [specific responsibility or challenge], and this role interests me because [verified detail from the job description or company research]. I would like to understand how the team approaches [relevant goal]. Keep the reason for moving truthful and constructive; do not invent a project, roadmap, or career path you have not verified.
 
+### Chi tiết và VÌ SAO
+Đây là câu hỏi về thái độ và tư duy phát triển của bạn. Interviewer không muốn nghe lý do "vì sếp khó tính" hay "vì lương thấp". Họ muốn một ứng viên có mục tiêu rõ ràng và tìm kiếm cơ hội để đóng góp giá trị cao hơn.
+- **Lý do rời bỏ (Leaving):** Hãy tập trung vào việc bạn đã học được gì và tại sao bạn đã sẵn sàng cho bước tiếp theo. Nếu công ty hiện tại đã ổn định và không còn thách thức kỹ thuật lớn, hãy nói điều đó một cách trung tính.
+- **Tại sao chọn công ty mới (Joining):** Đây là nơi bạn thể hiện mình đã nghiên cứu kỹ về công ty. Hãy chỉ ra một khía cạnh kỹ thuật, sản phẩm, hoặc văn hóa mà bạn thực sự ngưỡng mộ hoặc muốn chinh phục.
+- **Tránh sai lầm:** Tuyệt đối không nói xấu sếp, đồng nghiệp cũ.
+
+Việc chuẩn bị kỹ lưỡng cho câu hỏi này giúp bạn thể hiện sự chuyên nghiệp và định hướng rõ ràng.
+
 ### Cụm từ hữu ích
 - "I have learned a lot, but..."
 - "What excites me about this role is..."
@@ -1719,6 +1739,15 @@ I have learned a lot in my current role, especially about [relevant skill or dom
 
 ### Sample answer
 I would say: "Based on comparable roles, my experience, and the responsibilities we have discussed, I am targeting a total compensation range of [your researched range]. I am open to discussing the mix of base pay and any benefits or variable compensation that apply to this role. Could you share the budgeted range for the position?" Research the relevant location and level; do not assume equity or a bonus is part of the package.
+
+### Chi tiết và VÌ SAO
+Đàm phán lương là kỹ năng thể hiện sự tự tin và sự hiểu biết về giá trị của bản thân trên thị trường.
+- **Nghiên cứu thị trường (Research):** Biết rõ mức lương của vị trí tương đương, trình độ tương đương ở khu vực đó trước khi đi phỏng vấn.
+- **Tránh con số đơn nhất (Range):** Đưa ra một khoảng lương (range) thay vì một con số cố định để linh hoạt hơn.
+- **Tập trung vào tổng đãi ngộ (Total compensation):** Lương cơ bản chỉ là một phần, hãy cân nhắc thêm bonus, cổ phiếu (equity), phụ cấp, và cơ hội phát triển.
+- **Hỏi ngược lại (Turn around):** Nếu họ hỏi quá sớm, hãy hỏi lại khoảng budget của họ để hai bên biết có khớp nhau hay không, tránh mất thời gian.
+
+Điều này không phải là mặc cả, mà là đàm phán dựa trên giá trị và thị trường. Luôn giữ thái độ hợp tác và chuyên nghiệp.
 
 ### Cụm từ hữu ích
 - "Based on market data..."
