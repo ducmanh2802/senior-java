@@ -1,6 +1,6 @@
 # T241 — Dịch sang tiếng Anh: algo (7 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/algo-6.en.js`
 
@@ -16,3 +16,7 @@ Yêu cầu dịch:
 - `node --check js/i18n/algo-6.en.js` và `node scripts/check-i18n.js algo-6` → OK, rồi `Status: DONE`.
 
 ## Notes
+Đã dịch xong 7 thuật toán (algo-035 đến algo-041) sang tiếng Anh và cập nhật vào `js/i18n/algo-6.en.js`.
+Kiểm tra bằng `node scripts/check-i18n.js algo-6` đã báo OK.
+`node scripts/validate.js` không báo lỗi liên quan đến file này.
+Reviewed-by: check-i18n (translation, no LLM review)
