@@ -1,6 +1,6 @@
 # T181 — Dịch sang tiếng Anh: q-spring-data (12 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-spring-data-9.en.js`
 
@@ -16,3 +16,6 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-spring-data-9.en.js` và `node scripts/check-i18n.js q-spring-data-9` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+Đã dịch đủ 12 mục (spring-028…033, jpa-022…027) vào `js/i18n/q-spring-data-9.en.js`, mỗi mục chỉ gồm field `q`, `a`, `follow`. Giữ nguyên markup, `{{code}}`, bảng, nhãn "Summary:", "Senior tip:"; "### Pitfall production" dịch thành "### Production pitfalls", header `ids` giữ danh sách 12 id gốc. File khung trống từ lần chạy gián đoạn trước được giữ và điền tiếp. Kiểm tra: `node --check` OK, `node scripts/check-i18n.js q-spring-data-9` → `OK — 12 mục đã dịch.`, `node scripts/validate.js` → OK (cảnh báo còn lại là của q-english.js, ngoài phạm vi). File `js/i18n/manifest.js` (integrator) đã có sẵn `q-spring-data-9` nên không cần đổi.
+Reviewed-by: check-i18n (translation, no LLM review)
