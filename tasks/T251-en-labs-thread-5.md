@@ -1,6 +1,6 @@
 # T251 — Dịch sang tiếng Anh: labs-thread (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/labs-thread-5.en.js`
 
@@ -16,3 +16,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/labs-thread-5.en.js` và `node scripts/check-i18n.js labs-thread-5` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
