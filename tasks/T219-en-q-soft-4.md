@@ -1,6 +1,6 @@
 # T219 — Dịch sang tiếng Anh: q-soft (8 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-soft-4.en.js`
 
@@ -16,3 +16,6 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-soft-4.en.js` và `node scripts/check-i18n.js q-soft-4` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Translated testing-016, behavioral-013, behavioral-014, behavioral-015, behavioral-016, behavioral-017, behavioral-018, behavioral-019.
+- Validated with node scripts/check-i18n.js q-soft-4 -> OK.
+Reviewed-by: check-i18n (translation, no LLM review)
