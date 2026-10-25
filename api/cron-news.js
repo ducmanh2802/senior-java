@@ -115,7 +115,11 @@ async function fetchFeed(feed) {
 
 async function upsertNews(allItems) {
   if (!supabaseConfigured() || allItems.length === 0) return { inserted: 0 };
-  const rows = allItems.map(it => ({
+  // one bad row (no url/title/date, or the same url twice in a batch) would fail the whole insert
+  const seen = new Set();
+  const valid = allItems.filter(it => it.url && /^https?:\/\//.test(it.url) && it.title && it.published &&
+    !seen.has(it.url) && seen.add(it.url));
+  const rows = valid.map(it => ({
     url: it.url,
     category: it.category,
     source: it.source,
@@ -132,7 +136,7 @@ async function upsertNews(allItems) {
     const err = await r.text();
     throw new Error('upsert failed: ' + r.status + ' ' + err);
   }
-  return { inserted: rows.length };
+  return { inserted: rows.length };   // attempted; duplicates of existing urls are ignored by the db
 }
 
 async function cleanupOldNews() {
@@ -147,19 +151,27 @@ module.exports = async function handler(req, res) {
     return;
   }
   const auth = req.headers.authorization || '';
-  if (!CRON_SECRET || auth !== 'Bearer ' + CRON_SECRET) {
-    send(res, 500, { error: 'CRON_SECRET not configured or invalid', code: 'not_configured' });
+  if (!CRON_SECRET) {
+    console.error('cron-news: CRON_SECRET is not set (add it in Vercel env, then redeploy)');
+    send(res, 500, { error: 'CRON_SECRET not configured', code: 'not_configured' });
+    return;
+  }
+  if (auth !== 'Bearer ' + CRON_SECRET) {
+    send(res, 401, { error: 'invalid cron secret', code: 'unauthorized' });
     return;
   }
 
-  const results = await Promise.all(FEEDS.map(fetchFeed));
-  const allItems = results.flatMap(r => r.ok ? r.items : []);
-  let inserted = 0;
-  if (allItems.length > 0) {
-    const up = await upsertNews(allItems);
-    inserted = up.inserted;
+  try {
+    const results = await Promise.all(FEEDS.map(fetchFeed));
+    const allItems = results.flatMap(r => r.ok ? r.items : []);
+    const { inserted } = await upsertNews(allItems);
+    await cleanupOldNews();
+    const feeds = results.map(r => ({ id: r.id, ok: r.ok, count: r.count, error: r.error }));
+    console.log('cron-news: fetched ' + allItems.length + ', inserted ' + inserted + ', failed feeds: ' +
+      (feeds.filter(f => !f.ok).map(f => f.id).join(', ') || 'none'));
+    send(res, 200, { ok: true, fetched: allItems.length, inserted, feeds });
+  } catch (e) {
+    console.error('cron-news: ' + e.message);
+    send(res, 500, { error: e.message, code: 'cron_failed' });
   }
-  await cleanupOldNews();
-
-  send(res, 200, { ok: true, inserted, feeds: results });
 };
