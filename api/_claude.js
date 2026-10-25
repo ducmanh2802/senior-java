@@ -1,7 +1,8 @@
 /*
  * Shared Claude call for the serverless functions: one structured-output request with the
  * server-side fallback beta, plus uniform error → HTTP mapping.
- * Env: ANTHROPIC_API_KEY (required), CLAUDE_MODEL (default claude-opus-5-5).
+ * Env: ANTHROPIC_API_KEY (required), CLAUDE_MODEL (default claude-opus-5-5),
+ *      ANTHROPIC_WORKSPACE_ID (only for a key that is not scoped to a workspace).
  */
 'use strict';
 
@@ -15,7 +16,9 @@ const MODEL = process.env.CLAUDE_MODEL || 'claude-opus-5-5';
  */
 async function askJson({ system, prompt, messages, schema, effort = 'medium', maxTokens = 16000 }) {
   const { default: Anthropic } = await import('@anthropic-ai/sdk');
-  const client = new Anthropic();
+  // a key that is not scoped to a workspace must name one on every request (400 otherwise)
+  const workspace = process.env.ANTHROPIC_WORKSPACE_ID;
+  const client = new Anthropic(workspace ? { defaultHeaders: { 'anthropic-workspace-id': workspace } } : {});
   try {
     const response = await client.beta.messages.create({
       model: MODEL,
