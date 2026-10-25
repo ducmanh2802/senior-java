@@ -16,3 +16,7 @@ Yêu cầu dịch:
 - `node --check js/i18n/labs-thread-1.en.js` và `node scripts/check-i18n.js labs-thread-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+Dữ liệu labs-thread-001 được dịch đầy đủ vào `js/i18n/labs-thread-1.en.js`: title, scenario, questions, hints, answer, rubric — 6 field theo yêu cầu; giữ nguyên markup (`**{{code}}`{{synchronized}}{{jcmd...}}`), code block, table; không chép artifact/code; `node --check` + `node scripts/check-i18n.js labs-thread-1` → OK. 1 mục dịch xong.
+
+Status: DONE
+Reviewed-by: check-i18n (translation, no LLM review)
