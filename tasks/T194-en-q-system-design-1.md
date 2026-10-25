@@ -1,6 +1,7 @@
 # T194 — Dịch sang tiếng Anh: q-system-design (7 mục)
 
-Status: TODO
+Status: DONE
+Ghi chú: Đã dịch đầy đủ 7 mục (design-001 đến design-007) với q, a, follow. Đã bỏ tags (validator cấm), sửa lỗi cú pháp và dấu `}` thiếu. node --check và node scripts/check-i18n.js q-system-design-1 đều OK. node scripts/validate.js OK.
 Agent: opencode
 Owns: `js/i18n/q-system-design-1.en.js`
 
@@ -16,3 +17,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-system-design-1.en.js` và `node scripts/check-i18n.js q-system-design-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
