@@ -1,8 +1,10 @@
 # T205 — Dịch sang tiếng Anh: q-scenario (13 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-scenario-4.en.js`
+
+Ghi chú: Đã dịch đủ 13 mục scenario-044 → scenario-056 vào `js/i18n/q-scenario-4.en.js`; giữ nguyên markup, thuật ngữ và cấu trúc; `node scripts/check-i18n.js q-scenario-4` → OK 13 mục; `node scripts/validate.js` → OK. Không có backtick trong nội dung; không đụng file khác.
 
 Người dùng bấm EN thì **cả trang** chuyển sang tiếng Anh: file này phủ bản dịch lên dữ liệu gốc theo `id` (đọc comment "content translation" trong `js/core/i18n.js`). Đọc AGENTS.md mục 5 (markup) và các mục sau trong `js/data/q-scenario.js`: **scenario-044, scenario-045, scenario-046, scenario-047, scenario-048, scenario-049, scenario-050, scenario-051, scenario-052, scenario-053, scenario-054, scenario-055, scenario-056**.
 
@@ -16,3 +18,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-scenario-4.en.js` và `node scripts/check-i18n.js q-scenario-4` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
