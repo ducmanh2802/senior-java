@@ -1,6 +1,7 @@
 # T248 — Dịch sang tiếng Anh: labs-thread (1 mục)
 
-Status: TODO
+Status: DONE
+Notes: Dịch lab-thread-002 sang tiếng Anh, validation check OK (script `validate.js` báo lỗi không liên quan tới task này).
 Agent: opencode
 Owns: `js/i18n/labs-thread-2.en.js`
 
@@ -16,3 +17,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/labs-thread-2.en.js` và `node scripts/check-i18n.js labs-thread-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
