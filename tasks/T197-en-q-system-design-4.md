@@ -1,6 +1,6 @@
 # T197 — Dịch sang tiếng Anh: q-system-design (6 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-system-design-4.en.js`
 
@@ -16,3 +16,8 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-system-design-4.en.js` và `node scripts/check-i18n.js q-system-design-4` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã dịch đầy đủ 6 mục: architecture-007, architecture-008, design-014, design-015, design-016, design-017.
+- Giữ nguyên markup, thuật ngữ kỹ thuật, code block (chỉ dịch comment nếu có; trong này không cần vì comment đã tiếng Anh), và dấu `\` / `${` không xuất hiện thêm.
+- `node --check`, `node scripts/check-i18n.js q-system-design-4` và `node scripts/validate.js` đều OK.
+- Không git commit, không kill tiến trình, không mở trình duyệt.
+Reviewed-by: check-i18n (translation, no LLM review)
