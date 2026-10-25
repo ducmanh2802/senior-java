@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * Verify every learn-more link (QUESTIONS[].refs) really exists — AI-written links are often invented.
+ * Verify every learn-more link (QUESTIONS[].refs and GLOSSARY[].refs) really exists — AI-written links are often invented.
  *   node scripts/check-links.mjs              all files
  *   node scripts/check-links.mjs q-java.js    one file
  * YouTube: checked through the oEmbed endpoint (404 = no such video) and the real title is printed,
@@ -20,8 +20,14 @@ for (const f of fs.readdirSync(DATA).filter(f => /^q-.*\.js$/.test(f) && (!only 
   vm.runInContext(fs.readFileSync(path.join(DATA, f), 'utf8'), sandbox, { filename: f });
   (sandbox.window.QUESTIONS || []).slice(before).forEach(q => { q.__file = f; });
 }
+for (const f of fs.readdirSync(DATA).filter(f => /^glossary-.*\.js$/.test(f) && (!only || f === only))) {
+  const before = (sandbox.window.GLOSSARY || []).length;
+  vm.runInContext(fs.readFileSync(path.join(DATA, f), 'utf8'), sandbox, { filename: f });
+  (sandbox.window.GLOSSARY || []).slice(before).forEach(g => { g.__file = f; });
+}
 const refs = [];
 for (const q of sandbox.window.QUESTIONS || []) (q.refs || []).forEach(r => refs.push({ id: q.id, file: q.__file, ...r }));
+for (const g of sandbox.window.GLOSSARY || []) (g.refs || []).forEach(r => refs.push({ id: g.id, file: g.__file, ...r }));
 
 const yt = u => /^https:\/\/(www\.)?(youtube\.com\/watch\?v=|youtu\.be\/)/.test(u);
 async function check(r) {

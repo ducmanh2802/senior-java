@@ -26,3 +26,4 @@ Người học gặp từ khó trong đáp án (ví dụ "idempotency key", "pay
 - `css/glossary.css`: `.gl-term` reset button + dotted underline `var(--accent)`; modal theo style `dialog.ai-settings`, sticky header, cuộn được, responsive 360px, chỉ dùng biến CSS.
 - `scripts/check-links.mjs`: thêm nạp `glossary-*.js` và kiểm tra `GLOSSARY[].refs` như refs câu hỏi (kèm `__file` để `--fix` hoạt động). Đã chạy thử `node scripts/check-links.mjs glossary-java.js` → 0 link, exit 0.
 - Kiểm tra: `node --check js/core/glossary.js`, `node --check scripts/check-links.mjs`, `node scripts/validate.js` → `OK — không có lỗi.` Hiện 3 file glossary data còn rỗng nên chưa có term nào được link cho tới khi task nội dung điền vào.
+Reviewed-by: opencode (T146R)
