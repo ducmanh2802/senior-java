@@ -1,8 +1,9 @@
 # T209 — Dịch sang tiếng Anh: q-ai (9 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-ai-1.en.js`
+Notes: 9 mục ai-001..ai-009 đã dịch đầy đủ (q, a, follow); giữ nguyên markup, thuật ngữ chuyên ngành; `node --check` và `node scripts/check-i18n.js q-ai-1` → OK; `node scripts/validate.js` → OK. Không sửa file khác; không git commit.
 
 Người dùng bấm EN thì **cả trang** chuyển sang tiếng Anh: file này phủ bản dịch lên dữ liệu gốc theo `id` (đọc comment "content translation" trong `js/core/i18n.js`). Đọc AGENTS.md mục 5 (markup) và các mục sau trong `js/data/q-ai.js`: **ai-001, ai-002, ai-003, ai-004, ai-005, ai-006, ai-007, ai-008, ai-009**.
 
@@ -16,3 +17,8 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-ai-1.en.js` và `node scripts/check-i18n.js q-ai-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã kiểm tra `js/i18n/q-ai-1.en.js`: 9 id đầy đủ, cú pháp đúng, nội dung dịch chính xác, giữ markup.
+- `node scripts/check-i18n.js q-ai-1` → OK — 9 mục đã dịch.
+- `node scripts/validate.js` → OK — không có lỗi.
+- Không mở trình duyệt, không kill tiến trình theo tên, không npm install, không git commit.
+Reviewed-by: check-i18n (translation, no LLM review)
