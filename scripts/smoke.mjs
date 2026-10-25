@@ -35,7 +35,13 @@ const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
 const problems = [];
 let current = '';
 page.on('pageerror', e => problems.push(`[${current}] pageerror: ${e.message}`));
-page.on('console', m => { if (m.type() === 'error' && !/fonts\.g(oogleapis|static)\.com/.test(m.text())) problems.push(`[${current}] console: ${m.text()}`); });
+// the static smoke server has no Vercel functions: a 404 from /api/* is expected here, anything else is a bug
+page.on('console', m => {
+  if (m.type() !== 'error' || /fonts\.g(oogleapis|static)\.com/.test(m.text())) return;
+  const url = (m.location() && m.location().url) || '';
+  if (/\/api\//.test(url) && /404/.test(m.text())) return;
+  problems.push(`[${current}] console: ${m.text()}`);
+});
 page.on('requestfailed', r => { if (r.url().startsWith(base)) problems.push(`[${current}] request failed: ${r.url()}`); });
 
 for (const r of [...new Set(routes)]) {
