@@ -1773,6 +1773,14 @@ I would say: "Based on comparable roles, my experience, and the responsibilities
 ### Sample answer
 Choose questions that are still unanswered and fit the interview stage. For example: "What would success look like in the first few months?" or "What technical challenge is the team prioritizing?" Ask about on-call expectations, compensation, or leave when the interviewer or process makes those topics appropriate; none is inherently off limits. You can close with: "Is there anything about my experience you would like me to clarify?" That invites useful discussion without pressuring the interviewer.
 
+### Chi tiết và VÌ SAO
+Đây là cơ hội cuối cùng để bạn ghi điểm. Đừng chỉ hỏi để cho có, hãy hỏi những câu cho thấy bạn thực sự muốn hiểu công việc và văn hóa của công ty.
+- **Sự thành công (Success metrics):** Hỏi về kỳ vọng của họ trong 6 tháng tới giúp bạn hình dung được tiêu chuẩn của công ty.
+- **Thử thách kỹ thuật (Challenges):** Hiểu được vấn đề lớn nhất của team giúp bạn thấy được thực trạng (nợ kỹ thuật, vấn đề hạ tầng...).
+- **Cân bằng cuộc sống (Team health):** Hỏi về on-call và cân bằng công việc giúp bạn đánh giá xem đây có phải là môi trường lành mạnh hay không.
+
+Câu hỏi cuối cùng phải thể hiện sự chuyên nghiệp, chuẩn bị kỹ lưỡng và tư duy của một người thực sự muốn đóng góp lâu dài.
+
 ### Cụm từ hữu ích
 - "What does success look like..."
 - "What is the biggest challenge..."
@@ -1796,6 +1804,14 @@ Choose questions that are still unanswered and fit the interview stage. For exam
 
 ### Sample answer
 I would say: "Let me make sure I understand. The goal is to reduce failed payments by 20% this quarter. I assume we mean failed due to timeout, not fraud, and that we can change the retry policy. Before I build, I will run a 2-day analysis of failure reasons and share a one-page proposal. Does that match your expectation?" This avoids building the wrong thing and shows ownership.
+
+### Chi tiết và VÌ SAO
+Sự mơ hồ là kẻ thù của hiệu suất. Đừng bắt tay vào làm khi yêu cầu chưa rõ ràng, vì chi phí để sửa lại sau này sẽ cao gấp nhiều lần.
+- **Xác nhận mục tiêu (Restate goal):** Để chắc chắn bạn và stakeholder đang cùng nhìn về một hướng.
+- **Nêu giả định (Assumptions):** Giả định giúp làm rõ các ranh giới của vấn đề.
+- **Đề xuất bước kiểm chứng (Validation step):** Thay vì hỏi ngược lại "làm thế nào?", hãy đề xuất một cách giải quyết nhỏ để họ xác nhận.
+
+Cách tiếp cận này thể hiện tư duy của một kỹ sư senior: không chỉ thực hiện công việc, mà còn tối ưu hóa giá trị kinh doanh.
 
 ### Cụm từ hữu ích
 - "Let me make sure I understand..."
@@ -1821,6 +1837,13 @@ I would say: "Let me make sure I understand. The goal is to reduce failed paymen
 ### Sample answer
 When giving feedback, focus on correctness, maintainability, and risk; let configured automation handle style where practical. Explain the impact and suggest a path forward, for example: "Could this query load more rows than expected? What does the plan look like for the largest tenant?" Mark severity using the team's review conventions rather than assuming every team uses the same labels. When receiving feedback, ask about the underlying concern, verify it, and explain your reasoning with evidence if you still disagree.
 
+### Chi tiết và VÌ SAO
+Code review là quá trình học tập chung, không phải là cuộc chiến giữa reviewer và author.
+- **Góp ý (Giving feedback):** Hãy tập trung vào những thứ ảnh hưởng tới hệ thống như hiệu năng, bảo mật, tính dễ bảo trì. Dùng câu hỏi để người khác tự suy nghĩ, tránh áp đặt.
+- **Nhận feedback:** Hãy cởi mở và coi đó là cơ hội để cải thiện bản thân và code. Đừng phòng thủ (defensive). Nếu không đồng ý, hãy đưa ra lý lẽ dựa trên kỹ thuật chứ không phải sở thích cá nhân.
+
+Mục tiêu cuối cùng là chất lượng của sản phẩm, không phải việc ai là người chiến thắng.
+
 ### Cụm từ hữu ích
 - "Could this... become an issue..."
 - "Nit: ..."
@@ -1845,6 +1868,14 @@ When giving feedback, focus on correctness, maintainability, and risk; let confi
 ### Sample answer
 I used to [truthful, relevant weakness]. In [brief real example], it affected [specific outcome]. I changed my approach by [concrete action], and I check whether it is working through [evidence you can support]. I am still improving, especially when [honest context]. Avoid claiming a weakness or result that is not yours; choose something real that does not undermine a core requirement of the role.
 
+### Chi tiết và VÌ SAO
+Interviewer hỏi câu này không phải để tìm lỗi, mà để xem bạn có khả năng tự nhận thức (self-awareness) và tinh thần cầu tiến hay không.
+- **Điểm yếu thật (Real weakness):** Đừng nói "tôi quá hoàn hảo", hãy nói một điểm yếu thật nhưng không gây nguy hiểm cho vị trí ứng tuyển.
+- **Hành động cải thiện (Improvement):** Đây là phần quan trọng nhất. Bạn đã làm gì để khắc phục nó?
+- **Kết quả (Evidence):** Cho thấy tiến bộ cụ thể.
+
+Tư duy này cho thấy bạn là một kỹ sư có tinh thần học hỏi và không ngừng tự hoàn thiện.
+
 ### Cụm từ hữu ích
 - "I used to..."
 - "The impact was..."
@@ -1868,6 +1899,14 @@ I used to [truthful, relevant weakness]. In [brief real example], it affected [s
 
 ### Sample answer
 A junior teammate was building confidence in [specific skill]. I asked what they had tried, then paired on a real task and made my reasoning visible. Next I gave them an appropriately scoped task with a runbook and review support, so they could take ownership without being left alone with production risk. We checked progress through [specific evidence, with permission to share it]. The lesson was to adjust support to the person and create safe opportunities to practice; use a real example and do not disclose confidential details.
+
+### Chi tiết và VÌ SAO
+Việc mentor không phải chỉ là "dạy kỹ thuật", mà là tạo ra môi trường để người khác phát triển.
+- **Chẩn đoán (Diagnose):** Trước hết phải hiểu người kia thiếu gì (kiến thức nền, sự tự tin, hay khả năng quản lý thời gian).
+- **Thiết kế trải nghiệm (Structure):** Đừng làm hộ, hãy tạo ra các "cơ hội an toàn" để họ tự trải nghiệm và rút ra bài học.
+- **Đo lường (Measure):** Mentor hiệu quả là khi người được mentor có thể tự xử lý công việc mà không cần bạn.
+
+Người mentor giỏi là người biết rút lui đúng lúc, nhường lại sân khấu cho người khác tỏa sáng.
 
 ### Cụm từ hữu ích
 - "The gap was..."
