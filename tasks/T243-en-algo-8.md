@@ -1,6 +1,6 @@
 # T243 — Dịch sang tiếng Anh: algo (19 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/algo-8.en.js`
 
@@ -16,3 +16,6 @@ Yêu cầu dịch:
 - `node --check js/i18n/algo-8.en.js` và `node scripts/check-i18n.js algo-8` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã dịch xong 19 mục (algo-048 đến algo-066).
+- Kiểm tra OK bằng `node scripts/check-i18n.js algo-8`.
+Reviewed-by: check-i18n (translation, no LLM review)
