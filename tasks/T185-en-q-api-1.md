@@ -1,6 +1,6 @@
 # T185 — Dịch sang tiếng Anh: q-api (10 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-api-1.en.js`
 
@@ -16,3 +16,5 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-api-1.en.js` và `node scripts/check-i18n.js q-api-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+Translated 10 questions (api-001 through api-010) to English. All markup preserved (bold, inline code {{code}}, headers ###, lists, tables, code blocks). Technical terms kept in English. Fixed labels translated: "**Tóm tắt:**" → "**Summary:**", "> Senior tip:" unchanged. Validation passed: `node --check` OK, `node scripts/validate.js` OK, `node scripts/check-i18n.js q-api-1` OK.
+Reviewed-by: check-i18n (translation, no LLM review)
