@@ -1,6 +1,6 @@
 # T186 — Dịch sang tiếng Anh: q-api (7 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-api-2.en.js`
 
@@ -16,3 +16,8 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-api-2.en.js` và `node scripts/check-i18n.js q-api-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Translated 7 questions (api-011 through api-017) to English.
+- `node --check js/i18n/q-api-2.en.js` passes.
+- `node scripts/check-i18n.js q-api-2` returns OK.
+- `node scripts/validate.js` returns OK — không có lỗi.
+Reviewed-by: check-i18n (translation, no LLM review)
