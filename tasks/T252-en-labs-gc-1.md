@@ -1,6 +1,8 @@
 # T252 — Dịch sang tiếng Anh: labs-gc (2 mục)
 
-Status: TODO
+Status: DONE
+
+Đã dịch xong lab-gc-001 và lab-gc-002 sang tiếng Anh. Đã kiểm tra bằng scripts/check-i18n.js.
 Agent: opencode
 Owns: `js/i18n/labs-gc-1.en.js`
 
@@ -16,3 +18,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/labs-gc-1.en.js` và `node scripts/check-i18n.js labs-gc-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
