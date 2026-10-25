@@ -1,6 +1,7 @@
 # T237 — Dịch sang tiếng Anh: algo (7 mục)
 
-Status: TODO
+Status: DONE
+Note: Dịch 7 bài thuật toán (algo-008 đến algo-014) sang tiếng Anh. Chạy kiểm tra OK.
 Agent: opencode
 Owns: `js/i18n/algo-2.en.js`
 
@@ -16,3 +17,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/algo-2.en.js` và `node scripts/check-i18n.js algo-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
