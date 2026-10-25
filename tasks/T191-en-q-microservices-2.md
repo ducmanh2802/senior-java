@@ -1,6 +1,6 @@
 # T191 — Dịch sang tiếng Anh: q-microservices (10 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-microservices-2.en.js`
 
@@ -16,3 +16,6 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-microservices-2.en.js` và `node scripts/check-i18n.js q-microservices-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+Ghi chú: File đã có đủ 10 bản dịch (011-020), syntax và i18n check OK, validate OK. Không sửa file nào khác.
+Reviewed-by: check-i18n (translation, no LLM review)
