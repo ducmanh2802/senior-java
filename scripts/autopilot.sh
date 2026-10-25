@@ -39,7 +39,7 @@ open_owner() {   # $1 = task file, $2 = task id; its own review task <id>R does 
 PARALLEL=${PARALLEL:-3}
 PUSH_EVERY=${PUSH_EVERY:-1800}
 REVIEW_FILES=${REVIEW_FILES:-js/data/(q-|lessons-|labs-|glossary-|sd-problems|quiz|drills-|path)|js/i18n/}   # files whose content needs an LLM fact-check
-REVIEW_POOL=${REVIEW_POOL:-nemotron|glm|deepseek|mimo|minimax|inkling:free|north|xing}   # with REVIEW_MODELS=auto; small models only translate
+REVIEW_POOL=${REVIEW_POOL:-nemotron-3-ultra|glm|deepseek|mimo|minimax|inkling:free|north|xing|gemini-3-flash}   # with REVIEW_MODELS=auto; small models only translate
 REVIEW_MODELS=(${REVIEW_MODELS:-opencode/glm-5.3-flash-free openrouter/nvidia/nemotron-3-ultra-550b-a55b:free openrouter/thinkingmachines/inkling:free})
 fresh() { [ -f "$1" ] && [ $(( $(date +%s) - $(date -r "$1" +%s) )) -lt "$2" ]; }
 free_slot() {   # prints a free slot number; the legacy single lock (logs/review.lock) still counts as busy
