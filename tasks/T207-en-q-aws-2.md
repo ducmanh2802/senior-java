@@ -1,6 +1,7 @@
 # T207 — Dịch sang tiếng Anh: q-aws (9 mục)
 
-Status: TODO
+Status: DONE
+Ghi chú: Đã dịch đầy đủ 9 mục (aws-012 → aws-020) vào js/i18n/q-aws-2.en.js, giữ nguyên markup/code block/comment tiếng Việt đã dịch sang tiếng Anh, bỏ tags không được phép, qua node --check và check-i18n.js OK, validate.js OK.
 Agent: opencode
 Owns: `js/i18n/q-aws-2.en.js`
 
@@ -16,3 +17,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-aws-2.en.js` và `node scripts/check-i18n.js q-aws-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
