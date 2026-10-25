@@ -1,6 +1,6 @@
 # T216 — Dịch sang tiếng Anh: q-soft (10 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-soft-1.en.js`
 
@@ -16,3 +16,8 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-soft-1.en.js` và `node scripts/check-i18n.js q-soft-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã dịch đủ 10 mục testing-001 đến testing-010 vào `js/i18n/q-soft-1.en.js`.
+- `node --check` và `scripts/check-i18n.js q-soft-1` đều OK; `scripts/validate.js` → OK — không có lỗi.
+- Không sửa file khác ngoài file sở hữu, không commit, không mở trình duyệt.
+Reviewed-by: check-i18n (translation, no LLM review)
+Reviewed-by: check-i18n (translation, no LLM review)
