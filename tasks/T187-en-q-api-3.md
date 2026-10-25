@@ -1,6 +1,6 @@
 # T187 — Dịch sang tiếng Anh: q-api (5 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-api-3.en.js`
 
@@ -16,3 +16,5 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-api-3.en.js` và `node scripts/check-i18n.js q-api-3` → OK, rồi `Status: DONE`.
 
 ## Notes
+Completed translation of 5 questions (api-018 to api-022) covering: RFC 9457 Problem Details error model, rate limiting with token bucket in Redis, optimistic concurrency with If-Match/@Version, protocol selection (REST/gRPC/GraphQL) at system boundaries, and webhook receiver design for at-least-once delivery. All validations pass: `node --check`, `node scripts/check-i18n.js q-api-3`, and `node scripts/validate.js` → OK.
+Reviewed-by: check-i18n (translation, no LLM review)
