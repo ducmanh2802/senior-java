@@ -1,6 +1,6 @@
 # T189 — Dịch sang tiếng Anh: q-security (7 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-security-2.en.js`
 
@@ -16,3 +16,7 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-security-2.en.js` và `node scripts/check-i18n.js q-security-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã dịch đủ 7 mục security-008 → security-014 vào js/i18n/q-security-2.en.js (file rỗng sót lại từ lần chạy trước, đã viết đầy đủ).
+- `node --check` OK; `node scripts/check-i18n.js q-security-2` → "OK — 7 mục đã dịch."; `node scripts/validate.js` → "OK — không có lỗi." (các cảnh báo q-english.js thuộc file khác, không liên quan).
+- Giữ nguyên markup, thuật ngữ, `{{code}}`, code block (chỉ dịch comment/chuỗi tiếng Việt trong code) và các escape `\${` trong payload JNDI của security-013.
+Reviewed-by: check-i18n (translation, no LLM review)
