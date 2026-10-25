@@ -1,6 +1,6 @@
 # T231 — Dịch sang tiếng Anh: quiz (14 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/quiz-6.en.js`
 
@@ -16,3 +16,7 @@ Yêu cầu dịch:
 - `node --check js/i18n/quiz-6.en.js` và `node scripts/check-i18n.js quiz-6` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Translated 14 quiz questions: qz-aws-003, qz-aws-004, qz-aws-005, qz-aws-006, qz-ai-001, qz-ai-002, qz-ai-003, qz-ai-004, qz-ai-005, qz-ai-006, qz-testing-001, qz-testing-002, qz-testing-003, qz-testing-004.
+- Validated with `node scripts/check-i18n.js quiz-6`, output: OK — 14 mục đã dịch.
+Reviewed-by: check-i18n (translation, no LLM review)
+Reviewed-by: check-i18n (translation, no LLM review)
