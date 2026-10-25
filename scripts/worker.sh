@@ -13,13 +13,15 @@ log() { echo "[$(date +%T)] worker-$runner: $*"; }
 
 next_task() {
   local f id dep
-  for f in tasks/T*.md; do
+  for f in $(grep -l '^Status: TODO$' tasks/T*.md); do
     id=$(basename "$f" | cut -d- -f1)
     case "$id" in *R) continue ;; esac                       # review tasks belong to autopilot
     [ -n "$ONLY" ] && ! echo " $ONLY " | grep -q " $id " && continue
-    grep -q '^Status: TODO$' "$f" || continue
+    [ -n "${SKIP:-}" ] && echo "$f" | grep -qE "$SKIP" && continue   # e.g. SKIP=-en- keeps content workers off translations
     dep=$(grep -m1 '^After:' "$f" | awk '{print $2}')
     [ -n "$dep" ] && ! grep -q '^Status: DONE' tasks/"$dep"-*.md 2>/dev/null && continue
+    # a claim older than 2 h belongs to a worker that was restarted mid-task: release it
+    [ -d "logs/claim/$id" ] && [ $(( $(date +%s) - $(date -r "logs/claim/$id" +%s) )) -gt 7200 ] && rmdir "logs/claim/$id"
     mkdir "logs/claim/$id" 2>/dev/null || continue           # atomic claim
     echo "$id"; return 0
   done

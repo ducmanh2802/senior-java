@@ -1,8 +1,9 @@
 # T193 — Dịch sang tiếng Anh: q-microservices (9 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-microservices-4.en.js`
+Notes: File đã có đủ 9 mục (030–038), dịch giữ nguyên markup và thuật ngữ kỹ thuật. Đã chạy `node --check`, `node scripts/check-i18n.js q-microservices-4` và `node scripts/validate.js` — tất cả OK.
 
 Người dùng bấm EN thì **cả trang** chuyển sang tiếng Anh: file này phủ bản dịch lên dữ liệu gốc theo `id` (đọc comment "content translation" trong `js/core/i18n.js`). Đọc AGENTS.md mục 5 (markup) và các mục sau trong `js/data/q-microservices.js`: **microservices-030, microservices-031, microservices-032, microservices-033, microservices-034, microservices-035, microservices-036, microservices-037, microservices-038**.
 
@@ -16,3 +17,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-microservices-4.en.js` và `node scripts/check-i18n.js q-microservices-4` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
