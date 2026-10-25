@@ -1,6 +1,6 @@
 # T259 — Dịch sang tiếng Anh: labs-incident (2 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/labs-incident-1.en.js`
 
@@ -16,3 +16,6 @@ Yêu cầu dịch:
 - `node --check js/i18n/labs-incident-1.en.js` và `node scripts/check-i18n.js labs-incident-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+T259-specific kiểm tra (`node --check` + `check-i18n.js labs-incident-1`) passed: 2 mục dịch (lab-incident-001, lab-incident-002) chạy hợp lệ, không backtick, không tiếng Việt ngoài code block, field hợp lệ. `node scripts/validate.js` gặp lỗi **không thuộc task này** (glossary-dist.js refs URL: url không đầy đủ https/không có khoảng trắng/ngoặc), đây là lỗi của bản mẫu khác do người tích hợp chỉnh; theo luật #3 tôi không sửa file mình không sở hữu. Đảm bảo: đối chiếu bản gốc lab-incident-001/002 (scenario, questions, hints, answer, rubric), giữ nguyên số liệu/tên/thuật ngữ/markup, chuyển toàn bộ Vietnamese sang English trong `App.i18n.content({...})`.
+
+Reviewed-by: check-i18n (translation, no LLM review)
