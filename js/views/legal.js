@@ -2,6 +2,35 @@
 (function () {
   'use strict';
 
+  App.i18n.add({
+    vi: {
+      'legal.about': 'Giới thiệu',
+      'legal.privacy': 'Quyền riêng tư',
+      'legal.terms': 'Điều khoản',
+      'legal.updated': 'Cập nhật lần cuối:',
+      'legal.hint': 'Phím tắt: <kbd>1</kbd>/<kbd>2</kbd>/<kbd>3</kbd> để đổi trang.',
+      'legal.aboutTitle': 'Về Senior Java Prep',
+      'legal.aboutLead': 'App ôn luyện phỏng vấn miễn phí, chạy ngay trong trình duyệt.',
+      'legal.privacyTitle': 'Quyền riêng tư',
+      'legal.privacyLead': 'Nói đúng những gì app thật sự làm — không che giấu, không câu chữ pháp lý rườm rà.',
+      'legal.termsTitle': 'Điều khoản sử dụng',
+      'legal.termsLead': 'Vài quy tắc ngắn gọn khi dùng app.',
+    },
+    en: {
+      'legal.about': 'About',
+      'legal.privacy': 'Privacy',
+      'legal.terms': 'Terms',
+      'legal.updated': 'Last updated:',
+      'legal.hint': 'Shortcuts: <kbd>1</kbd>/<kbd>2</kbd>/<kbd>3</kbd> to switch pages.',
+      'legal.aboutTitle': 'About Senior Java Prep',
+      'legal.aboutLead': 'Free interview prep app, runs in the browser.',
+      'legal.privacyTitle': 'Privacy',
+      'legal.privacyLead': 'What the app actually does — no hiding, no legalese.',
+      'legal.termsTitle': 'Terms of Use',
+      'legal.termsLead': 'A few simple rules for using the app.',
+    }
+  });
+
   var UPDATED = '22/10/2026';
   var REPO = 'https://github.com/ducmanh2802/senior-java';
   var ISSUES = 'https://github.com/ducmanh2802/senior-java/issues';
@@ -120,9 +149,9 @@
   }
 
   var PAGES = [
-    { id: 'about', tab: 'Giới thiệu', h1: 'Về Senior Java Prep', lead: 'App ôn luyện phỏng vấn miễn phí, chạy ngay trong trình duyệt.' },
-    { id: 'privacy', tab: 'Quyền riêng tư', h1: 'Quyền riêng tư', lead: 'Nói đúng những gì app thật sự làm — không che giấu, không câu chữ pháp lý rườm rà.' },
-    { id: 'terms', tab: 'Điều khoản', h1: 'Điều khoản sử dụng', lead: 'Vài quy tắc ngắn gọn khi dùng app.' },
+    { id: 'about', tabKey: 'legal.about', h1Key: 'legal.aboutTitle', leadKey: 'legal.aboutLead' },
+    { id: 'privacy', tabKey: 'legal.privacy', h1Key: 'legal.privacyTitle', leadKey: 'legal.privacyLead' },
+    { id: 'terms', tabKey: 'legal.terms', h1Key: 'legal.termsTitle', leadKey: 'legal.termsLead' },
   ];
   function bodyFor(id) {
     if (id === 'privacy') return PRIVACY_BODY;
@@ -131,30 +160,31 @@
   }
 
   function renderTabBar(current) {
-    return '<nav class="chips lg-tabs" aria-label="Trang quyền riêng tư / điều khoản">' +
+    return '<nav class="chips lg-tabs" aria-label="' + (App.lang === 'en' ? 'Privacy / Terms pages' : 'Trang quyền riêng tư / điều khoản') + '">' +
       PAGES.map(function (p, i) {
         var active = p.id === current;
         return '<a class="chip' + (active ? ' active' : '') + '" href="#/legal/' + p.id + '"' +
           (active ? ' aria-current="page"' : '') +
-          '><kbd>' + (i + 1) + '</kbd> ' + h(p.tab) + '</a>';
+          '><kbd>' + (i + 1) + '</kbd> ' + h(App.t(p.tabKey)) + '</a>';
       }).join('') + '</nav>';
   }
 
   function renderPage(root, page) {
-    var title = page.h1 + ' · Senior Java Prep';
+    var title = App.t(page.h1Key) + ' · Senior Java Prep';
     document.title = title;
     root.innerHTML =
-      '<div class="page-head"><div><h1>' + h(page.h1) + '</h1><p>' + h(page.lead) + '</p></div></div>' +
+      '<div class="page-head"><div><h1>' + h(App.t(page.h1Key)) + '</h1><p>' + h(App.t(page.leadKey)) + '</p></div></div>' +
       renderTabBar(page.id) +
       '<article class="card legal-doc md" lang="vi">' +
-      '<p class="lg-updated">Cập nhật lần cuối: <b>' + h(UPDATED) + '</b></p>' +
+      '<p class="lg-updated">' + App.t('legal.updated') + ' <b>' + h(UPDATED) + '</b></p>' +
       bodyFor(page.id) +
       '</article>' +
-      '<p class="lg-hint">Phím tắt: <kbd>1</kbd>/<kbd>2</kbd>/<kbd>3</kbd> để đổi trang.</p>';
+      '<p class="lg-hint">' + App.t('legal.hint') + '</p>';
   }
 
   App.registerView('legal', {
     // Tiêu đề từng trang được đặt riêng trong render, nên không khai title chung ở đây.
+    get title() { return App.t('legal.about'); },
     render(root, params) {
       var id = params && params.length ? params[0] : 'about';
       var page = PAGES.find(function (p) { return p.id === id; });

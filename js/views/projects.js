@@ -1,5 +1,61 @@
 (function () {
   'use strict';
+
+  App.i18n.add({
+    vi: {
+      'projects.title': 'Pet project',
+      'projects.filterBySkill': 'Lọc theo kỹ năng',
+      'projects.allSkills': 'Tất cả kỹ năng',
+      'projects.weeks': 'tuần',
+      'projects.milestones': 'mốc',
+      'projects.percent': '%',
+      'projects.pitch': 'Tóm tắt ý tưởng',
+      'projects.requirements': 'Yêu cầu',
+      'projects.architecture': 'Kiến trúc',
+      'projects.milestonesTitle': 'Các mốc thực hiện',
+      'projects.completionCriteria': 'Tiêu chí hoàn thành',
+      'projects.technicalChallenges': 'Thách thức kỹ thuật',
+      'projects.challenge': 'Thách thức',
+      'projects.readmeTemplate': 'Mẫu README',
+      'projects.copyReadme': 'Copy README',
+      'projects.copied': 'Đã chép README.',
+      'projects.copyFailed': 'Không thể chép tự động; hãy chọn và sao chép nội dung README.',
+      'projects.interviewStory': 'Câu chuyện phỏng vấn',
+      'projects.interviewQuestions': 'Câu hỏi luyện phỏng vấn',
+      'projects.relatedStudy': 'Ôn tập liên quan',
+      'projects.backToList': '← Tất cả pet project',
+      'projects.notFound': 'Không tìm thấy pet project',
+      'projects.notFoundDesc': 'Pet project không tồn tại.',
+      'projects.backToProjects': 'Về danh sách',
+    },
+    en: {
+      'projects.title': 'Pet Projects',
+      'projects.filterBySkill': 'Filter by skill',
+      'projects.allSkills': 'All skills',
+      'projects.weeks': 'weeks',
+      'projects.milestones': 'milestones',
+      'projects.percent': '%',
+      'projects.pitch': 'Pitch',
+      'projects.requirements': 'Requirements',
+      'projects.architecture': 'Architecture',
+      'projects.milestonesTitle': 'Milestones',
+      'projects.completionCriteria': 'Completion Criteria',
+      'projects.technicalChallenges': 'Technical Challenges',
+      'projects.challenge': 'Challenge',
+      'projects.readmeTemplate': 'README Template',
+      'projects.copyReadme': 'Copy README',
+      'projects.copied': 'README copied.',
+      'projects.copyFailed': 'Could not copy automatically; please select and copy the README content.',
+      'projects.interviewStory': 'Interview Story',
+      'projects.interviewQuestions': 'Interview Practice Questions',
+      'projects.relatedStudy': 'Related Study',
+      'projects.backToList': '← All Pet Projects',
+      'projects.notFound': 'Pet Project Not Found',
+      'projects.notFoundDesc': 'Pet project does not exist.',
+      'projects.backToProjects': 'Back to Projects',
+    }
+  });
+
   const esc = App.esc;
   const progress = p => p.milestones.reduce((n, _, i) => n + (App.store.getStatus(p.id + '#m' + i) === 'known' ? 1 : 0), 0);
   const pct = p => Math.round(progress(p) / p.milestones.length * 100);
@@ -7,9 +63,9 @@
   function list(root) {
     const all = window.PROJECTS || [];
     const skills = [...new Set(all.flatMap(p => p.skills))].sort();
-    root.innerHTML = `<div class="page-head"><h1>Pet project</h1><p class="muted">Lộ trình làm sản phẩm có thể demo, đo lường và kể trong phỏng vấn. Chọn một kỹ năng để lọc.</p></div>
-      <label class="pr-filter-label" for="projectSkill">Lọc theo kỹ năng</label>
-      <select class="select pr-filter" id="projectSkill"><option value="">Tất cả kỹ năng</option>${skills.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('')}</select>
+    root.innerHTML = `<div class="page-head"><h1>${App.t('projects.title')}</h1><p class="muted">${App.t('projects.filterBySkill')}</p></div>
+      <label class="pr-filter-label" for="projectSkill">${App.t('projects.filterBySkill')}</label>
+      <select class="select pr-filter" id="projectSkill"><option value="">${App.t('projects.allSkills')}</option>${skills.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('')}</select>
       <div class="pr-grid">${all.map(p => card(p)).join('')}</div>`;
     const onChange = e => {
       if (!e.target.matches('#projectSkill')) return;
@@ -23,10 +79,10 @@
     const n = progress(p), percent = pct(p);
     return `<article class="card pr-card" data-skills="${esc(p.skills.join('|'))}">
       <div class="pr-card-head"><h2><a href="#/projects/${esc(p.id)}">${esc(p.title)}</a></h2><span class="badge">${esc(App.LEVELS[p.level] || p.level)}</span></div>
-      <p class="muted">${p.weeks} tuần · ${n}/${p.milestones.length} mốc · ${percent}%</p>
-      <div class="progress" aria-label="Hoàn thành ${percent}%"><i style="width:${percent}%"></i></div>
+      <p class="muted">${p.weeks} ${App.t('projects.weeks')} · ${n}/${p.milestones.length} ${App.t('projects.milestones')} · ${percent}${App.t('projects.percent')}</p>
+      <div class="progress" aria-label="${App.t('projects.percent')} ${percent}"><i style="width:${percent}%"></i></div>
       <div class="chips">${p.skills.map(s => `<span class="chip">${esc(s)}</span>`).join('')}</div>
-      <p class="md">${App.md(p.pitch)}</p><a class="btn sm" href="#/projects/${esc(p.id)}">Xem kế hoạch</a>
+      <p class="md">${App.md(p.pitch)}</p><a class="btn sm" href="#/projects/${esc(p.id)}">${App.t('projects.pitch')}</a>
     </article>`;
   }
 
@@ -34,19 +90,19 @@
     const questions = App.questions(), lessons = App.lessons();
     const checked = p.milestones.map((_, i) => App.store.getStatus(p.id + '#m' + i) === 'known');
     const percent = Math.round(checked.filter(Boolean).length / checked.length * 100);
-    root.innerHTML = `<a class="link-btn" href="#/projects">← Tất cả pet project</a>
-      <div class="page-head"><h1>${esc(p.title)}</h1><div class="row pr-meta"><span class="badge">${esc(App.LEVELS[p.level] || p.level)}</span><span class="badge">${p.weeks} tuần</span><span class="badge" data-progress-label>${percent}% hoàn thành</span></div></div>
+    root.innerHTML = `<a class="link-btn" href="#/projects">${App.t('projects.backToList')}</a>
+      <div class="page-head"><h1>${esc(p.title)}</h1><div class="row pr-meta"><span class="badge">${esc(App.LEVELS[p.level] || p.level)}</span><span class="badge">${p.weeks} ${App.t('projects.weeks')}</span><span class="badge" data-progress-label>${percent}${App.t('projects.percent')} ${App.t('projects.completionCriteria')}</span></div></div>
       <div class="chips pr-skills">${p.skills.map(s => `<span class="chip">${esc(s)}</span>`).join('')}</div>
       <section class="card md">${App.md(p.pitch)}</section>
       <section class="card md">${App.md(p.requirements)}</section>
       <section class="card md">${App.md(p.architecture)}</section>
-      <section class="pr-milestones"><h2>Các mốc thực hiện</h2><div class="progress" aria-label="Tiến độ dự án"><i data-progress-bar style="width:${percent}%"></i></div>
+      <section class="pr-milestones"><h2>${App.t('projects.milestonesTitle')}</h2><div class="progress" aria-label="${App.t('projects.percent')} ${percent}"><i data-progress-bar style="width:${percent}%"></i></div>
       ${p.milestones.map((m, i) => `<article class="card pr-milestone"><label class="pr-check"><input type="checkbox" data-milestone="${i}"${checked[i] ? ' checked' : ''}><span><b>${i + 1}. ${esc(m.title)}</b></span></label>
-        <div class="md">${App.md(m.tasks)}</div><details><summary>Tiêu chí hoàn thành</summary><div class="md">${App.md(m.done)}</div></details></article>`).join('')}</section>
-      <section class="pr-challenges"><h2>Thách thức kỹ thuật</h2>${p.challenges.map((c, i) => `<details class="card"><summary>Thách thức ${i + 1}</summary><div class="md">${App.md(c)}</div></details>`).join('')}</section>
-      <section class="card pr-readme"><h2>Mẫu README</h2><button type="button" class="btn sm" data-copy>Copy README</button><span class="muted" data-copy-status aria-live="polite"></span><pre class="pr-readme-text">${esc(p.readme)}</pre></section>
-      <section class="card md">${App.md(p.interview.story)}<h3>Câu hỏi luyện phỏng vấn</h3><ol>${p.interview.questions.map(q => `<li>${App.md(q).replace(/^<p>|<\/p>$/g, '')}</li>`).join('')}</ol></section>
-      ${p.related && p.related.length ? `<section class="card"><h2>Ôn tập liên quan</h2><ul>${p.related.map(id => {
+        <div class="md">${App.md(m.tasks)}</div><details><summary>${App.t('projects.completionCriteria')}</summary><div class="md">${App.md(m.done)}</div></details></article>`).join('')}</section>
+      <section class="pr-challenges"><h2>${App.t('projects.technicalChallenges')}</h2>${p.challenges.map((c, i) => `<details class="card"><summary>${App.t('projects.challenge')} ${i + 1}</summary><div class="md">${App.md(c)}</div></details>`).join('')}</section>
+      <section class="card pr-readme"><h2>${App.t('projects.readmeTemplate')}</h2><button type="button" class="btn sm" data-copy>${App.t('projects.copyReadme')}</button><span class="muted" data-copy-status aria-live="polite"></span><pre class="pr-readme-text">${esc(p.readme)}</pre></section>
+      <section class="card md">${App.md(p.interview.story)}<h3>${App.t('projects.interviewQuestions')}</h3><ol>${p.interview.questions.map(q => `<li>${App.md(q).replace(/^<p>|<\/p>$/g, '')}</li>`).join('')}</ol></section>
+      ${p.related && p.related.length ? `<section class="card"><h2>${App.t('projects.relatedStudy')}</h2><ul>${p.related.map(id => {
         const q = questions.find(x => x.id === id);
         if (q) return `<li><a href="#/bank/${esc(q.topic)}">${App.md(q.q).replace(/^<p>|<\/p>$/g, '')}</a></li>`;
         const l = lessons.find(x => x.id === id);
@@ -56,7 +112,7 @@
     function updateProgress() {
       const boxes = [...root.querySelectorAll('[data-milestone]')];
       const done = boxes.filter(b => b.checked).length, value = Math.round(done / boxes.length * 100);
-      root.querySelector('[data-progress-label]').textContent = value + '% hoàn thành';
+      root.querySelector('[data-progress-label]').textContent = value + App.t('projects.percent') + ' ' + App.t('projects.completionCriteria');
       root.querySelector('[data-progress-bar]').style.width = value + '%';
     }
     async function onClick(e) {
@@ -65,13 +121,13 @@
       const status = root.querySelector('[data-copy-status]');
       try {
         await navigator.clipboard.writeText(p.readme);
-        status.textContent = 'Đã chép README.';
+        status.textContent = App.t('projects.copied');
       } catch (_) {
         const area = document.createElement('textarea');
         area.value = p.readme; area.setAttribute('readonly', ''); area.className = 'pr-copy-fallback';
         root.appendChild(area); area.select();
         const copied = document.execCommand('copy'); area.remove();
-        status.textContent = copied ? 'Đã chép README.' : 'Không thể chép tự động; hãy chọn và sao chép nội dung README.';
+        status.textContent = copied ? App.t('projects.copied') : App.t('projects.copyFailed');
       }
     }
     function onChange(e) {
@@ -86,12 +142,12 @@
   }
 
   App.registerView('projects', {
-    title: 'Pet project',
+    get title() { return App.t('projects.title'); },
     render(root, params) {
       const id = params && params[0];
       if (!id) return list(root);
       const p = (window.PROJECTS || []).find(x => x.id === id);
-      if (!p) { root.innerHTML = '<div class="empty"><h2>Không tìm thấy pet project</h2><p><a href="#/projects">Về danh sách</a></p></div>'; return () => {}; }
+      if (!p) { root.innerHTML = '<div class="empty"><h2>' + App.t('projects.notFound') + '</h2><p><a href="#/projects">' + App.t('projects.backToProjects') + '</a></p></div>'; return () => {}; }
       return detail(root, p);
     },
   });
