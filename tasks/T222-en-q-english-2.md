@@ -1,6 +1,6 @@
 # T222 — Dịch sang tiếng Anh: q-english (12 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-english-2.en.js`
 
@@ -16,3 +16,10 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-english-2.en.js` và `node scripts/check-i18n.js q-english-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+## Notes
+- Đã dịch 12 mục (english-015 đến english-026) sang tiếng Anh kỹ thuật, giữ nguyên markup và thuật ngữ.
+- node --check OK; node scripts/check-i18n.js q-english-2 -> OK — 12 mục đã dịch.
+- node scripts/validate.js có lỗi pre-existing ở glossary-dist.js (không liên quan file sở hữu).
+- Không git commit; không kill tiến trình; không mở trình duyệt.
+Reviewed-by: check-i18n (translation, no LLM review)
