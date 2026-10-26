@@ -12,10 +12,56 @@
 (function () {
   'use strict';
 
+  // ---------- i18n (core strings) ----------
+  App.i18n.add({
+    vi: {
+      'auth.notConfigured': 'Tính năng tài khoản chưa được cấu hình trên server này.',
+      'auth.notSignedIn': 'Bạn chưa đăng nhập.',
+      'auth.googleNotEnabled': 'Đăng nhập Google chưa được bật — hãy dùng link đăng nhập qua email.',
+      'auth.invalidEmail': 'Email không hợp lệ.',
+      'auth.rateLimit': 'Bạn thao tác quá nhanh, thử lại sau ít phút.',
+      'auth.networkError': 'Không kết nối được máy chủ tài khoản.',
+      'auth.genericError': 'Có lỗi xảy ra.',
+      'auth.emptyDisplayName': 'Tên hiển thị không được để trống.',
+      'auth.deleteAccount.confirm': 'Xoá tài khoản và toàn bộ dữ liệu đám mây? Thao tác không thể hoàn tác.',
+      'auth.deleteAccount.clearLocal': 'Cũng xoá dữ liệu cục bộ trên thiết bị này?',
+      'auth.export.title': 'Tải dữ liệu của tôi',
+      'auth.sync.status.off': 'Tắt',
+      'auth.sync.status.idle': 'Sẵn sàng',
+      'auth.sync.status.syncing': 'Đang đồng bộ…',
+      'auth.sync.status.error': 'Lỗi',
+      'auth.sync.lastSync': 'Lần đồng bộ gần nhất',
+      'auth.sync.never': 'Chưa bao giờ',
+      'auth.sync.errorPrefix': 'Lỗi đồng bộ: ',
+      'auth.login.failed': 'Đăng nhập thất bại: ',
+      'auth.login.checkConfig': 'Kiểm tra cấu hình Google provider và Redirect URLs trong Supabase.',
+    },
+    en: {
+      'auth.notConfigured': 'Account feature is not configured on this server.',
+      'auth.notSignedIn': 'You are not signed in.',
+      'auth.googleNotEnabled': 'Google sign-in is not enabled — use email sign-in instead.',
+      'auth.invalidEmail': 'Invalid email.',
+      'auth.rateLimit': 'Too many requests, please try again in a few minutes.',
+      'auth.networkError': 'Cannot connect to the account server.',
+      'auth.genericError': 'An error occurred.',
+      'auth.emptyDisplayName': 'Display name cannot be empty.',
+      'auth.deleteAccount.confirm': 'Delete account and all cloud data? This cannot be undone.',
+      'auth.deleteAccount.clearLocal': 'Also clear local data on this device?',
+      'auth.export.title': 'Download my data',
+      'auth.sync.status.off': 'Off',
+      'auth.sync.status.idle': 'Ready',
+      'auth.sync.status.syncing': 'Syncing…',
+      'auth.sync.status.error': 'Error',
+      'auth.sync.lastSync': 'Last synced',
+      'auth.sync.never': 'Never',
+      'auth.sync.errorPrefix': 'Sync error: ',
+      'auth.login.failed': 'Login failed: ',
+      'auth.login.checkConfig': 'Check Google provider and Redirect URLs in Supabase.',
+    },
+  });
+
   const listeners = new Set();
   const syncListeners = new Set();
-  const NOT_CONFIGURED = 'Tính năng tài khoản chưa được cấu hình trên server này.';
-  const NOT_SIGNED_IN = 'Bạn chưa đăng nhập.';
   const RETURN_KEY = 'sjp.auth.return';
   const LOCAL_ONLY = ['theme'];          // device preferences, never synced
   const HISTORY_MAX = 50;
@@ -107,14 +153,14 @@
   }
 
   function need() {
-    if (!enabled) throw new Error(NOT_CONFIGURED);
-    if (!auth.user) throw new Error(NOT_SIGNED_IN);
+    if (!enabled) throw new Error(App.t('auth.notConfigured'));
+    if (!auth.user) throw new Error(App.t('auth.notSignedIn'));
   }
 
   function friendly(error) {
     const msg = (error && error.message) || String(error);
-    if (/rate limit|too many/i.test(msg)) return new Error('Bạn thao tác quá nhanh, thử lại sau ít phút.');
-    if (/fetch|network/i.test(msg)) return new Error('Không kết nối được máy chủ tài khoản.');
+    if (/rate limit|too many/i.test(msg)) return new Error(App.t('auth.rateLimit'));
+    if (/fetch|network/i.test(msg)) return new Error(App.t('auth.networkError'));
     return new Error(msg);
   }
 
@@ -135,21 +181,21 @@
     onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); },
     /** Redirects to Google sign-in. */
     async signInWithGoogle() {
-      if (!enabled) throw new Error(NOT_CONFIGURED);
-      if (auth.providers && !auth.providers.google) throw new Error('Đăng nhập Google chưa được bật — hãy dùng link đăng nhập qua email.');
+      if (!enabled) throw new Error(App.t('auth.notConfigured'));
+      if (auth.providers && !auth.providers.google) throw new Error(App.t('auth.googleNotEnabled'));
       const { error } = await client.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: redirectTo() } });
       if (error) throw friendly(error);
     },
     /** Sends a magic link to the email. Resolves when sent. */
     async signInWithEmail(email) {
-      if (!enabled) throw new Error(NOT_CONFIGURED);
+      if (!enabled) throw new Error(App.t('auth.notConfigured'));
       const e = String(email || '').trim();
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) throw new Error('Email không hợp lệ.');
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) throw new Error(App.t('auth.invalidEmail'));
       const { error } = await client.auth.signInWithOtp({ email: e, options: { emailRedirectTo: redirectTo() } });
       if (error) throw friendly(error);
     },
     async signOut() {
-      if (!enabled) throw new Error(NOT_CONFIGURED);
+      if (!enabled) throw new Error(App.t('auth.notConfigured'));
       if (auth.user) await sync.now().catch(() => {});   // last push before leaving
       const { error } = await client.auth.signOut();
       if (error) throw friendly(error);
@@ -164,7 +210,7 @@
     async updateDisplayName(name) {
       need();
       const n = String(name || '').trim().slice(0, 60);
-      if (!n) throw new Error('Tên hiển thị không được để trống.');
+      if (!n) throw new Error(App.t('auth.emptyDisplayName'));
       const { error } = await client.from('profiles').update({ display_name: n }).eq('id', auth.user.id);
       if (error) throw friendly(error);
       auth.user = Object.assign({}, auth.user, { name: n });
@@ -185,9 +231,9 @@
       const token = await auth.token();
       let res;
       try { res = await fetch('/api/me', { method: 'DELETE', headers: { Authorization: 'Bearer ' + token } }); }
-      catch (e) { throw new Error('Không kết nối được server.'); }
+      catch (e) { throw new Error(App.t('auth.networkError')); }
       const body = await res.json().catch(() => null);
-      if (!res.ok) throw new Error((body && body.error) || ('Xoá tài khoản thất bại (lỗi ' + res.status + ').'));
+      if (!res.ok) throw new Error((body && body.error) || (App.t('auth.genericError') + ' (lỗi ' + res.status + ').'));
       await client.auth.signOut({ scope: 'local' }).catch(() => {});
       if (opts && opts.clearLocal) App.store.reset();
     },
@@ -270,8 +316,24 @@
     merge,
   };
 
+  // Helper to format sync status for display
+  function formatSyncStatus(status) {
+    switch (status) {
+      case 'off': return App.t('auth.sync.status.off');
+      case 'idle': return App.t('auth.sync.status.idle');
+      case 'syncing': return App.t('auth.sync.status.syncing');
+      case 'error': return App.t('auth.sync.status.error');
+      default: return status;
+    }
+  }
+
+  function formatLastSync(ts) {
+    if (!ts) return App.t('auth.sync.never');
+    return new Date(ts).toLocaleString(App.lang === 'en' ? 'en-US' : 'vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  }
+
   auth._emit = () => listeners.forEach(fn => { try { fn(auth.user); } catch (e) { console.error(e); } });
-  sync._emit = () => syncListeners.forEach(fn => { try { fn({ status: sync.status, lastSyncAt: sync.lastSyncAt, lastError: sync.lastError }); } catch (e) { console.error(e); } });
+  sync._emit = () => syncListeners.forEach(fn => { try { fn({ status: sync.status, lastSyncAt: sync.lastSyncAt, lastError: sync.lastError, statusLabel: formatSyncStatus(sync.status), lastSyncLabel: formatLastSync(sync.lastSyncAt) }); } catch (e) { console.error(e); } });
 
   App.auth = auth;
   App.sync = sync;
@@ -322,8 +384,8 @@
   const qs = new URLSearchParams(location.search + '&' + location.hash.replace(/^#\/?[^?&]*[?&]?/, ''));
   if (qs.get('error_description') || qs.get('error')) {
     const msg = (qs.get('error_description') || qs.get('error')).replace(/\+/g, ' ');
-    sync.lastError = 'Đăng nhập thất bại: ' + msg;
-    setTimeout(() => alert('Đăng nhập thất bại: ' + msg + '\n\nKiểm tra cấu hình Google provider và Redirect URLs trong Supabase.'), 300);
+    sync.lastError = App.t('auth.login.failed') + msg;
+    setTimeout(() => alert(App.t('auth.login.failed') + msg + '\n\n' + App.t('auth.login.checkConfig')), 300);
     history.replaceState(null, '', location.pathname + '#/account');
   }
 

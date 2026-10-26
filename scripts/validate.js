@@ -238,6 +238,161 @@ for (const p of projects) {
   Object.keys(p).forEach(k => { if (!allowed.has(k)) err(f, `${id}: field lạ "${k}"`); });
 }
 
+// ---- path (window.PATH) ----
+const PATH_FILE = 'path.js';
+const validPhases = new Set(['Nền tảng', 'Vững vàng', 'Senior']);
+const pathStages = (sandbox.window.PATH || []);
+const seenPathId = new Set();
+let pathOrders = [];
+for (const s of pathStages) {
+  const f = PATH_FILE;
+  const sid = s.id || '(no id)';
+  if (!s.id || !/^path-\d{2}$/.test(s.id)) err(f, `${sid}: id phải có dạng path-NN`);
+  else if (seenPathId.has(s.id)) err(f, `${sid}: trùng id ${s.id}`);
+  else seenPathId.add(s.id);
+  if (!Number.isInteger(s.order) || s.order < 1) err(f, `${sid}: order phải là số nguyên >= 1`);
+  else pathOrders.push(s.order);
+  if (!validPhases.has(s.phase)) err(f, `${sid}: phase phải là Nền tảng | Vững vàng | Senior`);
+  if (typeof s.title !== 'string' || !s.title.trim()) err(f, `${sid}: thiếu title`);
+  if (typeof s.weeks !== 'string' || !s.weeks.trim()) err(f, `${sid}: thiếu weeks`);
+  if (typeof s.goal !== 'string' || !s.goal.trim()) err(f, `${sid}: thiếu goal`);
+  if (!Array.isArray(s.lessons) || !s.lessons.length) err(f, `${sid}: lessons phải là mảng có ít nhất 1 bài`);
+  else s.lessons.forEach(lid => {
+    if (!lessonIds.has(lid)) err(f, `${sid}: lesson "${lid}" không tồn tại trong window.LESSONS`);
+  });
+  if (Array.isArray(s.questions)) {
+    if (s.questions.length < 4 || s.questions.length > 8) warn(f, `${sid}: questions nên có 4-8 câu (hiện ${s.questions.length})`);
+    s.questions.forEach(qid => {
+      if (!questionIds.has(qid)) err(f, `${sid}: question "${qid}" không tồn tại trong window.QUESTIONS`);
+    });
+  } else err(f, `${sid}: questions phải là mảng`);
+  if (!Array.isArray(s.quizTopics) || !s.quizTopics.length) err(f, `${sid}: quizTopics phải là mảng có ít nhất 1 topic`);
+  else s.quizTopics.forEach(tid => {
+    if (!topicIds.has(tid)) err(f, `${sid}: quizTopics "${tid}" không tồn tại trong topics.js`);
+  });
+  if (!Array.isArray(s.requires)) err(f, `${sid}: requires phải là mảng`);
+  else s.requires.forEach(r => {
+    const exists = pathStages.some(st => st.id === r);
+    if (!exists) err(f, `${sid}: requires "${r}" không tồn tại trong window.PATH`);
+  });
+  const allowed = new Set(['id', 'order', 'phase', 'title', 'weeks', 'goal', 'lessons', 'questions', 'quizTopics', 'requires']);
+  Object.keys(s || {}).forEach(k => { if (!allowed.has(k)) err(f, `${sid}: field lạ "${k}"`); });
+}
+// order increasing
+for (let i = 1; i < pathOrders.length; i++) {
+  if (pathOrders[i] <= pathOrders[i - 1]) err('path.js', `path-${String(pathOrders[i]).padStart(2, '0')}: order phải tăng dần (không nhỏ hơn hoặc bằng chặng trước)`);
+}
+// requires must not point to a stage that comes after
+for (const s of pathStages) {
+  const sid = s.id || '';
+  (s.requires || []).forEach(r => {
+    const reqStage = pathStages.find(st => st.id === r);
+    if (reqStage && reqStage.order >= s.order) err('path.js', `${sid}: requires "${r}" trỏ tới chặng có order >= chặng này`);
+  });
+}
+// no repeated lessons across all stages
+const allLessonIds = new Set();
+const repeatedLessons = new Set();
+for (const s of pathStages) {
+  (s.lessons || []).forEach(lid => {
+    if (allLessonIds.has(lid)) repeatedLessons.add(lid);
+    else allLessonIds.add(lid);
+  });
+}
+repeatedLessons.forEach(lid => err('path.js', `lesson "${lid}" xuất hiện nhiều lần trong PATH`));
+// warning: lessons not in any path stage
+const pathLessonIds = new Set(allLessonIds);
+const missingInPath = [];
+for (const lid of lessonIds) {
+  if (!pathLessonIds.has(lid)) missingInPath.push(lid);
+}
+if (missingInPath.length) warn('path.js', `có ${missingInPath.length} bài học không nằm trong PATH: ${missingInPath.slice(0, 10).join(', ')}${missingInPath.length > 10 ? ' ...' : ''}`);
+
+// ---- drills (window.DRILLS) ----
+const DRILL_KINDS = new Set(['shadow', 'qa', 'term']);
+const DRILL_THEMES = new Set(['intro', 'tech', 'behavioral', 'design', 'project', 'negotiation', 'smalltalk']);
+const seenDrillId = new Set();
+for (const d of sandbox.window.DRILLS || []) {
+  const f = d.__file || 'drills-shadow.js', id = d.id || '(no id)';
+  if (!d.id || typeof d.id !== 'string') err(f, 'drill thiếu id');
+  else {
+    if (seenDrillId.has(d.id)) err(f, `trùng id drill ${d.id}`);
+    seenDrillId.add(d.id);
+  }
+  if (!DRILL_KINDS.has(d.kind)) err(f, `${id}: kind phải là shadow|qa|term`);
+  if (d.kind && !new RegExp(`^drill-${d.kind}-\\d{3}$`).test(id)) err(f, `${id}: id phải có dạng drill-${d.kind}-NNN`);
+  if (!DRILL_THEMES.has(d.theme)) err(f, `${id}: theme không hợp lệ`);
+  if (!LEVELS.has(d.level)) err(f, `${id}: level phải là mid|senior|lead`);
+
+  if (d.kind === 'shadow') {
+    ['en', 'vi'].forEach(k => {
+      if (!d[k] || typeof d[k] !== 'string') err(f, `${id}: thiếu ${k}`);
+      if (d[k] && /[`$]/.test(d[k])) err(f, `${id}: ${k} không được chứa backtick hoặc $`);
+    });
+  } else if (d.kind === 'qa') {
+    if (!d.q || typeof d.q !== 'string') err(f, `${id}: thiếu q`);
+    if (![60, 90, 120].includes(d.seconds)) err(f, `${id}: seconds phải là 60|90|120`);
+    if (!d.sample || typeof d.sample !== 'string') err(f, `${id}: thiếu sample`);
+    else {
+      const words = d.sample.split(/\s+/).filter(Boolean).length;
+      if (words < 80 || words > 200) err(f, `${id}: sample phải có 80-200 từ (hiện ${words})`);
+    }
+    if (!Array.isArray(d.phrases) || d.phrases.length < 3 || d.phrases.length > 6) err(f, `${id}: phrases phải có 3-6 mục`);
+    [d.q, d.sample, ...(d.phrases || [])].forEach(s => {
+      if (typeof s === 'string' && /[`$]/.test(s)) err(f, `${id}: chứa backtick hoặc $`);
+    });
+  } else if (d.kind === 'term') {
+    ['term', 'say', 'wrong', 'example'].forEach(k => {
+      if (!d[k] || typeof d[k] !== 'string') err(f, `${id}: thiếu ${k}`);
+      if (d[k] && /[`$]/.test(d[k])) err(f, `${id}: ${k} không được chứa backtick hoặc $`);
+    });
+  }
+}
+
+// ---- glossary (window.GLOSSARY) ----
+const seenGlossaryId = new Set();
+const allGlossaryAliases = new Set();
+const glossaryIds = new Set((sandbox.window.GLOSSARY || []).map(g => g.id));
+for (const g of sandbox.window.GLOSSARY || []) {
+  const f = g.__file || 'glossary-dist.js', id = g.id || '(no id)';
+  if (!g.id || typeof g.id !== 'string') err(f, 'glossary thiếu id');
+  else {
+    if (seenGlossaryId.has(g.id)) err(f, `trùng id glossary ${g.id}`);
+    seenGlossaryId.add(g.id);
+    if (!/^[a-z0-9-]+$/.test(id)) err(f, `${id}: id phải là kebab-case`);
+  }
+  ['term', 'short', 'body'].forEach(k => {
+    if (!g[k] || typeof g[k] !== 'string') err(f, `${id}: thiếu ${k}`);
+    if (g[k] && /[`$]/.test(g[k])) err(f, `${id}: ${k} không được chứa backtick hoặc $`);
+  });
+  if (g.body && g.body.length < 600) err(f, `${id}: body phải ≥ 600 ký tự (hiện ${g.body.length})`);
+  if (g.aliases) {
+    if (!Array.isArray(g.aliases)) err(f, `${id}: aliases phải là mảng`);
+    else g.aliases.forEach(a => {
+      if (typeof a !== 'string' || a !== a.toLowerCase()) err(f, `${id}: alias "${a}" phải là lowercase string`);
+      if (allGlossaryAliases.has(a)) err(f, `${id}: trùng alias "${a}"`);
+      allGlossaryAliases.add(a);
+    });
+  }
+  if (g.related) {
+    if (!Array.isArray(g.related)) err(f, `${id}: related phải là mảng`);
+    else g.related.forEach(r => {
+      if (!glossaryIds.has(r)) err(f, `${id}: related "${r}" không tồn tại`);
+    });
+  }
+  if (g.refs) {
+    if (!Array.isArray(g.refs) || g.refs.length > 5) err(f, `${id}: refs phải là mảng ≤ 5 mục`);
+    else g.refs.forEach((r, i) => {
+      if (!r || !REF_TYPES.has(r.type)) err(f, `${id}.refs[${i}]: type phải là ${[...REF_TYPES].join('|')}`);
+      if (!r || typeof r.title !== 'string' || r.title.length < 3 || /[[\]]/.test(r.title)) err(f, `${id}.refs[${i}]: title thiếu hoặc chứa [ ]`);
+      if (!r || !/^https:\/\/[^\s()]+$/.test(r.url || '')) err(f, `${id}.refs[${i}]: url phải là https và không chứa khoảng trắng/ngoặc`);
+      Object.keys(r || {}).forEach(k => { if (!['type', 'title', 'url', 'note'].includes(k)) err(f, `${id}.refs[${i}]: field lạ "${k}"`); });
+    });
+  }
+  checkMarkup(f, id, 'body', g.body);
+}
+
+
 // ---- summary ----
 const Q = sandbox.window.QUESTIONS || [], Z = sandbox.window.QUIZ || [];
 console.log('Questions per topic:');

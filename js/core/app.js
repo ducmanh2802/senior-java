@@ -179,7 +179,7 @@
   }
 
   function fmtDate(ts) {
-    return new Date(ts).toLocaleString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    return new Date(ts).toLocaleString(App.lang === 'en' ? 'en-US' : 'vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   }
 
   // ---------- light markup renderer (see AGENTS.md "Markup") ----------
@@ -271,6 +271,53 @@
     return html;
   }
 
+  // ---------- i18n (core strings) ----------
+  App.i18n.add({
+    vi: {
+      'app.title': 'Senior Java Prep',
+      'app.toast.exported': 'Đã xuất file tiến độ.',
+      'app.toast.imported': 'Đã nhập tiến độ.',
+      'app.toast.reset': 'Đã xoá tiến độ.',
+      'app.confirm.reset': 'Xoá toàn bộ tiến độ học? Không thể hoàn tác.',
+      'app.alert.importError': 'File không hợp lệ.',
+      'app.footer.saved': 'Tiến độ được lưu trong trình duyệt (localStorage).',
+      'app.footer.export': 'Xuất tiến độ',
+      'app.footer.import': 'Nhập tiến độ',
+      'app.footer.reset': 'Xoá tiến độ',
+      'app.footer.privacy': 'Quyền riêng tư',
+      'app.footer.terms': 'Điều khoản',
+      'app.footer.about': 'Giới thiệu',
+      'app.noView': 'Chưa có view nào được đăng ký.',
+      'app.error.render': 'Lỗi khi hiển thị',
+      'app.settings.ai': 'Cài đặt AI',
+      'app.settings.theme': 'Đổi giao diện sáng/tối',
+      'app.settings.lang': 'Switch to English',
+      'app.theme.light': 'Sáng',
+      'app.theme.dark': 'Tối',
+    },
+    en: {
+      'app.title': 'Senior Java Prep',
+      'app.toast.exported': 'Progress exported.',
+      'app.toast.imported': 'Progress imported.',
+      'app.toast.reset': 'Progress reset.',
+      'app.confirm.reset': 'Delete all study progress? Cannot be undone.',
+      'app.alert.importError': 'Invalid file.',
+      'app.footer.saved': 'Progress is saved in your browser (localStorage).',
+      'app.footer.export': 'Export progress',
+      'app.footer.import': 'Import progress',
+      'app.footer.reset': 'Reset progress',
+      'app.footer.privacy': 'Privacy',
+      'app.footer.terms': 'Terms',
+      'app.footer.about': 'About',
+      'app.noView': 'No view registered.',
+      'app.error.render': 'Render error',
+      'app.settings.ai': 'AI settings',
+      'app.settings.theme': 'Toggle light/dark theme',
+      'app.settings.lang': 'Chuyển sang tiếng Việt',
+      'app.theme.light': 'Light',
+      'app.theme.dark': 'Dark',
+    },
+  });
   // ---------- router ----------
   const views = {};
   let cleanup = null;
@@ -289,13 +336,13 @@
     root.innerHTML = '';
     root.className = 'container view-' + name;
     const view = views[name];
-    if (!view) { root.innerHTML = '<p class="muted">Chưa có view nào được đăng ký.</p>'; return; }
+    if (!view) { root.innerHTML = '<p class="muted">' + App.t('app.noView') + '</p>'; return; }
     try {
       const c = view.render(root, parts.slice(1));
       if (typeof c === 'function') cleanup = c;
     } catch (e) {
       console.error(e);
-      root.innerHTML = '<div class="card"><h2>Lỗi khi hiển thị</h2><pre class="code"><code>' + esc(e.stack || e) + '</code></pre></div>';
+      root.innerHTML = '<div class="card"><h2>' + App.t('app.error.render') + '</h2><pre class="code"><code>' + esc(e.stack || e) + '</code></pre></div>';
     }
     if (view.title) document.title = view.title + ' · Senior Java Prep';
     window.scrollTo(0, 0);
@@ -330,6 +377,7 @@
       a.download = 'senior-java-prep-progress.json';
       a.click();
       setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      alert(App.t('app.toast.exported'));
     });
     const imp = document.getElementById('importBtn');
     const file = document.getElementById('importFile');
@@ -339,13 +387,14 @@
         try {
           store.replace(JSON.parse(await file.files[0].text()));
           applyTheme(); route();
-        } catch (e) { alert('File không hợp lệ.'); }
+          alert(App.t('app.toast.imported'));
+        } catch (e) { alert(App.t('app.alert.importError')); }
         file.value = '';
       });
     }
     const rst = document.getElementById('resetBtn');
     if (rst) rst.addEventListener('click', () => {
-      if (confirm('Xoá toàn bộ tiến độ học? Không thể hoàn tác.')) { store.reset(); applyTheme(); route(); }
+      if (confirm(App.t('app.confirm.reset'))) { store.reset(); applyTheme(); route(); alert(App.t('app.toast.reset')); }
     });
   }
 

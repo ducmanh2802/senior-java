@@ -7213,5 +7213,2288 @@ class Solution {
   complexity: 'Time O(n), Space O(n)',
   follow: ['Nếu thêm dấu ngoặc vuông và nhọn thì sửa thế nào?', 'Có thể dùng DP thay vì stack không? Độ phức tạp thế nào?']
 }
+,
+{
+  id: 'algo-084',
+  title: 'Evaluate Reverse Polish Notation',
+  difficulty: 'medium',
+  pattern: 'Stack',
+  tags: ['stack', 'string', 'bytebytego'],
+  prompt: `Cho mảng chuỗi {{tokens}} biểu diễn biểu thức RPN (Reverse Polish Notation). Mỗi phần tử là toán tử (+, -, *, /) hoặc số nguyên. Trả về giá trị biểu thức.
+
+### Ví dụ
+~~~text
+Input: tokens = ["2","1","+","3","*"]
+Output: 9
+Giải thích: ((2 + 1) * 3) = 9
+
+Input: tokens = ["4","13","5","/","+"]
+Output: 6
+~~~
+
+### Ràng buộc
+- {{1 <= tokens.length <= 10^4}}
+- Mỗi toán tử áp dụng cho hai toán hạng trước đó; chia lấy phần nguyên và luôn hướng về 0.
+- Không có phép chia cho 0.`,
+  hints: [
+    'Dùng stack: khi gặp số thì đẩy vào; khi gặp toán tử thì lấy hai phần tử trên đỉnh.',
+    'Cẩn thận thứ tự: toán tử lấy phần tử thứ hai trước (pop), rồi phần tử thứ nhất (pop), tính rồi đẩy kết quả.',
+    'Chia nguyên: dùng Math.trunc hoặc ép kiểu int sau khi chia double; luôn hướng về 0.'
+  ],
+  solution: `### Ý tưởng
+Duyệt từng token từ trái sang phải. Nếu là số, đẩy vào stack. Nếu là toán tử, pop hai toán hạng, tính theo thứ tự đúng, đẩy kết quả lại. Cuối cùng stack còn đúng một phần tử — đó là đáp án.
+
+~~~java
+class Solution {
+    public int evalRPN(String[] tokens) {
+        Deque<Integer> stack = new ArrayDeque<>();
+        for (String t : tokens) {
+            if (t.equals("+")) {
+                int b = stack.pop(), a = stack.pop();
+                stack.push(a + b);
+            } else if (t.equals("-")) {
+                int b = stack.pop(), a = stack.pop();
+                stack.push(a - b);
+            } else if (t.equals("*")) {
+                int b = stack.pop(), a = stack.pop();
+                stack.push(a * b);
+            } else if (t.equals("/")) {
+                int b = stack.pop(), a = stack.pop();
+                stack.push(a / b);
+            } else {
+                stack.push(Integer.parseInt(t));
+            }
+        }
+        return stack.pop();
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Phép chia trong Java cho số âm: -3 / 2 = -1 (trunc toward zero), đúng yêu cầu đề chuẩn.
+- Nếu có nhiều toán tử cùng loại, nên dùng switch hoặc map; tránh nhiều if-else rối.
+- Đề đảm bảo biểu thức hợp lệ nên không cần kiểm tra stack rỗng khi pop.
+
+> Senior tip: RPN thường dùng trong trình biên dịch hoặc biểu thức cấu hình; khi gặp dấu âm cho toán hạng, cần phân biệt số âm và toán tử trừ bằng cách kiểm tra độ dài token hoặc dùng prefix.`,
+  starter: `class Solution {
+    public int evalRPN(String[] tokens) {
+        
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (java.util.Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        run("example", 9, () -> new Solution().evalRPN(new String[]{"2","1","+","3","*"}));
+        run("division", 6, () -> new Solution().evalRPN(new String[]{"4","13","5","/","+"}));
+        run("negative", -6, () -> new Solution().evalRPN(new String[]{"-2","3","*"}));
+        run("complex", 22, () -> new Solution().evalRPN(new String[]{"10","6","9","3","+","-11","*","/","*","17","+","5","+"}));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n), Space O(n)',
+  follow: ['Nếu có phép chia cho 0 thì xử lý thế nào?', 'Nếu biểu thức không hợp lệ thì phát hiện ra sao?']
+},
+
+{
+  id: 'algo-085',
+  title: 'Next Greater Element',
+  difficulty: 'medium',
+  pattern: 'Stacks',
+  tags: ['stack', 'monotonic', 'circular', 'bytebytego'],
+  prompt: `Cho mảng số nguyên {{nums}} có thể có phần tử trùng. Mảng được coi là **vòng tròn** (phần tử sau phần tử cuối quay về phần tử đầu). Với mỗi vị trí {{i}}, trả về {{nextGreater[i]}} là giá trị **đầu tiên** gặp được khi đi sang phải (theo chiều vòng) mà lớn hơn {{nums[i]}}; nếu không có thì {{-1}}.
+
+### Ví dụ
+~~~text
+Input: nums = [1,2,1]
+Output: [2,-1,2]
+Giải thích: 1 thấy 2 ngay bên phải; 2 không thấy gì lớn hơn; 1 (cuối vòng) thấy 2 ở đầu.
+
+Input: nums = [5,4,3,2,1]
+Output: [-1,5,5,5,5]
+
+Input: nums = [2,2,2]
+Output: [-1,-1,-1]
+~~~
+
+### Ràng buộc
+- {{0 <= n <= 10^5}}, {{-10^9 <= nums[i] <= 10^9}}
+- Yêu cầu O(n): duyệt vòng hai lần {{2n}} nhưng vẫn O(n).`,
+  hints: [
+    'Bài kinh điển dùng monotonic stack (stack đơn điệu): duyệt mảng và giữ stack các phần tử chưa tìm được NGE.',
+    'Với mảng vòng, duyệt {{i}} từ {{0}} đến {{2n-1}}, chỉ gán kết quả cho vị trí {{i % n}} chưa có.',
+    'Trong vòng lặp, trong khi stack không rỗng và {{nums[stack.peek()] < nums[i]}} thì pop và gán {{res[popped] = nums[i]}}; rồi đẩy {{i % n}} vào stack.',
+    'Chỉ đẩy {{i % n}} (không đẩy {{i}}) để mỗi phần tử vào stack đúng một lần → tổng O(n).'
+  ],
+  solution: `### Ý tưởng
+Monotonic stack giảm dần: các index trong stack luôn có giá trị giảm dần. Khi gặp {{nums[i]}} lớn hơn đỉnh stack, {{nums[i]}} chính là NGE của mọi phần tử bị pop ra, vì ta đi từ trái sang phải và đây là phần tử lớn hơn **đầu tiên**.
+
+Với mảng vòng, duyệt {{2n}} lần; mỗi index {{i}} xử lý như mảng thường nhưng chỉ đẩy {{i % n}} và chỉ gán kết quả nếu {{res[i % n]}} chưa được điền. Kết thúc {{2n}} bước, mọi vị trí có NGE đều đã điền, vị trí còn lại là {{-1}}.
+
+~~~java
+class Solution {
+    public int[] nextGreaterElements(int[] nums) {
+        int n = nums.length;
+        int[] res = new int[n];
+        Arrays.fill(res, -1);
+        Deque<Integer> stack = new ArrayDeque<>(); // index, monotonic giảm dần
+        for (int i = 0; i < 2 * n; i++) {
+            int x = nums[i % n];
+            // x lớn hơn đỉnh → x là NGE của mọi phần tử bị pop
+            while (!stack.isEmpty() && nums[stack.peek()] < x) {
+                res[stack.pop()] = x;
+            }
+            stack.push(i % n); // mỗi index chỉ push một lần
+        }
+        return res;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Đảm bảo chỉ push {{i % n}}: nếu push {{i}} (lên đến {{2n-1}}) thì index bị xử lý hai lần, kết quả sai với phần tử trùng giá trị.
+- Nếu đề không vòng thì bỏ {{% n}} và chạy một lần {{n}}; complexity giữ O(n).
+- Phần tử trùng: điều kiện strict {{<}} (không dùng {{<=}}) — bằng giá trị thì không "thay thế", giữ nguyên, đúng đề bài "lớn hơn".
+
+> Senior tip: Monotonic stack là pattern xuất hiện rất nhiều — Next Greater, Daily Temperatures, Largest Rectangle, Stock Span. Tôi luôn hỏi ứng viên "tại sao tổng số lần pop không quá n?" để kiểm tra hiểu amortized O(n): mỗi phần tử push một lần và pop tối đa một lần.`,
+  starter: `class Solution {
+    public int[] nextGreaterElements(int[] nums) {
+        
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (java.util.Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + java.util.Arrays.toString((int[]) expected) + " got " + java.util.Arrays.toString((int[]) actual));
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        run("example1", new int[]{2,-1,2}, () -> new Solution().nextGreaterElements(new int[]{1,2,1}));
+        run("decreasing", new int[]{-1,5,5,5,5}, () -> new Solution().nextGreaterElements(new int[]{5,4,3,2,1}));
+        run("duplicates", new int[]{-1,-1,-1}, () -> new Solution().nextGreaterElements(new int[]{2,2,2}));
+        run("increasing", new int[]{2,3,4,-1}, () -> new Solution().nextGreaterElements(new int[]{1,2,3,4}));
+        run("single", new int[]{-1}, () -> new Solution().nextGreaterElements(new int[]{1}));
+        run("empty", new int[]{}, () -> new Solution().nextGreaterElements(new int[]{}));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n), Space O(n)',
+  follow: [
+    'Nếu cho phép không vòng thì code thay đổi thế nào?',
+    'Daily Temperatures có liên hệ gì với bài này?'
+  ]
+},
+
+{
+  id: 'algo-086',
+  title: 'Asteroid Collision',
+  difficulty: 'medium',
+  pattern: 'Stacks',
+  tags: ['stack', 'simulation', 'bytebytego'],
+  prompt: `Trên trục số có các tiểu hành tinh, mỗi tiểu hành tinh có kích thước (giá trị tuyệt đối) và hướng: dương là sang phải, âm là sang trái. Hai tiểu hành tinh **đối đầu** thì nổ: nếu kích thước bằng nhau thì cả hai biến mất; nếu khác thì cái nhỏ hơn biến mất. Trả về trạng thái còn lại sau khi mọi va chạm kết thúc (theo thứ tự trên trục).
+
+### Ví dụ
+~~~text
+Input: asteroids = [5,10,-5]
+Output: [5,10]
+Giải thích: 10 và -5 đụng nhau, 10 lớn hơn nên -5 nổ.
+
+Input: asteroids = [8,-8]
+Output: []
+
+Input: asteroids = [10,2,-5]
+Output: [10]
+
+Input: asteroids = [-2,-1,1,2]
+Output: [-2,-1,1,2]
+Giải thích: -2,-1 sang trái, 1,2 sang phải; không có cặp nào đối đầu.
+~~~
+
+### Ràng buộc
+- {{1 <= n <= 10^4}}, {{-1000 <= asteroids[i] <= 1000}}, {{asteroids[i] != 0}}`,
+  hints: [
+    'Duyệt từ trái sang phải, đẩy các tiểu hành tinh đi **sang phải** (dương) vào stack — chúng chưa va chạm gì vì chưa có cái nào đi ngược về.',
+    'Gặp tiểu hành tinh {{a < 0}} (sang trái): so sánh với đỉnh stack. Nếu đỉnh dương nhỏ hơn {{|a|}} thì đỉnh nổ (pop) và tiếp tục so; nếu bằng thì cả hai nổ; nếu đỉnh lớn hơn thì {{a}} nổ ngay.',
+    'Tiểu hành tinh đi trái mà stack rỗng (hoặc đỉnh cũng đi trái) thì sống sót — đẩy vào kết quả.',
+    'Sau khi xử lý xong, kết quả là các phần tử còn trong stack theo thứ tự đáy → đỉnh, cần đảo lại.'
+  ],
+  solution: `### Ý tưởng
+Stack lưu các tiểu hành tinh đang "sống sót" theo thứ tự từ trái sang phải, tất cả đều đi **cùng hướng sang phải** khi ta xử lý một tiểu hành tinh mới đi trái. Vì không có va chạm nào giữa hai cái cùng chiều, chỉ cần lo çarp trán trái–phải.
+
+~~~java
+class Solution {
+    public int[] asteroidCollision(int[] asteroids) {
+        Deque<Integer> st = new ArrayDeque<>(); // các asteroid đang sống, chỉ chứa asteroid dương
+        for (int a : asteroids) {
+            boolean alive = true;
+            // a đi trái: đụng đỉnh stack (dương, đi phải)?
+            while (alive && a < 0 && !st.isEmpty() && st.peek() > 0) {
+                int top = st.peek();
+                if (top < -a) st.pop();      // đỉnh nhỏ hơn → đỉnh nổ, a tiếp tục
+                else if (top == -a) { st.pop(); alive = false; } // bằng nhau → cả hai nổ
+                else alive = false;          // đỉnh lớn hơn → a nổ
+            }
+            if (alive) st.push(a);
+        }
+        int[] res = new int[st.size()];
+        for (int i = res.length - 1; i >= 0; i--) res[i] = st.pop(); // đảo ngược
+        return res;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Case [-2,-1,1,2]: stack chỉ có phần tử dương mới va chạm được; asteroid âm đầu tiên khi stack rỗng sống sót, các asteroid âm sau đó không đụng ai.
+- Nếu đỉnh dương bằng |a| thì **cả hai** nổ — đừng đẩy lại {{a}}.
+- Đừng viết đệ quy; while pop trong stack là đủ, mỗi phần tử push/pop tối đa một lần → O(n).
+
+> Senior tip: Đây là bài kiểm tra simulation + stack điển hình. Ở phỏng vấn tôi hay thêm biến thể "nếu asteroid có thể cùng giá trị 0" hoặc "trả về số va chạm" để kiểm tra phần tách điều kiện; xử lý rõ ràng từng nhánh sẽ được điểm cao hơn code ngắn nhưng khó đọc.`,
+  starter: `class Solution {
+    public int[] asteroidCollision(int[] asteroids) {
+        
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (java.util.Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + java.util.Arrays.toString((int[]) expected) + " got " + java.util.Arrays.toString((int[]) actual));
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        run("example1", new int[]{5,10}, () -> new Solution().asteroidCollision(new int[]{5,10,-5}));
+        run("annihilate", new int[]{}, () -> new Solution().asteroidCollision(new int[]{8,-8}));
+        run("smaller dies", new int[]{10}, () -> new Solution().asteroidCollision(new int[]{10,2,-5}));
+        run("same direction", new int[]{-2,-1,1,2}, () -> new Solution().asteroidCollision(new int[]{-2,-1,1,2}));
+        run("equal dies both", new int[]{}, () -> new Solution().asteroidCollision(new int[]{5,-5}));
+        run("left survives stack empty", new int[]{-5,10}, () -> new Solution().asteroidCollision(new int[]{-5,10}));
+        run("chain", new int[]{10,12}, () -> new Solution().asteroidCollision(new int[]{10,-5,12,-3}));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n), Space O(n)',
+  follow: [
+    'Nếu đề yêu cầu đếm tổng số va chạm thì sửa thế nào?',
+    'Tại sao stack chỉ cần lưu asteroid dương?'
+  ]
+},
+
+{
+  id: 'algo-087',
+  title: 'Connect Ropes to Minimize Cost',
+  difficulty: 'medium',
+  pattern: 'Heaps',
+  tags: ['heap', 'greedy', 'priority-queue', 'bytebytego'],
+  prompt: `Bạn có {{n}} sợi dây, mỗi sợi có chiều dài {{ropes[i]}}. Mỗi bước, chọn hai sợi, ghép lại thành một sợi (chiều dài bằng tổng hai sợi) và tiêu tốn **chiều dài của sợi ghép được**. Tiếp tục đến khi còn đúng một sợi dây. Tìm tổng chi phí **nhỏ nhất**.
+
+### Ví dụ
+~~~text
+Input: ropes = [1,2,3,4,5]
+Output: 33
+Giải thích: (1+2)=3 [chi phí 3] → [3,3,4,5]; (3+3)=6 [6] → [4,5,6]; (4+5)=9 [9] → [6,9]; (6+9)=15 [15]. Tổng: 3+6+9+15 = 33.
+
+Input: ropes = [4,3,2,6]
+Output: 29
+
+Input: ropes = [5]
+Output: 0
+~~~
+
+### Ràng buộc
+- {{1 <= n <= 10^4}}, {{1 <= ropes[i] <= 10^4}}
+- Luôn ghép hai sợi **ngắn nhất** tại mỗi bước.`,
+  hints: [
+    'Chi phí là tổng các "sợi ghép trung gian"; mỗi chiều dài gốc được cộng vào chi phí đúng bằng số lần nó được ghép.',
+    'Cách tối ưu: luôn lấy hai sợi ngắn nhất — dùng min-heap (PriorityQueue) để lấy và đẩy lại tổng.',
+    'Lặp đến khi heap còn 0 hoặc 1 phần tử; nếu n = 1 thì chi phí 0.',
+    'Độ phức tạp O(n log n): mỗi bước pop/push log n, tổng n-1 bước.'
+  ],
+  solution: `### Ý tưởng
+Greedy chứng minh được: ghép hai sợi ngắn nhất luôn tối ưu (giống Huffman coding). Dùng min-heap lưu các sợi đang có; mỗi bước pop hai phần tử nhỏ nhất, cộng chi phí += a + b, push lại {{a + b}}.
+
+Với [1,2,3,4,5]: pop 1,2 → chi phí 3, push 3 → heap [3,3,4,5]; pop 3,3 → chi phí 6, push 6 → [4,5,6]; ... Tổng 33.
+
+~~~java
+class Solution {
+    public int connectRopes(int[] ropes) {
+        PriorityQueue<Integer> pq = new PriorityQueue<>(); // min-heap
+        for (int r : ropes) pq.offer(r);
+        int cost = 0;
+        while (pq.size() > 1) {
+            int a = pq.poll();
+            int b = pq.poll();
+            cost += a + b;   // chi phí bước này
+            pq.offer(a + b); // sợi ghép quay lại heap
+        }
+        return cost;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- {{n == 1}}: while không chạy, trả 0 — đúng yêu cầu (không cần ghép gì).
+- Nếu đề cho {{long}} (tổng có thể tràn int) thì khai báo {{long cost}} và PriorityQueue{{<Long>}}; với ràng buộc ở trên int là đủ.
+- Đừng thử quy hoạch động O(n^2); greedy + heap đã là lời giải chuẩn O(n log n).
+
+> Senior tip: Bài này cùng họ với Huffman coding và "chi phí nhỏ nhất của việc nối chuỗi". Ứng viên khá hay đề xuất "sắp xếp rồi ghép từ đầu" — cách đó chỉ đúng trong một số trường hợp; min-heap mới xử lý tổng quát khi tổng các sợi mới chen vào giữa dãy đã sắp.`,
+  starter: `class Solution {
+    public int connectRopes(int[] ropes) {
+        
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (java.util.Objects.equals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        run("example1", 33, () -> new Solution().connectRopes(new int[]{1,2,3,4,5}));
+        run("example2", 29, () -> new Solution().connectRopes(new int[]{4,3,2,6}));
+        run("single", 0, () -> new Solution().connectRopes(new int[]{5}));
+        run("two", 7, () -> new Solution().connectRopes(new int[]{2,5}));
+        run("equal", 16, () -> new Solution().connectRopes(new int[]{2,2,2,2}));
+        run("descending", 200, () -> new Solution().connectRopes(new int[]{50,30,20,10}));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n log n), Space O(n)',
+  follow: [
+    'Liên hệ với Huffman coding ở điểm nào?',
+    'Nếu chi phí mỗi bước bằng tích hai sợi thì lời giải còn đúng không?'
+  ]
+},
+
+{
+  id: 'algo-088',
+  title: 'Median of a Number Stream',
+  difficulty: 'medium',
+  pattern: 'Heaps',
+  tags: ['heap', 'two-heaps', 'design', 'stream', 'bytebytego'],
+  prompt: `Thiết kế cấu trúc dữ liệu cho luồng số vào ({{addNum}}), hỗ trợ trả về **trung vị** của toàn bộ số đã thêm ({{findMedian}}) trong O(log n) mỗi thao tác.
+
+- Nếu số phần tử lẻ: trung vị là phần tử giữa (sắp xếp tăng dần).
+- Nếu chẵn: trung vị là trung bình của hai phần tử giữa.
+
+### Ví dụ
+~~~text
+addNum(1); addNum(2); findMedian() → 1.5
+addNum(3);                 findMedian() → 2.0
+~~~
+
+### Ràng buộc
+- {{1 <= tổng số lần addNum <= 10^5}}
+- Số nguyên có thể âm, có thể trùng.
+- findMedian luôn được gọi khi đã có ít nhất một số.`,
+  hints: [
+    'Giữ hai nửa: nửa dưới (các số nhỏ) và nửa trên (các số lớn). Trung vị chỉ phụ thuộc hai phần tử giữa của hai nửa.',
+    'Dùng max-heap cho nửa dưới và min-heap cho nửa trên: PriorityQueue{{<Integer>}} mặc định là min-heap; max-heap đảo comparator.',
+    'Giữ bất biến: size(maxHeap) == size(minHeap) hoặc nhiều hơn đúng 1; mọi phần tử trong maxHeap ≤ mọi phần tử trong minHeap.',
+    'addNum: đẩy vào maxHeap, rồi "cân bằng" bằng cách chuyển đỉnh sang minHeap (và chiều ngược lại nếu lệch); findMedian là O(1).'
+  ],
+  solution: `### Ý tưởng
+Hai heap: {{lower}} (max-heap) chứa nửa nhỏ, {{upper}} (min-heap) chứa nửa lớn, kích thước chênh lệch tối đa 1.
+
+- {{addNum(x)}}: nếu {{x}} ≤ đỉnh {{lower}} thì đẩy vào {{lower}}, đẩy ngược {{upper}} để cân bằng. Cách đơn giản hơn: đẩy x vào lower rồi chuyển đỉnh lower sang upper, nếu lệch size thì chuyển đỉnh upper về lower.
+- {{findMedian}}: size lệch → đỉnh {{lower}}; bằng nhau → trung bình hai đỉnh.
+
+~~~java
+class MedianFinder {
+    private final PriorityQueue<Integer> lower = new PriorityQueue<>(Collections.reverseOrder()); // max-heap
+    private final PriorityQueue<Integer> upper = new PriorityQueue<>(); // min-heap
+
+    public void addNum(int num) {
+        lower.offer(num);                 // luôn đẩy vào nửa nhỏ trước
+        upper.offer(lower.poll());        // đỉnh lớn nhất nửa nhỏ → nửa lớn (giữ bất biến)
+        if (lower.size() < upper.size())  // cân bằng size
+            lower.offer(upper.poll());
+    }
+
+    public double findMedian() {
+        if (lower.size() > upper.size()) return lower.peek();
+        return lower.peek() / 2.0 + upper.peek() / 2.0; // tránh tràn int
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Bất biến quan trọng: {{upper.peek() >= lower.peek()}} luôn đúng nhờ bước chuyển đỉnh; nếu bỏ qua bước này thì hai nửa có thể xen kẽ sai.
+- Trả về double: chia {{2.0}} trước khi nhân/trung bình để không mất phần lẻ.
+- Variants phỏng vấn: cho phép xoá phần tử, tìm "kth largest" (chỉ cần lệch size đúng k), hoặc giới hạn bộ nhớ cho sliding median.
+
+> Senior tip: Two-heap là pattern mặc định cho trung vị trực tuyến; trong production tôi thấy nó xuất hiện ở monitoring (percentile latency theo cửa sổ trượt) thay vì sort lại toàn bộ mỗi lần. Nếu cần sliding window thì kết hợp thêm HashMap để lazy-remove khỏi heap.`,
+  starter: `class MedianFinder {
+    public MedianFinder() {
+        
+    }
+    public void addNum(int num) {
+        
+    }
+    public double findMedian() {
+        return 0.0;
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (java.util.Objects.equals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        run("classic", 2.0, () -> {
+            MedianFinder mf = new MedianFinder();
+            mf.addNum(1); mf.addNum(2);
+            if (mf.findMedian() != 1.5) throw new AssertionError("after 1,2 expected 1.5");
+            mf.addNum(3);
+            return mf.findMedian();
+        });
+        run("single", 10.0, () -> {
+            MedianFinder mf = new MedianFinder();
+            mf.addNum(10);
+            return mf.findMedian();
+        });
+        run("negatives", -2.0, () -> {
+            MedianFinder mf = new MedianFinder();
+            mf.addNum(-1); mf.addNum(-2); mf.addNum(-3);
+            return mf.findMedian();
+        });
+        run("duplicates", 5.0, () -> {
+            MedianFinder mf = new MedianFinder();
+            mf.addNum(5); mf.addNum(5); mf.addNum(5); mf.addNum(5);
+            return mf.findMedian();
+        });
+        run("interleaved", 0.0, () -> {
+            MedianFinder mf = new MedianFinder();
+            mf.addNum(0); mf.addNum(2); mf.addNum(-1);
+            return mf.findMedian();
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'addNum O(log n), findMedian O(1), Space O(n)',
+  follow: [
+    'Nếu cần findMedian của cửa sổ trượt thì làm thế nào?',
+    'Làm sao chứng minh mọi x trong lower ≤ mọi y trong upper?'
+  ]
+},
+
+{
+  id: 'algo-089',
+  title: 'Insert Interval',
+  difficulty: 'medium',
+  pattern: 'Merge Intervals',
+  tags: ['intervals', 'array', 'bytebytego'],
+  prompt: `Cho mảng {{intervals}} gồm các khoảng {{[start, end]}} đã sắp xếp theo {{start}}, **không giao nhau**, và một khoảng mới {{newInterval}}. Chèn {{newInterval}} vào và hợp nhất các khoảng nếu cần, trả về mảng kết quả đã sắp xếp.
+
+### Ví dụ
+~~~text
+Input: intervals = [[1,3],[6,9]], newInterval = [2,5]
+Output: [[1,5],[6,9]]
+
+Input: intervals = [[1,2],[3,5],[6,7],[8,10],[12,16]], newInterval = [4,8]
+Output: [[1,2],[3,10],[12,16]]
+
+Input: intervals = [], newInterval = [5,7]
+Output: [[5,7]]
+~~~
+
+### Ràng buộc
+- {{0 <= n <= 10^4}}, {{n * start/end <= 10^6}} (giá trị tọa độ là số nguyên)}
+- intervals đã sắp xếp và pairwise disjoint.`,
+  hints: [
+    'Phân đoạn: các khoảng hoàn toàn nằm **trước** {{newInterval}} (end < new.start) giữ nguyên; các khoảng nằm **sau** (start > new.end) giữ nguyên; phần còn lại chồng lên → hợp nhất vào newInterval.',
+    'Vòng 1: duyệt từ đầu, thêm mọi khoảng với {{end < newInterval[0]}} vào kết quả.',
+    'Vòng 2: hợp nhất mọi khoảng còn chồng lấn: {{newInterval = [min(start), max(end)]}} cho đến khi hết chồng.',
+    'Vòng 3: thêm {{newInterval}} rồi nối tiếp các khoảng còn lại — tổng vẫn O(n), không cần sort lại.'
+  ],
+  solution: `### Ý tưởng
+Vì mảng đã sắp xếp, ta đi một lần: copy các khoảng hoàn toàn bên trái, gộp các khoảng chồng lấn với khoảng mới, rồi copy phần bên phải. Không cần merge toàn bộ mảng — chỉ các khoảng "bị đụng" mới tham gia hợp nhất.
+
+~~~java
+class Solution {
+    public int[][] insert(int[][] intervals, int[] newInterval) {
+        List<int[]> res = new ArrayList<>();
+        int i = 0, n = intervals.length;
+        // 1) các khoảng hoàn toàn trước newInterval
+        while (i < n && intervals[i][1] < newInterval[0]) {
+            res.add(intervals[i++]);
+        }
+        // 2) hợp nhất mọi khoảng chồng lấn
+        while (i < n && intervals[i][0] <= newInterval[1]) {
+            newInterval[0] = Math.min(newInterval[0], intervals[i][0]);
+            newInterval[1] = Math.max(newInterval[1], intervals[i][1]);
+            i++;
+        }
+        res.add(newInterval);
+        // 3) các khoảng hoàn toàn sau
+        while (i < n) res.add(intervals[i++]);
+        return res.toArray(new int[0][]);
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Điều kiện biên: {{end == newStart}} (chạm đúng mép, ví dụ [1,2] và [3,5] với new [2,3]]) — đề coi "chạm mép" là chồng lấn ({{<=}}) thì [1,2],[2,3] gộp thành [1,3]. Hỏi người phỏng vấn rõ ràng.
+- newInterval bị **sửa tại chỗ** — nếu không được phép sửa input thì clone trước.
+- Không viết hàm merge chung; chỉ merge phần cần, code ngắn hơn và dễ chứng minh O(n).
+
+> Senior tip: Khi phỏng vấn, tôi luôn xem ứng viên có hỏi "touching intervals (2,3) và (3,4) có gộp không?" không — trong calendar systems, hai cuộc họp [10:00-11:00] và [11:00-12:00] thường **không** coi là conflict, nhưng interval tree chuẩn của LeetCode lại gộp. Làm rõ spec trước khi code là dấu hiệu senior thật sự.`,
+  starter: `class Solution {
+    public int[][] insert(int[][] intervals, int[] newInterval) {
+        
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (java.util.Arrays.deepEquals((Object[]) expected, (Object[]) actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + java.util.Arrays.deepToString((int[][]) expected) + " got " + java.util.Arrays.deepToString((int[][]) actual));
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        run("overlap front", new int[][]{{1,5},{6,9}},
+            () -> new Solution().insert(new int[][]{{1,3},{6,9}}, new int[]{2,5}));
+        run("merge middle", new int[][]{{1,2},{3,10},{12,16}},
+            () -> new Solution().insert(new int[][]{{1,2},{3,5},{6,7},{8,10},{12,16}}, new int[]{4,8}));
+        run("empty", new int[][]{{5,7}},
+            () -> new Solution().insert(new int[0][], new int[]{5,7}));
+        run("contained no expand", new int[][]{{1,5}},
+            () -> new Solution().insert(new int[][]{{1,5}}, new int[]{2,3}));
+        run("absorb all", new int[][]{{1,7}},
+            () -> new Solution().insert(new int[][]{{1,5}}, new int[]{2,7}));
+        run("append end", new int[][]{{1,2},{8,9}},
+            () -> new Solution().insert(new int[][]{{1,2}}, new int[]{8,9}));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n), Space O(1) ngoài kết quả',
+  follow: [
+    'Nếu intervals chưa sắp xếp thì lời giải nào tốt nhất?',
+    'Phạm vi tọa độ lớn (10^9) và số khoảng nhiều thì dùng gì?'
+  ]
+},
+
+{
+  id: 'algo-090',
+  title: 'Intervals Intersection',
+  difficulty: 'medium',
+  pattern: 'Merge Intervals',
+  tags: ['intervals', 'two-pointers', 'bytebytego'],
+  prompt: `Cho hai danh sách khoảng {{firstList}} và {{secondList}}, mỗi danh sách đã sắp xếp theo {{start}} và các khoảng bên trong **không giao nhau**. Trả về danh sách các khoảng giao của hai tập (mỗi phần tử là giao của một khoảng từ list này với một khoảng từ list kia), cũng đã sắp xếp và không giao nhau.
+
+### Ví dụ
+~~~text
+Input: firstList = [[0,2],[5,10],[13,23],[24,25]], secondList = [[1,5],[8,12],[15,24],[25,26]]
+Output: [[1,2],[5,5],[8,10],[15,23],[24,24],[25,25]]
+
+Input: firstList = [[1,3],[5,9]], secondList = []
+Output: []
+
+Input: firstList = [], secondList = [[4,8],[10,12]]
+Output: []
+~~~
+
+### Ràng buộc
+- {{0 <= m, n <= 10^4}}
+- Mỗi list đã sort và disjoint nội bộ.`,
+  hints: [
+    'Giao của hai khoảng [[a,b]], [[c,d]] là [[max(a,c), min(b,d)]]; nếu max(start) > min(end) thì không giao.',
+    'Two pointers {{i}}, {{j}} trên hai list: tại mỗi bước so sánh end của interval hiện tại, con trỏ nào end nhỏ hơn thì tăng (vì interval đó đã "kết thúc", không thể giao với interval sau của list kia nữa).',
+    'Ghi nhận giao (nếu có) rồi {{i++}} nếu {{first[i][1] < second[j][1]}}, ngược lại {{j++}}.',
+    'Giao chỉ gồm đúng hai khoảng (mỗi bên một), vì bên trong mỗi list đã disjoint.'
+  ],
+  solution: `### Ý tưởng
+Hai con trỏ. Với cặp hiện tại {{(a, b)}}, giao là {{[max(a0,b0), min(a1,b1)]}} nếu {{max(a0,b0) <= min(a1,b1)}}. Sau đó di chuyển con trỏ của khoảng có end **nhỏ hơn**, vì khoảng đó đã kết thúc sớm hơn và không giao được với khoảng sau của list kia.
+
+~~~java
+class Solution {
+    public int[][] intervalIntersection(int[][] first, int[][] second) {
+        List<int[]> res = new ArrayList<>();
+        int i = 0, j = 0;
+        while (i < first.length && j < second.length) {
+            int lo = Math.max(first[i][0], second[j][0]);
+            int hi = Math.min(first[i][1], second[j][1]);
+            if (lo <= hi) res.add(new int[]{lo, hi}); // có giao (touching tính là giao)
+            // đẩy con trỏ của khoảng kết thúc trước
+            if (first[i][1] < second[j][1]) i++;
+            else j++;
+        }
+        return res.toArray(new int[0][]);
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Điều kiện {{lo <= hi}}: "touching" ([[1,2]] ∩ [[2,3]] = [[2,2]]) có được tính không? Đề chuẩn LeetCode tính; hỏi lại nếu spec khác.
+- Không cần sort lại; bất biến của đề đã đảm bảo hai list sorted.
+- Variant: thay {{max/min}} bằng kiểm tra không giao ({{first[i][1] < second[j][0]}}) rồi đẩy con trỏ end nhỏ hơn — logic tương đương nhưng dễ nhầm khi viết vội.
+
+> Senior tip: Pattern hai con trỏ trên hai dãy sorted xuất hiện ở merged ranges của calendar, billing windows, capacity planning. Tôi thường hỏi thêm "nếu mỗi list có khoảng trùng lặp nội bộ thì sao?" — khi đó phải pre-merge từng list (O(m log m + n log n)) rồi chạy hai con trỏ, cho thấy bạn hiểu bất biến nào của thuật toán đang được dùng.`,
+  starter: `class Solution {
+    public int[][] intervalIntersection(int[][] firstList, int[][] secondList) {
+        
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (java.util.Arrays.deepEquals((Object[]) expected, (Object[]) actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + java.util.Arrays.deepToString((int[][]) expected) + " got " + java.util.Arrays.deepToString((int[][]) actual));
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        run("example", new int[][]{{1,2},{5,5},{8,10},{15,23},{24,24},{25,25}},
+            () -> new Solution().intervalIntersection(
+                new int[][]{{0,2},{5,10},{13,23},{24,25}},
+                new int[][]{{1,5},{8,12},{15,24},{25,26}}));
+        run("empty second", new int[][]{},
+            () -> new Solution().intervalIntersection(new int[][]{{1,3},{5,9}}, new int[0][]));
+        run("empty first", new int[][]{},
+            () -> new Solution().intervalIntersection(new int[0][], new int[][]{{4,8},{10,12}}));
+        run("touching", new int[][]{{2,2}},
+            () -> new Solution().intervalIntersection(new int[][]{{1,2}}, new int[][]{{2,3}}));
+        run("disjoint", new int[][]{},
+            () -> new Solution().intervalIntersection(new int[][]{{1,2}}, new int[][]{{3,4}}));
+        run("one contains", new int[][]{{5,7}},
+            () -> new Solution().intervalIntersection(new int[][]{{1,10}}, new int[][]{{5,7}}));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(m + n), Space O(1) ngoài kết quả',
+  follow: [
+    'Tại sao chỉ cần đẩy một trong hai con trỏ?',
+    'Nếu trả về danh sách thời gian **rảnh** (free time) thì làm tiếp thế nào?'
+  ]
+},
+
+{
+  id: 'algo-091',
+  title: 'Employee Free Time',
+  difficulty: 'hard',
+  pattern: 'Merge Intervals',
+  tags: ['intervals', 'heap', 'min-heap', 'bytebytego'],
+  prompt: `Cho lịch làm việc của {{k}} nhân viên: {{schedule[e]}} là danh sách các khoảng {{[start, end]}} mà nhân viên {{e}} **bận**, đã sắp xếp theo start và không giao nhau. Trả về danh sách các khoảng **rảnh chung cho tất cả** mọi nhân viên, đã sắp xếp và không giao nhau. Mảng kết quả **không rỗng** theo yêu cầu đề (mọi cặp lịch đều để lại ít nhất một khoảng rảnh) — nếu không có khoảng rảnh nào thì trả mảng rỗng.
+
+### Ví dụ
+~~~text
+Input: schedule = [[[1,3],[6,7]], [[2,4]], [[2,5],[9,12]]]
+Output: [[5,6],[7,9]]
+Giải thích: Tổng bận gộp lại: [1,5],[6,7],[9,12] → còn rảnh [5,6] và [7,9].
+
+Input: schedule = [[[1,3],[5,10]], [[2,4]]]
+Output: [[4,5]]
+
+Input: schedule = [[[1,2]], [[1,2]]]
+Output: []
+~~~
+
+### Ràng buộc
+- {{1 <= k <= 10^4}}, {{1 <= lịch mỗi nhân viên <= 10^3}}
+- Giá trị start/end là số nguyên.`,
+  hints: [
+    'Không cần xử lý từng cặp nhân viên — hợp nhất **toàn bộ** các khoảng bận của mọi nhân viên thành một danh sách disjoint, rồi "free time" chính là các lỗ giữa các khoảng liên tiếp.',
+    'Cách 1: gộp tất cả khoảng vào một mảng, sort theo start rồi merge — O(N log N) với N tổng số khoảng.',
+    'Cách 2 (tốt hơn khi k lớn): min-heap theo start, trộn dần từng khoảng một — vẫn O(N log N) nhưng tránh sort nóng toàn bộ; hữu ích nếu lịch tới dần (streaming).',
+    'Sau khi có merged busy intervals, free time là các lỗ giữa hai khoảng liên tiếp: từ end của khoảng trước đến start của khoảng sau (chỉ khi end trước nhỏ hơn start sau).'
+  ],
+  solution: `### Ý tưởng
+**Bước 1 — merge busy intervals**: gộp mọi khoảng bận của mọi nhân viên rồi sort theo start, merge như bài Merge Intervals kinh điển. **Bước 2 — free time**: khoảng rảnh chỉ tồn tại giữa hai khoảng busy liền kề: từ {{end}} của khoảng trước đến {{start}} của khoảng sau (nếu chặt nhau thì không có lỗ).
+
+Với [[[1,3],[6,7]], [[2,4]], [[2,5],[9,12]]]: gộp → sort → merge → [[1,5],[6,7],[9,12]]. Lỗ: [5,6] và [7,9].
+
+~~~java
+class Solution {
+    public List<int[]> employeeFreeTime(int[][][] schedule) {
+        // 1) gộp toàn bộ interval bận
+        List<int[]> all = new ArrayList<>();
+        for (int[][] emp : schedule)
+            for (int[] iv : emp) all.add(iv);
+        all.sort(Comparator.comparingInt(a -> a[0]));
+
+        // 2) merge busy
+        List<int[]> merged = new ArrayList<>();
+        for (int[] iv : all) {
+            if (merged.isEmpty() || merged.get(merged.size() - 1)[1] < iv[0])
+                merged.add(iv); // không chồng → thêm mới
+            else
+                merged.get(merged.size() - 1)[1] =
+                    Math.max(merged.get(merged.size() - 1)[1], iv[1]); // chồng → kéo dài
+        }
+
+        // 3) free = các lỗ giữa các busy liên tiếp
+        List<int[]> free = new ArrayList<>();
+        for (int i = 0; i < merged.size() - 1; i++)
+            if (merged.get(i)[1] < merged.get(i + 1)[0])
+                free.add(new int[]{merged.get(i)[1], merged.get(i + 1)[0]});
+        return free;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Variant streaming: thay sort+merge bằng min-heap (PriorityQueue theo start): poll từng interval, merge vào "busy hiện tại"; free ghi nhận giữa busy hiện tại và interval kế tiếp trong heap — O(N log k) với k là số nhân viên đang mở.
+- Chạm mép {{b == nextStart}}: không có khoảng rảnh (rỗng, không có độ dài dương).
+- Nếu lịch của mỗi nhân viên có thể chưa sort/pre-merged thì phải merge riêng từng người trước — merge chung vẫn đúng vì sort toàn cục xử lý được.
+
+> Senior tip: Đừng tối ưu sớm bằng heap trong buổi phỏng vấn trừ khi interviewer yêu cầu; sort toàn bộ O(N log N) với N tổng số lịch là đủ và code ngắn, ít lỗi. Nhưng nếu N ~ 10^7 và lịch tới stream thì heaps theo employee là lời giải thật sự cần thiết — chứng tỏ bạn biết khi nào cần.`,
+  starter: `class Solution {
+    public List<int[]> employeeFreeTime(int[][][] schedule) {
+        
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            List<?> freeList = (List<?>) actual;
+            int[][] actArr = new int[freeList.size()][];
+            for (int i = 0; i < freeList.size(); i++) actArr[i] = (int[]) freeList.get(i);
+            if (java.util.Arrays.deepEquals((Object[]) expected, (Object[]) actArr)) {
+                passed++; System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected " + java.util.Arrays.deepToString((int[][]) expected) + " got " + java.util.Arrays.deepToString((int[][]) actArr));
+            }
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        run("example1", new int[][]{{5,6},{7,9}},
+            () -> new Solution().employeeFreeTime(new int[][][]{{{1,3},{6,7}},{{2,4}},{{2,5},{9,12}}}));
+        run("example2", new int[][]{{4,5}},
+            () -> new Solution().employeeFreeTime(new int[][][]{{{1,3},{5,10}},{{2,4}}}));
+        run("no free", new int[][]{},
+            () -> new Solution().employeeFreeTime(new int[][][]{{{1,2}},{{1,2}}}));
+        run("fully covered", new int[][]{},
+            () -> new Solution().employeeFreeTime(new int[][][]{{{1,5}},{{2,3}}}));
+        run("adjacent no gap", new int[][]{},
+            () -> new Solution().employeeFreeTime(new int[][][]{{{1,2}},{{2,3}}}));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(N log N), Space O(N) — N tổng số khoảng của mọi nhân viên',
+  follow: [
+    'Làm sao giảm còn O(N log k) với k nhân viên?',
+    'Nếu mỗi nhân viên có thể có lịch trùng lặp nội bộ thì xử lý thế nào?'
+  ]
+},
+
+{
+  id: 'algo-092',
+  title: 'Kth Largest Number in a Stream',
+  difficulty: 'easy',
+  pattern: 'Top K Elements',
+  tags: ['heap', 'design', 'stream', 'bytebytego'],
+  prompt: `Cho một **stream** số nguyên và một số {{k}}. Implement lớp {{KthLargest}} với {{KthLargest(int k, int[] nums)}} — {{nums}} là các phần tử đã thấy trước đó (có thể rỗng) — và phương thức {{add(int val)}}: thêm {{val}} vào stream rồi trả về phần tử **lớn thứ {{k}}** của toàn bộ stream, tính cả {{val}} vừa thêm.
+
+### Ví dụ
+~~~text
+Input: k = 3, nums = [4, 5, 8, 2]
+add(3) → 4
+add(5) → 5
+add(10) → 5
+add(9) → 8
+add(4) → 8
+Giải thích: stream [2,3,4,5,8,10] → phần tử lớn thứ 3 lần lượt là 4, 5, 5, 8, 8.
+
+Input: k = 1, nums = []
+add(7) → 7
+add(100) → 100
+~~~
+
+### Ràng buộc
+- {{1 <= k <= 10^4}}
+- {{0 <= nums.length <= 10^4}}, {{-10^4 <= nums[i], val <= 10^4}}
+- {{add}} được gọi tối đa {{10^4}} lần.`,
+  hints: [
+    'Sort lại toàn bộ stream sau mỗi lần add thì đúng nhưng tốn O(n log n) mỗi lượt — thực ra ta chỉ cần nhớ đúng {{k}} phần tử lớn nhất.',
+    'Dùng **min-heap** chứa {{k}} phần tử lớn nhất: root là phần tử nhỏ nhất trong nhóm đó, tức chính là đáp án "lớn thứ k".',
+    'Mỗi {{add}}: đẩy val vào heap, nếu heap vỡ kích thước {{k}} thì {{poll()}} bỏ root. O(log k) mỗi lượt, bộ nhớ O(k).'
+  ],
+  solution: `### Ý tưởng
+Duy trì một **min-heap** đúng kích thước {{k}} chứa {{k}} phần tử lớn nhất đã thấy. Vì root là phần tử nhỏ nhất trong nhóm này, root chính là phần tử lớn thứ {{k}} của toàn stream. Khi thêm một số mới, nếu nó lớn hơn root thì nó sẽ thay root trong nhóm k; nếu nhỏ hơn thì bị loại ngay ở bước {{poll}} — không cần xử lý riêng.
+
+~~~java
+class KthLargest {
+    private final int k;
+    private final PriorityQueue<Integer> minHeap = new PriorityQueue<>();
+
+    public KthLargest(int k, int[] nums) {
+        this.k = k;
+        for (int n : nums) add(n);   // nap cac phan tu ban dau cung dung add
+    }
+
+    public int add(int val) {
+        minHeap.offer(val);
+        if (minHeap.size() > k) minHeap.poll();   // loai phan tu nho nhat trong k phan tu lon nhat
+        return minHeap.peek();                    // root = phan tu lon thu k
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Phân biệt với bài "tìm kth largest của một **mảng**" (sort/quickselect): ở đây data là **stream** nên cần cấu trúc giữ trạng thái giữa các lần gọi.
+- Nếu {{nums.length < k}} thì sao? Đề đảm bảo luôn có ít nhất {{k}} phần tử khi {{add}} được gọi — nhưng nếu không, bạn phải hỏi lại interviewer để chốt hành vi.
+- Bài đối xứng "kth smallest" dùng đúng mẫu này với **max-heap**.
+
+> Senior tip: Mẫu "heap giữ đúng k phần tử" chạy khắp production — top-k seller, top-k endpoint theo latency, top-k consumer theo lag. Khi stream không fit memory thì mới nghĩ đến sketch xấp xỉ (Count-Min / Space-Saving); còn fit thì min-heap size k là đủ và luôn chính xác.`,
+  starter: `class KthLargest {
+    public KthLargest(int k, int[] nums) {
+        
+    }
+    public int add(int val) {
+        return 0;
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual))
+            throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        runSteps("example", () -> {
+            KthLargest k = new KthLargest(3, new int[]{4, 5, 8, 2});
+            eq(4, k.add(3));
+            eq(5, k.add(5));
+            eq(5, k.add(10));
+            eq(8, k.add(9));
+            eq(8, k.add(4));
+        });
+        runSteps("empty stream k=1", () -> {
+            KthLargest k = new KthLargest(1, new int[0]);
+            eq(7, k.add(7));
+            eq(100, k.add(100));
+            eq(100, k.add(50));
+        });
+        runSteps("all smaller than root", () -> {
+            KthLargest k = new KthLargest(2, new int[]{10, 9, 8});
+            eq(9, k.add(7));
+            eq(9, k.add(1));
+        });
+        runSteps("duplicates", () -> {
+            KthLargest k = new KthLargest(2, new int[]{1, 1, 1});
+            eq(1, k.add(1));
+            eq(1, k.add(2));
+            eq(1, k.add(0));
+        });
+        runSteps("single element", () -> {
+            KthLargest k = new KthLargest(1, new int[]{5});
+            eq(6, k.add(6));
+            eq(6, k.add(4));
+            eq(6, k.add(6));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(log k) mỗi add, O(n log k) khởi tạo; Space O(k)',
+  follow: [
+    'Nếu k thay đổi giữa chừng (reconfigure) thì làm thế nào?',
+    'Nhiều thread cùng gọi add thì cần sửa gì?'
+  ]
+},
+{
+  id: 'algo-093',
+  title: 'K Closest Points to Origin',
+  difficulty: 'medium',
+  pattern: 'Top K Elements',
+  tags: ['heap', 'quickselect', 'geometry', 'bytebytego'],
+  prompt: `Cho mảng {{points}} trong đó {{points[i] = [xi, yi]}} là tọa độ một điểm trên mặt phẳng. Trả về {{k}} điểm **gần gốc tọa độ (0, 0) nhất**. Thứ tự trong kết quả không quan trọng.
+
+### Ví dụ
+~~~text
+Input: points = [[1, 3], [-2, 2]], k = 1
+Output: [[-2, 2]]
+
+Input: points = [[3, 3], [5, -1], [-2, 4]], k = 2
+Output: [[3, 3], [-2, 4]]
+~~~
+
+### Ràng buộc
+- {{1 <= k <= points.length <= 10^4}}
+- {{-10^4 <= xi, yi <= 10^4}}`,
+  hints: [
+    'Khoảng cách đến gốc là {{sqrt(x^2 + y^2)}} — để so sánh thì chỉ cần **bình phương**, không cần sqrt (vừa nhanh vừa tránh sai số dấu chấm động).',
+    'Cách straightforward: sort theo bình phương khoảng cách rồi lấy k phần tử đầu — O(n log n).',
+    'Cách tối ưu hơn: max-heap giữ đúng k điểm gần nhất, mỗi phần tử mới so với root — O(n log k); hoặc quickselect partition O(n) trung bình.'
+  ],
+  solution: `### Ý tưởng
+So sánh bình phương khoảng cách, không cần sqrt. Dùng **max-heap** theo bình phương khoảng cách, giữ đúng {{k}} phần tử nhỏ nhất: gặp điểm nào đẩy vào heap, nếu quá k thì {{poll()}} bỏ điểm xa nhất (root). Heap luôn chứa đúng k điểm gần gốc nhất, còn thứ tự thì không quan trọng nên trả thẳng ra được.
+
+~~~java
+class Solution {
+    public int[][] kClosest(int[][] points, int k) {
+        // max-heap theo binh phuong khoang cach: root la diem XA nhat trong k diem gan nhat
+        PriorityQueue<int[]> heap = new PriorityQueue<>(
+            (a, b) -> Integer.compare(b[0] * b[0] + b[1] * b[1],
+                                      a[0] * a[0] + a[1] * a[1]));
+        for (int[] p : points) {
+            heap.offer(p);
+            if (heap.size() > k) heap.poll();   // loai diem XA nhat
+        }
+        return heap.toArray(new int[0][]);
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- {{Integer.compare(a, b)}} thay vì {{a - b}}: tuy bình phương khoảng cách trong ràng buộc này không tràn int, nhưng thói quen này an toàn khi toạ độ lớn hơn (dùng {{long}}).
+- Nếu interviewer yêu cầu O(n) trung bình: **quickselect** partition theo bình phương khoảng cách — code dài hơn, cẩn thận worst case O(n^2) khi dữ liệu dày đặc; có thể thêm random pivot.
+- Nếu {{k = n}} thì sort cả mảng là tối ưu (không có phần bị loại); nếu {{k}} nhỏ thì heap thắng.
+
+> Senior tip: Trong hệ thống thật, "k điểm gần nhất" (nearest-neighbour) là bài toán lõi của location service: tìm k chi nhánh/quán gần user. Ngoài thuật toán, cần chú ý index không gian (R-tree, geohash) — không ai scan toàn bộ {{10^7}} điểm mỗi request; thuật toán chỉ là bước cuối sau khi index đã lọc xong.`,
+  starter: `class Solution {
+    public int[][] kClosest(int[][] points, int k) {
+        
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static int[][] norm(int[][] a) {
+        int[][] c = new int[a.length][];
+        for (int i = 0; i < a.length; i++) c[i] = a[i].clone();
+        Arrays.sort(c, (x, y) -> x[0] != y[0] ? Integer.compare(x[0], y[0]) : Integer.compare(x[1], y[1]));
+        return c;
+    }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString((int[][]) expected)
+                    + " got " + Arrays.deepToString((int[][]) actual));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    public static void main(String[] args) {
+        run("example1", norm(new int[][]{{-2, 2}}),
+            () -> norm(new Solution().kClosest(new int[][]{{1, 3}, {-2, 2}}, 1)));
+        run("example2", norm(new int[][]{{3, 3}, {-2, 4}}),
+            () -> norm(new Solution().kClosest(new int[][]{{3, 3}, {5, -1}, {-2, 4}}, 2)));
+        run("single point", norm(new int[][]{{5, 5}}),
+            () -> norm(new Solution().kClosest(new int[][]{{5, 5}}, 1)));
+        run("k equals n", norm(new int[][]{{1, 1}, {2, 2}}),
+            () -> norm(new Solution().kClosest(new int[][]{{2, 2}, {1, 1}}, 2)));
+        run("negatives", norm(new int[][]{{-2, -2}}),
+            () -> norm(new Solution().kClosest(new int[][]{{-2, -2}, {3, 3}}, 1)));
+        run("large", norm(new int[][]{{0, 0}, {1, 0}, {2, 0}}),
+            () -> {
+                int[][] pts = new int[10000][2];
+                for (int i = 0; i < pts.length; i++) { pts[i][0] = pts.length - 1 - i; pts[i][1] = 0; }
+                return norm(new Solution().kClosest(pts, 3));
+            });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n log k) với heap size k; Space O(k)',
+  follow: [
+    'Giải thích cách viết quickselect cho bài này và worst case khi nào xảy ra.',
+    'Nếu mỗi điểm có weight thì "gần nhất" được định nghĩa thế nào?'
+  ]
+},
+{
+  id: 'algo-094',
+  title: 'Kth Smallest Number in a Sorted Matrix',
+  difficulty: 'medium',
+  pattern: 'Top K Elements',
+  tags: ['binary-search', 'matrix', 'heap', 'bytebytego'],
+  prompt: `Cho ma trận vuông {{n x n}} mà mỗi **hàng** và mỗi **cột** đều được sắp xếp tăng dần (các phần tử có thể trùng nhau). Trả về phần tử **nhỏ thứ {{k}}** ({{k}} bắt đầu từ 1) nếu đọc ma trận theo thứ tự không giảm.
+
+### Ví dụ
+~~~text
+Input: matrix = [[1, 5, 9],
+                 [10, 11, 13],
+                 [12, 13, 15]], k = 8
+Output: 13
+Giải thích: dãy tăng dần là [1, 5, 9, 10, 11, 12, 13, 13, 15] → phần tử thứ 8 là 13.
+
+Input: matrix = [[-5]], k = 1
+Output: -5
+~~~
+
+### Ràng buộc
+- {{1 <= n <= 300}}
+- {{-10^9 <= matrix[i][j] <= 10^9}}
+- Ma trận được sắp xếp như mô tả, mọi {{1 <= k <= n^2}}.`,
+  hints: [
+    'Phần tử nhỏ nhất là {{matrix[0][0]}}, lớn nhất là {{matrix[n-1][n-1]}} — đáp án nằm trong đoạn giá trị này.',
+    'Sort/flatten O(n^2 log n^2) đúng nhưng lãng phí. Hãy **binary search trên giá trị**: với mỗi {{mid}}, đếm số phần tử <= {{mid}}.',
+    'Đếm số phần tử <= {{x}} O(n): bắt đầu từ góc **dưới-trái** (cột đầu tiên đã sort), nếu {{m[r][c] <= x}} thì cả {{r+1}} phần tử trên cột này đều <= x, sang cột tiếp; ngược lại đi lên một hàng.'
+  ],
+  solution: `### Ý tưởng
+**Binary search trên không gian giá trị** từ {{lo = matrix[0][0]}} đến {{hi = matrix[n-1][n-1]}}. Với mỗi {{mid}}, gọi {{countLE(mid)}} — số phần tử nhỏ hơn hay bằng {{mid}} — bằng cách đi từ góc dưới-trái lên: mỗi cột đã sort nên nếu {{m[r][c] <= mid}} thì {{r+1}} phần tử phía trên đều đạt, cộng vào tổng và sang cột sau; nếu lớn hơn thì giảm {{r}}. O(n) cho mỗi lần đếm.
+
+Nếu {{countLE(mid) < k}} thì đáp án > mid (đẩy {{lo}} lên); ngược lại đáp án <= mid ({{hi = mid}}). {{lo == hi}} là đáp án — phần tử nhỏ thứ k **chính là** giá trị nhỏ nhất mà có >= k phần tử <= nó.
+
+~~~java
+class Solution {
+    public int kthSmallest(int[][] matrix, int k) {
+        int n = matrix.length;
+        int lo = matrix[0][0], hi = matrix[n - 1][n - 1];
+        while (lo < hi) {
+            int mid = lo + (hi - lo) / 2;
+            if (countLE(matrix, mid) < k) lo = mid + 1;   // qua nho, dap an ben phai
+            else hi = mid;                                 // du nho, dap an nam trong [lo, mid]
+        }
+        return lo;
+    }
+
+    // dem so phan tu <= x, di tu goc duoi-trai
+    private int countLE(int[][] m, int x) {
+        int n = m.length, r = n - 1, c = 0, cnt = 0;
+        while (r >= 0 && c < n) {
+            if (m[r][c] <= x) { cnt += r + 1; c++; }   // toan bo cot nay deu <= x
+            else r--;                                   // cot nay co phan tu > x, di len
+        }
+        return cnt;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Cái bẫy kinh điển: mid là giá trị **không có thật** trong ma trận vẫn ổn — ta chỉ cần đếm, không cần mid là phần tử. Kết quả hội tụ về giá trị thật nhỏ thứ k (xử lý được cả khi có trùng lặp).
+- Cách heap: n hàng, min-heap ban đầu chứa phần tử đầu mỗi hàng, {{poll}} {{k}} lần — O(k log n), **tốt hơn** khi {{k << n^2}}. Nói được cả hai là điểm cộng.
+- {{lo + (hi - lo) / 2}} tránh tràn so với {{(lo + hi) / 2}} khi giá trị gần {{10^9}}.
+
+> Senior tip: "Binary search trên answer + đếm số phần tử thoả điều kiện" là khuôn mẫu chung của nhiều bài hard (koko bananas, split array, magnetic force). Phỏng vấn senior nên nhận ra pattern này ngay từ câu chữ "tìm phần tử thứ k trong cấu trúc đã sort 2 chiều".`,
+  starter: `class Solution {
+    public int kthSmallest(int[][] matrix, int k) {
+        
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    public static void main(String[] args) {
+        run("example", 13, () -> new Solution().kthSmallest(
+            new int[][]{{1, 5, 9}, {10, 11, 13}, {12, 13, 15}}, 8));
+        run("k=1 smallest", 1, () -> new Solution().kthSmallest(
+            new int[][]{{1, 5, 9}, {10, 11, 13}, {12, 13, 15}}, 1));
+        run("k=n*n largest", 15, () -> new Solution().kthSmallest(
+            new int[][]{{1, 5, 9}, {10, 11, 13}, {12, 13, 15}}, 9));
+        run("single element", -5, () -> new Solution().kthSmallest(new int[][]{{-5}}, 1));
+        run("duplicates", 2, () -> new Solution().kthSmallest(new int[][]{{1, 2}, {2, 3}}, 3));
+        run("all equal", 7, () -> new Solution().kthSmallest(new int[][]{{7, 7}, {7, 7}}, 4));
+        run("k mid duplicates", 3, () -> new Solution().kthSmallest(
+            new int[][]{{1, 2, 3}, {3, 3, 4}, {4, 5, 6}}, 5));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n log(max - min)), Space O(1) — n là cạnh ma trận',
+  follow: [
+    'So sánh với cách dùng min-heap: khi nào heap thắng binary search?',
+    'Nếu ma trận chỉ sort theo hàng, không sort theo cột thì sao?'
+  ]
+},
+{
+  id: 'algo-095',
+  title: 'Frequency Sort',
+  difficulty: 'medium',
+  pattern: 'Top K Elements',
+  tags: ['string', 'heap', 'bucket', 'bytebytego'],
+  prompt: `Cho một chuỗi {{s}}. Sắp xếp lại các ký tự trong chuỗi sao cho các ký tự **giống nhau nằm cạnh nhau** và ký tự có **tần suất cao hơn đứng trước**. Nếu nhiều ký tự cùng tần suất thì thứ tự tương ứng tuỳ ý.
+
+### Ví dụ
+~~~text
+Input:  s = "tree"
+Output: "eert"   (hoặc "eetr" — e xuất hiện 2 lần nên đi trước)
+
+Input:  s = "cccaaa"
+Output: "cccaaa" (hoặc "aaaccc" — cả hai đều đúng)
+
+Input:  s = "Aabb"
+Output: "bbAa"   (hoặc "bbaA" — b: 2, a: 1, A: 1)
+~~~
+
+### Ràng buộc
+- {{1 <= s.length <= 5 * 10^4}}; {{s}} gồm các ký tự in hoa, in thường và chữ số.`,
+  hints: [
+    'Đếm tần suất từng ký tự trước — O(n) bằng HashMap hay mảng 128 phần tử.',
+    'Cách 1: đưa các cặp (ký tự, tần suất) vào **max-heap** theo tần suất, rồi lấy từng cặp ra và nối ký tự đúng số lần.',
+    'Cách 2 (O(n)): gom ký tự vào **bucket** theo tần suất — bucket[i] chứa các ký tự xuất hiện i lần — rồi duyệt bucket từ cao xuống.'
+  ],
+  solution: `### Ý tưởng
+Đếm tần suất, rồi xếp các (ký tự, tần suất) theo tần suất giảm dần bằng max-heap; mỗi lần lấy ra một cặp thì nối ký tự đó đúng số lần bằng StringBuilder. Mọi ký tự cùng tần suất nằm trong một nhóm liên tiếp — yêu cầu "giống nhau cạnh nhau" tự động thoả mãn.
+
+~~~java
+class Solution {
+    public String frequencySort(String s) {
+        Map<Character, Integer> freq = new HashMap<>();
+        for (char c : s.toCharArray()) freq.merge(c, 1, Integer::sum);
+
+        // max-heap theo tuyen giam dan cua tan suat
+        PriorityQueue<Map.Entry<Character, Integer>> heap =
+            new PriorityQueue<>((a, b) -> Integer.compare(b.getValue(), a.getValue()));
+        heap.addAll(freq.entrySet());
+
+        StringBuilder sb = new StringBuilder();
+        while (!heap.isEmpty()) {
+            Map.Entry<Character, Integer> e = heap.poll();
+            for (int i = 0; i < e.getValue(); i++) sb.append(e.getKey());
+        }
+        return sb.toString();
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Vì đề cho phép thứ tự tùy ý khi cùng tần suất nên kết quả **không cần** được xác định tuyệt đối — interviewer có thể hỏi "làm sao cho kết quả deterministic?" → sort thứ cấp theo thứ tự bảng chữ cái.
+- Bucket sort O(n) thường được nhắc tới như đáp án tối ưu: tần suất tối đa là {{n}} nên có tối đa {{n}} bucket; không cần so sánh, không log.
+- Đừng viết {{b.getValue() - a.getValue()}} làm comparator nếu tần suất có thể lớn: {{Integer.compare}} an toàn hơn; trong ràng buộc này thì chưa tràn nhưng là thói quen tốt.
+
+> Senior tip: "Frequency sort" là vỏ của rất nhiều bài thật: log compression (RLE), top-k query suggestion, hay "most active user trong window". Sau khi nói xong heap/bucket, senior nên discuss luôn phần **window**: đếm tần suất trong 5 phút gần nhất thì cần sliding window + map, không còn là một lần đếm tĩnh.`,
+  starter: `class Solution {
+    public String frequencySort(String s) {
+        
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static String buildLarge() {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < 1000; i++) sb.append("x");
+        for (int i = 0; i < 2000; i++) sb.append("y");
+        for (int i = 0; i < 3000; i++) sb.append("z");
+        return sb.toString();
+    }
+    static void checkValid(String name, String input, String output) {
+        total++;
+        try {
+            if (output == null || output.length() != input.length()) {
+                System.out.println("FAIL " + name + ": length " + (output == null ? "null" : output.length())
+                    + " expected " + input.length());
+                return;
+            }
+            Map<Character, Integer> in = new HashMap<>(), out = new HashMap<>();
+            for (char c : input.toCharArray()) in.merge(c, 1, Integer::sum);
+            for (char c : output.toCharArray()) out.merge(c, 1, Integer::sum);
+            if (!in.equals(out)) {
+                System.out.println("FAIL " + name + ": output is not an anagram of input");
+                return;
+            }
+            int i = 0, prevFreq = Integer.MAX_VALUE;
+            while (i < output.length()) {
+                char c = output.charAt(i);
+                int j = i;
+                while (j < output.length() && output.charAt(j) == c) j++;
+                int freq = in.get(c);
+                if (j - i != freq) {
+                    System.out.println("FAIL " + name + ": char " + c + " not contiguous (run "
+                        + (j - i) + " vs freq " + freq + ")");
+                    return;
+                }
+                if (freq > prevFreq) {
+                    System.out.println("FAIL " + name + ": freq order broken at " + c);
+                    return;
+                }
+                prevFreq = freq;
+                i = j;
+            }
+            passed++;
+            System.out.println("PASS " + name);
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    public static void main(String[] args) {
+        checkValid("example tree", "tree", new Solution().frequencySort("tree"));
+        checkValid("example cccaaa", "cccaaa", new Solution().frequencySort("cccaaa"));
+        checkValid("mixed case", "Aabb", new Solution().frequencySort("Aabb"));
+        checkValid("single char", "z", new Solution().frequencySort("z"));
+        checkValid("all distinct", "abc", new Solution().frequencySort("abc"));
+        checkValid("digits", "11223", new Solution().frequencySort("11223"));
+        checkValid("two chars", "aaabbb", new Solution().frequencySort("aaabbb"));
+        checkValid("large", buildLarge(), new Solution().frequencySort(buildLarge()));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n log k) với heap (k = số ký tự khác nhau); bucket sort O(n). Space O(k + n)',
+  follow: [
+    'Giải thích cách làm bucket sort O(n) cho bài này.',
+    'Nếu chỉ được dùng O(1) bộ nhớ tạm (ngoại trừ kết quả) thì xử lý thế nào?'
+  ]
+},
+
+{
+  id: 'algo-096',
+  title: '0/1 Knapsack',
+  difficulty: 'medium',
+  pattern: '0/1 Knapsack (DP)',
+  tags: ['dp', 'knapsack', 'bytebytego'],
+  prompt: `Bạn có {{n}} vật phẩm; vật phẩm thứ {{i}} có trọng lượng {{weights[i]}} và giá trị {{values[i]}}. Túi có tải trọng tối đa {{capacity}}. Mỗi vật phẩm chỉ được chọn **tối đa một lần** hoặc không chọn (0/1). Trả về giá trị lớn nhất có thể nhét vào túi.
+
+### Ví dụ
+~~~text
+Input: weights = [1, 2, 3], values = [6, 10, 12], capacity = 5
+Output: 22
+Giải thích: chọn vật 2 (nặng 2, giá 10) + vật 3 (nặng 3, giá 12) = 22.
+
+Input: weights = [10], values = [5], capacity = 5
+Output: 0
+Giải thích: vật nặng hơn túi, không chọn được gì.
+
+Input: weights = [2, 3, 4, 5], values = [3, 4, 5, 6], capacity = 8
+Output: 10
+Giải thích: vật 2 (nặng 3, giá 4) + vật 4 (nặng 5, giá 6).
+~~~
+
+### Ràng buộc
+- {{1 <= n <= 100}}
+- {{1 <= weights[i], values[i] <= 100}}
+- {{1 <= capacity <= 1000}}`,
+  hints: [
+    'Brute force: với mỗi vật có 2 lựa chọn → {{2^n}} — quá chậm. Trạng thái nào đang bị tính lại nhiều lần?',
+    'Gọi {{dp[w]}} là giá trị lớn nhất nhét được trong túi có tải trọng tối đa {{w}}. Với mỗi vật, cập nhật thế nào để vật chỉ dùng một lần?',
+    'Duyệt {{w}} **giảm dần** từ {{capacity}} xuống {{weights[i]}}: khi cập nhật {{dp[w]}}, các ô {{dp[w - weights[i]]}} bên trái chưa chứa vật hiện tại → vật chỉ được dùng một lần.'
+  ],
+  solution: `### Ý tưởng
+DP 1 chiều: {{dp[w]}} = giá trị lớn nhất nhét được trong túi trọng lượng {{w}}. Với mỗi vật (nặng {{wt}}, giá {{val}}), duyệt {{w}} từ {{capacity}} xuống {{wt}}:
+
+{{dp[w] = max(dp[w], dp[w - wt] + val)}}
+
+Vì duyệt {{w}} giảm dần nên {{dp[w - wt]}} vẫn là trạng thái **chưa** cập nhật bởi vật hiện tại → mỗi vật tối đa một lần. Nếu duyệt tăng dần thì vật bị dùng vô số lần — đó là bài unbounded knapsack, cạm bẫy kinh điển.
+
+~~~java
+class Solution {
+    public int knapsack(int[] weights, int[] values, int capacity) {
+        int[] dp = new int[capacity + 1];
+        for (int i = 0; i < weights.length; i++) {
+            // duyet nguoc: moi vat chi duoc dung MOT lan
+            for (int w = capacity; w >= weights[i]; w--) {
+                dp[w] = Math.max(dp[w], dp[w - weights[i]] + values[i]);
+            }
+        }
+        return dp[capacity];
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Mở rộng sang 2 chiều {{dp[i][w]}} (xét {{i}} vật đầu tiên) để dễ trình bày; gộp còn 1 chiều chỉ khi đã giải thích được lý do duyệt ngược.
+- Nếu interviewer hỏi "đếm số cách chọn được giá trị đúng target" → biến thể Count of Subset Sum; "phân hoạch thành 2 nửa bằng nhau" → Equal Partition.
+- {{capacity}} lớn ({{10^6}}) còn {{n}} nhỏ → xem xét meet-in-the-middle hoặc branch & bound thay vì {{O(n * capacity)}}.
+
+> Senior tip: Knapsack là gốc rễ của rất nhiều bài toán thật: batch sizing tối ưu doanh thu với ràng buộc RAM/CPU, chọn feature cho model dưới budget inference, chọn log sampling rate. Khiến bài gần production bằng cách thêm ràng buộc thứ hai (ví dụ còn hạn mức số lượng) — đó chính là multidimensional knapsack, và interviewer senior thường đẩy tới đó.`,
+  starter: `class Solution {
+    public int knapsack(int[] weights, int[] values, int capacity) {
+        
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    public static void main(String[] args) {
+        run("example1", 22, () -> new Solution().knapsack(
+            new int[]{1, 2, 3}, new int[]{6, 10, 12}, 5));
+        run("item too heavy", 0, () -> new Solution().knapsack(
+            new int[]{10}, new int[]{5}, 5));
+        run("single item fits", 10, () -> new Solution().knapsack(
+            new int[]{3}, new int[]{10}, 5));
+        run("exact fit", 7, () -> new Solution().knapsack(
+            new int[]{2, 2}, new int[]{3, 4}, 4));
+        run("empty items", 0, () -> new Solution().knapsack(
+            new int[0], new int[0], 10));
+        run("classic", 10, () -> new Solution().knapsack(
+            new int[]{2, 3, 4, 5}, new int[]{3, 4, 5, 6}, 8));
+        run("value per weight trap", 18, () -> new Solution().knapsack(
+            new int[]{4, 3, 2}, new int[]{10, 9, 8}, 6));
+        run("large", 143, () -> {
+            int n = 100;
+            int[] w = new int[n], v = new int[n];
+            for (int i = 0; i < n; i++) { w[i] = 1 + (i % 10); v[i] = 2 + (i % 7); }
+            return new Solution().knapsack(w, v, 50);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n * capacity), Space O(capacity)',
+  follow: [
+    'Tại sao duyệt w giảm dần mới đúng cho 0/1 knapsack?',
+    'Nếu mỗi loại vật có số lượng giới hạn thì thuật toán nào?'
+  ]
+},
+{
+  id: 'algo-097',
+  title: 'Subset Sum',
+  difficulty: 'medium',
+  pattern: '0/1 Knapsack (DP)',
+  tags: ['dp', 'subset-sum', 'bytebytego'],
+  prompt: `Cho mảng số nguyên dương {{nums}} và một số {{target}}. Trả về {{true}} nếu tồn tại một **conset** (không cần liên tiếp) của {{nums}} có tổng bằng đúng {{target}}, ngược lại {{false}}.
+
+### Ví dụ
+~~~text
+Input: nums = [1, 2, 3, 7], target = 6
+Output: true
+Giải thích: 1 + 2 + 3 = 6.
+
+Input: nums = [1, 2, 3, 7], target = 15
+Output: false
+Giải thích: tổng cả mảng mới là 13, nhỏ hơn 15.
+
+Input: nums = [1, 2, 5], target = 4
+Output: false
+~~~
+
+### Ràng buộc
+- {{1 <= nums.length <= 100}}
+- {{1 <= nums[i] <= 100}}
+- {{1 <= target <= 10^4}}`,
+  hints: [
+    'Gọi {{dp[s]}} là "có cách nào tạo ra tổng s từ các phần tử đã xét chưa?". {{dp[0]}} luôn {{true}} (chọn rỗng).',
+    'Với mỗi phần tử {{x}}, nếu {{dp[s - x]}} đã true thì thêm {{x}} vào làm {{dp[s]}} true.',
+    'Duyệt {{s}} giảm dần để mỗi phần tử chỉ dùng một lần — cùng khuôn mẫu với 0/1 knapsack; chỉ khác giá trị là boolean thay vì số.'
+  ],
+  solution: `### Ý tưởng
+DP boolean 1 chiều: {{dp[s]}} = có thể tạo tổng {{s}} từ các phần tử đã xét. {{dp[0] = true}}. Với mỗi {{x}} trong {{nums}}, duyệt {{s}} từ {{target}} xuống {{x}}: {{dp[s] = dp[s] || dp[s - x]}}. Duyệt giảm dần đảm bảo mỗi phần tử tối đa một lần.
+
+~~~java
+class Solution {
+    public boolean canPartition(int[] nums, int target) {
+        boolean[] dp = new boolean[target + 1];
+        dp[0] = true;   // conset rong co tong 0
+        for (int x : nums) {
+            for (int s = target; s >= x; s--) {
+                dp[s] = dp[s] || dp[s - x];   // lay x hoac khong lay x
+            }
+        }
+        return dp[target];
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Nếu {{target = 0}} → luôn {{true}} (conset rỗng); nếu tổng cả mảng < target thì cắt cụt ngay, tránh chạy DP vô ích.
+- Số âm trong {{nums}}? Đề này chỉ số dương; nếu có số âm thì mảng boolean kích thước {{target + 1}} không còn đủ — cần map tổng → boolean, hoặc shift chỉ số.
+- Từ subset sum dẫn thẳng tới hai bài biến thể: **Equal Partition** ({{target = sum / 2}}) và **Count Subset Sum** (đếm thay vì tồn tại).
+
+> Senior tip: Subset sum xuất hiện trong thực tế như split bill cho nhóm, đóng gói đơn hàng theo thùng, anti-money-laundering (tìm tập giao dịch có tổng khớp số tiền đáng ngờ). Ở production với {{n}} lớn thì không chạy DP đầy đủ: xấp xỉ bằng sketch, hoặc meet-in-the-middle khi {{n ~ 40}}.`,
+  starter: `class Solution {
+    public boolean canPartition(int[] nums, int target) {
+        
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    public static void main(String[] args) {
+        run("example1", true, () -> new Solution().canPartition(new int[]{1, 2, 3, 7}, 6));
+        run("example2 total too small", false, () -> new Solution().canPartition(new int[]{1, 2, 3, 7}, 15));
+        run("no subset", false, () -> new Solution().canPartition(new int[]{1, 2, 5}, 4));
+        run("single hit", true, () -> new Solution().canPartition(new int[]{5}, 5));
+        run("single miss", false, () -> new Solution().canPartition(new int[]{5}, 3));
+        run("target zero", true, () -> new Solution().canPartition(new int[]{1, 2}, 0));
+        run("repeated ones", true, () -> new Solution().canPartition(new int[]{1, 1, 1, 1}, 3));
+        run("exceeds sum", false, () -> new Solution().canPartition(new int[]{2, 4, 6}, 14));
+        run("uses all elements", true, () -> new Solution().canPartition(new int[]{2, 4, 6}, 12));
+        run("large false", false, () -> {
+            int[] nums = new int[100];
+            for (int i = 0; i < nums.length; i++) nums[i] = 1;
+            return new Solution().canPartition(nums, 101);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n * target), Space O(target)',
+  follow: [
+    'Trả về luôn conset cụ thể thay vì chỉ true/false thì sửa thế nào?',
+    'Nếu nums có số âm thì thuật toán trên sai ở đâu?'
+  ]
+},
+
+{
+  id: 'algo-098',
+  title: 'Equal Subset Sum Partition',
+  difficulty: 'medium',
+  pattern: '0/1 Knapsack (DP)',
+  tags: ['dp', 'partition', 'bytebytego'],
+  prompt: `Cho mảng số nguyên dương {{nums}}. Trả về {{true}} nếu có thể **phân hoạch** {{nums}} thành hai conset sao cho tổng hai conset bằng nhau, ngược lại {{false}}.
+
+### Ví dụ
+~~~text
+Input: nums = [1, 5, 11, 5]
+Output: true
+Giải thích: {1, 5, 5} và {11} — tổng đều là 11.
+
+Input: nums = [1, 2, 3, 5]
+Output: false
+Giải thích: tổng 11 là số lẻ, không chia đôi được.
+
+Input: nums = [2, 2, 2, 2]
+Output: true
+Giải thích: {2, 2} và {2, 2}.
+~~~
+
+### Ràng buộc
+- {{1 <= nums.length <= 100}}
+- {{1 <= nums[i] <= 100}}`,
+  hints: [
+    'Tổng hai nửa bằng nhau thì mỗi nửa phải đúng bằng {{sum / 2}}. Nếu {{sum}} lẻ thì từ chối ngay.',
+    'Bài toán còn lại: tồn tại conset nào có tổng {{sum / 2}}? Đó chính là Subset Sum.',
+    'Dùng mảng boolean {{dp[s]}}, duyệt giảm dần với từng phần tử — O(n * sum) thời gian, O(sum) bộ nhớ.'
+  ],
+  solution: `### Ý tưởng
+Hai conset bằng nhau ⇔ mỗi conset có tổng {{sum / 2}}. Nếu {{sum}} lẻ → không thể. Còn lại chỉ là bài **Subset Sum** với target {{sum / 2}}: mảng boolean {{dp[s]}}, với mỗi {{x}} duyệt {{s}} giảm dần {{dp[s] = dp[s] || dp[s - x]}}.
+
+~~~java
+class Solution {
+    public boolean canPartition(int[] nums) {
+        int sum = 0;
+        for (int x : nums) sum += x;
+        if (sum % 2 != 0) return false;   // tong le khong chia duoc doi
+        int target = sum / 2;
+        boolean[] dp = new boolean[target + 1];
+        dp[0] = true;
+        for (int x : nums) {
+            for (int s = target; s >= x; s--) {
+                dp[s] = dp[s] || dp[s - x];
+            }
+        }
+        return dp[target];
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Kiểm tra {{sum}} lẻ trước: cắt cụt sớm, tránh chạy DP thừa.
+- Nếu {{nums.length <= 20}} ({{n}} nhỏ, giá trị lớn): meet-in-the-middle O({{2^(n/2)}}) tốt hơn O({{n * sum}}) khi {{sum}} khổng lồ.
+- Truy vết (reconstruct) một trong hai conset: lưu thêm bit hoặc chạy DP 2 chiều rồi đi ngược — interviewer đôi khi hỏi phần này.
+
+> Senior tip: Equal partition là bài kinh điển để hỏi nhận diện "đây là subset sum dưới vỏ bọc". Người tốt sẽ nói ngay: tổng lẻ out, còn lại quy về subset sum với target half. Trong production, bài này gắn với load balancing kiểu "chia N job thành 2 nhóm thời gian chạy bằng nhau" — NP-hard, thực tế dùng heuristic (greedy longest-processing-time-first) chứ không chạy DP khi {{sum}} quá lớn.`,
+  starter: `class Solution {
+    public boolean canPartition(int[] nums) {
+        
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    public static void main(String[] args) {
+        run("example1", true, () -> new Solution().canPartition(new int[]{1, 5, 11, 5}));
+        run("odd sum", false, () -> new Solution().canPartition(new int[]{1, 2, 3, 5}));
+        run("example3", true, () -> new Solution().canPartition(new int[]{2, 2, 2, 2}));
+        run("single element", false, () -> new Solution().canPartition(new int[]{1}));
+        run("triple plus pair", true, () -> new Solution().canPartition(new int[]{3, 3, 3, 4, 5}));
+        run("too big single", false, () -> new Solution().canPartition(new int[]{100, 1}));
+        run("large", true, () -> {
+            int[] nums = new int[50];
+            for (int i = 0; i < nums.length; i++) nums[i] = 100;
+            return new Solution().canPartition(nums);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n * sum), Space O(sum)',
+  follow: [
+    'Trả về một cách partition cụ thể thì làm tiếp thế nào?',
+    'Meet-in-the-middle hoạt động thế nào khi n <= 40?'
+  ]
+},
+{
+  id: 'algo-099',
+  title: 'Minimum Subset Sum Difference',
+  difficulty: 'medium',
+  pattern: '0/1 Knapsack (DP)',
+  tags: ['dp', 'partition', 'bytebytego'],
+  prompt: `Chia mảng số nguyên dương {{nums}} thành hai conset {{S1}} và {{S2}} (mọi phần tử phải được gán vào đúng một conset). Trả về giá trị nhỏ nhất của {{|sum(S1) - sum(S2)|}}.
+
+### Ví dụ
+~~~text
+Input: nums = [1, 6, 11, 5]
+Output: 1
+Giải thích: {6, 5} và {1, 11} → |11 - 12| = 1.
+
+Input: nums = [1, 2, 3]
+Output: 0
+Giải thích: {1, 2} và {3} → |3 - 3| = 0.
+
+Input: nums = [1]
+Output: 1
+Giải thích: {1} và {} → |1 - 0| = 1.
+~~~
+
+### Ràng buộc
+- {{1 <= nums.length <= 100}}
+- {{1 <= nums[i] <= 100}}`,
+  hints: [
+    'Gọi {{s1 + s2 = sum}}. Khi đó {{|s1 - s2| = |sum - 2 * s1|}} — difference nhỏ nhất khi {{s1}} gần {{sum / 2}} nhất.',
+    'Đếm/xác định các tổng có thể đạt được bằng Subset Sum DP (boolean array), chỉ cần xét tới {{sum / 2}}.',
+    'Tìm {{s}} lớn nhất ≤ {{sum / 2}} mà {{dp[s]}} true, đáp án là {{sum - 2 * s}}.'
+  ],
+  solution: `### Ý tưởng
+{{|s1 - s2| = |sum - 2 * s1|}} → difference nhỏ nhất khi một conset có tổng gần {{sum / 2}} nhất. Chạy subset sum DP để biết tổng nào đạt được, rồi quét từ {{sum / 2}} xuống 0 tìm tổng khả thi lớn nhất {{s}}; đáp án {{= sum - 2 * s}} (chênh lệch hai bên, luôn không âm).
+
+~~~java
+class Solution {
+    public int minSubsetDiff(int[] nums) {
+        int sum = 0;
+        for (int x : nums) sum += x;
+        boolean[] dp = new boolean[sum / 2 + 1];
+        dp[0] = true;
+        for (int x : nums) {
+            for (int s = sum / 2; s >= x; s--) {
+                dp[s] = dp[s] || dp[s - x];
+            }
+        }
+        // tim tong s <= sum/2 lon nhat co the dat duoc
+        for (int s = sum / 2; s >= 0; s--) {
+            if (dp[s]) return sum - 2 * s;   // sum - 2*s = |s - (sum - s)|
+        }
+        return sum;   // khong dat duoc gi ngoai conset rong
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Quét từ {{sum / 2}} xuống để tìm được tổng khả thi **lớn nhất** ≤ half — chênh lệch vì thế là nhỏ nhất. Quét tăng dần sẽ lấy nhầm tổng nhỏ, kết quả sai (lớn hơn).
+- Bài chính dạng: partition được thì đáp án 0 — Equal Subset Sum Partition là trường hợp đặc biệt.
+- {{nums}} có số âm? Công thức {{sum - 2*s}} không còn đúng trực tiếp; cần DP trên dãy tổng có thể âm (shift chỉ số).
+
+> Senior tip: Đây là bài DP "biến thể một dòng" của subset sum — phần value nằm ở chỗ biến đổi công thức {{|s1 - s2| = |sum - 2*s1|}} trước khi code. Ứng dụng thật: chia dữ liệu làm 2 batch xử lý cho hai worker cho thời gian chạy sát nhau nhất, cân bằng partition cho database sharding hai node. Ở quy mô lớn thì quay về greedy + local search, không còn DP.`,
+  starter: `class Solution {
+    public int minSubsetDiff(int[] nums) {
+        
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    public static void main(String[] args) {
+        run("example1", 1, () -> new Solution().minSubsetDiff(new int[]{1, 6, 11, 5}));
+        run("example2 perfect", 0, () -> new Solution().minSubsetDiff(new int[]{1, 2, 3}));
+        run("single", 1, () -> new Solution().minSubsetDiff(new int[]{1}));
+        run("pair equal", 0, () -> new Solution().minSubsetDiff(new int[]{5, 5}));
+        run("cannot split evenly", 2, () -> new Solution().minSubsetDiff(new int[]{1, 2, 5}));
+        run("all equal quadruple", 0, () -> new Solution().minSubsetDiff(new int[]{3, 3, 3, 3}));
+        run("large perfect", 0, () -> {
+            int[] nums = new int[50];
+            for (int i = 0; i < nums.length; i++) nums[i] = 1;
+            return new Solution().minSubsetDiff(nums);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n * sum), Space O(sum)',
+  follow: [
+    'Nếu bắt buộc hai conset không rỗng thì case nào cần xử lý riêng?',
+    'Số phần tử lớn nhưng giá trị nhỏ (n = 10^5, num <= 100) thì tối ưu nào?'
+  ]
+},
+
+{
+  id: 'algo-100',
+  title: 'Count of Subset Sum',
+  difficulty: 'medium',
+  pattern: '0/1 Knapsack (DP)',
+  tags: ['dp', 'subset-sum', 'bytebytego'],
+  prompt: `Cho mảng số nguyên dương {{nums}} và số {{target}}. Đếm số **conset** của {{nums}} có tổng bằng đúng {{target}}. Hai phần tử bằng nhau ở hai vị trí khác nhau được coi là hai phần tử khác nhau (đếm theo chỉ số).
+
+### Ví dụ
+~~~text
+Input: nums = [1, 1, 2, 3], target = 4
+Output: 3
+Giải thích: {1, 3} (chọn 1 đầu tiên), {1, 3} (chọn 1 thứ hai), {1, 1, 2}.
+
+Input: nums = [1, 2, 3], target = 3
+Output: 2
+Giải thích: {3} và {1, 2}.
+
+Input: nums = [1], target = 2
+Output: 0
+~~~
+
+### Ràng buộc
+- {{0 <= nums.length <= 200}}
+- {{1 <= nums[i] <= 100}}
+- {{1 <= target <= 10^4}}`,
+  hints: [
+    'Giống Subset Sum nhưng thay mảng boolean bằng mảng **đếm**: {{dp[s]}} = số cách tạo tổng {{s}}.',
+    '{{dp[0] = 1}} — có đúng một cách tạo tổng 0: không chọn phần tử nào.',
+    'Với mỗi {{x}} duyệt {{s}} giảm dần: {{dp[s] += dp[s - x]}} — mỗi cách tạo {{s - x}} cho một cách tạo {{s}} mới bằng cách thêm {{x}}.'
+  ],
+  solution: `### Ý tưởng
+DP đếm 1 chiều: {{dp[s]}} = số conset có tổng {{s}}. {{dp[0] = 1}} (conset rỗng). Với mỗi {{x}}, duyệt {{s}} từ {{target}} xuống {{x}} và cộng dồn {{dp[s] += dp[s - x]}}. Duyệt giảm dần đảm bảo {{x}} chỉ tham gia mỗi cách chọn tối đa một lần.
+
+~~~java
+class Solution {
+    public int countSubsets(int[] nums, int target) {
+        int[] dp = new int[target + 1];
+        dp[0] = 1;   // mot cach duy nhat de tong 0: khong chon gi
+        for (int x : nums) {
+            for (int s = target; s >= x; s--) {
+                dp[s] += dp[s - x];   // them moi cach lay x vao cac cach cua s - x
+            }
+        }
+        return dp[target];
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Tràn số: số cách có thể vượt {{int}} — hỏi interviewer có cần modulo không (thường mod {{10^9 + 7}}); khi đó dùng {{long}} rồi lấy modulo khi cộng.
+- Nếu đề yêu cầu các conset **về mặt giá trị** ({1, 2} và {2, 1} tính một, hai số 1 bị coi là một) thì DP theo chỉ số sẽ đếm thừa — cần sort và xử lý nhóm trùng khác đi.
+- {{target = 0}}: {{dp[0] = 1}} đếm cả conset rỗng; một số đề định nghĩa "conset không rỗng" thì phải trừ đi 1.
+
+> Senior tip: Count subset sum là nền của việc tính "số combo sản phẩm khớp ngân sách khách hàng" hay "số tập giao dịch khớp mẫu bất thường" trong billing/AML. Giá trị phỏng vấn nằm ở chỗ bạn nhận ra **đổi boolean sang cộng dồn** là xong, và chủ động nói về tràn số/modulo — đó là dấu hiệu nghĩ tới production thay vì chỉ giải đề.`,
+  starter: `class Solution {
+    public int countSubsets(int[] nums, int target) {
+        
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static int[] fill(int n, int v) {
+        int[] a = new int[n];
+        Arrays.fill(a, v);
+        return a;
+    }
+    public static void main(String[] args) {
+        run("example1", 3, () -> new Solution().countSubsets(new int[]{1, 1, 2, 3}, 4));
+        run("example2", 2, () -> new Solution().countSubsets(new int[]{1, 2, 3}, 3));
+        run("no way", 0, () -> new Solution().countSubsets(new int[]{1}, 2));
+        run("empty target zero", 1, () -> new Solution().countSubsets(new int[0], 0));
+        run("three ones choose two", 3, () -> new Solution().countSubsets(new int[]{1, 1, 1}, 2));
+        run("duplicates matter", 3, () -> new Solution().countSubsets(new int[]{1, 2, 3, 3}, 6));
+        run("large combination", 3268760, () -> new Solution().countSubsets(fill(25, 1), 10));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n * target), Space O(target)',
+  follow: [
+    'Nếu kết quả cần modulo 10^9 + 7 thì code đổi thế nào?',
+    'Đếm số conset có tổng trong đoạn [lo, hi] thì làm gì?'
+  ]
+},
+{
+  id: 'algo-101',
+  title: 'Target Sum',
+  difficulty: 'medium',
+  pattern: '0/1 Knapsack (DP)',
+  tags: ['dp', 'subset-sum', 'bytebytego'],
+  prompt: `Cho mảng số nguyên không âm {{nums}} và số {{target}}. Với **mỗi** phần tử, bạn gán dấu {{+}} hoặc {{-}} trước nó. Trả về số cách gán dấu sao cho biểu thức tính ra đúng bằng {{target}}.
+
+### Ví dụ
+~~~text
+Input: nums = [1, 1, 1, 1, 1], target = 3
+Output: 5
+Giải thích: cộng 4 số và trừ 1 số; vị trí số bị trừ có 5 cách chọn → 5 biểu thức.
+
+Input: nums = [1], target = 1
+Output: 1
+
+Input: nums = [1], target = 2
+Output: 0
+~~~
+
+### Ràng buộc
+- {{1 <= nums.length <= 20}}
+- {{0 <= nums[i] <= 1000}}
+- {{-1000 <= target <= 1000}}`,
+  hints: [
+    'Gọi tổng các số được cộng là {{P}}, tổng các số bị trừ là {{N}}. Ta có {{P - N = target}} và {{P + N = sum}}.',
+    'Từ hai phương trình: {{P = (sum + target) / 2}} — bài toán quy về **đếm conset** có tổng {{P}} (chính là Count of Subset Sum).',
+    'Nếu {{abs(target) > sum}} hoặc {{(sum + target)}} lẻ thì không có cách nào — trả 0 sớm. Số 0 trong mảng nhân đôi kết quả một cách tự nhiên.'
+  ],
+  solution: `### Ý tưởng
+{{P - N = target}} và {{P + N = sum}} → {{P = (sum + target) / 2}}. Bài toán trở thành: đếm số conset có tổng {{P}} — dùng lại DP của Count of Subset Sum. Kiểm tra sớm: {{abs(target) > sum}} hoặc {{(sum + target)}} lẻ → 0 cách. Số 0 trong mảng xử lý tự nhiên: khi {{x = 0}}, vòng lặp {{dp[s] += dp[s]}} nhân đôi số cách — đúng vì {{+0}} và {{-0}} là hai biểu thức khác nhau.
+
+~~~java
+class Solution {
+    public int findTargetSumWays(int[] nums, int target) {
+        int sum = 0;
+        for (int x : nums) sum += x;
+        if (Math.abs(target) > sum || (sum + target) % 2 != 0) return 0;
+        int p = (sum + target) / 2;   // tong cac so duoc CONG
+        int[] dp = new int[p + 1];
+        dp[0] = 1;
+        for (int x : nums) {
+            for (int s = p; s >= x; s--) {
+                dp[s] += dp[s - x];
+            }
+        }
+        return dp[p];
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Đây là bài "biến đổi đại số trước khi code": nhớ {{P = (sum + target) / 2}} là chìa khóa; không quy được về subset sum thì phải quay lại DFS {{2^n}} ({{n <= 20}} vẫn chạy được nhưng chậm và dài hơn).
+- Sau khi kiểm {{abs(target) <= sum}} thì {{sum + target >= 0}} nên phép modulo 2 an toàn, không âm.
+- Số 0: mảng [0], target 0 → 2 ({{+0}}, {{-0}}) — DP tự cho kết quả đúng, đừng "xử lý đặc biệt" làm sai.
+
+> Senior tip: Target sum là ví dụ mẫu mực về việc **biến đổi đề bài về bài đã biết** — kỹ năng phân tích này quan trọng hơn viết DP. Trong phỏng vấn thật, khi thấy "gán +/- cho từng phần tử", hãy nói ngay: quy về subset sum với mục tiêu {{(sum + target) / 2}}; phần còn lại chỉ là mechanical.`,
+  starter: `class Solution {
+    public int findTargetSumWays(int[] nums, int target) {
+        
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    public static void main(String[] args) {
+        run("example1", 5, () -> new Solution().findTargetSumWays(new int[]{1, 1, 1, 1, 1}, 3));
+        run("single hit", 1, () -> new Solution().findTargetSumWays(new int[]{1}, 1));
+        run("single miss", 0, () -> new Solution().findTargetSumWays(new int[]{1}, 2));
+        run("zero element", 2, () -> new Solution().findTargetSumWays(new int[]{0}, 0));
+        run("zero does not help", 0, () -> new Solution().findTargetSumWays(new int[]{1, 0}, 0));
+        run("mixed", 3, () -> new Solution().findTargetSumWays(new int[]{1, 2, 3, 4, 5}, 3));
+        run("negative target", 5, () -> new Solution().findTargetSumWays(new int[]{1, 1, 1, 1, 1}, -3));
+        run("zeros multiply", 8, () -> new Solution().findTargetSumWays(new int[]{0, 0, 0}, 0));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n * (sum + target)), Space O(sum + target)',
+  follow: [
+    'DFS ghi nhớ (memo) làm bài này thế nào?',
+    'Trả về một cách gán dấu cụ thể thì sửa code ra sao?'
+  ]
+},
+{
+  id: 'algo-102',
+  title: 'House Robber',
+  difficulty: 'medium',
+  pattern: 'Fibonacci Numbers (DP)',
+  tags: ['dp', 'array', 'bytebytego'],
+  prompt: `Bạn là tên trộm đang hoạch định một dãy {{n}} căn nhà xếp trên một đường thẳng; nhà thứ {{i}} chứa số tiền {{nums[i]}}. Camera bắt buộc: **không được cướp hai nhà kề nhau**. Trả về số tiền lớn nhất có thể cướp được.
+
+### Ví dụ
+~~~text
+Input: nums = [1, 2, 3, 1]
+Output: 4
+Giải thích: cướp nhà 1 và nhà 3 → 1 + 3 = 4 (không cướp nhà 2 và nhà 4).
+
+Input: nums = [2, 7, 9, 3, 1]
+Output: 12
+Giải thích: 2 + 9 + 1 = 12.
+
+Input: nums = [5]
+Output: 5
+~~~
+
+### Ràng buộc
+- {{1 <= nums.length <= 100}}
+- {{0 <= nums[i] <= 400}}`,
+  hints: [
+    'Với từng nhà chỉ có hai lựa chọn: **cướp** nó (cộng tiền nó với kết quả tối ưu bỏ qua nhà liền trước) hoặc **không cướp** (giữ kết quả tối ưu xét đến nhà liền trước).',
+    'Gọi {{dp[i]}} là số tiền tối đa xét {{i}} nhà đầu: {{dp[i] = max(dp[i-1], dp[i-2] + nums[i])}}.',
+    'Chỉ cần hai biến {{prev1, prev2}} thay vì cả mảng — bài này chính là nơi luyện kỹ năng gộp mảng DP như Fibonacci.'
+  ],
+  solution: `### Ý tưởng
+Nhà cuối: nếu cướp thì {{nums[n-1] + ket qua tot nhat cua [0, n-2]}}, không cướp thì {{ket qua tot nhat cua [0, n-1]}}. Công thức: {{dp[i] = max(dp[i-1], dp[i-2] + nums[i])}}. Gộp còn hai biến: {{prev2}} = kết quả tối ưu trước 2 nhà, {{prev1}} = trước 1 nhà.
+
+~~~java
+class Solution {
+    public int rob(int[] nums) {
+        int prev2 = 0;   // tot nhat truoc 2 nha
+        int prev1 = 0;   // tot nhat truoc 1 nha
+        for (int x : nums) {
+            int cur = Math.max(prev1, prev2 + x);   // bo qua hoac an nha nay
+            prev2 = prev1;
+            prev1 = cur;
+        }
+        return prev1;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- {{nums.length = 1}}: vòng lặp chạy một lần → {{cur = max(0, 0 + x) = x}} — đúng.
+- Variant vòng tròn (House Robber II): hai nhà đầu cuối kề nhau → chạy hai lượt: bỏ nhà đầu hoặc bỏ nhà cuối, lấy max.
+- Variant "cướp được nhiều hơn nhưng bị phạt": phải hỏi rõ hình phạt cộng/trừ thế nào rồi mới viết công thức — cạm bẫy giao tiếp, không phải cạm bẫy code.
+
+> Senior tip: House Robber là Fibonacci apply vào dữ liệu — khi phỏng vấn, hãy nhận ra họ đang test bạn có thấy {{dp[i] = f(dp[i-1], dp[i-2])}} không. Mọi bài DP một chiều dạng "quyết định lấy/không lấy phần tử i" đều có hình hài này; House Robber II, Delete and Earn, Minimum Cost Climbing Stairs đều là anh em ruột.`,
+  starter: `class Solution {
+    public int rob(int[] nums) {
+        
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    public static void main(String[] args) {
+        run("example1", 4, () -> new Solution().rob(new int[]{1, 2, 3, 1}));
+        run("example2", 12, () -> new Solution().rob(new int[]{2, 7, 9, 3, 1}));
+        run("single house", 5, () -> new Solution().rob(new int[]{5}));
+        run("two houses", 2, () -> new Solution().rob(new int[]{1, 2}));
+        run("zero money", 0, () -> new Solution().rob(new int[]{0}));
+        run("two big ends", 200, () -> new Solution().rob(new int[]{100, 1, 1, 100}));
+        run("one to ten", 30, () -> new Solution().rob(new int[]{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}));
+        run("large flat", 20000, () -> {
+            int[] nums = new int[100];
+            Arrays.fill(nums, 400);
+            return new Solution().rob(nums);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n), Space O(1)',
+  follow: [
+    'House Robber II (nhà đầu cuối kề nhau) giải ra sao?',
+    'Nếu muốn in ra danh sách nhà đã cướp thì lưu thêm gì?'
+  ]
+},
+{
+  id: 'algo-103',
+  title: 'House Robber II',
+  difficulty: 'medium',
+  pattern: 'Fibonacci Numbers (DP)',
+  tags: ['dp', 'circular', 'bytebytego'],
+  prompt: `Giống bài House Robber: {{n}} căn nhà xếp theo **vòng tròn** (nhà 1 và nhà {{n}} kề nhau); nhà {{i}} chứa {{nums[i]}}; không được cướp hai nhà kề nhau. Trả về số tiền lớn nhất cướp được.
+
+### Ví dụ
+~~~text
+Input: nums = [2, 3, 2]
+Output: 3
+Giải thích: không thể cướp cả nhà 1 và nhà 3 (chúng kề nhau theo vòng tròn) → chỉ lấy được nhà 2.
+
+Input: nums = [1, 2, 3, 1]
+Output: 4
+Giải thích: nhà 1 + nhà 3 = 4.
+
+Input: nums = [1, 2, 3]
+Output: 3
+~~~
+
+### Ràng buộc
+- {{1 <= nums.length <= 100}}
+- {{0 <= nums[i] <= 400}}`,
+  hints: [
+    'Nhà đầu và nhà cuối không thể cùng được chọn — chia bài thành hai bài con tuyến tính: một bài **bỏ nhà cuối**, một bài **bỏ nhà đầu**.',
+    'Chạy House Robber thường trên đoạn [0 .. n-2] và đoạn [1 .. n-1], lấy max của hai kết quả.',
+    '{{n = 1}} là corner case đặc biệt: hai bài con đều rỗng → trả {{nums[0]}}.'
+  ],
+  solution: `### Ý tưởng
+Ràng buộc vòng tròn duy nhất là "nhà 1 và nhà n không được cùng bị cướp". Loại cả hai trường hợp xung đột bằng cách chạy **hai lượt House Robber tuyến tính**: lượt A trên đoạn {{[0, n-2]}} (bỏ nhà cuối), lượt B trên đoạn {{[1, n-1]}} (bỏ nhà đầu). Đáp án = {{max(A, B)}}. {{n = 1}} thì trả thẳng {{nums[0]}}.
+
+~~~java
+class Solution {
+    public int rob(int[] nums) {
+        int n = nums.length;
+        if (n == 1) return nums[0];   // truong hop rieng
+        return Math.max(linear(nums, 0, n - 2), linear(nums, 1, n - 1));
+    }
+
+    // house robber tuyen tinh tren doan [lo, hi]
+    private int linear(int[] nums, int lo, int hi) {
+        int prev2 = 0, prev1 = 0;
+        for (int i = lo; i <= hi; i++) {
+            int cur = Math.max(prev1, prev2 + nums[i]);
+            prev2 = prev1;
+            prev1 = cur;
+        }
+        return prev1;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- {{n = 2}}: hai bài con là [nums[0]] và [nums[1]] → lấy max — đúng (chỉ cướp được một nhà).
+- Đừng cố "gộp" hai bài con vào một DP phức tạp: hai lần chạy tuyến tính O(n) đã tối ưu, code ngắn và ít lỗi hơn nhiều.
+- Biến thể hard "cướp tối đa k nhà liên tiếp": cần DP hai chiều {{dp[i][j]}} — nói được hướng này là điểm cộng lớn.
+
+> Senior tip: Mẫu "chia trường hợp vì ràng buộc tròn" còn thấy ở bên ngoài thuật toán: doanh số theo cửa sổ xoay vòng, chọn transaction trong lô có ràng buộc không được lấy cả đầu và cuối. Interviewer quan sát bạn có tự xử lý {{n = 1}} và {{n = 2}} ngay từ đầu để đánh giá mức độ corner-case.`,
+  starter: `class Solution {
+    public int rob(int[] nums) {
+        
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    public static void main(String[] args) {
+        run("example1", 3, () -> new Solution().rob(new int[]{2, 3, 2}));
+        run("example2", 4, () -> new Solution().rob(new int[]{1, 2, 3, 1}));
+        run("example3", 3, () -> new Solution().rob(new int[]{1, 2, 3}));
+        run("single house", 5, () -> new Solution().rob(new int[]{5}));
+        run("two houses", 10, () -> new Solution().rob(new int[]{10, 2}));
+        run("all equal triple", 10, () -> new Solution().rob(new int[]{10, 10, 10}));
+        run("big last wins", 340, () -> new Solution().rob(new int[]{200, 3, 140, 20, 10}));
+        run("skip first", 103, () -> new Solution().rob(new int[]{1, 3, 1, 3, 100}));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n), Space O(1)',
+  follow: [
+    'Tại sao hai bài con tuyến tính bao trùm mọi trường hợp?',
+    'Nếu là đường thẳng (bài I) thì đoạn code nào dùng lại được?'
+  ]
+},
+
+{
+  id: 'algo-104',
+  title: 'Minimum Cost to Climb Stairs',
+  difficulty: 'easy',
+  pattern: 'Fibonacci Numbers (DP)',
+  tags: ['dp', 'array', 'bytebytego'],
+  prompt: `Mỗi bậc cầu thang {{i}} có chi phí {{cost[i]}} — trả khoản phí này khi **bước lên** bậc đó. Từ bậc {{i}} bạn có thể bước lên 1 hoặc 2 bậc. Bạn có thể bắt đầu ở bậc 0 hoặc bậc 1 (miễn phí). "Đỉnh" là vị trí **sau** bậc cuối cùng. Trả về chi phí nhỏ nhất để lên tới đỉnh.
+
+### Ví dụ
+~~~text
+Input: cost = [10, 15, 20]
+Output: 15
+Giải thích: bắt đầu ở bậc 1 → trả 15 để bước 2 bậc lên đỉnh.
+
+Input: cost = [1, 100, 1, 1, 1, 100, 1]
+Output: 4
+Giải thích: bắt đầu ở bậc 0 → 0 → 2 → 4 → 6 → đỉnh, chi phí 1 + 1 + 1 + 1 = 4.
+
+Input: cost = [1, 2]
+Output: 1
+~~~
+
+### Ràng buộc
+- {{2 <= cost.length <= 1000}}
+- {{0 <= cost[i] <= 999}}`,
+  hints: [
+    'Muốn đứng ở bậc {{i}} thì bước cuối cùng đến từ {{i-1}} hoặc {{i-2}} — quan hệ Fibonacci.',
+    '{{dp[i] = cost[i] + min(dp[i-1], dp[i-2])}}: chi phí nhỏ nhất để **đứng được** trên bậc {{i}}.',
+    'Đỉnh nằm sau bậc cuối: đáp án là {{min(dp[n-1], dp[n-2])}} — hoặc đặt {{cost}} thêm 0 ở cuối cho gọn.'
+  ],
+  solution: `### Ý tưởng
+{{dp[i] = cost[i] + min(dp[i-1], dp[i-2])}} — chi phí nhỏ nhất để đứng trên bậc {{i}}. Đỉnh là vị trí sau cùng nên chỉ cần bước từ {{n-1}} hoặc {{n-2}}: đáp án {{min(dp[n-1], dp[n-2])}}. Gộp hai biến như House Robber.
+
+~~~java
+class Solution {
+    public int minCostClimbingStairs(int[] cost) {
+        int prev2 = cost[0];   // chi phi nho nhat de dung tren bac i-2
+        int prev1 = cost[1];   // de dung tren bac i-1
+        for (int i = 2; i < cost.length; i++) {
+            int cur = cost[i] + Math.min(prev1, prev2);
+            prev2 = prev1;
+            prev1 = cur;
+        }
+        return Math.min(prev1, prev2);   // dinh co the tu n-1 hoac n-2 buoc len
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- House Robber là "tối đa hoá giá trị khi không lấy kề"; bài này là "tối thiểu hoá chi phí khi đi 1-2 bước" — cùng khung {{dp[i] = f(dp[i-1], dp[i-2])}}, chỉ khác max/min và điều kiện gốc.
+- Variant "thêm bậc đắt đỏ bất kỳ" (insert stairs): chỉ cần thêm phần tử và chạy lại DP — hỏi interviewer trước khi code.
+- {{cost.length = 2}}: vòng lặp không chạy, trả {{min(cost[0], cost[1])}} — đúng.
+
+> Senior tip: Bài này thuộc nhóm "Fibonacci numbers" của ByteByteGo — khi thấy "đi 1 hoặc 2 bước", hãy gọi ngay {{dp[i] = cost[i] + min(dp[i-1], dp[i-2])}} trong đầu rồi mới hỏi chi tiết đề. Đánh giá senior nằm ở chỗ bạn **nhận ra pattern trong 10 giây**, không phải ở việc viết vòng lặp.`,
+  starter: `class Solution {
+    public int minCostClimbingStairs(int[] cost) {
+        
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    public static void main(String[] args) {
+        run("example1", 15, () -> new Solution().minCostClimbingStairs(new int[]{10, 15, 20}));
+        run("example2", 4, () -> new Solution().minCostClimbingStairs(new int[]{1, 100, 1, 1, 1, 100, 1}));
+        run("two steps", 1, () -> new Solution().minCostClimbingStairs(new int[]{1, 2}));
+        run("both zero", 0, () -> new Solution().minCostClimbingStairs(new int[]{0, 0}));
+        run("decreasing", 3, () -> new Solution().minCostClimbingStairs(new int[]{5, 1, 1, 1, 1, 1}));
+        run("hundred zeros", 0, () -> {
+            int[] cost = new int[100];
+            return new Solution().minCostClimbingStairs(cost);
+        });
+        run("big last", 1, () -> new Solution().minCostClimbingStairs(new int[]{1, 100}));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n), Space O(1)',
+  follow: [
+    'So sánh công thức với House Robber: giống và khác ở đâu?',
+    'Nếu chi phí âm được phép thì thuật toán có còn đúng không?'
+  ]
+},
+{
+  id: 'algo-105',
+  title: 'Decode Ways',
+  difficulty: 'medium',
+  pattern: 'Fibonacci Numbers (DP)',
+  tags: ['dp', 'string', 'bytebytego'],
+  prompt: `Một thông điệp gồm các chữ số {{A=1, B=2, ..., Z=26}} được mã hoá thành chuỗi {{s}} gồm các chữ số. Đếm số **cách giải mã** toàn bộ chuỗi thành chữ cái. Chữ số {{'0'}} không có mã riêng — chỉ hợp lệ khi nằm trong cặp {{10}} hoặc {{20}}.
+
+### Ví dụ
+~~~text
+Input: s = "226"
+Output: 3
+Giải thích: "BZ" (2, 26), "VF" (22, 6), "BBF" (2, 2, 6).
+
+Input: s = "06"
+Output: 0
+Giải thích: "0" không phải mã hợp lệ, "06" cũng không.
+
+Input: s = "12"
+Output: 2
+Giải thích: "AB" (1, 2) và "L" (12).
+~~~
+
+### Ràng buộc
+- {{1 <= s.length <= 100}}
+- {{s}} chỉ gồm chữ số {{0-9}}.`,
+  hints: [
+    'Ký tự cuối có thể được giải mã bằng **một chữ số** {{s[n-1]}} (nếu khác 0) hoặc **hai chữ số** {{s[n-2..n-1]}} (nếu trong đoạn 10..26).',
+    '{{dp[i]}} = số cách giải mã {{s[0..i]}}. {{dp[i] = (s[i] != 0 ? dp[i-1] : 0) + (10 <= s[i-1..i] <= 26 ? dp[i-2] : 0)}}.',
+    'Chuỗi rỗng có 1 cách giải mã ({{dp[-1] = 1}}) — đó là lý do {{dp[0] = 1}} khi {{s[0] != 0}}. Gặp chuỗi bất khả thi giữa chừng ({{dp[i] = 0}}) thì dừng sớm.'
+  ],
+  solution: `### Ý tưởng
+Quyết định ở cuối chuỗi: tách 1 chữ số hay 2 chữ số. {{dp[i]}} = số cách giải mã đoạn đầu dài {{i+1}}. Thêm hai điều kiện: chữ số cuối khác {{0}} mới tách được 1; cặp hai chữ số phải trong [10, 26] mới tách được 2. Duyệt tăng dần, gộp còn hai biến.
+
+~~~java
+class Solution {
+    public int numDecodings(String s) {
+        if (s.isEmpty() || s.charAt(0) == '0') return 0;
+        int prev2 = 1;   // so cach cua doan trong (truoc i-1)
+        int prev1 = 1;   // so cach cua s[0]
+        for (int i = 1; i < s.length(); i++) {
+            int cur = 0;
+            if (s.charAt(i) != '0') cur += prev1;   // lay mot chu so rieng
+            int two = (s.charAt(i - 1) - '0') * 10 + (s.charAt(i) - '0');
+            if (two >= 10 && two <= 26) cur += prev2;   // lay cap 2 chu so
+            prev2 = prev1;
+            prev1 = cur;
+            if (cur == 0) return 0;   // het cach giai ma, dung som
+        }
+        return prev1;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Cạm bẫy {{'0'}}: {{s = "30"}} → 0; {{s = "101"}} → 1 (chỉ "10, 1"); {{s = "100"}} → 0. Test kỹ mọi cặp có 0.
+- {{s = "0"}} → 0, {{s = "1..9"}} → 1 — kiểm tra đầu vào trước vòng lặp.
+- Bài này là Fibonacci "có điều kiện": nếu mọi cặp 10..26 và mọi chữ số đều hợp lệ thì kết quả đúng bằng số Fibonacci tương ứng; ràng buộc 0 làm gãy chuỗi — {{dp}} là công cụ theo dõi chỗ gãy.
+
+> Senior tip: Decode ways phỏng vấn kỹ năng xử lý edge case (0, 00, 10, 20, 30) và ability suy luận công thức từ mô tả. Trong production, logic giải mã như thế này thường chạy trên log stream hàng triệu dòng mỗi phút — người giỏi sẽ nói luôn: O(n) single-pass là đủ, đừng build table nếu chỉ cần một kết quả.`,
+  starter: `class Solution {
+    public int numDecodings(String s) {
+        
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    public static void main(String[] args) {
+        run("example1", 3, () -> new Solution().numDecodings("226"));
+        run("leading zero pair", 0, () -> new Solution().numDecodings("06"));
+        run("example3", 2, () -> new Solution().numDecodings("12"));
+        run("twenty-seven", 1, () -> new Solution().numDecodings("27"));
+        run("single zero", 0, () -> new Solution().numDecodings("0"));
+        run("ten", 1, () -> new Solution().numDecodings("10"));
+        run("one zero one", 1, () -> new Solution().numDecodings("101"));
+        run("mid zero kills", 2, () -> new Solution().numDecodings("11106"));
+        run("twenty one zero one", 1, () -> new Solution().numDecodings("2101"));
+        run("single digit", 1, () -> new Solution().numDecodings("1"));
+        run("thirty", 0, () -> new Solution().numDecodings("30"));
+        run("five ones", 8, () -> new Solution().numDecodings("11111"));
+        run("twenty ones", 10946, () -> new Solution().numDecodings("11111111111111111111"));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n), Space O(1)',
+  follow: [
+    'Nếu bài yêu cầu IN ra một cách giải mã thay vì đếm thì làm sao?',
+    'Biến thể: chữ số 0 được phép ánh xạ thành ký tự khác thì công thức đổi thế nào?'
+  ]
+}
+
 );
 

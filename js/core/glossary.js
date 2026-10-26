@@ -184,6 +184,14 @@
           App.esc(byId[id].term || id) + '</button>').join('') + '</div></div>';
     }
 
+    if (App.ui && App.ui.relatedQuestions) {
+      const rq = App.ui.relatedQuestions({
+        text: (e.term || '') + ' ' + (Array.isArray(e.aliases) ? e.aliases.join(' ') : ''),
+        limit: 3,
+      });
+      if (rq) html += rq;
+    }
+
     body.innerHTML = html;
     // explain the explanation too, but never link the entry to itself
     const mdEl = body.querySelector('.gl-body-md');
