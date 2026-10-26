@@ -35,6 +35,33 @@
 .view-dashboard .plan-txt strong { font-size: 1rem; }
 .view-dashboard .plan-activity { padding-top: 12px; border-top: 1px solid var(--border); }
 
+/* ---------- hôm nay học gì ---------- */
+.view-dashboard .today-card { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.view-dashboard .today-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.view-dashboard .today-card-head h2 { margin: 0 0 4px; }
+.view-dashboard .today-card-head p { margin: 0; max-width: 60ch; }
+.view-dashboard .today-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.view-dashboard .today-progress { margin-bottom: 4px; }
+.view-dashboard .today-progress-meta { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 6px; font-size: .85rem; color: var(--muted); }
+.view-dashboard .today-list { list-style: none; margin: 0; padding: 0; }
+.view-dashboard .today-item { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid var(--border); }
+.view-dashboard .today-item:first-child { border-top: 0; }
+.view-dashboard .today-check { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; cursor: pointer; }
+.view-dashboard .today-check input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.view-dashboard .today-icon { font-size: 1.35rem; line-height: 1; }
+.view-dashboard .today-body { flex: 1 1 220px; min-width: 0; }
+.view-dashboard .today-item-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.view-dashboard .today-item-head strong { overflow-wrap: anywhere; }
+.view-dashboard .today-item-head .badge { flex: 0 0 auto; }
+.view-dashboard .today-item.is-done .today-body strong { text-decoration: line-through; color: var(--muted); }
+.view-dashboard .today-item.is-done .today-icon { opacity: .55; }
+.view-dashboard .today-item > .btn { flex: 0 0 auto; }
+.view-dashboard .today-all-done { margin: 12px 0 0; color: var(--ok); font-weight: 600; }
+.view-dashboard .today-timer { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 4px; padding-top: 12px; border-top: 1px solid var(--border); }
+.view-dashboard .today-timer-label { font-size: .85rem; color: var(--muted); }
+.view-dashboard .today-timer-time { font-size: 1.15rem; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+.view-dashboard .today-timer-msg { flex: 1 1 100%; font-size: .85rem; color: var(--ok); }
+
 /* ---------- kế hoạch phỏng vấn sắp tới ---------- */
 .view-dashboard .interview-plan-card { border-color: var(--accent); }
 .view-dashboard .interview-plan-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
@@ -87,5 +114,10 @@
   .view-dashboard .hist-date { margin-left: 0; width: 100%; }
   .view-dashboard .interview-plan-form { grid-template-columns: 1fr; }
   .view-dashboard .interview-plan-summary { grid-template-columns: 1fr; }
+  .view-dashboard .today-actions { width: 100%; }
+  .view-dashboard .today-actions .btn { flex: 1 1 auto; }
+  .view-dashboard .today-progress-meta { flex-wrap: wrap; }
+  .view-dashboard .today-item { align-items: flex-start; flex-wrap: wrap; }
+  .view-dashboard .today-item > .btn { width: 100%; }
 }
 

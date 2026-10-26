@@ -2,6 +2,15 @@
 (function () {
   'use strict';
 
+  App.i18n.add({
+    vi: {
+      'mock.setup': 'Thiết lập phỏng vấn thử', 'mock.subtitle': 'Chọn preset, chủ đề, độ khó và thời lượng để luyện phỏng vấn như thật.', 'mock.preset': 'Preset', 'mock.topics': 'Chủ đề', 'mock.level': 'Độ khó', 'mock.count': 'Số câu', 'mock.minutes': 'Thời gian mỗi câu', 'mock.preferUnseen': 'Ưu tiên câu tôi chưa thuộc', 'mock.addCoding': 'Thêm vòng coding', 'mock.codingCount': 'Số bài coding', 'mock.codingDiff': 'Độ khó coding', 'mock.available': 'câu khả dụng', 'mock.start': 'Bắt đầu phỏng vấn', 'mock.noMatch': 'Không có câu nào phù hợp với lựa chọn hiện tại. Hãy nới lọc hoặc bổ sung câu hỏi.', 'mock.all': 'Tất cả', 'mock.notes': 'Câu trả lời của bạn', 'mock.showAnswer': 'Xem đáp án mẫu', 'mock.hideAnswer': 'Ẩn đáp án mẫu', 'mock.selfRate': 'Tự chấm điểm', 'mock.skip': 'Bỏ qua', 'mock.end': 'Kết thúc sớm', 'mock.overTime': 'Quá giờ', 'mock.hint': 'Gợi ý', 'mock.solution': 'Xem lời giải', 'mock.editor': 'Code của bạn', 'mock.summary': 'Tổng kết phỏng vấn', 'mock.avg': 'Điểm trung bình', 'mock.totalTime': 'Tổng thời gian', 'mock.seenAnswers': 'Đáp án mẫu đã xem', 'mock.byTopic': 'Điểm theo chủ đề', 'mock.weak': 'Chủ đề cần cải thiện', 'mock.retryWeak': 'Phỏng vấn lại các câu yếu', 'mock.newSession': 'Phiên mới', 'mock.backSetup': 'Quay lại thiết lập', 'mock.codingRound': 'Vòng coding', 'mock.perQuestion': 'mỗi câu', 'mock.rateHelp': 'Nhấn 1–5 để chấm nhanh (khi không gõ trong ô trả lời).', 'mock.scored': 'Điểm', 'mock.topic': 'Chủ đề', 'mock.difficulty': 'Độ khó', 'mock.mic': 'Đọc chính tả', 'mock.micStop': 'Dừng ghi âm', 'mock.voice': 'Trả lời bằng giọng nói', 'mock.voiceHint': 'Mục tiêu: 1–2 phút, 110–160 từ/phút, ít từ đệm', 'mock.gradeAI': 'Chấm bằng AI', 'mock.grading': 'AI đang chấm…', 'mock.followup': 'Trả lời câu hỏi đào sâu', 'mock.followupTitle': 'Câu hỏi đào sâu', 'mock.aiSuggest': 'AI gợi ý {n}/5 — bấm nút để xác nhận', 'mock.aiAvg': 'Điểm AI trung bình', 'mock.aiCol': 'AI', 'mock.score': 'Điểm', 'mock.time': 'Thời gian', 'mock.algoCount': 'Bài coding', 'mock.noWeak': 'Chưa có chủ đề nào dưới 3 điểm. Tốt lắm!', 'mock.confirmEnd': 'Kết thúc phiên phỏng vấn sớm? Kết quả vẫn được lưu.', 'mock.confirmLeave': 'Bạn đang trong phiên phỏng vấn. Thoát ra sẽ mất tiến độ phiên này.', 'mock.followTitle': 'Câu hỏi đào sâu thường gặp', 'mock.recapTitle': 'Chi tiết từng câu', 'mock.codingName': 'Coding', 'mock.question': 'Câu', 'mock.presetScenario': 'Tình huống thực tế',
+    },
+    en: {
+      'mock.setup': 'Mock interview setup', 'mock.subtitle': 'Pick a preset, topics, level and time per question to practise like a real interview.', 'mock.preset': 'Preset', 'mock.topics': 'Topics', 'mock.level': 'Level', 'mock.count': 'Questions', 'mock.minutes': 'Minutes per question', 'mock.preferUnseen': 'Prioritise questions I do not know yet', 'mock.addCoding': 'Add a coding round', 'mock.codingCount': 'Number of coding problems', 'mock.codingDiff': 'Coding difficulty', 'mock.available': 'questions available', 'mock.start': 'Start interview', 'mock.noMatch': 'No question matches the current selection. Relax the filters or add more questions.', 'mock.all': 'All', 'mock.notes': 'Your answer', 'mock.showAnswer': 'Show sample answer', 'mock.hideAnswer': 'Hide sample answer', 'mock.selfRate': 'Self rate', 'mock.skip': 'Skip', 'mock.end': 'End early', 'mock.overTime': 'Over time', 'mock.hint': 'Hint', 'mock.solution': 'Show solution', 'mock.editor': 'Your code', 'mock.summary': 'Interview summary', 'mock.avg': 'Average score', 'mock.totalTime': 'Total time', 'mock.seenAnswers': 'Sample answers viewed', 'mock.byTopic': 'Score by topic', 'mock.weak': 'Topics to improve', 'mock.retryWeak': 'Re-mock weak questions', 'mock.newSession': 'New session', 'mock.backSetup': 'Back to setup', 'mock.codingRound': 'Coding round', 'mock.perQuestion': 'per question', 'mock.rateHelp': 'Press 1-5 to score quickly (when not typing in the answer box).', 'mock.scored': 'Score', 'mock.topic': 'Topic', 'mock.difficulty': 'Difficulty', 'mock.mic': 'Dictate', 'mock.micStop': 'Stop recording', 'mock.voice': 'Answer with voice', 'mock.voiceHint': 'Target: 1-2 minutes, 110-160 words/min, few filler words', 'mock.gradeAI': 'Grade with AI', 'mock.grading': 'AI is grading…', 'mock.followup': 'Answer follow-up', 'mock.followupTitle': 'Follow-up question', 'mock.aiSuggest': 'AI suggests {n}/5 — click the button to confirm', 'mock.aiAvg': 'Average AI score', 'mock.aiCol': 'AI', 'mock.score': 'Score', 'mock.time': 'Time', 'mock.algoCount': 'Coding problems', 'mock.noWeak': 'No topic below 3 points. Nice work!', 'mock.confirmEnd': 'End the interview early? The result will still be saved.', 'mock.confirmLeave': 'You are in the middle of an interview. Leaving loses this session.', 'mock.followTitle': 'Typical follow-up questions', 'mock.recapTitle': 'Question by question', 'mock.codingName': 'Coding', 'mock.question': 'Question', 'mock.presetScenario': 'Real scenarios',
+    },
+  });
+
   const PRESETS = [
     { id: 'java', label: 'Java Backend Senior', topics: ['core', 'collections', 'concurrency', 'jvm', 'spring', 'jpa', 'db'], coding: false },
     { id: 'micro', label: 'Microservices & System Design', topics: ['microservices', 'design', 'architecture'], coding: false },
@@ -232,9 +241,9 @@
     const availA = S.cfg.coding ? availableAlgos() : [];
     const total = availQ.length + availA.length;
 
-    const presetChips = PRESETS.map(p => chip(p.label, S.cfg.preset === p.id, 'data-preset="' + p.id + '"')).join('');
+    const presetChips = PRESETS.map(p => chip(p.id === 'scenario' ? App.t('mock.presetScenario') : p.label, S.cfg.preset === p.id, 'data-preset="' + p.id + '"')).join('');
     const topicChips = allTopics.map(tp => chip(tp.icon + ' ' + tp.name, S.cfg.topics.indexOf(tp.id) !== -1, 'data-topic="' + tp.id + '"')).join('');
-    const levelChips = [['all', L.all], ['mid', App.LEVELS.mid], ['senior', App.LEVELS.senior], ['lead', App.LEVELS.lead]]
+    const levelChips = [['all', App.t('mock.all')], ['mid', App.LEVELS.mid], ['senior', App.LEVELS.senior], ['lead', App.LEVELS.lead]]
       .map(p => chip(p[1], S.cfg.level === p[0], 'data-level="' + p[0] + '"')).join('');
     const countChips = COUNTS.map(n => chip(String(n), S.cfg.count === n, 'data-count="' + n + '"')).join('');
     const minChips = MINUTES.map(n => chip(n + '′', S.cfg.minutes === n, 'data-minutes="' + n + '"')).join('');
@@ -242,28 +251,28 @@
     const diffChips = DIFFS.map(d => chip(d, S.cfg.codingDiff === d, 'data-cdiff="' + d + '"')).join('');
 
     root.innerHTML =
-      '<div class="page-head"><div><h1>' + App.esc(L.setup) + '</h1><p>' + App.esc(L.subtitle) + '</p></div></div>' +
+      '<div class="page-head"><div><h1>' + App.esc(App.t('mock.setup')) + '</h1><p>' + App.esc(App.t('mock.subtitle')) + '</p></div></div>' +
       '<div class="mock-setup stack">' +
-        '<section class="card"><h3>' + App.esc(L.preset) + '</h3><div class="chips">' + presetChips + '</div></section>' +
+        '<section class="card"><h3>' + App.esc(App.t('mock.preset')) + '</h3><div class="chips">' + presetChips + '</div></section>' +
 
-        '<section class="card"><h3>' + App.esc(L.topics) + '</h3><div class="chips">' + topicChips + '</div>' +
-          '<div class="mock-row"><h4>' + App.esc(L.level) + '</h4><div class="chips">' + levelChips + '</div></div>' +
-          '<div class="mock-row"><h4>' + App.esc(L.count) + '</h4><div class="chips">' + countChips + '</div></div>' +
-          '<div class="mock-row"><h4>' + App.esc(L.minutes) + '</h4><div class="chips">' + minChips + '</div></div>' +
-          '<label class="mock-check"><input type="checkbox" id="mockUnseen"' + (S.cfg.preferUnseen ? ' checked' : '') + '> ' + App.esc(L.preferUnseen) + '</label>' +
+        '<section class="card"><h3>' + App.esc(App.t('mock.topics')) + '</h3><div class="chips">' + topicChips + '</div>' +
+          '<div class="mock-row"><h4>' + App.esc(App.t('mock.level')) + '</h4><div class="chips">' + levelChips + '</div></div>' +
+          '<div class="mock-row"><h4>' + App.esc(App.t('mock.count')) + '</h4><div class="chips">' + countChips + '</div></div>' +
+          '<div class="mock-row"><h4>' + App.esc(App.t('mock.minutes')) + '</h4><div class="chips">' + minChips + '</div></div>' +
+          '<label class="mock-check"><input type="checkbox" id="mockUnseen"' + (S.cfg.preferUnseen ? ' checked' : '') + '> ' + App.esc(App.t('mock.preferUnseen')) + '</label>' +
         '</section>' +
 
-        '<section class="card"><h3>' + App.esc(L.codingRound) + '</h3>' +
-          '<label class="mock-check"><input type="checkbox" id="mockCoding"' + (S.cfg.coding ? ' checked' : '') + '> ' + App.esc(L.addCoding) + '</label>' +
-          '<div class="mock-row"><h4>' + App.esc(L.codingCount) + '</h4><div class="chips">' + ccChips + '</div></div>' +
-          '<div class="mock-row"><h4>' + App.esc(L.codingDiff) + '</h4><div class="chips">' + diffChips + '</div></div>' +
+        '<section class="card"><h3>' + App.esc(App.t('mock.codingRound')) + '</h3>' +
+          '<label class="mock-check"><input type="checkbox" id="mockCoding"' + (S.cfg.coding ? ' checked' : '') + '> ' + App.esc(App.t('mock.addCoding')) + '</label>' +
+          '<div class="mock-row"><h4>' + App.esc(App.t('mock.codingCount')) + '</h4><div class="chips">' + ccChips + '</div></div>' +
+          '<div class="mock-row"><h4>' + App.esc(App.t('mock.codingDiff')) + '</h4><div class="chips">' + diffChips + '</div></div>' +
         '</section>' +
 
         '<div class="mock-actions">' +
-          '<button type="button" class="btn primary lg" id="mockStart"' + (total ? '' : ' disabled') + '>' + App.esc(L.start) + '</button>' +
-          '<span class="mock-avail">' + total + ' ' + App.esc(L.available) + '</span>' +
+          '<button type="button" class="btn primary lg" id="mockStart"' + (total ? '' : ' disabled') + '>' + App.esc(App.t('mock.start')) + '</button>' +
+          '<span class="mock-avail">' + total + ' ' + App.esc(App.t('mock.available')) + '</span>' +
         '</div>' +
-        (total ? '' : '<p class="mock-warn">' + App.esc(L.noMatch) + '</p>') +
+        (total ? '' : '<p class="mock-warn">' + App.esc(App.t('mock.noMatch')) + '</p>') +
       '</div>';
 
     bindSetup(root);
@@ -373,7 +382,7 @@
     const el = root.querySelector('#mockTimer');
     if (!el) return;
     const left = (S.deadline - Date.now()) / 1000;
-    el.textContent = (left < 0 ? t().overTime + ' ' : '') + fmtClock(left);
+    el.textContent = (left < 0 ? App.t('mock.overTime') + ' ' : '') + fmtClock(left);
     el.classList.toggle('warn', left >= 0 && left < 30);
     el.classList.toggle('bad', left < 0);
   }
@@ -386,7 +395,7 @@
     const d = it.data;
     const n = S.items.length;
     const pos = S.idx + 1;
-    const tp = isAlgo ? { id: 'algorithm', name: L.codingName, icon: '💻' } : App.topic(d.topic);
+    const tp = isAlgo ? { id: 'algorithm', name: App.t('mock.codingName'), icon: '💻' } : App.topic(d.topic);
     const lvl = isAlgo ? d.difficulty : (App.LEVELS[d.level] || d.level);
     const noteVal = S.notes[d.id] || '';
     const speechSupported = !!App.speech.supported;
@@ -395,10 +404,10 @@
       '<div class="mock-session">' +
         '<header class="mock-head card">' +
           '<div class="mock-head-top">' +
-            '<div><strong>' + App.esc(L.question) + ' ' + pos + ' / ' + n + '</strong>' +
+            '<div><strong>' + App.esc(App.t('mock.question')) + ' ' + pos + ' / ' + n + '</strong>' +
               '<div class="mock-meta"><span class="badge">' + App.esc(tp.name) + '</span>' +
               '<span class="badge">' + App.esc(String(lvl)) + '</span>' +
-              (isAlgo ? '<span class="badge accent">' + App.esc(L.codingRound) + '</span>' : '') + '</div></div>' +
+              (isAlgo ? '<span class="badge accent">' + App.esc(App.t('mock.codingRound')) + '</span>' : '') + '</div></div>' +
             '<div class="mock-timer" id="mockTimer" role="timer">--:--</div>' +
           '</div>' +
           '<div class="mock-progress"><i style="width:' + Math.round(pos / n * 100) + '%"></i></div>' +
@@ -411,14 +420,14 @@
 
           (isAlgo ? renderAlgoExtra(d, L) : '') +
 
-          '<label class="field mock-notes"><span>' + App.esc(isAlgo ? L.editor : L.notes) + '</span>' +
+          '<label class="field mock-notes"><span>' + App.esc(isAlgo ? App.t('mock.editor') : App.t('mock.notes')) + '</span>' +
             '<textarea class="textarea' + (isAlgo ? ' mock-editor' : '') + '" id="mockNote" rows="6" placeholder="">' + App.esc(noteVal) + '</textarea>' +
           '</label>' +
-          (isAlgo ? '' : '<p class="mock-voice-hint muted small">🎯 ' + App.esc(L.voiceHint) + '</p>') +
+          (isAlgo ? '' : '<p class="mock-voice-hint muted small">🎯 ' + App.esc(App.t('mock.voiceHint')) + '</p>') +
           '<div class="row mock-tools">' +
-            (isAlgo ? '' : '<button type="button" class="btn" id="mockAnswer">' + App.esc(L.showAnswer) + '</button>') +
-            '<button type="button" class="btn mic-btn" id="mockMic"' + (speechSupported ? '' : ' hidden') + '>🎤 ' + App.esc(isAlgo ? L.mic : L.voice) + '</button>' +
-            (isAlgo ? '' : '<button type="button" class="btn primary" id="mockAi" disabled>🤖 ' + App.esc(L.gradeAI) + '</button>') +
+            (isAlgo ? '' : '<button type="button" class="btn" id="mockAnswer">' + App.esc(App.t('mock.showAnswer')) + '</button>') +
+            '<button type="button" class="btn mic-btn" id="mockMic"' + (speechSupported ? '' : ' hidden') + '>🎤 ' + App.esc(isAlgo ? App.t('mock.mic') : App.t('mock.voice')) + '</button>' +
+            (isAlgo ? '' : '<button type="button" class="btn primary" id="mockAi" disabled>🤖 ' + App.esc(App.t('mock.gradeAI')) + '</button>') +
           '</div>' +
           '<div id="mockSpeechBox" class="mock-speech"></div>' +
           (isAlgo ? '' : '<div id="mockAiBox" class="mock-ai"></div><div id="mockFollowups" class="mock-followups"></div>') +
@@ -427,9 +436,9 @@
 
         renderRating(L) +
         '<div class="row mock-actions-row">' +
-          '<button type="button" class="btn warn" id="mockSkip">' + App.esc(L.skip) + '</button>' +
+          '<button type="button" class="btn warn" id="mockSkip">' + App.esc(App.t('mock.skip')) + '</button>' +
           '<span class="spacer"></span>' +
-          '<button type="button" class="btn bad" id="mockEnd">' + App.esc(L.end) + '</button>' +
+          '<button type="button" class="btn bad" id="mockEnd">' + App.esc(App.t('mock.end')) + '</button>' +
         '</div>' +
       '</div>';
 
@@ -447,8 +456,8 @@
 
   function renderAlgoExtra(d, L) {
     let html = '<div class="mock-algo">' +
-      '<div class="row mock-algo-row"><button type="button" class="btn sm" id="mockHint">' + App.esc(L.hint) + '</button>' +
-      '<button type="button" class="btn sm" id="mockSolution">' + App.esc(L.solution) + '</button></div>' +
+      '<div class="row mock-algo-row"><button type="button" class="btn sm" id="mockHint">' + App.esc(App.t('mock.hint')) + '</button>' +
+      '<button type="button" class="btn sm" id="mockSolution">' + App.esc(App.t('mock.solution')) + '</button></div>' +
       '<div id="mockHints" class="mock-hints"></div><div id="mockSolutionBox" class="mock-solution" hidden></div></div>';
     return html;
   }
@@ -458,8 +467,8 @@
     for (let i = 1; i <= 5; i++) {
       btns += '<button type="button" class="btn mock-rate" data-rate="' + i + '" aria-label="' + i + ' / 5">' + i + '</button>';
     }
-    return '<section class="card mock-rate-box"><div class="row"><strong>' + App.esc(L.selfRate) + '</strong>' +
-      '<span class="spacer"></span><span class="muted small">' + App.esc(L.rateHelp) + '</span></div>' +
+    return '<section class="card mock-rate-box"><div class="row"><strong>' + App.esc(App.t('mock.selfRate')) + '</strong>' +
+      '<span class="spacer"></span><span class="muted small">' + App.esc(App.t('mock.rateHelp')) + '</span></div>' +
       '<div class="mock-rate-row">' + btns + '</div>' +
       '<p class="mock-ai-suggest small" id="mockAiSuggest"></p></section>';
   }
@@ -534,7 +543,7 @@
 
     const end = root.querySelector('#mockEnd');
     if (end) end.addEventListener('click', () => {
-      if (confirm(L.confirmEnd)) finish(root);
+      if (confirm(App.t('mock.confirmEnd'))) finish(root);
     });
 
     if (!S.keyCleanup) {
@@ -555,15 +564,15 @@
     if (!box) return;
     if (!box.hidden) {
       box.hidden = true; box.innerHTML = '';
-      if (btn) btn.textContent = L.showAnswer;
+      if (btn) btn.textContent = App.t('mock.showAnswer');
       return;
     }
     const follow = (d.follow && d.follow.length)
-      ? '<h4>' + App.esc(L.followTitle || 'Follow-up') + '</h4><ul>' + d.follow.map(f => '<li>' + App.md(f).replace(/^<p>|<\/p>$/g, '') + '</li>').join('') + '</ul>'
+      ? '<h4>' + App.esc(App.t('mock.followTitle') || 'Follow-up') + '</h4><ul>' + d.follow.map(f => '<li>' + App.md(f).replace(/^<p>|<\/p>$/g, '') + '</li>').join('') + '</ul>'
       : '';
     box.innerHTML = '<div class="md">' + App.md(d.a) + '</div>' + follow;
     box.hidden = false;
-    if (btn) btn.textContent = L.hideAnswer;
+    if (btn) btn.textContent = App.t('mock.hideAnswer');
     const r = current();
     r.seen = true;
   }
@@ -643,7 +652,7 @@
       return;
     }
     S.rec = { handle: handle, btn: btn, ta: ta, box: box, id: id, fuIdx: fuIdx, base: base, label: label };
-    btn.textContent = '⏹ ' + L.micStop;
+    btn.textContent = '⏹ ' + App.t('mock.micStop');
     btn.classList.add('recording');
   }
 
@@ -722,7 +731,7 @@
     const btn = box.querySelector('.mock-rate[data-rate="' + n + '"]');
     if (btn) btn.classList.add('suggested');
     const hint = box.querySelector('#mockAiSuggest');
-    if (hint) hint.textContent = L.aiSuggest.replace('{n}', () => String(n));
+    if (hint) hint.textContent = App.t('mock.aiSuggest', { n });
   }
 
   async function gradeAnswer(root) {
@@ -735,7 +744,7 @@
     const st = aiStateFor(d.id);
     const box = root.querySelector('#mockAiBox');
     st.busy = true;
-    if (box) box.innerHTML = '<span class="ai-loading">' + App.esc(L.grading) + '</span>';
+    if (box) box.innerHTML = '<span class="ai-loading">' + App.esc(App.t('mock.grading')) + '</span>';
     updateAiButtons(root);
     try {
       const res = await App.ai.grade({
@@ -787,19 +796,19 @@
     let html = '';
     st.followups.forEach((fu, i) => {
       html += '<section class="mock-fu">' +
-        '<div class="mock-fu-head"><span class="badge accent">' + App.esc(L.followupTitle) + ' ' + (i + 1) + '</span></div>' +
+        '<div class="mock-fu-head"><span class="badge accent">' + App.esc(App.t('mock.followupTitle')) + ' ' + (i + 1) + '</span></div>' +
         '<div class="md mock-fu-q"' + en + '>' + App.md(fu.question) + '</div>' +
         '<textarea class="textarea mock-fu-note" rows="4" data-fu-note="' + i + '" placeholder="">' + App.esc(fu.answer || '') + '</textarea>' +
         '<div class="row mock-fu-tools">' +
-          '<button type="button" class="btn mic-btn" data-fu-mic="' + i + '"' + (App.speech.supported ? '' : ' hidden') + '>🎤 ' + App.esc(L.voice) + '</button>' +
-          '<button type="button" class="btn primary" data-fu-grade="' + i + '" disabled>🤖 ' + App.esc(L.gradeAI) + '</button>' +
+          '<button type="button" class="btn mic-btn" data-fu-mic="' + i + '"' + (App.speech.supported ? '' : ' hidden') + '>🎤 ' + App.esc(App.t('mock.voice')) + '</button>' +
+          '<button type="button" class="btn primary" data-fu-grade="' + i + '" disabled>🤖 ' + App.esc(App.t('mock.gradeAI')) + '</button>' +
         '</div>' +
         '<div class="mock-fu-speech" data-fu-speech="' + i + '">' + (fu.speech ? App.ui.speechStats(fu.speech) : '') + '</div>' +
         '<div class="mock-fu-ai" data-fu-ai="' + i + '">' + (fu.result ? App.ui.feedback(fu.result, answerLang()) : '') + (fu.error ? App.ui.error(fu.error) : '') + '</div>' +
         '</section>';
     });
     if (st.followups.length < MAX_FOLLOWUPS && nextFollowupQuestion(st)) {
-      html += '<button type="button" class="btn mock-fu-add" id="mockAddFu">🎤 ' + App.esc(L.followup) + '</button>';
+      html += '<button type="button" class="btn mock-fu-add" id="mockAddFu">🎤 ' + App.esc(App.t('mock.followup')) + '</button>';
     }
     box.innerHTML = html;
   }
@@ -836,7 +845,7 @@
     }
     const box = root.querySelector('[data-fu-ai="' + i + '"]');
     st.busy = true;
-    if (box) box.innerHTML = '<span class="ai-loading">' + App.esc(L.grading) + '</span>';
+    if (box) box.innerHTML = '<span class="ai-loading">' + App.esc(App.t('mock.grading')) + '</span>';
     updateAiButtons(root);
     try {
       const res = await App.ai.grade({
@@ -925,7 +934,7 @@
     const topicRows = Object.keys(byTopic).map(id => {
       const g = byTopic[id];
       const a = g.n ? g.sum / g.n : 0;
-      return { id: id, avg: a, n: g.n, name: id === 'algorithm' ? t().codingName : App.topic(id).name };
+      return { id: id, avg: a, n: g.n, name: id === 'algorithm' ? App.t('mock.codingName') : App.topic(id).name };
     }).sort((x, y) => x.avg - y.avg);
     const weak = topicRows.filter(x => x.avg < 3);
 
@@ -963,13 +972,13 @@
       const d = r.kind === 'algo'
         ? App.algos().find(a => a.id === r.id)
         : App.questions().find(q => q.id === r.id);
-      const tname = r.kind === 'algo' ? t().codingName : App.topic(r.topic).name;
+      const tname = r.kind === 'algo' ? App.t('mock.codingName') : App.topic(r.topic).name;
       const badge = r.score >= 4 ? 'ok' : r.score === 3 ? 'warn' : r.score > 0 ? 'bad' : '';
       const aiBadge = (typeof r.aiScore === 'number')
-        ? '<span class="badge mock-ai-badge ' + (r.aiScore >= 4 ? 'ok' : r.aiScore === 3 ? 'warn' : 'bad') + '">' + App.esc(L.aiCol) + ' ' + r.aiScore + '/5</span>'
+        ? '<span class="badge mock-ai-badge ' + (r.aiScore >= 4 ? 'ok' : r.aiScore === 3 ? 'warn' : 'bad') + '">' + App.esc(App.t('mock.aiCol')) + ' ' + r.aiScore + '/5</span>'
         : '';
       const fus = (r.followups || []).map((fu, i) => {
-        let h = '<div class="mock-recap-fu"><strong>' + App.esc(L.followupTitle) + ' ' + (i + 1) + ':</strong> ' + App.esc(fu.question);
+        let h = '<div class="mock-recap-fu"><strong>' + App.esc(App.t('mock.followupTitle')) + ' ' + (i + 1) + ':</strong> ' + App.esc(fu.question);
         if (fu.answer) h += '<div class="mock-recap-note">' + App.esc(fu.answer) + '</div>';
         if (fu.speech) h += '<div class="mock-recap-speech">' + App.ui.speechStats(fu.speech) + '</div>';
         if (fu.result) h += '<div class="mock-recap-ai">' + App.ui.feedback(fu.result, fbLang) + '</div>';
@@ -981,7 +990,7 @@
         '<span class="mock-recap-q">' + App.esc(d ? (d.q || d.title) : r.id) + '</span>' +
         '<span class="muted small">' + App.esc(tname) + ' · ' + fmtClock(r.seconds) + '</span>' +
         '</summary>' +
-        (r.note ? '<div class="mock-recap-note"><strong>' + App.esc(L.notes) + ':</strong> ' + App.esc(r.note) + '</div>' : '') +
+        (r.note ? '<div class="mock-recap-note"><strong>' + App.esc(App.t('mock.notes')) + ':</strong> ' + App.esc(r.note) + '</div>' : '') +
         (r.speech ? '<div class="mock-recap-speech">' + App.ui.speechStats(r.speech) + '</div>' : '') +
         (r.ai ? '<div class="mock-recap-ai">' + App.ui.feedback(r.ai, fbLang) + '</div>' : '') +
         fus +
@@ -1000,33 +1009,33 @@
 
     const weakList = sum.weak.length
       ? '<ul class="mock-weak-list">' + sum.weak.map(x => '<li>' + App.esc(x.name) + ' — ' + x.avg.toFixed(1) + '/5</li>').join('') + '</ul>'
-      : '<p class="muted">' + App.esc(L.noWeak) + '</p>';
+      : '<p class="muted">' + App.esc(App.t('mock.noWeak')) + '</p>';
 
     root.innerHTML =
-      '<div class="page-head"><div><h1>' + App.esc(L.summary) + '</h1></div>' +
-        '<div class="row"><button type="button" class="btn" id="mockRetryWeak">' + App.esc(L.retryWeak) + '</button>' +
-        '<button type="button" class="btn primary" id="mockNew">' + App.esc(L.newSession) + '</button></div></div>' +
+      '<div class="page-head"><div><h1>' + App.esc(App.t('mock.summary')) + '</h1></div>' +
+        '<div class="row"><button type="button" class="btn" id="mockRetryWeak">' + App.esc(App.t('mock.retryWeak')) + '</button>' +
+        '<button type="button" class="btn primary" id="mockNew">' + App.esc(App.t('mock.newSession')) + '</button></div></div>' +
 
       '<div class="grid mock-stats">' +
-        '<div class="stat"><div class="num">' + sum.avg.toFixed(1) + '/5</div><div class="lbl">' + App.esc(L.avg) + '</div></div>' +
-        '<div class="stat"><div class="num">' + fmtClock(sum.totalSec) + '</div><div class="lbl">' + App.esc(L.totalTime) + '</div></div>' +
-        '<div class="stat"><div class="num">' + sum.seen + '</div><div class="lbl">' + App.esc(L.seenAnswers) + '</div></div>' +
-        '<div class="stat"><div class="num">' + sum.res.length + '</div><div class="lbl">' + App.esc(L.count) + '</div></div>' +
+        '<div class="stat"><div class="num">' + sum.avg.toFixed(1) + '/5</div><div class="lbl">' + App.esc(App.t('mock.avg')) + '</div></div>' +
+        '<div class="stat"><div class="num">' + fmtClock(sum.totalSec) + '</div><div class="lbl">' + App.esc(App.t('mock.totalTime')) + '</div></div>' +
+        '<div class="stat"><div class="num">' + sum.seen + '</div><div class="lbl">' + App.esc(App.t('mock.seenAnswers')) + '</div></div>' +
+        '<div class="stat"><div class="num">' + sum.res.length + '</div><div class="lbl">' + App.esc(App.t('mock.count')) + '</div></div>' +
         (sum.aiAvg === null ? '' :
           '<div class="stat mock-ai-stat"><div class="num">' + sum.aiAvg.toFixed(1) + '/5</div>' +
-          '<div class="lbl">' + App.esc(L.aiAvg) + ' (' + sum.aiCount + ')</div></div>') +
+          '<div class="lbl">' + App.esc(App.t('mock.aiAvg')) + ' (' + sum.aiCount + ')</div></div>') +
       '</div>' +
 
-      (sum.coding.length ? '<section class="card mock-coding-summary"><h3>' + App.esc(L.codingRound) + '</h3>' +
-        '<p class="muted">' + sum.coding.length + ' ' + App.esc(L.algoCount) + ' · ' + sum.codingAvg.toFixed(1) + '/5</p></section>' : '') +
+      (sum.coding.length ? '<section class="card mock-coding-summary"><h3>' + App.esc(App.t('mock.codingRound')) + '</h3>' +
+        '<p class="muted">' + sum.coding.length + ' ' + App.esc(App.t('mock.algoCount')) + ' · ' + sum.codingAvg.toFixed(1) + '/5</p></section>' : '') +
 
       '<div class="mock-summary-grid">' +
-        '<section class="card"><h3>' + App.esc(L.byTopic) + '</h3>' + (bars || '<p class="muted">—</p>') + '</section>' +
-        '<section class="card"><h3>' + App.esc(L.weak) + '</h3>' + weakList + '</section>' +
+        '<section class="card"><h3>' + App.esc(App.t('mock.byTopic')) + '</h3>' + (bars || '<p class="muted">—</p>') + '</section>' +
+        '<section class="card"><h3>' + App.esc(App.t('mock.weak')) + '</h3>' + weakList + '</section>' +
       '</div>' +
 
       '<section class="stack mock-recap">' +
-        '<h3>' + App.esc(L.recapTitle) + '</h3>' + (rows || '<p class="muted">—</p>') +
+        '<h3>' + App.esc(App.t('mock.recapTitle')) + '</h3>' + (rows || '<p class="muted">—</p>') +
       '</section>';
 
     const rw = root.querySelector('#mockRetryWeak');
@@ -1063,7 +1072,7 @@
 
   // ---------- register ----------
   App.registerView('mock', {
-    title: 'Phỏng vấn thử',
+    get title() { return App.t('mock.setup'); },
     render(root, params) {
       S.setupBound = false;
       S.sessionBound = false;

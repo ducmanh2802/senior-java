@@ -167,15 +167,11 @@
 
   function questionsHtml(x) {
     if (!x.p.questionIds.length) return `<p class="muted small">${esc(tr('noQuestions'))}</p>`;
-    const items = x.p.questionIds.map(id => {
-      const q = questionById(id);
-      const st = q ? App.store.getStatus(q.id) : null;
-      const info = st && App.STATUS[st] ? App.STATUS[st] : { label: tr('unseen'), cls: '' };
-      const href = q ? '#/bank/' + encodeURIComponent(q.topic) : '#/bank';
-      return `<li><a class="path-q" href="${esc(href)}">${esc(q ? shorten(q.q) : id)}</a>
-        <span class="chip path-st"><span class="dot ${esc(info.cls)}"></span>${esc(info.label)}</span></li>`;
-    }).join('');
-    return `<h4 class="path-h">${esc(tr('questionsH'))}</h4><ul class="path-list path-qs">${items}</ul>`;
+    return App.ui.relatedQuestions({
+      ids: x.p.questionIds,
+      limit: x.p.questionIds.length,
+      title: tr('questionsH'),
+    });
   }
 
   function bodyHtml(x) {

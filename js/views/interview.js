@@ -6,18 +6,209 @@
 (function () {
   'use strict';
 
+  App.i18n.add({
+    vi: {
+      'interview.title': 'Phỏng vấn AI',
+      'interview.subtitle': 'Hội thoại liên tục với interviewer AI bằng giọng nói: hỏi, nghe bạn trả lời, đào sâu như vòng phỏng vấn thật, rồi chấm và nhận xét cuối buổi.',
+      'interview.resume': 'Bạn có một buổi đang dở',
+      'interview.resumeBtn': 'Tiếp tục',
+      'interview.discardBtn': 'Bỏ buổi này',
+      'interview.langLabel': 'Ngôn ngữ',
+      'interview.levelLabel': 'Level',
+      'interview.durationLabel': 'Thời lượng',
+      'interview.personaLabel': 'Phong cách interviewer',
+      'interview.focusLabel': 'Trọng tâm',
+      'interview.modeTopics': 'Theo chủ đề',
+      'interview.modeCompany': 'Theo công ty',
+      'interview.modeJd': 'Theo JD',
+      'interview.companyLabel': 'Công ty',
+      'interview.jdText': 'Mô tả công việc (JD)',
+      'interview.jdPlaceholder': 'Dán JD (ít nhất 200 ký tự)…',
+      'interview.analyzeJd': 'Phân tích JD',
+      'interview.startJd': 'Phỏng vấn theo JD này',
+      'interview.start': 'Bắt đầu phỏng vấn',
+      'interview.costHint': 'Mỗi buổi tốn 1 lượt AI trong hạn mức ngày.',
+      'interview.speechNotSupported': 'Trình duyệt này không nhận dạng giọng nói — bạn sẽ gõ câu trả lời (dùng Chrome/Edge để nói).',
+      'interview.needLogin': 'Cần đăng nhập để dùng AI.',
+      'interview.jdTooShort': 'JD cần có ít nhất 200 ký tự.',
+      'interview.analyzingJd': 'Đang phân tích JD…',
+      'interview.jdChanged': 'JD đã thay đổi; hãy phân tích lại.',
+      'interview.muteBtn': '🔇 Đã tắt tiếng',
+      'interview.unmuteBtn': '🔊 Đọc câu hỏi',
+      'interview.hideScore': '🙈 Ẩn điểm',
+      'interview.showScore': '👁 Hiện điểm',
+      'interview.endBtn': 'Kết thúc & đánh giá',
+      'interview.answerPlaceholderVoice': 'Bấm 🎤 để nói, hoặc gõ câu trả lời…',
+      'interview.answerPlaceholderText': 'Gõ câu trả lời…',
+      'interview.answerAria': 'Câu trả lời',
+      'interview.sendBtn': 'Trả lời xong',
+      'interview.micAria': 'Bật/tắt micro',
+      'interview.handsFreeOn': '✋ Rảnh tay: bật',
+      'interview.handsFreeOff': '✋ Rảnh tay: tắt',
+      'interview.readAgainAria': 'Đọc lại',
+      'interview.grading': 'Hội đồng đang chấm buổi phỏng vấn…',
+      'interview.resultTitle': 'Đánh giá buổi phỏng vấn',
+      'interview.byQuestion': 'Từng câu hỏi',
+      'interview.strengths': 'Điểm mạnh',
+      'interview.improvements': 'Cần cải thiện',
+      'interview.studyNext': 'Nên ôn tiếp',
+      'interview.communication': 'Cách trình bày',
+      'interview.retryBtn': 'Phỏng vấn lại',
+      'interview.reviewTopic': 'Ôn {topic}',
+      'interview.download': 'Tải transcript',
+      'interview.viewScore': 'Xem đánh giá',
+      'interview.retry': 'Thử lại',
+      'interview.newSession': 'Buổi mới',
+      'interview.confirmEnd': 'Kết thúc phiên phỏng vấn sớm? Kết quả vẫn được lưu.',
+      'interview.confirmLeave': 'Bạn đang trong phiên phỏng vấn. Thoát ra sẽ mất tiến độ phiên này.',
+      'interview.interim': 'Trả lời tạm thời',
+      'interview.speakPlaceholder': 'Bấm 🎤 để nói, hoặc gõ câu trả lời…',
+      'interview.selectTopic': 'Chọn ít nhất một chủ đề.',
+      'interview.noItems': 'Không có mục nào.',
+      'interview.answerEmpty': 'Hãy nói hoặc gõ câu trả lời trước.',
+      'interview.mustHave': 'Must have',
+      'interview.niceToHave': 'Nice to have',
+      'interview.likelyQuestions': 'Câu hỏi có thể gặp',
+      'interview.prepTips': 'Mẹo chuẩn bị',
+      'interview.questionsToAsk': 'Câu nên hỏi nhà tuyển dụng',
+      'interview.minutesOpt': '{n} phút',
+      'interview.personaFriendly': 'Thân thiện',
+      'interview.personaStrict': 'Khó tính, hỏi dồn',
+      'interview.resumeMeta': '{n} câu trả lời, bắt đầu {date}',
+      'interview.signIn': 'đăng nhập',
+      'interview.intent.question': 'Câu hỏi',
+      'interview.intent.follow_up': 'Đào sâu',
+      'interview.intent.clarify': 'Làm rõ',
+      'interview.intent.hint': 'Gợi ý',
+      'interview.intent.wrap_up': 'Kết thúc',
+      'interview.sig.strong_no': 'Không đạt rõ ràng',
+      'interview.sig.no': 'Chưa đạt',
+      'interview.sig.lean_no': 'Hơi nghiêng về chưa đạt',
+      'interview.sig.lean_yes': 'Hơi nghiêng về đạt',
+      'interview.sig.yes': 'Đạt',
+      'interview.sig.strong_yes': 'Đạt rất tốt',
+      'interview.thinking': 'Interviewer đang nghĩ…',
+      'interview.sendHint': 'gửi',
+      'interview.betterAnswer': 'Trả lời tốt hơn:',
+      'interview.skillCol': 'Kỹ năng',
+      'interview.weightCol': 'Nhấn mạnh',
+      'interview.readyCol': 'Mức sẵn sàng',
+      'interview.notInBank': 'Chưa có trong ngân hàng',
+      'interview.defaultRole': 'Vai trò',
+      'interview.unknownCompany': 'Công ty chưa rõ',
+      'interview.unknownDomain': 'chưa rõ lĩnh vực',
+      'interview.bankTopic': 'ngân hàng',
+      'interview.techCompany': 'công ty công nghệ',
+      'interview.transcriptTitle': 'Phỏng vấn AI — ',
+      'interview.you': 'Bạn: ',
+      'interview.minutesUnit': 'phút',
+    },
+    en: {
+      'interview.title': 'AI Interview',
+      'interview.subtitle': 'Continuous voice mock interview with AI: asks, listens to your answers, drills deeper like a real round, then scores and gives feedback.',
+      'interview.resume': 'You have an unfinished session',
+      'interview.resumeBtn': 'Resume',
+      'interview.discardBtn': 'Discard this session',
+      'interview.langLabel': 'Language',
+      'interview.levelLabel': 'Level',
+      'interview.durationLabel': 'Duration',
+      'interview.personaLabel': 'Interviewer style',
+      'interview.focusLabel': 'Focus',
+      'interview.modeTopics': 'By topic',
+      'interview.modeCompany': 'By company',
+      'interview.modeJd': 'By JD',
+      'interview.companyLabel': 'Company',
+      'interview.jdText': 'Job Description (JD)',
+      'interview.jdPlaceholder': 'Paste JD (at least 200 characters)…',
+      'interview.analyzeJd': 'Analyze JD',
+      'interview.startJd': 'Interview by this JD',
+      'interview.start': 'Start interview',
+      'interview.costHint': 'Each session costs 1 AI credit from your daily limit.',
+      'interview.speechNotSupported': 'Voice recognition is not supported in this browser — you will type your answers (use Chrome/Edge to speak).',
+      'interview.needLogin': 'Sign in to use AI.',
+      'interview.jdTooShort': 'JD must have at least 200 characters.',
+      'interview.analyzingJd': 'Analyzing JD…',
+      'interview.jdChanged': 'JD changed; please analyze again.',
+      'interview.muteBtn': '🔇 Muted',
+      'interview.unmuteBtn': '🔊 Read question',
+      'interview.hideScore': '🙈 Hide scores',
+      'interview.showScore': '👁 Show scores',
+      'interview.endBtn': 'End & evaluate',
+      'interview.answerPlaceholderVoice': 'Press 🎤 to speak, or type your answer…',
+      'interview.answerPlaceholderText': 'Type your answer…',
+      'interview.answerAria': 'Your answer',
+      'interview.sendBtn': 'Done answering',
+      'interview.micAria': 'Toggle microphone',
+      'interview.handsFreeOn': '✋ Hands-free: on',
+      'interview.handsFreeOff': '✋ Hands-free: off',
+      'interview.readAgainAria': 'Read again',
+      'interview.grading': 'Panel is scoring your interview…',
+      'interview.resultTitle': 'Interview evaluation',
+      'interview.byQuestion': 'Per question',
+      'interview.strengths': 'Strengths',
+      'interview.improvements': 'Areas to improve',
+      'interview.studyNext': 'Next to study',
+      'interview.communication': 'Communication',
+      'interview.retryBtn': 'Interview again',
+      'interview.reviewTopic': 'Review {topic}',
+      'interview.download': 'Download transcript',
+      'interview.viewScore': 'View evaluation',
+      'interview.retry': 'Retry',
+      'interview.newSession': 'New session',
+      'interview.confirmEnd': 'End the interview early? The result will still be saved.',
+      'interview.confirmLeave': 'You are in the middle of an interview. Leaving will lose this session.',
+      'interview.interim': 'Interim response',
+      'interview.speakPlaceholder': 'Press 🎤 to speak, or type your answer…',
+      'interview.selectTopic': 'Select at least one topic.',
+      'interview.noItems': 'No items.',
+      'interview.answerEmpty': 'Speak or type your answer first.',
+      'interview.mustHave': 'Must have',
+      'interview.niceToHave': 'Nice to have',
+      'interview.likelyQuestions': 'Likely questions',
+      'interview.prepTips': 'Preparation tips',
+      'interview.questionsToAsk': 'Questions to ask the employer',
+      'interview.minutesOpt': '{n} min',
+      'interview.personaFriendly': 'Friendly',
+      'interview.personaStrict': 'Tough, drills deep',
+      'interview.resumeMeta': '{n} answers, started {date}',
+      'interview.signIn': 'sign in',
+      'interview.intent.question': 'Question',
+      'interview.intent.follow_up': 'Follow-up',
+      'interview.intent.clarify': 'Clarify',
+      'interview.intent.hint': 'Hint',
+      'interview.intent.wrap_up': 'Wrap up',
+      'interview.sig.strong_no': 'Clear no',
+      'interview.sig.no': 'No',
+      'interview.sig.lean_no': 'Lean no',
+      'interview.sig.lean_yes': 'Lean yes',
+      'interview.sig.yes': 'Yes',
+      'interview.sig.strong_yes': 'Strong yes',
+      'interview.thinking': 'Interviewer is thinking…',
+      'interview.sendHint': 'send',
+      'interview.betterAnswer': 'Better answer:',
+      'interview.skillCol': 'Skill',
+      'interview.weightCol': 'Weight',
+      'interview.readyCol': 'Readiness',
+      'interview.notInBank': 'Not in the bank yet',
+      'interview.defaultRole': 'Role',
+      'interview.unknownCompany': 'Company not specified',
+      'interview.unknownDomain': 'domain not specified',
+      'interview.bankTopic': 'bank',
+      'interview.techCompany': 'tech company',
+      'interview.transcriptTitle': 'AI interview — ',
+      'interview.you': 'You: ',
+      'interview.minutesUnit': 'min',
+    },
+  });
+
   const STORE_KEY = 'sjp.interview.current';
   const JD_KEY = 'sjp.interview.jd';
   const JD_RESULT_KEY = 'sjp.interview.jdResult';
   const SESSION_MS = 90 * 60000;          // server-side session token lifetime
   const SILENCE_MS = 2500;                // hands-free: send after this much silence
   const esc = App.esc;
-  const INTENT = { question: 'Câu hỏi', follow_up: 'Đào sâu', clarify: 'Làm rõ', hint: 'Gợi ý', wrap_up: 'Kết thúc' };
-  const SIGNAL = {
-    strong_no: ['Không đạt rõ ràng', 'bad'], no: ['Chưa đạt', 'bad'], lean_no: ['Hơi nghiêng về chưa đạt', 'warn'],
-    lean_yes: ['Hơi nghiêng về đạt', 'warn'], yes: ['Đạt', 'ok'], strong_yes: ['Đạt rất tốt', 'ok'],
-  };
-  const LEVELS = { mid: 'Middle', senior: 'Senior', lead: 'Lead' };
+  const INTENT = { question: 'interview.intent.question', follow_up: 'interview.intent.follow_up', clarify: 'interview.intent.clarify', hint: 'interview.intent.hint', wrap_up: 'interview.intent.wrap_up' };
+  const SIGNAL = { strong_no: 'bad', no: 'bad', lean_no: 'warn', lean_yes: 'warn', yes: 'ok', strong_yes: 'ok' };
 
   const load = () => { try { return JSON.parse(localStorage.getItem(STORE_KEY)); } catch (e) { return null; } };
   const save = s => { try { localStorage.setItem(STORE_KEY, JSON.stringify(s)); } catch (e) { /* private mode */ } };
@@ -63,7 +254,7 @@
   };
 
   App.registerView('interview', {
-    title: 'Phỏng vấn AI',
+    get title() { return App.t('interview.title'); },
     render(root) {
       let s = null;               // live session: { config, topics, companyId, transcript, token, startedAt, scores[], done }
       let mic = null, silence = null, ticker = null, busy = false, showScores = false, handsFree = false;
@@ -83,48 +274,48 @@
         let jd = ''; let jdResult = null;
         try { jd = localStorage.getItem(JD_KEY) || ''; jdResult = JSON.parse(localStorage.getItem(JD_RESULT_KEY) || 'null'); } catch (e) { /* storage unavailable */ }
         root.innerHTML = `
-          <div class="page-head"><h1>Phỏng vấn AI</h1>
-            <p class="muted">Hội thoại liên tục với interviewer AI bằng giọng nói: hỏi, nghe bạn trả lời, đào sâu như vòng phỏng vấn thật, rồi chấm và nhận xét cuối buổi.</p></div>
-          ${resumable ? `<div class="card iv-resume"><b>Bạn có một buổi đang dở</b> (${prev.transcript.filter(t => t.role === 'candidate').length} câu trả lời, bắt đầu ${esc(App.fmtDate(prev.startedAt))}).
-            <div class="row"><button class="btn primary" data-act="resume">Tiếp tục</button><button class="btn" data-act="discard">Bỏ buổi này</button></div></div>` : ''}
+          <div class="page-head"><h1>${App.t('interview.title')}</h1>
+            <p class="muted">${App.t('interview.subtitle')}</p></div>
+          ${resumable ? `<div class="card iv-resume"><b>${App.t('interview.resume')}</b> (${App.t('interview.resumeMeta', { n: prev.transcript.filter(t => t.role === 'candidate').length, date: esc(App.fmtDate(prev.startedAt)) })}).
+            <div class="row"><button class="btn primary" data-act="resume">${App.t('interview.resumeBtn')}</button><button class="btn" data-act="discard">${App.t('interview.discardBtn')}</button></div></div>` : ''}
           <div class="card iv-setup">
-            <div class="iv-field"><label>Ngôn ngữ</label>${chips('lang', { vi: 'Tiếng Việt', en: 'English' }, pref.lang)}</div>
-            <div class="iv-field"><label>Level</label>${chips('level', LEVELS, pref.level)}</div>
-            <div class="iv-field"><label>Thời lượng</label>${chips('minutes', { 10: '10 phút', 20: '20 phút', 30: '30 phút', 45: '45 phút' }, pref.minutes)}</div>
-            <div class="iv-field"><label>Phong cách interviewer</label>${chips('persona', { friendly: 'Thân thiện', strict: 'Khó tính, hỏi dồn' }, pref.persona)}</div>
-            <div class="iv-field"><label>Trọng tâm</label>${chips('mode', { topics: 'Theo chủ đề', company: 'Theo công ty', jd: 'Theo JD' }, pref.mode)}
+            <div class="iv-field"><label>${App.t('interview.langLabel')}</label>${chips('lang', { vi: 'Tiếng Việt', en: 'English' }, pref.lang)}</div>
+            <div class="iv-field"><label>${App.t('interview.levelLabel')}</label>${chips('level', App.LEVELS, pref.level)}</div>
+            <div class="iv-field"><label>${App.t('interview.durationLabel')}</label>${chips('minutes', { 10: App.t('interview.minutesOpt', { n: 10 }), 20: App.t('interview.minutesOpt', { n: 20 }), 30: App.t('interview.minutesOpt', { n: 30 }), 45: App.t('interview.minutesOpt', { n: 45 }) }, pref.minutes)}</div>
+            <div class="iv-field"><label>${App.t('interview.personaLabel')}</label>${chips('persona', { friendly: App.t('interview.personaFriendly'), strict: App.t('interview.personaStrict') }, pref.persona)}</div>
+            <div class="iv-field"><label>${App.t('interview.focusLabel')}</label>${chips('mode', { topics: App.t('interview.modeTopics'), company: App.t('interview.modeCompany'), jd: App.t('interview.modeJd') }, pref.mode)}
               ${pref.mode === 'company' && companies.length
-                ? `<select class="select iv-company" aria-label="Công ty">${companies.map(c => `<option value="${esc(c.id)}"${c.id === pref.company ? ' selected' : ''}>${esc((c.icon || '') + ' ' + c.name)}</option>`).join('')}</select>`
+                ? `<select class="select iv-company" aria-label="${App.t('interview.companyLabel')}">${companies.map(c => `<option value="${esc(c.id)}"${c.id === pref.company ? ' selected' : ''}>${esc((c.icon || '') + ' ' + c.name)}</option>`).join('')}</select>`
                 : pref.mode === 'jd'
-                ? `<div class="iv-jd"><label for="iv-jd-text">Mô tả công việc (JD)</label><textarea id="iv-jd-text" class="textarea" rows="7" placeholder="Dán JD (ít nhất 200 ký tự)…">${esc(jd)}</textarea><div class="row"><button type="button" class="btn" data-act="analyze-jd">🔎 Phân tích JD</button><span class="iv-jd-status muted small" aria-live="polite"></span></div>${jdResult ? renderJD(jdResult) : ''}</div>`
+                ? `<div class="iv-jd"><label for="iv-jd-text">${App.t('interview.jdText')}</label><textarea id="iv-jd-text" class="textarea" rows="7" placeholder="${App.t('interview.jdPlaceholder')}">${esc(jd)}</textarea><div class="row"><button type="button" class="btn" data-act="analyze-jd">🔎 ${App.t('interview.analyzeJd')}</button><span class="iv-jd-status muted small" aria-live="polite"></span></div>${jdResult ? renderJD(jdResult) : ''}</div>`
                 : `<div class="chips iv-topics">${App.topics().filter(t => t.id !== 'english').map(t =>
                     `<button type="button" class="chip${pref.topics.includes(t.id) ? ' active' : ''}" data-topic="${esc(t.id)}">${esc(t.icon + ' ' + t.name)}</button>`).join('')}</div>`}
             </div>
             <div class="row iv-start">
-              ${pref.mode === 'jd' ? `<button class="btn primary lg" data-act="start-jd"${needLogin || !jdResult ? ' disabled' : ''}>🎙️ Phỏng vấn theo JD này</button>` : `<button class="btn primary lg" data-act="start"${needLogin ? ' disabled' : ''}>🎙️ Bắt đầu phỏng vấn</button>`}
-              <span class="muted small">Mỗi buổi tốn 1 lượt AI trong hạn mức ngày.${App.speech.supported ? '' : ' Trình duyệt này không nhận dạng giọng nói — bạn sẽ gõ câu trả lời (dùng Chrome/Edge để nói).'}</span>
+              ${pref.mode === 'jd' ? `<button class="btn primary lg" data-act="start-jd"${needLogin || !jdResult ? ' disabled' : ''}>🎙️ ${App.t('interview.startJd')}</button>` : `<button class="btn primary lg" data-act="start"${needLogin ? ' disabled' : ''}>🎙️ ${App.t('interview.start')}</button>`}
+              <span class="muted small">${App.t('interview.costHint')}${App.speech.supported ? '' : ' ' + App.t('interview.speechNotSupported')}</span>
             </div>
-            ${needLogin ? '<p class="iv-note">Cần <a href="#/account">đăng nhập</a> để dùng AI.</p>' : ''}
+            ${needLogin ? '<p class="iv-note">' + App.t('interview.needLogin') + ' <a href="#/account">' + App.t('interview.signIn') + '</a></p>' : ''}
           </div>`;
         if (!pref.company && companies.length) pref.company = companies[0].id;
       }
 
       function renderJD(r) {
-        const skills = x => (x || []).map(i => { const topic = i.topic || ''; const stats = topic ? App.stats(topic) : null; const pct = stats && stats.total ? Math.round(stats.known * 100 / stats.total) : 0; const state = !topic ? 'Chưa có trong ngân hàng' : `${pct >= 60 ? '🟢' : pct >= 30 ? '🟡' : '🔴'} ${stats.known}/${stats.total} (${pct}%)`; return `<tr><td>${esc(i.skill)}</td><td>${'●'.repeat(Math.max(1, Math.min(3, Number(i.weight) || 1)))}${'○'.repeat(3 - Math.max(1, Math.min(3, Number(i.weight) || 1)))}</td><td>${topic ? `<a href="#/bank/${esc(topic)}">${state}</a>` : state}</td></tr>`; }).join('');
-        const table = (title, items) => `<section class="iv-jd-section"><h3>${title}</h3>${items && items.length ? `<div class="iv-jd-table-wrap"><table class="iv-jd-table"><thead><tr><th>Kỹ năng</th><th>Nhấn mạnh</th><th>Mức sẵn sàng</th></tr></thead><tbody>${skills(items)}</tbody></table></div>` : '<p class="muted">Không có mục nào.</p>'}</section>`;
+        const skills = x => (x || []).map(i => { const topic = i.topic || ''; const stats = topic ? App.stats(topic) : null; const pct = stats && stats.total ? Math.round(stats.known * 100 / stats.total) : 0; const state = !topic ? App.t('interview.notInBank') : `${pct >= 60 ? '🟢' : pct >= 30 ? '🟡' : '🔴'} ${stats.known}/${stats.total} (${pct}%)`; return `<tr><td>${esc(i.skill)}</td><td>${'●'.repeat(Math.max(1, Math.min(3, Number(i.weight) || 1)))}${'○'.repeat(3 - Math.max(1, Math.min(3, Number(i.weight) || 1)))}</td><td>${topic ? `<a href="#/bank/${esc(topic)}">${state}</a>` : state}</td></tr>`; }).join('');
+        const table = (key, items) => `<section class="iv-jd-section"><h3>${App.t(key)}</h3>${items && items.length ? `<div class="iv-jd-table-wrap"><table class="iv-jd-table"><thead><tr><th>${App.t('interview.skillCol')}</th><th>${App.t('interview.weightCol')}</th><th>${App.t('interview.readyCol')}</th></tr></thead><tbody>${skills(items)}</tbody></table></div>` : '<p class="muted">' + App.t('interview.noItems') + '</p>'}</section>`;
         const list = (title, items, why) => items && items.length ? `<section class="iv-jd-section"><h3>${title}</h3><ul>${items.map(x => `<li>${esc(typeof x === 'string' ? x : x.q || x.skill || '')}${why && x.why ? `<small class="muted"> — ${esc(x.why)}</small>` : ''}</li>`).join('')}</ul></section>` : '';
-        return `<div class="iv-jd-result"><h3>${esc(r.role || 'Vai trò')} · ${esc(r.company || 'Công ty chưa rõ')} · ${esc(LEVELS[r.level] || r.level || '')} · ${esc(r.domain || '')}</h3><p>${esc(r.summary || '')}</p>${table('Must have', r.must_have)}${table('Nice to have', r.nice_to_have)}${list('Câu hỏi có thể gặp', r.likely_questions, true)}${list('Mẹo chuẩn bị', r.prep_tips)}${list('Câu nên hỏi nhà tuyển dụng', r.questions_to_ask)}</div>`;
+        return `<div class="iv-jd-result"><h3>${esc(r.role || App.t('interview.defaultRole'))} · ${esc(r.company || App.t('interview.unknownCompany'))} · ${esc(App.LEVELS[r.level] || r.level || '')} · ${esc(r.domain || '')}</h3><p>${esc(r.summary || '')}</p>${table('interview.mustHave', r.must_have)}${table('interview.niceToHave', r.nice_to_have)}${list(App.t('interview.likelyQuestions'), r.likely_questions, true)}${list(App.t('interview.prepTips'), r.prep_tips)}${list(App.t('interview.questionsToAsk'), r.questions_to_ask)}</div>`;
       }
 
       async function analyzeJD() {
         const ta = root.querySelector('#iv-jd-text'), button = root.querySelector('[data-act="analyze-jd"]'), status = root.querySelector('.iv-jd-status');
         const text = ta ? ta.value.trim() : '';
         try { localStorage.setItem(JD_KEY, text); } catch (e) { /* storage unavailable */ }
-        if (text.length < 200) { if (status) status.innerHTML = '<span class="ai-error">JD cần có ít nhất 200 ký tự.</span>'; return; }
-        button.disabled = true; if (status) status.innerHTML = '<span class="ai-loading">Đang phân tích JD…</span>';
+        if (text.length < 200) { if (status) status.innerHTML = '<span class="ai-error">' + App.t('interview.jdTooShort') + '</span>'; return; }
+        button.disabled = true; if (status) status.innerHTML = '<span class="ai-loading">' + App.t('interview.analyzingJd') + '</span>';
         try {
           const r = await App.ai.jd(text);
-          if ((ta.value || '').trim() !== text) { if (status) status.textContent = 'JD đã thay đổi; hãy phân tích lại.'; return; }
+          if ((ta.value || '').trim() !== text) { if (status) status.textContent = App.t('interview.jdChanged'); return; }
           try { localStorage.setItem(JD_RESULT_KEY, JSON.stringify(r)); } catch (e) { /* storage unavailable */ }
           setup();
         }
@@ -137,8 +328,8 @@
         if (!r) return;
         const topics = [...new Set((r.must_have || []).map(x => x.topic).filter(Boolean))];
         const must = (r.must_have || []).map(x => x.skill).filter(Boolean);
-        s = { config: { lang: pref.lang, level: LEVELS[r.level] ? r.level : 'senior', minutes: Number(pref.minutes), persona: pref.persona,
-          focus: (r.company ? r.company + ' — ' : '') + (r.role || 'Vai trò') + ' (' + (r.domain || 'chưa rõ lĩnh vực') + '): ' + must.join(', '),
+        s = { config: { lang: pref.lang, level: App.LEVELS[r.level] ? r.level : 'senior', minutes: Number(pref.minutes), persona: pref.persona,
+          focus: (r.company ? r.company + ' — ' : '') + (r.role || App.t('interview.defaultRole')) + ' (' + (r.domain || App.t('interview.unknownDomain')) + '): ' + must.join(', '),
           seeds: [...(r.likely_questions || []).slice(0, 6).map(x => ({ topic: x.topic || '', q: x.q || '', ref: '' })), ...pickSeeds(topics, null, pref.lang)].slice(0, 12) },
           topics, companyId: null, transcript: [], token: null, startedAt: Date.now(), scores: [], done: false };
         save(s); session(); next();
@@ -148,12 +339,12 @@
         const companies = window.COMPANIES || [];
         const company = pref.mode === 'company' ? companies.find(c => c.id === pref.company) : null;
         const topics = company ? (company.focus || []) : pref.topics;
-        if (!topics.length) { alert('Chọn ít nhất một chủ đề.'); return; }
+        if (!topics.length) { alert(App.t('interview.selectTopic')); return; }
         const names = topics.map(t => App.topic(t).name).join(', ');
         s = {
           config: {
             lang: pref.lang, level: pref.level, minutes: Number(pref.minutes), persona: pref.persona,
-            focus: company ? company.name + ' (' + (company.type === 'bank' ? 'ngân hàng' : 'công ty công nghệ') + ') — ' + names : names,
+            focus: company ? company.name + ' (' + (company.type === 'bank' ? App.t('interview.bankTopic') : App.t('interview.techCompany')) + ') — ' + names : names,
             seeds: pickSeeds(topics, company, pref.lang),
           },
           topics, companyId: company ? company.id : null,
@@ -169,24 +360,24 @@
         const c = s.config;
         root.innerHTML = `
           <div class="iv-bar card">
-            <div><b>${esc(LEVELS[c.level])} · ${c.lang === 'en' ? 'English' : 'Tiếng Việt'}</b><div class="muted small iv-focus">${esc(c.focus)}</div></div>
+            <div><b>${esc(App.LEVELS[c.level])} · ${c.lang === 'en' ? 'English' : 'Tiếng Việt'}</b><div class="muted small iv-focus">${esc(c.focus)}</div></div>
             <div class="iv-timer" aria-live="off">00:00</div>
             <div class="row iv-toggles">
-              <button class="btn sm" data-act="mute" aria-pressed="${tts.muted}">${tts.muted ? '🔇 Đã tắt tiếng' : '🔊 Đọc câu hỏi'}</button>
-              <button class="btn sm" data-act="scores" aria-pressed="${showScores}">${showScores ? '🙈 Ẩn điểm' : '👁 Hiện điểm'}</button>
-              ${App.speech.supported ? `<button class="btn sm" data-act="handsfree" aria-pressed="${handsFree}">${handsFree ? '✋ Rảnh tay: bật' : '✋ Rảnh tay: tắt'}</button>` : ''}
-              <button class="btn sm bad" data-act="end">Kết thúc &amp; đánh giá</button>
+              <button class="btn sm" data-act="mute" aria-pressed="${tts.muted}">${tts.muted ? App.t('interview.muteBtn') : App.t('interview.unmuteBtn')}</button>
+              <button class="btn sm" data-act="scores" aria-pressed="${showScores}">${showScores ? App.t('interview.hideScore') : App.t('interview.showScore')}</button>
+              ${App.speech.supported ? `<button class="btn sm" data-act="handsfree" aria-pressed="${handsFree}">${handsFree ? App.t('interview.handsFreeOn') : App.t('interview.handsFreeOff')}</button>` : ''}
+              <button class="btn sm bad" data-act="end">${App.t('interview.endBtn')}</button>
             </div>
           </div>
           <div class="iv-chat" aria-live="polite"></div>
           <div class="iv-compose card">
-            <textarea class="textarea" rows="3" placeholder="${App.speech.supported ? 'Bấm 🎤 để nói, hoặc gõ câu trả lời…' : 'Gõ câu trả lời…'}" aria-label="Câu trả lời"></textarea>
+            <textarea class="textarea" rows="3" placeholder="${App.speech.supported ? App.t('interview.answerPlaceholderVoice') : App.t('interview.answerPlaceholderText')}" aria-label="${App.t('interview.answerAria')}"></textarea>
             <div class="iv-interim muted small"></div>
             <div class="row">
-              ${App.speech.supported ? '<button class="btn mic-btn lg" data-act="mic" aria-label="Bật/tắt micro">🎤</button>' : ''}
-              <button class="btn primary" data-act="send">Trả lời xong</button>
+              ${App.speech.supported ? '<button class="btn mic-btn lg" data-act="mic" aria-label="' + App.t('interview.micAria') + '">🎤</button>' : ''}
+              <button class="btn primary" data-act="send">${App.t('interview.sendBtn')}</button>
               <span class="iv-status"></span>
-              <span class="muted small iv-keys"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> gửi</span>
+              <span class="muted small iv-keys"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> ${App.t('interview.sendHint')}</span>
             </div>
           </div>`;
         drawChat();
@@ -212,13 +403,13 @@
         box.innerHTML = s.transcript.map((t, i) => {
           if (t.role === 'interviewer') {
             return `<div class="iv-msg iv-ai"><div class="iv-avatar" aria-hidden="true">AI</div><div class="iv-bubble">
-              ${t.intent ? `<span class="badge">${esc(INTENT[t.intent] || t.intent)}</span>` : ''}<p>${esc(t.text)}</p>
-              ${tts.ok ? `<button class="link-btn" data-say="${i}" aria-label="Đọc lại">🔊</button>` : ''}</div></div>`;
+              ${t.intent ? `<span class="badge">${esc(INTENT[t.intent] ? App.t(INTENT[t.intent]) : t.intent)}</span>` : ''}<p>${esc(t.text)}</p>
+              ${tts.ok ? `<button class="link-btn" data-say="${i}" aria-label="${App.t('interview.readAgainAria')}">🔊</button>` : ''}</div></div>`;
           }
           const sc = s.scores[answer++];
           return `<div class="iv-msg iv-me"><div class="iv-bubble"><p>${esc(t.text)}</p>
             ${showScores && sc && sc.score ? `<div class="iv-score">${App.ui.scoreBadge(sc.score)} <span class="muted small">${esc(sc.note)}</span></div>` : ''}</div></div>`;
-        }).join('') + (busy ? '<div class="iv-msg iv-ai"><div class="iv-avatar" aria-hidden="true">AI</div><div class="iv-bubble"><span class="ai-loading">Interviewer đang nghĩ…</span></div></div>' : '');
+        }).join('') + (busy ? '<div class="iv-msg iv-ai"><div class="iv-avatar" aria-hidden="true">AI</div><div class="iv-bubble"><span class="ai-loading">' + App.t('interview.thinking') + '</span></div></div>' : '');
         box.scrollTop = box.scrollHeight;
       }
 
@@ -250,7 +441,7 @@
           });
         } catch (e) {
           setBusy(false);
-          status(App.ui.error(e) + (e.code === 'bad_session' || e.code === 'session_full' ? ' <button class="btn sm" data-act="end">Xem đánh giá</button>' : ''));
+          status(App.ui.error(e) + (e.code === 'bad_session' || e.code === 'session_full' ? ' <button class="btn sm" data-act="end">' + App.t('interview.viewScore') + '</button>' : ''));
           if (!s.token && !s.transcript.length) { clear(); }
         }
       }
@@ -290,7 +481,7 @@
         stopMic();
         const ta = root.querySelector('.iv-compose textarea');
         const text = ta.value.trim();
-        if (!text) { status('<span class="muted">Hãy nói hoặc gõ câu trả lời trước.</span>'); return; }
+        if (!text) { status('<span class="muted">' + App.t('interview.answerEmpty') + '</span>'); return; }
         ta.value = '';
         s.transcript.push({ role: 'candidate', text });
         save(s);
@@ -303,7 +494,7 @@
         if (!s) return;
         const answers = s.transcript.filter(t => t.role === 'candidate').length;
         if (!answers) { clear(); s = null; setup(); return; }
-        root.innerHTML = '<div class="card iv-wait"><span class="ai-loading">Hội đồng đang chấm buổi phỏng vấn…</span></div>';
+        root.innerHTML = '<div class="card iv-wait"><span class="ai-loading">' + App.t('interview.grading') + '</span></div>';
         try {
           const r = await App.ai.interview.summary({ session_token: s.token, config: s.config, transcript: s.transcript });
           const minutes = Math.round((Date.now() - s.startedAt) / 60000);
@@ -315,36 +506,37 @@
           clear();
         } catch (e) {
           root.innerHTML = '<div class="card">' + App.ui.error(e) +
-            '<div class="row"><button class="btn primary" data-act="retry-summary">Thử lại</button><button class="btn" data-act="download">Tải transcript</button><button class="btn" data-act="new">Buổi mới</button></div></div>';
+            '<div class="row"><button class="btn primary" data-act="retry-summary">' + App.t('interview.retry') + '</button><button class="btn" data-act="download">' + App.t('interview.download') + '</button><button class="btn" data-act="new">' + App.t('interview.newSession') + '</button></div></div>';
         }
       }
 
       function result(r, minutes) {
-        const sig = SIGNAL[r.hire_signal] || [r.hire_signal, 'warn'];
+        const sigCls = SIGNAL[r.hire_signal] || 'warn';
         const list = (title, items) => items && items.length ? `<div class="card"><h3>${title}</h3><ul>${items.map(x => '<li>' + esc(x) + '</li>').join('')}</ul></div>` : '';
         root.innerHTML = `
-          <div class="page-head"><h1>Đánh giá buổi phỏng vấn</h1><p class="muted">${minutes} phút · ${esc(s.config.focus)}</p></div>
+          <div class="page-head"><h1>${App.t('interview.resultTitle')}</h1><p class="muted">${minutes} ${App.t('interview.minutesUnit')} · ${esc(s.config.focus)}</p></div>
           <div class="card iv-verdict">
-            <div class="row">${App.ui.scoreBadge(r.overall_score)}<span class="badge ${sig[1]}">${esc(sig[0])}</span></div>
+            <div class="row">${App.ui.scoreBadge(r.overall_score)}<span class="badge ${sigCls}">${esc(App.t('interview.sig.' + (r.hire_signal || 'lean_no')))}</span></div>
             <p>${esc(r.verdict)}</p>
           </div>
-          <div class="card"><h3>Từng câu hỏi</h3>
+          <div class="card"><h3>${App.t('interview.byQuestion')}</h3>
             ${(r.by_question || []).map(q => `<details class="iv-q"><summary>${App.ui.scoreBadge(q.score)} <span>${esc(q.question)}</span></summary>
-              <p>${esc(q.comment)}</p><p class="iv-better"><b>Trả lời tốt hơn:</b> <span${s.config.lang === 'en' ? ' lang="en"' : ''}>${esc(q.better_answer)}</span></p></details>`).join('')}
+              <p>${esc(q.comment)}</p><p class="iv-better"><b>${App.t('interview.betterAnswer')}</b> <span${s.config.lang === 'en' ? ' lang="en"' : ''}>${esc(q.better_answer)}</span></p></details>`).join('')}
           </div>
-          <div class="grid">${list('Điểm mạnh', r.strengths)}${list('Cần cải thiện', r.improvements)}${list('Nên ôn tiếp', r.study_next)}</div>
-          ${r.communication ? `<div class="card"><h3>Cách trình bày</h3><p>${esc(r.communication)}</p></div>` : ''}
+          <div class="grid">${list(App.t('interview.strengths'), r.strengths)}${list(App.t('interview.improvements'), r.improvements)}${list(App.t('interview.studyNext'), r.study_next)}</div>
+          ${r.communication ? `<div class="card"><h3>${App.t('interview.communication')}</h3><p>${esc(r.communication)}</p></div>` : ''}
           <div class="row iv-actions">
-            <button class="btn primary" data-act="new">Phỏng vấn lại</button>
-            ${s.topics[0] ? `<a class="btn" href="#/bank/${esc(s.topics[0])}">Ôn ${esc(App.topic(s.topics[0]).name)}</a>` : ''}
-            <button class="btn" data-act="download">Tải transcript</button>
+            <button class="btn primary" data-act="new">${App.t('interview.retryBtn')}</button>
+            ${s.topics[0] ? `<a class="btn" href="#/bank/${esc(s.topics[0])}">${App.t('interview.reviewTopic', {topic: App.topic(s.topics[0]).name})}</a>` : ''}
+            <button class="btn" data-act="download">${App.t('interview.download')}</button>
           </div>`;
       }
 
       function download() {
         if (!s) return;
-        const lines = ['Phỏng vấn AI — ' + new Date(s.startedAt).toLocaleString('vi-VN'), s.config.focus, ''];
-        s.transcript.forEach(t => lines.push((t.role === 'candidate' ? 'Bạn: ' : 'Interviewer: ') + t.text, ''));
+        const locale = App.lang === 'en' ? 'en-US' : 'vi-VN';
+        const lines = [App.t('interview.transcriptTitle') + new Date(s.startedAt).toLocaleString(locale), s.config.focus, ''];
+        s.transcript.forEach(t => lines.push((t.role === 'candidate' ? App.t('interview.you') : 'Interviewer: ') + t.text, ''));
         const a = document.createElement('a');
         a.href = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' }));
         a.download = 'phong-van-ai-' + App.dayKey(s.startedAt) + '.txt';
@@ -397,7 +589,7 @@
         const start = root.querySelector('[data-act="start-jd"]');
         if (start) start.disabled = true;
         const message = root.querySelector('.iv-jd-status');
-        if (message) message.textContent = 'JD đã thay đổi; hãy phân tích lại.';
+        if (message) message.textContent = App.t('interview.jdChanged');
       }
       function onChange(e) { if (e.target.matches('.iv-company')) pref.company = e.target.value; }
       function onKeydown(e) { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && e.target.matches('.iv-compose textarea')) { e.preventDefault(); send(); } }

@@ -423,6 +423,11 @@
             '</div>' +
             '<p class="small muted lab-self-note">' + App.t('labs.selfNote') + '</p>' +
           '</div>' +
+          '<div class="lab-related">' + App.ui.relatedQuestions({
+            topic: ({ thread: 'concurrency', gc: 'jvm', sql: 'sql', incident: 'microservices' })[lab.category] || '',
+            tags: lab.tags,
+            limit: 4,
+          }) + '</div>' +
         '</section>' +
       '</div>';
 

@@ -146,8 +146,6 @@
   function lesson(root, l) {
     const same = App.lessons().filter(x => x.track === l.track);
     const idx = same.indexOf(l), prev = same[idx - 1], next = same[idx + 1];
-    const qs = App.questions();
-    const related = (l.related || []).map(id => qs.find(q => q.id === id)).filter(Boolean);
     root.innerHTML = `
       <a class="link-btn" href="#/learn">${App.t('learn.tocBack')}</a>
       <div class="page-head"><h1>${esc(l.title)}</h1>
@@ -163,7 +161,7 @@
         <div class="card ln-check" data-check="${i}"><div class="md">${App.md(c.q)}</div>
           <div class="ln-options">${c.options.map((o, j) => `<button type="button" class="btn ln-opt" data-opt="${j}">${esc(String.fromCharCode(65 + j))}. ${App.md(o).replace(/^<p>|<\/p>$/g, '')}</button>`).join('')}</div>
           <div class="ln-explain"></div></div>`).join('')}` : ''}
-      ${related.length ? `<div class="card"><b>${App.t('learn.relatedTitle')}</b><ul>${related.map(q => `<li><a href="#/bank/${esc(q.topic)}">${App.md(q.q).replace(/^<p>|<\/p>$/g, '')}</a></li>`).join('')}</ul></div>` : ''}
+      ${App.ui.relatedQuestions({ ids: l.related || [], topic: l.track, tags: l.tags, limit: 5 })}
       <div class="row ln-footer">
         ${prev ? `<a class="btn" href="#/learn/${esc(prev.id)}">← ${esc(prev.title)}</a>` : '<span></span>'}
         <button class="btn ${isDone(l) ? '' : 'primary'}" data-act="done">${isDone(l) ? App.t('learn.doneBtnDone') : App.t('learn.doneBtnNot')}</button>
