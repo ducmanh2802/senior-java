@@ -1072,5 +1072,634 @@ final class SlidingWindow {
   ],
   related: ['security-015', 'security-001'],
   tags: ['rate limit', 'token bucket', 'sliding window', '429'],
-}
+},
+{
+  id: 'lesson-security-004',
+  track: 'security',
+  order: 4,
+  title: 'Session store Redis-thuần: resolve, CSRF, fixation và NullSecurityContext',
+  level: 'senior',
+  minutes: 55,
+  goals: [
+    'Mô tả được cấu trúc {{SessionStore}} ánh xạ {{sessionId -> Session}} và vì sao mỗi thao tác trả {{Optional<Session>}}',
+    'Tự viết được {{resolve}} kiểm tra tenant disabled, CSRF và NullSecurityContext mà không ném NPE',
+    'Giải thích và triển khai được session fixation protection bằng cách rotate sid sau đăng nhập',
+    'Dùng clock truyền vào để kiểm tra TTL, renew và các tình huống hết hạn tất định',
+  ],
+  body: `### Session store: Redis-thuần và trạng thái phiên
+Trong Spring Security, {{HttpSession}} thường được Servlet container quản lý; khi chuyển sang Redis (Spring Session) bạn phải tự quản lý map {{sessionId -> Session}}. Bài này mô phỏng đúng lớp đó bằng Java thuần: một {{SessionStore}} giữ map trong bộ nhớ, mỗi thao tác trả {{Optional<Session>}} để buộc người gọi xử lý trường hợp "không có phiên" thay vì dereference null.
+
+Mỗi {{Session}} chứa: {{tenantId}}, {{userId}}, {{attributes}}, {{expiryMs}}, {{securityContext}} (có thể null trước khi xác thực) và {{csrfToken}} riêng. Tách {{securityContext}} ra khỏi {{userId}} là để phân biệt "có phiên nhưng chưa đăng nhập" (anonymous) với "đã xác thực".
+
+### resolve và tenant biến mất: im lặng 500
+{{resolve(request, nowMs)}} là cửa vào mỗi request: đọc cookie sid, kiểm tra CSRF, kiểm tra tenant. Nếu tenant đã {{DISABLED}}, hệ thống phải trả {{Status}} với code 401 và dừng — **không** để code tiếp tục dereference tenant null rồi ném NullPointerException thành HTTP 500. Lỗi 500 là kênh dò thông tin: attacker biết tenant bị vô hiệu hoá và có thể thử enumerate; hơn nữa 500 phá monitoring (mọi alert đều kêu). Quy tắc: thiếu quyền là 401/403, không phải 500.
+
+### CSRF token: mỗi phiên một chuỗi riêng
+Mỗi session sinh {{csrfToken}} ngẫu nhiên khi tạo. Request phải gửi lại token đó trong header/form; {{resolve}} so {{session.csrfToken.equals(request.csrfToken)}}. Cookie tự động đi kèm request nên không đủ — attacker có thể ép trình duyệt gửi cookie (CSRF), nhưng không đọc được token trong DOM/response. Bài test "CSRF webpack": cookie hợp lệ nhưng CSRF sai → reject (403), dù session tồn tại.
+
+### Session fixation: rotate sid sau đăng nhập
+Trước đăng nhập, session thường là anonymous (sid cũ). Nếu attacker biết sid đó và dụ nạn nhân đăng nhập trên cùng sid, attacker có phiên đã xác thực. Phòng thủ: {{afterLogin(oldSid, nowMs)}} tạo **sid mới**, copy {{userId}}/tenant/attributes, xoá sid cũ. Sid cũ mất hiệu lực ngay; sid mới là phiên đã xác thực. Đây là lý do test kiểm tra old sid không resolve được và new sid resolve được với cùng {{userId}}.
+
+### NullSecurityContext: trả ANON thay vì NPE
+{{securityContext == null}} nghĩa là session tồn tại nhưng chưa xác thực (anonymous). Code xử lý request phải trả mã {{ANON}} và dừng, không gọi {{securityContext.getAuthorities()}}. Đây là lỗi hay gặp khi refactor: thêm field mới và quên null-check, NPE thành 500 ở production. Bài test gọi {{resolve}} trên session chưa set context và kỳ vọng {{code == "ANON"}} chứ không ném exception.
+
+### TTL, last renew và clock truyền vào
+{{expiryMs = nowMs + ttlMs}} khi tạo. {{resolve}} thành công sẽ **renew** (sliding window): expiryMs = nowMs + ttlMs. Clock được truyền vào thay vì đọc {{System.currentTimeMillis}} để test tái lập mọi tình huống: hết hạn, đồng hồ lùi, nhảy cóc. Đồng hồ lùi không được nới expiry (giữ nguyên). Session hết hạn bị xoá khỏi store.
+
+### Bẫy production
+- Lưu session trong RAM của từng instance → user bị đá khi request sang instance khác; phải dùng Redis với TTL và serialisation nhất quán.
+- CSRF token trong cookie (double-submit) dễ bị attacker đặt cookie nếu domain chung; ưu tiên token trong header/form và so constant-time.
+- Không rotate sid sau login → session fixation; không invalidate sid cũ → attacker vẫn dùng được.
+- {{securityContext}} null bị dereference → 500; luôn coi anonymous là trạng thái bình thường.
+- TTL quá dài (vài ngày) cho phiên nhạy cảm; nên kết hợp idle timeout và absolute timeout.
+- Attribute mutate trên object chia sẻ giữa các request → race; mỗi request nên làm việc trên bản copy hoặc đồng bộ.
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: "session fixation là gì và xử lý thế nào?", "CSRF khác XSS thế nào?", "vì sao tenant disabled không được trả 500?", "anonymous context xử lý ra sao trong filter chain?". Làm xong bài tập dưới đây — tự viết {{SessionStore}} với rotate sid và CSRF check — là bạn trả lời được cả bốn câu bằng chính mã của mình.`,
+  exercises: [
+    {
+      title: 'Viết SessionStore: resolve, CSRF, fixation và NullSecurityContext',
+      prompt: `Hoàn thiện {{SessionStore}} — session store Redis-thuần mô phỏng Spring Session, chỉ dùng JDK 17:
+
+- {{SessionStore(ttlMs)}}: TTL mỗi phiên; tham số không hợp lệ thì ném {{IllegalArgumentException}}.
+- {{create(tenantId, userId, nowMs)}}: tạo phiên mới với sid và csrfToken mới, {{securityContext = null}}, {{expiryMs = nowMs + ttlMs}}; trả {{Optional<Session>}}.
+- {{resolve(request, nowMs)}}: trả {{ResolveResult}} với {{session}} present khi sid hợp lệ, tenant không disabled, CSRF khớp, context không null và chưa hết hạn; renew expiry khi thành công. Tenant disabled → {{status.code == 401}} và session rỗng (không 500). CSRF sai → {{status.code == 403}}. {{securityContext == null}} → {{code == "ANON"}}. Hết hạn → 401.
+- {{afterLogin(oldSid, nowMs)}}: rotate sid, giữ cùng {{userId}}/tenant/attributes, xoá sid cũ; trả phiên mới.
+- {{setSecurityContext(sid, ctx)}}: gắn context cho phiên (sau xác thực).
+- {{putAttribute(sid, key, value)}} / {{hasAttributes(sid, key)}}: thuộc tính phiên; {{hasAttributes}} phải idempotent.
+
+Clock do test truyền vào, không dùng thời gian thật.`,
+      starter: `import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+
+final class SessionStore {
+    static final class Session {
+        public final String sessionId;
+        public final String tenantId;
+        public final String userId;
+        public final Map<String, String> attributes;
+        public final long expiryMs;
+        public final Object securityContext;
+        public final String csrfToken;
+        public Session(String sessionId, String tenantId, String userId,
+                       Map<String, String> attributes, long expiryMs,
+                       Object securityContext, String csrfToken) {
+            this.sessionId = sessionId;
+            this.tenantId = tenantId;
+            this.userId = userId;
+            this.attributes = attributes;
+            this.expiryMs = expiryMs;
+            this.securityContext = securityContext;
+            this.csrfToken = csrfToken;
+        }
+    }
+    static final class Status {
+        public final int code;
+        public Status(int code) { this.code = code; }
+    }
+    static final class ResolveResult {
+        public final Optional<Session> session;
+        public final Status status;
+        public final String code;
+        public ResolveResult(Optional<Session> session, Status status, String code) {
+            this.session = session;
+            this.status = status;
+            this.code = code;
+        }
+        public boolean ok() { return session.isPresent() && status == null; }
+    }
+    static final class Request {
+        public final String cookieSid;
+        public final String csrfToken;
+        public Request(String cookieSid, String csrfToken) {
+            this.cookieSid = cookieSid;
+            this.csrfToken = csrfToken;
+        }
+    }
+
+    private final long ttlMs;
+    private long seq = 0;
+    private final Map<String, Session> sessions = new HashMap<>();
+    private final Set<String> disabledTenants = new HashSet<>();
+
+    SessionStore(long ttlMs) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void disableTenant(String tenantId) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean isTenantDisabled(String tenantId) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    Optional<Session> create(String tenantId, String userId, long nowMs) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    Optional<Session> get(String sid, long nowMs) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    Optional<Session> renew(String sid, long nowMs) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    ResolveResult resolve(Request req, long nowMs) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    Optional<Session> afterLogin(String oldSid, long nowMs) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void setSecurityContext(String sid, Object ctx) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void putAttribute(String sid, String key, String value) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean hasAttributes(String sid, String key) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!java.util.Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    public static void main(String[] args) {
+        check("create returns session with csrf and ttl", () -> {
+            SessionStore store = new SessionStore(1000);
+            SessionStore.Session s = store.create("t1", "u1", 0).orElseThrow();
+            if (s.sessionId == null) throw new AssertionError("sessionId null");
+            if (s.csrfToken == null) throw new AssertionError("csrf null");
+            eq(1000L, s.expiryMs);
+            if (s.securityContext != null) throw new AssertionError("context phai null khi tao");
+        });
+        check("resolve valid session renews expiry", () -> {
+            SessionStore store = new SessionStore(1000);
+            SessionStore.Session s = store.create("t1", "u1", 0).get();
+            store.setSecurityContext(s.sessionId, "ctx");
+            SessionStore.ResolveResult r = store.resolve(new SessionStore.Request(s.sessionId, s.csrfToken), 100);
+            if (!r.ok()) throw new AssertionError("resolve phai ok");
+            eq(s.sessionId, r.session.get().sessionId);
+            if (r.session.get().expiryMs <= s.expiryMs) throw new AssertionError("expiry phai renew");
+        });
+        check("tenant disabled returns 401 not 500", () -> {
+            SessionStore store = new SessionStore(1000);
+            SessionStore.Session s = store.create("t1", "u1", 0).get();
+            store.setSecurityContext(s.sessionId, "ctx");
+            store.disableTenant("t1");
+            SessionStore.ResolveResult r = store.resolve(new SessionStore.Request(s.sessionId, s.csrfToken), 10);
+            if (r.session.isPresent()) throw new AssertionError("session phai rong");
+            eq(401, r.status.code);
+        });
+        check("csrf mismatch rejects", () -> {
+            SessionStore store = new SessionStore(1000);
+            SessionStore.Session s = store.create("t1", "u1", 0).get();
+            store.setSecurityContext(s.sessionId, "ctx");
+            SessionStore.ResolveResult r = store.resolve(new SessionStore.Request(s.sessionId, "wrong-csrf"), 10);
+            if (r.session.isPresent()) throw new AssertionError("session phai rong");
+            eq(403, r.status.code);
+        });
+        check("session fixation rotates sid", () -> {
+            SessionStore store = new SessionStore(1000);
+            SessionStore.Session s = store.create("t1", "u1", 0).get();
+            store.setSecurityContext(s.sessionId, "ctx");
+            SessionStore.Session rotated = store.afterLogin(s.sessionId, 5).orElseThrow();
+            if (rotated.sessionId.equals(s.sessionId)) throw new AssertionError("sid phai doi");
+            eq(s.userId, rotated.userId);
+            SessionStore.ResolveResult oldResolve = store.resolve(new SessionStore.Request(s.sessionId, s.csrfToken), 5);
+            if (oldResolve.session.isPresent()) throw new AssertionError("sid cu phai het quyen");
+            SessionStore.ResolveResult newResolve = store.resolve(new SessionStore.Request(rotated.sessionId, rotated.csrfToken), 5);
+            if (!newResolve.ok()) throw new AssertionError("sid moi phai hop le");
+        });
+        check("null security context returns ANON", () -> {
+            SessionStore store = new SessionStore(1000);
+            SessionStore.Session s = store.create("t1", "u1", 0).get();
+            SessionStore.ResolveResult r = store.resolve(new SessionStore.Request(s.sessionId, s.csrfToken), 10);
+            if (r.session.isPresent()) throw new AssertionError("session phai rong");
+            eq("ANON", r.code);
+        });
+        check("expired session is rejected", () -> {
+            SessionStore store = new SessionStore(1000);
+            SessionStore.Session s = store.create("t1", "u1", 0).get();
+            store.setSecurityContext(s.sessionId, "ctx");
+            SessionStore.ResolveResult r = store.resolve(new SessionStore.Request(s.sessionId, s.csrfToken), 2000);
+            if (r.session.isPresent()) throw new AssertionError("session phai rong");
+            eq(401, r.status.code);
+        });
+        check("hasAttributes is idempotent", () -> {
+            SessionStore store = new SessionStore(1000);
+            SessionStore.Session s = store.create("t1", "u1", 0).get();
+            store.putAttribute(s.sessionId, "email", "a@b.com");
+            eq(true, store.hasAttributes(s.sessionId, "email"));
+            eq(true, store.hasAttributes(s.sessionId, "email"));
+            eq(false, store.hasAttributes(s.sessionId, "nope"));
+        });
+        check("invalid ttl is rejected", () -> {
+            try { new SessionStore(0); }
+            catch (IllegalArgumentException e) { return; }
+            throw new AssertionError("ttl 0 phai nem IllegalArgumentException");
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+
+final class SessionStore {
+    static final class Session {
+        public final String sessionId;
+        public final String tenantId;
+        public final String userId;
+        public final Map<String, String> attributes;
+        public final long expiryMs;
+        public final Object securityContext;
+        public final String csrfToken;
+        public Session(String sessionId, String tenantId, String userId,
+                       Map<String, String> attributes, long expiryMs,
+                       Object securityContext, String csrfToken) {
+            this.sessionId = sessionId;
+            this.tenantId = tenantId;
+            this.userId = userId;
+            this.attributes = attributes;
+            this.expiryMs = expiryMs;
+            this.securityContext = securityContext;
+            this.csrfToken = csrfToken;
+        }
+    }
+    static final class Status {
+        public final int code;
+        public Status(int code) { this.code = code; }
+    }
+    static final class ResolveResult {
+        public final Optional<Session> session;
+        public final Status status;
+        public final String code;
+        public ResolveResult(Optional<Session> session, Status status, String code) {
+            this.session = session;
+            this.status = status;
+            this.code = code;
+        }
+        public boolean ok() { return session.isPresent() && status == null; }
+    }
+    static final class Request {
+        public final String cookieSid;
+        public final String csrfToken;
+        public Request(String cookieSid, String csrfToken) {
+            this.cookieSid = cookieSid;
+            this.csrfToken = csrfToken;
+        }
+    }
+
+    private final long ttlMs;
+    private long seq = 0;
+    private final Map<String, Session> sessions = new HashMap<>();
+    private final Set<String> disabledTenants = new HashSet<>();
+
+    SessionStore(long ttlMs) {
+        if (ttlMs < 1) throw new IllegalArgumentException("ttl phai >= 1");
+        this.ttlMs = ttlMs;
+    }
+
+    void disableTenant(String tenantId) { disabledTenants.add(tenantId); }
+    boolean isTenantDisabled(String tenantId) { return disabledTenants.contains(tenantId); }
+
+    private String newSid() { return "sid-" + (++seq); }
+    private String newCsrf() { return "csrf-" + (++seq); }
+
+    Optional<Session> create(String tenantId, String userId, long nowMs) {
+        String sid = newSid();
+        Session s = new Session(sid, tenantId, userId, new HashMap<>(), nowMs + ttlMs, null, newCsrf());
+        sessions.put(sid, s);
+        return Optional.of(s);
+    }
+
+    Optional<Session> get(String sid, long nowMs) {
+        Session s = sessions.get(sid);
+        if (s == null) return Optional.empty();
+        if (nowMs > s.expiryMs) { sessions.remove(sid); return Optional.empty(); }
+        return Optional.of(s);
+    }
+
+    Optional<Session> renew(String sid, long nowMs) {
+        Session s = sessions.get(sid);
+        if (s == null || nowMs > s.expiryMs) return Optional.empty();
+        Session renewed = new Session(s.sessionId, s.tenantId, s.userId, s.attributes, nowMs + ttlMs, s.securityContext, s.csrfToken);
+        sessions.put(sid, renewed);
+        return Optional.of(renewed);
+    }
+
+    ResolveResult resolve(Request req, long nowMs) {
+        if (req == null || req.cookieSid == null) {
+            return new ResolveResult(Optional.empty(), new Status(401), null);
+        }
+        Session s = sessions.get(req.cookieSid);
+        if (s == null) return new ResolveResult(Optional.empty(), new Status(401), null);
+        if (nowMs > s.expiryMs) { sessions.remove(req.cookieSid); return new ResolveResult(Optional.empty(), new Status(401), null); }
+        if (disabledTenants.contains(s.tenantId)) {
+            return new ResolveResult(Optional.empty(), new Status(401), null);
+        }
+        if (req.csrfToken == null || !s.csrfToken.equals(req.csrfToken)) {
+            return new ResolveResult(Optional.empty(), new Status(403), null);
+        }
+        if (s.securityContext == null) {
+            return new ResolveResult(Optional.empty(), new Status(401), "ANON");
+        }
+        Session renewed = new Session(s.sessionId, s.tenantId, s.userId, s.attributes, nowMs + ttlMs, s.securityContext, s.csrfToken);
+        sessions.put(s.sessionId, renewed);
+        return new ResolveResult(Optional.of(renewed), null, null);
+    }
+
+    Optional<Session> afterLogin(String oldSid, long nowMs) {
+        Session old = sessions.get(oldSid);
+        if (old == null) return Optional.empty();
+        sessions.remove(oldSid);
+        String newSid = newSid();
+        Session rotated = new Session(newSid, old.tenantId, old.userId, new HashMap<>(old.attributes), nowMs + ttlMs, old.securityContext, newCsrf());
+        sessions.put(newSid, rotated);
+        return Optional.of(rotated);
+    }
+
+    void setSecurityContext(String sid, Object ctx) {
+        Session s = sessions.get(sid);
+        if (s == null) return;
+        Session updated = new Session(s.sessionId, s.tenantId, s.userId, s.attributes, s.expiryMs, ctx, s.csrfToken);
+        sessions.put(sid, updated);
+    }
+
+    void putAttribute(String sid, String key, String value) {
+        Session s = sessions.get(sid);
+        if (s == null) return;
+        s.attributes.put(key, value);
+    }
+
+    boolean hasAttributes(String sid, String key) {
+        Session s = sessions.get(sid);
+        if (s == null) return false;
+        return s.attributes.containsKey(key);
+    }
+}`,
+      hints: [
+        'Kiểm tra tenant disabled **trước** khi dereference tenant; trả {{Status(401)}} thay vì để NPE thành 500.',
+        'CSRF so bằng {{equals}} trên chuỗi token; cookie hợp lệ nhưng token sai thì reject (403).',
+        'Session fixation: {{afterLogin}} phải **xoá sid cũ** và tạo sid mới giữ cùng {{userId}}; trả phiên mới.',
+        'NullSecurityContext: trả mã {{ANON}} và dừng, không gọi method trên context null.',
+        'Renew expiry khi {{resolve}} thành công; đồng hồ lùi thì không nới expiry.',
+      ],
+      explain: `Bẫy lớn nhất là dereference tenant/context null và biến thành 500; thiếu quyền phải là 401/403 và dừng ngay. CSRF phải so token riêng, không tin cookie. Session fixation xử lý bằng rotate sid và invalidate sid cũ. {{hasAttributes}} idempotent vì chỉ kiểm tra {{containsKey}}, gọi nhiều lần không thay đổi trạng thái.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Vì sao tenant disabled không được trả HTTP 500?',
+      options: [
+        'Vì 500 chậm hơn 401',
+        'Vì 500 là lỗi server và lộ kênh dò thông tin, thiếu quyền phải là 401/403',
+        'Vì Spring Security luôn trả 404 cho tenant disabled',
+        'Vì 500 làm client retry vô hạn',
+      ],
+      answer: 1,
+      explain: `Thiếu quyền/xác thực là lỗi client (4xx), không phải lỗi server (5xx). Trả 500 còn biến thành kênh dò: attacker biết tenant bị vô hiệu và có thể enumerate; đồng thời phá monitoring vì mọi alert đều kích hoạt. Quy tắc: không có quyền → 401/403, dừng ngay.`,
+    },
+    {
+      q: 'Session fixation attack được chặn bằng cách nào?',
+      options: [
+        'Đặt cookie HttpOnly',
+        'Rotate sessionId sau đăng nhập và invalidate sid cũ',
+        'Mã hoá cookie bằng AES',
+        'Tăng TTL của session',
+      ],
+      answer: 1,
+      explain: `Attacker biết sid anonymous và dụ nạn nhân đăng nhập trên cùng sid; nếu sid không đổi thì attacker có phiên đã xác thực. Rotate sid sau login (giữ userId) và xoá sid cũ chặn được: attacker chỉ còn sid anonymous vô dụng. HttpOnly/AES/TTL không giải quyết fixation.`,
+    },
+    {
+      q: 'NullSecurityContext trong filter chain nên xử lý thế nào?',
+      options: [
+        'Ném NullPointerException để framework trả 500',
+        'Bỏ qua request và tiếp tục chuỗi filter',
+        'Trả mã ANON và dừng, coi anonymous là trạng thái bình thường',
+        'Tự tạo context mặc định với quyền ADMIN',
+      ],
+      answer: 2,
+      explain: `Anonymous là trạng thái hợp lệ trước đăng nhập; dereference null thành NPE/500 vừa sai vừa lộ lỗi. Phải null-check và trả mã ANON (hoặc anonymous authentication) rồi dừng xử lý bảo vệ. Tự tạo context ADMIN là leo thang quyền kinh khủng.`,
+    },
+  ],
+  related: ['security-005', 'security-009', 'security-011'],
+  tags: ['session', 'CSRF', 'session fixation', 'security context'],
+},
+{
+  id: 'lesson-security-005',
+  track: 'security',
+  order: 5,
+  title: 'Role matrix OWNER/STEWARD/ADMIN theo domain: write, read và grant',
+  level: 'senior',
+  minutes: 45,
+  goals: [
+    'Mô tả được ma trận quyền OWNER/STEWARD/ADMIN/USER theo từng domain project/billing/vm',
+    'Triển khai được {{AccessChecker}} với {{canWrite}}, {{canRead}}, {{canGrant}} và {{canDelete}}',
+    'Phát hiện được lỗi copy-paste khiến rule của billing bị sai (leak) bằng test bijection',
+    'Giải thích được vì sao grant là quyền riêng, không đi kèm write',
+  ],
+  body: `### Role matrix theo domain
+Trong hệ thống nhiều domain (project, billing, vm), quyền không thể dùng một boolean chung cho mọi nơi. Mỗi domain có ma trận riêng: {{OWNER}} đủ quyền trong domain đó; {{STEWARD}} write/data nhưng không delete cũng không grant; {{ADMIN}} đọc, delete và grant nhưng không write data; {{USER}} chỉ read. Bài này mô phỏng {{AccessChecker}} bằng Java thuần, không dùng Spring Security.
+
+### canRead, canWrite, canDelete, canGrant
+- {{canRead(role, domain)}}: mọi role đều đọc được mọi domain (kể cả USER). Read là quyền cơ bản.
+- {{canWrite(role, domain)}}: chỉ OWNER và STEWARD. ADMIN không write data để tránh sửa dữ liệu nghiệp vụ; USER không write.
+- {{canDelete(role, domain)}}: OWNER và ADMIN. STEWARD không delete để tránh xoá nhầm dữ liệu quan trọng; USER không delete.
+- {{canGrant(role)}}: OWNER và ADMIN. Grant là quyền quản trị, không phụ thuộc domain trong bài này; STEWARD/USER không grant để tránh leo thang.
+
+### "Copy paste kẻ im lặng": billing leak
+Lỗi kinh điển: viết rule đúng cho project, rồi copy sang billing nhưng quên sửa một nhánh (ví dụ ADMIN vẫn write ở billing). Test phải kiểm tra **từng domain riêng** (bijection): với cùng role, kết quả canWrite/canRead ở billing và vm phải khớp baseline project; nếu một domain lệch là fail. Vì vậy không được dùng một map chung rồi "tin" nó đúng cho mọi domain — phải có mapping riêng cho từng domain và test so sánh.
+
+### Grant là quyền riêng, không đi kèm write
+Nhiều người nghĩ "ai write được thì grant được" — sai. STEWARD write data nhưng không được cấp quyền cho người khác; nếu không, STEWARD có thể tự cấp ADMIN cho mình (leo thang). Grant phải là quyền quản trị riêng (OWNER/ADMIN). Tương tự delete tách khỏi write: người nhập liệu (STEWARD) không nên xoá dữ liệu đã commit.
+
+### Bẫy production
+- Dùng một enum permission chung không theo domain → rule đúng chỗ này sai chỗ khác; phải theo domain.
+- Copy-paste rule giữa các domain mà không test từng domain → leak im lặng; test bijection bắt được.
+- Trộn grant vào write → leo thang quyền.
+- Không audit log khi grant/revoke → không truy vết được ai cấp quyền cho ai.
+- Cache permission trong session mà không invalidate khi role thay đổi → user bị revoke vẫn còn quyền.
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: "phân quyền theo domain thế nào?", "vì sao STEWARD không delete?", "grant và write khác nhau ra sao?", "làm sao phát hiện rule copy-paste sai?". Làm xong bài tập dưới đây — tự viết {{AccessChecker}} và test bijection — là bạn trả lời được cả bốn câu bằng chính mã của mình.`,
+  exercises: [
+    {
+      title: 'Viết AccessChecker: ma trận quyền OWNER/STEWARD/ADMIN/USER theo domain',
+      prompt: `Hoàn thiện {{AccessChecker}} — kiểm tra quyền theo domain, chỉ dùng JDK 17:
+
+- Enum {{Role}} (OWNER, STEWARD, ADMIN, USER) và {{Domain}} (project, billing, vm).
+- {{canRead(role, domain)}}: mọi role đều đọc được mọi domain.
+- {{canWrite(role, domain)}}: chỉ OWNER và STEWARD (mọi domain).
+- {{canDelete(role, domain)}}: chỉ OWNER và ADMIN (mọi domain).
+- {{canGrant(role)}}: chỉ OWNER và ADMIN (không phụ thuộc domain).
+- Quyền phải đúng cho **từng domain**; test bijection sẽ so sánh billing/vm với project để phát hiện copy-paste leak.`,
+      starter: `final class AccessChecker {
+    enum Role { OWNER, STEWARD, ADMIN, USER }
+    enum Domain { project, billing, vm }
+
+    static boolean canRead(Role role, Domain domain) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static boolean canWrite(Role role, Domain domain) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static boolean canDelete(Role role, Domain domain) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static boolean canGrant(Role role) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    public static void main(String[] args) {
+        check("every role can read every domain", () -> {
+            for (AccessChecker.Role r : AccessChecker.Role.values())
+                for (AccessChecker.Domain d : AccessChecker.Domain.values())
+                    if (!AccessChecker.canRead(r, d)) throw new AssertionError(r + " khong read duoc " + d);
+        });
+        check("write: only OWNER and STEWARD", () -> {
+            for (AccessChecker.Domain d : AccessChecker.Domain.values()) {
+                if (!AccessChecker.canWrite(AccessChecker.Role.OWNER, d)) throw new AssertionError("OWNER phai write duoc " + d);
+                if (!AccessChecker.canWrite(AccessChecker.Role.STEWARD, d)) throw new AssertionError("STEWARD phai write duoc " + d);
+                if (AccessChecker.canWrite(AccessChecker.Role.ADMIN, d)) throw new AssertionError("ADMIN khong duoc write " + d);
+                if (AccessChecker.canWrite(AccessChecker.Role.USER, d)) throw new AssertionError("USER khong duoc write " + d);
+            }
+        });
+        check("delete: only OWNER and ADMIN", () -> {
+            for (AccessChecker.Domain d : AccessChecker.Domain.values()) {
+                if (!AccessChecker.canDelete(AccessChecker.Role.OWNER, d)) throw new AssertionError("OWNER phai delete duoc " + d);
+                if (!AccessChecker.canDelete(AccessChecker.Role.ADMIN, d)) throw new AssertionError("ADMIN phai delete duoc " + d);
+                if (AccessChecker.canDelete(AccessChecker.Role.STEWARD, d)) throw new AssertionError("STEWARD khong duoc delete " + d);
+                if (AccessChecker.canDelete(AccessChecker.Role.USER, d)) throw new AssertionError("USER khong duoc delete " + d);
+            }
+        });
+        check("grant: only OWNER and ADMIN", () -> {
+            if (!AccessChecker.canGrant(AccessChecker.Role.OWNER)) throw new AssertionError("OWNER phai grant duoc");
+            if (!AccessChecker.canGrant(AccessChecker.Role.ADMIN)) throw new AssertionError("ADMIN phai grant duoc");
+            if (AccessChecker.canGrant(AccessChecker.Role.STEWARD)) throw new AssertionError("STEWARD khong duoc grant");
+            if (AccessChecker.canGrant(AccessChecker.Role.USER)) throw new AssertionError("USER khong duoc grant");
+        });
+        check("billing is not a leaked copy of project", () -> {
+            for (AccessChecker.Role r : AccessChecker.Role.values()) {
+                boolean baseWrite = AccessChecker.canWrite(r, AccessChecker.Domain.project);
+                boolean baseRead = AccessChecker.canRead(r, AccessChecker.Domain.project);
+                boolean baseDelete = AccessChecker.canDelete(r, AccessChecker.Domain.project);
+                if (AccessChecker.canWrite(r, AccessChecker.Domain.billing) != baseWrite) throw new AssertionError("billing write lech o " + r);
+                if (AccessChecker.canRead(r, AccessChecker.Domain.billing) != baseRead) throw new AssertionError("billing read lech o " + r);
+                if (AccessChecker.canDelete(r, AccessChecker.Domain.billing) != baseDelete) throw new AssertionError("billing delete lech o " + r);
+                if (AccessChecker.canWrite(r, AccessChecker.Domain.vm) != baseWrite) throw new AssertionError("vm write lech o " + r);
+            }
+        });
+        check("STEWARD cannot delete or grant (no escalation)", () -> {
+            for (AccessChecker.Domain d : AccessChecker.Domain.values()) {
+                if (AccessChecker.canDelete(AccessChecker.Role.STEWARD, d)) throw new AssertionError("STEWARD delete leak");
+                if (AccessChecker.canGrant(AccessChecker.Role.STEWARD)) throw new AssertionError("STEWARD grant leak");
+            }
+        });
+        check("ADMIN cannot write data", () -> {
+            for (AccessChecker.Domain d : AccessChecker.Domain.values())
+                if (AccessChecker.canWrite(AccessChecker.Role.ADMIN, d)) throw new AssertionError("ADMIN write leak o " + d);
+        });
+        check("USER is read-only", () -> {
+            for (AccessChecker.Domain d : AccessChecker.Domain.values()) {
+                if (AccessChecker.canWrite(AccessChecker.Role.USER, d)) throw new AssertionError("USER write leak");
+                if (AccessChecker.canDelete(AccessChecker.Role.USER, d)) throw new AssertionError("USER delete leak");
+                if (AccessChecker.canGrant(AccessChecker.Role.USER)) throw new AssertionError("USER grant leak");
+            }
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `final class AccessChecker {
+    enum Role { OWNER, STEWARD, ADMIN, USER }
+    enum Domain { project, billing, vm }
+
+    static boolean canRead(Role role, Domain domain) {
+        return true;
+    }
+
+    static boolean canWrite(Role role, Domain domain) {
+        return role == Role.OWNER || role == Role.STEWARD;
+    }
+
+    static boolean canDelete(Role role, Domain domain) {
+        return role == Role.OWNER || role == Role.ADMIN;
+    }
+
+    static boolean canGrant(Role role) {
+        return role == Role.OWNER || role == Role.ADMIN;
+    }
+}`,
+      hints: [
+        '{{canRead}} trả true cho mọi role/domain; read là quyền cơ bản.',
+        '{{canWrite}} chỉ OWNER và STEWARD; ADMIN không write data để tránh sửa nghiệp vụ.',
+        '{{canDelete}} OWNER và ADMIN; STEWARD không delete.',
+        '{{canGrant}} OWNER và ADMIN, không phụ thuộc domain; grant tách khỏi write để tránh leo thang.',
+        'Test bijection so sánh billing/vm với project để phát hiện copy-paste leak.',
+      ],
+      explain: `Bẫy lớn nhất là dùng một rule chung cho mọi domain rồi copy-paste sai; test bijection so từng domain bắt được. Grant phải tách khỏi write: STEWARD write data nhưng không cấp quyền, nếu không leo thang. Delete tách khỏi write: người nhập liệu không xoá dữ liệu đã commit. Ma trận này là nền tảng của RBAC theo domain trong Spring Security.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Trong ma trận này, ai được write data?',
+      options: ['OWNER và ADMIN', 'OWNER và STEWARD', 'OWNER, STEWARD và ADMIN', 'Chỉ OWNER'],
+      answer: 1,
+      explain: `OWNER đủ quyền trong domain; STEWARD write/data nhưng không delete/grant. ADMIN chỉ read/delete/grant, không write data. USER chỉ read. Vì vậy write là OWNER + STEWARD.`,
+    },
+    {
+      q: 'Vì sao STEWARD không được grant quyền?',
+      options: [
+        'Vì STEWARD không có tài khoản email',
+        'Vì grant là quyền quản trị riêng; nếu STEWARD grant được thì tự cấp ADMIN cho mình (leo thang)',
+        'Vì grant chỉ dùng cho billing',
+        'Vì STEWARD đã có write nên không cần grant',
+      ],
+      answer: 1,
+      explain: `Grant là quyền quản trị tách biệt với write. Nếu người write data cũng grant được, họ tự cấp quyền cao hơn cho mình → leo thang. Vì vậy chỉ OWNER và ADMIN grant; STEWARD/USER không.`,
+    },
+    {
+      q: 'Test bijection trong bài này dùng để phát hiện lỗi gì?',
+      options: [
+        'Phát hiện duplicate role',
+        'Phát hiện rule copy-paste sai giữa các domain (ví dụ ADMIN write ở billing)',
+        'Phát hiện user không tồn tại',
+        'Phát hiện cache permission',
+      ],
+      answer: 1,
+      explain: `Copy-paste rule giữa các domain mà quên sửa nhánh là lỗi im lặng: billing có thể cho ADMIN write dù project không. Test bijection so từng domain với baseline project; nếu một domain lệch là fail ngay. Duplicate role/cache không phải mục tiêu của test này.`,
+    },
+  ],
+  related: ['security-006', 'security-010', 'security-012'],
+  tags: ['authorization', 'RBAC', 'role matrix', 'domain'],
+},
 );
+
