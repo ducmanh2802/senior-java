@@ -1,6 +1,6 @@
 # T279 — Track `architecture`: LLD / OOP design bằng Java tự chấm (phần 1)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/lessons-architecture.js`
 
@@ -15,3 +15,10 @@ Mỗi bài:
 - `node scripts/test-lessons.js` (reference pass, starter không pass) và `node scripts/validate.js` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã hoàn thiện 4 bài `lesson-architecture-001..004` (order 1..4): Parking Lot, Elevator, Notification Service, Vending Machine.
+- Mỗi bài có body > 4500 ký tự, sơ đồ class `~~~text`, bảng trade-off và mục SOLID; kết bằng `### Liên hệ phỏng vấn`.
+- Bài tập: 001 Strategy (5 case), 002 State pattern + tick (13 case, có state mở rộng), 003 Observer (8 case, chặn subscribe trùng), 004 gồm DP tiền thừa có giới hạn (12 case) và VendingMachine state machine (22 case, có hết hàng / thiếu tiền / hết tiền lẻ / thêm sản phẩm).
+- `node scripts/test-lessons.js` → `Lesson exercises OK: 77/77`; `node scripts/validate.js` → `OK — không có lỗi.`
+- Lưu ý (không thuộc quyền sửa): validator còn cảnh báo 4 bài architecture chưa nằm trong `js/data/path.js`. Đề xuất integrator thêm `lesson-architecture-001..004` vào path khi phù hợp.
+

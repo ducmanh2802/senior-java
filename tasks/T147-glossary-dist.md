@@ -1,6 +1,6 @@
 # T147 — Từ điển thuật ngữ: thanh toán, hệ phân tán, microservices
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/glossary-dist.js`
 
@@ -9,3 +9,9 @@ Owns: `js/data/glossary-dist.js`
 Mỗi entry: `short` 1 câu dễ hiểu không dùng thuật ngữ khác; `body` 800–2000 ký tự gồm **### Ví dụ đời thường** (so sánh với đời sống: ngân hàng, quán cà phê, giao hàng…), **### Cơ chế** (từng bước), một sơ đồ ASCII trong `~~~text` (sequence giữa client/server/DB hoặc hộp-mũi-tên), **### Khi nào dùng**, **### Hay nhầm với** (so sánh với thuật ngữ gần nghĩa). `aliases`: viết thường, gồm biến thể số nhiều/viết tắt hay gặp trong đáp án (grep `js/data/q-*.js` để lấy đúng cách viết đang dùng). `related`: id entry khác (trong file này hoặc 2 file glossary còn lại nếu chắc chắn có). `refs` 1–3: ưu tiên tài liệu chính thức và video hội thảo/kênh uy tín; **chỉ link chắc chắn tồn tại** — chạy `node scripts/check-links.mjs js/data/glossary-dist.js` nếu script đã hỗ trợ glossary, không thì tự kiểm tra; không chắc thì bỏ refs. Không backtick, không `${`. `node scripts/validate.js` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã thêm 37 entry vào `js/data/glossary-dist.js`: idempotency, idempotency key, payment intent, retry, exponential backoff, at-least-once / at-most-once / exactly-once, dead letter queue, transactional outbox, saga, two-phase commit, eventual/strong consistency, CAP, distributed lock, leader election, circuit breaker, bulkhead, rate limiting, backpressure, message broker, consumer group, partition, offset, event sourcing, CQRS, API gateway, service discovery, double-entry ledger, reconciliation, chargeback, webhook, correlation id, distributed tracing, timeout budget, fan-out.
+- Mỗi entry đủ 4 mục bắt buộc, có sơ đồ `~~~text`, `short` 1 câu, alias lowercase, `related` trỏ đúng id trong file, `refs` 1–2 link chính thức/uy tín. Body dài 1351–1999 ký tự (đã kiểm tra không có backtick và không có `${`).
+- `node scripts/validate.js` → OK — không có lỗi.
+- `node scripts/check-links.mjs glossary-dist.js` → 42 link, 0 hỏng; 2 cảnh báo do một số site chặn bot (InfoQ 405, W3C 403).
+- `node --check js/data/glossary-dist.js` và render thử toàn bộ body qua `App.md()` (37/37) đều OK.
+- Không sửa file nào ngoài `js/data/glossary-dist.js` và file task này.

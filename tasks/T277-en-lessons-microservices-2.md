@@ -1,6 +1,6 @@
 # T277 — Dịch sang tiếng Anh: lessons-microservices (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-microservices-2.en.js`
 

@@ -19,3 +19,4 @@ Body nêu công cụ production (Kafka, Debezium, Spring Cloud Stream, OpenTelem
 - Đã tạo đủ 5 bài và 5 bài tập Java 17; tự biên dịch starter/reference và chạy các bộ test T115, tất cả reference pass.
 - `node scripts/validate.js` hiện báo `lessons-microservices.js: file không được khai báo trong index.html`. Task quy định không sửa `index.html` và integrator sẽ gắn script tag; cần integrator thêm file này vào index rồi chạy lại validator.
 Reviewed-by: claude (T115R)
+Verify-failed: 2026-10-24 09:07:58

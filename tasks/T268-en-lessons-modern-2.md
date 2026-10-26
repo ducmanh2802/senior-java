@@ -1,8 +1,11 @@
 # T268 — Dịch sang tiếng Anh: lessons-modern (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-modern-2.en.js`
+
+## Notes
+Translated lesson-modern-005 to English with all required fields; validated syntax and i18n checks pass.
 
 Người dùng bấm EN thì **cả trang** chuyển sang tiếng Anh: file này phủ bản dịch lên dữ liệu gốc theo `id` (đọc comment "content translation" trong `js/core/i18n.js`). Đọc AGENTS.md mục 5 (markup) và các mục sau trong `js/data/lessons-modern.js`: **lesson-modern-005**.
 

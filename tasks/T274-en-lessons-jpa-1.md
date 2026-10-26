@@ -1,6 +1,9 @@
 # T274 — Dịch sang tiếng Anh: lessons-jpa (5 mục)
 
-Status: TODO
+Status: DONE
+
+Notes:
+Completed translation in js/i18n/lessons-jpa-1.en.js (5 lessons). node --check OK, check-i18n OK. validate.js reports unrelated errors in lessons-devops.js and path.js owned by other tasks.
 Agent: opencode
 Owns: `js/i18n/lessons-jpa-1.en.js`
 

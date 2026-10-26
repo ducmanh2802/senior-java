@@ -1,6 +1,6 @@
 # T260 — Dịch sang tiếng Anh: labs-incident (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/labs-incident-2.en.js`
 
@@ -16,3 +16,5 @@ Yêu cầu dịch:
 - `node --check js/i18n/labs-incident-2.en.js` và `node scripts/check-i18n.js labs-incident-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+Dịch lab-incident-003 (title, scenario, questions, hints, answer, rubric) sang tiếng Anh trong `js/i18n/labs-incident-2.en.js`. `node --check` và `node scripts/check-i18n.js labs-incident-2` OK; `node scripts/validate.js` OK.

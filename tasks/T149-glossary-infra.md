@@ -1,8 +1,9 @@
 # T149 — Từ điển thuật ngữ: database, hạ tầng, cloud, bảo mật
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/glossary-infra.js`
+Ghi chú: File đã có 37 entry hoàn chỉnh từ lần trước. Kiểm tra lại: tất cả có đủ `short`, `body` (có đủ 5 mục + `~~~text`), `aliases`, `related`, `refs` (1-3 link thật). Không có `\`` hoặc `${` trong body. `node scripts/validate.js` OK. `node --check` OK. `node scripts/check-links.mjs js/data/glossary-infra.js` OK.
 
 Đọc comment schema đầu file (đã có sẵn, rỗng, đã gắn index.html), AGENTS.md mục 5 (markup) và 13 (refs). Người đọc: dev Java junior người Việt, chưa từng nghe thuật ngữ này. Thêm **~35 entry** vào `glossary-infra.js`: ACID, isolation level, MVCC, dirty/non-repeatable/phantom read, index (B-tree), covering index, query plan (EXPLAIN), sharding, partitioning, replication lag, read replica, connection pool exhaustion, cache-aside, cache stampede, TTL, CDN, load balancer, container, Kubernetes pod, readiness/liveness probe, HPA autoscaling, blue-green / canary deployment, infrastructure as code, observability (log/metric/trace), SLO/SLA/SLI, p99 latency, JWT, OAuth2, PKCE, mTLS, secret rotation, IDOR, SSRF, PCI DSS.
 

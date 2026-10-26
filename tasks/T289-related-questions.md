@@ -1,6 +1,6 @@
 # T289 — Câu hỏi phỏng vấn liên quan hiện ngay tại chỗ (dùng chung mọi màn)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/core/related.js`, `css/related.css`, `js/views/learn.js`, `js/views/path.js`, `js/views/labs.js`, `js/core/glossary.js`
 
@@ -19,3 +19,5 @@ Người học đang đọc bài học / thuật ngữ / lab muốn xem luôn c�
 4. `node --check` mọi file + `node scripts/validate.js` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+Đã implement `App.ui.relatedQuestions` (chọn theo ids → topic/tags/text, ưu tiên mid/senior), details có đáp án/follow/status/bookmark, event delegation 1 lần; gắn vào learn, path, labs (map category) và modal glossary. CSS `.rq-*` dùng biến, responsive 360px. `node --check` 5 file + `node scripts/validate.js` → OK.

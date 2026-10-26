@@ -1,6 +1,6 @@
 # T267 — Dịch sang tiếng Anh: lessons-modern (4 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-modern-1.en.js`
 
@@ -16,3 +16,6 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-modern-1.en.js` và `node scripts/check-i18n.js lessons-modern-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+- DONE: dịch đủ 4 mục lesson-modern-001..004 (title, goals, body, exercises, check — không chép starter/tests/reference) vào `js/i18n/lessons-modern-1.en.js`.
+- `node --check` OK; `node scripts/check-i18n.js lessons-modern-1` → "OK — 4 mục đã dịch."
+- `node scripts/validate.js` chỉ còn lỗi từ file của task khác (q-spring-data.js, lessons-devops.js, lessons-spring.js, lessons-security.js, path.js — các task đang chạy song song); đã đối chiếu trước/sau bằng git stash: file của task này không gây thêm lỗi nào.

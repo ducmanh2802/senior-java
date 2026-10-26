@@ -1,6 +1,6 @@
 # T261 — Dịch sang tiếng Anh: labs-incident (6 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/labs-incident-3.en.js`
 
@@ -16,3 +16,6 @@ Yêu cầu dịch:
 - `node --check js/i18n/labs-incident-3.en.js` và `node scripts/check-i18n.js labs-incident-3` → OK, rồi `Status: DONE`.
 
 ## Notes
+Đã dịch đủ 6 lab (004–009) vào js/i18n/labs-incident-3.en.js: title, scenario, questions, hints, answer, rubric; giữ markup, số liệu, "> Senior tip:", "**Summary:**".
+`node --check` OK, `node scripts/check-i18n.js labs-incident-3` OK (6 mục), `node scripts/validate.js` OK — không có lỗi.
+Ghi chú: ban đầu có field `level` trong 006–009, check-i18n báo không được phép, đã bỏ (004/005 gốc cũng không cần).

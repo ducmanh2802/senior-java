@@ -1,6 +1,6 @@
 # T280 — Track `architecture`: LLD / OOP design bằng Java tự chấm (phần 2)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 After: T279
 Owns: `js/data/lessons-architecture.js`
@@ -16,3 +16,13 @@ Mỗi bài:
 - `node scripts/test-lessons.js` (reference pass, starter không pass) và `node scripts/validate.js` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+Đã thêm 4 bài vào `js/data/lessons-architecture.js` (giữ nguyên 4 bài 001–004, splice trước `);`):
+
+- `lesson-architecture-005` (senior, 40'): Movie Ticket Booking — BookingService hold/confirm/cancel, hold có hạn với clock tiêm vào `LongSupplier`, lazy sweep + `synchronized` check-then-act, test race 16 thread (`CountDownLatch`, `ExecutorService` có timeout). 1 bài tập, 21 PASS.
+- `lesson-architecture-006` (mid, 35'): Splitwise — 2 bài tập: (1) SplitStrategy với EqualSplit/PercentSplit (floor + phân phát phần dư từng cent, dùng long cent không dùng double) và ExactSplit cho sẵn; (2) Ledger net balance + settle greedy (sort deterministic, tie theo id; settle không mutate net). 9 + 9 PASS, có test custom strategy (Open/Closed).
+- `lesson-architecture-007` (senior, 35'): Logging framework — LogRecord bất biến, filter chain kiểu phủ quyết (mọi filter phải accept), Decorator bọc Appender (PiiMask che chữ số, TimestampDecorator), nhiều appender; test thêm CountingAppender/OnlyOtp tự viết. 10 PASS.
+- `lesson-architecture-008` (mid, 30'): Text editor Undo/Redo — Command pattern với Cmd/InsertCmd/DeleteCmd cho sẵn, Editor gộp gõ liên tiếp (điều kiện: top là InsertCmd, cursor cuối text của nó, redoStack rỗng), history giới hạn (ArrayDeque addFirst/removeLast), run(Cmd) cho command mở rộng; test UpperCmd tự thêm. 21 PASS.
+
+Đã chạy: `node scripts/test-lessons.js lesson-architecture-005..008` (reference pass 100%, starter không pass, biên dịch JDK 17 `--release`) và `node scripts/validate.js` → **OK — không có lỗi.** (Cảnh báo về bài học chưa được liệt kê trong PATH vẫn còn như cũ, không thuộc phạm vi file này.)
+

@@ -1,6 +1,6 @@
 # T287 — View "Luyện System Design" (#/sd) bấm giờ từng pha
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/views/sd.js`, `css/views/sd.css`
 
@@ -14,3 +14,5 @@ Owns: `js/views/sd.js`, `css/views/sd.css`
 - Nếu `App.ui.relatedQuestions` tồn tại (js/core/related.js, task T289): cuối trang đề hiển thị `App.ui.relatedQuestions({ ids: problem.related, topic: "design", limit: 4 })`.
 
 ## Notes
+
+Đã implement view `#/sd` và `#/sd/<id>`: danh sách lọc kind/level/đã làm, 5 pha bấm giờ (pause/resume, tự chuyển pha, phím n/p), lưu nháp `sdDrafts`, mic dictation, AI chấm theo rubric, xem reference/followups, tự chấm 1–5 lưu `sdHistory` + log mock, related questions. CSS `.view-sd` dùng biến, responsive 360px. `node --check js/views/sd.js` + `node scripts/validate.js` → OK.

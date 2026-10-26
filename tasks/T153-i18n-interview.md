@@ -1,15 +1,14 @@
 # T153 — Song ngữ EN/VI cho giao diện: interview, mock, career
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/views/interview.js`, `js/views/mock.js`, `js/views/career.js`
 
-App đã có lõi i18n: đọc kỹ comment đầu `js/core/i18n.js` (`App.t`, `App.i18n.add`, `App.lang`, `App.setLang` render lại view hiện tại; `App.LEVELS`/`App.STATUS` tự đổi nhãn). Nút EN/VI ở header đã có. Chỉ **giao diện** song ngữ — nội dung dữ liệu (câu hỏi, đáp án, bài học, quiz, lab, roadmap, công ty…) giữ nguyên tiếng Việt, KHÔNG dịch.
-
-Với từng file được giao:
-1. Ở đầu IIFE gọi `App.i18n.add({ vi: {...}, en: {...} })` với key `<view>.<tên>` (ví dụ `bank.search`, `bank.found`). Bản `vi` giữ NGUYÊN chữ hiện tại (không đổi giọng văn); bản `en` là tiếng Anh tự nhiên, ngắn gọn kiểu UI (Title case cho tiêu đề, sentence case cho nút).
-2. Thay MỌI chuỗi tiếng Việt hiển thị cho người dùng (tiêu đề, nút, nhãn, placeholder, aria-label, title, thông báo, empty state, confirm/alert, toast, đơn vị như "câu", "phút", số nhiều tiếng Anh dùng `{n}`) bằng `App.t('key', { n })`. `title` của view → `get title() { return App.t('<view>.title'); }`. Ngày giờ: dùng `App.lang === 'en' ? 'en-US' : 'vi-VN'` cho `toLocale*String` nếu file đang tự format.
-3. Không đổi logic, class CSS, id, cấu trúc HTML; không sửa file khác (cần thì ghi `## Notes`). Chuỗi gửi cho AI (prompt, config interview) giữ nguyên.
-4. `node --check` từng file, `grep` lại để chắc không sót chuỗi tiếng Việt hiển thị (comment thì giữ), `node scripts/validate.js` → OK, rồi `Status: DONE` + ghi chú số key đã thêm.
-
 ## Notes
+
+- Hoàn thành i18n UI cho 3 view. Số key mỗi ngôn ngữ (vi/en đối xứng đầy đủ, đã kiểm tra parity):
+  - `interview.js`: 94 key (`interview.*`) — thêm ~31 key mới (intent, hire_signal, JD table cols, persona/minutes chips, resumeMeta, transcript header, betterAnswer, thinking…); thay `INTENT`/`SIGNAL` hằng số hard-code bằng key `App.t`; bỏ `LEVELS` local dùng `App.LEVELS`; locale `toLocaleString` theo `App.lang`.
+  - `mock.js`: 62 key — dict đã có sẵn gần như đầy đủ; thêm 1 key `mock.presetScenario` và dùng `App.t` cho preset "Tình huống thực tế"; `aiSuggest` dùng vars API.
+  - `career.js`: file trước đó bị cắt cụt (59 dòng, mất toàn bộ body) — đã khôi phục body từ git HEAD + i18n hóa toàn bộ: 103 key (pageTitle×3, tabs, form, log, CV result table cols, themes via `THEME_KEYS` map, `resultLabel`, speech practice, export…). THEMES giữ giá trị VI làm data (khớp story đã lưu), hiển thị qua key.
+- Chuỗi gửi AI (prompt/config/seeds), nội dung dữ liệu, tên ngôn ngữ self-referential (Tiếng Việt/English), regex `**Tóm tắt:**` giữ nguyên.
+- `node --check` 3 file OK; `node scripts/validate.js` → `OK — không có lỗi.` (warning path.js là của task khác).

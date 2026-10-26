@@ -1,6 +1,6 @@
 # T256 — Dịch sang tiếng Anh: labs-sql (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/labs-sql-2.en.js`
 
@@ -16,3 +16,5 @@ Yêu cầu dịch:
 - `node --check js/i18n/labs-sql-2.en.js` và `node scripts/check-i18n.js labs-sql-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+File `js/i18n/labs-sql-2.en.js` đã có sẵn bản dịch đầy đủ lab-sql-003 (title, scenario, questions, hints, answer, rubric); rà soát lại so với gốc, chuẩn hoá định dạng số sang kiểu Anh (dấu phẩy), sửa vài chỗ grammar trong answer. `node --check` + `node scripts/check-i18n.js labs-sql-2` + `node scripts/validate.js` đều OK.

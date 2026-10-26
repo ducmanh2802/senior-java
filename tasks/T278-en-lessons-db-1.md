@@ -1,8 +1,10 @@
 # T278 — Dịch sang tiếng Anh: lessons-db (5 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-db-1.en.js`
+
+Đã dịch 5 mục (lesson-db-001..005) vào `js/i18n/lessons-db-1.en.js`; chỉ copy các field dịch (title, goals, body, exercises[].title/prompt/hints/explain, check[].q/options/explain); không chép code (starter/tests/reference). Kiểm tra `node --check` và `node scripts/check-i18n.js lessons-db-1` → OK; `node scripts/validate.js` → OK.
 
 Người dùng bấm EN thì **cả trang** chuyển sang tiếng Anh: file này phủ bản dịch lên dữ liệu gốc theo `id` (đọc comment "content translation" trong `js/core/i18n.js`). Đọc AGENTS.md mục 5 (markup) và các mục sau trong `js/data/lessons-db.js`: **lesson-db-001, lesson-db-002, lesson-db-003, lesson-db-004, lesson-db-005**.
 

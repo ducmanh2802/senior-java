@@ -1,6 +1,6 @@
 # T137 — Dữ liệu lộ trình học Java junior → Senior
 
-Status: TODO
+Status: DONE
 Agent: opencode
 After: T139
 Owns: `js/data/path.js`, `scripts/validate.js`
@@ -15,3 +15,8 @@ Người học: dev Java **junior** (đã code Java, hổng nền collections, c
 3. `node scripts/validate.js` → OK, rồi `Status: DONE` + ghi chú.
 
 ## Notes
+- Viết 11 chặng (`path-01` → `path-11`) phủ đủ 3 phase (5 Nền tảng, 4 Vững vàng, 2 Senior) và 26 tuần (1-2 → 25-26).
+- Tất cả 63 bài học (`window.LESSONS`) xuất hiện đúng 1 lần; không trùng.
+- Mỗi chặng có 4-8 câu chốt từ `window.QUESTIONS` (tổng 84 câu, đúng chủ đề, ưu tiên mid/senior/lead).
+- `scripts/validate.js` thêm kiểm tra PATH: id duy nhất, order tăng dần, phase hợp lệ, mọi lesson/question/topic/requires tồn tại, requires không trỏ chặng sau, không lesson lặp, và cảnh báo bài học không trong PATH.
+- `node scripts/validate.js` → OK (chỉ có cảnh báo đáp án ngắn ở `q-english.js`, không liên quan PATH).

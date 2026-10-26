@@ -1,6 +1,6 @@
 # T273 — Dịch sang tiếng Anh: lessons-spring (5 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-spring-1.en.js`
 
@@ -16,3 +16,6 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-spring-1.en.js` và `node scripts/check-i18n.js lessons-spring-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đầy đủ 5 mục (lesson-spring-001…005) sang tiếng Anh; `node --check` OK, `node scripts/check-i18n.js lessons-spring-1` → OK — 5 mục đã dịch.
+- `node scripts/validate.js` vẫn báo lỗi từ file khác ngoài phạm vi task này: `q-spring-data.js` (lỗi cú pháp), `lessons-devops.js` (lỗi cú pháp), `algo.js` (algo-098 nested braces), `lessons-spring.js`/`lessons-sql.js`/`path.js` (related/question id không tồn tại — dữ liệu spring/jpa/db chưa có câu hỏi). Không thuộc file được sở hữu nên không sửa; integrator cần giao các task data tương ứng.

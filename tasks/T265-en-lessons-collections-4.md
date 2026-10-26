@@ -1,6 +1,6 @@
 # T265 — Dịch sang tiếng Anh: lessons-collections (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-collections-4.en.js`
 
@@ -16,3 +16,7 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-collections-4.en.js` và `node scripts/check-i18n.js lessons-collections-4` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã dịch đầy đủ **lesson-collections-005** vào `js/i18n/lessons-collections-4.en.js`: title, goals, body, 2 exercises (title/prompt/hints/explain) và 3 check (q/options/explain), giữ nguyên markup, bảng, blockquote, code block (chỉ dịch comment tiếng Việt trong code).
+- Không chép starter/tests/reference (overlay merge theo index giữ nguyên các field code); index `answer` của check không chép nên giữ đúng phương án gốc (1/2/1).
+- Đã chạy: `node --check` OK; `node scripts/check-i18n.js lessons-collections-4` → `OK — 1 mục đã dịch`; chạy cả bộ i18n → `OK — 905 mục đã dịch`. Đã test merge bằng Node: overlay áp đúng trường, code giữ nguyên.
+- `node scripts/validate.js` (chỉ quét js/data, không đọc i18n) còn 3 lỗi **không thuộc file của task này**, do agent khác đang chạy song song: `lessons-devops.js` lỗi cú pháp (làm path.js báo thiếu lesson-devops-001..003) và `algo.js: algo-098.solution` có `{{...}}` lồng nhau. Không sửa vì luật 3 (chỉ sửa file sở hữu); các file này đang Modified trong git bởi task khác.

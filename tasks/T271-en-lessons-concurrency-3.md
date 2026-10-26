@@ -1,6 +1,6 @@
 # T271 — Dịch sang tiếng Anh: lessons-concurrency (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-concurrency-3.en.js`
 
@@ -16,3 +16,7 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-concurrency-3.en.js` và `node scripts/check-i18n.js lessons-concurrency-3` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã dịch đầy đủ lesson-concurrency-003 (title, goals, body, 2 exercises với title/prompt/hints/explain, 3 câu check với q/options/explain) vào `js/i18n/lessons-concurrency-3.en.js`. Không chép starter/tests/reference.
+- Giữ nguyên markup (`{{code}}`, `###`, bảng, `~~~java`), comment tiếng Việt trong code block body đã dịch sang tiếng Anh. "### Liên hệ phỏng vấn" → "### Interview relevance" (khớp quy ước các file i18n lesson đã có).
+- `node --check` OK; `node scripts/check-i18n.js lessons-concurrency-3` → OK (1 mục đã dịch).
+- LƯU Ý cho integrator: `node scripts/validate.js` hiện FAIL vì lỗi cú pháp có sẵn trong `js/data/lessons-devops.js` dòng 514 (placeholder `... exercises ...` chưa được thay bằng dữ liệu thật — thuộc task khác, không phải file của task này). Lỗi này tồn tại trước khi task T271 chạy và không liên quan tới bản dịch.

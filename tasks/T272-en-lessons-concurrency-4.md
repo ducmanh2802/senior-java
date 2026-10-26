@@ -1,6 +1,6 @@
 # T272 — Dịch sang tiếng Anh: lessons-concurrency (2 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-concurrency-4.en.js`
 
@@ -16,3 +16,6 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-concurrency-4.en.js` và `node scripts/check-i18n.js lessons-concurrency-4` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã dịch đầy đủ lesson-concurrency-004 (CompletableFuture) và lesson-concurrency-005 (virtual threads) vào `js/i18n/lessons-concurrency-4.en.js`; giữ nguyên markup, code block, chỉ dịch comment tiếng Việt trong code.
+- `node --check js/i18n/lessons-concurrency-4.en.js` OK; `node scripts/check-i18n.js lessons-concurrency-4` → OK — 2 mục đã dịch.
+- `node scripts/validate.js` hiện còn lỗi ở file của task khác (q-spring-data.js, lessons-devops.js, algo.js, lessons-spring.js, lessons-sql.js, path.js) — không thuộc quyền sở hữu của T272, không sửa.

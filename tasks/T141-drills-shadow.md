@@ -1,6 +1,6 @@
 # T141 — Drills shadowing: câu mẫu nghe & nhắc lại
 
-Status: TODO
+Status: DONE
 Agent: opencode
 After: T137
 Owns: `js/data/drills-shadow.js`, `scripts/validate.js`
@@ -13,3 +13,4 @@ Owns: `js/data/drills-shadow.js`, `scripts/validate.js`
 4. `node scripts/validate.js` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Added 120 shadow drills (drill-shadow-001..120) across 7 themes; validate OK.

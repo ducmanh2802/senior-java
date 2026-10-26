@@ -1,6 +1,6 @@
 # T269 — Dịch sang tiếng Anh: lessons-concurrency (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-concurrency-1.en.js`
 
@@ -16,3 +16,7 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-concurrency-1.en.js` và `node scripts/check-i18n.js lessons-concurrency-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đủ `lesson-concurrency-001` (title, goals, body, 2 exercises [title/prompt/hints/explain], 3 câu check [q/options/explain]) vào `js/i18n/lessons-concurrency-1.en.js`. Không chép `starter`/`tests`/`reference`; giữ nguyên markup, code block (chỉ dịch comment tiếng Việt), số liệu, tên thuật ngữ; nhãn `**Tóm tắt:**` → `**Summary:**`, `### Liên hệ phỏng vấn` → `### Interview relevance`.
+- Kiểm tra: `node --check js/i18n/lessons-concurrency-1.en.js` OK; `node scripts/check-i18n.js lessons-concurrency-1` → `OK — 1 mục đã dịch.`; `node scripts/check-i18n.js` (toàn repo) → `OK — 905 mục đã dịch.`
+- `node scripts/validate.js` chưa về OK vì lỗi ở file của task khác đang được agent khác sửa song song: `js/data/lessons-devops.js` (lỗi cú pháp `...`), `js/data/algo.js` (`algo-098` inline code lồng `{ }`), `js/data/path.js` (path-09 trỏ lesson devops chưa có). `validate.js` **không** kiểm tra thư mục `js/i18n` (không có chuỗi "i18n" trong script) nên không có lỗi nào đến từ file của T269 — không tự sửa file không thuộc quyền sở hữu (luật 3).

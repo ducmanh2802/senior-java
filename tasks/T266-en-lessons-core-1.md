@@ -1,6 +1,6 @@
 # T266 — Dịch sang tiếng Anh: lessons-core (5 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-core-1.en.js`
 
@@ -16,3 +16,8 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-core-1.en.js` và `node scripts/check-i18n.js lessons-core-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Dịch đủ 5/5 bài (lesson-core-001…005) trong `js/i18n/lessons-core-1.en.js`; chỉ gồm các field được phép dịch (title, goals, body, exercises[].title/prompt/hints/explain, check[].q/options/explain), giữ nguyên markup, code block và toàn bộ code (chỉ dịch comment tiếng Việt trong code).
+- `check` của dữ liệu gốc vốn đã là tiếng Anh (placeholder "Pick the correct Java rule."…), giữ nguyên nội dung để không thêm ý mới.
+- Đã chạy: `node --check js/i18n/lessons-core-1.en.js` OK; `node scripts/check-i18n.js lessons-core-1` → OK — 5 mục đã dịch; `node scripts/validate.js` → OK — không có lỗi.
+- Không sửa file nào ngoài file được sở hữu. Không commit.

@@ -1,6 +1,6 @@
 # T270 — Dịch sang tiếng Anh: lessons-concurrency (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-concurrency-2.en.js`
 
@@ -16,3 +16,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-concurrency-2.en.js` và `node scripts/check-i18n.js lessons-concurrency-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+Translated lesson-concurrency-002 (synchronized, ReentrantLock, Atomic, deadlock, lock ordering) to English in js/i18n/lessons-concurrency-2.en.js. All translatable fields covered: title, goals, body, exercises[].title/prompt/hints/explain, check[].q/options/explain. Validation: node --check clean, check-i18n.js → OK (1 mục đã dịch). node scripts/validate.js reports a pre-existing ENOENT for js/data/lessons-ai.js (referenced by index.html:133, file missing from repo, unrelated to this task).

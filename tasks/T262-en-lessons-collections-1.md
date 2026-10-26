@@ -1,6 +1,6 @@
 # T262 — Dịch sang tiếng Anh: lessons-collections (2 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-collections-1.en.js`
 
@@ -16,3 +16,8 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-collections-1.en.js` và `node scripts/check-i18n.js lessons-collections-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đầy đủ `lesson-collections-001` và `lesson-collections-002` sang `js/i18n/lessons-collections-1.en.js` (title, goals, body, exercises[].title/prompt/hints/explain, check[].q/options/explain).
+- Giữ nguyên markup và toàn bộ code block; chỉ dịch comment tiếng Việt trong code. Không chép starter/tests/reference.
+- `node --check`, `node scripts/check-i18n.js lessons-collections-1` (OK — 2 mục) và `node scripts/validate.js` (OK — không có lỗi) đều pass.
+- Không sửa file nào khác ngoài file được sở hữu.

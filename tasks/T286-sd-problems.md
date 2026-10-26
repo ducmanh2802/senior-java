@@ -1,6 +1,6 @@
 # T286 — Đề system design bấm giờ (ngân hàng + big tech)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/sd-problems.js`
 
@@ -10,3 +10,4 @@ Owns: `js/data/sd-problems.js`
 Mỗi đề: `prompt` như interviewer nói, có con số quy mô cụ thể; 5 pha đúng schema (Requirements 5' / Estimation 5' / API & data model 5' / High-level design 15' / Deep dive 15'), `guide` từng pha nói rõ phải hỏi/chốt/tính gì; `rubric` 6–10 ý chấm được; `reference` ≥ 3000 ký tự có sơ đồ ASCII, phép tính ước lượng, trade-off, failure mode; `followups` 3–5 câu đổi ràng buộc (x10 traffic, mất một region…). Đúng kỹ thuật (Java 17/21, Spring Boot 3, PostgreSQL, Kafka, Redis, AWS). `node scripts/validate.js` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã viết 10 đề vào window.SD_PROBLEMS: 5 bank (sd-001..sd-005) và 5 bigtech (sd-006..sd-010). Mỗi đề có 5 pha, rubric 10 ý, reference 3.7k-5.5k ký tự, followups 3-4. node --check và validate.js OK.
