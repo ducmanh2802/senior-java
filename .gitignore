@@ -3,3 +3,13 @@ node_modules/
 .vercel/
 .DS_Store
 logs-runner.txt
+add_lessons.py
+append_lessons.js
+assemble.py
+assemble_final.py
+clean_exercises.py
+extract.py
+item0*.js
+item*_trans.js
+tmp_lesson-*.txt
+nul

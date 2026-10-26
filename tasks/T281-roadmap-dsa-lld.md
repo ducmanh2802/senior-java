@@ -1,6 +1,6 @@
 # T281 — Lộ trình 26 tuần: thêm mạch thuật toán (ByteByteGo) + LLD + system design theo tuần
 
-Status: TODO
+Status: DONE
 Agent: opencode
 After: T280
 Owns: `js/data/roadmap.js`
@@ -12,3 +12,6 @@ Người học theo sách **ByteByteGo Coding Patterns** (đã xong chương 1�
 - `node --check js/data/roadmap.js`, `node scripts/validate.js` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+## Notes
+Đã cập nhật roadmap.js: algo theo ByteByteGo chương 8–22 (Stacks → Heaps → Merge Intervals → Top K → DP Knapsack → DP Fibonacci → DP Palindromes → Greedy → Backtracking → Graphs → Topological Sort → Tries → Union Find → Bit Manipulation → Math/Geometry), 4–6 bài/tuần, ghi "luyện ở #/algo lọc theo pattern". Tasks thêm: LLD #/learn track architecture các tuần 5–12 (Parking Lot, Elevator, Notification, Vending Machine, Movie Booking, Splitwise, Logging, Undo/Redo); #/sd xen kẽ ngân hàng/big tech các tuần 13–24; mock coding 45 phút + mock SD các tuần 17–24; 2 câu chuyện STAR + #/speak 15 phút/ngày các tuần 21–24; mốc kiểm tra tuần 8/16/24. node --check OK, validate OK.
