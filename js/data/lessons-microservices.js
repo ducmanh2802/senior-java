@@ -467,5 +467,590 @@ Lỗi thường gặp: đọc ThreadLocal trên thread caller rồi mong worker 
     { q: 'Thread pool tái sử dụng worker; task A đặt MDC nhưng không clear. Nguy cơ chính?', options: ['Task B có thể ghi log với context A', 'TraceId tự đổi thành spanId', 'Executor sẽ tạo thread mới cho B', 'Kafka offset sẽ rollback'], answer: 0, explain: `ThreadLocal thuộc worker và worker được tái sử dụng. Không cleanup có thể làm context rò giữa các task.` },
     { q: 'Trong W3C Trace Context, trace-id và parent-id có vai trò nào?', options: ['Cả hai là ID của database', 'trace-id nối toàn trace; parent-id xác định span cha được truyền', 'parent-id là baggage PII', 'trace-id chỉ dùng làm metric label'], answer: 1, explain: `trace-id giữ các span trong cùng trace; parent-id chỉ span hiện tại ở phía gửi để phía nhận tạo quan hệ con. Baggage là metadata riêng, không nên chứa bí mật.` },
   ], tags: ['tracing', 'OpenTelemetry', 'ThreadLocal', 'context propagation']
+},
+{
+  id: 'lesson-microservices-006', track: 'microservices', order: 6,
+  title: 'Idempotency key store: in-flight dedup, TTL phantom và payload hash', level: 'senior', minutes: 45,
+  goals: ['Thiết kế state machine BEGIN/REPLAY/DUPLICATE/PHANTOM cho idempotency key', 'Chuyển trạng thái nguyên tử bằng ConcurrentHashMap mà không khóa toàn cục', 'Giải thích vì sao phải scope theo tenant, hash body và có TTL cho PENDING'],
+  body: `**Tóm tắt:** Idempotency store gắn một khóa do client sinh với trạng thái xử lý, để retry không tạo hiệu ứng thứ hai. Khóa được scope theo tenant + endpoint + body hash; chuyển trạng thái PENDING → COMPLETED/FAILED phải nguyên tử. Request thấy PENDING thì bị chặn, thấy COMPLETED thì nhận lại đúng result cũ, còn PENDING quá TTL được promote cho lần chạy mới.
+
+### Vì sao retry luôn xảy ra
+Một POST tạo đơn có thể commit DB thành công nhưng response mất trên đường về. Client timeout rồi gửi lại; nếu server không phân biệt được hai lần gửi, nó tạo hai đơn hoặc trừ tiền hai lần. Không thể sửa bằng cách "đảm bảo mạng không mất gói"; phải làm cho thao tác lặp lại an toàn.
+
+Idempotency key thường do client sinh một lần cho mỗi thao tác logic (UUID). Server lưu key cùng tenant, endpoint và hash của body. Scope theo tenant là bắt buộc: nếu key toàn cục, tenant A gửi trùng key của tenant B có thể nhận dữ liệu của B. Hash body chặn trường hợp client tái sử dụng key cho payload khác; trả 409 thay vì replay kết quả cũ.
+
+### Máy trạng thái
+| Trạng thái lưu | Request mới cùng key + hash | Việc cần làm |
+|---|---|---|
+| không có | BEGIN | chạy business rồi complete hoặc fail |
+| PENDING, còn trong TTL | DUPLICATE_INFLIGHT | trả 409/202, không chạy business |
+| PENDING, quá TTL | PHANTOM_PROMOTE | coi như chủ cũ đã chết, nhận quyền chạy |
+| COMPLETED | REPLAY | trả đúng result đã lưu |
+| FAILED | BEGIN | cho phép thử lại |
+| khác hash | CONFLICT | 409, không dùng lại kết quả |
+
+### Chuyển trạng thái nguyên tử
+Dùng {{ConcurrentHashMap.compute}} để mỗi key chỉ có một luồng sửa tại một thời điểm. compute khóa theo bin/key, không phải khóa toàn cục, nên các key khác vẫn chạy song song. Trong lambda: đọc entry, so hash, so trạng thái, rồi trả entry cũ hoặc entry mới. Không dùng khóa distributed ở đây vì bản thân bảng key đã là điểm tuần tự hóa.
+
+~~~java
+Begin b = store.begin(key, tenant, endpoint, hash);
+switch (b.decision()) {
+    case BEGIN, PHANTOM_PROMOTE -> {
+        String result = business();                 // chỉ một request thắng
+        store.complete(key, tenant, endpoint, hash, result);
+    }
+    case REPLAY -> respond(b.result());              // không chạy lại business
+    case DUPLICATE_INFLIGHT -> respond(409);
+    case CONFLICT -> respond(409);
+}
+~~~
+
+Thứ tự ghi quan trọng: gán result trước rồi mới đặt trạng thái COMPLETED. Nếu làm ngược, một request khác có thể thấy COMPLETED nhưng đọc result còn null. Trong JVM, compute cung cấp quan hệ happens-before giữa các lần compute cùng key; ở store thật hãy dùng UPDATE có điều kiện hoặc transaction.
+
+### TTL và phantom
+Process chết sau khi đặt PENDING nhưng trước complete sẽ để key kẹt. TTL biến PENDING cũ thành phantom: request đến sau TTL được promote và chạy lại. TTL phải lớn hơn p99 thời gian business, nếu không hai request có thể cùng chạy. Với job dài, dùng lease + heartbeat/gia hạn thay vì TTL cố định. Clock được truyền vào để test được; production dùng đồng hồ DB hoặc Redis, không tin đồng hồ từng máy vì lệch giờ.
+
+### Pitfall production
+- Chỉ giữ key trong RAM: hai instance không thấy nhau, dedup thất bại. Cần Redis/DB với unique index {{(tenant, endpoint, key)}} và TTL.
+- Quên hash body: client đổi payload nhưng key cũ trả về kết quả của payload trước.
+- Giữ khóa suốt network call: làm nghẽn và dễ treo khi downstream chậm. Chỉ giữ trạng thái, không giữ mutex phân tán trong lúc gọi.
+- Trả REPLAY khi lần trước đã FAILED nhưng side effect đã xảy ra một phần: business phải transactional hoặc có bước kiểm tra; chỉ đánh FAILED sau khi chắc chắn đã rollback.
+- Lưu result quá lớn hoặc chứa PII: giới hạn kích thước, mã hóa, và có retention (ví dụ 24 giờ).
+
+### Liên hệ phỏng vấn
+Hãy vẽ state machine và trả lời: hai request đồng thời cùng key thì request thứ hai làm gì; vì sao cần hash payload; TTL xử lý crash thế nào; và vì sao in-memory map không đủ khi chạy nhiều pod.
+
+> Senior tip: theo dõi tỉ lệ REPLAY, DUPLICATE_INFLIGHT và số key PENDING quá TTL. PENDING tăng bất thường thường là dấu hiệu business chậm hoặc một instance chết giữa chừng; đặt alert theo tuổi key chứ không chỉ theo số lượng.
+`,
+  exercises: [{
+    title: 'Idempotency store với in-flight dedup và phantom promotion',
+    prompt: `Cài {{IdempotencyStore}} trong bộ nhớ với API sau (các kiểu dùng chung đã có trong starter):
+
+- {{IdempotencyStore(long ttlMillis, LongSupplier clock)}}.
+- {{Begin begin(String key, String tenant, String endpoint, String payloadHash)}} trả {{Begin(Decision decision, String result)}}, trong đó {{Decision}} gồm {{BEGIN}}, {{DUPLICATE_INFLIGHT}}, {{PHANTOM_PROMOTE}}, {{REPLAY}}, {{CONFLICT}}.
+- {{void complete(String key, String tenant, String endpoint, String payloadHash, String result)}}.
+- {{void fail(String key, String tenant, String endpoint, String payloadHash)}}.
+- {{String result(String key, String tenant, String endpoint)}} và {{int size()}}.
+
+Quy tắc: key chưa có thì BEGIN. Cùng key nhưng payloadHash khác thì CONFLICT và không đổi trạng thái. COMPLETED thì REPLAY kèm result đã lưu. FAILED thì BEGIN cho lần thử mới. PENDING còn trong TTL thì DUPLICATE_INFLIGHT; PENDING có tuổi từ TTL trở lên thì PHANTOM_PROMOTE và trở thành chủ mới. Scope khóa theo cả tenant và endpoint. Chỉ complete/fail khi entry đang PENDING và đúng payloadHash.`,
+    starter: `enum Decision { BEGIN, DUPLICATE_INFLIGHT, PHANTOM_PROMOTE, REPLAY, CONFLICT }
+record Begin(Decision decision, String result) {}
+class IdempotencyStore {
+    IdempotencyStore(long ttlMillis, LongSupplier clock) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    Begin begin(String key, String tenant, String endpoint, String payloadHash) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    void complete(String key, String tenant, String endpoint, String payloadHash, String result) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    void fail(String key, String tenant, String endpoint, String payloadHash) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    String result(String key, String tenant, String endpoint) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    int size() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+    tests: `public class Main {
+ static int p=0,t=0;
+ interface Th { void run() throws Exception; }
+ static void ck(String n,Th r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+ static void eq(Object a,Object b){if(!Objects.equals(a,b))throw new AssertionError(a+" != "+b);}
+ public static void main(String[] x){
+  ck("first request runs business once",()->{
+   AtomicLong now=new AtomicLong();
+   AtomicInteger runs=new AtomicInteger();
+   IdempotencyStore s=new IdempotencyStore(1000,now::get);
+   Begin b=s.begin("k1","tenant-a","POST /orders","hash-1");
+   eq(Decision.BEGIN,b.decision());
+   eq(null,b.result());
+   runs.incrementAndGet();
+   s.complete("k1","tenant-a","POST /orders","hash-1","{\\"id\\":1}");
+   eq(1,runs.get());
+   eq(1,s.size());
+  });
+  ck("replay returns the stored result",()->{
+   AtomicLong now=new AtomicLong();
+   AtomicInteger runs=new AtomicInteger();
+   IdempotencyStore s=new IdempotencyStore(1000,now::get);
+   s.begin("k1","tenant-a","POST /orders","hash-1"); runs.incrementAndGet();
+   s.complete("k1","tenant-a","POST /orders","hash-1","{\\"id\\":1}");
+   Begin again=s.begin("k1","tenant-a","POST /orders","hash-1");
+   eq(Decision.REPLAY,again.decision());
+   eq("{\\"id\\":1}",again.result());
+   eq(1,runs.get());
+  });
+  ck("ten concurrent calls from two threads run business once",()->{
+   AtomicLong now=new AtomicLong();
+   AtomicInteger business=new AtomicInteger();
+   IdempotencyStore s=new IdempotencyStore(1000,now::get);
+   ExecutorService pool=Executors.newFixedThreadPool(2);
+   CountDownLatch ready=new CountDownLatch(2),go=new CountDownLatch(1),done=new CountDownLatch(10);
+   List<Decision> decisions=Collections.synchronizedList(new ArrayList<>());
+   List<Throwable> errors=Collections.synchronizedList(new ArrayList<>());
+   for(int i=0;i<10;i++) pool.submit(()->{
+    try{ ready.countDown(); go.await();
+      Begin b=s.begin("same","tenant-a","POST /orders","hash-1");
+      decisions.add(b.decision());
+      if(b.decision()==Decision.BEGIN) business.incrementAndGet();
+    }catch(Throwable e){ errors.add(e); } finally { done.countDown(); }
+   });
+   ready.await(); go.countDown();
+   if(!done.await(2,TimeUnit.SECONDS)) throw new AssertionError("timeout waiting for requests");
+   pool.shutdownNow();
+   eq(0,errors.size());
+   eq(10,decisions.size());
+   eq(1,business.get());
+   eq(1,(int)decisions.stream().filter(d->d==Decision.BEGIN).count());
+   eq(9,(int)decisions.stream().filter(d->d==Decision.DUPLICATE_INFLIGHT).count());
+  });
+  ck("stale pending is promoted after ttl",()->{
+   AtomicLong now=new AtomicLong(0);
+   IdempotencyStore s=new IdempotencyStore(1000,now::get);
+   eq(Decision.BEGIN,s.begin("k","t","e","h").decision());
+   now.set(999);
+   eq(Decision.DUPLICATE_INFLIGHT,s.begin("k","t","e","h").decision());
+   now.set(1000);
+   eq(Decision.PHANTOM_PROMOTE,s.begin("k","t","e","h").decision());
+   now.set(1499);
+   eq(Decision.DUPLICATE_INFLIGHT,s.begin("k","t","e","h").decision());
+  });
+  ck("failed attempt can begin again and replay latest result",()->{
+   AtomicLong now=new AtomicLong();
+   IdempotencyStore s=new IdempotencyStore(1000,now::get);
+   eq(Decision.BEGIN,s.begin("k","t","e","h").decision());
+   s.fail("k","t","e","h");
+   eq(Decision.BEGIN,s.begin("k","t","e","h").decision());
+   s.complete("k","t","e","h","second");
+   Begin b=s.begin("k","t","e","h");
+   eq(Decision.REPLAY,b.decision());
+   eq("second",b.result());
+  });
+  ck("same key with different payload conflicts",()->{
+   AtomicLong now=new AtomicLong();
+   IdempotencyStore s=new IdempotencyStore(1000,now::get);
+   eq(Decision.BEGIN,s.begin("k","t","e","hash-a").decision());
+   eq(Decision.CONFLICT,s.begin("k","t","e","hash-b").decision());
+   eq(1,s.size());
+   eq(null,s.result("k","t","e"));
+  });
+  ck("same key is isolated per tenant and endpoint",()->{
+   AtomicLong now=new AtomicLong();
+   IdempotencyStore s=new IdempotencyStore(1000,now::get);
+   eq(Decision.BEGIN,s.begin("k","tenant-a","POST /orders","h").decision());
+   eq(Decision.BEGIN,s.begin("k","tenant-b","POST /orders","h").decision());
+   eq(Decision.BEGIN,s.begin("k","tenant-a","POST /refunds","h").decision());
+   eq(3,s.size());
+  });
+  System.out.println("RESULT "+p+"/"+t);
+ }
+}`,
+    reference: `enum Decision { BEGIN, DUPLICATE_INFLIGHT, PHANTOM_PROMOTE, REPLAY, CONFLICT }
+record Begin(Decision decision, String result) {}
+class IdempotencyStore {
+    private enum Status { PENDING, COMPLETED, FAILED }
+    private static final class Entry {
+        final String payloadHash;
+        volatile Status status = Status.PENDING;
+        volatile String result;
+        volatile long startedAt;
+        Entry(String payloadHash, long startedAt) {
+            this.payloadHash = payloadHash;
+            this.startedAt = startedAt;
+        }
+    }
+    private final ConcurrentHashMap<String, Entry> entries = new ConcurrentHashMap<>();
+    private final long ttlMillis;
+    private final LongSupplier clock;
+
+    IdempotencyStore(long ttlMillis, LongSupplier clock) {
+        if (ttlMillis <= 0) throw new IllegalArgumentException("ttlMillis must be positive");
+        if (clock == null) throw new IllegalArgumentException("clock");
+        this.ttlMillis = ttlMillis;
+        this.clock = clock;
+    }
+
+    private static String scoped(String key, String tenant, String endpoint) {
+        return tenant + "::" + endpoint + "::" + key;
+    }
+
+    Begin begin(String key, String tenant, String endpoint, String payloadHash) {
+        if (key == null || tenant == null || endpoint == null || payloadHash == null)
+            throw new IllegalArgumentException("key/tenant/endpoint/payloadHash required");
+        String scoped = scoped(key, tenant, endpoint);
+        Begin[] out = new Begin[1];
+        entries.compute(scoped, (k, current) -> {
+            long now = clock.getAsLong();
+            if (current == null) {
+                out[0] = new Begin(Decision.BEGIN, null);
+                return new Entry(payloadHash, now);
+            }
+            if (!current.payloadHash.equals(payloadHash)) {
+                out[0] = new Begin(Decision.CONFLICT, null);
+                return current;
+            }
+            switch (current.status) {
+                case COMPLETED:
+                    out[0] = new Begin(Decision.REPLAY, current.result);
+                    return current;
+                case FAILED:
+                    out[0] = new Begin(Decision.BEGIN, null);
+                    return new Entry(payloadHash, now);
+                default:
+                    if (now - current.startedAt >= ttlMillis) {
+                        out[0] = new Begin(Decision.PHANTOM_PROMOTE, null);
+                        return new Entry(payloadHash, now);
+                    }
+                    out[0] = new Begin(Decision.DUPLICATE_INFLIGHT, null);
+                    return current;
+            }
+        });
+        return out[0];
+    }
+
+    void complete(String key, String tenant, String endpoint, String payloadHash, String result) {
+        entries.compute(scoped(key, tenant, endpoint), (k, current) -> {
+            if (current == null || current.status != Status.PENDING
+                    || !current.payloadHash.equals(payloadHash)) return current;
+            current.result = result;          // publish payload before the terminal state
+            current.status = Status.COMPLETED;
+            return current;
+        });
+    }
+
+    void fail(String key, String tenant, String endpoint, String payloadHash) {
+        entries.compute(scoped(key, tenant, endpoint), (k, current) -> {
+            if (current == null || current.status != Status.PENDING
+                    || !current.payloadHash.equals(payloadHash)) return current;
+            current.status = Status.FAILED;
+            current.result = null;
+            return current;
+        });
+    }
+
+    String result(String key, String tenant, String endpoint) {
+        Entry e = entries.get(scoped(key, tenant, endpoint));
+        return e == null ? null : e.result;
+    }
+
+    int size() { return entries.size(); }
+}`,
+    hints: [
+      'Dùng {{ConcurrentHashMap.compute}} cho cả ba thao tác; mỗi lần chạy lambda là một lần chuyển trạng thái nguyên tử theo key.',
+      'Thứ tự kiểm tra: entry null, payload hash, rồi trạng thái COMPLETED/FAILED/PENDING. Với PENDING hết TTL thì trả entry mới thay vì entry cũ.',
+      'Gán result trước khi đổi status sang COMPLETED để request REPLAY không bao giờ đọc phải result null.',
+    ],
+    explain: `Bài tập mô phỏng đúng phần khó nhất của idempotency: hai request đến cùng lúc và một process chết giữa chừng. compute là điểm tuần tự hóa theo key, nên chỉ một thread thấy entry null và nhận BEGIN; các thread còn lại thấy PENDING và nhận DUPLICATE_INFLIGHT. Không cần khóa toàn cục, cũng không cần distributed lock vì chính bảng key là trọng tài.
+
+Trạng thái terminal được ghi sau result. Với COMPLETED, result đã có trước khi status đổi, nên REPLAY luôn đọc được dữ liệu đầy đủ. Với FAILED, lần begin kế tiếp tạo entry PENDING mới, tức là cho phép retry nhưng không dùng lại kết quả cũ. Nếu complete/fail đến từ một request đã bị promote (sai payloadHash hoặc entry không còn PENDING), chúng bị bỏ qua: chủ cũ không được ghi đè chủ mới.
+
+TTL giải quyết phantom: process giữ PENDING rồi chết không để lại tín hiệu nào. Sau TTL, request khác được promote. Lỗi thường gặp là đặt TTL quá ngắn so với p99 business, hoặc không gia hạn lease cho job dài, dẫn tới hai chủ cùng chạy. Trong production, state phải nằm ở store chia sẻ (Redis/DB) với unique index theo tenant, endpoint, key và TTL; map trong RAM chỉ đúng cho một JVM và mất khi restart.`,
+  }],
+  check: [
+    { q: 'Hai request cùng tenant, endpoint, key và payload đến đồng thời; request đầu đang PENDING. Request thứ hai nên nhận gì?', options: ['BEGIN và chạy business song song', 'DUPLICATE_INFLIGHT và không chạy business', 'REPLAY với result null', 'CONFLICT vì key đã tồn tại'], answer: 1, explain: `PENDING nghĩa là đang có chủ xử lý; request sau phải bị chặn để tránh hai hiệu ứng. BEGIN chỉ dành cho key mới hoặc sau FAILED/phantom; REPLAY chỉ khi COMPLETED và result đã có; CONFLICT chỉ khi payloadHash khác.` },
+    { q: 'Vì sao phải lưu và so sánh hash của body cùng idempotency key?', options: ['Để nén payload trước khi lưu', 'Để phát hiện client dùng lại key với payload khác và trả 409 thay vì replay sai kết quả', 'Để tăng tốc độ tính khóa chính', 'Để thay thế TTL'], answer: 1, explain: `Key do client sinh nên có thể bị tái sử dụng sai. Cùng key nhưng body khác mà vẫn REPLAY sẽ trả kết quả của thao tác cũ, một lỗi dữ liệu nghiêm trọng. Hash không nén payload, không liên quan tốc độ khóa chính và không thay thế TTL cho PENDING.` },
+    { q: 'Một entry PENDING đã quá TTL. Hành vi đúng là gì?', options: ['Xóa entry và trả lỗi 500', 'Promote entry thành chủ mới để request hiện tại chạy business', 'Replay kết quả null', 'Chờ mãi đến khi chủ cũ complete'], answer: 1, explain: `PENDING quá TTL thường do process chết; promote cho phép hệ thống tự phục hồi. Xóa và trả 500 không giải quyết thao tác; replay null là sai vì chưa có kết quả; chờ mãi làm key kẹt vĩnh viễn, đúng lỗi mà TTL sinh ra để tránh.` },
+  ], related: ['microservices-006', 'microservices-041', 'microservices-031'],
+  tags: ['idempotency', 'ConcurrentHashMap', 'TTL', 'in-flight', 'payload hash']
+},
+{
+  id: 'lesson-microservices-007', track: 'microservices', order: 7,
+  title: 'Partial success khi xoá: 207 Multi-Status và compensation ledger', level: 'senior', minutes: 40,
+  goals: ['Thiết kế saga xoá dữ liệu qua DB, object store và downstream', 'Trả 207 kèm chi tiết từng id thay vì báo thành công giả', 'Dùng tiến độ và compensation ledger để retry, reconcile không xoá hai lần'],
+  body: `**Tóm tắt:** Xoá một lô dữ liệu nằm ở DB, object store và hệ downstream không thể là một transaction. Orchestrator chạy từng id theo thứ tự DB → blob → notify, trả 200 khi tất cả thành công và 207 kèm chi tiết từng id khi có lỗi. Mỗi bước đã thành công được ghi vào compensation ledger; retry dựa trên tiến độ từng id để không xoá hay notify hai lần.
+
+### Vì sao không thể all-or-nothing
+Ba hệ thống có transaction riêng và không có giao thức commit chung. Xoá row DB xong, xoá blob lỗi thì row đã mất trong khi file còn; nếu rollback DB thì có thể không khôi phục được blob đã xoá. 2PC không phù hợp vì object store/downstream thường không hỗ trợ, khóa lâu và lỗi mạng làm treo. Cách thực tế là saga: chấp nhận trạng thái trung gian, ghi lại việc đã làm, và có cơ chế hoàn tất hoặc bù.
+
+### Thứ tự và mã trả về
+- DB trước: nếu row không tồn tại, coi như đã xoá (idempotent), bỏ qua các bước sau.
+- Blob sau DB: tránh để blob mồ côi nếu row xoá thất bại.
+- Notify cuối: thông báo cho downstream chỉ khi dữ liệu đã biến mất.
+
+Response 200 khi mọi id đều 200. Chỉ cần một id lỗi thì trả 207 Multi-Status, trong {{detail}} mỗi id có code và msg riêng. Client phải đọc từng dòng, không được coi 207 là thành công.
+
+### Tiến độ và compensation
+Mỗi id có một tập bước đã xong. Retry bỏ qua bước đã xong nên không gọi xoá DB lần hai. Khi một bước lỗi, các bước trước đó đã thành công được ghi vào ledger:
+
+~~~text
+id=ord-7: db=OK, blob=FAIL
+ledger: compensation.delete.row(ord-7)
+~~~
+
+Token trên không phải rollback tức thời; nó đánh dấu công việc cần reconcile. reconcile đọc ledger, thử lại bước còn thiếu (blob rồi notify) và xoá entry khi xong. Nhờ vậy client nhận 207 ngay, còn hệ thống vẫn có đường hoàn tất mà không xoá lại row.
+
+### Production
+Ledger và tiến độ phải bền (bảng saga/outbox), không nằm trong RAM như bài tập. Mỗi bước cần idempotent ở phía đối tác: xoá row thiếu trả thành công, xoá blob thiếu trả thành công, notify dùng idempotency key. Orchestrator có thể chạy lại sau crash nhờ state đã lưu. Đừng gọi downstream trong transaction DB dài; ghi state trước, gọi ngoài transaction, rồi cập nhật.
+
+### Pitfall
+- Trả 200 dù có id lỗi: người dùng tưởng đã xoá hết.
+- Không có ledger: blob mồ côi, không ai biết cần dọn.
+- Retry không có tiến độ: xoá và notify lặp, đặc biệt nguy hiểm với notify gửi email.
+- Ledger chỉ trong RAM: restart là mất, dữ liệu kẹt nửa vời.
+- Xoá cứng ngay: khó khôi phục khi bước sau fail; nhiều hệ thống dùng soft delete + job dọn sau khi chắc chắn.
+
+### Liên hệ phỏng vấn
+Nêu rõ vì sao chọn 207 thay vì 500, thứ tự ba bước, ledger ghi gì, retry dựa vào đâu, và reconcile xử lý trường hợp nào. Sau đó mô tả cách làm cho từng tier idempotent để retry an toàn.
+
+> Senior tip: đặt metric theo id kẹt quá N phút và tuổi entry ledger; alert khi ledger tăng mà reconcile không giảm. Với lô lớn, xử lý theo batch nhỏ và trả 202 kèm job id thay vì giữ request quá lâu.
+`,
+  exercises: [{
+    title: 'Delete orchestrator: 207, tiến độ từng id và reconcile',
+    prompt: `Cài {{DeleteOrchestrator}} với ba tier (đã khai báo trong starter): {{DbTier.deleteRows(id)}} trả {{true}} nếu xoá được row, {{false}} nếu row không tồn tại và có thể ném exception; {{ObjectTier.deleteBlob(id)}} và {{DownstreamTier.notify(id)}} có thể ném exception.
+
+{{deleteBatch(List<String> ids)}} xử lý từng id theo thứ tự DB → blob → notify và trả {{Response(int status, List<Detail> detail)}}. Mọi id thành công thì status 200; chỉ cần một id lỗi thì 207; danh sách rỗng trả 200 với detail rỗng. Row không tồn tại được coi là đã xoá: trả detail code 200, bỏ qua blob và notify. Detail lỗi dùng code 500 và message chứa loại exception.
+
+Mỗi id lưu tiến độ các bước đã xong. Khi một bước lỗi, ghi ledger cho từng bước đã thành công theo đúng dạng {{compensation.delete.row(id)}} và {{compensation.delete.blob(id)}}; id đã xoá hoàn toàn thì lần gọi sau trả 200 ngay, không gọi lại tier. {{reconcile()}} thử tiếp các bước còn thiếu của id trong ledger, xoá ledger khi xong và trả số id còn kẹt.`,
+    starter: `record Detail(String id, int code, String msg) {}
+record Response(int status, List<Detail> detail) {}
+interface DbTier { boolean deleteRows(String id) throws Exception; }
+interface ObjectTier { void deleteBlob(String id) throws Exception; }
+interface DownstreamTier { void notify(String id) throws Exception; }
+class DeleteOrchestrator {
+    DeleteOrchestrator(DbTier db, ObjectTier objects, DownstreamTier downstream) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    Response deleteBatch(List<String> ids) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    int reconcile() {
+        throw new UnsupportedOperationException("TODO");
+    }
+    List<String> compensations() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+    tests: `public class Main {
+ static int p=0,t=0;
+ interface Th { void run() throws Exception; }
+ static void ck(String n,Th r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+ static void eq(Object a,Object b){if(!Objects.equals(a,b))throw new AssertionError(a+" != "+b);}
+ public static void main(String[] x){
+  ck("all tiers succeed returns 200",()->{
+   AtomicInteger dbc=new AtomicInteger(),blobc=new AtomicInteger(),notc=new AtomicInteger();
+   DeleteOrchestrator o=new DeleteOrchestrator(
+     id->{dbc.incrementAndGet();return true;},
+     id->blobc.incrementAndGet(),
+     id->notc.incrementAndGet());
+   Response r=o.deleteBatch(List.of("o1","o2"));
+   eq(200,r.status()); eq(2,r.detail().size());
+   eq(200,r.detail().get(0).code()); eq(200,r.detail().get(1).code());
+   eq(2,dbc.get()); eq(2,blobc.get()); eq(2,notc.get());
+   eq(0,o.compensations().size());
+  });
+  ck("object failure returns 207 and logs row compensation",()->{
+   AtomicInteger blobc=new AtomicInteger(),notc=new AtomicInteger();
+   DeleteOrchestrator o=new DeleteOrchestrator(
+     id->true,
+     id->{blobc.incrementAndGet();throw new InstantiationException("blob store down");},
+     id->notc.incrementAndGet());
+   Response r=o.deleteBatch(List.of("o1"));
+   eq(207,r.status()); eq(500,r.detail().get(0).code());
+   eq(1,blobc.get()); eq(0,notc.get());
+   eq(true,o.compensations().contains("compensation.delete.row(o1)"));
+   eq(false,o.compensations().contains("compensation.delete.blob(o1)"));
+  });
+  ck("downstream failure logs row and blob compensation",()->{
+   DeleteOrchestrator o=new DeleteOrchestrator(
+     id->true,
+     id->{},
+     id->{throw new InstantiationException("downstream down");});
+   Response r=o.deleteBatch(List.of("o1"));
+   eq(207,r.status());
+   eq(true,o.compensations().contains("compensation.delete.row(o1)"));
+   eq(true,o.compensations().contains("compensation.delete.blob(o1)"));
+  });
+  ck("reconcile finishes missing steps without deleting db twice",()->{
+   AtomicInteger dbc=new AtomicInteger(),blobc=new AtomicInteger(),notc=new AtomicInteger();
+   DeleteOrchestrator o=new DeleteOrchestrator(
+     id->{dbc.incrementAndGet();return true;},
+     id->{if(blobc.incrementAndGet()==1)throw new InstantiationException("first blob attempt");},
+     id->notc.incrementAndGet());
+   eq(207,o.deleteBatch(List.of("o1")).status());
+   eq(1,dbc.get());
+   eq(0,o.reconcile());
+   eq(1,notc.get());
+   Response again=o.deleteBatch(List.of("o1"));
+   eq(200,again.status());
+   eq(1,dbc.get());
+   eq(1,notc.get());
+   eq(0,o.compensations().size());
+  });
+  ck("stale id is treated as already deleted",()->{
+   AtomicInteger blobc=new AtomicInteger(),notc=new AtomicInteger();
+   DeleteOrchestrator o=new DeleteOrchestrator(
+     id->false,
+     id->blobc.incrementAndGet(),
+     id->notc.incrementAndGet());
+   Response r=o.deleteBatch(List.of("ghost"));
+   eq(200,r.status()); eq(200,r.detail().get(0).code());
+   eq(0,blobc.get()); eq(0,notc.get());
+   eq(0,o.compensations().size());
+  });
+  ck("empty batch returns 200 with empty detail",()->{
+   AtomicInteger calls=new AtomicInteger();
+   DeleteOrchestrator o=new DeleteOrchestrator(
+     id->{calls.incrementAndGet();return true;}, id->calls.incrementAndGet(), id->calls.incrementAndGet());
+   Response r=o.deleteBatch(List.of());
+   eq(200,r.status()); eq(0,r.detail().size()); eq(0,calls.get());
+  });
+  ck("mixed batch returns 207 with one detail per id",()->{
+   DeleteOrchestrator o=new DeleteOrchestrator(
+     id->true,
+     id->{if(id.equals("bad"))throw new InstantiationException("blob missing");},
+     id->{});
+   Response r=o.deleteBatch(List.of("ok","bad"));
+   eq(207,r.status()); eq(2,r.detail().size());
+   eq(200,r.detail().get(0).code()); eq(500,r.detail().get(1).code());
+   eq(true,o.compensations().contains("compensation.delete.row(bad)"));
+   eq(false,o.compensations().contains("compensation.delete.row(ok)"));
+  });
+  ck("db failure has no completed tier to compensate",()->{
+   AtomicInteger blobc=new AtomicInteger(),notc=new AtomicInteger();
+   AtomicBoolean down=new AtomicBoolean(true);
+   DeleteOrchestrator o=new DeleteOrchestrator(
+     id->{if(down.get())throw new InstantiationException("db down");return true;},
+     id->blobc.incrementAndGet(),
+     id->notc.incrementAndGet());
+   eq(207,o.deleteBatch(List.of("o1")).status());
+   eq(0,o.compensations().size()); eq(0,blobc.get()); eq(0,notc.get());
+   down.set(false);
+   eq(200,o.deleteBatch(List.of("o1")).status());
+   eq(1,blobc.get()); eq(1,notc.get());
+  });
+  ck("repeated success does not call tiers again",()->{
+   AtomicInteger dbc=new AtomicInteger(),notc=new AtomicInteger();
+   DeleteOrchestrator o=new DeleteOrchestrator(
+     id->{dbc.incrementAndGet();return true;}, id->{}, id->notc.incrementAndGet());
+   eq(200,o.deleteBatch(List.of("x")).status());
+   eq(200,o.deleteBatch(List.of("x")).status());
+   eq(1,dbc.get()); eq(1,notc.get());
+  });
+  System.out.println("RESULT "+p+"/"+t);
+ }
+}`,
+    reference: `record Detail(String id, int code, String msg) {}
+record Response(int status, List<Detail> detail) {}
+interface DbTier { boolean deleteRows(String id) throws Exception; }
+interface ObjectTier { void deleteBlob(String id) throws Exception; }
+interface DownstreamTier { void notify(String id) throws Exception; }
+class DeleteOrchestrator {
+    private enum Step { DB, BLOB, NOTIFY }
+    private static final class State {
+        final EnumSet<Step> done = EnumSet.noneOf(Step.class);
+    }
+    private record Comp(String action, String id) {}
+    private final DbTier db;
+    private final ObjectTier objects;
+    private final DownstreamTier downstream;
+    private final Map<String, State> progress = new HashMap<>();
+    private final Set<String> completed = new HashSet<>();
+    private final List<Comp> ledger = new ArrayList<>();
+
+    DeleteOrchestrator(DbTier db, ObjectTier objects, DownstreamTier downstream) {
+        this.db = db;
+        this.objects = objects;
+        this.downstream = downstream;
+    }
+
+    Response deleteBatch(List<String> ids) {
+        List<Detail> detail = new ArrayList<>();
+        for (String id : ids) detail.add(deleteOne(id));
+        boolean failed = detail.stream().anyMatch(d -> d.code() >= 400);
+        return new Response(failed ? 207 : 200, List.copyOf(detail));
+    }
+
+    private Detail deleteOne(String id) {
+        if (completed.contains(id)) return new Detail(id, 200, "already deleted");
+        State st = progress.computeIfAbsent(id, k -> new State());
+        try {
+            if (!st.done.contains(Step.DB)) {
+                if (!db.deleteRows(id)) {
+                    progress.remove(id);                 // no row and nothing to compensate
+                    return new Detail(id, 200, "already absent");
+                }
+                st.done.add(Step.DB);
+            }
+            if (!st.done.contains(Step.BLOB)) {
+                objects.deleteBlob(id);
+                st.done.add(Step.BLOB);
+            }
+            if (!st.done.contains(Step.NOTIFY)) {
+                downstream.notify(id);
+                st.done.add(Step.NOTIFY);
+            }
+            completed.add(id);
+            progress.remove(id);
+            clearLedger(id);
+            return new Detail(id, 200, "deleted");
+        } catch (Exception e) {
+            if (st.done.contains(Step.DB)) ledger.add(new Comp("delete.row", id));
+            if (st.done.contains(Step.BLOB)) ledger.add(new Comp("delete.blob", id));
+            return new Detail(id, 500, e.getClass().getSimpleName() + ": " + e.getMessage());
+        }
+    }
+
+    int reconcile() {
+        Set<String> ids = new LinkedHashSet<>();
+        for (Comp c : ledger) ids.add(c.id());
+        int unresolved = 0;
+        for (String id : ids) {
+            State st = progress.get(id);
+            if (completed.contains(id) || st == null) { clearLedger(id); continue; }
+            boolean ok = true;
+            try {
+                if (st.done.contains(Step.DB) && !st.done.contains(Step.BLOB)) {
+                    objects.deleteBlob(id);
+                    st.done.add(Step.BLOB);
+                }
+                if (st.done.contains(Step.BLOB) && !st.done.contains(Step.NOTIFY)) {
+                    downstream.notify(id);
+                    st.done.add(Step.NOTIFY);
+                }
+            } catch (Exception e) {
+                ok = false;
+            }
+            if (ok && st.done.contains(Step.NOTIFY)) {
+                completed.add(id);
+                progress.remove(id);
+                clearLedger(id);
+            } else {
+                unresolved++;
+            }
+        }
+        return unresolved;
+    }
+
+    List<String> compensations() {
+        List<String> out = new ArrayList<>();
+        for (Comp c : ledger) out.add("compensation." + c.action() + "(" + c.id() + ")");
+        return out;
+    }
+
+    private void clearLedger(String id) {
+        ledger.removeIf(c -> c.id().equals(id));
+    }
+}`,
+    hints: [
+      'Mỗi id có một {{EnumSet}} các bước đã xong; đầu mỗi lần xử lý chỉ chạy bước chưa có trong tập này.',
+      'Khi catch exception, ghi ledger cho các bước đã thành công, không ghi cho bước vừa lỗi. Với DB trả false, coi như đã xoá và bỏ qua blob/notify.',
+      'reconcile chỉ chạy tiếp từ bước còn thiếu dựa trên State, rồi xoá ledger của id khi đã notify xong.',
+    ],
+    explain: `Bài tập cho thấy saga xoá không cần rollback tức thời. Mỗi id đi qua ba bước; tiến độ được giữ lại nên retry tiếp tục từ chỗ dở dang. Nếu blob lỗi sau khi DB đã xoá, ledger ghi {{compensation.delete.row(id)}} để reconciler biết id này còn dang dở và sẽ thử blob/notify tiếp. Khi downstream lỗi sau khi cả DB và blob đã xong, ledger có cả row và blob.
+
+reconcile không gọi lại DB vì State đã đánh dấu DB xong; nó chỉ chạy blob rồi notify. Vì vậy lần retry sau không xoá row lần hai, và id đã hoàn tất được đưa vào completed để các lần gọi sau trả 200 ngay. Row không tồn tại trả về 200 thay vì 404: với thao tác xoá, trạng thái mong muốn đã đạt, còn blob mồ côi nên do job dọn riêng thay vì làm fail cả lô.
+
+Trong production, State và ledger phải được lưu bền và cập nhật nguyên tử với nhau; nếu không, crash sau khi xoá DB nhưng trước khi ghi ledger sẽ để lại dữ liệu không ai reconcile. Mỗi tier cần idempotent (xoá thiếu trả thành công, notify có idempotency key), và client phải hiển thị 207 theo từng id thay vì báo thành công chung.`,
+  }],
+  check: [
+    { q: 'Một lô có 10 id: 9 id xoá xong, 1 id lỗi ở object store. API nên trả gì?', options: ['200 vì phần lớn thành công', '207 kèm detail từng id để client biết id nào lỗi', '500 và rollback toàn bộ', '202 và bỏ qua id lỗi'], answer: 1, explain: `207 Multi-Status đúng cho kết quả từng phần: 9 id thành công, 1 id lỗi vẫn được báo riêng. 200 che mất lỗi; 500 làm mất thông tin id nào đã xong và không rollback được object store; 202 chỉ hợp lý nếu chấp nhận xử lý nền, nhưng vẫn phải có trạng thái theo id.` },
+    { q: 'Vì sao orchestrator lưu tiến độ các bước đã xong theo từng id?', options: ['Để tăng kích thước response', 'Để retry tiếp tục từ bước còn thiếu, tránh xoá DB hoặc notify hai lần', 'Để thay thế transaction DB', 'Để tự động rollback blob'], answer: 1, explain: `Tiến độ biến retry thành idempotent ở mức orchestration: bước đã xong bị bỏ qua. Nó không làm response lớn hơn (chỉ dùng nội bộ), không thay thế transaction DB, và cũng không tự rollback blob đã xoá.` },
+    { q: 'Sau khi DB đã xoá nhưng blob lỗi, compensation ledger nên ghi gì?', options: ['Không ghi gì vì chưa hoàn tất', 'compensation.delete.row(id) cho bước DB đã thành công', 'compensation.delete.blob(id) cho bước vừa lỗi', 'Một bản sao dữ liệu blob để phục hồi'], answer: 1, explain: `Ledger ghi các bước đã thành công để reconciler biết id còn dang dở; trong ví dụ này là row. Bước vừa lỗi chưa thành công nên không ghi blob; không ghi gì sẽ làm mất dấu id cần xử lý; sao lưu blob là việc của backup, không phải ledger compensation.` },
+  ], related: ['microservices-043', 'microservices-004', 'microservices-022'],
+  tags: ['207', 'partial success', 'compensation', 'saga', 'reconcile']
 }
 );

@@ -925,4 +925,637 @@ Lỗi hay gặp:
   related: ['testing-015', 'testing-006', 'testing-023'],
   tags: ['property-based testing', 'PBT', 'seed', 'merge sort', 'jqwik'],
 },
+{
+  id: 'lesson-testing-004',
+  track: 'testing',
+  order: 4,
+  title: 'Harness tự viết: verifyAll, barrier abort và trạng thái NOT RUN',
+  level: 'senior',
+  minutes: 45,
+  goals: [
+    'Viết được runner chạy hết mọi case, thu thập PASS/FAIL thay vì dừng ở lỗi đầu tiên',
+    'Phân biệt SKIP với NOT RUN và giải thích vì sao một case chưa chạy không bao giờ được tính là PASS',
+    'Thiết kế dòng RESULT có mẫu số trung thực và dùng nó làm quality gate trong CI',
+  ],
+  body: `**Tóm tắt:** Harness test tự viết hay hỏng theo hai kiểu: fail-fast chỉ báo case sai đầu tiên nên bạn phải sửa-rồi-chạy lại nhiều vòng, hoặc tệ hơn là biến case chưa hề chạy thành "qua" nên pipeline xanh mà thực chất không kiểm tra gì. Một runner đúng phải chạy hết các case, ghi trạng thái riêng cho từng case (PASS, FAIL, SKIP, NOT RUN) và tổng hợp thành dòng RESULT có mẫu số trung thực.
+
+### Vì sao fail-fast làm bạn mù thông tin
+Runner kiểu {{for (Case c : cases) c.run();}} dừng ngay khi case đầu tiên ném lỗi. Trên máy dev điều này có vẻ nhanh, nhưng khi một refactor làm hỏng 12 case, bạn chỉ thấy case số 3. Bạn sửa nó, chạy lại, thấy case số 7, sửa tiếp... Mỗi vòng CI mất vài phút, và bạn không biết mình còn cách "xanh" bao xa. Tệ hơn, một số lỗi chỉ xuất hiện khi các case chạy cùng nhau, nên dừng sớm che mất tương tác giữa chúng.
+
+Cách làm của JUnit và hầu hết runner trưởng thành là **verifyAll**: chạy từng case, ghi kết quả, rồi mới tổng hợp. Đổi lại, mỗi case phải **độc lập**: case trước không được để lại dữ liệu bẩn, không được đóng tài nguyên dùng chung, không được giả định thứ tự. Nếu không có isolation, chạy hết các case sẽ tạo ra lỗi dây chuyền khó tái hiện hơn cả fail-fast.
+
+Một điểm tinh tế: verifyAll không có nghĩa là bỏ qua lỗi nghiêm trọng. Nếu JVM hết bộ nhớ, stack overflow hoặc process bị kill thì runner không thể tiếp tục. Khi đó phần còn lại phải được ghi **NOT RUN**, không được im lặng coi như đã qua.
+
+### Bốn trạng thái, không phải hai
+Đa số harness tự viết chỉ có hai biến đếm: pass và fail. Đó là nguồn gốc của các báo cáo sai.
+
+| Trạng thái | Nghĩa | Ví dụ |
+|---|---|---|
+| PASS | Case đã chạy xong và mọi assertion đúng | Cộng hai số ra đúng kết quả |
+| FAIL | Case đã chạy nhưng assertion sai hoặc ném exception ngoài dự kiến | expected 100 but got 99, NullPointerException |
+| SKIP | Có quyết định hợp lệ là không chạy | Chỉ chạy smoke test vào ngày release |
+| NOT RUN | Chưa từng chạy, thường do runner bị abort | Barrier đóng, process bị kill, case trước treo |
+
+JUnit phân biệt **failure** (AssertionError) và **error** (exception khác), nhưng nhiều báo cáo trên UI gộp chúng thành "failed". Trong harness của bài này, exception cũng được gộp vào FAIL nhưng chi tiết phải giữ loại exception và message. Điều quan trọng không phải tên gọi mà là **không được đánh đồng case chưa chạy với case đã qua**. Một case có thể đã chạy được nửa chừng, in ra vài dòng log rồi bị abort ở barrier; nó vẫn là NOT RUN, không phải PASS, vì phần kiểm chứng cuối cùng chưa xảy ra.
+
+### Cái bẫy im lặng: luôn xanh vì không có gì chạy
+Hãy tưởng tượng runner đếm {{fail}} mỗi khi assertion sai và đếm {{total}} theo số case **đã chạy**. Case 1 pass, case 2 gọi {{abort()}} ở barrier, case 3 và 4 không bao giờ bắt đầu. Kết quả in ra {{RESULT 1/1}} và CI báo xanh. Không có case nào fail, nhưng 3 case chưa hề được kiểm tra.
+
+Đây là lý do phải tách hai con số:
+- {{total}} là **số case đã đăng ký**, lấy từ danh sách trước khi chạy, không phải số case đã chạy.
+- {{not_run}} là số case không chạy được, được đếm riêng và luôn xuất hiện trong dòng kết quả nếu lớn hơn 0.
+
+Một bất biến dễ kiểm tra: {{passed + failed + skipped + not_run == total}}. Nếu đẳng thức này sai, report đã bị hỏng và không nên tin bất kỳ con số nào trong đó.
+
+### Barrier và NOT RUN
+Barrier tượng trưng cho một điều kiện hạ tầng: database đã sẵn sàng chưa, service phụ đã khởi động chưa, future đã xong chưa. Trong harness của bài này, mỗi case có thể gọi {{awaitBar()}}. Nếu cờ abort đã bật, lời gọi ném một exception riêng; runner bắt đúng exception đó và ghi case hiện tại cùng toàn bộ case sau là NOT RUN.
+
+Ví dụ với ba case:
+- Case A chạy xong, PASS.
+- Case B gọi {{abort()}} rồi {{awaitBar()}}, bị chặn ở barrier.
+- Case C không bao giờ được gọi.
+
+Report phải là {{RESULT 1/3 (2 not_run)}}, không phải {{RESULT 1/1}} và càng không phải {{RESULT 3/3}}. Từ con số 3 ở mẫu số, người đọc biết ngay hai case chưa được xác minh. Nếu bạn dùng exit code làm gate, hãy chặn khi {{not_run > 0}}; nếu không, một lần CI bị cancel giữa chừng có thể trông giống một lần chạy hoàn hảo.
+
+### SKIP khác NOT RUN ở đâu
+Cả hai đều làm giảm độ phủ, nhưng nguyên nhân và cách xử lý khác nhau:
+- **SKIP** là quyết định có chủ đích, biết trước và có lý do: "test này chỉ chạy khi có Docker", "chỉ chạy trên release day", "tính năng đang sau feature flag". Người viết test chịu trách nhiệm về nó.
+- **NOT RUN** là sự cố vận hành: runner chết, barrier đóng, timeout toàn cục, process bị kill. Không ai chủ động quyết định bỏ case này.
+
+Vì vậy đừng gộp chúng vào một cột "skipped". Một skip tăng đột biến thường là feature flag bị tắt nhầm hoặc điều kiện môi trường thay đổi; một not_run tăng đột biến là hạ tầng test có vấn đề. Cả hai đều cần cảnh báo riêng. Đặc biệt, skip vĩnh viễn là một bug ẩn: hãy gắn owner, ticket và ngày hết hạn cho mọi skip có điều kiện.
+
+### skipIf phải nhận ngày từ ngoài
+Một biến thể hay gặp là test chỉ chạy vào một ngày nhất định, ví dụ smoke test ngày release. Nếu bên trong test gọi {{LocalDate.now()}} thì suite trở nên phụ thuộc đồng hồ thật: hôm nay xanh, mai đỏ, CI ở múi giờ khác lại cho kết quả khác. Cách đúng là truyền ngày vào:
+
+~~~java
+LocalDate today = LocalDate.of(2026, 10, 26);        // test quyết định ngày
+Case smoke = TestGate.skipIf(
+    "release-day smoke",
+    d -> d.equals(LocalDate.of(2026, 10, 25)),         // predicate nhận ngày được truyền
+    check -> check.require(true, "smoke ok")
+);
+Report report = gate.add(smoke).runAll(today);       // cùng ngày thì cùng kết quả
+~~~
+
+Nhờ vậy test của harness cũng deterministic: chạy ngày nào cũng ra cùng kết quả, và bạn kiểm tra được cả nhánh skip lẫn nhánh chạy trong cùng một lần.
+
+### Report phải đủ thông tin để hành động
+Một dòng "1 test failed" không giúp ai sửa lỗi. Mỗi kết quả nên có:
+- **Tên case** duy nhất và mô tả hành vi, không phải {{test1}}, {{test2}}.
+- **Trạng thái** rõ ràng, tách PASS, FAIL, SKIP, NOT RUN; exception ghi kèm loại và message.
+- **Chi tiết**: expected/actual, exception type và message, seed nếu là property-based test.
+- **Thứ tự chạy** hoặc id để tái hiện khi case phụ thuộc môi trường.
+- **Thời lượng** nếu bạn muốn phát hiện case chậm bất thường.
+
+Khi một case có nhiều assertion sai, đừng ném ngay ở assertion đầu. {{Check}} nên thu thập **tất cả** problem rồi báo một lần: sửa một lượt nhanh hơn ba lượt. Nhưng cũng đừng nuốt exception: nếu case ném lỗi ngoài dự kiến, ghi FAIL kèm loại exception và message, không được biến nó thành SKIP.
+
+### Dùng RESULT làm quality gate
+Exit code chỉ nói process kết thúc thế nào, không nói có bao nhiêu test thật sự chạy. Một test class bị vô hiệu hoá do merge conflict, một filter sai trong lệnh chạy, hoặc một lần cancel giữa chừng đều có thể cho exit code 0. Gate nên kiểm tra thêm:
+- Số test chạy được tối thiểu, ví dụ ít nhất 80% số case đã đăng ký.
+- {{not_run == 0}} trên nhánh chính.
+- Số skip không vượt ngưỡng đã thoả thuận, và mọi skip mới đều có ticket.
+- Không có case nào chạy quá lâu mà không có timeout.
+
+Trong hệ sinh thái Java, Surefire/Failsafe in ra dòng {{Tests run: X, Failures: Y, Errors: Z, Skipped: W}}; hãy parse đúng cả bốn số thay vì chỉ nhìn màu xanh của build. Với harness tự viết, dòng {{RESULT passed/total (skipped, not_run)}} chính là hợp đồng máy đọc được của bạn.
+
+### Bẫy production hay gặp
+- **Bắt {{Throwable}} rồi tiếp tục**: nuốt cả {{OutOfMemoryError}} và {{StackOverflowError}} làm JVM ở trạng thái không đáng tin. Harness nhỏ trong bài bắt {{Throwable}} để minh hoạ report, nhưng code production phải rethrow {{VirtualMachineError}} và để tầng ngoài đánh dấu phần còn lại NOT RUN.
+- **Một case treo vô hạn**: runner không có timeout sẽ treo cả CI. Mỗi case cần watchdog hoặc timeout toàn cục.
+- **Dùng {{System.exit}} trong case**: process thoát trước khi report được ghi, mọi case sau thành NOT RUN mà không ai biết.
+- **Chia sẻ trạng thái giữa các case**: case trước để lại dữ liệu, case sau pass giả hoặc fail oan. Tạo fixture mới cho mỗi case.
+- **Đếm total theo case đã chạy**: đây chính là lỗi khiến báo cáo 1/1 thay vì 1/3. Total phải lấy từ danh sách đăng ký.
+- **Skip im lặng**: {{@Disabled}} hoặc {{assumeTrue}} không ai theo dõi sẽ khiến coverage tụt dần mà không có cảnh báo.
+
+> Senior tip: mình từng thấy pipeline xanh suốt ba tuần vì một test class bị đánh dấu disabled khi resolve merge conflict; Surefire in "Tests run: 0" nhưng build vẫn success. Từ đó đội đặt gate: tổng số test không được giảm quá 5% so với baseline, not_run phải bằng 0, và mọi skip mới phải có ticket trong comment. Một harness trung thực quan trọng hơn một harness nhanh.
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: "Vì sao không nên fail-fast trong test suite?", "Skipped khác not run thế nào?", "Làm sao biết pipeline xanh thật hay chỉ là không có test nào chạy?", và "Bạn thiết kế quality gate ra sao?". Câu trả lời tốt nên nêu rõ bốn trạng thái, mẫu số lấy từ danh sách đăng ký, bất biến tổng số, và cách phân biệt skip có chủ đích với not run do hạ tầng. Bài tập dưới đây bắt bạn tự viết runner như vậy, gồm cả barrier abort và skipIf theo ngày được truyền vào.`,
+  exercises: [
+    {
+      title: 'Viết TestGate: verifyAll, barrier abort và dòng RESULT trung thực',
+      prompt: `Cho sẵn khung {{TestGate}} với các kiểu dữ liệu cơ bản. Hãy hoàn thiện phần logic:
+
+**1. {{Check}}** thu thập lỗi thay vì ném ngay:
+- {{require(condition, message)}} thêm {{message}} vào danh sách problem nếu điều kiện sai.
+- {{eq(expected, actual)}} thêm problem dạng {{expected X but got Y}} nếu hai giá trị khác nhau.
+- {{passed()}} trả true khi không có problem nào; {{problems()}} trả bản sao danh sách problem.
+
+**2. {{runAll(today)}}** chạy **tuần tự, không fail-fast**:
+- Mỗi case đã đăng ký phải có đúng một kết quả trong report, kể cả case không chạy.
+- Nếu cờ abort đã bật **trước** khi tới case: ghi {{NOT_RUN}}, không gọi body.
+- Nếu {{case.skippedOn(today)}} trả true: ghi {{SKIP}}, không gọi body.
+- Ngược lại chạy body với một {{Check}} mới. Nếu body gọi {{awaitBar()}} khi đã abort, bắt {{AbortedException}} và ghi case hiện tại cùng mọi case sau là {{NOT_RUN}}.
+- Nếu body ném exception khác, ghi {{FAIL}} với chi tiết là tên class và message, rồi **tiếp tục** case sau.
+- Nếu body chạy xong, {{Check}} có problem thì {{FAIL}} với các problem nối bằng {{"; "}}, không có problem thì {{PASS}}.
+
+**3. Barrier**: {{abort()}} bật cờ abort; {{awaitBar()}} ném {{AbortedException}} nếu cờ đã bật, ngược lại trả true.
+
+**4. {{Report}}**: {{total()}} là số case đã đăng ký. {{passed()}}, {{failed()}}, {{skipped()}}, {{notRun()}} đếm theo trạng thái. {{line()}} trả đúng định dạng:
+- Không có skip và not run: {{RESULT 2/3}}.
+- Có not run: {{RESULT 4/5 (1 not_run)}}.
+- Có cả hai: {{RESULT 2/4 (1 skipped, 1 not_run)}}.
+
+Test sẽ gọi {{runAll}} với một {{LocalDate}} cố định, nên đừng đọc {{LocalDate.now()}}. Không cần in ra stdout; test đọc trực tiếp từ object report.`,
+      starter: `import java.time.*;
+
+class TestGate {
+    enum Status { PASS, FAIL, SKIP, NOT_RUN }
+
+    static final class Check {
+        private final List<String> problems = new ArrayList<>();
+
+        void require(boolean condition, String message) {
+            throw new UnsupportedOperationException("TODO");
+        }
+
+        void eq(Object expected, Object actual) {
+            throw new UnsupportedOperationException("TODO");
+        }
+
+        boolean passed() {
+            throw new UnsupportedOperationException("TODO");
+        }
+
+        List<String> problems() {
+            throw new UnsupportedOperationException("TODO");
+        }
+    }
+
+    static final class Result {
+        private final String name;
+        private final Status status;
+        private final String detail;
+
+        Result(String name, Status status, String detail) {
+            this.name = name;
+            this.status = status;
+            this.detail = detail;
+        }
+
+        String name() { return name; }
+        Status status() { return status; }
+        String detail() { return detail; }
+    }
+
+    static final class Report {
+        private final List<Result> results;
+
+        Report(List<Result> results) {
+            this.results = new ArrayList<>(results);
+        }
+
+        List<Result> results() {
+            throw new UnsupportedOperationException("TODO");
+        }
+
+        int total() {
+            throw new UnsupportedOperationException("TODO");
+        }
+
+        int passed() {
+            throw new UnsupportedOperationException("TODO");
+        }
+
+        int failed() {
+            throw new UnsupportedOperationException("TODO");
+        }
+
+        int skipped() {
+            throw new UnsupportedOperationException("TODO");
+        }
+
+        int notRun() {
+            throw new UnsupportedOperationException("TODO");
+        }
+
+        String line() {
+            throw new UnsupportedOperationException("TODO");
+        }
+    }
+
+    static final class Case {
+        private final String name;
+        private final Predicate<LocalDate> skipWhen;
+        private final Consumer<Check> body;
+
+        Case(String name, Predicate<LocalDate> skipWhen, Consumer<Check> body) {
+            this.name = name;
+            this.skipWhen = skipWhen;
+            this.body = body;
+        }
+
+        String name() { return name; }
+        boolean skippedOn(LocalDate today) { return skipWhen.test(today); }
+        void run(Check check) { body.accept(check); }
+    }
+
+    static final class AbortedException extends RuntimeException {
+        AbortedException(String message) { super(message); }
+    }
+
+    private final List<Case> cases = new ArrayList<>();
+    private boolean aborted;
+
+    TestGate add(String name, Consumer<Check> body) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    TestGate add(Case c) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static Case skipIf(String name, Predicate<LocalDate> skipWhen, Consumer<Check> body) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void abort() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean aborted() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean awaitBar() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    Report runAll(LocalDate today) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `import java.time.*;
+
+public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static TestGate.Result result(TestGate.Report report, String name) {
+        for (TestGate.Result r : report.results()) if (r.name().equals(name)) return r;
+        throw new AssertionError("không có case " + name + " trong report");
+    }
+    static final LocalDate MONDAY = LocalDate.of(2026, 10, 26);
+    static final LocalDate SUNDAY = LocalDate.of(2026, 10, 25);
+
+    public static void main(String[] args) {
+        check("runAll reports every case and does not stop at the first failure", () -> {
+            TestGate gate = new TestGate();
+            List<String> order = new ArrayList<>();
+            gate.add("first", c -> { order.add("first"); c.eq(2, 1 + 1); });
+            gate.add("second fails", c -> { order.add("second"); c.eq(5, 2 + 2); });
+            gate.add("third", c -> { order.add("third"); c.eq("ok", "ok"); });
+            TestGate.Report r = gate.runAll(MONDAY);
+            eq(List.of("first", "second", "third"), order);
+            eq(3, r.total());
+            eq(2, r.passed());
+            eq(1, r.failed());
+            eq(TestGate.Status.PASS, result(r, "first").status());
+            eq(TestGate.Status.FAIL, result(r, "second fails").status());
+            eq(TestGate.Status.PASS, result(r, "third").status());
+            eq("RESULT 2/3", r.line());
+        });
+
+        check("a failed assertion names the exact case and keeps expected/actual detail", () -> {
+            TestGate gate = new TestGate();
+            gate.add("healthy", c -> c.eq("ok", "ok"));
+            gate.add("rounding bug", c -> c.eq(100L, 99L));
+            gate.add("healthy too", c -> c.require(true, "fine"));
+            TestGate.Report r = gate.runAll(MONDAY);
+            TestGate.Result bad = result(r, "rounding bug");
+            eq(TestGate.Status.FAIL, bad.status());
+            if (!bad.detail().contains("100") || !bad.detail().contains("99"))
+                throw new AssertionError("detail thiếu expected/actual: " + bad.detail());
+            eq(TestGate.Status.PASS, result(r, "healthy").status());
+            eq(TestGate.Status.PASS, result(r, "healthy too").status());
+        });
+
+        check("abort at the barrier marks the current and remaining cases NOT RUN, never PASS", () -> {
+            TestGate gate = new TestGate();
+            gate.add("before barrier", c -> c.require(true, "ok"));
+            gate.add("hits aborted barrier", c -> {
+                gate.abort();
+                gate.awaitBar();
+                c.require(true, "must not be reached");
+            });
+            gate.add("after barrier 1", c -> c.require(false, "must not run"));
+            gate.add("after barrier 2", c -> c.require(false, "must not run"));
+            TestGate.Report r = gate.runAll(MONDAY);
+            eq(TestGate.Status.PASS, result(r, "before barrier").status());
+            eq(TestGate.Status.NOT_RUN, result(r, "hits aborted barrier").status());
+            eq(TestGate.Status.NOT_RUN, result(r, "after barrier 1").status());
+            eq(TestGate.Status.NOT_RUN, result(r, "after barrier 2").status());
+            eq(1, r.passed());
+            eq(3, r.notRun());
+            eq("RESULT 1/4 (3 not_run)", r.line());
+        });
+
+        check("an intentional exception is reported as FAIL, not hidden, and later cases still run", () -> {
+            TestGate gate = new TestGate();
+            gate.add("throws on purpose", c -> { throw new IllegalStateException("database went away"); });
+            gate.add("still runs", c -> c.require(true, "alive"));
+            TestGate.Report r = gate.runAll(MONDAY);
+            TestGate.Result err = result(r, "throws on purpose");
+            eq(TestGate.Status.FAIL, err.status());
+            if (!err.detail().contains("IllegalStateException") || !err.detail().contains("database went away"))
+                throw new AssertionError("detail thiếu loại/message: " + err.detail());
+            eq(TestGate.Status.PASS, result(r, "still runs").status());
+            eq(1, r.failed());
+            eq("RESULT 1/2", r.line());
+        });
+
+        check("skipIf reads the supplied date and never executes the skipped body", () -> {
+            AtomicInteger runs = new AtomicInteger();
+            TestGate gate = new TestGate();
+            gate.add(TestGate.skipIf("release-day smoke",
+                    d -> d.equals(SUNDAY),
+                    c -> { runs.incrementAndGet(); c.require(false, "body must not run on skip day"); }));
+            gate.add("always", c -> c.require(true, "ok"));
+            TestGate.Report sunday = gate.runAll(SUNDAY);
+            eq(0, runs.get());
+            eq(TestGate.Status.SKIP, result(sunday, "release-day smoke").status());
+            eq("RESULT 1/2 (1 skipped)", sunday.line());
+            TestGate.Report monday = gate.runAll(MONDAY);
+            eq(1, runs.get());
+            eq(TestGate.Status.FAIL, result(monday, "release-day smoke").status());
+            eq(1, monday.failed());
+        });
+
+        check("result line matches the exact gate format for 4 passed and 1 not run", () -> {
+            TestGate gate = new TestGate();
+            for (int i = 1; i <= 4; i++) {
+                final int n = i;
+                gate.add("fast case " + n, c -> c.eq(n * 2, n + n));
+            }
+            gate.add("async lease renews", c -> {
+                gate.abort();
+                gate.awaitBar();
+            });
+            TestGate.Report r = gate.runAll(MONDAY);
+            eq("RESULT 4/5 (1 not_run)", r.line());
+            eq(4, r.passed());
+            eq(0, r.failed());
+            eq(1, r.notRun());
+            eq(0, r.skipped());
+        });
+
+        check("a gate aborted before runAll reports every case NOT RUN and runs nothing", () -> {
+            TestGate gate = new TestGate();
+            AtomicInteger runs = new AtomicInteger();
+            gate.add("never 1", c -> { runs.incrementAndGet(); c.require(false, "must not run"); });
+            gate.add("never 2", c -> { runs.incrementAndGet(); c.require(false, "must not run"); });
+            gate.abort();
+            TestGate.Report r = gate.runAll(MONDAY);
+            eq(0, runs.get());
+            eq(0, r.passed());
+            eq(2, r.notRun());
+            eq("RESULT 0/2 (2 not_run)", r.line());
+        });
+
+        check("Check collects every problem and eq shows expected/actual", () -> {
+            TestGate gate = new TestGate();
+            gate.add("many problems", c -> {
+                c.eq(1, 2);
+                c.require(false, "third problem");
+                c.eq("a", "b");
+            });
+            TestGate.Report r = gate.runAll(MONDAY);
+            TestGate.Result bad = result(r, "many problems");
+            eq(TestGate.Status.FAIL, bad.status());
+            eq(1, r.failed());
+            String d = bad.detail();
+            if (!d.contains("expected 1 but got 2")) throw new AssertionError("thiếu problem 1: " + d);
+            if (!d.contains("third problem")) throw new AssertionError("thiếu problem 2: " + d);
+            if (!d.contains("expected a but got b")) throw new AssertionError("thiếu problem 3: " + d);
+        });
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.time.*;
+
+class TestGate {
+    enum Status { PASS, FAIL, SKIP, NOT_RUN }
+
+    static final class Check {
+        private final List<String> problems = new ArrayList<>();
+
+        void require(boolean condition, String message) {
+            if (!condition) problems.add(message == null ? "requirement failed" : message);
+        }
+
+        void eq(Object expected, Object actual) {
+            if (!Objects.equals(expected, actual)) {
+                problems.add("expected " + expected + " but got " + actual);
+            }
+        }
+
+        boolean passed() {
+            return problems.isEmpty();
+        }
+
+        List<String> problems() {
+            return new ArrayList<>(problems);
+        }
+    }
+
+    static final class Result {
+        private final String name;
+        private final Status status;
+        private final String detail;
+
+        Result(String name, Status status, String detail) {
+            this.name = name;
+            this.status = status;
+            this.detail = detail;
+        }
+
+        String name() { return name; }
+        Status status() { return status; }
+        String detail() { return detail; }
+    }
+
+    static final class Report {
+        private final List<Result> results;
+
+        Report(List<Result> results) {
+            this.results = new ArrayList<>(results);
+        }
+
+        List<Result> results() {
+            return new ArrayList<>(results);
+        }
+
+        int total() {
+            return results.size();
+        }
+
+        private int count(Status status) {
+            int n = 0;
+            for (Result r : results) if (r.status() == status) n++;
+            return n;
+        }
+
+        int passed() { return count(Status.PASS); }
+        int failed() { return count(Status.FAIL); }
+        int skipped() { return count(Status.SKIP); }
+        int notRun() { return count(Status.NOT_RUN); }
+
+        String line() {
+            StringBuilder sb = new StringBuilder("RESULT ")
+                    .append(passed()).append("/").append(total());
+            List<String> notes = new ArrayList<>();
+            if (skipped() > 0) notes.add(skipped() + " skipped");
+            if (notRun() > 0) notes.add(notRun() + " not_run");
+            if (!notes.isEmpty()) sb.append(" (").append(String.join(", ", notes)).append(")");
+            return sb.toString();
+        }
+    }
+
+    static final class Case {
+        private final String name;
+        private final Predicate<LocalDate> skipWhen;
+        private final Consumer<Check> body;
+
+        Case(String name, Predicate<LocalDate> skipWhen, Consumer<Check> body) {
+            this.name = name;
+            this.skipWhen = skipWhen;
+            this.body = body;
+        }
+
+        String name() { return name; }
+        boolean skippedOn(LocalDate today) { return skipWhen.test(today); }
+        void run(Check check) { body.accept(check); }
+    }
+
+    static final class AbortedException extends RuntimeException {
+        AbortedException(String message) { super(message); }
+    }
+
+    private final List<Case> cases = new ArrayList<>();
+    private boolean aborted;
+
+    TestGate add(String name, Consumer<Check> body) {
+        return add(new Case(name, d -> false, body));
+    }
+
+    TestGate add(Case c) {
+        if (c == null) throw new IllegalArgumentException("case must not be null");
+        cases.add(c);
+        return this;
+    }
+
+    static Case skipIf(String name, Predicate<LocalDate> skipWhen, Consumer<Check> body) {
+        return new Case(name, skipWhen, body);
+    }
+
+    void abort() {
+        aborted = true;
+    }
+
+    boolean aborted() {
+        return aborted;
+    }
+
+    boolean awaitBar() {
+        if (aborted) throw new AbortedException("barrier aborted");
+        return true;
+    }
+
+    Report runAll(LocalDate today) {
+        if (today == null) throw new IllegalArgumentException("today is required");
+        List<Result> results = new ArrayList<>();
+        for (Case c : cases) {
+            if (aborted) {
+                results.add(new Result(c.name(), Status.NOT_RUN, "runner aborted before case"));
+                continue;
+            }
+            if (c.skippedOn(today)) {
+                results.add(new Result(c.name(), Status.SKIP, "skipped on " + today));
+                continue;
+            }
+            Check check = new Check();
+            try {
+                c.run(check);
+            } catch (AbortedException e) {
+                results.add(new Result(c.name(), Status.NOT_RUN, e.getMessage()));
+                continue;
+            } catch (VirtualMachineError e) {
+                throw e;
+            } catch (Throwable t) {
+                results.add(new Result(c.name(), Status.FAIL,
+                        t.getClass().getSimpleName() + ": " + t.getMessage()));
+                continue;
+            }
+            if (check.passed()) results.add(new Result(c.name(), Status.PASS, ""));
+            else results.add(new Result(c.name(), Status.FAIL, String.join("; ", check.problems())));
+        }
+        return new Report(results);
+    }
+}`,
+      hints: [
+        'Khi đếm total, dùng {{cases.size()}} hoặc {{results.size()}} ở report; không đếm số case đã thực sự chạy, vì đó chính là lỗi biến 1/3 thành 1/1.',
+        'Trong {{runAll}}, kiểm tra cờ {{aborted}} trước mỗi case. Khi {{awaitBar()}} ném {{AbortedException}}, bắt riêng nó và ghi {{NOT_RUN}}; đừng để nó rơi vào nhánh bắt {{Throwable}} chung và bị ghi FAIL.',
+        'Dòng {{line()}} chỉ thêm phần trong ngoặc khi có skip hoặc not run; dùng {{String.join(", ", notes)}} để có đúng {{(1 skipped, 1 not_run)}}.',
+      ],
+      explain: `Bài này mô phỏng đúng cách Surefire/JUnit tổng hợp kết quả, nhưng viết tay để bạn thấy các quyết định thiết kế:
+
+- **VerifyAll** chạy hết case để một lần CI cho bạn toàn bộ bức tranh. Test kiểm tra cả thứ tự chạy và việc case thứ ba vẫn chạy sau khi case thứ hai fail.
+- **NOT RUN** là trạng thái riêng. Khi barrier đóng, case hiện tại và mọi case sau đều không có kết quả kiểm chứng, nên tuyệt đối không được tính vào passed. Đây là điểm khác biệt giữa report trung thực và report "xanh giả".
+- **SKIP** có chủ đích, được quyết định bởi predicate nhận ngày từ ngoài. Nhờ truyền {{LocalDate}} vào {{runAll}}, test kiểm tra được cả ngày skip và ngày chạy mà không phụ thuộc đồng hồ thật.
+- **Lỗi bất ngờ** vẫn phải hiện ra. Case ném {{IllegalStateException}} được ghi FAIL kèm loại và message, và các case sau vẫn tiếp tục.
+
+Lỗi hay gặp:
+- Đếm {{total}} theo số case đã chạy, khiến report 1/1 thay vì 1/3 khi bị abort.
+- Bắt {{AbortedException}} chung với {{Throwable}} rồi ghi FAIL; như vậy case chưa chạy xong bị đánh giá sai và không phân biệt được sự cố hạ tầng với bug thật.
+- Quên kiểm tra {{aborted}} trước mỗi case, nên sau barrier vẫn chạy tiếp các case còn lại.
+- Gọi {{LocalDate.now()}} bên trong predicate, làm test phụ thuộc ngày chạy và flaky trên CI ở múi giờ khác.
+- Nuốt toàn bộ problem trong {{Check}} bằng cách chỉ giữ problem đầu tiên; sửa lỗi sẽ chậm vì mỗi lần chỉ lộ một assertion.
+
+Trong code production, hãy bắt {{Exception}} và {{AssertionError}} thay vì {{Throwable}}; các lỗi như {{OutOfMemoryError}} phải làm runner abort và đánh dấu phần còn lại NOT RUN. Nếu cần chạy song song, mỗi case phải có report riêng và gộp theo id, không dùng một biến đếm chung.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Vì sao runner chỉ đếm {{passed}} và {{failed}} nhưng bỏ qua case chưa chạy lại nguy hiểm hơn một test fail bình thường?',
+      options: [
+        'Vì nó làm test chạy chậm hơn',
+        'Vì pipeline có thể xanh dù chưa kiểm tra gì, tạo cảm giác an toàn giả và che giấu lỗi cho tới production',
+        'Vì Java không cho phép bỏ qua case',
+        'Vì nó làm tăng số dòng log',
+      ],
+      answer: 1,
+      explain: `Một fail thật hiện ra và buộc người ta sửa; một case chưa chạy nhưng bị tính là qua thì không ai biết. CI xanh, team tin tưởng, lỗi đi tới production. Runner không chậm hơn vì bỏ qua case; Java hoàn toàn cho phép không chạy case; log ít hơn cũng không phải vấn đề. Điểm chết người là độ tin cậy của tín hiệu.`,
+    },
+    {
+      q: 'Một case gọi {{assumeTrue(false)}} hoặc bị bỏ qua vì hôm nay không phải ngày release. Trạng thái nào đúng?',
+      options: [
+        'PASS, vì không có assertion nào sai',
+        'FAIL, vì test không chạy',
+        'SKIP, vì đó là quyết định có chủ đích dựa trên điều kiện đã biết',
+        'NOT RUN, vì mọi case không chạy đều là not run',
+      ],
+      answer: 2,
+      explain: `SKIP là quyết định có chủ đích, biết trước: điều kiện môi trường, ngày release, feature flag. NOT RUN là sự cố ngoài ý muốn như runner bị kill hoặc barrier đóng. Cả hai đều không phải PASS và không phải FAIL; nhưng gộp chúng lại sẽ che mất nguyên nhân và cách xử lý khác nhau.`,
+    },
+    {
+      q: 'Vì sao {{skipIf}} nên nhận ngày từ tham số thay vì gọi {{LocalDate.now()}} bên trong?',
+      options: [
+        'Vì LocalDate.now() luôn ném exception trong test',
+        'Vì nó làm test deterministic: cùng một ngày truyền vào cho cùng kết quả, và kiểm tra được cả nhánh skip lẫn nhánh chạy',
+        'Vì LocalDate không có method now()',
+        'Vì chỉ ngày trong quá khứ mới dùng được',
+      ],
+      answer: 1,
+      explain: `Đọc đồng hồ thật biến test thành phụ thuộc thời điểm chạy và múi giờ CI, nên hôm nay xanh mai đỏ. Truyền ngày vào cho phép test cố định ngày skip và ngày chạy trong cùng một lần. LocalDate có now(), và không có quy tắc nào cấm ngày tương lai; vấn đề là tính xác định.`,
+    },
+  ],
+  related: ['testing-009', 'testing-010', 'testing-006'],
+  tags: ['test harness', 'verifyAll', 'NOT RUN', 'skip', 'quality gate', 'CI'],
+},
 );

@@ -1828,4 +1828,405 @@ Order theo aggregate phụ thuộc transaction log order, connector routing và 
   tags: ['outbox', 'Debezium', 'CDC', 'Kafka', 'ordering'],
   refs: [{ type: 'doc', title: 'Debezium Outbox Event Router', url: 'https://debezium.io/documentation/reference/stable/transformations/outbox-event-router.html' }]
 }
+,
+{
+  id: 'microservices-039',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Bạn vận hành SaaS đa tenant. So sánh schema-per-tenant, shared-schema + tenant_id và PostgreSQL RLS: chọn theo quy mô, chi phí, compliance thế nào? Pitfall câu query quên filter tenant gây leak xuyên tenant; phát hiện qua audit query log + index composite (tenant_id, ...); migration schema-per-tenant không chạy được lần lượt (N tenant x M migration) thì xử lý thế nào?',
+  a: `**Tóm tắt:** không có mô hình đúng cho mọi tenant: schema-per-tenant cô lập mạnh và dễ tuân thủ nhưng đắt; shared-schema + tenant_id rẻ và scale tốt nhưng phụ thuộc kỷ luật query; RLS PostgreSQL là lớp an toàn giữa hai bên. Quyết định theo số tenant, yêu cầu compliance và ngân sách vận hành.
+
+### Ba mô hình
+| Tiêu chí | Schema-per-tenant | Shared-schema + tenant_id | RLS PostgreSQL |
+|---|---|---|---|
+| Cô lập | cao (DB/schema riêng) | logic (cột tenant_id) | logic + policy DB |
+| Chi phí infra | cao (N schema/table) | thấp (1 bảng) | thấp-trung bình |
+| Migration | N x M (đau) | 1 lần | 1 lần + policy |
+| Compliance (SOC2/HIPAA) | dễ chứng minh | cần audit query | policy ở DB, dễ chứng minh |
+| Onboarding tenant mới | chạy migration | insert row | insert row + policy |
+
+### Cách chọn
+- **< 50 tenant, enterprise/compliance cao, tenant lớn**: schema-per-tenant (hoặc DB-per-tenant) - backup/restore từng tenant, xóa tenant = drop schema, dễ satisfy right to be forgotten.
+- **> 1000 tenant, SMB, self-serve**: shared-schema + tenant_id - một bảng, một pipeline migration, chi phí thấp.
+- **Trung gian / cần an toàn hơn shared-schema**: RLS - policy {{CREATE POLICY tenant_isolation ON orders USING (tenant_id = current_setting('app.tenant_id'))}}; app set {{SET app.tenant_id = '...'}} mỗi request. Query quên filter tenant vẫn bị DB chặn.
+
+### Pitfall cross-tenant leak (thảm họa thật)
+- Query "SELECT * FROM orders WHERE status = 'PENDING'" quên {{AND tenant_id = ?}} trả đơn của tenant khác. Đây là lỗ hổng số 1 trong SaaS.
+- Join xuyên bảng: {{orders JOIN customers ON ...}} mà chỉ filter tenant ở một bảng leak.
+- Cache key thiếu tenant: cache key {{order:123}} dùng chung tenant B đọc cache tenant A.
+- Background job/async: ThreadLocal tenant context bị mất khi chuyển thread query chạy với tenant mặc định (thường null thấy tất cả hoặc nothing).
+
+### Phát hiện qua audit query log + index
+- Bật audit log PostgreSQL ({{pgaudit}}) hoặc proxy (PgBouncer log); CI scan query không có {{tenant_id}} trong WHERE.
+- Index composite bắt đầu bằng tenant_id: {{CREATE INDEX idx_orders_tenant_status ON orders(tenant_id, status)}} - vừa tối ưu vừa là code smell detector: query plan thiếu tenant_id sẽ full scan alert.
+- Test integration: chạy query với tenant A, assert không thấy data tenant B (row-level test).
+- Static analysis: lint SQL/JPQL bắt buộc {{tenant_id}} trong mọi SELECT/UPDATE/DELETE trên bảng tenant-scoped.
+
+### Migration schema-per-tenant: N x M problem
+- 500 tenant x 50 migration = 25.000 statement, chạy tuần tự hours downtime, một tenant fail toàn bộ pipeline kẹt.
+- **Nhóm tenant theo version**: tenant có schema version v3 chạy batch migration v3->v4 cùng lúc; theo dõi {{schema_version}} trong bảng tenant. Tenant mới onboard ở version mới nhất.
+- **Blue-green migration**: tạo schema mới song song, dual-write/read, cutover từng nhóm, rollback theo nhóm.
+- **Online migration**: dùng {{CREATE INDEX CONCURRENTLY}}, {{ALTER TABLE ... ADD COLUMN ... DEFAULT ...}} (Postgres 11+ instant), tránh lock dài.
+- **Tenant tiering**: tenant lớn (enterprise) migration riêng có maintenance window; tenant nhỏ batch qua job.
+
+### Pitfall production
+- RLS policy chỉ hoạt động nếu app set {{app.tenant_id}} đúng; test fail-open: policy {{USING (true)}} là thảm họa.
+- Connection pool dùng chung {{SET}} là session-level, phải reset khi trả connection (PgBouncer transaction mode + {{SET LOCAL}} trong transaction).
+- Shared-schema: backup/restore từng tenant khó; cần logical replication filter hoặc dump theo tenant_id.
+
+> Senior tip: dù chọn mô hình nào, hãy có một test tự động "tenant A không thấy data tenant B" chạy trong CI cho mọi endpoint. Một leak xuyên tenant là incident P0 và thường là lý do công ty mất khách hàng lớn.`,
+  follow: [
+    'RLS PostgreSQL có overhead thế nào so với filter ở app, bạn đo bằng gì?',
+    'Khi tenant bị xóa (right to be forgotten), schema-per-tenant vs shared-schema xử lý ra sao?',
+    'Làm sao enforce tenant filter ở tầng ORM (Hibernate @Filter) mà không bị bypass?'
+  ],
+  tags: ['multi-tenancy', 'RLS', 'PostgreSQL', 'data isolation', 'schema-per-tenant']
+},
+{
+  id: 'microservices-040',
+  topic: 'microservices',
+  level: 'mid',
+  q: 'Tenant bị disable/suspended giữa lúc request đang xử lý. Vì sao phải trả 401/403 chứ không 500? Bạn hook ở filter/gateway, cache tenant config có TTL thế nào để tránh exception tràn ra thành 500?',
+  a: `**Tóm tắt:** tenant bị suspend là trạng thái nghiệp vụ, không phải lỗi server. Phải trả 401/403 có ý nghĩa, không để exception lan ra thành 500. Hook ở gateway/filter trước khi vào controller; cache tenant config có TTL ngắn + invalidation khi admin thay đổi.
+
+### Status map của middleware
+- 401 Unauthorized: chưa xác thực (token thiếu/hỏng) - thường không phải tenant bị suspend.
+- 403 Forbidden: đã xác thực nhưng tenant bị disable/suspended/deleted, hoặc user không thuộc tenant.
+- 404: tenant không tồn tại (để tránh enumeration) - tùy chính sách.
+- 500: chỉ cho lỗi không mong đợi (bug, DB down). Tenant suspend không được là 500.
+
+### Hook ở gateway/filter
+- Gateway (Spring Cloud Gateway) hoặc servlet filter chạy trước authentication/authorization: resolve tenantId từ host/subdomain/JWT claim, load tenant status.
+- Nếu status != ACTIVE trả 403 ngay, không gọi downstream, không retry.
+- Dùng {{OncePerRequestFilter}} để đảm bảo chạy đúng một lần ngay cả khi forward/include.
+
+### Cache tenant config với TTL
+- Tenant status ít thay đổi nhưng cần phản ánh nhanh khi admin suspend. Cache TTL 30-60s trong Redis/Caffeine, key {{tenant:status:<id>}}.
+- Khi admin suspend publish event {{tenant.suspended}} invalidate cache (hoặc set TTL rất ngắn 5s cho trạng thái "pending suspension").
+- **Fail-closed**: nếu không load được tenant config trả 403/503, không default ACTIVE. Fail-open (mặc định ACTIVE khi cache miss) là lỗ hổng bảo mật.
+- Negative cache: tenant không tồn tại cache "NOT_FOUND" với TTL ngắn để tránh DB spike.
+
+### Bài học cho status map middleware
+- Middleware phải có bảng ánh xạ rõ ràng exception -> HTTP status, không để Spring Boot default 500 cho mọi Exception.
+- {{@ExceptionHandler(TenantSuspendedException.class)}} -> 403; {{@ExceptionHandler(TenantNotFoundException.class)}} -> 404.
+- Log với level WARN (không ERROR) cho suspend; ERROR chỉ cho 5xx.
+- Metric: đếm 403 theo tenant để phát hiện abuse hoặc suspension cascade.
+
+### Pitfall production
+- Cache TTL quá dài tenant bị suspend vẫn truy cập 10 phút.
+- ThreadLocal tenant context không clear giữa request trong thread pool request mới reuse context cũ cross-tenant.
+- Gateway cache status nhưng service downstream tự query DB không nhất quán gateway là source of truth cho status, service chỉ check quyền chi tiết.
+
+> Senior tip: viết test "suspend tenant giữa request" bằng cách mock tenant service trả ACTIVE rồi SUSPENDED trong cùng test, assert response 403 và không có 500. Đây là test hay bị thiếu nhất.`,
+  follow: [
+    'Cache tenant status nên invalidate bằng event hay polling, vì sao?',
+    'Khi tenant bị suspend, request đang in-flight (đã vào controller) xử lý thế nào?',
+    'Fail-closed vs fail-open cho tenant status: bạn chọn gì và vì sao?'
+  ],
+  tags: ['multi-tenancy', 'tenant lifecycle', 'HTTP status', 'middleware', 'cache TTL']
+},
+{
+  id: 'microservices-041',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Hợp đồng idempotency cho lệnh ghi: idempotency key client gửi, TTL, store (Redis + fallback DB), scope theo {tenantId, endpoint, key}. Chuyện gì xảy ra khi 2 request cùng key đồng thời (đang in-flight chưa set state là gì); trả 409 vs đợi/số hoá; sai lầm có khi actor trạng thái "PENDING" im lặng -> double-process.',
+  a: `**Tóm tắt:** idempotency key do client sinh, scope theo {tenantId, endpoint, key}, TTL, store Redis + fallback DB. Hai request cùng key đồng thời: trạng thái "in-flight" phải được claim atomic; trả 409 hoặc đợi; sai lầm để trạng thái PENDING im lặng double-process.
+
+### Hợp đồng idempotency
+- Client sinh UUID ({{Idempotency-Key}} header) cho mỗi lệnh ghi. Server lưu key + response + hash payload.
+- Scope: {{(tenantId, endpoint, key)}} - cùng key ở endpoint khác hoặc tenant khác là lệnh khác.
+- TTL: 24h (hoặc theo nghiệp vụ). Quá TTL xử lý như mới.
+- Store: Redis (nhanh, TTL native) + fallback DB (bền) - write-through hoặc write-behind. Redis die fallback DB, chấp nhận chậm hơn.
+
+### Trạng thái và đồng thời
+- Ba trạng thái: {{IN_FLIGHT}} (đang xử lý), {{COMPLETED}} (có response), {{FAILED}} (lỗi có thể retry).
+- Claim atomic: {{SETNX idempotency:<scope> "IN_FLIGHT" EX 30}} (Redis) hoặc {{INSERT ... ON CONFLICT}} (DB). Chỉ request claim thành công mới xử lý side effect.
+- Request thứ hai cùng key:
+  - Nếu {{IN_FLIGHT}}: trả 409 Conflict (hoặc 425 Too Early) với {{Retry-After}}, hoặc đợi (long polling) tối đa N giây.
+  - Nếu {{COMPLETED}}: trả response đã lưu (cùng status code, cùng body).
+  - Nếu {{FAILED}}: cho phép retry (xóa key hoặc chuyển IN_FLIGHT).
+- Sai lầm: set trạng thái {{PENDING}} nhưng không claim atomic hai request đều thấy PENDING cả hai xử lý double-charge. Phải dùng atomic claim (SETNX/unique constraint), không check-then-set.
+
+### Payload mismatch
+- Request trùng key nhưng payload khác trả 422 (không im lặng chạy). Lưu hash payload để so sánh.
+- Request trùng key, payload giống, đang IN_FLIGHT trả 409 + Retry-After.
+
+### Idempotency ở consumer (event)
+- Consumer idempotent: dedup table {{processed_msg(msg_id PK)}} trong cùng transaction với business write.
+- msg_id = event ID từ payload (không dùng Kafka offset vì replay/restore đổi offset).
+
+### Pitfall production
+- TTL quá ngắn so với retry client (message bay vòng 1 giờ) trùng lặp quay lại.
+- Retry ở nhiều tầng (client + framework + broker) x3 bản sao dedup table phình.
+- Side effect ngoài DB (gọi third-party API) mà dedup flag commit sau crash giữa hai chỗ = duplicate charge thật. Phải gọi API với idempotency key của chính nó.
+
+> Senior tip: idempotency key là "contract" giữa client và server - document rõ scope, TTL, behavior khi IN_FLIGHT, và payload mismatch. Không document client không biết cách retry đúng.`,
+  follow: [
+    'Idempotency key nên lưu trong Redis hay DB, vì sao?',
+    'Nếu side effect là gọi REST phía thứ ba không hỗ trợ idempotency, bạn làm gì?',
+    'Offset commit trước hay sau khi xử lý? Chọn từng lựa chọn thì đánh đổi gì?'
+  ],
+  tags: ['idempotency', 'concurrency', 'Redis', 'contract', 'retry']
+},
+{
+  id: 'microservices-042',
+  topic: 'microservices',
+  level: 'lead',
+  q: 'Quyền sở hữu request (servlet request ownership): chứng cứ bảo vệ tránh agent khác reuse: đổi characterEncoding, đọc body dựng X-Forwarded-*, cơ chế khi có nhiều filter chain; nên dùng OncePerRequestFilter + RequestContextHolder @RequestScope bean; pitfall ThreadLocal không clear giữa thread pool, contaminasi giữa request cũ và request mới; dùng ServletRequest đã được wrap nhiều lớp (Tomcat ApplicationHttpRequest chỉ read-only); chỉ nên copy data mình cần thay vì giữ reference.',
+  a: `**Tóm tắt:** request là tài nguyên dùng chung giữa nhiều filter/servlet; nếu một component "chiếm hữu" (đổi encoding, đọc body, set attribute) mà không wrap/copy, component khác sẽ thấy state sai. Dùng OncePerRequestFilter + RequestContextHolder/@RequestScope; ThreadLocal phải clear; chỉ copy data cần thiết, không giữ reference.
+
+### Chứng cứ bảo vệ tránh reuse
+- {{request.setCharacterEncoding("UTF-8")}} mutate request gốc filter sau thấy encoding đã đổi parse param sai. Nên wrap {{HttpServletRequestWrapper}} hoặc set trước khi chain.
+- Đọc body ({{getInputStream()}}) servlet downstream không đọc được nữa phải cache body trong wrapper ({{ContentCachingRequestWrapper}}) và cho downstream đọc từ cache.
+- {{X-Forwarded-*}}: gateway set header; nếu app tin header này từ client trực tiếp spoofing. Chỉ tin khi request đến từ trusted proxy ({{ForwardedHeaderFilter}} với {{server.forward-headers-strategy=framework}} + trusted proxies list).
+- Nhiều filter chain (Spring Security, DispatcherServlet) attribute set ở filter A có thể bị filter B ghi đè. Dùng tên attribute có namespace ({{com.example.tenantId}}).
+
+### OncePerRequestFilter + RequestContextHolder
+- {{OncePerRequestFilter}} đảm bảo filter chạy đúng một lần ngay cả khi request được forward/include (DispatcherServlet forward). Tránh double-processing.
+- {{RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request))}} gắn request vào ThreadLocal bean {{@RequestScope}}/scope request truy cập được. Phải {{resetRequestAttributes()}} trong finally (hoặc filter tự làm).
+- {{@RequestScope}} bean: mỗi request một instance, inject request-scoped data an toàn. Nhưng bean này không được inject vào singleton rồi giữ reference (sẽ lỗi hoặc stale).
+
+### ThreadLocal không clear contaminasi
+- Thread pool reuse thread ThreadLocal giữ request cũ request mới đọc data tenant/user cũ cross-tenant leak hoặc wrong user.
+- Luôn clear trong finally:
+~~~java
+try {
+    RequestContextHolder.setRequestAttributes(attrs, true);
+    // xử lý
+} finally {
+    RequestContextHolder.resetRequestAttributes();
+}
+~~~
+- {{InheritableThreadLocal}} nguy hiểm hơn: child thread inherit async task leak. Tránh, hoặc propagate thủ công.
+
+### Tomcat ApplicationHttpRequest (read-only)
+- Khi forward/include, Tomcat wrap request thành {{ApplicationHttpRequest}} (read-only cho param) setAttribute trên wrapper có thể không propagate về request gốc. Chỉ nên copy data mình cần vào attribute của mình, không giữ reference tới wrapper.
+- Pattern: extract {{tenantId, userId, traceId}} từ request vào object immutable (record) và lưu trong ThreadLocal/RequestScope; downstream dùng object đó, không touch request.
+
+### Pitfall production
+- Giữ reference tới {{HttpServletRequest}} trong async thread ({{@Async}}, CompletableFuture) request bị recycle sau response IllegalStateException hoặc data corruption. Dùng {{RequestContextListener}} + {{DelegatingSecurityContextRunnable}} hoặc copy data.
+- Filter mutate request body mà không wrap downstream đọc empty body 400.
+- Nhiều filter chain (Spring Security filter chain + custom) thứ tự filter quan trọng; {{@Order}} / {{SecurityFilterChain}} phải rõ.
+
+> Senior tip: rule "không giữ reference tới request" - mọi dữ liệu cần dùng downstream phải được extract thành object immutable ngay tại boundary (filter). Đây là invariant giúp tránh 90% bug cross-request contamination.`,
+  follow: [
+    'ContentCachingRequestWrapper cache body như thế nào, và khi nào downstream đọc được?',
+    'RequestContextHolder với async (CompletableFuture) propagate ra sao?',
+    'ForwardedHeaderFilter tin X-Forwarded-* như thế nào để tránh spoofing?'
+  ],
+  tags: ['servlet', 'request ownership', 'ThreadLocal', 'filter', 'Spring Security']
+},
+{
+  id: 'microservices-043',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Partial success khi xoá: API xoá bản ghi phụ thuộc nhiều nguồn (DB + object store + downstream), người dùng muốn "xoá 1 lô"; chiến lược orchestration: mark-for-delete + saga compensating; trả 207 Multi-Status với danh sách từng id status; auditable; phân biệt 409 khi còn khoá; tránh "im lặng xoá nửa vời" rồi cron dọn dẹp nhiệm vụ "cleanup orphan".',
+  a: `**Tóm tắt:** xóa bản ghi phụ thuộc nhiều nguồn (DB + object store + downstream) không thể atomic. Dùng mark-for-delete + saga compensating; trả 207 Multi-Status với status từng id; auditable; phân biệt 409 khi còn khóa; tránh "im lặng xóa nửa vời" rồi cron cleanup orphan.
+
+### Chiến lược orchestration
+- **Mark-for-delete**: set {{deleted_at = now(), status = 'PENDING_DELETE'}} trong DB (soft delete) user thấy "đã xóa" ngay, nguồn khác xử lý async.
+- **Saga compensating**: bước 1 xóa DB row bước 2 xóa object store bước 3 notify downstream. Nếu bước 2 fail compensate bước 1 (restore) hoặc retry bước 2.
+- **Orchestrator** (hoặc workflow engine) theo dõi trạng thái từng id; retry với backoff; DLQ cho id không xóa được.
+
+### 207 Multi-Status
+~~~json
+{
+  "results": [
+    {"id": "a1", "status": 200, "message": "deleted"},
+    {"id": "a2", "status": 207, "message": "db deleted, object store pending"},
+    {"id": "a3", "status": 409, "message": "locked by another process"},
+    {"id": "a4", "status": 500, "message": "downstream unavailable"}
+  ]
+}
+~~~
+- 207 = "một phần thành công"; client phải xử lý từng entry, không giả định all-or-nothing.
+- Envelope error chung có {{detail[]}} liệt kê từng id + status + reason.
+
+### HTTP status cho từng kết quả
+| Kết quả | Status | Khi nào |
+|---|---|---|
+| Xóa thành công | 200/204 | tất cả nguồn đã xóa |
+| Partial | 207 | một số id fail |
+| Conflict | 409 | còn khóa/dependency (VD còn đơn hàng chưa ship) |
+| Not found | 404 | id không tồn tại |
+| Server error | 500 | downstream unavailable, retry sau |
+
+### Auditable
+- Ghi audit log: ai xóa, khi nào, id nào, kết quả từng nguồn. Bắt buộc với data tài chính/y tế.
+- "Xóa" thật sự (hard delete) chỉ sau khi tất cả nguồn đã xóa + retention window (VD 30 ngày) có thể undelete.
+
+### Pitfall "im lặng xóa nửa vời"
+- Xóa DB row thành công nhưng object store fail user thấy "đã xóa" nhưng file vẫn còn storage leak + compliance violation.
+- Cron cleanup orphan chạy sau phát hiện file mồ côi xóa nhưng audit trail bị đứt.
+- Giải pháp: mark-for-delete + retry + DLQ + alert; không "fire and forget".
+
+### Phân biệt 409
+- 409 Conflict khi còn khóa (foreign key, business rule "không xóa đơn đã thanh toán"). Trả 409 ngay, không retry - đây là lỗi nghiệp vụ, không phải transient.
+
+> Senior tip: với batch delete, luôn trả 207 + detail[] thay vì 200 "OK" khi có bất kỳ fail. Client (và người dùng) phải biết chính xác cái nào đã xóa, cái nào chưa - "im lặng thành công" là bug nghiêm trọng nhất trong delete API.`,
+  follow: [
+    'Mark-for-delete vs hard delete: khi nào chuyển từ soft sang hard?',
+    'Saga compensating cho delete: nếu compensate (restore) cũng fail thì sao?',
+    'Cron cleanup orphan có nên là chiến lược chính không, vì sao?'
+  ],
+  tags: ['partial success', 'delete', 'saga', '207 Multi-Status', 'compensation']
+},
+{
+  id: 'microservices-044',
+  topic: 'microservices',
+  level: 'mid',
+  q: 'Quyết định topic thể hiện tinh thần "phía server có quyền": user-gọi delete n-fail mà server vẫn trả 200 khi chỉ 1 fail là bug; đưa bảng trạng thái HTTP cho từng kết quả (207/200/409/500), code chung trong envelope error có detail[].',
+  a: `**Tóm tắt:** server có quyền quyết định status; user gọi delete n-fail mà server vẫn trả 200 khi chỉ 1 fail là bug. Bảng trạng thái HTTP cho từng kết quả (207/200/409/500), code chung trong envelope error có detail[].
+
+### Nguyên tắc "server có quyền"
+- Client không được tự diễn giải kết quả; server phải trả status code chính xác phản ánh trạng thái thực.
+- "200 OK" chỉ khi toàn bộ thao tác thành công. Partial 207. Conflict 409. Server error 500.
+- Không bao giờ trả 200 cho "có lỗi nhưng client tự xử lý" - đó là anti-pattern làm debugging impossible.
+
+### Bảng trạng thái cho delete batch
+| Tình huống | HTTP status | Body |
+|---|---|---|
+| Tất cả xóa OK | 200/204 | {"deleted": N} |
+| Một phần fail | 207 | {"results": [...]} |
+| Còn khóa/dependency | 409 | {"error": "...", "detail": [...]} |
+| Id không tồn tại | 404 | {"error": "not found"} |
+| Downstream unavailable | 500/503 | {"error": "...", "retry_after": N} |
+
+### Envelope error chung
+~~~json
+{
+  "error": "partial_failure",
+  "message": "3/5 deleted",
+  "detail": [
+    {"id": "a1", "status": 200, "message": "ok"},
+    {"id": "a2", "status": 409, "message": "locked by order #123"}
+  ]
+}
+~~~
+- {{detail[]}} luôn có mặt trong response lỗi, giúp client xử lý từng item.
+- Status code tổng = worst-case trong batch (nếu có 500 500; nếu chỉ 409 409; nếu chỉ 207 207).
+
+### Pitfall
+- Trả 200 với body {"errors": [...]} client HTTP library coi success không retry data inconsistent.
+- Trả 500 cho conflict nghiệp vụ client retry vô ích tăng tải.
+- Không có detail[] client không biết item nào fail phải query lại toàn bộ.
+
+> Senior tip: viết contract test cho status code: "given 5 ids, 1 locked, 1 not found, 3 ok expect 207 with detail length 5". Đây là test rẻ nhưng bắt được regression lớn.`,
+  follow: [
+    'Khi nào trả 202 Accepted thay vì 207 cho delete batch?',
+    'Client nên xử lý 207 như thế nào để UX tốt?',
+    'Envelope error có nên dùng cho success response không?'
+  ],
+  tags: ['HTTP status', 'API contract', 'partial success', 'error envelope']
+},
+{
+  id: 'microservices-045',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Multi-tenancy rate limit & quota theo tenant: token bucket per-tenant trong Redis (Lua), tenant "noisy neighbor" toàn bộ native pool cần giới hạn; advisory nên trả 429 có Retry-After + bật X-RateLimit-*; riêng internal service calls có thể dùng circuit-breaker.',
+  a: `**Tóm tắt:** token bucket per-tenant trong Redis (Lua script) để tenant "noisy neighbor" không chiếm toàn bộ connection pool. Trả 429 kèm Retry-After + X-RateLimit-*; internal service calls có thể dùng circuit-breaker thay vì rate limit.
+
+### Token bucket per-tenant trong Redis
+- Key: {{rl:<tenantId>:<endpoint>}} hoặc {{rl:<tenantId>:global}}.
+- Lua script atomic: check tokens, decrement, set TTL. Tránh race condition giữa check và decrement.
+~~~lua
+-- KEYS[1]=key, ARGV[1]=capacity, ARGV[2]=refill_rate, ARGV[3]=now
+local tokens = tonumber(redis.call('GET', KEYS[1])) or ARGV[1]
+local last = tonumber(redis.call('GET', KEYS[1]..':ts')) or ARGV[3]
+local elapsed = ARGV[3] - last
+tokens = math.min(ARGV[1], tokens + elapsed * ARGV[2])
+if tokens >= 1 then
+  tokens = tokens - 1
+  redis.call('SET', KEYS[1], tokens, 'EX', 3600)
+  redis.call('SET', KEYS[1]..':ts', ARGV[3], 'EX', 3600)
+  return {1, tokens, 0}
+else
+  local retry = (1 - tokens) / ARGV[2]
+  return {0, 0, retry}
+end
+~~~
+- Chạy qua {{EVALSHA}} (script cache) để giảm latency. Fallback DB nếu Redis down (chấp nhận less accurate).
+
+### Response khi bị limit
+- HTTP 429 Too Many Requests.
+- Header: {{Retry-After: 2}}, {{X-RateLimit-Limit: 100}}, {{X-RateLimit-Remaining: 0}}, {{X-RateLimit-Reset: 1690000000}}.
+- Body: {"error": "rate_limited", "retry_after": 2, "limit": 100}.
+- Client SDK phải respect Retry-After (exponential backoff + jitter), không retry immediately.
+
+### Tier per tenant
+- Free tier: 100 req/min; Pro: 1000 req/min; Enterprise: 10000 req/min (hoặc unlimited với dedicated pool).
+- Store tier trong tenant config cache (TTL 60s). Thay đổi tier invalidate cache.
+- Burst allowance: token bucket cho phép burst up to capacity, sau đó refill theo rate.
+
+### Internal service calls
+- Service-to-service calls có thể dùng circuit-breaker (Resilience4j) thay vì rate limit - fail fast khi dependency yếu.
+- Nhưng vẫn cần bulkhead để tenant "noisy" không chiếm thread pool. Kết hợp: rate limit ở gateway (per tenant) + bulkhead ở service (per dependency).
+
+### Pitfall production
+- Rate limit theo IP thay vì tenant tenant sau NAT share limit false positive.
+- Redis single point: Redis down rate limit disabled (fail-open) hoặc fail-closed (block all) - chọn fail-open với alert, tránh outage toàn bộ.
+- Token bucket refill rate sai (per second vs per minute) limit thực tế khác config.
+- Không có per-endpoint limit tenant spam endpoint rẻ (health check) để bypass global limit.
+
+> Senior tip: đo "rate limited requests / total" theo tenant. Nếu một tenant thường xuyên bị 429, đó là tín hiệu cần upgrade tier hoặc tối ưu client (batching, caching). Đừng chỉ block - hãy communicate.`,
+  follow: [
+    'Rate limit per-tenant vs per-user: khi nào cần cả hai?',
+    'Redis Lua script có overhead thế nào so với check-then-set?',
+    'Token bucket vs sliding window: chọn cái nào cho billing chính xác?'
+  ],
+  tags: ['rate limiting', 'multi-tenancy', 'Redis', 'token bucket', 'quota']
+},
+{
+  id: 'microservices-046',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Nghịch lý multi-tenant DB (không bắt buộc): so sánh chi phí vận hành & schema migration giữa "PG RLS", "schema-per-tenant", "database-per-tenant"; công thức nhỏ.',
+  a: `**Tóm tắt:** paradox: "database-per-tenant cô lập hoàn hảo nhưng vận hành N database; shared-schema rẻ nhưng query discipline; RLS middle ground". Công thức nhỏ: chi phí vận hành ~ f(N, M, team_size); chọn theo số tenant x số migration x team capacity, không theo lý thuyết.
+
+### Công thức nhỏ
+- **Chi phí vận hành** tỷ lệ (số tenant) x (số migration/tháng) x (thời gian mỗi migration) + (monitoring per DB) + (backup per DB).
+- Schema-per-tenant: chi phí tỷ lệ N x M. 100 tenant x 20 migration/tháng = 2000 migration/tháng cần automation.
+- Shared-schema: chi phí tỷ lệ M (1 migration cho tất cả) nhưng rủi ro tỷ lệ N (một query sai N tenant leak).
+- RLS: chi phí tỷ lệ M + policy maintenance; rủi ro trung bình (policy bảo vệ nhưng app phải set context đúng).
+
+### So sánh chi tiết
+| Tiêu chí | DB-per-tenant | Schema-per-tenant | Shared-schema + tenant_id | RLS |
+|---|---|---|---|---|
+| Cô lập | tuyệt đối | cao | logic | logic + DB policy |
+| Chi phí infra | rất cao | cao | thấp | thấp |
+| Migration | N x M | N x M | 1 x M | 1 x M |
+| Backup/restore tenant | dễ (dump 1 DB) | dễ (dump 1 schema) | khó (filter tenant_id) | khó |
+| Xóa tenant (GDPR) | drop DB | drop schema | delete rows (phức tạp) | delete rows |
+| Cross-tenant query (analytics) | khó (federate) | khó | dễ (1 bảng) | dễ |
+| Onboarding tenant | provision DB | provision schema + migrate | insert row | insert row + policy |
+
+### Quyết định theo giai đoạn
+- **Startup (< 50 tenant, compliance thấp)**: shared-schema + tenant_id. Đơn giản, rẻ, đủ.
+- **Growth (50-500 tenant, compliance trung bình)**: RLS. Thêm lớp an toàn mà không tăng infra.
+- **Enterprise (> 500 tenant hoặc compliance cao)**: schema-per-tenant hoặc DB-per-tenant cho tenant lớn, shared-schema cho tenant nhỏ (hybrid). Nhóm tenant theo version để giảm migration cost.
+
+### Nghịch lý
+- "Cô lập hoàn hảo" (DB-per-tenant) chi phí vận hành cao team nhỏ không afford outage nhiều hơn do thiếu ops capacity thực tế kém an toàn hơn shared-schema được monitor tốt.
+- "Rẻ" (shared-schema) một bug query leak toàn bộ tenant mất khách hàng lớn chi phí sự cố cao hơn infra.
+- Giải: chọn theo team capacity và compliance requirement, không theo lý thuyết. Có team ops mạnh + compliance cao DB-per-tenant. Team nhỏ + compliance thấp shared-schema + RLS + test tự động.
+
+### Hybrid thực tế
+- Tenant enterprise: DB riêng (compliance, backup, SLA riêng).
+- Tenant SMB: shared DB với RLS.
+- Router: resolve tenant tier chọn datasource. Spring: {{AbstractRoutingDataSource}} với key = tenantId/tier.
+
+### Pitfall production
+- Hybrid router bug tenant enterprise đọc shared DB data leak. Phải test routing thoroughly.
+- Migration automation: nếu không có tool (Flyway per schema, Liquibase), N x M sẽ giết team.
+- Monitoring: N database N dashboard alert fatigue. Cần centralized monitoring (Prometheus federation, Datadog) với label tenant.
+
+> Senior tip: khi phỏng vấn, đừng trả lời "chọn DB-per-tenant cho security" - hãy trả lời "chọn theo số tenant, compliance, team capacity; bắt đầu shared-schema + RLS, migrate lên schema-per-tenant khi có evidence (tenant lớn yêu cầu, compliance audit)". Đây là câu trả lời senior vì có trade-off và migration path.`,
+  follow: [
+    'Hybrid routing (enterprise DB riêng, SMB shared) có rủi ro gì và test thế nào?',
+    'Migration automation cho schema-per-tenant: bạn dùng tool gì?',
+    'Khi nào nên migrate từ shared-schema lên schema-per-tenant?'
+  ],
+  tags: ['multi-tenancy', 'database', 'cost', 'migration', 'RLS', 'schema-per-tenant']
+}
 );
+

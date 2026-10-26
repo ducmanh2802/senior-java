@@ -4610,6 +4610,200 @@ Readiness chỉ đổi sau khi process bắt đầu tắt có thể khiến load
   tags: ['graceful shutdown', 'Spring Boot', 'Kubernetes', 'readiness']
 },
 {
+  id: 'spring-034', topic: 'spring', level: 'senior',
+  q: 'Lần deploy gần nhất service không boot được: log dừng ở Flyway, một instance báo "Flyway validate failed" và các pod còn lại không sẵn sàng. Flyway lấy khoá schema ra sao khi 2 instance boot cùng lúc, vì sao một migration nặng treo cả rollout, và bạn xử lý thế nào?',
+  a: `**Tóm tắt:** Flyway cần khoá schema độc quyền trước khi migrate/validate: instance đầu tiên lấy khoá, các instance khác chờ trong số lần retry cho phép rồi báo lỗi, pod không boot. Migration nặng (CREATE INDEX trên bảng lớn) giữ khoá và kéo dài startup, khiến rollout đứng. Xử lý ngắn hạn: tăng số lần retry; dài hạn: chỉ một nơi một lúc migrate, hoặc tách migration thành bước riêng trước khi app mới nhận traffic.
+
+### Khoá schema của Flyway
+Flyway không chỉ đọc bảng {{flyway_schema_history}} rồi chạy SQL. Trước khi migrate, nó phải đảm bảo đúng một instance thao tác trên database, nên cần một khoá schema (cơ chế khác nhau theo DB: metadata lock, bảng khoá riêng hoặc advisory lock). Instance thứ hai phải chờ khoá; tham số {{lockRetryCount}} - cấu hình {{spring.flyway.lock-retry-count}} trên Boot 3 - quy định số lần thử trước khi bỏ cuộc, mặc định thấp nên chưa tới lúc migration xong là instance chờ đã báo lỗi. Log thường hiện "could not acquire schema lock" hoặc "Flyway validate failed" tùy bước nào vấp.
+
+### Vì sao migration nặng treo cả rollout
+1. Pod mới boot: Flyway chạy trước web server nhận request và trước readiness.
+2. Migration nặng (index trên bảng hàng chục triệu dòng, backfill) giữ khoá đủ lâu.
+3. Các pod còn lại boot đồng loạt, chờ khoá, cạn retry, khởi động lỗi.
+4. Orchestrator đuổi pod cũ theo rollout; pod cũ chết trước khi pod mới sẵn sàng, có khoảng thời gian cả cụm không có pod sẵn.
+
+Kết luận: nơi và thời điểm chạy migration phải được thiết kế, không để nó tự lo theo mặc định.
+
+### Cấu hình và tổ chức
+~~~yaml
+spring:
+  flyway:
+    enabled: true
+    validate-on-migrate: true      # schema lệch thì boot fail nhanh, dễ thấy
+    lock-retry-count: 10           # chờ instance khác migrate xong
+    baseline-on-migrate: false     # chỉ bật đúng một thời điểm adopt schema cũ
+~~~
+
+- Cụm nhiều instance: chạy migration ở một bước riêng (job/init container hoặc pipeline trước khi deploy app), hoặc giữ trong app nhưng quy định chỉ một instance migrate rồi mới scale-out.
+- Dùng user DB riêng cho Flyway với quyền tối thiểu (DDL/DML cần thiết), không dùng chung user runtime của app.
+- Giữ migration nhỏ và tương thích với cả code cũ lẫn code mới (expand/contract) để rollback version app vẫn chạy được schema mới.
+
+### Pitfall production
+- Bật {{baseline-on-migrate}} để "cho qua" trên mọi env khiến Flyway coi nguyên schema cũ là hợp lệ, che đi sự lệch thật mà mỗi nơi lệch một kiểu.
+- Trên PostgreSQL, migration chờ metadata lock khi các query của pod cũ còn chạy; giám sát bằng {{pg_stat_activity}} để phân biệt "chờ khoá" với "chính nó chậm".
+- Orchestrator kill pod giữa migration nếu grace period quá ngắn; dừng hoàn tất migration lành lặn hay không phụ thuộc vào DB có transactional DDL (PostgreSQL có; MySQL DDL tự commit nên cần bước sau tiếp tục).
+
+> Senior tip: đo thời lượng từng migration qua cột {{installed_on}} của bảng history và alert khi vượt 60 giây; trước release, chạy thử trên dữ liệu staging kích thước thật để biết trước migration nào nặng, đừng để prod là nơi thử lần đầu.`,
+  follow: ['Vì sao CREATE INDEX CONCURRENTLY không chạy được trong transaction mà Flyway mặc định mở?', 'Khi nào baseline-on-migrate hợp lý và rủi ro của nó là gì?'],
+  tags: ['Flyway', 'schema lock', 'lockRetryCount', 'deployment', 'migration']
+},
+{
+  id: 'spring-035', topic: 'spring', level: 'senior',
+  q: 'Flyway phân biệt versioned (V__) và repeatable (R__) migration thế nào? Checksum trong bảng history có tác dụng gì, bạn xử lý lỗi "checksum mismatch" ra sao, và có bao giờ được sửa lại file migration đã chạy?',
+  a: `**Tóm tắt:** Versioned (V__) chạy đúng một lần theo thứ tự phiên bản; repeatable (R__) chạy lại khi nội dung thay đổi và luôn sau các versioned còn thiếu. Checksum ghi vào bảng {{flyway_schema_history}}; lỗi "checksum mismatch" nghĩa là file đã đổi sau khi đã chạy - cách xử lý chuẩn là **thêm migration mới**, không sửa file cũ; {{repair}} chỉ dùng khi có chủ ý và review.
+
+### Hai kiểu và checksum
+- **Versioned** {{V1__create_order.sql}}, {{V1.2__add_outbox.sql}}: mỗi phiên bản chạy tối đa một lần, đánh dấu vào history; trạng thái schema được tóm trong một phiên bản duy nhất - "DB đã đến Vx" đủ cho cả team hiểu.
+- **Repeatable** {{R__refresh_views.sql}}: chạy lại khi nội dung thay đổi và luôn sau cùng các versioned, sắp theo description; dùng cho các đối tượng phụ thuộc nhiều thứ khác: view, function/trigger, seed danh mục ít đổi. Description (phần sau dấu __) là tên của nó, đổi tên file là đổi đối tượng theo nghĩa Flyway.
+
+Checksum là **hash nội dung file**, lưu lúc migration chạy. Validate đối chiếu file trên disk với dòng history: cơ chế này bảo đảm nội dung đang khởi động đúng như nội dung đã được review và chạy trước đó. Lỗi mismatch nghĩa là có người đã sửa file - đây là cơ chế bảo vệ, không phải Flyway khó tính vô cớ.
+
+### Xử lý theo tình huống
+| Tình huống | Xử lý |
+|---|---|
+| V__ đã chạy ở prod | Thêm V mới để sửa; tuyệt đối không đụng file cũ |
+| File chưa đến prod, sửa nhỏ trước release | Được, nhưng mọi env đã chạy file cũ sẽ lệch checksum → phải đồng thời baseline lại các env đó |
+| History lệch do restore/copy DB tay | {{repair}} canh chỉnh checksum/pending, kèm review và backup |
+| Feature branch merge trễ sau V12 | Bật {{out-of-order}} để V11 bổ sung sau V12, có chính sách rõ |
+
+### Semantics đáng nhớ
+- Flyway chạy từng migration trong transaction riêng trên DB hỗ trợ (PostgreSQL); MySQL DDL tự commit, nên migration nhiều bước fail giữa chừng để schema "nửa vời" - cần biết trước và có migration sửa tiếp theo.
+- {{out-of-order}} chỉ nên bật kèm chính sách: dùng cho nhánh merge trễ ở staging, ghi rõ ai thêm migration nào trước cái nào; bật vô thức trên prod làm thứ tự giữa các branch khó tái hiện.
+- Repeatable không thay thế versioned cho thay đổi cấu trúc bảng: mọi thay đổi DDL nên versioned để câu chuyện lịch sử nhất quán trên mỗi env.
+
+### Pitfall production
+- Sửa file đã chạy chỉ để dọn comment/format: prod không đổi ngay, nhưng boot tiếp theo nổ checksum - thường đúng giờ cao điểm.
+- Tập thói quen gọi repair mỗi khi validate lỗi khiến checksum mất vai trò cảnh báo; repair phải là quyết định có review, không là thuốc xịt.
+- Ghép migration từ nhiều service cùng schema chung: các V tăng dần có thể đụng cùng một version; quy ước khoảng version riêng cho từng service hoặc thư mục vị trí riêng theo service.
+
+> Senior tip: khoá policy bằng CI: định kỳ chạy {{flyway validate}} trên một DB dựng từ đầu từ V1 tới bản mới nhất và trên snapshot staging; bất kỳ file nào drift khỏi hai đường đó sẽ lộ ra trước khi tới prod.
+`,
+  follow: ['Flyway repair làm gì và khi nào dùng nó là an toàn?', 'Vì sao migration nhiều bước trên MySQL cần nhớ implicit commit của DDL?'],
+  tags: ['Flyway', 'checksum', 'versioned migration', 'repeatable', 'out-of-order']
+},
+{
+  id: 'spring-036', topic: 'spring', level: 'mid',
+  q: 'Bạn thêm một field mới vào DTO nhưng response JSON vẫn không thấy field đó; một endpoint khác lại nổ "Java 8 date/time type not supported by default". Những bẫy Jackson nào khiến JSON âm thầm sai, và bạn cấu hình ObjectMapper đúng thế nào với Spring Boot?',
+  a: `**Tóm tắt:** Jackson mặc định serialise qua getter/property public: field private không getter bị bỏ qua, không exception nào báo. Ngày giờ java.time cần module JSR-310 - chỉ ObjectMapper do Boot auto-cấu hình là được nạp sẵn, còn một {{new ObjectMapper()}} tự chế thì trắng tinh mọi cấu hình. Cách đúng: để Boot quản ObjectMapper ({{spring.jackson.*}}) hoặc khai bean JsonMapper tường minh, kèm vài cờ fail-loud để lỗi lộ sớm.
+
+### Visibility: cái gì được serialise
+~~~java
+public record OrderFee(String code, BigDecimal amount) {}   // record: tự nhận accessor
+
+public class OrderDto {
+    private String orderId;                    // không getter  -> KHÔNG có trong JSON
+    private boolean paid;
+    public boolean isPaid() { return paid; }   // -> property "paid" (isX cho boolean)
+}
+~~~
+
+Vì getter quyết định mọi thứ, nhiều điều kỳ quái bắt nguồn từ tên method: getter gõ nhầm {{getSatus}} sinh key {{satus}} gửi ra client; thêm field mới nhưng quên thêm getter; hoặc client chờ field mới mà JSON vẫn không thay đổi - không có exception nào báo, chỉ thiếu một cách im lặng. Hướng phòng: {{@JsonProperty}} cố định tên property, dùng record cho DTO mới để accessor tự rõ, và có test assert key tồn tại.
+
+### Java time: lỗi rõ và drift im lặng
+- ObjectMapper **không** có {{JavaTimeModule}}: Jackson 2 nổ {{InvalidDefinitionException}} (Java 8 date/time type not supported by default) - lỗi rõ, dễ tra.
+- Có module nhưng vẫn còn default: {{WRITE_DATES_AS_TIMESTAMPS}} không tắt → {{LocalDate}} trả dạng array như [2026,5,1], {{Instant}} trả epoch giây; JSON có vẻ hợp lệ nhưng khác ISO-8601 - lệch phía client, im lặng phía server.
+
+Boot auto-cấu hình ObjectMapper có sẵn {{JavaTimeModule}} và tắt {{WRITE_DATES_AS_TIMESTAMPS}}. Vì vậy quy tắc: mọi ObjectMapper trong app xuất phát từ một nguồn cấu hình chung và được inject; new ObjectMapper() rải rác là nguồn drift phổ biến nhất. Khi nâng lên Jackson 3 (Boot 4): package đổi sang tools.jackson, hỗ trợ java.time đã tích hợp trong databind - đọc release notes, không chép cấu hình theo thói quen Jackson 2.
+
+### Cấu hình tay đúng chỗ
+~~~java
+@Bean
+JsonMapper jsonMapper() {
+  return JsonMapper.builder()
+      .addModule(new JavaTimeModule())
+      .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+      .enable(SerializationFeature.FAIL_ON_EMPTY_BEANS)   // DTO không có property -> exception, không trả {}
+      .build();
+}
+~~~
+Không cần bean riêng thì chỉnh yaml: {{spring.jackson.serialization.*}}, {{spring.jackson.default-property-inclusion}}. ObjectMapper sau khi cấu hình là **thread-safe**: tạo một lần trong vòng đời app.
+
+### Pitfall production
+- {{@JsonInclude(NON_NULL)}} làm field giá trị null mất hẳn khỏi JSON; client phân biệt "key không tồn tại" với "key = null", nên đổi cấu hình này là thay đổi hợp đồng API.
+- Tắt {{FAIL_ON_EMPTY_BEANS}} để cho yên tĩnh sẽ che hẳn lớp DTO quên getter toàn bộ, output thành {{}} rỗng; kiểm tra cấu hình hiện hành của ObjectMapper trước khi quyết định tắt.
+- Một util tĩnh new ObjectMapper() chảy từ service cũ sang nhiều đường gọi: trong cùng một app, khu này trả ISO, khu kia trả timestamp - hai ObjectMapper hai cấu hình.
+- Tạo ObjectMapper mới mỗi request là lãng phí và dễ lệch; cấu hình một lần hoặc qua một bean duy nhất.
+
+> Senior tip: contract test nhẹ: dùng chính ObjectMapper của app serialise DTO đại diện (đầy đủ java.time, null, list rỗng) rồi assert key và format; vài phút mỗi DTO nhưng bắt được cả visibility, date drift lẫn việc đổi tên getter.`,
+  follow: ['Vì sao một ObjectMapper tự new lại mất cấu hình JavaTimeModule?', 'NON_NULL thay đổi hợp đồng API với client ra sao?'],
+  tags: ['Jackson', 'ObjectMapper', 'JavaTimeModule', 'visibility', 'DTO']
+},
+{
+  id: 'spring-037', topic: 'spring', level: 'senior',
+  q: 'Serialise một entity Hibernate ra JSON: một endpoint trả response có thêm "hibernateLazyInitializer", endpoint khác nổ StackOverflowError vì quan hệ hai chiều. Proxy Hibernate tương tác với Jackson ra sao, cấu hình lớp an toàn nào cần thiết, và vì sao DTO projection vẫn là lựa chọn bền?',
+  a: `**Tóm tắt:** Relation LAZY chưa fetch là một proxy Hibernate (subclass sinh runtime); Jackson serialise qua getter nên gọi lên proxy: hoặc kích hoạt lazy load khi session còn mở (N+1 ngay lúc serialise), hoặc {{LazyInitializationException}} khi session đã đóng, hoặc lộ property nội bộ {{hibernateLazyInitializer}}/{{handler}}. Quan hệ hai chiều không cắt một phía tạo vòng đệ quy vô hạn - StackOverflowError. JSON nên do DTO mô tả; annotation trên entity chỉ là lớp mạng an toàn.
+
+### Proxy gặp Jackson ra sao
+Hibernate trả proxy chỉ mang id; fetch thật xảy ra ở lần đầu gọi getter nếu persistence context còn mở. Serialization thường chạy sau khi service đóng transaction (trong Controller, ở HTTP message writer), nên kết thúc có ba kết quả:
+- proxy chưa init + session đã đóng → {{LazyInitializationException}};
+- proxy đã init → JSON thêm data không chủ đích, và một vài query N+1 xảy ra ngay bước serialise;
+- property runtime của proxy không được ẩn → output dính {{hibernateLazyInitializer}} và {{handler}} vì Jackson dò mọi getter public trên proxy.
+
+### Phòng tuyến khi buộc phải trả entity
+~~~java
+@Entity
+@JsonIgnoreProperties({"hibernateLazyInitializer", "handler"})   // ẩn property runtime của proxy
+class Order {
+  @ManyToOne(fetch = FetchType.LAZY, optional = false)
+  @JsonIgnore                        // cắt MỘT phía của vòng hai chiều
+  private Customer customer;
+
+  @OneToMany(mappedBy = "order")
+  private List<OrderLine> lines;     // phía lines được serialise, phía Line.order bị cắt
+}
+~~~
+Vòng đệ quy hai chiều trên entity cũ có thể dùng {{@JsonManagedReference}}/{{@JsonBackReference}} đánh dấu parent/child, nhưng chỉ hợp một quan hệ một chiều đích thực và vẫn trói API vào model - quan hệ phức tạp thì DTO sạch hơn. Hoặc thêm module jackson-datatype-hibernate6 (chọn artifact khớp Hibernate 6 đang chạy) để proxy chưa init chỉ serialise id, không cần rải annotation từng entity.
+
+### Vì sao DTO projection bền hơn
+- Hợp đồng API không buộc vào model lưu trữ: đổi schema không vỡ client.
+- Fetch plan được chọn rõ cho từng use case (JOIN FETCH, {{@EntityGraph}}, constructor expression), serialization không bao giờ ngẫu nhiên kích hoạt lazy.
+- Không dính property proxy nội bộ, không vòng đệ quy bẩm sinh: một mapper (MapStruct hoặc record constructor) là đủ, không cần đội annotation trên từng entity.
+
+### Pitfall production
+- {{@JsonIgnore}} đặt cho quan hệ để cứu một endpoint, sau đó thêm endpoint khác cần chính field đó → dữ liệu bị cắt một cách im lặng; {{@JsonView}} phân lớp được nhưng cần quy tắc rõ trong team.
+- Serialise chạy sau commit: các query lúc serialise không nằm trong transaction nghiệp vụ của endpoint; không theo dõi query count thì không thấy N+1 kiểu này.
+- Dùng bytecode enhancement cho entity khiến lớp proxy sinh ra khác biệt theo cấu hình; khi cấu hình lazy fetch giữa dev và prod khác nhau, hành vi serialise đã kiểm chứng ở dev sẽ lệch trên prod - giữ cùng một cấu hình ở mọi môi trường.
+
+> Senior tip: quy tắc thực dụng: JSON luôn qua DTO; trên entity chỉ giữ một cấu hình ẩn {{hibernateLazyInitializer}} như mạng an toàn chung, không coi là chiến lược chính; theo dõi số query mỗi endpoint để thấy N+1 phát sinh ngay lúc serialise.`,
+  follow: ['{{@JsonManagedReference}}/{{@JsonBackReference}} giải vòng đệ quy thế nào, khi nào không đủ?', 'Vì sao N+1 lúc serialise khó phát hiện hơn N+1 trong service?'],
+  tags: ['Jackson', 'Hibernate proxy', 'hibernateLazyInitializer', 'infinite recursion', 'DTO']
+},
+{
+  id: 'spring-038', topic: 'spring', level: 'lead',
+  q: 'Service chạy ổn ở local nhưng ở prod, lần boot sau nổ "Migration checksum mismatch", còn một vài route ít dùng báo "column does not exist". Schema prod đã trôi lệch khỏi các file migration: drift hình thành ra sao, bạn xử lý thế nào khi nó lộ ra, và chính sách nào ngăn nó lặp lại?',
+  a: `**Tóm tắt:** Schema drift là khi DB thật của một môi trường khác với cái các file migration mô tả: một ALTER chạy tay để dập sự cố, script của service khác, merge trễ, hay restore cũ. Nó lộ theo hai bản mặt: boot fail tại validate (checksum mismatch) hoặc lỗi runtime "column does not exist" trên một đường API ít đi. Tôi xử lý bằng quy trình so-diff - forward-fix - repair có review, và ngăn lặp bằng chính sách "schema chỉ đi qua migration" kèm flyway validate trong CI.
+
+### Drift hình thành theo đường nào
+1. **Sự cố ngoài giờ**: DBA ALTER prod cho nhanh (thêm index, đổi kiểu, thêm cột) mà không có migration tương ứng - prod chạy ngay, mọi env khác không có.
+2. **Schema dùng chung nhiều service**: một service khác thêm cột/bảng "của riêng nó" trong cùng database.
+3. **Nhánh sống lâu**: file V được edit sau khi đã chạy ở một env nào đó, hoặc merge trễ khiến thứ tự version lộn - kết hợp với checksum mismatch lúc boot.
+4. **Restore/snapshot**: schema được khôi phục về thời điểm cũ, bảng Flyway history đi theo trạng thái cũ hoặc mất đồng bộ.
+
+Prod "chạy tốt ngay lúc đó" chính là lý do kéo dài thời gian drift ẩn nấp - lỗi nổ ở lần boot kế, hoặc chỉ với đường API ít được gọi sau vài ngày.
+
+### Quy trình xử lý khi drift lộ ra
+1. **Đóng băng thay đổi schema** cho tới khi có kế hoạch; dừng các deploy đang chờ.
+2. **So khác biệt**: dump schema prod (pg_dump --schema-only) và dựng một schema sạch từ V1 tới bản mới nhất, rồi diff từng bảng, cột, index, constraint; liệt kê từng đối tượng lệch và nguồn gốc của nó.
+3. **Forward-fix**: những thay đổi cần giữ được chuẩn hoá thành migration mới; những mảnh dư cũng được dọn qua migration - tuyệt đối không ALTER tay "cho nhanh" lần nữa.
+4. **Repair có review** nếu checksum lệch do file đã bị sửa: sau khi quyết định bước 3, dùng repair để đóng dấu lại history, kèm backup. Không dùng repair để "phục hồi đồng bộ" mà chưa biết lệch bao nhiêu.
+5. **Quay về quy ước**: từ đó mọi env dùng cùng chuỗi migration; nếu môi trường nào phải giữ schema đặc biệt, phần khác biệt đó phải được mô tả bằng migration riêng chứ không nằm ngoài hệ thống.
+
+### Ngăn lặp lại
+- **Chính sách**: mọi thay đổi schema phải qua PR chứa file migration; user DBA hay "operator" không có quyền DDL tự do, yêu cầu ALTER phải qua ticket và dẫn tới một migration.
+- **CI hai đường**: flyway validate trên một DB dựng từ đầu từ V1 (bắt file hỏng, thứ tự, conflict), và validate định kỳ (nightly) trên snapshot staging/prod để bắt drift ngoài code.
+- **Giám sát history**: bảng {{flyway_schema_history}} có dòng mới không từ deploy pipeline là red flag; đặt alert cho event đó.
+
+### Pitfall production
+- Hai team cùng schema nhưng không phân vùng version/thư mục: ai đó sửa file của team khác, checksum nổ ở chỗ không ai ngờ.
+- Repair dùng như thuốc tẩy mỗi khi nổ: cơ chế checksum mất vai trò cảnh báo "đã có thứ gì đổi ngoài quy trình".
+- Bật baseline-on-migrate để dập lỗi: mỗi env được coi là hợp lệ với schema thật khác nhau - drift không được sửa mà được niêm yết thành trạng thái chính thức.
+
+> Senior tip: đừng đo drift bằng "bao nhiêu cột lệch" - hãy đo bằng thời gian từ lúc drift xuất hiện đến lúc CI cảnh báo. Với chính sách validate nightly trên snapshot, một ALTER tay đêm khuya bị thấy lại vào sáng hôm sau; không có nó, drift có thể sống hàng tuần và nổ đúng lúc release lớn.`,
+  follow: ['{{flyway repair}} sửa những gì trong bảng history?', 'Bạn dựng schema diff giữa prod và migration code bằng công cụ nào?'],
+  tags: ['schema drift', 'Flyway', 'validate', 'CI', 'baseline-on-migrate']
+},
+{
   id: 'jpa-022', topic: 'jpa', level: 'senior',
   q: 'Persistence context của Hibernate theo dõi entity thế nào, dirty checking diễn ra lúc nào, và flush order có ý nghĩa gì khi một transaction vừa insert vừa update?',
   a: `**Tóm tắt:** Persistence context là identity map và đơn vị theo dõi entity managed trong một transaction/session. Hibernate giữ trạng thái ban đầu (snapshot), dirty checking so sánh entity khi flush để tạo SQL; flush đồng bộ thay đổi xuống DB nhưng không đồng nghĩa commit. Hibernate dùng thứ tự action xác định, không nhất thiết đúng thứ tự câu lệnh Java.
@@ -4734,4 +4928,139 @@ Bulk SQL hoặc cập nhật từ ứng dụng khác có thể làm cache stale 
   tags: ['second-level cache', 'Hibernate', 'cache invalidation', 'consistency']
 },
 
+{
+  id: 'jpa-028', topic: 'jpa', level: 'mid',
+  q: 'Bạn thêm file data.sql để seed dữ liệu nhưng app không nạp; một lần khác script chạy trước Flyway nên lỗi bảng chưa tồn tại. Script SQL init của Boot (schema.sql/data.sql, {{spring.sql.init.mode}}) chạy khi nào, {{spring.jpa.defer-datasource-initialization}} giải quyết gì, và vì sao với hệ thật nên chọn một đường duy nhất cho schema?',
+  a: `**Tóm tắt:** Boot có ba cơ chế dựng schema/seed chồng nhau: Hibernate {{ddl-auto}}, script init ({{schema.sql}}/{{data.sql}}) và công cụ migration (Flyway). Trộn cả ba là nguồn lỗi thứ tự kinh điển. Hai điểm mấu chốt: {{spring.sql.init.mode}} mặc định embedded nên trên DB thật data.sql không chạy cho tới khi bật {{always}}; còn {{spring.jpa.defer-datasource-initialization}} dời script chạy sau schema của Hibernate. Khi có Flyway, schema và seed cần nhất quán thuộc về migration.
+
+### Mỗi cơ chế chạy lúc nào
+- {{spring.sql.init.mode}} mặc định **embedded**: script chỉ tự chạy trên DB nhúng (H2/HSQL). Trên PostgreSQL thật, không set {{always}} thì data.sql bị bỏ qua hoàn toàn - nguyên nhân "thêm seed mà không thấy gì" phổ biến nhất, và nó bỏ qua một cách im lặng chứ không báo lỗi.
+- {{spring.jpa.defer-datasource-initialization=true}}: dời script init chạy **sau** khi Hibernate tạo schema ({{ddl-auto}}) thay vì trước; hợp với luồng Hibernate dựng schema rồi seed bằng SQL thô. Nhưng khi Flyway có mặt, Hibernate không nên đóng vai tạo schema ({{ddl-auto}} để none/validate), nên defer dần trở nên dư thừa trừ khi cố ý trộn.
+- Thứ tự tương đối giữa script init và Flyway/Liquibase đã thay đổi giữa các phiên bản Boot; nếu buộc hai cơ chế cùng sống, kiểm chứng bằng integration test trên đúng phiên bản Boot đang chạy.
+
+### Chọn một đường
+| Đường | Ưu | Nhược |
+|---|---|---|
+| Flyway duy nhất (schema + seed là migration) | mọi env giống nhau, có checksum và audit | seed lớn phải viết migration |
+| {{ddl-auto}} + data.sql | demo/test nhanh | prod không kiểm soát, schema drift |
+| Thêm script.sql cạnh Flyway | tiện nạp nhanh khi cần | thêm một nguồn thứ tự phải maintain |
+
+### Pitfall production
+- Script chạy trước migration → INSERT vào bảng chưa tạo, boot nổ; hoặc ngược lại lặng lẽ bị bỏ qua ở prod (mode embedded) trong khi test H2 vẫn chạy: dữ liệu "sống" ở dev, "chết" ở prod mà không exception nào.
+- Để {{ddl-auto=update}} trên prod vì schema lệch migration: Hibernate tự thêm cột làm schema trôi khỏi Flyway, và validate chỉ soi các file migration - drift kiểu này nằm ngoài radar.
+- Seed dữ liệu tham chiếu (danh mục, vai trò, cấu hình) qua data.sql: prod cần cùng bản định danh nhưng script không được bảo đảm chạy; id lệch giữa env làm quan hệ FK gãy. Đặt seed vào migration - versioned cho một lần, repeatable cho nội dung idempotent.
+
+> Senior tip: chính sách ba dòng phải thuộc: schema chỉ đến từ migration, script init gắn profile dev/test qua {{spring.sql.init.mode}}, mọi seed xuyên môi trường nằm trong Flyway; và integration test chạy PostgreSQL thật (testcontainers) thay vì để H2 che thứ tự thực tế.`,
+  follow: ['Vì sao {{spring.sql.init.mode}} mặc định embedded trên DB thật?', 'Vì sao seed dữ liệu tham chiếu nên qua migration thay vì script init?'],
+  tags: ['data.sql', 'schema.sql', 'spring.sql.init', 'defer-datasource-initialization', 'Flyway']
+},
+{
+  id: 'jpa-029', topic: 'jpa', level: 'senior',
+  q: 'Bảng có cột JSONB lưu thuộc tính linh hoạt của sản phẩm. Bạn map cột JSON với Hibernate 6 bằng {{@JdbcTypeCode(SqlTypes.JSON)}} thế nào, so với con đường AttributeConverter cũ, và những bẫy snapshot cùng query vào JSON là gì?',
+  a: `**Tóm tắt:** Hibernate 6 map cột JSON vào kiểu Java (record/POJO hoặc Map) nhờ {{@JdbcTypeCode(SqlTypes.JSON)}}, thường kèm {{@Column(columnDefinition = "jsonb")}} trên PostgreSQL; serialize/deserialize dựa vào JSON mapper trên classpath (mặc định Jackson). Con đường cũ dùng {{AttributeConverter}} chuyển String: phải cast thủ công khi query với jsonb, và snapshot so sánh theo chuỗi. Bẫy đáng nhớ: chi phí snapshot/so sánh tăng theo kích thước payload, còn query theo key JSON phải qua native query với toán tử jsonb.
+
+### Mapping trong Hibernate 6
+~~~java
+@Entity
+public class Product {
+    @Id Long id;
+
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(columnDefinition = "jsonb")
+    private ProductAttributes attributes;   // record/POJO; hoặc Map<String,Object>
+}
+~~~
+- Hibernate chọn JSON mapper từ classpath; thiếu dependency thì lỗi lộ ở runtime khi bind.
+- {{columnDefinition}} phát tác dụng trên đường DDL của Hibernate; với Flyway, cột jsonb được khai trong migration và khai báo trên entity phải khớp kiểu.
+- Chọn {{jsonb}} thay vì {{json}} của PostgreSQL: jsonb phân tích cấu trúc và hỗ trợ toán tử/index, json chỉ lưu nguyên văn.
+
+### Snapshot và chi phí
+Hibernate coi thuộc tính JSON là mutable: nó chép giá trị khi entity load và so khi flush, nên chỉnh sâu bên trong ({{attributes.tags.add(...)}}) vẫn được nhận ra và phát UPDATE đúng lúc. Giá phải trả: mỗi flush phải serialize/so sánh toàn bộ document - object vài trăm KB trên hàng nghìn row nóng làm flush chậm thấy rõ. Giữ payload nhỏ; phần nội dung nặng để nơi khác.
+
+Giữ kiểu immutable (record + copy-on-write) không bắt buộc nhưng giúp mọi chỗ ghi chỉ qua method có chủ đích, dễ test hơn mutate âm thầm.
+
+### Query theo key JSON
+JPQL không hiểu cấu trúc JSON; khi cần điều kiện theo key, dùng native query với toán tử jsonb:
+~~~java
+@Query(value = "select p.* from product p where p.attributes ->> 'brand' = :brand", nativeQuery = true)
+List<Product> findByBrand(@Param("brand") String brand);
+~~~
+Index GIN tạo trong migration cho những mẫu query thật sự cần; mỗi GIN khiến mọi INSERT/UPDATE nặng thêm, nên chỉ tạo theo tần suất query đã đo, không tạo "phòng hờ".
+
+### Trade-off
+| Tiêu chí | Cột JSONB | Bảng con quan hệ |
+|---|---|---|
+| Tính linh hoạt schema | cao, thêm thuộc tính không đổi DDL | mỗi loại mới cần migration |
+| Query theo điều kiện | cần toán tử jsonb + GIN | index b-tree tự nhiên |
+| Ràng buộc dữ liệu | yếu, tự validate ở app | FK/CHECK có sẵn |
+| Nên khi nào | thuộc tính tuỳ biến theo loại hàng | dữ liệu lõi query thường xuyên |
+
+### Pitfall production
+- Không có ràng buộc bên trong jsonb: thêm field "required" rồi im lặng để bản ghi cũ thiếu; validate shape khi decode hoặc backfill bằng migration.
+- UPDATE cột jsonb phát lại toàn bộ giá trị (MVCC ghi row mới): payload lớn trên row nóng gây bloat, thêm việc cho vacuum.
+- GIN index bừa cho "phòng khi": đo {{pg_stat_user_indexes}}; index không ai dùng chỉ tốn write và storage.
+
+> Senior tip: jsonb là chỗ cho dữ liệu "hình dạng thay đổi"; khi một key bắt đầu được query nóng hoặc ràng buộc nghiệp vụ chặt dần, hãy tách nó thành cột thật (hoặc generated column) và giữ jsonb cho phần mở thực sự.`,
+  follow: ['Chi phí snapshot của cột JSON tăng ra sao theo payload?', 'Khi nào nên tách key JSON thành cột thật hoặc bảng con?'],
+  tags: ['@JdbcTypeCode', 'JSONB', 'Hibernate 6', 'AttributeConverter'],
+  refs: [
+    { type: 'doc', title: 'Hibernate ORM User Guide', url: 'https://docs.jboss.org/hibernate/orm/6.6/userguide/html_single/Hibernate_User_Guide.html' }
+  ]
+},
+{
+  id: 'db-031', topic: 'db', level: 'senior',
+  q: 'Một job chạy mỗi 5 phút trên 3 pod phải chạy đúng một instance. Team định dùng file lock trên volume chung; bạn đề xuất Postgres advisory lock: {{pg_try_advisory_lock}} khác {{pg_advisory_xact_lock}} thế nào, rủi ro gì với connection pool, và so với SKIP LOCKED queue hay ShedLock thì chọn khi nào?',
+  a: `**Tóm tắt:** Advisory lock là khoá không gắn vào bảng nào, Postgres cấp theo key số 64-bit bạn tự chọn (ví dụ hash tên job). Session-level ({{pg_advisory_lock}}/{{pg_try_advisory_lock}}) giữ đến khi unlock hoặc connection đóng; transaction-level ({{pg_advisory_xact_lock}}) tự nhả khi COMMIT/ROLLBACK. Với connection pool, rủi ro lớn nhất là lấy và nhả khoá trên hai connection khác nhau - gói phần công việc trong một transaction là cách né cả hai. File lock trên volume chung không đáng tin cho môi trường nhiều pod.
+
+### Các loại advisory lock
+| API | Phạm vi | Tự nhả khi |
+|---|---|---|
+| {{pg_try_advisory_lock(key)}} | session | unlock hoặc connection đóng |
+| {{pg_advisory_lock(key)}} | session, chờ đến khi lấy được | unlock hoặc connection đóng |
+| {{pg_advisory_xact_lock(key)}} | transaction | COMMIT/ROLLBACK |
+
+### Vì sao xact-level khớp Spring
+~~~java
+@Transactional
+public void runSolo() {
+    Boolean got = jdbc.queryForObject(
+        "select pg_try_advisory_xact_lock(71801)", Boolean.class);
+    if (!got) throw new SkipRunException();   // pod khác đang chạy - bỏ qua vòng này
+    // toàn bộ công việc nằm trong cùng transaction:
+    // - Spring giữ đúng một connection cho mọi statement
+    // - COMMIT/ROLLBACK tự nhả advisory lock, không cần unlock thủ công
+    jdbc.update("update run_state set last_run_at = now() where job = 'daily_report'");
+}
+~~~
+Bẫy của session-level trong Spring: mỗi statement của JdbcTemplate là một lần mượn connection; statement unlock có thể rơi vào connection khác connection đã lock, unlock khi đó vô hiệu và khoá "treo" đến khi connection đóng thật. Bọc trong một Spring transaction ép cùng connection; đổi lại transaction phải đủ ngắn vì connection và khoá được giữ cả lúc chạy.
+
+Với {{pg_advisory_lock}} dạng blocking, caller chưa lấy được khoá sẽ chờ vô hạn - hiện tượng dễ nhầm thành "service treo". Cho quy tắc "chạy đúng một", dùng pg_try và bỏ qua vòng là đủ.
+
+### Vì sao file lock kém
+- Volume chung giữa các pod đi qua NFS/network volume: ngữ nghĩa khoá file (flock/fcntl) không được bảo đảm nhất quán trên mọi filesystem như vậy; file khoá "chết" sau crash còn phải dọn tay.
+- Postgres tự dọn: process chết, connection đóng, backend nhả mọi khoá session-level - không còn "khoá ma".
+
+### So với các pattern khác
+| Cách | Khi hợp |
+|---|---|
+| Advisory lock | chỉ cần "một runner" cho từng job, đã có PostgreSQL |
+| ShedLock (bảng lock, TTL) | cần TTL, audit, nhiều scheduler |
+| SKIP LOCKED queue | phân phối việc cho N worker, không phải single-run |
+| Redis lock (SETNX + TTL) | hạ tầng Redis có sẵn, chấp nhận thêm thành phần phụ |
+
+Advisory lock không có TTL: job treo bên trong (connection còn sống) giữ khoá cho tới khi xong; idempotency và watchdog nội bộ vẫn cần.
+
+### Pitfall production
+- Key trùng giữa hai job khác nhau vì đặt số tay: dẫn xuất key từ tên job (hash 63-bit) và ghi mapping trên file/code.
+- Dùng phiên bản blocking mà tưởng là try: pod xếp hàng chờ "vô hạn" nhìn như treo; dùng pg_try, hoặc đặt statement_timeout để tự thoát.
+- Unlock chạy ngoài transaction chứa lock: hai connection khác nhau, khoá treo đến khi pool thu hồi connection - lỗi rất khó tái hiện vì phụ thuộc thời điểm borrow.
+
+> Senior tip: giám sát {{pg_locks}} với locktype = advisory theo key để biết instance nào đang giữ; một advisory lock "sống sót" sau deploy là dấu hiệu job cũ chưa nhả - cảnh báo trước khi vòng chạy kế tiếp lặng lẽ skip.`,
+  follow: ['{{pg_advisory_lock}} dạng blocking có thể khiến pod xếp hàng thế nào?', 'Advisory lock không có TTL - bạn xử lý job treo ra sao?'],
+  tags: ['advisory lock', 'PostgreSQL', 'scheduling', 'ShedLock', 'SKIP LOCKED'],
+  refs: [
+    { type: 'doc', title: 'PostgreSQL: Advisory Locks', url: 'https://www.postgresql.org/docs/current/explicit-locking.html#ADVISORY-LOCKS' },
+    { type: 'doc', title: 'ShedLock on GitHub', url: 'https://github.com/lukas-krecan/ShedLock' }
+  ]
+},
 );

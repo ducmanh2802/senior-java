@@ -3,19 +3,88 @@
  * Stage = { id: 'path-NN', order, phase: 'Nền tảng'|'Vững vàng'|'Senior', title, weeks: '1–2', goal: `markup`,
  *           lessons: [lesson ids], questions: [bank question ids, 4–8 "câu chốt chặng"], quizTopics: [topic ids],
  *           requires: [stage ids] }
- * A stage is done when every lesson is 'known' and ≥ 70% of its questions are 'known'.
+ * A stage is done when every lesson is 'known' and >= 70% of its questions are 'known'.
  */
 window.PATH = [
   {
     id: 'path-01', order: 1, phase: 'Nền tảng', title: 'Java core chắc tay', weeks: '1–2',
     goal: 'Hiểu exception, generics, String và immutability đủ để giải thích bằng lời, không chỉ dùng được.',
-    lessons: ['lesson-core-001', 'lesson-core-002', 'lesson-core-005', 'lesson-core-003'],
-    questions: [], quizTopics: ['core'], requires: [],
+    lessons: ['lesson-core-001', 'lesson-core-002', 'lesson-core-003', 'lesson-core-004', 'lesson-core-005'],
+    questions: ['core-001', 'core-002', 'core-003', 'core-004', 'core-005', 'core-006', 'core-007', 'core-008'],
+    quizTopics: ['core'], requires: [],
   },
   {
     id: 'path-02', order: 2, phase: 'Nền tảng', title: 'Collections từ bên trong', weeks: '3–4',
     goal: 'Biết HashMap, ArrayList, TreeMap, PriorityQueue chạy thế nào bên trong và chọn đúng cấu trúc.',
-    lessons: ['lesson-collections-001', 'lesson-collections-002', 'lesson-collections-004', 'lesson-collections-005'],
-    questions: [], quizTopics: ['collections'], requires: ['path-01'],
+    lessons: ['lesson-collections-001', 'lesson-collections-002', 'lesson-collections-003', 'lesson-collections-004', 'lesson-collections-005'],
+    questions: ['collections-001', 'collections-002', 'collections-003', 'collections-004', 'collections-005', 'collections-006', 'collections-007', 'collections-008'],
+    quizTopics: ['collections'], requires: ['path-01'],
+  },
+  {
+    id: 'path-03', order: 3, phase: 'Nền tảng', title: 'SQL từ nền tảng đến nâng cao', weeks: '5–6',
+    goal: 'Viết query đúng, đọc execution plan, hiểu index và tránh N+1 ngay từ tầng SQL.',
+    lessons: ['lesson-sql-001', 'lesson-sql-002', 'lesson-sql-003'],
+    questions: ['sql-001', 'sql-002', 'sql-003', 'sql-004', 'sql-005', 'sql-006', 'sql-007', 'sql-008'],
+    quizTopics: ['sql'], requires: ['path-02'],
+  },
+  {
+    id: 'path-04', order: 4, phase: 'Nền tảng', title: 'JVM & GC hiểu từ bên trong', weeks: '7–8',
+    goal: 'Giải thích GC, heap, stack, classloader và tuning như một Senior khi production chậm.',
+    lessons: ['lesson-jvm-001', 'lesson-jvm-002', 'lesson-jvm-003'],
+    questions: ['jvm-001', 'jvm-002', 'jvm-003', 'jvm-004', 'jvm-005', 'jvm-006'],
+    quizTopics: ['jvm'], requires: ['path-03'],
+  },
+  {
+    id: 'path-05', order: 5, phase: 'Nền tảng', title: 'REST API & HTTP thực chiến', weeks: '9–10',
+    goal: 'Thiết kế endpoint đúng quy ước HTTP, xử lý lỗi và bảo mật cơ bản từ tầng API.',
+    lessons: ['lesson-api-001', 'lesson-api-002', 'lesson-api-003'],
+    questions: ['api-001', 'api-002', 'api-003', 'api-004', 'api-005', 'api-006', 'api-007', 'api-008'],
+    quizTopics: ['api'], requires: ['path-04'],
+  },
+  {
+    id: 'path-06', order: 6, phase: 'Vững vàng', title: 'Concurrency & Modern Java', weeks: '11–13',
+    goal: 'Dùng ExecutorService, CompletableFuture, Virtual Threads và Stream đúng ngữ cảnh, tránh deadlock.',
+    lessons: ['lesson-concurrency-001', 'lesson-concurrency-002', 'lesson-concurrency-003', 'lesson-concurrency-004', 'lesson-concurrency-005',
+              'lesson-modern-001', 'lesson-modern-002', 'lesson-modern-003', 'lesson-modern-004', 'lesson-modern-005'],
+    questions: ['concurrency-001', 'concurrency-002', 'concurrency-003', 'concurrency-004', 'concurrency-005', 'modern-001', 'modern-002', 'modern-003'],
+    quizTopics: ['concurrency', 'modern'], requires: ['path-05'],
+  },
+  {
+    id: 'path-07', order: 7, phase: 'Vững vàng', title: 'Spring Boot & JPA thực chiến', weeks: '14–16',
+    goal: 'Viết service đúng tầng, dùng JPA hiệu quả, tránh lazy load và hiểu cơ chế proxy.',
+    lessons: ['lesson-spring-001', 'lesson-spring-002', 'lesson-spring-003', 'lesson-spring-004', 'lesson-spring-005',
+              'lesson-jpa-001', 'lesson-jpa-002', 'lesson-jpa-003', 'lesson-jpa-004', 'lesson-jpa-005'],
+    questions: ['spring-001', 'spring-002', 'spring-003', 'spring-004', 'spring-005', 'jpa-001', 'jpa-002', 'jpa-003'],
+    quizTopics: ['spring', 'jpa'], requires: ['path-06'],
+  },
+  {
+    id: 'path-08', order: 8, phase: 'Vững vàng', title: 'DB nâng cao, Testing & Security', weeks: '17–19',
+    goal: 'Tối ưu query, viết unit/integration test đáng tin và hiểu bảo mật ứng dụng từ cơ bản đến OWASP.',
+    lessons: ['lesson-db-001', 'lesson-db-002', 'lesson-db-003', 'lesson-db-004', 'lesson-db-005',
+              'lesson-testing-001', 'lesson-testing-002', 'lesson-testing-003',
+              'lesson-security-001', 'lesson-security-002', 'lesson-security-003'],
+    questions: ['db-001', 'db-002', 'db-003', 'db-004', 'testing-001', 'testing-002', 'security-001', 'security-002'],
+    quizTopics: ['db', 'testing', 'security'], requires: ['path-07'],
+  },
+  {
+    id: 'path-09', order: 9, phase: 'Vững vàng', title: 'DevOps, Docker & CI/CD', weeks: '20–21',
+    goal: 'Triển khai container, cấu hình pipeline và hiểu môi trường production từ góc nhìn Senior.',
+    lessons: ['lesson-devops-001', 'lesson-devops-002', 'lesson-devops-003'],
+    questions: ['devops-001', 'devops-002', 'devops-003', 'devops-004', 'devops-005', 'devops-006'],
+    quizTopics: ['devops'], requires: ['path-08'],
+  },
+  {
+    id: 'path-10', order: 10, phase: 'Senior', title: 'System Design & Architecture', weeks: '22–24',
+    goal: 'Phân tích yêu cầu, chọn kiến trúc phù hợp và trình bày trade-off rõ ràng như một Architect.',
+    lessons: ['lesson-design-001', 'lesson-design-002', 'lesson-design-003', 'lesson-design-004', 'lesson-design-005'],
+    questions: ['design-001', 'design-002', 'design-003', 'design-004', 'design-005', 'architecture-001', 'architecture-002', 'architecture-003'],
+    quizTopics: ['design', 'architecture'], requires: ['path-09'],
+  },
+  {
+    id: 'path-11', order: 11, phase: 'Senior', title: 'Microservices & Chuẩn bị phỏng vấn Senior', weeks: '25–26',
+    goal: 'Hiểu microservices thực tế, chuẩn bị cho phỏng vấn Senior và tự đánh giá tiến độ tổng thể.',
+    lessons: ['lesson-microservices-001', 'lesson-microservices-002', 'lesson-microservices-003', 'lesson-microservices-004', 'lesson-microservices-005'],
+    questions: ['microservices-001', 'microservices-002', 'microservices-003', 'microservices-004', 'microservices-005', 'design-006', 'design-007', 'microservices-006'],
+    quizTopics: ['microservices', 'design'], requires: ['path-10'],
   },
 ];

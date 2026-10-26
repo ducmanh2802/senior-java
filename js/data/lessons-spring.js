@@ -382,5 +382,425 @@ class MiniDispatcher {
     }],
     check: [{ q: 'Validation cho email chưa tồn tại nên nằm ở đâu?', options: ['Chỉ trong regex ở controller', 'Service/domain và constraint DB khi cần chống race', 'Trong serializer JSON', 'Trong DispatcherServlet'], answer: 1, explain: `Kiểm tra tồn tại phụ thuộc dữ liệu và là invariant nghiệp vụ, nên xử lý ở service/domain; unique constraint DB bảo vệ race condition. Regex chỉ kiểm tra hình dạng.` }, { q: 'Trong thiết kế này, ranh giới nào giúp kiểm soát lỗi dễ hơn?', options: ['Ranh giới rõ theo trách nhiệm', 'Một method khổng lồ', 'Nuốt mọi exception', 'Chia sẻ mutable state toàn cục'], answer: 0, explain: `Ranh giới rõ theo trách nhiệm giúp thay đổi và kiểm thử từng phần độc lập.` }],
     related: ['spring-005'], tags: ['Spring MVC', 'validation', 'ProblemDetail', 'HTTP']
+  },
+  {
+    id: 'lesson-spring-006', track: 'spring', order: 6,
+    title: 'Migration runner kiểu Flyway: versioned, repeatable và checksum', level: 'senior', minutes: 50,
+    goals: ['Mô tả cách Flyway theo dõi migration đã áp dụng', 'Phân biệt migration versioned và repeatable', 'Tự viết runner kiểm tra checksum, thứ tự và out-of-order'],
+    body: `**Tóm tắt:** Flyway ghi nhận migration đã chạy trong bảng lịch sử schema, rồi áp các file versioned theo thứ tự tăng dần và các file repeatable khi checksum thay đổi. Runner tự viết trong bài tập mô phỏng cơ chế này: mỗi migration có tên, checksum và thời điểm áp dụng; checksum lệch với bản đã ghi thì runner từ chối để ngăn sửa lén file đã chạy.
+
+### Migration versioned và repeatable
+Flyway phân biệt hai nhóm. Migration versioned có tên kiểu {{V1__create_user.sql}}, {{V2__add_email.sql}}: mỗi phiên bản chỉ được áp một lần, theo thứ tự số phiên bản. Migration repeatable có tên kiểu {{R__refresh_view.sql}}: không mang số phiên bản, được chạy lại mỗi khi checksum thay đổi. Repeatable thường dùng cho view, stored procedure hoặc dữ liệu tham chiếu có thể tái tạo. Phân loại dựa vào tiền tố tên: {{V}} theo sau là số và hai dấu gạch dưới; {{R__}} cho repeatable.
+
+### Checksum và schema history
+Bảng lịch sử lưu version, checksum, trạng thái success và thời điểm. Checksum bảo vệ khỏi tình huống developer sửa file migration sau khi đã chạy trên production: nếu checksum hiện tại khác bản đã ghi, runner ném {{IllegalStateException}} với thông điệp checksum mismatch. Đây là lỗi có chủ ý để buộc người sửa tạo migration mới thay vì chỉnh migration cũ. Mỗi bản ghi lịch sử là một bằng chứng bất biến của trạng thái schema tại một thời điểm.
+
+| Trường | Ý nghĩa | Ghi chú |
+|---|---|---|
+| version | Số phiên bản, 0 cho repeatable | Dùng để sắp xếp versioned |
+| name | Tên file migration | Định danh repeatable |
+| checksum | Dấu vân tay nội dung | Phát hiện sửa lén |
+| success | Migration đã hoàn tất | Dùng để retry an toàn |
+| ts | Thời điểm áp dụng | Clock inject để test |
+
+### Thứ tự, khoảng trống và out-of-order
+Versioned phải chạy theo số thứ tự tăng dần. Khi một migration có số nhỏ hơn phiên bản lớn nhất đã áp dụng xuất hiện sau này, Flyway mặc định từ chối vì out of order. Cờ {{allowOutOfOrder}} cho phép trường hợp đặc biệt, ví dụ thêm migration bị bỏ sót trong quá khứ. Dùng cờ này phải có lý do rõ ràng và kiểm soát thay đổi. Migration đã áp với cùng checksum thì lần sau bỏ qua, nên runner idempotent.
+
+### Idempotency và production
+Clock được truyền vào để ghi thời điểm deterministic trong test; production dùng đồng hồ tin cậy. Migration nên ngắn, transactional khi DB hỗ trợ, và không chứa logic phụ thuộc dữ liệu không kiểm soát. Với nhiều instance chạy cùng lúc, cần khóa migration table để tránh hai pod cùng áp một phiên bản. Nếu migration thất bại giữa chừng, bản ghi success false giúp lần chạy sau biết trạng thái và retry đúng chỗ.
+
+### Liên hệ phỏng vấn
+Hãy giải thích vì sao sửa file migration đã chạy là sai, cách Flyway phát hiện, và khi nào out-of-order được phép. Nêu cách xử lý migration thất bại giữa chừng và cách khôi phục. Cuối cùng, phân biệt migration schema với seed data và dữ liệu tham chiếu.
+
+> Senior tip: migration là phần không thể rollback dễ dàng trên production. Hãy coi mỗi file migration như một commit không thể sửa; thêm migration mới để thay đổi, và luôn có kế hoạch forward-fix thay vì downgrade thủ công.`,
+    exercises: [{
+      title: 'Migration runner với checksum và out-of-order',
+      prompt: `Cài {{MigrationRunner}} mô phỏng Flyway với API:
+- {{Migration(name, checksum)}}: name kiểu {{V1__a.sql}} hoặc {{R__sp.sql}}.
+- {{MigrationRunner(List<Migration> migrations, Clock clock)}} và overload có cờ {{allowOutOfOrder}}.
+- {{void applyAll()}} áp dụng migration, ghi vào {{schemaHistory}}.
+- {{List<HistoryEntry> schemaHistory}} mỗi phần tử có {{version}}, {{name}}, {{checksum}}, {{success}}, {{ts}}.
+
+Quy tắc: versioned chạy theo số thứ tự tăng dần; cùng version nhưng checksum khác thì ném {{IllegalStateException("checksum mismatch ...")}}; repeatable chỉ chạy lại khi checksum khác lần trước; nếu không cho phép out-of-order thì migration có version nhỏ hơn max đã áp sẽ bị ném {{IllegalStateException("out of order ...")}}; danh sách rỗng không làm gì.`,
+      starter: `import java.time.*;
+import java.util.*;
+
+class Migration {
+    final String name;
+    final String checksum;
+    final int version;
+    final boolean repeatable;
+    Migration(String name, String checksum) { throw new UnsupportedOperationException("TODO"); }
+}
+
+class HistoryEntry {
+    final int version;
+    final String name;
+    final String checksum;
+    final boolean success;
+    final long ts;
+    HistoryEntry(int version, String name, String checksum, boolean success, long ts) { throw new UnsupportedOperationException("TODO"); }
+}
+
+class MigrationRunner {
+    List<Migration> migrations;
+    final Clock clock;
+    final boolean allowOutOfOrder;
+    List<HistoryEntry> schemaHistory = new ArrayList<>();
+    MigrationRunner(List<Migration> migrations, Clock clock) { throw new UnsupportedOperationException("TODO"); }
+    MigrationRunner(List<Migration> migrations, Clock clock, boolean allowOutOfOrder) { throw new UnsupportedOperationException("TODO"); }
+    void applyAll() { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `import java.time.*;
+import java.util.*;
+public class Main {
+  static int p=0,t=0;
+  static void ck(String n, Runnable r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+  static void eq(Object a,Object b){if(!Objects.equals(a,b))throw new AssertionError(a+" != "+b);}
+  public static void main(String[] x){
+    ck("apply in version order", () -> {
+      Clock clock = Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC);
+      List<Migration> ms = new ArrayList<>();
+      ms.add(new Migration("V2__b.sql","c2"));
+      ms.add(new Migration("V1__a.sql","c1"));
+      ms.add(new Migration("V3__c.sql","c3"));
+      MigrationRunner r = new MigrationRunner(ms, clock);
+      r.applyAll();
+      eq(3, r.schemaHistory.size());
+      eq(1, r.schemaHistory.get(0).version);
+      eq(2, r.schemaHistory.get(1).version);
+      eq(3, r.schemaHistory.get(2).version);
+      if (!r.schemaHistory.get(0).success) throw new AssertionError("success");
+      eq(clock.millis(), r.schemaHistory.get(0).ts);
+    });
+    ck("checksum mismatch throws", () -> {
+      Clock clock = Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC);
+      List<Migration> ms = new ArrayList<>();
+      ms.add(new Migration("V1__a.sql","old"));
+      ms.add(new Migration("V1__a.sql","new"));
+      MigrationRunner r = new MigrationRunner(ms, clock);
+      try { r.applyAll(); throw new AssertionError("expected"); }
+      catch (IllegalStateException e) { if (!e.getMessage().contains("checksum mismatch")) throw e; }
+    });
+    ck("repeatable reruns on checksum change", () -> {
+      Clock clock = Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC);
+      MigrationRunner r = new MigrationRunner(new ArrayList<>(), clock);
+      r.migrations.add(new Migration("R__sp.sql","a"));
+      r.applyAll();
+      eq(1, r.schemaHistory.size());
+      r.migrations.clear();
+      r.migrations.add(new Migration("R__sp.sql","b"));
+      r.applyAll();
+      eq(2, r.schemaHistory.size());
+    });
+    ck("repeatable skips when unchanged", () -> {
+      Clock clock = Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC);
+      MigrationRunner r = new MigrationRunner(new ArrayList<>(), clock);
+      r.migrations.add(new Migration("R__sp.sql","a"));
+      r.applyAll();
+      r.migrations.clear();
+      r.migrations.add(new Migration("R__sp.sql","a"));
+      r.applyAll();
+      eq(1, r.schemaHistory.size());
+    });
+    ck("out-of-order policy", () -> {
+      Clock clock = Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC);
+      MigrationRunner strict = new MigrationRunner(new ArrayList<>(), clock, false);
+      strict.migrations.add(new Migration("V3__c.sql","c3"));
+      strict.applyAll();
+      strict.migrations.clear();
+      strict.migrations.add(new Migration("V2__b.sql","c2"));
+      try { strict.applyAll(); throw new AssertionError("expected"); }
+      catch (IllegalStateException e) { if (!e.getMessage().contains("out of order")) throw e; }
+      MigrationRunner loose = new MigrationRunner(new ArrayList<>(), clock, true);
+      loose.schemaHistory = strict.schemaHistory;
+      loose.migrations.add(new Migration("V2__b.sql","c2"));
+      loose.applyAll();
+      eq(2, strict.schemaHistory.size());
+    });
+    ck("zero migrations", () -> {
+      Clock clock = Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC);
+      MigrationRunner r = new MigrationRunner(new ArrayList<>(), clock);
+      r.applyAll();
+      eq(0, r.schemaHistory.size());
+    });
+    System.out.println("RESULT "+p+"/"+t);
+  }
+}`,
+      reference: `import java.time.*;
+import java.util.*;
+import java.util.regex.*;
+
+class Migration {
+    final String name;
+    final String checksum;
+    final int version;
+    final boolean repeatable;
+    Migration(String name, String checksum) {
+        this.name = name;
+        this.checksum = checksum;
+        if (name.startsWith("R__")) {
+            this.repeatable = true;
+            this.version = 0;
+        } else {
+            this.repeatable = false;
+            java.util.regex.Matcher mt = java.util.regex.Pattern.compile("^V(\\\\d+)__").matcher(name);
+            if (!mt.find()) throw new IllegalArgumentException("bad migration name: " + name);
+            this.version = Integer.parseInt(mt.group(1));
+        }
+    }
+}
+
+class HistoryEntry {
+    final int version;
+    final String name;
+    final String checksum;
+    final boolean success;
+    final long ts;
+    HistoryEntry(int version, String name, String checksum, boolean success, long ts) {
+        this.version = version;
+        this.name = name;
+        this.checksum = checksum;
+        this.success = success;
+        this.ts = ts;
+    }
+}
+
+class MigrationRunner {
+    List<Migration> migrations;
+    final Clock clock;
+    final boolean allowOutOfOrder;
+    List<HistoryEntry> schemaHistory = new ArrayList<>();
+    MigrationRunner(List<Migration> migrations, Clock clock) { this(migrations, clock, false); }
+    MigrationRunner(List<Migration> migrations, Clock clock, boolean allowOutOfOrder) {
+        this.migrations = migrations;
+        this.clock = clock;
+        this.allowOutOfOrder = allowOutOfOrder;
+    }
+    void applyAll() {
+        List<Migration> versioned = new ArrayList<>();
+        List<Migration> repeatable = new ArrayList<>();
+        for (Migration m : migrations) {
+            if (m.repeatable) repeatable.add(m); else versioned.add(m);
+        }
+        versioned.sort((a, b) -> a.version != b.version ? Integer.compare(a.version, b.version) : a.name.compareTo(b.name));
+        repeatable.sort((a, b) -> a.name.compareTo(b.name));
+        for (Migration m : versioned) applyVersioned(m);
+        for (Migration m : repeatable) applyRepeatable(m);
+    }
+    private void applyVersioned(Migration m) {
+        HistoryEntry existing = null;
+        for (int i = schemaHistory.size() - 1; i >= 0; i--) {
+            if (schemaHistory.get(i).version == m.version) { existing = schemaHistory.get(i); break; }
+        }
+        if (existing != null) {
+            if (!existing.checksum.equals(m.checksum)) throw new IllegalStateException("checksum mismatch " + m.name);
+            return;
+        }
+        int maxApplied = 0;
+        for (HistoryEntry h : schemaHistory) if (h.version > maxApplied) maxApplied = h.version;
+        if (!allowOutOfOrder && m.version < maxApplied) throw new IllegalStateException("out of order " + m.name);
+        schemaHistory.add(new HistoryEntry(m.version, m.name, m.checksum, true, clock.millis()));
+    }
+    private void applyRepeatable(Migration m) {
+        HistoryEntry last = null;
+        for (int i = schemaHistory.size() - 1; i >= 0; i--) {
+            if (schemaHistory.get(i).name.equals(m.name)) { last = schemaHistory.get(i); break; }
+        }
+        if (last != null && last.checksum.equals(m.checksum)) return;
+        schemaHistory.add(new HistoryEntry(0, m.name, m.checksum, true, clock.millis()));
+    }
+}`,
+      hints: ['Dùng regex {{^V(\\\\d+)__}} để tách số phiên bản; tên bắt đầu {{R__}} là repeatable.', 'Duyệt {{schemaHistory}} từ cuối để tìm bản đã áp cùng version hoặc cùng tên.', 'Kiểm tra checksum trước khi quyết định skip; max version đã áp dùng cho quy tắc out-of-order.', 'Repeatable không có version; chỉ so checksum với lần chạy trước cùng tên.'],
+      explain: `Runner mô phỏng Flyway ở mức tối giản nhưng giữ được các bất biến quan trọng. Versioned được sắp xếp trước khi áp, nên thứ tự gọi applyAll không phụ thuộc thứ tự trong list. Checksum mismatch được phát hiện bằng cách tìm bản ghi cùng version; nếu lệch, runner từ chối ngay và không ghi thêm bản ghi sai. Repeatable dùng tên làm khóa và chỉ chạy khi checksum khác, nên gọi applyAll nhiều lần không tạo hiệu ứng phụ. Out-of-order được kiểm soát bằng max version đã áp và cờ allowOutOfOrder. Clock inject giúp ts deterministic trong test; production nên dùng đồng hồ tin cậy và khóa bảng migration khi chạy nhiều instance.`,
+    }],
+    check: [{ q: 'Vì sao không nên sửa file migration đã áp dụng trên production?', options: ['Vì checksum sẽ lệch và runner từ chối để ngăn thay đổi lén', 'Vì Java không compile được file SQL', 'Vì migration chỉ chạy một lần trong JVM', 'Vì Flyway tự động xóa bảng lịch sử'], answer: 0, explain: `Checksum của file hiện tại được so với bản ghi lịch sử. Nếu lệch, migration cũ đã chạy trên DB không còn khớp với file, nên runner báo lỗi để buộc tạo migration mới.` }, { q: 'Khi nào cờ out-of-order nên được bật?', options: ['Khi thêm migration bị bỏ sót có số phiên bản nhỏ hơn max đã áp', 'Mọi trường hợp để đơn giản', 'Khi checksum thay đổi', 'Khi chạy trên môi trường dev'], answer: 0, explain: `out-of-order cho phép áp migration có version nhỏ hơn max đã áp trong trường hợp đặc biệt như bổ sung migration bị bỏ sót. Bật mặc định sẽ che giấu thứ tự và làm khó truy vết.` }, { q: 'Repeatable migration chạy lại trong trường hợp nào?', options: ['Khi checksum khác lần trước', 'Mỗi lần applyAll', 'Khi version tăng', 'Khi bảng lịch sử rỗng'], answer: 0, explain: `Repeatable không có version; checksum là tiêu chí duy nhất. Nếu checksum giữ nguyên, runner bỏ qua để tránh chạy lại view hoặc procedure không cần thiết.` }],
+      related: ['spring-001', 'spring-002'], tags: ['Flyway', 'migration', 'checksum', 'schema history', 'out-of-order']
+    },
+  {
+    id: 'lesson-spring-007', track: 'spring', order: 7,
+    title: 'Annotation-driven mapper kiểu Jackson: reflection và FAIL_ON_MISSING', level: 'senior', minutes: 50,
+    goals: ['Dùng reflection để serialize object theo annotation', 'Hiểu vì sao field non-public không annotation bị bỏ qua im lặng', 'Bật chế độ strict để phát hiện field bị thiếu trong JSON'],
+    body: `**Tóm tắt:** Mapper kiểu Jackson dùng reflection để đọc field và annotation quyết định tên JSON. Nếu field không public và không có {{@JsonProperty}}, mapper mặc định bỏ qua im lặng; chế độ strict biến lỗi này thành exception để phát hiện field bị thiếu trong JSON.
+
+### Reflection và annotation runtime
+Annotation chỉ có tác dụng ở runtime nếu khai báo {{@Retention(RUNTIME)}} và target field. Mapper duyệt {{getDeclaredFields()}}, đọc {{@JsonProperty}} và {{@JsonIgnore}}, rồi {{setAccessible(true)}} để lấy giá trị. Thứ tự field theo khai báo trong class. Cache metadata theo class trong production để tránh lặp reflection.
+
+### Quy tắc đặt tên
+Có {{@JsonProperty("name")}} thì dùng tên đó. Không annotation nhưng field public thì dùng tên field. Không annotation và field không public thì bị bỏ qua im lặng; đây là bug thường gặp khi port từ Jackson sang mapper tự viết hoặc khi field thiếu getter. {{@JsonIgnore}} luôn bỏ qua, kể cả khi có {{@JsonProperty}} nếu cả hai cùng xuất hiện, vì bỏ qua an toàn hơn serialize nhầm dữ liệu nhạy cảm.
+
+### FAIL_ON_MISSING
+Chế độ strict không thay đổi output khi mọi field đều hợp lệ; nó chỉ kiểm tra trước khi serialize: gặp field non-public/không annotation thì ném exception. Điều này giúp phát hiện field bị drop. Trong Jackson thật, FAIL_ON_UNKNOWN_PROPERTIES và visibility rules phức tạp hơn; bài tập mô phỏng ý tưởng cốt lõi: silent drop là nguy hiểm vì không có lỗi nào được ném.
+
+### Empty object và giá trị
+Object không có field hợp lệ serialize thành {{}}. String phải escape quote, backslash và ký tự điều khiển. Số và boolean serialize trực tiếp. Null serialize thành null. Object lồng nhau có thể serialize đệ quy, nhưng phải tránh vòng tham chiếu trong production.
+
+### Pitfall production
+- Bỏ qua field im lặng gây thiếu dữ liệu mà không lỗi.
+- Reflection chậm; cache metadata per class trong production.
+- Field mutable và setAccessible có thể bị chặn bởi module system hoặc SecurityManager.
+- JSON injection nếu không escape đúng.
+- Thứ tự field không ổn định nếu dùng map; giữ declared order để snapshot test ổn định.
+
+### Liên hệ phỏng vấn
+Hãy mô tả cách Jackson quyết định property, visibility và unknown property handling. Giải thích vì sao silent drop là nguy hiểm và cách bật strict mode. Nêu trade-off reflection so với code generation và bean introspection.
+
+> Senior tip: Trong API contract, thiếu field thường nghiêm trọng hơn thừa field. Hãy có test snapshot JSON và bật strict validation trong môi trường dev/test để phát hiện regression sớm.`,
+    exercises: [{
+      title: 'SimpleJsonMapper với @JsonProperty và strict mode',
+      prompt: `Cài {{SimpleJsonMapper}} dùng reflection và annotation tự định nghĩa:
+- {{@JsonProperty("name")}} đặt tên JSON.
+- {{@JsonIgnore}} luôn bỏ qua.
+- Field không public và không có {{@JsonProperty}} bị bỏ qua im lặng ở chế độ thường; gọi {{strict(true)}} làm mapper ném {{IllegalStateException}} khi gặp field như vậy.
+- {{String toJson(Object value)}} serialize object thành JSON.
+
+Objects mẫu: class {{User}} với các field {{long id}}, {{@JsonProperty("full_name") String name}}, {{@JsonIgnore String ssn}} và {{String nick}}. Ở chế độ thường chỉ {{full_name}} xuất hiện; ở strict thì ném lỗi vì {{id}} và {{nick}}.`,
+      starter: `import java.lang.annotation.*;
+import java.lang.reflect.*;
+
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.FIELD)
+@interface JsonProperty { String value(); }
+
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.FIELD)
+@interface JsonIgnore {}
+
+class User {
+    long id;
+    @JsonProperty("full_name") String name;
+    @JsonIgnore String ssn;
+    String nick;
+}
+
+class SimpleJsonMapper {
+    SimpleJsonMapper strict(boolean strict) { throw new UnsupportedOperationException("TODO"); }
+    String toJson(Object value) { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `import java.lang.annotation.*;
+import java.lang.reflect.*;
+import java.util.*;
+public class Main {
+  static int p=0,t=0;
+  static void ck(String n, Runnable r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+  static void eq(Object a,Object b){if(!Objects.equals(a,b))throw new AssertionError(a+" != "+b);}
+  public static void main(String[] x){
+    class Safe { @JsonProperty("id") long id; @JsonProperty("name") String name; }
+    class Mixed { public int count; @JsonProperty("label") String title; }
+    class Empty {}
+    ck("annotation name is used", () -> {
+      User u = new User(); u.id=1; u.name="Alice"; u.ssn="secret"; u.nick="bob";
+      String json = new SimpleJsonMapper().toJson(u);
+      if (!json.equals("{\\"full_name\\":\\"Alice\\"}")) throw new AssertionError(json);
+    });
+    ck("ssn is ignored", () -> {
+      User u = new User(); u.id=1; u.name="Alice"; u.ssn="secret"; u.nick="bob";
+      String json = new SimpleJsonMapper().toJson(u);
+      if (json.contains("ssn") || json.contains("secret")) throw new AssertionError(json);
+    });
+    ck("nick is dropped in lenient mode", () -> {
+      User u = new User(); u.id=1; u.name="Alice"; u.ssn="secret"; u.nick="bob";
+      String json = new SimpleJsonMapper().toJson(u);
+      if (json.contains("nick") || json.contains("bob")) throw new AssertionError(json);
+    });
+    ck("strict throws on non-public unannotated field", () -> {
+      User u = new User(); u.id=1; u.name="Alice"; u.ssn="secret"; u.nick="bob";
+      SimpleJsonMapper m = new SimpleJsonMapper().strict(true);
+      try { m.toJson(u); throw new AssertionError("expected throw"); }
+      catch (RuntimeException e) { }
+    });
+    ck("strict does not throw for annotated fields", () -> {
+      Safe s = new Safe(); s.id=2; s.name="Bob";
+      String json = new SimpleJsonMapper().strict(true).toJson(s);
+      if (!json.equals("{\\"id\\":2,\\"name\\":\\"Bob\\"}")) throw new AssertionError(json);
+    });
+    ck("renaming and keeping names", () -> {
+      Mixed mx = new Mixed(); mx.count=5; mx.title="x";
+      String json = new SimpleJsonMapper().toJson(mx);
+      if (!json.equals("{\\"count\\":5,\\"label\\":\\"x\\"}")) throw new AssertionError(json);
+    });
+    ck("empty object serializes to {}", () -> {
+      String json = new SimpleJsonMapper().toJson(new Empty());
+      if (!json.equals("{}")) throw new AssertionError(json);
+    });
+    System.out.println("RESULT "+p+"/"+t);
+  }
+}`,
+      reference: `import java.lang.annotation.*;
+import java.lang.reflect.*;
+
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.FIELD)
+@interface JsonProperty { String value(); }
+
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.FIELD)
+@interface JsonIgnore {}
+
+class User {
+    long id;
+    @JsonProperty("full_name") String name;
+    @JsonIgnore String ssn;
+    String nick;
+}
+
+class SimpleJsonMapper {
+    private boolean strict;
+    SimpleJsonMapper strict(boolean strict) { this.strict = strict; return this; }
+    String toJson(Object value) {
+        if (value == null) return "null";
+        StringBuilder sb = new StringBuilder("{");
+        boolean first = true;
+        for (java.lang.reflect.Field f : value.getClass().getDeclaredFields()) {
+            int mod = f.getModifiers();
+            if (java.lang.reflect.Modifier.isStatic(mod) || java.lang.reflect.Modifier.isTransient(mod)) continue;
+            if (f.getAnnotation(JsonIgnore.class) != null) continue;
+            JsonProperty prop = f.getAnnotation(JsonProperty.class);
+            String name;
+            boolean annotated = prop != null;
+            if (annotated) name = prop.value();
+            else if (java.lang.reflect.Modifier.isPublic(mod)) name = f.getName();
+            else {
+                if (strict) throw new IllegalStateException("non-public field without @JsonProperty: " + f.getName());
+                continue;
+            }
+            f.setAccessible(true);
+            Object v;
+            try { v = f.get(value); }
+            catch (IllegalAccessException e) { throw new RuntimeException(e); }
+            if (!first) sb.append(",");
+            first = false;
+            sb.append("\\"").append(escape(name)).append("\\":");
+            sb.append(toJsonValue(v));
+        }
+        sb.append("}");
+        return sb.toString();
+    }
+    private String toJsonValue(Object v) {
+        if (v == null) return "null";
+        if (v instanceof String) return "\\"" + escape((String) v) + "\\"";
+        if (v instanceof Character) return "\\"" + escape(String.valueOf(v)) + "\\"";
+        if (v instanceof Boolean || v instanceof Number) return String.valueOf(v);
+        if (v.getClass().isArray()) {
+            StringBuilder sb = new StringBuilder("[");
+            int len = java.lang.reflect.Array.getLength(v);
+            for (int i = 0; i < len; i++) {
+                if (i > 0) sb.append(",");
+                sb.append(toJsonValue(java.lang.reflect.Array.get(v, i)));
+            }
+            sb.append("]");
+            return sb.toString();
+        }
+        return toJson(v);
+    }
+    private String escape(String s) {
+        return s.replace("\\\\", "\\\\\\\\").replace("\\"", "\\\\\\"").replace("\\n", "\\\\n").replace("\\r", "\\\\r").replace("\\t", "\\\\t");
+    }
+}`,
+      hints: ['Dùng {{getDeclaredFields()}} và {{getAnnotation(...)}} để đọc metadata runtime.', '{{JsonIgnore}} được kiểm tra trước {{JsonProperty}}.', 'Field public không annotation vẫn được include theo tên field.', 'strict chỉ kiểm tra trước khi append, không đổi output của object hợp lệ.'],
+      explain: `Mapper mô phỏng ý tưởng cốt lõi của Jackson: annotation quyết định tên, reflection đọc giá trị, và chế độ strict phát hiện field bị drop. Ở chế độ thường, field non-public không annotation bị bỏ qua im lặng, nên output của User chỉ còn {{full_name}}. Ở strict, mapper ném exception ngay khi gặp {{id}} hoặc {{nick}}, giúp test phát hiện regression. {{JsonIgnore}} luôn thắng để tránh serialize dữ liệu nhạy cảm. Escape đúng là bắt buộc để không tạo JSON injection. Trong production, nên cache metadata per class và cân nhắc code generation để giảm chi phí reflection.`,
+    }],
+    check: [{ q: 'Vì sao field {{long id;}} trong User bị bỏ qua ở chế độ thường?', options: ['Vì không public và không có @JsonProperty', 'Vì kiểu long không serialize được', 'Vì @JsonIgnore áp dụng cho cả class', 'Vì mapper chỉ đọc getter'], answer: 0, explain: `Mapper chỉ include field public hoặc có @JsonProperty. Field long id không public và không annotation nên bị drop im lặng, đây là bug cần strict mode để phát hiện.` }, { q: 'Chế độ strict thay đổi điều gì?', options: ['Biến field bị drop thành exception, output hợp lệ không đổi', 'Tự động thêm getter', 'Bỏ qua @JsonIgnore', 'Sắp xếp field theo tên'], answer: 0, explain: `strict không thay đổi JSON của object hợp lệ; nó chỉ kiểm tra và ném exception khi gặp field non-public không annotation. @JsonIgnore vẫn được tôn trọng và thứ tự field giữ nguyên.` }, { q: 'Trong thiết kế này, ranh giới nào giúp kiểm soát lỗi dễ hơn?', options: ['Ranh giới rõ theo trách nhiệm', 'Một method khổng lồ', 'Nuốt mọi exception', 'Chia sẻ mutable state toàn cục'], answer: 0, explain: `Ranh giới rõ theo trách nhiệm giúp thay đổi và kiểm thử từng phần độc lập.` }],
+      related: ['spring-005', 'spring-006'], tags: ['Jackson', 'reflection', 'annotation', 'JSON', 'FAIL_ON_MISSING']
   }
 );
