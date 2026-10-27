@@ -129,7 +129,7 @@ function codePrompt(b) {
 }
 
 module.exports = async function handler(req, res) {
-  if (!process.env.ANTHROPIC_API_KEY) return send(res, 503, { error: 'Server chưa cấu hình ANTHROPIC_API_KEY', code: 'not_configured' });
+  if (!process.env.OPENROUTER_API_KEY) return send(res, 503, { error: 'Server chưa cấu hình OPENROUTER_API_KEY', code: 'not_configured' });
   const ctx = await guard(req, res, { maxPerMinute: 15 });
   if (!ctx) return;
   const body = ctx.body;

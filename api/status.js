@@ -11,9 +11,9 @@ module.exports = async function handler(req, res) {
   if (!(await guard(req, res, { maxPerMinute: 30, auth: !!(req.headers['x-app-passcode'] || req.headers.authorization) }))) return;
   send(res, 200, {
     ok: true,
-    ai: !!process.env.ANTHROPIC_API_KEY,
+    ai: !!process.env.OPENROUTER_API_KEY,
     run: !!(process.env.JUDGE0_KEY || process.env.JUDGE0_URL),
     accounts: supabaseConfigured(),
-    model: process.env.CLAUDE_MODEL || 'claude-opus-5-5',
+    model: process.env.AI_MODEL || 'openrouter/free',
   });
 };
