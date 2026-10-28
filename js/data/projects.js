@@ -3181,5 +3181,638 @@ SecurityFilterChain security(HttpSecurity http) throws Exception {
       ]
     },
     related: ['claude-029', 'claude-018', 'claude-020', 'claude-034', 'claude-035', 'concurrency-006', 'jvm-006', 'spring-015', 'ai-008']
+  },
+  {
+    id: 'proj-auth-sso', title: 'SSO nội bộ với Spring Authorization Server (OAuth2/OIDC + PKCE)', level: 'senior', weeks: 5,
+    skills: ['Spring Authorization Server', 'Spring Security', 'OAuth2', 'OIDC', 'JWT', 'PKCE', 'RBAC', 'PostgreSQL', 'Testcontainers'],
+    pitch: `Tự dựng một **máy chủ đăng nhập tập trung (SSO)** bằng Spring Authorization Server cho 2 ứng dụng của công ty: một web app (React + BFF Spring Boot) và một API đơn hàng. Người dùng đăng nhập một lần, dùng được mọi app; API chỉ tin **JWT ký bằng RSA** do máy chủ này phát hành. Dự án bắt bạn hiểu thật sự những thứ hay bị hỏi xoáy: authorization code + PKCE chạy từng bước thế nào, vì sao không để token trong localStorage, refresh token rotation, phân quyền theo vai trò (RBAC), "đăng xuất khỏi mọi thiết bị" khi access token là JWT không thu hồi được, và CSRF khi dùng cookie.`,
+    requirements: `### Bối cảnh (đọc nếu chưa rõ OAuth2)
+Ví dụ đời thường: khách sạn. **Authorization Server** là quầy lễ tân: kiểm tra CMND (mật khẩu) rồi phát **thẻ phòng** (access token) có hạn 5 phút. **Resource Server** (API) là cửa phòng: chỉ đọc thẻ, không hỏi lại CMND. **Client** là ứng dụng thay mặt khách đi lấy thẻ. **OIDC** thêm một "tờ giấy giới thiệu" (ID token) cho client biết khách là ai. **PKCE** là mật mã một lần client tự nghĩ ra lúc xin mã, để kẻ trộm được mã (authorization code) giữa đường cũng không đổi lấy thẻ được.
+
+### User story
+1. **Đăng nhập một lần:** là nhân viên, tôi đăng nhập ở web app rồi mở app quản trị không phải nhập lại mật khẩu.
+  Chấp nhận: lần 2 chỉ có redirect qua auth server, không hiện form login (session ở auth server còn hạn).
+2. **Token không tới tay trình duyệt:** là kỹ sư bảo mật, tôi muốn JavaScript trên trình duyệt không đọc được token nào.
+  Chấp nhận: BFF giữ token phía server; trình duyệt chỉ có cookie phiên {{HttpOnly; Secure; SameSite=Lax}}; DevTools không thấy chuỗi JWT nào.
+3. **API kiểm tra JWT:** API đơn hàng từ chối token hết hạn, sai chữ ký, sai issuer hoặc sai audience bằng 401.
+4. **Phân quyền:** chỉ vai trò ADMIN được huỷ đơn của người khác; USER chỉ xem đơn của mình.
+  Chấp nhận: USER gọi {{DELETE /orders/42}} của người khác nhận 403; test IDOR tự động.
+5. **Refresh token rotation:** mỗi lần làm mới, refresh token cũ hết hiệu lực.
+  Chấp nhận: dùng lại refresh token cũ nhận {{invalid_grant}}.
+6. **Đăng xuất mọi thiết bị:** khi tôi đổi mật khẩu hoặc bấm "đăng xuất tất cả", mọi refresh token bị thu hồi; access token còn sống tối đa 5 phút.
+7. **Chống CSRF:** request ghi từ trang web lạ tới BFF bị chặn 403.
+
+### Phi chức năng
+- Endpoint {{/oauth2/token}} p95 < 150 ms ở 200 req/s; API resource server xác thực JWT cục bộ < 1 ms (không gọi auth server mỗi request).
+- Access token 5 phút, refresh token 8 giờ, authorization code 1 phút; khoá ký RSA 2048 xoay vòng mỗi 90 ngày không gây 401 hàng loạt.
+
+### Ngoài phạm vi
+- Không làm đăng ký người dùng tự phục vụ, MFA, đăng nhập mạng xã hội, đa tenant (ghi vào phần mở rộng).`,
+    architecture: `~~~text
+Trình duyệt (React SPA)
+   | cookie SESSION (HttpOnly) + header X-XSRF-TOKEN
+   v
+web-bff :8080 (Spring Boot, oauth2-client, confidential client)
+   | 1) redirect /oauth2/authorize (code + PKCE)       | 3) Bearer <access JWT>
+   v                                                   v
+auth-server :9000                                orders-api :8081
+(Spring Authorization Server,                    (oauth2-resource-server,
+ form login, JDBC: users, roles,                  kiểm chữ ký bằng /oauth2/jwks
+ oauth2_registered_client,                        cache khoá, @PreAuthorize)
+ oauth2_authorization)                                  |
+   |                                                    v
+PostgreSQL 16 (schema auth)                     PostgreSQL 16 (schema orders)
+~~~
+Vì sao có BFF: Spring Authorization Server **không cấp refresh token cho public client** (client không có secret như SPA thuần), và token nằm trong JavaScript thì một lỗ XSS là mất token. BFF là confidential client, giữ token trong session phía server, trình duyệt chỉ cầm cookie.`,
+    design: `### Schema DB
+Spring Authorization Server có sẵn file schema cho {{JdbcRegisteredClientRepository}}, {{JdbcOAuth2AuthorizationService}} và {{JdbcOAuth2AuthorizationConsentService}} (bảng {{oauth2_registered_client}}, {{oauth2_authorization}}, {{oauth2_authorization_consent}}): chép vào Flyway, đừng tự viết. Bảng người dùng tự làm:
+~~~sql
+CREATE TABLE app_user (
+  id            BIGSERIAL PRIMARY KEY,
+  username      VARCHAR(100) NOT NULL UNIQUE,      -- UNIQUE tạo index cho lookup lúc login
+  password_hash VARCHAR(100) NOT NULL,             -- {bcrypt}... của DelegatingPasswordEncoder
+  enabled       BOOLEAN NOT NULL DEFAULT true,
+  password_changed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE user_role (
+  user_id BIGINT NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
+  role    VARCHAR(30) NOT NULL CHECK (role IN ('USER','ADMIN','SUPPORT')),
+  PRIMARY KEY (user_id, role)
+);
+-- "Đăng xuất mọi thiết bị" tìm authorization theo người dùng:
+CREATE INDEX idx_oauth2_auth_principal ON oauth2_authorization (principal_name);
+~~~
+
+### Endpoint
+| Method | Path | Ai gọi | Ghi chú |
+|---|---|---|---|
+| GET | /oauth2/authorize | trình duyệt (redirect) | nhận code_challenge, trả code qua redirect_uri |
+| POST | /oauth2/token | BFF | đổi code lấy token, làm mới bằng refresh_token |
+| GET | /oauth2/jwks | orders-api | khoá công khai để kiểm chữ ký |
+| POST | /oauth2/revoke | BFF | thu hồi refresh token khi logout |
+| GET | /connect/logout | trình duyệt | OIDC RP-initiated logout |
+| GET | /.well-known/openid-configuration | mọi client | discovery |
+| POST | /account/sessions/revoke-all | người dùng | tự viết: thu hồi mọi authorization |
+| GET/DELETE | /orders/{id} (orders-api) | BFF | 401 token hỏng, 403 thiếu quyền |
+
+Phản hồi của {{/oauth2/token}} (rút gọn):
+~~~json
+{ "access_token": "eyJraWQiOiI3...", "token_type": "Bearer", "expires_in": 299,
+  "refresh_token": "Xq1...", "scope": "openid profile orders.read", "id_token": "eyJ..." }
+~~~
+
+### Luồng chính: authorization code + PKCE qua BFF
+~~~text
+Browser          web-bff                 auth-server             orders-api
+ |-- GET /orders ->|                          |                       |
+ |                 | chưa có session: tạo code_verifier (ngẫu nhiên),  |
+ |                 | code_challenge = BASE64URL(SHA256(verifier)), state|
+ |<-- 302 /oauth2/authorize?code_challenge=..&state=.. ------|        |
+ |------------------------------------------>| form login, kiểm bcrypt|
+ |<-- 302 /login/oauth2/code/bff?code=..&state=.. -----------|        |
+ |-- GET (code) -->|-- POST /oauth2/token (code, verifier, secret) -->|
+ |                 |   server tính SHA256(verifier) so với challenge   |
+ |                 |<-- access JWT + refresh + id_token --------------|
+ |<- Set-Cookie SESSION (HttpOnly), token ở lại BFF                     |
+ |-- GET /orders ->|-- Bearer JWT ------------------------------------>|
+ |                 |                kiểm chữ ký bằng khoá cache từ /oauth2/jwks
+~~~
+
+### Lỗi & bảo mật
+| Tình huống | Hành vi | Cách test |
+|---|---|---|
+| Kẻ trộm lấy được code | Không có verifier nên /oauth2/token trả invalid_grant | Gọi token với verifier sai |
+| Dùng lại refresh token cũ | {{reuseRefreshTokens(false)}}: token cũ không còn trong authorization, trả invalid_grant | Refresh 2 lần cùng token |
+| JWT sai audience/hết hạn | orders-api 401, header {{WWW-Authenticate}} mô tả lỗi | Token tự ký bằng khoá khác |
+| USER xoá đơn người khác | 403 do {{@PreAuthorize}} + kiểm chủ sở hữu | Test IDOR |
+| POST từ site lạ tới BFF | Thiếu CSRF token: 403 | MockMvc không gửi csrf() |
+| Xoay khoá ký | JWKS chứa cả khoá cũ và mới trong thời gian chuyển | Ký bằng khoá cũ vẫn qua |
+
+### Chiến lược test
+- **Integration (Testcontainers PostgreSQL):** chạy trọn luồng code + PKCE bằng {{MockMvc}} trên auth-server; test rotation và revoke-all.
+- **Resource server:** {{SecurityMockMvcRequestPostProcessors.jwt()}} giả JWT với authorities khác nhau, khỏi cần auth server.
+- **Load:** k6 200 req/s vào /oauth2/token (grant refresh_token), mục tiêu p95 < 150 ms.
+
+### Chạy local
+~~~yaml
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment: { POSTGRES_DB: auth, POSTGRES_USER: auth, POSTGRES_PASSWORD: auth }
+    ports: ["5432:5432"]
+# auth-server :9000, web-bff :8080, orders-api :8081 chạy bằng ./mvnw spring-boot:run
+# Dùng tên host khác nhau (auth.localtest.me, app.localtest.me) để cookie hai bên không đè nhau
+~~~
+
+### Quan sát
+- {{http.server.requests}} lọc {{uri="/oauth2/token"}}, tag status: tỉ lệ 400 tăng đột biến là dấu hiệu tấn công dò refresh token.
+- Log audit đăng nhập thành công/thất bại (username, IP, không bao giờ log token); alert khi một IP sai mật khẩu > 20 lần/phút.
+
+### Mở rộng x10
+- Nhiều instance auth-server: session đăng nhập đưa vào Spring Session Redis; khoá ký lấy từ KMS/secret manager thay vì sinh lúc khởi động.
+- Bảng {{oauth2_authorization}} phình nhanh: job xoá bản ghi đã hết hạn mọi token.`,
+    milestones: [
+      { title: 'Auth server chạy được với client trong DB', tasks: `1. Tạo project Spring Boot 3.5 (Java 21), thêm {{spring-boot-starter-oauth2-authorization-server}}, {{spring-boot-starter-jdbc}}, Flyway, PostgreSQL.
+2. Flyway V1 chép 3 file schema của Spring Authorization Server, V2 tạo {{app_user}}, {{user_role}}.
+3. Khai báo bean {{RegisteredClientRepository}} dạng {{JdbcRegisteredClientRepository}}, {{OAuth2AuthorizationService}} dạng {{JdbcOAuth2AuthorizationService}}.
+4. Đăng ký client {{web-bff}}: confidential, grant authorization_code + refresh_token, bắt PKCE.
+5. Khai báo {{JWKSource}} (RSA 2048) và {{AuthorizationServerSettings}} với issuer {{http://auth.localtest.me:9000}}.
+6. Mở {{/.well-known/openid-configuration}} kiểm tra các endpoint.
+
+~~~java
+RegisteredClient bff = RegisteredClient.withId(UUID.randomUUID().toString())
+    .clientId("web-bff")
+    .clientSecret(encoder.encode(secretFromEnv))       // lưu dạng băm, không lưu thô
+    .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_BASIC)
+    .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
+    .authorizationGrantType(AuthorizationGrantType.REFRESH_TOKEN)
+    .redirectUri("http://app.localtest.me:8080/login/oauth2/code/bff")
+    .postLogoutRedirectUri("http://app.localtest.me:8080/")
+    .scope(OidcScopes.OPENID).scope("orders.read").scope("orders.write")
+    .clientSettings(ClientSettings.builder()
+        .requireProofKey(true)                         // bắt buộc PKCE kể cả confidential client
+        .requireAuthorizationConsent(false).build())   // app nội bộ: bỏ màn hình đồng ý
+    .tokenSettings(TokenSettings.builder()
+        .accessTokenTimeToLive(Duration.ofMinutes(5))
+        .refreshTokenTimeToLive(Duration.ofHours(8))
+        .reuseRefreshTokens(false)                     // rotation: mỗi lần refresh cấp token mới
+        .build())
+    .build();
+if (repo.findByClientId("web-bff") == null) repo.save(bff); // idempotent khi khởi động lại
+~~~`, done: `Discovery trả đủ authorization_endpoint, token_endpoint, jwks_uri; bảng oauth2_registered_client có 1 dòng web-bff với secret đã băm; khởi động lại không tạo trùng.` },
+      { title: 'Đăng nhập bằng user trong DB và đưa vai trò vào JWT', tasks: `1. Viết {{UserDetailsService}} đọc {{app_user}} + {{user_role}}; mật khẩu dùng {{PasswordEncoderFactories.createDelegatingPasswordEncoder()}} (bcrypt).
+2. Filter chain thứ 2 ({{@Order(2)}}) bật {{formLogin}} cho trang đăng nhập.
+3. Viết {{OAuth2TokenCustomizer<JwtEncodingContext>}} thêm claim {{roles}} vào access token.
+4. Chỉ thêm claim cần cho phân quyền; không nhét email, số điện thoại vào access token (JWT chỉ là base64, ai cầm cũng đọc được).
+5. Test: đăng nhập, lấy token, giải mã phần payload thấy {{roles}}.
+
+~~~java
+@Bean
+OAuth2TokenCustomizer<JwtEncodingContext> rolesClaim() {
+    return context -> {
+        // chỉ sửa access token, không đụng id_token
+        if (OAuth2TokenType.ACCESS_TOKEN.equals(context.getTokenType())) {
+            Set<String> roles = context.getPrincipal().getAuthorities().stream()
+                .map(GrantedAuthority::getAuthority)
+                .filter(a -> a.startsWith("ROLE_"))
+                .map(a -> a.substring(5))              // "ROLE_ADMIN" -> "ADMIN"
+                .collect(Collectors.toSet());
+            context.getClaims().claim("roles", roles);
+        }
+    };
+}
+~~~`, done: `JWT có iss, sub, aud = web-bff, scope, roles, exp sau 5 phút; sai mật khẩu 5 lần liên tiếp bị khoá 15 phút (tự viết, có test).` },
+      { title: 'Resource server: kiểm JWT và RBAC', tasks: `1. orders-api thêm {{spring-boot-starter-oauth2-resource-server}}.
+2. Cấu hình {{spring.security.oauth2.resourceserver.jwt.issuer-uri}}: app tự tải discovery và JWKS, tự kiểm chữ ký, exp, iss.
+3. Kiểm audience bằng property {{spring.security.oauth2.resourceserver.jwt.audiences}} (Spring Boot 3.2+).
+4. Map claim {{roles}} sang authority {{ROLE_*}} bằng {{JwtGrantedAuthoritiesConverter}}.
+5. Bật {{@EnableMethodSecurity}}, dùng {{@PreAuthorize}}; kiểm chủ sở hữu đơn trong service (RBAC không thay được kiểm tra dữ liệu).
+6. Test bằng {{jwt()}} của spring-security-test.
+
+~~~java
+@Bean
+JwtAuthenticationConverter jwtAuthConverter() {
+    var roles = new JwtGrantedAuthoritiesConverter();
+    roles.setAuthoritiesClaimName("roles");   // mặc định đọc "scope"/"scp"
+    roles.setAuthorityPrefix("ROLE_");        // để hasRole('ADMIN') hoạt động
+    var conv = new JwtAuthenticationConverter();
+    conv.setJwtGrantedAuthoritiesConverter(roles);
+    return conv;
+}
+
+@PreAuthorize("hasRole('ADMIN') or @orderGuard.isOwner(#id, authentication.name)")
+@DeleteMapping("/orders/{id}")
+void cancel(@PathVariable long id) { service.cancel(id); }
+~~~`, done: `Test: không token 401; token hết hạn 401; token đúng nhưng aud khác 401; USER xoá đơn người khác 403; ADMIN 204; mỗi request xác thực không gọi mạng (log chỉ thấy 1 lần tải JWKS).` },
+      { title: 'BFF: oauth2Login, cookie và CSRF', tasks: `1. web-bff thêm {{spring-boot-starter-oauth2-client}}, khai báo provider {{issuer-uri}} và registration {{bff}}.
+2. Bật PKCE cho confidential client: {{OAuth2AuthorizationRequestCustomizers.withPkce()}} trên {{DefaultOAuth2AuthorizationRequestResolver}}.
+3. BFF gọi orders-api bằng {{RestClient}} gắn access token của người đang đăng nhập (Spring Security 6.4+ có {{OAuth2ClientHttpRequestInterceptor}}); token hết hạn thì tự refresh.
+4. CSRF: dùng {{CookieCsrfTokenRepository.withHttpOnlyFalse()}} để SPA đọc cookie XSRF-TOKEN và gửi header {{X-XSRF-TOKEN}}.
+5. Logout: {{OidcClientInitiatedLogoutSuccessHandler}} chuyển trình duyệt sang {{/connect/logout}} của auth server.
+
+~~~java
+@Bean
+SecurityFilterChain bff(HttpSecurity http, ClientRegistrationRepository regs) throws Exception {
+    var resolver = new DefaultOAuth2AuthorizationRequestResolver(regs, "/oauth2/authorization");
+    resolver.setAuthorizationRequestCustomizer(OAuth2AuthorizationRequestCustomizers.withPkce());
+    var logout = new OidcClientInitiatedLogoutSuccessHandler(regs);
+    logout.setPostLogoutRedirectUri("{baseUrl}/");
+    return http
+        .authorizeHttpRequests(a -> a.requestMatchers("/", "/assets/**").permitAll()
+                                     .anyRequest().authenticated())
+        .oauth2Login(o -> o.authorizationEndpoint(e -> e.authorizationRequestResolver(resolver)))
+        .csrf(c -> c.csrfTokenRepository(CookieCsrfTokenRepository.withHttpOnlyFalse()))
+        .logout(l -> l.logoutSuccessHandler(logout))
+        .build();
+}
+~~~
+Lưu ý: SPA cần xử lý thêm phần CSRF token "deferred" của Spring Security 6; xem mục CSRF cho Single-Page Applications trong reference.`, done: `Redirect tới /oauth2/authorize có code_challenge và code_challenge_method=S256; DevTools không thấy JWT; POST không có X-XSRF-TOKEN nhận 403; logout xong mở lại app phải đăng nhập lại.` },
+      { title: 'Đăng xuất mọi thiết bị, xoay khoá và demo', tasks: `1. Endpoint {{POST /account/sessions/revoke-all}}: tìm các authorization theo {{principal_name}} (query JDBC riêng, interface không có hàm tìm theo user) rồi gọi {{OAuth2AuthorizationService.remove}} từng cái.
+2. Đổi mật khẩu thì gọi luôn revoke-all.
+3. Access token JWT vẫn sống tới khi hết hạn: chấp nhận tối đa 5 phút, hoặc thêm cơ chế chặn (xem challenges).
+4. Xoay khoá: JWKSource trả 2 khoá (mới để ký, cũ để kiểm) trong ít nhất 1 vòng đời token, rồi bỏ khoá cũ.
+5. Load test /oauth2/token bằng k6, ghi p95 vào README.
+
+~~~java
+@Transactional
+public int revokeAll(String username) {
+    // Bảng oauth2_authorization là schema chuẩn của Spring Authorization Server
+    List<String> ids = jdbc.queryForList(
+        "SELECT id FROM oauth2_authorization WHERE principal_name = ?", String.class, username);
+    ids.forEach(id -> {
+        OAuth2Authorization a = authorizationService.findById(id);
+        if (a != null) authorizationService.remove(a);   // refresh token mất hiệu lực ngay
+    });
+    audit.info("revoke-all user={} count={}", username, ids.size());
+    return ids.size();
+}
+~~~`, done: `Đăng nhập trên 3 trình duyệt, gọi revoke-all: cả 3 refresh lần sau nhận invalid_grant và phải đăng nhập lại trong ≤ 5 phút; xoay khoá trong lúc chạy k6 không phát sinh 401.` }
+    ],
+    challenges: [
+      `### JWT không thu hồi được ngay
+**Triệu chứng:** nhân viên bị cho nghỉ việc, admin bấm khoá tài khoản nhưng người đó vẫn gọi API được thêm vài phút.
+**Nguyên nhân gốc:** resource server kiểm JWT **cục bộ** bằng chữ ký và exp, không hỏi auth server; xoá authorization chỉ giết refresh token.
+**Cách 1, access token ngắn (5 phút):** đơn giản, không thêm phụ thuộc; chấp nhận cửa sổ rủi ro ≤ 5 phút.
+**Cách 2, danh sách chặn:** auth server phát sự kiện "user X bị thu hồi lúc T" vào Redis; resource server từ chối token có {{iat}} < T. Thu hồi gần như tức thì nhưng thêm một lần đọc Redis mỗi request và một điểm hỏng (Redis chết thì chọn fail-open hay fail-closed?).
+**Chứng minh:** test lấy token, revoke, gọi API: cách 1 vẫn 200 tới khi hết hạn, cách 2 trả 401 ngay.`,
+      `### Refresh token bị đánh cắp và rotation
+**Triệu chứng:** log thấy cùng một refresh token được dùng từ 2 IP khác nhau.
+**Nguyên nhân gốc:** refresh token sống 8 giờ; lộ một lần là kẻ gian dùng được lâu nếu token được tái sử dụng.
+**Cách 1, rotation ({{reuseRefreshTokens(false)}}):** mỗi lần refresh nhận token mới, token cũ vô hiệu. Nếu kẻ gian refresh trước, người dùng thật sẽ nhận invalid_grant và phải đăng nhập lại (dấu hiệu bị lộ).
+**Cách 2, phát hiện tái sử dụng rồi thu hồi cả phiên:** Spring Authorization Server không tự làm việc này; phải tự lưu token đã dùng và khi thấy dùng lại thì xoá authorization. An toàn hơn nhưng phải xử lý trường hợp hợp lệ: hai tab cùng refresh một lúc (race) sẽ tự đá người dùng ra.
+**Chứng minh:** test refresh 2 lần bằng cùng token: lần 2 phải invalid_grant.`,
+      `### CSRF quay lại khi dùng cookie
+**Triệu chứng:** pentest tạo trang HTML có form POST tới {{/api/orders/42/cancel}} của BFF; nạn nhân đang đăng nhập mở trang là đơn bị huỷ.
+**Nguyên nhân gốc:** trình duyệt tự gửi cookie phiên kèm request; API dùng Bearer thì không bị, nhưng BFF dùng cookie thì bị.
+**Cách 1, CSRF token của Spring Security (cookie + header):** chuẩn, chặn chắc; SPA phải đọc cookie và gửi header ở mọi request ghi.
+**Cách 2, chỉ dựa vào {{SameSite=Lax}}:** chặn được POST từ site khác trong trình duyệt hiện đại, nhưng không bảo vệ khi có subdomain bị chiếm hoặc GET có tác dụng phụ. Dùng làm lớp phụ, không thay token.
+**Chứng minh:** test MockMvc POST không có csrf() nhận 403; test có {{with(csrf())}} nhận 200.`,
+      `### Token lộ qua log và URL
+**Triệu chứng:** grep log thấy chuỗi "eyJ" trong log access của gateway và trong Sentry.
+**Nguyên nhân gốc:** log toàn bộ header Authorization; hoặc dùng implicit flow cũ để token nằm trong URL (lưu vào lịch sử trình duyệt, header Referer).
+**Cách 1, chặn ở nguồn:** không bao giờ log header Authorization/Cookie, filter che giá trị; chỉ dùng authorization code (token không bao giờ nằm trong URL).
+**Cách 2, quét log:** rule trên hệ thống log phát hiện mẫu JWT rồi cảnh báo và che. Bắt được lỗi người khác gây ra nhưng là phản ứng sau khi đã lộ.
+**Chứng minh:** test tích hợp gọi API rồi đọc log appender, assert không có chuỗi khớp mẫu JWT.`,
+      `### Xoay khoá ký làm 401 hàng loạt
+**Triệu chứng:** sau deploy auth server, mọi API trả 401 trong vài phút.
+**Nguyên nhân gốc:** khoá RSA sinh lúc khởi động (như ví dụ getting-started); restart là khoá mới, token cũ ký bằng khoá đã mất; hoặc resource server đang cache JWKS cũ.
+**Cách 1, khoá lưu bền (secret manager/KMS) và JWKS chứa cả khoá cũ lẫn mới:** token cũ vẫn kiểm được tới khi hết hạn. Cần quy trình xoay có thứ tự.
+**Cách 2, giữ một khoá thật lâu:** đơn giản nhưng lộ khoá là thảm hoạ, không có đường lui.
+**Chứng minh:** test ký bằng khoá A, chuyển sang ký bằng khoá B, token A vẫn qua; bỏ A khỏi JWKS thì token A bị 401.`
+    ],
+    readme: `# auth-sso\n\n## Mục tiêu\nSSO nội bộ: Spring Authorization Server phát JWT, BFF giữ token, API kiểm JWT và RBAC.\n\n## Chạy\n{{docker compose up -d}}, chạy auth-server (9000), orders-api (8081), web-bff (8080); mở http://app.localtest.me:8080.\n\n## Luồng\nAuthorization code + PKCE qua BFF, sơ đồ sequence.\n\n## Bảo mật\nToken không tới trình duyệt, refresh rotation, revoke-all, CSRF, xoay khoá, không log token.\n\n## Số liệu\np95 /oauth2/token, thời gian tối đa token còn sống sau revoke.`,
+    interview: {
+      story: `### STAR
+**Situation:** Công ty có 3 app nội bộ, mỗi app một bảng user và mật khẩu riêng; nhân viên nghỉ việc phải khoá tay ở 3 nơi, từng có người nghỉ 2 tuần vẫn đăng nhập được. SPA cũ lưu JWT trong localStorage, sống 24 giờ.
+**Task:** Dựng SSO tập trung, token an toàn với XSS, phân quyền theo vai trò, thu hồi được khi cần.
+**Action:**
+- Spring Authorization Server lưu client và authorization bằng JDBC; authorization code + PKCE; access token 5 phút, refresh 8 giờ có rotation.
+- BFF Spring Boot giữ token phía server, trình duyệt chỉ có cookie HttpOnly + CSRF token.
+- API là resource server kiểm JWT cục bộ, audience, map roles sang authority, kiểm chủ sở hữu chống IDOR.
+- Endpoint revoke-all gắn với khoá tài khoản và đổi mật khẩu.
+**Result:**
+- Thời gian khoá một nhân viên từ "nhớ thì khoá" ở 3 nơi xuống 1 thao tác, hiệu lực ≤ 5 phút.
+- Token sống 24 giờ trong localStorage thay bằng 0 token ở trình duyệt; pentest không còn lỗi CSRF/IDOR.
+- /oauth2/token p95 khoảng 60 ms ở 200 req/s; API xác thực JWT không gọi mạng.
+
+> Số liệu là ví dụ minh hoạ: thay bằng số bạn tự đo.
+
+### Trả lời miệng 1 phút
+"Em dựng SSO bằng Spring Authorization Server. Web đi qua một BFF làm confidential client, dùng authorization code + PKCE, nên token không bao giờ tới trình duyệt, chỉ có cookie HttpOnly và CSRF token. API kiểm JWT bằng khoá công khai lấy từ JWKS, không gọi auth server mỗi request. Access token 5 phút, refresh có rotation; khi khoá tài khoản em xoá mọi authorization của user nên tối đa 5 phút là hết quyền."
+
+### Demo trong 5 phút
+1. Mở /.well-known/openid-configuration, giải thích các endpoint.
+2. Đăng nhập web app; DevTools cho thấy chỉ có cookie, mở tab Network thấy redirect có code_challenge.
+3. Mở app thứ 2: vào thẳng, không hỏi mật khẩu (SSO).
+4. Đăng nhập USER, thử huỷ đơn người khác: 403. Đổi sang ADMIN: 204.
+5. Gọi revoke-all ở terminal; refresh trên trình duyệt kia nhận lỗi và bị đẩy về trang login.
+6. Chạy test CSRF và test refresh token reuse trong IDE.`,
+      questions: [
+        'Vì sao cần PKCE khi đã có client secret? Mô tả từng bước code_verifier và code_challenge.',
+        'Vì sao bạn dùng BFF thay vì để SPA tự giữ access token?',
+        'JWT không thu hồi được: bạn làm "đăng xuất mọi thiết bị" thế nào?',
+        'Refresh token rotation hoạt động thế nào? Hai tab refresh cùng lúc thì sao?',
+        'Resource server kiểm tra JWT những gì? Có gọi auth server mỗi request không?',
+        'RBAC đặt vai trò trong JWT có rủi ro gì? Làm sao chống IDOR?',
+        'Dùng cookie thì CSRF xử lý thế nào? Vì sao API Bearer thuần không cần CSRF?',
+        'Bạn xoay khoá ký RSA thế nào mà không làm người dùng bị 401?'
+      ],
+      answers: [
+        `Secret chứng minh "đây là BFF", nhưng không chứng minh "code này do chính request ban đầu xin". PKCE vá đúng chỗ đó. Bước 1, client sinh code_verifier ngẫu nhiên (43–128 ký tự) và giữ bí mật. Bước 2, gửi kèm code_challenge = BASE64URL(SHA256(verifier)) và method S256 khi redirect sang /oauth2/authorize; server lưu challenge cùng code. Bước 3, khi đổi code ở /oauth2/token, client gửi verifier gốc; server băm lại và so. Kẻ chặn được code (qua log, Referer, app độc trên mobile) không có verifier nên đổi không được. Với public client (mobile, SPA) PKCE là lớp bảo vệ duy nhất; với confidential client nó là lớp thêm, nên OAuth 2.1 khuyến nghị dùng cho mọi client. Tôi bật bằng requireProofKey(true).`,
+        `Token nằm trong JavaScript thì một lỗ XSS (một thư viện npm bị nhiễm độc) là kẻ gian đọc và gửi token đi, dùng ở máy khác tới khi hết hạn. Thêm nữa, Spring Authorization Server không cấp refresh token cho public client, nên SPA thuần phải redirect lại liên tục. BFF là confidential client: token ở phía server trong session, trình duyệt chỉ có cookie HttpOnly mà JS không đọc được. XSS vẫn có thể gửi request thay người dùng trong lúc trang đang mở, nhưng không mang token đi nơi khác được. Trade-off: thêm một service, phải xử lý CSRF vì quay lại dùng cookie, và session của BFF phải đưa ra Redis khi chạy nhiều instance.`,
+        `Tách hai loại token. Refresh token nằm trong bảng oauth2_authorization nên thu hồi được ngay: tôi query id theo principal_name rồi gọi OAuth2AuthorizationService.remove; mọi thiết bị lần refresh sau nhận invalid_grant. Access token là JWT được kiểm cục bộ, nên vẫn sống tới exp; tôi giữ nó 5 phút để cửa sổ rủi ro nhỏ. Nếu nghiệp vụ cần tức thì (ngân hàng, khoá do gian lận) thì thêm danh sách chặn trong Redis: lưu "user X thu hồi lúc T", resource server từ chối token có iat < T. Cái giá là một lần đọc Redis mỗi request và phải quyết định fail-open hay fail-closed khi Redis chết. Ngoài ra còn phải huỷ session đăng nhập ở auth server để SSO không cấp lại token mới ngay.`,
+        `Với reuseRefreshTokens(false), mỗi lần grant refresh_token thành công server cấp refresh token mới và lưu đè trong authorization, token cũ không còn khớp nên dùng lại sẽ nhận invalid_grant. Lợi ích: token bị lộ chỉ dùng được đến lần refresh kế tiếp của người dùng thật, và nếu kẻ gian dùng trước thì người dùng thật bị lỗi, là tín hiệu để điều tra. Hai tab cùng refresh: với BFF chỉ có một nơi giữ token (session phía server), tôi khoá theo session để chỉ một request refresh, request kia chờ rồi dùng token mới. Nếu muốn "phát hiện tái sử dụng thì thu hồi cả phiên", phải tự viết vì framework không làm sẵn, và phải cẩn thận với race này để không đá nhầm người dùng.`,
+        `Resource server lấy discovery từ issuer-uri, tải JWKS một lần rồi cache. Mỗi request nó kiểm: chữ ký RSA khớp khoá có kid tương ứng, thuật toán đúng loại mong đợi, exp và nbf còn hiệu lực (có leeway nhỏ cho lệch đồng hồ), iss đúng issuer, aud chứa id API của mình (cấu hình audiences). Không gọi auth server mỗi request, nên xác thực dưới 1 ms và auth server chết vẫn không làm API sập trong ngắn hạn. Khi gặp kid lạ, decoder tải lại JWKS, đó là cách xoay khoá hoạt động. Nếu cần thu hồi tức thì có thể dùng opaque token + introspection, đổi lại mỗi request một lần gọi mạng, nên tôi chỉ dùng cho API cực nhạy cảm.`,
+        `Vai trò trong JWT là ảnh chụp tại lúc phát hành: bị hạ quyền thì token cũ vẫn mang ADMIN tới khi hết hạn, nên token phải ngắn. JWT chỉ được ký chứ không mã hoá, nên không nhét dữ liệu nhạy cảm, và đừng để danh sách quyền quá dài làm header phình. Quan trọng hơn: RBAC trả lời "loại người này được làm loại việc này không", không trả lời "đơn 42 có phải của anh không". IDOR là lỗi thiếu câu hỏi thứ hai. Tôi kiểm chủ sở hữu trong service hoặc @PreAuthorize gọi bean guard so order.customer với authentication.name, query luôn lọc theo owner, và có test riêng đổi id trong URL để chắc chắn nhận 403 hoặc 404.`,
+        `CSRF lợi dụng việc trình duyệt tự gửi cookie kèm request tới domain, kể cả request khởi phát từ trang khác. API dùng header Authorization: Bearer thì không bị, vì trang lạ không thể tự gắn header đó. BFF dùng cookie phiên nên bị, và tôi bật CSRF của Spring Security với CookieCsrfTokenRepository: server đặt cookie XSRF-TOKEN, SPA đọc và gửi lại trong header X-XSRF-TOKEN; trang lạ không đọc được cookie của domain tôi nên không giả được header. Thêm SameSite=Lax cho cookie phiên làm lớp phụ, và không bao giờ để GET có tác dụng phụ. Test bằng MockMvc: POST không có token phải 403.`,
+        `Khoá ký không sinh lúc khởi động mà nạp từ secret manager, có kid riêng. Quy trình: bước 1, thêm khoá mới vào JWKS nhưng vẫn ký bằng khoá cũ; chờ hết thời gian cache JWKS của resource server. Bước 2, chuyển sang ký bằng khoá mới, khoá cũ vẫn nằm trong JWKS để kiểm token cũ. Bước 3, sau ít nhất một vòng đời access token (5 phút, lấy dư vài giờ), bỏ khoá cũ. Resource server gặp kid mới thì tự tải lại JWKS nên không cần restart. Tôi diễn tập xoay khoá trong lúc chạy k6 để chứng minh không có 401. Nếu khoá bị lộ thì làm nhanh: bỏ khoá cũ ngay và chấp nhận người dùng phải đăng nhập lại.`
+      ]
+    },
+    related: ['security-004', 'security-003', 'security-017', 'security-018', 'security-006', 'security-023', 'spring-009', 'spring-021', 'api-008', 'microservices-013', 'scenario-037', 'testing-013', 'lesson-security-002', 'lesson-security-004']
+  },
+  {
+    id: 'proj-perf-lab', title: 'Performance lab: đo, profile và tối ưu một service CRUD có số liệu trước/sau', level: 'senior', weeks: 4,
+    skills: ['k6', 'JFR', 'async-profiler', 'Hibernate', 'HikariCP', 'Caffeine', 'Virtual threads', 'Micrometer', 'PostgreSQL'],
+    pitch: `Lấy một service CRUD "bình thường" (đơn hàng, sản phẩm) có sẵn những lỗi hiệu năng hay gặp trên production, rồi làm đúng quy trình của người làm performance: **đo baseline bằng k6 → profile bằng JFR/async-profiler → sửa MỘT thứ → đo lại**. Mỗi bước có bảng số liệu p95, throughput, số query, CPU trước/sau. Kết quả là một README dạng "nhật ký điều tra" và 4–5 dòng CV có số thật, thứ mà interviewer Senior rất thích đào sâu: "Sao bạn biết nút thắt ở đó? Đo thế nào? Vì sao không tăng pool lên 100?".`,
+    requirements: `### Bối cảnh (đọc nếu chưa làm performance bao giờ)
+Ví dụ đời thường: quán phở đông khách. **Throughput** là số bát bán được mỗi phút; **latency p95** là "95% khách chờ không quá X phút" (trung bình che mất những khách chờ rất lâu). **Nút thắt** là chỗ hẹp nhất: có thể là bếp (CPU), số bàn (connection pool), hay người chạy bàn phải đi chợ cho từng bát (N+1 query). Thêm bếp khi nút thắt là số bàn thì không nhanh hơn. Vì vậy luôn **đo trước, đoán sau**.
+
+### User story
+1. **Baseline lặp lại được:** tôi chạy 1 lệnh k6 và nhận p50/p95/p99, throughput, tỉ lệ lỗi; chạy 3 lần lệch nhau < 10%.
+2. **Tìm nút thắt bằng bằng chứng:** với mỗi bước sửa, README có ảnh flame graph hoặc output JFR/metric chỉ ra nguyên nhân.
+3. **Sửa N+1:** {{GET /orders?customerId=}} trả 20 đơn kèm item chỉ chạy ≤ 3 câu SQL (đo bằng thống kê Hibernate).
+4. **Pool đúng cỡ:** không còn request chờ connection quá 50 ms ở tải mục tiêu; giải thích được con số chọn.
+5. **Cache có kiểm soát:** {{GET /products/ID}} đọc từ cache, dữ liệu cũ tối đa 60 giây, có metric hit ratio.
+6. **Virtual threads cho endpoint chờ I/O:** endpoint gọi dịch vụ giá ngoài (chậm 300 ms) chịu được tải gấp 3 mà không tăng p95.
+7. **Không lùi:** CI chạy k6 ngắn với threshold; p95 vượt ngưỡng thì job đỏ.
+
+### Phi chức năng (mục tiêu sau tối ưu, máy dev 8 core)
+- 400 req/s hỗn hợp: p95 < 250 ms, lỗi < 0,1%; CPU app < 70%.
+- Mỗi lần đo: warm-up 1 phút (JIT, cache), đo 5 phút, cùng dữ liệu seed (1 triệu đơn, 50.000 sản phẩm).
+
+### Ngoài phạm vi
+- Không tuning GC sâu, không đổi sang WebFlux, không sharding DB.`,
+    architecture: `~~~text
+k6 (máy/container riêng, constant-arrival-rate)
+   |  HTTP
+   v
+catalog-api (Spring Boot 3.5, Java 21, Spring MVC + JPA/Hibernate 6)
+   |-- HikariCP --> PostgreSQL 16 (1 triệu orders, 3 triệu order_items)
+   |-- RestClient --> pricing-stub (WireMock, trễ cố định 300 ms)
+   |-- Caffeine (bước 3)
+   |-- /actuator/prometheus --> Prometheus --> Grafana
+   |-- JFR (luôn bật, settings=default) + async-profiler khi cần
+~~~
+Nguyên tắc: k6 không chạy chung máy/CPU với app (nếu không, công cụ đo tranh CPU với thứ bị đo); mỗi lần chỉ đổi **một** biến.`,
+    design: `### Dữ liệu và endpoint bị "cài lỗi"
+~~~sql
+CREATE TABLE orders (
+  id BIGSERIAL PRIMARY KEY,
+  customer_id BIGINT NOT NULL,
+  status VARCHAR(20) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE order_item (
+  id BIGSERIAL PRIMARY KEY,
+  order_id BIGINT NOT NULL REFERENCES orders(id),
+  product_id BIGINT NOT NULL,
+  qty INT NOT NULL CHECK (qty > 0)
+);
+-- Cố ý CHƯA có index (customer_id) và (order_id) ở baseline; thêm ở bước 1 và đo
+~~~
+| Endpoint | Lỗi cài sẵn | Tỉ lệ trong kịch bản |
+|---|---|---|
+| GET /orders?customerId= | N+1 (items LAZY), thiếu index | 50% |
+| GET /products/{id} | đọc DB mỗi lần, dữ liệu ít đổi | 35% |
+| GET /orders/{id}/quote | gọi pricing 300 ms trên thread Tomcat | 15% |
+
+### Kịch bản k6
+~~~text
+import http from 'k6/http';
+import { check } from 'k6';
+export const options = {
+  scenarios: {
+    mixed: {
+      executor: 'constant-arrival-rate',  // giữ đúng 400 req/s dù server chậm
+      rate: 400, timeUnit: '1s', duration: '5m',
+      preAllocatedVUs: 200, maxVUs: 1000,
+    },
+  },
+  thresholds: {
+    http_req_duration: ['p(95)<250'],     // CI đỏ nếu vượt
+    http_req_failed: ['rate<0.001'],
+  },
+};
+export default function () {
+  const id = Math.floor(Math.random() * 50000) + 1;
+  const res = http.get('http://catalog-api:8080/orders?customerId=' + id,
+                       { tags: { name: 'orders-by-customer' } }); // gom URL vào 1 nhóm
+  check(res, { 'status 200': (r) => r.status === 200 });
+}
+~~~
+Vì sao **arrival-rate** chứ không phải số VU cố định: với VU cố định, server chậm thì VU gửi ít đi, tải tự giảm và số liệu đẹp giả (coordinated omission). Arrival-rate giữ tốc độ đến như người dùng thật. Gatling làm được tương tự với mô hình tải "open" (số người dùng đến mỗi giây).
+
+### Quy trình mỗi vòng
+~~~text
+đo baseline -> xem metric (RED + pool + GC) -> profile 60s -> giả thuyết
+    -> sửa MỘT thứ -> đo lại 3 lần -> ghi bảng -> commit -> vòng tiếp
+~~~
+
+### Bảng kết quả (số minh hoạ, bạn thay bằng số tự đo)
+| Bước | p95 | Throughput tối đa | Query/req (orders) | Ghi chú |
+|---|---|---|---|---|
+| 0. Baseline | 1.850 ms | 140 req/s | 21 | lỗi 4% (timeout chờ connection) |
+| 1. Index + N+1 | 520 ms | 290 req/s | 2 | CPU DB 85% còn 30% |
+| 2. Pool 10 thành 20 | 340 ms | 360 req/s | 2 | pending connection về ~0 |
+| 3. Caffeine product | 210 ms | 470 req/s | 2 | DB QPS giảm 35% |
+| 4. Virtual threads | 190 ms | 900 req/s ở /quote | 2 | không còn chờ thread Tomcat |
+
+### Công cụ đo và lệnh
+- **JFR** ghi liên tục chi phí thấp (thường cỡ 1%): {{jcmd <pid> JFR.start name=lab settings=profile duration=60s filename=lab.jfr}}; xem nhanh bằng {{jfr summary lab.jfr}}, {{jfr view hot-methods lab.jfr}} (JDK 21) hoặc mở bằng JDK Mission Control. Event cần xem: {{jdk.ExecutionSample}} (CPU), {{jdk.ThreadPark}} (chờ lock/pool), {{jdk.VirtualThreadPinned}} (JDK 21).
+- **async-profiler** vẽ flame graph: {{asprof -d 30 -e cpu -f cpu.html <pid>}}; chế độ {{wall}} để thấy thread đang **chờ** (I/O, pool), chế độ {{alloc}} để thấy chỗ tạo rác.
+- **Hibernate:** {{spring.jpa.properties.hibernate.generate_statistics=true}} in số JDBC statement mỗi session (chỉ bật khi lab, tốn chi phí).
+
+### Quan sát
+- {{http.server.requests}} (p95 theo uri), {{hikaricp.connections.pending}}, {{hikaricp.connections.acquire}}, {{hikaricp.connections.usage}}, {{jvm.gc.pause}}, {{cache.gets}} với tag result hit/miss (cần {{recordStats}} trên Caffeine).
+- Alert lab: pending > 0 kéo dài 1 phút nghĩa là pool là nút thắt.
+
+### Chạy local
+~~~yaml
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment: { POSTGRES_DB: lab, POSTGRES_USER: lab, POSTGRES_PASSWORD: lab }
+    deploy: { resources: { limits: { cpus: "2", memory: 2g } } }   # cố định tài nguyên để so sánh công bằng
+  pricing-stub:
+    image: wiremock/wiremock:3.9.1
+    volumes: ["./wiremock:/home/wiremock"]                           # mapping có fixedDelayMilliseconds: 300
+  k6:
+    image: grafana/k6
+    volumes: ["./k6:/scripts"]
+    command: ["run", "/scripts/mixed.js"]
+~~~
+
+### Mở rộng lên production
+- Tải x10: pool không nhân 10 được (PostgreSQL mặc định {{max_connections}} = 100, chia cho mọi pod); thêm read replica cho đọc, PgBouncer, cache phân tán (Redis) cho dữ liệu dùng chung.
+- Bật JFR liên tục trên production và lưu file khi có sự cố; continuous profiling để so sánh flame graph giữa hai phiên bản.`,
+    milestones: [
+      { title: 'Dựng lab và đo baseline đáng tin', tasks: `1. Tạo catalog-api (Boot 3.5, Java 21, JPA, Actuator, {{micrometer-registry-prometheus}}).
+2. Seed 1 triệu orders, 3 triệu items bằng {{generate_series}} (nhanh hơn insert từ Java hàng trăm lần).
+3. Cố định môi trường: giới hạn CPU/RAM bằng docker, heap {{-Xms1g -Xmx1g}}, tắt các app khác.
+4. Viết kịch bản k6 mixed (50/35/15), tag {{name}} cho từng nhóm URL.
+5. Warm-up 1 phút rồi đo 5 phút, lặp 3 lần, lấy trung vị; ghi p50/p95/p99, throughput, lỗi, CPU.
+6. Tìm "điểm gãy": tăng rate 100, 200, 300… tới khi p95 vượt 1 giây.
+
+~~~sql
+-- Seed bằng SQL thuần: 1 triệu đơn của 50.000 khách
+INSERT INTO orders (customer_id, status, created_at)
+SELECT (random() * 49999)::int + 1,
+       (ARRAY['NEW','PAID','SHIPPED'])[1 + (random() * 2)::int],
+       now() - (random() * interval '365 days')
+FROM generate_series(1, 1000000);
+-- Mỗi đơn 3 item
+INSERT INTO order_item (order_id, product_id, qty)
+SELECT o.id, (random() * 49999)::int + 1, 1 + (random() * 4)::int
+FROM orders o, generate_series(1, 3);
+ANALYZE;   -- cập nhật thống kê cho planner trước khi đo
+~~~`, done: `3 lần đo baseline lệch p95 < 10%; README có bảng baseline và điểm gãy (ví dụ 140 req/s); có dashboard Grafana với p95, pool pending, GC.` },
+      { title: 'Bước 1: index và N+1', tasks: `1. Profile lúc chạy tải: flame graph {{wall}} cho thấy phần lớn thời gian nằm trong chờ JDBC; Hibernate statistics: 21 statement cho 1 request.
+2. Chạy {{EXPLAIN (ANALYZE, BUFFERS)}} câu lọc theo customer_id: Seq Scan trên 1 triệu dòng.
+3. Thêm index {{orders(customer_id, created_at DESC)}} và {{order_item(order_id)}} (Flyway, {{CREATE INDEX CONCURRENTLY}} trên bảng thật).
+4. Sửa N+1 bằng {{@EntityGraph}} hoặc {{JOIN FETCH}}; với phân trang thì dùng batch fetch thay vì fetch join collection.
+5. Viết test đếm statement để N+1 không quay lại.
+6. Đo lại 3 lần, ghi bảng.
+
+~~~java
+public interface OrderRepository extends JpaRepository<Order, Long> {
+    // 1 câu SQL lấy đơn + item, thay vì 1 + 20 câu
+    @EntityGraph(attributePaths = "items")
+    List<Order> findTop20ByCustomerIdOrderByCreatedAtDesc(long customerId);
+}
+// Phương án cho trang có phân trang (fetch join collection + limit sẽ phân trang trong RAM):
+// spring.jpa.properties.hibernate.default_batch_fetch_size=50
+// -> items của 20 đơn được nạp bằng 1 câu IN (...) thay vì 20 câu
+~~~`, done: `Query/request từ 21 còn ≤ 2; p95 orders giảm (ghi số trước/sau); test integration fail nếu statement > 3.` },
+      { title: 'Bước 2: kích thước connection pool', tasks: `1. Đọc metric: {{hikaricp.connections.pending}} > 0 liên tục, {{hikaricp.connections.acquire}} p95 hàng trăm ms: request đang xếp hàng chờ connection.
+2. Đo thời gian giữ connection ({{hikaricp.connections.usage}}): nếu dài do transaction ôm việc khác (gọi HTTP trong {{@Transactional}}) thì sửa code trước, đừng tăng pool.
+3. Ước lượng: connection cần ≈ req/s × thời gian giữ connection (giây). 360 req/s × 0,03 s ≈ 11, cộng dư → 20.
+4. Thử 10, 20, 50: ghi p95 và CPU DB; thường 50 không nhanh hơn 20 mà còn tăng tranh chấp ở DB.
+5. Kiểm tổng: số pod × pool ≤ {{max_connections}} của DB trừ phần dành cho admin.
+
+~~~yaml
+spring:
+  datasource:
+    hikari:
+      maximum-pool-size: 20      # mặc định 10; chọn theo đo, không theo cảm giác
+      minimum-idle: 20           # pool cố định, tránh tạo connection lúc tải tăng
+      connection-timeout: 2000   # chờ tối đa 2s rồi báo lỗi rõ thay vì treo 30s mặc định
+  jpa:
+    open-in-view: false          # không giữ connection suốt lúc render response
+~~~`, done: `Pending về ~0 ở 360 req/s; bảng so sánh pool 10/20/50 (p95, CPU DB); README giải thích công thức và vì sao không chọn 50.` },
+      { title: 'Bước 3: cache sản phẩm bằng Caffeine', tasks: `1. Xác nhận dữ liệu đọc nhiều ghi ít: product đổi vài lần/ngày, đọc 140 lần/giây.
+2. Thêm {{spring-boot-starter-cache}} + {{com.github.ben-manes.caffeine:caffeine}}, bật {{@EnableCaching}}.
+3. Cấu hình kích thước và TTL; bật {{recordStats}} để Micrometer có hit/miss.
+4. Khi sửa sản phẩm: {{@CacheEvict}} cùng key.
+5. Đo hit ratio, DB QPS, p95 trước/sau; thử kịch bản "cache lạnh" sau restart.
+
+~~~java
+@Service
+class ProductService {
+    // key = id; lần 2 trở đi không chạm DB tới khi hết hạn hoặc bị evict
+    @Cacheable(cacheNames = "products", key = "#id")
+    public ProductDto get(long id) {
+        return repo.findById(id).map(ProductDto::from).orElseThrow();
+    }
+    @CacheEvict(cacheNames = "products", key = "#p.id()")
+    public void update(ProductDto p) { repo.save(p.toEntity()); }
+}
+// application.yml:
+// spring.cache.cache-names: products
+// spring.cache.caffeine.spec: maximumSize=50000,expireAfterWrite=60s,recordStats
+~~~
+Lưu ý: cache trong từng pod; chạy 5 pod thì sau khi sửa, 4 pod khác có thể trả dữ liệu cũ tới 60 giây. Ghi rõ đây là trade-off đã chấp nhận.`, done: `Hit ratio > 90% sau warm-up; DB QPS và p95 có số trước/sau; test evict: sửa sản phẩm rồi đọc lại thấy giá mới ở pod đó.` },
+      { title: 'Bước 4: virtual threads và chặn lùi trong CI', tasks: `1. Endpoint /quote gọi pricing 300 ms: Tomcat mặc định tối đa 200 thread, nên trần ≈ 200 / 0,3 ≈ 660 req/s cho riêng endpoint này; tăng tải thì request xếp hàng.
+2. Bật {{spring.threads.virtual.enabled=true}} (Boot 3.2+, Java 21): mỗi request một virtual thread, chờ I/O không chiếm thread hệ điều hành.
+3. Bắt pinning bằng JFR event {{jdk.VirtualThreadPinned}}: trên JDK 21, chờ I/O bên trong {{synchronized}} giữ chặt carrier thread; đổi sang {{ReentrantLock}} (JDK 24 đã bỏ phần lớn hạn chế này).
+4. Giới hạn đồng thời tới pricing bằng Semaphore/bulkhead: hết giới hạn thread thì nút thắt chuyển sang dịch vụ phía sau và pool DB.
+5. Thêm job CI chạy k6 2 phút với thresholds; vượt ngưỡng thì fail.
+
+~~~java
+@Component
+class PricingClient {
+    private final RestClient http;
+    private final Semaphore limit = new Semaphore(300);   // pricing chịu tối đa 300 request đồng thời
+
+    BigDecimal quote(long orderId) throws InterruptedException {
+        if (!limit.tryAcquire(500, TimeUnit.MILLISECONDS))  // chờ quá 500ms thì từ chối nhanh
+            throw new PricingBusyException();
+        try {
+            return http.get().uri("/price/{id}", orderId).retrieve().body(BigDecimal.class);
+        } finally {
+            limit.release();                              // luôn trả permit
+        }
+    }
+}
+~~~`, done: `Ở 900 req/s vào /quote p95 ≈ 300 ms cộng chi phí nhỏ (trước đó vài giây); JFR không có event VirtualThreadPinned dài; CI đỏ khi cố tình bỏ index.` }
+    ],
+    challenges: [
+      `### Số đo không ổn định, mỗi lần một kiểu
+**Triệu chứng:** cùng code, lần 1 p95 300 ms, lần 2 520 ms.
+**Nguyên nhân gốc:** chưa warm-up (JIT chưa biên dịch, cache rỗng), k6 chạy chung máy tranh CPU, laptop hạ xung khi nóng, dữ liệu khác nhau giữa các lần.
+**Cách 1, chuẩn hoá môi trường:** warm-up 1 phút, giới hạn CPU bằng container, k6 ở máy khác, đo 3 lần lấy trung vị. Đơn giản nhưng tốn thời gian mỗi vòng.
+**Cách 2, đo trên môi trường giống production (staging cloud):** số gần thật hơn nhưng đắt và có "hàng xóm ồn ào" trên cloud.
+**Chứng minh:** README ghi độ lệch giữa 3 lần; chỉ công nhận cải thiện lớn hơn độ lệch đó.`,
+      `### Tăng pool lên 100 mà chậm hơn
+**Triệu chứng:** thấy pending connection, tăng {{maximum-pool-size}} từ 10 lên 100: p95 tăng, CPU DB 100%.
+**Nguyên nhân gốc:** DB chỉ có vài core; 100 query chạy song song tranh CPU, lock và bộ đệm, mỗi query chậm đi. Pool lớn chỉ chuyển hàng đợi từ app sang DB.
+**Cách 1, pool nhỏ + giảm thời gian giữ connection:** sửa query chậm, không gọi HTTP trong transaction, tắt open-in-view. Bền vững nhưng phải sửa code.
+**Cách 2, tăng pool vừa phải theo đo:** nhanh, nhưng nhân số pod lên có thể vượt {{max_connections}} của DB.
+**Chứng minh:** bảng pool 10/20/50/100 với p95 và CPU DB.`,
+      `### Fetch join collection kèm phân trang
+**Triệu chứng:** sau khi sửa N+1 bằng {{JOIN FETCH}} + {{Pageable}}, log Hibernate cảnh báo áp dụng phân trang trong bộ nhớ, heap tăng vọt.
+**Nguyên nhân gốc:** join làm mỗi đơn thành nhiều dòng; SQL LIMIT không còn đếm đúng theo đơn nên Hibernate tải hết rồi cắt trong RAM.
+**Cách 1, batch fetch ({{default_batch_fetch_size}}):** câu 1 phân trang đơn, câu 2 lấy items bằng IN. Luôn 2 câu, an toàn với phân trang.
+**Cách 2, hai bước thủ công:** query id theo trang, rồi query fetch join theo danh sách id. Rõ ràng, kiểm soát được nhưng nhiều code hơn.
+**Chứng minh:** test đếm statement = 2 và heap không tăng khi customer có 5.000 đơn.`,
+      `### Virtual threads không nhanh hơn, còn treo
+**Triệu chứng:** bật virtual threads, throughput /quote không đổi, đôi lúc treo vài giây.
+**Nguyên nhân gốc:** (1) nút thắt thật là pool DB 20 connection: hàng nghìn virtual thread cùng chờ 20 connection; (2) thư viện gọi I/O trong {{synchronized}} gây pinning trên JDK 21, chiếm hết carrier thread.
+**Cách 1, giới hạn đồng thời rõ ràng (Semaphore/bulkhead) theo tài nguyên phía sau:** ổn định; phải chọn con số theo đo.
+**Cách 2, giữ thread pool platform cho endpoint đó:** quen thuộc, tự giới hạn bằng số thread, nhưng tốn bộ nhớ và trần thấp.
+**Chứng minh:** JFR {{jdk.VirtualThreadPinned}} trước/sau khi đổi sang ReentrantLock; metric pool pending.`,
+      `### Benchmark đẹp nhưng production không cải thiện
+**Triệu chứng:** lab giảm p95 70%, production chỉ giảm 10%.
+**Nguyên nhân gốc:** kịch bản tải không giống thật: random id đều nhau (production có khách "nóng"), dữ liệu nhỏ hơn, không có ghi đồng thời, cache hit ratio lab cao bất thường.
+**Cách 1, dựng kịch bản từ access log thật:** tỉ lệ endpoint, phân bố id, kích thước payload. Sát thực tế nhưng cần dữ liệu và ẩn danh hoá.
+**Cách 2, canary + so sánh metric production:** đo trực tiếp nhưng rủi ro và chậm có kết quả.
+**Chứng minh:** so sánh tỉ lệ endpoint và hit ratio giữa lab và Grafana production trong README.`
+    ],
+    readme: `# perf-lab\n\n## Mục tiêu\nĐo, profile, tối ưu một service CRUD có số liệu trước/sau cho từng bước.\n\n## Chạy\n{{docker compose up -d}}, seed dữ liệu, chạy catalog-api, rồi {{docker compose run k6}}.\n\n## Quy trình\nBaseline, metric, profile, giả thuyết, sửa một thứ, đo lại 3 lần.\n\n## Kết quả\nBảng p95/throughput/query mỗi bước kèm flame graph trước/sau.\n\n## Bài học\nPool lớn không nhanh hơn, fetch join + phân trang, pinning của virtual threads, coordinated omission.`,
+    interview: {
+      story: `### STAR
+**Situation:** API đơn hàng p95 khoảng 1,8 giây giờ cao điểm, 4% request lỗi timeout; team định "tăng gấp đôi số pod".
+**Task:** Tìm nút thắt thật và giảm p95 xuống dưới 250 ms ở 400 req/s mà không thêm hạ tầng.
+**Action:**
+- Dựng lab tái hiện: dữ liệu 1 triệu đơn, kịch bản k6 arrival-rate theo tỉ lệ endpoint thật, đo 3 lần lấy trung vị.
+- Profile bằng JFR và flame graph wall-clock: thấy thời gian nằm ở chờ JDBC và chờ connection.
+- Sửa lần lượt, mỗi lần một thay đổi: index + N+1 (21 query còn 2), pool 10 thành 20 kèm tắt open-in-view, cache Caffeine cho sản phẩm, virtual threads + bulkhead cho endpoint gọi dịch vụ ngoài.
+- Thêm k6 có threshold vào CI để không lùi.
+**Result:**
+- p95 từ 1.850 ms còn 210 ms; throughput tối đa từ 140 lên 470 req/s; lỗi 4% còn < 0,1%.
+- Không thêm pod; CPU DB giờ cao điểm từ 85% xuống 35%.
+
+> Số liệu là ví dụ minh hoạ: thay bằng số bạn tự đo, kèm ảnh flame graph.
+
+### Trả lời miệng 1 phút
+"Em không đoán mà đo: dựng baseline bằng k6 kiểu arrival-rate để tránh số đẹp giả, rồi profile bằng JFR và async-profiler chế độ wall để thấy thread đang chờ gì. Mỗi vòng chỉ sửa một thứ và đo lại ba lần: N+1 và index giảm query từ 21 còn 2, chỉnh pool theo công thức req/s nhân thời gian giữ connection, cache sản phẩm, rồi virtual threads cho endpoint chờ I/O. p95 từ 1,8 giây còn 210 ms, và CI có threshold chống lùi."
+
+### Demo trong 5 phút
+1. Grafana: p95, pool pending, CPU DB của baseline.
+2. Mở flame graph wall trước/sau bước 1, chỉ khung chờ JDBC thu nhỏ.
+3. Chạy test đếm statement, đổi lại code N+1 để thấy test đỏ.
+4. Bảng pool 10/20/50: giải thích vì sao 50 không nhanh hơn.
+5. Chạy k6 2 phút với thresholds, cho xem summary p95 và trạng thái pass.`,
+      questions: [
+        'Làm sao bạn biết nút thắt nằm ở DB chứ không phải CPU của app?',
+        'Vì sao dùng arrival-rate trong k6? Coordinated omission là gì?',
+        'Bạn chọn kích thước connection pool thế nào? Sao không để 100?',
+        'Sửa N+1 có những cách nào, trade-off ra sao khi có phân trang?',
+        'Cache sản phẩm: dữ liệu cũ, nhiều pod, cache stampede bạn xử lý thế nào?',
+        'Virtual threads giúp gì ở đây và khi nào không giúp? Pinning là gì?',
+        'JFR và async-profiler khác nhau thế nào, bạn dùng mỗi cái lúc nào?',
+        'Làm sao đảm bảo hiệu năng không bị lùi sau các lần release tiếp theo?'
+      ],
+      answers: [
+        `Nhìn theo thứ tự. Metric trước: CPU app chỉ 35% trong khi p95 cao và {{hikaricp.connections.pending}} luôn > 0, nghĩa là request đang chờ chứ không phải đang tính. Flame graph chế độ cpu không có khung nào nổi bật, còn chế độ wall cho thấy phần lớn thread nằm trong socket read của driver JDBC và trong chờ lấy connection từ pool. Phía DB, CPU 85% và pg_stat_statements chỉ ra câu lọc orders theo customer_id chạy nhiều nhất, EXPLAIN là Seq Scan. Ba nguồn bằng chứng cùng chỉ một hướng nên tôi mới sửa. Nếu CPU app cao và flame graph cpu có khung rộng ở JSON serialization hay regex, khi đó mới là vấn đề phía app.`,
+        `Mô hình closed (số VU cố định) có nghĩa mỗi VU chờ response xong mới gửi tiếp. Khi server chậm, VU gửi ít đi, tải tự giảm đúng lúc hệ thống đang gặp khó, và những request "đáng lẽ đã đến" trong lúc chờ không bao giờ được đo: đó là coordinated omission, làm p99 đẹp giả. Người dùng thật không chờ nhau, họ cứ đến. Executor constant-arrival-rate của k6 giữ số request bắt đầu mỗi giây cố định, tự cấp thêm VU (tới maxVUs) khi server chậm, nên độ trễ đo được phản ánh hàng đợi thật. Nếu k6 báo thiếu VU thì cũng là tín hiệu hệ thống đã quá tải. Gatling có khái niệm tương tự là mô hình tải open.`,
+        `Tôi tính trước rồi đo xác nhận. Số connection cần ≈ số request cần DB mỗi giây nhân thời gian giữ connection: 360 req/s × 30 ms ≈ 11, cộng dư cho đỉnh nên chọn 20. Sau đó thử 10, 20, 50 và ghi p95, CPU DB: 50 không nhanh hơn mà CPU DB tăng vì DB chỉ có vài core, nhiều query song song tranh nhau. Pool lớn chỉ dời hàng đợi từ app sang DB. Còn ràng buộc tổng: số pod nhân pool phải dưới max_connections (mặc định 100 ở PostgreSQL). Cách hiệu quả hơn tăng pool là giảm thời gian giữ connection: sửa query chậm, tắt open-in-view, không gọi HTTP trong transaction.`,
+        `N+1 là 1 câu lấy danh sách cha rồi mỗi phần tử lazy-load con bằng 1 câu. Cách 1, fetch join hoặc @EntityGraph: 1 câu duy nhất, tốt cho danh sách không phân trang; nhưng fetch join collection kèm LIMIT thì Hibernate phải phân trang trong RAM, rất nguy hiểm với dữ liệu lớn. Cách 2, batch fetch (default_batch_fetch_size hoặc @BatchSize): câu 1 phân trang cha, câu 2 lấy con bằng IN, luôn khoảng 2 câu và an toàn với phân trang. Cách 3, DTO projection chỉ lấy cột cần cho màn hình, nhanh nhất nhưng không có entity để sửa. Tôi chọn batch fetch cho trang có phân trang và có test đếm statement để chặn hồi quy.`,
+        `Dữ liệu cũ: chấp nhận tối đa 60 giây vì giá hiển thị cuối cùng vẫn được kiểm lại lúc đặt hàng; @CacheEvict khi sửa trên pod nhận request. Nhiều pod: cache Caffeine nằm riêng từng pod nên các pod khác cũ tới hết TTL; nếu nghiệp vụ không chấp nhận thì phát sự kiện invalidate qua Redis pub/sub hoặc chuyển cache sang Redis, đổi lại thêm một bước mạng. Stampede: khi key hot hết hạn, nhiều request cùng xuống DB; tôi đặt {{@Cacheable(sync = true)}} để mỗi key chỉ một thread xuống DB, các thread khác chờ kết quả đó; key cực nóng có thể làm mới nền bằng refreshAfterWrite của Caffeine. Tôi đo hit ratio bằng recordStats để chắc cache thật sự có ích.`,
+        `Endpoint /quote chờ dịch vụ giá 300 ms; với thread Tomcat platform mặc định tối đa 200, trần khoảng 660 req/s và quá đó request xếp hàng. Virtual thread khi chờ I/O được tháo khỏi carrier thread, nên hàng nghìn request chờ cùng lúc chỉ tốn ít bộ nhớ. Bật bằng spring.threads.virtual.enabled trên Boot 3.2+. Không giúp khi việc là CPU-bound, hoặc khi nút thắt là tài nguyên hữu hạn phía sau như pool DB 20 connection: lúc đó phải có bulkhead. Pinning: trên JDK 21, virtual thread chờ bên trong synchronized không tháo được khỏi carrier, chiếm luôn thread hệ điều hành; tôi phát hiện bằng JFR event jdk.VirtualThreadPinned và đổi sang ReentrantLock. JDK 24 đã khắc phục phần lớn chuyện này.`,
+        `JFR có sẵn trong JDK, chi phí thấp nên bật liên tục được trên production; nó ghi nhiều loại sự kiện: mẫu CPU, GC, lock, I/O socket, cấp phát, pinning, nên khi có sự cố tôi dump file ra và xem lại bối cảnh chứ không chỉ một flame graph. async-profiler là công cụ ngoài, gắn vào process đang chạy, rất mạnh ở flame graph: chế độ cpu thấy hot path chính xác (kể cả code native), wall thấy thread đang chờ gì, alloc thấy chỗ tạo rác, lock thấy tranh chấp. Tôi dùng JFR để "nhìn tổng thể và bằng chứng sau sự cố", async-profiler để đào sâu một giả thuyết cụ thể trong lab trong 30–60 giây.`,
+        `Ba lớp. Một, test chức năng chặn những hồi quy có thể đếm được: test đếm số SQL statement cho endpoint quan trọng, đổi code gây N+1 là đỏ ngay. Hai, k6 ngắn trong CI (2 phút, môi trường cố định) với thresholds p95 và tỉ lệ lỗi; ngưỡng đặt dư 20–30% so với kết quả lab để tránh đỏ vì nhiễu, mục tiêu là bắt lùi lớn chứ không phải 5%. Ba, production: dashboard và alert p95 theo endpoint, so sánh trước/sau mỗi deploy, kèm JFR bật liên tục để có bằng chứng khi có sự cố. README giữ bảng lịch sử số liệu để mọi người thấy xu hướng.`
+      ]
+    },
+    related: ['jpa-001', 'db-007', 'jvm-006', 'jvm-012', 'jvm-018', 'concurrency-007', 'spring-032', 'testing-007', 'scenario-014', 'devops-015', 'lesson-jpa-002', 'lesson-db-004', 'lesson-concurrency-005']
   }
 ];
