@@ -22,7 +22,24 @@
 .view-projects .pr-copy-fallback { position: fixed; left: -10000px; top: 0; }
 .view-projects .pr-readme [data-copy-status] { margin-left: 10px; }
 .view-projects .card > .md:first-child { margin-top: 0; }
+
+/* Table of contents */
+.view-projects .pr-toc { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0; padding: 10px 12px; background: var(--surface-2); border-radius: var(--radius-sm); font-size: 0.9rem; }
+.view-projects .pr-toc a { color: var(--accent); text-decoration: none; }
+.view-projects .pr-toc a:hover { text-decoration: underline; }
+
+/* Interview answer details */
+.view-projects .pr-answer { margin: 8px 0; }
+.view-projects .pr-answer summary { cursor: pointer; font-weight: 600; color: var(--text-muted); }
+.view-projects .pr-answer[open] summary { color: var(--accent); }
+.view-projects .pr-answer .md { margin: 8px 0 0; padding: 8px; background: var(--surface-2); border-radius: var(--radius-sm); }
+
+/* Design section code blocks scroll horizontally */
+.view-projects #pr-design pre.code { overflow-x: auto; }
+.view-projects #pr-design pre.code code { display: block; }
+
 @media (max-width: 480px) {
   .view-projects .pr-milestone > .md, .view-projects .pr-milestone details { margin-left: 0; }
   .view-projects .pr-card-head { align-items: flex-start; }
+  .view-projects .pr-toc { font-size: 0.85rem; }
 }
