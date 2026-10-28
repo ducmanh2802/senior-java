@@ -41,7 +41,9 @@ class Solution {
 
 ### Lưu ý khi phỏng vấn
 - Hỏi lại: mảng đã sort chưa? Nếu đã sort thì dùng **two pointers** để đạt O(1) space.
-- Cẩn thận overflow khi tính {{target - nums[i]}} nếu ràng buộc lớn hơn (dùng {{long}}).`,
+- Cẩn thận overflow khi tính {{target - nums[i]}} nếu ràng buộc lớn hơn (dùng {{long}}).
+
+> Senior tip: Two Sum là bài hash map kinh điển; luôn hỏi interviewer về mảng đã sort và yêu cầu space để chọn two pointers.`,
   starter: "class Solution {\n    public int[] twoSum(int[] nums, int target) {\n        \n    }\n}",
   tests: `public class Main {
 
@@ -6364,7 +6366,9 @@ class Solution {
   id: 'algo-049', title: 'Normalize Transaction IDs', difficulty: 'easy', pattern: 'String / Simulation', tags: ['string', 'transactions'],
   prompt: `Chuẩn hoá danh sách mã giao dịch: bỏ khoảng trắng đầu/cuối, chuyển thành chữ hoa và bỏ các mã rỗng. Giữ nguyên thứ tự và bản ghi trùng.\n\n### Ví dụ\n~~~text\n[" ab1 ", "", "Xy2"] -> ["AB1", "XY2"]\n~~~\n### Ràng buộc\n0 ≤ n ≤ 100000; mã chỉ chứa chữ ASCII và số.`,
   hints: ['Duyệt một lần, tạo danh sách kết quả mới.', 'Dùng trim rồi kiểm tra chuỗi rỗng trước khi đổi hoa.', 'Không dùng Set vì giao dịch trùng vẫn có ý nghĩa.'],
-  solution: `### Ý tưởng\nDuyệt đầu vào theo thứ tự; loại chuỗi rỗng sau trim và thêm bản uppercase.\n~~~java\nclass Solution {\n    public List<String> normalize(List<String> ids) {\n        List<String> out = new ArrayList<>();\n        for (String id : ids) {\n            String value = id.trim();\n            if (!value.isEmpty()) out.add(value.toUpperCase(Locale.ROOT));\n        }\n        return out;\n    }\n}\n~~~\n### Lưu ý khi phỏng vấn\nLocale.ROOT tránh quy tắc hoa chữ cái phụ thuộc locale máy chủ; không loại trùng nếu nghiệp vụ cần kiểm toán từng giao dịch.`,
+  solution: `### Ý tưởng\nDuyệt đầu vào theo thứ tự; loại chuỗi rỗng sau trim và thêm bản uppercase.\n~~~java\nclass Solution {\n    public List<String> normalize(List<String> ids) {\n        List<String> out = new ArrayList<>();\n        for (String id : ids) {\n            String value = id.trim();\n            if (!value.isEmpty()) out.add(value.toUpperCase(Locale.ROOT));\n        }\n        return out;\n    }\n}\n~~~\n### Lưu ý khi phỏng vấn\nLocale.ROOT tránh quy tắc hoa chữ cái phụ thuộc locale máy chủ; không loại trùng nếu nghiệp vụ cần kiểm toán từng giao dịch.
+
+> Senior tip: Chuẩn hoá ID ở boundary giúp tránh bug locale; giữ nguyên thứ tự đầu vào để audit giao dịch.`,
   complexity: 'Time O(n·m), Space O(n·m)', starter: 'class Solution {\n    public List<String> normalize(List<String> ids) {\n        // TODO\n        return new ArrayList<>();\n    }\n}',
   tests: `public class Main { static int p=0,t=0; static void c(String n,Object e,Object a){t++; if(Objects.deepEquals(e,a)){p++;System.out.println("PASS "+n);}else System.out.println("FAIL "+n+": expected "+e+" got "+a);} public static void main(String[] x){ Solution s=new Solution(); c("example",Arrays.asList("AB1","XY2"),s.normalize(Arrays.asList(" ab1 ","","Xy2"))); c("empty",Collections.emptyList(),s.normalize(Collections.emptyList())); c("spaces",Collections.emptyList(),s.normalize(Arrays.asList(" ","\\t"))); c("duplicates",Arrays.asList("A","A"),s.normalize(Arrays.asList("a","A"))); c("order",Arrays.asList("B","A"),s.normalize(Arrays.asList("b","a"))); System.out.println("RESULT "+p+"/"+t); }}`,
   follow: ['Nếu ID phân biệt hoa thường thì bạn thay đổi bước chuẩn hoá nào?']
@@ -6373,7 +6377,9 @@ class Solution {
   id: 'algo-050', title: 'Daily Transaction Totals', difficulty: 'easy', pattern: 'Hash Map', tags: ['hashmap', 'aggregation'],
   prompt: `Gộp số tiền giao dịch theo ngày. Mỗi giao dịch là [ngày, số tiền]; trả về map tổng theo ngày.\n\n### Ví dụ\n~~~text\n[["Mon", 5], ["Tue", 4], ["Mon", -2]] -> {Mon=3, Tue=4}\n~~~\n### Ràng buộc\nSố tiền nằm trong int; tổng dùng long.`,
   hints: ['Mỗi ngày là một key.', 'Dùng merge để cộng dồn.', 'Giá trị tổng cần là long để tránh overflow int.'],
-  solution: `### Ý tưởng\nMap giữ tổng tích luỹ; mỗi dòng cập nhật đúng một key.\n~~~java\nclass Solution {\n    public Map<String, Long> totals(String[][] rows) {\n        Map<String, Long> out = new LinkedHashMap<>();\n        for (String[] row : rows) out.merge(row[0], Long.parseLong(row[1]), Long::sum);\n        return out;\n    }\n}\n~~~\n### Lưu ý khi phỏng vấn\nChọn LinkedHashMap nếu kết quả cần thứ tự ngày xuất hiện; nếu ngày phải sắp chronologically, parse thành LocalDate rồi sort.`,
+  solution: `### Ý tưởng\nMap giữ tổng tích luỹ; mỗi dòng cập nhật đúng một key.\n~~~java\nclass Solution {\n    public Map<String, Long> totals(String[][] rows) {\n        Map<String, Long> out = new LinkedHashMap<>();\n        for (String[] row : rows) out.merge(row[0], Long.parseLong(row[1]), Long::sum);\n        return out;\n    }\n}\n~~~\n### Lưu ý khi phỏng vấn\nChọn LinkedHashMap nếu kết quả cần thứ tự ngày xuất hiện; nếu ngày phải sắp chronologically, parse thành LocalDate rồi sort.
+
+> Senior tip: Dùng Long cho tổng tiền; tổng hợp theo ngày nên sort theo LocalDate thay vì string để tránh lỗi định dạng.`,
   complexity: 'Time O(n), Space O(d)', starter: 'class Solution {\n    public Map<String, Long> totals(String[][] rows) {\n        // TODO\n        return new LinkedHashMap<>();\n    }\n}',
   tests: `public class Main { static int p=0,t=0; static void c(String n,Object e,Object a){t++;if(Objects.deepEquals(e,a)){p++;System.out.println("PASS "+n);}else System.out.println("FAIL "+n+": expected "+e+" got "+a);} public static void main(String[] z){Solution s=new Solution(); Map<String,Long> e=new LinkedHashMap<>(); e.put("Mon",3L);e.put("Tue",4L); c("example",e,s.totals(new String[][]{{"Mon","5"},{"Tue","4"},{"Mon","-2"}})); c("empty",new LinkedHashMap<>(),s.totals(new String[0][])); c("negative",Collections.singletonMap("D",-8L),s.totals(new String[][]{{"D","-8"}})); c("zero",Collections.singletonMap("D",0L),s.totals(new String[][]{{"D","3"},{"D","-3"}})); c("large",Collections.singletonMap("D",5000000000L),s.totals(new String[][]{{"D","2147483647"},{"D","2147483647"},{"D","705032706"}})); System.out.println("RESULT "+p+"/"+t); }}`,
   follow: ['Bạn sẽ xử lý dữ liệu vượt RAM theo batch thế nào?']
@@ -6382,7 +6388,9 @@ class Solution {
   id: 'algo-051', title: 'First Non-repeating Character', difficulty: 'easy', pattern: 'Hash Map / String', tags: ['string', 'frequency'],
   prompt: `Trả về index ký tự đầu tiên chỉ xuất hiện một lần trong chuỗi; nếu không có, trả -1.\n\n### Ví dụ\n~~~text\n"swiss" -> 1\n~~~\n### Ràng buộc\nChuỗi chỉ gồm chữ thường ASCII; độ dài tối đa 200000.`,
   hints: ['Cần biết tần suất trước khi chọn index.', 'Hai lượt duyệt vẫn là O(n).', 'Dùng mảng 26 phần tử cho alphabet đã giới hạn.'],
-  solution: `### Ý tưởng\nĐếm tần suất rồi duyệt lại theo thứ tự ban đầu.\n~~~java\nclass Solution {\n    public int firstUnique(String s) {\n        int[] count = new int[26];\n        for (char ch : s.toCharArray()) count[ch - 'a']++;\n        for (int i = 0; i < s.length(); i++) if (count[s.charAt(i) - 'a'] == 1) return i;\n        return -1;\n    }\n}\n~~~\n### Lưu ý khi phỏng vấn\nNếu Unicode grapheme được tính là một ký tự, char không đủ vì Java char là UTF-16 code unit; cần chốt rõ định nghĩa ký tự.`,
+  solution: `### Ý tưởng\nĐếm tần suất rồi duyệt lại theo thứ tự ban đầu.\n~~~java\nclass Solution {\n    public int firstUnique(String s) {\n        int[] count = new int[26];\n        for (char ch : s.toCharArray()) count[ch - 'a']++;\n        for (int i = 0; i < s.length(); i++) if (count[s.charAt(i) - 'a'] == 1) return i;\n        return -1;\n    }\n}\n~~~\n### Lưu ý khi phỏng vấn\nNếu Unicode grapheme được tính là một ký tự, char không đủ vì Java char là UTF-16 code unit; cần chốt rõ định nghĩa ký tự.
+
+> Senior tip: First non-repeating character hay bị hỏi với Unicode; xác định rõ code point vs code unit trước khi code.`,
   complexity: 'Time O(n), Space O(1)', starter: 'class Solution {\n    public int firstUnique(String s) {\n        // TODO\n        return -1;\n    }\n}',
   tests: `public class Main {static int p=0,t=0;static void c(String n,int e,int a){t++;if(e==a){p++;System.out.println("PASS "+n);}else System.out.println("FAIL "+n+": expected "+e+" got "+a);}public static void main(String[]x){Solution s=new Solution();c("example",1,s.firstUnique("swiss"));c("empty",-1,s.firstUnique(""));c("all same",-1,s.firstUnique("zzzz"));c("first",0,s.firstUnique("abc"));c("last",4,s.firstUnique("aabbc"));System.out.println("RESULT "+p+"/"+t);}}`,
   follow: ['Nếu cần hỗ trợ Unicode code point thì cách đếm thay đổi ra sao?']
@@ -6391,7 +6399,9 @@ class Solution {
   id: 'algo-052', title: 'Merge Sorted Transaction Streams', difficulty: 'easy', pattern: 'Two Pointers', tags: ['array', 'merge'],
   prompt: `Trộn hai mảng số đã sắp tăng thành một mảng tăng, giữ cả phần tử trùng.\n\n### Ví dụ\n~~~text\n[1, 4] + [2, 4] -> [1, 2, 4, 4]\n~~~\n### Ràng buộc\nHai đầu vào có thể rỗng; giá trị có thể âm.`,
   hints: ['Giữ một con trỏ trên mỗi mảng.', 'Mỗi bước lấy phần tử nhỏ hơn.', 'Khi một mảng hết, chép phần còn lại.'],
-  solution: `### Ý tưởng\nMỗi vòng lặp tiêu thụ ít nhất một phần tử nên tổng thời gian tuyến tính.\n~~~java\nclass Solution {\n    public int[] merge(int[] a, int[] b) {\n        int[] out = new int[a.length + b.length]; int i=0,j=0,k=0;\n        while(i<a.length && j<b.length) out[k++]=a[i]<=b[j]?a[i++]:b[j++];\n        while(i<a.length) out[k++]=a[i++];\n        while(j<b.length) out[k++]=b[j++];\n        return out;\n    }\n}\n~~~\n### Lưu ý khi phỏng vấn\nNếu dữ liệu đến streaming, có thể phát từng phần tử nhưng cần backpressure khi consumer chậm.`,
+  solution: `### Ý tưởng\nMỗi vòng lặp tiêu thụ ít nhất một phần tử nên tổng thời gian tuyến tính.\n~~~java\nclass Solution {\n    public int[] merge(int[] a, int[] b) {\n        int[] out = new int[a.length + b.length]; int i=0,j=0,k=0;\n        while(i<a.length && j<b.length) out[k++]=a[i]<=b[j]?a[i++]:b[j++];\n        while(i<a.length) out[k++]=a[i++];\n        while(j<b.length) out[k++]=b[j++];\n        return out;\n    }\n}\n~~~\n### Lưu ý khi phỏng vấn\nNếu dữ liệu đến streaming, có thể phát từng phần tử nhưng cần backpressure khi consumer chậm.
+
+> Senior tip: Merge sorted streams cần cân nhắc memory và backpressure; với dữ liệu lớn, streaming iterator tốt hơn mảng.`,
   complexity: 'Time O(n + m), Space O(n + m)', starter: 'class Solution {\n    public int[] merge(int[] a, int[] b) {\n        // TODO\n        return new int[0];\n    }\n}',
   tests: `public class Main {static int p=0,t=0;static void c(String n,int[]e,int[]a){t++;if(Arrays.equals(e,a)){p++;System.out.println("PASS "+n);}else System.out.println("FAIL "+n+": expected "+Arrays.toString(e)+" got "+Arrays.toString(a));}public static void main(String[]x){Solution s=new Solution();c("example",new int[]{1,2,4,4},s.merge(new int[]{1,4},new int[]{2,4}));c("both empty",new int[]{},s.merge(new int[]{},new int[]{}));c("one empty",new int[]{-2,0},s.merge(new int[]{},new int[]{-2,0}));c("negative",new int[]{-5,-2,1},s.merge(new int[]{-5,1},new int[]{-2}));c("many dup",new int[]{1,1,1,1},s.merge(new int[]{1,1},new int[]{1,1}));System.out.println("RESULT "+p+"/"+t);}}`,
   follow: ['Hai stream nếu chỉ sắp theo timestamp thì nên merge thế nào?']
@@ -6400,7 +6410,9 @@ class Solution {
   id: 'algo-053', title: 'Maximum Profit from One Trade', difficulty: 'easy', pattern: 'Array Scan', tags: ['array', 'greedy'],
   prompt: `Cho giá cổ phiếu theo ngày, chọn tối đa một lần mua rồi bán về sau để lợi nhuận lớn nhất; không giao dịch thì lợi nhuận 0.\n\n### Ví dụ\n~~~text\n[7, 1, 5, 3, 6, 4] -> 5\n~~~\n### Ràng buộc\n0 ≤ n ≤ 200000; giá không âm.`,
   hints: ['Khi đứng tại ngày bán, cần biết giá mua rẻ nhất trước đó.', 'Cập nhật min trước khi tính lợi nhuận.', 'Không cần lưu toàn bộ lịch sử ngoài giá thấp nhất và best.'],
-  solution: `### Ý tưởng\nDuyệt trái sang phải, mỗi giá bán so với minimum đã thấy.\n~~~java\nclass Solution {\n    public int maxProfit(int[] prices) {\n        int low = Integer.MAX_VALUE, best = 0;\n        for (int price : prices) { low = Math.min(low, price); best = Math.max(best, price - low); }\n        return best;\n    }\n}\n~~~\n### Lưu ý khi phỏng vấn\nNếu cho phép nhiều giao dịch, đây là một bài khác; cần làm rõ phí và cooldown.`,
+  solution: `### Ý tưởng\nDuyệt trái sang phải, mỗi giá bán so với minimum đã thấy.\n~~~java\nclass Solution {\n    public int maxProfit(int[] prices) {\n        int low = Integer.MAX_VALUE, best = 0;\n        for (int price : prices) { low = Math.min(low, price); best = Math.max(best, price - low); }\n        return best;\n    }\n}\n~~~\n### Lưu ý khi phỏng vấn\nNếu cho phép nhiều giao dịch, đây là một bài khác; cần làm rõ phí và cooldown.
+
+> Senior tip: Bài một giao dịch chỉ cần track min price; nếu nhiều giao dịch thì cần DP riêng, đừng trộn hai yêu cầu.`,
   complexity: 'Time O(n), Space O(1)', starter: 'class Solution {\n    public int maxProfit(int[] prices) {\n        // TODO\n        return 0;\n    }\n}',
   tests: `public class Main {static int p=0,t=0;static void c(String n,int e,int a){t++;if(e==a){p++;System.out.println("PASS "+n);}else System.out.println("FAIL "+n+": expected "+e+" got "+a);}public static void main(String[]x){Solution s=new Solution();c("example",5,s.maxProfit(new int[]{7,1,5,3,6,4}));c("empty",0,s.maxProfit(new int[]{}));c("single",0,s.maxProfit(new int[]{9}));c("descending",0,s.maxProfit(new int[]{9,7,3,1}));c("best late",9,s.maxProfit(new int[]{2,1,10}));System.out.println("RESULT "+p+"/"+t);}}`,
   follow: ['Nếu cần trả về cả ngày mua và bán thì xử lý tie thế nào?']
@@ -6409,7 +6421,9 @@ class Solution {
   id: 'algo-054', title: 'Balanced Brackets with Types', difficulty: 'easy', pattern: 'Stack', tags: ['stack', 'string'],
   prompt: `Kiểm tra chuỗi chỉ gồm (), [], {} có đóng mở đúng thứ tự không. Chuỗi rỗng được xem là hợp lệ.\n\n### Ví dụ\n~~~text\n{[()]} -> true; ([)] -> false\n~~~\n### Ràng buộc\nĐộ dài tối đa 200000.`,
   hints: ['Khi gặp ký tự mở, lưu loại ngoặc.', 'Ký tự đóng phải khớp với phần tử gần nhất chưa đóng.', 'Nếu stack còn phần tử sau vòng lặp thì chuỗi thiếu ngoặc đóng.'],
-  solution: `### Ý tưởng\nStack mô hình hoá các ngoặc còn chờ đóng theo thứ tự LIFO.\n~~~java\nclass Solution {\n    public boolean balanced(String s) {\n        Deque<Character> st = new ArrayDeque<>();\n        for(char c:s.toCharArray()) {\n            if(c=='('||c=='['||c=='{') st.push(c);\n            else { if(st.isEmpty()) return false; char o=st.pop();\n                if((c==')'&&o!='(')||(c==']'&&o!='[')||(c=='}'&&o!='{')) return false; }\n        }\n        return st.isEmpty();\n    }\n}\n~~~\n### Lưu ý khi phỏng vấn\nArrayDeque không chấp nhận null; ở đây chỉ push char hợp lệ.`,
+  solution: `### Ý tưởng\nStack mô hình hoá các ngoặc còn chờ đóng theo thứ tự LIFO.\n~~~java\nclass Solution {\n    public boolean balanced(String s) {\n        Deque<Character> st = new ArrayDeque<>();\n        for(char c:s.toCharArray()) {\n            if(c=='('||c=='['||c=='{') st.push(c);\n            else { if(st.isEmpty()) return false; char o=st.pop();\n                if((c==')'&&o!='(')||(c==']'&&o!='[')||(c=='}'&&o!='{')) return false; }\n        }\n        return st.isEmpty();\n    }\n}\n~~~\n### Lưu ý khi phỏng vấn\nArrayDeque không chấp nhận null; ở đây chỉ push char hợp lệ.
+
+> Senior tip: Balanced brackets nên dùng ArrayDeque; clarify ký tự hợp lệ và encoding trước khi implement.`,
   complexity: 'Time O(n), Space O(n)', starter: 'class Solution {\n    public boolean balanced(String s) {\n        // TODO\n        return false;\n    }\n}',
   tests: `public class Main {static int p=0,t=0;static void c(String n,boolean e,boolean a){t++;if(e==a){p++;System.out.println("PASS "+n);}else System.out.println("FAIL "+n+": expected "+e+" got "+a);}public static void main(String[]x){Solution s=new Solution();c("nested",true,s.balanced("{[()] }".replace(" ","")));c("crossed",false,s.balanced("([)]"));c("empty",true,s.balanced(""));c("leading close",false,s.balanced(")("));c("unclosed",false,s.balanced("{{["));System.out.println("RESULT "+p+"/"+t);}}`,
   follow: ['Nếu chuỗi có cả ký tự thường và chỉ cần bỏ qua chúng thì thay đổi gì?']
@@ -9498,3 +9512,1853 @@ class Solution {
 
 );
 
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-106',
+  title: 'Clone Graph',
+  difficulty: 'medium',
+  pattern: 'Graphs (DFS/BFS)',
+  tags: ['graph', 'dfs', 'bfs', 'hashmap', 'bytebytego'],
+  prompt: `Nhân bản đồ thị vô hướng liên thông. Mỗi node có {{val}} và danh sách {{neighbors}}. Trả về node tương ứng với node gốc; phải là **bản sao sâu**, không dùng chung tham chiếu với đồ thị gốc.
+
+### Ví dụ
+~~~text
+Input: adjList = [[2,4],[1,3],[2,4],[1,3]]
+Output: [[2,4],[1,3],[2,4],[1,3]]
+~~~
+
+### Ràng buộc
+- {{1 <= n <= 100}}
+- {{1 <= Node.val <= 100}}
+- Không có cạnh tự lặp, không có cạnh song song.
+
+> {{Node}} đã được định nghĩa sẵn: class Node với trường {{val}} (int) và {{neighbors}} (List<Node>); constructor {{Node(int val)}} khởi tạo {{neighbors}} rỗng.`,
+  hints: [
+    'Khi gặp một node đã nhân bản rồi, trả về bản sao đó để tránh lặp vô hạn và giữ tính liên thông.',
+    'Dùng {{HashMap<Node, Node>}} ánh xạ node gốc -> node bản sao. DFS/BFS đều được.',
+    'Nhân bản node trước, rồi mới duyệt neighbors; nếu làm ngược, đồ thị có chu trình sẽ đệ quy vô hạn.'
+  ],
+  solution: `### Ý tưởng
+Duyệt đồ thị gốc, với mỗi node tạo node mới và lưu vào map. Khi gặp node đã có trong map, trả về bản sao tương ứng. Nhờ map, mỗi node chỉ tạo một lần, và chu trình không gây đệ quy vô hạn.
+
+~~~java
+class Solution {
+    public Node cloneGraph(Node node) {
+        if (node == null) return null;
+        Map<Node, Node> map = new HashMap<>();
+        return dfs(node, map);
+    }
+
+    private Node dfs(Node node, Map<Node, Node> map) {
+        Node clone = map.get(node);
+        if (clone != null) return clone;
+        clone = new Node(node.val);
+        map.put(node, clone);
+        for (Node nb : node.neighbors) {
+            clone.neighbors.add(dfs(nb, map));
+        }
+        return clone;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Hỏi rõ có được sửa đồ thị gốc không (ở đây không sửa).
+- BFS cũng làm được: queue + map; hữu ích khi đồ thị rất sâu và DFS có nguy cơ stack overflow.
+- Kiểm tra deep copy: mọi node bản sao phải khác tham chiếu với node gốc.
+
+> Senior tip: Nhân bản đồ thị là bài kiểm tra khả năng xử lý chu trình và trạng thái đã thăm. Map từ node gốc sang node sao vừa làm visited, vừa đảm bảo chia sẻ đúng tham chiếu trong bản sao.`,
+  starter: "class Solution {\n    public Node cloneGraph(Node node) {\n        \n    }\n}",
+  tests: `
+class Node { public int val; public List<Node> neighbors; public Node(int v){val=v;neighbors=new ArrayList<>();} }
+public class Main {
+ static int passed=0,total=0;
+ static void runSteps(String n, Runnable r){ total++; try{r.run();passed++;System.out.println("PASS "+n);} catch(Throwable t){System.out.println("FAIL "+n+": threw "+t);}}
+ static Node build(int[][] adj){ if(adj.length==0) return null; Node[] ns=new Node[adj.length]; for(int i=0;i<adj.length;i++) ns[i]=new Node(i+1); for(int i=0;i<adj.length;i++) for(int v:adj[i]) ns[i].neighbors.add(ns[v-1]); return ns[0];}
+ static boolean deep(Node o,Node c){ if(o==null||c==null) return o==c; Map<Integer,Node> mo=new HashMap<>(),mc=new HashMap<>(); Queue<Node> qo=new LinkedList<>(),qc=new LinkedList<>(); mo.put(o.val,o);qo.add(o); mc.put(c.val,c);qc.add(c); while(!qo.isEmpty()){ Node a=qo.poll(),b=qc.poll(); if(a==b) return false; for(Node n:a.neighbors) if(!mo.containsKey(n.val)){mo.put(n.val,n);qo.add(n);} for(Node n:b.neighbors) if(!mc.containsKey(n.val)){mc.put(n.val,n);qc.add(n);} } return true;}
+ static boolean eq(Node a,Node b){ if(a==null&&b==null) return true; if(a==null||b==null) return false; Map<Integer,Node> ma=new HashMap<>(),mb=new HashMap<>(); Queue<Node> qa=new LinkedList<>(),qb=new LinkedList<>(); ma.put(a.val,a);qa.add(a); mb.put(b.val,b);qb.add(b); while(!qa.isEmpty()){ Node x=qa.poll(),y=qb.poll(); if(x.val!=y.val||x.neighbors.size()!=y.neighbors.size()) return false; List<Integer> xn=new ArrayList<>(),yn=new ArrayList<>(); for(Node n:x.neighbors) xn.add(n.val); for(Node n:y.neighbors) yn.add(n.val); Collections.sort(xn);Collections.sort(yn); if(!xn.equals(yn)) return false; for(Node n:x.neighbors) if(!ma.containsKey(n.val)){ma.put(n.val,n);qa.add(n);} for(Node n:y.neighbors) if(!mb.containsKey(n.val)){mb.put(n.val,n);qb.add(n);} } return ma.size()==mb.size();}
+ public static void main(String[] args){
+   runSteps("null", ()->{ if(new Solution().cloneGraph(null)!=null) throw new AssertionError("x");});
+   int[][] a={{2,4},{1,3},{2,4},{1,3}}; Node o=build(a); Node c=new Solution().cloneGraph(o);
+   runSteps("example", ()->{ if(!deep(o,c)||!eq(o,c)) throw new AssertionError("x");});
+   Node s=new Node(1); Node cs=new Solution().cloneGraph(s);
+   runSteps("single", ()->{ if(cs==s||cs.val!=1||!cs.neighbors.isEmpty()) throw new AssertionError("x");});
+   int[][] b={{2},{1}}; Node o2=build(b); Node c2=new Solution().cloneGraph(o2);
+   runSteps("two", ()->{ if(!deep(o2,c2)||!eq(o2,c2)) throw new AssertionError("x");});
+   System.out.println("RESULT "+passed+"/"+total);
+ } }
+`,
+  complexity: 'Time O(V + E), Space O(V)',
+  follow: ['BFS nhân bản khác DFS ở điểm nào?', 'Làm sao nhân bản đồ thị có hướng và đồ thị rời rạc?']
+}
+);
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-107',
+  title: 'Pacific Atlantic Water Flow',
+  difficulty: 'medium',
+  pattern: 'Graphs (DFS/BFS)',
+  tags: ['matrix', 'bfs', 'dfs', 'bytebytego'],
+  prompt: `Cho ma trận {{heights}} kích thước {{m x n}}. Nước chảy từ ô cao hơn hoặc bằng sang ô thấp hơn hoặc bằng (4 hướng). Thái Bình Dương tiếp giáp biên trên và biên trái; Đại Tây Dương tiếp giáp biên dưới và biên phải. Trả về danh sách tọa độ {{[r, c]}} của các ô mà nước từ đó có thể chảy ra **cả hai** đại dương.
+
+### Ví dụ
+~~~text
+Input: heights = [[1,2,2,3,5],[3,2,3,4,4],[2,4,5,3,1],[6,7,1,4,5],[5,1,1,2,4]]
+Output: [[0,4],[1,3],[1,4],[2,2],[3,0],[3,1],[4,0]]
+~~~
+
+### Ràng buộc
+- {{1 <= m, n <= 200}}
+- {{0 <= heights[r][c] <= 10^5}}`,
+  hints: [
+    'Thay vì từ mỗi ô chảy xuống (tốn O(mn * mn)), hãy đảo ngược: từ đại dương chảy vào trong.',
+    'Nước chảy ngược nghĩa là từ ô thấp sang ô cao hơn hoặc bằng.',
+    'Tính tập ô chạm Thái Bình Dương và tập ô chạm Đại Tây Dương, lấy giao.'
+  ],
+  solution: `### Ý tưởng
+Đảo ngược hướng chảy: từ các ô biên thuộc mỗi đại dương, BFS vào trong theo điều kiện ô kế tiếp có độ cao >= ô hiện tại. Giao của hai tập kết quả là các ô chảy được ra cả hai đại dương.
+
+~~~java
+class Solution {
+    public List<List<Integer>> pacificAtlantic(int[][] heights) {
+        List<List<Integer>> res = new ArrayList<>();
+        if (heights == null || heights.length == 0) return res;
+        int m = heights.length, n = heights[0].length;
+        boolean[][] pac = new boolean[m][n], atl = new boolean[m][n];
+        Queue<int[]> q = new LinkedList<>();
+        for (int i = 0; i < m; i++) { q.add(new int[]{i, 0}); pac[i][0] = true; }
+        for (int j = 0; j < n; j++) { q.add(new int[]{0, j}); pac[0][j] = true; }
+        bfs(heights, q, pac);
+        q = new LinkedList<>();
+        for (int i = 0; i < m; i++) { q.add(new int[]{i, n - 1}); atl[i][n - 1] = true; }
+        for (int j = 0; j < n; j++) { q.add(new int[]{m - 1, j}); atl[m - 1][j] = true; }
+        bfs(heights, q, atl);
+        for (int i = 0; i < m; i++)
+            for (int j = 0; j < n; j++)
+                if (pac[i][j] && atl[i][j]) {
+                    List<Integer> c = new ArrayList<>();
+                    c.add(i); c.add(j);
+                    res.add(c);
+                }
+        return res;
+    }
+    private void bfs(int[][] h, Queue<int[]> q, boolean[][] vis) {
+        int m = h.length, n = h[0].length;
+        int[] dr = {1, -1, 0, 0}, dc = {0, 0, 1, -1};
+        while (!q.isEmpty()) {
+            int[] cur = q.poll();
+            for (int d = 0; d < 4; d++) {
+                int nr = cur[0] + dr[d], nc = cur[1] + dc[d];
+                if (nr < 0 || nr >= m || nc < 0 || nc >= n) continue;
+                if (vis[nr][nc]) continue;
+                if (h[nr][nc] >= h[cur[0]][cur[1]]) {
+                    vis[nr][nc] = true;
+                    q.add(new int[]{nr, nc});
+                }
+            }
+        }
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- DFS đệ quy cũng được; BFS tránh stack overflow với lưới lớn.
+- Kết quả theo thứ tự row-major.
+
+> Senior tip: Khi bài hỏi "từ đâu có thể đạt tới biên", hãy nghĩ đến BFS ngược từ biên — giảm độ phức tạp từ O((mn)^2) xuống O(mn).`,
+  starter: "class Solution {\n    public List<List<Integer>> pacificAtlantic(int[][] heights) {\n        \n    }\n}",
+  tests: `
+public class Main {
+ static int passed=0,total=0;
+ static List<List<Integer>> L(int[]... rows){ List<List<Integer>> r=new ArrayList<>(); for(int[] row:rows){ List<Integer> c=new ArrayList<>(); for(int x:row) c.add(x); r.add(c);} return r;}
+ public static void main(String[] args){
+   int[][] h1={{1,2,2,3,5},{3,2,3,4,4},{2,4,5,3,1},{6,7,1,4,5},{5,1,1,2,4}};
+   List<List<Integer>> exp1=L(new int[]{0,4},new int[]{1,3},new int[]{1,4},new int[]{2,2},new int[]{3,0},new int[]{3,1},new int[]{4,0});
+   total++; try{ if(Objects.deepEquals(exp1,new Solution().pacificAtlantic(h1))){passed++;System.out.println("PASS example");} else System.out.println("FAIL example");} catch(Throwable t){System.out.println("FAIL example: threw "+t);}
+   int[][] h2={{1}}; total++; try{ if(Objects.deepEquals(L(new int[]{0,0}),new Solution().pacificAtlantic(h2))){passed++;System.out.println("PASS single");} else System.out.println("FAIL single");} catch(Throwable t){System.out.println("FAIL single: threw "+t);}
+   int[][] h3={{3,3,3},{3,3,3},{3,3,3}}; List<List<Integer>> exp3=new ArrayList<>(); for(int i=0;i<3;i++) for(int j=0;j<3;j++){List<Integer> c=new ArrayList<>();c.add(i);c.add(j);exp3.add(c);}
+   total++; try{ if(Objects.deepEquals(exp3,new Solution().pacificAtlantic(h3))){passed++;System.out.println("PASS flat");} else System.out.println("FAIL flat");} catch(Throwable t){System.out.println("FAIL flat: threw "+t);}
+   total++; try{ if(Objects.deepEquals(new ArrayList<>(),new Solution().pacificAtlantic(new int[][]{}))){passed++;System.out.println("PASS empty");} else System.out.println("FAIL empty");} catch(Throwable t){System.out.println("FAIL empty: threw "+t);}
+   System.out.println("RESULT "+passed+"/"+total);
+ }
+}`,
+  complexity: 'Time O(m * n), Space O(m * n)',
+  follow: ['DFS đệ quy có rủi ro gì với lưới 200x200?', 'Có thể giải bằng Union-Find không?']
+}
+);
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-108',
+  title: 'Rotting Oranges',
+  difficulty: 'medium',
+  pattern: 'Graphs (DFS/BFS)',
+  tags: ['matrix', 'bfs', 'queue', 'bytebytego'],
+  prompt: `Cho lưới {{grid}}: {{0}} = ô trống, {{1}} = cam tươi, {{2}} = cam thối. Mỗi phút, cam thối làm thối các cam tươi kề cạnh (4 hướng). Trả về số phút tối thiểu để tất cả cam thối; nếu có cam tươi không thể thối thì trả về {{-1}}. Nếu không có cam tươi ban đầu thì trả về {{0}}.
+
+### Ví dụ
+~~~text
+Input: grid = [[2,1,1],[1,1,0],[0,1,1]]
+Output: 4
+
+Input: grid = [[2,1,1],[0,1,1],[1,0,1]]
+Output: -1
+~~~
+
+### Ràng buộc
+- {{1 <= m, n <= 10}}
+- {{grid[i][j]}} ∈ {{0, 1, 2}}`,
+  hints: [
+    'Nhiều nguồn thối cùng lúc -> multi-source BFS.',
+    'Ban đầu đưa tất cả cam thối vào queue, rồi BFS theo từng "lớp" (level).',
+    'Sau BFS, nếu còn cam tươi (1) thì trả -1.'
+  ],
+  solution: `### Ý tưởng
+Multi-source BFS: enqueue tất cả cam thối ban đầu. Mỗi level của BFS tương ứng một phút. Sau khi BFS kết thúc, nếu còn cam tươi thì trả -1.
+
+~~~java
+class Solution {
+    public int orangesRotting(int[][] grid) {
+        if (grid == null || grid.length == 0) return 0;
+        int m = grid.length, n = grid[0].length;
+        Queue<int[]> q = new LinkedList<>();
+        int fresh = 0;
+        for (int i = 0; i < m; i++)
+            for (int j = 0; j < n; j++) {
+                if (grid[i][j] == 2) q.add(new int[]{i, j});
+                else if (grid[i][j] == 1) fresh++;
+            }
+        if (fresh == 0) return 0;
+        int minutes = 0;
+        int[] dr = {1, -1, 0, 0}, dc = {0, 0, 1, -1};
+        while (!q.isEmpty() && fresh > 0) {
+            int size = q.size();
+            for (int s = 0; s < size; s++) {
+                int[] cur = q.poll();
+                for (int d = 0; d < 4; d++) {
+                    int nr = cur[0] + dr[d], nc = cur[1] + dc[d];
+                    if (nr < 0 || nr >= m || nc < 0 || nc >= n) continue;
+                    if (grid[nr][nc] != 1) continue;
+                    grid[nr][nc] = 2;
+                    fresh--;
+                    q.add(new int[]{nr, nc});
+                }
+            }
+            minutes++;
+        }
+        return fresh == 0 ? minutes : -1;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- BFS theo level (đếm size queue) để đo phút; không dùng visited riêng vì đổi 1->2 đã là visited.
+- Nếu input không được sửa, dùng mảng visited.
+
+> Senior tip: Multi-source BFS là mẫu chuẩn cho "lan truyền theo thời gian" (fire, infection, signal). Khởi tạo queue với mọi nguồn ban đầu là chìa khóa.`,
+  starter: "class Solution {\n    public int orangesRotting(int[][] grid) {\n        \n    }\n}",
+  tests: `
+public class Main {
+ static int passed=0,total=0;
+ static int[][] copy(int[][] g){ int[][] r=new int[g.length][]; for(int i=0;i<g.length;i++) r[i]=g[i].clone(); return r;}
+ public static void main(String[] args){
+   total++; try{ if(Objects.deepEquals(4,new Solution().orangesRotting(copy(new int[][]{{2,1,1},{1,1,0},{0,1,1}})))){passed++;System.out.println("PASS example");} else System.out.println("FAIL example");} catch(Throwable t){System.out.println("FAIL example: threw "+t);}
+   total++; try{ if(Objects.deepEquals(-1,new Solution().orangesRotting(copy(new int[][]{{2,1,1},{0,1,1},{1,0,1}})))){passed++;System.out.println("PASS impossible");} else System.out.println("FAIL impossible");} catch(Throwable t){System.out.println("FAIL impossible: threw "+t);}
+   total++; try{ if(Objects.deepEquals(0,new Solution().orangesRotting(copy(new int[][]{{0,2},{2,0}})))){passed++;System.out.println("PASS nofresh");} else System.out.println("FAIL nofresh");} catch(Throwable t){System.out.println("FAIL nofresh: threw "+t);}
+   total++; try{ if(Objects.deepEquals(-1,new Solution().orangesRotting(copy(new int[][]{{1,1},{1,1}})))){passed++;System.out.println("PASS allfresh");} else System.out.println("FAIL allfresh");} catch(Throwable t){System.out.println("FAIL allfresh: threw "+t);}
+   total++; try{ if(Objects.deepEquals(0,new Solution().orangesRotting(copy(new int[][]{{2}})))){passed++;System.out.println("PASS single");} else System.out.println("FAIL single");} catch(Throwable t){System.out.println("FAIL single: threw "+t);}
+   System.out.println("RESULT "+passed+"/"+total);
+ }
+}`,
+  complexity: 'Time O(m * n), Space O(m * n)',
+  follow: ['Nếu có nhiều loại cam với tốc độ thối khác nhau thì sao?', 'Có thể dùng DFS không? Vì sao BFS phù hợp hơn?']
+}
+);
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-109',
+  title: 'Topological Sort of a Directed Graph',
+  difficulty: 'medium',
+  pattern: 'Topological Sort',
+  tags: ['graph', 'topological-sort', 'kahn', 'bytebytego'],
+  prompt: `Cho đồ thị có hướng với {{V}} đỉnh (0..V-1) và danh sách cạnh {{edges}} (u -> v). Trả về một thứ tự topo hợp lệ; nếu đồ thị có chu trình thì trả về mảng rỗng.
+
+### Ví dụ
+~~~text
+Input: V = 4, edges = [[0,1],[1,2],[2,3]]
+Output: [0,1,2,3]
+
+Input: V = 4, edges = [[0,1],[1,2],[2,0],[3,3]]
+Output: []
+~~~
+
+### Ràng buộc
+- {{1 <= V <= 10^4}}
+- {{0 <= edges.length <= 10^4}}`,
+  hints: [
+    'Thứ tự topo: mọi cạnh u->v thì u đứng trước v.',
+    'Kahn: bắt đầu từ các đỉnh indegree 0, đưa vào queue, xử lý và giảm indegree của hàng xóm.',
+    'Nếu số đỉnh đã xuất ra < V thì có chu trình.'
+  ],
+  solution: `### Ý tưởng
+Kahn's algorithm: tính indegree, enqueue các đỉnh indegree 0. Khi pop một đỉnh, thêm vào kết quả và giảm indegree của các đỉnh kề; nếu indegree về 0 thì enqueue. Nếu kết quả đủ V đỉnh thì không có chu trình.
+
+~~~java
+class Solution {
+    public int[] topoSort(int V, int[][] edges) {
+        List<List<Integer>> adj = new ArrayList<>();
+        int[] indeg = new int[V];
+        for (int i = 0; i < V; i++) adj.add(new ArrayList<>());
+        for (int[] e : edges) {
+            adj.get(e[0]).add(e[1]);
+            indeg[e[1]]++;
+        }
+        Queue<Integer> q = new LinkedList<>();
+        for (int i = 0; i < V; i++) if (indeg[i] == 0) q.add(i);
+        int[] res = new int[V];
+        int idx = 0;
+        while (!q.isEmpty()) {
+            int u = q.poll();
+            res[idx++] = u;
+            for (int v : adj.get(u)) {
+                if (--indeg[v] == 0) q.add(v);
+            }
+        }
+        if (idx != V) return new int[0];
+        return res;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- DFS (finish time) cũng cho thứ tự topo; Kahn dễ phát hiện cycle.
+- Nhiều thứ tự hợp lệ; test nên kiểm tra tính hợp lệ thay vì so sánh mảng cố định. Ở đây harness kiểm tra indegree constraints.
+- Với đồ thị lớn, dùng adjacency list.
+
+> Senior tip: Topo sort là nền tảng cho scheduling, build system, và dependency resolution trong microservices.`,
+  starter: "class Solution {\n    public int[] topoSort(int V, int[][] edges) {\n        \n    }\n}",
+  tests: `
+public class Main {
+ static int passed=0,total=0;
+ static boolean valid(int V,int[][] edges,int[] res){
+   if(res.length==0){
+     // cycle expected? caller decides; here just return true for empty handling separately
+     return true;
+   }
+   if(res.length!=V) return false;
+   int[] pos=new int[V];
+   for(int i=0;i<V;i++) pos[res[i]]=i;
+   for(int[] e:edges) if(pos[e[0]]>=pos[e[1]]) return false;
+   // check permutation
+   boolean[] seen=new boolean[V];
+   for(int x:res){ if(x<0||x>=V||seen[x]) return false; seen[x]=true; }
+   for(boolean b:seen) if(!b) return false;
+   return true;
+ }
+ public static void main(String[] args){
+   int[][] e1={{0,1},{1,2},{2,3}};
+   int[] r1=new Solution().topoSort(4,e1);
+   total++; if(r1.length==4 && valid(4,e1,r1)){passed++;System.out.println("PASS chain");} else System.out.println("FAIL chain");
+   int[][] e2={{0,1},{1,2},{2,0},{3,3}};
+   int[] r2=new Solution().topoSort(4,e2);
+   total++; if(r2.length==0){passed++;System.out.println("PASS cycle");} else System.out.println("FAIL cycle");
+   int[] r3=new Solution().topoSort(1,new int[][]{});
+   total++; if(r3.length==1 && r3[0]==0){passed++;System.out.println("PASS single");} else System.out.println("FAIL single");
+   int[][] e4={{0,1},{0,2},{1,3},{2,3}};
+   int[] r4=new Solution().topoSort(4,e4);
+   total++; if(r4.length==4 && valid(4,e4,r4)){passed++;System.out.println("PASS diamond");} else System.out.println("FAIL diamond");
+   System.out.println("RESULT "+passed+"/"+total);
+ }
+}`,
+  complexity: 'Time O(V + E), Space O(V + E)',
+  follow: ['DFS topo sort khác Kahn ở điểm nào?', 'Làm sao trả về tất cả thứ tự topo?']
+}
+);
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-110',
+  title: 'Course Schedule II',
+  difficulty: 'medium',
+  pattern: 'Topological Sort',
+  tags: ['graph', 'topological-sort', 'bytebytego'],
+  prompt: `Có {{numCourses}} khóa học đánh số 0..numCourses-1. prerequisites[i] = [a, b] nghĩa là để học a phải hoàn thành b. Trả về một thứ tự học hợp lệ; nếu không thể (có chu trình) trả về mảng rỗng.
+
+### Ví dụ
+~~~text
+Input: numCourses = 2, prerequisites = [[1,0]]
+Output: [0,1]
+
+Input: numCourses = 2, prerequisites = [[1,0],[0,1]]
+Output: []
+~~~
+
+### Ràng buộc
+- {{1 <= numCourses <= 2000}}
+- {{0 <= prerequisites.length <= 5000}}`,
+  hints: [
+    'Đây là topo sort trên đồ thị prerequisite -> course.',
+    'Kahn: bắt đầu từ các khóa không có prerequisite.',
+    'Nếu không đủ khóa học thì có chu trình.'
+  ],
+  solution: `### Ý tưởng
+Xây đồ thị b -> a (b là prerequisite của a). Kahn: enqueue các khóa indegree 0. Kết quả là thứ tự học. Nếu thiếu khóa thì có cycle.
+
+~~~java
+class Solution {
+    public int[] findOrder(int numCourses, int[][] prerequisites) {
+        List<List<Integer>> adj = new ArrayList<>();
+        int[] indeg = new int[numCourses];
+        for (int i = 0; i < numCourses; i++) adj.add(new ArrayList<>());
+        for (int[] p : prerequisites) {
+            adj.get(p[1]).add(p[0]);
+            indeg[p[0]]++;
+        }
+        Queue<Integer> q = new LinkedList<>();
+        for (int i = 0; i < numCourses; i++) if (indeg[i] == 0) q.add(i);
+        int[] res = new int[numCourses];
+        int idx = 0;
+        while (!q.isEmpty()) {
+            int u = q.poll();
+            res[idx++] = u;
+            for (int v : adj.get(u)) if (--indeg[v] == 0) q.add(v);
+        }
+        return idx == numCourses ? res : new int[0];
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Có thể dùng DFS + stack finish time.
+- Nhiều thứ tự hợp lệ; harness kiểm tra tính hợp lệ.
+
+> Senior tip: Course schedule là ví dụ kinh điển của topo sort trong hệ thống build/deploy.`,
+  starter: "class Solution {\n    public int[] findOrder(int numCourses, int[][] prerequisites) {\n        \n    }\n}",
+  tests: `
+public class Main {
+ static int passed=0,total=0;
+ static boolean valid(int n,int[][] prereq,int[] res){
+   if(res.length==0) return false;
+   if(res.length!=n) return false;
+   int[] pos=new int[n];
+   for(int i=0;i<n;i++) pos[res[i]]=i;
+   for(int[] p:prereq) if(pos[p[0]]<=pos[p[1]]) return false;
+   boolean[] seen=new boolean[n];
+   for(int x:res){ if(x<0||x>=n||seen[x]) return false; seen[x]=true;}
+   for(boolean b:seen) if(!b) return false;
+   return true;
+ }
+ public static void main(String[] args){
+   int[][] p1={{1,0}};
+   int[] r1=new Solution().findOrder(2,p1);
+   total++; if(valid(2,p1,r1)){passed++;System.out.println("PASS example");} else System.out.println("FAIL example");
+   int[][] p2={{1,0},{0,1}};
+   int[] r2=new Solution().findOrder(2,p2);
+   total++; if(r2.length==0){passed++;System.out.println("PASS cycle");} else System.out.println("FAIL cycle");
+   int[] r3=new Solution().findOrder(1,new int[][]{});
+   total++; if(r3.length==1 && r3[0]==0){passed++;System.out.println("PASS single");} else System.out.println("FAIL single");
+   int[][] p4={{1,0},{2,0},{3,1},{3,2}};
+   int[] r4=new Solution().findOrder(4,p4);
+   total++; if(valid(4,p4,r4)){passed++;System.out.println("PASS diamond");} else System.out.println("FAIL diamond");
+   System.out.println("RESULT "+passed+"/"+total);
+ }
+}`,
+  complexity: 'Time O(V + E), Space O(V + E)',
+  follow: ['Nếu có nhiều thứ tự hợp lệ, trả về thứ tự nào?']
+}
+);
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-111',
+  title: 'Alien Dictionary',
+  difficulty: 'hard',
+  pattern: 'Topological Sort',
+  tags: ['graph', 'topological-sort', 'string', 'bytebytego'],
+  prompt: `Cho danh sách {{words}} được sắp xếp theo thứ tự từ điển của một ngôn ngữ ngoài hành tinh. Suy ra thứ tự các ký tự. Trả về chuỗi chứa các ký tự theo thứ tự topo; nếu có nhiều đáp án trả về bất kỳ; nếu dữ liệu không hợp lệ (mâu thuẫn hoặc prefix sai) trả về {{""}}.
+
+### Ví dụ
+~~~text
+Input: words = ["wrt","wrf","er","ett","rftt"]
+Output: "wertf"
+
+Input: words = ["z","x","z"]
+Output: ""
+~~~
+
+### Ràng buộc
+- {{1 <= words.length <= 100}}
+- {{1 <= words[i].length <= 100}}
+- Chỉ gồm chữ cái thường a-z`,
+  hints: [
+    'So sánh từng cặp từ liên tiếp để suy ra quan hệ thứ tự giữa hai ký tự đầu tiên khác nhau.',
+    'Xây đồ thị ký tự và topo sort.',
+    'Trường hợp prefix: nếu từ dài hơn đứng trước từ ngắn hơn có cùng prefix thì invalid.'
+  ],
+  solution: `### Ý tưởng
+So sánh các từ liên tiếp, tìm ký tự đầu tiên khác nhau để tạo cạnh. Sau đó Kahn topo sort trên 26 ký tự xuất hiện. Nếu topo sort không đủ số ký tự xuất hiện hoặc phát hiện cycle/prefix invalid thì trả "".
+
+~~~java
+class Solution {
+    public String alienOrder(String[] words) {
+        Map<Character, Set<Character>> adj = new HashMap<>();
+        Map<Character, Integer> indeg = new HashMap<>();
+        for (String w : words) for (char c : w.toCharArray()) { adj.putIfAbsent(c, new HashSet<>()); indeg.putIfAbsent(c, 0); }
+        for (int i = 0; i + 1 < words.length; i++) {
+            String a = words[i], b = words[i + 1];
+            int min = Math.min(a.length(), b.length());
+            boolean found = false;
+            for (int j = 0; j < min; j++) {
+                char ca = a.charAt(j), cb = b.charAt(j);
+                if (ca != cb) {
+                    if (adj.get(ca).add(cb)) indeg.put(cb, indeg.get(cb) + 1);
+                    found = true; break;
+                }
+            }
+            if (!found && a.length() > b.length()) return "";
+        }
+        Queue<Character> q = new LinkedList<>();
+        for (char c : indeg.keySet()) if (indeg.get(c) == 0) q.add(c);
+        StringBuilder sb = new StringBuilder();
+        while (!q.isEmpty()) {
+            char u = q.poll();
+            sb.append(u);
+            for (char v : adj.get(u)) { int nv = indeg.get(v) - 1; indeg.put(v, nv); if (nv == 0) q.add(v); }
+        }
+        return sb.length() == indeg.size() ? sb.toString() : "";
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Prefix invalid là bẫy thường gặp.
+- Nếu chỉ có một từ, mọi ký tự xuất hiện đều hợp lệ theo thứ tự bất kỳ.
+- Có thể trả bất kỳ thứ tự hợp lệ nào.
+
+> Senior tip: Alien dictionary là bài kiểm tra khả năng kết hợp string processing với graph algorithm.`,
+  starter: "class Solution {\n    public String alienOrder(String[] words) {\n        \n    }\n}",
+  tests: `
+public class Main {
+ static int passed=0,total=0;
+ static boolean follows(String[] words,String order){
+   Map<Character,Integer> pos=new HashMap<>();
+   for(int i=0;i<order.length();i++) pos.put(order.charAt(i),i);
+   for(int i=0;i+1<words.length;i++){
+     String a=words[i],b=words[i+1];
+     int min=Math.min(a.length(),b.length());
+     int j=0;
+     while(j<min && a.charAt(j)==b.charAt(j)) j++;
+     if(j==min){ if(a.length()>b.length()) return false; }
+     else {
+       char ca=a.charAt(j), cb=b.charAt(j);
+       if(!pos.containsKey(ca) || !pos.containsKey(cb)) return false;
+       if(pos.get(ca)>=pos.get(cb)) return false;
+     }
+   }
+   // all chars in words must appear in order
+   Set<Character> chars=new HashSet<>();
+   for(String w:words) for(char c:w.toCharArray()) chars.add(c);
+   for(char c:chars) if(!pos.containsKey(c)) return false;
+   return true;
+ }
+ public static void main(String[] args){
+   String[] w1={"wrt","wrf","er","ett","rftt"};
+   String r1=new Solution().alienOrder(w1);
+   total++; if(!r1.isEmpty() && follows(w1,r1)){passed++;System.out.println("PASS example");} else System.out.println("FAIL example: "+r1);
+   String[] w2={"z","x","z"};
+   total++; if(new Solution().alienOrder(w2).isEmpty()){passed++;System.out.println("PASS cycle");} else System.out.println("FAIL cycle");
+   String[] w3={"abc","ab"};
+   total++; if(new Solution().alienOrder(w3).isEmpty()){passed++;System.out.println("PASS prefix");} else System.out.println("FAIL prefix");
+   String[] w4={"z"};
+   String r4=new Solution().alienOrder(w4);
+   total++; if(r4.length()==1 && r4.equals("z")){passed++;System.out.println("PASS single");} else System.out.println("FAIL single: "+r4);
+   System.out.println("RESULT "+passed+"/"+total);
+ }
+}`,
+  complexity: 'Time O(V + E) over characters, Space O(V + E)',
+  follow: ['Nếu có nhiều ký tự không xuất hiện trong quan hệ thì đặt ở đâu?']
+}
+);
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-112',
+  title: 'Sequence Reconstruction',
+  difficulty: 'medium',
+  pattern: 'Topological Sort',
+  tags: ['graph', 'topological-sort', 'bytebytego'],
+  prompt: `Cho mảng {{org}} (một hoán vị của 1..n) và danh sách {{seqs}}. Kiểm tra xem {{org}} có phải là **thứ tự topo duy nhất** có thể suy ra từ {{seqs}} hay không (mỗi seq cho quan hệ thứ tự liên tiếp).
+
+### Ví dụ
+~~~text
+Input: org = [1,2,3], seqs = [[1,2],[1,3]]
+Output: false
+
+Input: org = [1,2,3], seqs = [[1,2],[2,3]]
+Output: true
+~~~
+
+### Ràng buộc
+- {{1 <= n <= 10^4}}
+- {{seqs[i].length >= 1}}`,
+  hints: [
+    'Xây đồ thị từ các cặp liên tiếp trong mỗi seq.',
+    'Unique topo order nghĩa là tại mỗi bước chỉ có đúng một đỉnh indegree 0.',
+    'Cũng phải kiểm tra org chứa đúng các phần tử và seqs không mâu thuẫn.'
+  ],
+  solution: `### Ý tưởng
+Xây đồ thị từ các cặp liên tiếp trong seqs. Kahn: tại mỗi bước nếu queue có nhiều hơn một phần tử thì thứ tự không duy nhất. So sánh kết quả với org.
+
+~~~java
+class Solution {
+    public boolean sequenceReconstruction(int[] org, int[][] seqs) {
+        int n = org.length;
+        Set<Integer> set = new HashSet<>();
+        for (int x : org) set.add(x);
+        List<Set<Integer>> adj = new ArrayList<>();
+        for (int i = 0; i <= n; i++) adj.add(new HashSet<>());
+        int[] indeg = new int[n + 1];
+        boolean[] seen = new boolean[n + 1];
+        for (int[] seq : seqs) {
+            for (int x : seq) {
+                if (x < 1 || x > n || !set.contains(x)) return false;
+                seen[x] = true;
+            }
+            for (int i = 0; i + 1 < seq.length; i++) {
+                int u = seq[i], v = seq[i + 1];
+                if (u == v) continue;
+                if (adj.get(u).add(v)) indeg[v]++;
+            }
+        }
+        for (int i = 1; i <= n; i++) if (!seen[i]) return false;
+        Queue<Integer> q = new LinkedList<>();
+        for (int i = 1; i <= n; i++) if (indeg[i] == 0) q.add(i);
+        int idx = 0;
+        while (!q.isEmpty()) {
+            if (q.size() > 1) return false;
+            int u = q.poll();
+            if (idx >= n || org[idx] != u) return false;
+            idx++;
+            for (int v : adj.get(u)) if (--indeg[v] == 0) q.add(v);
+        }
+        return idx == n;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Unique topo order là điều kiện quan trọng trong reconstruction.
+- Cần validate seqs chứa đúng tập phần tử của org.
+
+> Senior tip: Bài này thường xuất hiện trong phỏng vấn về dependency ordering với ràng buộc duy nhất.`,
+  starter: "class Solution {\n    public boolean sequenceReconstruction(int[] org, int[][] seqs) {\n        \n    }\n}",
+  tests: `
+public class Main {
+ static int passed=0,total=0;
+ public static void main(String[] args){
+   total++; try{ if(new Solution().sequenceReconstruction(new int[]{1,2,3}, new int[][]{{1,2},{2,3}})){passed++;System.out.println("PASS basic");} else System.out.println("FAIL basic");} catch(Throwable t){System.out.println("FAIL basic: threw "+t);}
+   total++; try{ if(!new Solution().sequenceReconstruction(new int[]{1,2,3}, new int[][]{{1,2},{1,3}})){passed++;System.out.println("PASS notunique");} else System.out.println("FAIL notunique");} catch(Throwable t){System.out.println("FAIL notunique: threw "+t);}
+   total++; try{ if(!new Solution().sequenceReconstruction(new int[]{1,2,3}, new int[][]{{1,2},{2,3},{3,1}})){passed++;System.out.println("PASS cycle");} else System.out.println("FAIL cycle");} catch(Throwable t){System.out.println("FAIL cycle: threw "+t);}
+   total++; try{ if(!new Solution().sequenceReconstruction(new int[]{1,2,3}, new int[][]{{1,2}})){passed++;System.out.println("PASS missing");} else System.out.println("FAIL missing");} catch(Throwable t){System.out.println("FAIL missing: threw "+t);}
+   total++; try{ if(new Solution().sequenceReconstruction(new int[]{1}, new int[][]{{1}})){passed++;System.out.println("PASS single");} else System.out.println("FAIL single");} catch(Throwable t){System.out.println("FAIL single: threw "+t);}
+   System.out.println("RESULT "+passed+"/"+total);
+ }
+}`,
+  complexity: 'Time O(n + E), Space O(n + E)',
+  follow: ['Nếu seqs chứa phần tử ngoài org thì xử lý thế nào?']
+}
+);
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-113',
+  title: 'Implement Trie (Prefix Tree)',
+  difficulty: 'medium',
+  pattern: 'Tries',
+  tags: ['trie', 'design', 'string', 'bytebytego'],
+  prompt: `Thiết kế cấu trúc dữ liệu Trie hỗ trợ:
+- {{insert(word)}}: chèn từ.
+- {{search(word)}}: trả về true nếu từ đã được chèn.
+- {{startsWith(prefix)}}: trả về true nếu có từ nào đó bắt đầu bằng prefix.
+
+### Ví dụ
+~~~text
+Trie trie = new Trie();
+trie.insert("apple");
+trie.search("apple");   // true
+trie.search("app");     // false
+trie.startsWith("app"); // true
+trie.insert("app");
+trie.search("app");     // true
+~~~
+
+### Ràng buộc
+- {{1 <= word.length, prefix.length <= 2000}}
+- Chỉ gồm chữ cái thường a-z`,
+  hints: [
+    'Mỗi node có mảng con của kích thước 26 và cờ isEnd.',
+    'insert: duyệt/tạo node theo từng ký tự, đánh dấu isEnd ở cuối.',
+    'search khác startsWith ở chỗ search yêu cầu isEnd = true.'
+  ],
+  solution: `### Ý tưởng
+Trie node chứa mảng con 26 và cờ kết thúc. insert tạo node theo ký tự; search yêu cầu node cuối tồn tại và isEnd; startsWith chỉ yêu cầu node cuối tồn tại.
+
+~~~java
+class Trie {
+    private static class Node {
+        Trie.Node[] ch = new Trie.Node[26];
+        boolean end;
+    }
+    private final Node root = new Node();
+
+    public void insert(String word) {
+        Node cur = root;
+        for (char c : word.toCharArray()) {
+            int i = c - 'a';
+            if (cur.ch[i] == null) cur.ch[i] = new Node();
+            cur = cur.ch[i];
+        }
+        cur.end = true;
+    }
+
+    public boolean search(String word) {
+        Node cur = find(word);
+        return cur != null && cur.end;
+    }
+
+    public boolean startsWith(String prefix) {
+        return find(prefix) != null;
+    }
+
+    private Node find(String s) {
+        Node cur = root;
+        for (char c : s.toCharArray()) {
+            int i = c - 'a';
+            if (cur.ch[i] == null) return null;
+            cur = cur.ch[i];
+        }
+        return cur;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Có thể dùng HashMap<Character, Node> để hỗ trợ unicode.
+- Delete word: cần xóa node nếu không còn con và không phải end của từ khác.
+- Space: tổng độ dài các từ.
+
+> Senior tip: Trie là nền tảng cho autocomplete, spell check và routing table.`,
+  starter: "class Trie {\n    public Trie() {\n        \n    }\n    public void insert(String word) {\n        \n    }\n    public boolean search(String word) {\n        \n    }\n    public boolean startsWith(String prefix) {\n        \n    }\n}",
+  tests: `
+public class Main {
+ static int passed=0,total=0;
+ public static void main(String[] args){
+   Trie t=new Trie();
+   t.insert("apple");
+   total++; if(t.search("apple")){passed++;System.out.println("PASS search1");} else System.out.println("FAIL search1");
+   total++; if(!t.search("app")){passed++;System.out.println("PASS search2");} else System.out.println("FAIL search2");
+   total++; if(t.startsWith("app")){passed++;System.out.println("PASS prefix1");} else System.out.println("FAIL prefix1");
+   t.insert("app");
+   total++; if(t.search("app")){passed++;System.out.println("PASS search3");} else System.out.println("FAIL search3");
+   total++; if(!t.search("appl")){passed++;System.out.println("PASS search4");} else System.out.println("FAIL search4");
+   System.out.println("RESULT "+passed+"/"+total);
+ }
+}`,
+  complexity: 'Time O(L) per operation, Space O(total chars)',
+  follow: ['Làm sao implement delete trong Trie?', 'So sánh Trie với HashMap prefix.']
+}
+);
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-114',
+  title: 'Word Search II',
+  difficulty: 'hard',
+  pattern: 'Tries',
+  tags: ['backtracking', 'trie', 'matrix', 'bytebytego'],
+  prompt: `Cho bảng chữ cái {{board}} kích thước {{m x n}} và danh sách {{words}}. Tìm tất cả từ trong {{words}} có thể được tạo thành bằng cách đi trên bảng theo 4 hướng, mỗi ô chỉ dùng một lần. Trả về danh sách các từ tìm được (không trùng).
+
+### Ví dụ
+~~~text
+Input: board = [["o","a","a","n"],["e","t","a","e"],["i","h","k","r"],["i","f","l","v"]], words = ["oath","pea","eat","rain"]
+Output: ["eat","oath"]
+~~~
+
+### Ràng buộc
+- {{1 <= m, n <= 12}}
+- {{1 <= words.length <= 3 * 10^4}}
+- {{1 <= words[i].length <= 10}}`,
+  hints: [
+    'Dùng Trie để kiểm tra prefix trong khi DFS.',
+    'Khi tìm được một từ, xóa nó khỏi Trie để tránh trả trùng.',
+    'Pruning: nếu node Trie không còn con thì cắt nhánh DFS.'
+  ],
+  solution: `### Ý tưởng
+Xây Trie từ words. DFS từ mỗi ô, theo Trie. Khi gặp node end, thêm từ vào kết quả và xóa end. Loại bỏ nhánh Trie rỗng để prune.
+
+~~~java
+class Solution {
+    static class TrieNode {
+        TrieNode[] ch = new TrieNode[26];
+        String word;
+    }
+
+    public List<String> findWords(char[][] board, String[] words) {
+        TrieNode root = new TrieNode();
+        for (String w : words) {
+            TrieNode cur = root;
+            for (char c : w.toCharArray()) {
+                int i = c - 'a';
+                if (cur.ch[i] == null) cur.ch[i] = new TrieNode();
+                cur = cur.ch[i];
+            }
+            cur.word = w;
+        }
+        List<String> res = new ArrayList<>();
+        for (int i = 0; i < board.length; i++)
+            for (int j = 0; j < board[0].length; j++)
+                dfs(board, i, j, root, res);
+        return res;
+    }
+
+    private void dfs(char[][] b, int r, int c, TrieNode node, List<String> res) {
+        if (r < 0 || r >= b.length || c < 0 || c >= b[0].length) return;
+        char ch = b[r][c];
+        if (ch == '#' || node.ch[ch - 'a'] == null) return;
+        TrieNode next = node.ch[ch - 'a'];
+        if (next.word != null) { res.add(next.word); next.word = null; }
+        b[r][c] = '#';
+        dfs(b, r + 1, c, next, res);
+        dfs(b, r - 1, c, next, res);
+        dfs(b, r, c + 1, next, res);
+        dfs(b, r, c - 1, next, res);
+        b[r][c] = ch;
+        // prune
+        boolean empty = true;
+        for (TrieNode t : next.ch) if (t != null) { empty = false; break; }
+        if (empty && next.word == null) node.ch[ch - 'a'] = null;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Nếu không prune, có thể TLE với board lớn.
+- Kết quả có thể sort để deterministic; harness sort.
+
+> Senior tip: Word Search II kết hợp Trie + backtracking, là bài khó điển hình của phỏng vấn senior.`,
+  starter: "class Solution {\n    public List<String> findWords(char[][] board, String[] words) {\n        \n    }\n}",
+  tests: `
+public class Main {
+ static int passed=0,total=0;
+ static List<String> sort(List<String> l){ List<String> r=new ArrayList<>(l); Collections.sort(r); return r;}
+ public static void main(String[] args){
+   char[][] b1={{'o','a','a','n'},{'e','t','a','e'},{'i','h','k','r'},{'i','f','l','v'}};
+   String[] w1={"oath","pea","eat","rain"};
+   List<String> exp1=new ArrayList<>(Arrays.asList("eat","oath"));
+   List<String> r1=sort(new Solution().findWords(b1,w1));
+   total++; if(r1.equals(sort(exp1))){passed++;System.out.println("PASS example");} else System.out.println("FAIL example: "+r1);
+   char[][] b2={{'a','b'},{'c','d'}};
+   String[] w2={"ab","abcd"};
+   List<String> r2=sort(new Solution().findWords(b2,w2));
+   total++; if(r2.equals(sort(new ArrayList<>(Arrays.asList("ab"))))){passed++;System.out.println("PASS short");} else System.out.println("FAIL short: "+r2);
+   char[][] b3={{'a'}};
+   String[] w3={"a","a"};
+   List<String> r3=sort(new Solution().findWords(b3,w3));
+   total++; if(r3.equals(sort(new ArrayList<>(Arrays.asList("a"))))){passed++;System.out.println("PASS dup");} else System.out.println("FAIL dup: "+r3);
+   char[][] b4={{'x'}};
+   String[] w4={"y"};
+   List<String> r4=new Solution().findWords(b4,w4);
+   total++; if(r4.isEmpty()){passed++;System.out.println("PASS none");} else System.out.println("FAIL none: "+r4);
+   System.out.println("RESULT "+passed+"/"+total);
+ }
+}`,
+  complexity: 'Time O(m*n*4^L) with pruning, Space O(total chars)',
+  follow: ['Tại sao cần xóa từ khỏi Trie sau khi tìm thấy?']
+}
+);
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-115',
+  title: 'Replace Words',
+  difficulty: 'medium',
+  pattern: 'Tries',
+  tags: ['trie', 'string', 'bytebytego'],
+  prompt: `Trong từ điển {{dictionary}} có các gốc từ. Với câu {{sentence}} (các từ cách nhau bởi khoảng trắng), thay mỗi từ bằng **gốc từ ngắn nhất** là tiền tố của nó; nếu không có gốc từ phù hợp thì giữ nguyên từ.
+
+### Ví dụ
+~~~text
+Input: dictionary = ["cat","bat","rat"], sentence = "the cattle was rattled by the battery"
+Output: "the cat was rat by the bat"
+~~~
+
+### Ràng buộc
+- {{1 <= dictionary.length <= 1000}}
+- {{1 <= dictionary[i].length <= 100}}
+- {{1 <= sentence.length <= 10^6}}`,
+  hints: [
+    'Dùng Trie chứa các gốc từ.',
+    'Với mỗi từ, đi theo Trie cho đến khi gặp node end -> gốc ngắn nhất.',
+    'Nếu đi hết mà không gặp end thì giữ nguyên từ.'
+  ],
+  solution: `### Ý tưởng
+Xây Trie từ dictionary. Với mỗi từ trong sentence, duyệt Trie theo ký tự; gặp node end đầu tiên thì đó là gốc ngắn nhất. Nếu không gặp, giữ từ gốc.
+
+~~~java
+class Solution {
+    static class Node {
+        Node[] ch = new Node[26];
+        boolean end;
+    }
+
+    public String replaceWords(List<String> dictionary, String sentence) {
+        Node root = new Node();
+        for (String w : dictionary) {
+            Node cur = root;
+            for (char c : w.toCharArray()) {
+                int i = c - 'a';
+                if (cur.ch[i] == null) cur.ch[i] = new Node();
+                cur = cur.ch[i];
+            }
+            cur.end = true;
+        }
+        String[] words = sentence.split(" ", -1);
+        StringBuilder sb = new StringBuilder();
+        for (int wi = 0; wi < words.length; wi++) {
+            if (wi > 0) sb.append(' ');
+            String w = words[wi];
+            Node cur = root;
+            int len = 0;
+            boolean found = false;
+            for (int j = 0; j < w.length(); j++) {
+                int i = w.charAt(j) - 'a';
+                if (i < 0 || i >= 26 || cur.ch[i] == null) break;
+                cur = cur.ch[i];
+                len = j + 1;
+                if (cur.end) { found = true; break; }
+            }
+            sb.append(found ? w.substring(0, len) : w);
+        }
+        return sb.toString();
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Cần xử lý ký tự không phải a-z nếu đề cho phép; ở đây chỉ a-z.
+- Từ điển có thể chứa từ trùng.
+
+> Senior tip: Replace words minh họa việc dùng Trie để tìm prefix ngắn nhất hiệu quả.`,
+  starter: "class Solution {\n    public String replaceWords(List<String> dictionary, String sentence) {\n        \n    }\n}",
+  tests: `
+public class Main {
+ static int passed=0,total=0;
+ public static void main(String[] args){
+   List<String> d1=Arrays.asList("cat","bat","rat");
+   total++; if(new Solution().replaceWords(d1,"the cattle was rattled by the battery").equals("the cat was rat by the bat")){passed++;System.out.println("PASS example");} else System.out.println("FAIL example: "+new Solution().replaceWords(d1,"the cattle was rattled by the battery"));
+   List<String> d2=Arrays.asList("a","aa","aaa");
+   total++; if(new Solution().replaceWords(d2,"a aa aaa aaaa").equals("a a a a")){passed++;System.out.println("PASS shortest");} else System.out.println("FAIL shortest");
+   List<String> d3=Arrays.asList("xyz");
+   total++; if(new Solution().replaceWords(d3,"abc def").equals("abc def")){passed++;System.out.println("PASS none");} else System.out.println("FAIL none");
+   List<String> d4=Arrays.asList();
+   total++; if(new Solution().replaceWords(d4,"hello world").equals("hello world")){passed++;System.out.println("PASS emptydict");} else System.out.println("FAIL emptydict");
+   System.out.println("RESULT "+passed+"/"+total);
+ }
+}`,
+  complexity: 'Time O(total chars), Space O(total chars)',
+  follow: ['Nếu dictionary có từ trùng thì xử lý thế nào?']
+}
+);
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-116',
+  title: 'Search Suggestions System',
+  difficulty: 'medium',
+  pattern: 'Tries',
+  tags: ['trie', 'binary-search', 'string', 'bytebytego'],
+  prompt: `Cho mảng {{products}} và chuỗi {{searchWord}}. Sau mỗi ký tự gõ, trả về tối đa 3 sản phẩm có prefix khớp, sắp xếp từ điển. Kết quả là danh sách các danh sách (mỗi bước một danh sách).
+
+### Ví dụ
+~~~text
+Input: products = ["mobile","mouse","moneypot","monitor","mousepad"], searchWord = "mouse"
+Output: [["mobile","moneypot","monitor"],["mobile","moneypot","monitor"],["mouse","mousepad"],["mouse","mousepad"],["mouse","mousepad"]]
+~~~
+
+### Ràng buộc
+- {{1 <= products.length <= 1000}}
+- {{1 <= products[i].length <= 3000}}`,
+  hints: [
+    'Sort products rồi dùng binary search để tìm prefix.',
+    'Hoặc dùng Trie, mỗi node lưu danh sách (tối đa 3) các từ.',
+    'Trie cho phép trả kết quả theo prefix tăng dần.'
+  ],
+  solution: `### Ý tưởng
+Sort products. Với mỗi prefix của searchWord, binary search lower_bound để tìm vị trí bắt đầu; lấy tối đa 3 từ liên tiếp có cùng prefix. Đơn giản và đủ nhanh.
+
+~~~java
+class Solution {
+    public List<List<String>> suggestedProducts(String[] products, String searchWord) {
+        Arrays.sort(products);
+        List<List<String>> res = new ArrayList<>();
+        String prefix = "";
+        int start = 0;
+        for (char c : searchWord.toCharArray()) {
+            prefix += c;
+            start = lowerBound(products, prefix, start);
+            List<String> cur = new ArrayList<>();
+            for (int i = start; i < products.length && i < start + 3; i++) {
+                if (products[i].startsWith(prefix)) cur.add(products[i]);
+                else break;
+            }
+            res.add(cur);
+        }
+        return res;
+    }
+
+    private int lowerBound(String[] a, String prefix, int from) {
+        int lo = from, hi = a.length;
+        while (lo < hi) {
+            int mid = (lo + hi) >>> 1;
+            if (a[mid].compareTo(prefix) < 0) lo = mid + 1;
+            else hi = mid;
+        }
+        return lo;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Nếu dùng Trie, mỗi node lưu top 3 để trả O(L).
+- Binary search approach O(n log n + L log n).
+
+> Senior tip: Search suggestions là bài kiểm tra khả năng cân bằng giữa preprocessing và query.`,
+  starter: "class Solution {\n    public List<List<String>> suggestedProducts(String[] products, String searchWord) {\n        \n    }\n}",
+  tests: `
+public class Main {
+ static int passed=0,total=0;
+ static List<List<String>> L(String[]... rows){ List<List<String>> r=new ArrayList<>(); for(String[] row:rows){ List<String> c=new ArrayList<>(Arrays.asList(row)); r.add(c);} return r;}
+ public static void main(String[] args){
+   String[] p1={"mobile","mouse","moneypot","monitor","mousepad"};
+   List<List<String>> exp1=L(new String[]{"mobile","moneypot","monitor"},new String[]{"mobile","moneypot","monitor"},new String[]{"mouse","mousepad"},new String[]{"mouse","mousepad"},new String[]{"mouse","mousepad"});
+   List<List<String>> r1=new Solution().suggestedProducts(p1,"mouse");
+   total++; if(r1.equals(exp1)){passed++;System.out.println("PASS example");} else System.out.println("FAIL example: "+r1);
+   String[] p2={"havana"};
+   List<List<String>> r2=new Solution().suggestedProducts(p2,"havana");
+   total++; if(r2.size()==6 && r2.get(5).equals(Arrays.asList("havana"))){passed++;System.out.println("PASS full");} else System.out.println("FAIL full: "+r2);
+   String[] p3={"abc"};
+   List<List<String>> r3=new Solution().suggestedProducts(p3,"z");
+   total++; if(r3.size()==1 && r3.get(0).isEmpty()){passed++;System.out.println("PASS none");} else System.out.println("FAIL none: "+r3);
+   String[] p4={"a","ab","abc"};
+   List<List<String>> r4=new Solution().suggestedProducts(p4,"ab");
+   total++; if(r4.get(0).equals(Arrays.asList("a","ab","abc")) && r4.get(1).equals(Arrays.asList("ab","abc"))){passed++;System.out.println("PASS prefix");} else System.out.println("FAIL prefix: "+r4);
+   System.out.println("RESULT "+passed+"/"+total);
+ }
+}`,
+  complexity: 'Time O(n log n + L log n), Space O(n)',
+  follow: ['Nếu products rất lớn, Trie có lợi thế gì?']
+}
+);
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-117',
+  title: 'Graph Valid Tree',
+  difficulty: 'medium',
+  pattern: 'Union Find',
+  tags: ['union-find', 'graph', 'bytebytego'],
+  prompt: `Cho {{n}} node (0..n-1) và danh sách cạnh {{edges}} vô hướng. Kiểm tra xem chúng có tạo thành một **cây** (connected và acyclic) hay không.
+
+### Ví dụ
+~~~text
+Input: n = 5, edges = [[0,1],[0,2],[0,3],[1,4]]
+Output: true
+
+Input: n = 5, edges = [[0,1],[1,2],[2,3],[1,3],[1,4]]
+Output: false
+~~~
+
+### Ràng buộc
+- {{1 <= n <= 2000}}
+- {{0 <= edges.length <= 5000}}`,
+  hints: [
+    'Cây với n node phải có đúng n-1 cạnh và liên thông.',
+    'Union-Find: nếu union hai node đã cùng component thì có cycle.',
+    'Sau xử lý, số component phải là 1.'
+  ],
+  solution: `### Ý tưởng
+Cây <=> n-1 cạnh, không cycle, liên thông. Union-Find: union từng cạnh; nếu find(u)==find(v) thì cycle. Cuối cùng kiểm tra số component == 1 (và edges.length == n-1).
+
+~~~java
+class Solution {
+    public boolean validTree(int n, int[][] edges) {
+        if (edges.length != n - 1) return false;
+        int[] parent = new int[n];
+        int[] rank = new int[n];
+        for (int i = 0; i < n; i++) parent[i] = i;
+        for (int[] e : edges) {
+            int ru = find(parent, e[0]), rv = find(parent, e[1]);
+            if (ru == rv) return false;
+            if (rank[ru] < rank[rv]) parent[ru] = rv;
+            else if (rank[ru] > rank[rv]) parent[rv] = ru;
+            else { parent[rv] = ru; rank[ru]++; }
+        }
+        return true;
+    }
+
+    private int find(int[] p, int x) {
+        while (p[x] != x) { p[x] = p[p[x]]; x = p[x]; }
+        return x;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Điều kiện n-1 cạnh + không cycle => liên thông tự động.
+- BFS/DFS cũng kiểm tra connected.
+
+> Senior tip: Union-Find là công cụ chuẩn cho dynamic connectivity và Kruskal.`,
+  starter: "class Solution {\n    public boolean validTree(int n, int[][] edges) {\n        \n    }\n}",
+  tests: `
+public class Main {
+ static int passed=0,total=0;
+ public static void main(String[] args){
+   total++; if(new Solution().validTree(5,new int[][]{{0,1},{0,2},{0,3},{1,4}})){passed++;System.out.println("PASS tree");} else System.out.println("FAIL tree");
+   total++; if(!new Solution().validTree(5,new int[][]{{0,1},{1,2},{2,3},{1,3},{1,4}})){passed++;System.out.println("PASS cycle");} else System.out.println("FAIL cycle");
+   total++; if(new Solution().validTree(1,new int[][]{})){passed++;System.out.println("PASS single");} else System.out.println("FAIL single");
+   total++; if(!new Solution().validTree(4,new int[][]{{0,1},{2,3}})){passed++;System.out.println("PASS disconnected");} else System.out.println("FAIL disconnected");
+   System.out.println("RESULT "+passed+"/"+total);
+ }
+}`,
+  complexity: 'Time O(n α(n)), Space O(n)',
+  follow: ['DFS kiểm tra connected khác Union-Find ở điểm nào?']
+}
+);
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-118',
+  title: 'Accounts Merge',
+  difficulty: 'medium',
+  pattern: 'Union Find',
+  tags: ['union-find', 'graph', 'string', 'bytebytego'],
+  prompt: `Cho danh sách {{accounts}}, mỗi account là [name, email1, email2, ...]. Hai account cùng tên và chia sẻ ít nhất một email thì thuộc cùng một người. Gộp các account của cùng một người, trả về danh sách account gộp: [name, email đã sort, ...].
+
+### Ví dụ
+~~~text
+Input: accounts = [["John","johnsmith@mail.com","john_newyork@mail.com"],["John","johnsmith@mail.com","john00@mail.com"],["Mary","mary@mail.com"],["John","johnnybravo@mail.com"]]
+Output: [["John","john00@mail.com","john_newyork@mail.com","johnsmith@mail.com"],["Mary","mary@mail.com"],["John","johnnybravo@mail.com"]]
+~~~
+
+### Ràng buộc
+- {{1 <= accounts.length <= 1000}}`,
+  hints: [
+    'Union-Find trên email; name lấy từ account đầu tiên.',
+    'Map email -> index account để union.',
+    'Sau đó gom email theo root, sort email.'
+  ],
+  solution: `### Ý tưởng
+Union-Find trên email: với mỗi account, union email đầu tiên với các email còn lại. Map email -> tên. Sau đó gom email theo root component, sort, prepend tên.
+
+~~~java
+class Solution {
+    public List<List<String>> accountsMerge(List<List<String>> accounts) {
+        Map<String, String> emailToName = new HashMap<>();
+        Map<String, String> parent = new HashMap<>();
+        for (List<String> acc : accounts) {
+            String name = acc.get(0);
+            for (int i = 1; i < acc.size(); i++) {
+                String email = acc.get(i);
+                emailToName.put(email, name);
+                parent.putIfAbsent(email, email);
+            }
+            for (int i = 2; i < acc.size(); i++) union(parent, acc.get(1), acc.get(i));
+        }
+        Map<String, TreeSet<String>> groups = new HashMap<>();
+        for (String email : parent.keySet()) {
+            String root = find(parent, email);
+            groups.computeIfAbsent(root, k -> new TreeSet<>()).add(email);
+        }
+        List<List<String>> res = new ArrayList<>();
+        for (Map.Entry<String, TreeSet<String>> e : groups.entrySet()) {
+            List<String> acc = new ArrayList<>();
+            acc.add(emailToName.get(e.getKey()));
+            acc.addAll(e.getValue());
+            res.add(acc);
+        }
+        return res;
+    }
+
+    private String find(Map<String, String> p, String x) {
+        while (!p.get(x).equals(x)) { p.put(x, p.get(p.get(x))); x = p.get(x); }
+        return x;
+    }
+    private void union(Map<String, String> p, String a, String b) {
+        String ra = find(p, a), rb = find(p, b);
+        if (!ra.equals(rb)) p.put(ra, rb);
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Cần sort email để output deterministic.
+- Nếu một email xuất hiện ở nhiều account cùng tên thì gộp.
+
+> Senior tip: Accounts merge là bài Union-Find kinh điển trên string keys.`,
+  starter: "class Solution {\n    public List<List<String>> accountsMerge(List<List<String>> accounts) {\n        \n    }\n}",
+  tests: `
+public class Main {
+ static int passed=0,total=0;
+ static List<List<String>> norm(List<List<String>> in){
+   List<List<String>> r=new ArrayList<>();
+   for(List<String> a:in){ List<String> c=new ArrayList<>(a); if(c.size()>1) Collections.sort(c.subList(1,c.size())); r.add(c);}
+   // sort outer by first email
+   r.sort((x,y)-> x.size()>1 && y.size()>1 ? x.get(1).compareTo(y.get(1)) : 0);
+   return r;
+ }
+ public static void main(String[] args){
+   List<List<String>> acc=new ArrayList<>();
+   acc.add(Arrays.asList("John","johnsmith@mail.com","john_newyork@mail.com"));
+   acc.add(Arrays.asList("John","johnsmith@mail.com","john00@mail.com"));
+   acc.add(Arrays.asList("Mary","mary@mail.com"));
+   acc.add(Arrays.asList("John","johnnybravo@mail.com"));
+   List<List<String>> res=new Solution().accountsMerge(acc);
+   total++; if(norm(res).size()==3){passed++;System.out.println("PASS count");} else System.out.println("FAIL count: "+res);
+   // check emails merged for John
+   total++; boolean ok=false;
+   for(List<String> a:res) if(a.get(0).equals("John") && a.contains("john00@mail.com") && a.contains("johnsmith@mail.com")) ok=true;
+   if(ok){passed++;System.out.println("PASS merge");} else System.out.println("FAIL merge: "+res);
+   List<List<String>> acc2=new ArrayList<>();
+   acc2.add(Arrays.asList("Gabe","g@mail.com"));
+   total++; if(new Solution().accountsMerge(acc2).size()==1){passed++;System.out.println("PASS single");} else System.out.println("FAIL single");
+   List<List<String>> acc3=new ArrayList<>();
+   acc3.add(Arrays.asList("A","a@mail.com"));
+   acc3.add(Arrays.asList("A","b@mail.com"));
+   total++; if(new Solution().accountsMerge(acc3).size()==2){passed++;System.out.println("PASS separate");} else System.out.println("FAIL separate");
+   System.out.println("RESULT "+passed+"/"+total);
+ }
+}`,
+  complexity: 'Time O(N log N), Space O(N)',
+  follow: ['Nếu cùng email xuất hiện với tên khác nhau thì sao?']
+}
+);
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-119',
+  title: 'Redundant Connection',
+  difficulty: 'medium',
+  pattern: 'Union Find',
+  tags: ['union-find', 'graph', 'bytebytego'],
+  prompt: `Cho đồ thị vô hướng gồm n node (1..n) được xây dựng bằng cách thêm các cạnh trong {{edges}} theo thứ tự. Có đúng một cạnh thừa tạo chu trình. Tìm cạnh đó (cạnh xuất hiện sau cùng trong edges nếu có nhiều).
+
+### Ví dụ
+~~~text
+Input: edges = [[1,2],[1,3],[2,3]]
+Output: [2,3]
+
+Input: edges = [[1,2],[2,3],[3,4],[1,4],[1,5]]
+Output: [1,4]
+~~~
+
+### Ràng buộc
+- {{3 <= n <= 1000}}
+- {{edges.length == n}}`,
+  hints: [
+    'Union-Find: duyệt cạnh theo thứ tự; nếu hai đầu đã cùng component thì cạnh này là thừa.',
+    'Cạnh đầu tiên tạo cycle trong quá trình union là đáp án.',
+    'Vì chỉ có một cycle, trả ngay khi phát hiện.'
+  ],
+  solution: `### Ý tưởng
+Duyệt edges theo thứ tự, union hai đầu. Nếu find(u)==find(v) thì cạnh này tạo chu trình -> redundant. Trả cạnh đó.
+
+~~~java
+class Solution {
+    public int[] findRedundantConnection(int[][] edges) {
+        int n = edges.length;
+        int[] parent = new int[n + 1];
+        for (int i = 0; i <= n; i++) parent[i] = i;
+        for (int[] e : edges) {
+            int ru = find(parent, e[0]), rv = find(parent, e[1]);
+            if (ru == rv) return e;
+            parent[ru] = rv;
+        }
+        return new int[0];
+    }
+
+    private int find(int[] p, int x) {
+        while (p[x] != x) { p[x] = p[p[x]]; x = p[x]; }
+        return x;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Nếu có nhiều cạnh thừa, cần trả cạnh xuất hiện cuối; ở đây chỉ một.
+- Path compression + union by rank để tối ưu.
+
+> Senior tip: Redundant connection là bài Union-Find đơn giản nhưng hay dùng để kiểm tra tư duy graph.`,
+  starter: "class Solution {\n    public int[] findRedundantConnection(int[][] edges) {\n        \n    }\n}",
+  tests: `
+public class Main {
+ static int passed=0,total=0;
+ public static void main(String[] args){
+   int[] r1=new Solution().findRedundantConnection(new int[][]{{1,2},{1,3},{2,3}});
+   total++; if(r1.length==2 && r1[0]==2 && r1[1]==3){passed++;System.out.println("PASS basic");} else System.out.println("FAIL basic: "+Arrays.toString(r1));
+   int[] r2=new Solution().findRedundantConnection(new int[][]{{1,2},{2,3},{3,4},{1,4},{1,5}});
+   total++; if(r2.length==2 && r2[0]==1 && r2[1]==4){passed++;System.out.println("PASS example");} else System.out.println("FAIL example: "+Arrays.toString(r2));
+   int[] r3=new Solution().findRedundantConnection(new int[][]{{1,2},{2,3},{1,3}});
+   total++; if(r3[0]==1 && r3[1]==3){passed++;System.out.println("PASS last");} else System.out.println("FAIL last: "+Arrays.toString(r3));
+   int[] r4=new Solution().findRedundantConnection(new int[][]{{1,2},{2,3},{3,4},{4,1}});
+   total++; if(r4.length==2){passed++;System.out.println("PASS cycle4");} else System.out.println("FAIL cycle4: "+Arrays.toString(r4));
+   System.out.println("RESULT "+passed+"/"+total);
+ }
+}`,
+  complexity: 'Time O(n α(n)), Space O(n)',
+  follow: ['Nếu có nhiều cạnh thừa, làm sao trả cạnh cuối cùng?']
+}
+);
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-120',
+  title: 'Single Number II',
+  difficulty: 'medium',
+  pattern: 'Bit Manipulation',
+  tags: ['bit-manipulation', 'array', 'bytebytego'],
+  prompt: `Cho mảng {{nums}} trong đó mọi phần tử xuất hiện **3 lần** ngoại trừ một phần tử xuất hiện **1 lần**. Tìm phần tử đó. Yêu cầu O(n) time và O(1) space.
+
+### Ví dụ
+~~~text
+Input: nums = [2,2,3,2]
+Output: 3
+
+Input: nums = [0,1,0,1,0,1,99]
+Output: 99
+~~~
+
+### Ràng buộc
+- {{1 <= nums.length <= 3 * 10^4}}
+- {{-2^31 <= nums[i] <= 2^31 - 1}}`,
+  hints: [
+    'Đếm bit trên 32 vị trí; bit nào có tổng count % 3 != 0 thì thuộc số xuất hiện một lần.',
+    "Có thể dùng two's complement và mask 32 bit.",
+    'Nâng cao: dùng two variables (ones, twos) để đạt O(1) space không mảng count.'
+  ],
+  solution: `### Ý tưởng
+Với mỗi trong 32 bit, đếm số phần tử có bit đó =1. Nếu count % 3 != 0 thì bit đó thuộc số xuất hiện một lần. Ghép lại thành int (xử lý bit dấu).
+
+~~~java
+class Solution {
+    public int singleNumber(int[] nums) {
+        int res = 0;
+        for (int b = 0; b < 32; b++) {
+            int count = 0;
+            for (int x : nums) if (((x >>> b) & 1) == 1) count++;
+            if (count % 3 != 0) res |= (1 << b);
+        }
+        return res;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- nums[i] có thể âm; dùng >>> khi đếm, và << khi ghép (Java int 32-bit two's complement) cho đúng.
+- Follow-up: giải O(1) space với ones/twos.
+
+> Senior tip: Single number II là bài kiểm tra hiểu biết về biểu diễn bit và modular counting.`,
+  starter: "class Solution {\n    public int singleNumber(int[] nums) {\n        \n    }\n}",
+  tests: `
+public class Main {
+ static int passed=0,total=0;
+ public static void main(String[] args){
+   total++; if(new Solution().singleNumber(new int[]{2,2,3,2})==3){passed++;System.out.println("PASS basic");} else System.out.println("FAIL basic");
+   total++; if(new Solution().singleNumber(new int[]{0,1,0,1,0,1,99})==99){passed++;System.out.println("PASS example");} else System.out.println("FAIL example");
+   total++; if(new Solution().singleNumber(new int[]{-1,-1,-1,5})==5){passed++;System.out.println("PASS negative");} else System.out.println("FAIL negative");
+   total++; if(new Solution().singleNumber(new int[]{7})==7){passed++;System.out.println("PASS single");} else System.out.println("FAIL single");
+   System.out.println("RESULT "+passed+"/"+total);
+ }
+}`,
+  complexity: 'Time O(32 * n), Space O(1)',
+  follow: ['Làm sao đạt O(1) space với ones/twos?']
+}
+);
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-121',
+  title: 'Missing Number',
+  difficulty: 'easy',
+  pattern: 'Bit Manipulation',
+  tags: ['array', 'bit-manipulation', 'math', 'bytebytego'],
+  prompt: `Cho mảng {{nums}} chứa n số phân biệt lấy từ 0..n, thiếu đúng một số. Tìm số bị thiếu.
+
+### Ví dụ
+~~~text
+Input: nums = [3,0,1]
+Output: 2
+
+Input: nums = [0,1]
+Output: 2
+~~~
+
+### Ràng buộc
+- {{n == nums.length}}
+- {{0 <= nums[i] <= n}}
+- Tất cả số phân biệt`,
+  hints: [
+    'Tổng 0..n là n(n+1)/2; trừ tổng nums.',
+    'Hoặc XOR tất cả số 0..n với nums.',
+    'Cả hai đều O(n).'
+  ],
+  solution: `### Ý tưởng
+XOR tất cả số từ 0..n với các phần tử trong nums. Các số xuất hiện hai lần triệt tiêu, còn lại số bị thiếu.
+
+~~~java
+class Solution {
+    public int missingNumber(int[] nums) {
+        int res = nums.length;
+        for (int i = 0; i < nums.length; i++) res ^= i ^ nums[i];
+        return res;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Tổng có thể overflow nếu n lớn; XOR an toàn.
+- Nếu thiếu nhiều số thì bài khác (Find All Numbers Disappeared).
+
+> Senior tip: Missing number là ví dụ kinh điển của XOR để tìm phần tử duy nhất.`,
+  starter: "class Solution {\n    public int missingNumber(int[] nums) {\n        \n    }\n}",
+  tests: `
+public class Main {
+ static int passed=0,total=0;
+ public static void main(String[] args){
+   total++; if(new Solution().missingNumber(new int[]{3,0,1})==2){passed++;System.out.println("PASS basic");} else System.out.println("FAIL basic");
+   total++; if(new Solution().missingNumber(new int[]{0,1})==2){passed++;System.out.println("PASS end");} else System.out.println("FAIL end");
+   total++; if(new Solution().missingNumber(new int[]{1})==0){passed++;System.out.println("PASS first");} else System.out.println("FAIL first");
+   total++; if(new Solution().missingNumber(new int[]{0})==1){passed++;System.out.println("PASS zero");} else System.out.println("FAIL zero");
+   System.out.println("RESULT "+passed+"/"+total);
+ }
+}`,
+  complexity: 'Time O(n), Space O(1)',
+  follow: ['Nếu mảng không bắt đầu từ 0 thì sao?']
+}
+);
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-122',
+  title: 'Counting Bits',
+  difficulty: 'easy',
+  pattern: 'Bit Manipulation',
+  tags: ['dynamic-programming', 'bit-manipulation', 'bytebytego'],
+  prompt: `Cho số nguyên {{n}}, trả về mảng {{ans}} độ dài n+1 trong đó {{ans[i]}} là số bit 1 trong biểu diễn nhị phân của i (0 <= i <= n).
+
+### Ví dụ
+~~~text
+Input: n = 2
+Output: [0,1,1]
+
+Input: n = 5
+Output: [0,1,1,2,1,2]
+~~~
+
+### Ràng buộc
+- {{0 <= n <= 10^5}}`,
+  hints: [
+    'ans[i] = ans[i >> 1] + (i & 1).',
+    'Hoặc ans[i] = ans[i & (i-1)] + 1.',
+    'DP O(n).'
+  ],
+  solution: `### Ý tưởng
+DP: số bit 1 của i bằng số bit 1 của i/2 cộng bit cuối. Hoặc dùng i & (i-1) để loại bit 1 thấp nhất.
+
+~~~java
+class Solution {
+    public int[] countBits(int n) {
+        int[] ans = new int[n + 1];
+        for (int i = 1; i <= n; i++) ans[i] = ans[i >> 1] + (i & 1);
+        return ans;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- O(n) tốt hơn O(n log n) naive.
+- Có thể mở rộng cho range queries.
+
+> Senior tip: Counting bits là bài DP trên bit cơ bản, hay xuất hiện trong phỏng vấn.`,
+  starter: "class Solution {\n    public int[] countBits(int n) {\n        \n    }\n}",
+  tests: `
+public class Main {
+ static int passed=0,total=0;
+ public static void main(String[] args){
+   total++; if(Arrays.equals(new Solution().countBits(2),new int[]{0,1,1})){passed++;System.out.println("PASS basic");} else System.out.println("FAIL basic");
+   total++; if(Arrays.equals(new Solution().countBits(5),new int[]{0,1,1,2,1,2})){passed++;System.out.println("PASS example");} else System.out.println("FAIL example");
+   total++; if(Arrays.equals(new Solution().countBits(0),new int[]{0})){passed++;System.out.println("PASS zero");} else System.out.println("FAIL zero");
+   total++; if(Arrays.equals(new Solution().countBits(8),new int[]{0,1,1,2,1,2,2,3,1})){passed++;System.out.println("PASS eight");} else System.out.println("FAIL eight");
+   System.out.println("RESULT "+passed+"/"+total);
+ }
+}`,
+  complexity: 'Time O(n), Space O(n)',
+  follow: ['Có thể tính popcount bằng builtin không?']
+}
+);
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-123',
+  title: 'Sum of Two Integers',
+  difficulty: 'medium',
+  pattern: 'Bit Manipulation',
+  tags: ['bit-manipulation', 'math', 'bytebytego'],
+  prompt: `Tính {{a + b}} mà **không dùng** toán tử {{+}} và {{-}}.
+
+### Ví dụ
+~~~text
+Input: a = 1, b = 2
+Output: 3
+
+Input: a = -1, b = 1
+Output: 0
+~~~
+
+### Ràng buộc
+- {{-1000 <= a, b <= 1000}}`,
+  hints: [
+    'Sum không carry: a XOR b.',
+    'Carry: (a AND b) << 1.',
+    'Lặp cho đến khi carry = 0.'
+  ],
+  solution: `### Ý tưởng
+Dùng XOR để cộng không nhớ, AND+shift để tính nhớ. Lặp cho đến khi nhớ bằng 0.
+
+~~~java
+class Solution {
+    public int getSum(int a, int b) {
+        while (b != 0) {
+            int carry = (a & b) << 1;
+            a = a ^ b;
+            b = carry;
+        }
+        return a;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Java int 32-bit; với ràng buộc nhỏ không lo overflow.
+- Nếu a,b lớn, cần mask 32-bit để mô phỏng unsigned.
+
+> Senior tip: Sum of two integers là bài kiểm tra hiểu biết về arithmetic ở mức bit.`,
+  starter: "class Solution {\n    public int getSum(int a, int b) {\n        \n    }\n}",
+  tests: `
+public class Main {
+ static int passed=0,total=0;
+ public static void main(String[] args){
+   total++; if(new Solution().getSum(1,2)==3){passed++;System.out.println("PASS basic");} else System.out.println("FAIL basic");
+   total++; if(new Solution().getSum(-1,1)==0){passed++;System.out.println("PASS negative");} else System.out.println("FAIL negative");
+   total++; if(new Solution().getSum(0,0)==0){passed++;System.out.println("PASS zero");} else System.out.println("FAIL zero");
+   total++; if(new Solution().getSum(1000,-1000)==0){passed++;System.out.println("PASS cancel");} else System.out.println("FAIL cancel");
+   System.out.println("RESULT "+passed+"/"+total);
+ }
+}`,
+  complexity: 'Time O(1) (32 iterations), Space O(1)',
+  follow: ['Nếu không được dùng loop thì sao?']
+}
+);
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-124',
+  title: 'Rotate Image',
+  difficulty: 'medium',
+  pattern: 'Math + Geometry',
+  tags: ['array', 'matrix', 'math', 'bytebytego'],
+  prompt: `Cho ma trận vuông {{matrix}} n x n, xoay ma trận **90 độ theo chiều kim đồng hồ** tại chỗ (in-place).
+
+### Ví dụ
+~~~text
+Input: matrix = [[1,2,3],[4,5,6],[7,8,9]]
+Output: [[7,4,1],[8,5,2],[9,6,3]]
+~~~
+
+### Ràng buộc
+- {{1 <= n <= 20}}
+- {{-1000 <= matrix[i][j] <= 1000}}`,
+  hints: [
+    'Transpose rồi reverse mỗi hàng.',
+    'Hoặc xoay từng lớp (layer) từ ngoài vào trong.',
+    'In-place: không cấp ma trận mới.'
+  ],
+  solution: `### Ý tưởng
+Transpose (đổi hàng/cột) rồi reverse mỗi hàng -> xoay 90° clockwise. Làm tại chỗ.
+
+~~~java
+class Solution {
+    public void rotate(int[][] matrix) {
+        int n = matrix.length;
+        for (int i = 0; i < n; i++)
+            for (int j = i + 1; j < n; j++) {
+                int t = matrix[i][j];
+                matrix[i][j] = matrix[j][i];
+                matrix[j][i] = t;
+            }
+        for (int i = 0; i < n; i++) {
+            int l = 0, r = n - 1;
+            while (l < r) {
+                int t = matrix[i][l];
+                matrix[i][l] = matrix[i][r];
+                matrix[i][r] = t;
+                l++; r--;
+            }
+        }
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Nếu xoay counter-clockwise: reverse mỗi hàng rồi transpose.
+- Kiểm tra n=1.
+
+> Senior tip: Rotate image là bài geometry cơ bản, kiểm tra khả năng thao tác index.`,
+  starter: "class Solution {\n    public void rotate(int[][] matrix) {\n        \n    }\n}",
+  tests: `
+public class Main {
+ static int passed=0,total=0;
+ static void runSteps(String n, Runnable r){ total++; try{r.run();passed++;System.out.println("PASS "+n);} catch(Throwable t){System.out.println("FAIL "+n+": threw "+t);}}
+ static boolean eq(int[][] a,int[][] b){ if(a.length!=b.length) return false; for(int i=0;i<a.length;i++) if(!Arrays.equals(a[i],b[i])) return false; return true;}
+ public static void main(String[] args){
+   int[][] m1={{1,2,3},{4,5,6},{7,8,9}};
+   new Solution().rotate(m1);
+   runSteps("3x3", ()->{ if(!eq(m1,new int[][]{{7,4,1},{8,5,2},{9,6,3}})) throw new AssertionError("x");});
+   int[][] m2={{1}};
+   new Solution().rotate(m2);
+   runSteps("1x1", ()->{ if(!eq(m2,new int[][]{{1}})) throw new AssertionError("x");});
+   int[][] m3={{1,2},{3,4}};
+   new Solution().rotate(m3);
+   runSteps("2x2", ()->{ if(!eq(m3,new int[][]{{3,1},{4,2}})) throw new AssertionError("x");});
+   int[][] m4={{1,2,3,4},{5,6,7,8},{9,10,11,12},{13,14,15,16}};
+   new Solution().rotate(m4);
+   runSteps("4x4", ()->{ if(!eq(m4,new int[][]{{13,9,5,1},{14,10,6,2},{15,11,7,3},{16,12,8,4}})) throw new AssertionError("x");});
+   System.out.println("RESULT "+passed+"/"+total);
+ }
+}`,
+  complexity: 'Time O(n^2), Space O(1)',
+  follow: ['Nếu không được sửa input thì sao?']
+}
+);
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-125',
+  title: 'Spiral Matrix',
+  difficulty: 'medium',
+  pattern: 'Math + Geometry',
+  tags: ['array', 'matrix', 'simulation', 'bytebytego'],
+  prompt: `Cho ma trận {{matrix}} m x n, trả về tất cả phần tử theo thứ tự xoắn ốc (spiral) từ ngoài vào trong, theo chiều kim đồng hồ.
+
+### Ví dụ
+~~~text
+Input: matrix = [[1,2,3],[4,5,6],[7,8,9]]
+Output: [1,2,3,6,9,8,7,4,5]
+~~~
+
+### Ràng buộc
+- {{1 <= m, n <= 10}}
+- {{-100 <= matrix[i][j] <= 100}}`,
+  hints: [
+    'Giữ 4 biên: top, bottom, left, right.',
+    'Mỗi vòng: đi phải, xuống, trái, lên; sau đó thu hẹp biên.',
+    'Cẩn thận khi còn một hàng/cột để không trùng.'
+  ],
+  solution: `### Ý tưởng
+Giữ 4 biên. Mỗi vòng đi phải (top row), xuống (right col), trái (bottom row), lên (left col), rồi thu hẹp. Kiểm tra điều kiện để tránh trùng khi còn một hàng/cột.
+
+~~~java
+class Solution {
+    public List<Integer> spiralOrder(int[][] matrix) {
+        List<Integer> res = new ArrayList<>();
+        if (matrix.length == 0) return res;
+        int top = 0, bottom = matrix.length - 1;
+        int left = 0, right = matrix[0].length - 1;
+        while (top <= bottom && left <= right) {
+            for (int j = left; j <= right; j++) res.add(matrix[top][j]);
+            top++;
+            for (int i = top; i <= bottom; i++) res.add(matrix[i][right]);
+            right--;
+            if (top <= bottom)
+                for (int j = right; j >= left; j--) res.add(matrix[bottom][j]);
+            bottom--;
+            if (left <= right)
+                for (int i = bottom; i >= top; i--) res.add(matrix[i][left]);
+            left++;
+        }
+        return res;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Có thể dùng visited matrix nhưng tốn O(mn) space.
+- Biên approach O(1) space.
+
+> Senior tip: Spiral traversal là bài geometry cơ bản, hay dùng trong UI grid rendering.`,
+  starter: "class Solution {\n    public List<Integer> spiralOrder(int[][] matrix) {\n        \n    }\n}",
+  tests: `
+public class Main {
+ static int passed=0,total=0;
+ public static void main(String[] args){
+   int[][] m1={{1,2,3},{4,5,6},{7,8,9}};
+   total++; if(new Solution().spiralOrder(m1).equals(Arrays.asList(1,2,3,6,9,8,7,4,5))){passed++;System.out.println("PASS 3x3");} else System.out.println("FAIL 3x3: "+new Solution().spiralOrder(m1));
+   int[][] m2={{1,2,3,4},{5,6,7,8},{9,10,11,12}};
+   total++; if(new Solution().spiralOrder(m2).equals(Arrays.asList(1,2,3,4,8,12,11,10,9,5,6,7))){passed++;System.out.println("PASS 2x4");} else System.out.println("FAIL 2x4");
+   int[][] m3={{1}};
+   total++; if(new Solution().spiralOrder(m3).equals(Arrays.asList(1))){passed++;System.out.println("PASS single");} else System.out.println("FAIL single");
+   int[][] m4={{1,2},{3,4}};
+   total++; if(new Solution().spiralOrder(m4).equals(Arrays.asList(1,2,4,3))){passed++;System.out.println("PASS 2x2");} else System.out.println("FAIL 2x2");
+   System.out.println("RESULT "+passed+"/"+total);
+ }
+}`,
+  complexity: 'Time O(m*n), Space O(1) extra',
+  follow: ['Nếu ma trận rỗng thì trả gì?']
+}
+);
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-126',
+  title: 'Valid Sudoku',
+  difficulty: 'medium',
+  pattern: 'Math + Geometry',
+  tags: ['array', 'hash-table', 'matrix', 'bytebytego'],
+  prompt: `Kiểm tra xem bảng Sudoku 9x9 có hợp lệ hay không. Chỉ cần các số 1-9 không trùng trong mỗi hàng, mỗi cột và mỗi khối 3x3 (ô '.' là trống). Không cần giải.
+
+### Ví dụ
+~~~text
+Input: board = [["5","3",".",".","7",".",".",".","."],["6",".",".","1","9","5",".",".","."],[".","9","8",".",".",".",".","6","."],["8",".",".",".","6",".",".",".","3"],["4",".",".","8",".","3",".",".","1"],["7",".",".",".","2",".",".",".","6"],[".","6",".",".",".",".","2","8","."],[".",".",".","4","1","9",".",".","5"],[".",".",".",".","8",".",".","7","9"]]
+Output: true
+~~~
+
+### Ràng buộc
+- {{board.length == 9}}, {{board[i].length == 9}}
+- {{board[i][j]}} ∈ {{'1'..'9', '.'}}`,
+  hints: [
+    'Dùng 3 mảng boolean: rows[9][10], cols[9][10], boxes[9][10].',
+    'Box index = (i/3)*3 + (j/3).',
+    'Duyệt từng ô; nếu là số thì kiểm tra 3 nhóm.'
+  ],
+  solution: `### Ý tưởng
+Kiểm tra mỗi số xuất hiện không quá một lần trong mỗi hàng, cột và khối 3x3. Dùng 3 mảng boolean 9x10.
+
+~~~java
+class Solution {
+    public boolean isValidSudoku(char[][] board) {
+        boolean[][] row = new boolean[9][10];
+        boolean[][] col = new boolean[9][10];
+        boolean[][] box = new boolean[9][10];
+        for (int i = 0; i < 9; i++) {
+            for (int j = 0; j < 9; j++) {
+                char ch = board[i][j];
+                if (ch == '.') continue;
+                int d = ch - '0';
+                int b = (i / 3) * 3 + (j / 3);
+                if (row[i][d] || col[j][d] || box[b][d]) return false;
+                row[i][d] = col[j][d] = box[b][d] = true;
+            }
+        }
+        return true;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Chỉ validate, không solve.
+- Có thể dùng HashSet cho từng nhóm.
+
+> Senior tip: Valid Sudoku kiểm tra khả năng xử lý index và grouping.`,
+  starter: "class Solution {\n    public boolean isValidSudoku(char[][] board) {\n        \n    }\n}",
+  tests: `
+public class Main {
+ static int passed=0,total=0;
+ static char[][] validBoard(){
+   return new char[][]{
+     {'5','3','.','.','7','.','.','.','.'},
+     {'6','.','.','1','9','5','.','.','.'},
+     {'.','9','8','.','.','.','.','6','.'},
+     {'8','.','.','.','6','.','.','.','3'},
+     {'4','.','.','8','.','3','.','.','1'},
+     {'7','.','.','.','2','.','.','.','6'},
+     {'.','6','.','.','.','.','2','8','.'},
+     {'.','.','.','4','1','9','.','.','5'},
+     {'.','.','.','.','8','.','.','7','9'}
+   };
+ }
+ public static void main(String[] args){
+   total++; if(new Solution().isValidSudoku(validBoard())){passed++;System.out.println("PASS valid");} else System.out.println("FAIL valid");
+   char[][] bad=validBoard();
+   bad[0][1]='5'; // duplicate in row
+   total++; if(!new Solution().isValidSudoku(bad)){passed++;System.out.println("PASS rowdup");} else System.out.println("FAIL rowdup");
+   char[][] bad2=validBoard();
+   bad2[1][0]='5'; // duplicate in col? row1 col0 currently 6; set 5 duplicates col0 with row0
+   total++; if(!new Solution().isValidSudoku(bad2)){passed++;System.out.println("PASS coldup");} else System.out.println("FAIL coldup");
+   char[][] empty=new char[9][9];
+   for(char[] r:empty) Arrays.fill(r,'.');
+   total++; if(new Solution().isValidSudoku(empty)){passed++;System.out.println("PASS empty");} else System.out.println("FAIL empty");
+   System.out.println("RESULT "+passed+"/"+total);
+ }
+}`,
+  complexity: 'Time O(1) (81 cells), Space O(1)',
+  follow: ['Nếu bảng có kích thước N x N tổng quát thì sao?']
+}
+);
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-127',
+  title: 'Count Primes',
+  difficulty: 'medium',
+  pattern: 'Math + Geometry',
+  tags: ['math', 'sieve', 'bytebytego'],
+  prompt: `Đếm số số nguyên tố nhỏ hơn {{n}}.
+
+### Ví dụ
+~~~text
+Input: n = 10
+Output: 4
+
+Input: n = 0
+Output: 0
+~~~
+
+### Ràng buộc
+- {{0 <= n <= 5 * 10^6}}`,
+  hints: [
+    'Sieve of Eratosthenes: đánh dấu bội số của mỗi số nguyên tố.',
+    'Chỉ cần sieve đến sqrt(n).',
+    'Đếm các số chưa bị đánh dấu.'
+  ],
+  solution: `### Ý tưởng
+Sieve of Eratosthenes: mảng boolean isComposite. Với mỗi i từ 2, nếu chưa composite, tăng count và đánh dấu bội số từ i*i. Độ phức tạp O(n log log n).
+
+~~~java
+class Solution {
+    public int countPrimes(int n) {
+        if (n <= 2) return 0;
+        boolean[] composite = new boolean[n];
+        int count = 0;
+        for (int i = 2; i < n; i++) {
+            if (!composite[i]) {
+                count++;
+                if ((long) i * i < n)
+                    for (int j = i * i; j < n; j += i) composite[j] = true;
+            }
+        }
+        return count;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- i*i có thể overflow nếu n lớn; dùng long.
+- Nếu cần danh sách prime thì lưu.
+
+> Senior tip: Sieve là nền tảng cho các bài toán số học và crypto cơ bản.`,
+  starter: "class Solution {\n    public int countPrimes(int n) {\n        \n    }\n}",
+  tests: `
+public class Main {
+ static int passed=0,total=0;
+ public static void main(String[] args){
+   total++; if(new Solution().countPrimes(10)==4){passed++;System.out.println("PASS basic");} else System.out.println("FAIL basic");
+   total++; if(new Solution().countPrimes(0)==0){passed++;System.out.println("PASS zero");} else System.out.println("FAIL zero");
+   total++; if(new Solution().countPrimes(2)==0){passed++;System.out.println("PASS two");} else System.out.println("FAIL two");
+   total++; if(new Solution().countPrimes(100)==25){passed++;System.out.println("PASS hundred");} else System.out.println("FAIL hundred");
+   System.out.println("RESULT "+passed+"/"+total);
+ }
+}`,
+  complexity: 'Time O(n log log n), Space O(n)',
+  follow: ['Nếu n rất lớn (10^8) thì sieve có đủ bộ nhớ không?']
+}
+);
