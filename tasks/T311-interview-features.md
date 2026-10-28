@@ -1,6 +1,6 @@
 # T311 — Phỏng vấn AI: tính năng kiểm soát chất lượng + trải nghiệm
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/views/interview.js`, `css/views/interview.css`
 After: T309
@@ -25,3 +25,5 @@ After: T309
 
 ## Notes
 
+Implemented all T311 requirements in `js/views/interview.js` + `css/views/interview.css`: quality transparency (model chip, flag buttons, warning + flagged count), sessionStorage resume prompt, retry on errors preserving text, progress bar/time remaining/answer count, result chart + hire_signal badge color + weak-practice + markdown download, keyboard shortcuts (Space/Esc/Ctrl+Enter). `node --check` and `validate.js` OK.
+Reviewed-by: verify-only (code/UI task)

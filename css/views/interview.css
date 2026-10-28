@@ -1,8 +1,8 @@
 /* Styles for view "interview". Scope every rule under .view-interview */
 
-/* setup */
+/* ---------- setup ---------- */
 .view-interview .iv-setup { display: grid; gap: 16px; }
-.view-interview .iv-field > label { display: block; font-size: .85rem; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
+.view-interview .iv-field > label { display: block; font-size: .85rem; font-weight: 600; color: var(--muted); margin-bottom: 8px; }
 .view-interview .iv-company { margin-top: 8px; max-width: 420px; width: 100%; }
 .view-interview .iv-topics { margin-top: 8px; }
 .view-interview .iv-start { align-items: center; gap: 12px; flex-wrap: wrap; }
@@ -21,7 +21,20 @@
 .view-interview .iv-jd-table th { color: var(--muted); }
 .view-interview .iv-jd-status { min-height: 1.4em; }
 
-/* session */
+/* choice chips as cards */
+.view-interview .iv-field .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.view-interview .iv-field .chip {
+  padding: 10px 14px; border-radius: var(--radius); border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); font-size: .9rem; cursor: pointer;
+  transition: border-color .15s, background .15s, transform .1s;
+}
+.view-interview .iv-field .chip:hover { border-color: var(--accent); }
+.view-interview .iv-field .chip.active {
+  background: var(--accent-soft); border-color: var(--accent); color: var(--text); font-weight: 600;
+}
+.view-interview .iv-topics .chip.active { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+
+/* ---------- session bar ---------- */
 .view-interview .iv-bar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 12px 16px; position: sticky; top: 64px; z-index: 5; }
 .view-interview .iv-bar > div:first-child { flex: 1; min-width: 180px; }
 .view-interview .iv-focus { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 480px; }
@@ -29,43 +42,126 @@
 .view-interview .iv-timer.warn { color: var(--warn); border-color: var(--warn); background: var(--warn-soft); }
 .view-interview .iv-timer.bad { color: var(--bad); border-color: var(--bad); background: var(--bad-soft); }
 .view-interview .iv-toggles { gap: 6px; flex-wrap: wrap; }
+.view-interview .iv-progress { display: flex; align-items: center; gap: 8px; min-width: 140px; flex: 1; }
+.view-interview .iv-progress .progress { flex: 1; height: 6px; }
+.view-interview .iv-progress-bar { height: 100%; background: var(--accent); border-radius: 999px; transition: width .3s linear; }
 
+/* ---------- chat ---------- */
 .view-interview .iv-chat { display: flex; flex-direction: column; gap: 12px; padding: 16px 0; min-height: 240px; }
-.view-interview .iv-msg { display: flex; gap: 10px; max-width: 85%; }
-.view-interview .iv-msg:last-child { animation: iv-in .2s ease-out; }   /* only the newest; the list is re-rendered */
+.view-interview .iv-msg { display: flex; gap: 10px; max-width: 88%; animation: iv-in .22s ease-out; }
+.view-interview .iv-msg.iv-ai { align-self: flex-start; }
+.view-interview .iv-msg.iv-me { align-self: flex-end; flex-direction: row-reverse; }
 @keyframes iv-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-.view-interview .iv-ai { align-self: flex-start; }
-.view-interview .iv-me { align-self: flex-end; }
-.view-interview .iv-avatar { width: 34px; height: 34px; flex: none; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: var(--accent-text); font: 700 12px var(--mono); }
-.view-interview .iv-bubble { padding: 10px 14px; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--border); position: relative; }
+
+.view-interview .iv-avatar {
+  width: 34px; height: 34px; flex: none; border-radius: 50%; display: grid; place-items: center;
+  background: var(--card); color: var(--text); font: 700 12px var(--mono); border: 1px solid var(--border);
+}
+.view-interview .iv-bubble {
+  padding: 10px 14px; border-radius: var(--radius); background: var(--card); border: 1px solid var(--border);
+  position: relative; box-shadow: 0 1px 2px rgba(0,0,0,.04);
+}
 .view-interview .iv-bubble p { margin: 4px 0 0; white-space: pre-wrap; }
 .view-interview .iv-bubble .badge { font-size: .75rem; }
-.view-interview .iv-me .iv-bubble { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
-.view-interview .iv-bubble [data-say] { position: absolute; top: 6px; right: 8px; }
-.view-interview .iv-score { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.view-interview .iv-me .iv-bubble {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.view-interview .iv-bubble .iv-read { position: absolute; top: 6px; right: 8px; }
+.view-interview .iv-time { font-size: .7rem; color: var(--muted); margin-top: 4px; }
 
-.view-interview .iv-compose { position: sticky; bottom: 12px; display: grid; gap: 8px; box-shadow: var(--shadow); }
+/* typing indicator */
+.view-interview .iv-typing { display: inline-flex; gap: 4px; align-items: center; }
+.view-interview .iv-typing span {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--muted); display: inline-block;
+  animation: iv-dot 1.2s infinite ease-in-out;
+}
+.view-interview .iv-typing span:nth-child(2) { animation-delay: .15s; }
+.view-interview .iv-typing span:nth-child(3) { animation-delay: .3s; }
+@keyframes iv-dot {
+  0%, 80%, 100% { transform: translateY(0); opacity: .4; }
+  40% { transform: translateY(-4px); opacity: 1; }
+}
+.view-interview .iv-typing-label { margin-left: 8px; }
+
+.view-interview .iv-score { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+
+/* ---------- compose (sticky bottom) ---------- */
+.view-interview .iv-compose {
+  position: sticky; bottom: 12px; display: grid; gap: 8px; box-shadow: var(--shadow);
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px;
+  z-index: 4;
+}
 .view-interview .iv-compose .row { align-items: center; gap: 10px; flex-wrap: wrap; }
 .view-interview .iv-interim { min-height: 1.2em; font-style: italic; }
 .view-interview .iv-keys { margin-left: auto; }
 
-/* result */
-.view-interview > .card + .card, .view-interview > .card + .grid, .view-interview > .grid + .card { margin-top: 12px; }
-.view-interview > .grid { margin-top: 12px; }
+/* mic button + ripple */
+.view-interview .mic-btn.lg { width: 56px; height: 56px; border-radius: 50%; font-size: 1.4rem; position: relative; }
+.view-interview .mic-btn.recording { background: var(--bad); color: #fff; border-color: var(--bad); }
+.view-interview .mic-btn.recording::before,
+.view-interview .mic-btn.recording::after {
+  content: ''; position: absolute; inset: -6px; border-radius: 50%; border: 2px solid var(--bad);
+  animation: iv-ripple 1.4s ease-out infinite; pointer-events: none;
+}
+.view-interview .mic-btn.recording::after { animation-delay: .7s; }
+@keyframes iv-ripple {
+  0% { transform: scale(.9); opacity: .8; }
+  100% { transform: scale(1.5); opacity: 0; }
+}
+
+/* ---------- result ---------- */
 .view-interview .iv-wait { text-align: center; padding: 40px; }
-.view-interview .iv-verdict .row { align-items: center; gap: 12px; }
+.view-interview .iv-verdict { }
+.view-interview .iv-verdict-row { align-items: center; gap: 16px; flex-wrap: wrap; }
+.view-interview .iv-hire { font-size: .85rem; }
+.view-interview .iv-score-circle {
+  width: 88px; height: 88px; border-radius: 50%; position: relative;
+  background: conic-gradient(var(--accent) calc(var(--iv-score) * 1%), var(--surface-2) 0);
+  display: grid; place-items: center; flex: none;
+}
+.view-interview .iv-score-circle::before {
+  content: ''; position: absolute; inset: 8px; border-radius: 50%; background: var(--card);
+}
+.view-interview .iv-score-circle span, .view-interview .iv-score-circle small {
+  position: relative; z-index: 1; font-weight: 700;
+}
+.view-interview .iv-score-circle span { font-size: 1.6rem; }
+.view-interview .iv-score-circle small { font-size: .8rem; color: var(--muted); margin-left: 2px; }
+
+.view-interview .iv-chart { display: flex; align-items: flex-end; gap: 6px; height: 90px; margin: 8px 0 12px; }
+.view-interview .iv-chart-col { display: flex; flex-direction: column; align-items: center; gap: 4px; flex: 1; min-width: 0; }
+.view-interview .iv-chart-bar { width: 100%; background: var(--accent); border-radius: 4px 4px 0 0; min-height: 2px; transition: height .3s; }
+.view-interview .iv-chart-col span { font-size: .7rem; color: var(--muted); }
+
 .view-interview .iv-q { border-top: 1px solid var(--border); padding: 10px 0; }
-.view-interview .iv-q summary { cursor: pointer; display: flex; gap: 10px; align-items: center; }
+.view-interview .iv-q summary { cursor: pointer; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.view-interview .iv-q-bar { height: 6px; background: var(--surface-2); border-radius: 999px; margin: 8px 0; overflow: hidden; }
+.view-interview .iv-q-bar > div { height: 100%; background: var(--accent); border-radius: 999px; transition: width .3s; }
 .view-interview .iv-better { background: var(--surface-2); padding: 10px 12px; border-radius: var(--radius-sm); }
 .view-interview .iv-actions { gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+.view-interview .iv-result-card { }
 
+/* ---------- responsive ---------- */
 @media (max-width: 640px) {
   .view-interview .iv-bar { position: static; }
   .view-interview .iv-msg { max-width: 100%; }
   .view-interview .iv-keys { display: none; }
+  .view-interview .iv-compose { bottom: 0; border-radius: 0; border-left: none; border-right: none; border-bottom: none; }
+  .view-interview .iv-compose .row { justify-content: center; }
 }
-
 @media (max-width: 400px) {
   .view-interview .iv-jd-table { min-width: 430px; }
   .view-interview .iv-jd-table-wrap { margin-right: -8px; }
+}
+
+/* reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .view-interview .iv-msg { animation: none; }
+  .view-interview .iv-typing span { animation: none; }
+  .view-interview .mic-btn.recording::before,
+  .view-interview .mic-btn.recording::after { animation: none; display: none; }
+  .view-interview .iv-progress-bar,
+  .view-interview .iv-chart-bar,
+  .view-interview .iv-q-bar > div { transition: none; }
 }
