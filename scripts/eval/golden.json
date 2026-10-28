@@ -1,0 +1,302 @@
+[
+  {
+    "id": "core-001",
+    "topic": "core",
+    "level": "mid",
+    "lang": "vi",
+    "question": "Contract giữa {{equals()}} và {{hashCode()}} là gì? Vi phạm thì chuyện gì xảy ra?",
+    "reference": "**Tóm tắt:** hai object {{equals()}} bằng nhau thì **bắt buộc** có cùng {{hashCode()}}; ngược lại không bắt buộc (cho phép collision).\n\n### Contract\n- **Reflexive / symmetric / transitive / consistent**, và {{x.equals(null) == false}}.\n- {{a.equals(b)}} ⇒ {{a.hashCode() == b.hashCode()}}.\n- {{hashCode()}} phải ổn định khi các field tham gia {{equals}} không đổi.\n\n### Vi phạm thì sao\n- Override {{equals}} mà quên {{hashCode}}: {{HashMap}}/{{HashSet}} đặt hai object \"bằng nhau\" vào hai bucket khác nhau ⇒ {{contains()}} trả về {{false}}, set chứa phần tử trùng.\n- Dùng **mutable field** làm key rồi sửa sau khi {{put}} ⇒ key \"mất tích\" trong map, gây memory leak.\n\n~~~java\nrecord Point(int x, int y) {}          // record tự sinh equals/hashCode đúng contract\n\n@Override public boolean equals(Object o) {\n    if (this == o) return true;\n    if (!(o instanceof User u)) return false;\n    return id.equals(u.id);\n}\n@Override public int hashCode() { return Objects.hash(id); }\n~~~\n\n> Senior tip: với JPA entity, đừng dùng id tự sinh trong {{hashCode}} (null trước khi persist) — dùng business key hoặc trả về hằng số theo class.",
+    "answers": [
+      {
+        "label": "bad",
+        "text": "equals va hashCode la hai method de so sanh object. Neu override equals thi nen override hashCode.",
+        "expected": 2
+      },
+      {
+        "label": "mid",
+        "text": "equals so sanh noi dung, hashCode tra ve so. Neu hai object equals thi hashCode phai bang nhau. Override equals ma quen hashCode lam HashMap contains tra false.",
+        "expected": 3
+      },
+      {
+        "label": "good",
+        "text": "Contract: equals bang nhau thi hashCode bang nhau; hashCode on dinh neu field tham gia equals khong doi. Vi pham: override equals quen hashCode lam HashMap/HashSet dat cung object vao bucket khac, contains false, set trung. Mutable field lam key roi sua sau put lam key mat tich, memory leak. JPA entity khong dung id tu sinh trong hashCode; dung business key hoac hang so theo class.",
+        "expected": 5
+      }
+    ]
+  },
+  {
+    "id": "core-002",
+    "topic": "core",
+    "level": "mid",
+    "lang": "vi",
+    "question": "Vì sao {{String}} là immutable và final? String pool hoạt động thế nào, {{intern()}} dùng khi nào?",
+    "reference": "**Tóm tắt:** {{String}} bất biến vì an toàn (thread, bảo mật, làm key), còn pool là vùng nhớ chia sẻ các literal giống nhau để tiết kiệm heap; {{intern()}} đưa chuỗi runtime về pool và trả về instance chuẩn.\n\n### Bên trong String\n- Class khai báo {{public final class String}}, nên không thể kế thừa để phá tính bất biến.\n- Từ Java 9, dữ liệu nằm trong {{private final byte[] value}} kèm {{byte coder}} (Compact Strings): chuỗi Latin-1 dùng 1 byte/ký tự, chuỗi có ký tự ngoài Latin-1 dùng UTF-16. Trước Java 9 là {{char[]}}.\n- Mọi \"thay đổi\" như {{concat}}, {{substring}}, {{replace}} đều tạo object mới. Không có setter, không expose mảng bên trong.\n\n### Vì sao phải bất biến\n- **Thread-safe miễn phí**: nhiều thread đọc cùng object mà không cần lock, vì trạng thái không đổi.\n- **An toàn khi làm key**: {{hashCode}} được cache trong field {{hash}} (tính lần đầu), nếu chuỗi đổi thì entry trong {{HashMap}} sẽ mất tích.\n- **Bảo mật**: đường dẫn file, URL, tên class, câu SQL được truyền vào API nhạy cảm; nếu bên nhận giữ tham chiếu mà nội dung bị sửa sau khi kiểm tra (TOCTOU) thì lỗ hổng xuất hiện.\n- **Chia sẻ và tối ưu**: pool, substring cũ không còn chia sẻ mảng (từ Java 7u6 đổi để tránh leak), JIT tối ưu tốt hơn.\n\n### String pool\n- Literal {{\"hello\"}} được resolve lúc load class và đưa vào **string pool** (từ Java 7 nằm trên heap, không phải PermGen).\n- {{new String(\"hello\")}} tạo object mới trên heap; literal bên trong vẫn lấy từ pool.\n- {{==}} so sánh reference, {{equals}} so sánh nội dung.\n- {{intern()}} tra pool: nếu có chuỗi bằng nội dung thì trả về instance trong pool, nếu chưa có thì thêm vào và trả về chính nó. Từ Java 7, chuỗi không còn trong pool cũng có thể được thu gom khi không còn ai tham chiếu.\n\n~~~java\nString a = \"hello\";                  // pool\nString b = new String(\"hello\");      // heap, khác reference\nSystem.out.println(a == b);          // false\nSystem.out.println(a == b.intern()); // true\nString c = (\"hel\" + \"lo\");           // compile-time constant => pool\nSystem.out.println(a == c);          // true\n~~~\n\n### Pitfall production\n- Cộng chuỗi trong vòng lặp bằng {{+}} tạo hàng nghìn object trung gian; dùng {{StringBuilder}} cho vòng lặp, {{String.join}} cho tập hợp.\n- Nối chuỗi trong {{toString()}} của entity trong log nóng cũng tạo rác; cân nhắc log theo tham số.\n- {{intern()}} trên dữ liệu không lặp lại (ví dụ mỗi request một UUID) làm pool phình to; chỉ dùng khi biết chắc tập giá trị nhỏ và lặp nhiều.\n\n> Senior tip: với service nhiều chuỗi trùng, bật {{-XX:+UseStringDeduplication}} (G1) và theo dõi {{-XX:+PrintStringTableStatistics}}; đừng gọi {{intern()}} tràn lan vì nó chạm một bảng có lock nội bộ.",
+    "answers": [
+      {
+        "label": "bad",
+        "text": "String mutable nhung final de khong ai ke thua; intern() dung de chuyen string sang char array.",
+        "expected": 2
+      },
+      {
+        "label": "mid",
+        "text": "String bat bien vi thread-safe va lam key HashMap. String pool chia se literal cung noi dung. intern() dua chuoi runtime ve pool.",
+        "expected": 3
+      },
+      {
+        "label": "good",
+        "text": "String final class va byte[] value private final, khong setter nen bat bien. Thread-safe mien phi, hashCode cache, bao mat TOCTOU, lam key an toan. Pool chia se literal, intern() dua chuoi runtime ve pool va tra instance chuan; dung khi nhieu chuoi lap lai (ma code) de tiet kiem heap nhung can can nhac memory. Compact Strings Java 9 dung byte[] voi coder Latin-1/UTF-16.",
+        "expected": 5
+      }
+    ]
+  },
+  {
+    "id": "core-003",
+    "topic": "core",
+    "level": "mid",
+    "lang": "vi",
+    "question": "Java luôn pass-by-value — giải thích điều này khi truyền một object reference vào method.",
+    "reference": "**Tóm tắt:** Java copy **giá trị của tham số** khi gọi method. Với object, giá trị được copy là **reference**, nên method sửa được nội dung object nhưng không thể đổi reference của biến phía caller.\n\n### Chuyện gì xảy ra trên stack\n- Mỗi lời gọi method tạo frame mới; tham số là biến local trong frame đó.\n- Với primitive, bản copy là giá trị số. Sửa trong method không ảnh hưởng caller.\n- Với object, biến ở caller và biến tham số là **hai biến khác nhau** cùng trỏ tới một object trên heap. Vì vậy:\n  - Gọi method trên object ({{list.add}}, {{sb.append}}) thì caller thấy thay đổi.\n  - Gán lại tham số ({{param = other}}) chỉ đổi biến local, caller vẫn trỏ object cũ.\n\n~~~java\nstatic void reassign(StringBuilder sb) {\n    sb = new StringBuilder(\"moi\");     // chỉ đổi biến local\n}\nstatic void mutate(StringBuilder sb) {\n    sb.append(\" them\");                // sửa object dùng chung\n}\n\nStringBuilder x = new StringBuilder(\"goc\");\nreassign(x);\nSystem.out.println(x);                 // goc\nmutate(x);\nSystem.out.println(x);                 // goc them\n~~~\n\n### Hệ quả khi phỏng vấn\n- Không có \"pass-by-reference\" kiểu C++ trong Java. Không thể viết {{swap(a, b)}} đổi được biến của caller.\n- Muốn trả nhiều giá trị: trả object/record, dùng mảng một phần tử, hoặc {{AtomicReference}} (nhưng thường record là rõ ràng nhất).\n- Truyền mảng cũng là truyền reference: method sửa phần tử thì caller thấy, gán mảng mới thì không.\n- Khi API nhận collection/array/ngày tháng mutable, hãy **defensive copy** ở biên nếu muốn giữ bất biến; nếu không, caller có thể sửa dữ liệu sau khi bạn validate.\n\n### Liên hệ với immutability\n- Vì reference được copy chứ không phải object, việc \"truyền object vào method\" không tạo bản sao. Đây là lý do các class như {{String}}, {{LocalDate}}, record nên bất biến: chia sẻ an toàn mà không cần copy.\n- Ngược lại, chia sẻ {{Date}}, {{ArrayList}} giữa các tầng dễ sinh bug \"dữ liệu tự đổi\" rất khó truy.\n\n> Senior tip: khi review code, thấy method public nhận {{List}} rồi lưu thẳng vào field là dấu hiệu cần {{List.copyOf}}; còn thấy {{param = ...}} trong method thì gần như chắc chắn là bug do hiểu sai pass-by-value.",
+    "answers": [
+      {
+        "label": "bad",
+        "text": "Java pass-by-reference cho object, nen method co the doi reference cua caller.",
+        "expected": 2
+      },
+      {
+        "label": "mid",
+        "text": "Java copy reference khi truyen object, nen sua noi dung thi caller thay, gan lai thi khong.",
+        "expected": 3
+      },
+      {
+        "label": "good",
+        "text": "Java luon pass-by-value: copy gia tri tham so. Primitive copy gia tri so. Object copy reference, hai bien khac nhau cung tro mot object heap. Goi method tren object thi caller thay; gan lai tham so chi doi bien local. Vi vay khong the viet swap(a,b) doi bien caller. Can defensive copy khi chia se object mutable.",
+        "expected": 5
+      }
+    ]
+  },
+  {
+    "id": "spring-001",
+    "topic": "spring",
+    "level": "mid",
+    "lang": "vi",
+    "question": "IoC/DI trong Spring hoạt động thế nào? Constructor injection và field injection khác nhau ở chỗ nào, khi nào nên chọn cái nào?",
+    "reference": "**Tóm tắt:** IoC (Inversion of Control) đảo chiều quyền khởi tạo: thay vì class tự tạo dependency, Spring container (ApplicationContext) chịu trách nhiệm tạo object và \"tiêm\" dependency vào. DI (Dependency Injection) là cách hiện thực cụ thể của IoC. Trong Spring, **constructor injection là lựa chọn mặc định**: dependency hiển nhiên, test được bằng {{new}}, và lỗi thiếu dependency lộ ra lúc start app chứ không phải lúc chạy production.\n\n### Ba kiểu tiêm dependency\n1. **Constructor injection** – Spring chọn constructor; từ Spring Framework 4.3, nếu class chỉ có một constructor thì không cần {{@Autowired}}.\n2. **Setter injection** – dành cho dependency không bắt buộc, hoặc cần gán lại sau khi tạo.\n3. **Field injection** – Spring gán thẳng vào field bằng reflection, không đi qua constructor.\n\n### So sánh\n| Tiêu chí | Constructor | Field |\n|---|---|---|\n| Dependency bắt buộc | Có, thiếu là fail lúc start | Không, có thể null |\n| Unit test | Dễ: truyền mock qua constructor | Cần reflection / framework mock |\n| Circular dependency | Bị phát hiện sớm | Che giấu, dễ tạo vòng xoáy |\n| Field final | Dùng được | Không dùng được |\n| Tính bất biến | Rõ ràng | Dễ bị sửa ngoài ý muốn |\n\n### Ví dụ\n~~~java\n@Service\n@RequiredArgsConstructor          // Lombok sinh constructor cho các field final\npublic class OrderService {\n    private final OrderRepository repo;      // bắt buộc\n    private final PaymentGateway gateway;\n}\n\n// Cách này không tốt\n@Service\npublic class BadOrderService {\n    @Autowired private OrderRepository repo;  // ẩn dependency, không final, khó test\n}\n~~~\n\n### Khi nào vẫn dùng field/setter injection\n- Bean của thư viện bên thứ ba bắt buộc setter (một số property của framework legacy).\n- Optional dependency: {{@Autowired(required = false)}} hoặc {{Optional<T>}}.\n- Trường hợp buộc phải tránh circular dependency bằng {{@Lazy}} – đây là nợ kỹ thuật, nên refactor.\n\n### Pitfall production\n- Constructor dài 10–15 tham số là dấu hiệu class vi phạm SRP. Cách xử lý: tách service theo use case, hoặc gom các thuộc tính cùng nghiệp vụ thành một command object.\n- Dùng Lombok {{@Data}} sẽ sinh cả {{@RequiredArgsConstructor}} nhưng cũng sinh {{equals}}/{{hashCode}} theo **mọi** field → với JPA entity sẽ gây N+1 và lỗi logic (xem câu về equals/hashCode của entity).\n- Nên inject **interface** khi đang có một implementation, để sau dễ thay bằng mock hoặc implementation thứ hai mà không sửa call site.\n\n> Senior tip: quy tắc thực tế cho team nên đưa vào code review: cấm {{@Autowired}} trên field, bắt buộc constructor injection. Lý do không chỉ ở \"style\" – field injection làm biến mất danh sách dependency khi đọc code và là nguồn gốc phổ biến nhất của circular dependency mà Spring phải che bằng proxy. Một repo có thể chặn bằng Checkstyle rule {{IllegalAnnotation}} hoặc ArchUnit test.",
+    "answers": [
+      {
+        "label": "bad",
+        "text": "Spring Bean la object do Spring tao va quan ly vong doi.",
+        "expected": 2
+      },
+      {
+        "label": "mid",
+        "text": "Bean la object trong application context, duoc tao theo scope singleton mac dinh, inject vao cac component khac qua constructor.",
+        "expected": 3
+      },
+      {
+        "label": "good",
+        "text": "Bean la object duoc Spring container quan ly: tao, cau hinh, inject, destroy. Singleton mac dinh, prototype/request/session scopes. Uu tien constructor injection de immutable va de test. Lifecycle: @PostConstruct, InitializingBean, @PreDestroy. Tranh field injection vi kho test va phu thuoc container.",
+        "expected": 5
+      }
+    ]
+  },
+  {
+    "id": "spring-002",
+    "topic": "spring",
+    "level": "mid",
+    "lang": "vi",
+    "question": "Mô tả vòng đời của một bean trong Spring container: {{@PostConstruct}}, {{BeanPostProcessor}}, {{InitializingBean}} và {{SmartLifecycle}} chạy ở thời điểm nào?",
+    "reference": "**Tóm tắt:** Vòng đời bean đi theo thứ tự: đọc {{BeanDefinition}} → khởi tạo instance → nạp dependency → {{BeanPostProcessor.postProcessBeforeInitialization}} → {{@PostConstruct}} → {{InitializingBean.afterPropertiesSet}} → init-method → {{BeanPostProcessor.postProcessAfterInitialization}} (đây là lúc Spring bọc proxy AOP) → bean sẵn sàng → {{SmartLifecycle.start}} khi context refresh. Lúc shutdown: {{SmartLifecycle.stop}} chạy trước (theo phase ngược), sau đó mới destroy bean: {{@PreDestroy}} → {{DisposableBean.destroy}} → destroy-method.\n\n### Các \"móc\" khác nhau\n| Móc | Thời điểm | Dùng để làm gì |\n|---|---|---|\n| {{BeanFactoryPostProcessor}} | Trước khi tạo bean, chỉ thấy {{BeanDefinition}} | Sửa/thêm {{BeanDefinition}}, đọc property |\n| {{BeanPostProcessor}} | Mỗi lần bean được tạo | Biến đổi bean sau khi khởi tạo (proxy AOP, metrics) |\n| {{@PostConstruct}} | Sau khi inject xong, 1 lần | Chuẩn bị tài nguyên, validate |\n| {{InitializingBean}} | Sau {{@PostConstruct}} | Tương đương init-method |\n| {{SmartLifecycle}} | Sau khi context refresh | Bật/tắt theo vòng đời app, có thứ tự theo phase |\n\n### Ví dụ\n~~~java\n@Component\nclass CacheWarmup implements InitializingBean, DisposableBean {\n    @PostConstruct\n    void init() { /* đã inject xong, chạy 1 lần */ }\n\n    @Override public void afterPropertiesSet() { /* giống init-method */ }\n\n    @PreDestroy\n    void shutdown() { /* giải phóng tài nguyên */ }\n\n    @Override public void destroy() { }\n}\n\n@Component\nclass ServerLifecycle implements SmartLifecycle {\n    private volatile boolean running;\n    @Override public void start() { running = true; }    // sẵn sàng phục vụ\n    @Override public void stop()  { running = false; }   // ngừng nhận việc\n    @Override public boolean isRunning() { return running; }\n}\n~~~\n\n### Vì sao proxy AOP nằm ở postProcessAfterInitialization\nCác tính năng dựa trên proxy như {{@Transactional}}, {{@Async}}, {{@Cacheable}} đều cần một \"lớp vỏ\" quanh bean. Spring tạo lớp vỏ đó trong {{postProcessAfterInitialization}} (lớp {{AbstractAutoProxyCreator}}), vì chỉ tới lúc đó bean mới đã đủ dependency để bị đóng gói.\n\n### Pitfall production\n- Không làm việc cần ghi DB nặng trong {{@PostConstruct}}: nó chạy trong lúc context đang khởi tạo, giữ transaction chưa sẵn sàng và làm app start chậm, dễ fail. Nếu cần warm-up dữ liệu thì dùng {{ApplicationReadyEvent}} hoặc {{CommandLineRunner}}.\n- {{@Bean}} trả về {{BeanPostProcessor}} phải là **static**, nếu không Spring sẽ phải khởi tạo sớm configuration class đó và log cảnh báo \"not eligible for getting processed by all BeanPostProcessors\".\n- Bean phải là singleton thì việc destroy mới xảy ra đúng một lần; bean prototype không được quản lý vòng đời kiểu này.\n\n> Senior tip: khi debug Spring, hãy bật {{--debug}} để xem điều kiện auto-config, và dùng {{ApplicationContext}} + {{getBeanDefinitionNames()}} khi cần hiểu vì sao một bean không được tạo. Với cơ chế vòng đời, nguyên tắc nhớ: **mọi thứ bạn ghi trong {{@PostConstruct}} phải idempotent**, vì app restart / devtools reload sẽ gọi lại nó.",
+    "answers": [
+      {
+        "label": "bad",
+        "text": "@Transactional de dam bao method chay trong transaction.",
+        "expected": 2
+      },
+      {
+        "label": "mid",
+        "text": "@Transactional tao transaction xung quanh method, rollback khi runtime exception. Can dat tren public method vi proxy.",
+        "expected": 3
+      },
+      {
+        "label": "good",
+        "text": "@Transactional qua AOP proxy: self-invocation khong kich hoat transaction. Propagation REQUIRED/REQUIRES_NEW, isolation, readOnly optimization. Rollback cho RuntimeException va Error, checked exception khong rollback mac dinh. Dat tren service layer, tranh tren controller. Luu y proxy mode va self-call pitfall.",
+        "expected": 5
+      }
+    ]
+  },
+  {
+    "id": "jpa-001",
+    "topic": "jpa",
+    "level": "senior",
+    "lang": "vi",
+    "question": "N+1 query là gì, làm sao phát hiện và xử lý? Bạn sẽ xử lý một truy vấn trả về danh sách kèm collection con bằng cách nào?",
+    "reference": "**Tóm tắt:** N+1 xảy ra khi truy vấn chính trả về N dòng, rồi mỗi dòng lại phát sinh **một** câu truy vấn con (do lazy loading trong vòng lặp) → tổng số query = 1 + N. Triệu chứng: thời gian response tăng tuyến tính theo số bản ghi, log SQL lặp lại hàng trăm lần. Cách xử lý phổ biến nhất: **fetch join**, kế đến **{{@EntityGraph}}**, **batch fetching**, và **DTO projection**.\n\n### Cơ chế gây ra\n~~~java\nList<Order> orders = orderRepo.findAll();      // 1 query\nfor (Order o : orders) {\n    System.out.println(o.getItems().size());    // mỗi order: 1 query thêm\n}\n// tổng: 1 + N query\n~~~\n\n### Phát hiện\n1. Bật log SQL: {{spring.jpa.show-sql=true}} và {{spring.jpa.properties.hibernate.format_sql=true}} → thấy query lặp.\n2. Bật thống kê Hibernate: {{spring.jpa.properties.hibernate.generate_statistics=true}} → đếm số query mỗi request.\n3. Dùng proxy để đếm query theo request (datasource-proxy, p6spy) hoặc tracing với span cho mỗi SQL.\n4. Bật {{spring.jpa.open-in-view=false}}: thay vì che lỗi, nó làm {{LazyInitializationException}} xuất hiện sớm – lúc đó bạn phát hiện ngay chỗ truy cập lazy ngoài transaction.\n5. Đọc code: thấy truy cập {{getXxx()}} của collection bên trong vòng lặp là dấu hiệu.\n\n### Cách xử lý\n| Cách | Khi nào dùng |\n|---|---|\n| {{join fetch}} trong JPQL | Truy vấn cần dữ liệu con, số lượng bản ghi vừa phải |\n| {{@EntityGraph(attributePaths = ...)}} | Cần fetch nhiều quan hệ mà không viết JPQL |\n| {{@BatchSize}} / {{default_batch_fetch_size}} | Nhiều collection nhỏ, gộp N query thành 1 query {{IN}} |\n| DTO projection | Chỉ cần vài cột – giảm tải và loại bỏ hẳn vấn đề |\n| Dùng subquery thay vì load collection | Cần đếm/thống kê con mà không cần object con |\n\n~~~java\n@Query(\"select o from Order o join fetch o.items where o.customerId = :cid\")\nList<Order> findWithItems(@Param(\"cid\") Long customerId);\n\n@EntityGraph(attributePaths = {\"items\", \"items.product\"})\nList<Order> findByCustomerId(Long customerId);\n~~~\n\n~~~java\n// DTO projection: không tạo entity, không có lazy nào\ninterface OrderSummary { Long getId(); String getStatus(); int getItemCount(); }\n@Query(\"select new com.acme.dto.OrderRow(o.id, o.status, size(o.items)) from Order o\")\nList<OrderRow> summary();\n~~~\n\n### Pitfall production\n- **Fetch join + phân trang** → Hibernate báo cảnh báo {{HHH000104}}: {{firstResult/maxResults}} được thực hiện trong bộ nhớ. Cách xử lý: query lấy danh sách **id** theo trang, rồi query thứ hai fetch theo danh sách id (kèm {{@BatchSize}}).\n- Fetch 2 collection kiểu {{List}} cùng lúc → {{MultipleBagFetchException}}. Dùng {{Set}} hoặc tách query.\n- {{FetchType.EAGER}} là mặc định của {{@ManyToOne}} và {{@OneToOne}} (còn {{@OneToMany}}/{{@ManyToMany}} mặc định LAZY) → rất dễ tạo N+1 ngầm; nên khai báo {{fetch = FetchType.LAZY}} tường minh.\n- Bật {{hibernate.default_batch_fetch_size}} (ví dụ 50) là một \"lưới an toàn\" rẻ tiền và hiệu quả cho hầu hết collection lazy.\n\n> Senior tip: khi thấy N+1, đừng vội sửa bằng {{join fetch}} cho mọi thứ – join fetch nhiều collection làm SQL phình to và dễ vỡ. Quy trình tốt hơn: (1) đo query count trước/sau, (2) ưu tiên **DTO projection** cho màn hình danh sách vì không ai cần cả entity con, (3) đặt {{default_batch_fetch_size}} làm lưới an toàn, (4) chỉ fetch join khi thực sự cần dữ liệu con để render.",
+    "answers": [
+      {
+        "label": "bad",
+        "text": "N+1 la khi query nhieu lan trong vong lap.",
+        "expected": 2
+      },
+      {
+        "label": "mid",
+        "text": "N+1 xay ra khi load entity roi truy cap lazy collection, moi entity phat sinh 1 query. Fix bang fetch join hoac entity graph.",
+        "expected": 3
+      },
+      {
+        "label": "good",
+        "text": "N+1: 1 query load N entity + N query lazy load association = N+1 round trip. Phat hien qua Hibernate statistics, log SQL. Fix: JOIN FETCH, @EntityGraph, batch fetching, hoac DTO projection. Can can nhac cartesian product khi fetch nhieu collection. Dung toOne EAGER mac dinh, toMany LAZY.",
+        "expected": 5
+      }
+    ]
+  },
+  {
+    "id": "jpa-002",
+    "topic": "jpa",
+    "level": "senior",
+    "lang": "vi",
+    "question": "Persistence context hoạt động thế nào? Các trạng thái của entity, dirty checking và flush mode ảnh hưởng ra sao đến việc ghi dữ liệu?",
+    "reference": "**Tóm tắt:** Persistence context (tức {{EntityManager}}/Session của Hibernate) là **cache cấp 1** và **identity map** của Hibernate: trong một transaction, mỗi entity được load chỉ tồn tại **một** object Java, và mọi thay đổi trên object đó được Hibernate so sánh với ảnh chụp (snapshot) lúc flush để sinh {{UPDATE}} – đó là **dirty checking**. Bốn trạng thái entity: transient, persistent (managed), detached, removed.\n\n### Bốn trạng thái\n| Trạng thái | Ý nghĩa | Thay đổi field có được ghi không |\n|---|---|---|\n| Transient | Mới {{new}}, chưa gắn vào context | Không |\n| Persistent / Managed | Đã được load hoặc persist trong context | **Có** – dirty checking |\n| Detached | Đã bị {{detach}} hoặc session đã đóng | Không (phải {{merge}}) |\n| Removed | Đã đánh dấu xóa | Xóa khi flush |\n\n### Dirty checking\n~~~java\n@Transactional\npublic void rename(Long id, String name) {\n    Customer c = customerRepo.findById(id).orElseThrow();  // persistent\n    c.setName(name);   // KHÔNG cần cập nhật, không cần save()\n    // khi commit -> Hibernate so snapshot -> UPDATE\n}\n~~~\nHai điều kiện để dirty checking chạy đúng:\n1. Entity phải được quản lý (managed) trong context.\n2. Field phải **không** là {{final}} – Hibernate không gán được final field qua reflection.\n\n### Flush là gì\nFlush = đẩy các thay đổi trong context xuống DB (ghi {{INSERT}}/{{UPDATE}}/{{DELETE}} và {{flush}} dirty). Hibernate flush:\n- trước khi **commit** transaction;\n- trước khi chạy một **JPQL query** có liên quan tới bảng đang bị thay đổi (auto-flush) – để query thấy dữ liệu mới nhất.\n\nCác flush mode:\n| FlushMode | Hành vi |\n|---|---|\n| {{AUTO}} (mặc định) | Flush khi cần (như trên) |\n| {{COMMIT}} | Chỉ flush lúc commit → query trong **chính** transaction đó có thể đọc dữ liệu **cũ** (thay đổi chưa flush) |\n| {{MANUAL}} | Không tự flush, phải gọi {{session.flush()}} |\n\n### Pitfall production\n- **Entity bị \"bẩn\" sau khi rollback**: transaction rollback trên DB, nhưng object trong context vẫn mang thay đổi. Nếu tái sử dụng context (ví dụ trong một luồng dài), hãy {{clear}} sau khi xử lý lỗi.\n- Dùng {{merge}} trên entity detached sẽ tạo **bản sao** managed; nếu bạn giữ tham chiếu tới bản gốc, thay đổi sau đó sẽ không được ghi.\n- {{equals}}/{{hashCode}} dựa trên {{getId()}}: trước khi persist, {{getId()}} là {{null}} → entity có thể bị \"mất\" trong {{HashSet}}.\n- Đừng dùng entity làm DTO trả về API: kích hoạt lazy loading ngầm, rò rỉ field nhạy cảm và dễ sinh N+1 khi serialize.\n\n> Senior tip: hãy nhớ quy tắc \"**managed = thay đổi được tự động lưu**\". Khi debug, nếu sửa field mà DB không đổi, hãy kiểm tra ngay: object có còn managed không (session còn mở không, có bị {{detach}} không), field có {{final}} không, và transaction có commit thật không.",
+    "answers": [
+      {
+        "label": "bad",
+        "text": "Cascade la tu dong luu entity lien quan.",
+        "expected": 2
+      },
+      {
+        "label": "mid",
+        "text": "Cascade ALL tu dong persist/remove entity con khi cha thay doi. Orphan removal xoa con khi bo khoi collection.",
+        "expected": 3
+      },
+      {
+        "label": "good",
+        "text": "Cascade types: PERSIST, MERGE, REMOVE, REFRESH, DETACH, ALL. Chon cascade phu hop, tranh ALL tren entity doc lap. orphanRemoval=true xoa entity con khi remove khoi collection. FetchType LAZY cho toMany tranh N+1. Can chu y CascadeType.REMOVE co the xoa nham du lieu.",
+        "expected": 5
+      }
+    ]
+  },
+  {
+    "id": "concurrency-001",
+    "topic": "concurrency",
+    "level": "mid",
+    "lang": "vi",
+    "question": "Java Memory Model: \"happens-before\" nghĩa là gì? {{volatile}} đảm bảo điều gì và KHÔNG đảm bảo điều gì?",
+    "reference": "**Tóm tắt:** happens-before là quan hệ thứ tự do JMM bảo chứng: nếu A happens-before B thì mọi ghi của A là nhìn thấy được với B và có thứ tự ổn định so với B. {{volatile}} tạo happens-before giữa write và read cùng biến — đảm bảo **visibility và ordering** — nhưng KHÔNG đảm bảo **atomicity** của chuỗi nhiều lệnh như {{i++}}.\n\n### Vì sao cần JMM\nMỗi core có cache riêng; compiler/JIT xếp lại lệnh để tối ưu. Một thread có thể đọc giá trị cũ, thậm chí thấy field của object là giá trị mặc định dù thread A đã chạy xong constructor (unsafe publication).\n\n### Các rule happens-before hay dùng\n- **Program order**: các hành động trong cùng một thread.\n- **Monitor**: unlock happens-before lần lock tiếp theo trên cùng monitor.\n- {{volatile}}: write happens-before read cùng biến.\n- {{Thread.start()}} và {{Thread.join()}}; quy tắc transitive.\n\n### Volatile: được và không được gì\n\n~~~java\nvolatile boolean stop;\n// ĐÚNG: flag visibility, safe publication\nwhile (!stop) { work(); }\n// SAI: i++ gồm read-modify-write 3 lệnh, vẫn mất update\nvolatile int counter;\ncounter++;               // => phải dùng AtomicInteger\n~~~\n\n- **Được**: read thấy giá trị mới nhất; ghi trước volatile được \"publish\" cho thread đọc sau.\n- **Không được**: atomic compound action; loại bỏ check-then-act race.\n\n> Senior tip: phỏng vấn hay hỏi \"volatile rồi mà vẫn sai thì do đâu?\" — chuẩn: volatile chỉ đảm bảo thấy giá trị, không đảm bảo tính toàn vẹn của phép nhiều bước; cần lock hoặc object bất biến.",
+    "answers": [
+      {
+        "label": "bad",
+        "text": "synchronized lam method thread-safe.",
+        "expected": 2
+      },
+      {
+        "label": "mid",
+        "text": "synchronized khoa object (intrinsic lock), dam bao mutual exclusion va visibility. Co the khoa method hoac block.",
+        "expected": 3
+      },
+      {
+        "label": "good",
+        "text": "synchronized su dung monitor cua object, mutual exclusion va happens-before visibility. Khoa toi thieu (block nho) de tang throughput. Tranh khoa tren String literal hoac Integer cache. Reentrant. So sanh voi ReentrantLock (tryLock, fairness, condition). Deadlock khi khoa nhieu lock theo thu tu khac nhau.",
+        "expected": 5
+      }
+    ]
+  },
+  {
+    "id": "db-001",
+    "topic": "db",
+    "level": "senior",
+    "lang": "vi",
+    "question": "B-tree index hoạt động thế nào? Composite index và covering index khác nhau ra sao, và những trường hợp index không được dùng?",
+    "reference": "**Tóm tắt:** Index B-tree là cấu trúc cân bằng giúp tìm dòng khớp trong O(log n) thay vì full scan O(n), đổi lại mỗi lần {{INSERT}}/{{UPDATE}}/{{DELETE}} phải cập nhật cây. **Composite index** chỉ dùng được theo **leftmost prefix** (cột đầu tiên phải xuất hiện trong điều kiện lọc), và **covering index** cho phép đọc chỉ từ index (index-only scan) nên không cần chạm vào bảng.\n\n### Cấu trúc B-tree\nCác node lá chứa key + pointer tới hàng, được liên kết thành **danh sách nối** theo thứ tự key. Nhờ vậy cả truy vấn **range** ({{WHERE ts BETWEEN ...}}) cũng hiệu quả. B-tree giữ node lá ở cùng độ sâu, tối ưu cho đĩa (ít lần đọc block) – đây là lý do MySQL/InnoDB dùng B+tree thay vì B-tree \"chuẩn\".\n\n### Composite index và leftmost prefix\nVới index {{(a, b, c)}}:\n| Truy vấn | Dùng được index? |\n|---|---|\n| {{WHERE a = 1}} | Có (dùng cột a) |\n| {{WHERE a = 1 AND b = 2}} | Có (dùng a, b) |\n| {{WHERE b = 2}} | **Thường không** – thiếu cột a (ngoại lệ: skip scan của MySQL 8.0.13+ / PostgreSQL 18 khi a có ít giá trị) |\n| {{WHERE a = 1 AND c = 3}} | Seek theo a; c chỉ được lọc trong index (không seek được vì thiếu b) |\n| {{ORDER BY a, b}} | Có, không cần sort |\n\nNguyên tắc thiết kế: cột đứng đầu phải là cột **hay được lọc bằng** và có **selectivity cao**; các cột sau là cột lọc/sort theo thứ tự truy vấn.\n\n### Covering index\nIndex chứa đủ cột mà query cần ⇒ DB chỉ đọc index, không đọc bảng (index-only scan). Ở PostgreSQL 11+ dùng {{INCLUDE (col)}}; ở MySQL/InnoDB, index gồm cả cột phụ cũng tạo covering index (secondary index đã chứa PK).\n\n~~~sql\nCREATE INDEX idx_order_cust_date ON orders (customer_id, created_at) INCLUDE (amount);\n-- SELECT customer_id, created_at, amount ... -> đọc được từ index\n~~~\n\n### Khi nào index **không** được dùng\n1. **Hàm bao quanh cột**: {{WHERE DATE(created_at) = '2026-01-01'}} → dùng index trên {{created_at}} không được; giải pháp: viết lại thành range ({{created_at >= '2026-01-01' AND created_at < '2026-01-02'}}) hoặc tạo index trên biểu thức.\n2. **Leading wildcard**: {{WHERE name LIKE '%abc'}} → không dùng được B-tree.\n3. **{{OR}} không có index bao phủ** toàn bộ nhánh.\n4. **Selectivity thấp**: cột có 2–3 giá trị (vd {{status}}) → index ít giá trị, optimizer thường chọn seq scan.\n5. **Sai kiểu dữ liệu**: so sánh cột {{varchar}} với số → index bị bỏ qua (ép kiểu ngược lại).\n6. **Thống kê lệch** (stale statistics) → optimizer ước tính sai và chọn sai plan; chạy {{ANALYZE}}.\n7. **Cột ít phân biệt ở đầu composite index** → không đạt leftmost prefix.\n8. **Bảng nhỏ** (vài nghìn dòng) → seq scan rẻ hơn.\n\n### Pitfall production\n- **Quá nhiều index làm chậm ghi**: mỗi {{INSERT}}/{{UPDATE}} phải cập nhật mọi index của bảng. Index thừa còn làm tăng kích thước backup và thời gian vacuum.\n- Index trên cột có **cardinality thấp** ở vị trí đầu gần như vô dụng.\n- Index dùng bởi query cũ không còn chạy vẫn tốn tài nguyên → cần review và drop định kỳ.\n- Với UUID làm PK, thứ tự ghi ngẫu nhiên gây phân mảnh trang; dùng UUIDv7 hoặc khóa tăng dần.\n\n> Senior tip: trước khi thêm index, hãy **đo** bằng {{EXPLAIN (ANALYZE, BUFFERS)}} trên chính dữ liệu production-like. Một index thừa không chỉ tốn disk mà còn làm {{UPDATE}} chậm hơn đáng kể trên bảng giao dịch lớn. Nguyên tắc: index là đánh đổi, mỗi index cần một lý do đo được.",
+    "answers": [
+      {
+        "label": "bad",
+        "text": "Index giup query nhanh hon.",
+        "expected": 2
+      },
+      {
+        "label": "mid",
+        "text": "Index la cau truc B-tree giup tim kiem nhanh, nhung lam cham write. Can index cot hay dung trong WHERE va JOIN.",
+        "expected": 3
+      },
+      {
+        "label": "good",
+        "text": "Index B-tree (PostgreSQL) tang toc WHERE/JOIN/ORDER BY nhung tang chi phi write va storage. Composite index theo thu tu cot phu hop query. Covering index tranh heap fetch. Partial index cho subset. Explain Analyze de xac nhan. Tran index khong dung (unused) lam cham write. Can can nhac write-heavy workload.",
+        "expected": 5
+      }
+    ]
+  },
+  {
+    "id": "design-001",
+    "topic": "design",
+    "level": "senior",
+    "lang": "vi",
+    "question": "Bạn có 45 phút cho một câu system design. Trình bày cách dẫn dắt buổi phỏng vấn từ đầu đến cuối để thể hiện đúng năng lực senior.",
+    "reference": "**Tóm tắt:** System design 45 phút là bài kiểm tra **quy trình tư duy có cấu trúc**, không phải đọc thuộc kiến trúc. Đi theo 7 bước: làm rõ yêu cầu, ước lượng, API, data model, kiến trúc tổng thể, đào sâu điểm nghẽn, trade-off — và nói to suy nghĩ trong suốt quá trình.\n\n### Phân bổ thời gian\n| Phút | Hoạt động | Kết quả cần có |\n|---|---|---|\n| 0–5 | Làm rõ yêu cầu | 3–5 use case, các con số scale, out-of-scope |\n| 5–10 | Ước lượng | QPS, storage, bandwidth, read/write ratio |\n| 10–15 | API + data model | 3–5 endpoint, bảng/collection chính |\n| 15–25 | Kiến trúc tổng thể | Sơ đồ box + luồng đọc/ghi |\n| 25–38 | Đào sâu 1–2 điểm nghẽn | Cơ chế cụ thể, không kể tên suông |\n| 38–43 | Trade-off + failure modes | Khi nào phương án khác tốt hơn |\n| 43–45 | Tóm tắt | 3 câu chốt lại thiết kế |\n\n### 1. Làm rõ yêu cầu (đừng bỏ qua)\n- **Functional:** chỉ 3–5 use case chính, hỏi rõ cái gì **không** làm. Ví dụ với URL shortener: có custom alias không, có analytics không, link hết hạn không.\n- **Non-functional:** DAU, read/write ratio, peak factor, p99 latency, availability (99.9 hay 99.99), consistency, retention, ngân sách.\n- Nếu interviewer không cho số, **tự đặt giả định và nói thành lời**: \"Tôi giả sử 10 triệu DAU, peak gấp 3 lần trung bình, chấp nhận eventual consistency cho phần analytics.\"\n\n### 2. Ước lượng để chọn công nghệ\nCông thức đủ dùng:\n- {{QPS trung bình = DAU × số thao tác/ngày / 86400}}, {{QPS peak = 2–5 × trung bình}}.\n- {{Storage = writes/ngày × kích thước bản ghi × số ngày lưu × replication factor}}.\n- **Kết luận quan trọng hơn con số**: 50 GB thì một Postgres là đủ; 50 TB thì phải nghĩ tới partition và object storage.\n\n### 3. API\nViết 3–5 endpoint ngắn gọn, nêu request/response chính và **idempotency key** cho mọi API ghi. Đây là chỗ thể hiện kinh nghiệm production: client retry là chuyện chắc chắn xảy ra.\n\n### 4. Data model và chọn storage\nĐi từ **access pattern** ngược lên schema, không đi từ ERD xuống. Nêu:\n- Entity chính, khoá chính, khoá phân vùng.\n- Index phục vụ đúng câu query nóng nhất.\n- Vì sao SQL hay NoSQL: cần transaction/join thì SQL; ghi cực lớn, key-value đơn giản thì wide-column; ranking realtime thì Redis sorted set; file thì S3.\n\n### 5. Kiến trúc tổng thể\nVẽ một sơ đồ đơn giản rồi mới thêm chi tiết:\n~~~text\nClient -> CDN -> Load Balancer -> API (stateless)\n                                   |-> Redis (cache)\n                                   |-> Postgres (primary) -> replica\n                                   |-> Kafka -> workers -> analytics store\n~~~\nNói rõ luồng đọc và luồng ghi khác nhau ở đâu.\n\n### 6. Đào sâu điểm nghẽn\nInterviewer thường chọn một trong: hot key, write amplification, tranh chấp khoá, fan-out, consistency khi cache, mất message. Hãy chọn chỗ **bạn hiểu sâu nhất**, giải thích cơ chế từng bước và đưa ra 2 phương án kèm điều kiện chọn.\n\n### 7. Trade-off và failure mode\nLuôn trả lời được: \"Nếu Redis chết thì sao?\", \"Nếu traffic tăng 10 lần trong 1 giờ thì sao?\", \"Điều gì xảy ra nếu hai request đến cùng lúc?\". Một thiết kế không có failure mode là một thiết kế chưa được nghĩ.\n\n### Sai lầm thường gặp\n- Vẽ ngay khi chưa rõ yêu cầu, rồi phải vẽ lại.\n- Kể tên Kafka, Cassandra, Kubernetes như bùa hộ mệnh mà không giải thích **vì sao**.\n- Bỏ qua ước lượng nên không biết hệ thống nhỏ hay lớn.\n- Im lặng 30 giây suy nghĩ — interviewer không chấm được suy nghĩ trong đầu bạn.\n- Không chủ động nói consistency, monitoring, và chi phí vận hành.\n\n> Senior tip: tôi luôn dành 60 giây cuối để nói \"phần nào tôi sẽ làm khác nếu có thêm thời gian\" — nó cho thấy bạn biết giới hạn của thiết kế và biết ưu tiên, đúng thứ interviewer tìm ở senior.",
+    "answers": [
+      {
+        "label": "bad",
+        "text": "System design la ve kien truc he thong.",
+        "expected": 2
+      },
+      {
+        "label": "mid",
+        "text": "System design phong van danh gia quy trinh tu duy: yeu cau, uoc luong, API, data model, kien truc, trade-off.",
+        "expected": 3
+      },
+      {
+        "label": "good",
+        "text": "System design 45 phut la bai kiem tra quy trinh tu duy co cau truc: lam ro yeu cau, uoc luong QPS/storage, API, data model, kien truc tong the, dao sau diem nghen, trade-off, failure modes. Noi to suy nghi. Phan bo thoi gian cu the. Tu dat gia dinh va noi thanh loi. Chot 3 cau tom tat.",
+        "expected": 5
+      }
+    ]
+  },
+  {
+    "id": "english-001",
+    "topic": "english",
+    "level": "mid",
+    "lang": "en",
+    "question": "Tell me about yourself. Give the short version you would use at the start of a Senior Java backend interview.",
+    "reference": "**Tóm tắt:** Interviewer không cần lý lịch đầy đủ; họ muốn biết bạn là ai, mạnh ở đâu và vì sao ngồi ở đây. Công thức 60–90 giây: **hiện tại (vai trò + domain + scale) → quá khứ (1–2 thành tựu có số) → vì sao ứng tuyển**. Đừng kể từ lúc tốt nghiệp đại học.\n\n### Sample answer\nThanks for having me. I am a backend engineer with seven years of experience, and for the last three years I have been working on a payments platform at a fintech company here in Vietnam. The platform handles about two million transactions a day across roughly twenty Spring Boot services, and I own the payment orchestration and reconciliation services end to end, from design and code review to running them on Kubernetes.\n\nBefore that I was a Java developer on a logistics product, where I led the migration of a legacy monolith from Java 8 and Spring 3 to Java 17 and Spring Boot 3. That project removed about forty percent of our old XML configuration and cut deployment time from forty minutes to eight.\n\nWhat I enjoy most is the part where correctness and performance meet: idempotency, retries, reconciliation. That is exactly why I am interested in this role. Your team is moving into multi-region payments, and that is the problem I want to spend the next few years on. I am also comfortable working in English, since my current team has engineers in Singapore and India, and all our design reviews are in English.\n\n### Useful phrases\n- **I specialize in**: tôi chuyên về\n- **end-to-end ownership**: sở hữu trọn vẹn từ thiết kế đến vận hành\n- **I led the migration of**: tôi dẫn dắt việc chuyển đổi\n- **which brings me to why I am here**: và đó là lý do tôi có mặt ở đây\n- **hands-on**: trực tiếp làm, không chỉ quản lý\n- **I own the service end to end**: tôi chịu trách nhiệm toàn bộ service\n\n> Tip: Người Việt hay viết \"I have 7 years experiences\" — sai, vì **experience** khi nói kinh nghiệm là uncountable: \"seven years of experience\". Cũng đừng dịch nguyên văn \"em rất vui được phỏng vấn\" thành \"I am very happy to be interviewed\" nghe cứng; dùng \"Thanks for having me\" tự nhiên hơn nhiều. Tập nói thành tiếng và bấm giờ: dài quá 2 phút là mất điểm.",
+    "answers": [
+      {
+        "label": "bad",
+        "text": "I am a Java developer with many years experience and I like coding.",
+        "expected": 2
+      },
+      {
+        "label": "mid",
+        "text": "I am a backend engineer with seven years of experience, working on payments platform with Spring Boot. I led migration from Java 8 to Java 17.",
+        "expected": 3
+      },
+      {
+        "label": "good",
+        "text": "Thanks for having me. I am a backend engineer with seven years of experience, three years on a payments platform handling two million transactions a day across twenty Spring Boot services, owning payment orchestration end to end. Before that I led migration of a logistics monolith from Java 8/Spring 3 to Java 17/Spring Boot 3, removing forty percent XML config and cutting deploy time from forty to eight minutes. I enjoy correctness and performance: idempotency, retries, reconciliation, which is why I am interested in this multi-region payments role.",
+        "expected": 5
+      }
+    ]
+  },
+  {
+    "id": "english-016",
+    "topic": "english",
+    "level": "senior",
+    "lang": "en",
+    "question": "How do you use AI tools in your daily development work? What do you trust them with, and what do you not?",
+    "reference": "**Tóm tắt:** Trả lời cân bằng: **dùng thật, cụ thể, có kiểm chứng**. Nêu việc phù hợp (viết test, đọc code lạ, chuyển đổi cú pháp, gợi ý regex, viết docs), việc không giao (quyết định kiến trúc, logic tiền bạc, secrets, dữ liệu khách hàng), và **quy trình xác minh**. Tránh thái độ \"AI thay được dev\".\n\n### Sample answer\nI use AI tools every day, but as a fast junior assistant, not as an authority. My most common use is tests: I give it a class and ask for edge cases I might have missed, then I rewrite the ones that do not fit. It is very good at generating the boring eighty percent, which frees me for the twenty percent that needs judgement.\n\nI also use it to read unfamiliar code. When I join a new service, I ask it to summarise a package or explain a complex JPQL query, then I verify by reading the actual code. For boilerplate like mapping DTOs or writing a Dockerfile, it saves maybe thirty to forty minutes a day.\n\nWhat I do not do is paste production data, customer information, credentials or proprietary business logic into a public model, and I do not let it make architectural decisions. It does not know our constraints, our traffic profile or our team. I also never merge generated code without reading every line, because the failure mode is confident, plausible code that passes a quick look and fails at the boundary.\n\nThe rule I follow is simple: AI can propose, but I am still the one who signs the commit. If I cannot explain a line to a reviewer, it does not go in.\n\n### Useful phrases\n- **as a fast junior assistant, not as an authority**: như một trợ lý nhanh, không phải chuyên gia có thẩm quyền\n- **edge cases I might have missed**: các trường hợp biên tôi có thể bỏ sót\n- **it saves maybe thirty minutes a day**: tiết kiệm khoảng ba mươi phút mỗi ngày\n- **confident, plausible code**: code trông tự tin và hợp lý\n- **I never merge generated code without reading every line**: tôi không bao giờ merge code sinh ra mà không đọc từng dòng\n- **I am the one who signs the commit**: tôi là người chịu trách nhiệm commit\n\n> Tip: Đừng trả lời \"I don't use AI\" (nghe lạc hậu) hoặc \"AI writes all my code\" (nghe thiếu trách nhiệm). Nêu **ranh giới dữ liệu** là điểm cộng lớn với công ty nước ngoài, vì họ lo compliance. Phát âm **authority** /əˈθɒrəti/ nhấn âm hai, và **proprietary** /prəˈpraɪətri/ — hai từ này người Việt hay đọc sai trọng âm.",
+    "answers": [
+      {
+        "label": "bad",
+        "text": "I use AI to write all my code so I am faster.",
+        "expected": 2
+      },
+      {
+        "label": "mid",
+        "text": "I use AI every day for tests and boilerplate, but I review all generated code before merging.",
+        "expected": 3
+      },
+      {
+        "label": "good",
+        "text": "I use AI tools every day as a fast junior assistant, not as an authority. Common uses: generating tests and edge cases, reading unfamiliar code, boilerplate like DTO mapping or Dockerfile, saving thirty to forty minutes daily. I never paste production data, customer info, credentials or proprietary logic into public models, and I do not let AI make architectural decisions. I never merge generated code without reading every line; if I cannot explain a line to a reviewer it does not go in. AI can propose, but I sign the commit.",
+        "expected": 5
+      }
+    ]
+  }
+]
