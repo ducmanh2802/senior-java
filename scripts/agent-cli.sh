@@ -14,6 +14,8 @@ file=$(ls tasks/"$id"-*.md 2>/dev/null | head -1)
 prompt="Bạn là agent thực hiện task $id của dự án này. Trước tiên hãy đọc kỹ AGENTS.md và $file. \
 Sau đó thực hiện ĐẦY ĐỦ task: chỉ sửa các file mà task sở hữu, chạy 'node scripts/validate.js' tới khi OK, \
 không git commit, và cuối cùng cập nhật Status: DONE kèm ghi chú vào $file. Làm việc tự động đến khi xong, không hỏi lại. Nếu file của bạn đã có nội dung từ lần chạy trước bị gián đoạn: đọc lại, giữ phần tốt, sửa lỗi cú pháp và làm tiếp phần còn thiếu. Tuân thủ tuyệt đối luật 8-9 trong AGENTS.md: không kill tiến trình theo tên, không mở trình duyệt, không npm install."
+# Reader profile for every content task (user request 2026-10-28): explain from the ground up.
+prompt="$prompt NGƯỜI ĐỌC (áp dụng cho mọi nội dung câu hỏi/bài học/đáp án): dev Java khoảng 4 năm nhưng CHƯA tiếp xúc nhiều công nghệ (Kafka, Kubernetes, Redis, AWS, observability...) và đang ôn phỏng vấn. Viết THẬT CHI TIẾT, DỄ HIỂU như dạy người mới: giải thích mọi thuật ngữ ở lần đầu xuất hiện (1 câu, kèm ví dụ đời thường nếu được); đi từng bước 'cái gì → vì sao cần → hoạt động thế nào → ví dụ cụ thể (code/số liệu/sơ đồ ASCII) → lỗi hay gặp → trả lời phỏng vấn thế nào'; không giả định người đọc đã biết; vẫn phải đúng kỹ thuật."
 # back up the files this task owns: a dying free model can leave them half-written or garbled
 bak="logs/backup/$id-$(date +%Y%m%d-%H%M%S)"; mkdir -p "$bak"
 for f in $(grep -m1 '^Owns:' "$file" | grep -o '`[^`]*`' | tr -d '`'); do [ -f "$f" ] && cp "$f" "$bak/"; done
