@@ -1,6 +1,6 @@
 # T263 — Dịch sang tiếng Anh: lessons-collections (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-collections-2.en.js`
 
@@ -16,3 +16,8 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-collections-2.en.js` và `node scripts/check-i18n.js lessons-collections-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đầy đủ **lesson-collections-003** vào `js/i18n/lessons-collections-2.en.js`: title, goals, body, 2 exercises (title/prompt/hints/explain) và 3 check (q/options/explain). Giữ nguyên markup, bảng, blockquote, code block (chỉ dịch comment tiếng Việt trong code); các nhãn: "### Liên hệ phỏng vấn" → "### Interview notes", "> Hiệu năng:" → "> Performance:".
+- Đã chạy: `node --check js/i18n/lessons-collections-2.en.js` OK; `node scripts/check-i18n.js lessons-collections-2` → `OK — 1 mục đã dịch`. `node scripts/validate.js` chỉ còn lỗi pre-existing `lesson-ai-001.js: file không được khai báo trong index.html` — thuộc T299 (fix index), không thuộc file của task này.
+- Phát hiện: lần chạy trước bị gián đoạn đã ghi nội dung T263 (bản Việt, thiếu trường, sai cấu trúc JS) vào sai file `js/i18n/lessons-collections-3.en.js` (file này thuộc T264 — owns lesson-collections-004). Không xoá/sửa vì không thuộc quyền sở hữu; ghi để T264/integrator dọn file stub đó.
+Reviewed-by: check-i18n (translation, no LLM review)
