@@ -1,6 +1,6 @@
 # T276 — Dịch sang tiếng Anh: lessons-microservices (4 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-microservices-1.en.js`
 
@@ -16,3 +16,9 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-microservices-1.en.js` và `node scripts/check-i18n.js lessons-microservices-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Bản dịch đã có sẵn trong commit `14026a6` (task còn để TODO); đã đọc lại và đối chiếu từng đoạn với `js/data/lessons-microservices.js`, giữ nguyên cấu trúc 4 bài.
+- Sửa 3 chỗ bám sát bản gốc hơn: khôi phục ý "command khác id" (lesson-002), "non-blocking retry" với `@RetryableTopic` (lesson-004), và căn lại sơ đồ ASCII compensation (lesson-003).
+- `node --check js/i18n/lessons-microservices-1.en.js` OK; `node scripts/check-i18n.js lessons-microservices-1` → `OK — 4 mục đã dịch.`
+- `node scripts/validate.js` hiện báo lỗi cú pháp ở `js/data/lesson-ai-001.js` (file đang được task khác sửa, không thuộc quyền sở hữu của T276): template literal bị đóng sớm trước dòng `### Bài tập minh họa...`. Đã kiểm tra lại sau vài phút nhưng file vẫn lỗi và không thay đổi; không tự sửa file của task khác. Phần dữ liệu của T276 không gây lỗi validate.
+Reviewed-by: check-i18n (translation, no LLM review)

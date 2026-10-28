@@ -104,7 +104,7 @@ if (inbox.insertIfAbsent(message.id())) { // unique constraint is the arbiter be
 ~~~
 
 ### Distinguishing event and command
-An event typically describes something that happened, while a command requests an action. You should not skip a command just because the payload looks the same; two valid transactions can have the same amount. The idempotency key should come from the originator and be stable across retries. With an HTTP API, store the key, request fingerprint, and result so a repeat call returns the same result.
+An event typically describes something that happened, while a command requests an action. You should not skip a command with a different id just because the payload looks the same; two valid transactions can have the same amount. The idempotency key should come from the originator and be stable across retries. With an HTTP API, store the key, request fingerprint, and result so a repeat call returns the same result.
 
 | Mechanism | Coverage | Limit |
 |---|---|---|
@@ -168,7 +168,7 @@ Example: create order in PENDING state → authorize/charge payment → reserve 
 ~~~text
 Order(PENDING) → Payment(authorized) → Inventory(reserved)
                                       ↘ failure
-                       Payment(refunded) ← compensation
+                 Payment(refunded) ← compensation
 ~~~
 
 Compensation does not erase what happened: a refund can be slow, fees may not be returned, the held inventory may have already expired. Therefore intermediate states must be visible and retryable/reconcilable.
@@ -252,7 +252,7 @@ if (attempt < maxAttempts) schedule(message, now + backoff(attempt));
 else deadLetter(message, error);
 ~~~
 
-Spring Kafka has {{DefaultErrorHandler}} (retry via BackOff) combined with {{DeadLetterPublishingRecoverer}}, and retry topics via {{@RetryableTopic}}; Spring Cloud Stream has retry/DLQ mechanisms per binder and config. The Kafka broker has no built-in DLQ for consumers; the application/framework must publish to another topic. Avoid long synchronous retries on the consumer thread because it reduces throughput, holds the partition, and if the gap between two polls exceeds {{max.poll.interval.ms}} (default 300000 ms) the consumer leaves the group, triggering a rebalance.
+Spring Kafka has {{DefaultErrorHandler}} (retry via BackOff) combined with {{DeadLetterPublishingRecoverer}}, and non-blocking retry via retry topics with {{@RetryableTopic}}; Spring Cloud Stream has retry/DLQ mechanisms per binder and config. The Kafka broker has no built-in DLQ for consumers; the application/framework must publish to another topic. Avoid long synchronous retries on the consumer thread because it reduces throughput, holds the partition, and if the gap between two polls exceeds {{max.poll.interval.ms}} (default 300000 ms) the consumer leaves the group, triggering a rebalance.
 
 | Policy | When to use | Risk |
 |---|---|---|
