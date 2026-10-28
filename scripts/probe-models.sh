@@ -6,7 +6,8 @@ CANDIDATES=${CANDIDATES:-"nemotron-3-ultra-free deepseek-v4.1-flash-free glm-5.3
 # other providers, full model ids (keys via `opencode auth login`); Google AI Studio free tier added 2026-10-25
 EXTRA_CANDIDATES=${EXTRA_CANDIDATES:-"google/gemini-3-flash-preview google/gemini-3.1-flash-lite"}
 # OpenRouter free models (key via `opencode auth login`); probed 2026-10-24, gemma-4-31b / nemotron-3-super did not answer
-OR_CANDIDATES=${OR_CANDIDATES:-"nvidia/nemotron-3-ultra-550b-a55b:free thinkingmachines/inkling:free cohere/north-mini-code:free thinkingmachines/inkling-small:free xingchen-agi/xing4.0-29b-a4b:free"}
+# OpenRouter free models are NOT probed by default: workers on the same account used up the daily free quota the site needs for AI interview/grading (2026-10-28). Opt in with OR_CANDIDATES="model ...".
+OR_CANDIDATES=${OR_CANDIDATES:-""}
 dir=$(mktemp -d)
 for m in $CANDIDATES; do
   ( timeout "${PROBE_TIMEOUT:-75}" opencode run -m "opencode/$m" "Reply with exactly: PONG" 2>/dev/null | grep -q PONG && touch "$dir/$m" ) &

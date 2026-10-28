@@ -4,6 +4,7 @@
 #   scripts/agent-cli.sh T82 codex    -> OpenAI Codex CLI (uses the ChatGPT login on this machine)
 #   scripts/agent-cli.sh T58 gemini   -> Gemini CLI (Gemini API key in ~/.gemini)
 #   scripts/agent-cli.sh T90 agy      -> Antigravity CLI (Google login; AGY_MODEL, see: agy models)
+#   scripts/agent-cli.sh T91 cline    -> Cline CLI (model configured in ~/.cline)
 # Log: logs/<task>.log; start/end lines on stdout (append to logs-runner.txt).
 set -u
 cd "$(dirname "$0")/.."
@@ -38,6 +39,7 @@ case "$runner" in
   opencode) run_agent opencode run -m "${OPENCODE_MODEL:-opencode/deepseek-v4.1-flash-free}" --title "$id" "$prompt" ;;
   codex)  run_agent codex ${CODEX_ARGS:-} exec -s workspace-write --skip-git-repo-check "$prompt" ;;
   gemini) run_agent env GEMINI_CLI_TRUST_WORKSPACE=true gemini -y -p "$prompt" ;;
+  cline)  run_agent cline -y --cwd "$PWD" "$prompt" ;;   # Cline CLI, provider/model from ~/.cline (cline-pass deepseek-v4-flash, free)
   agy)    run_agent /c/Users/Windows/AppData/Local/Microsoft/WinGet/Links/agy.exe --print-timeout 0 --model "${AGY_MODEL:-claude-opus-4-6-thinking}" -p "$prompt" ;;   # shell commands limited to the allowlist in ~/.gemini/antigravity-cli/settings.json
   *) echo "unknown runner $runner"; exit 1 ;;
 esac
