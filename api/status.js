@@ -6,14 +6,16 @@
 'use strict';
 
 const { send, guard, supabaseConfigured } = require('./_lib');
+const { providerStatus, MODEL } = require('./_claude');
 
 module.exports = async function handler(req, res) {
   if (!(await guard(req, res, { maxPerMinute: 30, auth: !!(req.headers['x-app-passcode'] || req.headers.authorization) }))) return;
   send(res, 200, {
     ok: true,
-    ai: !!process.env.OPENROUTER_API_KEY,
+    ai: providerStatus().length > 0,
     run: !!(process.env.JUDGE0_KEY || process.env.JUDGE0_URL),
     accounts: supabaseConfigured(),
-    model: process.env.AI_MODEL || 'openrouter/free',
+    model: MODEL,
+    providers: providerStatus(),   // [{ id, model, cooling }] — no keys
   });
 };

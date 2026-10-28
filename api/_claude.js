@@ -1,125 +1,224 @@
 /*
- * Shared AI call for the serverless functions: one structured-output request to OpenRouter
- * Chat Completions, plus uniform error → HTTP mapping.
- * Env: OPENROUTER_API_KEY (required), AI_MODEL (default openrouter/free).
- * No Anthropic SDK, no Anthropic beta params, no automatic fallback to paid models.
+ * Shared AI call for the serverless functions: one JSON-output chat completion, rotated across the
+ * free-tier providers that have credentials, plus uniform error → HTTP mapping.
+ *
+ * Providers (all OpenAI-compatible chat completions; a provider is on when its key AND model are set,
+ * except OpenRouter whose model defaults to openrouter/free):
+ *   openrouter  OPENROUTER_API_KEY   AI_MODELS (comma list, OpenRouter fallback routing) or AI_MODEL
+ *   groq        GROQ_API_KEY         GROQ_MODEL
+ *   gemini      GEMINI_API_KEY       GEMINI_MODEL
+ *   github      GITHUB_MODELS_TOKEN  GITHUB_MODEL
+ *   cerebras    CEREBRAS_API_KEY     CEREBRAS_MODEL
+ *   mistral     MISTRAL_API_KEY      MISTRAL_MODEL
+ * AI_PROVIDERS=groq,gemini,openrouter sets the order (default: the order above).
+ *
+ * Failover: 429 / 402 / 401 / 403 / 400 / 5xx / timeout / unreadable JSON → next provider (at most
+ * MAX_TRIES per request). A provider that hit a rate limit or its daily quota cools down in this
+ * instance's memory so the next requests skip it. Requests alternate their starting provider.
+ * No Anthropic SDK, no automatic fallback to paid models. Never logs keys or user content.
  */
 'use strict';
 
 const { send } = require('./_lib');
 
-const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
-const MODEL = process.env.AI_MODEL || 'openrouter/free';
+const PROVIDERS = {
+  openrouter: { url: 'https://openrouter.ai/api/v1/chat/completions', key: 'OPENROUTER_API_KEY', model: 'AI_MODEL', label: 'OpenRouter' },
+  groq:       { url: 'https://api.groq.com/openai/v1/chat/completions', key: 'GROQ_API_KEY', model: 'GROQ_MODEL', label: 'Groq' },
+  gemini:     { url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', key: 'GEMINI_API_KEY', model: 'GEMINI_MODEL', label: 'Gemini' },
+  github:     { url: 'https://models.github.ai/inference/chat/completions', key: 'GITHUB_MODELS_TOKEN', model: 'GITHUB_MODEL', label: 'GitHub Models' },
+  cerebras:   { url: 'https://api.cerebras.ai/v1/chat/completions', key: 'CEREBRAS_API_KEY', model: 'CEREBRAS_MODEL', label: 'Cerebras' },
+  mistral:    { url: 'https://api.mistral.ai/v1/chat/completions', key: 'MISTRAL_API_KEY', model: 'MISTRAL_MODEL', label: 'Mistral' },
+};
+const MAX_TRIES = 3;          // providers tried per request
+const TOTAL_BUDGET = 50000;   // ms for all tries together (stays under the function limit)
+const CALL_TIMEOUT = 25000;   // ms per provider call
 
-/**
- * Build the OpenRouter request body. Tries json_schema structured output when a schema is
- * provided; falls back to json_object + system-prompt instruction if the caller did not
- * supply a schema. The server always validates and re-parses the returned JSON.
- */
-function buildBody({ system, prompt, messages, schema, effort = 'medium', maxTokens = 16000 }) {
+const orModels = () => (process.env.AI_MODELS || '').split(',').map(s => s.trim()).filter(Boolean);
+const MODEL = orModels()[0] || process.env.AI_MODEL || 'openrouter/free';
+
+/** Providers with credentials, in AI_PROVIDERS order: [{ id, url, apiKey, model, label }]. */
+function enabledProviders() {
+  const order = (process.env.AI_PROVIDERS || '').split(',').map(s => s.trim().toLowerCase()).filter(id => PROVIDERS[id]);
+  const ids = order.length ? order : Object.keys(PROVIDERS);
+  const out = [];
+  for (const id of ids) {
+    const p = PROVIDERS[id], apiKey = process.env[p.key];
+    const model = id === 'openrouter' ? (orModels()[0] || process.env.AI_MODEL || 'openrouter/free') : process.env[p.model];
+    if (apiKey && model) out.push({ id, url: p.url, apiKey, model, label: p.label });
+  }
+  return out;
+}
+
+// ---------- per-instance rotation + cooldown (warm serverless instances keep module state) ----------
+const cooldown = new Map();   // provider id → epoch ms when it may be used again
+let rotation = 0;
+
+/** Providers to try for this request: available ones first (rotated), then the soonest to recover. */
+function pickOrder(list) {
+  const now = Date.now();
+  const ready = list.filter(p => !(cooldown.get(p.id) > now));
+  const cooling = list.filter(p => cooldown.get(p.id) > now).sort((a, b) => cooldown.get(a.id) - cooldown.get(b.id));
+  const start = ready.length ? rotation++ % ready.length : 0;
+  return ready.slice(start).concat(ready.slice(0, start), cooling).slice(0, MAX_TRIES);
+}
+
+function buildBody(p, { system, prompt, messages, schema, effort, maxTokens, temperature }) {
+  const jsonHint = 'Chỉ trả về MỘT object JSON hợp lệ' + (schema ? ' đúng schema sau: ' + JSON.stringify(schema) : '') + '. Không thêm chữ, không bọc code fence.';
+  const sys = p.id === 'openrouter' && schema ? system : [system, jsonHint].filter(Boolean).join('\n\n');
   const msgList = [];
-  if (system) msgList.push({ role: 'system', content: system });
+  if (sys) msgList.push({ role: 'system', content: sys });
   msgList.push(...(messages || [{ role: 'user', content: prompt }]));
   const body = {
-    model: MODEL,
-    max_tokens: maxTokens,
-    temperature: effort === 'low' ? 0.3 : 0.5,
+    model: p.model,
+    max_tokens: p.id === 'openrouter' ? maxTokens : Math.min(maxTokens, Number(process.env.AI_MAX_TOKENS) || 8000),
+    temperature: temperature != null ? temperature : (effort === 'low' ? 0.3 : 0.5),
     messages: msgList,
   };
-  if (schema) {
-    body.response_format = {
-      type: 'json_schema',
-      json_schema: { name: 'answer', strict: true, schema },
-    };
+  if (p.id === 'openrouter') {
+    const models = orModels();
+    if (models.length > 1) body.models = models;
+    if (schema) {
+      body.response_format = { type: 'json_schema', json_schema: { name: 'answer', strict: true, schema } };
+      body.provider = { require_parameters: true };
+    } else body.response_format = { type: 'json_object' };
   } else {
-    body.response_format = { type: 'json_object' };
+    body.response_format = { type: 'json_object' };   // json_schema support varies; the schema is in the system prompt
   }
   return body;
 }
 
-/**
- * Map an OpenRouter HTTP error to a { status, code, message } outcome ready for fail()/send().
- * Never logs the API key, full prompt, or full user content.
- */
-function mapOpenRouterError(status, message) {
-  if (status === 401) return { status: 503, code: 'bad_key', message: 'OPENROUTER_API_KEY không hợp lệ' };
-  if (status === 402) return { status: 429, code: 'quota_exceeded', message: 'Hết lượt miễn phí OpenRouter hôm nay, thử lại sau' };
-  if (status === 429) return { status: 429, code: 'rate_limited', message: 'OpenRouter đang giới hạn tốc độ, thử lại sau' };
-  if (status === 400) return { status: 400, code: 'bad_request', message: 'Yêu cầu OpenRouter không hợp lệ: ' + message };
-  if (status >= 500) return { status: 502, code: 'provider_error', message: 'OpenRouter/provider lỗi ' + status };
-  return { status: 502, code: 'provider_error', message: 'OpenRouter lỗi ' + status };
-}
-
-function fail(status, error, code) {
-  return { ok: false, status, body: code ? { error, code } : { error } };
-}
-
-/**
- * Ask the AI (via OpenRouter) for a JSON object matching `schema`.
- * Returns { ok: true, result, model } or { ok: false, status, body } ready for send().
- */
-async function askJson({ system, prompt, messages, schema, effort = 'medium', maxTokens = 16000 }) {
-  if (!process.env.OPENROUTER_API_KEY) {
-    return fail(503, 'Server chưa cấu hình OPENROUTER_API_KEY', 'not_configured');
+/** Parse model output that may be wrapped in a code fence or surrounded by prose. */
+function parseJson(text) {
+  if (!text || !String(text).trim()) return undefined;
+  let s = String(text).trim();
+  try { return JSON.parse(s); } catch (e) { /* try harder */ }
+  s = s.replace(/^\s*(```|~~~)[a-z]*\s*/i, '').replace(/\s*(```|~~~)\s*$/, '');
+  try { return JSON.parse(s); } catch (e) { /* try harder */ }
+  const start = s.indexOf('{');
+  if (start < 0) return undefined;
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < s.length; i++) {        // first balanced {...}, string-aware
+    const c = s[i];
+    if (inStr) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') inStr = false; continue; }
+    if (c === '"') inStr = true;
+    else if (c === '{') depth++;
+    else if (c === '}' && --depth === 0) { try { return JSON.parse(s.slice(start, i + 1)); } catch (e) { return undefined; } }
   }
-  const headers = {
-    'Content-Type': 'application/json',
-    Authorization: 'Bearer ' + process.env.OPENROUTER_API_KEY,
-  };
-  // Optional OpenRouter attribution; never contains secrets.
-  const referer = process.env.OPENROUTER_REFERER;
-  const title = process.env.OPENROUTER_APP_TITLE;
-  if (referer) headers['HTTP-Referer'] = referer;
-  if (title) headers['X-Title'] = title;
+  return undefined;
+}
 
-  const body = buildBody({ system, prompt, messages, schema, effort, maxTokens });
+const header = (res, name) => (res && res.headers && typeof res.headers.get === 'function' && res.headers.get(name)) || null;
+const DAILY = /per[- ]day|per day|daily|quota|RESOURCE_EXHAUSTED|tokens per day|requests per day|\bRPD\b|\bTPD\b/i;
+
+/** HH:mm in Vietnam time for an epoch-ms (or epoch-s) reset header. */
+function resetText(v) {
+  let t = Number(v); if (!t) return '';
+  if (t < 1e12) t *= 1000;
+  const d = new Date(t + 7 * 3600 * 1000);
+  return String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0');
+}
+
+/** Map a provider HTTP error to { status, code, message, cool (ms or 0) }. */
+function mapError(p, status, message, res) {
+  const who = p.label;
+  if (status === 401 || status === 403) return { status: 503, code: 'bad_key', message: who + ': API key không hợp lệ hoặc không có quyền', cool: 3600000 };
+  if (status === 402) return { status: 429, code: 'quota_exceeded', message: 'Hết lượt AI miễn phí của ' + who, cool: 3600000 };
+  if (status === 429) {
+    const reset = header(res, 'x-ratelimit-reset') || header(res, 'x-ratelimit-reset-requests');
+    if (DAILY.test(message)) {
+      const at = resetText(reset);
+      const until = Number(reset) ? (Number(reset) < 1e12 ? Number(reset) * 1000 : Number(reset)) - Date.now() : 0;
+      return { status: 429, code: 'quota_exceeded', message: 'Hết lượt AI miễn phí hôm nay của ' + who + (at ? ', thử lại sau ' + at : ''), cool: until > 0 ? until : 3600000 };
+    }
+    const after = Number(header(res, 'retry-after'));
+    return { status: 429, code: 'rate_limited', message: who + ' đang giới hạn tốc độ, thử lại sau', cool: (after > 0 ? after * 1000 : 60000), retry_after: after > 0 ? after : undefined };
+  }
+  if (status === 400) return { status: 400, code: 'bad_request', message: 'Yêu cầu ' + who + ' không hợp lệ: ' + message, cool: 0 };
+  return { status: 502, code: 'provider_error', message: who + ' lỗi ' + status, cool: 30000 };
+}
+
+function fail(status, error, code, extra) {
+  return { ok: false, status, body: Object.assign(code ? { error, code } : { error }, extra || {}) };
+}
+
+/** One call to one provider → { ok, result, model } or { ok: false, status, code, message, cool }. */
+async function callProvider(p, opts, timeoutMs) {
+  const headers = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + p.apiKey };
+  if (p.id === 'openrouter') {   // optional attribution; never contains secrets
+    if (process.env.OPENROUTER_REFERER) headers['HTTP-Referer'] = process.env.OPENROUTER_REFERER;
+    if (process.env.OPENROUTER_APP_TITLE) headers['X-Title'] = process.env.OPENROUTER_APP_TITLE;
+  }
   let res;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
-    res = await fetch(OPENROUTER_URL, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
+    res = await fetch(p.url, { method: 'POST', headers, body: JSON.stringify(buildBody(p, opts)), signal: controller.signal });
   } catch (e) {
-    if (e.name === 'AbortError') return fail(504, 'OpenRouter không phản hồi kịp thời', 'timeout');
-    return fail(502, 'Không kết nối được OpenRouter', 'network');
-  }
+    if (e && e.name === 'AbortError') return { ok: false, status: 504, code: 'timeout', message: p.label + ' không phản hồi kịp thời', cool: 30000 };
+    return { ok: false, status: 502, code: 'network', message: 'Không kết nối được ' + p.label, cool: 30000 };
+  } finally { clearTimeout(timer); }
 
   let data;
-  try { data = await res.json(); } catch (e) { return fail(502, 'OpenRouter trả về phản hồi không phải JSON', 'bad_json'); }
-
+  try { data = await res.json(); } catch (e) { return { ok: false, status: 502, code: 'bad_json', message: p.label + ' trả về phản hồi không phải JSON', cool: 0 }; }
+  if (Array.isArray(data)) data = data[0];          // Gemini sometimes wraps errors in an array
   if (!res.ok) {
-    const msg = (data && data.error && data.error.message) || (data && data.error) || res.statusText;
-    const mapped = mapOpenRouterError(res.status, String(msg));
-    return fail(mapped.status, mapped.message, mapped.code);
+    const err = data && data.error;
+    const msg = (err && (err.message || err.status)) || (typeof err === 'string' ? err : '') || res.statusText || '';
+    return Object.assign({ ok: false }, mapError(p, res.status, String(msg), res));
   }
+  const choice = data && Array.isArray(data.choices) && data.choices[0];
+  if (!choice) return { ok: false, status: 502, code: 'bad_json', message: p.label + ' không trả về choices', cool: 0 };
+  const msg = choice.message || {};
+  const text = msg.content || '';
+  if (!String(text).trim() && !msg.reasoning) return { ok: false, status: 502, code: 'bad_json', message: p.label + ' trả về nội dung trống', cool: 0 };
+  let parsed = parseJson(text);
+  if (parsed === undefined && msg.reasoning) parsed = parseJson(msg.reasoning);
+  if (!parsed || typeof parsed !== 'object') return { ok: false, status: 502, code: 'bad_json', message: 'Không đọc được kết quả từ AI (' + p.label + ')', cool: 0 };
+  return { ok: true, result: parsed, model: data.model || p.model };
+}
 
-  const choices = data && data.choices;
-  if (!Array.isArray(choices) || choices.length === 0) {
-    return fail(502, 'OpenRouter không trả về choices', 'bad_json');
+/**
+ * Ask the AI for a JSON object matching `schema`, failing over across providers.
+ * Returns { ok: true, result, model, provider, attempts } or { ok: false, status, body } ready for send().
+ */
+async function askJson({ system, prompt, messages, schema, effort = 'medium', maxTokens = 16000, temperature, timeoutMs }) {
+  const list = enabledProviders();
+  if (!list.length) return fail(503, 'Server chưa cấu hình AI (OPENROUTER_API_KEY / GROQ_API_KEY / GEMINI_API_KEY…)', 'not_configured');
+  const opts = { system, prompt, messages, schema, effort, maxTokens, temperature };
+  const started = Date.now();
+  const errors = [];
+  for (const p of pickOrder(list)) {
+    const left = TOTAL_BUDGET - (Date.now() - started);
+    if (left < 3000) break;
+    const r = await callProvider(p, opts, Math.min(timeoutMs || CALL_TIMEOUT, left));
+    if (r.ok) { cooldown.delete(p.id); return { ok: true, result: r.result, model: r.model, provider: p.id, attempts: errors.length + 1 }; }
+    if (r.cool) cooldown.set(p.id, Date.now() + r.cool);
+    errors.push(Object.assign({ provider: p.id }, r));
   }
-  const message = choices[0].message;
-  const text = (message && message.content) || '';
-  if (!text || !text.trim()) {
-    return fail(502, 'OpenRouter trả về nội dung trống', 'bad_json');
+  if (errors.length === 1) {   // single provider: keep its precise error
+    const e = errors[0];
+    return fail(e.status, e.message, e.code, e.retry_after ? { retry_after: e.retry_after } : null);
   }
-  let parsed;
-  try { parsed = JSON.parse(text); }
-  catch (e) { return fail(502, 'Không đọc được kết quả từ AI', 'bad_json'); }
-  return { ok: true, result: parsed, model: data.model || MODEL };
+  const tried = errors.map(e => e.provider + ':' + e.code);
+  if (errors.length && errors.every(e => e.code === 'quota_exceeded')) {
+    return fail(429, 'Hết lượt AI miễn phí hôm nay ở mọi nhà cung cấp. Thử lại sau.', 'quota_exceeded', { tried });
+  }
+  return fail(errors.some(e => e.status === 429) ? 429 : 502, 'Tất cả AI miễn phí đang hết lượt hoặc bận. Thử lại sau ít phút.', 'all_providers_busy', { tried });
 }
 
 /** send() the outcome of askJson, applying `shape` to a successful result. */
 function reply(res, outcome, shape) {
   if (!outcome.ok) return send(res, outcome.status, outcome.body);
   const result = shape ? shape(outcome.result) : outcome.result;
-  return send(res, 200, Object.assign(result, { model: outcome.model }));
+  return send(res, 200, Object.assign(result, { model: outcome.model, provider: outcome.provider }));
+}
+
+/** Configured providers for /api/status — ids, models and cooldown only, never keys. */
+function providerStatus() {
+  const now = Date.now();
+  return enabledProviders().map(p => ({ id: p.id, model: p.model, cooling: cooldown.get(p.id) > now }));
 }
 
 const clampScore = (n, min = 1) => Math.min(5, Math.max(min, Math.round(Number(n) || min)));
 
-module.exports = { askJson, reply, clampScore, MODEL };
+module.exports = { askJson, reply, clampScore, MODEL, providerStatus, parseJson };
