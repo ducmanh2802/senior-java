@@ -11,7 +11,9 @@
     'Áp dụng Strategy cho bảng giá theo giờ và Factory cho phân loại xe',
     'Xử lý concurrency khi nhiều xe vào cùng một tầng và tránh deadlock',
   ],
-  body: `### LLD bắt đầu từ câu hỏi làm rõ, không từ sơ đồ
+  body: `**Tóm tắt:** Thiết kế bãi đỗ xe nhiều tầng với Strategy tính phí và Factory tạo xe, tách biệt thuật toán giá thành khỏi logic tìm chỗ và hỗ trợ thêm bảng giá mới mà không sửa code cũ.
+
+### LLD bắt đầu từ câu hỏi làm rõ, không từ sơ đồ
 Trong vòng phỏng vấn LLD, interviewer không muốn bạn vẽ UML ngay lập tức. Họ muốn bạn đi theo quy trình: **làm rõ yêu cầu** (loại xe, số tầng, cách tính phí, có cần đặt trước chỗ không), **xác định entity chính** (Vehicle, ParkingSpot, ParkingFloor, Ticket, PricingStrategy), **vẽ quan hệ** (một tầng chứa nhiều chỗ, một chỗ chứa tối đa một xe), **chọn pattern** và **giải thích vì sao**, rồi mới nói đến concurrency và mở rộng.
 
 ### Bài toán Parking Lot
@@ -224,7 +226,9 @@ class TicketService {
     'So sánh chiến lược điều phối FCFS và SCAN và chọn theo tải',
     'Xử lý mô phỏng theo tick thời gian mà không phụ thuộc đồng hồ thực',
   ],
-  body: `### Vấn đề Elevator
+  body: `**Tóm tắt:** Mô phỏng thang máy bằng State pattern với từng trạng thái là một lớp riêng, kết hợp chiến lược điều phối FCFS/SCAN/LOOK để chọn thang phù hợp theo tải.
+
+### Vấn đề Elevator
 Một toà nhà có nhiều thang máy, mỗi thang có nhiều tầng. Mỗi thang có các trạng thái: {{IDLE}}, {{MOVING_UP}}, {{MOVING_DOWN}}, {{DOOR_OPEN}}. Khi có yêu cầu từ tầng (gọi thang) hoặc từ bên trong (chọn tầng đích), hệ thống phải chọn thang phù hợp, di chuyển, mở cửa và đóng cửa đúng thời điểm.
 
 ### Sơ đồ class
@@ -526,7 +530,9 @@ class DoorOpenState implements ElevatorState {
     'Áp dụng Open/Closed cho kênh mới (Email, SMS, Push)',
     'Xử lý retry và template một cách tách biệt',
   ],
-  body: `### Vấn đề thông báo đa kênh
+  body: `**Tóm tắt:** Xây dựng dịch vụ thông báo đa kênh bằng Observer pattern, cho phép thêm kênh mới (Email, SMS, Push) mà không sửa code gửi, cùng cơ chế retry và template tách biệt.
+
+### Vấn đề thông báo đa kênh
 Một hệ thống cần gửi thông báo cho người dùng qua nhiều kênh: Email, SMS, Push notification. Mỗi kênh có định dạng khác nhau, thời gian gửi khác nhau, và có thể thất bại. Nếu viết một hàm {{sendNotification}} chứa toàn bộ logic cho từng kênh, mỗi lần thêm kênh mới (ví dụ WhatsApp) bạn phải sửa hàm đó — vi phạm Open/Closed.
 
 ### Sơ đồ class
@@ -764,7 +770,9 @@ class NotificationService {
     'Tính tiền thừa ít đồng nhất khi số lượng mỗi mệnh giá có hạn',
     'Xử lý hết hàng, thiếu tiền và hết tiền lẻ mà không làm mất tiền người dùng',
   ],
-  body: `### Vấn đề Vending Machine
+  body: `**Tóm tắt:** Máy bán hàng tự động dùng State pattern quản lý luồng mua hàng, tính tiền thừa ít đồng nhất bằng quy hoạch động và kiểm tra đủ điều kiện trước khi nhả hàng.
+
+### Vấn đề Vending Machine
 Một máy bán hàng tự động có các trạng thái: {{WAITING_FOR_MONEY}}, {{SELECTING_ITEM}}, {{DISPENSING}}. Người dùng đưa tiền vào, chọn sản phẩm, nhận sản phẩm và nhận tiền thừa. Mỗi trạng thái có hành vi khác nhau: ở trạng thái chờ tiền, không thể chọn sản phẩm; ở trạng thái chọn sản phẩm, không thể thêm tiền; ở trạng thái nhả hàng, không thể đổi ý.
 
 ### Sơ đồ class
@@ -1240,7 +1248,9 @@ class VendingMachine {
     'Thiết kế luồng hai pha hold/confirm với hold có hạn và đồng hồ truyền vào',
     'Bảo đảm nhiều thread cùng chọn một ghế thì chỉ một bên thắng',
   ],
-  body: `### Vòng LLD cho bài toán đặt vé xem phim
+  body: `**Tóm tắt:** Dịch vụ đặt vé xem phim dùng luồng hold/confirm có hạn, đồng hồ tiêm vào và synchronized để chống race condition khi nhiều người cùng chọn ghế.
+
+### Vòng LLD cho bài toán đặt vé xem phim
 Đặt vé xem phim là bài LLD kinh điển về **tài nguyên hiếm và có tranh chấp**: một suất chiếu chỉ có vài trăm ghế, nhưng hàng trăm request có thể cùng chọn một hàng ghế đẹp trong một giây. Trong buổi phỏng vấn, đừng vẽ sơ đồ ngay — hãy làm rõ yêu cầu trước: một suất chiếu (show) có một lưới ghế theo hàng và cột; một khách có thể giữ nhiều ghế; **ghế bị giữ tạm (hold)** trong vài phút để khách có thời gian thanh toán; nếu hết giờ mà chưa xác nhận thì ghế tự nhả về trạng thái trống; và tuyệt đối không được có hai request ghi đè lên cùng một ghế. Hai phút chốt yêu cầu đúng cách ghi điểm hơn là một sơ đồ đẹp nhưng sai luồng.
 
 ### Sơ đồ class
@@ -1526,7 +1536,9 @@ class BookingService {
     'Giữ net balance cho mỗi người và từ chối expense khi phần chia không khớp tổng',
     'Tối giản số giao dịch thanh toán bằng netting theo kiểu greedy',
   ],
-  body: `### Đặt vấn đề: một expense nhiều kiểu chia
+  body: `**Tóm tắt:** Chia bill nhóm bằng Strategy pattern (chia đều/percent/số chỉ định), giữ net balance mỗi người và tối giản giao dịch thanh toán bằng netting greedy.
+
+### Đặt vấn đề: một expense nhiều kiểu chia
 Splitwise (chia bill nhóm) có ba dữ kiện: một expense có **người trả (payer)**, tổng tiền, và **cách chia** (chia đều, theo percent, theo số tiền chỉ định). Hệ thống không cần lưu nợ từng cặp thô; chỉ cần một bản ghi **net balance** của mỗi người: dương là được nợ, âm là còn thiếu. Từ net này bạn có thể đưa ra mức thanh toán ít giao dịch nhất. Bài này luyện ra một quyết định kỹ thuật quan trọng: tiền là số nguyên (cent, kiểu long), không dùng double — một ví với 997 cent vẫn phải khớp đúng từng cent.
 
 ### Sơ đồ class
@@ -1995,7 +2007,9 @@ class Ledger {
     'Hiểu vì sao format là Decorator bọc appender chứ không nằm trong Logger',
     'Thêm kênh hoặc filter mới mà không sửa Logger (Open/Closed)',
   ],
-  body: `### Vòng LLD cho logging framework
+  body: `**Tóm tắt:** Framework logging dùng filter chain quyết định event đi hay không, Decorator bọc appender định dạng độc lập, và thêm kênh/lọc mới mà không sửa Logger.
+
+### Vòng LLD cho logging framework
 Logging là bài LLD nhỏ nhưng khéo: một Logger nhận một event (level, message, timestamp), quyết định **cho đi hay không** (filter), rồi **gửi cho ai** (appender), và **dạng gì** (format). Hỏi làm rõ trước: có mấy level; một log có thể đi tới nhiều nơi đồng thời không (console, file, giám sát); format có khác nhau theo nơi gửi không; log chứa dữ liệu nhạy cảm thì xử lý thế nào? Bài này dùng bộ test với một appender nhớ trong bộ nhớ nên chỉ tập trung vào phần logic.
 
 ### Sơ đồ class
@@ -2308,7 +2322,9 @@ class Logger {
     'Giới hạn kích thước lịch sử undo bằng một deque có giới hạn',
     'Gộp các ký tự gõ liên tiếp thành một command để undo trả về cả từ',
   ],
-  body: `### Vòng LLD cho editor với Undo/Redo
+  body: `**Tóm tắt:** Text editor dùng Command pattern cho undo/redo, gộp các thao tác gõ liên tiếp và giới hạn lịch sử bằng deque để tiết kiệm bộ nhớ.
+
+### Vòng LLD cho editor với Undo/Redo
 Trong word processor hoặc editor (VS Code, Google Docs) mỗi lần nhận ký tự là một diff nhỏ — một file có hàng nghìn chữ cái vẫn phải undo được *cả cụm*, không phải từng ký tự một. Bài phỏng vấn LLD này khai thác Command pattern: mỗi thao tác (gõ, xoá) là một command biết tự thực thi và tự hoàn tác; history là tập command; redo là tái thực thi. Đi hai câu hỏi làm rõ trước: lịch sử có giới hạn bằng bao nhiêu (bộ nhớ có hạn)? Hai lần gõ liền nhau tính là một thao tác hay hai? (Câu thứ hai ra câu "gộp": gõ liên tiếp liền kề thì gộp vào một lệnh.)
 
 ### Sơ đồ class
