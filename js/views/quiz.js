@@ -130,16 +130,24 @@ App.i18n.add({
     return all.filter(q => Q.topics.indexOf(q.topic) >= 0);
   }
 
-  /** Chuẩn bị câu hỏi: xáo trộn options và nhớ index đáp án đúng. */
+  /** Chuẩn bị câu hỏi: xáo trộn options và nhớ index đáp án đúng (multi: mảng index, tăng dần). */
   function prepare(q) {
-    const opts = q.options.map((text, i) => ({ text: text, correct: i === q.answer }));
+    const ans = Array.isArray(q.answer) ? q.answer : [q.answer];
+    const opts = q.options.map((text, i) => ({ text: text, correct: ans.indexOf(i) >= 0 }));
     const shuffled = App.shuffle(opts);
+    const idx = shuffled.map((o, i) => (o.correct ? i : -1)).filter(i => i >= 0);
     return {
       q: q,
       options: shuffled.map(o => o.text),
-      answer: shuffled.findIndex(o => o.correct),
+      multi: q.multi === true,
+      answers: idx,
+      answer: idx[0],
     };
   }
+
+  /** Câu multi: các lựa chọn đang tick (chưa xác nhận). */
+  let pending = [];
+  const isRight = (item, i) => item.answers.indexOf(i) >= 0;
 
   /** Điểm cao nhất gần đây. */
   function bestScore() {
@@ -202,6 +210,10 @@ App.i18n.add({
           '<span class="small muted">' + available + ' ' + App.t('quiz.available') + '</span>' +
         '</div>' +
       '</section>' +
+      (App.quiz().some(q => q.topic === 'claude') ?
+        '<section class="card quiz-exam-cta"><h3>📝 Thi thử chứng chỉ Claude (CCDV-F)</h3>' +
+        '<p class="small muted">53 câu theo trọng số domain, bấm giờ, không hiện đáp án khi đang thi, chấm thang 1000 (đậu 720).</p>' +
+        '<a class="btn primary" href="#/exam/claude">Vào thi thử</a></section>' : '') +
       '<section class="card quiz-history">' +
         '<h3>' + App.t('quiz.bestScore') + (best && best.pct >= 0 ? ': ' + best.pct + '% (' + best.correct + '/' + best.total + ')' : '') + '</h3>' +
         (histRows ? '<ul class="quiz-hist">' + histRows + '</ul>' : '<p class="muted small">' + App.t('quiz.noHistory') + '</p>') +
@@ -227,27 +239,30 @@ App.i18n.add({
     const item = Q.list[Q.idx];
     if (!item) return '';
     const answered = Q.answers[Q.idx];
+    const picked = answered ? answered.picks : pending;
     const opts = item.options.map((text, i) => {
       let cls = '';
       if (answered) {
-        if (i === item.answer) cls = ' correct';
-        else if (i === answered.picked) cls = ' wrong';
-      }
+        if (isRight(item, i)) cls = ' correct';
+        else if (picked.indexOf(i) >= 0) cls = ' wrong';
+      } else if (item.multi && picked.indexOf(i) >= 0) cls = ' picked';
       return '<li><button type="button" class="quiz-opt' + cls + '" data-opt="' + i + '"' +
-        (answered ? ' disabled' : '') + '>' +
-        '<span class="quiz-opt-key">' + 'ABCD'[i] + '</span>' +
+        (answered ? ' disabled' : '') + (item.multi ? ' aria-pressed="' + (picked.indexOf(i) >= 0) + '"' : '') + '>' +
+        '<span class="quiz-opt-key">' + (item.multi ? (picked.indexOf(i) >= 0 ? '☑' : '☐') : 'ABCDEF'[i]) + '</span>' +
         '<span class="quiz-opt-text">' + mdInline(text) + '</span>' +
-        (answered && i === item.answer ? '<span class="badge ok">Đúng</span>' : '') +
-        (answered && i === answered.picked && i !== item.answer ? '<span class="badge bad">Sai</span>' : '') +
+        (answered && isRight(item, i) ? '<span class="badge ok">Đúng</span>' : '') +
+        (answered && picked.indexOf(i) >= 0 && !isRight(item, i) ? '<span class="badge bad">Sai</span>' : '') +
         '</button></li>';
     }).join('');
 
     return quizHeader() +
       '<section class="card quiz-q">' +
         '<div class="md quiz-q-text"' + (item.q.lang === 'en' ? ' lang="en"' : '') + '>' + App.md(item.q.q) + '</div>' +
+        (item.multi && !answered ? '<p class="small"><span class="badge warn">Chọn ' + item.answers.length + ' đáp án</span></p>' : '') +
         '<ul class="quiz-opts">' + opts + '</ul>' +
+        (item.multi && !answered ? '<button type="button" class="btn" id="quizConfirm"' + (pending.length === item.answers.length ? '' : ' disabled') + '>Xác nhận <kbd>Enter</kbd></button>' : '') +
         (answered ? '<div class="quiz-explain">' +
-          '<h4>' + (answered.picked === item.answer ? 'Chính xác!' : 'Chưa đúng') + '</h4>' +
+          '<h4>' + (answered.correct ? 'Chính xác!' : 'Chưa đúng') + '</h4>' +
           '<div class="md">' + App.md(item.q.explain) + '</div>' +
           '<div class="quiz-report"><a class="btn sm" target="_blank" rel="noopener noreferrer" href="' +
           App.esc('https://github.com/ducmanh2802/senior-java/issues/new?title=' + encodeURIComponent('Sai nội dung: ' + item.q.id) + '&body=' + encodeURIComponent('ID: ' + item.q.id + '\nTrang: ' + location.href + '\n\nSai ở đâu / nên sửa thế nào:\n') + '&labels=content') +
@@ -293,7 +308,7 @@ App.i18n.add({
 
     const wrongHtml = wrong.map((a, i) => {
       const item = Q.list.filter(x => x.q.id === a.q.id)[0] || null;
-      const ansText = item ? item.options[item.answer] : '';
+      const ansText = item ? item.answers.map(i => item.options[i]).join(' · ') : '';
       return '<details class="card quiz-wrong-item">' +
         '<summary><span class="quiz-wrong-q">' + (i + 1) + '. ' + App.esc(a.q.q) + '</span></summary>' +
           '<div class="quiz-wrong-body">' +
@@ -329,7 +344,7 @@ App.i18n.add({
     const list = App.shuffle(poolList).slice(0, Q.count).map(prepare);
     Q.list = list;
     Q.idx = 0;
-    Q.answers = [];
+    Q.answers = []; pending = [];
     Q.correct = 0;
     Q.seconds = 0;
     Q.startedAt = Date.now();
@@ -345,7 +360,7 @@ App.i18n.add({
     if (!list.length) return;
     Q.list = list;
     Q.idx = 0;
-    Q.answers = [];
+    Q.answers = []; pending = [];
     Q.correct = 0;
     Q.seconds = 0;
     Q.startedAt = Date.now();
@@ -373,11 +388,29 @@ App.i18n.add({
   function pick(optIndex) {
     if (Q.phase !== 'quiz' || Q.answers[Q.idx]) return;
     const item = Q.list[Q.idx];
-    if (!item) return;
-    const correct = optIndex === item.answer;
-    Q.answers[Q.idx] = { q: item.q, picked: optIndex, correct: correct };
+    if (!item || optIndex < 0 || optIndex >= item.options.length) return;
+    if (item.multi) {                       // tick/bỏ tick, xác nhận khi đủ số đáp án
+      const p = pending.indexOf(optIndex);
+      if (p >= 0) pending.splice(p, 1); else if (pending.length < item.answers.length) pending.push(optIndex);
+      render(rootEl);
+      return;
+    }
+    record(item, [optIndex]);
+  }
+
+  /** Ghi nhận câu trả lời (mảng lựa chọn); chỉ đúng khi khớp toàn bộ đáp án. */
+  function record(item, picks) {
+    const sorted = picks.slice().sort((a, b) => a - b);
+    const correct = sorted.length === item.answers.length && sorted.every((v, i) => v === item.answers[i]);
+    Q.answers[Q.idx] = { q: item.q, picked: picks[0], picks: picks, correct: correct };
     if (correct) Q.correct += 1;
+    pending = [];
     render(rootEl);
+  }
+
+  function confirmMulti() {
+    const item = Q.list[Q.idx];
+    if (item && item.multi && !Q.answers[Q.idx] && pending.length === item.answers.length) record(item, pending.slice());
   }
 
   /** Sang câu tiếp / xem kết quả. */
@@ -442,7 +475,7 @@ App.i18n.add({
       if (fresh) fresh.addEventListener('click', () => {
         Q.phase = 'setup';
         Q.list = [];
-        Q.answers = [];
+        Q.answers = []; pending = [];
         Q.correct = 0;
         Q.seconds = 0;
         render(root);
@@ -455,19 +488,21 @@ App.i18n.add({
     }));
     const nxt = document.getElementById('quizNext');
     if (nxt) nxt.addEventListener('click', next);
+    const conf = document.getElementById('quizConfirm');
+    if (conf) conf.addEventListener('click', confirmMulti);
   }
 
-  /** Phím tắt: 1–4 chọn đáp án, Enter sang câu tiếp. */
+  /** Phím tắt: 1–6 chọn đáp án, Enter xác nhận (multi) / sang câu tiếp. */
   function onKeyDown(e) {
     if (Q.phase !== 'quiz') return;
-    if (e.key >= '1' && e.key <= '4') {
+    if (e.key >= '1' && e.key <= '6') {
       e.preventDefault();
       pick(Number(e.key) - 1);
       return;
     }
     if (e.key === 'Enter') {
       e.preventDefault();
-      next();
+      if (!Q.answers[Q.idx]) confirmMulti(); else next();
     }
   }
 
@@ -477,7 +512,7 @@ App.i18n.add({
       stopTimer();
       Q.phase = 'setup';
       Q.list = [];
-      Q.answers = [];
+      Q.answers = []; pending = [];
       Q.correct = 0;
       Q.seconds = 0;
       Q.topics = [];
