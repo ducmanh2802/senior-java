@@ -4186,4 +4186,172 @@ Refund -> reversal posting -> balance policy
   follow: ['Pending points giữ bao lâu khi settlement trễ?', 'Balance âm có được phép không và ai duyệt?', 'Bạn dựng lại balance sau bug earn rule thế nào?'],
   tags: ['loyalty', 'cashback', 'points ledger', 'idempotency', 'reconciliation']
 },
+{
+  id: 'design-028',
+  topic: 'design',
+  level: 'senior',
+  q: 'API xuất báo cáo đang chạy đồng bộ 2–5 phút: load balancer cắt ở 60 giây, người dùng bấm lại tạo báo cáo trùng, deploy giữa chừng làm mất việc. Bạn chuyển nó sang async job thế nào: hợp đồng API, bảng jobs, worker lấy việc, lease/heartbeat, reaper, báo kết quả và retry?',
+  a: `**Tóm tắt:** Tách "nhận yêu cầu" khỏi "làm việc": API ghi một dòng vào bảng **jobs** rồi trả ngay **202 Accepted** kèm link trạng thái; worker lấy job bằng {{SELECT ... FOR UPDATE SKIP LOCKED}}, giữ job bằng **lease có heartbeat**, một **reaper** thu hồi job của worker đã chết. Client theo dõi qua **status API** (hoặc webhook), mọi bước đều **idempotent** và retry có **exponential backoff + jitter**.
+
+### Vì sao đồng bộ hỏng
+- Request giữ một thread và một kết nối HTTP suốt 5 phút; 200 người cùng bấm là cạn thread pool, ảnh hưởng cả API khác.
+- Proxy, load balancer, gateway đều có timeout (thường 30–60 s): server vẫn chạy nhưng client đã nhận lỗi 504 và bấm lại, tạo thêm một báo cáo.
+- Deploy hoặc pod restart giết request đang chạy, không ai biết để chạy lại.
+
+### Luồng mới
+~~~text
+Client --POST /reports (Idempotency-Key: k1)--> API --INSERT jobs--> DB
+       <-- 202 Accepted, Location: /jobs/123 ---
+Worker --claim (SKIP LOCKED)--> DB; chạy job; heartbeat mỗi 30s; ghi file lên S3
+Worker --UPDATE status=SUCCEEDED, result_url--> DB  (--> webhook nếu client đăng ký)
+Client --GET /jobs/123--> {status: RUNNING, progress: 40}  ... {status: SUCCEEDED, result_url}
+~~~
+
+### Hợp đồng API
+- {{POST /reports}} với header {{Idempotency-Key}}: unique theo {{(tenant_id, idempotency_key)}}. Bấm lại cùng key thì trả lại **đúng job cũ**, không tạo job mới.
+- Trả **202 Accepted**, header {{Location: /jobs/123}}, body {{jobId}} và {{status}}. Có thể thêm {{Retry-After: 5}} gợi ý khoảng poll.
+- {{GET /jobs/123}}: {{status}}, {{progress}}, {{error}}, {{result_url}} (presigned URL có hạn, không trả file qua API).
+- {{POST /jobs/123/cancel}}: đặt cờ huỷ; worker kiểm tra cờ ở mỗi checkpoint.
+
+### Bảng jobs
+~~~sql
+CREATE TABLE jobs (
+  id              BIGSERIAL PRIMARY KEY,
+  tenant_id       BIGINT NOT NULL,
+  idempotency_key TEXT   NOT NULL,
+  type            TEXT   NOT NULL,
+  payload         JSONB  NOT NULL,
+  status          TEXT   NOT NULL,       -- QUEUED, RUNNING, SUCCEEDED, FAILED, CANCELLED
+  attempts        INT    NOT NULL DEFAULT 0,
+  max_attempts    INT    NOT NULL DEFAULT 5,
+  run_after       TIMESTAMPTZ NOT NULL DEFAULT now(),  -- dùng cho backoff
+  lease_owner     TEXT,
+  lease_until     TIMESTAMPTZ,
+  progress        INT, result_url TEXT, last_error TEXT,
+  UNIQUE (tenant_id, idempotency_key)
+);
+CREATE INDEX jobs_ready ON jobs (run_after) WHERE status = 'QUEUED';
+~~~
+Worker claim bằng một transaction **ngắn**: chọn dòng QUEUED có {{run_after <= now()}} với {{FOR UPDATE SKIP LOCKED}}, đổi sang RUNNING, đặt {{lease_owner}}, {{lease_until = now() + 90s}}, tăng {{attempts}}, rồi commit ngay. Không giữ transaction trong lúc chạy job 5 phút.
+
+### Lease, heartbeat và fencing
+Lease nghĩa là "job này thuộc worker W tới thời điểm T". Worker gia hạn định kỳ:
+~~~java
+// chạy mỗi 30s trong lúc job đang làm; lease 90s = chịu được 2 lần heartbeat lỡ
+int n = jdbc.update("""
+    UPDATE jobs SET lease_until = now() + interval '90 seconds', progress = ?
+     WHERE id = ? AND lease_owner = ? AND attempts = ? AND status = 'RUNNING'
+    """, progress, jobId, workerId, attempt);
+if (n == 0) {          // lease đã bị reaper thu hồi và giao cho worker khác
+    cancelled.set(true); // dừng ngay, không được ghi kết quả
+}
+~~~
+Điều kiện {{lease_owner = ? AND attempts = ?}} là **fencing**: worker bị GC pause 3 phút tỉnh dậy không thể ghi đè kết quả của lần chạy mới. Lệnh hoàn tất cũng phải có cùng điều kiện. Dùng {{now()}} của DB, không dùng đồng hồ của từng pod.
+
+### Reaper và retry
+Một tiến trình chạy mỗi 30 s (chỉ cần một instance, ví dụ giữ advisory lock):
+- Job RUNNING có {{lease_until < now()}}: nếu {{attempts < max_attempts}} thì về QUEUED với {{run_after = now() + backoff}}, ngược lại FAILED.
+- Backoff: {{min(cap, base × 2^attempts)}} + jitter ngẫu nhiên. Ví dụ base 30 s, cap 30 phút: 30 s, 1 phút, 2 phút, 4 phút... Jitter tránh 1.000 job lỗi cùng lúc retry cùng giây.
+- Phân loại lỗi: timeout, 5xx, deadlock thì retry; dữ liệu sai, 4xx thì FAILED ngay, retry chỉ phí tài nguyên.
+
+### Báo kết quả
+| Cách | Ưu | Nhược |
+|---|---|---|
+| Polling status API | đơn giản, client nào cũng làm được | tốn request; cần cache/ETag |
+| Webhook | realtime, không tốn poll | client phải có endpoint public; phải ký HMAC, retry, client dedup theo event id |
+| SSE/WebSocket | realtime cho UI | giữ kết nối, khó qua một số proxy |
+
+Thực tế: luôn có status API (nguồn sự thật), thêm webhook hoặc SSE như tối ưu.
+
+### Pitfall production
+- Handler không idempotent: retry tạo hai file, gửi hai email. Ghi kết quả theo key cố định ({{reports/123.xlsx}}) để chạy lại thì ghi đè.
+- Graceful shutdown: khi nhận SIGTERM, ngừng claim job mới, chờ job đang chạy tới checkpoint hoặc trả về QUEUED; nếu không, job chỉ được thu hồi sau khi lease hết hạn.
+- Bảng jobs phình to và (với PostgreSQL) bloat vì UPDATE liên tục: chuyển job xong sang bảng lưu trữ hoặc partition theo ngày, xoá theo partition.
+- Không giới hạn số job mỗi tenant: một tenant gửi 10.000 job chiếm hết worker. Đặt quota và claim công bằng theo tenant.
+
+> Senior tip: metric quan trọng nhất là **tuổi của job QUEUED lâu nhất** và **số lần reaper thu hồi lease**. Reaper thu hồi nhiều thường không phải worker chết mà do heartbeat chạy chung thread pool với job nặng nên bị trễ: tách heartbeat ra thread riêng, và đặt lease ít nhất 3 lần chu kỳ heartbeat.`,
+  follow: [
+    'Worker bị GC pause dài hơn lease rồi tỉnh dậy: điều gì ngăn nó ghi đè kết quả?',
+    'Khi nào bạn thay bảng jobs bằng SQS hoặc Temporal?',
+    'Bạn thiết kế webhook retry và chữ ký HMAC thế nào để client chống giả mạo và chống trùng?'
+  ],
+  tags: ['async job', '202 Accepted', 'SKIP LOCKED', 'lease', 'heartbeat', 'reaper', 'idempotency', 'backoff', 'webhook'],
+  refs: [
+    { type: 'doc', title: 'PostgreSQL: SELECT, The Locking Clause', url: 'https://www.postgresql.org/docs/current/sql-select.html' },
+    { type: 'doc', title: 'RFC 9110: HTTP Semantics', url: 'https://www.rfc-editor.org/rfc/rfc9110' },
+    { type: 'article', title: 'ZemIT: Kafka có phải queue thật và bạn vẫn', url: 'https://zemit.substack.com/p/kafka-a-co-queue-that-va-ban-van' }
+  ]
+},
+{
+  id: 'design-029',
+  topic: 'design',
+  level: 'lead',
+  q: 'Hệ thống cần chạy background job (gửi email, resize ảnh, đồng bộ đối tác). Bạn so sánh hàng đợi bằng bảng DB, Redis Streams, message broker (RabbitMQ/SQS) và Kafka thế nào, và khi nào chọn cái nào?',
+  a: `**Tóm tắt:** Chọn theo 4 câu hỏi: job có phải ghi **cùng transaction** với dữ liệu nghiệp vụ không, cần **ack/retry/delay từng job** không, **throughput** bao nhiêu, và có cần **replay / nhiều consumer** không. Bảng DB thắng ở tính nhất quán và đơn giản; Redis Streams thắng ở độ trễ nhưng độ bền yếu hơn; RabbitMQ/SQS là work queue chuẩn; Kafka hợp event stream hơn là job queue.
+
+### 1. Bảng DB (SELECT ... FOR UPDATE SKIP LOCKED)
+- Cơ chế: job là một dòng; worker claim bằng {{FOR UPDATE SKIP LOCKED}} để nhiều worker không lấy trùng; lease + reaper thu hồi job treo.
+- Điểm mạnh lớn nhất: **INSERT job cùng transaction** với dữ liệu nghiệp vụ. Đơn hàng commit thì job gửi email chắc chắn tồn tại; rollback thì job cũng biến mất. Không có dual-write.
+- Query được: "job nào lỗi của tenant X tuần này" chỉ là một câu SQL.
+- Giới hạn: mỗi job là nhiều lần UPDATE; worker poll liên tục tạo tải cho DB chính. Thường đủ cho vài chục đến vài trăm job/s; cao hơn thì phải đo. PostgreSQL bị bloat vì UPDATE/DELETE nhiều, cần autovacuum tốt hoặc partition theo ngày. Có thể dùng {{LISTEN/NOTIFY}} để đánh thức worker thay vì poll dày.
+
+### 2. Redis Streams
+- Cơ chế: {{XADD jobs * ...}} thêm job; consumer group đọc bằng {{XREADGROUP}}; mỗi message đã giao nằm trong **PEL (pending entries list)** tới khi worker {{XACK}}. Worker chết thì worker khác dùng {{XAUTOCLAIM}} để nhận lại message pending quá lâu; {{XPENDING}} cho biết số lần giao, dùng để đẩy poison message ra.
+~~~text
+XADD jobs * type email to a@x.com          -> 1730000000000-0
+XREADGROUP GROUP workers w1 COUNT 10 BLOCK 5000 STREAMS jobs >
+XACK jobs workers 1730000000000-0
+XAUTOCLAIM jobs workers w2 60000 0-0 COUNT 10   -- nhận lại job pending > 60s
+~~~
+- Điểm mạnh: độ trễ thấp (mili giây), throughput cao, có sẵn nếu đã dùng Redis.
+- Điểm yếu: dữ liệu ở RAM; AOF với {{appendfsync everysec}} có thể mất khoảng 1 giây ghi; replication bất đồng bộ nên failover có thể mất job đã được xác nhận ghi. Không có delay/retry có lịch sẵn; phải tự làm (ví dụ sorted set theo thời điểm chạy). Stream phải được cắt ({{MAXLEN}}) kẻo đầy RAM.
+
+### 3. Message broker: RabbitMQ, SQS
+- **SQS**: nhận message, message bị ẩn trong **visibility timeout**; xoá thì xong, không xoá thì hiện lại để retry. Quá {{maxReceiveCount}} thì chuyển sang DLQ (redrive policy). Delay tới 15 phút, giữ message tối đa 14 ngày. Không phải vận hành gì.
+- **RabbitMQ**: manual ack/nack, {{prefetch}} giới hạn số message mỗi worker giữ, dead-letter exchange, TTL, priority; dùng **quorum queue** để chịu được mất node.
+- Điểm mạnh: đúng ngữ nghĩa work queue: worker rảnh lấy việc, ack từng job, retry/DLQ có sẵn, scale worker tự do.
+- Điểm yếu: không ghi cùng transaction với DB, cần outbox nếu job phải khớp tuyệt đối với dữ liệu nghiệp vụ; không replay job đã ack.
+
+### 4. Kafka
+- Hợp khi job thực chất là **phản ứng với một event** đã nằm trong Kafka, cần nhiều consumer độc lập và replay.
+- Không hợp cho job dài, không đều: head-of-line blocking theo partition, số worker bị giới hạn bởi partition, retry/DLQ phải tự xây bằng topic phụ. Share group (Kafka 4.x) cải thiện chuyện này nhưng còn mới và không giữ thứ tự.
+
+### Bảng so sánh
+| Tiêu chí | Bảng DB | Redis Streams | RabbitMQ / SQS | Kafka |
+|---|---|---|---|---|
+| Enqueue cùng transaction DB | **có** | không | không (cần outbox) | không (cần outbox) |
+| Ack/retry từng job | tự làm, dễ | PEL + XAUTOCLAIM | **có sẵn** | không (consumer group) |
+| Delay / lịch chạy | **dễ** ({{run_after}}) | tự làm | có (giới hạn) | tự làm |
+| Độ bền | cao (WAL) | trung bình | cao (quorum queue / SQS) | cao |
+| Throughput | thấp–trung bình | cao | trung bình–cao | rất cao |
+| Replay | query lại | trong giới hạn MAXLEN | không | **có** |
+| Vận hành thêm | không | Redis có sẵn | trung bình / gần 0 (SQS) | cao |
+
+### Cách chọn
+1. Job phải khớp tuyệt đối với dữ liệu nghiệp vụ, vài chục job/s: **bảng DB**. Không thêm hạ tầng.
+2. Trên AWS, job độc lập, cần retry/DLQ/delay: **SQS**. Nếu job sinh ra từ transaction DB, dùng outbox đẩy sang SQS.
+3. Cần routing phức tạp, priority, chạy on-prem: **RabbitMQ**.
+4. Cần độ trễ mili giây, chấp nhận mất rất ít và job idempotent, đã có Redis: **Redis Streams**.
+5. Job là hệ quả của event cần nhiều hệ thống cùng nghe, cần replay: **Kafka**, có thể bridge sang queue cho phần việc nặng.
+
+### Pitfall production
+- Chọn Kafka cho "queue email" rồi phải tự viết retry topic, DLT, delay: tốn gấp nhiều lần so với SQS.
+- Dùng Redis List ({{LPUSH}}/{{BRPOP}}) làm queue: worker chết sau khi pop là **mất job**, vì không có PEL. Streams hoặc pattern có danh sách đang xử lý mới an toàn.
+- Bảng DB queue nằm chung DB nghiệp vụ, worker poll 100 lần/s mỗi pod: DB tốn CPU chỉ để trả lời "không có job".
+
+> Senior tip: ở mọi lựa chọn, ngữ nghĩa thực tế đều là **at-least-once**, nên handler idempotent là bắt buộc, không phải tuỳ chọn. Bắt đầu bằng bảng DB hoặc SQS; chỉ chuyển sang thứ phức tạp hơn khi metric (tuổi job, tải DB, throughput) cho thấy cần, và ghi lại lý do bằng ADR.`,
+  follow: [
+    'Bạn migrate từ bảng DB queue sang SQS mà không mất hoặc chạy trùng job thế nào?',
+    'Redis failover làm mất một ít job đã XADD: bạn phát hiện và bù thế nào?',
+    'Khi nào cần priority queue, và mỗi lựa chọn làm priority ra sao?'
+  ],
+  tags: ['job queue', 'SKIP LOCKED', 'Redis Streams', 'RabbitMQ', 'SQS', 'Kafka', 'background job', 'trade-off'],
+  refs: [
+    { type: 'doc', title: 'Redis Streams', url: 'https://redis.io/docs/latest/develop/data-types/streams/' },
+    { type: 'doc', title: 'Amazon SQS visibility timeout', url: 'https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-visibility-timeout.html' },
+    { type: 'doc', title: 'RabbitMQ Quorum Queues', url: 'https://www.rabbitmq.com/docs/quorum-queues' },
+    { type: 'doc', title: 'PostgreSQL: SELECT, The Locking Clause', url: 'https://www.postgresql.org/docs/current/sql-select.html' },
+    { type: 'article', title: 'ZemIT: Kafka có phải queue thật và bạn vẫn', url: 'https://zemit.substack.com/p/kafka-a-co-queue-that-va-ban-van' }
+  ]
+},
 );

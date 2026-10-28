@@ -2227,6 +2227,243 @@ end
     'Khi nào nên migrate từ shared-schema lên schema-per-tenant?'
   ],
   tags: ['multi-tenancy', 'database', 'cost', 'migration', 'RLS', 'schema-per-tenant']
+},
+{
+  id: 'microservices-047',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Kafka ghi mọi message xuống đĩa nhưng một broker vẫn chịu được hàng trăm MB/s. Hãy đi theo một record từ lúc tới leader đến lúc consumer đọc được: log segment, page cache, zero-copy, ISR, {{acks}} và {{min.insync.replicas}}. Cấu hình nào quyết định mất hay không mất dữ liệu?',
+  a: `**Tóm tắt:** Kafka nhanh vì chỉ **append tuần tự** vào file segment, để **page cache của OS** làm bộ đệm thay vì heap JVM, gửi dữ liệu cho consumer bằng **zero-copy (sendfile)** và xử lý theo **batch nén**. Độ bền không đến từ fsync mà từ **replication**: với RF=3, {{acks=all}} và {{min.insync.replicas=2}}, một record chỉ được xác nhận khi ít nhất 2 replica trong ISR đã có nó, nên mất 1 broker không mất dữ liệu.
+
+### 1. Partition là một thư mục chứa các segment
+Mỗi partition trên đĩa là một thư mục, ví dụ {{orders-3/}}. Log được cắt thành nhiều **segment**; tên file là offset đầu tiên của segment:
+~~~text
+orders-3/
+  00000000000000000000.log        <- dữ liệu (các record batch nối tiếp nhau)
+  00000000000000000000.index      <- offset -> vị trí byte (index thưa)
+  00000000000000000000.timeindex  <- timestamp -> offset
+  00000000000005242880.log        <- segment đang ghi (active segment)
+  00000000000005242880.index
+~~~
+- Chỉ **active segment** được ghi, luôn ghi ở cuối file nên là ghi tuần tự, HDD hay SSD đều chạy ở tốc độ cao nhất.
+- Segment mới được tạo khi đạt {{segment.bytes}} (mặc định 1 GiB) hoặc {{segment.ms}} (mặc định 7 ngày).
+- Retention và compaction làm việc trên **cả segment đã đóng**: xoá một file cũ rẻ hơn rất nhiều so với xoá từng dòng như database. Active segment không bị xoá, nên topic ít traffic có thể giữ dữ liệu lâu hơn {{retention.ms}}.
+- Consumer muốn đọc offset 5.300.000: broker tìm segment có base offset lớn nhất mà nhỏ hơn hoặc bằng 5.300.000, tra {{.index}} để nhảy gần tới vị trí byte, rồi quét tiếp một đoạn ngắn.
+
+### 2. Vì sao ghi xuống đĩa mà vẫn nhanh
+1. **Page cache**: broker ghi vào file qua OS, dữ liệu nằm ở page cache (RAM do kernel quản lý), lệnh ghi trả về ngay mà **không fsync** từng message (mặc định Kafka để OS tự flush). Consumer đọc dữ liệu vừa ghi thì đọc thẳng từ RAM. Cache nằm ngoài heap nên không tạo áp lực GC, và restart broker cache vẫn còn.
+2. **Batch**: producer gửi cả batch nhiều record; broker lưu nguyên batch (kể cả đã nén) xuống đĩa và gửi nguyên batch cho consumer. Không giải nén, không chuyển đổi.
+3. **Zero-copy**: khi consumer fetch, broker dùng {{FileChannel.transferTo}} (Linux {{sendfile}}): dữ liệu đi từ page cache thẳng ra socket, không copy qua bộ nhớ ứng dụng.
+~~~text
+Đọc thông thường:  disk -> page cache -> heap JVM -> socket buffer -> NIC  (4 lần copy)
+sendfile:          disk -> page cache ----------------------------> NIC   (không qua JVM)
+~~~
+4. **Song song theo partition**: mỗi partition là một log độc lập, có thể nằm trên broker khác nhau.
+
+Lưu ý: bật **TLS** thì dữ liệu phải được mã hoá trong JVM trước khi gửi, nên không còn zero-copy. Đó là lý do CPU broker tăng rõ khi bật TLS.
+
+### 3. Replication: ISR và high watermark
+Mỗi partition có 1 **leader** và các **follower**. Follower chủ động gửi fetch request tới leader để kéo dữ liệu (giống một consumer).
+- **ISR (in-sync replicas)**: tập replica bắt kịp leader. Follower không bắt kịp trong {{replica.lag.time.max.ms}} (mặc định 30 giây) bị loại khỏi ISR.
+- **High watermark (HW)**: offset lớn nhất mà mọi replica trong ISR đã có. Consumer **chỉ đọc được tới HW**, nên không bao giờ thấy record có thể bị mất khi leader đổi.
+~~~text
+leader    : 0 1 2 3 4 5      (LEO = 6)
+follower A: 0 1 2 3 4 5      (LEO = 6)
+follower B: 0 1 2 3          (LEO = 4)
+ISR = {leader, A, B}  =>  HW = 4  => consumer đọc được offset 0..3
+~~~
+
+### 4. acks và min.insync.replicas
+| Cấu hình producer | Leader trả lời khi | Rủi ro |
+|---|---|---|
+| {{acks=0}} | không chờ gì | mất khi có bất kỳ lỗi mạng nào |
+| {{acks=1}} | leader ghi vào log của nó | leader chết trước khi follower kịp copy: **mất** record đã được xác nhận |
+| {{acks=all}} | mọi replica **trong ISR hiện tại** đã có | an toàn, nếu ISR không co lại còn 1 |
+
+Điểm mấu chốt: {{acks=all}} nghĩa là "đủ ISR hiện tại", **không** phải "đủ RF". Nếu 2 follower bị loại khỏi ISR, ISR chỉ còn leader và {{acks=all}} lại giống {{acks=1}}. {{min.insync.replicas}} chặn trường hợp này: nếu ISR nhỏ hơn giá trị đó, broker từ chối ghi với lỗi {{NotEnoughReplicasException}}.
+
+| RF | min.insync.replicas | Mất 1 broker | Mất 2 broker |
+|---|---|---|---|
+| 3 | 1 | vẫn ghi được, có thể mất dữ liệu nếu leader chết tiếp | vẫn ghi, rủi ro cao |
+| 3 | **2** | **vẫn ghi, không mất dữ liệu** | ngừng nhận ghi (an toàn) |
+| 3 | 3 | ngừng nhận ghi | ngừng nhận ghi |
+
+~~~java
+@Bean
+NewTopic orders() {
+    return TopicBuilder.name("orders")
+        .partitions(12)
+        .replicas(3)                                            // RF=3
+        .config(TopicConfig.MIN_IN_SYNC_REPLICAS_CONFIG, "2")   // cần ít nhất 2 bản
+        .build();
+}
+// producer: từ Kafka 3.0 mặc định acks=all và enable.idempotence=true
+~~~
+Thêm {{unclean.leader.election.enable=false}} (mặc định): không cho replica ngoài ISR lên làm leader, chấp nhận partition tạm offline thay vì mất dữ liệu âm thầm.
+
+### Pitfall production
+- Topic tự tạo (auto create) dùng {{default.replication.factor}} của broker, mặc định là **1**: một đĩa hỏng là mất topic. Tắt auto create hoặc đặt mặc định 3.
+- Tính đĩa thiếu replication: ingress 50 MB/s, retention 7 ngày ≈ 50 × 86.400 × 7 ≈ 30 TB, nhân RF=3 thành khoảng **90 TB** trên toàn cluster, chưa tính dự phòng.
+- Cấp heap JVM quá lớn cho broker (ví dụ 32 GB trên máy 64 GB) là lấy mất RAM của page cache. Broker thường chỉ cần heap vài GB, phần còn lại để OS cache.
+- Consumer đọc dữ liệu cũ (replay vài ngày) không có trong page cache, phải đọc đĩa thật và đẩy dữ liệu nóng ra khỏi cache, làm producer và consumer realtime cùng chậm.
+
+> Senior tip: alert trên **UnderReplicatedPartitions > 0** và **UnderMinIsrPartitions > 0**; đó là tín hiệu sớm nhất trước khi producer bắt đầu nhận {{NotEnoughReplicasException}}. Khi benchmark, hãy so sánh throughput có và không có TLS, và đo p99 latency của {{acks=all}}, vì nó phụ thuộc follower chậm nhất trong ISR chứ không phải leader.`,
+  follow: [
+    'Vì sao Kafka không fsync từng message mà vẫn được coi là bền? Khi nào bạn vẫn cân nhắc flush thường xuyên hơn?',
+    'ISR co lại còn 1 replica trong giờ cao điểm: producer, consumer và on-call nhìn thấy gì?',
+    'Bật TLS làm CPU broker tăng gấp đôi, bạn phân tích và xử lý thế nào?'
+  ],
+  tags: ['Kafka', 'log segment', 'page cache', 'zero-copy', 'ISR', 'acks', 'min.insync.replicas', 'replication'],
+  refs: [
+    { type: 'doc', title: 'Kafka design: Persistence and efficiency', url: 'https://kafka.apache.org/documentation/#design' },
+    { type: 'doc', title: 'Kafka design: Replication', url: 'https://kafka.apache.org/documentation/#replication' },
+    { type: 'doc', title: 'Kafka topic configuration', url: 'https://kafka.apache.org/documentation/#topicconfigs' },
+    { type: 'article', title: 'ZemIT: Kafka có phải queue thật và bạn vẫn', url: 'https://zemit.substack.com/p/kafka-a-co-queue-that-va-ban-van' }
+  ]
+},
+{
+  id: 'microservices-048',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Producer gửi 20.000 event/giây, mỗi event 1 KB, nhưng throughput thấp và CPU broker cao vì quá nhiều request nhỏ. Bạn giải thích đường đi bên trong {{KafkaProducer}} (partitioner, record accumulator, sender thread) và tuning {{batch.size}}, {{linger.ms}}, nén, {{max.in.flight.requests.per.connection}} thế nào mà không làm mất thứ tự?',
+  a: `**Tóm tắt:** {{send()}} không gửi ngay: record được serialize, chọn partition, rồi bỏ vào **batch theo partition** trong record accumulator; một **sender thread** riêng gom các batch đã đầy hoặc đã chờ đủ {{linger.ms}} thành request gửi tới broker. Tăng {{linger.ms}} (5–20 ms) và {{batch.size}} (64–256 KB) cộng nén {{lz4}}/{{zstd}} giúp ít request hơn, nén tốt hơn. Thứ tự vẫn đúng nhờ **idempotent producer** (mặc định từ Kafka 3.0) với tối đa 5 request in-flight.
+
+### Đường đi của một record
+~~~text
+thread của bạn                                 sender thread (I/O)
+send(record) --> serializer --> partitioner --> RecordAccumulator
+                                                 orders-0: [batch đang đầy dần]
+                                                 orders-1: [batch đủ] [batch]
+                                                 orders-2: [batch đang chờ linger]
+                                                        |
+                                    gom batch theo broker leader, gửi ProduceRequest
+                                    tối đa max.in.flight request chưa ack / kết nối
+~~~
+1. **Serializer** biến key/value thành byte.
+2. **Partitioner**: có key thì chọn partition bằng hash murmur2 của key (cùng key cùng partition). **Không có key** thì từ Kafka 3.3 producer dùng chiến lược **sticky**: dồn record vào cùng một partition cho tới khi đầy batch rồi mới đổi partition, nên batch to hơn nhiều so với kiểu round-robin từng record.
+3. **RecordAccumulator**: mỗi partition có một hàng đợi batch. Tổng bộ nhớ giới hạn bởi {{buffer.memory}} (mặc định 32 MB); đầy thì {{send()}} **block** tối đa {{max.block.ms}} (mặc định 60 s) rồi ném lỗi.
+4. **Sender thread** lấy batch khi batch đầy {{batch.size}} hoặc đã chờ đủ {{linger.ms}}, gộp các batch cùng broker vào một request.
+
+### Vì sao request nhỏ làm chậm
+20.000 event/s × 1 KB = 20 MB/s. Nếu {{linger.ms}} gần 0 và traffic rải đều 12 partition, mỗi batch chỉ có vài record, broker phải xử lý hàng nghìn request/s, mỗi request tốn chi phí cố định (header, ghi log, replication, ack). Với {{linger.ms=10}}, mỗi 10 ms tích được khoảng 200 KB, chỉ còn vài chục request lớn mỗi giây. Nén cũng hiệu quả hơn vì JSON lặp lại tên field: batch càng to, tỉ lệ nén càng cao (giảm 3–5 lần là thường gặp với JSON, tuỳ dữ liệu).
+
+| Tham số | Mặc định | Tăng lên thì |
+|---|---|---|
+| {{linger.ms}} | 5 ms từ Kafka 4.0 (0 ở bản cũ) | batch to hơn, thêm vài ms latency |
+| {{batch.size}} | 16 KB | ít request hơn, tốn bộ nhớ hơn mỗi partition |
+| {{compression.type}} | none | giảm băng thông và đĩa, tốn CPU producer |
+| {{buffer.memory}} | 32 MB | chịu burst tốt hơn trước khi block |
+
+~~~yaml
+spring:
+  kafka:
+    producer:
+      acks: all
+      batch-size: 131072          # 128 KB
+      compression-type: zstd      # hoặc lz4 nếu muốn ít CPU hơn
+      properties:
+        linger.ms: 10
+        delivery.timeout.ms: 120000   # tổng thời gian cho phép, gồm cả retry
+~~~
+
+### Thứ tự và max.in.flight.requests.per.connection
+Không có idempotence, retry có thể đảo thứ tự:
+~~~text
+request 1 (offset dự kiến 100-199) -> timeout, sẽ retry
+request 2 (200-299)                -> thành công, ghi trước
+request 1 retry                    -> ghi sau  => thứ tự bị đảo
+~~~
+**Idempotent producer** ({{enable.idempotence=true}}) gán cho producer một **producer id** và mỗi batch một **sequence number** theo partition. Broker chỉ chấp nhận batch có sequence đúng thứ tự kế tiếp, batch trùng thì bỏ qua. Nhờ vậy vẫn giữ thứ tự khi {{max.in.flight.requests.per.connection}} tới 5 (mặc định 5) và retry không tạo bản trùng.
+
+Từ Kafka 3.0 idempotence bật mặc định, nhưng nó **tự tắt** nếu bạn đặt cấu hình xung đột mà không bật idempotence tường minh, ví dụ {{acks=1}}. Nên khai báo rõ {{enable.idempotence=true}} và {{acks=all}}.
+
+Transaction ({{transactional.id}}) đi xa hơn: ghi nhiều partition và commit offset consumer một cách nguyên tử, dùng cho consume-transform-produce trong Kafka. Nó tăng latency và chỉ bao phủ dữ liệu trong Kafka.
+
+### Pitfall production
+- Gọi {{send(...).get()}} cho từng record: biến producer thành đồng bộ, mỗi record chờ một vòng ack, throughput rơi xuống vài trăm/s. Trong Spring Kafka 3.x, {{KafkaTemplate.send}} trả {{CompletableFuture}}: xử lý kết quả bằng callback.
+- Làm việc nặng hoặc gọi blocking trong callback: callback chạy trên sender thread, chặn nó là chặn mọi batch.
+- Bỏ qua callback lỗi: sau {{delivery.timeout.ms}} record bị bỏ và chỉ báo qua callback. Không log thì mất dữ liệu âm thầm.
+- Một key quá nóng: batching không cứu được vì mọi record dồn vào một partition, giới hạn bởi một leader.
+
+> Senior tip: đo bằng metric producer {{batch-size-avg}}, {{records-per-request-avg}}, {{record-queue-time-avg}} và {{compression-rate-avg}} trước và sau khi tuning. Batch trung bình chỉ vài KB là dấu hiệu linger quá nhỏ; queue time tăng sát {{delivery.timeout.ms}} là dấu hiệu broker hoặc mạng đang nghẽn, tăng batch không giải quyết được.`,
+  follow: [
+    'Vì sao sticky partitioner chỉ áp dụng cho record không có key?',
+    'buffer.memory đầy và send() bắt đầu block: bạn xử lý ở tầng API thế nào?',
+    'Khi nào bạn chấp nhận tắt idempotence hoặc giảm acks để lấy latency?'
+  ],
+  tags: ['Kafka', 'producer', 'batch.size', 'linger.ms', 'sticky partitioner', 'idempotent producer', 'compression'],
+  refs: [
+    { type: 'doc', title: 'Kafka producer configuration', url: 'https://kafka.apache.org/documentation/#producerconfigs' },
+    { type: 'doc', title: 'Kafka design: The Producer', url: 'https://kafka.apache.org/documentation/#theproducer' },
+    { type: 'doc', title: 'Kafka design: Message delivery semantics', url: 'https://kafka.apache.org/documentation/#semantics' },
+    { type: 'article', title: 'ZemIT: Kafka có phải queue thật và bạn vẫn', url: 'https://zemit.substack.com/p/kafka-a-co-queue-that-va-ban-van' }
+  ]
+},
+{
+  id: 'microservices-049',
+  topic: 'microservices',
+  level: 'lead',
+  q: 'Team muốn dùng Kafka làm hàng đợi job (gửi email, render PDF, mỗi job 1–60 giây) vì "đã có sẵn Kafka". Vì sao consumer group truyền thống không hợp với work queue? Queues for Kafka (share group, KIP-932) giải quyết được gì và còn hạn chế gì?',
+  a: `**Tóm tắt:** Consumer group gán **cả partition cho một consumer** và chỉ lưu **một offset** cho mỗi partition, nên một job chậm chặn mọi job phía sau (head-of-line blocking), số worker tối đa bằng số partition, và không có ack/retry/hẹn giờ cho từng message. **Share group** (KIP-932) cho nhiều consumer cùng lấy record từ một partition và xác nhận **từng record**, nhưng không giữ thứ tự, và tính năng mới ở Kafka 4.x nên phải kiểm tra trạng thái phát hành trước khi dùng production.
+
+### Vấn đề 1: head-of-line blocking theo partition
+~~~text
+partition 3:  [job A: 60s] [job B: 1s] [job C: 1s] [job D: 1s] ...
+consumer-3 :   đang xử lý A ......................... B, C, D phải chờ
+consumer-5 :   partition 5 trống, rảnh tay nhưng không được lấy việc ở partition 3
+~~~
+Một partition chỉ có **một** consumer trong group. Job A render PDF 60 giây thì B, C, D chờ đủ 60 giây, dù các worker khác đang rảnh.
+
+### Vấn đề 2: scale bị giới hạn bởi số partition
+12 partition thì tối đa 12 consumer có việc; pod thứ 13 ngồi chơi. Job trung bình 2 giây thì throughput tối đa khoảng 12 / 2 = **6 job/s**. Muốn 100 job/s cần khoảng 200 luồng xử lý song song: hoặc tăng lên hàng trăm partition (tốn tài nguyên broker, không giảm lại được), hoặc tự xử lý song song trong consumer, khi đó phải tự theo dõi offset nào đã xong.
+
+### Vấn đề 3: offset là một con trỏ, không phải ack từng message
+Offset commit nghĩa là "mọi record trước offset này đã xong". Nếu record 100 lỗi còn 101–150 đã xong, bạn **không** commit qua 100 được. Consumer crash thì 101–150 bị xử lý lại. Không có khái niệm "trả job này về hàng đợi sau 5 phút". Retry, delay, DLQ phải tự xây: retry topic, DLT (Spring Kafka {{@RetryableTopic}}, {{DeadLetterPublishingRecoverer}}), mỗi thứ thêm topic, thêm consumer, thêm chỗ có thể hỏng.
+
+| Nhu cầu work queue | Consumer group | Broker hàng đợi (RabbitMQ, SQS) |
+|---|---|---|
+| Worker rảnh lấy việc bất kỳ | không, gắn theo partition | có |
+| Ack/nack từng message | không, chỉ commit offset | có |
+| Retry sau X phút, DLQ | tự làm bằng topic phụ | có sẵn (DLX, redrive policy) |
+| Scale worker tự do | tối đa = số partition | có |
+| Giữ thứ tự theo key | **có** | hạn chế |
+| Replay lại job cũ | **có** | không (đã ack là mất) |
+
+### Share group (Queues for Kafka, KIP-932)
+Ý tưởng: thêm loại group mới, nơi các consumer **chia nhau từng record** thay vì chia partition.
+- Nhiều consumer cùng đọc một partition; số consumer **có thể lớn hơn số partition**.
+- Broker cho consumer **mượn (acquire)** record kèm một khoá có thời hạn. Hết hạn mà chưa xác nhận thì record được giao cho consumer khác, giống visibility timeout của SQS.
+- Consumer xác nhận từng record: **ACCEPT** (xong), **RELEASE** (trả lại để giao lại), **REJECT** (không xử lý được, không giao lại).
+- Broker đếm **số lần giao** mỗi record; vượt giới hạn thì record bị bỏ qua (archive), chống poison message lặp vô hạn.
+- Client Java mới: {{KafkaShareConsumer}}.
+
+Trạng thái phát hành: early access ở Kafka 4.0, preview ở 4.1. Trước khi dùng production, đọc release notes và tài liệu đúng phiên bản cluster của bạn để biết đã ổn định chưa và cấu hình bật tính năng.
+
+### Hạn chế cần nói rõ khi phỏng vấn
+- **Không có thứ tự**: record cùng key có thể được xử lý đồng thời bởi hai consumer. Cần thứ tự theo key thì vẫn dùng consumer group.
+- Số record đang được mượn trên mỗi partition có giới hạn, nên partition vẫn là đơn vị giới hạn ở mức nào đó.
+- Record bị REJECT hoặc vượt số lần giao chỉ bị bỏ qua; ở thiết kế ban đầu **không** tự chuyển sang DLQ, bạn vẫn phải tự ghi lại job lỗi để điều tra.
+- Không có hẹn giờ giao (delay) hay priority như broker hàng đợi chuyên dụng.
+- Không thay thế transaction exactly-once của consumer group; xử lý vẫn là at-least-once, handler phải idempotent.
+- Hệ sinh thái (framework, monitoring, managed service) cần thời gian để hỗ trợ đầy đủ.
+
+### Khuyến nghị
+- Job đã là **event trong Kafka** (ví dụ order-created kích hoạt gửi email), job ngắn và đều: consumer group + xử lý song song có giới hạn + retry topic là đủ.
+- Job dài, thời gian không đều, cần retry/delay/DLQ: dùng broker hàng đợi (SQS, RabbitMQ) hoặc bảng job trong DB; có thể dùng Kafka làm nguồn và một bridge đẩy sang queue.
+- Cluster Kafka đã lên bản có share group ổn định và chấp nhận mất thứ tự: share group là lựa chọn đáng thử, bớt một hệ thống phải vận hành.
+
+> Senior tip: khi team nói "đã có sẵn Kafka", hãy hỏi lại 3 câu: job dài nhất bao lâu, có cần thứ tự không, và job lỗi thì ai xử lý. Tôi từng thấy một topic 6 partition chứa job xuất Excel 3 phút: một sáng thứ Hai 200 người cùng bấm xuất, thời gian chờ lên 1 tiếng trong khi 20 pod khác ngồi chơi; chuyển sang SQS với 20 worker là hết.`,
+  follow: [
+    'Bạn tự xử lý song song trong một consumer thế nào mà vẫn commit offset an toàn?',
+    'Share group và SQS visibility timeout giống và khác nhau ở điểm nào?',
+    'Khi nào bạn vẫn chọn consumer group cho job dù có share group?'
+  ],
+  tags: ['Kafka', 'work queue', 'share group', 'KIP-932', 'head-of-line blocking', 'retry', 'DLQ'],
+  refs: [
+    { type: 'article', title: 'ZemIT: Kafka có phải queue thật và bạn vẫn', url: 'https://zemit.substack.com/p/kafka-a-co-queue-that-va-ban-van' },
+    { type: 'doc', title: 'KIP-932: Queues for Kafka', url: 'https://cwiki.apache.org/confluence/display/KAFKA/KIP-932%3A+Queues+for+Kafka' },
+    { type: 'doc', title: 'Kafka documentation', url: 'https://kafka.apache.org/documentation/' }
+  ]
 }
 );
 
