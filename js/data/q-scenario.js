@@ -2171,4 +2171,1278 @@ Redis Lua atomicity chỉ bảo đảm trong phạm vi một Redis primary, khô
   follow: ['Bạn thiết kế giao thức chuyển quota giữa region sao cho retry không cấp hai lần?', 'Nếu business chấp nhận oversell tối đa 0,1% thì bạn lượng hóa và giám sát điều khoản đó thế nào?'],
   tags: ['multi-region', 'quota', 'consistency', 'coupon'],
 },
+{
+  id: 'scenario-057',
+  topic: 'scenario',
+  level: 'mid',
+  q: 'Sáng thứ Hai, kế toán báo có 37 đơn hàng ở trạng thái PAID nhưng không có dòng trừ tồn kho tương ứng, dù code đã gắn {{@Transactional}}. Log có {{InsufficientStockException}} đúng lúc tạo các đơn đó. Bạn điều tra và sửa thế nào?',
+  a: `**Tóm tắt:** {{@Transactional}} chỉ hoạt động khi lời gọi **đi qua proxy** của Spring, và mặc định chỉ rollback với **unchecked exception** (RuntimeException, Error). Ba thủ phạm hay gặp nhất: exception là checked, method được gọi nội bộ bằng {{this.xxx()}} (self-invocation), hoặc method là {{private}}. Xác minh bằng log TRACE của transaction interceptor, sửa bằng {{rollbackFor}}, tách bean hoặc {{TransactionTemplate}}, và thêm test tích hợp kiểm tra rollback.
+
+### Hiểu nhanh
+Hãy tưởng tượng {{@Transactional}} là **anh bảo vệ đứng ở cửa** phòng làm việc. Ai đi **qua cửa** (gọi từ bean khác) thì anh mở sổ giao dịch, đợi bạn làm xong rồi chốt (commit) hoặc huỷ (rollback). Nhưng nếu bạn đã ở **trong phòng** và gọi chính đồng nghiệp ngồi cạnh ({{this.method()}}), anh bảo vệ không hề biết. Thêm nữa, anh chỉ được dặn "huỷ khi có **sự cố bất ngờ** (RuntimeException)"; còn sự cố "đã khai báo trước" (checked exception như {{IOException}}) thì anh vẫn chốt sổ như bình thường.
+
+### Thuật ngữ
+- **Proxy**: một object bọc ngoài bean thật, chặn lời gọi để mở/đóng transaction. Spring Boot mặc định dùng CGLIB (lớp con sinh ra lúc chạy).
+- **Self-invocation**: method trong một bean gọi method khác **của chính bean đó**, đi thẳng qua {{this}}, không đi qua proxy.
+- **Checked exception**: exception kế thừa {{Exception}} nhưng không kế thừa {{RuntimeException}}, bắt buộc khai báo {{throws}}.
+- **Rollback-only**: cờ đánh dấu transaction phải rollback khi kết thúc, dù code bên ngoài đã catch exception.
+
+### Triệu chứng và số liệu
+- 37/12.000 đơn trong 3 ngày có {{status = PAID}} nhưng bảng {{stock_movement}} không có dòng tương ứng.
+- Log cùng thời điểm: {{InsufficientStockException: sku=SKU-889 remain=0}}. Class này {{extends Exception}} (checked).
+- Code (rút gọn):
+
+~~~java
+@Service
+public class OrderService {
+    public void checkout(Long orderId) throws InsufficientStockException {
+        placeOrder(orderId);               // self-invocation: KHÔNG đi qua proxy
+    }
+
+    @Transactional                         // vô tác dụng khi gọi từ checkout()
+    public void placeOrder(Long orderId) throws InsufficientStockException {
+        Order o = orderRepo.findById(orderId).orElseThrow();
+        o.setStatus(OrderStatus.PAID);
+        orderRepo.save(o);                 // save() có tx riêng => commit ngay
+        stockService.decrease(orderId);    // ném checked exception khi hết hàng
+    }
+}
+~~~
+
+### Giả thuyết (xếp theo khả năng)
+1. Exception là checked nên kể cả khi có transaction, Spring vẫn **commit**.
+2. {{checkout()}} gọi {{placeOrder()}} qua {{this}} nên không có transaction nào cả; mỗi câu lệnh repository tự chạy transaction riêng của nó (Spring Data repository có {{@Transactional}} trên từng method) và commit ngay.
+3. Method {{private}} hoặc {{final}}: CGLIB không override được nên annotation bị bỏ qua (Spring 6 hỗ trợ cả method protected/package-private với class-based proxy, nhưng **private thì không bao giờ**).
+4. Code catch exception rồi chỉ ghi log mà không ném lại, nên interceptor không thấy lỗi và commit.
+
+### Xác minh từng bước
+1. Bật log tạm thời trên một pod: {{logging.level.org.springframework.transaction.interceptor=TRACE}}. Khi đi qua proxy sẽ thấy dòng "Getting transaction for [...OrderService.placeOrder]". Nếu **không thấy**, đó là self-invocation.
+2. Thêm log tạm {{TransactionSynchronizationManager.isActualTransactionActive()}} ở đầu method để chắc chắn.
+3. Kiểm tra cây kế thừa của exception: {{extends Exception}} là checked.
+4. Viết test tích hợp tái hiện: giả lập hết hàng, assert đơn **không** chuyển sang PAID.
+
+### Cơ chế bên trong (vì sao lại như vậy)
+~~~text
+Controller ──► [Proxy OrderService] ──► OrderService thật
+                  │ mở tx                  │ checkout()
+                  │                        └─► this.placeOrder()  (không qua proxy)
+                  └ commit/rollback
+~~~
+1. Khi khởi động, Spring tạo proxy cho bean có {{@Transactional}}. Bean khác được inject **proxy**, không phải object thật.
+2. Proxy chỉ chặn được lời gọi **từ bên ngoài** vào. Bên trong object thật, {{this}} là object thật nên annotation không được đọc.
+3. Khi method ném exception, {{TransactionInterceptor}} hỏi rule: mặc định {{rollbackOn(ex)}} chỉ trả true với {{RuntimeException}} và {{Error}}. Lý do lịch sử (kế thừa từ EJB): checked exception được coi là "kết quả nghiệp vụ dự kiến", không phải lỗi hệ thống.
+
+### Sửa ngắn hạn và dài hạn
+| Cách | Khi nào dùng | Lưu ý |
+|---|---|---|
+| {{@Transactional(rollbackFor = Exception.class)}} | exception checked là lỗi thật | phải nhớ ở mọi chỗ, dễ quên |
+| Đổi exception thành RuntimeException | exception nghiệp vụ tự định nghĩa | cách gọn nhất, phổ biến ở Spring |
+| Đặt {{@Transactional}} lên {{checkout()}} hoặc tách {{placeOrder}} sang bean khác | self-invocation | thiết kế rõ ràng nhất |
+| {{TransactionTemplate}} | cần ranh giới transaction nằm giữa method | lập trình, không phụ thuộc proxy |
+
+Ngắn hạn: hotfix chuyển {{InsufficientStockException}} thành unchecked và đặt annotation ở method public được gọi từ ngoài; viết script đối soát đưa 37 đơn về trạng thái đúng (hoàn tiền hoặc đặt lại hàng) có duyệt nghiệp vụ. Dài hạn: chuẩn hoá "transaction boundary ở tầng application service, gọi từ controller".
+
+### Phòng ngừa
+- Test tích hợp ({{@SpringBootTest}} + Testcontainers) cho **nhánh lỗi**: ném exception giữa chừng, assert DB không đổi.
+- Rule ArchUnit/Sonar: cấm {{@Transactional}} trên method private, cảnh báo self-invocation.
+- Job đối soát hằng đêm: đơn PAID phải có stock_movement; lệch thì alert.
+
+### Lỗi hay gặp
+1. **Tin rằng {{@Transactional}} rollback mọi exception.** Triệu chứng: dữ liệu nửa vời khi lỗi checked. Cách tránh: dùng unchecked hoặc {{rollbackFor}}.
+2. **Self-inject bằng {{@Lazy}} để "lách" self-invocation.** Chạy được nhưng che giấu thiết kế sai; nên tách bean.
+3. **Catch exception ở method trong rồi để method ngoài commit.** Nếu method trong (REQUIRED) đã đánh dấu rollback-only, method ngoài sẽ nhận {{UnexpectedRollbackException}} lúc commit, gây khó hiểu.
+
+### Trả lời miệng 1 phút
+"Tôi nghi ngay ba nguyên nhân kinh điển: exception là checked nên Spring mặc định vẫn commit; method được gọi nội bộ qua this nên không đi qua proxy; hoặc method private. Tôi bật log TRACE của TransactionInterceptor để xem transaction có được mở không, kiểm tra cây kế thừa của exception, rồi viết test tích hợp tái hiện. Ở case này cả hai lỗi cùng xảy ra. Tôi sửa bằng cách đổi exception sang unchecked, đặt ranh giới transaction ở method public được gọi từ controller, chạy script đối soát 37 đơn, và thêm test nhánh lỗi cùng job đối soát để phòng tái diễn."
+
+> Senior tip: khi review code, cứ thấy {{@Transactional}} là hỏi hai câu: "ai gọi method này, có qua proxy không?" và "exception nào làm nó rollback?". Ở một dự án thanh toán, chỉ riêng việc thêm test "ném lỗi giữa chừng rồi assert DB" vào mỗi use case ghi dữ liệu đã bắt được 4 lỗi rollback trước khi lên production.`,
+  follow: [
+    'Nếu method bên trong dùng {{REQUIRES_NEW}} còn method ngoài ném lỗi, dữ liệu nào được giữ lại?',
+    'Vì sao gặp {{UnexpectedRollbackException}} khi method ngoài đã catch exception của method trong?',
+    'Khi nào bạn chọn {{TransactionTemplate}} thay vì annotation?'
+  ],
+  tags: ['Spring', '@Transactional', 'rollback', 'self-invocation', 'proxy', 'checked exception'],
+  refs: [
+    { type: 'doc', title: 'Spring Framework: Using @Transactional', url: 'https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative/annotations.html' },
+    { type: 'doc', title: 'Spring Framework: Rolling Back a Declarative Transaction', url: 'https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative/rolling-back.html' }
+  ]
+},
+{
+  id: 'scenario-058',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Sau khi chuyển việc ghi audit log và gửi email sang {{@Async}}, bảng audit ghi người thao tác là {{anonymousUser}} hoặc NULL, và log của các tác vụ async mất {{traceId}} nên không lần được theo request. Bạn chẩn đoán và sửa thế nào?',
+  a: `**Tóm tắt:** {{SecurityContextHolder}} (mặc định) và {{MDC}} đều lưu dữ liệu trong **ThreadLocal**, tức là gắn với một thread. {{@Async}} chạy code trên thread khác của pool, nên không thấy user và traceId của thread gốc. Sửa bằng cách **chụp context ở thread gọi và khôi phục ở thread worker** qua {{TaskDecorator}} (hoặc {{DelegatingSecurityContextAsyncTaskExecutor}}), luôn dọn context trong {{finally}}; tốt hơn nữa là truyền userId tường minh vào tham số.
+
+### Hiểu nhanh
+ThreadLocal giống **túi áo của từng nhân viên**. Request vào, nhân viên A (thread HTTP) bỏ thẻ tên user và mã theo dõi vào túi mình. Khi A giao việc cho nhân viên B (thread của pool async), A chỉ đưa tờ giấy việc cần làm, không đưa túi áo. B mở túi mình ra thì trống, hoặc tệ hơn là còn **thẻ của khách trước** nếu chưa ai dọn.
+
+### Thuật ngữ
+- **ThreadLocal**: biến mà mỗi thread có một bản riêng.
+- **SecurityContext**: nơi Spring Security giữ {{Authentication}} của user hiện tại.
+- **MDC (Mapped Diagnostic Context)**: map key/value của SLF4J/Logback, được in vào mọi dòng log của thread đó (ví dụ traceId).
+- **TaskDecorator**: hook của Spring để bọc mỗi {{Runnable}} trước khi đưa vào thread pool.
+
+### Triệu chứng
+- 100% bản ghi audit tạo từ luồng async có {{actor = 'anonymousUser'}} hoặc NULL, bản ghi từ luồng đồng bộ thì đúng.
+- Log async không có traceId, nên trên Kibana/Loki không nối được với request gốc.
+- Hiếm hơn nhưng nguy hiểm: vài bản ghi mang **user của request khác**. Đây là dấu hiệu context bị rò do không dọn.
+
+### Giả thuyết và xác minh
+1. **Context không được truyền sang thread mới.** Xác minh: log {{Thread.currentThread().getName()}} cùng {{SecurityContextHolder.getContext().getAuthentication()}} ở cả hai nơi; thread HTTP là {{http-nio-8080-exec-7}}, thread async là {{task-3}} và authentication null.
+2. **Ai đó đã đổi strategy sang {{MODE_INHERITABLETHREADLOCAL}}.** Cách này chỉ copy khi **tạo** thread con; pool tái sử dụng thread nên thread cũ giữ context của request đầu tiên đã tạo nó. Đây chính là nguồn gốc của "user lạ" trong audit. Xác minh: grep {{setStrategyName}} và tham số JVM {{spring.security.strategy}}.
+3. **Decorator có copy nhưng không clear.** Xác minh: code review khối {{finally}}.
+
+### Cơ chế từng bước
+~~~text
+http-nio-exec-7: [SecCtx=alice, MDC.traceId=abc]
+   │  auditService.record(...)   (@Async)
+   ▼
+ proxy ─► executor.submit(task) ─► task-3: [SecCtx=?, MDC=?]
+                                       └─ nếu không decorate: rỗng
+~~~
+1. Proxy của {{@Async}} chặn lời gọi và nộp task vào {{ThreadPoolTaskExecutor}} (bean {{applicationTaskExecutor}} mà Spring Boot tự cấu hình).
+2. Thread của pool đã tồn tại sẵn, nó **không kế thừa gì** từ thread gọi.
+3. Vì vậy mọi thứ dựa trên ThreadLocal (SecurityContext, MDC, LocaleContext, transaction hiện tại) đều không có.
+
+### Sửa: TaskDecorator chụp và khôi phục
+~~~java
+public class ContextCopyingDecorator implements TaskDecorator {
+    @Override
+    public Runnable decorate(Runnable task) {
+        // Chạy trên thread GỌI: chụp context tại đây
+        Map<String, String> mdc = MDC.getCopyOfContextMap();
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        return () -> {                          // chạy trên thread WORKER
+            SecurityContext ctx = SecurityContextHolder.createEmptyContext();
+            ctx.setAuthentication(auth);
+            SecurityContextHolder.setContext(ctx);
+            if (mdc != null) MDC.setContextMap(mdc);
+            try {
+                task.run();
+            } finally {
+                SecurityContextHolder.clearContext(); // bắt buộc: thread sẽ được tái dùng
+                MDC.clear();
+            }
+        };
+    }
+}
+~~~
+Khai báo decorator là một bean; Spring Boot gắn bean {{TaskDecorator}} vào executor tự cấu hình. Nếu bạn tự tạo {{ThreadPoolTaskExecutor}} thì gọi {{setTaskDecorator(...)}} thủ công. Với tracing của Micrometer (Boot 3), Spring Framework 6.1 có sẵn {{ContextPropagatingTaskDecorator}} dựa trên thư viện context-propagation để truyền observation/traceId.
+
+### So sánh cách sửa
+| Cách | Ưu điểm | Nhược điểm |
+|---|---|---|
+| TaskDecorator tự viết | kiểm soát được, gom cả MDC + security | tự lo dọn dẹp |
+| {{DelegatingSecurityContextAsyncTaskExecutor}} | có sẵn trong Spring Security | chỉ lo SecurityContext, không lo MDC |
+| Truyền {{actorId}} vào tham số | tường minh, test dễ, không phụ thuộc thread | phải sửa chữ ký method |
+| {{MODE_INHERITABLETHREADLOCAL}} | một dòng cấu hình | **sai với thread pool**, rò context |
+
+Với audit log, tôi khuyên **truyền actor tường minh**: dữ liệu kiểm toán không nên phụ thuộc vào "ma thuật" ThreadLocal.
+
+### Phòng ngừa
+- Test: gọi method async trong context có user giả ({{@WithMockUser}}), assert bản ghi audit đúng actor; chạy 2 lần liên tiếp với 2 user khác nhau để bắt rò context.
+- Pattern log bắt buộc có traceId; alert khi tỉ lệ dòng log thiếu traceId tăng.
+- Áp dụng tương tự cho {{CompletableFuture.supplyAsync(...)}}: mặc định nó chạy trên {{ForkJoinPool.commonPool()}}, không đi qua decorator của Spring.
+
+### Lỗi hay gặp
+1. **Copy context nhưng không clear trong finally**: thread tái sử dụng mang user cũ, audit ghi sai người, đây là lỗi bảo mật.
+2. **Chụp context bên trong lambda** (tức đã ở thread worker) thay vì trước lambda: chụp được context rỗng.
+3. **Quên {{CompletableFuture}} và {{parallelStream}}**: chúng không dùng executor của Spring.
+
+### Trả lời miệng 1 phút
+"SecurityContext và MDC đều nằm trong ThreadLocal, còn @Async chạy trên thread khác của pool nên mất user và traceId. Tôi xác minh bằng cách log tên thread và authentication ở hai phía. Cách sửa là một TaskDecorator chụp context ở thread gọi, khôi phục ở thread worker và luôn clear trong finally, vì pool tái sử dụng thread. Tôi tránh MODE_INHERITABLETHREADLOCAL vì nó chỉ copy lúc tạo thread nên rò context giữa các request. Riêng audit log, tôi truyền actorId tường minh vào tham số để không phụ thuộc ThreadLocal."
+
+> Senior tip: hãy coi "context rò sang request khác" là **sự cố bảo mật**, không chỉ là bug log. Ở một hệ thống tôi từng làm, audit ghi nhầm người duyệt khoản vay vì InheritableThreadLocal + thread pool; sau đó team cấm cấu hình này bằng rule review và thêm test hai user liên tiếp cho mọi luồng async.`,
+  follow: [
+    'Virtual thread trong Java 21 có giải quyết được việc mất context không?',
+    'Làm sao truyền traceId qua Kafka từ producer sang consumer?',
+    'Vì sao {{CompletableFuture.supplyAsync}} không dùng decorator của Spring?'
+  ],
+  tags: ['Spring', '@Async', 'SecurityContext', 'MDC', 'ThreadLocal', 'TaskDecorator'],
+  refs: [
+    { type: 'doc', title: 'Spring Security: Concurrency Support', url: 'https://docs.spring.io/spring-security/reference/servlet/integrations/concurrency.html' },
+    { type: 'doc', title: 'Spring Boot: Task Execution and Scheduling', url: 'https://docs.spring.io/spring-boot/reference/features/task-execution-and-scheduling.html' }
+  ]
+},
+{
+  id: 'scenario-059',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'API {{GET /orders?size=50}} chạy 40ms ở môi trường dev nhưng 900ms ở production, và lúc cao điểm HikariCP báo hết connection. Service không có {{@Transactional}} nào trên luồng đọc, và log khởi động có cảnh báo {{spring.jpa.open-in-view is enabled by default}}. Bạn xử lý thế nào?',
+  a: `**Tóm tắt:** Spring Boot bật **Open Session In View (OSIV)** mặc định: EntityManager mở suốt request, nên khi Jackson serialize entity và chạm vào quan hệ lazy, Hibernate âm thầm bắn thêm query, tạo **N+1 ẩn** ngoài tầng service. Xác minh bằng Hibernate statistics/log SQL đếm query mỗi request; sửa bằng {{spring.jpa.open-in-view=false}}, tải dữ liệu cần thiết bằng fetch join/{{@EntityGraph}}/DTO projection trong service có {{@Transactional(readOnly = true)}}, và không trả entity ra controller.
+
+### Hiểu nhanh
+OSIV giống việc **thư viện cho bạn mượn chìa khoá kho sách đến khi bạn về nhà**. Tiện: lúc nào cần sách là chạy vào lấy. Nhưng nếu bạn cần 50 cuốn và mỗi lần chỉ lấy một cuốn, bạn chạy vào kho 50 lần. Dev chỉ có 3 đơn hàng nên không ai thấy; production có 50 đơn mỗi trang, mỗi đơn kéo thêm khách hàng và danh sách món hàng.
+
+### Thuật ngữ
+- **Lazy loading**: quan hệ (ví dụ {{order.getItems()}}) chỉ được query khi code chạm vào lần đầu.
+- **N+1**: 1 query lấy danh sách + N query lấy quan hệ cho từng phần tử.
+- **OSIV**: {{OpenEntityManagerInViewInterceptor}} giữ EntityManager mở từ đầu đến cuối request web.
+- **DTO projection**: query trả thẳng object chỉ chứa các cột cần, không phải entity được quản lý.
+
+### Triệu chứng và số liệu
+- Dev: 3 đơn, 7 query. Production: 50 đơn, **101 query** (1 orders + 50 customer + 50 items), p95 900ms.
+- Hikari: {{hikaricp_connections_pending}} > 0 lúc cao điểm, lỗi "Connection is not available, request timed out after 30000ms".
+- Code service trả {{List<Order>}} entity, controller trả thẳng entity cho Jackson.
+
+### Giả thuyết và cách xác minh
+1. **N+1 do lazy load khi serialize.** Bật {{spring.jpa.properties.hibernate.generate_statistics=true}} và {{logging.level.org.hibernate.SQL=DEBUG}} trên staging, gọi API một lần, đếm dòng select. Thấy cùng một câu {{select ... from customer where id=?}} lặp 50 lần là xác nhận.
+2. **Query xảy ra ngoài service.** Đặt breakpoint/stack trace ở câu SQL: frame nằm trong {{com.fasterxml.jackson...BeanSerializer}}, tức là lúc render response.
+3. **Thiếu index** (loại trừ): {{EXPLAIN}} từng câu đều dùng index và chạy dưới 1ms; vấn đề là **số lượng** chứ không phải từng câu chậm.
+
+### Cơ chế từng bước
+~~~text
+Request ─► OSIV mở EntityManager
+  └─► Controller ─► Service: orderRepo.findPage()   (1 query)
+  └─► Jackson serialize Order[0..49]
+        order.getCustomer().getName()  -> select customer (x50)
+        order.getItems()               -> select items    (x50)
+Response xong ─► OSIV đóng EntityManager
+~~~
+1. Vì EntityManager còn mở, proxy lazy không ném {{LazyInitializationException}} mà âm thầm query, nên bug **không lộ ra lúc dev**.
+2. Các query lazy này chạy **ngoài transaction của service**, ở chế độ auto-commit, mỗi lần chạm lazy là một round-trip tới DB.
+3. Thời gian request dùng tài nguyên DB kéo dài suốt phần serialize, nên lúc cao điểm pool connection cạn nhanh hơn dự kiến.
+
+### Sửa
+~~~java
+public interface OrderRepository extends JpaRepository<Order, Long> {
+    // Lấy kèm customer trong cùng 1 query, tránh N+1 cho quan hệ ToOne
+    @EntityGraph(attributePaths = "customer")
+    Page<Order> findByStatus(OrderStatus status, Pageable pageable);
+}
+
+@Service
+@Transactional(readOnly = true)           // ranh giới đọc rõ ràng
+public class OrderQueryService {
+    public Page<OrderDto> list(OrderStatus s, Pageable p) {
+        Page<Order> page = repo.findByStatus(s, p);
+        // items: tải theo lô bằng @BatchSize hoặc query IN riêng, rồi map sang DTO
+        return page.map(OrderDto::from);   // map XONG trong transaction
+    }
+}
+~~~
+- Đặt {{spring.jpa.open-in-view=false}}. Lúc này mọi chỗ lazy ngoài transaction sẽ ném {{LazyInitializationException}}; đó là điều tốt, bug hiện ra ở test thay vì ở production.
+- Collection (OneToMany) + phân trang: **không** fetch join collection kèm {{Pageable}} (Hibernate phải phân trang trong bộ nhớ và cảnh báo). Dùng {{@BatchSize}}/{{hibernate.default_batch_fetch_size}} hoặc query thứ hai với {{WHERE order_id IN (...)}}.
+
+| Cách tải | Hợp với | Hạn chế |
+|---|---|---|
+| {{@EntityGraph}}/fetch join | ToOne, danh sách nhỏ | collection + paging thì nguy hiểm |
+| Batch fetch size | collection | vẫn vài query, không phải 1 |
+| DTO projection | API chỉ đọc | không dùng được để update |
+
+### Phòng ngừa
+- Test đếm query (Hibernate {{Statistics}} hoặc datasource-proxy): assert API list ≤ 3 query, chạy với 50 bản ghi chứ không phải 3.
+- Không trả entity ra controller; luôn trả DTO.
+- Dashboard số query/request; alert khi tăng đột biến sau deploy.
+
+### Lỗi hay gặp
+1. **Tắt OSIV rồi "chữa cháy" bằng {{FetchType.EAGER}}**: N+1 chuyển sang mọi nơi load entity đó, tệ hơn.
+2. **Chỉ test với dữ liệu nhỏ**: 3 đơn thì N+1 vô hình.
+3. **Tắt OSIV mà không có test**: cả loạt endpoint ném LazyInitializationException sau deploy. Hãy tắt trên staging, chạy regression trước.
+
+### Trả lời miệng 1 phút
+"Cảnh báo open-in-view là manh mối chính. OSIV giữ EntityManager mở suốt request nên khi Jackson serialize entity, mỗi quan hệ lazy bắn thêm query, thành N+1 ẩn ngoài service. Tôi bật Hibernate statistics để đếm query: 101 query cho 50 đơn. Cách sửa: tắt open-in-view, tải dữ liệu cần trong service read-only bằng EntityGraph cho quan hệ ToOne, batch fetch cho collection, map sang DTO trước khi rời transaction. Cuối cùng thêm test đếm số query với dữ liệu đủ lớn để chặn tái phát."
+
+> Senior tip: ở dự án mới, tôi đặt {{spring.jpa.open-in-view=false}} ngay từ commit đầu tiên. Ở dự án cũ, tắt OSIV là thay đổi lớn: tôi bật nó theo từng nhóm endpoint sau khi đã có test đếm query, và thường thấy p95 các API danh sách giảm 3 đến 10 lần, connection pool bớt căng rõ rệt lúc cao điểm.`,
+  follow: [
+    'Vì sao fetch join collection kèm phân trang lại nguy hiểm trong Hibernate?',
+    'Bạn viết test tự động phát hiện N+1 như thế nào?',
+    'Khi nào giữ OSIV là chấp nhận được?'
+  ],
+  tags: ['Spring Data JPA', 'OSIV', 'N+1', 'Hibernate', 'lazy loading', 'HikariCP'],
+  refs: [
+    { type: 'article', title: 'The Open Session In View Anti-Pattern', url: 'https://vladmihalcea.com/the-open-session-in-view-anti-pattern/' },
+    { type: 'doc', title: 'Spring Boot: Data Access How-to', url: 'https://docs.spring.io/spring-boot/how-to/data-access.html' }
+  ]
+},
+{
+  id: 'scenario-060',
+  topic: 'scenario',
+  level: 'mid',
+  q: 'Khách hàng phản ánh thỉnh thoảng tải PDF hoá đơn thì thấy **tên và số tiền của người khác**. Không tái hiện được trên máy dev, chỉ xảy ra lúc đông người. Code {{InvoiceService}} là một {{@Service}} có field {{currentInvoice}} và một {{SimpleDateFormat}}. Bạn xử lý thế nào?',
+  a: `**Tóm tắt:** bean {{@Service}} mặc định là **singleton**: chỉ có một object dùng chung cho mọi request đang chạy song song. Field có thể thay đổi (mutable) như {{currentInvoice}} hay {{SimpleDateFormat}} trở thành **dữ liệu dùng chung giữa các thread**, gây race condition và rò dữ liệu giữa khách hàng. Sửa bằng cách đưa state vào biến cục bộ/tham số, dùng class bất biến và thread-safe ({{DateTimeFormatter}}), rồi coi đây là sự cố lộ dữ liệu cần đánh giá phạm vi.
+
+### Hiểu nhanh
+Singleton bean giống **một tờ giấy nháp duy nhất dán trên bàn quầy**, mà 200 nhân viên (thread) cùng viết lên. Nhân viên A vừa ghi tên khách A, chưa kịp in thì nhân viên B xoá đi ghi tên khách B; A in ra tờ giấy có tên B. Trên máy dev chỉ có bạn bấm nên không bao giờ có hai người cùng viết.
+
+### Thuật ngữ
+- **Singleton scope**: Spring tạo đúng 1 instance cho mỗi bean trong container, inject cho mọi nơi.
+- **Race condition**: kết quả phụ thuộc vào thứ tự chạy xen kẽ giữa các thread.
+- **Stateless**: object không giữ dữ liệu của một request cụ thể trong field.
+- **Thread-safe**: dùng đồng thời từ nhiều thread mà vẫn đúng.
+
+### Triệu chứng
+- Khoảng 1/20.000 hoá đơn sai người, chỉ lúc tải cao (> 50 request đồng thời).
+- Thỉnh thoảng có {{NumberFormatException}} hoặc ngày tháng vô lý kiểu năm 20240 trong log, từ {{SimpleDateFormat.parse}}.
+
+~~~java
+@Service
+public class InvoiceService {
+    private Invoice currentInvoice;                    // SAI: state của request trong singleton
+    private final SimpleDateFormat fmt = new SimpleDateFormat("dd/MM/yyyy"); // không thread-safe
+
+    public byte[] render(Long id) {
+        currentInvoice = repo.findById(id).orElseThrow();
+        String date = fmt.format(currentInvoice.getIssuedAt());
+        return pdf.build(currentInvoice, date);         // có thể đọc invoice của thread khác
+    }
+}
+~~~
+
+### Giả thuyết và cách xác minh
+1. **State dùng chung trong singleton.** Xác minh: tìm mọi field không {{final}} hoặc field có kiểu mutable trong {{@Service}}, {{@Component}}, {{@Controller}}; field {{currentInvoice}} bị ghi trong method nghiệp vụ.
+2. **SimpleDateFormat dùng chung.** Class này giữ một {{Calendar}} bên trong làm vùng nhớ tạm khi format/parse, nên hai thread cùng dùng sẽ ghi đè lên nhau.
+3. **Tái hiện bằng test đồng thời** (không cần production):
+
+~~~java
+ExecutorService pool = Executors.newFixedThreadPool(32);
+List<Future<Boolean>> results = new ArrayList<>();
+for (long id = 1; id <= 2000; id++) {
+    long expected = id;
+    results.add(pool.submit(() -> pdfParser.ownerOf(service.render(expected)) == expected));
+}
+long wrong = 0;
+for (Future<Boolean> f : results) if (!f.get()) wrong++;
+assertEquals(0, wrong);                                // code sai: thường fail ngay
+~~~
+
+### Cơ chế từng bước
+~~~text
+Thread T1: currentInvoice = INV-A
+Thread T2: currentInvoice = INV-B        (ghi đè)
+Thread T1: pdf.build(currentInvoice)  -> in INV-B cho khách A
+~~~
+1. Tomcat phục vụ mỗi request trên một thread khác nhau, nhưng tất cả gọi **cùng một** object {{InvoiceService}}.
+2. Field nằm trên heap, mọi thread cùng thấy. Biến cục bộ nằm trên stack riêng của từng thread nên không ai đụng được.
+3. Không có đồng bộ (synchronization) nên thứ tự ghi/đọc xen kẽ tuỳ bộ lập lịch; tải càng cao xác suất càng lớn. Đó là lý do dev không tái hiện được.
+
+### Sửa
+~~~java
+@Service
+public class InvoiceService {
+    // DateTimeFormatter bất biến, thread-safe, dùng chung thoải mái
+    private static final DateTimeFormatter FMT = DateTimeFormatter.ofPattern("dd/MM/yyyy");
+
+    public byte[] render(Long id) {
+        Invoice invoice = repo.findById(id).orElseThrow();   // biến cục bộ: của riêng thread này
+        String date = FMT.format(invoice.getIssuedAt());      // issuedAt là LocalDate
+        return pdf.build(invoice, date);
+    }
+}
+~~~
+| Cách | Khi nào | Lưu ý |
+|---|---|---|
+| Biến cục bộ / tham số | hầu hết trường hợp | đơn giản, đúng nhất |
+| Class bất biến ({{DateTimeFormatter}}, record) | cấu hình dùng chung | cần thiết kế immutable |
+| {{@RequestScope}} bean | thật sự cần state theo request | có proxy, khó test hơn |
+| {{synchronized}} | gần như không bao giờ cho việc này | biến service thành nút cổ chai |
+
+### Xử lý sự cố
+- Ngắn hạn: hotfix, đồng thời tạm tắt tính năng tải PDF nếu chưa deploy kịp.
+- Đánh giá phạm vi: đối chiếu access log (ai tải invoice nào) với nội dung đã sinh nếu có lưu, báo bộ phận bảo mật/pháp chế vì đây là **lộ dữ liệu cá nhân**.
+- Dài hạn: rule Sonar (ví dụ cảnh báo field non-static {{SimpleDateFormat}}, field mutable trong singleton), checklist review.
+
+### Lỗi hay gặp
+1. **Thêm {{synchronized}} lên method**: hết bug nhưng throughput sụt mạnh vì mọi request xếp hàng.
+2. **Đổi bean sang {{@Scope("prototype")}}**: prototype inject vào singleton vẫn chỉ được tạo **một lần**, bug còn nguyên.
+3. **Cache "tạm" trong {{HashMap}} field**: vừa race, vừa có thể làm hỏng cấu trúc map; dùng {{ConcurrentHashMap}} hoặc cache library.
+
+### Trả lời miệng 1 phút
+"Lỗi chỉ xuất hiện khi đông người là dấu hiệu race condition. Bean Spring mặc định là singleton, nên field currentInvoice và SimpleDateFormat được mọi request dùng chung. Tôi tái hiện bằng test 32 thread gọi song song và kiểm tra chủ hoá đơn. Cách sửa là đưa state vào biến cục bộ, thay SimpleDateFormat bằng DateTimeFormatter bất biến. Vì đây là lộ dữ liệu khách hàng, tôi còn phối hợp bảo mật để đánh giá phạm vi, và thêm rule tĩnh chặn field mutable trong singleton."
+
+> Senior tip: quy tắc đơn giản nhất cho team: **service bean chỉ có field {{final}} trỏ tới dependency hoặc object bất biến**. Constructor injection với field final làm vi phạm lộ ra ngay khi review. Lỗi này hiếm khi gây crash, nó gây **sai dữ liệu âm thầm**, nên luôn đáng một test đồng thời.`,
+  follow: [
+    'Inject bean prototype vào singleton thì chuyện gì xảy ra, và sửa bằng {{ObjectProvider}} thế nào?',
+    'Vì sao {{DateTimeFormatter}} thread-safe còn {{SimpleDateFormat}} thì không?'
+  ],
+  tags: ['Spring', 'singleton', 'thread-safety', 'race condition', 'SimpleDateFormat'],
+  refs: [
+    { type: 'doc', title: 'Spring Framework: Bean Scopes', url: 'https://docs.spring.io/spring-framework/reference/core/beans/factory-scopes.html' }
+  ]
+},
+{
+  id: 'scenario-061',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Sau khi tăng dữ liệu cache warm-up, pod Spring Boot mới không bao giờ lên được: {{kubectl get pods}} báo {{CrashLoopBackOff}}, RESTARTS tăng đều, không có {{OOMKilled}}. Ngoài ra pod đang chạy thỉnh thoảng bị restart đúng lúc có Full GC dài. Bạn điều tra và cấu hình probe thế nào?',
+  a: `**Tóm tắt:** **liveness probe** đang giết pod: lúc khởi động app cần ~90 giây nhưng liveness bắt đầu kiểm tra sau 30 giây và cho phép thất bại 3 lần × 10 giây, nên kubelet kill container trước khi app kịp sẵn sàng; tương tự, một lần GC pause dài làm probe timeout liên tiếp. Xác minh bằng {{kubectl describe pod}} (Events "Liveness probe failed"), {{kubectl logs --previous}} và GC log. Sửa bằng **startupProbe** cho giai đoạn khởi động, liveness nhẹ chỉ kiểm tra "process còn sống" với timeout/threshold hợp lý, và readiness riêng cho việc nhận traffic.
+
+### Hiểu nhanh
+Liveness giống **bác sĩ hỏi "anh còn tỉnh không?"** mỗi 10 giây; không trả lời 3 lần là đem đi "khởi động lại". Vấn đề là người bệnh đang **tỉnh dậy sau gây mê** (khởi động) hoặc **đang nín thở vài giây** (GC pause) thì chưa trả lời được, và bác sĩ quá vội. Startup probe là quy tắc "trong lúc tỉnh dậy thì đừng hỏi câu đó"; readiness là câu hỏi khác hẳn: "anh đã sẵn sàng tiếp khách chưa?".
+
+### Thuật ngữ
+| Probe | Thất bại thì | Dùng để |
+|---|---|---|
+| startupProbe | kill container khi hết hạn mức | che chắn giai đoạn khởi động chậm; trong lúc nó chạy, liveness/readiness bị tạm hoãn |
+| livenessProbe | **kill và restart** container | phát hiện process treo vĩnh viễn (deadlock) |
+| readinessProbe | gỡ pod khỏi Service, **không kill** | tạm ngừng nhận traffic |
+
+### Triệu chứng và số liệu
+- Startup log: "Started OrderApplication in 92.4 seconds" (trước khi tăng dữ liệu warm-up là 40 giây).
+- Probe hiện tại: {{initialDelaySeconds: 30}}, {{periodSeconds: 10}}, {{timeoutSeconds: 1}}, {{failureThreshold: 3}}, path {{/actuator/health}}.
+- Thời điểm bị kill ≈ 30 + 3 × 10 = khoảng 60 giây sau khi start, luôn trước mốc 92 giây, nên vòng lặp không bao giờ thoát.
+
+### Giả thuyết và cách xác minh
+1. **Liveness kill lúc khởi động.** {{kubectl describe pod order-7c9f}}: Events có "Liveness probe failed: Get http://10.1.2.3:8080/actuator/health: dial tcp ... connection refused" rồi "Container order failed liveness probe, will be restarted". Last State: Terminated, Reason **Error** hoặc exit 143 (JVM nhận SIGTERM), không phải OOMKilled.
+2. **Liveness kill khi GC pause.** Với {{-Xlog:gc*:file=/logs/gc.log}}, thấy "Pause Full (G1 Compaction Pause) 3.9G->3.7G(4G) 14210.512ms" trùng thời điểm Event "Liveness probe failed ... context deadline exceeded". Heap gần đầy sau Full GC còn cho thấy vấn đề bộ nhớ thật cần xử lý riêng.
+3. **Liveness kiểm tra cả DB.** Nếu path là {{/actuator/health}} (gồm cả {{db}}, {{redis}}), một lần DB chậm làm **mọi pod** fail liveness cùng lúc và bị restart hàng loạt, biến sự cố nhỏ thành sập toàn bộ.
+4. Lấy log của lần chạy trước khi bị kill: {{kubectl logs order-7c9f --previous}}.
+
+### Cơ chế từng bước
+~~~text
+t=0s   container start, JVM khởi động, Spring tạo bean, warm-up cache
+t=30s  liveness #1 -> connection refused (fail 1)
+t=40s  liveness #2 -> fail 2
+t=50s  liveness #3 -> fail 3 => kubelet gửi SIGTERM, sau grace period gửi SIGKILL
+t=~60s container restart -> lặp lại; backoff tăng dần => CrashLoopBackOff
+~~~
+Kubelet không biết app "đang khởi động"; nó chỉ đếm số lần thất bại liên tiếp. GC stop-the-world tương tự: toàn bộ thread ứng dụng, kể cả thread xử lý HTTP probe, dừng lại.
+
+### Cấu hình đề xuất
+~~~yaml
+startupProbe:                    # cho tối đa 30 x 5s = 150s để khởi động
+  httpGet: { path: /actuator/health/liveness, port: 8080 }
+  periodSeconds: 5
+  failureThreshold: 30
+livenessProbe:                   # chỉ hỏi: process còn phản hồi không
+  httpGet: { path: /actuator/health/liveness, port: 8080 }
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 6            # chịu được ~60s không phản hồi
+readinessProbe:                  # có nhận traffic được không
+  httpGet: { path: /actuator/health/readiness, port: 8080 }
+  periodSeconds: 5
+  failureThreshold: 3
+~~~
+Spring Boot tự bật các health group {{liveness}} và {{readiness}} khi phát hiện chạy trên Kubernetes (hoặc đặt {{management.endpoint.health.probes.enabled=true}}). Mặc định group liveness **không** chứa DB; giữ nguyên như vậy. Nếu muốn DB ảnh hưởng thì chỉ đưa vào readiness, và cân nhắc kỹ vì DB chết thì mọi pod cùng rút khỏi Service.
+
+### Sửa ngắn hạn và dài hạn
+- Ngắn hạn: thêm startupProbe, đổi liveness sang {{/actuator/health/liveness}}, tăng timeout; rollout lại.
+- Dài hạn: giảm thời gian khởi động (warm-up cache bất đồng bộ sau khi ready, hoặc lazy init có chọn lọc); xử lý Full GC dài (heap sizing, tìm memory leak) vì probe chỉ là triệu chứng.
+
+### Lỗi hay gặp
+1. **Dùng chung một endpoint cho liveness và readiness**: DB chậm làm restart toàn bộ fleet.
+2. **Tăng {{initialDelaySeconds}} lên 120 giây**: chạy được nhưng mỗi lần pod chết thật, phải chờ 2 phút mới phát hiện; startupProbe tốt hơn vì xong khởi động là liveness chạy ngay.
+3. **{{timeoutSeconds: 1}} mặc định** cho app JVM: một GC pause 1–2 giây đã đủ tính là fail.
+
+### Trả lời miệng 1 phút
+"CrashLoopBackOff mà không OOMKilled, tôi xem ngay Events của pod: thấy Liveness probe failed và container bị restart khoảng 60 giây sau khi start, trong khi app cần 92 giây. Lần restart lúc chạy thì trùng Full GC 14 giây trong GC log. Tôi thêm startupProbe cho giai đoạn khởi động, cho liveness trỏ vào health group liveness nhẹ, không kiểm tra DB, với timeout và threshold chịu được pause, còn readiness lo chuyện nhận traffic. Song song tôi xử lý gốc: rút ngắn startup và tìm vì sao heap đầy gây Full GC."
+
+> Senior tip: nguyên tắc của tôi là **liveness chỉ fail khi restart thực sự chữa được bệnh** (deadlock, process treo). Mọi phụ thuộc bên ngoài để ở readiness hoặc circuit breaker. Một sự cố tôi từng gặp: Postgres failover 40 giây, liveness có check DB, cả 30 pod restart cùng lúc và mất thêm 5 phút khởi động lại, lâu gấp mấy lần chính sự cố DB.`,
+  follow: [
+    'Khi readiness phụ thuộc DB và DB chết, toàn bộ pod rút khỏi Service thì có ổn không?',
+    'Exit code 137 và 143 khác nhau thế nào khi đọc {{kubectl describe pod}}?',
+    'Bạn rút ngắn thời gian khởi động Spring Boot bằng những cách nào?'
+  ],
+  tags: ['Kubernetes', 'liveness probe', 'startupProbe', 'readiness', 'CrashLoopBackOff', 'GC pause'],
+  refs: [
+    { type: 'doc', title: 'Kubernetes: Configure Liveness, Readiness and Startup Probes', url: 'https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/' },
+    { type: 'doc', title: 'Spring Boot: Actuator Endpoints and Kubernetes Probes', url: 'https://docs.spring.io/spring-boot/reference/actuator/endpoints.html' }
+  ]
+},
+{
+  id: 'scenario-062',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Mỗi lần rolling deploy service thanh toán (10 pod), client nhận khoảng 200–400 lỗi 502/503 và vài lỗi "connection reset" trong 1–2 phút, dù readiness probe đã cấu hình. Bạn tìm nguyên nhân và làm deploy "không rơi request" thế nào?',
+  a: `**Tóm tắt:** khi pod bị xoá, Kubernetes **song song** gửi SIGTERM cho container và gỡ pod khỏi danh sách endpoint; ingress/kube-proxy cần vài giây mới cập nhật, nên trong khoảng đó traffic vẫn đổ vào một JVM đang tắt. Sửa bằng ba lớp: **preStop sleep** vài giây để chờ endpoint được gỡ, **graceful shutdown** của Spring Boot để xử lý nốt request đang chạy, và {{terminationGracePeriodSeconds}} lớn hơn tổng hai khoảng đó; kèm {{maxUnavailable: 0}} và readiness đúng nghĩa cho pod mới.
+
+### Hiểu nhanh
+Giống một quầy thu ngân đóng ca: quản lý vừa **tắt đèn quầy** (SIGTERM) vừa **gửi thông báo cho bảo vệ** đừng dẫn khách tới quầy này (gỡ endpoint). Nhưng thông báo mất vài giây mới tới, bảo vệ vẫn dẫn khách đến quầy đã tối. Cách làm đúng: thông báo trước, **đợi vài giây** cho bảo vệ nhận tin, rồi mới phục vụ nốt khách đang đứng và đóng quầy.
+
+### Thuật ngữ
+- **EndpointSlice**: danh sách IP pod đứng sau một Service; kube-proxy và ingress controller đọc danh sách này.
+- **preStop hook**: lệnh chạy **trước** khi container nhận SIGTERM.
+- **Graceful shutdown**: ngừng nhận request mới, chờ request đang chạy xong rồi mới tắt.
+- **terminationGracePeriodSeconds**: tổng thời gian tối đa (mặc định 30s) từ lúc bắt đầu tắt đến khi kubelet gửi SIGKILL.
+
+### Triệu chứng và số liệu
+- Lỗi chỉ xuất hiện trong cửa sổ deploy; access log ingress có 502 với "upstream prematurely closed connection" và "connect() failed (111: Connection refused)" tới IP của pod cũ.
+- Pod cũ: log "Graceful shutdown" không xuất hiện, process tắt trong dưới 1 giây sau SIGTERM.
+- Một số request thanh toán mất 8–15 giây (gọi ngân hàng), bị cắt ngang giữa chừng.
+
+### Giả thuyết và cách xác minh
+1. **Race giữa SIGTERM và việc gỡ endpoint.** Ghi log thời điểm nhận SIGTERM (shutdown hook) và so với thời điểm IP biến mất khỏi {{kubectl get endpointslices -l kubernetes.io/service-name=payment -w}}; ingress vẫn gửi request tới IP đó sau SIGTERM 2–5 giây.
+2. **App tắt ngay, không chờ request đang chạy.** Kiểm tra {{server.shutdown}}: Spring Boot 3.4 trở đi mặc định là graceful; bản cũ hơn mặc định là immediate.
+3. **Grace period quá ngắn.** Request 15 giây + chờ endpoint, nhưng {{terminationGracePeriodSeconds}} vẫn 30 với shutdown phase dài, có thể bị SIGKILL (exit 137).
+4. **Pod mới nhận traffic quá sớm.** Readiness trả UP trước khi warm-up xong, request đầu bị timeout.
+
+### Cơ chế từng bước khi một pod bị xoá
+~~~text
+API server đánh dấu pod Terminating
+   ├─► (A) kubelet: chạy preStop -> gửi SIGTERM -> chờ -> SIGKILL khi hết grace
+   └─► (B) EndpointSlice controller gỡ IP -> kube-proxy / ingress cập nhật (vài giây)
+(A) và (B) chạy SONG SONG, không có thứ tự đảm bảo
+~~~
+Nếu không có preStop, (A) thường nhanh hơn (B): JVM đã đóng cổng trong khi ingress vẫn còn IP cũ, sinh ra connection refused/502.
+
+### Cấu hình sửa
+~~~yaml
+spec:
+  terminationGracePeriodSeconds: 60   # > preStop (10) + shutdown timeout (40)
+  containers:
+  - name: payment
+    lifecycle:
+      preStop:
+        sleep: { seconds: 10 }        # K8s 1.30+; bản cũ: exec ["sh","-c","sleep 10"]
+    readinessProbe:
+      httpGet: { path: /actuator/health/readiness, port: 8080 }
+---
+# Deployment strategy
+strategy:
+  rollingUpdate: { maxUnavailable: 0, maxSurge: 2 }
+~~~
+~~~yaml
+# application.yml
+server:
+  shutdown: graceful                  # ngừng nhận request mới, chờ request đang chạy
+spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 40s   # mặc định 30s
+~~~
+Khi bắt đầu tắt, Spring Boot cũng chuyển readiness sang trạng thái không nhận traffic; nhưng **không nên chỉ dựa vào điều đó** vì readiness cũng cần vài chu kỳ probe mới có hiệu lực.
+
+### Những thứ khác cần tắt êm
+- Kafka consumer: container listener dừng và commit offset trong shutdown; xử lý idempotent để chịu được giao lại.
+- Job {{@Scheduled}} và executor async: cấu hình chờ task xong ({{spring.task.execution.shutdown.await-termination=true}}).
+- Keep-alive connection từ ingress: graceful shutdown của Tomcat trả lỗi cho request mới trên connection cũ, nên preStop sleep vẫn là lớp chính.
+
+### Phòng ngừa
+- Test: chạy k6/Gatling 200 RPS liên tục trong khi {{kubectl rollout restart deployment/payment}}, yêu cầu 0 lỗi 5xx.
+- PodDisruptionBudget để node drain không đá nhiều pod cùng lúc.
+- Đo deploy như một SLO: "số lỗi 5xx trong cửa sổ deploy".
+
+### Lỗi hay gặp
+1. **preStop sleep lớn hơn grace period**: kubelet SIGKILL giữa chừng, request đang chạy chết hết.
+2. **Image distroless không có lệnh sleep** mà vẫn dùng exec sleep: hook lỗi; dùng action sleep native (K8s 1.30+) hoặc endpoint tự viết.
+3. **Chỉ cấu hình {{server.shutdown=graceful}}** mà quên preStop: vẫn rơi request do race endpoint.
+
+### Trả lời miệng 1 phút
+"Nguyên nhân là race: khi xoá pod, Kubernetes gửi SIGTERM và gỡ endpoint song song, ingress cần vài giây mới cập nhật nên vẫn đổ traffic vào JVM đang tắt. Tôi xác minh bằng cách so log SIGTERM với lúc IP rời EndpointSlice và access log 502 của ingress. Tôi sửa bằng preStop sleep 10 giây, server.shutdown graceful với timeout 40 giây, grace period 60 giây, maxUnavailable 0, và readiness chỉ UP sau warm-up. Cuối cùng chạy load test trong lúc rollout restart để chứng minh 0 lỗi."
+
+> Senior tip: con số grace period phải tính từ **request dài nhất bạn chấp nhận hoàn tất**, không chọn đại. Với dịch vụ gọi ngân hàng p99.9 là 15 giây, tôi đặt shutdown timeout 40 giây và grace 60 giây; sau thay đổi, lỗi trong mỗi lần deploy giảm từ vài trăm xuống 0, và team dám deploy giữa giờ hành chính.`,
+  follow: [
+    'Vì sao readiness probe đã có mà vẫn cần preStop?',
+    'Rolling deploy với Kafka consumer gây rebalance liên tục thì xử lý thế nào?',
+    'PodDisruptionBudget giúp gì khi node bị drain?'
+  ],
+  tags: ['Kubernetes', 'rolling update', 'graceful shutdown', 'preStop', 'zero downtime'],
+  refs: [
+    { type: 'doc', title: 'Kubernetes: Pod Lifecycle', url: 'https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/' },
+    { type: 'doc', title: 'Kubernetes: Container Lifecycle Hooks', url: 'https://kubernetes.io/docs/concepts/containers/container-lifecycle-hooks/' },
+    { type: 'doc', title: 'Spring Boot: Graceful Shutdown', url: 'https://docs.spring.io/spring-boot/reference/web/graceful-shutdown.html' }
+  ]
+},
+{
+  id: 'scenario-063',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'HPA của service catalog dao động liên tục: số replica nhảy 4 → 12 → 4 → 12 cứ khoảng 6–7 phút, kể cả khi traffic gần như phẳng. Mỗi lần scale up, latency lại tăng. Bạn phân tích và ổn định nó thế nào?',
+  a: `**Tóm tắt:** HPA tính {{desired = ceil(current × currentUtilization / target)}} theo CPU **so với request**. Pod JVM mới khởi động đốt nhiều CPU (class loading, JIT, warm-up) nên đẩy trung bình CPU lên, HPA scale up thêm; vài phút sau CPU về thấp, hết cửa sổ ổn định 5 phút thì scale down, rồi lặp lại. Xác minh bằng {{kubectl describe hpa}} và metric CPU theo từng pod; sửa bằng {{behavior}} (stabilization window, giới hạn tốc độ), đặt CPU request sát thực tế, readiness chỉ UP sau warm-up, và cân nhắc scale theo metric gần nghiệp vụ hơn (RPS, lag).
+
+### Hiểu nhanh
+HPA giống **quản lý siêu thị nhìn độ bận của thu ngân để mở thêm quầy**. Thu ngân mới vào ca phải mở máy, đếm tiền, nên trông "rất bận" dù chưa phục vụ ai. Quản lý thấy trung bình bận tăng, mở thêm quầy; lát sau ai cũng rảnh, đóng bớt quầy; quầy mới lại "bận giả"... cứ thế lặp lại.
+
+### Thuật ngữ
+- **CPU utilization của HPA**: CPU dùng thật chia cho **CPU request** của container, không phải chia cho limit.
+- **Stabilization window**: HPA nhìn lại các đề xuất trong khoảng thời gian này và chọn giá trị an toàn nhất; mặc định scale down 300 giây, scale up 0 giây.
+- **Tolerance**: chênh lệch dưới 10% so với target thì HPA không đổi gì.
+- **Flapping**: scale lên xuống liên tục.
+
+### Triệu chứng và số liệu
+- Target CPU 60%, request 500m. Lúc ổn định mỗi pod dùng ~250m (50%).
+- Pod mới: 30–60 giây đầu dùng 1.5–2 core (JIT C2 + warm-up), 300–400% so với request.
+- {{kubectl describe hpa catalog}} Events: "New size: 12; reason: cpu resource utilization (percentage of request) above target", vài phút sau "New size: 4; reason: All metrics below target".
+
+### Giả thuyết và cách xác minh
+1. **CPU khởi động của pod mới làm lệch trung bình.** Vẽ {{container_cpu_usage_seconds_total}} theo từng pod: các pod tuổi dưới 1 phút có CPU vọt cao. HPA có cơ chế bỏ qua mẫu CPU của pod chưa ready trong giai đoạn khởi tạo, nhưng nếu readiness UP **quá sớm** thì CPU warm-up vẫn bị tính.
+2. **Request quá thấp so với thực tế** nên utilization nhạy với mọi biến động nhỏ. Xác minh bằng p95 CPU thực tế dài ngày so với request.
+3. **Scale up mạnh không giới hạn**: từ 4 nhảy thẳng 12 trong một chu kỳ vì đang dùng mặc định cho scale up.
+4. **Latency tăng khi scale up** vì pod mới chưa warm (JIT, connection pool, cache), nhận traffic ngay.
+
+### Cơ chế từng bước một vòng flapping
+~~~text
+t0   4 pod x 50%                 -> ổn
+t1   dao động nhẹ: 4 pod x 70%   -> desired = ceil(4 x 70/60) = 5
+t2   pod mới ready sớm, CPU 350% -> trung bình 5 pod ~ 126% -> desired 11..12
+t3   7 pod mới cùng warm-up      -> CPU vẫn cao, giữ 12
+t8   warm-up xong: 12 pod x 17%  -> đề xuất 4, hết 300s stabilization -> về 4
+t9   4 pod quay lại ~50-70%      -> vòng mới
+~~~
+
+### Cấu hình ổn định
+~~~yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+spec:
+  minReplicas: 6                          # sàn đủ cho traffic nền
+  maxReplicas: 20
+  metrics:
+  - type: Resource
+    resource: { name: cpu, target: { type: Utilization, averageUtilization: 65 } }
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60      # cần đề xuất cao kéo dài 60s mới scale
+      policies: [ { type: Percent, value: 50, periodSeconds: 60 } ]   # tối đa +50%/phút
+    scaleDown:
+      stabilizationWindowSeconds: 600     # chậm rãi khi giảm
+      policies: [ { type: Pods, value: 1, periodSeconds: 120 } ]
+~~~
+Kèm theo:
+- **Đặt CPU request theo p90–p95 thực tế** (ví dụ 1000m), để utilization phản ánh đúng tải.
+- **Readiness chỉ UP sau warm-up** (gọi trước các endpoint chính, mở đủ connection pool), giúp HPA bỏ qua CPU khởi tạo và tránh latency tăng.
+- Nếu CPU không phải nút cổ chai thật (service chờ I/O), scale theo RPS hoặc latency qua custom/external metric (Prometheus Adapter, KEDA).
+
+### Trade-off
+| Lựa chọn | Lợi | Giá |
+|---|---|---|
+| Stabilization dài | ổn định | phản ứng chậm với đỉnh thật |
+| minReplicas cao | ít flapping, sẵn sàng đỉnh | tốn tiền giờ thấp điểm |
+| Scale theo RPS | sát nghiệp vụ | cần pipeline metric, có thể trễ |
+
+### Lỗi hay gặp
+1. **Đặt target theo limit** trong đầu thay vì request: target 60% với request 500m nghĩa là chỉ 300m.
+2. **Bật cả HPA theo CPU và VPA chỉnh CPU request** cùng lúc: hai bộ điều khiển giành nhau.
+3. **Không giới hạn tốc độ scale up**: một đỉnh giả kéo theo hàng chục pod, có thể làm DB cạn connection (mỗi pod mở pool 20 connection).
+
+### Trả lời miệng 1 phút
+"HPA tính utilization theo CPU request. Pod JVM mới đốt nhiều CPU lúc warm-up nên kéo trung bình lên, HPA scale up, sau đó CPU tụt và sau 5 phút stabilization lại scale down, thành vòng lặp. Tôi xác minh bằng events của HPA và CPU theo tuổi pod. Tôi sửa bằng behavior: stabilization 60 giây khi tăng, 10 phút khi giảm, giới hạn +50% mỗi phút; đặt request theo p95 thực tế; readiness chỉ UP sau warm-up; và nếu service chủ yếu chờ I/O thì scale theo RPS thay vì CPU."
+
+> Senior tip: hãy nhớ mỗi replica mới còn **nhân thêm connection tới DB**. Tôi từng thấy HPA nhảy từ 8 lên 40 pod trong một đỉnh giả, mỗi pod Hikari 20 connection, tổng 800 connection vượt {{max_connections}} của Postgres và chính autoscale gây sự cố. Luôn tính {{maxReplicas × pool size}} so với giới hạn DB.`,
+  follow: [
+    'Khi nào nên scale theo Kafka lag thay vì CPU?',
+    'Vì sao không nên dùng chung HPA (CPU) và VPA (CPU) cho cùng Deployment?',
+    'Bạn chọn minReplicas dựa trên số liệu nào?'
+  ],
+  tags: ['Kubernetes', 'HPA', 'autoscaling', 'JVM warm-up', 'flapping'],
+  refs: [
+    { type: 'doc', title: 'Kubernetes: Horizontal Pod Autoscaling', url: 'https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/' }
+  ]
+},
+{
+  id: 'scenario-064',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Dashboard cho thấy pod của service pricing chỉ dùng trung bình 35% CPU limit (limit 1 core), nhưng p99 latency tăng từ 80ms lên 600ms mỗi khi traffic lên nhẹ, và GC pause cũng dài bất thường. Team định tối ưu code. Bạn nghi điều gì và kiểm chứng thế nào?',
+  a: `**Tóm tắt:** nghi **CPU throttling** do CFS quota: limit 1 core nghĩa là mỗi chu kỳ 100ms container chỉ được tiêu tổng cộng 100ms CPU. Ứng dụng nhiều thread (Tomcat, GC, JIT) có thể dùng hết quota trong 25ms đầu trên 4 core rồi **bị đóng băng 75ms còn lại**, dù trung bình theo phút chỉ 35%. Kiểm chứng bằng {{container_cpu_cfs_throttled_periods_total}} hoặc {{cpu.stat}} trong cgroup; sửa bằng tăng hoặc bỏ CPU limit (giữ request), chỉnh số thread/GC cho phù hợp, và đặt alert tỉ lệ throttling.
+
+### Hiểu nhanh
+CPU limit giống **vé xem phim 100 phút mỗi buổi**, mà bạn được dùng nhiều ghế cùng lúc. Nếu đưa 4 người vào cùng lúc, 25 phút là hết 100 phút-người, và cả nhóm phải **ra ngoài đứng chờ** đến buổi sau. Tính trung bình cả ngày bạn dùng rất ít vé, nhưng ngay lúc cần thì bị đuổi ra. Trung bình đẹp đã che mất những lần chờ đó.
+
+### Thuật ngữ
+- **CFS quota/period**: Linux cấp cho cgroup một hạn mức CPU-time (quota) trong mỗi chu kỳ (period, mặc định 100ms). Limit 1 core = 100ms quota mỗi 100ms.
+- **Throttling**: cgroup dùng hết quota trước khi hết chu kỳ, nên mọi thread của nó bị dừng đến chu kỳ sau.
+- **CPU request**: phần CPU đảm bảo, dùng để xếp lịch và chia CPU khi tranh chấp; không gây throttling.
+- **availableProcessors**: số CPU mà JVM nghĩ mình có; trong container JVM tính từ quota (limit).
+
+### Triệu chứng và số liệu
+- Node có 8 core, pod limit 1 core, request 500m.
+- CPU trung bình theo phút: 0.35 core. Nhưng {{rate(container_cpu_cfs_throttled_periods_total[5m]) / rate(container_cpu_cfs_periods_total[5m])}} = **45%**: gần một nửa số chu kỳ bị throttle.
+- GC log: pause "Pause Young" lúc bình thường 15ms, lúc tải lên 120–250ms.
+- {{java -XX:+PrintFlagsFinal -version}} trong container: JVM chọn **SerialGC** vì thấy ít hơn 2 CPU.
+
+### Giả thuyết và cách xác minh
+1. **Throttling theo quota.** Vào container: {{cat /sys/fs/cgroup/cpu.stat}} (cgroup v2) xem {{nr_periods}}, {{nr_throttled}}, {{throttled_usec}}; chạy lại sau 60 giây, tính phần tăng. Hoặc dùng metric cAdvisor ở trên.
+2. **JVM nhận sai tài nguyên.** {{jcmd 1 VM.info}} hoặc log khởi động với {{-Xlog:os+container=info}} cho thấy quota và số CPU JVM tính ra; với limit 1 core, {{availableProcessors}} = 1, JVM mặc định chọn Serial GC (chỉ 1 thread GC, stop-the-world).
+3. **Code chậm thật?** So sánh: chạy load test cùng code trên pod không limit; p99 về 85ms thì vấn đề nằm ở hạ tầng, không phải code.
+
+### Cơ chế từng bước
+~~~text
+Period 100ms, quota 100ms, app có 4 thread chạy song song trên 4 core
+0ms ─ 25ms : 4 thread x 25ms = 100ms CPU -> HẾT quota
+25ms ─ 100ms: TẤT CẢ thread bị dừng (throttled 75ms)
+=> request đang xử lý dở bị cộng thêm tới 75ms; GC đang chạy cũng bị dừng
+~~~
+Một request đi qua vài chu kỳ bị throttle là đã cộng thêm hàng trăm ms. Metric trung bình theo phút không thấy vì tổng CPU vẫn thấp; đó là lý do "35% mà vẫn chậm".
+
+### Sửa
+| Cách | Hiệu quả | Lưu ý |
+|---|---|---|
+| Bỏ CPU limit, giữ request đúng | hết throttling, dùng CPU rảnh của node | cần policy cho phép; noisy neighbor được kiểm soát bằng request |
+| Tăng limit (ví dụ 2–4 core) | giảm mạnh throttling | tốn quota namespace |
+| {{-XX:ActiveProcessorCount=2}} | JVM chọn G1, số thread GC/JIT hợp lý | không tăng quota, chỉ sửa ước lượng của JVM |
+| Giảm thread song song (pool) | ít đốt quota cùng lúc | có thể giảm throughput |
+
+Với service nhạy latency, phương án phổ biến: request = mức dùng p95 thật (ví dụ 1 core), limit bỏ hoặc gấp 2–4 lần request; chỉ định GC tường minh ({{-XX:+UseG1GC}}) thay vì để JVM tự chọn.
+
+### Phòng ngừa
+- Alert khi tỉ lệ chu kỳ bị throttle > 10–20% kéo dài.
+- Dashboard đặt cạnh nhau: p99 latency, throttled ratio, GC pause.
+- Khi sizing, đo theo **burst** (p99 CPU theo giây) chứ không chỉ trung bình theo phút.
+
+### Lỗi hay gặp
+1. **Nhìn CPU trung bình rồi kết luận "CPU dư"**: throttling xảy ra ở thang 100ms, metric phút không thấy.
+2. **Limit dưới 2 core cho app JVM**: JVM chọn Serial GC, pause dài, càng ăn quota đúng lúc nhạy cảm.
+3. **Tối ưu code trước khi đo hạ tầng**: mất nhiều tuần mà p99 không đổi.
+
+### Trả lời miệng 1 phút
+"CPU trung bình thấp mà latency cao khiến tôi nghi CPU throttling của CFS: limit 1 core là 100ms CPU mỗi 100ms, app nhiều thread tiêu hết quota sớm rồi bị dừng phần còn lại của chu kỳ. Tôi kiểm tra cpu.stat trong cgroup hoặc metric throttled periods: 45% chu kỳ bị throttle. JVM còn thấy chỉ 1 CPU nên chọn Serial GC, pause dài thêm. Tôi sửa bằng đặt request theo p95, bỏ hoặc nâng limit, chỉ định G1 và ActiveProcessorCount phù hợp, rồi thêm alert tỉ lệ throttle."
+
+> Senior tip: trước khi để team đi tối ưu code vì p99, tôi luôn xem 3 biểu đồ: **throttled ratio, GC pause, connection pool wait**. Ở một dự án, chỉ bỏ CPU limit cho 6 service nhạy latency (giữ request) đã làm p99 giảm từ 600ms xuống khoảng 90ms mà không đổi dòng code nào.`,
+  follow: [
+    'Khi bỏ CPU limit, làm sao tránh một pod chiếm hết CPU của node?',
+    'Vì sao JVM chọn Serial GC khi container có ít hơn 2 CPU?',
+    'Memory limit có nên bỏ như CPU limit không? Vì sao?'
+  ],
+  tags: ['Kubernetes', 'CPU throttling', 'CFS quota', 'JVM container', 'latency', 'GC'],
+  refs: [
+    { type: 'doc', title: 'Kubernetes: Resource Management for Pods and Containers', url: 'https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/' }
+  ]
+},
+{
+  id: 'scenario-065',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Consumer group {{invoice-sync}} (6 instance, topic 12 partition) cứ vài phút lại rebalance, lag tăng từ 0 lên 2 triệu, và log đầy {{CommitFailedException}}. Mỗi message cần gọi API bên ngoài mất 0.5–1 giây. Bạn chẩn đoán và sửa "rebalance storm" này thế nào?',
+  a: `**Tóm tắt:** consumer lấy về tối đa {{max.poll.records}} (mặc định 500) message mỗi lần {{poll()}}; xử lý 500 × 1 giây = 500 giây, vượt {{max.poll.interval.ms}} (mặc định 300.000ms = 5 phút), nên client tự rời group, gây rebalance; offset của lô đó không commit được ({{CommitFailedException}}), lô bị giao lại và lặp lại. Sửa bằng cách **giảm số record mỗi poll** để thời gian xử lý một lô nằm xa dưới giới hạn, tăng tốc xử lý (song song có kiểm soát, timeout API), chỉ tăng {{max.poll.interval.ms}} khi đã hiểu hệ quả; dùng cooperative rebalancing và static membership để rebalance ít đau hơn.
+
+### Hiểu nhanh
+Nhóm consumer giống **đội công nhân chia nhau các băng chuyền**. Quản lý (group coordinator) có luật: mỗi công nhân phải **quay lại bàn nhận việc** ít nhất 5 phút một lần, nếu không coi như đã bỏ về và chia lại băng chuyền cho người khác. Một công nhân ôm 500 kiện, mỗi kiện 1 giây, mất 8 phút mới quay lại; quản lý đã chia lại việc, công sức của anh không được ghi nhận, và kiện hàng phải làm lại từ đầu.
+
+### Thuật ngữ
+- **Rebalance**: group chia lại partition giữa các consumer; trong rebalance kiểu eager, mọi consumer dừng tiêu thụ.
+- **max.poll.interval.ms**: thời gian tối đa giữa hai lần gọi {{poll()}}; vượt quá thì consumer bị coi là chết.
+- **session.timeout.ms / heartbeat**: heartbeat chạy ở thread nền, phát hiện process chết; khác với poll interval (phát hiện "process sống nhưng kẹt").
+- **Static membership**: đặt {{group.instance.id}} cố định để restart nhanh không gây rebalance.
+
+### Triệu chứng và log
+~~~text
+WARN  [Consumer clientId=invoice-sync-3, groupId=invoice-sync] consumer poll timeout has expired.
+  This means the time between subsequent calls to poll() was longer than the configured
+  max.poll.interval.ms, which typically implies that the poll loop is spending too much time
+  processing messages. You can address this either by increasing max.poll.interval.ms or by
+  reducing the maximum size of batches returned in poll() with max.poll.records.
+ERROR CommitFailedException: Commit cannot be completed since the group has already rebalanced...
+~~~
+- Lag tăng dần theo bậc thang; số lần rebalance mỗi giờ: 15–20.
+- API bên ngoài bị gọi **trùng** (cùng invoiceId nhiều lần) vì lô bị xử lý lại.
+
+### Giả thuyết và cách xác minh
+1. **Lô quá lớn so với thời gian xử lý.** Đo thời gian xử lý mỗi lô (metric tự ghi hoặc Micrometer timer quanh listener) và so với 300 giây.
+2. **API bên ngoài chậm bất thường** (p99 tăng từ 1 giây lên 10 giây). Kiểm tra metric client HTTP; thiếu timeout thì một request treo có thể chiếm cả phút.
+3. **Rebalance do deploy/restart** chứ không phải do poll. Xem log coordinator/consumer: lý do rời group là "poll timeout" hay "session timeout".
+4. Xem trạng thái group: {{kafka-consumer-groups.sh --bootstrap-server kafka:9092 --describe --group invoice-sync}}, cột CONSUMER-ID đổi liên tục, LAG tăng.
+
+### Cơ chế từng bước
+~~~text
+poll() -> nhận 500 record
+xử lý 500 x ~1s ............... 300s: vượt max.poll.interval.ms
+ -> client gửi LeaveGroup, coordinator rebalance, partition chuyển cho consumer khác
+xử lý xong ở giây 500 -> commitSync() -> CommitFailedException (không còn sở hữu partition)
+consumer mới bắt đầu từ offset đã commit cũ -> 500 record bị xử lý LẠI -> cũng chậm -> lặp
+~~~
+
+### Sửa
+~~~yaml
+spring:
+  kafka:
+    consumer:
+      max-poll-records: 50                 # 50 x 1s = 50s, xa dưới giới hạn 300s
+      properties:
+        max.poll.interval.ms: 600000       # nâng có chủ đích, phát hiện kẹt chậm hơn
+        partition.assignment.strategy: org.apache.kafka.clients.consumer.CooperativeStickyAssignor
+        group.instance.id: \${HOSTNAME}     # static membership (tên pod StatefulSet ổn định)
+~~~
+- **Timeout cho API ngoài** (connect 2s, read 5s) và circuit breaker: một call treo không được chiếm cả lô.
+- **Tăng throughput** có kiểm soát: tăng {{concurrency}} của listener tới số partition (12), hoặc xử lý song song trong lô nhưng **gom theo key** để giữ thứ tự cho cùng invoice.
+- **Idempotency** phía gọi API (gửi idempotency key = invoiceId) vì at-least-once luôn có trùng.
+- Kafka 4.0 có giao thức consumer group mới (KIP-848, {{group.protocol=consumer}}) do broker điều phối việc chia partition, giảm hẳn kiểu rebalance "dừng cả nhóm"; cần cả broker và client hỗ trợ.
+
+### Trade-off
+| Tham số | Tăng lên thì | Giảm xuống thì |
+|---|---|---|
+| max.poll.records | throughput mỗi poll cao, dễ vượt interval | an toàn hơn, nhiều round-trip hơn |
+| max.poll.interval.ms | chịu được lô chậm | consumer kẹt thật được phát hiện nhanh hơn |
+| concurrency | xử lý nhanh hơn | vô ích nếu vượt số partition |
+
+### Lỗi hay gặp
+1. **Chỉ tăng max.poll.interval.ms lên 1 giờ**: hết rebalance, nhưng consumer treo thật sẽ giữ partition 1 giờ mà không ai phát hiện.
+2. **Xử lý async trong listener rồi trả về ngay**: offset commit trước khi xử lý xong, mất message khi crash.
+3. **Static membership với ID trùng nhau** giữa hai pod: một instance bị fence liên tục.
+
+### Trả lời miệng 1 phút
+"Log poll timeout cùng CommitFailedException chỉ thẳng vào max.poll.interval.ms. Mỗi poll lấy 500 record, mỗi record 1 giây là 500 giây, vượt mặc định 5 phút, consumer bị loại khỏi group, lô không commit được và bị xử lý lại, thành vòng lặp. Tôi đo thời gian mỗi lô để xác nhận. Tôi giảm max.poll.records xuống 50, đặt timeout cho API ngoài, tăng concurrency tới số partition, làm idempotent theo invoiceId, và dùng cooperative sticky cùng static membership để rebalance khi deploy nhẹ hơn."
+
+> Senior tip: quy tắc ngón tay cái của tôi là **thời gian xử lý một lô ở p99 ≤ 1/3 max.poll.interval.ms**. Thêm metric "thời gian xử lý lô" và "số rebalance mỗi giờ" vào dashboard consumer ngay từ đầu; khi số rebalance > 0 ngoài giờ deploy, đó là cảnh báo sớm trước khi lag bùng nổ.`,
+  follow: [
+    'session.timeout.ms và max.poll.interval.ms phát hiện hai loại lỗi khác nhau thế nào?',
+    'Cooperative rebalancing khác eager rebalancing ra sao?',
+    'Xử lý song song trong một partition mà vẫn giữ thứ tự theo key thế nào?'
+  ],
+  tags: ['Kafka', 'rebalance', 'max.poll.interval.ms', 'consumer group', 'CommitFailedException'],
+  refs: [
+    { type: 'doc', title: 'Apache Kafka Documentation', url: 'https://kafka.apache.org/documentation/' },
+    { type: 'doc', title: 'Spring for Apache Kafka Reference', url: 'https://docs.spring.io/spring-kafka/reference/' }
+  ]
+},
+{
+  id: 'scenario-066',
+  topic: 'scenario',
+  level: 'mid',
+  q: 'Partition 3 của topic {{orders}} đứng yên ở offset 18.234 suốt 2 giờ, lag partition đó tăng tới 400 nghìn, trong khi các partition khác bình thường. Log consumer lặp lại cùng một lỗi parse JSON mỗi giây. Bạn xử lý "poison message" này thế nào?',
+  a: `**Tóm tắt:** một message hỏng (poison message) làm consumer lỗi mãi ở cùng offset; vì Kafka xử lý tuần tự trong partition, mọi message phía sau bị kẹt. Xác minh bằng {{kafka-consumer-groups.sh --describe}} và đọc đúng offset đó; sửa bằng **ErrorHandlingDeserializer** (lỗi parse không còn nổ trong {{poll()}}), **DefaultErrorHandler** với số lần retry có giới hạn và **DeadLetterPublishingRecoverer** đẩy message lỗi sang topic DLT, phân loại lỗi không đáng retry, rồi có quy trình xem và replay DLT.
+
+### Hiểu nhanh
+Partition giống **một hàng người xếp hàng qua cửa soát vé**. Một người có vé rách, máy không đọc được; nhân viên cứ thử quét đi quét lại mãi, cả hàng phía sau đứng chờ. Cách đúng: thử vài lần, không được thì **mời người đó sang quầy riêng** (DLT) để xử lý sau, hàng tiếp tục di chuyển.
+
+### Thuật ngữ
+- **Poison message**: message mà lần xử lý nào cũng thất bại (sai định dạng, vi phạm ràng buộc dữ liệu).
+- **DLT (Dead Letter Topic)**: topic chứa message không xử lý được, kèm header mô tả lỗi.
+- **Retryable và non-retryable**: lỗi tạm thời (timeout DB) đáng thử lại; lỗi dữ liệu (JSON sai) thử bao nhiêu lần cũng sai.
+
+### Triệu chứng và xác minh
+~~~text
+$ kafka-consumer-groups.sh --bootstrap-server kafka:9092 --describe --group order-svc
+TOPIC  PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG     CONSUMER-ID
+orders 2          991203          991210          7       order-svc-1-...
+orders 3          18234           418901          400667  order-svc-2-...
+orders 4          770012          770015          3       order-svc-3-...
+~~~
+1. Chỉ một partition đứng, CURRENT-OFFSET không nhích: đúng dấu hiệu poison message (nếu cả group chậm thì là vấn đề throughput).
+2. Đọc chính message đó: {{kafka-console-consumer.sh --bootstrap-server kafka:9092 --topic orders --partition 3 --offset 18234 --max-messages 1}}. Thấy payload bị cắt cụt hoặc producer cũ gửi {{amount}} dạng chuỗi "1,000".
+3. Log lặp: "SerializationException: Error deserializing ... at offset 18234". Lỗi xảy ra **trong {{poll()}}**, trước khi tới code listener, nên handler của bạn không bắt được.
+
+### Cơ chế vì sao bị kẹt
+~~~text
+poll() -> deserialize offset 18234 -> exception
+offset không được commit -> lần poll sau lại đọc 18234 -> exception -> ...
+Kafka không cho "nhảy cóc" trong partition: 18235.. phải chờ
+~~~
+
+### Sửa với Spring Kafka (Boot 3)
+~~~yaml
+spring:
+  kafka:
+    consumer:
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JsonDeserializer
+~~~
+~~~java
+@Bean
+DefaultErrorHandler errorHandler(KafkaTemplate<Object, Object> template) {
+    // Gửi message hỏng sang "orders.DLT", mặc định cùng số partition với topic gốc
+    var recoverer = new DeadLetterPublishingRecoverer(template);
+    // 1 lần đầu + tối đa 3 lần retry, cách nhau 1 giây; sau đó chuyển DLT và đi tiếp
+    var handler = new DefaultErrorHandler(recoverer, new FixedBackOff(1000L, 3));
+    handler.addNotRetryableExceptions(ConstraintViolationException.class); // lỗi dữ liệu: không retry
+    return handler;
+}
+~~~
+- {{ErrorHandlingDeserializer}} bọc deserializer thật; khi parse lỗi, nó trả về null kèm thông tin lỗi trong header, và error handler nhận được exception để chuyển sang DLT. {{DeserializationException}} mặc định đã thuộc nhóm không retry.
+- Spring Boot tự gắn bean {{CommonErrorHandler}} vào container factory mặc định.
+- Topic DLT phải tồn tại với **số partition ≥ topic gốc** (recoverer mặc định giữ nguyên số partition).
+
+### Xử lý ngay trong sự cố
+- Nếu chưa deploy kịp bản sửa: dừng consumer group, dùng {{kafka-consumer-groups.sh --reset-offsets --to-offset 18235 --topic orders:3 --group order-svc --execute}} để bỏ qua đúng một message, **sau khi đã lưu lại nội dung** message đó. Đây là thao tác thủ công có duyệt, không phải cách làm thường xuyên.
+- Báo team producer sửa nguồn; xác định có bao nhiêu message cùng lỗi.
+
+### Phòng ngừa
+- Schema Registry (Avro/Protobuf/JSON Schema) với kiểm tra tương thích để producer không gửi được dữ liệu sai hợp đồng.
+- Alert: lag của **từng partition** không đổi trong 10 phút; số message vào DLT > 0.
+- Quy trình DLT: dashboard xem message, nguyên nhân (header exception), công cụ replay về topic gốc sau khi sửa.
+
+### Lỗi hay gặp
+1. **Retry vô hạn** ({{FixedBackOff}} với số lần không giới hạn) cho lỗi dữ liệu: partition kẹt mãi.
+2. **Catch rồi bỏ qua im lặng** trong listener: không kẹt nhưng **mất dữ liệu** mà không ai biết.
+3. **DLT ít partition hơn topic gốc**: publish vào DLT lỗi, lại kẹt ở bước recover.
+
+### Trả lời miệng 1 phút
+"Chỉ một partition đứng yên ở một offset là dấu hiệu poison message. Tôi dùng kafka-consumer-groups describe để thấy partition 3 kẹt ở 18234, đọc đúng message đó bằng console consumer và thấy JSON sai. Vì lỗi nổ ngay trong poll nên consumer đọc lại mãi. Tôi bọc deserializer bằng ErrorHandlingDeserializer, cấu hình DefaultErrorHandler retry 3 lần rồi đẩy sang DLT, đánh dấu lỗi dữ liệu là không retry. Sau đó thêm alert lag theo partition, alert DLT và quy trình replay."
+
+> Senior tip: hãy phân biệt **lỗi tạm thời** và **lỗi dữ liệu** ngay trong thiết kế: lỗi tạm thời thì retry với backoff (kể cả retry topic), lỗi dữ liệu thì vào DLT ngay. Một DLT không ai xem chỉ là thùng rác có chi phí lưu trữ; gán owner và SLA xử lý (ví dụ trong 1 ngày làm việc) cho từng DLT.`,
+  follow: [
+    'Retry topic (non-blocking retry) khác retry tại chỗ của DefaultErrorHandler thế nào, và ảnh hưởng thứ tự ra sao?',
+    'Khi replay message từ DLT, làm sao tránh xử lý trùng?'
+  ],
+  tags: ['Kafka', 'poison message', 'DLT', 'Spring Kafka', 'DefaultErrorHandler', 'ErrorHandlingDeserializer'],
+  refs: [
+    { type: 'doc', title: 'Spring for Apache Kafka: Handling Exceptions', url: 'https://docs.spring.io/spring-kafka/reference/kafka/annotation-error-handling.html' }
+  ]
+},
+{
+  id: 'scenario-067',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Consumer lag của topic {{payment-events}} tăng đều mỗi ngày giờ cao điểm (từ 0 lên 700 nghìn), tối mới về 0, và tuần sau đỉnh lại cao hơn. Không có lỗi, không rebalance. Team đề xuất "thêm pod consumer". Bạn phân tích năng lực xử lý và đưa ra kế hoạch thế nào?',
+  a: `**Tóm tắt:** lag tăng đều mà không lỗi nghĩa là **tốc độ vào lớn hơn tốc độ xử lý** ở giờ cao điểm. Cần đo hai con số: message vào mỗi giây và năng lực xử lý tối đa của group = số consumer **thực sự có partition** × (1 / thời gian xử lý mỗi message). Thêm pod chỉ có ích khi số consumer còn ít hơn số partition; nếu nút cổ chai là DB/API phía sau thì thêm pod còn làm tệ hơn. Kế hoạch: đo, tìm nút cổ chai, tối ưu xử lý (batch, bỏ round-trip thừa), rồi mới scale partition/consumer có tính toán, kèm alert lag theo **thời gian**.
+
+### Hiểu nhanh
+Lag giống **hàng người chờ ở quầy**. Nếu mỗi phút có 800 người đến mà các quầy chỉ phục vụ 600 người/phút, hàng dài thêm 200 người mỗi phút, dù không ai làm gì sai. Mở thêm quầy chỉ giúp nếu còn chỗ đặt quầy (partition) và **kho phía sau** (DB) chịu nổi số quầy mới.
+
+### Thuật ngữ
+- **Lag**: LOG-END-OFFSET trừ CURRENT-OFFSET (đã commit), tức số message chưa xử lý.
+- **Lag theo thời gian**: message cũ nhất chưa xử lý đã chờ bao lâu; có ý nghĩa nghiệp vụ hơn số lượng.
+- **Throughput mỗi consumer**: số message/giây một luồng xử lý được, ≈ 1 / thời gian xử lý mỗi message.
+- **Partition skew**: một số partition nhận nhiều message hơn hẳn do key nóng.
+
+### Số liệu thu thập
+- Producer giờ cao điểm: 800 msg/s (tăng 10% mỗi tuần theo tăng trưởng người dùng).
+- Topic 12 partition, group có 12 consumer thread (concurrency 4 × 3 pod).
+- Thời gian xử lý trung bình mỗi message: 20ms (đọc 1 bản ghi, ghi 2 bản ghi, mỗi câu một round-trip DB).
+- Năng lực tối đa: 12 × (1000 / 20) = **600 msg/s**. Thiếu 200 msg/s, tức lag tăng 720 nghìn mỗi giờ cao điểm, khớp với quan sát.
+
+### Giả thuyết và cách xác minh
+1. **Thiếu năng lực tổng thể** (như phép tính trên). Xác minh: lag tăng đều trên **mọi** partition; metric {{records-consumed-rate}} của consumer phẳng ở trần ~600 msg/s.
+2. **Partition skew.** {{kafka-consumer-groups.sh --describe}}: nếu lag dồn vào 1–2 partition thì vấn đề là key nóng (ví dụ một merchant lớn), thêm consumer không giúp gì.
+3. **Nút cổ chai phía sau.** Đo latency DB/API trong lúc cao điểm; nếu DB đã 85% CPU, tăng consumer sẽ chỉ đẩy latency lên.
+4. **Consumer dư thừa.** Nếu số consumer thread > số partition, phần dư ngồi không; kiểm tra cột CONSUMER-ID có dòng không gán partition.
+
+### Kế hoạch theo thứ tự chi phí
+| Bước | Ví dụ | Hiệu quả ước tính |
+|---|---|---|
+| 1. Bớt round-trip | gom 3 câu SQL thành 1 batch, upsert | 20ms xuống ~8ms: 1.500 msg/s |
+| 2. Xử lý theo lô | batch listener 100 record, insert batch | tăng thêm 2–5 lần nếu DB chịu được |
+| 3. Song song trong partition theo key | thư viện parallel consumer, hoặc tự gom theo key | tăng mà vẫn giữ thứ tự theo key |
+| 4. Thêm partition + consumer | 12 lên 24 | gấp đôi trần, nhưng đổi mapping key |
+
+Thêm partition là bước **cuối** vì: số partition chỉ tăng được, không giảm; mapping {{hash(key) % partitions}} thay đổi nên các message mới của cùng một key có thể sang partition khác trong khi message cũ còn chưa xử lý, phá thứ tự trong lúc chuyển giao. Nếu buộc phải tăng, làm khi lag gần 0 hoặc chuyển sang topic mới có kế hoạch.
+
+### Ví dụ batch listener
+~~~java
+@KafkaListener(topics = "payment-events", batch = "true")
+public void onBatch(List<PaymentEvent> events) {
+    // 1 round-trip cho cả lô thay vì 3 x N round-trip
+    paymentRepository.upsertAll(events);   // JDBC batch / INSERT ... ON CONFLICT
+}                                           // lỗi giữa lô: dùng BatchListenerFailedException để chỉ ra record hỏng
+~~~
+
+### Giám sát và tiêu chí thành công
+- Alert theo **thời gian chờ** (ví dụ message cũ nhất > 5 phút) thay vì số lượng; công cụ như Burrow hoặc kafka-exporter + tính toán theo tốc độ.
+- Dashboard: tốc độ vào, tốc độ xử lý, lag theo partition, latency DB.
+- Mục tiêu năng lực: trần xử lý ≥ 2 lần đỉnh hiện tại để có chỗ cho tăng trưởng 10%/tuần và cho việc "đuổi lag" sau sự cố.
+
+### Lỗi hay gặp
+1. **Thêm pod khi consumer đã bằng số partition**: tốn tiền, không tăng throughput.
+2. **Tăng concurrency mà DB đã nghẽn**: latency mỗi message tăng, throughput gần như không đổi, có khi giảm.
+3. **Alert theo số lượng lag cố định**: 100 nghìn message có thể là 2 phút ở topic này nhưng 3 giờ ở topic khác.
+
+### Trả lời miệng 1 phút
+"Lag tăng đều không lỗi là bài toán năng lực: vào 800 msg/s, trong khi 12 consumer mỗi message 20ms chỉ xử lý được 600 msg/s, thiếu 200 msg/s đúng bằng tốc độ lag tăng. Thêm pod vô ích vì consumer đã bằng số partition. Tôi kiểm tra skew theo partition và tải DB, rồi tối ưu theo thứ tự rẻ nhất: gom round-trip DB, batch listener, song song theo key, cuối cùng mới tăng partition vì nó đổi mapping key và không giảm lại được. Tôi đặt alert theo thời gian chờ và mục tiêu trần xử lý gấp đôi đỉnh."
+
+> Senior tip: khi lead review một đề xuất "scale consumer", tôi yêu cầu một phép tính trên giấy: **đỉnh vào, thời gian xử lý mỗi message, số partition, giới hạn DB**. Thường chỉ riêng việc gom round-trip DB đã cho gấp 2–3 lần throughput, rẻ hơn nhiều so với thêm hạ tầng và không đụng tới thứ tự message.`,
+  follow: [
+    'Làm sao xử lý partition skew khi một merchant chiếm 40% traffic?',
+    'Tăng số partition của topic đang chạy cần chuẩn bị những gì?',
+    'Batch listener xử lý lỗi một record giữa lô thế nào?'
+  ],
+  tags: ['Kafka', 'consumer lag', 'capacity planning', 'throughput', 'partition'],
+  refs: [
+    { type: 'doc', title: 'Apache Kafka Documentation', url: 'https://kafka.apache.org/documentation/' }
+  ]
+},
+{
+  id: 'scenario-068',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Công ty có 40 service chạy Java 8 và Java 11, cần lên Java 21 trong 2 quý để kịp hạn hỗ trợ và chuẩn bị lên Spring Boot 3. Bạn lập kế hoạch nâng cấp, phát hiện rủi ro và tránh sự cố production thế nào?',
+  a: `**Tóm tắt:** nâng cấp theo hai bước tách bạch: **chạy bytecode cũ trên JVM 21** trước (đổi runtime, chưa đổi code), rồi mới **biên dịch với {{--release 21}}** và dùng tính năng mới. Rủi ro chính nằm ở: API đã bị gỡ (Java EE modules như JAXB từ Java 11), **strong encapsulation** của JDK nội bộ (Java 16/17), thư viện dùng bytecode/reflection quá cũ (Lombok, Mockito/ByteBuddy, ASM, JaCoCo), flag JVM/GC đã bị bỏ, và thay đổi hành vi (charset mặc định UTF-8 từ Java 18, dữ liệu locale CLDR). Kiểm kê bằng {{jdeps}}/{{jdeprscan}}, canary từng service, so sánh metric trước và sau.
+
+### Hiểu nhanh
+Giống **chuyển cả công ty sang toà nhà mới**: trước hết thử cho từng phòng ban **dọn sang với nguyên đồ cũ** (đổi runtime) xem điện nước có chạy không, rồi mới **sắm nội thất mới** (đổi code, tính năng mới). Làm cả hai cùng lúc thì hỏng cái gì cũng không biết do đâu.
+
+### Thuật ngữ
+- **Runtime upgrade**: chạy file JAR cũ (biên dịch Java 8/11) trên JVM 21; Java giữ tương thích ngược ở mức bytecode rất tốt.
+- **--release N**: cờ của javac để biên dịch đúng API của phiên bản N.
+- **Strong encapsulation**: từ Java 16 (JEP 396) truy cập reflection vào nội bộ JDK bị chặn mặc định; Java 17 (JEP 403) bỏ hẳn cờ {{--illegal-access}}, chỉ còn mở từng gói bằng {{--add-opens}}.
+- **jdeps / jdeprscan**: công cụ trong JDK tìm phụ thuộc vào API nội bộ và API đã deprecated/bị gỡ.
+
+### Kiểm kê và phân loại rủi ro
+1. {{jdeps --jdk-internals --multi-release 21 -cp 'libs/*' app.jar}}: liệt kê chỗ dùng {{sun.misc}}, {{sun.security}}...
+2. {{jdeprscan --release 21 app.jar}}: API bị đánh dấu gỡ bỏ.
+3. Quét build: plugin Maven/Gradle, agent (APM, JaCoCo), flag JVM trong Dockerfile/Helm.
+4. Xếp hạng 40 service theo rủi ro: số thư viện cũ, mức dùng reflection, độ quan trọng nghiệp vụ.
+
+### Những thứ hay vỡ (và triệu chứng)
+| Vấn đề | Triệu chứng | Cách xử lý |
+|---|---|---|
+| JAXB, JAX-WS bị gỡ từ Java 11 | {{NoClassDefFoundError: javax/xml/bind/...}} | thêm dependency Jakarta XML Binding |
+| Strong encapsulation | {{InaccessibleObjectException: Unable to make field ... accessible}} | nâng thư viện; tạm dùng {{--add-opens}} có ghi chú gỡ |
+| Lombok/ByteBuddy/ASM cũ | lỗi biên dịch, Mockito không mock được | nâng lên bản hỗ trợ Java 21 |
+| Flag JVM cũ | JVM không khởi động với {{-XX:+PrintGCDateStamps}} (Unrecognized VM option) | đổi sang unified logging {{-Xlog:gc*}} |
+| CMS đã bị gỡ (Java 14) | cảnh báo bỏ qua flag, GC khác dự kiến | chọn G1 (mặc định) hoặc ZGC có đo đạc |
+| Charset mặc định UTF-8 (Java 18) | file đọc/ghi sai dấu trên máy Windows/locale cũ | luôn chỉ định charset tường minh |
+| Dữ liệu locale CLDR (từ Java 9) | format ngày/tiền khác trước, test so chuỗi fail | dùng pattern tường minh; xem lại test |
+
+### Lộ trình
+~~~text
+Pha 0  Chuẩn bị: base image JDK 21, CI chạy test trên cả JDK cũ và 21
+Pha 1  Runtime: chạy JAR cũ trên JDK 21 ở staging -> canary 5% -> 100%
+Pha 2  Build: --release 21, nâng plugin/thư viện, sửa cảnh báo
+Pha 3  Tận dụng: record, switch pattern, virtual threads (đo trước, bật có chọn lọc)
+Mỗi pha: 2-3 service ít rủi ro đi trước làm "playbook", rồi nhân rộng
+~~~
+
+### Xác minh trên production
+- So sánh trước và sau theo từng service: p99 latency, GC pause, RSS của container, CPU, số lỗi.
+- Bật {{-Xlog:gc*}} và JFR ({{-XX:StartFlightRecording}}) trên canary để có dữ liệu đối chiếu.
+- Lưu ý bộ nhớ: JVM mới có thể dùng metaspace/native khác trước; xem lại {{-XX:MaxRAMPercentage}} và memory limit.
+
+### Quản trị dự án (góc nhìn lead)
+- Một "BOM" thư viện chung đã được kiểm chứng trên Java 21 để 40 service dùng chung.
+- Bảng theo dõi trạng thái từng service theo pha; mỗi service có owner và ngày canary.
+- Tiêu chí rollback rõ ràng: lỗi tăng > X%, p99 tăng > Y% trong 30 phút thì quay về image cũ (image JDK cũ phải còn sẵn).
+
+### Lỗi hay gặp
+1. **Gộp nâng Java 21 + Spring Boot 3 + đổi GC trong một lần**: sự cố không khoanh vùng được.
+2. **Rải {{--add-opens}} khắp nơi rồi quên**: nợ kỹ thuật, chặn bản nâng cấp sau.
+3. **Chỉ test unit**: thay đổi charset, locale, TLS chỉ lộ ra ở test tích hợp và dữ liệu thật.
+
+### Trả lời miệng 1 phút
+"Tôi tách nâng cấp làm hai bước: trước tiên chạy JAR cũ trên JDK 21 để kiểm tra runtime, sau đó mới biên dịch với release 21 và dùng tính năng mới. Tôi kiểm kê bằng jdeps và jdeprscan, rà flag JVM, agent và thư viện dùng bytecode như Lombok, Mockito, JaCoCo. Các điểm hay vỡ là JAXB bị gỡ, strong encapsulation gây InaccessibleObjectException, flag GC cũ và charset mặc định UTF-8. Tôi cho vài service ít rủi ro đi trước làm playbook, canary từng service, so sánh p99, GC và memory, có tiêu chí rollback rõ, và không gộp chung với nâng Spring Boot 3."
+
+> Senior tip: phần tốn thời gian nhất thường **không phải code ứng dụng** mà là chuỗi công cụ: agent APM, plugin build, image base, script vận hành dùng flag JVM cũ. Hãy kiểm kê những thứ này đầu tiên. Ở một đợt nâng cấp 30 service, hơn nửa số lỗi đến từ agent và flag JVM trong Helm chart, không phải từ code Java.`,
+  follow: [
+    'Bạn đánh giá có nên bật virtual threads ngay sau khi lên Java 21 không?',
+    'Vì sao không nên dùng {{--add-opens}} như giải pháp lâu dài?',
+    'G1 và ZGC (generational) chọn thế nào cho service latency thấp?'
+  ],
+  tags: ['Java 21', 'migration', 'upgrade', 'jdeps', 'strong encapsulation', 'JVM'],
+  refs: [
+    { type: 'doc', title: 'Oracle JDK 21 Migration Guide', url: 'https://docs.oracle.com/en/java/javase/21/migrate/index.html' },
+    { type: 'doc', title: 'JEP 403: Strongly Encapsulate JDK Internals', url: 'https://openjdk.org/jeps/403' },
+    { type: 'doc', title: 'JEP 400: UTF-8 by Default', url: 'https://openjdk.org/jeps/400' }
+  ]
+},
+{
+  id: 'scenario-069',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Bạn phụ trách nâng một monolith Spring Boot 2.7 (Hibernate 5, Spring Security 5, Sleuth) lên Spring Boot 3. Bản build đầu tiên có hơn 800 lỗi biên dịch, và sau khi sửa xong thì staging xuất hiện lỗi 404 lạ, ID sinh ra bị trùng, và mất trace. Bạn lập kế hoạch và xử lý từng nhóm vấn đề thế nào?',
+  a: `**Tóm tắt:** Spring Boot 3 yêu cầu **Java 17+**, dựa trên **Spring Framework 6** và **Jakarta EE** (gói {{javax.*}} của Java EE đổi thành {{jakarta.*}}), đi kèm **Hibernate 6** và **Spring Security 6**. Phần lớn 800 lỗi biên dịch là đổi namespace, làm được bằng công cụ (OpenRewrite). Những lỗi nguy hiểm là **thay đổi hành vi không báo lỗi biên dịch**: Spring MVC 6 bỏ khớp dấu gạch chéo cuối URL (gây 404), Hibernate 6 đổi cách sinh ID/sequence, Sleuth không còn được hỗ trợ (thay bằng Micrometer Tracing). Đi theo lộ trình: lên 2.7 mới nhất và hết deprecation, chạy công cụ migrate, sửa hành vi theo checklist, test đối chiếu, canary.
+
+### Hiểu nhanh
+Giống **đổi hệ thống biển số xe cả thành phố**: phần lớn công việc là thay biển ({{javax}} thành {{jakarta}}), máy làm được. Cái nguy hiểm là vài **luật giao thông cũng đổi** mà không ai báo: đường cũ không còn cho rẽ (URL có dấu "/" cuối), cách đánh số xe mới khác (sequence). Xe vẫn chạy, nhưng chạy sai.
+
+### Thuật ngữ
+- **Jakarta EE**: tên mới của Java EE sau khi chuyển sang Eclipse Foundation; từ Jakarta EE 9, gói đổi thành {{jakarta.*}}.
+- **OpenRewrite**: công cụ refactor tự động theo "recipe", có recipe nâng Spring Boot 3.
+- **spring-boot-properties-migrator**: dependency tạm thời, khi chạy sẽ báo các property đã đổi tên.
+- **Micrometer Tracing**: lớp tracing của Boot 3, thay cho Spring Cloud Sleuth.
+
+### Lộ trình
+1. **Lên Spring Boot 2.7.x mới nhất**, sửa toàn bộ cảnh báo deprecated (nhiều API bị gỡ ở 3.0 đã được đánh dấu deprecated ở 2.x).
+2. **Lên Java 17/21** trước hoặc song song (Boot 3 bắt buộc Java 17+).
+3. Chạy recipe OpenRewrite nâng Boot 3 cho đổi namespace, đổi API phổ biến.
+4. Thêm {{spring-boot-properties-migrator}} tạm thời để phát hiện property đổi tên; gỡ sau khi sửa.
+5. Xử lý thư viện bên thứ ba còn dùng {{javax}} (ví dụ springfox phải thay bằng springdoc-openapi bản 2.x).
+6. Test hồi quy, test đối chiếu API, canary.
+
+### Nhóm 1: lỗi biên dịch (dễ, nhiều)
+- {{javax.persistence}}, {{javax.servlet}}, {{javax.validation}}, {{javax.annotation.PostConstruct}} đổi thành {{jakarta.*}}.
+- **Bẫy**: không find-replace mù toàn bộ {{javax.}}. Các gói thuộc JDK như {{javax.sql.DataSource}}, {{javax.crypto}}, {{javax.net.ssl}} **giữ nguyên**.
+- Spring Security 6: {{WebSecurityConfigurerAdapter}} đã bị gỡ; chuyển sang bean {{SecurityFilterChain}}, {{authorizeRequests}} sang {{authorizeHttpRequests}}, {{antMatchers}} sang {{requestMatchers}}.
+
+~~~java
+@Bean
+SecurityFilterChain api(HttpSecurity http) throws Exception {
+    http.authorizeHttpRequests(auth -> auth
+            .requestMatchers("/actuator/health/**").permitAll()
+            .requestMatchers("/admin/**").hasRole("ADMIN")
+            .anyRequest().authenticated())
+        .oauth2ResourceServer(o -> o.jwt(Customizer.withDefaults()));
+    return http.build();
+}
+~~~
+
+### Nhóm 2: lỗi hành vi (khó, ít, nguy hiểm)
+| Triệu chứng | Nguyên nhân | Cách sửa |
+|---|---|---|
+| {{GET /orders/}} trả 404, trước đây chạy | Spring Framework 6 tắt mặc định trailing slash match | sửa client gọi đúng URL; hoặc redirect/rewrite ở gateway trong thời gian chuyển tiếp |
+| Insert lỗi trùng khoá chính hoặc thiếu sequence | Hibernate 6 đổi chiến lược đặt tên sequence mặc định (sequence riêng mỗi entity thay cho {{hibernate_sequence}} dùng chung) | khai báo sequence tường minh trên entity, hoặc tạm dùng {{hibernate.id.db_structure_naming_strategy=legacy}}; kiểm tra {{allocationSize}} khớp INCREMENT của sequence trong DB |
+| Mất traceId trong log, trace không nối giữa service | Sleuth không hỗ trợ Boot 3 | {{micrometer-tracing-bridge-otel}} hoặc bridge Brave, cấu hình lại pattern log |
+| Query HQL lỗi lúc chạy | Hibernate 6 parser chặt hơn, một số cú pháp cũ không còn chấp nhận | test toàn bộ repository/query với DB thật (Testcontainers) |
+| Endpoint actuator đổi tên | {{httptrace}} thành {{httpexchanges}} | cập nhật dashboard/script |
+
+### Xác minh trên staging
+- Test hợp đồng API: chạy bộ request ghi lại từ production (đã ẩn dữ liệu nhạy cảm) vào bản cũ và bản mới, so sánh status code và body.
+- Kiểm tra schema: bật {{spring.jpa.hibernate.ddl-auto=validate}} trên staging để phát hiện lệch giữa entity và DB.
+- So sánh số lượng câu SQL mỗi request (Hibernate statistics) giữa hai bản: Hibernate 6 có thể sinh SQL khác.
+
+### Quản trị rủi ro (góc nhìn lead)
+- Nhánh nâng cấp sống ngắn, rebase thường xuyên; hoặc tách module để nâng từng phần nếu monolith đủ module hoá.
+- Đóng băng tính năng lớn trong 1–2 sprint cuối.
+- Canary 5% traffic với dashboard so sánh; rollback bằng image cũ (DB migration phải tương thích ngược với cả hai bản).
+
+### Lỗi hay gặp
+1. **Find-replace {{javax}} toàn bộ**: hỏng {{javax.sql}}, {{javax.crypto}}.
+2. **Chỉ dựa vào biên dịch thành công**: các thay đổi hành vi (URL, sequence, tracing) không gây lỗi biên dịch.
+3. **Nhảy thẳng từ Boot 2.3/2.4 lên 3**: bỏ qua các deprecation của 2.5–2.7, lỗi dồn cục.
+
+### Trả lời miệng 1 phút
+"Tôi chia vấn đề làm hai nhóm. Nhóm biên dịch: đổi javax sang jakarta, Spring Security 6 bỏ WebSecurityConfigurerAdapter, tôi dùng OpenRewrite và properties migrator sau khi đã lên 2.7 mới nhất, cẩn thận không đổi các gói javax của JDK. Nhóm hành vi mới nguy hiểm: Spring 6 tắt trailing slash match gây 404, Hibernate 6 đổi cách đặt tên sequence nên ID trùng hoặc lỗi, Sleuth phải thay bằng Micrometer Tracing. Tôi xác minh bằng replay request so sánh hai bản, ddl-auto validate và so số câu SQL, rồi canary với tiêu chí rollback rõ."
+
+> Senior tip: hãy lập **checklist thay đổi hành vi** từ migration guide chính thức trước khi viết dòng code nào, và gán mỗi mục một cách kiểm chứng tự động. Ở một dự án, chỉ riêng việc replay 50 nghìn request thật vào staging đã bắt được 3 endpoint 404 do dấu "/" cuối URL từ app mobile cũ, những lỗi mà unit test không bao giờ thấy.`,
+  follow: [
+    'Bạn xử lý thế nào khi một thư viện nội bộ vẫn phụ thuộc {{javax.servlet}}?',
+    'Làm sao để DB migration tương thích với cả bản Boot 2 và Boot 3 trong lúc canary?',
+    'Hibernate 6 đổi chiến lược sequence ảnh hưởng gì tới {{allocationSize}}?'
+  ],
+  tags: ['Spring Boot 3', 'migration', 'Jakarta EE', 'Hibernate 6', 'Spring Security 6', 'Micrometer Tracing'],
+  refs: [
+    { type: 'doc', title: 'Spring Boot 3.0 Migration Guide', url: 'https://github.com/spring-projects/spring-boot/wiki/Spring-Boot-3.0-Migration-Guide' },
+    { type: 'doc', title: 'Upgrading to Spring Framework 6.x', url: 'https://github.com/spring-projects/spring-framework/wiki/Upgrading-to-Spring-Framework-6.x' }
+  ]
+},
+{
+  id: 'scenario-070',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Sau release backend lúc 10 giờ, crash rate của app Android bản 3.2 (chiếm 30% người dùng) tăng từ 0,1% lên 18%. Nguyên nhân: API đổi tên field {{fullName}} thành {{name}} và thêm giá trị enum {{PARTIALLY_SHIPPED}}. App mobile không thể "rollback" như backend. Bạn xử lý sự cố và thiết kế quy trình để không lặp lại thế nào?',
+  a: `**Tóm tắt:** xử lý sự cố trước: **rollback hoặc bật lại field cũ ngay** ở backend (đây là bên duy nhất đổi được nhanh), xác nhận crash rate giảm. Sau đó xây quy tắc tiến hoá API cho client không kiểm soát được: **chỉ thay đổi theo kiểu thêm vào** (additive), giữ field cũ đến khi phần trăm traffic của app cũ dưới ngưỡng (expand → migrate → contract), client là **tolerant reader** (bỏ qua field lạ, enum lạ thành UNKNOWN), versioning khi buộc phải phá vỡ, contract test chạy trong CI, và cơ chế **phiên bản tối thiểu/buộc cập nhật** cho app.
+
+### Hiểu nhanh
+Backend như **nhà máy in thực đơn**, app mobile như **những thực khách đã in sẵn hướng dẫn đọc thực đơn trong túi**. Backend có thể in bản mới mỗi ngày, nhưng khách cầm hướng dẫn cũ vẫn đi lại hàng tháng, không thu hồi được. Đổi tên món ({{fullName}} thành {{name}}) hay thêm loại món lạ làm người cầm hướng dẫn cũ "đọc không hiểu và ngất xỉu" (crash).
+
+### Thuật ngữ
+- **Breaking change**: thay đổi làm client cũ hiểu sai hoặc lỗi: xoá/đổi tên field, đổi kiểu, thêm enum mà client parse chặt, đổi ý nghĩa.
+- **Tolerant reader**: client chỉ đọc thứ mình cần, bỏ qua phần lạ.
+- **Expand–contract**: thêm cái mới song song cái cũ, chuyển dần client, cuối cùng mới gỡ cái cũ.
+- **Consumer-driven contract test**: client mô tả hợp đồng nó cần (Pact, Spring Cloud Contract), CI của backend kiểm tra không vi phạm.
+
+### Xử lý sự cố (60 phút đầu)
+1. **Xác nhận tương quan**: Crashlytics nhóm crash theo app version, stack trace {{JsonDataException: Required value 'fullName' missing}} và lỗi parse enum, bắt đầu từ 10:02; API log tách theo header {{User-Agent}}/{{X-App-Version}}.
+2. **Hành động nhanh nhất**: rollback backend nếu release không kèm migration DB phá vỡ; nếu không rollback được, hotfix trả **cả** {{fullName}} và {{name}}, và với client bản ≤ 3.2 thì map {{PARTIALLY_SHIPPED}} về giá trị client cũ hiểu ({{SHIPPING}}) dựa trên header phiên bản.
+3. **Xác nhận khôi phục**: crash rate bản 3.2 về mức nền trong 15–30 phút.
+4. Thông báo CSKH/đối tác; viết postmortem không đổ lỗi.
+
+### Cơ chế vì sao crash
+~~~text
+Backend mới: { "name": "An", "status": "PARTIALLY_SHIPPED" }
+App 3.2: data class Order(val fullName: String, val status: Status)  // non-null
+  -> parser không thấy fullName  -> exception
+  -> enum Status không có PARTIALLY_SHIPPED -> exception
+  -> không bắt lỗi ở tầng parse -> crash màn hình đơn hàng
+~~~
+Phía Java, Jackson thuần mặc định **fail** khi gặp field lạ ({{FAIL_ON_UNKNOWN_PROPERTIES}} = true); Spring Boot đã tắt cờ này cho ObjectMapper của nó. Nhưng mobile dùng thư viện và cấu hình riêng, backend không được giả định client "dễ tính".
+
+### Quy tắc tiến hoá API
+| Thay đổi | An toàn? | Cách làm đúng |
+|---|---|---|
+| Thêm field mới (optional) | an toàn nếu client tolerant | mặc định cho phép |
+| Đổi tên field | phá vỡ | thêm field mới, giữ field cũ đến khi app cũ < ngưỡng |
+| Thêm giá trị enum | phá vỡ với client parse chặt | client có UNKNOWN; server map cho bản cũ theo phiên bản |
+| Đổi kiểu (số thành chuỗi) | phá vỡ | field mới tên mới |
+| Xoá endpoint | phá vỡ | header {{Deprecation}}/{{Sunset}}, đo traffic, rồi mới gỡ |
+
+Phía client (Jackson cho Java/Kotlin):
+~~~java
+enum Status { CREATED, SHIPPING, DELIVERED, @JsonEnumDefaultValue UNKNOWN }
+// ObjectMapper: bật READ_UNKNOWN_ENUM_VALUES_USING_DEFAULT_VALUE,
+// tắt FAIL_ON_UNKNOWN_PROPERTIES -> field lạ bị bỏ qua, enum lạ thành UNKNOWN
+~~~
+
+### Quy trình phòng ngừa (góc nhìn lead)
+- **Contract test** cho từng bản app còn > 1% traffic, chạy trong CI backend; PR phá hợp đồng bị chặn.
+- **Telemetry phiên bản**: dashboard % request theo app version; quy định gỡ field cũ chỉ khi phiên bản dùng nó < 1–2%.
+- **Phiên bản tối thiểu**: endpoint cấu hình cho app biết "bản tối thiểu được hỗ trợ" để hiện màn hình buộc cập nhật (dùng cho trường hợp bảo mật hoặc cực chẳng đã).
+- **Versioning**: khi buộc phải phá vỡ, mở {{/v2}} (hoặc version theo header/media type) chạy song song; có BFF cho mobile nếu nhiều app khác nhau.
+- **Release backend theo feature flag** và canary theo phiên bản app.
+
+### Lỗi hay gặp
+1. **Cho rằng "đã có app bản mới" là đủ**: tỉ lệ cập nhật app thường mất nhiều tuần, có người không bao giờ cập nhật.
+2. **Contract test chỉ cho bản app mới nhất**: đúng bản cũ mới là bản hay vỡ.
+3. **Dùng buộc cập nhật để sửa lỗi của backend**: phạt người dùng vì lỗi của mình, ảnh hưởng đánh giá trên store.
+
+### Trả lời miệng 1 phút
+"Ưu tiên đầu là cầm máu: backend là bên duy nhất đổi nhanh được, nên tôi rollback hoặc hotfix trả cả field cũ và mới, map enum mới về giá trị cũ cho bản 3.2 dựa trên header phiên bản, rồi theo dõi crash rate trên Crashlytics về mức nền. Sau đó tôi đặt quy tắc tiến hoá API: chỉ thay đổi additive, expand–contract với ngưỡng traffic theo phiên bản, client tolerant reader với enum UNKNOWN, contract test cho mọi bản app còn đáng kể, versioning khi buộc phải phá vỡ và cơ chế phiên bản tối thiểu cho trường hợp đặc biệt."
+
+> Senior tip: với API phục vụ mobile, hãy coi mỗi bản app đã phát hành là **một khách hàng riêng không bao giờ biến mất**. Tôi yêu cầu mọi response có thể map theo phiên bản client ngay từ đầu (header phiên bản bắt buộc), vì nó biến một sự cố "phải đợi store duyệt 2 ngày" thành một hotfix 15 phút ở server.`,
+  follow: [
+    'So sánh versioning qua URL, header và media type: bạn chọn cái nào cho mobile?',
+    'Contract test theo kiểu consumer-driven vận hành thế nào giữa team mobile và backend?',
+    'Khi nào bạn chấp nhận dùng force update?'
+  ],
+  tags: ['API versioning', 'backward compatibility', 'mobile', 'contract test', 'incident'],
+  refs: [
+    { type: 'article', title: 'Martin Fowler: Tolerant Reader', url: 'https://martinfowler.com/bliki/TolerantReader.html' },
+    { type: 'article', title: 'Martin Fowler: Parallel Change', url: 'https://martinfowler.com/bliki/ParallelChange.html' }
+  ]
+},
+{
+  id: 'scenario-071',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Sau khi lên Java 21 và bật {{spring.threads.virtual.enabled=true}} (Spring Boot 3.2+), service order không nhanh hơn mà còn thỉnh thoảng **treo hoàn toàn** vài chục giây dưới tải; HikariCP báo timeout lấy connection. Bạn chẩn đoán và quyết định thế nào?',
+  a: `**Tóm tắt:** virtual thread làm việc **chờ I/O rẻ** nhưng không làm DB nhanh hơn: hàng nghìn virtual thread cùng tranh pool Hikari 20 connection nên timeout. Trên Java 21, virtual thread chặn bên trong {{synchronized}} sẽ **ghim (pin)** carrier thread; khi mọi carrier (bằng số core) bị ghim, toàn bộ virtual thread khác đứng chờ, nên service "treo". Chẩn đoán bằng thread dump JSON ({{jcmd <pid> Thread.dump_to_file -format=json}}), JFR event {{jdk.VirtualThreadPinned}} và metric pool; sửa bằng giới hạn đồng thời theo tài nguyên phía sau, thay {{synchronized}} quanh I/O bằng {{ReentrantLock}}, nâng thư viện, hoặc lên JDK 24+ (JEP 491 bỏ phần lớn pinning do synchronized).
+
+### Hiểu nhanh
+Platform thread giống **mỗi khách một nhân viên phục vụ riêng** (đắt, có hạn). Virtual thread là **phiếu xếp hàng**: rất rẻ, phát cả vạn cái, vài nhân viên (carrier) luân phiên phục vụ ai đang sẵn sàng. Nhưng nếu nhà bếp chỉ có 20 bếp (connection DB), phát bao nhiêu phiếu cũng không nấu nhanh hơn. Và nếu một nhân viên **khoá cửa phòng rồi ngồi chờ** món ăn (synchronized + I/O) thì nhân viên đó không phục vụ ai khác được; đủ số nhân viên cùng làm vậy là cả quán đứng hình.
+
+### Thuật ngữ
+- **Carrier thread**: platform thread trong ForkJoinPool mà JVM gắn virtual thread lên để chạy; mặc định số carrier bằng số core.
+- **Unmount**: khi virtual thread chặn I/O, JVM gỡ nó khỏi carrier để carrier chạy việc khác.
+- **Pinning**: virtual thread không unmount được (Java 21: đang trong {{synchronized}} hoặc native frame), nên chặn luôn carrier.
+- **Backpressure**: giới hạn số việc đồng thời theo sức chứa của tài nguyên phía sau.
+
+### Triệu chứng và số liệu
+- Trước: Tomcat 200 platform thread, p99 180ms. Sau: p99 250ms, thỉnh thoảng 30 giây không có response nào, rồi tự hồi phục.
+- {{hikaricp_connections_pending}} vọt lên 3.000; lỗi "Connection is not available, request timed out after 30000ms".
+- Pod 4 core nên chỉ 4 carrier thread.
+
+### Giả thuyết và cách xác minh
+1. **Pool DB là nút cổ chai, không phải thread.** Trước đây 200 thread tự giới hạn số request vào DB; giờ không còn giới hạn đó. Xác minh: pending connection tăng tương ứng số request đồng thời.
+2. **Pinning làm treo.** Chạy JFR ({{jcmd <pid> JFR.start duration=60s filename=pin.jfr}}) rồi {{jfr print --events jdk.VirtualThreadPinned pin.jfr}}: thấy stack trace pin nằm trong một method {{synchronized}} đang gọi HTTP/JDBC. Trên Java 21 cũng có thể dùng {{-Djdk.tracePinnedThreads=full}} để in stack khi pin (tuỳ chọn này đã bị gỡ ở JDK 24).
+3. **Thread dump**: {{jcmd <pid> Thread.dump_to_file -format=json /tmp/td.json}} liệt kê cả virtual thread; thấy hàng nghìn virtual thread chờ connection và 4 carrier đều đang kẹt trong cùng một khối synchronized.
+
+### Cơ chế treo từng bước
+~~~text
+4 carrier: C1..C4
+VT-a vào synchronized(cache) -> gọi DB -> chờ connection (pool hết)
+   Java 21: VT-a bị PIN, C1 bị giữ chặt
+VT-b, VT-c, VT-d cũng vậy -> C2, C3, C4 bị giữ
+VT đang giữ connection muốn trả lại, nhưng cần carrier để chạy tiếp -> không còn carrier
+=> cả service đứng cho tới khi timeout 30s giải phóng
+~~~
+
+### Sửa
+~~~java
+// Trước: synchronized bao quanh I/O -> pin trên Java 21
+// Sau: ReentrantLock cho phép virtual thread unmount khi chờ
+private final ReentrantLock lock = new ReentrantLock();
+public Price refresh(String sku) {
+    lock.lock();
+    try {
+        return priceClient.fetch(sku);       // I/O khi đang giữ lock: tốt nhất là tránh hẳn
+    } finally {
+        lock.unlock();
+    }
+}
+
+// Giới hạn đồng thời theo sức chứa DB, thay cho giới hạn "200 thread" cũ
+private final Semaphore dbPermits = new Semaphore(40);
+~~~
+- **Backpressure**: Semaphore hoặc giới hạn request ở tầng web/gateway, đặt quanh tài nguyên khan hiếm (pool DB, API đối tác).
+- **Nâng thư viện**: nhiều driver/thư viện đã thay synchronized bằng lock để thân thiện với virtual thread; kiểm tra release note.
+- **JDK 24+** (JEP 491): virtual thread không còn bị pin khi chặn trong synchronized; nhưng Java 21 là LTS phổ biến nên vẫn cần các bước trên.
+- Nếu workload chủ yếu là CPU hoặc DB đã là giới hạn, virtual thread **không mang lại lợi ích**; có thể tắt và giữ platform thread.
+
+### Khi nào virtual thread đáng dùng
+| Workload | Lợi ích |
+|---|---|
+| Nhiều I/O chờ lâu, gọi nhiều API chậm | cao |
+| Bị giới hạn bởi pool DB nhỏ | thấp, cần backpressure |
+| Tính toán CPU nặng | gần như không |
+
+### Lỗi hay gặp
+1. **Bật virtual thread rồi tăng pool Hikari lên 500**: chuyển nghẽn sang DB, có thể vượt {{max_connections}}.
+2. **Dùng ThreadLocal để cache object nặng** (ví dụ buffer lớn mỗi thread): với hàng chục nghìn virtual thread, bộ nhớ tăng vọt.
+3. **Pool virtual thread** (đặt vào fixed pool): sai mục đích; virtual thread được tạo mới cho mỗi task.
+
+### Trả lời miệng 1 phút
+"Virtual thread làm việc chờ I/O rẻ hơn, nhưng không tăng sức chứa DB. Khi bỏ giới hạn 200 thread của Tomcat, hàng nghìn request cùng tranh 20 connection nên Hikari timeout. Còn chuyện treo hẳn là pinning trên Java 21: virtual thread chặn trong synchronized giữ luôn carrier, 4 carrier cùng kẹt là cả service đứng. Tôi xác minh bằng JFR event VirtualThreadPinned và thread dump JSON. Tôi sửa bằng Semaphore giới hạn đồng thời theo sức chứa DB, đổi synchronized quanh I/O sang ReentrantLock, nâng thư viện, và cân nhắc JDK 24 nơi JEP 491 bỏ phần lớn pinning."
+
+> Senior tip: trước khi bật virtual thread cho một service, tôi chạy load test với JFR bật event pinning và ghi lại **tài nguyên khan hiếm thật sự** (pool DB, rate limit đối tác). Virtual thread tháo bỏ giới hạn ngầm mà thread pool cũ vô tình tạo ra, nên phải thêm giới hạn tường minh ở đúng chỗ, nếu không bạn chỉ chuyển sự cố từ app sang DB.`,
+  follow: [
+    'Vì sao không nên đặt virtual thread vào một thread pool cố định?',
+    'ScopedValue khác ThreadLocal thế nào và vì sao hợp với virtual thread?',
+    'Khi nào bạn giữ platform thread thay vì virtual thread?'
+  ],
+  tags: ['Java 21', 'virtual threads', 'pinning', 'HikariCP', 'backpressure', 'Spring Boot 3.2'],
+  refs: [
+    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
+    { type: 'doc', title: 'JEP 491: Synchronize Virtual Threads without Pinning', url: 'https://openjdk.org/jeps/491' }
+  ]
+},
 );
