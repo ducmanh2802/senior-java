@@ -20,3 +20,4 @@ Người học: dev Java **junior** (đã code Java, hổng nền collections, c
 - Mỗi chặng có 4-8 câu chốt từ `window.QUESTIONS` (tổng 84 câu, đúng chủ đề, ưu tiên mid/senior/lead).
 - `scripts/validate.js` thêm kiểm tra PATH: id duy nhất, order tăng dần, phase hợp lệ, mọi lesson/question/topic/requires tồn tại, requires không trỏ chặng sau, không lesson lặp, và cảnh báo bài học không trong PATH.
 - `node scripts/validate.js` → OK (chỉ có cảnh báo đáp án ngắn ở `q-english.js`, không liên quan PATH).
+Reviewed-by: kilo (T137R)
