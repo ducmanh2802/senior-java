@@ -7,6 +7,7 @@
 'use strict';
 
 const assert = require('assert');
+delete process.env.ANTHROPIC_API_KEY;   // the paid Claude fallback must not kick in during these tests
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..');

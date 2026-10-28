@@ -15,6 +15,10 @@ Một provider chỉ được bật khi có đủ **key + model**. Khi một bê
 | Cerebras | `CEREBRAS_API_KEY`, `CEREBRAS_MODEL` | https://cloud.cerebras.ai | Có thể yêu cầu |
 | Mistral | `MISTRAL_API_KEY`, `MISTRAL_MODEL` | https://console.mistral.ai/api-keys | Có thể yêu cầu |
 
+**Phương án cuối, trả phí, bật khi muốn:** đặt `ANTHROPIC_API_KEY` (lấy ở https://platform.claude.com/settings/keys) và tuỳ chọn `CLAUDE_MODEL` (mặc định `claude-haiku-5-5`, model rẻ nhất).
+- Claude **chỉ** được gọi khi mọi provider free đều lỗi trong cùng một request. Claude không nằm trong vòng luân phiên.
+- Nên đặt hạn mức chi tiêu tháng trong Anthropic Console để không bị bất ngờ về chi phí.
+
 Các biến tuỳ chọn:
 - `AI_PROVIDERS`: thứ tự ưu tiên, ví dụ `groq,gemini,openrouter`. Không đặt thì dùng thứ tự trong bảng.
 - `AI_MAX_TOKENS`: trần `max_tokens` cho provider khác OpenRouter (mặc định 8000).

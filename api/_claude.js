@@ -11,11 +11,13 @@
  *   cerebras    CEREBRAS_API_KEY     CEREBRAS_MODEL
  *   mistral     MISTRAL_API_KEY      MISTRAL_MODEL
  * AI_PROVIDERS=groq,gemini,openrouter sets the order (default: the order above).
+ * Last resort (paid, opt-in): ANTHROPIC_API_KEY (+ CLAUDE_MODEL, default claude-haiku-5-5) is called only
+ * when every free provider above failed for this request; it is never part of the rotation.
  *
  * Failover: 429 / 402 / 401 / 403 / 400 / 5xx / timeout / unreadable JSON → next provider (at most
  * MAX_TRIES per request). A provider that hit a rate limit or its daily quota cools down in this
  * instance's memory so the next requests skip it. Requests alternate their starting provider.
- * No Anthropic SDK, no automatic fallback to paid models. Never logs keys or user content.
+ * No SDKs (plain fetch). The only paid fallback is the opt-in Claude one. Never logs keys or user content.
  */
 'use strict';
 
@@ -29,6 +31,7 @@ const PROVIDERS = {
   cerebras:   { url: 'https://api.cerebras.ai/v1/chat/completions', key: 'CEREBRAS_API_KEY', model: 'CEREBRAS_MODEL', label: 'Cerebras' },
   mistral:    { url: 'https://api.mistral.ai/v1/chat/completions', key: 'MISTRAL_API_KEY', model: 'MISTRAL_MODEL', label: 'Mistral' },
 };
+const CLAUDE = { id: 'claude', url: 'https://api.anthropic.com/v1/messages', label: 'Claude' };
 const MAX_TRIES = 3;          // providers tried per request
 const TOTAL_BUDGET = 50000;   // ms for all tries together (stays under the function limit)
 const CALL_TIMEOUT = 25000;   // ms per provider call
@@ -148,11 +151,20 @@ async function callProvider(p, opts, timeoutMs) {
     if (process.env.OPENROUTER_REFERER) headers['HTTP-Referer'] = process.env.OPENROUTER_REFERER;
     if (process.env.OPENROUTER_APP_TITLE) headers['X-Title'] = process.env.OPENROUTER_APP_TITLE;
   }
+  let reqBody = buildBody(p, opts);
+  if (p.id === 'claude') {     // Anthropic Messages API: x-api-key + version header, system outside messages
+    delete headers.Authorization;
+    headers['x-api-key'] = p.apiKey;
+    headers['anthropic-version'] = '2023-06-01';
+    const sys = reqBody.messages.filter(m => m.role === 'system').map(m => m.content).join('\n\n');
+    reqBody = { model: p.model, max_tokens: reqBody.max_tokens, temperature: reqBody.temperature, system: sys || undefined,
+      messages: reqBody.messages.filter(m => m.role !== 'system') };
+  }
   let res;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    res = await fetch(p.url, { method: 'POST', headers, body: JSON.stringify(buildBody(p, opts)), signal: controller.signal });
+    res = await fetch(p.url, { method: 'POST', headers, body: JSON.stringify(reqBody), signal: controller.signal });
   } catch (e) {
     if (e && e.name === 'AbortError') return { ok: false, status: 504, code: 'timeout', message: p.label + ' không phản hồi kịp thời', cool: 30000 };
     return { ok: false, status: 502, code: 'network', message: 'Không kết nối được ' + p.label, cool: 30000 };
@@ -165,6 +177,9 @@ async function callProvider(p, opts, timeoutMs) {
     const err = data && data.error;
     const msg = (err && (err.message || err.status)) || (typeof err === 'string' ? err : '') || res.statusText || '';
     return Object.assign({ ok: false }, mapError(p, res.status, String(msg), res));
+  }
+  if (p.id === 'claude' && data && Array.isArray(data.content)) {
+    data = { model: data.model, choices: [{ message: { content: data.content.filter(b => b.type === 'text').map(b => b.text).join('') } }] };
   }
   const choice = data && Array.isArray(data.choices) && data.choices[0];
   if (!choice) return { ok: false, status: 502, code: 'bad_json', message: p.label + ' không trả về choices', cool: 0 };
@@ -183,7 +198,7 @@ async function callProvider(p, opts, timeoutMs) {
  */
 async function askJson({ system, prompt, messages, schema, effort = 'medium', maxTokens = 16000, temperature, timeoutMs }) {
   const list = enabledProviders();
-  if (!list.length) return fail(503, 'Server chưa cấu hình AI (OPENROUTER_API_KEY / GROQ_API_KEY / GEMINI_API_KEY…)', 'not_configured');
+  if (!list.length && !process.env.ANTHROPIC_API_KEY) return fail(503, 'Server chưa cấu hình AI (OPENROUTER_API_KEY / GROQ_API_KEY / GEMINI_API_KEY…)', 'not_configured');
   const opts = { system, prompt, messages, schema, effort, maxTokens, temperature };
   const started = Date.now();
   const errors = [];
@@ -194,6 +209,16 @@ async function askJson({ system, prompt, messages, schema, effort = 'medium', ma
     if (r.ok) { cooldown.delete(p.id); return { ok: true, result: r.result, model: r.model, provider: p.id, attempts: errors.length + 1 }; }
     if (r.cool) cooldown.set(p.id, Date.now() + r.cool);
     errors.push(Object.assign({ provider: p.id }, r));
+  }
+  const claudeKey = process.env.ANTHROPIC_API_KEY;
+  if (claudeKey && !errors.every(e => e.code === 'bad_request')) {   // every free provider failed → paid last resort
+    const p = Object.assign({ apiKey: claudeKey, model: process.env.CLAUDE_MODEL || 'claude-haiku-5-5' }, CLAUDE);
+    const left = TOTAL_BUDGET + 8000 - (Date.now() - started);
+    if (left > 5000) {
+      const r = await callProvider(p, opts, Math.min(timeoutMs || CALL_TIMEOUT, left));
+      if (r.ok) return { ok: true, result: r.result, model: r.model, provider: 'claude', attempts: errors.length + 1 };
+      errors.push(Object.assign({ provider: 'claude' }, r));
+    }
   }
   if (errors.length === 1) {   // single provider: keep its precise error
     const e = errors[0];
@@ -216,7 +241,9 @@ function reply(res, outcome, shape) {
 /** Configured providers for /api/status — ids, models and cooldown only, never keys. */
 function providerStatus() {
   const now = Date.now();
-  return enabledProviders().map(p => ({ id: p.id, model: p.model, cooling: cooldown.get(p.id) > now }));
+  const list = enabledProviders().map(p => ({ id: p.id, model: p.model, cooling: cooldown.get(p.id) > now }));
+  if (process.env.ANTHROPIC_API_KEY) list.push({ id: 'claude', model: process.env.CLAUDE_MODEL || 'claude-haiku-5-5', cooling: false, fallback: true });
+  return list;
 }
 
 const clampScore = (n, min = 1) => Math.min(5, Math.max(min, Math.round(Number(n) || min)));

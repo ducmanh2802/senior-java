@@ -39,7 +39,7 @@ If {{work()}} throws primary exception A and {{inner.close()}} throws B, Java st
 Use a context-revealing name such as {{InsufficientFundsException}} instead of a generic {{Exception}}. You can carry a stable error code for the API and keep the cause for investigation:
 
 ~~~java
-throw new PaymentException("PAYMENT_DECLINED", "Không thể thanh toán", cause);
+throw new PaymentException("PAYMENT_DECLINED", "Could not process payment", cause);
 ~~~
 
 Never put PAN, tokens, or sensitive data in the message. Translate exceptions at layer boundaries (driver → repository/domain → HTTP) without losing the cause. Avoid catching and returning null: the caller cannot tell "no data" from "query failed".

@@ -9,7 +9,7 @@ const assert = require('assert');
 const path = require('path');
 
 const MOD = path.join(__dirname, '..', 'api', '_claude.js');
-const ENV = ['OPENROUTER_API_KEY', 'AI_MODEL', 'AI_MODELS', 'AI_PROVIDERS', 'GROQ_API_KEY', 'GROQ_MODEL', 'GEMINI_API_KEY', 'GEMINI_MODEL',
+const ENV = ['ANTHROPIC_API_KEY', 'CLAUDE_MODEL', 'OPENROUTER_API_KEY', 'AI_MODEL', 'AI_MODELS', 'AI_PROVIDERS', 'GROQ_API_KEY', 'GROQ_MODEL', 'GEMINI_API_KEY', 'GEMINI_MODEL',
   'GITHUB_MODELS_TOKEN', 'GITHUB_MODEL', 'CEREBRAS_API_KEY', 'CEREBRAS_MODEL', 'MISTRAL_API_KEY', 'MISTRAL_MODEL'];
 let passed = 0, failed = 0;
 
@@ -119,6 +119,28 @@ const THREE = { AI_PROVIDERS: 'groq,gemini,openrouter', GROQ_API_KEY: 'gk', GROQ
     const s = JSON.stringify(m.providerStatus());
     assert.ok(!/gk|"gm"|"or"/.test(s.replace(/"id":"[a-z]+"/g, '')), s);
     assert.deepStrictEqual(m.providerStatus().map(p => p.id), ['groq', 'gemini', 'openrouter']);
+  });
+
+  await test('Claude chỉ được gọi khi mọi provider free đều lỗi (Messages API, header x-api-key)', async () => {
+    const m = load(Object.assign({ ANTHROPIC_API_KEY: 'sk-ant' }, THREE));
+    const claudeOk = { ok: true, status: 200, headers: new Map(), json: async () => ({ model: 'claude-haiku-5-5', content: [{ type: 'text', text: '{"e":5}' }] }) };
+    let claudeInit = null;
+    calls = [];
+    global.fetch = async (url, init) => {
+      const h = host(url); calls.push({ h });
+      if (h === 'anthropic') { claudeInit = init; return claudeOk; }
+      return h === 'groq' ? ok({ free: 1 }) : err(503, 'x');
+    };
+    let r = await m.askJson({ system: 'S', prompt: 'P' });
+    assert.strictEqual(r.provider, 'groq'); assert.ok(!calls.some(c => c.h === 'anthropic'), 'free ok → không gọi Claude');
+    const m2 = load(Object.assign({ ANTHROPIC_API_KEY: 'sk-ant' }, THREE));
+    global.fetch = async (url, init) => { const h = host(url); if (h === 'anthropic') { claudeInit = init; return claudeOk; } return err(429, 'tokens per day'); };
+    r = await m2.askJson({ system: 'S', prompt: 'P' });
+    assert.strictEqual(r.provider, 'claude'); assert.deepStrictEqual(r.result, { e: 5 });
+    const b = JSON.parse(claudeInit.body);
+    assert.strictEqual(claudeInit.headers['x-api-key'], 'sk-ant'); assert.ok(!claudeInit.headers.Authorization);
+    assert.ok(b.system && /JSON/.test(b.system)); assert.ok(b.messages.every(x => x.role !== 'system')); assert.ok(!('response_format' in b));
+    assert.ok(m2.providerStatus().some(p => p.id === 'claude' && p.fallback));
   });
 
   delete global.fetch;
