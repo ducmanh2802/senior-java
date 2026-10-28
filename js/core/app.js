@@ -272,7 +272,9 @@
   }
 
   // ---------- i18n (core strings) ----------
-  App.i18n.add({
+  // App.i18n comes from js/core/i18n.js, which loads after this file: register on DOMContentLoaded
+  // (this listener is added before i18n.js's own init, so the strings exist when it relabels the page).
+  document.addEventListener('DOMContentLoaded', () => App.i18n && App.i18n.add({
     vi: {
       'app.title': 'Senior Java Prep',
       'app.toast.exported': 'Đã xuất file tiến độ.',
@@ -317,7 +319,7 @@
       'app.theme.light': 'Light',
       'app.theme.dark': 'Dark',
     },
-  });
+  }));
   // ---------- router ----------
   const views = {};
   let cleanup = null;
