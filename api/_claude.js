@@ -39,6 +39,45 @@ const CALL_TIMEOUT = 25000;   // ms per provider call
 const orModels = () => (process.env.AI_MODELS || '').split(',').map(s => s.trim()).filter(Boolean);
 const MODEL = orModels()[0] || process.env.AI_MODEL || 'openrouter/free';
 
+// ---------- automatic model choice when *_MODEL is not set ----------
+// GET <base>/models (OpenAI-compatible) → best chat model by score; cached per instance for 6 h.
+const AUTO = {
+  groq: {
+    url: 'https://api.groq.com/openai/v1/models',
+    skip: /whisper|tts|guard|embed|audio|playai|orpheus|compound|prompt-guard|safeguard|allam/i,
+    score: id => (/gpt-oss-120b/i.test(id) ? 50 : 0) + (/versatile/i.test(id) ? 40 : 0) + (/llama-4|maverick|scout/i.test(id) ? 30 : 0)
+      + (/qwen|kimi|deepseek/i.test(id) ? 20 : 0) + Math.min(30, sizeB(id) / 4) - (/instant|8b|mini|small/i.test(id) ? 25 : 0),
+  },
+  gemini: {
+    url: 'https://generativelanguage.googleapis.com/v1beta/openai/models',
+    skip: /embed|image|imagen|veo|tts|audio|live|aqa|learnlm|gemma|robotics|computer|native|exp-\d/i,
+    // flash-lite has the most generous free quota, then flash; newer versions first
+    score: id => (/flash-lite/i.test(id) ? 60 : /flash/i.test(id) ? 40 : 0) + version(id) * 5 - (/preview/i.test(id) ? 3 : 0) - (/pro/i.test(id) ? 50 : 0),
+  },
+};
+function sizeB(id) { const m = /(\d+(?:\.\d+)?)b\b/i.exec(id); return m ? Number(m[1]) : 0; }
+function version(id) { const m = /gemini-(\d+(?:\.\d+)?)/i.exec(id); return m ? Number(m[1]) : 0; }
+const autoCache = new Map();   // provider id → { model, at }
+
+/** Resolve 'auto' to a concrete model id, or '' when the list cannot be read. */
+async function resolveModel(p, timeoutMs) {
+  const hit = autoCache.get(p.id);
+  if (hit && Date.now() - hit.at < 6 * 3600000) return hit.model;
+  const a = AUTO[p.id];
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.min(timeoutMs, 6000));
+  try {
+    const res = await fetch(a.url, { headers: { Authorization: 'Bearer ' + p.apiKey }, signal: controller.signal });
+    if (!res.ok) return '';
+    const data = await res.json();
+    const ids = (data && Array.isArray(data.data) ? data.data : []).filter(m => m && m.active !== false).map(m => String(m.id || '').replace(/^models\//, ''))
+      .filter(id => id && !a.skip.test(id));
+    const best = ids.sort((x, y) => a.score(y) - a.score(x))[0] || '';
+    if (best) autoCache.set(p.id, { model: best, at: Date.now() });
+    return best;
+  } catch (e) { return ''; } finally { clearTimeout(timer); }
+}
+
 /** Providers with credentials, in AI_PROVIDERS order: [{ id, url, apiKey, model, label }]. */
 function enabledProviders() {
   const order = (process.env.AI_PROVIDERS || '').split(',').map(s => s.trim().toLowerCase()).filter(id => PROVIDERS[id]);
@@ -46,7 +85,8 @@ function enabledProviders() {
   const out = [];
   for (const id of ids) {
     const p = PROVIDERS[id], apiKey = process.env[p.key];
-    const model = id === 'openrouter' ? (orModels()[0] || process.env.AI_MODEL || 'openrouter/free') : process.env[p.model];
+    const model = id === 'openrouter' ? (orModels()[0] || process.env.AI_MODEL || 'openrouter/free')
+      : process.env[p.model] || (AUTO[id] ? 'auto' : '');   // no *_MODEL → pick from the provider's model list
     if (apiKey && model) out.push({ id, url: p.url, apiKey, model, label: p.label });
   }
   return out;
@@ -205,7 +245,12 @@ async function askJson({ system, prompt, messages, schema, effort = 'medium', ma
   for (const p of pickOrder(list)) {
     const left = TOTAL_BUDGET - (Date.now() - started);
     if (left < 3000) break;
-    const r = await callProvider(p, opts, Math.min(timeoutMs || CALL_TIMEOUT, left));
+    if (p.model === 'auto') {
+      p.model = await resolveModel(p, left);
+      if (!p.model) { cooldown.set(p.id, Date.now() + 60000); errors.push({ provider: p.id, status: 502, code: 'no_model', message: 'Không đọc được danh sách model của ' + p.label }); continue; }
+    }
+    const r = await callProvider(p, opts, Math.min(timeoutMs || CALL_TIMEOUT, left - 500));
+    if (!r.ok && (r.status === 400 || r.status === 404) && autoCache.get(p.id)) autoCache.delete(p.id);   // auto-picked model may be retired
     if (r.ok) { cooldown.delete(p.id); return { ok: true, result: r.result, model: r.model, provider: p.id, attempts: errors.length + 1 }; }
     if (r.cool) cooldown.set(p.id, Date.now() + r.cool);
     errors.push(Object.assign({ provider: p.id }, r));
@@ -241,7 +286,7 @@ function reply(res, outcome, shape) {
 /** Configured providers for /api/status — ids, models and cooldown only, never keys. */
 function providerStatus() {
   const now = Date.now();
-  const list = enabledProviders().map(p => ({ id: p.id, model: p.model, cooling: cooldown.get(p.id) > now }));
+  const list = enabledProviders().map(p => ({ id: p.id, model: p.model === 'auto' ? (autoCache.get(p.id) || { model: 'auto' }).model : p.model, cooling: cooldown.get(p.id) > now }));
   if (process.env.ANTHROPIC_API_KEY) list.push({ id: 'claude', model: process.env.CLAUDE_MODEL || 'claude-haiku-5-5', cooling: false, fallback: true });
   return list;
 }

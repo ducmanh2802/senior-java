@@ -39,7 +39,7 @@ const THREE = { AI_PROVIDERS: 'groq,gemini,openrouter', GROQ_API_KEY: 'gk', GROQ
   console.log('api/_claude.js (multi-provider failover)');
 
   await test('provider thiếu model thì không bật; không provider nào → not_configured', async () => {
-    const m = load({ GROQ_API_KEY: 'gk' });
+    const m = load({ CEREBRAS_API_KEY: 'ck' });   // cerebras has no auto model pick
     mock({});
     const r = await m.askJson({ prompt: 'P' });
     assert.strictEqual(r.body.code, 'not_configured'); assert.strictEqual(calls.length, 0);
@@ -119,6 +119,29 @@ const THREE = { AI_PROVIDERS: 'groq,gemini,openrouter', GROQ_API_KEY: 'gk', GROQ
     const s = JSON.stringify(m.providerStatus());
     assert.ok(!/gk|"gm"|"or"/.test(s.replace(/"id":"[a-z]+"/g, '')), s);
     assert.deepStrictEqual(m.providerStatus().map(p => p.id), ['groq', 'gemini', 'openrouter']);
+  });
+
+  await test('không đặt *_MODEL → tự chọn model từ danh sách /models (Groq, Gemini) và cache', async () => {
+    const m = load({ AI_PROVIDERS: 'groq,gemini', GROQ_API_KEY: 'gk', GEMINI_API_KEY: 'gm' });
+    const lists = {
+      groq: { data: [{ id: 'whisper-large-v3' }, { id: 'llama-3.1-8b-instant' }, { id: 'llama-3.3-70b-versatile' }, { id: 'openai/gpt-oss-120b' }, { id: 'meta-llama/llama-guard-4-12b' }] },
+      googleapis: { data: [{ id: 'models/gemini-2.5-pro' }, { id: 'models/gemini-2.5-flash' }, { id: 'models/gemini-2.5-flash-lite' }, { id: 'models/gemini-3.1-flash-lite' }, { id: 'models/text-embedding-004' }, { id: 'models/gemini-2.5-flash-preview-tts' }] },
+    };
+    const sent = [];
+    global.fetch = async (url, init) => {
+      const h = host(url);
+      if (/\/models$/.test(url)) { sent.push('list:' + h); return { ok: true, status: 200, json: async () => lists[h] }; }
+      const b = JSON.parse(init.body); sent.push(h + ':' + b.model);
+      return h === 'groq' ? err(503, 'x') : ok({ z: 1 });
+    };
+    const r = await m.askJson({ prompt: 'P' });
+    assert.ok(sent.includes('groq:openai/gpt-oss-120b'), sent.join(' '));
+    assert.ok(sent.includes('googleapis:gemini-3.1-flash-lite'), sent.join(' '));
+    assert.strictEqual(r.provider, 'gemini');
+    const before = sent.filter(s => s.startsWith('list:')).length;
+    await m.askJson({ prompt: 'P' });
+    assert.strictEqual(sent.filter(s => s.startsWith('list:')).length, before, 'danh sách model được cache');
+    assert.deepStrictEqual(m.providerStatus().map(p => p.model), ['openai/gpt-oss-120b', 'gemini-3.1-flash-lite']);
   });
 
   await test('Claude chỉ được gọi khi mọi provider free đều lỗi (Messages API, header x-api-key)', async () => {
