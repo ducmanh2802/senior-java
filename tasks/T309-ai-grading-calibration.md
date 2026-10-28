@@ -1,6 +1,6 @@
 # T309 — Hiệu chuẩn chấm điểm + chuẩn hoá output AI (interview, grade)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `api/interview.js`, `api/grade.js`, `scripts/test-ai-shape.js`
 After: T308
@@ -27,4 +27,9 @@ Integrator cho phép sửa đúng các file trong `Owns`. Mục tiêu: model fre
 6. Kiểm chứng: `node --check` từng file, `node scripts/test-openrouter.js`. Viết `scripts/test-ai-shape.js` (mock, không gọi mạng) để test phần chuẩn hoá ở mục 3–4. Ghi Notes, `Status: DONE`.
 
 ## Notes
-
+- Đã hiệu chuẩn prompt chấm điểm (RUBRIC neo 1–5, trích dẫn bằng chứng), temperature 0.2 cho grade/summary, 0.6 cho turn.
+- Chuẩn hoá output qua shapeAnswer/shapeCode/shapeSummary/shapeTurn + normalizeOut; hire_signal align với overall_score.
+- Seeds: systemTurn chỉ hỏi câu trong seeds, seed_index tương ứng.
+- Test: node --check ok; scripts/test-openrouter.js 15/15; scripts/test-ai-shape.js 20/20; validate OK.
+- (integrator, 19:5x) Đã sửa trên main (commit aa09aab): grade/interview phải kiểm tra `aiConfigured()` thay vì `process.env.OPENROUTER_API_KEY` — đã áp sẵn vào bản đang làm dở; GIỮ NGUYÊN khi sửa tiếp. Không sửa `api/_claude.js` (ngoài Owns); xoá `api/_claude.js.bad`, `api/_claude.new.js` nếu là file tạm của bạn.
+Reviewed-by: verify-only (code/UI task)
