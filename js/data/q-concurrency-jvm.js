@@ -1805,31 +1805,74 @@ scheduler.scheduleAtFixedRate(() -> {
   topic: 'jvm',
   level: 'senior',
   q: 'Liệt kê các vùng nhớ JVM (heap young/old, metaspace, stack, code cache, direct memory) và cho biết vấn đề ở vùng nào sinh ra triệu chứng gì.',
-  a: `**Tóm tắt:** Heap (young Eden/Survivor + old) chứa object của code; metaspace là native memory cho metadata class; mỗi thread một stack; code cache chứa JIT code; direct memory cho NIO ByteBuffer ngoài heap. Triệu chứng nhanh: OOM "Java heap space" = heap; OOM "Metaspace" = nhiều class/classloader leak; "unable to create native thread" = stack/native; RSS cao hơn Xmx = native (direct/cache).
+  a: `**Tóm tắt:** Bộ nhớ của một process Java chia thành nhiều vùng: **heap** (young gồm Eden + 2 Survivor, và old) chứa object do code tạo ra; **metaspace** là native memory chứa metadata của class; **mỗi thread một stack** chứa các frame method; **code cache** chứa mã máy do JIT sinh ra; **direct memory** cho NIO {{ByteBuffer}} nằm ngoài heap. Đọc triệu chứng là đoán được vùng: OOM "Java heap space" = heap; OOM "Metaspace" = quá nhiều class hoặc classloader leak; "unable to create native thread" = thread/stack/giới hạn OS; RSS cao hơn Xmx nhiều = native (direct buffer, metaspace, code cache...).
+
+### Hiểu nhanh
+Hãy hình dung JVM như một văn phòng. **Heap** là kho hàng chung, nơi mọi người để đồ (object); có khu "hàng mới về" (young) dọn rất thường xuyên và khu "hàng lưu lâu" (old) dọn ít hơn. **Stack** là cái bàn làm việc riêng của từng nhân viên (thread): giấy tờ đang xử lý dở nằm trên bàn, xong việc là dọn ngay. **Metaspace** là tủ hồ sơ mô tả "loại hàng" (class). **Code cache** là sổ tay ghi các thao tác đã được tối ưu sẵn để làm nhanh hơn. **Direct memory** là kho thuê ngoài, không nằm trong kho chính nên quản lý kho chính (GC) không nhìn thấy trực tiếp. Kho nào đầy thì báo lỗi khác nhau, nên đọc đúng thông báo là biết kho nào có vấn đề.
+
+### Thuật ngữ
+- **Heap**: vùng nhớ dùng chung mọi thread, nơi {{new}} cấp phát object, do GC quản lý; giới hạn bằng {{-Xmx}}.
+- **Eden / Survivor**: Eden là nơi object mới sinh ra; Survivor là hai vùng nhỏ giữ object sống sót qua young GC.
+- **Old gen**: nơi chứa object sống lâu, được "promote" từ young lên.
+- **Metaspace**: native memory (ngoài heap) chứa metadata class, thay cho PermGen từ Java 8.
+- **Native memory**: bộ nhớ process xin trực tiếp từ OS, không nằm trong heap Java.
+- **RSS**: Resident Set Size, lượng RAM thật process đang chiếm, con số mà Kubernetes dùng để quyết định OOMKill.
+- **JIT**: trình biên dịch lúc chạy, dịch bytecode nóng thành mã máy và cất vào code cache.
+- **Direct buffer**: {{ByteBuffer.allocateDirect}}, vùng nhớ ngoài heap để I/O không phải copy qua lại.
 
 ### Bảng tổng hợp
 
 | Vùng | Chứa gì | Triệu chứng khi vấn đề |
 |---|---|---|
-| Heap: young (Eden + 2 Survivor) / old | object java | OOM Java heap space; Full GC thường xuyên |
+| Heap: young (Eden + 2 Survivor) / old | object Java | OOM Java heap space; Full GC thường xuyên |
 | Metaspace | metadata class/method | OOM Metaspace; tăng dần mỗi redeploy |
 | Stack mỗi thread | frame method | StackOverflowError; "unable to create native thread" |
 | Code cache | JIT code đã compile | "CodeCache is full" — JIT ngừng compile, CPU tăng |
 | Direct memory | ByteBuffer.allocateDirect, Netty | OOM direct buffer memory; RSS cao hơn Xmx |
 
-### Điểm cần nhớ
-- Young GC (minor) chạy nhanh, object sống qua vài minor GC được promote lên old; old chạy major/mixed GC chậm hơn — tỉ lệ young/old ảnh hưởng rõ throughput.
-- Metaspace giới hạn bằng MaxMetaspaceSize; không đặt thì chỉ có RAM là trần — classloader leak có thể ăn hết container.
-- Mỗi thread một stack (Xss mặc định ~512 KB–1 MB): 10k OS thread = chục GB reserve — lý do virtual thread dùng stack trên heap.
-- Code cache bounded ({{-XX:ReservedCodeCacheSize}} ~240 MB); full làm JIT ngừng, hiệu năng rơi dần — service chạy lâu dễ gặp.
-- Direct memory trần mặc định = Xmx (MaxDirectMemorySize); Netty/HTTP client dùng nhiều buffer direct — RSS nhìn luôn cao hơn Xmx một chút là bình thường.
+### Sơ đồ RSS của một process Java
+~~~text
+RSS (RAM thật của process, ví dụ 1.6 GB)
++-------------------------------------------+
+| Heap (-Xmx1g)    [Eden|S0|S1|   Old     ] |  ~1.0 GB
+| Metaspace + compressed class space        |  ~150 MB
+| Thread stacks (200 thread, phần đã dùng)  |  ~100 MB
+| Code cache (JIT)                          |  ~60 MB
+| Direct buffers (Netty, NIO)               |  ~150 MB
+| GC data structures, symbol, malloc...     |  ~140 MB
++-------------------------------------------+
+=> RSS luôn lớn hơn Xmx; chênh vài trăm MB là bình thường
+~~~
 
-### Cách phân khi có vấn đề
-- OOM heap / RSS cao: bật HeapDumpOnOutOfMemoryError + NativeMemoryTracking cho 2 hướng.
-- Metaspace tăng dần theo redeploy: gần như chắc chắn classloader leak; kiểm Dominator Tree của dump tìm WebappClassLoader.
-- "unable to create native thread": không phải thiếu heap — đếm số thread, kiểm stack size và ulimit.
+### Từng vùng hoạt động thế nào (và vì sao)
+1. **Young gen**: object mới vào Eden. Khi Eden đầy, young GC (minor) copy object còn sống sang Survivor rồi xoá sạch Eden. Vì sao nhanh: phần lớn object chết trẻ, nên chỉ phải copy số ít còn sống.
+2. **Old gen**: object sống qua vài lần minor GC được promote lên old. Old được dọn bằng major/mixed GC, chậm hơn vì nhiều object sống. Tỉ lệ young/old và tốc độ promote ảnh hưởng rõ tới throughput.
+3. **Metaspace**: mỗi class được load sinh metadata ở đây. Giới hạn bằng {{-XX:MaxMetaspaceSize}}; không đặt thì trần chỉ là RAM, nên classloader leak có thể ăn hết memory của container.
+4. **Stack**: mỗi platform thread có một stack ({{-Xss}}, mặc định 1 MB trên Linux x64; con số này là phần **reserve** địa chỉ, chỉ các trang thực sự dùng mới tốn RAM). 10.000 OS thread nghĩa là khoảng 10 GB địa chỉ reserve và rất nhiều tài nguyên kernel — một lý do virtual thread lưu stack của nó trên heap.
+5. **Code cache**: có giới hạn ({{-XX:ReservedCodeCacheSize}}, mặc định 240 MB khi bật tiered compilation). Đầy thì JIT ngừng compile, code mới chạy bằng interpreter, hiệu năng rơi dần — service chạy lâu, nhiều code dễ gặp.
+6. **Direct memory**: trần mặc định ({{-XX:MaxDirectMemorySize}}) bằng max heap. Netty và nhiều HTTP client dùng buffer direct để tránh copy, nên RSS luôn cao hơn Xmx một chút là bình thường.
 
-> Senior tip: luôn bật {{-XX:NativeMemoryTracking=summary}} ở môi trường quan trọng; so sánh jcmd VM.native_memory baseline rồi diff.summary trước khi kết luận "leak heap" — nhiều lần RSS tăng là native (direct buffer, metaspace) chứ heap trong sạch.`,
+### Cách phân loại khi có vấn đề
+- OOM heap / RSS cao: bật {{-XX:+HeapDumpOnOutOfMemoryError}} cho hướng heap và {{-XX:NativeMemoryTracking=summary}} cho hướng native.
+- Metaspace tăng dần theo mỗi lần redeploy: gần như chắc chắn classloader leak; mở Dominator Tree của heap dump tìm các WebappClassLoader cũ.
+- "unable to create native thread": không phải thiếu heap — đếm số thread, kiểm tra stack size, {{ulimit -u}} và giới hạn pids của cgroup.
+
+~~~bash
+jcmd <pid> GC.heap_info                  # heap đang dùng bao nhiêu
+jcmd <pid> VM.native_memory summary      # cần bật NMT lúc khởi động
+jcmd <pid> VM.metaspace                  # chi tiết metaspace
+~~~
+
+### Lỗi hay gặp
+- **Tăng Xmx để chữa mọi OOM**: triệu chứng là OOM Metaspace hoặc Direct buffer memory vẫn lặp lại, thậm chí pod bị OOMKilled sớm hơn vì heap lấn chỗ native. Cách tránh: đọc thông điệp sau dấu hai chấm trước khi đổi gì.
+- **Nghĩ RSS = heap**: triệu chứng là pod 2 GB, Xmx 2 GB, bị OOMKilled (exit 137) mà log không có OutOfMemoryError. Cách tránh: chừa 25–40% limit cho native.
+- **Thread pool không giới hạn**: triệu chứng là "unable to create native thread" dù heap còn trống. Cách tránh: pool có giới hạn, theo dõi metric số thread.
+- **Không đặt trần Metaspace khi app sinh class động**: triệu chứng là RSS tăng dần qua nhiều ngày. Cách tránh: đặt {{MaxMetaspaceSize}} để lỗi lộ ra sớm và rõ ràng, rồi sửa gốc.
+
+### Trả lời miệng 1 phút
+"JVM có heap chia young và old để chứa object, metaspace chứa metadata class ở native memory, mỗi thread một stack, code cache cho mã JIT, và direct memory cho buffer NIO ngoài heap. Young dọn thường xuyên và rẻ vì đa số object chết trẻ, old dọn ít mà nặng hơn. Khi có sự cố tôi đọc thông điệp lỗi để khoanh vùng: Java heap space là heap, Metaspace thường là classloader leak, unable to create native thread là quá nhiều thread, còn RSS cao hơn Xmx là native. Trade-off quan trọng là trong container heap không được chiếm hết limit. Thực tế tôi luôn bật heap dump khi OOM và Native Memory Tracking, nhiều lần RSS tăng hoá ra do direct buffer chứ heap hoàn toàn sạch."
+
+> Senior tip: luôn bật {{-XX:NativeMemoryTracking=summary}} ở môi trường quan trọng; so sánh {{jcmd VM.native_memory baseline}} rồi {{summary.diff}} trước khi kết luận "leak heap" — nhiều lần RSS tăng là native (direct buffer, metaspace) chứ heap vẫn trong sạch.`,
   follow: [
     'Metaspace khác PermGen (trước Java 8) thế nào, vì sao đổi?',
     'RSS lớn hơn Xmx — bạn điều tra bằng tool nào trước?'
@@ -1846,42 +1889,73 @@ scheduler.scheduleAtFixedRate(() -> {
   topic: 'jvm',
   level: 'senior',
   q: 'So sánh các GC: Serial, Parallel, G1, ZGC, Shenandoah — cơ chế và tiêu chí chọn; G1 hoạt động ra sao (region, mixed GC)?',
-  a: `**Tóm tắt:** Serial và Parallel = stop-the-world, chọn theo throughput vs RAM nhỏ; G1 (mặc định từ Java 9) = region-based, incremental từng phần, cân bằng latency; ZGC (kể cả Generational) và Shenandoah = concurrent, pause dưới 1 ms cho heap lớn. Chọn theo mục tiêu: throughput → Parallel; cân bằng → G1; latency p99 thấp + heap to → ZGC.
+  a: `**Tóm tắt:** Serial và Parallel dừng toàn bộ ứng dụng (stop-the-world) khi dọn; Serial dùng 1 thread cho máy nhỏ, Parallel dùng nhiều thread để tối đa throughput. G1 (mặc định từ Java 9) chia heap thành region và dọn từng phần, cân bằng giữa latency và throughput. ZGC (bản generational) và Shenandoah làm gần hết việc **đồng thời** với ứng dụng, pause dưới 1 ms kể cả heap lớn. Chọn theo mục tiêu: throughput → Parallel; cân bằng → G1; p99 thấp + heap to → ZGC.
+
+### Hiểu nhanh
+GC giống đội dọn vệ sinh trong một nhà hàng. **Serial**: một người dọn, nhà hàng đóng cửa khi dọn. **Parallel**: cả đội dọn cùng lúc, nhà hàng vẫn phải đóng cửa nhưng ngắn hơn. **G1**: chia nhà hàng thành nhiều ô bàn, mỗi lần chỉ đóng vài ô bẩn nhất để dọn nhanh, khách ở ô khác ảnh hưởng ít. **ZGC/Shenandoah**: nhân viên dọn **ngay trong lúc khách đang ăn**, chỉ xin khách dừng tay vài giây lẻ; đổi lại cần thêm nhân viên (CPU) chạy song song.
+
+### Thuật ngữ
+- **Stop-the-world (STW)**: mọi thread ứng dụng bị dừng trong lúc GC làm việc.
+- **Throughput**: tỉ lệ thời gian CPU dành cho code ứng dụng thay vì GC.
+- **Region**: ô nhớ kích thước bằng nhau mà G1 chia heap ra, mỗi ô đóng một vai trò (Eden, Survivor, Old, Humongous).
+- **Humongous object**: object lớn từ nửa region trở lên, G1 cấp riêng một hoặc nhiều region liền nhau.
+- **Concurrent marking**: đánh dấu object sống trong lúc ứng dụng vẫn chạy.
+- **SATB (snapshot-at-the-beginning)**: kỹ thuật của G1 để không bỏ sót object khi đánh dấu đồng thời.
+- **Barrier**: đoạn code nhỏ JIT chèn vào mỗi lần đọc/ghi reference để GC biết thay đổi.
+- **IHOP**: ngưỡng chiếm dụng heap để G1 bắt đầu concurrent marking.
 
 ### Bảng so sánh
 
 | GC | Cơ chế | Phù hợp heap | Mục tiêu |
 |---|---|---|---|
-| Serial | STW đầy đủ, 1 thread | nhỏ (<100 MB) | app đơn giản/CLI |
-| Parallel | STW, threads song song | vừa tới lớn | throughput tối đa |
-| G1 | STW từng pha (ngắn) | trung – lớn (4–32 GB) | cân bằng latency |
-| ZGC | concurrent, STW rất ngắn | lớn tới TB | pause < 1 ms |
-| Shenandoah | concurrent | lớn | pause thấp |
+| Serial | STW đầy đủ, 1 thread | nhỏ (dưới vài trăm MB) | app đơn giản/CLI, container rất nhỏ |
+| Parallel | STW, nhiều thread song song | vừa tới lớn | throughput tối đa (mặc định ở JDK 8) |
+| G1 | STW từng pha ngắn + marking đồng thời | trung – lớn (4–32 GB) | cân bằng latency |
+| ZGC | concurrent, STW rất ngắn | lớn tới TB | pause dưới 1 ms |
+| Shenandoah | concurrent, compaction đồng thời | lớn | pause thấp |
 
-### G1 hoạt động ra sao
-- Heap chia đều thành region (1–32 MB); mỗi region gán định danh Eden / Survivor / Old / Humongous (object ≥ nửa region).
-- Young GC: thuần Eden/Survivor region, STW parallel — nhanh vì ít region.
-- Concurrent marking tính liveness per region (SATB), rồi old/mixed GC chọn region có liveness thấp (rác nhiều nhất, garbage-first) để dọn — đó là "mixed GC".
-- IHOP (InitiatingHeapOccupancyPercent, mặc định 45): khi old chiếm mức đó của heap thì bắt đầu concurrent marking.
+### G1 hoạt động ra sao (từng bước)
+1. **Chia heap thành region** (ergonomics chọn 1–32 MB; JDK 18+ cho đặt tay tới 512 MB). Mỗi region được gán vai trò Eden / Survivor / Old / Humongous. Vì sao: dọn theo region cho phép mỗi lần chỉ xử lý một phần heap, nên pause ngắn và dự đoán được.
+2. **Young GC**: khi các region Eden đầy, G1 dừng app (STW, nhiều thread) và copy object sống sang Survivor/Old. Nhanh vì chỉ đụng tới ít region và ít object sống.
+3. **Concurrent marking**: khi old chiếm vượt IHOP ({{InitiatingHeapOccupancyPercent}}, mặc định 45%, và G1 tự điều chỉnh động — adaptive IHOP), G1 đánh dấu object sống song song với app, dùng SATB, rồi tính mỗi region còn bao nhiêu byte sống.
+4. **Mixed GC**: các lần GC tiếp theo dọn young **cộng thêm** những region old ít object sống nhất (nhiều rác nhất — "garbage first"). Vì sao chọn region nhiều rác: copy ít mà thu hồi nhiều.
+5. **Full GC** chỉ là phương án dự phòng khi các bước trên không theo kịp; thấy nó là có vấn đề.
+
+~~~text
+Heap G1 (mỗi ô là một region)
+[E][E][S][O][O][H][H][ ][O][E][ ][O]
+ E=Eden S=Survivor O=Old H=Humongous
+Young GC : dọn tất cả E (+S)
+Mixed GC : dọn E + vài O có ít object sống nhất
+~~~
 
 ~~~bash
-java -XX:+UseG1GC -XX:MaxGCPauseMillis=50 -Xlog:gc* ...   # Java 9+
-# G1 tự điều chỉnh số region mỗi lần GC để ăn vào mục tiêu pause
-# MaxGCPauseMillis là mục tiêu hướng dẫn, không phải cam kết cứng
+java -XX:+UseG1GC -XX:MaxGCPauseMillis=50 -Xlog:gc* ...
+# G1 tự điều chỉnh số region dọn mỗi lần để bám mục tiêu pause
+# MaxGCPauseMillis (mặc định 200) là mục tiêu hướng dẫn, không phải cam kết cứng
 ~~~
 
 ### ZGC / Shenandoah
-- ZGC: con trỏ có bit màu (colored pointers) + load/store barrier; hầu hết giai đoạn chạy concurrent không STW; Java 21 có Generational ZGC (-XX:+ZGenerational) — tách young/old, throughput tốt hơn hẳn ZGC cũ; JDK 23 thành mặc định, JDK 24 bỏ hẳn ZGC non-generational (flag ZGenerational lỗi thời).
-- Shenandoah: forwarding pointer + concurrent compaction; pause rất thấp.
-- Giá chung: overhead CPU concurrent (cái này đấu với core của app), có chút barrier cost.
+- **ZGC**: dùng colored pointers (bit màu trong con trỏ) + load barrier; marking, relocation và compaction đều chạy concurrent, STW chỉ còn vài pha rất ngắn. Java 21 có Generational ZGC ({{-XX:+UseZGC -XX:+ZGenerational}}, JEP 439) — tách young/old, throughput tốt hơn hẳn ZGC cũ; JDK 23 generational thành mặc định (JEP 474), JDK 24 bỏ hẳn chế độ non-generational (JEP 490), flag ZGenerational lỗi thời.
+- **Shenandoah**: forwarding pointer + concurrent compaction; pause rất thấp. Có trong các bản OpenJDK build (Temurin, Corretto...), không có trong Oracle JDK. JDK 25 có chế độ generational ở dạng product (JEP 521).
+- Giá chung: GC threads chạy song song **ăn CPU của app**, và barrier làm mỗi lần đọc/ghi reference đắt hơn chút.
 
 ### Khi nào chọn
-- **Parallel**: batch job, throughput ưu tiên, pause vài trăm ms chấp nhận được.
-- **G1**: default đa số web/app heap trung tới lớn.
-- **ZGC**: service latency nhạy (p99 < 10 ms), heap 4 GB tới TB, Java 21+.
-- **Serial**: container nhỏ (~512 MB), ít core.
+- **Parallel**: batch job, ưu tiên throughput, pause vài trăm ms chấp nhận được.
+- **G1**: mặc định cho đa số web/app heap trung tới lớn.
+- **ZGC**: service nhạy latency (p99 dưới 10 ms), heap vài GB tới TB, Java 21+.
+- **Serial**: container nhỏ (~512 MB), 1 core; JVM tự chọn Serial khi máy dưới 2 CPU hoặc dưới khoảng 1792 MB RAM.
 
-> Senior tip: nhảy ZGC vì "pause thấp" chưa chắc đúng: ZGC có overhead CPU concurrent và throughput có thể giảm so với G1 cùng heap; đo p99 tổng throughput 24h cho cả hai collector trước khi quyết — latency và throughput là bài toán đổi chỗ, chọn trên số liệu.`,
+### Lỗi hay gặp
+- **Đặt MaxGCPauseMillis quá thấp (10 ms với G1)**: triệu chứng là young gen bị thu nhỏ, GC chạy liên tục, throughput tụt. Cách tránh: giữ mặc định, chỉ hạ sau khi đo.
+- **Chuyển ZGC khi CPU đã sát trần**: triệu chứng là pause đẹp nhưng latency tổng tệ hơn vì app bị giành CPU. Cách tránh: kiểm tra CPU headroom ở peak.
+- **Pod 1 vCPU âm thầm chạy SerialGC**: triệu chứng là pause dài bất ngờ. Cách tránh: ghi rõ {{-XX:+UseG1GC}} và kiểm tra log khởi động.
+- **Copy flag CMS từ blog cũ**: CMS đã bị xoá ở JDK 14, JVM từ chối khởi động. Cách tránh: dọn flag khi nâng JDK.
+
+### Trả lời miệng 1 phút
+"Serial và Parallel là GC dừng cả ứng dụng, Parallel dùng nhiều thread nên hợp batch cần throughput. G1 là mặc định từ Java 9: chia heap thành region, young GC dọn Eden, khi old vượt ngưỡng IHOP thì marking đồng thời, sau đó mixed GC dọn thêm các region old nhiều rác nhất, nên pause ngắn và bám được mục tiêu MaxGCPauseMillis. ZGC và Shenandoah dùng barrier để làm gần hết việc song song với app, pause dưới một mili giây, từ JDK 21 có Generational ZGC và từ JDK 23 nó là mặc định của ZGC. Trade-off là ZGC tốn thêm CPU và barrier. Thực tế tôi giữ G1 cho đa số service, chỉ chuyển ZGC khi p99 bị GC chi phối và đã đo 24 giờ cho cả hai."
+
+> Senior tip: nhảy ZGC vì "pause thấp" chưa chắc đúng: ZGC có overhead CPU concurrent và throughput có thể giảm so với G1 cùng heap; đo p99 và tổng throughput 24h cho cả hai collector trước khi quyết — latency và throughput là bài toán đổi chỗ, chọn trên số liệu.`,
   follow: [
     'mixed GC của G1 chọn region thế nào?',
     'Generational ZGC khác ZGC non-generation thế nào?'
@@ -1899,9 +1973,25 @@ java -XX:+UseG1GC -XX:MaxGCPauseMillis=50 -Xlog:gc* ...   # Java 9+
   topic: 'jvm',
   level: 'senior',
   q: 'Tuning heap cho JVM chạy trong container (Kubernetes): vì sao không nên đặt Xmx bằng RAM limit của pod? {{-XX:MaxRAMPercentage}} hoạt động thế nào?',
-  a: `**Tóm tắt:** RSS của JVM = heap + metaspace + stack mỗi thread + code cache + direct memory + native khác. Đặt Xmx = RAM limit là lấy hết chỗ cho heap, không chừa native — container bị OOMKilled (exit 137) dù heap chưa OOM. {{-XX:MaxRAMPercentage}} (mặc định 25%) cho heap % RAM limit, phần còn lại dành native; thực tế nên 50–75% tùy profile.
+  a: `**Tóm tắt:** RSS của JVM = heap + metaspace + stack mỗi thread + code cache + direct memory + native khác (cấu trúc GC, malloc). Đặt Xmx = RAM limit là dành hết chỗ cho heap, không chừa gì cho native — container bị kernel giết (OOMKilled, exit 137) dù heap chưa hề OOM. {{-XX:MaxRAMPercentage}} (mặc định 25%) đặt heap tối đa bằng một phần trăm memory limit mà JVM đọc từ cgroup, phần còn lại dành cho native; thực tế nên 50–75% tuỳ profile.
 
-### Vì sao Xmx = RAM limit là bẫy
+### Hiểu nhanh
+Memory limit của pod giống một chiếc vali 2 kg của hãng bay. Heap chỉ là **một ngăn** trong vali; còn có ngăn đựng sạc (metaspace), ngăn đựng giấy tờ (thread stack), ngăn đựng đồ điện tử (direct buffer). Nếu bạn nhét riêng ngăn quần áo đã 2 kg thì cả vali chắc chắn vượt cân, và nhân viên (kernel) không hỏi han gì, cứ thế loại vali (OOMKill). MaxRAMPercentage là quy tắc "ngăn quần áo chỉ được chiếm 70% cân nặng vali".
+
+### Thuật ngữ
+- **Memory limit (Kubernetes)**: trần RAM của container, vượt là bị kernel giết.
+- **cgroup**: cơ chế Linux giới hạn tài nguyên cho nhóm process; JVM đọc limit từ đây (hỗ trợ cả cgroup v1 và v2).
+- **RSS**: RAM thật mà process chiếm, gồm heap và mọi vùng native.
+- **OOMKilled / exit 137**: kernel gửi SIGKILL (128 + 9) vì container vượt limit; JVM không kịp in gì.
+- **UseContainerSupport**: tính năng (bật mặc định từ Java 10, backport 8u191) để JVM nhìn limit của container thay vì RAM của cả node.
+- **MaxRAMPercentage**: phần trăm limit dùng làm heap tối đa khi không đặt Xmx.
+- **Direct buffer**: bộ nhớ ngoài heap dùng cho NIO/Netty.
+
+### Vì sao Xmx = RAM limit là bẫy (từng bước)
+1. Pod có limit 2 GB, ta đặt {{-Xmx2g}}. JVM tin là được dùng 2 GB cho heap, nên GC không vội dọn khi heap mới 1.7 GB.
+2. Cùng lúc đó native vẫn tăng: metaspace ~150 MB, 200 thread stack, code cache, direct buffer của Netty.
+3. Tổng RSS vượt 2 GB. Kernel không biết gì về "heap" — nó chỉ thấy process vượt limit và gửi SIGKILL.
+4. Kết quả: không có OutOfMemoryError, không có heap dump, chỉ có event "OOMKilled" trong Kubernetes.
 
 ~~~text
 RAM limit 2 GB, Xmx = 2 GB
@@ -1911,20 +2001,46 @@ RSS = heap 1.7 GB + metaspace 150 MB
      => ~2.1 GB > limit => kernel OOMKill pod (exit 137)
 ~~~
 
-OOMKilled khác OOM "Java heap space": không exception trong log JVM, chỉ kube event "OOMKilled". HeapDumpOnOutOfMemoryError vô dụng cho native OOM.
+OOMKilled khác OOM "Java heap space": không có exception trong log JVM, chỉ có kube event "OOMKilled". {{HeapDumpOnOutOfMemoryError}} vô dụng cho loại chết này vì JVM bị giết trước khi kịp làm gì.
 
-### MaxRAMPercentage
-- Java 10+ bật {{UseContainerSupport}} mặc định: JVM đọc cgroup limit và tính heap theo %.
-- Mặc định 25% khá dè sẻn với service nặng; thực hành: 50–75%, nhớ heap % + native dự đoán < 100%.
-- {{-XX:MaxDirectMemorySize}} cap direct buffer; {{-XX:MaxMetaspaceSize}} cap metaspace — hai mục native hay "ăn chừa" nhất phải có cap.
-- {{-Xss256k}} nếu có ngàn thread — tiết kiệm GB native reserve cho stack.
+### MaxRAMPercentage hoạt động thế nào
+1. Khi khởi động, JVM đọc memory limit của container từ cgroup (nhờ {{UseContainerSupport}}).
+2. Nếu không có {{-Xmx}}, heap tối đa = limit × MaxRAMPercentage / 100. Pod 1 GB với mặc định 25% chỉ được 256 MB heap — khá dè sẻn cho service nặng.
+3. {{-XX:InitialRAMPercentage}} quyết định heap ban đầu; đặt bằng Max để lộ thiếu RAM ngay lúc khởi động.
+4. Nếu đặt cả Xmx thì Xmx thắng, phần trăm bị bỏ qua.
+
+~~~text
+Pod limit 2048 MB, MaxRAMPercentage=65
+heap tối đa  = 2048 x 0.65 ~ 1331 MB
+chừa native  ~ 717 MB  (metaspace, stack, code cache, direct, GC, malloc)
+~~~
+
+- Thực hành: 50–75%, luôn kiểm tra heap% + native dự đoán dưới 100%.
+- {{-XX:MaxDirectMemorySize}} giới hạn direct buffer; {{-XX:MaxMetaspaceSize}} giới hạn metaspace — hai mục native hay "phình" nhất nên có trần khi đã đo.
+- {{-Xss256k}} khi có hàng nghìn platform thread: giảm phần địa chỉ reserve và giới hạn mức stack tối đa mỗi thread có thể chiếm. Lưu ý stack chỉ tốn RAM thật cho trang đã dùng, và stack nhỏ có thể gây StackOverflowError với call stack sâu (Spring/Hibernate) — chỉ giảm sau khi test.
+
+### Kiểm tra JVM thực sự thấy gì
+~~~bash
+java -XX:MaxRAMPercentage=65 -XX:+PrintFlagsFinal -version | grep -E "MaxHeapSize|UseContainerSupport"
+jcmd <pid> VM.flags                 # flag đang chạy
+kubectl describe pod <pod>          # Last State: OOMKilled, Exit Code 137
+~~~
 
 ### Pitfall production
-- Kube event OOMKilled lặp lại là dấu đầu tiên; đừng chỉ đọc log JVM.
-- Heap nằm dưới limit không đồng nghĩa an toàn: RSS vẫn tăng theo native; alert theo RSS (host metrics) chứ không chỉ heap.
-- Heap 65% thường là mức an toàn cho app Spring Boot/Netty vốn ngốn native đáng kể.
+- Kube event OOMKilled lặp lại là dấu hiệu đầu tiên; đừng chỉ đọc log JVM.
+- Heap nằm dưới limit không đồng nghĩa an toàn: RSS vẫn tăng theo native; alert theo memory của container (working set), không chỉ heap.
+- Heap 65% thường là mức an toàn cho app Spring Boot/Netty vốn tốn native đáng kể.
 
-> Senior tip: template tôi chia trong team: heap 65%, native 35% trong pod — chưa bị OOMKilled trong 2 năm. Tăng heap theo bước 50 → 60 → 65% sau khi đo RSS thật, không nhảy 75% ngay từ đầu.`,
+### Lỗi hay gặp
+- **Copy Xmx từ máy ảo cũ sang pod**: triệu chứng là pod restart liên tục với exit 137. Cách tránh: dùng MaxRAMPercentage thay cho Xmx cố định.
+- **Để mặc định 25%**: triệu chứng là heap nhỏ, GC chạy dày, CPU cao dù pod còn thừa RAM. Cách tránh: đặt 60–70% rồi đo.
+- **Request thấp hơn limit nhiều**: pod bị xếp lên node chật, dễ bị evict khi node thiếu RAM. Cách tránh: service quan trọng đặt request = limit.
+- **Tăng limit mà không tìm gốc**: nếu native tăng do leak (thread, direct buffer) thì chỉ là chết chậm hơn. Cách tránh: bật NMT và so sánh theo thời gian.
+
+### Trả lời miệng 1 phút
+"Trong container, RSS của JVM không chỉ là heap mà còn metaspace, thread stack, code cache, direct buffer và cấu trúc của GC. Nếu đặt Xmx bằng memory limit thì heap được phép chiếm hết, native đẩy tổng vượt limit và kernel giết pod với exit 137, không có OutOfMemoryError hay heap dump nào. Vì vậy tôi không đặt Xmx cố định mà dùng MaxRAMPercentage: JVM đọc limit từ cgroup và lấy một phần trăm làm heap, mặc định 25% thì quá ít, tôi thường bắt đầu 60–65%. Trade-off là heap lớn hơn thì ít GC hơn nhưng ít chỗ cho native hơn. Kinh nghiệm của tôi là tăng dần theo RSS đo được lúc load test, kèm alert theo memory container chứ không chỉ heap."
+
+> Senior tip: template tôi chia sẻ trong team: heap 65%, native 35% trong pod — chưa bị OOMKilled trong 2 năm. Tăng heap theo bước 50 → 60 → 65% sau khi đo RSS thật, không nhảy 75% ngay từ đầu.`,
   follow: [
     'OOMKilled (exit 137) khác OOM Java heap space thế nào?',
     'MaxRAMPercentage = 25% với pod 1 GB RAM là bao nhiêu MB heap?'
@@ -1941,34 +2057,71 @@ OOMKilled khác OOM "Java heap space": không exception trong log JVM, chỉ kub
   topic: 'jvm',
   level: 'senior',
   q: 'Các loại OutOfMemoryError và cách chẩn đoán từng loại (heap dump, MAT) như thế nào?',
-  a: `**Tóm tắt:** OOME hay gặp: {{Java heap space}}, {{GC overhead limit exceeded}}, {{Metaspace}}, {{unable to create native thread}}, {{Direct buffer memory}}. Mỗi loại dùng công cụ khác: heap dump + MAT cho heap; NMT cho native; đếm thread + ulimit cho native thread. Bật HeapDumpOnOutOfMemoryError từ đầu là bắt buộc.
+  a: `**Tóm tắt:** OutOfMemoryError hay gặp: {{Java heap space}}, {{GC overhead limit exceeded}}, {{Metaspace}}, {{unable to create native thread}}, {{Direct buffer memory}}. Mỗi loại cạn một vùng nhớ khác nhau nên cần công cụ khác: heap dump + MAT cho heap; NMT cho native; đếm thread + ulimit cho native thread. Bật {{HeapDumpOnOutOfMemoryError}} từ đầu là bắt buộc, vì dump đúng lúc OOM là bằng chứng quý nhất.
+
+### Hiểu nhanh
+OutOfMemoryError giống đèn cảnh báo "hết" trên ô tô: có đèn hết xăng, hết dầu nhớt, hết nước làm mát. Cùng là "hết" nhưng đổ nhầm thứ thì xe vẫn hỏng. Thông điệp sau dấu hai chấm của OOM chính là chữ in trên đèn: nó cho biết hết **cái gì**. Heap dump giống hộp đen máy bay: chụp lại toàn bộ heap đúng lúc sự cố để sau này mổ xẻ, và MAT là phần mềm đọc hộp đen đó.
+
+### Thuật ngữ
+- **Heap dump (.hprof)**: ảnh chụp mọi object trong heap tại một thời điểm.
+- **MAT (Eclipse Memory Analyzer)**: công cụ mở heap dump, tìm object giữ nhiều bộ nhớ nhất.
+- **Shallow size**: kích thước của riêng một object.
+- **Retained size**: lượng bộ nhớ được giải phóng nếu object đó biến mất (nó + mọi thứ chỉ nó giữ).
+- **Dominator Tree**: cây cho biết object nào "độc quyền giữ" những object nào.
+- **GC Roots**: điểm xuất phát của GC (static field, biến trên stack thread...), object đến được từ đây thì còn sống.
+- **NMT (Native Memory Tracking)**: tính năng JVM theo dõi bộ nhớ ngoài heap theo hạng mục.
+- **ulimit / cgroup pids**: giới hạn số process/thread mà OS cho phép.
 
 ### Bảng tổng hợp
 
 | Error | Ý nghĩa | Công cụ |
 |---|---|---|
 | Java heap space | hết chỗ cấp phát object | heap dump → MAT (Leak Suspects, Dominator Tree) |
-| GC overhead limit exceeded | GC ~98% thời gian, giải phóng < 2% heap | GC log + heap dump |
+| GC overhead limit exceeded | GC chiếm ~98% thời gian mà giải phóng dưới 2% heap; chỉ Parallel GC ném lỗi này (G1/ZGC thì ra "Java heap space") | GC log + heap dump |
 | Metaspace | metadata class vượt MaxMetaspaceSize | dump + đếm classloader; tăng theo redeploy = classloader leak |
-| Unable to create native thread | OS từ chối tạo thread (ulimit, cgroup pids) | jstack đếm thread; ulimit -u; cgroup pids |
-| Direct buffer memory | allocateDirect vượt MaxDirectMemorySize | NMT; kiểm Netty pool; tăng/tinh chỉnh cap |
+| Unable to create native thread | OS từ chối tạo thread (ulimit, cgroup pids, hết RAM cho stack) | jstack đếm thread; ulimit -u; cgroup pids |
+| Direct buffer memory | allocateDirect vượt MaxDirectMemorySize | NMT; kiểm Netty pool; tinh chỉnh cap |
+| Requested array size exceeds VM limit | xin mảng lớn hơn giới hạn của JVM | tìm code tạo mảng cực lớn |
 
-### Làm việc với MAT
+### Quy trình chẩn đoán (từng bước)
+1. **Đọc thông điệp**: quyết định đi hướng heap hay native. Vì sao: tăng Xmx không giúp gì cho Metaspace hay native thread.
+2. **Lấy bằng chứng**: dump tự động khi OOM, hoặc dump chủ động trên pod đã rút khỏi traffic.
+3. **Mở MAT → Leak Suspects**: báo cáo nghi vấn tự động, điểm khởi đầu nhanh.
+4. **Dominator Tree** sắp theo retained size: object giữ nhiều heap nhất nằm trên cùng.
+5. **Path to GC Roots** (loại weak/soft): chỉ ra chuỗi tham chiếu nào đang giữ, từ đó tìm dòng code.
+6. Với native: NMT {{baseline}} rồi {{summary.diff}} để biết hạng mục nào tăng.
+
 ~~~bash
 java -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp/dumps ...
-jmap -dump:live,format=b,file=heap.hprof <pid>   # dump chủ động
+jcmd <pid> GC.heap_dump /tmp/dumps/heap.hprof    # dump chủ động (khuyên dùng)
+jmap -dump:live,format=b,file=heap.hprof <pid>   # cách cũ, tương đương
 ~~~
 
-- **Leak Suspects**: báo cáo nghi vấn tự động — bắt đầu từ đây.
-- **Dominator Tree**: object giữ nhiều heap nhất; Path to GC Roots chỉ ra chain nào bám giữ.
-- Retained size khác shallow size: bám theo retained mới tìm đúng gốc.
+~~~text
+Ví dụ Dominator Tree:
+Class Name                          Shallow   Retained
+OrderCache (static INSTANCE)           24 B    1.2 GB   <- nghi phạm
+  ConcurrentHashMap                    64 B    1.2 GB
+    Node[]                           16 MB    1.2 GB
+~~~
+Retained khác shallow: bám theo retained mới tìm đúng gốc, vì kẻ giữ bộ nhớ thường có shallow size rất nhỏ.
 
 ### Pitfall
-- OOM heap nhưng dump không thấy object to: heap phân mảnh — cần cấp khối lớn liền kề mà không đủ (stream file, buffer lớn); tìm qua GC log.
-- "Unable to create native thread" thường do leak executor tạo thread unbounded (newCachedThreadPool) — trace xem executor nào tạo thread không giới hạn.
-- Về "Direct buffer": giảm pool direct của Netty hoặc tăng MaxDirectMemorySize theo đo của NMT.
+- OOM heap nhưng dump không thấy object to: có thể là đỉnh cấp phát một khối lớn liền kề (đọc cả file, buffer lớn) mà heap không đủ, hoặc object đã chết sau OOM; tìm qua stack trace của OOM và GC log.
+- "Unable to create native thread" thường do executor tạo thread không giới hạn ({{newCachedThreadPool}}) — tìm xem executor nào sinh thread.
+- "Direct buffer": giảm pool direct của Netty hoặc tăng MaxDirectMemorySize theo số đo của NMT.
+- OOMKilled (exit 137) không phải OOME: không có heap dump, phải điều tra theo RSS.
 
-> Senior tip: bật HeapDumpOnOutOfMemoryError ngay khi boot với Path đủ disk; dump có thể dừng JVM vài giây, nhưng đó là dump duy nhất đáng tin vì ở đúng trạng thái OOM — dump sau restart không có giá trị điều tra như vậy.`,
+### Lỗi hay gặp
+- **Không bật HeapDumpOnOutOfMemoryError**: triệu chứng là sự cố xảy ra, restart xong không còn gì để điều tra. Cách tránh: bật từ ngày đầu.
+- **HeapDumpPath trỏ vào filesystem tạm của container**: dump mất theo pod. Cách tránh: dùng volume bền, đủ chỗ bằng kích thước heap.
+- **Catch OutOfMemoryError rồi chạy tiếp**: app hỏng ngầm. Cách tránh: {{-XX:+ExitOnOutOfMemoryError}} để restart sạch.
+- **Đọc shallow size thay vì retained**: thấy toàn {{byte[]}} và {{String}} rồi bế tắc. Cách tránh: xem Dominator Tree và Path to GC Roots.
+
+### Trả lời miệng 1 phút
+"OutOfMemoryError có nhiều loại và thông điệp cho biết vùng nào cạn: Java heap space là heap, GC overhead limit exceeded là Parallel GC đang chạy gần như liên tục mà thu được rất ít, Metaspace thường do classloader leak, unable to create native thread là quá nhiều thread hoặc chạm ulimit, Direct buffer memory là bộ nhớ NIO ngoài heap. Với heap tôi lấy heap dump, mở MAT xem Leak Suspects, Dominator Tree theo retained size rồi Path to GC Roots để tìm ai đang giữ. Với native tôi dùng NMT và đếm thread. Trade-off là heap dump dừng JVM vài giây và file rất lớn, nên tôi dump trên pod đã rút traffic. Tôi luôn bật dump tự động khi OOM vì đó là bằng chứng đáng tin nhất."
+
+> Senior tip: bật HeapDumpOnOutOfMemoryError ngay khi boot với HeapDumpPath đủ disk; dump có thể dừng JVM vài giây, nhưng đó là dump duy nhất đáng tin vì ở đúng trạng thái OOM — dump sau restart không có giá trị điều tra như vậy.`,
   follow: [
     'OOM "Java heap space" mà dump không thấy object to — bước tiếp theo?',
     'Vì sao JVM có message riêng "GC overhead limit exceeded"?'
@@ -1985,28 +2138,73 @@ jmap -dump:live,format=b,file=heap.hprof <pid>   # dump chủ động
   topic: 'jvm',
   level: 'senior',
   q: 'Memory leak trong Java: ví dụ thực tế thường gặp và cách tìm ra (heap dump, MAT)?',
-  a: `**Tóm tắt:** Java có GC không nghĩa không leak: leak = object không còn dùng nhưng vẫn được tham chiếu từ GC Roots. Dạng phổ biến: cache static không eviction, listener không unregister, ThreadLocal trong pool, classloader leak khi redeploy, mutable key trong HashMap. Quy trình tiêu chuẩn: xem trend heap, dump 2 lần cách nhau, MAT Dominator Tree + Path to GC Roots.
+  a: `**Tóm tắt:** Java có GC không có nghĩa là không leak: leak là object **không còn được dùng** nhưng **vẫn được tham chiếu** từ GC Roots, nên GC không được phép thu. Dạng phổ biến: cache static không eviction, listener không unregister, ThreadLocal trong thread pool, classloader leak khi redeploy, key mutable trong HashMap, resource không close. Quy trình chuẩn: xem xu hướng heap sau GC, dump 2 lần cách nhau, so sánh histogram, rồi MAT Dominator Tree + Path to GC Roots.
+
+### Hiểu nhanh
+GC giống người dọn nhà chỉ vứt những món **không ai nắm giữ**. Nếu bạn cột một món đồ cũ vào sợi dây buộc ở cột nhà (static field), người dọn sẽ không dám vứt, dù bạn chẳng bao giờ dùng nữa. Leak trong Java chính là hàng nghìn sợi dây bị quên như vậy: một Map static cứ thêm mà không xoá, một ThreadLocal không gỡ. GC làm đúng việc của nó; lỗi là do code vẫn "nắm" thứ không còn cần.
+
+### Thuật ngữ
+- **GC Roots**: điểm xuất phát mà GC coi là chắc chắn sống (static field, biến trên stack của thread đang chạy, JNI reference...).
+- **Reachable**: đến được từ GC Roots qua chuỗi reference strong, nên GC không thu.
+- **ThreadLocal**: biến riêng cho từng thread, lưu trong map của chính thread đó.
+- **Classloader leak**: classloader cũ của ứng dụng không được thu sau redeploy, kéo theo toàn bộ class và static của nó.
+- **Histogram**: bảng đếm số instance và tổng byte theo từng class trong heap.
+- **Caffeine**: thư viện cache Java có giới hạn kích thước và thời gian sống.
+- **CLOSE_WAIT**: trạng thái socket mà phía bên kia đã đóng nhưng ứng dụng mình chưa close.
 
 ### Dạng thực tế thường gặp
-- **Static cache unbounded**: Map static put liên tục, không TTL/LRU — old gen tăng đều. Fix: Caffeine với maximumSize + expireAfter.
-- **Listener không unregister**: register vào EventBus/cache nhưng khi service đóng không bỏ — mỗi lần khởi động lại heap tăng thêm một tầng.
-- **ThreadLocal trong pool**: set không remove — context (user/MDC) sống mãi trong thread.
-- **ClassLoader leak (Tomcat redeploy)**: JDBC driver register ở app lần 1 không unregister; ThreadLocal value tham chiếu webapp ⇒ WebappClassLoader không giải phóng sau redeploy.
-- **Mutable key trong HashMap**: key bị mutate sau put ⇒ entry không tìm lại được (leak logic).
-- **Resource không close**: Connection/InputStream trong exception path không finally — pool cạn connection, socket kẹt CLOSE_WAIT.
+- **Static cache unbounded**: Map static put liên tục, không TTL/LRU — old gen tăng đều. Sửa: Caffeine với {{maximumSize}} + {{expireAfterWrite}}.
+- **Listener không unregister**: đăng ký vào EventBus/cache nhưng khi component đóng không gỡ — mỗi lần tạo lại component, heap tăng thêm một tầng.
+- **ThreadLocal trong pool**: {{set}} mà không {{remove}} — context (user, MDC) sống mãi theo thread của pool.
+- **ClassLoader leak (Tomcat redeploy)**: JDBC driver đăng ký ở lần deploy 1 không deregister; ThreadLocal value tham chiếu class webapp ⇒ WebappClassLoader không được giải phóng.
+- **Key mutable trong HashMap**: key bị sửa sau khi put ⇒ hashCode đổi, entry không tìm lại được nhưng vẫn nằm trong map (leak logic).
+- **Resource không close**: Connection/InputStream trong nhánh exception không có finally — pool cạn connection, socket kẹt CLOSE_WAIT.
 
-### Quy trình tìm
-1. **Xem trend heap**: metrics old gen sau full GC tăng đều dần tới OOM sau vài giờ/ngày — leak chậm; biến động nhanh chỉ là burst.
-2. **Heap dump 2 lần** cách nhau 30 phút đến 1 giờ; diff class histogram (MAT Compare hay jmap -histo) — class tăng đều là nghi phạm.
-3. **MAT Dominator Tree**: object có retained heap lớn nhất — 90% bắt được static Map, cache, ThreadLocal map, classloader.
-4. **Path to GC Roots** (exclude weak/soft): tìm chain giữ object; định ra chỗ code nào giữ.
+~~~java
+// Leak kinh điển: ThreadLocal trong thread pool của Tomcat
+private static final ThreadLocal<UserContext> CTX = new ThreadLocal<>();
+
+void handle(Request r) {
+    CTX.set(load(r));          // thread của pool sống mãi
+    try {
+        process(r);
+    } finally {
+        CTX.remove();          // THIẾU dòng này => context cũ dính theo thread
+    }
+}
+~~~
+
+### Quy trình tìm (từng bước)
+1. **Xem xu hướng heap sau GC**: old gen sau mỗi lần GC tăng đều tới OOM sau vài giờ/ngày là leak chậm; dao động lên xuống nhanh chỉ là burst. Vì sao xem "sau GC": trước GC heap đầy rác nên con số không nói lên gì.
+2. **Heap dump 2 lần** cách nhau 30 phút đến 1 giờ; so sánh histogram (MAT Compare Basket hoặc {{jmap -histo}}) — class tăng đều là nghi phạm. Vì sao hai lần: một lần chỉ cho thấy "cái gì to", hai lần cho thấy "cái gì đang lớn lên".
+3. **MAT Dominator Tree**: object có retained heap lớn nhất — phần lớn trường hợp bắt được static Map, cache, ThreadLocalMap, classloader.
+4. **Path to GC Roots** (loại weak/soft): tìm chuỗi đang giữ object; từ tên field suy ra dòng code. Loại weak/soft vì chúng không ngăn GC thu.
+
+~~~text
+Old gen sau GC (MB)
+1600 |                                 *     <- OOM sắp tới
+1200 |                     *    *
+ 800 |          *    *
+ 400 |  *  *
+     +----------------------------------- giờ
+       leak: đường "sau GC" đi lên dạng bậc thang
+~~~
 
 ~~~bash
 jmap -dump:live,format=b,file=dump-1.hprof <pid>
 jmap -histo <pid> | head -30
 ~~~
 
-> Senior tip: thiết lập alarm trend (so sánh heap sau full GC giữa hai thời điểm cách nhau 1 giờ) bắt được leak sớm hơn alert mốc fixed rất nhiều; cột "Largest Objects" trong MAT là nơi tôi mở đầu luôn luôn khi điều tra dump.`,
+### Lỗi hay gặp
+- **Kết luận leak chỉ vì heap cao**: heap dùng cao trước GC là bình thường. Cách tránh: chỉ nhìn đường old gen sau GC qua nhiều giờ.
+- **Dump trên pod đang nhận traffic**: dump dừng JVM vài giây tới vài chục giây, gây timeout. Cách tránh: rút pod khỏi load balancer trước.
+- **Dùng HashMap làm cache "tạm"**: triệu chứng là OOM sau vài tuần chạy. Cách tránh: mọi cache phải có giới hạn và metric hit/size.
+- **Restart định kỳ để "chữa" leak**: che triệu chứng, leak vẫn nằm đó và nhanh hơn khi tải tăng. Cách tránh: tìm root bằng dump.
+
+### Trả lời miệng 1 phút
+"Trong Java, leak là object không còn dùng nhưng vẫn reachable từ GC Roots, nên GC không được thu. Hay gặp nhất là cache static không có giới hạn, ThreadLocal trong thread pool không remove, listener không gỡ, và classloader leak khi redeploy. Tôi điều tra bằng cách nhìn heap sau GC theo thời gian: đi lên dạng bậc thang là leak. Sau đó lấy hai heap dump cách nhau khoảng một giờ trên pod đã rút traffic, so sánh histogram để xem class nào tăng đều, rồi dùng Dominator Tree và Path to GC Roots trong MAT để tìm field đang giữ. Trade-off là dump tốn pause và đĩa. Sửa thì thường là thay Map bằng Caffeine có maximumSize hoặc thêm remove trong finally."
+
+> Senior tip: thiết lập alarm theo xu hướng (so sánh heap sau full GC giữa hai thời điểm cách nhau 1 giờ) bắt được leak sớm hơn alert theo mốc cố định rất nhiều; Dominator Tree trong MAT là nơi tôi luôn mở đầu khi điều tra dump.`,
   follow: [
     'Path to GC Roots — exclude weak/soft references nghĩa gì, vì sao?',
     'Chụp heap dump trong production có rủi ro gì (pause, disk)?'
@@ -2024,39 +2222,70 @@ jmap -histo <pid> | head -30
   topic: 'jvm',
   level: 'lead',
   q: 'CPU 100% trên production: quy trình điều tra của bạn (top -H, jstack, async-profiler, JFR) như thế nào?',
-  a: `**Tóm tắt:** tìm thread đốt CPU: top -H -p PID lấy thread id nóng nhất → grep nid trong jstack (JDK 18+ in nid thập phân; JDK 8–17 phải đổi sang hex trước), đọc frame đầu (hàm nóng). Cần phân sâu hơn thì dùng async-profiler/flame graph hoặc JFR. Phải trả lời được: đốt CPU vì code nghiệp vụ, JIT compiler, GC thread, hay native (TLS/deflate).
+  a: `**Tóm tắt:** Tìm thread đang đốt CPU: {{top -H -p PID}} lấy thread id nóng nhất → tìm nid tương ứng trong jstack (JDK 17 trở về trước in nid dạng hex nên phải đổi sang hex trước; các bản JDK mới hơn in nid thập phân — nhìn có tiền tố 0x hay không là biết), đọc frame đầu để biết hàm nóng. Cần phân tích sâu hơn thì dùng async-profiler (flame graph) hoặc JFR. Phải trả lời được: CPU bị đốt bởi code nghiệp vụ, JIT compiler, GC thread, hay native (TLS, nén).
 
-### Quy trình tiêu chuẩn
-1. Xác định process đốt CPU nhất (top/htop).
-2. Lấy thread nóng nhất của process đó:
+### Hiểu nhanh
+CPU 100% giống hoá đơn tiền điện tăng vọt. Đầu tiên bạn tìm **phòng nào** đang tốn điện (process), rồi **thiết bị nào** trong phòng (thread), rồi xem thiết bị đó đang làm gì (stack trace). jstack giống chụp một tấm ảnh: thấy ai đang làm gì đúng khoảnh khắc đó. async-profiler giống camera quay liên tục 30 giây rồi thống kê ai chiếm nhiều thời gian nhất — đáng tin hơn một tấm ảnh.
+
+### Thuật ngữ
+- **top -H**: lệnh Linux hiển thị từng thread của process kèm %CPU.
+- **TID / nid**: id của thread ở tầng OS; jstack ghi nó là {{nid}}.
+- **jstack**: công cụ in stack trace của mọi thread Java tại một thời điểm.
+- **async-profiler**: profiler lấy mẫu, overhead thấp, thấy cả frame native và kernel.
+- **Flame graph**: biểu đồ các stack được lấy mẫu; frame càng rộng càng chiếm nhiều sample.
+- **JFR**: Java Flight Recorder, bộ ghi sự kiện tích hợp trong JDK.
+- **Busy-wait**: vòng lặp liên tục kiểm tra điều kiện mà không ngủ, đốt CPU vô ích.
+- **Megamorphic call**: lời gọi interface có quá nhiều implementation thực tế, JIT khó inline.
+
+### Quy trình tiêu chuẩn (từng bước)
+1. **Xác định process đốt CPU nhất** (top/htop). Vì sao: trên node có thể có sidecar, agent, không chắc là JVM.
+2. **Lấy thread nóng nhất của process đó**:
 
 ~~~bash
 top -H -p <pid>                          # threads, xem %CPU; giả sử TID nóng nhất là 4321
-jstack <pid> | grep -A 12 "nid=4321"     # JDK 18+: nid in dạng thập phân (kèm [4321] sau #N)
-printf %x 4321                           # JDK 8–17: nid là hex → 10e1
+printf %x 4321                           # = 10e1 (JDK 17 trở về trước in nid hex)
 jstack <pid> | grep -A 12 "nid=0x10e1"
+jstack <pid> | grep -A 12 "nid=4321"     # JDK mới hơn: nid thập phân, kèm [4321] sau #N
 ~~~
 
-Frame đầu cùng thread RUNNABLE thường chỉ ra method đang đốt CPU.
+Frame đầu của thread RUNNABLE thường chỉ ra method đang đốt CPU. Nên chụp 3 lần cách nhau vài giây: frame lặp lại ở cả 3 lần mới đáng tin.
 
-3. Phân loại nguyên nhân: GC thread (kiểm jstat -gc và GC log), JIT compiler thread (-Xlog:jit + PrintCompilation), code business, native.
-4. Flame graph khi stack không đủ:
+3. **Phân loại nguyên nhân**: tên thread cho biết nhiều điều — "GC Thread#", "G1 Conc#" là GC (kiểm {{jstat -gcutil}} và GC log); "C2 CompilerThread" là JIT ({{-Xlog:jit*}}, {{-XX:+PrintCompilation}}); "http-nio-..." là code nghiệp vụ.
+4. **Flame graph khi stack không đủ**:
 
 ~~~bash
-./profiler.sh -d 30 -e cpu -f flame.html <pid>   # async-profiler 3.x: asprof
+asprof -d 30 -e cpu -f flame.html <pid>   # async-profiler 3.x (bản cũ: profiler.sh)
 # frame rộng nhất (nhiều sample nhất) = chỗ đốt CPU nhiều nhất
 # mặc định đã gồm cả native và kernel frame
 ~~~
 
-5. JFR luôn bật cho service nhạy prod: jcmd <pid> JFR.start duration=60s filename=cpu.jfr; phân tích bằng JDK Mission Control (hotspot view, allocation call tree).
+5. **JFR** cho service nhạy trên prod: {{jcmd <pid> JFR.start duration=60s filename=cpu.jfr}}; phân tích bằng JDK Mission Control (Hot Methods, Allocation, Threads).
+
+~~~text
+top -H -p 1234
+  PID   %CPU  COMMAND
+  4321  98.7  http-nio-8080-e   -> code nghiệp vụ
+  1250  12.0  C2 CompilerThre   -> JIT
+  1240   3.1  GC Thread#0       -> GC
+~~~
 
 ### Nguyên nhân thường gặp
-- GC thread nóng → nhiều full GC: chuyển sang heap tuning, không phải fix code.
-- JIT compiler thread nóng: hot path churn (lambda, polymorphic megamorphism).
-- Busy-wait trong code: spin-loop wait, poll 0 ms, retry vòng không backoff.
-- Native: TLS handshake, compress/deflate, bitmap — jstack không hiện native frame; async-profiler bắt được (hiện native frame mặc định).
+- GC thread nóng → full GC liên tục, heap thiếu hoặc leak: đi hướng heap, không phải sửa thuật toán.
+- JIT compiler thread nóng: thường chỉ trong vài phút sau deploy; kéo dài thì nghi code bị deoptimize rồi compile lại liên tục (polymorphism megamorphic, code cache đầy).
+- Busy-wait trong code: spin-loop chờ, poll timeout 0 ms, retry không backoff.
+- Regex catastrophic backtracking: thread kẹt trong {{java.util.regex.Pattern}}.
+- Native: TLS handshake, nén/deflate — jstack không hiện native frame; async-profiler thấy được.
 
-> Senior tip: tôi bắt đầu bằng async-profiler (sampler-based, không STW — an toàn trong prod) trước khi soi jstack tỉ mỉ; CPU 100% mà GC và JIT đều an toàn thì 90% là busy-wait — tìm vòng while thiếu sleep trong review code.`,
+### Lỗi hay gặp
+- **Quên đổi TID sang hex trên JDK 17**: grep không ra, tưởng thread không phải Java. Cách tránh: kiểm tra định dạng nid trong dump trước.
+- **Chỉ chụp một jstack**: frame tình cờ, kết luận sai. Cách tránh: 3 lần, hoặc dùng profiler.
+- **Restart ngay để "chữa cháy"**: mất toàn bộ bằng chứng. Cách tránh: chụp jstack và 30 giây profile trước khi restart.
+- **Đổ lỗi GC mà không xem GC log**: tối ưu nhầm chỗ. Cách tránh: xem tên thread nóng và tỉ lệ thời gian GC.
+
+### Trả lời miệng 1 phút
+"Khi CPU 100%, tôi xác định process rồi dùng top -H để lấy thread đốt nhiều nhất, đổi TID sang hex nếu JDK 17 trở về trước, tìm nid đó trong jstack và đọc frame trên cùng; chụp vài lần để chắc. Tên thread cho tôi phân loại ngay: GC thread thì sang hướng heap và GC log, compiler thread thì là JIT, worker HTTP thì là code nghiệp vụ. Nếu stack chưa rõ, tôi chạy async-profiler 30 giây lấy flame graph, nó overhead thấp và thấy cả frame native. Trade-off: jstack rẻ nhưng chỉ là ảnh chụp, profiler chính xác hơn nhưng cần cài agent. Theo kinh nghiệm, CPU cao mà GC và JIT bình thường thì đa phần là busy-wait hoặc regex backtracking."
+
+> Senior tip: tôi bắt đầu bằng async-profiler (lấy mẫu, không cần safepoint, an toàn trên prod) trước khi soi jstack tỉ mỉ; CPU 100% mà GC và JIT đều bình thường thì rất thường là busy-wait — tìm vòng while thiếu sleep/backoff trong review code.`,
   follow: [
     'CPU 100% mà hot thread nằm ở native — xác định thế nào?',
     'async-profiler khác JFR như thế nào, chọn cái nào?'
@@ -2072,38 +2301,76 @@ Frame đầu cùng thread RUNNABLE thường chỉ ra method đang đốt CPU.
   topic: 'jvm',
   level: 'mid',
   q: 'Class loading: parent delegation model hoạt động thế nào và vì sao? ClassLoader leak khi redeploy webapp xảy ra ở đâu?',
-  a: `**Tóm tắt:** parent delegation: class loader hỏi parent trước (bootstrap → platform → application) để load; không có mới tự load. Mục đích: java.* chỉ load 1 lần và không cho code bên ngoài giả mạo class hệ thống. ClassLoader leak: class của webapp bị giữ bởi tham chiếu static/ThreadLocal/driver không unregister ⇒ WebappClassLoader không GC, metaspace phình mỗi redeploy.
+  a: `**Tóm tắt:** Parent delegation: khi cần load class, một class loader **hỏi parent trước** (application → platform → bootstrap); parent không tìm thấy thì nó mới tự load. Mục đích: class lõi như {{java.lang.String}} chỉ load một lần từ JDK và code bên ngoài không thể giả mạo. ClassLoader leak: class của webapp bị giữ bởi tham chiếu static, ThreadLocal hoặc JDBC driver không deregister ⇒ WebappClassLoader cũ không được GC, metaspace phình sau mỗi lần redeploy.
 
-### Parent delegation
-- Thứ tự: Bootstrap (java.base, java.*) → Platform (JDK modules) → Application (classpath) → WebAppClassLoader của mỗi webapp (Tomcat — loader này đảo thứ tự: tìm WEB-INF trước, trừ class java.* / JDK).
+### Hiểu nhanh
+Hãy tưởng tượng một công ty có ba cấp: nhân viên (application loader), trưởng phòng (platform loader), giám đốc (bootstrap). Khi cần một tài liệu, nhân viên luôn hỏi lên trên trước: "Sếp có bản chính thức chưa?". Chỉ khi cấp trên nói không có, nhân viên mới tự soạn. Nhờ vậy không ai trong công ty tự in một "quy chế công ty" giả. ClassLoader leak giống một nhân viên đã nghỉ việc (webapp cũ) nhưng vẫn còn một sợi dây ai đó buộc vào bàn của anh ta, nên cả bàn làm việc với hàng nghìn tài liệu (class) không thể dọn đi.
+
+### Thuật ngữ
+- **ClassLoader**: object chịu trách nhiệm tìm và nạp bytecode thành class trong JVM.
+- **Bootstrap loader**: loader gốc viết bằng native, nạp {{java.base}} ({{java.lang}}, {{java.util}}...).
+- **Platform loader**: từ Java 9 thay cho extension loader, nạp các module JDK khác.
+- **Application (system) loader**: nạp class từ classpath/module path của ứng dụng.
+- **WebappClassLoader**: loader riêng Tomcat tạo cho mỗi webapp để các app cô lập nhau.
+- **Metaspace**: vùng native chứa metadata của class; class chỉ được unload khi loader của nó bị GC.
+- **DriverManager**: registry static của JDBC, giữ reference tới các driver đã đăng ký.
+
+### Parent delegation hoạt động thế nào (từng bước)
+1. Code gọi tới class {{com.shop.Order}} lần đầu; JVM nhờ loader của class đang chạy load nó.
+2. Loader đó kiểm tra đã load chưa (cache). Có rồi thì trả về. Vì sao: mỗi loader chỉ định nghĩa một class một lần.
+3. Chưa có thì **ủy quyền lên parent**: application → platform → bootstrap.
+4. Bootstrap tìm trong {{java.base}}; không có thì trả về cho platform tìm; không có nữa thì application loader tự {{findClass}} từ classpath.
+5. Kết quả: {{java.lang.String}} luôn đến từ bootstrap, dù ai đó cố đặt một file String.class trong jar của mình.
 
 ~~~text
 loadClass(name):
-  1. hỏi parent.loadClass(name); nếu parent tìm thấy => dùng của parent
-  2. parent không có => tự findClass(name)
+  1. đã load chưa? có -> trả về
+  2. hỏi parent.loadClass(name); parent tìm thấy => dùng của parent
+  3. parent không có => tự findClass(name)
+
+Bootstrap  (java.base: java.lang, java.util ...)
+   ^
+Platform   (java.sql, java.xml ...)
+   ^
+Application (classpath: spring, app code)
+   ^
+WebappClassLoader (Tomcat: WEB-INF/classes, WEB-INF/lib) - mỗi webapp một cái
 ~~~
 
-- Vì sao: an toàn (app không được inject java.lang.String giả) và nhất quán (một copy java.base dùng chung toàn JVM).
-- JVM xác định "cùng class" theo (tên class, classloader id) nên class có thể load nhiều lần nếu app server chưa reuse.
-- Java 9 module rewrite loader nhưng vẫn giữ logic delegate.
+- Vì sao thiết kế vậy: **an toàn** (app không inject được {{java.lang.String}} giả) và **nhất quán** (một bản {{java.base}} dùng chung toàn JVM).
+- Tomcat cố ý **đảo thứ tự** cho WebappClassLoader: vẫn để class của JDK cho bootstrap/platform, nhưng tìm trong WEB-INF trước rồi mới hỏi các loader chung, để mỗi webapp dùng đúng phiên bản thư viện của mình.
+- JVM coi "cùng class" là (tên class, classloader định nghĩa nó). Vì thế cùng một tên class có thể được load nhiều lần bởi các loader khác nhau, và khi đó chúng là **hai class khác nhau** — nguồn gốc lỗi {{ClassCastException: Order cannot be cast to Order}}.
+- Java 9 module system đổi cấu trúc loader (platform thay extension) nhưng vẫn giữ logic ủy quyền.
 
-### ClassLoader leak khi redeploy
-1. JDBC driver register vào DriverManager (static) mà app không deregister khi undeploy.
-2. ThreadLocal value nằm trong thread pool của Tomcat, tham chiếu class webapp.
-3. Static field/singleton của webapp giữ classloader.
+### ClassLoader leak khi redeploy (từng bước)
+1. Webapp v1 chạy, WebappClassLoader v1 nạp hàng nghìn class.
+2. Undeploy: Tomcat bỏ reference tới loader v1 và chờ GC thu.
+3. Nhưng còn một reference từ nơi sống lâu hơn webapp: JDBC driver đăng ký vào {{DriverManager}} (static, thuộc loader cha); một ThreadLocal value nằm trong thread pool của Tomcat; một thread do app tạo ra mà không dừng.
+4. Một object duy nhất của webapp còn bị giữ là đủ: object → class → loader v1 → **mọi** class và static field của v1. Metaspace không giảm.
+5. Sau vài lần redeploy: OOM Metaspace.
+
 ~~~text
-WebappClassLoader bị câu bởi chain static field -> class của webapp
+WebappClassLoader v1 bị giữ bởi chuỗi:
+DriverManager.registeredDrivers (static) -> com.mysql.Driver (load bởi v1) -> v1
 => Metaspace phình dần mỗi redeploy
-=> vài lần redeploy gặp OOM Metaspace
 Tomcat thường log: "The web application [app] appears to have started a thread named ..."
 ~~~
 
-Fix tiêu chuẩn:
-- Đăng ký lifecycle: Spring context close, JDBC driver deregister, ThreadLocal clear trong ServletContextListener.
-- Tomcat có "leak prevention" built-in: bắt được nhiều nguồn phổ biến; vẫn phải theo dõi log "appears to have started a thread" khi redeploy.
-- Tránh mutable static trong webapp; các cache dùng contract lifecycle của container.
+Cách sửa tiêu chuẩn:
+- Gắn vào lifecycle: đóng Spring context, deregister JDBC driver, clear ThreadLocal, dừng thread/executor trong {{ServletContextListener.contextDestroyed}}.
+- Tomcat có cơ chế "leak prevention" bắt được nhiều nguồn phổ biến; vẫn phải đọc log "appears to have started a thread" sau redeploy.
+- Tránh static mutable trong webapp; cache dùng lifecycle của container.
 
-> Senior tip: so sánh jcmd <pid> GC.class_histogram trước và sau redeploy là dấu hiệu sớm của loader leak: số class của webapp tăng dần sau mỗi lần redeploy — phát hiện trước OOM Metaspace nhiều ngày.`,
+### Lỗi hay gặp
+- **Đặt JDBC driver trong WEB-INF/lib**: triệu chứng là metaspace tăng sau mỗi redeploy. Cách tránh: đặt driver ở thư mục lib của Tomcat hoặc deregister khi shutdown.
+- **Tạo thread/scheduler tự quản lý mà không dừng**: thread giữ loader cũ. Cách tránh: dùng executor có shutdown trong lifecycle.
+- **Nhầm ClassNotFoundException với NoClassDefFoundError**: cái đầu là tìm không thấy khi load động, cái sau là lúc compile có nhưng lúc chạy thiếu hoặc static initializer đã lỗi. Cách tránh: đọc "Caused by".
+- **Hot redeploy trên production**: nguồn leak liên tục. Cách tránh: deploy bằng thay container/process mới.
+
+### Trả lời miệng 1 phút
+"Parent delegation nghĩa là class loader luôn hỏi parent trước: application hỏi platform, platform hỏi bootstrap, chỉ khi cấp trên không có thì mới tự load. Nhờ vậy class lõi như String chỉ có một bản và không bị giả mạo. JVM nhận diện class bằng tên cộng loader, nên cùng tên ở hai loader là hai class khác nhau. Tomcat đảo thứ tự để mỗi webapp dùng thư viện riêng. Leak xảy ra khi redeploy: chỉ cần một reference từ chỗ sống lâu như DriverManager, ThreadLocal trong pool của Tomcat hay một thread không dừng trỏ vào object của app cũ là cả loader và mọi class của nó bị giữ, metaspace tăng mỗi lần redeploy. Tôi xử lý bằng dọn dẹp trong lifecycle, và trên production tôi chọn thay cả process thay vì hot redeploy."
+
+> Senior tip: so sánh {{jcmd <pid> GC.class_histogram}} hoặc {{jcmd <pid> VM.classloader_stats}} trước và sau redeploy là dấu hiệu sớm của loader leak: số class của webapp tăng dần sau mỗi lần redeploy — phát hiện trước OOM Metaspace nhiều ngày.`,
   follow: [
     'Vì sao một class có thể được load nhiều lần qua classloader khác nhau?',
     'Tomcat warn "appears to have started a thread" nghĩa là gì?'
@@ -2117,50 +2384,88 @@ Fix tiêu chuẩn:
   topic: 'jvm',
   level: 'senior',
   q: 'JIT compiler: C1/C2, tiered compilation, escape analysis, warm-up — và trade-off của GraalVM native image so với JVM?',
-  a: `**Tóm tắt:** HotSpot compile theo tier: interpreter → C1 (nhanh, thu profile) → C2 (tối ưu mạnh). Escape analysis cho phép object không thoát khỏi method được scalar replacement (không cấp trên heap) và lock elision. Warm-up: perf đạt tối đa sau vài nghìn invocation; GraalVM native image là AOT: khởi động ~100 ms + RSS thấp, nhưng peak perf thường kém hơn JIT cho workload chạy dài.
+  a: `**Tóm tắt:** HotSpot biên dịch theo tầng (tiered): interpreter → C1 (biên dịch nhanh, kèm thu profile) → C2 (tối ưu mạnh dựa trên profile). Escape analysis cho phép object không "thoát" khỏi method được scalar replacement (không cấp phát trên heap) và lock elision. Warm-up: hiệu năng chỉ đạt đỉnh sau khi method nóng được C2 biên dịch (cỡ vài nghìn lần gọi). GraalVM native image là AOT: khởi động khoảng vài chục ms + RSS thấp, nhưng peak performance thường kém JIT với workload chạy lâu.
 
-### Tiered compilation
-- C1 compile nhanh, ít tối ưu, kèm thu profile; C2 dùng profile đó để inline, escape analysis trong tối ưu mạnh.
-- Method cấp mức "hot" được đẩy từ interpreter lên C1 rồi C2 (threshold ~10k invocation).
-- Code cache là nơi chứa code đã compile — hãy reserve đủ (mặc định ~240 MB); đầy thì JIT ngừng, hiệu năng rơi dần theo thời gian chạy dài.
+### Hiểu nhanh
+JIT giống một nhân viên mới: tuần đầu làm theo sách hướng dẫn từng bước (interpreter), chậm nhưng đúng. Việc nào lặp lại nhiều, anh ta ghi lại thao tác tắt (C1), rồi khi đã quan sát đủ thói quen của khách thì viết hẳn quy trình tối ưu cho đúng những tình huống hay gặp (C2). Nếu khách đổi thói quen, quy trình tối ưu không còn đúng, anh ta quay về đọc sách (deoptimization). Native image giống thuê người đã được đào tạo sẵn từ trước: vào làm là nhanh ngay, nhưng không học thêm được thói quen của khách nên đỉnh cao thường thấp hơn.
+
+### Thuật ngữ
+- **Interpreter**: chạy từng lệnh bytecode, khởi động ngay nhưng chậm.
+- **C1 / C2**: hai JIT compiler của HotSpot; C1 nhanh, tối ưu nhẹ; C2 chậm hơn nhưng tối ưu mạnh.
+- **Profile**: thống kê lúc chạy (kiểu thực tế, nhánh hay chạy) mà C2 dùng để tối ưu.
+- **Inline**: chép thân method được gọi vào chỗ gọi để bỏ chi phí gọi hàm và mở thêm tối ưu.
+- **Escape analysis**: phân tích object có bị lộ ra ngoài method/thread hay không.
+- **Scalar replacement**: thay object bằng các biến local riêng lẻ, không cần cấp phát trên heap.
+- **Deoptimization**: bỏ code đã tối ưu khi giả định không còn đúng, quay về chạy chậm rồi biên dịch lại.
+- **AOT (ahead-of-time)**: biên dịch trước khi chạy, như GraalVM native image.
+
+### Tiered compilation (từng bước)
+1. Method mới chạy bằng **interpreter**, JVM đếm số lần gọi và số vòng lặp (back-edge). Vì sao: không tốn công biên dịch code chỉ chạy một lần.
+2. Vượt ngưỡng (cỡ vài trăm lần gọi) → **C1** biên dịch nhanh, kèm đoạn đếm để thu profile.
+3. Nóng hơn nữa (cỡ vài nghìn tới vài chục nghìn lần gọi, tùy vòng lặp) → **C2** biên dịch lại dùng profile: inline, escape analysis, loại bỏ nhánh không bao giờ chạy.
+4. Nếu giả định sai (class mới được load, nhánh "chưa từng chạy" bỗng chạy) → deoptimize, quay lại bước 1–2.
+5. Mã máy được cất trong **code cache** (mặc định 240 MB với tiered). Đầy thì JIT ngừng biên dịch, hiệu năng rơi dần với service chạy lâu.
+
+~~~text
+latency
+  ^
+  |\\  interpreter
+  | \\__ C1
+  |    \\______ C2 (đỉnh hiệu năng)
+  +------------------------------> thời gian sau deploy
+     0      30s          vài phút
+~~~
 
 ~~~bash
 -XX:+PrintCompilation -Xlog:jit*   # xem method nào được compile, tier mấy
 -XX:ReservedCodeCacheSize=512m      # nếu service chạy dài dễ đầy cache
+jcmd <pid> Compiler.codecache       # code cache đang dùng bao nhiêu
 ~~~
 
 ### Escape analysis (C2)
 ~~~java
-// object chỉ sống trong method — không escaping
+// object chỉ sống trong method — không escape
 int sum() {
-    Point p = new Point();      // JIT scalar replacement: không cấp trên heap
+    Point p = new Point();      // C2 có thể scalar replacement: không cấp trên heap
     p.x = 1; p.y = 2;
-    return p.x + p.y;
+    return p.x + p.y;           // tương đương: int x = 1, y = 2; return x + y;
 }
 ~~~
-- Scalar replacement: object không escaping trở thành tập các biến local — giảm allocation, giảm GC work.
-- Lock elision: synchronize trên object không escaping bị JIT bỏ đi.
-- Cần method đủ để giữ và profile; thường người dùng trong hot loop.
+- Object "escape" khi bị return, gán vào field/static, hoặc truyền vào method mà JIT không inline được. Khi đó bắt buộc cấp phát thật.
+- Scalar replacement: object không escape trở thành tập biến local (có thể nằm trong register) — giảm allocation, giảm việc cho GC.
+- Lock elision: {{synchronized}} trên object không escape bị JIT bỏ đi vì không thread nào khác thấy được nó.
+- Chỉ áp dụng cho code đã đủ nóng để C2 biên dịch, thường là hot loop; đây là tối ưu, không phải cam kết.
 
 ### Warm-up
-- Khi mới start, code chạy interpreter/C1 — perf thấp rõ rệt cho tới khi C2 compile xong hot path.
-- Đo benchmark ngay sau restart cho ra số "nghèo" — phải warm-up vài nghìn request trước khi đo.
-- Chỉnh được: threshold compile (thấp hơn → compile sớm hơn); JFR event Compilation để profiling hoạt động compile.
+- Khi mới start, code chạy interpreter/C1 — hiệu năng thấp rõ rệt tới khi C2 biên dịch xong hot path.
+- Đo benchmark ngay sau restart cho ra số "xấu" — phải warm-up vài nghìn request trước khi đo (JMH làm việc này tự động).
+- Có thể chỉnh ngưỡng compile, quan sát qua JFR event {{jdk.Compilation}}, {{jdk.Deoptimization}}.
+- JDK mới bắt đầu giảm warm-up bằng AOT cache: JDK 24 (JEP 483) lưu sẵn class đã load và link; JDK 25 bổ sung lưu cả method profile (JEP 515) để JIT có dữ liệu ngay từ đầu.
 
 ### GraalVM native image: trade-off
 
-| Thang đo | JVM JIT | Native image |
+| Tiêu chí | JVM JIT | Native image |
 |---|---|---|
-| Start-up | vài giây (Spring Boot 2–10 s) | dưới 100 ms |
+| Start-up | vài giây (Spring Boot 2–10 s) | vài chục tới dưới 100 ms |
 | RSS | cao hơn | thấp hơn nhiều |
-| Peak perf | cao nhất cho hot path tốt | thường thấp hơn |
-| Reflection/Proxy | bỏ qua | cần config rõ ràng (closed-world) |
+| Peak perf | cao nhất cho hot path sau warm-up | thường thấp hơn (Oracle GraalVM có PGO để thu hẹp) |
+| Reflection/Proxy | chạy tự do | phải khai báo (closed-world) |
 | Debug/profiler | đầy đủ | hạn chế hơn |
+| Build | nhanh | vài phút, tốn nhiều RAM |
 
-- Native image dùng cho serverless/cron job/edge nơi startup + memory là điểm yếu; giữ JVM cho service chạy dài có warm-up đủ.
-- Spring Boot 3 AOT + GraalVM đã khả thi cho app nhỏ; integration library native cần config reflection/proxy rõ ràng.
+- Native image hợp với serverless, cron job, CLI — nơi startup và memory là điểm yếu; giữ JVM cho service chạy dài, đủ thời gian warm-up.
+- Spring Boot 3 AOT + GraalVM đã khả thi cho app vừa và nhỏ; thư viện ít phổ biến cần tự khai báo reflection/proxy.
 
-> Senior tip: rule của tôi: workload chạy dài (hàng giờ) giữ JVM — peak perf tốt sau warm-up; serverless/cron burst giữ native image. Benchmark riêng cho workload của mình trước khi quyết — startup nhanh và peak throughput cao là bài toán đổi chỗ, không phải win-win.`,
+### Lỗi hay gặp
+- **Benchmark bằng vòng for + System.nanoTime**: đo phần lớn là interpreter, hoặc JIT xoá luôn code không dùng kết quả. Cách tránh: JMH có warm-up, fork, Blackhole.
+- **Code cache đầy trên service chạy lâu**: log "CodeCache is full. Compiler has been disabled", CPU tăng dần. Cách tránh: theo dõi và tăng ReservedCodeCacheSize.
+- **Chuyển native image chỉ vì "nhanh hơn"**: throughput ổn định giảm, build CI chậm, lỗi reflection lúc chạy. Cách tránh: benchmark đúng workload.
+- **Nhận traffic ngay khi pod vừa lên**: p99 tăng vọt vài phút đầu. Cách tránh: warm-up trước khi readiness báo sẵn sàng.
+
+### Trả lời miệng 1 phút
+"HotSpot chạy code bằng interpreter trước, method nóng được C1 biên dịch nhanh kèm thu profile, rồi C2 dùng profile đó để tối ưu mạnh như inline và escape analysis; giả định sai thì deoptimize và biên dịch lại. Escape analysis giúp object không thoát khỏi method được thay bằng biến local, không cấp phát heap, và lock trên nó bị bỏ. Hệ quả là warm-up: vài phút đầu sau deploy latency cao hơn. GraalVM native image biên dịch trước nên khởi động vài chục mili giây và tốn ít RAM, nhưng closed-world, build lâu và peak throughput thường thấp hơn JIT. Tôi dùng native cho serverless hay CLI, còn service chạy lâu thì giữ JVM và làm warm-up trước khi nhận traffic."
+
+> Senior tip: rule của tôi: workload chạy dài (hàng giờ) giữ JVM — peak perf tốt sau warm-up; serverless/cron burst cân nhắc native image. Benchmark riêng cho workload của mình trước khi quyết — startup nhanh và peak throughput cao là bài toán đổi chỗ, không phải win-win.`,
   follow: [
     'Object "escaping" nghĩa là gì, điều kiện nào để escape analysis dùng được?',
     'Native image đánh mất gì so với JIT hot path?'
@@ -2178,37 +2483,73 @@ int sum() {
   topic: 'jvm',
   level: 'mid',
   q: 'Stop-the-world, safepoint là gì, và cách đọc GC log để phát hiện vấn đề?',
-  a: `**Tóm tắt:** STW là giai đoạn mọi thread application phải dừng tại safepoint để JVM làm việc toàn cục (GC, deopt, thread dump; biased locking revocation trước JDK 15). Đọc GC log để theo pause của young/mixed có vượt mục tiêu không, allocation rate, promotion rate, và dấu hiệu full GC (trên G1 là warning lớn nhất).
+  a: `**Tóm tắt:** Stop-the-world (STW) là khoảng thời gian **mọi thread ứng dụng phải dừng** để JVM làm một việc cần trạng thái toàn cục nhất quán (một số pha GC, deoptimization, thread dump, heap dump; trước JDK 15 còn có thu hồi biased locking). Thread chỉ dừng được tại **safepoint** — điểm mà JVM biết chính xác reference nào nằm ở đâu. Đọc GC log để xem pause của young/mixed có vượt mục tiêu không, allocation rate, promotion rate, và đặc biệt là Full GC (trên G1 là cảnh báo lớn nhất).
 
-### Safepoint
-- Mọi thread phải tới "safepoint" — vị trí có full pointer state — trước GC/deopt/heap dump.
-- Một thread chạy loop dài không safepoint (counted loop lớn) sẽ kéo dài time-to-safepoint; pause hiển thị gồm cả thời gian chờ cộng dồn.
-- Log {{-Xlog:safepoint}} cho thấy reached/wait time; wait cao nghĩa là có thread chậm tới safepoint.
+### Hiểu nhanh
+Hãy nghĩ tới một buổi kiểm kê siêu thị: quản lý hô "mọi người dừng tay" để đếm hàng cho chính xác. Nhân viên không thể dừng giữa lúc đang bê thùng hàng lơ lửng; họ phải đặt thùng xuống chỗ an toàn rồi mới dừng — chỗ đó chính là **safepoint**. Thời gian kiểm kê thực tế = thời gian chờ người chậm nhất đặt thùng xuống + thời gian đếm. GC log là sổ ghi chép mỗi lần kiểm kê: lúc nào, mất bao lâu, kho còn bao nhiêu hàng.
+
+### Thuật ngữ
+- **Stop-the-world (STW)**: mọi thread Java bị tạm dừng trong một khoảng.
+- **Safepoint**: vị trí trong code mà thread có thể dừng an toàn, JVM biết đủ trạng thái reference.
+- **Time-to-safepoint (TTSP)**: thời gian từ lúc JVM yêu cầu dừng tới khi thread cuối cùng dừng.
+- **Allocation rate**: tốc độ ứng dụng tạo object mới (MB/s).
+- **Promotion rate**: tốc độ object được chuyển từ young lên old.
+- **To-space exhausted / evacuation failure**: G1 không còn region trống để copy object sống, thường dẫn tới Full GC.
+- **Unified logging (-Xlog)**: hệ thống log của JVM từ JDK 9, thay cho các flag PrintGC cũ.
+- **Humongous allocation**: cấp phát object lớn từ nửa region G1 trở lên.
+
+### Safepoint hoạt động thế nào (từng bước)
+1. JVM cần làm việc toàn cục (ví dụ young GC) nên bật cờ "yêu cầu safepoint".
+2. Mỗi thread đang chạy code đã JIT sẽ kiểm tra cờ ở các điểm poll (cuối vòng lặp, khi return method). Vì sao không dừng ở bất kỳ đâu: giữa hai lệnh máy, JVM không biết chắc register nào đang giữ reference.
+3. Thread đang chạy native/blocking I/O được coi là đã ở safepoint (nó không đụng heap Java).
+4. Khi thread cuối cùng tới safepoint, JVM làm việc (GC...), rồi thả tất cả chạy tiếp.
+5. Pause người dùng cảm nhận = TTSP + thời gian làm việc. Một vòng lặp dài không có poll (counted loop rất lớn) có thể kéo dài TTSP; từ JDK 10, C2 dùng loop strip mining để chèn poll vào các vòng lặp này, giảm đáng kể vấn đề.
+
+~~~text
+t=0     JVM yêu cầu safepoint
+thread A ----| dừng ngay
+thread B --------| dừng
+thread C ----------------------| (vòng lặp dài, tới muộn)
+              <---- TTSP ----->  <-- GC làm việc -->  chạy tiếp
+Pause thật = TTSP + GC
+~~~
+
+Log {{-Xlog:safepoint}} cho thấy thời gian "reaching" (TTSP) và "at safepoint"; TTSP cao nghĩa là có thread chậm tới safepoint.
 
 ### Đọc GC log G1
 
 ~~~text
 [gc] Pause Young (Normal) 512M->128M(1024M) 14.2ms   # dưới MaxGCPauseMillis: OK
-[gc] Pause Young (Mixed) 300M->150M(1024M) 60ms      # mixed dọn old region
+[gc] Pause Young (Mixed) 300M->150M(1024M) 60ms      # mixed dọn thêm old region
 [gc] Pause Full (G1 Compaction Pause) 800M->600M(1024M) 800ms  # CẢNH BÁO lớn trên G1
-[gc] to-space exhausted                               # thường trước Full GC
+[gc] To-space exhausted                               # thường đi trước Full GC
 ~~~
+Cách đọc một dòng: {{512M->128M(1024M)}} nghĩa là heap đang dùng 512 MB trước GC, còn 128 MB sau GC, tổng heap đã commit 1024 MB; con số cuối là thời gian pause.
 
-### Điều nhìn trong log
-- **Pause vượt MaxGCPauseMillis thường xuyên**: xem young size, humongous allocation.
-- **Full GC xuất hiện**: G1 không đủ chỗ (to-space exhausted) — tăng heap hoặc giảm humongous.
-- **Allocation rate (MB/young GC)**: cao — nhìn lại code tạo rác (String concat, DTO copy).
-- **Promotion rate lên old**: cao bất thường — object sống lâu hơn dự định; old đầy nhanh, phải xem mixed GC có theo kịp không.
-- **Metaspace tăng theo deploy** — classloader leak.
+### Cần nhìn gì trong log (từng bước)
+1. **Pause vượt MaxGCPauseMillis thường xuyên**: xem kích thước young, humongous allocation, số GC thread.
+2. **Full GC xuất hiện**: G1 không đủ chỗ (to-space exhausted) — tăng heap, giảm humongous, hoặc cho marking bắt đầu sớm hơn.
+3. **Allocation rate** (MB tạo ra giữa hai lần young GC chia thời gian): cao bất thường thì xem lại code tạo rác (String concat trong vòng lặp, copy DTO).
+4. **Promotion rate lên old**: cao bất thường nghĩa là object sống lâu hơn dự kiến; old đầy nhanh, phải xem mixed GC có theo kịp không.
+5. **Metaspace tăng theo mỗi lần deploy**: classloader leak.
 
 ~~~bash
 # Java 9+
 -Xlog:gc*,safepoint:file=gc.log:time,uptime,level,tags
 ~~~
 
-Phân tích tổng: GCeasy / GCViewer để nhìn biểu đồ pause, throughput GC, heap usage sau GC.
+Phân tích tổng quan: GCeasy, GCViewer để vẽ biểu đồ pause, tỉ lệ thời gian GC, heap sau GC.
 
-> Senior tip: rule của tôi: Full GC trên G1 (ngoài System.gc() thủ công) là dấu hiệu capacity failing — kéo 24h GC log trước mọi tuning, đo trước rồi tinh chỉnh; bước cuối cùng là tăng heap, không phải tune tham số mù.`,
+### Lỗi hay gặp
+- **Chỉ nhìn GC pause mà bỏ qua TTSP**: GC log báo 5 ms nhưng ứng dụng đứng 300 ms. Cách tránh: bật log safepoint, đọc cả thời gian reaching.
+- **Nhầm Pause Young (Mixed) với Full GC**: hoảng hốt không cần thiết. Cách tránh: chỉ "Pause Full" mới là full GC.
+- **Không xoay vòng file log**: đĩa đầy. Cách tránh: thêm {{filecount=5,filesize=20m}}.
+- **Tune flag khi chưa có log 24 giờ**: sửa dựa trên một lần đo. Cách tránh: thu log qua một chu kỳ tải đầy đủ.
+
+### Trả lời miệng 1 phút
+"Stop-the-world là lúc JVM dừng mọi thread ứng dụng để làm việc cần trạng thái nhất quán như một số pha GC, deoptimization hay heap dump. Thread chỉ dừng ở safepoint, nơi JVM biết chính xác reference nằm đâu, nên pause thật bằng thời gian chờ thread chậm nhất tới safepoint cộng thời gian GC. Khi đọc GC log tôi xem pause young và mixed có vượt mục tiêu không, allocation rate, promotion rate, và đặc biệt bất kỳ dòng Pause Full nào trên G1, vì đó là dấu hiệu heap không theo kịp. Trade-off là log chi tiết thì nặng hơn nhưng với unified logging có xoay vòng thì chi phí rất nhỏ, nên tôi luôn bật gc và safepoint trên production."
+
+> Senior tip: rule của tôi: Full GC trên G1 (ngoài System.gc() thủ công) là dấu hiệu capacity đang thiếu — kéo 24h GC log trước mọi tuning, đo trước rồi tinh chỉnh; tăng heap là bước sau khi đã loại trừ leak, không phải tune tham số mù.`,
   follow: [
     'GC pause ngắn mà app vẫn có spike latency — kiểm chứng thế nào?',
     'Mixed GC và Full GC của G1 khác gì?'
@@ -2221,31 +2562,61 @@ Phân tích tổng: GCeasy / GCViewer để nhìn biểu đồ pause, throughput
   topic: 'jvm',
   level: 'senior',
   q: 'String deduplication, compressed oops, và object header layout — ước lượng size của object như thế nào?',
-  a: `**Tóm tắt:** Compressed oops nén con trỏ 64-bit thành 4 bytes khi heap ≤ 32 GB (mặc định bật) — vượt 32 GB thì JVM tắt, reference 8 bytes làm heap cần thêm ~20%. Object header gồm mark word (8 B) + klass pointer (4 B với compression) ≈ 12 B + padding 8 B. Công cụ chuẩn: JOL (Java Object Layout). String deduplication (G1) chia sẻ backing array giữa các String cùng nội dung.
+  a: `**Tóm tắt:** Compressed oops nén con trỏ 64-bit thành 4 byte khi heap dưới khoảng 32 GB (mặc định bật); vượt ngưỡng đó JVM tắt nén, mỗi reference thành 8 byte và heap cần thêm khoảng 20–30% cho cùng dữ liệu. Object header truyền thống gồm mark word (8 B) + klass pointer (4 B khi nén) = 12 B, cộng field, rồi làm tròn lên bội số của 8. JDK 25 có compact object headers (JEP 519, {{-XX:+UseCompactObjectHeaders}}) giảm header còn 8 B. Công cụ đo chuẩn: JOL. String deduplication cho các String cùng nội dung dùng chung một mảng byte bên trong.
 
-### Compressed oops
-- Với heap ≤ 32 GB: pointer encode 4 bytes; vượt 32 GB tắt tự động ⇒ mỗi field reference phình 8 bytes.
-- Bẫy kinh điển: tăng heap từ 31 GB lên 33 GB — chỉ vì bỏ compressed oops mà heap thực dùng tăng ~20–30%; nhiều case heap 31 GB có compression chứa được nhiều data hơn heap 33–40 GB không compression.
-- Heap > 32 GB: cân nhắc sharding (nhiều instance nhỏ) hoặc chấp nhận chi phí.
+### Hiểu nhanh
+Compressed oops giống việc đánh số phòng trong một khách sạn: nếu khách sạn có dưới 4 tỷ "ô" 8 byte (khoảng 32 GB), số phòng vừa vặn trong 4 chữ số kiểu nén, nên mỗi tấm thẻ (reference) nhỏ gọn. Khách sạn to hơn thì phải dùng thẻ dài gấp đôi, và vì có hàng triệu tấm thẻ nên tổng cộng tốn thêm rất nhiều chỗ. Object header giống phần nhãn dán trên mỗi thùng hàng: thùng nhỏ thì nhãn chiếm tỉ lệ lớn. String deduplication giống việc nhiều người cùng giữ bản photo của một tài liệu giống hệt nhau, cất bớt các bản trùng chỉ giữ một bản dùng chung.
+
+### Thuật ngữ
+- **oop (ordinary object pointer)**: con trỏ tới object trong heap của HotSpot.
+- **Compressed oops**: lưu reference 32-bit rồi nhân 8 (dịch 3 bit) + base để ra địa chỉ thật.
+- **Mark word**: 8 byte đầu header, chứa hash code, tuổi GC, trạng thái lock.
+- **Klass pointer**: con trỏ tới metadata class của object.
+- **Padding**: byte đệm để kích thước object là bội của 8.
+- **JOL (Java Object Layout)**: thư viện OpenJDK in ra layout thật của object.
+- **Compact strings**: từ Java 9, String Latin-1 lưu 1 byte mỗi ký tự thay vì 2.
+- **String deduplication**: GC tìm các String cùng nội dung và cho chúng dùng chung mảng byte.
+
+### Compressed oops hoạt động thế nào (từng bước)
+1. Mọi object được căn theo 8 byte, nên 3 bit cuối của địa chỉ luôn là 0.
+2. JVM lưu địa chỉ đã bỏ 3 bit đó vào 4 byte: 2^32 × 8 byte = 32 GB địa chỉ được.
+3. Khi dùng, JVM dịch trái 3 bit (và cộng base nếu cần) để ra địa chỉ thật — chi phí rất rẻ.
+4. Heap vượt ngưỡng (thực tế hơi dưới 32 GB) thì không nén được nữa: mỗi reference 8 byte.
+- Bẫy kinh điển: tăng heap từ 31 GB lên 33 GB — chỉ vì mất compressed oops mà dữ liệu thực dùng phình 20–30%; nhiều trường hợp heap 31 GB có nén chứa được nhiều dữ liệu hơn heap 33–40 GB không nén.
+- Heap trên 32 GB: cân nhắc chia nhỏ (nhiều instance) hoặc chấp nhận chi phí; kiểm tra bằng {{java -Xmx32g -XX:+PrintFlagsFinal -version | grep UseCompressedOops}}.
 
 ### Object header + ước lượng
 ~~~text
-compressed refs: mark word 8 B + klass 4 B = 12 B
+header truyền thống (compressed refs): mark 8 B + klass 4 B = 12 B
 data fields + padding tới bội 8 B
-Integer: 12 + 4 = 16 B
-class có long: 12 + 8 (long) + 4 padding = 24 B (không phải 8)
-byte[100]: 12 + 4 (length) + 100 = 116 -> 120 B
+new Object()      : 12 -> 16 B
+Integer           : 12 + 4 (int)              = 16 B
+class chỉ có long : 12 + (4 đệm) + 8 (long)   = 24 B  (không phải 8)
+byte[100]         : 12 + 4 (length) + 100 = 116 -> 120 B
+Compact headers (JDK 25, JEP 519): header 8 B
+new Object() -> 8 B ; Integer -> 8 + 4 = 12 -> 16 B
 ~~~
 
-- JOL (Java Object Layout) là công cụ chính — {{org.openjdk.jol:jol}} — in layout chính xác từng trường, padding.
-- HashMap entry ~ 44-56 bytes mỗi entry — HashMap<Long, Object> 1 triệu entry ≈ 50+ MB, không phải 8 bytes/entry như tưởng.
+- JOL ({{org.openjdk.jol:jol-core}}) in layout chính xác từng field và padding: {{ClassLayout.parseClass(Order.class).toPrintable()}}.
+- HashMap: mỗi entry gồm Node (~32 B) + ô trong mảng bảng + key/value đóng gói (Long ~24 B) ⇒ khoảng 44–56+ B mỗi entry trước cả dữ liệu thật. HashMap<Long, Object> 1 triệu entry dễ tốn 50+ MB, không phải 8 byte/entry như tưởng.
+- Compact object headers: trải qua JEP 450 (experimental, JDK 24) rồi JEP 519 (product, JDK 25, vẫn phải bật bằng flag). App nhiều object nhỏ có thể giảm heap đáng kể (thường được nhắc ở mức 10–20%); đo trước khi bật.
 
-### String deduplication (G1; từ JDK 18 mọi GC)
-- {{-XX:+UseStringDeduplication}}: concurrent thread xử lý String sống qua age threshold, cho các String cùng nội dung chia sẻ backing byte[]/Latin-1 encoding.
-- Giảm được 20–40% heap trong app có nhiều URL/config/token trùng lặp; bật theo age threshold (mặc định 3) và đo memory trước/sau.
-- Java 9+ String dùng byte[] nội bộ (compact strings): String Latin-1 mỗi ký tự 1 byte — "1 tỷ ký tự ASCII ~ 1 GB" chứ không 2 GB.
+### String deduplication
+- {{-XX:+UseStringDeduplication}}: ban đầu chỉ cho G1, từ JDK 18 hỗ trợ cả Serial, Parallel, ZGC, Shenandoah.
+- Cơ chế: GC chọn các String sống qua ngưỡng tuổi ({{StringDeduplicationAgeThreshold}}, mặc định 3), một thread nền băm nội dung và cho các String trùng trỏ chung một mảng {{byte[]}}; object String vẫn là các object riêng.
+- Giảm 20–40% heap trong app có nhiều URL, header, config, token trùng lặp; đo trước/sau.
+- Java 9+ String dùng {{byte[]}} nội bộ (compact strings): String Latin-1 mỗi ký tự 1 byte — "1 tỷ ký tự ASCII ~ 1 GB" chứ không phải 2 GB.
 
-> Senior tip: đo bằng công cụ (JOL + heap dump), đừng ước bằng trí nhớ: HashMap 1 triệu entry thường đòi 60–100 MB heap trước cả phần data — heap 2 GB có thể cạn chỉ với vài cache không eviction; tính theo header + ref + padding là skill ghi điểm của phỏng vấn JVM.`,
+### Lỗi hay gặp
+- **Đặt Xmx 34g "cho rộng rãi"**: triệu chứng là heap dùng nhiều hơn hẳn so với 31g, GC chậm hơn. Cách tránh: dừng dưới 32 GB hoặc nhảy hẳn lên mức lớn hơn nhiều.
+- **Ước lượng memory bằng "số field × 8"**: thiếu header, padding, boxing. Cách tránh: đo bằng JOL và heap dump.
+- **Cache Map<Long, Long> triệu entry**: tốn gấp nhiều lần dữ liệu thật. Cách tránh: cấu trúc primitive (mảng, thư viện primitive collection) hoặc nén key.
+- **Bật String dedup mà không đo**: thêm CPU nền cho GC mà không lợi gì nếu chuỗi ít trùng. Cách tránh: so sánh heap sau GC trước và sau.
+
+### Trả lời miệng 1 phút
+"Trên JVM 64-bit, reference mặc định được nén còn 4 byte nhờ compressed oops: object căn 8 byte nên bỏ được 3 bit cuối, 32 bit đủ địa chỉ cho khoảng 32 GB. Vượt ngưỡng đó mỗi reference thành 8 byte, nên heap 33 GB có khi chứa ít dữ liệu hơn heap 31 GB. Object có header 12 byte với compressed refs, cộng field rồi làm tròn bội 8, nên Integer là 16 byte và một entry HashMap tốn cỡ 50 byte. JDK 25 có compact object headers giảm header còn 8 byte. String deduplication cho các String trùng nội dung dùng chung mảng byte. Trade-off là các tối ưu này tốn chút CPU, nên tôi luôn đo bằng JOL và heap dump trước khi quyết định."
+
+> Senior tip: đo bằng công cụ (JOL + heap dump), đừng ước bằng trí nhớ: HashMap 1 triệu entry thường đòi 60–100 MB heap trước cả phần data — heap 2 GB có thể cạn chỉ với vài cache không eviction; tính được header + ref + padding là kỹ năng ghi điểm trong phỏng vấn JVM.`,
   refs: [
     { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
     { type: 'doc', title: 'JEP 450: Compact Object Headers', url: 'https://openjdk.org/jeps/450' },
@@ -2264,37 +2635,70 @@ byte[100]: 12 + 4 (length) + 100 = 116 -> 120 B
   topic: 'jvm',
   level: 'lead',
   q: 'Service latency nhạy (p99 < 10 ms) trên JVM: chiến lược GC và tuning của bạn là gì (ZGC generational, heap layout, các nguồn STW ngoài GC)?',
-  a: `**Tóm tắt:** với target p99 < 10 ms: chọn ZGC generational (Java 21+, pause dưới 1 ms gần như độc lập heap size); heap ~1.5–2× live set để tần suất concurrent mark thấp; kiểm soát cả các nguồn STW ngoài GC (safepoint lâu, code cache full, System.gc() trong library); đo bằng GC log + JFR + load test trước khi chuyển production.
+  a: `**Tóm tắt:** Với mục tiêu p99 dưới 10 ms: chọn Generational ZGC (Java 21+, pause dưới 1 ms gần như không phụ thuộc kích thước heap); heap khoảng 1.5–2× live set để GC không phải chạy dồn dập; kiểm soát cả các nguồn STW **ngoài GC** (time-to-safepoint dài, code cache đầy, {{System.gc()}} trong thư viện, heap dump); đo bằng GC log + JFR + load test trước khi đưa lên production.
+
+### Hiểu nhanh
+Giả sử bạn vận hành một quầy thu ngân phải phục vụ mỗi khách dưới 10 giây. G1 giống việc thỉnh thoảng đóng quầy vài chục giây để dọn dẹp; ZGC giống có thêm một nhân viên vừa dọn vừa để quầy mở, chỉ chặn khách một tích tắc. Nhưng dù dọn dẹp tốt đến đâu, khách vẫn có thể chờ lâu nếu máy POS treo (safepoint dài), máy in hết giấy (code cache đầy) hay có ai đó bấm nút "kiểm kê toàn bộ" (System.gc). Muốn đạt 10 giây phải xử lý tất cả nguồn chờ, không chỉ việc dọn dẹp.
+
+### Thuật ngữ
+- **p99**: 99% request nhanh hơn con số này; đo được "đuôi" chậm mà trung bình che mất.
+- **Live set**: lượng dữ liệu còn sống sau một lần GC đầy đủ, tức dữ liệu thật app cần.
+- **Generational ZGC**: ZGC tách young/old (JEP 439, JDK 21), dọn object chết trẻ rẻ hơn.
+- **Concurrent GC**: GC làm việc song song với app, tốn CPU nhưng ít dừng app.
+- **Allocation stall**: ZGC buộc thread cấp phát phải chờ vì GC dọn không kịp tốc độ tạo rác.
+- **TTSP**: thời gian chờ mọi thread tới safepoint.
+- **Code cache**: vùng chứa mã máy JIT; đầy thì JIT ngừng.
+- **Deoptimization**: bỏ mã đã tối ưu, quay về chạy chậm.
 
 ### Quyết định chính
 
 | Yếu tố | Chọn | Lý do |
 |---|---|---|
-| GC | ZGC generational (-XX:+UseZGC -XX:+ZGenerational) | pause < 1 ms, gần như không phụ thuộc heap size |
-| Heap size | 1.5–2x live set | giảm tần suất concurrent mark cycle |
-| young size | để ZGC gen tự điều chỉnh | gen ZGC tự quản young |
-| Allocation rate | đo từng request, giảm String concat/DTO copy | concurrent GC vẫn tốn CPU khi alloc cao |
+| GC | Generational ZGC | pause dưới 1 ms, gần như không phụ thuộc heap size |
+| Heap size | 1.5–2x live set | đủ khoảng trống để GC concurrent theo kịp |
+| young size | để ZGC tự điều chỉnh | generational ZGC tự quản young |
+| Allocation rate | đo theo request, giảm String concat/copy DTO | GC concurrent vẫn tốn CPU khi tạo rác nhiều |
 
 ### Triển khai từng bước
-1. Java 21+ + flag trên; pause thường 0.1–0.5 ms; cần đủ core vì ZGC dùng CPU concurrent (thuộc cùng máy với app).
-2. Heap: không max trần theo RAM; 1.5–2× live set đủ trong đa số case (đo live set qua JFR/MAT).
-3. Trừ các nguồn STW ngoài GC:
-   - Safepoint: {{-Xlog:safepoint}} — kiểm counted loop dài gây TTSP tăng.
-   - Code cache full: JIT ngừng compile, code chạy chậm dần — reserve đủ.
-   - System.gc() từ third-party: với ZGC, System.gc() chạy một chu kỳ concurrent (chỉ thread gọi phải chờ); với G1 dùng {{-XX:+ExplicitGCInvokesConcurrent}} để tránh Full GC STW, hoặc {{-XX:+DisableExplicitGC}}.
-   - HeapDumpOnOutOfMemoryError: dump có thể pause hàng chục giây — nhớ khi gặp.
-4. Đo: GC log (pause p99), JFR allocation profile và Safepoint events; load test sinh burst 2× peak trước khi chuyển production.
+1. **Bật ZGC trên Java 21+**: pause thường 0.1–0.5 ms. Vì sao cần đủ core: GC thread chạy song song, giành CPU với app; CPU sát trần thì ZGC dọn không kịp và gây allocation stall — tệ hơn cả pause.
+2. **Kích thước heap**: không đặt bằng toàn bộ RAM; 1.5–2× live set đủ cho đa số trường hợp (đo live set qua JFR {{jdk.GCHeapSummary}} hoặc heap sau GC). Heap quá sát live set thì GC chạy liên tục.
+3. **Loại các nguồn STW ngoài GC**:
+   - Safepoint: {{-Xlog:safepoint}} — kiểm tra TTSP; vòng lặp counted dài có thể làm TTSP tăng.
+   - Code cache đầy: JIT ngừng compile, code chạy chậm dần — reserve đủ, theo dõi {{jdk.CodeCacheFull}}.
+   - {{System.gc()}} từ thư viện: với ZGC, nó chạy một chu kỳ concurrent (chỉ thread gọi phải chờ); với G1 dùng {{-XX:+ExplicitGCInvokesConcurrent}} để tránh Full GC STW, hoặc {{-XX:+DisableExplicitGC}}.
+   - Heap dump ({{HeapDumpOnOutOfMemoryError}}, jcmd): dump có thể dừng hàng chục giây — nhớ điều này khi gặp spike khó hiểu.
+4. **Đo**: GC log (phân bố pause), JFR (allocation, safepoint, deoptimization) và load test với burst 2× peak trước khi lên production.
 
 ~~~bash
+# Java 21
 -XX:+UseZGC -XX:+ZGenerational -Xlog:gc*,safepoint:file=gc.log:time
 # JDK 23+: chỉ cần -XX:+UseZGC (generational là mặc định, JDK 24 bỏ flag ZGenerational)
 ~~~
 
-### Khi không nên ZGC
-- Heap nhỏ (< 4 GB) và ưu tiên throughput: G1 đủ tốt, ZGC tốn thêm CPU cho concurrent threads.
-- Batch job (không quan tâm latency): Parallel GC cho throughput cao hơn.
+~~~text
+Ngân sách p99 = 10 ms cho một request
+  xử lý nghiệp vụ + DB      ~6 ms
+  mạng / serialize          ~2 ms
+  GC pause (ZGC)            ~0.5 ms
+  dự phòng safepoint, JIT   ~1.5 ms
+Một lần Full GC 800 ms của G1 làm vỡ ngân sách cho mọi request đang chạy
+~~~
 
-> Senior tip: target p99 < 10 ms cần đo cả 3 tầng: GC pause (GC log), runtime event (JFR), scheduling/network (tracing ở tầng APM). ZGC giảm pause GC nhưng spike vẫn có thể đến từ safepoint, deopt, thread scheduling — đo từng tầng để không gán sai nguyên nhân cho GC.`,
+### Khi không nên dùng ZGC
+- Heap nhỏ (dưới vài GB) và ưu tiên throughput: G1 đủ tốt, ZGC tốn thêm CPU cho thread concurrent.
+- Batch job không quan tâm latency: Parallel GC cho throughput cao hơn.
+- CPU quota đã sát trần ở peak: cần thêm CPU trước khi đổi collector.
+
+### Lỗi hay gặp
+- **Đổi sang ZGC rồi thấy p99 không giảm**: nguồn chậm thật là DB, lock hay TTSP. Cách tránh: đo từng tầng trước khi gán lỗi cho GC.
+- **Allocation stall**: log có "Allocation Stall", thread bị chặn dù pause rất ngắn. Cách tránh: thêm heap hoặc CPU, giảm allocation rate.
+- **Vẫn để -XX:+ZGenerational khi lên JDK 24+**: cảnh báo flag lỗi thời. Cách tránh: dọn flag khi nâng JDK.
+- **Đo p99 trên benchmark ngắn**: chưa thấy chu kỳ GC old. Cách tránh: load test vài giờ.
+
+### Trả lời miệng 1 phút
+"Với p99 dưới 10 ms, tôi chọn Generational ZGC trên Java 21 trở lên, vì nó làm marking và compaction đồng thời, pause dưới một mili giây gần như không phụ thuộc heap. Heap tôi đặt khoảng 1.5 tới 2 lần live set để GC có chỗ thở, và đảm bảo đủ CPU vì GC thread chạy song song với app, thiếu CPU sẽ gây allocation stall. Nhưng GC chỉ là một nguồn; tôi còn kiểm tra time-to-safepoint, code cache, System.gc trong thư viện và heap dump. Trade-off là ZGC tốn thêm CPU và throughput có thể thấp hơn G1 một chút. Tôi luôn đo bằng GC log, JFR và load test có burst trước khi đưa lên production."
+
+> Senior tip: target p99 dưới 10 ms cần đo cả 3 tầng: GC pause (GC log), runtime event (JFR), scheduling/network (tracing ở tầng APM). ZGC giảm pause GC nhưng spike vẫn có thể đến từ safepoint, deopt, thread scheduling — đo từng tầng để không gán sai nguyên nhân cho GC.`,
   follow: [
     'ZGC generational khác ZGC non-generation thế nào, vì sao thêm?',
     'Các nguồn STW ngoài GC bạn đã gặp trong production?'
@@ -2311,6 +2715,33 @@ byte[100]: 12 + 4 (length) + 100 = 116 -> 120 B
   level: 'senior',
   q: 'JFR + JMC: bật continuous profiling trên production, overhead, các event quan trọng cần theo dõi?',
   a: `**Tóm tắt:** JFR (Java Flight Recorder) là bộ ghi sự kiện tích hợp sẵn trong HotSpot, miễn phí từ JDK 11 (và đã backport về 8u262). Nó ghi vào buffer vòng trong bộ nhớ và đĩa với overhead rất thấp: cấu hình {{default}} được thiết kế ở mức khoảng 1%, đủ để chạy liên tục 24/7; cấu hình {{profile}} chi tiết hơn (khoảng 2%) dành cho các đợt điều tra ngắn. Bật bằng {{-XX:StartFlightRecording}} kèm {{maxage}}/{{maxsize}} để luôn có "hộp đen" vài giờ gần nhất. Khi có sự cố, dùng {{jcmd <pid> JFR.dump}} lấy dữ liệu ra rồi mở bằng JMC hoặc công cụ dòng lệnh {{jfr}}.
+
+### Hiểu nhanh
+JFR giống **hộp đen máy bay** gắn sẵn trong JVM: lúc nào cũng ghi lại những gì xảy ra (GC, lock, I/O chậm, method nóng) vào một cuộn băng có giới hạn, cũ thì tự xoá. Bình thường không ai mở ra xem; chỉ khi có sự cố (p99 tăng lúc 2 giờ sáng) ta mới "rút hộp đen" bằng {{JFR.dump}} để đọc lại vài giờ trước đó. JMC là máy đọc hộp đen, vẽ ra biểu đồ và tự chỉ điểm vấn đề. Nhờ chi phí rất thấp nên có thể để nó chạy suốt đời process.
+
+### Thuật ngữ
+- **JFR (Java Flight Recorder)**: bộ ghi sự kiện tích hợp trong HotSpot, ghi file .jfr.
+- **JMC (JDK Mission Control)**: ứng dụng desktop mở và phân tích file .jfr.
+- **Event**: một bản ghi có thời điểm, thời lượng, thread và có thể kèm stack trace (ví dụ một lần GC pause).
+- **Recording**: một phiên ghi với cấu hình riêng (tên, settings, maxage, maxsize).
+- **Settings default / profile**: hai cấu hình có sẵn; default nhẹ cho chạy liên tục, profile chi tiết cho điều tra ngắn.
+- **Threshold**: chỉ ghi event kéo dài hơn ngưỡng (ví dụ lần chờ lock trên 20 ms).
+- **Continuous profiling**: profiling chạy liên tục trên production thay vì chỉ bật khi có sự cố.
+- **Event Streaming**: API đọc event JFR theo thời gian thực từ trong chính ứng dụng (JDK 14+).
+
+### JFR hoạt động thế nào (từng bước)
+1. JVM phát event ở những chỗ nó vốn đã biết (bắt đầu/kết thúc GC, safepoint, class load) — gần như miễn phí vì không cần đo thêm.
+2. Event được ghi vào **buffer cục bộ của từng thread**, không khoá chung. Vì sao: tránh tranh chấp giữa các thread.
+3. Buffer đầy thì được đẩy vào buffer toàn cục, rồi định kỳ ghi xuống **file chunk** trên đĩa.
+4. Chunk cũ hơn {{maxage}} hoặc vượt {{maxsize}} bị xoá — nên đĩa không bao giờ đầy với recording đã giới hạn.
+5. Khi cần, {{JFR.dump}} gom các chunk hiện có thành một file .jfr để phân tích.
+
+~~~text
+thread-1 buffer --+
+thread-2 buffer --+--> global buffer --> chunk 10:00 | chunk 10:10 | ... | chunk 16:00
+thread-N buffer --+                       (chunk cũ hơn maxage=6h bị xoá)
+                                         jcmd JFR.dump --> incident.jfr --> JMC / jfr
+~~~
 
 ### Bật trên production
 ~~~bash
@@ -2354,6 +2785,15 @@ jcmd <pid> JFR.start name=probe settings=profile duration=2m filename=/data/jfr/
 - Chỉ bật khi đã có sự cố thì quá muộn: sự cố thoáng qua không tái hiện lại được. Giá trị lớn nhất của JFR là hộp đen chạy sẵn.
 - File JFR chứa system property, biến môi trường và tham số dòng lệnh. Secret truyền qua biến môi trường sẽ nằm trong file, nên phải xử lý file như dữ liệu nhạy cảm.
 
+### Lỗi hay gặp
+- **Recording không giới hạn**: triệu chứng là đĩa pod đầy sau vài ngày. Cách tránh: luôn đặt {{maxage}} và {{maxsize}}.
+- **Dùng settings=profile chạy liên tục**: overhead cao hơn cần thiết, nhất là allocation và lock. Cách tránh: default cho chạy nền, profile chỉ vài phút khi điều tra.
+- **File .jfr nằm trong filesystem tạm của container**: pod restart là mất. Cách tránh: dump ra volume bền và copy đi ngay.
+- **Chia sẻ file JFR tuỳ tiện**: lộ biến môi trường chứa secret. Cách tránh: xử lý như dữ liệu nhạy cảm, không truyền secret qua tham số dòng lệnh.
+
+### Trả lời miệng 1 phút
+"JFR là bộ ghi sự kiện có sẵn trong JDK, miễn phí từ JDK 11. Event được ghi vào buffer theo từng thread rồi đẩy xuống các chunk trên đĩa, chunk cũ tự xoá theo maxage và maxsize, nên tôi để nó chạy liên tục như hộp đen với cấu hình default, overhead khoảng 1%. Khi có sự cố, tôi gọi jcmd JFR.dump để lấy vài giờ gần nhất rồi mở bằng JMC, hoặc dùng lệnh jfr print và jfr view ngay trên server. Event tôi xem đầu tiên là GC pause, safepoint, execution sample, lock và socket I/O. Trade-off là cấu hình profile chi tiết hơn nhưng tốn hơn, nên chỉ chạy ngắn. Tôi còn nối alert với job tự dump đúng pod đang có p99 cao."
+
 > Senior tip: tôi bật JFR default với {{maxage=6h}} trên mọi pod và nối với alerting: khi p99 vượt ngưỡng, một job tự gọi {{JFR.dump}} trên đúng pod đó. Nhờ vậy những spike 30 giây lúc 2 giờ sáng vẫn có dữ liệu để đọc vào sáng hôm sau, thường lộ ra là safepoint dài, lock trên connection pool, hoặc một đợt allocation lớn do batch.`,
   follow: [
     'JFR và async-profiler khác nhau thế nào, khi nào dùng cái nào?',
@@ -2373,6 +2813,19 @@ jcmd <pid> JFR.start name=probe settings=profile duration=2m filename=/data/jfr/
   level: 'senior',
   q: 'Đọc heap dump: dominator tree, shallow vs retained size, GC roots path — quy trình tìm leak bằng MAT?',
   a: `**Tóm tắt:** Shallow size là kích thước của riêng object (header + field). Retained size là lượng bộ nhớ được giải phóng nếu object đó bị thu hồi: chính nó cộng với mọi object chỉ đến được qua nó. Dominator tree sắp xếp object theo quan hệ "mọi đường từ GC root tới B đều đi qua A", nên object đứng đầu một nhánh có retained size lớn chính là thứ đang giữ bộ nhớ. Quy trình: lấy dump đúng lúc → Leak Suspects → Dominator Tree sắp theo retained → Path to GC Roots (loại weak/soft) để biết **ai** đang giữ → đối chiếu với code. Leak tăng chậm thì so sánh hai dump cách nhau vài giờ.
+
+### Hiểu nhanh
+Heap dump giống một bức ảnh chụp toàn bộ kho hàng kèm sơ đồ "ai đang giữ món nào". Shallow size là trọng lượng của riêng chiếc hộp; retained size là trọng lượng chiếc hộp **cộng mọi thứ chỉ có nó đang giữ** — nếu bỏ chiếc hộp đi thì cả đống đồ đó cũng được dọn. Dominator tree trả lời câu hỏi: "Nếu tôi cắt sợi dây này, bao nhiêu đồ sẽ rơi?". Path to GC Roots là lần ngược sợi dây lên tới cái móc cố định trên tường (static field, thread) để biết ai buộc nó vào đó.
+
+### Thuật ngữ
+- **Heap dump (.hprof)**: ảnh chụp mọi object và reference trong heap.
+- **Shallow size**: kích thước bản thân object (header + field), không tính object nó trỏ tới.
+- **Retained size**: bộ nhớ được giải phóng nếu object đó bị thu, gồm mọi object chỉ đến được qua nó.
+- **Dominator**: A dominate B khi mọi đường từ GC root tới B đều đi qua A.
+- **GC root**: điểm xuất phát chắc chắn sống: static field, biến trên stack thread, JNI reference...
+- **OQL**: ngôn ngữ truy vấn kiểu SQL trên heap dump trong MAT.
+- **Histogram**: bảng số instance và tổng byte theo class.
+- **Weak/Soft reference**: reference không ngăn GC thu object, nên không phải nguyên nhân leak.
 
 ### Lấy heap dump
 ~~~bash
@@ -2415,6 +2868,15 @@ Retained của một Session: khoảng 4 KB
 - Dump 20 GB không mở được trên laptop: chạy MAT headless ({{ParseHeapDump.sh}}) trên máy RAM lớn, tăng {{-Xmx}} trong MemoryAnalyzer.ini, tạo index và report trước rồi mới mở GUI.
 - Dump nằm trên filesystem của container sẽ mất khi pod restart. {{HeapDumpPath}} phải trỏ vào volume còn tồn tại sau restart.
 
+### Lỗi hay gặp
+- **Sắp xếp theo shallow size**: đầu bảng toàn {{byte[]}}, {{char[]}}, {{String}} và không biết ai giữ. Cách tránh: sắp theo retained trong Dominator Tree.
+- **Không loại weak/soft khi tìm Path to GC Roots**: ra đường đi qua {{WeakHashMap}} hay cache soft, kết luận sai. Cách tránh: chọn "exclude weak/soft references".
+- **Dump đúng lúc pod đang phục vụ**: STW vài giây, timeout dây chuyền. Cách tránh: rút pod khỏi load balancer trước.
+- **Gửi dump qua chat/email**: lộ dữ liệu khách hàng. Cách tránh: lưu chỗ mã hoá, giới hạn quyền, xoá sau khi xong.
+
+### Trả lời miệng 1 phút
+"Shallow size là kích thước của riêng object, retained size là lượng bộ nhớ được giải phóng nếu object đó biến mất. Dominator tree xây dựa trên quan hệ mọi đường từ GC root tới B đều đi qua A, nên object đứng đầu với retained lớn chính là kẻ giữ bộ nhớ, thường là một collection có shallow rất nhỏ. Quy trình của tôi: lấy dump đúng lúc, mở Leak Suspects, sang Dominator Tree sắp theo retained, rồi Path to GC Roots loại weak và soft để biết field nào đang giữ, sau đó đối chiếu code. Với leak chậm tôi so sánh histogram của hai dump cách nhau vài giờ. Trade-off là dump dừng JVM và chứa dữ liệu nhạy cảm, nên tôi làm trên pod đã rút traffic và xử lý file cẩn thận."
+
 > Senior tip: với leak tăng chậm, tôi không dump liên tục trên production vì mỗi lần là một lần STW. Tôi theo dõi xu hướng old gen sau GC qua metric, rồi chỉ chụp hai dump trên một pod đã rút khỏi traffic, cách nhau vài giờ. So sánh histogram giữa hai dump gần như luôn chỉ thẳng vào class đang tích tụ, sau đó Path to GC Roots cho biết đoạn code nào giữ nó.`,
   follow: [
     'Khi nào bạn dùng Unreachable Objects Histogram?',
@@ -2434,6 +2896,33 @@ Retained của một Session: khoảng 4 KB
   level: 'senior',
   q: 'Native Memory Tracking: RSS cao hơn heap nhiều — metaspace, thread stack, direct buffer, code cache, glibc malloc arenas. Phân tích như thế nào?',
   a: `**Tóm tắt:** RSS của process Java gồm heap, cộng native memory do JVM cấp phát (metaspace, code cache, thread stack, cấu trúc dữ liệu của GC, symbol, direct buffer...), cộng phần native mà JVM không theo dõi (thư viện JNI, overhead và phân mảnh của malloc). NMT ({{-XX:NativeMemoryTracking=summary}}) chỉ thấy phần JVM tự cấp phát. Quy trình: bật NMT, lấy baseline, sau vài giờ xem {{summary.diff}} để biết hạng mục nào tăng. Nếu tổng committed của NMT ổn định mà RSS vẫn tăng, hãy nghi phần nằm ngoài NMT, thường là glibc malloc arena hoặc thư viện native.
+
+### Hiểu nhanh
+Hãy coi RSS là hoá đơn tổng tiền thuê nhà của JVM. Heap chỉ là tiền phòng chính; còn tiền điện (thread stack), tiền nước (metaspace), phí gửi xe (direct buffer), phí quản lý (cấu trúc của GC). NMT là bảng kê chi tiết mà **chính JVM tự ghi**, nên nó chỉ thấy các khoản JVM tự chi. Những khoản do "người ở ghép" chi (thư viện native, glibc malloc giữ lại bộ nhớ) thì không có trong bảng kê; nếu tổng hoá đơn tăng mà bảng kê đứng yên thì thủ phạm nằm ngoài JVM.
+
+### Thuật ngữ
+- **RSS**: lượng RAM thật process đang chiếm, con số Kubernetes dùng để OOMKill.
+- **NMT (Native Memory Tracking)**: tính năng HotSpot theo dõi bộ nhớ native do chính JVM cấp phát.
+- **Reserved / committed**: reserved là vùng địa chỉ đã giữ chỗ; committed là phần đã được cấp bộ nhớ thật (gần với RSS hơn).
+- **Metaspace**: vùng native chứa metadata class.
+- **Direct buffer**: bộ nhớ ngoài heap cho NIO/Netty.
+- **glibc malloc arena**: vùng quản lý bộ nhớ riêng mà thư viện C cấp cho các thread để giảm tranh chấp; giữ lại bộ nhớ đã free.
+- **pmap**: lệnh Linux liệt kê các vùng nhớ của process và phần đang resident.
+- **jemalloc**: allocator thay thế cho glibc malloc, thường ít phân mảnh hơn.
+
+### Quy trình phân tích (từng bước)
+1. Bật NMT lúc khởi động. Vì sao: NMT phải theo dõi từ lần cấp phát đầu tiên, không bật giữa chừng được.
+2. Khi app đã ổn định, lấy {{baseline}}.
+3. Chờ vài giờ dưới tải thật, chạy {{summary.diff}} để thấy hạng mục nào tăng.
+4. So tổng committed của NMT với RSS: khớp thì vấn đề nằm trong JVM; RSS cao hơn nhiều và tiếp tục tăng thì nhìn ra ngoài NMT.
+5. Xử lý theo từng hạng mục như bảng dưới.
+
+~~~text
+RSS 3.2 GB
+= Java Heap committed       2.0 GB
++ NMT ngoài heap            0.7 GB  (Thread 0.3, Class 0.2, Code 0.1, GC 0.1)
++ phần NMT không thấy       0.5 GB  (malloc arena, thư viện native)  <- nếu phần này tăng mãi, nghi glibc
+~~~
 
 ### Các hạng mục chính trong NMT
 | Hạng mục | Nội dung | Tăng bất thường khi |
@@ -2472,6 +2961,15 @@ pmap -x <pid> | sort -k3 -n | tail -20
 ### Container
 Trên Kubernetes, pod bị OOMKilled (exit 137) khi RSS vượt memory limit, và lúc đó JVM không ném OutOfMemoryError nào. Vì vậy heap chỉ nên chiếm một phần của limit, phần còn lại để dành cho các hạng mục trên.
 
+### Lỗi hay gặp
+- **Tìm leak trong heap dump khi heap vẫn ổn**: mất cả ngày vô ích. Cách tránh: so RSS với heap trước, chênh lớn thì đi hướng native.
+- **Bật NMT detail trên production lâu dài**: overhead đáng kể. Cách tránh: summary cho chạy nền, detail chỉ khi cần biết ai cấp phát.
+- **Tăng memory limit để chữa OOMKilled**: leak native vẫn tăng, chỉ chết chậm hơn. Cách tránh: dùng summary.diff tìm hạng mục tăng.
+- **Không close GZIPInputStream/Inflater**: RSS tăng dần ngoài NMT. Cách tránh: try-with-resources cho mọi stream nén.
+
+### Trả lời miệng 1 phút
+"RSS của Java gồm heap, phần native do JVM cấp phát như metaspace, thread stack, code cache, cấu trúc GC và direct buffer, cộng phần native ngoài tầm theo dõi của JVM như thư viện JNI và glibc malloc. Tôi bật Native Memory Tracking mức summary lúc khởi động, lấy baseline khi app ổn định, vài giờ sau xem summary.diff để biết hạng mục nào tăng: Thread tăng thì đếm thread, Class tăng thì nghi classloader leak, Other tăng thì là direct buffer. Nếu NMT đứng yên mà RSS vẫn tăng thì tôi nghi malloc arena và thử MALLOC_ARENA_MAX hoặc jemalloc. Trade-off là NMT tốn chút overhead, detail tốn nhiều hơn. Trong container tôi luôn chừa phần native khi đặt heap."
+
 > Senior tip: công thức tôi dùng là RSS = heap + phần NMT ngoài heap + phần ngoài NMT, và luôn tính đủ ba con số trước khi kết luận. Case hay gặp: pod 4 GB bị OOMKilled dù heap chỉ 2,5 GB, NMT cho thấy Thread chiếm vài trăm MB vì một HTTP client tạo thread mới cho mỗi request. Trường hợp đó phải sửa code, tăng memory limit chỉ làm lỗi xảy ra chậm hơn.`,
   follow: [
     'Vì sao glibc malloc arena làm RSS phình, MALLOC_ARENA_MAX đánh đổi gì?',
@@ -2491,6 +2989,33 @@ Trên Kubernetes, pod bị OOMKilled (exit 137) khi RSS vượt memory limit, v�
   level: 'lead',
   q: 'Bộ JVM flags baseline cho service Spring Boot trên container: heap %, GC, OOM dump, GC log, exit on OOM — lý do từng flag?',
   a: `**Tóm tắt:** Baseline của tôi cho Spring Boot 3 trên Java 21 trong container: để JVM tự đọc memory limit của cgroup và đặt heap theo phần trăm ({{-XX:MaxRAMPercentage}} khoảng 60–75), chọn GC một cách tường minh (G1, hoặc Generational ZGC khi cần latency thấp), bật GC log có xoay vòng, heap dump khi OOM vào volume bền, {{-XX:+ExitOnOutOfMemoryError}} để process chết hẳn thay vì sống dở, và JFR chạy nền. Không thêm flag nào mà không đo được tác dụng của nó.
+
+### Hiểu nhanh
+Bộ JVM flags baseline giống **danh sách kiểm tra trước khi cất cánh** của phi công: không phải để bay nhanh hơn, mà để khi có sự cố thì máy bay phản ứng đúng và để lại đủ dữ liệu điều tra. Heap theo phần trăm giống chia hành lý theo cân nặng cho phép của vali; heap dump và JFR giống hộp đen; ExitOnOutOfMemoryError giống quy tắc "động cơ hỏng thì hạ cánh ngay, đừng cố bay tiếp". Mỗi flag phải trả lời được câu hỏi "nó bảo vệ mình khỏi điều gì?".
+
+### Thuật ngữ
+- **cgroup**: cơ chế Linux giới hạn CPU/RAM cho container; JVM đọc limit từ đây.
+- **MaxRAMPercentage / InitialRAMPercentage**: heap tối đa / ban đầu tính theo phần trăm memory limit.
+- **Server-class machine**: máy JVM coi là "server" (từ 2 CPU và khoảng 1792 MB RAM trở lên); dưới mức đó JVM chọn SerialGC.
+- **Unified logging (-Xlog)**: hệ thống log của JVM từ JDK 9, có xoay vòng file.
+- **ExitOnOutOfMemoryError**: JVM thoát ngay khi gặp OutOfMemoryError đầu tiên.
+- **JAVA_TOOL_OPTIONS**: biến môi trường JVM tự đọc để thêm flag, tiện cho container.
+- **restartPolicy**: quy tắc Kubernetes khởi động lại container khi process thoát.
+- **Graceful shutdown**: dừng nhận request mới và chờ request đang chạy xong rồi mới tắt.
+
+### Khi pod khởi động, JVM quyết định thế nào (từng bước)
+1. Đọc memory/CPU limit từ cgroup. Vì sao quan trọng: không đọc thì JVM tưởng có cả RAM của node.
+2. Tính heap = limit × MaxRAMPercentage (trừ khi có Xmx).
+3. Chọn GC: có flag thì theo flag; không có thì G1 nếu là server-class, ngược lại SerialGC.
+4. Mở GC log, JFR, NMT theo flag — chỉ bật được ở bước này, không bật giữa chừng (NMT) hoặc phải gọi jcmd sau (JFR).
+5. Khi OOM: ghi heap dump vào HeapDumpPath, rồi thoát (exit code 3) để kubelet khởi động lại.
+
+~~~text
+Pod limit 2 GiB, 2 vCPU, MaxRAMPercentage=70
+heap max  ~ 1434 MiB
+native    ~ 614 MiB  (metaspace, thread, code cache, direct, GC, malloc)
+GC        = G1 (vì có -XX:+UseG1GC; nếu 1 vCPU mà không ghi rõ -> SerialGC)
+~~~
 
 ### Bộ flags
 ~~~bash
@@ -2533,6 +3058,15 @@ Thường truyền qua biến môi trường {{JAVA_TOOL_OPTIONS}} hoặc ENTRYP
 - Kubernetes: memory request = limit cho service quan trọng; {{terminationGracePeriodSeconds}} lớn hơn thời gian graceful shutdown.
 - Kiểm tra JVM thực sự thấy gì: {{java -XX:+PrintFlagsFinal -version}} trong image, hoặc {{jcmd <pid> VM.flags}} khi đang chạy.
 
+### Lỗi hay gặp
+- **Không ghi rõ GC trên pod 1 vCPU**: triệu chứng là pause dài bất ngờ, log khởi động cho thấy SerialGC. Cách tránh: luôn đặt {{-XX:+UseG1GC}} hoặc ZGC.
+- **Không có ExitOnOutOfMemoryError**: service "sống dở", health check xanh nhưng scheduler đã chết. Cách tránh: thoát và để orchestrator restart.
+- **HeapDumpPath trên filesystem tạm**: dump mất khi container restart. Cách tránh: mount volume bền, đủ dung lượng.
+- **Đặt cả Xmx và MaxRAMPercentage**: Xmx thắng, phần trăm vô tác dụng, đổi limit pod không có hiệu lực. Cách tránh: chỉ dùng một cách.
+
+### Trả lời miệng 1 phút
+"Baseline của tôi cho Spring Boot trên container là: heap theo phần trăm memory limit, khoảng 70%, Initial bằng Max để lộ thiếu RAM ngay khi khởi động; ghi rõ G1 hoặc Generational ZGC vì pod ít CPU sẽ âm thầm chạy SerialGC; GC log có xoay vòng; heap dump khi OOM vào volume bền; ExitOnOutOfMemoryError để process chết hẳn thay vì sống dở; JFR chạy nền và NMT summary. Mỗi flag phải có lý do: hoặc bảo vệ khỏi OOMKilled, hoặc để lại bằng chứng, hoặc tránh trạng thái hỏng ngầm. Trade-off là heap lớn hơn thì ít chỗ cho native. Tôi không copy flag từ blog cũ, và luôn kiểm tra log khởi động hoặc jcmd VM.flags để xem JVM thực sự chọn gì."
+
 > Senior tip: con số 70% không phải chân lý. Tôi chạy load test với NMT bật, đo RSS lúc cao điểm rồi mới chỉnh: service nhiều thread hoặc dùng Netty cần chừa nhiều hơn (khoảng 60%), service ít thread với heap lớn có thể lên 75–80%. Và tôi luôn đọc log khởi động để xem JVM thực sự chọn GC nào và heap bao nhiêu, vì đã nhiều lần gặp pod 1 vCPU âm thầm chạy SerialGC.`,
   follow: [
     'ExitOnOutOfMemoryError và CrashOnOutOfMemoryError khác nhau thế nào?',
@@ -2551,6 +3085,33 @@ Thường truyền qua biến môi trường {{JAVA_TOOL_OPTIONS}} hoặc ENTRYP
   level: 'mid',
   q: 'Reference types: Soft/Weak/Phantom, {{ReferenceQueue}}, vì sao SoftReference cache là ý tồi?',
   a: `**Tóm tắt:** Strong reference giữ object sống. SoftReference chỉ bị GC dọn khi bộ nhớ căng, và JVM đảm bảo đã dọn hết soft reference trước khi ném OutOfMemoryError. WeakReference bị dọn ở lần GC đầu tiên thấy object chỉ còn weak reference. PhantomReference có {{get()}} luôn trả null, chỉ dùng để biết "object đã chết" qua {{ReferenceQueue}} và dọn tài nguyên ngoài heap; từ JDK 9 nên dùng {{java.lang.ref.Cleaner}} thay vì tự viết. Dùng SoftReference làm cache là ý tồi vì việc evict do GC quyết định theo áp lực heap, không theo kích thước hay giá trị của entry: cache luôn lấp đầy heap, rồi bị xả hàng loạt đúng lúc hệ thống căng nhất.
+
+### Hiểu nhanh
+Hãy tưởng tượng object là một quả bóng bay, reference là sợi dây. **Strong** là bạn nắm chặt dây: bóng không bay đi được. **Soft** là buộc dây lỏng vào ghế: chỉ khi phòng quá chật (heap căng) người dọn mới cắt. **Weak** là chỉ dán băng keo: người dọn đi qua lần đầu là gỡ. **Phantom** là chỉ còn tấm ảnh chụp quả bóng: bạn không lấy lại được bóng, chỉ dùng để biết "bóng đã bay đi" mà dọn dẹp đồ đi kèm. Dùng SoftReference làm cache giống chất đồ đầy phòng rồi trông chờ người dọn tự quyết vứt món nào: họ vứt hàng loạt đúng lúc phòng đông khách nhất.
+
+### Thuật ngữ
+- **Strong reference**: reference thông thường, giữ object sống.
+- **SoftReference**: GC chỉ thu khi bộ nhớ căng, chắc chắn thu trước khi ném OOM.
+- **WeakReference**: GC thu ở lần đầu thấy object chỉ còn weak reference.
+- **PhantomReference**: không lấy được object ({{get()}} luôn null), chỉ để nhận tín hiệu object đã chết.
+- **ReferenceQueue**: hàng đợi GC đưa Reference object vào sau khi referent bị thu.
+- **Referent**: object mà Reference trỏ tới.
+- **Cleaner**: API JDK 9+ đăng ký hành động dọn dẹp chạy khi object chết.
+- **W-TinyLFU**: thuật toán evict của Caffeine, giữ entry được truy cập thường xuyên.
+
+### Vòng đời một WeakReference có queue (từng bước)
+1. Tạo {{new WeakReference<>(obj, queue)}}; obj vẫn còn strong reference ở nơi khác nên sống bình thường.
+2. Strong reference cuối cùng bị bỏ; giờ obj chỉ còn weak.
+3. Lần GC kế tiếp phát hiện điều đó, xoá liên kết ({{get()}} trả null) và thu obj. Vì sao ngay lần đầu: weak không có quyền giữ object.
+4. GC đưa chính object WeakReference vào queue.
+5. Thread dọn dẹp {{poll()}} queue, xoá entry tương ứng khỏi map — đúng cách {{WeakHashMap}} tự dọn.
+
+~~~text
+strong:  [code] ==> obj          (luôn sống)
+soft:    [ref] --> obj          (sống tới khi heap căng)
+weak:    [ref] --> obj          (chết ở GC kế tiếp nếu không còn strong)
+phantom: [ref] ..x obj          (get() = null; chỉ báo tin qua queue)
+~~~
 
 ### So sánh
 | Loại | Khi nào bị dọn | get() | Dùng cho |
@@ -2597,6 +3158,15 @@ Thay bằng Caffeine với {{maximumSize}} hoặc {{maximumWeight}}, {{expireAft
 - "WeakHashMap là cache tốt": nó weak ở **key**, không phải value. Key là String literal (được intern) sẽ không bao giờ bị dọn, còn key vừa tạo mới có thể mất ngay sau lần GC kế tiếp.
 - "PhantomReference.get() trả object để dọn": luôn trả null; dữ liệu cần để dọn phải lưu riêng.
 
+### Lỗi hay gặp
+- **Cache bằng SoftReference**: triệu chứng là heap luôn gần đầy, GC dày, và cache trống trơn đúng giờ cao điểm khiến DB quá tải. Cách tránh: Caffeine có {{maximumSize}} và metric.
+- **Dùng WeakHashMap làm cache theo key String literal**: entry không bao giờ bị xoá (literal được intern, luôn reachable). Cách tránh: chỉ dùng WeakHashMap khi key là object có vòng đời do code khác quản lý.
+- **Action của Cleaner tham chiếu tới this**: object không bao giờ chết, tài nguyên native rò rỉ. Cách tránh: action là static nested class/record chỉ giữ dữ liệu cần dọn.
+- **Dựa vào Cleaner/finalize thay cho close()**: tài nguyên được trả rất muộn hoặc không bao giờ. Cách tránh: try-with-resources là đường chính.
+
+### Trả lời miệng 1 phút
+"Java có bốn mức reference. Strong giữ object sống. Soft chỉ bị thu khi heap căng và chắc chắn bị thu trước OOM. Weak bị thu ở lần GC đầu tiên thấy object chỉ còn weak, dùng trong WeakHashMap hay gắn metadata cho object của người khác. Phantom thì get luôn trả null, chỉ để biết object đã chết qua ReferenceQueue và dọn tài nguyên native; từ JDK 9 tôi dùng Cleaner thay vì tự viết. Tôi tránh SoftReference cache vì việc evict do GC quyết theo áp lực heap chứ không theo kích thước hay giá trị: cache làm heap luôn đầy rồi bị xả hàng loạt lúc tải cao. Thay vào đó tôi dùng Caffeine có giới hạn kích thước, expire và thống kê hit rate."
+
 > Senior tip: khi review thấy {{SoftReference}} trong code cache, tôi yêu cầu chuyển sang Caffeine có giới hạn. Một thay đổi giải quyết được cả chuyện GC dày lẫn hiện tượng "cache tự nhiên trống trơn lúc 9 giờ sáng". Weak reference thì giữ đúng chỗ của nó: gắn metadata vào object có vòng đời do code khác quản lý.`,
   follow: [
     'WeakHashMap hoạt động thế nào và khi nào dùng nó an toàn?',
@@ -2611,6 +3181,34 @@ Thay bằng Caffeine với {{maximumSize}} hoặc {{maximumWeight}}, {{expireAft
   q: 'Startup time: CDS/AppCDS, Spring AOT, CRaC, GraalVM native — so sánh và khi nào đáng làm?',
   a: `**Tóm tắt:** Có bốn hướng, đánh đổi tăng dần. (1) **CDS/AppCDS** lưu sẵn class đã parse vào một archive, giảm thời gian load class, gần như không phải đổi code. (2) **Spring AOT** sinh sẵn bean definition lúc build để bớt reflection lúc khởi động, đổi lại cấu hình bị "đóng băng" theo bản build. (3) **CRaC** chụp snapshot một JVM đã warm-up rồi restore trong khoảng vài chục tới vài trăm ms; cần JDK có hỗ trợ CRaC (Azul Zulu, BellSoft Liberica) và code phải đóng/mở lại kết nối. (4) **GraalVM native image** biên dịch AOT thành binary: khởi động tính bằng ms, RAM thấp, nhưng closed-world, build lâu và peak throughput thường thấp hơn JIT. Service chạy lâu dài: CDS là đủ (thêm AOT nếu cần). Scale-to-zero, serverless, CLI mới đáng đầu tư CRaC hoặc native.
 
+### Hiểu nhanh
+Khởi động một service Spring Boot giống mở cửa một nhà hàng mỗi sáng: phải bày bàn ghế (load class), sắp xếp nhân viên (tạo bean), và đầu bếp mất một lúc mới vào nhịp (JIT warm-up). **CDS** giống để sẵn bàn ghế đã bày từ hôm trước. **Spring AOT** giống in sẵn bảng phân công thay vì sáng nào cũng họp. **CRaC** giống chụp ảnh nhà hàng lúc đang chạy nhịp nhàng rồi "dịch chuyển tức thời" về đúng trạng thái đó. **Native image** giống xây hẳn một quầy bán đồ ăn nhanh: mở là bán ngay, nhưng thực đơn cố định, khó thay đổi.
+
+### Thuật ngữ
+- **CDS (Class Data Sharing)**: lưu class đã parse vào file archive (.jsa) để lần sau nạp nhanh hơn.
+- **AppCDS**: CDS mở rộng cho cả class của ứng dụng, không chỉ của JDK.
+- **AOT cache**: bản nâng cấp CDS từ JDK 24, lưu cả class đã load và link (và từ JDK 25 có cả method profile).
+- **Spring AOT**: bước build sinh sẵn code Java cho bean definition thay vì dùng reflection lúc chạy.
+- **CRaC (Coordinated Restore at Checkpoint)**: chụp snapshot JVM đã warm rồi khôi phục, dựa trên CRIU của Linux.
+- **Closed-world**: giả định của native image rằng mọi code có thể chạy đều biết trước lúc build.
+- **Reachability metadata**: file khai báo reflection, proxy, resource cho native image.
+- **Scale-to-zero**: tắt hết instance khi không có tải, khởi động lại khi có request.
+
+### Bốn hướng xếp theo mức đánh đổi (từng bước)
+1. **CDS/AppCDS**: gần như không đổi code; cắt phần load/verify class. Vì sao làm trước tiên: rẻ nhất, rủi ro thấp nhất.
+2. **Spring AOT**: thêm bước build, đổi lại cấu hình bị "đóng băng" theo bản build.
+3. **CRaC**: phải dùng JDK có CRaC và viết hook đóng/mở tài nguyên; được cả khởi động nhanh lẫn JIT đã warm.
+4. **Native image**: đổi toàn bộ cách build và chạy; khởi động nhanh nhất, RAM thấp nhất, nhưng peak throughput thường thấp hơn.
+
+~~~text
+Ví dụ minh hoạ thứ tự độ lớn (Spring Boot cỡ vừa, số thật tuỳ app)
+JVM thường            ~ 6-8 s
++ CDS/AOT cache       ~ 4-5 s
++ Spring AOT          ~ 3-4 s
+CRaC restore          ~ 0.1-0.3 s  (JIT đã warm)
+Native image          ~ 0.05-0.1 s (không JIT)
+~~~
+
 ### Thời gian khởi động đi đâu
 Load và verify hàng chục nghìn class; Spring quét classpath và tạo bean bằng reflection; JIT chưa warm nên code chạy bằng interpreter. CDS và AOT nhắm vào hai phần đầu. Chỉ CRaC và native image giải quyết được cả warm-up.
 
@@ -2619,7 +3217,7 @@ Load và verify hàng chục nghìn class; Spring quét classpath và tạo bean
 - Cách đơn giản (JDK 13+): chạy thử một lần với {{-XX:ArchiveClassesAtExit=app.jsa}}, các lần sau chạy với {{-XX:SharedArchiveFile=app.jsa}}. Từ JDK 19 có {{-XX:+AutoCreateSharedArchive}} để tự tạo và tự tạo lại archive.
 - Spring Boot 3.3+ hỗ trợ sẵn: giải nén jar ({{java -Djarmode=tools -jar app.jar extract}}), chạy training với {{-Dspring.context.exit=onRefresh}} để app khởi động xong thì thoát và ghi archive.
 - Archive chỉ dùng được với **đúng** bản JDK và classpath lúc tạo; lệch thì JVM bỏ qua archive (chỉ cảnh báo). Vì vậy phải tạo archive ngay trong lúc build Docker image.
-- CDS không lưu code đã JIT. Mức cải thiện thường vào khoảng vài chục phần trăm thời gian khởi động. JDK 24 (JEP 483) mở rộng thành AOT cache, lưu cả class đã được load và link sẵn.
+- CDS không lưu code đã JIT. Mức cải thiện thường vào khoảng vài chục phần trăm thời gian khởi động. JDK 24 (JEP 483) mở rộng thành AOT cache, lưu cả class đã được load và link sẵn. JDK 25 làm gọn quy trình tạo cache ({{-XX:AOTCacheOutput}}, JEP 514) và lưu thêm method profile (JEP 515) để JIT có dữ liệu ngay từ đầu, giảm cả thời gian warm-up.
 
 ### Spring AOT
 - Goal {{process-aot}} của {{spring-boot-maven-plugin}} (hoặc plugin Gradle tương ứng) sinh code Java cho bean definition lúc build. Trên JVM, bật bằng {{-Dspring.aot.enabled=true}}; với native image thì AOT là bắt buộc.
@@ -2645,6 +3243,15 @@ Load và verify hàng chục nghìn class; Spring quét classpath và tạo bean
 | Lambda, scale-to-zero | SnapStart hoặc native image |
 | CLI, job ngắn, sidecar | Native image |
 
+### Lỗi hay gặp
+- **Tạo CDS archive trên máy dev rồi copy vào image**: JDK hoặc classpath lệch, JVM bỏ qua archive, chẳng nhanh hơn chút nào. Cách tránh: tạo archive trong chính bước build Docker, kiểm tra log {{-Xlog:cds}}.
+- **Bật Spring AOT rồi đổi profile lúc chạy**: bean không như mong đợi. Cách tránh: build riêng cho từng cấu hình hoặc không dùng AOT trên JVM.
+- **CRaC snapshot giữ connection DB cũ**: sau restore mọi query lỗi. Cách tránh: implement {{org.crac.Resource}} hoặc dùng tích hợp lifecycle của Spring.
+- **Chuyển native image cho service chạy lâu**: throughput giảm, build CI chậm, lỗi reflection lúc chạy. Cách tránh: chỉ chọn khi startup/RAM thật sự là nút thắt.
+
+### Trả lời miệng 1 phút
+"Thời gian khởi động đến từ load class, Spring tạo bean bằng reflection, và JIT chưa warm. CDS hay AppCDS lưu class đã parse vào archive, gần như không phải đổi code, giảm vài chục phần trăm; từ JDK 24 thành AOT cache và JDK 25 lưu cả method profile. Spring AOT sinh sẵn bean definition lúc build nhưng đóng băng profile và điều kiện. CRaC chụp snapshot JVM đã warm rồi restore trong vài trăm mili giây, nhưng cần JDK hỗ trợ và hook đóng mở kết nối, snapshot còn chứa secret. Native image khởi động vài chục mili giây, RAM thấp, nhưng closed-world và peak throughput thường thấp hơn. Với service K8s chạy lâu tôi dừng ở CDS và warm-up tốt; serverless hay CLI mới đầu tư CRaC hoặc native."
+
 > Senior tip: trước khi tối ưu startup, hãy hỏi "ai đang chờ startup?". Với service K8s rolling update, 20 giây khởi động thường không ai thấy; thứ gây sự cố là pod nhận traffic khi JIT chưa warm, khiến p99 tăng vọt trong vài phút đầu. Hãy đo bằng {{BufferingApplicationStartup}} kèm endpoint startup của actuator để xem bean nào chậm: nhiều khi chỉ một bean gọi mạng lúc khởi động đã chiếm nửa thời gian.`,
   follow: [
     'AppCDS archive bị vô hiệu khi nào, và bạn tích hợp nó vào Docker build thế nào?',
@@ -2664,6 +3271,33 @@ Load và verify hàng chục nghìn class; Spring quét classpath và tạo bean
   level: 'senior',
   q: 'async-profiler: CPU vs wall-clock vs alloc vs lock mode, đọc flame graph để tìm hot path như thế nào?',
   a: `**Tóm tắt:** async-profiler là profiler lấy mẫu cho HotSpot. Nó lấy stack trace mà không cần chờ safepoint, nên không bị safepoint bias như các profiler JVMTI cổ điển, và thấy được cả frame native lẫn kernel. Chọn mode theo câu hỏi cần trả lời: **cpu** — ai đang đốt CPU; **wall** — thread đang ở đâu theo thời gian thực, kể cả lúc chờ I/O hay lock (dùng để tìm latency); **alloc** — ai cấp phát nhiều (nguồn áp lực GC); **lock** — ai chờ lock lâu. Trên flame graph, chiều rộng là tỷ lệ sample chứ trục X không phải thời gian; hãy tìm frame rộng, đặc biệt là các "đỉnh phẳng" (self time) ở trên cùng.
+
+### Hiểu nhanh
+Profiler lấy mẫu giống một người cầm sổ đi qua văn phòng **mỗi 10 ms** và ghi lại mỗi nhân viên đang làm gì. Sau 30 giây, việc nào xuất hiện nhiều lần nhất trong sổ chính là việc chiếm nhiều thời gian nhất. Mode **cpu** chỉ ghi người đang thực sự làm việc; **wall** ghi cả người đang ngồi chờ điện thoại (chờ DB, chờ lock); **alloc** ghi ai đang lấy nhiều giấy mới (tạo object); **lock** ghi ai đang xếp hàng chờ chìa khoá. Flame graph là bản tổng hợp cuốn sổ: khối càng rộng, việc đó càng hay bị bắt gặp.
+
+### Thuật ngữ
+- **Sampling profiler**: profiler chụp stack định kỳ thay vì đo mọi lời gọi, nên overhead thấp.
+- **Safepoint bias**: lỗi của profiler cũ chỉ lấy stack ở safepoint, nên chỉ sai chỗ nóng.
+- **perf_events**: cơ chế của Linux kernel để đếm chu kỳ CPU và lấy mẫu.
+- **Wall-clock**: thời gian thực trôi qua, gồm cả lúc thread ngủ hoặc chờ.
+- **TLAB**: vùng cấp phát riêng của mỗi thread trong Eden; async-profiler lấy mẫu allocation theo TLAB.
+- **Flame graph**: biểu đồ stack chồng lên nhau, chiều rộng là tỉ lệ sample.
+- **Self time**: thời gian tiêu tốn ngay trong method, không tính method con.
+- **Inclusive time**: thời gian của method cộng mọi method nó gọi.
+
+### Từ sample tới flame graph (từng bước)
+1. Mỗi khoảng (mặc định 10 ms với cpu), async-profiler nhận tín hiệu và chụp stack của thread đang chạy — không cần chờ safepoint. Vì sao quan trọng: chụp đúng chỗ đang chạy, không bị lệch.
+2. Các stack giống nhau được gộp lại và đếm số lần.
+3. Mỗi frame vẽ thành một khối, khối con nằm trên khối cha; chiều rộng tỉ lệ số sample.
+4. Bạn đọc từ dưới lên: tìm nhánh rộng thuộc code của mình, rồi tìm đỉnh phẳng (self time) trên nhánh đó.
+
+~~~text
+            [ writeValueAsString 40% ]      [ regex 10% ]
+       [ OrderController.get ......... 55% ][ Report 15% ]
+  [ DispatcherServlet ................................ 70% ]
+[ Thread.run ................................................ 100% ]
+   rộng = nhiều sample; đỉnh phẳng 40% = ứng viên tối ưu số 1
+~~~
 
 ### Bốn mode
 | Mode | Lấy mẫu thế nào | Trả lời câu hỏi |
@@ -2702,6 +3336,15 @@ asprof -d 60 -e cpu,alloc,lock -f /tmp/profile.jfr <pid>
 - Overhead thấp ở interval mặc định (cpu 10 ms), chạy được trên production cho các phiên vài chục giây.
 - Trong container, perf_events thường bị chặn ({{perf_event_paranoid}}, seccomp): dùng {{-e itimer}} hoặc {{ctimer}}, hoặc cấp quyền phù hợp. Nên thêm {{-XX:+UnlockDiagnosticVMOptions -XX:+DebugNonSafepoints}} lúc khởi động để stack trace của code được inline chính xác hơn.
 - So với JFR: JFR luôn chạy sẵn và có nhiều loại event (GC, I/O, safepoint); async-profiler mạnh hơn khi cần frame native/kernel, wall-clock rõ ràng và flame graph nhanh.
+
+### Lỗi hay gặp
+- **Dùng cpu mode để tìm latency**: flame graph không có gì nổi bật vì thread chủ yếu đang chờ. Cách tránh: dùng wall với {{-t}}.
+- **Đọc trục X như thời gian**: kết luận "cái này chạy trước". Cách tránh: nhớ trái phải chỉ là thứ tự tên, chỉ chiều rộng có ý nghĩa.
+- **Container chặn perf_events**: lệnh báo lỗi quyền hoặc ra kết quả rỗng. Cách tránh: {{-e itimer}}/{{ctimer}} hoặc cấp quyền phù hợp.
+- **Tối ưu theo một lần chụp 5 giây**: mẫu quá ít, nhiễu. Cách tránh: chụp 30–60 giây dưới tải đại diện, so sánh trước/sau.
+
+### Trả lời miệng 1 phút
+"async-profiler là profiler lấy mẫu cho HotSpot, nó chụp stack mà không cần safepoint nên không bị safepoint bias và thấy cả frame native lẫn kernel. Tôi chọn mode theo câu hỏi: cpu để biết ai đốt CPU, wall để biết request đang chờ ở đâu, alloc để biết ai sinh rác làm GC dày, lock để biết ai tranh chấp khoá. Trên flame graph, chiều rộng là tỉ lệ sample chứ trục ngang không phải thời gian; tôi đi từ dưới lên tìm nhánh code của mình rồi nhìn các đỉnh phẳng là self time. Trade-off với JFR là async-profiler mạnh về native và wall-clock, còn JFR chạy nền liên tục với nhiều loại event. Khi điều tra latency tôi luôn chạy wall trước cpu."
 
 > Senior tip: khi điều tra latency, tôi chạy wall với {{-t}} trước cpu. CPU profile chỉ thấy phần thời gian thread thực sự chạy; nếu 80% thời gian của request là chờ connection pool thì tối ưu hot method trên flame graph cpu chỉ cải thiện phần nhỏ còn lại. Và luôn chụp flame graph trước và sau khi sửa để chứng minh tác động bằng số.`,
   follow: [
@@ -3446,6 +4089,19 @@ Bean scope singleton nghĩa là "một instance cho mỗi ApplicationContext", d
   q: 'JDK, JRE và JVM khác nhau thế nào? Mô tả đường đi từ file {{.java}} tới lúc code chạy ở tốc độ native: javac, bytecode, class loading, verify, interpreter, JIT.',
   a: `**Tóm tắt:** JVM là máy ảo thực thi bytecode (HotSpot là bản cài đặt phổ biến nhất). JRE = JVM + thư viện chuẩn, đủ để chạy chương trình. JDK = JRE + công cụ phát triển ({{javac}}, {{jar}}, {{jlink}}, {{jcmd}}, {{jfr}}...). Từ Java 11, Oracle không còn phát hành JRE riêng (một số vendor như Eclipse Temurin vẫn có gói JRE); thường ta dùng JDK hoặc tạo runtime tối giản bằng {{jlink}}. Đường đi: {{javac}} biên dịch .java thành bytecode (.class) độc lập nền tảng → class loader nạp, verify, link và khởi tạo class khi cần → interpreter chạy bytecode → method nóng được JIT (C1 rồi C2) biên dịch thành mã máy để thay thế.
 
+### Hiểu nhanh
+Hãy tưởng tượng bạn viết một công thức nấu ăn bằng một "ngôn ngữ bếp chung" (bytecode) thay vì tiếng của từng nước. **JVM** là đầu bếp đọc được ngôn ngữ chung đó, ở bất kỳ bếp nào (Linux, Windows, ARM). **JRE** là đầu bếp kèm bộ dụng cụ cơ bản (thư viện chuẩn) — đủ để nấu. **JDK** là tất cả những thứ đó cộng thêm dụng cụ cho người viết công thức (javac để dịch, jcmd/jstack để kiểm tra bếp). Lúc đầu đầu bếp đọc từng dòng công thức (interpreter); món nào nấu nhiều lần thì anh ta nhớ thuộc lòng và làm thật nhanh (JIT).
+
+### Thuật ngữ
+- **Bytecode**: tập lệnh trung gian trong file .class, độc lập hệ điều hành và CPU.
+- **Constant pool**: bảng hằng số và tên tham chiếu (class, method, field) trong file .class.
+- **Class loader**: thành phần tìm và nạp file .class vào JVM.
+- **Verify**: bước kiểm tra bytecode hợp lệ, không phá vỡ an toàn kiểu.
+- **Interpreter**: chạy bytecode từng lệnh một.
+- **JIT (C1/C2)**: biên dịch method nóng thành mã máy lúc chạy.
+- **Deoptimization**: bỏ mã máy đã tối ưu khi giả định sai, quay về interpreter.
+- **jlink**: công cụ tạo runtime Java tối giản chỉ gồm các module cần dùng.
+
 ### Ba khái niệm
 | | Gồm | Dùng để |
 |---|---|---|
@@ -3498,6 +4154,15 @@ jcmd <pid> Compiler.codecache                # dung lượng code cache đang d�
 - "Mọi class được load hết lúc khởi động": class được load lazy, lúc lần đầu cần tới.
 - "Server cần cài JRE": image hiện đại dùng JDK hoặc runtime tạo bằng jlink.
 
+### Lỗi hay gặp
+- **Image Docker dùng full JDK cho production**: image to, nhiều công cụ thừa. Cách tránh: dùng image JRE của vendor hoặc tạo runtime bằng {{jlink}}; nhớ giữ {{jcmd}} nếu cần chẩn đoán.
+- **Compile bằng JDK mới nhưng chạy trên JRE cũ**: lỗi {{UnsupportedClassVersionError}}. Cách tránh: đặt {{--release}} đúng phiên bản runtime.
+- **NoClassDefFoundError chỉ xuất hiện ở nhánh hiếm**: thiếu dependency nhưng test không chạm tới. Cách tránh: kiểm tra dependency scope, test cả các nhánh lỗi.
+- **Đánh giá hiệu năng ngay sau deploy**: số liệu xấu do chưa warm-up. Cách tránh: đo sau vài phút hoặc warm-up trước khi nhận traffic.
+
+### Trả lời miệng 1 phút
+"JVM là máy ảo chạy bytecode, JRE là JVM cộng thư viện chuẩn để chạy ứng dụng, còn JDK là JRE cộng công cụ như javac, jar, jlink, jcmd. Đường đi là: javac dịch file java thành bytecode, khi code cần tới class lần đầu thì class loader nạp nó, JVM verify, prepare, resolve rồi chạy static initializer. Bytecode chạy bằng interpreter trước, method nóng được C1 biên dịch nhanh kèm profile, rồi C2 tối ưu mạnh; giả định sai thì deoptimize. Trade-off của thiết kế hai tầng là khởi động nhanh và tối ưu theo dữ liệu thật, nhưng phải trả giá bằng warm-up. Thực tế điều này giải thích vì sao p99 cao vài phút sau deploy và vì sao image dựng bằng jlink nhỏ hơn hẳn."
+
 > Senior tip: hiểu đường đi này giải thích được nhiều hiện tượng trên production: p99 cao sau mỗi lần deploy (JIT chưa warm, nên warm-up trước khi nhận traffic); {{NoClassDefFoundError}} chỉ xuất hiện khi chạy vào nhánh hiếm (class được load lazy); và vì sao image dựng bằng {{jlink}} với đúng các module cần dùng nhỏ hơn đáng kể so với full JDK.`,
   follow: [
     'Deoptimization xảy ra khi nào và ảnh hưởng tới latency ra sao?',
@@ -3512,6 +4177,19 @@ jcmd <pid> Compiler.codecache                # dung lượng code cache đang d�
   level: 'senior',
   q: 'GC xác định một object là "rác" như thế nào? GC roots gồm những gì, vì sao JVM không dùng reference counting, và vì sao Java có GC mà vẫn bị memory leak?',
   a: `**Tóm tắt:** HotSpot dùng **reachability analysis** (tracing): bắt đầu từ tập GC roots, đi theo mọi reference strong để đánh dấu object còn sống. Object không đến được từ root nào là rác, kể cả khi các object đó vẫn trỏ lẫn nhau. GC roots gồm: biến local và tham số trong các frame của thread đang sống, static field của class đã load (thông qua class loader), JNI reference, monitor đang bị giữ, và các reference nội bộ của JVM. JVM không dùng reference counting vì nó không thu được vòng tham chiếu (A trỏ B, B trỏ A) và tốn chi phí cập nhật bộ đếm ở mỗi lần gán (lại phải atomic khi đa luồng). Leak trong Java nghĩa là object **vẫn reachable** nhưng không còn được dùng: GC không thể biết ý định của bạn.
+
+### Hiểu nhanh
+Hãy tưởng tượng heap là một hội chợ và GC là ban tổ chức đi kiểm tra cuối ngày. Họ bắt đầu từ các **lối vào chính thức** (GC roots: thread đang chạy, static field) và đi theo mọi sợi dây nối giữa các gian hàng. Gian nào **đi tới được** thì còn hoạt động; gian nào không có đường nào tới thì bị dỡ, kể cả khi hai gian bỏ hoang nối dây với nhau. Leak xảy ra khi bạn quên tháo dây nối từ lối vào chính tới một gian không ai dùng nữa: ban tổ chức thấy vẫn đi tới được nên không dỡ.
+
+### Thuật ngữ
+- **Reachability analysis (tracing)**: đánh dấu object sống bằng cách đi từ GC roots theo reference.
+- **GC roots**: tập điểm xuất phát chắc chắn sống: biến trên stack thread, static field, JNI reference, monitor đang giữ.
+- **Reference counting**: cách quản lý bộ nhớ đếm số reference tới mỗi object, về 0 thì giải phóng.
+- **Mark / sweep / compact / copy**: đánh dấu object sống / dọn chỗ trống / dồn object lại / chép object sống sang vùng mới.
+- **Card table / remembered set**: cấu trúc ghi lại reference từ old sang young (hoặc giữa các region) để không phải quét cả heap.
+- **Write barrier**: đoạn code JIT chèn vào mỗi lần gán reference để cập nhật các cấu trúc trên.
+- **SATB / load barrier**: kỹ thuật để GC đánh dấu đồng thời mà không bỏ sót object (G1 / ZGC).
+- **reachabilityFence**: API giữ một object sống tới một điểm trong code, chống JIT coi nó chết sớm.
 
 ### Reachability
 ~~~text
@@ -3565,6 +4243,15 @@ Cách tìm: chụp heap dump rồi dùng Path to GC Roots trong MAT trên object
 - "System.gc() giải phóng bộ nhớ ngay": đó chỉ là gợi ý (có thể bị tắt bằng {{-XX:+DisableExplicitGC}}), và với G1 mặc định nó gây ra một lần full GC.
 - "Các object trỏ vòng lẫn nhau không bao giờ được thu": đúng với reference counting, sai với JVM.
 
+### Lỗi hay gặp
+- **Static Map làm sổ tạm mà quên xoá**: old gen tăng đều qua nhiều ngày. Cách tránh: xoá trong finally hoặc dùng cache có giới hạn và TTL.
+- **ThreadLocal không remove trong thread pool**: dữ liệu request cũ sống mãi theo thread. Cách tránh: {{remove()}} trong finally.
+- **Gán null khắp nơi để "giúp GC"**: code rối mà không giải quyết leak thật. Cách tránh: tìm root giữ object bằng MAT thay vì đoán.
+- **Gọi System.gc() để giải phóng bộ nhớ**: với G1 gây Full GC dài. Cách tránh: bỏ lời gọi hoặc dùng {{-XX:+ExplicitGCInvokesConcurrent}}.
+
+### Trả lời miệng 1 phút
+"JVM xác định rác bằng reachability: bắt đầu từ GC roots là biến trên stack của thread đang sống, static field, JNI reference và monitor, đi theo mọi reference strong để đánh dấu; object không đến được là rác, kể cả khi chúng trỏ vòng vào nhau. JVM không dùng reference counting vì nó không thu được vòng tham chiếu, tốn chi phí cập nhật bộ đếm atomic ở mỗi lần gán, và có thể giải phóng dây chuyền gây pause. Tracing thì chi phí tỉ lệ với object còn sống, hợp với việc đa số object chết trẻ. Còn leak trong Java nghĩa là object vẫn reachable nhưng không còn dùng, như static map quên xoá hay ThreadLocal trong pool. GC chỉ thu cái không đến được, không thu cái bạn không cần."
+
 > Senior tip: khi giải thích một vụ leak cho team, tôi luôn chỉ ra **root** cụ thể lấy từ MAT, thường là static field, ThreadLocal của thread pool, hoặc class loader. Câu hỏi "có GC rồi sao còn leak" được trả lời bằng một câu: GC thu những gì không còn đến được, chứ không thu những gì bạn không còn cần.`,
   follow: [
     'Card table / remembered set giải quyết vấn đề gì khi chỉ dọn young gen?',
@@ -3583,6 +4270,19 @@ Cách tìm: chụp heap dump rồi dùng Path to GC Roots trong MAT trên object
   level: 'senior',
   q: 'Minor GC, major GC và full GC khác nhau thế nào? Object được promote lên old gen khi nào, và trên production bạn nhận ra "promote quá sớm" hay full GC qua GC log ra sao?',
   a: `**Tóm tắt:** Heap được chia thế hệ dựa trên giả thuyết "phần lớn object chết trẻ". **Minor (young) GC** dọn young gen (Eden + Survivor) khi Eden đầy; có stop-the-world nhưng nhanh vì chỉ copy số ít object còn sống. **Major GC** là việc thu dọn old gen; thuật ngữ này không được chuẩn hoá, với G1 nó thường là chu kỳ concurrent marking cộng các lần mixed GC. **Full GC** dọn toàn bộ heap (kèm class unloading) trong một lần stop-the-world; với G1 đây là phương án dự phòng khi các cơ chế khác không theo kịp, pause dài và là dấu hiệu có vấn đề. Object được promote khi sống qua số lần minor GC vượt tenuring threshold (tối đa 15), khi Survivor không đủ chỗ (promote sớm), còn object rất lớn ở G1 (humongous) được cấp thẳng vào region riêng thuộc old gen.
+
+### Hiểu nhanh
+Heap chia thế hệ giống cách một bệnh viện chia khu cấp cứu và khu điều trị dài ngày. Hầu hết bệnh nhân cấp cứu (object mới) về nhà rất nhanh, nên khu cấp cứu được dọn liên tục và nhanh (minor GC). Ai ở lâu thì chuyển lên khu dài ngày (old gen), dọn ít hơn nhưng mỗi lần dọn tốn công hơn. Nếu khu cấp cứu quá chật, bệnh nhân bị chuyển lên khu dài ngày quá sớm rồi xuất viện ngay hôm sau — khu dài ngày đầy giường trống ảo (**promote quá sớm**). Full GC giống phải đóng cả bệnh viện để sắp xếp lại: hiếm khi nên xảy ra.
+
+### Thuật ngữ
+- **Generational hypothesis**: giả thuyết phần lớn object chết trẻ, là nền tảng của việc chia young/old.
+- **Eden / Survivor**: nơi object mới sinh / nơi giữ object sống sót qua young GC (có hai vùng luân phiên).
+- **Promotion (tenuring)**: chuyển object từ young lên old.
+- **Tenuring threshold**: số lần sống sót qua young GC trước khi bị promote (tối đa 15).
+- **Premature promotion**: object sống trung bình bị đẩy lên old sớm rồi chết ở đó.
+- **Mixed GC**: lần GC của G1 dọn young cộng một số region old nhiều rác.
+- **IHOP**: ngưỡng chiếm dụng heap để G1 bắt đầu concurrent marking.
+- **Humongous object**: object từ nửa region G1 trở lên, cấp thẳng vào region riêng thuộc old.
 
 ### Vòng đời một object
 ~~~text
@@ -3631,6 +4331,15 @@ Nguyên nhân thường gặp: allocation rate rất cao; young gen quá nhỏ (
 - "Minor GC không dừng ứng dụng": có stop-the-world, chỉ là ngắn.
 - "Object luôn phải sống đủ 15 lần GC mới lên old": ngưỡng thay đổi động, và Survivor đầy thì object bị promote sớm.
 
+### Lỗi hay gặp
+- **Đặt MaxGCPauseMillis quá thấp**: G1 thu nhỏ young, object bị promote sớm, mixed GC dày. Cách tránh: giữ mặc định 200 ms trừ khi đã đo.
+- **Batch đọc 100.000 bản ghi vào List một lúc**: object sống trung bình tràn Survivor, old phình. Cách tránh: xử lý theo lô nhỏ, ghi kết quả ngay.
+- **Tạo mảng byte lớn liên tục (đọc file, build response)**: log nhiều "G1 Humongous Allocation". Cách tránh: streaming, buffer tái sử dụng.
+- **Tăng heap khi Full GC giải phóng rất ít**: chỉ trì hoãn OOM vì đó là leak. Cách tránh: xem old gen sau GC, lấy heap dump.
+
+### Trả lời miệng 1 phút
+"Minor GC dọn young gen khi Eden đầy, có dừng ứng dụng nhưng ngắn vì chỉ copy số ít object còn sống sang Survivor. Major GC là dọn old gen, thuật ngữ không chuẩn hoá; với G1 nó là concurrent marking cộng mixed GC. Full GC dọn toàn bộ heap trong một lần dừng dài, trên G1 là phương án dự phòng và là dấu hiệu có vấn đề. Object được promote khi sống qua tenuring threshold, tối đa 15 vì tuổi lưu trong 4 bit header, hoặc sớm hơn khi Survivor đầy; object humongous vào thẳng old. Trên GC log tôi nhìn old gen sau GC: đi ngang là khoẻ, bậc thang đi lên là leak, sát trần là heap nhỏ. Một dòng Pause Full mà giải phóng rất ít là tín hiệu tôi lấy heap dump ngay."
+
 > Senior tip: chỉ số tôi xem đầu tiên không phải pause time mà là **old gen sau GC** (heap còn lại sau mixed/full GC). Đường này đi ngang là heap khoẻ; đi lên theo hình bậc thang là leak; đi ngang nhưng sát trần là heap quá nhỏ. Ba hình dạng, ba hướng xử lý khác nhau.`,
   follow: [
     'Vì sao MaxTenuringThreshold tối đa là 15?',
@@ -3650,6 +4359,31 @@ Nguyên nhân thường gặp: allocation rate rất cao; young gen quá nhỏ (
   level: 'mid',
   q: 'Phân biệt {{StackOverflowError}} và {{OutOfMemoryError}}: nguyên nhân, cách tái hiện từng loại, có nên catch không, và sau khi lỗi xảy ra thì JVM/ứng dụng ở trạng thái nào?',
   a: `**Tóm tắt:** StackOverflowError xảy ra khi stack của **một thread** hết chỗ, gần như luôn do đệ quy quá sâu hoặc vô hạn. Chỉ thread đó bị ảnh hưởng, và stack được giải phóng ngay khi exception lan ngược ra. OutOfMemoryError xảy ra khi JVM không cấp phát được bộ nhớ trong một vùng **dùng chung** (heap, metaspace, direct memory, hay native memory để tạo thread). Nó nổ ở thread "xui xẻo" đang cấp phát lúc đó, không nhất thiết là thread gây ra, và thường cả ứng dụng đã ở trạng thái hỏng. Cả hai đều là {{Error}} (kế thừa {{VirtualMachineError}}) và không nên catch để chạy tiếp. Với OOM, hãy cấu hình heap dump và {{ExitOnOutOfMemoryError}} để process được restart sạch.
+
+### Hiểu nhanh
+Stack của một thread giống một chồng đĩa trên bàn của một đầu bếp: mỗi lần gọi method là đặt thêm một cái đĩa, method xong thì lấy đĩa ra. Đệ quy vô hạn là cứ chồng đĩa mãi tới khi chạm trần — **StackOverflowError** — và chỉ bàn của đầu bếp đó bị ảnh hưởng; dọn chồng đĩa là bàn lại sạch. Heap thì giống **kho chung** của cả nhà hàng: khi kho đầy (**OutOfMemoryError**), người lấy đồ tiếp theo bị báo lỗi, dù người làm đầy kho có thể là người khác. Và kho vẫn đầy sau khi báo lỗi, nên cả nhà hàng đang gặp nguy.
+
+### Thuật ngữ
+- **Stack frame**: vùng nhớ cho một lần gọi method (biến local, tham số, địa chỉ trả về).
+- **-Xss**: kích thước stack tối đa cho mỗi platform thread.
+- **Unwind**: exception lan ngược ra ngoài, lần lượt bỏ các frame.
+- **Error vs Exception**: Error là lỗi nghiêm trọng của môi trường, ứng dụng thường không nên bắt.
+- **VirtualMachineError**: lớp cha của StackOverflowError và OutOfMemoryError.
+- **ExitOnOutOfMemoryError**: flag làm JVM thoát ngay khi có OOM để được restart sạch.
+- **ArrayDeque**: hàng đợi hai đầu, dùng làm stack tường minh khi chuyển đệ quy thành vòng lặp.
+- **OOMKilled (exit 137)**: kernel giết container vì vượt memory limit, không phải OutOfMemoryError.
+
+### Hai lỗi diễn ra thế nào (từng bước)
+1. **StackOverflowError**: mỗi lời gọi đẩy một frame lên stack của thread → đệ quy không dừng → chạm giới hạn Xss → JVM ném lỗi ngay tại lời gọi đó → exception unwind, các frame bị bỏ, stack trống lại. Vì sao JVM vẫn khoẻ: stack là riêng của thread, không ai khác dùng chung.
+2. **OutOfMemoryError**: một thread xin cấp phát → heap không đủ → JVM chạy GC hết sức → vẫn không đủ → ném OOM cho **thread đang xin** → nhưng các object giữ heap vẫn còn đó, thread khác xin tiếp cũng sẽ OOM. Vì sao app nguy hiểm: lỗi nổ ở chỗ ngẫu nhiên, để lại trạng thái dở dang.
+
+~~~text
+StackOverflowError                    OutOfMemoryError
+thread A: [f][f][f]...[f] X           heap chung: [######## đầy ########]
+thread B: [g][h]  (bình thường)       thread A xin 1 MB -> OOM (nạn nhân)
+=> chỉ A lỗi, stack A được dọn         thread B xin tiếp  -> OOM
+                                      thủ phạm: cache static giữ 90% heap
+~~~
 
 ### So sánh
 | | StackOverflowError | OutOfMemoryError |
@@ -3701,6 +4435,15 @@ Hai ví dụ chỉ để học; đừng chạy kiểu "tạo thread vô hạn" (
 - "StackOverflowError do heap đầy": không liên quan tới heap.
 - "Tăng Xmx để sửa StackOverflowError": stack được chỉnh bằng Xss, không phải Xmx.
 - "Bắt OutOfMemoryError rồi gọi System.gc()": JVM đã GC hết sức trước khi ném OOM.
+
+### Lỗi hay gặp
+- **catch (Throwable) trong worker loop**: nuốt OOM, service trông vẫn sống nhưng mất worker, dữ liệu dở dang. Cách tránh: ném lại {{VirtualMachineError}} và bật ExitOnOutOfMemoryError.
+- **Tăng -Xss toàn JVM để chữa một đệ quy sâu**: mọi thread đều có thể chiếm thêm bộ nhớ stack. Cách tránh: viết lại bằng vòng lặp hoặc giới hạn độ sâu input.
+- **Tăng Xmx khi gặp OOM Metaspace hay Direct buffer memory**: vô ích. Cách tránh: đọc thông điệp sau dấu hai chấm.
+- **toString/equals đệ quy vòng tròn giữa hai entity (ví dụ Lombok @Data hai chiều)**: StackOverflowError khi log. Cách tránh: loại field quan hệ khỏi toString/equals.
+
+### Trả lời miệng 1 phút
+"StackOverflowError là stack của một thread hết chỗ, gần như luôn do đệ quy vô hạn hoặc quá sâu; chỉ thread đó bị ảnh hưởng và stack được giải phóng khi exception unwind, nên JVM vẫn khoẻ. OutOfMemoryError là một vùng dùng chung như heap, metaspace hay direct memory hết chỗ; nó nổ ở thread đang cấp phát, thường chỉ là nạn nhân, và vì bộ nhớ vẫn đầy nên cả app ở trạng thái hỏng. Cả hai đều là Error, tôi không catch để chạy tiếp. Với stack overflow tôi đọc cụm frame lặp, đổi đệ quy thành vòng lặp hoặc giới hạn độ sâu input. Với OOM tôi đọc thông điệp để biết vùng nào, bật heap dump và ExitOnOutOfMemoryError để process restart sạch rồi phân tích dump."
 
 > Senior tip: với StackOverflowError, tôi coi input là nghi phạm đầu tiên: cây danh mục cha–con do người dùng tạo, rule engine đệ quy, JSON từ đối tác. Giới hạn độ sâu ở biên hệ thống rẻ hơn nhiều so với tăng Xss. Với OOM, câu hỏi đầu tiên luôn là "thông điệp nói vùng nào?"; rất nhiều lần team nhầm OOM Metaspace hay Direct buffer memory thành OOM heap rồi tăng Xmx một cách vô ích.`,
   follow: [
@@ -3856,24 +4599,65 @@ Với Java 21 có thể thay pool bằng {{newVirtualThreadPerTaskExecutor()}} c
   topic: 'jvm',
   level: 'senior',
   q: 'Service có heap lớn và p99 nhạy: bạn chọn G1 hay Generational ZGC, và benchmark nào đủ tin cậy?',
-  a: `**Tóm tắt:** G1 cân bằng throughput và pause với mục tiêu pause mềm; Generational ZGC hướng tới pause rất ngắn bằng cách làm nhiều việc concurrent. Quyết định dựa trên SLO, CPU/RSS headroom và benchmark với đúng runtime, không dựa vào một con số pause duy nhất.
+  a: `**Tóm tắt:** G1 cân bằng throughput và pause, với một **mục tiêu** pause mềm ({{MaxGCPauseMillis}}); Generational ZGC hướng tới pause rất ngắn (dưới 1 ms) bằng cách làm gần hết việc **đồng thời** với ứng dụng, đổi lại tốn thêm CPU. Quyết định dựa trên SLO latency, phần CPU/RSS còn dư (headroom) và một benchmark chạy với đúng runtime, đúng tải — không dựa vào một con số pause duy nhất.
 
-### Trade-off
-- G1 chia heap thành regions, có young/mixed collection và concurrent marking; một số pha vẫn stop-the-world. MaxGCPauseMillis là mục tiêu, không phải SLA.
-- Generational ZGC tận dụng tuổi object; ZGC dùng load barrier để làm nhiều công việc khi ứng dụng chạy. JEP 439 đưa generational mode vào JDK 21.
-- Concurrent work tiêu thụ CPU. Nếu CPU quota đã sát trần, giảm pause có thể đổi thành throughput thấp hơn.
+### Hiểu nhanh
+Hãy so sánh hai cách dọn một siêu thị lớn. **G1** đóng từng khu vài chục mili giây để dọn nhanh, khách ở khu đó phải chờ một chút. **ZGC** cho nhân viên dọn ngay trong lúc khách mua sắm, gần như không ai phải chờ, nhưng cần thêm nhân viên (CPU) và mỗi khách đi lại hơi chậm hơn một chút (barrier). Nếu siêu thị đã thiếu nhân viên ở giờ cao điểm (CPU sát trần), thêm việc dọn song song chỉ làm mọi thứ chậm hơn. Vì vậy phải thử cả hai cách trong **đúng giờ cao điểm thật** rồi mới chọn.
 
-### Quy trình chọn
-1. Chạy cùng heap limit, JDK build, container quota, dataset và request mix.
-2. Warm-up ổn định; đo nhiều lần cả peak lẫn burst và cold deploy.
-3. So p99/p999, throughput, CPU, RSS, allocation rate, pause distribution và thời gian GC.
-4. Canary một nhóm instance, giữ cấu hình rollback.
+### Thuật ngữ
+- **SLO**: mục tiêu chất lượng dịch vụ, ví dụ "p99 dưới 50 ms".
+- **p99 / p999**: 99% / 99.9% request nhanh hơn con số này — đo phần "đuôi" chậm.
+- **Region**: ô nhớ G1 chia heap ra; G1 dọn theo từng nhóm region.
+- **Mixed collection**: lần GC của G1 dọn young cộng một số region old nhiều rác.
+- **Load barrier**: đoạn code nhỏ ZGC chèn vào mỗi lần đọc reference để sửa con trỏ trong lúc GC di chuyển object.
+- **Generational ZGC**: ZGC tách young/old (JEP 439, JDK 21), mặc định của ZGC từ JDK 23.
+- **Headroom**: phần tài nguyên (CPU, RAM) còn trống ở peak.
+- **Canary**: triển khai thay đổi cho một nhóm nhỏ instance trước khi áp dụng toàn bộ.
+
+### Trade-off (từng bước suy luận)
+1. **G1** chia heap thành region, có young/mixed collection và concurrent marking; một số pha (copy object) vẫn stop-the-world. {{MaxGCPauseMillis}} (mặc định 200 ms) là mục tiêu để G1 chọn bao nhiêu region dọn mỗi lần, **không phải SLA**: khi heap chật hoặc allocation bùng nổ, pause vẫn có thể vượt.
+2. **Generational ZGC** tận dụng tuổi object (dọn young thường xuyên, rẻ) và dùng load barrier để marking, relocate và compact trong khi ứng dụng chạy. JEP 439 đưa generational mode vào JDK 21; từ JDK 23 nó là mặc định, JDK 24 bỏ chế độ cũ.
+3. **Concurrent work tiêu thụ CPU.** Nếu CPU quota đã sát trần, giảm pause có thể đổi thành throughput thấp hơn, thậm chí allocation stall (thread phải chờ GC vì dọn không kịp).
+4. **RSS**: ZGC thường cần heap rộng hơn live set để có chỗ thở; cả hai đều có thêm metaspace, direct memory, thread stack nằm trong RSS ngoài heap.
+
+| Tiêu chí | G1 | Generational ZGC |
+|---|---|---|
+| Pause điển hình | vài ms tới vài chục ms | dưới 1 ms |
+| Phụ thuộc kích thước heap | pause tăng theo lượng object sống phải copy | gần như không |
+| CPU overhead | thấp hơn | cao hơn (GC thread + barrier) |
+| Throughput | thường tốt hơn chút | có thể thấp hơn chút |
+| Khi nào hợp | đa số service | p99 bị GC pause chi phối, heap lớn |
+
+### Quy trình chọn (benchmark đủ tin cậy)
+1. **Cùng điều kiện**: cùng heap limit, cùng JDK build, cùng container quota (CPU/RAM), cùng dataset và tỷ lệ loại request. Vì sao: đổi một biến khác là kết quả vô nghĩa.
+2. **Warm-up ổn định** trước khi đo; đo nhiều lần, ở cả peak, burst và ngay sau cold deploy.
+3. **So nhiều chỉ số cùng lúc**: p99/p999, throughput, CPU, RSS, allocation rate, phân bố pause và tổng thời gian GC.
+4. **Chạy đủ dài** (vài giờ) để thấy cả chu kỳ old gen, không chỉ young GC.
+5. **Canary** một nhóm instance trên production, giữ sẵn cấu hình rollback.
 
 ~~~bash
 -Xlog:gc*,safepoint:file=/logs/gc.log:time,uptime,level,tags
+# G1:  -XX:+UseG1GC -XX:MaxGCPauseMillis=100
+# ZGC: -XX:+UseZGC   (JDK 21 thêm -XX:+ZGenerational; JDK 23+ không cần)
 ~~~
 
-Đọc log cùng JFR; lưu ý metaspace, direct memory và thread stack cũng nằm trong RSS ngoài heap.
+~~~text
+Ví dụ kết quả load test 2 giờ, pod 4 vCPU, heap 8 GB (số minh hoạ)
+              p99     p999    throughput   CPU peak   RSS
+G1            38 ms   120 ms  10.000 rps   62%        9.6 GB
+Gen ZGC       21 ms    35 ms   9.600 rps   78%        10.1 GB
+=> ZGC thắng latency; chọn nếu SLO là p999 và còn CPU headroom ở peak
+~~~
+Đọc GC log cùng JFR; nhớ rằng metaspace, direct memory và thread stack cũng nằm trong RSS ngoài heap.
+
+### Lỗi hay gặp
+- **So sánh bằng benchmark 5 phút trên laptop**: chưa thấy chu kỳ old, CPU khác production. Cách tránh: chạy trong container cùng quota, vài giờ.
+- **Chỉ nhìn pause trung bình**: G1 trung bình đẹp nhưng p999 xấu. Cách tránh: so phân bố pause và p999 của request.
+- **Chuyển ZGC khi CPU peak đã 85%**: latency tổng tệ hơn, có allocation stall. Cách tránh: thêm CPU hoặc giữ G1.
+- **Tăng Xmx bằng toàn bộ memory limit để ZGC "có chỗ"**: pod bị OOMKilled. Cách tránh: tính cả phần native.
+
+### Trả lời miệng 1 phút
+"G1 chia heap thành region, dọn theo từng nhóm với mục tiêu pause mềm, MaxGCPauseMillis không phải cam kết; còn Generational ZGC làm marking và relocation đồng thời nhờ load barrier nên pause dưới một mili giây, nhưng tốn thêm CPU và thường cần heap rộng hơn. Tôi không chọn theo một con số pause mà theo SLO, CPU và RSS headroom. Benchmark đáng tin phải cùng JDK, cùng heap và quota container, cùng dữ liệu và tỷ lệ request, có warm-up, chạy vài giờ, và so cả p99, p999, throughput, CPU, RSS. Sau đó canary trên production với cấu hình rollback. Nếu ZGC đạt latency nhưng làm CPU peak cạn thì tôi giữ G1."
 
 > Senior tip: nếu mục tiêu pause đạt nhưng CPU headroom cạn ở peak, collector đó chưa phù hợp production. Đừng tăng Xmx bằng toàn bộ memory limit của container.`,
   follow: ['Vì sao MaxGCPauseMillis không phải cam kết?', 'Bạn theo dõi gì để biết ZGC đang lấy CPU khỏi ứng dụng?'],
@@ -3885,20 +4669,70 @@ Với Java 21 có thể thay pool bằng {{newVirtualThreadPerTaskExecutor()}} c
   topic: 'jvm',
   level: 'senior',
   q: 'Benchmark cho thấy allocation của object biến mất sau warm-up. Escape analysis và scalar replacement giải thích gì, và vì sao không phải hợp đồng?',
-  a: `**Tóm tắt:** JIT có thể chứng minh object không escape khỏi phạm vi cần thiết rồi thay field bằng scalar, loại allocation và lock không cần. Đây là tối ưu runtime phụ thuộc profile, không phải cam kết của ngôn ngữ hay bytecode.
+  a: `**Tóm tắt:** Khi method đã nóng, JIT C2 có thể chứng minh một object **không thoát (escape)** ra khỏi phạm vi nó phân tích được, rồi thay object đó bằng các biến scalar riêng lẻ (scalar replacement) — allocation biến mất — và bỏ luôn lock không ai khác quan sát được (lock elimination). Đây là **tối ưu runtime phụ thuộc profile**, không phải cam kết của ngôn ngữ hay bytecode: đổi JDK, đổi cách gọi, hay code phức tạp hơn một chút là nó có thể không còn xảy ra.
 
-### Quá trình
-- Interpreter/C1 thu thập profile; tiered compilation có thể chuyển method nóng cho C2.
-- Escape analysis tìm reference bị return, lưu vào field/static hoặc truyền tới call không thể phân tích.
-- Nếu object không escape, scalar replacement có thể giữ từng field trong registers; lock elimination cũng có thể bỏ monitor không quan sát được.
-- Giả định profile đổi có thể khiến deoptimization và biên dịch lại.
+### Hiểu nhanh
+Giả sử mỗi lần tính tiền bạn lấy một tờ giấy nháp mới (cấp phát object), ghi hai con số, cộng lại rồi vứt giấy. Một nhân viên giỏi sau vài nghìn lần sẽ nhận ra "tờ giấy này không bao giờ rời khỏi bàn", nên chỉ nhẩm trong đầu (biến trong register) — không tốn giấy nữa. Nhưng anh ta chỉ làm vậy khi **chắc chắn** tờ giấy không bị đưa cho ai; nếu một lần nào đó tờ giấy được chuyển sang phòng khác, anh ta phải quay lại dùng giấy thật. Benchmark thấy "allocation biến mất sau warm-up" chính là lúc nhân viên bắt đầu nhẩm.
+
+### Thuật ngữ
+- **Escape analysis**: phân tích xem reference tới object có thoát khỏi method/thread hiện tại không.
+- **Scalar replacement**: thay object bằng các field riêng lẻ dưới dạng biến local/register.
+- **Lock elimination (elision)**: bỏ synchronized trên object mà chỉ một thread có thể thấy.
+- **Inline**: chép thân method được gọi vào nơi gọi; escape analysis chỉ thấy được những gì đã inline.
+- **Profile**: thống kê lúc chạy (kiểu thực tế, nhánh hay chạy) do interpreter/C1 thu thập.
+- **Deoptimization**: bỏ mã đã tối ưu khi giả định của profile không còn đúng.
+- **JMH**: framework benchmark chính thức của OpenJDK, xử lý warm-up, fork và dead-code elimination.
+- **Dead-code elimination**: JIT xoá code mà kết quả không được dùng.
+
+### Quá trình (từng bước)
+1. **Thu profile**: interpreter/C1 đếm số lần gọi và ghi lại kiểu thực tế; tiered compilation chuyển method nóng cho C2. Vì sao cần: trước đó chưa có tối ưu này, nên benchmark lạnh vẫn thấy allocation.
+2. **Inline**: C2 inline các method nhỏ được gọi. Vì sao quan trọng: nếu object được truyền vào một method không inline, JIT phải coi như object đã escape.
+3. **Escape analysis**: tìm xem reference có bị return, lưu vào field/static, đưa vào collection, truyền cho thread khác hay truyền tới lời gọi không phân tích được.
+4. **Scalar replacement**: nếu object không escape, từng field được giữ trong register/biến local; không còn {{new}} trên heap.
+5. **Lock elimination**: monitor trên object không escape không ai quan sát được nên bị bỏ.
+6. **Deoptimize khi giả định đổi**: ví dụ một implementation mới được load, nhánh hiếm bắt đầu chạy — mã bị bỏ, quay lại chạy chậm rồi biên dịch lại, allocation có thể xuất hiện trở lại.
+
+~~~java
+record Point(int x, int y) {}
+
+long sumDistance(int[] xs, int[] ys) {
+    long total = 0;
+    for (int i = 0; i < xs.length; i++) {
+        Point p = new Point(xs[i], ys[i]);   // không escape: có thể scalar replace
+        total += Math.abs(p.x()) + Math.abs(p.y());
+    }
+    return total;
+}
+
+List<Point> cache = new ArrayList<>();
+void keep(int x, int y) {
+    cache.add(new Point(x, y));              // escape vào field -> bắt buộc cấp phát thật
+}
+~~~
+
+~~~text
+Allocation rate đo bằng JFR trên method sumDistance (số minh hoạ)
+0-10 s   (interpreter/C1)  : ~800 MB/s
+sau C2 compile             : ~0 MB/s   <- scalar replacement
+sau deopt (class mới load) : ~800 MB/s vài giây, rồi về ~0 khi C2 compile lại
+~~~
 
 ### Đo đúng
-- Dùng JFR hoặc async-profiler allocation mode để tìm hot allocation trên workload thật.
-- JMH cần warm-up, fork và chống dead-code elimination; benchmark một vòng lạnh thường đo interpreter.
-- Object escape hoặc code quá phức tạp có thể ngăn tối ưu. Không kết luận rằng record luôn được stack allocate.
+- Dùng JFR ({{jdk.ObjectAllocationSample}}) hoặc async-profiler mode alloc để tìm hot allocation trên **workload thật**, không chỉ trong microbenchmark.
+- JMH cần warm-up, nhiều fork và chống dead-code elimination ({{Blackhole}} hoặc trả kết quả về); benchmark một vòng lạnh thường chỉ đo interpreter.
+- Có thể so sánh bằng cách tắt tạm tối ưu trong thí nghiệm ({{-XX:-DoEscapeAnalysis}}) để thấy phần chênh — chỉ dùng khi đo, không dùng trên production.
+- Object escape hoặc code quá phức tạp (method quá lớn không inline được, nhiều nhánh hợp nhất object) có thể ngăn tối ưu. Đừng kết luận rằng record hay object nhỏ "luôn được cấp phát trên stack" — HotSpot không có stack allocation, chỉ có scalar replacement khi điều kiện cho phép.
 
-> Senior tip: tối ưu allocation khi allocation flame graph chứng minh nó chiếm đáng kể CPU/GC. Thiết kế code rõ ràng trước, đừng phụ thuộc vào một tối ưu JIT khó tái lập giữa JDK.`,
+### Lỗi hay gặp
+- **Benchmark tự viết bằng vòng for**: số liệu dao động, có khi JIT xoá hết code. Cách tránh: dùng JMH.
+- **Thiết kế API dựa vào giả định allocation miễn phí**: lên JDK khác hoặc đổi code nhỏ, GC tăng vọt. Cách tránh: đo trên workload thật, không coi tối ưu JIT là hợp đồng.
+- **Tối ưu allocation khi GC không phải nút thắt**: code khó đọc mà không cải thiện gì. Cách tránh: chỉ làm khi allocation flame graph chứng minh nó chiếm đáng kể CPU/GC.
+- **Truyền object vào method lớn hoặc qua interface nhiều implementation**: mất inline, object escape. Cách tránh: giữ hot path đơn giản, kiểm tra bằng profiler thay vì đoán.
+
+### Trả lời miệng 1 phút
+"Allocation biến mất sau warm-up là do C2: sau khi method đủ nóng và các lời gọi nhỏ được inline, escape analysis chứng minh object không bị return, không lưu vào field hay truyền ra ngoài, nên JIT thay object bằng các biến scalar trong register và bỏ luôn lock trên nó. Nhưng đó là tối ưu phụ thuộc profile: trước khi C2 compile thì vẫn cấp phát, khi giả định đổi thì deoptimize, và code phức tạp hơn hay JDK khác có thể không tối ưu được. Vì vậy tôi không coi nó là hợp đồng. Tôi đo bằng JMH có warm-up và fork, và bằng JFR hoặc async-profiler alloc trên workload thật, rồi chỉ tối ưu allocation khi số liệu cho thấy nó thực sự gây áp lực GC."
+
+> Senior tip: tối ưu allocation khi allocation flame graph chứng minh nó chiếm đáng kể CPU/GC. Thiết kế code rõ ràng trước, đừng phụ thuộc vào một tối ưu JIT khó tái lập giữa các phiên bản JDK.`,
   follow: ['Escape qua field static tác động phân tích ra sao?', 'Vì sao JMH cần warm-up và fork?'],
   tags: ['JIT', 'escape analysis', 'scalar replacement']
 },
@@ -3907,24 +4741,64 @@ Với Java 21 có thể thay pool bằng {{newVirtualThreadPerTaskExecutor()}} c
   topic: 'jvm',
   level: 'lead',
   q: 'Latency tăng vài phút sau deploy rồi giảm; compilation và deoptimization tăng. Bạn giải thích tiered compilation và điều tra thế nào?',
-  a: `**Tóm tắt:** HotSpot khởi động bằng interpreter/C1, thu profile rồi biên dịch method nóng với C2; warm-up và deoptimization có thể làm latency thay đổi sau deploy. Cần đối chiếu JIT activity, code cache, class loading và GC trước khi đổi compiler flags.
+  a: `**Tóm tắt:** HotSpot khởi động bằng interpreter và C1, thu profile rồi biên dịch method nóng bằng C2; giai đoạn warm-up này và các lần deoptimization làm latency cao trong vài phút sau deploy rồi tự giảm. Trước khi đổi compiler flag, cần đối chiếu hoạt động JIT (compilation, deopt, CPU của compiler thread), code cache, class loading và GC — vì nhiều thứ "lạnh" cùng xảy ra sau deploy (connection pool, cache), và tương quan không phải nhân quả.
 
-### Tiered compilation
-- Interpreter chạy bytecode và ghi nhận invocation/back-edge counters.
-- C1 biên dịch nhanh ở các mức tối ưu và có thể gắn instrumentation.
-- C2 dùng profile để inline và tối ưu mạnh. Khi giả định kiểu hoặc hierarchy không còn đúng, code có thể deoptimize về mức thấp hơn.
-- Code cache lưu machine code; đầy code cache có thể làm compilation ngừng hoặc suy giảm.
+### Hiểu nhanh
+Một đội bóng mới vào sân chưa thể chơi hết sức ngay: phải khởi động, làm quen mặt cỏ, đọc lối chơi của đối thủ. JVM cũng vậy: vài phút đầu chạy "chậm rãi" (interpreter, C1) để quan sát code nào hay chạy, rồi mới "tăng tốc" (C2). Nếu đối thủ đổi chiến thuật (giả định sai), đội phải lùi lại điều chỉnh (deoptimization). Nhưng trận đấu chậm đầu giờ cũng có thể vì sân trơn (cache trống) hay thiếu người (connection pool chưa mở) — phải xem đủ các nguyên nhân trước khi trách việc khởi động.
 
-### Điều tra
-- Ghi JFR và compilation/deoptimization log ngắn hạn ở canary; xem CPU của compiler thread, code cache usage, class loading.
-- Tách warm-up khỏi khởi tạo connection pool, cache, CDS và GC; các hiện tượng này thường cùng xảy ra sau deploy.
-- Warm-up có kiểm soát trước khi nhận traffic, nhưng phải chạy code path thật.
-- Không tắt tiered compilation chỉ dựa vào tương quan. Thay đổi có thể làm throughput ổn định thấp hơn.
+### Thuật ngữ
+- **Tiered compilation**: biên dịch nhiều tầng: interpreter → C1 → C2.
+- **Invocation / back-edge counter**: bộ đếm số lần gọi method / số vòng lặp, quyết định khi nào biên dịch.
+- **Instrumentation**: đoạn code C1 chèn thêm để thu profile, làm code chạy hơi chậm hơn.
+- **Deoptimization**: bỏ mã máy đã tối ưu khi giả định (kiểu, class hierarchy, nhánh) không còn đúng.
+- **Code cache**: vùng chứa mã máy JIT; đầy thì biên dịch ngừng hoặc suy giảm.
+- **CDS / AOT cache**: lưu sẵn class đã xử lý để khởi động nhanh hơn (AOT cache từ JDK 24).
+- **Readiness probe**: kiểm tra của Kubernetes quyết định khi nào pod được nhận traffic.
+- **Canary**: nhóm nhỏ instance nhận phiên bản mới trước.
+
+### Tiered compilation (từng bước)
+1. **Interpreter** chạy bytecode và ghi nhận invocation/back-edge counter. Vì sao bắt đầu từ đây: không tốn thời gian biên dịch code chỉ chạy vài lần.
+2. **C1** biên dịch nhanh ở các mức tối ưu khác nhau, có thể gắn instrumentation để thu profile (kiểu thực tế, nhánh hay chạy).
+3. **C2** dùng profile để inline và tối ưu mạnh. Trong lúc C2 đang làm việc, compiler thread tiêu tốn CPU cạnh tranh với request.
+4. **Deoptimization**: khi giả định về kiểu hoặc class hierarchy không còn đúng (load class mới, nhánh hiếm bắt đầu chạy), code quay về mức thấp hơn rồi được biên dịch lại.
+5. **Code cache** lưu machine code; đầy code cache có thể làm compilation ngừng hoặc suy giảm, hiệu năng rơi dần.
+
+~~~text
+p99 (ms)
+ 300 |*
+ 200 | * *            <- interpreter/C1 + compiler thread ăn CPU
+ 100 |     * *  *     <- C2 compile xong dần, vài lần deopt
+  40 |           * * * * * * * *   <- ổn định
+     +--------------------------------> phút sau deploy
+       0   1   2   3   4   5   6
+~~~
+
+### Điều tra (từng bước)
+1. **Ghi dữ liệu ở canary**: JFR (event {{jdk.Compilation}}, {{jdk.Deoptimization}}, {{jdk.CodeCacheFull}}, {{jdk.ClassLoad}}) và log compilation/deoptimization ngắn hạn; xem CPU của compiler thread, mức dùng code cache, số class load.
+2. **Tách các nguồn "lạnh" khác**: khởi tạo connection pool, cache rỗng, TLS handshake tới dependency, CDS có được dùng không, GC lúc heap đang nở. Các hiện tượng này thường xảy ra **cùng lúc** với JIT warm-up.
+3. **So sánh với nhóm đối chứng**: instance đã warm cùng phiên bản; nếu chênh lệch chỉ có trong vài phút đầu và trùng với đỉnh compilation thì JIT là nguyên nhân chính.
+4. **Warm-up có kiểm soát** trước khi nhận traffic (readiness chỉ báo sẵn sàng sau khi chạy một lượng request mẫu), nhưng phải chạy **code path thật**, không chỉ health check.
+5. **Không tắt tiered compilation** chỉ dựa vào tương quan: thay đổi đó có thể làm throughput ổn định thấp hơn hoặc khởi động còn chậm hơn.
+
+~~~bash
+java -XX:+PrintCompilation -jar app.jar          # tạm thời ở canary
+jcmd <pid> Compiler.codecache                    # code cache đang dùng
+jcmd <pid> JFR.start duration=5m filename=/data/warmup.jfr
+~~~
 
 ### Pitfall
-- Health check thường không làm nóng hot path.
-- Benchmark cần đủ warm-up và cùng image/runtime với production.
-- CDS/AOT có thể giảm startup/class loading nhưng không loại mọi JIT warm-up.
+- Health check thường không làm nóng hot path, nên pod "ready" vẫn chạy interpreter ở các endpoint chính.
+- Benchmark cần đủ warm-up và chạy cùng image/runtime với production.
+- CDS/AOT cache có thể giảm startup và class loading nhưng không loại bỏ mọi JIT warm-up (JDK 25 lưu thêm method profile vào AOT cache để rút ngắn phần này, vẫn cần đo).
+
+### Lỗi hay gặp
+- **Readiness probe chỉ gọi /health**: p99 tăng vọt khi pod mới nhận traffic thật. Cách tránh: warm-up bằng request mẫu trên endpoint chính trước khi ready.
+- **Rolling update quá nhanh**: nhiều pod lạnh cùng lúc, cả cụm chậm. Cách tránh: {{maxSurge}} nhỏ, thêm thời gian chờ giữa các đợt.
+- **Pod quá ít CPU**: compiler thread giành CPU với request, warm-up kéo dài. Cách tránh: cho đủ CPU (hoặc CPU limit cao hơn request) giai đoạn đầu.
+- **Đổ lỗi JIT trong khi cache rỗng là thủ phạm**: tối ưu nhầm chỗ. Cách tránh: tách từng nguồn lạnh bằng metric riêng.
+
+### Trả lời miệng 1 phút
+"HotSpot chạy code bằng interpreter trước, đếm số lần gọi và vòng lặp, method nóng được C1 biên dịch kèm instrumentation để thu profile, rồi C2 dùng profile đó để inline và tối ưu mạnh. Trong vài phút đầu, compiler thread ăn CPU và code chưa tối ưu, cộng với deoptimization khi giả định sai, nên latency cao rồi giảm dần. Khi điều tra tôi ghi JFR và log compilation ở canary, xem CPU compiler thread, code cache, class loading, và tách riêng các nguồn lạnh khác như connection pool hay cache rỗng, so với một nhóm instance đã warm. Cách xử lý là warm-up bằng code path thật trước khi readiness báo sẵn sàng và đủ CPU, chứ không tắt tiered compilation chỉ vì thấy tương quan."
 
 > Senior tip: giữ một nhóm instance đã warm làm đối chứng khi rollout. So p99 cùng CPU, compilation, error rate để phân biệt JIT với dependency cold start.`,
   follow: ['Deoptimization khác compilation failure thế nào?', 'Code cache đầy có biểu hiện gì?'],
