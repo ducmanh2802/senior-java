@@ -334,4 +334,7 @@ function normalizeOut(r, spec, overrides) {
   return out;
 }
 
-module.exports = { askJson, reply, clampScore, MODEL, providerStatus, parseJson, strArr, cleanArr, str, enumVal, normalizeOut };
+/** True when at least one provider (or the Claude fallback) has credentials. */
+const aiConfigured = () => enabledProviders().length > 0 || !!process.env.ANTHROPIC_API_KEY;
+
+module.exports = { askJson, reply, clampScore, MODEL, providerStatus, parseJson, strArr, cleanArr, str, enumVal, normalizeOut, aiConfigured };

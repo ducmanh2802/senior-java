@@ -21,7 +21,7 @@
 
 const crypto = require('crypto');
 const { send, guard, charge, str } = require('./_lib');
-const { askJson, reply, clampScore } = require('./_claude');
+const { askJson, reply, clampScore, aiConfigured } = require('./_claude');
 
 const SESSION_MINUTES = 90;
 const MAX_TURNS = 24;
@@ -152,7 +152,7 @@ function turnPrompt(config, transcript, elapsed) {
 
 // ---------- handler ----------
 module.exports = async function handler(req, res) {
-  if (!process.env.OPENROUTER_API_KEY) return send(res, 503, { error: 'Server chưa cấu hình OPENROUTER_API_KEY', code: 'not_configured' });
+  if (!aiConfigured()) return send(res, 503, { error: 'Server chưa cấu hình AI (OPENROUTER_API_KEY / GROQ_API_KEY / GEMINI_API_KEY…)', code: 'not_configured' });
   if (!secret()) return send(res, 503, { error: 'Server chưa cấu hình khoá phiên phỏng vấn', code: 'not_configured' });
   const ctx = await guard(req, res, { maxPerMinute: 20 });
   if (!ctx) return;

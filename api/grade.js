@@ -13,7 +13,7 @@
 'use strict';
 
 const { send, guard, charge, str } = require('./_lib');
-const { askJson, reply, clampScore } = require('./_claude');
+const { askJson, reply, clampScore, aiConfigured } = require('./_claude');
 
 const RUBRIC = `Thang điểm (giống thang tự chấm trong app):
 1 = không trả lời được / sai cơ bản
@@ -129,7 +129,7 @@ function codePrompt(b) {
 }
 
 module.exports = async function handler(req, res) {
-  if (!process.env.OPENROUTER_API_KEY) return send(res, 503, { error: 'Server chưa cấu hình OPENROUTER_API_KEY', code: 'not_configured' });
+  if (!aiConfigured()) return send(res, 503, { error: 'Server chưa cấu hình AI (OPENROUTER_API_KEY / GROQ_API_KEY / GEMINI_API_KEY…)', code: 'not_configured' });
   const ctx = await guard(req, res, { maxPerMinute: 15 });
   if (!ctx) return;
   const body = ctx.body;

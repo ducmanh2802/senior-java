@@ -23,7 +23,12 @@ async function test(name, fn) {
 const sandbox = { window: {}, location: { protocol: 'file:' }, console, setTimeout, clearTimeout };
 sandbox.window.App = { store: { data: {} } };
 sandbox.App = sandbox.window.App;
-vm.runInNewContext(fs.readFileSync(path.join(ROOT, 'js/core/auth.js'), 'utf8'), sandbox);
+// index.html loads i18n.js before auth.js (auth.js registers its strings at load time)
+sandbox.localStorage = { getItem() { return null; }, setItem() {} };
+sandbox.document = { readyState: 'loading', addEventListener() {}, querySelectorAll() { return []; }, getElementById() { return null; }, documentElement: {} };
+vm.createContext(sandbox);
+vm.runInContext(fs.readFileSync(path.join(ROOT, 'js/core/i18n.js'), 'utf8'), sandbox);
+vm.runInContext(fs.readFileSync(path.join(ROOT, 'js/core/auth.js'), 'utf8'), sandbox);
 const { merge } = sandbox.App.sync;
 const plain = x => JSON.parse(JSON.stringify(x));
 
