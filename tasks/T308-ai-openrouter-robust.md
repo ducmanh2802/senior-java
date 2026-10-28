@@ -24,3 +24,4 @@ Ghi Notes, `Status: DONE`.
 ## Notes
 
 - Integrator (Claude) làm gộp T308+T324+T325 trong một lần viết lại `api/_claude.js` (agent free lỗi liên tục ở T308): failover nhiều provider (openrouter, groq, gemini, github, cerebras, mistral), cooldown + luân phiên, đọc JSON bền (fence/chữ lẫn/reasoning), phân biệt hết hạn mức ngày (quota_exceeded) với 429 theo phút (rate_limited + retry_after), `AI_MODELS` + `require_parameters` cho OpenRouter, `temperature`/`timeoutMs` tuỳ chọn. `api/status.js` trả `providers` (không lộ key). Test: `scripts/test-openrouter.js` 15/15, `scripts/test-providers.js` 10/10. Hướng dẫn: `docs/AI-PROVIDERS.md`.
+Reviewed-by: verify-only (code/UI task)

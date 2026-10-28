@@ -293,4 +293,45 @@ function providerStatus() {
 
 const clampScore = (n, min = 1) => Math.min(5, Math.max(min, Math.round(Number(n) || min)));
 
-module.exports = { askJson, reply, clampScore, MODEL, providerStatus, parseJson };
+/** Normalize an array value into a clean string array: drop empty, cap length. */
+function strArr(v, max = 8) {
+  if (!Array.isArray(v)) return [];
+  return v.map(x => (x == null ? '' : String(x))).map(s => s.trim()).filter(Boolean).slice(0, max);
+}
+
+/** Keep an array of arbitrary items (e.g. grammar objects) but drop empties and cap length. */
+function cleanArr(v, max = 8) {
+  if (!Array.isArray(v)) return [];
+  return v.filter(x => x !== null && x !== undefined && !(typeof x === 'string' && !x.trim())).slice(0, max);
+}
+
+/** String-coerce and cap a scalar value. */
+function str(v, max = 4000) {
+  return String(v == null ? '' : v).slice(0, max);
+}
+
+/** Return v when it is in `allowed`, otherwise `fallback`. */
+function enumVal(v, allowed, fallback) {
+  return allowed.includes(v) ? v : fallback;
+}
+
+/**
+ * Standardize the AI output before sending to the client (T309):
+ *  - arrays become clean string arrays (≤ 8 items)
+ *  - scalars are String()-coerced and length-capped
+ *  - enum fields fall back to a safe default
+ *  - score fields go through clampScore
+ */
+function normalizeOut(r, spec, overrides) {
+  const out = r && typeof r === 'object' ? Object.assign({}, r) : {};
+  for (const k of spec.arrays || []) out[k] = strArr(out[k], spec.arrMax);
+  for (const k of (spec.cleanArrays || [])) out[k] = cleanArr(out[k], spec.arrMax);
+  for (const k of spec.strings || []) out[k] = str(out[k], spec.strMax);
+  for (const [k, allowed, fb] of (spec.enums || [])) out[k] = enumVal(out[k], allowed, fb);
+  for (const k of spec.scores || []) out[k] = clampScore(out[k]);
+  for (const k of spec.booleans || []) out[k] = Boolean(out[k]);
+  if (overrides) Object.assign(out, overrides);
+  return out;
+}
+
+module.exports = { askJson, reply, clampScore, MODEL, providerStatus, parseJson, strArr, cleanArr, str, enumVal, normalizeOut };
