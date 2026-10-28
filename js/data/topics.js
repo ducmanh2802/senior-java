@@ -3,6 +3,7 @@
  * Order here is the display order everywhere in the UI.
  */
 window.TOPICS = [
+  { id: 'primer',        name: 'Nhập môn công nghệ (cho người mới)', icon: '🧭', group: 'Java',   file: 'q-primer.js' },
   { id: 'core',          name: 'Core Java',                  icon: '☕', group: 'Java',         file: 'q-java.js' },
   { id: 'collections',   name: 'Collections',                icon: '🗂️', group: 'Java',         file: 'q-java.js' },
   { id: 'modern',        name: 'Java 8 → 21',                icon: '✨', group: 'Java',         file: 'q-java.js' },
