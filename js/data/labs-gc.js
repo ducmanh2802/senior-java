@@ -1247,5 +1247,575 @@ Với key của cache: tính sẵn phần tĩnh một lần cho mỗi feature ({
   ],
   tags: ['allocation-rate', 'young-gc', 'g1', 'jfr', 'logging', 'latency', 'p99']
 }
+,
+{
+  id: 'lab-gc-006',
+  category: 'gc',
+  title: 'p99 vọt lên 1,2 giây đúng mỗi 10 phút: Pause Full (System.gc()) trong job sao kê',
+  level: 'mid',
+  scenario: `**Bối cảnh:** **PayVN Statement** (Spring Boot 3.3, JDK 17.0.12, G1, {{-Xms8g -Xmx8g}}, pod 8 vCPU) phục vụ API xem sao kê ({{GET /statements/*}}) và chạy job {{StatementBatchJob}} sinh file PDF sao kê mỗi 10 phút (phút 0, 10, 20…). Tháng trước, một dev thêm một dòng vào cuối job "để giải phóng RAM sau batch PDF lớn" vì thấy dashboard "heap used" lên tới 3,6 GB.
+
+**Triệu chứng:** Dashboard latency của {{/statements/*}} có hình răng cưa đều đặn: bình thường p99 ~40ms, nhưng đúng các mốc **hh:m0:00** (02:00, 02:10, 02:20…) p99 nhảy lên **~1,2 giây**, kèm vài chục request timeout ở client mobile (timeout 1s). Không có lỗi, CPU trung bình 25%, heap sau GC trông "rất đẹp".
+
+**Dữ liệu thu thập:** GC log (unified logging {{-Xlog:gc*:file=gc.log:time,uptime,level,tags}}) quanh 02:10, {{jstat -gccause}}, log job, cờ JVM và kết quả grep source code.`,
+  artifacts: [
+    {
+      name: 'gc-statement-02-10.log',
+      lang: 'text',
+      content: `[2026-10-24T02:09:51.207+0700][22791.207s][info][gc,start    ] GC(1872) Pause Young (Normal) (G1 Evacuation Pause)
+[2026-10-24T02:09:51.207+0700][22791.207s][info][gc,task     ] GC(1872) Using 8 workers of 8 for evacuation
+[2026-10-24T02:09:51.220+0700][22791.220s][info][gc,phases   ] GC(1872)   Pre Evacuate Collection Set: 0.1ms
+[2026-10-24T02:09:51.220+0700][22791.220s][info][gc,phases   ] GC(1872)   Merge Heap Roots: 0.2ms
+[2026-10-24T02:09:51.220+0700][22791.220s][info][gc,phases   ] GC(1872)   Evacuate Collection Set: 11.6ms
+[2026-10-24T02:09:51.220+0700][22791.220s][info][gc,phases   ] GC(1872)   Post Evacuate Collection Set: 1.0ms
+[2026-10-24T02:09:51.220+0700][22791.220s][info][gc,phases   ] GC(1872)   Other: 0.3ms
+[2026-10-24T02:09:51.220+0700][22791.220s][info][gc,heap     ] GC(1872) Eden regions: 204->0(196)
+[2026-10-24T02:09:51.220+0700][22791.220s][info][gc,heap     ] GC(1872) Survivor regions: 7->8(26)
+[2026-10-24T02:09:51.220+0700][22791.220s][info][gc,heap     ] GC(1872) Old regions: 693->700
+[2026-10-24T02:09:51.220+0700][22791.220s][info][gc,heap     ] GC(1872) Archive regions: 2->2
+[2026-10-24T02:09:51.220+0700][22791.220s][info][gc,heap     ] GC(1872) Humongous regions: 6->6
+[2026-10-24T02:09:51.220+0700][22791.220s][info][gc,metaspace] GC(1872) Metaspace: 171M(174M)->171M(174M) NonClass: 152M(154M)->152M(154M) Class: 19M(20M)->19M(20M)
+[2026-10-24T02:09:51.220+0700][22791.220s][info][gc          ] GC(1872) Pause Young (Normal) (G1 Evacuation Pause) 3648M->2864M(8192M) 13.204ms
+[2026-10-24T02:09:51.220+0700][22791.220s][info][gc,cpu      ] GC(1872) User=0.09s Sys=0.00s Real=0.01s
+[2026-10-24T02:10:00.412+0700][22800.412s][info][gc,start    ] GC(1873) Pause Full (System.gc())
+[2026-10-24T02:10:00.412+0700][22800.412s][info][gc,task     ] GC(1873) Using 8 workers of 8 for full compaction
+[2026-10-24T02:10:00.412+0700][22800.412s][info][gc,phases,start] GC(1873) Phase 1: Mark live objects
+[2026-10-24T02:10:00.815+0700][22800.815s][info][gc,phases      ] GC(1873) Phase 1: Mark live objects 402.611ms
+[2026-10-24T02:10:00.815+0700][22800.815s][info][gc,phases,start] GC(1873) Phase 2: Prepare for compaction
+[2026-10-24T02:10:00.957+0700][22800.957s][info][gc,phases      ] GC(1873) Phase 2: Prepare for compaction 141.902ms
+[2026-10-24T02:10:00.957+0700][22800.957s][info][gc,phases,start] GC(1873) Phase 3: Adjust pointers
+[2026-10-24T02:10:01.225+0700][22801.225s][info][gc,phases      ] GC(1873) Phase 3: Adjust pointers 268.377ms
+[2026-10-24T02:10:01.225+0700][22801.225s][info][gc,phases,start] GC(1873) Phase 4: Compact heap
+[2026-10-24T02:10:01.597+0700][22801.597s][info][gc,phases      ] GC(1873) Phase 4: Compact heap 371.840ms
+[2026-10-24T02:10:01.608+0700][22801.608s][info][gc,heap        ] GC(1873) Eden regions: 131->0(204)
+[2026-10-24T02:10:01.608+0700][22801.608s][info][gc,heap        ] GC(1873) Survivor regions: 8->0(26)
+[2026-10-24T02:10:01.608+0700][22801.608s][info][gc,heap        ] GC(1873) Old regions: 700->412
+[2026-10-24T02:10:01.608+0700][22801.608s][info][gc,heap        ] GC(1873) Archive regions: 2->2
+[2026-10-24T02:10:01.608+0700][22801.608s][info][gc,heap        ] GC(1873) Humongous regions: 6->0
+[2026-10-24T02:10:01.608+0700][22801.608s][info][gc,metaspace   ] GC(1873) Metaspace: 171M(174M)->171M(174M) NonClass: 152M(154M)->152M(154M) Class: 19M(20M)->19M(20M)
+[2026-10-24T02:10:01.608+0700][22801.608s][info][gc             ] GC(1873) Pause Full (System.gc()) 3388M->1656M(8192M) 1196.204ms
+[2026-10-24T02:10:01.608+0700][22801.608s][info][gc,cpu         ] GC(1873) User=8.91s Sys=0.03s Real=1.20s
+
+# Các lần Pause Full trước đó (grep 'Pause Full' gc.log | tail -4):
+[2026-10-24T01:40:01.566+0700][21001.566s][info][gc             ] GC(1726) Pause Full (System.gc()) 3402M->1644M(8192M) 1188.211ms
+[2026-10-24T01:50:01.582+0700][21601.582s][info][gc             ] GC(1775) Pause Full (System.gc()) 3371M->1652M(8192M) 1201.774ms
+[2026-10-24T02:00:01.590+0700][22201.590s][info][gc             ] GC(1824) Pause Full (System.gc()) 3390M->1649M(8192M) 1194.902ms
+[2026-10-24T02:10:01.608+0700][22801.608s][info][gc             ] GC(1873) Pause Full (System.gc()) 3388M->1656M(8192M) 1196.204ms
+# grep -c 'Concurrent Mark Cycle' gc.log  -> 0
+# Region size: 4M (8192M / 2048 regions). IHOP mặc định 45% = ~3686M.`
+    },
+    {
+      name: 'jstat-flags-grep.txt',
+      lang: 'text',
+      content: `$ jstat -gccause -t 1 5s 4
+Timestamp         S0     S1     E      O      M     CCS    YGC     YGCT     FGC    FGCT     CGC    CGCT       GCT    LGCC                 GCC
+        22795.4   0.00 100.00  53.43  37.04  98.27  95.12   1836    23.311    37    44.081     0    0.000    67.392 G1 Evacuation Pause  No GC
+        22800.4   0.00 100.00  65.74  37.04  98.27  95.12   1836    23.311    37    44.081     0    0.000    67.392 G1 Evacuation Pause  No GC
+        22805.4   0.00   0.00   9.80  21.78  98.27  95.12   1836    23.311    38    45.277     0    0.000    68.588 System.gc()          No GC
+        22810.4   0.00   0.00  21.57  21.78  98.27  95.12   1836    23.311    38    45.277     0    0.000    68.588 System.gc()          No GC
+
+# JVM khởi động 2026-10-23T19:50:00, job chạy từ 20:00 -> tới 02:10 là lần thứ 38 (FGC = 38).
+
+$ grep 'StatementBatchJob' app.log | tail -3
+2026-10-24T01:50:00.380+07:00  INFO 1 --- [   scheduling-1] v.p.statement.batch.StatementBatchJob : batch STMT-20261024-0150 done files=1184 elapsed=0m00.9s
+2026-10-24T02:00:00.384+07:00  INFO 1 --- [   scheduling-1] v.p.statement.batch.StatementBatchJob : batch STMT-20261024-0200 done files=1201 elapsed=0m00.9s
+2026-10-24T02:10:00.401+07:00  INFO 1 --- [   scheduling-1] v.p.statement.batch.StatementBatchJob : batch STMT-20261024-0210 done files=1212 elapsed=0m00.9s
+
+$ jcmd 1 VM.flags
+1:
+-XX:CICompilerCount=4 -XX:ConcGCThreads=2 -XX:G1ConcRefinementThreads=8 -XX:G1HeapRegionSize=4194304 -XX:GCDrainStackTargetSize=64 -XX:InitialHeapSize=8589934592 -XX:MarkStackSize=4194304 -XX:MaxHeapSize=8589934592 -XX:MaxNewSize=5150605312 -XX:MinHeapDeltaBytes=4194304 -XX:MinHeapSize=8589934592 -XX:NonNMethodCodeHeapSize=5839372 -XX:NonProfiledCodeHeapSize=122909434 -XX:ProfiledCodeHeapSize=122909434 -XX:ReservedCodeCacheSize=251658240 -XX:+SegmentedCodeCache -XX:SoftMaxHeapSize=8589934592 -XX:+UseCompressedClassPointers -XX:+UseCompressedOops -XX:+UseG1GC
+
+$ grep -rn "System.gc" src/main/java
+src/main/java/vn/pay/statement/batch/StatementBatchJob.java:118:        System.gc(); // giải phóng RAM sau batch PDF lớn (heap used 3.6GB!)
+
+# Prometheus p99 http_server_requests{uri="/statements/{id}"} 02:09:50-02:10:10 theo bucket 5s:
+# 02:09:55 = 41ms   02:10:00 = 1 212ms   02:10:05 = 63ms   02:10:10 = 39ms`
+    }
+  ],
+  questions: [
+    'Dựa vào GC log và jstat, chỉ ra nguyên nhân các đỉnh latency đúng mỗi 10 phút. Vì sao lại là đúng mốc hh:m0?',
+    'Vì sao gọi System.gc() "để giải phóng RAM" là hiểu sai về G1? Giải thích con số heap 3,6 GB mà dev đã lo lắng.',
+    'Đề xuất cách sửa, và nêu rủi ro của từng tuỳ chọn JVM liên quan (DisableExplicitGC, ExplicitGCInvokesConcurrent).'
+  ],
+  hints: [
+    'Tìm nguyên nhân (cause) trong ngoặc của các dòng Pause Full và cột LGCC của jstat -gccause. So timestamp của chúng với log job.',
+    'Trước Full GC, heap 3388M nhưng vẫn dưới ngưỡng IHOP 45% (~3686M), nên G1 chưa cần đánh dấu đồng thời — không có Concurrent Mark Cycle nào. Rác trong old gen "chờ đến lượt" là bình thường.',
+    'Mặc định trên G1, {{System.gc()}} chạy Full GC dừng toàn bộ ứng dụng. {{-XX:+ExplicitGCInvokesConcurrent}} biến nó thành chu kỳ đồng thời; {{-XX:+DisableExplicitGC}} bỏ qua hẳn nhưng có rủi ro với direct buffer.'
+  ],
+  answer: `**Tóm tắt:** Mỗi đỉnh latency là một **{{Pause Full (System.gc())}} dừng ứng dụng ~1,2 giây**, do chính dòng {{System.gc()}} ở {{StatementBatchJob.java:118}} gọi ngay sau mỗi batch (02:10:00.401 job xong → 02:10:00.412 Full GC). Trên G1, {{System.gc()}} mặc định là Full GC stop-the-world nén toàn heap. Nó không "giải phóng RAM" gì thêm: rác trong old gen là bình thường, G1 sẽ tự dọn khi cần bằng chu kỳ đồng thời + mixed GC với pause vài chục ms. Sửa: xoá dòng đó; phòng ngừa bằng {{-XX:+ExplicitGCInvokesConcurrent}}.
+
+### Hiểu từ gốc: G1 dọn rác bằng những loại pause nào
+
+Heap G1 được chia thành các **region** bằng nhau (ở đây 4 MB × 2048 region = 8 GB). Object mới sinh ra ở **Eden**; sống sót qua vài lần dọn thì chuyển sang **Survivor** rồi **Old**. G1 có 3 kiểu dọn:
+
+| Loại | Dọn cái gì | Dừng app? | Thời gian điển hình ở đây |
+|---|---|---|---|
+| Young (Normal) | Eden + Survivor | Có, ngắn | ~13 ms |
+| Concurrent Mark + Mixed | Đánh dấu old **song song với app**, rồi dọn dần các old region nhiều rác nhất | Pause ngắn (Remark, Mixed) | vài chục ms |
+| Full GC | **Toàn bộ heap**, đánh dấu + nén | Có, dài | **~1 200 ms** |
+
+Full GC trong G1 là "phương án cuối cùng" — chỉ nên xảy ra khi G1 thất bại (hết chỗ). Còn {{System.gc()}} là **yêu cầu tường minh** "hãy dọn toàn bộ ngay": trên G1, mặc định nó làm đúng một Full GC stop-the-world với 4 phase: Mark → Prepare → Adjust pointers → Compact. Trong 1,2 giây đó **không request nào được xử lý**.
+
+### Vì sao dev tưởng cần System.gc()
+
+Dashboard "heap used" lên 3,6 GB trông đáng sợ, nhưng với G1 đó là bình thường: G1 **cố tình để rác nằm trong old gen** cho tới khi old gen vượt ngưỡng **IHOP** (Initiating Heap Occupancy Percent, mặc định 45% heap ≈ 3 686 MB ở đây), lúc đó mới bắt đầu đánh dấu đồng thời. Dọn sớm hơn = tốn CPU vô ích. Ví như thùng rác trong văn phòng: không ai đổ thùng mỗi khi có một tờ giấy; người ta đổ khi gần đầy, và đổ lúc mọi người vẫn làm việc (đồng thời), không bắt cả văn phòng đứng dậy chờ.
+
+Con số đúng để theo dõi là **heap sau GC** (live data), không phải heap used tức thời. Ở đây live thật sự chỉ ~1,6 GB (sau Full GC: {{3388M->1656M}}). Heap 8 GB rất dư.
+
+### Dẫn chứng từ artifact
+
+- GC log: {{GC(1873) Pause Full (System.gc()) 3388M->1656M(8192M) 1196.204ms}}, Real=1.20s; 4 phase cộng lại ≈ 1 185 ms. Các lần trước đúng 01:40, 01:50, 02:00, 02:10 — chu kỳ 10 phút, mỗi lần ~1,19–1,20 s.
+- Ngay trước đó young GC bình thường: {{GC(1872) ... 3648M->2864M(8192M) 13.204ms}} — pause thường của app chỉ ~13 ms.
+- Heap trước Full GC 3388M (131+8+700+2+6 = 847 region × 4 MB) **dưới IHOP 3686M**, và {{grep -c 'Concurrent Mark Cycle'}} = 0: G1 chưa từng cần dọn old gen, tức không có áp lực bộ nhớ nào.
+- jstat: LGCC chuyển từ "G1 Evacuation Pause" sang "System.gc()" và FGC 37 → 38, FGCT tăng 1,196 s (44,081 → 45,277); CGC = 0.
+- Log job: batch xong lúc 02:10:00.401, Full GC bắt đầu 02:10:00.412 (11 ms sau). Grep source: {{StatementBatchJob.java:118: System.gc()}}. VM.flags không có {{DisableExplicitGC}} hay {{ExplicitGCInvokesConcurrent}}.
+- p99 bucket 02:10:00 = 1 212 ms, các bucket xung quanh ~40 ms.
+
+Tổng thiệt hại: 6 lần/giờ × 1,2 s = **7,2 giây/giờ app đứng hình hoàn toàn**, chỉ để dọn rác mà G1 sẽ tự dọn rẻ hơn nhiều.
+
+### Cách sửa
+
+1. **Xoá dòng System.gc()** ở {{StatementBatchJob.java:118}}. Đây là sửa gốc.
+2. Thêm cờ phòng ngừa cho mọi service: {{-XX:+ExplicitGCInvokesConcurrent}} — nếu có thư viện nào đó gọi {{System.gc()}}, G1 sẽ khởi động **chu kỳ đánh dấu đồng thời** thay vì Full GC STW.
+3. Nếu batch PDF thật sự tạo nhiều object lớn (humongous), xử lý bằng streaming/giới hạn kích thước buffer, không phải bằng gọi GC.
+
+~~~java
+// TRƯỚC
+public void run() {
+    generatePdfs(batch);
+    System.gc();            // Full GC STW 1,2s trên G1 — làm hại mọi request khác
+}
+// SAU: không can thiệp GC; nếu lo bộ nhớ thì đo live set (heap sau GC)
+public void run() {
+    generatePdfs(batch);    // giới hạn kích thước batch / dùng stream nếu cần
+}
+~~~
+
+### So sánh các cờ JVM liên quan
+
+| Cờ | System.gc() làm gì | Rủi ro |
+|---|---|---|
+| Mặc định | Full GC STW | Pause dài như sự cố này |
+| {{-XX:+ExplicitGCInvokesConcurrent}} | Bắt đầu concurrent cycle (pause ngắn) | Gần như không; tốn CPU nền một chút |
+| {{-XX:+DisableExplicitGC}} | Bị bỏ qua hoàn toàn | **Direct buffer**: khi chạm giới hạn {{MaxDirectMemorySize}}, JDK gọi {{System.gc()}} để giải phóng {{DirectByteBuffer}} cũ; tắt đi có thể gây {{OutOfMemoryError: Direct buffer memory}} ở app dùng nhiều NIO/Netty |
+
+Vì rủi ro direct buffer, tôi ưu tiên {{ExplicitGCInvokesConcurrent}} hơn {{DisableExplicitGC}}.
+
+### Lỗi hay gặp
+
+- Nhìn "heap used" tức thời và hoảng; phải nhìn **heap sau GC** (hoặc old gen sau mixed GC).
+- Nghĩ {{System.gc()}} chỉ là "gợi ý nhẹ". Spec nói JVM có thể bỏ qua, nhưng HotSpot mặc định **luôn thực hiện** Full GC.
+- Quên các nguồn gọi ẩn: RMI distributed GC (khi bật JMX remote/RMI) có thể gọi {{System.gc()}} định kỳ theo {{sun.rmi.dgc.server.gcInterval}} (mặc định 1 giờ); một số thư viện cũ cũng gọi.
+- Bật {{DisableExplicitGC}} cho service dùng Netty/NIO mà không theo dõi direct memory.
+
+### Trả lời miệng 1 phút
+
+"Các đỉnh p99 trùng chính xác với dòng Pause Full (System.gc()) mỗi 10 phút, mỗi lần dừng app khoảng 1,2 giây. Nguồn là dòng System.gc() ở StatementBatchJob dòng 118, gọi ngay sau mỗi batch — log job xong 02:10:00.401, Full GC bắt đầu 11 ms sau. Trên G1, System.gc() mặc định là Full GC stop-the-world. Nó không cần thiết: heap 3,4 GB vẫn dưới ngưỡng IHOP 45%, G1 chưa cần chạy concurrent mark lần nào, live set thật chỉ 1,6 GB. Tôi xoá dòng đó và thêm ExplicitGCInvokesConcurrent để phòng thư viện khác gọi; không dùng DisableExplicitGC vì có thể làm hỏng việc thu hồi direct buffer."
+
+> Senior tip: Khi thấy latency spike có **chu kỳ đều** (đúng mỗi N phút), tôi nghĩ ngay đến cron/job, System.gc(), RMI DGC hoặc log rotation — không phải tải người dùng. Chạy {{grep -E 'Pause Full' gc.log}} và xem nguyên nhân trong ngoặc là cách chẩn đoán nhanh nhất: "(System.gc())" là do code, "(G1 Compaction Pause)" là G1 hết chỗ thật, "(Metadata GC Threshold)" là metaspace. Ba nguyên nhân khác nhau, ba hướng sửa khác nhau.`,
+  rubric: [
+    'Xác định đúng nguyên nhân: Pause Full (System.gc()) ~1,2s mỗi 10 phút do System.gc() ở StatementBatchJob.java:118, timestamp khớp log job (02:10:00.401 → 02:10:00.412).',
+    'Giải thích đúng: trên G1 System.gc() mặc định là Full GC STW; heap 3388M dưới IHOP 45% (~3686M), không có Concurrent Mark Cycle, live set thật ~1656M nên gọi GC thủ công là không cần thiết.',
+    'Dẫn chứng bằng jstat -gccause (LGCC = System.gc(), FGC 37→38, FGCT tăng ~1,196s, CGC 0) và so sánh với young GC bình thường ~13ms.',
+    'Đề xuất sửa: xoá System.gc(), dùng -XX:+ExplicitGCInvokesConcurrent, nêu rủi ro DisableExplicitGC với direct buffer và các nguồn gọi ẩn (RMI DGC, thư viện).'
+  ],
+  tags: ['g1', 'system-gc', 'full-gc', 'gc-log', 'jstat', 'latency']
+},
+{
+  id: 'lab-gc-007',
+  category: 'gc',
+  title: 'Lên Kubernetes với limit 1 CPU: JVM tự chọn Serial GC và heap chỉ 384 MB',
+  level: 'senior',
+  scenario: `**Bối cảnh:** **PayVN Merchant API** (Spring Boot 3.4, JDK 21.0.4) trước đây chạy trên VM 4 vCPU/8 GB với {{-Xmx2g}}, p99 ~60ms. Tuần này team mới chuyển lên Kubernetes bằng image {{eclipse-temurin:21-jre}}, Dockerfile chỉ có {{ENTRYPOINT ["java", "-jar", "/app.jar"]}} (không cờ JVM nào). Manifest đặt {{requests: cpu 500m, memory 1536Mi}} và {{limits: cpu "1", memory 1536Mi}} "cho tiết kiệm".
+
+**Triệu chứng:** Sau khi chuyển 100% traffic (09:00 ngày 26/10/2026), p99 lên **450ms**, thỉnh thoảng có request **>1,1 giây**. Pod không bị OOMKilled; {{kubectl top}} cho thấy memory chỉ dùng **~640Mi / 1536Mi** nên team kết luận "không phải vấn đề bộ nhớ" và định tăng số replica.
+
+**Dữ liệu thu thập:** Phần đầu GC log ({{-Xlog:gc*}} được bật tạm qua {{JAVA_TOOL_OPTIONS}}), đoạn log lúc ~09:13, {{jstat -gcutil}}, {{-XX:+PrintFlagsFinal}} chạy trong pod và metric CPU throttling.`,
+  artifacts: [
+    {
+      name: 'gc-merchant-api.log',
+      lang: 'text',
+      content: `[2026-10-26T09:00:00.006+0700][0.006s][info][gc] Using Serial
+[2026-10-26T09:00:00.031+0700][0.031s][info][gc,init] Version: 21.0.4+7-LTS (release)
+[2026-10-26T09:00:00.031+0700][0.031s][info][gc,init] CPUs: 16 total, 1 available
+[2026-10-26T09:00:00.031+0700][0.031s][info][gc,init] Memory: 1536M
+[2026-10-26T09:00:00.031+0700][0.031s][info][gc,init] Large Page Support: Disabled
+[2026-10-26T09:00:00.031+0700][0.031s][info][gc,init] NUMA Support: Disabled
+[2026-10-26T09:00:00.031+0700][0.031s][info][gc,init] Compressed Oops: Enabled (32-bit)
+[2026-10-26T09:00:00.031+0700][0.031s][info][gc,init] Heap Min Capacity: 8M
+[2026-10-26T09:00:00.031+0700][0.031s][info][gc,init] Heap Initial Capacity: 24M
+[2026-10-26T09:00:00.031+0700][0.031s][info][gc,init] Heap Max Capacity: 384M
+[2026-10-26T09:00:00.031+0700][0.031s][info][gc,init] Pre-touch: Disabled
+...
+[2026-10-26T09:13:31.402+0700][811.402s][info][gc,start    ] GC(1286) Pause Young (Allocation Failure)
+[2026-10-26T09:13:31.441+0700][811.441s][info][gc,heap     ] GC(1286) DefNew: 117376K(117952K)->12800K(117952K) Eden: 104832K(104832K)->0K(104832K) From: 12544K(13120K)->12800K(13120K)
+[2026-10-26T09:13:31.441+0700][811.441s][info][gc,heap     ] GC(1286) Tenured: 241210K(262144K)->252330K(262144K)
+[2026-10-26T09:13:31.441+0700][811.441s][info][gc,metaspace] GC(1286) Metaspace: 98211K(99328K)->98211K(99328K) NonClass: 85602K(86272K)->85602K(86272K) Class: 12609K(13056K)->12609K(13056K)
+[2026-10-26T09:13:31.441+0700][811.441s][info][gc          ] GC(1286) Pause Young (Allocation Failure) 350M->258M(371M) 38.912ms
+[2026-10-26T09:13:31.441+0700][811.441s][info][gc,cpu      ] GC(1286) User=0.03s Sys=0.01s Real=0.04s
+[2026-10-26T09:13:32.050+0700][812.050s][info][gc,start    ] GC(1287) Pause Full (Allocation Failure)
+[2026-10-26T09:13:32.050+0700][812.050s][info][gc,phases,start] GC(1287) Phase 1: Mark live objects
+[2026-10-26T09:13:32.332+0700][812.332s][info][gc,phases      ] GC(1287) Phase 1: Mark live objects 281.733ms
+[2026-10-26T09:13:32.332+0700][812.332s][info][gc,phases,start] GC(1287) Phase 2: Compute new object addresses
+[2026-10-26T09:13:32.406+0700][812.406s][info][gc,phases      ] GC(1287) Phase 2: Compute new object addresses 74.120ms
+[2026-10-26T09:13:32.406+0700][812.406s][info][gc,phases,start] GC(1287) Phase 3: Adjust pointers
+[2026-10-26T09:13:32.528+0700][812.528s][info][gc,phases      ] GC(1287) Phase 3: Adjust pointers 121.904ms
+[2026-10-26T09:13:32.528+0700][812.528s][info][gc,phases,start] GC(1287) Phase 4: Move objects
+[2026-10-26T09:13:32.624+0700][812.624s][info][gc,phases      ] GC(1287) Phase 4: Move objects 96.415ms
+[2026-10-26T09:13:32.627+0700][812.627s][info][gc,heap        ] GC(1287) DefNew: 117632K(117952K)->0K(117952K) Eden: 104832K(104832K)->0K(104832K) From: 12800K(13120K)->0K(13120K)
+[2026-10-26T09:13:32.627+0700][812.627s][info][gc,heap        ] GC(1287) Tenured: 252330K(262144K)->201406K(262144K)
+[2026-10-26T09:13:32.627+0700][812.627s][info][gc,metaspace   ] GC(1287) Metaspace: 98211K(99328K)->98211K(99328K) NonClass: 85602K(86272K)->85602K(86272K) Class: 12609K(13056K)->12609K(13056K)
+[2026-10-26T09:13:32.627+0700][812.627s][info][gc             ] GC(1287) Pause Full (Allocation Failure) 361M->196M(371M) 577.102ms
+[2026-10-26T09:13:32.627+0700][812.627s][info][gc,cpu         ] GC(1287) User=0.57s Sys=0.01s Real=0.58s
+[2026-10-26T09:13:33.231+0700][813.231s][info][gc,start       ] GC(1288) Pause Young (Allocation Failure)
+[2026-10-26T09:13:33.262+0700][813.262s][info][gc,heap        ] GC(1288) DefNew: 104832K(117952K)->11520K(117952K) Eden: 104832K(104832K)->0K(104832K) From: 0K(13120K)->11520K(13120K)
+[2026-10-26T09:13:33.262+0700][813.262s][info][gc,heap        ] GC(1288) Tenured: 201406K(262144K)->203210K(262144K)
+[2026-10-26T09:13:33.262+0700][813.262s][info][gc             ] GC(1288) Pause Young (Allocation Failure) 299M->209M(371M) 31.442ms`
+    },
+    {
+      name: 'jstat-flags-k8s.txt',
+      lang: 'text',
+      content: `$ kubectl exec merchant-api-58c7-9pq2d -- jstat -gcutil -t 1 10s 2
+Timestamp         S0     S1     E      O      M     CCS    YGC     YGCT     FGC    FGCT     CGC    CGCT       GCT
+          820.3   0.00  87.80  38.41  77.52  98.88  96.57   1262    41.612    27    15.734      -        -    57.346
+          830.3  97.56   0.00  21.06  79.95  98.88  96.57   1266    41.749    27    15.734      -        -    57.483
+
+$ kubectl exec merchant-api-58c7-9pq2d -- java -XX:+PrintFlagsFinal -version | grep -E ' (UseSerialGC|UseG1GC|MaxHeapSize|InitialHeapSize|MaxRAMPercentage|ActiveProcessorCount) '
+     int ActiveProcessorCount                     = -1                                        {product} {default}
+   size_t InitialHeapSize                          = 25165824                                  {product} {ergonomic}
+   size_t MaxHeapSize                              = 402653184                                 {product} {ergonomic}
+   double MaxRAMPercentage                         = 25.000000                                 {product} {default}
+     bool UseG1GC                                  = false                                     {product} {default}
+     bool UseSerialGC                              = true                                      {product} {ergonomic}
+
+$ kubectl top pod merchant-api-58c7-9pq2d
+NAME                       CPU(cores)   MEMORY(bytes)
+merchant-api-58c7-9pq2d    997m         641Mi
+
+# Prometheus, 09:05-09:15
+# rate(container_cpu_cfs_throttled_periods_total[5m]) / rate(container_cpu_cfs_periods_total[5m]) = 0.41
+# http_server_requests p99 = 452ms, max = 1 140ms (trùng thời điểm Pause Full)
+# Trên VM cũ (4 vCPU, -Xmx2g): "Using G1", Full GC = 0 trong 7 ngày, young pause trung bình 9ms`
+    }
+  ],
+  questions: [
+    'Vì sao JVM chọn Serial GC và heap tối đa 384 MB trong khi không ai cấu hình? Giải thích ergonomics trong container.',
+    'Đọc GC log: chuyện gì xảy ra với old gen (Tenured) và vì sao có Full GC liên tục? Tính tỉ lệ thời gian dành cho GC.',
+    'Vì sao "memory pod chỉ dùng 640Mi / 1536Mi" lại không chứng minh là không có vấn đề bộ nhớ? Đề xuất cấu hình đúng cho pod và JVM.'
+  ],
+  hints: [
+    'Dòng đầu GC log: "Using Serial", "CPUs: 16 total, 1 available", "Memory: 1536M", "Heap Max Capacity: 384M". JVM chỉ coi máy là "server class" (và chọn G1) khi có ít nhất 2 CPU và khoảng 1792 MB RAM.',
+    'MaxRAMPercentage mặc định 25%: 25% × 1536M = 384M. Tenured chỉ có 256M; sau Full GC vẫn còn 201M dữ liệu sống (~77%).',
+    'jstat: 1262 young + 27 full trong 820 giây, GCT 57,3 s. Với 1 CPU bị throttle 41%, mọi pause đều kéo dài và Serial GC dừng toàn bộ app.'
+  ],
+  answer: `**Tóm tắt:** Không có cờ JVM nào, nên JVM dùng **ergonomics**: trong container nó thấy **1 CPU** (từ limit) và **1536 MB** (từ memory limit). Với dưới 2 CPU, JVM không coi đây là "server class machine" nên chọn **Serial GC** (một luồng, dừng toàn bộ app) thay vì G1; và heap tối đa mặc định = **25% RAM = 384 MB**. Live data của app ~200 MB chiếm ~77% old gen 256 MB nên **Full GC mỗi ~30 giây** (577ms mỗi lần) và young GC mỗi ~0,6 giây. Pod chỉ dùng 640Mi vì JVM bị giới hạn heap, không phải vì app ít bộ nhớ. Sửa: đặt {{-XX:MaxRAMPercentage=75}}, nâng CPU limit lên 2 (hoặc bỏ limit), và khai báo GC tường minh.
+
+### Hiểu từ gốc: JVM tự chọn cấu hình như thế nào
+
+Khi không có cờ, HotSpot tự quyết ("ergonomics") dựa trên phần cứng nó **thấy được**. Từ JDK 10 (và 8u191), JVM **nhận biết container**: đọc cgroup để biết CPU quota và memory limit thay vì phần cứng của cả node. Ở pod này:
+
+~~~text
+Node: 16 vCPU, 64 GB          Container (cgroup): cpu limit 1, memory limit 1536Mi
+                                       |
+                    JVM thấy: 1 CPU khả dụng, 1536 MB RAM
+                                       |
+   Server-class?  cần >= 2 CPU VÀ >= ~1792 MB  -> KHÔNG (1 CPU, 1536 MB)
+                                       |
+   GC mặc định:   Serial GC  (thay vì G1)
+   Max heap:      MaxRAMPercentage 25%  x 1536M = 384M
+   Initial heap:  1/64 x 1536M = 24M,   Min heap 8M
+   Young/Old:     NewRatio=2 -> young 128M (eden 102,4M + 2 survivor 12,8M), old (Tenured) 256M
+~~~
+
+Chú ý {{requests: cpu 500m}} không ảnh hưởng: từ JDK 19, JVM bỏ qua cpu shares và chỉ dùng **quota (limit)** để tính số CPU. Cặp "1 CPU, 1,5 GB" là cấu hình "tiết kiệm" phổ biến, và rơi đúng dưới cả hai ngưỡng.
+
+**Serial GC** dùng **một thread** để dọn rác và **dừng toàn bộ ứng dụng** cho mọi lần dọn (young lẫn full). Nó hợp với app nhỏ, heap vài trăm MB, 1 CPU, không cần latency thấp — không hợp với API thanh toán p99 dưới 100ms.
+
+### Đọc GC log từng bước
+
+- {{GC(1286) Pause Young}}: Eden đầy (104832K) → copy object sống sang survivor (12800K) và **đẩy lên Tenured 11 120K** (241210K → 252330K). Tenured chỉ còn ~9,8 MB trống trên 256 MB.
+- {{GC(1287) Pause Full (Allocation Failure)}}: lần young tiếp theo không chắc đủ chỗ để đẩy object lên Tenured, nên Serial chạy **Full GC** (mark-compact cả heap, 1 thread): 577 ms. Sau Full GC Tenured còn **201406K ≈ 197 MB sống** = 77% của 256 MB.
+- {{GC(1288)}}: young bình thường lại, Tenured đã lên 203210K. Mỗi lần young đẩy thêm ~1,6 MB lên Tenured (jstat: O 77,52% → 79,95% sau 4 lần young), nên chỉ cần khoảng 35–40 lần young (~25 giây) là 59 MB trống lại đầy → Full GC tiếp.
+
+Tính từ jstat lúc uptime 820 s: **1 262 young + 27 full**, GCT = 57,3 s → **~7% thời gian app đứng hình vì GC**, trung bình **Full GC mỗi ~30 giây** (820 / 27). Thêm CPU throttling 41% (pod dùng 997m, đụng trần 1 CPU): JIT, GC và request tranh nhau một core, khi bị throttle thì pause kéo dài thêm. Request trùng lúc Full GC chịu thêm ~0,6 s → khớp max 1 140 ms.
+
+### Vì sao "640Mi / 1536Mi" đánh lừa
+
+Bộ nhớ process = heap (tối đa 384M) + metaspace (~98M) + code cache + thread stack + direct buffer + GC structures. Tổng ~640Mi là hợp lý. Pod còn trống 900Mi **vì JVM không được phép dùng**, trong khi heap bên trong đang ngộp (Tenured 77–96%). Kết luận đúng: nhìn **bên trong JVM** (GC log, jstat), không nhìn RSS của container.
+
+Tăng replica cũng không giúp: mỗi replica có cùng heap 384M và cùng live set ~200MB (cache, Spring context), nên Full GC vẫn dày như cũ.
+
+### Dẫn chứng từ artifact
+
+- {{Using Serial}}, {{CPUs: 16 total, 1 available}}, {{Memory: 1536M}}, {{Heap Max Capacity: 384M}}, {{Heap Initial Capacity: 24M}}.
+- PrintFlagsFinal: {{UseSerialGC = true}} (nguồn {{ergonomic}}), {{UseG1GC = false}}, {{MaxHeapSize = 402653184}} (384 MB), {{MaxRAMPercentage = 25}}.
+- Capacity trong log: DefNew 117952K (eden 104832K + 1 survivor 13120K) + Tenured 262144K = 380096K ≈ **371M** ({{(371M)}}), đúng heap 384M trừ một survivor.
+- Full GC 577 ms với User=0.57s ≈ Real=0.58s: một thread duy nhất làm việc (G1 trên VM cũ: User gấp nhiều lần Real vì nhiều worker).
+- jstat: O 77–80%, FGC 27, GCT 57,3 s; CGC = "-" vì Serial không có chu kỳ đồng thời.
+- Throttling 41%, CPU 997m = chạm limit.
+
+### Cách sửa
+
+~~~yaml
+resources:
+  requests: { cpu: "2", memory: 2Gi }
+  limits:   { memory: 2Gi }          # nhiều team bỏ CPU limit, chỉ giữ request
+env:
+  - name: JAVA_TOOL_OPTIONS
+    value: >-
+      -XX:+UseG1GC
+      -XX:MaxRAMPercentage=75.0
+      -XX:+ExitOnOutOfMemoryError
+      -Xlog:gc*:file=/tmp/gc.log:time,uptime,level,tags:filecount=5,filesize=20m
+~~~
+
+- {{MaxRAMPercentage=75}}: heap ~1,5 GB trên 2 GB, chừa ~25% cho metaspace, thread, code cache, direct memory. Đừng đặt 90–100% — sẽ bị OOMKilled vì bộ nhớ ngoài heap.
+- Khai báo GC **tường minh** để không phụ thuộc ngưỡng ergonomics. Nếu buộc phải giữ 1 CPU, G1 vẫn chạy được nhưng thread đồng thời của nó tranh CPU với app; khi đó cân nhắc {{-XX:ActiveProcessorCount=2}} chỉ khi đã hiểu hệ quả, hoặc đơn giản là cấp 2 CPU.
+- Kiểm chứng sau khi đổi: GC log phải in "Using G1", heap sau GC < 50% max, Full GC = 0, throttling < 5%.
+
+| Cấu hình | GC | Max heap | Kết quả dự kiến |
+|---|---|---|---|
+| 1 CPU, 1536Mi, không cờ | Serial (ergonomic) | 384M | Full GC ~30s, p99 450ms |
+| 1 CPU, 1536Mi, MaxRAMPercentage=75 | Serial | 1152M | Ít Full GC, nhưng pause vẫn STW 1 thread |
+| 2 CPU, 2Gi, G1, MaxRAMPercentage=75 | G1 | ~1536M | Young pause ~10ms, gần như không Full GC |
+
+### Lỗi hay gặp
+
+- Copy Dockerfile "java -jar" không cờ và tin JVM tự chọn tốt — trong container nhỏ, mặc định thường là heap 25% và có thể là Serial.
+- Đặt {{-Xmx}} bằng đúng memory limit → pod bị OOMKilled vì bộ nhớ ngoài heap.
+- Đặt CPU limit thấp cho app Java: lúc khởi động JIT cần nhiều CPU, GC cần CPU; throttling làm mọi thứ chậm theo bội số.
+- Nhìn {{kubectl top}} (RSS) để kết luận về heap.
+
+### Trả lời miệng 1 phút
+
+"Không có cờ JVM, nên JVM dùng ergonomics theo cgroup: thấy 1 CPU và 1536 MB, dưới ngưỡng server-class là 2 CPU, nên chọn Serial GC và heap tối đa 25% là 384 MB. GC log ghi rõ Using Serial và Heap Max Capacity 384M. Live data khoảng 200 MB chiếm 77% old gen 256 MB, nên Full GC mỗi 30 giây, mỗi lần 577 ms một luồng; jstat cho thấy 7% thời gian là GC, cộng thêm CPU throttling 41%. Pod chỉ dùng 640Mi vì JVM bị giới hạn, không phải vì app nhẹ. Tôi nâng lên 2 CPU, đặt MaxRAMPercentage 75 và khai báo UseG1GC tường minh, rồi kiểm tra lại bằng GC log."
+
+> Senior tip: Tôi đưa vào chuẩn của team: mọi service Java trên Kubernetes **phải** có {{-XX:MaxRAMPercentage}}, GC tường minh và {{-Xlog:gc*}} xoay vòng file; CI kiểm tra dòng "Using G1" (hoặc GC đã chọn) trong log khởi động. Dòng gc,init đầu log là thứ đầu tiên tôi đọc khi một service "chậm hơn sau khi lên K8s" — 9/10 lần nguyên nhân là heap mặc định 25% hoặc CPU limit quá thấp.`,
+  rubric: [
+    'Giải thích đúng ergonomics trong container: JVM đọc cgroup, thấy 1 CPU và 1536M, dưới ngưỡng server-class (≥2 CPU, ~1792MB) nên chọn Serial GC; MaxRAMPercentage 25% → heap 384M; nêu requests cpu không ảnh hưởng (JDK 19+ dùng quota).',
+    'Đọc đúng GC log: Tenured 256M, sau Full GC còn ~201MB sống (77%), Full GC 577ms một thread (User≈Real), young đẩy object lên Tenured liên tục nên Full GC mỗi ~30s.',
+    'Định lượng từ jstat: 1262 young + 27 full trong 820s, GCT 57,3s (~7%), kết hợp CPU throttling 41%; giải thích vì sao RSS 640Mi và việc tăng replica không chứng minh/không giải quyết được.',
+    'Đề xuất cấu hình đúng: MaxRAMPercentage ~75 (không 100%), GC tường minh (G1), cấp 2 CPU hoặc bỏ CPU limit, bật GC log và cách kiểm chứng sau sửa.'
+  ],
+  tags: ['container', 'kubernetes', 'ergonomics', 'serial-gc', 'max-ram-percentage', 'jstat']
+},
+{
+  id: 'lab-gc-008',
+  category: 'gc',
+  title: 'Old gen tăng 2,65 object mỗi giây: Finalizer thread kẹt vì finalize() đóng kết nối SFTP',
+  level: 'lead',
+  scenario: `**Bối cảnh:** **PayVN Settlement Gateway** (JDK 21.0.4, G1, {{-Xmx4g}}, 4 vCPU) kéo/đẩy file đối soát với trung tâm thanh toán bù trừ qua SFTP. Service dùng thư viện nội bộ cũ {{vn.pay.legacy.sftp}} (viết từ thời Java 6): mỗi {{SftpHandle}} giữ một kênh SSH và một buffer 16 KB, và **đóng kênh trong finalize()**. Code gọi thư viện không bao giờ gọi {{close()}} — "để GC lo".
+
+**Triệu chứng:** Lúc **19:00 ngày 24/10/2026** trung tâm bù trừ nâng cấp SFTP server. Từ đó, heap sau mixed GC của gateway tăng đều: ~980 MB (ổn định suốt 3 tháng trước) → **1 990 MB lúc 02:04** → **2 931 MB lúc 08:07 ngày 25/10**. Pod khởi động lại lúc 19:40 ngày 24/10. Không có thay đổi code. Dự báo theo xu hướng: OOM khoảng 14h chiều.
+
+**Dữ liệu thu thập:** Hai lần {{jcmd 1 GC.class_histogram}}, GC log, {{jstat -gcutil}}, một thread dump và đoạn code thư viện.`,
+  artifacts: [
+    {
+      name: 'class-histogram-2-samples.txt',
+      lang: 'text',
+      content: `### Sample 1: 2026-10-25 02:04:50 (uptime 23090s)  $ jcmd 1 GC.class_histogram | head -8
+1:
+ num     #instances         #bytes  class name (module)
+-------------------------------------------------------
+   1:        112400     1011656032  [B (java.base@21.0.4)
+   2:        284113       13637424  java.lang.String (java.base@21.0.4)
+   3:         61204        2448160  java.lang.ref.Finalizer (java.base@21.0.4)
+   4:         61190        2447600  vn.pay.legacy.sftp.SftpHandle
+   5:         61190        1958080  vn.pay.legacy.sftp.SshChannel
+
+### Sample 2: 2026-10-25 08:07:50 (uptime 44870s)  $ jcmd 1 GC.class_histogram | head -8
+1:
+ num     #instances         #bytes  class name (module)
+-------------------------------------------------------
+   1:        171544     1958392168  [B (java.base@21.0.4)
+   2:        286530       13753440  java.lang.String (java.base@21.0.4)
+   3:        118930        4757200  java.lang.ref.Finalizer (java.base@21.0.4)
+   4:        118911        4756440  vn.pay.legacy.sftp.SftpHandle
+   5:        118911        3805152  vn.pay.legacy.sftp.SshChannel
+
+# Chênh lệch 6h03m (21780 s): SftpHandle +57 721 (≈ 2,65 object/giây), [B +946,7 MB
+# 57 721 x 16 400 byte ([B 16 KB + header) ≈ 946,6 MB
+# Metric app: sftp_handles_opened_total tăng ~3,2/giây; số phiên SFTP đang thật sự dùng: 6-10
+
+### $ jstat -gcutil -t 1 (lấy mẫu mỗi giờ, trích)
+Timestamp         S0     S1     E      O      M     CCS    YGC     YGCT     FGC    FGCT     CGC    CGCT       GCT
+         3600.2   0.00 100.00  48.12  41.33  97.81  94.20    702     8.114     0     0.000     4     0.061     8.175
+        23090.4   0.00 100.00  37.50  63.92  97.83  94.20   4511    56.902     0     0.000    31     0.512    57.414
+        44870.6   0.00 100.00  22.21  88.40  97.83  94.20   8890   118.331     0     0.000    72     1.244   119.575`
+    },
+    {
+      name: 'gc-and-thread-dump.txt',
+      lang: 'text',
+      content: `### GC log (trích), sau mỗi chu kỳ mixed
+[2026-10-24T14:31:12.004+0700][7203412.004s][info][gc] GC(1440211) Pause Young (Mixed) (G1 Evacuation Pause) 1201M->978M(4096M) 22.418ms   # pod cũ, trước nâng cấp SFTP
+[2026-10-25T02:03:58.776+0700][23038.776s][info][gc] GC(4539) Pause Young (Mixed) (G1 Evacuation Pause) 2214M->1990M(4096M) 33.207ms
+[2026-10-25T08:06:41.120+0700][44801.120s][info][gc] GC(8957) Pause Young (Concurrent Start) (G1 Evacuation Pause) 3302M->2950M(4096M) 38.402ms
+[2026-10-25T08:06:41.121+0700][44801.121s][info][gc] GC(8958) Concurrent Mark Cycle
+[2026-10-25T08:06:42.640+0700][44802.640s][info][gc] GC(8958) Pause Remark 2988M->2988M(4096M) 21.118ms
+[2026-10-25T08:06:42.902+0700][44802.902s][info][gc] GC(8958) Pause Cleanup 2990M->2990M(4096M) 0.412ms
+[2026-10-25T08:06:42.923+0700][44802.923s][info][gc] GC(8958) Concurrent Mark Cycle 1802.331ms
+[2026-10-25T08:06:45.311+0700][44805.311s][info][gc] GC(8959) Pause Young (Prepare Mixed) (G1 Evacuation Pause) 3196M->2961M(4096M) 29.774ms
+[2026-10-25T08:06:48.090+0700][44808.090s][info][gc] GC(8960) Pause Young (Mixed) (G1 Evacuation Pause) 3138M->2931M(4096M) 44.106ms
+
+### $ jcmd 1 Thread.print (2026-10-25 08:08:02, trích; 3 lần dump cách 10s đều giống nhau)
+"Finalizer" #10 [33] daemon prio=8 os_prio=0 cpu=48210.55ms elapsed=44882.31s tid=0x00007f6e3c13e000 nid=33 runnable  [0x00007f6e1b5fd000]
+   java.lang.Thread.State: RUNNABLE
+        at sun.nio.ch.Net.poll(java.base@21.0.4/Native Method)
+        at sun.nio.ch.NioSocketImpl.park(java.base@21.0.4/NioSocketImpl.java:191)
+        at sun.nio.ch.NioSocketImpl.timedRead(java.base@21.0.4/NioSocketImpl.java:280)
+        at sun.nio.ch.NioSocketImpl.implRead(java.base@21.0.4/NioSocketImpl.java:304)
+        at sun.nio.ch.NioSocketImpl.read(java.base@21.0.4/NioSocketImpl.java:346)
+        at sun.nio.ch.NioSocketImpl$1.read(java.base@21.0.4/NioSocketImpl.java:796)
+        at java.net.Socket$SocketInputStream.read(java.base@21.0.4/Socket.java:1099)
+        at java.io.DataInputStream.readFully(java.base@21.0.4/DataInputStream.java:208)
+        at vn.pay.legacy.sftp.SshTransport.readPacket(SshTransport.java:212)
+        at vn.pay.legacy.sftp.SshChannel.awaitClose(SshChannel.java:144)
+        at vn.pay.legacy.sftp.SshChannel.disconnect(SshChannel.java:121)
+        at vn.pay.legacy.sftp.SftpHandle.finalize(SftpHandle.java:88)
+        at java.lang.System$2.invokeFinalize(java.base@21.0.4/System.java:2449)
+        at java.lang.ref.Finalizer.runFinalizer(java.base@21.0.4/Finalizer.java:96)
+        at java.lang.ref.Finalizer$FinalizerThread.run(java.base@21.0.4/Finalizer.java:174)
+
+### Log DEBUG của thư viện (bật 60 giây)
+08:09:10.114 DEBUG [Finalizer] v.p.legacy.sftp.SshChannel : close ack ch=88123 waited=1803ms
+08:09:11.921 DEBUG [Finalizer] v.p.legacy.sftp.SshChannel : close ack ch=88124 waited=1798ms
+08:09:13.730 DEBUG [Finalizer] v.p.legacy.sftp.SshChannel : close ack ch=88125 waited=1801ms
+# 60 giây: 33 dòng "close ack" (≈ 0,55/giây). Trước 24/10, waited trung bình 18ms.`
+    },
+    {
+      name: 'SftpHandle-and-usage.java',
+      lang: 'java',
+      content: `// Thư viện nội bộ vn.pay.legacy.sftp (2011)
+public class SftpHandle {
+    private final SshChannel channel;
+    private final byte[] buffer = new byte[16 * 1024];   // 16 KB mỗi handle
+
+    public void close() { channel.disconnect(); }         // có nhưng không ai gọi
+
+    @Override
+    protected void finalize() throws Throwable {          // dòng 85
+        try {
+            if (channel.isOpen()) {
+                channel.disconnect();                     // dòng 88: gửi CLOSE, chờ ack (timeout 2s)
+            }
+        } finally { super.finalize(); }
+    }
+}
+
+// Code ứng dụng: StatementPuller chạy liên tục cho 12 thư mục
+for (RemoteFile f : listing) {
+    SftpHandle h = sftp.open(f.path());                    // ~3,2 handle/giây
+    store.save(f.name(), h.readAll());
+    // không close: "GC sẽ gọi finalize để đóng"
+}`
+    }
+  ],
+  questions: [
+    'Vì sao heap tăng đều dù số phiên SFTP thật sự đang dùng chỉ 6–10? Giải thích cơ chế finalization trong JVM từng bước và vì sao object có finalize() sống lâu hơn object thường.',
+    'Dùng số liệu trong artifact, chứng minh tốc độ tích luỹ khớp với chênh lệch giữa tốc độ tạo handle và tốc độ Finalizer thread xử lý.',
+    'Đề xuất kế hoạch xử lý: ngắn hạn (trước 14h), sửa gốc, và chính sách cho cả codebase về finalize()/Cleaner trên JDK 21.'
+  ],
+  hints: [
+    'Histogram: số {{SftpHandle}} ≈ số {{java.lang.ref.Finalizer}} và cùng tăng; mỗi handle kéo theo một {{[B}} 16 KB. Nhưng chỉ có 6–10 phiên đang dùng — phần còn lại đang chờ gì?',
+    'JVM chỉ có MỘT thread "Finalizer" chạy lần lượt mọi finalize(). Thread này đang làm gì trong 3 dump liên tiếp? Mỗi lần mất bao lâu (log DEBUG)?',
+    'Tạo 3,2/giây, finalize xong 1/1,8s ≈ 0,55/giây → hàng đợi tăng 2,65/giây. Nhân với 21 780 giây giữa hai sample, rồi nhân với 16 400 byte.'
+  ],
+  answer: `**Tóm tắt:** Đây là **finalizer backlog**, không phải leak kiểu "ai đó giữ tham chiếu". Code không gọi {{close()}}, nên mỗi {{SftpHandle}} chỉ được dọn qua {{finalize()}}. JVM chạy mọi finalize() trên **một thread "Finalizer" duy nhất**; sau khi SFTP server nâng cấp, {{finalize()}} chặn ~1,8 giây chờ ack đóng kênh, nên Finalizer chỉ xử lý **~0,55 handle/giây** trong khi app tạo **~3,2 handle/giây**. Hàng chờ tăng **2,65 object/giây**, mỗi object giữ buffer 16 KB → ~946 MB mỗi 6 giờ, khớp histogram và GC log. Sửa: gọi {{close()}} tường minh (try-with-resources), bỏ IO khỏi finalize, và loại bỏ finalize() khỏi codebase.
+
+### Hiểu từ gốc: object có finalize() chết như thế nào
+
+Object thường: khi không còn ai tham chiếu, lần GC tiếp theo thu hồi luôn. Object có {{finalize()}} thì khác — JVM phải **gọi finalize() trước khi được phép xoá**, và finalize() là code Java bất kỳ, có thể chạy lâu, thậm chí "hồi sinh" object. Quy trình:
+
+~~~text
+1. new SftpHandle()  -> JVM tạo kèm một java.lang.ref.Finalizer trỏ tới nó
+                        (vì vậy số Finalizer ~ số SftpHandle trong histogram)
+2. App bỏ tham chiếu -> object "không còn ai dùng"
+3. GC phát hiện      -> KHÔNG xoá; đưa Finalizer vào hàng đợi (ReferenceQueue).
+                        Object + mọi thứ nó trỏ tới (buffer 16 KB, SshChannel) vẫn SỐNG,
+                        thường bị promote lên old gen trong lúc chờ.
+4. Thread "Finalizer" (1 thread, priority 8) lấy lần lượt từng phần tử, gọi finalize()
+5. GC lần sau        -> lúc này mới thực sự thu hồi object và buffer
+~~~
+
+Điểm then chốt: bước 4 là **một hàng đợi, một người phục vụ**. Nếu một finalize() mất 1,8 giây, cả hàng phải chờ. GC không thể "dọn nhanh hơn" — nó chỉ có thể xoá object **sau** khi Finalizer xử lý xong. Vì vậy heap sau GC tăng đều, G1 chạy concurrent mark + mixed đầy đủ nhưng không thu hồi được gì thêm: các object này **còn reachable** từ hàng đợi finalization.
+
+Ví dụ đời thường: một văn phòng có một nhân viên huỷ tài liệu. Mỗi tài liệu phải được gọi điện xác nhận trước khi huỷ. Trước đây mỗi cuộc gọi 18ms; nay đối tác bắt máy chậm, 1,8 giây. Tài liệu chờ huỷ chất đống trong kho (heap) dù không ai cần đến chúng.
+
+### Định lượng: số liệu khớp nhau
+
+| Đại lượng | Giá trị | Nguồn |
+|---|---|---|
+| Tốc độ tạo handle | ~3,2/giây | {{sftp_handles_opened_total}} |
+| Tốc độ finalize | 33 / 60 s ≈ 0,55/giây (1,8 s mỗi lần) | log DEBUG "close ack waited≈1800ms" |
+| Tích luỹ | 3,2 − 0,55 ≈ **2,65/giây** | |
+| Thực tế | (118 911 − 61 190) / 21 780 s = **2,65/giây** | 2 histogram |
+| Bộ nhớ | 57 721 × 16 400 B ≈ **946,6 MB** | histogram: [B tăng 946,7 MB |
+| Heap sau mixed | 1 990 → 2 931 MB (+941 MB) | GC log |
+| Kiểm tra mốc 1 | 23 090 s × 2,65 ≈ 61 190 handle | khớp sample 1 |
+
+Trước 24/10, close ack ~18 ms → Finalizer xử lý ~55/giây, dư sức so với 3,2/giây, nên lỗi thiết kế "không close" đã **ngủ yên 3 tháng**. Thay đổi bên ngoài (SFTP server chậm ack) làm nó bùng phát. Dự báo: heap max 4 096 MB, nền ~980 MB, mỗi giờ thêm ~156 MB (2,65 × 3 600 × 16,4 KB) → còn ~1 000 MB trống lúc 08:07 → hết sau ~6–7 giờ, khoảng 14h.
+
+### Dẫn chứng từ artifact
+
+- Histogram: {{SftpHandle}} 61 190 → 118 911 và {{SshChannel}} cùng số; {{java.lang.ref.Finalizer}} 61 204 → 118 930 (gần bằng: mỗi handle một Finalizer, thêm 14–19 của class khác). [B tăng từ 1,01 GB lên 1,96 GB. Trong khi app chỉ có 6–10 phiên SFTP thật.
+- Thread dump: thread **"Finalizer"** RUNNABLE nhưng thực chất đang chờ socket ({{Net.poll}} native) trong {{SshChannel.awaitClose}} ← {{SshChannel.disconnect}} ← {{SftpHandle.finalize(SftpHandle.java:88)}} ← {{Finalizer.runFinalizer}}; 3 dump liên tiếp giống nhau.
+- GC log: heap sau mixed 978M (pod cũ) → 1 990M → 2 931M; concurrent mark chạy bình thường (1,8s), pause ngắn — **G1 không có lỗi**, nó chỉ không được phép xoá các object này. FGC = 0 vẫn đúng: chưa tới lúc hết chỗ.
+- jstat: O 41% → 64% → 88%, CGC tăng (31 → 72) vì old gen vượt IHOP thường xuyên hơn.
+- Code: {{close()}} tồn tại nhưng {{StatementPuller}} không gọi.
+
+### Kế hoạch xử lý
+
+**Ngắn hạn (trước 14h):**
+- Rolling restart pod trong khung giờ ít giao dịch để reset hàng đợi (mua thời gian ~18 giờ).
+- Hotfix nhỏ nhất: gọi {{close()}} trong {{StatementPuller}} bằng try-with-resources. Nếu {{SftpHandle}} chưa implements {{AutoCloseable}}, dùng try/finally.
+
+~~~java
+for (RemoteFile f : listing) {
+    try (SftpHandle h = sftp.open(f.path())) {   // cần SftpHandle implements AutoCloseable
+        store.save(f.name(), h.readAll());
+    }                                             // close() chạy NGAY, trên thread của app
+}
+// close() được gọi tường minh -> channel đã đóng -> finalize() thấy !isOpen() và return ngay
+~~~
+
+Sau hotfix, finalize() vẫn được gọi nhưng chỉ kiểm tra {{isOpen()}} rồi thoát trong micro giây, nên hàng đợi tiêu biến.
+
+**Sửa gốc trong thư viện:**
+- Cho {{SftpHandle implements AutoCloseable}}; {{close()}} có timeout ngắn và idempotent.
+- **Xoá finalize()**. Nếu cần lưới an toàn khi người dùng quên close, dùng {{java.lang.ref.Cleaner}} với action chỉ **ghi log cảnh báo + đóng socket cục bộ** (không chờ mạng). Cleaner cũng chạy trên thread dùng chung — action chậm vẫn gây backlog y như finalize.
+
+**Chính sách codebase (JDK 21):**
+- Finalization đã **deprecated for removal** (JEP 421, JDK 18). Cấm {{finalize()}} trong code mới; quét dependency.
+- Chạy test và staging với {{--finalization=disabled}} (JDK 18+) để phát hiện code đang dựa vào finalize để giải phóng tài nguyên.
+- Theo dõi: JFR có event {{jdk.FinalizerStatistics}} (JDK 18+) liệt kê class nào có finalizer và số lần chạy; alert khi histogram cho thấy {{java.lang.ref.Finalizer}} tăng liên tục.
+- Nguyên tắc: tài nguyên ngoài JVM (socket, file, kênh SSH, connection) **phải** đóng tường minh; GC chỉ quản lý bộ nhớ heap, không quản lý tài nguyên.
+
+| Cơ chế | Thời điểm chạy | Thread | Rủi ro |
+|---|---|---|---|
+| try-with-resources / close() | Ngay lập tức, xác định | Thread của app | Quên gọi (dùng static analysis để bắt) |
+| Cleaner | Sau khi GC phát hiện unreachable | Thread Cleaner dùng chung | Action chậm → backlog; không đảm bảo chạy |
+| finalize() | Sau GC, không xác định | 1 thread Finalizer | Backlog, hồi sinh object, deprecated |
+
+### Lỗi hay gặp
+
+- Thấy heap tăng liền nghĩ "cache leak" và đi tìm map static; trong histogram phải để ý {{java.lang.ref.Finalizer}} — số lượng lớn là dấu hiệu finalization.
+- Tăng {{-Xmx}}: chỉ kéo dài thời gian tới OOM, tốc độ tích luỹ không đổi.
+- Nghĩ có thể "ép" chạy finalize bằng {{System.gc()}} hoặc {{System.runFinalization()}}: không làm Finalizer chạy nhanh hơn khi mỗi finalize() chặn 1,8 giây.
+- Bỏ qua thread "Finalizer" khi đọc dump vì nó là thread hệ thống.
+- Lưu ý: {{GC.class_histogram}} mặc định kích hoạt Full GC để đếm object sống — trên heap lớn sẽ gây pause; chạy ngoài giờ cao điểm.
+
+### Trả lời miệng 1 phút
+
+"Hai histogram cho thấy SftpHandle và java.lang.ref.Finalizer tăng cùng nhau, từ 61 nghìn lên 119 nghìn, mỗi handle giữ buffer 16 KB, trong khi chỉ 6–10 phiên SFTP thật đang dùng. Code không gọi close, nên handle chỉ được dọn qua finalize, mà JVM chỉ có một thread Finalizer. Thread dump cho thấy Finalizer kẹt ở finalize dòng 88 chờ ack đóng kênh, log ghi 1,8 giây mỗi lần kể từ khi SFTP server nâng cấp. Tạo 3,2 mỗi giây, xử lý 0,55 mỗi giây, dư 2,65 mỗi giây, đúng bằng tốc độ tăng đo được, và nhân với 16 KB ra 946 MB mỗi 6 giờ, khớp GC log. Ngắn hạn tôi restart và hotfix try-with-resources; dài hạn bỏ finalize, đóng tài nguyên tường minh, chạy test với --finalization=disabled."
+
+> Senior tip: Một heuristic tôi hay dùng: nếu "leak" có **tốc độ đều tuyệt đối** và khởi phát trùng với thay đổi **bên ngoài** (đối tác, mạng, DB) chứ không trùng deploy, hãy nghĩ đến một hàng đợi có một consumer chậm đi — Finalizer, Cleaner, AsyncAppender, executor một thread. Lấy tốc độ vào trừ tốc độ ra, nhân thời gian, so với histogram; khi ba con số khớp nhau tới 1%, bạn đã có root cause đủ chắc để trình bày trong postmortem.`,
+  rubric: [
+    'Nhận diện đúng finalizer backlog: SftpHandle không được close, chỉ dọn qua finalize(); một thread Finalizer duy nhất; object chờ finalize vẫn reachable nên GC không thu hồi được (G1 không có lỗi).',
+    'Dẫn chứng: histogram SftpHandle ≈ Finalizer cùng tăng 61190→118911, [B +946MB; thread Finalizer kẹt ở SftpHandle.finalize dòng 88 chờ ack socket; log close ack ~1800ms; heap sau mixed 978→1990→2931MB.',
+    'Định lượng khớp: tạo ~3,2/s, finalize ~0,55/s, tích luỹ 2,65/s = (118911−61190)/21780s; ×16400B ≈ 946MB; giải thích vì sao lỗi ngủ yên khi ack 18ms và dự báo thời điểm OOM.',
+    'Kế hoạch: ngắn hạn restart + try-with-resources; sửa gốc AutoCloseable, bỏ finalize, Cleaner chỉ làm việc nhanh; chính sách JDK 21 (JEP 421 deprecated, --finalization=disabled, JFR jdk.FinalizerStatistics, không dùng GC để quản lý tài nguyên).'
+  ],
+  tags: ['finalizer', 'finalization', 'class-histogram', 'g1', 'resource-leak', 'jep-421']
+}
 );
 // APPEND_END

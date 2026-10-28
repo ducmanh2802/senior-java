@@ -1428,4 +1428,766 @@ Pattern được biên dịch và match trong {{TransferValidator.isValidReferen
   ],
   tags: ['high-cpu', 'regex', 'redos', 'jstack', 'top-h']
 },
+{
+  id: 'lab-thread-006',
+  category: 'thread',
+  title: 'Campaign 20:00: API báo giá treo vĩnh viễn, 16 thread quote-pool cùng chờ join()',
+  level: 'senior',
+  scenario: `**Bối cảnh:** **PayVN Checkout** (Spring Boot 3.4, Java 21, pod 4 vCPU) có endpoint {{POST /checkout/quote}} tính giá cuối cho giỏ hàng. Để "chạy song song cho nhanh", {{QuoteService}} chạy phần tính giá trên một executor riêng {{quoteExecutor = Executors.newFixedThreadPool(16)}} (thread đặt tên {{quote-pool-N}}). Bên trong task tính giá, code lại gửi thêm 2 task con (phí ship, voucher) lên **cùng executor đó** rồi {{join()}}. Controller chờ kết quả bằng {{future.get(3, SECONDS)}}.
+
+**Triệu chứng:** Ngày thường (~60 req/s) chưa từng lỗi. Lúc **20:00:04 ngày 24/10/2026** campaign mở, tải lên ~900 req/s. Từ **20:00:06** mọi request {{/checkout/quote}} đều trả **504 sau đúng 3 giây**, kể cả khi tải đã giảm về 50 req/s lúc 20:20. CPU pod chỉ **2–3%**, DB và hai service phí ship/voucher hoàn toàn bình thường (chúng gần như **không nhận được request nào** từ checkout sau 20:00:06). Không có exception nào ngoài {{TimeoutException}}. Restart pod là hết, cho tới đợt tải đột biến tiếp theo.
+
+**Dữ liệu thu thập:** {{jcmd 1 Thread.print -l}} lúc 20:07:15, metric executor từ Micrometer, log ứng dụng và đoạn code {{QuoteService}}.`,
+  artifacts: [
+    {
+      name: 'thread-print-checkout-20-07.txt',
+      lang: 'text',
+      content: `1:
+2026-10-24 20:07:15
+Full thread dump OpenJDK 64-Bit Server VM (21.0.4+7-LTS-151 mixed mode, sharing):
+
+"quote-pool-1" #58 [3117] prio=5 os_prio=0 cpu=1204.33ms elapsed=29011.40s tid=0x00007f1e4c3a2000 nid=3117 waiting on condition  [0x00007f1dfa1f0000]
+   java.lang.Thread.State: WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+        - parking to wait for  <0x00000007a1c2e3f8> (a java.util.concurrent.CompletableFuture$Signaller)
+        at java.util.concurrent.locks.LockSupport.park(java.base@21.0.4/LockSupport.java:371)
+        at java.util.concurrent.CompletableFuture$Signaller.block(java.base@21.0.4/CompletableFuture.java:1898)
+        at java.util.concurrent.ForkJoinPool.unmanagedBlock(java.base@21.0.4/ForkJoinPool.java:3780)
+        at java.util.concurrent.ForkJoinPool.managedBlock(java.base@21.0.4/ForkJoinPool.java:3725)
+        at java.util.concurrent.CompletableFuture.waitingGet(java.base@21.0.4/CompletableFuture.java:1932)
+        at java.util.concurrent.CompletableFuture.join(java.base@21.0.4/CompletableFuture.java:2117)
+        at vn.pay.checkout.quote.QuoteService.buildQuote(QuoteService.java:74)
+        at vn.pay.checkout.quote.QuoteService.lambda$quoteAsync$0(QuoteService.java:52)
+        at vn.pay.checkout.quote.QuoteService$$Lambda/0x00007f1dd8331a20.get(Unknown Source)
+        at java.util.concurrent.CompletableFuture$AsyncSupply.run(java.base@21.0.4/CompletableFuture.java:1768)
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(java.base@21.0.4/ThreadPoolExecutor.java:1144)
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(java.base@21.0.4/ThreadPoolExecutor.java:642)
+        at java.lang.Thread.run(java.base@21.0.4/Thread.java:1583)
+
+   Locked ownable synchronizers:
+        - <0x00000007a0f11a20> (a java.util.concurrent.ThreadPoolExecutor$Worker)
+
+"quote-pool-2" #59 [3118] prio=5 os_prio=0 cpu=1198.07ms elapsed=29011.39s tid=0x00007f1e4c3a4000 nid=3118 waiting on condition  [0x00007f1dfa0ef000]
+   java.lang.Thread.State: WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+        - parking to wait for  <0x00000007a1c31b70> (a java.util.concurrent.CompletableFuture$Signaller)
+        at java.util.concurrent.locks.LockSupport.park(java.base@21.0.4/LockSupport.java:371)
+        at java.util.concurrent.CompletableFuture$Signaller.block(java.base@21.0.4/CompletableFuture.java:1898)
+        at java.util.concurrent.ForkJoinPool.unmanagedBlock(java.base@21.0.4/ForkJoinPool.java:3780)
+        at java.util.concurrent.ForkJoinPool.managedBlock(java.base@21.0.4/ForkJoinPool.java:3725)
+        at java.util.concurrent.CompletableFuture.waitingGet(java.base@21.0.4/CompletableFuture.java:1932)
+        at java.util.concurrent.CompletableFuture.join(java.base@21.0.4/CompletableFuture.java:2117)
+        at vn.pay.checkout.quote.QuoteService.buildQuote(QuoteService.java:74)
+        at vn.pay.checkout.quote.QuoteService.lambda$quoteAsync$0(QuoteService.java:52)
+        at vn.pay.checkout.quote.QuoteService$$Lambda/0x00007f1dd8331a20.get(Unknown Source)
+        at java.util.concurrent.CompletableFuture$AsyncSupply.run(java.base@21.0.4/CompletableFuture.java:1768)
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(java.base@21.0.4/ThreadPoolExecutor.java:1144)
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(java.base@21.0.4/ThreadPoolExecutor.java:642)
+        at java.lang.Thread.run(java.base@21.0.4/Thread.java:1583)
+
+   Locked ownable synchronizers:
+        - <0x00000007a0f11c58> (a java.util.concurrent.ThreadPoolExecutor$Worker)
+
+"quote-pool-16" #73 [3132] prio=5 os_prio=0 cpu=1187.92ms elapsed=29011.21s tid=0x00007f1e4c3c1000 nid=3132 waiting on condition  [0x00007f1df92e1000]
+   java.lang.Thread.State: WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+        - parking to wait for  <0x00000007a1c6d208> (a java.util.concurrent.CompletableFuture$Signaller)
+        at java.util.concurrent.locks.LockSupport.park(java.base@21.0.4/LockSupport.java:371)
+        at java.util.concurrent.CompletableFuture$Signaller.block(java.base@21.0.4/CompletableFuture.java:1898)
+        at java.util.concurrent.ForkJoinPool.unmanagedBlock(java.base@21.0.4/ForkJoinPool.java:3780)
+        at java.util.concurrent.ForkJoinPool.managedBlock(java.base@21.0.4/ForkJoinPool.java:3725)
+        at java.util.concurrent.CompletableFuture.waitingGet(java.base@21.0.4/CompletableFuture.java:1932)
+        at java.util.concurrent.CompletableFuture.join(java.base@21.0.4/CompletableFuture.java:2117)
+        at vn.pay.checkout.quote.QuoteService.buildQuote(QuoteService.java:74)
+        at vn.pay.checkout.quote.QuoteService.lambda$quoteAsync$0(QuoteService.java:52)
+        at vn.pay.checkout.quote.QuoteService$$Lambda/0x00007f1dd8331a20.get(Unknown Source)
+        at java.util.concurrent.CompletableFuture$AsyncSupply.run(java.base@21.0.4/CompletableFuture.java:1768)
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(java.base@21.0.4/ThreadPoolExecutor.java:1144)
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(java.base@21.0.4/ThreadPoolExecutor.java:642)
+        at java.lang.Thread.run(java.base@21.0.4/Thread.java:1583)
+
+   Locked ownable synchronizers:
+        - <0x00000007a0f13e90> (a java.util.concurrent.ThreadPoolExecutor$Worker)
+
+"http-nio-8080-exec-118" #241 [3417] daemon prio=5 os_prio=0 cpu=88.41ms elapsed=421.07s tid=0x00007f1e4c8d9000 nid=3417 waiting on condition  [0x00007f1dd2bfa000]
+   java.lang.Thread.State: TIMED_WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+        - parking to wait for  <0x00000007a7e40c10> (a java.util.concurrent.CompletableFuture$Signaller)
+        at java.util.concurrent.locks.LockSupport.parkNanos(java.base@21.0.4/LockSupport.java:269)
+        at java.util.concurrent.CompletableFuture$Signaller.block(java.base@21.0.4/CompletableFuture.java:1896)
+        at java.util.concurrent.ForkJoinPool.unmanagedBlock(java.base@21.0.4/ForkJoinPool.java:3780)
+        at java.util.concurrent.ForkJoinPool.managedBlock(java.base@21.0.4/ForkJoinPool.java:3725)
+        at java.util.concurrent.CompletableFuture.timedGet(java.base@21.0.4/CompletableFuture.java:1997)
+        at java.util.concurrent.CompletableFuture.get(java.base@21.0.4/CompletableFuture.java:2095)
+        at vn.pay.checkout.quote.QuoteController.quote(QuoteController.java:38)
+        at jdk.internal.reflect.DirectMethodHandleAccessor.invoke(java.base@21.0.4/DirectMethodHandleAccessor.java:103)
+        at org.springframework.web.servlet.DispatcherServlet.doDispatch(DispatcherServlet.java:1089)
+        at org.apache.tomcat.util.threads.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:1190)
+        at java.lang.Thread.run(java.base@21.0.4/Thread.java:1583)
+
+   Locked ownable synchronizers:
+        - <0x00000007a69d0e48> (a org.apache.tomcat.util.threads.ThreadPoolExecutor$Worker)
+
+# Ghi chú on-call:
+#   grep -c '"quote-pool-' td.txt                         -> 16   (đúng bằng corePoolSize = maxPoolSize = 16)
+#   grep -A11 '"quote-pool-' td.txt | grep -c 'buildQuote(QuoteService.java:74)'  -> 16
+#   16 Signaller khác nhau, không thread nào RUNNABLE trong pool.
+#   Cuối dump KHÔNG có dòng "Found one Java-level deadlock".`
+    },
+    {
+      name: 'metrics-and-log.txt',
+      lang: 'text',
+      content: `# Micrometer ExecutorServiceMetrics (Prometheus), pod checkout-6b8f-2xk4q
+# time       pool_size  active  queued  completed_total
+20:00:00         16        3       0      1208311
+20:00:05         16       16      41      1208339
+20:00:06         16       16     312      1208344
+20:01:00         16       16    9 870      1208344
+20:05:00         16       16   41 236      1208344
+20:07:00         16       16   50 994      1208344
+
+executor_pool_size_threads{name="quoteExecutor"} 16.0
+executor_active_threads{name="quoteExecutor"} 16.0
+executor_queued_tasks{name="quoteExecutor"} 50994.0
+executor_completed_tasks_total{name="quoteExecutor"} 1208344.0
+
+# downstream (cùng khung giờ)
+http_client_requests_seconds_count{uri="/shipping/fee"}   tăng 0 kể từ 20:00:06
+http_client_requests_seconds_count{uri="/voucher/best"}   tăng 0 kể từ 20:00:06
+
+# log ứng dụng
+2026-10-24T20:00:06.412+07:00  WARN 1 --- [nio-8080-exec-7] v.p.checkout.quote.QuoteController : quote timeout after 3000ms cart=C-88120931
+2026-10-24T20:00:06.415+07:00  WARN 1 --- [nio-8080-exec-9] v.p.checkout.quote.QuoteController : quote timeout after 3000ms cart=C-88120944
+2026-10-24T20:07:14.902+07:00  WARN 1 --- [io-8080-exec-118] v.p.checkout.quote.QuoteController : quote timeout after 3000ms cart=C-88431187
+# kubectl top pod: CPU 104m / 4000m, memory 1.9Gi (tăng dần, ngày thường 1.2Gi)`
+    },
+    {
+      name: 'QuoteService.java',
+      lang: 'java',
+      content: `@Configuration
+class ExecutorConfig {
+    @Bean
+    ExecutorService quoteExecutor() {
+        // FixedThreadPool: 16 thread, hàng đợi LinkedBlockingQueue KHÔNG giới hạn
+        return Executors.newFixedThreadPool(16, Thread.ofPlatform().name("quote-pool-", 1).factory());
+    }
+}
+
+@Service
+public class QuoteService {                                          // dòng 45
+    private final ExecutorService quoteExecutor;
+    // ... constructor injection, shippingClient, voucherClient, pricing
+
+    public CompletableFuture<Quote> quoteAsync(Order order) {         // dòng 50
+        return CompletableFuture.supplyAsync(
+                () -> buildQuote(order), quoteExecutor);               // dòng 52: task CHA
+    }
+
+    Quote buildQuote(Order order) {                                    // dòng 66
+        CompletableFuture<Fee> fee = CompletableFuture.supplyAsync(
+                () -> shippingClient.fee(order), quoteExecutor);       // task CON 1
+        CompletableFuture<Voucher> voucher = CompletableFuture.supplyAsync(
+                () -> voucherClient.best(order), quoteExecutor);       // task CON 2
+        Price base = pricing.base(order);                              // ~5 ms
+        // chờ task con, KHÔNG có timeout
+        return Quote.of(base, fee.join(), voucher.join());             // dòng 74
+    }
+}
+
+// QuoteController dòng 38:
+//   return quoteService.quoteAsync(order).get(3, TimeUnit.SECONDS);`
+    }
+  ],
+  questions: [
+    'Vì sao pool 16 thread treo vĩnh viễn trong khi CPU gần 0 và downstream rảnh? Dẫn chứng bằng dump và metric.',
+    'Vì sao jstack không báo deadlock dù hệ thống "kẹt cứng"? Hiện tượng này gọi là gì?',
+    'Bạn sửa thế nào (ngắn hạn, dài hạn) và làm sao để test tái hiện được lỗi trước khi lên production?'
+  ],
+  hints: [
+    'Đếm số thread quote-pool và xem cả 16 đang làm gì: tất cả cùng dừng ở {{buildQuote(QuoteService.java:74)}}, tức là đang {{join()}} chờ task con.',
+    'Task con được gửi vào đâu? Nếu cả 16 thread đều đang bận chờ, ai sẽ lấy task con ra khỏi hàng đợi để chạy?',
+    'Metric: {{active=16}}, {{queued}} tăng liên tục, {{completed_total}} đứng yên ở 1208344 từ 20:00:06, và downstream nhận 0 request. Đây là thread-starvation deadlock (pool-induced deadlock), không phải deadlock khoá.'
+  ],
+  answer: `**Tóm tắt:** Đây là **thread-starvation deadlock** (còn gọi là pool-induced deadlock): task cha chạy trên {{quoteExecutor}} lại gửi task con vào **chính executor đó** rồi {{join()}} chờ. Lúc 20:00:05 tải đột biến làm cả 16 thread cùng chạy task cha; task con của chúng nằm trong hàng đợi phía sau, **không còn thread nào rảnh để chạy**, nên 16 thread chờ nhau mãi mãi. Sửa: không bao giờ chặn chờ task con trên cùng pool bị giới hạn — dùng executor riêng cho task con (hoặc gọi đồng bộ), hoặc ghép bằng {{thenCombine}} không chặn, luôn có timeout.
+
+### Hiểu từ gốc: thread pool cố định hoạt động thế nào
+
+Hình dung quầy giao dịch có **16 nhân viên** (16 thread) và **một hàng chờ dài vô tận** (LinkedBlockingQueue không giới hạn). Khách (task) xếp hàng, nhân viên rảnh thì gọi khách tiếp theo. Một nhân viên chỉ phục vụ được 1 khách tại một thời điểm.
+
+Bây giờ mỗi khách lại yêu cầu: "tôi cần thêm 2 giấy tờ phụ, hãy lấy số thứ tự cho giấy tờ đó rồi **tôi đứng chờ ở quầy** cho tới khi có". Giấy tờ phụ cũng phải xếp **cùng hàng chờ** và cũng phải do **một trong 16 nhân viên** làm. Ngày vắng: 3 nhân viên bận, 13 người rảnh lập tức xử lý giấy tờ phụ, mọi thứ trôi. Ngày campaign: 16 khách lên quầy cùng lúc, cả 16 nhân viên đứng chờ giấy tờ phụ, mà giấy tờ phụ nằm trong hàng chờ **phía sau** hàng trăm khách khác. Không ai rảnh để làm giấy tờ phụ, nên không ai xong. Đó là "đói thread" dẫn đến kẹt vĩnh viễn.
+
+~~~text
+quoteExecutor (16 thread)                 LinkedBlockingQueue (không giới hạn)
++---------------------------+            +---------------------------------------+
+| quote-pool-1 : CHA#1 join |--chờ--+    | CHA#17 | CHA#18 | ... | CON1#1 | CON2#1|
+| quote-pool-2 : CHA#2 join |--chờ--|--> | ... CON1#2 | CON2#2 ... CON1#16 ...    |
+| ...                       |       |    +---------------------------------------+
+| quote-pool-16: CHA#16 join|--chờ--+       ^ task con nằm đây, không ai lấy ra
++---------------------------+
+Điều kiện kẹt: số task CHA đang chạy = kích thước pool (16) VÀ mỗi CHA chờ CON cùng pool.
+~~~
+
+Vì sao ngày thường không lỗi? Ở 60 req/s, mỗi quote ~60 ms nên trung bình chỉ ~4 task cha chạy đồng thời; luôn còn thread rảnh cho task con. Lỗi chỉ xuất hiện khi **số task cha đồng thời chạm 16** — đúng lúc burst 900 req/s. Và một khi đã kẹt thì **không bao giờ tự thoát**, vì {{join()}} không có timeout; tải giảm về 50 req/s cũng vô ích.
+
+### Vì sao jstack không báo deadlock
+
+JVM chỉ phát hiện deadlock dạng **vòng khoá**: thread A giữ monitor/lock X chờ Y, thread B giữ Y chờ X (monitor của {{synchronized}} hoặc ownable synchronizer như {{ReentrantLock}}). Ở đây không thread nào **giữ** thứ mà thread khác đang chờ: mỗi quote-pool chờ một {{CompletableFuture$Signaller}} riêng (16 id khác nhau), tức chờ một **sự kiện tương lai** ("future hoàn thành"). JVM không biết future đó phụ thuộc vào việc một thread trong pool được rảnh. Vì vậy dump không có dòng "Found one Java-level deadlock" — nhưng về bản chất vẫn là deadlock tài nguyên (tài nguyên = thread của pool). Dòng {{ThreadPoolExecutor$Worker}} trong "Locked ownable synchronizers" chỉ là khoá nội bộ worker tự giữ khi đang chạy task, không liên quan.
+
+Chú ý thêm stack có {{ForkJoinPool.managedBlock}} → {{unmanagedBlock}}: {{CompletableFuture}} có cơ chế "báo trước tôi sắp chặn" để **ForkJoinPool** tạo thêm thread bù. Nhưng thread đang chạy là thread của {{ThreadPoolExecutor}} thường, nên rơi vào nhánh {{unmanagedBlock}}: **không có thread bù nào**.
+
+### Dẫn chứng từ artifact
+
+- **Cả 16** thread {{quote-pool-1..16}} ở {{WAITING (parking)}} trên {{CompletableFuture$Signaller}} với stack {{join}} ← {{buildQuote(QuoteService.java:74)}} ← {{lambda$quoteAsync$0(QuoteService.java:52)}}: tức là thread đang chạy **task cha** và chờ **task con**. Không thread nào trong pool đang chạy task con.
+- Code dòng 66–74: task con gửi vào {{quoteExecutor}} — cùng pool với task cha; {{join()}} không timeout.
+- Metric: {{active_threads=16}} = pool size; {{queued_tasks}} từ 41 (20:00:05) lên **50 994** (20:07); {{completed_tasks_total}} **đứng yên ở 1 208 344** từ 20:00:06 → pool không hoàn thành thêm task nào trong 7 phút.
+- Downstream {{/shipping/fee}} và {{/voucher/best}} nhận **0 request** sau 20:00:06: task con chưa bao giờ được chạy, loại trừ giả thuyết "downstream chậm".
+- CPU 104m/4000m: mọi thread đều đang park, không ai làm việc. Thread HTTP ({{http-nio-8080-exec-118}}) chờ {{get(3s)}} rồi trả 504 → khớp log "quote timeout after 3000ms".
+- Memory tăng 1.2Gi → 1.9Gi: hàng đợi không giới hạn tích 50 994 task (mỗi task giữ {{Order}} + giỏ hàng) — nếu để lâu sẽ thành OOM.
+
+### Cách sửa
+
+**Ngắn hạn (giảm đau ngay):** restart pod để giải phóng 16 thread; tạm thời đổi task con sang **gọi đồng bộ** ngay trong task cha (mất song song nhưng không thể kẹt), hoặc tách executor như dưới đây — đây là thay đổi nhỏ, có thể hotfix.
+
+**Sửa gốc — không chặn chờ task con trên cùng pool:**
+
+~~~java
+// Phương án 1: executor RIÊNG cho task con (bulkhead), có giới hạn + timeout
+CompletableFuture<Quote> quoteAsync(Order o) {
+    CompletableFuture<Fee> fee = CompletableFuture
+        .supplyAsync(() -> shippingClient.fee(o), ioExecutor)     // pool khác quoteExecutor
+        .orTimeout(800, TimeUnit.MILLISECONDS);                   // không bao giờ chờ vô hạn
+    CompletableFuture<Voucher> voucher = CompletableFuture
+        .supplyAsync(() -> voucherClient.best(o), ioExecutor)
+        .completeOnTimeout(Voucher.NONE, 500, TimeUnit.MILLISECONDS); // fallback mềm
+    // Phương án 2: GHÉP không chặn - không thread nào ngồi chờ join()
+    return fee.thenCombine(voucher, (f, v) -> Quote.of(pricing.base(o), f, v));
+}
+~~~
+
+Với {{thenCombine}}, task cha **không tồn tại nữa**: callback chỉ chạy khi cả hai future xong, trên thread vừa hoàn thành future cuối. Không có thread nào ngồi chờ, nên không thể đói thread.
+
+**Phương án 3 (Java 21):** dùng {{Executors.newVirtualThreadPerTaskExecutor()}} cho luồng quote: mỗi task một virtual thread, {{join()}} chỉ park virtual thread và trả carrier lại, nên không có "16 chỗ" để cạn. Nhưng phải tự giới hạn tải xuống downstream (Semaphore, connection pool), vì virtual thread không tự giới hạn.
+
+**Dài hạn:**
+- Hàng đợi **có giới hạn** ({{ThreadPoolExecutor}} với {{ArrayBlockingQueue(500)}} + RejectedExecutionHandler trả 503 nhanh) thay vì {{newFixedThreadPool}} không giới hạn — fail fast tốt hơn tích 50k task trong RAM.
+- Mọi {{join()/get()}} phải có timeout; mọi pool phải có metric {{active/queued/completed}} và alert "completed không tăng trong khi queued tăng".
+
+### Cách test tái hiện
+
+Đặt pool size = 2 trong test, gửi 2 task cha đồng thời bằng {{CountDownLatch}} để chắc chắn cả hai cùng chạy trước khi gửi task con; với code cũ test sẽ treo — bọc bằng {{assertTimeoutPreemptively(Duration.ofSeconds(2), ...)}} để test **fail** thay vì treo CI. Quy tắc chung: lỗi starvation lộ ra khi **số task đồng thời ≥ pool size**, nên test với pool nhỏ.
+
+### Bảng so sánh lựa chọn
+
+| Cách | Có thể kẹt? | Song song | Ghi chú |
+|---|---|---|---|
+| Task con cùng pool + join | Có, khi tải ≥ pool size | Có | Lỗi gốc |
+| Gọi đồng bộ trong task cha | Không | Không | Đơn giản, chậm hơn ~40 ms |
+| Executor riêng cho task con | Không (nếu task con không chờ ngược) | Có | Cần timeout, bulkhead |
+| thenCombine không chặn | Không | Có | Tốt nhất, code async |
+| Virtual thread per task | Không | Có | Java 21, cần tự giới hạn downstream |
+
+### Lỗi hay gặp
+
+- Dùng {{ForkJoinPool.commonPool()}} (mặc định của {{supplyAsync}} khi không truyền executor) cho task gọi IO rồi join lồng nhau: commonPool chỉ có {{số CPU - 1}} thread, kẹt còn nhanh hơn.
+- Tăng pool từ 16 lên 64 và nghĩ là xong: chỉ đẩy ngưỡng kẹt lên cao hơn, burst lớn hơn vẫn kẹt.
+- Đọc jstack thấy không có "deadlock" rồi kết luận "không phải deadlock" — phải nhìn **tất cả thread trong pool đang chờ gì**.
+- Dùng {{CallerRunsPolicy}} cho pool có task chờ task con: thread HTTP sẽ chạy task cha và cũng có thể chờ vô hạn.
+
+### Trả lời miệng 1 phút
+
+"Cả 16 thread quote-pool đều đang join ở QuoteService dòng 74, chờ task con được gửi vào chính pool đó. Khi burst làm 16 task cha cùng chạy, task con nằm trong hàng đợi phía sau mà không còn thread rảnh, nên kẹt vĩnh viễn: completed đứng yên, queued tăng tới 50 nghìn, downstream không nhận request nào, CPU gần 0. JVM không báo deadlock vì không có vòng khoá, đây là thread-starvation deadlock. Tôi sửa bằng cách tách executor cho task con hoặc ghép bằng thenCombine không chặn, thêm timeout cho mọi join, hàng đợi có giới hạn và alert khi completed không tăng."
+
+> Senior tip: Khi review code có {{CompletableFuture}}, tôi luôn hỏi hai câu: "task này chạy trên pool nào?" và "có chỗ nào join/get bên trong một task khác cùng pool không?". Một alert rất rẻ mà bắt được loại lỗi này: {{rate(executor_completed_tasks_total[1m]) == 0 and executor_queued_tasks > 0}} trong 1 phút. Ở các hệ thống tôi từng làm, alert này phát hiện starvation trước cả khi khách hàng báo lỗi.`,
+  rubric: [
+    'Gọi đúng tên và cơ chế: thread-starvation deadlock — task cha trên quoteExecutor join task con cũng gửi vào quoteExecutor; khi 16 task cha cùng chạy thì không còn thread chạy task con.',
+    'Dẫn chứng: cả 16 quote-pool WAITING ở join tại QuoteService.java:74 (lambda quoteAsync dòng 52), active=16, queued tăng tới 50994, completed_total đứng yên 1208344, downstream nhận 0 request, CPU gần 0.',
+    'Giải thích vì sao jstack không báo deadlock (không có vòng khoá; chờ CompletableFuture$Signaller riêng; unmanagedBlock không tạo thread bù) và vì sao chỉ xảy ra khi tải đột biến, không tự hồi phục.',
+    'Đề xuất sửa: executor riêng hoặc thenCombine không chặn hoặc virtual thread; timeout cho join/get; hàng đợi có giới hạn + reject nhanh; metric/alert và test tái hiện với pool nhỏ.'
+  ],
+  tags: ['thread-starvation', 'completablefuture', 'executor', 'thread-pool', 'jstack']
+},
+{
+  id: 'lab-thread-007',
+  category: 'thread',
+  title: 'SMS provider lỗi kéo sập luôn notify-service: 187 thread kẹt trong Logback AsyncAppender',
+  level: 'mid',
+  scenario: `**Bối cảnh:** **PayVN Notify** (Spring Boot 3.4, Java 21, Logback 1.5, Tomcat 200 thread) gửi OTP và thông báo giao dịch qua SMS/email. Log ghi qua {{AsyncAppender}} bọc một {{RollingFileAppender}} ghi vào {{/var/log/app}} — thư mục này mount từ **Amazon EFS (NFS)** để đội vận hành "khỏi phải vào pod lấy log".
+
+**Triệu chứng:** Lúc **11:32 ngày 25/10/2026**, nhà cung cấp SMS bắt đầu trả HTTP 503. Code gửi SMS retry 3 lần và mỗi lần thất bại ghi {{log.warn(..., e)}} kèm **toàn bộ stack trace**; hết retry thì {{log.error}}. Từ 11:33, **cả service** (kể cả email và health check) chậm: p99 từ 80ms lên **28s**, ingress trả 504, readiness probe fail. CPU pod chỉ **9%**, heap bình thường, DB bình thường. Khi nhà cung cấp SMS hồi phục lúc 11:51, service tự khỏi sau ~1 phút.
+
+**Dữ liệu thu thập:** {{jcmd 1 Thread.print}} lúc 11:41:20 (đã đếm sẵn), cấu hình {{logback-spring.xml}}, thông tin mount và số liệu log rate.`,
+  artifacts: [
+    {
+      name: 'thread-print-notify-11-41.txt',
+      lang: 'text',
+      content: `1:
+2026-10-25 11:41:20
+Full thread dump OpenJDK 64-Bit Server VM (21.0.4+7-LTS-151 mixed mode, sharing):
+
+"AsyncAppender-Worker-ASYNC_FILE" #31 [88] daemon prio=5 os_prio=0 cpu=912044.10ms elapsed=95112.66s tid=0x00007fb0a8b2c000 nid=88 runnable  [0x00007fb05c7fd000]
+   java.lang.Thread.State: RUNNABLE
+        at java.io.FileOutputStream.writeBytes(java.base@21.0.4/Native Method)
+        at java.io.FileOutputStream.write(java.base@21.0.4/FileOutputStream.java:367)
+        at ch.qos.logback.core.recovery.ResilientOutputStreamBase.write(ResilientOutputStreamBase.java:66)
+        at ch.qos.logback.core.OutputStreamAppender.writeBytes(OutputStreamAppender.java:205)
+        at ch.qos.logback.core.OutputStreamAppender.writeOut(OutputStreamAppender.java:192)
+        at ch.qos.logback.core.FileAppender.writeOut(FileAppender.java:283)
+        at ch.qos.logback.core.OutputStreamAppender.subAppend(OutputStreamAppender.java:242)
+        at ch.qos.logback.core.rolling.RollingFileAppender.subAppend(RollingFileAppender.java:243)
+        at ch.qos.logback.core.OutputStreamAppender.append(OutputStreamAppender.java:113)
+        at ch.qos.logback.core.UnsynchronizedAppenderBase.doAppend(UnsynchronizedAppenderBase.java:84)
+        at ch.qos.logback.core.spi.AppenderAttachableImpl.appendLoopOnAppenders(AppenderAttachableImpl.java:51)
+        at ch.qos.logback.core.AsyncAppenderBase$Worker.run(AsyncAppenderBase.java:298)
+
+"http-nio-8080-exec-41" #179 [5021] daemon prio=5 os_prio=0 cpu=2211.30ms elapsed=95101.92s tid=0x00007fb0a91e4000 nid=5021 waiting on condition  [0x00007fb03affd000]
+   java.lang.Thread.State: WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+        - parking to wait for  <0x00000007c08a3b10> (a java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject)
+        at java.util.concurrent.locks.LockSupport.park(java.base@21.0.4/LockSupport.java:371)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionNode.block(java.base@21.0.4/AbstractQueuedSynchronizer.java:519)
+        at java.util.concurrent.ForkJoinPool.unmanagedBlock(java.base@21.0.4/ForkJoinPool.java:3780)
+        at java.util.concurrent.ForkJoinPool.managedBlock(java.base@21.0.4/ForkJoinPool.java:3725)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(java.base@21.0.4/AbstractQueuedSynchronizer.java:1712)
+        at java.util.concurrent.ArrayBlockingQueue.put(java.base@21.0.4/ArrayBlockingQueue.java:370)
+        at ch.qos.logback.core.AsyncAppenderBase.putUninterruptibly(AsyncAppenderBase.java:189)
+        at ch.qos.logback.core.AsyncAppenderBase.put(AsyncAppenderBase.java:180)
+        at ch.qos.logback.core.AsyncAppenderBase.append(AsyncAppenderBase.java:162)
+        at ch.qos.logback.core.UnsynchronizedAppenderBase.doAppend(UnsynchronizedAppenderBase.java:84)
+        at ch.qos.logback.core.spi.AppenderAttachableImpl.appendLoopOnAppenders(AppenderAttachableImpl.java:51)
+        at ch.qos.logback.classic.Logger.appendLoopOnAppenders(Logger.java:272)
+        at ch.qos.logback.classic.Logger.callAppenders(Logger.java:259)
+        at ch.qos.logback.classic.Logger.buildLoggingEventAndAppend(Logger.java:426)
+        at ch.qos.logback.classic.Logger.filterAndLog_1(Logger.java:400)
+        at ch.qos.logback.classic.Logger.warn(Logger.java:688)
+        at vn.pay.notify.sms.SmsSender.send(SmsSender.java:77)
+        at vn.pay.notify.NotifyController.otp(NotifyController.java:52)
+
+"http-nio-8080-exec-97" #235 [5133] daemon prio=5 os_prio=0 cpu=1987.04ms elapsed=95101.80s tid=0x00007fb0a9372000 nid=5133 waiting on condition  [0x00007fb0372fc000]
+   java.lang.Thread.State: WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+        - parking to wait for  <0x00000007c08a3b10> (a java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject)
+        at java.util.concurrent.locks.LockSupport.park(java.base@21.0.4/LockSupport.java:371)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionNode.block(java.base@21.0.4/AbstractQueuedSynchronizer.java:519)
+        at java.util.concurrent.ForkJoinPool.unmanagedBlock(java.base@21.0.4/ForkJoinPool.java:3780)
+        at java.util.concurrent.ForkJoinPool.managedBlock(java.base@21.0.4/ForkJoinPool.java:3725)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(java.base@21.0.4/AbstractQueuedSynchronizer.java:1712)
+        at java.util.concurrent.ArrayBlockingQueue.put(java.base@21.0.4/ArrayBlockingQueue.java:370)
+        at ch.qos.logback.core.AsyncAppenderBase.putUninterruptibly(AsyncAppenderBase.java:189)
+        at ch.qos.logback.core.AsyncAppenderBase.put(AsyncAppenderBase.java:180)
+        at ch.qos.logback.core.AsyncAppenderBase.append(AsyncAppenderBase.java:162)
+        at ch.qos.logback.core.UnsynchronizedAppenderBase.doAppend(UnsynchronizedAppenderBase.java:84)
+        at ch.qos.logback.core.spi.AppenderAttachableImpl.appendLoopOnAppenders(AppenderAttachableImpl.java:51)
+        at ch.qos.logback.classic.Logger.appendLoopOnAppenders(Logger.java:272)
+        at ch.qos.logback.classic.Logger.callAppenders(Logger.java:259)
+        at ch.qos.logback.classic.Logger.buildLoggingEventAndAppend(Logger.java:426)
+        at ch.qos.logback.classic.Logger.filterAndLog_2(Logger.java:414)
+        at ch.qos.logback.classic.Logger.error(Logger.java:540)
+        at vn.pay.notify.email.EmailSender.send(EmailSender.java:61)
+        at vn.pay.notify.NotifyController.txnMail(NotifyController.java:71)
+
+# Ghi chú on-call (đếm trên toàn bộ dump):
+#   grep -c '"http-nio-8080-exec-' td.txt                          -> 200
+#   grep -c 'AsyncAppenderBase.put(' td.txt                         -> 187
+#   grep -c 'parking to wait for  <0x00000007c08a3b10>' td.txt       -> 187
+#   13 thread exec còn lại: idle trong TaskQueue.take (chờ request mới)
+#   Lấy thêm 2 dump lúc 11:41:30 và 11:41:40: worker luôn ở FileOutputStream.writeBytes`
+    },
+    {
+      name: 'logback-mount-rates.txt',
+      lang: 'text',
+      content: `<!-- logback-spring.xml (trích) -->
+<appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+  <file>/var/log/app/notify.log</file>
+  <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+    <fileNamePattern>/var/log/app/notify.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+    <maxFileSize>200MB</maxFileSize>
+  </rollingPolicy>
+  <encoder><pattern>%d %-5level [%thread] %logger{36} : %msg%n</pattern></encoder>
+  <!-- immediateFlush không khai báo => mặc định true -->
+</appender>
+<appender name="ASYNC_FILE" class="ch.qos.logback.classic.AsyncAppender">
+  <queueSize>256</queueSize>
+  <!-- discardingThreshold không khai báo => mặc định queueSize/5 = 51 -->
+  <!-- neverBlock không khai báo => mặc định false -->
+  <appender-ref ref="FILE"/>
+</appender>
+<root level="INFO"><appender-ref ref="ASYNC_FILE"/></root>
+
+$ mount | grep /var/log/app
+fs-0a1b2c3d.efs.ap-southeast-1.amazonaws.com:/ on /var/log/app type nfs4 (rw,relatime,vers=4.1,rsize=1048576,wsize=1048576,hard,proto=tcp,timeo=600,retrans=2)
+
+# Số liệu log (Prometheus logback_events_total, đếm lúc gọi logger, trước khi vào appender)
+# khung giờ        info/s   warn/s   error/s   bytes ghi file/s
+11:20-11:30          310        2        0       ~0.2 MB/s
+11:33-11:50          290     3 900    1 300      ~1.1 MB/s (giới hạn bởi worker)
+# Kích thước trung bình 1 event WARN/ERROR có stack trace: ~9 KB (62 dòng)
+# Đo thời gian ghi của worker (async-profiler wall, 30s): trung bình 2.9 ms / event, ~340 event/s
+
+# p99 theo endpoint 11:40
+/notify/otp      28.1 s     /notify/txn-mail   27.4 s     /actuator/health/readiness   timeout (1s)`
+    }
+  ],
+  questions: [
+    'Vì sao lỗi của nhà cung cấp SMS làm chậm cả endpoint email và health check? Chỉ ra điểm nghẽn trong dump.',
+    'Giải thích cơ chế AsyncAppender với cấu hình mặc định: khi nào event bị bỏ, khi nào thread gọi log bị chặn? Vì sao INFO vẫn trôi mà WARN/ERROR lại chặn?',
+    'Đề xuất cách sửa ngắn hạn và dài hạn, kèm đánh đổi (mất log vs chặn request).'
+  ],
+  hints: [
+    '187 thread HTTP cùng park trên một ConditionObject {{<0x00000007c08a3b10>}} ở {{ArrayBlockingQueue.put}} gọi từ {{AsyncAppenderBase.put}}: chúng đang chờ hàng đợi log có chỗ trống.',
+    'Chỉ có 1 thread {{AsyncAppender-Worker-ASYNC_FILE}} lấy event ra và ghi xuống file trên NFS. So sánh tốc độ ghi (~340 event/s) với tốc độ sinh WARN+ERROR (~5 200 event/s).',
+    'Logback: khi chỗ trống còn dưới {{discardingThreshold}} (mặc định 20% hàng đợi) thì event TRACE/DEBUG/INFO bị bỏ, còn WARN/ERROR luôn được giữ; nếu {{neverBlock=false}} thì {{put}} chặn khi đầy.'
+  ],
+  answer: `**Tóm tắt:** "Async" logging vẫn **chặn** được thread nghiệp vụ. Khi SMS provider lỗi, mỗi giây sinh ~5 200 event WARN/ERROR có stack trace, nhưng **một** worker của {{AsyncAppender}} chỉ ghi được ~340 event/s xuống EFS (NFS, flush mỗi event). Hàng đợi 256 phần tử đầy trong chưa tới 0,1 giây; với cấu hình mặc định ({{neverBlock=false}}), mọi thread gọi {{log.warn/error}} bị park trong {{ArrayBlockingQueue.put}} — 187/200 thread Tomcat kẹt, nên cả email và health check cũng chết theo. Sửa: {{neverBlock=true}}, ghi log ra stdout/đĩa local, giảm lượng log lỗi (không in stack trace mỗi lần retry, circuit breaker).
+
+### Hiểu từ gốc: AsyncAppender hoạt động thế nào
+
+Ghi file là IO chậm (vài ms, NFS còn chậm hơn), nên Logback cho phép bọc appender thật bằng {{AsyncAppender}}: thread nghiệp vụ chỉ **bỏ event vào một hàng đợi** ({{ArrayBlockingQueue}}, mặc định 256 chỗ) rồi đi tiếp; một **thread worker duy nhất** lấy event ra và ghi file. Giống quầy nhận thư: khách bỏ thư vào hộp rồi về, một nhân viên mang thư đi gửi.
+
+Câu hỏi quan trọng: **hộp thư đầy thì sao?** Logback có 2 núm:
+
+| Thuộc tính | Mặc định | Ý nghĩa |
+|---|---|---|
+| {{queueSize}} | 256 | Sức chứa hàng đợi |
+| {{discardingThreshold}} | queueSize/5 (= 51) | Khi chỗ trống còn **ít hơn** ngưỡng này, event mức TRACE/DEBUG/INFO bị **bỏ**; WARN/ERROR **không bao giờ** bị bỏ |
+| {{neverBlock}} | false | false: {{put()}} chờ tới khi có chỗ (chặn thread gọi log). true: dùng {{offer()}}, đầy thì bỏ event |
+
+Vậy với cấu hình mặc định, khi hàng đợi gần đầy: INFO bị lặng lẽ bỏ (thread không bị chặn), còn **WARN/ERROR phải chờ chỗ trống**. Đó là lý do trong dump cả 187 thread đều đang ở {{Logger.warn}} hoặc {{Logger.error}} — đúng loại event không được phép bỏ.
+
+### Vì sao worker quá chậm
+
+~~~text
+Sinh event:  WARN 3 900/s + ERROR 1 300/s = 5 200 event/s (mỗi event ~9 KB stack trace)
+Tiêu thụ:    1 worker × (1 / 2.9 ms) ≈ 340 event/s
+Chênh lệch:  ~4 860 event/s dư thừa -> hàng đợi 256 đầy trong ~0,05 s
+Sau đó:      tốc độ log của CẢ JVM = tốc độ worker = 340 event/s
+             -> mỗi thread phải đợi tới lượt mới được log rồi mới trả response
+~~~
+
+Worker chậm vì 2 lý do chồng nhau: {{immediateFlush=true}} (mặc định) nên mỗi event là một lần {{write()}} xuống file; và file nằm trên **NFS qua mạng** (EFS), mỗi write phải đi round-trip tới server lưu trữ. Ổ đĩa local hoặc stdout nhanh hơn nhiều bậc.
+
+Vì sao **email và health check** cũng chết? Vì chúng dùng chung 200 thread Tomcat. Khi 187 thread kẹt ở log, chỉ còn 13 thread cho mọi request; email cũng log ERROR (ví dụ {{EmailSender.send}} dòng 61 log lỗi template) nên cũng bị kẹt. Readiness probe timeout → Kubernetes rút pod khỏi Service → tải dồn sang pod khác → các pod khác cũng kẹt theo. Một sự cố của **đối tác bên ngoài** đã lan thành sự cố toàn service qua **tài nguyên dùng chung là hàng đợi log**.
+
+### Dẫn chứng từ artifact
+
+- 187 thread exec park trên **cùng** {{<0x00000007c08a3b10>}} ({{ConditionObject}} "notFull" của hàng đợi) tại {{ArrayBlockingQueue.put}} ← {{AsyncAppenderBase.putUninterruptibly}} ← {{Logger.warn}}/{{Logger.error}}.
+- Duy nhất thread {{AsyncAppender-Worker-ASYNC_FILE}} RUNNABLE ở {{FileOutputStream.writeBytes}} (native), cả 3 dump liên tiếp đều ở đó; cpu tích luỹ rất lớn (912s) vì nó làm việc liên tục.
+- Cấu hình: {{queueSize=256}}, không khai báo {{neverBlock}} → false, không khai báo {{immediateFlush}} → true; mount {{nfs4}} từ EFS.
+- Số liệu: warn+error tăng từ 2/s lên 5 200/s đúng lúc SMS lỗi, trong khi worker chỉ ~340 event/s. INFO giảm nhẹ (310 → 290/s) chỉ vì request ít đi; nhiều INFO thực tế đã bị bỏ trong appender mà không ai biết.
+- CPU 9%: thread đang park, không phải đang tính toán.
+
+### Cách sửa
+
+**Ngắn hạn:**
+- Bật {{<neverBlock>true</neverBlock>}}: khi đầy thì bỏ event thay vì chặn — chấp nhận mất log còn hơn mất service.
+- Giảm log: retry thất bại chỉ log {{warn}} một dòng (không kèm stack trace), log stack trace một lần khi hết retry; thêm **circuit breaker** (Resilience4j) cho SMS provider để ngừng gọi và ngừng log khi đối tác đang chết.
+
+~~~java
+// Trước: 3 lần retry x stack trace 62 dòng
+log.warn("SMS send failed attempt={} to={}", attempt, maskedPhone, e);
+// Sau: một dòng gọn, stack trace chỉ log ở DEBUG
+log.warn("SMS send failed attempt={} status={} msg={}", attempt, status, e.getMessage());
+~~~
+
+**Dài hạn:**
+- Ghi log ra **stdout** (hoặc đĩa local của node) và để agent (Fluent Bit, CloudWatch agent) gửi đi; không ghi log trực tiếp lên NFS.
+- {{immediateFlush=false}} cho appender file nếu chấp nhận mất vài event cuối khi JVM crash.
+- Cân nhắc appender không chặn hẳn (ví dụ Log4j2 async logger với chính sách discard) và **metric số event bị bỏ** để biết khi nào mất log.
+- Đưa "hàng đợi log" vào danh sách tài nguyên dùng chung cần bulkhead, giống connection pool.
+
+| Lựa chọn | Thread nghiệp vụ bị chặn? | Mất log? |
+|---|---|---|
+| Mặc định (neverBlock=false) | Có, khi đầy | INFO mất khi gần đầy |
+| neverBlock=true | Không | Mất cả WARN/ERROR khi đầy |
+| queueSize lớn (ví dụ 8192) | Chỉ trì hoãn | Ít hơn, nhưng tốn RAM, burst dài vẫn đầy |
+| Giảm lượng log + circuit breaker | Hiếm | Ít nhất — sửa tận gốc |
+
+### Lỗi hay gặp
+
+- Tin rằng "AsyncAppender = không bao giờ chặn". Mặc định của Logback là **chặn** cho WARN/ERROR.
+- Chỉ tăng {{queueSize}}: burst kéo dài vài phút thì hàng đợi lớn mấy cũng đầy, chỉ làm chậm thời điểm sự cố và tăng RAM.
+- Log stack trace ở mỗi lần retry hoặc trong vòng lặp; một lỗi đối tác tạo ra hàng chục MB log/giây.
+- Đọc dump thấy WAITING rồi nghĩ "thread rảnh"; phải xem chúng chờ **cái gì** (cùng một ConditionObject = cùng một hàng đợi).
+
+### Trả lời miệng 1 phút
+
+"Dump cho thấy 187 trên 200 thread Tomcat park ở ArrayBlockingQueue.put trong AsyncAppender của Logback, cùng một condition, tất cả đang gọi log.warn hoặc log.error. Chỉ có một worker ghi log xuống EFS với khoảng 340 event mỗi giây, trong khi SMS lỗi sinh 5 nghìn event WARN/ERROR có stack trace mỗi giây. Mặc định Logback bỏ INFO khi hàng đợi gần đầy nhưng không bao giờ bỏ WARN/ERROR, và neverBlock là false nên thread bị chặn. Vì dùng chung thread pool, email và health check cũng chết. Tôi bật neverBlock, giảm log stack trace, thêm circuit breaker cho SMS và chuyển log sang stdout thay vì NFS."
+
+> Senior tip: Trong postmortem, tôi luôn hỏi "đường log có phải là một dependency đồng bộ không?". Log, metric, tracing exporter đều là IO; nếu chúng có thể chặn thread nghiệp vụ thì chúng là điểm lỗi chung. Một con số đáng nhớ: một stack trace Spring điển hình 60–100 dòng, ~8–10 KB; 1 000 lỗi/s là ~10 MB/s chỉ riêng log — đủ làm nghẽn nhiều hệ thống log. Hãy rate-limit log lỗi lặp lại và đo cả "log events dropped".`,
+  rubric: [
+    'Xác định đúng điểm nghẽn: 187 thread HTTP park ở ArrayBlockingQueue.put trong AsyncAppenderBase (cùng ConditionObject 0x00000007c08a3b10), một worker duy nhất đang ghi file NFS.',
+    'Giải thích đúng cơ chế mặc định của Logback AsyncAppender: queueSize 256, discardingThreshold 20% chỉ bỏ TRACE/DEBUG/INFO, WARN/ERROR không bị bỏ, neverBlock=false nên put chặn khi đầy.',
+    'Định lượng: sinh ~5200 event WARN/ERROR/s vs worker ~340 event/s (immediateFlush + NFS), giải thích vì sao email và health check cùng chết (dùng chung 200 thread Tomcat).',
+    'Đề xuất sửa có đánh đổi: neverBlock=true (chấp nhận mất log), giảm log stack trace/rate-limit, circuit breaker cho SMS, log ra stdout/đĩa local thay vì NFS, metric event bị bỏ.'
+  ],
+  tags: ['logback', 'async-appender', 'logging', 'blocking-queue', 'jstack', 'nfs']
+},
+{
+  id: 'lab-thread-008',
+  category: 'thread',
+  title: 'Tỷ giá đứng hình 12 giây mỗi giờ: ReadWriteLock và một writer đứng chờ',
+  level: 'lead',
+  scenario: `**Bối cảnh:** **PayVN FX** (Spring Boot 3.4, Java 21) cung cấp tỷ giá cho mọi giao dịch ngoại tệ, ~2 500 req/s qua {{GET /fx/rate}}. Bảng tỷ giá 180 cặp tiền nằm trong {{RateTable}}, bảo vệ bằng {{ReentrantReadWriteLock}} (mặc định non-fair) với lý do "đọc nhiều ghi ít, read lock cho đọc song song". Job {{fx-refresh}} cập nhật bảng mỗi 30 giây. Tháng này đội BI thêm endpoint {{GET /fx/export}} xuất snapshot CSV kèm lịch sử, công cụ BI gọi vào **phút 15 mỗi giờ**.
+
+**Triệu chứng:** Từ ngày 25/10/2026, đúng khoảng **hh:15:30 → hh:15:42** mỗi giờ, p99 của {{/fx/rate}} vọt từ 4ms lên **11,8 giây**, thanh toán ngoại tệ timeout hàng loạt. CPU thấp, không GC dài, không lỗi DB. Team tranh cãi: "read lock là chia sẻ, export chỉ đọc thì sao chặn được ai?"
+
+**Dữ liệu thu thập:** Log ứng dụng quanh 10:15, {{jcmd 1 Thread.print -l}} lúc 10:15:36 và code {{RateTable}}.`,
+  artifacts: [
+    {
+      name: 'app-log-10-15.txt',
+      lang: 'text',
+      content: `2026-10-25T10:14:30.002+07:00  INFO 1 --- [   fx-refresh-1] vn.pay.fx.RateRefresher     : refresh start source=reuters
+2026-10-25T10:14:30.041+07:00  INFO 1 --- [   fx-refresh-1] vn.pay.fx.RateRefresher     : refresh applied pairs=180 waitedForLock=0ms
+2026-10-25T10:15:00.003+07:00  INFO 1 --- [   fx-refresh-1] vn.pay.fx.RateRefresher     : refresh start source=reuters
+2026-10-25T10:15:00.044+07:00  INFO 1 --- [   fx-refresh-1] vn.pay.fx.RateRefresher     : refresh applied pairs=180 waitedForLock=0ms
+2026-10-25T10:15:02.118+07:00  INFO 1 --- [nio-8080-exec-3] vn.pay.fx.ExportController  : export snapshot start pairs=180 client=bi-reporter
+2026-10-25T10:15:30.001+07:00  INFO 1 --- [   fx-refresh-1] vn.pay.fx.RateRefresher     : refresh start source=reuters
+2026-10-25T10:15:30.044+07:00  INFO 1 --- [   fx-refresh-1] vn.pay.fx.RateRefresher     : fetched 180 rates in 43ms, acquiring write lock
+2026-10-25T10:15:33.051+07:00  WARN 1 --- [io-8080-exec-212] vn.pay.fx.RateController    : slow rate lookup pair=USD/VND elapsed=3007ms
+2026-10-25T10:15:38.660+07:00  WARN 1 --- [io-8080-exec-187] vn.pay.fx.RateController    : slow rate lookup pair=EUR/VND elapsed=8612ms
+2026-10-25T10:15:41.733+07:00  INFO 1 --- [nio-8080-exec-3] vn.pay.fx.ExportController  : export snapshot done pairs=180 elapsed=39615ms
+2026-10-25T10:15:41.734+07:00  INFO 1 --- [   fx-refresh-1] vn.pay.fx.RateRefresher     : refresh applied pairs=180 waitedForLock=11690ms
+2026-10-25T10:15:41.736+07:00  WARN 1 --- [io-8080-exec-150] vn.pay.fx.RateController    : slow rate lookup pair=JPY/VND elapsed=11688ms
+2026-10-25T10:16:00.002+07:00  INFO 1 --- [   fx-refresh-1] vn.pay.fx.RateRefresher     : refresh start source=reuters
+2026-10-25T10:16:00.040+07:00  INFO 1 --- [   fx-refresh-1] vn.pay.fx.RateRefresher     : refresh applied pairs=180 waitedForLock=0ms
+# p99 /fx/rate theo phút: 10:14 = 4 ms, 10:15 = 11 812 ms, 10:16 = 5 ms
+# Export 10:15:02 -> 10:15:41 KHÔNG làm chậm /fx/rate trong 28 giây đầu (10:15:02 -> 10:15:30).`
+    },
+    {
+      name: 'thread-print-fx-10-15-36.txt',
+      lang: 'text',
+      content: `1:
+2026-10-25 10:15:36
+Full thread dump OpenJDK 64-Bit Server VM (21.0.4+7-LTS-151 mixed mode, sharing):
+
+"http-nio-8080-exec-3" #64 [2210] daemon prio=5 os_prio=0 cpu=6120.88ms elapsed=87012.45s tid=0x00007f80b42c1000 nid=2210 runnable  [0x00007f8071ffc000]
+   java.lang.Thread.State: RUNNABLE
+        at sun.nio.ch.Net.poll(java.base@21.0.4/Native Method)
+        at sun.nio.ch.NioSocketImpl.park(java.base@21.0.4/NioSocketImpl.java:191)
+        at sun.nio.ch.NioSocketImpl.timedRead(java.base@21.0.4/NioSocketImpl.java:280)
+        at sun.nio.ch.NioSocketImpl.implRead(java.base@21.0.4/NioSocketImpl.java:304)
+        at sun.nio.ch.NioSocketImpl.read(java.base@21.0.4/NioSocketImpl.java:346)
+        at sun.nio.ch.NioSocketImpl$1.read(java.base@21.0.4/NioSocketImpl.java:796)
+        at java.net.Socket$SocketInputStream.read(java.base@21.0.4/Socket.java:1099)
+        at java.io.BufferedInputStream.fill(java.base@21.0.4/BufferedInputStream.java:291)
+        at java.io.BufferedInputStream.read1(java.base@21.0.4/BufferedInputStream.java:347)
+        at java.io.BufferedInputStream.implRead(java.base@21.0.4/BufferedInputStream.java:420)
+        at java.io.BufferedInputStream.read(java.base@21.0.4/BufferedInputStream.java:399)
+        at sun.net.www.http.HttpClient.parseHTTPHeader(java.base@21.0.4/HttpClient.java:827)
+        at sun.net.www.http.HttpClient.parseHTTP(java.base@21.0.4/HttpClient.java:759)
+        at sun.net.www.protocol.http.HttpURLConnection.getInputStream0(java.base@21.0.4/HttpURLConnection.java:1690)
+        at sun.net.www.protocol.http.HttpURLConnection.getInputStream(java.base@21.0.4/HttpURLConnection.java:1599)
+        at java.net.HttpURLConnection.getResponseCode(java.base@21.0.4/HttpURLConnection.java:531)
+        at org.springframework.http.client.SimpleClientHttpResponse.getStatusCode(SimpleClientHttpResponse.java:58)
+        at org.springframework.web.client.DefaultRestClient$DefaultResponseSpec.body(DefaultRestClient.java:731)
+        at vn.pay.fx.history.HistoryClient.fetch(HistoryClient.java:52)
+        at vn.pay.fx.RateTable.exportSnapshot(RateTable.java:64)
+        at vn.pay.fx.ExportController.export(ExportController.java:29)
+
+   Locked ownable synchronizers:
+        - <0x00000007a91f0d40> (a org.apache.tomcat.util.threads.ThreadPoolExecutor$Worker)
+
+"fx-refresh-1" #41 [2187] prio=5 os_prio=0 cpu=1840.31ms elapsed=87015.02s tid=0x00007f80b4211000 nid=2187 waiting on condition  [0x00007f80740fe000]
+   java.lang.Thread.State: WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+        - parking to wait for  <0x00000007b3a01c88> (a java.util.concurrent.locks.ReentrantReadWriteLock$NonfairSync)
+        at java.util.concurrent.locks.LockSupport.park(java.base@21.0.4/LockSupport.java:221)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(java.base@21.0.4/AbstractQueuedSynchronizer.java:754)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(java.base@21.0.4/AbstractQueuedSynchronizer.java:990)
+        at java.util.concurrent.locks.ReentrantReadWriteLock$WriteLock.lock(java.base@21.0.4/ReentrantReadWriteLock.java:959)
+        at vn.pay.fx.RateTable.refresh(RateTable.java:51)
+        at vn.pay.fx.RateRefresher.run(RateRefresher.java:38)
+        at java.util.concurrent.Executors$RunnableAdapter.call(java.base@21.0.4/Executors.java:572)
+        at java.util.concurrent.FutureTask.runAndReset(java.base@21.0.4/FutureTask.java:358)
+        at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.run(java.base@21.0.4/ScheduledThreadPoolExecutor.java:305)
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(java.base@21.0.4/ThreadPoolExecutor.java:1144)
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(java.base@21.0.4/ThreadPoolExecutor.java:642)
+        at java.lang.Thread.run(java.base@21.0.4/Thread.java:1583)
+
+   Locked ownable synchronizers:
+        - <0x00000007a90b2e18> (a java.util.concurrent.ThreadPoolExecutor$Worker)
+
+"http-nio-8080-exec-187" #248 [2394] daemon prio=5 os_prio=0 cpu=4410.07ms elapsed=87001.10s tid=0x00007f80b4c02000 nid=2394 waiting on condition  [0x00007f8052efd000]
+   java.lang.Thread.State: WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+        - parking to wait for  <0x00000007b3a01c88> (a java.util.concurrent.locks.ReentrantReadWriteLock$NonfairSync)
+        at java.util.concurrent.locks.LockSupport.park(java.base@21.0.4/LockSupport.java:221)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(java.base@21.0.4/AbstractQueuedSynchronizer.java:754)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireShared(java.base@21.0.4/AbstractQueuedSynchronizer.java:1086)
+        at java.util.concurrent.locks.ReentrantReadWriteLock$ReadLock.lock(java.base@21.0.4/ReentrantReadWriteLock.java:739)
+        at vn.pay.fx.RateTable.get(RateTable.java:41)
+        at vn.pay.fx.RateController.rate(RateController.java:27)
+
+   Locked ownable synchronizers:
+        - <0x00000007a9a3c650> (a org.apache.tomcat.util.threads.ThreadPoolExecutor$Worker)
+
+"http-nio-8080-exec-212" #273 [2419] daemon prio=5 os_prio=0 cpu=4388.52ms elapsed=87000.96s tid=0x00007f80b4c4a000 nid=2419 waiting on condition  [0x00007f8051af8000]
+   java.lang.Thread.State: WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+        - parking to wait for  <0x00000007b3a01c88> (a java.util.concurrent.locks.ReentrantReadWriteLock$NonfairSync)
+        at java.util.concurrent.locks.LockSupport.park(java.base@21.0.4/LockSupport.java:221)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(java.base@21.0.4/AbstractQueuedSynchronizer.java:754)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireShared(java.base@21.0.4/AbstractQueuedSynchronizer.java:1086)
+        at java.util.concurrent.locks.ReentrantReadWriteLock$ReadLock.lock(java.base@21.0.4/ReentrantReadWriteLock.java:739)
+        at vn.pay.fx.RateTable.get(RateTable.java:41)
+        at vn.pay.fx.RateController.rate(RateController.java:27)
+
+   Locked ownable synchronizers:
+        - <0x00000007a9a51288> (a org.apache.tomcat.util.threads.ThreadPoolExecutor$Worker)
+
+# Ghi chú on-call:
+#   grep -c 'parking to wait for  <0x00000007b3a01c88>' td.txt                 -> 172
+#   trong đó WriteLock.lock: 1 (fx-refresh-1), ReadLock.lock: 171 (http-nio-8080-exec-*)
+#   KHÔNG thread nào liệt kê <0x00000007b3a01c88> trong "Locked ownable synchronizers".
+#   Thread duy nhất đang chạy trong RateTable: http-nio-8080-exec-3 (exportSnapshot dòng 64).`
+    },
+    {
+      name: 'RateTable.java',
+      lang: 'java',
+      content: `public class RateTable {                                              // dòng 30
+    private final ReentrantReadWriteLock rw = new ReentrantReadWriteLock(); // non-fair
+    private final Map<String, Rate> rates = new HashMap<>();
+    private final HistoryClient historyClient;
+
+    public Rate get(String pair) {                                        // dòng 38, ~2500 lần/s
+        // ...
+        rw.readLock().lock();                                             // dòng 41
+        try { return rates.get(pair); }
+        finally { rw.readLock().unlock(); }
+    }
+
+    public void refresh(Map<String, Rate> fresh) {                        // mỗi 30 giây
+        rw.writeLock().lock();                                            // dòng 51
+        try { rates.clear(); rates.putAll(fresh); }
+        finally { rw.writeLock().unlock(); }
+    }
+
+    public void exportSnapshot(Writer out) throws IOException {           // BI gọi phút 15 mỗi giờ
+        rw.readLock().lock();                         // "chỉ đọc thôi, read lock là chia sẻ"
+        try {
+            for (Map.Entry<String, Rate> e : rates.entrySet()) {
+                History h = historyClient.fetch(e.getKey());              // dòng 64: HTTP ~220 ms/cặp
+                out.write(csvLine(e.getKey(), e.getValue(), h));
+            }
+        } finally { rw.readLock().unlock(); }
+    }
+}`
+    }
+  ],
+  questions: [
+    'Export chỉ cầm read lock, vậy vì sao các request đọc tỷ giá (cũng chỉ cần read lock) lại bị chặn? Giải thích cơ chế của ReentrantReadWriteLock non-fair và dựng lại timeline từ log.',
+    'Vì sao trong dump không thread nào "giữ" lock 0x00000007b3a01c88? Làm sao bạn suy ra ai đang giữ nó?',
+    'Đề xuất thiết kế lại RateTable (ít nhất 2 phương án) và so sánh trade-off. Với vai trò lead, bạn sẽ đặt quy tắc gì cho team?'
+  ],
+  hints: [
+    'Chú ý thời điểm: export bắt đầu 10:15:02 nhưng /fx/rate chỉ chậm từ 10:15:30 — đúng lúc fx-refresh-1 xin write lock. Chuyện gì thay đổi khi có một writer đứng chờ?',
+    'Trong ReentrantReadWriteLock non-fair, reader mới sẽ tự chặn nếu thread đứng đầu hàng chờ là một writer (cơ chế chống writer bị đói). Writer lại đang chờ reader cũ — export — nhả lock.',
+    'jstack chỉ liệt kê ownable synchronizer được giữ ở chế độ độc quyền (exclusive owner). Read lock là chia sẻ nên không hiện; phải suy ra từ stack: thread nào đang ở bên trong exportSnapshot sau lệnh readLock().lock()?'
+  ],
+  answer: `**Tóm tắt:** Export giữ **read lock suốt ~40 giây** vì gọi HTTP lấy lịch sử cho 180 cặp tiền **bên trong** vùng khoá. Lúc 10:15:30, {{fx-refresh-1}} xin **write lock** và phải đứng chờ export. Trong {{ReentrantReadWriteLock}}, khi đầu hàng chờ là một writer, **reader mới cũng phải xếp hàng sau writer** (để writer không bị đói). Kết quả: 171 request đọc tỷ giá bị chặn ~11,7 giây cho tới khi export xong. Sửa: không bao giờ làm IO trong vùng khoá; tốt hơn nữa là bỏ khoá cho reader bằng **immutable snapshot + volatile** (copy-on-write).
+
+### Hiểu từ gốc: ReadWriteLock và luật "không cho writer bị đói"
+
+Read-write lock có 2 loại vé: **vé đọc** (nhiều người cầm cùng lúc được) và **vé ghi** (chỉ một người, và lúc đó không ai được đọc). Nghe thì "đọc không bao giờ chặn đọc". Nhưng hãy tưởng tượng một phòng họp: người đọc ra vào liên tục, 2 500 lượt/giây. Nếu reader mới luôn được vào miễn là đang có reader khác bên trong, phòng **không bao giờ trống**, writer chờ mãi — gọi là **writer starvation**.
+
+Để tránh vậy, {{ReentrantReadWriteLock}} (cả chế độ non-fair mặc định) có luật: reader mới gọi {{readLock().lock()}} sẽ **tự chặn nếu người đứng đầu hàng chờ là writer** (trong mã nguồn JDK: {{readerShouldBlock()}} → {{apparentlyFirstQueuedIsExclusive()}}). Nghĩa là một writer **đang chờ** sẽ "đóng cửa" với mọi reader mới, cho tới khi writer vào và ra xong. Writer thì lại chờ **tất cả reader cũ** nhả vé đọc.
+
+~~~text
+10:15:02  exec-3 (export) lấy READ lock ------------------------------+ giữ ~39,6 s
+                                                                     |
+10:15:02..10:15:30  reader /fx/rate vào/ra bình thường (đọc // đọc)  |  p99 4 ms
+                                                                     |
+10:15:30.044  fx-refresh-1 xin WRITE lock -> phải chờ export         |
+              hàng chờ AQS: [WRITER fx-refresh-1]                    |
+10:15:30+     reader mới thấy đầu hàng là WRITER -> tự xếp hàng sau  |
+              hàng chờ: [WRITER][R exec-212][R exec-187]... 171 R    |
+10:15:41.733  export nhả READ lock  <--------------------------------+
+10:15:41.734  WRITER vào, cập nhật 180 cặp (vài µs), nhả
+10:15:41.736  171 reader được đánh thức, trả kết quả (elapsed tới 11 688 ms)
+~~~
+
+Vậy **export một mình không chặn ai**; **writer đứng chờ** mới là "cửa chặn". Ghép 2 thứ lại: một reader chậm + một writer bình thường = mọi reader đều chậm. Vì export kéo dài 40 giây > chu kỳ refresh 30 giây, **mỗi lần export chắc chắn trùng một lần refresh**, nên sự cố lặp lại đúng hh:15:30 mỗi giờ.
+
+### Vì sao dump không cho thấy ai giữ lock
+
+Mục "Locked ownable synchronizers" của {{jstack -l}} / {{Thread.print -l}} chỉ liệt kê các {{AbstractOwnableSynchronizer}} mà thread là **chủ sở hữu độc quyền** ({{exclusiveOwnerThread}}) — ví dụ {{ReentrantLock}} hoặc write lock. **Read lock là chia sẻ**, AQS chỉ đếm số lượt đọc chứ không ghi tên từng người, nên **không bao giờ xuất hiện** ở đó. Đây là bẫy rất phổ biến: thấy 172 thread chờ một lock mà "không ai giữ".
+
+Cách suy luận: tìm thread nào đang chạy **bên trong** đoạn code đã lấy read lock. Chỉ có {{http-nio-8080-exec-3}} đang ở {{RateTable.exportSnapshot(RateTable.java:64)}} — dòng 64 nằm sau {{rw.readLock().lock()}} và trước {{unlock()}}, tức nó đang giữ read lock trong lúc chờ socket ({{HttpURLConnection.getInputStream}} → {{NioSocketImpl.timedRead}}). Thread này RUNNABLE nhưng thực chất đang chờ mạng (native poll).
+
+### Dẫn chứng từ artifact
+
+- Log: export start 10:15:02.118, done 10:15:41.733 (39 615 ms ≈ 180 × 220 ms). Refresh 10:15:30.044 "acquiring write lock", applied 10:15:41.734 với {{waitedForLock=11690ms}}. Request chậm nhất 11 688 ms kết thúc 10:15:41.736 — 2 ms sau writer.
+- 28 giây đầu của export (10:15:02 → 10:15:30) p99 bình thường: chứng minh read lock của export **không** chặn reader khi chưa có writer.
+- Dump: 172 thread park trên cùng {{<0x00000007b3a01c88>}} ({{ReentrantReadWriteLock$NonfairSync}}): 1 ở {{WriteLock.lock}} ({{RateTable.refresh}} dòng 51), 171 ở {{ReadLock.lock}} ({{RateTable.get}} dòng 41).
+- Không thread nào liệt kê {{0x00000007b3a01c88}} trong ownable synchronizers → chủ đang giữ là reader (chia sẻ), khớp với exec-3 ở exportSnapshot dòng 64.
+
+### Cách sửa
+
+**Ngắn hạn:** đưa IO ra khỏi vùng khoá — copy bảng dưới read lock (180 phần tử, vài µs), nhả lock, rồi mới gọi HTTP:
+
+~~~java
+public void exportSnapshot(Writer out) throws IOException {
+    Map<String, Rate> copy;
+    rw.readLock().lock();
+    try { copy = Map.copyOf(rates); }          // giữ lock vài micro giây
+    finally { rw.readLock().unlock(); }
+    for (var e : copy.entrySet()) {            // IO chậm nằm NGOÀI khoá
+        out.write(csvLine(e.getKey(), e.getValue(), historyClient.fetch(e.getKey())));
+    }
+}
+~~~
+
+**Sửa gốc — reader không cần khoá (immutable snapshot):** dữ liệu ghi 30 giây/lần, đọc 2 500 lần/giây → mô hình copy-on-write là tự nhiên nhất:
+
+~~~java
+public class RateTable {
+    private volatile Map<String, Rate> rates = Map.of();  // bảng bất biến
+    public Rate get(String pair) { return rates.get(pair); } // không khoá, không chờ
+    public void refresh(Map<String, Rate> fresh) {
+        rates = Map.copyOf(fresh);   // tạo bảng mới, đổi tham chiếu trong 1 bước
+    }                                // volatile đảm bảo reader thấy bảng hoàn chỉnh
+    public Map<String, Rate> snapshot() { return rates; }   // export dùng snapshot
+}
+~~~
+
+Reader đọc tham chiếu {{volatile}} rồi tra map bất biến: không có hàng chờ, không có writer starvation, không có reader starvation. Export lấy {{snapshot()}} và chậm bao lâu cũng không ảnh hưởng ai. Chú ý code cũ {{rates.clear(); rates.putAll(...)}} còn có rủi ro khác: nếu sau này ai đó bỏ khoá, reader có thể thấy bảng **rỗng** giữa clear và putAll.
+
+### So sánh phương án
+
+| Phương án | Reader chờ? | Phức tạp | Khi nào dùng |
+|---|---|---|---|
+| RRWL + IO trong khoá (hiện tại) | Có, khi có writer chờ | Thấp | Không bao giờ |
+| RRWL, copy rồi IO ngoài khoá | Rất ngắn (µs) | Thấp | Dữ liệu lớn, cập nhật từng phần |
+| Fair RRWL ({{new ReentrantReadWriteLock(true)}}) | Vẫn có — công bằng FIFO cũng xếp reader sau writer | Thấp | Không giải quyết vấn đề này |
+| {{StampedLock}} optimistic read | Hầu như không | Cao, dễ sai, không reentrant | Hot path cực nóng, dữ liệu nhỏ |
+| Immutable snapshot + volatile | Không bao giờ | Thấp | Đọc nhiều, ghi định kỳ toàn bộ (case này) |
+
+Thêm một lưu ý: {{writeLock().tryLock(timeout)}} **không** cứu được vì writer vẫn vào hàng chờ trong lúc chờ timeout và vẫn chặn reader mới; chỉ {{tryLock()}} không tham số mới "chen ngang" mà không xếp hàng.
+
+### Quy tắc cho team (góc nhìn lead)
+
+1. **Không IO, không gọi service khác, không log nặng trong vùng khoá** — áp dụng cho {{synchronized}}, {{ReentrantLock}}, read lock, cả lock phân tán.
+2. Dữ liệu "đọc nhiều, ghi định kỳ" → mặc định dùng immutable snapshot; chỉ dùng RRWL khi có lý do đo được.
+3. Mọi endpoint mới (như export của BI) phải được review về tài nguyên dùng chung mà nó chạm vào, không chỉ về logic.
+4. Đo **thời gian giữ khoá** (timer quanh vùng khoá hoặc JFR {{jdk.ThreadPark}}) và alert khi vượt ngưỡng.
+
+### Lỗi hay gặp
+
+- Tin rằng "read lock không bao giờ chặn read lock". Đúng khi không có writer chờ; sai khi có.
+- Đổi sang fair mode để "công bằng hơn" — fair mode còn chặt hơn, reader cũng xếp hàng FIFO sau writer.
+- Đọc dump thấy không ai giữ lock rồi nghi "bug JVM" hoặc "lost wakeup"; thực ra là read lock không hiện owner.
+- Chỉ nhìn thread đang BLOCKED/WAITING mà bỏ qua thread RUNNABLE ở socket read — chính nó là thủ phạm.
+
+### Trả lời miệng 1 phút
+
+"Export của BI giữ read lock 40 giây vì gọi HTTP cho 180 cặp tiền bên trong vùng khoá. Bản thân việc đó không chặn reader, bằng chứng là 28 giây đầu p99 bình thường. Nhưng lúc 10:15:30 job refresh xin write lock và phải chờ export; trong ReentrantReadWriteLock, khi đầu hàng chờ là writer thì reader mới cũng phải xếp sau để writer không bị đói, nên 171 request đọc tỷ giá kẹt 11,7 giây. Dump không cho thấy ai giữ lock vì read lock là chia sẻ, phải suy ra từ thread đang ở exportSnapshot dòng 64. Tôi sửa bằng cách đưa IO ra ngoài khoá ngay, và dài hạn đổi sang immutable map với tham chiếu volatile để reader không cần khoá."
+
+> Senior tip: Khi thấy {{ReentrantReadWriteLock}} trong code review, tôi hỏi "tỉ lệ đọc/ghi và thời gian giữ khoá dài nhất là bao nhiêu?". Phần lớn trường hợp đọc nhiều, ghi theo lô thì copy-on-write với {{volatile}} vừa đơn giản vừa nhanh hơn — {{get}} chỉ còn một lần đọc volatile và một lần tra map, không có CAS trên bộ đếm reader (với 2 500 req/s trên nhiều core, CAS trên một biến chung cũng gây cache-line contention). RRWL chỉ đáng dùng khi dữ liệu quá lớn để copy và cập nhật từng phần.`,
+  rubric: [
+    'Giải thích đúng cơ chế: export giữ read lock lâu do IO trong vùng khoá; writer fx-refresh xin write lock và chờ; reader mới tự chặn vì đầu hàng chờ là writer (chống writer starvation, áp dụng cả non-fair) nên 171 request bị chặn.',
+    'Dựng đúng timeline từ log: export 10:15:02–10:15:41.733 (39615ms), 28 giây đầu không chậm, writer chờ từ 10:15:30.044 với waitedForLock=11690ms, request chậm nhất 11688ms kết thúc ngay sau writer; lặp mỗi giờ vì export 40s > chu kỳ 30s.',
+    'Giải thích vì sao không thread nào hiện là chủ lock 0x00000007b3a01c88 (read lock chia sẻ không có exclusive owner) và suy ra chủ là exec-3 ở exportSnapshot dòng 64.',
+    'Đề xuất sửa: copy rồi IO ngoài khoá (ngắn hạn), immutable snapshot + volatile (dài hạn), so sánh với fair mode/StampedLock/tryLock, kèm quy tắc team (không IO trong khoá, đo thời gian giữ khoá).'
+  ],
+  tags: ['readwritelock', 'lock-contention', 'writer-starvation', 'jstack', 'copy-on-write', 'aqs']
+},
 );
