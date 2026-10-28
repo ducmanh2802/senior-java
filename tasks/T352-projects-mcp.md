@@ -1,6 +1,6 @@
 # T352 — Pet project MCP: DB Inspector, Prep Coach, Ops Assistant
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/data/projects.js`
 After: T328
@@ -45,3 +45,9 @@ Mỗi dự án có:
 
 ## Notes
 
+- Added proj-mcp-db-inspector (senior, 4w), proj-mcp-prep-coach (mid, 2w), proj-mcp-ops-assistant (senior, 3w) at the end of window.PROJECTS; existing projects untouched.
+- Each: requirements (user stories + acceptance, NFR, out-of-scope), architecture, design 4.1k–5.9k chars with "### Thiết kế tool cho AI" table (+ tools/list JSON example), ASCII flow, error/security table, test strategy; 4–5 milestones with numbered steps + commented code; 4–5 challenges; STAR + "### Demo trong 5 phút"; 8 questions + answers (560–690 chars).
+- Sources checked (Oct 2026): modelcontextprotocol.io spec 2026-07-28 (tools/resources/prompts, stdio + Streamable HTTP, security best practices, -32602 for missing resource, token passthrough forbidden), MCP Inspector docs (npx @modelcontextprotocol/inspector, --cli, --server-url/--transport http), Java SDK repo/docs, Spring AI 1.1 docs (spring-ai-bom 1.1.x for Boot 3.4/3.5; starters spring-ai-starter-mcp-server / -webmvc; spring.ai.mcp.server.stdio/name/version/instructions/protocol=STREAMABLE; @McpTool, @McpToolParam, @McpTool.McpAnnotations, @McpResource, @McpPrompt/@McpArg, ReadResourceResult, TextResourceContents, GetPromptResult, PromptMessage), Claude Code MCP docs (claude mcp add --transport stdio/http, --env, --header, list/get, /mcp, @server:uri resources, /mcp__server__prompt, MAX_MCP_OUTPUT_TOKENS 10k warn/25k default, MCP_TIMEOUT).
+- Not fully verified (worded cautiously in content / "xem tài liệu SDK"): how a thrown exception from @McpTool maps to isError (left to SDK docs + Inspector check); Spring AI 1.1 default Streamable HTTP path /mcp (confirmed only in 2.0 docs); Spring docs show annotations = McpTool.McpAnnotations(...) without @ — content uses the valid Java form @McpTool.McpAnnotations(...); readOnlyHint/destructiveHint/idempotentHint names confirmed via Spring AI docs, openWorldHint only in the JSON example; Spring Boot ECS log field names (told learner to check real log file); Node TS SDK API not described (pointed to docs).
+- Verification: node --check OK. Working-tree validate fails only due to other agents' in-progress q-microservices.js / q-devops.js; validate on a git archive HEAD copy + this projects.js → "OK — không có lỗi." No refs added, so check-links not needed.
+Reviewed-by: claude (subagent; MCP APIs from official docs, unverified items in Notes; validate OK on HEAD+projects.js)
