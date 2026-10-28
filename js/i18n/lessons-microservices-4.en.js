@@ -36,7 +36,7 @@ A circuit breaker is a resilience pattern that prevents cascading failures in di
 - Monitoring circuit state transitions is essential for observability.
 
 ### Example: Resilience4j circuit breaker (Java)
-```java
+~~~java
 CircuitBreaker cb = CircuitBreaker.ofDefaults("order-service");
 Supplier<String> supplier = CircuitBreaker.decorateSupplier(cb, () -> {
     // call remote service
@@ -47,11 +47,9 @@ try {
 } catch (Exception e) {
     // circuit may have tripped
 }
-```
+~~~
 `,
     exercises: [],
     check: [],
-    related: ['microservices-003'],
-    tags: ['circuit-breaker', 'resilience', 'distributed-systems'],
   },
 });

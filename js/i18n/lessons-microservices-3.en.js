@@ -23,14 +23,14 @@ In **event sourcing** (or saga), the database only stores a sequence of **events
 
 ### Core concepts
 - **Aggregate**: The root entity that encapsulates business invariants. Events are emitted when the aggregate changes state.
-- **Event**: A fact that something happened. Typically named in past tense (e.g., `OrderPlaced`, `CustomerRegistered`).
+- **Event**: A fact that something happened. Typically named in past tense (e.g., {{OrderPlaced}}, {{CustomerRegistered}}).
 - **Projection**: A read model that is updated by consuming events. Projections can be materialized views, search indexes, or UI updates.
 - **Snapshot**: A snapshot of the aggregate state at a given version, taken to avoid replaying all events for performance.
 
 ### Typical flow
-1. **Command**: A client sends a command (e.g., `PlaceOrder`) to change state.
+1. **Command**: A client sends a command (e.g., {{PlaceOrder}}) to change state.
 2. **Domain logic**: The aggregate validates the command, emits one or more events, and updates its internal state.
-3. **Event store**: Events are appended to the log (often with `version` and `timestamp`).
+3. **Event store**: Events are appended to the log (often with {{version}} and {{timestamp}}).
 4. **Projection update**: Event handlers update read models (e.g., update a SQL table, a search index, a UI component).
 5. **Query**: Applications read from the projection, not the event store directly.
 
@@ -46,7 +46,7 @@ In **event sourcing** (or saga), the database only stores a sequence of **events
 - When the domain is simple CRUD without complex invariants.
 
 ### Example: Order aggregate (simplified)
-```
+~~~
 class Order {
   OrderId id;
   State state; // NEW, CONFIRMED, SHIPPED, CANCELLED;
@@ -66,17 +66,15 @@ class Order {
 
   List<OrderEvent> getEvents() { return events; }
 }
-```
+~~~
 
 ### Example projection (read model)
-```java
+~~~java
 @Query("SELECT o.orderId, o.total, o.status, o.createdAt FROM Orders o")
 List<OrderDto> findAll();
-```
+~~~
 `,
     exercises: [],
     check: [],
-    related: ['microservices-002'],
-    tags: ['saga', 'event-sourcing', 'CQRS'],
   },
 });
