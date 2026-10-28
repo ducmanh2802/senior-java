@@ -14,6 +14,9 @@
     daily: {},           // 'YYYY-MM-DD' -> { review, known, quiz, mock, algo, minutes }
     roadmap: { start: null, done: {} },  // roadmap view: start date + checked task keys
     theme: null,
+    stories: [],
+    interviewLog: [],
+    aiFlags: [],
   });
   const DAY = 86400000;
 
@@ -28,7 +31,11 @@
   function loadData() {
     try {
       const raw = JSON.parse(localStorage.getItem(STORE_KEY));
-      return Object.assign(DEFAULT_DATA(), raw || {});
+      const d = Object.assign(DEFAULT_DATA(), raw || {});
+      if (!Array.isArray(d.aiFlags)) d.aiFlags = [];
+      if (!Array.isArray(d.stories)) d.stories = [];
+      if (!Array.isArray(d.interviewLog)) d.interviewLog = [];
+      return d;
     } catch (e) {
       return DEFAULT_DATA();
     }
