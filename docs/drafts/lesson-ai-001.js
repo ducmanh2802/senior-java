@@ -23,45 +23,45 @@
     'Nêu ra checklist triển khai AI production (rate limit, retry, cache, logging, audit).',
   ],
   body: `### ⚡ Tóm tắt
-AI Engineering không phải "viết prompt đẹp" mà là **lập trình hệ thống**: gọi endpoint model, định dạng payload JSON, nhận ` + '`response_format`' + `, xử lý lỗi, xếp hạng chất lượng và ghi số liệu. Trước khi dùng LLM, cần biết:
+AI Engineering không phải "viết prompt đẹp" mà là **lập trình hệ thống**: gọi endpoint model, định dạng payload JSON, nhận {{response_format}}, xử lý lỗi, xếp hạng chất lượng và ghi số liệu. Trước khi dùng LLM, cần biết:
 1. **Prompt** — đầu vào trò chuyện (system/user/assistant/tools).
 2. **API contract** — HTTP method, header, body JSON, timeout, retry, quota.
 3. **Measurement** — accuracy, precision@k, recall@k, hallucination rate, latency, cost.
 
 Bài học chỉ hướng 3 việc:
-- Gọi HTTP từ Java 17 với ` + '`java.net.http.HttpClient`' + `.
+- Gọi HTTP từ Java 17 với {{java.net.http.HttpClient}}.
 - Xây pipeline đo lường deterministic (test không ảo, không network).
-- Nêu checklist ` + '`AI production`' + `.
+- Nêu checklist {{AI production}}.
 
 > ⚠️ Không bao giờ ghi API key, prompt wall, transcript vào log. Log chỉ giữ method, endpoint, status, duration, request/response id (không body nhạy cảm).
 
 ### Cơ chế hoạt động: AI gọi API như thế nào?
-Gọi ` + '`POST /v1/chat/completions`' + ` (OpenAI/OpenRouter style):
-1. Client gửi `Authorization: Bearer <key>`, `Content-Type: application/json`.
-2. Body gồm `model`, `messages[]`, `max_tokens`, `temperature`, `response_format` (nếu muốn JSON hợp lệ).
-3. Server trả: `{"id": "...", "model": "...", "choices":[{"message":{"content":"..."}}]}`. `content` đôi khi là **1 string JSON** (structured output), cần `JSON.parse`.
-4. Client phải parse lại và **xác thực lỗi**: parse thất bại → 502; `choices` rỗng → 502; HTTP 4xx → map lỗi (401 key sai, 429 rate limit, 400 bad request, 5xx provider error). Không tự trả JSON giả khi server lỗi.
+Gọi {{POST /v1/chat/completions}} (OpenAI/OpenRouter style):
+1. Client gửi {{Authorization: Bearer <key>}}, {{Content-Type: application/json}}.
+2. Body gồm {{model}}, {{messages[]}}, {{max_tokens}}, {{temperature}}, {{response_format}} (nếu muốn JSON hợp lệ).
+3. Server trả: {{"id": "...", "model": "...", "choices":[{"message":{"content":"..."}}]}}. {{content}} đôi khi là **1 string JSON** (structured output), cần {{JSON.parse}}.
+4. Client phải parse lại và **xác thực lỗi**: parse thất bại → 502; {{choices}} rỗng → 502; HTTP 4xx → map lỗi (401 key sai, 429 rate limit, 400 bad request, 5xx provider error). Không tự trả JSON giả khi server lỗi.
 
 ### AI Engineering 5 layers
 | Layer | Mô tả | Ví dụ | Lỗi thường gặp |
 |---|---|---|---|
 | System prompt | Hướng dẫn hành vi | "Bạn là interviewer Java senior…" | Prompt dài, mục đích không rõ, rò từ/khóa |
-| Messages | Conversation history | `messages = [{role, content}]` | Sai thứ tự, múi giờ, lịch sử tràn ngập |
+| Messages | Conversation history | {{messages = [{role, content}]}} | Sai thứ tự, múi giờ, lịch sử tràn ngập |
 | API call | Request/response JSON | HttpClient, JSON.parse, response_format | Payload lớn, timeout, JSON không parse |
 | Evaluation | Metric & rubric | accuracy, precision@k, latency, cost | Chỉ "thấy đúng" mà không có số; không đo 100 case |
 | Production | Rate limit, retry, cache, logging, audit | Retry backoff, circuit breaker, log summarize | Retry vô hạn đẩy provider, log chứa PII/API key`
 
 ### Bài tập minh họa: HTTP client + JSON parse (Java 17)
-Viết `Main` đọc JSON request từ stdin, gửi (mô phỏng, không dùng network), đọc response JSON string, in `OK_HTTP_200` / `HTTP_4xx` / `IO_ERROR`. Template chỉ dùng `java.net.http.HttpClient`, `java.io.*`, `java.util.*`.
+Viết {{Main}} đọc JSON request từ stdin, gửi (mô phỏng, không dùng network), đọc response JSON string, in {{OK_HTTP_200}} / {{HTTP_4xx}} / {{IO_ERROR}}. Template chỉ dùng {{java.net.http.HttpClient}}, {{java.io.*}}, {{java.util.*}}.
 
-> Kiểm tra: dùng `HttpClient`, `HttpRequest.BodyPublishers`, `HttpResponse.BodyHandlers`. Khuyến nghị: không gọi real endpoint vì flaky, không deterministic.
+> Kiểm tra: dùng {{HttpClient}}, {{HttpRequest.BodyPublishers}}, {{HttpResponse.BodyHandlers}}. Khuyến nghị: không gọi real endpoint vì flaky, không deterministic.
 
 ### Bài tập 2: Measurement (deterministic)
-Viết class đo `accuracy`, `precisionAtK(k)`, `recallAtK(k)`. Dùng `Set<String>` để O(1). Test 100 trường hợp deterministic (tối thiểu 3→10 items).
+Viết class đo {{accuracy}}, {{precisionAtK(k)}}, {{recallAtK(k)}}. Dùng {{Set<String>}} để O(1). Test 100 trường hợp deterministic (tối thiểu 3→10 items).
 
 ### Kiểm tra nhanh
-1. JSON từ AI (content = string JSON) trong Java 17 parse đúng cách? A) `toString()` rồi in ra; B) `new JSONObject(text)` / `new Gson().fromJson(text, T.class)`; C) không parse; D) chỉ in `content`.
-2. `precision@k` khác `recall@k` ra sao? A) precision đo tỷ lệ top-k đúng; B) precision đo tỷ lệ top-k có ít nhất 1 label; C) precision lấy số lượng top-k đúng; D) precision lấy % tất cả label nằm trong top-k.
+1. JSON từ AI (content = string JSON) trong Java 17 parse đúng cách? A) {{toString()}} rồi in ra; B) {{new JSONObject(text)}} / {{new Gson().fromJson(text, T.class)}}; C) không parse; D) chỉ in {{content}}.
+2. {{precision@k}} khác {{recall@k}} ra sao? A) precision đo tỷ lệ top-k đúng; B) precision đo tỷ lệ top-k có ít nhất 1 label; C) precision lấy số lượng top-k đúng; D) precision lấy % tất cả label nằm trong top-k.
 3. Xuất hiện 502 bad_json khi gọi AI, xử lý đúng? A) coi là 200; B) map internal code; 5xx/429 → retry backoff + fallback an toàn, không re-throw; C) lưu full payload để audit; D) throw RuntimeException.
 4. Đâu không thuộc AI Engineering pipeline? A) Prompt design; B) API contract; C) Evaluation; D) Mua GPU cluster.
 5. Lỗi HTTP 502 bad_json: sai? A) Roigate response sang object validate; B) fallback để user ask lại; C) retry cháy; D) luân hồi 5xx: exponential backoff + cap.`,
