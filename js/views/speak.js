@@ -27,6 +27,11 @@
       'speak.listenQuestion': 'Nghe câu hỏi',
       'speak.listenTerm': 'Nghe từ',
       'speak.listenExample': 'Nghe ví dụ',
+       'speak.voice': 'Giọng đọc',
+       'speak.previewVoice': 'Nghe thử',
+       'speak.voiceHint': 'Giọng tự nhiên nhất: mở bằng Microsoft Edge (giọng Natural) hoặc Chrome (Google US English).',
+       'speak.loadingAudio': 'Đang tải audio…',
+       'speak.audioSource': 'Wiktionary audio (CC BY-SA)',
       'speak.showVi': 'Hiện nghĩa',
       'speak.hideVi': 'Ẩn nghĩa',
       'speak.showText': 'Hiện chữ',
@@ -103,6 +108,11 @@
       'speak.listenQuestion': 'Listen to the question',
       'speak.listenTerm': 'Hear the word',
       'speak.listenExample': 'Hear the example',
+       'speak.voice': 'Voice',
+       'speak.previewVoice': 'Preview',
+       'speak.voiceHint': 'Most natural voices: open in Microsoft Edge (Natural voices) or Chrome (Google US English).',
+       'speak.loadingAudio': 'Loading audio…',
+       'speak.audioSource': 'Wiktionary audio (CC BY-SA)',
       'speak.showVi': 'Show meaning',
       'speak.hideVi': 'Hide meaning',
       'speak.showText': 'Show text',
@@ -165,8 +175,10 @@
   const esc = App.esc;
   const tr = (key, vars) => App.t('speak.' + key, vars);
   const TABS = ['shadow', 'qa', 'term'];
-  const RATES = [0.75, 1, 1.15];
+  const RATES = [0.75, 0.95, 1, 1.15];
   const RATE_KEY = 'sjp.speak.rate';
+  const VOICE_KEY = 'sjp.speak.voice';
+  const AUDIO_CACHE_KEY = 'sjp.speak.audio';
   const THEME_ORDER = ['intro', 'tech', 'behavioral', 'design', 'project', 'negotiation', 'smalltalk'];
 
   // ---------- text helpers ----------
@@ -244,7 +256,7 @@
       let tab = 'shadow';
       let theme = 'all';
       let level = 'all';
-      let rate = 1;
+      let rate = 0.95;
       try {
         const r = parseFloat(localStorage.getItem(RATE_KEY));
         if (RATES.indexOf(r) >= 0) rate = r;
@@ -258,6 +270,11 @@
       let mic = null, micKind = null;
       let qTimer = null, silenceTimer = null, maxTimer = null, nextTimer = null;
       let speakSeq = 0;
+      let voiceChoice = null;
+      try { voiceChoice = localStorage.getItem(VOICE_KEY); } catch (e) { voiceChoice = null; }
+      const audioCache = (function () { try { return JSON.parse(localStorage.getItem(AUDIO_CACHE_KEY) || '{}') || {}; } catch (e) { return {}; } })();
+      let currentAudio = null;
+      const termAudio = { term: null, info: null, loading: false };
 
       // ---------- data ----------
       const all = kind => (window.DRILLS || []).filter(d => d && d.kind === kind);
@@ -298,6 +315,7 @@
       // ---------- text to speech ----------
       function stopSpeak() {
         speakSeq++;
+         if (currentAudio) { try { currentAudio.pause(); } catch (e) { /* ignore */ } currentAudio = null; }
         if (!hasTTS) return;
         try { window.speechSynthesis.cancel(); } catch (e) { /* ignore */ }
       }
@@ -309,17 +327,122 @@
         const mine = speakSeq;
         try { window.speechSynthesis.cancel(); } catch (e) { /* ignore */ }
         const u = new SpeechSynthesisUtterance(str);
-        u.lang = 'en-US';
         u.rate = rate;
         try {
-          const voices = window.speechSynthesis.getVoices ? window.speechSynthesis.getVoices() : [];
-          const v = voices.find(x => /^en[-_]US/i.test(x.lang || '')) || voices.find(x => /^en/i.test(x.lang || ''));
-          if (v) u.voice = v;
+          const v = resolveVoice();
+          if (v) { u.voice = v; u.lang = v.lang || 'en-US'; }
+          else { u.lang = 'en-US'; }
         } catch (e) { /* voice list may be unavailable */ }
         u.onend = u.onerror = () => { if (mine === speakSeq && onEnd) onEnd(); };
         try { window.speechSynthesis.speak(u); } catch (e) { if (mine === speakSeq && onEnd) onEnd(); }
       }
 
+       function voiceScore(v) {
+         const name = (v && v.name) ? v.name : '';
+         const lang = (v && v.lang) ? v.lang : '';
+         let score = 0;
+         if (/^en[-_]US/i.test(lang)) score += 3;
+         else if (/^en[-_]GB/i.test(lang)) score += 2;
+         else if (/^en/i.test(lang)) score += 1;
+         if (/Natural|Neural|Online|Google US English|Google UK English|Aria|Jenny|Guy|Ava|Andrew|Emma|Samantha|Daniel/i.test(name)) score += 10;
+         if (/David|Zira|Mark|eSpeak/i.test(name)) score -= 6;
+         return score;
+       }
+       function englishVoices() {
+         if (!hasTTS) return [];
+         try {
+           const voices = window.speechSynthesis.getVoices ? window.speechSynthesis.getVoices() : [];
+           return voices.filter(function (v) { return /^en/i.test(v.lang || ''); })
+             .slice().sort(function (a, b) { return voiceScore(b) - voiceScore(a) || String(a.name || '').localeCompare(String(b.name || '')); });
+         } catch (e) { return []; }
+       }
+       function resolveVoice() {
+         const list = englishVoices();
+         if (!list.length) return null;
+         if (voiceChoice) {
+           const found = list.find(function (v) { return v.name === voiceChoice; });
+           if (found) return found;
+         }
+         return list[0];
+       }
+       function saveAudioCache() {
+         try { localStorage.setItem(AUDIO_CACHE_KEY, JSON.stringify(audioCache)); } catch (e) { /* storage unavailable */ }
+       }
+       function wordCount(s) { return String(s == null ? '' : s).trim().split(/\s+/).filter(Boolean).length; }
+       async function fetchWordAudio(term) {
+         const key = String(term == null ? '' : term).trim().toLowerCase();
+         if (!key) return { none: true };
+         if (Object.prototype.hasOwnProperty.call(audioCache, key)) return audioCache[key];
+         if (wordCount(key) > 3) {
+           audioCache[key] = { none: true };
+           saveAudioCache();
+           return audioCache[key];
+         }
+         let result = { none: true };
+         try {
+           const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+           let timer = null;
+           if (ctrl) timer = setTimeout(function () { try { ctrl.abort(); } catch (e) { /* ignore */ } }, 4000);
+           const res = await fetch('https://api.dictionaryapi.dev/api/v2/entries/en/' + encodeURIComponent(key), ctrl ? { signal: ctrl.signal } : undefined);
+           if (timer) clearTimeout(timer);
+           if (res && res.ok) {
+             const data = await res.json();
+             const urls = [];
+             let ipa = '';
+             (Array.isArray(data) ? data : []).forEach(function (entry) {
+               (entry && entry.phonetics ? entry.phonetics : []).forEach(function (ph) {
+                 if (ph && ph.audio) urls.push(ph.audio);
+                 if (!ipa && ph && ph.text) ipa = ph.text;
+               });
+             });
+             let url = '';
+             const us = urls.find(function (u) { return /-us\.mp3$/i.test(u); });
+             const uk = urls.find(function (u) { return /-uk\.mp3$/i.test(u); });
+             if (us) url = us; else if (uk) url = uk; else if (urls.length) url = urls[0];
+             if (url) result = { url: url, ipa: ipa };
+           }
+         } catch (e) { result = { none: true }; }
+         audioCache[key] = result;
+         saveAudioCache();
+         return result;
+       }
+       function playTermAudio(term) {
+         const t = String(term == null ? '' : term).trim();
+         if (!t) { speak('', function () {}); return; }
+         termAudio.term = t;
+         termAudio.info = null;
+         termAudio.loading = true;
+         renderBody();
+         fetchWordAudio(t).then(function (info) {
+           termAudio.loading = false;
+           termAudio.info = info;
+           renderBody();
+           if (info && info.url) {
+             try { if (currentAudio) currentAudio.pause(); } catch (e) { /* ignore */ }
+             const a = new Audio(info.url);
+             currentAudio = a;
+             const seq = speakSeq;
+             a.onended = a.onerror = function () { if (seq === speakSeq) currentAudio = null; };
+             try {
+               const p = a.play();
+               if (p && typeof p.catch === 'function') p.catch(function () { currentAudio = null; speak(t); });
+             } catch (e) { currentAudio = null; speak(t); }
+           } else {
+             speak(t);
+           }
+         });
+       }
+       function refreshVoiceSelect() {
+         const sel = root.querySelector('[data-voice]');
+         if (!sel) return;
+         const voices = englishVoices();
+         const cur = voiceChoice || (voices.length ? voices[0].name : '');
+         sel.innerHTML = voices.map(function (v) {
+           return '<option value="' + esc(v.name) + '"' + (v.name === cur ? ' selected' : '') + '>' + esc(v.name) + ' (' + esc(v.lang) + ')</option>';
+         }).join('');
+         if (cur) sel.value = cur;
+       }
+       
       // ---------- microphone ----------
       function takeMic() {
         const h = mic;
@@ -606,7 +729,7 @@
         if (example) {
           if (d.example) speak(d.example);
         } else if (d.term) {
-          speak(d.term);
+          playTermAudio(d.term);
         }
       }
 
@@ -767,8 +890,8 @@
           (shadow.showVi && d.vi ? '<p class="sp-vi" lang="vi">' + esc(d.vi) + '</p>' : '') + '</div>' +
           '<div class="sp-controls">' +
           '<button type="button" class="btn" data-act="listen"' + (hasTTS ? '' : ' disabled') + '>▶ ' + esc(tr('listen')) + '</button>' +
-          '<label class="sp-rate"><span>' + esc(tr('speed')) + '</span><select class="select" data-rate aria-label="' + esc(tr('speed')) + '">' +
-          RATES.map(v => '<option value="' + v + '"' + (v === rate ? ' selected' : '') + '>' + v + '×</option>').join('') + '</select></label>' +
+           (hasTTS ? '<label class="sp-rate"><span>' + esc(tr('speed')) + '</span><select class="select" data-rate aria-label="' + esc(tr('speed')) + '">' +
+           RATES.map(v => '<option value="' + v + '"' + (v === rate ? ' selected' : '') + '>' + v + '×' + '</option>').join('') + '</select></label>' : '') +
           (supported ? '<button type="button" class="btn mic-btn' + (shadow.recording ? ' recording' : '') + '" data-act="record" aria-label="' +
             esc(shadow.recording ? tr('stopRecord') : tr('record')) + '">' + (shadow.recording ? '⏹ ' + esc(tr('stopRecord')) : '🎤 ' + esc(tr('record'))) + '</button>' : '') +
           (supported ? '<button type="button" class="chip' + (shadow.auto ? ' active' : '') + '" data-act="auto" aria-pressed="' + shadow.auto +
@@ -859,6 +982,8 @@
           metaHTML(d) +
           '<p class="sp-hint muted small">' + esc(tr('term.hint')) + '</p>' +
           '<div class="sp-term" lang="en">' + esc(d.term || '') + '</div>' +
+           (termAudio.term === String(d.term || '').trim() && termAudio.loading ? '<p class="muted small">' + esc(tr('loadingAudio')) + '</p>' : '') +
+           (termAudio.term === String(d.term || '').trim() && termAudio.info && termAudio.info.ipa ? '<p class="sp-ipa muted small"><span lang="en">/' + esc(String(termAudio.info.ipa).replace(/^\/+|\/+$/g, '')) + '/</span> <span class="sp-audio-src">' + esc(tr('audioSource')) + '</span></p>' : '') +
           '<dl class="sp-term-info">' +
           '<dt>' + esc(tr('term.say')) + '</dt><dd>' + esc(d.say || '') + '</dd>' +
           '<dt>' + esc(tr('term.wrong')) + '</dt><dd>' + esc(d.wrong || '') + '</dd>' +
@@ -910,6 +1035,13 @@
             '" data-tab="' + x + '">' + esc(tr('tab.' + x)) + '</button>').join('') +
           '</div>' +
           filtersHTML() +
+          (hasTTS ? '<div class="sp-voice card" style="display:grid;gap:8px;margin-bottom:16px">' +
+            '<label class="sp-rate"><span>' + esc(tr('voice')) + '</span><select class="select" data-voice aria-label="' + esc(tr('voice')) + '">' +
+            englishVoices().map(function (v) { return '<option value="' + esc(v.name) + '"' + (v.name === (voiceChoice || (englishVoices()[0] && englishVoices()[0].name)) ? ' selected' : '') + '>' + esc(v.name) + ' (' + esc(v.lang) + ')</option>'; }).join('') +
+            '</select></label>' +
+            '<div><button type="button" class="btn sm" data-act="preview-voice">' + esc(tr('previewVoice')) + '</button></div>' +
+            '<p class="muted small">' + esc(tr('voiceHint')) + '</p>' +
+            '</div>' : '') +
           '<div class="sp-body"></div>';
         renderBody();
       }
@@ -935,9 +1067,11 @@
         else if (act === 'listen-term') speakTerm(false);
         else if (act === 'listen-example') speakTerm(true);
         else if (act === 'clear-filter') clearFilters();
+         else if (act === 'preview-voice') speak('Hello, this is a preview of the selected voice.');
       }
 
       function onChange(e) {
+         if (e.target.matches('[data-voice]')) { voiceChoice = e.target.value; try { localStorage.setItem(VOICE_KEY, voiceChoice); } catch (err) { /* storage unavailable */ } return; }
         if (e.target.matches('[data-filter="theme"]')) { applyFilter('theme', e.target.value); return; }
         if (e.target.matches('[data-filter="level"]')) { applyFilter('level', e.target.value); return; }
         if (e.target.matches('[data-rate]')) {
@@ -966,12 +1100,18 @@
       root.addEventListener('change', onChange);
       const removeKeys = App.onKey(onKey);
       if (hasTTS) { try { window.speechSynthesis.getVoices(); } catch (e) { /* warm up voice list */ } }
+       if (hasTTS) {
+         const vcHandler = function () { refreshVoiceSelect(); };
+         try { window.speechSynthesis.addEventListener('voiceschanged', vcHandler); } catch (e) { /* ignore */ }
+         root.__vcHandler = vcHandler;
+       }
 
       renderAll();
 
       return () => {
         stopEverything();
         root.removeEventListener('click', onClick);
+         if (hasTTS && root.__vcHandler) { try { window.speechSynthesis.removeEventListener('voiceschanged', root.__vcHandler); } catch (e) { /* ignore */ } }
         root.removeEventListener('change', onChange);
         removeKeys();
       };

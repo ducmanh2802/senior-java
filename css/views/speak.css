@@ -81,3 +81,8 @@
   .view-speak .sp-en, .view-speak .sp-qa-question { font-size: 1.05rem; }
   .view-speak .sp-term { font-size: 1.6rem; }
 }
+
+.view-speak .sp-voice { padding: 12px 14px; }
+.view-speak .sp-ipa { margin: 4px 0 0; display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
+.view-speak .sp-ipa span[lang="en"] { font-family: var(--mono); font-size: .95rem; }
+.view-speak .sp-audio-src { font-size: .75rem; color: var(--muted); }

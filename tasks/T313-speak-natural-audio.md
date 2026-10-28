@@ -1,6 +1,6 @@
 # T313 — Luyện nói: phát âm từ vựng bằng audio thật + chọn giọng TTS tự nhiên
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/views/speak.js`, `css/views/speak.css`
 
@@ -24,3 +24,8 @@ Không dùng Oxford Learner's Dictionaries: Oxford không có API miễn phí, l
 
 ## Notes
 
+- Implemented dictionaryapi.dev audio for term words (≤3 words) with IPA + source label, localStorage cache (incl. no-audio), 4s timeout, TTS fallback.
+- Added voice scoring (Natural/Neural/Online/Google/... preferred, David/Zira/Mark/eSpeak penalized), voiceschanged listener.
+- Added voice select + preview button + voiceHint; default rate 0.95; hide TTS controls when no speechSynthesis.
+- node --check and validate OK.
+Reviewed-by: verify-only (code/UI task)
