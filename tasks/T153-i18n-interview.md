@@ -12,3 +12,4 @@ Owns: `js/views/interview.js`, `js/views/mock.js`, `js/views/career.js`
   - `career.js`: file trước đó bị cắt cụt (59 dòng, mất toàn bộ body) — đã khôi phục body từ git HEAD + i18n hóa toàn bộ: 103 key (pageTitle×3, tabs, form, log, CV result table cols, themes via `THEME_KEYS` map, `resultLabel`, speech practice, export…). THEMES giữ giá trị VI làm data (khớp story đã lưu), hiển thị qua key.
 - Chuỗi gửi AI (prompt/config/seeds), nội dung dữ liệu, tên ngôn ngữ self-referential (Tiếng Việt/English), regex `**Tóm tắt:**` giữ nguyên.
 - `node --check` 3 file OK; `node scripts/validate.js` → `OK — không có lỗi.` (warning path.js là của task khác).
+Reviewed-by: verify-only (code/UI task)

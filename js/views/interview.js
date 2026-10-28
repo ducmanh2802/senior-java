@@ -102,6 +102,20 @@
       'interview.transcriptTitle': 'Phỏng vấn AI — ',
       'interview.you': 'Bạn: ',
       'interview.minutesUnit': 'phút',
+      'interview.continueSession': 'Tiếp tục phiên dở?',
+      'interview.flagWrong': 'Chấm chưa đúng?',
+      'interview.flagged': 'Đã đánh dấu',
+      'interview.modelChip': 'Model',
+      'interview.modelWarning': 'Điểm do model free chấm, có thể lệch ±1',
+      'interview.flaggedCount': '{n} câu đã bị đánh dấu',
+      'interview.retrySend': 'Gửi lại',
+      'interview.downloadMd': 'Tải transcript (.md)',
+      'interview.practiceWeak': 'Luyện lại câu yếu',
+      'interview.progressTime': 'Thời gian',
+      'interview.progressAnswers': 'Câu trả lời',
+      'interview.shortcutHint': '<kbd>Space</kbd> mic · <kbd>Ctrl</kbd>+<kbd>Enter</kbd> gửi · <kbd>Esc</kbd> dừng đọc',
+      'interview.questionCount': 'Số câu',
+      'interview.maxAnswers': 'Tối đa 24',
     },
     en: {
       'interview.title': 'AI Interview',
@@ -198,6 +212,20 @@
       'interview.transcriptTitle': 'AI interview — ',
       'interview.you': 'You: ',
       'interview.minutesUnit': 'min',
+      'interview.continueSession': 'Continue unfinished session?',
+      'interview.flagWrong': 'Flag as incorrect?',
+      'interview.flagged': 'Flagged',
+      'interview.modelChip': 'Model',
+      'interview.modelWarning': 'Scores from free model may vary by ±1',
+      'interview.flaggedCount': '{n} flagged',
+      'interview.retrySend': 'Retry',
+      'interview.downloadMd': 'Download transcript (.md)',
+      'interview.practiceWeak': 'Practice weak questions',
+      'interview.progressTime': 'Time',
+      'interview.progressAnswers': 'Answers',
+      'interview.shortcutHint': '<kbd>Space</kbd> mic · <kbd>Ctrl</kbd>+<kbd>Enter</kbd> send · <kbd>Esc</kbd> stop TTS',
+      'interview.questionCount': 'Questions',
+      'interview.maxAnswers': 'Max 24',
     },
   });
 
@@ -206,6 +234,7 @@
   const JD_RESULT_KEY = 'sjp.interview.jdResult';
   const SESSION_MS = 90 * 60000;          // server-side session token lifetime
   const SILENCE_MS = 2500;                // hands-free: send after this much silence
+  const MAX_ANSWERS = 24;
   const esc = App.esc;
   const INTENT = { question: 'interview.intent.question', follow_up: 'interview.intent.follow_up', clarify: 'interview.intent.clarify', hint: 'interview.intent.hint', wrap_up: 'interview.intent.wrap_up' };
   const SIGNAL = { strong_no: 'bad', no: 'bad', lean_no: 'warn', lean_yes: 'warn', yes: 'ok', strong_yes: 'ok' };
@@ -213,6 +242,38 @@
   const load = () => { try { return JSON.parse(localStorage.getItem(STORE_KEY)); } catch (e) { return null; } };
   const save = s => { try { localStorage.setItem(STORE_KEY, JSON.stringify(s)); } catch (e) { /* private mode */ } };
   const clear = () => { try { localStorage.removeItem(STORE_KEY); } catch (e) { /* ignore */ } };
+
+  function saveSession(s) {
+    try {
+      sessionStorage.setItem('sjp.interview.session', JSON.stringify({
+        transcript: s.transcript || [],
+        config: s.config || {},
+        token: s.token || null,
+        startedAt: s.startedAt || Date.now(),
+        scores: s.scores || [],
+        done: !!s.done,
+        topics: s.topics || [],
+        companyId: s.companyId || null,
+        model: s.model || null,
+        savedAt: Date.now()
+      }));
+    } catch (e) { /* ignore */ }
+  }
+
+  function loadSession() {
+    try {
+      const raw = sessionStorage.getItem('sjp.interview.session');
+      if (!raw) return null;
+      const st = JSON.parse(raw);
+      if (!st || !st.token) return null;
+      if (Date.now() - (st.savedAt || st.startedAt || 0) > SESSION_MS) return null;
+      return st;
+    } catch (e) { return null; }
+  }
+
+  function clearSession() {
+    try { sessionStorage.removeItem('sjp.interview.session'); } catch (e) { }
+  }
   const mmss = s => String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(Math.floor(s % 60)).padStart(2, '0');
 
   /** First paragraph after "**Tóm tắt:**", markup stripped — the interviewer only needs the gist. */
@@ -257,16 +318,53 @@
     get title() { return App.t('interview.title'); },
     render(root) {
       let s = null;               // live session: { config, topics, companyId, transcript, token, startedAt, scores[], done }
-      let mic = null, silence = null, ticker = null, busy = false, showScores = false, handsFree = false;
+      let mic = null, silence = null, ticker = null, busy = false, showScores = false, handsFree = false, resumeSource = 'local', pendingRetry = false, lastResult = null;
       const cleanups = [];
 
       // ---------- setup ----------
       const pref = { lang: 'vi', level: 'senior', minutes: 20, persona: 'friendly', mode: 'topics', topics: ['core', 'spring', 'db'], company: '' };
 
+      function flagAnswer(obj) {
+        if (!App.store) return;
+        try {
+          if (!Array.isArray(App.store.data.aiFlags)) App.store.data.aiFlags = [];
+          const id = 'ivf-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
+          App.store.data.aiFlags.push({
+            id,
+            updatedAt: Date.now(),
+            kind: 'interview',
+            question: obj.question || '',
+            score: obj.score,
+            model: obj.model || s.model || null,
+            note: obj.note || '',
+            token: s && s.token ? String(s.token).slice(0, 12) : null
+          });
+          App.store.save();
+        } catch (e) { /* ignore */ }
+      }
+
+      function flaggedCount() {
+        try {
+          if (!App.store || !Array.isArray(App.store.data.aiFlags)) return 0;
+          return App.store.data.aiFlags.filter(f => f.kind === 'interview').length;
+        } catch (e) { return 0; }
+      }
+
+      function fmtTime(ts) {
+        if (!ts) return '';
+        try {
+          return new Date(ts).toLocaleTimeString(App.lang === 'en' ? 'en-US' : 'vi-VN', { hour: '2-digit', minute: '2-digit' });
+        } catch (e) { return ''; }
+      }
+
       function setup() {
         stopAll();
         const prev = load();
         const resumable = prev && prev.token && Date.now() - prev.startedAt < SESSION_MS && !prev.done;
+        const sess = loadSession();
+const resumableSess = sess && sess.token && Date.now() - (sess.savedAt || sess.startedAt) < SESSION_MS && !sess.done;
+        resumeSource = resumableSess ? 'session' : 'local';
+const resumableAny = resumable || resumableSess;
         const companies = window.COMPANIES || [];
         const chips = (name, opts, cur) => '<div class="chips" data-pref="' + name + '">' + Object.entries(opts).map(([v, l]) =>
           '<button type="button" class="chip' + (String(cur) === v ? ' active' : '') + '" data-v="' + esc(v) + '">' + esc(l) + '</button>').join('') + '</div>';
@@ -276,7 +374,7 @@
         root.innerHTML = `
           <div class="page-head"><h1>${App.t('interview.title')}</h1>
             <p class="muted">${App.t('interview.subtitle')}</p></div>
-          ${resumable ? `<div class="card iv-resume"><b>${App.t('interview.resume')}</b> (${App.t('interview.resumeMeta', { n: prev.transcript.filter(t => t.role === 'candidate').length, date: esc(App.fmtDate(prev.startedAt)) })}).
+          ${resumableAny ? `<div class="card iv-resume"><b>${App.t('interview.resume')}</b> (${App.t('interview.resumeMeta', { n: prev.transcript.filter(t => t.role === 'candidate').length, date: esc(App.fmtDate(prev.startedAt)) })}).
             <div class="row"><button class="btn primary" data-act="resume">${App.t('interview.resumeBtn')}</button><button class="btn" data-act="discard">${App.t('interview.discardBtn')}</button></div></div>` : ''}
           <div class="card iv-setup">
             <div class="iv-field"><label>${App.t('interview.langLabel')}</label>${chips('lang', { vi: 'Tiếng Việt', en: 'English' }, pref.lang)}</div>
@@ -362,6 +460,10 @@
           <div class="iv-bar card">
             <div><b>${esc(App.LEVELS[c.level])} · ${c.lang === 'en' ? 'English' : 'Tiếng Việt'}</b><div class="muted small iv-focus">${esc(c.focus)}</div></div>
             <div class="iv-timer" aria-live="off">00:00</div>
+            <div class="iv-progress">
+              <div class="progress"><div class="iv-progress-bar" style="width:100%"></div></div>
+              <span class="muted small iv-answers">0 / ${MAX_ANSWERS}</span>
+            </div>
             <div class="row iv-toggles">
               <button class="btn sm" data-act="mute" aria-pressed="${tts.muted}">${tts.muted ? App.t('interview.muteBtn') : App.t('interview.unmuteBtn')}</button>
               <button class="btn sm" data-act="scores" aria-pressed="${showScores}">${showScores ? App.t('interview.hideScore') : App.t('interview.showScore')}</button>
@@ -377,7 +479,7 @@
               ${App.speech.supported ? '<button class="btn mic-btn lg" data-act="mic" aria-label="' + App.t('interview.micAria') + '">🎤</button>' : ''}
               <button class="btn primary" data-act="send">${App.t('interview.sendBtn')}</button>
               <span class="iv-status"></span>
-              <span class="muted small iv-keys"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> ${App.t('interview.sendHint')}</span>
+              <span class="muted small iv-keys">${App.t('interview.shortcutHint')}</span>
             </div>
           </div>`;
         drawChat();
@@ -393,6 +495,16 @@
         el.textContent = mmss(sec) + ' / ' + mmss(limit);
         el.classList.toggle('warn', sec > limit - 120 && sec <= limit);
         el.classList.toggle('bad', sec > limit);
+        const bar = root.querySelector('.iv-progress-bar');
+        if (bar) {
+          const pct = limit > 0 ? Math.max(0, Math.min(100, (limit - sec) / limit * 100)) : 0;
+          bar.style.width = pct + '%';
+        }
+        const ansEl = root.querySelector('.iv-answers');
+        if (ansEl) {
+          const n = s.transcript.filter(t => t.role === 'candidate').length;
+          ansEl.textContent = n + ' / ' + MAX_ANSWERS;
+        }
         if (sec > limit + 120 && !busy && !s.done) finish();   // hard stop 2 minutes after the planned length
       }
 
@@ -404,12 +516,15 @@
           if (t.role === 'interviewer') {
             return `<div class="iv-msg iv-ai"><div class="iv-avatar" aria-hidden="true">AI</div><div class="iv-bubble">
               ${t.intent ? `<span class="badge">${esc(INTENT[t.intent] ? App.t(INTENT[t.intent]) : t.intent)}</span>` : ''}<p>${esc(t.text)}</p>
+              ${fmtTime(t.ts) ? `<div class="iv-time">${esc(fmtTime(t.ts))}</div>` : ''}
               ${tts.ok ? `<button class="link-btn" data-say="${i}" aria-label="${App.t('interview.readAgainAria')}">🔊</button>` : ''}</div></div>`;
           }
           const sc = s.scores[answer++];
+          const flagBtn = showScores && sc && sc.score ? `<button class="btn sm" data-act="flag-answer" data-idx="${i}">${App.t('interview.flagWrong')}</button>` : '';
           return `<div class="iv-msg iv-me"><div class="iv-bubble"><p>${esc(t.text)}</p>
-            ${showScores && sc && sc.score ? `<div class="iv-score">${App.ui.scoreBadge(sc.score)} <span class="muted small">${esc(sc.note)}</span></div>` : ''}</div></div>`;
-        }).join('') + (busy ? '<div class="iv-msg iv-ai"><div class="iv-avatar" aria-hidden="true">AI</div><div class="iv-bubble"><span class="ai-loading">' + App.t('interview.thinking') + '</span></div></div>' : '');
+            ${fmtTime(t.ts) ? `<div class="iv-time">${esc(fmtTime(t.ts))}</div>` : ''}
+            ${showScores && sc && sc.score ? `<div class="iv-score">${App.ui.scoreBadge(sc.score)} <span class="muted small">${esc(sc.note || '')}</span> ${sc.model ? `<span class="chip">${App.t('interview.modelChip')}: ${esc(sc.model)}</span>` : ''} ${flagBtn}</div>` : ''}</div></div>`;
+        }).join('') + (busy ? '<div class="iv-msg iv-ai"><div class="iv-avatar" aria-hidden="true">AI</div><div class="iv-bubble"><span class="iv-typing" aria-label="' + esc(App.t('interview.thinking')) + '"><span></span><span></span><span></span></span><span class="muted small iv-typing-label">' + esc(App.t('interview.thinking')) + '</span></div></div>' : '');
         box.scrollTop = box.scrollHeight;
       }
 
@@ -430,10 +545,17 @@
             elapsed_seconds: Math.round((Date.now() - s.startedAt) / 1000),
           });
           s.token = r.session_token;
-          if (s.transcript.some(t => t.role === 'candidate')) s.scores.push(r.last_answer);
-          s.transcript.push({ role: 'interviewer', text: r.say, intent: r.intent });
+if (r.model) s.model = r.model;
+          if (s.transcript.some(t => t.role === 'candidate')) {
+            const sc = r.last_answer || {};
+            if (r.last_answer && r.last_answer.model) sc.model = r.last_answer.model;
+            else if (r.model) sc.model = r.model;
+            s.scores.push(sc);
+          }
+          s.transcript.push({ role: 'interviewer', text: r.say, intent: r.intent, model: r.model || null, ts: Date.now() });
           s.done = !!r.done;
           save(s);
+saveSession(s);
           setBusy(false);
           tts.speak(r.say, s.config.lang, () => {
             if (s && s.done) finish();
@@ -442,7 +564,7 @@
         } catch (e) {
           setBusy(false);
           status(App.ui.error(e) + (e.code === 'bad_session' || e.code === 'session_full' ? ' <button class="btn sm" data-act="end">' + App.t('interview.viewScore') + '</button>' : ''));
-          if (!s.token && !s.transcript.length) { clear(); }
+          if (!s.token && !s.transcript.length) { clear(); clearSession(); }
         }
       }
 
@@ -483,7 +605,7 @@
         const text = ta.value.trim();
         if (!text) { status('<span class="muted">' + App.t('interview.answerEmpty') + '</span>'); return; }
         ta.value = '';
-        s.transcript.push({ role: 'candidate', text });
+        s.transcript.push({ role: 'candidate', text, ts: Date.now() });
         save(s);
         next();
       }
@@ -497,6 +619,7 @@
         root.innerHTML = '<div class="card iv-wait"><span class="ai-loading">' + App.t('interview.grading') + '</span></div>';
         try {
           const r = await App.ai.interview.summary({ session_token: s.token, config: s.config, transcript: s.transcript });
+          if (r.model) s.model = r.model;
           const minutes = Math.round((Date.now() - s.startedAt) / 60000);
           App.store.addMockResult({
             kind: 'ai-interview', score: r.overall_score, hire_signal: r.hire_signal, minutes, lang: s.config.lang,
@@ -511,35 +634,46 @@
       }
 
       function result(r, minutes) {
+        lastResult = r;
         const sigCls = SIGNAL[r.hire_signal] || 'warn';
-        const list = (title, items) => items && items.length ? `<div class="card"><h3>${title}</h3><ul>${items.map(x => '<li>' + esc(x) + '</li>').join('')}</ul></div>` : '';
+        const list = (title, items, icon) => items && items.length ? '<div class="card iv-result-card"><h3>' + (icon ? icon + ' ' : '') + title + '</h3><ul>' + items.map(x => '<li>' + esc(x) + '</li>').join('') + '</ul></div>' : '';
+        const model = r.model || s.model;
+        const weak = (r.by_question || []).filter(q => (Number(q.score) || 0) <= 3);
+        const flagged = flaggedCount();
         root.innerHTML = `
           <div class="page-head"><h1>${App.t('interview.resultTitle')}</h1><p class="muted">${minutes} ${App.t('interview.minutesUnit')} · ${esc(s.config.focus)}</p></div>
           <div class="card iv-verdict">
-            <div class="row">${App.ui.scoreBadge(r.overall_score)}<span class="badge ${sigCls}">${esc(App.t('interview.sig.' + (r.hire_signal || 'lean_no')))}</span></div>
+            <div class="row iv-verdict-row"><div class="iv-score-circle" style="--iv-score:${Math.max(0, Math.min(100, (Number(r.overall_score) || 0) / 5 * 100))}"><span>${esc(String(r.overall_score))}</span><small>/5</small></div><span class="badge ${sigCls} iv-hire">${esc(App.t('interview.sig.' + (r.hire_signal || 'lean_no')))}</span>${model ? ' <span class="chip">' + App.t('interview.modelChip') + ': ' + esc(model) + '</span>' : ''}</div>
             <p>${esc(r.verdict)}</p>
+            <p class="muted small">${App.t('interview.modelWarning')}${flagged ? ' · ' + App.t('interview.flaggedCount', { n: flagged }) : ''}</p>
           </div>
           <div class="card"><h3>${App.t('interview.byQuestion')}</h3>
-            ${(r.by_question || []).map(q => `<details class="iv-q"><summary>${App.ui.scoreBadge(q.score)} <span>${esc(q.question)}</span></summary>
-              <p>${esc(q.comment)}</p><p class="iv-better"><b>${App.t('interview.betterAnswer')}</b> <span${s.config.lang === 'en' ? ' lang="en"' : ''}>${esc(q.better_answer)}</span></p></details>`).join('')}
+            <div class="iv-chart">${(r.by_question || []).map((q, i) => '<div class="iv-chart-col"><div class="iv-chart-bar" style="height:' + Math.max(4, (Number(q.score) || 0) / 5 * 100) + '%"></div><span>' + (i + 1) + '</span></div>').join('')}</div>
+            ${(r.by_question || []).map((q, qi) => '<details class="iv-q"><summary>' + App.ui.scoreBadge(q.score) + ' <span>' + esc(q.question) + '</span> ' + ((q.model || model) ? '<span class="chip">' + App.t('interview.modelChip') + ': ' + esc(q.model || model) + '</span>' : '') + ' <button class="btn sm" data-act="flag-bq" data-qidx="' + qi + '">' + App.t('interview.flagWrong') + '</button></summary><div class="iv-q-bar"><div style="width:' + Math.max(0, Math.min(100, (Number(q.score) || 0) / 5 * 100)) + '%"></div></div><p>' + esc(q.comment) + '</p><p class="iv-better"><b>' + App.t('interview.betterAnswer') + '</b> <span' + (s.config.lang === 'en' ? ' lang="en"' : '') + '>' + esc(q.better_answer) + '</span></p></details>').join('')}
           </div>
-          <div class="grid">${list(App.t('interview.strengths'), r.strengths)}${list(App.t('interview.improvements'), r.improvements)}${list(App.t('interview.studyNext'), r.study_next)}</div>
-          ${r.communication ? `<div class="card"><h3>${App.t('interview.communication')}</h3><p>${esc(r.communication)}</p></div>` : ''}
+          <div class="grid">${list(App.t('interview.strengths'), r.strengths, '💪')}${list(App.t('interview.improvements'), r.improvements, '🛠️')}${list(App.t('interview.studyNext'), r.study_next, '📚')}</div>
+          ${r.communication ? '<div class="card"><h3>' + App.t('interview.communication') + '</h3><p>' + esc(r.communication) + '</p></div>' : ''}
           <div class="row iv-actions">
             <button class="btn primary" data-act="new">${App.t('interview.retryBtn')}</button>
-            ${s.topics[0] ? `<a class="btn" href="#/bank/${esc(s.topics[0])}">${App.t('interview.reviewTopic', {topic: App.topic(s.topics[0]).name})}</a>` : ''}
-            <button class="btn" data-act="download">${App.t('interview.download')}</button>
+            ${weak.length && s.topics[0] ? '<a class="btn" href="#/flash/' + esc(s.topics[0]) + '">' + App.t('interview.practiceWeak') + '</a>' : ''}
+            ${s.topics[0] ? '<a class="btn" href="#/bank/' + esc(s.topics[0]) + '">' + App.t('interview.reviewTopic', {topic: App.topic(s.topics[0]).name}) + '</a>' : ''}
+            <button class="btn" data-act="download">${App.t('interview.downloadMd')}</button>
           </div>`;
       }
 
       function download() {
         if (!s) return;
         const locale = App.lang === 'en' ? 'en-US' : 'vi-VN';
-        const lines = [App.t('interview.transcriptTitle') + new Date(s.startedAt).toLocaleString(locale), s.config.focus, ''];
-        s.transcript.forEach(t => lines.push((t.role === 'candidate' ? App.t('interview.you') : 'Interviewer: ') + t.text, ''));
+        const lines = ['# ' + App.t('interview.transcriptTitle') + new Date(s.startedAt).toLocaleString(locale), '', '**' + s.config.focus + '**', ''];
+        s.transcript.forEach(t => {
+          lines.push('## ' + (t.role === 'candidate' ? App.t('interview.you') : 'Interviewer'));
+          lines.push('');
+          lines.push(t.text);
+          lines.push('');
+        });
         const a = document.createElement('a');
-        a.href = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' }));
-        a.download = 'phong-van-ai-' + App.dayKey(s.startedAt) + '.txt';
+        a.href = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' }));
+        a.download = 'phong-van-ai-' + App.dayKey(s.startedAt) + '.md';
         a.click();
         setTimeout(() => URL.revokeObjectURL(a.href), 1000);
       }
@@ -568,17 +702,68 @@
           case 'analyze-jd': analyzeJD(); break;
           case 'start-jd': startFromJD(); break;
           case 'start': startNew(); break;
-          case 'resume': s = load(); session(); if (s.transcript.length && s.transcript[s.transcript.length - 1].role === 'candidate') next(); break;
+          case 'resume':
+  if (resumeSource === 'session') {
+    const st = loadSession();
+    if (!st) { setup(); break; }
+    s = { config: st.config, topics: st.topics || [], companyId: st.companyId || null, transcript: st.transcript || [], token: st.token, startedAt: st.startedAt || Date.now(), scores: st.scores || [], done: !!st.done, model: st.model || null };
+  } else {
+    s = load();
+  }
+  if (!s) { setup(); break; }
+  save(s);
+  session();
+  if (s.transcript.length && s.transcript[s.transcript.length - 1].role === 'candidate') next();
+  break;
           case 'discard': clear(); setup(); break;
           case 'mic': if (mic) stopMic(); else listen(); break;
           case 'send': send(); break;
           case 'end': finish(); break;
           case 'retry-summary': finish(); break;
-          case 'download': download(); break;
+          case 'retry-send':
+            if (busy || !s) break;
+            const taR = root.querySelector('.iv-compose textarea');
+            const txtR = taR ? taR.value.trim() : '';
+            if (txtR) { for (let i = s.transcript.length - 1; i >= 0; i--) if (s.transcript[i].role === 'candidate') { s.transcript[i].text = txtR; break; } }
+            save(s); next(); break;
+case 'download': download(); break;
+          case 'flag-bq':
+  if (!lastResult || !lastResult.by_question) break;
+  const qi = Number(act.dataset.qidx);
+  const bq = lastResult.by_question[qi];
+  if (!bq) break;
+  flagAnswer({ question: bq.question || '', score: bq.score, model: bq.model || (lastResult.model || s && s.model) || null, note: bq.comment || '' });
+  act.textContent = App.t('interview.flagged');
+  act.disabled = true;
+  break;
           case 'new': s = null; setup(); break;
           case 'mute': tts.muted = !tts.muted; if (tts.muted) tts.stop(); session(); break;
           case 'scores': showScores = !showScores; session(); break;
-          case 'handsfree': handsFree = !handsFree; session(); if (handsFree && !busy) listen(); break;
+case 'handsfree': handsFree = !handsFree; session(); if (handsFree && !busy) listen(); break;
+          case 'flag-answer':
+  if (!s) break;
+  const idx = Number(act.dataset.idx);
+  // find score object
+  let scObj = null;
+  if (!isNaN(idx)) {
+    // count candidate index
+    let candCount = -1;
+    for (let i = 0; i < s.transcript.length; i++) {
+      if (s.transcript[i].role === 'candidate') {
+        candCount++;
+        if (i === idx) { scObj = s.scores[candCount] || null; break; }
+      }
+    }
+  }
+  const qText = (function () {
+    // preceding interviewer message
+    for (let i = idx - 1; i >= 0; i--) if (s.transcript[i].role === 'interviewer') return s.transcript[i].text;
+    return '';
+  })();
+  flagAnswer({ question: qText, score: scObj ? scObj.score : null, model: scObj && scObj.model ? scObj.model : (s.model || null), note: scObj ? (scObj.note || '') : '' });
+  act.textContent = App.t('interview.flagged');
+  act.disabled = true;
+  break;
         }
       }
       function onInput(e) {
@@ -592,7 +777,11 @@
         if (message) message.textContent = App.t('interview.jdChanged');
       }
       function onChange(e) { if (e.target.matches('.iv-company')) pref.company = e.target.value; }
-      function onKeydown(e) { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && e.target.matches('.iv-compose textarea')) { e.preventDefault(); send(); } }
+      function onKeydown(e) {
+        if (e.key === 'Escape') { tts.stop(); return; }
+        if (e.key === ' ' && !e.target.matches('textarea, input, select')) { e.preventDefault(); const b = root.querySelector('[data-act="mic"]'); if (b) { if (mic) stopMic(); else listen(); } return; }
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && e.target.matches('.iv-compose textarea')) { e.preventDefault(); send(); }
+      }
 
       root.addEventListener('click', onClick);
       root.addEventListener('change', onChange);
