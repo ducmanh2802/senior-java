@@ -465,11 +465,11 @@ Khi phỏng vấn, ghép đoạn code này với cấu hình K8s (readiness prob
     'Xây được auto-rollback: nút chặn bằng error rate + ngưỡng mẫu tối thiểu, tránh rollback vì noise',
   ],
   body: `### Ba chiến lược, ba đánh đổi
-  | Chiến lược | Blast radius | Chi phí | Rollback | Ràng buộc dữ liệu |
-  |---|---|---|---|---|
-  | **Rolling update** | Cả cụm theo chu kỳ, version lẫn lộn trong lúc deploy | Thấp nhất (giữ {{maxSurge}}/{{maxUnavailable}}) | Rollback = deploy lại bản cũ, chậm | Migration phải tương thích cả hai version |
-  | **Blue-green** | Switch một lần, nhưng switch sai là 100% traffic | Đôi tài nguyên (hai environment) | Nhanh: đổi service selector về blue | Migration phải "đổi hướng" ngay được, thường kèm feature flag |
-  | **Canary** | Theo % traffic, thường 1→5→25→100 | Trung bình (thêm vài pod canary) | Nhanh: giảm % về 0 | Version cũ/mới cùng serve; DB tương thích tuyệt đối |
+| Chiến lược | Blast radius | Chi phí | Rollback | Ràng buộc dữ liệu |
+|---|---|---|---|---|
+| **Rolling update** | Cả cụm theo chu kỳ, version lẫn lộn trong lúc deploy | Thấp nhất (giữ {{maxSurge}}/{{maxUnavailable}}) | Rollback = deploy lại bản cũ, chậm | Migration phải tương thích cả hai version |
+| **Blue-green** | Switch một lần, nhưng switch sai là 100% traffic | Đôi tài nguyên (hai environment) | Nhanh: đổi service selector về blue | Migration phải "đổi hướng" ngay được, thường kèm feature flag |
+| **Canary** | Theo % traffic, thường 1→5→25→100 | Trung bình (thêm vài pod canary) | Nhanh: giảm % về 0 | Version cũ/mới cùng serve; DB tương thích tuyệt đối |
   
   Canary mạnh ở chỗ **dữ liệu production thật** quyết định có tiếp tục không: sau 5% traffic trong 15 phút, error rate, latency p99 và log của bản mới đã có ý nghĩa thống kê — điều blue-green không có trước khi switch.
   
@@ -489,9 +489,9 @@ Khi phỏng vấn, ghép đoạn code này với cấu hình K8s (readiness prob
 ### Tự rollback: ngưỡng + mẫu tối thiểu + cửa sổ trượt
   Canary chỉ có ý nghĩa khi **so sánh** được. Tự động rollback cần ba thứ:
   
-  1. **Error rate** theo version: {{failures / total}} trong cửa sổ trượt (ví dụ 5 phút gần nhất), không phải cumulative từ đầu đời — bug có thể ở một cụm user cụ thể.
-  2. **Ngưỡng mẫu tối thiểu** (minSamples): 3 request lỗi trên 3 request đầu = 100% error rate, nhưng chưa đủ bằng chứng để kill release. Kinh điển: ≥ 20–50 request hoặc ≥ 5 phút.
-  3. **Ngưỡng so sánh** (error threshold): thường là max(abs, factor × baseline). Đơn giản: {{errorRate("canary") > 0.02}} (2%) và canary đã có ≥ 30 mẫu.
+1. **Error rate** theo version: {{failures / total}} trong cửa sổ trượt (ví dụ 5 phút gần nhất), không phải cumulative từ đầu đời — bug có thể ở một cụm user cụ thể.
+2. **Ngưỡng mẫu tối thiểu** (minSamples): 3 request lỗi trên 3 request đầu = 100% error rate, nhưng chưa đủ bằng chứng để kill release. Kinh điển: ≥ 20–50 request hoặc ≥ 5 phút.
+3. **Ngưỡng so sánh** (error threshold): thường là max(abs, factor × baseline). Đơn giản: {{errorRate("canary") > 0.02}} (2%) và canary đã có ≥ 30 mẫu.
   
   ~~~text
   record(version, success)           // append vào cửa sổ
@@ -503,11 +503,11 @@ Khi phỏng vấn, ghép đoạn code này với cấu hình K8s (readiness prob
   Sau rollback, **không** dừng quan sát: logs, traces của đoạn canary ngắn là vàng cho postmortem. Ngoài ra cần phân biệt rollback **tự động** (an toàn, chỉ giảm %) với promote 100% (cần tín hiệu đủ tốt: error rate ≤ baseline, không có anomaly khác).
   
 ### Bẫy production hay gặp
-  - **Hash theo {{Random()}} mỗi request**: user đổi version liên tục; thậm chí hai request song song của cùng user đi hai nơi. Phải hash **thứ tự ổn định của user** (userId, hoặc accountId cho luồng tiền).
-  - **CanaryPercent đổi giữa chừng giữa hai lần tính hash của cùng user session**: khi roll 5% → 20%, user 5% giữ nguyên (đúng), nhưng nếu code dùng "random < percent" thì user nhảy lung tung. Dùng bucket cố định 0..99 rồi so với percent.
-  - **Rollback vì noise**: 100 request đầu mà 3 lỗi đã kill release vào 2h sáng; ngày hôm sau 5% traffic cả tuần cũng không được thử. Min samples + ngưỡng so sánh với baseline của stable mới công bằng.
-  - **Migration DB một chiều**: canary ghi dữ liệu kiểu mới trong lúc stable còn đọc kiểu cũ — deploy canary xong thì rollback **không thể** vì data đã ghi. Kỹ thuật expand-contract (mở rộng schema tương thích cả hai, migrate, thu hẹp) là điều kiện tiên quyết của canary trên hệ thống có state.
-  - **Quên giới hạn canary ở hạ tầng**: traffic 5% nhưng metrics/log chỉ có nhãn version khi code tự tag; so sánh p99 không làm được nếu gateway không truyền header {{X-Version}}.
+- **Hash theo {{Random()}} mỗi request**: user đổi version liên tục; thậm chí hai request song song của cùng user đi hai nơi. Phải hash **thứ tự ổn định của user** (userId, hoặc accountId cho luồng tiền).
+- **CanaryPercent đổi giữa chừng giữa hai lần tính hash của cùng user session**: khi roll 5% → 20%, user 5% giữ nguyên (đúng), nhưng nếu code dùng "random < percent" thì user nhảy lung tung. Dùng bucket cố định 0..99 rồi so với percent.
+- **Rollback vì noise**: 100 request đầu mà 3 lỗi đã kill release vào 2h sáng; ngày hôm sau 5% traffic cả tuần cũng không được thử. Min samples + ngưỡng so sánh với baseline của stable mới công bằng.
+- **Migration DB một chiều**: canary ghi dữ liệu kiểu mới trong lúc stable còn đọc kiểu cũ — deploy canary xong thì rollback **không thể** vì data đã ghi. Kỹ thuật expand-contract (mở rộng schema tương thích cả hai, migrate, thu hẹp) là điều kiện tiên quyết của canary trên hệ thống có state.
+- **Quên giới hạn canary ở hạ tầng**: traffic 5% nhưng metrics/log chỉ có nhãn version khi code tự tag; so sánh p99 không làm được nếu gateway không truyền header {{X-Version}}.
   
 ### Liên hệ phỏng vấn
   Câu hỏi senior kinh điển: "Service thanh toán, bạn chọn chiến lược gì và tự rollback thế nào?" — trả lời: canary theo % với hash ổn định của userId (sticky session, không cần store chung), quan sát error rate theo version với min samples, rollback bằng cách hạ % về 0; điều kiện tiên quyết là migration expand-contract để bản cũ luôn rollback được. Bài tập dưới đây dựng chính bộ định tuyến + auto-rollback đó bằng Java thuần.`,
@@ -734,12 +734,12 @@ Thử thách lớn nhất khi làm việc với nhiều provider là sự dị b
 Việc xử lý lỗi sai cách là nguyên nhân hàng đầu dẫn đến sự cố lan truyền (Cascading Failures). Chúng ta phân loại lỗi thành hai nhóm chiến lược:
 
 1. **Final Errors (Lỗi cuối cùng)**: Đây là những lỗi mà bản chất của nó là do cấu hình, quyền truy cập hoặc logic dữ liệu sai.
-   - **Ví dụ**: {{403 Forbidden}} (Sai quyền truy cập), {{404 Not Found}} (File đã bị xóa), {{400 Bad Request}} (Tham số không hợp lệ).
-   - **Hành động**: Dừng ngay lập tức. Việc thử lại (retry) trong trường hợp này chỉ làm lãng phí CPU, băng thông mạng và quan trọng nhất là làm cạn kiệt API quota của hệ thống. Nếu bạn retry một lỗi 403 hàng ngàn lần, hệ thống giám sát của provider có thể coi đó là một cuộc tấn công và khóa luôn tài khoản tích hợp của bạn.
+- **Ví dụ**: {{403 Forbidden}} (Sai quyền truy cập), {{404 Not Found}} (File đã bị xóa), {{400 Bad Request}} (Tham số không hợp lệ).
+- **Hành động**: Dừng ngay lập tức. Việc thử lại (retry) trong trường hợp này chỉ làm lãng phí CPU, băng thông mạng và quan trọng nhất là làm cạn kiệt API quota của hệ thống. Nếu bạn retry một lỗi 403 hàng ngàn lần, hệ thống giám sát của provider có thể coi đó là một cuộc tấn công và khóa luôn tài khoản tích hợp của bạn.
 
 2. **Retryable Errors (Lỗi có thể thử lại)**: Những lỗi mang tính tạm thời, thường do áp lực tải hoặc sự cố mạng nhất thời.
-   - **Ví dụ**: {{429 Too Many Requests}} (Chạm ngưỡng Rate Limit), {{503 Service Unavailable}} (Server đang bảo trì hoặc quá tải), {{504 Gateway Timeout}}, hoặc các lỗi {{SocketTimeout}}.
-   - **Hành động**: Thử lại sau một khoảng trễ. Tuy nhiên, "thử lại thế nào" mới là điều làm nên sự khác biệt.
+- **Ví dụ**: {{429 Too Many Requests}} (Chạm ngưỡng Rate Limit), {{503 Service Unavailable}} (Server đang bảo trì hoặc quá tải), {{504 Gateway Timeout}}, hoặc các lỗi {{SocketTimeout}}.
+- **Hành động**: Thử lại sau một khoảng trễ. Tuy nhiên, "thử lại thế nào" mới là điều làm nên sự khác biệt.
 
 ### Chiến lược Retry: Exponential Backoff và Jitter
 Đừng bao giờ retry theo kiểu "thử lại sau mỗi 1 giây". Nếu server đang quá tải, việc hàng ngàn client cùng thử lại sau đúng 1 giây sẽ tạo ra một đợt sóng tải mới (thường được gọi là **Thundering Herd problem**), khiến server không bao giờ có cơ hội hồi phục.
@@ -774,14 +774,14 @@ Bạn: "Tôi sử dụng kiến trúc Adapter kết hợp với Circuit Breaker.
       prompt: `Xây dựng hệ thống Adapter cho ECM với các yêu cầu sau:
 1. Định nghĩa {{ErrorKind}} gồm {{FINAL}} và {{RETRY}}.
 2. Implement 2 adapter:
-   - {{EfssAdapter}}: Map {{RATE_LIMIT}}, {{TOKEN_EXPIRED}}, {{SERVER_BUSY}} thành {{RETRY}}. Các lỗi khác mặc định là {{FINAL}}.
-   - {{OneDriveAdapter}}: Map {{throttledError}}, {{itemLocked}} thành {{RETRY}}. Các lỗi khác là {{FINAL}}.
+- {{EfssAdapter}}: Map {{RATE_LIMIT}}, {{TOKEN_EXPIRED}}, {{SERVER_BUSY}} thành {{RETRY}}. Các lỗi khác mặc định là {{FINAL}}.
+- {{OneDriveAdapter}}: Map {{throttledError}}, {{itemLocked}} thành {{RETRY}}. Các lỗi khác là {{FINAL}}.
 3. Hoàn thiện hàm {{fetchWithRetry}} trong {{EcmService}}:
-   - Gọi {{connector.fetch(id)}}.
-   - Nếu ném ngoại lệ, dùng {{connector.getPolicy()}} để classify message của ngoại lệ đó.
-   - Nếu là {{RETRY}}, thử lại tối đa **3 lần** (tổng cộng 4 lần gọi).
-   - Nếu là {{FINAL}} hoặc đã hết lượt retry, ném ngoại lệ ra ngoài.
-   - Mỗi lần retry, in ra log: {{"Retrying <id> (attempt <n>)..."}}.`,
+- Gọi {{connector.fetch(id)}}.
+- Nếu ném ngoại lệ, dùng {{connector.getPolicy()}} để classify message của ngoại lệ đó.
+- Nếu là {{RETRY}}, thử lại tối đa **3 lần** (tổng cộng 4 lần gọi).
+- Nếu là {{FINAL}} hoặc đã hết lượt retry, ném ngoại lệ ra ngoài.
+- Mỗi lần retry, in ra log: {{"Retrying <id> (attempt <n>)..."}}.`,
       starter: `enum ErrorKind { FINAL, RETRY }
 
 interface ErrorPolicy {
@@ -1057,12 +1057,12 @@ Bạn: "Tôi triển khai cơ chế Pre-emptive Rotation. Tôi không đợi l�
 1. **TokenBucket**: Khởi tạo với 10 token, tốc độ nạp 10 token mỗi phút. Hàm {{tryConsume()}} trả về true nếu đủ token.
 2. **SecretProvider**: Cung cấp {{getSecret(key)}} trả về một object chứa {{token}} và {{expiryMs}}.
 3. **IngestionLoop**: 
-   - Có 25 file cần xử lý, chạy tối đa trong 3 chu kỳ (Cycles).
-   - Mỗi chu kỳ:
-     - Kiểm tra token từ {{SecretProvider}}. Nếu expiry còn lại **< 2 phút** (120,000ms), phải gọi {{getSecret}} để refresh.
-     - Kiểm tra Quota: Nếu không đủ token trong {{TokenBucket}}, phải đợi (mô phỏng bằng log) cho đến cửa sổ tiếp theo. Trong bài tập này, nếu không đủ token, hãy thoát chu kỳ hiện tại và chờ chu kỳ sau.
-     - Mỗi file xử lý thành công: {{fetch -> upload -> stateChange}}.
-   - Kết thúc 3 chu kỳ, nếu vẫn còn file chưa xử lý, đánh dấu các file đó là {{SKIPPED}}.`,
+- Có 25 file cần xử lý, chạy tối đa trong 3 chu kỳ (Cycles).
+- Mỗi chu kỳ:
+- Kiểm tra token từ {{SecretProvider}}. Nếu expiry còn lại **< 2 phút** (120,000ms), phải gọi {{getSecret}} để refresh.
+- Kiểm tra Quota: Nếu không đủ token trong {{TokenBucket}}, phải đợi (mô phỏng bằng log) cho đến cửa sổ tiếp theo. Trong bài tập này, nếu không đủ token, hãy thoát chu kỳ hiện tại và chờ chu kỳ sau.
+- Mỗi file xử lý thành công: {{fetch -> upload -> stateChange}}.
+- Kết thúc 3 chu kỳ, nếu vẫn còn file chưa xử lý, đánh dấu các file đó là {{SKIPPED}}.`,
       starter: `class TokenBucket {
     private int tokens;
     private long lastRefill;
