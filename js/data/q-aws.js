@@ -7,6 +7,36 @@
   q: 'Deploy một Spring Boot service lên AWS: khi nào chọn EC2, ECS Fargate, EKS hay Lambda? Tiêu chí nào thực sự quyết định?',
   a: `**Tóm tắt:** chọn theo mức kiểm soát hạ tầng và mô hình vận hành: EC2 khi cần toàn quyền OS; ECS Fargate khi muốn chạy container mà không quản server; EKS khi đội đã chuẩn Kubernetes hoặc cần hệ sinh thái K8s; Lambda khi workload ngắn, event-driven và chịu được cold start.
 
+### Hiểu nhanh
+Hãy tưởng tượng bạn cần chỗ để mở quán ăn. **EC2** giống thuê nguyên mặt bằng trống: tự sắm bếp, tự sửa điện nước, muốn làm gì cũng được nhưng mọi hỏng hóc là việc của bạn. **ECS Fargate** giống thuê một gian trong food court: bạn chỉ mang "thùng hàng" (Docker image) tới, điện nước và bảo vệ do ban quản lý lo. **EKS** giống tự vận hành cả một food court theo chuẩn quốc tế (Kubernetes): rất mạnh khi có nhiều quầy, nhiều đội, nhưng cần người quản lý chuyên trách. **Lambda** giống thuê đầu bếp theo từng món: có khách gọi thì đầu bếp tới nấu, không có khách thì không mất tiền, nhưng lần đầu đầu bếp tới sẽ chậm (cold start) và không nấu món nào quá 15 phút.
+
+### Thuật ngữ
+- **EC2 instance**: một máy ảo thuê theo giây/giờ, có OS riêng do bạn quản lý và vá lỗi.
+- **AMI (Amazon Machine Image)**: "ảnh đĩa" mẫu chứa OS và phần mềm, dùng để tạo nhiều EC2 giống hệt nhau.
+- **Auto Scaling Group (ASG)**: nhóm EC2 tự thêm/bớt máy theo tải và tự thay máy hỏng.
+- **Task definition**: bản khai báo của ECS cho container: image, CPU, memory, biến môi trường, IAM role.
+- **Control plane**: "bộ não" của Kubernetes (API server, scheduler, etcd); trên EKS do AWS vận hành và tính phí theo giờ.
+- **HPA (Horizontal Pod Autoscaler)**: thành phần Kubernetes tự tăng/giảm số pod theo CPU hoặc metric tuỳ chỉnh.
+- **Cold start**: lần gọi Lambda phải tạo môi trường mới (tải code, bật JVM, chạy code khởi tạo) nên chậm hơn hẳn các lần sau.
+- **SnapStart**: tính năng Lambda chụp ảnh JVM đã khởi tạo xong rồi khôi phục từ ảnh đó để giảm cold start.
+
+### Cơ chế từng bước: cùng một service, bốn cách chạy
+1. **Đóng gói**: EC2 nhận file JAR hoặc AMI; Fargate và EKS nhận Docker image từ ECR; Lambda nhận JAR/zip hoặc container image. Vì sao quan trọng: cách đóng gói quyết định pipeline CI/CD bạn phải dựng.
+2. **Nơi chạy**: EC2 chạy trên máy bạn quản lý; Fargate chạy trên máy AWS quản lý mà bạn không nhìn thấy; EKS chạy pod trên node (EC2 của bạn hoặc Fargate); Lambda chạy trong microVM ngắn hạn do AWS tạo khi có event. Vì sao: ai giữ máy thì người đó phải vá OS và trực khi máy hỏng.
+3. **Nhận traffic**: EC2/Fargate/EKS thường đứng sau ALB và lắng nghe cổng liên tục; Lambda chỉ chạy khi có event từ API Gateway, ALB, SQS, S3… Vì sao: đây là lý do Lambda không tốn tiền khi không có request.
+4. **Scale**: EC2/Fargate/EKS cần vài chục giây đến vài phút để bật thêm máy/container và JVM; Lambda tạo môi trường mới trong vài giây, nhưng **mỗi môi trường chỉ xử lý 1 request tại một thời điểm**. Vì sao: đây là gốc của trade-off "scale nhanh nhưng có cold start và bùng nổ số connection".
+5. **Tính tiền**: EC2/Fargate tính theo thời gian chạy dù không có request; Lambda tính theo số request × thời gian × memory. Vì sao: tải thấp hoặc thất thường thì Lambda rẻ, tải cao và đều thì container thường rẻ hơn.
+
+~~~text
+Ví dụ ước lượng (để so sánh bậc độ lớn, không phải bảng giá chính xác):
+API 5 request/giây đều cả ngày = ~13 triệu request/tháng, mỗi request 200 ms, 1 GB
+  Lambda : 13M x 0,2 s x 1 GB = 2,6 triệu GB-giây  -> khoảng 45 USD/tháng
+  Fargate: 2 task (0,5 vCPU, 1 GB) chạy 24/7        -> khoảng 35 USD/tháng
+Traffic tăng 10 lần:
+  Lambda : tăng gần đúng 10 lần (~450 USD)
+  Fargate: chỉ cần thêm vài task, vì một JVM xử lý nhiều request song song
+~~~
+
 ### Bản chất từng lựa chọn
 - **EC2**: bạn quản lý OS, patch, AMI, Auto Scaling Group, load balancer. Linh hoạt nhất (cài agent, kernel tuning, GPU) nhưng bạn trả tiền cho thời gian instance chạy và cho công sức vận hành.
 - **ECS Fargate**: bạn đóng gói Docker image, khai báo task definition (CPU, memory, env, IAM task role). AWS lo phần chạy container; không có node để vá. Phù hợp đa số service Spring Boot "bình thường".
@@ -29,10 +59,14 @@
 3. Nếu cần GPU, phần mềm đặc thù, kernel tuning, hoặc tận dụng Reserved Instance đã mua: **EC2**.
 4. Nếu là tác vụ ngắn (xử lý ảnh, webhook, cron nhỏ, glue code giữa service): **Lambda**. Với Java, luôn cân nhắc SnapStart và giữ function "nóng".
 
-### Pitfall production
-- Đem Spring Boot nguyên bản lên Lambda thường cold start 3–8 giây vì Spring context, Hibernate, connection pool. Đừng chọn Lambda chỉ vì "rẻ" rồi ngạc nhiên vì p99.
-- Trên Fargate, task CPU/memory quyết định cả giá lẫn hiệu năng; đặt memory sát giới hạn dễ bị OOMKilled, đặt quá cao thì trả tiền vô ích. Theo dõi memory utilization thực tế trước khi chốt.
-- Trên EKS, tự viết YAML deployment cho từng service sẽ nhanh chóng lệch cấu hình; dùng Helm/Kustomize và policy-as-code.
+### Lỗi hay gặp
+- **Đem Spring Boot nguyên bản lên Lambda.** Triệu chứng: cold start 3–8 giây vì Spring context, Hibernate, connection pool; trung bình đẹp nhưng p99 xấu. Cách tránh: đừng chọn Lambda chỉ vì "rẻ"; nếu vẫn dùng thì bật SnapStart, tăng memory, cắt bớt dependency, hoặc chuyển sang Fargate.
+- **Đặt CPU/memory của task Fargate theo cảm tính.** Triệu chứng: đặt memory sát giới hạn thì container bị OOMKilled (exit code 137); đặt quá cao thì trả tiền vô ích, vì task CPU/memory quyết định cả giá lẫn hiệu năng. Cách tránh: theo dõi memory utilization thực tế vài tuần trước khi chốt, để heap khoảng 75% memory của task.
+- **Tự viết YAML deployment riêng cho từng service trên EKS.** Triệu chứng: sau vài tháng mỗi service một kiểu, cấu hình lệch nhau, khó nâng cấp. Cách tránh: dùng Helm/Kustomize với template chung và policy-as-code.
+- **Chọn EKS vì "công ty lớn đều dùng".** Triệu chứng: đội 5 người dành nửa thời gian nâng cấp cluster, sửa add-on, ingress. Cách tránh: chỉ chọn EKS khi có người trực platform và có nhu cầu thật (nhiều team, CRD/operator, service mesh).
+
+### Trả lời miệng 1 phút
+"Tôi chọn nơi chạy dựa trên hai câu hỏi: ai sẽ vận hành hạ tầng, và workload trông như thế nào. EC2 cho toàn quyền OS nhưng tôi phải tự vá và trực máy; ECS Fargate cho tôi chạy container mà không có server để quản; EKS là Kubernetes managed, mạnh khi công ty đã có platform K8s; còn Lambda chạy theo event, scale trong vài giây và trả tiền theo request. Trade-off chính là Lambda rẻ khi tải thấp, thất thường nhưng có cold start, giới hạn 15 phút và khó quản connection pool; EKS linh hoạt nhất nhưng chi phí con người cao. Với API Spring Boot chạy 24/7, mặc định của tôi là ECS Fargate sau ALB; Lambda tôi dùng cho webhook, xử lý file, cron nhỏ, và luôn đo Init Duration trước khi quyết định."
 
 > Senior tip: với đa số đội Java 5–20 người, ECS Fargate + ALB + RDS là con đường ngắn nhất tới production ổn định. Chỉ nhảy lên EKS khi có người thực sự trực cluster; chi phí ẩn của Kubernetes là con người, không phải hoá đơn AWS.`,
   follow: [
@@ -48,6 +82,38 @@
   level: 'senior',
   q: 'Lambda chạy Java bị cold start cao. SnapStart, GraalVM native và tối ưu memory/CPU hoạt động thế nào, chọn cái nào?',
   a: `**Tóm tắt:** cold start của Java trên Lambda gồm tải class + khởi tạo JVM + chạy code khởi tạo (Spring context, DB pool). SnapStart snapshot trạng thái JVM sau khi init để bỏ phần khởi tạo; GraalVM native giảm thời gian nạp và bộ nhớ; tăng memory giúp có thêm CPU và giảm thời gian init.
+
+### Hiểu nhanh
+Cold start giống mở cửa hàng buổi sáng: phải bật đèn, mở két, xếp hàng lên kệ rồi mới bán được món đầu tiên. Java đặc biệt chậm ở bước này vì JVM phải nạp hàng nghìn class và Spring phải dựng toàn bộ bean. **SnapStart** giống chụp ảnh cửa hàng đã bày biện xong, mỗi lần mở cửa chỉ cần "khôi phục từ ảnh" thay vì bày lại từ đầu. **GraalVM native** giống nấu sẵn suất ăn đóng hộp từ trước (biên dịch trước): mở ra là ăn ngay, nhưng khó đổi công thức. **Tăng memory** giống thuê thêm nhân viên: Lambda cấp CPU tỉ lệ với memory nên mọi việc, kể cả khởi động, đều nhanh hơn.
+
+### Thuật ngữ
+- **Execution environment**: microVM chạy hàm Lambda, được tái sử dụng cho nhiều lần gọi liên tiếp nhưng mỗi lúc chỉ xử lý 1 request.
+- **Init phase**: giai đoạn chạy static initializer, constructor của handler và khởi động framework, trước lần gọi handler đầu tiên.
+- **Init Duration / Restore Duration**: trường trong dòng log REPORT cho biết init (hoặc restore snapshot) mất bao lâu; chỉ xuất hiện ở lần cold start.
+- **CRaC (Coordinated Restore at Checkpoint)**: API {{org.crac}} cho phép code chạy hook trước khi chụp snapshot và sau khi khôi phục.
+- **AOT (Ahead-of-Time)**: biên dịch sang mã máy trước khi chạy, thay vì để JIT biên dịch trong lúc chạy.
+- **JIT warmup**: giai đoạn đầu JVM chạy chậm vì đang thông dịch và thu thập số liệu trước khi biên dịch code nóng.
+- **Reachability metadata**: khai báo class/resource nào cần reflection để GraalVM giữ lại khi build native image.
+- **GB-giây**: đơn vị tính tiền Lambda = memory cấu hình (GB) × thời gian chạy (giây).
+
+### Cơ chế từng bước
+**Cold start thường:**
+1. Request tới nhưng không có môi trường rảnh, Lambda tạo microVM mới. Vì sao: mỗi môi trường chỉ xử lý 1 request, nên request đồng thời thứ N+1 luôn cần môi trường mới.
+2. Tải code và khởi động runtime Java. Vì sao chậm: JVM phải nạp, verify class và chạy thông dịch trước khi JIT kịp tối ưu.
+3. Chạy init phase: constructor handler, Spring dựng context, Hibernate đọc metadata. Đây thường là phần lớn nhất, tính bằng giây.
+4. Gọi handler. Các request sau vào lại môi trường này là **warm start**, chỉ còn bước 4.
+
+**Với SnapStart:**
+1. Khi bạn **publish version**, Lambda chạy init một lần, gọi {{beforeCheckpoint}}, chụp snapshot bộ nhớ và trạng thái microVM, mã hoá và cache lại. Vì sao lúc publish: để chi phí init chỉ trả một lần thay vì mỗi cold start.
+2. Khi cần môi trường mới, Lambda khôi phục từ snapshot thay cho bước 2–3, rồi gọi {{afterRestore}}.
+3. Gọi handler như bình thường. Lưu ý SnapStart chỉ áp dụng khi gọi qua version/alias đã publish, không áp cho {{$LATEST}}.
+
+~~~text
+Số liệu minh hoạ, Spring Boot 1 GB:
+Cold start thường: [tạo VM][khởi JVM][init Spring ~4 s.............][handler 50 ms] ~ 4-5 s
+SnapStart        : [tạo VM][restore ~0,3-0,6 s][afterRestore][handler 50 ms]      < 1 s
+Warm start       : [handler 50 ms]
+~~~
 
 ### Cold start hình thành từ đâu
 Khi không có execution environment sẵn, Lambda phải: tải code, khởi tạo runtime, chạy **init phase** (static initializer, constructor, Spring Boot), rồi mới gọi handler. Với Spring Boot, init có thể chiếm phần lớn thời gian vì component scan, proxy, Hibernate metadata. Ngoài ra VPC cũ (trước 2019) từng gây ENI cold start; nay Lambda dùng hyperplane ENI nên thường không còn là vấn đề chính.
@@ -89,6 +155,15 @@ Lambda cấp CPU theo memory (ví dụ 1.769 MB tương đương 1 vCPU). Tăng 
 | Code đã có nhiều reflection/agent | JVM + SnapStart, tăng memory |
 | Latency không nhạy cảm | JVM thường, tối ưu init |
 
+### Lỗi hay gặp
+- **Bật SnapStart nhưng trigger vẫn gọi {{$LATEST}}.** Triệu chứng: log REPORT vẫn có Init Duration vài giây, không thấy Restore Duration. Cách tránh: publish version, trỏ API Gateway/event source vào alias trỏ tới version đó.
+- **Giữ connection mở xuyên qua snapshot.** Triệu chứng: lần gọi đầu sau restore lỗi connection reset hoặc timeout tới DB/HTTP. Cách tránh: đóng ở {{beforeCheckpoint}} và mở lại ở {{afterRestore}}, hoặc tạo lazy ở lần dùng đầu, bật validation trong pool.
+- **Sinh UUID/seed/token trong init.** Triệu chứng: nhiều môi trường sinh ra cùng giá trị, gây trùng khoá hoặc lỗ hổng bảo mật. Cách tránh: sinh trong handler hoặc {{afterRestore}}, dùng {{SecureRandom}}.
+- **Đặt 512 MB cho Spring Boot.** Triệu chứng: init 8–10 giây, handler chậm, timeout lẻ tẻ. Cách tránh: thử 1024–2048 MB bằng Lambda Power Tuning; thường chi phí không tăng vì thời gian chạy giảm tương ứng.
+
+### Trả lời miệng 1 phút
+"Cold start của Java trên Lambda gồm ba phần: tạo môi trường, khởi động JVM và chạy code khởi tạo như Spring context, trong đó phần khởi tạo thường tốn nhất. Tôi có ba công cụ. SnapStart chụp snapshot sau khi init lúc publish version, cold start chỉ còn là restore, thường dưới một giây, đổi lại phải xử lý connection và giá trị ngẫu nhiên sau restore bằng hook CRaC. GraalVM native biên dịch AOT nên khởi động cực nhanh và ít memory, nhưng build lâu, phải khai báo reflection và mất JIT. Tăng memory thì có thêm CPU, init nhanh hơn và nhiều khi còn rẻ hơn. Thực tế tôi đo Init Duration trước, bật SnapStart và chỉnh memory đầu tiên vì rẻ nhất; chỉ chọn native cho function nhỏ, ít dependency."
+
 > Senior tip: đừng tối ưu cold start trước khi đo. Bật Lambda Insights hoặc đọc dòng log REPORT để xem Init Duration; nếu p99 chấp nhận được thì giữ JVM bình thường. SnapStart gần như luôn là bước tăng tốc rẻ nhất cho Java, nhưng nhớ test kỹ các connection và random sau restore.`,
   follow: [
     'Sau khi SnapStart restore, connection pool tới RDS nên được xử lý thế nào?',
@@ -103,6 +178,45 @@ Lambda cấp CPU theo memory (ví dụ 1.769 MB tương đương 1 vCPU). Tăng 
   level: 'senior',
   q: 'Thiết kế VPC cho một hệ microservices: public/private subnet, NAT, Security Group vs NACL, VPC endpoint — giải thích và các bẫy hay gặp?',
   a: `**Tóm tắt:** VPC là mạng riêng ảo; public subnet có route ra Internet Gateway, private subnet đi ra ngoài qua NAT. Security Group là firewall stateful gắn vào ENI, NACL là stateless ở tầng subnet. VPC endpoint cho phép gọi dịch vụ AWS mà không cần qua Internet.
+
+### Hiểu nhanh
+VPC giống một khu chung cư có tường rào riêng. **Public subnet** là dãy nhà mặt đường có cổng ra phố (Internet Gateway); **private subnet** là dãy nhà trong hẻm, muốn ra phố phải đi qua chốt bảo vệ một chiều (**NAT**): người bên trong đi ra được, người bên ngoài không tự vào được. **Security Group** là bảo vệ đứng ở cửa từng căn hộ, nhớ mặt khách đã cho vào nên tự cho khách đi ra; **NACL** là barie đầu dãy nhà, kiểm tra cả chiều vào lẫn chiều ra và không nhớ ai. **VPC endpoint** là lối đi nội bộ dẫn thẳng tới "siêu thị AWS" (S3, SQS…) mà không cần ra phố.
+
+### Thuật ngữ
+- **CIDR**: cách ghi dải IP; {{10.0.0.0/16}} có 65.536 địa chỉ, {{/24}} có 256 địa chỉ (AWS giữ lại 5 địa chỉ mỗi subnet).
+- **Availability Zone (AZ)**: một hoặc nhiều datacenter tách biệt điện và mạng trong một region.
+- **Route table**: bảng chỉ đường của subnet: đích nào thì đi qua cửa nào; route cụ thể hơn (prefix dài hơn) thắng.
+- **Internet Gateway (IGW)**: cửa hai chiều giữa VPC và Internet.
+- **NAT Gateway**: cho máy trong private subnet đi ra Internet bằng IP của NAT, chặn kết nối khởi tạo từ ngoài vào.
+- **ENI**: card mạng ảo gắn vào EC2, task Fargate, Lambda trong VPC; Security Group thực chất gắn vào ENI.
+- **Stateful / stateless**: stateful nhớ kết nối nên tự cho chiều trả lời đi qua; stateless xét từng gói tin độc lập.
+- **Ephemeral port**: cổng tạm phía client (1024–65535) mà gói trả lời quay về; NACL phải mở cho chiều này.
+
+### Cơ chế từng bước: app trong private subnet gọi API bên ngoài và gọi S3
+1. Task ECS ({{10.0.11.25}}) mở kết nối tới IP của api.partner.com. Route table của private subnet có {{0.0.0.0/0 → nat-a}}. Vì sao: private subnet không có route tới IGW nên không ai ngoài Internet nhắm thẳng vào task được.
+2. Security Group của task kiểm tra outbound (mặc định cho phép tất cả). Vì SG stateful, gói trả lời sẽ tự được cho vào.
+3. NACL của subnet kiểm tra outbound; vì NACL stateless, nó cũng phải có rule inbound cho cổng ephemeral để gói trả lời quay về.
+4. NAT Gateway nằm trong public subnet, có Elastic IP, đổi IP nguồn private thành IP public rồi gửi qua IGW. Vì sao: Internet chỉ trả lời được về IP public.
+5. Gói trả lời về NAT, NAT đổi ngược địa chỉ và chuyển cho task.
+6. Khi task gọi S3: route table có route tới prefix list của S3 trỏ vào gateway endpoint. Route này cụ thể hơn {{0.0.0.0/0}} nên thắng, traffic **không đi qua NAT** và không tốn phí NAT theo GB.
+
+~~~text
+                       Internet
+                          |
+                       [ IGW ]
+          AZ-a            |              AZ-b
++------------------ public subnet -------------------+
+| ALB node    NAT-a (EIP)      | ALB node   NAT-b    |
++------------------ private app ---------------------+
+| ECS task 10.0.11.25          | ECS task 10.0.12.40 |
++------------------ private db ----------------------+
+| RDS primary                  | RDS standby         |
++----------------------------------------------------+
+Route table private-a:
+  10.0.0.0/16      -> local
+  pl-xxxx (S3)     -> vpce-s3   (gateway endpoint, miễn phí)
+  0.0.0.0/0        -> nat-a     (NAT cùng AZ)
+~~~
 
 ### Bố cục tham chiếu
 - **2–3 Availability Zone**, mỗi AZ có một public subnet và một hoặc nhiều private subnet.
@@ -127,12 +241,15 @@ Thực tế 95% kiểm soát nên nằm ở Security Group. Đừng mở {{0.0.0
 - Lợi ích: giảm NAT cost, không phụ thuộc Internet, tuân thủ bảo mật.
 - Cần bật **private DNS** cho interface endpoint để SDK dùng tên miền chuẩn.
 
-### Bẫy production
-- **NAT Gateway hết dung lượng/chi phí tăng vọt** vì tải Docker image hoặc log qua NAT. Dùng endpoint cho ECR (api + dkr + s3) và CloudWatch Logs.
-- **Một NAT cho nhiều AZ**: AZ đó chết là mất egress toàn hệ; cross-AZ còn phát sinh phí.
-- **NACL sửa sai**: vì stateless, mở inbound 443 mà quên outbound ephemeral port 1024–65535 sẽ làm kết nối treo rất khó hiểu.
-- **DNS resolution trong VPC**: nếu tắt {{enableDnsSupport}}/{{enableDnsHostnames}} thì endpoint private DNS không hoạt động.
-- **CIDR chồng lấn** khi kết nối nhiều VPC/on-prem; vạch dải /16 từ đầu, tránh phải re-IP sau này.
+### Lỗi hay gặp
+- **Kéo Docker image và đẩy log qua NAT.** Triệu chứng: hoá đơn NAT Gateway (tính theo GB xử lý) tăng vọt mỗi lần deploy, đôi khi NAT nghẽn. Cách tránh: tạo endpoint cho ECR (api + dkr + gateway endpoint S3, vì layer image nằm trên S3) và CloudWatch Logs.
+- **Một NAT dùng chung cho nhiều AZ.** Triệu chứng: AZ chứa NAT gặp sự cố là toàn hệ mất egress; ngày thường thì phát sinh phí cross-AZ. Cách tránh: mỗi AZ một NAT, route table private của AZ nào trỏ NAT của AZ đó.
+- **Sửa NACL mà quên nó stateless.** Triệu chứng: mở inbound 443 nhưng quên outbound ephemeral 1024–65535, kết nối treo rất khó hiểu dù Security Group đúng. Cách tránh: để NACL mặc định allow, chỉ dùng NACL cho chặn dải IP thô; kiểm soát chính bằng Security Group.
+- **Tắt DNS của VPC.** Triệu chứng: interface endpoint có private DNS nhưng SDK vẫn đi ra Internet hoặc không resolve được. Cách tránh: bật cả {{enableDnsSupport}} và {{enableDnsHostnames}}.
+- **CIDR chồng lấn.** Triệu chứng: không peering/Transit Gateway được với VPC khác hoặc on-prem, phải re-IP cả hệ. Cách tránh: quy hoạch dải /16 không trùng cho từng VPC ngay từ đầu.
+
+### Trả lời miệng 1 phút
+"VPC là mạng riêng của tôi trên AWS. Tôi chia mỗi AZ một public subnet cho ALB và NAT, các private subnet cho app và database; private subnet đi ra Internet qua NAT Gateway của chính AZ đó để không có điểm chết chung và không tốn phí cross-AZ. Kiểm soát truy cập tôi dồn vào Security Group vì nó stateful và tham chiếu được SG khác, ví dụ chỉ SG của app mới vào được cổng 5432 của SG database; NACL stateless nên tôi chỉ dùng để chặn dải IP thô. Để giảm phí NAT và không phụ thuộc Internet, tôi luôn có gateway endpoint cho S3, DynamoDB và interface endpoint cho ECR, Secrets Manager, CloudWatch Logs. Kinh nghiệm của tôi là đa số sự cố 'không gọi được S3' nằm ở route table hoặc thiếu endpoint, nên tôi bật VPC Flow Logs ngay từ đầu."
 
 > Senior tip: hãy vẽ route table trước khi vẽ diagram. Phần lớn sự cố "service không gọi được S3/Secrets Manager" là do thiếu endpoint hoặc route, không phải do code. Bật VPC Flow Logs gửi về CloudWatch/S3 để điều tra nhanh.`,
   follow: [
@@ -148,6 +265,41 @@ Thực tế 95% kiểm soát nên nằm ở Security Group. Đừng mở {{0.0.0
   level: 'senior',
   q: 'IAM role khác IAM user thế nào? Làm sao áp least privilege cho ứng dụng chạy trên ECS/EKS/Lambda mà không hard-code credentials?',
   a: `**Tóm tắt:** IAM user là danh tính lâu dài gắn với access key; IAM role là danh tính tạm thời được assume, trả về credential có hạn (thường 15 phút–12 giờ). Ứng dụng nên dùng role: task role trên ECS, IRSA hoặc EKS Pod Identity trên EKS, execution role trên Lambda, và không bao giờ nhúng access key vào image hay biến môi trường.
+
+### Hiểu nhanh
+**IAM user** giống nhân viên được phát chìa khoá vĩnh viễn: lỡ đánh rơi chìa (access key lộ lên GitHub) thì kẻ gian vào được mãi cho đến khi bạn thay khoá. **IAM role** giống thẻ khách có hạn dùng ở quầy lễ tân: ai đủ điều kiện (trust policy) thì được phát thẻ, thẻ tự hết hạn sau vài giờ. Ứng dụng nên luôn "ra lễ tân lấy thẻ" thay vì giữ chìa vĩnh viễn, và AWS SDK làm việc đó tự động. **Least privilege** nghĩa là thẻ chỉ mở đúng những cửa cần cho công việc: nhân viên kho không cần vào phòng kế toán.
+
+### Thuật ngữ
+- **Principal**: chủ thể gửi request tới AWS: user, role, hoặc dịch vụ AWS.
+- **Policy**: tài liệu JSON gồm Effect (Allow/Deny), Action, Resource và Condition.
+- **Trust policy**: policy gắn vào role, quy định ai được phép assume role đó.
+- **STS (Security Token Service)**: dịch vụ phát credential tạm khi một principal assume role.
+- **Session token**: thành phần thứ ba của credential tạm, bắt buộc gửi kèm access key tạm, hết hạn theo phiên.
+- **IMDS**: địa chỉ {{169.254.169.254}} bên trong EC2 cung cấp metadata và credential của instance profile; IMDSv2 yêu cầu lấy token bằng PUT trước.
+- **IRSA / EKS Pod Identity**: hai cách gắn IAM role cho pod thông qua Kubernetes ServiceAccount.
+- **OIDC provider**: cấu hình để IAM tin token do cluster EKS ký, dùng cho IRSA.
+
+### Cơ chế từng bước: task ECS đọc file trên S3
+1. Khi task khởi động, ECS lấy credential tạm của **task role** và phục vụ qua một endpoint nội bộ, đồng thời đặt biến {{AWS_CONTAINER_CREDENTIALS_RELATIVE_URI}} trong container. Vì sao: code không bao giờ phải cầm credential lâu dài.
+2. Code gọi {{S3Client.create()}}. SDK v2 đi theo credential provider chain, gặp container credential provider, gọi endpoint đó và nhận access key, secret key, session token và thời điểm hết hạn.
+3. SDK ký request bằng SigV4 rồi gửi tới S3.
+4. IAM đánh giá: có explicit Deny nào khớp không? Có Allow nào khớp (identity policy hoặc resource policy) và không bị SCP/permission boundary chặn không? Không có Allow thì là implicit deny.
+5. Trước khi credential hết hạn, SDK tự refresh. Vì sao app không cần restart: provider cache credential kèm thời hạn và tự lấy mới.
+
+Trên EKS cơ chế tương tự: với IRSA, pod được gắn token ServiceAccount và biến {{AWS_ROLE_ARN}}, {{AWS_WEB_IDENTITY_TOKEN_FILE}}; SDK gọi {{AssumeRoleWithWebIdentity}}. Với Pod Identity, SDK gọi agent chạy trên node qua {{AWS_CONTAINER_CREDENTIALS_FULL_URI}}, giống cách ECS làm.
+
+~~~text
+Request ký SigV4
+   |
+   v
+Có explicit Deny khớp? ---có---> TỪ CHỐI
+   | không
+   v
+Có Allow khớp và SCP/boundary không chặn? ---không---> TỪ CHỐI (implicit deny)
+   | có
+   v
+CHO PHÉP
+~~~
 
 ### Cơ chế
 - **Principal** (ai) thực hiện **action** (làm gì) trên **resource** (cái gì), có thể kèm **condition** (khi nào). Policy được đánh giá theo kiểu: explicit deny thắng tất cả; sau đó explicit allow; còn lại là implicit deny.
@@ -184,11 +336,14 @@ Thực tế 95% kiểm soát nên nằm ở Security Group. Đừng mở {{0.0.0
 }
 ~~~
 
-### Bẫy production
-- Access key nằm trong Git hoặc image: dù xoá sau đó, key vẫn nằm trong layer/history. Phải rotate ngay và bật secret scanning.
-- Dùng root account cho CI/CD: thảm hoạ. Bật MFA cho root, không tạo access key cho root.
-- Role quá rộng khiến một lỗ hổng SSRF có thể đọc toàn bộ S3. Giới hạn cả quyền lẫn đường mạng (VPC endpoint, IMDSv2).
-- Trên EC2, IMDSv1 bị SSRF lợi dụng để lấy credential; bật **IMDSv2 required**.
+### Lỗi hay gặp
+- **Gắn quyền vào execution role thay vì task role trên ECS.** Triệu chứng: task chạy được, kéo image và ghi log bình thường, nhưng code gọi S3 bị AccessDenied. Cách tránh: quyền của code đặt ở task role; execution role chỉ cho ECS kéo image, đọc secret lúc khởi động và ghi log.
+- **Access key nằm trong Git hoặc Docker image.** Triệu chứng: dù đã xoá ở commit sau, key vẫn nằm trong layer/history và bị bot quét lấy trong vài phút. Cách tránh: rotate (vô hiệu hoá) key ngay, bật secret scanning, chuyển sang role.
+- **Dùng root account cho CI/CD.** Triệu chứng: một lần lộ key là mất toàn quyền account, thảm hoạ. Cách tránh: bật MFA cho root, không tạo access key cho root; CI/CD dùng role assume qua OIDC (ví dụ GitHub Actions).
+- **Role quá rộng kết hợp lỗ hổng SSRF.** Triệu chứng: kẻ tấn công lợi dụng SSRF lấy credential rồi đọc toàn bộ S3; trên EC2, IMDSv1 đặc biệt dễ bị lợi dụng. Cách tránh: giới hạn cả quyền lẫn đường mạng (VPC endpoint, condition), bật **IMDSv2 required**.
+
+### Trả lời miệng 1 phút
+"IAM user là danh tính lâu dài với access key cố định, còn IAM role là danh tính được assume, STS trả về credential tạm có session token và tự hết hạn. Ứng dụng của tôi luôn dùng role: task role trên ECS, IRSA hoặc Pod Identity trên EKS, execution role trên Lambda; AWS SDK tự lấy và làm mới credential qua provider chain nên code không chứa key nào. Khi đánh giá quyền, explicit Deny luôn thắng, sau đó mới tới Allow, còn lại bị từ chối ngầm. Để least privilege, tôi tách role theo service và môi trường, giới hạn ARN cụ thể, thêm condition như VPC endpoint, và dùng IAM Access Analyzer sinh policy từ CloudTrail. Câu tôi luôn hỏi khi review là: nếu service này bị chiếm, kẻ tấn công chạm được gì."
 
 > Senior tip: hãy coi mỗi service là một principal riêng. Khi review, câu hỏi đầu tiên không phải "có chạy không" mà "nếu service này bị chiếm, kẻ tấn công chạm được gì". Ranh giới role tốt biến sự cố lớn thành sự cố nhỏ.`,
   follow: [
@@ -204,6 +359,34 @@ Thực tế 95% kiểm soát nên nằm ở Security Group. Đừng mở {{0.0.0
   level: 'senior',
   q: 'RDS, Aurora và DynamoDB khác nhau về bản chất ra sao? Với một hệ thống mới, bạn chọn cái nào và vì sao?',
   a: `**Tóm tắt:** RDS là database quan hệ managed trên engine truyền thống (PostgreSQL, MySQL…); Aurora là engine quan hệ tương thích MySQL/PostgreSQL nhưng storage phân tán, scale đọc tốt hơn; DynamoDB là key-value/document NoSQL fully managed, độ trễ ổn định ở mọi scale nhưng phải thiết kế truy cập trước.
+
+### Hiểu nhanh
+**RDS** giống thuê một căn bếp quen thuộc (PostgreSQL, MySQL) có người lo bảo trì, sao lưu giúp; bạn vẫn chọn cỡ bếp và nấu như cũ. **Aurora** vẫn là món ăn đó, nhưng kho nguyên liệu được chép ra 6 kho ở 3 nơi, nhiều đầu bếp phụ cùng lấy từ chung kho nên phục vụ đọc nhanh, hỏng một kho vẫn chạy. **DynamoDB** giống tủ gửi đồ siêu thị: đưa đúng số tủ (key) là lấy đồ trong vài mili giây dù có hàng triệu tủ, nhưng hỏi "tìm giúp mọi túi màu đỏ" thì vừa chậm vừa đắt. Vì vậy chọn database là chọn theo **cách bạn sẽ hỏi dữ liệu**.
+
+### Thuật ngữ
+- **Multi-AZ**: bản standby ở AZ khác, nhận dữ liệu đồng bộ, tự lên thay khi primary hỏng.
+- **Read replica**: bản sao chỉ đọc, nhận dữ liệu bất đồng bộ nên có độ trễ.
+- **Replica lag**: khoảng thời gian giữa lúc ghi ở primary và lúc replica nhìn thấy dữ liệu đó.
+- **Quorum**: số bản sao tối thiểu phải xác nhận thì thao tác mới được coi là thành công.
+- **ACU (Aurora Capacity Unit)**: đơn vị năng lực của Aurora Serverless v2, khoảng 2 GiB RAM cùng CPU và mạng tương ứng.
+- **Partition key / sort key**: khoá của DynamoDB; partition key quyết định item nằm ở partition nào, sort key sắp xếp item trong partition.
+- **RCU / WCU**: đơn vị throughput đọc/ghi của DynamoDB.
+- **RDS Proxy**: proxy managed gom connection từ nhiều client vào một pool nhỏ tới database.
+
+### Cơ chế từng bước: một lệnh ghi đi qua từng hệ
+1. **RDS Multi-AZ (DB instance)**: app ghi vào primary, primary ghi xuống EBS và **đồng bộ** sang standby ở AZ khác, chỉ trả commit khi cả hai đã ghi. Vì sao: mất primary thì standby có đủ dữ liệu, RPO gần 0. Đổi lại standby không nhận query.
+2. **Aurora**: writer không ghi cả trang dữ liệu mà gửi redo log tới tầng storage phân tán; dữ liệu có 6 bản trên 3 AZ, commit khi **4/6** bản xác nhận (đọc cần 3/6). Reader dùng chung storage nên không phải chép dữ liệu, lag thường dưới 100 ms. Vì sao failover nhanh: promote reader không cần chép lại dữ liệu.
+3. **DynamoDB**: SDK gửi PutItem, DynamoDB băm partition key để chọn partition, ghi vào bản leader rồi replicate sang 3 AZ, trả về khi đa số xác nhận. Vì sao độ trễ ổn định: mỗi truy cập chỉ chạm một partition, không join, không query planner.
+
+~~~text
+RDS Multi-AZ             Aurora                          DynamoDB
+   App                     App                              App
+    |                       |                                | PutItem(pk=USER#42)
+ Primary --sync--> Stb   Writer    Reader x15             hash(pk) -> partition 7
+    |               |       |          |                     |
+   EBS             EBS   [ storage: 6 bản / 3 AZ ]       3 bản trên 3 AZ
+                          ghi cần 4/6, đọc cần 3/6
+~~~
 
 ### RDS
 - Chạy engine quen thuộc, bạn chọn instance class, storage, backup, Multi-AZ.
@@ -234,11 +417,14 @@ Thực tế 95% kiểm soát nên nằm ở Security Group. Đừng mở {{0.0.0
 | Analytics nặng, OLAP | Redshift / Athena, không phải 3 cái trên |
 | Full-text search | OpenSearch |
 
-### Bẫy production
-- Chọn DynamoDB rồi viết truy vấn kiểu SQL (scan toàn bảng, lọc phía client) sẽ đắt và chậm. DynamoDB yêu cầu **thiết kế bảng theo access pattern** trước.
-- Aurora tính I/O, workload nhiều update nhỏ có thể tốn hơn tưởng tượng; đo trước khi chốt.
-- RDS Multi-AZ (DB instance) không phải để scale đọc; standby không nhận kết nối, report phải trỏ vào read replica.
-- Quên connection pool: mỗi app instance mở quá nhiều connection làm cạn {{max_connections}}. Dùng HikariCP với pool nhỏ và PgBouncer/RDS Proxy nếu cần.
+### Lỗi hay gặp
+- **Chọn DynamoDB rồi truy vấn kiểu SQL.** Triệu chứng: Scan toàn bảng, lọc phía client, hoá đơn RCU tăng vọt và API chậm dần theo dữ liệu. Cách tránh: liệt kê access pattern trước, **thiết kế bảng theo access pattern**; truy vấn ad-hoc thì đẩy dữ liệu sang Athena/OpenSearch.
+- **Không tính I/O của Aurora.** Triệu chứng: workload nhiều update nhỏ khiến phí I/O lớn hơn cả phí instance. Cách tránh: đo trước khi chốt, cân nhắc Aurora I/O-Optimized khi I/O vượt khoảng 25% tổng chi phí Aurora.
+- **Trỏ báo cáo vào standby Multi-AZ.** Triệu chứng: không kết nối được vì standby (DB instance) không nhận connection. Cách tránh: Multi-AZ là để HA, không để scale đọc; report trỏ vào read replica hoặc reader endpoint.
+- **Quên connection pool khi scale.** Triệu chứng: mỗi app instance mở quá nhiều connection, cạn {{max_connections}}, lỗi "too many connections" khi autoscale. Cách tránh: HikariCP với pool nhỏ, thêm PgBouncer/RDS Proxy nếu số client lớn hoặc dùng Lambda.
+
+### Trả lời miệng 1 phút
+"RDS là PostgreSQL hoặc MySQL quen thuộc được AWS quản lý: tôi chọn instance, Multi-AZ cho HA và read replica để scale đọc. Aurora tương thích PostgreSQL/MySQL nhưng tách compute khỏi storage: dữ liệu có 6 bản trên 3 AZ, ghi theo quorum 4/6, tối đa 15 reader dùng chung storage nên failover nhanh và replica lag thấp. DynamoDB là key-value: truy cập theo partition key thì vài mili giây ở mọi quy mô, nhưng không join, không query linh hoạt, mọi access pattern phải biết trước. Trade-off là linh hoạt truy vấn so với khả năng scale dự đoán được. Với hệ mới có dữ liệu quan hệ, mặc định của tôi là Aurora PostgreSQL; tôi chỉ chọn DynamoDB khi liệt kê được rõ các truy vấn chính, ví dụ session, giỏ hàng, trạng thái event."
 
 > Senior tip: mặc định của tôi cho hệ mới là **Aurora PostgreSQL** nếu dữ liệu quan hệ và đội quen SQL; **DynamoDB** chỉ khi access pattern rõ và cần scale/độ trễ dự đoán được. Đừng chọn NoSQL vì "trend" rồi phải tự viết join ở tầng ứng dụng.`,
   follow: [
@@ -254,6 +440,34 @@ Thực tế 95% kiểm soát nên nằm ở Security Group. Đừng mở {{0.0.0
   level: 'senior',
   q: 'DynamoDB: partition key và sort key ảnh hưởng gì? Hot partition là gì, GSI xử lý ra sao và có cạm bẫy nào?',
   a: `**Tóm tắt:** DynamoDB chia dữ liệu theo hash của partition key; key phân bố đều thì throughput trải đều, key lệch tạo hot partition. Sort key cho phép query theo range trong cùng partition. GSI là bảng phụ có key khác, được cập nhật bất đồng bộ và có chi phí riêng.
+
+### Hiểu nhanh
+DynamoDB giống một bưu điện có hàng nghìn ô thư. **Partition key** như mã bưu chính: máy tự băm mã đó để quyết định thư vào ô nào. Nếu ai cũng gửi tới cùng một mã (ví dụ "ngày hôm nay"), một ô bị nghẽn trong khi các ô khác trống trơn: đó là **hot partition**. **Sort key** như việc xếp thư trong cùng một ô theo ngày, nên lấy "thư của khách 42 trong tháng 3" rất nhanh. **GSI** như cuốn danh bạ thứ hai sắp theo tiêu chí khác, được nhân viên chép lại sau mỗi lần có thư mới, nên đôi khi chậm một nhịp.
+
+### Thuật ngữ
+- **Partition (vật lý)**: đơn vị lưu trữ và throughput bên trong DynamoDB, khoảng 10 GB, 3.000 RCU và 1.000 WCU.
+- **RCU**: 1 lần đọc strongly consistent một item tới 4 KB mỗi giây (hoặc 2 lần đọc eventually consistent).
+- **WCU**: 1 lần ghi một item tới 1 KB mỗi giây.
+- **Cardinality**: số giá trị khác nhau của một thuộc tính; cardinality cao thì dữ liệu trải đều hơn.
+- **Throttling**: DynamoDB từ chối request (ProvisionedThroughputExceededException) khi vượt giới hạn; SDK sẽ retry kèm backoff.
+- **Adaptive capacity**: cơ chế tự dồn capacity cho partition nóng và tách partition khi cần.
+- **Single-table design**: lưu nhiều loại entity trong một bảng, phân biệt bằng tiền tố của key.
+- **Projection**: tập thuộc tính được chép từ bảng gốc sang index.
+
+### Cơ chế từng bước: ghi một đơn hàng
+1. App gọi PutItem với {{pk=USER#42}}, {{sk=ORDER#2025-03-01#A1}}. DynamoDB băm {{pk}} để chọn partition. Vì sao băm: để các key gần nhau (USER#41, USER#42) vẫn rơi vào partition khác nhau, trải đều tải.
+2. Item được ghi trong partition và sắp theo {{sk}}. Vì sao: Query "đơn của USER#42 từ tháng 3" chỉ cần đọc một vùng liên tục, không quét cả bảng.
+3. Nếu item có thuộc tính là khoá của GSI (ví dụ {{status}}), DynamoDB chép **bất đồng bộ** sang GSI và tiêu WCU của GSI. Vì sao bất đồng bộ: để ghi vào bảng gốc không phải chờ index.
+4. Khi partition vượt dung lượng hoặc nóng kéo dài, DynamoDB tự tách partition. Nhưng một giá trị partition key cực nóng vẫn dễ chạm giới hạn của partition, vì mọi request của key đó dồn về cùng một chỗ.
+
+~~~text
+Bảng có 10 partition, tải ghi 5.000 WCU/giây:
+Key tốt (userId)            : ~500 WCU mỗi partition            -> OK
+Key tệ (date = hôm nay)     : 5.000 WCU dồn 1 partition, trần 1.000
+                              -> phần lớn request bị throttle dù bảng "còn dư"
+Shard suffix (date#0..date#9): ~500 WCU mỗi partition           -> OK
+                              đổi lại: đọc phải gọi 10 Query rồi gộp kết quả
+~~~
 
 ### Cách DynamoDB lưu dữ liệu
 - Item được định danh bởi **partition key** (bắt buộc) và **sort key** (tuỳ chọn).
@@ -287,11 +501,14 @@ QueryRequest req = QueryRequest.builder()
     .build();
 ~~~
 
-### Bẫy production
-- Dùng timestamp làm partition key: mọi write dồn vào partition của giây hiện tại. Hãy dùng timestamp làm **sort key**, partition key là entity id.
-- GSI bị **throttle ngược** về bảng gốc: nếu GSI không đủ WCU, ghi vào bảng có thể bị ảnh hưởng.
-- GSI không đảm bảo consistency mạnh; đọc ngay sau ghi có thể chưa thấy dữ liệu.
-- Item 400 KB và transaction tối đa 100 item/4 MB; thiết kế sai kích thước sẽ phải viết lại.
+### Lỗi hay gặp
+- **Dùng timestamp/ngày làm partition key.** Triệu chứng: mọi write dồn vào partition của thời điểm hiện tại, throttling dù bảng còn capacity. Cách tránh: partition key là entity id, timestamp làm **sort key**.
+- **GSI thiếu capacity.** Triệu chứng: ghi vào bảng gốc bị throttle dù bảng còn WCU, vì GSI bị **throttle ngược** về bảng gốc. Cách tránh: cấp đủ WCU cho GSI (hoặc dùng on-demand), chọn key GSI phân bố đều, projection gọn.
+- **Đọc GSI ngay sau khi ghi.** Triệu chứng: vừa tạo đơn xong gọi API danh sách lại không thấy đơn mới. Cách tránh: GSI chỉ hỗ trợ eventually consistent; luồng đọc-sau-ghi đọc từ bảng gốc bằng key (có thể dùng ConsistentRead).
+- **Thiết kế sai kích thước.** Triệu chứng: item vượt 400 KB hoặc transaction vượt 100 item/4 MB, phải viết lại mô hình. Cách tránh: tách dữ liệu lớn sang S3, chỉ lưu key; chia item theo nhiều sort key.
+
+### Trả lời miệng 1 phút
+"DynamoDB băm partition key để quyết định item nằm ở partition vật lý nào, mỗi partition có trần khoảng 3.000 RCU và 1.000 WCU. Nếu key phân bố đều như userId thì tải trải đều; nếu key ít giá trị như status hay ngày thì một partition bị nóng và throttle dù bảng còn capacity. Sort key cho phép query theo khoảng trong cùng partition, rất hợp cho kiểu 'đơn hàng của user theo thời gian'. GSI là bảng phụ với key khác, cập nhật bất đồng bộ, có capacity riêng và cũng có thể bị hot partition, thậm chí throttle ngược bảng gốc. Khi buộc phải dùng key lệch, tôi thêm shard suffix và đọc scatter-gather. Kinh nghiệm của tôi là bắt đầu thiết kế bằng danh sách access pattern kèm tần suất, chứ không bằng ERD."
 
 > Senior tip: thiết kế DynamoDB bắt đầu bằng danh sách access pattern, không bắt đầu bằng ERD. Nếu bạn không liệt kê được 10 truy vấn chính kèm tần suất, chưa nên chọn DynamoDB.`,
   follow: [
@@ -307,6 +524,37 @@ QueryRequest req = QueryRequest.builder()
   level: 'mid',
   q: 'S3: storage class nào dùng khi nào, presigned URL hoạt động ra sao, lifecycle, consistency và multipart upload có gì cần lưu ý?',
   a: `**Tóm tắt:** S3 là object storage bền vững, nhất quán mạnh sau khi ghi thành công; chọn storage class theo tần suất đọc và thời gian lưu; presigned URL cho phép client tải/đọc object trong thời hạn mà không cần credential; multipart upload là bắt buộc trên thực tế cho file lớn.
+
+### Hiểu nhanh
+S3 giống một kho gửi đồ khổng lồ: mỗi món đồ (**object**) có một nhãn (**key**) và nằm trong một khu (**bucket**); không có thư mục thật, dấu {{/}} chỉ là một phần của nhãn. **Storage class** giống chọn giữa tủ ở quầy (lấy ngay, phí thuê cao) và kho lạnh ngoại ô (thuê rẻ, nhưng lấy ra mất phí và thời gian). **Presigned URL** giống vé gửi xe có chữ ký và giờ hết hạn: ai cầm vé thì gửi/lấy đúng một món đó, không cần tài khoản. **Multipart upload** giống chuyển nhà bằng nhiều xe nhỏ chạy song song: một xe hỏng thì chỉ chạy lại xe đó.
+
+### Thuật ngữ
+- **Object / key / bucket**: object là file kèm metadata; key là tên đầy đủ của object; bucket là vùng chứa có tên duy nhất toàn cầu.
+- **Durability 11 số 9**: S3 lưu dư ở nhiều AZ (trừ One Zone) nên xác suất mất object cực thấp; khác với availability (truy cập được hay không).
+- **Retrieval fee**: phí lấy dữ liệu ra từ các class IA và Glacier, tính theo GB.
+- **Minimum storage duration**: xoá hoặc chuyển object sớm hơn số ngày tối thiểu vẫn bị tính đủ số ngày đó.
+- **SigV4**: thuật toán ký request của AWS bằng secret key; presigned URL là chữ ký SigV4 đặt trong query string.
+- **Delete marker**: khi bucket bật versioning, lệnh xoá chỉ thêm "dấu xoá", các version cũ vẫn còn và vẫn tính tiền.
+- **OAC (Origin Access Control)**: cơ chế cho CloudFront đọc bucket private mà không phải mở bucket ra Internet.
+- **Checksum**: giá trị CRC32C/SHA256 dùng để phát hiện dữ liệu bị hỏng trên đường truyền.
+
+### Cơ chế từng bước: người dùng upload ảnh đại diện bằng presigned URL
+1. Client gọi API backend: "tôi muốn upload avatar.png, 2 MB". Backend xác thực user và kiểm tra quyền. Vì sao: quyết định cấp vé phải nằm ở server.
+2. Backend ký URL bằng credential của role, chỉ định bucket, key {{user/42/avatar.png}}, Content-Type và thời hạn 10 phút. Việc ký là phép tính cục bộ, **không gọi mạng tới S3**, nên rất nhanh.
+3. Client PUT file thẳng lên S3 bằng URL đó, kèm đúng Content-Type đã ký. Vì sao: file không đi qua backend, backend không tốn băng thông và thread.
+4. S3 kiểm tra chữ ký, thời hạn, và cả quyền của principal đã ký: nếu role không có {{s3:PutObject}} trên key đó thì URL vẫn bị từ chối.
+5. S3 ghi object; khi PUT trả 200 thì mọi GET/LIST sau đó đều thấy object mới (strong consistency).
+6. S3 phát event (qua EventBridge hoặc SQS) để backend xử lý tiếp: resize ảnh, quét virus, cập nhật DB.
+
+~~~text
+Client --(1) xin URL---------> Backend --(2) ký SigV4 cục bộ
+Client <------ URL hết hạn sau 10 phút ---
+Client --(3) PUT 2 MB ----------------------------> S3 bucket "uploads"
+                                                      | (6) event
+Backend <------------- SQS / EventBridge -------------+
+Multipart cho file 1 GB: 10 part x 100 MB, upload 4 part song song,
+part 7 lỗi -> chỉ upload lại part 7 -> CompleteMultipartUpload
+~~~
 
 ### Storage class
 | Class | Dùng khi | Ghi chú |
@@ -349,11 +597,15 @@ String url = req.url().toString();
 - Nếu một part lỗi, chỉ cần retry part đó. Phải gọi CompleteMultipartUpload; nếu bỏ dở, dùng lifecycle {{AbortIncompleteMultipartUpload}}.
 - Kiểm tra checksum (CRC32C/SHA256) để phát hiện hỏng dữ liệu.
 
-### Bẫy production
-- Bucket public: gần như luôn sai. Bật Block Public Access, dùng CloudFront + OAC cho nội dung công khai.
-- Bật versioning mà không có lifecycle: chi phí lưu tăng âm thầm theo mọi lần ghi.
-- Dùng S3 làm filesystem (sửa file nhỏ liên tục): mỗi PUT là object mới, tốn kém; cần filesystem chia sẻ thì dùng EFS.
-- Không đặt {{Content-Type}} khi presign PUT: file tải về có thể bị trình duyệt xử lý sai.
+### Lỗi hay gặp
+- **Bucket public.** Triệu chứng: dữ liệu khách hàng bị index hoặc bị tải hàng loạt, gần như luôn là cấu hình sai. Cách tránh: bật Block Public Access, nội dung công khai thì phục vụ qua CloudFront + OAC.
+- **Bật versioning mà không có lifecycle.** Triệu chứng: chi phí lưu trữ tăng âm thầm theo mọi lần ghi đè/xoá vì version cũ vẫn còn. Cách tránh: rule lifecycle xoá noncurrent version sau N ngày và dọn delete marker hết hạn.
+- **Multipart upload bỏ dở.** Triệu chứng: bucket "trống" nhưng hoá đơn vẫn tính dung lượng của các part chưa hoàn tất. Cách tránh: lifecycle {{AbortIncompleteMultipartUpload}} sau vài ngày.
+- **Dùng S3 làm filesystem.** Triệu chứng: sửa file nhỏ liên tục, mỗi PUT là một object mới, tốn tiền request và chậm. Cách tránh: cần filesystem chia sẻ thì dùng EFS.
+- **Không đặt Content-Type khi presign PUT.** Triệu chứng: file tải về bị trình duyệt hiểu sai (tải xuống thay vì hiển thị, hoặc ngược lại). Cách tránh: đặt Content-Type khi ký và kiểm tra lại sau upload.
+
+### Trả lời miệng 1 phút
+"S3 là object storage: dữ liệu lưu dư nhiều AZ, và từ cuối 2020 đã nhất quán mạnh, ghi xong là đọc và list thấy ngay. Tôi chọn storage class theo tần suất đọc: Standard cho dữ liệu nóng, Intelligent-Tiering khi không đoán được, IA và Glacier cho dữ liệu ít đọc, nhớ rằng chúng có phí lấy ra và thời gian lưu tối thiểu. Với upload từ client, backend ký presigned URL ngắn hạn cho đúng một key, client đẩy thẳng lên S3 nên backend không gánh băng thông; ai có URL là có quyền, nên TTL phải ngắn. File lớn thì dùng multipart: chia part, upload song song, part lỗi chỉ retry part đó. Mặc định mọi bucket tôi bật Block Public Access, versioning kèm lifecycle và rule huỷ multipart dở dang."
 
 > Senior tip: mặc định bật versioning + Block Public Access + lifecycle abort multipart cho mọi bucket. Với upload từ client, dùng presigned POST với điều kiện {{content-length-range}} trong POST policy để tránh bị đẩy file khổng lồ (presigned PUT không giới hạn được kích thước theo khoảng).`,
   follow: [
@@ -369,6 +621,35 @@ String url = req.url().toString();
   level: 'senior',
   q: 'So sánh SQS standard/FIFO, SNS, EventBridge, Kinesis và MSK. Visibility timeout, DLQ và chuyện "ít nhất một lần" ảnh hưởng thiết kế ra sao?',
   a: `**Tóm tắt:** SQS là hàng đợi point-to-point cho worker; SNS là pub/sub fan-out; EventBridge là bus sự kiện có routing theo rule và tích hợp SaaS; Kinesis là stream cho analytics/replay; MSK là Kafka managed. SQS standard là at-least-once nên consumer phải idempotent.
+
+### Hiểu nhanh
+**SQS** giống hàng đợi lấy số ở ngân hàng: mỗi phiếu chỉ một quầy xử lý, xử lý xong thì huỷ phiếu. **SNS** giống loa phát thanh: nói một lần, ai đăng ký đều nghe, nhưng không ghi âm lại. **EventBridge** giống tổng đài phân loại thư theo nội dung: thư "hoàn tiền" chuyển phòng A, thư "đơn mới" chuyển phòng B. **Kinesis và MSK (Kafka)** giống cuốn sổ có đánh số trang: nhiều người đọc độc lập, mỗi người tự nhớ mình đọc tới trang nào, muốn đọc lại trang cũ cũng được. Vì mạng có thể rớt giữa chừng, các hệ này chọn "thà giao trùng còn hơn mất" (**at-least-once**), nên bên nhận phải chịu được trùng.
+
+### Thuật ngữ
+- **Visibility timeout**: khoảng thời gian message bị ẩn khỏi consumer khác sau khi một consumer đã nhận nó.
+- **Receipt handle**: "biên nhận" trả về khi nhận message, dùng để xoá hoặc gia hạn đúng lần nhận đó.
+- **DLQ (dead-letter queue)**: hàng đợi chứa message đã thất bại quá số lần quy định.
+- **maxReceiveCount**: số lần nhận tối đa trong redrive policy trước khi message bị chuyển sang DLQ.
+- **Long polling**: consumer chờ tối đa 20 giây cho tới khi có message thay vì hỏi liên tục và nhận về rỗng.
+- **Poison message**: message luôn làm consumer lỗi, ví dụ sai định dạng.
+- **Idempotent**: xử lý một message nhiều lần cho kết quả giống như xử lý một lần.
+- **Shard / partition**: đơn vị chia song song của Kinesis/Kafka; thứ tự chỉ được đảm bảo trong một shard/partition.
+
+### Cơ chế từng bước: vòng đời một message SQS
+1. Producer gọi SendMessage; SQS lưu message dư trên nhiều server. Vì sao có thể giao trùng: hệ phân tán đôi khi một bản sao chưa kịp biết message đã bị xoá.
+2. Consumer gọi ReceiveMessage (long polling 20 giây), nhận message và receipt handle; message chuyển sang trạng thái **in-flight**, bị ẩn trong visibility timeout (ví dụ 60 giây).
+3. Xử lý xong trong 60 giây thì gọi DeleteMessage với receipt handle, message biến mất vĩnh viễn.
+4. Nếu consumer chết hoặc quá 60 giây chưa xoá, message hiện lại và ApproximateReceiveCount tăng 1, consumer khác sẽ nhận. Vì sao: SQS không biết bạn đã xử lý hay chưa, nó chỉ biết bạn chưa xoá.
+5. Khi số lần nhận vượt maxReceiveCount (ví dụ 5), SQS chuyển message sang DLQ; alarm trên DLQ báo cho người trực.
+
+~~~text
+Send -> [Queue: visible] --Receive--> [in-flight, ẩn 60 s] --Delete--> (hết)
+               ^                                |
+               +---- hết 60 s chưa Delete ------+  receiveCount + 1
+                     receiveCount > 5  ------->  [DLQ] -> alarm
+Ví dụ: xử lý p99 = 20 s -> visibility 60-120 s.
+Lambda đọc SQS: AWS khuyên visibility >= 6 lần timeout của function.
+~~~
 
 ### Phân biệt nhanh
 | Dịch vụ | Mô hình | Giữ message | Replay | Throughput |
@@ -400,11 +681,14 @@ EventBridge hợp khi cần lọc theo nội dung sự kiện ({{source}}, {{det
 - Kinesis: managed hoàn toàn, shard-based, tích hợp sẵn với Lambda/Firehose; tốt cho telemetry, clickstream, ingest đơn giản.
 - MSK: Kafka thật, hợp khi đội đã dùng Kafka, cần ecosystem Connect/Streams, hoặc nhiều consumer phức tạp. Vận hành nặng hơn (broker, storage, monitoring).
 
-### Bẫy production
-- Visibility timeout ngắn hơn thời gian xử lý: message bị xử lý song song nhiều lần, tạo duplicate và tăng tải DB.
-- Không có DLQ: poison message retry vô hạn, đốt tiền và che mất lỗi thật.
-- Dùng SQS như event log cần replay: SQS xoá message sau khi ack, không replay được; chọn Kinesis/Kafka/EventBridge archive.
-- FIFO với một group duy nhất: mất song song hoàn toàn; chia group theo aggregate id.
+### Lỗi hay gặp
+- **Visibility timeout ngắn hơn thời gian xử lý.** Triệu chứng: cùng một message được hai consumer xử lý song song, tạo bản ghi trùng và tăng tải DB. Cách tránh: đặt timeout lớn hơn p99 xử lý, gia hạn bằng {{ChangeMessageVisibility}} cho job dài.
+- **Không có DLQ.** Triệu chứng: poison message retry vô hạn, đốt tiền và che mất lỗi thật. Cách tránh: redrive policy với maxReceiveCount 3–5, alarm khi DLQ có message.
+- **Dùng SQS như event log cần replay.** Triệu chứng: muốn xử lý lại dữ liệu tuần trước nhưng message đã bị xoá sau khi ack. Cách tránh: chọn Kinesis, Kafka/MSK hoặc EventBridge archive.
+- **FIFO với một message group duy nhất.** Triệu chứng: throughput tụt về một consumer, mất song song hoàn toàn. Cách tránh: chia group theo aggregate id, ví dụ {{MessageGroupId = orderId}}.
+
+### Trả lời miệng 1 phút
+"Tôi phân biệt theo mô hình: SQS là hàng đợi cho worker, mỗi message một consumer; SNS là pub/sub fan-out, thường kết hợp SNS tới nhiều SQS để mỗi service có hàng đợi và DLQ riêng; EventBridge là bus có routing theo nội dung sự kiện; Kinesis và MSK là log có thứ tự theo shard, giữ lại để replay. Với SQS, khi nhận message nó bị ẩn trong visibility timeout; xoá kịp thì xong, không thì message hiện lại và được giao lần nữa, quá maxReceiveCount thì vào DLQ. Vì vậy hệ thống là at-least-once, consumer bắt buộc idempotent bằng khoá nghiệp vụ hoặc bảng dedup. Cần thứ tự theo đơn hàng thì tôi dùng FIFO với message group theo orderId. Mọi consumer của tôi đều có DLQ, alarm theo tuổi message cũ nhất, và idempotency key."
 
 > Senior tip: mọi consumer SQS nên có DLQ + alarm {{ApproximateNumberOfMessagesVisible}} + idempotency key. Khi sự cố, DLQ là nơi trả lời "message nào hỏng và vì sao" nhanh nhất.`,
   follow: [
@@ -421,6 +705,37 @@ EventBridge hợp khi cần lọc theo nội dung sự kiện ({{source}}, {{det
   refs: [{"type": "doc", "title": "AWS Documentation", "url": "https://docs.aws.amazon.com/"}, {"type": "doc", "title": "AWS Well-Architected", "url": "https://aws.amazon.com/architecture/well-architected/"}],
   q: 'Thiết kế HA và DR: multi-AZ khác multi-region thế nào? RTO/RPO là gì và các chiến lược DR (backup, pilot light, warm standby, active-active) đánh đổi ra sao?',
   a: `**Tóm tắt:** multi-AZ bảo vệ trước lỗi một AZ trong cùng region, thường tự động và RTO phút; multi-region bảo vệ trước lỗi cả region, đắt và phức tạp hơn nhiều. RTO là thời gian chấp nhận mất dịch vụ, RPO là lượng dữ liệu chấp nhận mất. Chọn chiến lược DR theo hai con số này, không theo cảm tính.
+
+### Hiểu nhanh
+**Multi-AZ** giống cửa hàng có hai kho ở hai quận của cùng thành phố: một kho cháy thì kho kia phục vụ gần như ngay. **Multi-region** giống mở thêm chi nhánh ở thành phố khác: cứu được khi cả thành phố mất điện, nhưng đắt và khó đồng bộ hàng hoá. **RTO** là "bao lâu thì mở cửa lại được", **RPO** là "chấp nhận mất sổ sách của bao nhiêu phút cuối". Các chiến lược DR giống mức sẵn sàng của chi nhánh dự phòng: chỉ giữ bản sao giấy tờ (backup), có kho hàng nhưng chưa có nhân viên (pilot light), có một cửa hàng nhỏ đang mở (warm standby), hay hai cửa hàng cùng bán (active-active).
+
+### Thuật ngữ
+- **Region / AZ**: region là một vùng địa lý (ví dụ ap-southeast-1) gồm nhiều AZ cách nhau vài chục km, mỗi AZ có điện và mạng riêng.
+- **Failover / failback**: chuyển dịch vụ sang hạ tầng dự phòng / chuyển ngược về hạ tầng chính sau sự cố.
+- **Replication bất đồng bộ**: dữ liệu được chép sang nơi khác sau khi đã commit ở nơi chính, nên có thể mất phần chưa kịp chép.
+- **Switchover**: chuyển vai trò có kế hoạch khi region chính còn sống, không mất dữ liệu.
+- **Route 53 health check**: Route 53 gọi định kỳ tới endpoint; khi fail, bản ghi failover tự trỏ sang đích dự phòng.
+- **DNS TTL**: thời gian client và resolver được phép cache bản ghi DNS.
+- **Last-writer-wins**: khi hai region cùng ghi một item, bản ghi có thời điểm muộn hơn thắng, bản kia bị ghi đè.
+- **Game day**: buổi diễn tập sự cố có kế hoạch trên hệ thống thật hoặc staging.
+
+### Cơ chế từng bước: failover warm standby sang region phụ
+1. **Phát hiện**: alarm và Route 53 health check thấy region chính lỗi liên tục nhiều phút. Vì sao không chuyển ngay: tránh failover vì lỗi thoáng qua; failover region có giá rất cao.
+2. **Quyết định**: người trực xác nhận theo runbook, nhiều tổ chức yêu cầu người có thẩm quyền đồng ý.
+3. **Promote database**: Aurora Global Database chuyển cluster ở region phụ thành writer. Nếu region chính còn sống thì dùng switchover (không mất dữ liệu); nếu đã chết thì failover, mất phần dữ liệu chưa kịp replicate, thường khoảng 1 giây.
+4. **Scale app**: tăng desired count ở region phụ từ bản thu nhỏ lên đủ tải. Vì sao tốn phút: phải khởi động thêm task và JVM.
+5. **Chuyển traffic**: Route 53 trỏ bản ghi sang region phụ; client nhận được sau khi hết DNS TTL.
+6. **Kiểm tra và thông báo**, sau đó lập kế hoạch failback có kiểm soát.
+
+~~~text
+t=0      region chính lỗi
+t=3'     alarm + health check fail 3 lần liên tiếp
+t=10'    on-call xác nhận, mở runbook
+t=12'    promote Aurora ở region phụ (mất ~1 giây dữ liệu cuối = RPO thực tế)
+t=20'    ECS scale 2 -> 20 task
+t=21'    Route 53 đổi bản ghi, TTL 60 s
+t=23'    traffic về region phụ   => RTO thực tế ~23 phút
+~~~
 
 ### Định nghĩa
 - **RTO** (Recovery Time Objective): mục tiêu thời gian khôi phục. Ví dụ RTO 15 phút nghĩa là hệ phải chạy lại trong 15 phút.
@@ -449,12 +764,14 @@ EventBridge hợp khi cần lọc theo nội dung sự kiện ({{source}}, {{det
 - **Infrastructure as Code** phải dựng được region phụ từ đầu; nếu phải làm tay thì DR không tồn tại.
 - Diễn tập định kỳ (game day): chuyển region thật, đo RTO thật, ghi lại các bước còn thiếu.
 
-### Bẫy production
-- Có backup nhưng chưa bao giờ restore thử: backup chưa được kiểm chứng là chưa có backup.
-- DNS TTL dài làm failover chậm dù hạ tầng sẵn sàng; đặt TTL thấp cho bản ghi failover.
-- Khác biệt cấu hình region phụ (IAM, secret, security group) chỉ phát hiện khi có sự cố.
-- Active-active mà dữ liệu không partition theo region: xung đột ghi và chi phí cross-region tăng vọt.
-- Quên quota/service limit ở region phụ: khi cần scale mới biết chưa xin tăng.
+### Lỗi hay gặp
+- **Có backup nhưng chưa bao giờ restore thử.** Triệu chứng: đến lúc cần mới biết snapshot thiếu quyền KMS ở region phụ hoặc restore mất 6 giờ thay vì 1. Cách tránh: tự động restore định kỳ và đo thời gian; backup chưa kiểm chứng là chưa có backup.
+- **DNS TTL dài.** Triệu chứng: hạ tầng region phụ đã sẵn sàng nhưng client vẫn gọi region cũ thêm hàng chục phút. Cách tránh: đặt TTL thấp (30–60 giây) cho bản ghi failover.
+- **Cấu hình region phụ lệch.** Triệu chứng: khi failover mới phát hiện thiếu IAM role, secret, security group, hoặc quota/service limit chưa xin tăng. Cách tránh: dựng region phụ hoàn toàn bằng IaC, kiểm tra quota định kỳ, diễn tập thật.
+- **Active-active mà dữ liệu không partition theo region.** Triệu chứng: xung đột ghi, dữ liệu bị ghi đè theo last-writer-wins, chi phí cross-region tăng vọt. Cách tránh: chia dữ liệu theo region "chủ" (ví dụ theo khách hàng), hoặc chọn warm standby.
+
+### Trả lời miệng 1 phút
+"Multi-AZ bảo vệ khỏi mất một datacenter trong region, thường tự động và RTO tính bằng phút; multi-region bảo vệ khỏi mất cả region nhưng đắt và phức tạp hơn nhiều. Tôi luôn bắt đầu từ hai con số do business ký: RTO là thời gian được phép ngừng dịch vụ, RPO là lượng dữ liệu được phép mất. Từ đó chọn chiến lược rẻ nhất đáp ứng: backup and restore tính bằng giờ, pilot light giữ dữ liệu nóng ở region phụ, warm standby chạy bản thu nhỏ đầy đủ, active-active gần như không gián đoạn nhưng phải xử lý xung đột ghi. Về công cụ tôi dùng Aurora Global Database với RPO khoảng một giây, Route 53 failover, IaC để dựng region phụ. Kinh nghiệm của tôi là DR chỉ tồn tại khi đã diễn tập và đo RTO thật."
 
 > Senior tip: hãy bắt đầu bằng RTO/RPO do business ký, rồi chọn chiến lược rẻ nhất đáp ứng. Đa số hệ thống không cần active-active; warm standby + IaC + diễn tập 6 tháng/lần thường là điểm cân bằng tốt hơn nhiều so với chi phí gấp đôi hạ tầng chạy song song.`,
   follow: [
@@ -470,6 +787,36 @@ EventBridge hợp khi cần lọc theo nội dung sự kiện ({{source}}, {{det
   level: 'senior',
   q: 'Auto Scaling, ALB vs NLB, health check và graceful shutdown: làm sao để scale-in không làm rơi request?',
   a: `**Tóm tắt:** ALB hiểu HTTP/HTTPS (path, host, header) và phù hợp web API; NLB hiểu TCP/UDP, độ trễ cực thấp, giữ IP tĩnh. Auto Scaling thêm/bớt instance dựa trên metric, nhưng scale-in chỉ an toàn khi kết hợp deregistration delay, health check đúng và graceful shutdown trong ứng dụng.
+
+### Hiểu nhanh
+Load balancer giống nhân viên điều phối ở cửa nhà hàng, chia khách cho các bàn phục vụ (instance/task). **ALB** đọc được "phiếu order" (HTTP: path, host, header) nên đưa được khách gọi {{/payments}} sang khu riêng; **NLB** chỉ đếm người đi qua cửa (TCP/UDP) nhưng cực nhanh và có địa chỉ cố định. **Auto Scaling** là quản lý gọi thêm hoặc cho bớt nhân viên theo lượng khách. Cho nhân viên về đúng cách (scale-in an toàn) nghĩa là: ngừng xếp khách mới cho họ, đợi họ phục vụ xong bàn đang ăn, rồi mới cho về; không được kéo họ đi giữa lúc đang bưng món.
+
+### Thuật ngữ
+- **Target group**: nhóm đích (instance, IP, task) mà load balancer chuyển traffic tới, kèm cấu hình health check.
+- **Deregistration delay (connection draining)**: thời gian LB ngừng gửi request mới nhưng vẫn chờ request đang chạy hoàn tất.
+- **SIGTERM / SIGKILL**: SIGTERM là "xin hãy dừng" (app được dọn dẹp); SIGKILL là dừng cưỡng bức ngay lập tức.
+- **Liveness / readiness**: liveness hỏi "có cần restart không", readiness hỏi "có nhận traffic được không"; Spring Boot Actuator có sẵn {{/actuator/health/liveness}} và {{/actuator/health/readiness}}.
+- **Target tracking**: chính sách scale giữ một metric quanh giá trị mục tiêu, ví dụ CPU 60%.
+- **Cooldown**: khoảng chờ sau mỗi lần scale để metric ổn định trước khi quyết định tiếp.
+- **Flapping**: scale ra rồi vào liên tục vì ngưỡng quá sát nhau.
+- **preStop hook**: lệnh Kubernetes chạy trước khi gửi SIGTERM cho container.
+
+### Cơ chế từng bước: ECS scale-in một task sau ALB
+1. Auto Scaling thấy CPU dưới mục tiêu đủ lâu, giảm desired count. Vì sao chậm hơn scale-out: cooldown scale-in dài để tránh flapping.
+2. ECS chọn một task, deregister nó khỏi target group. ALB ngừng gửi request **mới**, target chuyển sang trạng thái draining.
+3. ECS chờ hết deregistration delay (ví dụ 30 giây) để request đang chạy hoàn tất.
+4. ECS gửi SIGTERM. Spring Boot graceful shutdown ngừng nhận request, chờ request dở tối đa {{timeout-per-shutdown-phase}}, đóng pool rồi thoát.
+5. Nếu sau {{stopTimeout}} (mặc định 30 giây, trên Fargate tối đa 120 giây) container chưa thoát, ECS gửi SIGKILL. Vì sao phải khớp các con số: SIGKILL cắt ngang request, client thấy 502 hoặc connection reset.
+
+~~~text
+ECS + ALB (delay 30 s, stopTimeout 30 s, Spring timeout 20 s)
+t=0      deregister -> ALB ngừng gửi request mới
+t=0-30s  request cũ chạy nốt (draining)
+t=30s    SIGTERM -> Spring từ chối request mới, chờ request dở <= 20 s
+t=31s    app thoát sạch                    (SIGKILL nếu tới t=60 s chưa thoát)
+Kubernetes: SIGTERM và việc gỡ pod khỏi endpoint diễn ra CÙNG LÚC
+  -> preStop sleep 5-10 s để LB kịp gỡ pod trước khi app ngừng nhận request
+~~~
 
 ### ALB vs NLB
 | Tiêu chí | ALB | NLB |
@@ -509,11 +856,14 @@ UnhealthyThresholdCount: 3
 - Với workload theo lịch, dùng scheduled scaling. Với workload đột biến, cân nhắc warm pool hoặc giữ min capacity đủ lớn.
 - **Không scale theo memory** nếu memory không tương quan tải; ưu tiên metric phản ánh tải thực (RPS, queue depth).
 
-### Bẫy production
-- DB connection pool nhân theo số instance: scale 5 → 50 instance có thể làm cạn {{max_connections}}. Dùng pool nhỏ, RDS Proxy/PgBouncer.
-- Health check gọi endpoint có query DB nặng: tự tạo tải và tự làm mình unhealthy.
-- Chỉ scale app mà không scale downstream: SQS consumer tăng gấp 10 nhưng DB khoá.
-- Quên connection draining khi deploy: request đang chạy bị cắt giữa chừng, user thấy lỗi 502.
+### Lỗi hay gặp
+- **Connection pool nhân theo số instance.** Triệu chứng: scale 5 lên 50 instance làm cạn {{max_connections}}, DB từ chối kết nối đúng lúc tải cao. Cách tránh: pool nhỏ (10–20), RDS Proxy/PgBouncer, đặt max capacity của ASG theo sức chịu của DB.
+- **Health check gọi endpoint có query DB nặng.** Triệu chứng: health check tự tạo tải, DB chậm thoáng qua làm cả fleet unhealthy. Cách tránh: readiness nhẹ, chỉ kiểm tra thứ app thật sự cần, không phụ thuộc cứng vào DB.
+- **Chỉ scale app mà không scale downstream.** Triệu chứng: SQS consumer tăng gấp 10 nhưng DB bị khoá, mọi thứ chậm hơn trước. Cách tránh: giới hạn concurrency của consumer, scale theo năng lực của tầng chậm nhất.
+- **Quên connection draining và graceful shutdown khi deploy.** Triệu chứng: user thấy lỗi 502 lẻ tẻ mỗi lần deploy hoặc scale-in. Cách tránh: bật {{server.shutdown=graceful}}, deregistration delay 20–60 giây, stopTimeout lớn hơn timeout của Spring.
+
+### Trả lời miệng 1 phút
+"ALB là load balancer tầng 7, hiểu HTTP nên route theo path, host, header, hợp cho API Spring Boot; NLB là tầng 4, độ trễ rất thấp, có IP tĩnh, hợp khi đối tác cần whitelist IP hoặc giao thức không phải HTTP. Auto Scaling tôi dùng target tracking theo CPU hoặc request mỗi target, scale-out nhanh, scale-in chậm. Để scale-in không rơi request, ba thứ phải khớp nhau: target group deregistration delay để LB ngừng gửi request mới và chờ request cũ, graceful shutdown trong Spring Boot để app xử lý nốt khi nhận SIGTERM, và stopTimeout của ECS hoặc terminationGracePeriod của Kubernetes đủ dài trước khi bị SIGKILL; trên Kubernetes thêm preStop sleep vài giây. Health check thì nhẹ và không phụ thuộc cứng vào DB. Tôi luôn kiểm chứng bằng cách giảm desired count trong lúc bắn tải và xem có 5xx không."
 
 > Senior tip: luôn test scale-in bằng cách giảm desired count trong lúc bắn tải. Nếu thấy lỗi 5xx lẻ tẻ khi scale, nguyên nhân gần như chắc chắn là deregistration delay + graceful shutdown chưa khớp, không phải code logic.`,
   follow: [
@@ -529,6 +879,35 @@ UnhealthyThresholdCount: 3
   level: 'mid',
   q: 'ElastiCache Redis dùng cho những bài toán nào? Cluster mode, eviction policy và các lỗi thường gặp trên production?',
   a: `**Tóm tắt:** Redis là in-memory store dùng cho cache, session, rate limit, distributed lock, leaderboard. ElastiCache cung cấp bản managed (engine Redis OSS hoặc Valkey, fork mã nguồn mở tương thích Redis và rẻ hơn). Cluster mode cho phép chia shard dữ liệu để vượt giới hạn bộ nhớ/throughput của một node; eviction quyết định Redis xử lý gì khi đầy bộ nhớ.
+
+### Hiểu nhanh
+Redis giống cái bàn làm việc ngay cạnh bạn, còn database giống kho hồ sơ dưới tầng hầm: lấy từ bàn mất chưa tới một mili giây, xuống kho mất lâu hơn nhiều. Vì bàn nhỏ (RAM đắt), bạn chỉ để những hồ sơ hay dùng, và khi bàn đầy phải quyết định bỏ bớt cái nào: đó là **eviction**. **Cluster mode** giống ghép nhiều bàn lại, mỗi bàn giữ một phần hồ sơ theo quy tắc chia cố định (hash slot). **ElastiCache** là dịch vụ "thuê bàn có người lau dọn": AWS lo cài đặt, replica, failover, vá lỗi.
+
+### Thuật ngữ
+- **TTL**: thời gian sống của key; hết hạn thì Redis tự xoá.
+- **Cache-aside**: app tự đọc cache, miss thì đọc DB rồi ghi vào cache.
+- **Hash slot**: Redis Cluster chia không gian key thành 16.384 slot theo CRC16(key) mod 16384; mỗi shard giữ một dải slot.
+- **Hash tag**: phần tên key đặt trong cặp ngoặc nhọn; chỉ phần này được băm, nhờ đó nhiều key rơi vào cùng slot.
+- **Replica / failover**: bản sao của primary; khi primary chết, replica được promote thay thế.
+- **maxmemory / eviction policy**: ngưỡng bộ nhớ tối đa và quy tắc chọn key để xoá khi chạm ngưỡng.
+- **LRU / LFU**: xoá key lâu chưa được dùng nhất / xoá key được dùng ít lần nhất.
+- **Valkey**: fork mã nguồn mở của Redis, tương thích giao thức, ElastiCache hỗ trợ với giá thấp hơn.
+
+### Cơ chế từng bước: cache-aside cho trang sản phẩm
+1. App gọi {{GET product:42}}. Hit thì trả ngay (khoảng 1 ms). Vì sao nhanh: dữ liệu nằm trong RAM, cùng VPC với app.
+2. Miss thì query DB (khoảng 20 ms).
+3. Ghi lại {{SET product:42 <json> EX 300}}, TTL 5 phút cộng thêm vài chục giây ngẫu nhiên (jitter). Vì sao có TTL: giới hạn thời gian dữ liệu cũ tồn tại; vì sao jitter: tránh hàng loạt key hết hạn cùng lúc.
+4. Khi sản phẩm được cập nhật: ghi DB trước rồi **xoá** key (DEL) thay vì ghi đè. Vì sao: lần đọc sau tự nạp bản mới, tránh race hai luồng ghi đè giá trị cũ lên giá trị mới.
+5. Ở cluster mode, client băm key ra slot, gửi thẳng tới shard giữ slot đó; nếu bản đồ slot đổi (failover, resharding), shard trả lỗi MOVED và client cập nhật bản đồ.
+
+~~~text
+1.000 request/s đọc sản phẩm, DB 20 ms, Redis 1 ms, hit rate 95%
+  Không cache : 1.000 query/s vào DB
+  Có cache    : 50 query/s vào DB
+                latency TB = 0,95 x 1 + 0,05 x (1 + 20) ~ 2 ms
+Cluster 3 shard:
+  slot 0-5460 -> shard 1 | 5461-10922 -> shard 2 | 10923-16383 -> shard 3
+~~~
 
 ### Use case
 - **Cache-aside**: app đọc Redis trước, miss thì đọc DB rồi ghi lại với TTL. Phổ biến nhất, dễ hiểu, dễ sai nếu TTL không hợp lý.
@@ -555,13 +934,15 @@ Khi {{maxmemory}} đạt ngưỡng, policy quyết định:
 
 Với cache thuần, {{allkeys-lru}} hoặc {{allkeys-lfu}} thường hợp. Nếu Redis vừa cache vừa giữ dữ liệu không được mất (lock, session), dùng {{volatile-*}} và đảm bảo key quan trọng không có TTL — nhưng tốt nhất tách cluster.
 
-### Bẫy production
-- **Cache stampede**: nhiều request cùng miss một key nóng, đồng loạt đập DB. Dùng mutex/lock khi rebuild hoặc TTL jitter.
-- **Big key**: một key chứa hàng trăm nghìn phần tử làm thao tác block Redis. Chia nhỏ hoặc dùng cấu trúc khác.
-- **Hot key**: một key nhận phần lớn traffic, dù cluster vẫn nghẽn một shard. Thêm local cache hoặc replicate key.
-- Dùng {{KEYS *}} trên production: block toàn bộ Redis. Dùng {{SCAN}}.
-- Không đặt TTL: bộ nhớ đầy dần, eviction bắt đầu xoá dữ liệu quan trọng.
-- Nhầm Redis là database bền vững: mất node có thể mất dữ liệu chưa persist; backup/AOF không thay thế được DB giao dịch.
+### Lỗi hay gặp
+- **Cache stampede.** Triệu chứng: một key nóng hết hạn, hàng nghìn request cùng miss và đồng loạt đập vào DB, DB quá tải. Cách tránh: mutex/lock khi rebuild, TTL jitter, hoặc làm mới trước khi hết hạn.
+- **Big key và hot key.** Triệu chứng: một key chứa hàng trăm nghìn phần tử làm thao tác block Redis; một key nhận phần lớn traffic khiến một shard nghẽn dù cluster còn rảnh. Cách tránh: chia nhỏ big key; với hot key thêm local cache (Caffeine) hoặc nhân bản key.
+- **Dùng {{KEYS *}} trên production.** Triệu chứng: Redis đơn luồng bị block toàn bộ, mọi request timeout. Cách tránh: dùng {{SCAN}} theo lô.
+- **Không đặt TTL.** Triệu chứng: bộ nhớ đầy dần, eviction bắt đầu xoá cả dữ liệu quan trọng. Cách tránh: mọi key cache đều có TTL, theo dõi metric bộ nhớ và Evictions.
+- **Coi Redis là database bền vững.** Triệu chứng: mất node làm mất dữ liệu chưa persist. Cách tránh: backup/AOF không thay thế DB giao dịch; dữ liệu gốc phải nằm ở DB.
+
+### Trả lời miệng 1 phút
+"Redis là kho dữ liệu trong RAM, tôi dùng cho cache, session, rate limit, distributed lock và leaderboard; trên AWS tôi dùng ElastiCache với engine Redis OSS hoặc Valkey. Mẫu phổ biến nhất là cache-aside: đọc cache, miss thì đọc DB rồi ghi lại với TTL có jitter, cập nhật thì ghi DB rồi xoá key. Khi dữ liệu hoặc throughput vượt một node, tôi bật cluster mode: key được băm vào 16.384 hash slot chia trên nhiều shard, đổi lại lệnh nhiều key phải cùng slot nhờ hash tag. Khi đầy bộ nhớ, eviction policy quyết định: cache thuần thì allkeys-lru hoặc allkeys-lfu, còn dữ liệu không được mất thì nên tách cluster riêng. Kinh nghiệm của tôi là phải trả lời trước ba câu: TTL bao lâu, khi nào invalidate, và app sống ra sao khi Redis chết."
 
 > Senior tip: mọi cache phải trả lời được ba câu: TTL bao lâu, khi nào invalidate, và điều gì xảy ra khi Redis chết. Nếu app không chịu được Redis chết, đó không còn là cache mà là dependency bắt buộc — phải thiết kế HA và có fallback.`,
   follow: [
@@ -577,6 +958,39 @@ Với cache thuần, {{allkeys-lru}} hoặc {{allkeys-lfu}} thường hợp. N�
   level: 'senior',
   q: 'Observability trên AWS cho hệ Java: CloudWatch logs/metrics/alarms đủ chưa, X-Ray và OpenTelemetry bổ sung gì, làm sao tránh chi phí log?',
   a: `**Tóm tắt:** CloudWatch là nền tảng log/metric/alarm mặc định của AWS; X-Ray theo dấu request phân tán; OpenTelemetry là chuẩn mở để instrument và gửi trace/metric/log tới backend bất kỳ. Ba trụ cột là logs, metrics, traces — thiếu trace thì debug hệ microservices rất chậm.
+
+### Hiểu nhanh
+Observability giống bộ ba dụng cụ của bác sĩ. **Metrics** là các chỉ số sinh tồn (nhịp tim, huyết áp): nhìn nhanh biết có bệnh hay không. **Logs** là sổ khám bệnh ghi chi tiết từng sự việc. **Traces** là ảnh chụp đường đi của một mũi thuốc qua từng cơ quan: một request đi qua những service nào, chậm ở đâu. Thiếu trace thì giống chỉ biết bệnh nhân sốt mà không biết ổ viêm nằm ở đâu. **CloudWatch** là bệnh viện mặc định của AWS, **X-Ray** là máy chụp đường đi, còn **OpenTelemetry** là chuẩn chung để mọi máy móc nói cùng một ngôn ngữ.
+
+### Thuật ngữ
+- **Log group / log stream**: log group là nhóm log theo service và môi trường; log stream là luồng log của từng task/instance.
+- **EMF (Embedded Metric Format)**: in một dòng log JSON đúng định dạng, CloudWatch tự tách thành metric mà không cần gọi API.
+- **Span / trace**: span là một đoạn công việc (gọi DB, gọi HTTP); trace là cây các span của cùng một request.
+- **Trace context propagation**: truyền trace ID qua header (chuẩn W3C {{traceparent}}) để service sau nối tiếp cùng trace.
+- **Sampling (head/tail)**: chỉ giữ một phần trace; head quyết định ngay từ đầu request, tail quyết định sau khi biết request lỗi hay chậm.
+- **OTel Collector / ADOT**: tiến trình nhận, xử lý, gửi telemetry; ADOT là bản phân phối OpenTelemetry của AWS.
+- **MDC**: Mapped Diagnostic Context của SLF4J/Logback, nơi đặt trace ID để mọi dòng log tự kèm theo.
+- **SLO**: mục tiêu chất lượng dịch vụ đo được, ví dụ 99,9% request dưới 500 ms.
+
+### Cơ chế từng bước: từ một request tới lúc người trực tìm ra nguyên nhân
+1. Request vào order-service; agent OTel (hoặc Micrometer Tracing) tạo trace ID và span gốc. Vì sao tự động: agent bọc sẵn Spring MVC, JDBC, HTTP client.
+2. Khi order-service gọi payment-service, trace ID đi theo header {{traceparent}}, nên span bên kia gắn vào cùng trace.
+3. Trace ID được đặt vào MDC, mọi dòng log JSON của request đều có trường {{trace_id}}.
+4. Collector gom span theo lô, áp sampling, gửi tới X-Ray hoặc backend khác; log đi tới CloudWatch Logs; metric đi qua EMF hoặc Micrometer.
+5. Alarm trên metric (p99, tỉ lệ 5xx) vượt ngưỡng thì gửi SNS tới người trực.
+6. Người trực mở Logs Insights lọc dòng ERROR, lấy {{trace_id}}, mở trace và thấy ngay span nào chậm.
+
+~~~text
+Client -> ALB -> order-service ----------> payment-service ----> RDS
+                 span A 900 ms            span B 850 ms          span C 800 ms
+Log order  : {"level":"ERROR","trace_id":"4bf92f...","msg":"payment timeout"}
+Log payment: {"level":"WARN","trace_id":"4bf92f...","msg":"slow query"}
+=> từ 1 dòng log lỗi -> trace_id -> trace -> span C (query DB) là thủ phạm
+Chi phí log ước lượng: 20 task x 2 GB/ngày x 30 ngày = 1.200 GB
+  x ~0,5 USD/GB ingest  = ~600 USD/tháng, chưa tính lưu trữ
+~~~
+
+Lưu ý hiện hành: với dự án mới, AWS khuyến nghị instrument bằng OpenTelemetry (ADOT, CloudWatch agent) thay cho X-Ray SDK/daemon cũ; X-Ray vẫn là nơi xem trace.
 
 ### CloudWatch
 - **Logs**: Log group theo service/môi trường, log stream theo task/instance. Có Logs Insights để query.
@@ -611,12 +1025,15 @@ OTEL_TRACES_SAMPLER_ARG: "0.1"
 - Không log payload đầy đủ (request body, token); vừa tốn tiền vừa rò rỉ dữ liệu.
 - Dùng metric filter thay vì lưu mọi dòng để đếm lỗi.
 
-### Bẫy production
-- Alarm chỉ dựa trên CPU: hệ có thể chết vì DB connection pool cạn trong khi CPU thấp.
-- Không có SLO/alarm theo user impact: biết muộn sau khi khách phàn nàn.
-- Trace sampling 100% ở traffic lớn: chi phí và overhead tăng mạnh; dùng head/tail sampling hợp lý.
-- Log không có timestamp chuẩn, không có trace ID, không có service name: vô dụng khi sự cố.
-- Dashboard quá nhiều biểu đồ: không ai nhìn. Chọn 5–8 chỉ số phản ánh sức khoẻ.
+### Lỗi hay gặp
+- **Alarm chỉ dựa trên CPU.** Triệu chứng: hệ "chết" vì DB connection pool cạn trong khi CPU thấp, không alarm nào kêu. Cách tránh: alarm theo triệu chứng người dùng thấy: p99 latency, tỉ lệ 5xx, tuổi message cũ nhất.
+- **Không có SLO/alarm theo user impact.** Triệu chứng: biết sự cố sau khi khách phàn nàn. Cách tránh: định nghĩa SLO, alarm theo tốc độ đốt error budget.
+- **Trace sampling 100% ở traffic lớn.** Triệu chứng: chi phí trace và overhead tăng mạnh. Cách tránh: head sampling 5–10% cộng tail sampling giữ mọi trace lỗi hoặc chậm.
+- **Log thiếu timestamp chuẩn, trace ID, service name.** Triệu chứng: lúc sự cố không ghép được log giữa các service. Cách tránh: log JSON có trường cố định, trace ID qua MDC.
+- **Dashboard quá nhiều biểu đồ và log debug ở production.** Triệu chứng: không ai nhìn dashboard, còn hoá đơn log là khoản lớn nhất. Cách tránh: 5–8 chỉ số sức khoẻ; retention theo log group, chỉ gửi WARN/ERROR hoặc sample DEBUG, dùng log class Infrequent Access cho log ít truy vấn.
+
+### Trả lời miệng 1 phút
+"Observability có ba trụ cột: metrics để biết có vấn đề, logs để biết chi tiết, traces để biết vấn đề nằm ở service nào. Trên AWS, CloudWatch lo log, metric và alarm; với hệ microservices tôi thêm tracing bằng OpenTelemetry, trace ID truyền qua header traceparent và được đặt vào MDC để mọi dòng log nối được với trace, rồi xuất sang X-Ray hoặc backend khác. CloudWatch một mình đủ cho hệ nhỏ, nhưng thiếu trace thì debug microservices rất chậm. Về chi phí, log ingestion tính theo GB nên tôi đặt retention cho từng log group, không log payload, chỉ gửi WARN và ERROR ở production, và sample trace thay vì giữ 100%. Alarm tôi đặt theo SLO người dùng như p99 và tỉ lệ 5xx, không theo CPU."
 
 > Senior tip: bắt đầu từ SLO của người dùng (ví dụ 99,9% request < 500 ms), rồi chọn metric/alarm phản ánh SLO đó. Observability không phải "cài agent cho có"; nó là khả năng trả lời câu hỏi mới trong vài phút thay vì vài giờ.`,
   follow: [
@@ -632,6 +1049,40 @@ OTEL_TRACES_SAMPLER_ARG: "0.1"
   level: 'senior',
   q: 'Secrets Manager khác Parameter Store thế nào? KMS envelope encryption hoạt động ra sao và ứng dụng Java nên lấy secret lúc nào?',
   a: `**Tóm tắt:** Parameter Store là nơi lưu cấu hình và secret đơn giản, rẻ, có SecureString mã hoá bằng KMS; Secrets Manager chuyên cho secret cần xoay vòng tự động, tích hợp RDS/Redshift, có phiên bản và replication. KMS envelope encryption dùng một data key để mã hoá dữ liệu, còn data key được mã hoá bởi KMS key.
+
+### Hiểu nhanh
+**Parameter Store** giống bảng thông báo nội bộ có vài ngăn khoá: dán cấu hình thì tiện, cất vài mật khẩu đơn giản cũng được. **Secrets Manager** giống két sắt có thủ quỹ: tự đổi mã két định kỳ (rotation), ghi lại ai mở, giữ cả mã cũ và mã mới trong lúc chuyển giao. **KMS envelope encryption** giống việc khoá tài liệu bằng một chìa nhỏ, rồi bỏ chìa nhỏ đó vào một phong bì chỉ ngân hàng (KMS) mới mở được: tài liệu nặng không phải gửi tới ngân hàng, chỉ cái chìa nhỏ đi qua.
+
+### Thuật ngữ
+- **KMS key (trước gọi là CMK)**: khoá chính nằm trong HSM của KMS, không bao giờ rời KMS ở dạng rõ.
+- **Data key**: khoá AES sinh ra để mã hoá dữ liệu thật; được lưu ở dạng đã mã hoá bởi KMS key.
+- **Envelope encryption**: mã hoá dữ liệu bằng data key, rồi mã hoá data key bằng KMS key.
+- **Encryption context**: cặp key-value bắt buộc khớp khi giải mã, đồng thời được ghi vào CloudTrail để audit.
+- **SecureString**: kiểu tham số của Parameter Store được mã hoá bằng KMS.
+- **Staging label**: nhãn trỏ vào phiên bản secret: AWSCURRENT (đang dùng), AWSPENDING (đang xoay), AWSPREVIOUS (bản trước).
+- **Rotation**: quy trình tự đổi secret định kỳ bằng Lambda hoặc managed rotation.
+- **Key policy**: resource policy gắn trên KMS key, quyết định ai quản trị và ai được dùng key.
+
+### Cơ chế từng bước
+**Envelope encryption:**
+1. App gọi {{GenerateDataKey}} với id của KMS key. KMS trả về data key dạng rõ và cùng data key đó đã được mã hoá. Vì sao: KMS key không rời KMS, chỉ data key đi ra.
+2. App mã hoá dữ liệu bằng data key dạng rõ (AES-GCM) ngay trong bộ nhớ, rồi xoá data key dạng rõ.
+3. App lưu cạnh nhau: data key đã mã hoá và ciphertext.
+4. Khi đọc: gọi {{Decrypt}} với data key đã mã hoá, nhận lại data key dạng rõ, giải mã dữ liệu. Vì sao nhanh: chỉ vài trăm byte đi qua KMS, dữ liệu 100 MB vẫn giải mã cục bộ.
+
+**Rotation của Secrets Manager (mật khẩu RDS):**
+1. createSecret: sinh mật khẩu mới, gắn nhãn AWSPENDING.
+2. setSecret: đặt mật khẩu mới vào database.
+3. testSecret: thử đăng nhập bằng bản AWSPENDING.
+4. finishSecret: chuyển AWSCURRENT sang bản mới, bản cũ thành AWSPREVIOUS. Vì sao app cache lâu bị lỗi: với chiến lược single user, mật khẩu cũ mất hiệu lực ngay ở bước 2; chiến lược alternating users giữ user cũ dùng được tới lần xoay sau.
+
+~~~text
+Mã hoá:  App --GenerateDataKey--> KMS
+         App <-- DK rõ + DK mã hoá --
+         ciphertext = AES-GCM(data, DK rõ); xoá DK rõ
+         Lưu: [DK mã hoá | ciphertext]
+Giải mã: App --Decrypt(DK mã hoá)--> KMS --> DK rõ --> giải mã cục bộ
+~~~
 
 ### So sánh
 | Tiêu chí | Parameter Store | Secrets Manager |
@@ -669,12 +1120,14 @@ String json = res.secretString();   // {"username":"app","password":"..."}
 
 Với Spring Boot có thể dùng {{spring-cloud-aws-secrets-manager-config}} hoặc {{spring.config.import=aws-secretsmanager:prod/orders/db}} (tuỳ phiên bản).
 
-### Bẫy production
-- Cache secret vĩnh viễn rồi bật rotation: app vẫn dùng mật khẩu cũ, RDS từ chối sau khi xoay.
-- Log secret khi debug: dính vào CloudWatch, khó xoá, phải rotate ngay.
-- Cấp quyền {{secretsmanager:*}} cho mọi service: một service bị chiếm là lộ toàn bộ.
-- Dùng cùng KMS key cho mọi môi trường mà không giới hạn key policy: khó cô lập.
-- Quên rằng Parameter Store mặc định chỉ khoảng 40 TPS cho GetParameter (bật higher throughput thì có phí); đọc liên tục ở traffic cao sẽ bị throttle.
+### Lỗi hay gặp
+- **Cache secret vĩnh viễn rồi bật rotation.** Triệu chứng: sau lần xoay đầu tiên app vẫn dùng mật khẩu cũ, RDS từ chối, lỗi đăng nhập hàng loạt. Cách tránh: cache có TTL (ví dụ 5–15 phút), khi gặp lỗi xác thực thì lấy lại secret và tạo lại connection; dùng chiến lược alternating users.
+- **Log secret khi debug.** Triệu chứng: mật khẩu nằm trong CloudWatch, khó xoá. Cách tránh: không bao giờ log giá trị; nếu lỡ lộ thì rotate ngay.
+- **Cấp quyền {{secretsmanager:*}} hoặc dùng chung KMS key cho mọi môi trường.** Triệu chứng: một service bị chiếm là lộ toàn bộ secret; khó cô lập dev và prod. Cách tránh: quyền {{GetSecretValue}} theo ARN cụ thể, key và key policy riêng theo môi trường.
+- **Gọi Parameter Store mỗi request.** Triệu chứng: bị throttle ở traffic cao vì GetParameter mặc định chỉ khoảng 40 TPS (bật higher throughput thì có phí). Cách tránh: đọc lúc khởi động và cache có TTL.
+
+### Trả lời miệng 1 phút
+"Parameter Store hợp cho cấu hình và secret đơn giản, rẻ, có SecureString mã hoá bằng KMS; Secrets Manager dành cho secret có vòng đời: xoay vòng tự động, tích hợp sẵn RDS, có staging label AWSCURRENT và AWSPREVIOUS, replication sang region khác. Bên dưới, KMS dùng envelope encryption: KMS key không bao giờ rời KMS, nó chỉ mã hoá một data key nhỏ; dữ liệu lớn được mã hoá cục bộ bằng data key đó, nên nhanh và không vướng giới hạn 4 KB của KMS. Ứng dụng Java của tôi lấy secret bằng IAM role lúc khởi động, cache trong bộ nhớ có TTL chứ không gọi mỗi request, và khi gặp lỗi xác thực thì nạp lại. Bài học của tôi là rotation chỉ an toàn khi ứng dụng đã được thiết kế để nhận secret mới mà không cần restart."
 
 > Senior tip: secret là dữ liệu có vòng đời, hãy thiết kế như dữ liệu có vòng đời: có owner, có lịch xoay, có cảnh báo khi sắp hết hạn, và có đường lui khi xoay lỗi. Đừng biến "lấy secret lúc start" thành "cache đến khi restart".`,
   follow: [
@@ -691,6 +1144,37 @@ Với Spring Boot có thể dùng {{spring-cloud-aws-secrets-manager-config}} ho
   refs: [{"type": "doc", "title": "AWS Documentation", "url": "https://docs.aws.amazon.com/"}, {"type": "doc", "title": "AWS Well-Architected", "url": "https://aws.amazon.com/architecture/well-architected/"}],
   q: 'Tối ưu chi phí AWS cho hệ Java: những đòn bẩy nào hiệu quả nhất, đo lường ra sao và bẫy nào khiến chi phí tăng ngược?',
   a: `**Tóm tắt:** chi phí AWS thường tập trung ở compute, database, storage và data transfer. Đòn bẩy lớn nhất là chọn đúng kích thước (rightsizing), cam kết dài hạn (Savings Plans/Reserved), dùng Spot cho workload chịu được gián đoạn, Graviton để giảm giá/hiệu năng, và kiểm soát data transfer + log.
+
+### Hiểu nhanh
+Hoá đơn AWS giống hoá đơn điện nước của một toà nhà lớn: nếu không có đồng hồ riêng từng căn hộ (tag), không ai biết ai dùng nhiều và không ai chịu tiết kiệm. **Rightsizing** là thay bóng đèn 200W bằng bóng 60W khi phòng không cần sáng thế. **Savings Plans** giống đóng tiền điện trả trước một năm để được giảm giá, chỉ nên trả trước phần chắc chắn dùng. **Spot** giống mua vé máy bay giờ chót giá rẻ nhưng có thể bị huỷ chuyến. **Data transfer** là "phí vận chuyển" ẩn: dữ liệu đi qua AZ khác, qua NAT, ra Internet đều tốn tiền.
+
+### Thuật ngữ
+- **Rightsizing**: chỉnh kích thước tài nguyên khớp với mức sử dụng thật.
+- **Savings Plans / Reserved Instances**: cam kết chi một mức cố định mỗi giờ (hoặc giữ một loại instance) trong 1–3 năm để được giảm giá.
+- **Spot**: dung lượng EC2/Fargate dư của AWS, rẻ hơn nhiều nhưng có thể bị thu hồi với 2 phút báo trước.
+- **Graviton**: CPU ARM do AWS thiết kế, giá trên hiệu năng tốt hơn x86 cùng thế hệ.
+- **Cost allocation tag**: tag (team, env, service) được bật trong Billing để chia chi phí theo nhóm.
+- **CUR (Cost and Usage Report)**: file chi phí chi tiết nhất, đẩy ra S3 để truy vấn bằng Athena.
+- **Cross-AZ data transfer**: phí tính trên mỗi GB đi giữa hai AZ, tính ở cả hai chiều.
+- **Compute Optimizer**: dịch vụ phân tích metric và gợi ý kích thước EC2, ECS, Lambda, EBS phù hợp.
+
+### Cơ chế từng bước: một vòng tối ưu chi phí hằng tháng
+1. **Đo**: bật cost allocation tag, Cost Explorer chia theo service và tag. Vì sao trước tiên: không đo thì không biết tiền chảy đi đâu.
+2. **Xếp hạng**: lấy top 5 dòng chi phí và top 5 dòng tăng nhanh nhất so với tháng trước. Vì sao: 80% tiền thường nằm ở vài dòng.
+3. **Rightsizing**: xem p95 CPU/memory 2–4 tuần qua Compute Optimizer, giảm size từng bước nhỏ, theo dõi latency. Vì sao p95 mà không phải trung bình: trung bình che mất giờ cao điểm.
+4. **Cam kết**: chỉ sau khi rightsizing mới mua Savings Plans cho phần nền ổn định. Vì sao theo thứ tự này: mua trước khi cắt là trả trước cho phần thừa.
+5. **Chuyển kiến trúc**: Spot cho worker/batch, Graviton cho service Java, endpoint thay NAT, lifecycle cho S3.
+6. **Ngăn tái phát**: budget có cảnh báo theo team, policy bắt buộc tag, tắt dev/staging ngoài giờ.
+
+~~~text
+Ví dụ hoá đơn 20.000 USD/tháng (minh hoạ):
+  EC2/Fargate 9.000 | RDS 5.000 | NAT + data transfer 2.500 | CloudWatch 1.500 | S3 1.000 | khác 1.000
+  Rightsizing -20% compute         : -1.800
+  Savings Plans phần nền 6.000     : -1.500 (giảm ~25%)
+  Endpoint ECR/S3 thay NAT         :   -800
+  Retention + bỏ log debug         :   -700
+  => ~15.200 USD/tháng, giảm ~24% mà không đổi chức năng
+~~~
 
 ### Nhìn vào hoá đơn đúng cách
 - Bật **Cost Explorer**, chia theo service, account, tag (team, env, service). Không có tagging thì không ai chịu trách nhiệm chi phí.
@@ -722,12 +1206,15 @@ Với Spring Boot có thể dùng {{spring-cloud-aws-secrets-manager-config}} ho
 - Tận dụng Graviton (ARM64) cho image Java: hầu hết thư viện thuần Java chạy tốt; kiểm tra agent native.
 - Build pipeline kéo image nhiều lần: dùng cache layer, ECR pull-through, và chạy build trong cùng region.
 
-### Bẫy khiến chi phí tăng ngược
-- Cắt instance quá tay → app chậm, autoscale bật thêm instance, tổng tiền tăng và user tệ hơn.
-- Mua Reserved/Savings Plan cho workload chưa ổn định rồi phải chuyển region/instance family.
-- Spot cho workload có state mà không checkpoint: mất việc, chạy lại, tốn gấp đôi.
-- Xoá NAT để tiết kiệm nhưng private subnet mất egress, phải mở public, bảo mật giảm.
-- Quên môi trường dev/staging chạy 24/7 với instance lớn.
+### Lỗi hay gặp
+- **Cắt instance quá tay.** Triệu chứng: app chậm, autoscale bật thêm instance, tổng tiền tăng mà user còn thấy tệ hơn. Cách tránh: giảm từng bậc, theo dõi p99 latency và số instance sau mỗi bước.
+- **Mua Reserved/Savings Plans cho workload chưa ổn định.** Triệu chứng: sau vài tháng phải chuyển region/instance family, cam kết thành tiền chết. Cách tránh: chỉ cam kết phần nền chắc chắn; ưu tiên Compute Savings Plans vì linh hoạt instance family, region và cả Fargate/Lambda.
+- **Spot cho workload có state mà không checkpoint.** Triệu chứng: bị thu hồi giữa chừng, chạy lại từ đầu, tốn gấp đôi. Cách tránh: checkpoint định kỳ, xử lý thông báo 2 phút, trộn nhiều instance type.
+- **Xoá NAT để tiết kiệm.** Triệu chứng: private subnet mất egress, người ta mở public subnet cho app, bảo mật giảm. Cách tránh: giữ NAT, giảm traffic qua NAT bằng VPC endpoint.
+- **Quên môi trường dev/staging.** Triệu chứng: instance lớn chạy 24/7 cho môi trường chỉ dùng giờ hành chính. Cách tránh: scheduled scaling về 0 ngoài giờ, instance nhỏ hơn prod.
+
+### Trả lời miệng 1 phút
+"Chi phí AWS của hệ Java thường dồn vào compute, database, data transfer và log. Tôi bắt đầu bằng đo lường: tag bắt buộc, Cost Explorer theo team, budget có cảnh báo. Sau đó làm theo thứ tự: rightsizing theo p95 chứ không theo trung bình, rồi mới mua Savings Plans cho phần nền ổn định, Spot cho worker chịu được gián đoạn, Graviton cho service Java vì gần như không phải sửa code. Khoản hay bị bỏ quên là data transfer: kéo image qua NAT, traffic cross-AZ, Internet egress; tôi xử lý bằng VPC endpoint và CloudFront. Trade-off cần nhớ là cắt quá tay có thể làm tổng tiền tăng vì autoscale bù lại. Kinh nghiệm của tôi là một buổi review một giờ mỗi tháng, nhìn top 5 dòng tăng chi phí, hiệu quả hơn mọi công cụ đắt tiền."
 
 > Senior tip: tối ưu chi phí là bài toán liên tục, không phải chiến dịch một lần. Hãy gắn tag bắt buộc ngay từ đầu, đặt budget theo team, và review top 5 service tăng chi phí mỗi tháng. Một buổi review 1 giờ/tháng thường tiết kiệm hơn nhiều so với mua công cụ đắt tiền.`,
   follow: [
@@ -743,6 +1230,35 @@ Với Spring Boot có thể dùng {{spring-cloud-aws-secrets-manager-config}} ho
   level: 'senior',
   q: 'Infrastructure as Code: CloudFormation, CDK hay Terraform? CI/CD cho Spring Boot trên AWS nên tổ chức thế nào?',
   a: `**Tóm tắt:** CloudFormation là dịch vụ IaC gốc của AWS, CDK sinh CloudFormation từ ngôn ngữ lập trình, Terraform là công cụ đa cloud với state riêng. Không có lựa chọn đúng tuyệt đối; chọn theo đa cloud, kỹ năng đội và mức độ cần kiểm soát state. CI/CD nên tách pipeline hạ tầng và pipeline ứng dụng, có môi trường tương đương và deploy tăng dần.
+
+### Hiểu nhanh
+Infrastructure as Code giống bản vẽ thiết kế nhà: thay vì bảo thợ "xây thêm cái phòng" bằng miệng, bạn sửa bản vẽ, mọi người duyệt bản vẽ, rồi thợ xây đúng theo đó, và lần sau xây nhà giống hệt chỉ cần in lại bản vẽ. **CloudFormation** là mẫu bản vẽ chuẩn của AWS (YAML/JSON). **CDK** cho bạn vẽ bằng ngôn ngữ lập trình như Java hay TypeScript, rồi tự dịch ra CloudFormation. **Terraform** là bộ bản vẽ dùng được cho nhiều nhà thầu (đa cloud), nhưng bạn phải tự cất giữ "sổ hiện trạng" (state). CI/CD là dây chuyền tự động: mỗi thay đổi code đi qua kiểm tra rồi mới tới production.
+
+### Thuật ngữ
+- **Stack**: một nhóm tài nguyên CloudFormation được tạo, sửa, xoá cùng nhau.
+- **State (Terraform)**: file ghi lại tài nguyên thật nào ứng với khối code nào; mất hoặc hỏng state là Terraform "quên" hạ tầng.
+- **State locking**: khoá để hai người không apply cùng lúc; Terraform 1.10+ khoá được ngay trên S3 ({{use_lockfile}}), trước đó thường dùng DynamoDB.
+- **Drift**: chênh lệch giữa hạ tầng thật và code do ai đó sửa tay.
+- **Construct L2/L3 (CDK)**: lớp trừu tượng có sẵn giá trị mặc định tốt (L2) hoặc cả một mẫu kiến trúc (L3).
+- **Blast radius**: phạm vi thiệt hại khi một thay đổi bị lỗi.
+- **Blue/green, canary**: blue/green dựng bản mới song song rồi chuyển traffic; canary chuyển một phần nhỏ traffic trước.
+- **Expand/contract**: đổi schema DB theo hai pha (thêm cái mới tương thích ngược, rồi mới bỏ cái cũ).
+
+### Cơ chế từng bước: một thay đổi đi từ PR tới production
+1. Dev mở PR. Pipeline build, chạy unit test, static analysis, quét bảo mật IaC, và chạy {{terraform plan}} hoặc {{cdk diff}}. Vì sao: người review nhìn thấy chính xác tài nguyên nào sẽ bị tạo, sửa, **xoá**.
+2. Merge vào main. Pipeline build image một lần, tag theo commit SHA, push ECR, quét image. Vì sao tag theo SHA: biết chính xác code nào đang chạy và rollback được.
+3. Deploy dev tự động, chạy test tích hợp; deploy staging tự động.
+4. Production cần approval; pipeline assume role ngắn hạn qua OIDC thay vì dùng access key cố định.
+5. Release bằng rolling, blue/green hoặc canary; alarm (5xx, p99) theo dõi trong cửa sổ quan sát.
+6. Alarm vượt ngưỡng thì rollback tự động về image SHA trước đó.
+
+~~~text
+PR ──> build + test + plan/diff + scan ──> review
+merge ──> image orders:3f9c2a1 ──> ECR ──> dev ──> staging ──[approve]──> prod
+                                                                canary 10% 10 phút
+                                                                5xx > 1%? -> rollback
+State Terraform tách: network/prod | data/prod | app/prod | ... (mỗi cái một file state)
+~~~
 
 ### So sánh
 | Tiêu chí | CloudFormation | CDK | Terraform |
@@ -776,16 +1292,19 @@ Chọn CloudFormation khi đội thuần AWS và muốn ít công cụ. Chọn C
 - run: ./mvnw -B verify
 - run: docker build -t $ECR_REPO:$GITHUB_SHA .
 - run: docker push $ECR_REPO:$GITHUB_SHA
-- run: aws ecs update-service --cluster prod --service orders \
+- run: aws ecs update-service --cluster prod --service orders \\
     --task-definition orders:$TASK_REV --force-new-deployment
 ~~~
 
-### Bẫy production
-- Dùng chung state Terraform cho mọi môi trường: một lỗi plan có thể ảnh hưởng prod.
-- Apply tay từ laptop: không audit, dễ lệch. Chạy pipeline với role assume ngắn hạn.
-- Pipeline không pin version action/image: build không tái lập được.
-- Blue/green nhưng DB migration không tương thích ngược: rollback app không cứu được schema. Dùng migration theo hướng expand/contract.
-- Deploy cùng lúc hạ tầng và app khi thay đổi phụ thuộc nhau: thứ tự quan trọng.
+### Lỗi hay gặp
+- **Dùng chung state Terraform cho mọi môi trường.** Triệu chứng: một lỗi plan ở dev đụng tới tài nguyên prod. Cách tránh: state tách theo môi trường và theo tầng.
+- **Apply tay từ laptop.** Triệu chứng: không audit, hạ tầng lệch với code, không ai biết ai đổi gì. Cách tránh: chỉ pipeline được apply, chạy với role assume ngắn hạn.
+- **Pipeline không pin version action/image.** Triệu chứng: build hôm nay khác hôm qua dù code không đổi. Cách tránh: pin version (hoặc digest) cho action, base image, provider.
+- **Blue/green nhưng migration DB không tương thích ngược.** Triệu chứng: rollback app không cứu được vì schema đã đổi. Cách tránh: migration theo expand/contract, tách deploy schema và deploy app.
+- **Deploy cùng lúc hạ tầng và app phụ thuộc nhau.** Triệu chứng: app mới chạy trước khi queue/secret nó cần tồn tại. Cách tránh: tách pipeline hạ tầng và app, hạ tầng đi trước.
+
+### Trả lời miệng 1 phút
+"CloudFormation là IaC gốc của AWS, state do AWS quản; CDK cho tôi viết hạ tầng bằng Java hoặc TypeScript rồi sinh ra CloudFormation; Terraform đa cloud, hệ sinh thái provider lớn nhưng tôi phải tự quản state trên S3 có khoá. Tôi chọn theo bối cảnh: thuần AWS và đội mạnh code thì CDK, đa cloud hoặc công ty đã chuẩn hoá thì Terraform. Dù chọn gì, nguyên tắc vẫn vậy: mọi thứ trong code, state tách theo môi trường và tầng để giảm blast radius, plan được review như code. CI/CD tôi tách pipeline hạ tầng và pipeline ứng dụng; image build một lần, tag theo commit SHA, đi qua dev, staging, rồi prod có approval với canary và rollback tự động theo alarm. Bẫy lớn nhất tôi gặp là migration DB không tương thích ngược, nên luôn dùng expand/contract."
 
 > Senior tip: IaC chỉ có giá trị khi nó là con đường duy nhất để thay đổi hạ tầng. Nếu vẫn còn người click console cho prod, hãy coi đó là sự cố quy trình. Bắt đầu nhỏ: network + data + một service, rồi mở rộng.`,
   follow: [
@@ -802,6 +1321,35 @@ Chọn CloudFormation khi đội thuần AWS và muốn ít công cụ. Chọn C
   refs: [{"type": "doc", "title": "AWS Documentation", "url": "https://docs.aws.amazon.com/"}, {"type": "doc", "title": "AWS Well-Architected", "url": "https://aws.amazon.com/architecture/well-architected/"}],
   q: 'Well-Architected Framework gồm những trụ cột nào? Bạn dùng nó thế nào để review kiến trúc thay vì chỉ trả lời lý thuyết?',
   a: `**Tóm tắt:** Well-Architected Framework có 6 trụ cột: Operational Excellence, Security, Reliability, Performance Efficiency, Cost Optimization, Sustainability. Giá trị thực nằm ở quy trình review có câu hỏi cụ thể, xác định risk, gán owner và theo dõi hành động — không phải ở việc học thuộc tên.
+
+### Hiểu nhanh
+Well-Architected Framework giống bộ câu hỏi khám sức khoẻ tổng quát cho một hệ thống: không phải sách giáo khoa để học thuộc, mà là danh sách câu hỏi giúp bạn phát hiện "bệnh" trước khi nó phát tác. Sáu trụ cột giống sáu chuyên khoa: vận hành, bảo mật, độ tin cậy, hiệu năng, chi phí, bền vững. Một buổi khám tốt kết thúc bằng **đơn thuốc cụ thể có người chịu trách nhiệm và ngày tái khám**, chứ không phải một tờ giấy ghi "nên ăn uống lành mạnh".
+
+### Thuật ngữ
+- **Workload**: tập tài nguyên và code cùng phục vụ một giá trị nghiệp vụ, ví dụ hệ thanh toán; đơn vị để review.
+- **Pillar (trụ cột)**: một góc nhìn đánh giá, có bộ câu hỏi và best practice riêng.
+- **HRI / MRI (high/medium risk issue)**: rủi ro mức cao/trung bình mà Well-Architected Tool ghi nhận khi câu trả lời thiếu best practice.
+- **Lens**: bộ câu hỏi chuyên biệt bổ sung, ví dụ Serverless Lens, SaaS Lens, Financial Services Lens.
+- **Well-Architected Tool**: dịch vụ trong console để lưu câu trả lời, risk và milestone của từng lần review.
+- **Milestone**: ảnh chụp trạng thái review tại một thời điểm, dùng để so sánh tiến bộ.
+- **Owner**: người chịu trách nhiệm xử lý một risk cụ thể.
+- **Blast radius**: phạm vi ảnh hưởng khi một thành phần hỏng.
+
+### Cơ chế từng bước: biến framework thành thay đổi thật
+1. **Chọn phạm vi**: một workload cụ thể, mời đúng người (dev lead, ops, security, product). Vì sao: review cả công ty thì kết luận chung chung.
+2. **Hỏi theo trụ cột**, yêu cầu bằng chứng: "đã test mất AZ chưa, kết quả đâu?" thay vì "có HA không?". Vì sao: câu trả lời "có" mà không có bằng chứng thường là "chưa".
+3. **Ghi risk** kèm mức độ, tác động kinh doanh và owner.
+4. **Ưu tiên** theo tác động × khả năng xảy ra, ghép với chi phí khắc phục.
+5. **Đưa vào backlog** có deadline, lưu milestone trong Well-Architected Tool.
+6. **Review lại** sau 1–3 tháng, so sánh số HRI với milestone trước.
+
+~~~text
+Ma trận ưu tiên (ví dụ từ một buổi review hệ Spring Boot):
+                    Khả năng xảy ra cao        Khả năng thấp
+Tác động cao   | Chưa test mất AZ (làm ngay) | Chưa có DR region (lên kế hoạch)
+Tác động thấp  | Log thiếu trace ID (sprint) | Instance dư 20% (khi rảnh)
+Kết quả đo được: 7 HRI -> 2 HRI sau 3 tháng
+~~~
 
 ### Sáu trụ cột
 - **Operational Excellence**: vận hành bằng code, quan sát được, học từ sự cố, quy trình thay đổi an toàn.
@@ -829,12 +1377,14 @@ Chọn CloudFormation khi đội thuần AWS và muốn ít công cụ. Chọn C
 | Cost | Top 3 service tốn tiền? Có môi trường nào chạy 24/7 vô ích? |
 | Sustainability | Instance có bị over-provision? Data cũ có lifecycle? |
 
-### Bẫy khi dùng framework
-- Review như checklist tô đủ ô: không tạo ra thay đổi nào.
-- Chỉ nhìn Reliability/Security mà bỏ Cost/Ops: kiến trúc "đẹp" nhưng không vận hành nổi.
-- Đánh giá toàn công ty thay vì từng workload: kết luận chung chung, không ai hành động.
-- Không có owner: risk được ghi rồi nằm đó.
-- Bỏ qua con người: framework giả định đội đủ năng lực trực hệ thống; với đội nhỏ, chọn managed service đơn giản hơn là kiến trúc tối ưu lý thuyết.
+### Lỗi hay gặp
+- **Review như checklist tô đủ ô.** Triệu chứng: báo cáo dài, không có thay đổi nào sau đó. Cách tránh: mỗi buổi review phải ra ít nhất một quyết định và backlog có deadline.
+- **Chỉ nhìn Reliability/Security, bỏ Cost/Ops.** Triệu chứng: kiến trúc "đẹp" nhưng đắt và không vận hành nổi. Cách tránh: đi đủ sáu trụ cột, chấp nhận trade-off có ghi lại.
+- **Đánh giá toàn công ty thay vì từng workload, và không có owner.** Triệu chứng: kết luận chung chung, risk được ghi rồi nằm đó. Cách tránh: một workload mỗi buổi, mỗi risk một owner.
+- **Bỏ qua con người.** Triệu chứng: kiến trúc tối ưu lý thuyết nhưng đội nhỏ không đủ người trực. Cách tránh: framework giả định đội đủ năng lực; với đội nhỏ, chọn managed service đơn giản hơn.
+
+### Trả lời miệng 1 phút
+"Well-Architected có sáu trụ cột: Operational Excellence, Security, Reliability, Performance Efficiency, Cost Optimization và Sustainability. Tôi không dùng nó như lý thuyết mà như quy trình review: chọn một workload cụ thể, hỏi từng trụ cột bằng câu hỏi đòi bằng chứng, ví dụ đã diễn tập mất một AZ chưa, ai có quyền deploy prod, metric nào phát hiện sự cố trong năm phút. Mỗi rủi ro được ghi mức độ, owner, đưa vào backlog và review lại sau một đến ba tháng, lưu milestone trong Well-Architected Tool để thấy tiến bộ. Trade-off là các trụ cột kéo nhau, ví dụ tăng reliability thì tăng chi phí, nên tôi trình bày với business bằng rủi ro và tiền. Một buổi review thành công với tôi là có quyết định cụ thể, không phải một tài liệu dài."
 
 > Senior tip: hãy dùng Well-Architected như công cụ đàm phán với business: mỗi risk đi kèm chi phí khắc phục và rủi ro nếu không khắc phục. Review tốt nhất là review có một quyết định cụ thể được đưa ra, không phải một tài liệu dài được lưu trữ.`,
   follow: [
@@ -850,6 +1400,36 @@ Chọn CloudFormation khi đội thuần AWS và muốn ít công cụ. Chọn C
   level: 'senior',
   q: 'Bạn định đưa một nhóm API lên API Gateway + Lambda. Giới hạn timeout, payload và concurrency ảnh hưởng thiết kế thế nào? REST API hay HTTP API, và khi nào không nên dùng Lambda làm backend?',
   a: `**Tóm tắt:** API Gateway + Lambda hợp cho API nhẹ, traffic biến động. Ba giới hạn quyết định thiết kế: integration timeout mặc định **29 giây** (HTTP API tối đa 30 giây), payload thực tế **6 MB** vì Lambda gọi đồng bộ chỉ nhận/trả 6 MB, và mỗi execution environment chỉ xử lý một request tại một thời điểm. HTTP API rẻ và đơn giản hơn; REST API đủ tính năng hơn (usage plan, WAF, cache, canary, private endpoint).
+
+### Hiểu nhanh
+API Gateway giống quầy lễ tân của toà nhà, Lambda giống nhân viên thời vụ được gọi tới khi có khách. Lễ tân chỉ đứng chờ khách tối đa khoảng 29 giây: quá thời gian đó lễ tân báo khách "hết giờ" (504), dù nhân viên phía sau vẫn đang làm tiếp. Mỗi nhân viên thời vụ chỉ tiếp một khách một lúc, nên 1.000 khách cùng lúc là 1.000 nhân viên, và nếu ai cũng gọi điện xuống kho (database) thì kho bị nghẽn máy. Vì vậy việc lâu phải đổi sang kiểu "nhận phiếu, về chờ gọi" (202 + jobId).
+
+### Thuật ngữ
+- **Integration timeout**: thời gian tối đa API Gateway chờ backend trả lời trước khi trả 504 cho client.
+- **Lambda proxy integration**: API Gateway chuyển nguyên request thành event JSON cho Lambda và nhận response JSON trở lại.
+- **Concurrency (Lambda)**: số execution environment đang xử lý request cùng lúc; mặc định tối đa 1.000 mỗi region (có thể xin tăng).
+- **Reserved concurrency**: số concurrency dành riêng (và cũng là trần) cho một function.
+- **Usage plan / API key**: cơ chế REST API giới hạn quota và throttle theo từng khách hàng/đối tác.
+- **Authorizer**: bước xác thực trước khi gọi backend: IAM, Cognito, JWT hoặc Lambda tự viết.
+- **Idempotency key**: khoá do client gửi để server nhận ra request lặp và trả lại kết quả cũ thay vì xử lý lần hai.
+- **RDS Proxy**: proxy managed gom nhiều connection từ Lambda vào một pool nhỏ tới database.
+
+### Cơ chế từng bước: một request đồng bộ
+1. Client gọi {{POST /payments}}; API Gateway kiểm tra throttle, authorizer. Vì sao trước Lambda: request xấu bị chặn trước khi tốn tiền compute.
+2. API Gateway invoke Lambda đồng bộ; nếu không có environment rảnh thì Lambda tạo mới (cold start), tính vào concurrency.
+3. Lambda xử lý, trả response tối đa 6 MB.
+4. Nếu sau 29 giây chưa có response, API Gateway trả 504 nhưng Lambda **vẫn chạy tiếp** tới khi xong hoặc tới timeout của hàm.
+5. Client thấy 504 và thường bấm lại, tạo request thứ hai. Vì sao cần idempotency key: lần đầu có thể đã thành công.
+
+~~~text
+Client --POST--> API GW --invoke--> Lambda (1 request / environment)
+                   |                    |
+         29 s: 504 về client        vẫn chạy tới 40 s, trừ tiền xong
+Client retry ----> lần 2: thiếu idempotency key = trừ tiền 2 lần
+
+1.000 request đồng thời -> 1.000 environment -> tới 1.000 connection RDS
+RDS PostgreSQL db.t4g.medium (4 GB): max_connections mặc định ~400 -> cạn connection
+~~~
 
 ### Timeout: chuyện gì xảy ra khi vượt 29 giây
 - API Gateway ngắt kết nối và trả **504** cho client, nhưng **Lambda vẫn chạy tiếp** (tối đa 15 phút) và vẫn tính tiền. Nếu hàm đã trừ tiền xong thì client nhận 504, bấm lại, và giao dịch bị chạy hai lần → API có side effect bắt buộc có idempotency key.
@@ -894,10 +1474,14 @@ WebSocket là một loại API thứ ba, không thuộc bảng này. Chọn HTTP
 4. Spring Boot nặng, cold start lớn mà không dùng được SnapStart/tối ưu.
 5. Cần GPU, hoặc tiến trình chạy nền lâu.
 
-### Bẫy production
-- Throttle mặc định của API Gateway là 10.000 RPS, burst 5.000, **chia chung cho mọi API trong account/region**; Lambda concurrency mặc định 1.000/region. Một API bị spam kéo sập API khác → đặt throttle theo stage/route và reserved concurrency.
-- Retry phía client cộng retry phía SDK khi gặp 504 → nhân bản request.
-- Log API Gateway và Lambda tách nhau: bật access log có requestId để nối trace.
+### Lỗi hay gặp
+- **Quota chia chung cả account/region.** Triệu chứng: throttle mặc định API Gateway 10.000 RPS, burst 5.000 và Lambda concurrency 1.000 bị chia cho mọi API, một API bị spam kéo sập API khác. Cách tránh: throttle theo stage/route, reserved concurrency cho function quan trọng.
+- **Retry chồng retry khi gặp 504.** Triệu chứng: retry phía client cộng retry phía SDK nhân bản request, giao dịch chạy nhiều lần. Cách tránh: idempotency key bắt buộc cho API có side effect, giới hạn tổng số lần retry.
+- **Log API Gateway và Lambda tách rời.** Triệu chứng: không nối được request lỗi ở hai bên. Cách tránh: bật access log có requestId, truyền requestId vào log của Lambda.
+- **Cho file đi xuyên Lambda.** Triệu chứng: lỗi payload quá lớn vì base64 làm file phình 33% và vượt 6 MB. Cách tránh: S3 presigned URL.
+
+### Trả lời miệng 1 phút
+"Với API Gateway cộng Lambda tôi thiết kế quanh ba giới hạn. Timeout tích hợp khoảng 29 giây: vượt thì client nhận 504 nhưng Lambda vẫn chạy, nên API có side effect phải có idempotency key, và việc dài thì trả 202 kèm jobId rồi xử lý qua SQS hoặc Step Functions. Payload thực tế 6 MB vì giới hạn invoke đồng bộ của Lambda, nên file đi qua presigned URL S3. Concurrency: mỗi environment chỉ xử lý một request, nghìn request đồng thời là nghìn connection tới database, nên cần RDS Proxy và pool size một. Về loại API, HTTP API rẻ và đơn giản với JWT authorizer; REST API khi cần WAF, usage plan, cache hoặc private endpoint. Tôi không dùng Lambda khi request thường xuyên dài, traffic nền cao đều, hoặc Spring Boot nặng không tối ưu được cold start."
 
 > Senior tip: ghi rõ trong ADR "endpoint nào được phép chạy quá 3 giây". Nếu danh sách đó không rỗng, tách chúng sang luồng bất đồng bộ ngay từ đầu; đợi đến khi client gặp 504 rồi mới sửa thì phải đổi cả contract API.`,
   follow: [
@@ -913,6 +1497,39 @@ WebSocket là một loại API thứ ba, không thuộc bảng này. Chọn HTTP
   level: 'senior',
   q: 'Quy trình mở tài khoản gồm eKYC, chấm điểm, duyệt tay và tạo tài khoản core banking. Bạn điều phối bằng Step Functions hay tự viết Saga trong Java, và vì sao?',
   a: `**Tóm tắt:** Step Functions là orchestrator được quản lý: trạng thái mỗi bước, retry/backoff, catch, chờ duyệt tay (task token) và lịch sử thực thi đều có sẵn, đổi lại bị khoá vào AWS và giới hạn payload 256 KB. Tự viết Saga trong Java cho toàn quyền kiểm soát nhưng phải tự lo lưu trạng thái, retry, timeout, compensation và audit. Quy trình dài, nhiều bước chờ người như mở tài khoản rất hợp với Step Functions Standard.
+
+### Hiểu nhanh
+Quy trình mở tài khoản giống hồ sơ đi qua nhiều phòng ban: phòng kiểm tra giấy tờ (eKYC), phòng chấm điểm, trưởng phòng ký duyệt, rồi phòng mở tài khoản. **Step Functions** giống một nhân viên điều phối chuyên nghiệp có sổ theo dõi: biết hồ sơ đang ở bước nào, gọi lại phòng ban khi họ bận, chờ trưởng phòng ký bao nhiêu ngày cũng được mà không tốn lương, và ghi lại mọi bước để kiểm toán. **Tự viết Saga** giống bạn tự làm người điều phối đó bằng code: linh hoạt hoàn toàn, nhưng cuốn sổ, việc nhắc việc, việc gọi lại, việc huỷ bỏ khi bị từ chối đều phải tự làm.
+
+### Thuật ngữ
+- **Orchestration**: một bộ điều phối trung tâm ra lệnh cho từng bước; ngược với choreography, nơi các service tự phản ứng theo event.
+- **Saga**: chuỗi transaction cục bộ, mỗi bước có hành động bù trừ (compensation) để hoàn tác khi bước sau thất bại.
+- **State machine / ASL**: quy trình của Step Functions, viết bằng Amazon States Language (JSON).
+- **State transition**: mỗi lần chuyển từ state này sang state khác; Standard workflow tính tiền theo đơn vị này.
+- **Task token**: chuỗi định danh một bước đang chờ; hệ thống ngoài gửi lại token để báo bước đó thành công hay thất bại.
+- **Execution history**: nhật ký từng sự kiện của một lần chạy, gồm input/output mỗi bước.
+- **Distributed Map**: chế độ Map chạy hàng nghìn execution con song song cho tập dữ liệu lớn.
+- **Compensation**: hành động hoàn tác nghiệp vụ, ví dụ huỷ hồ sơ đã tạo hoặc hoàn tiền.
+
+### Cơ chế từng bước: một hồ sơ đi qua Step Functions
+1. API tạo execution với tên là mã hồ sơ ({{APP-2025-000123}}). Vì sao đặt tên: Step Functions Standard từ chối tên trùng, chống khởi động hai lần.
+2. Bước eKYC gọi Lambda; lỗi tạm thời (throttle, timeout) thì Retry tự động với backoff 2, 4, 8 giây.
+3. Bước Scoring: lỗi nghiệp vụ {{ScoreRejected}} được Catch và rẽ sang nhánh thông báo từ chối.
+4. Bước ManualReview dùng {{.waitForTaskToken}}: gửi token vào hàng đợi duyệt, execution tạm dừng, không tốn compute. Có thể đặt HeartbeatSeconds/TimeoutSeconds để quá hạn thì rẽ nhánh xử lý.
+5. Chuyên viên duyệt trên màn hình nội bộ, backend gọi {{SendTaskSuccess}} với token; execution chạy tiếp.
+6. Bước OpenAccount gọi core banking với idempotency key; thất bại vĩnh viễn thì chạy compensation.
+
+~~~text
+[Start] -> eKYC --retry--> Scoring --ScoreRejected--> NotifyRejected -> [End]
+                              |
+                              v
+                       ManualReview (task token, chờ tối đa 3 ngày)
+                              | SendTaskSuccess          | timeout
+                              v                          v
+                       OpenAccount --lỗi--> Compensate -> NotifyFailed
+                              |
+                            [End]
+~~~
 
 ### Step Functions làm gì thay bạn
 - **Standard workflow**: chạy tối đa 1 năm, mỗi bước được ghi vào execution history (giữ 90 ngày), tính tiền theo **state transition**. Hợp cho quy trình nghiệp vụ dài, cần audit.
@@ -964,12 +1581,14 @@ Ngoài đoạn trên còn cần: scheduler quét saga treo, timeout từng bư�
 | Test | TestState API cho từng state, test tích hợp trên account sandbox | Unit test thuần Java |
 | Lock-in, chạy on-prem | Chỉ AWS | Portable |
 
-### Bẫy production
-- Payload vượt 256 KB (ảnh CCCD, kết quả OCR) làm execution fail: lưu S3, chỉ truyền key.
-- Standard giới hạn 25.000 event trong history: vòng lặp hoặc Map lớn phải dùng Distributed Map hoặc execution con.
-- Step Functions retry không làm bước của bạn idempotent: Lambda/API đích vẫn phải chống trùng.
-- Đặt tên execution theo mã hồ sơ để tránh khởi động trùng một quy trình.
-- Không nhét logic nghiệp vụ vào ASL (Choice lồng nhau phức tạp): ASL là khung điều phối, logic để trong code.
+### Lỗi hay gặp
+- **Truyền dữ liệu lớn giữa các bước.** Triệu chứng: ảnh CCCD hay kết quả OCR vượt 256 KB làm execution fail. Cách tránh: lưu S3, chỉ truyền key.
+- **Vòng lặp hoặc Map lớn trong Standard.** Triệu chứng: chạm giới hạn 25.000 event trong history, execution fail. Cách tránh: Distributed Map hoặc tách execution con.
+- **Tin rằng retry của Step Functions làm bước idempotent.** Triệu chứng: core banking mở hai tài khoản cho một hồ sơ. Cách tránh: Lambda/API đích vẫn phải chống trùng; đặt tên execution theo mã hồ sơ để tránh khởi động trùng quy trình.
+- **Nhét logic nghiệp vụ vào ASL.** Triệu chứng: Choice lồng nhau phức tạp, khó test, khó đọc. Cách tránh: ASL chỉ là khung điều phối, logic để trong code.
+
+### Trả lời miệng 1 phút
+"Với quy trình mở tài khoản tôi nghiêng về Step Functions Standard. Nó là orchestrator managed: mỗi bước có trạng thái, retry với backoff và catch khai báo sẵn, bước duyệt tay dùng task token nên có thể chờ nhiều ngày mà không tốn compute, và execution history cho kiểm toán biết ai duyệt, lúc nào, input là gì. Nếu tự viết saga trong Java, tôi phải tự lưu trạng thái sau từng bước, tự viết scheduler quét saga treo, timeout, compensation và màn hình tra cứu. Đổi lại Step Functions khoá vào AWS, payload mỗi bước tối đa 256 KB nên tài liệu lớn phải để trên S3, và history chỉ giữ 90 ngày. Dù chọn cách nào, các bước đích vẫn phải idempotent; tôi đặt tên execution theo mã hồ sơ và đẩy sự kiện quan trọng sang kho audit riêng."
 
 > Senior tip: ở ngân hàng, lý do mạnh nhất chọn Step Functions thường là audit: kiểm toán hỏi "hồ sơ này ai duyệt, lúc nào, input là gì" thì có ngay execution history. Nhưng history chỉ giữ 90 ngày, nên vẫn phải đẩy sự kiện quan trọng sang kho audit riêng có thời hạn lưu theo quy định.`,
   follow: [
@@ -985,6 +1604,33 @@ Ngoài đoạn trên còn cần: scheduler quét saga treo, timeout từng bư�
   level: 'senior',
   q: 'Aurora PostgreSQL failover xong sau khoảng 30 giây, nhưng service Spring Boot vẫn lỗi ghi suốt vài phút. Vì sao, và bạn cấu hình JVM, connection pool, driver thế nào để hồi phục nhanh?',
   a: `**Tóm tắt:** Failover của Aurora đổi bản ghi DNS của cluster endpoint sang writer mới, nhưng ứng dụng Java có thể vẫn dùng IP cũ (DNS cache của JVM) và connection pool vẫn giữ connection tới instance cũ, nay đã thành reader, nên ghi bị lỗi "read-only". Cách sửa: TTL DNS của JVM ngắn, pool biết loại bỏ connection hỏng, và tốt nhất dùng **AWS Advanced JDBC Wrapper** với plugin failover để chuyển sang writer mới theo topology thay vì chờ DNS; ứng dụng phải retry transaction.
+
+### Hiểu nhanh
+Hãy tưởng tượng quầy giao dịch chính (writer) đóng cửa và quầy bên cạnh (replica) được đổi biển thành quầy chính. Biển chỉ đường (DNS) đã đổi sau khoảng 30 giây, nhưng khách của bạn vẫn nhớ đường cũ (JVM cache DNS) và vẫn đang đứng xếp hàng ở quầy cũ (connection trong pool). Quầy cũ mở lại nhưng giờ chỉ được tra cứu, không được ghi, nên mọi giao dịch ghi bị từ chối "read-only". Muốn hồi phục nhanh, khách phải hay xem lại biển chỉ đường, bỏ hàng cũ khi thấy bất thường, hoặc có người dẫn đường biết sơ đồ thật (AWS Advanced JDBC Wrapper).
+
+### Thuật ngữ
+- **Cluster endpoint (writer endpoint)**: tên DNS luôn trỏ tới writer hiện tại của Aurora cluster.
+- **Reader endpoint / instance endpoint**: tên DNS cân bằng giữa các reader / tên DNS cố định của từng instance.
+- **Failover**: Aurora promote một reader thành writer khi writer gặp sự cố hoặc khi bạn chủ động yêu cầu.
+- **DNS cache của JVM**: JVM nhớ kết quả phân giải tên miền theo {{networkaddress.cache.ttl}}.
+- **max-lifetime (HikariCP)**: thời gian sống tối đa của một connection trong pool trước khi bị thay mới.
+- **Socket timeout**: thời gian driver chờ dữ liệu trên socket trước khi coi kết nối đã chết.
+- **Topology**: danh sách instance và vai trò hiện tại (writer/reader) mà wrapper đọc trực tiếp từ Aurora.
+- **TCP treo (half-open)**: máy bên kia đã chết mà không gửi RST, socket phía client vẫn tưởng còn sống.
+
+### Cơ chế phục hồi từng bước khi đã cấu hình đúng
+1. Writer A gặp sự cố; plugin efm đang theo dõi ở luồng riêng phát hiện A không phản hồi sau vài giây thay vì chờ TCP timeout của hệ điều hành.
+2. Plugin failover đọc topology và kết nối thẳng tới writer mới B, không chờ DNS. Vì sao nhanh hơn: bỏ qua cả DNS TTL của Aurora lẫn DNS cache của JVM.
+3. Wrapper ném {{FailoverSuccessSQLException}} cho transaction đang chạy, báo rằng connection đã chuyển sang B nhưng transaction cũ đã mất.
+4. Lớp retry của ứng dụng chạy lại toàn bộ transaction (nếu an toàn), lần này thành công trên B.
+5. Các connection còn lại trong pool lần lượt được thay mới nhờ max-lifetime và cơ chế loại bỏ connection lỗi.
+
+~~~text
+Thời gian không ghi được, đo từ ứng dụng (số liệu minh hoạ):
+Mặc định (DNS cache 30 s+, pool giữ connection cũ, TCP treo) : 2-5 phút
+DNS TTL 5 s + max-lifetime 5 phút + socketTimeout           : ~1-2 phút
+AWS Advanced JDBC Wrapper (failover + efm) + retry           : thường < 1 phút
+~~~
 
 ### Chuyện gì xảy ra khi failover
 ~~~text
@@ -1034,10 +1680,14 @@ spring:
 ### Lựa chọn khác: RDS Proxy
 RDS Proxy giữ kết nối phía client và tự chuyển sang writer mới, giảm thời gian failover mà không đổi driver. Đổi lại: thêm chi phí, thêm một hop, và pinning làm giảm hiệu quả multiplexing khi dùng prepared statement/session state.
 
-### Bẫy production
-- Chỉ test failover trên giấy. Hãy chạy {{aws rds failover-db-cluster}} trên staging dưới tải và đo thời gian ghi lỗi.
-- Ứng dụng dùng instance endpoint cứng thay vì cluster endpoint.
-- Retry vô hạn với backoff nhỏ trong lúc failover: tạo bão connection vào writer mới.
+### Lỗi hay gặp
+- **Chỉ test failover trên giấy.** Triệu chứng: sự cố thật kéo dài gấp nhiều lần dự kiến. Cách tránh: chạy {{aws rds failover-db-cluster}} trên staging dưới tải và đo thời gian ghi lỗi từ phía ứng dụng.
+- **Dùng instance endpoint cứng thay vì cluster endpoint.** Triệu chứng: sau failover app vẫn ghi vào instance cũ, nay đã là reader. Cách tránh: luôn ghi qua cluster (writer) endpoint hoặc qua wrapper.
+- **Retry vô hạn với backoff nhỏ.** Triệu chứng: bão connection dồn vào writer mới đúng lúc nó vừa lên. Cách tránh: retry 1–2 lần có backoff và jitter, connection-timeout ngắn.
+- **Retry transaction không idempotent.** Triệu chứng: lỗi lúc commit, chạy lại làm trừ tiền hai lần. Cách tránh: kiểm tra lại bằng idempotency key trước khi chạy lại.
+
+### Trả lời miệng 1 phút
+"Failover của Aurora chỉ đổi DNS của cluster endpoint sang writer mới, nhưng ứng dụng Java có ba lớp làm chậm: JVM cache địa chỉ IP cũ, HikariCP vẫn giữ connection tới instance cũ nay đã thành reader nên mọi lệnh ghi bị lỗi read-only, và TCP có thể treo khi instance cũ chết mà không gửi RST. Tôi xử lý từng lớp: đặt networkaddress.cache.ttl khoảng 5 giây, max-lifetime vài phút, connection-timeout và socketTimeout ngắn để fail nhanh. Tốt nhất là dùng AWS Advanced JDBC Wrapper với plugin failover và efm, nó đọc topology từ chính database và nối thẳng tới writer mới mà không chờ DNS. Dù vậy transaction đang chạy luôn mất, nên ứng dụng phải retry có giới hạn và idempotent. Mục tiêu tôi đo là thời gian không ghi được từ phía ứng dụng, và diễn tập hằng quý."
 
 > Senior tip: mục tiêu đo được nên là "thời gian không ghi được" từ góc nhìn ứng dụng, không phải thời gian failover trên console. Với cấu hình mặc định con số này hay là vài phút; sau khi chỉnh DNS TTL, pool và wrapper, nhiều đội đưa được về dưới một phút. Hãy diễn tập hằng quý và ghi số liệu vào runbook.`,
   follow: [
@@ -1053,6 +1703,33 @@ RDS Proxy giữ kết nối phía client và tự chuyển sang writer mới, gi
   level: 'senior',
   q: 'API công khai của ví điện tử bị bot dò mật khẩu và thỉnh thoảng bị DDoS. Bạn dựng lớp biên với CloudFront, AWS WAF và Shield thế nào, cái gì nên cache?',
   a: `**Tóm tắt:** Đặt **CloudFront** trước ALB/API Gateway để kết thúc TLS ở edge, hấp thụ tấn công tầng mạng và cache phần công khai; gắn **AWS WAF** web ACL với managed rules, rate-based rule và Bot Control/ATP cho endpoint đăng nhập; **Shield Standard** miễn phí chống DDoS L3/L4, **Shield Advanced** khi cần đội phản ứng DDoS và bảo vệ chi phí. Quan trọng không kém: khoá origin để chỉ nhận traffic từ CloudFront.
+
+### Hiểu nhanh
+Lớp biên giống hệ thống an ninh của một trung tâm thương mại. **CloudFront** là hàng trăm cửa ra vào đặt khắp thành phố: khách vào ở cửa gần nhất, đồ dùng chung (tờ rơi, bảng giá) được phát ngay tại cửa (cache) mà không cần vào kho. **AWS WAF** là bảo vệ kiểm tra từng người ở cửa: ai mang "vũ khí" (SQL injection), ai ra vào quá nhiều lần (dò mật khẩu), ai trông như robot. **Shield** là tường chắn chống đám đông xô đẩy (DDoS): bản Standard miễn phí, bản Advanced có đội phản ứng chuyên nghiệp. Và quan trọng: cửa sau của kho (origin) phải khoá, chỉ mở cho xe của trung tâm.
+
+### Thuật ngữ
+- **Edge location**: điểm hiện diện của CloudFront gần người dùng, nơi kết thúc TLS và phục vụ cache.
+- **Origin**: backend thật phía sau CloudFront (ALB, API Gateway, S3).
+- **Cache key / cache policy**: tập thành phần (path, query, header, cookie) quyết định hai request có dùng chung bản cache không.
+- **Web ACL**: bộ rule của AWS WAF gắn vào CloudFront, ALB hoặc API Gateway.
+- **Rate-based rule**: rule đếm số request theo IP hoặc khoá tuỳ chỉnh trong một cửa sổ thời gian và chặn khi vượt ngưỡng.
+- **Credential stuffing**: dùng danh sách tài khoản/mật khẩu bị lộ từ nơi khác để thử đăng nhập hàng loạt.
+- **CGNAT**: nhà mạng cho nhiều thuê bao dùng chung một IP public.
+- **Count mode**: chế độ rule chỉ đếm và ghi log, không chặn, dùng để thử rule mới.
+
+### Cơ chế từng bước: một request đăng nhập đi qua lớp biên
+1. Client phân giải tên miền, được đưa tới edge location gần nhất; tầng mạng của AWS (Shield Standard) lọc SYN flood, UDP reflection.
+2. CloudFront kết thúc TLS. Vì sao ở edge: tiết kiệm CPU của origin, giảm độ trễ bắt tay.
+3. WAF đánh giá web ACL theo thứ tự ưu tiên: IP reputation, rule lỗ hổng, rate-based, Bot Control/ATP (chỉ cho {{/login}}). Rule nào Block thì trả 403 ngay, origin không hề biết.
+4. Request hợp lệ: path công khai có thể trả từ cache; {{/login}} dùng CachingDisabled nên đi tiếp tới origin kèm header bí mật.
+5. ALB chỉ nhận traffic từ prefix list của CloudFront và có header bí mật; app đọc IP thật của client từ X-Forwarded-For.
+
+~~~text
+Đợt credential stuffing (minh hoạ): 2 triệu lần thử / 1 giờ từ 40.000 IP
+  -> mỗi IP chỉ ~50 request/giờ: rate limit theo IP (ví dụ 100/5 phút) KHÔNG bắt được
+  -> ATP so khớp thông tin đăng nhập bị lộ + Bot Control + tín hiệu thiết bị
+  -> ALB/ECS chỉ còn thấy phần nhỏ traffic, autoscale không bị kích hoạt vô ích
+~~~
 
 ### Vì sao lại là edge
 Tấn công càng bị chặn gần người dùng thì càng rẻ: SYN flood, UDP reflection bị hạ tầng edge của AWS hấp thụ; request L7 xấu bị WAF chặn trước khi tạo connection tới ALB, không tốn CPU của service Java, không kích hoạt auto scaling vô ích.
@@ -1088,10 +1765,14 @@ Client -> CloudFront (TLS, cache, WAF, Shield) -> ALB (chỉ nhận từ CloudFr
 - **Standard**: miễn phí, tự động, chống L3/L4.
 - **Advanced**: phí cố định hằng tháng (khoảng 3.000 USD/tháng cho cả organization, cam kết 1 năm, kiểm tra tài liệu hiện hành), có Shield Response Team, tự động giảm thiểu DDoS L7 bằng WAF, bảo vệ chi phí khi bị DDoS làm scale. Hợp với ngân hàng/ví có SLA và rủi ro danh tiếng lớn.
 
-### Bẫy production
-- Rate limit theo IP ở Việt Nam: nhà mạng di động dùng CGNAT, hàng nghìn người dùng chung một IP. Giới hạn quá chặt sẽ chặn khách thật; nên kết hợp khoá theo header/thiết bị và ngưỡng riêng cho /login.
-- Ứng dụng đọc nhầm IP client: phía sau CloudFront + ALB phải lấy từ X-Forwarded-For (Spring: {{server.forward-headers-strategy}}) hoặc header {{CloudFront-Viewer-Address}}, nếu không log và rate limit trong app đều thấy IP của proxy.
-- Chặn theo quốc gia làm khách đi nước ngoài không đăng nhập được.
+### Lỗi hay gặp
+- **Rate limit theo IP quá chặt ở Việt Nam.** Triệu chứng: khách thật dùng 4G bị chặn hàng loạt vì nhà mạng dùng CGNAT, hàng nghìn người chung một IP. Cách tránh: khoá theo header/thiết bị, ngưỡng riêng cho {{/login}}, chạy Count trước khi Block.
+- **Ứng dụng đọc nhầm IP client.** Triệu chứng: log và rate limit trong app đều thấy IP của CloudFront/ALB. Cách tránh: lấy từ X-Forwarded-For (Spring: {{server.forward-headers-strategy}}) hoặc header {{CloudFront-Viewer-Address}}.
+- **Origin không khoá.** Triệu chứng: kẻ tấn công gọi thẳng ALB, vượt qua toàn bộ WAF và cache. Cách tránh: prefix list + header bí mật, hoặc CloudFront VPC origin.
+- **Chặn theo quốc gia hoặc cache key thừa.** Triệu chứng: khách đi nước ngoài không đăng nhập được; tỷ lệ cache hit về 0. Cách tránh: dùng CAPTCHA/Challenge thay vì chặn cứng; cache key chỉ gồm thành phần làm đổi nội dung.
+
+### Trả lời miệng 1 phút
+"Tôi đặt CloudFront trước ALB hoặc API Gateway để kết thúc TLS ở edge, hấp thụ tấn công tầng mạng và cache phần công khai như cấu hình, danh sách ngân hàng với TTL ngắn; mọi thứ cá nhân hoá như số dư thì tắt cache. Trên CloudFront gắn AWS WAF với managed rules cho IP xấu và payload tấn công, rate-based rule, và Bot Control cùng Account Takeover Prevention chỉ áp cho /login để kiểm soát chi phí; rule mới luôn chạy Count trước. Shield Standard miễn phí lo DDoS tầng 3 và 4, Shield Advanced khi cần đội phản ứng và bảo vệ chi phí. Origin phải khoá bằng prefix list của CloudFront cộng header bí mật. Kinh nghiệm của tôi: credential stuffing thật dùng hàng chục nghìn IP, nên rate limit theo IP gần như vô dụng, phải dựa vào tín hiệu bot và thiết bị."
 
 > Senior tip: đo hiệu quả bằng số liệu WAF log trong Athena: tỷ lệ request bị chặn theo rule, top IP/ASN, false positive do CSKH báo. Một đợt credential stuffing thực tế thường dùng hàng chục nghìn IP, mỗi IP vài request; rate limit theo IP gần như vô dụng, phải dựa vào Bot Control/ATP và tín hiệu thiết bị.`,
   follow: [
@@ -1108,6 +1789,35 @@ Client -> CloudFront (TLS, cache, WAF, Shield) -> ALB (chỉ nhận từ CloudFr
   refs: [{"type": "doc", "title": "AWS Documentation", "url": "https://docs.aws.amazon.com/"}, {"type": "doc", "title": "AWS Well-Architected", "url": "https://aws.amazon.com/architecture/well-architected/"}],
   q: 'Ngân hàng của bạn đang chạy mọi thứ trong 2 AWS account dùng chung. Bạn thiết kế lại theo mô hình multi-account với Organizations, Control Tower và SCP thế nào, chuyển đổi ra sao?',
   a: `**Tóm tắt:** Account là ranh giới cách ly mạnh nhất trên AWS: tách IAM, quota, chi phí và phạm vi sự cố. Dùng **AWS Organizations** chia account theo OU (Security, Infrastructure, Workloads prod/non-prod, Sandbox), **Control Tower** dựng landing zone chuẩn (log archive, audit, IAM Identity Center, controls), và **SCP** làm hàng rào "không ai được vượt", kể cả admin của account con. Chuyển đổi dần theo từng workload, không big bang.
+
+### Hiểu nhanh
+Hai account dùng chung cho mọi thứ giống một công ty mà mọi phòng ban ở chung một căn phòng, dùng chung một chìa khoá và một đồng hồ điện: ai cũng chạm được tủ hồ sơ của nhau, và không biết phòng nào tiêu tốn bao nhiêu. **Multi-account** là chia thành nhiều phòng riêng có khoá riêng. **Organizations** là sơ đồ toà nhà gom phòng thành tầng (OU). **Control Tower** là ban quản lý toà nhà: xây phòng mới theo mẫu chuẩn, có camera (log) sẵn. **SCP** là nội quy toà nhà: kể cả trưởng phòng (admin của account) cũng không được phá camera hay mở cửa thoát hiểm.
+
+### Thuật ngữ
+- **Management account**: account gốc tạo organization, lo billing; SCP không áp lên account này.
+- **OU (Organizational Unit)**: nhóm account trong organization; policy gắn ở OU áp cho mọi account bên dưới.
+- **Landing zone**: môi trường multi-account chuẩn có sẵn log, bảo mật, mạng, danh tính.
+- **SCP (Service Control Policy)**: policy giới hạn quyền tối đa của mọi principal trong account con.
+- **RCP (Resource Control Policy)**: loại policy mới hơn của Organizations, giới hạn quyền tối đa trên tài nguyên (ví dụ S3, KMS) bất kể ai gọi tới.
+- **IAM Identity Center**: dịch vụ đăng nhập một lần vào nhiều account qua permission set, nối với IdP công ty.
+- **Account Factory / AFT**: cơ chế của Control Tower tạo account mới có sẵn baseline; AFT là phiên bản dùng Terraform.
+- **CDE (Cardholder Data Environment)**: phần hệ thống lưu, xử lý hoặc truyền dữ liệu thẻ, thuộc phạm vi PCI DSS.
+
+### Cơ chế từng bước: quyền hiệu lực khi một dev gọi API trong account payments-prod
+1. Dev đăng nhập IAM Identity Center bằng tài khoản công ty, chọn permission set ReadOnly cho payments-prod. Vì sao: không có IAM user và mật khẩu riêng ở từng account.
+2. Identity Center cấp credential tạm của role tương ứng trong account đó.
+3. Khi gọi API, AWS đánh giá: SCP của mọi OU từ root xuống account có cho phép action này không? Nếu SCP chặn thì từ chối, dù role có AdministratorAccess.
+4. Tiếp theo xét RCP (nếu có), identity policy, resource policy, permission boundary; explicit Deny ở bất kỳ đâu đều thắng.
+5. Mọi lời gọi được CloudTrail organization trail ghi vào account log-archive, nơi người của payments-prod không có quyền xoá.
+
+~~~text
+Quyền hiệu lực = giao của các lớp
+  SCP (root -> Workloads OU -> Prod OU)   : giới hạn trần cho account
+  ∩ Identity policy / permission set      : quyền thật được cấp
+  ∩ Resource policy, boundary, RCP        : giới hạn thêm
+  - bất kỳ explicit Deny nào              : thắng tất cả
+Ví dụ: role có "*:*", SCP Deny cloudtrail:StopLogging -> vẫn KHÔNG tắt được trail
+~~~
 
 ### Vì sao không ở chung account
 - Một IAM policy sai trong account chung có thể cho dev đọc dữ liệu prod.
@@ -1163,10 +1873,14 @@ Giới hạn region (ví dụ chỉ ap-southeast-1) nên dùng control có sẵn
 3. Chuyển workload ít rủi ro trước (non-prod), rồi đến prod theo từng hệ thống.
 4. Account cũ thu hẹp dần, cuối cùng vào Suspended OU.
 
-### Bẫy
-- Áp SCP thẳng vào Prod OU mà chưa thử: chặn luôn pipeline deploy. Luôn có OU thử nghiệm policy.
-- SCP có giới hạn kích thước và số policy gắn trên mỗi node (kiểm tra tài liệu hiện hành); viết gọn, gom nhóm.
-- Account dễ tạo nhưng khó đóng: phải có quy trình vòng đời account và tag chủ sở hữu.
+### Lỗi hay gặp
+- **Áp SCP thẳng vào Prod OU mà chưa thử.** Triệu chứng: pipeline deploy bị chặn, sự cố production do chính guardrail. Cách tránh: luôn có OU thử nghiệm policy, áp dần từ sandbox lên non-prod rồi prod.
+- **SCP phình to.** Triệu chứng: chạm giới hạn kích thước và số policy gắn trên mỗi node (kiểm tra tài liệu hiện hành). Cách tránh: viết gọn, gom nhóm action, ưu tiên control có sẵn của Control Tower.
+- **Account dễ tạo, khó đóng.** Triệu chứng: hàng chục account không chủ, vẫn tốn tiền và là bề mặt tấn công. Cách tránh: quy trình vòng đời account, tag chủ sở hữu, Suspended OU.
+- **Chạy workload trong management account.** Triệu chứng: workload đó không chịu bất kỳ SCP nào. Cách tránh: management account chỉ dùng cho billing và Organizations.
+
+### Trả lời miệng 1 phút
+"Account là ranh giới cách ly mạnh nhất trên AWS: tách IAM, quota, chi phí và phạm vi sự cố. Với ngân hàng đang dùng chung hai account, tôi dựng landing zone bằng Control Tower: management account chỉ lo billing, OU Security có log-archive và security tooling, OU Infrastructure có network và CI/CD, OU Workloads chia prod và non-prod theo từng hệ thống, CDE của thẻ tách riêng. Người dùng đăng nhập qua IAM Identity Center, không có IAM user. SCP là trần quyền, không cấp quyền; nó áp cả cho root của account con nhưng không áp cho management account, nên tôi dùng nó để cấm tắt CloudTrail, rời organization, dùng region không được duyệt. Chuyển đổi tôi làm dần: dựng song song, bật log và GuardDuty toàn tổ chức, chuyển non-prod trước rồi tới prod. Với ban lãnh đạo, tôi nói bằng phạm vi kiểm toán PCI thu hẹp và chi phí rõ theo sản phẩm."
 
 > Senior tip: khi trình bày với ban lãnh đạo, đừng nói "best practice của AWS". Hãy nói bằng rủi ro và tiền: thu hẹp phạm vi kiểm toán PCI, một sự cố ở dev không thể chạm prod, và chi phí hiện rõ theo sản phẩm. Đó là ba lý do giúp dự án landing zone được duyệt.`,
   follow: [
@@ -1182,6 +1896,35 @@ Giới hạn region (ví dụ chỉ ap-southeast-1) nên dùng control có sẵn
   level: 'senior',
   q: 'Hệ thống thanh toán thẻ chạy trên AWS cần đạt PCI DSS và tuân thủ yêu cầu lưu trữ dữ liệu tại Việt Nam. Trách nhiệm của AWS dừng ở đâu, bạn mã hoá, kiểm soát truy cập và audit thế nào?',
   a: `**Tóm tắt:** Theo **shared responsibility model**, AWS chịu trách nhiệm bảo mật "của" cloud (datacenter, phần cứng, hạ tầng dịch vụ) và có chứng nhận PCI DSS Level 1; bạn chịu trách nhiệm bảo mật "trong" cloud: cấu hình, IAM, mã hoá, dữ liệu, ứng dụng, log. Chiến lược: thu nhỏ phạm vi dữ liệu thẻ (tokenization, account riêng), mã hoá bằng KMS với phân tách quyền, ghi mọi thao tác bằng CloudTrail vào kho log bất biến, và xác định với bộ phận pháp chế dữ liệu nào bắt buộc nằm tại Việt Nam.
+
+### Hiểu nhanh
+Shared responsibility giống thuê căn hộ trong toà nhà có bảo vệ: chủ toà nhà (AWS) lo móng, tường, cửa chính và camera sảnh; còn khoá cửa căn hộ, ai được giữ chìa, két sắt đặt ở đâu là việc của bạn. Toà nhà đạt chuẩn an toàn không có nghĩa căn hộ của bạn an toàn nếu bạn để cửa mở. **Tokenization** giống gửi vàng vào ngân hàng và chỉ cầm biên nhận: mọi giao dịch hằng ngày dùng biên nhận (token), chỉ một chỗ duy nhất (vault) giữ vàng thật (số thẻ), nên chỉ chỗ đó phải canh gác nghiêm ngặt.
+
+### Thuật ngữ
+- **PCI DSS**: bộ tiêu chuẩn bảo mật bắt buộc cho tổ chức lưu, xử lý hoặc truyền dữ liệu thẻ thanh toán; phiên bản hiện hành là v4.x.
+- **PAN (Primary Account Number)**: số thẻ in trên mặt thẻ, dữ liệu trung tâm cần bảo vệ.
+- **CDE**: môi trường chứa dữ liệu thẻ; mọi hệ thống kết nối tới nó cũng nằm trong phạm vi kiểm toán.
+- **Tokenization**: thay PAN bằng một giá trị thay thế không suy ngược được nếu không có vault.
+- **Customer managed key (KMS)**: KMS key do bạn tạo và kiểm soát key policy, rotation, quyền dùng.
+- **CloudHSM**: HSM chuyên dụng một khách hàng, bạn toàn quyền quản lý khoá và cluster.
+- **Log file integrity validation**: CloudTrail tạo file digest có chữ ký để chứng minh log không bị sửa hay xoá.
+- **S3 Object Lock**: chế độ WORM, object không thể bị xoá/ghi đè trong thời gian giữ, kể cả bởi admin (ở compliance mode).
+
+### Cơ chế từng bước: một giao dịch thẻ với tokenization
+1. Trang thanh toán gửi PAN thẳng tới **token vault** (account CDE riêng) qua TLS; các service khác không bao giờ nhận PAN. Vì sao: service nào chạm PAN là nằm trong phạm vi kiểm toán.
+2. Vault mã hoá PAN bằng envelope encryption với KMS key riêng, lưu ciphertext, trả về token.
+3. Order-service, lịch sử giao dịch, báo cáo chỉ lưu token và 4 số cuối.
+4. Khi cần gửi sang cổng thanh toán, chỉ vault (hoặc service trong CDE) gọi KMS Decrypt để lấy PAN và gửi đi qua PrivateLink/TLS.
+5. Mọi lời gọi KMS và truy cập S3 trong CDE được CloudTrail ghi vào account log-archive có Object Lock; EventBridge cảnh báo ngay khi key policy bị sửa hoặc trail bị tắt.
+
+~~~text
+Browser --PAN--> [ token vault | account CDE ] --token tok_8f2c...--> order-service
+                        |  KMS Decrypt (chỉ role vault)               (ngoài CDE)
+                        v
+                 Cổng thanh toán (TLS)
+CloudTrail (mọi account) --> log-archive: S3 Object Lock + digest
+Phạm vi kiểm toán: 40 service -> 3 service (vault, payment gateway adapter, log)
+~~~
 
 ### Shared responsibility trong thực tế
 | Thành phần | AWS | Bạn |
@@ -1220,10 +1963,14 @@ Dùng dịch vụ "PCI compliant" không làm hệ thống của bạn compliant
 - AWS chưa có region đầy đủ tại Việt Nam (chỉ có Local Zone Hà Nội, kiểm tra hiện hành). Mô hình hay gặp: dữ liệu gốc khách hàng ở on-prem trong nước, workload trên AWS chỉ xử lý dữ liệu đã token hoá/ẩn danh; hoặc chỉ dùng cloud cho hệ thống không chứa dữ liệu bị ràng buộc.
 - Chặn tạo tài nguyên ngoài region được duyệt bằng SCP để dữ liệu không vô tình đi sai nơi.
 
-### Bẫy production
-- PAN lọt vào log ứng dụng, stack trace, message queue: phạm vi kiểm toán lan ra cả hệ thống log. Cần masking ở logger và quét định kỳ.
-- Shared service (CI/CD, monitoring) có quyền vào CDE: tự động nằm trong phạm vi.
-- Account log archive mà ai cũng có quyền xoá thì audit vô giá trị.
+### Lỗi hay gặp
+- **PAN lọt vào log, stack trace, message queue.** Triệu chứng: phạm vi kiểm toán lan ra cả hệ thống log và hàng đợi. Cách tránh: masking ở logger, không log request body ở luồng thanh toán, Macie và quét định kỳ.
+- **Shared service có quyền vào CDE.** Triệu chứng: CI/CD hoặc monitoring tự động nằm trong phạm vi kiểm toán. Cách tránh: pipeline và agent riêng cho CDE, kết nối một chiều có kiểm soát.
+- **Account log archive ai cũng xoá được.** Triệu chứng: audit vô giá trị vì không chứng minh được log nguyên vẹn. Cách tránh: SCP chặn xoá, Object Lock, integrity validation, quyền chỉ đọc cho người điều tra.
+- **Nghĩ rằng dùng dịch vụ "PCI compliant" là đủ.** Triệu chứng: kiểm toán chỉ ra cấu hình sai dù mọi dịch vụ đều nằm trong danh sách. Cách tránh: báo cáo trên AWS Artifact chỉ chứng minh phần của AWS; phần cấu hình phải tự chứng minh bằng Config, Security Hub.
+
+### Trả lời miệng 1 phút
+"Theo shared responsibility model, AWS lo bảo mật của cloud như datacenter, phần cứng, hạ tầng dịch vụ và có chứng nhận PCI DSS Level 1; tôi lo bảo mật trong cloud: IAM, cấu hình mạng, mã hoá, dữ liệu, ứng dụng và log. Chiến lược đầu tiên của tôi là thu nhỏ phạm vi: tokenization để chỉ một vault trong account riêng chạm số thẻ, các service khác chỉ thấy token. Mã hoá bằng KMS customer managed key, tách người quản trị key khỏi người dùng key, thêm mã hoá cấp ứng dụng cho PAN. Audit bằng organization trail vào account log-archive có Object Lock và integrity validation, giữ ít nhất 12 tháng. Với yêu cầu dữ liệu tại Việt Nam, tôi để pháp chế chốt diễn giải, rồi thiết kế hybrid và dùng SCP chặn region không được duyệt. Thứ tiết kiệm nhất là giảm số hệ thống chạm dữ liệu thẻ."
 
 > Senior tip: thứ tiết kiệm nhiều tiền kiểm toán nhất không phải là thêm công cụ bảo mật mà là giảm số hệ thống chạm vào dữ liệu thẻ. Mỗi service bạn đưa ra khỏi CDE nhờ tokenization là bớt một hạng mục phải chứng minh hằng năm.`,
   follow: [
