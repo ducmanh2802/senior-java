@@ -1351,8 +1351,37 @@ public class Customer { /* ... */ }
   q: 'B-tree index hoạt động thế nào? Composite index và covering index khác nhau ra sao, và những trường hợp index không được dùng?',
   a: `**Tóm tắt:** Index B-tree là cấu trúc cân bằng giúp tìm dòng khớp trong O(log n) thay vì full scan O(n), đổi lại mỗi lần {{INSERT}}/{{UPDATE}}/{{DELETE}} phải cập nhật cây. **Composite index** chỉ dùng được theo **leftmost prefix** (cột đầu tiên phải xuất hiện trong điều kiện lọc), và **covering index** cho phép đọc chỉ từ index (index-only scan) nên không cần chạm vào bảng.
 
+### Hiểu nhanh
+Hãy tưởng tượng một cuốn sách 1000 trang không có mục lục: muốn tìm chữ "deadlock" bạn phải lật từng trang (full scan). Index giống **mục lục cuối sách**: các từ được xếp theo thứ tự chữ cái, mỗi từ ghi số trang, nên bạn mở đúng trang sau vài lần lật. B-tree là mục lục **nhiều tầng**: tầng trên chỉ ghi "A–F ở quyển 1, G–M ở quyển 2…", tầng dưới mới ghi chi tiết. Composite index giống danh bạ xếp theo **họ rồi tên**: tìm theo họ thì nhanh, chỉ biết tên thì phải lật cả cuốn. Covering index là khi mục lục ghi luôn cả nội dung bạn cần, khỏi phải lật vào trang sách.
+
+### Thuật ngữ
+- **Page (trang)**: đơn vị đọc/ghi đĩa của DB, 8KB ở PostgreSQL và 16KB ở InnoDB; mỗi node của cây là một page.
+- **B+tree**: biến thể B-tree mà dữ liệu/pointer chỉ nằm ở lá, các lá nối với nhau để quét theo khoảng.
+- **Fan-out**: số con của một node; page 8–16KB chứa hàng trăm key nên cây rất "thấp".
+- **Clustered index**: index mà lá chứa chính dòng dữ liệu (InnoDB: theo PK); PostgreSQL không có, bảng là heap riêng.
+- **Selectivity / cardinality**: tỉ lệ dòng mà điều kiện giữ lại / số giá trị khác nhau của cột; selectivity cao = lọc được ít dòng.
+- **Index-only scan**: trả kết quả chỉ từ index, không đọc bảng (heap).
+- **Seq scan**: quét tuần tự toàn bộ bảng.
+- **Page split**: khi chèn vào page đã đầy, DB tách đôi page – tốn I/O và để lại page rỗng một nửa.
+
+### Tìm một dòng qua B-tree, từng bước
+~~~text
+                [ root: ... | 5000 | 9000 | ... ]          <- tầng 1 (luôn nằm trong RAM)
+                 /              |
+      [ ... 4100 | 4500 ... ]  [ 5000 | 6200 ... ]          <- tầng 2 (branch)
+              |                      |
+  [4500 4501 4502 ...] <-> [4600 4601 ...] <-> ...           <- lá: key + TID/PK, nối hai chiều
+~~~
+1. **Đọc root**: so sánh key cần tìm (ví dụ 4501) với các mốc trong root để biết đi xuống nhánh nào. Vì sao nhanh: root gần như luôn nằm sẵn trong buffer cache.
+2. **Đi xuống branch**: lặp lại phép so sánh ở mỗi tầng. Vì sao ít tầng: mỗi page chứa vài trăm mốc, nên 3 tầng đã đủ cho ~ 500 × 500 × 500 ≈ 125 triệu key, 4 tầng cho hàng chục tỉ.
+3. **Tới lá**: lấy được TID (PostgreSQL) hoặc PK (InnoDB secondary). Với range ({{BETWEEN}}), DB đi tiếp sang lá kế bên nhờ danh sách nối, không phải quay lại root.
+4. **Đọc dòng thật**: PostgreSQL nhảy vào heap theo TID; InnoDB tra clustered index theo PK. Vì sao covering index có lợi: bỏ được chính bước này.
+5. **Khi ghi**: {{INSERT}} phải chèn key vào đúng lá của **mọi** index; lá đầy thì page split. Đó là cái giá bạn trả cho đọc nhanh.
+
+So sánh số liệu: bảng 100 triệu dòng, full scan đọc khoảng 1–2 triệu page; tìm qua index chỉ đọc 4–5 page.
+
 ### Cấu trúc B-tree
-Các node lá chứa key + pointer tới hàng, được liên kết thành **danh sách nối** theo thứ tự key. Nhờ vậy cả truy vấn **range** ({{WHERE ts BETWEEN ...}}) cũng hiệu quả. B-tree giữ node lá ở cùng độ sâu, tối ưu cho đĩa (ít lần đọc block) – đây là lý do MySQL/InnoDB dùng B+tree thay vì B-tree "chuẩn".
+Các node lá chứa key + "đường dẫn" tới hàng, được liên kết thành **danh sách nối** theo thứ tự key. Cụ thể: ở **PostgreSQL**, lá chứa key + **TID** (số trang, vị trí trong trang của heap); ở **InnoDB**, bảng chính là **clustered index** (lá chứa **cả dòng dữ liệu**, sắp theo PK), còn **secondary index** chứa key + **giá trị PK** – đọc dòng đầy đủ phải tra thêm một lần vào clustered index. Nhờ vậy cả truy vấn **range** ({{WHERE ts BETWEEN ...}}) cũng hiệu quả. B-tree giữ node lá ở cùng độ sâu, tối ưu cho đĩa (ít lần đọc block) – đây là lý do MySQL/InnoDB dùng B+tree thay vì B-tree "chuẩn".
 
 ### Composite index và leftmost prefix
 Với index {{(a, b, c)}}:
@@ -1390,6 +1419,15 @@ CREATE INDEX idx_order_cust_date ON orders (customer_id, created_at) INCLUDE (am
 - Index dùng bởi query cũ không còn chạy vẫn tốn tài nguyên → cần review và drop định kỳ.
 - Với UUID làm PK, thứ tự ghi ngẫu nhiên gây phân mảnh trang; dùng UUIDv7 hoặc khóa tăng dần.
 
+### Lỗi hay gặp
+- **Index (b, a) trong khi query lọc theo a**: triệu chứng – EXPLAIN vẫn Seq Scan dù "đã có index". Cách tránh: đặt cột lọc bằng (=) lên đầu, cột range/sort sau, kiểm tra lại bằng EXPLAIN.
+- **Bọc cột trong hàm hoặc ép kiểu ngầm**: {{WHERE lower(email) = ?}} hay so {{varchar}} với số. Triệu chứng – query chậm đột ngột sau khi "chỉ sửa một chút". Cách tránh: viết lại thành điều kiện trên cột gốc hoặc tạo expression index ({{CREATE INDEX ... ON users (lower(email))}}).
+- **Thêm index cho mọi cột "cho chắc"**: triệu chứng – INSERT/UPDATE chậm dần, bảng index to hơn cả bảng. Cách tránh: dùng {{pg_stat_user_indexes}} (cột {{idx_scan}} = 0) hoặc {{sys.schema_unused_indexes}} của MySQL để tìm và xoá index không dùng.
+- **PK là UUIDv4 ngẫu nhiên trên InnoDB**: triệu chứng – ghi chậm, page split nhiều, buffer pool đầy nhanh. Cách tránh: dùng khoá tăng dần (BIGINT sequence) hoặc UUIDv7 có thứ tự theo thời gian.
+
+### Trả lời miệng 1 phút
+"Index B-tree giống mục lục nhiều tầng: các key được sắp xếp, mỗi node là một page nên cây chỉ cao 3–4 tầng, tìm một dòng trong hàng trăm triệu dòng chỉ tốn vài lần đọc page thay vì quét cả bảng. Lá được nối với nhau nên range query và ORDER BY cũng tận dụng được. Composite index tuân theo leftmost prefix: index (a, b, c) dùng tốt cho điều kiện trên a hoặc a, b, còn chỉ lọc b thì thường không dùng được. Covering index chứa đủ cột cho query nên DB không phải quay lại bảng. Cái giá là ghi chậm hơn và tốn disk, nên tôi chỉ thêm index khi EXPLAIN chứng minh nó được dùng. Lỗi tôi gặp nhiều nhất là bọc cột trong hàm, ví dụ DATE(created_at), làm index bị bỏ qua – viết lại thành range là hết."
+
 > Senior tip: trước khi thêm index, hãy **đo** bằng {{EXPLAIN (ANALYZE, BUFFERS)}} trên chính dữ liệu production-like. Một index thừa không chỉ tốn disk mà còn làm {{UPDATE}} chậm hơn đáng kể trên bảng giao dịch lớn. Nguyên tắc: index là đánh đổi, mỗi index cần một lý do đo được.`,
   follow: [
     'Vì sao index trên cột {{status}} (chỉ vài giá trị) thường không được optimizer dùng?',
@@ -1403,6 +1441,32 @@ CREATE INDEX idx_order_cust_date ON orders (customer_id, created_at) INCLUDE (am
   level: 'senior',
   q: 'Các mức isolation level của SQL ngăn chặn những hiện tượng nào (dirty read, non-repeatable read, phantom)? MVCC của PostgreSQL và MySQL InnoDB khác nhau ra sao?',
   a: `**Tóm tắt:** Bốn mức isolation chuẩn tăng dần: {{READ UNCOMMITTED}} → {{READ COMMITTED}} → {{REPEATABLE READ}} → {{SERIALIZABLE}}. Mỗi mức chặn thêm một hiện tượng. **PostgreSQL** mặc định {{READ COMMITTED}} và theo MVCC "statement-level"; **MySQL InnoDB** mặc định {{REPEATABLE READ}} và theo MVCC "transaction-level" (read view giữ suốt transaction).
+
+### Hiểu nhanh
+Tưởng tượng một bảng tính Excel dùng chung cho cả phòng. **Dirty read** là bạn nhìn thấy con số đồng nghiệp đang gõ dở, rồi họ bấm Undo. **Non-repeatable read** là bạn đọc ô A1 hai lần, ở giữa có người sửa và lưu, nên hai lần thấy hai giá trị. **Phantom** là bạn đếm "các dòng có trạng thái MỚI" được 5, lát sau đếm lại thành 6 vì có người thêm dòng. Isolation level là "luật" quyết định bạn được nhìn thấy những thay đổi nào. MVCC là cách DB thực thi luật đó mà không bắt mọi người xếp hàng: mỗi người được một **ảnh chụp** bảng tính tại một thời điểm.
+
+### Thuật ngữ
+- **Transaction**: nhóm thao tác hoặc thành công hết (commit) hoặc huỷ hết (rollback).
+- **Isolation level**: mức độ một transaction bị "che" khỏi thay đổi của transaction khác đang chạy song song.
+- **MVCC (Multi-Version Concurrency Control)**: giữ nhiều phiên bản của một dòng để người đọc thấy bản cũ nhất quán trong khi người ghi tạo bản mới.
+- **Snapshot / read view**: danh sách "transaction nào đã commit tại thời điểm chụp", dùng để quyết định phiên bản nào nhìn thấy được.
+- **xmin / xmax**: hai cột ẩn của mỗi dòng trong PostgreSQL – id transaction đã tạo và đã xoá/thay thế phiên bản đó.
+- **Undo log**: nơi InnoDB lưu giá trị cũ của dòng để rollback và để dựng lại phiên bản cũ cho người đọc.
+- **Gap lock / next-key lock**: khoá InnoDB đặt lên "khoảng trống" giữa các key trong index để chặn insert dòng mới vào khoảng đó.
+- **Write skew**: hai transaction đọc cùng dữ liệu, mỗi bên sửa một dòng khác nhau, kết hợp lại vi phạm ràng buộc nghiệp vụ.
+
+### MVCC chạy thế nào, từng bước
+~~~text
+Thời gian ->  t1              t2                     t3
+Tx A:         BEGIN; SELECT balance (=100)           SELECT balance (= ?)
+Tx B:                         UPDATE balance=50; COMMIT
+READ COMMITTED      : lần 2 thấy 50  (snapshot mới cho mỗi statement)
+REPEATABLE READ     : lần 2 thấy 100 (giữ snapshot từ statement đầu)
+~~~
+1. **Ghi tạo phiên bản mới, không ghi đè**: PostgreSQL chèn một tuple mới (xmin = id Tx B) và đánh dấu tuple cũ xmax = id Tx B; InnoDB ghi đè dòng trong page nhưng đẩy giá trị cũ vào undo log, dòng mới mang {{DB_TRX_ID}} và con trỏ tới bản cũ. Vì sao: người đọc cũ vẫn cần thấy bản trước.
+2. **Đọc lấy snapshot**: transaction ghi nhận danh sách transaction đang chạy tại thời điểm chụp. Vì sao: mọi thay đổi của transaction chưa commit tại lúc chụp đều phải vô hình.
+3. **Chọn phiên bản nhìn thấy được**: DB đi theo chuỗi phiên bản (PostgreSQL: so xmin/xmax với snapshot; InnoDB: lần ngược undo log) tới bản mới nhất mà snapshot cho phép.
+4. **Dọn rác**: bản cũ không còn ai cần được dọn – PostgreSQL bằng **VACUUM**, InnoDB bằng **purge thread** xoá undo. Vì sao transaction dài nguy hiểm: nó giữ snapshot cũ nên rác không dọn được, bảng/undo phình to.
 
 ### Bốn mức isolation và hiện tượng
 | Mức | Dirty read | Non-repeatable read | Phantom read |
@@ -1434,6 +1498,15 @@ Thay vì khoá cả bảng khi đọc, MVCC giữ **nhiều phiên bản** của
 - Ở mức isolation cao, hiệu năng giảm (nhiều lock, nhiều conflict) và deadlock tăng.
 - Chọn isolation không cứu được lỗi logic: luôn thiết kế constraint ở tầng database (unique, check, foreign key) là lớp phòng thủ cuối.
 
+### Lỗi hay gặp
+- **Tưởng REPEATABLE READ của InnoDB bảo vệ read-modify-write**: {{SELECT}} thường đọc snapshot cũ, nhưng {{UPDATE}}/{{SELECT ... FOR UPDATE}} là **current read** – đọc bản commit mới nhất và khoá nó. Triệu chứng – số dư tính từ giá trị cũ ghi đè lên giá trị mới (lost update). Cách tránh: {{UPDATE ... SET balance = balance - ?}} nguyên tử, hoặc {{FOR UPDATE}} ngay từ lần đọc, hoặc optimistic lock với cột {{version}}.
+- **Viết code giả định PostgreSQL REPEATABLE READ chạy giống MySQL**: PostgreSQL ném lỗi {{40001}} khi hai bên cùng sửa một dòng, còn InnoDB thì chờ khoá rồi ghi tiếp. Triệu chứng – lỗi serialization "lạ" sau khi đổi DB. Cách tránh: có retry cho class 40.
+- **Write skew trong bài toán "ít nhất một bác sĩ trực"**: hai transaction cùng thấy còn 2 người trực, mỗi bên rút một người, kết quả 0 người. Cách tránh: SERIALIZABLE, hoặc khoá tường minh các dòng liên quan bằng {{FOR UPDATE}}, hoặc ràng buộc ở tầng DB.
+- **Transaction mở hàng giờ (quên commit, batch dài)**: triệu chứng – PostgreSQL bloat, InnoDB "History list length" tăng vọt, query chậm dần. Cách tránh: đặt {{idle_in_transaction_session_timeout}}, chia batch nhỏ.
+
+### Trả lời miệng 1 phút
+"Chuẩn SQL có bốn mức isolation, mỗi mức chặn thêm một hiện tượng: READ COMMITTED chặn dirty read, REPEATABLE READ chặn thêm non-repeatable read, SERIALIZABLE chặn cả phantom và các bất thường khác. Cả PostgreSQL và InnoDB đều dùng MVCC: ghi tạo phiên bản mới, đọc nhìn một snapshot nên đọc không chặn ghi. Khác biệt chính là PostgreSQL mặc định READ COMMITTED, snapshot mới cho mỗi câu lệnh, và REPEATABLE READ của nó chặn cả phantom nhưng vẫn có write skew; InnoDB mặc định REPEATABLE READ, giữ read view cả transaction, chặn phantom khi ghi bằng gap lock nên dễ deadlock hơn. Trade-off là mức càng cao càng nhiều conflict và retry. Kinh nghiệm của tôi là đặt isolation tường minh, dùng update nguyên tử hoặc khoá cho read-modify-write, và luôn có retry cho lỗi serialization."
+
 > Senior tip: luôn đặt **isolation level rõ ràng** trong cấu hình ứng dụng thay vì để mặc định của DB, vì mặc định khác nhau giữa PostgreSQL và MySQL – cùng một code chạy được trên cả hai nhưng hành vi khác nhau. Kèm theo đó, hãy chuẩn bị cơ chế **retry với backoff + jitter** cho lỗi serialization/deadlock: đây là giải pháp chuẩn của cả PostgreSQL lẫn CockroachDB cho các tranh chấp hiếm.`,
   follow: [
     'Vì sao REPEATABLE READ của PostgreSQL không có phantom nhưng vẫn có write skew?',
@@ -1447,6 +1520,34 @@ Thay vì khoá cả bảng khi đọc, MVCC giữ **nhiều phiên bản** của
   level: 'mid',
   q: 'Đọc {{EXPLAIN ANALYZE}} và tối ưu một query chậm theo quy trình nào? Những dấu hiệu nào trong execution plan chỉ ra nguyên nhân?',
   a: `**Tóm tắt:** {{EXPLAIN}} chỉ cho plan **dự kiến**; {{EXPLAIN ANALYZE}} chạy query thật và trả về plan **thực tế** kèm thời gian từng node. Quy trình tối ưu đúng là: **đo baseline → đọc plan → tìm node tốn kém → giải thích bằng index/thống kê/dữ liệu → sửa → đo lại**, lặp lại. Dấu hiệu quan trọng nhất: **số dòng ước tính lệch mạnh với số dòng thực tế**.
+
+### Hiểu nhanh
+Execution plan giống **lộ trình Google Maps** mà DB vạch ra trước khi đi: đi đường cao tốc (index) hay đường làng (quét bảng), rẽ ở đâu (join), có phải dừng xếp hàng (sort) không. {{EXPLAIN}} chỉ cho bạn xem lộ trình dự kiến; {{EXPLAIN ANALYZE}} thật sự lái xe và ghi lại mỗi đoạn mất bao lâu. Nếu Maps ước tính "đoạn này 2 phút" mà thực tế mất 40 phút, nghĩa là bản đồ (thống kê) đã cũ – đó chính là dấu hiệu "estimated rows lệch actual rows". Tối ưu query là tìm đoạn đường kẹt nhất rồi sửa đúng chỗ đó.
+
+### Thuật ngữ
+- **Execution plan**: cây các bước (node) DB dùng để chạy câu SQL; node con chạy trước, đưa kết quả lên node cha.
+- **Optimizer (planner)**: thành phần chọn plan rẻ nhất dựa trên **cost** ước tính.
+- **Statistics**: số liệu mẫu về bảng (số dòng, phân bố giá trị) mà optimizer dùng để ước tính; cập nhật bằng {{ANALYZE}}.
+- **Seq Scan / Index Scan / Bitmap Heap Scan**: quét cả bảng / đi qua index lấy từng dòng / gom vị trí từ index rồi đọc bảng theo lô.
+- **Nested Loop / Hash Join / Merge Join**: ba cách join – lặp lồng nhau, dựng bảng băm, trộn hai dãy đã sắp xếp.
+- **Buffers shared hit / read**: số page lấy từ cache / phải đọc từ đĩa (hoặc OS cache).
+- **work_mem**: bộ nhớ mỗi thao tác sort/hash được dùng trước khi phải tràn ra đĩa.
+- **Plan regression**: query đang nhanh bỗng chậm vì optimizer đổi sang plan tệ hơn.
+
+### Đọc một plan cụ thể
+~~~text
+Nested Loop  (cost=0.43..9120.5 rows=12 width=48) (actual time=0.05..842.1 rows=48210 loops=1)
+  -> Seq Scan on orders o  (rows=12) (actual rows=48210 loops=1)
+       Filter: (status = 'NEW')   Rows Removed by Filter: 1951790
+  -> Index Scan using customers_pkey on customers c (actual time=0.01..0.01 rows=1 loops=48210)
+Buffers: shared hit=150321 read=22012
+~~~
+1. **Đọc từ trong ra ngoài, từ dưới lên**: node thụt sâu nhất chạy trước. Vì sao: node cha chỉ nhận dòng do con trả về.
+2. **So estimated với actual**: ước 12 dòng, thực tế 48210 – lệch 4000 lần. Vì sao quan trọng: vì tưởng chỉ 12 dòng nên optimizer chọn Nested Loop; với 48 nghìn dòng, Hash Join mới hợp lý.
+3. **Nhân thời gian với loops**: inner index scan 0.01ms nhưng chạy 48210 lần ≈ 480ms. Vì sao: con số "actual time" là **mỗi lần lặp**.
+4. **Nhìn Rows Removed by Filter**: bỏ 1,95 triệu dòng để giữ 48 nghìn – thiếu index trên {{status}} (hoặc index composite phù hợp).
+5. **Nhìn Buffers**: {{read=22012}} page ≈ 172MB đọc từ đĩa – giải thích vì sao lần chạy đầu chậm hơn lần sau.
+6. **Sửa và đo lại**: chạy {{ANALYZE orders}}, thêm index phù hợp, rồi so thời gian trước/sau.
 
 ### Lệnh đọc plan
 ~~~sql
@@ -1480,8 +1581,17 @@ EXPLAIN FORMAT=JSON SELECT ...;
 - Chạy {{EXPLAIN ANALYZE}} trên query {{UPDATE}}/{{DELETE}} **thật** sẽ thực thi thay đổi → hãy bọc trong {{BEGIN}} + {{ROLLBACK}}.
 - Đừng tối ưu theo "đẹp của plan" mà theo **số liệu thực tế**; một plan trông lạ lùng vẫn có thể nhanh hơn.
 - Index thêm mà không được dùng vẫn làm chậm ghi.
-- Kiểm tra **parameter sniffing**: plan tốt với một bộ tham số có thể rất tệ với bộ khác (PostgreSQL dùng generic plan sau 5 lần, MySQL có {{optimizer_switch}}).
+- Kiểm tra **parameter sniffing**: plan tốt với một bộ tham số có thể rất tệ với bộ khác (PostgreSQL với prepared statement: 5 lần đầu lập **custom plan** theo giá trị cụ thể, từ lần thứ 6 có thể chuyển sang **generic plan** nếu ước tính không đắt hơn – chỉnh bằng {{plan_cache_mode}}; MySQL không cache plan theo cách này mà tối ưu lại mỗi lần chạy, nhưng plan vẫn thay đổi theo giá trị tham số và thống kê).
 - Với truy vấn chạy theo lịch, hãy lưu lại plan theo thời gian để phát hiện **plan regression** sau khi deploy.
+
+### Lỗi hay gặp
+- **Chỉ chạy EXPLAIN (không ANALYZE)**: triệu chứng – plan trông ổn nhưng query vẫn chậm, vì bạn chỉ thấy ước tính. Cách tránh: dùng {{EXPLAIN (ANALYZE, BUFFERS)}} trên môi trường có dữ liệu giống production.
+- **Đo trên dữ liệu dev 1000 dòng**: optimizer chọn plan hoàn toàn khác so với production 50 triệu dòng. Cách tránh: test trên bản sao dữ liệu đã ẩn danh, hoặc ít nhất có cùng phân bố.
+- **Đo một lần rồi kết luận**: lần đầu đọc đĩa (cold cache), lần sau đọc RAM. Cách tránh: chạy vài lần, so cả cột Buffers hit/read.
+- **Thêm index nhưng query vẫn bọc cột trong hàm**: index không được dùng. Cách tránh: đọc lại plan sau khi sửa, đừng giả định.
+
+### Trả lời miệng 1 phút
+"EXPLAIN cho tôi plan dự kiến, còn EXPLAIN ANALYZE chạy thật và cho thời gian, số dòng thực tế của từng node. Quy trình của tôi: đo baseline, đọc plan từ node trong cùng ra, tìm node tốn thời gian nhất – nhớ nhân với số loops – rồi giải thích vì sao nó chậm: thiếu index, thống kê cũ, join sai kiểu, hay sort tràn đĩa. Dấu hiệu quan trọng nhất là estimated rows lệch xa actual rows, vì khi đó optimizer chọn sai thuật toán join. Sửa xong tôi đo lại để chắc chắn. Lưu ý thực tế: EXPLAIN ANALYZE với UPDATE sẽ thật sự ghi dữ liệu nên phải bọc trong BEGIN và ROLLBACK, và tôi dùng pg_stat_statements để tìm query tốn nhất tổng thể chứ không chỉ query chậm nhất một lần."
 
 > Senior tip: hãy lưu {{EXPLAIN ANALYZE}} của các query quan trọng vào CI hoặc theo dõi bằng {{pg_stat_statements}} / {{auto_explain}} để **phát hiện plan regression trước khi lên production**. Một thay đổi nhỏ về index hoặc thống kê có thể làm query chậm gấp 100 lần mà không đổi một dòng code.`,
   follow: [
@@ -1496,6 +1606,37 @@ EXPLAIN FORMAT=JSON SELECT ...;
   level: 'senior',
   q: 'Deadlock trong database do nguyên nhân gì và xử lý ra sao? Bạn sẽ làm gì khi gặp lỗi deadlock trong production?',
   a: `**Tóm tắt:** Deadlock xảy ra khi hai transaction mỗi transaction giữ một lock mà transaction kia cần, tạo thành vòng chờ. Database phát hiện vòng này (InnoDB kiểm tra ngay khi một lock phải chờ nếu {{innodb_deadlock_detect=ON}}; PostgreSQL kiểm tra sau {{deadlock_timeout}}, mặc định 1s) và **rollback một transaction** (victim) để giải phóng tài nguyên; transaction còn lại tiếp tục. Client nhận lỗi và **phải retry** – đây là hành vi bình thường, không phải sự cố hệ thống.
+
+### Hiểu nhanh
+Hai xe gặp nhau trên một cây cầu hẹp chỉ đủ một làn: xe A đã lên nửa cầu bên trái và chờ xe B lùi, xe B đã lên nửa bên phải và chờ xe A lùi – không ai đi được. Đó là deadlock. DB đóng vai cảnh sát giao thông: phát hiện hai xe chờ nhau thành vòng tròn, rồi bắt một xe (victim) quay đầu (rollback) để xe kia đi. Xe bị bắt quay đầu chỉ cần chạy lại từ đầu là qua được. Cách phòng tốt nhất là luật "mọi xe đi theo cùng một chiều" – tức là khoá tài nguyên theo cùng thứ tự.
+
+### Thuật ngữ
+- **Row lock**: khoá trên một dòng, {{UPDATE}}/{{DELETE}}/{{SELECT ... FOR UPDATE}} tự đặt và giữ đến khi commit/rollback.
+- **Wait-for graph**: đồ thị "transaction nào đang chờ transaction nào"; có vòng tròn nghĩa là deadlock.
+- **Victim**: transaction bị DB chọn để rollback (InnoDB chọn transaction "nhỏ" hơn – ít dòng bị sửa/khoá hơn).
+- **deadlock_timeout**: (PostgreSQL) thời gian chờ khoá trước khi chạy kiểm tra deadlock, mặc định 1s.
+- **innodb_lock_wait_timeout**: (MySQL) thời gian tối đa chờ một row lock, mặc định 50s – khác với deadlock.
+- **SQLSTATE**: mã lỗi chuẩn 5 ký tự; class {{40}} nghĩa là transaction đã bị rollback.
+- **Jitter**: thêm độ trễ ngẫu nhiên vào thời gian chờ retry để các client không retry cùng lúc.
+
+### Deadlock diễn ra từng bước
+~~~text
+Tx1: UPDATE account SET .. WHERE id=1   -- giữ lock dòng 1
+Tx2: UPDATE account SET .. WHERE id=2   -- giữ lock dòng 2
+Tx1: UPDATE account SET .. WHERE id=2   -- CHỜ Tx2
+Tx2: UPDATE account SET .. WHERE id=1   -- CHỜ Tx1  => vòng tròn
+      Tx1 ---chờ---> Tx2
+       ^              |
+       +-----chờ------+
+DB: chọn Tx2 làm victim -> ROLLBACK Tx2 (lỗi 40P01 / 1213), Tx1 chạy tiếp
+~~~
+1. **Mỗi transaction lấy khoá dần dần** trong lúc chạy, không lấy hết từ đầu. Vì sao: DB không biết trước bạn sẽ đụng dòng nào.
+2. **Khoá giữ tới cuối transaction**. Vì sao: để rollback được và để người khác không thấy/sửa dữ liệu dở dang.
+3. **Khi phải chờ**, DB ghi nhận một cạnh trong wait-for graph. InnoDB kiểm tra vòng ngay; PostgreSQL đợi {{deadlock_timeout}} rồi mới kiểm tra (vì đa số lần chờ tự hết, kiểm tra ngay thì tốn CPU).
+4. **Phát hiện vòng** → chọn victim, rollback toàn bộ transaction đó, trả lỗi cho client. Vì sao rollback cả transaction: khoá của nó cần được nhả hết để phá vòng.
+5. **Client retry** bằng transaction mới; lúc này Tx1 đã xong nên lần chạy lại thường thành công.
+
+Trong ví dụ chuyển tiền: nếu cả hai luồng luôn khoá id nhỏ trước (như đoạn code dưới), Tx2 sẽ chờ ở bước khoá dòng 1 ngay từ đầu – chỉ chờ, không có vòng.
 
 ### Khi nào deadlock xảy ra
 1. **Thứ tự khoá khác nhau**: transaction A khoá bảng 1 rồi bảng 2, transaction B khoá bảng 2 rồi bảng 1.
@@ -1533,6 +1674,15 @@ public void transfer(Long from, Long to, BigDecimal amount) {
 - Deadlock do một đoạn code "xấu" sẽ tái diễn liên tục: hãy **cảnh báo theo tỉ lệ** chứ không chỉ log, và điều tra khi tỉ lệ tăng.
 - PostgreSQL ghi chi tiết deadlock vào server log ({{pg_stat_database.deadlocks}} chỉ là bộ đếm); MySQL xem {{SHOW ENGINE INNODB STATUS}} (mục LATEST DETECTED DEADLOCK) hoặc bật {{innodb_print_all_deadlocks}} để xác định câu query nào gây deadlock.
 
+### Lỗi hay gặp
+- **Dùng {{@Retryable}} trên cùng method {{@Transactional}} nhưng thứ tự proxy sai**: retry chạy **bên trong** transaction đã hỏng. Triệu chứng – retry luôn thất bại. Cách tránh: đặt retry ở lớp gọi bên ngoài (một bean khác), mỗi lần retry mở transaction mới.
+- **Nhầm lock wait timeout với deadlock**: MySQL lỗi 1205 (chờ quá 50s) không phải deadlock – nghĩa là có transaction giữ khoá quá lâu. Cách tránh: tìm transaction dài trong {{information_schema.innodb_trx}} / {{pg_stat_activity}}.
+- **Foreign key không có index**: xoá dòng cha khiến DB quét và khoá bảng con rộng hơn cần thiết. Cách tránh: luôn index cột FK (PostgreSQL không tự tạo).
+- **Batch update không sắp xếp**: hai job cùng cập nhật danh sách id theo thứ tự khác nhau. Cách tránh: sort id trước khi update.
+
+### Trả lời miệng 1 phút
+"Deadlock là khi hai transaction giữ khoá mà bên kia cần, tạo thành vòng chờ. DB phát hiện vòng đó – InnoDB kiểm tra ngay, PostgreSQL sau deadlock_timeout một giây – rồi rollback một transaction làm victim, client nhận lỗi 40P01 hoặc MySQL 1213. Cách xử lý của tôi có hai lớp: phòng ngừa bằng việc khoá theo thứ tự cố định, giữ transaction ngắn, có index cho mọi điều kiện ghi; và chịu lỗi bằng retry với transaction mới, có backoff và jitter. Trên production tôi đọc server log của PostgreSQL hoặc SHOW ENGINE INNODB STATUS để biết hai câu query nào tham gia, rồi sửa thứ tự khoá. Tôi theo dõi tỉ lệ deadlock theo thời gian: tăng đột biến sau deploy thường là dấu hiệu thay đổi code gây ra."
+
 > Senior tip: deadlock **không phải là bug của DB** – nó là hệ quả của việc nhiều transaction cùng tranh chấp tài nguyên theo thứ tự khác nhau. Hãy xem nó như tín hiệu về thiết kế giao dịch: transaction của bạn đang làm quá nhiều việc, đang khoá theo thứ tự không ổn định, hoặc đang quét bảng không có index. Mục tiêu là giảm **tần suất** deadlock, không phải chỉ "bắt và retry".`,
   follow: [
     'Vì sao phải retry bằng transaction mới sau khi gặp deadlock?',
@@ -1546,6 +1696,32 @@ public void transfer(Long from, Long to, BigDecimal amount) {
   level: 'mid',
   q: 'Phân trang bằng {{OFFSET}} và bằng keyset (seek) khác nhau thế nào? Với bảng hàng chuỗi triệu dòng, bạn chọn cách nào?',
   a: `**Tóm tắt:** {{OFFSET n}} bắt DB phải **đọc và bỏ qua n dòng** trước ⇒ trang càng sâu càng chậm (tổng chi phí O(n²) nếu người dùng lướt hết các trang). **Keyset (seek) pagination** dùng điều kiện trên cột sort: {{WHERE (created_at, id) < (:lastCreatedAt, :lastId)}} kèm {{LIMIT}} ⇒ index range scan, thời gian gần như **hằng** bất kể trang bao nhiêu.
+
+### Hiểu nhanh
+Đọc sách bằng OFFSET giống như mỗi lần muốn đọc trang 500, bạn phải **lật từ trang 1 và đếm** tới 500 – càng về cuối càng mệt. Keyset giống **kẹp bookmark**: lần sau mở sách, bạn mở ngay chỗ kẹp và đọc tiếp. "Bookmark" ở đây là giá trị cột sắp xếp của dòng cuối trang trước (ví dụ {{created_at}} + {{id}}). Nhờ index đã sắp xếp sẵn, DB nhảy thẳng tới vị trí bookmark rồi đọc tiếp 20 dòng.
+
+### Thuật ngữ
+- **OFFSET / LIMIT**: bỏ qua n dòng đầu / chỉ lấy tối đa k dòng.
+- **Keyset (seek) pagination**: lọc "các dòng đứng sau dòng cuối đã thấy" theo thứ tự sort, thay vì đếm vị trí.
+- **Cursor**: giá trị đánh dấu vị trí (vd {{created_at}} + {{id}} của dòng cuối), thường mã hoá base64 gửi cho client.
+- **Tie-breaker**: cột duy nhất thêm vào cuối ORDER BY để thứ tự luôn xác định khi cột sort bị trùng.
+- **Row value comparison**: so sánh bộ {{(a, b) < (x, y)}} theo thứ tự từ điển; PostgreSQL và MySQL 8 đều hỗ trợ cú pháp này.
+- **Index range scan**: đi theo index từ một điểm bắt đầu và đọc tuần tự các lá kế tiếp.
+
+### Vì sao OFFSET chậm dần, từng bước
+~~~text
+OFFSET 100000 LIMIT 20:
+index: [1][2][3]......[100000][100001..100020]
+        ^---- đọc rồi BỎ 100000 dòng ----^  ^-- trả 20 dòng
+Keyset WHERE id < 100000 LIMIT 20 (sort id desc):
+index:                     [99999..99980]
+                            ^-- nhảy thẳng tới đây qua B-tree, đọc 20 dòng
+~~~
+1. **OFFSET không có "địa chỉ"**: DB không biết dòng thứ 100000 nằm ở đâu, phải đếm từ đầu. Vì sao: B-tree biết vị trí theo **giá trị key**, không theo số thứ tự dòng.
+2. **Mỗi dòng bị bỏ vẫn tốn công**: đọc page, kiểm tra điều kiện, (thường) đọc cả dòng từ bảng. Số liệu điển hình: trang 1 mất 2ms, trang 5000 mất 1–3 giây.
+3. **Keyset biến bài toán thành tìm theo giá trị**: {{WHERE (created_at, id) < (:t, :id)}} là điều kiện mà B-tree trả lời bằng một lần đi từ root xuống lá (vài page).
+4. **Đọc tiếp 20 lá kế bên** theo danh sách nối rồi dừng nhờ {{LIMIT}}. Vì sao thời gian gần như hằng: số page đọc không phụ thuộc trang thứ mấy.
+5. **Bonus về tính đúng**: với OFFSET, nếu có dòng mới chèn vào đầu trong lúc người dùng lướt, trang sau sẽ lặp lại dòng cũ; keyset không bị vì nó bám theo giá trị.
 
 ### So sánh
 | Cách | Truy vấn | Độ sâu trang | Ghi chú |
@@ -1582,6 +1758,15 @@ List<Order> findNext(@Param("t") Instant lastCreatedAt,
 - Cần "trang N" ngẫu nhiên hoặc cần hiển thị tổng số trang.
 - Xuất báo cáo cố định theo lô, chạy định kỳ ngoài giờ cao điểm.
 
+### Lỗi hay gặp
+- **Không có tie-breaker**: nhiều đơn hàng cùng {{created_at}} (import theo lô). Triệu chứng – người dùng thấy trùng hoặc mất dòng ở ranh giới trang. Cách tránh: luôn {{ORDER BY created_at DESC, id DESC}} và cursor gồm cả hai.
+- **Index không khớp hướng sort hoặc thiếu cột id**: triệu chứng – plan có thêm node Sort, chậm lại khi bảng lớn. Cách tránh: index {{(created_at, id)}} (B-tree đọc ngược được nên DESC/DESC vẫn dùng được; chỉ cần index riêng khi trộn chiều ASC/DESC).
+- **Viết {{Page}} trong Spring Data cho keyset**: {{Page}} chạy thêm câu {{COUNT(*)}} mỗi lần – trên bảng lớn tốn ngang query chính. Cách tránh: trả về {{Slice}} hoặc {{List}}; Spring Data 3.1+ còn có {{Window}} + {{ScrollPosition}} hỗ trợ keyset sẵn.
+- **Cột sort có NULL**: so sánh với NULL luôn không đúng nên dòng NULL biến mất. Cách tránh: cột sort NOT NULL hoặc xử lý NULLS FIRST/LAST tường minh.
+
+### Trả lời miệng 1 phút
+"OFFSET bắt DB đọc rồi bỏ n dòng nên trang càng sâu càng chậm; keyset thì lưu giá trị sort của dòng cuối và hỏi 'các dòng sau giá trị này', nên DB đi thẳng tới đó qua index và thời gian gần như không đổi. Với bảng hàng triệu dòng tôi chọn keyset, ORDER BY created_at, id với id làm tie-breaker, có index khớp, cursor mã hoá trả cho client. Trade-off là không nhảy được tới trang N và khó đổi kiểu sort tuỳ ý, nên với màn hình admin nhỏ cần số trang tôi vẫn dùng OFFSET. Kinh nghiệm thực tế: chuyển API danh sách giao dịch sang keyset và bỏ COUNT(*) giảm p99 từ vài giây xuống vài chục mili giây."
+
 > Senior tip: với danh sách "xem thêm" (infinite scroll) – feed, danh sách đơn hàng – keyset là lựa chọn mặc định vì người dùng thực tế chỉ đi tới vài trang đầu, đúng nơi offset tốn kém nhất. Với bảng hàng trăm triệu dòng, chuyển từ offset sang keyset thường giảm thời gian response từ hàng giây xuống dưới 50ms, miễn là có index khớp với cột sort + tie-breaker.`,
   follow: [
     'Tại sao cần cột tie-breaker như {{id}} khi phân trang bằng keyset?',
@@ -1595,6 +1780,34 @@ List<Order> findNext(@Param("t") Instant lastCreatedAt,
   level: 'lead',
   q: 'Replication, partitioning và sharding khác nhau thế nào? Bạn chọn shard key bằng cách nào, và những vấn đề nào sẽ phát sinh?',
   a: `**Tóm tắt:** **Replication** nhân bản dữ liệu để đọc scale/tính sẵn sàng (một primary ghi, nhiều replica đọc) – giải quyết tải đọc, **không** giải quyết tải ghi. **Partitioning** chia một bảng lớn thành nhiều phân vùng **trong cùng** instance – giúp quản lý và bảo trì, không scale ngang. **Sharding** chia dữ liệu ra nhiều **instance** độc lập – scale được cả tải ghi, nhưng đổi lại là độ phức tạp vận hành.
+
+### Hiểu nhanh
+Hãy nghĩ về một thư viện. **Replication** là photo nguyên bộ sách ra nhiều phòng đọc: nhiều người đọc cùng lúc được, nhưng sách mới chỉ được nhập ở một quầy chính rồi mới chuyển sang các phòng. **Partitioning** là chia kệ sách trong **cùng một** phòng theo năm xuất bản: tìm sách năm 2025 thì chỉ ra kệ 2025, dọn sách cũ thì bê cả kệ đi. **Sharding** là mở nhiều **chi nhánh thư viện**, mỗi chi nhánh giữ một phần sách (ví dụ theo vần tên tác giả): tổng sức chứa và số quầy nhập sách tăng lên, nhưng muốn tìm "mọi sách về Java" phải hỏi tất cả chi nhánh.
+
+### Thuật ngữ
+- **Primary / replica**: node nhận ghi / bản sao chỉ đọc nhận thay đổi từ primary.
+- **Replication lag**: độ trễ từ lúc primary commit tới lúc replica thấy thay đổi.
+- **Partition pruning**: optimizer loại bỏ các partition chắc chắn không chứa dữ liệu khớp điều kiện.
+- **Shard key**: cột dùng để quyết định một dòng nằm ở shard nào.
+- **Scatter-gather (fan-out)**: gửi query tới mọi shard rồi gộp kết quả – chậm và tốn.
+- **Hot shard**: một shard nhận tải lớn hơn hẳn các shard khác.
+- **Resharding**: chia lại dữ liệu khi thêm/bớt shard.
+- **Saga / 2PC**: chuỗi bước có bước bù khi lỗi / giao thức commit hai pha khoá mọi bên tới khi tất cả đồng ý.
+
+### Ba kỹ thuật trong một hình
+~~~text
+Replication            Partitioning (1 instance)      Sharding (nhiều instance)
+ [Primary] --WAL-->     orders                         router: hash(customer_id) % 3
+   |   |   [Replica]     |- orders_2026_01             [DB0] cust 0,3,6..
+  ghi  |                 |- orders_2026_02             [DB1] cust 1,4,7..
+       +--> [Replica]    |- orders_2026_03             [DB2] cust 2,5,8..
+~~~
+### Một request đi qua hệ thống shard, từng bước
+1. **Ứng dụng xác định shard key** trong request (vd {{customer_id = 42}}). Vì sao: không có key thì không biết gửi đi đâu, phải fan-out.
+2. **Router tính shard**: dùng hash hoặc bảng tra (directory) ánh xạ key → shard. Vì sao hay dùng bảng tra/consistent hashing thay vì {{% N}} đơn giản: đổi N thì gần như mọi key đổi chỗ.
+3. **Query chạy trên một shard** như một DB bình thường – index, transaction, join đều nguyên vẹn **trong** shard.
+4. **Thao tác chạm nhiều shard** (chuyển tiền giữa hai khách ở hai shard) phải dùng Saga hoặc outbox, vì không còn một transaction chung.
+5. **Báo cáo toàn cục** đọc từ kho phái sinh (data warehouse, Elasticsearch) được đổ dữ liệu qua CDC, không fan-out lên các shard đang phục vụ online.
 
 ### So sánh
 | Tiêu chí | Replication | Partitioning | Sharding |
@@ -1630,6 +1843,15 @@ Ví dụ thực tế: sharding theo {{tenant_id}} hoặc {{customer_id}} cho h�
 - Read replica có **replication lag**: đọc ngay sau khi ghi có thể không thấy dữ liệu ⇒ dùng "read-your-writes" bằng cách đọc primary hoặc sticky routing.
 - Sharding không tự động tăng hiệu năng nếu truy vấn phải fan-out.
 
+### Lỗi hay gặp
+- **Đọc từ replica ngay sau khi ghi**: người dùng vừa đổi tên, F5 thấy tên cũ. Cách tránh: đọc primary cho dữ liệu của chính user trong vài giây sau khi ghi, hoặc định tuyến theo transaction ({{@Transactional(readOnly = true)}} → replica, còn lại → primary) có cân nhắc.
+- **Partition theo cột mà query không lọc tới**: triệu chứng – query quét **tất cả** partition, còn chậm hơn bảng thường. Cách tránh: mọi query nóng phải có điều kiện trên partition key; kiểm tra pruning bằng EXPLAIN.
+- **Shard theo thời gian**: toàn bộ ghi hôm nay dồn vào một shard mới nhất (hot shard). Cách tránh: shard theo khoá phân tán đều (tenant, customer) và chỉ partition theo thời gian **bên trong** shard.
+- **Quá nhiều partition nhỏ**: hàng nghìn partition làm planning chậm và tốn bộ nhớ. Cách tránh: giữ số partition vừa phải (vài chục đến vài trăm), chọn độ hạt theo tháng thay vì ngày nếu đủ.
+
+### Trả lời miệng 1 phút
+"Ba khái niệm giải quyết ba vấn đề khác nhau. Replication tạo bản sao để scale đọc và HA, mọi ghi vẫn đi qua một primary và có replication lag. Partitioning chia một bảng lớn thành nhiều phần trong cùng instance, lợi ích chính là partition pruning và xoá dữ liệu cũ bằng drop partition. Sharding chia dữ liệu ra nhiều DB độc lập nên scale được cả ghi, đổi lại mất transaction và join xuyên shard. Shard key tôi chọn theo truy vấn thực tế: phần lớn query phải chứa key, phân bố đều và không tạo hot shard – thường là tenant hoặc customer id. Kinh nghiệm của tôi là đi theo thứ tự tối ưu query, replica, partition, cache rồi mới shard, vì shard gần như không quay lại được."
+
 > Senior tip: trước khi shard, hãy cân nhắc theo thứ tự: **tối ưu index và query → đọc từ replica → partition → cache → cuối cùng mới shard**. Sharding là quyết định gần như không đảo ngược: nó ảnh hưởng mọi truy vấn, mọi transaction và cả tổ chức. Với hệ thống ngân hàng, sharding theo **chi nhánh/tenant** thường khớp với ranh giới nghiệp vụ và giải quyết cả yêu cầu pháp lý về dữ liệu địa phương.`,
   follow: [
     'Vì sao replication lag gây vấn đề "đọc không thấy dữ liệu vừa ghi"?',
@@ -1643,6 +1865,34 @@ Ví dụ thực tế: sharding theo {{tenant_id}} hoặc {{customer_id}} cho h�
   level: 'mid',
   q: 'Connection pool HikariCP: sizing thế nào, các timeout quan trọng ra sao, và làm sao phát hiện connection bị rò rỉ (leak detection)?',
   a: `**Tóm tắt:** HikariCP là pool mặc định của Spring Boot. Nguyên tắc sizing: **số connection của một ứng dụng không được vượt quá khả năng phục vụ của DB**; tổng connection của toàn hệ thống phải nhỏ hơn {{max_connections}} của DB. Quy tắc thực tế: pool mỗi instance khoảng **10–20**, và **nhỏ hơn nhiều** nếu dùng virtual threads.
+
+### Hiểu nhanh
+Connection pool giống **bãi xe taxi trước sân bay**: thay vì mỗi khách tự gọi một chiếc xe mới (mở connection tốn 20–100ms: TCP, TLS, xác thực), có sẵn 15 chiếc đậu chờ, khách tới lấy xe, đi xong trả lại bãi. Nếu cả 15 xe đều đang chạy, khách mới phải **xếp hàng** – chờ quá {{connection-timeout}} thì bỏ cuộc (lỗi). Nghe có vẻ cứ thêm xe là tốt, nhưng con đường dẫn ra thành phố (CPU, ổ đĩa của DB) chỉ có vài làn: 200 xe cùng chạy chỉ gây kẹt. Leak detection là camera ghi lại "xe nào ra bãi quá 60 giây chưa về và ai đã lấy nó".
+
+### Thuật ngữ
+- **Connection pool**: tập connection DB mở sẵn và được tái sử dụng giữa các request.
+- **HikariCP**: thư viện pool JDBC mặc định của Spring Boot, nổi tiếng nhanh và gọn.
+- **max_connections**: (PostgreSQL) số connection tối đa server chấp nhận; mỗi connection là một process tốn vài MB RAM.
+- **Pending threads**: số thread đang chờ lấy connection – dấu hiệu pool không đủ hoặc connection bị giữ quá lâu.
+- **Connection leak**: lấy connection mà không trả lại pool (hoặc giữ cực lâu).
+- **Little's Law**: số việc đang xử lý = tốc độ đến × thời gian xử lý; dùng để ước số connection cần.
+- **PgBouncer**: proxy đứng trước PostgreSQL, gom nhiều connection client vào ít connection thật.
+
+### Đời sống của một connection, từng bước
+~~~text
+request -> getConnection() --có sẵn--> dùng ~5ms -> close() = TRẢ LẠI POOL
+                 |
+                 +--hết--> chờ (pending) ... quá 3000ms -> SQLTransientConnectionException
+Hikari housekeeping: connection sống > max-lifetime -> đóng và tạo mới
+                     bị mượn > leak-detection-threshold -> log WARN kèm stack trace
+~~~
+1. **Khởi động**: Hikari mở sẵn {{minimum-idle}} connection. Vì sao: request đầu tiên không phải trả phí mở kết nối.
+2. **Mượn**: {{getConnection()}} lấy một connection rảnh; Spring làm việc này khi vào {{@Transactional}} hoặc khi Repository chạy query.
+3. **Trả**: {{close()}} trên connection của pool **không đóng socket** mà trả về pool. Vì sao quên trả = leak: pool tưởng nó vẫn đang được dùng.
+4. **Chờ khi hết**: thread bị block tới {{connection-timeout}}. Vì sao nên để ngắn (2–5s): fail nhanh tốt hơn để request treo 30s kéo theo cả hệ thống.
+5. **Thay mới định kỳ**: quá {{max-lifetime}} thì connection được đóng khi rảnh và thay bằng cái mới. Vì sao: firewall/NAT/DB có thể cắt kết nối im lặng; Hikari khuyên đặt nhỏ hơn giới hạn đó vài chục giây.
+
+**Ví dụ tính bằng Little's Law**: 400 request/s, mỗi request giữ connection trung bình 20ms ⇒ cần trung bình 400 × 0,02 = **8 connection** bận cùng lúc. Pool 15 là dư cho đỉnh tải; pool 100 chỉ thêm tranh chấp ở DB.
 
 ### Cấu hình tham khảo
 ~~~yaml
@@ -1677,6 +1927,15 @@ spring:
 - Với **virtual threads**, số thread có thể rất lớn nhưng connection vẫn là tài nguyên hữu hạn ⇒ đặt pool nhỏ (thường 5–10) và theo dõi {{hikaricp.connections.pending}}.
 - Nhiều ứng dụng nhỏ dùng chung một DB ⇒ cân nhắc **PgBouncer** (transaction pooling) thay vì mở rộng pool.
 
+### Lỗi hay gặp
+- **Bật {{spring.jpa.open-in-view}} (mặc định true)**: connection bị giữ suốt cả lúc render JSON/view. Triệu chứng – pool cạn dù query rất nhanh. Cách tránh: đặt {{spring.jpa.open-in-view=false}} và load đủ dữ liệu trong service.
+- **Gọi API ngoài bên trong {{@Transactional}}**: API chậm 5s thì connection cũng bị giữ 5s. Triệu chứng – "Connection is not available, request timed out after 3000ms" khi đối tác chậm. Cách tránh: gọi API trước/sau transaction.
+- **{{max-lifetime}} dài hơn timeout của firewall/DB**: triệu chứng – lỗi "connection reset" ngẫu nhiên sau giờ thấp điểm. Cách tránh: đặt max-lifetime ngắn hơn giới hạn hạ tầng (vd 30 phút so với 60 phút).
+- **Autoscale 50 pod × pool 20 = 1000 connection** vào PostgreSQL {{max_connections=500}}: triệu chứng – "too many clients already" khi scale. Cách tránh: tính tổng ở số pod tối đa, dùng PgBouncer/RDS Proxy.
+
+### Trả lời miệng 1 phút
+"HikariCP giữ sẵn một số connection để tái sử dụng vì mở connection mới rất đắt. Tôi sizing theo khả năng của DB chứ không theo số thread của app: tổng pool của mọi instance phải nhỏ hơn max_connections, mỗi instance thường 10–20, và dùng Little's Law – request/s nhân thời gian giữ connection – để kiểm tra. Các timeout quan trọng: connection-timeout ngắn vài giây để fail nhanh, max-lifetime ngắn hơn giới hạn của firewall, và leak-detection-threshold để log stack trace nơi mượn connection quá lâu. Trade-off là pool lớn không làm DB nhanh hơn mà chỉ tăng contention. Khi thấy pending tăng, việc đầu tiên tôi làm là tìm transaction giữ connection lâu – thường là open-in-view hoặc gọi API ngoài trong transaction – chứ không tăng pool."
+
 > Senior tip: metric quan trọng nhất của connection pool là **thời gian chờ** và **số connection đang chờ (pending)**. Nếu pending > 0 thường xuyên, đừng tăng pool ngay – hãy tìm query chậm giữ transaction mở, vì tăng pool chỉ biến tắc nghẽn từ app xuống DB. Còn nếu DB CPU không vượt 50% mà vẫn chậm, lúc đó mới cân nhắc tăng pool.`,
   follow: [
     'Làm thế nào phát hiện connection bị rò rỉ trong production?',
@@ -1690,6 +1949,33 @@ spring:
   level: 'lead',
   q: 'Thay đổi schema trên bảng hàng trăm triệu dòng mà không gây downtime thế nào? So sánh expand/contract với Flyway và Liquibase.',
   a: `**Tóm tắt:** Nguyên tắc là **expand/contract** (mở rộng trước, thu hẹp sau) để mọi phiên bản ứng dụng đang chạy đều hoạt động đúng trong suốt quá trình triển khai. Quy trình: (1) **Expand** – thêm cột mới **nullable** hoặc có default không tốn kém; (2) **Backfill** dữ liệu theo lô nhỏ; (3) **Migrate** – code đọc/ghi cả cột cũ và cột mới; (4) **Contract** – xoá cột cũ ở một bản phát hành sau, khi không còn phiên bản cũ nào chạy.
+
+### Hiểu nhanh
+Đổi schema trên bảng lớn giống **sửa đường khi xe vẫn đang chạy**: bạn không thể đóng cả con đường (downtime), nên làm làn mới bên cạnh trước (expand), cho xe chạy được cả hai làn trong thời gian chuyển (dual-write, backfill), khi chắc chắn không còn xe nào dùng làn cũ thì mới phá nó (contract). Lý do phải làm vậy: khi deploy rolling, bản app cũ và bản app mới **chạy cùng lúc** vài phút đến vài giờ, cả hai phải hiểu được schema. Flyway và Liquibase là "sổ nhật ký thi công": ghi lại bước nào đã làm trên DB nào, để mọi môi trường đi cùng một lộ trình.
+
+### Thuật ngữ
+- **DDL**: câu lệnh đổi cấu trúc ({{CREATE}}, {{ALTER}}, {{DROP}}).
+- **Table rewrite**: DB chép toàn bộ bảng sang file mới khi ALTER – giữ khoá mạnh suốt thời gian chép.
+- **ACCESS EXCLUSIVE lock**: khoá mạnh nhất của PostgreSQL, chặn cả đọc lẫn ghi; hầu hết {{ALTER TABLE}} cần nó dù chỉ trong tích tắc.
+- **Online DDL**: DDL cho phép đọc/ghi đồng thời (MySQL {{ALGORITHM=INPLACE/INSTANT, LOCK=NONE}}).
+- **Backfill**: điền dữ liệu cho cột mới trên các dòng cũ, chạy theo lô.
+- **Dual-write**: trong giai đoạn chuyển, app ghi cùng lúc vào cột cũ và cột mới.
+- **Rolling deploy**: thay từng instance một, nên có lúc hai phiên bản app chạy song song.
+- **lock_timeout**: (PostgreSQL) thời gian tối đa một câu lệnh chờ để lấy khoá rồi bỏ cuộc.
+
+### Dòng thời gian một lần đổi tên cột
+~~~text
+Release N   : schema có status + order_status(null) | app ghi CẢ HAI, đọc status
+Backfill    : UPDATE theo lô 5000 dòng, nghỉ 100ms, theo dõi replication lag
+Release N+1 : app ghi CẢ HAI, đọc order_status    (app N vẫn chạy đúng)
+Release N+2 : app chỉ dùng order_status
+Release N+3 : DROP COLUMN status                   (không còn ai đọc nó)
+~~~
+1. **Expand bằng thao tác rẻ**: thêm cột nullable chỉ sửa metadata. Vì sao: tránh rewrite và tránh khoá lâu.
+2. **Dual-write trước khi backfill**: để dòng mới sinh ra trong lúc backfill không bị sót.
+3. **Backfill theo lô có điều kiện {{IS NULL}}**: chạy lại được nếu bị ngắt; lô nhỏ để mỗi transaction ngắn, không giữ khoá lâu, không làm replica trễ. Ví dụ 200 triệu dòng, lô 5000 dòng ~ 50ms ⇒ khoảng 40 nghìn lô, vài giờ chạy nền.
+4. **Chuyển đọc sang cột mới** ở release sau khi backfill xong và đã kiểm tra số dòng NULL = 0.
+5. **Contract** chỉ khi chắc chắn không còn instance nào của release cũ (kể cả bản rollback).
 
 ### Ví dụ: đổi tên cột {{status}} thành {{order_status}}
 ~~~sql
@@ -1706,17 +1992,18 @@ ALTER TABLE orders DROP COLUMN status;
 ~~~
 
 ### Mẹo tránh khóa lâu trên bảng lớn
-- **PostgreSQL 11+**: {{ADD COLUMN ... DEFAULT}} không còn rewrite toàn bảng (chỉ ghi giá trị default vào metadata, đọc sau thì mới materialize) – có thể dùng default an toàn.
+- **PostgreSQL 11+**: {{ADD COLUMN ... DEFAULT}} với default **không volatile** (hằng số, không phải {{random()}}/{{clock_timestamp()}}) không còn rewrite toàn bảng (chỉ ghi giá trị default vào catalog, dòng cũ trả về giá trị này khi đọc) – có thể dùng default an toàn.
+- **MySQL 8.0.12+**: {{ALTER TABLE ... ADD COLUMN ..., ALGORITHM=INSTANT}} chỉ sửa metadata, xong gần như tức thì (từ 8.0.29 thêm được cột ở bất kỳ vị trí nào).
 - **Tạo index**: {{CREATE INDEX CONCURRENTLY}} (PostgreSQL) chạy lâu nhưng **không khóa ghi**; bắt buộc chạy ngoài transaction. MySQL 8 dùng online DDL: {{ALTER TABLE ... ALGORITHM=INPLACE, LOCK=NONE}}.
 - **Backfill theo lô** + giới hạn tốc độ để không chiếm I/O và không làm replication lag tăng.
-- **Không dùng {{NOT NULL}} ngay** khi thêm cột trên bảng lớn: cần thêm nullable, backfill, rồi mới set NOT NULL (thao tác này cũng cần quét bảng – hãy kiểm tra chi phí trước).
+- **Không dùng {{NOT NULL}} ngay** khi thêm cột trên bảng lớn: cần thêm nullable, backfill, rồi mới set NOT NULL (thao tác này cũng cần quét bảng – hãy kiểm tra chi phí trước). Mẹo PostgreSQL 12+: thêm {{CHECK (order_status IS NOT NULL) NOT VALID}}, chạy {{VALIDATE CONSTRAINT}} (chỉ khoá nhẹ, không chặn ghi), sau đó {{SET NOT NULL}} sẽ dùng CHECK đã validate mà không quét lại bảng.
 
 ### Flyway vs Liquibase
 | Tiêu chí | Flyway | Liquibase |
 |---|---|---|
 | Định dạng | File SQL thuần trong resources | XML/YAML/JSON/SQL |
-| Kiểm soát | Bản vá (patch) theo phiên bản | Snapshot/changelog có thể tính checksum |
-| Rollback | Thủ công viết script rollback | Có khái niệm rollback declarative |
+| Kiểm soát | Migration đánh số phiên bản (V1, V2…), lưu checksum trong {{flyway_schema_history}} | Changeset (id + author) trong changelog, lưu checksum trong {{DATABASECHANGELOG}} |
+| Rollback | Bản miễn phí: tự viết migration "đi tiếp" để sửa; undo migration chỉ có ở bản trả phí | Có khối rollback trong changeset (một số lệnh tự sinh được rollback) |
 | Hợp với | Quy trình review SQL rõ ràng | Nhiều môi trường, nhiều biến thể schema |
 | Điểm mạnh | Đơn giản, dễ review, dễ đọc diff | Quản lý được môi trường phức tạp |
 
@@ -1727,6 +2014,15 @@ Cả hai đều chạy **trước khi app khởi động** (hoặc qua init cont
 - Thêm cột {{NOT NULL}} có default trên MySQL bản cũ sẽ **copy toàn bảng** và khóa lâu.
 - Trigger tạm thời để đồng bộ 2 cột có thể giảm hiệu năng ghi đáng kể – nhớ gỡ trigger ở bước contract.
 - Với bảng cực lớn, hãy cân nhắc công cụ chuyên dụng: {{gh-ost}}, {{pt-online-schema-change}}, Vitess.
+
+### Lỗi hay gặp
+- **ALTER chờ khoá phía sau một transaction dài**: ALTER xếp hàng chờ ACCESS EXCLUSIVE, và **mọi câu SELECT tới sau cũng xếp hàng sau ALTER**. Triệu chứng – cả bảng "đơ" dù ALTER rất nhanh. Cách tránh: {{SET lock_timeout = '3s'}} trước DDL và retry, kiểm tra không có transaction dài.
+- **{{CREATE INDEX CONCURRENTLY}} thất bại giữa chừng**: để lại index trạng thái INVALID vẫn làm chậm ghi. Cách tránh: kiểm tra {{pg_index.indisvalid}}, drop và tạo lại; nhớ Flyway phải chạy lệnh này ngoài transaction.
+- **Gộp expand và contract vào một release**: triệu chứng – lỗi "column does not exist" trên các pod cũ trong lúc rolling. Cách tránh: tách ít nhất hai release.
+- **Sửa file migration đã chạy**: checksum lệch, Flyway/Liquibase từ chối khởi động. Cách tránh: không bao giờ sửa migration đã apply, luôn tạo migration mới.
+
+### Trả lời miệng 1 phút
+"Tôi dùng expand/contract: thêm cấu trúc mới theo cách không khoá bảng, cho app ghi cả cũ lẫn mới, backfill theo lô nhỏ, chuyển đọc sang cột mới, và chỉ xoá cột cũ ở một release sau. Lý do là khi rolling deploy, app cũ và app mới chạy cùng lúc nên schema phải tương thích cả hai. Về cơ chế, tôi tránh mọi thao tác rewrite bảng, dùng CREATE INDEX CONCURRENTLY hoặc online DDL của MySQL, và đặt lock_timeout để ALTER không làm nghẽn cả bảng. Flyway đơn giản, SQL thuần, dễ review; Liquibase mạnh hơn khi cần nhiều DB và rollback khai báo. Kinh nghiệm: luôn chạy thử migration trên bản sao dữ liệu thật để đo thời gian trước khi lên production."
 
 > Senior tip: hãy coi **migration script là code** và cần review như code: không được chạy trực tiếp lên production, phải có bản chạy thử trên dữ liệu giống hệt production và đo thời gian. Với bảng hàng trăm triệu dòng, chênh lệch giữa "chạy 2 phút trên staging 1 triệu dòng" và "chạy 6 tiếng trên production" là chuyện thường ngày. Ngoài ra, luôn chuẩn bị kế hoạch **rollback** dựa trên việc code cũ vẫn chạy được với schema mới.`,
   follow: [
@@ -1741,6 +2037,33 @@ Cả hai đều chạy **trước khi app khởi động** (hoặc qua init cont
   level: 'senior',
   q: 'SQL và NoSQL chọn thế nào? Với Redis, MongoDB, Cassandra và Elasticsearch, mỗi loại phù hợp với bài toán gì?',
   a: `**Tóm tắt:** SQL (PostgreSQL/MySQL/Oracle) thắng ở **tính nhất quán, transaction, join và schema rõ ràng**; NoSQL thắng ở **khả năng scale ngang, schema linh hoạt và độ trễ thấp** cho các mô hình truy cận đặc thù. Câu hỏi đúng không phải "SQL hay NoSQL" mà là: **mô hình dữ liệu, mô hình truy vấn và yêu cầu nhất quán của bài toán là gì?**
+
+### Hiểu nhanh
+Chọn database giống chọn **phương tiện chở hàng**. SQL như xe tải có thùng chia ngăn, có sổ kế toán đi kèm: chở được mọi thứ, kiểm đếm chặt (transaction, ràng buộc), hỏi kiểu gì cũng trả lời được (join, báo cáo). Redis như **xe máy giao hàng**: cực nhanh cho món nhỏ, nhưng chở ít và không phải kho lưu trữ. MongoDB như **thùng carton đóng sẵn theo đơn**: mỗi đơn gói gọn trong một thùng, lấy ra là đủ. Cassandra như **mạng lưới kho tổng ở nhiều thành phố**: nhập hàng liên tục cực nhanh, nhưng chỉ tìm được theo mã kho. Elasticsearch như **cuốn danh bạ tra từ khoá**: tìm "áo khoác đỏ" trong tích tắc, nhưng không phải nơi giữ hàng gốc.
+
+### Thuật ngữ
+- **ACID**: Atomicity, Consistency, Isolation, Durability – bốn bảo đảm của transaction.
+- **Scale ngang (horizontal)**: thêm máy để tăng năng lực, thay vì nâng cấp một máy (scale dọc).
+- **Eventual consistency**: các bản sao sẽ khớp nhau "sau một lúc", không phải ngay lập tức.
+- **Partition key** (Cassandra): khoá quyết định dữ liệu nằm ở node nào; mọi truy vấn hiệu quả đều phải có nó.
+- **Tunable consistency**: Cassandra cho chọn mỗi query cần bao nhiêu replica xác nhận ({{ONE}}, {{QUORUM}}, {{ALL}}).
+- **Inverted index**: bảng tra "từ → danh sách tài liệu chứa từ đó", nền tảng của full-text search.
+- **System of record**: nơi giữ bản dữ liệu "chính thức"; các hệ khác là bản phái sinh.
+- **CDC (Change Data Capture)**: đọc log thay đổi của DB (WAL/binlog) để đẩy sang hệ thống khác, ví dụ qua Debezium.
+
+### Một kiến trúc điển hình
+~~~text
+             ghi            CDC (Debezium) / outbox
+ App ----> [PostgreSQL] ----------> [Kafka] ----> [Elasticsearch]  (search, trễ ~1-5s)
+  |   đọc nhiều  ^                          +---> [Data warehouse] (báo cáo)
+  +---> [Redis cache] (miss -> đọc PostgreSQL, TTL 5 phút)
+~~~
+### Cách quyết định, từng bước
+1. **Liệt kê truy vấn chính** trước khi chọn DB (ví dụ: "lấy đơn theo id", "đơn của khách trong 30 ngày", "tìm sản phẩm theo từ khoá"). Vì sao: NoSQL được thiết kế theo truy vấn, chọn sai là phải viết lại.
+2. **Xác định yêu cầu nhất quán**: tiền, tồn kho cần ACID → SQL; lượt xem, gợi ý chấp nhận trễ → có thể NoSQL.
+3. **Ước lượng tải**: 2000 ghi/s một PostgreSQL tốt vẫn gánh được; 200 nghìn ghi/s liên tục, nhiều region mới thật sự cần Cassandra.
+4. **Chọn system of record** (thường là SQL), các hệ khác là bản phái sinh nhận dữ liệu qua CDC/outbox. Vì sao: một nguồn sự thật duy nhất giúp rebuild được khi hệ phái sinh hỏng.
+5. **Tính chi phí vận hành**: mỗi hệ thêm vào là thêm backup, monitoring, nâng cấp, người trực.
 
 ### Khi nào chọn SQL
 - Dữ liệu có quan hệ rõ ràng, cần transaction nhiều bảng (chuyển tiền, đơn hàng + kho).
@@ -1774,6 +2097,15 @@ Hãy đi từ **ràng buộc đo được**:
 - Đưa dữ liệu vào nhiều hệ thống mà không có quy trình đồng bộ là nguồn gốc của bất nhất quán dữ liệu kinh điển.
 - "Không có SQL" là một loại fanatism: hầu hết hệ thống thành công dùng cả hai theo đúng vai trò.
 
+### Lỗi hay gặp
+- **Chọn MongoDB "vì không cần schema"** rồi sau đó cần join và transaction nhiều document. Triệu chứng – code app tự join, dữ liệu lệch. Cách tránh: nếu dữ liệu quan hệ chặt, dùng SQL; PostgreSQL {{JSONB}} đã đủ cho phần linh hoạt.
+- **Cache Redis không có TTL và không có chiến lược invalidation**: triệu chứng – người dùng thấy giá cũ hàng giờ. Cách tránh: TTL + xoá key khi ghi (cache-aside), chấp nhận và nói rõ độ trễ.
+- **Thiết kế bảng Cassandra theo kiểu SQL**: triệu chứng – phải dùng {{ALLOW FILTERING}}, query chậm và làm nặng cluster. Cách tránh: mỗi truy vấn một bảng, denormalize theo partition key.
+- **Ghi vào DB và Elasticsearch trong cùng request (dual-write)**: một bên lỗi là lệch vĩnh viễn. Cách tránh: ghi DB, đồng bộ sang ES bằng CDC/outbox, có job reindex.
+
+### Trả lời miệng 1 phút
+"Tôi không chọn theo 'SQL hay NoSQL' mà theo mô hình truy vấn và yêu cầu nhất quán. Dữ liệu có quan hệ, cần transaction như tiền và đơn hàng thì tôi chọn PostgreSQL làm nguồn dữ liệu chính. Redis tôi dùng cho cache, session, rate limit – những thứ mất được và rebuild được. MongoDB hợp với document tự chứa, đọc nguyên khối. Cassandra cho ghi rất lớn, nhiều region, truy vấn luôn theo partition key. Elasticsearch cho full-text search, là bản phái sinh đồng bộ qua CDC. Trade-off là mỗi hệ thêm vào làm tăng độ trễ đồng bộ và chi phí vận hành. Kinh nghiệm của tôi: một PostgreSQL được tối ưu tốt gánh được nhiều hơn mọi người nghĩ, nên tôi chỉ thêm hệ mới khi có số liệu chứng minh."
+
 > Senior tip: đừng trả lời "chúng tôi dùng PostgreSQL vì nó mạnh". Câu trả lời mạnh là: "chúng tôi chọn PostgreSQL vì nghiệp vụ cần transaction chéo bảng và join; phần tìm kiếm toàn văn tách sang Elasticsearch để không ảnh hưởng write latency; Redis chỉ cache những gì chịu được việc mất để rebuild". Mỗi lựa chọn đều gắn với một ràng buộc cụ thể – đó là tư duy của kỹ sư 4–8 năm.`,
   follow: [
     'Vì sao Elasticsearch không nên là nguồn dữ liệu chuẩn?',
@@ -1787,6 +2119,31 @@ Hãy đi từ **ràng buộc đo được**:
   level: 'senior',
   q: 'Dùng {{SELECT ... FOR UPDATE SKIP LOCKED}} để làm hàng đợi job trong database thế nào, và những điểm nào cần lưu ý?',
   a: `**Tóm tắt:** {{FOR UPDATE SKIP LOCKED}} cho phép nhiều worker **lấy job khác nhau song song** mà không chờ nhau: worker A khoá dòng job 1, worker B thấy dòng đó bị khoá nên **bỏ qua** và lấy dòng tiếp theo. Đây là cách làm job queue đơn giản, không cần broker, và tận dụng chính transaction của DB để đảm bảo tính nhất quán.
+
+### Hiểu nhanh
+Hãy tưởng tượng một **bảng phân công việc dán trên tường** và 5 nhân viên. Mỗi người đi tới, tìm tờ việc chưa ai nhận, dán tên mình lên rồi mang đi làm. Nếu dùng {{FOR UPDATE}} thường, khi hai người cùng nhắm vào tờ đầu tiên, người thứ hai phải **đứng chờ** người kia dán tên xong. Với {{SKIP LOCKED}}, người thứ hai thấy tờ đó "đang có người cầm" thì **lấy luôn tờ kế tiếp** – không ai phải chờ ai. Dán tên xong (commit) thì rời bảng ngay để làm việc, không đứng ôm bảng.
+
+### Thuật ngữ
+- **Row lock (FOR UPDATE)**: khoá dòng để không ai khác sửa hay khoá nó tới khi transaction kết thúc.
+- **SKIP LOCKED**: khi gặp dòng đang bị khoá, bỏ qua thay vì chờ – kết quả cố ý không nhất quán, chỉ hợp cho hàng đợi.
+- **CTE ({{WITH ... AS}})**: truy vấn con đặt tên, dùng như một bảng tạm trong câu lệnh.
+- **Lease**: "hợp đồng thuê" có hạn – job thuộc về worker tới thời điểm {{locked_at + timeout}}, quá hạn thì người khác được lấy lại.
+- **At-least-once**: mỗi job chắc chắn được xử lý ít nhất một lần, có thể nhiều hơn một lần.
+- **Idempotent**: chạy lại nhiều lần cho kết quả như chạy một lần.
+- **Dead tuple**: phiên bản dòng cũ trong PostgreSQL chờ VACUUM dọn; bảng job update liên tục sinh rất nhiều.
+- **Dead-letter**: nơi chứa job lỗi quá số lần retry để người xem xét.
+
+### Vòng đời một job
+~~~text
+PENDING --(worker lấy + commit)--> RUNNING --(xong)--> DONE
+   ^                                 |  |
+   |  (lỗi, attempts < 5, run_at = now()+backoff)
+   +---------------------------------+  +--(attempts >= 5)--> FAILED (dead-letter)
+   ^
+   +--(reaper: RUNNING mà locked_at < now() - 10 phút)
+Worker A: lấy job 1..10   Worker B: bỏ qua 1..10 (đang khoá) -> lấy 11..20
+~~~
+Điểm mấu chốt: khoá dòng chỉ sống trong **vài mili giây** của transaction lấy job; sau commit, "quyền sở hữu" job được thể hiện bằng trạng thái {{RUNNING}} + {{locked_at}} lưu trong dòng, nên worker chết thì reaper vẫn nhận ra được.
 
 ### Câu SQL lấy job
 ~~~sql
@@ -1834,6 +2191,15 @@ Khi tải lớn, hãy chuyển sang Kafka/RabbitMQ/SQS: độ trễ thấp hơn,
 - Giữ transaction mở trong khi xử lý job ⇒ giảm throughput và tăng deadlock.
 - Query lấy job phải dùng **index** phù hợp, nếu không sẽ quét toàn bảng mỗi vòng poll.
 
+### Lỗi hay gặp
+- **Không có index cho điều kiện lấy job**: bảng job có 10 triệu dòng DONE, mỗi lần poll quét lại hết. Triệu chứng – CPU DB cao dù chỉ có vài job PENDING. Cách tránh: partial index {{CREATE INDEX ON jobs (run_at) WHERE status = 'PENDING'}} (PostgreSQL), và chuyển/xoá job DONE cũ định kỳ.
+- **Poll quá dày từ nhiều worker**: 50 worker poll mỗi 100ms = 500 query/s chỉ để hỏi "có việc không". Cách tránh: poll có backoff khi rỗng, hoặc dùng {{LISTEN/NOTIFY}} của PostgreSQL để đánh thức worker.
+- **Reaper đặt timeout ngắn hơn thời gian xử lý thật**: job đang chạy bị trả về PENDING, worker khác chạy trùng. Cách tránh: timeout dư so với p99, worker gia hạn {{locked_at}} (heartbeat) với job dài, và job idempotent.
+- **Ghi kết quả không kiểm tra chủ sở hữu**: worker cũ (đã bị reaper thu hồi) vẫn cập nhật DONE đè lên. Cách tránh: {{UPDATE ... WHERE id = ? AND locked_by = ? AND status = 'RUNNING'}} và kiểm tra số dòng cập nhật.
+
+### Trả lời miệng 1 phút
+"FOR UPDATE SKIP LOCKED cho phép nhiều worker cùng lấy job từ một bảng mà không chờ nhau: dòng nào đang bị worker khác khoá thì bỏ qua và lấy dòng tiếp theo. Tôi làm theo kiểu lấy một lô nhỏ, đổi trạng thái sang RUNNING kèm locked_at rồi commit ngay, xử lý job ngoài transaction, và cập nhật DONE hoặc FAILED trong transaction riêng. Vì là at-least-once nên job phải idempotent, và cần một reaper trả các job RUNNING quá hạn về PENDING. Trade-off: đơn giản, không cần thêm broker, ghi job cùng transaction với nghiệp vụ, nhưng không hợp cho tải rất lớn hay cần routing phức tạp. Tôi từng dùng nó cho gửi email và đồng bộ đối tác vài trăm job mỗi giây, chạy ổn định với partial index trên job PENDING."
+
 > Senior tip: {{SKIP LOCKED}} là ví dụ đẹp của việc "dùng đúng nguyên lý của hệ quản trị cơ sở dữ liệu thay vì dựng thêm hạ tầng". Trước khi chọn, hãy hỏi: lưu lượng job có đủ lớn để cần broker không, và đội ngũ có chịu vận hành thêm RabbitMQ/Kafka không? Nếu câu trả lời là "chưa cần", hãy bắt đầu với DB – và thiết kế API để sau này đổi sang broker mà không phải viết lại nghiệp vụ.`,
   follow: [
     'Tại sao phải commit ngay sau khi lấy job thay vì xử lý job trong cùng transaction?',
@@ -1847,6 +2213,31 @@ Khi tải lớn, hãy chuyển sang Kafka/RabbitMQ/SQS: độ trễ thấp hơn,
   level: 'lead',
   q: 'So sánh Oracle và PostgreSQL: những khác biệt nào dev Java cần biết, đặc biệt khi làm việc với hệ thống dùng Oracle (rất phổ biến tại ngân hàng Việt Nam)?',
   a: `**Tóm tắt:** Cả hai đều là RDBMS mạnh với transaction, partition và optimizer tốt. Khác biệt quan trọng nhất với dev Java: **sequence và cách sinh id**, **xử lý chuỗi rỗng và NULL**, **cú pháp phân trang và hàm ngày**, **driver và cách đọc execution plan**. Nhiều hệ thống ngân hàng VN chạy Oracle, nên hiểu khác biệt này giúp bạn đọc code cũ và debug nhanh hơn nhiều.
+
+### Hiểu nhanh
+Oracle và PostgreSQL giống hai hãng ô tô cùng hạng sang: đều có vô lăng, phanh, túi khí (transaction, index, MVCC), nhưng **vị trí nút bấm khác nhau** – lái quen xe này sang xe kia dễ bật nhầm cần gạt nước thay vì xi-nhan. Với dev Java, "nút bấm" là: cách sinh id, cách đối xử với chuỗi rỗng, cú pháp phân trang, kiểu ngày giờ và công cụ xem plan. Code JPA thuần ít bị ảnh hưởng, nhưng native query, stored procedure và dữ liệu hiện có thì dính trực tiếp. Hiểu khác biệt giúp bạn đọc code cũ của ngân hàng và tránh bug "chạy local PostgreSQL ổn, lên Oracle thì lỗi".
+
+### Thuật ngữ
+- **Sequence**: object sinh số tăng dần độc lập với bảng; {{CACHE n}} cấp sẵn n số trong bộ nhớ nên nhanh nhưng có thể nhảy số (gap) khi restart.
+- **VARCHAR2**: kiểu chuỗi chính của Oracle; chuỗi rỗng lưu vào sẽ thành NULL.
+- **ROWNUM**: số thứ tự Oracle gán cho dòng khi trả kết quả, dùng để phân trang ở bản cũ.
+- **PL/SQL / PL/pgSQL**: ngôn ngữ thủ tục chạy trong DB (stored procedure, trigger) của Oracle / PostgreSQL.
+- **Undo segment**: nơi Oracle lưu dữ liệu cũ để rollback và cho đọc nhất quán (tương tự undo log InnoDB).
+- **RAC / Data Guard**: cụm nhiều node dùng chung storage / bản sao dự phòng ở site khác của Oracle.
+- **DBMS_XPLAN**: package Oracle để hiển thị execution plan.
+- **allocationSize**: tham số JPA của {{@SequenceGenerator}}, Hibernate lấy trước bao nhiêu id mỗi lần gọi sequence (mặc định 50).
+
+### Sinh id bằng sequence với JPA, từng bước
+~~~text
+DB:  CREATE SEQUENCE order_seq START WITH 1 INCREMENT BY 50 CACHE 20;
+JPA: @SequenceGenerator(name="ord", sequenceName="order_seq", allocationSize=50)
+ Lần 1: Hibernate gọi nextval -> 1   => tự cấp id 1..50 trong bộ nhớ
+ Lần 2: gọi nextval -> 51            => cấp 51..100
+~~~
+1. **Hibernate gọi sequence một lần cho cả lô id**. Vì sao: giảm số round-trip, insert hàng loạt nhanh hơn nhiều so với identity.
+2. **INCREMENT BY của sequence phải bằng allocationSize**. Vì sao: Hibernate 6 đọc metadata sequence lúc khởi động và mặc định báo lỗi khi lệch (cấu hình {{hibernate.id.sequence.increment_size_mismatch_strategy}}); nếu tắt kiểm tra mà vẫn lệch, hai instance có thể sinh trùng id hoặc nhảy số lớn.
+3. **Gap là bình thường**: restart app bỏ phí phần id chưa dùng, Oracle {{CACHE}} bỏ phí số đã cache khi instance tắt. Vì sao không sao: id chỉ cần duy nhất, không cần liên tục; số chứng từ liên tục phải sinh bằng cơ chế khác.
+4. **Trên Oracle RAC**, sequence {{NOORDER}} + {{CACHE}} khiến id từ các node không tăng đúng theo thời gian. Vì sao quan trọng: đừng sort "theo thời gian tạo" bằng id.
 
 ### Bảng so sánh
 | Tiêu chí | Oracle | PostgreSQL |
@@ -1862,14 +2253,14 @@ Khi tải lớn, hãy chuyển sang Kafka/RabbitMQ/SQS: độ trễ thấp hơn,
 | PL/SQL | PL/SQL (riêng, mạnh) | PL/pgSQL |
 | Đọc consistency | MVCC dựa trên undo; mặc định READ COMMITTED (snapshot theo statement), có SERIALIZABLE; không có dirty read | MVCC theo version dòng ({{xmin}}/{{xmax}}); mặc định READ COMMITTED, có REPEATABLE READ/SERIALIZABLE |
 | Driver JDBC | {{ojdbc11}} (JDK 11+), {{ojdbc17}} cho JDK 17 | {{org.postgresql:postgresql}} |
-| Phân vùng | Range/list/hash, partition exchange, reference partitioning | Declarative partitioning, declarative sharding (Citus) |
+| Phân vùng | Range/list/hash, partition exchange, reference partitioning | Declarative partitioning; sharding qua extension Citus |
 
 ### Những khác biệt "gây bug" nếu không biết
 1. **Chuỗi rỗng**: trên Oracle, insert {{''}} vào cột {{VARCHAR2}} biến thành NULL. Code Java so sánh {{"".equals(value)}} cho kết quả khác giữa hai DB.
 2. **Phân trang**: {{LIMIT 20 OFFSET 100}} là cú pháp PostgreSQL/MySQL; Oracle dùng {{OFFSET 100 ROWS FETCH NEXT 20 ROWS ONLY}}. Cùng một native query không chạy được trên cả hai.
-3. **Ngày**: Oracle {{SYSDATE}} trả thời gian hệ thống theo timezone của server; PostgreSQL nên dùng {{now()}} (theo timezone session). Với {{TIMESTAMPTZ}}, PostgreSQL lưu UTC và hiển thị theo timezone của session – hành vi này gần với Oracle hơn là với {{TIMESTAMP}}.
+3. **Ngày**: Oracle {{SYSDATE}} trả thời gian hệ thống theo timezone của server; PostgreSQL nên dùng {{now()}} (theo timezone session). Với {{TIMESTAMPTZ}}, PostgreSQL lưu UTC và hiển thị theo timezone của session – tương đương gần nhất bên Oracle là {{TIMESTAMP WITH LOCAL TIME ZONE}}; còn {{DATE}}/{{TIMESTAMP}} của Oracle không lưu múi giờ, giống {{timestamp}} (without time zone) của PostgreSQL.
 4. **So sánh null**: cả hai đều dùng {{IS NULL}}; {{NOT IN}} với một giá trị NULL trong tập kết quả sẽ trả về **không dòng nào** (cả hai DB đều vậy – đây là lỗi kinh điển).
-5. **Identifier**: Oracle ghi tên cột không phân biệt hoa thường (đọc là chữ hoa); cần quote khi dùng tên nhạy cảm.
+5. **Identifier**: tên không quote không phân biệt hoa thường, nhưng Oracle gập về **chữ HOA** còn PostgreSQL gập về **chữ thường**; tên được tạo trong dấu nháy kép ("OrderId") thì phải quote đúng y hệt mỗi lần dùng.
 6. **Hàm ngày cộng**: Oracle {{date + 1}} = thêm 1 ngày; PostgreSQL cần {{date + interval '1 day'}}.
 7. **Nối chuỗi với NULL**: Oracle {{||}} bỏ qua NULL ({{'abc' || NULL}} = {{'abc'}}), còn PostgreSQL {{'abc' || NULL}} = NULL – muốn bỏ qua NULL trên PostgreSQL dùng {{concat()}} hoặc {{coalesce}}. Query port từ Oracle sang hay bị NULL bất ngờ ở chỗ này.
 
@@ -1883,6 +2274,15 @@ Khi tải lớn, hãy chuyển sang Kafka/RabbitMQ/SQS: độ trễ thấp hơn,
 - Chuyển schema từ Oracle sang PostgreSQL: cần map kiểu dữ liệu, sequence, index, và **constraint đặc thù Oracle** (virtual column, function-based index).
 - Đọc execution plan: Oracle dùng {{V$SQL}} + {{DBMS_XPLAN}}; PostgreSQL dùng {{pg_stat_statements}} – hai bộ công cụ hoàn toàn khác nhau.
 - Cẩn thận với {{NUMBER}} không có scale của Oracle: so sánh số tiền dạng số thực có thể sai số ở ranh giới.
+
+### Lỗi hay gặp
+- **Validate chuỗi rỗng bằng DB**: trên Oracle, cột {{NOT NULL}} nhận {{''}} sẽ báo lỗi ORA-01400 vì {{''}} thành NULL. Triệu chứng – form có ô để trống chạy tốt trên PostgreSQL, lỗi trên Oracle. Cách tránh: chuẩn hoá ở tầng Java (chuỗi rỗng → null hoặc bắt buộc nhập) và test với Oracle thật (Testcontainers có image Oracle Free).
+- **Dùng {{java.util.Date}} / {{LocalDateTime}} với cột Oracle {{DATE}} mà quên múi giờ**: dữ liệu lệch 7 giờ khi server đặt UTC. Cách tránh: thống nhất lưu UTC, dùng {{Instant}}/{{OffsetDateTime}} và đặt {{hibernate.jdbc.time_zone}}.
+- **Biểu thức {{IN}} quá dài**: Oracle giới hạn 1000 phần tử trong danh sách {{IN}} (ORA-01795). Triệu chứng – batch lớn lỗi bất ngờ. Cách tránh: chia lô hoặc dùng bảng tạm/join.
+- **Lệch allocationSize với INCREMENT BY**: id trùng hoặc lỗi khởi động sau khi đổi DB. Cách tránh: khai báo tường minh cả hai và kiểm tra trong migration.
+
+### Trả lời miệng 1 phút
+"Oracle và PostgreSQL đều là RDBMS đầy đủ với MVCC và mặc định READ COMMITTED, nên logic transaction gần giống nhau. Khác biệt gây bug nhiều nhất mà tôi gặp: Oracle coi chuỗi rỗng là NULL, cú pháp phân trang khác – ROWNUM hoặc FETCH NEXT so với LIMIT OFFSET –, nối chuỗi với NULL cho kết quả khác, và kiểu DATE của Oracle có cả giờ. Về id, cả hai dùng sequence; tôi luôn để INCREMENT BY khớp allocationSize của Hibernate và chấp nhận gap. Trade-off khi chọn: Oracle mạnh về hệ sinh thái enterprise như RAC, Data Guard nhưng license đắt; PostgreSQL miễn phí, JSONB và extension rất mạnh. Khi làm hệ thống ngân hàng, tôi giữ native query theo từng dialect và chạy integration test trên đúng loại DB của production."
 
 > Senior tip: ở môi trường ngân hàng VN, câu hỏi "bạn từng làm việc với Oracle chưa, khác biệt gì so với PostgreSQL?" xuất hiện rất thường xuyên. Câu trả lời tốt là nhắc 2–3 khác biệt **có tác động thật** (chuỗi rỗng bị coi là NULL, cú pháp phân trang, cách sinh id bằng sequence và {{CACHE}} khiến gap trong id) và nói rõ bạn đã xử lý nó thế nào trong code. Nhớ kiểm tra câu lệnh SQL của hệ thống cũ: rất nhiều câu dùng {{NVL}}, {{SYSDATE}}, {{ROWNUM}} – đó là dấu hiệu rõ của Oracle.`,
   follow: [
@@ -3059,6 +3459,33 @@ Khi gọi {{repo.findByCustomerId(1L, PageRequest.of(0, 20))}}, Spring Data sinh
   q: 'PostgreSQL dùng MVCC: một {{UPDATE}} tạo ra một phiên bản dòng mới thì điều gì xảy ra với dữ liệu cũ? VACUUM, bloat và transaction ID wraparound liên quan gì đến nhau, và transaction dài gây hại ra sao?',
   a: `**Tóm tắt:** Trong MVCC của PostgreSQL, mỗi dòng mang {{xmin}} (transaction id tạo ra nó) và {{xmax}} (transaction id xoá/cập nhật nó). Mỗi lần {{UPDATE}} tạo **một tuple mới** và đánh dấu tuple cũ bằng {{xmax}} – dữ liệu cũ **không bị xoá ngay**, nó thành **dead tuple** và chỉ được dọn khi {{VACUUM}} chạy. Tích luỹ dead tuple tạo ra **bloat**. Song song, transaction id là 32 bit (~4,3 tỷ); nếu vòng sắp hết mà tuple cũ chưa được "đóng băng" thì xảy ra **wraparound** và PostgreSQL có thể **từ chối nhận lệnh ghi**. **Transaction dài là thủ phạm của cả hai**.
 
+### Hiểu nhanh
+Hãy hình dung một cuốn sổ ghi chép mà bạn **không bao giờ tẩy**: muốn sửa số dư, bạn gạch dòng cũ và viết dòng mới bên dưới, vì có người khác có thể vẫn đang đọc dòng cũ. Theo thời gian, sổ đầy những dòng bị gạch (dead tuple) – sổ dày lên dù thông tin thật không nhiều hơn (bloat). VACUUM là người dọn dẹp: xoá những dòng gạch mà không còn ai đọc, để chỗ trống cho dòng mới. Mỗi dòng còn ghi "số hiệu người viết" (xid), nhưng sổ chỉ có 4 tỷ số hiệu rồi phải quay lại từ đầu – nên những dòng rất cũ phải được đóng dấu "cũ vĩnh viễn" (freeze) trước khi số hiệu quay vòng. Một người đọc chậm chạp giữ sổ hàng giờ (transaction dài) sẽ khiến không dòng nào được dọn hay đóng dấu.
+
+### Thuật ngữ
+- **Tuple**: một phiên bản vật lý của một dòng trong bảng PostgreSQL.
+- **Dead tuple**: phiên bản đã bị xoá/thay thế và không còn transaction nào nhìn thấy, chờ VACUUM dọn.
+- **Bloat**: dung lượng bảng/index lớn hơn nhiều so với dữ liệu thật vì chứa dead tuple hoặc khoảng trống.
+- **xid (transaction id)**: số 32 bit cấp cho mỗi transaction có ghi.
+- **Freeze**: đánh dấu tuple đủ cũ là "thấy được với mọi transaction" để không phải so xid nữa.
+- **Wraparound**: khi xid quay vòng, tuple cũ chưa freeze bị hiểu nhầm là "của tương lai" và biến mất khỏi kết quả đọc.
+- **Autovacuum**: tiến trình nền tự chạy VACUUM/ANALYZE khi bảng vượt ngưỡng thay đổi.
+- **xmin horizon**: xid nhỏ nhất mà một snapshot còn sống cần; VACUUM không dọn được gì mới hơn mốc này.
+
+### Một UPDATE đi qua vòng đời, từng bước
+~~~text
+t0  UPDATE id=1 (xid 100):  [v1 xmin=90 xmax=100 (dead)] [v2 xmin=100 xmax=0 (live)]
+t1  Session X đang mở transaction từ trước xid 100 -> vẫn cần v1 -> VACUUM bỏ qua v1
+t2  Session X commit -> xmin horizon tiến lên -> VACUUM đánh dấu chỗ của v1 là trống
+t3  INSERT/UPDATE sau tái dùng chỗ trống đó (file không nhỏ đi, chỉ không to thêm)
+age(datfrozenxid): 0 ... 200 triệu (autovacuum ép freeze) ... ~2,1 tỷ (dừng nhận ghi)
+~~~
+1. **UPDATE ghi phiên bản mới**, không sửa tại chỗ. Vì sao: người đọc đang dùng snapshot cũ vẫn phải thấy v1.
+2. **v1 thành dead** khi mọi snapshot còn sống đều mới hơn xid 100. Vì sao phải chờ: dọn sớm sẽ làm người đọc cũ mất dữ liệu.
+3. **VACUUM dọn và ghi vào free space map**. Vì sao file không co lại: trả chỗ cho OS phải viết lại file (VACUUM FULL), quá đắt khi bảng đang chạy.
+4. **VACUUM freeze tuple cũ**, đẩy {{datfrozenxid}} lên. Vì sao bắt buộc: chỉ ~2,1 tỷ xid là "quá khứ", không freeze thì tới lúc DB phải dừng ghi để tự bảo vệ.
+5. **Transaction dài chặn cả bước 2 và 4**: xmin horizon đứng yên nên dead tuple không dọn, tuple không freeze được.
+
 ### Tuple version hoạt động thế nào
 ~~~sql
 -- Ban dau
@@ -3126,6 +3553,15 @@ SET lock_timeout = '5s';
 - **Bảng tăng trưởng nhanh**: với bảng append-only, hãy partition theo thời gian để xoá dữ liệu cũ bằng {{DROP TABLE}} partition (hoặc DETACH rồi DROP) thay vì {{DELETE}} hàng triệu dòng.
 - **Bảng tạm (temp table)**: autovacuum không xử lý được temp table; với connection pool, session gần như không bao giờ kết thúc nên temp table không bị drop, tích dead tuple và giữ tuổi XID – luôn drop (hoặc {{ON COMMIT DROP}}).
 
+### Lỗi hay gặp
+- **Ứng dụng quên commit (idle in transaction)** sau một exception bị nuốt. Triệu chứng – bảng update nhiều phình gấp 5–10 lần, query chậm dần qua vài ngày. Cách tránh: {{idle_in_transaction_session_timeout}}, cảnh báo transaction mở quá 5 phút qua {{pg_stat_activity.xact_start}}.
+- **Replication slot bị bỏ rơi** (consumer CDC đã tắt): slot giữ xmin/WAL cũ. Triệu chứng – đĩa đầy WAL, vacuum không dọn. Cách tránh: theo dõi {{pg_replication_slots}}, xoá slot không dùng, đặt {{max_slot_wal_keep_size}}.
+- **Chạy VACUUM FULL giờ cao điểm để "giải phóng đĩa"**: khoá ACCESS EXCLUSIVE, cả bảng đứng. Cách tránh: dùng extension {{pg_repack}} (viết lại online), hoặc chấp nhận bloat và chỉnh autovacuum.
+- **Bỏ qua cảnh báo tuổi xid**: triệu chứng – log "database must be vacuumed within N transactions". Cách tránh: theo dõi {{age(datfrozenxid)}} trong {{pg_database}}, cảnh báo ở mốc vài trăm triệu.
+
+### Trả lời miệng 1 phút
+"Trong PostgreSQL, UPDATE không sửa tại chỗ mà tạo tuple mới, tuple cũ được đánh xmax và thành dead tuple khi không còn snapshot nào cần nó. VACUUM dọn dead tuple để chỗ trống được tái dùng, đồng thời freeze tuple cũ vì xid chỉ có 32 bit – không freeze kịp thì tới gần wraparound PostgreSQL sẽ ngừng nhận ghi. Bloat là hệ quả khi dọn không kịp. Transaction dài là thủ phạm chung: nó giữ xmin horizon nên chặn cả dọn rác lẫn freeze, lại giữ lock và connection. Trade-off của MVCC là đọc không chặn ghi nhưng phải trả bằng việc dọn dẹp. Trong thực tế tôi chỉnh autovacuum theo từng bảng lớn, đặt idle_in_transaction_session_timeout và cảnh báo trên transaction dài, replication slot và tuổi xid."
+
 > Senior tip: hãy theo dõi **tỉ lệ dead tuple và tuổi transaction** như hai metric hàng ngày. Kinh nghiệm thực tế: phần lớn sự cố "database chậm không rõ nguyên nhân" đều truy vết ngược lại được tới một hoặc vài session {{idle in transaction}} kéo dài. Một câu lệnh giám sát đơn giản – {{SELECT count(*) FROM pg_stat_activity WHERE state = 'idle in transaction'}} – đã có thể cứu một sự cố nghiêm trọng.`,
   follow: [
     'Vì sao {{VACUUM}} không giải phóng dung lượng đĩa cho hệ điều hành?',
@@ -3139,6 +3575,32 @@ SET lock_timeout = '5s';
   level: 'senior',
   q: 'PostgreSQL có nhiều loại index: B-tree, partial, expression, GIN, BRIN. Mỗi loại giải quyết bài toán gì, khi nào optimizer không dùng được, và bạn chọn loại nào cho bảng log giao dịch khổng lồ?',
   a: `**Tóm tắt:** B-tree là mặc định và giải quyết tốt equality, range và {{ORDER BY}}. Các loại index khác làm được những điều B-tree không làm: **partial index** chỉ lập chỉ mục một phần dữ liệu (nhỏ, rẻ, hợp với trạng thái "chờ xử lý"); **expression index** lập chỉ mục theo **biểu thức** nên query phải viết **đúng biểu thức đó**; **GIN** là inverted index cho JSONB, mảng, full-text; **BRIN** là index cực nhỏ dựa trên **tương quan vật lý**, dành cho bảng append-only tăng dần theo thời gian. Điểm cần nhớ nhất: **optimizer chỉ dùng được index khi chứng minh được điều kiện query bao hàm điều kiện của index**.
+
+### Hiểu nhanh
+Mỗi loại index là một kiểu **sổ tra cứu** khác nhau. B-tree là mục lục sắp xếp theo chữ cái – tra từ chính xác hoặc một khoảng đều nhanh. Partial index là **sổ chỉ ghi các đơn chưa xử lý** – mỏng, tra cực nhanh, nhưng vô dụng nếu bạn tìm đơn đã xong. Expression index là mục lục theo **tên viết thường** – bạn phải tra bằng tên viết thường mới thấy. GIN là **bảng tra từ khoá cuối sách**: mỗi từ chỉ ra mọi trang có nó, hợp với JSON, mảng, full-text. BRIN là **nhãn trên gáy từng thùng hồ sơ** "tháng 1/2026": không chỉ đúng tờ, nhưng cho biết khỏi mở thùng nào – hiệu quả khi hồ sơ được xếp theo thời gian.
+
+### Thuật ngữ
+- **Partial index**: index có mệnh đề {{WHERE}}, chỉ chứa các dòng thoả điều kiện.
+- **Expression index**: index trên kết quả của một biểu thức/hàm thay vì cột thô.
+- **GIN (Generalized Inverted Index)**: index ngược, ánh xạ từng phần tử (key JSON, từ, phần tử mảng) tới các dòng chứa nó.
+- **BRIN (Block Range Index)**: lưu min/max cho mỗi dải page liên tiếp.
+- **Correlation**: mức độ thứ tự giá trị cột khớp với thứ tự vật lý của dòng trên đĩa ({{pg_stats.correlation}} gần 1 là tốt cho BRIN).
+- **Recheck / lossy**: index chỉ trả "có thể khớp", DB phải đọc dòng thật để kiểm tra lại.
+- **Pending list**: vùng đệm của GIN chứa entry mới chưa được gộp vào cấu trúc chính.
+- **Generic plan**: plan dùng chung cho mọi giá trị tham số của prepared statement.
+
+### Chọn index cho bảng log, từng bước
+~~~text
+transaction_log: 2 tỷ dòng, ~400GB, chỉ INSERT, created_at tăng dần
+B-tree(created_at): ~45GB, mỗi INSERT cập nhật cây
+BRIN(created_at)  : vài trăm KB, query 1 giờ dữ liệu -> chỉ đọc vài dải page
+ page range: [0-127] 01/01 00:00-00:07 | [128-255] 00:07-00:15 | ...
+~~~
+1. **Liệt kê query thật**: "log của tài khoản X trong 7 ngày", "tổng theo giờ". Vì sao: index phục vụ query, không phục vụ bảng.
+2. **Kiểm tra correlation** của {{created_at}}: ~1 vì chỉ append. Vì sao: BRIN chỉ có ích khi mỗi dải page chứa một khoảng giá trị hẹp.
+3. **Cột thời gian dùng BRIN**, cột tra cứu chính xác như {{account_id}} vẫn cần B-tree (thường composite {{(account_id, created_at)}}). Vì sao: BRIN không tìm được một giá trị rải rác khắp bảng.
+4. **Trạng thái nghiệp vụ hiếm** ("FAILED cần đối soát") dùng partial index. Vì sao: chỉ chứa vài nghìn dòng thay vì hàng tỷ.
+5. **Đo bằng EXPLAIN** – với BRIN nhìn "Rows Removed by Index Recheck" và số "lossy heap blocks" để biết độ chính xác.
 
 ### Các loại index
 | Loại | Dùng cho | Lưu ý |
@@ -3200,6 +3662,15 @@ CREATE INDEX idx_log_created_brin ON transaction_log USING brin (created_at)
 - Với **UUID ngẫu nhiên** làm khoá chính, B-tree bị phân mảnh ⇒ độ trễ ghi tăng. Dùng UUIDv7 hoặc khoá tăng dần.
 - **Index GIN + vacuum bị bỏ sót** ⇒ pending list phình ⇒ query chậm dần mà không có cảnh báo rõ ràng. Hãy theo dõi {{pgstatginindex}} và cấu hình autovacuum cho các bảng đó.
 
+### Lỗi hay gặp
+- **Tạo BRIN cho cột không tương quan** (ví dụ {{customer_id}} hay dữ liệu có UPDATE nhiều làm dòng di chuyển). Triệu chứng – index tồn tại nhưng plan vẫn đọc gần hết bảng. Cách tránh: xem {{pg_stats.correlation}} trước khi tạo.
+- **Expression index với hàm không IMMUTABLE**: PostgreSQL từ chối tạo (ví dụ {{to_tsvector}} một tham số phụ thuộc cấu hình). Cách tránh: dùng phiên bản có tham số cố định như {{to_tsvector('simple', body)}}.
+- **GIN trên cả JSONB lớn chỉ để tra một key**: index to, ghi chậm. Cách tránh: expression B-tree trên {{(payload->>'orderId')}}.
+- **Partial index với điều kiện tham số hoá**: ORM sinh {{status = ?}}, sau 5 lần chạy có thể chuyển sang generic plan và bỏ qua partial index. Cách tránh: viết literal trong query (giá trị cố định, không phải input người dùng) hoặc kiểm tra plan với tham số.
+
+### Trả lời miệng 1 phút
+"B-tree là mặc định cho equality, range và sort. Partial index chỉ lập chỉ mục phần dữ liệu có điều kiện, ví dụ đơn PENDING, nên nhỏ và rẻ, nhưng planner phải chứng minh được điều kiện query bao hàm điều kiện index. Expression index lập theo biểu thức như lower(email), query phải viết đúng biểu thức đó. GIN là index ngược cho JSONB, mảng, full-text, đọc rất nhanh nhưng ghi đắt hơn. BRIN chỉ lưu min max theo dải page, cực nhỏ, hợp với dữ liệu append-only theo thời gian. Với bảng log khổng lồ tôi dùng BRIN cho created_at, B-tree composite cho account_id cộng thời gian, partial index cho trạng thái hiếm, và thường kết hợp partition theo tháng. Luôn kiểm tra bằng EXPLAIN chứ không đoán."
+
 > Senior tip: chọn loại index nên bắt đầu từ **hình dạng dữ liệu và câu query thực tế**. Ba phát hiện hay bị bỏ qua: bảng log khổng lồ thường **không cần** B-tree mà BRIN là đủ và rẻ hơn hàng trăm lần; truy vấn JSONB theo **một key cụ thể** thường được phục vụ tốt hơn bằng expression index; partial index theo trạng thái nghiệp vụ giảm rất nhiều I/O.`,
   follow: [
     'Vì sao partial index thường không được dùng khi câu query dùng tham số thay vì giá trị cụ thể?',
@@ -3213,6 +3684,33 @@ CREATE INDEX idx_log_created_brin ON transaction_log USING brin (created_at)
   level: 'senior',
   q: 'Bảng giao dịch của bạn đã 800 triệu dòng và bạn muốn chia theo tháng, xoá dữ liệu cũ bằng cách drop partition. Partition pruning hoạt động thế nào, quản lý partition hằng ngày ra sao, và những ràng buộc nào của PostgreSQL có thể làm bạn phải thiết kế lại khoá chính?',
   a: `**Tóm tắt:** Partitioning theo khoảng thời gian là câu trả lời kinh điển cho bảng giao dịch lớn: dữ liệu chia theo {{RANGE}} trên cột thời gian, mỗi partition là một bảng con. Khi truy vấn có điều kiện trên cột partition, planner **pruning** – bỏ hẳn các partition không liên quan. Lợi ích lớn nhất không phải tốc độ đọc mà là **xoá dữ liệu cũ gần như tức thời** bằng {{DROP TABLE partition}} thay vì {{DELETE}} hàng chục triệu dòng. Cái giá: mọi **unique constraint** phải **chứa cột partition**.
+
+### Hiểu nhanh
+Partition giống việc lưu **hoá đơn theo từng hộp tháng** thay vì dồn chung một kho. Khi cần hoá đơn tháng 3, bạn chỉ mở hộp tháng 3 (pruning). Khi hết hạn lưu trữ 5 năm, bạn **vứt cả hộp** của tháng cũ nhất (drop partition) thay vì ngồi rút từng tờ (DELETE). Nhưng có một luật: muốn đảm bảo "số hoá đơn không trùng", mỗi hộp chỉ tự kiểm tra trong hộp của mình – nên khoá duy nhất phải chứa cả **tháng**, vì DB không có sổ chung để kiểm tra xuyên hộp.
+
+### Thuật ngữ
+- **Partitioned table (bảng cha)**: bảng logic không chứa dữ liệu, chỉ định tuyến dòng vào các partition.
+- **Partition key**: cột (hoặc biểu thức) quyết định dòng thuộc partition nào, ở đây {{created_at}}.
+- **Partition pruning**: loại bỏ partition không thể chứa dữ liệu khớp điều kiện – lúc lập plan hoặc lúc thực thi.
+- **DEFAULT partition**: partition hứng mọi dòng không thuộc khoảng nào.
+- **ATTACH / DETACH**: gắn một bảng có sẵn thành partition / tách partition ra thành bảng độc lập.
+- **Global index**: index duy nhất trải qua mọi partition – PostgreSQL **không có**, mỗi partition có index riêng.
+- **Metadata lock**: (MySQL) khoá trên định nghĩa bảng, DDL cần nó và sẽ chặn query nếu phải chờ.
+
+### Một ngày vận hành bảng partition, từng bước
+~~~text
+transaction_log (cha, PARTITION BY RANGE created_at)
+ |- _2024_01 ... _2026_03   (cũ, chỉ đọc)       -> sau 24 tháng: DETACH CONCURRENTLY, archive S3, DROP
+ |- _2026_04                (tháng hiện tại, ghi ~27 triệu dòng)
+ |- _2026_05, _2026_06      (tạo trước 2 tháng bởi job hằng ngày)
+ '- _default                (phải luôn rỗng - có dòng là cảnh báo)
+800 triệu dòng / 30 tháng ≈ 27 triệu dòng mỗi partition
+~~~
+1. **Job hằng ngày tạo partition cho 1–2 tháng tới** (pg_partman hoặc cron tự viết). Vì sao: INSERT vào khoảng chưa có partition sẽ fail.
+2. **Query luôn kèm điều kiện thời gian**: planner prune xuống 1–2 partition. Vì sao: mỗi partition 27 triệu dòng, index nhỏ, nằm gọn trong RAM.
+3. **Partition cũ có thể chuyển sang tablespace rẻ** hoặc nén, vì chỉ đọc. Vì sao: dữ liệu nóng/lạnh tách bạch.
+4. **Hết hạn lưu trữ thì DETACH rồi DROP**: xong trong mili giây, không sinh WAL hàng triệu dòng, không tạo dead tuple. Vì sao so với DELETE: DELETE 27 triệu dòng sinh hàng chục GB WAL, làm replica lag và để lại bloat.
+5. **Giám sát partition DEFAULT** và việc "đã có partition tháng sau chưa" bằng cảnh báo.
 
 ### Khai báo
 ~~~sql
@@ -3253,7 +3751,7 @@ ALTER TABLE transaction_log ATTACH PARTITION transaction_log_2025_01
 ~~~
 Lưu ý: {{DETACH ... CONCURRENTLY}} không chạy được trong transaction block và **không dùng được khi bảng có partition DEFAULT**. Lệnh {{ATTACH PARTITION}} (PG 12+) chỉ lấy {{SHARE UPDATE EXCLUSIVE}} trên bảng cha, nhưng khoá bảng được gắn và phải quét nó để kiểm tra ràng buộc (cùng quét partition DEFAULT nếu có). Mẹo: tạo trước một {{CHECK}} constraint khớp với khoảng giá trị để PostgreSQL bỏ qua bước quét.
 - **Xoá dữ liệu cũ**: {{DROP TABLE transaction_log_2024_01;}} – gần như tức thời vì chỉ unlink file, không ghi vào hàng triệu dòng.
-- **Vá lỗi dữ liệu sai năm**: có thể {{ATTACH}} một bảng đã chứa dữ liệu vào partition tương ứng (lưu ý phải có index trùng cấu trúc, và lệnh sẽ khoá).
+- **Vá lỗi dữ liệu sai năm**: có thể {{ATTACH}} một bảng đã chứa dữ liệu vào partition tương ứng (nếu bảng chưa có index khớp với index của bảng cha, PostgreSQL sẽ tự tạo trong lúc attach – tốn thời gian và giữ khoá, nên tạo sẵn index trước).
 
 ### Ràng buộc quan trọng
 1. **Unique constraint phải chứa cột partition**. Đây là điểm hay gây đau nhất:
@@ -3276,6 +3774,14 @@ Lưu ý: {{DETACH ... CONCURRENTLY}} không chạy được trong transaction bl
 - **Partition bị phình** (skew): nếu dữ liệu không phân bố đều theo tháng (ví dụ chương trình khuyến mãi), partition đó sẽ rất lớn.
 - **Bảng partitioned có overhead**: mỗi câu lệnh phải đi qua "append node" của partition ⇒ có chi phí nhỏ so với bảng thường. Với bảng nhỏ, partitioning có thể làm chậm.
 
+### Lỗi hay gặp
+- **Tìm theo {{id}} mà không có {{created_at}}**: plan quét index của mọi partition (30+ lần index lookup). Triệu chứng – API "lấy giao dịch theo id" chậm sau khi partition. Cách tránh: đưa {{created_at}} vào khoá API/URL, hoặc encode thời gian trong id (UUIDv7/snowflake) để suy ra partition.
+- **Hibernate entity với PK composite mới**: quên đổi mapping thành {{@IdClass}}/{{@EmbeddedId}}. Cách tránh: đổi mapping cùng lúc với migration, hoặc giữ {{@Id}} trên id nhưng hiểu rằng tính duy nhất chỉ còn do sequence bảo đảm.
+- **Tạo index trên bảng cha khi đã có hàng chục partition lớn**: lệnh khoá ghi rất lâu ({{CONCURRENTLY}} không dùng được trực tiếp trên bảng cha). Cách tránh: tạo index {{ON ONLY}} bảng cha, tạo {{CONCURRENTLY}} trên từng partition, rồi {{ALTER INDEX ... ATTACH PARTITION}}.
+
+### Trả lời miệng 1 phút
+"Với bảng giao dịch 800 triệu dòng, tôi partition theo RANGE trên created_at, mỗi tháng một partition. Khi query có điều kiện thời gian, planner prune và chỉ đọc partition liên quan, kể cả runtime pruning với tham số. Lợi ích lớn nhất là xoá dữ liệu cũ bằng detach và drop partition, gần như tức thời, không sinh WAL và bloat như DELETE. Vận hành hằng ngày gồm tạo partition trước bằng job, cảnh báo nếu partition DEFAULT có dữ liệu. Ràng buộc đau nhất là unique và primary key phải chứa cột partition, nên PK thành (id, created_at) và mọi đường truy cập theo id phải biết thời gian. Kinh nghiệm của tôi là quyết định thiết kế khoá này trước khi bảng lớn, vì đổi về sau rất tốn kém."
+
 > Senior tip: trước khi partition, trả lời ba câu: **(1) tôi xoá dữ liệu cũ theo chu kỳ nào?** (đây mới là lý do chính để partition) **(2) unique constraint có chứa được cột partition không?** Nếu không, bạn phải đổi thiết kế khoá – thay đổi rất tốn kém nên phải quyết định sớm. **(3) sau 3 năm sẽ có bao nhiêu partition?**`,
   follow: [
     'Vì sao unique constraint phải chứa cột partition và điều đó ảnh hưởng gì tới khoá chính?',
@@ -3289,6 +3795,30 @@ Lưu ý: {{DETACH ... CONCURRENTLY}} không chạy được trong transaction bl
   level: 'mid',
   q: 'Ba thuật toán join của PostgreSQL (nested loop, hash join, merge join) khác nhau thế nào? Đọc execution plan và tìm ra lý do optimizer chọn sai thuật toán là việc gì?',
   a: `**Tóm tắt:** Có ba thuật toán join chính. **Nested loop**: lấy từng dòng của bảng ngoài rồi tìm dòng khớp trong bảng trong bằng index – rẻ khi bảng ngoài nhỏ, đắt nếu bảng trong không có index. **Hash join**: dựng bảng băm từ bảng nhỏ hơn rồi quét bảng lớn – tốt cho join lớn không có index, nhưng cần **bộ nhớ** (vượt {{work_mem}} thì spill ra đĩa). **Merge join**: cả hai bảng đã sort thì trỏ hai danh sách song song – tốt khi cả hai lớn và có index đúng thứ tự. Optimizer chọn sai phần lớn **không phải vì thuật toán**, mà vì **thống kê sai**.
+
+### Hiểu nhanh
+Ghép danh sách 1000 đơn hàng với danh sách khách hàng có ba cách. **Nested loop**: cầm từng đơn, tra danh bạ (index) tìm khách – nhanh nếu chỉ có 10 đơn, mệt nếu có 1 triệu. **Hash join**: chép danh sách khách vào một cuốn sổ chia ngăn theo chữ cái đầu (bảng băm), rồi lướt qua các đơn, mỗi đơn mở đúng ngăn – nhanh cho khối lượng lớn nhưng cần bàn đủ rộng để bày sổ (bộ nhớ). **Merge join**: cả hai danh sách đều đã xếp theo mã khách, bạn dò hai ngón tay song song từ trên xuống. Optimizer chọn cách nào dựa trên **ước đoán số dòng** – đoán sai thì chọn sai.
+
+### Thuật ngữ
+- **Outer / inner (build / probe)**: vế được duyệt ngoài vòng lặp / vế bị tra cứu; với hash join, vế build dựng bảng băm, vế probe đi dò.
+- **Cardinality estimate**: số dòng optimizer dự đoán mỗi node sẽ trả về.
+- **work_mem**: bộ nhớ cho mỗi thao tác sort/hash; PostgreSQL 13+ cho hash dùng {{work_mem × hash_mem_multiplier}} (mặc định 2.0 từ bản 15).
+- **Spill / Batches**: dữ liệu không vừa bộ nhớ phải ghi tạm ra đĩa, chia thành nhiều lô.
+- **default_statistics_target**: số mẫu/khoảng histogram thu thập cho mỗi cột khi ANALYZE.
+- **Extended statistics**: thống kê nhiều cột cùng lúc để optimizer biết các cột phụ thuộc nhau.
+- **Visibility map**: bản đồ đánh dấu page mà mọi tuple đều visible, cho phép index-only scan bỏ qua heap.
+
+### Optimizer chọn sai như thế nào, từng bước
+~~~text
+WHERE country = 'VN' AND city = 'Hanoi'
+ước tính: P(VN)=0.1 x P(Hanoi)=0.05 x 1.000.000 = 5.000 dòng (giả định độc lập)
+thực tế : mọi Hanoi đều là VN -> 50.000 dòng (lệch 10 lần)
+=> chọn Nested Loop cho 5.000 dòng, thực tế chạy 50.000 lần index lookup
+~~~
+1. **Ước số dòng mỗi node** từ thống kê cột. Vì sao dễ sai: mặc định optimizer coi các cột là **độc lập** và nhân xác suất.
+2. **Tính cost từng thuật toán** với số dòng đó: nested loop ~ rows_outer × cost_lookup; hash join ~ build + probe tuyến tính; merge join ~ sort (nếu chưa có thứ tự) + merge. Vì sao: với ít dòng ngoài, nested loop thắng; nhiều dòng thì hash thắng.
+3. **Chọn plan cost thấp nhất**. Khi ước 5.000 mà thật 50.000, cost của nested loop bị đánh giá thấp 10 lần.
+4. **Sửa ở gốc**: {{CREATE STATISTICS ... (dependencies)}} trên {{(country, city)}} rồi {{ANALYZE}} → ước tính về gần 50.000 → planner tự chọn hash join.
 
 ### So sánh
 | Thuật toán | Cơ chế | Tốt khi | Xấu khi |
@@ -3332,6 +3862,14 @@ Các dấu hiệu đáng chú ý:
 - **Tăng {{work_mem}} toàn cục** có thể làm hỏng máy chủ khi nhiều session cùng dùng. Hãy đặt theo session/role, và nhớ rằng nó bị tính cho **mỗi** node của plan.
 - **Tối ưu theo "đẹp của plan"** thay vì theo số đo thực tế là sai lầm phổ biến: một plan trông lạ lùng vẫn có thể nhanh hơn.
 
+### Lỗi hay gặp
+- **Dùng {{enable_nestloop = off}} trên production để "sửa" plan**: cứu một query nhưng làm hỏng các query khác dùng chung session/role. Cách tránh: chỉ dùng để chẩn đoán, sửa bằng thống kê/index; nếu buộc phải ép plan thì dùng {{SET LOCAL}} trong đúng transaction.
+- **Batch insert lớn rồi query ngay**: autoanalyze chưa kịp chạy, thống kê nghĩ bảng còn rỗng. Triệu chứng – job ETL chậm bất thường ở bước ngay sau load. Cách tránh: gọi {{ANALYZE table}} tường minh sau khi load.
+- **Join trên cột khác kiểu** ({{bigint}} với {{varchar}}, hoặc {{numeric}} với {{int}}): index không dùng được, phải ép kiểu từng dòng. Cách tránh: thống nhất kiểu dữ liệu của FK và PK.
+
+### Trả lời miệng 1 phút
+"Nested loop duyệt từng dòng vế ngoài và tra vế trong qua index, tốt khi vế ngoài nhỏ. Hash join dựng bảng băm từ vế nhỏ rồi quét vế lớn, tốt cho join lớn không có index nhưng cần work_mem, thiếu thì spill ra đĩa với Batches lớn hơn 1. Merge join trộn hai dãy đã sắp xếp, tốt khi cả hai lớn và có sẵn thứ tự. Khi đọc plan, tôi so estimated rows với actual rows ở từng node: lệch lớn gần như luôn là nguyên nhân optimizer chọn sai thuật toán, thường do thống kê cũ, các cột tương quan, hoặc generic plan. Tôi sửa bằng ANALYZE, tăng statistics target, extended statistics, còn tắt enable_hashjoin chỉ để chẩn đoán. Kinh nghiệm: sửa ước lượng thì planner tự chọn đúng, ép plan chỉ là băng dán tạm."
+
 > Senior tip: hãy lưu {{EXPLAIN (ANALYZE)}} của các query quan trọng vào CI hoặc lưu theo thời gian để phát hiện **plan regression** trước khi lên production.`,
   follow: [
     'Hash join spill xuống đĩa xảy ra khi nào và ảnh hưởng thế nào tới hiệu năng?',
@@ -3345,6 +3883,33 @@ Các dấu hiệu đáng chú ý:
   level: 'lead',
   q: 'Bạn thêm read replica để giảm tải đọc, nhưng khách hàng báo "vừa chuyển tiền xong không thấy giao dịch". Replication lag đo thế nào, các nguyên nhân gây lag ra sao, và bạn giải quyết read-your-writes bằng cách nào trong Spring?',
   a: `**Tóm tắt:** Read replica chỉ nhận được các thay đổi đã **commit** trên primary và phải **replay** WAL để có dữ liệu tương ứng. Khoảng thời gian giữa lúc commit trên primary và lúc replica có dữ liệu đó gọi là **replication lag** – chính nó gây ra "đọc không thấy dữ liệu vừa ghi". Với PostgreSQL, lag đo bằng cột {{replay_lsn}} trong {{pg_stat_replication}} so với {{pg_current_wal_lsn()}}. Giải pháp read-your-writes: **đọc từ primary sau khi ghi**, **chờ replica bắt kịp** (theo LSN), **đọc từ cache** vừa ghi, hoặc **kiểm tra phiên bản** dòng đọc được.
+
+### Hiểu nhanh
+Primary giống **văn phòng chính** nơi mọi hợp đồng được ký; replica là **chi nhánh nhận bản photo** hợp đồng qua bưu điện. Bản photo luôn tới sau bản gốc một chút – vài mili giây khi bình thường, vài giây hoặc vài phút khi bưu điện tắc. Khách vừa ký hợp đồng ở văn phòng chính rồi chạy sang chi nhánh hỏi "hợp đồng của tôi đâu?" sẽ nhận câu trả lời "chưa có". Read-your-writes là luật "ai vừa ký thì trong ít phút tới hãy hỏi ở văn phòng chính", hoặc chi nhánh phải chờ bản photo về rồi mới trả lời.
+
+### Thuật ngữ
+- **WAL (Write-Ahead Log)**: nhật ký mọi thay đổi; replica nhận WAL qua streaming và áp dụng lại (replay).
+- **LSN (Log Sequence Number)**: vị trí byte trong WAL, tăng dần – dùng để so replica đã theo kịp tới đâu.
+- **Replication lag**: khoảng cách (byte hoặc thời gian) giữa primary và replica.
+- **Hot standby**: replica cho phép chạy query đọc trong khi đang replay.
+- **Asynchronous / synchronous replication**: primary trả commit không chờ / có chờ replica xác nhận.
+- **Read-your-writes**: bảo đảm người dùng luôn thấy dữ liệu chính mình vừa ghi.
+- **AbstractRoutingDataSource**: DataSource của Spring chọn DataSource đích theo một key ở mỗi lần lấy connection.
+- **RPO**: lượng dữ liệu tối đa chấp nhận mất khi sự cố.
+
+### Đường đi của một giao dịch chuyển tiền
+~~~text
+t=0ms   App -> PRIMARY: INSERT transfer; COMMIT (LSN 0/5A00010)
+t=1ms   App trả 200 OK, client chuyển màn hình
+t=3ms   Client GET /transactions -> REPLICA (replay_lsn = 0/59FFF00 < 0/5A00010)
+        => KHÔNG THẤY giao dịch
+t=40ms  REPLICA replay tới 0/5A00010 -> giờ mới thấy
+Lúc tải cao/VACUUM lớn: lag 40ms -> 8s => lỗi thành "thường xuyên"
+~~~
+1. **Commit trên primary** ghi WAL và flush; với async replication, primary trả OK ngay. Vì sao: không chờ mạng để giữ latency ghi thấp.
+2. **WAL sender gửi WAL** sang replica, replica ghi rồi replay. Vì sao có lag: mạng + I/O + replay đơn luồng.
+3. **Query đọc tới replica** trước khi replay xong LSN của giao dịch → không thấy dữ liệu.
+4. **Giải pháp đọc-sau-ghi**: lưu LSN (hoặc thời điểm) lần ghi cuối vào session; trong N giây sau đó, hoặc khi {{pg_last_wal_replay_lsn()}} của replica còn nhỏ hơn LSN đó, định tuyến đọc về primary.
 
 ### Replica lag đo thế nào
 ~~~sql
@@ -3361,7 +3926,7 @@ FROM pg_stat_replication;
 1. **Primary ghi quá nhiều**: mỗi giao dịch đều tạo WAL, replica phải nhận và replay bằng I/O.
 2. **Replica yếu hơn primary**: CPU/I/O của replica không đủ để replay kịp.
 3. **Mạng**: băng thông hoặc độ trễ giữa hai vùng.
-4. **Replay bị chặn bởi query dài chạy trên replica**: khi một câu {{SELECT}} dài đang đọc một trang cũ, replay của WAL tương ứng bị trì hoãn để bảo đảm tính nhất quán snapshot.
+4. **Replay bị chặn bởi query dài chạy trên replica**: khi WAL sắp xoá những phiên bản dòng mà một câu {{SELECT}} dài trên replica vẫn cần (ví dụ do VACUUM trên primary dọn dead tuple), replay bị trì hoãn tối đa {{max_standby_streaming_delay}} (mặc định 30s) rồi PostgreSQL **huỷ query** đó ("canceling statement due to conflict with recovery"). Bật {{hot_standby_feedback}} giảm huỷ query nhưng đổi lại gây bloat trên primary.
 5. **Thao tác nặng trên primary** ({{VACUUM}} lớn, {{REINDEX}}, {{CREATE INDEX}}, bulk update) sinh lượng WAL đột biến mà replica phải replay (replica không tự chạy VACUUM/REINDEX).
 6. **Bảng lớn, index bloat** khiến việc apply WAL chậm.
 
@@ -3390,6 +3955,14 @@ Spring không có sẵn cơ chế read replica; cần tự xây bằng {{Abstrac
 - **Hai connection pool** ⇒ tổng số connection của ứng dụng tăng lên; replica có {{max_connections}} riêng (và với hot standby phải không nhỏ hơn primary), cần tính lại sizing cho cả hai.
 - **Báo cáo chạy trên replica** có thể tạo tải nặng làm lag tăng, kéo theo việc đọc của người dùng cũng bị ảnh hưởng gián tiếp.
 
+### Lỗi hay gặp
+- **{{@Transactional(readOnly = true)}} ở service gọi từ trong một transaction ghi**: transaction ngoài đã giữ connection primary, routing không đổi – đây là hành vi đúng, nhưng dev tưởng đã đọc replica. Ngược lại, gọi method readOnly **ngay sau** method ghi (hai transaction riêng) thì lại đọc replica và dính lag. Cách tránh: đánh dấu rõ màn hình nào cần read-your-writes và để chúng đọc primary.
+- **Không có giới hạn lag**: replica trễ 10 phút vẫn nhận query. Triệu chứng – báo cáo sai số, khách hàng khiếu nại. Cách tránh: health check loại replica khỏi pool khi lag vượt ngưỡng.
+- **Query báo cáo bị huỷ trên replica** với lỗi conflict with recovery. Cách tránh: replica riêng cho báo cáo với {{max_standby_streaming_delay}} cao hơn, chấp nhận lag ở replica đó.
+
+### Trả lời miệng 1 phút
+"Replica chỉ thấy dữ liệu sau khi nhận và replay WAL từ primary, nên luôn có replication lag – đó là lý do khách vừa chuyển tiền xong mà không thấy giao dịch. Tôi đo lag bằng byte qua pg_stat_replication, so LSN với pg_current_wal_lsn, đáng tin hơn đo theo thời gian. Lag tăng khi primary ghi đột biến, replica yếu hơn, mạng chậm, hoặc replay bị chặn bởi query dài trên replica. Trong Spring tôi dùng AbstractRoutingDataSource bọc LazyConnectionDataSourceProxy, readOnly đi replica, ghi đi primary, và với dữ liệu nhạy cảm như số dư hay giao dịch vừa tạo thì luôn đọc primary, hoặc đọc primary trong vài giây sau lần ghi của chính user. Kinh nghiệm: coi lag là SLO có cảnh báo và tự động rút replica khỏi routing khi lag vượt ngưỡng."
+
 > Senior tip: coi **replication lag là một SLO có cảnh báo**. Ngưỡng nên theo tác động nghiệp vụ: nếu nghiệp vụ chấp nhận dữ liệu cũ tối đa 1 giây thì cảnh báo khi lag vượt 1 giây. Hãy có **đường lùi tự động về primary**, vì hệ thống đọc replica mà không có lưới an toàn sẽ biểu hiện sự cố thành "khách hàng không thấy giao dịch" – rất khó chẩn đoán.`,
   follow: [
     'Vì sao replay WAL trên replica có thể bị chặn bởi một câu SELECT dài?',
@@ -3403,6 +3976,32 @@ Spring không có sẵn cơ chế read replica; cần tự xây bằng {{Abstrac
   level: 'mid',
   q: 'Bạn cần báo cáo số dư chạy (running balance) và top-3 giao dịch lớn nhất của mỗi khách hàng. Window function giải quyết thế nào, và những bẫy nào khiến kết quả tính sai?',
   a: `**Tóm tắt:** Window function tính một giá trị **theo một tập hàng** (partition) mà **không gom nhóm**, nên vẫn giữ được từng dòng của bảng gốc. Ba ứng dụng phổ biến: **running balance** dùng {{SUM(...) OVER (PARTITION BY ... ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)}}, **xếp hạng** dùng {{RANK}}/{{DENSE_RANK}}/{{ROW_NUMBER}}, và **top-N mỗi nhóm** dùng {{ROW_NUMBER() OVER (PARTITION BY ... ORDER BY ...)}} rồi lọc ở lớp ngoài. Bẫy lớn nhất: chọn sai **frame** và quên **tie-breaker** trong {{ORDER BY}}.
+
+### Hiểu nhanh
+GROUP BY giống **gộp sổ cuối tháng**: mỗi khách chỉ còn một dòng tổng. Window function giống **viết thêm một cột bên lề** của sổ chi tiết: mỗi dòng giao dịch vẫn còn nguyên, nhưng bên cạnh có thêm "số dư tính tới dòng này" hoặc "giao dịch này xếp hạng mấy của khách". "Window" (cửa sổ) là nhóm dòng mà phép tính được phép nhìn vào: {{PARTITION BY}} quyết định nhóm (mỗi khách một nhóm), {{ORDER BY}} quyết định thứ tự, còn **frame** quyết định nhìn từ đâu tới đâu (từ đầu nhóm tới dòng hiện tại).
+
+### Thuật ngữ
+- **Window function**: hàm tính trên một tập dòng liên quan tới dòng hiện tại mà không gộp các dòng lại.
+- **PARTITION BY**: chia dòng thành các nhóm độc lập để tính (khác với partition bảng).
+- **Frame**: phạm vi dòng trong partition được dùng cho phép tính ở dòng hiện tại.
+- **ROWS vs RANGE**: frame đếm theo từng dòng vật lý / theo giá trị ORDER BY (dòng cùng giá trị là "peer", vào frame cùng nhau).
+- **Peer rows**: các dòng có cùng giá trị ORDER BY trong partition.
+- **Tie-breaker**: cột duy nhất thêm vào ORDER BY để thứ tự xác định.
+- **CTE**: truy vấn con đặt tên bằng {{WITH}}.
+
+### SQL chạy theo thứ tự nào, từng bước
+~~~text
+FROM/JOIN -> WHERE -> GROUP BY -> HAVING -> WINDOW -> SELECT -> DISTINCT -> ORDER BY -> LIMIT
+Ví dụ account 7 (ORDER BY created_at, id):
+ created_at  id  amount | ROWS running | RANGE (không tie-breaker) running
+ 09:00       11   +500  |   500        |   500
+ 10:00       12   -200  |   300        |   400   <- 12 và 13 cùng 10:00 là peer
+ 10:00       13   +100  |   400        |   400      nên cùng nhận tổng của cả nhóm
+~~~
+1. **WHERE lọc trước**: window chỉ thấy dòng còn lại sau WHERE. Vì sao quan trọng: lọc tháng 1 thì mất số dư đầu kỳ.
+2. **Chia partition và sort** theo PARTITION BY + ORDER BY. Vì sao tốn: không có index khớp thì phải sort toàn bộ dữ liệu.
+3. **Tính hàm trên frame** của từng dòng. Vì sao ROWS: mỗi giao dịch là một bước số dư riêng, không gộp peer.
+4. **SELECT nhận giá trị window** – nên muốn lọc theo {{rn <= 3}} phải bọc thêm một tầng truy vấn bên ngoài.
 
 ### Running balance
 ~~~sql
@@ -3459,6 +4058,14 @@ SELECT * FROM ranked WHERE rn <= 3 ORDER BY account_id, amount DESC;
 - **Hiệu năng**: window function cần dữ liệu đã sort theo {{PARTITION BY}} + {{ORDER BY}}; không có index phù hợp thì phải sort toàn bộ ⇒ tốn memory và I/O (spill khi vượt {{work_mem}}).
 - **Lọc trước, tính sau**: {{WHERE}} chạy trước window function, nên lọc {{WHERE created_at >= ...}} thì chỉ các dòng thoả điều kiện mới tham gia tính ⇒ running balance ở ví dụ trên **thiếu số dư đầu kỳ**. Phải cộng thêm opening balance, hoặc tính trên toàn bộ lịch sử rồi lọc ở lớp ngoài.
 
+### Lỗi hay gặp
+- **Để frame mặc định (RANGE) cho running balance**: hai giao dịch cùng giây hiển thị cùng một số dư. Triệu chứng – khách thấy sao kê "nhảy cóc". Cách tránh: {{ROWS BETWEEN ...}} tường minh + tie-breaker {{id}}.
+- **Dùng {{ROW_NUMBER}} rồi mong "top 3 kể cả hoà"**: giao dịch bằng tiền nhau bị cắt ngẫu nhiên. Cách tránh: chọn {{RANK}}/{{DENSE_RANK}} theo đúng yêu cầu nghiệp vụ và ghi rõ trong spec.
+- **Tính trên cả bảng 1 tỷ dòng không có index**: sort spill ra đĩa hàng chục GB. Cách tránh: index {{(account_id, created_at, id)}}, lọc phạm vi khách hàng trước, hoặc lưu sẵn số dư đầu kỳ (snapshot theo ngày) để chỉ tính phần mới.
+
+### Trả lời miệng 1 phút
+"Window function tính trên một nhóm dòng liên quan mà không gộp dòng như GROUP BY, nên mỗi giao dịch vẫn giữ nguyên và có thêm cột tính toán. Running balance tôi viết SUM amount OVER PARTITION BY account ORDER BY created_at, id với frame ROWS từ đầu tới dòng hiện tại. Top-3 mỗi khách thì dùng ROW_NUMBER trong CTE rồi lọc rn nhỏ hơn hoặc bằng 3 ở tầng ngoài, vì window không dùng được trong WHERE. Bẫy chính: frame mặc định là RANGE nên các dòng trùng thời gian bị gộp, thiếu tie-breaker làm kết quả không ổn định, và WHERE chạy trước nên phải cộng số dư đầu kỳ. Trên dữ liệu lớn tôi luôn có index khớp partition và order để tránh sort tràn đĩa."
+
 > Senior tip: khi viết báo cáo bằng window function, luôn thêm **tie-breaker** vào {{ORDER BY}} và **chọn frame tường minh** ({{ROWS ...}} thay vì để mặc định).`,
   follow: [
     'Vì sao {{SUM(x) OVER (ORDER BY y)}} lại tính running total mà {{SUM(x) OVER ()}} lại là tổng cả bảng?',
@@ -3472,6 +4079,30 @@ SELECT * FROM ranked WHERE rn <= 3 ORDER BY account_id, amount DESC;
   level: 'lead',
   q: 'Một team khác đề nghị đưa logic tính lãi và biểu phí vào stored procedure trong database. Bạn đánh giá ưu/nhược thế nào, và khi nào nên đưa logic lên tầng Java thay vì để trong DB?',
   a: `**Tóm tắt:** Stored procedure chạy **ngay trong DB**, tiếp cận dữ liệu trực tiếp và giảm số round-trip mạng – hiệu quả cho thao tác hàng loạt. Nhưng cái giá là **khả năng kiểm thử, versioning, review và vận hành** đều kém hơn hẳn. Quy tắc thực tế cho hệ thống ngân hàng: **giữ logic nghiệp vụ ở tầng Java**, chỉ để procedure cho thao tác **dữ liệu hàng loạt** không cần kiểm thử đơn vị (tổng hợp, xoá dữ liệu cũ, tính lại tổng).
+
+### Hiểu nhanh
+Đặt logic tính phí trong stored procedure giống **giao công thức nấu ăn cho người giữ kho**: họ nấu ngay trong kho nên khỏi khuân nguyên liệu ra bếp (ít round-trip), rất nhanh khi nấu số lượng lớn. Nhưng công thức nằm trong kho thì đầu bếp chính (team Java) không thấy, không kiểm thử được bằng công cụ quen thuộc, mỗi lần sửa phải nhờ người giữ kho, và đổi sang kho khác (Oracle → PostgreSQL) là phải viết lại. Vì vậy quy tắc thường là: **việc khuân vác hàng loạt** để kho làm, **công thức nghiệp vụ** để bếp chính giữ.
+
+### Thuật ngữ
+- **Stored procedure / function**: đoạn chương trình lưu và chạy bên trong DB; PostgreSQL 11+ có {{CREATE PROCEDURE}} (được commit giữa chừng) bên cạnh {{FUNCTION}}.
+- **PL/pgSQL / PL/SQL**: ngôn ngữ thủ tục của PostgreSQL / Oracle.
+- **Round-trip**: một lượt gửi lệnh từ app tới DB và nhận kết quả, thường 0,2–1ms trong cùng data center.
+- **SECURITY DEFINER / INVOKER**: hàm chạy với quyền người tạo hàm / người gọi hàm.
+- **search_path**: danh sách schema PostgreSQL dò theo thứ tự khi gặp tên không ghi schema.
+- **pgTAP / utPLSQL**: framework unit test cho PostgreSQL / Oracle.
+- **Set-based**: xử lý cả tập dòng bằng một câu SQL thay vì lặp từng dòng.
+
+### Đánh giá đề xuất, từng bước
+~~~text
+Batch tính lãi 2 triệu tài khoản:
+ Java đọc từng tài khoản : 2.000.000 round-trip x 0,5ms ≈ 17 phút chỉ cho mạng
+ Java set-based theo lô  : 2.000 lô x 1.000 dòng, mỗi lô 1 SELECT + 1 batch UPDATE ≈ vài phút
+ Procedure set-based     : 1 lệnh UPDATE ... FROM (...)   ≈ 1-2 phút
+~~~
+1. **Phân loại logic**: quy tắc nghiệp vụ hay biến đổi dữ liệu hàng loạt? Vì sao: chỉ loại thứ hai được lợi rõ rệt khi chạy trong DB.
+2. **Đo chi phí round-trip thật**: nhiều khi chậm là vì code Java xử lý từng dòng, không phải vì ở tầng Java. Vì sao: chuyển sang batch/set-based trong Java thường đã đủ nhanh.
+3. **Hỏi về vòng đời**: ai viết test, CI có chạy không, version và rollback thế nào. Vì sao: chi phí lớn nhất của procedure là bảo trì nhiều năm.
+4. **Quyết định lai**: công thức lãi/phí ở Java (một nơi, có unit test), phần "áp dụng hàng loạt" là một câu SQL set-based do Java gọi, hoặc procedure mỏng không chứa quy tắc.
 
 ### Ưu điểm
 - **Hiệu năng theo lô**: một lệnh gọi xử lý hàng triệu dòng mà không đưa dữ liệu về ứng dụng.
@@ -3541,6 +4172,14 @@ Quy trình đề xuất khi vẫn phải dùng procedure:
 - **Quyền {{EXECUTE}}** trên procedure có thể bị cấp quá rộng; hãy theo nguyên tắc đặc quyền tối thiểu.
 - **Khi chuyển từ 1 DB lên nhiều DB**, logic trong DB không scale theo ⇒ phải viết lại. Đây là lý do đáng để đặt logic ở tầng Java từ đầu.
 
+### Lỗi hay gặp
+- **Procedure chạy vòng lặp từng dòng (cursor loop)** thay vì set-based: mất luôn lợi thế hiệu năng duy nhất. Cách tránh: viết thành một câu UPDATE/INSERT ... SELECT.
+- **Cùng một công thức phí tồn tại ở cả Java và procedure**: hai nơi lệch nhau sau vài lần sửa. Triệu chứng – phí trên màn hình khác phí bị trừ. Cách tránh: một nguồn sự thật duy nhất.
+- **Gọi procedure dài từ {{@Transactional}} Java**: transaction mở 20 phút, giữ lock và connection. Cách tránh: chia lô, mỗi lô một transaction, có điểm tiếp tục khi lỗi.
+
+### Trả lời miệng 1 phút
+"Stored procedure chạy sát dữ liệu nên rất nhanh cho xử lý hàng loạt và giảm round-trip, có thể cấp quyền EXECUTE thay vì quyền ghi bảng. Nhưng nó khó unit test, khó review, khó version, ẩn logic khỏi team Java và trói chặt vào một loại DB. Với tính lãi và biểu phí – là quy tắc nghiệp vụ thay đổi theo sản phẩm, cần audit và test – tôi giữ ở tầng Java. Procedure tôi chỉ dùng cho thao tác dữ liệu set-based như dọn dữ liệu, tổng hợp, và khi đó quản lý bằng Flyway, có test chạy trên DB thật trong CI. Kinh nghiệm: phần lớn 'Java chậm' là do xử lý từng dòng; chuyển sang batch theo lô thường đủ nhanh mà vẫn giữ logic ở chỗ dễ bảo trì."
+
 > Senior tip: câu hỏi nên tự hỏi là: "**Nếu logic này ở trong DB, ai sẽ viết test cho nó, và test sẽ chạy trong CI của team ứng dụng không?**". Nếu câu trả lời là "không" thì đó là tín hiệu mạnh cho thấy procedure sẽ trở thành "logic ma" – không ai dám sửa, không ai hiểu, và sự cố sẽ được gọi bằng cái tên "lỗi stored procedure" trong khi nguyên nhân thật là thiếu test và thiếu sở hữu.`,
   follow: [
     'Khi nào việc đưa logic lên tầng Java lại làm hệ thống chậm đi?',
@@ -3554,6 +4193,32 @@ Quy trình đề xuất khi vẫn phải dùng procedure:
   level: 'senior',
   q: 'Bạn cần khôi phục dữ liệu tới đúng thời điểm trước khi một câu {{DELETE}} sai chạy. PITR hoạt động thế nào, WAL archiving đóng vai trò gì, và bạn chọn RPO/RTO ra sao cho hệ thống giao dịch?',
   a: `**Tóm tắt:** **PITR** là khả năng khôi phục database tới **thời điểm bất kỳ trong quá khứ**, không chỉ tới thời điểm có bản sao lưu. Cơ chế: **base backup** cộng với **WAL archive** liên tục (mọi thay đổi sau thời điểm backup). Khi khôi phục, PostgreSQL đọc base backup rồi replay các file WAL đã lưu cho tới khi đạt {{recovery_target_time}} rồi dừng. **RPO** quyết định tần suất lưu WAL; **RTO** quyết định kiến trúc HA. Điểm không thể bỏ qua: **backup chưa bao giờ được khôi phục thì không phải backup**.
+
+### Hiểu nhanh
+Base backup giống **ảnh chụp toàn bộ căn nhà** lúc nửa đêm; WAL archive giống **camera ghi hình liên tục** mọi thay đổi sau đó. Muốn đưa căn nhà về đúng 09:19 sáng – ngay trước khi ai đó lỡ tay vứt đồ (câu DELETE sai) – bạn dựng lại từ ảnh nửa đêm rồi **tua băng camera** tới 09:19 và dừng. Không có băng camera thì chỉ quay về được nửa đêm. **RPO** là "tối đa mất bao nhiêu phút băng hình", **RTO** là "mất bao lâu để dựng lại nhà".
+
+### Thuật ngữ
+- **PITR (Point-In-Time Recovery)**: khôi phục DB về một thời điểm bất kỳ trong khoảng còn WAL.
+- **Base backup**: bản sao vật lý toàn bộ thư mục dữ liệu, chụp online.
+- **WAL segment**: file WAL, mặc định 16MB; được archive khi đầy hoặc khi {{archive_timeout}} ép chuyển.
+- **archive_command / restore_command**: lệnh copy WAL ra kho / lấy WAL về khi khôi phục.
+- **Restore point**: mốc có tên trong WAL để khôi phục chính xác tới đó.
+- **RPO (Recovery Point Objective)**: lượng dữ liệu tối đa được phép mất, đo bằng thời gian.
+- **RTO (Recovery Time Objective)**: thời gian tối đa để hệ thống hoạt động trở lại.
+- **Object lock (WORM)**: chế độ lưu trữ không cho sửa/xoá trong thời hạn quy định.
+
+### Khôi phục sau câu DELETE sai, từng bước
+~~~text
+00:00  base backup (pg_basebackup)  ---> S3
+00:00 - 09:20  WAL 000..0A3 archive liên tục ---> S3
+09:20:13  DELETE FROM payment WHERE ... (thiếu điều kiện) -- xid 8812345
+Khôi phục: base 00:00 + replay WAL tới 09:20:00 (hoặc recovery_target_xid = 8812345 với recovery_target_inclusive = false)
+~~~
+1. **Xác định thời điểm/xid của lệnh sai** từ log ứng dụng, audit log hoặc {{pg_waldump}}. Vì sao: khôi phục quá muộn sẽ dính lệnh sai, quá sớm thì mất giao dịch đúng.
+2. **Dựng instance mới** từ base backup gần nhất **trước** thời điểm đó – không ghi đè production. Vì sao: production vẫn có dữ liệu mới hơn cần giữ.
+3. **Cấu hình restore_command + recovery_target** rồi khởi động; PostgreSQL tải và replay WAL lần lượt. Vì sao lâu: replay bị giới hạn bởi I/O, khoảng vài trăm MB tới vài GB WAL mỗi phút tuỳ phần cứng.
+4. **Dừng ở đích với {{recovery_target_action = 'pause'}}**, kiểm tra dữ liệu. Vì sao: còn lùi thêm/đi tiếp được nếu chọn sai mốc.
+5. **Trích các dòng bị xoá** từ instance khôi phục và chèn lại vào production (qua {{pg_dump}} bảng đó hoặc script). Vì sao không thay cả DB: giữ được các giao dịch hợp lệ sau 09:20.
 
 ### Các loại backup
 | Loại | Nội dung | Ưu | Nhược |
@@ -3617,6 +4282,14 @@ recovery_target_action = 'promote'      # pause (mac dinh) | shutdown | promote
 - **Quyền xoá trong kho backup**: rủi ro insider hoặc mã hoá tống tiền. Dùng **object lock (WORM)**, versioning, và khoá truy cập riêng không dùng cho ứng dụng.
 - **Chỉ backup database mà không có WAL archive** ⇒ không có PITR, chỉ có "khôi phục về đêm hôm đó".
 - **Mất khoá mã hoá backup** (hoặc chỉ lưu khoá ở cùng chỗ với hệ thống bị sự cố) ⇒ không khôi phục được.
+
+### Lỗi hay gặp
+- **archive_command lỗi âm thầm**: WAL không đẩy được, tích trong {{pg_wal}} tới khi đầy đĩa. Triệu chứng – {{pg_stat_archiver.failed_count}} tăng, đĩa đầy rồi DB dừng. Cách tránh: cảnh báo trên {{last_failed_time}} và độ tuổi WAL chưa archive.
+- **Khôi phục đè lên production** thay vì instance riêng: mất luôn dữ liệu hợp lệ sau thời điểm khôi phục. Cách tránh: luôn khôi phục ra chỗ khác rồi trích dữ liệu cần thiết.
+- **Chỉ dựa vào replica** để chống xoá nhầm: replica replay câu DELETE gần như tức thời nên cũng mất. Cách tránh: replica dùng cho HA, PITR dùng cho lỗi logic; có thể thêm delayed replica ({{recovery_min_apply_delay}}).
+
+### Trả lời miệng 1 phút
+"PITR cho phép khôi phục tới bất kỳ thời điểm nào, dựa trên base backup cộng với WAL archive liên tục. Khi có câu DELETE sai, tôi dựng một instance riêng từ base backup trước đó, đặt restore_command và recovery_target_time ngay trước lệnh sai, để PostgreSQL replay WAL rồi pause, kiểm tra, sau đó trích dữ liệu bị xoá đưa lại production. RPO phụ thuộc WAL được archive nhanh tới đâu – archive_timeout, hoặc synchronous replication nếu cần gần bằng không; RTO phụ thuộc kích thước backup, lượng WAL cần replay và có standby sẵn hay không. Trade-off là RPO và RTO càng nhỏ thì chi phí càng lớn. Kinh nghiệm quan trọng nhất của tôi: backup chưa từng được khôi phục thử thì chưa phải backup, nên tôi diễn tập restore định kỳ và đo thời gian thật."
 
 > Senior tip: hãy nói với stakeholder bằng **con số**, không bằng thuật ngữ: "Nếu ổ cứng chết lúc 10:05, chúng ta mất tối đa 5 phút dữ liệu giao dịch và cần 20 phút để dựng lại từ bản sao lưu gần nhất". Rất nhiều tổ chức tuyên bố RPO "không mất dữ liệu" trong khi thực tế backup đêm và không có WAL archive – đó không phải PITR, đó là mất một ngày dữ liệu.`,
   follow: [
@@ -3982,6 +4655,34 @@ UPDATE account SET balance = balance + 100 WHERE id = 'B';
 COMMIT;
 ~~~
 
+### Hiểu nhanh
+Chuyển 100 nghìn từ A sang B giống một **giao dịch tại quầy ngân hàng**. **Atomicity**: giao dịch viên hoặc làm xong cả hai bước (trừ A, cộng B) hoặc huỷ hết – không bao giờ "trừ rồi mà chưa cộng". **Consistency**: sổ sách luôn đúng luật (số dư không âm, tài khoản phải tồn tại) – luật do DB kiểm tra. **Isolation**: hai khách cùng chuyển tiền một lúc không làm rối sổ của nhau. **Durability**: một khi đã đưa biên lai "thành công", dù cúp điện ngay sau đó, giao dịch vẫn còn – vì đã được ghi vào **nhật ký** trước khi đưa biên lai.
+
+### Thuật ngữ
+- **Transaction**: một đơn vị công việc gồm nhiều câu lệnh, kết thúc bằng {{COMMIT}} hoặc {{ROLLBACK}}.
+- **Undo log**: bản lưu giá trị cũ để huỷ thay đổi (InnoDB, Oracle).
+- **WAL / redo log**: nhật ký thay đổi ghi **trước** khi sửa file dữ liệu, dùng để làm lại khi crash.
+- **fsync**: lệnh buộc hệ điều hành ghi dữ liệu từ bộ nhớ đệm xuống đĩa thật.
+- **Checkpoint**: thời điểm DB đảm bảo mọi page đã sửa trước đó đã được ghi xuống file dữ liệu, WAL cũ hơn có thể bỏ.
+- **Constraint**: luật dữ liệu khai báo ở DB (PK, FK, UNIQUE, CHECK, NOT NULL).
+- **DEFERRABLE**: constraint được hoãn kiểm tra tới lúc commit thay vì sau từng câu lệnh.
+- **Crash recovery**: quá trình DB tự sửa trạng thái khi khởi động lại sau sự cố.
+
+### Commit diễn ra thế nào, từng bước
+~~~text
+UPDATE A (-100) --> page A sửa trong RAM (buffer), ghi bản ghi WAL #1 vào WAL buffer
+UPDATE B (+100) --> page B sửa trong RAM,        ghi bản ghi WAL #2
+COMMIT          --> ghi bản ghi COMMIT, fsync WAL xuống đĩa (~0,1-2ms SSD) --> trả "OK"
+(sau đó)        --> checkpoint/background writer mới ghi page A, B xuống file dữ liệu
+CRASH trước fsync: không có COMMIT trong WAL -> coi như chưa xảy ra (A)
+CRASH sau fsync  : replay WAL #1, #2 -> A và B đúng như đã commit (D)
+~~~
+1. **Sửa trong bộ nhớ, ghi nhật ký trước**. Vì sao: ghi tuần tự vào cuối file WAL nhanh hơn nhiều so với ghi ngẫu nhiên từng page dữ liệu.
+2. **Kiểm tra constraint ở mỗi câu lệnh**: CHECK {{balance >= 0}} vi phạm thì câu lệnh lỗi, transaction phải rollback. Vì sao ở DB: mọi đường ghi (app, script, batch) đều qua đây.
+3. **Giữ row lock trên A và B tới commit**. Vì sao: transaction khác không được sửa chồng; người chỉ đọc thì thấy phiên bản cũ nhờ MVCC.
+4. **COMMIT = fsync WAL**. Vì sao chỉ cần WAL: có WAL là dựng lại được page; page dữ liệu ghi sau cũng không sao.
+5. **Rollback hoặc crash giữa chừng**: InnoDB dùng undo trả giá trị cũ; PostgreSQL đánh dấu transaction aborted nên phiên bản mới thành vô hình.
+
 ### Mỗi chữ cái được đảm bảo như thế nào
 | Chữ cái | Cơ chế DB | Điều gì xảy ra nếu lỗi |
 |---|---|---|
@@ -4000,6 +4701,14 @@ COMMIT;
 - **Tắt fsync** ({{fsync = off}}) để nhanh hơn -> mất Durability, crash = mất dữ liệu commit.
 - **Isolation level thấp** (READ COMMITTED) -> non-repeatable read, phantom read -> logic sai (ví dụ đọc số dư rồi trừ mà không lock).
 - **Constraint không được define ở DB** mà chỉ check ở app -> race condition vượt qua check, dữ liệu hỏng.
+
+### Lỗi hay gặp
+- **Nới các tham số durability để benchmark đẹp rồi quên trả lại**: MySQL {{innodb_flush_log_at_trx_commit = 2}} (hoặc 0) và PostgreSQL {{synchronous_commit = off}} có thể mất các giao dịch của khoảng một giây gần nhất khi crash (PostgreSQL vẫn không làm hỏng dữ liệu, chỉ mất commit gần nhất; {{fsync = off}} thì còn có thể hỏng dữ liệu). Cách tránh: giữ mặc định ({{1}} / {{on}}) cho dữ liệu tiền, chỉ nới cho dữ liệu chịu mất được.
+- **Kiểm tra số dư ở Java rồi mới UPDATE** mà không có CHECK ở DB: hai request song song cùng qua được kiểm tra, số dư âm. Cách tránh: {{UPDATE ... SET balance = balance - ? WHERE id = ? AND balance >= ?}} và kiểm tra số dòng cập nhật, cộng thêm CHECK constraint.
+- **Gọi API ngoài trong transaction rồi rollback**: DB huỷ được thay đổi của nó nhưng không "huỷ" được email đã gửi. Cách tránh: ACID chỉ áp dụng trong DB; side effect ngoài dùng outbox.
+
+### Trả lời miệng 1 phút
+"ACID là bốn bảo đảm của transaction, lấy ví dụ chuyển tiền A sang B. Atomicity: hai lệnh trừ và cộng hoặc cùng thành công hoặc cùng huỷ, InnoDB dùng undo log, PostgreSQL đánh dấu transaction aborted. Consistency: các constraint như CHECK số dư không âm, FK, UNIQUE được DB kiểm tra nên dữ liệu không bao giờ sai luật. Isolation: MVCC cho người đọc thấy snapshot cũ, row lock ngăn hai người sửa chồng. Durability: commit chỉ trả OK sau khi WAL đã fsync xuống đĩa, crash thì replay WAL. Trade-off: durability tốn một lần fsync mỗi commit, có thể nới bằng synchronous_commit nhưng không cho dữ liệu tiền. Kinh nghiệm: tôi luôn đặt constraint ở DB vì kiểm tra ở Java không chống được race condition."
 
 > Senior tip: khi design schema, **luôn define constraint ở DB** (FK, CHECK, UNIQUE) – đó là lớp phòng thủ cuối cùng. App có thể bug, race condition có thể xảy ra, nhưng DB constraint áp dụng cho mọi đường ghi (app, script, batch) – trừ khi ai đó chủ động tắt nó.`,
   follow: [
@@ -4021,6 +4730,32 @@ COMMIT;
 | **1NF** | Mỗi ô một giá trị, không hàng lặp, không cột mảng | Cột {{tags}} lưu {{\"tag1,tag2\"}}, bảng {{order_items}} lặp trong {{orders}} |
 | **2NF** | Non-key phụ thuộc **toàn bộ** PK (nếu PK composite) | Bảng {{student_course(student_id, course_id, student_name)}} -> {{student_name}} chỉ phụ thuộc {{student_id}} |
 | **3NF** | Không **phụ thuộc bắc cầu** (A -> B -> C, trong đó A là PK) | Bảng {{employee(emp_id, dept_id, dept_name)}} -> {{dept_name}} phụ thuộc {{dept_id}} (non-key) |
+
+### Hiểu nhanh
+Chuẩn hoá giống **sắp xếp danh bạ công ty** sao cho mỗi thông tin chỉ ghi ở **một chỗ**. Nếu tên phòng ban được chép vào hồ sơ của từng nhân viên, khi phòng đổi tên bạn phải sửa 200 hồ sơ – sót một cái là dữ liệu mâu thuẫn (update anomaly). Chuẩn hoá tách "phòng ban" ra bảng riêng, nhân viên chỉ ghi mã phòng. Denormalize là cố ý **chép lại** một ít thông tin để đọc nhanh hơn – giống dán tên phòng lên cửa từng văn phòng cho khách khỏi tra – chấp nhận việc phải cập nhật nhiều chỗ khi đổi tên.
+
+### Thuật ngữ
+- **Functional dependency (A → B)**: biết A thì xác định duy nhất được B (biết {{emp_id}} thì biết {{dept_id}}).
+- **Anomaly**: bất thường khi thêm/sửa/xoá do dữ liệu bị lặp (thêm không được, sửa sót, xoá mất thông tin khác).
+- **Composite key**: khoá chính gồm nhiều cột.
+- **Phụ thuộc bộ phận (partial dependency)**: cột phụ thuộc vào một phần của khoá composite – vi phạm 2NF.
+- **Phụ thuộc bắc cầu (transitive)**: khoá → cột X → cột Y, Y không phụ thuộc trực tiếp vào khoá – vi phạm 3NF.
+- **OLTP / OLAP**: hệ thống giao dịch nhiều ghi nhỏ / hệ thống phân tích đọc khối lớn.
+- **Star schema**: mô hình kho dữ liệu gồm bảng fact ở giữa và các bảng dimension xung quanh.
+
+### Chuẩn hoá một bảng thật, từng bước
+~~~text
+Bảng thô: order_line(order_id, product_id, qty, product_name, customer_id, customer_name, tags="a,b")
+1NF: tách tags thành bảng order_tag(order_id, tag)            -- mỗi ô một giá trị
+2NF: khoá (order_id, product_id); product_name chỉ phụ thuộc product_id,
+     customer_* chỉ phụ thuộc order_id -> tách product(...), orders(order_id, customer_id, ...)
+3NF: orders: order_id -> customer_id -> customer_name (bắc cầu) -> tách customer(...)
+Kết quả: orders, order_line(order_id, product_id, qty), product, customer, order_tag
+~~~
+1. **1NF – mỗi ô một giá trị**. Vì sao: chuỗi "a,b" không index được, không đặt FK được, tìm "tag = b" phải dùng LIKE.
+2. **2NF – bỏ phụ thuộc vào một phần khoá**. Vì sao: {{product_name}} lặp trên mọi dòng đơn hàng có sản phẩm đó; đổi tên phải sửa hàng triệu dòng.
+3. **3NF – bỏ phụ thuộc bắc cầu**. Vì sao: xoá đơn hàng cuối cùng của khách không được làm mất luôn tên khách (delete anomaly).
+4. **Cân nhắc giữ lại bản sao có chủ đích**: giá bán tại thời điểm mua ({{order_line.unit_price}}) **không** phải denormalize sai – nó là sự thật lịch sử, giá sản phẩm sau này đổi cũng không được ảnh hưởng.
 
 ### Khi nào denormalize
 1. **Đọc nhiều, ghi ít**: danh mục, cấu hình, báo cáo – join tốn kém.
@@ -4045,6 +4780,14 @@ Cần **trigger / application logic** đồng bộ {{customer_name}} khi {{custo
 - Quên **unique constraint** trên bảng denormalized -> duplicate data.
 - Over-denormalize: bảng phình to, ghi chậm, index to, backup lớn.
 
+### Lỗi hay gặp
+- **Lưu danh sách id trong một cột chuỗi** ("1,5,9"): triệu chứng – query bằng LIKE, không có FK, xoá phần tử phải parse chuỗi. Cách tránh: bảng liên kết; nếu thật sự cần mảng, PostgreSQL có kiểu array/JSONB kèm GIN index.
+- **Nhầm "snapshot lịch sử" với dữ liệu lặp**: chuẩn hoá cả địa chỉ giao hàng về bảng {{customer}}, khách đổi địa chỉ là đơn cũ hiển thị sai. Cách tránh: dữ liệu phải giữ nguyên theo thời điểm (giá, địa chỉ, tên trên hoá đơn) được lưu ngay trong đơn.
+- **Cột tổng tính sẵn ({{total_amount}}) không cập nhật cùng transaction** với dòng chi tiết. Triệu chứng – tổng khác tổng các dòng. Cách tránh: cập nhật trong cùng transaction, hoặc dùng job đối soát định kỳ.
+
+### Trả lời miệng 1 phút
+"Chuẩn hoá nhằm mỗi sự thật chỉ lưu một chỗ để tránh anomaly khi thêm, sửa, xoá. 1NF yêu cầu mỗi ô một giá trị nguyên tử. 2NF yêu cầu cột không khoá phụ thuộc toàn bộ khoá chính, không phụ thuộc một phần khoá composite. 3NF bỏ phụ thuộc bắc cầu, ví dụ dept_name phụ thuộc dept_id chứ không phụ thuộc trực tiếp emp_id. Với OLTP tôi mặc định thiết kế tới 3NF. Denormalize là đánh đổi: đọc nhanh hơn, ít join hơn, nhưng phải có cơ chế đồng bộ – cùng transaction, trigger hoặc CDC. Tôi chỉ denormalize khi đo được join là nút thắt, và phân biệt rõ với dữ liệu lịch sử như giá tại thời điểm mua, thứ vốn phải được chép vào đơn hàng."
+
 > Senior tip: mặc định **chuẩn hoá 3NF** cho OLTP. Chỉ denormalize khi **đo được** join là bottleneck và có kế hoạch sync rõ ràng (trigger, CDC, hoặc app-level sync). Đừng denormalize "dự phòng".`,
   follow: [
     'Sự khác biệt giữa 2NF và 3NF là gì? Cho ví dụ vi phạm 3NF nhưng đạt 2NF.',
@@ -4065,6 +4808,34 @@ Cần **trigger / application logic** đồng bộ {{customer_name}} khi {{custo
 - Lookup by PK: **1 B-tree traversal**.
 - Lookup by secondary index: **2 B-tree** (secondary -> PK -> clustered).
 - **PK nên ngắn** (BIGINT/AUTO_INCREMENT) vì PK value được lặp trong mọi secondary index.
+
+### Hiểu nhanh
+**Clustered index (InnoDB)** giống **cuốn từ điển**: chính nội dung được xếp theo thứ tự từ (PK), tra tới từ là thấy luôn định nghĩa. Muốn tra theo nghĩa khác (secondary index), bạn dùng một bảng tra phụ, nó chỉ cho bạn "từ" (PK), rồi bạn lại tra từ điển lần nữa. **Heap table (PostgreSQL/Oracle)** giống **kho hàng xếp theo thứ tự nhập**: món mới để vào chỗ trống bất kỳ; mọi bảng tra (kể cả theo mã chính) chỉ ghi "kệ số mấy, ô số mấy" (TID/ROWID), tra xong đi thẳng tới ô đó.
+
+### Thuật ngữ
+- **Clustered index**: index mà lá chứa toàn bộ dòng, dữ liệu được sắp vật lý theo khoá index.
+- **Secondary (non-clustered) index**: index phụ, lá chứa con trỏ tới dòng (InnoDB: giá trị PK; PostgreSQL: TID).
+- **Heap**: vùng lưu dòng không theo thứ tự khoá nào.
+- **TID / ctid / ROWID**: địa chỉ vật lý của dòng (block, vị trí trong block).
+- **HOT update (Heap-Only Tuple)**: UPDATE trong PostgreSQL không đổi cột có index và tuple mới vừa trong cùng page → không phải thêm entry index.
+- **FILLFACTOR**: tỉ lệ lấp đầy page khi ghi, để dành chỗ trống cho update sau.
+- **IOT (Index-Organized Table)**: bảng Oracle lưu theo dạng clustered index.
+
+### Tra cứu một dòng, từng bước
+~~~text
+InnoDB: SELECT * FROM orders WHERE email = 'a@x.vn'
+ idx_email (B-tree)  --> lá: ('a@x.vn', PK=42)
+ clustered PK        --> 3-4 page --> lá: [42 | toàn bộ cột]
+PostgreSQL: cùng query
+ idx_email (B-tree)  --> lá: ('a@x.vn', TID=(1050, 7))
+ heap                --> đọc page 1050, ô 7 (1 page)
+PK 8 byte (BIGINT) vs 36 byte (UUID dạng chuỗi): 5 secondary index x 100 triệu dòng
+ -> chênh khoảng 5 x 100tr x 28 byte ≈ 14GB chỉ vì cỡ PK
+~~~
+1. **Đi secondary index tới lá**. Vì sao lá InnoDB chứa PK chứ không chứa địa chỉ: khi page split làm dòng dời chỗ, không phải sửa mọi secondary index.
+2. **InnoDB: tra tiếp clustered index bằng PK** (thêm 3–4 page, thường đã nằm trong buffer pool). PostgreSQL: nhảy thẳng tới heap theo TID (1 page).
+3. **Nếu index đã chứa đủ cột** (covering), bỏ được bước 2 – InnoDB tự động có PK trong mọi secondary index nên {{SELECT id, email}} là covering sẵn.
+4. **Khi UPDATE**: InnoDB sửa dòng tại chỗ trong clustered index và chỉ sửa secondary index có cột đổi; PostgreSQL tạo tuple mới, nếu không HOT thì phải thêm entry vào **mọi** index.
 
 ### PostgreSQL / Oracle - Heap table
 - Dữ liệu lưu trong **heap** (không theo thứ tự), mỗi dòng có địa chỉ vật lý: {{ctid}} = (block, offset) trong PostgreSQL; {{ROWID}} của Oracle gồm cả file.
@@ -4089,6 +4860,14 @@ Cần **trigger / application logic** đồng bộ {{customer_name}} khi {{custo
 - **PostgreSQL: UPDATE bất kỳ cột nào** cũng tạo tuple mới; nếu không đạt điều kiện HOT thì tất cả index cập nhật -> bloat nhanh. Với bảng update nhiều: đặt {{FILLFACTOR}} thấp (chừa chỗ cho HOT), tránh index trên cột hay đổi, autovacuum aggressive; theo dõi {{n_tup_hot_upd}} trong {{pg_stat_user_tables}}.
 - **PostgreSQL: {{CLUSTER}} command** có thể sắp xếp heap theo một index (giống clustered) nhưng **không duy trì** sau insert/update.
 
+### Lỗi hay gặp
+- **Bảng InnoDB không khai báo PK**: InnoDB dùng row id ẩn 6 byte – không truy vấn được, và replication theo dòng (row-based) trên replica có thể rất chậm khi UPDATE/DELETE nhiều dòng vì không có khoá để tìm dòng. Cách tránh: luôn khai báo PK (MySQL 8.0.30+ có {{sql_generate_invisible_primary_key}}).
+- **Đánh index lên cột cập nhật liên tục ({{last_seen_at}}) trên PostgreSQL**: mất HOT update, mỗi lần cập nhật ghi vào mọi index. Triệu chứng – {{n_tup_hot_upd}} gần 0, index bloat nhanh. Cách tránh: bỏ index đó hoặc tách cột "nóng" sang bảng riêng.
+- **Tin rằng {{CLUSTER}} làm PostgreSQL thành clustered index**: chỉ sắp xếp một lần, giữ khoá ACCESS EXCLUSIVE suốt quá trình. Cách tránh: dùng BRIN/partition theo thời gian nếu cần dữ liệu gần nhau, hoặc {{pg_repack}} để sắp xếp online.
+
+### Trả lời miệng 1 phút
+"Trong InnoDB, primary key chính là clustered index: lá của B-tree PK chứa toàn bộ dòng, còn secondary index chứa giá trị PK, nên tra theo secondary là hai lần duyệt cây. PostgreSQL và Oracle mặc định dùng heap: dữ liệu nằm riêng, mọi index kể cả PK chỉ chứa địa chỉ vật lý TID hay ROWID. Hệ quả thực tế: với InnoDB, PK phải ngắn và tăng dần, vì nó lặp trong mọi secondary index và PK ngẫu nhiên gây page split; với PostgreSQL, mỗi UPDATE tạo tuple mới, nên cần thiết kế để tận dụng HOT update bằng fillfactor và tránh index trên cột hay đổi. Kinh nghiệm: khi chuyển từ MySQL sang PostgreSQL, workload update nhiều cần theo dõi n_tup_hot_upd và autovacuum ngay từ đầu."
+
 > Senior tip: khi migrate từ MySQL sang PostgreSQL, đừng giữ tư duy "PK clustered = nhanh nhất". PostgreSQL heap + index đều non-clustered, mỗi UPDATE tạo một phiên bản dòng mới – workload update nhiều phải được thiết kế để tận dụng HOT update và vacuum kịp. Hãy benchmark thực tế trên dữ liệu production.`,
   follow: [
     'Vì sao InnoDB secondary index lưu PK value thay vì con trỏ vật lý?',
@@ -4101,31 +4880,66 @@ Cần **trigger / application logic** đồng bộ {{customer_name}} khi {{custo
   topic: 'db',
   level: 'senior',
   q: 'Khi nào index không được dùng: hàm trên cột, LIKE bắt đầu bằng %, OR, ép kiểu ngầm, selectivity thấp?',
-  a: `**Tóm tắt:** Index B-tree chỉ dùng được khi điều kiện query **bao hàm** điều kiện của index. Năm trường hợp phổ biến khiến optimizer **bỏ qua index**: (1) **Hàm/biểu thức trên cột** ({{WHERE UPPER(name) = 'A'}}), (2) **LIKE '%abc'** (leading wildcard), (3) **OR** không có index bao phủ cả hai nhánh, (4) **Ép kiểu ngầm** (cột varchar so với số), (5) **Selectivity thấp** (cột ít giá trị riêng biệt như status, gender).
- 
-### 1. Hàm trên cột
+  a: `**Tóm tắt:** Index B-tree giống mục lục sách: nó giúp DB tìm theo giá trị theo thứ tự, nhưng chỉ khi điều kiện trong câu lệnh WHERE "khớp với" thứ tự của index. Năm trường hợp phổ biến khiến optimizer bỏ qua index: (1) hàm/biểu thức bao bọc cột, (2) LIKE bắt đầu bằng %, (3) OR mà không có index phủ cả hai bên, (4) so sánh kiểu khác gây ép kiểu ngầm, (5) cột có ít giá trị riêng biệt (selectivity thấp). Trong các trường hợp này DB thường quét toàn bộ bảng (seq scan), chậm khi bảng lớn.
+
+### Hiểu nhanh
+Hãy tưởng tượng index giống mục lục ở cuối cuốn sách: mục lục được sắp theo từ khoá, bạn tra chữ "Java" rất nhanh vì chữ nằm theo thứ tự alphabet. Nhưng nếu yêu cầu "tìm sách có chữ 'Java' nằm ở đâu đó trong mô tả" — tương đương hàm hoặc wildcard ở đầu — mục lục đã không giúp gì, vì mục lục chỉ tra theo từ đầu của mỗi mục. Tương tự, nếu bạn hỏi "sách màu đỏ hoặc xanh" nhưng chỉ có mục lục theo màu, DB phải đọc cả hai mục lục hoặc quét cả cuốn sách. Khi một cột chỉ có hai giá trị (nam/nữ), mục lục cũng không ích nhiều, vì gần như mọi trang sách cũng có cả hai giới. Vậy index hữu ích nhất khi điều kiện khớp giá trị cột thực tế và lọc ra ít dòng.
+
+### Thuật ngữ
+- **B-tree index**: cấu trúc mục lục theo thứ tự trong DB, hỗ trợ tìm kiếm, dải giá trị và prefix nhanh.
+- **Seq scan / full table scan**: quét từng dòng của bảng từ đầu đến cuối; chậm khi bảng lớn.
+- **Expression index**: index tạo trên kết quả của hàm/biểu thức (ví dụ DATE(cột)); chỉ dùng khi query viết đúng biểu thức đó.
+- **Implicit cast**: DB tự chuyển kiểu dữ liệu (ví dụ varchar thành số) để so sánh, làm mất khả năng dùng index trên cột gốc.
+- **Selectivity**: tỷ lệ dòng khớp điều kiện so với tổng số dòng; càng ít dòng khớp, index càng hữu ích.
+- **Partial index**: index chỉ chứa tập con các dòng thỏa mãn điều kiện, thích hợp cho cột ít giá trị riêng biệt.
+
+### 1. Hàm (biểu thức) trên cột
+DB tra index theo giá trị thực tế của cột, không theo kết quả của hàm. Khi viết DATE(created_at), giá trị trong index vẫn là datetime đầy đủ, nên DB không biết trang nào chứa các ngày khớp.
+
+Cách hoạt động từng bước:
+1. Optimizer xem điều kiện WHERE DATE(created_at) = '2026-01-01'.
+2. Cột trong index là created_at (timestamp), còn điều kiện áp hàm DATE() lên cột.
+3. Do giá trị index khác giá trị sau hàm, optimizer không thể ánh xạ điều kiện vào index -> bỏ qua index, quét toàn bộ bảng.
+
+Ví dụ số liệu: bảng orders có 1 triệu dòng. Query DATE(created_at) = '2026-01-01' với seq scan đọc cả 1 triệu dòng; viết lại dưới dạng range chỉ đọc vài trăm dòng của ngày đó.
+
 ~~~sql
--- KHÔNG dùng index trên created_at
+-- KHÔNG dùng index trên created_at (hàm bao bọc cột)
 WHERE DATE(created_at) = '2026-01-01'
 WHERE YEAR(created_at) = 2026
 
--- Sửa: viết thành range
+-- Sửa: viết dưới dạng range trên cột thuần
 WHERE created_at >= '2026-01-01' AND created_at < '2026-01-02'
 ~~~
-Giải pháp khác: **expression index** – MySQL 8.0.13+: {{CREATE INDEX idx_day ON orders ((DATE(created_at)))}}; PostgreSQL: {{CREATE INDEX ON orders ((created_at::date))}} (chỉ với cột {{timestamp}}; với {{timestamptz}} biểu thức phụ thuộc timezone, không IMMUTABLE nên không tạo được). Query phải dùng đúng biểu thức đó.
 
-### 2. LIKE leading wildcard
+Giải pháp khác: **expression index** – tạo index trên chính biểu thức. MySQL 8.0.13+: {{CREATE INDEX idx_day ON orders ((DATE(created_at)))}}; PostgreSQL: {{CREATE INDEX ON orders ((created_at::date))}} (chỉ với cột {{timestamp}}; với {{timestamptz}} biểu thức phụ thuộc múi giờ, không IMMUTABLE nên không tạo được). Query phải dùng **cùng biểu thức** (cùng hàm, cùng kiểu, cùng collation) mới được dùng index.
+
+### 2. LIKE bắt đầu bằng wildcard (leading wildcard)
+B-tree index lưu giá trị theo thứ tự từ trái sang phải, nên nó chỉ hỗ trợ tra theo "đầu từ" (prefix).
+
+Cách hoạt động:
+1. WHERE name LIKE 'abc%' có prefix abc -> optimizer dùng index để nhảy đến đoạn abc và quét theo thứ tự.
+2. WHERE name LIKE '%abc' hoặc LIKE '%abc%' không có prefix xác định -> không biết điểm bắt đầu trong index -> quét toàn bộ.
+
+Ví dụ đời thường: mục lục sách tra theo chữ cái đầu. Nếu bạn chỉ nhớ từ kết thúc bằng "phim", mục lục không giúp.
+
 ~~~sql
-WHERE name LIKE '%abc'   -- Không dùng B-tree
-WHERE name LIKE 'abc%'   -- Dùng được (prefix)
+WHERE name LIKE '%abc'   -- không dùng B-tree
+WHERE name LIKE 'abc%'   -- dùng được (prefix)
 ~~~
-Lưu ý PostgreSQL: prefix LIKE chỉ dùng được B-tree khi collation là {{C}} hoặc index tạo với {{text_pattern_ops}}/{{varchar_pattern_ops}}.
-Giải pháp cho {{%abc%}}: **trigram index** ({{pg_trgm}} với GIN/GiST) hỗ trợ {{LIKE}}/{{ILIKE}} chứa chuỗi; tìm kiếm ngôn ngữ tự nhiên thì dùng full-text ({{tsvector}}) hoặc search engine.
 
-### 3. OR không có index bao phủ
+Lưu ý PostgreSQL: prefix LIKE chỉ dùng được B-tree khi collation là {{C}} hoặc index tạo với {{text_pattern_ops}}/{{varchar_pattern_ops}}. Giải pháp cho '%abc%': **trigram index** ({{pg_trgm}} với GIN/GiST) hỗ trợ {{LIKE}}/{{ILIKE}} chứa chuỗi; tìm kiếm ngôn ngữ tự nhiên thì dùng full-text ({{tsvector}}) hoặc search engine.
+
+### 3. OR không có index bao phủ cả hai nhánh
+Cách hoạt động:
+1. WHERE status = 'ACTIVE' OR priority = 1: nếu chỉ cột status có index, nhánh priority = 1 không thể dùng index đó.
+2. Optimizer thường chọn quét toàn bộ bảng thay vì kết hợp hai plan khác nhau.
+3. PostgreSQL có BitmapOr (kết hợp bitmap từ hai index), MySQL có index_merge, nhưng không phải lúc nào cũng chọn được.
+
+Thay thế: dùng UNION ALL, mỗi nhánh dùng index riêng, và lọc trùng nếu cần.
+
 ~~~sql
 -- Chỉ dùng index nếu CẢ HAI cột đều có index
--- (PostgreSQL: BitmapOr, MySQL: index_merge)
 WHERE status = 'ACTIVE' OR priority = 1
 
 -- Thay thế: UNION ALL (mỗi nhánh dùng index riêng)
@@ -4136,32 +4950,48 @@ SELECT * FROM orders WHERE priority = 1
 ~~~
 
 ### 4. Ép kiểu ngầm (implicit cast)
+Cách hoạt động:
+1. Cột phone là VARCHAR(20), nhưng query so sánh WHERE phone = 123456789 (số).
+2. DB không thể so sánh trực tiếp kiểu khác, nên ép cột về số (hoặc báo lỗi) trước khi so sánh.
+3. Sau khi ép, giá trị trong index (chuỗi) không còn khớp điều kiện -> index bị bỏ qua.
+
 ~~~sql
 -- Cột phone VARCHAR(20)
-WHERE phone = 123456789  -- MySQL/Oracle ép cột thành số -> index không dùng
+WHERE phone = 123456789  -- ép ngầm: index không dùng
 
 -- Sửa: so sánh đúng kiểu
 WHERE phone = '123456789'
 ~~~
+
 PostgreSQL nghiêm ngặt hơn: so sánh {{varchar = integer}} báo lỗi {{operator does not exist}} thay vì ép ngầm. Từ Java, bẫy hay gặp là bind tham số sai kiểu (ví dụ {{setString}} vào cột số, hoặc NVARCHAR với VARCHAR trên Oracle/SQL Server).
 
 ### 5. Selectivity thấp
-- Cột {{status}} chỉ có 3 giá trị ({{PENDING}}, {{DONE}}, {{CANCELLED}}) -> selectivity ~33%.
-- Optimizer ước tính: seq scan đọc 33% bảng nhanh hơn index scan (phải đọc index + heap fetch cho từng dòng).
-- **Partial index** giải quyết: {{CREATE INDEX ON orders (created_at) WHERE status = 'PENDING'}} – index chỉ chứa dòng cần truy vấn.
+Cách hoạt động:
+1. Cột {{status}} chỉ có 3 giá trị ({{PENDING}}, {{DONE}}, {{CANCELLED}}), selectivity khoảng 33%.
+2. Optimizer ước tính: quét 33% bảng bằng seq scan nhanh hơn dùng index scan (phải đọc index rồi lấy từng dòng từ heap).
+3. Vì vậy optimizer bỏ qua index trên cột này.
+
+**Partial index** giải quyết: chỉ index một tập con cần truy vấn. {{CREATE INDEX ON orders (created_at) WHERE status = 'PENDING'}}.
 
 ### Kiểm tra index có được dùng không
+Dùng EXPLAIN (ANALYZE, BUFFERS) để xem access path thực tế.
+
 ~~~sql
 EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM orders WHERE status = 'PENDING';
 -- Xem: Index Scan vs Seq Scan, rows removed by filter
 ~~~
 
-### Pitfall production
-- **Function-based index** (expression index) query phải dùng **cùng biểu thức** (cùng hàm, cùng kiểu tham số, cùng collation) – khác dấu cách thì không sao, nhưng {{lower(email)}} và {{upper(email)}}, hoặc khác kiểu do cast, là index không được dùng.
-- **OR** với nhiều điều kiện phức tạp -> UNION ALL thường nhanh hơn.
-- **Selectivity thay đổi theo thời gian** (ví dụ status {{PENDING}} từ 1% lên 50% khi hệ thống nghẽn) -> plan cache (prepared statement) có thể chọn sai plan. Dùng {{force_custom_plan}} hoặc re-prepare.
+### Lỗi hay gặp
+1. **Thêm index trên cột selectivity thấp mà không đo**: query vẫn seq scan, index chỉ tốn dung lượng và làm chậm UPDATE. Cách tránh: dùng EXPLAIN ANALYZE trên dữ liệu production-like trước khi thêm.
+2. **Viết hàm trên cột cho mục đích báo cáo và để nguyên ở production**: mỗi lần chạy quét toàn bảng. Cách tránh: viết lại dưới dạng range, hoặc tạo expression index nếu biểu thức ổn định và query dùng đúng nó.
+3. **Dùng LIKE '%abc' cho tìm kiếm lớn**: quét hết bảng, chậm theo kích thước bảng. Cách tránh: dùng prefix LIKE, hoặc trigram index / full-text search cho tìm kiếm chứa chuỗi.
+4. **Giả định plan tĩnh khi selectivity thay đổi theo thời gian**: status {{PENDING}} từ 1% lên 50% khi hệ thống nghẽn, plan cache (prepared statement) có thể chọn sai plan. Cách tránh: dùng {{force_custom_plan}} hoặc re-prepare, và theo dõi plan định kỳ.
 
-> Senior tip: trước khi thêm index, hãy **đo bằng EXPLAIN ANALYZE** trên dữ liệu production-like. Một index thừa không chỉ tốn disk mà còn làm UPDATE chậm hơn đáng kể. Nguyên tắc: mỗi index phải có một lý do đo được.`,
+### Trả lời miệng 1 phút
+"Index B-tree giống như mục lục sách: nó chỉ giúp bạn tra nhanh khi bạn biết từ đầu của mục lục. Nếu bạn gói cột trong hàm, dùng wildcard ở đầu LIKE, viết OR mà chỉ một bên có index, so sánh kiểu khác gây ép kiểu ngầm, hoặc cột chỉ có ít giá trị riêng biệt, optimizer thường không dùng index mà quét toàn bộ bảng. Giải pháp cơ bản là viết điều kiện trực tiếp trên cột (ví dụ range thay vì hàm), và nếu thực sự cần thì dùng expression index hoặc partial index. Trước khi thêm index, tôi luôn đo bằng EXPLAIN ANALYZE trên dữ liệu gần production để tránh thêm index thừa làm chậm ghi."
+
+> Senior tip: trước khi thêm index, hãy **đo bằng EXPLAIN ANALYZE** trên dữ liệu production-like. Một index thừa không chỉ tốn disk mà còn làm UPDATE chậm hơn đáng kể. Nguyên tắc: mỗi index phải có một lý do đo được。
+`,
   follow: [
     'Vì sao LIKE "%abc" không dùng được B-tree nhưng "abc%" được?',
     'Partial index giúp gì cho cột selectivity thấp?'
@@ -4173,8 +5003,20 @@ EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM orders WHERE status = 'PENDING';
   topic: 'db',
   level: 'senior',
   q: 'Redis các cấu trúc dữ liệu (String, Hash, List, Set, Sorted Set, Bitmap, HyperLogLog, Stream) dùng cho use case nào: cache, rate limit, leaderboard, distributed lock, session?',
-  a: `**Tóm tắt:** Redis là **in-memory data structure store** – không chỉ key-value đơn giản mà cung cấp nhiều cấu trúc dữ liệu gốc, mỗi cái giải quyết một bài toán đặc thù. Hiểu đúng cấu trúc tránh việc "dùng búa đập đinh" (ví dụ: dùng String + JSON cho session phức tạp thay vì Hash).
- 
+  a: `**Tóm tắt:** Redis là **cửa hàng cấu trúc dữ liệu trong bộ nhớ** (in-memory data structure store): không chỉ lưu key-value đơn giản, mà cung cấp các cấu trúc gốc như String, Hash, List, Set, Sorted Set, Bitmap, HyperLogLog, Stream, mỗi cái giải quyết một bài toán riêng. Chọn sai cấu trúc (ví dụ: dùng String + JSON cho session phức tạp) sẽ khiến mỗi lần cập nhật phải đọc toàn bộ đối tượng, Parse JSON, sửa, ghi lại — chậm và dễ bị lỗi đồng thời.
+
+### Hiểu nhanh
+Hãy tưởng tượng Redis như một quầy thuốc tiên tiến: String giống một chiếc phôi thuốc đơn giản (một giá trị duy nhất), Hash giống một tờ phiếu với nhiều trường (mã bệnh nhân, tuổi, chỉ số), List giống hàng đợi đón thuốc theo thứ tự, Set giống danh sách bệnh nhân không trùng lặp, Sorted Set giống bảng xếp hạng sắp theo điểm, Bitmap giống bảng chấm điểm đúng/sai từng ngày, HyperLogLog giống máy ước lượng số khách độc lập mà không cần ghi từng tên, Stream giống hàng đợi tin nhắn có ghi nhận đã đọc. Mỗi cấu trúc dùng đúng mục đích sẽ nhanh, dùng sai sẽ chậm và phức tạp.
+
+### Thuật ngữ
+- **Redis**: cửa hàng dữ liệu trong bộ nhớ (RAM), dùng làm cache hoặc cơ sở dữ liệu nhẹ.
+- **In-memory**: dữ liệu nằm toàn bộ trong RAM, nên truy xuất cực nhanh nhưng mất nếu mất điện (trừ khi bật persistence).
+- **Key-value**: mô hình lưu cặp "khóa - giá trị", ví dụ key "user:123" và giá trị "Nguyen Van A".
+- **Hash table**: cấu trúc tra cứu theo khóa trong O(1), Redis dùng để lưu Hash.
+- **O(1) / O(log n)**: thời gian thực hiện thao tác không phụ thuộc vào số phần tử (O(1)) hoặc phụ thuộc lũy tiến (O(log n)).
+- **TTL**: thời gian tồn tại của một khóa, sau đó Redis tự xóa (dùng cho cache, session).
+- **Fencing token**: mã số tăng dần dùng để ngăn worker cũ ghi dữ liệu sau khi mất khoá (tránh ghi đè nhầm).
+
 ### Các cấu trúc và use case điển hình
 | Cấu trúc | Lệnh mẫu | Use case thực tế |
 |---|---|---|
@@ -4188,18 +5030,22 @@ EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM orders WHERE status = 'PENDING';
 | **Stream** | {{XADD}}, {{XREAD}}, {{XGROUP}} | **Message queue** (consumer group, acknowledgment, replay) – thay thế Kafka nhẹ |
 
 ### Ví dụ điển hình
-- **Rate limit sliding window**: Sorted Set với score = timestamp, {{ZREMRANGEBYSCORE}} xoá entry cũ, {{ZCARD}} đếm request trong cửa sổ.
-- **Distributed lock**: {{SET lock:order:123 "owner1" NX EX 10}} – atomic, auto-expire. Cần Lua script để unlock an toàn (chỉ unlock nếu value khớp owner). Lock trên một master với replication async có thể mất khi failover – với tác vụ quan trọng, kết hợp fencing token hoặc ràng buộc ở DB.
+- **Rate limit sliding window**: Sorted Set với score = timestamp. Ví dụ 100 request/phút: mỗi request chạy {{ZADD limit:user:1 <ts> <ts>}}, sau đó {{ZREMRANGEBYSCORE limit:user:1 -inf <ts-60s>}} xoá entry cũ và {{ZCARD limit:user:1}} đếm số request còn lại. Nếu > 100 thì từ chối.
+- **Distributed lock**: {{SET lock:order:123 "owner1" NX EX 10}} – nguyên tử, tự hết hạn sau 10 giây. Cần Lua script để unlock an toàn (chỉ unlock nếu value khớp owner). Lock trên master với replication async có thể mất khi failover – với tác vụ quan trọng, kết hợp fencing token hoặc ràng buộc ở DB.
 - **Leaderboard**: {{ZADD leaderboard 1500 "user:1"}}, {{ZREVRANGE leaderboard 0 9}} lấy top 10.
-- **Session**: Hash {{session:abc123}} với field {{user_id}}, {{role}}, {{last_seen}} – {{HGETALL}} lấy toàn bộ, {{HINCRBY}} cập nhật counter.
+- **Session**: Hash {{session:abc123}} với field {{user_id}}, {{role}}, {{last_seen}} – {{HGETALL}} lấy toàn bộ, {{HINCRBY}} cập nhật counter một trường duy nhất mà không đọc lại toàn bộ đối tượng.
 
-### Pitfall production
-- **Dùng String + JSON cho session** -> mỗi lần cập nhật một field phải GET -> deserialize -> modify -> serialize -> SET (race condition, tốn CPU). Hash cho phép {{HSET}} field đơn lẻ.
-- **List làm queue** không có consumer group, không ack -> mất message khi worker crash. Dùng **Stream** cho queue production.
-- **Big key** (Hash/List/Set/ZSet lớn) -> block Redis single thread khi {{DEL}}, {{HGETALL}}, {{ZRANGE}}. Dùng {{UNLINK}} (async delete), {{SCAN}}/{{HSCAN}}/{{ZSCAN}} duyệt theo cursor.
-- **Lua script** cho atomic compound operation (check-then-act) – tránh race condition trong lock, rate limit.
+### Lỗi hay gặp
+1. **Dùng String + JSON cho session**: mỗi lần cập nhật một trường phải GET -> deserialize -> modify -> serialize -> SET (dễ race condition, tốn CPU). Cách tránh: dùng Hash và {{HSET}} trường đơn lẻ.
+2. **List làm queue không có consumer group, không ack**: mất message khi worker crash. Cách tránh: dùng **Stream** cho queue production (có consumer group + acknowledgment).
+3. **Big key** (Hash/List/Set/ZSet lớn): lệnh như {{DEL}}, {{HGETALL}}, {{ZRANGE}} chặn luồng đơn của Redis. Cách tránh: dùng {{UNLINK}} (xóa bất đồng bộ), {{SCAN}}/{{HSCAN}}/{{ZSCAN}} duyệt theo cursor.
+4. **Lua script** dùng sai: thao tác phức hợp không nguyên tử gây race condition trong lock, rate limit. Cách tránh: gói check-then-act vào Lua script thực thi nguyên tử.
 
-> Senior tip: Redis không phải "cache thôi". Nắm vững 8 cấu trúc dữ liệu và biết khi nào dùng cái nào là dấu hiệu dev senior. Ví dụ: rate limit dùng Sorted Set (sliding window) hoặc String (fixed window/token bucket); leaderboard dùng Sorted Set; session thường dùng Hash (Spring Session Redis cũng lưu session dạng Hash); queue cần ack thì dùng Stream.`,
+### Trả lời miệng 1 phút
+"Redis không chỉ là key-value đơn giản, mà là cửa hàng cấu trúc dữ liệu trong bộ nhớ. Mỗi cấu trúc giải quyết một bài toán: String dùng cho cache đơn giản và counter, Hash dùng cho session và object cache, List dùng cho hàng đợi đơn giản, Set dùng cho tagging và khách độc lập, Sorted Set dùng cho bảng xếp hạng và giới hạn tốc độ trượt, Bitmap dùng cho chấm điểm, HyperLogLog dùng cho ước lượng số lượng duy nhất, Stream dùng cho hàng đợi tin nhắn có xác nhận. Tôi chọn cấu trúc theo yêu cầu: session thường dùng Hash để cập nhật từng trường, leaderboard dùng Sorted Set, rate limit sliding window dùng Sorted Set, queue cần xác nhận dùng Stream. Tránh dùng String + JSON cho session vì mỗi cập nhật phải đọc-ghi toàn bộ đối tượng."
+
+> Senior tip: Redis không phải "cache thôi". Nắm vững 8 cấu trúc dữ liệu và biết khi nào dùng cái nào là dấu hiệu dev senior. Ví dụ: rate limit dùng Sorted Set (sliding window) hoặc String (fixed window/token bucket); leaderboard dùng Sorted Set; session thường dùng Hash (Spring Session Redis cũng lưu session dạng Hash); queue cần ack thì dùng Stream.
+`,
   follow: [
     'Tại sao không nên dùng Redis List để làm message queue production?',
     'Làm sao xử lý big key trong Redis (Hash/ZSet lớn) để không block main thread?'
@@ -4211,8 +5057,20 @@ EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM orders WHERE status = 'PENDING';
   topic: 'db',
   level: 'senior',
   q: 'Redis single-threaded nhưng vì sao nhanh? Persistence RDB vs AOF khác nhau ra sao, và Redis có mất dữ liệu không?',
-  a: `**Tóm tắt:** Redis nhanh nhờ **I/O multiplexing** (epoll/kqueue) + **single-threaded event loop** (không context switch, không lock contention) + **data structure đơn giản** (O(1) hoặc O(log n)) + **toàn bộ dữ liệu trong RAM**. **RDB** (snapshot) nhanh, compact, phục hồi nhanh nhưng **mất dữ liệu** từ lần snapshot cuối. **AOF** (append-only log) bền vững hơn, configurable fsync ({{always}}/{{everysec}}/{{no}}), file lớn hơn, phục hồi chậm hơn. Redis **có thể mất dữ liệu** tùy cấu hình persistence và failure scenario.
- 
+  a: `**Tóm tắt:** Redis nhanh nhờ **I/O multiplexing** (epoll/kqueue) + **single-threaded event loop** (không context switch, không lock contention) + **cấu trúc dữ liệu đơn giản** (O(1) hoặc O(log n)) + **toàn bộ dữ liệu trong RAM**. **RDB** (snapshot) nhanh, compact, phục hồi nhanh nhưng **mất dữ liệu** từ lần snapshot cuối. **AOF** (append-only log) bền vững hơn, configurable fsync ({{always}}/{{everysec}}/{{no}}), file lớn hơn, phục hồi chậm hơn. Redis **có thể mất dữ liệu** tùy cấu hình persistence và failure scenario.
+
+### Hiểu nhanh
+Hãy tưởng tượng Redis như một nhà vô địch chạy nước rút: mặc dù chỉ có một đôi chân (thread), nhưng anh ta có thể quản lý hàng nghìn việc cùng lúc nhờ cơ chế I/O multiplexing (giống như đồng thời mở nhiều cửa và chỉ làm việc khi cửa đó sẵn sàng) và cấu trúc dữ liệu siêu tối ưu. Persistence giống như hai cách sao lưu: snapshot (chụp ảnh toàn bộ dữ liệu theo lịch) và nhật ký ghi liên tục (ghi từng thao tác). Mất dữ liệu xảy ra khi crash giữa các lần sao lưu hoặc replication chưa kịp cập nhật.
+
+### Thuật ngữ
+- **I/O multiplexing**: một cơ chế cho phép một thread quản lý nhiều socket, chỉ xử lý các socket sẵn sàng (ví dụ epoll trên Linux).
+- **Event loop**: vòng lặp không ngừng lấy công việc từ hàng đợi và thực hiện; đơn thread, không có context switch.
+- **Child process**: tiến trình phụ được fork từ main process để ghi RDB, hoàn toàn độc lập.
+- **Append-only file (AOF)**: file văn bản ghi tuần tự mọi write command, sau đó có thể được rewrite để nén.
+- **fsync**: lệnh đảm bảo dữ liệu ghi vào disk, có các chế độ always, everysec, no.
+- **Snapshot**: trạng thái persisted của Redis ghi ra đĩa theo thời gian định kỳ (ví dụ save 900 1).
+- **Replication lag**: độ trễ giữa master và replica khi replication diễn ra bất đồng bộ.
+
 ### Vì sao single-thread vẫn nhanh
 1. **Không context switch**: một thread xử lý tất cả command tuần tự.
 2. **I/O multiplexing**: {{epoll}} (Linux) / {{kqueue}} (BSD) cho phép một thread quản lý hàng nghìn connection đồng thời – chỉ đọc/write khi socket ready.
@@ -4229,7 +5087,7 @@ EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM orders WHERE status = 'PENDING';
 | Tần suất | {{save 900 1}} (900s nếu 1 key thay đổi) | Mỗi write command |
 | Kích thước file | Nhỏ (compressed, binary) | Lớn (text protocol); rewrite định kỳ để thu gọn |
 | Phục hồi | **Nhanh** (load binary) | Chậm hơn (replay command); {{aof-use-rdb-preamble}} (mặc định bật) giúp phần nền load nhanh như RDB |
-| Mất dữ liệu | Từ snapshot cuối tới crash | Tuỳ {{appendfsync}}: {{always}} ≈ 0, {{everysec}} ≈ 1s (tệ nhất ~2s), {{no}} = tuỳ OS flush |
+| Mất dữ liệu | Từ snapshot cuối tới crash | Tuỳ {{appendfsync}}: {{always}} ≈ 0, {{everysec}} ≈ 1s (tệ nhất ~2s), {{no}} = tuỳ OS cache |
 | Tốn CPU/Disk | Fork + dump (có thể gây latency spike) | Ghi liên tục, fsync cost |
 
 ### Redis có mất dữ liệu không?
@@ -4249,19 +5107,23 @@ save 60 10000
 
 appendonly yes
 appendfsync everysec        # cân bằng hiệu năng/bền vững
-no-appendfsync-on-rewrite yes
+no-appendfsync-on-rewrite no   # yes giảm latency lúc rewrite nhưng có thể mất tới ~30s dữ liệu
 auto-aof-rewrite-percentage 100
 auto-aof-rewrite-min-size 64mb
 ~~~
 Với dữ liệu tài chính/critical: {{appendfsync always}} + replica + backup định kỳ.
 
-### Pitfall production
+### Lỗi hay gặp
 - **Tắt persistence** ({{save ""}} + {{appendonly no}}) -> Redis thành pure cache, restart = mất sạch.
 - **RDB fork() latency spike** trên instance memory lớn (>10GB) -> lời gọi fork chặn main thread (có thể từ hàng chục tới hàng trăm ms, nhất là trên VM). Giảm {{save}} frequency hoặc dùng AOF.
 - **AOF rewrite** (compaction) cũng fork -> tương tự. Theo dõi {{aof_rewrite_in_progress}} metric.
 - **Replication lag**: master write nhanh, replica chậm -> failover mất dữ liệu. Dùng {{min-replicas-to-write}} + {{min-replicas-max-lag}} để master từ chối write nếu replica quá chậm – chỉ giới hạn cửa sổ mất dữ liệu, không loại bỏ hoàn toàn.
 
-> Senior tip: không có "miễn phí" – muốn tốc độ tối đa (sub-ms) thì chấp nhận rủi ro mất dữ liệu (chỉ RDB hoặc AOF everysec). Muốn hạn chế mất dữ liệu -> {{appendfsync always}} + replica + lệnh {{WAIT}} (Redis không có replication đồng bộ thật sự) -> latency tăng; dữ liệu tuyệt đối không được mất thì nguồn sự thật nên là DB. Hãy quy ước **SLO rõ ràng**: "rate limit/session/cache chấp nhận mất", "billing/inventory/idempotency key KHÔNG được mất".`,
+### Trả lời miệng 1 phút
+"Redis là cửa hàng dữ liệu trong bộ nhớ (RAM) có single-threaded event loop và I/O multiplexing, giúp nó xử lý hàng nghìn kết nối mà không cần context switch. Persistence có hai chế độ: snapshot (chụp ảnh nhanh) và nhật ký ghi (ghi từng thao tác). Mất dữ liệu xảy ra khi crash giữa các lần sao lưu hoặc replication chưa kịp cập nhật. Tôi chọn cấu hình bền vững dựa trên SLO: cache chấp nhận mất vài giây, còn billing thì phải có appendfsync always + replica."
+
+> Senior tip: không có "miễn phí" – muốn tốc độ tối đa (sub-ms) thì chấp nhận rủi ro mất dữ liệu (chỉ RDB hoặc AOF everysec). Muốn hạn chế mất dữ liệu -> {{appendfsync always}} + replica + lệnh {{WAIT}} (Redis không có replication đồng bộ thật sự) -> latency tăng; dữ liệu tuyệt đối không được mất thì nguồn sự thật nên là DB. Hãy quy ước **SLO rõ ràng**: "rate limit/session/cache chấp nhận mất", "billing/inventory/idempotency key KHÔNG được mất".",
+`,
   follow: [
     'Tại sao Redis 6+ thêm threaded I/O mà vẫn giữ command execution single-thread?',
     'Khi nào nên chọn RDB only, AOF only, hay cả hai?'
@@ -4274,6 +5136,37 @@ Với dữ liệu tài chính/critical: {{appendfsync always}} + replica + backu
   level: 'senior',
   q: 'Một nghiệp vụ Oracle chỉ được cung cấp qua PL/SQL package/procedure trả về REF CURSOR. Bạn gọi từ Spring JDBC thế nào, quản lý transaction và mapping kết quả ra sao?',
   a: `**Tóm tắt:** Với procedure Oracle, giữ ranh giới DB rõ ràng: khai báo đúng parameter, gọi qua Spring JDBC, consume cursor khi connection còn mở và map sang DTO. {{SimpleJdbcCall}} hỗ trợ khai báo procedure/function và metadata, nhưng package, overload, REF CURSOR thường cần khai báo tường minh để tránh phụ thuộc metadata driver.
+
+### Hiểu nhanh
+Gọi một procedure Oracle trả REF CURSOR giống **gọi điện tới kho và được đưa một "tấm vé lấy hàng"** thay vì hàng: tấm vé (cursor) chỉ có giá trị khi đường dây (connection) còn mở – bạn phải theo vé ra lấy hàng ngay, từng xe một (fetch), rồi mới cúp máy. Nếu bạn cúp máy rồi mới đưa vé cho người khác đi lấy, vé vô hiệu. Spring JDBC lo phần gọi điện, giữ máy, đọc hàng ra và đóng máy giúp bạn – việc của bạn là **khai báo đúng** tham số vào/ra và **chuyển hàng sang DTO** ngay trong lúc còn giữ máy.
+
+### Thuật ngữ
+- **PL/SQL package**: nhóm procedure/function/kiểu dữ liệu của Oracle dưới một tên, gồm phần spec (khai báo) và body (cài đặt).
+- **REF CURSOR**: con trỏ tới một result set mở trên server, trả về qua tham số OUT.
+- **IN / OUT parameter**: tham số truyền vào / tham số procedure ghi kết quả ra.
+- **SimpleJdbcCall**: lớp Spring giúp gọi procedure/function, tự sinh câu {{call}} và map tham số.
+- **Metadata discovery**: Spring đọc định nghĩa tham số từ dictionary của DB qua driver; với package/overload dễ sai, nên khai báo tường minh.
+- **Overload**: nhiều procedure cùng tên trong package nhưng khác danh sách tham số.
+- **OracleTypes.CURSOR**: hằng số kiểu của driver Oracle ({{oracle.jdbc.OracleTypes}}) để đăng ký tham số OUT là cursor.
+- **RowMapper**: hàm chuyển một dòng ResultSet thành object Java.
+
+### Một lần gọi đi qua các lớp, từng bước
+~~~text
+Service (@Transactional(readOnly = true))
+  -> DAO: call.execute(Map.of("p_account_id", 42))
+       Spring: lấy connection (đã gắn với transaction)
+       JDBC  : { call BANK_APP.ACCOUNT_PKG.FIND_ENTRIES(?, ?) }
+               bind IN = 42, registerOutParameter(2, OracleTypes.CURSOR)
+       Oracle: mở cursor, trả handle
+       Spring: đọc ResultSet theo fetch size, RowMapper -> List<Entry>, đóng ResultSet
+  <- Map {"p_rows" -> List<Entry>}
+Service: dùng List<Entry> (cursor đã đóng, an toàn)
+~~~
+1. **Khai báo schema, package (catalog), procedure** đúng như trên DB. Vì sao: Oracle tìm theo tên đầy đủ; thiếu package sẽ báo PLS-00201 hoặc gọi nhầm procedure.
+2. **Khai báo tham số tường minh và tắt metadata** ({{withoutProcedureColumnMetaDataAccess}}). Vì sao: tránh lỗi khi có overload, synonym hoặc user ứng dụng không có quyền đọc dictionary.
+3. **Đăng ký OUT cursor kèm RowMapper**. Vì sao: Spring đọc hết cursor ngay trong {{execute}} và đóng nó, nên kết quả trả về là List bình thường.
+4. **Bọc trong transaction phù hợp** ({{readOnly}} cho truy vấn, transaction ghi nếu procedure có DML). Vì sao: procedure ghi dữ liệu thì commit/rollback phải do Spring điều khiển, không để procedure tự {{COMMIT}} bên trong.
+5. **Lấy kết quả từ Map theo đúng tên tham số** và ép kiểu an toàn ({{@SuppressWarnings("unchecked")}} hoặc một hàm helper).
 
 ### Luồng gọi
 1. Xác định package, tên procedure, thứ tự/kiểu IN và OUT, kiểu cursor, quyền EXECUTE.
@@ -4306,6 +5199,14 @@ var result = call.execute(Map.of("p_account_id", accountId));
 - Bind parameter, không nối chuỗi SQL. Đo thời gian DB riêng với thời gian mapping.
 - Procedure lỗi có thể trả vendor error code; chuyển thành exception nghiệp vụ ổn định, nhưng giữ SQLState/code trong telemetry đã lọc dữ liệu nhạy cảm.
 
+### Lỗi hay gặp
+- **Procedure tự {{COMMIT}} bên trong**: Spring rollback không còn tác dụng với phần đã commit. Triệu chứng – lỗi ở bước Java sau đó nhưng dữ liệu vẫn được lưu nửa vời. Cách tránh: thoả thuận với team DB để procedure không commit, ranh giới transaction thuộc về ứng dụng.
+- **Tên cột trong RowMapper sai hoa thường hoặc alias**: Oracle trả tên cột chữ HOA; đổi alias trong procedure là RowMapper lỗi "invalid column name" lúc chạy. Cách tránh: integration test gọi procedure thật, tên cột là hợp đồng có version.
+- **Gọi procedure trả hàng trăm nghìn dòng vào List**: OutOfMemoryError. Cách tránh: dùng {{JdbcTemplate.execute(CallableStatementCallback)}} để tự đọc ResultSet theo luồng (streaming) và xử lý từng lô (xem thêm câu về fetch size/BULK COLLECT).
+
+### Trả lời miệng 1 phút
+"Với procedure Oracle trả REF CURSOR, tôi dùng SimpleJdbcCall khai báo schema, package là catalog, tên procedure, và tắt metadata discovery để khai báo tham số tường minh: IN là account id, OUT là OracleTypes.CURSOR kèm RowMapper. Spring đọc hết cursor ngay trong lúc execute khi connection còn mở, map sang DTO rồi đóng, nên tôi không bao giờ trả ResultSet ra khỏi DAO. Transaction do Spring quản lý, procedure không được tự commit. Trade-off: JdbcTemplate thuần cho kiểm soát tối đa, SimpleJdbcCall gọn khi có nhiều OUT param, còn JPA native thì vụng với cursor. Kinh nghiệm: luôn có integration test trên Oracle thật, vì H2 không mô phỏng được package, cursor hay tên cột chữ hoa."
+
 > Senior tip: viết integration test trên Oracle tương thích môi trường thật cho REF CURSOR và overload; H2 không xác nhận được semantics Oracle.
 `,
   follow: ['Khi nào SimpleJdbcCall cần khai báo parameter tường minh?', 'Bạn kiểm thử procedure Oracle trong pipeline CI thế nào?'],
@@ -4317,6 +5218,34 @@ var result = call.execute(Map.of("p_account_id", accountId));
   level: 'senior',
   q: 'Procedure Oracle trả hàng trăm nghìn dòng để Java xử lý. Khi nào dùng REF CURSOR, BULK COLLECT/FORALL hoặc JDBC fetch batching, và kiểm soát bộ nhớ thế nào?',
   a: `**Tóm tắt:** Chọn nơi xử lý theo dữ liệu và nghiệp vụ: cursor streaming/JDBC fetch size khi Java cần đọc tuần tự với bộ nhớ giới hạn; {{BULK COLLECT}}/{{FORALL}} khi phép biến đổi nên chạy gần dữ liệu. Không tải vô hạn vào collection hoặc List chỉ để giảm số round trip.
+
+### Hiểu nhanh
+Chuyển 500 nghìn thùng hàng từ kho (Oracle) sang xưởng (Java) giống **chở bằng xe tải**: chở từng thùng một (fetch từng dòng) thì tốn 500 nghìn chuyến; dồn cả 500 nghìn thùng lên một xe khổng lồ (đọc hết vào List) thì xe sập (hết heap). Cách đúng là **xe vừa phải, chạy nhiều chuyến** – fetch size 500 dòng mỗi lượt, xưởng xử lý xong lô này rồi mới nhận lô sau. Còn nếu việc cần làm chỉ là "chuyển thùng từ kệ A sang kệ B trong cùng kho", đừng chở ra xưởng làm gì: để kho tự làm bằng **BULK COLLECT/FORALL** theo từng lô.
+
+### Thuật ngữ
+- **Fetch size**: số dòng driver JDBC lấy từ server trong mỗi round-trip; driver Oracle mặc định chỉ 10.
+- **Round-trip**: một lượt hỏi–đáp qua mạng giữa app và DB.
+- **Context switch PL/SQL ↔ SQL**: chi phí mỗi lần engine PL/SQL chuyển một câu lệnh sang engine SQL và nhận kết quả.
+- **BULK COLLECT ... LIMIT n**: lấy n dòng mỗi lần vào một collection PL/SQL.
+- **FORALL**: gửi cả collection vào một câu DML trong một lần chuyển ngữ cảnh.
+- **SAVE EXCEPTIONS**: cho FORALL chạy tiếp khi một phần tử lỗi, gom lỗi vào {{SQL%BULK_EXCEPTIONS}}.
+- **PGA**: vùng nhớ riêng của mỗi session Oracle, nơi chứa collection PL/SQL.
+- **Streaming**: xử lý dữ liệu theo dòng/lô khi nó tới, không giữ toàn bộ trong bộ nhớ.
+
+### Con số giúp chọn, từng bước
+~~~text
+500.000 dòng, RTT mạng 1ms
+ fetch size 10   (mặc định Oracle) : 50.000 round-trip ≈ 50s chỉ để chờ mạng
+ fetch size 500                     :  1.000 round-trip ≈ 1s
+ fetch size 50.000                  :     10 round-trip, nhưng mỗi lô ~ vài chục MB heap
+PL/SQL từng dòng: 500.000 INSERT = 500.000 lần chuyển ngữ cảnh
+FORALL lô 500   : 1.000 lần chuyển ngữ cảnh
+~~~
+1. **Hỏi: Java có cần thấy dữ liệu không?** Nếu chỉ biến đổi/sao chép trong DB, làm trong Oracle. Vì sao: dữ liệu không phải đi qua mạng hai lần.
+2. **Nếu Java cần**: đọc REF CURSOR theo luồng, {{setFetchSize(500)}}, xử lý và ghi xuống downstream từng lô. Vì sao: bộ nhớ chỉ giữ một lô, round-trip giảm 50 lần so với mặc định.
+3. **Nếu làm trong Oracle**: {{BULK COLLECT ... LIMIT}} + {{FORALL}}. Vì sao LIMIT: collection nằm trong PGA, không giới hạn thì 500 nghìn dòng có thể chiếm hàng trăm MB mỗi session.
+4. **Quyết định ranh giới commit**: một transaction cho cả job (dễ rollback, nhưng giữ undo lâu) hay commit theo lô (nhẹ hơn nhưng phải có checkpoint để chạy tiếp). Vì sao quan trọng: nó đổi ý nghĩa "thành công/thất bại" của job.
+5. **Đo**: rows/giây, heap Java, PGA, số round-trip; tăng fetch size/LIMIT chỉ khi số đo chỉ ra mạng là nút thắt.
 
 ### Cơ chế và lựa chọn
 - REF CURSOR trả một result set; JDBC fetch size gợi ý số dòng lấy mỗi lượt, không đảm bảo mọi driver triển khai giống nhau.
@@ -4346,6 +5275,15 @@ END LOOP;
 - DML hàng loạt bỏ qua một số hành vi ORM/callback; cập nhật version/audit/counter theo thiết kế rõ.
 - Cursor mở lâu giữ session, snapshot và tài nguyên DB; đóng ResultSet/statement bằng try-with-resources và đặt timeout.
 
+### Lỗi hay gặp
+- **Để fetch size mặc định 10** khi đọc báo cáo lớn từ Oracle: triệu chứng – query trên DB chỉ mất 2s nhưng Java mất 1 phút. Cách tránh: {{jdbcTemplate.setFetchSize(500)}} hoặc {{hibernate.jdbc.fetch_size}}, hoặc {{defaultRowPrefetch}} của driver.
+- **Mang thói quen sang PostgreSQL**: driver PostgreSQL chỉ dùng cursor phía server (fetch theo lô) khi **autocommit tắt** và có fetch size; nếu không, nó tải hết kết quả vào bộ nhớ. Cách tránh: đọc trong {{@Transactional}} và đặt fetch size.
+- **Commit theo lô mà không có checkpoint**: job chết ở lô 600/1000, chạy lại thì xử lý trùng 600 lô đầu. Cách tránh: lưu "khoá cuối đã xử lý" sau mỗi lô, thiết kế ghi idempotent (MERGE thay vì INSERT).
+- **Mở cursor lâu trên bảng đang bị sửa nhiều**: Oracle báo ORA-01555 "snapshot too old" vì undo cũ đã bị ghi đè. Cách tránh: rút ngắn thời gian đọc, chia theo khoảng khoá, tăng undo retention có cân nhắc.
+
+### Trả lời miệng 1 phút
+"Tôi chọn theo câu hỏi dữ liệu có cần ra Java hay không. Nếu Java phải xử lý hay đẩy sang hệ khác, tôi đọc REF CURSOR theo luồng với fetch size vài trăm dòng – mặc định của Oracle chỉ 10 nên rất tốn round-trip – và xử lý từng lô để heap không phình. Nếu chỉ là biến đổi dữ liệu trong DB, tôi để PL/SQL làm bằng BULK COLLECT có LIMIT và FORALL, giảm chuyển ngữ cảnh mà vẫn giới hạn bộ nhớ PGA. Trade-off lớn nhất là ranh giới commit: commit theo lô nhẹ hơn nhưng đổi ngữ nghĩa atomic, nên cần checkpoint và ghi idempotent để chạy tiếp được. Kinh nghiệm: chỉ riêng việc tăng fetch size từ 10 lên 500 từng giúp tôi giảm một job từ vài phút xuống vài giây."
+
 > Senior tip: đo rows/sec, PGA/heap, round trips và thời gian lock trên batch đại diện; tăng LIMIT/fetch size chỉ khi phép đo cho thấy round trip là nút thắt.
 `,
   follow: ['Vì sao BULK COLLECT LIMIT tốt hơn gom toàn bộ?', 'Commit theo chunk ảnh hưởng khả năng chạy lại ra sao?'],
@@ -4357,6 +5295,36 @@ END LOOP;
   level: 'mid',
   q: 'Một bảng Oracle cần khóa chính sinh tự động và có thể triển khai cả Oracle lẫn PostgreSQL. Bạn chọn sequence hay identity thế nào, đặc biệt với insert batch và thứ tự ID?',
   a: `**Tóm tắt:** Sequence là object độc lập, cấp giá trị trước insert và linh hoạt cho nhiều bảng; identity gắn generator với cột, đơn giản cho một bảng. Sequence/identity thường có khoảng trống khi rollback, cache hoặc restart; ID không phải số thứ tự nghiệp vụ và không đảm bảo thứ tự commit.
+
+### Hiểu nhanh
+Sequence giống **máy lấy số thứ tự đặt giữa sảnh ngân hàng**: ai cần cũng bấm lấy được, kể cả nhiều quầy (nhiều bảng) dùng chung, và bạn cầm số trong tay **trước khi** tới quầy. Identity giống **máy lấy số gắn liền vào từng quầy**: tiện, không phải quản lý riêng, nhưng chỉ khi đứng ở quầy (insert) mới biết số của mình. Cả hai đều có thể **nhảy số**: người lấy số rồi bỏ về (rollback), hay máy in sẵn một xấp số rồi mất điện (cache) – nên số thứ tự không bao giờ được dùng làm số hoá đơn liên tục.
+
+### Thuật ngữ
+- **Sequence**: object sinh số tăng dần, độc lập với transaction.
+- **Identity column**: cột tự sinh giá trị khi insert ({{GENERATED ... AS IDENTITY}}); Oracle 12c+ và PostgreSQL 10+ đều có, bên dưới vẫn là sequence.
+- **GENERATED ALWAYS / BY DEFAULT**: luôn tự sinh (cấm tự chèn giá trị) / chỉ sinh khi không truyền giá trị.
+- **CACHE**: số giá trị sequence cấp sẵn trong bộ nhớ; Oracle mặc định 20.
+- **Gap**: khoảng trống trong dãy id do rollback, cache bị bỏ hoặc restart.
+- **allocationSize / pooled optimizer**: Hibernate gọi sequence một lần rồi tự cấp một dải id trong bộ nhớ.
+- **JDBC batching**: gom nhiều câu INSERT gửi một lần để giảm round-trip.
+- **getGeneratedKeys / RETURNING**: cách lấy giá trị id vừa sinh sau khi insert.
+
+### Insert 10.000 bản ghi bằng Hibernate, từng bước
+~~~text
+GenerationType.IDENTITY:
+  persist #1 -> INSERT ngay (phải lấy id) -> getGeneratedKeys -> ... x10.000
+  => 10.000 round-trip, Hibernate tắt JDBC insert batching
+GenerationType.SEQUENCE (allocationSize = 50, INCREMENT BY 50):
+  persist #1  -> SELECT nextval -> 1   (cấp 1..50 trong RAM)
+  persist #51 -> SELECT nextval -> 51  (cấp 51..100)
+  flush       -> INSERT gom theo lô 50 (hibernate.jdbc.batch_size = 50)
+  => 200 lần lấy sequence + 200 batch, nhanh hơn nhiều lần
+~~~
+1. **Quyết định id cần có trước hay sau insert**. Vì sao: Hibernate cần id ngay khi {{persist}} để đưa entity vào persistence context; identity buộc phải insert ngay để biết id.
+2. **Với sequence, đặt allocationSize = INCREMENT BY**. Vì sao: Hibernate tính dải id dựa trên giả định đó; lệch sẽ trùng id hoặc lỗi khởi động (Hibernate 6 kiểm tra).
+3. **Bật {{hibernate.jdbc.batch_size}} và {{order_inserts}}**. Vì sao: chỉ khi id có sẵn thì batching mới phát huy.
+4. **Chấp nhận gap, không dùng id cho nghiệp vụ**. Vì sao: sequence không tham gia transaction (rollback không trả số), cache bị bỏ khi restart/failover; số chứng từ liên tục phải có cơ chế riêng (bảng counter khoá theo dòng, chấp nhận chậm hơn).
+5. **Viết migration theo từng dialect** cho DDL sequence/identity. Vì sao: cú pháp và tên sequence ngầm định khác nhau giữa Oracle và PostgreSQL.
 
 ### Cách hoạt động
 Oracle hỗ trợ identity column và sequence; PostgreSQL identity cũng dựa trên sequence. Sequence cấp số độc lập transaction nên rollback không trả số đã lấy. Cache tăng throughput nhưng có thể tạo gap sau sự cố. Với sequence, ứng dụng có thể lấy ID trước khi insert; identity thường lấy qua generated keys/returning theo driver.
@@ -4391,6 +5359,14 @@ CREATE TABLE payment (
 - Sequence cache lớn tăng hiệu năng nhưng restart/failover có thể bỏ qua vùng cache; không hạ cache nếu chỉ vì thấy gap.
 - Bulk import: cấu hình allocation size của ORM phải tương thích increment của sequence.
 
+### Lỗi hay gặp
+- **Import dữ liệu với id có sẵn rồi quên chỉnh sequence**: insert mới báo lỗi trùng khoá chính. Triệu chứng – "duplicate key value violates unique constraint" ngay sau khi migrate. Cách tránh: PostgreSQL {{SELECT setval('payment_id_seq', (SELECT max(id) FROM payment))}}; Oracle (cột identity) {{ALTER TABLE ... MODIFY id GENERATED ... AS IDENTITY (START WITH LIMIT VALUE)}} hoặc tạo lại sequence với START WITH lớn hơn.
+- **Dùng IDENTITY rồi thắc mắc batch insert chậm**: Hibernate âm thầm tắt batching. Cách tránh: dùng SEQUENCE cho bảng ghi nhiều.
+- **Sắp xếp "theo thời gian tạo" bằng id**: trên Oracle RAC với sequence NOORDER, hoặc khi transaction id nhỏ commit sau id lớn, thứ tự sai. Cách tránh: cột {{created_at}} riêng; consumer đọc theo id (polling "id > last_id") có thể bỏ sót dòng commit muộn.
+
+### Trả lời miệng 1 phút
+"Sequence là object độc lập, cấp số trước khi insert và dùng chung được nhiều bảng; identity gắn generator với cột, gọn hơn nhưng chỉ biết id sau khi insert – và cả hai bên dưới đều là sequence. Với JPA, tôi chọn SEQUENCE với allocationSize bằng INCREMENT BY cho bảng ghi nhiều, vì Hibernate cấp id trong bộ nhớ và giữ được JDBC batching; IDENTITY buộc insert từng dòng và tắt batching. Cả hai đều có gap do rollback, cache và restart, và không đảm bảo thứ tự commit, nên id chỉ là định danh kỹ thuật. Khi chạy cả Oracle lẫn PostgreSQL, tôi viết migration theo dialect và test batch insert thật. Kinh nghiệm: số hoá đơn liên tục luôn phải là một cơ chế nghiệp vụ riêng có audit."
+
 > Senior tip: khóa chính là định danh kỹ thuật. Thiết kế số tham chiếu khách hàng riêng, có unique constraint và quy trình cấp số được audit.
 `,
   follow: ['Vì sao rollback làm sequence có gap?', 'IDENTITY ảnh hưởng JDBC batching và Hibernate thế nào?'],
@@ -4402,6 +5378,35 @@ CREATE TABLE payment (
   level: 'senior',
   q: 'Query Oracle chậm sau khi dữ liệu tăng mạnh. Bạn đọc execution plan và đánh giá optimizer hint thế nào trước khi sửa SQL hoặc thêm index?',
   a: `**Tóm tắt:** Bắt đầu từ plan thực tế, bind values và thống kê: so sánh estimated rows với actual rows, access path, join order, predicate và I/O. Hint chỉ là chỉ dẫn có điều kiện, không thay thế mô hình dữ liệu hay thống kê; ép plan có thể chữa một bind nhưng làm các bind khác chậm.
+
+### Hiểu nhanh
+Optimizer của Oracle giống **người lập kế hoạch giao hàng dựa trên số liệu thống kê** về các con đường. Khi dữ liệu tăng mạnh mà thống kê vẫn là của năm ngoái, nó tưởng "khách hàng này chỉ có 10 giao dịch" nên chọn lộ trình dành cho đơn nhỏ – thực tế là 2 triệu giao dịch. **Hint** giống bạn viết lên phiếu "bắt buộc đi đường X": có thể cứu chuyến hôm nay, nhưng mai đường X kẹt thì xe vẫn phải đi đường X. Vì vậy trước khi ép, hãy sửa **thông tin đầu vào** (thống kê, câu SQL, index) để người lập kế hoạch tự chọn đúng.
+
+### Thuật ngữ
+- **SQL_ID / child cursor**: định danh của câu SQL trong shared pool / các biến thể plan của cùng câu SQL.
+- **Estimated vs actual rows (E-Rows / A-Rows)**: số dòng optimizer đoán / số dòng thật khi chạy.
+- **DBMS_XPLAN.DISPLAY_CURSOR**: hiển thị plan thật của cursor trong bộ nhớ; với {{'ALLSTATS LAST'}} cho cả số liệu thực thi.
+- **Histogram**: thống kê phân bố giá trị của một cột, giúp ước tính đúng khi dữ liệu lệch (skew).
+- **Bind peeking**: optimizer nhìn giá trị bind lần parse đầu để chọn plan, rồi tái dùng plan đó.
+- **Adaptive cursor sharing**: Oracle 11g+ phát hiện bind khác nhau cần plan khác và tạo thêm child cursor.
+- **Hint**: chú thích {{/*+ ... */}} trong SQL hướng dẫn optimizer (INDEX, LEADING, USE_HASH...).
+- **SQL Plan Baseline**: cơ chế SPM của Oracle lưu các plan đã được chấp nhận để tránh plan regression.
+
+### Chẩn đoán một query chậm, từng bước
+~~~text
+SELECT /*+ gather_plan_statistics */ ... ;     -- chạy với bind thật
+SELECT * FROM table(DBMS_XPLAN.DISPLAY_CURSOR(NULL, NULL, 'ALLSTATS LAST'));
+| Id | Operation                    | Name        | E-Rows | A-Rows | Buffers |
+|  1 |  NESTED LOOPS                |             |     12 |  1.8M  |  4.2M   |
+|  2 |   INDEX RANGE SCAN           | TXN_ACC_IDX |     12 |  1.8M  |  9.1K   |
+|  3 |   TABLE ACCESS BY INDEX ROWID| TXN         |      1 |      1 |  4.1M   |
+=> E-Rows 12 vs A-Rows 1.8 triệu: thống kê cũ/thiếu histogram trên account_id
+~~~
+1. **Lấy đúng câu SQL và bind thật** (từ AWR/ASH hoặc {{V$SQL}}). Vì sao: plan phụ thuộc bind; test với một giá trị "đẹp" sẽ không tái hiện được.
+2. **Xem plan thực tế, không phải EXPLAIN PLAN**. Vì sao: EXPLAIN PLAN không nhìn bind peeking, có thể khác plan đang chạy.
+3. **Tìm dòng E-Rows lệch A-Rows nhiều nhất** – thường là gốc rễ. Ở ví dụ, 1,8 triệu lần TABLE ACCESS BY ROWID tốn 4,1 triệu buffer.
+4. **Sửa đầu vào trước**: {{DBMS_STATS.GATHER_TABLE_STATS}} (kèm histogram cho cột lệch), viết lại predicate cho sargable, cân nhắc index composite {{(account_id, booked_at)}} để giảm số dòng phải lấy.
+5. **Chỉ khi optimizer vẫn chọn sai một cách ổn định** mới dùng hint hoặc tốt hơn là SQL Plan Baseline – có ghi lý do và cách gỡ. Vì sao: baseline quản lý ngoài code, gỡ được mà không cần deploy.
 
 ### Quy trình
 1. Thu SQL, bind, elapsed/CPU, logical reads và số dòng thực tế; xác nhận cùng SQL_ID/cursor.
@@ -4430,6 +5435,14 @@ WHERE account_id = :account_id
 - Hint có thể bị bỏ qua hoặc diễn giải khác theo phiên bản; ghi lại lý do, plan baseline/giám sát regression và cách gỡ.
 - Đừng tạo index chỉ dựa trên một query; xem write rate, locking, storage, thống kê và workload tổng thể.
 
+### Lỗi hay gặp
+- **Thêm hint {{INDEX}} vào code để "sửa nhanh"**: chạy tốt với khách nhỏ, cực chậm với khách có hàng triệu giao dịch. Cách tránh: test nhiều bind có cardinality khác nhau; ưu tiên thống kê đúng.
+- **Gather stats giữa giờ cao điểm mà không theo dõi**: plan của hàng loạt câu SQL đổi cùng lúc. Triệu chứng – nhiều query chậm "không lý do" ngay sau job thống kê. Cách tránh: theo dõi plan hash trước/sau, có SQL Plan Baseline cho câu quan trọng, chạy ngoài giờ cao điểm.
+- **Tên alias trong hint sai** (đổi alias bảng nhưng quên sửa hint): Oracle **im lặng bỏ qua** hint không hợp lệ. Cách tránh: kiểm tra phần "Hint Report" của DBMS_XPLAN (Oracle 19c+) để biết hint có được dùng không.
+
+### Trả lời miệng 1 phút
+"Tôi bắt đầu bằng plan thực tế của đúng SQL_ID với bind thật, dùng DBMS_XPLAN.DISPLAY_CURSOR với ALLSTATS LAST, không dùng EXPLAIN PLAN vì nó có thể khác plan đang chạy. Tôi tìm node có E-Rows lệch A-Rows nhiều nhất, xem access path, join order, buffers. Sau khi dữ liệu tăng mạnh, nguyên nhân thường là thống kê cũ hoặc thiếu histogram cho cột lệch, bind peeking, hay predicate không sargable. Tôi sửa đầu vào trước: gather stats, viết lại SQL, index composite phù hợp. Hint hoặc SQL Plan Baseline chỉ là biện pháp cuối khi có bằng chứng optimizer sai ổn định, vì hint gắn chặt với dữ liệu và phiên bản. Kinh nghiệm: tôi luôn lưu plan hash, buffer gets và p95 trước sau để chứng minh cải thiện."
+
 > Senior tip: lưu plan hash, buffer gets và p95 trước/sau; mục tiêu là giảm công việc DB cho workload thật, không phải làm plan trông đẹp.
 `,
   follow: ['Estimated rows sai thường gợi ý vấn đề gì?', 'Khi nào function-based index đáng dùng?'],
@@ -4441,6 +5454,35 @@ WHERE account_id = :account_id
   level: 'lead',
   q: 'Migrate ứng dụng ngân hàng từ Oracle sang PostgreSQL nhưng vẫn phải chạy song song và đối soát. Bạn lập kế hoạch xử lý khác biệt SQL, transaction và dữ liệu thế nào?',
   a: `**Tóm tắt:** Không coi migration là đổi JDBC URL. Lập inventory schema, SQL, procedure, sequence, kiểu dữ liệu, isolation và workload; chạy chuyển đổi theo expand/contract, backfill có checkpoint, CDC hoặc dual-read có kiểm soát, rồi đối soát trước cutover và giữ đường rollback.
+
+### Hiểu nhanh
+Chuyển hệ thống ngân hàng từ Oracle sang PostgreSQL giống **chuyển cả một siêu thị sang toà nhà mới mà không đóng cửa ngày nào**. Bạn không thể khiêng hết hàng trong một đêm; bạn dựng kệ ở toà mới, chuyển hàng dần (backfill), mọi hàng mới nhập phải đồng thời ghi ở cả hai nơi hoặc được chép tự động sang (CDC), rồi **kiểm kê đối chiếu** hai bên từng kệ. Chỉ khi số liệu khớp tới từng đồng, bạn mới mở cửa toà mới cho một nhóm khách nhỏ trước (canary), và vẫn giữ toà cũ hoạt động để quay về nếu có sự cố (rollback).
+
+### Thuật ngữ
+- **Inventory**: danh sách đầy đủ mọi thứ phải chuyển (bảng, SQL native, procedure, job, kiểu dữ liệu).
+- **CDC (Change Data Capture)**: đọc redo log của Oracle (ví dụ Debezium với LogMiner, GoldenGate) để chép thay đổi sang hệ mới gần thời gian thực.
+- **Dual-write**: ứng dụng ghi vào cả hai DB; không atomic nên cần cơ chế phát hiện lệch.
+- **Backfill**: chép dữ liệu lịch sử sang hệ mới theo lô có checkpoint.
+- **Reconciliation (đối soát)**: so khớp dữ liệu hai bên theo khoá, tổng tiền, hash.
+- **Canary / cohort**: chuyển một nhóm nhỏ người dùng/nghiệp vụ trước để kiểm chứng.
+- **Cutover**: thời điểm chuyển nguồn sự thật sang hệ mới.
+- **Ledger invariant**: quy tắc sổ cái luôn đúng, ví dụ tổng nợ = tổng có cho mỗi bút toán.
+
+### Kế hoạch theo giai đoạn
+~~~text
+Giai đoạn 0: Inventory + dịch SQL/PLSQL + test tương đương   (Oracle là nguồn sự thật)
+Giai đoạn 1: Backfill lịch sử -> PostgreSQL; CDC chép thay đổi mới (lag < 5s)
+Giai đoạn 2: Shadow read: đọc cả hai, so kết quả, ghi log lệch (người dùng vẫn thấy Oracle)
+Giai đoạn 3: Đối soát hằng ngày: count, sum(amount) theo ngày/currency/status, hash từng dòng
+Giai đoạn 4: Canary 1% -> 10% -> 50% -> 100% nghiệp vụ ghi sang PostgreSQL
+             CDC đảo chiều PostgreSQL -> Oracle để giữ đường rollback
+Giai đoạn 5: Hết rollback window -> tắt Oracle (contract)
+~~~
+1. **Inventory và dịch**: quét mã nguồn tìm {{NVL}}, {{DECODE}}, {{ROWNUM}}, {{SYSDATE}}, {{CONNECT BY}}, {{MERGE}}, outer join kiểu {{(+)}}, gọi package. Vì sao: đây là chỗ hỏng khi chạy trên PostgreSQL (nhiều thứ có tương đương: {{coalesce}}, {{CASE}}, {{LIMIT}}, {{now()}}, {{WITH RECURSIVE}}, {{INSERT ... ON CONFLICT}} hoặc {{MERGE}} từ PostgreSQL 15).
+2. **Tại mọi thời điểm chỉ có một nguồn sự thật**. Vì sao: hai DB cùng nhận ghi độc lập thì không có cách nào tự giải quyết xung đột.
+3. **Đối soát theo khoá, không chỉ tổng**. Vì sao: hai sai lệch +100 và −100 cho tổng vẫn khớp.
+4. **Chuyển theo cohort với tiêu chí dừng rõ ràng** (lag, error rate, mismatch = 0). Vì sao: rủi ro được giới hạn trong nhóm nhỏ.
+5. **Giữ đường quay lui** bằng replication ngược trong rollback window. Vì sao: sau cutover, dữ liệu mới chỉ có ở PostgreSQL, quay về Oracle mà không có chúng là mất giao dịch.
 
 ### Khác biệt cần kiểm kê
 | Vùng | Ví dụ rủi ro | Cách xác minh |
@@ -4462,6 +5504,14 @@ WHERE account_id = :account_id
 - Sequence values không đồng nghĩa bản ghi commit; CDC order, retry và thời điểm snapshot phải được thiết kế.
 - Một lượt tổng checksum có thể che hai sai lệch bù trừ; đối soát theo khóa, ngày, currency và trạng thái.
 - Không để hai DB cùng ghi độc lập mà không có quy tắc conflict; dual-write không atomic giữa hai hệ.
+
+### Lỗi hay gặp
+- **Kiểu {{NUMBER}} không có precision map sang {{double precision}}**: số tiền lệch vài đồng ở hàng triệu bản ghi. Cách tránh: map sang {{numeric(p,s)}} khớp nghiệp vụ, so khớp tổng theo từng ngày/currency.
+- **{{DATE}} của Oracle có giờ phút giây** nhưng được map sang {{date}} của PostgreSQL: mất phần giờ, đối soát lệch ngày. Cách tránh: map sang {{timestamp}} (hoặc {{timestamptz}} khi đã xác định múi giờ nguồn).
+- **Collation khác nhau làm thứ tự sắp xếp và so sánh chuỗi khác**: báo cáo "top khách hàng theo tên" khác thứ tự, keyset pagination sai. Cách tránh: chọn collation tường minh (ví dụ ICU hoặc {{C}}) và test với dữ liệu tiếng Việt có dấu.
+
+### Trả lời miệng 1 phút
+"Tôi không coi đây là đổi JDBC URL. Bước đầu là inventory: schema, SQL native, PL/SQL, sequence, kiểu dữ liệu, isolation và workload, rồi dịch và viết test tương đương. Sau đó backfill dữ liệu lịch sử có checkpoint, dùng CDC chép thay đổi mới, chạy shadow read để so kết quả hai bên, và đối soát hằng ngày theo khoá, tổng tiền theo ngày và currency, cùng các invariant của sổ cái. Cutover theo cohort, mỗi bước có tiêu chí lag, error rate và mismatch bằng không, kèm replication ngược để giữ đường rollback. Nguyên tắc cứng là mọi thời điểm chỉ có một nguồn sự thật. Kinh nghiệm: những lỗi tốn công nhất thường nằm ở chuỗi rỗng thành NULL, DATE có giờ và NUMBER không precision, nên tôi test biên các kiểu này từ sớm."
 
 > Senior tip: với ledger, cutover chỉ sau khi cân bằng debit/credit và reconcile được theo từng partition/ngày; đặt ngưỡng mismatch bằng zero cho dữ liệu tài chính cốt lõi.
 `,
@@ -5012,6 +6062,34 @@ Index GIN tạo trong migration cho những mẫu query thật sự cần; mỗi
   q: 'Một job chạy mỗi 5 phút trên 3 pod phải chạy đúng một instance. Team định dùng file lock trên volume chung; bạn đề xuất Postgres advisory lock: {{pg_try_advisory_lock}} khác {{pg_advisory_xact_lock}} thế nào, rủi ro gì với connection pool, và so với SKIP LOCKED queue hay ShedLock thì chọn khi nào?',
   a: `**Tóm tắt:** Advisory lock là khoá không gắn vào bảng nào, Postgres cấp theo key số 64-bit bạn tự chọn (ví dụ hash tên job). Session-level ({{pg_advisory_lock}}/{{pg_try_advisory_lock}}) giữ đến khi unlock hoặc connection đóng; transaction-level ({{pg_advisory_xact_lock}}) tự nhả khi COMMIT/ROLLBACK. Với connection pool, rủi ro lớn nhất là lấy và nhả khoá trên hai connection khác nhau - gói phần công việc trong một transaction là cách né cả hai. File lock trên volume chung không đáng tin cho môi trường nhiều pod.
 
+### Hiểu nhanh
+Advisory lock giống **chiếc chìa khoá phòng họp treo ở quầy lễ tân** (PostgreSQL): ba nhân viên (3 pod) cùng muốn dùng phòng lúc 9 giờ, ai tới quầy trước lấy được chìa, hai người kia thấy móc trống thì quay về – không chạy job vòng này. Chìa không gắn với đồ vật nào trong phòng (không gắn với bảng), chỉ là một con số mà mọi người thống nhất ý nghĩa. Loại **session-level** thì bạn phải tự mang chìa trả lại; loại **transaction-level** thì chìa tự quay về móc khi bạn kết thúc cuộc họp (commit/rollback). Nếu người cầm chìa ngất xỉu (connection đóng), lễ tân tự thu lại chìa.
+
+### Thuật ngữ
+- **Advisory lock**: khoá "tư vấn" do ứng dụng tự định nghĩa ý nghĩa, PostgreSQL chỉ quản lý việc ai đang giữ key nào.
+- **Session-level / transaction-level**: khoá thuộc về connection (giữ tới unlock/đóng) / thuộc về transaction (tự nhả khi kết thúc).
+- **pg_try_***: biến thể không chờ – trả về true/false ngay lập tức.
+- **Connection pool**: tập connection tái sử dụng; hai statement liên tiếp ngoài transaction có thể đi qua hai connection khác nhau.
+- **ShedLock**: thư viện Java khoá job {{@Scheduled}} bằng một bảng lock (hoặc Redis, Mongo...) có thời hạn {{lockAtMostFor}}.
+- **Leader election**: chọn một instance làm "người chạy" trong cụm.
+- **pg_locks**: view hệ thống liệt kê các khoá đang được giữ/chờ.
+
+### Một vòng chạy job trên 3 pod, từng bước
+~~~text
+09:00:00.000  pod-A: BEGIN; SELECT pg_try_advisory_xact_lock(71801) -> true
+09:00:00.002  pod-B: BEGIN; SELECT pg_try_advisory_xact_lock(71801) -> false -> ROLLBACK, bỏ vòng
+09:00:00.003  pod-C: ... -> false -> bỏ vòng
+09:00:00 - 09:00:40  pod-A chạy job trong transaction (giữ 1 connection, 1 khoá)
+09:00:40.010  pod-A: COMMIT -> khoá 71801 tự nhả
+Nếu pod-A bị kill lúc 09:00:20 -> TCP đóng -> backend kết thúc -> khoá được nhả
+(nếu mạng "treo" thay vì đóng, chỉ nhả khi TCP keepalive/timeout phát hiện)
+~~~
+1. **Mở transaction và thử lấy khoá không chờ**. Vì sao try: quy tắc là "đúng một", không cần xếp hàng; pod thua bỏ qua vòng này.
+2. **Làm việc trong cùng transaction**. Vì sao: Spring gắn một connection cho cả transaction, khoá và công việc đi cùng một session.
+3. **Commit/rollback nhả khoá tự động**. Vì sao an toàn: không có đường nào quên unlock, kể cả khi exception.
+4. **Process chết thì khoá theo connection mất đi**. Vì sao tốt hơn file lock: không có "khoá ma" cần dọn tay.
+5. **Trade-off**: transaction mở suốt thời gian job – job dài 40 phút sẽ giữ connection và snapshot cũ (cản VACUUM). Với job dài, cân nhắc lấy khoá trên một connection riêng giữ ngoài pool, hoặc ShedLock với {{lockAtMostFor}}.
+
 ### Các loại advisory lock
 | API | Phạm vi | Tự nhả khi |
 |---|---|---|
@@ -5054,6 +6132,14 @@ Advisory lock không có TTL: job treo bên trong (connection còn sống) giữ
 - Key trùng giữa hai job khác nhau vì đặt số tay: dẫn xuất key từ tên job (hash 63-bit) và ghi mapping trên file/code.
 - Dùng phiên bản blocking mà tưởng là try: pod xếp hàng chờ "vô hạn" nhìn như treo; dùng pg_try, hoặc đặt statement_timeout để tự thoát.
 - Unlock chạy ngoài transaction chứa lock: hai connection khác nhau, khoá treo đến khi pool thu hồi connection - lỗi rất khó tái hiện vì phụ thuộc thời điểm borrow.
+
+### Lỗi hay gặp
+- **Gọi {{pg_try_advisory_lock}} (session) qua JdbcTemplate không có transaction**: lock trên connection #3, unlock chạy trên connection #7 trả false, khoá vẫn treo trên #3 nằm trong pool. Triệu chứng – từ đó job không bao giờ chạy lại ở mọi pod. Cách tránh: dùng biến thể {{xact}} trong {{@Transactional}}, kiểm tra kết quả của {{pg_advisory_unlock}}.
+- **Đi qua PgBouncer ở chế độ transaction pooling** với session-level lock: các transaction kế tiếp có thể chạy trên server connection khác. Cách tránh: chỉ dùng transaction-level lock, hoặc connection trực tiếp/session pooling cho job.
+- **Job chạy lâu hơn chu kỳ**: vòng sau ở pod khác thấy khoá đang bị giữ và bỏ qua liên tục – job "không chạy" mà không có lỗi. Cách tránh: log/metric cho mỗi lần skip, cảnh báo khi skip liên tiếp, đo thời gian chạy so với chu kỳ.
+
+### Trả lời miệng 1 phút
+"Advisory lock là khoá theo một key số 64-bit do ứng dụng tự định nghĩa, PostgreSQL chỉ đảm bảo tại một thời điểm có một session giữ key đó. pg_try_advisory_lock là session-level, giữ tới khi unlock hoặc connection đóng; pg_advisory_xact_lock gắn với transaction và tự nhả khi commit hay rollback. Với Spring và connection pool, tôi dùng pg_try_advisory_xact_lock trong một @Transactional: lấy được thì chạy job, không được thì bỏ vòng, và không bao giờ phải unlock thủ công trên một connection khác. Rủi ro là transaction mở suốt thời gian job, nên chỉ hợp với job ngắn. So sánh: SKIP LOCKED để chia việc cho nhiều worker, ShedLock khi cần TTL và audit, file lock trên volume chung thì không đáng tin. Kinh nghiệm: luôn có metric cho số lần skip để phát hiện job bị kẹt."
 
 > Senior tip: giám sát {{pg_locks}} với locktype = advisory theo key để biết instance nào đang giữ; một advisory lock "sống sót" sau deploy là dấu hiệu job cũ chưa nhả - cảnh báo trước khi vòng chạy kế tiếp lặng lẽ skip.`,
   follow: ['{{pg_advisory_lock}} dạng blocking có thể khiến pod xếp hàng thế nào?', 'Advisory lock không có TTL - bạn xử lý job treo ra sao?'],
