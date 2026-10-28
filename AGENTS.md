@@ -22,6 +22,7 @@ Gồm 5 màn hình (route dạng hash):
 | `#/mock` | mock | Phỏng vấn thử: preset, bấm giờ, ghi chú, vòng coding, tự chấm 1–5, tổng kết |
 
 Deploy: site tĩnh trên **Vercel** (import repo GitHub, không có build command, output là thư mục gốc).
+Nhánh: mọi commit (autopilot, integrator) vào nhánh **`content`**, Vercel dựng Preview deploy cho nhánh này. Production là `main`, chỉ đổi khi người dùng merge PR `content → main` (tạo bằng `scripts/release.sh`, kèm `CHANGELOG.md`).
 
 ## 2. Luật bắt buộc
 
