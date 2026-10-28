@@ -31,4 +31,6 @@ Làm **từng câu một**: sửa xong câu nào thì chạy `node --check js/da
 - `node scripts/validate.js` → OK — không có lỗi.
 
 Reviewed-by: kilo (T338R)
-Verify-failed: hold — Claude fact-check in progress (remove when done)
+
+Claude fact-check: bản kilo của devops-012..016 làm rơi nhiều ý đúng (bảng ELK/Loki, cấu hình JVM/metric của 015, YAML Actuator 016...), Hiểu nhanh/Thuật ngữ của 013/014 sai nghĩa, 016 bị đổi level mid→senior và dán Senior tip lạc đề → khôi phục HEAD rồi viết lại khung cho cả devops-012..022 (017..022 trước đó chưa có khung). Sửa kỹ thuật: 013 thêm cách xử lý DNS upstream (resolver/resolve 1.27.3+); 017 thêm commit offset sau xử lý; 022 thay Promtail (đã ngừng) bằng Fluent Bit/Alloy; ~~~properties → ~~~text.
+Reviewed-by: claude (subagent fact-check; validate OK)
