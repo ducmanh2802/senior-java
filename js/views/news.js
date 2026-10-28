@@ -5,11 +5,11 @@
   App.i18n.add({
     vi: {
       'news.title': 'Tin tức mỗi sáng',
-      'news.subtitle': 'Công nghệ, thị trường tuyển dụng và engineering blog — cập nhật lúc 6h sáng mỗi ngày.',
+      'news.subtitle': 'Blog công nghệ đang hot: Java/Spring và engineering blog của các công ty lớn — cập nhật lúc 6h sáng mỗi ngày.',
       'news.updated': 'Cập nhật lúc {time}',
       'news.refresh': 'Làm mới',
       'news.filterAll': 'Tất cả',
-      'news.filterTech': 'Công nghệ',
+      'news.filterTech': 'Java & kiến trúc',
       'news.filterHiring': 'Tuyển dụng',
       'news.filterCompany': 'Engineering blog',
       'news.days1': '1 ngày',
@@ -36,11 +36,11 @@
     },
     en: {
       'news.title': 'Morning news',
-      'news.subtitle': 'Tech, hiring market, and engineering blogs — updated at 6 AM daily.',
+      'news.subtitle': 'Hot tech blogs: Java/Spring and big-tech engineering blogs — updated at 6 AM daily.',
       'news.updated': 'Updated at {time}',
       'news.refresh': 'Refresh',
       'news.filterAll': 'All',
-      'news.filterTech': 'Technology',
+      'news.filterTech': 'Java & architecture',
       'news.filterHiring': 'Hiring',
       'news.filterCompany': 'Engineering blog',
       'news.days1': '1 day',
@@ -74,7 +74,6 @@
   const CATEGORIES = [
     { id: 'all', vi: 'news.filterAll', en: 'news.filterAll' },
     { id: 'tech', vi: 'news.filterTech', en: 'news.filterTech' },
-    { id: 'hiring', vi: 'news.filterHiring', en: 'news.filterHiring' },
     { id: 'company', vi: 'news.filterCompany', en: 'news.filterCompany' },
   ];
 

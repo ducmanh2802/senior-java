@@ -5,25 +5,31 @@ const { send, supabase, supabaseConfigured } = require('./_lib');
 const CRON_SECRET = process.env.CRON_SECRET;
 
 const FEEDS = [
-  // tech
+  // tech: Java / Spring ecosystem blogs
   { id: 'inside-java', name: 'Inside Java', category: 'tech', url: 'https://inside.java/feed.xml' },
   { id: 'spring-blog', name: 'Spring Blog', category: 'tech', url: 'https://spring.io/blog.atom' },
-  { id: 'jetbrains-idea', name: 'JetBrains IntelliJ Blog', category: 'tech', url: 'https://blog.jetbrains.com/idea/feed/' },
+  { id: 'infoq-java', name: 'InfoQ Java', category: 'tech', url: 'https://feed.infoq.com/java/' },
   { id: 'baeldung', name: 'Baeldung', category: 'tech', url: 'https://www.baeldung.com/feed' },
-  { id: 'hn-200', name: 'Hacker News ≥200 pts', category: 'tech', url: 'https://hnrss.org/newest?points=200' },
-  { id: 'vnexpress-sohoa', name: 'VnExpress Số hóa', category: 'tech', url: 'https://vnexpress.net/rss/so-hoa.rss' },
-  { id: 'aws-arch', name: 'AWS Architecture Blog', category: 'tech', url: 'https://aws.amazon.com/blogs/architecture/feed/' },
+  { id: 'vlad-mihalcea', name: 'Vlad Mihalcea', category: 'tech', url: 'https://vladmihalcea.com/feed/' },
+  { id: 'jetbrains-idea', name: 'JetBrains IntelliJ Blog', category: 'tech', url: 'https://blog.jetbrains.com/idea/feed/' },
+  { id: 'bytebytego', name: 'ByteByteGo', category: 'tech', url: 'https://blog.bytebytego.com/feed' },
+  { id: 'pragmatic-engineer', name: 'The Pragmatic Engineer', category: 'tech', url: 'https://newsletter.pragmaticengineer.com/feed' },
+  { id: 'martin-fowler', name: 'Martin Fowler', category: 'tech', url: 'https://martinfowler.com/feed.atom' },
+  { id: 'hn-300', name: 'Hacker News ≥300 pts', category: 'tech', url: 'https://hnrss.org/newest?points=300' },
 
-  // hiring
-  { id: 'hn-hiring', name: 'HN Who is hiring', category: 'hiring', url: 'https://hnrss.org/newest?q=hiring&points=100' },
-  { id: 'topdev-blog', name: 'TopDev Blog', category: 'hiring', url: 'https://topdev.vn/blog/feed/' },
-  { id: 'itviec-blog', name: 'ITviec Blog', category: 'hiring', url: 'https://itviec.com/feed/' },
-
-  // company
+  // company: engineering blogs of big tech
   { id: 'netflix-tech', name: 'Netflix Tech Blog', category: 'company', url: 'https://netflixtechblog.com/feed' },
-  { id: 'grab-eng', name: 'Grab Engineering', category: 'company', url: 'https://engineering.grab.com/feed/' },
+  { id: 'meta-eng', name: 'Engineering at Meta', category: 'company', url: 'https://engineering.fb.com/feed/' },
+  { id: 'github-eng', name: 'GitHub Engineering', category: 'company', url: 'https://github.blog/engineering/feed/' },
   { id: 'cloudflare-blog', name: 'Cloudflare Blog', category: 'company', url: 'https://blog.cloudflare.com/rss/' },
-  { id: 'martin-fowler', name: 'Martin Fowler', category: 'company', url: 'https://martinfowler.com/feed.atom' },
+  { id: 'stripe-blog', name: 'Stripe Blog', category: 'company', url: 'https://stripe.com/blog/feed.rss' },
+  { id: 'shopify-eng', name: 'Shopify Engineering', category: 'company', url: 'https://shopify.engineering/blog.atom' },
+  { id: 'discord-blog', name: 'Discord Blog', category: 'company', url: 'https://discord.com/blog/rss.xml' },
+  { id: 'slack-eng', name: 'Slack Engineering', category: 'company', url: 'https://slack.engineering/feed/' },
+  { id: 'dropbox-tech', name: 'Dropbox Tech', category: 'company', url: 'https://dropbox.tech/feed' },
+  { id: 'pinterest-eng', name: 'Pinterest Engineering', category: 'company', url: 'https://medium.com/feed/@Pinterest_Engineering' },
+  { id: 'grab-eng', name: 'Grab Engineering', category: 'company', url: 'https://engineering.grab.com/feed.xml' },
+  { id: 'aws-arch', name: 'AWS Architecture Blog', category: 'company', url: 'https://aws.amazon.com/blogs/architecture/feed/' },
 ];
 
 function parseRSS(text) {
