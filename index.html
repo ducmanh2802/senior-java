@@ -90,65 +90,16 @@
     <input type="file" id="importFile" accept="application/json" hidden>
   </footer>
 
-  <!-- data (window.TOPICS / QUESTIONS / QUIZ) -->
+  <!-- data: only the tiny always-needed files load here; everything else is loaded per route by
+       App.need() from js/core/data-manifest.js (single source of truth, see docs/PERFORMANCE.md) -->
   <script src="js/data/topics.js"></script>
-  <script src="js/data/q-java.js"></script>
-  <script src="js/data/q-kotlin.js"></script>
-  <script src="js/data/q-concurrency-jvm.js"></script>
-  <script src="js/data/q-spring-data.js"></script>
-  <script src="js/data/q-sql.js"></script>
-  <script src="js/data/q-api.js"></script>
-  <script src="js/data/q-security.js"></script>
-  <script src="js/data/q-microservices.js"></script>
-  <script src="js/data/q-system-design.js"></script>
-  <script src="js/data/q-scenario.js"></script>
-  <script src="js/data/q-aws.js"></script>
-  <script src="js/data/q-ai.js"></script>
-  <script src="js/data/q-claude.js"></script>
-  <script src="js/data/q-primer.js"></script>
-  <script src="js/data/q-devops.js"></script>
-  <script src="js/data/q-soft.js"></script>
-  <script src="js/data/q-english.js"></script>
-  <script src="js/data/quiz.js"></script>
-  <script src="js/data/quiz-claude.js"></script>
-  <script src="js/data/algo.js"></script>
   <script src="js/data/roadmap.js"></script>
-  <script src="js/data/companies.js"></script>
-  <script src="js/data/labs-thread.js"></script>
-  <script src="js/data/labs-gc.js"></script>
-  <script src="js/data/labs-sql.js"></script>
-  <script src="js/data/labs-incident.js"></script>
-  <script src="js/data/lessons-collections.js"></script>
-  <script src="js/data/lessons-core.js"></script>
-  <script src="js/data/lessons-modern.js"></script>
-  <script src="js/data/lessons-concurrency.js"></script>
-  <script src="js/data/lessons-spring.js"></script>
-  <script src="js/data/lessons-jpa.js"></script>
-  <script src="js/data/lessons-design.js"></script>
-  <script src="js/data/lessons-microservices.js"></script>
-  <script src="js/data/lessons-db.js"></script>
-  <script src="js/data/lessons-jvm.js"></script>
-  <script src="js/data/lessons-sql.js"></script>
-  <script src="js/data/lessons-security.js"></script>
-  <script src="js/data/lessons-testing.js"></script>
-  <script src="js/data/lessons-api.js"></script>
-  <script src="js/data/lessons-devops.js"></script>
-  <script src="js/data/lessons-architecture.js"></script>
-  <script src="js/data/lessons-ai.js"></script>
-  <script src="js/data/lessons-claude.js"></script>
-  <script src="js/data/sd-problems.js"></script>
   <script src="js/data/path.js"></script>
-  <script src="js/data/drills-shadow.js"></script>
-  <script src="js/data/drills-qa.js"></script>
-  <script src="js/data/drills-term.js"></script>
-  <script src="js/data/glossary-dist.js"></script>
-  <script src="js/data/glossary-java.js"></script>
-  <script src="js/data/glossary-infra.js"></script>
-  <script src="js/data/projects.js"></script>
   <!-- accounts: supabase-js (optional — the app works without it, e.g. offline) + public config -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3/dist/umd/supabase.js" integrity="sha384-BWcjm9OdFth9TbhCxZPdm+gAOUMAzQy9nmTs12ioXdCcbVnJaPMn+fMUoQCLt60R" crossorigin="anonymous"></script>
   <script src="js/config.js"></script>
   <!-- core + views -->
+  <script src="js/core/data-manifest.js"></script>
   <script src="js/core/app.js"></script>
   <script src="js/i18n/manifest.js"></script>
   <script src="js/core/i18n.js"></script>

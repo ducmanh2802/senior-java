@@ -29,7 +29,7 @@ const FIELDS = {
   ROADMAP: ['(every Vietnamese string, same structure)'],
 };
 
-const files = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8').match(/js\/data\/[a-z0-9-]+\.js/g)
+const files = require(path.join(ROOT, 'js/core/data-manifest.js')).allFiles()
   .map(f => path.basename(f, '.js')).filter(f => !/^(drills-|glossary-|path$)/.test(f));   // drills are English; glossary/path still being written
 
 const covered = new Set();

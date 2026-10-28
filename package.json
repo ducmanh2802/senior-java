@@ -9,8 +9,9 @@
     "validate": "node scripts/validate.js",
     "monitor": "node scripts/monitor.js",
     "smoke": "node scripts/smoke.mjs",
+    "budget": "node scripts/check-budget.js",
     "test-algos": "node scripts/test-algos.js",
-    "check": "node scripts/validate.js && node scripts/test-algos.js && node scripts/test-lessons.js && node scripts/test-rls.mjs && node scripts/smoke.mjs",
+    "check": "node scripts/validate.js && node scripts/check-budget.js && node scripts/test-algos.js && node scripts/test-lessons.js && node scripts/test-rls.mjs && node scripts/smoke.mjs",
     "test-rls": "node scripts/test-rls.mjs",
     "test-sync": "node scripts/test-sync.js",
     "test-lessons": "node scripts/test-lessons.js"

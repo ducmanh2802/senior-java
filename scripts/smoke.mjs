@@ -44,9 +44,16 @@ page.on('console', m => {
 });
 page.on('requestfailed', r => { if (r.url().startsWith(base)) problems.push(`[${current}] request failed: ${r.url()}`); });
 
+// data groups load lazily (App.need): wait until the router has replaced its loading placeholder
+const settle = async () => {
+  await page.waitForFunction(() => window.App && !document.querySelector('#main .route-loading'), null, { timeout: 20000 })
+    .catch(() => problems.push(`[${current}] still loading data after 20s`));
+};
+
 for (const r of [...new Set(routes)]) {
   current = '#/' + r;
   await page.goto(base + '#/' + r);
+  await settle();
   await page.waitForTimeout(400);
   const text = await page.locator('#main').innerText();
   if (/Lỗi khi hiển thị/.test(text)) problems.push(`[${current}] view threw (router error fallback)`);
@@ -58,10 +65,18 @@ await page.setViewportSize({ width: 360, height: 800 });
 for (const r of ['', 'bank', 'algo', 'mock']) {
   current = '#/' + r + ' @360px';
   await page.goto(base + '#/' + r);
+  await settle();
   await page.waitForTimeout(300);
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   if (overflow > 2) problems.push(`[${current}] horizontal overflow ${overflow}px`);
 }
+
+// idle prefetch must eventually load every data group without errors
+current = 'prefetch';
+const groups = await page.evaluate(() => Object.keys(window.DATA_MANIFEST.groups));
+await page.waitForFunction(gs => window.App.hasData(gs), groups, { timeout: 30000 })
+  .catch(async () => problems.push('[prefetch] not all data groups loaded: ' +
+    (await page.evaluate(gs => gs.filter(g => !window.App.hasData([g])), groups)).join(', ')));
 
 await browser.close();
 server.close();

@@ -154,6 +154,11 @@
     },
   });
 
+  // data groups arrive lazily (App.need): translate the newly loaded items too
+  if (typeof window.addEventListener === 'function') {
+    window.addEventListener('datagroupload', () => { if (lang === 'en') swapContent(); });
+  }
+
   App.i18n = { add, dict, content, overlay };
   App.t = t;
   App.lang = lang;

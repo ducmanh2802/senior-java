@@ -16,7 +16,7 @@ const path = require('path');
 
 const App = require('./browser-shim.js');
 global.window.ALGOS = [];
-require(path.join(__dirname, '..', 'js', 'data', 'algo.js'));
+App.loadData(['algos']);   // file list: js/core/data-manifest.js
 const only = process.argv[2];
 const algos = window.ALGOS.filter(a => (!only || a.id === only));
 

@@ -20,10 +20,20 @@ vm.createContext(sandbox);
 const err = (file, msg) => { if (!only || file === only) errors.push(`${file}: ${msg}`); };
 const warn = (file, msg) => { if (!only || file === only) warns.push(`${file}: ${msg}`); };
 
-// topics.js first, then the rest in the same order as index.html
-const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
-const files = [...html.matchAll(/src="js\/data\/([^"]+)"/g)].map(m => m[1]);
-for (const f of fs.readdirSync(DATA)) if (!files.includes(f)) err(f, 'file không được khai báo trong index.html');
+// file list + order come from js/core/data-manifest.js (single source of truth; topics.js first)
+const MANIFEST = require(path.join(__dirname, '..', 'js', 'core', 'data-manifest.js'));
+const files = MANIFEST.allFiles();
+for (const f of fs.readdirSync(DATA)) if (!files.includes(f)) err(f, 'file không được khai báo trong js/core/data-manifest.js');
+for (const f of files) if (!fs.existsSync(path.join(DATA, f))) err(f, 'có trong js/core/data-manifest.js nhưng không tồn tại');
+if (new Set(files).size !== files.length) err('data-manifest.js', 'một file nằm trong nhiều group');
+// index.html must load exactly the manifest's eager files (the rest is lazy via App.need)
+{
+  const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+  const tags = [...html.matchAll(/src="js\/data\/([^"]+)"/g)].map(m => m[1]);
+  if (tags.join() !== MANIFEST.eager.join()) err('index.html', `<script src="js/data/…"> phải đúng bằng DATA_MANIFEST.eager (${MANIFEST.eager.join(', ')}), đang là: ${tags.join(', ')}`);
+  if (!/src="js\/core\/data-manifest\.js"[\s\S]*src="js\/core\/app\.js"/.test(html)) err('index.html', 'phải nạp js/core/data-manifest.js trước js/core/app.js');
+  for (const [r, gs] of Object.entries(MANIFEST.routes)) for (const g of gs) if (!MANIFEST.groups[g]) err('data-manifest.js', `route ${r}: group lạ ${g}`);
+}
 
 const owner = {}; // question id -> file
 for (const f of files) {

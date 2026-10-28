@@ -33,6 +33,9 @@ jobs:
       - name: Validate content schema & markup
         run: node scripts/validate.js
 
+      - name: Payload budget (eager shell + per-route lazy data)
+        run: node scripts/check-budget.js
+
       - name: Algorithm harnesses compile and pass with reference solutions
         run: node scripts/test-algos.js
 

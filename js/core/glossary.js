@@ -259,6 +259,13 @@
     return true;
   }
 
+  // glossary files load lazily (App.need / idle prefetch): rebuild the index and link existing blocks
+  window.addEventListener('datagroupload', e => {
+    if (!e || e.detail !== 'glossary') return;
+    index = null;
+    start();
+  });
+
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => { start(); expose(); });
   } else {

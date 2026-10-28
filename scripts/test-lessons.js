@@ -4,7 +4,7 @@
  * solution with its `tests` harness, compiles with the local JDK and runs it. The reference must pass
  * every case (RESULT n/n, n ≥ 3) — otherwise the exercise would grade learners against a broken key.
  *
- *   node scripts/test-lessons.js                      # every lesson file declared in index.html
+ *   node scripts/test-lessons.js                      # every lesson file in js/core/data-manifest.js
  *   node scripts/test-lessons.js lesson-collections-001
  *
  * Needs `javac`/`java` on PATH. Uses --release 17.
@@ -16,8 +16,7 @@ const path = require('path');
 
 const App = require('./browser-shim.js');
 global.window.LESSONS = [];
-const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
-for (const m of html.matchAll(/src="js\/data\/(lessons-[a-z]+\.js)"/g)) require(path.join(__dirname, '..', 'js', 'data', m[1]));
+App.loadData(['lessons']);   // file list: js/core/data-manifest.js
 const only = process.argv[2];
 const lessons = window.LESSONS.filter(l => !only || l.id === only);
 

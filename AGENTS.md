@@ -48,6 +48,7 @@ index.html                 # khung trang, thứ tự script/css      (integrator
 css/base.css               # design tokens + component dùng chung (integrator)
 css/views/<view>.css       # style riêng từng view                (task view tương ứng)
 js/core/app.js             # App core: store, router, md, helpers (integrator)
+js/core/data-manifest.js   # danh sách file js/data + group nạp lười theo route (integrator), xem docs/PERFORMANCE.md
 js/data/topics.js          # danh sách chủ đề                    (integrator)
 js/data/q-*.js             # câu hỏi tự luận, mỗi topic thuộc đúng 1 file (xem topics.js) (task nội dung)
 js/data/quiz.js            # câu trắc nghiệm                       (T12)

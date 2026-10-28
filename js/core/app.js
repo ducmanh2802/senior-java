@@ -118,12 +118,13 @@
 
   // optional q.refs [{type, title, url, note?}] are appended once as a "learn more" section of the answer
   const REF_ICON = { video: '🎬', doc: '📘', article: '📝', book: '📕', course: '🎓' };
-  let refsAppended = false;
+  let refsAppended = 0;   // questions arrive lazily (App.need): process only the not-yet-seen tail
   function questions() {
     const qs = window.QUESTIONS || [];
-    if (!refsAppended) {
-      refsAppended = true;
-      qs.forEach(q => {
+    if (refsAppended < qs.length) {
+      const from = refsAppended;
+      refsAppended = qs.length;
+      qs.slice(from).forEach(q => {
         if (!Array.isArray(q.refs) || !q.refs.length) return;
         q.a += '\n\n### 📚 Tìm hiểu sâu hơn\n' + q.refs.map(r => '- ' + (REF_ICON[r.type] || '🔗') + ' [' +
           String(r.title).replace(/[[\]]/g, '') + '](' + r.url + ')' + (r.note ? ' — ' + r.note : '')).join('\n');
@@ -327,17 +328,68 @@
       'app.theme.dark': 'Dark',
     },
   }));
+  // ---------- lazy data (js/core/data-manifest.js, docs/PERFORMANCE.md) ----------
+  // App.need(['questions', 'algos']) → Promise resolved once every file of those groups has run.
+  // Classic <script> injection (works on file://); async=false keeps execution in insertion order, so
+  // QUESTIONS/QUIZ/GLOSSARY keep the manifest order while files still download in parallel.
+  // After each group: 'datagroupload' event (glossary re-indexes, i18n overlays English on new items).
+  const MANIFEST = window.DATA_MANIFEST || { groups: {}, routes: {}, prefetch: [], needsFor: () => [] };
+  const groupState = {};   // group -> Promise (pending or resolved); dropped again if a file failed
+  const groupDone = {};    // group -> true once loaded
+  function loadScript(src) {
+    return new Promise(resolve => {
+      const s = document.createElement('script');
+      s.src = src;
+      s.async = false;
+      s.onload = () => resolve(true);
+      s.onerror = () => { console.error('Không tải được ' + src); resolve(false); };
+      (document.body || document.head).appendChild(s);
+    });
+  }
+  function loadGroup(g) {
+    if (groupState[g]) return groupState[g];
+    const files = MANIFEST.groups[g];
+    if (!files) { console.warn('App.need: unknown data group ' + g); return Promise.resolve(); }
+    groupState[g] = Promise.all(files.map(f => loadScript('js/data/' + f))).then(oks => {
+      if (oks.every(Boolean)) groupDone[g] = true; else delete groupState[g];   // retry on next need
+      try { window.dispatchEvent(new CustomEvent('datagroupload', { detail: g })); } catch (e) { console.error(e); }
+    });
+    return groupState[g];
+  }
+  function need(groups) {
+    return Promise.all((groups || []).map(loadGroup)).then(() => undefined);
+  }
+  function hasData(groups) { return (groups || []).every(g => groupDone[g]); }
+
+  let prefetchStarted = false;
+  function prefetchAll() {
+    if (prefetchStarted) return;
+    prefetchStarted = true;
+    const idle = window.requestIdleCallback ? fn => window.requestIdleCallback(fn, { timeout: 3000 }) : fn => setTimeout(fn, 1200);
+    const queue = (MANIFEST.prefetch || Object.keys(MANIFEST.groups)).filter(g => MANIFEST.groups[g]);
+    Object.keys(MANIFEST.groups).forEach(g => { if (queue.indexOf(g) < 0) queue.push(g); });
+    // one group per idle slot, so a navigation in between is not stuck behind the whole bank
+    const next = () => { const g = queue.shift(); if (g) idle(() => loadGroup(g).then(next)); };
+    next();
+  }
+
   // ---------- router ----------
   const views = {};
   let cleanup = null;
+  let routeSeq = 0;
 
   function registerView(name, def) { views[name] = def; }
 
   function navigate(hash) { location.hash = hash; }
 
+  function routeParts() {
+    return location.hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);
+  }
+
   function route() {
-    const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);
+    const parts = routeParts();
     const name = views[parts[0]] ? parts[0] : 'dashboard';
+    const seq = ++routeSeq;
     if (cleanup) { try { cleanup(); } catch (e) { console.error(e); } cleanup = null; }
     document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('active', a.dataset.route === name));
     document.querySelectorAll('.nav-group[open]').forEach(d => d.removeAttribute('open'));
@@ -346,6 +398,19 @@
     root.className = 'container view-' + name;
     const view = views[name];
     if (!view) { root.innerHTML = '<p class="muted">' + App.t('app.noView') + '</p>'; return; }
+    const groups = MANIFEST.needsFor(name, parts[1]);
+    if (hasData(groups)) { renderView(view, root, parts); prefetchAll(); return; }
+    root.innerHTML = '<div class="route-loading muted" role="status" aria-live="polite">' +
+      (App.lang === 'en' ? 'Loading…' : 'Đang tải dữ liệu…') + '</div>';
+    need(groups).then(() => {
+      if (seq !== routeSeq) return;          // the user navigated away meanwhile
+      root.innerHTML = '';
+      renderView(view, root, parts);
+      prefetchAll();
+    });
+  }
+
+  function renderView(view, root, parts) {
     try {
       const c = view.render(root, parts.slice(1));
       if (typeof c === 'function') cleanup = c;
@@ -410,8 +475,15 @@
   window.App = {
     LEVELS, STATUS, store, esc, md, highlight, shuffle, onKey, fmtDate,
     questions, quiz, algos, lessons, topics, dueItems, dayKey, startOfDay, DAY, topic, filterQuestions, stats,
-    registerView, navigate, route,
+    registerView, navigate, route, need, hasData,
   };
+
+  // start downloading the landing route's data now, in parallel with the remaining core/view scripts
+  (function () {
+    const p = routeParts();
+    const name = MANIFEST.routes[p[0]] ? p[0] : 'dashboard';
+    need(MANIFEST.needsFor(name, p[1]));
+  })();
 
   window.addEventListener('hashchange', route);
   document.addEventListener('DOMContentLoaded', () => { initChrome(); route(); });
