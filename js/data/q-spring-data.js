@@ -5063,4 +5063,533 @@ Advisory lock không có TTL: job treo bên trong (connection còn sống) giữ
     { type: 'doc', title: 'ShedLock on GitHub', url: 'https://github.com/lukas-krecan/ShedLock' }
   ]
 },
+{
+  id: 'db-032', topic: 'db', level: 'senior',
+  q: 'Bảng {{orders}} trên MySQL InnoDB đang dùng {{CHAR(36)}} UUIDv4 làm PRIMARY KEY; khi lên 200 triệu dòng, insert chậm dần và buffer pool hit rate tụt. Vì sao kiểu ID lại ảnh hưởng tới hiệu năng ghi như vậy, và bạn chọn giữa auto-increment, UUIDv4, UUIDv7/ULID, Snowflake thế nào?',
+  a: `**Tóm tắt:** Trong InnoDB, PRIMARY KEY chính là clustered index: dòng dữ liệu nằm trong lá B+tree, sắp theo PK. ID tăng dần thì mọi insert dồn vào trang cuối (ghi tuần tự, trang đầy ~15/16); UUIDv4 ngẫu nhiên thì mỗi insert rơi vào một trang bất kỳ, gây page split, trang chỉ đầy 1/2 đến 15/16, và cần cả index nằm trong RAM. Thêm nữa, mọi secondary index đều chứa PK, nên PK 36 byte làm mọi index phình ra. Chọn ID có thứ tự theo thời gian (BIGINT, UUIDv7, Snowflake), lưu dạng nhị phân gọn.
+
+### Bước 1: clustered index lưu dữ liệu thế nào
+InnoDB lưu bảng theo đơn vị **page** (mặc định {{innodb_page_size}} = 16KB). Các page tổ chức thành B+tree theo PK:
+~~~text
+                [root: 1..5000 | 5001..10000 | ...]
+               /                |                 \\
+   [leaf: id 1..120]   [leaf: id 121..240]  ...  [leaf: id 9881..10000]  <- lá chứa cả dòng
+~~~
+Mỗi lá chứa các dòng đầy đủ, sắp theo PK, và có con trỏ sang lá kế tiếp. Secondary index ({{idx_customer}}) có lá chứa {{(customer_id, PK)}}; muốn lấy dòng thì lấy PK rồi tra tiếp clustered index.
+
+### Bước 2: insert tuần tự và insert ngẫu nhiên khác nhau ra sao
+- **ID tăng dần (AUTO_INCREMENT, UUIDv7, Snowflake):** mọi dòng mới có key lớn nhất nên luôn ghi vào lá ngoài cùng bên phải. Lá đầy thì InnoDB mở lá mới, không phải dời dữ liệu cũ. Tài liệu MySQL ghi rõ: insert tuần tự cho trang đầy khoảng 15/16. Chỉ vài trang "nóng" cần nằm trong buffer pool.
+- **UUIDv4:** key ngẫu nhiên nên dòng mới phải chen vào giữa một lá bất kỳ. Lá đã đầy thì **page split**: cấp trang mới, chuyển khoảng một nửa số dòng sang, sửa trang cha. Kết quả: trang chỉ đầy từ 1/2 đến 15/16, tốn nhiều đĩa hơn; và mỗi insert chạm một lá ngẫu nhiên, nên khi index lớn hơn buffer pool thì gần như insert nào cũng phải đọc đĩa trước.
+
+Ví dụ ước lượng: 200 triệu dòng, mỗi dòng 200 byte thì clustered index khoảng 40GB (chưa tính trang không đầy). Buffer pool 16GB: với ID tuần tự, insert gần như luôn trúng RAM; với UUIDv4, xác suất lá cần ghi đang ở RAM chỉ khoảng 16/40, phần còn lại là random I/O.
+
+### Bước 3: kích thước secondary index
+Mỗi entry của secondary index chứa bản sao PK:
+| Kiểu PK | Byte/entry cho phần PK | 5 secondary index x 200 triệu dòng |
+|---|---|---|
+| BIGINT | 8 | ~8GB |
+| BINARY(16) (UUID nhị phân) | 16 | ~16GB |
+| CHAR(36) utf8mb4 | ≥ 36 | ≥ 36GB |
+(chỉ tính phần PK, chưa tính overhead). Index to hơn thì ít vừa RAM hơn, query đọc nhiều trang hơn.
+
+### Bước 4: so sánh các lựa chọn
+| Kiểu | Thứ tự | Kích thước | Sinh ở đâu | Điểm yếu |
+|---|---|---|---|---|
+| AUTO_INCREMENT BIGINT | tuần tự | 8B | DB | lộ số lượng/đoán được ID, khó gộp dữ liệu nhiều DB, phải insert mới biết ID |
+| UUIDv4 | ngẫu nhiên | 16B | app | page split, random I/O như trên |
+| UUIDv7 (RFC 9562) / ULID | tăng theo ms | 16B | app | lộ thời điểm tạo; vẫn gấp đôi BIGINT |
+| Snowflake (41 bit ms + 10 bit máy + 12 bit sequence) | tăng theo thời gian | 8B | app | phải cấp worker id duy nhất, phụ thuộc đồng hồ |
+
+Gợi ý chọn: hệ thống một DB → BIGINT AUTO_INCREMENT hoặc sequence, cộng thêm một cột mã công khai nếu không muốn lộ ID. Cần sinh ID ở client/nhiều service, hoặc đồng bộ offline → UUIDv7. Cần 64 bit và throughput lớn → Snowflake.
+
+~~~sql
+-- MySQL: lưu UUID dạng 16 byte thay vì CHAR(36)
+CREATE TABLE orders (
+  id BINARY(16) PRIMARY KEY,          -- UUIDv7 sinh từ app
+  customer_id BIGINT NOT NULL,
+  KEY idx_customer (customer_id)
+);
+SELECT BIN_TO_UUID(id) FROM orders LIMIT 1;  -- đổi về dạng chữ khi debug
+~~~
+
+### PostgreSQL thì sao
+PostgreSQL lưu bảng dạng heap (dòng không sắp theo PK), nên UUIDv4 chỉ làm khổ **index PK**: lá B-tree ngẫu nhiên, nhiều page split, và sau mỗi checkpoint, lần sửa đầu tiên của một trang phải ghi nguyên trang vào WAL (full-page write), nên ghi ngẫu nhiên nhiều trang làm WAL phình to. PostgreSQL có kiểu {{uuid}} 16 byte sẵn; từ PostgreSQL 18 có hàm {{uuidv7()}}.
+
+### Pitfall production
+- Đổi CHAR(36) sang BINARY(16) mà quên các cột khoá ngoại ở bảng khác: join giữa hai kiểu khác nhau làm index không được dùng.
+- Snowflake ID là số lớn hơn 2^53: trả JSON dạng số thì JavaScript làm tròn sai, nên serialize thành chuỗi.
+- Dùng {{UUID_TO_BIN(uuid, 1)}} (cờ swap) tưởng là sửa được UUIDv4: cờ này chỉ đảo các phần thời gian của UUIDv1, UUIDv4 vẫn ngẫu nhiên.
+
+> Senior tip: trước khi kết luận "UUID chậm", đo {{Innodb_buffer_pool_reads}} (đọc đĩa vì miss) so với {{Innodb_buffer_pool_read_requests}} trước và sau đợt ghi cao điểm. Tôi từng thấy một bảng log chuyển từ UUIDv4 sang UUIDv7 giảm hơn một nửa dung lượng index chỉ nhờ trang đầy hơn; không cần đổi phần cứng.`,
+  follow: ['Vì sao UUIDv7 vẫn có thể gây tranh chấp ở trang cuối khi ghi rất cao, và InnoDB xử lý hotspot đó thế nào?', 'Nếu đã có hàng tỷ dòng UUIDv4, bạn migrate sang khoá mới ra sao mà không downtime?', 'Cột mã công khai (public id) và PK nội bộ nên thiết kế thế nào?'],
+  tags: ['UUID', 'UUIDv7', 'Snowflake', 'InnoDB', 'clustered index', 'page split', 'buffer pool'],
+  refs: [
+    { type: 'doc', title: 'MySQL: The Physical Structure of an InnoDB Index', url: 'https://dev.mysql.com/doc/refman/8.0/en/innodb-physical-structure.html' },
+    { type: 'doc', title: 'MySQL: Clustered and Secondary Indexes', url: 'https://dev.mysql.com/doc/refman/8.0/en/innodb-index-types.html' },
+    { type: 'doc', title: 'RFC 9562: Universally Unique IDentifiers (UUIDs)', url: 'https://www.rfc-editor.org/rfc/rfc9562' },
+    { type: 'article', title: 'ZemIT: Chọn kiểu ID cho hệ thống', url: 'https://zemit.substack.com/p/chon-kieu-id-cho-he-thong-hien-ai' }
+  ]
+},
+{
+  id: 'db-033', topic: 'db', level: 'senior',
+  q: 'Trên MySQL InnoDB (REPEATABLE READ), hai request đặt cùng một ghế chạy: {{SELECT ... WHERE seat_id = 15 FOR UPDATE}}, không thấy dòng nào, rồi {{INSERT}}. Thỉnh thoảng một request bị lỗi 1213 Deadlock. Giải thích gap lock / next-key lock gây ra deadlock này, đọc {{SHOW ENGINE INNODB STATUS}} thế nào, và sửa ra sao?',
+  a: `**Tóm tắt:** Ở REPEATABLE READ, khi locking read tìm một key không tồn tại, InnoDB khoá **khoảng trống (gap)** quanh vị trí đó để chặn phantom. Gap lock của hai transaction không xung đột nhau, nên cả hai cùng giữ được; nhưng INSERT cần **insert intention lock**, mà khoá này xung đột với gap lock của bên kia. Hai bên chờ nhau thì deadlock. Sửa bằng cách INSERT thẳng và bắt lỗi duplicate key (dựa vào unique index), hoặc dùng READ COMMITTED, và luôn có retry.
+
+### Bước 1: InnoDB có những loại khoá dòng nào
+| Khoá | Khoá cái gì | Ý nghĩa |
+|---|---|---|
+| Record lock | đúng một bản ghi trong index | khoá dòng đã tồn tại |
+| Gap lock | khoảng trống giữa hai bản ghi | cấm chèn vào khoảng đó |
+| Next-key lock | bản ghi + gap ngay trước nó | mặc định cho locking read/UPDATE/DELETE ở RR |
+| Insert intention | một loại gap lock đặc biệt do INSERT xin | xung đột với gap/next-key lock của người khác |
+
+Gap lock "chỉ để ngăn": hai transaction có thể cùng giữ gap lock trên cùng một khoảng. Đây chính là mấu chốt.
+
+### Bước 2: dựng lại deadlock
+Bảng {{booking}} có unique index {{seat_id}}, đang có các giá trị 10 và 20.
+~~~text
+T1: SELECT * FROM booking WHERE seat_id = 15 FOR UPDATE;  -- không có 15 -> gap lock (10, 20)
+T2: SELECT * FROM booking WHERE seat_id = 15 FOR UPDATE;  -- gap lock (10, 20), KHÔNG bị chặn
+T1: INSERT INTO booking(seat_id, ...) VALUES (15, ...);    -- xin insert intention, chờ gap lock của T2
+T2: INSERT INTO booking(seat_id, ...) VALUES (15, ...);    -- chờ gap lock của T1 -> vòng chờ
+InnoDB phát hiện vòng, rollback một bên: ERROR 1213 (40001): Deadlock found ...
+~~~
+Code kiểu "kiểm tra chưa có thì thêm" rất phổ biến trong Java, và chỉ lộ ra khi có tải đồng thời.
+
+### Bước 3: đọc SHOW ENGINE INNODB STATUS
+Phần {{LATEST DETECTED DEADLOCK}} (rút gọn; trong output thật, tên bảng nằm trong dấu nháy ngược):
+~~~text
+*** (1) TRANSACTION:
+TRANSACTION 5021, ACTIVE 3 sec inserting
+*** (1) HOLDS THE LOCK(S):
+RECORD LOCKS ... index uk_seat of table shop.booking trx id 5021 lock_mode X locks gap before rec
+*** (1) WAITING FOR THIS LOCK TO BE GRANTED:
+RECORD LOCKS ... index uk_seat of table shop.booking trx id 5021 lock_mode X locks gap before rec insert intention waiting
+*** (2) TRANSACTION:
+TRANSACTION 5022, ACTIVE 2 sec inserting
+*** (2) HOLDS THE LOCK(S):
+... lock_mode X locks gap before rec
+*** (2) WAITING FOR THIS LOCK TO BE GRANTED:
+... lock_mode X locks gap before rec insert intention waiting
+*** WE ROLL BACK TRANSACTION (2)
+~~~
+Cách đọc: {{lock_mode X}} = next-key lock; {{locks rec but not gap}} = record lock; {{locks gap before rec}} = gap lock; {{insert intention waiting}} = INSERT đang chờ. Cả hai bên giữ gap và chờ insert intention: đúng kịch bản trên. Bản này chỉ giữ deadlock gần nhất; bật {{innodb_print_all_deadlocks = ON}} để ghi mọi deadlock vào error log. Khoá đang giữ lúc chạy xem ở {{performance_schema.data_locks}} (MySQL 8.0).
+
+### Bước 4: các cách sửa
+1. **Để unique index làm việc:** bỏ SELECT FOR UPDATE, INSERT luôn; bắt lỗi duplicate key (Spring dịch thành {{DuplicateKeyException}}) và trả "ghế đã có người đặt".
+2. **INSERT ... ON DUPLICATE KEY UPDATE / INSERT IGNORE** khi nghiệp vụ là upsert.
+3. **READ COMMITTED:** InnoDB tắt gap lock cho tìm kiếm và quét index (vẫn dùng cho kiểm tra khoá ngoại và duplicate key). Đổi isolation phải kiểm tra lại các chỗ dựa vào RR.
+4. **Khoá dòng cha có thật:** ví dụ {{SELECT ... FROM show_time WHERE id = ? FOR UPDATE}} để tuần tự hoá theo suất chiếu.
+5. **Luôn retry** lỗi 1213 (SQLSTATE 40001) vài lần với backoff, ở tầng ngoài transaction.
+
+### Pitfall production
+- Range query trên cột không có index ({{UPDATE ... WHERE status = 'NEW'}}) ở RR: InnoDB quét và khoá next-key **mọi dòng đã quét**, gần như khoá cả bảng.
+- Khoá trên gap cuối cùng (sau giá trị lớn nhất) được ghi là khoá trên "supremum": mọi insert ID lớn hơn đều bị chặn, hay gặp với bảng ID tăng dần.
+- Tăng {{innodb_lock_wait_timeout}} không chữa được deadlock: deadlock bị phát hiện ngay, timeout chỉ áp dụng cho chờ khoá thông thường (lỗi 1205).
+
+> Senior tip: khi review code có chuỗi "SELECT FOR UPDATE rồi INSERT nếu không thấy", tôi hỏi ngay "unique index nào đang bảo vệ?". Hầu hết trường hợp xoá SELECT, để constraint quyết định, vừa hết deadlock vừa bớt một round-trip.`,
+  follow: ['Vì sao PostgreSQL không gặp đúng deadlock này với cùng đoạn code?', 'Chuyển sang READ COMMITTED thì binlog format phải là gì?', 'Khi nào next-key lock trên unique index thu gọn thành record lock?'],
+  tags: ['InnoDB', 'gap lock', 'next-key lock', 'deadlock', 'REPEATABLE READ', 'MySQL'],
+  refs: [
+    { type: 'doc', title: 'MySQL: InnoDB Locking', url: 'https://dev.mysql.com/doc/refman/8.0/en/innodb-locking.html' },
+    { type: 'doc', title: 'MySQL: Locks Set by Different SQL Statements in InnoDB', url: 'https://dev.mysql.com/doc/refman/8.0/en/innodb-locks-set.html' },
+    { type: 'doc', title: 'MySQL: An InnoDB Deadlock Example', url: 'https://dev.mysql.com/doc/refman/8.0/en/innodb-deadlock-example.html' }
+  ]
+},
+{
+  id: 'db-034', topic: 'db', level: 'senior',
+  q: 'Trên PostgreSQL mặc định READ COMMITTED, code Java đọc số dư, tính trong app rồi {{UPDATE account SET balance = :newBalance}}, và thỉnh thoảng mất tiền. Khi hai transaction cùng sửa một dòng, PostgreSQL xử lý thế nào ở READ COMMITTED, REPEATABLE READ và SERIALIZABLE? Bạn sửa và retry ra sao?',
+  a: `**Tóm tắt:** Ở READ COMMITTED, UPDATE gặp dòng đang bị người khác sửa sẽ **chờ**, rồi khi bên kia commit thì **đánh giá lại điều kiện WHERE trên phiên bản mới** và cập nhật tiếp. Nó không kiểm tra lại giá trị bạn đã đọc trước đó trong app, nên "đọc, tính, ghi" bị lost update. Sửa bằng UPDATE nguyên tử ({{balance = balance - 100}}), khoá dòng ({{FOR UPDATE}}), optimistic version, hoặc isolation cao hơn; hai mức cao hơn báo lỗi SQLSTATE 40001 và **bắt buộc retry cả transaction**.
+
+### Bước 1: lost update xảy ra thế nào
+~~~text
+T1: SELECT balance FROM account WHERE id = 1;   -- 1000
+T2: SELECT balance FROM account WHERE id = 1;   -- 1000
+T1: UPDATE account SET balance = 900 WHERE id = 1;   -- app tính 1000 - 100
+T2: UPDATE account SET balance = 700 WHERE id = 1;   -- chờ T1 (khoá dòng)
+T1: COMMIT
+T2: tiếp tục, ghi 700 -> COMMIT                       -- đúng ra phải là 600
+~~~
+Khoá dòng có hoạt động: T2 đúng là chờ T1. Nhưng giá trị 700 đã tính từ con số 1000 cũ trong RAM của Java, nên DB không thể biết.
+
+### Bước 2: READ COMMITTED đánh giá lại thế nào
+Theo tài liệu PostgreSQL, với UPDATE/DELETE/SELECT FOR UPDATE ở READ COMMITTED:
+1. Tìm dòng thoả WHERE theo snapshot của câu lệnh.
+2. Nếu dòng đang bị transaction khác sửa thì chờ nó kết thúc.
+3. Bên kia rollback: dùng dòng cũ. Bên kia commit: lấy **phiên bản mới nhất** của dòng, chạy lại WHERE trên nó (bên trong PostgreSQL gọi là EvalPlanQual). Vẫn thoả thì cập nhật dựa trên phiên bản mới; không thoả hoặc dòng đã bị xoá thì bỏ qua.
+
+Vì vậy câu này an toàn dù chạy song song:
+~~~sql
+-- trừ tiền nguyên tử: biểu thức tính trên phiên bản mới nhất
+UPDATE account SET balance = balance - 100
+WHERE id = 1 AND balance >= 100;   -- trả về 0 dòng nghĩa là không đủ tiền
+~~~
+Hoặc khoá trước khi đọc: {{SELECT balance FROM account WHERE id = 1 FOR UPDATE}} (T2 chờ ngay ở bước đọc và đọc được 900).
+
+### Bước 3: REPEATABLE READ và SERIALIZABLE
+| Mức | Hai bên cùng sửa một dòng | Bắt được write skew (hai bên sửa hai dòng khác nhau dựa trên cùng dữ liệu đọc)? |
+|---|---|---|
+| READ COMMITTED | chờ rồi đánh giá lại, không lỗi | không |
+| REPEATABLE READ | bên sau lỗi {{could not serialize access due to concurrent update}} | không |
+| SERIALIZABLE (SSI) | như RR | có: lỗi {{could not serialize access due to read/write dependencies among transactions}} |
+
+SERIALIZABLE trong PostgreSQL dùng **SSI**: ghi nhận ai đã đọc gì (khoá SIRead, không chặn ai) và phát hiện cấu trúc phụ thuộc đọc/ghi nguy hiểm giữa các transaction đồng thời, rồi huỷ một bên. Ví dụ write skew kinh điển: quy định "luôn có ít nhất 1 bác sĩ trực"; hai bác sĩ cùng đọc "đang có 2 người trực", mỗi người tự xin nghỉ, sửa hai dòng khác nhau, nên RR không phát hiện được. SSI phát hiện được. Đổi lại: có thể báo lỗi "dư" (false positive) và phải retry nhiều hơn.
+
+### Bước 4: retry đúng cách trong Spring
+Mọi lỗi SQLSTATE 40001 (và deadlock 40P01) phải retry **toàn bộ transaction** từ đầu, kể cả các SELECT, vì dữ liệu đọc trước đó đã cũ.
+~~~java
+// retry nằm NGOÀI @Transactional: mỗi lần thử là một transaction mới
+public void transfer(long from, long to, BigDecimal amt) {
+    for (int attempt = 1; ; attempt++) {
+        try {
+            txService.transferInTx(from, to, amt); // @Transactional(isolation = SERIALIZABLE)
+            return;
+        } catch (ConcurrencyFailureException e) {   // Spring dịch 40001/40P01 về nhóm này
+            if (attempt == 3) throw e;
+            sleepWithJitter(attempt);               // backoff ngẫu nhiên tránh va chạm lại
+        }
+    }
+}
+~~~
+
+### Pitfall production
+- Đặt retry bên trong method {{@Transactional}}: transaction đã bị đánh dấu rollback, retry vô nghĩa.
+- Gửi email/gọi API bên ngoài trong transaction có thể retry: retry thì gửi hai lần. Đưa side effect ra sau commit (outbox).
+- Bật SERIALIZABLE cho cả ứng dụng: transaction dài làm tỉ lệ lỗi tăng; chỉ dùng cho nghiệp vụ cần bất biến phức tạp, và giữ transaction ngắn.
+
+> Senior tip: với nghiệp vụ tiền, tôi ưu tiên "UPDATE có điều kiện + kiểm tra số dòng bị ảnh hưởng" vì nó đúng ở mọi isolation và không cần retry. SERIALIZABLE để dành cho bất biến trải trên nhiều dòng; khi bật, theo dõi tỉ lệ lỗi 40001 trên tổng transaction và cảnh báo nếu vượt vài phần trăm.`,
+  follow: ['Optimistic locking bằng cột version khác gì so với UPDATE có điều kiện?', 'Vì sao transaction read-only có thể dùng SERIALIZABLE READ ONLY DEFERRABLE để không bao giờ bị huỷ?', 'MySQL InnoDB ở REPEATABLE READ xử lý cùng kịch bản lost update thế nào?'],
+  tags: ['PostgreSQL', 'READ COMMITTED', 'SERIALIZABLE', 'SSI', 'lost update', 'write skew', 'retry'],
+  refs: [
+    { type: 'doc', title: 'PostgreSQL: Transaction Isolation', url: 'https://www.postgresql.org/docs/current/transaction-iso.html' },
+    { type: 'doc', title: 'PostgreSQL: Serialization Failure Handling', url: 'https://www.postgresql.org/docs/current/mvcc-serialization-failure-handling.html' }
+  ]
+},
+{
+  id: 'db-035', topic: 'db', level: 'senior',
+  q: 'Đĩa của PostgreSQL primary đầy dần dù dữ liệu không tăng; thư mục {{pg_wal}} chiếm 400GB. Team từng dùng Debezium (CDC) nhưng đã tắt connector tuần trước. WAL hoạt động thế nào, vì sao replication slot giữ WAL lại, và bạn xử lý, phòng ngừa ra sao?',
+  a: `**Tóm tắt:** Mọi thay đổi được ghi vào WAL trước khi ghi vào file dữ liệu; sau checkpoint, segment WAL cũ được xoá/tái dùng, **trừ khi** còn ai đó cần nó. Replication slot là lời hứa "giữ WAL cho tới khi consumer xác nhận đã đọc". Consumer chết (Debezium tắt, replica bị gỡ) mà slot vẫn còn thì WAL tích luỹ mãi tới khi đầy đĩa và primary ngừng hoạt động. Xử lý: tìm slot inactive, drop; phòng ngừa: đặt {{max_slot_wal_keep_size}} và cảnh báo theo lượng WAL bị giữ.
+
+### Bước 1: WAL là gì và vì sao cần
+~~~text
+UPDATE -> (1) ghi record vào WAL buffer -> (2) COMMIT: flush WAL xuống đĩa (fsync)
+       -> (3) trang dữ liệu sửa trong shared_buffers, ghi xuống file sau
+       -> (4) CHECKPOINT: đẩy mọi trang bẩn xuống đĩa
+       -> WAL trước checkpoint không còn cần để crash recovery -> segment (16MB) được tái dùng/xoá
+~~~
+Nhờ WAL, commit chỉ cần ghi tuần tự một file log thay vì ghi ngẫu nhiên nhiều trang; crash thì phát lại WAL từ checkpoint gần nhất. Replica (streaming replication) và CDC (logical decoding) cũng chỉ là "người đọc WAL".
+
+### Bước 2: replication slot giữ WAL thế nào
+Không có slot, primary xoá WAL theo lịch, nên replica chậm quá có thể mất đoạn WAL cần và phải dựng lại. Slot khắc phục điều đó: primary nhớ vị trí {{restart_lsn}} của từng consumer và **không xoá WAL sau vị trí đó**. Cái giá: consumer biến mất thì slot vẫn giữ. Ví dụ: hệ thống sinh 60GB WAL/ngày, connector tắt 7 ngày, thì khoảng 400GB WAL bị giữ.
+
+### Bước 3: chẩn đoán
+~~~sql
+SELECT slot_name, slot_type, active, wal_status,
+       pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) AS retained_wal
+FROM pg_replication_slots
+ORDER BY pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) DESC;
+-- slot active = false và retained_wal lớn là thủ phạm
+~~~
+Các nguyên nhân khác cũng làm WAL bị giữ, kiểm tra luôn:
+| Nguyên nhân | Dấu hiệu |
+|---|---|
+| Slot inactive / consumer chậm | {{pg_replication_slots}} như trên |
+| {{archive_command}} lỗi liên tục | {{pg_stat_archiver.failed_count}} tăng, file {{.ready}} dồn trong {{pg_wal/archive_status}} |
+| {{wal_keep_size}} đặt quá lớn | cấu hình |
+| Ghi rất nhiều giữa hai checkpoint | {{max_wal_size}} chỉ là giới hạn mềm |
+
+### Bước 4: xử lý
+1. Xác nhận slot không còn ai dùng (Debezium đã gỡ hẳn chưa, replica nào còn sống).
+2. {{SELECT pg_drop_replication_slot('debezium_orders');}} WAL sẽ được dọn ở checkpoint tiếp theo.
+3. Nếu CDC còn cần: dựng lại connector, chấp nhận snapshot lại dữ liệu vì đoạn WAL đã mất.
+4. **Không** xoá tay file trong {{pg_wal}}: làm hỏng cluster.
+
+### Phòng ngừa
+- {{max_slot_wal_keep_size}} (PostgreSQL 13+, mặc định -1 tức không giới hạn): vượt ngưỡng thì slot bị đánh dấu {{wal_status = 'lost'}}; mất CDC/replica nhưng primary sống. Chọn ngưỡng nhỏ hơn dung lượng trống của đĩa với biên an toàn.
+- Cảnh báo theo {{retained_wal}} và theo {{active = false}} kéo dài. Trên Amazon RDS: metric {{OldestReplicationSlotLag}} và {{TransactionLogsDiskUsage}}.
+- Quy trình gỡ CDC/replica phải có bước drop slot.
+- Logical slot còn giữ {{catalog_xmin}}: VACUUM không dọn được bảng hệ thống; slot vật lý với {{hot_standby_feedback = on}} giữ xmin nên gây bloat bảng người dùng. Slot bỏ quên vừa đầy đĩa vừa bloat.
+
+### Liên hệ replica lag
+Replica dùng slot sẽ không mất WAL, nhưng replica lag lớn đồng nghĩa primary giữ nhiều WAL. Theo dõi {{pg_stat_replication}} ({{write_lag}}, {{flush_lag}}, {{replay_lag}}) song song với kích thước WAL bị giữ.
+
+> Senior tip: tôi coi "retained WAL > 20% dung lượng trống" là cảnh báo cấp trang (page) chứ không phải email. Sự cố đầy đĩa vì slot bỏ quên rất phổ biến sau các PoC CDC; cách rẻ nhất là đặt {{max_slot_wal_keep_size}} ngay khi tạo cluster.`,
+  follow: ['Đặt max_slot_wal_keep_size thì đánh đổi gì với Debezium?', 'synchronous_commit và synchronous_standby_names ảnh hưởng tới độ trễ commit thế nào?', 'Vì sao query dài trên hot standby có thể bị huỷ, và hot_standby_feedback giải quyết đổi lại cái gì?'],
+  tags: ['PostgreSQL', 'WAL', 'replication slot', 'Debezium', 'CDC', 'disk full'],
+  refs: [
+    { type: 'doc', title: 'PostgreSQL: Write-Ahead Logging (WAL)', url: 'https://www.postgresql.org/docs/current/wal-intro.html' },
+    { type: 'doc', title: 'PostgreSQL: pg_replication_slots', url: 'https://www.postgresql.org/docs/current/view-pg-replication-slots.html' },
+    { type: 'doc', title: 'PostgreSQL: Replication settings', url: 'https://www.postgresql.org/docs/current/runtime-config-replication.html' }
+  ]
+},
+{
+  id: 'db-036', topic: 'db', level: 'lead',
+  q: 'Bạn chạy {{ALTER TABLE orders ADD COLUMN note VARCHAR(255)}} (online DDL, ALGORITHM=INSTANT) trên MySQL 8 lúc 10 giờ sáng. Câu lệnh treo, và trong vài giây mọi API đọc/ghi bảng {{orders}} đều treo theo, connection pool cạn. Chuyện gì đã xảy ra, bạn cứu sự cố thế nào, và đặt timeout gì để không lặp lại?',
+  a: `**Tóm tắt:** Một transaction dài (thường là phiên "Sleep" quên commit) đang giữ **metadata lock (MDL)** dạng shared trên bảng. ALTER TABLE, dù INSTANT, vẫn cần MDL exclusive trong chốc lát nên phải chờ; và vì yêu cầu exclusive đang xếp hàng, **mọi câu lệnh mới trên bảng cũng xếp hàng sau nó**. Cứu: tìm và KILL phiên đang giữ transaction (hoặc huỷ ALTER). Phòng: {{lock_wait_timeout}} ngắn cho phiên DDL, cảnh báo transaction dài, timeout ở tầng app và DB.
+
+### Bước 1: metadata lock là gì
+MDL bảo vệ **cấu trúc** bảng (không phải dữ liệu). Mọi câu lệnh chạm bảng, kể cả SELECT thường, lấy MDL shared; quan trọng là MDL được giữ **tới khi transaction kết thúc**, không phải khi câu lệnh xong. DDL cần MDL exclusive.
+~~~text
+10:00:00  phiên 41: BEGIN; SELECT * FROM orders WHERE id = 1;   -- giữ MDL shared, rồi "Sleep" không commit
+10:00:05  phiên 77: ALTER TABLE orders ...                        -- chờ MDL exclusive
+10:00:06  phiên 80..300 (API): SELECT/INSERT orders               -- xếp hàng SAU yêu cầu exclusive
+          -> SHOW PROCESSLIST: "Waiting for table metadata lock" hàng trăm dòng, Hikari báo timeout
+~~~
+Hàng đợi khoá công bằng theo thứ tự: không cho shared mới "chen ngang" yêu cầu exclusive đang chờ (để DDL không bị bỏ đói mãi). Vì vậy một phiên quên commit + một DDL là đủ làm treo bảng.
+
+### Bước 2: cứu sự cố
+1. Nhanh nhất: huỷ ALTER ({{KILL 77}}), hàng đợi giải phóng ngay, API sống lại.
+2. Tìm phiên giữ khoá:
+~~~sql
+-- MySQL 8: sys schema chỉ ra ai chặn ai
+SELECT waiting_pid, blocking_pid, sql_kill_blocking_connection
+FROM sys.schema_table_lock_waits WHERE object_name = 'orders';
+-- transaction mở lâu nhất
+SELECT trx_mysql_thread_id, trx_started, trx_state
+FROM information_schema.innodb_trx ORDER BY trx_started LIMIT 5;
+~~~
+3. {{KILL QUERY 41}} vô dụng ở đây: nó chỉ huỷ **câu lệnh đang chạy**, mà phiên 41 đang Sleep, không có câu lệnh nào. Phải {{KILL 41}} (tức KILL CONNECTION): đóng kết nối và rollback transaction, nhả mọi khoá.
+4. Transaction lớn bị kill phải rollback, có thể mất nhiều phút (trạng thái killed/rolling back): đừng restart MySQL để "nhanh hơn", recovery khi khởi động cũng phải rollback y như vậy.
+
+| Lệnh | MySQL | PostgreSQL |
+|---|---|---|
+| Huỷ câu lệnh, giữ phiên | {{KILL QUERY id}} | {{pg_cancel_backend(pid)}} |
+| Đóng phiên, rollback transaction | {{KILL id}} | {{pg_terminate_backend(pid)}} |
+
+### Bước 3: transaction dài còn gây hại gì
+- InnoDB không purge được undo log cũ hơn read view mở lâu nhất: {{History list length}} trong {{SHOW ENGINE INNODB STATUS}} tăng, query chậm dần vì phải lần qua nhiều phiên bản.
+- PostgreSQL: VACUUM không dọn được dead tuple, bảng bloat; ALTER TABLE lấy ACCESS EXCLUSIVE và gây đúng hiện tượng xếp hàng như MySQL.
+- Giữ row lock: request khác chờ tới {{innodb_lock_wait_timeout}} (mặc định 50 giây).
+
+Nguồn gốc thường gặp phía Java: {{@Transactional}} bao cả lời gọi HTTP chậm; connection bị leak khỏi pool; người dùng mở tool SQL ở chế độ manual commit rồi đi họp.
+
+### Bước 4: timeout nên đặt
+| Ở đâu | Tham số | Gợi ý |
+|---|---|---|
+| Phiên chạy DDL (MySQL) | {{SET SESSION lock_wait_timeout = 5}} | mặc định là 31536000 giây (1 năm) |
+| Phiên chạy DDL (PostgreSQL) | {{SET lock_timeout = '3s'}} | thất bại nhanh rồi retry, thay vì chặn cả bảng |
+| PostgreSQL toàn cục | {{idle_in_transaction_session_timeout}}, {{statement_timeout}}, {{transaction_timeout}} (PG 17+) | ví dụ 60s / 30s cho user của app |
+| MySQL | {{max_execution_time}} (chỉ SELECT, ms), {{wait_timeout}} cho phiên idle | |
+| App | Hikari {{leakDetectionThreshold}}, transaction timeout của Spring | phát hiện code giữ connection lâu |
+
+~~~sql
+-- quy trình DDL an toàn: chờ khoá tối đa 5s, thất bại thì thử lại sau
+SET SESSION lock_wait_timeout = 5;
+ALTER TABLE orders ADD COLUMN note VARCHAR(255), ALGORITHM=INSTANT;
+~~~
+
+### Pitfall production
+- Tin rằng "INSTANT/online DDL thì không khoá": phần copy/rebuild không khoá, nhưng lúc bắt đầu và kết thúc vẫn cần MDL exclusive.
+- Kill bừa phiên của job batch đang ghi dở: rollback lâu và có thể làm sai lệch nghiệp vụ; luôn xem {{trx_started}}, {{trx_rows_modified}} trước khi kill.
+- Đặt timeout DB mà không có retry ở script migration: deploy thất bại ngẫu nhiên. Script DDL phải có vòng thử lại với backoff.
+
+> Senior tip: checklist trước mọi DDL trên production của tôi: (1) xem {{information_schema.innodb_trx}} có transaction nào mở quá 60 giây không, (2) đặt {{lock_wait_timeout}}/{{lock_timeout}} vài giây, (3) chạy giờ thấp điểm có người trực. Ba bước này tốn 2 phút và đã tránh cho team tôi nhiều sự cố "DDL 1 giây làm sập API 10 phút".`,
+  follow: ['gh-ost tránh được vấn đề MDL ở mức nào, và bước cut-over của nó vẫn cần khoá gì?', 'Làm sao phát hiện tự động transaction mở quá lâu và cảnh báo trước khi có sự cố?', 'Trên PostgreSQL, thêm cột có DEFAULT có rewrite bảng không, và khi nào thì có?'],
+  tags: ['MySQL', 'metadata lock', 'long transaction', 'online DDL', 'KILL', 'lock_timeout', 'PostgreSQL'],
+  refs: [
+    { type: 'doc', title: 'MySQL: Metadata Locking', url: 'https://dev.mysql.com/doc/refman/8.0/en/metadata-locking.html' },
+    { type: 'doc', title: 'MySQL: KILL Statement', url: 'https://dev.mysql.com/doc/refman/8.0/en/kill.html' },
+    { type: 'doc', title: 'PostgreSQL: Client Connection Defaults (timeouts)', url: 'https://www.postgresql.org/docs/current/runtime-config-client.html' },
+    { type: 'doc', title: 'PostgreSQL: Server Signaling Functions', url: 'https://www.postgresql.org/docs/current/functions-admin.html' }
+  ]
+},
+{
+  id: 'db-037', topic: 'db', level: 'mid',
+  q: 'Màn hình "đơn hàng gần đây" chạy {{SELECT ... FROM orders WHERE customer_id = ? AND status = ? ORDER BY created_at DESC LIMIT 20}} mất 800ms dù đã có index trên {{customer_id}}. Bạn thiết kế index thế nào cho query có ORDER BY + LIMIT, thứ tự cột quyết định ra sao, và kiểm chứng bằng EXPLAIN thế nào?',
+  a: `**Tóm tắt:** Index chỉ trên {{customer_id}} giúp tìm đúng khách hàng, nhưng DB vẫn phải đọc **mọi** đơn của khách đó, lọc status rồi **sắp xếp** mới lấy 20 dòng. Index ghép {{(customer_id, status, created_at)}} đặt cột so sánh bằng trước, cột sắp xếp sau, nên DB đi thẳng tới đúng đoạn index đã có sẵn thứ tự, đọc 20 entry rồi dừng. Quy tắc: **bằng (=) trước, sắp xếp sau, khoảng (range) cuối**.
+
+### Bước 1: vì sao index một cột chưa đủ
+Giả sử khách VIP có 50.000 đơn. Với index {{(customer_id)}}:
+~~~text
+1. Tìm trong index: 50.000 entry của customer 42
+2. Với mỗi entry, đọc dòng trong bảng để kiểm tra status   -> 50.000 lần đọc ngẫu nhiên
+3. Còn 12.000 dòng đúng status -> SORT theo created_at
+4. Lấy 20 dòng đầu
+~~~
+Bước 2 và 3 là nơi tốn 800ms. LIMIT 20 không giúp được gì vì phải sắp xếp xong mới biết 20 dòng nào mới nhất.
+
+### Bước 2: index ghép, B-tree sắp theo nhiều cột
+Index {{(customer_id, status, created_at)}} sắp theo customer_id, trong cùng customer thì theo status, rồi theo created_at:
+~~~text
+(42, 'NEW',  2024-01-01) (42, 'NEW', 2024-03-05) ... (42, 'PAID', 2023-12-30) (42, 'PAID', 2024-02-11) ...
+                                                     |<------- đoạn customer=42, status=PAID: đã sắp theo created_at ------->|
+~~~
+Hai cột đầu là so sánh bằng, nên đoạn khớp là một dải liền, và bên trong dải đó created_at **đã có thứ tự**. DB nhảy tới cuối dải, đọc ngược 20 entry, xong. Không có bước sort; chi phí gần như không phụ thuộc khách có bao nhiêu đơn. B-tree đọc ngược được, nên không cần khai báo DESC cho trường hợp chỉ một chiều sắp xếp.
+
+### Bước 3: leftmost prefix và thứ tự cột
+Index {{(a, b, c)}} dùng hiệu quả cho điều kiện trên {{a}}, {{a, b}}, {{a, b, c}}; điều kiện chỉ trên {{b}} thì thường không (MySQL 8.0.13+ và PostgreSQL 18 có skip scan, nhưng chỉ có lợi khi cột đầu ít giá trị khác nhau).
+| Query | Index tốt | Lý do |
+|---|---|---|
+| {{customer_id = ? AND status = ? ORDER BY created_at}} | {{(customer_id, status, created_at)}} | bằng, bằng, sắp xếp |
+| {{customer_id = ? AND created_at > ? ORDER BY created_at}} | {{(customer_id, created_at)}} | range trùng cột sắp xếp: vẫn có thứ tự |
+| {{customer_id IN (...) ORDER BY created_at}} | khó tránh sort | nhiều dải, mỗi dải có thứ tự riêng |
+| {{created_at > ? AND customer_id = ?}} | {{(customer_id, created_at)}} | cột bằng phải đứng trước cột range |
+
+Đặt cột range trước cột sắp xếp (ví dụ {{(customer_id, total, created_at)}} với {{total > 100}}) thì phần sau range mất thứ tự, DB lại phải sort.
+
+### Bước 4: kiểm chứng bằng EXPLAIN
+PostgreSQL, trước và sau:
+~~~text
+-- trước
+Limit -> Sort (Sort Method: top-N heapsort) -> Bitmap Heap Scan on orders
+           Recheck Cond: (customer_id = 42)  Filter: (status = 'PAID')  Rows Removed by Filter: 38000
+-- sau
+Limit (actual rows=20) -> Index Scan Backward using idx_cust_status_created on orders
+~~~
+MySQL: trước có {{Using filesort}} trong cột Extra; sau là {{Backward index scan}}, không còn filesort. Nếu index còn chứa đủ các cột SELECT cần (covering index, hoặc {{INCLUDE}} trong PostgreSQL) thì Extra hiện {{Using index}} / plan là Index Only Scan, không phải đọc bảng.
+
+### Pitfall production
+- **Bẫy LIMIT với index sắp xếp:** query {{WHERE status = 'FRAUD' ORDER BY created_at DESC LIMIT 20}} chỉ có index {{(created_at)}}. Planner nghĩ "đọc ngược theo thời gian, sớm gặp 20 dòng FRAUD", nhưng FRAUD rất hiếm nên phải quét hàng triệu entry. Sửa bằng index {{(status, created_at)}} hoặc partial index.
+- Thêm index ghép mới mà quên index cũ {{(customer_id)}} giờ đã thừa (là prefix của index mới): tốn ghi và RAM vô ích.
+- Thứ tự ORDER BY trộn chiều ({{a ASC, b DESC}}) cần index khai báo đúng chiều (MySQL 8 và PostgreSQL đều hỗ trợ index DESC).
+
+> Senior tip: khi nhận một query chậm, tôi viết ra ba nhóm cột: cột so sánh bằng, cột sắp xếp, cột range, rồi dựng index đúng thứ tự đó, sau đó mới xem EXPLAIN. Với màn hình danh sách có LIMIT, mục tiêu là plan không có node Sort và số dòng đọc xấp xỉ LIMIT.`,
+  follow: ['Phân trang trang thứ 500 của màn hình này thì index trên còn giúp được không?', 'Index Only Scan phụ thuộc visibility map thế nào?', 'Khi nào nên dùng partial index thay vì thêm cột status vào index?'],
+  tags: ['index', 'composite index', 'ORDER BY', 'LIMIT', 'EXPLAIN', 'filesort', 'leftmost prefix'],
+  refs: [
+    { type: 'doc', title: 'PostgreSQL: Indexes and ORDER BY', url: 'https://www.postgresql.org/docs/current/indexes-ordering.html' },
+    { type: 'doc', title: 'PostgreSQL: Multicolumn Indexes', url: 'https://www.postgresql.org/docs/current/indexes-multicolumn.html' },
+    { type: 'doc', title: 'MySQL: ORDER BY Optimization', url: 'https://dev.mysql.com/doc/refman/8.0/en/order-by-optimization.html' },
+    { type: 'article', title: 'ZemIT: Đánh index cho query thực tế', url: 'https://zemit.substack.com/p/phan-lon-dev-chi-anh-index-en-dau' }
+  ]
+},
+{
+  id: 'db-038', topic: 'db', level: 'senior',
+  q: 'Job đồng bộ cần ghi 2 triệu dòng giá sản phẩm mỗi đêm (dòng nào có rồi thì cập nhật) và đang chạy mất 3 giờ bằng vòng lặp {{save()}} từng dòng. Bạn tăng tốc thế nào ở tầng JDBC/SQL: batch, multi-row insert, COPY, upsert {{ON CONFLICT}} / {{ON DUPLICATE KEY UPDATE}}, và những bẫy nào cần biết?',
+  a: `**Tóm tắt:** Thời gian chủ yếu mất vào **round-trip mạng và commit từng dòng**, không phải vào việc ghi. Gom thành batch (JDBC {{addBatch}}), bật driver viết lại thành multi-row insert ({{reWriteBatchedInserts}} cho PostgreSQL, {{rewriteBatchedStatements}} cho MySQL), commit theo lô vài nghìn dòng, và dùng upsert một câu thay cho "SELECT rồi INSERT/UPDATE". Với nạp thô số lượng rất lớn, {{COPY}} (PostgreSQL) là nhanh nhất.
+
+### Bước 1: tiền đi đâu
+Mỗi {{save()}} trong vòng lặp thường gồm: SELECT kiểm tra tồn tại, rồi INSERT hoặc UPDATE, mỗi câu một round-trip; nếu mỗi dòng một transaction thì thêm một lần fsync WAL/redo log khi commit.
+~~~text
+2.000.000 dòng x 2 câu x 1ms round-trip  = 4.000 giây (~67 phút) chỉ để chờ mạng
++ 2.000.000 commit x ~1-2ms fsync        = thêm 30-60 phút
+~~~
+Cùng dữ liệu, batch 1.000 dòng/round-trip và commit mỗi 5.000 dòng thì phần chờ mạng và fsync giảm hàng nghìn lần; còn lại chủ yếu là chi phí ghi dữ liệu và cập nhật index.
+
+### Bước 2: JDBC batch + để driver viết lại
+~~~java
+String sql = "INSERT INTO product_price(sku, price, updated_at) VALUES (?, ?, now()) "
+           + "ON CONFLICT (sku) DO UPDATE SET price = EXCLUDED.price, updated_at = now() "
+           + "WHERE product_price.price IS DISTINCT FROM EXCLUDED.price"; // bỏ qua dòng không đổi
+try (PreparedStatement ps = conn.prepareStatement(sql)) {
+    conn.setAutoCommit(false);
+    int n = 0;
+    for (PriceRow r : rows) {
+        ps.setString(1, r.sku()); ps.setBigDecimal(2, r.price());
+        ps.addBatch();
+        if (++n % 1000 == 0) ps.executeBatch();   // 1 round-trip cho 1000 dòng
+        if (n % 5000 == 0) conn.commit();         // transaction vừa phải, không giữ khoá quá lâu
+    }
+    ps.executeBatch(); conn.commit();
+}
+~~~
+URL JDBC: PostgreSQL thêm {{reWriteBatchedInserts=true}}, MySQL Connector/J thêm {{rewriteBatchedStatements=true}}. Không có cờ này, driver vẫn gửi từng câu INSERT (dù trong một lần gửi); có cờ thì gộp thành {{INSERT ... VALUES (...), (...), ...}}, server parse và thực thi ít câu hơn. Nếu dùng Hibernate: ID {{IDENTITY}} làm Hibernate tắt batch insert, nên dùng sequence (xem câu về batching của JPA).
+
+### Bước 3: upsert khác nhau giữa hai DB
+| | PostgreSQL {{ON CONFLICT}} | MySQL {{ON DUPLICATE KEY UPDATE}} |
+|---|---|---|
+| Xác định trùng | chỉ định rõ cột/constraint | bất kỳ unique key nào (nhiều unique key thì khó đoán dòng nào bị sửa) |
+| Tham chiếu giá trị mới | {{EXCLUDED.col}} | alias dòng: {{VALUES (...) AS new ... col = new.col}} (8.0.19+); {{VALUES(col)}} đã deprecated |
+| Kết quả đếm | số dòng insert + update | 1 = insert, 2 = update, 0 = không đổi |
+| Bẫy | một câu không được đụng một dòng hai lần: lỗi {{ON CONFLICT DO UPDATE command cannot affect row a second time}} | dòng trùng vẫn "tiêu" một giá trị AUTO_INCREMENT, ID nhảy cóc |
+
+Bẫy PostgreSQL ở trên xảy ra khi một multi-row insert chứa hai dòng cùng sku: khử trùng lặp trong lô trước khi gửi.
+
+### Bước 4: COPY cho nạp thô
+~~~java
+// PostgreSQL JDBC: stream CSV thẳng vào bảng tạm, rồi một câu upsert từ bảng tạm
+CopyManager copy = conn.unwrap(PGConnection.class).getCopyAPI();
+copy.copyIn("COPY price_staging (sku, price) FROM STDIN WITH (FORMAT csv)", csvReader);
+// sau đó: INSERT INTO product_price SELECT ... FROM price_staging ON CONFLICT (sku) DO UPDATE ...
+~~~
+COPY bỏ qua gần như toàn bộ chi phí từng câu lệnh. MySQL tương đương là {{LOAD DATA LOCAL INFILE}} (phải bật {{local_infile}} ở server và {{allowLoadLocalInfile}} ở driver, cân nhắc bảo mật).
+
+### Pitfall production
+- Commit một lô 2 triệu dòng: transaction khổng lồ, giữ khoá lâu, undo/WAL phình, lỗi ở dòng cuối thì rollback cả đêm. Lô vài nghìn dòng + checkpoint để chạy lại được.
+- Upsert song song từ nhiều luồng với thứ tự khoá khác nhau sinh deadlock: sắp xếp dòng theo khoá (sku) trong mỗi lô.
+- Nạp lần đầu vào bảng trống có nhiều index: tạo index **sau** khi nạp nhanh hơn nhiều so với cập nhật index từng dòng.
+- UPDATE dòng không thay đổi vẫn tạo phiên bản dòng mới trong PostgreSQL: lọc bằng {{IS DISTINCT FROM}} như ví dụ để bớt bloat và WAL.
+
+> Senior tip: trước khi tối ưu, tôi in hai con số: số round-trip và số commit cho mỗi 1.000 dòng. Job đồng bộ của một hệ thống bán lẻ tôi từng xử lý giảm từ vài giờ xuống dưới 10 phút chỉ bằng batch + rewrite + upsert, không cần đổi kiến trúc.`,
+  follow: ['Khi batch thất bại ở giữa, làm sao biết dòng nào lỗi và chạy lại phần còn lại?', 'Bulk upsert từ nhiều worker song song thì chia dữ liệu thế nào để tránh deadlock?', 'Vì sao GenerationType.IDENTITY làm Hibernate tắt batch insert?'],
+  tags: ['bulk insert', 'JDBC batch', 'COPY', 'ON CONFLICT', 'ON DUPLICATE KEY UPDATE', 'upsert', 'reWriteBatchedInserts'],
+  refs: [
+    { type: 'doc', title: 'PostgreSQL: Populating a Database', url: 'https://www.postgresql.org/docs/current/populate.html' },
+    { type: 'doc', title: 'PostgreSQL: INSERT (ON CONFLICT)', url: 'https://www.postgresql.org/docs/current/sql-insert.html' },
+    { type: 'doc', title: 'MySQL: INSERT ... ON DUPLICATE KEY UPDATE', url: 'https://dev.mysql.com/doc/refman/8.0/en/insert-on-duplicate.html' }
+  ]
+},
+{
+  id: 'db-039', topic: 'db', level: 'lead',
+  q: 'Bạn cần export 5 triệu dòng giao dịch từ PostgreSQL mỗi đêm cho bộ phận đối soát. Phiên bản hiện tại dùng {{LIMIT 1000 OFFSET n}} và càng về cuối càng chậm, có đêm chết giữa chừng phải chạy lại từ đầu. Ở tầng database và JDBC, bạn thiết kế lại thế nào: keyset, streaming cursor, checkpoint/resume, đọc từ replica?',
+  a: `**Tóm tắt:** OFFSET buộc DB đọc rồi **vứt bỏ** n dòng mỗi trang, nên tổng chi phí tăng theo bình phương. Thay bằng **keyset** ({{WHERE (created_at, id) > (?, ?) ORDER BY created_at, id LIMIT 5000}}): mỗi trang là một lần nhảy index, chi phí gần như hằng số, và khoá cuối của trang chính là **checkpoint** để chạy tiếp sau sự cố. Streaming cursor (fetchSize) cho một query duy nhất nhưng giữ transaction mở suốt quá trình; đọc từ replica để không ảnh hưởng primary nhưng phải xử lý xung đột recovery.
+
+### Bước 1: vì sao OFFSET chậm dần
+DB không "nhảy" được tới dòng thứ n; nó phải đi qua n dòng đầu theo thứ tự rồi bỏ đi.
+~~~text
+trang 1:     đọc 1.000 dòng
+trang 2:     đọc 2.000 dòng (bỏ 1.000)
+trang 5000:  đọc 5.000.000 dòng (bỏ 4.999.000)
+tổng ≈ 5.000 trang x trung bình 2,5 triệu = ~12,5 tỷ lượt đọc dòng cho 5 triệu dòng hữu ích
+~~~
+Thêm nữa, dữ liệu bị insert/xoá giữa hai trang thì OFFSET lệch: dòng bị lặp hoặc bị sót.
+
+### Bước 2: keyset pagination
+~~~sql
+-- index (created_at, id); id phá hoà khi trùng created_at
+SELECT id, created_at, amount FROM txn
+WHERE created_at >= :from AND created_at < :to
+  AND (created_at, id) > (:lastCreatedAt, :lastId)   -- PostgreSQL so sánh row value dùng được index
+ORDER BY created_at, id
+LIMIT 5000;
+~~~
+Mỗi trang: một lần tìm trên B-tree tới vị trí {{(lastCreatedAt, lastId)}} rồi đọc 5.000 entry kế tiếp. Trang 1 và trang 1.000 tốn như nhau. Với MySQL, viết dạng tách {{created_at > ? OR (created_at = ? AND id > ?)}} và kiểm tra EXPLAIN để chắc index được dùng.
+
+### Bước 3: checkpoint và resume
+~~~java
+// mỗi lô: đọc trang -> ghi file -> lưu checkpoint; crash thì đọc checkpoint chạy tiếp
+Cursor cur = jobRepo.loadCheckpoint(jobId).orElse(Cursor.start(from));
+while (true) {
+    List<Txn> page = txnDao.nextPage(cur, 5000);        // query keyset ở trên, transaction ngắn
+    if (page.isEmpty()) break;
+    writer.append(page);                                // ghi part file / multipart upload
+    cur = Cursor.after(page.get(page.size() - 1));
+    jobRepo.saveCheckpoint(jobId, cur, writer.partNo()); // ghi SAU khi dữ liệu đã an toàn
+}
+~~~
+Ghi checkpoint sau khi phần dữ liệu đã được lưu bền (part file đã flush/upload); nếu ngược lại, crash sẽ làm mất một lô. Chạy lại một lô thì có thể trùng, nên đầu ra theo part (ghi đè part cùng số) hoặc phía nhận khử trùng theo id.
+
+### Bước 4: streaming cursor, khi nào dùng
+Một query duy nhất, driver kéo dần từng mẻ thay vì nạp hết vào RAM:
+| Môi trường | Cách bật |
+|---|---|
+| PostgreSQL JDBC | {{setAutoCommit(false)}} + {{setFetchSize(5000)}}, ResultSet forward-only; thiếu autoCommit=false thì driver vẫn tải hết |
+| MySQL Connector/J | {{setFetchSize(Integer.MIN_VALUE)}} (stream từng dòng) hoặc {{useCursorFetch=true}} + fetchSize |
+| Hibernate 6 | {{query.setFetchSize(5000).scroll(ScrollMode.FORWARD_ONLY)}} hoặc {{getResultStream()}}; dùng {{StatelessSession}} hoặc {{clear()}} định kỳ để persistence context không giữ 5 triệu entity |
+| Spring Data JPA | method trả {{Stream}} phải chạy trong {{@Transactional(readOnly = true)}} và đóng stream (try-with-resources) |
+
+Đánh đổi: cả quá trình là **một transaction dài**: giữ snapshot nên VACUUM không dọn được dead tuple của các bảng bị cập nhật nhiều, giữ connection hàng chục phút, và đứt giữa chừng thì phải chạy lại từ đầu (trừ khi kết hợp với khoá cuối đã xử lý). Ưu điểm: thấy một snapshot nhất quán duy nhất.
+
+| | Keyset theo lô | Streaming cursor |
+|---|---|---|
+| Transaction | nhiều transaction ngắn | một transaction dài |
+| Resume | tự nhiên qua checkpoint | khó |
+| Nhất quán | mỗi lô một snapshot | một snapshot cho cả export |
+| Ảnh hưởng VACUUM | thấp | cao nếu chạy lâu |
+
+Với đối soát theo ngày, dữ liệu trong khoảng {{[from, to)}} đã "đóng" nên keyset theo lô vừa nhất quán vừa resume được; đó là lựa chọn mặc định của tôi.
+
+### Bước 5: đọc từ replica
+Chuyển export sang hot standby để primary không bị tranh I/O. Bẫy: query dài trên standby có thể bị huỷ với lỗi {{canceling statement due to conflict with recovery}} khi primary VACUUM dọn những dòng mà query còn cần. Các lựa chọn: lô ngắn (keyset lại thắng), tăng {{max_standby_streaming_delay}} (replica trễ hơn), hoặc {{hot_standby_feedback = on}} (an toàn cho query nhưng gây bloat trên primary).
+
+> Senior tip: tôi đặt mục tiêu "mỗi lô < 1 giây, checkpoint mỗi lô" và đo thời gian từng lô. Nếu thời gian lô tăng dần theo tiến độ, gần như chắc chắn còn OFFSET hoặc thiếu index cho khoá keyset ở đâu đó.`,
+  follow: ['Nếu export cần một snapshot nhất quán tuyệt đối trên nhiều bảng, bạn dùng REPEATABLE READ hay pg_export_snapshot thế nào?', 'Chia 5 triệu dòng cho 4 worker song song bằng keyset thế nào?', 'Khi nào nên dùng COPY TO STDOUT thay vì đọc qua JDBC ResultSet?'],
+  tags: ['export', 'keyset pagination', 'OFFSET', 'fetchSize', 'ScrollableResults', 'checkpoint', 'read replica'],
+  refs: [
+    { type: 'doc', title: 'PostgreSQL: LIMIT and OFFSET', url: 'https://www.postgresql.org/docs/current/queries-limit.html' },
+    { type: 'doc', title: 'PostgreSQL: Hot Standby', url: 'https://www.postgresql.org/docs/current/hot-standby.html' },
+    { type: 'doc', title: 'PgJDBC: Issuing a Query and Processing the Result', url: 'https://jdbc.postgresql.org/documentation/query/' },
+    { type: 'article', title: 'ZemIT: Export 5 triệu dòng mà không giết hệ thống', url: 'https://zemit.substack.com/p/export-5-trieu-dong-ma-khong-giet' }
+  ]
+},
 );
