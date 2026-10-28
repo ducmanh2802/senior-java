@@ -18,3 +18,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-db-1.en.js` và `node scripts/check-i18n.js lessons-db-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)

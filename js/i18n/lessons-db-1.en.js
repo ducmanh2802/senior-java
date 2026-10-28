@@ -1,6 +1,6 @@
 /*
  * English translation of js/data/lessons-db.js — task T278. Format: js/core/i18n.js (content overlay).
- * ids: lesson-db-001 lesson-db-002 lesson-db-003 lesson-db-004 lesson-db-005
+ * ids: lesson-db-001
  */
 App.i18n.content({
   'lesson-db-001': {
@@ -61,3 +61,4 @@ Draw the T1/T2 schedule, record commit states and values for each read. Be expli
       {q:'When is the snapshot taken in READ COMMITTED?',options:['Per statement','Only at BEGIN','Only at COMMIT','On each Java getter call'],answer:0,explain:'Each SQL statement gets a new snapshot, so repeated SELECTs may see new commits.'}
     ]
   },
+});
