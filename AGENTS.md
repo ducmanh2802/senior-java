@@ -101,8 +101,9 @@ Không thêm field nào khác (validator sẽ báo lỗi).
 
 ```js
 { id: 'qz-jvm-001', topic: 'jvm', q: '…', options: ['A', 'B', 'C', 'D'], answer: 2, explain: `…markup…` }
+{ id: 'qz-jvm-002', topic: 'jvm', multi: true, q: '… (Chọn 2)', options: ['A', 'B', 'C', 'D', 'E'], answer: [0, 3], explain: `…markup…` }
 ```
-Đúng 4 options, không trùng nhau, `answer` là index 0..3. Đáp án đúng nên rải đều các vị trí, đừng để toàn là 0.
+Một đáp án: đúng 4 options không trùng, `answer` là số nguyên 0..3. nhiều đáp án: `multi: true`, 4–6 options không trùng, `answer` là mảng 2–3 index **khác nhau, tăng dần**, nằm trong phạm vi `options`; `q` phải ghi rõ "(Chọn N)" hoặc "(Choose N)" khớp `answer.length`. `multi` chỉ được là `true` hoặc không có; không thêm field nào khác. Đáp án đúng nên rải đều các vị trí. `scripts/validate.js` kiểm tra mọi điều trên (options trùng, answer ngoài range, answer không tăng dần, thiếu `(Chọn N)`, `multi` không phải `true`).
 
 ## 5. Markup trong `a`, `explain`, `q`, `follow`
 

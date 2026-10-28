@@ -109,11 +109,33 @@ for (const z of sandbox.window.QUIZ || []) {
   seenQz.add(z.id);
   if (!/^qz-[a-z]+-\d{3}$/.test(z.id || '')) err(f, `${id}: quiz id phải có dạng qz-<topic>-NNN`);
   if (!topicIds.has(z.topic)) err(f, `${id}: topic "${z.topic}" không hợp lệ`);
-  if (!Array.isArray(z.options) || z.options.length !== 4) err(f, `${id}: cần đúng 4 options`);
-  else if (new Set(z.options).size !== 4) err(f, `${id}: options bị trùng`);
-  if (!Number.isInteger(z.answer) || z.answer < 0 || z.answer > 3) err(f, `${id}: answer phải là 0..3`);
+  const multi = z.multi;
+  if (multi !== undefined && multi !== true) err(f, `${id}: multi chỉ được là true hoặc không có`);
+  if (multi === true) {
+    if (!Array.isArray(z.options) || z.options.length < 4 || z.options.length > 6) err(f, `${id}: multi cần 4–6 options`);
+    else if (new Set(z.options).size !== z.options.length) err(f, `${id}: options bị trùng`);
+    if (!Array.isArray(z.answer) || z.answer.length < 2 || z.answer.length > 3) err(f, `${id}: multi answer phải là mảng 2–3 index`);
+    else {
+      const opts = Array.isArray(z.options) ? z.options.length : 0;
+      const sorted = z.answer.slice().sort((a, b) => a - b);
+      const distinct = new Set(z.answer).size === z.answer.length;
+      if (!distinct) err(f, `${id}: answer index phải khác nhau`);
+      if (JSON.stringify(z.answer) !== JSON.stringify(sorted)) err(f, `${id}: answer phải tăng dần`);
+      if (z.answer.some(x => !Number.isInteger(x) || x < 0 || x >= opts)) err(f, `${id}: answer index nằm ngoài phạm vi options`);
+      // q must state count
+      const m = String(z.q || '').match(/\((?:Chọn|Choose)\s+(\d+)\)/);
+      if (!m) err(f, `${id}: multi q phải ghi rõ (Chọn N) hoặc (Choose N)`);
+      else if (Number(m[1]) !== z.answer.length) err(f, `${id}: số trong (Chọn N) phải khớp answer.length`);
+    }
+  } else {
+    if (!Array.isArray(z.options) || z.options.length !== 4) err(f, `${id}: cần đúng 4 options`);
+    else if (new Set(z.options).size !== 4) err(f, `${id}: options bị trùng`);
+    if (!Number.isInteger(z.answer) || z.answer < 0 || z.answer > 3) err(f, `${id}: answer phải là 0..3`);
+  }
   if (!z.explain) err(f, `${id}: thiếu explain`);
   checkMarkup(f, id, 'q', z.q); checkMarkup(f, id, 'explain', z.explain);
+  const allowed = new Set(['id', 'topic', 'q', 'options', 'answer', 'explain', 'multi', '__file']);
+  Object.keys(z).forEach(k => { if (!allowed.has(k)) err(f, `${id}: field lạ "${k}"`); });
 }
 
 // ---- algorithms ----
