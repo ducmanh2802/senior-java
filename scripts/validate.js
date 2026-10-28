@@ -252,11 +252,27 @@ for (const p of projects) {
   if (p.interview) {
     checkMarkup(f, id, 'interview.story', p.interview.story);
     (Array.isArray(p.interview.questions) ? p.interview.questions : []).forEach((x, i) => checkMarkup(f, id, `interview.questions[${i}]`, x));
-    Object.keys(p.interview).forEach(k => { if (!['story', 'questions'].includes(k)) err(f, `${id}.interview: field lạ "${k}"`); });
+    if (p.interview.answers != null) {
+      if (!Array.isArray(p.interview.answers)) err(f, `${id}.interview.answers: phải là mảng`);
+      else {
+        if (p.interview.answers.length !== p.interview.questions.length) err(f, `${id}.interview.answers: độ dài phải bằng questions (${p.interview.answers.length} vs ${p.interview.questions.length})`);
+        p.interview.answers.forEach((x, i) => {
+          if (typeof x !== 'string') err(f, `${id}.interview.answers[${i}]: phải là chuỗi`);
+          else if (x.length < 300) err(f, `${id}.interview.answers[${i}]: quá ngắn (${x.length} ký tự) — cần ≥ 300`);
+          else checkMarkup(f, id, `interview.answers[${i}]`, x);
+        });
+      }
+    }
+    Object.keys(p.interview).forEach(k => { if (!['story', 'questions', 'answers'].includes(k)) err(f, `${id}.interview: field lạ "${k}"`); });
+  }
+  if (p.design != null) {
+    if (typeof p.design !== 'string') err(f, `${id}: design phải là chuỗi`);
+    else if (p.design.length < 1500) err(f, `${id}: design quá ngắn (${p.design.length} ký tự) — cần ≥ 1500`);
+    else checkMarkup(f, id, 'design', p.design);
   }
   if (p.related != null && !Array.isArray(p.related)) err(f, `${id}: related phải là mảng`);
   (Array.isArray(p.related) ? p.related : []).forEach(r => { if (!questionIds.has(r) && !lessonIds.has(r)) err(f, `${id}: related "${r}" không phải question/lesson có thật`); });
-  const allowed = new Set(['id', 'title', 'level', 'weeks', 'skills', 'pitch', 'requirements', 'architecture', 'milestones', 'challenges', 'readme', 'interview', 'related']);
+  const allowed = new Set(['id', 'title', 'level', 'weeks', 'skills', 'pitch', 'requirements', 'architecture', 'milestones', 'challenges', 'readme', 'design', 'interview', 'related']);
   Object.keys(p).forEach(k => { if (!allowed.has(k)) err(f, `${id}: field lạ "${k}"`); });
 }
 

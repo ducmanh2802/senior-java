@@ -15,3 +15,4 @@ Integrator cho phép sửa đúng các file trong `Owns`. Đề CCDV-F có câu 
 ## Notes
 
 - Integrator (Claude) kiểm tra bản agent làm: validate dữ liệu thật OK; thử 4 câu scratch (không commit) → câu multi đúng qua, sai số (Chọn N), answer không tăng dần, multi khác true đều bị báo lỗi.
+Reviewed-by: verify-only (code/UI task)
