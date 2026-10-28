@@ -1697,4 +1697,163 @@ Boundary gồm thiết bị ↔ Internet, DMZ ↔ nội bộ, service ↔ core b
   ],
   tags: ['Threat Modeling', 'STRIDE', 'Payment', 'Idempotency', 'Double Spending', 'Trust Boundary', 'Banking']
 },
+{
+  id: 'security-023',
+  topic: 'security',
+  level: 'lead',
+  q: 'Bạn thiết kế đăng nhập cho app ngân hàng có web và mobile. Chọn session lưu trên server hay JWT dựa trên tiêu chí "cửa sổ thu hồi" thế nào, và làm sao hỗ trợ "đăng xuất khỏi mọi thiết bị"?',
+  a: `**Tóm tắt:** Câu hỏi đúng không phải "JWT hay session cái nào xịn hơn" mà là: **sau khi ra lệnh thu hồi (khoá tài khoản, đổi mật khẩu, đăng xuất), nghiệp vụ chấp nhận token cũ còn dùng được bao lâu?** Nếu chỉ vài giây, cần trạng thái phía server (session hoặc tra cứu mỗi request). Nếu chấp nhận 5–15 phút, dùng access token JWT ngắn hạn + refresh token xoay vòng lưu trong DB là đủ, và rẻ hơn khi có nhiều service.
+
+### 1. "Cửa sổ thu hồi" là gì, đo thế nào
+Cửa sổ thu hồi = khoảng thời gian từ lúc hệ thống quyết định "token này không còn hợp lệ" tới lúc **request cuối cùng** dùng token đó bị chặn.
+
+~~~text
+t0: admin khoá tài khoản ------------------------------> t1: request cuối cùng còn lọt
+          |<-------------- cửa sổ thu hồi -------------->|
+
+Session server-side : t1 - t0 ~ 0       (request kế tiếp tra store, session đã bị xoá)
+JWT thuần, TTL 15'  : t1 - t0 <= 15 phút (service verify offline, không hỏi ai)
+JWT + denylist      : t1 - t0 = độ trễ lan truyền denylist (vài ms nếu tra Redis trực tiếp,
+                                 vài giây nếu mỗi service cache denylist cục bộ)
+~~~
+Hãy hỏi nghiệp vụ một con số cụ thể. Ví dụ ngân hàng thường yêu cầu: "khách báo mất điện thoại, khoá xong thì **trong 5 giây** không giao dịch được nữa". Một trang đọc tin tức có thể chấp nhận 1 giờ.
+
+### 2. Ba kiến trúc và chi phí
+**(a) Session lưu trạng thái** (Spring Session + Redis): trình duyệt giữ cookie {{SESSION}} (HttpOnly, Secure, SameSite), mỗi request service đọc session từ Redis.
+- Thu hồi: xoá key trong Redis, hiệu lực ngay.
+- Chi phí: 1 lần đọc Redis mỗi request (thường dưới 1 ms cùng AZ). 5.000 req/s là 5.000 ops/s, một node Redis chịu thoải mái. Rủi ro thật là **Redis thành điểm phụ thuộc**: Redis chết thì mọi người bị đăng xuất hoặc không đăng nhập được, nên cần replica/failover và không để eviction xoá session (đặt {{maxmemory-policy noeviction}} cho cluster session).
+
+**(b) JWT ngắn hạn + refresh token xoay vòng**: access token 5–10 phút, verify offline bằng public key (cỡ vài chục micro giây, không gọi mạng). Refresh token là chuỗi ngẫu nhiên lưu **hash** trong DB.
+- Rotation: mỗi lần refresh, token cũ bị đánh dấu đã dùng, phát token mới cùng {{family_id}}.
+- **Reuse detection**: nếu một refresh token **đã dùng** lại được gửi lên, nghĩa là có hai bên cùng giữ nó (một bên là kẻ trộm), nên thu hồi **cả family**. Đây là khuyến nghị trong OAuth 2.0 Security BCP (RFC 9700).
+- Cửa sổ thu hồi = TTL access token. Chi phí: chỉ đọc DB lúc refresh (vài phút/lần/thiết bị), không phải mỗi request.
+
+**(c) JWT + denylist {{jti}} trong Redis**: thu hẹp cửa sổ xuống gần 0, nhưng mỗi request lại tra Redis, tức là bạn đã quay về **stateful** mà vẫn gánh độ phức tạp của JWT (key rotation, kích thước token). Chỉ đáng khi đã có hạ tầng JWT cho nhiều service và chỉ một số API cần thu hồi tức thì.
+
+| Tiêu chí | Session + Redis | JWT ngắn + refresh rotation | JWT + denylist |
+|---|---|---|---|
+| Cửa sổ thu hồi | ~0 | = TTL access (5–15') | ~0 đến vài giây |
+| Tra cứu mỗi request | Có | Không | Có |
+| Hợp với nhiều microservice | Kém (mọi service phải đọc store) | Tốt | Trung bình |
+| Độ phức tạp | Thấp | Trung bình | Cao |
+
+### 3. Đăng xuất khỏi mọi thiết bị
+- **Session**: cần tìm mọi session theo user. Spring Session cung cấp {{FindByIndexNameSessionRepository.findByPrincipalName(username)}}; với Redis phải dùng repository loại **indexed** (Spring Boot 3: {{spring.session.redis.repository-type=indexed}}), loại mặc định không có index này. Lấy danh sách rồi {{deleteById}} từng session.
+- **JWT**: thu hồi mọi refresh token family của user ({{UPDATE refresh_token SET revoked = true WHERE user_id = ?}}). Access token đang lưu hành vẫn sống tới hết TTL. Nếu cửa sổ đó không chấp nhận được, thêm claim {{ver}} (token version của user), tăng version khi "đăng xuất tất cả", và các API nhạy cảm (chuyển tiền) so sánh với version trong cache.
+
+~~~java
+// Refresh với rotation + reuse detection (rút gọn)
+@Transactional
+public Tokens refresh(String presented) {
+    RefreshToken rt = repo.findByHash(sha256(presented))       // chỉ lưu hash, lộ DB không lộ token
+        .orElseThrow(InvalidTokenException::new);
+    if (rt.isRevoked() || rt.isExpired()) throw new InvalidTokenException();
+    if (rt.getUsedAt() != null) {                              // token đã dùng mà bị gửi lại
+        repo.revokeFamily(rt.getFamilyId());                   // => nghi bị đánh cắp, khoá cả họ
+        throw new InvalidTokenException();
+    }
+    rt.setUsedAt(Instant.now());
+    String next = randomToken();                               // 32 byte SecureRandom
+    repo.save(RefreshToken.child(rt, sha256(next)));           // cùng family_id, cùng user, thiết bị
+    return new Tokens(jwt.issue(rt.getUserId(), Duration.ofMinutes(10)), next);
+}
+~~~
+
+### 4. Pitfall production
+- **Refresh đồng thời**: app mobile mở hai luồng cùng refresh một token, luồng thứ hai bị coi là "reuse" và cả family bị khoá, người dùng bị đăng xuất vô cớ. Cách xử lý thường dùng: grace period vài giây trả lại đúng token con vừa phát, hoặc client serialize việc refresh.
+- Lưu refresh token dạng plaintext trong DB: lộ backup là lộ phiên của mọi người.
+- Session cookie thiếu {{HttpOnly}}/{{Secure}}, hoặc không đổi session id sau login (session fixation; Spring Security mặc định đã đổi id, đừng tắt).
+- Đặt TTL access 24 giờ "cho đỡ refresh" rồi tuyên bố "có logout": logout chỉ xoá token ở client, token bị trộm vẫn dùng được cả ngày.
+
+> Senior tip: ghi rõ cửa sổ thu hồi vào tài liệu kiến trúc như một NFR có số ("khoá tài khoản có hiệu lực ≤ 5 giây với API chuyển tiền, ≤ 10 phút với API đọc"). Thiết kế lai rất phổ biến: web dùng session cookie qua BFF, mobile dùng access 10 phút + refresh rotation, và riêng API giao dịch kiểm tra thêm token version. Đừng bắt mọi API trả giá tra cứu chỉ vì vài API cần thu hồi tức thì.`,
+  follow: [
+    'Grace period cho refresh đồng thời mở ra lỗ hổng gì, và giới hạn nó thế nào?',
+    'Redis lưu session bị failover mất dữ liệu vài giây: người dùng bị ảnh hưởng ra sao, bạn chấp nhận hay thiết kế lại?',
+    'Với SPA, vì sao mô hình BFF (token giữ ở server, trình duyệt chỉ có session cookie) đang được khuyến nghị?'
+  ],
+  tags: ['JWT', 'Session', 'Refresh Token Rotation', 'Revocation', 'Spring Session', 'Logout All Devices'],
+  refs: [
+    { type: 'doc', title: 'OWASP Session Management Cheat Sheet', url: 'https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html' },
+    { type: 'doc', title: 'RFC 9700: Best Current Practice for OAuth 2.0 Security', url: 'https://datatracker.ietf.org/doc/html/rfc9700' },
+    { type: 'doc', title: 'Spring Session Reference', url: 'https://docs.spring.io/spring-session/reference/' }
+  ]
+},
+{
+  id: 'security-024',
+  topic: 'security',
+  level: 'senior',
+  q: 'API của bạn dùng ID tự tăng trên URL, ví dụ {{GET /orders/10482}}. Pentest báo lỗi BOLA. Đổi sang UUID có giải quyết được không? Bạn sửa và ngăn tái phát thế nào?',
+  a: `**Tóm tắt:** Đổi sang UUID **không** sửa được BOLA, vì lỗi nằm ở chỗ server không kiểm tra "user này có quyền với object này không". UUID chỉ làm việc **đoán** ID khó hơn. Cách sửa đúng gồm 3 lớp: kiểm tra quyền theo owner ở tầng service (bắt buộc), ID khó đoán ở API boundary (giảm enumeration và lộ thông tin kinh doanh), và test tự động cho ma trận quyền để lỗi không quay lại.
+
+### 1. BOLA là gì và vì sao ID tuần tự làm nó tệ hơn
+BOLA (Broken Object Level Authorization) đứng **số 1** trong OWASP API Security Top 10 (API1:2023). Nó chính là IDOR áp dụng cho API: endpoint nhận ID từ client rồi trả object mà không kiểm tra quyền sở hữu.
+
+~~~text
+User A (đã đăng nhập) gọi GET /orders/10482  -> 200, đơn của A   (đúng)
+User A đổi số:          GET /orders/10481  -> 200, đơn của B   (BOLA!)
+Script lặp 1..10482                          -> tải toàn bộ đơn hàng
+~~~
+Với ID tuần tự, kẻ tấn công **không cần đoán**: cứ trừ 1. Ngay cả khi không có BOLA, ID tuần tự vẫn lộ thông tin: tạo đơn lúc 9h được id 10482, lúc 10h được 10982, suy ra shop có khoảng 500 đơn/giờ. Đối thủ dùng cách này để ước lượng doanh số.
+
+### 2. Lớp 1 (bắt buộc): kiểm tra quyền theo owner ở tầng service
+Quy tắc: **mọi truy vấn lấy object theo ID phải kèm điều kiện người sở hữu**, đặt ở service/repository để mọi đường gọi (REST, GraphQL, message consumer, batch) đều đi qua.
+
+~~~java
+public OrderDto getOrder(String publicId, UserPrincipal me) {
+    // Điều kiện owner nằm NGAY TRONG query: không có kiểu "lấy ra rồi mới if"
+    Order o = orderRepo.findByPublicIdAndCustomerId(publicId, me.customerId())
+        .orElseThrow(() -> new NotFoundException("ORDER_NOT_FOUND")); // 404, không phải 403
+    return mapper.toDto(o);
+}
+~~~
+- Trả **404** thay vì 403 khi object không thuộc user: 403 xác nhận "ID này tồn tại", vẫn là rò rỉ thông tin.
+- Object lồng nhau ({{/orders/:orderId/items/:itemId}}) phải kiểm tra **item thuộc order và order thuộc user**, không chỉ kiểm tra order.
+- Đừng tin ID trong body: {{PUT /orders/1}} với body {{customerId: 2}} cũng là BOLA nếu service dùng giá trị đó.
+
+### 3. Lớp 2: lớp dịch ID tại API boundary
+Giữ khoá chính {{BIGINT}} nội bộ (join nhanh, index nhỏ), nhưng ra ngoài chỉ dùng **public id**.
+
+| Cách | Cơ chế | Ưu | Nhược |
+|---|---|---|---|
+| Cột {{public_id}} UUID/ULID riêng | Sinh ngẫu nhiên khi insert, có unique index | Không đoán được, không lộ số lượng | Thêm cột + index, phải tra theo public_id |
+| UUID làm luôn khoá chính | Không cần dịch | Đơn giản | UUIDv4 ngẫu nhiên làm index B-tree phân mảnh, khoá lớn hơn (16 byte so với 8) |
+| Hashids/Sqids | Mã hoá số thành chuỗi ngắn bằng "salt" | Không thêm cột, URL ngắn | **Không phải mã hoá an toàn**: lộ salt hoặc có nhiều mẫu là giải ngược được; chỉ để che, không để bảo vệ |
+
+Lớp này là **phòng thủ chiều sâu**: nó giảm thiệt hại khi lớp 1 bị quên ở một endpoint mới, và chặn việc suy ra số liệu kinh doanh. Nhưng UUID vẫn lộ qua log, email, link chia sẻ, nên tuyệt đối không coi "khó đoán" là "đã phân quyền".
+
+### 4. Lớp 3: test tự động cho quyền
+Lỗi BOLA thường quay lại khi có endpoint mới. Viết test **ma trận**: với mỗi endpoint có ID, user A tạo object, user B thử đọc/sửa/xoá, kỳ vọng 404.
+
+~~~java
+@ParameterizedTest
+@MethodSource("ownedEndpoints") // ví dụ: GET/PUT/DELETE /orders/{id}, GET /orders/{id}/invoice
+void otherUserCannotAccess(HttpMethod method, String pathTemplate) throws Exception {
+    String id = createOrderAs("alice");                       // chủ sở hữu
+    mvc.perform(request(method, pathTemplate, id)
+            .with(jwt().jwt(j -> j.subject("bob"))))           // user khác
+       .andExpect(status().isNotFound());
+}
+~~~
+Thêm một test "kiểm kê": quét mọi handler có {{@PathVariable}} tên chứa "id" (qua {{RequestMappingHandlerMapping}}) và fail nếu endpoint đó chưa nằm trong danh sách test ma trận. Như vậy dev thêm API mới mà quên test sẽ bị CI chặn.
+
+### 5. Pitfall production
+- Chỉ kiểm tra quyền ở API Gateway theo route: gateway không biết object 10481 thuộc ai.
+- Kiểm tra quyền rồi mới query lần hai không kèm owner (race, hoặc sửa code sau này bỏ mất bước kiểm tra).
+- Endpoint export/batch ({{/orders/export?ids=1,2,3}}) quên lọc owner cho từng phần tử.
+- Rate limit không thay được phân quyền, nhưng nên có để phát hiện enumeration: một user gặp hàng trăm lỗi 404 liên tiếp trên {{/orders/*}} là tín hiệu cần alert.
+
+> Senior tip: khi nhận báo cáo BOLA, đừng chỉ vá endpoint bị báo. Tôi grep toàn bộ repository method dạng {{findById(}} được gọi từ controller/service phục vụ user cuối và thay bằng biến thể có owner, rồi bật test kiểm kê trong CI. Cách này thường tìm thêm vài endpoint cùng lỗi mà pentest chưa chạm tới.`,
+  follow: [
+    'Với hệ thống multi-tenant, bạn đảm bảo mọi query đều lọc tenant_id thế nào (Hibernate filter, PostgreSQL Row Level Security)?',
+    'Nhân viên CSKH cần xem đơn của khách: thiết kế quyền và audit thế nào để không mở lại BOLA?',
+    'Vì sao trả 404 thay vì 403, và có trường hợp nào nên trả 403?'
+  ],
+  tags: ['BOLA', 'IDOR', 'OWASP API Security', 'Enumeration', 'UUID', 'Hashids', 'Authorization Testing'],
+  refs: [
+    { type: 'doc', title: 'OWASP API1:2023 Broken Object Level Authorization', url: 'https://owasp.org/API-Security/editions/2023/en/0xa1-broken-object-level-authorization/' },
+    { type: 'doc', title: 'OWASP Insecure Direct Object Reference Prevention Cheat Sheet', url: 'https://cheatsheetseries.owasp.org/cheatsheets/Insecure_Direct_Object_Reference_Prevention_Cheat_Sheet.html' },
+    { type: 'doc', title: 'OWASP Authorization Testing Automation Cheat Sheet', url: 'https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Testing_Automation_Cheat_Sheet.html' },
+    { type: 'doc', title: 'Spring Security Testing: OAuth 2.0', url: 'https://docs.spring.io/spring-security/reference/servlet/test/mockmvc/oauth2.html' }
+  ]
+},
 );

@@ -2982,6 +2982,154 @@ int read() { return ready ? value : -1; }
 > Senior tip: giữ một nhóm instance đã warm làm đối chứng khi rollout. So p99 cùng CPU, compilation, error rate để phân biệt JIT với dependency cold start.`,
   follow: ['Deoptimization khác compilation failure thế nào?', 'Code cache đầy có biểu hiện gì?'],
   tags: ['tiered compilation', 'C1', 'C2', 'deoptimization']
+},
+{
+  id: 'jvm-026',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'Service chạy ổn nhiều tháng, rồi một hôm chết vì OutOfMemoryError ngay sau khi một khách hàng upload file log 1.5 GB để phân tích. Những đoạn code "tưởng vô hại" nào hay gây OOM kiểu này, và bạn đọc thông điệp lỗi để khoanh vùng ra sao?',
+  a: `**Tóm tắt:** Phần lớn OOM ngoài đời không phải leak từ từ mà là **đỉnh cấp phát (allocation spike)**: một request đưa toàn bộ dữ liệu lớn vào bộ nhớ một lúc (đọc cả file, cả result set, cả JSON, gom cả stream vào List). Code chạy tốt với dữ liệu test vài MB, chỉ nổ khi gặp input lớn. Thông điệp sau dấu hai chấm của {{OutOfMemoryError}} cho biết vùng nhớ nào cạn, nên đọc nó trước khi làm bất cứ điều gì.
+
+### 1. Vì sao một file 1.5 GB cần nhiều hơn 1.5 GB heap
+Ví dụ đoạn code quen thuộc:
+~~~java
+// "Đọc file rồi lọc dòng lỗi" - chạy tốt với file 10 MB
+List<String> lines = Files.readAllLines(path);           // (1) toàn bộ file thành List<String>
+String all = String.join("\\n", lines);                   // (2) thêm một bản sao nữa
+Matcher m = Pattern.compile("ERROR.*timeout").matcher(all); // (3) regex trên chuỗi khổng lồ
+~~~
+Tính thô cho file 1.5 GB, 15 triệu dòng:
+~~~text
+(1) mảng byte của các String : ~1.5 GB (log ASCII, compact string 1 byte/ký tự)
+    header String + mảng     : 15 triệu x ~40 byte  = ~0.6 GB
+    ArrayList chứa tham chiếu : 15 triệu x 4-8 byte = ~0.1 GB
+(2) join tạo thêm MỘT chuỗi mới chứa toàn bộ nội dung, trong khi List vẫn còn sống
+                              : thêm ~1.5 GB
+=> đỉnh cần gần 4 GB heap trong khi pod chỉ có -Xmx2g  ->  OutOfMemoryError: Java heap space
+~~~
+Thêm nữa, mảng Java tối đa khoảng 2^31 phần tử, nên {{Files.readAllBytes}} trên file lớn hơn ~2 GB sẽ ném OOM với thông điệp kiểu "Required array size too large" dù heap còn trống.
+
+### 2. Các mẫu code "vô hại" hay gặp
+| Mẫu | Vì sao nổ | Cách sửa |
+|---|---|---|
+| {{readAllLines}}, {{readAllBytes}}, {{IOUtils.toString}} | Toàn bộ file vào heap | {{Files.lines(path)}} hoặc {{BufferedReader}} xử lý từng dòng, nhớ đóng stream |
+| {{repo.findAll()}} / JDBC không đặt fetch size | Driver MySQL mặc định đọc **toàn bộ** result set vào bộ nhớ; driver PostgreSQL cũng vậy trừ khi tắt autocommit và đặt {{fetchSize}} | Phân trang keyset, {{Stream}} của Spring Data trong transaction + fetch size, hoặc {{JdbcTemplate}} với {{RowCallbackHandler}} |
+| {{objectMapper.readValue(body, List.class)}} với JSON lớn | Cả cây object trong heap, thường gấp nhiều lần kích thước JSON | Streaming {{JsonParser}} đọc từng phần tử |
+| {{collect(Collectors.toList())}} / {{groupingBy}} trên nguồn rất lớn | Stream lazy nhưng collect thì gom hết | Xử lý theo lô (batch 1.000 phần tử), ghi ra đích ngay |
+| {{ByteArrayOutputStream}} để build file export | Tăng gấp đôi khi đầy, {{toByteArray()}} copy thêm lần nữa | Ghi thẳng ra {{OutputStream}} của response/S3 multipart |
+| {{Executors.newFixedThreadPool}} | Hàng đợi {{LinkedBlockingQueue}} không giới hạn, burst làm queue phình | {{ThreadPoolExecutor}} với queue có capacity + rejection policy |
+| Cache {{HashMap}} static, {{ThreadLocal}} không {{remove()}} | Leak từ từ (khác spike), old gen tăng dần qua nhiều ngày | Caffeine có {{maximumSize}}; {{try/finally}} remove |
+
+### 3. Regex trên log lớn: hai vấn đề khác nhau
+- **Catastrophic backtracking**: pattern có lượng từ lồng nhau như {{(a+)+b}} hoặc {{(.*,)*x}} gặp chuỗi không khớp sẽ thử số cách tách tăng **theo hàm mũ**. Triệu chứng chính là **CPU 100%, thread treo** trong {{java.util.regex.Pattern}} (thấy rõ trong jstack), không phải OOM. Đây là ReDoS.
+- **StackOverflowError**: engine regex của JDK xử lý một số cấu trúc (ví dụ nhóm có alternation lặp lại {{(a|b)*}}) bằng đệ quy, chuỗi đủ dài sẽ làm tràn stack.
+- **OOM** thường đến từ việc **nạp cả log thành một String** để chạy regex, như ví dụ ở mục 1.
+
+Cách làm an toàn: chạy regex **từng dòng**, giới hạn độ dài dòng (cắt dòng trên 10 KB), viết pattern không lồng lượng từ (dùng lớp ký tự phủ định như {{[^,]*}} thay cho {{.*}}, possessive quantifier {{*+}} hoặc atomic group {{(?>...)}} để chặn backtrack), và không bao giờ biên dịch pattern lấy từ input người dùng.
+
+### 4. Đọc thông điệp OOM để khoanh vùng
+| Thông điệp | Vùng cạn | Hướng điều tra |
+|---|---|---|
+| Java heap space | Heap | Heap dump: spike thì thấy một thread giữ object khổng lồ; leak thì thấy collection to dần |
+| GC overhead limit exceeded | Heap gần đầy, GC chạy liên tục mà thu hồi rất ít | Giống heap space, thường là leak |
+| Requested array size exceeds VM limit | Xin mảng lớn hơn giới hạn của JVM | Tìm code tạo mảng/collection cực lớn |
+| Metaspace / Compressed class space | Metadata của class | Classloader leak, sinh class động (proxy, script) không giới hạn |
+| Direct buffer memory | Bộ nhớ ngoài heap của NIO | Netty/NIO buffer, {{-XX:MaxDirectMemorySize}}, Native Memory Tracking |
+| unable to create native thread | OS không cho tạo thêm thread | Đếm thread bằng jstack, tìm pool không giới hạn |
+
+Lưu ý: pod bị **OOMKilled** (exit code 137) **không** phải {{OutOfMemoryError}}. Đó là kernel giết process vì tổng bộ nhớ (heap + ngoài heap) vượt memory limit của container, nên sẽ không có stack trace hay heap dump.
+
+> Senior tip: mọi API nhận file hoặc trả dữ liệu "toàn bộ" phải có **giới hạn kích thước** ({{spring.servlet.multipart.max-file-size}}, giới hạn số dòng export) và được load test với input lớn gấp 10 lần dữ liệu thật. Quy tắc tôi dùng khi review: thấy {{readAll}}, {{findAll()}}, {{toList()}} hay {{toByteArray()}} ở đường xử lý dữ liệu người dùng thì hỏi ngay "input lớn nhất là bao nhiêu?". Câu hỏi đó chặn được phần lớn OOM loại spike trước khi lên production.`,
+  follow: [
+    'Làm sao phân biệt OOM do spike và OOM do leak chỉ bằng biểu đồ heap sau GC?',
+    'Spring Data trả về {{Stream<Order>}}: cần những điều kiện gì để thật sự streaming và không giữ hết entity trong persistence context?',
+    'Bạn bảo vệ một API cho phép người dùng nhập regex tìm kiếm thế nào?'
+  ],
+  tags: ['OutOfMemoryError', 'allocation spike', 'ReDoS', 'regex', 'streaming', 'fetchSize'],
+  refs: [
+    { type: 'doc', title: 'Troubleshooting Memory Leaks (Java SE 21 Troubleshooting Guide)', url: 'https://docs.oracle.com/en/java/javase/21/troubleshoot/troubleshooting-memory-leaks.html' },
+    { type: 'doc', title: 'java.util.regex.Pattern (Java SE 21)', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/regex/Pattern.html' },
+    { type: 'article', title: 'OWASP: Regular expression Denial of Service - ReDoS', url: 'https://owasp.org/www-community/attacks/Regular_expression_Denial_of_Service_-_ReDoS' }
+  ]
+},
+{
+  id: 'jvm-027',
+  topic: 'jvm',
+  level: 'lead',
+  q: 'Bạn là người trực sự cố: service thanh toán trên Kubernetes liên tục restart vì hết bộ nhớ. Trình bày playbook xử lý OOM của bạn, từ chuẩn bị trước sự cố, cấp cứu, thu thập bằng chứng đến phân tích và phòng ngừa.',
+  a: `**Tóm tắt:** Playbook có 4 pha. **Chuẩn bị** (trước sự cố): cờ JVM để tự dump và tự thoát, JFR chạy liên tục, metric + alert về heap sau GC và memory của container. **Cấp cứu**: xác định đó là Java OOM hay container OOMKilled, khôi phục dịch vụ (rollback, scale, tăng limit tạm) mà **không làm mất bằng chứng**. **Thu thập và phân tích**: heap dump bằng Eclipse MAT, Native Memory Tracking cho ngoài heap, JFR/async-profiler cho allocation. **Phòng ngừa**: sửa gốc, thêm test tải và alert.
+
+### Pha 0: chuẩn bị (phải làm TRƯỚC sự cố)
+~~~bash
+-XX:MaxRAMPercentage=70                 # heap = 70% memory limit của container
+-XX:+HeapDumpOnOutOfMemoryError         # tự dump khi OOM do JVM ném (heap, metaspace)
+-XX:HeapDumpPath=/dumps                 # volume bền vững, đủ chỗ >= kích thước heap
+-XX:+ExitOnOutOfMemoryError             # dump xong thì thoát, để Kubernetes restart sạch
+-XX:NativeMemoryTracking=summary        # chỉ bật được lúc khởi động
+-XX:StartFlightRecording=name=blackbox,maxage=6h,maxsize=512m
+~~~
+Vì sao cần {{ExitOnOutOfMemoryError}}: sau OOM, một số thread có thể đã chết giữa chừng (scheduler, consumer Kafka) nhưng process vẫn sống và health check vẫn xanh. Đó là trạng thái "zombie" tệ hơn chết hẳn. Thoát ngay để orchestrator thay pod mới.
+
+Metric và alert (Micrometer + Prometheus) cần có sẵn:
+| Metric | Alert gợi ý | Ý nghĩa |
+|---|---|---|
+| Heap còn lại **sau GC** ({{jvm_gc_live_data_size_bytes}} so với {{jvm_gc_max_data_size_bytes}}) | > 80% trong 15 phút | Dấu hiệu leak sớm, nhiều giờ trước khi OOM |
+| {{jvm_gc_pause_seconds}} | Tổng pause > 10% thời gian | GC "thở dốc", sắp OOM |
+| {{container_memory_working_set_bytes}} / limit | > 90% | Nguy cơ OOMKilled (gồm cả ngoài heap) |
+| Số lần restart, lý do {{OOMKilled}} | Bất kỳ | Phải có người xem |
+
+### Pha 1: cấp cứu, phân loại trong 5 phút đầu
+~~~text
+kubectl describe pod ... -> Last State
+   |
+   +-- Reason: OOMKilled, exit 137  --> KERNEL giết: tổng RSS > limit
+   |        (không có heap dump; nghi ngoài heap: thread, direct buffer, metaspace, malloc)
+   |
+   +-- Error, exit 3 / log có "java.lang.OutOfMemoryError: <thông điệp>"
+            --> JVM ném OOM; đọc thông điệp để biết vùng nhớ, tìm file .hprof
+~~~
+Khôi phục dịch vụ theo thứ tự ưu tiên:
+1. Có deploy gần đây? **Rollback** trước, phân tích sau.
+2. OOM do một loại request (file lớn, export)? Chặn tạm bằng feature flag hoặc rate limit.
+3. Tăng memory limit / heap tạm thời để mua thời gian (ghi rõ là biện pháp tạm).
+4. **Giữ một pod "bệnh"** để lấy bằng chứng: bỏ nhãn khỏi Service để không nhận traffic thay vì xoá pod.
+
+### Pha 2: thu thập bằng chứng
+~~~bash
+jcmd <pid> GC.heap_info                              # heap đang dùng thế nào
+jcmd <pid> GC.class_histogram | head -30             # class nào chiếm nhiều nhất (nhanh, nhẹ)
+jcmd <pid> GC.heap_dump /dumps/live.hprof            # dump chủ động; mặc định chỉ object còn sống
+jcmd <pid> VM.native_memory summary                  # ngoài heap: thread, class, code, GC, internal
+jcmd <pid> JFR.dump name=blackbox filename=/dumps/rec.jfr  # lấy tối đa 6 giờ gần nhất
+~~~
+- Heap dump **dừng JVM** trong lúc ghi (heap 4 GB có thể mất vài giây đến vài chục giây) và file to bằng phần heap đang dùng. Không dump pod đang phục vụ traffic.
+- Heap dump chứa **dữ liệu thật** (số thẻ, token, thông tin khách). Xử lý như dữ liệu nhạy cảm: lưu chỗ mã hoá, giới hạn người truy cập, xoá sau khi xong.
+
+### Pha 3: phân tích
+- **Eclipse MAT**: mở báo cáo **Leak Suspects** trước. Sau đó **Dominator Tree** sắp theo retained size (lượng bộ nhớ được giải phóng nếu object đó biến mất). Chọn object lớn nhất, xem **Path to GC Roots** để biết ai đang giữ nó (static field, ThreadLocal của thread nào, cache nào).
+- Spike hay leak: spike thường thấy một thread đang xử lý request giữ một mảng/collection khổng lồ; leak thường thấy collection hàng triệu phần tử treo trên một static field hoặc cache.
+- Ngoài heap: so sánh hai lần {{VM.native_memory summary.diff}} (sau khi chạy {{VM.native_memory baseline}}) cách nhau 30 phút để thấy vùng nào tăng.
+- Allocation: JFR event {{jdk.ObjectAllocationSample}} hoặc async-profiler ({{asprof -e alloc -d 60 -f alloc.html <pid>}}) cho flame graph "ai cấp phát nhiều nhất", hữu ích khi không chụp được dump đúng lúc.
+
+### Pha 4: phòng ngừa và postmortem
+- Sửa gốc + test tái hiện (input lớn, load test chạy vài giờ để lộ leak).
+- Thêm giới hạn: kích thước upload, cache có {{maximumSize}}, queue có capacity.
+- **Continuous profiling** (JFR liên tục, hoặc async-profiler qua công cụ như Pyroscope) để lần sau có dữ liệu ngay thời điểm trước sự cố.
+
+> Senior tip: đo thời gian từ alert tới "có heap dump trong tay" như một chỉ số của đội. Nhiều đội mất cả ngày chỉ vì dump ghi vào filesystem tạm của container và mất theo pod restart. Hãy diễn tập: cố tình gây OOM trên staging mỗi quý và kiểm tra dump có nằm đúng chỗ, mở được bằng MAT, alert có kêu không. Một playbook chưa diễn tập lần nào thường hỏng đúng lúc cần.`,
+  follow: [
+    'Pod bị OOMKilled mà heap chỉ dùng 50%: bạn lập "ngân sách bộ nhớ" của process thế nào?',
+    'ExitOnOutOfMemoryError so với CrashOnOutOfMemoryError: khi nào chọn cái nào?',
+    'Heap dump 16 GB không mở được trên laptop: bạn phân tích bằng cách nào?'
+  ],
+  tags: ['OutOfMemoryError', 'incident', 'heap dump', 'MAT', 'NMT', 'JFR', 'async-profiler', 'OOMKilled'],
+  refs: [
+    { type: 'doc', title: 'Java SE 21 Troubleshooting Guide: Diagnostic Tools', url: 'https://docs.oracle.com/en/java/javase/21/troubleshoot/diagnostic-tools.html' },
+    { type: 'doc', title: 'Native Memory Tracking (Java SE 21)', url: 'https://docs.oracle.com/en/java/javase/21/vm/native-memory-tracking.html' },
+    { type: 'doc', title: 'The java Command (Java SE 21)', url: 'https://docs.oracle.com/en/java/javase/21/docs/specs/man/java.html' },
+    { type: 'doc', title: 'Eclipse Memory Analyzer (MAT)', url: 'https://eclipse.dev/mat/' },
+    { type: 'doc', title: 'async-profiler', url: 'https://github.com/async-profiler/async-profiler' }
+  ]
 }
 );
 
