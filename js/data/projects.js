@@ -1149,110 +1149,1020 @@ Thêm biên an toàn: worker chỉ hết hạn sau expires_at + 30 giây để t
   {
     id: 'proj-notifications', title: 'Thông báo đa kênh qua event', level: 'senior', weeks: 6,
     skills: ['Spring Boot', 'Kafka', 'PostgreSQL', 'Outbox', 'Docker', 'Observability', 'Testing'],
-    pitch: `Tạo nền tảng gửi email/SMS/push giả lập từ domain event, làm rõ delivery semantics, retry và trạng thái cuối. Đây là cách tốt để kể về vận hành bất đồng bộ giữa nhiều team.`,
-    requirements: `### Chức năng
-- Nhận notification request, áp dụng template/preferences, gửi qua adapter giả lập và tra trạng thái.
-- Có deduplication key, retry theo loại lỗi, DLQ và thao tác replay có kiểm soát.
+    pitch: `Tạo nền tảng gửi email/SMS/push giả lập từ domain event, làm rõ delivery semantics, retry và trạng thái cuối. Đây là cách tốt để kể về vận hành bất đồng bộ giữa nhiều team: không gửi trùng, không gửi cho người đã opt-out, không để provider chậm kéo sập API.`,
+    requirements: `### User story
+1. **Gửi từ domain event:** khi đơn hàng thanh toán xong, order service phát event {{OrderPaid}} qua outbox; notification service gửi email + push cho người mua.
+  Chấp nhận: provider khoẻ thì p95 từ lúc event commit tới SENT < 5 giây; mỗi kênh có đúng 1 bản ghi delivery.
+2. **Idempotency:** producer gửi lại cùng {{notification_id}} (retry, replay, consumer restart).
+  Chấp nhận: vẫn chỉ 1 notification và mỗi kênh gửi tối đa 1 lần; cùng id nhưng payload khác trả 409.
+3. **Template và i18n:** template {{order.paid}} có bản vi và en cho từng kênh.
+  Chấp nhận: thiếu bản locale yêu cầu thì dùng bản vi mặc định; thiếu biến trong params thì delivery FAILED với lỗi TEMPLATE_ERROR, không retry.
+4. **Opt-out:** tôi tắt email khuyến mãi.
+  Chấp nhận: tin MARKETING qua email bị SKIPPED (không gọi provider), tin TRANSACTIONAL như OTP vẫn gửi; opt-out có hiệu lực cả với event đã nằm trong queue.
+5. **Retry:** provider SMS trả 503 hoặc timeout.
+  Chấp nhận: retry sau 10 giây, 30 giây, 90 giây, 270 giây; vẫn lỗi thì vào DLT, delivery DEAD; lỗi vĩnh viễn (số điện thoại sai, 400) không retry.
+6. **Rate limit theo provider:** gói SMS chỉ cho 50 tin/giây.
+  Chấp nhận: vượt hạn mức thì worker chờ chứ không bỏ tin; không bao giờ nhận 429 từ provider giả lập ở tải 500 event/giây.
+7. **Tra trạng thái:** support nhập notification id.
+  Chấp nhận: thấy từng kênh, số lần thử, lỗi cuối và provider message id.
+8. **Replay DLT:** admin replay tin DEAD sau khi provider hồi phục.
+  Chấp nhận: chỉ role NOTIF_ADMIN; có audit ai replay, lúc nào; tin đã SENT không bị gửi lại.
+
 ### Phi chức năng
-- Mục tiêu demo: 500 event/giây, p95 tiếp nhận dưới 150 ms; latency giao nhận được báo riêng.
-- Không ghi nội dung nhạy cảm vào log; giới hạn retry để tránh gửi lặp vô hạn.`,
+- Tiếp nhận 500 event/giây trên laptop 8 core (3 partition, 1 instance mỗi loại worker); API POST p95 < 150 ms.
+- Tỉ lệ giao thành công ≥ 99% khi provider lỗi tạm thời 5%; 0 tin gửi trùng trong ranh giới hệ thống.
+- Delivery semantics: at-least-once tới provider, dedup bằng khoá idempotency; công bố rõ giới hạn khi provider không hỗ trợ idempotency.
+- Không log nội dung tin, số điện thoại, email đầy đủ (che còn 3 ký tự cuối).
+
+### Ngoài phạm vi
+- Không dùng provider thật: email qua Mailpit, SMS/push là WireMock giả lập có thể bật lỗi/chậm.
+- Không làm campaign marketing hàng loạt, lên lịch gửi, phân khúc người dùng hay UI soạn template.
+- Không đảm bảo thứ tự giữa các kênh (email có thể tới sau push).`,
     architecture: `~~~text
-Domain API -> PostgreSQL outbox -> Kafka topic
-                                 -> channel workers
-                                 -> retry topic / DLQ
-Workers -> provider adapters (fake SMTP/SMS/push)
+Order service -> PostgreSQL outbox -> relay -> Kafka notification.requested (key = userId)
+  -> Router: lưu notification + delivery, kiểm tra preference
+     -> notification.email / notification.sms / notification.push
+        -> channel worker: rate limit -> render template -> provider adapter
+        -> retry topic (-retry-0..3, backoff) -> DLT (-dlt)
 ~~~
-Outbox bảo đảm event cùng commit với thay đổi nghiệp vụ. Mỗi consumer lưu delivery state và khóa idempotency; retry topic có backoff và consumer phải phân biệt lỗi tạm thời với lỗi vĩnh viễn.`,
+Outbox bảo đảm event cùng commit với thay đổi nghiệp vụ. Router và worker đều idempotent nhờ unique key (notification_id, channel) và update có điều kiện; retry không chặn partition nhờ retry topic riêng; mỗi kênh scale độc lập.`,
+    design: `### Schema DB (PostgreSQL 16, Flyway V1)
+~~~sql
+CREATE TABLE notification (
+  id           UUID PRIMARY KEY,               -- notification_id do producer sinh
+  user_id      VARCHAR(64) NOT NULL,
+  template_key VARCHAR(64) NOT NULL,
+  locale       VARCHAR(8)  NOT NULL DEFAULT 'vi',
+  category     VARCHAR(16) NOT NULL CHECK (category IN ('TRANSACTIONAL','MARKETING')),
+  params       JSONB NOT NULL,
+  payload_hash CHAR(64) NOT NULL,              -- phát hiện cùng id khác payload
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE delivery (
+  id              BIGSERIAL PRIMARY KEY,
+  notification_id UUID NOT NULL REFERENCES notification(id),
+  channel   VARCHAR(8)  NOT NULL CHECK (channel IN ('EMAIL','SMS','PUSH')),
+  status    VARCHAR(16) NOT NULL CHECK (status IN
+            ('PENDING','SENDING','SENT','SKIPPED','FAILED','DEAD')),
+  attempts  INT NOT NULL DEFAULT 0,
+  provider_msg_id VARCHAR(128),
+  last_error      VARCHAR(300),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (notification_id, channel)            -- khoá idempotency: 1 kênh tối đa 1 bản ghi
+);
+CREATE INDEX ix_delivery_stuck ON delivery (updated_at) WHERE status = 'SENDING';
+CREATE TABLE user_preference (
+  user_id VARCHAR(64), channel VARCHAR(8), category VARCHAR(16),
+  enabled BOOLEAN NOT NULL,
+  PRIMARY KEY (user_id, channel, category)
+);
+~~~
+- {{UNIQUE (notification_id, channel)}}: chặn trùng ở tầng DB, không cần khoá Java.
+- {{ix_delivery_stuck}} là partial index chỉ chứa dòng SENDING: quét "kẹt quá 5 phút" rất rẻ.
+
+### API
+| Method | Path | Request | Response | Mã lỗi |
+|---|---|---|---|---|
+| POST | /api/notifications | {notificationId, userId, templateKey, locale, category, params, channels} | 202 {id} | 400 template không có, 409 cùng id khác payload |
+| GET | /api/notifications/{id} | - | 200 {deliveries[]} | 404 |
+| PUT | /api/users/{id}/preferences | [{channel, category, enabled}] | 200 | 403 |
+| POST | /admin/dlt/replay | {deliveryIds[]} | 202 {replayed} | 403 thiếu NOTIF_ADMIN |
+
+~~~json
+GET /api/notifications/5b1f0c2e-...
+{ "id": "5b1f0c2e-...", "templateKey": "order.paid", "deliveries": [
+  { "channel": "EMAIL", "status": "SENT", "attempts": 1, "providerMsgId": "m-881" },
+  { "channel": "SMS", "status": "DEAD", "attempts": 5, "lastError": "HTTP 503" } ] }
+~~~
+
+### Luồng chính: router và worker
+~~~text
+Kafka requested   Router             PostgreSQL           Kafka channel     EmailWorker     Provider
+  |-- record ----->|-- INSERT notification ON CONFLICT DO NOTHING ->|          |               |
+  |                |-- INSERT delivery (PENDING | SKIPPED nếu opt-out) ->|      |               |
+  |                |-- send notification.email (key=userId) --------->|        |               |
+  |<- commit offset|                    |                  |-- record ------>|               |
+  |                |                    |<-- UPDATE status='SENDING' WHERE status='PENDING' --|
+  |                |                    |   (0 dòng => đã có worker khác xử lý, bỏ qua)         |
+  |                |                    |                  |  rateLimiter.acquire()            |
+  |                |                    |                  |  re-check opt-out, render ------->|
+  |                |                    |<-- UPDATE status='SENT', provider_msg_id -----------|
+  |                |                    |   lỗi tạm thời => ném exception => retry topic        |
+~~~
+Router commit offset sau khi publish; crash thì xử lý lại, INSERT bị bỏ qua nhờ unique.
+
+### Xử lý lỗi & đồng thời
+| Tình huống | Hành vi hệ thống | Cách test |
+|---|---|---|
+| Event tới 2 lần | ON CONFLICT DO NOTHING, chỉ 1 delivery | Gửi cùng record 2 lần |
+| Worker chết sau khi provider nhận, trước khi ghi SENT | Kẹt SENDING; sweeper sau 5 phút đưa lại PENDING; gửi kèm idempotency key {{notificationId:channel}} | Kill worker bằng hook giữa send và update |
+| Provider 503 | Retry topic, backoff x3, sau 5 lần vào DLT, DEAD | WireMock trả 503 cho 3 lần đầu |
+| Provider 400 | FAILED ngay, không retry | WireMock trả 400 |
+| User opt-out khi tin đang trong queue | Worker kiểm tra lại preference trước khi gửi, SKIPPED | Đổi preference rồi mới thả consumer |
+| Vượt 50 SMS/giây | RateLimiter chờ tối đa 5 giây, không bỏ tin | Bơm 1.000 tin SMS, đếm request/giây ở WireMock |
+
+### Chiến lược test
+- **Unit:** render template (thiếu biến, fallback locale), phân loại lỗi tạm thời/vĩnh viễn, che số điện thoại khi log.
+- **Integration (Testcontainers Kafka + PostgreSQL, WireMock):** luồng end-to-end, retry rồi thành công, vào DLT, replay.
+- **Đồng thời:** 2 worker cùng nhận 1 delivery (gửi trùng record), assert WireMock chỉ nhận 1 request.
+- **Load (k6 + producer script):** 500 event/giây trong 10 phút, provider lỗi ngẫu nhiên 5%; mục tiêu success ≥ 99%, lag về 0 trong 1 phút sau khi dừng bơm.
+
+### Chạy local
+~~~yaml
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment: { POSTGRES_DB: notif, POSTGRES_USER: app, POSTGRES_PASSWORD: app }
+    ports: ["5432:5432"]
+  kafka:
+    image: apache/kafka:3.7.0          # KRaft, không cần ZooKeeper
+    ports: ["9092:9092"]
+  mailpit:
+    image: axllent/mailpit             # SMTP 1025, giao diện web 8025
+    ports: ["1025:1025", "8025:8025"]
+  wiremock:
+    image: wiremock/wiremock:3.5.4     # giả lập SMS và push
+    ports: ["8089:8080"]
+~~~
+
+### Quan sát
+- Metric: {{notification.delivery}} (Counter, tag channel, result=sent|skipped|failed|dead), {{notification.delivery.latency}} (Timer, từ created_at tới SENT), {{notification.ratelimit.wait}} (Timer), consumer lag {{kafka.consumer.fetch.manager.records.lag.max}}.
+- Tỉ lệ giao thành công = sent / (sent + failed + dead), không tính SKIPPED.
+- Alert: success < 97% trong 15 phút; DLT nhận > 50 tin/5 phút; lag > 10.000; số SENDING kẹt > 0 quá 10 phút.
+
+### Mở rộng lên production (5.000 event/giây)
+- Tăng partition (12 đến 24) và số pod worker theo từng kênh; rate limit chuyển sang Redis token bucket dùng chung vì RateLimiter của Resilience4j chỉ tính trong 1 instance.
+- Tách topic ưu tiên: OTP riêng để tin marketing tồn đọng không chặn OTP.`,
     milestones: [
-      { title: 'Event contract và preference', tasks: `Định nghĩa schema có version, recipient reference, template key, correlation id và consent/preference.`, done: `Contract có compatibility rule; test từ chối payload thiếu field bắt buộc và không log nội dung nhạy cảm.` },
-      { title: 'Outbox và publish', tasks: `Ghi outbox trong cùng transaction nghiệp vụ, relay có checkpoint và xử lý crash/restart.`, done: `Integration test xác nhận không mất event sau commit và phát lại không tạo tác dụng phụ trùng.` },
-      { title: 'Worker, retry và DLQ', tasks: `Xây adapter channel, phân loại lỗi, retry với backoff và dead-letter sau ngưỡng.`, done: `Test lỗi tạm thời thành công sau retry; lỗi vĩnh viễn vào DLQ cùng nguyên nhân có thể truy vết.` },
-      { title: 'Preference, dedup và quan sát', tasks: `Kiểm tra opt-out trước delivery, lưu trạng thái theo key và thêm metrics lag/failure.`, done: `Test opt-out không gửi, duplicate event không gửi lần hai; dashboard có throughput, lag và DLQ count.` }
+      { title: 'Contract event, schema và preference', tasks: `1. Tạo project Spring Boot 3.3 (Java 21): Web, Validation, Data JPA, Flyway, Spring for Apache Kafka, Actuator, Mustache.
+2. Viết {{V1__init.sql}} theo phần Schema, thêm bảng template (key, locale, channel, subject, body).
+3. Định nghĩa event dạng record có {{schemaVersion}}; chỉ thêm field optional, không đổi nghĩa field cũ.
+4. Viết API POST nhận request, tính {{payload_hash}} (SHA-256 của JSON đã chuẩn hoá), cùng id khác hash thì 409.
+5. Viết API preference và hàm {{isAllowed(userId, channel, category)}}: TRANSACTIONAL luôn true.
+6. Viết unit test cho 10 tổ hợp preference.
+
+~~~java
+public record NotificationRequested(
+        int schemaVersion,                 // tăng khi đổi contract, consumer đọc được cả bản cũ
+        UUID notificationId,               // khoá idempotency do producer sinh
+        String userId,
+        String templateKey,
+        String locale,
+        Category category,                 // TRANSACTIONAL | MARKETING
+        Map<String, Object> params,        // chỉ dữ liệu cần render, không gửi cả entity
+        Set<Channel> channels) {}
+~~~`, done: `POST cùng notificationId 2 lần trả 202 cả 2 nhưng DB có 1 dòng; cùng id khác params trả 409; 10 test preference pass, gồm OTP vẫn gửi khi user tắt hết.` },
+      { title: 'Outbox phía producer và router idempotent', tasks: `1. Ở order service giả lập: ghi order và outbox trong cùng {{@Transactional}}.
+2. Viết relay đọc outbox theo lô 100 dòng bằng {{FOR UPDATE SKIP LOCKED}}, gửi Kafka, đánh dấu đã gửi.
+3. Router consume {{notification.requested}}: INSERT notification và delivery với ON CONFLICT DO NOTHING.
+4. Delivery có kênh bị opt-out thì tạo luôn với status SKIPPED.
+5. Publish sang topic kênh cho mọi delivery còn PENDING, rồi mới để offset được commit.
+6. Test: dừng app sau khi commit DB nhưng trước khi publish, khởi động lại, kiểm tra tin vẫn tới worker đúng 1 lần.
+
+~~~sql
+-- Relay: nhiều instance chạy song song không lấy trùng dòng
+SELECT id, topic, msg_key, payload
+FROM outbox
+WHERE published_at IS NULL
+ORDER BY id
+LIMIT 100
+FOR UPDATE SKIP LOCKED;
+~~~
+~~~java
+@KafkaListener(topics = "notification.requested", groupId = "router")
+@Transactional
+public void route(NotificationRequested e) {
+    repo.insertIfAbsent(e);                           // ON CONFLICT (id) DO NOTHING
+    for (Channel ch : e.channels()) {
+        String st = prefs.isAllowed(e.userId(), ch, e.category()) ? "PENDING" : "SKIPPED";
+        deliveryRepo.insertIfAbsent(e.notificationId(), ch, st);
+    }
+    // gửi lại cả khi record này là bản lặp: worker sẽ tự bỏ qua delivery không còn PENDING
+    deliveryRepo.findPending(e.notificationId())
+        .forEach(d -> kafka.send("notification." + d.channel().topic(), e.userId(), d.id()));
+}
+~~~`, done: `Integration test: gửi cùng event 3 lần thì có 1 notification, 2 delivery; kill relay giữa lô 100 rồi chạy lại thì cả 100 event tới Kafka, consumer đếm không thiếu.` },
+      { title: 'Channel worker, template và chống gửi trùng', tasks: `1. Mỗi kênh một {{@KafkaListener}} và một adapter ({{EmailAdapter}} dùng JavaMailSender tới Mailpit, SMS/push gọi WireMock bằng RestClient).
+2. Claim delivery bằng UPDATE có điều kiện; 0 dòng thì bỏ qua.
+3. Kiểm tra lại opt-out ngay trước khi gửi.
+4. Render bằng JMustache; thiếu biến thì ném lỗi, đánh dấu FAILED TEMPLATE_ERROR.
+5. Gửi kèm idempotency key {{notificationId:channel}} nếu provider hỗ trợ.
+6. Viết sweeper {{@Scheduled}} đưa SENDING quá 5 phút về PENDING và publish lại.
+
+~~~java
+@Transactional
+public boolean claim(long deliveryId) {
+    // Chỉ 1 worker đổi được PENDING -> SENDING; worker kia nhận 0 dòng và bỏ qua
+    return jdbc.update("""
+        UPDATE delivery SET status = 'SENDING', attempts = attempts + 1, updated_at = now()
+        WHERE id = ? AND status = 'PENDING'""", deliveryId) == 1;
+}
+
+String render(Template t, Map<String, Object> params) {
+    // JMustache mặc định ném MustacheException khi thiếu biến: đúng ý, không gửi "Xin chào ,"
+    return Mustache.compiler().escapeHTML(true).compile(t.body()).execute(params);
+}
+~~~`, done: `Gửi cùng delivery id vào topic 2 lần song song thì Mailpit chỉ có 1 email; template thiếu biến cho FAILED trong < 1 giây và không retry; sweeper khôi phục delivery kẹt trong test.` },
+      { title: 'Retry có backoff, DLT và replay', tasks: `1. Phân loại lỗi: {{TransientProviderException}} (timeout, 429, 5xx) và {{PermanentProviderException}} (4xx khác).
+2. Bật non-blocking retry bằng {{@RetryableTopic}}: 5 lần, backoff 10 giây nhân 3, tối đa 10 phút.
+3. Lỗi vĩnh viễn đưa vào {{exclude}} để đi thẳng DLT và set FAILED.
+4. {{@DltHandler}} set DEAD, ghi last_error.
+5. Viết API replay: set lại PENDING, publish lại, ghi audit.
+6. Test bằng WireMock scenario: 503 hai lần rồi 200.
+
+~~~java
+@RetryableTopic(
+    attempts = "5",                                   // 1 lần đầu + 4 lần retry
+    backoff = @Backoff(delay = 10_000, multiplier = 3.0, maxDelay = 600_000),
+    exclude = PermanentProviderException.class,        // không retry lỗi vĩnh viễn
+    topicSuffixingStrategy = TopicSuffixingStrategy.SUFFIX_WITH_INDEX_VALUE)
+@KafkaListener(topics = "notification.sms", groupId = "sms-worker")
+public void onSms(@Payload Long deliveryId) {
+    smsWorker.process(deliveryId);                     // ném TransientProviderException để retry
+}
+
+@DltHandler
+public void dead(Long deliveryId, @Header(KafkaHeaders.EXCEPTION_MESSAGE) String error) {
+    deliveryRepo.markDead(deliveryId, error);          // support thấy lý do trong GET
+}
+~~~`, done: `Scenario 503, 503, 200 cho SENT với attempts = 3; 503 liên tục cho DEAD sau 5 lần và có tin trong topic -dlt; replay 20 tin DEAD thì 20 SENT, tin đã SENT không gửi lại.` },
+      { title: 'Rate limit, metric và load test', tasks: `1. Mỗi provider một RateLimiter Resilience4j (50/giây cho SMS); chạy nhiều pod thì chia hạn mức hoặc dùng Redis.
+2. Bọc adapter bằng circuit breaker để provider chết không làm mọi tin chờ timeout.
+3. Thêm metric như phần Quan sát, dashboard Grafana.
+4. Viết script producer bơm 500 event/giây; WireMock lỗi ngẫu nhiên 5%.
+5. Chạy 10 phút, ghi throughput, lag, success rate, p95 latency giao nhận vào README.
+
+~~~yaml
+resilience4j:
+  ratelimiter:
+    instances:
+      sms:
+        limitForPeriod: 50          # 50 lượt mỗi chu kỳ
+        limitRefreshPeriod: 1s
+        timeoutDuration: 5s         # chờ tối đa 5 giây để có lượt, quá thì ném lỗi để retry
+  circuitbreaker:
+    instances:
+      sms:
+        slidingWindowSize: 50
+        failureRateThreshold: 50
+        waitDurationInOpenState: 30s
+~~~`, done: `WireMock ghi nhận tối đa 50 request SMS/giây suốt load test; success ≥ 99% với 5% lỗi tạm thời; README có bảng kết quả và dashboard có đủ 4 metric.` }
     ],
     challenges: [
-      `### At-least-once và gửi trùng
-Kafka consumer có thể xử lý lại sau khi side effect đã xảy ra nhưng offset chưa commit. Lưu delivery key bền vững; với provider ngoài, idempotency phụ thuộc khả năng của provider và cần ghi rõ giới hạn.`,
-      `### Thứ tự và partition
-Chỉ có ordering trong một partition. Chọn key theo recipient hoặc aggregate tùy invariant; key nóng có thể làm mất song song, nên đo phân bố trước khi chọn.`,
-      `### Retry storm
-Retry tức thì có thể khuếch đại outage. Dùng exponential backoff có jitter, giới hạn số lần, tách retry topic và circuit breaker ở adapter; DLQ cần quy trình replay có quyền kiểm soát.`
+      `### Gửi trùng khi worker crash
+**Triệu chứng:** khách nhận 2 email "Đơn hàng đã thanh toán" sau một lần deploy.
+**Nguyên nhân gốc:** Kafka là at-least-once: worker gửi xong nhưng chết trước khi commit offset hoặc trước khi ghi SENT, nên record được xử lý lại.
+**Cách 1, claim bằng UPDATE có điều kiện + trạng thái SENDING:** chặn 2 worker gửi song song; nhưng cửa sổ "đã gửi, chưa ghi SENT" vẫn còn, sweeper sẽ gửi lại.
+**Cách 2, idempotency key phía provider** ({{notificationId:channel}}): đóng nốt cửa sổ đó, nhưng chỉ dùng được khi provider hỗ trợ; nếu không, ghi rõ giới hạn "tối đa 1 bản trùng khi crash đúng thời điểm".
+**Chứng minh:** test kill worker giữa send và update, đếm request ở WireMock.`,
+      `### Retry storm khi provider sập
+**Triệu chứng:** provider SMS chết 10 phút; khi sống lại bị dội hàng chục nghìn request cùng lúc và sập tiếp.
+**Nguyên nhân gốc:** retry ngay lập tức, không giới hạn, mọi tin cùng thời điểm retry.
+**Cách 1, retry topic với exponential backoff + giới hạn 5 lần:** không chặn partition chính; đổi lại mất thứ tự giữa các tin (chấp nhận được với thông báo).
+**Cách 2, circuit breaker + rate limiter trước adapter:** breaker mở thì không gọi provider, tin quay về retry; rate limiter giữ đều 50/giây khi hồi phục. Phức tạp hơn, phải tinh chỉnh ngưỡng.
+**Chứng minh:** WireMock trả 503 trong 2 phút rồi 200, đo số request/giây không vượt 50 và mọi tin cuối cùng SENT.`,
+      `### OTP bị kẹt sau tin marketing
+**Triệu chứng:** đợt gửi khuyến mãi 1 triệu email, người dùng đăng nhập chờ OTP 4 phút.
+**Nguyên nhân gốc:** head-of-line blocking: OTP và marketing chung topic, chung worker, chung hạn mức provider.
+**Cách 1, tách topic và worker theo độ ưu tiên** ({{notification.sms.otp}}): đơn giản, OTP không bao giờ chờ marketing; tốn thêm topic và cấu hình.
+**Cách 2, chia hạn mức provider** (ví dụ dành 20% cho OTP): tận dụng tài nguyên tốt hơn nhưng logic rate limit phức tạp.
+**Chứng minh:** bơm 50.000 tin marketing rồi gửi 1 OTP, đo latency OTP < 5 giây.`,
+      `### Opt-out không có hiệu lực ngay
+**Triệu chứng:** user tắt thông báo khuyến mãi lúc 10:00 nhưng vẫn nhận tin lúc 10:05.
+**Nguyên nhân gốc:** chỉ kiểm tra preference ở router, trong khi tin đã nằm trong queue hoặc retry topic từ trước.
+**Cách 1, kiểm tra lại preference ở worker ngay trước khi gửi:** đúng ý người dùng, thêm 1 query mỗi tin (có thể cache Caffeine 30 giây, chấp nhận trễ 30 giây).
+**Cách 2, phát event PreferenceChanged để huỷ delivery PENDING:** chủ động hơn nhưng vẫn có race với worker đang gửi, nên vẫn cần kiểm tra lại.
+**Chứng minh:** đưa tin vào retry topic, đổi preference, đợi retry chạy, assert SKIPPED và WireMock không có request.`,
+      `### Partition nóng
+**Triệu chứng:** lag tăng ở 1 partition trong khi các partition khác rảnh.
+**Nguyên nhân gốc:** key = userId và một tài khoản hệ thống (ví dụ merchant lớn) nhận rất nhiều tin.
+**Cách 1, key theo notificationId:** phân tán đều nhưng mất thứ tự theo user (thường chấp nhận được).
+**Cách 2, giữ key userId nhưng tách user nóng sang topic riêng:** giữ thứ tự cho user thường, phức tạp hơn.
+**Chứng minh:** đo lag từng partition khi 30% tin dồn vào 1 user.`
     ],
     readme: `# Notification Platform\n\n## Mục tiêu\nDemo pipeline event-driven đa kênh với outbox, retry, DLQ, preference và deduplication. Provider được giả lập.\n\n## Chạy local\n{{docker compose up --build}} khởi động PostgreSQL, Kafka và worker.\n\n## Luồng dữ liệu\nMô tả schema event, partition key, trạng thái delivery, retry policy và điều kiện replay DLQ.\n\n## Kiểm thử\nTest outbox crash/restart, consumer duplicate, lỗi tạm thời/vĩnh viễn và opt-out.\n\n## Benchmark và vận hành\nGhi throughput, consumer count, partition count, lag, p95 tiếp nhận và thời gian giao nhận; không gộp hai loại latency.`,
-    interview: { story: `### STAR
-**Situation:** Gửi thông báo đồng bộ làm API phụ thuộc provider và lỗi provider kéo dài request người dùng.\n**Task:** Tách tiếp nhận khỏi delivery nhưng vẫn truy vết được trạng thái.\n**Action:** Tôi lưu outbox cùng transaction, relay vào Kafka, worker dùng delivery key, retry có backoff và DLQ. Preference được kiểm tra ngay trước gửi; metrics phân biệt API acceptance với delivery latency.\n**Result:** Khi adapter giả lập lỗi, API vẫn nhận event và worker phục hồi theo policy; duplicate/replay được kiểm soát bằng test.`, questions: ['Outbox giải quyết failure window nào?', 'Làm sao tránh gửi email trùng khi consumer restart?', 'Bạn chọn partition key nào?', 'Khi nào message vào DLQ và ai được replay?', 'Làm sao tôn trọng opt-out nếu event đã nằm trong queue?'] },
-    related: ['lesson-spring-001', 'lesson-concurrency-001']
+    interview: {
+      story: `### STAR
+**Situation:** Order service gửi email/SMS đồng bộ ngay trong request thanh toán. Khi provider SMS chậm, API thanh toán p95 từ 200 ms lên 3 giây; khi provider lỗi thì khách không nhận gì và không ai biết; sau mỗi lần deploy có khoảng 0,5% email bị gửi trùng.
+**Task:** Tách việc gửi thông báo khỏi luồng nghiệp vụ, đạt tỉ lệ giao ≥ 99%, 0 gửi trùng trong hệ thống, tôn trọng opt-out và đo được từng bước.
+**Action:**
+- Outbox trong order service, relay sang Kafka; router idempotent theo {{(notification_id, channel)}}.
+- Worker từng kênh claim delivery bằng UPDATE có điều kiện, kiểm tra lại opt-out, render template có i18n.
+- Non-blocking retry ({{@RetryableTopic}}, backoff 10 giây nhân 3, 5 lần), DLT và API replay có audit.
+- RateLimiter 50 SMS/giây và circuit breaker theo provider; metric success rate, latency giao nhận, lag.
+**Result:**
+- API thanh toán p95 về 180 ms vì không còn gọi provider.
+- Load test 500 event/giây, lỗi provider 5%: giao thành công 99,6%, 0 trùng; provider sập 2 phút thì tự hồi phục, không có tin mất.
+- Lỗi cấu hình template phát hiện qua alert trong 5 phút thay vì khách hàng báo.
+
+> Số liệu trên là ví dụ minh hoạ: hãy thay bằng kết quả bạn tự đo.
+
+### Demo trong 5 phút
+1. {{docker compose up -d}}, chạy app; mở Mailpit (localhost:8025).
+2. POST một notification email + SMS, mở Mailpit thấy email, GET trạng thái thấy SENT.
+3. POST lại cùng notificationId: vẫn 1 email.
+4. Bật WireMock trả 503 cho SMS, POST tin mới, xem attempts tăng dần, tắt lỗi thì SENT.
+5. Tắt email marketing của user, gửi tin marketing: SKIPPED, Mailpit không có gì.
+6. Mở dashboard: success rate, lag, số tin trong DLT.`,
+      questions: [
+        'Outbox giải quyết failure window nào? Sao không publish Kafka ngay sau khi commit?',
+        'Làm sao tránh gửi email trùng khi consumer restart?',
+        'Bạn chọn partition key nào và vì sao?',
+        'Vì sao dùng retry topic thay vì retry ngay trong listener?',
+        'Khi nào message vào DLQ và ai được replay?',
+        'Làm sao tôn trọng opt-out nếu event đã nằm trong queue?',
+        'Rate limit 50 SMS/giây khi chạy 3 pod thì làm thế nào?',
+        'Bạn đo "tỉ lệ giao thành công" thế nào cho đúng?'
+      ],
+      answers: [
+        `Nếu commit DB rồi mới gọi {{kafkaTemplate.send}}, có một cửa sổ: DB đã commit nhưng app chết hoặc Kafka lỗi trước khi gửi, event mất vĩnh viễn và khách không bao giờ nhận thông báo. Đảo ngược (gửi trước, commit sau) thì có event cho đơn hàng đã rollback. Outbox biến 2 thao tác thành 1: ghi order và dòng outbox trong cùng transaction, relay đọc outbox và gửi Kafka sau. Cái giá là at-least-once: relay có thể gửi xong mà chưa kịp đánh dấu, nên gửi lại; vì vậy consumer phải idempotent. Ngoài ra thêm độ trễ vài trăm ms do relay polling; nếu cần nhanh hơn dùng CDC (Debezium) đọc WAL thay cho polling.`,
+        `Ba lớp. Một: router insert notification và delivery với unique (notification_id, channel) và ON CONFLICT DO NOTHING, nên event lặp không tạo bản ghi mới. Hai: worker claim bằng {{UPDATE ... SET status='SENDING' WHERE status='PENDING'}}; chỉ một worker nhận được 1 dòng, worker kia bỏ qua. Ba: cửa sổ còn lại là "provider đã nhận nhưng chưa ghi SENT" khi worker chết; với trường hợp này tôi gửi idempotency key cho provider nếu họ hỗ trợ, nếu không thì công bố giới hạn "có thể trùng 1 lần khi crash đúng thời điểm". Exactly-once end-to-end với hệ thống bên ngoài là không thể, việc của mình là thu hẹp cửa sổ và đo nó.`,
+        `Tôi chọn userId cho topic requested: các thông báo của cùng một người được xử lý theo thứ tự, ví dụ "đơn đã đặt" không tới sau "đơn đã giao". Trade-off là partition nóng nếu một user nhận rất nhiều tin, như tài khoản merchant. Tôi đo phân bố key trước bằng dữ liệu thật; nếu có user nóng thì tách sang topic riêng hoặc dùng notificationId làm key cho loại tin không cần thứ tự. Lưu ý thứ tự chỉ đúng trong một partition, và retry topic phá thứ tự (tin lỗi đi vòng retry trong khi tin sau đã gửi), nên với thông báo tôi chấp nhận "gần đúng thứ tự"; nếu nghiệp vụ cần thứ tự tuyệt đối thì phải dùng blocking retry và chấp nhận chặn partition.`,
+        `Retry ngay trong listener (blocking, {{DefaultErrorHandler}} + BackOff) giữ record ở partition: trong lúc chờ backoff 10 phút, mọi tin khác cùng partition đứng chờ, lag tăng, và nếu thời gian chờ vượt {{max.poll.interval.ms}} thì consumer bị đá khỏi group. Retry topic ({{@RetryableTopic}}) chuyển record lỗi sang topic -retry-0, -retry-1 với thời điểm xử lý trễ dần; topic chính chạy tiếp. Đổi lại, mất thứ tự và có thêm nhiều topic phải giám sát. Với thông báo, không chặn hàng nghìn tin khác vì một tin lỗi quan trọng hơn thứ tự. Lỗi vĩnh viễn (400, số điện thoại sai) tôi loại khỏi retry bằng {{exclude}} để không phí 5 lần thử.`,
+        `Vào DLT khi: lỗi tạm thời nhưng đã hết 5 lần thử (khoảng 7 phút theo backoff), hoặc lỗi không phân loại được (deserialization). Lỗi vĩnh viễn như email sai định dạng thì đánh FAILED, không cần replay. Replay là thao tác có rủi ro (gửi lại hàng nghìn tin) nên chỉ role NOTIF_ADMIN, qua API nhận danh sách delivery id hoặc khoảng thời gian, có dry-run hiển thị số lượng, và ghi audit ai làm, lúc nào, bao nhiêu tin. Replay chỉ đổi DEAD về PENDING; tin đã SENT không bị gửi lại vì worker claim theo PENDING. Tôi cũng bỏ qua tin quá cũ (OTP quá 5 phút là vô nghĩa) bằng TTL theo template.`,
+        `Tôi kiểm tra preference hai lần: ở router khi tạo delivery và ở worker ngay trước khi gọi provider. Lần thứ hai là quan trọng: tin có thể nằm trong retry topic 10 phút, trong lúc đó user tắt thông báo. Worker đọc preference mới nhất; nếu đã tắt thì SKIPPED và ghi lý do. Chi phí là 1 query mỗi tin; tải cao thì cache Caffeine 30 giây, tức chấp nhận trễ tối đa 30 giây, và tôi ghi rõ con số này. Tin TRANSACTIONAL như OTP, cảnh báo bảo mật không cho opt-out theo quy định, nên preference chỉ áp cho MARKETING. Test: đưa tin vào retry, đổi preference, assert WireMock không nhận request.`,
+        `RateLimiter của Resilience4j đếm trong bộ nhớ một JVM, nên 3 pod mỗi pod 50/giây thành 150/giây và provider trả 429. Cách đơn giản: chia hạn mức theo số pod (mỗi pod 16/giây) và cố định số pod worker SMS; nhược điểm là khi scale phải đổi cấu hình và pod rảnh không cho pod bận mượn lượt. Cách chuẩn hơn: token bucket dùng chung trong Redis bằng Lua script (lấy token nguyên tử), mọi pod cùng tiêu một bucket 50/giây. Đổi lại mỗi tin thêm 1 round-trip Redis (khoảng 1 ms) và Redis thành phụ thuộc; khi Redis lỗi tôi fallback về hạn mức cục bộ chia theo pod. Dù cách nào vẫn xử lý 429 của provider như lỗi tạm thời để retry.`,
+        `Phải định nghĩa mẫu số rõ ràng. Tôi tính theo delivery: thành công = SENT, thất bại = FAILED + DEAD, còn SKIPPED (opt-out) không tính vì đó là hành vi đúng. Tỉ lệ = sent / (sent + failed + dead) theo cửa sổ thời gian và theo kênh, vì gộp chung thì email tốt che SMS tệ. Tôi tách latency tiếp nhận (API 202) khỏi latency giao nhận (created_at tới SENT), vì hai số này trả lời hai câu hỏi khác nhau. Lưu ý: SENT chỉ có nghĩa là provider đã nhận; giao tới máy người dùng cần webhook delivery report của provider, nếu có thì thêm trạng thái DELIVERED. Alert khi tỉ lệ dưới 97% trong 15 phút theo từng kênh.`
+      ]
+    },
+    related: ['lesson-spring-001', 'lesson-concurrency-001', 'design-006', 'microservices-005', 'microservices-022', 'microservices-020', 'microservices-029', 'microservices-009', 'api-011', 'spring-016']
   },
   {
     id: 'proj-reconciliation', title: 'Đối soát giao dịch cuối ngày', level: 'lead', weeks: 8,
     skills: ['Spring Batch', 'Java', 'PostgreSQL', 'S3', 'AWS', 'Observability', 'Testcontainers'],
-    pitch: `Xử lý file giao dịch lớn có checkpoint, restart và báo cáo sai lệch. Dự án thể hiện năng lực batch và thiết kế vận hành thực tế, đặc biệt khi dữ liệu phải có thể giải thích và chạy lại.`,
-    requirements: `### Chức năng
-- Nhận file CSV từ object storage, validate schema, chống nạp trùng và đối chiếu tổng tiền/số lượng với giao dịch nội bộ.
-- Xuất matched, unmatched và invalid records kèm lý do; hỗ trợ chạy lại theo file/version.
+    pitch: `Xử lý file giao dịch lớn có checkpoint, restart và báo cáo sai lệch. Dự án thể hiện năng lực batch và thiết kế vận hành thực tế, đặc biệt khi dữ liệu phải có thể giải thích, chạy lại cho cùng kết quả và chịu được 10 triệu dòng mỗi đêm.`,
+    requirements: `### User story
+1. **Nhận file:** mỗi sáng đối tác đẩy {{settlement_20270115.csv}} lên S3; job tự chạy lúc 06:00.
+  Chấp nhận: tính SHA-256 khi tải về; file cùng checksum đã xử lý thì bỏ qua, không nạp trùng; dòng trailer (tổng số dòng, tổng tiền) phải khớp nội dung, sai thì cả file FAILED.
+2. **Dòng lỗi:** amount không phải số, ngày sai định dạng, thiếu mã giao dịch.
+  Chấp nhận: dòng lỗi vào {{recon_invalid}} kèm số dòng và lý do, job chạy tiếp; quá 1.000 dòng lỗi thì job FAILED (file có vấn đề hệ thống, không đối soát nửa vời).
+3. **Matching:** ghép dòng file với giao dịch nội bộ theo khoá {{partner_ref}}.
+  Chấp nhận: lệch tiền vượt dung sai (VND 0 đồng, USD 0,01) là AMOUNT_MISMATCH; đối tác SUCCESS mà nội bộ FAILED/PENDING là STATUS_MISMATCH; chỉ có ở file là MISSING_INTERNAL; chỉ có nội bộ là MISSING_PARTNER; file có 2 dòng cùng ref là DUPLICATE.
+4. **Biên ngày:** giao dịch nội bộ lúc 23:59:58 có thể nằm trong file ngày sau.
+  Chấp nhận: MISSING_PARTNER trong 10 phút cuối ngày được xếp PENDING_NEXT_DAY và chỉ thành lệch thật nếu file ngày sau cũng không có.
+5. **Báo cáo:** ops nhận file chênh lệch và bảng tổng hợp.
+  Chấp nhận: tổng tiền file = tổng MATCHED + các nhóm lệch phía đối tác (control total); báo cáo CSV lên S3 và tái tạo được từ run id.
+6. **Restart:** job chết ở dòng 6 triệu.
+  Chấp nhận: chạy lại tiếp từ chunk đã commit cuối, không nạp trùng dòng nào.
+7. **Chạy lại có chủ đích:** sau khi sửa dữ liệu nội bộ, ops chạy lại ngày D.
+  Chấp nhận: tạo run version mới, kết quả version cũ giữ nguyên; audit ghi ai chạy, lúc nào, lý do.
+8. **Xử lý chênh lệch:** ops đánh dấu một dòng lệch là RESOLVED kèm ghi chú.
+  Chấp nhận: bắt buộc ghi chú; audit ai sửa; không được sửa số tiền trong kết quả.
+
 ### Phi chức năng
-- Mục tiêu demo: 5 triệu dòng/file, chạy trong 30 phút trên máy đã mô tả; bộ nhớ không tăng tuyến tính theo file.
-- File có checksum, mã hóa, retention và audit trail; không đưa dữ liệu cá nhân thật vào repo.`,
+- 10 triệu dòng (khoảng 1,2 GB CSV) hoàn tất < 30 phút trên laptop 8 core, PostgreSQL 16 trong Docker.
+- Heap ≤ 1 GB và không tăng theo kích thước file (streaming).
+- Nạp staging ≥ 20.000 dòng/giây; bước matching set-based < 5 phút.
+- Xác định: cùng file + cùng dữ liệu nội bộ cho cùng kết quả, đếm và tổng tiền khớp tuyệt đối.
+
+### Ngoài phạm vi
+- Không kết nối SFTP/ngân hàng thật: MinIO thay S3, file sinh bằng script.
+- Không tự động sửa giao dịch nội bộ, chỉ báo cáo; không quy đổi tỷ giá; không UI (API + file CSV).`,
     architecture: `~~~text
-S3/local object store -> batch job -> staging table -> reconciliation
-                                      -> matched / exception report
-PostgreSQL metadata: file checksum, run id, checkpoint, totals
+S3 (MinIO) -> tải về đĩa tạm + SHA-256 -> recon_file
+Spring Batch job (tham số: fileId, version)
+  step 1 load:    FlatFileItemReader -> validate/chuẩn hoá -> JdbcBatchItemWriter -> stg_partner_txn
+  step 2 match:   1 câu SQL FULL OUTER JOIN stg với payment_txn -> recon_result
+  step 3 report:  JdbcCursorItemReader -> CSV -> S3, cập nhật summary
+PostgreSQL: metadata Spring Batch (checkpoint), staging, kết quả, audit
 ~~~
-Đọc stream theo chunk, lưu progress bền vững và dùng run id/version để idempotently tiếp tục. AWS demo có thể dùng S3 + scheduled container; phân quyền IAM tối thiểu và mã hóa bucket.`,
+Đọc streaming theo chunk, checkpoint nằm trong cùng transaction với dữ liệu chunk nên restart không trùng. Matching để PostgreSQL làm bằng hash join thay vì vòng lặp Java. Trên AWS: ECS task theo lịch (EventBridge Scheduler), IAM role chỉ đọc đúng prefix S3, bucket mã hoá SSE-KMS.`,
+    design: `### Schema DB (PostgreSQL 16)
+~~~sql
+CREATE TABLE recon_file (
+  id            BIGSERIAL PRIMARY KEY,
+  partner       VARCHAR(32) NOT NULL,
+  business_date DATE NOT NULL,
+  s3_key        VARCHAR(512) NOT NULL,
+  sha256        CHAR(64) NOT NULL,
+  trailer_rows  BIGINT NOT NULL,
+  trailer_total NUMERIC(20,2) NOT NULL,
+  UNIQUE (partner, sha256)                 -- file gửi lại y hệt bị bỏ qua
+);
+CREATE TABLE recon_run (
+  id           BIGSERIAL PRIMARY KEY,
+  file_id      BIGINT NOT NULL REFERENCES recon_file(id),
+  version      INT NOT NULL,
+  triggered_by VARCHAR(64) NOT NULL,
+  reason       VARCHAR(300),
+  status       VARCHAR(16) NOT NULL,
+  UNIQUE (file_id, version)
+);
+-- Staging chia partition theo ngày: xoá dữ liệu cũ bằng DROP partition, không DELETE 10 triệu dòng
+CREATE TABLE stg_partner_txn (
+  business_date DATE NOT NULL,
+  file_id     BIGINT NOT NULL,
+  line_no     BIGINT NOT NULL,
+  partner_ref VARCHAR(64) NOT NULL,
+  amount      NUMERIC(20,2) NOT NULL,
+  currency    CHAR(3) NOT NULL,
+  status      VARCHAR(16) NOT NULL,       -- đã chuẩn hoá: SUCCESS -> COMPLETED
+  txn_time    TIMESTAMPTZ NOT NULL,
+  is_dup      BOOLEAN NOT NULL DEFAULT false, -- dòng lặp ref thứ 2 trở đi
+  PRIMARY KEY (business_date, file_id, line_no)  -- restart ghi lại chunk cũ: ON CONFLICT DO NOTHING
+) PARTITION BY RANGE (business_date);
+CREATE TABLE stg_2027_01 PARTITION OF stg_partner_txn
+  FOR VALUES FROM ('2027-01-01') TO ('2027-02-01');  -- job tạo trước partition tháng sau
+CREATE TABLE recon_result (
+  id BIGSERIAL PRIMARY KEY,
+  run_id BIGINT NOT NULL REFERENCES recon_run(id),
+  partner_ref VARCHAR(64) NOT NULL,
+  result VARCHAR(20) NOT NULL,
+  partner_amount NUMERIC(20,2), internal_amount NUMERIC(20,2),
+  resolved_by VARCHAR(64), note VARCHAR(500)
+);
+CREATE INDEX ix_result_run ON recon_result (run_id, result);
+~~~
+- Không index {{partner_ref}} trên staging: matching đọc cả file, hash join nhanh hơn; index chỉ làm chậm lúc nạp.
+- Bảng nội bộ {{payment_txn}} cần index {{(partner, created_at)}} để lọc đúng 1 ngày.
+
+### API
+| Method | Path | Request | Response | Mã lỗi |
+|---|---|---|---|---|
+| POST | /api/recon/files | {partner, s3Key, businessDate} | 202 {fileId, runId} | 409 checksum đã xử lý |
+| POST | /api/recon/runs/{fileId}/rerun | {reason} | 202 {runId, version} | 409 đang có run chạy |
+| GET | /api/recon/runs/{id} | - | 200 {status, summary} | 404 |
+| PATCH | /api/recon/results/{id} | {note} | 200 | 400 thiếu note, 403 |
+
+~~~json
+GET /api/recon/runs/42
+{ "runId": 42, "version": 1, "status": "COMPLETED", "fileRows": 10000000,
+  "summary": { "MATCHED": 9998710, "AMOUNT_MISMATCH": 112, "STATUS_MISMATCH": 41,
+               "MISSING_INTERNAL": 1103, "MISSING_PARTNER": 25, "DUPLICATE": 9 },
+  "controlTotalOk": true, "reportKey": "reports/2027-01-15/run-42.csv" }
+~~~
+
+### Luồng chính
+~~~text
+Scheduler   ReconService       S3        Spring Batch           PostgreSQL
+  |-- 06:00 ->|-- GET object --->|              |                    |
+  |           |<- stream (tính SHA-256, ghi đĩa tạm)                 |
+  |           |-- INSERT recon_file (unique partner+sha256) -------->|
+  |           |   trùng => bỏ qua, ghi log                           |
+  |           |-- launch(fileId, version=1) --->|                    |
+  |           |                  |  load: mỗi chunk 5.000 dòng      |
+  |           |                  |   BEGIN; INSERT staging; UPDATE checkpoint; COMMIT
+  |           |                  |  match: DELETE result của run; INSERT ... SELECT FULL JOIN
+  |           |                  |  report: cursor -> CSV -> S3     |
+~~~
+
+### Xử lý lỗi & đồng thời
+| Tình huống | Hành vi | Cách test |
+|---|---|---|
+| Process chết giữa chunk | Chunk đang dở rollback; restart cùng tham số chạy tiếp từ chunk đã commit | Processor ném lỗi ở dòng 60.001 lần đầu |
+| File gửi lại y hệt | Unique (partner, sha256) chặn | Upload 2 lần |
+| Đối tác gửi file đã sửa cùng ngày | Checksum khác: file mới, run mới, cảnh báo ops | Sửa 1 dòng rồi upload |
+| Trailer không khớp | FAILED trước khi matching | File thiếu 10 dòng cuối |
+| 2 người cùng bấm rerun | Unique (file_id, version) + kiểm tra run đang chạy | 2 request song song |
+| Step match chạy lại | DELETE rồi INSERT trong 1 transaction nên idempotent | Chạy step 2 lần, đếm kết quả |
+
+### Chiến lược test
+- **Unit:** parser từng định dạng lỗi, chuẩn hoá status, so sánh tiền bằng {{BigDecimal.compareTo}} (không dùng equals vì 10.0 khác 10.00).
+- **Integration (Testcontainers PostgreSQL + MinIO):** file 10.000 dòng tạo đủ 6 nhóm kết quả với số lượng biết trước.
+- **Restart:** {{JobLauncherTestUtils}} chạy lần 1 lỗi, lần 2 thành công; assert số dòng staging bằng số dòng file.
+- **Hiệu năng:** sinh file 10 triệu dòng bằng script, đo thời gian từng step, heap ({{jcmd GC.heap_info}}) và EXPLAIN ANALYZE câu matching.
+
+### Chạy local
+~~~yaml
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment: { POSTGRES_DB: recon, POSTGRES_USER: app, POSTGRES_PASSWORD: app }
+    command: ["postgres", "-c", "work_mem=256MB", "-c", "max_wal_size=4GB"]
+    ports: ["5432:5432"]
+  minio:
+    image: minio/minio
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment: { MINIO_ROOT_USER: minio, MINIO_ROOT_PASSWORD: minio123 }
+    ports: ["9000:9000", "9001:9001"]
+~~~
+
+### Quan sát
+- Metric có sẵn của Spring Batch: {{spring.batch.job}}, {{spring.batch.step}}, {{spring.batch.chunk.write}}, {{spring.batch.item.read}}.
+- Metric tự thêm: {{recon.result}} (Counter, tag result), {{recon.skip}} (Counter, tag reason), {{recon.amount.diff}} (tổng tiền lệch).
+- Alert: job chưa COMPLETED lúc 07:30; tỉ lệ lệch > 0,5%; control total sai; skip > 0 ở đối tác thường không có lỗi.
+
+### Mở rộng (x10: 100 triệu dòng hoặc 20 đối tác)
+- Mỗi file một partition của step (partitioned step, {{TaskExecutorPartitionHandler}}); nhiều máy thì remote partitioning.
+- Nạp bằng {{COPY}} ({{CopyManager}} của driver PostgreSQL) thay INSERT, nhanh hơn nhiều lần; validate trước khi COPY.
+- Đọc {{payment_txn}} từ read replica.`,
     milestones: [
-      { title: 'Định dạng và kiểm soát file', tasks: `Định nghĩa CSV version, checksum, encoding, timezone, currency và quy tắc duplicate.`, done: `Parser có test file lỗi/truncated/duplicate; metadata run lưu checksum và schema version.` },
-      { title: 'Chunk processing và checkpoint', tasks: `Đọc streaming theo chunk, staging dữ liệu và checkpoint để restart không nạp lại toàn bộ.`, done: `Test dừng giữa file rồi resume cho cùng kết quả và không nhân đôi staging records.` },
-      { title: 'Quy tắc đối soát', tasks: `Đối chiếu theo khóa nghiệp vụ, amount/currency và thời gian; lưu mã lý do cho từng exception.`, done: `Test bao phủ matched, missing, duplicate, amount mismatch và timezone boundary.` },
-      { title: 'Báo cáo và vận hành', tasks: `Xuất file kết quả, metrics tiến độ, cảnh báo lỗi và cơ chế phê duyệt/replay run.`, done: `Báo cáo tái lập từ run id; có tổng số/amount đối chiếu và audit người thao tác.` },
-      { title: 'AWS và tải lớn', tasks: `Đóng gói job, đọc S3 qua IAM role, cấu hình retry và đo heap/database throughput.`, done: `README mô tả quyền IAM tối thiểu, retention, benchmark file lớn và giới hạn tài nguyên.` }
+      { title: 'Định dạng file, checksum và metadata', tasks: `1. Tạo project Spring Boot 3.3 (Java 21): Batch, JDBC, Flyway, Actuator, AWS SDK v2 (s3).
+2. Viết đặc tả CSV: UTF-8, delimiter dấu phẩy, amount dấu chấm thập phân, thời gian ISO-8601 có offset, dòng cuối {{TRAILER,rows,total}}.
+3. Viết script sinh file giả 10.000 và 10 triệu dòng, có cài sẵn lệch tiền, thiếu, trùng.
+4. Tải file từ S3 về đĩa tạm theo stream, vừa ghi vừa tính SHA-256.
+5. INSERT recon_file; vi phạm unique thì bỏ qua và log.
+6. Test file trùng, file thiếu trailer, file trailer sai tổng.
+
+~~~java
+// Tải theo stream: heap không phụ thuộc kích thước file
+Path download(String bucket, String key, Path dir) throws Exception {
+    MessageDigest sha = MessageDigest.getInstance("SHA-256");
+    Path target = dir.resolve(Path.of(key).getFileName());
+    try (InputStream in = s3.getObject(b -> b.bucket(bucket).key(key));
+         OutputStream out = Files.newOutputStream(target)) {
+        byte[] buf = new byte[64 * 1024];
+        for (int n; (n = in.read(buf)) > 0; ) {
+            sha.update(buf, 0, n);                    // tính checksum trong cùng một lần đọc
+            out.write(buf, 0, n);
+        }
+    }
+    this.lastSha256 = HexFormat.of().formatHex(sha.digest());
+    return target;
+}
+~~~`, done: `Upload cùng file 2 lần thì chỉ 1 recon_file; file 1,2 GB tải về với heap < 100 MB; 3 test file hỏng đều FAILED với lý do rõ ràng.` },
+      { title: 'Step load: chunk, skip, restart', tasks: `1. Khai báo job với tham số định danh {{fileId}} và {{version}}.
+2. {{FlatFileItemReader}} đọc file tạm, bỏ dòng header, mapper sang record {{PartnerLine}}.
+3. Processor validate và chuẩn hoá (status, currency, thời gian sang UTC); dòng lỗi ném {{ValidationException}}.
+4. Writer {{JdbcBatchItemWriter}} với INSERT ... ON CONFLICT DO NOTHING; JDBC URL thêm {{reWriteBatchedInserts=true}}.
+5. Fault tolerant: skip parse/validation tối đa 1.000 dòng; SkipListener ghi recon_invalid.
+6. Test restart: lần 1 lỗi ở dòng 60.001, lần 2 chạy cùng tham số.
+
+~~~java
+@Bean
+Step loadStep(JobRepository repo, PlatformTransactionManager tx,
+              FlatFileItemReader<PartnerLine> reader, JdbcBatchItemWriter<StagingRow> writer) {
+    return new StepBuilder("load", repo)
+        .<PartnerLine, StagingRow>chunk(5_000, tx)   // 1 transaction = 5.000 dòng + checkpoint
+        .reader(reader)                              // lưu số dòng đã đọc vào ExecutionContext
+        .processor(validator)
+        .writer(writer)
+        .faultTolerant()
+        .skip(FlatFileParseException.class)
+        .skip(ValidationException.class)
+        .skipLimit(1_000)                            // quá 1.000 dòng lỗi thì FAILED
+        .listener(invalidRowListener)                // ghi dòng lỗi + lý do vào recon_invalid
+        .build();
+}
+~~~`, done: `Restart sau lỗi ở dòng 60.001: staging có đúng 10.000.000 dòng, không trùng; file 1.500 dòng lỗi cho job FAILED; nạp 10 triệu dòng ≥ 20.000 dòng/giây.` },
+      { title: 'Step match: quy tắc đối soát bằng SQL', tasks: `1. Viết tasklet chạy trong 1 transaction: DELETE kết quả cũ của run rồi INSERT ... SELECT.
+2. Tính khung ngày theo múi giờ Asia/Ho_Chi_Minh bằng {{ZonedDateTime}} rồi đổi sang Instant.
+3. Xử lý DUPLICATE trước: dòng có cùng ref, dòng thứ 2 trở đi ghi DUPLICATE và loại khỏi join.
+4. Quy tắc PENDING_NEXT_DAY cho MISSING_PARTNER 10 phút cuối ngày.
+5. Chạy EXPLAIN ANALYZE, xác nhận Hash Full Join và không spill đĩa quá nhiều.
+6. Test 6 nhóm với file 10.000 dòng có đáp án biết trước.
+
+~~~sql
+INSERT INTO recon_result (run_id, partner_ref, result, partner_amount, internal_amount)
+SELECT :runId, COALESCE(p.partner_ref, i.ref),
+       CASE WHEN i.ref IS NULL THEN 'MISSING_INTERNAL'
+            WHEN p.partner_ref IS NULL THEN 'MISSING_PARTNER'
+            WHEN abs(p.amount - i.amount) > :tolerance THEN 'AMOUNT_MISMATCH'
+            WHEN p.status <> i.status THEN 'STATUS_MISMATCH'
+            ELSE 'MATCHED' END,
+       p.amount, i.amount
+FROM (SELECT * FROM stg_partner_txn
+      WHERE business_date = :day AND file_id = :fileId AND NOT is_dup) p
+FULL OUTER JOIN
+     (SELECT ref, amount, status FROM payment_txn
+      WHERE partner = :partner AND created_at >= :dayStart AND created_at < :dayEnd) i
+  ON i.ref = p.partner_ref;
+~~~`, done: `File mẫu 10.000 dòng cho đúng số lượng từng nhóm như đáp án; chạy step match 2 lần cho cùng kết quả; 10 triệu dòng match < 5 phút, có ảnh EXPLAIN ANALYZE trong README.` },
+      { title: 'Báo cáo, control total và audit', tasks: `1. Step report đọc kết quả bằng {{JdbcCursorItemReader}} (fetchSize 5.000) ghi CSV, upload S3 theo key có run id.
+2. Tính control total: tổng tiền file phải bằng tổng các nhóm phía đối tác.
+3. API rerun tạo version mới (job parameters mới), ghi audit người bấm và lý do.
+4. API resolve chỉ cho ghi note, không sửa số tiền; audit mọi thay đổi.
+5. Test: rerun giữ nguyên kết quả version cũ.
+
+~~~java
+public long rerun(long fileId, String reason, String user) {
+    int version = runRepo.nextVersion(fileId);        // unique (file_id, version) chặn bấm trùng
+    long runId = runRepo.insert(fileId, version, user, reason);
+    audit.log(user, "RERUN", "file=" + fileId + ", version=" + version + ", reason=" + reason);
+    JobParameters params = new JobParametersBuilder()
+        .addLong("fileId", fileId)
+        .addLong("version", (long) version)          // tham số mới => JobInstance mới
+        .addLong("runId", runId, false)               // không định danh, chỉ để truyền
+        .toJobParameters();
+    jobLauncher.run(reconJob, params);
+    return runId;
+}
+~~~`, done: `Control total đúng trên 3 file mẫu và báo sai khi cố tình xoá 1 dòng staging; rerun tạo version 2, version 1 vẫn truy vấn được; mọi rerun/resolve có dòng audit.` },
+      { title: 'AWS, tải lớn và vận hành', tasks: `1. Đóng gói Docker, chạy ECS Fargate task theo lịch bằng EventBridge Scheduler.
+2. IAM role: {{s3:GetObject}} chỉ trên prefix {{incoming/}}, {{s3:PutObject}} chỉ trên {{reports/}}.
+3. Bucket bật SSE-KMS, lifecycle xoá file gốc sau 400 ngày (theo chính sách lưu trữ bạn đặt ra).
+4. Chạy file 10 triệu dòng, đo thời gian từng step, heap, I/O PostgreSQL.
+5. Thử tăng chunk 1.000, 5.000, 20.000 và ghi bảng so sánh.
+6. Thêm metric, alert như phần Quan sát; viết runbook "job FAILED lúc 6 giờ sáng".
+
+~~~json
+{ "Version": "2012-10-17",
+  "Statement": [
+    { "Effect": "Allow", "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::recon-bucket/incoming/*" },
+    { "Effect": "Allow", "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::recon-bucket/reports/*" } ] }
+~~~`, done: `10 triệu dòng hoàn tất < 30 phút, heap tối đa < 1 GB; README có bảng chunk size và thời gian; runbook có các bước kiểm tra, restart và báo cáo.` }
     ],
     challenges: [
-      `### Restart không gây nạp trùng
-Checkpoint chỉ an toàn khi tiến độ và dữ liệu chunk được commit nhất quán. Dùng transaction/checkpoint của batch framework hoặc staging có unique key theo run/file/row; thiết kế rõ semantics khi process chết giữa commit.`,
-      `### CSV không đồng nhất
-Encoding, delimiter, timezone và dấu thập phân có thể khác nhau. Gắn schema version, parse nghiêm ngặt và cách ly dòng lỗi thay vì đoán format âm thầm.`,
-      `### Dữ liệu lớn và đối chiếu
-Không giữ toàn bộ file trong heap. Dùng streaming/chunk và index phù hợp; nếu join staging với bảng lớn, kiểm tra execution plan và giới hạn transaction duration.`
+      `### Restart gây nạp trùng
+**Triệu chứng:** job chết lúc 06:20, chạy lại thì staging có 12 triệu dòng cho file 10 triệu, báo cáo lệch hàng loạt.
+**Nguyên nhân gốc:** tự viết vòng lặp đọc file và insert, lưu tiến độ ở chỗ khác transaction ghi dữ liệu; hoặc chạy lại từ đầu mà không xoá.
+**Cách 1, chunk của Spring Batch:** dữ liệu chunk và ExecutionContext (số dòng đã đọc) commit cùng một transaction trên cùng DB, restart đọc tiếp từ dòng đã commit. Đơn giản, nhưng cần JobRepository chung DB với staging.
+**Cách 2, khoá tự nhiên (file_id, line_no) + ON CONFLICT DO NOTHING:** chạy lại từ đầu vẫn không trùng, không phụ thuộc framework; đổi lại tốn thời gian đọc lại phần đã nạp.
+Tôi dùng cả hai: lớp 2 là lưới an toàn.
+**Chứng minh:** test ném lỗi ở dòng 60.001 rồi restart, đếm staging bằng số dòng file.`,
+      `### So sánh tiền sai
+**Triệu chứng:** 30.000 dòng báo AMOUNT_MISMATCH dù số tiền nhìn giống nhau.
+**Nguyên nhân gốc:** parse amount bằng double (0,1 + 0,2 khác 0,3), hoặc so sánh BigDecimal bằng equals (10.0 khác 10.00 vì khác scale), hoặc file dùng dấu phẩy thập phân.
+**Cách 1, parse thẳng sang BigDecimal với định dạng cố định, so bằng compareTo:** chính xác, đơn giản.
+**Cách 2, lưu số nguyên đơn vị nhỏ nhất** (đồng, cent) dạng BIGINT: nhanh, không lo scale; phải biết số chữ số thập phân của từng currency.
+**Chứng minh:** unit test 10.0 với 10.00 là khớp; file có "1.234,50" bị đưa vào invalid với lý do định dạng.`,
+      `### Giao dịch ở biên ngày
+**Triệu chứng:** mỗi ngày khoảng 50 dòng MISSING_PARTNER, hôm sau tự xuất hiện trong file của đối tác.
+**Nguyên nhân gốc:** nội bộ chốt ngày theo giờ Việt Nam, đối tác chốt theo thời điểm họ xử lý (có thể trễ vài giây đến vài phút), hoặc theo UTC.
+**Cách 1, trạng thái PENDING_NEXT_DAY cho giao dịch sát nửa đêm:** ít báo động giả; cần job ngày sau đối chiếu lại các dòng này.
+**Cách 2, cửa sổ chồng lấn** (lấy nội bộ từ 23:50 ngày trước tới 00:10 ngày sau, ghép theo ref): bắt được ngay, nhưng phải tránh một giao dịch bị tính ở hai ngày.
+**Chứng minh:** fixture có giao dịch 23:59:58 nội bộ nằm trong file ngày sau, kết quả cuối cùng là MATCHED sau 2 ngày.`,
+      `### Matching 10 triệu dòng quá chậm
+**Triệu chứng:** bước matching chạy 2 giờ, CPU thấp, đĩa đầy file tạm.
+**Nguyên nhân gốc:** match bằng vòng lặp Java gọi 1 query cho mỗi dòng (10 triệu round-trip), hoặc hash join tràn đĩa vì work_mem nhỏ.
+**Cách 1, set-based SQL FULL OUTER JOIN:** 1 câu lệnh, PostgreSQL dùng hash join; tăng work_mem cho riêng session batch ({{SET LOCAL work_mem = '512MB'}}). Nhanh, nhưng 1 transaction lớn, giữ snapshot lâu.
+**Cách 2, chia bucket** (ví dụ theo ký tự cuối của ref) và match từng bucket: transaction nhỏ hơn, chạy song song được; phức tạp hơn, phải đảm bảo hai phía cùng hàm chia bucket.
+**Chứng minh:** EXPLAIN (ANALYZE, BUFFERS) trước/sau, ghi thời gian và số batch hash join.`,
+      `### Chạy lại làm mất dấu vết audit
+**Triệu chứng:** ops chạy lại ngày D, kết quả cũ bị ghi đè, kiểm toán hỏi "vì sao hôm qua báo 112 dòng lệch, hôm nay còn 3" thì không trả lời được.
+**Nguyên nhân gốc:** kết quả gắn với ngày chứ không gắn với lần chạy.
+**Cách 1, run version bất biến:** mỗi lần chạy lại là version mới, kết quả cũ giữ nguyên; tốn thêm dung lượng.
+**Cách 2, chỉ lưu diff giữa các version:** tiết kiệm dung lượng nhưng truy vấn và giải thích phức tạp.
+**Chứng minh:** test rerun, truy vấn cả 2 version, audit có người bấm và lý do.`
     ],
     readme: `# Daily Reconciliation Batch\n\n## Mục tiêu\nBatch đối chiếu file giao dịch với dữ liệu nội bộ, hỗ trợ restart, exception report và audit. Chỉ dùng dữ liệu tổng hợp.\n\n## Chạy local\n{{docker compose up --build}} khởi động PostgreSQL và object store local; nạp fixture có checksum.\n\n## Quy trình\nMô tả schema version, staging, chunk/checkpoint, quy tắc match và trạng thái run.\n\n## Kiểm thử và benchmark\nTest restart giữa file, duplicate, malformed row, timezone và tổng tiền. Báo kích thước file, chunk size, heap, thời gian và execution plan.\n\n## AWS\nJob dùng IAM role tối thiểu để đọc S3; bucket mã hóa, policy retention và audit truy cập được ghi rõ.`,
-    interview: { story: `### STAR
-**Situation:** Đối soát thủ công khó chạy lại sau lỗi và không giải thích được từng sai lệch.\n**Task:** Tôi cần pipeline xử lý file lớn có thể restart và audit.\n**Action:** Tôi đưa file qua checksum/schema validation, xử lý streaming theo chunk vào staging, lưu checkpoint và sinh exception có reason code. Testcontainers mô phỏng restart và file lỗi; benchmark theo dõi heap, DB plan và thời gian.\n**Result:** Cùng file/version tạo cùng kết quả, có thể truy nguyên từ run tới từng dòng; giới hạn throughput và vận hành được ghi trong README.`, questions: ['Checkpoint và transaction cần phối hợp thế nào?', 'Bạn xử lý file gửi lại cùng nội dung ra sao?', 'Vì sao không đọc toàn bộ CSV vào memory?', 'Làm sao xác định sai lệch timezone/currency?', 'Bạn thiết kế replay và audit quyền thao tác thế nào?'] },
-    related: ['lesson-spring-001', 'lesson-core-001']
+    interview: {
+      story: `### STAR
+**Situation:** Đội vận hành đối soát file ngân hàng bằng Excel và một script đọc cả file vào bộ nhớ. File lên 8 triệu dòng thì script OutOfMemory; mỗi lần lỗi phải chạy lại từ đầu mất 3 giờ, và không giải thích được vì sao số lệch hôm nay khác hôm qua.
+**Task:** Xây job đối soát chạy xong trước 07:00 với 10 triệu dòng, restart được, kết quả xác định và có audit cho kiểm toán.
+**Action:**
+- Tải file theo stream, SHA-256 để chống nạp trùng, kiểm tra trailer trước khi đối soát.
+- Spring Batch chunk 5.000 dòng, skip dòng lỗi có giới hạn, staging có khoá (file_id, line_no) để restart không trùng.
+- Matching bằng một câu SQL FULL OUTER JOIN thay vì vòng lặp Java; 6 nhóm kết quả, quy tắc biên ngày.
+- Run version bất biến, control total, báo cáo CSV lên S3, metric và alert 07:30.
+**Result:**
+- 10 triệu dòng từ 3 giờ (khi chạy được) xuống 22 phút; heap tối đa 600 MB bất kể kích thước file.
+- Restart sau lỗi tiếp tục trong vài giây, không nạp lại phần đã xong.
+- Báo động giả do biên ngày giảm từ khoảng 50 dòng/ngày xuống dưới 5.
+
+> Số liệu trên là ví dụ minh hoạ: hãy thay bằng kết quả bạn tự đo.
+
+### Demo trong 5 phút
+1. {{docker compose up -d}}, mở MinIO console, upload file mẫu 10.000 dòng.
+2. Gọi POST /api/recon/files, xem log job từng step.
+3. GET run: summary 6 nhóm và controlTotalOk; mở file CSV báo cáo trên MinIO.
+4. Upload lại cùng file: 409, không chạy.
+5. Bật cờ lỗi ở dòng 6.001, chạy, thấy FAILED; tắt cờ, restart, đếm staging đúng 10.000.
+6. Mở bảng benchmark 10 triệu dòng và ảnh EXPLAIN trong README.`,
+      questions: [
+        'Checkpoint và transaction cần phối hợp thế nào để restart không nạp trùng?',
+        'Bạn xử lý file gửi lại cùng nội dung, hoặc gửi lại bản đã sửa ra sao?',
+        'Vì sao không đọc toàn bộ CSV vào memory rồi so sánh bằng HashMap?',
+        'Vì sao matching bằng SQL thay vì Java?',
+        'Skip policy: bao nhiêu dòng lỗi thì nên dừng cả job?',
+        'Làm sao xác định sai lệch do timezone hay do tiền thật sự lệch?',
+        'Bạn thiết kế rerun và audit quyền thao tác thế nào?',
+        'Khi lên 100 triệu dòng mỗi ngày bạn đổi gì?'
+      ],
+      answers: [
+        `Trong Spring Batch, mỗi chunk là một transaction: đọc 5.000 dòng, xử lý, ghi staging, rồi cập nhật ExecutionContext của step (reader lưu số dòng đã đọc) vào bảng metadata, tất cả commit cùng lúc. Vì JobRepository và staging nằm chung một PostgreSQL, hoặc cả hai cùng thành công, hoặc cả hai cùng rollback. Khi restart với cùng tham số định danh, Spring Batch tìm execution FAILED, nạp ExecutionContext và reader bỏ qua số dòng đã commit. Nếu staging ở DB khác JobRepository thì mất bảo đảm này, cần 2PC hoặc idempotent writer. Tôi thêm lớp an toàn thứ hai: khoá chính (business_date, file_id, line_no) và ON CONFLICT DO NOTHING, nên kể cả chạy lại từ đầu cũng không nhân đôi.`,
+        `Khi tải về tôi tính SHA-256 trên nội dung; bảng recon_file có unique (partner, sha256), nên file y hệt gửi lần 2 bị bỏ qua và trả 409, không tốn tài nguyên. Không dùng tên file làm khoá vì đối tác hay gửi lại cùng tên với nội dung sửa. Nếu checksum khác nhưng cùng partner và ngày, đó là bản sửa: tôi tạo file mới, run mới, và cảnh báo ops vì cần biết đối tác đã đổi gì, có thể so 2 version kết quả. Không ghi đè kết quả cũ, vì kiểm toán cần biết hôm đó hệ thống đã báo gì. Trailer với số dòng và tổng tiền giúp phát hiện file bị cắt cụt khi truyền, trường hợp checksum không bắt được vì đối tác tính checksum trên file đã cắt.`,
+        `10 triệu dòng, mỗi object Java vài trăm byte (String, BigDecimal, header object), dễ lên 3 đến 5 GB heap, GC dừng lâu và OOM khi file lớn thêm. Quan trọng hơn: không restart được, chết ở phút 50 thì làm lại từ đầu. Streaming theo chunk giữ heap cố định (5.000 dòng mỗi lúc) bất kể file 1 triệu hay 100 triệu dòng. Phía nội bộ cũng có 10 triệu giao dịch; nạp vào HashMap là thêm vài GB nữa. Đẩy cả hai vào PostgreSQL và để DB join thì DB tự quản lý bộ nhớ, tràn thì ghi đĩa chứ không chết. Trade-off: tốn I/O ghi staging, nhưng staging còn là bằng chứng để audit và debug.`,
+        `Vòng lặp Java cho mỗi dòng file gọi 1 query tìm giao dịch nội bộ nghĩa là 10 triệu round-trip, mỗi cái khoảng 0,5 ms là gần 1,5 giờ chỉ riêng mạng. Một câu INSERT ... SELECT với FULL OUTER JOIN cho PostgreSQL chọn hash join: đọc tuần tự hai phía một lần, build hash table phía nhỏ hơn, chạy vài phút. FULL OUTER JOIN cho ra cả 4 trường hợp (khớp, lệch, chỉ bên trái, chỉ bên phải) trong một lần, thay vì hai lần anti-join. Trade-off: logic nằm trong SQL khó unit test hơn, nên tôi viết integration test với file 10.000 dòng có đáp án; transaction lớn giữ snapshot lâu, nên chạy ngoài giờ cao điểm hoặc trên replica, và kiểm tra EXPLAIN ANALYZE để chắc không có nested loop.`,
+        `Skip là để chịu lỗi lẻ tẻ, không phải để che lỗi hệ thống. Tôi đặt skipLimit 1.000 (khoảng 0,01% file 10 triệu) và mọi dòng skip đều ghi vào recon_invalid kèm số dòng và lý do, có metric. Nếu đối tác đổi định dạng ngày hay thêm cột, gần như mọi dòng lỗi: job phải FAILED sớm, không được tạo báo cáo "9 triệu dòng thiếu nội bộ" gây hoảng loạn. Chỉ skip lỗi dữ liệu (parse, validate); lỗi hạ tầng như mất kết nối DB thì để retry hoặc fail. Ngưỡng nên cấu hình theo đối tác vì chất lượng file khác nhau, và alert ngay khi skip > 0 ở đối tác bình thường sạch.`,
+        `Trước hết chuẩn hoá thời gian: file đối tác có offset hoặc ghi rõ múi giờ trong đặc tả, tôi đổi tất cả sang UTC ({{TIMESTAMPTZ}}) khi nạp, còn khái niệm "ngày nghiệp vụ" tính theo Asia/Ho_Chi_Minh bằng {{ZonedDateTime}}. Lệch do biên ngày có dấu hiệu rõ: MISSING_PARTNER tập trung trong vài phút cuối ngày và xuất hiện lại trong file hôm sau, nên tôi xếp PENDING_NEXT_DAY. Lệch tiền thật thì ref khớp nhưng amount khác; tôi xem chênh lệch có quy luật không (đúng bằng phí giao dịch, hay do làm tròn currency 2 chữ số) để phân biệt lỗi phí với lỗi dữ liệu. Dung sai cấu hình theo currency, VND là 0.`,
+        `Mỗi lần chạy là một recon_run với version tăng dần, unique (file_id, version) và kiểm tra không có run đang chạy cho cùng file, nên 2 người bấm cùng lúc chỉ 1 thành công. Job parameters gồm fileId và version, nên rerun là JobInstance mới chứ không đụng execution cũ. Kết quả version cũ không bị xoá: kiểm toán hỏi "ngày 15 hệ thống báo gì" thì vẫn trả lời được. Quyền: chỉ role RECON_OPERATOR được rerun và resolve, bắt buộc nhập lý do; resolve chỉ thêm ghi chú, không sửa số tiền. Mọi thao tác ghi bảng audit append-only (ai, lúc nào, gì, lý do) và user ứng dụng không có quyền UPDATE/DELETE trên bảng này.`,
+        `Gấp 10 lần thì nút thắt chuyển sang I/O DB. Một: nạp bằng COPY thay vì INSERT batch, nhanh hơn nhiều lần; validate trong Java rồi stream vào COPY. Hai: nhiều đối tác thì partitioned step, mỗi file một partition chạy song song; khi một máy không đủ thì remote partitioning qua nhiều pod. Ba: đọc payment_txn từ read replica để không ảnh hưởng hệ thống chính, và partition payment_txn theo ngày. Bốn: staging partition theo ngày và DROP partition cũ. Nếu lên hàng tỷ dòng, chuyển sang Spark hoặc Athena trên Parquet trong S3, vì PostgreSQL một node không còn hợp lý. Dù đổi gì vẫn giữ các bất biến: idempotent, version bất biến, control total.`
+      ]
+    },
+    related: ['lesson-spring-001', 'lesson-core-001', 'spring-020', 'db-039', 'sql-016', 'scenario-026', 'design-005']
   },
   {
     id: 'proj-bff', title: 'API gateway và BFF cho mobile banking', level: 'lead', weeks: 10,
     skills: ['Spring Boot', 'Microservices', 'OAuth2', 'Redis', 'AWS', 'Kubernetes', 'Observability', 'Contract Testing'],
-    pitch: `Thiết kế lớp BFF gom dữ liệu cho màn hình mobile mà vẫn giữ ranh giới giữa gateway, domain service và identity. Trọng tâm là timeout, bảo mật token, tương thích contract và xử lý lỗi từng phần.`,
-    requirements: `### Chức năng
-- API tổng hợp trang tài khoản từ account, card và transaction service; hỗ trợ version mobile client.
-- Áp dụng OAuth2 access token, scope/ownership, quota và correlation id.
+    pitch: `Thiết kế lớp BFF gom dữ liệu cho màn hình mobile mà vẫn giữ ranh giới giữa gateway, domain service và identity. Trọng tâm là timeout, bảo mật token, tương thích contract và xử lý lỗi từng phần: một service chậm không được kéo cả màn hình Home chậm theo.`,
+    requirements: `### User story
+1. **Home trong 1 lần gọi:** là người dùng app, tôi mở màn hình Home và thấy tài khoản, thẻ (đã che số), 10 giao dịch gần nhất, khuyến mãi.
+  Chấp nhận: app gọi đúng 1 request {{GET /bff/mobile/v1/home}}; p95 tại gateway < 300 ms khi downstream khoẻ (trước đây app gọi 5 API tuần tự).
+2. **Lỗi từng phần:** service khuyến mãi hoặc thẻ chết.
+  Chấp nhận: vẫn trả 200, field đó là null và có trong mảng {{degraded}}; nếu service tài khoản chết thì trả 503, không trả trang thiếu số dư.
+3. **Đăng nhập OIDC:** app đăng nhập bằng Authorization Code + PKCE qua Keycloak.
+  Chấp nhận: token sai issuer/audience hoặc hết hạn trả 401; thiếu scope {{accounts:read}} trả 403; user A không xem được tài khoản của B (404).
+4. **Phân trang giao dịch:** tôi cuộn danh sách giao dịch.
+  Chấp nhận: cursor mờ (opaque), limit mặc định 20, tối đa 50; giao dịch mới phát sinh không làm trùng hay sót dòng.
+5. **Versioning:** app bản cũ vẫn chạy khi ra v2 (đổi cấu trúc field).
+  Chấp nhận: v1 được hỗ trợ ít nhất 6 tháng sau khi v2 ra, response v1 có header {{Sunset}}; endpoint config báo app có cần cập nhật bắt buộc không.
+6. **Rate limit:** một user gọi quá 20 req/giây.
+  Chấp nhận: gateway trả 429; user khác không bị ảnh hưởng.
+7. **Cache đúng chỗ:** danh sách khuyến mãi, danh sách ngân hàng cache 5 phút.
+  Chấp nhận: số dư và giao dịch không bao giờ lấy từ cache chung.
+8. **Truy vết:** support có request id từ app.
+  Chấp nhận: tìm được trace qua gateway, BFF và 4 downstream; dashboard p95 theo từng downstream.
+
 ### Phi chức năng
-- Mục tiêu demo: 300 QPS, p95 dưới 250 ms khi dependency khỏe; timeout tổng request 800 ms.
-- Một dependency chậm không giữ thread vô hạn; response partial chỉ cho field được phép thiếu và có telemetry.`,
+- 300 RPS trên laptop (gateway, BFF, 4 service giả lập); p95 end-to-end < 300 ms, p99 < 800 ms; deadline tổng 800 ms.
+- Một downstream treo không làm cạn tài nguyên: tối đa 50 call đồng thời tới mỗi downstream (bulkhead).
+- Dependency optional lỗi: 0 lỗi 5xx; contract test chạy trong CI chặn thay đổi phá vỡ.
+
+### Ngoài phạm vi
+- Không kết nối core banking thật (4 service là WireMock/Spring Boot giả lập), không tự viết IdP (dùng Keycloak).
+- Không làm luồng chuyển tiền (BFF chỉ đọc), không GraphQL, không web app.`,
     architecture: `~~~text
-Mobile -> Edge/Gateway -> BFF -> account service
-                               -> card service
-                               -> transaction service
-                       -> Redis (short-lived reference/cache)
+Mobile --HTTPS--> Spring Cloud Gateway (xác thực JWT, rate limit Redis, route, request id)
+                    -> BFF mobile (Spring Boot 3, Java 21 virtual threads)
+                         -> account-service      (bắt buộc, timeout 300 ms)
+                         -> card-service         (tuỳ chọn, 300 ms)
+                         -> transaction-service  (tuỳ chọn, 400 ms)
+                         -> promotion-service    (tuỳ chọn, cache Redis 5 phút)
+Keycloak (OIDC) phát token; mọi service tự kiểm tra JWT
 ~~~
-Gateway xử lý concern biên như TLS/rate limit; BFF điều phối theo nhu cầu UI và không trở thành nơi chứa business rule. Dùng timeout theo ngân sách, giới hạn concurrency, token relay có chủ đích và contract test giữa service.`,
+Gateway lo concern biên (TLS, xác thực token, rate limit, routing), BFF chỉ ghép dữ liệu theo nhu cầu một màn hình, không chứa business rule. Mỗi downstream có timeout, circuit breaker, bulkhead riêng.`,
+    design: `### Dữ liệu và cache (BFF gần như stateless)
+~~~sql
+-- Bảng duy nhất của BFF: chính sách phiên bản app
+CREATE TABLE app_version_policy (
+  platform        VARCHAR(8) PRIMARY KEY CHECK (platform IN ('IOS','ANDROID')),
+  min_supported   VARCHAR(16) NOT NULL,  -- thấp hơn thì bắt cập nhật
+  latest          VARCHAR(16) NOT NULL,
+  v1_sunset_at    TIMESTAMPTZ
+);
+~~~
+| Key Redis | Giá trị | TTL | Lý do |
+|---|---|---|---|
+| promo:{segment}:{locale} | JSON danh sách | 5 phút | Giống nhau cho mọi user cùng phân khúc |
+| ref:banks | JSON | 1 giờ | Dữ liệu tham chiếu |
+| rl:{userId} | token bucket của gateway | tự quản | Rate limit |
+
+Số dư, giao dịch không cache chung: sai một lần là sự cố tài chính và lộ dữ liệu người khác.
+
+### API
+| Method | Path | Response | Mã lỗi |
+|---|---|---|---|
+| GET | /bff/mobile/v1/home | 200 {accounts, cards, recentTxns, promotions, degraded[]} | 401, 403, 429, 503 ACCOUNT_UNAVAILABLE |
+| GET | /bff/mobile/v1/accounts/{id}/transactions?cursor=&limit= | 200 {items, nextCursor} | 400 limit > 50, 404 |
+| GET | /bff/mobile/v2/home | như v1, amount thành {value, currency} | như v1 |
+| GET | /bff/mobile/config?platform=&version= | 200 {forceUpdate, latest} | 400 |
+
+~~~json
+GET /bff/mobile/v1/home   (card-service timeout)
+200 OK
+{ "accounts": [ { "id": "acc-1", "name": "Tài khoản thanh toán",
+                  "balance": 15250000, "currency": "VND" } ],
+  "cards": null,
+  "recentTxns": [ { "id": "t-99", "amount": -55000, "desc": "Grab", "bookedAt": "2027-01-15T08:12:00Z" } ],
+  "promotions": [ { "id": "p-7", "title": "Hoàn tiền 5%" } ],
+  "degraded": ["cards"] }
+~~~
+
+### Luồng chính: Home có deadline
+~~~text
+App      Gateway           BFF (virtual thread)        account   card   txn   promo/Redis
+ |--GET-->|                    |                          |        |      |       |
+ |        |-- verify JWT, rate limit (Redis), X-Request-Id|        |      |       |
+ |        |------------------->| lấy token từ SecurityContext (trước khi fan-out)  |
+ |        |                    |-- song song, deadline 800 ms ----------------------->|
+ |        |                    |---------------- 300 ms ->|        |      |       |
+ |        |                    |---------------------------- 300 ms ->|      |       |
+ |        |                    |--------------------------------- 400 ms ->|       |
+ |        |                    |<- account OK; card timeout => cards=null, degraded |
+ |        |<-- 200 ------------|  account lỗi => 503 ngay, huỷ các call còn lại    |
+~~~
+Thời gian Home ≈ max(các call) thay vì tổng; app chỉ trả 1 RTT mạng di động (100–200 ms) thay vì 5.
+
+### Xử lý lỗi & đồng thời
+| Tình huống | Hành vi | Cách test |
+|---|---|---|
+| card-service chậm 5 giây | Timeout 300 ms, cards = null, degraded | WireMock {{withFixedDelay(5000)}} |
+| account-service 500 liên tục | Circuit breaker mở, trả 503 ngay < 10 ms | WireMock trả 500, đếm request tới mock |
+| transaction-service treo, 300 RPS | Bulkhead 50, call thứ 51 bị từ chối ngay, không xếp hàng | Load test + mock treo |
+| Token hết hạn giữa chừng | Downstream trả 401, BFF trả 401 (không trả 503) | Token TTL 1 giây |
+| Thêm field mới ở downstream | Bỏ qua field lạ ({{FAIL_ON_UNKNOWN_PROPERTIES}} tắt, mặc định Boot) | Contract test |
+| User đổi id tài khoản trong URL | Downstream kiểm tra ownership theo sub trong token | Token A gọi tài khoản B |
+
+### Chiến lược test
+- **Unit:** mapper v1/v2, ghép partial response, encode/decode cursor.
+- **Integration:** {{@SpringBootTest}} + WireMock cho 4 downstream, Keycloak bằng Testcontainers hoặc JWT tự ký với {{spring-security-test}}.
+- **Contract:** Pact hoặc Spring Cloud Contract: BFF là consumer, mỗi downstream verify trong CI của nó.
+- **Load (k6):** 300 RPS 10 phút khoẻ, rồi 1 downstream chậm; mục tiêu p95 < 300 ms và 0 lỗi 5xx khi chỉ dependency optional lỗi.
+
+### Chạy local
+~~~yaml
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    command: ["start-dev", "--import-realm"]
+    environment: { KEYCLOAK_ADMIN: admin, KEYCLOAK_ADMIN_PASSWORD: admin }
+    volumes: ["./realm:/opt/keycloak/data/import"]
+    ports: ["8180:8080"]
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+  downstreams:
+    image: wiremock/wiremock:3.5.4      # account/card/txn/promo, bật lỗi qua admin API
+    volumes: ["./wiremock:/home/wiremock"]
+    ports: ["8089:8080"]
+~~~
+
+### Quan sát
+- {{http.server.requests}} ở gateway và BFF (p95/p99 theo uri), {{http.client.requests}} theo {{client.name}} cho từng downstream, {{resilience4j.circuitbreaker.state}}, {{resilience4j.bulkhead.available.concurrent.calls}}, counter {{bff.degraded}} (tag field).
+- Trace bằng Micrometer Tracing + OpenTelemetry, traceId trả về header cho app.
+- Alert: p95 Home > 300 ms trong 10 phút; degraded > 5% request; breaker OPEN quá 2 phút.
+
+### Mở rộng (3.000 RPS)
+- HPA theo CPU và p95; mỗi pod BFF nhẹ vì virtual thread, nút thắt là downstream nên phải nâng bulkhead cùng năng lực downstream.
+- Gom nhiều call nhỏ thành API batch ở downstream; cache khuyến mãi ở CDN.
+- Canary bằng trọng số route, rollback tự động khi p95 hoặc error rate vượt ngưỡng.`,
     milestones: [
-      { title: 'Ranh giới và API contract', tasks: `Vẽ trust boundary, xác định gateway/BFF/domain ownership và response version cho mobile.`, done: `Contract test kiểm tra schema tương thích; tài liệu nêu field bắt buộc, optional và deprecation.` },
-      { title: 'Auth và quyền truy cập', tasks: `Xác thực JWT/OAuth2, kiểm tra audience/scope và quyền sở hữu account; không tin user id từ client.`, done: `Test token sai audience, scope thiếu và truy cập chéo người dùng đều bị từ chối.` },
-      { title: 'Fan-out có timeout', tasks: `Gọi dependency song song có giới hạn, deadline tổng, bulkhead và chính sách partial response.`, done: `Test dependency chậm/lỗi chứng minh request kết thúc trong ngân sách và partial data không che lỗi nghiêm trọng.` },
-      { title: 'Cache và rate limit', tasks: `Cache dữ liệu tham chiếu phù hợp, không cache số dư nhạy cảm tùy tiện; giới hạn theo principal/client.`, done: `Test invalidation/TTL và rate limit; README ghi rõ consistency và dữ liệu được phép cache.` },
-      { title: 'Triển khai và quan sát', tasks: `Docker/Kubernetes readiness, trace propagation, metrics theo dependency và rollout canary.`, done: `Dashboard có p95/p99, error rate, saturation; canary dừng theo ngưỡng định lượng và có rollback.` }
+      { title: 'Ranh giới, contract và skeleton', tasks: `1. Vẽ sơ đồ trust boundary: app, gateway, BFF, 4 downstream, Keycloak; ghi ai kiểm tra gì.
+2. Tạo 2 project: gateway (Spring Cloud Gateway) và BFF (Web, Security OAuth2 Resource Server, Actuator, Data Redis, resilience4j-spring-boot3).
+3. Viết OpenAPI cho /v1/home và /transactions; ghi field bắt buộc, optional (có thể null khi degraded).
+4. Dựng WireMock cho 4 downstream với stub thành công.
+5. Bật virtual thread: {{spring.threads.virtual.enabled=true}} (Java 21).
+6. Viết DTO dạng record cho v1.
+
+~~~java
+// Response v1: field optional có thể null, degraded cho app biết phần nào thiếu
+public record HomeV1(
+        List<AccountDto> accounts,        // bắt buộc: thiếu thì cả request 503
+        List<CardDto> cards,              // optional
+        List<TxnDto> recentTxns,          // optional
+        List<PromoDto> promotions,        // optional
+        List<String> degraded) {}
+
+public record CardDto(String id, String maskedPan, String status) {
+    // không bao giờ nhận/trả PAN đầy đủ: che ở downstream, BFF chỉ chuyển tiếp
+}
+~~~`, done: `OpenAPI có ví dụ cho mọi field; GET /v1/home trên WireMock trả đủ dữ liệu; tài liệu trust boundary có trong README.` },
+      { title: 'OAuth2/OIDC và token relay', tasks: `1. Tạo realm Keycloak: public client {{mobile-app}} (PKCE), audience {{bff}}, scope {{accounts:read}}.
+2. Gateway và BFF đều là Resource Server: kiểm tra issuer, chữ ký (JWKS), hạn, audience.
+3. BFF kiểm tra scope bằng {{@PreAuthorize}} hoặc cấu hình {{authorizeHttpRequests}}.
+4. BFF chuyển tiếp token của người dùng tới downstream; downstream kiểm tra ownership theo claim sub.
+5. Lấy token **trước** khi fan-out sang thread khác (SecurityContext gắn với thread).
+6. Test: sai audience, thiếu scope, token A đọc tài khoản B.
+
+~~~yaml
+spring:
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: http://localhost:8180/realms/bank   # tự lấy JWKS và kiểm tra iss
+          audiences: bff                                  # Boot 3.2+: từ chối token cấp cho client khác
+~~~
+~~~java
+@GetMapping("/bff/mobile/v1/home")
+@PreAuthorize("hasAuthority('SCOPE_accounts:read')")
+public HomeV1 home(@AuthenticationPrincipal Jwt jwt) {
+    return homeService.load(jwt.getTokenValue());     // truyền token tường minh vào fan-out
+}
+~~~`, done: `5 test bảo mật pass: không token 401, sai audience 401, hết hạn 401, thiếu scope 403, truy cập chéo 404; log không chứa token.` },
+      { title: 'Fan-out song song có deadline, timeout, circuit breaker, bulkhead', tasks: `1. Mỗi downstream một {{RestClient}} từ {{RestClient.Builder}} của Boot (để có metric), read timeout ở HTTP client.
+2. Bọc mỗi call bằng Resilience4j CircuitBreaker + Bulkhead (semaphore).
+3. Gọi song song bằng {{CompletableFuture}} trên executor virtual thread, mỗi call có {{orTimeout}}.
+4. Call bắt buộc lỗi thì 503; call optional lỗi thì null + degraded.
+5. Không retry trong Home (ngân sách 800 ms không đủ, retry nhân tải); chỉ retry 1 lần cho GET khi còn ≥ 2 lần timeout.
+6. Test bằng WireMock delay và lỗi.
+
+~~~java
+public HomeV1 load(String token) {
+    var acc   = call(() -> accounts.list(token), 300);
+    var cards = call(() -> cardsClient.list(token), 300);
+    var txns  = call(() -> txnClient.recent(token, 10), 400);
+    var promo = call(promoCache::current, 200);
+    List<String> degraded = new ArrayList<>();
+    List<AccountDto> a;
+    try { a = acc.join(); }                              // bắt buộc: lỗi là 503
+    catch (CompletionException e) { throw new DependencyUnavailableException("account"); }
+    return new HomeV1(a, optional(cards, "cards", degraded),
+            optional(txns, "recentTxns", degraded), optional(promo, "promotions", degraded), degraded);
+}
+
+<T> CompletableFuture<T> call(Supplier<T> s, long ms) {
+    // orTimeout chỉ hoàn thành future, KHÔNG huỷ HTTP call: vẫn cần read timeout ở client
+    return CompletableFuture.supplyAsync(s, virtualThreads).orTimeout(ms, TimeUnit.MILLISECONDS);
+}
+~~~`, done: `card-service chậm 5 giây: Home vẫn trả trong < 400 ms với degraded ["cards"]; account-service lỗi: 503 trong < 350 ms; breaker OPEN thì không còn request nào tới mock.` },
+      { title: 'Cache, phân trang, rate limit và versioning', tasks: `1. Cache khuyến mãi bằng {{@Cacheable}} + RedisCacheManager TTL 5 phút; key gồm segment và locale, không gồm userId.
+2. Cursor phân trang: Base64URL của (bookedAt, id), downstream query keyset {{WHERE (booked_at, id) < (?, ?)}}.
+3. Gateway: RequestRateLimiter dùng Redis, key theo principal.
+4. Tạo /v2/home, mapper riêng từ cùng dữ liệu; v1 thêm header Sunset.
+5. Endpoint config đọc app_version_policy.
+6. Test: rate limit 25 req/giây cho 5 lần 429, cursor không trùng khi chèn giao dịch mới.
+
+~~~yaml
+spring:
+  cloud:
+    gateway:
+      routes:
+        - id: bff-mobile
+          uri: http://localhost:8081
+          predicates:
+            - Path=/bff/mobile/**
+          filters:
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 20     # 20 token mỗi giây
+                redis-rate-limiter.burstCapacity: 40     # cho phép dồn ngắn 40
+                key-resolver: "#{@principalNameKeyResolver}"
+~~~`, done: `Promotion chỉ gọi downstream 1 lần trong 5 phút dưới tải; 25 req/giây từ 1 user cho khoảng 5 lần 429, user khác không bị; app v1 và v2 cùng chạy trên một BFF.` },
+      { title: 'Contract test, đo p95 và rollout', tasks: `1. Viết consumer contract (Pact hoặc Spring Cloud Contract) cho account và transaction service.
+2. Bật Micrometer Tracing + OTLP, xem trace trong Jaeger hoặc Grafana Tempo.
+3. Dashboard: p95/p99 Home, p95 từng downstream, degraded rate, breaker state.
+4. k6: 300 RPS 10 phút; lặp lại khi card-service chậm; so sánh với kịch bản "app gọi 5 API tuần tự".
+5. Kubernetes: readiness probe, resource limit, HPA; canary 10% bằng trọng số route.
+6. Ghi ngưỡng rollback: p95 > 350 ms hoặc 5xx > 1% trong 5 phút.
+
+~~~java
+// Test với WireMock: chứng minh deadline thay vì chỉ tin cấu hình
+@Test
+void slowCardServiceDoesNotBlockHome() {
+    stubFor(get("/cards").willReturn(okJson("[]").withFixedDelay(5_000)));   // treo 5 giây
+    long start = System.nanoTime();
+    HomeV1 home = client.get().uri("/bff/mobile/v1/home")
+        .header("Authorization", "Bearer " + tokenFor("user-a"))
+        .retrieve().body(HomeV1.class);
+    long ms = (System.nanoTime() - start) / 1_000_000;
+    assertThat(home.cards()).isNull();
+    assertThat(home.degraded()).containsExactly("cards");
+    assertThat(ms).isLessThan(500);                    // timeout 300 ms + overhead
+}
+~~~`, done: `CI chặn thay đổi phá contract; README có bảng k6: 1 call BFF so với 5 call tuần tự (p95), kịch bản downstream chậm; dashboard và ngưỡng canary được ghi rõ.` }
     ],
     challenges: [
-      `### Fan-out khuếch đại tải
-Một request BFF gọi nhiều service làm downstream nhận tải nhân lên. Giới hạn concurrency, timeout, cache dữ liệu phù hợp và tránh retry đồng loạt; đo saturation từng dependency.`,
+      `### Fan-out khuếch đại tải và cạn tài nguyên
+**Triệu chứng:** transaction-service chậm, sau 1 phút BFF cạn connection, mọi request (kể cả không cần transaction) đều chậm.
+**Nguyên nhân gốc:** không có giới hạn đồng thời; mỗi request Home giữ tài nguyên chờ downstream chậm, request mới tiếp tục dồn vào.
+**Cách 1, bulkhead semaphore theo downstream** (50 call): service chậm chỉ chiếm tối đa 50 slot, phần còn lại phục vụ bình thường; call thứ 51 bị từ chối ngay và thành degraded.
+**Cách 2, circuit breaker theo slow call rate:** khi 80% call chậm hơn 250 ms thì ngắt hẳn, không gửi request vào service đang quá tải; cần tinh chỉnh ngưỡng để không ngắt nhầm.
+Dùng cả hai, và nhớ virtual thread không làm downstream mạnh hơn.
+**Chứng minh:** load test 300 RPS khi transaction-service treo, endpoint /accounts riêng vẫn p95 < 100 ms.`,
       `### Token relay và confused deputy
-BFF không nên chuyển access token tùy tiện tới mọi service. Kiểm tra audience/scope, dùng token exchange hoặc credentials phù hợp với kiến trúc identity; không biến BFF thành quyền truy cập rộng thay người dùng.`,
-      `### Partial response
-Trả dữ liệu thiếu có thể khiến UI hiểu sai trạng thái tài chính. Chỉ cho partial với dữ liệu không trọng yếu, mô tả field status rõ ràng và không dùng cache stale để che lỗi nghiệp vụ.`
+**Triệu chứng:** BFF dùng một service account quyền rộng gọi downstream; lỗi kiểm tra ở BFF làm user A đọc được dữ liệu B.
+**Nguyên nhân gốc:** downstream tin BFF tuyệt đối, ownership chỉ kiểm tra ở một chỗ.
+**Cách 1, chuyển tiếp token người dùng:** downstream tự kiểm tra sub và scope, lỗi ở BFF không thành lỗ hổng; token phải có audience gồm downstream, nên token rộng hơn.
+**Cách 2, token exchange (RFC 8693, Keycloak hỗ trợ):** BFF đổi token lấy token mới có audience hẹp cho từng downstream; an toàn hơn nhưng thêm 1 call tới IdP (cần cache).
+**Chứng minh:** test token A gọi tài khoản B trả 404 ngay cả khi tắt kiểm tra ở BFF.`,
+      `### Partial response che lỗi nghiệp vụ
+**Triệu chứng:** account-service lỗi, BFF trả balance = 0 thay vì null, khách tưởng mất tiền và gọi tổng đài.
+**Nguyên nhân gốc:** dùng giá trị mặc định cho mọi lỗi, không phân biệt dữ liệu trọng yếu và tuỳ chọn.
+**Cách 1, phân loại field:** trọng yếu (số dư) lỗi thì 503; tuỳ chọn lỗi thì null + degraded để app hiện "tạm thời không tải được".
+**Cách 2, trả dữ liệu cũ có nhãn thời gian** ("số dư lúc 08:10"): trải nghiệm tốt hơn nhưng phải cache số dư theo user, rủi ro bảo mật và sai lệch.
+**Chứng minh:** test từng downstream lỗi, assert status và degraded đúng bảng.`,
+      `### Đổi contract làm vỡ app cũ
+**Triệu chứng:** team account đổi {{balance}} từ số sang object, app bản cũ crash sau deploy.
+**Nguyên nhân gốc:** không có contract test, và app mobile không thể cập nhật đồng loạt như web.
+**Cách 1, consumer-driven contract test trong CI** của downstream: phát hiện trước khi merge; tốn công duy trì contract.
+**Cách 2, BFF làm lớp chống va đập:** mapper riêng cho v1/v2, downstream đổi thì chỉ sửa mapper; BFF thêm code phải duy trì.
+**Chứng minh:** sửa stub đổi kiểu field, contract test fail; app v1 vẫn nhận đúng định dạng cũ.`,
+      `### SecurityContext mất khi chạy song song
+**Triệu chứng:** gọi tuần tự thì chạy, chuyển sang CompletableFuture thì downstream nhận request không có token và trả 401.
+**Nguyên nhân gốc:** SecurityContextHolder mặc định lưu theo thread (ThreadLocal); thread của executor không có context.
+**Cách 1, lấy token ở thread request rồi truyền tường minh:** rõ ràng, dễ test.
+**Cách 2, bọc executor bằng {{DelegatingSecurityContextExecutor}}:** code gọn hơn nhưng phụ thuộc "phép màu", dễ quên khi đổi executor.
+**Chứng minh:** integration test fan-out kiểm tra header Authorization tới đủ 4 mock.`
     ],
     readme: `# Mobile Banking BFF\n\n## Mục tiêu\nBFF tổng hợp view mobile từ các domain service với ranh giới auth, timeout và contract rõ ràng. Các service được giả lập.\n\n## Chạy local\n{{docker compose up --build}} chạy gateway, BFF và dependency giả lập có thể cấu hình latency/lỗi.\n\n## Security\nMô tả issuer/audience/scope, quyền sở hữu, token relay và dữ liệu nhạy cảm không cache/log.\n\n## Resilience\nGhi deadline tổng, timeout từng dependency, concurrency cap, partial response policy và retry policy.\n\n## Kiểm thử/triển khai\nContract test, fault injection, benchmark và canary thresholds được nêu kèm cấu hình; dashboard phân rã latency/error theo dependency.`,
-    interview: { story: `### STAR
-**Situation:** Mobile gọi nhiều backend riêng làm latency tăng và trải nghiệm phụ thuộc từng team.\n**Task:** Tạo BFF tối ưu cho UI nhưng không đưa business rule hay quyền truy cập nhạy cảm sai chỗ.\n**Action:** Tôi vẽ trust boundary, xác định gateway xử lý concern biên và BFF điều phối. Tôi đặt deadline tổng, bulkhead, contract test, kiểm tra audience/scope và dashboard theo dependency.\n**Result:** Fault injection cho thấy lỗi dependency không làm request treo vô hạn; canary có ngưỡng rollback và các giới hạn partial response được công bố.`, questions: ['Gateway và BFF khác nhau ở ranh giới trách nhiệm nào?', 'Bạn truyền identity tới downstream ra sao?', 'Khi một dependency chậm, ngân sách timeout được chia thế nào?', 'Dữ liệu nào tuyệt đối không nên cache ở BFF?', 'Bạn thiết kế canary rollback theo metric nào?'] },
-    related: ['security-001', 'api-001']
+    interview: {
+      story: `### STAR
+**Situation:** App mobile banking gọi 5 API tuần tự để dựng màn hình Home. Trên 4G (RTT khoảng 150 ms) p95 Home khoảng 1,6 giây; khi card-service chậm, cả màn hình trắng 10 giây vì không có timeout; mỗi lần team backend đổi field là app bản cũ lỗi.
+**Task:** Đưa p95 Home dưới 300 ms phía server và dưới 600 ms phía app, cô lập lỗi từng service, giữ bảo mật token và không làm vỡ app cũ.
+**Action:**
+- Spring Cloud Gateway lo xác thực JWT, rate limit Redis, request id; BFF chỉ ghép dữ liệu cho màn hình.
+- Fan-out song song trên virtual thread, deadline 800 ms, timeout riêng từng downstream, circuit breaker + bulkhead Resilience4j, phân loại field bắt buộc/tuỳ chọn.
+- Chuyển tiếp token người dùng, downstream tự kiểm tra ownership; cache chỉ dữ liệu không nhạy cảm.
+- Versioning /v1, /v2 với mapper riêng, header Sunset; contract test trong CI.
+**Result:**
+- Round-trip từ 5 xuống 1; p95 phía app 1,6 giây xuống 520 ms, p95 server 210 ms ở 300 RPS.
+- card-service treo 5 giây: Home vẫn trả trong 380 ms với degraded, 0 lỗi 5xx.
+- 2 thay đổi phá contract bị CI chặn trong tháng đầu.
+
+> Số liệu trên là ví dụ minh hoạ: hãy thay bằng kết quả bạn tự đo.
+
+### Demo trong 5 phút
+1. {{docker compose up -d}}, lấy token từ Keycloak bằng script, gọi /v1/home qua gateway.
+2. Gọi không token (401), token thiếu scope (403), token A đọc tài khoản B (404).
+3. Bật delay 5 giây cho card mock qua admin API của WireMock, gọi lại: 200 nhanh, degraded ["cards"].
+4. Cho account mock trả 500: 503; mở /actuator/circuitbreakers thấy OPEN.
+5. Chạy vòng lặp 30 req/giây: thấy 429.
+6. Mở dashboard p95 theo downstream và một trace đầy đủ trong Jaeger.`,
+      questions: [
+        'Gateway và BFF khác nhau ở ranh giới trách nhiệm nào? Sao không gộp làm một?',
+        'Bạn truyền identity tới downstream ra sao? Token relay có rủi ro gì?',
+        'Khi một dependency chậm, ngân sách timeout được chia thế nào?',
+        'Vì sao không retry trong BFF?',
+        'Dữ liệu nào tuyệt đối không nên cache ở BFF?',
+        'Đã dùng virtual thread thì còn cần bulkhead không?',
+        'Bạn versioning API cho mobile thế nào?',
+        'Bạn đo "p95 end-to-end" thế nào và canary rollback theo metric nào?'
+      ],
+      answers: [
+        `Gateway là lớp biên dùng chung cho mọi client: TLS, xác thực token, rate limit, routing, request id, chặn request xấu trước khi vào hệ thống. Nó không biết màn hình nào cần gì. BFF thuộc về một loại client (mobile): ghép dữ liệu, đổi định dạng, partial response theo nhu cầu UI, thường do team mobile sở hữu. Gộp làm một thì gateway phình ra logic của từng app, mọi team phải sửa chung một thành phần nhạy cảm, deploy một thay đổi UI có thể làm hỏng rate limit của cả hệ thống. Ranh giới tôi giữ: BFF không chứa business rule (tính phí, kiểm tra hạn mức thuộc domain service), chỉ điều phối và biến đổi. Nếu có web thì làm BFF thứ hai thay vì nhồi vào một BFF.`,
+        `App giữ access token lấy bằng Authorization Code + PKCE. Gateway và BFF đều kiểm tra token (issuer, chữ ký, hạn, audience) theo nguyên tắc không tin mạng nội bộ. BFF chuyển tiếp token người dùng tới downstream, và downstream tự kiểm tra sub, scope, ownership. Rủi ro: token có audience rộng, lộ ở một service là dùng được ở nhiều service; và nếu BFF dùng service account quyền rộng thay cho token người dùng thì thành confused deputy, một lỗi ở BFF là lộ dữ liệu. Cách chặt hơn là token exchange (RFC 8693): BFF đổi lấy token audience hẹp cho từng downstream, đổi lại thêm call tới IdP nên phải cache theo hạn token. Không bao giờ log token hay để token đi qua query string.`,
+        `Tôi bắt đầu từ mục tiêu người dùng: Home phải trả trong 800 ms kể cả khi có lỗi. Các call chạy song song nên mỗi call có timeout riêng nhỏ hơn deadline tổng: account 300 ms, card 300 ms, transaction 400 ms, promotion 200 ms (có cache), dựa trên p99 đo được của từng service cộng một khoảng đệm. Timeout phải đặt ở HTTP client (read timeout), vì {{orTimeout}} của CompletableFuture chỉ kết thúc future chứ không huỷ socket, thread vẫn bị giữ. Downstream nên nhận deadline còn lại qua header để không làm việc vô ích khi BFF đã bỏ cuộc. Nếu timeout của một service thường xuyên bị chạm, đó là tín hiệu tối ưu service đó chứ không phải nới timeout.`,
+        `Retry trong đường đọc đồng bộ có hai vấn đề. Một: ngân sách thời gian, timeout 300 ms rồi retry thêm 300 ms đã vượt mục tiêu p95. Hai: khuếch đại tải, service đang quá tải nên chậm, mỗi request bị gọi 2 lần thì tải gấp đôi đúng lúc nó yếu nhất, và nếu gateway, BFF, downstream mỗi tầng retry 3 lần thì 1 request thành 27. Tôi chỉ retry 1 lần cho lỗi kết nối nhanh (connection refused, pod vừa chết) với GET idempotent khi còn đủ ngân sách, và có retry budget (không quá 10% tổng request). Lỗi khác thì partial response hoặc 503 rõ ràng, để app quyết định hiển thị nút thử lại cho người dùng.`,
+        `Không cache chung dữ liệu tài chính theo người dùng: số dư, giao dịch, số thẻ, thông tin cá nhân. Hai lý do: tính đúng (khách vừa chuyển tiền mà Home hiện số dư cũ là gọi tổng đài ngay) và bảo mật (key cache sai, ví dụ thiếu userId, là trả dữ liệu người A cho người B, sự cố nghiêm trọng nhất có thể xảy ra). Tôi chỉ cache dữ liệu giống nhau cho nhiều người: khuyến mãi theo phân khúc, danh sách ngân hàng, cấu hình app; key không chứa userId và nội dung không chứa dữ liệu cá nhân. Response API cá nhân có header {{Cache-Control: no-store}} để proxy hay CDN không lưu. Nếu muốn giảm tải số dư, làm ở downstream nơi biết khi nào dữ liệu đổi.`,
+        `Cần. Virtual thread giải quyết phía BFF: thread chờ I/O rất rẻ, 10.000 request chờ không cạn thread pool như platform thread. Nhưng chính vì rẻ, BFF sẽ vui vẻ gửi 10.000 request đồng thời tới card-service đang chậm và đè chết nó, hoặc cạn connection pool HTTP. Bulkhead semaphore giới hạn số call đồng thời tới mỗi downstream (ví dụ 50, theo năng lực đo được của downstream), call vượt quá bị từ chối ngay và thành degraded thay vì xếp hàng. Cộng với circuit breaker theo slow call rate để ngừng gửi khi downstream đã quá tải. Nói gọn: virtual thread bảo vệ mình khỏi chờ đợi, bulkhead bảo vệ người khác khỏi mình.`,
+        `Mobile khác web: người dùng không cập nhật app ngay, bản cũ sống hàng tháng. Tôi dùng version trong URI (/v1, /v2) vì dễ route, dễ đọc log và dễ đo tỉ lệ dùng từng version. Thay đổi bổ sung (thêm field, thêm endpoint) không tăng version, client được yêu cầu bỏ qua field lạ. Thay đổi phá vỡ (đổi kiểu, đổi nghĩa, xoá field) thì ra version mới với mapper riêng trên cùng dữ liệu domain. Version cũ có header Sunset báo ngày ngừng, tôi theo dõi metric theo version và chỉ tắt khi lượng dùng dưới ngưỡng thoả thuận; endpoint config cho phép bắt cập nhật bản quá cũ. Contract test giữa BFF và downstream giữ cho BFF không bị vỡ từ phía sau.`,
+        `End-to-end có 3 lớp số: phía app (thời gian người dùng thấy, gồm mạng di động, lấy từ telemetry app hoặc k6 chạy từ ngoài), tại gateway ({{http.server.requests}} của gateway, gồm cả BFF và downstream), và từng downstream ({{http.client.requests}} theo client.name). Tôi báo p95 tại gateway là cam kết của backend và ghi riêng số phía app, không trộn. Canary: 10% traffic sang bản mới bằng trọng số route, so sánh với bản cũ cùng thời điểm: p95 Home, tỉ lệ 5xx, tỉ lệ degraded và lỗi 401/403 (bắt lỗi cấu hình bảo mật). Rollback tự động khi p95 cao hơn bản cũ 20% hoặc 5xx > 1% trong 5 phút; chỉ tăng dần 25, 50, 100% khi qua ngưỡng.`
+      ]
+    },
+    related: ['security-001', 'api-001', 'security-004', 'microservices-011', 'microservices-007', 'microservices-026', 'microservices-014', 'api-016', 'testing-004', 'design-003', 'api-019']
   }
 ];
