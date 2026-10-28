@@ -27,7 +27,7 @@
       'interview.analyzeJd': 'Phân tích JD',
       'interview.startJd': 'Phỏng vấn theo JD này',
       'interview.start': 'Bắt đầu phỏng vấn',
-      'interview.costHint': 'Mỗi buổi tốn 1 lượt AI trong hạn mức ngày.',
+      'interview.costHint': '1 phiên = 1 lượt hạn mức',
       'interview.speechNotSupported': 'Trình duyệt này không nhận dạng giọng nói — bạn sẽ gõ câu trả lời (dùng Chrome/Edge để nói).',
       'interview.needLogin': 'Cần đăng nhập để dùng AI.',
       'interview.jdTooShort': 'JD cần có ít nhất 200 ký tự.',

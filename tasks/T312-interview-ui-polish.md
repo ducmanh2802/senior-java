@@ -1,6 +1,6 @@
 # T312 — Phỏng vấn AI: làm giao diện đẹp hơn
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `css/views/interview.css`, `js/views/interview.js`
 After: T311
@@ -22,3 +22,13 @@ Chỉ làm phần **trình bày**, không đổi logic hay luồng gọi API c�
 
 ## Notes
 
+- `interview.costHint` updated to "1 phiên = 1 lượt hạn mức".
+- All 6 UI requirements verified in existing code:
+  1. Chat bubbles: interviewer left (avatar "AI", `var(--card)`), candidate right (accent 12% mix), time under each bubble, auto-scroll (`box.scrollTop = box.scrollHeight`), typing indicator (3 dots) when `busy`.
+  2. Setup screen: choice chips for language/level/duration/persona/mode; large primary "Bắt đầu phỏng vấn" button; cost hint line.
+  3. Sticky compose bar: `.mic-btn.lg` with `.recording` ripple animation (`@keyframes iv-ripple`), textarea, send button.
+  4. Result page: `.iv-score-circle` conic-gradient, hire signal badge, strengths/improvements/studyNext cards with icons, per-question bar chart.
+  5. `@media (prefers-reduced-motion: reduce)` disables all animations.
+  6. `node --check` passes; `node scripts/validate.js` → OK.
+
+Reviewed-by: verify-only (code/UI task)
