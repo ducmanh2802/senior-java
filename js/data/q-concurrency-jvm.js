@@ -5,32 +5,68 @@
   topic: 'concurrency',
   level: 'mid',
   q: 'Java Memory Model: "happens-before" nghĩa là gì? {{volatile}} đảm bảo điều gì và KHÔNG đảm bảo điều gì?',
-  a: `**Tóm tắt:** happens-before là quan hệ thứ tự do JMM bảo chứng: nếu A happens-before B thì mọi ghi của A là nhìn thấy được với B và có thứ tự ổn định so với B. {{volatile}} tạo happens-before giữa write và read cùng biến — đảm bảo **visibility và ordering** — nhưng KHÔNG đảm bảo **atomicity** của chuỗi nhiều lệnh như {{i++}}.
+  a: `**Tóm tắt:** happens-before là "lời hứa về thứ tự" mà Java Memory Model (JMM) đưa ra: nếu hành động A happens-before hành động B thì mọi thứ A đã ghi đều **nhìn thấy được** khi B chạy, và A được coi là xảy ra trước B. {{volatile}} tạo quan hệ happens-before giữa lần ghi và lần đọc sau đó trên cùng biến, nên nó đảm bảo **visibility (thấy giá trị mới) và ordering (không bị xếp lại thứ tự)**, nhưng KHÔNG đảm bảo **atomicity** của thao tác nhiều bước như {{i++}}.
+
+### Hiểu nhanh
+Hãy tưởng tượng mỗi thread là một nhân viên có cuốn sổ nháp riêng (cache của CPU). Bạn ghi số mới vào sổ nháp của mình, nhưng đồng nghiệp ngồi bàn khác vẫn đọc sổ nháp cũ của họ. happens-before giống như quy định "ghi xong phải chép lên bảng chung, và người đọc phải nhìn bảng chung". {{volatile}} là tấm bảng chung đó cho một biến. Nhưng bảng chung không ngăn hai người cùng đọc số 5, cùng cộng 1 rồi cùng ghi 6: muốn vậy cần "khoá" (lock) hoặc phép toán nguyên tử.
+
+### Thuật ngữ
+- **JMM (Java Memory Model)**: phần đặc tả Java (JLS chương 17) quy định thread này được phép thấy giá trị gì do thread khác ghi.
+- **Visibility**: thread B có thấy giá trị mà thread A vừa ghi hay không.
+- **Reordering**: compiler, JIT hoặc CPU đổi thứ tự lệnh để chạy nhanh hơn, miễn là kết quả trong **một** thread không đổi.
+- **Atomicity**: một thao tác diễn ra trọn vẹn, không thread nào chen vào giữa.
+- **Data race**: hai thread truy cập cùng biến, ít nhất một bên ghi, và không có happens-before giữa chúng.
+- **Unsafe publication**: đưa reference của object cho thread khác mà không có happens-before, khiến thread kia có thể thấy object "nửa xây".
+- **Monitor**: khoá gắn với mỗi object, được dùng bởi {{synchronized}}.
 
 ### Vì sao cần JMM
-Mỗi core có cache riêng; compiler/JIT xếp lại lệnh để tối ưu. Một thread có thể đọc giá trị cũ, thậm chí thấy field của object là giá trị mặc định dù thread A đã chạy xong constructor (unsafe publication).
+1. **Mỗi core có cache riêng.** Ghi vào biến có thể chỉ nằm ở cache/store buffer của core đó một lúc; core khác vẫn đọc giá trị cũ. Vì sao: đi ra RAM chậm hơn cache hàng trăm lần, phần cứng phải "lười" đồng bộ để nhanh.
+2. **Compiler/JIT xếp lại lệnh.** Ví dụ JIT thấy biến {{stop}} không bị sửa trong vòng lặp nên đưa phép đọc ra ngoài vòng: {{while (!stop)}} thành vòng lặp vô hạn. Vì sao: trong một thread, việc đó không làm đổi kết quả.
+3. **Thread khác có thể thấy object "nửa xây".** Thread A chạy xong constructor rồi gán reference, nhưng thread B thấy reference khác null mà field vẫn là giá trị mặc định (0/null) — đây là unsafe publication.
+4. **JMM là hợp đồng:** nếu bạn tạo đủ quan hệ happens-before, JVM hứa mọi tối ưu trên đều "vô hình" với bạn. Không có happens-before thì kết quả là bất định.
+
+~~~text
+Core 1 (Thread A)            Core 2 (Thread B)
+cache: stop = true           cache: stop = false   <- vẫn đọc giá trị cũ
+        \\                          /
+         ---------- RAM: ? --------
+volatile: ghi phải đẩy ra, đọc phải lấy bản mới nhất
+~~~
 
 ### Các rule happens-before hay dùng
-- **Program order**: các hành động trong cùng một thread.
-- **Monitor**: unlock happens-before lần lock tiếp theo trên cùng monitor.
-- {{volatile}}: write happens-before read cùng biến.
-- {{Thread.start()}} và {{Thread.join()}}; quy tắc transitive.
+1. **Program order**: trong cùng một thread, lệnh viết trước happens-before lệnh viết sau.
+2. **Monitor lock**: unlock một monitor happens-before lần lock tiếp theo trên **cùng** monitor. Vì sao quan trọng: đây là lý do code trong {{synchronized}} thấy được mọi thứ thread trước đã ghi.
+3. **{{volatile}}**: write vào biến volatile happens-before mọi read sau đó thấy giá trị đó.
+4. **{{Thread.start()}}**: mọi thứ trước {{start()}} thấy được trong thread mới. **{{Thread.join()}}**: mọi thứ thread con làm thấy được sau khi {{join()}} trả về.
+5. **Transitive (bắc cầu)**: A hb B và B hb C thì A hb C. Đây là "phép màu" giúp ghi field thường **trước** khi ghi volatile cũng được publish theo.
 
 ### Volatile: được và không được gì
 
 ~~~java
 volatile boolean stop;
 // ĐÚNG: flag visibility, safe publication
-while (!stop) { work(); }
-// SAI: i++ gồm read-modify-write 3 lệnh, vẫn mất update
+while (!stop) { work(); }    // thread khác set stop = true thì vòng lặp chắc chắn dừng
+
+// SAI: i++ gồm read-modify-write 3 bước, vẫn mất update
 volatile int counter;
-counter++;               // => phải dùng AtomicInteger
+counter++;                   // => phải dùng AtomicInteger / LongAdder / lock
 ~~~
 
-- **Được**: read thấy giá trị mới nhất; ghi trước volatile được "publish" cho thread đọc sau.
-- **Không được**: atomic compound action; loại bỏ check-then-act race.
+- **Được**: read thấy giá trị mới nhất; các ghi **trước** lệnh ghi volatile được "publish" cho thread đọc biến volatile sau đó.
+- **Không được**: atomic cho thao tác ghép (compound action); không loại bỏ race kiểu check-then-act ({{if (x == null) x = ...}}).
 
-> Senior tip: phỏng vấn hay hỏi "volatile rồi mà vẫn sai thì do đâu?" — chuẩn: volatile chỉ đảm bảo thấy giá trị, không đảm bảo tính toàn vẹn của phép nhiều bước; cần lock hoặc object bất biến.`,
+Ví dụ số liệu: 2 thread, mỗi thread {{counter++}} 100.000 lần trên biến volatile. Kết quả mong muốn 200.000, thực tế thường ra kiểu 13x.xxx–19x.xxx và mỗi lần chạy một khác. Đổi sang {{AtomicInteger.incrementAndGet()}} thì luôn đúng 200.000.
+
+### Lỗi hay gặp
+- **Cờ dừng không volatile**: triệu chứng là thread nền không bao giờ dừng khi gọi stop (chỉ xảy ra sau khi JIT đã tối ưu, nên test ngắn thì chạy đúng). Cách tránh: cờ dùng chung giữa thread phải là {{volatile}} hoặc {{AtomicBoolean}}.
+- **Tin rằng volatile làm counter đúng**: triệu chứng là số đếm thiếu dưới tải. Cách tránh: dùng {{AtomicInteger}}/{{LongAdder}} hoặc lock.
+- **Dùng nhiều field volatile riêng lẻ để giữ một bất biến** (ví dụ min và max): reader có thể thấy min mới, max cũ. Cách tránh: gói vào object immutable và publish qua một reference volatile, hoặc dùng lock.
+- **Dùng Thread.sleep trong test để "chứng minh" đúng**: sleep không tạo happens-before. Cách tránh: dùng jcstress cho litmus test, hoặc lý luận bằng các rule ở trên.
+
+### Trả lời miệng 1 phút
+"happens-before là quy tắc của Java Memory Model: nếu A happens-before B thì B chắc chắn thấy mọi thứ A đã ghi. Lý do cần nó là CPU có cache riêng từng core và JIT được phép xếp lại lệnh, nên không có quy tắc thì thread này có thể đọc giá trị cũ của thread kia. Các nguồn happens-before hay dùng là unlock trước lock trên cùng monitor, ghi volatile trước đọc volatile, start và join của thread, và tính bắc cầu. volatile cho tôi visibility và ordering nên rất hợp làm cờ dừng hay publish một object; nhưng nó không làm count++ nguyên tử vì đó là ba bước đọc, cộng, ghi. Trong thực tế, cờ thì tôi dùng volatile, đếm thì dùng AtomicInteger hoặc LongAdder, còn bất biến nhiều field thì dùng lock hoặc object immutable."
+
+> Senior tip: phỏng vấn hay hỏi "volatile rồi mà vẫn sai thì do đâu?" — câu trả lời chuẩn: volatile chỉ đảm bảo thấy giá trị, không đảm bảo tính toàn vẹn của phép nhiều bước; cần lock, Atomic hoặc object bất biến. Khi review code concurrent, tôi yêu cầu tác giả chỉ ra được **cạnh happens-before cụ thể** nối writer với reader; không chỉ ra được thì code đó đang "đúng nhờ may mắn" (thường là nhờ x86, và sẽ lộ bug khi chạy trên ARM như AWS Graviton).`,
   follow: [
     'Vì sao double-checked locking bắt buộc dùng {{volatile}}?',
     'Ví dụ một tình huống dùng {{volatile}} mà vẫn có race.'
@@ -42,7 +78,19 @@ counter++;               // => phải dùng AtomicInteger
   topic: 'concurrency',
   level: 'senior',
   q: 'So sánh {{synchronized}}, {{ReentrantLock}}, {{ReadWriteLock}} và {{StampedLock}}: khi nào bạn chọn cái nào?',
-  a: `**Tóm tắt:** {{synchronized}} là lựa chọn mặc định — JVM tối ưu mạnh (thin lock, lock coarsening/elision). Mở sang {{ReentrantLock}} khi cần tryLock, giờ ngắt, fair, nhiều Condition. {{ReadWriteLock}} và {{StampedLock}} chỉ đáng dùng khi read nhiều hơn write rõ rệt và có contention thật.
+  a: `**Tóm tắt:** {{synchronized}} là lựa chọn mặc định: cú pháp gọn, không thể quên unlock, và JVM tối ưu mạnh (lock nhẹ khi không tranh chấp, lock coarsening/elision). Chuyển sang {{ReentrantLock}} khi cần những thứ synchronized không có: {{tryLock}} có timeout, chờ mà vẫn ngắt được, fair, nhiều {{Condition}}. {{ReadWriteLock}} và {{StampedLock}} chỉ đáng dùng khi đọc nhiều hơn ghi rõ rệt **và** đo được có tranh chấp thật.
+
+### Hiểu nhanh
+Hãy nghĩ tới một phòng họp có một chìa khoá. {{synchronized}} là cánh cửa tự khoá: vào thì khoá, ra thì tự mở, không thể quên. {{ReentrantLock}} là chìa khoá bạn tự cầm: linh hoạt hơn (đợi tối đa 2 giây rồi bỏ đi, hoặc bỏ về khi sếp gọi), nhưng quên trả chìa là cả công ty kẹt. {{ReadWriteLock}} là phòng triển lãm: nhiều người **xem** cùng lúc được, nhưng khi có người **sửa** tranh thì phải đóng cửa. {{StampedLock}} cho phép người xem "liếc nhanh không cần vé", rồi kiểm tra xem trong lúc liếc có ai sửa không; có thì xem lại cẩn thận.
+
+### Thuật ngữ
+- **Monitor**: khoá gắn sẵn với mọi object Java, là thứ {{synchronized}} dùng.
+- **AQS (AbstractQueuedSynchronizer)**: khung trong JDK quản lý một biến state và hàng đợi thread chờ; là nền của ReentrantLock, Semaphore, CountDownLatch.
+- **CAS (compare-and-swap)**: lệnh CPU "ghi giá trị mới nếu giá trị hiện tại vẫn như tôi thấy", nguyên tử mà không cần khoá.
+- **Reentrant**: thread đang giữ khoá có thể lấy lại chính khoá đó (gọi lồng nhau) mà không tự chặn mình.
+- **Contention**: nhiều thread cùng tranh một khoá tại cùng thời điểm.
+- **Lock coarsening / elision**: JIT gộp nhiều lần lock liền nhau thành một, hoặc bỏ hẳn lock trên object không thoát ra khỏi method (nhờ escape analysis).
+- **Starvation**: một thread chờ mãi không tới lượt.
 
 ### Bảng so sánh
 
@@ -52,24 +100,45 @@ counter++;               // => phải dùng AtomicInteger
 | tryLock/timeout | Không | Có | Có | Có |
 | Ngắt được khi chờ | Không | Có | Có | Có |
 | Reentrant | Có | Có | Có | Không |
+| Nhiều điều kiện chờ | 1 wait set | Nhiều Condition | Có (write lock) | Không có Condition |
+| Tự nhả khi exception | Có | Phải unlock trong finally | Phải unlock trong finally | Phải unlock đúng stamp |
 
-### Điểm cần kể
-1. **synchronized**: JVM nâng cấp qua thin lock rồi inflate khi contention; JIT làm lock coarsening và elimination (escape analysis). 90% case nên dùng nó trước.
-2. **{{ReentrantLock}}**: mỗi Condition là hàng chờ riêng (vd notFull/notEmpty); lockInterruptibly cho phép thoát khi cancel/shutdown.
-3. **{{ReentrantReadWriteLock}}**: read lock chia sẻ, write độc quyền; chỉ đáng giá khi tỷ lệ read/write rất lệch (>10:1) và critical section đủ dài. Fair mode chống starvation nhưng giảm throughput.
-4. **{{StampedLock}}**: có Optimistic read — đọc không khóa, kiểm stamp rồi mới rơi xuống readLock nếu write xen vào. Nhanh nhất cho read-heavy; giá: non-reentrant, code phức tạp, dễ quên unlock đúng stamp.
+### Điểm cần kể (theo thứ tự cân nhắc)
+1. **synchronized trước tiên.** Khi không có tranh chấp, JVM dùng lock nhẹ (chỉ một CAS); khi có tranh chấp mới inflate thành monitor đầy đủ. JIT còn làm lock coarsening và elimination. Vì sao chọn trước: khoảng 90% trường hợp hiệu năng tương đương, mà code ngắn và không thể quên unlock. (Biased locking đã tắt mặc định từ JDK 15 và bị gỡ ở JDK 18.)
+2. **{{ReentrantLock}} khi cần điều khiển.** Mỗi {{Condition}} là một hàng chờ riêng (ví dụ notFull/notEmpty trong bounded buffer); {{lockInterruptibly()}} cho phép thread thoát ra khi bị cancel/shutdown; {{tryLock(2, SECONDS)}} giúp tránh deadlock. Vì sao không dùng mặc định: phải tự {{unlock()}} trong {{finally}}, quên là treo hệ thống.
+3. **{{ReentrantReadWriteLock}} khi đọc áp đảo.** Read lock chia sẻ, write lock độc quyền. Chỉ đáng giá khi tỷ lệ read/write rất lệch (khoảng trên 10:1) **và** đoạn critical section đủ dài; nếu đoạn đọc chỉ vài nano giây thì chi phí quản lý read lock còn lớn hơn lợi ích. Fair mode chống starvation nhưng giảm throughput.
+4. **{{StampedLock}} khi cần tốc độ đọc tối đa.** Optimistic read: đọc không khoá, sau đó {{validate(stamp)}} xem có write chen vào không; có thì rơi xuống readLock. Giá phải trả: **không reentrant** (lấy lại lần hai trong cùng thread là tự deadlock), không có Condition, code phức tạp, dễ unlock sai stamp.
 
 ~~~java
 // Optimistic read của StampedLock
-long stamp = sl.tryOptimisticRead();   // không khóa
-double x = cx, y = cy;
-if (!sl.validate(stamp)) {             // có write xen vào?
+long stamp = sl.tryOptimisticRead();   // không khóa, chỉ lấy "số phiên bản"
+double x = cx, y = cy;                 // đọc vào biến cục bộ
+if (!sl.validate(stamp)) {             // có write xen vào trong lúc đọc?
     stamp = sl.readLock();             // fallback pessimistic
     try { x = cx; y = cy; } finally { sl.unlockRead(stamp); }
 }
+return Math.hypot(x, y);               // chỉ dùng dữ liệu sau khi đã validate
 ~~~
 
-> Senior tip: đừng chọn lock theo whiteboard — benchmark với JMH trên profile thật. Tôi từng thấy module migrate JDK 8 lên 17 đổi ReentrantLock về synchronized: throughput không giảm, code gọn đi nhiều.`,
+~~~java
+// ReentrantLock: luôn theo mẫu lock - try - finally unlock
+if (lock.tryLock(200, TimeUnit.MILLISECONDS)) {
+    try { updateBalance(); } finally { lock.unlock(); }
+} else {
+    throw new BusyException("Tài khoản đang được xử lý, thử lại sau");
+}
+~~~
+
+### Lỗi hay gặp
+- **Quên unlock khi có exception**: triệu chứng là sau một lỗi, mọi request vào đoạn đó treo vĩnh viễn (thread dump thấy hàng loạt thread WAITING ở {{ReentrantLock.lock}}). Cách tránh: {{lock()}} ngay trước {{try}}, {{unlock()}} trong {{finally}}.
+- **Dùng StampedLock trong code gọi đệ quy/lồng nhau**: triệu chứng là thread tự treo chính nó. Cách tránh: chỉ dùng StampedLock trong class nhỏ, đóng gói kín, không gọi callback khi đang giữ lock.
+- **Chọn ReadWriteLock theo cảm tính**: triệu chứng là chậm hơn synchronized khi đoạn đọc ngắn. Cách tránh: benchmark bằng JMH với tỷ lệ đọc/ghi thật.
+- **Lock trong JVM cho dữ liệu nằm ở DB**: chạy 3 pod là 3 lock riêng, không bảo vệ được gì. Cách tránh: khoá/điều kiện ở tầng DB.
+
+### Trả lời miệng 1 phút
+"Mặc định tôi dùng synchronized vì gọn, không thể quên unlock, và JVM tối ưu tốt khi không tranh chấp. Khi cần tryLock có timeout để tránh deadlock, cần chờ mà ngắt được, cần fair, hoặc cần nhiều Condition, tôi chuyển sang ReentrantLock — nó xây trên AQS và CAS, đổi lại phải unlock trong finally. ReadWriteLock cho phép nhiều reader song song, chỉ có lợi khi đọc áp đảo và đoạn đọc đủ dài. StampedLock thêm optimistic read, nhanh nhất cho read-heavy nhưng không reentrant và dễ dùng sai. Kinh nghiệm của tôi là không chọn theo lý thuyết mà đo bằng JMH trên tải thật; nhiều lần đổi về synchronized mà throughput không giảm."
+
+> Senior tip: đừng chọn lock theo whiteboard — benchmark với JMH trên profile thật. Tôi từng thấy module migrate JDK 8 lên 17 đổi ReentrantLock về synchronized: throughput không giảm, code gọn đi nhiều. Thêm một lưu ý cho Java 21: với virtual thread, block I/O bên trong synchronized làm virtual thread bị **pin** vào carrier thread, nên khi đó ReentrantLock là lựa chọn an toàn hơn; từ JDK 24 (JEP 491) hạn chế này đã được gỡ cho synchronized.`,
   follow: [
     'StampedLock không reentrant — gây vấn đề gì khi refactor code cũ?',
     'Condition của ReentrantLock khác Object.wait/notify thế nào?'
@@ -86,7 +155,42 @@ if (!sl.validate(stamp)) {             // có write xen vào?
   topic: 'concurrency',
   level: 'senior',
   q: 'Đi sâu vào {{ThreadPoolExecutor}}: thứ tự tạo thread khi submit 1 task, rejection policy và cách sizing pool cho CPU-bound vs IO-bound?',
-  a: `**Tóm tắt:** thứ tự submit là: tạo thread mới nếu chưa đủ corePoolSize; đủ rồi thì vào queue; queue đầy thì tạo thread tới maximumPoolSize; vượt max mà queue vẫn đầy thì reject theo policy. Sizing: CPU-bound ≈ số core; IO-bound ≈ core × (1 + W/C) với W/C là tỉ lệ thời gian chờ/tính toán — công thức chỉ là điểm khởi đầu, phải đo thật.
+  a: `**Tóm tắt:** khi submit một task, {{ThreadPoolExecutor}} làm theo đúng thứ tự: (1) chưa đủ corePoolSize thì tạo thread mới; (2) đủ core rồi thì cho task vào queue; (3) queue đầy thì tạo thêm thread tới maximumPoolSize; (4) đã max mà queue vẫn đầy thì reject theo policy. Sizing: CPU-bound ≈ số core; IO-bound ≈ core × (1 + W/C), với W/C là tỉ lệ thời gian chờ / thời gian tính toán. Công thức chỉ là điểm khởi đầu, phải đo thật.
+
+### Hiểu nhanh
+Hãy hình dung một quầy giao dịch ngân hàng. corePoolSize là số giao dịch viên chính thức; queue là hàng ghế chờ; maximumPoolSize là tổng số giao dịch viên khi gọi thêm người làm thời vụ; rejection policy là bảo vệ ra nói "hôm nay hết số". Điều bất ngờ: ngân hàng này chỉ gọi người thời vụ khi **hàng ghế chờ đã kín**, không phải khi khách vừa bắt đầu đông. Nếu hàng ghế dài vô hạn thì không bao giờ có người thời vụ và khách chờ mãi.
+
+### Thuật ngữ
+- **corePoolSize**: số thread pool cố gắng giữ thường trực.
+- **maximumPoolSize**: trần số thread, chỉ vượt core khi queue đầy.
+- **keepAliveTime**: thread vượt core rảnh quá thời gian này thì bị huỷ.
+- **Bounded queue**: hàng đợi có sức chứa giới hạn, ví dụ {{ArrayBlockingQueue(100)}}.
+- **Rejection policy**: cách xử lý khi pool không nhận thêm được task.
+- **CPU-bound / IO-bound**: task tốn thời gian tính toán / tốn thời gian chờ mạng, DB, file.
+- **Little's law**: số việc đang xử lý đồng thời = throughput × thời gian xử lý mỗi việc.
+- **Backpressure**: tín hiệu "chậm lại" truyền ngược về phía bên gửi việc khi hệ thống quá tải.
+
+### Thứ tự xử lý khi submit (từng bước)
+1. **Số thread < core** → tạo thread mới chạy task ngay, kể cả khi đang có thread rảnh. Vì sao: pool "làm ấm" dần tới số core.
+2. **Đủ core** → {{queue.offer(task)}}. Vì sao queue trước: JDK coi thread là tài nguyên đắt, ưu tiên xếp hàng hơn là tạo thêm thread.
+3. **Queue đầy** → tạo thread mới cho tới maximumPoolSize. Đây là "chế độ khẩn cấp" để xả tải.
+4. **Đã max và queue vẫn đầy** → gọi RejectedExecutionHandler.
+
+~~~text
+submit(task)
+   |
+   v
+threads < core ? --yes--> tạo thread mới
+   | no
+   v
+queue.offer ok ? --yes--> nằm chờ trong queue
+   | no (đầy)
+   v
+threads < max ? --yes--> tạo thread "thời vụ"
+   | no
+   v
+rejection policy
+~~~
 
 ### Constructor đầy đủ
 
@@ -96,28 +200,33 @@ new ThreadPoolExecutor(
     8,                                  // maximumPoolSize
     60, TimeUnit.SECONDS,               // keepAlive cho thread ngoài core
     new ArrayBlockingQueue<>(100),      // queue BOUNDED (rất quan trọng)
-    namedThreadFactory,                 // đặt tên thread
+    namedThreadFactory,                 // đặt tên thread để đọc thread dump
     new ThreadPoolExecutor.CallerRunsPolicy()); // rejection
 ~~~
 
-- Bẫy tư duy: queue được check **trước** khi tạo thread vượt core. Với queue vô hạn, maxPoolSize gần như vô nghĩa.
-- {{allowCoreThreadTimeOut(true)}} cho core chết khi idle — hợp cho pool có traffic co giãn.
+- Bẫy tư duy: queue được check **trước** khi tạo thread vượt core. Với queue vô hạn, maxPoolSize gần như vô nghĩa (pool không bao giờ vượt core).
+- {{allowCoreThreadTimeOut(true)}} cho cả core thread chết khi idle — hợp cho pool có traffic co giãn.
+- Ví dụ số: core 4, max 8, queue 100. Gửi 50 task cùng lúc: 4 task chạy, 46 nằm queue, **không** có thread thứ 5. Gửi 110 task: 4 chạy + 100 chờ + 4 thread thời vụ chạy 4 task nữa = 108, 2 task còn lại bị reject.
 
 ### Rejection policy
-- **AbortPolicy** (mặc định): ném {{RejectedExecutionException}} — fail fast, caller tự retry.
-- **CallerRunsPolicy**: chạy trên thread submit — backpressure tự nhiên; nhưng nếu submit từ Netty event loop thì chậm cả hệ thống.
+- **AbortPolicy** (mặc định): ném {{RejectedExecutionException}} — fail fast, caller tự retry hoặc trả 503.
+- **CallerRunsPolicy**: chạy task trên chính thread submit — backpressure tự nhiên vì caller bận thì không submit thêm được; nhưng nếu submit từ Netty event loop thì cả hệ thống chậm theo.
 - **DiscardPolicy / DiscardOldestPolicy**: bỏ im lặng — chỉ hợp task có thể vứt (metric, log).
 
 ### Sizing
-- **CPU-bound**: pool ≈ số core, thêm thread chỉ tăng context switch.
-- **IO-bound**: pool ≈ core × (1 + W/C); W/C tỉ lệ chờ/tính toán — REST, JDBC, file IO có thể gấp 10–50 lần số core.
-- Little's law kiểm chứng: concurrency cần ≈ throughput × latency mục tiêu (vd 1000 req/s × 200 ms = 200 đang bay).
-- Metric: expose activeCount/queueSize qua Micrometer; alert khi queue > 70% trong nhiều phút.
+1. **CPU-bound**: pool ≈ số core (có thể +1). Vì sao: chỉ có N core thật, thêm thread chỉ tăng context switch.
+2. **IO-bound**: pool ≈ core × (1 + W/C). Ví dụ 8 core, mỗi request chờ DB 90 ms và tính toán 10 ms → W/C = 9 → khoảng 80 thread. REST, JDBC, file IO có thể gấp 10–50 lần số core.
+3. **Kiểm chứng bằng Little's law**: concurrency cần ≈ throughput × latency mục tiêu (ví dụ 1000 req/s × 200 ms = 200 request đang bay).
+4. **Đo**: expose activeCount/queueSize qua Micrometer; alert khi queue > 70% trong nhiều phút.
 
-### Pitfall production
-- Queue vô hạn (mặc định của {{newFixedThreadPool}}): p99 trượt dài rồi OOM heap.
-- Task ném exception không ai hay: bọc try-catch, định nghĩa UncaughtExceptionHandler.
-- Pool JDBC phải tune song song: 200 thread với 10 connection = 190 thread xếp hàng chờ connection.
+### Lỗi hay gặp
+- **Queue vô hạn** (mặc định của {{newFixedThreadPool}}): triệu chứng là p99 trượt dài, heap tăng dần rồi OOM. Cách tránh: luôn truyền capacity cho queue.
+- **Task ném exception không ai hay**: với {{submit()}}, exception nằm im trong Future. Cách tránh: bọc try-catch trong task và log, hoặc dùng {{execute()}} cùng UncaughtExceptionHandler.
+- **Pool JDBC không tune song song**: 200 thread với 10 connection = 190 thread xếp hàng chờ connection, timeout hàng loạt. Cách tránh: kích thước pool thread phải khớp với pool connection và giới hạn của DB.
+- **Đặt max lớn mà queue vô hạn rồi tưởng pool sẽ tự co giãn**: pool mãi chỉ có core thread. Cách tránh: hiểu đúng thứ tự ở trên.
+
+### Trả lời miệng 1 phút
+"ThreadPoolExecutor xử lý submit theo thứ tự: chưa đủ core thì tạo thread, đủ core thì vào queue, queue đầy mới tạo thêm tới max, max rồi thì reject. Điểm hay bị hiểu sai là queue được ưu tiên trước thread vượt core, nên dùng queue vô hạn thì max coi như vô nghĩa và burst sẽ thành latency rồi OOM. Policy tôi hay dùng là AbortPolicy để fail fast trả 503, hoặc CallerRunsPolicy cho batch nội bộ để có backpressure. Sizing thì CPU-bound bằng số core, IO-bound theo core nhân một cộng W trên C, rồi kiểm chứng bằng Little's law và metric queue size, active count. Trên production tôi luôn yêu cầu queue bounded, policy ghi rõ và thread có tên."
 
 > Senior tip: tôi luôn đưa ra con số mẫu: với API ngoài 100 rps và latency 200 ms, concurrency cap = 20 theo Little's law; rate limiter 100 rps chặn burst. Câu trả lời thiếu số và thiếu cách đo là thiếu nửa điểm ở vị trí senior.`,
   follow: [
@@ -137,9 +246,25 @@ new ThreadPoolExecutor(
   topic: 'concurrency',
   level: 'senior',
   q: 'Vì sao không nên dùng {{Executors.newFixedThreadPool}} / {{newCachedThreadPool}} mặc định trên production?',
-  a: `**Tóm tắt:** {{newFixedThreadPool}} dùng {{LinkedBlockingQueue}} vô hạn ⇒ burst làm queue phình vô hạn: p99 trượt dài rồi OOM heap; maxPoolSize gần như vô nghĩa. {{newCachedThreadPool}} có max = {{Integer.MAX_VALUE}} với {{SynchronousQueue}} ⇒ burst tạo hàng nghìn thread ⇒ OOM "unable to create native thread". Production nên tự dựng ThreadPoolExecutor với queue bounded và policy có chủ đích.
+  a: `**Tóm tắt:** {{newFixedThreadPool}} dùng {{LinkedBlockingQueue}} không giới hạn: khi có burst, queue phình vô hạn, p99 trượt dài rồi OOM heap, và maxPoolSize gần như vô nghĩa. {{newCachedThreadPool}} có max = {{Integer.MAX_VALUE}} với {{SynchronousQueue}} (không chứa được task nào): burst tạo hàng nghìn thread, dẫn tới OOM "unable to create native thread". Production nên tự dựng {{ThreadPoolExecutor}} với queue bounded, rejection policy có chủ đích và thread có tên.
 
-### Câu chuyện failure
+### Hiểu nhanh
+{{newFixedThreadPool}} giống một quán ăn có 10 đầu bếp nhưng hàng chờ dài vô tận: khách cứ xếp hàng, chẳng ai bị từ chối, nhưng người cuối hàng chờ 3 tiếng và quán bị tràn ra đường (hết RAM). {{newCachedThreadPool}} ngược lại: mỗi khách tới là thuê thêm một đầu bếp mới, không giới hạn — đến lúc bếp không còn chỗ đứng (hết bộ nhớ/giới hạn thread của OS). Cả hai đều thiếu cái quan trọng nhất: một giới hạn rõ ràng và cách nói "không" khi quá tải.
+
+### Thuật ngữ
+- **Executors**: class tiện ích của JDK sinh sẵn các pool phổ biến (fixed, cached, single, scheduled).
+- **LinkedBlockingQueue**: queue dạng danh sách liên kết; tạo không truyền capacity thì sức chứa là {{Integer.MAX_VALUE}}.
+- **SynchronousQueue**: queue sức chứa 0 — mỗi lần đưa task vào phải có thread nhận ngay.
+- **Native thread**: thread thật của hệ điều hành; mỗi platform thread Java ứng với một native thread, có stack riêng.
+- **OOM (OutOfMemoryError)**: JVM hết bộ nhớ heap, metaspace hoặc không tạo được native thread.
+- **p99**: 99% request nhanh hơn giá trị này; đo "đuôi chậm" mà người dùng cảm nhận.
+- **ThreadFactory**: đối tượng quyết định cách tạo thread (tên, daemon, priority).
+
+### Câu chuyện failure (từng bước)
+1. Burst 50k task trong 10 giây, mỗi task khoảng 100 ms.
+2. Fixed pool 10 thread xử lý được khoảng 100 task/giây, tức trong 10 giây chỉ xong khoảng 1k task. 49k task còn lại nằm trong queue. Vì sao không tạo thêm thread: queue chưa bao giờ đầy, nên max không bao giờ được dùng tới.
+3. Task cuối hàng chờ khoảng 490 giây. Client đã timeout từ lâu, nhưng server vẫn cặm cụi làm việc vô ích.
+4. Mỗi task giữ một payload (ví dụ 50 KB) → 49k × 50 KB ≈ 2,4 GB nằm trong heap → GC chạy liên tục → OOM.
 
 ~~~java
 // Burst 50k task trong 10s, mỗi task ~100ms
@@ -148,28 +273,45 @@ Executors.newFixedThreadPool(10);
 // task giữ payload lớn => OOM heap
 
 Executors.newCachedThreadPool();
-// SynchronousQueue: mỗi task cần một thread mới
-// 10k thread x 1 MB stack reserve => "unable to create native thread"
+// SynchronousQueue: mỗi task cần một thread mới (nếu không có thread rảnh)
+// 10k thread x ~1 MB stack reserve => "unable to create native thread"
+~~~
+
+~~~text
+newFixedThreadPool(10)          newCachedThreadPool()
+[10 thread] <- [queue vô hạn]   [thread][thread][thread]... không giới hạn
+  latency tăng -> OOM heap        RAM/ulimit cạn -> OOM native thread
 ~~~
 
 ### Thiếu sót của factory helper
-- Không expose rejection policy (mặc định Abort) và ThreadFactory — thread dump thành pool-1-thread-123, khó grep.
-- Không expose queue type/capacity, allowCoreThreadTimeOut — mọi tuning phải sửa code.
+- Không expose rejection policy (mặc định Abort) và ThreadFactory — thread dump toàn {{pool-1-thread-123}}, khó grep.
+- Không expose loại queue/capacity, allowCoreThreadTimeOut — mọi tuning phải sửa code.
 - Không có sẵn metric queue depth / active count / rejection count.
-- Java 21: {{newVirtualThreadPerTaskExecutor}} thay "cached pool" cho task IO — nhưng vẫn phải giới hạn ở tầng tài nguyên (pool JDBC, semaphore), nếu không tự DDOS chính DB của mình.
+- Java 21: {{newVirtualThreadPerTaskExecutor}} thay "cached pool" cho task IO — nhưng vẫn phải giới hạn ở tầng tài nguyên (pool JDBC, semaphore), nếu không tự DDoS chính DB của mình.
 
 ### Cách làm đúng
 
 ~~~java
 ThreadPoolExecutor pool = new ThreadPoolExecutor(
     8, 32, 30, TimeUnit.SECONDS,
-    new ArrayBlockingQueue<>(200),
-    new CustomizableThreadFactory("video-encode-"), // Spring; set daemon qua setDaemon(true)
-    new ThreadPoolExecutor.CallerRunsPolicy()); // hoặc Abort + retry/MQ
+    new ArrayBlockingQueue<>(200),                    // tối đa 200 task chờ
+    new CustomizableThreadFactory("video-encode-"),   // Spring; set daemon qua setDaemon(true)
+    new ThreadPoolExecutor.CallerRunsPolicy());       // hoặc Abort + retry/MQ
 pool.allowCoreThreadTimeOut(true);
 ~~~
 
-Rule tôi áp cho team khi review: mọi pool trên production phải có (1) queue bounded, (2) rejection policy được ghi rõ, (3) thread name dễ grep.
+Không dùng Spring thì Java 21 có sẵn {{Thread.ofPlatform().name("video-encode-", 0).factory()}} để đặt tên thread.
+
+Rule tôi áp cho team khi review: mọi pool trên production phải có (1) queue bounded, (2) rejection policy được ghi rõ, (3) thread name dễ grep, (4) metric queue size và số lần reject.
+
+### Lỗi hay gặp
+- **Tạo pool mới trong mỗi request** ({{Executors.newFixedThreadPool}} trong method controller): triệu chứng là số thread tăng mãi, vì pool không được shutdown. Cách tránh: pool là bean dùng chung, shutdown theo lifecycle app.
+- **Dùng newSingleThreadExecutor cho việc quan trọng**: nó cũng có queue vô hạn, một task chậm làm cả hàng chờ dồn lại. Cách tránh: đặt capacity và timeout.
+- **Chuyển sang virtual thread rồi bỏ mọi giới hạn**: triệu chứng là DB báo "too many connections" hoặc đối tác trả 429. Cách tránh: Semaphore hoặc pool connection làm giới hạn thật.
+- **CallerRunsPolicy trên thread I/O của Netty/WebFlux**: event loop bị chặn, mọi kết nối khác chậm theo. Cách tránh: dùng AbortPolicy và trả lỗi nhanh ở tầng đó.
+
+### Trả lời miệng 1 phút
+"Tôi không dùng Executors.newFixedThreadPool hay newCachedThreadPool trên production vì cả hai đều không có giới hạn ở chỗ nguy hiểm nhất. Fixed pool dùng LinkedBlockingQueue vô hạn, nên khi burst, task xếp hàng mãi, latency tăng tới hàng trăm giây rồi OOM heap, và max pool không bao giờ được dùng. Cached pool dùng SynchronousQueue với max bằng Integer.MAX_VALUE, nên burst tạo hàng nghìn thread và OOM vì không tạo được native thread. Thay vào đó tôi tự tạo ThreadPoolExecutor với queue bounded, rejection policy rõ ràng, thread có tên và metric. Từ Java 21, với task I/O có thể dùng virtual thread, nhưng vẫn giới hạn bằng semaphore hoặc connection pool."
 
 > Senior tip: vụ thực tế tôi điều tra: p99 nhảy từ 80 ms lên 9 s không phải vì code chậm mà vì queue vô hạn nuốt 200k task sau một khoảng traffic spike. Fail fast với rejection công khai tốt hơn âm thầm xếp hàng vô hạn nhiều.`,
   follow: [
@@ -188,7 +330,19 @@ Rule tôi áp cho team khi review: mọi pool trên production phải có (1) qu
   topic: 'concurrency',
   level: 'senior',
   q: '{{CompletableFuture}}: khác biệt giữa {{thenApply}} và {{thenCompose}}, dùng {{allOf}} thế nào, xử lý exception, executor mặc định chạy ở đâu?',
-  a: `**Tóm tắt:** {{thenApply}} = map giá trị thành giá trị; {{thenCompose}} = flatMap khi bước tiếp theo tự nó trả về CompletableFuture — tránh lồng CF<CF<T>>. Lỗi dùng exceptionally / handle / whenComplete. Không truyền executor: callback chạy trên thread hoàn thành bước trước, hoặc ForkJoinPool.commonPool() — task blocking bắt buộc phải dùng executor riêng.
+  a: `**Tóm tắt:** {{thenApply}} = map: biến giá trị thành giá trị khác. {{thenCompose}} = flatMap: dùng khi bước tiếp theo **tự nó** trả về một CompletableFuture, để không bị lồng {{CompletableFuture<CompletableFuture<T>>}}. {{allOf}} chờ nhiều future rồi gom kết quả bằng {{join()}}. Lỗi xử lý bằng {{exceptionally}} / {{handle}} / {{whenComplete}}. Không truyền executor thì callback không-async chạy trên thread vừa hoàn thành bước trước (hoặc thread gọi nếu future đã xong), còn các hàm {{*Async}} chạy trên {{ForkJoinPool.commonPool()}} — task blocking bắt buộc phải dùng executor riêng.
+
+### Hiểu nhanh
+CompletableFuture giống một phiếu hẹn ở tiệm giặt: bạn được phiếu ngay, đồ giặt xong sau. {{thenApply}} là "khi xong thì gấp quần áo" — việc nhỏ, làm ngay trên kết quả. {{thenCompose}} là "khi xong thì gửi sang tiệm là ủi" — việc đó lại cho bạn **một phiếu hẹn mới**; thenCompose giúp bạn cầm một phiếu cuối cùng thay vì "phiếu kẹp trong phiếu". {{allOf}} là "báo tôi khi cả ba túi đồ đều xong". Còn executor là "ai làm việc đó": không nói rõ thì ai rảnh làm, và nếu bạn bắt nhân viên dùng chung của cả toà nhà (commonPool) đứng chờ, cả toà nhà kẹt.
+
+### Thuật ngữ
+- **CompletableFuture (CF)**: future có thể hoàn thành từ bên ngoài và cho phép nối các bước xử lý bất đồng bộ.
+- **map / flatMap**: map biến T thành R; flatMap biến T thành "hộp chứa R" rồi gỡ một lớp hộp.
+- **Callback / stage**: một bước trong chuỗi, chạy khi bước trước hoàn thành.
+- **commonPool**: ForkJoinPool dùng chung toàn JVM, parallelism mặc định = số core − 1.
+- **CompletionException**: exception bọc lỗi gốc khi lỗi đi qua chuỗi CF hoặc khi gọi {{join()}}.
+- **Executor**: thành phần quyết định task chạy trên thread nào.
+- **Fail-fast**: dừng ngay khi có lỗi đầu tiên thay vì chờ tất cả.
 
 ### thenApply vs thenCompose
 
@@ -201,8 +355,10 @@ CompletableFuture<Dto> dto = resp.thenApply(Dto::of);
 // flatMap: bước tiếp theo là async (trả CF)
 CompletableFuture<Detail> d = resp.thenCompose(r -> fetchAsync(r.id));
 
-// nếu dùng thenApply r -> fetchAsync(r.id): được CF<CF<Detail>> — sai mong muốn
+// nếu dùng thenApply(r -> fetchAsync(r.id)): được CF<CF<Detail>> — sai mong muốn
 ~~~
+
+Quy tắc nhớ: lambda trả về giá trị thường thì dùng thenApply; lambda trả về CompletableFuture thì dùng thenCompose.
 
 ### allOf + gom kết quả
 ~~~java
@@ -210,19 +366,33 @@ CompletableFuture<List<Price>> all = CompletableFuture
     .allOf(c1, c2, c3)
     .thenApply(v -> List.of(c1.join(), c2.join(), c3.join()));
 ~~~
-- allOf trả về CF<Void>; sau khi complete, từng CF con đã done nên join không block.
-- Một CF con hoàn thành exceptionally thì allOf cũng complete exceptionally (bọc trong CompletionException) — nhưng chỉ khi TẤT CẢ CF con đã xong: allOf không fail-fast, muốn hủy sớm phải tự xử lý.
+1. {{allOf}} trả về {{CF<Void>}} — nó không chứa kết quả, chỉ báo "tất cả đã xong".
+2. Khi allOf complete, từng CF con đã xong nên {{join()}} bên trong không block.
+3. Nếu một CF con lỗi, allOf cũng complete exceptionally (bọc trong CompletionException) — nhưng **chỉ khi TẤT CẢ CF con đã xong**: allOf không fail-fast. Muốn huỷ sớm phải tự xử lý (ví dụ CF con lỗi thì complete một CF "failFast" riêng).
+
+Ví dụ số: gọi 3 dịch vụ giá, lần lượt mất 120 ms, 80 ms, 300 ms. Gọi tuần tự hết 500 ms; dùng supplyAsync + allOf hết khoảng 300 ms (bằng call chậm nhất).
 
 ### Xử lý exception
-- {{exceptionally(ex -> fallback)}}: chỉ khi lỗi; dùng cho fallback giá trị.
-- {{handle((v, ex) -> ...)}}: luôn chạy; dùng để normalize cả 2 đường.
-- {{whenComplete((v, ex) -> ...)}}: side effect (log/metric), giữ nguyên kết quả.
-- Chain không handle lỗi sẽ im lặng cho tới khi join/get — kể lỗi "rơi vào hư không"; nhớ whenComplete để log.
+- {{exceptionally(ex -> fallback)}}: chỉ chạy khi lỗi; dùng để thay bằng giá trị dự phòng.
+- {{handle((v, ex) -> ...)}}: luôn chạy; dùng để chuẩn hoá cả hai đường thành công/thất bại.
+- {{whenComplete((v, ex) -> ...)}}: side effect (log/metric), giữ nguyên kết quả hoặc lỗi.
+- Chuỗi không xử lý lỗi sẽ im lặng cho tới khi có người {{join/get}} — nếu không ai gọi, lỗi "rơi vào hư không"; nhớ whenComplete để log.
+- Timeout: Java 9+ có {{orTimeout(2, SECONDS)}} (lỗi TimeoutException) và {{completeOnTimeout(fallback, 2, SECONDS)}}.
 
-### Executor mặc định
-- Không truyền: callback chạy trên thread hoàn thành bước trước (hoặc Caller thread nếu đã complete).
-- async mới mà không có executor: chạy trên {{ForkJoinPool.commonPool()}} (parallelism = cores - 1) — cạn thì ảnh hưởng toàn JVM (parallel stream, CF khác).
-- Pitfall lớn: blocking code (JDBC, REST sync) trong commonPool gây treo toàn commonPool; deadlock tự tạo kinh điển: callback trong commonPool .join() một CF con cũng chạy trong commonPool.
+### Executor mặc định (từng trường hợp)
+1. **{{thenApply}} (không Async)**: chạy trên thread vừa hoàn thành bước trước; nếu future đã xong từ trước thì chạy ngay trên thread đang gọi thenApply.
+2. **{{thenApplyAsync(fn)}} / {{supplyAsync(fn)}} không truyền executor**: chạy trên {{ForkJoinPool.commonPool()}} (parallelism = cores − 1). Pool này dùng chung với parallel stream và CF khác: cạn là ảnh hưởng toàn JVM. (Nếu parallelism ≤ 1, ví dụ container 1–2 vCPU, JDK tạo một thread mới cho mỗi task.)
+3. **{{supplyAsync(fn, ioExecutor)}}**: chạy trên executor bạn chỉ định — cách đúng cho IO.
+- Pitfall lớn: blocking code (JDBC, REST sync) trong commonPool làm treo cả pool; deadlock tự tạo kinh điển: callback trong commonPool {{join()}} một CF con cũng cần chạy trong commonPool.
+
+### Lỗi hay gặp
+- **Dùng thenApply cho bước trả về CF**: triệu chứng là kiểu {{CF<CF<T>>}} và phải join hai lần (block thread). Cách tránh: thenCompose.
+- **supplyAsync không executor cho JDBC/HTTP**: triệu chứng là parallel stream và các tính năng khác chậm theo, thread dump thấy worker commonPool chờ socket. Cách tránh: executor IO riêng có giới hạn.
+- **Quên xử lý lỗi**: triệu chứng là request "biến mất" không log. Cách tránh: whenComplete log ở cuối chuỗi, handle/exceptionally ở biên.
+- **join() rải rác giữa chuỗi**: mất lợi ích async, có thể deadlock. Cách tránh: chỉ join ở tầng biên.
+
+### Trả lời miệng 1 phút
+"thenApply là map, dùng khi bước sau trả về giá trị thường; thenCompose là flatMap, dùng khi bước sau tự trả về CompletableFuture để tránh lồng future trong future. Muốn chạy song song nhiều call thì tôi supplyAsync từng cái rồi allOf, sau đó join từng cái để gom kết quả — lưu ý allOf không fail-fast. Lỗi thì exceptionally để fallback, handle để chuẩn hoá cả hai nhánh, whenComplete để log. Điểm quan trọng nhất là executor: các hàm Async không truyền executor chạy trên commonPool dùng chung cả JVM, nên mọi IO tôi đều truyền executor riêng có giới hạn, và chỉ join ở tầng ngoài cùng."
 
 > Senior tip: quy ước của tôi: callback then* chỉ non-blocking; mọi IO đi qua supplyAsync(fn, ioExecutor) riêng; join/get chỉ ở tầng biên (controller, batch-finish). Thiết kế này giúp tránh "CF hell" và deadlock tự tạo chung commonPool.`,
   follow: [
@@ -241,34 +411,59 @@ CompletableFuture<List<Price>> all = CompletableFuture
   topic: 'concurrency',
   level: 'lead',
   q: 'Deadlock: 4 điều kiện cần là gì, phát hiện bằng thread dump ra sao, phòng tránh khi thiết kế thế nào? Phân biệt với livelock và starvation.',
-  a: `**Tóm tắt:** deadlock cần đủ 4 điều kiện Coffman — mutual exclusion, hold-and-wait, no-preemption, circular wait; phá một trong bốn là hết. Trên production phát hiện qua thread dump: JVM tự in "Found one Java-level deadlock". Livelock: thread còn chạy nhưng tiến độ = 0 vì liên tục nhường nhau. Starvation: thread không bao giờ được cấp tài nguyên vì bị chen hàng liên tục.
+  a: `**Tóm tắt:** deadlock chỉ xảy ra khi có đủ 4 điều kiện Coffman — mutual exclusion, hold-and-wait, no-preemption, circular wait; phá được một trong bốn là hết deadlock. Trên production phát hiện bằng thread dump: JVM tự in "Found one Java-level deadlock" kèm vòng chờ. Livelock: thread vẫn chạy nhưng không tiến được vì liên tục nhường/thử lại theo nhau. Starvation: một số thread mãi không được cấp tài nguyên vì bị chen hàng liên tục.
+
+### Hiểu nhanh
+Deadlock giống hai xe ô tô gặp nhau trên cây cầu một làn: mỗi xe đã chiếm nửa cầu và chờ xe kia lùi, không ai chịu lùi, kẹt mãi. Livelock giống hai người gặp nhau ở hành lang hẹp: cả hai cùng bước sang trái, rồi cùng bước sang phải... vẫn di chuyển nhưng không ai qua được. Starvation giống một người xếp hàng mà cứ có người "quen" chen lên trước: hàng vẫn chạy, chỉ có người đó mãi không tới lượt.
+
+### Thuật ngữ
+- **Coffman conditions**: 4 điều kiện cần (đặt theo tên Edward Coffman, 1971) để deadlock xảy ra.
+- **Mutual exclusion**: mỗi tài nguyên tại một thời điểm chỉ một thread dùng.
+- **Hold and wait**: đang giữ tài nguyên này mà đi xin thêm tài nguyên khác.
+- **No preemption**: không ai tước được tài nguyên khỏi thread đang giữ.
+- **Circular wait**: chuỗi chờ khép vòng (A chờ B, B chờ A).
+- **Thread dump**: ảnh chụp stack trace của mọi thread tại một thời điểm ({{jstack}}, {{jcmd Thread.print}}).
+- **Lock ordering**: quy ước mọi nơi đều lấy lock theo cùng một thứ tự.
+- **Open call**: gọi ra ngoài (callback, DB, mạng) khi không giữ lock nào.
 
 ### 4 điều kiện Coffman
-1. **Mutual exclusion** — tài nguyên một thread dùng tại một thời điểm.
-2. **Hold and wait** — đang giữ 1 lock mà đi chờ lock khác.
-3. **No preemption** — không thể tước lock khỏi thread đang giữ.
-4. **Circular wait** — vòng: A chờ B, B chờ A.
+1. **Mutual exclusion** — tài nguyên chỉ một thread dùng tại một thời điểm. Vì sao khó phá: lock sinh ra chính là để làm việc này.
+2. **Hold and wait** — đang giữ 1 lock mà đi chờ lock khác. Phá bằng cách lấy mọi lock cần thiết cùng lúc, hoặc chỉ giữ một lock.
+3. **No preemption** — không thể tước lock khỏi thread đang giữ. Phá bằng {{tryLock}} có timeout: chờ không được thì tự nhả.
+4. **Circular wait** — vòng: A chờ B, B chờ A. Phá bằng lock ordering — cách bền vững nhất.
 
-### Phát hiện thread dump
+~~~text
+Thread-A: giữ lock(acc#1) ---- chờ ----> lock(acc#2)
+                ^                              |
+                |                              v
+Thread-B: chờ lock(acc#1) <---- giữ ---- lock(acc#2)
+  => vòng khép kín: không ai nhả, không ai tiến
+~~~
+
+### Phát hiện bằng thread dump
 
 ~~~bash
 jstack <pid> > dump-1.txt       # chụp 2-3 lần cách nhau vài giây
-jcmd <pid> Thread.print -l      # thay thế jstack
+jcmd <pid> Thread.print -l      # thay thế jstack, -l in thêm thông tin lock j.u.c
 ~~~
 
 ~~~text
 "Thread-A" waiting to lock <0x0a1b> (owned by "Thread-B")
 "Thread-B" waiting to lock <0x9c2d> (owned by "Thread-A")
-Java level deadlock ...
+Found one Java-level deadlock: ...
 ~~~
 
-ReentrantLock cũng được phát hiện vì AQS giữ owner. Dump không báo deadlock mà service vẫn treo (chờ IO/DB lock): so sánh nhiều dump — thread đứng nguyên cùng stack qua mọi lần chụp là nghi phạm (hot thread analysis).
+1. Tìm dòng "Found one Java-level deadlock" ở cuối dump — JVM tự phát hiện vòng chờ.
+2. Đọc từng thread: lock nào đang giữ ("locked <0x...>"), lock nào đang chờ ("waiting to lock <0x...>").
+3. Ánh xạ về code qua stack trace để biết hai đoạn code nào lấy lock ngược thứ tự.
+- ReentrantLock cũng được phát hiện vì AQS ghi nhận owner. Có thể kiểm tra bằng code: {{ThreadMXBean.findDeadlockedThreads()}}.
+- Dump không báo deadlock mà service vẫn treo (chờ IO, chờ DB lock, chờ pool connection): so sánh nhiều dump — thread đứng nguyên cùng stack qua mọi lần chụp là nghi phạm.
 
 ### Phòng tránh — phá đúng 1 trong 4 điều kiện
-- **Lock ordering**: mọi code lock theo cùng thứ tự (vd theo entity id tăng dần) — phá circular wait, cách bền nhất.
-- **tryLock + timeout**: chờ không được thì nhả hết đã giữ rồi retry — phủ nhận no-preemption.
+- **Lock ordering**: mọi code lock theo cùng thứ tự (ví dụ theo entity id tăng dần) — phá circular wait, cách bền nhất.
+- **tryLock + timeout**: chờ không được thì nhả hết lock đã giữ rồi retry (có backoff) — phá no-preemption.
 - **Open calls**: không gọi callback/DB/network khi đang giữ lock.
-- Giảm nested lock: một method một lock; dùng cấu trúc concurrent sẵn.
+- Giảm nested lock: một method một lock; dùng cấu trúc concurrent sẵn có.
 
 ~~~java
 // Phá circular wait: luôn khóa hai account theo id tăng dần
@@ -278,8 +473,23 @@ synchronized (a) { synchronized (b) { transfer(from, to, amount); } }
 ~~~
 
 ### Livelock & starvation
-- **Livelock**: hai hướng retry liên tục hủy hành động của nhau — có hoạt động nhưng không tiến triển; fix bằng random backoff hoặc một bên quyết.
-- **Starvation**: writer liên tiếp thắng, reader đói mãi vì lock không fair; fix bằng fair lock (đổi throughput), quota, hoặc MQ có thứ tự.
+- **Livelock**: hai bên retry liên tục và huỷ hành động của nhau — có hoạt động (CPU cao) nhưng không tiến triển; sửa bằng random backoff hoặc để một bên quyết.
+- **Starvation**: writer liên tiếp thắng, reader đói mãi vì lock không fair (hoặc ngược lại); sửa bằng fair lock (đổi lấy throughput), quota, hoặc hàng đợi có thứ tự.
+
+| | Deadlock | Livelock | Starvation |
+|---|---|---|---|
+| CPU | Thấp | Cao | Bình thường |
+| Thread state | BLOCKED/WAITING mãi | RUNNABLE | Một số chờ lâu |
+| Tiến triển | Không | Không | Có nhưng không công bằng |
+
+### Lỗi hay gặp
+- **Chuyển tiền A→B và B→A cùng lúc**, mỗi bên khoá tài khoản nguồn trước: triệu chứng là vài request treo vĩnh viễn dưới tải cao. Cách tránh: khoá theo id tăng dần.
+- **Gọi listener/callback khi đang giữ lock**: callback lại lấy một lock khác của module khác → vòng chờ khó thấy. Cách tránh: copy dữ liệu ra, nhả lock, rồi mới gọi.
+- **Deadlock giữa lock JVM và connection pool**: thread giữ lock rồi chờ connection, thread khác giữ connection rồi chờ lock. Dump không báo deadlock. Cách tránh: không lấy connection khi đang giữ lock.
+- **Deadlock ở DB**: hai transaction cập nhật dòng theo thứ tự ngược nhau. Cách tránh: cập nhật theo thứ tự khoá chính cố định, transaction ngắn.
+
+### Trả lời miệng 1 phút
+"Deadlock cần đủ bốn điều kiện Coffman: mutual exclusion, hold and wait, no preemption và circular wait, nên chỉ cần phá một điều kiện. Cách tôi hay dùng nhất là lock ordering, ví dụ chuyển tiền thì luôn khoá tài khoản id nhỏ trước, để không bao giờ có vòng chờ; chỗ nào không áp được thứ tự thì dùng tryLock có timeout rồi nhả và retry. Trên production tôi chụp jstack hai ba lần, JVM sẽ in Found one Java-level deadlock; còn nếu treo mà không báo deadlock thì tìm thread đứng yên ở cùng stack qua nhiều dump. Livelock khác ở chỗ thread vẫn chạy, CPU cao mà không tiến; starvation là hệ thống vẫn chạy nhưng một số thread mãi không tới lượt."
 
 > Senior tip: deadlock DB là dạng khó nhất: MySQL tự resolve (rollback 1 transaction) nhưng app chỉ thấy lỗi generic. Bật innodb_print_all_deadlocks để log mọi deadlock vào error log — một deadlock app gặp chỉ là một trong hàng trăm DB log ra.`,
   follow: [
@@ -298,33 +508,67 @@ synchronized (a) { synchronized (b) { transfer(from, to, amount); } }
   topic: 'concurrency',
   level: 'senior',
   q: 'Virtual threads (Java 21): cơ chế hoạt động bên trong, vấn đề pinning, khi nào nên/không nên dùng, ảnh hưởng tới {{ThreadLocal}} và connection pool?',
-  a: `**Tóm tắt:** virtual thread là thread do JVM quản, không phải OS thread: JVM mount nó lên một carrier thread (ForkJoinPool, số carrier ≈ số CPU) và khi gặp blocking IO, JVM lưu stack xuống heap, unmount, trả carrier cho task khác. Chi phí thấp nên có thể chạy hàng triệu task đồng thời. Pinning: khi block trong khối {{synchronized}} trên Java 21, virtual thread không unmount được — carrier bị giữ (Java 24/25 đã bỏ hạn chế này qua JEP 491).
+  a: `**Tóm tắt:** virtual thread (JEP 444, chính thức từ Java 21) là thread do JVM quản lý chứ không phải thread của OS. JVM "gắn" (mount) nó lên một carrier thread — platform thread thuộc một ForkJoinPool riêng, số carrier mặc định ≈ số CPU. Khi virtual thread gặp blocking I/O, JVM cất stack của nó xuống heap, tháo ra (unmount) và trả carrier cho virtual thread khác. Vì rẻ nên có thể chạy hàng triệu task đồng thời. Pinning: trên Java 21, block bên trong khối {{synchronized}} (hoặc trong native call) khiến virtual thread không unmount được và giữ luôn carrier; JDK 24 (JEP 491) đã gỡ hạn chế này cho synchronized.
 
-### Cơ chế
-- Virtual thread có stack trên heap (continuation); scheduler là ForkJoinPool FIFO.
-- Blocking IO do JDK cung cấp (Socket, sleep, lock của j.u.c...) là điểm unmount (Object.wait trên Java 21 vẫn pin); IO xong, task được mount lại trên carrier mới.
-- API tương thích: {{Thread.ofVirtual().start()}} hoặc {{Executors.newVirtualThreadPerTaskExecutor()}}. Phong cách mới: một thread cho mỗi task, KHÔNG pool.
+### Hiểu nhanh
+Platform thread giống thuê một tài xế riêng cho mỗi khách: khách vào quán ăn 30 phút thì tài xế ngồi chờ ngoài xe, rất phí. Virtual thread giống một hãng taxi: khách xuống xe vào quán (chờ I/O) thì xe chạy đi đón khách khác; khi khách ăn xong, một chiếc xe bất kỳ tới đón tiếp. Số xe (carrier) chỉ bằng số CPU, nhưng phục vụ được hàng nghìn khách. Pinning là khi khách bắt tài xế "chờ tôi, không được đi đâu" — trên Java 21 đó là khi khách đang ở trong khối synchronized.
+
+### Thuật ngữ
+- **Platform thread**: thread Java truyền thống, ánh xạ 1-1 với thread của OS, stack cỡ MB.
+- **Virtual thread**: thread nhẹ do JVM lập lịch, stack lưu trên heap và co giãn theo nhu cầu.
+- **Carrier thread**: platform thread đang "chở" (chạy) một virtual thread.
+- **Mount / unmount**: gắn virtual thread lên carrier để chạy / tháo ra khi nó phải chờ.
+- **Continuation**: cấu trúc lưu trạng thái stack để tạm dừng rồi chạy tiếp ở đúng chỗ.
+- **Pinning**: virtual thread bị dính chặt vào carrier, không unmount được khi block.
+- **JFR (Java Flight Recorder)**: công cụ ghi sự kiện trong JVM với overhead thấp.
+- **ScopedValue**: cách chia sẻ dữ liệu bất biến theo phạm vi code, thay thế ThreadLocal (chính thức từ JDK 25).
+
+### Cơ chế (từng bước)
+1. **Tạo**: {{Thread.ofVirtual().start(task)}} hoặc {{Executors.newVirtualThreadPerTaskExecutor()}}. Chỉ tốn vài trăm byte ban đầu, vì stack nằm trên heap dưới dạng continuation.
+2. **Lập lịch**: scheduler là một ForkJoinPool riêng (không phải commonPool) chạy ở chế độ FIFO; nó mount virtual thread lên một carrier rảnh.
+3. **Gặp blocking**: các điểm blocking của JDK (Socket, {{Thread.sleep}}, lock của {{java.util.concurrent}}, BlockingQueue...) được viết lại để khi virtual thread chờ, JVM chép các frame stack xuống heap và unmount. Vì sao: carrier được giải phóng để chạy virtual thread khác.
+4. **Hết chờ**: I/O xong, virtual thread được đưa lại vào hàng chờ và mount lên một carrier bất kỳ (có thể khác carrier cũ), chạy tiếp từ đúng dòng đã dừng.
+5. **Phong cách mới**: một virtual thread cho mỗi task, **KHÔNG pool** virtual thread — tạo mới rẻ hơn tái dùng.
+
+~~~text
+Carrier-1: [VT-1 chạy] -> VT-1 chờ DB (unmount) -> [VT-7 chạy] -> ...
+Carrier-2: [VT-2 chạy] -> [VT-3 chạy] -> VT-1 quay lại (mount) ...
+Heap:      stack VT-1 nằm đây trong lúc chờ DB
+=> 8 carrier phục vụ 10.000 virtual thread chủ yếu đang chờ I/O
+~~~
+
+Ví dụ số: 10.000 request đồng thời, mỗi request chờ DB/HTTP 200 ms. Platform thread: cần ~10.000 thread × ~1 MB stack reserve, gần như chắc chắn chạm giới hạn. Virtual thread: 10.000 continuation nhỏ trên heap, chạy trên 8 carrier.
 
 ### Pinning
 ~~~java
-synchronized (lock) {        // trong khối này block IO...
+synchronized (lock) {        // Java 21: block I/O trong khối này...
     api.call();              // => virtual thread bị pin vào carrier
-}                            // carrier không thể giải phóng
+}                            // carrier không thể giải phóng cho task khác
 ~~~
-- Java 21: block trong synchronized (hoặc gọi native) khiến virtual thread không unmount => giữ carrier; khi nhiều task chạm khối đó, parallelism sụp về số carrier.
-- Phát hiện: flag {{-Djdk.tracePinnedThreads=full}} (in stack chỗ bị pin; flag này bị bỏ từ JDK 24) hoặc JFR event jdk.VirtualThreadPinned.
-- Java trước 24: thay synchronized bằng ReentrantLock ở vùng block IO là biện pháp số một.
+- **Java 21–23**: block trong synchronized (kể cả {{Object.wait()}}) hoặc trong native/foreign call khiến virtual thread không unmount → giữ carrier. Khi nhiều task cùng chạm khối đó, số task chạy song song sụp về đúng số carrier.
+- **JDK 24+ (JEP 491)**: synchronized và Object.wait không còn pin; virtual thread unmount bình thường. Native call và foreign function vẫn pin.
+- **Phát hiện**: JFR event {{jdk.VirtualThreadPinned}} (có từ Java 21, vẫn dùng được ở bản mới); flag {{-Djdk.tracePinnedThreads=full}} in stack chỗ bị pin trên Java 21–23 nhưng đã bị bỏ từ JDK 24.
+- **Trên Java 21**: thay synchronized bằng ReentrantLock ở vùng có block I/O là biện pháp số một; đồng thời nâng thư viện (JDBC driver, HTTP client) lên bản đã bỏ synchronized ở đường I/O.
 
 ### Nên / không nên
-- **Nên**: server nhiều concurrent connection với blocking IO; migrate code blocking cũ không đổi sang reactive; fan-out gọi hàng trăm call mỗi request.
-- **Không nên**: CPU-bound (thread cheap không giúp gì cho số core); code reactive đã chạy tốt; task cần state lớn qua ThreadLocal mà chưa chuyển ScopedValue.
-- Virtual thread "rẻ" nhưng vẫn giới hạn bị tài nguyên dưới đó (DB pool, file descriptor) — đó là chỗ cần semaphore + rate limit.
+- **Nên**: server nhiều kết nối đồng thời với blocking I/O; migrate code blocking cũ mà không muốn chuyển sang reactive; fan-out gọi hàng trăm call mỗi request. Spring Boot 3.2+ bật bằng {{spring.threads.virtual.enabled=true}}.
+- **Không nên**: task CPU-bound (thread rẻ không tạo thêm core); code reactive đã chạy tốt; task giữ state lớn trong ThreadLocal.
+- Virtual thread "rẻ" nhưng tài nguyên phía dưới thì không (DB pool, file descriptor, quota đối tác) — chỗ đó cần semaphore + rate limit.
 
 ### ThreadLocal & pool tài nguyên
-- KHÔNG pool virtual thread → ThreadLocal mỗi task một bản mới: MDC, security context tạo mới mỗi request, GC pressure tăng; Object lớn giữ trong ThreadLocal + hàng triệu task = OOM dễ.
-- Bottleneck thường chuyển sang pool JDBC: 10 connection = 10 task chạy song song, phần còn lại chờ. Điều đó là ĐÚNG — nhưng bạn phải tune pool JDBC và xem chiều chi tiết chứ không phải "tăng pool vô hạn" là xong.
+- Không pool virtual thread → ThreadLocal được tạo mới cho mỗi task: MDC, security context tạo mới mỗi request, GC pressure tăng; object lớn giữ trong ThreadLocal nhân với hàng triệu task là dễ OOM. ScopedValue (preview ở Java 21, chính thức ở JDK 25) là hướng thay thế.
+- Bottleneck thường chuyển sang pool JDBC: 10 connection = 10 task chạy DB song song, phần còn lại chờ. Điều đó là ĐÚNG — nhưng bạn phải tune pool JDBC trong giới hạn DB chịu được và đo chi tiết, chứ không phải "tăng pool vô hạn" là xong.
 
-> Senior tip: benchmark trước khi tin virtual threads: test tăng concurrent từ 100 lên 10k, đo p99 và connection pool; thường p99 còn phụ thuộc pool JDBC nhiều hơn số thread — tăng pool JDBC mới là đòn chỉnh đúng.`,
+### Lỗi hay gặp
+- **Pool virtual thread** (đưa vào FixedThreadPool hay tái dùng): mất lợi ích, còn rò ThreadLocal giữa task. Cách tránh: mỗi task một virtual thread mới; giới hạn bằng Semaphore.
+- **Không giới hạn gì sau khi bật virtual thread**: triệu chứng là DB báo hết connection, đối tác trả 429, Hikari timeout hàng loạt. Cách tránh: Semaphore theo từng dependency.
+- **Pinning trên Java 21**: triệu chứng là throughput thấp bất thường, thread dump thấy carrier đều đứng trong synchronized. Cách tránh: JFR VirtualThreadPinned, đổi sang ReentrantLock hoặc nâng lên JDK 24+.
+- **Dùng virtual thread cho tính toán nặng**: không nhanh hơn, còn làm các task I/O bị chậm vì carrier bị chiếm. Cách tránh: tách pool CPU riêng.
+
+### Trả lời miệng 1 phút
+"Virtual thread là thread nhẹ do JVM quản lý: nó được mount lên một carrier thread, và khi gặp blocking I/O, JVM cất stack xuống heap, unmount, trả carrier cho việc khác. Nhờ vậy tôi viết code blocking bình thường mà vẫn phục vụ hàng chục nghìn request đồng thời với vài carrier. Điểm cần cẩn thận trên Java 21 là pinning: block bên trong synchronized hoặc native call sẽ giữ carrier, tôi phát hiện bằng JFR event VirtualThreadPinned và thay bằng ReentrantLock; từ JDK 24 synchronized đã hết pin. Virtual thread hợp với I/O-bound, không giúp CPU-bound, không nên pool, và vẫn phải giới hạn tài nguyên phía sau bằng semaphore hay connection pool."
+
+> Senior tip: benchmark trước khi tin virtual threads: test tăng concurrent từ 100 lên 10k, đo p99 và connection pool; thường p99 phụ thuộc pool JDBC và giới hạn của DB nhiều hơn số thread. Khi đó việc cần làm là tune pool JDBC (trong sức chịu của DB) và đặt semaphore cho từng dependency, không phải thêm thread.`,
   follow: [
     'Phát hiện pinning của một service Java 21 trong production thế nào?',
     'Nên dùng virtual thread cho fan-out 1000 call mỗi request hay reactive stack?'
@@ -341,17 +585,42 @@ synchronized (lock) {        // trong khối này block IO...
   topic: 'concurrency',
   level: 'mid',
   q: '{{ThreadLocal}} dùng khi nào? Vì sao nó gây memory leak trong thread pool và xử lý ra sao?',
-  a: `**Tóm tắt:** {{ThreadLocal}} cho mỗi thread một bản dữ liệu riêng: user context, transaction context, trace id MDC... Trong thread pool, thread sống lâu nên giá trị set vào không được giải phóng nếu không gọi {{remove()}} — rò rỉ heap; tệ hơn, task sau có thể đọc nhầm giá trị của task trước (bảo mật).
+  a: `**Tóm tắt:** {{ThreadLocal}} cho mỗi thread một bản dữ liệu riêng, hợp để mang ngữ cảnh theo request mà không phải truyền tham số qua mọi method: user context, transaction context, trace id trong MDC... Trong thread pool, thread sống rất lâu nên giá trị đã set không được giải phóng nếu không gọi {{remove()}} — gây rò rỉ heap; tệ hơn, task sau có thể đọc nhầm giá trị của task trước (lỗi bảo mật).
 
-### Cơ chế
-- Mỗi Thread có một ThreadLocalMap: key là tham chiếu yếu tới ThreadLocal object, value là tham chiếu mạnh.
-- {{set(v)}} gán entry vào map của thread hiện tại; {{get()}} dò trong map; khi ThreadLocal object thoát scope, key bị GC nhưng value vẫn ở lại cho tới khi stale được dọn lazily. {{remove()}} là cách dọn chủ động duy nhất đáng tin cậy.
+### Hiểu nhanh
+Mỗi thread có một "ngăn kéo riêng". ThreadLocal là nhãn dán trên ngăn kéo: cùng một nhãn "currentUser" nhưng mỗi thread mở ra thấy đồ của mình. Vấn đề là trong thread pool, thread giống nhân viên ca kíp dùng chung bàn làm việc: nếu ca trước không dọn ngăn kéo, ca sau mở ra thấy giấy tờ của khách cũ — vừa chật chỗ (leak bộ nhớ) vừa lộ thông tin (leak dữ liệu). Quy tắc vàng: ai bỏ đồ vào ngăn kéo thì phải dọn ra trước khi kết thúc việc.
+
+### Thuật ngữ
+- **ThreadLocalMap**: bảng băm nằm bên trong mỗi object Thread, lưu các giá trị ThreadLocal của thread đó.
+- **WeakReference (tham chiếu yếu)**: tham chiếu không giữ object sống; GC được phép thu hồi object nếu chỉ còn tham chiếu yếu.
+- **Strong reference (tham chiếu mạnh)**: tham chiếu bình thường, giữ object sống.
+- **Stale entry**: entry có key đã bị GC (null) nhưng value vẫn còn.
+- **MDC (Mapped Diagnostic Context)**: map trong logging (SLF4J/Logback) để gắn requestId/userId vào mọi dòng log, cài đặt bằng ThreadLocal.
+- **ClassLoader leak**: một object còn giữ tham chiếu khiến cả classloader của webapp không được thu hồi khi redeploy.
+- **Metaspace**: vùng nhớ ngoài heap chứa metadata của class.
+- **ScopedValue**: dữ liệu bất biến gắn với một phạm vi code, tự hết hạn khi ra khỏi phạm vi.
+
+### Cơ chế (từng bước)
+1. Mỗi Thread có field {{threadLocals}} kiểu ThreadLocalMap. Vì sao đặt trong Thread: đọc/ghi chỉ chạm vào dữ liệu của thread hiện tại nên không cần lock.
+2. {{tl.set(v)}}: lấy map của thread hiện tại, ghi entry với key là **tham chiếu yếu** tới object ThreadLocal, value là **tham chiếu mạnh** tới v.
+3. {{tl.get()}}: tra map của thread hiện tại theo key; chưa có thì gọi {{initialValue()}}.
+4. Khi object ThreadLocal không còn ai dùng, key bị GC thành null nhưng value vẫn bị map giữ mạnh. Value chỉ được dọn **lười biếng** khi map tình cờ quét tới entry đó trong lần get/set sau.
+5. Thread trong pool không bao giờ chết → map không bao giờ bị huỷ → value sống mãi. {{remove()}} là cách dọn chủ động duy nhất đáng tin cậy.
+
+~~~text
+Thread "http-nio-8080-exec-7" (sống suốt đời app)
+  threadLocals: ThreadLocalMap
+    [ key: weak -> ThreadLocal(userCtx) | value: STRONG -> UserContext(user=A, 2 MB) ]
+Request A xong, quên remove()  -> Request B chạy trên cùng thread
+  -> get() trả về UserContext của A  (rò dữ liệu)
+  -> 200 thread x 2 MB = 400 MB nằm chết trong Old Gen (rò bộ nhớ)
+~~~
 
 ### Leak trong pool
-1. Task quên remove: giá trị nằm trong thread nữa ngày, chiếm Old Gen.
-2. **Leak dữ liệu giữa request**: task sau đọc nhầm MDC requestId/userId của task trước — issue bảo mật nghiêm trọng và không debug được qua stack trace.
-3. Giá trị tham chiếu class của webapp (Tomcat) ⇒ WebappClassLoader không giải phóng khi redeploy → Metaspace leak.
-4. Cache tĩnh + ThreadLocal = nhân đôi heap footprint.
+1. Task quên remove: giá trị nằm trong thread hàng giờ, hàng ngày, chiếm Old Gen.
+2. **Leak dữ liệu giữa request**: task sau đọc nhầm MDC requestId/userId của task trước — lỗi bảo mật nghiêm trọng và không debug được qua stack trace.
+3. Giá trị tham chiếu tới class của webapp (Tomcat) ⇒ WebappClassLoader không giải phóng khi redeploy → Metaspace leak.
+4. Cache tĩnh + ThreadLocal = nhân bản dữ liệu theo số thread, footprint heap tăng gấp nhiều lần.
 
 ### Cách làm đúng
 
@@ -360,15 +629,25 @@ try {
     MDC.put("requestId", reqId);
     chain.doFilter(req, resp);
 } finally {
-    MDC.clear();          // luôn dọn ở finally
+    MDC.clear();          // luôn dọn ở finally, kể cả khi có exception
 }
 ~~~
 
 - Quy ước: set — try/finally — remove trong cùng call stack; đặt set/remove ở filter/interceptor, không để từng method tự set.
-- SimpleDateFormat mutable: gói ThreadLocal.withInitial là cách tạm thời; Java 17/21 dùng DateTimeFormatter bất biến là xong — không cần ThreadLocal nữa.
-- Java 21/22 preview: ScopedValue thay ThreadLocal trong code virtual-thread; giá gắn scope nên tự chết, không cần quên remove.
+- SimpleDateFormat mutable: bọc {{ThreadLocal.withInitial}} là cách tạm thời; Java 17/21 dùng {{DateTimeFormatter}} bất biến là xong — không cần ThreadLocal nữa.
+- Truyền context sang thread khác (executor, @Async): ThreadLocal **không** tự đi theo; dùng TaskDecorator của Spring hoặc Micrometer Context Propagation để copy vào rồi dọn ra.
+- ScopedValue (preview Java 21–24, chính thức JDK 25 qua JEP 506): giá trị gắn với scope nên tự hết hạn, không có remove để quên — hợp với virtual thread.
 
-> Senior tip: một vụ "user A thấy data user B" gây ấn tượng cho tôi: MDC có userId của request trước bị giữ lại trong thread, một filter sau đó đọc MDC mà không set — 1 trong 10k request rơi vào thể loại này. Sau đó team tôi review tìm dấu {{set(}} và {{remove}} phải đi cùng nhau trong cùng method.`,
+### Lỗi hay gặp
+- **Quên remove trong filter tự viết**: triệu chứng là thỉnh thoảng log mang userId của người khác, hoặc user thấy dữ liệu của user khác. Cách tránh: luôn dọn trong finally.
+- **Đọc ThreadLocal trong code chạy ở @Async/CompletableFuture**: triệu chứng là giá trị null (thread khác). Cách tránh: TaskDecorator/context propagation.
+- **InheritableThreadLocal với pool**: giá trị chỉ được copy lúc **tạo** thread, nên thread pool cũ giữ giá trị của request đầu tiên. Cách tránh: không dùng InheritableThreadLocal với pool.
+- **ThreadLocal chứa object lớn với virtual thread**: mỗi task một bản, hàng trăm nghìn task là hàng trăm nghìn bản. Cách tránh: giữ ThreadLocal nhỏ, hoặc chuyển ScopedValue.
+
+### Trả lời miệng 1 phút
+"ThreadLocal cho mỗi thread một bản giá trị riêng, tôi hay dùng cho context của request như MDC hay security context. Bên trong, mỗi Thread có một ThreadLocalMap, key là tham chiếu yếu tới ThreadLocal còn value là tham chiếu mạnh. Trong thread pool, thread sống suốt đời app nên nếu không remove thì value nằm mãi, vừa rò heap vừa có thể để request sau đọc nhầm dữ liệu của request trước, và trên Tomcat còn gây leak classloader khi redeploy. Vì vậy tôi luôn set ở filter và remove trong finally ở cùng chỗ. Với Java 21 và virtual thread, tôi giữ ThreadLocal thật nhỏ và hướng tới ScopedValue."
+
+> Senior tip: một vụ "user A thấy data user B" gây ấn tượng cho tôi: MDC có userId của request trước bị giữ lại trong thread, một filter sau đó đọc MDC mà không set — 1 trong 10k request rơi vào trường hợp này. Sau đó team tôi review bắt buộc {{set(}} và {{remove}} phải đi cùng nhau trong cùng method.`,
   follow: [
     'ThreadLocalMap dùng WeakReference cho key — vì sao value vẫn leak?',
     'InheritableThreadLocal hành xử thế nào với virtual threads?'
@@ -380,49 +659,82 @@ try {
   topic: 'concurrency',
   level: 'senior',
   q: 'CAS hoạt động thế nào, {{AtomicInteger}} dùng nó ra sao, vấn đề ABA là gì, và {{LongAdder}} khác {{AtomicLong}} ở điểm nào?',
-  a: `**Tóm tắt:** CAS là phép "so sánh rồi hoán đổi" nguyên tử của CPU: ghi giá trị mới chỉ khi giá trị hiện tại đúng như thấy — nền của lock-free. {{AtomicInteger}} dùng CAS loop cho getAndIncrement. ABA: giá trị đi A → B → A khiến CAS nghĩ không đổi; fix bằng {{AtomicStampedReference}} (kèm stamp). {{LongAdder}} chống hot-spot: tách counter vào nhiều cell, sum khi đọc — throughput cao hơn dưới conflict, đánh đổi độ chính xác lúc đọc.
+  a: `**Tóm tắt:** CAS (compare-and-swap) là lệnh nguyên tử của CPU: "chỉ ghi giá trị mới nếu giá trị hiện tại vẫn đúng như tôi đã thấy" — nền tảng của lập trình lock-free. {{AtomicInteger}} dùng vòng lặp CAS cho {{incrementAndGet}}: thử, thất bại thì đọc lại và thử tiếp. ABA: giá trị đi A → B → A khiến CAS tưởng không có gì thay đổi; sửa bằng {{AtomicStampedReference}} (gắn kèm số phiên bản). {{LongAdder}} chống điểm nóng bằng cách chia counter thành nhiều cell và cộng lại khi đọc — throughput cao hơn nhiều khi tranh chấp mạnh, đổi lại {{sum()}} chỉ là giá trị xấp xỉ khi đang có thread cập nhật.
 
-### CAS trong JVM
+### Hiểu nhanh
+CAS giống sửa một trang wiki: bạn mở trang thấy phiên bản 5, sửa xong bấm lưu, hệ thống chỉ chấp nhận nếu trang vẫn là phiên bản 5; ai đó đã lưu trước thì bạn phải tải lại và sửa lại. Không ai phải "khoá" trang. ABA là khi người khác sửa trang rồi hoàn tác về đúng nội dung cũ — bạn nhìn nội dung thấy giống hệt nên tưởng chưa ai đụng vào. LongAdder giống quầy thu ngân có nhiều máy đếm tiền: mỗi thu ngân đếm vào máy riêng, cuối ngày mới cộng tổng, thay vì cả chục người tranh nhau một máy.
+
+### Thuật ngữ
+- **CAS (compare-and-swap)**: lệnh so sánh-rồi-ghi nguyên tử ở mức phần cứng.
+- **Lock-free**: thuật toán bảo đảm luôn có ít nhất một thread tiến triển, không dùng khoá.
+- **CAS loop / spin**: vòng lặp thử CAS cho tới khi thành công.
+- **ABA problem**: giá trị bị đổi rồi đổi về như cũ, CAS không phát hiện được.
+- **Stamp / version**: số đếm tăng mỗi lần thay đổi, dùng kèm giá trị để phát hiện ABA.
+- **Cache line**: khối 64 byte mà CPU đồng bộ giữa các core.
+- **Cache line bouncing**: một cache line bị chuyền qua lại giữa các core vì nhiều core cùng ghi.
+- **AQS**: khung đồng bộ của JDK (nền ReentrantLock, Semaphore) dùng CAS để đổi state.
+
+### CAS trong JVM (từng bước)
 
 ~~~java
 public final int incrementAndGet() {
     int cur;
     do {
-        cur = get();                            // đọc hiện tại
-    } while (!compareAndSet(cur, cur + 1));     // fail => thử lại
+        cur = get();                            // 1. đọc giá trị hiện tại (volatile read)
+    } while (!compareAndSet(cur, cur + 1));     // 2. CAS; fail => có thread khác vừa đổi => thử lại
     return cur + 1;
 }
 ~~~
+(Đây là cách hiểu; JDK thật gọi thẳng {{Unsafe.getAndAddInt}}, trên x86 thường thành một lệnh {{lock xadd}}.)
 
-- CAS compile thành lệnh {{lock cmpxchg}} trên x86 hoặc ldxr/stxr trên ARM — nguyên tử phần cứng, không cần mutex.
-- Nhiều cấu trúc JDK xây trên CAS: AtomicXxx, AQS (nền ReentrantLock/Semaphore), ConcurrentHashMap node insert...
+1. Đọc giá trị hiện tại của field volatile. Vì sao volatile: để luôn thấy giá trị mới nhất và để CAS có ngữ nghĩa happens-before.
+2. Tính giá trị mới ở biến cục bộ.
+3. Gọi CAS: CPU khoá cache line trong tích tắc, so sánh, ghi nếu khớp.
+4. Thất bại nghĩa là thread khác thắng → quay lại bước 1. Không ai bị "ngủ", nên không có context switch.
+
+- CAS compile thành lệnh {{lock cmpxchg}} trên x86 hoặc cặp ldxr/stxr (hoặc lệnh CAS của ARMv8.1 LSE) trên ARM — nguyên tử phần cứng, không cần mutex.
+- Nhiều cấu trúc JDK xây trên CAS: AtomicXxx, AQS (nền ReentrantLock/Semaphore), ConcurrentHashMap khi chèn node vào bucket rỗng...
 
 ### Vấn đề ABA
-CAS chỉ kiểm "bằng hay khác", không biết lịch sử biến đổi. Lỗi kinh điển trên lock-free  stack:
+CAS chỉ kiểm "bằng hay khác", không biết lịch sử. Lỗi kinh điển trên lock-free stack:
 
 ~~~text
-Thread 1: đọc head = A, định CAS A -> next
-Thread 2: pop A, pop B, push lại node A  (A B A)
-Thread 1: CAS thành công — NHƯNG stack đã đổi thật
+Thread 1: đọc head = A (A.next = B), định CAS head: A -> B
+Thread 2: pop A, pop B, push lại node A   (head: A -> B -> A)
+Thread 1: CAS(head, A, B) THÀNH CÔNG — nhưng B đã bị pop, stack hỏng
 ~~~
 
-Fix:
-- {{AtomicStampedReference}}: CAS trên cặp (reference, stamp); stamp tăng mỗi lần đổi.
-- Trong Java object có GC tham chiếu sống nên ít bị; ABA chủ yếu ở off-heap/direct buffer, object pool, node reuse.
-- Cách khác: gắn version number vào record, hoặc quay lại lock phần phức tạp.
+Cách sửa:
+- {{AtomicStampedReference}}: CAS trên cặp (reference, stamp); stamp tăng mỗi lần đổi nên A(stamp 1) khác A(stamp 3).
+- {{AtomicMarkableReference}}: biến thể chỉ có một bit đánh dấu.
+- Trong Java, GC giữ object sống khi còn tham chiếu nên ít gặp ABA hơn C/C++ (không thể "tái sử dụng địa chỉ" khi còn ai giữ); ABA chủ yếu xuất hiện khi tự quản lý object pool, node reuse, off-heap/direct buffer, hoặc khi CAS trên **giá trị số** (số dư 100 → 50 → 100).
+- Cách khác: gắn version number vào record (giống optimistic locking ở DB), hoặc quay lại dùng lock cho phần phức tạp.
 
 ### LongAdder vs AtomicLong
 
 | | AtomicLong | LongAdder |
 |---|---|---|
-| Cơ chế | 1 volatile long + CAS | base + mảng Cell theo hash thread |
-| Conflict cao | CAS liên tục fail, CPU đốt | mỗi thread CAS cell riêng, ít fail |
-| sum() | chính xác tại một điểm | xấp xỉ khi khác thread đang update |
-| Dùng khi | cần giá trị chuẩn từng thời điểm | đếm cho metrics, throughput cao |
+| Cơ chế | 1 volatile long + CAS | base + mảng Cell, thread chọn cell theo hash |
+| Tranh chấp cao | CAS liên tục fail, CPU đốt vòng lặp | mỗi thread CAS cell riêng, ít fail |
+| sum() | chính xác tại một thời điểm | xấp xỉ khi thread khác đang update |
+| API | incrementAndGet, compareAndSet... | increment, add, sum, sumThenReset (không có CAS) |
+| Bộ nhớ | 8 byte | lớn hơn (cell được đệm @Contended) |
+| Dùng khi | cần giá trị chuẩn từng thời điểm, sinh ID | đếm metric, throughput cao |
 
-LongAdder thắng hot-key bằng cách chia cache line: tránh nhiều core CAS trên cùng một cache line (cache line bouncing).
+Cơ chế LongAdder: không có tranh chấp thì CAS vào {{base}}; CAS fail thì tạo mảng Cell và mỗi thread cộng vào cell của mình; mảng có thể mở rộng tới cỡ số CPU. Các cell được đệm để nằm ở cache line khác nhau, tránh cache line bouncing.
 
-> Senior tip: rule code review: counter cho metrics → LongAdder; giá trị chuẩn từng thời điểm (token bucket rate limiter) → AtomicLong. Trong async-profiler, nếu thấy CAS fail spin loop của AtomicLong chiếm CPU khi conflict cao — đó là chỗ LongAdder thoải mái thay.`,
+Ví dụ số (cỡ độ lớn, tuỳ máy): 16 thread cùng tăng counter, AtomicLong có thể chậm hơn LongAdder vài lần đến hàng chục lần vì phần lớn CAS thất bại; với 1 thread thì hai cái tương đương.
+
+### Lỗi hay gặp
+- **Check-then-act với Atomic**: {{if (a.get() > 0) a.decrementAndGet()}} vẫn race. Cách tránh: dùng vòng CAS có điều kiện hoặc {{updateAndGet}}/{{accumulateAndGet}}.
+- **Dùng LongAdder cho sinh ID/số thứ tự**: không có incrementAndGet nên không lấy được giá trị duy nhất. Cách tránh: AtomicLong.
+- **Hàm truyền vào updateAndGet có side effect**: hàm có thể bị gọi nhiều lần khi CAS fail. Cách tránh: hàm thuần, không log/gọi API bên trong.
+- **Vòng CAS tự viết trên dữ liệu nóng**: triệu chứng là CPU 100% nhưng throughput thấp. Cách tránh: LongAdder, hoặc giảm tranh chấp bằng cách chia nhỏ dữ liệu.
+
+### Trả lời miệng 1 phút
+"CAS là lệnh nguyên tử của CPU: chỉ ghi giá trị mới nếu giá trị hiện tại vẫn như mình đã đọc. AtomicInteger dùng nó trong vòng lặp: đọc, tính, CAS, thất bại thì thử lại, nên không có thread nào bị ngủ. Hạn chế đầu tiên là ABA: giá trị đổi rồi đổi về như cũ thì CAS không biết; tôi xử lý bằng AtomicStampedReference hoặc version number. Hạn chế thứ hai là khi tranh chấp cao, nhiều thread CAS cùng một cache line nên fail liên tục; LongAdder giải quyết bằng cách chia thành nhiều cell rồi cộng khi đọc. Nên metric thì tôi dùng LongAdder, còn giá trị cần chính xác từng thời điểm như sinh ID thì dùng AtomicLong."
+
+> Senior tip: rule code review: counter cho metrics → LongAdder; giá trị chuẩn từng thời điểm (token bucket rate limiter, sinh ID) → AtomicLong. Trong async-profiler, nếu thấy vòng CAS của AtomicLong chiếm CPU khi tranh chấp cao — đó là chỗ LongAdder thay thế thoải mái.`,
   follow: [
     'CAS + volatility: vì sao field của {{AtomicInteger}} phải volatile?',
     'ABA trên máy có GC tham chiếu sống: vẫn là vấn đề thật?'
@@ -440,7 +752,19 @@ LongAdder thắng hot-key bằng cách chia cache line: tránh nhiều core CAS 
   topic: 'concurrency',
   level: 'mid',
   q: 'Double-checked locking cho singleton: viết code đúng và giải thích vì sao bắt buộc phải có {{volatile}}.',
-  a: `**Tóm tắt:** DCL chỉ vào {{synchronized}} ở lần gọi đầu. Nếu instance không {{volatile}}, JIT/CPU có thể gán tham chiếu vào field trước khi constructor chạy xong; thread khác thấy tham chiếu khác null nhưng dùng object "nửa xây" (field chưa init). {{volatile}} cấm việc xếp lại này nhờ happens-before.
+  a: `**Tóm tắt:** double-checked locking (DCL) chỉ vào {{synchronized}} ở lần gọi đầu tiên; những lần sau đọc field mà không cần khoá. Nếu field instance không {{volatile}}, JIT/CPU có thể làm cho thread khác thấy tham chiếu đã được gán **trước khi** constructor chạy xong; thread đó thấy instance khác null nhưng dùng một object "nửa xây" (field chưa khởi tạo). {{volatile}} cấm việc xếp lại này nhờ quan hệ happens-before giữa lần ghi và lần đọc field.
+
+### Hiểu nhanh
+Tưởng tượng xây nhà: thứ tự đúng là xây xong rồi mới treo biển số nhà. Nhưng đội thi công (JIT/CPU) được phép treo biển số trước cho nhanh, miễn là **chính họ** không bị ảnh hưởng. Người đưa thư (thread khác) thấy biển số là đi vào — và bước vào một ngôi nhà chưa có sàn. {{volatile}} giống quy định "chỉ được treo biển khi nhà đã xây xong và người đưa thư phải nhìn biển chính thức", nên ai thấy biển là chắc chắn nhà đã hoàn thiện.
+
+### Thuật ngữ
+- **Singleton**: class chỉ có đúng một instance trong ứng dụng.
+- **Lazy initialization**: chỉ tạo object khi có người dùng lần đầu, không tạo sẵn.
+- **Double-checked locking (DCL)**: kiểm tra null hai lần, một lần ngoài lock (nhanh) và một lần trong lock (an toàn).
+- **Reordering**: JIT/CPU đổi thứ tự lệnh khi thấy không ảnh hưởng tới thread hiện tại.
+- **Happens-before**: quy tắc của JMM bảo đảm thứ tự và khả năng nhìn thấy giữa các thread.
+- **Holder idiom**: dùng class lồng static để JVM khởi tạo lazy và thread-safe.
+- **Class initialization lock**: khoá JVM tự dùng để đảm bảo phần khởi tạo static của class chạy đúng một lần.
 
 ### Code đúng
 
@@ -449,10 +773,10 @@ public class Db {
     private static volatile Db instance;   // volatile BẮT BUỘC
 
     public static Db getInstance() {
-        Db r = instance;                   // đọc 1 lần cho đường nóng
-        if (r == null) {
+        Db r = instance;                   // đọc volatile 1 lần cho đường nóng
+        if (r == null) {                   // check 1: không khoá
             synchronized (Db.class) {
-                r = instance;              // đọc lại trong lock
+                r = instance;              // check 2: đọc lại trong lock
                 if (r == null) instance = r = new Db();
             }
         }
@@ -460,24 +784,46 @@ public class Db {
     }
 }
 ~~~
+Biến cục bộ {{r}} giúp đường nóng chỉ đọc field volatile một lần (đọc volatile đắt hơn đọc biến cục bộ một chút).
 
-### Vì sao thiếu volatile là sai
-- {{new Db()}} gồm: cấp phát memory, chạy constructor, gán tham chiếu vào field. JIT chỉ bảo đảm thứ tự nhìn từ bên trong khối synchronized; thread B ở ngoài có thể thấy gán-ref trước khi constructor kết thúc.
-- Thread B vào nhánh đầu (không lock), thấy instance != null, trả về object chưa init — bug phụ thuộc CPU/JIT/scheduler, khó tái hiện.
-- {{volatile}} tạo happens-before giữa ghi tham chiếu và đọc sau; mọi field init của constructor nhìn thấy được cho thread B.
+### Vì sao thiếu volatile là sai (từng bước)
+1. {{new Db()}} gồm 3 việc: (a) cấp phát bộ nhớ, field mặc định 0/null; (b) chạy constructor; (c) gán tham chiếu vào field {{instance}}.
+2. Trong thread A, JIT chỉ cần đảm bảo kết quả **từ góc nhìn của A** không đổi, nên được phép để bước (c) hiển thị với thread khác trước (b).
+3. Thread B vào check 1 (không lock), thấy {{instance != null}}, bỏ qua synchronized, trả về object — nhưng constructor chưa chạy xong, field vẫn là null/0.
+4. B dùng object hỏng: NullPointerException hoặc cấu hình sai, chỉ xảy ra hiếm hoi, phụ thuộc CPU/JIT/scheduler, gần như không tái hiện được.
+5. Khi thêm {{volatile}}: lệnh ghi volatile (c) không được đưa lên trước các lệnh ghi trong constructor, và thread B đọc volatile thấy tham chiếu thì chắc chắn thấy mọi field đã khởi tạo.
+
+~~~text
+Thread A (không volatile)          Thread B
+cấp phát Db@1 (url = null)
+instance = Db@1   <- hiện ra sớm
+                                   instance != null -> return Db@1
+                                   Db@1.url.length()  -> NPE!
+chạy constructor: url = "jdbc:..."
+~~~
 
 ### Phương án thay thế (khuyên dùng hơn)
-- **Holder idiom** — tận dụng JVM lock cho class initializer, không cần volatile:
+- **Holder idiom** — tận dụng khoá khởi tạo class của JVM, không cần volatile:
 
 ~~~java
 private static class Holder { static final Db INSTANCE = new Db(); }
 public static Db getInstance() { return Holder.INSTANCE; }  // lazy + thread-safe
 ~~~
+Vì sao đúng: class {{Holder}} chỉ được khởi tạo khi {{Holder.INSTANCE}} được đọc lần đầu; JVM đảm bảo việc khởi tạo chạy đúng một lần và kết quả được publish an toàn cho mọi thread.
 
 - **{{enum}} singleton**: chống reflection + serialization miễn phí (Effective Java khuyên).
 - Trong Spring app: bean singleton của container đã có lifecycle/scope đúng — đừng viết tay.
 
-> Senior tip: tôi coi "singleton tự viết bằng DCL" là code legacy cần review kỹ: 2 nhóm bug thường gặp là (1) quên volatile — bug "object nửa xây" rơi vào production không repro được, (2) holder nhưng class được load bởi 2 classloader khác nhau trong app server.`,
+### Lỗi hay gặp
+- **Quên volatile**: triệu chứng là NPE "không thể xảy ra" lâu lâu xuất hiện một lần, nhất là trên ARM. Cách tránh: volatile, hoặc dùng holder idiom.
+- **Chỉ kiểm tra một lần bên ngoài lock** (bỏ check 2): hai thread cùng thấy null, cùng chờ lock, lần lượt tạo hai instance. Cách tránh: luôn kiểm tra lại trong lock.
+- **synchronized cả method getInstance()**: đúng nhưng mọi lần gọi đều phải lấy lock. Cách tránh: holder idiom cho cả lazy lẫn nhanh.
+- **Constructor nặng (gọi DB/mạng) trong holder**: lỗi một lần là class hỏng tới khi restart (ExceptionInInitializerError rồi NoClassDefFoundError). Cách tránh: không làm I/O trong khởi tạo static.
+
+### Trả lời miệng 1 phút
+"Double-checked locking kiểm tra null bên ngoài lock để đường nóng không phải khoá, rồi kiểm tra lại bên trong synchronized để chỉ tạo một instance. Field phải volatile vì new gồm cấp phát, chạy constructor và gán tham chiếu, và JIT hay CPU có thể làm thread khác thấy phép gán trước khi constructor xong; thread đó bỏ qua lock và dùng object nửa xây. volatile tạo happens-before giữa lần ghi và lần đọc nên ai thấy tham chiếu cũng thấy object đã khởi tạo đầy đủ. Tuy vậy trong thực tế tôi ưu tiên holder idiom hoặc enum vì JVM tự lo thread-safety, và trong Spring thì để container quản lý singleton."
+
+> Senior tip: tôi coi "singleton tự viết bằng DCL" là code legacy cần review kỹ: 2 nhóm bug thường gặp là (1) quên volatile — bug "object nửa xây" rơi vào production không repro được, (2) holder nhưng class được load bởi 2 classloader khác nhau trong app server, nên thực tế có 2 "singleton".`,
   follow: [
     'Ba bước của {{new Foo()}} được JIT xếp lại thế nào?',
     'Holder idiom chạy thế nào khi class được load 2 lần bởi 2 classloader?'
@@ -489,7 +835,34 @@ public static Db getInstance() { return Holder.INSTANCE; }  // lazy + thread-saf
   topic: 'concurrency',
   level: 'senior',
   q: 'So sánh use case của {{CountDownLatch}}, {{CyclicBarrier}}, {{Semaphore}} và {{Phaser}}: khi nào chọn cái nào?',
-  a: `**Tóm tắt:** {{CountDownLatch}} = chờ N việc xong (một lần). {{CyclicBarrier}} = N worker chờ nhau tới điểm đồng bộ, dùng lại được. {{Semaphore}} = giới hạn số thread vào đồng thời (giới hạn concurrency / tài nguyên — không phải rate limit theo thời gian). {{Phaser}} = barrier nhiều pha với số party linh hoạt.
+  a: `**Tóm tắt:** {{CountDownLatch}} = chờ N việc xong (dùng một lần). {{CyclicBarrier}} = N worker chờ nhau tại một điểm hẹn, xong pha này qua pha khác, dùng lại được. {{Semaphore}} = giới hạn số thread được vào cùng lúc (giới hạn concurrency / tài nguyên — không phải rate limit theo thời gian). {{Phaser}} = barrier nhiều pha với số thành viên thay đổi linh hoạt.
+
+### Hiểu nhanh
+- **CountDownLatch** giống tên lửa đếm ngược: mỗi bộ phận kiểm tra xong thì đếm lùi một số, về 0 thì phóng; đã phóng thì không đếm lại.
+- **CyclicBarrier** giống nhóm leo núi hẹn nhau ở mỗi trạm nghỉ: ai tới trước thì chờ, đủ người mới cùng đi tiếp chặng sau; trạm sau lại hẹn như vậy.
+- **Semaphore** giống bãi đỗ xe có 5 chỗ: hết chỗ thì xe sau chờ ở barrier, có xe ra thì xe khác vào.
+- **Phaser** giống nhóm leo núi mà thành viên có thể nhập đoàn hay rời đoàn ở bất kỳ trạm nào.
+
+### Thuật ngữ
+- **Party**: một thành viên tham gia barrier/phaser.
+- **Permit**: một "vé vào" của Semaphore; acquire lấy vé, release trả vé.
+- **Barrier action**: đoạn code chạy một lần khi đủ party tới điểm hẹn (trước khi cả nhóm đi tiếp).
+- **Broken barrier**: trạng thái CyclicBarrier bị hỏng khi một party bị interrupt, timeout hoặc barrier action ném lỗi.
+- **Fan-out / fan-in**: chia việc ra nhiều thread / gom kết quả về.
+- **Rate limit**: giới hạn số lần mỗi đơn vị thời gian (ví dụ 100 call/giây) — khác với giới hạn số việc chạy cùng lúc.
+- **AQS**: khung đồng bộ của JDK mà CountDownLatch và Semaphore xây trên đó.
+
+### Cơ chế từng loại
+1. **CountDownLatch(n)**: bên trong là một bộ đếm (state của AQS). {{countDown()}} giảm 1; {{await()}} chặn cho tới khi về 0. Về 0 rồi thì mọi await sau trả về ngay. Vì sao một lần: không có thao tác tăng lại, thiết kế để đơn giản và nhanh.
+2. **CyclicBarrier(n, action)**: mỗi thread gọi {{await()}} thì chờ; thread thứ n tới sẽ chạy action rồi đánh thức cả nhóm, barrier tự reset cho pha sau. Vì sao "cyclic": nó dùng lại được qua nhiều vòng.
+3. **Semaphore(k)**: có k permit. {{acquire()}} lấy một permit (hết thì chờ), {{release()}} trả lại. Không có khái niệm "chủ sở hữu": thread khác release được — khác với lock.
+4. **Phaser**: {{register()}}/{{arriveAndDeregister()}} thay đổi số party giữa chừng; {{arriveAndAwaitAdvance()}} giống await của barrier; có số thứ tự pha.
+
+~~~text
+CountDownLatch(3):  T1 done(2) T2 done(1) T3 done(0) -> main.await() trả về
+CyclicBarrier(3):   W1 chờ.. W2 chờ.. W3 tới -> action -> cả 3 sang pha 2 -> lặp lại
+Semaphore(5):       [5 call đang chạy] call thứ 6 chờ -> 1 call xong, release -> call 6 vào
+~~~
 
 ### Code mẫu từng loại
 
@@ -499,7 +872,7 @@ CountDownLatch done = new CountDownLatch(tasks.size());
 for (var t : tasks) executor.submit(() -> {
     try { process(t); } finally { done.countDown(); }   // nhớ finally
 });
-done.await(30, TimeUnit.SECONDS);
+boolean ok = done.await(30, TimeUnit.SECONDS);          // false nếu hết giờ
 
 // CyclicBarrier: các worker chờ nhau mỗi pha, có barrier action
 CyclicBarrier barrier = new CyclicBarrier(N, () -> flushStage());
@@ -516,17 +889,23 @@ try { api.call(); } finally { gate.release(); }
 |---|---|
 | Đợi N tác vụ kết thúc rồi tổng hợp | CountDownLatch |
 | Worker chờ nhau ở pha, lặp nhiều pha | CyclicBarrier |
-| Giới hạn tài nguyên bên ngoài | Semaphore |
+| Giới hạn số truy cập đồng thời vào tài nguyên ngoài | Semaphore |
 | Số party thay đổi giữa các pha | Phaser |
-| Fan-out/fan-in async có data flow | CompletableFuture.allOf |
+| Fan-out/fan-in async có dữ liệu trả về | CompletableFuture.allOf |
+| Giới hạn số call mỗi giây | Rate limiter (Resilience4j, Guava), không phải Semaphore |
 
-### Pitfall
-- Quên countDown trong đường lỗi → await treo mãi: đặt trong finally, luôn dùng await có timeout.
-- Semaphore: số release phải bằng acquire; release nằm ở finally; với semaphore, một thread khác release được (khác lock).
-- CyclicBarrier: một thread ném lỗi làm barrier "broken" (BrokenBarrierException cho tất cả đang chờ); cần thiết kế reset/retry.
-- CountDownLatch không reset; muốn tái dùng đổi CyclicBarrier.
+Ví dụ số để phân biệt Semaphore và rate limit: Semaphore(5) với mỗi call 100 ms cho tối đa khoảng 50 call/giây; nếu call chỉ còn 10 ms thì thành 500 call/giây — Semaphore không giới hạn theo thời gian.
 
-> Senior tip: 90% nhu cầu fan-out thực chiến chỉ là "đợi N việc xong" — CountDownLatch + await timeout là mẫu gọn nhất. Tôi có một lần duy nhất phải dùng Phaser: pipeline nhiều stage số worker thay đổi khi kết thúc từng stage — mạnh nhưng không đáng dùng mặc định.`,
+### Lỗi hay gặp
+- **Quên countDown trong đường lỗi**: triệu chứng là await treo mãi khi một task ném exception. Cách tránh: countDown trong finally, luôn dùng await có timeout và kiểm tra giá trị trả về.
+- **Semaphore release nhiều hơn acquire** (release trong finally dù acquire thất bại, hoặc release hai lần): số permit tăng dần, giới hạn mất tác dụng. Cách tránh: acquire **trước** try, release trong finally; với tryAcquire thì chỉ release khi trả về true.
+- **CyclicBarrier bị broken**: một thread ném lỗi/timeout làm mọi thread đang chờ nhận BrokenBarrierException. Cách tránh: thiết kế reset/retry, hoặc chuyển sang Phaser.
+- **Dùng CountDownLatch cho nhiều vòng**: latch không reset; vòng thứ hai await trả về ngay. Cách tránh: CyclicBarrier hoặc tạo latch mới mỗi vòng.
+
+### Trả lời miệng 1 phút
+"Bốn công cụ này đều là synchronizer của java.util.concurrent nhưng giải bốn bài khác nhau. CountDownLatch là chờ N việc xong, dùng một lần, tôi hay dùng để fan-out rồi đợi tất cả, luôn countDown trong finally và await có timeout. CyclicBarrier là nhóm worker chờ nhau tại mỗi pha, dùng lại được, có barrier action, nhưng một thread lỗi là cả barrier broken. Semaphore giới hạn số việc chạy đồng thời, ví dụ tối đa 5 call tới đối tác; nó không phải rate limit theo giây. Phaser dành cho nhiều pha với số thành viên thay đổi. Thực tế phần lớn nhu cầu chỉ là CountDownLatch hoặc CompletableFuture.allOf."
+
+> Senior tip: 90% nhu cầu fan-out thực chiến chỉ là "đợi N việc xong" — CountDownLatch + await timeout là mẫu gọn nhất. Tôi có một lần duy nhất phải dùng Phaser: pipeline nhiều stage mà số worker thay đổi khi kết thúc từng stage — mạnh nhưng không đáng dùng mặc định.`,
   follow: [
     'CyclicBarrier "broken" xảy ra thế nào, xử lý ra sao?',
     'Khi nào CompletableFuture.allOf thay thế được CountDownLatch?'
@@ -543,7 +922,20 @@ try { api.call(); } finally { gate.release(); }
   topic: 'concurrency',
   level: 'lead',
   q: 'Thiết kế hệ thống xử lý song song 1 triệu record với giới hạn tốc độ (rate limit của API bên ngoài) và yêu cầu không mất dữ liệu. Bạn dựng kiến trúc thế nào?',
-  a: `**Tóm tắt:** tách bài thành 3 lớp: (1) nguồn có checkpoint (Kafka hoặc cursor trên bảng) để crash vẫn resume được; (2) fan-out có kiểm soát: queue bounded + rate limiter đúng theo quota API ngoài; (3) ghi idempotent + DLQ để đạt at-least-once mà hiệu ứng là exactly-once. Không dùng queue vô hạn; không suy ra quota từ số worker.
+  a: `**Tóm tắt:** tôi tách bài toán thành 3 lớp: (1) **nguồn có checkpoint** (Kafka hoặc cursor trên bảng) để crash vẫn chạy tiếp được từ chỗ cũ; (2) **fan-out có kiểm soát**: queue bounded + giới hạn concurrency + rate limiter đúng theo quota API ngoài; (3) **ghi idempotent + DLQ** để đạt at-least-once mà hiệu ứng cuối cùng như exactly-once. Không dùng queue vô hạn; không suy ra quota từ số worker.
+
+### Hiểu nhanh
+Hãy hình dung bạn phải gửi 1 triệu lá thư qua một bưu cục chỉ nhận 100 lá mỗi giây. Bạn cần: một cuốn sổ ghi "đã gửi tới lá số bao nhiêu" (checkpoint) để mất điện vẫn biết làm tiếp từ đâu; một người gác cửa đếm đúng 100 lá/giây (rate limiter) thay vì để 250 nhân viên ùa vào; mỗi lá có mã riêng để bưu cục nhận trùng thì bỏ qua (idempotent); và một rổ "thư bị trả lại" (DLQ) để xem lại sau thay vì vứt đi.
+
+### Thuật ngữ
+- **Checkpoint / offset**: vị trí đã xử lý xong, lưu bền vững để chạy tiếp sau sự cố.
+- **Rate limit / quota**: số request tối đa đối tác cho phép trong một đơn vị thời gian.
+- **Token bucket**: thuật toán rate limit — "xô" được nạp token đều đặn, mỗi request lấy một token.
+- **Idempotent**: thực hiện nhiều lần cho kết quả như một lần.
+- **At-least-once**: mỗi record được xử lý ít nhất một lần (có thể trùng), không mất.
+- **DLQ (Dead Letter Queue)**: nơi chứa record xử lý thất bại sau nhiều lần retry, để xem và xử lý lại.
+- **Outbox pattern**: ghi sự kiện vào bảng outbox trong cùng transaction nghiệp vụ, một tiến trình khác gửi đi sau.
+- **Jitter**: thêm độ trễ ngẫu nhiên để các client không retry cùng một lúc.
 
 ### Kiến trúc tổng thể
 
@@ -552,23 +944,25 @@ Kafka topic (hoặc bảng job có cursor)
   -> Ingest worker: fetch batch nhỏ (vd 500), advance checkpoint sau khi batch được sink ack
   -> BoundedQueue (cap ~ 2x concurrency)
   -> Worker pool (virtual threads): mỗi worker 1 record
-  -> Rate limiter (token bucket theo quota API) trước mỗi call ngoài
+  -> Semaphore (concurrency) + Rate limiter (token bucket theo quota API) trước mỗi call ngoài
   -> Sink ghi idempotent theo key; lỗi đi DLQ
   -> Checkpoint store: advance sau khi cả batch commit
 ~~~
 
 ### 1) Nguồn — checkpoint bền vững
-- Kafka: offset do broker quản lý, replay được; crash giữa chừng thì re-consume từ offset chưa commit — không mất dữ liệu.
-- Batch job tự viết: lưu cursor (id cuối) trong bảng; commit checkpoint sau khi sink ack cả batch, không phải ngay khi đọc.
+1. Kafka: offset do broker lưu, replay được; crash giữa chừng thì consumer đọc lại từ offset chưa commit — không mất dữ liệu (nhưng có thể xử lý trùng, nên bước 3 phải idempotent).
+2. Batch job tự viết: lưu cursor (id cuối) trong bảng; đọc theo {{WHERE id > :cursor ORDER BY id LIMIT 500}}.
+3. Commit checkpoint **sau khi** sink ack cả batch, không phải ngay khi đọc. Vì sao: commit lúc đọc mà crash trước khi ghi xong thì các record đó bị bỏ qua vĩnh viễn.
 
 ### 2) Concurrency + rate limit
-- Đo quota thật của API ngoài (429 header, document); không guess. Dùng token bucket (Resilience4j/Guava RateLimiter).
-- Concurrency cap theo Little's law: concurrency ≈ quota (rps) × latency dự kiến. Ví dụ 100 rps × 200 ms = 20 đang bay ⇒ semaphore 20.
-- 429/Retry-After: worker tôn trọng Retry-After, thêm jitter để tránh stampede khi cả cụm retry cùng lúc; sau 3 lần retry thì đẩy record sang topic retry/DLQ.
+1. **Đo quota thật** của API ngoài (tài liệu, header 429/Retry-After); không đoán. Dùng token bucket (Resilience4j RateLimiter hoặc Guava RateLimiter).
+2. **Giới hạn concurrency theo Little's law**: concurrency ≈ quota (rps) × latency. Ví dụ 100 rps × 200 ms = 20 call đang bay ⇒ Semaphore(20). Vì sao cần cả hai: rate limiter chặn số call mỗi giây, semaphore chặn số call treo cùng lúc khi đối tác chậm đi.
+3. **429/Retry-After**: worker tôn trọng Retry-After, thêm jitter để cả cụm không retry cùng lúc (stampede); sau 3 lần retry thì đẩy record sang topic retry/DLQ.
 
 ~~~text
-// Ví dụ: 10 nghìn record, quota 100 rps, latency 200 ms
-// => 20 worker song song; rate limiter 100 rps chặn burst
+// Ví dụ: 1.000.000 record, quota 100 rps, latency 200 ms
+// => 20 call song song; rate limiter 100 rps chặn burst
+// thời gian tối thiểu: 1.000.000 / 100 = 10.000 s ≈ 2,8 giờ (đây là trần cứng)
 // record gặp 429: chờ Retry-After + jitter, max 3 lần rồi vào DLQ
 ~~~
 
@@ -576,12 +970,21 @@ Kafka topic (hoặc bảng job có cursor)
 - Sink idempotent theo key nghiệp vụ (upsert / unique constraint / event id) — retry an toàn.
 - DLQ cho record fail sau N lần retry, kèm alert; không có DLQ là cách âm thầm mất data.
 - Outbox pattern khi cần atomic giữa DB và hệ thống ngoài: ghi bảng outbox cùng transaction nghiệp vụ, relay background gửi đi; crash thì replay outbox.
-- Shutdown có kế hoạch: dừng submit mới, chờ queue drain (có timeout), flush batch cuối, advance checkpoint, rồi mới tắt process.
+- Shutdown có kế hoạch: dừng nhận mới, chờ queue drain (có timeout), flush batch cuối, advance checkpoint, rồi mới tắt process.
 
 ### 4) Vận hành
-- Metric: queue depth, in-flight count, rps thực tế vs quota, DLQ count, batch latency p99; alert khi DLQ > 0 liên tục.
+- Metric: queue depth, in-flight count, rps thực tế so với quota, DLQ count, batch latency p99; alert khi DLQ tăng liên tục.
 - Load test phá: burst 10x quota, kill -9 giữa batch — checkpoint phải nhảy lại đúng chỗ.
-- Bài toán quota làm trần cứng: chuyển sang batching — 1 call 500 record thay vì 500 call riêng lẻ.
+- Khi quota là trần cứng (2,8 giờ ở ví dụ trên mà SLA yêu cầu 1 giờ): chuyển sang batching nếu đối tác hỗ trợ — 1 call 500 record thay vì 500 call riêng lẻ — hoặc thương lượng quota.
+
+### Lỗi hay gặp
+- **"Rate limit" bằng sleep trong mỗi worker**: triệu chứng là rps thực tế = số worker × (1/sleep), vượt quota, 429 dồn dập. Cách tránh: một rate limiter dùng chung, đo rps thực tế trên dashboard.
+- **Commit checkpoint trước khi ghi xong**: triệu chứng là thiếu record sau mỗi lần deploy/crash. Cách tránh: commit sau khi sink ack.
+- **Sink không idempotent**: triệu chứng là bản ghi trùng (gửi 2 lần tiền, 2 email) sau mỗi lần replay. Cách tránh: unique key/upsert, lưu event id đã xử lý.
+- **Retry ngay lập tức không jitter**: cả cụm cùng retry, đối tác càng quá tải. Cách tránh: exponential backoff + jitter, tôn trọng Retry-After.
+
+### Trả lời miệng 1 phút
+"Tôi chia thành ba lớp. Nguồn phải có checkpoint bền vững, Kafka offset hoặc cursor trong bảng, và tôi chỉ advance checkpoint sau khi cả batch đã ghi xong, nên crash thì chạy lại đúng chỗ. Ở giữa là fan-out có kiểm soát: queue bounded, semaphore giới hạn số call đang bay theo Little's law, và một rate limiter token bucket đặt đúng quota đối tác; gặp 429 thì retry theo Retry-After có jitter, quá ba lần thì vào DLQ. Đầu ra ghi idempotent theo key nghiệp vụ nên at-least-once vẫn cho kết quả như exactly-once. Cuối cùng là metric rps thực tế so với quota, DLQ và test kill giữa batch để chứng minh không mất dữ liệu."
 
 > Senior tip: sai lầm đắt tôi từng thấy: "mỗi worker sleep 100 ms" với 250 worker mà nghĩ đã rate limit — kết quả 2.500 rps, API bắn 429 dồn dập, checkpoint không advance, mất 8 tiếng replay một batch. Rate limit phải đo được (rps thực tế vs quota trên dashboard), không đánh chặn bằng sleep trong code.`,
   follow: [
@@ -600,28 +1003,56 @@ Kafka topic (hoặc bảng job có cursor)
   topic: 'concurrency',
   level: 'senior',
   q: 'Structured concurrency (Java 21 preview): ý tưởng chính là gì, giải quyết vấn đề gì của CompletableFuture, và ScopedValues thay thế ThreadLocal chỗ nào?',
-  a: `**Tóm tắt:** JEP 453 (preview từ Java 21) coi nhóm task song song là một khối có ranh giới: ra khỏi khối thì mọi subtask phải kết thúc; một con fail thì cha hủy các con còn lại rồi ném lỗi. ScopedValue (JEP 446, preview) là dữ liệu chia sẻ bất biến gắn với khối code thay cho ThreadLocal — tự hết hạn, không leak khi pool reuse, kế thừa rẻ cho virtual threads.
+  a: `**Tóm tắt:** structured concurrency (JEP 453, preview từ Java 21) coi một nhóm task song song là **một khối có ranh giới**: ra khỏi khối thì mọi subtask phải kết thúc; một subtask fail thì khối huỷ các subtask còn lại rồi báo lỗi. Nó sửa những điểm yếu của CompletableFuture: không huỷ dây chuyền, task "mồ côi" sống lâu hơn request, stack trace khó đọc. ScopedValue (JEP 446, preview ở Java 21; chính thức ở JDK 25) là dữ liệu bất biến gắn với một khối code, thay ThreadLocal ở chỗ truyền context theo request: tự hết hạn, không leak khi pool tái dùng thread, và kế thừa rẻ sang subtask.
+
+### Hiểu nhanh
+Hãy nghĩ tới một trưởng nhóm giao 3 việc cho 3 người rồi ngồi chờ ở phòng họp. Structured concurrency là luật: "không ai rời phòng họp khi việc còn dang dở; một người báo hỏng thì trưởng nhóm gọi hai người kia dừng tay". Với CompletableFuture, mỗi người tự đi làm, trưởng nhóm về rồi họ vẫn làm tiếp và chẳng ai bảo dừng. ScopedValue giống thẻ khách đeo cổ chỉ có hiệu lực trong toà nhà: ra khỏi cửa là thẻ tự hết hạn, không như ThreadLocal là chìa khoá bạn phải nhớ trả lại.
+
+### Thuật ngữ
+- **Structured concurrency**: nguyên tắc vòng đời của task con nằm trọn trong khối code đã tạo ra nó.
+- **StructuredTaskScope**: API của JDK hiện thực nguyên tắc trên (fork, join, huỷ).
+- **Subtask / fork**: task con được tạo bên trong scope.
+- **Cancellation propagation (huỷ dây chuyền)**: một task lỗi thì các task liên quan tự động bị huỷ.
+- **Orphan task (task mồ côi)**: task vẫn chạy dù bên gọi đã trả kết quả hoặc đã lỗi.
+- **Preview feature**: tính năng chưa chính thức, phải bật {{--enable-preview}}, API có thể thay đổi.
+- **ScopedValue**: giá trị bất biến được "gắn" (bind) trong phạm vi một lời gọi {{run}}/{{call}}.
+- **Rebind**: gắn giá trị khác cho một phạm vi con nhỏ hơn.
 
 ### Vấn đề của CompletableFuture
-- Callback chạy trên thread không kiểm soát (executor/callback thread) — stack trace khó đọc.
-- Không có hủy cascade: 1 task fail, các task còn lại vẫn chạy ngốn tài nguyên; phải tự viết logic hủy.
-- Task "orphan" sống lâu hơn request (không giới hạn lifetime) — khó suy luận.
-- Không có khối scope — không có điểm "tất cả phải xong".
+1. **Callback chạy trên thread không kiểm soát** (executor/callback thread) — stack trace chỉ có các frame của framework, khó biết ai đã gọi.
+2. **Không huỷ dây chuyền**: 1 task fail, các task còn lại vẫn chạy và ngốn tài nguyên; phải tự viết logic huỷ.
+3. **Task mồ côi** sống lâu hơn request (không giới hạn vòng đời) — khó suy luận, có thể ghi dữ liệu sau khi request đã trả lỗi.
+4. **Không có khối scope** — không có một điểm "tới đây thì tất cả phải xong".
 
-### StructuredTaskScope
+~~~text
+CompletableFuture:                 StructuredTaskScope:
+request ──┬─ findUser   (lỗi!)     try (scope) {
+          ├─ fetchOrder (vẫn chạy)   fork findUser   (lỗi!)
+          └─ return lỗi              fork fetchOrder -> bị huỷ
+fetchOrder chạy tiếp sau khi        join -> ném lỗi
+request đã trả về (mồ côi)        } // ra khỏi khối: không còn subtask sống
+~~~
+
+### StructuredTaskScope (API Java 21–24)
 
 ~~~java
 try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
-    var u = scope.fork(() -> findUser(id));
+    var u = scope.fork(() -> findUser(id));     // mỗi fork là 1 virtual thread
     var o = scope.fork(() -> fetchOrder(id));
 
-    scope.join().throwIfFailed();   // 1 con fail => hủy con còn lại
+    scope.join().throwIfFailed();   // 1 con fail => huỷ con còn lại, ném lỗi
     return new Profile(u.get(), o.get());
 }   // ra khỏi khối: không còn subtask nào sống
 ~~~
 
-- Lifetime rõ: con không sống ngoài khối đã spawn nó; cancel lan truyền tự động.
-- Hai policy có sẵn: ShutdownOnFailure (1 fail hủy tất cả) và ShutdownOnSuccess (1 thành công là đủ, hủy còn lại — hợp "race lấy nhanh nhất").
+1. {{fork}} chạy subtask (mặc định trên virtual thread mới).
+2. {{join}} chờ tới khi mọi subtask xong **hoặc** policy quyết định dừng.
+3. Policy ShutdownOnFailure: subtask đầu tiên lỗi → scope shutdown → các subtask còn lại bị interrupt.
+4. {{throwIfFailed()}} ném lỗi gốc; nếu không lỗi thì {{get()}} lấy kết quả.
+5. try-with-resources đóng scope, đảm bảo không còn thread con nào sống.
+
+- Hai policy có sẵn: ShutdownOnFailure (1 fail huỷ tất cả) và ShutdownOnSuccess (1 thành công là đủ, huỷ còn lại — hợp "đua lấy kết quả nhanh nhất" giữa nhiều replica).
+- Huỷ hoạt động bằng interrupt, nên subtask phải phản ứng với interrupt (I/O của JDK trên virtual thread thì có).
 
 ### ScopedValues
 
@@ -629,15 +1060,26 @@ try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
 static final ScopedValue<User> CURRENT_USER = ScopedValue.newInstance();
 
 ScopedValue.where(CURRENT_USER, user)
-           .run(() -> handleRequest(request));   // gán chỉ trong run()
+           .run(() -> handleRequest(request));   // chỉ có giá trị bên trong run()
+
+// ở sâu bên trong: CURRENT_USER.get() trả về user; ngoài run() thì không có binding
 ~~~
 
 - Không có set/remove để quên: giá trị sống đúng trong scope rồi tự biến mất; không leak giữa các task trong pool.
 - Bất biến; chỉ rebind cho scope nhỏ hơn.
-- Với virtual thread, subtask fork trong StructuredTaskScope kế thừa binding rẻ (chia sẻ, không copy), không tạo entry per-thread như ThreadLocal.
-- ScopedValue preview 21-24, final ở JDK 25 (JEP 506); structured concurrency vẫn preview ở JDK 25 và API đổi (StructuredTaskScope.open() + Joiner thay ShutdownOnFailure/ShutdownOnSuccess). Trên JDK 21 production: ThreadLocal.remove() trong filter vẫn là chuẩn an toàn.
+- Subtask fork trong StructuredTaskScope kế thừa binding rẻ (chia sẻ, không copy), không tạo entry riêng cho từng thread như ThreadLocal/InheritableThreadLocal.
+- Phiên bản: ScopedValue preview 21–24, chính thức ở JDK 25 (JEP 506); structured concurrency vẫn preview ở JDK 25 và API đổi ({{StructuredTaskScope.open()}} + Joiner thay ShutdownOnFailure/ShutdownOnSuccess). Trên JDK 21 production không bật preview: ThreadLocal + {{remove()}} trong filter vẫn là chuẩn an toàn.
 
-> Senior tip: cách chia nhanh: CompletableFuture hợp với data flow compose nhiều bước; StructuredTaskScope hợp với mẫu "gọi N call, 1 fail hủy còn lại, tổng hợp". Tôi áp nó cho fan-out 3-5 call: code giảm từ 40 dòng (CompletableFuture + AtomicBoolean hủy tay) xuống 10 dòng, stack trace đọc dễ hẳn.`,
+### Lỗi hay gặp
+- **Đưa API preview vào production rồi nâng JDK**: code không biên dịch được vì API đã đổi (như JDK 25). Cách tránh: cô lập phần dùng preview sau một lớp wrapper, hoặc chỉ dùng trên bản đã chính thức.
+- **Gọi get() trước join()**: ném IllegalStateException. Cách tránh: luôn join (và throwIfFailed) trước.
+- **Subtask nuốt InterruptedException**: huỷ không có tác dụng, scope chờ lâu. Cách tránh: khôi phục cờ interrupt hoặc ném tiếp.
+- **Coi ScopedValue như biến có thể sửa**: không có set; muốn đổi thì rebind trong scope con.
+
+### Trả lời miệng 1 phút
+"Structured concurrency coi một nhóm task song song như một khối: fork các subtask, join, và khi ra khỏi khối thì chắc chắn không còn subtask nào chạy. Với ShutdownOnFailure, một subtask lỗi thì scope interrupt các subtask còn lại và ném lỗi, nên không có task mồ côi như với CompletableFuture, và stack trace đọc được vì mỗi subtask là một virtual thread bình thường. ScopedValue thay ThreadLocal cho context theo request: giá trị bất biến, chỉ có hiệu lực trong run, tự hết hạn nên không thể quên remove. Lưu ý phiên bản: ScopedValue chính thức từ JDK 25, structured concurrency vẫn preview và API đã đổi, nên trên Java 21 production tôi vẫn dùng ThreadLocal có remove."
+
+> Senior tip: cách chia nhanh: CompletableFuture hợp với data flow compose nhiều bước; StructuredTaskScope hợp với mẫu "gọi N call, 1 fail huỷ còn lại, tổng hợp". Tôi áp nó cho fan-out 3-5 call: code giảm từ 40 dòng (CompletableFuture + AtomicBoolean huỷ tay) xuống 10 dòng, stack trace đọc dễ hẳn.`,
   follow: [
     'ShutdownOnFailure khác ShutdownOnSuccess ở use case nào?',
     'Vì sao ScopedValue khó leak hơn ThreadLocal trong thread pool?'
@@ -655,6 +1097,26 @@ ScopedValue.where(CURRENT_USER, user)
   level: 'senior',
   q: 'ForkJoinPool và work stealing: cơ chế hoạt động, vì sao parallel stream dùng chung commonPool là nguy hiểm trên server?',
   a: `**Tóm tắt:** ForkJoinPool cho mỗi worker một deque riêng: worker push/pop task của mình ở một đầu (LIFO), worker rảnh thì "trộm" ở đầu còn lại của deque người khác (FIFO). Nhờ vậy gần như không có lock chung, rất hợp với bài toán chia để trị. {{ForkJoinPool.commonPool()}} là pool tĩnh dùng chung cả JVM, parallelism mặc định = số core − 1. Parallel stream và các hàm {{*Async}} của CompletableFuture không truyền executor đều chạy trên pool này, nên chỉ một đoạn code blocking (JDBC, HTTP) cũng đủ chiếm hết vài worker và làm chậm mọi tính năng khác đang dùng chung.
+
+### Hiểu nhanh
+Hãy hình dung một bếp có 4 đầu bếp, mỗi người có một chồng đĩa việc riêng. Ai cũng lấy việc ở **đỉnh** chồng của mình (việc vừa thêm, còn "nóng"). Người nào hết việc thì sang lấy trộm ở **đáy** chồng của người khác — chỗ đó thường là việc to nhất, trộm một lần được nhiều. Vì ít khi đụng tay nhau nên bếp gần như không cần "trưởng bếp phân việc" (lock chung). Còn commonPool là cái bếp **dùng chung của cả toà nhà**: chỉ cần một đầu bếp đứng chờ người giao hàng (I/O) là cả toà nhà thiếu người nấu.
+
+### Thuật ngữ
+- **ForkJoinPool**: thread pool chuyên cho bài chia để trị, mỗi worker có hàng đợi hai đầu riêng.
+- **Deque (double-ended queue)**: hàng đợi lấy/thêm được ở cả hai đầu.
+- **Work stealing**: worker rảnh lấy task từ deque của worker khác.
+- **fork / join**: tách task con ra chạy song song / chờ lấy kết quả task con.
+- **RecursiveTask / RecursiveAction**: task của ForkJoinPool có / không có kết quả trả về.
+- **commonPool**: ForkJoinPool tĩnh dùng chung toàn JVM, parallelism mặc định = số core − 1.
+- **managedBlock**: API để báo cho ForkJoinPool biết sắp block, cho phép pool bù thêm thread.
+- **Parallelism**: số worker mà pool cố gắng giữ chạy song song.
+
+~~~text
+Worker-1 deque: [T8 T5 T1]  <- push/pop ở đầu phải (LIFO, task mới, nhỏ)
+                 ^ đầu trái: Worker-3 rảnh trộm T1 (FIFO, task cũ, lớn)
+Worker-2 deque: [T9 T6]
+Worker-3 deque: [ ]  -> chọn ngẫu nhiên deque khác để steal
+~~~
 
 ### Work stealing hoạt động thế nào
 1. Task gọi {{fork()}}: task con được push vào deque của chính worker đang chạy.
@@ -702,6 +1164,15 @@ class SumTask extends RecursiveTask<Long> {
 - "Parallel stream luôn nhanh hơn": với vài nghìn phần tử, chi phí chia và gộp lớn hơn lợi ích. Nguồn như {{LinkedList}} hay {{Stream.iterate}} lại chia rất kém.
 - "commonPool có số thread bằng số core": thực tế là core − 1, vì thread gọi cũng tham gia làm việc.
 
+### Lỗi hay gặp
+- **Gọi HTTP/JDBC trong {{parallelStream()}}**: triệu chứng là các API không liên quan cũng chậm, thread dump thấy {{ForkJoinPool.commonPool-worker-*}} đứng ở socket read. Cách tránh: executor I/O riêng có giới hạn, hoặc virtual thread + semaphore.
+- **Ngưỡng tách task quá nhỏ** (ví dụ tách tới từng phần tử): chi phí tạo task lớn hơn việc thật, chậm hơn chạy tuần tự. Cách tránh: ngưỡng cỡ vài nghìn tới vài chục nghìn phần tử, đo bằng JMH.
+- **Gọi {{left.join()}} trước khi tự tính nửa còn lại** (fork rồi join ngay): mất tính song song. Cách tránh: fork một nửa, compute nửa kia, rồi mới join.
+- **Container 1–2 vCPU**: commonPool parallelism = 1, parallel stream không song song và CompletableFuture async tạo thread mới cho mỗi task. Cách tránh: truyền executor rõ ràng, đặt CPU request/limit hợp lý.
+
+### Trả lời miệng 1 phút
+"ForkJoinPool cho mỗi worker một deque riêng: worker lấy việc của mình ở một đầu theo LIFO để tận dụng cache, còn worker rảnh trộm ở đầu kia theo FIFO, thường được task lớn nên ít phải trộm lại; join không ngồi chờ mà chạy việc khác. Thiết kế này rất hợp chia để trị CPU-bound. Vấn đề là commonPool dùng chung cả JVM, chỉ có số core trừ một worker, và parallel stream lẫn supplyAsync không truyền executor đều chạy ở đó. Nếu ai đó gọi HTTP hay JDBC trong parallel stream thì worker kẹt chờ I/O và mọi tính năng khác đang dùng commonPool chậm theo. Vì vậy I/O tôi luôn đưa sang executor riêng hoặc virtual thread, parallel stream chỉ dành cho tính toán thuần trên dữ liệu lớn và phải đo trước."
+
 > Senior tip: khi review code, tôi grep {{parallelStream}} và các lời gọi {{supplyAsync}} không truyền executor, vì đây là hai đường phổ biến nhất khiến việc rò vào commonPool. Hãy expose {{getActiveThreadCount()}} và {{getQueuedSubmissionCount()}} của commonPool thành metric: queue tăng dần trong giờ cao điểm là dấu hiệu có ai đó đang block trong pool.`,
   follow: [
     'Vì sao worker trộm task ở đầu FIFO của deque chứ không ở đầu LIFO?',
@@ -721,6 +1192,33 @@ class SumTask extends RecursiveTask<Long> {
   level: 'senior',
   q: 'Producer–consumer với {{BlockingQueue}}: backpressure, chọn bounded queue và chính sách khi queue đầy (reject, block, drop) — bạn quyết định thế nào?',
   a: `**Tóm tắt:** Producer–consumer phải dùng queue **có giới hạn**, vì queue không giới hạn chỉ đổi vấn đề "chậm" thành "OOM". Khi queue đầy có bốn lựa chọn: block producer ({{put}}), chờ có hạn ({{offer}} kèm timeout), từ chối ngay ({{offer}} trả false, trả 429/503 hoặc chuyển sang nơi lưu bền) và drop (chỉ cho dữ liệu được phép mất như metric). Cách chọn dựa trên hai câu hỏi: producer có được phép chậm lại không, và dữ liệu có được phép mất không.
+
+### Hiểu nhanh
+Producer–consumer giống một dây chuyền đóng gói: người bỏ hàng lên băng chuyền (producer) và người đóng thùng (consumer) làm với tốc độ khác nhau, băng chuyền ở giữa (queue) giúp hai bên không phải chờ nhau từng món. Nếu băng chuyền dài vô hạn, người bỏ hàng cứ bỏ mãi, hàng chất đống tới khi sập kho (OOM). Băng chuyền có độ dài giới hạn buộc ta phải quyết định khi đầy: bảo người bỏ hàng **đứng chờ** (block), **chờ một chút rồi thôi** (offer có timeout), **từ chối ngay** (reject), hay **vứt bớt** (drop). Tín hiệu "đầy rồi, chậm lại" đó gọi là backpressure.
+
+### Thuật ngữ
+- **Producer / consumer**: bên tạo việc / bên xử lý việc.
+- **BlockingQueue**: queue thread-safe có thao tác chặn khi đầy (put) hoặc khi rỗng (take).
+- **Bounded queue**: queue có sức chứa tối đa.
+- **Backpressure**: cơ chế truyền tín hiệu quá tải ngược về phía producer.
+- **Load shedding**: chủ động từ chối bớt việc để giữ hệ thống sống.
+- **Poison pill**: một phần tử đặc biệt đưa vào queue để báo consumer dừng.
+- **Little's Law**: số việc trong hệ thống = tốc độ xử lý × thời gian mỗi việc ở trong hệ thống.
+- **Outbox table**: bảng lưu sự kiện trong cùng transaction nghiệp vụ, để gửi đi bền vững sau.
+
+### Luồng xử lý khi queue đầy (từng bước)
+1. Producer tạo việc với tốc độ 600 task/s, consumer chỉ xử lý 400 task/s → mỗi giây dư 200 task.
+2. Queue bounded 200 phần tử đầy sau khoảng 1 giây.
+3. Từ đây mỗi lần producer gửi việc, chính sách khi đầy quyết định: block (producer chậm lại còn 400/s), offer timeout (chờ vài chục ms rồi trả 503), reject ngay, hoặc drop.
+4. Vì sao như vậy là tốt: quá tải lộ ra **ngay tại biên** dưới dạng 503/chậm lại có kiểm soát, thay vì latency tăng dần rồi OOM sau vài phút.
+
+~~~text
+Producer 600/s --> [ queue cap 200 ] --> Consumer 400/s
+                       đầy sau ~1s
+                 put()   : producer bị chặn, chạy ở 400/s
+                 offer(t): chờ t, hết chỗ -> false -> trả 503
+                 offer() : false ngay -> drop/đếm metric
+~~~
 
 ### Vì sao bắt buộc bounded
 - {{LinkedBlockingQueue}} tạo không truyền capacity thì capacity = {{Integer.MAX_VALUE}}; {{Executors.newFixedThreadPool}} dùng đúng loại này.
@@ -775,6 +1273,15 @@ Dùng Little's Law: số task trong hệ thống = throughput × thời gian ch�
 - {{ArrayBlockingQueue}} dùng một lock cho cả put và take; {{LinkedBlockingQueue}} tách hai lock nên thường cho throughput cao hơn khi có nhiều producer và consumer, đổi lại mỗi phần tử phải cấp phát một node.
 - Quên cách dừng consumer: cần poison pill hoặc interrupt, nếu không consumer kẹt mãi ở {{take()}}.
 
+### Lỗi hay gặp
+- **Queue không truyền capacity** ({{new LinkedBlockingQueue<>()}}): triệu chứng là heap tăng đều trong giờ cao điểm, GC dày, p99 tăng rồi OOM. Cách tránh: luôn đặt capacity tính từ SLA.
+- **Dùng put() trong thread HTTP**: triệu chứng là request treo vô thời hạn khi consumer chậm, thread Tomcat cạn. Cách tránh: offer có timeout, hết chỗ trả 429/503.
+- **Drop dữ liệu quan trọng trong RAM**: mất giao dịch khi queue đầy hoặc pod restart. Cách tránh: ghi bền vững trước (outbox, Kafka).
+- **Consumer không dừng được khi shutdown**: kẹt ở take(), pod bị SIGKILL. Cách tránh: poll có timeout + cờ dừng, hoặc poison pill, hoặc interrupt.
+
+### Trả lời miệng 1 phút
+"Producer–consumer tôi luôn dùng queue có giới hạn, vì queue vô hạn chỉ đổi vấn đề chậm thành OOM và task trong đó thường đã quá hạn từ lâu. Khi queue đầy có bốn lựa chọn: put để block producer, hợp với batch nội bộ; offer có timeout cho request online, hết chỗ thì trả 503 hoặc 429; offer trả false ngay để load shedding; và drop chỉ cho dữ liệu được phép mất như metric. Dữ liệu không được mất thì phải ghi bền vững trước, như outbox hay Kafka. Kích thước queue tôi tính bằng Little's Law từ thời gian chờ tối đa chấp nhận được, rồi theo dõi queue size và số lần reject để biết lúc nào phải scale consumer."
+
 > Senior tip: kích thước queue là tham số SLA, không phải tham số hiệu năng. Tôi tính nó từ thời gian chờ tối đa chấp nhận được, rồi expose {{queue.size()}} và số lần reject thành metric. Alert khi queue liên tục trên 80%: đó là lúc phải scale consumer, không phải tăng queue.`,
   follow: [
     'Poison pill và interrupt: cách nào dừng consumer an toàn hơn?',
@@ -794,6 +1301,34 @@ Dùng Little's Law: số task trong hệ thống = throughput × thời gian ch�
   level: 'senior',
   q: 'Interrupt: {{InterruptedException}} xử lý đúng (khôi phục cờ), huỷ task, {{Future.cancel}} — bạn implement thế nào?',
   a: `**Tóm tắt:** Interrupt là cơ chế **hợp tác**: {{t.interrupt()}} chỉ bật một cờ. Thread đang bị chặn ở {{sleep}}, {{wait}}, {{join}}, {{BlockingQueue.take}}, {{Lock.lockInterruptibly}}... sẽ thoát ra bằng {{InterruptedException}}, và cờ bị xoá. Khi bắt được exception này chỉ có hai cách đúng: ném tiếp lên (khai báo throws), hoặc nếu không ném được thì gọi {{Thread.currentThread().interrupt()}} để khôi phục cờ rồi kết thúc công việc. {{Future.cancel(true)}} thực chất chỉ gửi interrupt tới thread đang chạy task; task không kiểm tra cờ thì vẫn chạy đến hết.
+
+### Hiểu nhanh
+Interrupt giống việc gõ cửa phòng và nói "anh dừng tay được rồi" chứ không phải phá cửa lôi người ra. Người đang ngủ (sleep/wait/take) sẽ bị đánh thức ngay và biết là có người gọi. Người đang cắm cúi làm việc thì phải **tự ngẩng lên kiểm tra** xem có ai gọi không. Nếu bạn nghe thấy tiếng gọi rồi lờ đi (nuốt exception), người quản lý bên ngoài (executor) tưởng bạn chưa được báo và đứng chờ mãi. Vì thế: nghe được mà chưa xử lý được thì phải "gõ cửa lại" cho người khác biết — đó là khôi phục cờ interrupt.
+
+### Thuật ngữ
+- **Interrupt flag (cờ interrupt)**: một biến boolean trong mỗi thread, {{interrupt()}} bật nó lên.
+- **Cooperative cancellation (huỷ hợp tác)**: task tự kiểm tra yêu cầu dừng và tự dừng, không bị giết cưỡng bức.
+- **Interruptible blocking**: điểm chặn sẽ thoát ra bằng InterruptedException khi thread bị interrupt.
+- **Future**: đại diện cho kết quả của task chạy bất đồng bộ; có {{get}}, {{cancel}}, {{isDone}}.
+- **CancellationException**: lỗi ném ra khi lấy kết quả của task đã bị huỷ.
+- **Graceful shutdown**: tắt ứng dụng có trật tự: ngừng nhận việc, làm nốt hoặc dừng việc dang dở an toàn.
+- **Checked exception**: exception bắt buộc phải khai báo {{throws}} hoặc bắt; InterruptedException là loại này.
+
+### Luồng một lần huỷ task (từng bước)
+1. Executor gọi {{future.cancel(true)}} hoặc {{shutdownNow()}} → gọi {{workerThread.interrupt()}}. Vì sao không giết thread: giết giữa chừng để lại lock và dữ liệu dở dang.
+2. Cờ interrupt của worker bật lên.
+3. Nếu worker đang ở {{queue.take()}} → JVM đánh thức, **xoá cờ**, ném InterruptedException.
+4. Task bắt exception: khôi phục cờ ({{Thread.currentThread().interrupt()}}), dọn tài nguyên trong finally, return.
+5. Executor thấy task kết thúc, thread được thu hồi; {{awaitTermination}} trả về true.
+
+~~~text
+cancel(true) --> interrupt() --> cờ = true
+                     |
+   đang take()/sleep()?  --yes--> InterruptedException (cờ bị xoá)
+                     |                  -> catch: interrupt() lại + dọn dẹp + thoát
+                     no (đang tính toán)
+                     -> task phải tự kiểm tra isInterrupted() sau mỗi vòng/lô
+~~~
 
 ### Cơ chế
 - Mỗi thread có một cờ interrupt. {{interrupt()}} bật cờ, và nếu thread đang ở một điểm chặn "interruptible" thì đánh thức nó.
@@ -853,6 +1388,15 @@ Không cần vừa gọi {{interrupt()}} vừa ném lại InterruptedException: 
 - Nghĩ tới {{Thread.stop()}}: nó deprecated vì giết thread giữa chừng, để lại object hỏng và lock dở dang; từ JDK 20, gọi nó ném {{UnsupportedOperationException}}.
 - "interrupt() dừng thread ngay lập tức": không, nó chỉ là yêu cầu.
 
+### Lỗi hay gặp
+- **Bắt {{InterruptedException}} rồi chỉ log** và chạy tiếp: triệu chứng là shutdown treo tới khi pod bị kill sau 30 giây. Cách tránh: ném lại hoặc khôi phục cờ rồi thoát.
+- **Vòng lặp tính toán không kiểm tra cờ**: {{cancel(true)}} không có tác dụng, CPU vẫn 100% sau khi huỷ. Cách tránh: kiểm tra {{isInterrupted()}} sau mỗi lô.
+- **Dùng {{Thread.interrupted()}} để "xem thử"**: cờ bị xoá, tầng trên không còn biết. Cách tránh: dùng {{isInterrupted()}} khi chỉ muốn đọc.
+- **Đọc socket kiểu cũ không timeout**: interrupt không đánh thức, thread treo mãi. Cách tránh: đặt read timeout, hoặc đóng socket từ thread khác.
+
+### Trả lời miệng 1 phút
+"Interrupt trong Java là cơ chế hợp tác: interrupt chỉ bật một cờ, thread đang chặn ở sleep, wait, join, take hay lockInterruptibly sẽ thoát ra bằng InterruptedException và cờ bị xoá; còn code đang tính toán phải tự kiểm tra isInterrupted. Khi bắt InterruptedException tôi chỉ có hai lựa chọn đúng: khai báo throws để ném tiếp, hoặc nếu đang trong Runnable thì gọi Thread.currentThread().interrupt để khôi phục cờ rồi thoát, nếu không thì shutdownNow sẽ không có tác dụng. Future.cancel(true) thực chất chỉ interrupt thread đang chạy task, còn CompletableFuture.cancel thì không interrupt gì cả. Với job dài, tôi kiểm tra cờ sau mỗi batch và commit theo batch để dừng nhanh mà dữ liệu vẫn nhất quán."
+
 > Senior tip: trong code review tôi grep {{catch (InterruptedException}}: mọi chỗ phải ném lại hoặc có {{Thread.currentThread().interrupt()}}. Với job đối soát chạy hàng giờ, tôi kiểm tra cờ interrupt sau mỗi batch 1.000 bản ghi và commit theo batch. Nhờ vậy khi deploy, {{shutdownNow()}} dừng được job trong vài giây mà dữ liệu vẫn nhất quán.`,
   follow: [
     'Task đang đọc socket bằng InputStream không phản ứng với interrupt — bạn dừng nó thế nào?',
@@ -872,6 +1416,18 @@ Không cần vừa gọi {{interrupt()}} vừa ném lại InterruptedException: 
   level: 'mid',
   q: '{{wait/notify}} vs {{Condition}}: spurious wakeup là gì, vì sao luôn kiểm tra điều kiện trong vòng lặp?',
   a: `**Tóm tắt:** {{wait}}/{{notify}} gắn với monitor của một object và chỉ gọi được khi đang giữ {{synchronized}} trên chính object đó; mỗi monitor chỉ có **một** wait set. {{Condition}} (lấy từ {{Lock.newCondition()}}) cho phép một lock có nhiều hàng chờ riêng (notFull, notEmpty), và có thêm {{awaitUninterruptibly}}, {{awaitNanos}}, {{awaitUntil}}. Luôn chờ trong {{while}}, vì thread có thể thức dậy khi điều kiện chưa đúng: spurious wakeup (đặc tả cho phép), {{notifyAll}} đánh thức nhiều thread cùng lúc, hoặc một thread khác chen vào lấy mất trạng thái trước khi bạn giành lại được lock.
+
+### Hiểu nhanh
+Hãy nghĩ tới phòng chờ ở phòng khám. {{wait()}} là bệnh nhân ngồi xuống ghế chờ và **trả lại chìa khoá phòng khám** để người khác vào. {{notify()}} là y tá gọi "có chỗ rồi" — nhưng gọi không có nghĩa là bạn được vào ngay: bạn phải đứng dậy, giành lại chìa khoá, và có thể người khác đã nhanh chân vào trước. Vì thế khi đứng dậy bạn phải **nhìn lại xem còn chỗ không** (vòng while). wait/notify chỉ có **một phòng chờ chung** cho mọi loại bệnh nhân; Condition cho phép có nhiều phòng chờ riêng (phòng chờ "khám", phòng chờ "lấy thuốc") nên y tá gọi đúng người.
+
+### Thuật ngữ
+- **Monitor**: khoá gắn với mỗi object, dùng bởi synchronized, wait, notify.
+- **Wait set**: tập các thread đang chờ trên một monitor sau khi gọi wait().
+- **Condition**: hàng chờ gắn với một Lock, tạo bằng {{lock.newCondition()}}; có await/signal.
+- **Spurious wakeup**: thread thức dậy dù không ai notify — đặc tả Java cho phép điều này.
+- **Lost wakeup**: tín hiệu notify được gửi khi chưa ai chờ, nên thread chờ sau đó ngủ mãi.
+- **Guarded wait**: mẫu "chờ trong vòng lặp cho tới khi điều kiện đúng".
+- **Bounded buffer**: hàng đợi có sức chứa giới hạn, producer chờ khi đầy, consumer chờ khi rỗng.
 
 ### Cơ chế wait/notify
 1. Thread A giữ monitor và gọi {{lock.wait()}}: A nhả monitor rồi vào wait set.
@@ -931,6 +1487,15 @@ Khi chỉ có một wait set, {{notify()}} có thể đánh thức nhầm một 
 - "Spurious wakeup hiếm nên dùng if cũng được": lý do chính để dùng while là notifyAll và việc bị chen trạng thái, những chuyện xảy ra thường xuyên.
 - "notify() chạy thread được đánh thức ngay": thread đó còn phải chờ giành lại monitor.
 
+### Lỗi hay gặp
+- **Dùng {{if}} thay {{while}}**: triệu chứng là NoSuchElementException hoặc dữ liệu sai lâu lâu mới xuất hiện dưới tải. Cách tránh: luôn {{while (!condition) wait()}}.
+- **notify() trên monitor có nhiều loại waiter**: đánh thức nhầm producer thay vì consumer, hệ thống thỉnh thoảng treo. Cách tránh: notifyAll(), hoặc Lock + nhiều Condition.
+- **Sửa trạng thái ngoài synchronized rồi mới notify**: lost wakeup, thread chờ ngủ mãi. Cách tránh: kiểm tra và thay đổi trạng thái luôn trong cùng lock với wait/notify.
+- **Gọi await() mà quên lock.unlock() trong finally**: lock kẹt vĩnh viễn khi có exception. Cách tránh: mẫu lock — try — finally unlock.
+
+### Trả lời miệng 1 phút
+"wait và notify gắn với monitor của một object, chỉ gọi được khi đang giữ synchronized trên object đó, và mỗi monitor chỉ có một wait set. Condition lấy từ Lock cho phép nhiều hàng chờ riêng, ví dụ notFull và notEmpty, nên signal đánh thức đúng loại thread, và còn có awaitNanos, awaitUntil, awaitUninterruptibly. Tôi luôn chờ trong vòng while vì thread có thể thức dậy khi điều kiện chưa đúng: spurious wakeup, notifyAll đánh thức nhiều thread, hoặc thread khác chen vào lấy mất trạng thái trước khi mình giành lại lock. Trong thực tế tôi hầu như không tự viết wait/notify mà dùng BlockingQueue, CountDownLatch hay Semaphore."
+
 > Senior tip: khi gặp bug "thỉnh thoảng treo" trong code wait/notify cũ, tôi kiểm tra ba thứ theo thứ tự: có {{if}} thay vì {{while}} không; có {{notify()}} trên monitor có nhiều loại waiter không; trạng thái có bị sửa ở ngoài khối synchronized không. Gần như mọi bug loại này rơi vào một trong ba chỗ đó.`,
   follow: [
     'notify() vs notifyAll(): khi nào notify() là đủ an toàn?',
@@ -944,6 +1509,19 @@ Khi chỉ có một wait set, {{notify()}} có thể đánh thức nhầm một 
   level: 'senior',
   q: 'Safe publication và immutability: vì sao object không được publish an toàn có thể bị thấy "nửa vời"; {{final}} field semantics hoạt động ra sao?',
   a: `**Tóm tắt:** Publish nghĩa là làm cho reference tới một object nhìn thấy được từ thread khác. Nếu publish qua một field thường (data race), JMM không có quan hệ happens-before giữa các lệnh ghi trong constructor và lệnh đọc ở thread khác. Thread đọc có thể thấy reference khác null nhưng field bên trong vẫn là 0/null. Các cách publish an toàn: static initializer, field {{volatile}}/Atomic, ghi và đọc dưới cùng một lock, hoặc chuyển qua concurrent collection/BlockingQueue. Riêng field {{final}} có đảm bảo đặc biệt: nếu {{this}} không bị lộ ra trong constructor, mọi thread thấy object đều thấy giá trị final (và những gì đến được qua nó) đúng như lúc constructor kết thúc, kể cả khi publish qua data race.
+
+### Hiểu nhanh
+Publish một object giống dán thông báo lên bảng tin công ty. Nếu bạn dán tờ giấy lên trước rồi mới viết nội dung, người đi ngang có thể đọc được một tờ trắng. "Publish an toàn" là các cách bảo đảm người đọc chỉ thấy tờ thông báo khi nội dung đã viết xong: dán qua bảng có kính khoá (lock), qua hộp thư chính thức (volatile, concurrent collection), hoặc in sẵn từ nhà in (static initializer). Riêng object **immutable** giống tờ thông báo được in xong mới mang ra — dán kiểu gì người đọc cũng thấy đủ nội dung, nhờ bảo đảm đặc biệt của field {{final}}.
+
+### Thuật ngữ
+- **Publish**: làm cho reference tới object nhìn thấy được từ thread khác.
+- **Safe publication**: publish có happens-before giữa lúc khởi tạo xong và lúc thread khác đọc.
+- **Data race**: hai thread truy cập cùng biến, có ít nhất một lần ghi, không có happens-before.
+- **Immutable object**: object không đổi trạng thái sau khi constructor chạy xong.
+- **Final field semantics / freeze**: bảo đảm của JMM rằng giá trị field final ở cuối constructor được mọi thread nhìn thấy.
+- **this escape**: để lộ reference {{this}} ra ngoài khi constructor chưa chạy xong.
+- **Defensive copy (copy phòng thủ)**: sao chép input/output mutable để bên ngoài không sửa được trạng thái bên trong.
+- **Initialization safety**: tên gọi khác của bảo đảm dành cho field final.
 
 ### Vì sao thấy object "nửa vời"
 ~~~java
@@ -994,6 +1572,15 @@ public final class FxQuote {                  // immutable: publish kiểu nào 
 - "final chỉ có nghĩa là không gán lại được": bỏ sót đảm bảo initialization safety.
 - "Field final trỏ tới object mutable thì không có đảm bảo gì": có, trạng thái tại thời điểm freeze vẫn được nhìn thấy; chỉ các thay đổi về sau là không.
 
+### Lỗi hay gặp
+- **Cache/config được nạp lại và gán vào field thường**: triệu chứng là thread khác thỉnh thoảng thấy config cũ, hoặc object có field null dù constructor đã gán. Cách tránh: field volatile hoặc AtomicReference giữ object immutable.
+- **Đăng ký listener hoặc start thread trong constructor**: thread khác thấy object trước khi khởi tạo xong, field final cũng mất bảo đảm. Cách tránh: dùng factory method — tạo xong rồi mới đăng ký/start.
+- **record chứa List rồi tưởng là immutable**: bên ngoài vẫn sửa được list, reader thấy trạng thái thay đổi giữa chừng. Cách tránh: {{List.copyOf}} trong compact constructor.
+- **Chỉ test trên x86**: bug không xuất hiện ở máy dev, rồi lộ khi chạy trên Graviton/ARM. Cách tránh: lý luận bằng happens-before, kiểm tra bằng jcstress.
+
+### Trả lời miệng 1 phút
+"Publish là đưa reference của object cho thread khác. Nếu publish qua một field thường thì không có happens-before giữa các lệnh ghi trong constructor và lệnh đọc ở thread khác, nên thread kia có thể thấy reference khác null nhưng field vẫn là 0 hay null, nhất là trên ARM. Các cách publish an toàn là static initializer, volatile hoặc AtomicReference, lock, hoặc concurrent collection. Field final có bảo đảm riêng: nếu this không bị lộ trong constructor thì mọi thread thấy object đều thấy giá trị final đúng như lúc constructor xong. Vì vậy pattern tôi hay dùng là object immutable cộng một reference volatile: cập nhật bằng cách thay cả object, reader không cần lock."
+
 > Senior tip: pattern tôi hay dùng cho config hay bảng tỷ giá đổi định kỳ là object immutable cộng một field {{volatile}} (hoặc AtomicReference) giữ bản hiện tại. Thread cập nhật tạo object mới rồi gán một lần. Reader không cần lock và không bao giờ thấy trạng thái lẫn giữa bản cũ và bản mới, vừa rẻ vừa đúng hơn nhiều so với đặt lock quanh một object mutable.`,
   follow: [
     'Để lộ this trong constructor: cho ví dụ thực tế và hậu quả?',
@@ -1013,6 +1600,27 @@ public final class FxQuote {                  // immutable: publish kiểu nào 
   level: 'lead',
   q: 'False sharing, cache line, {{@Contended}}: hiện tượng, phát hiện, khắc phục — đo bằng JMH thế nào?',
   a: `**Tóm tắt:** CPU đồng bộ cache theo đơn vị **cache line** (64 byte trên x86 và phần lớn ARM server). Khi hai thread ghi vào hai biến **khác nhau** nhưng nằm chung một line, mỗi lần ghi giao thức coherence (MESI) phải giành quyền sở hữu độc quyền line đó và vô hiệu hoá bản ở core kia. Line bị "chuyền qua lại" giữa các core, throughput giảm mạnh dù không có lock hay data race. Cách sửa là tách các biến ra những line khác nhau: {{@Contended}} (code ứng dụng phải chạy với {{-XX:-RestrictContended}}), padding, hoặc thiết kế để mỗi thread ghi vào vùng riêng như {{LongAdder}}. Đo bằng JMH với benchmark nhóm nhiều thread, kèm profiler {{perfnorm}} hoặc {{perf c2c}}.
+
+### Hiểu nhanh
+Hãy tưởng tượng hai người viết vào hai dòng khác nhau của **cùng một tờ giấy**, nhưng luật là mỗi lúc chỉ một người được cầm tờ giấy. Họ không hề viết đè lên nhau, vậy mà cứ phải chuyền tờ giấy qua lại liên tục, nên cả hai đều chậm. CPU cũng vậy: nó không đồng bộ từng biến mà đồng bộ cả "tờ giấy" 64 byte gọi là cache line. Hai biến nằm chung một line, mỗi biến do một thread ghi, là đủ để line bị chuyền qua lại giữa các core. Cách sửa là cho mỗi người một tờ giấy riêng (tách biến ra các line khác nhau).
+
+### Thuật ngữ
+- **Cache line**: đơn vị nhỏ nhất CPU chép giữa RAM và cache, thường 64 byte.
+- **Cache coherence**: cơ chế giữ các bản copy trong cache của nhiều core nhất quán với nhau.
+- **MESI**: giao thức coherence phổ biến, mỗi line ở một trong 4 trạng thái Modified, Exclusive, Shared, Invalid.
+- **False sharing**: các thread ghi vào biến khác nhau nhưng chung cache line, gây tranh chấp phần cứng.
+- **Padding**: chèn byte thừa để đẩy các biến sang cache line khác nhau.
+- **@Contended**: annotation nội bộ của JDK yêu cầu JVM tự đệm quanh field/class.
+- **JMH**: framework benchmark chính thức của OpenJDK, xử lý warm-up và tối ưu JIT để đo đúng.
+- **perf c2c**: công cụ Linux phát hiện cache line bị chia sẻ giữa các core.
+
+~~~text
+Cache line 64 byte: [ requests (8B) | errors (8B) | ... ]
+Core 1 ghi requests -> line ở Core 1 = Modified, ở Core 2 = Invalid
+Core 2 ghi errors   -> kéo line về Core 2, Core 1 = Invalid
+Core 1 ghi requests -> kéo line về lại ...   (ping-pong hàng triệu lần/giây)
+Sau khi tách: [ requests | padding ... ]  [ errors | padding ... ]  -> mỗi core giữ line của mình
+~~~
 
 ### Cơ chế
 1. Core 1 ghi {{a}}: line chứa a và b chuyển sang Modified ở core 1; bản ở core 2 thành Invalid.
@@ -1064,6 +1672,15 @@ public class FalseSharingBench {
 - "False sharing là data race": không, dữ liệu vẫn đúng, chỉ có hiệu năng bị ảnh hưởng.
 - "Thêm volatile hoặc synchronized là hết": cả hai không đổi bố cục bộ nhớ, thậm chí volatile còn làm hiện tượng rõ hơn.
 
+### Lỗi hay gặp
+- **Mảng counter theo thread** ({{long[] counts}}, thread i ghi {{counts[i]}}): triệu chứng là thêm thread thì chậm hơn. Cách tránh: LongAdder, hoặc counter cục bộ trong thread rồi gộp cuối cùng.
+- **Dùng @Contended mà quên {{-XX:-RestrictContended}}**: annotation bị bỏ qua âm thầm, không có cải thiện. Cách tránh: kiểm tra bố cục object bằng JOL (Java Object Layout) và benchmark lại.
+- **Padding bằng field long thừa trong cùng class**: JVM sắp xếp lại field nên padding không nằm đúng chỗ. Cách tránh: padding qua kế thừa nhiều tầng, hoặc dùng thư viện đã làm sẵn (JCTools, Agrona).
+- **Đo bằng System.nanoTime trong vòng lặp tự viết**: JIT loại bỏ code, kết quả vô nghĩa. Cách tránh: JMH với @Group và profiler perfnorm.
+
+### Trả lời miệng 1 phút
+"CPU đồng bộ cache theo cache line, thường 64 byte. False sharing là khi hai thread ghi vào hai biến khác nhau nhưng nằm chung một line: theo giao thức MESI, mỗi lần ghi phải giành quyền độc quyền và vô hiệu hoá bản ở core kia, nên line bị chuyền qua lại và throughput sụp dù không có lock hay data race. Tôi nghi tới nó khi thêm thread mà throughput không tăng, CPU cao và không thấy lock contention; xác nhận bằng perf c2c hoặc JMH với benchmark nhóm. Cách sửa là tách biến sang các line khác nhau bằng @Contended với cờ -XX:-RestrictContended, padding qua kế thừa, hoặc tốt nhất là đổi thiết kế như LongAdder để mỗi thread ghi vùng riêng."
+
 > Senior tip: false sharing hiếm khi là nguyên nhân trong service CRUD, vì I/O và lock tốn hơn nhiều bậc. Tôi chỉ nghĩ tới nó khi thêm thread mà throughput không tăng (thậm chí giảm), CPU vẫn cao và profiler không thấy lock contention. Trước khi dùng @Contended (phụ thuộc API nội bộ, tốn bộ nhớ), hãy thử LongAdder hoặc thiết kế lại để mỗi thread chỉ ghi dữ liệu của riêng nó.`,
   follow: [
     'Vì sao padding bằng field thừa trong cùng một class không đáng tin, còn padding qua kế thừa thì có?',
@@ -1081,6 +1698,28 @@ public class FalseSharingBench {
   level: 'senior',
   q: 'Graceful shutdown executor: {{shutdown}} vs {{shutdownNow}}, {{awaitTermination}}; {{ScheduledExecutorService}} nuốt exception làm job ngừng chạy — xử lý thế nào?',
   a: `**Tóm tắt:** {{shutdown()}} ngừng nhận task mới nhưng vẫn chạy hết task đang chạy và task trong queue. {{shutdownNow()}} ngừng nhận, lấy các task còn trong queue ra trả về (không chạy chúng) và **interrupt** mọi worker; task nào không phản ứng với interrupt thì vẫn chạy tiếp. Cả hai đều không chờ, muốn chờ phải gọi {{awaitTermination(timeout)}}. Với {{ScheduledExecutorService}}, nếu một lần chạy của {{scheduleAtFixedRate}} ném exception thì mọi lần chạy sau **bị huỷ âm thầm**: exception nằm trong ScheduledFuture và không ai log. Thread không chết, chỉ có job ngừng. Cách sửa: bắt mọi exception trong thân job, log và đẩy metric.
+
+### Hiểu nhanh
+Tắt một executor giống đóng cửa một nhà hàng. {{shutdown()}} là treo biển "ngừng nhận khách": khách đang ăn và khách đã gọi món vẫn được phục vụ xong. {{shutdownNow()}} là bật đèn báo "đóng cửa ngay": huỷ các món chưa nấu, nhắc khách đang ăn đứng dậy (interrupt) — nhưng ai cố ngồi ăn tiếp thì vẫn ngồi. {{awaitTermination}} là quản lý đứng ở cửa chờ khách cuối cùng ra, tối đa bao lâu. Còn bẫy của ScheduledExecutorService giống một chiếc đồng hồ báo thức: chỉ cần một lần chuông bị lỗi là nó tự tắt hẳn, không báo cho ai.
+
+### Thuật ngữ
+- **Graceful shutdown**: tắt có trật tự, làm nốt việc đang dở trong thời gian cho phép.
+- **ScheduledExecutorService**: executor chạy task sau một khoảng trễ hoặc lặp lại định kỳ.
+- **scheduleAtFixedRate / scheduleWithFixedDelay**: lặp theo nhịp cố định tính từ lúc bắt đầu / tính từ lúc lần trước kết thúc.
+- **ScheduledFuture**: future đại diện cho task định kỳ; giữ exception nếu task lỗi.
+- **UncaughtExceptionHandler**: hàm xử lý exception không ai bắt làm chết thread.
+- **terminationGracePeriodSeconds**: thời gian Kubernetes chờ pod tự tắt sau SIGTERM trước khi gửi SIGKILL.
+- **SIGTERM / SIGKILL**: tín hiệu yêu cầu tắt (bắt được) / giết ngay (không bắt được).
+
+### Trình tự tắt pod trên Kubernetes
+~~~text
+t=0s   kubelet gửi SIGTERM -> JVM chạy shutdown hook / Spring đóng context
+t=0s   web server ngừng nhận request mới; executor.shutdown()
+t=0..20s chờ request + task đang chạy xong (awaitTermination)
+t=20s  hết kiên nhẫn: shutdownNow() -> interrupt worker
+t=25s  vẫn chưa xong: log lỗi, để process thoát
+t=30s  (grace period mặc định) kubelet gửi SIGKILL -> chết ngay, không dọn dẹp gì
+~~~
 
 ### So sánh
 | | Task mới | Task trong queue | Task đang chạy | Trả về |
@@ -1139,6 +1778,15 @@ scheduler.scheduleAtFixedRate(() -> {
 ### Câu trả lời sai phổ biến
 - "shutdownNow() dừng ngay mọi task": nó chỉ interrupt; task phải hợp tác.
 - "Job định kỳ ném exception thì thread chết và pool tạo thread mới chạy tiếp": thread không chết, nhưng job thì dừng hẳn.
+
+### Lỗi hay gặp
+- **Job định kỳ không có try/catch**: triệu chứng là job im lặng ngừng chạy sau một lỗi đầu tiên, không log, không alert. Cách tránh: try/catch bao toàn thân job + metric "lần chạy thành công gần nhất".
+- **Gọi shutdown() mà không awaitTermination**: process thoát khi task còn dở, dữ liệu ghi một nửa. Cách tránh: quy trình hai pha như trên.
+- **Tổng thời gian chờ dài hơn grace period**: pod bị SIGKILL giữa chừng. Cách tránh: tổng timeout nhỏ hơn {{terminationGracePeriodSeconds}}, hoặc tăng grace period.
+- **Task nuốt InterruptedException**: shutdownNow không dừng được. Cách tránh: khôi phục cờ interrupt và thoát.
+
+### Trả lời miệng 1 phút
+"shutdown ngừng nhận task mới nhưng vẫn chạy hết task đang chạy và trong queue; shutdownNow ngừng nhận, trả về các task chưa chạy và interrupt các worker, task không hợp tác với interrupt thì vẫn chạy tiếp. Cả hai đều không chờ, nên tôi dùng quy trình hai pha: shutdown, awaitTermination có timeout, hết giờ thì shutdownNow rồi chờ thêm một chút, và tổng thời gian phải nhỏ hơn grace period của pod. Riêng ScheduledExecutorService, một lần chạy ném exception là các lần sau bị huỷ âm thầm, exception nằm trong ScheduledFuture và không ai log; vì vậy mọi job định kỳ của tôi đều có try/catch bao ngoài, log, metric, và alert khi quá vài chu kỳ không có lần chạy thành công."
 
 > Senior tip: kiểu incident hay gặp: job đồng bộ tỷ giá chạy mỗi phút, một lần API đối tác trả JSON lỗi gây NullPointerException, job ngừng chạy cả tuần cho tới khi khách khiếu nại tỷ giá cũ. Từ đó tôi bắt buộc mọi job định kỳ có try/catch bao ngoài và metric "lần chạy thành công gần nhất", alert khi quá 3 chu kỳ không cập nhật. Alert dựa trên "không có lần thành công" bắt được cả job chết lẫn job treo.`,
   follow: [
@@ -2075,6 +2723,18 @@ asprof -d 60 -e cpu,alloc,lock -f /tmp/profile.jfr <pid>
   q: 'Một thread Java có những trạng thái nào (NEW, RUNNABLE, BLOCKED, WAITING, TIMED_WAITING, TERMINATED)? Chuyển trạng thái xảy ra khi nào, và khi đọc thread dump bạn suy ra được gì từ trạng thái?',
   a: `**Tóm tắt:** {{Thread.State}} có 6 giá trị: NEW (đã tạo, chưa start), RUNNABLE (đang chạy hoặc sẵn sàng chạy, kể cả khi đang chờ I/O ở tầng OS), BLOCKED (chờ vào monitor của {{synchronized}}), WAITING (chờ không thời hạn: {{wait()}}, {{join()}}, {{LockSupport.park()}}), TIMED_WAITING (chờ có thời hạn: {{sleep}}, {{wait(ms)}}, {{parkNanos}}), TERMINATED (run đã kết thúc). Các điểm interviewer hay vặn: Java không có trạng thái "RUNNING" riêng; thread đang đọc socket vẫn là RUNNABLE; thread chờ {{ReentrantLock}} là WAITING chứ không phải BLOCKED.
 
+### Hiểu nhanh
+Hãy nghĩ thread như một nhân viên trong văn phòng. NEW: đã ký hợp đồng nhưng chưa đi làm. RUNNABLE: đang ở bàn làm việc — có thể đang gõ phím, cũng có thể đang chờ máy in (Java không phân biệt). BLOCKED: đứng xếp hàng trước phòng họp có người đang dùng ({{synchronized}}). WAITING: ngồi chờ đến khi có người gọi tên, không hẹn giờ. TIMED_WAITING: đặt báo thức "chờ tối đa 5 phút". TERMINATED: đã nghỉ việc, không thể gọi quay lại. Đọc thread dump giống nhìn ảnh chụp cả văn phòng: 180 người cùng đứng ở một cửa là biết chỗ nghẽn.
+
+### Thuật ngữ
+- **Thread.State**: enum 6 giá trị mô tả trạng thái thread theo góc nhìn của JVM.
+- **Monitor**: khoá gắn với object, dùng bởi synchronized; chờ monitor là BLOCKED.
+- **Parking**: cơ chế {{LockSupport.park()}} cho thread ngủ; là nền của ReentrantLock, BlockingQueue, Future.get.
+- **Thread dump**: ảnh chụp trạng thái và stack của mọi thread ({{jstack}}, {{jcmd Thread.print}}).
+- **nid (native id)**: id của thread ở mức hệ điều hành, dùng để ghép với {{top -H}}.
+- **Carrier thread**: platform thread đang chạy một virtual thread.
+- **IllegalThreadStateException**: lỗi khi gọi start() lần hai trên cùng một Thread.
+
 ### Sơ đồ chuyển trạng thái
 ~~~text
           start()                      run() kết thúc hoặc ném exception
@@ -2118,7 +2778,7 @@ public static void main(String[] args) throws InterruptedException {
 ### Đọc thread dump
 - Nhiều thread **BLOCKED** cùng "waiting to lock <0x...>": tranh chấp một monitor (hoặc deadlock nếu các thread chờ nhau thành vòng).
 - Nhiều thread **WAITING (parking)** ở {{HikariPool.getConnection}}: thread HTTP đang chờ connection, pool đã cạn. Còn worker nằm WAITING ở {{LinkedBlockingQueue.take}} là worker rảnh, hoàn toàn bình thường.
-- Thread **RUNNABLE** ở {{socketRead}} hoặc {{NioSocketImpl.read}}: đang chờ mạng nhưng vẫn hiện RUNNABLE, đừng kết luận là đang tốn CPU. Muốn biết thread nào đốt CPU, ghép {{top -H}} với nid trong dump (từ JDK 18 nid in ở dạng thập phân, trước đó là hex).
+- Thread **RUNNABLE** ở {{socketRead}} hoặc {{NioSocketImpl.read}}: đang chờ mạng nhưng vẫn hiện RUNNABLE, đừng kết luận là đang tốn CPU. Muốn biết thread nào đốt CPU, ghép {{top -H}} với nid trong dump (JDK cũ như 8, 11 in nid dạng hex, JDK mới in dạng thập phân; xem kỹ định dạng trước khi so).
 - Chụp 3 dump cách nhau vài giây: thread đứng yên một chỗ qua cả 3 lần mới là nghi phạm.
 
 ### Câu trả lời sai phổ biến
@@ -2128,6 +2788,15 @@ public static void main(String[] args) throws InterruptedException {
 
 ### Virtual thread (Java 21)
 {{getState()}} vẫn trả về 6 trạng thái này. Virtual thread chờ I/O hay chờ lock thì được unmount khỏi carrier và nằm ở WAITING/TIMED_WAITING, không chiếm platform thread. Thread dump thường không liệt kê đủ virtual thread; dùng {{jcmd <pid> Thread.dump_to_file -format=json <file>}}.
+
+### Lỗi hay gặp
+- **Thấy nhiều RUNNABLE rồi kết luận "CPU cao do code"**: thực ra thread đang chờ socket. Cách tránh: đo CPU bằng {{top -H}}, async-profiler; dump chỉ cho biết đang đứng ở đâu.
+- **Bỏ qua thread WAITING ở getConnection**: triệu chứng là API timeout hàng loạt trong khi CPU thấp. Cách tránh: nhận ra pool connection cạn, xem metric Hikari (pending, active) và tìm chỗ giữ connection lâu.
+- **Chỉ chụp một dump**: không phân biệt được thread kẹt với thread tình cờ đi ngang. Cách tránh: chụp 3 lần cách nhau vài giây.
+- **Gọi start() lần hai để "chạy lại" thread**: ném IllegalThreadStateException. Cách tránh: tạo Thread mới hoặc submit lại vào executor.
+
+### Trả lời miệng 1 phút
+"Thread Java có sáu trạng thái: NEW khi mới tạo, RUNNABLE sau khi start, gồm cả đang chạy, chờ CPU lẫn đang chờ I/O ở tầng OS; BLOCKED khi chờ vào monitor của synchronized; WAITING khi chờ không thời hạn như wait, join, park; TIMED_WAITING khi có thời hạn như sleep hay wait có timeout; và TERMINATED khi run kết thúc. Điểm hay bị hỏi vặn là thread chờ ReentrantLock là WAITING chứ không phải BLOCKED, và thread đọc socket vẫn là RUNNABLE. Khi đọc dump tôi chụp ba lần, nhóm thread theo stack giống nhau: nhiều BLOCKED cùng một lock là tranh chấp, nhiều WAITING ở getConnection là cạn connection pool, còn CPU thì phải đo bằng top -H hoặc profiler."
 
 > Senior tip: khi đọc dump, tôi không đếm trạng thái mà nhóm thread theo **stack trace giống nhau**. 180 thread HTTP cùng đứng ở một dòng {{getConnection}} kể câu chuyện rõ hơn mọi biểu đồ. Và nhớ rằng RUNNABLE trong dump không có nghĩa là đang dùng CPU: CPU phải đo bằng {{top -H}} hoặc profiler.`,
   follow: [
@@ -2142,6 +2811,31 @@ public static void main(String[] args) throws InterruptedException {
   level: 'mid',
   q: 'Có những cách nào để chạy code trên thread khác: {{Thread}}, {{Runnable}}, {{Callable}}, {{ExecutorService}}, virtual thread? Vì sao gọi {{run()}} thay vì {{start()}} là bug, và trong service thật bạn chọn cách nào?',
   a: `**Tóm tắt:** Thread là "công nhân", còn Runnable và Callable là "việc". Runnable không trả kết quả và không ném được checked exception; Callable trả về giá trị và ném được exception, kết quả lấy qua {{Future}}. Trong code thật hầu như không ai tự {{new Thread()}}: việc được submit vào một {{ExecutorService}} có giới hạn (thread có tên, có giới hạn, có shutdown), hoặc với Java 21 thì dùng virtual thread cho tác vụ I/O. {{start()}} mới tạo thread mới và gọi run() trên thread đó; gọi thẳng {{run()}} chỉ là một lời gọi hàm bình thường trên thread hiện tại. Không có lỗi biên dịch, không có exception, chỉ là âm thầm mất tính song song.
+
+### Hiểu nhanh
+Hãy tách hai khái niệm: **việc** và **người làm**. Runnable là tờ giấy ghi việc ("dọn kho"), Callable là tờ giấy ghi việc kèm yêu cầu báo cáo kết quả ("đếm hàng trong kho, báo lại số"). Thread là người làm. ExecutorService là công ty dịch vụ có sẵn một đội người làm: bạn chỉ việc đưa tờ giấy, họ tự phân người và trả cho bạn một "phiếu hẹn" (Future) để lấy kết quả. Virtual thread là đội cộng tác viên rất đông và rất rẻ, hợp với việc chủ yếu là ngồi chờ. Gọi {{run()}} thay vì {{start()}} giống như bạn cầm tờ giấy giao việc rồi **tự mình làm luôn** — việc vẫn xong, nhưng không có ai làm song song.
+
+### Thuật ngữ
+- **Runnable**: interface có method {{run()}}, không trả kết quả, không ném checked exception.
+- **Callable**: interface có method {{call()}}, trả kết quả và ném được exception.
+- **Future**: đại diện kết quả sẽ có trong tương lai; {{get()}} chờ lấy kết quả.
+- **ExecutionException**: lỗi bọc exception mà task ném ra, nhận được khi gọi {{Future.get()}}.
+- **ExecutorService**: dịch vụ quản lý một nhóm thread và hàng đợi task.
+- **Platform thread**: thread Java gắn 1-1 với thread của OS.
+- **Virtual thread**: thread nhẹ do JVM quản lý (Java 21+), hợp với task chờ I/O.
+- **@Async**: annotation của Spring để chạy method trên executor khác.
+
+### Luồng start() (từng bước)
+~~~text
+main: t.start()
+  1. JVM kiểm tra trạng thái NEW (không phải thì ném IllegalThreadStateException)
+  2. Gọi native tạo thread OS mới, cấp stack riêng
+  3. Thread chuyển NEW -> RUNNABLE, start() trả về ngay cho main
+  4. Thread mới gọi run() -> chạy lambda
+main vẫn chạy tiếp song song      |      worker chạy run()
+
+main: t.run()   -> chỉ là lời gọi method: run() chạy trên chính main, xong mới tới dòng sau
+~~~
 
 ### Các cách
 ~~~java
@@ -2193,6 +2887,15 @@ t.start();  // ném IllegalThreadStateException: mỗi Thread chỉ start đư�
 - "Callable chạy trên thread mới": Callable chỉ là việc; chạy ở đâu là do executor quyết định.
 - "Exception trong task submit() sẽ được log": không, nó nằm im trong Future cho tới khi có người gọi get().
 
+### Lỗi hay gặp
+- **Gọi run() thay vì start()**: triệu chứng là "song song" mà thời gian tổng bằng tổng từng việc, log thấy tên thread là main/http-nio. Cách tránh: dùng executor thay vì tự quản Thread; review mọi chỗ {{.run()}} trên object Thread.
+- **new Thread() trong mỗi request**: triệu chứng là số thread tăng vọt khi spike, "unable to create native thread". Cách tránh: executor bounded dùng chung, hoặc virtual thread kèm giới hạn tài nguyên.
+- **submit() mà không bao giờ get()**: exception của task biến mất. Cách tránh: try/catch + log trong task, hoặc dùng execute() để exception tới UncaughtExceptionHandler.
+- **Future.get() không timeout**: thread gọi treo mãi khi task treo. Cách tránh: {{get(timeout, unit)}}.
+
+### Trả lời miệng 1 phút
+"Thread là người làm, còn Runnable và Callable là việc: Runnable không trả kết quả, Callable trả kết quả và ném được exception, lấy qua Future. start() mới tạo thread OS mới rồi gọi run trên thread đó; gọi thẳng run() chỉ là gọi method trên thread hiện tại, không lỗi gì nhưng mất song song, nên bug này hay chỉ lộ khi load test. Trong service thật tôi không new Thread mà submit vào ExecutorService có giới hạn, thread có tên và có shutdown; với Java 21 và task chờ I/O thì dùng virtual thread, nhưng vẫn giới hạn tài nguyên phía sau bằng semaphore hoặc connection pool. Với Spring thì dùng ThreadPoolTaskExecutor hoặc bật spring.threads.virtual.enabled."
+
 > Senior tip: quy tắc của tôi là mỗi loại việc một executor có tên rõ ràng ({{payment-io-}}, {{report-cpu-}}) để nhìn thread dump là biết pool nào đang nghẽn. Với Java 21 và tác vụ chủ yếu chờ I/O, virtual thread giúp bỏ được phần lớn việc tính kích thước pool; nhưng vẫn phải giới hạn tài nguyên phía sau (connection pool, rate limit của đối tác) bằng Semaphore, vì virtual thread không giới hạn gì cả.`,
   follow: [
     'execute() và submit() khác nhau thế nào khi task ném exception?',
@@ -2206,6 +2909,27 @@ t.start();  // ném IllegalThreadStateException: mỗi Thread chỉ start đư�
   level: 'mid',
   q: 'So sánh {{Thread.sleep}}, {{Object.wait}}, {{Thread.join}} và {{Thread.yield}}: cái nào nhả lock, cái nào phải gọi trong {{synchronized}}, và dùng sai thì gây bug gì?',
   a: `**Tóm tắt:** Chỉ {{wait()}} nhả monitor, và chỉ nhả monitor của chính object được gọi wait. Vì thế nó bắt buộc phải gọi khi đang giữ monitor đó, nếu không sẽ ném {{IllegalMonitorStateException}}. {{sleep()}} giữ nguyên mọi lock, chỉ tạm dừng thread hiện tại. {{join()}} chờ một thread khác kết thúc; với platform thread nó được cài đặt bằng {{wait()}} trên chính object Thread, nên chỉ "nhả" monitor của object Thread đó, mọi lock khác vẫn giữ. {{yield()}} chỉ là gợi ý cho scheduler: không nhả lock, không đảm bảo gì.
+
+### Hiểu nhanh
+Hãy tưởng tượng bạn đang giữ chìa khoá phòng họp. {{sleep()}} là ngủ gật ngay trong phòng mà vẫn cầm chìa: không ai vào được. {{wait()}} là ra ghế chờ và **trả lại chìa khoá của đúng phòng đó** để người khác vào làm việc, ai xong thì gọi bạn. {{join()}} là đứng chờ một đồng nghiệp làm xong việc của họ — chìa khoá nào bạn đang cầm thì vẫn cầm. {{yield()}} là nói "ai cần thì cứ dùng máy tính trước" — lời mời lịch sự, người khác có thể chẳng để ý.
+
+### Thuật ngữ
+- **Monitor**: khoá gắn với mỗi object, dùng bởi synchronized, wait, notify.
+- **IllegalMonitorStateException**: lỗi khi gọi wait/notify mà không giữ monitor của object đó.
+- **Lost wakeup**: tín hiệu notify đến trước khi thread kịp chờ, nên thread ngủ mãi.
+- **Spurious wakeup**: thread tự thức dậy dù không ai notify.
+- **Scheduler**: phần của OS quyết định thread nào được chạy trên CPU.
+- **Thread.onSpinWait()**: gợi ý cho CPU rằng thread đang chờ bận (spin), giúp CPU tối ưu (Java 9+).
+- **Awaitility**: thư viện test chờ điều kiện xảy ra thay vì sleep cố định.
+
+### Ai giữ lock khi đang chờ
+~~~text
+Thread A giữ lock L1 và L2:
+  Thread.sleep(1000)  -> vẫn giữ L1, L2 (mọi thread cần L1/L2 bị BLOCKED)
+  L2.wait()           -> nhả L2, VẪN giữ L1  (cẩn thận deadlock)
+  other.join()        -> vẫn giữ L1, L2
+  Thread.yield()      -> vẫn giữ L1, L2, có thể chạy tiếp ngay
+~~~
 
 | | Thuộc | Nhả lock? | Phải giữ monitor? | Thức dậy khi | Trạng thái |
 |---|---|---|---|---|---|
@@ -2258,6 +2982,15 @@ lock.wait();                 // ném IllegalMonitorStateException: không giữ 
 - "wait nhả mọi lock thread đang giữ": sai, chỉ nhả monitor của object được gọi wait. Đang giữ lock A mà gọi {{b.wait()}} thì vẫn giữ A, và đó là một nguồn deadlock.
 - "notify() làm thread được đánh thức chạy ngay": không, thread đó phải giành lại monitor (BLOCKED) sau khi bên notify ra khỏi synchronized.
 
+### Lỗi hay gặp
+- **sleep() hoặc gọi API/DB bên trong synchronized**: triệu chứng là thread dump đầy BLOCKED ở cùng một lock, throughput tụt về vài request/giây. Cách tránh: chỉ giữ lock cho thao tác bộ nhớ ngắn, I/O để ngoài.
+- **Gọi wait() mà không giữ monitor**: ném IllegalMonitorStateException ngay khi chạy. Cách tránh: wait/notify luôn nằm trong {{synchronized (cùng object)}}.
+- **join(timeout) rồi tưởng thread kia đã xong**: hết giờ join không ném lỗi, code chạy tiếp với dữ liệu chưa sẵn sàng. Cách tránh: kiểm tra {{isAlive()}}, hoặc dùng {{Future.get(timeout)}} vốn ném TimeoutException.
+- **Dùng sleep/yield trong test để "chờ thread kia"**: test flaky, chạy chậm. Cách tránh: CountDownLatch hoặc Awaitility.
+
+### Trả lời miệng 1 phút
+"Trong bốn hàm này chỉ wait nhả lock, và chỉ nhả monitor của chính object được gọi wait, nên nó bắt buộc phải gọi khi đang giữ monitor đó, nếu không sẽ ném IllegalMonitorStateException. Lý do là kiểm tra điều kiện và đi ngủ phải nguyên tử để không mất tín hiệu. sleep chỉ tạm dừng thread và giữ nguyên mọi lock, nên sleep trong synchronized là bug kinh điển làm mọi thread khác BLOCKED. join chờ thread khác kết thúc, bên trong dùng wait trên object Thread nên chỉ nhả monitor của Thread đó. yield chỉ là gợi ý cho scheduler. Trong code mới tôi thay join bằng Future hay CountDownLatch, và không dùng sleep để đồng bộ."
+
 > Senior tip: khi review, tôi coi {{Thread.sleep}} trong code production (trừ backoff có giới hạn khi retry) là dấu hiệu thiết kế cần xem lại. Chờ một điều kiện thì dùng cơ chế có tín hiệu (latch, future, queue); chờ theo thời gian thì dùng ScheduledExecutorService. Trong test, thay sleep bằng Awaitility để test vừa nhanh vừa không flaky.`,
   follow: [
     'Lost wakeup là gì và vì sao giữ monitor khi gọi wait() ngăn được nó?',
@@ -2271,6 +3004,33 @@ lock.wait();                 // ném IllegalMonitorStateException: không giữ 
   level: 'senior',
   q: '{{synchronized}} trên static method, instance method và block khác nhau thế nào (class lock vs object lock)? Hai thread cùng lúc gọi một static synchronized method và một instance synchronized method của cùng class thì có chặn nhau không?',
   a: `**Tóm tắt:** synchronized luôn khoá **một object cụ thể**. Instance method khoá {{this}}; static method khoá object {{Class}} ({{Foo.class}}); block khoá object bạn chỉ định. Lock khác nhau thì không chặn nhau: static synchronized và instance synchronized của cùng class chạy song song được. Đây thường chính là bug khi cả hai cùng sửa một field static. Tương tự, hai instance khác nhau gọi instance synchronized cũng không chặn nhau.
+
+### Hiểu nhanh
+Mỗi object Java có sẵn một ổ khoá riêng, và mỗi class cũng có một ổ khoá riêng (ổ khoá của object {{Class}}). {{synchronized}} trên instance method giống khoá cửa **từng căn hộ**: hai người vào hai căn hộ khác nhau không chặn nhau. {{static synchronized}} giống khoá cổng **toà nhà**: nhưng khoá cổng toà nhà và khoá cửa căn hộ là hai ổ khác nhau, nên một người cầm chìa cổng và một người cầm chìa căn hộ vẫn đi song song được. Bug xảy ra khi đồ dùng chung của cả toà nhà (field static) lại chỉ được bảo vệ bằng chìa của từng căn hộ.
+
+### Thuật ngữ
+- **Object lock (instance lock)**: monitor của một object cụ thể, ví dụ {{this}}.
+- **Class lock**: monitor của object {{Class}} ({{Foo.class}}), dùng bởi static synchronized.
+- **Monitor**: khoá gắn với mỗi object, có owner và hàng chờ.
+- **Reentrant**: thread đang giữ lock có thể lấy lại chính lock đó khi gọi lồng nhau.
+- **monitorenter / monitorexit**: lệnh bytecode để vào/ra block synchronized.
+- **ACC_SYNCHRONIZED**: cờ trong bytecode đánh dấu method synchronized.
+- **Value-based class**: class như Integer, LocalDate mà identity không nên được dựa vào (không nên dùng làm lock).
+- **Lock inflation**: JVM nâng lock nhẹ lên monitor đầy đủ khi có tranh chấp.
+
+### Cách JVM chọn object để khoá (từng bước)
+1. Gặp {{synchronized}} instance method → lock = {{this}} của lần gọi đó.
+2. Gặp {{static synchronized}} → lock = object {{Foo.class}} (mỗi class loader một object).
+3. Gặp {{synchronized (x)}} → lock = object mà x trỏ tới **tại thời điểm vào block**.
+4. Hai thread chỉ chặn nhau khi bước trên trả về **cùng một object**. Vì sao: mỗi object có monitor riêng, JVM không có khái niệm "khoá cả class kèm mọi instance".
+
+~~~text
+           Foo.class (class lock)      a1 (object lock)      a2 (object lock)
+T1: Foo.staticSync()  -> giữ
+T2: a1.syncMethod()                      -> giữ        (không chờ T1)
+T3: a2.syncMethod()                                           -> giữ (không chờ ai)
+T4: a1.otherSync()                       -> CHỜ T2
+~~~
 
 ### Ma trận chặn nhau
 | Thread A gọi | Thread B gọi | Chặn nhau? |
@@ -2325,6 +3085,15 @@ class AccountService {
 - "synchronized method khoá cả object, nên mọi method của object đều bị chặn": chỉ các method/block synchronized trên cùng object mới chờ nhau.
 - "synchronized trong service là đủ": nó chỉ có tác dụng trong **một JVM**. Service chạy 3 pod là 3 lock độc lập; khi đó phải khoá ở DB hoặc dùng thao tác nguyên tử ở kho dữ liệu.
 
+### Lỗi hay gặp
+- **Instance synchronized bảo vệ field static**: triệu chứng là trùng ID, đếm sai khi có hơn một instance (test tạo new, prototype bean). Cách tránh: khoá theo phạm vi dữ liệu, hoặc AtomicLong.
+- **synchronized trên String literal hoặc Integer**: triệu chứng là chậm hoặc deadlock "vô lý" giữa hai module không liên quan vì dùng chung object được intern/cache. Cách tránh: {{private final Object lock = new Object()}}.
+- **Gán lại field dùng làm lock**: hai thread khoá hai object khác nhau, mất loại trừ. Cách tránh: lock luôn là field final.
+- **Dùng synchronized để chống trùng trên nhiều pod**: mỗi JVM một lock, vẫn trùng. Cách tránh: UPDATE có điều kiện, unique constraint, hoặc lock ở DB.
+
+### Trả lời miệng 1 phút
+"synchronized luôn khoá một object cụ thể: instance method khoá this, static method khoá object Class, còn block khoá object tôi chỉ định. Hai thread chỉ chặn nhau khi cùng khoá một object, nên static synchronized và instance synchronized của cùng class chạy song song được, và hai instance khác nhau cũng không chặn nhau. Bug hay gặp là dùng instance synchronized để bảo vệ field static: chỉ cần có hai instance là sinh trùng dữ liệu. Nguyên tắc của tôi là lock phải cùng phạm vi với dữ liệu, dùng private final Object làm lock, không khoá trên String hay Integer, và nhớ synchronized chỉ có tác dụng trong một JVM, nhiều pod thì phải khoá ở DB."
+
 > Senior tip: khi thấy synchronized trên method public của một Spring bean, tôi hỏi hai câu: dữ liệu được bảo vệ nằm ở đâu, và service chạy mấy instance? Nếu dữ liệu ở DB thì lock trong JVM vô nghĩa khi có nhiều pod; nếu dữ liệu là field static thì khoá this là sai phạm vi. Hai câu đó bắt được phần lớn bug đồng bộ trong code nghiệp vụ.`,
   follow: [
     'Vì sao không nên synchronized trên String literal hoặc Integer?',
@@ -2343,6 +3112,19 @@ class AccountService {
   level: 'lead',
   q: '{{count++}} chạy từ nhiều thread cho kết quả sai: vì sao? Nêu các cách sửa trong một JVM, và khi service chạy nhiều instance (trừ tồn kho, đếm lượt dùng voucher) thì bạn làm thế nào với DB hoặc Redis?',
   a: `**Tóm tắt:** {{count++}} gồm ba bước đọc, cộng, ghi và không nguyên tử. Hai thread cùng đọc một giá trị cũ thì một lần cộng bị mất (lost update). {{volatile}} không sửa được vì nó chỉ đảm bảo visibility. Trong một JVM có thể dùng {{synchronized}}/Lock, {{AtomicInteger.incrementAndGet()}} (CAS), hoặc {{LongAdder}} khi ghi nhiều đọc ít. Khi chạy nhiều instance thì mọi lock trong JVM đều vô dụng: phải đưa phép kiểm tra và cập nhật về chính nơi lưu dữ liệu, như một câu {{UPDATE}} có điều kiện trong DB, optimistic locking bằng version, {{SELECT ... FOR UPDATE}}, hoặc {{DECR}}/Lua script trên Redis.
+
+### Hiểu nhanh
+{{count++}} giống hai thu ngân cùng cập nhật một tờ sổ tồn kho: cả hai cùng nhìn thấy "còn 5", mỗi người bán một món, rồi cùng ghi "còn 4". Thực tế bán 2 món mà sổ chỉ trừ 1. Trong một máy (một JVM) có thể bắt mọi người xếp hàng dùng sổ (lock) hoặc dùng "máy đếm tự động" (Atomic). Nhưng khi có 3 cửa hàng (3 pod) dùng chung một kho, mỗi cửa hàng có lock riêng chẳng giúp gì: phải để **chính kho** (DB/Redis) làm phép "kiểm tra còn hàng rồi trừ" trong một bước duy nhất.
+
+### Thuật ngữ
+- **Race condition**: kết quả phụ thuộc vào thứ tự chạy ngẫu nhiên giữa các thread.
+- **Lost update**: hai lần cập nhật chồng lên nhau, một lần bị mất.
+- **Read-modify-write**: thao tác đọc, tính, ghi — không nguyên tử nếu không được bảo vệ.
+- **Check-then-act**: kiểm tra điều kiện rồi hành động; sai nếu điều kiện đổi giữa hai bước.
+- **Optimistic locking**: không khoá trước, khi ghi kiểm tra version; xung đột thì retry.
+- **Pessimistic locking**: khoá dòng trước khi đọc ({{SELECT ... FOR UPDATE}}) để người khác chờ.
+- **Lua script (Redis)**: đoạn script chạy nguyên tử trên Redis server.
+- **Fencing token**: số tăng dần đi kèm lock phân tán, giúp từ chối lần ghi của người giữ lock đã hết hạn.
 
 ### Vì sao sai
 ~~~text
@@ -2414,6 +3196,15 @@ return 0
 - "Dùng synchronized trong service": chạy 3 pod là 3 lock độc lập.
 - "Đọc tồn kho lên, kiểm tra trong Java, rồi UPDATE qty bằng giá trị mới": lost update giữa các instance.
 
+### Lỗi hay gặp
+- **Đọc lên, kiểm tra trong Java, rồi UPDATE giá trị mới** ({{SET qty = 4}}): triệu chứng là bán vượt tồn kho khi có flash sale. Cách tránh: {{SET qty = qty - 1 WHERE qty > 0}} và kiểm tra affected rows.
+- **Optimistic locking cho dòng cực nóng**: triệu chứng là hàng loạt OptimisticLockException, retry dồn dập, DB càng tải. Cách tránh: UPDATE có điều kiện, hoặc giữ chỗ trên Redis.
+- **GET rồi DECR trên Redis từ app**: vẫn là check-then-act, voucher bị dùng quá lượt. Cách tránh: một Lua script, hoặc {{DECR}} rồi kiểm tra kết quả âm thì hoàn lại.
+- **Distributed lock không fencing**: GC pause dài làm lock hết hạn, hai instance cùng ghi. Cách tránh: fencing token hoặc điều kiện version trong câu ghi DB.
+
+### Trả lời miệng 1 phút
+"count++ gồm ba bước đọc, cộng, ghi nên không nguyên tử: hai thread cùng đọc 5 thì cùng ghi 6 và mất một lần tăng; volatile không sửa được vì nó chỉ lo visibility. Trong một JVM tôi dùng AtomicInteger cho giá trị cần chính xác, LongAdder cho metric ghi nhiều, hoặc lock khi phải cập nhật nhiều biến cùng lúc; và cẩn thận check-then-act, phải gộp kiểm tra và trừ vào một thao tác CAS. Khi chạy nhiều instance, lock trong JVM vô dụng, tôi đưa tính nguyên tử về DB: UPDATE có điều kiện như used nhỏ hơn max_uses rồi xem affected rows; xung đột hiếm thì optimistic locking, logic phức tạp thì SELECT FOR UPDATE. Khi một dòng quá nóng mới chuyển phần giữ chỗ sang Redis Lua kèm job đối soát."
+
 > Senior tip: với bài toán trừ tồn kho hay voucher, tôi luôn bắt đầu bằng UPDATE có điều kiện và kiểm tra affected rows: một câu SQL, không cần lock phân tán, đúng tuyệt đối. Chỉ khi đo thấy một dòng "nóng" làm DB nghẽn (hàng nghìn request mỗi giây vào cùng một SKU) mới chuyển phần giữ chỗ lên Redis Lua, kèm job đối soát với DB.`,
   follow: [
     'Vì sao check-then-act vẫn sai kể cả khi dùng AtomicInteger?',
@@ -2432,6 +3223,33 @@ return 0
   level: 'senior',
   q: 'Livelock và starvation khác deadlock thế nào? Cho ví dụ thực tế, cách phát hiện, và khi nào bạn dùng fair lock ({{new ReentrantLock(true)}}) — nó tốn gì?',
   a: `**Tóm tắt:** Deadlock: các thread **đứng im** chờ nhau mãi mãi, CPU gần như bằng 0. Livelock: các thread **vẫn chạy**, liên tục phản ứng với nhau (nhả ra rồi thử lại) nhưng không ai tiến được; CPU cao mà throughput bằng 0. Starvation: hệ thống vẫn tiến, nhưng **một số** thread mãi không được phục vụ vì luôn bị chen. Fair lock trao lock theo thứ tự chờ (FIFO) nên chống được starvation, nhưng throughput giảm đáng kể vì mất khả năng "chen ngang" và mỗi lần trao lock đều phải đánh thức một thread đang ngủ. Chỉ dùng khi đã đo thấy starvation thật.
+
+### Hiểu nhanh
+- **Deadlock** giống hai xe đối đầu trên cầu một làn: cả hai đứng im, không ai lùi.
+- **Livelock** giống hai người lịch sự nhường đường ở hành lang hẹp: cùng bước sang trái, rồi cùng sang phải, cứ thế mãi — rất bận rộn mà không ai đi qua được.
+- **Starvation** giống một người xếp hàng mà người quen của bảo vệ cứ chen lên trước: hàng vẫn chạy, chỉ riêng người đó mãi không tới lượt.
+- **Fair lock** là quầy phát số thứ tự: công bằng tuyệt đối, nhưng mỗi lần gọi số phải chờ người đó đi từ ghế lên quầy, nên tổng số khách phục vụ mỗi giờ ít hơn.
+
+### Thuật ngữ
+- **Livelock**: các thread liên tục đổi trạng thái để phản ứng với nhau nhưng không ai hoàn thành việc.
+- **Starvation**: một thread không bao giờ (hoặc rất lâu) mới được cấp tài nguyên.
+- **Fair lock**: lock trao quyền theo thứ tự chờ (FIFO).
+- **Barging (chen ngang)**: thread vừa tới lấy được lock ngay, bỏ qua các thread đang xếp hàng — hành vi của lock non-fair.
+- **Backoff / jitter**: chờ một khoảng trước khi thử lại / cộng thêm độ trễ ngẫu nhiên để các bên lệch nhịp.
+- **Retry storm**: rất nhiều client cùng retry một lúc, làm hệ thống đang quá tải càng quá tải.
+- **Bulkhead**: tách tài nguyên (pool, queue) theo nhóm để nhóm này không làm đói nhóm khác.
+- **Circuit breaker**: tạm ngừng gọi một dependency đang lỗi để nó có thời gian hồi phục.
+
+### Vì sao lock non-fair nhanh hơn (từng bước)
+1. Thread A nhả lock. Trong hàng chờ có B đang ngủ (park).
+2. **Non-fair**: C đang chạy sẵn trên CPU, gọi lock() đúng lúc đó → CAS thành công ngay, làm xong việc trong vài micro giây. B được đánh thức sau và có thể vẫn kịp lấy lock khi C nhả.
+3. **Fair**: C bắt buộc xếp sau B. JVM phải unpark B, chờ OS lập lịch B (thường cỡ micro giây đến hàng chục micro giây) — trong thời gian đó lock nằm không, không ai dùng.
+4. Vì sao quan trọng: dưới tranh chấp cao, khoảng "lock nằm không" lặp lại ở mọi lần chuyển giao, nên throughput tổng của fair lock có thể thấp hơn nhiều.
+
+~~~text
+Non-fair: A nhả --> C (đang chạy) lấy ngay --> C nhả --> B (vừa thức) lấy
+Fair:     A nhả --> [chờ đánh thức B ... lock trống] --> B lấy --> C phải xếp sau
+~~~
 
 | | Deadlock | Livelock | Starvation |
 |---|---|---|---|
@@ -2480,6 +3298,15 @@ Semaphore permits = new Semaphore(10, true);     // semaphore fair
 - "Livelock là deadlock nhẹ": ngược lại, livelock đốt CPU và khó nhận ra hơn vì mọi thread trông như đang làm việc.
 - "Cứ dùng fair lock cho an toàn": trả giá bằng throughput mà không giải quyết gốc rễ (giữ lock quá lâu).
 
+### Lỗi hay gặp
+- **tryLock + retry không backoff**: triệu chứng là CPU cao, request chuyển tiền ngược chiều cứ chạy mãi không xong. Cách tránh: khoá theo thứ tự id, hoặc backoff ngẫu nhiên.
+- **Retry ngay lập tức khi timeout ở client**: triệu chứng là sau một sự cố nhỏ, lưu lượng tăng gấp 3–4 lần và hệ thống sập hẳn. Cách tránh: exponential backoff + jitter, giới hạn số lần retry, circuit breaker.
+- **Một pool chung cho mọi loại việc**: report nặng chiếm hết thread, API thanh toán ngắn bị đói. Cách tránh: bulkhead, mỗi loại việc một pool/semaphore.
+- **Bật fair lock "cho chắc"**: throughput giảm mạnh mà vấn đề gốc (giữ lock quá lâu) vẫn còn. Cách tránh: rút ngắn critical section trước, đo rồi mới cân nhắc fair.
+
+### Trả lời miệng 1 phút
+"Deadlock là các thread đứng im chờ nhau mãi, CPU thấp, JVM phát hiện được trong thread dump. Livelock là các thread vẫn chạy, liên tục nhả ra rồi thử lại theo nhau, CPU cao mà không ai tiến; ví dụ hai thread chuyển tiền ngược chiều dùng tryLock không có backoff, hay retry storm trong hệ phân tán. Starvation là hệ thống vẫn chạy nhưng một số thread mãi không tới lượt, ví dụ do lock non-fair hoặc một tenant chiếm hết pool. Fair lock trao lock theo thứ tự chờ nên chống starvation, nhưng mất khả năng chen ngang và mỗi lần chuyển giao phải đánh thức thread đang ngủ, nên throughput giảm đáng kể. Tôi chỉ dùng nó khi đo thấy starvation thật, sau khi đã thử rút ngắn thời gian giữ lock."
+
 > Senior tip: livelock tôi gặp nhiều nhất không nằm trong code Java mà ở chính sách retry: client timeout 1 giây và retry ngay 3 lần, service vốn đang chậm vì quá tải lại càng quá tải hơn. Exponential backoff có jitter và circuit breaker chính là "fair lock" của hệ phân tán. Còn starvation trong JVM thường lộ ra qua p99.9 của một nhóm request tăng vọt; lúc đó tôi thử giảm thời gian giữ lock trước, fair lock là lựa chọn sau cùng.`,
   follow: [
     'Vì sao lock non-fair lại cho throughput cao hơn fair lock?',
@@ -2498,6 +3325,32 @@ Semaphore permits = new Semaphore(10, true);     // semaphore fair
   level: 'senior',
   q: 'Viết singleton thread-safe theo các cách eager, lazy holder và enum, rồi so sánh. Singleton có thể bị phá bằng reflection, serialization, clone hoặc nhiều class loader như thế nào, và cách nào chống được?',
   a: `**Tóm tắt:** Có ba cách đáng dùng: **eager** (field {{static final}} khởi tạo khi class được khởi tạo), **holder idiom** (lazy nhờ class lồng chỉ được khởi tạo khi truy cập lần đầu) và **enum** (JVM đảm bảo đúng một instance, chống reflection và serialization mà không phải làm gì thêm). Cả ba đều thread-safe nhờ JVM khoá trong lúc khởi tạo class (JLS 12.4.2), không cần volatile hay synchronized. Singleton bị phá bằng: reflection gọi constructor private, deserialization tạo object mới, {{clone()}} nếu class là Cloneable, và việc mỗi class loader có một bản class riêng. Enum chặn được reflection và serialization; còn class loader thì không có cách nào chặn trong code.
+
+### Hiểu nhanh
+Singleton giống con dấu của công ty: cả công ty chỉ được có một con dấu. **Eager** là khắc sẵn con dấu ngay khi thành lập công ty. **Holder** là chỉ khắc khi có người cần đóng dấu lần đầu, và có một quy trình đảm bảo dù 10 người cùng xin thì cũng chỉ khắc một con. **Enum** là con dấu do nhà nước cấp: không ai làm giả được (reflection), không ai photo ra thành con mới được (serialization). Còn "nhiều class loader" giống công ty có nhiều chi nhánh độc lập: mỗi chi nhánh tự khắc một con dấu riêng, và không có quy định nào trong code ngăn được điều đó.
+
+### Thuật ngữ
+- **Eager initialization**: tạo instance ngay khi class được khởi tạo.
+- **Lazy initialization**: chỉ tạo instance khi có truy cập lần đầu.
+- **Holder idiom**: dùng class lồng static để JVM khởi tạo lazy và thread-safe.
+- **Class initialization lock**: khoá JVM dùng để phần khởi tạo static chạy đúng một lần (JLS 12.4.2).
+- **Reflection**: API cho phép gọi constructor/method private lúc runtime.
+- **readResolve**: method đặc biệt của serialization để thay object vừa đọc bằng object khác.
+- **ClassLoader**: thành phần nạp class; cùng một file class nạp bởi hai loader là hai class khác nhau.
+- **ExceptionInInitializerError**: lỗi khi phần khởi tạo static ném exception.
+
+### Vòng đời khởi tạo class (vì sao không cần lock)
+1. Lần đầu có thread gọi {{CoreBankClient.get()}} → JVM thấy class {{Holder}} chưa khởi tạo.
+2. Thread đó lấy khoá khởi tạo của Holder, chạy {{static final I = new CoreBankClient()}}.
+3. Thread khác gọi get() cùng lúc → thấy Holder đang được khởi tạo → **chờ**.
+4. Khởi tạo xong → JVM đánh dấu "initialized", đánh thức các thread chờ; kết quả được publish an toàn (có happens-before).
+5. Các lần sau → class đã khởi tạo, đọc field như bình thường, không còn chi phí khoá.
+
+~~~text
+T1: get() -> Holder chưa init -> lấy khoá init -> new CoreBankClient() -> xong, mở khoá
+T2: get() -> Holder đang init bởi T1 -> chờ ......................... -> nhận cùng instance
+T3: get() (sau đó) -> Holder đã init -> trả về ngay, không khoá
+~~~
 
 ### Ba cách
 ~~~java
@@ -2563,6 +3416,15 @@ Thiếu {{readResolve}} thì mỗi lần deserialize lại tạo một object m�
 
 ### Trong ứng dụng Spring
 Bean scope singleton nghĩa là "một instance cho mỗi ApplicationContext", do container quản lý: test được (mock, thay bean), không có trạng thái static toàn cục. Singleton tĩnh tự viết chỉ nên dành cho thứ thật sự không phụ thuộc container (bảng hằng số, utility).
+
+### Lỗi hay gặp
+- **Constructor singleton gọi DB/mạng**: lỗi một lần là class hỏng vĩnh viễn (ExceptionInInitializerError rồi NoClassDefFoundError) tới khi restart. Cách tránh: khởi tạo nhẹ, kết nối lazy bên trong method, có retry.
+- **Singleton Serializable không có readResolve**: sau khi deserialize (cache phân tán, session replication) có hai instance, trạng thái lệch nhau. Cách tránh: readResolve, hoặc dùng enum.
+- **Singleton tĩnh giữ trạng thái mutable trong ứng dụng Spring**: test khó mock, test chạy song song ảnh hưởng nhau. Cách tránh: dùng bean singleton của Spring.
+- **Hai instance do DevTools/app server dùng nhiều class loader**: cache "toàn cục" bị nhân đôi, cấu hình lệch. Cách tránh: đặt class ở loader dùng chung hoặc bỏ singleton tĩnh.
+
+### Trả lời miệng 1 phút
+"Tôi dùng ba cách: eager với static final, holder idiom khi cần lazy, và enum khi cần chống phá. Cả ba thread-safe nhờ JVM bảo đảm phần khởi tạo class chạy đúng một lần dưới khoá và publish an toàn, nên không cần volatile hay synchronized. Singleton bị phá bằng reflection gọi constructor private, deserialization tạo object mới, clone nếu class là Cloneable, và nhiều class loader. Enum chặn được reflection và serialization; với class thường thì kiểm tra trong constructor và thêm readResolve; còn class loader thì không chặn được trong code. Lưu ý thực tế là constructor ném exception thì class hỏng tới khi restart, và trong Spring tôi để container quản lý singleton thay vì tự viết."
 
 > Senior tip: trong phỏng vấn, tôi trả lời gọn: "enum nếu cần chống reflection và serialization, holder nếu cần lazy, còn trong Spring thì không tự viết singleton". Interviewer thường vặn tiếp chuyện ExceptionInInitializerError; biết rằng class khởi tạo lỗi là "hỏng vĩnh viễn" tới khi restart cho thấy bạn đã thật sự debug chuyện này trên production.`,
   follow: [
@@ -2852,28 +3714,68 @@ Hai ví dụ chỉ để học; đừng chạy kiểu "tạo thread vô hạn" (
   topic: 'concurrency',
   level: 'senior',
   q: 'Một thread publish dữ liệu qua cờ ready nhưng reader đôi lúc thấy cờ mới và value cũ. Bạn giải thích happens-before và sửa thế nào?',
-  a: `**Tóm tắt:** Không có happens-before thì chương trình có data race; compiler và CPU có thể reorder, nên reader không được đảm bảo thấy các write trước đó. Dùng volatile cho cờ publish, hoặc đồng bộ cả hai phía bằng cùng monitor hay primitive concurrency.
+  a: `**Tóm tắt:** khi writer và reader không có quan hệ happens-before, chương trình có **data race**: compiler, JIT và CPU được phép xếp lại thứ tự, nên reader không được đảm bảo thấy các lệnh ghi trước đó dù đã thấy cờ {{ready = true}}. Cách sửa: khai báo cờ là {{volatile}} và ghi payload **trước** khi bật cờ, hoặc đồng bộ cả hai phía bằng cùng một monitor hay một primitive concurrency (AtomicReference, BlockingQueue, CountDownLatch...).
 
-### Cơ chế
-- Volatile write có ngữ nghĩa release; volatile read có ngữ nghĩa acquire. Nếu reader thấy write đó, các write trước cờ happens-before các read sau cờ.
-- Vì vậy writer ghi payload trước rồi mới bật cờ. Reader kiểm tra cờ rồi mới đọc payload.
-- Sleep/yield không tạo quan hệ happens-before; test stress cũng không chứng minh chương trình đúng.
+### Hiểu nhanh
+Giống bạn nhắn đồng nghiệp: "Tài liệu đã để trên bàn rồi" — nhưng tin nhắn tới nhanh hơn người chuyển tài liệu, đồng nghiệp chạy ra thì bàn vẫn trống (hoặc còn bản cũ). Cờ {{ready}} là tin nhắn, {{value}} là tài liệu. {{volatile}} trên cờ giống quy định của bưu tá: "chỉ được gửi tin nhắn sau khi tài liệu đã đặt xong, và người nhận đọc tin nhắn thì chắc chắn thấy tài liệu".
 
-### Giới hạn
-- Volatile không làm phép cộng hay read-modify-write thành atomic. Dùng AtomicLong, lock hoặc LongAdder tùy yêu cầu.
-- Nếu invariant gồm nhiều field cần snapshot thống nhất, dùng lock hoặc publish một immutable object qua volatile reference.
-- Nhiều writer cần giao thức ownership rõ; cờ volatile đơn lẻ không cộng dồn cập nhật.
+### Thuật ngữ
+- **Happens-before**: quy tắc của Java Memory Model: nếu A happens-before B thì B thấy mọi thứ A đã ghi.
+- **Data race**: hai thread truy cập cùng biến, ít nhất một bên ghi, không có happens-before giữa chúng.
+- **Reordering**: đổi thứ tự lệnh để tối ưu, hợp lệ nếu một thread đơn lẻ không thấy khác biệt.
+- **Release / acquire**: ghi volatile là "release" (đẩy mọi ghi trước đó ra), đọc volatile là "acquire" (thấy mọi thứ đã release).
+- **Publish**: đưa dữ liệu cho thread khác nhìn thấy.
+- **Invariant**: ràng buộc phải luôn đúng giữa nhiều field (ví dụ min ≤ max).
+- **jcstress**: công cụ của OpenJDK để kiểm thử các kịch bản concurrency khó tái hiện.
+
+### Vì sao reader thấy cờ mới mà value cũ (từng bước)
+1. Writer chạy {{value = 42; ready = true;}}. Không có volatile, hai lệnh ghi này không có ràng buộc thứ tự với thread khác.
+2. JIT hoặc CPU (đặc biệt ARM) có thể làm lệnh ghi {{ready}} hiện ra với core khác trước lệnh ghi {{value}}.
+3. Reader thấy {{ready == true}}, đọc {{value}} và nhận 0 (giá trị cũ). JIT thậm chí có thể đưa lần đọc {{ready}} ra khỏi vòng lặp, khiến reader chờ mãi.
+4. Khi {{ready}} là volatile: ghi volatile là release — mọi ghi trước đó (value = 42) phải hiện ra trước; đọc volatile là acquire — nếu reader thấy {{ready == true}} thì chắc chắn thấy {{value == 42}}. Đây là luật volatile cộng với tính bắc cầu của happens-before.
+
+~~~text
+Không volatile:                      Có volatile ready:
+Writer: value=42 ; ready=true        Writer: value=42 --hb--> ready=true (release)
+Core khác có thể thấy:                                            |
+  ready=true, value=0   <- BUG       Reader: đọc ready==true (acquire) --hb--> đọc value==42
+~~~
+
+### Cách sửa
 
 ~~~java
 int value;
-volatile boolean ready;
-void publish() { value = 42; ready = true; }
-int read() { return ready ? value : -1; }
+volatile boolean ready;                  // cờ publish phải volatile
+
+void publish() {
+    value = 42;                          // 1. ghi payload TRƯỚC
+    ready = true;                        // 2. bật cờ SAU (release)
+}
+int read() {
+    return ready ? value : -1;           // đọc cờ TRƯỚC (acquire), rồi mới đọc payload
+}
 ~~~
+- Thứ tự là bắt buộc: writer ghi payload rồi mới bật cờ; reader kiểm tra cờ rồi mới đọc payload. Đảo thứ tự là mất bảo đảm.
+- Sleep/yield không tạo quan hệ happens-before; test stress chạy ổn cũng không chứng minh chương trình đúng.
 
-Để kiểm tra litmus test khó tái hiện, dùng jcstress; thread.sleep không thay thế synchronization.
+### Giới hạn
+- Volatile không làm phép cộng hay read-modify-write thành atomic. Dùng AtomicLong, lock hoặc LongAdder tuỳ yêu cầu.
+- Nếu invariant gồm nhiều field cần snapshot thống nhất, dùng lock hoặc publish **một object immutable** qua một volatile reference (hoặc AtomicReference).
+- Nhiều writer cần giao thức ownership rõ ràng; một cờ volatile đơn lẻ không cộng dồn được cập nhật của nhiều người.
+- Muốn reader chờ tới khi có dữ liệu (thay vì kiểm tra rồi trả -1): dùng CountDownLatch, CompletableFuture hoặc BlockingQueue thay vì vòng lặp bận.
 
-> Senior tip: khi review concurrent code, hãy chỉ ra cạnh happens-before nối writer với reader. Nếu không chỉ ra được cạnh cụ thể, đừng dựa vào việc “máy x86 chạy ổn”.`,
+Để kiểm tra các litmus test khó tái hiện, dùng jcstress; {{Thread.sleep}} không thay thế được synchronization.
+
+### Lỗi hay gặp
+- **Cờ volatile nhưng payload ghi sau cờ**: reader vẫn thấy value cũ. Cách tránh: luôn ghi payload trước, bật cờ cuối cùng.
+- **Chỉ payload volatile, cờ không volatile**: reader đọc cờ không có acquire, không có bảo đảm. Cách tránh: biến được dùng làm "tín hiệu" mới là biến cần volatile.
+- **Publish nhiều field liên quan bằng nhiều volatile riêng**: reader thấy tổ hợp lẫn lộn giữa bản cũ và bản mới. Cách tránh: gói thành object immutable, publish một reference.
+- **Kết luận "đã đúng" vì chạy ổn trên laptop x86**: bug lộ trên ARM/Graviton. Cách tránh: lý luận bằng happens-before, kiểm bằng jcstress.
+
+### Trả lời miệng 1 phút
+"Nguyên nhân là không có happens-before giữa writer và reader, tức là data race: JIT và CPU được phép làm lệnh ghi cờ hiện ra trước lệnh ghi value, nên reader thấy ready bằng true nhưng value vẫn cũ. Cách sửa là khai báo ready là volatile, writer ghi value trước rồi mới bật cờ, reader đọc cờ trước rồi mới đọc value: ghi volatile có ngữ nghĩa release, đọc volatile có ngữ nghĩa acquire, cộng tính bắc cầu nên value chắc chắn nhìn thấy được. Nhưng volatile không làm thao tác ghép thành nguyên tử, và nếu cần snapshot nhiều field thì tôi publish một object immutable qua một reference volatile hoặc dùng lock. Tôi không dùng sleep hay test stress để chứng minh đúng, mà chỉ ra cạnh happens-before cụ thể và kiểm bằng jcstress khi cần."
+
+> Senior tip: khi review concurrent code, hãy chỉ ra cạnh happens-before nối writer với reader. Nếu không chỉ ra được cạnh cụ thể, đừng dựa vào việc "máy x86 chạy ổn".`,
   follow: ['Vì sao volatile không bảo vệ count++?', 'Khi nào cần immutable snapshot thay vì nhiều volatile field?'],
   tags: ['JMM', 'happens-before', 'volatile']
 },
@@ -2882,23 +3784,68 @@ int read() { return ready ? value : -1; }
   topic: 'concurrency',
   level: 'lead',
   q: 'Parallel stream trong endpoint làm nghẽn các tác vụ ForkJoin khác. Bạn giải thích common pool và thiết kế lại thế nào?',
-  a: `**Tóm tắt:** Parallel stream thường dùng ForkJoinPool.commonPool, vốn được chia sẻ trong JVM. Blocking I/O giữ worker trong lúc chờ và có thể làm task không liên quan bị đói; tách workload vào executor hữu hạn hoặc dùng async client với giới hạn concurrency.
+  a: `**Tóm tắt:** parallel stream chạy trên {{ForkJoinPool.commonPool()}} — một pool dùng chung cả JVM, chỉ có (số core − 1) worker. Blocking I/O (gọi HTTP, JDBC) bên trong parallel stream giữ worker suốt thời gian chờ, làm các task không liên quan (CompletableFuture async không truyền executor, parallel stream khác) bị đói. Thiết kế lại bằng cách tách workload I/O vào executor có giới hạn (bulkhead) hoặc async client, với giới hạn concurrency, timeout và queue hữu hạn.
 
-### Vì sao common pool dễ thành bẫy
-- ForkJoinPool tối ưu cho task CPU-bound nhỏ bằng work stealing: worker rảnh lấy task từ deque của worker bận.
-- Khi worker chờ socket/DB, nó không steal được việc khác. Compensation cho blocking không phải bảo đảm để dùng pool làm I/O executor.
-- Một parallel stream ở endpoint có thể cạnh tranh với CompletableFuture async stage không truyền executor.
+### Hiểu nhanh
+commonPool giống chiếc thang máy duy nhất của toà nhà, chỉ chở được 3 người một lúc. Parallel stream gọi I/O giống 3 người vào thang rồi **đứng chờ trong thang** nghe điện thoại 2 phút: thang không đi đâu được, cả toà nhà xếp hàng, kể cả những người chẳng liên quan gì tới cuộc điện thoại. Cách sửa: những ai phải chờ lâu thì đi thang riêng có giới hạn người (executor riêng), và thang chung chỉ để chở việc nhanh (tính toán thuần).
+
+### Thuật ngữ
+- **commonPool**: ForkJoinPool tĩnh dùng chung toàn JVM, parallelism mặc định = số core − 1.
+- **Parallel stream**: stream xử lý phần tử song song trên commonPool.
+- **Work stealing**: worker rảnh lấy task từ deque của worker khác.
+- **Blocking I/O**: thread đứng chờ mạng/đĩa/DB trả kết quả, không làm được việc khác.
+- **Bulkhead**: tách tài nguyên (pool, semaphore) theo từng dependency để một chỗ hỏng không kéo sập chỗ khác.
+- **Starvation**: task chờ mãi không được chạy vì worker bị chiếm hết.
+- **Compensation thread**: thread ForkJoinPool tạo thêm khi worker báo sắp block qua {{ForkJoinPool.managedBlock}}.
+- **Rejection policy**: cách executor xử lý khi không nhận thêm task.
+
+### Vì sao common pool dễ thành bẫy (từng bước)
+1. ForkJoinPool tối ưu cho task CPU-bound nhỏ bằng work stealing: worker rảnh lấy task từ deque của worker bận.
+2. Pod 4 vCPU → commonPool có 3 worker. Endpoint gọi {{ids.parallelStream().map(this::callPartner)}}, mỗi call 300 ms.
+3. 3 worker cùng đứng chờ socket, không steal được việc khác. Bù thread (compensation) chỉ xảy ra khi code báo trước qua managedBlock, mà HTTP client hay JDBC driver không làm vậy, nên không thể coi commonPool là I/O executor.
+4. Mọi CompletableFuture async không truyền executor và mọi parallel stream khác trong JVM phải xếp hàng sau → các endpoint không liên quan cũng timeout.
+5. Ví dụ số: 100 id × 300 ms / 3 worker ≈ 10 giây cho một request; 5 request đồng thời là commonPool kẹt gần một phút.
+
+~~~text
+commonPool (3 worker, pod 4 vCPU)
+worker-1: [callPartner ... chờ 300ms ...]
+worker-2: [callPartner ... chờ 300ms ...]
+worker-3: [callPartner ... chờ 300ms ...]
+queue:    [CF.supplyAsync từ API khác][parallel sort][...] <- đói, timeout
+~~~
 
 ### Cách sửa
-- Dùng executor chuyên cho dependency, thread/queue hữu hạn, rejection policy rõ ràng và timeout.
+- Dùng executor chuyên cho từng dependency: thread/queue hữu hạn, rejection policy rõ ràng và timeout.
 - Đặt semaphore theo quota đối tác và số connection DB; song song không có nghĩa là không giới hạn.
-- Truyền executor cho supplyAsync/thenApplyAsync. Với parallel stream, cân nhắc vòng lặp tuần tự hoặc đổi sang API cho phép chỉ định executor.
-- Queue phải hữu hạn: queue vô hạn biến quá tải thành latency và memory tăng liên tục.
+- Truyền executor cho {{supplyAsync}}/{{thenApplyAsync}}. Parallel stream không nhận executor: cân nhắc vòng lặp tuần tự, hoặc đổi sang API cho phép chỉ định executor.
+- Queue phải hữu hạn: queue vô hạn biến quá tải thành latency và bộ nhớ tăng liên tục.
+
+~~~java
+// Bulkhead cho đối tác: tối đa 20 call song song, queue 100, đầy thì fail fast
+ExecutorService partnerPool = new ThreadPoolExecutor(20, 20, 0, TimeUnit.SECONDS,
+        new ArrayBlockingQueue<>(100), new ThreadPoolExecutor.AbortPolicy());
+
+List<CompletableFuture<Quote>> fs = ids.stream()
+        .map(id -> CompletableFuture.supplyAsync(() -> callPartner(id), partnerPool)
+                .orTimeout(2, TimeUnit.SECONDS))          // mỗi call có deadline
+        .toList();
+List<Quote> quotes = fs.stream().map(CompletableFuture::join).toList(); // join ở biên
+~~~
+Với Java 21 có thể thay pool bằng {{newVirtualThreadPerTaskExecutor()}} cộng một {{Semaphore(20)}} quanh callPartner — vẫn phải có giới hạn.
 
 ### Vận hành
-- Theo dõi queue depth, active worker, rejection, dependency latency và saturation của common pool.
+- Theo dõi queue depth, active worker, số lần reject, latency của dependency và mức bão hoà của commonPool ({{getActiveThreadCount}}, {{getQueuedSubmissionCount}}).
 - Không tạo executor mỗi request. Shutdown executor cùng lifecycle ứng dụng.
 - Virtual thread giúp viết blocking code dễ scale, nhưng không tăng quota DB hay capacity đối tác.
+
+### Lỗi hay gặp
+- **I/O trong parallel stream**: triệu chứng là nhiều API chậm cùng lúc, thread dump thấy {{ForkJoinPool.commonPool-worker}} đứng ở socket read. Cách tránh: executor I/O riêng.
+- **Tạo executor mới trong mỗi request**: số thread tăng mãi, rò bộ nhớ. Cách tránh: executor là bean dùng chung, có shutdown.
+- **Executor riêng nhưng queue vô hạn**: không còn kẹt commonPool nhưng latency tăng dần rồi OOM. Cách tránh: queue bounded + AbortPolicy + trả 503.
+- **Bỏ timeout cho call đối tác**: đối tác chậm là worker kẹt hết. Cách tránh: timeout ở HTTP client và orTimeout ở future.
+
+### Trả lời miệng 1 phút
+"Parallel stream chạy trên commonPool, pool dùng chung cả JVM chỉ có số core trừ một worker. Nếu trong lambda có HTTP hay JDBC thì worker đứng chờ I/O, không steal được việc khác, và ForkJoinPool không tự bù thread vì driver không báo trước; thế là mọi CompletableFuture async không truyền executor và các parallel stream khác bị đói, endpoint không liên quan cũng timeout. Tôi thiết kế lại bằng bulkhead: mỗi dependency một executor có số thread và queue hữu hạn, rejection rõ ràng, timeout cho từng call, semaphore theo quota đối tác; hoặc virtual thread cộng semaphore trên Java 21. Parallel stream tôi chỉ giữ cho tính toán thuần trên dữ liệu lớn, và theo dõi metric của commonPool để phát hiện ai đó lại block trong đó."
 
 > Senior tip: đặt bulkhead theo từng dependency. Khi queue đã đầy, fail fast thường tốt hơn xếp thêm việc chắc chắn hết deadline.`,
   follow: ['Vì sao virtual thread vẫn cần semaphore?', 'CompletableFuture stage nào mặc định có thể chạy trên common pool?'],
