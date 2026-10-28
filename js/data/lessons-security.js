@@ -1086,7 +1086,9 @@ final class SlidingWindow {
     'Giải thích và triển khai được session fixation protection bằng cách rotate sid sau đăng nhập',
     'Dùng clock truyền vào để kiểm tra TTL, renew và các tình huống hết hạn tất định',
   ],
-  body: `### Session store: Redis-thuần và trạng thái phiên
+  body: `**Tóm tắt:** Bài này mô phỏng {{SessionStore}} Redis-thuần bằng Java thuần: các phiên nằm trong map {{sessionId -> Session}}, thao tác tạo/truy vấn trả {{Optional<Session>}} để buộc xử lý trường hợp thiếu phiên, còn {{resolve}} trả {{ResolveResult}}. {{resolve}} kiểm tra tenant disabled (401 thay vì 500), CSRF token (403), {{NullSecurityContext}} (mã {{ANON}}) và renew TTL khi thành công; việc rotate sid sau đăng nhập chống session fixation nằm ở {{afterLogin}}; mọi thao tác nhận {{nowMs}} truyền vào thay vì đọc đồng hồ hệ thống để test tất định (hết hạn, đồng hồ lùi, nhảy cóc).
+
+### Session store: Redis-thuần và trạng thái phiên
 Trong Spring Security, {{HttpSession}} thường được Servlet container quản lý; khi chuyển sang Redis (Spring Session) bạn phải tự quản lý map {{sessionId -> Session}}. Bài này mô phỏng đúng lớp đó bằng Java thuần: một {{SessionStore}} giữ map trong bộ nhớ, mỗi thao tác trả {{Optional<Session>}} để buộc người gọi xử lý trường hợp "không có phiên" thay vì dereference null.
 
 Mỗi {{Session}} chứa: {{tenantId}}, {{userId}}, {{attributes}}, {{expiryMs}}, {{securityContext}} (có thể null trước khi xác thực) và {{csrfToken}} riêng. Tách {{securityContext}} ra khỏi {{userId}} là để phân biệt "có phiên nhưng chưa đăng nhập" (anonymous) với "đã xác thực".
@@ -1095,7 +1097,7 @@ Mỗi {{Session}} chứa: {{tenantId}}, {{userId}}, {{attributes}}, {{expiryMs}}
 {{resolve(request, nowMs)}} là cửa vào mỗi request: đọc cookie sid, kiểm tra CSRF, kiểm tra tenant. Nếu tenant đã {{DISABLED}}, hệ thống phải trả {{Status}} với code 401 và dừng — **không** để code tiếp tục dereference tenant null rồi ném NullPointerException thành HTTP 500. Lỗi 500 là kênh dò thông tin: attacker biết tenant bị vô hiệu hoá và có thể thử enumerate; hơn nữa 500 phá monitoring (mọi alert đều kêu). Quy tắc: thiếu quyền là 401/403, không phải 500.
 
 ### CSRF token: mỗi phiên một chuỗi riêng
-Mỗi session sinh {{csrfToken}} ngẫu nhiên khi tạo. Request phải gửi lại token đó trong header/form; {{resolve}} so {{session.csrfToken.equals(request.csrfToken)}}. Cookie tự động đi kèm request nên không đủ — attacker có thể ép trình duyệt gửi cookie (CSRF), nhưng không đọc được token trong DOM/response. Bài test "CSRF webpack": cookie hợp lệ nhưng CSRF sai → reject (403), dù session tồn tại.
+Mỗi session sinh {{csrfToken}} ngẫu nhiên khi tạo. Request phải gửi lại token đó trong header/form; {{resolve}} so {{session.csrfToken.equals(request.csrfToken)}}. Cookie tự động đi kèm request nên không đủ — attacker có thể ép trình duyệt gửi cookie (CSRF), nhưng không đọc được token trong DOM/response. Bài test {{csrf mismatch rejects}}: cookie hợp lệ nhưng CSRF sai → reject (403), dù session tồn tại.
 
 ### Session fixation: rotate sid sau đăng nhập
 Trước đăng nhập, session thường là anonymous (sid cũ). Nếu attacker biết sid đó và dụ nạn nhân đăng nhập trên cùng sid, attacker có phiên đã xác thực. Phòng thủ: {{afterLogin(oldSid, nowMs)}} tạo **sid mới**, copy {{userId}}/tenant/attributes, xoá sid cũ. Sid cũ mất hiệu lực ngay; sid mới là phiên đã xác thực. Đây là lý do test kiểm tra old sid không resolve được và new sid resolve được với cùng {{userId}}.
@@ -1113,6 +1115,8 @@ Trước đăng nhập, session thường là anonymous (sid cũ). Nếu attacke
 - {{securityContext}} null bị dereference → 500; luôn coi anonymous là trạng thái bình thường.
 - TTL quá dài (vài ngày) cho phiên nhạy cảm; nên kết hợp idle timeout và absolute timeout.
 - Attribute mutate trên object chia sẻ giữa các request → race; mỗi request nên làm việc trên bản copy hoặc đồng bộ.
+
+> Senior tip: một NPE trong filter chain thường bị log như lỗi 500 và che giấu việc tenant đã bị disable hoặc context chưa set. Luôn trả 401/403 có ý nghĩa thay vì để exception biến thành 500; đã có những hệ thống bị enumerate tenant qua chính lỗi 500 này.
 
 ### Liên hệ phỏng vấn
 Interviewer hay hỏi: "session fixation là gì và xử lý thế nào?", "CSRF khác XSS thế nào?", "vì sao tenant disabled không được trả 500?", "anonymous context xử lý ra sao trong filter chain?". Làm xong bài tập dưới đây — tự viết {{SessionStore}} với rotate sid và CSRF check — là bạn trả lời được cả bốn câu bằng chính mã của mình.`,
@@ -1517,7 +1521,9 @@ final class SessionStore {
     'Phát hiện được lỗi copy-paste khiến rule của billing bị sai (leak) bằng test bijection',
     'Giải thích được vì sao grant là quyền riêng, không đi kèm write',
   ],
-  body: `### Role matrix theo domain
+  body: `**Tóm tắt:** Mỗi domain (project, billing, vm) có ma trận quyền riêng: OWNER đầy đủ, STEWARD write/data không delete/grant, ADMIN read/delete/grant không write data, USER chỉ read. {{AccessChecker}} triển khai canRead/canWrite/canDelete/canGrant; test bijection so billing/vm với project để bắt leak copy-paste. Grant tách khỏi write để ngăn leo thang.
+
+### Role matrix theo domain
 Trong hệ thống nhiều domain (project, billing, vm), quyền không thể dùng một boolean chung cho mọi nơi. Mỗi domain có ma trận riêng: {{OWNER}} đủ quyền trong domain đó; {{STEWARD}} write/data nhưng không delete cũng không grant; {{ADMIN}} đọc, delete và grant nhưng không write data; {{USER}} chỉ read. Bài này mô phỏng {{AccessChecker}} bằng Java thuần, không dùng Spring Security.
 
 ### canRead, canWrite, canDelete, canGrant
@@ -1538,6 +1544,8 @@ Nhiều người nghĩ "ai write được thì grant được" — sai. STEWARD 
 - Trộn grant vào write → leo thang quyền.
 - Không audit log khi grant/revoke → không truy vết được ai cấp quyền cho ai.
 - Cache permission trong session mà không invalidate khi role thay đổi → user bị revoke vẫn còn quyền.
+
+> Senior tip: hậu quả kinh điển của việc trộn grant vào write là một STEWARD tự cấp ADMIN cho mình vì canGrant không phụ thuộc domain nên test bijection không bắt được; còn lỗi copy-paste rule giữa các domain thì một test bijection so billing/vm với project bắt được ngay. Luôn tách quyền quản trị (grant/delete) khỏi quyền dữ liệu (write), và test từng domain độc lập.
 
 ### Liên hệ phỏng vấn
 Interviewer hay hỏi: "phân quyền theo domain thế nào?", "vì sao STEWARD không delete?", "grant và write khác nhau ra sao?", "làm sao phát hiện rule copy-paste sai?". Làm xong bài tập dưới đây — tự viết {{AccessChecker}} và test bijection — là bạn trả lời được cả bốn câu bằng chính mã của mình.`,

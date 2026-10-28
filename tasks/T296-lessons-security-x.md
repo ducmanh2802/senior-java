@@ -25,3 +25,4 @@ Owns: `js/data/lessons-security.js`
 
 ## Notes
 File dài, đã hoàn thiện: lesson-security-004 (Session store + NullSecurityContext + tenant DISABLED → 401, session fixation rotate, TTL theo clock) và lesson-security-005 (AccessChecker role matrix OWNER/STEWARD/ADMIN/USER theo domain project/billing/vm). test-lessons 91/91 OK, validate OK.
+Reviewed-by: opencode (T296R)
