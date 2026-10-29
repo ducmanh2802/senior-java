@@ -1,8 +1,10 @@
 # T375 — Dịch sang tiếng Anh: q-spring-data (8 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-spring-data-10.en.js`
+
+Translated 8 questions (spring-034, spring-035, spring-036, spring-037, spring-038, jpa-028, jpa-029, db-031) to English. Validated with `node scripts/validate.js`.
 
 Người dùng bấm EN thì **cả trang** chuyển sang tiếng Anh: file này phủ bản dịch lên dữ liệu gốc theo `id` (đọc comment "content translation" trong `js/core/i18n.js`). Đọc AGENTS.md mục 5 (markup) và các mục sau trong `js/data/q-spring-data.js`: **spring-034, spring-035, spring-036, spring-037, spring-038, jpa-028, jpa-029, db-031**.
 
@@ -16,3 +18,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-spring-data-10.en.js` và `node scripts/check-i18n.js q-spring-data-10` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
