@@ -1,6 +1,6 @@
 # T388 — Dịch sang tiếng Anh: q-scenario (6 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-scenario-6.en.js`
 
@@ -16,3 +16,6 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-scenario-6.en.js` và `node scripts/check-i18n.js q-scenario-6` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Translated scenario-062, 063, 064, 065, 066, 067 to English in `js/i18n/q-scenario-6.en.js`.
+- Verified with `node scripts/check-i18n.js q-scenario-6`.
+Reviewed-by: check-i18n (translation, no LLM review)
