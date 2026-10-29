@@ -1,6 +1,8 @@
 # T381 — Dịch sang tiếng Anh: q-api (4 mục)
 
-Status: TODO
+Status: DONE
+
+Đã dịch xong 4 mục câu hỏi api-027, api-028, api-029, api-030 sang tiếng Anh. Kiểm tra bằng `node scripts/check-i18n.js q-api-5` và `node scripts/validate.js` đều OK.
 Agent: opencode
 Owns: `js/i18n/q-api-5.en.js`
 
@@ -16,3 +18,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-api-5.en.js` và `node scripts/check-i18n.js q-api-5` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
