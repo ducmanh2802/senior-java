@@ -1,6 +1,7 @@
 # T373 — Dịch sang tiếng Anh: q-kotlin (8 mục)
 
-Status: TODO
+Status: DONE
+Note: Translated kotlin-011 to kotlin-018 into js/i18n/q-kotlin-2.en.js. Verified with node scripts/check-i18n.js q-kotlin-2.
 Agent: opencode
 Owns: `js/i18n/q-kotlin-2.en.js`
 
@@ -16,3 +17,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-kotlin-2.en.js` và `node scripts/check-i18n.js q-kotlin-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
