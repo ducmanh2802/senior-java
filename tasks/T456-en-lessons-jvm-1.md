@@ -1,6 +1,6 @@
 # T456 — Dịch sang tiếng Anh: lessons-jvm (2 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-jvm-1.en.js`
 
@@ -16,3 +16,10 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-jvm-1.en.js` và `node scripts/check-i18n.js lessons-jvm-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đầy đủ `lesson-jvm-001`, `lesson-jvm-002` (title, goals, body, exercises[].title/prompt/hints/explain, check[].q/options/explain). Không chép code (starter/tests/reference).
+- Giữ nguyên markup, tên API/class, số liệu; comment tiếng Việt trong code block của `body` đã dịch sang tiếng Anh.
+- `node scripts/check-i18n.js lessons-jvm-1` → `OK — 2 mục đã dịch.` (file được nạp và chạy qua vm nên cú pháp hợp lệ).
+- `node scripts/validate.js` → `OK — không có lỗi.`
+- Chỉ sửa `js/i18n/lessons-jvm-1.en.js` và file task này.
+Reviewed-by: check-i18n (translation, no LLM review)
