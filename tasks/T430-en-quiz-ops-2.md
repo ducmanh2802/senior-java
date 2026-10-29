@@ -1,6 +1,6 @@
 # T430 — Dịch sang tiếng Anh: quiz-ops (22 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/quiz-ops-2.en.js`
 
@@ -16,3 +16,7 @@ Yêu cầu dịch:
 - `node --check js/i18n/quiz-ops-2.en.js` và `node scripts/check-i18n.js quiz-ops-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã dịch đủ 22 mục vào `js/i18n/quiz-ops-2.en.js` (qz-aws-018..022, qz-security-009..022, qz-primer-001..003), chỉ gồm `q`, `options`, `explain`.
+- Giữ nguyên markup, số lượng option, bảng, code block; dịch comment tiếng Việt trong code block. Không có backtick/`${` trong file.
+- `node scripts/check-i18n.js quiz-ops-2` → OK (22 mục). `node scripts/validate.js` → OK — không có lỗi. (Lệnh `node --check` bị chặn quyền trong phiên này; check-i18n đã nạp file qua `vm` nên cú pháp hợp lệ.)
+Reviewed-by: check-i18n (translation, no LLM review)
