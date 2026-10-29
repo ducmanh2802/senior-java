@@ -18,10 +18,13 @@
   const M = {
     eager: ['topics.js', 'roadmap.js', 'path.js'],
     groups: {
+      // GENERATED compact index of the heavy groups (scripts/build-light-index.js) for light routes; ~100 KB
+      index: ['index-light.js'],
       questions: ['q-java.js', 'q-kotlin.js', 'q-concurrency-jvm.js', 'q-spring-data.js', 'q-sql.js', 'q-api.js',
         'q-security.js', 'q-microservices.js', 'q-system-design.js', 'q-scenario.js', 'q-aws.js', 'q-ai.js',
         'q-claude.js', 'q-primer.js', 'q-devops.js', 'q-soft.js', 'q-english.js'],
       quiz: ['quiz.js', 'quiz-claude.js'],
+      exams: ['exams.js'],                                    // exam registry (#/exam)
       algos: ['algo.js'],
       companies: ['companies.js'],
       labs: ['labs-thread.js', 'labs-gc.js', 'labs-sql.js', 'labs-incident.js'],
@@ -35,18 +38,19 @@
       projects: ['projects.js'],
     },
     routes: {
-      // dashboard: SRS due list + stats (questions, algos), next lesson, today's plan (sd, drills), interview plan (companies)
-      dashboard: ['questions', 'algos', 'lessons', 'sd', 'drills', 'companies'],
-      roadmap: ['questions', 'algos'],                        // App.dueItems()
+      // dashboard: SRS due list + stats, next lesson, today's plan, interview plan — all from the light index via
+      // App.lite()/App.stats()/App.dueItems(); full text loads when the user opens an item (bank/flash/learn…)
+      dashboard: ['index'],
+      roadmap: ['index'],                                     // App.dueItems()
       bank: ['questions', 'glossary'],
       flash: ['questions', 'glossary'],
       quiz: ['quiz', 'glossary'],
-      exam: ['quiz', 'glossary'],
+      exam: ['quiz', 'exams', 'glossary'],
       algo: ['algos', 'glossary'],
       mock: ['questions', 'algos'],
       companies: ['companies', 'questions'],                  // App.stats()
       labs: ['labs', 'questions', 'glossary'],                // related-questions widget
-      account: ['questions', 'algos'],                        // App.dueItems(), App.stats()
+      account: ['index'],                                     // App.dueItems(), App.stats()
       legal: ['questions', 'quiz', 'algos'],                  // #/legal (= about page) shows counts
       'legal/about': ['questions', 'quiz', 'algos'],
       'legal/privacy': [],
@@ -61,7 +65,7 @@
       career: ['questions', 'companies'],
     },
     // idle prefetch order after the first render (most likely next screens first)
-    prefetch: ['questions', 'glossary', 'lessons', 'algos', 'quiz', 'companies', 'sd', 'drills', 'labs', 'projects'],
+    prefetch: ['index', 'questions', 'glossary', 'lessons', 'algos', 'quiz', 'exams', 'companies', 'sd', 'drills', 'labs', 'projects'],
   };
   /** Groups a resolved view needs: needsFor('legal', 'privacy') → routes['legal/privacy'] ?? routes.legal ?? []. */
   M.needsFor = function (view, param) {

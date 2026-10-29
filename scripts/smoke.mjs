@@ -28,7 +28,7 @@ const base = `http://127.0.0.1:${server.address().port}/`;
 
 const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 const routes = ['', ...[...html.matchAll(/data-route="([a-z]+)"/g)].map(m => m[1]).filter(r => r !== 'dashboard'),
-  'bank/core', 'flash/due', 'algo/algo-001'];
+  'bank/core', 'flash/due', 'algo/algo-001', 'exam/claude', 'exam/java-core', 'exam/spring', 'exam/system-design', 'exam/devops-cloud'];
 
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
@@ -62,7 +62,7 @@ for (const r of [...new Set(routes)]) {
 
 // mobile width: no horizontal page scroll on the main routes
 await page.setViewportSize({ width: 360, height: 800 });
-for (const r of ['', 'bank', 'algo', 'mock']) {
+for (const r of ['', 'bank', 'algo', 'mock', 'exam', 'exam/java-core']) {
   current = '#/' + r + ' @360px';
   await page.goto(base + '#/' + r);
   await settle();

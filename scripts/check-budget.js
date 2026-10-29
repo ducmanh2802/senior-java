@@ -17,7 +17,10 @@ const BUDGET_EAGER = 900 * 1024;
 // Routes that must stay light (no question bank): data awaited before render. Other routes are reported only,
 // since they legitimately need the bank (which grows with content) — the win there is the parallel, non-blocking load.
 const BUDGET_ROUTE_DATA = { quiz: 1500 * 1024, exam: 1500 * 1024, algo: 1500 * 1024, speak: 300 * 1024, news: 0,
-  'legal/privacy': 0, 'legal/terms': 0 };
+  'legal/privacy': 0, 'legal/terms': 0, roadmap: 200 * 1024, account: 200 * 1024 };
+// Landing page: eager shell + awaited data, total. The dashboard renders from the generated light index
+// (js/data/index-light.js, ~100 KB) instead of the ~6 MB of questions/lessons/algos it used to await.
+const BUDGET_ROUTE_TOTAL = { dashboard: 1200 * 1024 };
 
 const size = f => { try { return fs.statSync(path.join(ROOT, f)).size; } catch (e) { return 0; } };
 const kb = n => (n / 1024).toFixed(0).padStart(6) + ' KB';
@@ -56,6 +59,12 @@ for (const [r, gs] of Object.entries(M.routes)) {
   const over = b != null && n > b;
   console.log('  ' + r.padEnd(14) + kb(n) + (b != null ? ' (budget' + kb(b) + ')' : '                  ') + '  [' + gs.join(', ') + ']' + (over ? '  OVER' : ''));
   if (over) problems.push(`route ${r}: ${kb(n).trim()} > budget ${kb(b).trim()}`);
+}
+console.log('\nPer route: total incl. eager shell:');
+for (const [r, b] of Object.entries(BUDGET_ROUTE_TOTAL)) {
+  const n = eager + (M.routes[r] || []).reduce((s, g) => s + (groupBytes[g] || 0), 0);
+  console.log('  ' + (r === 'dashboard' ? '#/ dashboard' : r).padEnd(14) + kb(n) + ' (budget' + kb(b) + ')' + (n > b ? '  OVER' : ''));
+  if (n > b) problems.push(`route ${r} total (shell + data): ${kb(n).trim()} > budget ${kb(b).trim()}`);
 }
 
 if (problems.length) { console.error('\nLỖI:\n  ' + problems.join('\n  ')); process.exit(1); }

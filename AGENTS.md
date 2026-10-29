@@ -34,6 +34,7 @@ Nhánh: mọi commit (autopilot, integrator) vào nhánh **`content`**, Vercel d
 4. **Không chạy `git commit` / `git push`** và không tạo branch. Người tích hợp sẽ review rồi commit.
 5. Không xoá hoặc ghi đè nội dung của người khác. File dữ liệu chỉ được **thêm** câu hỏi.
 6. Làm xong phải chạy `node scripts/validate.js` cho đến khi in ra `OK — không có lỗi.`
+   Thêm/sửa câu hỏi, bài học, algo, sd, drill hoặc công ty thì chạy trước `node scripts/build-light-index.js` (sinh lại `js/data/index-light.js` cho dashboard; validate báo lỗi nếu file này cũ).
 7. Cuối cùng, cập nhật trạng thái trong file task của bạn: `Status: DONE`, kèm ghi chú ngắn.
 8. **TUYỆT ĐỐI KHÔNG kill tiến trình theo tên** (`taskkill /IM`, `Stop-Process -Name`, `Get-Process node | Stop-Process`, `pkill`, `killall`…).
    Máy này đang chạy nhiều agent và công cụ khác dùng `node`/`chrome`; kill theo tên sẽ tắt hết chúng và cả trình duyệt của người dùng.

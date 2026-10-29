@@ -87,7 +87,9 @@
 
   function collections() {
     return [window.TOPICS, window.QUESTIONS, window.QUIZ, window.ALGOS, window.LESSONS, window.LABS,
-      window.GLOSSARY, window.PATH, window.ROADMAP && [Object.assign(window.ROADMAP, { id: '__roadmap' })]];
+      window.GLOSSARY, window.PATH, window.ROADMAP && [Object.assign(window.ROADMAP, { id: '__roadmap' })]]
+      // light index (App.lite) copies: only the fields they carry are swapped (titles), never whole bodies
+      .concat(Object.values((App.lightIndex && App.lightIndex()) || {}));
   }
 
   function swapContent() {
@@ -98,6 +100,7 @@
       if (lang === 'en' && !item.__vi) {
         item.__vi = {};
         Object.keys(over).forEach(k => {
+          if (item.__light && !(k in item)) return;
           item.__vi[k] = item[k];
           let v = merge(item[k], over[k]);
           if (k === 'a' && typeof v === 'string' && Array.isArray(item.refs) && item.refs.length) {
@@ -129,7 +132,7 @@
     vi: {
       'nav.main': 'Điều hướng chính', 'nav.dashboard': 'Tổng quan', 'nav.roadmap': 'Lộ trình', 'nav.news': '📰 Tin tức mỗi sáng',
       'nav.study': 'Ôn tập', 'nav.path': '🗺️ Lộ trình học', 'nav.learn': '📖 Bài học', 'nav.bank': '📚 Câu hỏi',
-      'nav.flash': '🃏 Flashcard', 'nav.quiz': '✅ Trắc nghiệm', 'nav.practice': 'Luyện tập',
+      'nav.flash': '🃏 Flashcard', 'nav.quiz': '✅ Trắc nghiệm', 'nav.exam': '📝 Thi thử', 'nav.practice': 'Luyện tập',
       'nav.algo': '🧠 Thuật toán', 'nav.labs': '🔧 Debug lab', 'nav.sd': '🏗️ Luyện System Design', 'nav.projects': '🛠️ Pet project',
       'nav.speak': '🗣️ Luyện nói tiếng Anh', 'nav.interview': '🎙️ Phỏng vấn AI (giọng nói)',
       'nav.career': '🧭 Sự nghiệp', 'nav.mock': '🎤 Phỏng vấn thử', 'nav.companies': '🏢 Theo công ty',
@@ -142,7 +145,7 @@
     en: {
       'nav.main': 'Main navigation', 'nav.dashboard': 'Dashboard', 'nav.roadmap': 'Roadmap', 'nav.news': '📰 Morning news',
       'nav.study': 'Study', 'nav.path': '🗺️ Learning path', 'nav.learn': '📖 Lessons', 'nav.bank': '📚 Questions',
-      'nav.flash': '🃏 Flashcards', 'nav.quiz': '✅ Quiz', 'nav.practice': 'Practice',
+      'nav.flash': '🃏 Flashcards', 'nav.quiz': '✅ Quiz', 'nav.exam': '📝 Mock exams', 'nav.practice': 'Practice',
       'nav.algo': '🧠 Algorithms', 'nav.labs': '🔧 Debug lab', 'nav.sd': '🏗️ System design practice', 'nav.projects': '🛠️ Pet projects',
       'nav.speak': '🗣️ English speaking', 'nav.interview': '🎙️ AI interview (voice)',
       'nav.career': '🧭 Career', 'nav.mock': '🎤 Mock interview', 'nav.companies': '🏢 By company',

@@ -289,7 +289,7 @@
 
   /** First lesson not marked known, walking window.PATH order then the full lesson list. */
   function nextLesson() {
-    const lessons = App.lessons();
+    const lessons = App.lite('lessons');
     const byId = {};
     lessons.forEach(l => { byId[l.id] = l; });
     const order = [], seen = {};
@@ -307,7 +307,7 @@
 
   /** Due algorithm first, otherwise an unsolved problem matching the current week's pattern. */
   function pickAlgo() {
-    const algos = App.algos();
+    const algos = App.lite('algos');
     if (!algos.length) return null;
     const due = App.dueItems().filter(x => String(x.id).indexOf('algo-') === 0);
     if (due.length) {
@@ -336,19 +336,19 @@
 
   /** Rotate through system-design problems by day. */
   function pickSd() {
-    const list = Array.isArray(window.SD_PROBLEMS) ? window.SD_PROBLEMS.filter(x => x && x.id) : [];
+    const list = App.lite('sd').filter(x => x && x.id);
     return list.length ? list[dayNumber() % list.length] : null;
   }
 
   /** Speaking drill (prefer not-known), falling back to an English question in the bank. */
   function pickSpeak() {
-    const drills = Array.isArray(window.DRILLS) ? window.DRILLS.filter(d => d && d.id) : [];
+    const drills = App.lite('drills').filter(d => d && d.id);
     if (drills.length) {
       const fresh = drills.filter(d => App.store.getStatus(d.id) !== 'known');
       const pool = fresh.length ? fresh : drills;
       return { kind: 'speak', drill: pool[dayNumber() % pool.length].id, minutes: 10 };
     }
-    const q = App.questions().find(x => x.lang === 'en');
+    const q = App.lite('questions').find(x => x.lang === 'en');
     return q ? { kind: 'speak', q: q.id, minutes: 10 } : null;
   }
 
@@ -403,12 +403,12 @@
   function planItemView(it) {
     if (!it || !it.kind) return null;
     if (it.kind === 'review') {
-      const n = (it.ids || []).filter(id => App.questions().some(q => q.id === id)).length;
+      const n = (it.ids || []).filter(id => App.lite('questions').some(q => q.id === id)).length;
       if (!n) return null;
       return { icon: '🔁', title: tr('itemReview'), sub: tr('itemReviewSub', { n: n }), href: '#/flash/due' };
     }
     if (it.kind === 'lesson') {
-      const l = App.lessons().find(x => x.id === it.id);
+      const l = App.lite('lessons').find(x => x.id === it.id);
       if (!l) return null;
       const topic = App.topic(l.track);
       return {
@@ -419,7 +419,7 @@
       };
     }
     if (it.kind === 'algo') {
-      const a = App.algos().find(x => x.id === it.id);
+      const a = App.lite('algos').find(x => x.id === it.id);
       if (!a) return null;
       return {
         icon: '🧩',
@@ -430,21 +430,21 @@
     }
     if (it.kind === 'speak') {
       if (it.drill) {
-        const drills = Array.isArray(window.DRILLS) ? window.DRILLS : [];
+        const drills = App.lite('drills');
         const d = drills.find(x => x.id === it.drill);
         if (!d) return null;
         const detail = d.kind === 'qa' ? d.q : d.kind === 'term' ? d.term + ' — ' + d.example : d.en;
         return { icon: '🎤', title: tr('itemSpeak'), sub: detail || '', lang: 'en', href: '#/speak' };
       }
       if (it.q) {
-        const q = App.questions().find(x => x.id === it.q);
+        const q = App.lite('questions').find(x => x.id === it.q);
         if (!q) return null;
         return { icon: '🎤', title: tr('itemSpeak'), sub: q.q, lang: 'en', href: '#/bank/english' };
       }
       return null;
     }
     if (it.kind === 'sd') {
-      const list = Array.isArray(window.SD_PROBLEMS) ? window.SD_PROBLEMS : [];
+      const list = App.lite('sd');
       const p = list.find(x => x.id === it.id);
       if (!p) return null;
       return { icon: '🏗️', title: p.title, sub: tr('itemSd'), href: '#/sd/' + encodeURIComponent(p.id) };
@@ -683,7 +683,7 @@
 
   function interviewPlanCard() {
     const plan = App.store.data.interviewPlan || {};
-    const companies = window.COMPANIES || [];
+    const companies = App.lite('companies');
     const company = companies.find(c => c.name === plan.company) || companies.find(c => c.id === plan.company);
     const focusIds = company && Array.isArray(company.focus) && company.focus.length
       ? company.focus.filter(id => App.topics().some(t => t.id === id))

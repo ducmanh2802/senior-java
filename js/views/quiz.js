@@ -84,6 +84,10 @@ App.i18n.add({
     'quiz.quizWrongItem': '{i}. {q}',
     'quiz.quizScoreLabel': 'Score: <strong>{n}</strong>',
     'quiz.timerLabel': '{m}:{s}',
+    'quiz.examTitle': '📝 Timed mock exams',
+    'quiz.examText': 'Topic exams (Java Core, Spring, System Design, DevOps & Cloud, Claude certification): weighted questions, timer, pass/fail.',
+    'quiz.examAll': 'Choose an exam',
+    'quiz.examClaude': 'Claude certification (CCDV-F)',
   },
 });
 
@@ -210,10 +214,10 @@ App.i18n.add({
           '<span class="small muted">' + available + ' ' + App.t('quiz.available') + '</span>' +
         '</div>' +
       '</section>' +
-      (App.quiz().some(q => q.topic === 'claude') ?
-        '<section class="card quiz-exam-cta"><h3>📝 Thi thử chứng chỉ Claude (CCDV-F)</h3>' +
-        '<p class="small muted">53 câu theo trọng số domain, bấm giờ, không hiện đáp án khi đang thi, chấm thang 1000 (đậu 720).</p>' +
-        '<a class="btn primary" href="#/exam/claude">Vào thi thử</a></section>' : '') +
+      '<section class="card quiz-exam-cta"><h3>' + App.t('quiz.examTitle') + '</h3>' +
+        '<p class="small muted">' + App.t('quiz.examText') + '</p>' +
+        '<div class="row"><a class="btn primary" href="#/exam">' + App.t('quiz.examAll') + '</a> ' +
+        (App.quiz().some(q => q.topic === 'claude') ? '<a class="btn" href="#/exam/claude">' + App.t('quiz.examClaude') + '</a>' : '') + '</div></section>' +
       '<section class="card quiz-history">' +
         '<h3>' + App.t('quiz.bestScore') + (best && best.pct >= 0 ? ': ' + best.pct + '% (' + best.correct + '/' + best.total + ')' : '') + '</h3>' +
         (histRows ? '<ul class="quiz-hist">' + histRows + '</ul>' : '<p class="muted small">' + App.t('quiz.noHistory') + '</p>') +

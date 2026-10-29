@@ -148,6 +148,44 @@ for (const z of sandbox.window.QUIZ || []) {
   Object.keys(z).forEach(k => { if (!allowed.has(k)) err(f, `${id}: field lạ "${k}"`); });
 }
 
+// ---- exams (js/data/exams.js → window.EXAMS) ----
+{
+  const f = 'exams.js', EX = sandbox.window.EXAMS;
+  const ALLOWED = new Set(['id', 'title', 'icon', 'desc', 'lang', 'topics', 'domains', 'count', 'minutes', 'passPct', 'passScore']);
+  const posNum = v => typeof v === 'number' && isFinite(v) && v > 0;
+  if (!Array.isArray(EX) || !EX.length) err(f, 'window.EXAMS phải là mảng không rỗng');
+  const seenEx = new Set();
+  for (const e of Array.isArray(EX) ? EX : []) {
+    const id = (e && e.id) || '(no id)';
+    if (!/^[a-z][a-z0-9-]*$/.test(e.id || '') || seenEx.has(e.id)) err(f, `${id}: id thiếu, trùng hoặc không phải dạng kebab-case`);
+    seenEx.add(e.id);
+    Object.keys(e).forEach(k => { if (!ALLOWED.has(k)) err(f, `${id}: field lạ "${k}"`); });
+    if (typeof e.title !== 'string' || !e.title.trim()) err(f, `${id}: thiếu title`);
+    if (e.lang !== undefined && e.lang !== 'en') err(f, `${id}: lang chỉ được là 'en' hoặc không có`);
+    const tids = e.topics && typeof e.topics === 'object' ? Object.keys(e.topics) : [];
+    if (!tids.length) err(f, `${id}: topics phải là object { topicId: trọng số } không rỗng`);
+    tids.forEach(t => {
+      if (!topicIds.has(t)) err(f, `${id}: topic "${t}" không có trong topics.js`);
+      if (!posNum(e.topics[t])) err(f, `${id}: trọng số topic "${t}" phải là số > 0`);
+    });
+    if (e.domains !== undefined) {
+      if (tids.length !== 1) err(f, `${id}: domains (theo tag) chỉ dùng cho đề 1 topic`);
+      const ds = e.domains && typeof e.domains === 'object' ? Object.keys(e.domains) : [];
+      if (!ds.length) err(f, `${id}: domains phải là object { Tag: trọng số } không rỗng`);
+      ds.forEach(d => { if (!posNum(e.domains[d])) err(f, `${id}: trọng số domain "${d}" phải là số > 0`); });
+    }
+    if (!Number.isInteger(e.count) || e.count < 5 || e.count > 100) err(f, `${id}: count phải là số nguyên 5..100`);
+    if (!Number.isInteger(e.minutes) || e.minutes < 5 || e.minutes > 240) err(f, `${id}: minutes phải là số nguyên 5..240`);
+    const hasPct = e.passPct !== undefined, hasScore = e.passScore !== undefined;
+    if (hasPct === hasScore) err(f, `${id}: cần đúng một trong passPct hoặc passScore`);
+    if (hasPct && !(Number.isInteger(e.passPct) && e.passPct >= 1 && e.passPct <= 100)) err(f, `${id}: passPct phải là số nguyên 1..100`);
+    if (hasScore && !(Number.isInteger(e.passScore) && e.passScore >= 100 && e.passScore <= 1000)) err(f, `${id}: passScore phải là số nguyên 100..1000`);
+    const poolN = (sandbox.window.QUIZ || []).filter(q => tids.includes(q.topic)).length;
+    if (poolN < e.count) warn(f, `${id}: ngân hàng chỉ có ${poolN} câu trắc nghiệm < count ${e.count} (đề sẽ ngắn hơn)`);
+    else if (poolN < e.count * 2) warn(f, `${id}: ngân hàng ${poolN} câu, chưa gấp đôi count ${e.count} — các lần thi sẽ lặp câu nhiều`);
+  }
+}
+
 // ---- algorithms ----
 const seenAl = new Set();
 const DIFFS = new Set(['easy', 'medium', 'hard']);
@@ -458,5 +496,13 @@ if (LS.length) console.log(`Bài học: ${LS.length} bài, ${LS.reduce((n, l) =>
   [...new Set(LS.map(l => l.track))].map(t => t + ' ' + LS.filter(l => l.track === t).length).join(', ') + ')');
 console.log(`Pet project: ${projects.length} dự án`);
 if (warns.length) console.log('\nCảnh báo:\n  ' + warns.join('\n  '));
+// ---- generated light index (js/data/index-light.js) must match the content (always reported, even with a file arg) ----
+{
+  const LI = require('./build-light-index.js');
+  if (LI.current() !== LI.build(sandbox.window)) {
+    errors.push(`${LI.OUT_NAME}: đã cũ so với dữ liệu (thêm/sửa câu hỏi, bài học, algo, sd, drill, công ty). Chạy: ${LI.CMD}`);
+  }
+}
+
 if (errors.length) { console.error('\nLỖI:\n  ' + errors.join('\n  ')); process.exit(1); }
 console.log('\nOK — không có lỗi.');
