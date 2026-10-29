@@ -1,6 +1,6 @@
 # T427 — Dịch sang tiếng Anh: quiz-design (19 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/quiz-design-2.en.js`
 
@@ -16,3 +16,10 @@ Yêu cầu dịch:
 - `node --check js/i18n/quiz-design-2.en.js` và `node scripts/check-i18n.js quiz-design-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đủ 19 mục (`qz-architecture-012…020`, `qz-microservices-007…016`) vào `js/i18n/quiz-design-2.en.js`, chỉ gồm `q`, `options`, `explain`; số option mỗi câu khớp bản gốc (4–5), giữ nguyên `answer`/`multi` từ dữ liệu gốc.
+- Giữ nguyên markup: `**`, `{{code}}`, `###`, `> Senior tip:`, bảng Markdown, code block `~~~java`/`~~~text`; comment tiếng Việt trong code block đã dịch sang tiếng Anh ("Khác loại tiền" → "Currency mismatch", "empty = qua" → "empty = pass", "lắp theo cấu hình sản phẩm" → "assembled from product configuration"…).
+- Nhãn cố định: "Đáp án đúng" → "Correct answer", "Vì sao đúng" → "Why it is correct", "Vì sao các phương án khác sai" → "Why the other options are wrong", "Cách thiết kế đúng" → "How to design it correctly", "Bảng nhớ nhanh" → "Quick-reference table"; các "(Chọn N)" → "(Choose N)".
+- Không có backtick, không có `${`, giữ `\'` escape như bản gốc (vd `current_setting(\'app.tenant_id\')`, `{{ALTER TABLE ... RENAME COLUMN}}`).
+- Kiểm tra: `node scripts/check-i18n.js quiz-design-2` → `OK — 19 mục đã dịch.`; `node scripts/validate.js` → `OK — không có lỗi.` Lệnh `node --check` bị chặn bởi permission layer của phiên (không phải lỗi cú pháp); `check-i18n` chạy file qua `vm.runInNewContext` nên đã xác nhận file parse sạch.
+Reviewed-by: check-i18n (translation, no LLM review)
