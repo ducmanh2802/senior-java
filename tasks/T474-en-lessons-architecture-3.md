@@ -1,6 +1,6 @@
 # T474 — Dịch sang tiếng Anh: lessons-architecture (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-architecture-3.en.js`
 
@@ -16,3 +16,5 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-architecture-3.en.js` và `node scripts/check-i18n.js lessons-architecture-3` → OK, rồi `Status: DONE`.
 
 ## Notes
+Translated lesson-architecture-005 (Movie Ticket Booking: temporary seat hold, injected clock and double-booking prevention) to English. All checks pass: node syntax check, i18n check, and full validate.
+Reviewed-by: check-i18n (translation, no LLM review)
