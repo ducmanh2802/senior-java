@@ -1,6 +1,6 @@
 # T418 — Dịch sang tiếng Anh: quiz-claude (22 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/quiz-claude-6.en.js`
 
@@ -16,3 +16,12 @@ Yêu cầu dịch:
 - `node --check js/i18n/quiz-claude-6.en.js` và `node scripts/check-i18n.js quiz-claude-6` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Dịch đủ 22/22 mục (qz-claude-179 → qz-claude-200) vào `js/i18n/quiz-claude-6.en.js`, mỗi mục chỉ gồm `q`, `options`, `explain` — không chép `answer`, `topic`, `multi`.
+- Giữ nguyên thứ tự và số lượng options (mục `multi` vẫn đủ 5 phương án), nên `answer` gốc vẫn khớp vị trí; nhãn "(Chọn 2)" → "(Choose 2)", "**Đúng:**" → "**Correct:**", "### Vì sao các phương án còn lại sai" → "### Why the other options are wrong" (theo đúng quy ước các file quiz-claude-1..5).
+- Giữ nguyên markup: `**`, `{{code}}`, `###`, danh sách `- `, blockquote `>`, bảng trong qz-claude-199, code block `~~~json` trong qz-claude-189 (chỉ dịch chuỗi mô tả "Ảnh màn hình hiện tại" → "Current screenshot", không đổi cấu trúc JSON).
+- Không có backtick, không có `${` trong nội dung; số liệu giữ nguyên giá trị, chỉ đổi dấu thập phân sang dạng tiếng Anh (0,1 → 0.1; 0,85 → 0.85) cho đồng bộ với các file dịch khác.
+- Ưu tiên trung thành với bản gốc (không thêm ý, không rút gọn) theo yêu cầu dịch; các thuật ngữ (tool_use, tool_result, prompt injection, least privilege, defer_loading…) giữ nguyên tiếng Anh.
+- Kiểm tra: `node scripts/check-i18n.js quiz-claude-6` → `OK — 22 mục đã dịch.`; `node scripts/validate.js` → `OK — không có lỗi.` (`node --check` bị chặn quyền shell trên máy này, nhưng check-i18n nạp file bằng `vm.runInNewContext` nên cú pháp đã được parse thật).
+- Chỉ sửa `js/i18n/quiz-claude-6.en.js` và file task này.
+Reviewed-by: check-i18n (translation, no LLM review)
