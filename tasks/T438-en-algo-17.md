@@ -1,6 +1,6 @@
 # T438 — Dịch sang tiếng Anh: algo (13 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/algo-17.en.js`
 
@@ -16,3 +16,11 @@ Yêu cầu dịch:
 - `node --check js/i18n/algo-17.en.js` và `node scripts/check-i18n.js algo-17` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đủ 13 mục algo-118 … algo-130 (prompt, hints, solution, follow) trong `js/i18n/algo-17.en.js`.
+- Giữ nguyên toàn bộ markup (`**`, `{{code}}`, `###`, bảng, `~~~lang` … `~~~`); code Java và số liệu không đổi, chỉ dịch comment trong code block sang tiếng Anh.
+- Nhãn cố định: "### Lưu ý khi phỏng vấn" → "### Interview notes"; "> Senior tip:" giữ nguyên. Các heading khác dịch theo quy ước của algo-10/algo-15/algo-16 (### Example(s), ### Constraints, ### Approach, ### Complexity, ### Dry run …).
+- Không có backtick lạ và không có `${`; chỉ dùng template literal đúng như bản gốc (số âm `two\'s complement` đã escape).
+- Kiểm tra: `node scripts/check-i18n.js algo-17` → OK — 13 mục đã dịch; `node scripts/validate.js` → OK — không có lỗi. (`node --check` bị chặn bởi allowlist shell của phiên làm việc; check-i18n.js nạp file qua `vm.runInNewContext` nên cũng xác nhận được cú pháp.)
+- Căn lại vài sơ đồ ASCII (algo-120, algo-124, algo-125, algo-126, algo-129) sau khi dịch nhãn để cột không lệch.
+Reviewed-by: check-i18n (translation, no LLM review)
