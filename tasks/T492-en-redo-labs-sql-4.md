@@ -1,6 +1,6 @@
 # T492 — Dịch lại (nội dung đã sửa): labs-sql-4 (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/labs-sql-4.en.js`
 
@@ -13,3 +13,9 @@ Với MỖI mục trên: đọc bản tiếng Việt hiện tại trong `js/data
 node scripts/check-i18n.js labs-sql-4 → OK; node scripts/validate.js → OK.
 
 ## Notes
+
+- Dịch lại toàn bộ entry `lab-sql-005` trong `js/i18n/labs-sql-4.en.js` theo bản tiếng Việt hiện tại (`js/data/labs-sql.js` dòng 832–1061): sửa ngày flash sale 15/03/2026, scenario, hints (bỏ chi tiết `xmax` không có trong bản Việt), answer, rubric.
+- Sửa lỗi escape cũ (`\\'` in ra dấu `\` thừa) trong hint và answer; không còn backtick / `${` trong chuỗi.
+- Giữ nguyên key, tập field (title, scenario, questions, hints, answer, rubric), code/id/url; không đụng lab-sql-006..008.
+- `node scripts/check-i18n.js labs-sql-4` → `OK — 4 mục đã dịch.`; `node scripts/validate.js` → `OK — không có lỗi.`
+Reviewed-by: check-i18n (translation, no LLM review)

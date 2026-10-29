@@ -5,22 +5,22 @@
 App.i18n.content({
   'lab-sql-005': {
     title: 'Flash sale hangs because one transaction "idle in transaction" holds a lock',
-    scenario: `**Context.** MiniShop runs the "Mega Sale 12:00" flash sale on October 15, 2026 on **3,200 orders/second** for the first 3 minutes. Service {{inventory-service}} (Spring Boot 3.3, HikariCP 20 connections, PostgreSQL 15.6) manages inventory reservation: each order runs a transaction that does {{INSERT orders}}, {{INSERT order_item}}, {{UPDATE inventory}} (decrement stock), then calls HTTP to {{risk-scoring-service}} to score risk before confirming the order.
+    scenario: `**Context.** The MiniShop e-commerce site runs the "Mega Sale 12:00" flash sale on March 15, 2026 at **3,200 orders/second** for the first 3 minutes. Service {{inventory-service}} (Spring Boot 3.3, HikariCP 20 connections, PostgreSQL 15.6) owns stock reservation: each order runs one transaction with {{INSERT orders}}, {{INSERT order_item}}, {{UPDATE inventory}} (decrement stock), then calls {{risk-scoring-service}} over HTTP to score risk before confirming the order.
 
-**Symptoms.** From **12:00:31** until about 12:02:10 (DBA killed the hanging session at 12:01:55 and the queue drained ~15 seconds), every order with the hot SKU {{IPH15-256GB}} froze: p99 jumped to 30 seconds then timed out, and {{HikariPool-1}} ran out of connections. The oddest observation: **CPU on RDS was only 5%** — the database was nearly idle yet everything remained hung, i.e., this is a **blocking** symptom, not overload.
+**Symptoms.** From **12:00:31** until about 12:02:10 (the DBA terminated the hanging session at 12:01:55, and the queue drained in ~15 seconds), every order containing the hot SKU {{IPH15-256GB}} froze: p99 rose to 30 seconds then timed out, and {{HikariPool-1}} reported that it had run out of connections. The strangest part: **CPU on the RDS instance was only 5%** — the database was almost idle yet everything stayed hung, i.e., this is a **blocking** symptom, not overload.
 
-**What was tried, didn't help.** Increasing {{max_connections}} to 500 (worse: adding pointless sessions waiting), increasing Hikari pool to 60, restarting pod {{inventory-service}} (10.0.31.9) — did nothing, because the hanging session holds the lock belongs to a different pod and the lock queue remains unchanged at the DB.
+**What was tried, didn't help.** Raising {{max_connections}} to 500 (worse: more pointless waiting sessions), raising the Hikari pool to 60, restarting one pod of {{inventory-service}} (10.0.31.9) — nothing helped, because the session holding the lock belongs to a different pod and the lock queue stays right where it is in the DB.
 
-**Your task.** Four artifacts below were collected: snapshot of {{pg_stat_activity}}, the lock chain detail ({{pg_locks}} + {{pg_blocking_pids}}), instance timeout configuration, and application logs. Find the hanging session, build the lock chain, and propose immediate handling plus root-cause elimination.`,
+**Your task.** You have four artifacts: a snapshot of {{pg_stat_activity}}, the lock chain detail ({{pg_locks}} + {{pg_blocking_pids}}), the instance timeout configuration, and the application log. Find the hanging session, build the wait chain, and propose both immediate handling and a way to eliminate the root cause.`,
     questions: [
       'Which session is causing the hang and why does it keep the lock? Cite evidence from pg_stat_activity and pg_locks.',
       'Build the lock chain: who waits for whom, and why does the system hang even though CPU on the DB is only 5%?',
       'How do you handle it immediately at 12:02, and what change prevents this hang from recurring during future flash sales?'
     ],
     hints: [
-      'Find the session with state = "idle in transaction": it isn\\\'t waiting for a lock (wait_event_type = Client, wait_event = ClientRead) but the server is waiting for the application to send the next command — the transaction is open, the last query finished running, but COMMIT/ROLLBACK hasn\\\'t arrived. The row lock created by UPDATE is hidden inside the tuple header (xmax = transaction 884120917 of 24117), so it does not appear directly in pg_locks; the proof is 24831 having {{ShareLock}} granted = f on transactionid 884120917, i.e., the row lock of the hot SKU is still held by 24117.',
-      'Read pg_blocking_pids: 24831 (waiting transactionid) is blocked by 24117; the other sessions wait for the tuple lock held by 24831 and queue behind it — that is a single-row lock queue.',
-      'Check pg_settings: idle_in_transaction_session_timeout = 0 means PostgreSQL never auto-closes a hanging session in idle-in-transaction state; and the app log shows a 30-second HTTP call sitting inside @Transactional.'
+      'Find the session with state = "idle in transaction": it is not waiting for a lock (wait_event_type = Client, wait_event = ClientRead); the server is waiting for the application to send the next command (or a COMMIT) — while the row lock is still held.',
+      'Read pg_blocking_pids: 24831 (waiting on transactionid) is blocked by 24117; the remaining sessions wait for the tuple lock held by 24831 and queue behind each other — that is a lock queue on the same row.',
+      'Check pg_settings: idle_in_transaction_session_timeout = 0 means PostgreSQL never auto-cleans a hanging session; and the application log shows a 30-second HTTP call sitting right inside @Transactional.'
     ],
     answer: `**Summary:** One transaction of {{inventory-service}} opened an {{@Transactional}} wrapping the whole workflow, including a 30-second (×3 retries) HTTP call to {{risk-scoring-service}}. While waiting for HTTP, the connection stayed in the transaction in the state **idle in transaction** and **kept the row lock** on {{inventory}} of the flash-sale SKU → 46 other sessions queued behind the same row. Because {{idle_in_transaction_session_timeout = 0}}, PostgreSQL **never auto-closes** the hanging session.
 
@@ -32,18 +32,18 @@ App.i18n.content({
 
 ### Lock chain
 - {{24831}} is the first session queued: took the tuple lock on 8821/44 and is waiting {{ShareLock}} on the transaction of **24117** ({{wait_event = transactionid}}, {{blocked_by = 24117}}).
-- {{24832}}, {{24833}}, {{24834}}, {{24835}}, {{24841}}… wait for the **tuple lock** held by 24831 ({{wait_event = tuple}}); pg_blocking_pids of each session lists 24831 plus earlier sessions behind it ({{24833}} → 24831, 24832; {{24834}} → 24831, 24832, 24833…).
-- Total {{46}} sessions have {{wait_event_type = 'Lock'}}, all running one UPDATE on the same SKU {{IPH15-256GB}}. One idle session leads the queue → the entire hot SKU gets stuck, and because each queued session occupies one Hikari connection, the pods\\' pools also exhaust.
-- **Why CPU is only 5%?** Because all queued sessions are **waiting**, not consuming CPU; the database is idle but cannot progress. This is a blocking symptom, not overload — adding connections or CPU both useless.
+- {{24832}}, {{24833}}, {{24834}}, {{24835}}, {{24841}}… wait for the **tuple lock** held by 24831 ({{wait_event = tuple}}); pg_blocking_pids of each session lists 24831 plus the sessions queued before it ({{24833}} → 24831, 24832; {{24834}} → 24831, 24832, 24833…).
+- In total {{46}} sessions have {{wait_event_type = 'Lock'}}, all running the same UPDATE on one SKU row {{IPH15-256GB}}. One idle session at the head of the queue drags the whole queue → the entire hot SKU is stuck, and because each queueing session occupies one Hikari connection, the pods' pools run out too.
+- **Why CPU is only 5%?** Because all queued sessions are **waiting**, not consuming CPU; the database is idle but cannot progress. This is a blocking symptom, not overload — adding connections or CPU is useless.
 
 ### Root cause
 Three layers nested:
 1. **Transaction too wide:** {{@Transactional}} wraps the whole workflow, including the external HTTP call. Any slow external call turns into time holding the row lock.
-2. **No timeout at the DB layer:** {{idle_in_transaction_session_timeout = 0}}, {{statement_timeout = 0}}, {{lock_timeout = 0}}, {{log_lock_waits = off}}. PostgreSQL won\\'t auto-kill hanging sessions; {{max_connections = 200}} doesn\\'t save either because 46 waiting sessions still occupy space.
+2. **No timeout at the DB layer:** {{idle_in_transaction_session_timeout = 0}}, {{statement_timeout = 0}}, {{lock_timeout = 0}}, {{log_lock_waits = off}}. PostgreSQL will not kill hanging sessions by itself; {{max_connections = 200}} does not help either because the 46 waiting sessions still occupy slots.
 3. **No fail-fast mechanism:** {{risk-scoring}} retries ×3 ×30 seconds means up to **90 seconds holding the lock** (at snapshot time it was already 78 seconds); {{HikariCP}} timeout 3 seconds makes requests of other threads fail, but **never** releases any lock.
 
 ### Immediate handling (12:02)
-- {{SELECT pg_terminate_backend(24117);}} — ending the hanging session; its transaction gets rolled back, the lock is released, and the queue continues (artifact 3: DBA did it at 12:01:55, releasing t). ({{pg_cancel_backend}} cancels the running statement, useless against an idle session.) The order ORD-…00091233 of that session gets rolled back — the app log at 12:02:02 confirms.
+- {{SELECT pg_terminate_backend(24117);}} — end the hanging session; its transaction is rolled back, the row lock is released and the queue moves on (artifact 3: the DBA did it at 12:01:55 and got t). ({{pg_cancel_backend}} only cancels the currently running statement and is useless for an idle session.) Order ORD-…00091233 of that session is rolled back — the application log at 12:02:02 confirms it.
 - Temporarily suspend selling the SKU {{IPH15-256GB}} or put it in a queue to stop more sessions queuing.
 - Turn on immediately (no restart): change {{idle_in_transaction_session_timeout = 30s}} in the RDS parameter group (dynamic parameter), or {{ALTER ROLE inventory_svc SET lock_timeout = '3s'}} — applies to new connections of that role, so the pool needs recycling. A {{SET}} issued in psql only affects the psql session.
 - After clearing, run the reconcile job for orders reserved but not confirmed (log shows **4.182 orders** in that state) and refund / restore stock for the hanging orders.
@@ -69,7 +69,7 @@ Three layers nested:
 - Alert app layer: {{hikaricp.connections.pending}} > 0, {{hikaricp.connections.acquire}} p95 rising, latency of {{risk-scoring}}.
 - Dashboard: chart number of sessions by {{state}} and sessions waiting for locks by SKU; enable {{log_lock_waits = on}} for postmortem evidence.
 - Review rule: **transactions must not contain network calls**; every client outside must have a timeout; transactions must have a bounded duration.
-- Run a flash-sale drill with low connection limits to catch this hang pattern early (if the system can handle 3.200 orders/second, the DB must too).
+- Run flash-sale drills with low connection limits to catch this hang pattern early (if the system can handle 3,200 orders/second, the DB must be able to handle at least that too).
 
 > Senior tip: the state **"idle in transaction"** is the most dangerous state in PostgreSQL because it **does not consume CPU** — the DB is idle at 5% yet the service hangs, tricking teams into looking for the wrong problem (add CPU, add connections, restart service). Rule to remember: **CPU low + high latency = blocking**; look at {{pg_stat_activity}} and {{pg_blocking_pids}} before touching performance config. And the biggest lesson for Java teams: **transactions should only contain SQL** — every HTTP, message broker or file I/O call must sit outside the transaction. One setting worth investing most in is {{idle_in_transaction_session_timeout}}: it turns a hang lasting 30 minutes into an auto-healing incident within 30 seconds.`,
     rubric: [
