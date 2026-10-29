@@ -66,9 +66,13 @@ Có thể dùng biến môi trường thay cho file.
 2. **Chọn 5–10 tin** đa dạng chủ đề (Java/Spring, dữ liệu, DevOps/cloud, kiến trúc, bảo mật). Bỏ tin quảng cáo,
    webinar, tin không có giá trị kỹ thuật, và tin đã đăng hôm trước.
 3. **Đọc bài gốc** của từng tin (mở URL, đọc toàn bài, không chỉ đoạn trích RSS).
-4. **Viết** `logs/digest-YYYY-MM-DD.json` theo schema ở mục 3.
-5. **Kiểm tra**: `node scripts/publish-digest.js logs/digest-YYYY-MM-DD.json --dry` cho tới khi in `✔ … hợp lệ`.
-6. **Đăng**: `node scripts/publish-digest.js logs/digest-YYYY-MM-DD.json`. Đăng lại cùng ngày sẽ ghi đè.
+4. **Viết** `digests/YYYY-MM-DD.json` theo schema ở mục 3.
+5. **Kiểm tra**: `node scripts/publish-digest.js digests/YYYY-MM-DD.json --dry` cho tới khi in `✔ … hợp lệ`.
+6. **Đăng**:
+   - Routine tự động (cloud): commit file vào nhánh `claude/digest` và push; GitHub Action
+     `.github/workflows/publish-digest.yml` đăng lên Supabase bằng repo secrets `SUPABASE_URL`, `SUPABASE_SECRET_KEY`
+     (GitHub → Settings → Secrets and variables → Actions). Đăng lại tay: Actions → Publish news digest → Run workflow.
+   - Trên máy có `.env.local`: `node scripts/publish-digest.js digests/YYYY-MM-DD.json`. Đăng lại cùng ngày sẽ ghi đè.
    Trang `#/news` thấy bản mới sau tối đa ~10 phút (cache CDN).
 
 ## 3. Schema file JSON

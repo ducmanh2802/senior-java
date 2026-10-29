@@ -1,0 +1,41 @@
+name: Publish news digest
+
+# The daily routine (Claude, cloud) commits digests/YYYY-MM-DD.json to branch claude/digest.
+# This job validates and upserts every changed digest into Supabase news_digest, using repo secrets
+# SUPABASE_URL and SUPABASE_SECRET_KEY, so the key never lives in the AI's environment.
+on:
+  push:
+    branches: [claude/digest]
+    paths: ['digests/*.json']
+  workflow_dispatch:
+    inputs:
+      file:
+        description: 'digests/YYYY-MM-DD.json to (re)publish'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Publish changed digests
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          INPUT_FILE: ${{ github.event.inputs.file }}
+        run: |
+          if [ -n "$INPUT_FILE" ]; then files="$INPUT_FILE"
+          else files=$(git diff --name-only --diff-filter=AM HEAD~1 HEAD -- 'digests/*.json'); fi
+          [ -n "$files" ] || { echo "No digest changed"; exit 0; }
+          for f in $files; do node scripts/publish-digest.js "$f" || exit 1; done
