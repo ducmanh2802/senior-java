@@ -1,6 +1,6 @@
 # T446 — Dịch sang tiếng Anh: labs-gc (2 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/labs-gc-5.en.js`
 
@@ -16,3 +16,10 @@ Yêu cầu dịch:
 - `node --check js/i18n/labs-gc-5.en.js` và `node scripts/check-i18n.js labs-gc-5` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- `js/i18n/labs-gc-5.en.js` trước đó tồn tại nhưng chỉ là stub rỗng (lần chạy trước bị gián đoạn); đã viết lại đầy đủ.
+- Dịch `lab-gc-005`, `lab-gc-006`, chỉ các field title / scenario / questions / hints / answer / rubric; artifacts (gc log, jstat, diff code) không chép, chỉ phần translate giữ nguyên.
+- Giữ nguyên mọi markup (`**`, `{{}}`, `###`, bảng, `~~~java` … `~~~`); comment tiếng Việt trong code block đã dịch, code/định danh/số liệu giữ nguyên. Nhãn "**Summary:**" và "> Senior tip:" theo quy ước.
+- Kiểm tra: `node scripts/check-i18n.js labs-gc-5` → OK — 2 mục đã dịch (script này parse và chạy file qua `vm`, nên cũng xác nhận cú pháp hợp lệ). `node scripts/validate.js` → OK — không có lỗi.
+- `node --check js/i18n/labs-gc-5.en.js` và `node -e …` bị môi trường chặn (deny rule của shell tool), không chạy được trực tiếp; cú pháp đã được xác nhận gián tiếp qua `scripts/check-i18n.js` như trên.
+Reviewed-by: check-i18n (translation, no LLM review)
