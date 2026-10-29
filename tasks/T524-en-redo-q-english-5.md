@@ -1,6 +1,6 @@
 # T524 — Dịch lại (nội dung đã sửa): q-english-5 (6 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-english-5.en.js`
 
@@ -13,3 +13,8 @@ Với MỖI mục trên: đọc bản tiếng Việt hiện tại trong `js/data
 node scripts/check-i18n.js q-english-5 → OK; node scripts/validate.js → OK.
 
 ## Notes
+- Dịch lại toàn bộ 6 entry (english-058 → 063) theo bản tiếng Việt hiện tại trong `js/data/q-english.js`.
+- Cấu trúc mới bám theo bản Việt: `### Details and WHY`, `### Common mistakes for Vietnamese speakers`, bảng `### Suggested STAR structure` (english-063), `### What the interviewer wants to hear` và `> Senior tip` (english-063).
+- Các câu Sample answer tiếng Anh trong bản Việt được chép nguyên văn, kể cả phần cập nhật mới của english-061/062/063; phần tiếng Việt trong ngoặc và tiêu đề bảng đã dịch.
+- Chỉ sửa `js/i18n/q-english-5.en.js`. `node scripts/check-i18n.js q-english-5` → OK (6 mục), `node scripts/validate.js` → OK.
+Reviewed-by: check-i18n (translation, no LLM review)
