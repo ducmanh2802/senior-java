@@ -1,7 +1,9 @@
 # T391 — Dịch sang tiếng Anh: q-scenario (6 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
+
+Đã dịch 6 mục (scenario-081 đến 086) sang tiếng Anh trong `js/i18n/q-scenario-9.en.js`. Đã chạy kiểm tra `node scripts/check-i18n.js q-scenario-9` và kết quả OK.
 Owns: `js/i18n/q-scenario-9.en.js`
 
 Người dùng bấm EN thì **cả trang** chuyển sang tiếng Anh: file này phủ bản dịch lên dữ liệu gốc theo `id` (đọc comment "content translation" trong `js/core/i18n.js`). Đọc AGENTS.md mục 5 (markup) và các mục sau trong `js/data/q-scenario.js`: **scenario-081, scenario-082, scenario-083, scenario-084, scenario-085, scenario-086**.
@@ -16,3 +18,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-scenario-9.en.js` và `node scripts/check-i18n.js q-scenario-9` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
