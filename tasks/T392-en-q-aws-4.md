@@ -1,7 +1,9 @@
 # T392 — Dịch sang tiếng Anh: q-aws (5 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
+
+Đã dịch aws-023 đến aws-027 sang tiếng Anh và kiểm tra bằng script.
 Owns: `js/i18n/q-aws-4.en.js`
 
 Người dùng bấm EN thì **cả trang** chuyển sang tiếng Anh: file này phủ bản dịch lên dữ liệu gốc theo `id` (đọc comment "content translation" trong `js/core/i18n.js`). Đọc AGENTS.md mục 5 (markup) và các mục sau trong `js/data/q-aws.js`: **aws-023, aws-024, aws-025, aws-026, aws-027**.
@@ -16,3 +18,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-aws-4.en.js` và `node scripts/check-i18n.js q-aws-4` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
