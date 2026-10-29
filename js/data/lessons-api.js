@@ -14,7 +14,7 @@
     'Hiểu {{Content-Type}}, {{Cache-Control}}, {{ETag}} ảnh hưởng gì tới client và proxy',
   ],
   body: `### Một HTTP message gồm hai phần
-Mọi request hay response đều là **text có cấu trúc**, truyền trên TCP dưới dạng byte. Phần đầu (head) gồm **request line** (hoặc status line) và các **header**, cách nhau bởi dấu hai chấm; sau đó là **một dòng trống**, rồi tới **body**. Dòng trống chính là ranh giới: mọi thứ sau nó thuộc về body, kể cả khi body rỗng.
+Với HTTP/1.1, mọi request hay response đều là **text có cấu trúc**, truyền trên TCP dưới dạng byte (HTTP/2 và HTTP/3 mã hoá nhị phân nhưng giữ nguyên ý nghĩa: method, status, header, body). Phần đầu (head) gồm **request line** (hoặc status line) và các **header**, mỗi header một dòng dạng {{Tên: giá trị}}; sau đó là **một dòng trống**, rồi tới **body**. Dòng trống chính là ranh giới: mọi thứ sau nó thuộc về body, kể cả khi body rỗng.
 
 ~~~text
 POST /accounts/42/transactions HTTP/1.1
@@ -26,17 +26,17 @@ Content-Length: 29
 ~~~
 
 Bốn điểm dễ sai khi tự đọc message:
-- Chuẩn (RFC 9112) quy định {{CRLF}} (hai ký tự xuống dòng) để ngăn dòng, nhưng nhiều client gửi trần {{LF}}. Parser thực tế thường chấp nhận cả hai; khi tự viết, hãy tách phần đầu theo {{CRLF CRLF}}, nếu không thấy mới thử {{LF LF}}.
+- Chuẩn (RFC 9112) quy định kết thúc dòng là {{CRLF}}, tức hai ký tự {{\\r\\n}} (carriage return + line feed). RFC 9112 cho phép bên nhận chấp nhận cả {{LF}} trần ({{\\n}}), và parser thực tế thường làm vậy; khi tự viết, hãy tách phần đầu theo {{CRLF CRLF}}, nếu không thấy mới thử {{LF LF}}.
 - **Không được trim body.** Body có thể bắt đầu hoặc kết thúc bằng khoảng trắng, thậm chí chứa dòng trống. Body là dữ liệu nhị phân đối với HTTP; chỉ header mới được chuẩn hoá.
 - Tên header **không phân biệt hoa thường** ({{Content-Type}} và {{content-type}} là một); giá trị thì **phân biệt**, trừ khi chuẩn riêng định nghĩa ngược lại. Nên {{X-Trace: Abc}} khác {{X-Trace: abc}}, nhưng type/subtype trong {{Content-Type}} là ngoại lệ: {{application/JSON}} vẫn chỉ đúng một media type. Tên header không được chứa khoảng trắng; giá trị được cắt khoảng trắng hai đầu.
-- Header trùng tên: với hầu hết header, các giá trị được gộp; với vài header đặc biệt ({{Set-Cookie}}) phải giữ riêng từng dòng. Trong bài tập, quy ước giá trị sau ghi đè giá trị trước cho đơn giản.
+- Header trùng tên: chuẩn chỉ cho phép lặp với header dạng **danh sách** (ví dụ {{Accept}}, {{Cache-Control}}), và khi đó các dòng tương đương một dòng gộp bằng dấu phẩy ({{Accept: a}} + {{Accept: b}} = {{Accept: a, b}}). {{Set-Cookie}} là ngoại lệ: phải giữ riêng từng dòng vì giá trị cookie có thể chứa dấu phẩy. Trong bài tập, quy ước giá trị sau ghi đè giá trị trước cho đơn giản.
 
-Độ dài body do {{Content-Length}} khai báo, hoặc dùng {{Transfer-Encoding: chunked}} khi chưa biết trước. Nếu server nhận **cả hai** header này thì đó là dấu hiệu tấn công **request smuggling**; RFC 9112 khuyến nghị coi đây là lỗi — thường từ chối với 400 và đóng kết nối — thay vì tự chọn một cái.
+Độ dài body do {{Content-Length}} khai báo, hoặc dùng {{Transfer-Encoding: chunked}} khi chưa biết trước. Nếu server nhận **cả hai** header này thì đó là dấu hiệu tấn công **request smuggling** (proxy phía trước hiểu độ dài theo một header, backend hiểu theo header kia, nên phần dư bị coi là request thứ hai do kẻ tấn công cài vào). RFC 9112 quy định: {{Transfer-Encoding}} được ưu tiên và {{Content-Length}} bị bỏ qua; server **được phép** từ chối hẳn (400), và nếu vẫn xử lý thì phải **đóng kết nối** sau response. Cách an toàn nhất trên production là từ chối.
 
 ### Method: safe, idempotent và hệ quả
-- **Safe** (an toàn): client được phép gọi mà không làm thay đổi trạng thái server. Trình duyệt, crawler, proxy được tự do gọi trước.
+- **Safe** (an toàn): theo ngữ nghĩa, method chỉ **đọc**; client không yêu cầu thay đổi trạng thái server. Vì vậy trình duyệt được prefetch link, crawler được gọi tuỳ ý. (Server vẫn có thể ghi log hay tăng bộ đếm, nhưng client không chịu trách nhiệm cho các tác dụng phụ đó.)
 - **Idempotent** (bất biến với lặp): gọi một lần hay nhiều lần với cùng dữ liệu thì **trạng thái cuối** như nhau. Lưu ý: response có thể khác nhau giữa các lần gọi, HTTP không bắt response phải giống nhau.
-- **Cacheable**: response có thể được cache khi có header phù hợp.
+- **Cacheable**: response có thể được cache. Trên thực tế chỉ GET và HEAD được cache; POST về lý thuyết cacheable khi có header tường minh nhưng gần như không cache nào hỗ trợ.
 
 | Method | Safe | Idempotent | Thường dùng |
 |---|---|---|---|
@@ -61,7 +61,7 @@ Status code không phải trang trí. Client, load balancer, SDK và hệ thốn
 | 201 Created | tạo thành công, kèm {{Location}} trỏ tới tài nguyên mới |
 | 202 Accepted | đã nhận việc, xử lý bất đồng bộ, trả về nơi theo dõi |
 | 204 No Content | thành công, không có body (DELETE, PUT ghi đè) |
-| 304 Not Modified | client gửi {{If-None-Match}} khớp {{ETag}}, không cần body |
+| 304 Not Modified | client gửi {{If-None-Match}} khớp {{ETag}} (hoặc {{If-Modified-Since}}), không có body; client dùng lại bản đã cache |
 | 400 Bad Request | message sai cú pháp, JSON hỏng, thiếu header bắt buộc |
 | 401 Unauthorized | thiếu hoặc sai thông tin xác thực; kèm {{WWW-Authenticate}} |
 | 403 Forbidden | đã xác thực nhưng không có quyền |
@@ -80,11 +80,11 @@ Phân biệt 401 và 403 là câu hỏi kinh điển. 401 nghĩa là "bạn là 
 - {{Content-Type}} mô tả **định dạng body đang gửi**; {{Accept}} mô tả **định dạng client muốn nhận**. Thiếu {{Content-Type}} thì server phải đoán — đừng để server đoán.
 - {{Content-Type: application/json; charset=utf-8}}: RFC 8259 **không** định nghĩa charset cho {{application/json}} vì JSON mặc định đã là UTF-8; ghi thêm {{charset=utf-8}} không phải bắt buộc nhưng vô hại và giúp vài client cũ khỏi đoán sai.
 - {{Content-Length}} vs {{Transfer-Encoding: chunked}} đã nói ở trên; không gửi cả hai.
-- {{Cache-Control}} quyết định ai được cache và bao lâu. {{public}} cho phép cả proxy dùng chung; {{private}} chỉ cache phía client; {{no-store}} cấm ghi xuống đĩa; {{max-age}} tính bằng giây; {{s-maxage}} dành cho proxy dùng chung; {{stale-while-revalidate}} cho phép trả bản cũ trong lúc làm mới.
+- {{Cache-Control}} quyết định ai được cache và bao lâu. {{public}} cho phép cả proxy dùng chung; {{private}} chỉ cho cache riêng của client (trình duyệt) lưu; {{no-store}} cấm **mọi** cache lưu response (cả RAM lẫn đĩa); {{no-cache}} thì ngược với tên gọi: vẫn được lưu nhưng phải hỏi lại server (revalidate) trước mỗi lần dùng; {{max-age}} tính bằng giây; {{s-maxage}} dành cho proxy dùng chung; {{stale-while-revalidate}} cho phép trả bản cũ trong lúc làm mới.
 - {{ETag}} là dấu vân tay của phiên bản tài nguyên. Client gửi lại trong {{If-None-Match}} để nhận 304 (tiết kiệm băng thông), hoặc trong {{If-Match}} để chống ghi đè (nhận 412 nếu đã có người sửa trước).
 - {{Vary}} cho cache biết response thay đổi theo header nào; thiếu {{Vary: Accept-Encoding}} có thể khiến proxy trả bản gzip cho client không hỗ trợ.
 
-Với dữ liệu ngân hàng như số dư hay lịch sử giao dịch, mặc định nên là {{Cache-Control: private, no-store}} và chỉ mở cache cho dữ liệu tham chiếu ít đổi (danh mục chi nhánh, tỉ giá có TTL ngắn). Một cấu hình cache sai ở đây không chỉ làm chậm; nó còn có thể để lộ dữ liệu của người này cho người khác qua proxy dùng chung.
+Với dữ liệu ngân hàng như số dư hay lịch sử giao dịch, mặc định nên là {{Cache-Control: no-store}} (nhiều team ghi thêm {{private}} cho chắc với cache cũ) và chỉ mở cache cho dữ liệu tham chiếu ít đổi (danh mục chi nhánh, tỉ giá có TTL ngắn). Một cấu hình cache sai ở đây không chỉ làm chậm; nó còn có thể để lộ dữ liệu của người này cho người khác qua proxy dùng chung.
 
 ### Liên hệ phỏng vấn
 Interviewer thường đi từ "phân biệt PUT và POST" tới "vì sao DELETE idempotent mà vẫn trả 404", rồi hỏi tình huống thật: mobile retry sau timeout, CDN cache nhầm response có Authorization, gateway trả 504 trong khi backend vẫn đang xử lý. Trả lời tốt là gắn mỗi khái niệm với một quyết định vận hành: có được retry không, cache ở đâu, client phân biệt lỗi tạm thời với lỗi vĩnh viễn thế nào.`,
@@ -193,9 +193,9 @@ class HttpParser {
         'Phần đầu tách theo dòng, dòng 0 là request line (tách theo dấu cách, giới hạn 3 phần), các dòng sau tách tại dấu hai chấm **đầu tiên**.',
         'Đừng gọi {{trim()}} trên body; chỉ trim tên và giá trị header.',
       ],
-      explain: `Điểm mấu chốt là **ranh giới head/body** và **không đụng vào body**. Nếu dùng {{split(":")}} không giới hạn, giá trị {{abc:def}} sẽ bị cắt sai; phải dùng {{indexOf(':')}} hoặc {{split(":", 2)}}. Nếu tìm separator bằng {{"\\n\\n"}} trước, request CRLF sẽ không khớp vì giữa hai dòng có {{"\\r\\n\\r\\n"}} chứa {{"\\n\\r"}} — thứ tự kiểm tra rất quan trọng.
+      explain: `Điểm mấu chốt là **ranh giới head/body** và **không đụng vào body**. Nếu dùng {{split(":")}} không giới hạn, giá trị {{abc:def}} sẽ bị cắt sai; phải dùng {{indexOf(':')}} hoặc {{split(":", 2)}}. Thứ tự tìm separator rất quan trọng: chuỗi {{"\\r\\n\\r\\n"}} **không** chứa {{"\\n\\n"}} (giữa hai ký tự {{\\n}} có một {{\\r}}). Nên nếu tìm {{"\\n\\n"}} trước trên request CRLF, bạn hoặc không thấy ranh giới thật, hoặc tệ hơn là khớp nhầm một {{"\\n\\n"}} nằm sâu trong body và cắt sai cả message.
 
-Lỗi hay gặp khác: dùng {{trim()}} cho cả message làm mất khoảng trắng đầu/cuối của body; dùng {{equals}} cho tên header nên {{Content-Type}} không tìm thấy; và bỏ qua dòng trống cuối khi tách bằng {{split}} mặc định (Java bỏ trailing empty string, nên truyền {{-1}} nếu cần giữ). Trong production, parser thật còn phải giới hạn kích thước header (chống header bombing), từ chối {{obs-fold}} (header xuống dòng liên tục, đã bị deprecate), và xử lý cả {{Content-Length}} lẫn {{Transfer-Encoding}}.`,
+Lỗi hay gặp khác: dùng {{trim()}} cho cả message làm mất khoảng trắng đầu/cuối của body; không đưa tên header về chữ thường nên tra {{"content-type"}} không thấy khi client gửi {{Content-Type}}; và tách request line bằng {{split(" ")}} không giới hạn rồi lấy sai phần tử. Lưu ý {{String.split}} mặc định bỏ các chuỗi rỗng ở cuối mảng; truyền {{-1}} nếu cần giữ. Trong production, parser thật còn phải giới hạn kích thước header (chống tấn công gửi header khổng lồ làm cạn bộ nhớ), từ chối {{obs-fold}} (giá trị header kéo sang dòng sau bằng cách thụt đầu dòng, đã bị RFC 9112 loại bỏ), và xử lý đúng {{Content-Length}} / {{Transfer-Encoding}} như phần lý thuyết.`,
     },
   ],
   check: [
@@ -203,13 +203,13 @@ Lỗi hay gặp khác: dùng {{trim()}} cho cả message làm mất khoảng tr�
       q: 'Method nào **idempotent nhưng không safe**?',
       options: ['GET', 'PUT', 'POST', 'HEAD'],
       answer: 1,
-      explain: `PUT ghi đè tài nguyên nên gửi lặp vẫn ra cùng trạng thái, nhưng nó **thay đổi** dữ liệu nên không safe. GET và HEAD vừa safe vừa idempotent. POST không safe và cũng không idempotent — đây là lý do cần idempotency key cho thanh toán.`,
+      explain: `**PUT đúng**: PUT ghi đè tài nguyên nên gửi lặp vẫn ra cùng trạng thái (idempotent), nhưng nó **thay đổi** dữ liệu nên không safe. **GET** và **HEAD** sai vì chúng vừa safe vừa idempotent (câu hỏi cần method không safe). **POST** sai vì nó không safe và cũng không idempotent — đây là lý do cần idempotency key cho thanh toán.`,
     },
     {
       q: 'Client đã đăng nhập hợp lệ nhưng tài khoản không có role chuyển tiền. Server nên trả gì?',
       options: ['401 Unauthorized', '403 Forbidden', '404 Not Found', '422 Unprocessable Content'],
       answer: 1,
-      explain: `401 dành cho trường hợp chưa xác thực được danh tính (thiếu/sai token). Đã biết là ai nhưng thiếu quyền thì là 403. 404 thường dùng để che giấu sự tồn tại của tài nguyên, không phản ánh đúng ngữ nghĩa ở đây. 422 là lỗi ngữ nghĩa của body, không phải lỗi phân quyền.`,
+      explain: `401 dành cho trường hợp chưa xác thực được danh tính (thiếu/sai token). Đã biết là ai nhưng thiếu quyền thì là 403. 404 chỉ nên dùng khi muốn **che giấu** việc tài nguyên có tồn tại hay không (RFC 9110 cho phép); ở đây đó là một chức năng (chuyển tiền) mà user biết là có, nên 404 gây hiểu nhầm. 422 là lỗi ngữ nghĩa của body, không phải lỗi phân quyền.`,
     },
     {
       q: 'Xoá tài nguyên thành công và không cần trả body. Status code phù hợp nhất?',
@@ -221,7 +221,7 @@ Lỗi hay gặp khác: dùng {{trim()}} cho cả message làm mất khoảng tr�
       q: 'API trả số dư tài khoản. {{Cache-Control}} nào an toàn nhất?',
       options: ['public, max-age=60', 'private, max-age=60', 'no-store', 's-maxage=3600'],
       answer: 2,
-      explain: `Số dư là dữ liệu nhạy cảm, không nên lưu ở bất kỳ cache nào (kể cả cache riêng của trình duyệt trên máy dùng chung), nên {{no-store}}. {{public}} cho phép proxy dùng chung cache và có thể lộ dữ liệu; {{s-maxage}} cũng là cache dùng chung; {{private}} giảm rủi ro hơn nhưng vẫn ghi xuống đĩa client.`,
+      explain: `Số dư là dữ liệu nhạy cảm, không nên lưu ở bất kỳ cache nào (kể cả cache riêng của trình duyệt trên máy dùng chung), nên {{no-store}}. {{public}} cho phép proxy dùng chung cache và có thể lộ dữ liệu; {{s-maxage}} cũng là cache dùng chung; {{private, max-age=60}} chặn proxy dùng chung nhưng vẫn cho trình duyệt lưu 60 giây, nên người dùng sau trên cùng máy có thể thấy số dư cũ của người trước.`,
     },
   ],
   related: ['api-001', 'api-002', 'api-009'],
@@ -257,7 +257,7 @@ Vài quy ước giúp API dễ đoán:
 | Liệt kê | {{GET /accounts}} | 200 + danh sách + metadata phân trang |
 | Đọc một | {{GET /accounts/42}} | 200, hoặc 404 nếu không có |
 | Tạo | {{POST /accounts}} | 201 + {{Location: /accounts/43}} |
-| Ghi đè | {{PUT /accounts/42}} | 200 hoặc 204 |
+| Ghi đè | {{PUT /accounts/42}} | 200 hoặc 204; 201 nếu PUT tạo mới tài nguyên tại URI đó |
 | Sửa một phần | {{PATCH /accounts/42}} | 200 với tài nguyên sau khi sửa |
 | Xoá | {{DELETE /accounts/42}} | 204, hoặc 202 nếu xoá bất đồng bộ |
 
@@ -274,14 +274,14 @@ Không dùng GET cho thao tác có side effect (gửi email, trừ tiền) chỉ
 Ranh giới 400 và 422 không tuyệt đối: nhiều team gộp cả hai vào 400. Điều quan trọng là **thống nhất trong toàn API** và ghi rõ trong tài liệu; đừng lúc thì 400, lúc thì 422 cho cùng một loại lỗi.
 
 ### Validation: báo đủ, báo đúng chỗ
-Validation nên chạy **trước** khi chạm database và trước khi thực hiện side effect. Với Spring Boot 3, {{@Valid}} trên {{@RequestBody}} kích hoạt Bean Validation; lỗi ném ra {{MethodArgumentNotValidException}} với danh sách field lỗi. Đừng bắt exception rồi trả một chuỗi chung "Dữ liệu không hợp lệ" — client không biết sửa field nào.
+Validation nên chạy **trước** khi chạm database và trước khi thực hiện side effect. Với Spring Boot 3, {{@Valid}} trên {{@RequestBody}} kích hoạt Bean Validation; lỗi ném ra {{MethodArgumentNotValidException}} chứa **toàn bộ** field lỗi (qua {{getBindingResult().getFieldErrors()}}). Spring mặc định trả **400** cho exception này; muốn dùng 422 cho lỗi nghiệp vụ thì tự map trong {{@RestControllerAdvice}}. (Từ Spring Framework 6.1, ràng buộc đặt trực tiếp trên {{@PathVariable}}/{{@RequestParam}} có thể ném {{HandlerMethodValidationException}} — cũng cần xử lý.) Đừng bắt exception rồi trả một chuỗi chung "Dữ liệu không hợp lệ" — client không biết sửa field nào.
 
 Nguyên tắc:
 - Trả **tất cả** lỗi của các field trong một response, không dừng ở lỗi đầu tiên. Người dùng sửa form một lần tốt hơn sửa năm lần.
 - Chỉ rõ **vị trí**: {{/amount}}, hoặc {{/beneficiaries/0/accountNumber}} nếu lỗi nằm trong mảng.
 - Mã lỗi **ổn định** cho máy: {{INSUFFICIENT_FUNDS}}, {{ACCOUNT_FROZEN}}. Đừng để client so sánh chuỗi tiếng Việt.
 - Không trả stack trace, tên bảng, câu SQL hay thông tin nội bộ. Log đầy đủ ở server kèm traceId, trả cho client traceId đó.
-- Lỗi xác thực (401) và phân quyền (403) không được tiết lộ tài nguyên có tồn tại hay không nếu đó là thông tin nhạy cảm; nhiều hệ thống ngân hàng trả 404 thay cho 403 trong trường hợp này.
+- Cẩn thận khi chính việc "tài nguyên có tồn tại" là thông tin nhạy cảm: user A gọi {{GET /accounts/99}} của user B mà nhận 403 thì A biết tài khoản 99 **có tồn tại**. RFC 9110 cho phép trả **404** thay cho 403 để che giấu điều này, và nhiều hệ thống ngân hàng làm vậy.
 
 ### RFC 9457 Problem Details
 RFC 9457 (kế thừa RFC 7807) định nghĩa một body lỗi chung, content type {{application/problem+json}}:
@@ -301,14 +301,14 @@ RFC 9457 (kế thừa RFC 7807) định nghĩa một body lỗi chung, content t
 }
 ~~~
 
-- {{type}} là URI định danh **loại** lỗi, không nhất thiết phải mở được; hãy host tài liệu thật để dev đọc.
-- {{title}} ngắn, ổn định, có thể dịch; {{detail}} dành cho con người và có thể thay đổi.
-- {{status}} phải khớp status line, đừng để 200 ở HTTP nhưng 422 trong body.
-- {{instance}} trỏ tới lần xảy ra cụ thể (request id/traceId).
+- {{type}} là URI định danh **loại** lỗi, không bắt buộc phải mở được (nhưng RFC khuyến nghị nếu mở được thì phải là tài liệu cho người đọc, nên hãy host tài liệu thật). Không có {{type}} thì mặc định là {{about:blank}}, nghĩa là "không có gì thêm ngoài ý nghĩa của status code".
+- {{title}} là tóm tắt ngắn của **loại** lỗi, giống nhau giữa các lần xảy ra (chỉ khác khi dịch sang ngôn ngữ khác); {{detail}} mô tả **lần** xảy ra này cho con người đọc, có thể chứa số liệu cụ thể.
+- {{status}} chỉ mang tính thông tin và phải khớp status code thật của response; đừng để 200 ở HTTP nhưng 422 trong body.
+- {{instance}} là URI định danh lần xảy ra cụ thể (ví dụ đường dẫn chứa request id), để đối chiếu với log.
 - Các field mở rộng như {{code}}, {{errors}}, {{traceId}} được phép; client dựa vào {{code}} và {{pointer}} chứ đừng parse {{detail}}.
 - Với lỗi 5xx, body càng ít càng tốt: mã lỗi chung + traceId. Không đưa thông điệp exception thật ra ngoài.
 
-Trong Spring Boot 3, {{ProblemDetail}} và {{ErrorResponseException}} hỗ trợ sẵn; có thể bật {{spring.mvc.problemdetails.enabled=true}} để lỗi mặc định cũng theo format này, rồi viết {{@RestControllerAdvice}} để thêm {{code}}/{{errors}}.
+Trong Spring Boot 3 (Spring Framework 6), {{ProblemDetail}} và {{ErrorResponseException}} có sẵn; bật {{spring.mvc.problemdetails.enabled=true}} để các lỗi Spring MVC mặc định (405, 415, lỗi validate…) cũng trả {{application/problem+json}}. Muốn thêm {{code}}/{{errors}} thì viết {{@RestControllerAdvice}} (thường kế thừa {{ResponseEntityExceptionHandler}}) và gọi {{problem.setProperty("code", "INSUFFICIENT_FUNDS")}}.
 
 ### Liên hệ phỏng vấn
 Câu hỏi thực tế không dừng ở "REST là gì" mà là: vì sao chọn 404 hay 403 khi user không có quyền xem tài khoản người khác, làm sao client phân biệt lỗi tạm thời để retry, và làm sao giữ error contract ổn định khi backend đổi framework. Trả lời bằng hợp đồng: status code + mã lỗi ổn định + Problem Details, kèm ví dụ client chỉ cần đọc {{code}} là xử lý được.`,
@@ -476,7 +476,7 @@ Quy ước: bỏ query string (mọi thứ sau {{?}}) và bỏ dấu {{/}} cuố
       ],
       explain: `Luồng đúng là: tách path thành segment, duyệt mọi route, mỗi route trả về hoặc null (không khớp) hoặc map tham số. Khi không route nào khớp **với method**, kiểm tra lại chỉ theo path để phân biệt 404 và 405 — đây là chỗ nhiều bạn trả 404 cho cả hai.
 
-Ưu tiên route literal bằng {{literalCount}} mô phỏng hành vi của router thật (Spring, Express, Go chi-router): {{/accounts/me}} phải thắng /accounts/{id} vì nếu không, route tĩnh không bao giờ chạy được. Trong production còn nhiều thứ khác: regex constraint ({{id}} phải là số), wildcard, method OPTIONS tự sinh, và header {{Allow}} tính từ {{allowed()}}.
+Ưu tiên route literal bằng {{literalCount}} mô phỏng hành vi của Spring MVC (so sánh độ cụ thể của {{PathPattern}}) và nhiều router dạng cây như Go chi: {{/accounts/me}} phải thắng /accounts/{id} vì nếu không, route tĩnh không bao giờ chạy được. Lưu ý không phải router nào cũng vậy: Express (Node.js) khớp theo **thứ tự đăng ký**, nên ở đó phải khai báo /accounts/me trước. Trong production còn nhiều thứ khác: regex constraint ({{id}} phải là số), wildcard, method OPTIONS tự sinh, và header {{Allow}} tính từ {{allowed()}}.
 
 Lỗi hay gặp: so path bằng {{startsWith}} nên {{/accounts/42x}} khớp {{/accounts/42}}; quên bỏ query nên {{?limit=5}} làm hỏng segment cuối; và trả 405 mà không có {{Allow}} — client không biết cách sửa request.`,
     },
@@ -486,7 +486,7 @@ Lỗi hay gặp: so path bằng {{startsWith}} nên {{/accounts/42x}} khớp {{/
       q: 'Tạo tài khoản thành công. Response nào đúng nhất?',
       options: ['200 OK kèm body tài khoản', '201 Created kèm header Location', '202 Accepted kèm job id', '204 No Content'],
       answer: 1,
-      explain: `201 nói rằng một tài nguyên **mới** đã được tạo; {{Location}} chỉ cho client URI của nó. 200 không sai về mặt kỹ thuật nhưng mất thông tin "mới được tạo". 202 dành cho xử lý bất đồng bộ, 204 dành khi không có body và thường cho update/delete.`,
+      explain: `**201 + Location đúng**: 201 nói rằng một tài nguyên **mới** đã được tạo; {{Location}} chỉ cho client URI của nó. **200** không sai về mặt kỹ thuật nhưng mất thông tin "mới được tạo". **202** sai vì nó dành cho việc mới được nhận và sẽ xử lý bất đồng bộ, trong khi ở đây tài khoản đã tạo xong. **204** sai vì nó báo không có body và thường dùng cho update/delete, không nói gì về tài nguyên mới.`,
     },
     {
       q: 'Path {{/accounts/42}} tồn tại nhưng chỉ hỗ trợ GET và PUT. Client gọi DELETE. Trả gì?',
@@ -498,7 +498,7 @@ Lỗi hay gặp: so path bằng {{startsWith}} nên {{/accounts/42x}} khớp {{/
       q: 'JSON đúng cú pháp nhưng {{amount}} là số âm. Trả 422 hay 400?',
       options: ['400 vì request sai', '422 vì cú pháp đúng nhưng ngữ nghĩa sai', '409 vì xung đột', '500 vì server không xử lý được'],
       answer: 1,
-      explain: `422 dành cho body parse được nhưng vi phạm quy tắc nghiệp vụ. 400 thường dành cho JSON hỏng, thiếu field bắt buộc hoặc sai kiểu. Nhiều API gộp cả hai vào 400 — chấp nhận được nếu nhất quán — nhưng không được trả 409/500 cho lỗi validate.`,
+      explain: `**422 đúng** theo quy ước của bài: body parse được nhưng vi phạm quy tắc nghiệp vụ. **400** dành cho JSON hỏng hoặc sai kiểu dữ liệu; nhiều API (và mặc định của Spring) gộp cả lỗi validate vào 400 — chấp nhận được nếu nhất quán toàn API, nhưng phương án này nói "request sai" một cách chung chung. **409** sai vì không có xung đột với trạng thái tài nguyên trên server. **500** sai vì lỗi nằm ở dữ liệu client gửi, không phải lỗi server; trả 5xx còn khiến client retry vô ích và làm nhiễu alert.`,
     },
     {
       q: 'Field nào **không nên** xuất hiện trong Problem Details trả cho client production?',
@@ -537,14 +537,14 @@ Header thường dùng: {{Idempotency-Key: 9f1c2e7a-...}}.
 |---|---|
 | Key mới | Chạy nghiệp vụ, lưu kết quả (status + body) gắn với key |
 | Key cũ, body giống hệt | **Không chạy lại**; trả nguyên status và body đã lưu |
-| Key cũ, body khác | Từ chối, thường 409 hay 422 (Stripe trả lỗi {{idempotency_error}}), vì client đang tái sử dụng key sai |
-| Key cũ, request đầu còn đang chạy | Trả 409 Conflict "request in progress" hoặc chờ ngắn rồi trả kết quả |
+| Key cũ, body khác | Từ chối, **không** chạy nghiệp vụ. Bản nháp chuẩn IETF {{Idempotency-Key}} đề xuất 422; Stripe trả lỗi loại {{idempotency_error}} |
+| Key cũ, request đầu còn đang chạy | Trả 409 Conflict "request in progress" (theo bản nháp IETF) hoặc chờ ngắn rồi trả kết quả |
 | Key thiếu ở endpoint bắt buộc | 400, kèm mô tả header cần gửi |
 | Key hết TTL | Coi như key mới; vì vậy TTL phải dài hơn cửa sổ retry của client |
 
-Phạm vi key rất quan trọng: key phải unique trong phạm vi **(merchant/tenant, endpoint, key)**. Nếu chỉ unique toàn hệ thống, hai merchant tình cờ dùng cùng UUID sẽ đụng nhau; nếu không gắn endpoint, cùng key dùng cho hai API khác nhau sẽ trả nhầm kết quả. TTL thường 24 giờ; hệ thống có retry 72 giờ như webhook ngân hàng phải để TTL dài hơn 72 giờ.
+Phạm vi key rất quan trọng: key phải unique trong phạm vi **(merchant/tenant, endpoint, key)**. Nếu chỉ unique toàn hệ thống, hai merchant tình cờ dùng cùng UUID sẽ đụng nhau; nếu không gắn endpoint, cùng key dùng cho hai API khác nhau sẽ trả nhầm kết quả. TTL thường 24 giờ (Stripe giữ key ít nhất 24 giờ); nếu client có thể retry trong 72 giờ (ví dụ job đối soát chạy lại các lệnh treo) thì TTL phải dài hơn 72 giờ.
 
-Body fingerprint nên là **hash của raw body** (SHA-256) cho đơn giản: client retry phải gửi **byte-identical body**, format lại JSON giữa các lần retry là lỗi của client. Cách thứ hai là canonicalize (sort key, chuẩn hoá số và unicode) rồi hash — như Stripe làm với parameters — để chấp nhận request khác byte nhưng cùng ngữ nghĩa; bù lại bạn phải định nghĩa canonicalization thật kỹ và ghi rõ trong tài liệu, nếu không hai request "giống nhau về ngữ nghĩa" sẽ bị coi là khác. Chọn một trong hai và nhất quán toàn API.
+Body fingerprint nên là **hash của raw body** (SHA-256) cho đơn giản: client retry phải gửi **byte-identical body**, format lại JSON giữa các lần retry là lỗi của client. Cách thứ hai là canonicalize (sắp xếp key JSON, chuẩn hoá số và unicode) rồi hash — gần với cách Stripe so sánh **tham số** thay vì từng byte — để chấp nhận request khác byte nhưng cùng ngữ nghĩa; bù lại bạn phải định nghĩa canonicalization thật kỹ và ghi rõ trong tài liệu, nếu không hai request "giống nhau về ngữ nghĩa" sẽ bị coi là khác. Chọn một trong hai và nhất quán toàn API.
 
 ### Lưu ở đâu
 Có hai lựa chọn chính:
@@ -560,10 +560,10 @@ Hai request cùng key đến cách nhau vài mili giây là chuyện bình thư�
 
 Ba cách đúng:
 1. **In-memory**: {{ConcurrentHashMap.computeIfAbsent}} đảm bảo hàm tính chỉ chạy một lần cho mỗi key trong một JVM. Chỉ dùng khi một instance; nhiều instance thì vô nghĩa.
-2. **Database**: insert key với unique constraint; request thua nhận {{DuplicateKeyException}} rồi đọc kết quả của request thắng (poll ngắn nếu còn {{IN_PROGRESS}}).
+2. **Database**: insert key với unique constraint; request thua bị DB từ chối (Spring dịch thành {{DuplicateKeyException}}; trên PostgreSQL có thể dùng {{INSERT ... ON CONFLICT DO NOTHING}} rồi xem số dòng được insert) và đọc kết quả của request thắng (poll ngắn nếu còn {{IN_PROGRESS}}).
 3. **Distributed lock**: Redis {{SET NX}} hoặc lock theo key; nhớ TTL cho lock để không treo khi instance chết.
 
-Lưu ý {{computeIfAbsent}} giữ lock của bin trong lúc chạy hàm, nên nếu nghiệp vụ chậm (gọi gateway 2 giây) các key khác rơi cùng bin có thể bị block. Với nghiệp vụ dài, dùng {{FutureTask}} đặt vào map trước rồi mới chạy, hoặc lock theo key ở tầng ngoài.
+Lưu ý {{ConcurrentHashMap.computeIfAbsent}} giữ lock của bin (một ô trong bảng băm) trong lúc chạy hàm, nên nếu nghiệp vụ chậm (gọi gateway 2 giây) các key khác rơi cùng bin cũng bị block; và hàm bên trong tuyệt đối không được sửa chính map đó. Với nghiệp vụ dài, dùng {{FutureTask}} đặt vào map trước rồi mới chạy, hoặc lock theo key ở tầng ngoài.
 
 ### Pitfall thực tế
 - **Sinh key mỗi lần retry**: lỗi phổ biến nhất, đặc biệt khi dùng HTTP client tự retry. Key phải được tạo ở tầng nghiệp vụ, không phải trong interceptor retry.
@@ -766,7 +766,7 @@ Khác biệt với production: {{computeIfAbsent}} giữ lock bin trong suốt t
       q: 'Cùng key nhưng body khác body của lần đầu. Server nên trả gì?',
       options: ['200 với kết quả cũ', '422 (hoặc 409) vì key bị tái sử dụng sai', '400 vì JSON sai', '412 Precondition Failed'],
       answer: 1,
-      explain: `Key đã gắn với một thao tác khác nên không thể trả kết quả cũ (sai tiền) cũng không thể chạy mới (phá hợp đồng idempotent). 400, 409 và 422 đều xuất hiện trong thực tế tuỳ hợp đồng từng API (Stripe dùng lỗi {{idempotency_error}}, có hệ thống dùng 409 Conflict); điểm cốt lõi là **từ chối**, không thực thi. 412 dành cho precondition như {{If-Match}}, không phải lỗi tái sử dụng key.`,
+      explain: `Key đã gắn với một thao tác khác nên không thể trả kết quả cũ (sai tiền) cũng không thể chạy mới (phá hợp đồng idempotent). Bản nháp chuẩn IETF {{Idempotency-Key}} đề xuất 422; một số API dùng 409 hoặc 400 (Stripe trả lỗi loại {{idempotency_error}}); điểm cốt lõi là **từ chối**, không thực thi. **200 với kết quả cũ** sai vì client sẽ tưởng giao dịch mới (khác số tiền) đã thành công. **400 vì JSON sai** sai vì JSON hoàn toàn hợp lệ, vấn đề nằm ở việc dùng lại key. **412** dành cho precondition như {{If-Match}}, không phải lỗi tái sử dụng key.`,
     },
     {
       q: 'Hệ thống chạy nhiều instance sau load balancer, cần idempotency bền qua restart và có audit. Nên lưu key ở đâu?',
