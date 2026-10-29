@@ -1077,6 +1077,8 @@ mapper.activateDefaultTyping(ptv, ObjectMapper.DefaultTyping.NON_FINAL);
 | **Verify** | T+48h | Scan lại, penetration test, confirm fix |
 | **Report** | T+72h | Báo cáo CISO/Regulator, update SBOM, lessons learned |
 
+> Lưu ý lịch sử: biện pháp tạm đầu tiên {{-Dlog4j2.formatMsgNoLookups=true}} (2.10+) sau đó được chứng minh **không đủ** (CVE-2021-45046 vẫn khai thác qua Context Lookup trong pattern layout). Chỉ upgrade hoặc xoá {{JndiLookup.class}} mới là giảm thiểu đáng tin.
+
 ### Defense-in-depth (không chỉ patch)
 - **WAF**: rule chặn chuỗi lookup chứa {{jndi:}} và dạng lookup lồng nhau trong header/body — chỉ là lớp tạm, payload obfuscate có thể vượt qua.
 - **Egress firewall**: block outbound LDAP (389), RMI (1099), DNS to unknown.
@@ -1106,7 +1108,7 @@ mapper.activateDefaultTyping(ptv, ObjectMapper.DefaultTyping.NON_FINAL);
 | Layer | Scope | Algorithm | Config ví dụ |
 |---|---|---|---|
 | **Network/WAF** | IP | Token bucket | 100 req/min/IP, burst 20 |
-| **Application** | IP + User | Sliding window log | 5 req/15min/IP, 10 req/15min/user |
+| **Application** | IP + User | Sliding window | 50 req/15min/IP (NAT công ty/4G nhiều người chung IP), 10 req/15min/user |
 | **Login endpoint** | User | Fixed window + exponential backoff | 5 fail → lock 15m, 10 fail → lock 1h, 20 fail → lock 24h |
 
 ### Account Lockout — Exponential Backoff
@@ -1123,13 +1125,15 @@ mapper.activateDefaultTyping(ptv, ObjectMapper.DefaultTyping.NON_FINAL);
 public class LoginProtectionService {
     private final RedisTemplate<String, String> redis;
     private static final int MAX_ATTEMPTS = 5;
-    private static final int WINDOW_MINUTES = 15;
+    // Cửa sổ đếm phải DÀI hơn thời gian khoá (15 phút), nếu không counter tự reset
+    // sau mỗi lần khoá và không bao giờ leo lên mức khoá 1h/24h
+    private static final Duration COUNT_WINDOW = Duration.ofHours(24);
 
     public void recordFailedAttempt(String username, String ip) {
         // Đếm theo USER (không gộp với IP — botnet đổi IP liên tục) và đếm riêng theo IP
         String key = "login:fail:user:" + username;
         Long count = redis.opsForValue().increment(key);
-        if (count == 1) redis.expire(key, Duration.ofMinutes(WINDOW_MINUTES)); // nên gộp atomic bằng Lua
+        if (count == 1) redis.expire(key, COUNT_WINDOW); // nên gộp atomic bằng Lua
         Long ipCount = redis.opsForValue().increment("login:fail:ip:" + ip); // dùng cho rate limit/CAPTCHA theo IP
 
         if (count >= MAX_ATTEMPTS) {
@@ -1169,8 +1173,9 @@ public boolean isPwned(String password) {
     String suffix = sha1.substring(5);
     String response = webClient.get().uri("https://api.pwnedpasswords.com/range/" + prefix)
         .retrieve().bodyToMono(String.class).block();
+    // Mỗi dòng trả về có dạng "SUFFIX:COUNT" (35 ký tự hex + số lần lộ)
     return Arrays.stream(response.split("\\r?\\n"))
-        .anyMatch(line -> line.startsWith(suffix));
+        .anyMatch(line -> line.startsWith(suffix + ":"));
 }
 ~~~
 
@@ -1238,7 +1243,7 @@ public class SecurityConfig {
 ~~~
 
 ### CORS, CSRF và mã lỗi
-- **CORS**: nếu có bean {{CorsConfigurationSource}}, hãy gọi {{http.cors(Customizer.withDefaults())}}. Thiếu bước này, preflight {{OPTIONS}} có thể bị chặn với 401 trước khi tới controller.
+- **CORS**: nếu có bean {{CorsConfigurationSource}}, hãy gọi tường minh {{http.cors(Customizer.withDefaults())}} để {{CorsFilter}} chạy **trước** filter xác thực. Nếu CORS chỉ cấu hình ở tầng Spring MVC ({{@CrossOrigin}}, {{WebMvcConfigurer}}) mà không có bước này, preflight {{OPTIONS}} (không mang token) bị chặn 401 trước khi tới MVC.
 - **CSRF**: chain dùng cookie/session phải giữ CSRF. API stateless xác thực bằng header {{Authorization}} thì tắt được. SPA dùng cookie có thể dùng {{CookieCsrfTokenRepository.withHttpOnlyFalse()}} và gửi token qua header.
 - **401 vs 403**: chưa xác thực → {{AuthenticationEntryPoint}} trả 401; đã xác thực nhưng thiếu quyền → {{AccessDeniedHandler}} trả 403. Đừng trả 500 cho hai trường hợp này.
 
@@ -1372,7 +1377,7 @@ public void revoke(Jwt jwt, RedisTemplate<String, String> redis) {
 - Denylist không có TTL → Redis phình to.
 - Chỉ revoke access token mà quên refresh token.
 - Kiểm tra denylist **sau** khi verify chữ ký; đừng tra Redis bằng dữ liệu chưa xác thực.
-- Log token, đặt token vào query URL (lọt access log/referer) hoặc để cả localStorage khi còn rủi ro XSS.
+- Log token, đặt token vào query URL (lọt access log/Referer), hoặc lưu token trong {{localStorage}} khi ứng dụng còn rủi ro XSS (script độc đọc được ngay).
 
 > Senior tip: chốt **revocation SLA** với bên nghiệp vụ trước khi chọn kiến trúc, vì nó quyết định TTL và chi phí hạ tầng. Cấu hình thực tế hay dùng: access 10 phút, refresh 8 giờ có rotation, denylist cho logout và khoá khẩn cấp, version check cho đổi mật khẩu. Đo tỉ lệ cache hit của introspection; đặt alert khi auth server chậm, và luôn có đường fallback đọc JWKS cache khi auth server down.`,
   follow: [
@@ -1391,7 +1396,7 @@ public void revoke(Jwt jwt, RedisTemplate<String, String> redis) {
 
 ### Validate bắt buộc
 - Mặc định {{NimbusJwtDecoder}} kiểm tra chữ ký và timestamp ({{exp}}, {{nbf}} với clock skew 60 giây). {{iss}} chỉ được kiểm tra khi bạn cấu hình {{issuer-uri}} hoặc validator.
-- **Audience** thường **không** được kiểm tra tự động. Đây là lỗ hổng hay bị bỏ sót: token của dịch vụ A vẫn dùng được ở dịch vụ B nếu cùng issuer và cùng key.
+- **Audience** **không** được kiểm tra nếu bạn không khai báo. Đây là lỗ hổng hay bị bỏ sót: token của dịch vụ A vẫn dùng được ở dịch vụ B nếu cùng issuer và cùng key. Từ Spring Boot 3.1, cách gọn nhất là property {{spring.security.oauth2.resourceserver.jwt.audiences=payments-api}} (Boot tự thêm validator); khi tự dựng {{JwtDecoder}} như dưới thì phải tự thêm validator.
 - Nên kiểm tra cả {{azp}}/{{client_id}} nếu token do nhiều client lấy.
 
 ~~~java
@@ -1422,14 +1427,14 @@ JwtDecoder jwtDecoder(OAuth2ResourceServerProperties props) {
 - Với opaque token, cấu hình {{introspection-uri}} + client credentials; cache kết quả ngắn và không cache lỗi.
 
 ### JWKS rotation và độ sẵn sàng
-- {{issuer-uri}} khiến app gọi {{/.well-known/openid-configuration}} lúc khởi động; auth server down có thể làm app không start. Với hệ thống cần khởi động độc lập, dùng thẳng {{jwk-set-uri}}.
+- Với chỉ {{issuer-uri}}, app phải gọi {{/.well-known/openid-configuration}} để tìm JWKS. Spring Boot 3 khởi tạo decoder này **lười** (lần đầu có request), nên app vẫn start, nhưng nếu auth server down thì các request đầu tiên lỗi 401/500. Khai báo thêm {{jwk-set-uri}} (giữ {{issuer-uri}} để vẫn validate {{iss}}) giúp bỏ bước discovery. Nếu tự gọi {{JwtDecoders.fromIssuerLocation()}} trong bean thì discovery chạy ngay lúc start và auth server down sẽ làm app không start.
 - Decoder cache JWKS (mặc định khoảng 5 phút). Khi auth server xoay key, cần cửa sổ **overlap**: public key mới được publish trước, token cũ vẫn verify được bằng key cũ tới khi hết TTL.
 - Đặt timeout ngắn cho việc tải JWKS và có retry; đừng để request treo theo auth server.
 
 ### 401 đúng chuẩn
 - Trả {{401}} với {{WWW-Authenticate: Bearer error="invalid_token"}}; không trả 500, không trả stack trace.
 - Không tiết lộ token hết hạn hay sai audience cho client không tin cậy; log chi tiết ở server với correlation id.
-- Dispatch ERROR cũng cần authorize: Boot forward exception sang {{/error}} và từ chuỗi 6.x rule áp cho cả ERROR dispatch — nếu không permitAll cho {{/error}} (hoặc {{dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()}}), lỗi gốc bị thay bằng 401/403, che mất dấu vết điều tra.
+- Dispatch ERROR cũng cần authorize: Boot forward exception sang {{/error}}, và từ Spring Security 6 rule authorization áp cho mọi dispatcher type, kể cả ERROR — nếu không permitAll cho {{/error}} (hoặc {{dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()}}), lỗi gốc bị thay bằng 401/403, che mất dấu vết điều tra.
 
 ### Pitfall
 - Chỉ cấu hình {{issuer-uri}} rồi tưởng đã đủ — thiếu audience check.
@@ -1455,7 +1460,7 @@ JwtDecoder jwtDecoder(OAuth2ResourceServerProperties props) {
 ### Nguyên tắc nền
 - **Secret zero**: app lấy quyền đọc secret bằng workload identity (IRSA trên EKS, instance profile trên EC2), không nhúng access key tĩnh.
 - IAM least privilege: chỉ được {{secretsmanager:GetSecretValue}} đúng ARN, không {{ListSecrets}} toàn bộ.
-- Bật encryption bằng CMK riêng cho môi trường; bật CloudTrail **data events** để biết ai đọc secret nào.
+- Bật encryption bằng CMK riêng cho môi trường. CloudTrail ghi mỗi lần gọi {{GetSecretValue}} (management event loại read), nên trail phải bật ghi read events và có alert khi principal lạ đọc secret.
 - Không đưa secret vào env var nếu tránh được: env lộ qua {{/proc}}, crash dump, child process, actuator/env. Ưu tiên đọc qua SDK hoặc CSI volume.
 
 ### Tích hợp Spring Boot
@@ -1476,15 +1481,16 @@ spring:
 - Secret chứa nhiều key (username, password, host) thường là JSON; parse một lần rồi tạo {{DataSource}}.
 
 ### Rotation hoạt động thế nào
-1. Lambda rotation được gắn vào secret, chạy theo lịch (ví dụ 30 ngày).
-2. Với RDS, Lambda dùng **alternating users** ({{app_user}} và {{app_user_clone}}): tạo user mới/mật khẩu mới, cập nhật secret thành {{AWSPENDING}}, test kết nối, rồi chuyển {{AWSCURRENT}}.
-3. Consumer đọc {{AWSCURRENT}}; secret có thêm {{AWSPREVIOUS}} trong thời gian chuyển tiếp để app còn đang giữ credential cũ vẫn hoạt động.
-4. Kết thúc: credential cũ bị vô hiệu hoá. Cửa sổ chuyển tiếp chính là thời gian app phải refresh.
+1. Lambda rotation được gắn vào secret, chạy theo lịch (ví dụ 30 ngày), qua 4 bước: {{createSecret}} (sinh mật khẩu mới, lưu version nhãn {{AWSPENDING}}) → {{setSecret}} (đổi mật khẩu trong DB) → {{testSecret}} (thử đăng nhập) → {{finishSecret}} (chuyển nhãn {{AWSCURRENT}} sang version mới, version cũ thành {{AWSPREVIOUS}}).
+2. **Single user**: {{setSecret}} đổi mật khẩu của chính user app → mật khẩu cũ **chết ngay**. Connection đang mở vẫn chạy, nhưng mọi connection mới tạo bằng mật khẩu cũ sẽ fail cho tới khi app đọc secret mới.
+3. **Alternating users** ({{app_user}} và {{app_user_clone}}): mỗi lần xoay chỉ đổi mật khẩu của user **đang không dùng** rồi chuyển AWSCURRENT sang user đó. User cũ vẫn đăng nhập được tới lần xoay kế tiếp → app có cả một chu kỳ để refresh. Đây là lựa chọn an toàn cho DB production.
+4. Consumer luôn đọc {{AWSCURRENT}}; {{AWSPREVIOUS}} chỉ là nhãn để rollback, không có nghĩa mật khẩu cũ còn dùng được (với single user thì đã chết).
 
 ### Bẫy lớn nhất: connection pool giữ credential cũ
 - HikariCP tạo connection với mật khẩu tại thời điểm tạo; connection sống lâu sẽ tiếp tục dùng session đã mở. Khi DB đổi mật khẩu, connection **mới** sẽ fail nếu app chưa đọc secret mới.
 - Giải pháp: đọc lại secret theo lịch ngắn (vài phút) và đặt {{maxLifetime}} thấp hơn nhiều so với chu kỳ rủi ro (rotation 30 ngày, maxLifetime 20–30 phút là đủ dư). {{validationTimeout}} (mặc định 5 giây, kiểm tra lúc borrow connection) cứ để khoảng mặc định, đừng kéo dài.
-- Khi refresh, tạo {{HikariDataSource}} mới và đóng cái cũ sau khi connection đang dùng xong; hoặc evict pool. Không chỉ gán lại biến password.
+- Khi refresh, tạo {{HikariDataSource}} mới và đóng cái cũ sau khi connection đang dùng xong; hoặc evict pool. Không chỉ gán lại biến password trong Spring Environment (pool không đọc lại).
+- Cách ít code nhất: **AWS Secrets Manager JDBC driver** (thư viện {{aws-secretsmanager-jdbc}}) bọc driver thật; khi đăng nhập DB fail vì sai mật khẩu, nó tự đọc lại secret và thử lại. Kết hợp alternating users thì gần như không có downtime.
 - Với RDS, cân nhắc **IAM database authentication**: token ngắn hạn (15 phút) sinh từ role, không cần password rotation — nhưng vẫn cần refresh token trước khi hết hạn.
 
 ### Các secret khác cần rotation
@@ -1528,11 +1534,11 @@ public UserProfile getProfile(String username) { ... }
 ~~~
 - SpEL gọi được bean ({{@authz.canRead(...)}}), tiện nhưng khó test và có thể gây N+1.
 - Đừng nhét logic phức tạp vào SpEL; đóng gói thành bean rõ ràng, có test.
-- {{@PostAuthorize}} kiểm tra **sau** khi method chạy, dùng khi quyền phụ thuộc kết quả trả về; exception vẫn rollback nếu trong transaction.
+- {{@PostAuthorize}} kiểm tra **sau** khi method chạy, dùng khi quyền phụ thuộc kết quả trả về. Bẫy: interceptor của method security mặc định bọc **ngoài** {{@Transactional}} (transaction advisor có order thấp nhất nên chạy ở trong cùng), tức là khi @PostAuthorize từ chối thì transaction **đã commit**. Chỉ dùng @PostAuthorize cho method đọc, đừng dùng cho method ghi dữ liệu.
 - {{@PostFilter}} vẫn load toàn bộ rồi mới lọc — dữ liệu lớn hãy lọc ở query.
 
 ### AuthorizationManager
-- {{AuthorizationManager<T>}} có method {{check(Supplier<Authentication>, T)}} trả {{AuthorizationDecision}}. Nó thay thế {{AccessDecisionVoter}}/{{AccessDecisionManager}}.
+- {{AuthorizationManager<T>}} nhận {{Supplier<Authentication>}} và object cần bảo vệ, trả về quyết định cho/không cho ({{check(...)}} trả {{AuthorizationDecision}}; từ 6.4 có thêm {{authorize(...)}} trả {{AuthorizationResult}} và {{check}} bị deprecated). Nó thay thế {{AccessDecisionVoter}}/{{AccessDecisionManager}}.
 - Có thể đăng ký interceptor cho method cụ thể hoặc dùng {{RequestMatcherDelegatingAuthorizationManager}} cho HTTP; ưu điểm là type-safe, unit test được và compose tốt.
 
 ~~~java
@@ -1598,7 +1604,8 @@ public AccountView getAccount(Long accountId) { ... }
 - Partition theo tháng, detach partition cũ sang storage lạnh.
 - **Hash chain**: {{h_n = SHA-256(h_n-1 || canonical_json(event))}}. Sửa một bản ghi sẽ làm gãy toàn bộ chuỗi phía sau.
 - **Neo (anchor)**: định kỳ ký số root hash và đẩy lên S3 Object Lock (compliance mode) hoặc dịch vụ notarize độc lập; kẻ có quyền DB vẫn không sửa được bản neo.
-- Job định kỳ phát hiện gap về id, hash mismatch, bản ghi thiếu so với outbox; alert ngay, không tự "sửa" dữ liệu.
+- Hash chain đòi hỏi **một writer tuần tự** (ví dụ một worker đọc outbox theo thứ tự rồi ghi): nhiều pod ghi song song sẽ cùng đọc một {{prev_hash}} và chuỗi bị rẽ nhánh.
+- Job định kỳ phát hiện hash mismatch, bản ghi thiếu so với outbox; alert ngay, không tự "sửa" dữ liệu. Đừng dựa vào gap của {{seq}}: sequence PostgreSQL vốn có gap khi transaction rollback, nên gap seq không chứng minh bị xoá — chuỗi hash mới là bằng chứng.
 
 ~~~sql
 CREATE TABLE audit_event (
@@ -1615,10 +1622,12 @@ CREATE TABLE audit_event (
     prev_hash    BYTEA NOT NULL,
     hash         BYTEA NOT NULL
 );
-GRANT INSERT, SELECT ON audit_event TO app_role;   -- KHÔNG cấp UPDATE/DELETE cho role nào
 REVOKE ALL ON audit_event FROM PUBLIC;             -- phòng khi PUBLIC từng được cấp quyền
+GRANT INSERT, SELECT ON audit_event TO app_role;   -- KHÔNG UPDATE/DELETE/TRUNCATE
+-- Owner của bảng là một role riêng (chỉ dùng cho migration, có phê duyệt),
+-- vì owner luôn sửa/xoá được bất kể GRANT
 ~~~
-- Postgres production: nghiệp vụ nên PARTITION BY RANGE theo occurred_at từng tháng; lưu ý trong bảng phân khoá, PK/unique phải gồm cả cột phân khoá, ví dụ PRIMARY KEY (occurred_at, seq).
+- Trên production nên {{PARTITION BY RANGE (occurred_at)}} theo tháng; lưu ý với bảng partition, PK/unique phải chứa cột phân vùng, ví dụ {{PRIMARY KEY (occurred_at, seq)}} và {{event_id}} unique cũng phải kèm {{occurred_at}}.
 
 ### Lưu trữ, retention và PII
 - Retention theo quy định nội bộ và NHNN; xác định thời hạn, legal hold và quy trình xoá. Với PII, che hoặc mã hoá số tài khoản, CCCD.

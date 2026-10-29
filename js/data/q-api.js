@@ -789,15 +789,16 @@ ResponseEntity<String> receive(
         return ResponseEntity.status(401).body("Invalid signature");
     }
     
-    // 3. Idempotency check (production: unique constraint trên delivery_id để chống race 2 request song song)
-    if (deliveryLogRepo.existsByDeliveryId(deliveryId)) {
-        return ResponseEntity.ok().build();  // already processed
+    // 3. Idempotency: INSERT trước, unique constraint trên delivery_id là trọng tài
+    //    (existsBy... rồi save có race khi 2 request trùng đến song song)
+    try {
+        inboxRepo.insert(deliveryId, payload);          // trạng thái RECEIVED
+    } catch (DuplicateKeyException dup) {
+        return ResponseEntity.ok().build();             // đã nhận rồi, ack lại
     }
-    
-    // 4. Process event (async)
-    eventProcessor.process(payload);
-    deliveryLogRepo.save(new DeliveryLog(deliveryId, "SUCCESS"));
-    return ResponseEntity.ok().build();
+
+    // 4. Xử lý nghiệp vụ ở worker async đọc bảng inbox; trả 2xx thật nhanh
+    return ResponseEntity.accepted().build();
 }
 ~~~
 
@@ -924,10 +925,10 @@ histogram_quantile(0.99, rate(http_server_requests_seconds_bucket[5m])) > 5
 | **Latency** | Trung bình | **Thấp nhất** (binary, multiplexing) | Cao hơn (N+1 resolver, parsing) |
 | **Payload size** | Lớn | **Nhỏ nhất** (binary, thường nhỏ hơn JSON đáng kể – đo với payload thật) | Tùy query (có thể over-fetch nếu client kém) |
 | **Streaming** | SSE, WebSocket | **Native** (unary, server/client/bidi stream) | Subscription (WebSocket) |
-| **Caching** | **Native** (HTTP cache, ETag, CDN) | Khó (custom) | Khó (POST body, persisted query) |
+| **Caching** | **Native** (HTTP cache, ETag, CDN) | Khó (custom) | Khó (query thường đi bằng POST; muốn cache CDN phải dùng persisted query + GET) |
 | **Browser support** | **Native** (fetch, axios) | Cần grpc-web / Envoy proxy | Native (fetch) |
 | **Tooling** | Rất phong phú | Tốt (protoc, buf, grpcurl) | Tốt (Apollo, Relay, GraphiQL) |
-| **Evolution** | Versioning URL/header | Field number, backward compat | Deprecation directive, schema stitching |
+| **Evolution** | Versioning URL/header | Field number, backward compat | Thêm field + directive {{@deprecated}}, thường không version |
 | **Learning curve** | Thấp | Trung bình (Protobuf, HTTP/2) | Cao (resolver, dataloader, security) |
 
 ### Khi nào chọn gì?
@@ -971,7 +972,7 @@ histogram_quantile(0.99, rate(http_server_requests_seconds_bucket[5m])) > 5
 ~~~
 
 ### Anti-patterns
-- **gRPC cho public API** → partner kêu khổ vì tooling, firewall block HTTP/2.
+- **gRPC cho public API** → partner kêu khổ vì tooling; nhiều proxy/WAF doanh nghiệp không chuyển tiếp HTTP/2 end-to-end hoặc làm rơi trailer.
 - **GraphQL cho service-to-service** → tight coupling, N+1 death spiral, khó trace.
 - **REST cho high-frequency internal call** → JSON serialization overhead, no streaming.
 
@@ -998,13 +999,13 @@ histogram_quantile(0.99, rate(http_server_requests_seconds_bucket[5m])) > 5
 ~~~text
 1. Design: Viết API spec (YAML) ──► Review (Arch, Security, Partner)
                                   │
-2. Baseline: Commit spec vào \`main\` branch (git tag v1.0.0)
+2. Baseline: Commit spec vào branch main (git tag v1.0.0)
                                   │
 3. Implement: Dev generate server stub (interface + DTO)
                                   │
 4. Contract Test: MockMvc + validator (ví dụ swagger-request-validator) kiểm tra request/response khớp spec
                                   │
-5. CI Gate: \`oasdiff\` / openapi-diff compare HEAD vs baseline
+5. CI Gate: oasdiff / openapi-diff compare HEAD vs baseline
                                   │
 6. Release: Tag version, publish spec to portal (Stoplight, Redocly, SwaggerHub)
                                   │
@@ -1012,10 +1013,10 @@ histogram_quantile(0.99, rate(http_server_requests_seconds_bucket[5m])) > 5
 ~~~
 
 ### springdoc-openapi 2.x (Spring Boot 3)
-~~~yaml
-dependencies:
-  - org.springdoc:springdoc-openapi-starter-webmvc-ui:2.6.0
-  - org.springdoc:springdoc-openapi-starter-webmvc-api:2.6.0
+~~~text
+org.springdoc:springdoc-openapi-starter-webmvc-ui:2.6.0
+  -> gồm cả webmvc-api (endpoint /v3/api-docs) + Swagger UI (/swagger-ui.html)
+  -> chỉ cần spec, không cần UI: dùng springdoc-openapi-starter-webmvc-api
 ~~~
 
 ~~~java
@@ -1075,24 +1076,17 @@ class AccountContractTest {
     @Autowired MockMvc mvc;
     
     @Test
-    void createAccount_specCompliant() throws Exception {
-        String spec = mvc.perform(get("/v3/api-docs"))
-            .andExpect(status().isOk())
-            .andReturn().getResponse().getContentAsString();
-        
-        // Validate với openapi-validator (optional)
-        // Hoặc dùng Pact/Spring Cloud Contract cho consumer-driven contract
-    }
-    
-    @Test
     void createAccount_responseMatchesSchema() throws Exception {
         mvc.perform(post("/api/v1/accounts")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"email\":\"test@bank.vn\",\"initialBalance\":1000}"))
             .andExpect(status().isCreated())
-            .andExpect(jsonPath("$.email").value("test@bank.vn"))
-            .andExpect(jsonPath("$.id").exists());
+            // swagger-request-validator-mockmvc: so request + response
+            // với file account-api.yaml đã duyệt (sai field/type -> test fail)
+            .andExpect(openApi().isValid("openapi/account-api.yaml"));
     }
+    // jsonPath chỉ kiểm vài field bạn nhớ ra; validator kiểm TOÀN BỘ schema.
+    // Consumer-driven (Pact / Spring Cloud Contract) bổ sung góc nhìn của client.
 }
 ~~~
 
@@ -1131,7 +1125,7 @@ jobs:
 | Thêm required field request | **Có** | {{required: [newField]}} |
 | Xóa field | **Có** | Bỏ {{phone}} |
 | Đổi type field | **Có** | {{int}} → {{string}} |
-| Đổi enum value | **Có** | Thêm/bỏ value |
+| Bỏ enum value / thêm enum value vào response | **Có** (thêm vào request thì thường không) | Client switch-case cứng gặp giá trị lạ |
 | Thêm endpoint mới | Không | GET /v1/accounts/{id}/cards |
 | Đổi status code | **Có** | 200 → 201 |
 | Thêm header response | Không | {{X-Request-ID}} |
@@ -1153,7 +1147,7 @@ jobs:
     topic: 'api',
     level: 'mid',
     q: 'POST /payments không idempotent: khách bấm "Thanh toán" hai lần hoặc mobile retry sau timeout. Thiết kế Idempotency-Key để không trừ tiền hai lần — lưu ở đâu, xử lý request song song, TTL bao lâu?',
-    a: `**Tóm tắt:** Client sinh một {{Idempotency-Key}} (UUID) cho mỗi lần thanh toán và **giữ nguyên** key khi retry. Server lưu key + fingerprint của request + response đã trả; request thứ hai cùng key được **replay response cũ**, không gọi lại PSP/lõi thẻ. Unique index trên {{(merchant_id, idempotency_key)}} trong PostgreSQL là cơ chế chống race, TTL thường 24 giờ.
+    a: `**Tóm tắt:** Client sinh một {{Idempotency-Key}} (UUID) cho mỗi lần thanh toán và **giữ nguyên** key khi retry. Server lưu key + fingerprint của request + response đã trả; request thứ hai cùng key được **replay response cũ**, không gọi lại PSP/lõi thẻ. Unique index trên {{(merchant_id, idempotency_key)}} trong PostgreSQL là cơ chế chống race; TTL tối thiểu 24 giờ (nhiều hệ thống giữ 7 ngày).
 
 ### Vì sao không thể dựa vào HTTP
 - POST **không idempotent** theo RFC 9110: gửi lại nghĩa là tạo thêm giao dịch.
@@ -1210,11 +1204,15 @@ public ResponseEntity<String> pay(String key, PayRequest req) {
     }
     try {
         PspResult r = psp.charge(req, key);               // idempotent ở cả phía PSP
+        // r có thể là thành công HOẶC lỗi nghiệp vụ đã chốt (thẻ bị từ chối):
+        // cả hai đều lưu lại để replay, status COMPLETED/FAILED
         repo.complete(merchantId, key, r.status(), r.body());
         return ResponseEntity.status(r.status()).body(r.body());
     } catch (PspTimeout e) {
-        repo.fail(merchantId, key);                        // cho phép retry cùng key
-        throw e;
+        // Không biết PSP đã trừ tiền chưa -> xoá bản ghi reserve để client retry
+        // CÙNG key; an toàn vì PSP nhận lại đúng key đó nên không trừ 2 lần
+        repo.release(merchantId, key);
+        throw e;                                           // client nhận 5xx/504
     }
 }
 ~~~
@@ -1272,20 +1270,27 @@ T4  tắt hẳn, giữ 410 Gone + Link migration ít nhất một chu kỳ
 - Đừng trả 404 ngay: 404 khiến client tưởng endpoint chưa từng tồn tại (URL sai, lệnh gọi vào môi trường chưa có route) và không biết phải làm tiếp thế nào; 410 Gone nói rõ "đã bỏ vĩnh viễn", kèm Link dẫn tới migration guide.
 
 ~~~java
-// Spring MVC: cùng logic, hai mặt tiền version
+// Spring MVC: hai controller mỏng theo version, dùng chung một service
 @RestController
-@RequestMapping({"/v1/accounts", "/v2/accounts"})
-class AccountController {
+@RequestMapping("/v2/accounts")
+class AccountControllerV2 {
     @GetMapping("/{id}")
-    AccountDtoV2 get(@PathVariable long id,
-                     @RequestHeader(value = "X-Api-Version", required = false) String v) {
-        AccountDtoV2 dto = service.get(id);                    // v2 là canonical
-        return "1".equals(v) ? dto.withoutNewFields() : dto;  // facade giữ shape cũ
+    AccountDtoV2 get(@PathVariable long id) {
+        return AccountDtoV2.from(service.get(id));   // v2 là model chuẩn (canonical)
+    }
+}
+
+@RestController
+@RequestMapping("/v1/accounts")
+class AccountControllerV1 {
+    @GetMapping("/{id}")
+    AccountDtoV1 get(@PathVariable long id) {
+        return AccountDtoV1.from(service.get(id));   // adapter: map về shape cũ
     }
 }
 ~~~
 
-Trong thực tế nên tách controller/facade theo version và dùng chung service; đừng rải điều kiện {{if v1}} khắp code.
+Business logic chỉ nằm ở service; controller v1 chỉ map dữ liệu. Đừng rải điều kiện {{if v1}} khắp code. (Spring Framework 7 / Spring Boot 4 có thêm hỗ trợ API versioning sẵn, nhưng nguyên tắc tách adapter vẫn vậy.)
 
 ### Đo lường trước khi tắt
 - Đếm request theo {{api_key}} + version trong access log/Micrometer; dashboard "consumer còn gọi v1".
@@ -1392,7 +1397,7 @@ String encode(Cursor c) throws Exception {
 - {{detail}} là văn bản cho người, có thể đổi ngôn ngữ, không phải hợp đồng.
 - {{type}} là **mã lỗi máy đọc được**, ổn định, có thể trỏ tới trang tài liệu giải thích cách sửa.
 
-~~~json
+~~~text
 HTTP/1.1 422 Unprocessable Content
 Content-Type: application/problem+json
 
@@ -1415,6 +1420,8 @@ spring:
     problemdetails:
       enabled: true   # framework exception (404, 405, lỗi binding) -> problem+json
 ~~~
+
+> Property này chỉ đăng ký một {{ResponseEntityExceptionHandler}} mặc định **khi bạn chưa có** bean cùng loại. Nếu bạn tự viết advice {{extends ResponseEntityExceptionHandler}} như dưới đây thì advice của bạn thay thế nó (vẫn trả ProblemDetail cho exception của framework), property lúc đó không còn tác dụng.
 
 ~~~java
 @RestControllerAdvice
@@ -1528,6 +1535,7 @@ return { allowed, math.floor(tokens) }
 - Toàn bộ read-modify-write nằm trong một lần chạy Lua; Redis đơn luồng nên không có race.
 - Đừng làm GET rồi SET từ Java: hai request chen nhau sẽ cùng thấy token còn và cùng cho qua.
 - Script chỉ chạm một key nên an toàn trên Redis Cluster.
+- {{nowMs}} lấy từ đồng hồ của pod: nếu các pod lệch giờ vài trăm ms, bucket refill sai. Có thể gọi {{redis.call('TIME')}} trong script (Redis 5+ cho phép) để mọi pod dùng chung đồng hồ của Redis.
 
 ~~~java
 public Decision check(String consumer, String endpoint, int cost) {
@@ -1552,7 +1560,7 @@ Content-Type: application/problem+json
 {"type":"https://api.bank.vn/problems/rate-limited","title":"Quá nhiều yêu cầu","status":429}
 ~~~
 - {{Retry-After}} tính bằng giây (hoặc HTTP-date) — client biết chờ bao lâu thay vì retry ngay.
-- {{RateLimit-*}} theo IETF draft; nhiều client cũ chỉ đọc {{X-RateLimit-*}}, có thể phát cả hai trong giai đoạn chuyển.
+- {{RateLimit-Limit/-Remaining/-Reset}} là dạng của các bản IETF draft cũ (nhiều gateway vẫn phát); bản draft mới (draft-ietf-httpapi-ratelimit-headers) gộp thành hai header structured {{RateLimit}} và {{RateLimit-Policy}}. Chưa là RFC, nên ghi rõ format trong tài liệu API; nhiều client cũ chỉ đọc {{X-RateLimit-*}}.
 - Client retry phải thêm **jitter**, nếu không toàn bộ client cùng quay lại đúng một giây và tạo sóng thứ hai.
 
 ### Key và chính sách
@@ -1619,7 +1627,9 @@ public ResponseEntity<?> update(@PathVariable long id,
         return ResponseEntity.status(428).header("ETag", currentEtag(id))
             .body(problem("precondition-required", 428, "Gửi If-Match với version hiện tại"));
     }
-    long expected = parseEtag(ifMatch);          // bỏ W/ và 2 dấu nháy, parse số
+    // If-Match dùng so sánh STRONG (RFC 9110): ETag yếu W/"7" không bao giờ khớp
+    // -> parseEtag trả -1 cho dạng W/, service không khớp version nào -> 412
+    long expected = parseEtag(ifMatch);
     try {
         Beneficiary saved = service.update(id, expected, req);
         String etag = '"' + String.valueOf(saved.getVersion()) + '"';
@@ -1640,7 +1650,7 @@ Cách service dùng version mong đợi:
 int updateIfVersion(long id, long expected, String name, BigDecimal limit);
 ~~~
   Trả 0 dòng → ném {{OptimisticLockingFailureException}}. Một câu lệnh, atomic, không có cửa sổ race.
-- **Cách B**: load entity trong transaction, set field, để {{@Version}} kiểm tra lúc flush/commit. Gọn hơn nhưng entity phải được load **trong cùng transaction** với lần ghi, và exception chỉ ném ở commit.
+- **Cách B**: trong transaction, load entity, **so {{entity.getVersion()}} với {{expected}} và ném {{OptimisticLockingFailureException}} nếu khác**, rồi set field; {{@Version}} lo nốt race giữa lúc load và lúc flush. Lưu ý: gán {{setVersion(expected)}} lên entity đang managed **không** có tác dụng, Hibernate dùng version nó đã load, nên bắt buộc phải tự so. Exception của @Version chỉ ném ở flush/commit.
 
 ### Pitfall
 - **Đọc version ở controller rồi so sánh**: hai request vẫn có thể chen giữa lúc so và lúc ghi. Phải để DB làm trọng tài.
