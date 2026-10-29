@@ -1,6 +1,7 @@
 # T378 — Dịch sang tiếng Anh: q-sql (6 mục)
 
-Status: TODO
+Status: DONE
+Note: Translated sql-023 to sql-028 to English.
 Agent: opencode
 Owns: `js/i18n/q-sql-4.en.js`
 
@@ -16,3 +17,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-sql-4.en.js` và `node scripts/check-i18n.js q-sql-4` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
