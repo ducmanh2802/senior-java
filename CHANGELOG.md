@@ -18,4 +18,5 @@
 ### Ứng dụng
 - News digest: shared feed module + /api/digest, editor scripts, docs (completes 5d77763/0615363)
 - Perf: load data groups per route (first load 8.8 MB -> ~0.8 MB)
+- Release gate: work on branch content (Vercel preview), main only via PR; CI on content; scripts/release.sh writes CHANGELOG.md
 

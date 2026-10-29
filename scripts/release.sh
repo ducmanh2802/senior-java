@@ -20,7 +20,7 @@ section="## $(date +%F)
 $(git log --no-merges --format='- %s' "$range" | grep -E '^- Content' | sed 's/^- Content: /- /' || true)
 
 ### Ứng dụng
-$(git log --no-merges --format='- %s' "$range" | grep -vE '^- (Content|Release)' || true)
+$(git log --no-merges --format='- %s' "$range" | grep -vE '^- (Content|Release notes)' || true)
 "
 if [ "${1:-}" = --dry ]; then echo "$section"; exit 0; fi
 
