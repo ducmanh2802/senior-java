@@ -1,6 +1,6 @@
 # T432 — Dịch sang tiếng Anh: algo (7 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/algo-11.en.js`
 
@@ -16,3 +16,13 @@ Yêu cầu dịch:
 - `node --check js/i18n/algo-11.en.js` và `node scripts/check-i18n.js algo-11` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đủ 7 mục algo-001…algo-007 với các field prompt / hints / solution / follow; giữ nguyên markup
+  (`**`, `{{code}}`, `###`, danh sách, `>` tip, bảng, `~~~text`/`~~~java`) và dịch cả comment tiếng Việt trong code block.
+  Tiêu đề mục dùng "### Example", "### Constraints", "### Approach", "### Interview notes"; "> Senior tip:" giữ nguyên.
+- `node scripts/check-i18n.js algo-11` → OK (7 mục). `node scripts/validate.js` → OK. Không còn ký tự tiếng Việt trong file
+  (đã grep cả nội dung code block).
+- Lưu ý (không sửa, chỉ báo): `js/i18n/algo-1.en.js` (task khác) cũng đang phủ algo-001…007 bằng bản dịch rút gọn trước đó.
+  `manifest.js` nạp `algo-1` trước `algo-11` nên bản đầy đủ này ghi đè (Object.assign), kết quả hiển thị là bản mới; nếu muốn
+  dọn trùng thì integrator xoá các key trùng trong `algo-1.en.js`.
+Reviewed-by: check-i18n (translation, no LLM review)
