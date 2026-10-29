@@ -1,6 +1,6 @@
 # T382 — Dịch sang tiếng Anh: q-security (8 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-security-3.en.js`
 
@@ -16,3 +16,5 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-security-3.en.js` và `node scripts/check-i18n.js q-security-3` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Translated 8 security questions (security-015 to security-022) into English and added to `js/i18n/q-security-3.en.js`. Validated with `node scripts/check-i18n.js q-security-3`.
+Reviewed-by: check-i18n (translation, no LLM review)
