@@ -1,7 +1,9 @@
 # T371 — Dịch sang tiếng Anh: q-java (9 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
+
+Đã dịch xong 9 mục: collections-019 tới collections-026 và modern-017. Đã kiểm tra qua scripts/check-i18n.js.
 Owns: `js/i18n/q-java-8.en.js`
 
 Người dùng bấm EN thì **cả trang** chuyển sang tiếng Anh: file này phủ bản dịch lên dữ liệu gốc theo `id` (đọc comment "content translation" trong `js/core/i18n.js`). Đọc AGENTS.md mục 5 (markup) và các mục sau trong `js/data/q-java.js`: **collections-019, collections-020, collections-021, collections-022, collections-023, collections-024, collections-025, collections-026, modern-017**.
@@ -16,3 +18,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-java-8.en.js` và `node scripts/check-i18n.js q-java-8` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
