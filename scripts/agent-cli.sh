@@ -42,6 +42,7 @@ case "$runner" in
   opencode) run_agent opencode run -m "${OPENCODE_MODEL:-opencode/deepseek-v4.1-flash-free}" --title "$id" "$prompt" ;;
   codex)  run_agent codex ${CODEX_ARGS:-} exec -s workspace-write --skip-git-repo-check "$prompt" ;;
   gemini) run_agent env GEMINI_CLI_TRUST_WORKSPACE=true gemini -y -p "$prompt" ;;
+  qoder)  run_agent scripts/qoder-run.sh "$prompt" ;;   # Qoder account (qodercli login); falls back to cheaper models when credits run out
   cline)  run_agent cline -y --cwd "$PWD" "$prompt" ;;   # Cline CLI, provider/model from ~/.cline (cline-pass deepseek-v4-flash, free)
   agy)    run_agent /c/Users/Windows/AppData/Local/Microsoft/WinGet/Links/agy.exe --print-timeout 0 --model "${AGY_MODEL:-claude-opus-4-6-thinking}" -p "$prompt" ;;   # shell commands limited to the allowlist in ~/.gemini/antigravity-cli/settings.json
   *) echo "unknown runner $runner"; exit 1 ;;
