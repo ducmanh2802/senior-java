@@ -1,6 +1,6 @@
 # T466 — Dịch sang tiếng Anh: lessons-testing (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-testing-3.en.js`
 
@@ -16,3 +16,9 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-testing-3.en.js` và `node scripts/check-i18n.js lessons-testing-3` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đầy đủ `lesson-testing-004` (1 bài học, 1 exercise, 3 câu check) sang tiếng Anh trong `js/i18n/lessons-testing-3.en.js`: title, goals, body, exercises[].title/prompt/hints/explain, check[].q/options/explain. Không chép starter/tests/reference.
+- Giữ nguyên markup (`**`, `{{...}}`, `###`, bảng, `~~~java`), code block chỉ dịch comment; "**Tóm tắt:**" → "**Summary:**", "### Liên hệ phỏng vấn" → "### Interview notes", "> Senior tip:" giữ nguyên. Không có backtick trong nội dung và không có `${`.
+- Kiểm tra: `node scripts/check-i18n.js lessons-testing-3` → `OK — 1 mục đã dịch.`; `node scripts/validate.js` → `OK — không có lỗi.`. Lưu ý: `node --check` bị chặn bởi quy tắc quyền của môi trường (lệnh bị từ chối), nên cú pháp được xác nhận gián tiếp qua `check-i18n.js` (script này `vm.runInNewContext` toàn bộ file, lỗi cú pháp sẽ làm script báo "không chạy được").
+- Manifest `js/i18n/manifest.js` đã có sẵn `lessons-testing-3`, không cần sửa (integrator sở hữu).
+Reviewed-by: check-i18n (translation, no LLM review)
