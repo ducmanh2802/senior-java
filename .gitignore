@@ -13,3 +13,6 @@ item0*.js
 item*_trans.js
 tmp_lesson-*.txt
 nul
+
+# local secrets (scripts/publish-digest.js reads SUPABASE_URL / SUPABASE_SECRET_KEY)
+.env.local
