@@ -1,9 +1,10 @@
 # T397 — Dịch sang tiếng Anh: q-claude (8 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-claude-4.en.js`
 
+Translated 8 items (claude-026 to claude-033) to English in `js/i18n/q-claude-4.en.js`. Ran `node scripts/build-light-index.js` and `node scripts/check-i18n.js q-claude-4` (passed). `node scripts/validate.js` shows errors in `algo.js` which is outside the scope of this task.
 Người dùng bấm EN thì **cả trang** chuyển sang tiếng Anh: file này phủ bản dịch lên dữ liệu gốc theo `id` (đọc comment "content translation" trong `js/core/i18n.js`). Đọc AGENTS.md mục 5 (markup) và các mục sau trong `js/data/q-claude.js`: **claude-026, claude-027, claude-028, claude-029, claude-030, claude-031, claude-032, claude-033**.
 
 Viết vào `js/i18n/q-claude-4.en.js`, trong `App.i18n.content({ ... })`, mỗi mục một key là id, giá trị là object chỉ gồm các field dịch: **q, a, follow**. Mảng object (vd `exercises`, `check`) viết đủ phần tử theo đúng thứ tự, mỗi phần tử chỉ chứa field dịch (code như starter/tests/reference KHÔNG chép vào).
@@ -16,3 +17,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-claude-4.en.js` và `node scripts/check-i18n.js q-claude-4` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
