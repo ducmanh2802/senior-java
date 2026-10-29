@@ -460,7 +460,7 @@ s3.putObject(req, RequestBody.fromFile(tmpFile)); // SDK v2, upload từ file: R
 - CORS phải cấu hình cho presigned upload; phải test bằng trình duyệt thật, không chỉ Postman/curl.
 - Tách ba bucket: upload-raw / quarantine / clean; chỉ bucket clean được app đọc — fail-safe khi quét lỗi.
 
-> Senior tip: chuyển upload thẳng S3 giảm tới 90% CPU/RAM của service khi xử lý file lớn. Chọn part size/concurrency bằng đo đạc trên client và mạng mục tiêu; giới hạn số part đồng thời để không làm cạn băng thông/connection của thiết bị. Retry từng part giúp tiếp tục upload mà không gửi lại toàn file.`,
+> Senior tip: khi chuyển sang upload thẳng S3, service chỉ còn cấp presigned URL và nhận callback, nên CPU/RAM/băng thông dành cho file lớn gần như biến mất khỏi service (đo trước/sau để có con số của chính hệ thống bạn). Chọn part size/concurrency bằng đo đạc trên client và mạng mục tiêu; giới hạn số part đồng thời để không làm cạn băng thông/connection của thiết bị. Retry từng part giúp tiếp tục upload mà không gửi lại toàn file.`,
   follow: [
     'Client mất mạng khi đã upload 5 trên 12 part — luồng resume thiết kế thế nào?',
     'Dùng S3 ListParts để biết client đã xong part nào và bắt đầu retry từ đâu ra sao?'
@@ -2004,7 +2004,7 @@ public long addItem(String userId, String sku, long delta) {
 Nếu cần cập nhật quantity và refreshed TTL đồng bộ, dùng Lua thay vì nhiều lệnh có crash window. Spring Data Redis hỗ trợ hash operations; cân nhắc serializer nhất quán giữa app và script.
 
 ### Pitfall production
-- Redis key hash tag trong cluster có thể gom cart vào một slot; tránh tag quá rộng gây hotspot.
+- Trong Redis Cluster, một cart là một key nên luôn nằm trọn trong một slot. Hash tag (phần trong ngoặc nhọn của tên key) chỉ cần khi muốn gom nhiều key của cùng user vào một slot để chạy Lua/MULTI; đừng dùng một tag chung cho mọi user, vì mọi cart sẽ dồn về một node và tạo hotspot.
 - Không tin price gửi từ browser hoặc lưu trong cart; client có thể sửa payload.
 - Xóa cart khi quantity về 0 phải xử lý race với request thêm cùng lúc.
 
@@ -2033,10 +2033,11 @@ public void changePrice(long id, BigDecimal price) {
     p.changePrice(price); // tăng version trong entity
     outbox.save(CacheInvalidated.product(id, p.version()));
 }
-// Consumer xóa key; loader chỉ ghi nếu version không cũ hơn bản đang cache.
+// Consumer KHÔNG xóa hẳn key mà ghi tombstone {version: 8} có TTL ngắn;
+// loader chỉ SET nếu version của nó >= version đang nằm trong key.
 ~~~
 
-Outbox đảm bảo event invalidation không mất giữa DB commit và publish; consumer idempotent. Với cache Redis, Lua có thể chỉ SET nếu incoming version >= cached version. Khi dùng cache-aside đơn giản, invalidate sau commit và TTL ngắn có thể đủ nếu SLA chấp nhận stale window.
+Outbox đảm bảo event invalidation không mất giữa DB commit và publish; consumer idempotent. Lưu ý: so sánh version chỉ chặn được race ở trên nếu key **còn giữ version mới nhất**. Nếu invalidation dùng {{DEL}} thì key rỗng, loader A (version 7) không có gì để so và vẫn ghi đè thành công. Vì vậy invalidation ghi một tombstone mang version 8 (TTL vài phút), và Lua của loader chỉ {{SET}} khi incoming version >= version trong key (tombstone hoặc giá trị thật). Khi dùng cache-aside đơn giản, invalidate sau commit và TTL ngắn có thể đủ nếu SLA chấp nhận stale window.
 
 ### Trade-off
 | Cách | Nhất quán | Độ phức tạp |
@@ -2090,7 +2091,7 @@ Inbox unique theo eventId chặn duplicate trong cùng transaction. Version guar
 ### Pitfall production
 - Retry topic riêng có thể đảo thứ tự: event sau chạy trước event đang retry.
 - Commit offset trước DB commit có thể mất event; commit sau DB có thể giao trùng, vì vậy handler phải idempotent.
-- Không tăng concurrency listener vượt mức partition rồi kỳ vọng cùng key vẫn tuần tự nếu tự dispatch async.
+- Đặt {{concurrency}} của listener lớn hơn số partition chỉ tạo consumer ngồi rảnh, không tăng throughput. Còn nếu tự đẩy record sang thread pool để xử lý async, thứ tự cùng key bị phá ngay, trừ khi bạn serialize theo key (mỗi key một hàng đợi) và chỉ commit offset khi mọi record trước đó đã xong.
 
 > Senior tip: log aggregate ID, event ID, partition/offset và version; khi điều tra lệch trạng thái có thể dựng lại chính xác chuỗi đã apply.
 `,

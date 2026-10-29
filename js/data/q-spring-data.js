@@ -647,7 +647,7 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 ~~~
 
 ### Khi nào kế thừa ResponseEntityExceptionHandler
-Lớp này xử lý nhiều lỗi do Spring MVC sinh ra như 400, 405 và 415. Nếu kế thừa, hãy override các hook tương ứng (ví dụ {{handleMethodArgumentNotValid}}) thay vì khai báo một {{@ExceptionHandler}} trùng với exception đã được lớp cha ánh xạ. Lỗi 404 không được bảo đảm đi qua advice; việc xử lý phụ thuộc cấu hình resource/dispatcher.
+Lớp này xử lý nhiều lỗi do Spring MVC sinh ra như 400, 405 và 415. Nếu kế thừa, hãy override các hook tương ứng (ví dụ {{handleMethodArgumentNotValid}}) thay vì khai báo một {{@ExceptionHandler}} trùng với exception đã được lớp cha ánh xạ. Với 404: từ Spring Framework 6.1 (Boot 3.2), URL không khớp handler nào rơi vào static resource handler và ném {{NoResourceFoundException}}, lớp cha đã map nó thành ProblemDetail 404 nên advice của bạn xử lý được (override {{handleNoResourceFoundException}} nếu cần format riêng). Ở bản cũ hơn, 404 mặc định đi thẳng tới error page của Boot ({{/error}}) chứ không qua advice.
 
 ### Định dạng response chuẩn
 ~~~json
@@ -681,7 +681,6 @@ Lớp này xử lý nhiều lỗi do Spring MVC sinh ra như 400, 405 và 415. N
   tags: ['ControllerAdvice', 'ProblemDetail', 'RFC 7807', 'exception handling'],
   refs: [
     { type: 'doc', title: 'Spring Framework REST Exceptions', url: 'https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-ann-rest-exceptions.html' },
-    { type: 'doc', title: 'Spring Problem Details', url: 'https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-ann-rest-exceptions.html' },
     { type: 'doc', title: 'RFC 9457 Problem Details', url: 'https://www.rfc-editor.org/rfc/rfc9457.html' }
   ]
 },
@@ -5274,6 +5273,7 @@ END LOOP;
 - Commit từng lô đổi semantics atomicity: job lỗi giữa chừng để lại phần đã commit. Cần checkpoint/idempotency và quy trình resume.
 - DML hàng loạt bỏ qua một số hành vi ORM/callback; cập nhật version/audit/counter theo thiết kế rõ.
 - Cursor mở lâu giữ session, snapshot và tài nguyên DB; đóng ResultSet/statement bằng try-with-resources và đặt timeout.
+- {{COMMIT}} bên trong vòng lặp đang fetch từ cursor (fetch across commit) làm tăng nguy cơ lỗi ORA-01555 snapshot too old: cursor vẫn cần undo cũ để đọc nhất quán, còn commit cho phép Oracle tái sử dụng vùng undo đó. Job dài nên chia theo khoảng khóa và mở cursor mới cho mỗi khoảng.
 
 ### Lỗi hay gặp
 - **Để fetch size mặc định 10** khi đọc báo cáo lớn từ Oracle: triệu chứng – query trên DB chỉ mất 2s nhưng Java mất 1 phút. Cách tránh: {{jdbcTemplate.setFetchSize(500)}} hoặc {{hibernate.jdbc.fetch_size}}, hoặc {{defaultRowPrefetch}} của driver.
@@ -5500,7 +5500,7 @@ Giai đoạn 5: Hết rollback window -> tắt Oracle (contract)
 4. Canary read/write theo cohort; cutover có tiêu chí lag, error rate, reconciliation và rollback window.
 
 ### Pitfall production
-- Oracle treats empty string as NULL cho kiểu ký tự; PostgreSQL phân biệt. Kiểm tra dữ liệu và predicate.
+- Oracle coi chuỗi rỗng {{''}} là NULL với kiểu VARCHAR2/CHAR; PostgreSQL phân biệt {{''}} và NULL, nên {{WHERE col IS NULL}} và unique constraint cho kết quả khác. Kiểm tra dữ liệu và predicate.
 - Sequence values không đồng nghĩa bản ghi commit; CDC order, retry và thời điểm snapshot phải được thiết kế.
 - Một lượt tổng checksum có thể che hai sai lệch bù trừ; đối soát theo khóa, ngày, currency và trạng thái.
 - Không để hai DB cùng ghi độc lập mà không có quy tắc conflict; dual-write không atomic giữa hai hệ.
@@ -5531,7 +5531,7 @@ Với lời gọi bên ngoài, luồng là Controller → proxy → transaction 
 |---|---|---|
 | Proxy type | Interface | Subclass của class cụ thể |
 | Điều kiện | Có interface | Class không final, method không final/private |
-| Gọi qua interface | Có | Có thể |
+| Gọi qua interface | Có | Có (subclass cũng implement interface) |
 | Tự gọi nội bộ | Bypass interceptor | Bypass interceptor |
 
 Boot mặc định thường dùng CGLIB cho Spring AOP, nhưng không nên dựa vào loại proxy để chữa self-call. Final class/method và private method vẫn không thể override để advice.
@@ -5618,7 +5618,7 @@ Gắn userId, orderId hoặc URL đầy đủ làm metric tag sẽ tạo cardina
 {
   id: 'spring-032', topic: 'spring', level: 'senior',
   q: 'Ứng dụng Spring Boot 3 chạy workload blocking muốn bật virtual thread bằng {{spring.threads.virtual.enabled}}. Bạn đánh giá lợi ích, giới hạn và kế hoạch rollout thế nào?',
-  a: `**Tóm tắt:** Trên Java 21+, cấu hình {{spring.threads.virtual.enabled=true}} yêu cầu Spring Boot dùng virtual thread ở các integration được hỗ trợ. Virtual thread giảm chi phí thread cho nhiều tác vụ blocking đồng thời, nhưng không làm CPU nhanh hơn, không tăng giới hạn connection hay tự biến code blocking thành non-blocking; cần kiểm tra version Boot, pinning và tài nguyên downstream.
+  a: `**Tóm tắt:** Từ Spring Boot 3.2 và chạy trên Java 21+, cấu hình {{spring.threads.virtual.enabled=true}} yêu cầu Spring Boot dùng virtual thread ở các integration được hỗ trợ (Tomcat/Jetty xử lý request, {{@Async}}/task executor, scheduler, một số listener messaging). Virtual thread giảm chi phí thread cho nhiều tác vụ blocking đồng thời, nhưng không làm CPU nhanh hơn, không tăng giới hạn connection hay tự biến code blocking thành non-blocking; cần kiểm tra version Boot, pinning và tài nguyên downstream.
 
 ### Mô hình
 Platform thread gắn với OS thread, nên lượng lớn thread chờ I/O tốn stack và scheduling resource. Virtual thread được runtime mount lên carrier thread khi chạy, thường unmount khi blocking operation tương thích. Khi hoàn thành, nó trả kết quả như thread thông thường, giúp code imperative dễ giữ. Nó hữu ích khi số tác vụ đồng thời lớn và phần lớn thời gian chờ I/O.
@@ -5626,7 +5626,7 @@ Platform thread gắn với OS thread, nên lượng lớn thread chờ I/O tố
 ### Giới hạn và rollout
 - CPU-bound workload vẫn bị giới hạn bởi core; hàng triệu virtual thread không tăng throughput tính toán.
 - JDBC pool, remote API quota, file descriptor và memory vẫn là giới hạn. Throttle bằng semaphore/bulkhead và pool phù hợp.
-- Pinning có thể xảy ra trong một số vùng synchronized/native khi virtual thread blocking; kiểm tra tài liệu JDK và diagnostic JFR của runtime.
+- Pinning: trên Java 21–23, virtual thread blocking bên trong {{synchronized}} hoặc native frame sẽ giữ luôn carrier thread; phát hiện bằng JFR event {{jdk.VirtualThreadPinned}}. JEP 491 (Java 24) bỏ pinning do {{synchronized}}, nhưng native frame vẫn pin.
 - Xác minh Boot version và component nào dùng executor virtual thread; không giả định mọi scheduler/third-party library tự chuyển đổi.
 - Benchmark latency, throughput, heap, carrier utilization và downstream saturation trước/sau dưới tải đại diện.
 
@@ -5646,7 +5646,8 @@ Tối ưu thread count nhưng bỏ qua connection pool có thể tạo hàng ch�
 Khi nhận tín hiệu shutdown, instance phải sớm rời khỏi endpoint nhận traffic (readiness false), load balancer cần thời gian cập nhật, sau đó server ngừng nhận kết nối/request mới theo cơ chế graceful. Request đang chạy được drain trong thời hạn cấu hình. Bean lifecycle dừng các worker và giải phóng tài nguyên; cuối cùng process thoát trước khi orchestrator gửi SIGKILL.
 
 ### Thiết kế
-- Bật graceful shutdown của Boot và đặt shutdown phase timeout dựa trên thời lượng request thực tế.
+- Graceful shutdown của web server: {{server.shutdown=graceful}} (từ Boot 3.4 đây là mặc định; bản cũ hơn mặc định {{immediate}}). Thời gian chờ mỗi phase là {{spring.lifecycle.timeout-per-shutdown-phase}} (mặc định 30s); đặt theo p99 thời lượng request thực tế.
+- Trên Kubernetes, việc gỡ pod khỏi Endpoints chạy song song với SIGTERM, nên thường thêm {{preStop}} sleep vài giây để load balancer kịp ngừng gửi traffic trước khi server ngừng nhận request.
 - Tổng grace period của orchestrator phải lớn hơn readiness propagation + drain window + dừng consumer/cleanup, có buffer.
 - Với queue consumer, pause nhận message, hoàn tất hoặc nack để broker redeliver; xử lý idempotent để tránh duplicate.
 - Dừng scheduled jobs và executor có timeout; tránh cleanup gọi dịch vụ ngoài không giới hạn.
@@ -5864,7 +5865,7 @@ Entity transient chưa được quản lý; sau {{persist}} trở thành managed
 Một context chỉ có một instance cho mỗi entity type và primary key: hai lần load cùng khóa trả về cùng object managed. Điều này đảm bảo identity nhất quán trong transaction nhưng làm context lớn giữ nhiều object và snapshot.
 
 ### Flush order
-Hibernate thực thi action queue theo nhóm (ví dụ insert, update, collection actions, delete) thay vì giữ nguyên thứ tự source code. Constraint DB vẫn là nguồn sự thật. Nếu cần thứ tự phụ thuộc, thiết kế FK/association đúng, flush có chủ đích hoặc tách transaction theo nghiệp vụ; đừng dựa vào thứ tự gọi repository.
+Hibernate thực thi action queue theo nhóm (ví dụ insert, update, collection actions, delete) thay vì giữ nguyên thứ tự source code. Ví dụ kinh điển: trong cùng transaction bạn {{remove}} một row có {{code = 'VIP'}} rồi {{persist}} row mới cùng {{code = 'VIP'}} (cột unique). Khi flush, INSERT chạy trước DELETE nên DB báo vi phạm unique constraint dù code Java "xoá trước, thêm sau". Cách sửa: gọi {{flush()}} ngay sau {{remove}}, hoặc update row cũ thay vì xoá rồi tạo lại. Constraint DB vẫn là nguồn sự thật. Nếu cần thứ tự phụ thuộc, thiết kế FK/association đúng, flush có chủ đích hoặc tách transaction theo nghiệp vụ; đừng dựa vào thứ tự gọi repository.
 
 ### Pitfall production
 Bulk JPQL update/delete chạy trực tiếp ở DB và bỏ qua dirty checking của entity đang nằm trong context, nên object managed có thể stale; clear/refresh phù hợp sau bulk operation. Flush không làm dữ liệu durable: rollback vẫn hoàn tác SQL. Thay đổi collection lớn có thể tạo nhiều snapshot/SQL và tăng heap.
@@ -5888,7 +5889,7 @@ Repository load entity cùng association lazy chưa khởi tạo. Transaction se
 - Open Session in View có thể hữu ích ở ứng dụng server-rendered đơn giản, nhưng nên hiểu rõ query phát sinh ở view và kiểm soát bằng metric/log.
 
 ### Pitfall production
-Bật OSIV không đảm bảo transaction nghiệp vụ kéo dài; nó chỉ giữ persistence context mở, nên lazy query có thể chạy sau commit với transaction khác/autocommit tùy cấu hình. Serialize danh sách 100 entity rồi đọc mỗi collection có thể tạo 101 query. Trả entity cũng làm lộ cấu trúc nội bộ và nguy cơ recursion trong hai chiều association.
+Spring Boot **bật OSIV mặc định** ({{spring.jpa.open-in-view=true}}) và in cảnh báo lúc khởi động; với REST API nên đặt {{false}} để lỗi fetch plan lộ ra sớm. Bật OSIV không đảm bảo transaction nghiệp vụ kéo dài; nó chỉ giữ persistence context mở, nên lazy query có thể chạy sau commit với transaction khác/autocommit tùy cấu hình. Serialize danh sách 100 entity rồi đọc mỗi collection có thể tạo 101 query. Trả entity cũng làm lộ cấu trúc nội bộ và nguy cơ recursion trong hai chiều association.
 
 > Senior tip: API service nên trả DTO với fetch plan được review. Bật thống kê SQL hoặc datasource proxy trong test để phát hiện N+1; việc hết exception chưa chứng minh endpoint hiệu quả.`,
   follow: ['OSIV có giữ transaction DB mở suốt HTTP request không?', 'Bạn phát hiện N+1 phát sinh trong quá trình JSON serialization thế nào?'],
@@ -5900,7 +5901,7 @@ Bật OSIV không đảm bảo transaction nghiệp vụ kéo dài; nó chỉ gi
   a: `**Tóm tắt:** Hibernate dùng cột version trong câu update: update chỉ thành công nếu version DB vẫn bằng version entity đã đọc. Nếu request khác commit trước, row count bằng 0 và Hibernate báo optimistic lock conflict. Retry phải chạy lại toàn bộ use case trong transaction mới, đọc lại dữ liệu mới và quyết định nghiệp vụ; không chỉ gửi lại câu update cũ.
 
 ### Ví dụ cơ chế
-Hai transaction cùng đọc số dư version 7. T1 cập nhật với điều kiện {{where id=? and version=7}}, tăng version lên 8 và commit. T2 cũng update version 7; điều kiện không match, Hibernate phát hiện conflict thay vì âm thầm overwrite. Version có thể là số nguyên hoặc timestamp; numeric version thường biểu đạt thứ tự rõ hơn.
+Hai transaction cùng đọc số dư version 7. T1 cập nhật với điều kiện {{where id=? and version=7}}, tăng version lên 8 và commit. T2 cũng update version 7; điều kiện không match (update trả về 0 row), Hibernate ném {{StaleObjectStateException}} / JPA {{OptimisticLockException}}, Spring dịch thành {{ObjectOptimisticLockingFailureException}}, thay vì âm thầm overwrite. Version có thể là số nguyên hoặc timestamp; numeric version thường biểu đạt thứ tự rõ hơn.
 
 ### Retry an toàn
 - Chỉ retry lỗi transient/conflict có giới hạn lần, backoff có jitter.
@@ -5921,7 +5922,7 @@ Retry bên trong cùng transaction đã marked rollback-only thường không c�
   a: `**Tóm tắt:** Hibernate JDBC batching gom nhiều prepared statement cùng dạng để gửi theo batch; cấu hình {{hibernate.jdbc.batch_size}} và flush/clear theo chunk giúp giảm round trip và memory. Với {{IDENTITY}}, DB phải tạo row để trả generated key cho từng insert, khiến Hibernate thường phải insert ngay để lấy ID, nên batching insert bị hạn chế hoặc vô hiệu.
 
 ### Cấu hình và ghi dữ liệu
-Đặt batch size phù hợp (thường bắt đầu khoảng vài chục, sau đó đo), đảm bảo driver hỗ trợ batch rewrite nếu có, và tránh SQL statement shape thay đổi liên tục. Persistence context vẫn giữ entity nên xử lý theo chunk: persist N entity, flush, clear rồi tiếp tục. Hibernate có thể sắp xếp insert/update theo entity để tăng batch tương thích; kiểm tra config và SQL log trên DB/driver thật.
+Đặt batch size phù hợp (thường bắt đầu khoảng vài chục, sau đó đo), bật {{hibernate.order_inserts=true}}/{{hibernate.order_updates=true}} để gom statement cùng bảng, và bật batch rewrite của driver nếu có ({{reWriteBatchedInserts=true}} với PostgreSQL JDBC, {{rewriteBatchedStatements=true}} với MySQL Connector/J), và tránh SQL statement shape thay đổi liên tục. Persistence context vẫn giữ entity nên xử lý theo chunk: persist N entity, flush, clear rồi tiếp tục. Hibernate có thể sắp xếp insert/update theo entity để tăng batch tương thích; kiểm tra config và SQL log trên DB/driver thật.
 
 ### ID generation
 Sequence cho phép lấy ID trước insert, nên Hibernate có thể gom insert; sequence allocation/block size cần cân đối round trip và khoảng trống ID. {{IDENTITY}} cần giá trị do DB sinh sau từng row insert để gán vào entity, vì thế thường buộc insert sớm. Không đổi strategy chỉ vì batch: cân nhắc portability, schema và semantics ID.
@@ -5939,14 +5940,14 @@ Batching giảm network round trip nhưng không giảm số index update, WAL h
   a: `**Tóm tắt:** {{@EntityGraph}} khai báo fetch plan theo use case, còn JOIN FETCH viết trực tiếp join trong JPQL; cả hai có thể giảm N+1 nhưng collection fetch join kết hợp pagination làm row SQL nhân bản. Hibernate có thể lấy toàn bộ result rồi phân trang trong memory, phát cảnh báo HHH000104, gây tải lớn thay vì giới hạn ở DB.
 
 ### Cách chọn
-EntityGraph phù hợp khi muốn giữ query repository dễ đọc và chọn association cần fetch ở runtime; kiểm tra graph là fetch hay load semantics theo mapping. JOIN FETCH hữu ích khi query cần điều kiện/sắp xếp gắn với association, nhưng không thể fetch nhiều bag collection một cách tùy ý do duplicate/cartesian explosion.
+EntityGraph phù hợp khi muốn giữ query repository dễ đọc và chọn association cần fetch theo từng method. Spring Data mặc định dùng {{EntityGraphType.FETCH}} (attribute không liệt kê trong graph coi như LAZY); {{LOAD}} giữ fetch type khai báo trong mapping cho attribute không liệt kê. JOIN FETCH hữu ích khi query cần điều kiện/sắp xếp gắn với association, nhưng fetch đồng thời hai collection kiểu {{List}} (bag) sẽ gặp {{MultipleBagFetchException}}, và kể cả dùng {{Set}} thì vẫn tạo tích Đề-các (cartesian product) rất nhiều row.
 
 ### Pagination an toàn
 1. Page ID của root entity bằng query có giới hạn và thứ tự ổn định.
 2. Query thứ hai fetch các association cần thiết cho tập ID đó, dùng IN.
 3. Khôi phục thứ tự trang nếu query thứ hai không giữ thứ tự, và cân nhắc count query riêng.
 
-Có thể cấu hình Hibernate fail khi pagination collection fetch thay vì âm thầm paginate memory. Với to-many, batch fetching hoặc DTO projection cũng là lựa chọn tùy shape response.
+Có thể đặt {{hibernate.query.fail_on_pagination_over_collection_fetch=true}} để Hibernate ném exception thay vì âm thầm paginate trong memory. Với to-many, batch fetching hoặc DTO projection cũng là lựa chọn tùy shape response.
 
 ### Pitfall production
 Một trang 20 root có thể thành hàng nghìn SQL rows nếu mỗi root có nhiều child; phân trang trên rows không đồng nghĩa phân trang root. Cảnh báo bị bỏ qua trong môi trường dữ liệu nhỏ nhưng production heap/latency tăng đột biến. Sorting theo cột child cũng cần định nghĩa rõ một root có nhiều giá trị thì thứ tự tính thế nào.
@@ -5961,7 +5962,7 @@ Một trang 20 root có thể thành hàng nghìn SQL rows nếu mỗi root có 
   a: `**Tóm tắt:** Second-level cache sống ngoài persistence context, chia sẻ cache entity/collection giữa các Session. Nó phù hợp với dữ liệu đọc nhiều, ít thay đổi và có chiến lược invalidation nhất quán; không nên bật rộng cho dữ liệu mutable/hot hoặc yêu cầu consistency nghiêm ngặt nếu chi phí đồng bộ và stale read lớn hơn lợi ích.
 
 ### Phân biệt cache
-First-level cache là persistence context của một Session và luôn gắn với identity map. Second-level cache thuộc SessionFactory và có provider/configuration riêng. Query cache lưu kết quả truy vấn (thường tham chiếu ID), không thay thế entity cache và phải invalidate khi dữ liệu liên quan thay đổi. Cache hit vẫn cần kiểm tra mapping, version và provider semantics.
+First-level cache là persistence context của một Session và luôn gắn với identity map. Second-level cache thuộc SessionFactory và có provider/configuration riêng. Query cache lưu kết quả truy vấn (danh sách ID), không thay thế entity cache; Hibernate tự vô hiệu hoá mọi kết quả của một bảng mỗi khi có ghi vào bảng đó qua Hibernate (theo timestamp của bảng), nên với bảng ghi thường xuyên, query cache gần như luôn miss. Cache hit vẫn cần kiểm tra mapping, version và provider semantics.
 
 ### Khi nên cân nhắc
 - Danh mục tham chiếu nhỏ, được đọc thường xuyên và cập nhật ít.

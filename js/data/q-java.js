@@ -178,9 +178,7 @@ public class NotFoundException extends BusinessException {
   ],
   tags: ['exception', 'checked', 'RuntimeException', 'error handling'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 },
 {
@@ -229,9 +227,7 @@ try (var in = Files.newInputStream(path);
   ],
   tags: ['final', 'finally', 'finalize', 'Cleaner', 'try-with-resources'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 },
 {
@@ -286,9 +282,7 @@ void addInts(List<? super Integer> dst) {  // consumer: ghi được Integer
   ],
   tags: ['generics', 'type erasure', 'wildcard', 'PECS'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 },
 {
@@ -395,9 +389,7 @@ public class Service {
   ],
   tags: ['nested class', 'inner class', 'memory leak', 'this$0'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 },
 {
@@ -442,9 +434,7 @@ public class Service {
   ],
   tags: ['serialization', 'serialVersionUID', 'deserialization', 'security'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 },
 {
@@ -491,9 +481,7 @@ public class Service {
   ],
   tags: ['reflection', 'annotation processing', 'Lombok', 'MethodHandle'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 },
 {
@@ -589,7 +577,6 @@ int index = (n - 1) & hash;          // n là capacity
   tags: ['HashMap', 'resize', 'treeify', 'hash flooding'],
   refs: [
     { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
     { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
   ]
 },
@@ -734,9 +721,7 @@ list.removeIf(String::isEmpty);
   ],
   tags: ['iterator', 'fail-fast', 'ConcurrentModificationException', 'fail-safe'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 },
 {
@@ -790,7 +775,6 @@ class LruCache<K, V> extends LinkedHashMap<K, V> {
   tags: ['LinkedHashMap', 'LRU', 'removeEldestEntry', 'Caffeine'],
   refs: [
     { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
     { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
   ]
 },
@@ -834,9 +818,7 @@ class LruCache<K, V> extends LinkedHashMap<K, V> {
   ],
   tags: ['TreeMap', 'NavigableMap', 'Comparator', 'BigDecimal'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 },
 {
@@ -889,9 +871,7 @@ class LruCache<K, V> extends LinkedHashMap<K, V> {
   ],
   tags: ['CopyOnWriteArrayList', 'BlockingQueue', 'backpressure', 'thread pool'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 },
 {
@@ -1000,9 +980,7 @@ List<Long> top100 = minHeap.stream().sorted(Comparator.reverseOrder()).toList();
   ],
   tags: ['PriorityQueue', 'heap', 'top-K', 'stream'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 },
 {
@@ -1115,9 +1093,7 @@ List<String> copy = List.copyOf(source);       // immutable copy (Java 10)
   ],
   tags: ['List.of', 'unmodifiableList', 'immutable', 'defensive copy'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 },
 {
@@ -1183,7 +1159,6 @@ Meta getMeta(Class<?> clazz) {
   tags: ['WeakHashMap', 'IdentityHashMap', 'weak reference', 'identity', 'cache'],
   refs: [
     { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
     { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
   ]
 },
@@ -1248,9 +1223,7 @@ Comparator<Person> good = Comparator
   ],
   tags: ['TimSort', 'Comparator', 'sort', 'stable', 'nullsFirst'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 },
 {
@@ -1365,9 +1338,7 @@ List<String> out = s.toList();       // terminal -> mới chạy
   ],
   tags: ['Stream', 'lazy', 'parallel', 'ForkJoinPool'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 },
 {
@@ -1491,9 +1462,7 @@ record Order(String id, List<Item> items) {
   ],
   tags: ['record', 'compact constructor', 'DTO', 'JPA'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 },
 {
@@ -1554,9 +1523,7 @@ double area(Shape s) {
   ],
   tags: ['sealed', 'pattern matching', 'switch', 'Java 21'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 },
 {
@@ -1783,9 +1750,7 @@ Map<String, User> byEmail = users.stream()
   ],
   tags: ['Collectors', 'groupingBy', 'toMap', 'Stream'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 },
 {
@@ -1858,9 +1823,7 @@ for (var e : map.reversed().entrySet()) { ... }  // b=2, a=1
   ],
   tags: ['SequencedCollection', 'SequencedMap', 'Java 21', 'reversed', 'getFirst'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 },
 {
@@ -1959,9 +1922,7 @@ String priority(Order o) {
   ],
   tags: ['record pattern', 'nested deconstruction', 'switch', 'when', 'Java 21'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 }
 ,
@@ -2017,9 +1978,7 @@ new BigDecimal("1.0").compareTo(new BigDecimal("1.00")); // 0 (giá trị bằng
   ],
   tags: ['BigDecimal', 'money', 'RoundingMode', 'floating point'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 },
 {
@@ -2068,9 +2027,7 @@ Instant back = vn.toInstant();                  // ngược về UTC
   ],
   tags: ['Date/Time', 'Instant', 'ZonedDateTime', 'timezone', 'cut-off'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 },
 {
@@ -2192,9 +2149,7 @@ try (in) { ... }  // không cần khai báo mới trong try
   ],
   tags: ['try-with-resources', 'AutoCloseable', 'suppressed exception', 'resource management'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 },
 {
@@ -2255,9 +2210,7 @@ enum OrderState {
   ],
   tags: ['enum', 'EnumMap', 'EnumSet', 'singleton', 'state machine'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 },
 {
@@ -2329,9 +2282,7 @@ class C implements A, B {
   ],
   tags: ['interface', 'default method', 'diamond problem', 'abstract class'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 },
 {
@@ -2401,9 +2352,7 @@ try (var in = FileChannel.open(src, StandardOpenOption.READ);
   ],
   tags: ['NIO', 'Buffer', 'Channel', 'Files', 'transferTo', 'zero-copy'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 },
 {
@@ -2473,9 +2422,7 @@ log.info("Processing {} for {}", id, user);
   ],
   tags: ['String', 'concat', 'invokedynamic', 'StringBuilder', 'String.format'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 },
 {
@@ -2620,9 +2567,7 @@ Compiler tìm theo 3 phase: (1) không boxing, không varargs; (2) cho phép box
   ],
   tags: ['overloading', 'overriding', 'method hiding', 'polymorphism', 'covariant return'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 },
 {
@@ -2793,9 +2738,7 @@ try {
   ],
   tags: ['finally', 'exception', 'predict output', 'System.exit', 'try-catch'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 },
 {
@@ -2886,9 +2829,7 @@ Khi khởi tạo class, mọi static field có giá trị mặc định (counter
   ],
   tags: ['initialization order', 'static block', 'constructor', 'predict output', 'class loading'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 },
 {
@@ -2945,9 +2886,7 @@ Lưu ý: field {{int}} của một object nằm trên **heap** cùng object đó
   ],
   tags: ['stack', 'heap', 'StackOverflowError', 'JVM memory', 'String pool'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 },
 {
@@ -3076,7 +3015,6 @@ Nếu {{get(k)}} trả về null, trong môi trường đồng thời ta không 
   tags: ['HashMap', 'Hashtable', 'ConcurrentHashMap', 'synchronizedMap', 'thread-safety'],
   refs: [
     { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
     { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
   ]
 },
@@ -3151,7 +3089,6 @@ Vì sao: node trong bucket lưu **hash cũ** (tính từ "001"). Tìm {{a}} thì
   tags: ['HashSet', 'hashCode', 'mutable key', 'HashMap', 'JPA entity'],
   refs: [
     { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
     { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
   ]
 },
@@ -3285,9 +3222,7 @@ System.out.println(Arrays.asList(boxed).size());   // 3
   ],
   tags: ['Arrays.asList', 'UnsupportedOperationException', 'immutable', 'List.of', 'predict output'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 },
 {
@@ -3357,9 +3292,7 @@ List<Number> ok = Stream.of(1, 2).collect(Collectors.toList());
   ],
   tags: ['Stream.toList', 'Collectors', 'immutable', 'Java 16', 'migration'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 },
 {
@@ -3664,9 +3597,7 @@ Từ Java 9, {{count()}} có thể tính thẳng từ kích thước của ngu�
   ],
   tags: ['Stream', 'flatMap', 'reduce', 'collect', 'peek'],
   refs: [
-    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'Java Object Specification', url: 'https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html' }
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
   ]
 },
 {
@@ -3777,11 +3708,11 @@ record OrderKey(String tenant, List<String> regions) {
   topic: 'core',
   level: 'lead',
   q: 'Một cache giữ hàng triệu String lặp lại và heap dump cho thấy nhiều mảng byte giống nhau. Bạn cân nhắc compact strings, String deduplication hay intern thế nào?',
-  a: `**Tóm tắt:** Compact Strings giảm byte lưu cho nội dung Latin-1 ngay trong mỗi String; G1 String dedup chia sẻ mảng byte giống nhau giữa các String khác object; {{intern()}} canonicalize cả object và có chi phí tra bảng. Chọn bằng heap profile và benchmark theo workload, không bật cả ba theo cảm tính.
+  a: `**Tóm tắt:** Compact Strings giảm byte lưu cho nội dung Latin-1 ngay trong mỗi String; String deduplication của GC chia sẻ mảng byte giống nhau giữa các String khác object; {{intern()}} canonicalize cả object và có chi phí tra bảng. Chọn bằng heap profile và benchmark theo workload, không bật cả ba theo cảm tính.
 
 ### Ba cơ chế khác nhau
 - Từ Java 9, {{String}} lưu nội dung bằng {{byte[]}} và coder: nội dung Latin-1 thường cần một byte mỗi ký tự, còn nội dung cần UTF-16 dùng hai byte. Đây là cách biểu diễn mặc định của String, không phải flag bật riêng.
-- G1 có thể tìm các String bằng nhau rồi cho chúng dùng chung backing array; các String object vẫn riêng. Tùy chọn {{-XX:+UseStringDeduplication}} có overhead CPU và cần G1.
+- GC có thể tìm các String bằng nhau (đã sống qua vài lần GC) rồi cho chúng dùng chung backing array; các String object vẫn riêng. Bật bằng {{-XX:+UseStringDeduplication}}, mặc định tắt, có overhead CPU. JDK 17 chỉ hỗ trợ với G1 và Shenandoah; từ JDK 18 hỗ trợ thêm Serial, Parallel và ZGC.
 - {{String.intern()}} trả về canonical instance từ string table. Mọi caller dùng đúng instance đó, nhưng tra và quản lý pool cũng tốn chi phí; với dữ liệu cardinality cao có thể biến thành nút tranh chấp và giữ thêm cấu trúc.
 
 ### Khi nào cân nhắc
@@ -3790,7 +3721,10 @@ record OrderKey(String tenant, List<String> regions) {
 3. Chỉ dùng intern cho tập chuỗi nhỏ, lặp cao và có ranh giới rõ như tên schema; tránh với request id hoặc dữ liệu người dùng có cardinality lớn.
 
 ~~~bash
--Xlog:gc+stringdedup=debug
+# JDK 17 + G1
+-XX:+UseStringDeduplication -Xlog:gc+stringdedup=debug
+# JDK 18+ (log tag mới)
+-XX:+UseStringDeduplication -Xlog:stringdedup*=debug
 jcmd <pid> GC.heap_info
 ~~~
 
@@ -3818,8 +3752,20 @@ Log dedup cho biết số chuỗi khảo sát, deduplicate và byte tiết kiệ
 - Một số hệ thống dùng equality theo id chỉ khi id khác null, còn hashCode ổn định theo class. Cách này giữ bucket ổn định nhưng nhiều entity cùng class va chạm; đo trước khi coi đó là vấn đề.
 
 ### Hibernate proxy
-- Proxy có thể là subclass hoặc wrapper tùy mapping/enhancement. Kiểm tra bằng getClass() cứng nhắc có thể làm proxy và entity cùng hàng bị coi khác nhau.
-- Dùng API Hibernate như persistentClass khi cần xử lý proxy, nhưng tránh phụ thuộc Hibernate trong domain thuần nếu không cần.
+- Lazy proxy của Hibernate là một **subclass** của entity (sinh bằng ByteBuddy). Vì vậy {{getClass() != o.getClass()}} sẽ coi proxy và entity thật của cùng một row là khác nhau; dùng {{instanceof}} hoặc {{Hibernate.getClass(o)}} (trả về class thật sau khi unwrap proxy).
+- Trong equals, đọc id của đối tượng kia qua **getter** ({{other.getId()}}), không đọc field trực tiếp: field của proxy chưa được khởi tạo, chỉ getter mới được proxy chuyển tiếp.
+- Tránh để domain thuần phụ thuộc API Hibernate nếu {{instanceof}} đã đủ.
+
+~~~java
+@Override public boolean equals(Object o) {
+    if (this == o) return true;
+    if (!(o instanceof Account other)) return false; // proxy là subclass nên vẫn match
+    return id != null && id.equals(other.getId());   // id null (chưa persist) => chỉ bằng chính nó
+}
+@Override public int hashCode() {
+    return Account.class.hashCode(); // hằng số: không đổi khi id được cấp
+}                                     // (đừng dùng getClass(): proxy cho kết quả khác)
+~~~
 - Không đưa association/lazy collection vào equals/hashCode: dễ kích hoạt query bất ngờ, đệ quy hai chiều, hoặc N+1.
 
 ### Quyết định
@@ -3834,7 +3780,7 @@ Viết test cho entity mới, sau persist, proxy, detached và hai instance cùn
   topic: 'core',
   level: 'lead',
   q: 'Một domain có ba trạng thái kết quả hữu hạn và team muốn switch exhaustive. Bạn model bằng sealed interface/record ra sao, và giữ tương thích phiên bản thế nào?',
-  a: `**Tóm tắt:** Sealed interface giới hạn trực tiếp các subtype được phép; record phù hợp làm từng variant dữ liệu bất biến. Pattern matching switch có thể kiểm tra exhaustive theo kiểu đã biết, nhưng thêm variant là thay đổi source/binary đáng quản lý và preview feature cần ghi rõ mức hỗ trợ.
+  a: `**Tóm tắt:** Sealed interface giới hạn trực tiếp các subtype được phép; record phù hợp làm từng variant dữ liệu bất biến. Sealed class chính thức từ Java 17, pattern matching for switch chính thức từ Java 21 (JEP 441), nên compiler kiểm tra switch exhaustive mà không cần nhánh {{default}}. Cái giá: thêm một variant là thay đổi phá vỡ với mọi consumer, cần quản lý như thay đổi API.
 
 ### Model
 - Khai báo sealed interface với permits rõ ràng, rồi tạo record cho các kết quả như Accepted, Rejected và Pending.
@@ -3845,11 +3791,18 @@ Viết test cho entity mới, sau persist, proxy, detached và hai instance cùn
 sealed interface Result permits Accepted, Rejected {}
 record Accepted(String id) implements Result {}
 record Rejected(String reason) implements Result {}
+
+String describe(Result r) {
+    return switch (r) {              // không cần default: compiler biết đủ 2 nhánh
+        case Accepted a -> "OK " + a.id();
+        case Rejected x -> "Từ chối: " + x.reason();
+    };
+}
 ~~~
 
 ### Ranh giới module
-- Cùng module có thể giới hạn subtype theo quy tắc permits; khác module/package có thêm yêu cầu về named module và modifier subtype.
-- Khi thêm subtype, compile lại consumer để phát hiện switch thiếu nhánh. Consumer đã biên dịch cũ không tự nhận ra domain mới; thiết kế fallback nếu protocol/version có thể mở rộng độc lập.
+- Mỗi subtype được permit phải khai báo {{final}}, {{sealed}} hoặc {{non-sealed}} (record mặc định là final). Nếu sealed interface nằm trong named module, các subtype phải cùng module; nếu ở unnamed module (classpath), chúng phải cùng package. {{permits}} có thể bỏ khi mọi subtype nằm cùng file.
+- Khi thêm subtype, compile lại consumer để phát hiện switch thiếu nhánh. Consumer đã biên dịch với bản cũ vẫn chạy, nhưng khi gặp variant mới thì switch exhaustive ném {{MatchException}} lúc runtime; nếu protocol/version có thể mở rộng độc lập, thiết kế fallback (ví dụ variant {{Unknown}}).
 - Java 21 pattern matching for switch là tính năng chuẩn; StructuredTaskScope ở Java 21 mới là preview. Không gộp hai mức ổn định này.
 
 ### Khi dùng
@@ -3870,6 +3823,7 @@ Hợp với algebraic data type có tập biến thể hữu hạn trong một b
 - Constructor nhận list cần kiểm tra null/giá trị rồi dùng List.copyOf để tạo snapshot cấu trúc và từ chối phần tử null.
 - Getter có thể trả chính snapshot immutable đó; nếu phần tử mutable và phải cô lập sâu thì copy từng phần tử hoặc dùng kiểu phần tử bất biến.
 - Collections.unmodifiableList chỉ là wrapper: ai còn reference tới list gốc vẫn sửa được nội dung.
+- {{List.copyOf}} đủ thông minh: nếu input đã là list bất biến tạo bởi {{List.of}}/{{List.copyOf}} thì nó trả lại chính instance đó, không copy lần nữa; còn input là {{ArrayList}} hay unmodifiable view thì luôn copy. Lưu ý nó ném {{NullPointerException}} nếu có phần tử null.
 
 ~~~java
 final class Batch {
