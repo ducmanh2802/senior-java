@@ -1,6 +1,6 @@
 # T405 — Dịch sang tiếng Anh: q-soft (8 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-soft-6.en.js`
 
@@ -16,3 +16,5 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-soft-6.en.js` và `node scripts/check-i18n.js q-soft-6` → OK, rồi `Status: DONE`.
 
 ## Notes
+Translated testing-017 (Spring Boot test transaction rollback) and testing-024 (Kafka consumer test strategy) to English. All validations passed: syntax check, i18n check, and full validate.js.
+Reviewed-by: check-i18n (translation, no LLM review)
