@@ -1,6 +1,6 @@
 # T455 — Dịch sang tiếng Anh: lessons-db (4 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-db-2.en.js`
 
@@ -16,3 +16,7 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-db-2.en.js` và `node scripts/check-i18n.js lessons-db-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã dịch đủ 4 mục (lesson-db-002…005): title, goals, body, exercises[0].title/prompt/hints/explain, check[].q/options/explain. Không chép code (starter/tests/reference).
+- Giữ markup nguyên vẹn (`**`, `{{}}`, `###`, bảng, `~~~java`/`~~~sql`); đã dịch comment tiếng Việt trong code block của body. Nhãn: `**Summary:**`, `### Interview notes`, `> Senior tip:` giữ nguyên.
+- `node scripts/check-i18n.js lessons-db-2` → `OK — 4 mục đã dịch.`; `node scripts/validate.js` → `OK — không có lỗi.` (file cũng đã được vm parse trong check-i18n nên cú pháp hợp lệ).
+Reviewed-by: check-i18n (translation, no LLM review)
