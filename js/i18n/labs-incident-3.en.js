@@ -84,36 +84,36 @@ return loadWithLockOrWait(campaignId);                           // nothing yet:
   },
   'lab-incident-005': {
     title: 'Webhook sender service restarts every 25 minutes: Too many open files and 62K sockets in CLOSE_WAIT',
-    scenario: `**Context:** Payment gateway **PayHub** runs a **merchant-notify** service (Spring Boot 3.2, JDK 17, Apache HttpClient 5.2) that sends payment-result webhooks to about 3,000 merchants over HTTPS. Failed webhooks are retried on a backoff schedule. There are 4 pods, and the container's file descriptor limit is 65,536. In August, the service hit pool-exhaustion errors while sending webhooks ({{ConnectionRequestTimeoutException}}). The fix applied back then was to raise {{maxConnTotal}} and {{maxConnPerRoute}} to 50,000.
+    scenario: `**Context:** The payment gateway **PayHub** runs a **merchant-notify** service (Spring Boot 3.2, JDK 17, Apache HttpClient 5.2) that sends payment-result webhooks — outgoing HTTP callbacks that push a payment's final status to a merchant's URL — to about 3,000 merchants over HTTPS. Failed webhooks are re-sent on a backoff schedule (the delay between attempts grows after each failure). There are 4 pods (**pod** = one running copy of the service on Kubernetes; the 4 copies share the traffic), and the container's file-descriptor limit is 65,536. A **file descriptor** (FD) is the integer handle the OS gives a process for every open file or socket: each open TCP connection costs one FD, and once they run out the process cannot open anything new. In August the service hit pool-exhaustion errors while sending webhooks ({{ConnectionRequestTimeoutException}} = HttpClient waited for a free connection until the timeout because every connection in the pool was busy). The fix back then was to raise {{maxConnTotal}} and {{maxConnPerRoute}} to 50,000.
 
-**Symptoms:** On **23/10/2026**, from about 11:06, merchant-notify stops accepting new requests, the log fills with {{Too many open files}}, the liveness probe fails and the pod restarts at 11:09. After restart the pod runs normally for about 25 minutes, then it repeats. CPU, heap and GC all look normal. At 10:41, large merchant **M-0042** deploys a new version and their webhook endpoint starts returning **HTTP 500**.
+**Symptoms:** On **23/10/2026**, from about 11:06, merchant-notify stops accepting new requests, the log fills with {{Too many open files}}, the liveness probe fails (the **liveness probe** is the periodic health check Kubernetes calls; after repeated failures the pod is killed and restarted) and the pod restarts at 11:09. After the restart the pod runs normally for about 25 minutes, then it repeats. CPU, heap and GC all look normal. At 10:41 the large merchant **M-0042** deploys a new version and their webhook endpoint starts returning **HTTP 500**.
 
-**Data collected:** Output of {{ss}} and {{/proc}} inside the pod at 11:07 (before the restart), metrics, logs and the webhook-sending code.`,
+**Data collected:** Output of {{ss}} and {{/proc}} inside the pod at 11:07 (before the restart), plus metrics, logs and the webhook-sending code.`,
     questions: [
-      'What are the file descriptors being spent on? What does the CLOSE_WAIT state mean, and which side is "at fault"?',
+      'What are the file descriptors being spent on? What does the CLOSE_WAIT state mean, and which side is actually "at fault"?',
       'Find the leaking code and prove it by connecting the artifacts (timing, growth rate, peer addresses, pool metrics). Why did the August "fix" make the incident worse?',
-      'Propose a short-term fix, long-term fix and alerts. Is restarting via liveness probe an acceptable mitigation?'
+      'Propose a short-term fix, a long-term fix and alerts. Is restarting via the liveness probe an acceptable mitigation?'
     ],
     hints: [
-      'CLOSE_WAIT means the remote side sent FIN (closed the connection) and the kernel ACKed, but our application has NOT called close() on the socket yet. A socket in this state can persist forever.',
-      'Resolve IP 112.213.89.40 to a hostname. From 10:41, fds grow about 12,200 every 5 minutes, i.e. about 40 per second. Compare with m42_5xx/s and with leased.',
-      'In HttpClient 5 classic, a connection only returns to the pool when the response is closed or the entity is fully read. What error would a 20-connections-per-route pool report under this leak, and what about a 50,000 pool?'
+      'CLOSE_WAIT means the remote side already sent FIN (its "I have finished sending" packet) and our kernel ACKed it, but our application has NOT called close() on the socket yet. The kernel has no timeout for this state, so a socket can stay here forever.',
+      'Resolve IP 112.213.89.40 to a hostname. From 10:41, fds grow about 12,200 every 5 minutes, i.e. about 40 per second. Compare that rate with m42_5xx/s and with leased.',
+      'In HttpClient 5 classic, a connection only returns to the pool when the response is closed or the entity (the response body) is fully read. What error would a pool limited to 20 connections per route report under this leak, and what would a 50,000 pool report?'
     ],
-    answer: `**Summary:** {{WebhookSender.deliver}} **does not close the response on the error path** (status other than 2xx). Every webhook that receives a 500 from M-0042 leaves one connection permanently leased in the pool. After about 75 seconds idle, the merchant's server closes the connection; our socket enters **CLOSE_WAIT** and keeps holding a file descriptor. At roughly 40 failed webhooks per second, the process exhausts 65,536 FDs in about 25 minutes: Tomcat cannot accept new connections, the liveness probe fails, the pod restarts, and the cycle repeats.
+    answer: `**Summary:** {{WebhookSender.deliver}} **does not close the response on the error path** (any status outside 2xx). Every webhook that receives a 500 from M-0042 leaves one connection permanently leased in the pool (leased = borrowed by the application and never handed back). After about 75 seconds idle, the merchant's server closes the connection; our socket enters **CLOSE_WAIT** and keeps holding a file descriptor. At roughly 40 failed webhooks per second, the process exhausts 65,536 FDs in about 25 minutes: Tomcat cannot accept new connections, the liveness probe fails, the pod restarts, and the cycle repeats.
 
 ### What CLOSE_WAIT means
 
-When the other side closes the connection (sends FIN), our kernel ACKs and puts the socket in CLOSE_WAIT, **waiting for the application to call close()**. The kernel has no timeout for this state. So thousands of CLOSE_WAIT entries are almost always **a bug in our own application** (a forgotten close), not a network fault or the merchant's fault. By contrast, TIME_WAIT is the normal state of the side that closed first and clears itself after a while; here there are only {{timewait 47}}, negligible.
+Closing a TCP connection is a four-step handshake, not an instant switch. When the other side closes first, it sends FIN ("I have finished sending"). Our kernel ACKs that packet and moves the socket to **CLOSE_WAIT**, **waiting for our application to call close()** so our half can finish. The kernel has no timeout for this state: the FD stays allocated until the application closes the socket or the process dies. So thousands of CLOSE_WAIT entries are almost always **a bug in our own application** (a forgotten close), not a network fault and not the merchant's fault. By contrast, TIME_WAIT is the normal, short-lived state of the side that closed first and clears itself after a while; here there are only {{timewait 47}}, negligible.
 
 ### Evidence
 
-- {{ls /proc/1/fd | wc -l}} equals **65536**, exactly the {{Max open files 65536}} limit.
-- {{ss -tan state close-wait | wc -l}} reads 62,040, i.e. **62,039 sockets** (minus the header line). Of those, **58,214** go to **112.213.89.40**, and {{getent hosts}} shows that is {{webhook.m0042-shop.vn}}. The other peers (1,873, 611, ...) are a slow accumulation since 19/10 from other merchants occasionally failing.
-- {{ss -tanp}}: all CLOSE_WAIT sockets belong to {{"java",pid=1}} with fds reaching 40,211 and beyond.
-- **Timing and growth rate:** fds hold at ~4,300 until 10:40, then climb steadily **about 12,200 every 5 minutes, i.e. about 40.6/second** from 10:41, matching {{m42_5xx/s}} around 40 and the first log {{webhook merchant=M-0042 ... status=500}} at 10:41:07. (65,536 − 4,357) / 40.6 ≈ 1,507 seconds, about 25 minutes from 10:41:07, matching the first {{Too many open files}} at 11:06 and the 25-minute restart cycle.
-- **Pool:** {{leased}} rises in lockstep with fds (always about 460 lower, reaching 65,079 at 11:07), while {{avail}} stays flat around 210. Connections are borrowed and never returned. 65,079 = 62,039 CLOSE_WAIT + about 3,040 connections to M-0042 still ESTABLISHED (leaked within the last 75 seconds, server has not closed yet).
-- **Consequences:** Tomcat {{Socket accept failed ... Too many open files}} (cannot accept new requests, including probes), HttpClient cannot create new sockets to other merchants ({{M-1007 ... SocketException: Too many open files}}), webhook/s drops to 41. Kubelet reports the liveness failure and restarts the pod.
-- Noise: CPU, heap and GC are stable and unrelated. GC cannot help because the pool (a singleton) keeps strong references to the leased connections.
+- {{ls /proc/1/fd | wc -l}} equals **65536**, exactly the {{Max open files 65536}} limit — the process has no FD left to open anything.
+- {{ss -tan state close-wait | wc -l}} reads 62,040, i.e. **62,039 sockets** once the header line is removed. **58,214** of them go to **112.213.89.40**, and {{getent hosts}} resolves that IP to {{webhook.m0042-shop.vn}}. The other peers (1,873, 611, ...) are a slow accumulation since 19/10 from other merchants that occasionally returned errors: the leak had been there all along, just slowly.
+- {{ss -tanp}}: every CLOSE_WAIT socket belongs to {{"java",pid=1}}, with FDs reaching 40,211 and beyond.
+- **Timing and growth rate:** fds sit at ~4,300 until 10:40, then climb steadily **about 12,200 every 5 minutes, that is, about 40.6 per second**, starting at 10:41 — matching {{m42_5xx/s}} around 40 and the first log line {{webhook merchant=M-0042 ... status=500}} at 10:41:07. (65,536 − 4,357) / 40.6 ≈ 1,507 seconds ≈ 25 minutes after 10:41:07, matching the first {{Too many open files}} at 11:06 and the 25-minute restart cycle.
+- **Pool:** {{leased}} rises in lockstep with fds (always about 460 lower, reaching 65,079 at 11:07), while {{avail}} stays flat around 210. Connections are borrowed and never returned. 65,079 = 62,039 CLOSE_WAIT + about 3,040 connections to M-0042 still ESTABLISHED (leaked in the last 75 seconds, the merchant's server has not closed them yet).
+- **Consequences:** Tomcat logs {{Socket accept failed ... Too many open files}} (it cannot accept new requests, health probes included), HttpClient cannot create sockets to other merchants either ({{M-1007 ... SocketException: Too many open files}}), and webhook throughput drops to 41 per second. Kubelet (the agent on each node that runs the probes) reports the liveness failure and restarts the pod.
+- Noise: CPU, heap and GC are stable and unrelated. GC cannot help because the pool (a singleton — one object shared by the whole process) keeps strong references to the leased connections.
 
 ### The leaking code
 
@@ -126,15 +126,15 @@ if (code >= 200 && code < 300) {
 return DeliveryResult.retryLater(code);      // error branch: connection leased forever
 ~~~
 
-In HttpClient 5 classic, a connection only returns to the pool when **the entity is fully consumed** or **the response is closed**. The 5xx branch does neither. If an exception is thrown midway ({{signer}}, {{getCode}}), the connection leaks too.
+In HttpClient 5 classic, a connection only returns to the pool when **the entity is fully consumed** (the body is read to the end, which is what {{EntityUtils.consume}} does) or **the response is closed**. The 5xx branch does neither. If an exception is thrown midway ({{signer}}, {{getCode}}), the connection leaks too.
 
 ### Why the August "fix" made it worse
 
-With the old limit of 20 connections per route, this leak would have surfaced as **that route's pool exhausting** after 20 failures: only webhooks to the failing merchant got {{ConnectionRequestTimeoutException}}, other merchants were unaffected, and the error pointed right at the culprit. Raising it to 50,000 **masked the symptom** and turned a localized, easily diagnosable error into a global one: process-wide FD exhaustion, taking down both the inbound API and webhooks for all 3,000 merchants. Pool limits are a bulkhead by design.
+With the old limit of 20 connections per route (a **route** is one target host and port, i.e. one merchant), this leak would have surfaced as **that route's pool exhausting** after 20 failures: only webhooks to the failing merchant got {{ConnectionRequestTimeoutException}}, other merchants were unaffected, and the error pointed right at the culprit. Raising it to 50,000 **masked the symptom** and turned a localized, easily diagnosable error into a global one: process-wide FD exhaustion, taking down both the inbound API and webhooks for all 3,000 merchants. Pool limits are a bulkhead by design (a **bulkhead** is a wall that confines damage to one compartment: a bad merchant can only use up its own connection budget).
 
 ### Fix
 
-**Short term (hotfix):** always close the response via try-with-resources, or better, use the response-handler API (HttpClient 5 closes it for you and returns the connection to the pool):
+**Short term (hotfix):** always close the response via try-with-resources (the Java construct that closes a resource automatically at the end of the block, even when an exception is thrown), or better, use the response-handler API (HttpClient 5 closes it for you and returns the connection to the pool):
 
 ~~~java
 DeliveryResult deliver(Merchant m, WebhookEvent ev) throws IOException {
@@ -147,33 +147,33 @@ DeliveryResult deliver(Merchant m, WebhookEvent ev) throws IOException {
 }
 ~~~
 
-While waiting to deploy: pause webhooks to M-0042 (manual circuit breaker) and notify the merchant.
+While waiting to deploy: pause webhooks to M-0042 (a manual circuit breaker — stop calling something that keeps failing so it cannot keep burning resources) and notify the merchant.
 
 **Long term:**
 - Return the pool limits to sensible values (e.g. 500 total, 20 per route). A per-route pool exhaustion is a signal, not an error to hide.
 - Configure connection housekeeping: {{evictExpiredConnections()}} and {{evictIdleConnections(TimeValue.ofSeconds(30))}} on the builder, plus a time-to-live for connections, so idle sockets get closed proactively.
-- **Per-merchant circuit breaker and bulkhead:** one failing merchant must not consume shared resources. Escalate retry backoff and suspend after N consecutive failures.
-- Put the service into a test environment with fault injection: a mock merchant returning 500, 404, timeouts, mid-response disconnects; assert FDs do not grow.
-- Raise the FD limit to be generous, but **never treat raising ulimit as the fix**: pushing it to a million only moves the crash from 25 minutes to a few hours.
+- **Per-merchant circuit breaker and bulkhead:** one failing merchant must not consume shared resources. Stretch the retry backoff and suspend the merchant after N consecutive failures.
+- Put the service into a test environment with fault injection: a mock merchant returning 500, 404, timeouts or disconnecting mid-response; assert FDs do not grow.
+- Set the FD limit generously, but **never treat raising ulimit as the fix** (ulimit is the OS per-process limit on FDs): pushing it to a million only moves the crash from 25 minutes to a few hours.
 
 ### Is restarting via liveness probe acceptable?
 
-It is why the system "self-heals" every 25 minutes, but it is a very poor mitigation: each restart drops in-flight webhooks and inbound requests, retried webhooks can cause duplicate deliveries (merchants must handle idempotency per event id), and the incident gets masked. Use it only as a deliberate stopgap (scheduled rolling restarts) while waiting for the hotfix.
+It is the reason the system "self-heals" every 25 minutes, but it is a very poor mitigation: each restart drops in-flight webhooks and inbound requests, retried webhooks can cause duplicate deliveries (merchants must handle idempotency per event id — receiving the same event id twice must leave the same end state as receiving it once), and the incident gets masked. Use it only as a deliberate stopgap (scheduled rolling restarts) while waiting for the hotfix.
 
 ### Alerts
 
 - {{process_files_open_files / process_files_max_files}} above 70%, and a sustained positive growth rate for 15 minutes.
-- CLOSE_WAIT socket count per pod (node exporter or a script counting {{ss}}) above a few hundred.
-- {{httpcomponents_httpclient_pool_total_connections}} with state="leased" rising without falling, or approaching max.
-- 5xx rate per merchant: one failing merchant must be visible individually, not averaged into the total.
+- CLOSE_WAIT socket count per pod (node exporter, or a small script counting {{ss}}) above a few hundred.
+- {{httpcomponents_httpclient_pool_total_connections}} with state="leased" rising and never falling, or approaching the maximum.
+- 5xx rate per merchant: one failing merchant must be visible on its own, not averaged into the total.
 
-> Senior tip: When you see lots of CLOSE_WAIT, group sockets by peer address with {{ss}} and map back to the code that calls that peer. There is almost certainly one branch (usually an error or exception path) that never closes the response, stream or connection. The rule I enforce in reviews: every {{CloseableHttpResponse}}, {{InputStream}}, {{ResultSet}} must be in try-with-resources, or use a callback-style API so the library closes it. And never "fix" pool exhaustion by raising the pool size before proving there is no leak.`,
+> Senior tip: When you see lots of CLOSE_WAIT, group the sockets by peer address with {{ss}} and map each group back to the code that calls that peer. There is almost certainly one branch (usually an error or exception path) that never closes the response, stream or connection. The rule I enforce in code reviews: every {{CloseableHttpResponse}}, {{InputStream}}, {{ResultSet}} must be in try-with-resources, or use a callback-style API so the library closes it. And never "fix" pool exhaustion by raising the pool size before proving there is no leak.`,
     rubric: [
-      'Explain CLOSE_WAIT correctly: the remote side closed (FIN), our application has not called close(), the socket holds an FD indefinitely; it is an application bug, not a network or merchant fault.',
-      'Evidence: 65,536 FDs equals the limit, 62,039 CLOSE_WAIT of which 58,214 to 112.213.89.40 (webhook.m0042-shop.vn), fds growing 40/second from 10:41 matching m42_5xx/s, leased rising while avail stays flat, FDs exhausted after about 25 minutes.',
-      'Identify the exact code: the non-2xx status branch neither consumes the entity nor closes the response, so the connection stays leased forever; GC cannot reclaim it because the pool holds the reference.',
+      'Explain CLOSE_WAIT correctly: the remote side already closed (sent FIN), our application never called close(), so the socket holds an FD indefinitely; it is an application bug, not a network or merchant fault.',
+      'Quote the evidence: 65,536 FDs equals the limit, 62,039 CLOSE_WAIT sockets of which 58,214 go to 112.213.89.40 (webhook.m0042-shop.vn), fds growing by 40 per second from 10:41 matching m42_5xx/s, leased rising while avail stays flat, FDs exhausted after about 25 minutes.',
+      'Point at the exact code: the non-2xx branch neither consumes the entity nor closes the response, so the connection stays leased forever; GC cannot reclaim it because the pool holds a strong reference.',
       'Explain how raising maxConnTotal and maxConnPerRoute to 50,000 masked the leak and turned a per-route localized error into process-wide FD exhaustion.',
-      'Propose: try-with-resources or response handler, restore pool limits, evict idle and expired connections, per-merchant circuit breaker, alerts on FDs, CLOSE_WAIT and leased pool; explain why liveness restarts or raising ulimit are not solutions.'
+      'Propose: try-with-resources or a response handler, restore sensible pool limits, evict idle and expired connections, a per-merchant circuit breaker, alerts on FDs, CLOSE_WAIT and leased pool; explain why liveness restarts or raising ulimit are not solutions.'
     ]
   },
   'lab-incident-006': {
