@@ -1,6 +1,6 @@
 # T423 — Dịch sang tiếng Anh: quiz-spring (20 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/quiz-spring-1.en.js`
 
@@ -16,3 +16,9 @@ Yêu cầu dịch:
 - `node --check js/i18n/quiz-spring-1.en.js` và `node scripts/check-i18n.js quiz-spring-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đủ 20/20 mục (14 qz-spring-007…020 + 6 qz-jpa-007…012) vào `js/i18n/quiz-spring-1.en.js`, mỗi mục chỉ gồm `q`, `options`, `explain`; markup (`**`, `{{code}}`, `###`, `~~~lang`, bảng) giữ nguyên, code block giữ code và dịch comment/literal tiếng Việt minh hoạ.
+- Số liệu đổi sang định dạng tiếng Anh theo tiền lệ các file `.en.js` khác: 5.000 → 5,000; 0,3 s → 0.3 s; 200.000 → 200,000; 70.000 → 70,000.
+- Kiểm tra: `node scripts/check-i18n.js quiz-spring-1` → `OK — 20 mục đã dịch.`; `node scripts/validate.js` → `OK — không có lỗi.` (checker chạy file qua vm nên cũng xác nhận cú pháp; lệnh `node --check` bị chặn quyền trong phiên này).
+- Không sửa file nào khác; `js/i18n/manifest.js` đã có sẵn `quiz-spring-1`.
+Reviewed-by: check-i18n (translation, no LLM review)
