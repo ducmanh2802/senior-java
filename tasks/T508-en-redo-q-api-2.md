@@ -1,6 +1,6 @@
 # T508 — Dịch lại (nội dung đã sửa): q-api-2 (5 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-api-2.en.js`
 
@@ -13,3 +13,5 @@ Với MỖI mục trên: đọc bản tiếng Việt hiện tại trong `js/data
 node scripts/check-i18n.js q-api-2 → OK; node scripts/validate.js → OK.
 
 ## Notes
+Đã dịch lại 5 mục: api-011 (webhook partner integration), api-013 (REST vs gRPC vs GraphQL), api-014 (API-first OpenAPI), api-015 (Idempotency-Key), api-016 (API versioning & deprecation). Loại bỏ field `tags` và `refs` khỏi bản dịch vì không phải field được dịch. Cả hai script check đều OK.
+Reviewed-by: check-i18n (translation, no LLM review)

@@ -84,15 +84,16 @@ ResponseEntity<String> receive(
         return ResponseEntity.status(401).body("Invalid signature");
     }
     
-    // 3. Idempotency check (production: unique constraint on delivery_id to prevent race from 2 parallel requests)
-    if (deliveryLogRepo.existsByDeliveryId(deliveryId)) {
-        return ResponseEntity.ok().build();  // already processed
+    // 3. Idempotency: INSERT first, unique constraint on delivery_id is the arbiter
+    //    (existsBy... then save has a race when 2 requests arrive in parallel)
+    try {
+        inboxRepo.insert(deliveryId, payload);          // RECEIVED state
+    } catch (DuplicateKeyException dup) {
+        return ResponseEntity.ok().build();             // already received, ack again
     }
-    
-    // 4. Process event (async)
-    eventProcessor.process(payload);
-    deliveryLogRepo.save(new DeliveryLog(deliveryId, "SUCCESS"));
-    return ResponseEntity.ok().build();
+
+    // 4. Business logic in async worker reading inbox table; return 2xx fast
+    return ResponseEntity.accepted().build();
 }
 ~~~
 
@@ -194,7 +195,7 @@ histogram_quantile(0.99, rate(http_server_requests_seconds_bucket[5m])) > 5
       'How to detect HikariCP connection leak in production without restarting the app?'
     ]
   },
-  'api-013': {
+'api-013': {
     q: `Compare REST vs gRPC vs GraphQL: which to choose for mobile app, for internal service (microservice), for external partner? Trade-offs in latency, payload, tooling, evolution.`,
     a: `**Summary:** REST (HTTP/JSON) — universal, cacheable, great tooling, fits public API, mobile, partner. gRPC (HTTP/2 + Protobuf) — lowest latency, contract-first, streaming, fits internal service-to-service. GraphQL — flexible query, single endpoint, fits BFF (Backend for Frontend), mobile with complex UI. No "silver bullet", often combine.
 
@@ -244,13 +245,13 @@ histogram_quantile(0.99, rate(http_server_requests_seconds_bucket[5m])) > 5
                                        │   Gateway)  │
                                        └──────┬──────┘
                                               │
-                     ┌────────────────────────┼────────────────────────┐
-                     ▼                        ▼                        ▼
-              ┌─────────────┐          ┌─────────────┐          ┌─────────────┐
-              │  Account    │          │ Transaction │          │  Ledger     │
-              │  Service    │          │  Service    │          │  Service    │
-              │  (gRPC)     │◄────────►│  (gRPC)     │◄────────►│  (gRPC)     │
-              └─────────────┘          └─────────────┘          └─────────────┘
+                      ┌────────────────────────┼────────────────────────┐
+                      ▼                        ▼                        ▼
+               ┌─────────────┐          ┌─────────────┐          ┌─────────────┐
+               │  Account    │          │ Transaction │          │  Ledger     │
+               │  Service    │          │  Service    │          │  Service    │
+               │  (gRPC)     │◄────────►│  (gRPC)     │◄────────►│  (gRPC)     │
+               └─────────────┘          └─────────────┘          └─────────────┘
 ~~~
 
 ### Anti-patterns
@@ -538,20 +539,27 @@ T4  hard shutdown, keep 410 Gone + Link to migration for at least one cycle
 - Don't return 404 immediately: 404 makes client think endpoint never existed (wrong URL, calling env without route) and they don't know what to do next; 410 Gone says "gone forever", with Link to migration guide.
 
 ~~~java
-// Spring MVC: same logic, two version facades
+// Spring MVC: two thin version facades sharing one service
 @RestController
-@RequestMapping({"/v1/accounts", "/v2/accounts"})
-class AccountController {
+@RequestMapping("/v2/accounts")
+class AccountControllerV2 {
     @GetMapping("/{id}")
-    AccountDtoV2 get(@PathVariable long id,
-                     @RequestHeader(value = "X-Api-Version", required = false) String v) {
-        AccountDtoV2 dto = service.get(id);                    // v2 is canonical
-        return "1".equals(v) ? dto.withoutNewFields() : dto;  // facade keeps old shape
+    AccountDtoV2 get(@PathVariable long id) {
+        return AccountDtoV2.from(service.get(id));   // v2 is canonical model
+    }
+}
+
+@RestController
+@RequestMapping("/v1/accounts")
+class AccountControllerV1 {
+    @GetMapping("/{id}")
+    AccountDtoV1 get(@PathVariable long id) {
+        return AccountDtoV1.from(service.get(id));   // adapter: map back to old shape
     }
 }
 ~~~
 
-In practice, separate controller/facade per version and share service; don't scatter {{if v1}} throughout code.
+Business logic only in service; controller v1 just maps data. Don't scatter {{if v1}} throughout code. (Spring Framework 7 / Spring Boot 4 will add built-in API versioning support, but adapter separation principle remains.)
 
 ### Measure Before Shutdown
 - Count requests by {{api_key}} + version in access log/Micrometer; dashboard "consumers still calling v1".
