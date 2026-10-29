@@ -1,6 +1,6 @@
 # T477 — Dịch sang tiếng Anh: lessons-ai (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-ai-1.en.js`
 
@@ -16,3 +16,5 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-ai-1.en.js` và `node scripts/check-i18n.js lessons-ai-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+Translation completed for lesson-ai-001. All validation checks pass: syntax check, i18n check, and full validate.js all report OK.
+Reviewed-by: check-i18n (translation, no LLM review)
