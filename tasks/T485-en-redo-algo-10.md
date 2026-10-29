@@ -1,6 +1,6 @@
 # T485 — Dịch lại (nội dung đã sửa): algo-10 (3 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/algo-10.en.js`
 
@@ -13,3 +13,7 @@ Với MỖI mục trên: đọc bản tiếng Việt hiện tại trong `js/data
 node scripts/check-i18n.js algo-10 → OK; node scripts/validate.js → OK.
 
 ## Notes
+- Dịch lại toàn bộ 3 entry (prompt, hints, solution, follow) theo bản tiếng Việt hiện tại: algo-081 thêm phần "Why is j always valid?", code dùng sentinel và ép long; algo-082 đổi sang ArrayDeque + quy tắc từng bước + chạy tay "1-(-2)"; algo-083 thêm giải thích invariant "vật cản", alternative O(1) bộ nhớ và trace ")()())".
+- Code mẫu giữ nguyên logic, chỉ dịch comment và các dòng trace tiếng Việt trong khối ~~~text; không có backtick hay `${` trong file.
+- Đã chạy: `node scripts/check-i18n.js algo-10` → OK (3 mục); `node scripts/validate.js` → OK — không có lỗi.
+Reviewed-by: check-i18n (translation, no LLM review)
