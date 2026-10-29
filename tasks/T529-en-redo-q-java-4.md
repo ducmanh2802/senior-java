@@ -1,6 +1,6 @@
 # T529 — Dịch lại (nội dung đã sửa): q-java-4 (9 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-java-4.en.js`
 
@@ -13,3 +13,5 @@ Với MỖI mục trên: đọc bản tiếng Việt hiện tại trong `js/data
 node scripts/check-i18n.js q-java-4 → OK; node scripts/validate.js → OK.
 
 ## Notes
+Đã dịch lại 9 mục: modern-009, modern-010, core-012, core-013, core-015, core-016, core-017, core-018, core-019. Cả hai validation đều pass. core-014 không nằm trong danh sách nên không được đụng.
+Reviewed-by: check-i18n (translation, no LLM review)

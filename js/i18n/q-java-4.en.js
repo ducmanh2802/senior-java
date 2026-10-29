@@ -1,6 +1,6 @@
 /*
- * English translation of js/data/q-java.js — task T162. Format: js/core/i18n.js (content overlay).
- * ids: modern-009 modern-010 core-012 core-013 core-014 core-015 core-016 core-017 core-018 core-019
+ * English translation of js/data/q-java.js — task T529. Format: js/core/i18n.js (content overlay).
+ * ids: modern-009 modern-010 core-012 core-013 core-015 core-016 core-017 core-018 core-019
  */
 App.i18n.content({
   'modern-009': {
@@ -234,46 +234,6 @@ Instant back = vn.toInstant();                  // back to UTC
       'Why is {{ZonedDateTime}} safer than {{OffsetDateTime}} for cut-off logic?',
       'How to migrate old {{TIMESTAMP}} columns to {{TIMESTAMP WITH TIME ZONE}} without data loss?',
       'When should you use {{LocalDateTime}} vs {{Instant}} for business rules?'
-    ]
-  },
-  'core-014': {
-    q: 'Autoboxing: Integer cache (-128..127), {{==}} on wrapper, NPE on unboxing, and boxing cost in hot loops.',
-    a: `**Summary:** Autoboxing automatically converts primitive ↔ wrapper; {{Integer.valueOf}} caches -128..127 so {{==}} works on cache but fails outside the range; unboxing {{null}} throws NPE; boxing inside hot loops creates GC garbage — use primitive or primitive collections.
-
-### Integer cache
-- {{Integer.valueOf(int)}} caches [-128, 127] (can be extended with {{-XX:AutoBoxCacheMax}}); {{new Integer()}} is deprecated (Java 9) and skips cache.
-- {{Long}}, {{Short}}, {{Byte}}, {{Character}} have similar caches.
-- {{Boolean}} caches {{TRUE}} / {{FALSE}} singletons.
-
-~~~java
-Integer a = 127, b = 127;        // cache -> same object
-Integer c = 128, d = 128;        // new objects -> different
-System.out.println(a == b);      // true
-System.out.println(c == d);      // false (reference comparison!)
-System.out.println(c.equals(d)); // true (value comparison)
-~~~
-
-### NPE on unboxing
-~~~java
-Integer wrapper = null;
-int primitive = wrapper;         // NPE at this line (implicit unboxing)
-~~~
-- Happens when: {{map.get(key)}} returns null then assigned to primitive; ternary {{condition ? 1 : null}} forces primitive; stream {{reduce}} with null identity.
-- Defense: use {{Objects.requireNonNull}}, {{Optional}}, or check null before unboxing.
-
-### Boxing cost in hot path
-- Each boxing creates a new object (except cache), causing high allocation rate ⇒ frequent young GC, pauses increase.
-- Example: {{Long sum = 0L; for (long v : values) sum += v;}} — {{sum}} is boxed/unboxed each iteration.
-- Fix: use primitive local ({{long sum = 0;}}), primitive streams ({{LongStream}}, {{IntStream}}), or primitive collections (fastutil / Eclipse Collections).
-- JIT can use escape analysis to eliminate boxing if the object does not escape the method, but it is not guaranteed.
-
-### Wrapper comparison
-
-> Senior tip: treat wrapper equality as a code smell. If you need identity comparison (e.g., enum-like singleton), use {{==}} intentionally; for values always use {{equals}}. Never assume cache behavior outside [-128, 127].`,
-    follow: [
-      'Why does Integer cache default to -128..127 and how to extend it?',
-      'Why does ternary {{flag ? 1 : null}} throw NPE when assigned to {{int}}?',
-      'When should {{OptionalInt}} be used instead of {{Integer}}?'
     ]
   },
   'core-015': {
