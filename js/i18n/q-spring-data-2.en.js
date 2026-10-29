@@ -46,8 +46,8 @@ When enabled, Tomcat processes each request by a single virtual thread: **code b
     ]
   },
   'spring-013': {
-    q: 'How do you centralize exception handling in Spring Boot? What role does {{@ControllerAdvice}} and {{ProblemDetail}} (RFC 7807/9457) play, and what traps must be avoided?',
-    a: `**Summary:** Centralized error handling uses {{@RestControllerAdvice}} + {{@ExceptionHandler}}. Since Spring Framework 6, Spring supports **{{ProblemDetail}}** per RFC 9457 (formerly RFC 7807): returning {{ProblemDetail}} causes the framework to generate response {{application/problem+json}} with {{type}}, {{title}}, {{status}}, {{detail}} and other extension properties.
+    q: 'How do you handle exceptions centrally in Spring Boot? How are {{@ControllerAdvice}} and {{ProblemDetail}} (RFC 7807/9457) used, and what traps should you avoid?',
+    a: `**Summary:** Centralized error handling uses {{@RestControllerAdvice}} + {{@ExceptionHandler}}. Since Spring Framework 6, Spring supports **{{ProblemDetail}}** per RFC 9457 (formerly RFC 7807): you only return a {{ProblemDetail}} and the framework generates an {{application/problem+json}} response with {{type}}, {{title}}, {{status}}, {{detail}} and any extension properties.
 
 ### Structure of an advice
 ~~~java
@@ -63,12 +63,12 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return pd;
     }
 
-    // For validation errors, override handleMethodArgumentNotValid if needed.
+    // For validation errors, override handleMethodArgumentNotValid if you need a custom format.
 }
 ~~~
 
-### When to inherit ResponseEntityExceptionHandler
-This class handles many errors Spring MVC throws, like 400, 405 and 415. If you extend, override the corresponding hooks instead of declaring a {{@ExceptionHandler}} duplicating an already-mapped exception. Not all 404s go through the advice; handling depends on resource/dispatcher configuration.
+### When to extend ResponseEntityExceptionHandler
+This class handles many errors raised by Spring MVC, such as 400, 405 and 415. If you extend it, override the corresponding hooks (for example {{handleMethodArgumentNotValid}}) instead of declaring an {{@ExceptionHandler}} that duplicates an exception the parent class has already mapped. On 404: since Spring Framework 6.1 (Boot 3.2), a URL that matches no handler falls through to the static resource handler and throws {{NoResourceFoundException}}; the parent class already maps it to a 404 ProblemDetail, so your advice handles it (override {{handleNoResourceFoundException}} if you need a custom format). In older versions, a 404 by default goes straight to Boot's error page ({{/error}}) and never passes through the advice.
 
 ### Standard response format
 ~~~json
@@ -82,19 +82,19 @@ This class handles many errors Spring MVC throws, like 400, 405 and 415. If you 
 }
 ~~~
 
-### Pitfalls to avoid
-1. **Silent catch-all**: {{@ExceptionHandler(Exception.class)}} returning 500 with {{ex.getMessage()}} leaks internal details (SQL, file paths). Must log the root cause server-side and return neutral messages to the client.
-2. **Lost stack trace in logs**: returning only ProblemDetail without logging makes production issues very hard to trace.
-3. **Catch too broadly**: catching {{Exception.class}} swallows serious system errors, hiding bugs.
-4. **Exceptions outside dispatcher**: exceptions in filters, interceptors, or async tasks don't go through {{@ControllerAdvice}} — must handle separately.
-5. **No correlation id**: client reports an error without an identifier for tracing logs.
+### Traps to avoid
+1. **Silent catch-all**: {{@ExceptionHandler(Exception.class)}} returning 500 with {{ex.getMessage()}} leaks internal details (SQL statements, file paths) to the outside. You must log the root cause on the server and return a neutral message to the client.
+2. **Lost stack trace in logs**: if you only return the ProblemDetail without logging, production incidents become very hard to trace.
+3. **Catching too broadly**: catching {{Exception.class}} swallows serious system errors and hides bugs.
+4. **Errors outside the dispatcher**: exceptions thrown in filters, interceptors, or async tasks do not go through {{@ControllerAdvice}} — you have to handle them separately.
+5. **No correlation id**: the client reports an error but there is no identifier to search the logs with.
 
 ### Production pitfall
-- Consider role-based access: clients can see detailed error messages; others see only error codes.
-- ProblemDetail content can be cached by CDN/proxy — remember to add cache-busting headers for error responses.
-- Don't expose internal info in {{detail}} when the error is user-caused; put detailed info in logs with {{traceId}}.
+- Consider role-based access: clients entitled to see details get the detailed message, other clients only see the error code.
+- {{ProblemDetail}} content can be cached by a CDN/proxy — remember to set no-cache headers on error responses.
+- Do not put internal information in {{detail}} when the error is user-caused; put the details in the log together with {{traceId}}.
 
-> Senior tip: standardize error codes across the entire system using **business error codes ({{code}})** instead of English message strings — the client displays by code, while you change the message in code without breaking the client. Also always return {{traceId}} for log tracing within 30 seconds when users report errors.`,
+> Senior tip: standardize the errors of the whole system around **business error codes** ({{code}}) instead of English message strings — the client renders by code, and you can change the message in code without breaking the client. Alongside that, always return a {{traceId}} so you can find the log within 30 seconds when a user calls to report an error.`,
     follow: [
       'What is the difference between {{@ExceptionHandler}} and {{@ResponseStatus}}?',
       'Why don\'t exceptions occurring in filters get handled by {{@ControllerAdvice}}?'
