@@ -1,6 +1,6 @@
 # T428 — Dịch sang tiếng Anh: quiz-design (18 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/quiz-design-3.en.js`
 
@@ -16,3 +16,10 @@ Yêu cầu dịch:
 - `node --check js/i18n/quiz-design-3.en.js` và `node scripts/check-i18n.js quiz-design-3` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đủ 18/18 mục (`qz-microservices-017..020`, `qz-scenario-007..020`), mỗi mục chỉ gồm `q`, `options`, `explain`; `multi` giữ đúng thứ tự đáp án và câu hỏi có "(Choose 2)".
+- Giữ nguyên markup (`**`, `{{code}}`, `###`, `~~~`, `> Senior tip:`), không backtick, không `${`; số phương án khớp bản gốc (4/4/5/4 và 11 mục 4 + 3 mục 5).
+- `node scripts/check-i18n.js quiz-design-3` → `OK — 18 mục đã dịch.`; `node scripts/check-i18n.js` (toàn bộ) → `OK — 1567 mục đã dịch.`; `node scripts/validate.js` → `OK — không có lỗi.`
+- Lưu ý môi trường: lệnh `node --check <file>` bị lớp permission của shell chặn nên không chạy trực tiếp được; file đã được `check-i18n.js` nạp và chạy qua `vm.runInNewContext` (biên dịch cú pháp thành công, không lỗi parse).
+
+Reviewed-by: check-i18n (translation, no LLM review)
