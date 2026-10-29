@@ -1011,6 +1011,652 @@ P99 tăng 80ms lên 1.8s, lỗi 42%; retry chồng request làm concurrency và 
 - Chỉ một tầng retry, tối đa 2–3 attempt, exponential backoff full jitter, lỗi transient và thao tác idempotent.
 - Truyền deadline, retry budget, bulkhead, circuit breaker và load shedding.
 - Dùng idempotency key; dashboard tách logical request khỏi physical attempt.
-> Senior tip: Theo dõi amplification ratio để phát hiện retry storm sớm.`,rubric:['Tính 27 attempts','Dẫn user traffic ổn định/cat 1044/s','Một tầng retry, jitter, giới hạn','Deadline/budget/bulkhead/breaker','Idempotency và metrics logical/physical'],tags:['retry-storm','circuit-breaker']}
+> Senior tip: Theo dõi amplification ratio để phát hiện retry storm sớm.`,rubric:['Tính 27 attempts','Dẫn user traffic ổn định/cat 1044/s','Một tầng retry, jitter, giới hạn','Deadline/budget/bulkhead/breaker','Idempotency và metrics logical/physical'],tags:['retry-storm','circuit-breaker']},
+{
+  id: 'lab-incident-010',
+  category: 'incident',
+  title: 'Deploy order-service tăng pool lên 40, payment-service không mở nổi connection: PostgreSQL hết max_connections',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Sàn **ShopVN** có nhiều service dùng chung một PostgreSQL 16 (RDS db.r6g.4xlarge, {{max_connections = 400}}, {{superuser_reserved_connections = 3}}). Trên Kubernetes:
+| Service | Pod | Hikari maximumPoolSize | Connection |
+|---|---|---|---|
+| order-service | 12 (HPA 12–16) | 10 | 120 |
+| payment-service | 6 (HPA 6–10) | 15 | 90 |
+| report-service | 2 | 20 | 40 |
+| admin/batch | | | 10 |
+
+Tổng trước sự cố: **260/400**. Mọi service dùng Spring Boot 3.3, HikariCP 5.1 với cấu hình mặc định còn lại ({{minimumIdle}} không đặt, {{connectionTimeout = 30s}}, {{maxLifetime = 30 phút}}).
+
+**Sự kiện (28/10/2026).** 19:55 order-service deploy **v2.14**. Trong PR có dòng đổi {{maximum-pool-size: 10 → 40}} với mô tả "fix lỗi Connection is not available trong load test". 20:00 HPA của order-service lên 16 pod theo lịch giờ cao điểm. Từ **20:04**, **checkout lỗi 23%**: payment-service báo không lấy được connection, 2 pod payment mới (do HPA scale) bị CrashLoopBackOff. Lạ là order-service vẫn chạy bình thường, CPU DB chỉ 22%.
+
+**Việc bạn có.** Log PostgreSQL, log payment-service, snapshot {{pg_stat_activity}}, metric Hikari và timeline.`,
+  artifacts: [
+    {
+      name: 'postgresql-and-payment.log',
+      lang: 'text',
+      content: `### RDS PostgreSQL log (UTC+7)
+2026-10-28 20:03:41.207 +07 [91822] [unknown]@shop FATAL:  sorry, too many clients already
+2026-10-28 20:03:41.233 +07 [91823] [unknown]@shop FATAL:  sorry, too many clients already
+2026-10-28 20:03:44.019 +07 [91840] [unknown]@shop FATAL:  sorry, too many clients already
+... (2.316 dòng FATAL tương tự từ 20:03:41 đến 20:18:52)
+
+### payment-service, pod payment-7c9d-xk2lp (pod mới do HPA scale lúc 20:03:30)
+2026-10-28T20:03:52.418+07:00  INFO 1 --- [payment] [main] com.zaxxer.hikari.HikariDataSource : HikariPool-1 - Starting...
+2026-10-28T20:03:52.611+07:00 ERROR 1 --- [payment] [main] com.zaxxer.hikari.pool.HikariPool : HikariPool-1 - Exception during pool initialization.
+org.postgresql.util.PSQLException: FATAL: sorry, too many clients already
+	at org.postgresql.core.v3.ConnectionFactoryImpl.doAuthentication(ConnectionFactoryImpl.java:704)
+	at org.postgresql.core.v3.ConnectionFactoryImpl.tryConnect(ConnectionFactoryImpl.java:213)
+	...
+2026-10-28T20:03:52.640+07:00  WARN 1 --- [payment] [main] o.s.b.d.LoggingFailureAnalysisReporter : Application run failed
+
+### payment-service, pod payment-7c9d-a81mq (pod cũ, chạy từ 18:12)
+2026-10-28T20:05:11.004+07:00 DEBUG 1 --- [payment] [onnection closer] com.zaxxer.hikari.pool.PoolBase : HikariPool-1 - Closing connection org.postgresql.jdbc.PgConnection@4b1f0e2a: (connection has passed maxLifetime)
+2026-10-28T20:06:48.771+07:00 ERROR 1 --- [payment] [nio-8080-exec-61] o.a.c.c.C.[.[.[/].[dispatcherServlet] : Servlet.service() threw exception
+org.springframework.transaction.CannotCreateTransactionException: Could not open JPA EntityManager for transaction
+Caused by: java.sql.SQLTransientConnectionException: HikariPool-1 - Connection is not available, request timed out after 30000ms (total=11, active=11, idle=0, waiting=43)`,
+    },
+    {
+      name: 'pg-stat-activity-2004.txt',
+      lang: 'text',
+      content: `-- 2026-10-28 20:04:30 +07, đăng nhập bằng tài khoản master (dùng slot superuser dự phòng)
+shop=> SELECT application_name, state, count(*)
+       FROM pg_stat_activity WHERE backend_type = 'client backend'
+       GROUP BY 1, 2 ORDER BY 3 DESC;
+ application_name |        state        | count
+------------------+---------------------+-------
+ order-service    | idle                |   251
+ payment-service  | idle                |    48
+ payment-service  | active              |    42
+ report-service   | idle                |    37
+ admin-batch      | idle                |     9
+ order-service    | active              |     6
+ report-service   | active              |     3
+ admin-batch      | active              |     1
+ psql             | active              |     1
+(9 rows)
+-- tổng client backend = 398 (397 của ứng dụng + 1 phiên psql superuser)
+
+shop=> SELECT client_addr, count(*) FROM pg_stat_activity
+       WHERE application_name = 'order-service' GROUP BY 1 ORDER BY 2 DESC;
+ 10.42.3.17 (order-v214-5f8b-0)  40      10.42.5.88 (order-v214-5f8b-3)  40
+ 10.42.1.21 (order-v214-5f8b-1)  40      10.42.2.40 (order-v214-5f8b-4)  40
+ 10.42.4.66 (order-v214-5f8b-2)  40      10.42.6.12 (order-v214-5f8b-5)  40
+ 10.42.7.31 (order-v214-5f8b-6)   7      10.42.0.19 (order-v213-77aa-9)  10
+ -- tổng order-service = 257
+
+### Prometheus, order-service (v2.14), trung bình mỗi pod, 20:04
+hikaricp_connections{pool="HikariPool-1"}          40
+hikaricp_connections_active{pool="HikariPool-1"}   0.9
+hikaricp_connections_idle{pool="HikariPool-1"}     39.1
+hikaricp_connections_pending{pool="HikariPool-1"}  0
+hikaricp_connections_usage_seconds (p99)           0.006
+http_server_requests rate (toàn bộ order-service)  1800 req/s`,
+    },
+    {
+      name: 'timeline-and-diff.txt',
+      lang: 'text',
+      content: `### PR #4182 (order-service v2.14), application.yaml
+ spring:
+   datasource:
+     hikari:
+-      maximum-pool-size: 10
++      maximum-pool-size: 40      # fix "Connection is not available" khi load test 3000 rps trên 2 pod
+ Deployment strategy: RollingUpdate maxSurge=25% maxUnavailable=0
+
+### Timeline (UTC+7)
+19:55:02  rollout order-service v2.14 bắt đầu (12 pod v2.13 -> v2.14)
+20:00:00  HPA order-service: desired 12 -> 16 (lịch giờ cao điểm)
+20:03:30  HPA payment-service: desired 6 -> 8 (traffic checkout tăng)
+20:03:41  PostgreSQL bắt đầu từ chối kết nối mới (FATAL too many clients)
+20:03:52  2 pod payment mới CrashLoopBackOff (Exception during pool initialization)
+20:04:10  order-v214-5f8b-7 .. -15 CrashLoopBackOff, rollout dừng ở 7/16 pod v2.14
+20:05:11  payment pod cũ bắt đầu đóng connection hết maxLifetime, không mở lại được
+20:06:30  checkout error rate 23%, p99 31 s
+20:11:00  alert PagerDuty "checkout 5xx > 5%"
+20:18:40  kubectl rollout undo deployment/order-service
+20:24:00  checkout error rate về 0.1%`,
+    },
+  ],
+  questions: [
+    'Nguyên nhân gốc là gì? Vì sao service bị lỗi (payment) lại không phải service vừa deploy (order)? Dẫn chứng từ artifact.',
+    'Dùng định luật Little với số liệu của order-service: thực sự cần bao nhiêu connection? Vì sao tăng pool lên 40 không giúp mà còn hại?',
+    'Bạn xử lý ngay thế nào, và thiết kế lại thế nào để một service không thể làm cạn connection của service khác?',
+  ],
+  hints: [
+    'Cộng connection: 257 + 90 + 40 + 10 = ? So với 400 − 3 slot dự phòng. Nhìn cột state của order-service: bao nhiêu active, bao nhiêu idle?',
+    'minimumIdle không đặt thì Hikari giữ minimumIdle = maximumPoolSize: mỗi pod mở đủ 40 connection ngay cả khi rảnh. Pod payment mới cần ít nhất 1 connection lúc khởi động; pod cũ thì mất dần connection do maxLifetime.',
+    'Định luật Little: số connection bận = tốc độ request × thời gian giữ connection. 1800 req/s × 0,0035 s ≈ ? Ở tầng DB có thể giới hạn mỗi role bằng ALTER ROLE ... CONNECTION LIMIT.',
+  ],
+  answer: `**Tóm tắt:** order-service v2.14 tăng pool từ 10 lên 40 mà không đặt {{minimumIdle}}, nên mỗi pod **mở sẵn 40 connection dù gần như không dùng**. Rollout cộng HPA 16 pod cần 640 connection, vượt xa ngân sách. Đến 20:03:41 PostgreSQL chạm 397 connection ứng dụng (400 trừ 3 slot superuser) và từ chối mọi kết nối mới. Order-service vẫn chạy vì đã "chiếm chỗ" trước; nạn nhân là payment-service: pod mới không khởi động được, pod cũ mất dần connection khi hết {{maxLifetime}} mà không mở lại được. Thực tế order-service chỉ cần khoảng **6–7 connection bận cho cả fleet**. Sửa: rollback, rồi đặt **ngân sách connection** cho từng service ({{CONNECTION LIMIT}} theo role, kiểm tra replicas × pool trong CI) và cân nhắc RDS Proxy/PgBouncer.
+
+### Kiến thức nền: vì sao PostgreSQL giới hạn số connection
+Mỗi connection PostgreSQL là **một process** riêng trên server (khoảng 5–10 MB RAM, cộng {{work_mem}} khi chạy query). {{max_connections}} là số chỗ ngồi cố định của "nhà hàng": hết ghế thì khách mới bị từ chối ngay ({{FATAL: sorry, too many clients already}}), không xếp hàng. Connection pool (Hikari) ở phía ứng dụng giống một nhóm khách **giữ ghế lâu dài**: đặt sẵn N ghế để không phải chờ mở connection (TCP + TLS + xác thực, 20–50 ms).
+
+Vấn đề: ghế bị **giữ** chứ không chỉ **dùng**. Một connection idle vẫn chiếm một chỗ trong 400.
+
+### Nguyên nhân gốc, từng bước
+1. **Hikari mặc định {{minimumIdle = maximumPoolSize}}** (pool cố định). Đổi max lên 40 nghĩa là mỗi pod v2.14 khởi động sẽ mở và **giữ** 40 connection.
+2. Ngân sách: 400 − 3 = 397 chỗ. Các service khác đang giữ 90 + 40 + 10 = 140 → order-service chỉ còn tối đa **257**. Với 16 pod × 40 = **640**, chắc chắn vượt.
+3. Rollout dần: mỗi pod v2.14 lên thì một pod v2.13 (10 connection) tắt. 6 pod mới đầy 40, pod thứ 7 lấy được 7 connection thì DB hết chỗ (20:03:41): 6 × 40 + 7 + 10 (pod v2.13 cuối) = **257**. Tổng 257 + 90 + 40 + 10 = **397** đúng bằng giới hạn.
+4. **Ai bị hại?** Service cần connection **mới** sau thời điểm đó:
+   - 2 pod payment mới từ HPA (20:03:30): Hikari cố mở connection đầu tiên lúc khởi động, thất bại → {{Exception during pool initialization}} → app dừng → CrashLoopBackOff. HPA thêm pod nhưng không thêm được năng lực.
+   - Pod payment cũ: connection lần lượt hết {{maxLifetime}} 30 phút (log 20:05:11), Hikari đóng rồi mở lại thì bị từ chối → pool co từ 15 xuống 11 → request chờ 30 giây rồi lỗi {{(total=11, active=11, idle=0, waiting=43)}}.
+   - Các pod order v2.14 thứ 8 trở đi cũng CrashLoop, rollout kẹt ở 7/16.
+5. CPU DB 22%: DB **không quá tải**, chỉ hết chỗ. 251/257 connection của order-service đang **idle**.
+
+### Little's law: order-service thật sự cần bao nhiêu connection?
+Số connection bận trung bình = tốc độ × thời gian giữ = 1.800 req/s × ~0,0035 s ≈ **6,3** cho **cả** fleet (khớp {{active = 6}} trong pg_stat_activity và {{hikaricp_connections_active}} ≈ 0,9/pod). Kể cả nhân 3 lần cho burst, 12–16 pod × 10 connection = 120–160 đã **dư** rất nhiều. Lỗi "Connection is not available" trong load test (3.000 rps dồn vào **2 pod**) là do môi trường test, hoặc do code giữ connection lâu (gọi HTTP trong transaction): nên tìm nguyên nhân đó thay vì tăng pool.
+
+~~~text
+Pool lớn hơn KHÔNG có nghĩa là nhanh hơn:
+ - DB có 16 vCPU: chỉ ~16-32 query thực sự chạy song song có ích
+ - thêm connection => thêm process, thêm context switch, thêm lock contention
+ - connection idle vẫn chiếm 1/400 chỗ => "ăn" ngân sách của service khác
+~~~
+
+### Dẫn chứng
+- Diff PR #4182: **"maximum-pool-size: 40"**, không có {{minimum-idle}}.
+- pg_stat_activity 20:04:30: order-service **251 idle + 6 active = 257**; 6 pod v2.14 × 40, pod -6 có 7, pod v2.13 có 10. Tổng ứng dụng 397.
+- Prometheus: {{hikaricp_connections_idle}} **39.1**, {{active}} **0.9**, {{usage_seconds p99 = 0.006}}.
+- Log DB: **"FATAL: sorry, too many clients already"** từ 20:03:41; log payment: **"Exception during pool initialization"** (pod mới) và **"total=11, active=11, idle=0, waiting=43"** (pod cũ) sau dòng **"connection has passed maxLifetime"**.
+- Timeline: rollback 20:18:40, checkout hồi phục 20:24.
+
+### Cách sửa
+**Ngay lập tức:** {{kubectl rollout undo deployment/order-service}} (đã làm). Nhanh hơn nữa nếu có sẵn: đổi biến môi trường {{SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE=10}}. Nếu rollback chậm, có thể {{pg_terminate_backend}} một phần connection idle của order-service (Hikari sẽ cố mở lại tới 40, nên chỉ là giải pháp vài phút).
+
+**Dài hạn:**
+- **Ngân sách connection** cho mỗi service, ghi thành văn bản: {{maxReplicas × maximumPoolSize ≤ budget}}. Ví dụ order 16 × 10 = 160, payment 10 × 15 = 150, report 40, batch 20, tổng 370 < 397. Kiểm tra tự động trong CI (đọc Helm values + HPA maxReplicas).
+- **Bulkhead ở tầng DB**: mỗi service một role riêng và {{ALTER ROLE order_app CONNECTION LIMIT 160;}}. Khi order-service vượt, chỉ **nó** bị lỗi, payment vẫn an toàn.
+- Đặt {{minimumIdle}} nhỏ (ví dụ 2–5) với {{idleTimeout}} để pod rảnh trả bớt connection (đánh đổi: burst đầu tiên phải mở connection mới).
+- Khi số pod lớn: **RDS Proxy** hoặc **PgBouncer** (transaction pooling) để hàng nghìn connection phía app dùng chung vài chục connection thật. Lưu ý transaction pooling không giữ session state ({{SET}}, advisory lock); prepared statement chỉ an toàn với PgBouncer 1.21+ có {{max_prepared_statements}}.
+- Review: mọi thay đổi pool size phải kèm phép tính Little's law và tổng ngân sách.
+
+### Phòng ngừa và monitoring
+- Alert {{sum(numbackends) / max_connections > 0.8}} (CloudWatch {{DatabaseConnections}}).
+- Dashboard tỉ lệ idle/active theo {{application_name}} (đặt {{ApplicationName}} trong JDBC URL cho từng service).
+- Canary: deploy 1 pod trước, so số connection mở thêm.
+
+### Lỗi hay gặp
+- Gặp "Connection is not available" là tăng pool: thường nguyên nhân là connection bị giữ lâu, không phải pool nhỏ.
+- Quên nhân với số replica và HPA maxReplicas, và quên pod cũ + pod mới cùng sống trong rolling update.
+- Tăng {{max_connections}} của DB lên 1.000: tốn RAM, tăng contention, và chỉ dời ngưỡng.
+- Đổ lỗi cho service đang báo lỗi (payment) mà không xem **ai đang giữ** connection.
+
+### Trả lời miệng 1 phút
+"Deploy order-service tăng pool từ 10 lên 40 và Hikari mặc định giữ pool cố định, nên mỗi pod giữ 40 connection dù chỉ dùng chưa tới 1. Với rollout và HPA, order-service chiếm 257 chỗ, cộng service khác đúng 397 trên 400, PostgreSQL từ chối kết nối mới. Payment bị hại vì pod mới không khởi động được và pod cũ mất connection theo maxLifetime. Little's law cho thấy order chỉ cần khoảng 6 connection bận cho cả fleet. Tôi rollback ngay, sau đó đặt ngân sách connection theo service, CONNECTION LIMIT theo role để cô lập, minimumIdle nhỏ, và dùng RDS Proxy hoặc PgBouncer khi số pod tăng."
+
+> Senior tip: Tôi coi connection database là **tài nguyên chung có hạn ngạch**, giống CPU quota trên Kubernetes. Mỗi PR đổi pool size hoặc HPA maxReplicas phải cập nhật bảng ngân sách. Pool nhỏ là bình thường: một PostgreSQL 16 vCPU hiếm khi cần quá 50–100 connection bận cùng lúc; nếu app cần nhiều hơn, gần như chắc chắn có connection đang bị giữ trong lúc chờ thứ khác (HTTP, Kafka, lock).`,
+  rubric: [
+    'Chỉ ra nguyên nhân: pool 40 với minimumIdle mặc định = max, rollout + HPA làm tổng connection chạm 397/400, PostgreSQL từ chối kết nối mới',
+    'Giải thích vì sao payment bị hại: pod mới fail pool initialization, pod cũ mất connection do maxLifetime mà không mở lại được; order đã chiếm chỗ trước',
+    'Dẫn chứng: 251 idle/6 active của order-service, 257 + 90 + 40 + 10 = 397, hikaricp idle 39.1/active 0.9, log FATAL too many clients',
+    'Áp dụng định luật Little: 1800 req/s × ~3,5 ms ≈ 6 connection bận, pool lớn không giúp',
+    'Đề xuất: rollback, ngân sách connection replicas × pool, CONNECTION LIMIT theo role, minimumIdle nhỏ, RDS Proxy/PgBouncer, alert tỉ lệ connection',
+  ],
+  tags: ['hikari', 'postgresql', 'max-connections', 'connection-pool', 'deploy', 'littles-law'],
+},
+{
+  id: 'lab-incident-011',
+  category: 'incident',
+  title: 'KEDA scale consumer từ 3 lên 24 pod, lag Kafka lại tăng gấp 4: rebalance storm do autoscale',
+  level: 'lead',
+  scenario: `**Bối cảnh.** **notification-service** (Spring Boot 3.3, spring-kafka 3.2, kafka-clients 3.7) đọc topic {{order-events}} (**12 partition**, Kafka 3.7) để gửi SMS/push cho khách. Mỗi pod chạy {{concurrency = 4}} consumer. Mỗi message gọi SMS gateway (~16 ms), mỗi consumer xử lý khoảng **250 msg/s**. Không đặt {{partition.assignment.strategy}} và {{group.instance.id}} (dùng mặc định).
+
+Autoscale bằng **KEDA** (Kafka scaler): {{lagThreshold: 1000}}, {{minReplicaCount: 3}}, {{maxReplicaCount: 24}}, {{allowIdleConsumers: true}} (bật để "scale được nhiều hơn số partition"), và tuỳ chỉnh HPA scaleDown {{stabilizationWindowSeconds: 0}} "để tiết kiệm chi phí". Pod khởi động mất ~40 giây.
+
+**Triệu chứng (flash sale 11/11, 11:00).** Producer tăng từ 900 lên **4.200 msg/s** trong 10 phút. KEDA scale lên 24 pod trong 30 giây, nhưng lag không giảm mà tăng vọt, đỉnh **1,39 triệu** lúc 11:10; khách nhận SMS xác nhận đơn trễ 6–8 phút, và **18.400** khách nhận SMS trùng 2–3 lần. Sau đó đến 12:30, số pod dao động 3 ↔ 24 nhiều lần.
+
+**Việc bạn có.** Log broker (GroupCoordinator), log một consumer, metric theo phút.`,
+  artifacts: [
+    {
+      name: 'broker-group-coordinator.log',
+      lang: 'text',
+      content: `[2026-11-11 11:01:47,102] INFO [GroupCoordinator 2]: Preparing to rebalance group notification-service in state PreparingRebalance with old generation 1842 (__consumer_offsets-17) (reason: Adding new member consumer-notification-service-5-6e1d9c0a-41f2-4b8e-9d53-0c1f7a2b8e11 with group instance id None; client reason: need to re-join with the given member-id: consumer-notification-service-5-6e1d9c0a-41f2-4b8e-9d53-0c1f7a2b8e11) (kafka.coordinator.group.GroupCoordinator)
+[2026-11-11 11:01:59,664] INFO [GroupCoordinator 2]: Stabilized group notification-service generation 1843 (__consumer_offsets-17) with 16 members (kafka.coordinator.group.GroupCoordinator)
+[2026-11-11 11:02:03,118] INFO [GroupCoordinator 2]: Preparing to rebalance group notification-service in state PreparingRebalance with old generation 1843 (__consumer_offsets-17) (reason: Adding new member consumer-notification-service-1-0b77e2d4-... with group instance id None; ...) (kafka.coordinator.group.GroupCoordinator)
+[2026-11-11 11:02:15,870] INFO [GroupCoordinator 2]: Stabilized group notification-service generation 1844 (__consumer_offsets-17) with 24 members (kafka.coordinator.group.GroupCoordinator)
+... (lặp lại)
+[2026-11-11 11:06:41,205] INFO [GroupCoordinator 2]: Stabilized group notification-service generation 1871 (__consumer_offsets-17) with 96 members (kafka.coordinator.group.GroupCoordinator)
+-- 29 lần rebalance (generation 1842 -> 1871) trong 11:01:47 - 11:06:41
+[2026-11-11 11:21:12,440] INFO [GroupCoordinator 2]: Preparing to rebalance group notification-service in state PreparingRebalance with old generation 1871 (__consumer_offsets-17) (reason: Removing member consumer-notification-service-3-91c2... on LeaveGroup; client reason: the consumer is being closed) (kafka.coordinator.group.GroupCoordinator)
+-- 11:21:12 - 11:23:30: thêm 17 lần rebalance khi scale 24 -> 3`,
+    },
+    {
+      name: 'consumer-pod-notification-6f7b-0.log',
+      lang: 'text',
+      content: `2026-11-11T11:01:47.390+07:00  INFO 1 --- [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Request joining group due to: group is already rebalancing
+2026-11-11T11:01:47.391+07:00  INFO 1 --- [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Revoke previously assigned partitions order-events-0
+2026-11-11T11:01:47.392+07:00  INFO 1 --- [ntainer#0-0-C-1] o.s.k.l.KafkaMessageListenerContainer    : notification-service: partitions revoked: [order-events-0]
+2026-11-11T11:01:47.393+07:00  INFO 1 --- [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] (Re-)joining group
+2026-11-11T11:01:59.671+07:00  INFO 1 --- [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Successfully joined group with generation Generation{generationId=1843, memberId='consumer-notification-service-1-3a0f...', protocol='range'}
+2026-11-11T11:01:59.702+07:00  INFO 1 --- [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Adding newly assigned partitions:
+2026-11-11T11:01:59.703+07:00  INFO 1 --- [ntainer#0-0-C-1] o.s.k.l.KafkaMessageListenerContainer    : notification-service: partitions assigned: []
+2026-11-11T11:02:03.402+07:00  INFO 1 --- [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Request joining group due to: group is already rebalancing
+...
+2026-11-11T11:01:51.880+07:00  WARN 1 --- [ntainer#0-2-C-1] c.s.notify.SmsSender                     : SMS sent orderId=O-77120931 but offset 5518302 of order-events-6 not committed (partition revoked)
+-- consumer config (ConsumerConfig values): partition.assignment.strategy = [class org.apache.kafka.clients.consumer.RangeAssignor, class org.apache.kafka.clients.consumer.CooperativeStickyAssignor]
+--   group.instance.id = null ; max.poll.records = 500 ; max.poll.interval.ms = 300000 ; session.timeout.ms = 45000
+--   spring.kafka.listener.ack-mode = BATCH`,
+    },
+    {
+      name: 'metrics-per-minute.txt',
+      lang: 'text',
+      content: `time  | produce msg/s | consume msg/s | lag (sum)  | replicas | consumers in group | rebalances/min
+10:58 |       900     |      900      |       120  |     3    |        12          |   0
+11:00 |      4200     |     3000      |     72000  |     3    |        12          |   0
+11:01 |      4200     |     3000      |    144000  |     3    |        12          |   1
+11:02 |      4200     |      640      |    358000  |    24    |        64          |   8
+11:03 |      4200     |      410      |    585000  |    24    |        88          |   9
+11:04 |      4200     |      520      |    806000  |    24    |        96          |   7
+11:05 |      4200     |     1100      |    992000  |    24    |        96          |   3
+11:06 |      4200     |     2400      |   1100000  |    24    |        96          |   1
+11:07 |      4200     |     3000      |   1172000  |    24    |        96          |   0
+11:10 |       900     |     3000      |   1388000  |    24    |        96          |   0
+11:21 |       900     |     3000      |      1800  |     3    |        12          |  11
+11:23 |       900     |      520      |     47000  |    24    |        58          |   6
+... dao động 3 <-> 24 đến 12:30
+-- consume msg/s đo bằng sum(rate(kafka_consumer_fetch_manager_records_consumed_total[1m]))
+-- trong 96 consumer chỉ 12 consumer có partition; 84 consumer nhận "partitions assigned: []"`,
+    },
+  ],
+  questions: [
+    'Vì sao tăng từ 3 lên 24 pod không tăng tốc độ xử lý mà còn làm lag tăng nhanh hơn? Tính trần năng lực của consumer group.',
+    'Giải thích cơ chế eager rebalance (protocol range) và vì sao có 18.400 SMS trùng. Static membership và CooperativeStickyAssignor giúp gì, không giúp gì?',
+    'Bạn thiết kế lại autoscale và consumer thế nào để chịu được flash sale 4.200 msg/s?',
+  ],
+  hints: [
+    'Một partition chỉ được đọc bởi tối đa một consumer trong group. 12 partition, mỗi pod 4 consumer: cần bao nhiêu pod là đủ dùng hết partition?',
+    'Mỗi pod mới join là một lần rebalance; với protocol range (eager), MỌI consumer phải trả hết partition và dừng đọc cho đến khi group ổn định. Nhìn cột consume msg/s lúc 11:02–11:04.',
+    'Message đã gửi SMS nhưng offset chưa commit (ack-mode BATCH) thì khi partition bị thu hồi, consumer khác đọc lại từ offset đã commit. Năng lực thật chỉ tăng khi tăng partition hoặc tăng tốc xử lý mỗi partition.',
+  ],
+  answer: `**Tóm tắt:** Năng lực tối đa của group bị **khoá bởi số partition**: 12 partition × 250 msg/s = **3.000 msg/s**, đã đạt ngay với 3 pod × 4 consumer. Scale lên 24 pod chỉ thêm 84 consumer **rảnh**, nhưng mỗi lần pod join là một lần **eager rebalance**: mọi consumer trả hết partition và dừng đọc. 29 lần rebalance trong 5 phút làm tốc độ xử lý rơi từ 3.000 xuống 410–640 msg/s, nên lag tăng gấp 4. Partition bị thu hồi giữa batch khiến message đã gửi SMS nhưng chưa commit bị xử lý lại → SMS trùng. Scale-down không có stabilization lại gây thêm một loạt rebalance và dao động. Sửa: giới hạn replicas theo số partition, tăng partition/tăng tốc xử lý, CooperativeStickyAssignor, idempotency khi gửi SMS và chống dao động autoscale.
+
+### Kiến thức nền: partition, consumer group và rebalance
+- Topic chia thành **partition**. Trong một consumer group, **mỗi partition chỉ thuộc một consumer** tại một thời điểm (để giữ thứ tự). Vì vậy số consumer có việc làm tối đa = số partition. Consumer thứ 13 trở đi chỉ ngồi chờ.
+- **Rebalance** là quá trình group coordinator (một broker) chia lại partition khi có member vào/ra. Giống chia lại bàn trong nhà hàng mỗi khi có nhân viên mới đến ca.
+- **Eager rebalance** (RangeAssignor, RoundRobinAssignor): mọi consumer **trả lại toàn bộ** partition, chờ mọi member join lại, rồi mới nhận phân công mới. Trong lúc đó **cả group dừng đọc**: "stop the world".
+- **Cooperative (incremental) rebalance** (CooperativeStickyAssignor): chỉ partition **cần di chuyển** bị thu hồi, các partition khác tiếp tục được đọc.
+
+Lưu ý: kafka-clients 3.x mặc định {{partition.assignment.strategy = [RangeAssignor, CooperativeStickyAssignor]}}, group dùng chiến lược **đầu tiên** mà mọi member hỗ trợ, tức **range (eager)**. Log xác nhận {{protocol='range'}}.
+
+### Nguyên nhân gốc, từng bước
+1. **11:00** producer 4.200 msg/s > năng lực 3.000 msg/s → lag tăng 1.200 msg/s (72.000 sau 1 phút, khớp bảng).
+2. KEDA thấy lag/1000 > 3 replicas, và {{allowIdleConsumers: true}} cho phép vượt số partition → desired 24. HPA scale nhanh 3 → 24.
+3. 21 pod mới khởi động lệch nhau vài giây (40 giây startup), mỗi pod có 4 consumer join → coordinator rebalance liên tục: generation **1842 → 1871 (29 lần)** trong 5 phút. Mỗi lần mất ~12 giây ({{Preparing}} 11:01:47 → {{Stabilized}} 11:01:59) và mọi consumer dừng đọc.
+4. Kết quả: consume rơi xuống **640, 410, 520** msg/s (11:02–11:04) trong khi vẫn produce 4.200 → lag tăng ~3.600 msg/s, nhanh gấp 3 lần so với lúc chưa scale.
+5. Khi ổn định, group có **96 member** nhưng chỉ 12 có partition (log {{partitions assigned: []}}): tốc độ quay lại đúng 3.000 msg/s, không hơn.
+6. **11:21** lag giảm dưới ngưỡng, {{stabilizationWindowSeconds: 0}} → scale 24 → 3 tức thì → 21 pod gửi LeaveGroup → thêm 17 rebalance. Lag lại tăng (47.000 lúc 11:23) → scale lên lại → dao động đến 12:30.
+
+~~~text
+Năng lực = min(số consumer, số partition) × tốc độ mỗi consumer
+3 pod  x 4 = 12 consumer, 12 partition  => 12 x 250 = 3.000 msg/s
+24 pod x 4 = 96 consumer, 12 partition  => 12 x 250 = 3.000 msg/s  (+84 consumer rảnh)
+                                             - thời gian dừng do rebalance
+~~~
+
+### Vì sao 18.400 SMS trùng
+Với {{ack-mode BATCH}}, offset được commit **sau** khi xử lý xong cả batch (tối đa 500 record). Khi rebalance thu hồi partition giữa chừng, các record đã gửi SMS nhưng offset chưa commit sẽ được consumer mới đọc lại **từ offset đã commit cuối cùng** → gửi lại. Log: **"SMS sent orderId=O-77120931 but offset 5518302 of order-events-6 not committed (partition revoked)"**. Kafka đảm bảo **at-least-once**, không phải exactly-once với tác dụng phụ bên ngoài (gửi SMS). 29 + 17 lần rebalance nhân với vài trăm record dở dang mỗi lần ra cỡ hàng chục nghìn bản ghi trùng.
+
+### Dẫn chứng
+- Broker: **"generation 1842"** → **"generation 1871 ... with 96 members"**, lý do **"Adding new member ... group instance id None"** (không static membership).
+- Consumer: **"Revoke previously assigned partitions order-events-0"**, **"protocol='range'"**, **"partitions assigned: []"**; config {{group.instance.id = null}}, {{ack-mode = BATCH}}.
+- Metric: consume 3.000 → 640/410/520 khi rebalance 8/9/7 lần/phút; lag 144.000 → 1.172.000; 96 consumer nhưng chỉ 12 partition.
+
+### Cách sửa
+**Ngay lập tức:** đặt {{maxReplicaCount: 3}} (= 12 partition / 4 concurrency) và {{allowIdleConsumers: false}}, để group ổn định và chạy hết 3.000 msg/s; lag ~1,4 triệu sẽ xả trong ~11 phút sau khi produce về 900 msg/s.
+
+**Tăng năng lực thật (trước flash sale sau):**
+- **Tăng số partition** (ví dụ 48). Lưu ý: thêm partition làm thay đổi ánh xạ key → partition cho message mới, nên nếu cần thứ tự theo {{orderId}} thì làm lúc ít traffic và chấp nhận hoặc xử lý khoảng chuyển tiếp.
+- **Tăng tốc mỗi partition**: gửi SMS bất đồng bộ theo lô (gateway hỗ trợ batch API), hoặc xử lý song song theo key trong một partition (ví dụ thư viện Confluent Parallel Consumer) với giới hạn đồng thời.
+- **{{CooperativeStickyAssignor}}**: khi member join/leave chỉ partition cần chuyển bị thu hồi, các consumer khác vẫn đọc. Chuyển từ range sang cooperative cần **rolling bounce hai lần** (lần 1: danh sách gồm cả hai, lần 2: chỉ cooperative), cấu hình mặc định hiện tại của client đã là bước 1.
+- **Static membership** ({{group.instance.id}} = tên pod StatefulSet): pod restart quay lại trong {{session.timeout.ms}} thì **không** rebalance. Nó giúp rolling deploy, **không** giúp scale-out (member mới vẫn phải được chia partition).
+
+**Autoscale đúng cách:**
+- {{maxReplicaCount × concurrency ≤ số partition}}.
+- scaleDown {{stabilizationWindowSeconds}} 300–600 giây, scaleUp có giới hạn bước; đo lag theo **thời gian** (lag / tốc độ consume) thay vì số message.
+
+**Chống trùng:** gửi SMS với **idempotency key** ({{orderId + loại thông báo}}) lưu trong Redis/DB ({{SET NX}} với TTL) trước khi gọi gateway; ack theo record ({{AckMode.RECORD}}) giảm số bản ghi dở dang nhưng không thay thế được idempotency.
+
+### Lỗi hay gặp
+- Nghĩ "thêm pod là thêm tốc độ" với Kafka: trần là số partition.
+- Bật {{allowIdleConsumers}} để "scale được nhiều hơn".
+- Scale-down tức thì để tiết kiệm, gây flapping và rebalance liên tục.
+- Tin rằng static membership chống được rebalance khi scale.
+- Nghĩ Kafka chống trùng giúp mình: tác dụng phụ bên ngoài phải tự idempotent.
+
+### Trả lời miệng 1 phút
+"Topic chỉ có 12 partition và mỗi pod 4 consumer, nên 3 pod đã dùng hết partition, năng lực trần là 3.000 msg/s. KEDA scale lên 24 pod chỉ thêm 84 consumer rảnh, nhưng mỗi lần join gây một eager rebalance theo protocol range: mọi consumer dừng đọc. 29 lần trong 5 phút làm tốc độ rơi xuống 400–600 msg/s, lag tăng gấp 4. Partition bị thu hồi giữa batch nên message đã gửi SMS mà chưa commit bị đọc lại, gây SMS trùng. Tôi giới hạn replicas theo partition, tăng partition và tăng tốc xử lý, chuyển sang CooperativeStickyAssignor, thêm stabilization cho scale-down và idempotency key khi gửi SMS."
+
+> Senior tip: Với consumer Kafka, autoscale theo lag chỉ có ý nghĩa **dưới trần partition**, và mỗi lần scale đều có "thuế rebalance". Tôi thường chọn số partition dư 3–4 lần nhu cầu đỉnh ngay từ đầu (partition rẻ, thay đổi về sau thì đắt), cố định số consumer ở mức đủ dùng, và chỉ autoscale thêm khi đã bật cooperative rebalancing. Một chỉ số tôi luôn đặt alert: **số rebalance mỗi phút > 0 kéo dài** — đó gần như luôn là bệnh, không phải tải.`,
+  rubric: [
+    'Tính trần năng lực: 12 partition × 250 msg/s = 3.000 msg/s, đạt ngay với 3 pod × 4 consumer; 24 pod chỉ thêm consumer rảnh',
+    'Giải thích eager rebalance (protocol range, mọi consumer trả partition và dừng), dẫn chứng 29 lần rebalance, consume rơi xuống 410–640 msg/s',
+    'Giải thích SMS trùng do partition thu hồi giữa batch với offset chưa commit (at-least-once), đề xuất idempotency key',
+    'Phân biệt đúng CooperativeStickyAssignor (incremental) và static membership (chỉ giúp restart, không giúp scale-out)',
+    'Thiết kế lại autoscale: maxReplicas × concurrency ≤ partition, stabilization khi scale-down, tăng partition/tăng tốc xử lý',
+  ],
+  tags: ['kafka', 'rebalance', 'keda', 'autoscaling', 'consumer-lag', 'idempotency'],
+},
+{
+  id: 'lab-incident-012',
+  category: 'incident',
+  title: 'Đổi serializer của Redis cache khi deploy, cache "trống trơn" và database sập theo',
+  level: 'senior',
+  scenario: `**Bối cảnh.** **catalog-service** (16 pod, Spring Boot 3.3, Spring Cache + Redis 7 qua Lettuce, Hikari 20 connection/pod) phục vụ chi tiết sản phẩm cho web, app và cho **checkout-service** (lấy giá). Cache {{product}} TTL 6 giờ, khoảng **1,8 triệu key**, hit ratio **98,5%** ở mức 6.000 req/s. Khi miss, service chạy truy vấn join 5 bảng trên PostgreSQL 16 (RDS 8 vCPU), ~35 ms khi DB rảnh. Load test trước đây cho thấy DB chịu tối đa khoảng **1.400 truy vấn sản phẩm/giây**.
+
+**Sự kiện (29/10/2026).** 14:00 deploy **v5.2** với PR "chuyển cache sang JSON để service Node.js đọc được". Từ 14:03 trang sản phẩm chậm dần, 14:06 p99 lên 9 giây, checkout lỗi 31% vì gọi giá bị timeout. Redis CPU chỉ 18%, memory tăng dần. Rollout vẫn tiếp tục vì readiness probe của các pod mới đều xanh.
+
+**Việc bạn có.** Diff cấu hình cache, metric theo phút, log ứng dụng, thông tin Redis và {{pg_stat_statements}}.`,
+  artifacts: [
+    {
+      name: 'pr-5121-cache-config.diff',
+      lang: 'text',
+      content: `--- a/src/main/java/vn/shop/catalog/config/CacheConfig.java
++++ b/src/main/java/vn/shop/catalog/config/CacheConfig.java
+@@ -18,9 +18,11 @@ public class CacheConfig {
+     @Bean
+     RedisCacheConfiguration cacheConfiguration() {
+         return RedisCacheConfiguration.defaultCacheConfig()
+-                .entryTtl(Duration.ofHours(6));
+-        // value: JdkSerializationRedisSerializer (mặc định), key: "product::<id>"
++                .entryTtl(Duration.ofHours(6))
++                .prefixCacheNameWith("catalog:v2:")
++                .serializeValuesWith(RedisSerializationContext.SerializationPair
++                        .fromSerializer(new GenericJackson2JsonRedisSerializer()));
+     }
+--- a/src/main/java/vn/shop/catalog/ProductQueryService.java (không đổi)
+     @Cacheable(cacheNames = "product", key = "#id")
+     public ProductDetail getProduct(long id) { return repository.loadDetail(id); }
+
+Deployment: RollingUpdate maxSurge=4 maxUnavailable=0 ; readinessProbe /actuator/health/readiness`,
+    },
+    {
+      name: 'metrics-and-redis.txt',
+      lang: 'text',
+      content: `time  | pods v5.2 | req/s | cache hit % | DB product queries/s | DB CPU % | query p99 | catalog p99 | checkout err %
+13:58 |    0/16   | 6000  |    98.5     |          90          |    21    |   38 ms   |   24 ms     |   0.1
+14:01 |    4/16   | 6050  |    74.1     |        1410          |    96    |  610 ms   |  1.9 s      |   2.8
+14:03 |    8/16   | 6100  |    50.2     |        1390          |   100    |  1.6 s    |  5.4 s      |  14.0
+14:05 |   12/16   | 6080  |    27.9     |        1360          |   100    |  1.9 s    |  8.1 s      |  26.5
+14:06 |   16/16   | 6020  |     6.8     |        1350          |   100    |  2.1 s    |  9.0 s      |  31.0
+-- "DB product queries/s" = rate(pg_stat_statements calls) của truy vấn loadDetail; DB không thể vượt ~1.400/s nên phần còn lại xếp hàng/timeout
+
+### redis-cli, 14:06:30
+> INFO keyspace
+db0:keys=1912448,expires=1912448,avg_ttl=19544120
+> SCAN-based count (redis-cli --scan --pattern ...)
+product::*            1812004
+catalog:v2:product::*  100444
+> INFO stats (trích)
+keyspace_hits:  rất thấp kể từ 14:00 với key mới ; instantaneous_ops_per_sec: 12880
+
+### pg_stat_statements 14:00-14:06 (trích)
+ calls   | mean_exec_time | rows    | query
+ 497331  |   1288.4 ms    | 497331  | select p1_0.id, ... from product p1_0 join product_price ... where p1_0.id=$1
+-- Số id khác nhau được truy vấn trong 6 phút: 100.444; trung bình mỗi id bị tải ~5 lần`,
+    },
+    {
+      name: 'catalog-app.log',
+      lang: 'text',
+      content: `2026-10-29T14:01:12.408+07:00  INFO 1 --- [catalog] [main] o.s.b.w.e.tomcat.TomcatWebServer : Tomcat started on port 8080 (http) with context path '/'
+2026-10-29T14:01:12.951+07:00  INFO 1 --- [catalog] [main] vn.shop.catalog.CatalogApplication : Started CatalogApplication in 38.112 seconds (process running for 39.6)
+2026-10-29T14:04:40.117+07:00  WARN 1 --- [catalog] [nio-8080-exec-88] o.h.engine.jdbc.spi.SqlExceptionHelper : SQL Error: 0, SQLState: 08003
+2026-10-29T14:04:40.117+07:00 ERROR 1 --- [catalog] [nio-8080-exec-88] o.h.engine.jdbc.spi.SqlExceptionHelper : HikariPool-1 - Connection is not available, request timed out after 30001ms (total=20, active=20, idle=0, waiting=187)
+2026-10-29T14:04:52.633+07:00  INFO 1 --- [catalog] [nio-8080-exec-14] vn.shop.catalog.ProductQueryService : cache miss product id=880213 (hot, 412 concurrent loaders across pods in last 10s)
+
+### checkout-service
+2026-10-29T14:05:03.902+07:00 ERROR 1 --- [checkout] [nio-8080-exec-41] v.s.checkout.PriceClient : GET catalog /products/880213/price failed: I/O error on GET request: Read timed out (2000 ms)`,
+    },
+  ],
+  questions: [
+    'Nguyên nhân gốc là gì? Vì sao Redis vẫn khoẻ, còn đầy 1,8 triệu key, mà hit ratio lại rơi về 6,8%?',
+    'Dùng số liệu: khi hit ratio giảm, DB cần xử lý bao nhiêu query/giây so với khả năng ~1.400/s? Vì sao checkout cũng sập?',
+    'Bạn làm gì ngay trong 5 phút, và lẽ ra nên triển khai thay đổi serializer/key thế nào cho an toàn?',
+  ],
+  hints: [
+    'Diff thêm prefixCacheNameWith("catalog:v2:"): key mới là catalog:v2:product::id, còn 1.812.004 key cũ product::id vẫn nằm đó nhưng không ai đọc.',
+    'Số miss/giây = req/s × (1 − hit ratio). Ở 13:58: 6000 × 1,5% = 90. Ở 14:06: 6000 × 93,2% = ? So với 1.400.',
+    'Rollback về v5.1 thì key cũ vẫn còn TTL đến 6 giờ. Lần sau: dual-read (đọc key mới, miss thì đọc key cũ và chuyển đổi), warm-up, canary, @Cacheable(sync = true) và giới hạn đồng thời khi nạp từ DB.',
+  ],
+  answer: `**Tóm tắt:** PR v5.2 đổi **cả prefix key lẫn serializer**, nên với pod mới, toàn bộ 1,8 triệu key cũ trở nên "vô hình": mọi request đều miss và rơi xuống DB. Rolling update đẩy dần tỉ lệ pod mới lên 16/16, hit ratio rơi từ 98,5% xuống 6,8%, lượng truy vấn cần thiết lên khoảng **5.600/s** trong khi DB chỉ chịu ~1.400/s. DB 100% CPU, Hikari cạn, catalog chậm 9 giây, checkout (phụ thuộc giá từ catalog) lỗi 31%. Đây là **cold cache stampede do deploy**, không phải một hot key hết hạn. Xử lý nhanh nhất: **rollback**, vì key cũ vẫn còn trong Redis nên hit ratio hồi phục ngay. Lần sau: đổi định dạng cache theo kiểu expand/contract (dual-read), warm-up, canary và bảo vệ DB khi nạp.
+
+### Kiến thức nền: cache-aside và vì sao "cache là một phần của năng lực"
+Spring {{@Cacheable}} làm theo **cache-aside**: tìm trong Redis theo key; có thì trả; không có thì gọi method (query DB) rồi ghi vào Redis. Key mặc định của Spring Data Redis là {{cacheName::key}}, ví dụ {{product::880213}}; {{prefixCacheNameWith("catalog:v2:")}} biến nó thành {{catalog:v2:product::880213}}. Với Redis, đó là **hai key khác nhau hoàn toàn**.
+
+Điểm quan trọng nhất: với hit ratio 98,5%, DB chỉ thấy 1,5% traffic. **Năng lực của hệ thống = năng lực DB / tỉ lệ miss**. DB chịu 1.400/s chia 1,5% ≈ 93.000 req/s "trên giấy". Nhưng khi cache trống, năng lực tụt về đúng 1.400 req/s. Cache không còn là "tối ưu", nó là **thành phần chịu tải**.
+
+### Nguyên nhân gốc, từng bước
+1. **14:00** rollout v5.2, maxSurge 4: 4 pod mới (25% traffic) đọc key {{catalog:v2:...}}: 100% miss. Pod cũ vẫn hit key cũ.
+2. Nhu cầu miss/giây ≈ 6.050 × (1 − 0,741) ≈ **1.570**, đã vượt năng lực ~1.400 của DB (bảng 14:01: DB chỉ xử lý được 1.410/s) → DB CPU 96%, query 38 ms → 610 ms.
+3. Query chậm thì mỗi request giữ connection lâu → Hikari 20 connection/pod cạn ({{total=20, active=20, idle=0, waiting=187}}) → request catalog chờ 30 giây.
+4. Readiness probe chỉ kiểm tra app đã khởi động, **không** kiểm tra chất lượng phục vụ → rollout tiếp tục 8, 12, 16 pod. Hit ratio 50% → 28% → **6,8%**. Nhu cầu: 6.020 × 0,932 ≈ **5.610 query/s**, gấp 4 lần năng lực. DB không thể làm hơn ~1.350/s (bảng), phần còn lại xếp hàng rồi timeout.
+5. Cache **nạp lại chậm** vì chính DB đang nghẹt: 6 phút chỉ nạp được 100.444 key mới (so với 1,8 triệu cần). Cộng thêm **stampede trên từng key**: {{@Cacheable}} không có {{sync = true}}, 16 pod × hàng trăm thread cùng miss một sản phẩm hot thì cùng query DB ("412 concurrent loaders" cho id 880213). {{pg_stat_statements}}: 497.331 lần gọi cho 100.444 id → mỗi id bị tải ~5 lần.
+6. **checkout** gọi catalog lấy giá với timeout 2 giây → lỗi 31%. Một thay đổi "chỉ về định dạng cache" làm sập luồng thanh toán.
+
+~~~text
+              hit 98.5%                         hit 6.8%
+req 6000/s ──> Redis ──miss 90/s──> DB       req 6000/s ──> Redis ──miss 5610/s──> DB (max 1400/s)
+                                   CPU 21%                                       CPU 100%, hàng đợi
+~~~
+
+### Dẫn chứng
+- Diff: **"prefixCacheNameWith("catalog:v2:")"** và **"GenericJackson2JsonRedisSerializer"**: key mới, định dạng mới.
+- Redis: **"product::* 1812004"** (key cũ còn nguyên) so với **"catalog:v2:product::* 100444"**; Redis CPU 18%: Redis không phải nút thắt.
+- Bảng: hit 98,5 → 74,1 → 50,2 → 27,9 → 6,8% **tương ứng** pod v5.2 4 → 8 → 12 → 16; DB queries 90 → 1.410 rồi kẹt ~1.350/s; DB CPU 100%.
+- {{pg_stat_statements}}: **calls 497331, mean 1288.4 ms**; 100.444 id khác nhau.
+- Log: Hikari **waiting=187**, **"412 concurrent loaders"**, checkout **"Read timed out (2000 ms)"**.
+
+### Cách sửa
+**Trong 5 phút:**
+- {{kubectl rollout undo deployment/catalog-service}}. Key cũ {{product::*}} vẫn còn TTL (tối đa 6 giờ) nên pod v5.1 hit ngay, DB hạ tải trong vài chục giây. Đây là trường hợp rollback **rẻ hơn mọi cách sửa tiến**.
+- Nếu không rollback được: tạm thời dừng rollout ({{kubectl rollout pause}}), giảm tải DB bằng rate limit/load shedding ở gateway cho trang sản phẩm, ưu tiên luồng giá của checkout.
+
+**Đổi định dạng cache an toàn (expand/contract):**
+1. **Expand**: bản mới **đọc key mới, miss thì đọc key cũ** (deserialize bằng serializer cũ), chuyển đổi rồi ghi sang key mới. Không có request nào phải xuống DB chỉ vì đổi định dạng.
+2. Hoặc **warm-up** trước: job đọc key cũ / top N sản phẩm hot và ghi key mới, kiểm tra hit ratio của key mới trước khi chuyển traffic.
+3. **Canary** 1 pod + theo dõi hit ratio và DB QPS; tự động dừng rollout (Argo Rollouts analysis) nếu DB QPS > 2 lần bình thường.
+4. **Contract**: khi key mới đã đầy và ổn định, bỏ code đọc key cũ; key cũ tự hết hạn theo TTL.
+
+**Bảo vệ DB khỏi stampede:**
+- {{@Cacheable(cacheNames = "product", key = "#id", sync = true)}}: trong **một JVM**, chỉ một thread nạp mỗi key, thread khác chờ. Giữa các pod vẫn có thể trùng (tối đa 16 lần/key thay vì hàng trăm); muốn chặn hoàn toàn cần lock phân tán ({{SET NX}} với TTL ngắn) hoặc request coalescing.
+- **Bulkhead cho loader**: giới hạn số truy vấn DB đồng thời mỗi pod (ví dụ Semaphore 8) và **fail nhanh** (trả lỗi 503 hoặc dữ liệu cũ) thay vì xếp hàng 30 giây giữ thread.
+- Tách đường **giá cho checkout** (critical) khỏi trang sản phẩm: cache riêng, timeout riêng, hoặc đọc replica.
+
+### Phòng ngừa
+- Coi **mọi thay đổi key, prefix, serializer, cache name, kiểu dữ liệu của value** như một migration dữ liệu, có checklist.
+- Alert hit ratio < 90% và DB QPS > 3 lần baseline; đưa hit ratio vào phân tích canary.
+- Test chịu tải với **cache trống** (cold start) để biết năng lực thật khi Redis mất dữ liệu (failover, flush).
+
+### Lỗi hay gặp
+- Nghĩ đổi serializer là "refactor không ảnh hưởng": thực chất làm mất toàn bộ cache.
+- Chỉ đổi serializer mà không đổi prefix: pod mới đọc key cũ bằng serializer JSON → lỗi deserialize (SerializationException), còn tệ hơn.
+- Xoá Redis ({{FLUSHALL}}) để "làm sạch" trước deploy, tự tạo cold cache.
+- Cho rằng {{sync = true}} chống được stampede giữa nhiều pod.
+
+### Trả lời miệng 1 phút
+"Bản v5.2 đổi prefix và serializer của cache, nên pod mới không thấy 1,8 triệu key cũ và mọi request miss xuống DB. Rollout tăng dần pod mới nên hit ratio rơi từ 98,5% xuống 6,8%, DB cần 5.600 query/s trong khi chỉ chịu 1.400, CPU 100%, pool cạn, checkout gọi giá bị timeout. Cách nhanh nhất là rollback vì key cũ vẫn còn trong Redis. Lần sau tôi đổi định dạng cache theo kiểu expand/contract: đọc key mới, miss thì đọc key cũ và chuyển đổi, warm-up, canary theo dõi hit ratio, và bảo vệ DB bằng sync=true, giới hạn đồng thời khi nạp."
+
+> Senior tip: Câu hỏi tôi luôn đặt ra khi review hệ thống có cache: **"Nếu cache trống lúc giờ cao điểm thì sao?"**. Nếu câu trả lời là "DB sập" thì cache đã là thành phần bắt buộc, và mọi thay đổi chạm vào cache phải được triển khai như migration database: có kế hoạch, có đường lùi, có số đo. Rule of thumb của tôi: DB phải chịu được ít nhất 20–30% traffic ở trạng thái miss, phần còn lại phải có cơ chế từ chối có kiểm soát.`,
+  rubric: [
+    'Chỉ ra nguyên nhân: đổi prefix + serializer tạo keyspace mới, key cũ còn nguyên nhưng pod mới không đọc, cold cache theo tiến độ rollout',
+    'Tính được nhu cầu DB: 6000 × (1 − hit) ≈ 5.600 query/s so với năng lực ~1.400/s; nối chuỗi DB CPU 100% → Hikari cạn → catalog chậm → checkout timeout',
+    'Dẫn chứng: Redis product::* 1.812.004 vs catalog:v2 100.444, hit ratio giảm theo số pod v5.2, pg_stat_statements calls/mean, 412 concurrent loaders',
+    'Đề xuất rollback là cách nhanh nhất vì key cũ còn; triển khai an toàn bằng dual-read/warm-up/canary theo hit ratio',
+    'Bảo vệ DB: sync=true (giới hạn trong một JVM), lock phân tán/coalescing, bulkhead cho loader, tách luồng critical; alert hit ratio',
+  ],
+  tags: ['cache', 'redis', 'cold-cache', 'cache-stampede', 'deploy', 'spring-cache'],
+},
+{
+  id: 'lab-incident-013',
+  category: 'incident',
+  title: 'Recommendation treo, liveness probe giết dần toàn bộ BFF: cascading failure do thiếu timeout',
+  level: 'senior',
+  scenario: `**Bối cảnh.** **product-page-bff** (10 pod, Spring Boot 3.2, Java 17, Tomcat {{threads.max = 200}}, {{accept-count = 100}}) ghép dữ liệu cho trang sản phẩm: thông tin sản phẩm, giá, tồn kho, và khối "Sản phẩm gợi ý" từ **recommendation-service**. Khối gợi ý **không quan trọng**: thiếu nó trang vẫn bán được hàng. Traffic ~900 req/s (90 req/s mỗi pod), gợi ý bình thường trả về trong 60 ms. Khởi động một pod BFF mất ~45 giây.
+
+Kubernetes probe (cả hai cùng cổng 8080 của ứng dụng):
+~~~yaml
+livenessProbe:  { httpGet: { path: /actuator/health/liveness,  port: 8080 }, periodSeconds: 10, timeoutSeconds: 1, failureThreshold: 3 }
+readinessProbe: { httpGet: { path: /actuator/health/readiness, port: 8080 }, periodSeconds: 5,  timeoutSeconds: 1, failureThreshold: 2 }
+~~~
+
+**Sự cố (29/10/2026).** 21:00:10 cụm Elasticsearch phía sau recommendation-service bị GC pause dài, recommendation nhận kết nối nhưng **không trả lời**. Đến 21:01 toàn bộ trang sản phẩm trả 503. Recommendation hồi phục lúc **21:09**, nhưng BFF chỉ ổn định lại lúc **21:31**: các pod liên tục bị restart (restartCount 4–7).`,
+  artifacts: [
+    {
+      name: 'kubectl-events.txt',
+      lang: 'text',
+      content: `$ kubectl get pods -l app=product-page-bff   (21:12:40)
+NAME                                READY   STATUS    RESTARTS      AGE
+product-page-bff-6d4c8b9f7-2kq9x    0/1     Running   5 (38s ago)   3d
+product-page-bff-6d4c8b9f7-7wz4m    0/1     Running   4 (12s ago)   3d
+product-page-bff-6d4c8b9f7-b8n2c    1/1     Running   6 (61s ago)   3d
+product-page-bff-6d4c8b9f7-f5r7d    0/1     Running   7 (4s ago)    3d
+... (10 pod, chỉ 2 pod READY)
+
+$ kubectl describe pod product-page-bff-6d4c8b9f7-2kq9x  (trích Events)
+  Warning  Unhealthy  21:00:31  kubelet  Readiness probe failed: Get "http://10.42.3.51:8080/actuator/health/readiness": context deadline exceeded (Client.Timeout exceeded while awaiting headers)
+  Warning  Unhealthy  21:00:42  kubelet  Liveness probe failed: Get "http://10.42.3.51:8080/actuator/health/liveness": context deadline exceeded (Client.Timeout exceeded while awaiting headers)
+  Warning  Unhealthy  21:00:52  kubelet  Liveness probe failed: Get "http://10.42.3.51:8080/actuator/health/liveness": context deadline exceeded (Client.Timeout exceeded while awaiting headers)
+  Warning  Unhealthy  21:01:02  kubelet  Liveness probe failed: Get "http://10.42.3.51:8080/actuator/health/liveness": context deadline exceeded (Client.Timeout exceeded while awaiting headers)
+  Normal   Killing    21:01:02  kubelet  Container bff failed liveness probe, will be restarted
+  Normal   Started    21:01:05  kubelet  Started container bff
+  Warning  Unhealthy  21:02:14  kubelet  Liveness probe failed: ... (lặp lại sau khi khởi động xong, nhận traffic)
+
+### Ingress (nginx) 21:01:30
+upstream "default-product-page-bff-8080": 0 endpoint ready -> 503 Service Temporarily Unavailable`,
+    },
+    {
+      name: 'jstack-bff-2100.txt',
+      lang: 'text',
+      content: `2026-10-29 21:00:38
+Full thread dump OpenJDK 64-Bit Server VM (17.0.12+7 mixed mode, sharing):
+
+"http-nio-8080-exec-137" #212 daemon prio=5 os_prio=0 cpu=41.20ms elapsed=27.80s tid=0x00007f3a2c0d9000 nid=0x1a3 runnable  [0x00007f39d6ffd000]
+   java.lang.Thread.State: RUNNABLE
+	at sun.nio.ch.Net.poll(java.base@17.0.12/Native Method)
+	at sun.nio.ch.NioSocketImpl.park(java.base@17.0.12/NioSocketImpl.java:186)
+	at sun.nio.ch.NioSocketImpl.park(java.base@17.0.12/NioSocketImpl.java:196)
+	at sun.nio.ch.NioSocketImpl.implRead(java.base@17.0.12/NioSocketImpl.java:304)
+	at sun.nio.ch.NioSocketImpl.read(java.base@17.0.12/NioSocketImpl.java:346)
+	at java.net.Socket$SocketInputStream.read(java.base@17.0.12/Socket.java:966)
+	at java.io.BufferedInputStream.fill(java.base@17.0.12/BufferedInputStream.java:244)
+	at sun.net.www.http.HttpClient.parseHTTPHeader(java.base@17.0.12/HttpClient.java:799)
+	at sun.net.www.protocol.http.HttpURLConnection.getInputStream0(java.base@17.0.12/HttpURLConnection.java:1615)
+	at java.net.HttpURLConnection.getResponseCode(java.base@17.0.12/HttpURLConnection.java:527)
+	at org.springframework.http.client.SimpleClientHttpResponse.getStatusCode(SimpleClientHttpResponse.java:58)
+	at org.springframework.web.client.RestTemplate.doExecute(RestTemplate.java:889)
+	at org.springframework.web.client.RestTemplate.getForObject(RestTemplate.java:385)
+	at vn.shop.bff.reco.RecommendationClient.fetch(RecommendationClient.java:41)
+	at vn.shop.bff.page.ProductPageService.build(ProductPageService.java:73)
+
+-- Thống kê toàn bộ dump: 200/200 thread http-nio-8080-exec-* có cùng stack RecommendationClient.fetch
+-- elapsed của các thread này: từ 2.1s đến 28.4s ; không thread nào đang phục vụ /actuator/health/*
+
+### RecommendationClient.java
+  @Bean RestTemplate recoRestTemplate() { return new RestTemplate(); }   // không cấu hình timeout
+  RecoDto fetch(long productId) { return reco.getForObject(RECO_URL + productId, RecoDto.class); }`,
+    },
+    {
+      name: 'metrics-2058-2132.txt',
+      lang: 'text',
+      content: `time     | reco p99 | bff busy threads (avg/pod) | bff ready pods | restarts (cumulative) | page 5xx %
+20:58    |  0.06 s  |      6                     |      10        |          0            |   0.0
+21:00:10 |  >60 s   |    200                     |      10        |          0            |  12.0
+21:00:40 |  >60 s   |    200                     |       3        |          0            |  71.0
+21:01:30 |  >60 s   |    200                     |       0        |         10            | 100.0
+21:05    |  >60 s   |    200 (pod vừa lên)        |       1        |         26            |  97.0
+21:09    |  0.07 s  |    180                     |       2        |         38            |  88.0
+21:20    |  0.06 s  |    120                     |       5        |         49            |  45.0
+21:31    |  0.06 s  |      9                     |      10        |         53            |   0.2
+-- tomcat_threads_busy_threads, kube_pod_container_status_restarts_total, nginx_ingress 5xx
+-- 21:09-21:31: pod vừa khởi động (JIT nguội) nhận dồn 1/2 tổng traffic của cả trang, bị liveness giết lại trước khi kịp ấm`,
+    },
+  ],
+  questions: [
+    'Mô tả chuỗi nhân quả từ "recommendation không trả lời" đến "toàn bộ trang 503". Vì sao một tính năng không quan trọng lại làm sập trang?',
+    'Vì sao recommendation đã hồi phục lúc 21:09 mà BFF phải đến 21:31 mới ổn? Liveness probe đã góp phần thế nào?',
+    'Đề xuất cách sửa: timeout, cô lập lỗi, fallback, và cấu hình probe đúng.',
+  ],
+  hints: [
+    'new RestTemplate() dùng SimpleClientHttpRequestFactory, mặc định không có connect/read timeout. 90 req/s mỗi pod, mỗi request giữ một thread mãi mãi: 200 thread cạn sau bao lâu?',
+    'Probe HTTP đi vào cùng cổng 8080, cần một thread Tomcat để trả lời. Hết thread → probe chờ quá 1 giây → readiness rút pod khỏi Service, liveness 3 lần → kill. Pod còn lại nhận thêm traffic.',
+    'Restart không chữa được downstream chậm. Liveness chỉ nên trả lời "process có hỏng không thể tự hồi phục không"; tách cổng management, timeout ngắn cho reco, bulkhead riêng, fallback rỗng.',
+  ],
+  answer: `**Tóm tắt:** RestTemplate gọi recommendation **không có timeout**, nên khi recommendation treo, mỗi request BFF giữ một thread Tomcat vô thời hạn; với 90 req/s mỗi pod, 200 thread cạn trong khoảng **2,2 giây**. Probe dùng chung cổng 8080 nên cũng không có thread trả lời: readiness rút pod khỏi Service (0 endpoint → 503 toàn trang), liveness 3 lần thất bại thì **kill** pod. Restart không sửa được downstream; pod mới lên nhận dồn traffic của cả fleet, cạn thread lại và bị giết tiếp: **restart storm** kéo dài 22 phút sau khi recommendation đã hồi phục. Sửa: timeout ngắn, bulkhead và fallback rỗng cho khối gợi ý, tách cổng management cho probe, liveness không phụ thuộc request thread.
+
+### Kiến thức nền: thread-per-request và vì sao timeout là bắt buộc
+Tomcat (Spring MVC) dùng mô hình **mỗi request một thread**. Thread đó làm mọi việc, kể cả **chờ** HTTP gọi ra ngoài. Pool có 200 thread, giống quầy có 200 nhân viên: nếu mỗi nhân viên gọi điện cho một bộ phận không nghe máy và **không bao giờ cúp máy**, sau một lúc không còn ai tiếp khách, kể cả khách chỉ hỏi "quầy có mở không?" (health check).
+
+Little's law: số thread bận = tốc độ đến × thời gian giữ. Bình thường: 90 req/s × 0,06 s ≈ **5,4** thread bận (khớp 6 trong bảng). Khi thời gian giữ = vô hạn: 200 thread / 90 req/s ≈ **2,2 giây** là cạn. Sau đó request mới chờ trong hàng đợi accept (100), rồi bị từ chối.
+
+{{new RestTemplate()}} dùng {{SimpleClientHttpRequestFactory}} (HttpURLConnection) với connect/read timeout mặc định **không giới hạn**. Stack trace cho thấy thread nằm ở {{HttpClient.parseHTTPHeader}} → đang chờ byte đầu tiên của response mà không có hạn chót.
+
+### Chuỗi nhân quả
+1. **21:00:10** recommendation treo (nhận TCP nhưng không trả lời). Mỗi request BFF dính vào {{RecommendationClient.fetch}}.
+2. ~2 giây sau, 200/200 thread bận (jstack: elapsed 2,1–28,4 s, cùng một stack). 5xx 12%.
+3. Probe HTTP vào cổng 8080 → không có thread → kubelet chờ 1 giây → {{context deadline exceeded}}. Readiness 2 lần thất bại (10 giây) → pod bị rút khỏi Service. 21:00:40 chỉ còn 3 pod ready → 3 pod gánh traffic của 10 → cạn nhanh hơn. 21:01:30 **0 endpoint** → nginx trả 503 cho **toàn trang**, kể cả phần không liên quan đến gợi ý.
+4. Liveness 3 lần × 10 giây (21:00:42, :52, 21:01:02) → **Killing**. Container khởi động lại mất 45 giây; vừa ready là nhận dồn traffic, lại gọi recommendation đang treo → cạn → bị giết lại. 26 restart đến 21:05.
+5. **21:09** recommendation hồi phục, nhưng: pod vừa khởi động có JIT nguội (chậm hơn vài lần), mỗi lúc chỉ 1–2 pod ready nên mỗi pod nhận 1/2 tổng traffic (450 req/s thay vì 90) → thread vẫn cạn vì thời gian xử lý tăng → liveness tiếp tục giết. Hệ thống rơi vào **trạng thái tự duy trì** (metastable): nguyên nhân gốc đã hết nhưng vòng lặp "quá tải → kill → ít pod hơn → quá tải hơn" vẫn chạy. Chỉ thoát khi đủ nhiều pod tình cờ ready cùng lúc (21:31).
+
+~~~text
+reco treo ─> thread chờ vô hạn ─> 200/200 thread bận ─> probe timeout
+   ├─ readiness fail ─> ít pod ready ─> pod còn lại quá tải ─┐
+   └─ liveness fail  ─> kill/restart 45s ─> ít pod hơn ──────┤
+                                                              └─> 0 endpoint ─> 503 toàn trang
+sau 21:09: pod mới (JIT nguội) nhận x5 traffic ─> cạn ─> liveness kill ─> lặp đến 21:31
+~~~
+
+### Dẫn chứng
+- jstack: **200/200** thread {{http-nio-8080-exec-*}} ở {{RecommendationClient.fetch}} → {{RestTemplate.doExecute}} → {{HttpURLConnection.getInputStream0}} → {{parseHTTPHeader}}; **không thread nào** phục vụ health.
+- Code: **"return new RestTemplate(); // không cấu hình timeout"**.
+- Events: **"Readiness probe failed ... Client.Timeout exceeded while awaiting headers"** 21:00:31; liveness thất bại 21:00:42/52, 21:01:02 rồi **"Container bff failed liveness probe, will be restarted"**.
+- Ingress: **"0 endpoint ready -> 503"**. Metric: busy threads 6 → 200, ready pods 10 → 3 → 0, restarts 0 → 53, recommendation p99 về 0,07 s lúc 21:09 nhưng 5xx còn 88%.
+
+### Cách sửa
+**1. Timeout cho mọi lời gọi ra ngoài**, nhỏ hơn ngân sách thời gian của trang:
+~~~java
+@Bean
+RestTemplate recoRestTemplate() {
+    var f = new SimpleClientHttpRequestFactory();
+    f.setConnectTimeout(Duration.ofMillis(200)); // không mở được kết nối trong 200 ms thì bỏ
+    f.setReadTimeout(Duration.ofMillis(300));    // chờ response tối đa 300 ms (p99 bình thường 60 ms)
+    return new RestTemplate(f);
+}
+~~~
+**2. Cô lập (bulkhead) + fallback**: khối gợi ý chạy trên executor riêng có giới hạn (ví dụ 20 thread, hàng đợi nhỏ) hoặc Resilience4j {{Bulkhead}}, kèm **circuit breaker**: khi lỗi/timeout vượt ngưỡng thì không gọi nữa trong 30 giây và trả **danh sách rỗng**. Trang vẫn hiện đủ sản phẩm, giá, tồn kho. Có thể gọi song song các khối với deadline chung (CompletableFuture với {{orTimeout}}), khối nào trễ thì bỏ.
+
+**3. Probe đúng vai trò:**
+| Probe | Câu hỏi nó trả lời | Nên phụ thuộc |
+|---|---|---|
+| startupProbe | "Đã khởi động xong chưa?" | thời gian khởi động 45 s (tránh liveness giết pod đang boot) |
+| readiness | "Có nên nhận traffic lúc này?" | trạng thái của chính pod; **không** phụ thuộc downstream không quan trọng |
+| liveness | "Process có hỏng mà restart sẽ sửa được không?" | gần như chỉ "JVM còn sống"; **không bao giờ** phụ thuộc downstream |
+- Đặt {{management.server.port=8081}}: actuator chạy trên một server riêng (connector và thread riêng), probe không tranh thread với request nghiệp vụ.
+- Liveness {{timeoutSeconds}} 3–5, {{failureThreshold}} cao hơn; thêm {{startupProbe}}.
+- Cân nhắc HPA/minReadySeconds và slow start ở load balancer để pod mới không nhận dồn traffic khi JIT còn nguội.
+
+### Phòng ngừa
+- Quy tắc code review: **không có HTTP client nào không có timeout**; dùng một bean builder chung đã cấu hình sẵn.
+- Chaos test: tiêm độ trễ vô hạn (không phải lỗi 500) vào từng dependency và xác nhận trang vẫn phục vụ.
+- Alert {{tomcat_threads_busy_threads / max > 0.8}} và số restart theo phút.
+
+### Lỗi hay gặp
+- Chỉ test downstream **lỗi nhanh** (500), không test downstream **treo**: treo nguy hiểm hơn nhiều.
+- Gắn health của DB/downstream vào liveness, khiến lỗi bên ngoài biến thành restart hàng loạt.
+- Đặt timeout quá lớn (30 giây) cho khối không quan trọng: vẫn cạn thread, chỉ chậm hơn.
+- Tăng {{threads.max}} lên 1.000: chỉ kéo dài thời gian đến lúc cạn và tốn RAM.
+
+### Trả lời miệng 1 phút
+"RestTemplate gọi recommendation không có timeout, nên khi recommendation treo, mỗi request giữ một thread Tomcat mãi mãi; 90 req/s thì 200 thread cạn sau khoảng 2 giây. Probe dùng chung cổng 8080 nên cũng không được trả lời: readiness rút pod khỏi Service đến mức 0 endpoint và cả trang 503, liveness thì kill pod. Restart không sửa được downstream, pod mới nhận dồn traffic rồi bị giết tiếp, nên dù recommendation hồi phục lúc 21:09, BFF vẫn sập đến 21:31. Tôi sửa bằng timeout 200/300 ms, bulkhead và circuit breaker có fallback rỗng cho khối gợi ý, tách cổng management cho probe, liveness không phụ thuộc request thread hay downstream, và thêm startupProbe."
+
+> Senior tip: Hai câu tôi luôn hỏi khi review một service: **"Mỗi lời gọi ra ngoài có timeout bao nhiêu và tổng có nhỏ hơn SLA không?"** và **"Nếu dependency X treo (không phải lỗi) thì trang còn chạy không?"**. Liveness probe là con dao hai lưỡi: dùng sai, Kubernetes sẽ biến một sự cố một phần thành sự cố toàn phần. Kinh nghiệm thực tế: liveness nên rất "khoan dung" (chỉ restart khi deadlock hoặc process hỏng thật), còn khả năng chịu lỗi phải nằm trong code bằng timeout, bulkhead và fallback.`,
+  rubric: [
+    'Chỉ ra RestTemplate không timeout làm thread chờ vô hạn; dùng định luật Little tính 200 thread cạn sau ~2,2 giây ở 90 req/s',
+    'Giải thích probe cùng cổng 8080 cần thread Tomcat: readiness rút pod đến 0 endpoint (503 toàn trang), liveness kill pod; dẫn chứng event và jstack 200/200 thread',
+    'Giải thích restart storm/metastable sau 21:09: pod mới JIT nguội nhận dồn traffic, bị kill lại, restart không chữa downstream',
+    'Đề xuất timeout ngắn, bulkhead + circuit breaker + fallback rỗng cho tính năng không quan trọng',
+    'Cấu hình probe đúng: management port riêng, liveness không phụ thuộc downstream, startupProbe, timeout/threshold hợp lý',
+  ],
+  tags: ['timeout', 'cascading-failure', 'liveness-probe', 'kubernetes', 'bulkhead', 'resttemplate'],
+}
 );
 // APPEND_END

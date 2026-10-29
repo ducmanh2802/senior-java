@@ -1091,5 +1091,403 @@ pg_stat_user_tables báo 12M live, 8.4M dead; autovacuum vẫn active chờ IO. 
 - Giảm write amplification, tránh update cột indexed không cần thiết, batch update; đảm bảo autovacuum có I/O và worker phù hợp.
 - Điều chỉnh per-table vacuum/analyze scale factor và cost limit theo tốc độ churn; kiểm tra n_dead_tup, vacuum progress, bloat và wraparound age.
 - VACUUM thường không cần khóa độc quyền nhưng không compact file; cân nhắc pg_repack/maintenance window cho reclaim, có kiểm thử dung lượng và replica.
-> Senior tip: Trước khi tuning autovacuum, kiểm tra xmin horizon và catalog_xmin của logical slots; restart_lsn lag chủ yếu giữ WAL, không tự nó chứng minh vacuum cleanup bị chặn.`,rubric:['Dẫn n_dead_tup 8.4M, autovacuum active/IO và table/index size','Nêu long xmin và catalog_xmin của slot logical có thể giữ dead tuple; phân biệt restart_lsn giữ WAL','Điều tra pg_stat_activity/slots trước khi xử lý','Tuning per-table theo churn, analyze, IO và giảm update amplification','Phân biệt vacuum reuse với reclaim OS; nêu pg_repack/maintenance thận trọng'],tags:['postgresql','autovacuum','bloat']}
+> Senior tip: Trước khi tuning autovacuum, kiểm tra xmin horizon và catalog_xmin của logical slots; restart_lsn lag chủ yếu giữ WAL, không tự nó chứng minh vacuum cleanup bị chặn.`,rubric:['Dẫn n_dead_tup 8.4M, autovacuum active/IO và table/index size','Nêu long xmin và catalog_xmin của slot logical có thể giữ dead tuple; phân biệt restart_lsn giữ WAL','Điều tra pg_stat_activity/slots trước khi xử lý','Tuning per-table theo churn, analyze, IO và giảm update amplification','Phân biệt vacuum reuse với reclaim OS; nêu pg_repack/maintenance thận trọng'],tags:['postgresql','autovacuum','bloat']},
+{
+  id: 'lab-sql-009',
+  category: 'sql',
+  title: 'Job đồng bộ đêm chạy 6,5 phút, chạy tay buổi sáng chỉ 3,5 giây: statistics cũ sau bulk load',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Công ty giao vận **ShipNhanh** chạy {{shipment-sync}} (Spring Boot 3.3, JdbcTemplate) trên PostgreSQL **16.4** (RDS, 8 vCPU / 64 GB). Mỗi đêm lúc 01:00, job ETL dùng {{COPY}} nạp vận đơn mới của đối tác vào bảng {{shipment}} với {{status = 'PENDING_SYNC'}} và {{batch_id = yyyymmdd}}. Ngay khi ETL commit, {{shipment-sync}} chạy một câu SELECT join với bảng giá {{carrier_rate}} (2.140 dòng, chỉ có primary key trên {{id}}) để tính cước rồi đẩy sang hệ thống đối tác. SLA: phải xong trước **01:30**.
+
+**Triệu chứng (đêm 28/10/2026).** Câu SELECT chạy **389 giây**, job xong lúc 01:31, trễ SLA, CPU RDS 100% một core suốt 6 phút. Sáng 08:12, DBA chạy lại đúng câu đó với cùng tham số: **3,5 giây**. Không ai đổi code hay index. Tuần trước cũng có 2 đêm bị như vậy, các đêm còn lại job xong trong 20 giây. Một bạn đề xuất "tăng {{work_mem}}", một bạn khác đề xuất "thêm {{pg_hint_plan}} ép Hash Join".
+
+**Việc bạn có.** Log của PostgreSQL (có {{auto_explain}} với {{log_analyze = on}}, {{log_buffers = on}}), plan khi chạy lại buổi sáng, và các bảng thống kê. Hãy tìm nguyên nhân gốc và vì sao "chạy lại thì nhanh".`,
+  artifacts: [
+    {
+      name: 'postgresql-2026-10-28.log',
+      lang: 'text',
+      content: `2026-10-28 01:00:03.118 +07 [40211] etl@shipnhanh LOG:  statement: COPY shipment (id, tracking_no, batch_id, carrier_id, zone_code, weight_g, status, created_at) FROM STDIN WITH (FORMAT csv)
+2026-10-28 01:18:37.402 +07 [40211] etl@shipnhanh LOG:  duration: 1114284.117 ms  statement: COPY shipment ... (COPY 2398114)
+2026-10-28 01:18:37.415 +07 [40211] etl@shipnhanh LOG:  statement: COMMIT
+2026-10-28 01:18:41.006 +07 [41877] sync_app@shipnhanh LOG:  execute S_1: SELECT s.id, s.tracking_no, s.weight_g, r.price_per_kg FROM shipment s JOIN carrier_rate r ON r.carrier_id = s.carrier_id AND r.zone_code = s.zone_code WHERE s.batch_id = $1 AND s.status = $2
+2026-10-28 01:18:41.006 +07 [41877] sync_app@shipnhanh DETAIL:  Parameters: $1 = '20261028', $2 = 'PENDING_SYNC'
+2026-10-28 01:21:07.880 +07 [40533] LOG:  automatic analyze of table "shipnhanh.public.shipment"
+        avg read rate: 41.204 MB/s, avg write rate: 0.000 MB/s
+        buffer usage: 2210 hits, 27119 misses, 0 dirtied
+        system usage: CPU: user: 1.84 s, system: 0.31 s, elapsed: 5.14 s
+2026-10-28 01:25:10.617 +07 [41877] sync_app@shipnhanh LOG:  duration: 389611.442 ms  plan:
+        Query Text: SELECT s.id, s.tracking_no, s.weight_g, r.price_per_kg FROM shipment s JOIN carrier_rate r ON r.carrier_id = s.carrier_id AND r.zone_code = s.zone_code WHERE s.batch_id = $1 AND s.status = $2
+        Query Parameters: $1 = '20261028', $2 = 'PENDING_SYNC'
+        Nested Loop  (cost=0.56..59.68 rows=1 width=52) (actual time=0.412..389204.877 rows=2398114 loops=1)
+          Join Filter: ((s.carrier_id = r.carrier_id) AND ((s.zone_code)::text = (r.zone_code)::text))
+          Rows Removed by Join Filter: 5129565846
+          Buffers: shared hit=45707372 read=19842
+          ->  Index Scan using idx_shipment_batch_status on shipment s  (cost=0.56..8.58 rows=1 width=44) (actual time=0.051..2930.774 rows=2398114 loops=1)
+                Index Cond: ((batch_id = 20261028) AND ((status)::text = 'PENDING_SYNC'::text))
+                Buffers: shared hit=2541320 read=19842
+          ->  Seq Scan on carrier_rate r  (cost=0.00..39.40 rows=2140 width=16) (actual time=0.002..0.071 rows=2140 loops=2398114)
+                Buffers: shared hit=43166052
+2026-10-28 01:31:02.551 +07 [41877] sync_app@shipnhanh LOG:  statement: COMMIT`,
+    },
+    {
+      name: 'explain-rerun-0812.txt',
+      lang: 'text',
+      content: `-- psql 16.4, chạy tay trên primary, 2026-10-28 08:12:30 +07 (cùng tham số với job đêm qua)
+shipnhanh=> EXPLAIN (ANALYZE, BUFFERS)
+SELECT s.id, s.tracking_no, s.weight_g, r.price_per_kg
+FROM shipment s
+JOIN carrier_rate r ON r.carrier_id = s.carrier_id AND r.zone_code = s.zone_code
+WHERE s.batch_id = 20261028 AND s.status = 'PENDING_SYNC';
+                                                          QUERY PLAN
+------------------------------------------------------------------------------------------------------------------------------------
+ Hash Join  (cost=66.15..412873.40 rows=319412 width=52) (actual time=1.204..3412.580 rows=2398114 loops=1)
+   Hash Cond: ((s.carrier_id = r.carrier_id) AND ((s.zone_code)::text = (r.zone_code)::text))
+   Buffers: shared hit=2561180
+   ->  Index Scan using idx_shipment_batch_status on shipment s  (cost=0.56..401987.12 rows=319412 width=44) (actual time=0.038..2101.733 rows=2398114 loops=1)
+         Index Cond: ((batch_id = 20261028) AND ((status)::text = 'PENDING_SYNC'::text))
+         Buffers: shared hit=2561162
+   ->  Hash  (cost=39.40..39.40 rows=2140 width=16) (actual time=1.102..1.103 rows=2140 loops=1)
+         Buckets: 4096  Batches: 1  Memory Usage: 133kB
+         Buffers: shared hit=18
+         ->  Seq Scan on carrier_rate r  (cost=0.00..39.40 rows=2140 width=16) (actual time=0.009..0.412 rows=2140 loops=1)
+               Buffers: shared hit=18
+ Planning:
+   Buffers: shared hit=24
+ Planning Time: 0.611 ms
+ Execution Time: 3498.115 ms
+(15 rows)
+
+-- Ghi chú DBA: rows ước lượng 319412, thực tế 2398114 (vẫn lệch ~7,5 lần) nhưng plan đã hợp lý.`,
+    },
+    {
+      name: 'stats-snapshot.txt',
+      lang: 'text',
+      content: `-- (A) cron giám sát chụp lúc 2026-10-28 01:18:50 +07 (13 giây sau khi ETL commit)
+shipnhanh=> SELECT relname, n_live_tup, n_mod_since_analyze, last_analyze, last_autoanalyze
+            FROM pg_stat_user_tables WHERE relname = 'shipment';
+ relname  | n_live_tup | n_mod_since_analyze | last_analyze |       last_autoanalyze
+----------+------------+---------------------+--------------+-------------------------------
+ shipment |   18002334 |             2398114 |              | 2026-10-25 02:14:51.203+07
+
+shipnhanh=> SELECT reltuples::bigint FROM pg_class WHERE relname = 'shipment';
+ reltuples
+-----------
+  15604220
+
+shipnhanh=> SELECT attname, n_distinct, most_common_vals, most_common_freqs
+            FROM pg_stats WHERE tablename = 'shipment' AND attname = 'status';
+ attname | n_distinct |          most_common_vals           |       most_common_freqs
+---------+------------+-------------------------------------+-------------------------------
+ status  |          4 | {SYNCED,DELIVERED,CANCELLED,RETURNED} | {0.7104,0.2512,0.0297,0.0087}
+
+shipnhanh=> SELECT histogram_bounds FROM pg_stats WHERE tablename = 'shipment' AND attname = 'batch_id';
+-- (rút gọn) {20230101, ..., 20261019, 20261022, 20261024}
+
+-- (B) cấu hình liên quan
+autovacuum_naptime = 1min
+autovacuum_max_workers = 3
+autovacuum_analyze_threshold = 50
+autovacuum_analyze_scale_factor = 0.1
+default_statistics_target = 100
+-- 01:00-01:21 cả 3 autovacuum worker đang bận VACUUM shipment_event (410 GB) và tracking_log (95 GB)
+
+-- (C) \\d carrier_rate
+--   id bigint PK, carrier_id int, zone_code varchar(8), price_per_kg numeric(12,2)
+--   Indexes: "carrier_rate_pkey" PRIMARY KEY, btree (id)    (không có index trên (carrier_id, zone_code))
+-- (D) \\d shipment: "idx_shipment_batch_status" btree (batch_id, status)`,
+    },
+  ],
+  questions: [
+    'Vì sao planner chọn Nested Loop cho 2,4 triệu dòng? Chỉ ra con số ước lượng sai trong plan và giải thích nó đến từ đâu (dựa vào snapshot thống kê).',
+    'Vì sao chạy lại lúc 08:12 lại nhanh? Vì sao ngay cả sau ANALYZE, ước lượng vẫn lệch 7,5 lần?',
+    'Bạn sửa thế nào để đêm nào cũng ổn định? Đánh giá hai đề xuất tăng work_mem và pg_hint_plan.',
+  ],
+  hints: [
+    'So sánh rows=1 (ước lượng) với rows=2398114 (thực tế) ở node Index Scan on shipment. Rồi nhìn loops=2398114 ở Seq Scan on carrier_rate.',
+    'Trong snapshot (A): n_mod_since_analyze, last_autoanalyze, và most_common_vals của status có giá trị PENDING_SYNC không? Autoanalyze chạy lúc mấy giờ, câu SELECT bắt đầu lúc mấy giờ?',
+    'Planner nhân selectivity của từng điều kiện như thể chúng độc lập. batch_id mới và status PENDING_SYNC có độc lập không? Tìm hiểu CREATE STATISTICS ... (dependencies).',
+  ],
+  answer: `**Tóm tắt:** ETL vừa nạp 2,4 triệu dòng mới nhưng câu SELECT bắt đầu chỉ 4 giây sau commit, khi statistics vẫn là của 3 ngày trước: trong statistics, {{status = 'PENDING_SYNC'}} gần như không tồn tại và {{batch_id = 20261028}} nằm ngoài histogram, nên planner ước lượng **1 dòng** và chọn Nested Loop với Seq Scan bảng giá ở vòng trong. Thực tế có 2.398.114 dòng nên bảng giá bị quét lại 2,4 triệu lần (5,1 tỉ phép so sánh). Sáng ra autoanalyze đã chạy nên plan đổi sang Hash Join. Sửa: chạy {{ANALYZE shipment}} ngay trong ETL trước khi commit/báo hiệu, thêm extended statistics cho cặp cột tương quan, và thêm index {{(carrier_id, zone_code)}} cho bảng giá làm lưới an toàn.
+
+### Kiến thức nền: planner "đoán" số dòng như thế nào
+PostgreSQL không đếm dữ liệu trước khi chạy. Nó dùng **cost-based optimizer**: với mỗi plan có thể (Nested Loop, Hash Join, Merge Join…), nó ước lượng chi phí dựa trên **số dòng dự kiến** của từng bước, rồi chọn plan rẻ nhất. Số dòng dự kiến lấy từ bảng thống kê {{pg_statistic}} (xem qua view {{pg_stats}}), do lệnh {{ANALYZE}} tạo ra bằng cách **lấy mẫu** 300 × {{default_statistics_target}} = 30.000 dòng.
+
+Giống như đi chợ: bạn nhớ "tuần trước nhà có 4 người ăn" nên mua 1 kg thịt. Hôm nay có 30 khách đến mà bạn không cập nhật thông tin, bạn vẫn mua 1 kg. Plan cũng vậy: đúng với dữ liệu cũ, thảm họa với dữ liệu mới.
+
+Các thống kê chính:
+| Thống kê | Ý nghĩa | Dùng khi |
+|---|---|---|
+| {{reltuples}} | tổng số dòng ước lượng | mọi ước lượng |
+| {{most_common_vals/freqs}} (MCV) | các giá trị phổ biến và tần suất | điều kiện {{=}} |
+| {{histogram_bounds}} | phân bố các giá trị còn lại | điều kiện {{<}}, {{>}}, BETWEEN |
+| {{n_distinct}} | số giá trị khác nhau | {{=}} với giá trị không trong MCV, GROUP BY |
+
+### Nguyên nhân gốc, từng bước
+1. **01:18:37** ETL commit 2.398.114 dòng mới, tất cả có {{status = 'PENDING_SYNC'}}, {{batch_id = 20261028}}.
+2. **01:18:41** (4 giây sau) job chạy SELECT. Statistics lúc này vẫn của lần autoanalyze **25/10**: MCV của {{status}} chỉ có {{SYNCED, DELIVERED, CANCELLED, RETURNED}} với tần suất cộng lại = 1,0. Theo statistics, không còn chỗ cho giá trị nào khác, nên selectivity của {{PENDING_SYNC}} ≈ 0. {{batch_id = 20261028}} cũng lớn hơn biên trên histogram (20261024), nên cũng bị đoán rất nhỏ. Nhân hai selectivity nhỏ → ước lượng bị kẹp về mức tối thiểu **rows=1**.
+3. Với "1 dòng" ở vòng ngoài, Nested Loop là rẻ nhất: "quét bảng giá 2.140 dòng một lần, so sánh, xong". Không cần dựng hash table. Chi phí ước lượng của cả câu chỉ **59,68**.
+4. Thực tế vòng ngoài trả 2.398.114 dòng, nên vòng trong (Seq Scan carrier_rate) chạy **2.398.114 lần**, mỗi lần đọc 2.140 dòng và loại 2.139 dòng: 2.398.114 × 2.139 = **5.129.565.846** dòng bị Join Filter loại. Không có index trên {{(carrier_id, zone_code)}} nên mỗi vòng là quét toàn bảng.
+5. **01:21:07** autoanalyze mới chạy (3 worker bận vacuum hai bảng lớn khác). Nhưng plan của câu đang chạy đã chốt từ 01:18:41: **plan không đổi giữa chừng**, nên câu vẫn chạy tiếp đến 01:25:10.
+6. **08:12** chạy lại: statistics đã mới, ước lượng 319.412 dòng → planner chọn Hash Join: đọc bảng giá **1 lần**, dựng hash table 133 kB, rồi mỗi dòng shipment chỉ tra hash O(1). 3,5 giây.
+
+~~~text
+Nested Loop (statistics cũ)                Hash Join (statistics mới)
+for s in shipment(2.398.114 dòng):         h = hash(carrier_rate)   -- 1 lần, 2.140 dòng
+   for r in carrier_rate(2.140 dòng):      for s in shipment(2.398.114 dòng):
+      if match: emit                          r = h.get(s.carrier_id, s.zone_code)
+=> 5,13 tỉ phép so sánh, 389 s            => 2,4 triệu lần tra hash, 3,5 s
+~~~
+
+**Vì sao các đêm khác không bị?** Đó là "race": nếu autoanalyze kịp chạy trước khi job bắt đầu (worker rảnh), plan đúng. Đêm 28/10 cả 3 autovacuum worker đang bận, analyze trễ gần 3 phút. Ngưỡng tự analyze là 50 + 0,1 × 15.604.220 = 1.560.472 thay đổi, nên 2,4 triệu dòng mới **có** vượt ngưỡng, chỉ là autovacuum chạy **bất đồng bộ**, không đảm bảo "ngay sau commit".
+
+### Vì sao sau ANALYZE vẫn lệch 7,5 lần
+Planner giả định các điều kiện **độc lập** và nhân selectivity: sel(batch_id = 20261028) ≈ 2,4/18,0 = 0,133 và sel(status = PENDING_SYNC) ≈ 0,133 → 0,133 × 0,133 × 18.002.334 ≈ **319 nghìn**. Nhưng hai cột **tương quan hoàn toàn**: mọi dòng của batch mới đều PENDING_SYNC. Thực tế là 2,4 triệu. Đêm nay lệch 7,5 lần vẫn chọn đúng Hash Join, nhưng với bảng lớn hơn hoặc batch nhỏ hơn có thể lại lật plan. Cách báo cho planner biết:
+~~~sql
+-- Thống kê nhiều cột: planner học được "biết batch_id thì gần như biết status"
+CREATE STATISTICS shipment_batch_status_dep (dependencies)
+  ON batch_id, status FROM shipment;
+ANALYZE shipment;   -- extended statistics chỉ có dữ liệu sau ANALYZE
+~~~
+
+### Dẫn chứng
+- Log 01:25:10: **"Nested Loop (cost=0.56..59.68 rows=1 ...) (actual ... rows=2398114 loops=1)"**: ước lượng 1, thực tế 2,4 triệu.
+- **"Seq Scan on carrier_rate r ... loops=2398114"** và **"Rows Removed by Join Filter: 5129565846"**: bảng giá bị quét lại 2,4 triệu lần. **"Buffers: shared hit=43166052"** = 18 page × 2.398.114 lần: toàn bộ từ RAM, nên vấn đề là CPU, không phải I/O (khớp CPU 100% một core).
+- Timeline: COMMIT **01:18:37.415**, SELECT bắt đầu **01:18:41.006**, autoanalyze **01:21:07**, câu kết thúc **01:25:10** (01:18:41 + 389,6 s).
+- Snapshot (A): {{n_mod_since_analyze = 2398114}}, {{last_autoanalyze = 2026-10-25}}, {{reltuples = 15604220}} trong khi {{n_live_tup = 18002334}}; MCV của status không có PENDING_SYNC; histogram batch_id dừng ở 20261024.
+- Plan 08:12: **Hash Join**, Seq Scan carrier_rate **loops=1**, Execution Time **3498 ms**; rows ước lượng 319412 vs thực tế 2398114.
+
+### Cách sửa
+**Ngắn hạn (đêm nay):**
+- Thêm bước {{ANALYZE shipment;}} vào cuối ETL, **trước** khi báo cho {{shipment-sync}} chạy. ANALYZE chỉ lấy mẫu 30.000 dòng, log cho thấy mất khoảng 5 giây: rẻ hơn rất nhiều so với 6 phút rủi ro.
+- Thêm index cho bảng giá: {{CREATE INDEX CONCURRENTLY idx_carrier_rate_carrier_zone ON carrier_rate (carrier_id, zone_code);}}. Kể cả khi planner lại đoán sai và chọn Nested Loop, vòng trong sẽ là Index Scan (vài micro giây mỗi lần) thay vì quét 2.140 dòng. Đây là "giảm thiệt hại khi đoán sai".
+
+**Dài hạn:**
+- {{CREATE STATISTICS ... (dependencies)}} cho {{(batch_id, status)}} như trên.
+- Tách bảng staging: COPY vào {{shipment_staging}} (hoặc partition theo {{batch_id}}/ngày), ANALYZE riêng bảng nhỏ đó, xử lý xong mới gộp. Với partition theo ngày, partition mới tinh luôn cần ANALYZE ngay sau khi nạp (autovacuum không tự analyze bảng cha partitioned).
+- Tuning autovacuum cho bảng này: {{ALTER TABLE shipment SET (autovacuum_analyze_scale_factor = 0.02);}} và tăng {{autovacuum_max_workers}} nếu IO cho phép. Nhưng đừng dựa vào autovacuum cho luồng "nạp xong chạy ngay", vì nó luôn bất đồng bộ.
+
+**Về hai đề xuất:**
+- **Tăng work_mem:** vô ích. Plan xấu không do thiếu bộ nhớ (Hash chỉ cần 133 kB, không spill). Vấn đề là ước lượng sai.
+- **pg_hint_plan ép Hash Join:** chữa triệu chứng, khoá cứng plan. Khi dữ liệu đổi (batch rất nhỏ), Hash Join có thể lại là lựa chọn kém, và extension phải cài, bảo trì. Sửa gốc (statistics đúng) tốt hơn.
+
+### Phòng ngừa và monitoring
+- Bật {{auto_explain}} với {{log_min_duration}} hợp lý (như ở đây, nhờ nó mới có plan đêm qua). Đặc biệt soi **tỉ lệ rows thực tế / rows ước lượng > 10 lần** ở mọi node.
+- Alert khi {{n_mod_since_analyze / reltuples}} > 10% trên bảng nóng.
+- {{statement_timeout}} cho role job (ví dụ 120 s) để plan xấu không chiếm DB 6 phút; job retry sau khi ANALYZE.
+
+### Lỗi hay gặp
+- Nghĩ "đã có autovacuum thì statistics luôn mới": autovacuum có độ trễ (naptime, số worker, bảng lớn khác).
+- Chạy lại thấy nhanh rồi kết luận "do DB lúc đó bận": thực ra plan đã khác. Luôn so plan, không so thời gian.
+- Chỉ tạo index cho bảng lớn, bỏ quên bảng nhỏ ở vòng trong Nested Loop.
+- Tạo CREATE STATISTICS nhưng quên ANALYZE nên không có tác dụng.
+
+### Trả lời miệng 1 phút
+"Plan đêm qua là Nested Loop với ước lượng 1 dòng nhưng thực tế 2,4 triệu, nên bảng giá bị quét lại 2,4 triệu lần, 5 tỉ phép so sánh. Ước lượng sai vì job chạy 4 giây sau khi ETL nạp xong, statistics còn của 3 ngày trước: PENDING_SYNC không có trong MCV, batch_id mới nằm ngoài histogram. Autoanalyze chạy lúc 01:21, sau khi plan đã chốt, nên sáng chạy lại thì Hash Join, 3,5 giây. Tôi sẽ ANALYZE ngay trong ETL, thêm extended statistics cho cặp batch_id/status vì chúng tương quan, thêm index (carrier_id, zone_code) cho bảng giá để nếu đoán sai thì vẫn không thảm họa, và theo dõi tỉ lệ rows thực tế/ước lượng bằng auto_explain."
+
+> Senior tip: Mẫu "job batch chạy ngay sau bulk load thì chậm, chạy lại thì nhanh" gặp rất nhiều trong data pipeline. Quy tắc của tôi: **mọi bước nạp dữ liệu lớn (> 10% bảng) phải kết thúc bằng ANALYZE tường minh**, giống như flush cache. Và khi đọc EXPLAIN ANALYZE, việc đầu tiên không phải là tìm Seq Scan mà là tìm node có **rows ước lượng lệch thực tế nhiều bậc**: gần như mọi plan tệ bắt nguồn từ đó.`,
+  rubric: [
+    'Chỉ ra ước lượng rows=1 so với thực tế 2.398.114 khiến planner chọn Nested Loop, vòng trong Seq Scan carrier_rate chạy 2.398.114 lần (Rows Removed by Join Filter 5,1 tỉ)',
+    'Giải thích statistics cũ: autoanalyze cuối 25/10, PENDING_SYNC không có trong MCV, batch_id ngoài histogram; SELECT chạy 4 giây sau commit, autoanalyze 01:21 sau khi plan đã chốt',
+    'Giải thích vì sao chạy lại nhanh (statistics mới → Hash Join) và vì sao vẫn lệch 7,5 lần (giả định độc lập, cột tương quan → CREATE STATISTICS dependencies)',
+    'Đề xuất sửa: ANALYZE tường minh trong ETL, extended statistics, index (carrier_id, zone_code) làm lưới an toàn, statement_timeout',
+    'Phản biện đúng work_mem và pg_hint_plan; nêu monitoring auto_explain/tỉ lệ estimate vs actual',
+  ],
+  tags: ['postgresql', 'explain', 'statistics', 'analyze', 'nested-loop', 'extended-statistics'],
+},
+{
+  id: 'lab-sql-010',
+  category: 'sql',
+  title: 'Chỉ khách hàng lớn nhất bị chậm 11 giây, psql chạy lại thì 40 ms: generic plan của prepared statement',
+  level: 'lead',
+  scenario: `**Bối cảnh.** SaaS hoá đơn điện tử **EInvoice** (multi-tenant, một database chung) chạy {{invoice-api}} gồm 12 pod Spring Boot 3.3, Spring Data JPA (Hibernate 6.4), driver pgjdbc 42.7 (mặc định {{prepareThreshold=5}}), HikariCP 30 connection mỗi pod, PostgreSQL **16.3**. Bảng {{invoice}} có **60 triệu** dòng của khoảng 4.200 tenant. Dữ liệu **lệch rất mạnh**: tenant 7 (chuỗi siêu thị **MegaMart**) chiếm **35%** bảng (21 triệu dòng); 90% tenant có dưới 10 nghìn hoá đơn.
+
+Màn hình "Hoá đơn chưa thanh toán" gọi:
+~~~sql
+SELECT id, number, amount, due_date FROM invoice
+WHERE tenant_id = ? AND status = 'OPEN'
+ORDER BY due_date LIMIT 50;
+~~~
+
+**Triệu chứng.** Sau mỗi lần deploy hoặc restart, mọi tenant đều nhanh. Khoảng 5–10 phút sau, **riêng MegaMart** bị chậm 9–12 giây (timeout gateway 10 s), các tenant khác vẫn dưới 50 ms. DBA copy câu SQL vào psql với {{tenant_id = 7}}: **38 ms**, không tái hiện được. Đội đã thử restart pod: đỡ được 10 phút rồi lại chậm.
+
+**Việc bạn có.** Log auto_explain từ production, kết quả thử nghiệm của DBA trong psql, thống kê bảng và metric theo thời gian.`,
+  artifacts: [
+    {
+      name: 'auto-explain-prod.log',
+      lang: 'text',
+      content: `2026-10-27 10:09:44.802 +07 [77120] invoice_app@einvoice LOG:  duration: 11842.309 ms  plan:
+        Query Text: select i1_0.id,i1_0.number,i1_0.amount,i1_0.due_date from invoice i1_0 where i1_0.tenant_id=$1 and i1_0.status='OPEN' order by i1_0.due_date fetch first $2 rows only
+        Query Parameters: $1 = '7', $2 = '50'
+        Limit  (cost=6874.21..6874.33 rows=50 width=40) (actual time=11841.977..11841.990 rows=50 loops=1)
+          Buffers: shared hit=402118 read=611904
+          ->  Sort  (cost=6874.21..6878.50 rows=1716 width=40) (actual time=11841.975..11841.982 rows=50 loops=1)
+                Sort Key: due_date
+                Sort Method: top-N heapsort  Memory: 31kB
+                Buffers: shared hit=402118 read=611904
+                ->  Bitmap Heap Scan on invoice i1_0  (cost=161.14..6817.27 rows=1716 width=40) (actual time=902.418..11502.661 rows=2522117 loops=1)
+                      Recheck Cond: (tenant_id = $1)
+                      Rows Removed by Index Recheck: 6120488
+                      Filter: ((status)::text = 'OPEN'::text)
+                      Rows Removed by Filter: 18482260
+                      Heap Blocks: exact=183301 lossy=812677
+                      Buffers: shared hit=402118 read=611904
+                      ->  Bitmap Index Scan on idx_invoice_tenant  (cost=0.00..160.71 rows=14286 width=0) (actual time=889.204..889.204 rows=21004377 loops=1)
+                            Index Cond: (tenant_id = $1)
+                            Buffers: shared read=18140
+2026-10-27 10:09:45.113 +07 [77134] invoice_app@einvoice LOG:  duration: 512.004 ms  plan:
+        Query Text: (cùng câu trên)
+        Query Parameters: $1 = '7', $2 = '50'
+        ... (cùng plan Bitmap Heap Scan, lần này phần lớn page đã nằm trong shared buffers)`,
+    },
+    {
+      name: 'dba-psql-test.txt',
+      lang: 'text',
+      content: `-- psql 16.3, 2026-10-27 10:30 +07
+-- (1) Literal: planner thấy giá trị 7 ngay lúc lập plan (custom plan)
+einvoice=> EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, number, amount, due_date FROM invoice
+WHERE tenant_id = 7 AND status = 'OPEN' ORDER BY due_date LIMIT 50;
+ Limit  (cost=0.56..420.31 rows=50 width=40) (actual time=0.061..37.702 rows=50 loops=1)
+   Buffers: shared hit=4180
+   ->  Index Scan using idx_invoice_due_date on invoice  (cost=0.56..21180332.14 rows=2522994 width=40) (actual time=0.060..37.689 rows=50 loops=1)
+         Filter: ((tenant_id = 7) AND ((status)::text = 'OPEN'::text))
+         Rows Removed by Filter: 4127
+         Buffers: shared hit=4180
+ Planning Time: 0.402 ms
+ Execution Time: 37.751 ms
+
+-- (2) Mô phỏng prepared statement như JDBC, ép generic plan
+einvoice=> PREPARE q(bigint) AS SELECT id, number, amount, due_date FROM invoice
+           WHERE tenant_id = $1 AND status = 'OPEN' ORDER BY due_date LIMIT 50;
+einvoice=> SET plan_cache_mode = force_generic_plan;
+einvoice=> EXPLAIN EXECUTE q(7);
+ Limit  (cost=6874.21..6874.33 rows=50 width=40)
+   ->  Sort  (cost=6874.21..6878.50 rows=1716 width=40)
+         Sort Key: due_date
+         ->  Bitmap Heap Scan on invoice  (cost=161.14..6817.27 rows=1716 width=40)
+               Recheck Cond: (tenant_id = $1)
+               Filter: ((status)::text = 'OPEN'::text)
+               ->  Bitmap Index Scan on idx_invoice_tenant  (cost=0.00..160.71 rows=14286 width=0)
+                     Index Cond: (tenant_id = $1)
+einvoice=> SET plan_cache_mode = force_custom_plan;
+einvoice=> EXPLAIN EXECUTE q(7);
+ Limit  (cost=0.56..420.31 rows=50 width=40)
+   ->  Index Scan using idx_invoice_due_date on invoice  (cost=0.56..21180332.14 rows=2522994 width=40)
+         Filter: ((tenant_id = 7) AND ((status)::text = 'OPEN'::text))
+
+-- (3) Tenant nhỏ 3105 (6.200 hoá đơn) với generic plan: 1.9 ms. Với custom plan: 1.7 ms.`,
+    },
+    {
+      name: 'stats-and-metrics.txt',
+      lang: 'text',
+      content: `-- pg_class / pg_stats (ANALYZE gần nhất 2026-10-27 03:10)
+ reltuples = 60004118
+ tenant_id: n_distinct = 4200 ; most_common_vals = {7,112,58,...} ; most_common_freqs = {0.3501,0.0212,0.0174,...}
+ status:    most_common_vals = {PAID,OPEN,CANCELLED} ; most_common_freqs = {0.8612,0.1201,0.0187}
+ Indexes:
+   "invoice_pkey" PRIMARY KEY, btree (id)
+   "idx_invoice_tenant" btree (tenant_id)
+   "idx_invoice_due_date" btree (due_date)
+ work_mem = 4MB
+
+-- pgjdbc / Hikari
+ prepareThreshold = 5 (mặc định), preparedStatementCacheQueries = 256 (mặc định)
+ Hikari maximumPoolSize = 30, 12 pod  =>  360 connection
+
+-- Prometheus: histogram_quantile(0.99, sum by (le, tenant) (rate(http_server_requests_seconds_bucket{uri="/api/invoices/open"}[1m])))
+ time   | event                 | p99 tenant=7 | p99 tenant=112 | p99 các tenant khác
+ 10:02  | rolling restart xong  | 0.041 s      | 0.019 s        | 0.008 s
+ 10:05  |                       | 0.044 s      | 0.020 s        | 0.008 s
+ 10:07  |                       | 6.9 s        | 0.020 s        | 0.008 s
+ 10:09  |                       | 11.8 s       | 0.021 s        | 0.007 s
+ 10:15  |                       | 10.0 s (504) | 0.022 s        | 0.007 s
+-- request rate: ~40 req/s toàn hệ thống trên endpoint này, tenant 7 chiếm 6 req/s`,
+    },
+  ],
+  questions: [
+    'Vì sao cùng một câu SQL và tham số 7, production chạy 11,8 giây còn psql chỉ 38 ms? Giải thích cơ chế custom plan / generic plan và vai trò của pgjdbc prepareThreshold.',
+    'Vì sao generic plan được chọn dù nó rất tệ với tenant 7, và vì sao lỗi chỉ xuất hiện 5–10 phút sau restart?',
+    'Đề xuất cách sửa (ngắn hạn và dài hạn) để mọi tenant, lớn hay nhỏ, đều nhanh. So sánh ít nhất 3 phương án.',
+  ],
+  hints: [
+    'So plan trong auto_explain với plan (1) của DBA: điều kiện là "tenant_id = $1" hay "tenant_id = 7"? Index nào được dùng?',
+    'Generic plan không biết giá trị $1 nên phải dùng một ước lượng "trung bình": 60.004.118 / n_distinct 4200 ≈ 14.286 dòng. Tenant 7 thật ra có 21 triệu.',
+    'PostgreSQL lập custom plan cho 5 lần EXECUTE đầu, sau đó so chi phí generic với trung bình custom. pgjdbc chỉ dùng server-side prepared statement từ lần thứ 5 trên cùng connection. Index (tenant_id, status, due_date) làm cho cả hai loại plan đều tốt.',
+  ],
+  answer: `**Tóm tắt:** Production chạy câu dưới dạng **prepared statement**; sau vài lần thực thi trên mỗi connection, PostgreSQL chuyển sang **generic plan** (một plan dùng chung cho mọi giá trị {{$1}}), được tối ưu cho tenant "trung bình" ~14 nghìn dòng: lấy hết hoá đơn của tenant rồi sort. Với MegaMart (21 triệu dòng), plan này đọc 1 triệu page, mất 11,8 giây. psql dùng literal nên luôn có **custom plan** thấy giá trị 7 và chọn đi theo index {{due_date}}, 38 ms. Sửa gốc bằng index {{(tenant_id, status, due_date)}} (hoặc partial index {{WHERE status = 'OPEN'}}) để một plan duy nhất tốt cho mọi tenant; ngắn hạn có thể đặt {{plan_cache_mode = force_custom_plan}} cho role ứng dụng.
+
+### Kiến thức nền: prepared statement, custom plan và generic plan
+Mỗi câu SQL phải qua: parse → rewrite → **plan** (chọn cách chạy) → execute. Lập plan tốn thời gian (thường 0,1–5 ms), nên prepared statement cho phép **lập plan một lần, chạy nhiều lần**.
+
+PostgreSQL có hai loại plan cho prepared statement:
+| | Custom plan | Generic plan |
+|---|---|---|
+| Lập khi nào | mỗi lần EXECUTE, **biết** giá trị tham số | một lần, **không biết** giá trị |
+| Ước lượng | dùng MCV: tenant 7 → 35% bảng | dùng trung bình: 1 / n_distinct |
+| Chi phí lập plan | mỗi lần | được cache, gần như 0 |
+| Rủi ro | tốn CPU planner | sai nặng khi dữ liệu lệch (skew) |
+
+Thuật toán mặc định ({{plan_cache_mode = auto}}): **5 lần EXECUTE đầu** luôn dùng custom plan. Từ lần thứ 6, PostgreSQL lập generic plan và so **chi phí ước lượng** của nó với **chi phí trung bình của 5 custom plan** (cộng chi phí lập plan). Nếu generic không đắt hơn đáng kể, nó dùng generic **mãi mãi** cho prepared statement đó trên connection đó.
+
+Lớp thứ hai là driver: pgjdbc mặc định {{prepareThreshold=5}}: 4 lần đầu một PreparedStatement chạy dưới dạng unnamed statement (luôn được lập plan lại như custom), từ lần thứ 5 mới tạo **server-side named prepared statement**. Ghép hai lớp lại: trên mỗi connection, khoảng lần thực thi thứ 10 trở đi câu này có thể chuyển sang generic plan.
+
+### Nguyên nhân gốc, từng bước
+1. Sau restart, 360 connection mới, mọi câu đều custom plan → tenant 7 dùng index {{due_date}}: duyệt theo thứ tự hạn thanh toán, lọc tenant 7 + OPEN, vì tenant 7 chiếm 35% bảng nên chỉ cần đọc ~4.177 dòng là đủ 50 dòng. Nhanh.
+2. Đa số lần gọi là tenant nhỏ. Custom plan của tenant nhỏ: bitmap trên {{idx_invoice_tenant}} rồi sort vài nghìn dòng, chi phí thấp (~vài nghìn).
+3. Sau ~10 lần trên một connection, PostgreSQL thử generic plan: {{tenant_id = $1}} được ước lượng **60.004.118 / 4200 ≈ 14.286** dòng (khớp {{rows=14286}} trong Bitmap Index Scan), nhân 0,12 của OPEN → **1.716** dòng. Chi phí 6.874, gần với trung bình custom plan của tenant nhỏ → PostgreSQL chọn generic.
+4. Request tiếp theo của tenant 7 rơi vào connection đó: generic plan lấy toàn bộ **21.004.377** entry của tenant 7 từ index, bitmap vượt {{work_mem = 4MB}} nên thành **lossy** (812.677 block lossy, phải recheck 6.120.488 dòng), đọc ~1 triệu page (hit 402.118 + read 611.904), lọc bỏ 18.482.260 dòng không OPEN, còn 2.522.117 dòng rồi sort lấy 50. 11,8 giây.
+5. Vì mỗi connection tự chuyển sang generic theo nhịp riêng, sau 5–10 phút hầu hết 360 connection đã "lật", nên MegaMart chậm gần như mọi request. Restart xoá plan cache → nhanh lại, rồi lặp.
+
+~~~text
+Generic plan cho tenant 7:
+idx_invoice_tenant ──> 21.004.377 TID ──> bitmap (lossy, work_mem 4MB)
+   ──> đọc ~1.000.000 page heap ──> filter OPEN ──> 2.522.117 dòng ──> top-N sort ──> 50
+Custom plan cho tenant 7:
+idx_invoice_due_date (đã sắp xếp) ──> đọc 4.177 dòng, lọc ──> đủ 50 dòng thì DỪNG (nhờ LIMIT)
+~~~
+
+### Dẫn chứng
+- auto_explain: **"Recheck Cond: (tenant_id = $1)"** và **"Index Cond: (tenant_id = $1)"**: tham số chưa được thay vào lúc lập plan → generic plan. Ước lượng **rows=14286** so với thực tế **rows=21004377** (lệch 1.470 lần).
+- **"Heap Blocks: exact=183301 lossy=812677"**, **"Rows Removed by Filter: 18482260"**, **"Buffers: shared hit=402118 read=611904"**, **"duration: 11842.309 ms"**.
+- psql (1): literal 7 → **Index Scan using idx_invoice_due_date**, **Rows Removed by Filter: 4127**, **37.751 ms**. psql (2): {{force_generic_plan}} tái hiện **chính xác** plan production (cost 6874.21, rows=1716), còn {{force_custom_plan}} cho lại plan nhanh: chứng minh nguyên nhân là loại plan, không phải tải hay cache.
+- Thống kê: tenant 7 có freq **0.3501** trong MCV, n_distinct **4200**; 60.004.118 / 4200 = 14.286.
+- Metric: 10:02 restart, p99 tenant 7 là 41 ms; 10:07 nhảy lên 6,9 s; tenant khác không đổi.
+
+### Cách sửa
+| Phương án | Ưu điểm | Nhược điểm |
+|---|---|---|
+| Index {{(tenant_id, status, due_date)}} | Một plan tốt cho mọi tenant, kể cả generic: Index Scan theo đúng thứ tự, đọc đúng 50 dòng | Tốn dung lượng, ghi chậm hơn một chút |
+| Partial index {{(tenant_id, due_date) WHERE status = 'OPEN'}} | Nhỏ hơn nhiều (chỉ 12% dòng) | Chỉ phục vụ câu có {{status = 'OPEN'}} literal |
+| {{ALTER ROLE invoice_app SET plan_cache_mode = force_custom_plan}} | Không cần deploy, hiệu lực cho connection mới | Mọi câu đều tốn planning mỗi lần, CPU tăng; che giấu thiếu index |
+| pgjdbc {{prepareThreshold=0}} | Không bao giờ dùng named statement | Mất lợi ích prepared cho mọi câu; dễ quên vì sao |
+| Tách tenant lớn (partition theo tenant, DB riêng) | Cô lập noisy neighbor | Lớn, thay đổi kiến trúc |
+
+**Ngắn hạn (hôm nay):** {{CREATE INDEX CONCURRENTLY idx_invoice_tenant_open_due ON invoice (tenant_id, due_date) WHERE status = 'OPEN';}} (không khoá ghi). Trong lúc chờ index build, đặt {{plan_cache_mode = force_custom_plan}} cho role ứng dụng rồi rotate connection (Hikari {{softEvictConnections}} qua JMX, hoặc rolling restart) để áp dụng.
+
+**Dài hạn:** quy tắc thiết kế index cho multi-tenant: **cột đầu tiên luôn là tenant_id, sau đó là cột filter bằng, cuối cùng là cột ORDER BY**. Với query có LIMIT, index đúng thứ tự giúp dừng sớm thay vì sort hàng triệu dòng. Theo dõi tenant lớn bằng metric gắn nhãn tenant (top-N tenant), test hiệu năng với dữ liệu lệch.
+
+### Phòng ngừa
+- auto_explain với {{log_parameter_max_length}} (PostgreSQL 16+) để thấy tham số; dấu hiệu nhận biết generic plan là {{$1}} trong Index Cond.
+- Khi tái hiện trong psql, **luôn thử thêm PREPARE + force_generic_plan**, không chỉ literal.
+- Dashboard p99 theo tenant: trung bình toàn hệ thống (8 ms) che mất một tenant 11 giây.
+
+### Lỗi hay gặp
+- "psql nhanh mà app chậm → do network/app": thật ra plan khác nhau.
+- Restart để chữa: chỉ reset plan cache, lỗi quay lại sau vài phút.
+- Tăng {{work_mem}}: bớt lossy, nhanh hơn chút nhưng vẫn đọc 21 triệu dòng.
+- Nghĩ Hibernate tự "inline" tham số: Hibernate luôn bind tham số qua PreparedStatement.
+
+### Trả lời miệng 1 phút
+"Production dùng prepared statement. Sau khoảng 10 lần trên mỗi connection, PostgreSQL chuyển sang generic plan vì chi phí ước lượng tương đương custom plan của các tenant nhỏ. Generic plan không biết tenant_id nên đoán 14 nghìn dòng, chọn bitmap theo tenant rồi sort. Với MegaMart có 21 triệu dòng, plan đó đọc 1 triệu page, 11,8 giây. psql dùng literal nên có custom plan đi theo index due_date và dừng sớm sau 50 dòng. Tôi xác nhận bằng PREPARE với force_generic_plan, tái hiện đúng plan. Sửa gốc bằng index tenant_id, due_date where status OPEN để mọi plan đều tốt; tạm thời force_custom_plan cho role ứng dụng."
+
+> Senior tip: Trong hệ thống multi-tenant, **data skew + prepared statement** là tổ hợp nguy hiểm kinh điển: "trung bình" không đại diện cho khách hàng lớn nhất, mà khách lớn nhất lại thường là khách trả tiền nhiều nhất. Tôi luôn kiểm tra {{most_common_freqs}} của cột tenant_id; nếu có tenant > 5% bảng thì mọi query theo tenant phải được thiết kế index sao cho plan **không phụ thuộc** vào việc biết giá trị tham số.`,
+  rubric: [
+    'Nhận ra plan production là generic plan (tenant_id = $1) còn psql với literal là custom plan; giải thích cơ chế 5 custom plan rồi so chi phí, và pgjdbc prepareThreshold=5',
+    'Tính được ước lượng 60.004.118/4200 ≈ 14.286 dòng so với thực tế 21.004.377 của tenant 7 (skew 35%), dẫn chứng lossy blocks, Rows Removed by Filter, buffers, 11,8 s',
+    'Giải thích vì sao chỉ tenant lớn bị và vì sao lỗi quay lại 5–10 phút sau restart (plan cache theo connection)',
+    'Đề xuất sửa gốc bằng index (tenant_id, status/due_date) hoặc partial index, kèm phương án tạm force_custom_plan và đánh giá trade-off',
+    'Nêu cách tái hiện đúng (PREPARE + plan_cache_mode) và monitoring theo tenant/auto_explain',
+  ],
+  tags: ['postgresql', 'prepared-statement', 'generic-plan', 'data-skew', 'multi-tenant', 'pgjdbc'],
+}
 );
