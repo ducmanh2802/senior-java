@@ -11636,65 +11636,82 @@ class Solution {
   difficulty: 'medium',
   pattern: 'Fibonacci Numbers (DP)',
   tags: ['dp', 'string', 'bytebytego'],
-  prompt: `Một thông điệp gồm các chữ số {{A=1, B=2, ..., Z=26}} được mã hoá thành chuỗi {{s}} gồm các chữ số. Đếm số **cách giải mã** toàn bộ chuỗi thành chữ cái. Chữ số {{'0'}} không có mã riêng — chỉ hợp lệ khi nằm trong cặp {{10}} hoặc {{20}}.
+  prompt: `Một thông điệp chữ cái được mã hoá thành chuỗi chữ số theo bảng {{A = 1, B = 2, ..., Z = 26}}. Cho chuỗi {{s}} chỉ gồm chữ số, hãy đếm **số cách giải mã** toàn bộ chuỗi trở lại thành chữ cái. Mỗi mã là 1 hoặc 2 chữ số; mã có số {{0}} đứng đầu (như {{"06"}}) không hợp lệ, và riêng {{"0"}} cũng không ứng với chữ nào.
 
 ### Ví dụ
 ~~~text
-Input: s = "226"
+Input:  s = "12"
+Output: 2
+Giải thích: "AB" (1, 2) và "L" (12).
+
+Input:  s = "226"
 Output: 3
 Giải thích: "BZ" (2, 26), "VF" (22, 6), "BBF" (2, 2, 6).
 
-Input: s = "06"
+Input:  s = "06"
 Output: 0
-Giải thích: "0" không phải mã hợp lệ, "06" cũng không.
-
-Input: s = "12"
-Output: 2
-Giải thích: "AB" (1, 2) và "L" (12).
+Giải thích: "0" không phải mã hợp lệ và "06" cũng không (khác "6").
 ~~~
 
 ### Ràng buộc
 - {{1 <= s.length <= 100}}
-- {{s}} chỉ gồm chữ số {{0-9}}.`,
+- {{s}} chỉ gồm chữ số {{'0'..'9'}}.
+- Đề đảm bảo kết quả vừa kiểu {{int}}.`,
   hints: [
-    'Ký tự cuối có thể được giải mã bằng **một chữ số** {{s[n-1]}} (nếu khác 0) hoặc **hai chữ số** {{s[n-2..n-1]}} (nếu trong đoạn 10..26).',
-    '{{dp[i]}} = số cách giải mã {{s[0..i]}}. {{dp[i] = (s[i] != 0 ? dp[i-1] : 0) + (10 <= s[i-1..i] <= 26 ? dp[i-2] : 0)}}.',
-    'Chuỗi rỗng có 1 cách giải mã ({{dp[-1] = 1}}) — đó là lý do {{dp[0] = 1}} khi {{s[0] != 0}}. Gặp chuỗi bất khả thi giữa chừng ({{dp[i] = 0}}) thì dừng sớm.'
+    'Nhìn vào **đoạn mã cuối cùng** của một cách giải mã: hoặc nó là 1 chữ số {{s[i]}} (chỉ được khi khác {{0}}), hoặc là 2 chữ số {{s[i-1..i]}} (chỉ được khi nằm trong 10..26).',
+    'Gọi {{ways[i]}} = số cách giải mã {{i}} ký tự đầu. Khi đó {{ways[i] = (s[i-1] != 0 ? ways[i-1] : 0) + (10 <= s[i-2..i-1] <= 26 ? ways[i-2] : 0)}}, với {{ways[0] = 1}} (chuỗi rỗng có đúng 1 cách: không làm gì).',
+    'Mỗi bước chỉ cần hai giá trị trước, giống Fibonacci: giữ hai biến {{prev2}}, {{prev1}} thay cho cả mảng để có O(1) bộ nhớ.'
   ],
   solution: `### Ý tưởng
-Quyết định ở cuối chuỗi: tách 1 chữ số hay 2 chữ số. {{dp[i]}} = số cách giải mã đoạn đầu dài {{i+1}}. Thêm hai điều kiện: chữ số cuối khác {{0}} mới tách được 1; cặp hai chữ số phải trong [10, 26] mới tách được 2. Duyệt tăng dần, gộp còn hai biến.
+Đây là "Fibonacci có điều kiện". Ở Climbing Stairs, mỗi bước leo 1 hoặc 2 bậc nên {{ways[i] = ways[i-1] + ways[i-2]}}. Ở đây "leo 1 bậc" = dùng 1 chữ số, "leo 2 bậc" = dùng 2 chữ số, nhưng mỗi kiểu chỉ được phép khi mã hợp lệ:
+- Dùng 1 chữ số {{s[i-1]}}: hợp lệ khi chữ số đó khác {{'0'}}.
+- Dùng 2 chữ số {{s[i-2..i-1]}}: hợp lệ khi giá trị trong khoảng [10, 26] (tự loại "05", "27"...).
+
+Gọi {{ways[i]}} là số cách giải mã **i ký tự đầu**. Đặt {{ways[0] = 1}}: chuỗi rỗng có một cách giải mã (rỗng). Giá trị này giúp công thức đúng cho mã 2 chữ số đầu tiên, ví dụ {{"12"}}: dùng "12" ứng với {{ways[0] = 1}} cách.
 
 ~~~java
 class Solution {
     public int numDecodings(String s) {
-        if (s.isEmpty() || s.charAt(0) == '0') return 0;
-        int prev2 = 1;   // so cach cua doan trong (truoc i-1)
-        int prev1 = 1;   // so cach cua s[0]
-        for (int i = 1; i < s.length(); i++) {
+        int prev2 = 1;                                   // ways[i-2], ban dau = ways[0] = 1 (chuoi rong)
+        int prev1 = s.charAt(0) == '0' ? 0 : 1;          // ways[i-1], ban dau = ways[1]
+        for (int i = 2; i <= s.length(); i++) {
             int cur = 0;
-            if (s.charAt(i) != '0') cur += prev1;   // lay mot chu so rieng
-            int two = (s.charAt(i - 1) - '0') * 10 + (s.charAt(i) - '0');
-            if (two >= 10 && two <= 26) cur += prev2;   // lay cap 2 chu so
-            prev2 = prev1;
+            char one = s.charAt(i - 1);                  // ky tu cuoi cua tien to dai i
+            if (one != '0') cur += prev1;                // dung 1 chu so lam ma cuoi
+            int two = (s.charAt(i - 2) - '0') * 10 + (one - '0');
+            if (two >= 10 && two <= 26) cur += prev2;    // dung 2 chu so lam ma cuoi
+            prev2 = prev1;                               // dich cua so sang phai
             prev1 = cur;
-            if (cur == 0) return 0;   // het cach giai ma, dung som
         }
-        return prev1;
+        return prev1;                                    // ways[n]
     }
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- Cạm bẫy {{'0'}}: {{s = "30"}} → 0; {{s = "101"}} → 1 (chỉ "10, 1"); {{s = "100"}} → 0. Test kỹ mọi cặp có 0.
-- {{s = "0"}} → 0, {{s = "1..9"}} → 1 — kiểm tra đầu vào trước vòng lặp.
-- Bài này là Fibonacci "có điều kiện": nếu mọi cặp 10..26 và mọi chữ số đều hợp lệ thì kết quả đúng bằng số Fibonacci tương ứng; ràng buộc 0 làm gãy chuỗi — {{dp}} là công cụ theo dõi chỗ gãy.
+### Chạy tay với s = "226"
+| i | tiền tố | 1 chữ số | 2 chữ số | ways[i] |
+|---|---|---|---|---|
+| 0 | "" | | | 1 |
+| 1 | "2" | '2' ✔ → 1 | | 1 |
+| 2 | "22" | '2' ✔ → 1 | "22" ✔ → 1 | 2 |
+| 3 | "226" | '6' ✔ → 2 | "26" ✔ → 1 | 3 |
 
-> Senior tip: Decode ways phỏng vấn kỹ năng xử lý edge case (0, 00, 10, 20, 30) và ability suy luận công thức từ mô tả. Trong production, logic giải mã như thế này thường chạy trên log stream hàng triệu dòng mỗi phút — người giỏi sẽ nói luôn: O(n) single-pass là đủ, đừng build table nếu chỉ cần một kết quả.`,
-  starter: `class Solution {
-    public int numDecodings(String s) {
-        
-    }
-}`,
+### Các trường hợp số 0 (hay bị hỏi)
+- {{"10"}} → 1 (chỉ "J"). {{"100"}} → 0: chữ "0" cuối không đứng một mình được và "00" không hợp lệ.
+- {{"30"}} → 0: "0" không đứng riêng, "30" > 26.
+- {{"101"}} → 1: chỉ có (10, 1).
+- Một khi {{ways[i] = 0}} và {{ways[i-1] = 0}} thì mọi giá trị sau cũng bằng 0. Có thể dừng sớm, nhưng không bắt buộc.
+
+### Độ phức tạp
+Một vòng lặp → O(n) thời gian, O(1) bộ nhớ.
+
+### Lưu ý khi phỏng vấn
+- Nói rõ ý nghĩa {{ways[0] = 1}}: đây là chỗ ứng viên hay lúng túng.
+- Viết bản đệ quy có memo trước nếu bạn thấy dễ nghĩ hơn, rồi chuyển sang bottom-up và rút gọn còn hai biến.
+
+> Senior tip: Hầu hết bài "đếm số cách" theo từng vị trí đều có dạng {{ways[i]}} phụ thuộc vài giá trị trước. Hãy tìm "quyết định cuối cùng" (ở đây: mã cuối dài 1 hay 2), công thức sẽ hiện ra.`,
+  complexity: 'Time O(n), Space O(1)',
+  starter: 'class Solution {\n    public int numDecodings(String s) {\n        // TODO\n        return 0;\n    }\n}',
   tests: `public class Main {
     static int passed = 0, total = 0;
     interface Case { Object get() throws Throwable; }
@@ -11702,38 +11719,28 @@ class Solution {
         total++;
         try {
             Object actual = c.get();
-            if (Objects.deepEquals(expected, actual)) {
-                passed++;
-                System.out.println("PASS " + name);
-            } else {
-                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
-            }
-        } catch (Throwable t) {
-            System.out.println("FAIL " + name + ": threw " + t);
-        }
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
     }
     public static void main(String[] args) {
-        run("example1", 3, () -> new Solution().numDecodings("226"));
-        run("leading zero pair", 0, () -> new Solution().numDecodings("06"));
-        run("example3", 2, () -> new Solution().numDecodings("12"));
-        run("twenty-seven", 1, () -> new Solution().numDecodings("27"));
+        run("example 12", 2, () -> new Solution().numDecodings("12"));
+        run("example 226", 3, () -> new Solution().numDecodings("226"));
+        run("leading zero", 0, () -> new Solution().numDecodings("06"));
+        run("single digit", 1, () -> new Solution().numDecodings("1"));
         run("single zero", 0, () -> new Solution().numDecodings("0"));
         run("ten", 1, () -> new Solution().numDecodings("10"));
-        run("one zero one", 1, () -> new Solution().numDecodings("101"));
-        run("mid zero kills", 2, () -> new Solution().numDecodings("11106"));
-        run("twenty one zero one", 1, () -> new Solution().numDecodings("2101"));
-        run("single digit", 1, () -> new Solution().numDecodings("1"));
+        run("twenty-seven", 1, () -> new Solution().numDecodings("27"));
         run("thirty", 0, () -> new Solution().numDecodings("30"));
+        run("one zero zero", 0, () -> new Solution().numDecodings("100"));
+        run("one zero one", 1, () -> new Solution().numDecodings("101"));
+        run("mid zero", 2, () -> new Solution().numDecodings("11106"));
         run("five ones", 8, () -> new Solution().numDecodings("11111"));
         run("twenty ones", 10946, () -> new Solution().numDecodings("11111111111111111111"));
         System.out.println("RESULT " + passed + "/" + total);
     }
 }`,
-  complexity: 'Time O(n), Space O(1)',
-  follow: [
-    'Nếu bài yêu cầu IN ra một cách giải mã thay vì đếm thì làm sao?',
-    'Biến thể: chữ số 0 được phép ánh xạ thành ký tự khác thì công thức đổi thế nào?'
-  ]
+  follow: ['Nếu cần in ra một (hoặc mọi) cách giải mã thay vì đếm thì làm sao?', 'Biến thể Decode Ways II có ký tự {{*}} đại diện cho 1–9: công thức thay đổi thế nào?']
 }
 
 );
@@ -11745,77 +11752,139 @@ class Solution {
   difficulty: 'medium',
   pattern: 'Graphs (DFS/BFS)',
   tags: ['graph', 'dfs', 'bfs', 'hashmap', 'bytebytego'],
-  prompt: `Nhân bản đồ thị vô hướng liên thông. Mỗi node có {{val}} và danh sách {{neighbors}}. Trả về node tương ứng với node gốc; phải là **bản sao sâu**, không dùng chung tham chiếu với đồ thị gốc.
+  prompt: `Cho một node bất kỳ của **đồ thị vô hướng liên thông**. Mỗi node có giá trị {{val}} (duy nhất) và danh sách {{neighbors}}. Hãy tạo **bản sao sâu** (deep copy) của cả đồ thị và trả về node bản sao tương ứng với node được cho. Bản sao phải gồm toàn node **mới**, không được dùng lại bất kỳ node nào của đồ thị gốc; nếu input là {{null}} thì trả về {{null}}.
 
 ### Ví dụ
 ~~~text
-Input: adjList = [[2,4],[1,3],[2,4],[1,3]]
-Output: [[2,4],[1,3],[2,4],[1,3]]
+Input:  adjList = [[2,4],[1,3],[2,4],[1,3]]
+        (node 1 nối 2 và 4; node 2 nối 1 và 3; node 3 nối 2 và 4; node 4 nối 1 và 3)
+Output: [[2,4],[1,3],[2,4],[1,3]]  (cùng cấu trúc, nhưng toàn node mới)
+
+Input:  adjList = [[]]   (một node, không có cạnh)
+Output: [[]]
 ~~~
 
 ### Ràng buộc
-- {{1 <= n <= 100}}
-- {{1 <= Node.val <= 100}}
-- Không có cạnh tự lặp, không có cạnh song song.
+- {{0 <= số node <= 100}}, {{1 <= Node.val <= 100}}, các {{val}} khác nhau.
+- Không có cạnh tự nối và không có cạnh lặp.
 
-> {{Node}} đã được định nghĩa sẵn: class Node với trường {{val}} (int) và {{neighbors}} (List<Node>); constructor {{Node(int val)}} khởi tạo {{neighbors}} rỗng.`,
+> {{Node}} đã được định nghĩa sẵn, gồm trường {{public int val}}, trường {{public List<Node> neighbors}} và constructor {{Node(int val)}} (khởi tạo {{neighbors}} rỗng).`,
   hints: [
-    'Khi gặp một node đã nhân bản rồi, trả về bản sao đó để tránh lặp vô hạn và giữ tính liên thông.',
-    'Dùng {{HashMap<Node, Node>}} ánh xạ node gốc -> node bản sao. DFS/BFS đều được.',
-    'Nhân bản node trước, rồi mới duyệt neighbors; nếu làm ngược, đồ thị có chu trình sẽ đệ quy vô hạn.'
+    'Đồ thị có chu trình (1 → 2 → 1). Nếu cứ thấy neighbor là tạo node mới thì sẽ lặp vô hạn. Cần nhớ node gốc nào **đã được sao chép**.',
+    'Dùng {{Map<Node, Node>}} ánh xạ node gốc → node bản sao. Map này vừa là "visited", vừa giúp nối cạnh tới đúng bản sao đã có.',
+    'Tạo bản sao và **đưa vào map trước**, rồi mới duyệt neighbors. Nếu đưa vào map sau khi duyệt xong, chu trình sẽ gọi đệ quy lại chính node đó mãi.'
   ],
   solution: `### Ý tưởng
-Duyệt đồ thị gốc, với mỗi node tạo node mới và lưu vào map. Khi gặp node đã có trong map, trả về bản sao tương ứng. Nhờ map, mỗi node chỉ tạo một lần, và chu trình không gây đệ quy vô hạn.
+Duyệt đồ thị gốc (DFS hoặc BFS). Với mỗi node gốc ta tạo đúng **một** node bản sao và ghi vào {{Map<Node, Node> copies}}.
+- Gặp node chưa có trong map: tạo bản sao, ghi vào map, rồi sao chép từng neighbor và thêm vào {{neighbors}} của bản sao.
+- Gặp node đã có trong map: trả về bản sao đã tạo, không tạo thêm. Đây là điều giúp chu trình không gây lặp vô hạn và các cạnh trỏ đúng vào cùng một node bản sao.
 
 ~~~java
 class Solution {
+    private final Map<Node, Node> copies = new HashMap<>(); // node goc -> node ban sao
+
     public Node cloneGraph(Node node) {
         if (node == null) return null;
-        Map<Node, Node> map = new HashMap<>();
-        return dfs(node, map);
-    }
-
-    private Node dfs(Node node, Map<Node, Node> map) {
-        Node clone = map.get(node);
-        if (clone != null) return clone;
-        clone = new Node(node.val);
-        map.put(node, clone);
+        Node existing = copies.get(node);
+        if (existing != null) return existing;      // da sao chep roi: dung lai ban sao
+        Node copy = new Node(node.val);
+        copies.put(node, copy);                     // ghi vao map TRUOC khi duyet neighbors
         for (Node nb : node.neighbors) {
-            clone.neighbors.add(dfs(nb, map));
+            copy.neighbors.add(cloneGraph(nb));     // sao chep (hoac lay lai) tung neighbor
         }
-        return clone;
+        return copy;
     }
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- Hỏi rõ có được sửa đồ thị gốc không (ở đây không sửa).
-- BFS cũng làm được: queue + map; hữu ích khi đồ thị rất sâu và DFS có nguy cơ stack overflow.
-- Kiểm tra deep copy: mọi node bản sao phải khác tham chiếu với node gốc.
+### Chạy tay với đồ thị vuông 1-2-3-4
+1. {{clone(1)}}: tạo 1', map {1→1'}. Duyệt neighbor 2.
+2. {{clone(2)}}: tạo 2', map thêm 2→2'. Neighbor 1 đã có → trả 1'. Neighbor 3 → {{clone(3)}}.
+3. {{clone(3)}}: tạo 3'. Neighbor 2 đã có → 2'. Neighbor 4 → {{clone(4)}}: tạo 4', neighbor 1 và 3 đều đã có.
+4. Quay về 1: neighbor 4 đã có → 4'. Xong, mỗi node gốc có đúng một bản sao.
 
-> Senior tip: Nhân bản đồ thị là bài kiểm tra khả năng xử lý chu trình và trạng thái đã thăm. Map từ node gốc sang node sao vừa làm visited, vừa đảm bảo chia sẻ đúng tham chiếu trong bản sao.`,
-  starter: "class Solution {\n    public Node cloneGraph(Node node) {\n        \n    }\n}",
-  tests: `
-class Node { public int val; public List<Node> neighbors; public Node(int v){val=v;neighbors=new ArrayList<>();} }
-public class Main {
- static int passed=0,total=0;
- static void runSteps(String n, Runnable r){ total++; try{r.run();passed++;System.out.println("PASS "+n);} catch(Throwable t){System.out.println("FAIL "+n+": threw "+t);}}
- static Node build(int[][] adj){ if(adj.length==0) return null; Node[] ns=new Node[adj.length]; for(int i=0;i<adj.length;i++) ns[i]=new Node(i+1); for(int i=0;i<adj.length;i++) for(int v:adj[i]) ns[i].neighbors.add(ns[v-1]); return ns[0];}
- static boolean deep(Node o,Node c){ if(o==null||c==null) return o==c; Map<Integer,Node> mo=new HashMap<>(),mc=new HashMap<>(); Queue<Node> qo=new LinkedList<>(),qc=new LinkedList<>(); mo.put(o.val,o);qo.add(o); mc.put(c.val,c);qc.add(c); while(!qo.isEmpty()){ Node a=qo.poll(),b=qc.poll(); if(a==b) return false; for(Node n:a.neighbors) if(!mo.containsKey(n.val)){mo.put(n.val,n);qo.add(n);} for(Node n:b.neighbors) if(!mc.containsKey(n.val)){mc.put(n.val,n);qc.add(n);} } return true;}
- static boolean eq(Node a,Node b){ if(a==null&&b==null) return true; if(a==null||b==null) return false; Map<Integer,Node> ma=new HashMap<>(),mb=new HashMap<>(); Queue<Node> qa=new LinkedList<>(),qb=new LinkedList<>(); ma.put(a.val,a);qa.add(a); mb.put(b.val,b);qb.add(b); while(!qa.isEmpty()){ Node x=qa.poll(),y=qb.poll(); if(x.val!=y.val||x.neighbors.size()!=y.neighbors.size()) return false; List<Integer> xn=new ArrayList<>(),yn=new ArrayList<>(); for(Node n:x.neighbors) xn.add(n.val); for(Node n:y.neighbors) yn.add(n.val); Collections.sort(xn);Collections.sort(yn); if(!xn.equals(yn)) return false; for(Node n:x.neighbors) if(!ma.containsKey(n.val)){ma.put(n.val,n);qa.add(n);} for(Node n:y.neighbors) if(!mb.containsKey(n.val)){mb.put(n.val,n);qb.add(n);} } return ma.size()==mb.size();}
- public static void main(String[] args){
-   runSteps("null", ()->{ if(new Solution().cloneGraph(null)!=null) throw new AssertionError("x");});
-   int[][] a={{2,4},{1,3},{2,4},{1,3}}; Node o=build(a); Node c=new Solution().cloneGraph(o);
-   runSteps("example", ()->{ if(!deep(o,c)||!eq(o,c)) throw new AssertionError("x");});
-   Node s=new Node(1); Node cs=new Solution().cloneGraph(s);
-   runSteps("single", ()->{ if(cs==s||cs.val!=1||!cs.neighbors.isEmpty()) throw new AssertionError("x");});
-   int[][] b={{2},{1}}; Node o2=build(b); Node c2=new Solution().cloneGraph(o2);
-   runSteps("two", ()->{ if(!deep(o2,c2)||!eq(o2,c2)) throw new AssertionError("x");});
-   System.out.println("RESULT "+passed+"/"+total);
- } }
-`,
+### Độ phức tạp
+Mỗi node được tạo một lần, mỗi cạnh được duyệt hai lần (vô hướng) → O(V + E) thời gian, O(V) bộ nhớ cho map và stack đệ quy.
+
+### Lưu ý khi phỏng vấn
+- Đồ thị rất sâu (dạng đường thẳng hàng nghìn node) có thể làm DFS đệ quy bị {{StackOverflowError}}; khi đó dùng BFS với {{ArrayDeque}}.
+- Map dùng {{Node}} làm key dựa trên {{equals/hashCode}} mặc định (so sánh tham chiếu), đúng là điều ta cần. Nếu {{val}} duy nhất thì cũng có thể dùng {{Map<Integer, Node>}}.
+- Thứ tự {{neighbors}} của bản sao nên giữ giống bản gốc.
+
+> Senior tip: Cùng mẫu "map từ đối tượng gốc sang bản sao" được dùng khi deep-copy object graph có tham chiếu vòng (ví dụ entity JPA hai chiều). Thiếu map đó là nguyên nhân kinh điển của {{StackOverflowError}} khi serialize hoặc clone.`,
   complexity: 'Time O(V + E), Space O(V)',
-  follow: ['BFS nhân bản khác DFS ở điểm nào?', 'Làm sao nhân bản đồ thị có hướng và đồ thị rời rạc?']
+  starter: 'class Solution {\n    public Node cloneGraph(Node node) {\n        // TODO\n        return null;\n    }\n}',
+  tests: `class Node {
+    public int val;
+    public List<Node> neighbors;
+    public Node() { neighbors = new ArrayList<>(); }
+    public Node(int v) { val = v; neighbors = new ArrayList<>(); }
+}
+public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    // adj[i] = danh sach val (1-based) cua neighbor cua node i+1
+    static Node build(int[][] adj) {
+        if (adj.length == 0) return null;
+        Node[] ns = new Node[adj.length];
+        for (int i = 0; i < adj.length; i++) ns[i] = new Node(i + 1);
+        for (int i = 0; i < adj.length; i++) for (int v : adj[i]) ns[i].neighbors.add(ns[v - 1]);
+        return ns[0];
+    }
+    static Set<Node> collect(Node start) {
+        Set<Node> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        Deque<Node> st = new ArrayDeque<>();
+        if (start != null) { st.push(start); seen.add(start); }
+        while (!st.isEmpty()) for (Node nb : st.pop().neighbors) if (seen.add(nb)) st.push(nb);
+        return seen;
+    }
+    // "ok" neu copy co cung cau truc (giu thu tu neighbors) va khong dung chung node nao voi goc
+    static String check(Node orig, Node copy) {
+        if (orig == null) return copy == null ? "ok" : "expected null";
+        if (copy == null) return "copy is null";
+        Set<Node> origNodes = collect(orig);
+        Set<Node> copyNodes = collect(copy);
+        for (Node n : copyNodes) if (origNodes.contains(n)) return "shares node " + n.val + " with original";
+        if (origNodes.size() != copyNodes.size()) return "node count " + copyNodes.size() + " != " + origNodes.size();
+        Map<Integer, Node> byVal = new HashMap<>();
+        for (Node n : copyNodes) if (byVal.put(n.val, n) != null) return "duplicate copy of node " + n.val;
+        for (Node o : origNodes) {
+            Node c = byVal.get(o.val);
+            if (c == null) return "missing node " + o.val;
+            if (c.neighbors.size() != o.neighbors.size()) return "node " + o.val + " neighbor count differs";
+            for (int i = 0; i < o.neighbors.size(); i++) {
+                if (c.neighbors.get(i) != byVal.get(o.neighbors.get(i).val)) return "node " + o.val + " neighbor " + i + " wrong";
+            }
+        }
+        return copy.val == orig.val ? "ok" : "returned node " + copy.val + " instead of " + orig.val;
+    }
+    public static void main(String[] args) {
+        run("null input", "ok", () -> check(null, new Solution().cloneGraph(null)));
+        run("example square", "ok", () -> { Node o = build(new int[][]{{2, 4}, {1, 3}, {2, 4}, {1, 3}}); return check(o, new Solution().cloneGraph(o)); });
+        run("single node", "ok", () -> { Node o = build(new int[][]{{}}); return check(o, new Solution().cloneGraph(o)); });
+        run("two nodes", "ok", () -> { Node o = build(new int[][]{{2}, {1}}); return check(o, new Solution().cloneGraph(o)); });
+        run("triangle", "ok", () -> { Node o = build(new int[][]{{2, 3}, {1, 3}, {1, 2}}); return check(o, new Solution().cloneGraph(o)); });
+        run("long path 100", "ok", () -> {
+            int n = 100; int[][] adj = new int[n][];
+            for (int i = 0; i < n; i++) {
+                List<Integer> nb = new ArrayList<>();
+                if (i > 0) nb.add(i); if (i < n - 1) nb.add(i + 2);
+                adj[i] = nb.stream().mapToInt(Integer::intValue).toArray();
+            }
+            Node o = build(adj); return check(o, new Solution().cloneGraph(o));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  follow: ['Viết lại bằng BFS với hàng đợi: khác DFS ở chỗ nào?', 'Nếu đồ thị có hướng và không liên thông (cho danh sách mọi node) thì sửa thế nào?']
 }
 );
 (window.ALGOS = window.ALGOS || []).push(
@@ -11825,91 +11894,132 @@ public class Main {
   difficulty: 'medium',
   pattern: 'Graphs (DFS/BFS)',
   tags: ['matrix', 'bfs', 'dfs', 'bytebytego'],
-  prompt: `Cho ma trận {{heights}} kích thước {{m x n}}. Nước chảy từ ô cao hơn hoặc bằng sang ô thấp hơn hoặc bằng (4 hướng). Thái Bình Dương tiếp giáp biên trên và biên trái; Đại Tây Dương tiếp giáp biên dưới và biên phải. Trả về danh sách tọa độ {{[r, c]}} của các ô mà nước từ đó có thể chảy ra **cả hai** đại dương.
+  prompt: `Một hòn đảo hình chữ nhật được chia thành lưới {{m x n}}, {{heights[r][c]}} là độ cao ô {{(r, c)}}. **Thái Bình Dương** giáp cạnh trên và cạnh trái của đảo; **Đại Tây Dương** giáp cạnh dưới và cạnh phải. Nước mưa từ một ô chảy sang ô kề (trên/dưới/trái/phải) nếu ô kề có độ cao **nhỏ hơn hoặc bằng**; ô nằm sát mép đảo chảy thẳng ra đại dương giáp mép đó. Trả về toạ độ {{[r, c]}} của mọi ô mà nước từ đó chảy được ra **cả hai** đại dương, theo thứ tự hàng trước, cột sau (row-major).
 
 ### Ví dụ
 ~~~text
-Input: heights = [[1,2,2,3,5],[3,2,3,4,4],[2,4,5,3,1],[6,7,1,4,5],[5,1,1,2,4]]
+Input:  heights = [[1,2,2,3,5],
+                   [3,2,3,4,4],
+                   [2,4,5,3,1],
+                   [6,7,1,4,5],
+                   [5,1,1,2,4]]
 Output: [[0,4],[1,3],[1,4],[2,2],[3,0],[3,1],[4,0]]
+Giải thích: ví dụ ô (2,2) cao 5:
+  (2,2)=5 → (1,2)=3 → (0,2)=2 → mép trên → Thái Bình Dương
+  (2,2)=5 → (2,3)=3 → (2,4)=1 → mép phải → Đại Tây Dương
+
+Input:  heights = [[1]]
+Output: [[0,0]]
 ~~~
 
 ### Ràng buộc
 - {{1 <= m, n <= 200}}
 - {{0 <= heights[r][c] <= 10^5}}`,
   hints: [
-    'Thay vì từ mỗi ô chảy xuống (tốn O(mn * mn)), hãy đảo ngược: từ đại dương chảy vào trong.',
-    'Nước chảy ngược nghĩa là từ ô thấp sang ô cao hơn hoặc bằng.',
-    'Tính tập ô chạm Thái Bình Dương và tập ô chạm Đại Tây Dương, lấy giao.'
+    'Thử từ mỗi ô xem nước có ra được biển không sẽ tốn O((mn)²). Hãy đảo chiều câu hỏi: **từ biển đi ngược lên**, những ô nào tới được?',
+    'Đi ngược dòng nghĩa là từ ô hiện tại sang ô kề có độ cao **lớn hơn hoặc bằng**. Bắt đầu BFS/DFS từ mọi ô ở mép giáp Thái Bình Dương để đánh dấu {{pacific[r][c]}}; làm tương tự cho Đại Tây Dương.',
+    'Đáp án là các ô có cả {{pacific}} và {{atlantic}} đều đúng. Duyệt lưới theo hàng rồi cột để kết quả đúng thứ tự.'
   ],
   solution: `### Ý tưởng
-Đảo ngược hướng chảy: từ các ô biên thuộc mỗi đại dương, BFS vào trong theo điều kiện ô kế tiếp có độ cao >= ô hiện tại. Giao của hai tập kết quả là các ô chảy được ra cả hai đại dương.
+Câu hỏi gốc: "từ ô X nước có chảy ra biển không?". Hỏi cho từng ô thì mỗi lần mất O(mn), tổng O((mn)²) = 1,6·10^9 với lưới 200×200, quá chậm.
+
+Đảo chiều: "biển có thể **ngược dòng** lên tới những ô nào?". Nước chảy từ A xuống B khi {{h[B] <= h[A]}}, nên đi ngược từ B lên A khi {{h[A] >= h[B]}}. Chỉ cần **hai lần BFS nhiều nguồn**:
+1. Nguồn = mọi ô ở hàng 0 và cột 0 → đánh dấu {{pacific}}.
+2. Nguồn = mọi ô ở hàng m-1 và cột n-1 → đánh dấu {{atlantic}}.
+3. Ô thuộc cả hai tập là đáp án.
 
 ~~~java
 class Solution {
+    private static final int[][] DIRS = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+
     public List<List<Integer>> pacificAtlantic(int[][] heights) {
-        List<List<Integer>> res = new ArrayList<>();
-        if (heights == null || heights.length == 0) return res;
         int m = heights.length, n = heights[0].length;
-        boolean[][] pac = new boolean[m][n], atl = new boolean[m][n];
-        Queue<int[]> q = new LinkedList<>();
-        for (int i = 0; i < m; i++) { q.add(new int[]{i, 0}); pac[i][0] = true; }
-        for (int j = 0; j < n; j++) { q.add(new int[]{0, j}); pac[0][j] = true; }
-        bfs(heights, q, pac);
-        q = new LinkedList<>();
-        for (int i = 0; i < m; i++) { q.add(new int[]{i, n - 1}); atl[i][n - 1] = true; }
-        for (int j = 0; j < n; j++) { q.add(new int[]{m - 1, j}); atl[m - 1][j] = true; }
-        bfs(heights, q, atl);
-        for (int i = 0; i < m; i++)
-            for (int j = 0; j < n; j++)
-                if (pac[i][j] && atl[i][j]) {
-                    List<Integer> c = new ArrayList<>();
-                    c.add(i); c.add(j);
-                    res.add(c);
-                }
+        boolean[][] pacific = new boolean[m][n], atlantic = new boolean[m][n];
+        Deque<int[]> pq = new ArrayDeque<>(), aq = new ArrayDeque<>();
+        for (int r = 0; r < m; r++) {
+            mark(pq, pacific, r, 0);          // cot trai giap Thai Binh Duong
+            mark(aq, atlantic, r, n - 1);     // cot phai giap Dai Tay Duong
+        }
+        for (int c = 0; c < n; c++) {
+            mark(pq, pacific, 0, c);          // hang tren
+            mark(aq, atlantic, m - 1, c);     // hang duoi
+        }
+        bfs(heights, pq, pacific);
+        bfs(heights, aq, atlantic);
+        List<List<Integer>> res = new ArrayList<>();
+        for (int r = 0; r < m; r++)           // duyet hang roi cot -> ket qua row-major
+            for (int c = 0; c < n; c++)
+                if (pacific[r][c] && atlantic[r][c]) res.add(Arrays.asList(r, c));
         return res;
     }
-    private void bfs(int[][] h, Queue<int[]> q, boolean[][] vis) {
-        int m = h.length, n = h[0].length;
-        int[] dr = {1, -1, 0, 0}, dc = {0, 0, 1, -1};
+
+    private void mark(Deque<int[]> q, boolean[][] seen, int r, int c) {
+        if (!seen[r][c]) { seen[r][c] = true; q.add(new int[]{r, c}); }
+    }
+
+    // di nguoc dong: sang o ke co do cao >= o hien tai
+    private void bfs(int[][] h, Deque<int[]> q, boolean[][] seen) {
         while (!q.isEmpty()) {
             int[] cur = q.poll();
-            for (int d = 0; d < 4; d++) {
-                int nr = cur[0] + dr[d], nc = cur[1] + dc[d];
-                if (nr < 0 || nr >= m || nc < 0 || nc >= n) continue;
-                if (vis[nr][nc]) continue;
-                if (h[nr][nc] >= h[cur[0]][cur[1]]) {
-                    vis[nr][nc] = true;
-                    q.add(new int[]{nr, nc});
-                }
+            for (int[] d : DIRS) {
+                int nr = cur[0] + d[0], nc = cur[1] + d[1];
+                if (nr < 0 || nr >= h.length || nc < 0 || nc >= h[0].length) continue;
+                if (seen[nr][nc] || h[nr][nc] < h[cur[0]][cur[1]]) continue;
+                mark(q, seen, nr, nc);
             }
         }
     }
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- DFS đệ quy cũng được; BFS tránh stack overflow với lưới lớn.
-- Kết quả theo thứ tự row-major.
+### Chạy tay với lưới 2×2 [[1,2],[4,3]]
+- Thái Bình Dương: nguồn (0,0),(0,1),(1,0). Từ (0,1)=2 ngược lên (1,1)=3 (3 ≥ 2) → cả 4 ô.
+- Đại Tây Dương: nguồn (1,0),(1,1),(0,1). Từ đó sang (0,0)=1? 1 < 2 và 1 < 4 → không. Vậy 3 ô.
+- Giao: (0,1),(1,0),(1,1).
 
-> Senior tip: Khi bài hỏi "từ đâu có thể đạt tới biên", hãy nghĩ đến BFS ngược từ biên — giảm độ phức tạp từ O((mn)^2) xuống O(mn).`,
-  starter: "class Solution {\n    public List<List<Integer>> pacificAtlantic(int[][] heights) {\n        \n    }\n}",
-  tests: `
-public class Main {
- static int passed=0,total=0;
- static List<List<Integer>> L(int[]... rows){ List<List<Integer>> r=new ArrayList<>(); for(int[] row:rows){ List<Integer> c=new ArrayList<>(); for(int x:row) c.add(x); r.add(c);} return r;}
- public static void main(String[] args){
-   int[][] h1={{1,2,2,3,5},{3,2,3,4,4},{2,4,5,3,1},{6,7,1,4,5},{5,1,1,2,4}};
-   List<List<Integer>> exp1=L(new int[]{0,4},new int[]{1,3},new int[]{1,4},new int[]{2,2},new int[]{3,0},new int[]{3,1},new int[]{4,0});
-   total++; try{ if(Objects.deepEquals(exp1,new Solution().pacificAtlantic(h1))){passed++;System.out.println("PASS example");} else System.out.println("FAIL example");} catch(Throwable t){System.out.println("FAIL example: threw "+t);}
-   int[][] h2={{1}}; total++; try{ if(Objects.deepEquals(L(new int[]{0,0}),new Solution().pacificAtlantic(h2))){passed++;System.out.println("PASS single");} else System.out.println("FAIL single");} catch(Throwable t){System.out.println("FAIL single: threw "+t);}
-   int[][] h3={{3,3,3},{3,3,3},{3,3,3}}; List<List<Integer>> exp3=new ArrayList<>(); for(int i=0;i<3;i++) for(int j=0;j<3;j++){List<Integer> c=new ArrayList<>();c.add(i);c.add(j);exp3.add(c);}
-   total++; try{ if(Objects.deepEquals(exp3,new Solution().pacificAtlantic(h3))){passed++;System.out.println("PASS flat");} else System.out.println("FAIL flat");} catch(Throwable t){System.out.println("FAIL flat: threw "+t);}
-   total++; try{ if(Objects.deepEquals(new ArrayList<>(),new Solution().pacificAtlantic(new int[][]{}))){passed++;System.out.println("PASS empty");} else System.out.println("FAIL empty");} catch(Throwable t){System.out.println("FAIL empty: threw "+t);}
-   System.out.println("RESULT "+passed+"/"+total);
- }
-}`,
+### Độ phức tạp
+Mỗi ô vào hàng đợi tối đa một lần cho mỗi đại dương → O(m·n) thời gian và bộ nhớ.
+
+### Lưu ý khi phỏng vấn
+- DFS đệ quy cũng được, nhưng lưới 200×200 có thể tạo đường đi dài 40.000 ô → nguy cơ {{StackOverflowError}}; BFS an toàn hơn.
+- Điều kiện là **≥** (ô bằng nhau vẫn chảy được). Dùng {{>}} sẽ sai với vùng phẳng.
+- Đánh dấu {{seen}} **khi đưa vào hàng đợi**, không phải khi lấy ra, để một ô không bị thêm nhiều lần.
+
+> Senior tip: "Đảo chiều tìm kiếm từ đích" là mẹo tối ưu hay gặp: thay vì hỏi N nguồn có tới được đích không, hãy loang một lần từ đích. Cùng ý tưởng dùng khi tính "service nào bị ảnh hưởng nếu DB X sập" trên đồ thị phụ thuộc.`,
   complexity: 'Time O(m * n), Space O(m * n)',
-  follow: ['DFS đệ quy có rủi ro gì với lưới 200x200?', 'Có thể giải bằng Union-Find không?']
+  starter: 'class Solution {\n    public List<List<Integer>> pacificAtlantic(int[][] heights) {\n        // TODO\n        return new ArrayList<>();\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<List<Integer>> L(int[]... rows) {
+        List<List<Integer>> r = new ArrayList<>();
+        for (int[] row : rows) r.add(Arrays.asList(row[0], row[1]));
+        return r;
+    }
+    public static void main(String[] args) {
+        run("example", L(new int[]{0, 4}, new int[]{1, 3}, new int[]{1, 4}, new int[]{2, 2}, new int[]{3, 0}, new int[]{3, 1}, new int[]{4, 0}),
+            () -> new Solution().pacificAtlantic(new int[][]{{1, 2, 2, 3, 5}, {3, 2, 3, 4, 4}, {2, 4, 5, 3, 1}, {6, 7, 1, 4, 5}, {5, 1, 1, 2, 4}}));
+        run("single cell", L(new int[]{0, 0}), () -> new Solution().pacificAtlantic(new int[][]{{1}}));
+        run("single row", L(new int[]{0, 0}, new int[]{0, 1}, new int[]{0, 2}), () -> new Solution().pacificAtlantic(new int[][]{{1, 2, 3}}));
+        run("flat 3x3", L(new int[]{0, 0}, new int[]{0, 1}, new int[]{0, 2}, new int[]{1, 0}, new int[]{1, 1}, new int[]{1, 2}, new int[]{2, 0}, new int[]{2, 1}, new int[]{2, 2}),
+            () -> new Solution().pacificAtlantic(new int[][]{{3, 3, 3}, {3, 3, 3}, {3, 3, 3}}));
+        run("2x2 low corner", L(new int[]{0, 1}, new int[]{1, 0}, new int[]{1, 1}), () -> new Solution().pacificAtlantic(new int[][]{{1, 2}, {4, 3}}));
+        run("large 200x200 flat", 40000, () -> {
+            int[][] h = new int[200][200];
+            return new Solution().pacificAtlantic(h).size();
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  follow: ['DFS đệ quy có rủi ro gì với lưới 200x200 và khắc phục thế nào?', 'Nếu lưới thay đổi (một ô được nâng độ cao) thì có cần tính lại toàn bộ không?']
 }
 );
 (window.ALGOS = window.ALGOS || []).push(
@@ -11919,84 +12029,112 @@ public class Main {
   difficulty: 'medium',
   pattern: 'Graphs (DFS/BFS)',
   tags: ['matrix', 'bfs', 'queue', 'bytebytego'],
-  prompt: `Cho lưới {{grid}}: {{0}} = ô trống, {{1}} = cam tươi, {{2}} = cam thối. Mỗi phút, cam thối làm thối các cam tươi kề cạnh (4 hướng). Trả về số phút tối thiểu để tất cả cam thối; nếu có cam tươi không thể thối thì trả về {{-1}}. Nếu không có cam tươi ban đầu thì trả về {{0}}.
+  prompt: `Cho lưới {{grid}} kích thước {{m x n}}, mỗi ô là {{0}} (trống), {{1}} (cam tươi) hoặc {{2}} (cam thối). Mỗi phút, mọi quả cam tươi **kề cạnh** (trên/dưới/trái/phải) với một quả cam thối sẽ bị thối. Trả về số phút **ít nhất** để không còn quả cam tươi nào. Nếu có quả không bao giờ bị thối thì trả về {{-1}}; nếu ban đầu đã không có cam tươi thì trả về {{0}}.
 
 ### Ví dụ
 ~~~text
-Input: grid = [[2,1,1],[1,1,0],[0,1,1]]
+Input:  grid = [[2,1,1],
+                [1,1,0],
+                [0,1,1]]
 Output: 4
 
-Input: grid = [[2,1,1],[0,1,1],[1,0,1]]
+Input:  grid = [[2,1,1],
+                [0,1,1],
+                [1,0,1]]
 Output: -1
+Giải thích: quả ở góc dưới trái (2,0) không kề quả nào, không bao giờ thối.
+
+Input:  grid = [[0,2]]
+Output: 0
 ~~~
 
 ### Ràng buộc
 - {{1 <= m, n <= 10}}
-- {{grid[i][j]}} ∈ {{0, 1, 2}}`,
+- {{grid[r][c]}} là {{0}}, {{1}} hoặc {{2}}.`,
   hints: [
-    'Nhiều nguồn thối cùng lúc -> multi-source BFS.',
-    'Ban đầu đưa tất cả cam thối vào queue, rồi BFS theo từng "lớp" (level).',
-    'Sau BFS, nếu còn cam tươi (1) thì trả -1.'
+    'Mọi quả thối ban đầu cùng lan **đồng thời**. Đưa tất cả chúng vào hàng đợi ngay từ đầu (BFS nhiều nguồn), không chạy BFS riêng cho từng quả.',
+    'Xử lý BFS theo **từng lớp**: lấy đúng {{q.size()}} phần tử hiện có trong hàng đợi = những quả thối ở phút hiện tại; các quả chúng làm thối thuộc phút kế tiếp.',
+    'Đếm số cam tươi lúc đầu, giảm dần mỗi khi một quả bị thối. Kết thúc mà vẫn còn cam tươi thì trả {{-1}}.'
   ],
   solution: `### Ý tưởng
-Multi-source BFS: enqueue tất cả cam thối ban đầu. Mỗi level của BFS tương ứng một phút. Sau khi BFS kết thúc, nếu còn cam tươi thì trả -1.
+Đây là bài "lan truyền theo thời gian" kinh điển và lời giải là **BFS nhiều nguồn**:
+1. Duyệt lưới: đưa mọi quả thối vào hàng đợi, đếm số quả tươi {{fresh}}.
+2. Nếu {{fresh == 0}} → trả 0.
+3. Lặp theo từng phút: lấy ra **đúng số phần tử đang có** trong hàng đợi (lớp hiện tại). Mỗi quả làm thối các quả tươi kề, đổi chúng thành 2 (chính là đánh dấu đã thăm), giảm {{fresh}}, đưa vào hàng đợi cho phút sau.
+4. Hết vòng mà {{fresh > 0}} → {{-1}}, ngược lại trả số phút.
+
+Vì sao BFS cho số phút **ít nhất**? BFS thăm các ô theo thứ tự khoảng cách tăng dần tới nguồn gần nhất. Thời điểm một quả bị thối chính là khoảng cách ngắn nhất từ nó tới một quả thối ban đầu.
 
 ~~~java
 class Solution {
     public int orangesRotting(int[][] grid) {
-        if (grid == null || grid.length == 0) return 0;
         int m = grid.length, n = grid[0].length;
-        Queue<int[]> q = new LinkedList<>();
+        Deque<int[]> q = new ArrayDeque<>();
         int fresh = 0;
-        for (int i = 0; i < m; i++)
-            for (int j = 0; j < n; j++) {
-                if (grid[i][j] == 2) q.add(new int[]{i, j});
-                else if (grid[i][j] == 1) fresh++;
+        for (int r = 0; r < m; r++)
+            for (int c = 0; c < n; c++) {
+                if (grid[r][c] == 2) q.add(new int[]{r, c}); // moi nguon cung bat dau o phut 0
+                else if (grid[r][c] == 1) fresh++;
             }
-        if (fresh == 0) return 0;
+        int[][] dirs = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
         int minutes = 0;
-        int[] dr = {1, -1, 0, 0}, dc = {0, 0, 1, -1};
-        while (!q.isEmpty() && fresh > 0) {
-            int size = q.size();
-            for (int s = 0; s < size; s++) {
+        while (fresh > 0 && !q.isEmpty()) {
+            int size = q.size();                 // so qua thoi cua phut hien tai
+            for (int k = 0; k < size; k++) {
                 int[] cur = q.poll();
-                for (int d = 0; d < 4; d++) {
-                    int nr = cur[0] + dr[d], nc = cur[1] + dc[d];
-                    if (nr < 0 || nr >= m || nc < 0 || nc >= n) continue;
-                    if (grid[nr][nc] != 1) continue;
-                    grid[nr][nc] = 2;
+                for (int[] d : dirs) {
+                    int r = cur[0] + d[0], c = cur[1] + d[1];
+                    if (r < 0 || r >= m || c < 0 || c >= n || grid[r][c] != 1) continue;
+                    grid[r][c] = 2;              // lam thoi = danh dau da tham
                     fresh--;
-                    q.add(new int[]{nr, nc});
+                    q.add(new int[]{r, c});      // se lan tiep o phut sau
                 }
             }
-            minutes++;
+            minutes++;                           // xong mot lop = qua mot phut
         }
         return fresh == 0 ? minutes : -1;
     }
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- BFS theo level (đếm size queue) để đo phút; không dùng visited riêng vì đổi 1->2 đã là visited.
-- Nếu input không được sửa, dùng mảng visited.
+### Chạy tay với ví dụ 1
+- Phút 0: thối {(0,0)}, fresh = 6.
+- Phút 1: (0,1),(1,0) thối. Phút 2: (0,2),(1,1). Phút 3: (2,1). Phút 4: (2,2). fresh = 0 → 4.
 
-> Senior tip: Multi-source BFS là mẫu chuẩn cho "lan truyền theo thời gian" (fire, infection, signal). Khởi tạo queue với mọi nguồn ban đầu là chìa khóa.`,
-  starter: "class Solution {\n    public int orangesRotting(int[][] grid) {\n        \n    }\n}",
-  tests: `
-public class Main {
- static int passed=0,total=0;
- static int[][] copy(int[][] g){ int[][] r=new int[g.length][]; for(int i=0;i<g.length;i++) r[i]=g[i].clone(); return r;}
- public static void main(String[] args){
-   total++; try{ if(Objects.deepEquals(4,new Solution().orangesRotting(copy(new int[][]{{2,1,1},{1,1,0},{0,1,1}})))){passed++;System.out.println("PASS example");} else System.out.println("FAIL example");} catch(Throwable t){System.out.println("FAIL example: threw "+t);}
-   total++; try{ if(Objects.deepEquals(-1,new Solution().orangesRotting(copy(new int[][]{{2,1,1},{0,1,1},{1,0,1}})))){passed++;System.out.println("PASS impossible");} else System.out.println("FAIL impossible");} catch(Throwable t){System.out.println("FAIL impossible: threw "+t);}
-   total++; try{ if(Objects.deepEquals(0,new Solution().orangesRotting(copy(new int[][]{{0,2},{2,0}})))){passed++;System.out.println("PASS nofresh");} else System.out.println("FAIL nofresh");} catch(Throwable t){System.out.println("FAIL nofresh: threw "+t);}
-   total++; try{ if(Objects.deepEquals(-1,new Solution().orangesRotting(copy(new int[][]{{1,1},{1,1}})))){passed++;System.out.println("PASS allfresh");} else System.out.println("FAIL allfresh");} catch(Throwable t){System.out.println("FAIL allfresh: threw "+t);}
-   total++; try{ if(Objects.deepEquals(0,new Solution().orangesRotting(copy(new int[][]{{2}})))){passed++;System.out.println("PASS single");} else System.out.println("FAIL single");} catch(Throwable t){System.out.println("FAIL single: threw "+t);}
-   System.out.println("RESULT "+passed+"/"+total);
- }
-}`,
+### Độ phức tạp
+Mỗi ô vào hàng đợi tối đa một lần → O(m·n) thời gian và bộ nhớ.
+
+### Lưu ý khi phỏng vấn
+- Điều kiện {{fresh > 0}} trong vòng {{while}} quan trọng: nếu không có, vòng cuối (lớp không làm thối thêm quả nào) vẫn cộng thêm 1 phút.
+- Lời giải trên sửa {{grid}} của người gọi. Nếu không được sửa input, dùng mảng {{visited}} riêng hoặc copy lưới. Hỏi interviewer.
+- Chạy BFS riêng từ từng quả thối rồi lấy min là sai mô hình (các nguồn lan đồng thời) và chậm hơn.
+
+> Senior tip: BFS nhiều nguồn mô hình hoá tốt "lan truyền đồng thời": cháy rừng, lây nhiễm, hay tính khoảng cách từ mỗi điểm tới kho gần nhất. Nhận ra "nhiều điểm bắt đầu cùng lúc" là chìa khoá.`,
   complexity: 'Time O(m * n), Space O(m * n)',
-  follow: ['Nếu có nhiều loại cam với tốc độ thối khác nhau thì sao?', 'Có thể dùng DFS không? Vì sao BFS phù hợp hơn?']
+  starter: 'class Solution {\n    public int orangesRotting(int[][] grid) {\n        // TODO\n        return 0;\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        run("example", 4, () -> new Solution().orangesRotting(new int[][]{{2, 1, 1}, {1, 1, 0}, {0, 1, 1}}));
+        run("unreachable", -1, () -> new Solution().orangesRotting(new int[][]{{2, 1, 1}, {0, 1, 1}, {1, 0, 1}}));
+        run("no fresh", 0, () -> new Solution().orangesRotting(new int[][]{{0, 2}}));
+        run("only empty", 0, () -> new Solution().orangesRotting(new int[][]{{0}}));
+        run("fresh without rotten", -1, () -> new Solution().orangesRotting(new int[][]{{1}}));
+        run("two sources at once", 2, () -> new Solution().orangesRotting(new int[][]{{2, 1, 1}, {1, 1, 1}, {0, 1, 2}}));
+        run("long line", 9, () -> new Solution().orangesRotting(new int[][]{{2, 1, 1, 1, 1, 1, 1, 1, 1, 1}}));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  follow: ['Nếu không được sửa grid đầu vào thì đổi code thế nào?', 'Vì sao DFS không phù hợp để tính số phút ít nhất?']
 }
 );
 (window.ALGOS = window.ALGOS || []).push(
@@ -12006,97 +12144,122 @@ public class Main {
   difficulty: 'medium',
   pattern: 'Topological Sort',
   tags: ['graph', 'topological-sort', 'kahn', 'bytebytego'],
-  prompt: `Cho đồ thị có hướng với {{V}} đỉnh (0..V-1) và danh sách cạnh {{edges}} (u -> v). Trả về một thứ tự topo hợp lệ; nếu đồ thị có chu trình thì trả về mảng rỗng.
+  prompt: `Cho đồ thị có hướng gồm {{V}} đỉnh đánh số {{0..V-1}} và danh sách cạnh {{edges}}, mỗi cạnh {{[u, v]}} nghĩa là có mũi tên {{u → v}}. Trả về một **thứ tự topo** bất kỳ: mảng chứa mỗi đỉnh đúng một lần sao cho với mọi cạnh {{u → v}}, {{u}} đứng trước {{v}}. Nếu đồ thị có chu trình (kể cả cạnh tự nối {{[x, x]}}) thì không tồn tại thứ tự topo, trả về mảng rỗng.
 
 ### Ví dụ
 ~~~text
-Input: V = 4, edges = [[0,1],[1,2],[2,3]]
+Input:  V = 4, edges = [[0,1],[1,2],[2,3]]
 Output: [0,1,2,3]
 
-Input: V = 4, edges = [[0,1],[1,2],[2,0],[3,3]]
-Output: []
+Input:  V = 4, edges = [[0,1],[0,2],[1,3],[2,3]]
+Output: [0,1,2,3] hoặc [0,2,1,3] (đều hợp lệ)
+
+Input:  V = 3, edges = [[0,1],[1,2],[2,0]]
+Output: []   (chu trình 0 → 1 → 2 → 0)
 ~~~
 
 ### Ràng buộc
 - {{1 <= V <= 10^4}}
-- {{0 <= edges.length <= 10^4}}`,
+- {{0 <= edges.length <= 10^4}}, {{0 <= u, v < V}}`,
   hints: [
-    'Thứ tự topo: mọi cạnh u->v thì u đứng trước v.',
-    'Kahn: bắt đầu từ các đỉnh indegree 0, đưa vào queue, xử lý và giảm indegree của hàng xóm.',
-    'Nếu số đỉnh đã xuất ra < V thì có chu trình.'
+    'Đỉnh nào **không có mũi tên đi vào** (bậc vào = 0) thì không phải chờ ai, có thể đứng đầu.',
+    'Thuật toán Kahn: đưa mọi đỉnh bậc vào 0 vào hàng đợi. Lấy một đỉnh ra, ghi vào kết quả, rồi "xoá" các cạnh đi ra từ nó (giảm bậc vào của đỉnh đích). Đỉnh nào giảm về 0 thì vào hàng đợi.',
+    'Nếu đến cuối mà số đỉnh đã ghi nhận ít hơn {{V}} thì các đỉnh còn lại nằm trong chu trình (luôn còn mũi tên đi vào) → trả mảng rỗng.'
   ],
   solution: `### Ý tưởng
-Kahn's algorithm: tính indegree, enqueue các đỉnh indegree 0. Khi pop một đỉnh, thêm vào kết quả và giảm indegree của các đỉnh kề; nếu indegree về 0 thì enqueue. Nếu kết quả đủ V đỉnh thì không có chu trình.
+Thứ tự topo giống sắp lịch công việc có phụ thuộc: việc nào không phụ thuộc ai thì làm trước, làm xong thì "gỡ" phụ thuộc của các việc sau.
+
+**Thuật toán Kahn** (BFS theo bậc vào):
+1. Dựng danh sách kề {{adj}} và mảng {{indeg[v]}} = số cạnh đi vào {{v}}.
+2. Đưa mọi đỉnh có {{indeg == 0}} vào hàng đợi.
+3. Lấy đỉnh {{u}} ra, ghi vào kết quả. Với mỗi cạnh {{u → v}}: giảm {{indeg[v]}}; nếu về 0 thì {{v}} sẵn sàng → vào hàng đợi.
+4. Nếu số đỉnh ghi nhận {{< V}} → có chu trình.
+
+Vì sao phát hiện được chu trình? Trong một chu trình, mỗi đỉnh luôn có ít nhất một cạnh đi vào từ đỉnh khác **trong cùng chu trình**; không đỉnh nào của chu trình được ghi nhận trước nên bậc vào không bao giờ về 0.
 
 ~~~java
 class Solution {
     public int[] topoSort(int V, int[][] edges) {
         List<List<Integer>> adj = new ArrayList<>();
-        int[] indeg = new int[V];
         for (int i = 0; i < V; i++) adj.add(new ArrayList<>());
+        int[] indeg = new int[V];                 // so canh di vao moi dinh
         for (int[] e : edges) {
             adj.get(e[0]).add(e[1]);
             indeg[e[1]]++;
         }
-        Queue<Integer> q = new LinkedList<>();
-        for (int i = 0; i < V; i++) if (indeg[i] == 0) q.add(i);
-        int[] res = new int[V];
+        Deque<Integer> q = new ArrayDeque<>();
+        for (int v = 0; v < V; v++) if (indeg[v] == 0) q.add(v); // khong phu thuoc ai
+        int[] order = new int[V];
         int idx = 0;
         while (!q.isEmpty()) {
             int u = q.poll();
-            res[idx++] = u;
+            order[idx++] = u;
             for (int v : adj.get(u)) {
-                if (--indeg[v] == 0) q.add(v);
+                if (--indeg[v] == 0) q.add(v);    // v het phu thuoc -> san sang
             }
         }
-        if (idx != V) return new int[0];
-        return res;
+        return idx == V ? order : new int[0];     // thieu dinh -> co chu trinh
     }
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- DFS (finish time) cũng cho thứ tự topo; Kahn dễ phát hiện cycle.
-- Nhiều thứ tự hợp lệ; test nên kiểm tra tính hợp lệ thay vì so sánh mảng cố định. Ở đây harness kiểm tra indegree constraints.
-- Với đồ thị lớn, dùng adjacency list.
+### Chạy tay với V = 4, edges = [[0,1],[0,2],[1,3],[2,3]]
+- indeg = [0,1,1,2]. Hàng đợi: [0].
+- Lấy 0 → indeg[1]=0, indeg[2]=0 → hàng đợi [1,2].
+- Lấy 1 → indeg[3]=1. Lấy 2 → indeg[3]=0 → hàng đợi [3]. Lấy 3.
+- Kết quả [0,1,2,3], đủ 4 đỉnh.
 
-> Senior tip: Topo sort là nền tảng cho scheduling, build system, và dependency resolution trong microservices.`,
-  starter: "class Solution {\n    public int[] topoSort(int V, int[][] edges) {\n        \n    }\n}",
-  tests: `
-public class Main {
- static int passed=0,total=0;
- static boolean valid(int V,int[][] edges,int[] res){
-   if(res.length==0){
-     // cycle expected? caller decides; here just return true for empty handling separately
-     return true;
-   }
-   if(res.length!=V) return false;
-   int[] pos=new int[V];
-   for(int i=0;i<V;i++) pos[res[i]]=i;
-   for(int[] e:edges) if(pos[e[0]]>=pos[e[1]]) return false;
-   // check permutation
-   boolean[] seen=new boolean[V];
-   for(int x:res){ if(x<0||x>=V||seen[x]) return false; seen[x]=true; }
-   for(boolean b:seen) if(!b) return false;
-   return true;
- }
- public static void main(String[] args){
-   int[][] e1={{0,1},{1,2},{2,3}};
-   int[] r1=new Solution().topoSort(4,e1);
-   total++; if(r1.length==4 && valid(4,e1,r1)){passed++;System.out.println("PASS chain");} else System.out.println("FAIL chain");
-   int[][] e2={{0,1},{1,2},{2,0},{3,3}};
-   int[] r2=new Solution().topoSort(4,e2);
-   total++; if(r2.length==0){passed++;System.out.println("PASS cycle");} else System.out.println("FAIL cycle");
-   int[] r3=new Solution().topoSort(1,new int[][]{});
-   total++; if(r3.length==1 && r3[0]==0){passed++;System.out.println("PASS single");} else System.out.println("FAIL single");
-   int[][] e4={{0,1},{0,2},{1,3},{2,3}};
-   int[] r4=new Solution().topoSort(4,e4);
-   total++; if(r4.length==4 && valid(4,e4,r4)){passed++;System.out.println("PASS diamond");} else System.out.println("FAIL diamond");
-   System.out.println("RESULT "+passed+"/"+total);
- }
-}`,
+### Độ phức tạp
+Mỗi đỉnh vào/ra hàng đợi một lần, mỗi cạnh được xét một lần → O(V + E) thời gian, O(V + E) bộ nhớ.
+
+### Lưu ý khi phỏng vấn
+- Có nhiều thứ tự hợp lệ; nếu cần thứ tự nhỏ nhất theo từ điển thì thay hàng đợi bằng {{PriorityQueue}} (O((V + E) log V)).
+- Cách khác: DFS, đỉnh nào **duyệt xong** thì đẩy vào stack; đảo stack là thứ tự topo. Phát hiện chu trình bằng 3 màu (chưa thăm / đang thăm / xong).
+- Bài này gần như **trùng thuật toán với algo-110 (Course Schedule II)**, chỉ khác cách diễn đạt cạnh.
+
+> Senior tip: Topological sort là lõi của build tool (Maven/Gradle sắp thứ tự module), Spring khởi tạo bean theo phụ thuộc, và migration DB. Lỗi "circular dependency" bạn từng gặp chính là bước 4 của Kahn.`,
   complexity: 'Time O(V + E), Space O(V + E)',
-  follow: ['DFS topo sort khác Kahn ở điểm nào?', 'Làm sao trả về tất cả thứ tự topo?']
+  starter: 'class Solution {\n    public int[] topoSort(int V, int[][] edges) {\n        // TODO\n        return new int[0];\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    // tra ve "valid" neu res la hoan vi cua 0..V-1 va moi canh u->v co u dung truoc v
+    static String check(int V, int[][] edges, int[] res) {
+        if (res == null) return "null";
+        if (res.length != V) return "length " + res.length + ": " + Arrays.toString(res);
+        int[] pos = new int[V];
+        Arrays.fill(pos, -1);
+        for (int i = 0; i < V; i++) {
+            if (res[i] < 0 || res[i] >= V || pos[res[i]] != -1) return "not a permutation: " + Arrays.toString(res);
+            pos[res[i]] = i;
+        }
+        for (int[] e : edges) if (pos[e[0]] >= pos[e[1]]) return "edge " + e[0] + "->" + e[1] + " violated: " + Arrays.toString(res);
+        return "valid";
+    }
+    public static void main(String[] args) {
+        run("chain", "valid", () -> { int[][] e = {{0, 1}, {1, 2}, {2, 3}}; return check(4, e, new Solution().topoSort(4, e)); });
+        run("diamond", "valid", () -> { int[][] e = {{0, 1}, {0, 2}, {1, 3}, {2, 3}}; return check(4, e, new Solution().topoSort(4, e)); });
+        run("reverse numbering", "valid", () -> { int[][] e = {{3, 2}, {2, 1}, {1, 0}}; return check(4, e, new Solution().topoSort(4, e)); });
+        run("no edges", "valid", () -> check(3, new int[0][], new Solution().topoSort(3, new int[0][])));
+        run("cycle -> empty", 0, () -> new Solution().topoSort(3, new int[][]{{0, 1}, {1, 2}, {2, 0}}).length);
+        run("self loop -> empty", 0, () -> new Solution().topoSort(2, new int[][]{{0, 1}, {1, 1}}).length);
+        run("large chain 10000", "valid", () -> {
+            int V = 10000; int[][] e = new int[V - 1][];
+            for (int i = 0; i + 1 < V; i++) e[i] = new int[]{V - 1 - i, V - 2 - i};
+            return check(V, e, new Solution().topoSort(V, e));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  follow: ['Viết thứ tự topo bằng DFS và phát hiện chu trình bằng 3 trạng thái màu như thế nào?', 'Muốn thứ tự topo nhỏ nhất theo từ điển thì sửa gì?']
 }
 );
 (window.ALGOS = window.ALGOS || []).push(
@@ -12106,89 +12269,112 @@ public class Main {
   difficulty: 'medium',
   pattern: 'Topological Sort',
   tags: ['graph', 'topological-sort', 'bytebytego'],
-  prompt: `Có {{numCourses}} khóa học đánh số 0..numCourses-1. prerequisites[i] = [a, b] nghĩa là để học a phải hoàn thành b. Trả về một thứ tự học hợp lệ; nếu không thể (có chu trình) trả về mảng rỗng.
+  prompt: `Có {{numCourses}} môn học đánh số {{0..numCourses-1}}. {{prerequisites[i] = [a, b]}} nghĩa là muốn học môn {{a}} thì phải học xong môn {{b}} trước. Trả về **một** thứ tự học hết mọi môn thoả mãn tất cả điều kiện; nếu không thể (điều kiện vòng tròn) thì trả về mảng rỗng.
 
 ### Ví dụ
 ~~~text
-Input: numCourses = 2, prerequisites = [[1,0]]
+Input:  numCourses = 2, prerequisites = [[1,0]]
 Output: [0,1]
 
-Input: numCourses = 2, prerequisites = [[1,0],[0,1]]
-Output: []
+Input:  numCourses = 4, prerequisites = [[1,0],[2,0],[3,1],[3,2]]
+Output: [0,1,2,3] hoặc [0,2,1,3]
+
+Input:  numCourses = 2, prerequisites = [[1,0],[0,1]]
+Output: []   (0 cần 1, 1 lại cần 0)
 ~~~
 
 ### Ràng buộc
 - {{1 <= numCourses <= 2000}}
-- {{0 <= prerequisites.length <= 5000}}`,
+- {{0 <= prerequisites.length <= numCourses * (numCourses - 1)}}
+- Các cặp {{[a, b]}} khác nhau và {{a != b}}.`,
   hints: [
-    'Đây là topo sort trên đồ thị prerequisite -> course.',
-    'Kahn: bắt đầu từ các khóa không có prerequisite.',
-    'Nếu không đủ khóa học thì có chu trình.'
+    'Vẽ mỗi điều kiện {{[a, b]}} thành mũi tên {{b → a}} ("học b xong mới tới a"). Bài toán trở thành tìm thứ tự topo.',
+    'Môn không có điều kiện tiên quyết (bậc vào 0) học trước. Học xong một môn thì giảm bậc vào của các môn phụ thuộc nó (thuật toán Kahn).',
+    'Nếu học được ít hơn {{numCourses}} môn thì có vòng phụ thuộc → trả mảng rỗng.'
   ],
   solution: `### Ý tưởng
-Xây đồ thị b -> a (b là prerequisite của a). Kahn: enqueue các khóa indegree 0. Kết quả là thứ tự học. Nếu thiếu khóa thì có cycle.
+Đổi đề sang đồ thị: mỗi môn là một đỉnh, điều kiện {{[a, b]}} là cạnh {{b → a}}. Thứ tự học hợp lệ chính là **thứ tự topo**. Dùng thuật toán Kahn:
+1. {{indeg[a]}} = số môn tiên quyết của {{a}}.
+2. Hàng đợi khởi đầu = các môn có {{indeg == 0}} (học ngay được).
+3. Lấy môn {{b}} ra, thêm vào lịch học. Với mỗi môn {{a}} cần {{b}}: {{indeg[a]--}}; về 0 thì {{a}} đã đủ điều kiện → vào hàng đợi.
+4. Lịch học đủ {{numCourses}} môn → trả lịch; ngược lại có vòng → mảng rỗng.
 
 ~~~java
 class Solution {
     public int[] findOrder(int numCourses, int[][] prerequisites) {
-        List<List<Integer>> adj = new ArrayList<>();
-        int[] indeg = new int[numCourses];
-        for (int i = 0; i < numCourses; i++) adj.add(new ArrayList<>());
+        List<List<Integer>> next = new ArrayList<>();  // next[b] = cac mon can b
+        for (int i = 0; i < numCourses; i++) next.add(new ArrayList<>());
+        int[] indeg = new int[numCourses];             // so mon tien quyet con thieu
         for (int[] p : prerequisites) {
-            adj.get(p[1]).add(p[0]);
+            next.get(p[1]).add(p[0]);                  // canh b -> a
             indeg[p[0]]++;
         }
-        Queue<Integer> q = new LinkedList<>();
-        for (int i = 0; i < numCourses; i++) if (indeg[i] == 0) q.add(i);
-        int[] res = new int[numCourses];
-        int idx = 0;
+        Deque<Integer> q = new ArrayDeque<>();
+        for (int c = 0; c < numCourses; c++) if (indeg[c] == 0) q.add(c);
+        int[] order = new int[numCourses];
+        int taken = 0;
         while (!q.isEmpty()) {
-            int u = q.poll();
-            res[idx++] = u;
-            for (int v : adj.get(u)) if (--indeg[v] == 0) q.add(v);
+            int b = q.poll();
+            order[taken++] = b;                        // hoc mon b
+            for (int a : next.get(b)) {
+                if (--indeg[a] == 0) q.add(a);         // a da du dieu kien
+            }
         }
-        return idx == numCourses ? res : new int[0];
+        return taken == numCourses ? order : new int[0];
     }
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- Có thể dùng DFS + stack finish time.
-- Nhiều thứ tự hợp lệ; harness kiểm tra tính hợp lệ.
+### Chạy tay với ví dụ 2
+indeg = [0,1,1,2]. Hàng đợi [0] → học 0, môn 1 và 2 về 0 → học 1 (môn 3 còn 1) → học 2 (môn 3 về 0) → học 3. Kết quả [0,1,2,3].
 
-> Senior tip: Course schedule là ví dụ kinh điển của topo sort trong hệ thống build/deploy.`,
-  starter: "class Solution {\n    public int[] findOrder(int numCourses, int[][] prerequisites) {\n        \n    }\n}",
-  tests: `
-public class Main {
- static int passed=0,total=0;
- static boolean valid(int n,int[][] prereq,int[] res){
-   if(res.length==0) return false;
-   if(res.length!=n) return false;
-   int[] pos=new int[n];
-   for(int i=0;i<n;i++) pos[res[i]]=i;
-   for(int[] p:prereq) if(pos[p[0]]<=pos[p[1]]) return false;
-   boolean[] seen=new boolean[n];
-   for(int x:res){ if(x<0||x>=n||seen[x]) return false; seen[x]=true;}
-   for(boolean b:seen) if(!b) return false;
-   return true;
- }
- public static void main(String[] args){
-   int[][] p1={{1,0}};
-   int[] r1=new Solution().findOrder(2,p1);
-   total++; if(valid(2,p1,r1)){passed++;System.out.println("PASS example");} else System.out.println("FAIL example");
-   int[][] p2={{1,0},{0,1}};
-   int[] r2=new Solution().findOrder(2,p2);
-   total++; if(r2.length==0){passed++;System.out.println("PASS cycle");} else System.out.println("FAIL cycle");
-   int[] r3=new Solution().findOrder(1,new int[][]{});
-   total++; if(r3.length==1 && r3[0]==0){passed++;System.out.println("PASS single");} else System.out.println("FAIL single");
-   int[][] p4={{1,0},{2,0},{3,1},{3,2}};
-   int[] r4=new Solution().findOrder(4,p4);
-   total++; if(valid(4,p4,r4)){passed++;System.out.println("PASS diamond");} else System.out.println("FAIL diamond");
-   System.out.println("RESULT "+passed+"/"+total);
- }
-}`,
+### Độ phức tạp
+O(V + E) thời gian và bộ nhớ, với V = số môn, E = số điều kiện.
+
+### Lưu ý khi phỏng vấn
+- Hay nhầm chiều cạnh: {{[a, b]}} là "a cần b" nên cạnh đi **từ b sang a**. Nói to điều này khi phỏng vấn.
+- Course Schedule I (algo-029, algo-073) chỉ hỏi "có học hết được không" → cùng code, trả {{taken == numCourses}}.
+- Bài này cùng thuật toán với algo-109 (Topological Sort).
+
+> Senior tip: Hệ thống CI/CD chạy job theo pipeline có phụ thuộc, hay Kubernetes/Helm cài chart có dependency, đều cần thứ tự topo và phải báo lỗi rõ ràng khi có vòng. Trong thực tế nên in ra **các đỉnh còn lại** (chính là các đỉnh dính vòng) để người dùng sửa cấu hình.`,
   complexity: 'Time O(V + E), Space O(V + E)',
-  follow: ['Nếu có nhiều thứ tự hợp lệ, trả về thứ tự nào?']
+  starter: 'class Solution {\n    public int[] findOrder(int numCourses, int[][] prerequisites) {\n        // TODO\n        return new int[0];\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    // "valid" neu res la hoan vi 0..n-1 va moi [a,b] co b hoc truoc a
+    static String check(int n, int[][] pre, int[] res) {
+        if (res == null) return "null";
+        if (res.length != n) return "length " + res.length + ": " + Arrays.toString(res);
+        int[] pos = new int[n];
+        Arrays.fill(pos, -1);
+        for (int i = 0; i < n; i++) {
+            if (res[i] < 0 || res[i] >= n || pos[res[i]] != -1) return "not a permutation: " + Arrays.toString(res);
+            pos[res[i]] = i;
+        }
+        for (int[] p : pre) if (pos[p[1]] >= pos[p[0]]) return "course " + p[0] + " before its prerequisite " + p[1];
+        return "valid";
+    }
+    public static void main(String[] args) {
+        run("example", "valid", () -> { int[][] p = {{1, 0}}; return check(2, p, new Solution().findOrder(2, p)); });
+        run("diamond", "valid", () -> { int[][] p = {{1, 0}, {2, 0}, {3, 1}, {3, 2}}; return check(4, p, new Solution().findOrder(4, p)); });
+        run("single course", "valid", () -> check(1, new int[0][], new Solution().findOrder(1, new int[0][])));
+        run("no prerequisites", "valid", () -> check(3, new int[0][], new Solution().findOrder(3, new int[0][])));
+        run("two-course cycle", 0, () -> new Solution().findOrder(2, new int[][]{{1, 0}, {0, 1}}).length);
+        run("cycle in part of graph", 0, () -> new Solution().findOrder(4, new int[][]{{1, 0}, {2, 1}, {3, 2}, {1, 3}}).length);
+        run("edge direction matters", "valid", () -> { int[][] p = {{0, 1}, {0, 2}, {1, 2}}; return check(3, p, new Solution().findOrder(3, p)); });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  follow: ['Nếu có vòng phụ thuộc, làm sao in ra chính các môn nằm trong vòng?', 'Nếu mỗi học kỳ học được tối đa k môn thì cần tối thiểu bao nhiêu học kỳ?']
 }
 );
 (window.ALGOS = window.ALGOS || []).push(
@@ -12198,108 +12384,130 @@ public class Main {
   difficulty: 'hard',
   pattern: 'Topological Sort',
   tags: ['graph', 'topological-sort', 'string', 'bytebytego'],
-  prompt: `Cho danh sách {{words}} được sắp xếp theo thứ tự từ điển của một ngôn ngữ ngoài hành tinh. Suy ra thứ tự các ký tự. Trả về chuỗi chứa các ký tự theo thứ tự topo; nếu có nhiều đáp án trả về bất kỳ; nếu dữ liệu không hợp lệ (mâu thuẫn hoặc prefix sai) trả về {{""}}.
+  prompt: `Một ngôn ngữ ngoài hành tinh dùng các chữ cái {{a-z}} nhưng theo **thứ tự khác**. Bạn nhận danh sách {{words}} đã được sắp xếp theo thứ tự từ điển của ngôn ngữ đó. Hãy suy ra một thứ tự các chữ cái và trả về dưới dạng chuỗi chứa **mọi chữ cái xuất hiện** trong {{words}}, mỗi chữ đúng một lần. Nếu có nhiều đáp án, trả về bất kỳ. Nếu dữ liệu mâu thuẫn thì trả về {{""}}. Dữ liệu mâu thuẫn gồm hai loại: có vòng thứ tự (a trước b, b trước a), hoặc một từ đứng trước **tiền tố của chính nó** (ví dụ {{"abc"}} đứng trước {{"ab"}}).
 
 ### Ví dụ
 ~~~text
-Input: words = ["wrt","wrf","er","ett","rftt"]
+Input:  words = ["wrt","wrf","er","ett","rftt"]
 Output: "wertf"
+Giải thích: "wrt" < "wrf" cho t < f; "wrf" < "er" cho w < e; "er" < "ett" cho r < t; "ett" < "rftt" cho e < r.
 
-Input: words = ["z","x","z"]
-Output: ""
+Input:  words = ["z","x","z"]
+Output: ""   (z < x và x < z: mâu thuẫn)
+
+Input:  words = ["abc","ab"]
+Output: ""   (từ dài đứng trước tiền tố của nó)
 ~~~
 
 ### Ràng buộc
 - {{1 <= words.length <= 100}}
 - {{1 <= words[i].length <= 100}}
-- Chỉ gồm chữ cái thường a-z`,
+- {{words[i]}} chỉ gồm chữ cái thường {{a-z}}.`,
   hints: [
-    'So sánh từng cặp từ liên tiếp để suy ra quan hệ thứ tự giữa hai ký tự đầu tiên khác nhau.',
-    'Xây đồ thị ký tự và topo sort.',
-    'Trường hợp prefix: nếu từ dài hơn đứng trước từ ngắn hơn có cùng prefix thì invalid.'
+    'So sánh **hai từ liền kề**: ký tự khác nhau **đầu tiên** cho ta đúng một thông tin "chữ c1 đứng trước chữ c2". Các ký tự phía sau không cho thông tin gì.',
+    'Mỗi thông tin là một cạnh {{c1 → c2}} trong đồ thị 26 đỉnh. Thứ tự chữ cái cần tìm là thứ tự topo của đồ thị đó (thuật toán Kahn).',
+    'Hai trường hợp trả {{""}}: (1) topo sort không lấy được hết các chữ (có vòng); (2) hai từ liền kề không có ký tự khác nhau nhưng từ trước dài hơn từ sau.'
   ],
   solution: `### Ý tưởng
-So sánh các từ liên tiếp, tìm ký tự đầu tiên khác nhau để tạo cạnh. Sau đó Kahn topo sort trên 26 ký tự xuất hiện. Nếu topo sort không đủ số ký tự xuất hiện hoặc phát hiện cycle/prefix invalid thì trả "".
+Từ điển bình thường so sánh hai từ bằng **ký tự khác nhau đầu tiên**. Đảo ngược: nhìn hai từ liền kề, ký tự khác nhau đầu tiên cho biết chữ nào đứng trước. Ví dụ {{"wrt" < "wrf"}}: ký tự đầu tiên khác nhau là {{t}} và {{f}} → {{t}} trước {{f}}.
+
+Các bước:
+1. Ghi nhận mọi chữ xuất hiện (cả những chữ không có quan hệ nào cũng phải có trong kết quả).
+2. Với mỗi cặp từ liền kề, tìm ký tự khác nhau đầu tiên → cạnh {{c1 → c2}} (dùng Set để không đếm trùng cạnh). Nếu không có ký tự khác mà từ trước dài hơn → mâu thuẫn, trả {{""}}.
+3. Kahn: chữ có bậc vào 0 ra trước. Nếu lấy được ít chữ hơn số chữ xuất hiện → có vòng → {{""}}.
 
 ~~~java
 class Solution {
     public String alienOrder(String[] words) {
         Map<Character, Set<Character>> adj = new HashMap<>();
         Map<Character, Integer> indeg = new HashMap<>();
-        for (String w : words) for (char c : w.toCharArray()) { adj.putIfAbsent(c, new HashSet<>()); indeg.putIfAbsent(c, 0); }
+        for (String w : words)
+            for (char c : w.toCharArray()) {          // moi chu xuat hien deu la mot dinh
+                adj.putIfAbsent(c, new HashSet<>());
+                indeg.putIfAbsent(c, 0);
+            }
         for (int i = 0; i + 1 < words.length; i++) {
             String a = words[i], b = words[i + 1];
-            int min = Math.min(a.length(), b.length());
-            boolean found = false;
-            for (int j = 0; j < min; j++) {
-                char ca = a.charAt(j), cb = b.charAt(j);
-                if (ca != cb) {
-                    if (adj.get(ca).add(cb)) indeg.put(cb, indeg.get(cb) + 1);
-                    found = true; break;
-                }
+            int len = Math.min(a.length(), b.length());
+            int j = 0;
+            while (j < len && a.charAt(j) == b.charAt(j)) j++; // tim ky tu khac dau tien
+            if (j == len) {
+                if (a.length() > b.length()) return "";        // "abc" truoc "ab": vo ly
+                continue;                                       // khong co thong tin moi
             }
-            if (!found && a.length() > b.length()) return "";
+            char from = a.charAt(j), to = b.charAt(j);
+            if (adj.get(from).add(to)) indeg.merge(to, 1, Integer::sum); // canh moi: tang bac vao
         }
-        Queue<Character> q = new LinkedList<>();
-        for (char c : indeg.keySet()) if (indeg.get(c) == 0) q.add(c);
-        StringBuilder sb = new StringBuilder();
+        Deque<Character> q = new ArrayDeque<>();
+        for (Map.Entry<Character, Integer> e : indeg.entrySet()) if (e.getValue() == 0) q.add(e.getKey());
+        StringBuilder order = new StringBuilder();
         while (!q.isEmpty()) {
-            char u = q.poll();
-            sb.append(u);
-            for (char v : adj.get(u)) { int nv = indeg.get(v) - 1; indeg.put(v, nv); if (nv == 0) q.add(v); }
+            char c = q.poll();
+            order.append(c);
+            for (char nx : adj.get(c)) {
+                if (indeg.merge(nx, -1, Integer::sum) == 0) q.add(nx);
+            }
         }
-        return sb.length() == indeg.size() ? sb.toString() : "";
+        return order.length() == indeg.size() ? order.toString() : ""; // thieu chu -> co vong
     }
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- Prefix invalid là bẫy thường gặp.
-- Nếu chỉ có một từ, mọi ký tự xuất hiện đều hợp lệ theo thứ tự bất kỳ.
-- Có thể trả bất kỳ thứ tự hợp lệ nào.
+### Chạy tay với ví dụ 1
+Cạnh: t→f, w→e, r→t, e→r. Bậc vào: w=0, e=1, r=1, t=1, f=1.
+Kahn: w → (e về 0) e → r → t → f. Kết quả "wertf".
 
-> Senior tip: Alien dictionary là bài kiểm tra khả năng kết hợp string processing với graph algorithm.`,
-  starter: "class Solution {\n    public String alienOrder(String[] words) {\n        \n    }\n}",
-  tests: `
-public class Main {
- static int passed=0,total=0;
- static boolean follows(String[] words,String order){
-   Map<Character,Integer> pos=new HashMap<>();
-   for(int i=0;i<order.length();i++) pos.put(order.charAt(i),i);
-   for(int i=0;i+1<words.length;i++){
-     String a=words[i],b=words[i+1];
-     int min=Math.min(a.length(),b.length());
-     int j=0;
-     while(j<min && a.charAt(j)==b.charAt(j)) j++;
-     if(j==min){ if(a.length()>b.length()) return false; }
-     else {
-       char ca=a.charAt(j), cb=b.charAt(j);
-       if(!pos.containsKey(ca) || !pos.containsKey(cb)) return false;
-       if(pos.get(ca)>=pos.get(cb)) return false;
-     }
-   }
-   // all chars in words must appear in order
-   Set<Character> chars=new HashSet<>();
-   for(String w:words) for(char c:w.toCharArray()) chars.add(c);
-   for(char c:chars) if(!pos.containsKey(c)) return false;
-   return true;
- }
- public static void main(String[] args){
-   String[] w1={"wrt","wrf","er","ett","rftt"};
-   String r1=new Solution().alienOrder(w1);
-   total++; if(!r1.isEmpty() && follows(w1,r1)){passed++;System.out.println("PASS example");} else System.out.println("FAIL example: "+r1);
-   String[] w2={"z","x","z"};
-   total++; if(new Solution().alienOrder(w2).isEmpty()){passed++;System.out.println("PASS cycle");} else System.out.println("FAIL cycle");
-   String[] w3={"abc","ab"};
-   total++; if(new Solution().alienOrder(w3).isEmpty()){passed++;System.out.println("PASS prefix");} else System.out.println("FAIL prefix");
-   String[] w4={"z"};
-   String r4=new Solution().alienOrder(w4);
-   total++; if(r4.length()==1 && r4.equals("z")){passed++;System.out.println("PASS single");} else System.out.println("FAIL single: "+r4);
-   System.out.println("RESULT "+passed+"/"+total);
- }
+### Độ phức tạp
+Gọi C = tổng số ký tự của mọi từ. Bước so sánh O(C); đồ thị tối đa 26 đỉnh và 26·25 cạnh nên topo sort coi như O(1). Tổng O(C) thời gian, O(1) bộ nhớ phụ (bảng chữ cái cố định).
+
+### Lưu ý khi phỏng vấn
+- **Chỉ** ký tự khác nhau đầu tiên mới cho thông tin; so sánh tiếp các ký tự sau là sai.
+- Bẫy tiền tố: {{["abc","ab"]}} không thể là từ điển hợp lệ ở bất kỳ ngôn ngữ nào.
+- Chữ xuất hiện mà không có quan hệ vẫn phải có trong kết quả (ví dụ {{["z"]}} → {{"z"}}).
+- Không thêm cạnh trùng hai lần vào {{indeg}}, nếu không bậc vào bị đếm sai và thuật toán báo vòng nhầm.
+
+> Senior tip: Bài này kiểm tra khả năng **mô hình hoá**: biến dữ liệu chuỗi thành đồ thị rồi áp thuật toán chuẩn. Khi gặp vấn đề lạ, hãy hỏi "đâu là đỉnh, đâu là cạnh?". Rất nhiều bài toán phụ thuộc thực tế giải theo cách này.`,
+  complexity: 'Time O(C) với C = tổng số ký tự, Space O(1) (tối đa 26 chữ)',
+  starter: 'class Solution {\n    public String alienOrder(String[] words) {\n        // TODO\n        return "";\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    // "valid" neu order chua dung moi chu xuat hien (moi chu 1 lan) va words duoc sap xep theo order
+    static String check(String[] words, String order) {
+        Map<Character, Integer> pos = new HashMap<>();
+        for (int i = 0; i < order.length(); i++) if (pos.put(order.charAt(i), i) != null) return "duplicate letter in " + order;
+        Set<Character> chars = new HashSet<>();
+        for (String w : words) for (char c : w.toCharArray()) chars.add(c);
+        if (!chars.equals(pos.keySet())) return "letters " + pos.keySet() + " != " + chars;
+        for (int i = 0; i + 1 < words.length; i++) {
+            String a = words[i], b = words[i + 1];
+            int j = 0, len = Math.min(a.length(), b.length());
+            while (j < len && a.charAt(j) == b.charAt(j)) j++;
+            if (j < len && pos.get(a.charAt(j)) > pos.get(b.charAt(j))) return "order " + order + " breaks " + a + " < " + b;
+        }
+        return "valid";
+    }
+    public static void main(String[] args) {
+        run("example (unique answer)", "wertf", () -> new Solution().alienOrder(new String[]{"wrt", "wrf", "er", "ett", "rftt"}));
+        run("cycle", "", () -> new Solution().alienOrder(new String[]{"z", "x", "z"}));
+        run("prefix invalid", "", () -> new Solution().alienOrder(new String[]{"abc", "ab"}));
+        run("single word", "valid", () -> { String[] w = {"z"}; return check(w, new Solution().alienOrder(w)); });
+        run("letters without relation kept", "valid", () -> { String[] w = {"ab", "adc"}; return check(w, new Solution().alienOrder(w)); });
+        run("conflict across pairs", "", () -> new Solution().alienOrder(new String[]{"ac", "bc", "ad", "bd"}));
+        run("same words", "valid", () -> { String[] w = {"z", "z"}; return check(w, new Solution().alienOrder(w)); });
+        run("repeated relation", "valid", () -> { String[] w = {"ab", "ac", "bb", "bc"}; return check(w, new Solution().alienOrder(w)); });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
 }`,
-  complexity: 'Time O(V + E) over characters, Space O(V + E)',
-  follow: ['Nếu có nhiều ký tự không xuất hiện trong quan hệ thì đặt ở đâu?']
+  follow: ['Làm sao biết thứ tự suy ra được là **duy nhất**?', 'Nếu danh sách từ rất lớn và đến dần theo stream thì xây đồ thị thế nào?']
 }
 );
 (window.ALGOS = window.ALGOS || []).push(
@@ -12309,85 +12517,104 @@ public class Main {
   difficulty: 'medium',
   pattern: 'Topological Sort',
   tags: ['graph', 'topological-sort', 'bytebytego'],
-  prompt: `Cho mảng {{org}} (một hoán vị của 1..n) và danh sách {{seqs}}. Kiểm tra xem {{org}} có phải là **thứ tự topo duy nhất** có thể suy ra từ {{seqs}} hay không (mỗi seq cho quan hệ thứ tự liên tiếp).
+  prompt: `Cho mảng {{org}} là một hoán vị của {{1..n}} và danh sách các dãy {{seqs}}. Mỗi dãy trong {{seqs}} cho biết thứ tự: phần tử đứng trước phải xuất hiện trước phần tử đứng sau. Hỏi {{org}} có phải là dãy **duy nhất** có độ dài n thoả mọi dãy trong {{seqs}} (mỗi dãy là dãy con của nó) hay không? Trả về {{false}} nếu {{seqs}} chứa số nằm ngoài {{1..n}}, hoặc không nhắc tới đủ mọi số {{1..n}}.
 
 ### Ví dụ
 ~~~text
-Input: org = [1,2,3], seqs = [[1,2],[1,3]]
+Input:  org = [1,2,3], seqs = [[1,2],[1,3]]
 Output: false
+Giải thích: cả [1,2,3] và [1,3,2] đều thoả, nên không duy nhất.
 
-Input: org = [1,2,3], seqs = [[1,2],[2,3]]
+Input:  org = [1,2,3], seqs = [[1,2],[2,3]]
+Output: true
+
+Input:  org = [4,1,5,2,6,3], seqs = [[5,2,6,3],[4,1,5,2]]
 Output: true
 ~~~
 
 ### Ràng buộc
-- {{1 <= n <= 10^4}}
-- {{seqs[i].length >= 1}}`,
+- {{1 <= n <= 10^4}}, {{org}} là hoán vị của {{1..n}}
+- {{1 <= seqs[i].length}}, tổng độ dài các dãy {{<= 10^5}}`,
   hints: [
-    'Xây đồ thị từ các cặp liên tiếp trong mỗi seq.',
-    'Unique topo order nghĩa là tại mỗi bước chỉ có đúng một đỉnh indegree 0.',
-    'Cũng phải kiểm tra org chứa đúng các phần tử và seqs không mâu thuẫn.'
+    'Mỗi cặp phần tử **liền kề** trong một dãy {{seqs[i]}} cho một cạnh {{u → v}}. Dãy cần tìm là một thứ tự topo của đồ thị đó.',
+    'Thứ tự topo là **duy nhất** khi và chỉ khi ở mọi bước của Kahn, hàng đợi chỉ có **đúng một** đỉnh (nếu có hai đỉnh cùng sẵn sàng thì đổi thứ tự chúng được).',
+    'Đi song song với {{org}}: đỉnh lấy ra ở bước i phải bằng {{org[i]}}. Đừng quên kiểm tra số lạ và số bị thiếu.'
   ],
   solution: `### Ý tưởng
-Xây đồ thị từ các cặp liên tiếp trong seqs. Kahn: tại mỗi bước nếu queue có nhiều hơn một phần tử thì thứ tự không duy nhất. So sánh kết quả với org.
+1. **Dựng đồ thị:** với mỗi dãy, mỗi cặp liền kề {{(u, v)}} là cạnh {{u → v}} (dùng Set để không tính trùng). Đồng thời kiểm tra mọi số nằm trong {{1..n}} và đánh dấu số nào đã xuất hiện.
+2. **Kahn có kiểm tra duy nhất:** nếu hàng đợi có ≥ 2 đỉnh thì có ít nhất hai thứ tự khác nhau → {{false}}. Đỉnh lấy ra phải đúng bằng {{org[idx]}}.
+3. Cuối cùng phải xử lý đủ n đỉnh (không có vòng).
+
+Vì sao "hàng đợi luôn đúng một phần tử" ⇔ duy nhất? Nếu lúc nào đó có hai đỉnh {{x, y}} cùng bậc vào 0 thì giữa chúng không có ràng buộc, đổi chỗ x và y vẫn hợp lệ → có ≥ 2 đáp án. Ngược lại, nếu luôn chỉ một lựa chọn thì mỗi bước bị ép buộc → đáp án duy nhất.
 
 ~~~java
 class Solution {
     public boolean sequenceReconstruction(int[] org, int[][] seqs) {
         int n = org.length;
-        Set<Integer> set = new HashSet<>();
-        for (int x : org) set.add(x);
         List<Set<Integer>> adj = new ArrayList<>();
         for (int i = 0; i <= n; i++) adj.add(new HashSet<>());
         int[] indeg = new int[n + 1];
         boolean[] seen = new boolean[n + 1];
         for (int[] seq : seqs) {
-            for (int x : seq) {
-                if (x < 1 || x > n || !set.contains(x)) return false;
-                seen[x] = true;
-            }
-            for (int i = 0; i + 1 < seq.length; i++) {
-                int u = seq[i], v = seq[i + 1];
-                if (u == v) continue;
-                if (adj.get(u).add(v)) indeg[v]++;
+            for (int i = 0; i < seq.length; i++) {
+                if (seq[i] < 1 || seq[i] > n) return false;    // so la
+                seen[seq[i]] = true;
+                if (i > 0 && adj.get(seq[i - 1]).add(seq[i])) indeg[seq[i]]++; // canh moi
             }
         }
-        for (int i = 1; i <= n; i++) if (!seen[i]) return false;
-        Queue<Integer> q = new LinkedList<>();
-        for (int i = 1; i <= n; i++) if (indeg[i] == 0) q.add(i);
+        for (int v = 1; v <= n; v++) if (!seen[v]) return false; // thieu so -> khong xac dinh duoc
+        Deque<Integer> q = new ArrayDeque<>();
+        for (int v = 1; v <= n; v++) if (indeg[v] == 0) q.add(v);
         int idx = 0;
         while (!q.isEmpty()) {
-            if (q.size() > 1) return false;
+            if (q.size() > 1) return false;        // 2 lua chon -> khong duy nhat
             int u = q.poll();
-            if (idx >= n || org[idx] != u) return false;
-            idx++;
+            if (org[idx++] != u) return false;     // khac org
             for (int v : adj.get(u)) if (--indeg[v] == 0) q.add(v);
         }
-        return idx == n;
+        return idx == n;                           // thieu dinh -> co vong
     }
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- Unique topo order là điều kiện quan trọng trong reconstruction.
-- Cần validate seqs chứa đúng tập phần tử của org.
+### Chạy tay với org = [1,2,3], seqs = [[1,2],[1,3]]
+Cạnh 1→2, 1→3. Hàng đợi [1] → lấy 1 (= org[0]) → 2 và 3 cùng về 0 → hàng đợi có 2 phần tử → {{false}}.
 
-> Senior tip: Bài này thường xuất hiện trong phỏng vấn về dependency ordering với ràng buộc duy nhất.`,
-  starter: "class Solution {\n    public boolean sequenceReconstruction(int[] org, int[][] seqs) {\n        \n    }\n}",
-  tests: `
-public class Main {
- static int passed=0,total=0;
- public static void main(String[] args){
-   total++; try{ if(new Solution().sequenceReconstruction(new int[]{1,2,3}, new int[][]{{1,2},{2,3}})){passed++;System.out.println("PASS basic");} else System.out.println("FAIL basic");} catch(Throwable t){System.out.println("FAIL basic: threw "+t);}
-   total++; try{ if(!new Solution().sequenceReconstruction(new int[]{1,2,3}, new int[][]{{1,2},{1,3}})){passed++;System.out.println("PASS notunique");} else System.out.println("FAIL notunique");} catch(Throwable t){System.out.println("FAIL notunique: threw "+t);}
-   total++; try{ if(!new Solution().sequenceReconstruction(new int[]{1,2,3}, new int[][]{{1,2},{2,3},{3,1}})){passed++;System.out.println("PASS cycle");} else System.out.println("FAIL cycle");} catch(Throwable t){System.out.println("FAIL cycle: threw "+t);}
-   total++; try{ if(!new Solution().sequenceReconstruction(new int[]{1,2,3}, new int[][]{{1,2}})){passed++;System.out.println("PASS missing");} else System.out.println("FAIL missing");} catch(Throwable t){System.out.println("FAIL missing: threw "+t);}
-   total++; try{ if(new Solution().sequenceReconstruction(new int[]{1}, new int[][]{{1}})){passed++;System.out.println("PASS single");} else System.out.println("FAIL single");} catch(Throwable t){System.out.println("FAIL single: threw "+t);}
-   System.out.println("RESULT "+passed+"/"+total);
- }
+### Độ phức tạp
+O(n + L) với L = tổng độ dài các dãy (mỗi cặp liền kề tạo tối đa một cạnh).
+
+### Lưu ý khi phỏng vấn
+- Cạnh u → u (hai số giống nhau liền kề) là vòng tự nối: lời giải trên tự động trả {{false}} vì bậc vào của u không về 0.
+- Cách khác không cần Kahn: kiểm tra mọi cặp liền kề {{(org[i], org[i+1])}} đều xuất hiện liền kề trong một dãy nào đó (và mọi cạnh tôn trọng thứ tự của org). Cách này cũng O(n + L).
+
+> Senior tip: Câu hỏi "có duy nhất một cách sắp xếp không?" xuất hiện khi kiểm tra cấu hình pipeline có xác định (deterministic) hay không. Thứ tự không duy nhất nghĩa là kết quả có thể khác nhau giữa các lần chạy, nguồn gốc của những bug khó tái hiện.`,
+  complexity: 'Time O(n + L), Space O(n + L) với L = tổng độ dài seqs',
+  starter: 'class Solution {\n    public boolean sequenceReconstruction(int[] org, int[][] seqs) {\n        // TODO\n        return false;\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        run("unique chain", true, () -> new Solution().sequenceReconstruction(new int[]{1, 2, 3}, new int[][]{{1, 2}, {2, 3}}));
+        run("not unique", false, () -> new Solution().sequenceReconstruction(new int[]{1, 2, 3}, new int[][]{{1, 2}, {1, 3}}));
+        run("unique with extra edge", true, () -> new Solution().sequenceReconstruction(new int[]{1, 2, 3}, new int[][]{{1, 2}, {1, 3}, {2, 3}}));
+        run("example 3", true, () -> new Solution().sequenceReconstruction(new int[]{4, 1, 5, 2, 6, 3}, new int[][]{{5, 2, 6, 3}, {4, 1, 5, 2}}));
+        run("different order", false, () -> new Solution().sequenceReconstruction(new int[]{1, 2, 3}, new int[][]{{1, 3}, {3, 2}}));
+        run("cycle", false, () -> new Solution().sequenceReconstruction(new int[]{1, 2, 3}, new int[][]{{1, 2}, {2, 3}, {3, 1}}));
+        run("missing number", false, () -> new Solution().sequenceReconstruction(new int[]{1, 2, 3}, new int[][]{{1, 2}}));
+        run("out of range", false, () -> new Solution().sequenceReconstruction(new int[]{1}, new int[][]{{1}, {2}}));
+        run("single", true, () -> new Solution().sequenceReconstruction(new int[]{1}, new int[][]{{1}}));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
 }`,
-  complexity: 'Time O(n + E), Space O(n + E)',
-  follow: ['Nếu seqs chứa phần tử ngoài org thì xử lý thế nào?']
+  follow: ['Giải bằng cách kiểm tra các cặp liền kề của org (không dùng Kahn) như thế nào?', 'Nếu seqs chứa số ngoài org mà vẫn muốn bỏ qua thay vì trả false thì sửa gì?']
 }
 );
 (window.ALGOS = window.ALGOS || []).push(
@@ -12397,17 +12624,18 @@ public class Main {
   difficulty: 'medium',
   pattern: 'Tries',
   tags: ['trie', 'design', 'string', 'bytebytego'],
-  prompt: `Thiết kế cấu trúc dữ liệu Trie hỗ trợ:
-- {{insert(word)}}: chèn từ.
-- {{search(word)}}: trả về true nếu từ đã được chèn.
-- {{startsWith(prefix)}}: trả về true nếu có từ nào đó bắt đầu bằng prefix.
+  prompt: `Cài đặt lớp {{Trie}} (cây tiền tố) với các thao tác:
+- {{Trie()}}: khởi tạo cây rỗng.
+- {{void insert(String word)}}: thêm từ {{word}}.
+- {{boolean search(String word)}}: {{true}} nếu **đúng từ** {{word}} đã từng được thêm.
+- {{boolean startsWith(String prefix)}}: {{true}} nếu có ít nhất một từ đã thêm bắt đầu bằng {{prefix}}.
 
 ### Ví dụ
 ~~~text
 Trie trie = new Trie();
 trie.insert("apple");
 trie.search("apple");   // true
-trie.search("app");     // false
+trie.search("app");     // false  ("app" chỉ là tiền tố, chưa được thêm như một từ)
 trie.startsWith("app"); // true
 trie.insert("app");
 trie.search("app");     // true
@@ -12415,78 +12643,128 @@ trie.search("app");     // true
 
 ### Ràng buộc
 - {{1 <= word.length, prefix.length <= 2000}}
-- Chỉ gồm chữ cái thường a-z`,
+- Chỉ gồm chữ cái thường {{a-z}}.
+- Tổng số lời gọi tối đa {{3 * 10^4}}.`,
   hints: [
-    'Mỗi node có mảng con của kích thước 26 và cờ isEnd.',
-    'insert: duyệt/tạo node theo từng ký tự, đánh dấu isEnd ở cuối.',
-    'search khác startsWith ở chỗ search yêu cầu isEnd = true.'
+    'Mỗi node đại diện cho một tiền tố. Node có tối đa 26 con, con thứ {{c - \'a\'}} ứng với việc nối thêm chữ {{c}}.',
+    'Cần thêm cờ {{isEnd}} ở node: tiền tố này có phải là **một từ hoàn chỉnh** đã được thêm hay không. Đó là chỗ khác nhau giữa {{search}} và {{startsWith}}.',
+    'Viết một hàm phụ {{find(s)}} đi từ gốc theo từng ký tự, trả về node cuối (hoặc {{null}} nếu đứt giữa chừng). {{search}} = node khác null và {{isEnd}}; {{startsWith}} = node khác null.'
   ],
   solution: `### Ý tưởng
-Trie node chứa mảng con 26 và cờ kết thúc. insert tạo node theo ký tự; search yêu cầu node cuối tồn tại và isEnd; startsWith chỉ yêu cầu node cuối tồn tại.
+Trie lưu các từ theo dạng cây, các từ có chung tiền tố thì **dùng chung** các node đầu. Ví dụ "app" và "apple" cùng đi qua a → p → p:
+~~~text
+(root)
+  └─ a
+     └─ p
+        └─ p  [isEnd: "app"]
+           └─ l
+              └─ e  [isEnd: "apple"]
+~~~
+- **insert:** đi từ gốc theo từng ký tự, thiếu node thì tạo mới; tới ký tự cuối thì bật {{isEnd}}.
+- **search:** đi theo từng ký tự; đứt giữa chừng → false; đi hết thì cần {{isEnd == true}}.
+- **startsWith:** giống search nhưng không cần {{isEnd}}.
 
 ~~~java
 class Trie {
     private static class Node {
-        Trie.Node[] ch = new Trie.Node[26];
-        boolean end;
+        Node[] children = new Node[26]; // children[c - 'a'] = node sau khi noi them chu c
+        boolean isEnd;                  // tien to nay la mot tu da insert
     }
+
     private final Node root = new Node();
 
     public void insert(String word) {
         Node cur = root;
-        for (char c : word.toCharArray()) {
-            int i = c - 'a';
-            if (cur.ch[i] == null) cur.ch[i] = new Node();
-            cur = cur.ch[i];
+        for (int i = 0; i < word.length(); i++) {
+            int k = word.charAt(i) - 'a';
+            if (cur.children[k] == null) cur.children[k] = new Node(); // tao node con neu chua co
+            cur = cur.children[k];
         }
-        cur.end = true;
+        cur.isEnd = true;                   // danh dau ket thuc mot tu
     }
 
     public boolean search(String word) {
-        Node cur = find(word);
-        return cur != null && cur.end;
+        Node node = find(word);
+        return node != null && node.isEnd;  // phai la tu hoan chinh
     }
 
     public boolean startsWith(String prefix) {
-        return find(prefix) != null;
+        return find(prefix) != null;        // chi can duong di ton tai
     }
 
+    // di theo s tu goc; tra ve node cuoi hoac null neu duong di bi dut
     private Node find(String s) {
         Node cur = root;
-        for (char c : s.toCharArray()) {
-            int i = c - 'a';
-            if (cur.ch[i] == null) return null;
-            cur = cur.ch[i];
+        for (int i = 0; i < s.length() && cur != null; i++) {
+            cur = cur.children[s.charAt(i) - 'a'];
         }
         return cur;
     }
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- Có thể dùng HashMap<Character, Node> để hỗ trợ unicode.
-- Delete word: cần xóa node nếu không còn con và không phải end của từ khác.
-- Space: tổng độ dài các từ.
+### Độ phức tạp
+- Mỗi thao tác O(L) với L = độ dài từ/tiền tố, **không phụ thuộc** số từ đã lưu.
+- Bộ nhớ: tối đa một node cho mỗi ký tự được insert (O(tổng độ dài)), mỗi node chứa mảng 26 tham chiếu.
 
-> Senior tip: Trie là nền tảng cho autocomplete, spell check và routing table.`,
-  starter: "class Trie {\n    public Trie() {\n        \n    }\n    public void insert(String word) {\n        \n    }\n    public boolean search(String word) {\n        \n    }\n    public boolean startsWith(String prefix) {\n        \n    }\n}",
-  tests: `
-public class Main {
- static int passed=0,total=0;
- public static void main(String[] args){
-   Trie t=new Trie();
-   t.insert("apple");
-   total++; if(t.search("apple")){passed++;System.out.println("PASS search1");} else System.out.println("FAIL search1");
-   total++; if(!t.search("app")){passed++;System.out.println("PASS search2");} else System.out.println("FAIL search2");
-   total++; if(t.startsWith("app")){passed++;System.out.println("PASS prefix1");} else System.out.println("FAIL prefix1");
-   t.insert("app");
-   total++; if(t.search("app")){passed++;System.out.println("PASS search3");} else System.out.println("FAIL search3");
-   total++; if(!t.search("appl")){passed++;System.out.println("PASS search4");} else System.out.println("FAIL search4");
-   System.out.println("RESULT "+passed+"/"+total);
- }
+### So sánh với HashSet
+| | Trie | HashSet<String> |
+|---|---|---|
+| search đúng từ | O(L) | O(L) (tính hash) |
+| startsWith | O(L) | phải duyệt mọi từ, O(N·L) |
+| Bộ nhớ | tốn khi ít tiền tố chung | gọn hơn |
+
+### Lưu ý khi phỏng vấn
+- Bảng chữ cái lớn (Unicode) thì thay mảng 26 bằng {{HashMap<Character, Node>}}.
+- Xoá từ: tắt {{isEnd}}, rồi (tuỳ chọn) xoá ngược các node không còn con và không phải cuối của từ khác.
+- Hay quên trường hợp "tiền tố của từ đã có" ({{search("app")}} sau khi chỉ insert "apple") → phải là false.
+
+> Senior tip: Trie (và biến thể nén như radix tree) dùng trong autocomplete, định tuyến IP theo longest-prefix match, và router của nhiều web framework để khớp URL path nhanh.`,
+  complexity: 'Time O(L) mỗi thao tác, Space O(tổng số ký tự đã insert)',
+  starter: 'class Trie {\n    public Trie() {\n        // TODO\n    }\n\n    public void insert(String word) {\n        // TODO\n    }\n\n    public boolean search(String word) {\n        // TODO\n        return false;\n    }\n\n    public boolean startsWith(String prefix) {\n        // TODO\n        return false;\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    // tu "aaaa".."zzzz" duy nhat cho moi i (viet i theo co so 26, dung 4 chu)
+    static String word(int i) { char[] w = new char[4]; for (int k = 3; k >= 0; k--) { w[k] = (char) ('a' + i % 26); i /= 26; } return new String(w); }
+    public static void main(String[] args) {
+        run("example sequence", Arrays.asList(true, false, true, true), () -> {
+            Trie t = new Trie();
+            t.insert("apple");
+            boolean a = t.search("apple"), b = t.search("app"), c = t.startsWith("app");
+            t.insert("app");
+            return Arrays.asList(a, b, c, t.search("app"));
+        });
+        run("empty trie", Arrays.asList(false, false), () -> { Trie t = new Trie(); return Arrays.asList(t.search("a"), t.startsWith("a")); });
+        run("longer word not found", false, () -> { Trie t = new Trie(); t.insert("app"); return t.search("apple"); });
+        run("prefix longer than word", false, () -> { Trie t = new Trie(); t.insert("ab"); return t.startsWith("abc"); });
+        run("whole word is prefix", true, () -> { Trie t = new Trie(); t.insert("abc"); return t.startsWith("abc"); });
+        run("branching words", Arrays.asList(true, true, false, true, false), () -> {
+            Trie t = new Trie();
+            t.insert("car"); t.insert("cat"); t.insert("dog");
+            return Arrays.asList(t.search("car"), t.search("cat"), t.search("ca"), t.startsWith("do"), t.startsWith("cb"));
+        });
+        run("insert twice", true, () -> { Trie t = new Trie(); t.insert("x"); t.insert("x"); return t.search("x"); });
+        run("many words", 5000, () -> {
+            Trie t = new Trie();
+            for (int i = 0; i < 5000; i++) t.insert(word(i));
+            int found = 0;
+            for (int i = 0; i < 5000; i++) if (t.search(word(i))) found++;
+            for (int i = 5000; i < 6000; i++) if (t.search(word(i))) found += 100000; // tu chua insert
+            return found;
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
 }`,
-  complexity: 'Time O(L) per operation, Space O(total chars)',
-  follow: ['Làm sao implement delete trong Trie?', 'So sánh Trie với HashMap prefix.']
+  follow: ['Cài đặt thêm {{delete(word)}} sao cho không làm hỏng các từ khác có chung tiền tố thế nào?', 'Muốn trả về top 3 từ phổ biến nhất bắt đầu bằng một tiền tố (autocomplete) thì lưu thêm gì ở node?']
 }
 );
 (window.ALGOS = window.ALGOS || []).push(
@@ -12496,104 +12774,127 @@ public class Main {
   difficulty: 'hard',
   pattern: 'Tries',
   tags: ['backtracking', 'trie', 'matrix', 'bytebytego'],
-  prompt: `Cho bảng chữ cái {{board}} kích thước {{m x n}} và danh sách {{words}}. Tìm tất cả từ trong {{words}} có thể được tạo thành bằng cách đi trên bảng theo 4 hướng, mỗi ô chỉ dùng một lần. Trả về danh sách các từ tìm được (không trùng).
+  prompt: `Cho bảng chữ cái {{board}} kích thước {{m x n}} và danh sách từ {{words}}. Một từ "có trong bảng" nếu ghép được từ các ô **kề cạnh** liên tiếp (trên/dưới/trái/phải), mỗi ô dùng **không quá một lần** trong cùng một từ. Trả về mọi từ trong {{words}} có trong bảng, mỗi từ **một lần**, thứ tự tuỳ ý.
 
 ### Ví dụ
 ~~~text
-Input: board = [["o","a","a","n"],["e","t","a","e"],["i","h","k","r"],["i","f","l","v"]], words = ["oath","pea","eat","rain"]
+Input:  board = [["o","a","a","n"],
+                 ["e","t","a","e"],
+                 ["i","h","k","r"],
+                 ["i","f","l","v"]]
+        words = ["oath","pea","eat","rain"]
 Output: ["eat","oath"]
+
+Input:  board = [["a","b"],["c","d"]], words = ["abcb"]
+Output: []   (muốn quay lại ô "b" thì phải dùng ô đó hai lần)
 ~~~
 
 ### Ràng buộc
 - {{1 <= m, n <= 12}}
-- {{1 <= words.length <= 3 * 10^4}}
-- {{1 <= words[i].length <= 10}}`,
+- {{1 <= words.length <= 3 * 10^4}}, {{1 <= words[i].length <= 10}}
+- Chỉ gồm chữ cái thường; {{words}} có thể chứa từ trùng nhau.`,
   hints: [
-    'Dùng Trie để kiểm tra prefix trong khi DFS.',
-    'Khi tìm được một từ, xóa nó khỏi Trie để tránh trả trùng.',
-    'Pruning: nếu node Trie không còn con thì cắt nhánh DFS.'
+    'Chạy Word Search (DFS) riêng cho từng từ tốn O(số từ × m × n × 4^L): quá chậm với 3·10^4 từ. Cần tìm **mọi từ trong một lần DFS**.',
+    'Đưa mọi từ vào một Trie. Khi DFS trên bảng, đi song song trên Trie: chữ ở ô kế tiếp không có trong node con của Trie thì cắt nhánh ngay, vì không từ nào bắt đầu bằng tiền tố đó.',
+    'Lưu cả từ ở node cuối của nó. Tìm thấy thì thêm vào kết quả và đặt về {{null}} để không thêm trùng. Có thể xoá luôn node lá đã "hết việc" để các lần DFS sau càng nhanh.'
   ],
   solution: `### Ý tưởng
-Xây Trie từ words. DFS từ mỗi ô, theo Trie. Khi gặp node end, thêm từ vào kết quả và xóa end. Loại bỏ nhánh Trie rỗng để prune.
+Kết hợp **Trie** và **backtracking**:
+1. Dựng Trie từ {{words}}; node kết thúc từ lưu luôn chuỗi từ đó ({{node.word}}).
+2. Từ mỗi ô của bảng, DFS: chỉ đi sang ô có chữ khớp với một node con của node Trie hiện tại. Nhờ vậy ta khám phá **mọi từ cùng lúc**, và nhánh nào không phải tiền tố của từ nào thì dừng ngay.
+3. Gặp node có {{word != null}} → thêm vào kết quả rồi đặt {{word = null}} (chống trùng).
+4. Đánh dấu ô đang dùng bằng {{'#'}}, đệ quy 4 hướng, rồi trả lại chữ cũ (backtrack).
+5. Tối ưu: sau khi DFS qua một node con mà node đó không còn con và không còn từ → xoá khỏi Trie.
 
 ~~~java
 class Solution {
-    static class TrieNode {
-        TrieNode[] ch = new TrieNode[26];
-        String word;
+    private static class TrieNode {
+        TrieNode[] next = new TrieNode[26];
+        String word;                        // khac null neu mot tu ket thuc tai day
     }
 
     public List<String> findWords(char[][] board, String[] words) {
         TrieNode root = new TrieNode();
-        for (String w : words) {
+        for (String w : words) {            // dung Trie tu danh sach tu
             TrieNode cur = root;
-            for (char c : w.toCharArray()) {
-                int i = c - 'a';
-                if (cur.ch[i] == null) cur.ch[i] = new TrieNode();
-                cur = cur.ch[i];
+            for (char ch : w.toCharArray()) {
+                int k = ch - 'a';
+                if (cur.next[k] == null) cur.next[k] = new TrieNode();
+                cur = cur.next[k];
             }
             cur.word = w;
         }
-        List<String> res = new ArrayList<>();
-        for (int i = 0; i < board.length; i++)
-            for (int j = 0; j < board[0].length; j++)
-                dfs(board, i, j, root, res);
-        return res;
+        List<String> found = new ArrayList<>();
+        for (int r = 0; r < board.length; r++)
+            for (int c = 0; c < board[0].length; c++)
+                dfs(board, r, c, root, found);
+        return found;
     }
 
-    private void dfs(char[][] b, int r, int c, TrieNode node, List<String> res) {
+    private void dfs(char[][] b, int r, int c, TrieNode parent, List<String> found) {
         if (r < 0 || r >= b.length || c < 0 || c >= b[0].length) return;
         char ch = b[r][c];
-        if (ch == '#' || node.ch[ch - 'a'] == null) return;
-        TrieNode next = node.ch[ch - 'a'];
-        if (next.word != null) { res.add(next.word); next.word = null; }
-        b[r][c] = '#';
-        dfs(b, r + 1, c, next, res);
-        dfs(b, r - 1, c, next, res);
-        dfs(b, r, c + 1, next, res);
-        dfs(b, r, c - 1, next, res);
-        b[r][c] = ch;
-        // prune
-        boolean empty = true;
-        for (TrieNode t : next.ch) if (t != null) { empty = false; break; }
-        if (empty && next.word == null) node.ch[ch - 'a'] = null;
+        if (ch == '#') return;                       // o dang nam tren duong di hien tai
+        TrieNode node = parent.next[ch - 'a'];
+        if (node == null) return;                    // khong tu nao co tien to nay: cat nhanh
+        if (node.word != null) {                     // tim thay mot tu
+            found.add(node.word);
+            node.word = null;                        // tranh them trung
+        }
+        b[r][c] = '#';                               // danh dau da dung
+        dfs(b, r + 1, c, node, found);
+        dfs(b, r - 1, c, node, found);
+        dfs(b, r, c + 1, node, found);
+        dfs(b, r, c - 1, node, found);
+        b[r][c] = ch;                                // backtrack: tra lai chu cu
+        if (node.word == null && isLeaf(node)) parent.next[ch - 'a'] = null; // nhanh da het viec
+    }
+
+    private boolean isLeaf(TrieNode node) {
+        for (TrieNode t : node.next) if (t != null) return false;
+        return true;
     }
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- Nếu không prune, có thể TLE với board lớn.
-- Kết quả có thể sort để deterministic; harness sort.
+### Độ phức tạp
+- Dựng Trie: O(tổng độ dài các từ).
+- DFS: mỗi ô là điểm bắt đầu, mỗi bước có tối đa 3 hướng mới (không quay lại ô vừa đi) → cận trên O(m·n·4·3^(L-1)) với L ≤ 10 là độ dài từ dài nhất. Nhờ Trie cắt nhánh, thực tế nhanh hơn rất nhiều.
+- Bộ nhớ: O(tổng độ dài các từ) cho Trie, O(L) cho đệ quy.
 
-> Senior tip: Word Search II kết hợp Trie + backtracking, là bài khó điển hình của phỏng vấn senior.`,
-  starter: "class Solution {\n    public List<String> findWords(char[][] board, String[] words) {\n        \n    }\n}",
-  tests: `
-public class Main {
- static int passed=0,total=0;
- static List<String> sort(List<String> l){ List<String> r=new ArrayList<>(l); Collections.sort(r); return r;}
- public static void main(String[] args){
-   char[][] b1={{'o','a','a','n'},{'e','t','a','e'},{'i','h','k','r'},{'i','f','l','v'}};
-   String[] w1={"oath","pea","eat","rain"};
-   List<String> exp1=new ArrayList<>(Arrays.asList("eat","oath"));
-   List<String> r1=sort(new Solution().findWords(b1,w1));
-   total++; if(r1.equals(sort(exp1))){passed++;System.out.println("PASS example");} else System.out.println("FAIL example: "+r1);
-   char[][] b2={{'a','b'},{'c','d'}};
-   String[] w2={"ab","abcd"};
-   List<String> r2=sort(new Solution().findWords(b2,w2));
-   total++; if(r2.equals(sort(new ArrayList<>(Arrays.asList("ab"))))){passed++;System.out.println("PASS short");} else System.out.println("FAIL short: "+r2);
-   char[][] b3={{'a'}};
-   String[] w3={"a","a"};
-   List<String> r3=sort(new Solution().findWords(b3,w3));
-   total++; if(r3.equals(sort(new ArrayList<>(Arrays.asList("a"))))){passed++;System.out.println("PASS dup");} else System.out.println("FAIL dup: "+r3);
-   char[][] b4={{'x'}};
-   String[] w4={"y"};
-   List<String> r4=new Solution().findWords(b4,w4);
-   total++; if(r4.isEmpty()){passed++;System.out.println("PASS none");} else System.out.println("FAIL none: "+r4);
-   System.out.println("RESULT "+passed+"/"+total);
- }
+### Lưu ý khi phỏng vấn
+- Lưu {{word}} ở node thay vì truyền {{StringBuilder}} theo đường đi giúp code gọn và khỏi tạo chuỗi trung gian.
+- Đặt {{word = null}} sau khi tìm thấy là cách chống trùng rẻ nhất (không cần {{Set}}).
+- Bước xoá node lá là tối ưu quan trọng khi nhiều từ chung tiền tố; không có nó lời giải vẫn đúng nhưng chậm hơn trên bảng lớn.
+
+> Senior tip: Mẫu "gộp nhiều truy vấn vào một cấu trúc rồi duyệt một lần" (ở đây gộp 3·10^4 từ vào Trie) giống multi-pattern matching (Aho-Corasick) dùng trong lọc từ khoá, WAF, hay quét log tìm nhiều mẫu lỗi cùng lúc.`,
+  complexity: 'Time O(m * n * 4 * 3^(L-1)) cận trên, Space O(tổng độ dài từ)',
+  starter: 'class Solution {\n    public List<String> findWords(char[][] board, String[] words) {\n        // TODO\n        return new ArrayList<>();\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<String> sorted(List<String> l) { List<String> r = new ArrayList<>(l); Collections.sort(r); return r; }
+    static char[][] example() { return new char[][]{{'o', 'a', 'a', 'n'}, {'e', 't', 'a', 'e'}, {'i', 'h', 'k', 'r'}, {'i', 'f', 'l', 'v'}}; }
+    public static void main(String[] args) {
+        run("example", Arrays.asList("eat", "oath"), () -> sorted(new Solution().findWords(example(), new String[]{"oath", "pea", "eat", "rain"})));
+        run("cell reuse not allowed", Collections.emptyList(), () -> sorted(new Solution().findWords(new char[][]{{'a', 'b'}, {'c', 'd'}}, new String[]{"abcb"})));
+        run("short found long not", Arrays.asList("ab"), () -> sorted(new Solution().findWords(new char[][]{{'a', 'b'}, {'c', 'd'}}, new String[]{"ab", "abcd"})));
+        run("duplicate words reported once", Arrays.asList("a"), () -> sorted(new Solution().findWords(new char[][]{{'a'}}, new String[]{"a", "a"})));
+        run("word is prefix of another", Arrays.asList("oa", "oaa"), () -> sorted(new Solution().findWords(example(), new String[]{"oa", "oaa"})));
+        run("nothing found", Collections.emptyList(), () -> sorted(new Solution().findWords(new char[][]{{'x'}}, new String[]{"y"})));
+        run("snake path", Arrays.asList("abcfed"), () -> sorted(new Solution().findWords(new char[][]{{'a', 'b', 'c'}, {'d', 'e', 'f'}}, new String[]{"abcfed", "abcd"})));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
 }`,
-  complexity: 'Time O(m*n*4^L) with pruning, Space O(total chars)',
-  follow: ['Tại sao cần xóa từ khỏi Trie sau khi tìm thấy?']
+  follow: ['Vì sao cần đặt {{word = null}} sau khi tìm thấy, và có cách nào khác?', 'Nếu bảng rất lớn nhưng danh sách từ nhỏ thì nên dựng Trie từ từ hay từ bảng?']
 }
 );
 (window.ALGOS = window.ALGOS || []).push(
@@ -12603,89 +12904,112 @@ public class Main {
   difficulty: 'medium',
   pattern: 'Tries',
   tags: ['trie', 'string', 'bytebytego'],
-  prompt: `Trong từ điển {{dictionary}} có các gốc từ. Với câu {{sentence}} (các từ cách nhau bởi khoảng trắng), thay mỗi từ bằng **gốc từ ngắn nhất** là tiền tố của nó; nếu không có gốc từ phù hợp thì giữ nguyên từ.
+  prompt: `Cho danh sách **gốc từ** {{dictionary}} và một câu {{sentence}} gồm các từ cách nhau bởi **đúng một** dấu cách. Thay mỗi từ trong câu bằng **gốc từ ngắn nhất** là tiền tố của nó; từ không có gốc nào phù hợp thì giữ nguyên. Trả về câu sau khi thay.
 
 ### Ví dụ
 ~~~text
-Input: dictionary = ["cat","bat","rat"], sentence = "the cattle was rattled by the battery"
+Input:  dictionary = ["cat","bat","rat"]
+        sentence   = "the cattle was rattled by the battery"
 Output: "the cat was rat by the bat"
+
+Input:  dictionary = ["a","b","c"]
+        sentence   = "aadsfasf absbs bbab cadsfafs"
+Output: "a a b c"
 ~~~
 
 ### Ràng buộc
-- {{1 <= dictionary.length <= 1000}}
-- {{1 <= dictionary[i].length <= 100}}
-- {{1 <= sentence.length <= 10^6}}`,
+- {{1 <= dictionary.length <= 1000}}, {{1 <= dictionary[i].length <= 100}}
+- {{1 <= sentence.length <= 10^6}}
+- Chỉ gồm chữ cái thường và dấu cách; không có dấu cách thừa ở đầu, cuối hay giữa.`,
   hints: [
-    'Dùng Trie chứa các gốc từ.',
-    'Với mỗi từ, đi theo Trie cho đến khi gặp node end -> gốc ngắn nhất.',
-    'Nếu đi hết mà không gặp end thì giữ nguyên từ.'
+    'Cách thô: với mỗi từ, thử mọi gốc xem có phải tiền tố không: O(số từ × số gốc × độ dài). Có thể làm tốt hơn.',
+    'Đưa các gốc vào Trie (đánh dấu node cuối mỗi gốc). Với mỗi từ trong câu, đi dọc Trie theo từng ký tự.',
+    'Node đầu tiên có cờ kết thúc mà bạn gặp chính là **gốc ngắn nhất**: dừng ngay. Nếu đường đi bị đứt hoặc hết từ mà chưa gặp, giữ nguyên từ.'
   ],
   solution: `### Ý tưởng
-Xây Trie từ dictionary. Với mỗi từ trong sentence, duyệt Trie theo ký tự; gặp node end đầu tiên thì đó là gốc ngắn nhất. Nếu không gặp, giữ từ gốc.
+1. Dựng Trie từ các gốc, node cuối của mỗi gốc có {{isRoot = true}}.
+2. Tách câu thành các từ. Với mỗi từ, đi từ gốc Trie theo từng ký tự:
+   - Không có node con cho ký tự này → từ không có gốc nào → giữ nguyên.
+   - Tới node có {{isRoot}} → tiền tố đã đi chính là gốc **ngắn nhất** (vì ta đi từ ngắn tới dài) → dùng nó.
+3. Nối kết quả bằng {{StringBuilder}} (không cộng chuỗi trong vòng lặp).
 
 ~~~java
 class Solution {
-    static class Node {
-        Node[] ch = new Node[26];
-        boolean end;
+    private static class Node {
+        Node[] next = new Node[26];
+        boolean isRoot;                         // mot goc tu ket thuc tai day
     }
 
     public String replaceWords(List<String> dictionary, String sentence) {
-        Node root = new Node();
-        for (String w : dictionary) {
-            Node cur = root;
-            for (char c : w.toCharArray()) {
-                int i = c - 'a';
-                if (cur.ch[i] == null) cur.ch[i] = new Node();
-                cur = cur.ch[i];
+        Node trie = new Node();
+        for (String root : dictionary) {        // dung Trie tu cac goc
+            Node cur = trie;
+            for (char ch : root.toCharArray()) {
+                int k = ch - 'a';
+                if (cur.next[k] == null) cur.next[k] = new Node();
+                cur = cur.next[k];
             }
-            cur.end = true;
+            cur.isRoot = true;
         }
-        String[] words = sentence.split(" ", -1);
-        StringBuilder sb = new StringBuilder();
-        for (int wi = 0; wi < words.length; wi++) {
-            if (wi > 0) sb.append(' ');
-            String w = words[wi];
-            Node cur = root;
-            int len = 0;
-            boolean found = false;
-            for (int j = 0; j < w.length(); j++) {
-                int i = w.charAt(j) - 'a';
-                if (i < 0 || i >= 26 || cur.ch[i] == null) break;
-                cur = cur.ch[i];
-                len = j + 1;
-                if (cur.end) { found = true; break; }
-            }
-            sb.append(found ? w.substring(0, len) : w);
+        StringBuilder out = new StringBuilder();
+        for (String word : sentence.split(" ")) {
+            if (out.length() > 0) out.append(' ');
+            out.append(shortestRoot(trie, word));
         }
-        return sb.toString();
+        return out.toString();
+    }
+
+    // goc ngan nhat la tien to cua word, hoac chinh word neu khong co
+    private String shortestRoot(Node trie, String word) {
+        Node cur = trie;
+        for (int i = 0; i < word.length(); i++) {
+            cur = cur.next[word.charAt(i) - 'a'];
+            if (cur == null) return word;          // duong di dut: khong co goc
+            if (cur.isRoot) return word.substring(0, i + 1); // gap goc dau tien = ngan nhat
+        }
+        return word;                               // het tu ma chua gap goc
     }
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- Cần xử lý ký tự không phải a-z nếu đề cho phép; ở đây chỉ a-z.
-- Từ điển có thể chứa từ trùng.
+### Chạy tay với "rattled"
+Trie có c-a-t, b-a-t, r-a-t. Đi r → a → t: node "rat" có {{isRoot}} → trả "rat", không cần xem phần "tled".
 
-> Senior tip: Replace words minh họa việc dùng Trie để tìm prefix ngắn nhất hiệu quả.`,
-  starter: "class Solution {\n    public String replaceWords(List<String> dictionary, String sentence) {\n        \n    }\n}",
-  tests: `
-public class Main {
- static int passed=0,total=0;
- public static void main(String[] args){
-   List<String> d1=Arrays.asList("cat","bat","rat");
-   total++; if(new Solution().replaceWords(d1,"the cattle was rattled by the battery").equals("the cat was rat by the bat")){passed++;System.out.println("PASS example");} else System.out.println("FAIL example: "+new Solution().replaceWords(d1,"the cattle was rattled by the battery"));
-   List<String> d2=Arrays.asList("a","aa","aaa");
-   total++; if(new Solution().replaceWords(d2,"a aa aaa aaaa").equals("a a a a")){passed++;System.out.println("PASS shortest");} else System.out.println("FAIL shortest");
-   List<String> d3=Arrays.asList("xyz");
-   total++; if(new Solution().replaceWords(d3,"abc def").equals("abc def")){passed++;System.out.println("PASS none");} else System.out.println("FAIL none");
-   List<String> d4=Arrays.asList();
-   total++; if(new Solution().replaceWords(d4,"hello world").equals("hello world")){passed++;System.out.println("PASS emptydict");} else System.out.println("FAIL emptydict");
-   System.out.println("RESULT "+passed+"/"+total);
- }
+### Độ phức tạp
+- Dựng Trie: O(tổng độ dài các gốc).
+- Mỗi từ dừng sau tối đa {{min(độ dài từ, độ dài gốc dài nhất)}} bước → tổng O(độ dài câu).
+- Bộ nhớ: O(tổng độ dài các gốc) cho Trie, O(độ dài câu) cho kết quả.
+
+### Lưu ý khi phỏng vấn
+- Có gốc "a" và "aa" thì luôn dùng "a" (ngắn nhất), nhờ dừng ở {{isRoot}} đầu tiên.
+- Cách khác: cho các gốc vào {{HashSet}}, với mỗi từ thử các tiền tố độ dài 1, 2, 3...; đơn giản nhưng mỗi lần {{substring}} tạo chuỗi mới, chậm hơn Trie khi từ dài.
+
+> Senior tip: Bài này là "longest/shortest prefix match": cùng mô hình với bảng định tuyến IP hay chọn rule cấu hình theo đường dẫn URL. Trie biến nó thành phép đi O(độ dài khoá), không phụ thuộc số rule.`,
+  complexity: 'Time O(D + S) với D = tổng độ dài gốc, S = độ dài câu; Space O(D + S)',
+  starter: 'class Solution {\n    public String replaceWords(List<String> dictionary, String sentence) {\n        // TODO\n        return sentence;\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected [" + expected + "] got [" + actual + "]");
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        run("example", "the cat was rat by the bat", () -> new Solution().replaceWords(Arrays.asList("cat", "bat", "rat"), "the cattle was rattled by the battery"));
+        run("single letters", "a a b c", () -> new Solution().replaceWords(Arrays.asList("a", "b", "c"), "aadsfasf absbs bbab cadsfafs"));
+        run("shortest root wins", "a a a a", () -> new Solution().replaceWords(Arrays.asList("aaa", "aa", "a"), "a aa aaa aaaa"));
+        run("no match", "abc def", () -> new Solution().replaceWords(Arrays.asList("xyz"), "abc def"));
+        run("root longer than word", "ca", () -> new Solution().replaceWords(Arrays.asList("cat"), "ca"));
+        run("word equals root", "cat", () -> new Solution().replaceWords(Arrays.asList("cat"), "cat"));
+        run("single word sentence", "rat", () -> new Solution().replaceWords(Arrays.asList("rat"), "rattle"));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
 }`,
-  complexity: 'Time O(total chars), Space O(total chars)',
-  follow: ['Nếu dictionary có từ trùng thì xử lý thế nào?']
+  follow: ['Nếu thay vì gốc ngắn nhất cần gốc **dài nhất** thì sửa chỗ nào?', 'So sánh lời giải Trie với lời giải HashSet thử từng tiền tố về thời gian và bộ nhớ?']
 }
 );
 (window.ALGOS = window.ALGOS || []).push(
@@ -12695,50 +13019,67 @@ public class Main {
   difficulty: 'medium',
   pattern: 'Tries',
   tags: ['trie', 'binary-search', 'string', 'bytebytego'],
-  prompt: `Cho mảng {{products}} và chuỗi {{searchWord}}. Sau mỗi ký tự gõ, trả về tối đa 3 sản phẩm có prefix khớp, sắp xếp từ điển. Kết quả là danh sách các danh sách (mỗi bước một danh sách).
+  prompt: `Cho mảng tên sản phẩm {{products}} và từ khoá {{searchWord}}. Người dùng gõ {{searchWord}} từng ký tự một. Sau **mỗi** ký tự, hệ thống gợi ý tối đa **3** sản phẩm có tiền tố trùng với phần đã gõ; nếu nhiều hơn 3 thì lấy 3 sản phẩm nhỏ nhất theo thứ tự từ điển. Trả về danh sách gồm {{searchWord.length()}} danh sách gợi ý (danh sách có thể rỗng).
 
 ### Ví dụ
 ~~~text
-Input: products = ["mobile","mouse","moneypot","monitor","mousepad"], searchWord = "mouse"
-Output: [["mobile","moneypot","monitor"],["mobile","moneypot","monitor"],["mouse","mousepad"],["mouse","mousepad"],["mouse","mousepad"]]
+Input:  products = ["mobile","mouse","moneypot","monitor","mousepad"], searchWord = "mouse"
+Output: [["mobile","moneypot","monitor"],
+         ["mobile","moneypot","monitor"],
+         ["mouse","mousepad"],
+         ["mouse","mousepad"],
+         ["mouse","mousepad"]]
+Giải thích: sau khi sắp xếp: mobile, moneypot, monitor, mouse, mousepad.
+"m" và "mo" khớp cả 5 → lấy 3 đầu. "mou", "mous", "mouse" khớp mouse, mousepad.
+
+Input:  products = ["havana"], searchWord = "tatiana"
+Output: [[],[],[],[],[],[],[]]
 ~~~
 
 ### Ràng buộc
-- {{1 <= products.length <= 1000}}
-- {{1 <= products[i].length <= 3000}}`,
+- {{1 <= products.length <= 1000}}, {{1 <= products[i].length <= 3000}}
+- {{1 <= searchWord.length <= 1000}}
+- Chỉ gồm chữ cái thường; các {{products[i]}} khác nhau.`,
   hints: [
-    'Sort products rồi dùng binary search để tìm prefix.',
-    'Hoặc dùng Trie, mỗi node lưu danh sách (tối đa 3) các từ.',
-    'Trie cho phép trả kết quả theo prefix tăng dần.'
+    'Sau khi **sắp xếp** {{products}}, mọi sản phẩm có cùng một tiền tố nằm thành một **đoạn liên tiếp**. Ba gợi ý chính là ba phần tử đầu của đoạn đó.',
+    'Tìm vị trí đầu đoạn bằng binary search: phần tử đầu tiên {{>= prefix}} (lower bound). Tiền tố càng dài thì vị trí này chỉ có thể dịch sang phải, nên có thể tìm tiếp từ vị trí cũ.',
+    'Từ vị trí đó lấy tối đa 3 phần tử, dừng ngay khi gặp phần tử không bắt đầu bằng {{prefix}}. Cách khác: Trie mà mỗi node lưu sẵn 3 từ nhỏ nhất đi qua nó.'
   ],
   solution: `### Ý tưởng
-Sort products. Với mỗi prefix của searchWord, binary search lower_bound để tìm vị trí bắt đầu; lấy tối đa 3 từ liên tiếp có cùng prefix. Đơn giản và đủ nhanh.
+Sắp xếp {{products}}. Các chuỗi có cùng tiền tố P nằm liền nhau và chuỗi nhỏ nhất trong số đó là chuỗi đầu tiên {{>= P}} (vì mọi chuỗi bắt đầu bằng P đều {{>= P}}, và chuỗi nào {{>= P}} mà nhỏ hơn chuỗi đầu đoạn thì đã nằm trước đoạn).
+
+Với mỗi tiền tố {{searchWord[0..i]}}:
+1. Binary search tìm {{start}} = chỉ số đầu tiên có {{products[start] >= prefix}}.
+2. Lấy {{products[start]}}, {{products[start+1]}}, {{products[start+2]}} nếu chúng bắt đầu bằng {{prefix}}.
 
 ~~~java
 class Solution {
     public List<List<String>> suggestedProducts(String[] products, String searchWord) {
-        Arrays.sort(products);
-        List<List<String>> res = new ArrayList<>();
-        String prefix = "";
+        String[] sorted = products.clone();        // khong sua mang cua nguoi goi
+        Arrays.sort(sorted);
+        List<List<String>> result = new ArrayList<>();
+        StringBuilder prefix = new StringBuilder();
         int start = 0;
-        for (char c : searchWord.toCharArray()) {
-            prefix += c;
-            start = lowerBound(products, prefix, start);
-            List<String> cur = new ArrayList<>();
-            for (int i = start; i < products.length && i < start + 3; i++) {
-                if (products[i].startsWith(prefix)) cur.add(products[i]);
-                else break;
+        for (char ch : searchWord.toCharArray()) {
+            prefix.append(ch);
+            String p = prefix.toString();
+            start = lowerBound(sorted, p, start);  // prefix dai hon -> vi tri chi tien len
+            List<String> suggestions = new ArrayList<>();
+            for (int i = start; i < sorted.length && suggestions.size() < 3; i++) {
+                if (!sorted[i].startsWith(p)) break; // het doan cung tien to
+                suggestions.add(sorted[i]);
             }
-            res.add(cur);
+            result.add(suggestions);
         }
-        return res;
+        return result;
     }
 
-    private int lowerBound(String[] a, String prefix, int from) {
+    // chi so dau tien trong [from, n) co a[i] >= key
+    private int lowerBound(String[] a, String key, int from) {
         int lo = from, hi = a.length;
         while (lo < hi) {
             int mid = (lo + hi) >>> 1;
-            if (a[mid].compareTo(prefix) < 0) lo = mid + 1;
+            if (a[mid].compareTo(key) < 0) lo = mid + 1;
             else hi = mid;
         }
         return lo;
@@ -12746,35 +13087,52 @@ class Solution {
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- Nếu dùng Trie, mỗi node lưu top 3 để trả O(L).
-- Binary search approach O(n log n + L log n).
+### Chạy tay với ví dụ 1
+Sau sắp xếp: [mobile, moneypot, monitor, mouse, mousepad].
+- "m": lower bound = 0 → mobile, moneypot, monitor.
+- "mo": vẫn 0 → như trên.
+- "mou": "monitor" < "mou" < "mouse" → start = 3 → mouse, mousepad.
 
-> Senior tip: Search suggestions là bài kiểm tra khả năng cân bằng giữa preprocessing và query.`,
-  starter: "class Solution {\n    public List<List<String>> suggestedProducts(String[] products, String searchWord) {\n        \n    }\n}",
-  tests: `
-public class Main {
- static int passed=0,total=0;
- static List<List<String>> L(String[]... rows){ List<List<String>> r=new ArrayList<>(); for(String[] row:rows){ List<String> c=new ArrayList<>(Arrays.asList(row)); r.add(c);} return r;}
- public static void main(String[] args){
-   String[] p1={"mobile","mouse","moneypot","monitor","mousepad"};
-   List<List<String>> exp1=L(new String[]{"mobile","moneypot","monitor"},new String[]{"mobile","moneypot","monitor"},new String[]{"mouse","mousepad"},new String[]{"mouse","mousepad"},new String[]{"mouse","mousepad"});
-   List<List<String>> r1=new Solution().suggestedProducts(p1,"mouse");
-   total++; if(r1.equals(exp1)){passed++;System.out.println("PASS example");} else System.out.println("FAIL example: "+r1);
-   String[] p2={"havana"};
-   List<List<String>> r2=new Solution().suggestedProducts(p2,"havana");
-   total++; if(r2.size()==6 && r2.get(5).equals(Arrays.asList("havana"))){passed++;System.out.println("PASS full");} else System.out.println("FAIL full: "+r2);
-   String[] p3={"abc"};
-   List<List<String>> r3=new Solution().suggestedProducts(p3,"z");
-   total++; if(r3.size()==1 && r3.get(0).isEmpty()){passed++;System.out.println("PASS none");} else System.out.println("FAIL none: "+r3);
-   String[] p4={"a","ab","abc"};
-   List<List<String>> r4=new Solution().suggestedProducts(p4,"ab");
-   total++; if(r4.get(0).equals(Arrays.asList("a","ab","abc")) && r4.get(1).equals(Arrays.asList("ab","abc"))){passed++;System.out.println("PASS prefix");} else System.out.println("FAIL prefix: "+r4);
-   System.out.println("RESULT "+passed+"/"+total);
- }
+### Độ phức tạp
+- Sắp xếp: O(n log n) phép so sánh, mỗi phép tốn tối đa O(độ dài chuỗi).
+- Mỗi ký tự gõ: binary search O(log n) phép so sánh + lấy 3 phần tử → tổng O(L · log n) phép so sánh, L = độ dài searchWord.
+- Bộ nhớ: O(n) cho mảng đã sắp xếp (không tính kết quả).
+
+### Lưu ý khi phỏng vấn
+- So với Trie: binary search đơn giản, ít bộ nhớ; Trie lưu sẵn top 3 ở mỗi node thì mỗi lần gõ chỉ O(1), hợp với hệ thống phục vụ hàng triệu truy vấn trên một tập sản phẩm ít thay đổi.
+- Nhớ trường hợp tiền tố không khớp gì: vẫn phải thêm danh sách rỗng cho bước đó.
+
+> Senior tip: Autocomplete thật thường không xếp theo từ điển mà theo độ phổ biến; khi đó mỗi node Trie lưu top-k theo điểm số, và cập nhật chạy offline định kỳ thay vì mỗi lần người dùng gõ.`,
+  complexity: 'Time O(n log n + L log n) phép so sánh chuỗi, Space O(n)',
+  starter: 'class Solution {\n    public List<List<String>> suggestedProducts(String[] products, String searchWord) {\n        // TODO\n        return new ArrayList<>();\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<List<String>> L(String[]... rows) { List<List<String>> r = new ArrayList<>(); for (String[] row : rows) r.add(Arrays.asList(row)); return r; }
+    public static void main(String[] args) {
+        run("example", L(new String[]{"mobile", "moneypot", "monitor"}, new String[]{"mobile", "moneypot", "monitor"}, new String[]{"mouse", "mousepad"}, new String[]{"mouse", "mousepad"}, new String[]{"mouse", "mousepad"}),
+            () -> new Solution().suggestedProducts(new String[]{"mobile", "mouse", "moneypot", "monitor", "mousepad"}, "mouse"));
+        run("full match single product", L(new String[]{"havana"}, new String[]{"havana"}, new String[]{"havana"}, new String[]{"havana"}, new String[]{"havana"}, new String[]{"havana"}),
+            () -> new Solution().suggestedProducts(new String[]{"havana"}, "havana"));
+        run("no match after first char", L(new String[]{}, new String[]{}, new String[]{}),
+            () -> new Solution().suggestedProducts(new String[]{"havana"}, "tat"));
+        run("diverges midway", L(new String[]{"baggage", "bags", "banner"}, new String[]{"baggage", "bags", "banner"}, new String[]{"baggage", "bags"}, new String[]{"bags"}),
+            () -> new Solution().suggestedProducts(new String[]{"bags", "baggage", "banner", "box", "cloths"}, "bags"));
+        run("prefix is product", L(new String[]{"a", "ab", "abc"}, new String[]{"ab", "abc"}),
+            () -> new Solution().suggestedProducts(new String[]{"abc", "ab", "a"}, "ab"));
+        run("input not modified", "[mouse, mobile]", () -> { String[] p = {"mouse", "mobile"}; new Solution().suggestedProducts(p, "m"); return Arrays.toString(p); });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
 }`,
-  complexity: 'Time O(n log n + L log n), Space O(n)',
-  follow: ['Nếu products rất lớn, Trie có lợi thế gì?']
+  follow: ['Nếu sản phẩm được thêm/xoá liên tục thì chọn Trie hay mảng sắp xếp? Vì sao?', 'Làm sao xếp gợi ý theo độ phổ biến thay vì thứ tự từ điển?']
 }
 );
 (window.ALGOS = window.ALGOS || []).push(
@@ -12784,71 +13142,113 @@ public class Main {
   difficulty: 'medium',
   pattern: 'Union Find',
   tags: ['union-find', 'graph', 'bytebytego'],
-  prompt: `Cho {{n}} node (0..n-1) và danh sách cạnh {{edges}} vô hướng. Kiểm tra xem chúng có tạo thành một **cây** (connected và acyclic) hay không.
+  prompt: `Cho {{n}} node đánh số {{0..n-1}} và danh sách cạnh **vô hướng** {{edges}}. Kiểm tra các cạnh này có tạo thành **một cây** hay không: tức đồ thị **liên thông** (đi được giữa mọi cặp node) và **không có chu trình**.
 
 ### Ví dụ
 ~~~text
-Input: n = 5, edges = [[0,1],[0,2],[0,3],[1,4]]
+Input:  n = 5, edges = [[0,1],[0,2],[0,3],[1,4]]
 Output: true
 
-Input: n = 5, edges = [[0,1],[1,2],[2,3],[1,3],[1,4]]
-Output: false
+Input:  n = 5, edges = [[0,1],[1,2],[2,3],[1,3],[1,4]]
+Output: false   (chu trình 1-2-3-1)
+
+Input:  n = 4, edges = [[0,1],[2,3]]
+Output: false   (hai mảnh rời nhau)
 ~~~
 
 ### Ràng buộc
 - {{1 <= n <= 2000}}
-- {{0 <= edges.length <= 5000}}`,
+- {{0 <= edges.length <= 5000}}
+- Không có cạnh tự nối và không có cạnh lặp.`,
   hints: [
-    'Cây với n node phải có đúng n-1 cạnh và liên thông.',
-    'Union-Find: nếu union hai node đã cùng component thì có cycle.',
-    'Sau xử lý, số component phải là 1.'
+    'Một cây có n node thì có **đúng n - 1 cạnh**. Số cạnh khác n - 1 → chắc chắn không phải cây.',
+    'Nếu đã có đúng n - 1 cạnh thì "không có chu trình" tương đương "liên thông". Vậy chỉ cần kiểm tra một trong hai.',
+    'Union-Find: duyệt từng cạnh {{(u, v)}}. Nếu {{find(u) == find(v)}} thì u và v vốn đã nối với nhau, thêm cạnh này tạo chu trình → false.'
   ],
   solution: `### Ý tưởng
-Cây <=> n-1 cạnh, không cycle, liên thông. Union-Find: union từng cạnh; nếu find(u)==find(v) thì cycle. Cuối cùng kiểm tra số component == 1 (và edges.length == n-1).
+Tính chất của cây n node: liên thông, không chu trình, và có đúng n - 1 cạnh. Hai trong ba điều này kéo theo điều thứ ba. Vì vậy:
+1. Nếu {{edges.length != n - 1}} → false.
+2. Kiểm tra không có chu trình bằng **Union-Find** (Disjoint Set Union): mỗi node ban đầu là một nhóm riêng. Với mỗi cạnh, nếu hai đầu đã cùng nhóm thì cạnh đó khép một vòng → false; ngược lại gộp hai nhóm.
+3. Qua được hết → n - 1 cạnh, không chu trình → liên thông → là cây.
+
+**Union-Find hoạt động thế nào?** Mỗi nhóm là một cây nhỏ, {{parent[x]}} trỏ lên cha; gốc là đại diện nhóm. {{find(x)}} đi lên tới gốc. Hai kỹ thuật giữ cây thấp: **path compression** (cho node trỏ thẳng/gần tới gốc khi đi qua) và **union by rank** (gắn cây thấp vào dưới cây cao).
 
 ~~~java
 class Solution {
+    private int[] parent, rank;
+
     public boolean validTree(int n, int[][] edges) {
-        if (edges.length != n - 1) return false;
-        int[] parent = new int[n];
-        int[] rank = new int[n];
-        for (int i = 0; i < n; i++) parent[i] = i;
+        if (edges.length != n - 1) return false;   // cay phai co dung n-1 canh
+        parent = new int[n];
+        rank = new int[n];
+        for (int i = 0; i < n; i++) parent[i] = i; // moi node la mot nhom rieng
         for (int[] e : edges) {
-            int ru = find(parent, e[0]), rv = find(parent, e[1]);
-            if (ru == rv) return false;
-            if (rank[ru] < rank[rv]) parent[ru] = rv;
-            else if (rank[ru] > rank[rv]) parent[rv] = ru;
-            else { parent[rv] = ru; rank[ru]++; }
+            if (!union(e[0], e[1])) return false;  // hai dau da cung nhom -> chu trinh
         }
-        return true;
+        return true;                               // n-1 canh + khong chu trinh = lien thong
     }
 
-    private int find(int[] p, int x) {
-        while (p[x] != x) { p[x] = p[p[x]]; x = p[x]; }
+    private int find(int x) {
+        while (parent[x] != x) {
+            parent[x] = parent[parent[x]];         // path compression (halving)
+            x = parent[x];
+        }
         return x;
+    }
+
+    // gop hai nhom; tra ve false neu da cung nhom
+    private boolean union(int a, int b) {
+        int ra = find(a), rb = find(b);
+        if (ra == rb) return false;
+        if (rank[ra] < rank[rb]) { int t = ra; ra = rb; rb = t; } // ra la cay cao hon
+        parent[rb] = ra;                           // gan cay thap vao duoi cay cao
+        if (rank[ra] == rank[rb]) rank[ra]++;
+        return true;
     }
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- Điều kiện n-1 cạnh + không cycle => liên thông tự động.
-- BFS/DFS cũng kiểm tra connected.
+### Chạy tay với ví dụ 2
+5 node, 5 cạnh ≠ 4 → false ngay ở bước 1. Nếu bỏ bước 1: union(0,1), union(1,2), union(2,3), rồi cạnh (1,3): find(1) == find(3) → chu trình → false.
 
-> Senior tip: Union-Find là công cụ chuẩn cho dynamic connectivity và Kruskal.`,
-  starter: "class Solution {\n    public boolean validTree(int n, int[][] edges) {\n        \n    }\n}",
-  tests: `
-public class Main {
- static int passed=0,total=0;
- public static void main(String[] args){
-   total++; if(new Solution().validTree(5,new int[][]{{0,1},{0,2},{0,3},{1,4}})){passed++;System.out.println("PASS tree");} else System.out.println("FAIL tree");
-   total++; if(!new Solution().validTree(5,new int[][]{{0,1},{1,2},{2,3},{1,3},{1,4}})){passed++;System.out.println("PASS cycle");} else System.out.println("FAIL cycle");
-   total++; if(new Solution().validTree(1,new int[][]{})){passed++;System.out.println("PASS single");} else System.out.println("FAIL single");
-   total++; if(!new Solution().validTree(4,new int[][]{{0,1},{2,3}})){passed++;System.out.println("PASS disconnected");} else System.out.println("FAIL disconnected");
-   System.out.println("RESULT "+passed+"/"+total);
- }
+### Độ phức tạp
+O(n + E·α(n)) thời gian, với α là hàm Ackermann ngược (≤ 4 trong thực tế, coi như hằng số). Bộ nhớ O(n).
+
+### Lưu ý khi phỏng vấn
+- Đừng quên trường hợp {{n = 1, edges = []}}: một node đơn lẻ là cây hợp lệ.
+- Cách khác: BFS/DFS từ node 0, đếm số node thăm được; cây ⇔ đúng n - 1 cạnh và thăm đủ n node.
+- Giải thích được vì sao chỉ cần kiểm tra hai trong ba điều kiện là điểm cộng.
+
+> Senior tip: Union-Find là công cụ chuẩn cho bài toán "kết nối động": thuật toán Kruskal tìm cây khung nhỏ nhất, gom nhóm tài khoản trùng, hay phát hiện vòng khi thêm dần cạnh vào mạng lưới.`,
+  complexity: 'Time O(n + E * α(n)), Space O(n)',
+  starter: 'class Solution {\n    public boolean validTree(int n, int[][] edges) {\n        // TODO\n        return false;\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        run("tree", true, () -> new Solution().validTree(5, new int[][]{{0, 1}, {0, 2}, {0, 3}, {1, 4}}));
+        run("cycle", false, () -> new Solution().validTree(5, new int[][]{{0, 1}, {1, 2}, {2, 3}, {1, 3}, {1, 4}}));
+        run("single node", true, () -> new Solution().validTree(1, new int[0][]));
+        run("two nodes no edge", false, () -> new Solution().validTree(2, new int[0][]));
+        run("disconnected", false, () -> new Solution().validTree(4, new int[][]{{0, 1}, {2, 3}}));
+        run("n-1 edges but cycle + isolated", false, () -> new Solution().validTree(4, new int[][]{{0, 1}, {1, 2}, {2, 0}}));
+        run("long path 2000", true, () -> {
+            int n = 2000; int[][] e = new int[n - 1][];
+            for (int i = 0; i + 1 < n; i++) e[i] = new int[]{i + 1, i};
+            return new Solution().validTree(n, e);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
 }`,
-  complexity: 'Time O(n α(n)), Space O(n)',
-  follow: ['DFS kiểm tra connected khác Union-Find ở điểm nào?']
+  follow: ['Giải bằng BFS/DFS thay vì Union-Find thì kiểm tra những gì?', 'Path compression và union by rank giúp gì, nếu bỏ cả hai thì độ phức tạp xấu nhất là bao nhiêu?']
 }
 );
 (window.ALGOS = window.ALGOS || []).push(
@@ -12858,104 +13258,130 @@ public class Main {
   difficulty: 'medium',
   pattern: 'Union Find',
   tags: ['union-find', 'graph', 'string', 'bytebytego'],
-  prompt: `Cho danh sách {{accounts}}, mỗi account là [name, email1, email2, ...]. Hai account cùng tên và chia sẻ ít nhất một email thì thuộc cùng một người. Gộp các account của cùng một người, trả về danh sách account gộp: [name, email đã sort, ...].
+  prompt: `Cho danh sách {{accounts}}, mỗi phần tử có dạng {{[name, email1, email2, ...]}}. Hai account có **chung ít nhất một email** thì chắc chắn thuộc cùng một người (khi đó tên cũng giống nhau). Lưu ý quan hệ này **bắc cầu**: A chung email với B, B chung email với C thì A, B, C là một người. Hai account trùng tên nhưng không liên quan email thì có thể là hai người khác nhau. Gộp các account của cùng một người, mỗi account kết quả có dạng {{[name, các email **đã sắp xếp tăng dần** và không trùng]}}. Thứ tự các account trong kết quả tuỳ ý.
 
 ### Ví dụ
 ~~~text
-Input: accounts = [["John","johnsmith@mail.com","john_newyork@mail.com"],["John","johnsmith@mail.com","john00@mail.com"],["Mary","mary@mail.com"],["John","johnnybravo@mail.com"]]
-Output: [["John","john00@mail.com","john_newyork@mail.com","johnsmith@mail.com"],["Mary","mary@mail.com"],["John","johnnybravo@mail.com"]]
+Input:  accounts = [["John","johnsmith@mail.com","john_newyork@mail.com"],
+                    ["John","johnsmith@mail.com","john00@mail.com"],
+                    ["Mary","mary@mail.com"],
+                    ["John","johnnybravo@mail.com"]]
+Output: [["John","john00@mail.com","john_newyork@mail.com","johnsmith@mail.com"],
+         ["Mary","mary@mail.com"],
+         ["John","johnnybravo@mail.com"]]
+Giải thích: hai account John đầu chung johnsmith@mail.com nên gộp. John cuối là người khác.
 ~~~
 
 ### Ràng buộc
-- {{1 <= accounts.length <= 1000}}`,
+- {{1 <= accounts.length <= 1000}}, {{2 <= accounts[i].length <= 10}}
+- Mọi email hợp lệ, độ dài tối đa 30.`,
   hints: [
-    'Union-Find trên email; name lấy từ account đầu tiên.',
-    'Map email -> index account để union.',
-    'Sau đó gom email theo root, sort email.'
+    'Coi mỗi **email** là một đỉnh. Trong cùng một account, mọi email thuộc cùng một người → nối chúng với nhau (chỉ cần nối email đầu với từng email còn lại).',
+    'Union-Find trên chuỗi email ({{Map<String, String> parent}}) gom các email thành nhóm. Mỗi nhóm cuối cùng là một người.',
+    'Nhớ tên theo email ({{Map<String, String> emailToName}}). Gom email theo gốc của nhóm, dùng {{TreeSet}} để vừa sắp xếp vừa bỏ trùng, rồi thêm tên vào đầu.'
   ],
   solution: `### Ý tưởng
-Union-Find trên email: với mỗi account, union email đầu tiên với các email còn lại. Map email -> tên. Sau đó gom email theo root component, sort, prepend tên.
+"Chung email thì cùng người" và quan hệ bắc cầu chính là **các thành phần liên thông** trong đồ thị mà đỉnh là email. Union-Find tìm thành phần liên thông rất gọn:
+1. Với mỗi account: mỗi email là một phần tử của Union-Find; nối email đầu tiên với các email còn lại. Ghi {{emailToName}}.
+2. Sau khi xử lý hết, hai email cùng gốc ({{find}}) ⇔ cùng một người.
+3. Gom email theo gốc vào {{TreeSet}} (tự sắp xếp, bỏ trùng). Mỗi nhóm thành một account: tên + danh sách email.
 
 ~~~java
 class Solution {
+    private final Map<String, String> parent = new HashMap<>();
+
     public List<List<String>> accountsMerge(List<List<String>> accounts) {
         Map<String, String> emailToName = new HashMap<>();
-        Map<String, String> parent = new HashMap<>();
         for (List<String> acc : accounts) {
-            String name = acc.get(0);
+            String name = acc.get(0), first = acc.get(1);
             for (int i = 1; i < acc.size(); i++) {
                 String email = acc.get(i);
+                parent.putIfAbsent(email, email);   // email moi: tu lam goc
                 emailToName.put(email, name);
-                parent.putIfAbsent(email, email);
+                union(first, email);                // cung account -> cung nguoi
             }
-            for (int i = 2; i < acc.size(); i++) union(parent, acc.get(1), acc.get(i));
         }
-        Map<String, TreeSet<String>> groups = new HashMap<>();
+        Map<String, TreeSet<String>> groups = new HashMap<>(); // goc -> cac email (sap xep)
         for (String email : parent.keySet()) {
-            String root = find(parent, email);
-            groups.computeIfAbsent(root, k -> new TreeSet<>()).add(email);
+            groups.computeIfAbsent(find(email), k -> new TreeSet<>()).add(email);
         }
-        List<List<String>> res = new ArrayList<>();
-        for (Map.Entry<String, TreeSet<String>> e : groups.entrySet()) {
+        List<List<String>> result = new ArrayList<>();
+        for (TreeSet<String> emails : groups.values()) {
             List<String> acc = new ArrayList<>();
-            acc.add(emailToName.get(e.getKey()));
-            acc.addAll(e.getValue());
-            res.add(acc);
+            acc.add(emailToName.get(emails.first()));  // ten cua nguoi nay
+            acc.addAll(emails);
+            result.add(acc);
         }
-        return res;
+        return result;
     }
 
-    private String find(Map<String, String> p, String x) {
-        while (!p.get(x).equals(x)) { p.put(x, p.get(p.get(x))); x = p.get(x); }
+    private String find(String x) {
+        while (!parent.get(x).equals(x)) {
+            parent.put(x, parent.get(parent.get(x))); // path compression
+            x = parent.get(x);
+        }
         return x;
     }
-    private void union(Map<String, String> p, String a, String b) {
-        String ra = find(p, a), rb = find(p, b);
-        if (!ra.equals(rb)) p.put(ra, rb);
+
+    private void union(String a, String b) {
+        String ra = find(a), rb = find(b);
+        if (!ra.equals(rb)) parent.put(rb, ra);
     }
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- Cần sort email để output deterministic.
-- Nếu một email xuất hiện ở nhiều account cùng tên thì gộp.
+### Chạy tay với ví dụ
+- Account 1: union(johnsmith, john_newyork). Account 2: union(johnsmith, john00) → cả ba cùng gốc.
+- Mary và johnnybravo đứng riêng.
+- Gom nhóm → 3 account, email trong mỗi nhóm đã sắp xếp nhờ {{TreeSet}}.
 
-> Senior tip: Accounts merge là bài Union-Find kinh điển trên string keys.`,
-  starter: "class Solution {\n    public List<List<String>> accountsMerge(List<List<String>> accounts) {\n        \n    }\n}",
-  tests: `
-public class Main {
- static int passed=0,total=0;
- static List<List<String>> norm(List<List<String>> in){
-   List<List<String>> r=new ArrayList<>();
-   for(List<String> a:in){ List<String> c=new ArrayList<>(a); if(c.size()>1) Collections.sort(c.subList(1,c.size())); r.add(c);}
-   // sort outer by first email
-   r.sort((x,y)-> x.size()>1 && y.size()>1 ? x.get(1).compareTo(y.get(1)) : 0);
-   return r;
- }
- public static void main(String[] args){
-   List<List<String>> acc=new ArrayList<>();
-   acc.add(Arrays.asList("John","johnsmith@mail.com","john_newyork@mail.com"));
-   acc.add(Arrays.asList("John","johnsmith@mail.com","john00@mail.com"));
-   acc.add(Arrays.asList("Mary","mary@mail.com"));
-   acc.add(Arrays.asList("John","johnnybravo@mail.com"));
-   List<List<String>> res=new Solution().accountsMerge(acc);
-   total++; if(norm(res).size()==3){passed++;System.out.println("PASS count");} else System.out.println("FAIL count: "+res);
-   // check emails merged for John
-   total++; boolean ok=false;
-   for(List<String> a:res) if(a.get(0).equals("John") && a.contains("john00@mail.com") && a.contains("johnsmith@mail.com")) ok=true;
-   if(ok){passed++;System.out.println("PASS merge");} else System.out.println("FAIL merge: "+res);
-   List<List<String>> acc2=new ArrayList<>();
-   acc2.add(Arrays.asList("Gabe","g@mail.com"));
-   total++; if(new Solution().accountsMerge(acc2).size()==1){passed++;System.out.println("PASS single");} else System.out.println("FAIL single");
-   List<List<String>> acc3=new ArrayList<>();
-   acc3.add(Arrays.asList("A","a@mail.com"));
-   acc3.add(Arrays.asList("A","b@mail.com"));
-   total++; if(new Solution().accountsMerge(acc3).size()==2){passed++;System.out.println("PASS separate");} else System.out.println("FAIL separate");
-   System.out.println("RESULT "+passed+"/"+total);
- }
+### Độ phức tạp
+Gọi E = tổng số email. Union-Find O(E·α(E)) (coi như O(E)); sắp xếp trong {{TreeSet}} O(E log E). Bộ nhớ O(E).
+
+### Lưu ý khi phỏng vấn
+- Không được gộp theo **tên**: hai "John" khác email là hai người.
+- Một email có thể lặp lại ở nhiều account, {{TreeSet}} lo phần bỏ trùng.
+- Cách khác: dựng đồ thị email rồi DFS/BFS tìm thành phần liên thông, cùng độ phức tạp.
+
+> Senior tip: Đây là bài "entity resolution" thu nhỏ, gặp thật khi gộp hồ sơ khách hàng từ nhiều hệ thống (CRM, đơn hàng, ticket hỗ trợ) bằng khoá chung như email/số điện thoại. Cần cẩn thận với email dùng chung (ví dụ email công ty) vì nó có thể "nối" nhầm hàng nghìn người.`,
+  complexity: 'Time O(E log E), Space O(E) với E = tổng số email',
+  starter: 'class Solution {\n    public List<List<String>> accountsMerge(List<List<String>> accounts) {\n        // TODO\n        return new ArrayList<>();\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    // thu tu cac account tuy y; email trong moi account PHAI da sap xep (khong sap lai)
+    static List<String> norm(List<List<String>> accs) {
+        List<String> r = new ArrayList<>();
+        for (List<String> a : accs) r.add(a.toString());
+        Collections.sort(r);
+        return r;
+    }
+    static List<List<String>> A(String[]... rows) { List<List<String>> r = new ArrayList<>(); for (String[] row : rows) r.add(Arrays.asList(row)); return r; }
+    public static void main(String[] args) {
+        run("example", norm(A(new String[]{"John", "john00@mail.com", "john_newyork@mail.com", "johnsmith@mail.com"}, new String[]{"Mary", "mary@mail.com"}, new String[]{"John", "johnnybravo@mail.com"})),
+            () -> norm(new Solution().accountsMerge(A(new String[]{"John", "johnsmith@mail.com", "john_newyork@mail.com"}, new String[]{"John", "johnsmith@mail.com", "john00@mail.com"}, new String[]{"Mary", "mary@mail.com"}, new String[]{"John", "johnnybravo@mail.com"}))));
+        run("single account sorted", norm(A(new String[]{"Gabe", "a@m.co", "b@m.co"})),
+            () -> norm(new Solution().accountsMerge(A(new String[]{"Gabe", "b@m.co", "a@m.co"}))));
+        run("same name different people", norm(A(new String[]{"A", "a@m.co"}, new String[]{"A", "b@m.co"})),
+            () -> norm(new Solution().accountsMerge(A(new String[]{"A", "a@m.co"}, new String[]{"A", "b@m.co"}))));
+        run("transitive merge", norm(A(new String[]{"K", "x@m.co", "y@m.co", "z@m.co"})),
+            () -> norm(new Solution().accountsMerge(A(new String[]{"K", "x@m.co"}, new String[]{"K", "z@m.co", "y@m.co"}, new String[]{"K", "x@m.co", "y@m.co"}))));
+        run("duplicate email inside account", norm(A(new String[]{"D", "d@m.co"})),
+            () -> norm(new Solution().accountsMerge(A(new String[]{"D", "d@m.co", "d@m.co"}))));
+        run("chain via later account", norm(A(new String[]{"E", "e1@m.co", "e2@m.co", "e3@m.co", "e4@m.co"})),
+            () -> norm(new Solution().accountsMerge(A(new String[]{"E", "e1@m.co", "e2@m.co"}, new String[]{"E", "e3@m.co", "e4@m.co"}, new String[]{"E", "e4@m.co", "e1@m.co"}))));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
 }`,
-  complexity: 'Time O(N log N), Space O(N)',
-  follow: ['Nếu cùng email xuất hiện với tên khác nhau thì sao?']
+  follow: ['Giải bằng DFS trên đồ thị email thay vì Union-Find thế nào?', 'Nếu một email bị dùng chung bởi rất nhiều người (email công ty) thì nên xử lý ra sao trong hệ thống thật?']
 }
 );
 (window.ALGOS = window.ALGOS || []).push(
@@ -12965,72 +13391,99 @@ public class Main {
   difficulty: 'medium',
   pattern: 'Union Find',
   tags: ['union-find', 'graph', 'bytebytego'],
-  prompt: `Cho đồ thị vô hướng gồm n node (1..n) được xây dựng bằng cách thêm các cạnh trong {{edges}} theo thứ tự. Có đúng một cạnh thừa tạo chu trình. Tìm cạnh đó (cạnh xuất hiện sau cùng trong edges nếu có nhiều).
+  prompt: `Một cây gồm {{n}} node đánh số {{1..n}} bị thêm **đúng một cạnh**, thành đồ thị vô hướng {{edges}} có {{n}} cạnh (vì vậy có đúng một chu trình). Tìm một cạnh mà khi bỏ đi thì đồ thị lại thành cây. Nếu có nhiều cạnh như vậy, trả về cạnh **xuất hiện sau cùng** trong {{edges}}.
 
 ### Ví dụ
 ~~~text
-Input: edges = [[1,2],[1,3],[2,3]]
+Input:  edges = [[1,2],[1,3],[2,3]]
 Output: [2,3]
 
-Input: edges = [[1,2],[2,3],[3,4],[1,4],[1,5]]
+Input:  edges = [[1,2],[2,3],[3,4],[1,4],[1,5]]
 Output: [1,4]
+Giải thích: chu trình 1-2-3-4-1; bỏ cạnh nào trong chu trình cũng được, [1,4] xuất hiện sau cùng.
 ~~~
 
 ### Ràng buộc
-- {{3 <= n <= 1000}}
-- {{edges.length == n}}`,
+- {{3 <= n <= 1000}}, {{edges.length == n}}
+- {{1 <= a < b <= n}} với mỗi cạnh {{[a, b]}}; không có cạnh lặp.
+- Đồ thị liên thông.`,
   hints: [
-    'Union-Find: duyệt cạnh theo thứ tự; nếu hai đầu đã cùng component thì cạnh này là thừa.',
-    'Cạnh đầu tiên tạo cycle trong quá trình union là đáp án.',
-    'Vì chỉ có một cycle, trả ngay khi phát hiện.'
+    'Thêm lần lượt từng cạnh vào một đồ thị rỗng. Cạnh nào nối hai node **đã liên thông** với nhau thì khép một chu trình.',
+    'Union-Find trả lời "đã liên thông chưa?" gần như O(1): so sánh {{find(a)}} và {{find(b)}}.',
+    'Vì chỉ có đúng một chu trình, cạnh **đầu tiên** làm {{find(a) == find(b)}} chính là cạnh cuối cùng (theo thứ tự input) của chu trình đó.'
   ],
   solution: `### Ý tưởng
-Duyệt edges theo thứ tự, union hai đầu. Nếu find(u)==find(v) thì cạnh này tạo chu trình -> redundant. Trả cạnh đó.
+Duyệt cạnh theo thứ tự trong {{edges}}, mỗi cạnh {{(a, b)}}:
+- Nếu {{a}} và {{b}} **chưa** cùng nhóm → gộp nhóm (cạnh hợp lệ của cây).
+- Nếu **đã** cùng nhóm → giữa a và b đã có đường đi, cạnh này tạo chu trình → trả về.
+
+Vì sao đó là cạnh **xuất hiện sau cùng** trong chu trình? Chu trình chỉ "đóng lại" khi cạnh cuối cùng của nó (theo thứ tự input) được thêm vào; trước thời điểm đó các cạnh của chu trình chỉ tạo thành một đường đi, không bị phát hiện.
 
 ~~~java
 class Solution {
     public int[] findRedundantConnection(int[][] edges) {
         int n = edges.length;
-        int[] parent = new int[n + 1];
-        for (int i = 0; i <= n; i++) parent[i] = i;
+        int[] parent = new int[n + 1];             // node danh so 1..n
+        for (int i = 1; i <= n; i++) parent[i] = i;
         for (int[] e : edges) {
-            int ru = find(parent, e[0]), rv = find(parent, e[1]);
-            if (ru == rv) return e;
-            parent[ru] = rv;
+            int ra = find(parent, e[0]), rb = find(parent, e[1]);
+            if (ra == rb) return e;                // da lien thong -> canh thua
+            parent[ra] = rb;                       // gop hai nhom
         }
-        return new int[0];
+        return new int[0];                         // khong xay ra voi input hop le
     }
 
-    private int find(int[] p, int x) {
-        while (p[x] != x) { p[x] = p[p[x]]; x = p[x]; }
+    private int find(int[] parent, int x) {
+        while (parent[x] != x) {
+            parent[x] = parent[parent[x]];         // path compression (halving)
+            x = parent[x];
+        }
         return x;
     }
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- Nếu có nhiều cạnh thừa, cần trả cạnh xuất hiện cuối; ở đây chỉ một.
-- Path compression + union by rank để tối ưu.
+### Chạy tay với ví dụ 2
+[1,2] gộp; [2,3] gộp; [3,4] gộp → {1,2,3,4} cùng nhóm. [1,4]: find(1) == find(4) → trả [1,4].
 
-> Senior tip: Redundant connection là bài Union-Find đơn giản nhưng hay dùng để kiểm tra tư duy graph.`,
-  starter: "class Solution {\n    public int[] findRedundantConnection(int[][] edges) {\n        \n    }\n}",
-  tests: `
-public class Main {
- static int passed=0,total=0;
- public static void main(String[] args){
-   int[] r1=new Solution().findRedundantConnection(new int[][]{{1,2},{1,3},{2,3}});
-   total++; if(r1.length==2 && r1[0]==2 && r1[1]==3){passed++;System.out.println("PASS basic");} else System.out.println("FAIL basic: "+Arrays.toString(r1));
-   int[] r2=new Solution().findRedundantConnection(new int[][]{{1,2},{2,3},{3,4},{1,4},{1,5}});
-   total++; if(r2.length==2 && r2[0]==1 && r2[1]==4){passed++;System.out.println("PASS example");} else System.out.println("FAIL example: "+Arrays.toString(r2));
-   int[] r3=new Solution().findRedundantConnection(new int[][]{{1,2},{2,3},{1,3}});
-   total++; if(r3[0]==1 && r3[1]==3){passed++;System.out.println("PASS last");} else System.out.println("FAIL last: "+Arrays.toString(r3));
-   int[] r4=new Solution().findRedundantConnection(new int[][]{{1,2},{2,3},{3,4},{4,1}});
-   total++; if(r4.length==2){passed++;System.out.println("PASS cycle4");} else System.out.println("FAIL cycle4: "+Arrays.toString(r4));
-   System.out.println("RESULT "+passed+"/"+total);
- }
+### Độ phức tạp
+O(n·α(n)) thời gian (gần như tuyến tính), O(n) bộ nhớ.
+
+### Lưu ý khi phỏng vấn
+- Ở đây chỉ dùng path compression (đã đủ nhanh với n ≤ 1000); thêm union by rank để đảm bảo α(n) chặt chẽ.
+- Cách khác: với mỗi cạnh, DFS kiểm tra a và b đã nối chưa → O(n²). Nên nêu để thấy vì sao Union-Find tốt hơn.
+- Redundant Connection II (đồ thị **có hướng**) khó hơn nhiều: phải xét thêm node có hai cha.
+
+> Senior tip: Phát hiện "cạnh tạo vòng" khi thêm dần kết nối giống kiểm tra vòng khi thêm dependency mới vào hệ thống module, hoặc phát hiện loop trong cấu hình mạng (vai trò của Spanning Tree Protocol).`,
+  complexity: 'Time O(n * α(n)), Space O(n)',
+  starter: 'class Solution {\n    public int[] findRedundantConnection(int[][] edges) {\n        // TODO\n        return new int[0];\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + Arrays.toString((int[]) expected) + " got " + (actual instanceof int[] ? Arrays.toString((int[]) actual) : actual));
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        run("triangle", new int[]{2, 3}, () -> new Solution().findRedundantConnection(new int[][]{{1, 2}, {1, 3}, {2, 3}}));
+        run("example", new int[]{1, 4}, () -> new Solution().findRedundantConnection(new int[][]{{1, 2}, {2, 3}, {3, 4}, {1, 4}, {1, 5}}));
+        run("last edge of cycle", new int[]{1, 3}, () -> new Solution().findRedundantConnection(new int[][]{{1, 2}, {2, 3}, {1, 3}}));
+        run("cycle closes early", new int[]{2, 4}, () -> new Solution().findRedundantConnection(new int[][]{{1, 2}, {2, 3}, {3, 4}, {2, 4}, {4, 5}}));
+        run("cycle not containing node 1", new int[]{3, 5}, () -> new Solution().findRedundantConnection(new int[][]{{1, 2}, {2, 3}, {3, 4}, {4, 5}, {3, 5}}));
+        run("large cycle 1000", new int[]{1, 1000}, () -> {
+            int n = 1000; int[][] e = new int[n][];
+            for (int i = 0; i + 1 < n; i++) e[i] = new int[]{i + 1, i + 2};
+            e[n - 1] = new int[]{1, n};
+            return new Solution().findRedundantConnection(e);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
 }`,
-  complexity: 'Time O(n α(n)), Space O(n)',
-  follow: ['Nếu có nhiều cạnh thừa, làm sao trả cạnh cuối cùng?']
+  follow: ['Nếu đồ thị có hướng (Redundant Connection II) thì phải xét thêm những trường hợp nào?', 'Không dùng Union-Find thì giải thế nào và độ phức tạp bao nhiêu?']
 }
 );
 (window.ALGOS = window.ALGOS || []).push(
@@ -13040,61 +13493,109 @@ public class Main {
   difficulty: 'medium',
   pattern: 'Bit Manipulation',
   tags: ['bit-manipulation', 'array', 'bytebytego'],
-  prompt: `Cho mảng {{nums}} trong đó mọi phần tử xuất hiện **3 lần** ngoại trừ một phần tử xuất hiện **1 lần**. Tìm phần tử đó. Yêu cầu O(n) time và O(1) space.
+  prompt: `Cho mảng số nguyên {{nums}}, mọi phần tử xuất hiện **đúng 3 lần**, trừ **một** phần tử xuất hiện **đúng 1 lần**. Tìm phần tử đó với thời gian O(n) và bộ nhớ phụ O(1) (không dùng HashMap đếm).
 
 ### Ví dụ
 ~~~text
-Input: nums = [2,2,3,2]
+Input:  nums = [2,2,3,2]
 Output: 3
 
-Input: nums = [0,1,0,1,0,1,99]
+Input:  nums = [0,1,0,1,0,1,99]
 Output: 99
+
+Input:  nums = [-2,-2,1,1,-4,1,-2]
+Output: -4
 ~~~
 
 ### Ràng buộc
 - {{1 <= nums.length <= 3 * 10^4}}
 - {{-2^31 <= nums[i] <= 2^31 - 1}}`,
   hints: [
-    'Đếm bit trên 32 vị trí; bit nào có tổng count % 3 != 0 thì thuộc số xuất hiện một lần.',
-    "Có thể dùng two's complement và mask 32 bit.",
-    'Nâng cao: dùng two variables (ones, twos) để đạt O(1) space không mảng count.'
+    'Mẹo XOR của Single Number I (mọi số xuất hiện 2 lần) không dùng được: {{x ^ x ^ x = x}}, ba lần không triệt tiêu.',
+    'Xét riêng **từng bit** (32 vị trí). Ở bit thứ b, đếm số phần tử có bit đó bằng 1. Các số xuất hiện 3 lần đóng góp bội số của 3; nếu {{count % 3 == 1}} thì số cần tìm có bit b bằng 1.',
+    'Ghép các bit lại bằng {{res |= 1 << b}}. Bit 31 là bit dấu nên số âm tự động đúng (bù hai). Nâng cao: hai biến {{ones}}, {{twos}} làm cùng việc trong một lần duyệt.'
   ],
   solution: `### Ý tưởng
-Với mỗi trong 32 bit, đếm số phần tử có bit đó =1. Nếu count % 3 != 0 thì bit đó thuộc số xuất hiện một lần. Ghép lại thành int (xử lý bit dấu).
+Nhìn mảng theo **từng cột bit**. Ví dụ [2,2,3,2]:
+~~~text
+     bit1 bit0
+2  =  1    0
+2  =  1    0
+3  =  1    1
+2  =  1    0
+tổng  4    1
+%3    1    1   → kết quả = 11b = 3
+~~~
+Với mỗi bit b: các số xuất hiện 3 lần góp vào cột đó 0 hoặc 3 (hoặc 6, 9...) đơn vị, tức bội số của 3. Phần dư khi chia 3 chỉ có thể đến từ số xuất hiện một lần. Vậy {{count % 3}} chính là bit b của đáp án.
 
 ~~~java
 class Solution {
     public int singleNumber(int[] nums) {
         int res = 0;
-        for (int b = 0; b < 32; b++) {
+        for (int b = 0; b < 32; b++) {           // xet tung bit, ke ca bit dau (31)
             int count = 0;
-            for (int x : nums) if (((x >>> b) & 1) == 1) count++;
-            if (count % 3 != 0) res |= (1 << b);
+            for (int x : nums) {
+                count += (x >>> b) & 1;          // >>> dich khong dau: lay dung bit b
+            }
+            if (count % 3 != 0) res |= 1 << b;   // bit b thuoc so xuat hien 1 lan
         }
-        return res;
+        return res;                              // bit 31 = 1 -> res tu dong la so am
     }
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- nums[i] có thể âm; dùng >>> khi đếm, và << khi ghép (Java int 32-bit two's complement) cho đúng.
-- Follow-up: giải O(1) space với ones/twos.
+### Cách nâng cao: ones / twos (một lần duyệt)
+Giữ hai mặt nạ: {{ones}} = các bit đã thấy số lần ≡ 1 (mod 3), {{twos}} = các bit đã thấy ≡ 2 (mod 3).
+~~~java
+int ones = 0, twos = 0;
+for (int x : nums) {
+    ones = (ones ^ x) & ~twos;   // them x vao ones neu bit chua o twos
+    twos = (twos ^ x) & ~ones;   // them x vao twos neu bit vua roi khoi ones
+}
+return ones;                     // bit xuat hien 3 lan da bi xoa khoi ca hai
+~~~
+Ngắn và nhanh hơn, nhưng khó giải thích; trong phỏng vấn nên trình bày cách đếm bit trước.
 
-> Senior tip: Single number II là bài kiểm tra hiểu biết về biểu diễn bit và modular counting.`,
-  starter: "class Solution {\n    public int singleNumber(int[] nums) {\n        \n    }\n}",
-  tests: `
-public class Main {
- static int passed=0,total=0;
- public static void main(String[] args){
-   total++; if(new Solution().singleNumber(new int[]{2,2,3,2})==3){passed++;System.out.println("PASS basic");} else System.out.println("FAIL basic");
-   total++; if(new Solution().singleNumber(new int[]{0,1,0,1,0,1,99})==99){passed++;System.out.println("PASS example");} else System.out.println("FAIL example");
-   total++; if(new Solution().singleNumber(new int[]{-1,-1,-1,5})==5){passed++;System.out.println("PASS negative");} else System.out.println("FAIL negative");
-   total++; if(new Solution().singleNumber(new int[]{7})==7){passed++;System.out.println("PASS single");} else System.out.println("FAIL single");
-   System.out.println("RESULT "+passed+"/"+total);
- }
+### Độ phức tạp
+- Đếm bit: O(32·n) = O(n) thời gian, O(1) bộ nhớ.
+- ones/twos: O(n), O(1).
+
+### Lưu ý khi phỏng vấn
+- Dùng {{>>>}} (dịch không dấu) hoặc {{>>}} rồi {{& 1}} đều lấy đúng bit; quan trọng là ghép lại bằng {{1 << b}} với đủ 32 bit để số âm đúng.
+- Tổng quát: mọi số xuất hiện k lần trừ một số → {{count % k}}.
+
+> Senior tip: "Tách theo từng bit rồi đếm" là kỹ thuật dùng lại được ở nhiều nơi (tìm XOR lớn nhất, đếm cặp có AND bằng 0...). Khi bị yêu cầu O(1) bộ nhớ với số nguyên, hãy nghĩ tới 32 cột bit như 32 bộ đếm nhỏ.`,
+  complexity: 'Time O(32 * n) = O(n), Space O(1)',
+  starter: 'class Solution {\n    public int singleNumber(int[] nums) {\n        // TODO\n        return 0;\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        run("example 1", 3, () -> new Solution().singleNumber(new int[]{2, 2, 3, 2}));
+        run("example 2", 99, () -> new Solution().singleNumber(new int[]{0, 1, 0, 1, 0, 1, 99}));
+        run("negative answer", -4, () -> new Solution().singleNumber(new int[]{-2, -2, 1, 1, -4, 1, -2}));
+        run("single element", 7, () -> new Solution().singleNumber(new int[]{7}));
+        run("answer zero", 0, () -> new Solution().singleNumber(new int[]{5, 5, 0, 5}));
+        run("int min value", Integer.MIN_VALUE, () -> new Solution().singleNumber(new int[]{5, Integer.MIN_VALUE, 5, 5}));
+        run("max repeated, negative single", -7, () -> new Solution().singleNumber(new int[]{Integer.MAX_VALUE, -7, Integer.MAX_VALUE, Integer.MAX_VALUE}));
+        run("large", 123457, () -> {
+            int[] a = new int[30001];
+            for (int i = 0; i < 10000; i++) { a[3 * i] = a[3 * i + 1] = a[3 * i + 2] = i * 37 - 50000; }
+            a[30000] = 123457;
+            return new Solution().singleNumber(a);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
 }`,
-  complexity: 'Time O(32 * n), Space O(1)',
-  follow: ['Làm sao đạt O(1) space với ones/twos?']
+  follow: ['Giải thích từng bước công thức ones/twos với ví dụ [2,2,3,2].', 'Nếu mọi số xuất hiện 2 lần trừ **hai** số xuất hiện một lần (Single Number III) thì làm thế nào?']
 }
 );
 (window.ALGOS = window.ALGOS || []).push(
@@ -13104,58 +13605,89 @@ public class Main {
   difficulty: 'easy',
   pattern: 'Bit Manipulation',
   tags: ['array', 'bit-manipulation', 'math', 'bytebytego'],
-  prompt: `Cho mảng {{nums}} chứa n số phân biệt lấy từ 0..n, thiếu đúng một số. Tìm số bị thiếu.
+  prompt: `Cho mảng {{nums}} gồm {{n}} số **khác nhau** lấy từ đoạn {{[0, n]}} (đoạn này có n + 1 số), nên thiếu đúng **một** số. Tìm số bị thiếu với thời gian O(n) và bộ nhớ phụ O(1).
 
 ### Ví dụ
 ~~~text
-Input: nums = [3,0,1]
+Input:  nums = [3,0,1]
 Output: 2
 
-Input: nums = [0,1]
-Output: 2
+Input:  nums = [0,1]
+Output: 2   (n = 2, đoạn [0, 2], thiếu số 2)
+
+Input:  nums = [9,6,4,2,3,5,7,0,1]
+Output: 8
 ~~~
 
 ### Ràng buộc
-- {{n == nums.length}}
-- {{0 <= nums[i] <= n}}
-- Tất cả số phân biệt`,
+- {{n == nums.length}}, {{1 <= n <= 10^4}}
+- {{0 <= nums[i] <= n}}, các số khác nhau.`,
   hints: [
-    'Tổng 0..n là n(n+1)/2; trừ tổng nums.',
-    'Hoặc XOR tất cả số 0..n với nums.',
-    'Cả hai đều O(n).'
+    'Cách 1 (toán): tổng {{0 + 1 + ... + n = n(n+1)/2}}. Trừ đi tổng của mảng là ra số thiếu.',
+    'Cách 2 (XOR): {{x ^ x = 0}} và {{x ^ 0 = x}}. XOR tất cả các số {{0..n}} với tất cả phần tử mảng: số nào có mặt ở cả hai bên bị triệt tiêu, chỉ còn số thiếu.',
+    'Gộp hai vòng XOR thành một: khởi tạo {{res = n}}, rồi với mỗi i: {{res ^= i ^ nums[i]}}.'
   ],
   solution: `### Ý tưởng
-XOR tất cả số từ 0..n với các phần tử trong nums. Các số xuất hiện hai lần triệt tiêu, còn lại số bị thiếu.
+**XOR** có ba tính chất: {{a ^ a = 0}}, {{a ^ 0 = a}}, và có thể đổi thứ tự tuỳ ý. Nếu XOR **tất cả** các số trong {{0..n}} cùng với **tất cả** phần tử của mảng, mỗi số có mặt sẽ xuất hiện hai lần và tự triệt tiêu; số bị thiếu chỉ xuất hiện một lần nên còn lại.
+
+Viết gọn trong một vòng: chỉ số {{i}} chạy 0..n-1 cung cấp các số 0..n-1, còn số {{n}} thì đặt sẵn vào {{res}}.
 
 ~~~java
 class Solution {
     public int missingNumber(int[] nums) {
-        int res = nums.length;
-        for (int i = 0; i < nums.length; i++) res ^= i ^ nums[i];
-        return res;
+        int res = nums.length;          // so n (chi so i chi chay toi n-1)
+        for (int i = 0; i < nums.length; i++) {
+            res ^= i ^ nums[i];         // XOR chi so i va gia tri nums[i]
+        }
+        return res;                     // moi so co mat bi triet tieu, con lai so thieu
     }
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- Tổng có thể overflow nếu n lớn; XOR an toàn.
-- Nếu thiếu nhiều số thì bài khác (Find All Numbers Disappeared).
+### Chạy tay với [3,0,1]
+res = 3. i=0: 3^0^3 = 0. i=1: 0^1^0 = 1. i=2: 1^2^1 = 2. Kết quả 2.
 
-> Senior tip: Missing number là ví dụ kinh điển của XOR để tìm phần tử duy nhất.`,
-  starter: "class Solution {\n    public int missingNumber(int[] nums) {\n        \n    }\n}",
-  tests: `
-public class Main {
- static int passed=0,total=0;
- public static void main(String[] args){
-   total++; if(new Solution().missingNumber(new int[]{3,0,1})==2){passed++;System.out.println("PASS basic");} else System.out.println("FAIL basic");
-   total++; if(new Solution().missingNumber(new int[]{0,1})==2){passed++;System.out.println("PASS end");} else System.out.println("FAIL end");
-   total++; if(new Solution().missingNumber(new int[]{1})==0){passed++;System.out.println("PASS first");} else System.out.println("FAIL first");
-   total++; if(new Solution().missingNumber(new int[]{0})==1){passed++;System.out.println("PASS zero");} else System.out.println("FAIL zero");
-   System.out.println("RESULT "+passed+"/"+total);
- }
-}`,
+### So sánh các cách
+| Cách | Thời gian | Bộ nhớ | Ghi chú |
+|---|---|---|---|
+| Sắp xếp rồi tìm chỗ hổng | O(n log n) | O(1)–O(n) | sửa mảng input |
+| HashSet | O(n) | O(n) | dễ nghĩ nhất |
+| Tổng n(n+1)/2 | O(n) | O(1) | có thể tràn số nếu n lớn (dùng {{long}}) |
+| XOR | O(n) | O(1) | không bao giờ tràn |
+
+### Lưu ý khi phỏng vấn
+- Với n ≤ 10^4 thì tổng chỉ khoảng 5·10^7, chưa tràn {{int}}; nhưng nếu n tới 10^5 thì {{n(n+1)}} ≈ 10^10 đã vượt {{int}}. XOR tránh hẳn vấn đề này.
+- Nếu thiếu **nhiều** số thì cần cách khác (đánh dấu âm tại chỗ, hoặc HashSet).
+
+> Senior tip: Kiểm tra "thiếu mã nào trong dãy liên tục" là việc thật khi đối soát số thứ tự hoá đơn hay sequence number của message. Ở quy mô lớn người ta dùng bitmap thay vì XOR vì thường thiếu nhiều số cùng lúc.`,
   complexity: 'Time O(n), Space O(1)',
-  follow: ['Nếu mảng không bắt đầu từ 0 thì sao?']
+  starter: 'class Solution {\n    public int missingNumber(int[] nums) {\n        // TODO\n        return -1;\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        run("example 1", 2, () -> new Solution().missingNumber(new int[]{3, 0, 1}));
+        run("missing last", 2, () -> new Solution().missingNumber(new int[]{0, 1}));
+        run("example 3", 8, () -> new Solution().missingNumber(new int[]{9, 6, 4, 2, 3, 5, 7, 0, 1}));
+        run("missing zero", 0, () -> new Solution().missingNumber(new int[]{1}));
+        run("single zero", 1, () -> new Solution().missingNumber(new int[]{0}));
+        run("large shuffled", 4321, () -> {
+            int n = 10000; int[] a = new int[n]; int k = 0;
+            for (int v = n; v >= 0; v--) if (v != 4321) a[k++] = v;
+            return new Solution().missingNumber(a);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  follow: ['Nếu thiếu đúng hai số thì dùng XOR thế nào để tìm cả hai?', 'Nếu mảng rất lớn nằm trên đĩa và thiếu nhiều số thì xử lý ra sao?']
 }
 );
 (window.ALGOS = window.ALGOS || []).push(
@@ -13165,56 +13697,88 @@ public class Main {
   difficulty: 'easy',
   pattern: 'Bit Manipulation',
   tags: ['dynamic-programming', 'bit-manipulation', 'bytebytego'],
-  prompt: `Cho số nguyên {{n}}, trả về mảng {{ans}} độ dài n+1 trong đó {{ans[i]}} là số bit 1 trong biểu diễn nhị phân của i (0 <= i <= n).
+  prompt: `Cho số nguyên {{n}}. Trả về mảng {{ans}} độ dài {{n + 1}}, trong đó {{ans[i]}} là **số bit 1** trong biểu diễn nhị phân của {{i}} (với {{0 <= i <= n}}). Hãy làm trong O(n), không đếm lại từng bit cho mỗi số.
 
 ### Ví dụ
 ~~~text
-Input: n = 2
+Input:  n = 2
 Output: [0,1,1]
+Giải thích: 0 = 0, 1 = 1, 2 = 10.
 
-Input: n = 5
+Input:  n = 5
 Output: [0,1,1,2,1,2]
+Giải thích: 3 = 11, 4 = 100, 5 = 101.
 ~~~
 
 ### Ràng buộc
 - {{0 <= n <= 10^5}}`,
   hints: [
-    'ans[i] = ans[i >> 1] + (i & 1).',
-    'Hoặc ans[i] = ans[i & (i-1)] + 1.',
-    'DP O(n).'
+    'Cách đơn giản: với mỗi i đếm bit bằng vòng lặp → O(n log n). Có thể tận dụng kết quả của số nhỏ hơn đã tính.',
+    'Dịch phải 1 bit ({{i >> 1}}) là bỏ đi bit cuối. Vậy số bit 1 của i = số bit 1 của {{i >> 1}} + bit cuối của i ({{i & 1}}).',
+    '{{i >> 1 < i}} nên {{ans[i >> 1]}} đã có sẵn khi tính {{ans[i]}}: đây là DP một chiều.'
   ],
   solution: `### Ý tưởng
-DP: số bit 1 của i bằng số bit 1 của i/2 cộng bit cuối. Hoặc dùng i & (i-1) để loại bit 1 thấp nhất.
+Quan sát: viết i dưới dạng nhị phân, bỏ bit cuối cùng ta được {{i >> 1}} (tức {{i / 2}}). Ví dụ:
+~~~text
+i = 13 = 1101
+i >> 1 = 6 = 110      (bỏ bit cuối là 1)
+ans[13] = ans[6] + 1 = 2 + 1 = 3
+~~~
+Công thức: {{ans[i] = ans[i >> 1] + (i & 1)}}. Vì {{i >> 1}} luôn nhỏ hơn i (khi i ≥ 1), duyệt i tăng dần thì giá trị cần dùng đã được tính trước.
 
 ~~~java
 class Solution {
     public int[] countBits(int n) {
-        int[] ans = new int[n + 1];
-        for (int i = 1; i <= n; i++) ans[i] = ans[i >> 1] + (i & 1);
+        int[] ans = new int[n + 1];             // ans[0] = 0
+        for (int i = 1; i <= n; i++) {
+            ans[i] = ans[i >> 1] + (i & 1);      // bit 1 cua i/2 + bit cuoi cua i
+        }
         return ans;
     }
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- O(n) tốt hơn O(n log n) naive.
-- Có thể mở rộng cho range queries.
+### Công thức thay thế
+{{i & (i - 1)}} xoá bit 1 **thấp nhất** của i (ví dụ 12 = 1100 → 1000). Do đó {{ans[i] = ans[i & (i - 1)] + 1}}. Cũng O(n).
 
-> Senior tip: Counting bits là bài DP trên bit cơ bản, hay xuất hiện trong phỏng vấn.`,
-  starter: "class Solution {\n    public int[] countBits(int n) {\n        \n    }\n}",
-  tests: `
-public class Main {
- static int passed=0,total=0;
- public static void main(String[] args){
-   total++; if(Arrays.equals(new Solution().countBits(2),new int[]{0,1,1})){passed++;System.out.println("PASS basic");} else System.out.println("FAIL basic");
-   total++; if(Arrays.equals(new Solution().countBits(5),new int[]{0,1,1,2,1,2})){passed++;System.out.println("PASS example");} else System.out.println("FAIL example");
-   total++; if(Arrays.equals(new Solution().countBits(0),new int[]{0})){passed++;System.out.println("PASS zero");} else System.out.println("FAIL zero");
-   total++; if(Arrays.equals(new Solution().countBits(8),new int[]{0,1,1,2,1,2,2,3,1})){passed++;System.out.println("PASS eight");} else System.out.println("FAIL eight");
-   System.out.println("RESULT "+passed+"/"+total);
- }
-}`,
+### Độ phức tạp
+O(n) thời gian, O(n) bộ nhớ cho mảng kết quả (bắt buộc phải trả về).
+
+### Lưu ý khi phỏng vấn
+- Java có sẵn {{Integer.bitCount(i)}} (thường được JIT dịch thành một lệnh CPU {{POPCNT}}); nên nhắc tới nhưng interviewer thường muốn thấy công thức DP.
+- Giải thích được "vì sao ans[i >> 1] đã có" là điểm mấu chốt của lời giải DP.
+
+> Senior tip: Đếm bit 1 (popcount) dùng nhiều trong thực tế: tính độ tương đồng giữa hai bitmap (khoảng cách Hamming), đếm số quyền bật trong một bitmask phân quyền, hay trong cấu trúc như HyperLogLog và Roaring Bitmap.`,
   complexity: 'Time O(n), Space O(n)',
-  follow: ['Có thể tính popcount bằng builtin không?']
+  starter: 'class Solution {\n    public int[] countBits(int n) {\n        // TODO\n        return new int[0];\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + show(expected) + " got " + show(actual));
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static String show(Object o) { return o instanceof int[] ? Arrays.toString((int[]) o) : String.valueOf(o); }
+    public static void main(String[] args) {
+        run("example n=2", new int[]{0, 1, 1}, () -> new Solution().countBits(2));
+        run("example n=5", new int[]{0, 1, 1, 2, 1, 2}, () -> new Solution().countBits(5));
+        run("zero", new int[]{0}, () -> new Solution().countBits(0));
+        run("one", new int[]{0, 1}, () -> new Solution().countBits(1));
+        run("n=8", new int[]{0, 1, 1, 2, 1, 2, 2, 3, 1}, () -> new Solution().countBits(8));
+        run("n=100000 matches bitCount", "ok", () -> {
+            int[] a = new Solution().countBits(100000);
+            if (a.length != 100001) return "length " + a.length;
+            for (int i = 0; i <= 100000; i++) if (a[i] != Integer.bitCount(i)) return "wrong at " + i;
+            return "ok";
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  follow: ['Chứng minh công thức {{ans[i & (i - 1)] + 1}} đúng.', 'Nếu chỉ cần tổng số bit 1 của mọi số từ 0 tới n (n tới 10^18) thì làm thế nào?']
 }
 );
 (window.ALGOS = window.ALGOS || []).push(
@@ -13224,59 +13788,94 @@ public class Main {
   difficulty: 'medium',
   pattern: 'Bit Manipulation',
   tags: ['bit-manipulation', 'math', 'bytebytego'],
-  prompt: `Tính {{a + b}} mà **không dùng** toán tử {{+}} và {{-}}.
+  prompt: `Cho hai số nguyên {{a}} và {{b}}. Tính {{a + b}} mà **không dùng** toán tử {{+}} và {{-}} (kể cả {{+=}}, {{++}}).
 
 ### Ví dụ
 ~~~text
-Input: a = 1, b = 2
+Input:  a = 1, b = 2
 Output: 3
 
-Input: a = -1, b = 1
+Input:  a = 2, b = 3
+Output: 5
+
+Input:  a = -1, b = 1
 Output: 0
 ~~~
 
 ### Ràng buộc
 - {{-1000 <= a, b <= 1000}}`,
   hints: [
-    'Sum không carry: a XOR b.',
-    'Carry: (a AND b) << 1.',
-    'Lặp cho đến khi carry = 0.'
+    'Nhớ lại phép cộng tay ở hệ nhị phân: mỗi cột cho ra một **bit tổng** và có thể một **bit nhớ** sang cột bên trái.',
+    'Bit tổng khi **không tính nhớ** chính là {{a ^ b}} (1+0 = 1, 1+1 = 0). Bit nhớ xuất hiện ở cột mà cả hai đều là 1: {{a & b}}, và nhớ được cộng vào cột bên trái nên là {{(a & b) << 1}}.',
+    'Bài toán chuyển thành cộng "tổng không nhớ" với "phần nhớ". Lặp lại cho đến khi phần nhớ bằng 0. Số âm vẫn đúng nhờ biểu diễn bù hai 32 bit.'
   ],
   solution: `### Ý tưởng
-Dùng XOR để cộng không nhớ, AND+shift để tính nhớ. Lặp cho đến khi nhớ bằng 0.
+Phép cộng nhị phân tách thành hai phần:
+- {{a ^ b}}: cộng từng cột nhưng **bỏ qua nhớ**.
+- {{(a & b) << 1}}: các bit nhớ, đã dịch sang cột bên trái.
+
+Tổng thật = (tổng không nhớ) + (phần nhớ). Ta lại cộng hai số này theo đúng cách trên, cho tới khi không còn nhớ.
+
+Ví dụ 5 + 3:
+~~~text
+a = 101, b = 011
+vòng 1: xor = 110, carry = (001) << 1 = 010
+vòng 2: a = 110, b = 010 → xor = 100, carry = (010) << 1 = 100
+vòng 3: a = 100, b = 100 → xor = 000, carry = 1000
+vòng 4: a = 000, b = 1000 → xor = 1000, carry = 0 → kết quả 1000 = 8
+~~~
 
 ~~~java
 class Solution {
     public int getSum(int a, int b) {
         while (b != 0) {
-            int carry = (a & b) << 1;
-            a = a ^ b;
-            b = carry;
+            int carry = (a & b) << 1;   // cac bit nho, day sang cot ben trai
+            a = a ^ b;                  // tong tung cot khi bo qua nho
+            b = carry;                  // con phai cong them phan nho
         }
         return a;
     }
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- Java int 32-bit; với ràng buộc nhỏ không lo overflow.
-- Nếu a,b lớn, cần mask 32-bit để mô phỏng unsigned.
+### Vì sao số âm vẫn đúng và vòng lặp có dừng?
+Java {{int}} dùng bù hai 32 bit, phép cộng thật cũng chính là cộng nhị phân bỏ phần tràn khỏi bit 31. Thuật toán mô phỏng đúng điều đó. Mỗi vòng, bit nhớ thấp nhất dịch trái ít nhất một vị trí; sau tối đa 32 vòng nó bị đẩy ra khỏi 32 bit và {{carry}} thành 0.
 
-> Senior tip: Sum of two integers là bài kiểm tra hiểu biết về arithmetic ở mức bit.`,
-  starter: "class Solution {\n    public int getSum(int a, int b) {\n        \n    }\n}",
-  tests: `
-public class Main {
- static int passed=0,total=0;
- public static void main(String[] args){
-   total++; if(new Solution().getSum(1,2)==3){passed++;System.out.println("PASS basic");} else System.out.println("FAIL basic");
-   total++; if(new Solution().getSum(-1,1)==0){passed++;System.out.println("PASS negative");} else System.out.println("FAIL negative");
-   total++; if(new Solution().getSum(0,0)==0){passed++;System.out.println("PASS zero");} else System.out.println("FAIL zero");
-   total++; if(new Solution().getSum(1000,-1000)==0){passed++;System.out.println("PASS cancel");} else System.out.println("FAIL cancel");
-   System.out.println("RESULT "+passed+"/"+total);
- }
+### Độ phức tạp
+Tối đa 32 vòng → O(1) thời gian, O(1) bộ nhớ.
+
+### Lưu ý khi phỏng vấn
+- Ở Python (số nguyên không giới hạn) phải tự mask {{0xFFFFFFFF}}; ở Java không cần vì {{int}} tự cắt 32 bit. Nêu được khác biệt này là điểm cộng.
+- Trừ {{a - b}} = {{getSum(a, getSum(~b, 1))}} vì {{-b = ~b + 1}} trong bù hai.
+
+> Senior tip: Bài này kiểm tra bạn hiểu số nguyên trong máy (bù hai, tràn số). Kiến thức đó cần khi debug lỗi tràn {{int}} thật, ví dụ cộng hai timestamp mili-giây hoặc tính {{(low + high) / 2}} trong binary search.`,
+  complexity: 'Time O(1) (tối đa 32 vòng), Space O(1)',
+  starter: 'class Solution {\n    public int getSum(int a, int b) {\n        // TODO\n        return 0;\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        run("1 + 2", 3, () -> new Solution().getSum(1, 2));
+        run("2 + 3", 5, () -> new Solution().getSum(2, 3));
+        run("-1 + 1", 0, () -> new Solution().getSum(-1, 1));
+        run("0 + 0", 0, () -> new Solution().getSum(0, 0));
+        run("both negative", -20, () -> new Solution().getSum(-12, -8));
+        run("positive + negative", 4, () -> new Solution().getSum(7, -3));
+        run("max bound", 2000, () -> new Solution().getSum(1000, 1000));
+        run("min bound", -2000, () -> new Solution().getSum(-1000, -1000));
+        run("many carries", 1024, () -> new Solution().getSum(1023, 1));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
 }`,
-  complexity: 'Time O(1) (32 iterations), Space O(1)',
-  follow: ['Nếu không được dùng loop thì sao?']
+  follow: ['Viết phép trừ a - b chỉ bằng toán tử bit.', 'Vì sao trong Python cần mask 0xFFFFFFFF còn Java thì không?']
 }
 );
 (window.ALGOS = window.ALGOS || []).push(
@@ -13286,77 +13885,98 @@ public class Main {
   difficulty: 'medium',
   pattern: 'Math + Geometry',
   tags: ['array', 'matrix', 'math', 'bytebytego'],
-  prompt: `Cho ma trận vuông {{matrix}} n x n, xoay ma trận **90 độ theo chiều kim đồng hồ** tại chỗ (in-place).
+  prompt: `Cho ma trận vuông {{matrix}} kích thước {{n x n}} biểu diễn một bức ảnh. Xoay ảnh **90 độ theo chiều kim đồng hồ** **tại chỗ** (in-place): sửa trực tiếp {{matrix}}, không được tạo ma trận thứ hai.
 
 ### Ví dụ
 ~~~text
-Input: matrix = [[1,2,3],[4,5,6],[7,8,9]]
-Output: [[7,4,1],[8,5,2],[9,6,3]]
+Input:  [[1,2,3],
+         [4,5,6],
+         [7,8,9]]
+Output: [[7,4,1],
+         [8,5,2],
+         [9,6,3]]
 ~~~
 
 ### Ràng buộc
 - {{1 <= n <= 20}}
 - {{-1000 <= matrix[i][j] <= 1000}}`,
   hints: [
-    'Transpose rồi reverse mỗi hàng.',
-    'Hoặc xoay từng lớp (layer) từ ngoài vào trong.',
-    'In-place: không cấp ma trận mới.'
+    'Khi xoay 90° theo chiều kim đồng hồ, phần tử ở {{(i, j)}} đi tới {{(j, n - 1 - i)}}. Có cách nào đạt được điều đó bằng hai phép đơn giản, mỗi phép làm tại chỗ được?',
+    'Phép 1: **chuyển vị** (transpose), đổi {{matrix[i][j]}} với {{matrix[j][i]}}, chỉ duyệt nửa trên đường chéo ({{j > i}}) để không đổi hai lần.',
+    'Phép 2: **đảo ngược mỗi hàng** (đổi chỗ cột trái và cột phải). Chuyển vị rồi đảo hàng = xoay 90° theo chiều kim đồng hồ.'
   ],
   solution: `### Ý tưởng
-Transpose (đổi hàng/cột) rồi reverse mỗi hàng -> xoay 90° clockwise. Làm tại chỗ.
+Xoay 90° theo chiều kim đồng hồ đưa {{(i, j)}} → {{(j, n-1-i)}}. Ta đạt được bằng hai bước, mỗi bước chỉ là hoán đổi tại chỗ:
+1. **Chuyển vị**: {{(i, j)}} → {{(j, i)}}.
+2. **Đảo mỗi hàng**: {{(j, i)}} → {{(j, n-1-i)}}.
+
+~~~text
+1 2 3      chuyển vị    1 4 7     đảo hàng    7 4 1
+4 5 6     ─────────►    2 5 8    ─────────►   8 5 2
+7 8 9                   3 6 9                 9 6 3
+~~~
 
 ~~~java
 class Solution {
     public void rotate(int[][] matrix) {
         int n = matrix.length;
-        for (int i = 0; i < n; i++)
-            for (int j = i + 1; j < n; j++) {
-                int t = matrix[i][j];
-                matrix[i][j] = matrix[j][i];
-                matrix[j][i] = t;
-            }
+        // buoc 1: chuyen vi - chi doi nua tren duong cheo (j > i), neu khong se doi 2 lan = khong doi
         for (int i = 0; i < n; i++) {
-            int l = 0, r = n - 1;
-            while (l < r) {
-                int t = matrix[i][l];
-                matrix[i][l] = matrix[i][r];
-                matrix[i][r] = t;
-                l++; r--;
+            for (int j = i + 1; j < n; j++) {
+                int tmp = matrix[i][j];
+                matrix[i][j] = matrix[j][i];
+                matrix[j][i] = tmp;
+            }
+        }
+        // buoc 2: dao nguoc tung hang
+        for (int[] row : matrix) {
+            for (int l = 0, r = n - 1; l < r; l++, r--) {
+                int tmp = row[l];
+                row[l] = row[r];
+                row[r] = tmp;
             }
         }
     }
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- Nếu xoay counter-clockwise: reverse mỗi hàng rồi transpose.
-- Kiểm tra n=1.
+### Cách khác: xoay 4 phần tử theo vòng
+Với mỗi "lớp" từ ngoài vào trong, 4 ô ở bốn cạnh đổi vòng cho nhau: trên → phải → dưới → trái → trên. Chỉ cần một biến tạm, mỗi ô di chuyển đúng một lần, nhưng chỉ số dễ nhầm hơn.
 
-> Senior tip: Rotate image là bài geometry cơ bản, kiểm tra khả năng thao tác index.`,
-  starter: "class Solution {\n    public void rotate(int[][] matrix) {\n        \n    }\n}",
-  tests: `
-public class Main {
- static int passed=0,total=0;
- static void runSteps(String n, Runnable r){ total++; try{r.run();passed++;System.out.println("PASS "+n);} catch(Throwable t){System.out.println("FAIL "+n+": threw "+t);}}
- static boolean eq(int[][] a,int[][] b){ if(a.length!=b.length) return false; for(int i=0;i<a.length;i++) if(!Arrays.equals(a[i],b[i])) return false; return true;}
- public static void main(String[] args){
-   int[][] m1={{1,2,3},{4,5,6},{7,8,9}};
-   new Solution().rotate(m1);
-   runSteps("3x3", ()->{ if(!eq(m1,new int[][]{{7,4,1},{8,5,2},{9,6,3}})) throw new AssertionError("x");});
-   int[][] m2={{1}};
-   new Solution().rotate(m2);
-   runSteps("1x1", ()->{ if(!eq(m2,new int[][]{{1}})) throw new AssertionError("x");});
-   int[][] m3={{1,2},{3,4}};
-   new Solution().rotate(m3);
-   runSteps("2x2", ()->{ if(!eq(m3,new int[][]{{3,1},{4,2}})) throw new AssertionError("x");});
-   int[][] m4={{1,2,3,4},{5,6,7,8},{9,10,11,12},{13,14,15,16}};
-   new Solution().rotate(m4);
-   runSteps("4x4", ()->{ if(!eq(m4,new int[][]{{13,9,5,1},{14,10,6,2},{15,11,7,3},{16,12,8,4}})) throw new AssertionError("x");});
-   System.out.println("RESULT "+passed+"/"+total);
- }
-}`,
+### Độ phức tạp
+Mỗi bước duyệt khoảng n²/2 ô → O(n²) thời gian, O(1) bộ nhớ phụ.
+
+### Lưu ý khi phỏng vấn
+- Xoay **ngược** chiều kim đồng hồ: chuyển vị rồi đảo mỗi **cột** (hoặc đảo hàng trước rồi chuyển vị).
+- Xoay 180°: đảo hàng rồi đảo thứ tự các hàng.
+- Lỗi phổ biến: vòng chuyển vị chạy {{j}} từ 0, đổi mỗi cặp hai lần nên ma trận không đổi.
+
+> Senior tip: Phân rã một phép biến đổi khó thành các phép đơn giản đã biết (chuyển vị + đảo) là kỹ năng thiết kế quan trọng, giúp code dễ kiểm chứng hơn việc suy ra trực tiếp công thức chỉ số.`,
   complexity: 'Time O(n^2), Space O(1)',
-  follow: ['Nếu không được sửa input thì sao?']
+  starter: 'class Solution {\n    public void rotate(int[][] matrix) {\n        // TODO: sua truc tiep matrix\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + Arrays.deepToString((Object[]) expected) + " got " + Arrays.deepToString((Object[]) actual));
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static int[][] rot(int[][] m) { new Solution().rotate(m); return m; }
+    public static void main(String[] args) {
+        run("3x3", new int[][]{{7, 4, 1}, {8, 5, 2}, {9, 6, 3}}, () -> rot(new int[][]{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}}));
+        run("1x1", new int[][]{{1}}, () -> rot(new int[][]{{1}}));
+        run("2x2", new int[][]{{3, 1}, {4, 2}}, () -> rot(new int[][]{{1, 2}, {3, 4}}));
+        run("4x4", new int[][]{{13, 9, 5, 1}, {14, 10, 6, 2}, {15, 11, 7, 3}, {16, 12, 8, 4}}, () -> rot(new int[][]{{1, 2, 3, 4}, {5, 6, 7, 8}, {9, 10, 11, 12}, {13, 14, 15, 16}}));
+        run("negatives", new int[][]{{-3, -1}, {-4, -2}}, () -> rot(new int[][]{{-1, -2}, {-3, -4}}));
+        run("four rotations = identity", new int[][]{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}}, () -> rot(rot(rot(rot(new int[][]{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}})))));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  follow: ['Viết lại bằng cách xoay 4 phần tử theo từng lớp.', 'Nếu ma trận không vuông (m x n) thì có xoay tại chỗ được không?']
 }
 );
 (window.ALGOS = window.ALGOS || []).push(
@@ -13366,72 +13986,99 @@ public class Main {
   difficulty: 'medium',
   pattern: 'Math + Geometry',
   tags: ['array', 'matrix', 'simulation', 'bytebytego'],
-  prompt: `Cho ma trận {{matrix}} m x n, trả về tất cả phần tử theo thứ tự xoắn ốc (spiral) từ ngoài vào trong, theo chiều kim đồng hồ.
+  prompt: `Cho ma trận {{matrix}} kích thước {{m x n}}. Trả về mọi phần tử theo thứ tự **xoắn ốc**: bắt đầu ở góc trên trái, đi sang phải, rồi xuống, sang trái, lên, và cứ thế đi vòng vào trong theo chiều kim đồng hồ.
 
 ### Ví dụ
 ~~~text
-Input: matrix = [[1,2,3],[4,5,6],[7,8,9]]
+Input:  [[1,2,3],
+         [4,5,6],
+         [7,8,9]]
 Output: [1,2,3,6,9,8,7,4,5]
+
+Input:  [[1,2,3,4],
+         [5,6,7,8],
+         [9,10,11,12]]
+Output: [1,2,3,4,8,12,11,10,9,5,6,7]
 ~~~
 
 ### Ràng buộc
 - {{1 <= m, n <= 10}}
 - {{-100 <= matrix[i][j] <= 100}}`,
   hints: [
-    'Giữ 4 biên: top, bottom, left, right.',
-    'Mỗi vòng: đi phải, xuống, trái, lên; sau đó thu hẹp biên.',
-    'Cẩn thận khi còn một hàng/cột để không trùng.'
+    'Giữ 4 biên của phần chưa duyệt: {{top}}, {{bottom}}, {{left}}, {{right}}.',
+    'Mỗi vòng: đi hết hàng {{top}} (trái → phải) rồi {{top++}}; đi hết cột {{right}} (trên → dưới) rồi {{right--}}; đi hàng {{bottom}} (phải → trái) rồi {{bottom--}}; đi cột {{left}} (dưới → trên) rồi {{left++}}.',
+    'Cẩn thận khi chỉ còn **một hàng** hoặc **một cột**: trước khi đi hàng dưới phải kiểm tra {{top <= bottom}}, trước khi đi cột trái phải kiểm tra {{left <= right}}, nếu không sẽ lấy trùng phần tử.'
   ],
   solution: `### Ý tưởng
-Giữ 4 biên. Mỗi vòng đi phải (top row), xuống (right col), trái (bottom row), lên (left col), rồi thu hẹp. Kiểm tra điều kiện để tránh trùng khi còn một hàng/cột.
+Mô phỏng việc "bóc vỏ" ma trận từng lớp. Bốn biến biên mô tả hình chữ nhật còn lại chưa duyệt. Mỗi lần đi hết một cạnh thì cạnh đó đã dùng xong, ta thu biên tương ứng vào trong.
+
+~~~text
+→ → → ↓        top    = hàng trên cùng chưa duyệt
+↑ → ↓ ↓        bottom = hàng dưới cùng chưa duyệt
+↑ ← ← ↓        left / right = cột trái / phải chưa duyệt
+~~~
 
 ~~~java
 class Solution {
     public List<Integer> spiralOrder(int[][] matrix) {
         List<Integer> res = new ArrayList<>();
-        if (matrix.length == 0) return res;
         int top = 0, bottom = matrix.length - 1;
         int left = 0, right = matrix[0].length - 1;
         while (top <= bottom && left <= right) {
-            for (int j = left; j <= right; j++) res.add(matrix[top][j]);
+            for (int c = left; c <= right; c++) res.add(matrix[top][c]);   // hang tren: trai -> phai
             top++;
-            for (int i = top; i <= bottom; i++) res.add(matrix[i][right]);
+            for (int r = top; r <= bottom; r++) res.add(matrix[r][right]); // cot phai: tren -> duoi
             right--;
-            if (top <= bottom)
-                for (int j = right; j >= left; j--) res.add(matrix[bottom][j]);
-            bottom--;
-            if (left <= right)
-                for (int i = bottom; i >= top; i--) res.add(matrix[i][left]);
-            left++;
+            if (top <= bottom) {                                            // con hang de di nguoc?
+                for (int c = right; c >= left; c--) res.add(matrix[bottom][c]); // hang duoi: phai -> trai
+                bottom--;
+            }
+            if (left <= right) {                                            // con cot de di len?
+                for (int r = bottom; r >= top; r--) res.add(matrix[r][left]);   // cot trai: duoi -> tren
+                left++;
+            }
         }
         return res;
     }
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- Có thể dùng visited matrix nhưng tốn O(mn) space.
-- Biên approach O(1) space.
+### Vì sao cần hai câu if?
+Với ma trận một hàng {{[[1,2,3]]}}: đi hàng trên lấy 1,2,3, rồi {{top = 1 > bottom = 0}}. Nếu không kiểm tra, bước "hàng dưới" sẽ lấy lại 3,2,1. Tương tự với ma trận một cột và bước "cột trái".
 
-> Senior tip: Spiral traversal là bài geometry cơ bản, hay dùng trong UI grid rendering.`,
-  starter: "class Solution {\n    public List<Integer> spiralOrder(int[][] matrix) {\n        \n    }\n}",
-  tests: `
-public class Main {
- static int passed=0,total=0;
- public static void main(String[] args){
-   int[][] m1={{1,2,3},{4,5,6},{7,8,9}};
-   total++; if(new Solution().spiralOrder(m1).equals(Arrays.asList(1,2,3,6,9,8,7,4,5))){passed++;System.out.println("PASS 3x3");} else System.out.println("FAIL 3x3: "+new Solution().spiralOrder(m1));
-   int[][] m2={{1,2,3,4},{5,6,7,8},{9,10,11,12}};
-   total++; if(new Solution().spiralOrder(m2).equals(Arrays.asList(1,2,3,4,8,12,11,10,9,5,6,7))){passed++;System.out.println("PASS 2x4");} else System.out.println("FAIL 2x4");
-   int[][] m3={{1}};
-   total++; if(new Solution().spiralOrder(m3).equals(Arrays.asList(1))){passed++;System.out.println("PASS single");} else System.out.println("FAIL single");
-   int[][] m4={{1,2},{3,4}};
-   total++; if(new Solution().spiralOrder(m4).equals(Arrays.asList(1,2,4,3))){passed++;System.out.println("PASS 2x2");} else System.out.println("FAIL 2x2");
-   System.out.println("RESULT "+passed+"/"+total);
- }
+### Độ phức tạp
+Mỗi phần tử được thêm đúng một lần → O(m·n) thời gian, O(1) bộ nhớ phụ (không tính kết quả).
+
+### Lưu ý khi phỏng vấn
+- Cách khác: mảng {{visited}} + đổi hướng khi chạm biên hoặc ô đã thăm; dễ nghĩ nhưng tốn O(m·n) bộ nhớ.
+- Test tay với ma trận 1 hàng, 1 cột và hình chữ nhật không vuông trước khi nói "xong".
+
+> Senior tip: Bài mô phỏng như thế này không khó về thuật toán mà khó về **điều kiện biên**. Thói quen tự test các ca 1×n, n×1, 1×1 trước khi nộp cũng chính là thói quen viết unit test tốt.`,
+  complexity: 'Time O(m * n), Space O(1) phụ',
+  starter: 'class Solution {\n    public List<Integer> spiralOrder(int[][] matrix) {\n        // TODO\n        return new ArrayList<>();\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        run("3x3", Arrays.asList(1, 2, 3, 6, 9, 8, 7, 4, 5), () -> new Solution().spiralOrder(new int[][]{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}}));
+        run("3x4", Arrays.asList(1, 2, 3, 4, 8, 12, 11, 10, 9, 5, 6, 7), () -> new Solution().spiralOrder(new int[][]{{1, 2, 3, 4}, {5, 6, 7, 8}, {9, 10, 11, 12}}));
+        run("1x1", Arrays.asList(1), () -> new Solution().spiralOrder(new int[][]{{1}}));
+        run("single row", Arrays.asList(1, 2, 3), () -> new Solution().spiralOrder(new int[][]{{1, 2, 3}}));
+        run("single column", Arrays.asList(1, 2, 3), () -> new Solution().spiralOrder(new int[][]{{1}, {2}, {3}}));
+        run("2x2", Arrays.asList(1, 2, 4, 3), () -> new Solution().spiralOrder(new int[][]{{1, 2}, {3, 4}}));
+        run("4x3 tall", Arrays.asList(1, 2, 3, 6, 9, 12, 11, 10, 7, 4, 5, 8), () -> new Solution().spiralOrder(new int[][]{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}, {10, 11, 12}}));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
 }`,
-  complexity: 'Time O(m*n), Space O(1) extra',
-  follow: ['Nếu ma trận rỗng thì trả gì?']
+  follow: ['Sinh ma trận n x n chứa 1..n² theo thứ tự xoắn ốc (Spiral Matrix II) thế nào?', 'Nếu chỉ cần phần tử thứ k theo thứ tự xoắn ốc thì có cách nhanh hơn duyệt hết không?']
 }
 );
 (window.ALGOS = window.ALGOS || []).push(
@@ -13441,38 +14088,59 @@ public class Main {
   difficulty: 'medium',
   pattern: 'Math + Geometry',
   tags: ['array', 'hash-table', 'matrix', 'bytebytego'],
-  prompt: `Kiểm tra xem bảng Sudoku 9x9 có hợp lệ hay không. Chỉ cần các số 1-9 không trùng trong mỗi hàng, mỗi cột và mỗi khối 3x3 (ô '.' là trống). Không cần giải.
+  prompt: `Cho bảng Sudoku {{9 x 9}} đang điền dở ({{'.'}} là ô trống). Kiểm tra các ô **đã điền** có vi phạm luật không: mỗi chữ số {{1-9}} xuất hiện tối đa một lần trong mỗi **hàng**, mỗi **cột** và mỗi **khối 3x3**. Không cần kiểm tra bảng có giải được hay không.
 
 ### Ví dụ
 ~~~text
-Input: board = [["5","3",".",".","7",".",".",".","."],["6",".",".","1","9","5",".",".","."],[".","9","8",".",".",".",".","6","."],["8",".",".",".","6",".",".",".","3"],["4",".",".","8",".","3",".",".","1"],["7",".",".",".","2",".",".",".","6"],[".","6",".",".",".",".","2","8","."],[".",".",".","4","1","9",".",".","5"],[".",".",".",".","8",".",".","7","9"]]
+Input:
+5 3 . | . 7 . | . . .
+6 . . | 1 9 5 | . . .
+. 9 8 | . . . | . 6 .
+------+-------+------
+8 . . | . 6 . | . . 3
+4 . . | 8 . 3 | . . 1
+7 . . | . 2 . | . . 6
+------+-------+------
+. 6 . | . . . | 2 8 .
+. . . | 4 1 9 | . . 5
+. . . | . 8 . | . 7 9
 Output: true
+
+Nếu đổi ô (0,0) từ 5 thành 8: cột 0 có hai số 8 (hàng 0 và hàng 3) → false.
 ~~~
 
 ### Ràng buộc
 - {{board.length == 9}}, {{board[i].length == 9}}
-- {{board[i][j]}} ∈ {{'1'..'9', '.'}}`,
+- {{board[i][j]}} là chữ số {{'1'..'9'}} hoặc {{'.'}}.`,
   hints: [
-    'Dùng 3 mảng boolean: rows[9][10], cols[9][10], boxes[9][10].',
-    'Box index = (i/3)*3 + (j/3).',
-    'Duyệt từng ô; nếu là số thì kiểm tra 3 nhóm.'
+    'Duyệt mỗi ô **một lần**, với mỗi chữ số cần biết ngay nó đã xuất hiện ở hàng/cột/khối này chưa.',
+    'Dùng ba bảng đánh dấu {{row[9][10]}}, {{col[9][10]}}, {{box[9][10]}}: ví dụ {{row[i][d] = true}} nghĩa là chữ số d đã có ở hàng i.',
+    'Chỉ số khối của ô {{(i, j)}} là {{(i / 3) * 3 + j / 3}} (khối đánh số 0..8 từ trái sang phải, trên xuống dưới).'
   ],
   solution: `### Ý tưởng
-Kiểm tra mỗi số xuất hiện không quá một lần trong mỗi hàng, cột và khối 3x3. Dùng 3 mảng boolean 9x10.
+Có 27 "nhóm" cần kiểm tra trùng: 9 hàng, 9 cột, 9 khối. Thay vì kiểm tra từng nhóm riêng, ta duyệt bảng một lần và cập nhật cả ba nhóm chứa ô hiện tại.
+
+**Tính chỉ số khối:** {{i / 3}} cho biết khối nằm ở dải hàng thứ mấy (0, 1, 2), {{j / 3}} cho dải cột. Ghép lại {{(i / 3) * 3 + j / 3}}:
+~~~text
+khối:  0 | 1 | 2
+       3 | 4 | 5
+       6 | 7 | 8
+ô (4, 7): 4/3 = 1, 7/3 = 2 → khối 1*3 + 2 = 5
+~~~
 
 ~~~java
 class Solution {
     public boolean isValidSudoku(char[][] board) {
-        boolean[][] row = new boolean[9][10];
+        boolean[][] row = new boolean[9][10]; // row[i][d]: chu so d da co o hang i
         boolean[][] col = new boolean[9][10];
         boolean[][] box = new boolean[9][10];
         for (int i = 0; i < 9; i++) {
             for (int j = 0; j < 9; j++) {
                 char ch = board[i][j];
-                if (ch == '.') continue;
+                if (ch == '.') continue;              // o trong: bo qua
                 int d = ch - '0';
-                int b = (i / 3) * 3 + (j / 3);
-                if (row[i][d] || col[j][d] || box[b][d]) return false;
+                int b = (i / 3) * 3 + j / 3;          // chi so khoi 3x3
+                if (row[i][d] || col[j][d] || box[b][d]) return false; // trung
                 row[i][d] = col[j][d] = box[b][d] = true;
             }
         }
@@ -13481,44 +14149,47 @@ class Solution {
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- Chỉ validate, không solve.
-- Có thể dùng HashSet cho từng nhóm.
+### Độ phức tạp
+Bảng cố định 81 ô → O(1) (nếu tổng quát hoá cho bảng N×N thì O(N²)). Bộ nhớ 3 × 9 × 10 boolean → O(1).
 
-> Senior tip: Valid Sudoku kiểm tra khả năng xử lý index và grouping.`,
-  starter: "class Solution {\n    public boolean isValidSudoku(char[][] board) {\n        \n    }\n}",
-  tests: `
-public class Main {
- static int passed=0,total=0;
- static char[][] validBoard(){
-   return new char[][]{
-     {'5','3','.','.','7','.','.','.','.'},
-     {'6','.','.','1','9','5','.','.','.'},
-     {'.','9','8','.','.','.','.','6','.'},
-     {'8','.','.','.','6','.','.','.','3'},
-     {'4','.','.','8','.','3','.','.','1'},
-     {'7','.','.','.','2','.','.','.','6'},
-     {'.','6','.','.','.','.','2','8','.'},
-     {'.','.','.','4','1','9','.','.','5'},
-     {'.','.','.','.','8','.','.','7','9'}
-   };
- }
- public static void main(String[] args){
-   total++; if(new Solution().isValidSudoku(validBoard())){passed++;System.out.println("PASS valid");} else System.out.println("FAIL valid");
-   char[][] bad=validBoard();
-   bad[0][1]='5'; // duplicate in row
-   total++; if(!new Solution().isValidSudoku(bad)){passed++;System.out.println("PASS rowdup");} else System.out.println("FAIL rowdup");
-   char[][] bad2=validBoard();
-   bad2[1][0]='5'; // duplicate in col? row1 col0 currently 6; set 5 duplicates col0 with row0
-   total++; if(!new Solution().isValidSudoku(bad2)){passed++;System.out.println("PASS coldup");} else System.out.println("FAIL coldup");
-   char[][] empty=new char[9][9];
-   for(char[] r:empty) Arrays.fill(r,'.');
-   total++; if(new Solution().isValidSudoku(empty)){passed++;System.out.println("PASS empty");} else System.out.println("FAIL empty");
-   System.out.println("RESULT "+passed+"/"+total);
- }
+### Lưu ý khi phỏng vấn
+- Đề chỉ hỏi bảng **hiện tại** có hợp lệ không; bảng hợp lệ vẫn có thể không giải được.
+- Có thể dùng một {{HashSet<String>}} chứa các chuỗi như "5 in row 0", "5 in col 0", "5 in box 0": code ngắn, nhưng chậm hơn mảng boolean.
+- Tối ưu bộ nhớ: mỗi hàng/cột/khối dùng một {{int}} 9 bit làm bitmask.
+
+> Senior tip: Kiểm tra ràng buộc "duy nhất trong nhiều chiều" giống việc validate dữ liệu nhập (ví dụ lịch xếp ca: một người không trùng ca trong cùng ngày, cùng phòng). Mảng đánh dấu hay bitmask là cách kiểm tra rẻ nhất.`,
+  complexity: 'Time O(1) (81 ô), Space O(1)',
+  starter: 'class Solution {\n    public boolean isValidSudoku(char[][] board) {\n        // TODO\n        return false;\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static char[][] valid() {
+        String[] rows = {"53..7....", "6..195...", ".98....6.", "8...6...3", "4..8.3..1", "7...2...6", ".6....28.", "...419..5", "....8..79"};
+        char[][] b = new char[9][];
+        for (int i = 0; i < 9; i++) b[i] = rows[i].toCharArray();
+        return b;
+    }
+    static char[][] with(int r, int c, char v) { char[][] b = valid(); b[r][c] = v; return b; }
+    public static void main(String[] args) {
+        run("valid example", true, () -> new Solution().isValidSudoku(valid()));
+        run("column duplicate", false, () -> new Solution().isValidSudoku(with(0, 0, '8')));
+        run("row duplicate", false, () -> new Solution().isValidSudoku(with(0, 2, '5')));
+        run("column only duplicate", false, () -> new Solution().isValidSudoku(with(4, 1, '6')));
+        run("box only duplicate", false, () -> new Solution().isValidSudoku(with(1, 1, '8')));
+        run("empty board", true, () -> { char[][] b = new char[9][9]; for (char[] r : b) Arrays.fill(r, '.'); return new Solution().isValidSudoku(b); });
+        run("valid extra digit", true, () -> new Solution().isValidSudoku(with(0, 2, '4')));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
 }`,
-  complexity: 'Time O(1) (81 cells), Space O(1)',
-  follow: ['Nếu bảng có kích thước N x N tổng quát thì sao?']
+  follow: ['Dùng bitmask (một int cho mỗi hàng/cột/khối) thay mảng boolean thế nào?', 'Từ bài này, làm sao viết bộ giải Sudoku bằng backtracking?']
 }
 );
 (window.ALGOS = window.ALGOS || []).push(
@@ -13528,38 +14199,53 @@ public class Main {
   difficulty: 'medium',
   pattern: 'Math + Geometry',
   tags: ['math', 'sieve', 'bytebytego'],
-  prompt: `Đếm số số nguyên tố nhỏ hơn {{n}}.
+  prompt: `Cho số nguyên {{n}}. Đếm số **số nguyên tố nhỏ hơn hẳn** {{n}} (số nguyên tố là số > 1 chỉ chia hết cho 1 và chính nó).
 
 ### Ví dụ
 ~~~text
-Input: n = 10
+Input:  n = 10
 Output: 4
+Giải thích: 2, 3, 5, 7.
 
-Input: n = 0
+Input:  n = 0
 Output: 0
+
+Input:  n = 2
+Output: 0   (2 không nhỏ hơn 2)
 ~~~
 
 ### Ràng buộc
 - {{0 <= n <= 5 * 10^6}}`,
   hints: [
-    'Sieve of Eratosthenes: đánh dấu bội số của mỗi số nguyên tố.',
-    'Chỉ cần sieve đến sqrt(n).',
-    'Đếm các số chưa bị đánh dấu.'
+    'Kiểm tra từng số bằng cách thử chia tới căn bậc hai tốn khoảng O(n·√n) ≈ 10^10 phép với n = 5·10^6: quá chậm.',
+    'Sàng Eratosthenes: thay vì hỏi "x có phải số nguyên tố không", hãy **gạch bỏ** mọi bội của từng số nguyên tố. Số nào không bị gạch là số nguyên tố.',
+    'Với số nguyên tố p, bắt đầu gạch từ {{p * p}} (các bội nhỏ hơn như 2p, 3p đã bị gạch bởi số nguyên tố nhỏ hơn). Chỉ cần sàng với {{p * p < n}}; dùng {{long}} hoặc so sánh cẩn thận để tránh tràn số.'
   ],
-  solution: `### Ý tưởng
-Sieve of Eratosthenes: mảng boolean isComposite. Với mỗi i từ 2, nếu chưa composite, tăng count và đánh dấu bội số từ i*i. Độ phức tạp O(n log log n).
+  solution: `### Ý tưởng: sàng Eratosthenes
+1. Mảng {{composite[0..n-1]}}, ban đầu tất cả false (chưa bị gạch).
+2. Duyệt p từ 2: nếu {{composite[p] == false}} thì p là số nguyên tố → đếm, rồi gạch {{p*p, p*p + p, p*p + 2p, ...}}.
+3. Vì sao bắt đầu từ {{p * p}}? Mọi bội {{k·p}} với {{k < p}} có ước nguyên tố nhỏ hơn p nên đã bị gạch trước đó.
+
+Ví dụ n = 20:
+~~~text
+p = 2: gạch 4 6 8 10 12 14 16 18
+p = 3: gạch 9 (12, 18 đã gạch) 15
+p = 5: 25 >= 20, không gạch gì nữa
+Còn lại: 2 3 5 7 11 13 17 19 → 8 số
+~~~
 
 ~~~java
 class Solution {
     public int countPrimes(int n) {
-        if (n <= 2) return 0;
-        boolean[] composite = new boolean[n];
+        if (n < 3) return 0;                       // khong co so nguyen to nao < 2
+        boolean[] composite = new boolean[n];      // composite[x] = true: x la hop so
         int count = 0;
-        for (int i = 2; i < n; i++) {
-            if (!composite[i]) {
-                count++;
-                if ((long) i * i < n)
-                    for (int j = i * i; j < n; j += i) composite[j] = true;
+        for (int p = 2; p < n; p++) {
+            if (composite[p]) continue;
+            count++;                               // p khong bi bo so nao gach -> nguyen to
+            if ((long) p * p >= n) continue;       // ep long: p*p co the tran int
+            for (int m = p * p; m < n; m += p) {
+                composite[m] = true;               // gach boi cua p
             }
         }
         return count;
@@ -13567,25 +14253,42 @@ class Solution {
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- i*i có thể overflow nếu n lớn; dùng long.
-- Nếu cần danh sách prime thì lưu.
+### Độ phức tạp
+- Thời gian O(n log log n): tổng số lần gạch là n/2 + n/3 + n/5 + ... (theo các số nguyên tố) ≈ n·log log n, gần như tuyến tính.
+- Bộ nhớ O(n): n = 5·10^6 → khoảng 5 MB với {{boolean[]}} (mỗi phần tử 1 byte); {{BitSet}} giảm còn ~625 KB.
 
-> Senior tip: Sieve là nền tảng cho các bài toán số học và crypto cơ bản.`,
-  starter: "class Solution {\n    public int countPrimes(int n) {\n        \n    }\n}",
-  tests: `
-public class Main {
- static int passed=0,total=0;
- public static void main(String[] args){
-   total++; if(new Solution().countPrimes(10)==4){passed++;System.out.println("PASS basic");} else System.out.println("FAIL basic");
-   total++; if(new Solution().countPrimes(0)==0){passed++;System.out.println("PASS zero");} else System.out.println("FAIL zero");
-   total++; if(new Solution().countPrimes(2)==0){passed++;System.out.println("PASS two");} else System.out.println("FAIL two");
-   total++; if(new Solution().countPrimes(100)==25){passed++;System.out.println("PASS hundred");} else System.out.println("FAIL hundred");
-   System.out.println("RESULT "+passed+"/"+total);
- }
-}`,
+### Lưu ý khi phỏng vấn
+- {{p * p}} với p gần 46341 đã vượt {{Integer.MAX_VALUE}}; ở đây n ≤ 5·10^6 nên vòng gạch không chạy tới đó, nhưng ép {{long}} là thói quen tốt.
+- Biên: n = 0, 1, 2 đều trả 0; n = 3 trả 1.
+- Với n rất lớn (10^9+) dùng **sàng phân đoạn** (segmented sieve) để bộ nhớ chỉ O(√n).
+
+> Senior tip: Sàng là ví dụ điển hình của việc đánh đổi bộ nhớ lấy tốc độ. Khi tính toán lặp lại nhiều lần trên cùng miền giá trị, tính trước một bảng (precompute) thường nhanh hơn rất nhiều so với tính lại từng lần.`,
   complexity: 'Time O(n log log n), Space O(n)',
-  follow: ['Nếu n rất lớn (10^8) thì sieve có đủ bộ nhớ không?']
+  starter: 'class Solution {\n    public int countPrimes(int n) {\n        // TODO\n        return 0;\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        run("n=10", 4, () -> new Solution().countPrimes(10));
+        run("n=0", 0, () -> new Solution().countPrimes(0));
+        run("n=1", 0, () -> new Solution().countPrimes(1));
+        run("n=2", 0, () -> new Solution().countPrimes(2));
+        run("n=3", 1, () -> new Solution().countPrimes(3));
+        run("n=20", 8, () -> new Solution().countPrimes(20));
+        run("n=100", 25, () -> new Solution().countPrimes(100));
+        run("n=5000000", 348513, () -> new Solution().countPrimes(5000000));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  follow: ['Dùng BitSet hoặc chỉ lưu số lẻ để giảm bộ nhớ thế nào?', 'Sàng phân đoạn (segmented sieve) hoạt động ra sao khi n = 10^10?']
 }
 );
 
@@ -13598,96 +14301,110 @@ public class Main {
   difficulty: 'medium',
   pattern: 'Dynamic Programming',
   tags: ['string', 'palindrome', 'dp', 'bytebytego'],
-  prompt: `Cho chuỗi {{s}}, tìm chuỗi con liên tiếp dài nhất là palindrome (đọc xuôi ngả như nhau). Nếu có nhiều chuỗi dài nhất bằng nhau, trả về bất kỳ chuỗi nào.
+  prompt: `Cho chuỗi {{s}}. Tìm **chuỗi con liên tiếp** dài nhất là palindrome (đọc xuôi và đọc ngược giống nhau). Nếu có nhiều chuỗi cùng độ dài lớn nhất, trả về chuỗi bất kỳ trong số đó.
 
 ### Ví dụ
 ~~~text
+Input:  s = "babad"
+Output: "bab"   ("aba" cũng đúng)
+
 Input:  s = "cbbd"
 Output: "bb"
 
 Input:  s = "a"
 Output: "a"
-
-Input:  s = "abb"
-Output: "bb"
 ~~~
 
 ### Ràng buộc
 - {{1 <= s.length <= 1000}}
-- {{s}} chỉ gồm chữ cái và chữ số.`,
+- {{s}} chỉ gồm chữ cái tiếng Anh và chữ số.`,
   hints: [
-    'Với mỗi vị trí, coi nó là tâm của palindrome và mở rộng ra hai phía bằng hai con trỏ cho đến khi ký tự khác nhau.',
-    'Có hai loại tâm: một ký tự (palindrome độ dài lẻ) và hai ký tự liền kề (palindrome độ dài chẵn).',
-    'Lưu chuỗi dài nhất tìm được; mỗi vị trí được xét hai lần nên tổng số bước là O(n²) nhưng không tốn thêm bộ nhớ.'
+    'Mọi palindrome đều đối xứng quanh một **tâm**. Thay vì xét mọi chuỗi con (O(n²) chuỗi, mỗi chuỗi kiểm tra O(n)), hãy xét mọi tâm.',
+    'Từ một tâm, dùng hai con trỏ {{left}}, {{right}} mở rộng ra hai phía chừng nào {{s[left] == s[right]}}.',
+    'Có hai loại tâm: một ký tự ({{left = right = i}}, palindrome độ dài lẻ như "aba") và giữa hai ký tự ({{left = i, right = i + 1}}, độ dài chẵn như "abba"). Tổng cộng 2n - 1 tâm.'
   ],
-  solution: `### Ý tưởng
-Dùng phương pháp "mở rộng từ tâm" (expand around center). Với mỗi vị trí i trong chuỗi, coi nó là tâm của palindrome lẻ (tâm là một ký tự) và tâm của palindrome chẵn (tâm nằm giữa hai ký tự). Mở rộng ra trái phải cho đến khi ký tự khác nhau hoặc đạt biên chuỗi.
+  solution: `### Ý tưởng: mở rộng từ tâm (expand around center)
+Palindrome "aba" có tâm là "b"; palindrome "abba" có tâm nằm giữa hai chữ "b". Với mỗi tâm, ta mở rộng ra hai phía cho tới khi hai đầu khác nhau hoặc chạm biên; độ dài đạt được là palindrome dài nhất có tâm đó. Lấy max qua mọi tâm.
 
-Mỗi mở rộng tốn O(n), có n vị trí nên tổng O(n²). Không dùng bảng DP 2D nên bộ nhớ chỉ O(1).
+~~~text
+s = "babad", tâm i = 2 (chữ 'b'):
+  left=2,right=2: 'b'=='b' → mở rộng
+  left=1,right=3: 'a'=='a' → mở rộng
+  left=0,right=4: 'b'!='d' → dừng → palindrome s[1..3] = "aba", dài 3
+~~~
 
 ~~~java
 class Solution {
     public String longestPalindrome(String s) {
-        if (s == null || s.length() < 1) return "";
-        int start = 0, end = 0;
+        int bestStart = 0, bestLen = 1;               // it nhat 1 ky tu la palindrome
         for (int i = 0; i < s.length(); i++) {
-            int len1 = expandAroundCenter(s, i, i);
-            int len2 = expandAroundCenter(s, i, i + 1);
-            int len = Math.max(len1, len2);
-            if (len > end - start) {
-                start = i - (len - 1) / 2;
-                end = i + len / 2;
+            int odd = expand(s, i, i);                // tam la ky tu i (do dai le)
+            int even = expand(s, i, i + 1);           // tam giua i va i+1 (do dai chan)
+            int len = Math.max(odd, even);
+            if (len > bestLen) {
+                bestLen = len;
+                bestStart = i - (len - 1) / 2;        // tinh lai diem bat dau tu tam
             }
         }
-        return s.substring(start, end + 1);
+        return s.substring(bestStart, bestStart + bestLen);
     }
 
-    private int expandAroundCenter(String s, int left, int right) {
+    // mo rong tu [left, right]; tra ve do dai palindrome dai nhat co tam nay
+    private int expand(String s, int left, int right) {
         while (left >= 0 && right < s.length() && s.charAt(left) == s.charAt(right)) {
             left--;
             right++;
         }
-        return right - left - 1;
+        return right - left - 1;                      // vong lap dung khi da vuot 1 buoc moi ben
     }
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- Cần xử lý cả hai loại tâm: "{{i, i}}" cho độ dài lẻ và "{{i, i + 1}}" cho độ dài chẵn.
-- Có thể dùng bảng DP {{dp[i][j]}} cho biết s[i..j] có phải palindrome hay không, nhưng tốn O(n²) bộ nhớ.
-- Khi s chứa Unicode, so sánh ký tự bằng {{charAt}} có thể chưa chính xác với surrogate pair.`,
-  starter: "class Solution {\\n    public String longestPalindrome(String s) {\\n        \\n    }\\n}",
-  tests: `public class Main {
+### Vì sao {{bestStart = i - (len - 1) / 2}}?
+- Độ dài lẻ, ví dụ len = 3 quanh i: bắt đầu ở {{i - 1}} = {{i - (3 - 1) / 2}}.
+- Độ dài chẵn, ví dụ len = 4 với tâm giữa i và i + 1: bắt đầu ở {{i - 1}} = {{i - (4 - 1) / 2}} (chia nguyên 3 / 2 = 1). Một công thức dùng được cho cả hai.
 
+### So sánh các cách
+| Cách | Thời gian | Bộ nhớ |
+|---|---|---|
+| Thử mọi chuỗi con | O(n³) | O(1) |
+| DP bảng {{isPal[i][j]}} | O(n²) | O(n²) |
+| Mở rộng từ tâm | O(n²) | O(1) |
+| Manacher | O(n) | O(n) |
+
+### Lưu ý khi phỏng vấn
+- Quên tâm chẵn là lỗi phổ biến nhất: "cbbd" sẽ trả "c" thay vì "bb".
+- Mở rộng từ tâm là lời giải được mong đợi; Manacher chỉ cần nhắc tên và ý tưởng (tận dụng tính đối xứng của palindrome đã tìm được).
+
+> Senior tip: Khi thấy lời giải O(n²) bộ nhớ dùng bảng DP, hãy hỏi "mỗi ô có thật sự cần lưu không?". Ở đây thứ tự duyệt theo tâm cho phép bỏ hẳn bảng, giữ O(1) bộ nhớ.`,
+  complexity: 'Time O(n^2), Space O(1)',
+  starter: 'class Solution {\n    public String longestPalindrome(String s) {\n        // TODO\n        return "";\n    }\n}',
+  tests: `public class Main {
     static int passed = 0, total = 0;
     interface Case { Object get() throws Throwable; }
     static void run(String name, Object expected, Case c) {
         total++;
         try {
             Object actual = c.get();
-            if (Objects.deepEquals(expected, actual)) {
-                passed++;
-                System.out.println("PASS " + name);
-            } else {
-                System.out.println("FAIL " + name + ": expected '"
-                    + expected + "' got '" + actual + "'");
-            }
-        } catch (Throwable t) {
-            System.out.println("FAIL " + name + ": threw " + t);
-        }
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected '" + expected + "' got '" + actual + "'");
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
     }
-
+    static String repeat(char ch, int k) { char[] a = new char[k]; Arrays.fill(a, ch); return new String(a); }
     public static void main(String[] args) {
-        run("cbbd", "bb", () -> new Solution().longestPalindrome("cbbd"));
+        run("babad (bab or aba)", true, () -> { String r = new Solution().longestPalindrome("babad"); return r.equals("bab") || r.equals("aba"); });
+        run("even center", "bb", () -> new Solution().longestPalindrome("cbbd"));
         run("single", "a", () -> new Solution().longestPalindrome("a"));
-        run("abb", "bb", () -> new Solution().longestPalindrome("abb"));
-        run("bbbb", "bbbb", () -> new Solution().longestPalindrome("bbbb"));
-        run("racecar", "racecar", () -> new Solution().longestPalindrome("racecar"));
+        run("at end", "bb", () -> new Solution().longestPalindrome("abb"));
+        run("all same", "bbbb", () -> new Solution().longestPalindrome("bbbb"));
+        run("whole string", "racecar", () -> new Solution().longestPalindrome("racecar"));
+        run("in the middle", "anana", () -> new Solution().longestPalindrome("bananas"));
+        run("digits", "12321", () -> new Solution().longestPalindrome("9123214"));
+        run("large 1000 same", repeat('a', 1000), () -> new Solution().longestPalindrome(repeat('a', 1000)));
         System.out.println("RESULT " + passed + "/" + total);
     }
 }`,
-  complexity: 'Time O(n^2), Space O(1)',
-  follow: ['Nếu cần trả về độ dài thay vì chuỗi thì sửa thế nào?', 'Có cách nào đạt O(n) không?']
+  follow: ['Nếu chỉ cần độ dài thì code gọn hơn thế nào?', 'Thuật toán Manacher đạt O(n) bằng cách nào (ý tưởng chính)?']
 },
 {
   id: 'algo-129',
@@ -13695,7 +14412,7 @@ class Solution {
   difficulty: 'medium',
   pattern: 'Dynamic Programming',
   tags: ['string', 'palindrome', 'dp', 'bytebytego'],
-  prompt: `Cho chuỗi {{s}}, tính số lượng chuỗi con liên tiếp là palindrome. Hai chuỗi con khác nhau nếu chúng có vị trí bắt đầu hoặc kết thúc khác nhau, kể cả cùng nội dung.
+  prompt: `Cho chuỗi {{s}}. Đếm số **chuỗi con liên tiếp** là palindrome. Hai chuỗi con ở **vị trí khác nhau** được tính riêng, kể cả khi nội dung giống nhau.
 
 ### Ví dụ
 ~~~text
@@ -13705,80 +14422,90 @@ Giải thích: "a", "b", "c".
 
 Input:  s = "aaa"
 Output: 6
-Giải thích: "a", "a", "a", "aa", "aa", "aaa".
+Giải thích: "a" ×3 (ở 3 vị trí), "aa" ×2, "aaa" ×1.
 ~~~
 
 ### Ràng buộc
 - {{1 <= s.length <= 1000}}
 - {{s}} chỉ gồm chữ cái thường tiếng Anh.`,
   hints: [
-    'Với mỗi vị trí làm tâm, mở rộng ra hai phía và đếm mỗi lần tìm được palindrome.',
-    'Có hai loại tâm: một ký tự (độ dài lẻ) và hai ký tự liền kề (độ dài chẵn).',
-    'Mỗi mở rộng thành công tăng biến đếm 1; có n vị trí nên tổng O(n²).'
+    'Mỗi palindrome có đúng một tâm (một ký tự hoặc khoảng giữa hai ký tự). Đếm palindrome theo từng tâm thì không sót, không trùng.',
+    'Từ một tâm, mở rộng ra hai phía: **mỗi lần mở rộng thành công** là thêm đúng một palindrome mới (dài hơn cái trước 2 ký tự).',
+    'Cộng kết quả của cả 2n - 1 tâm: n tâm lẻ {{(i, i)}} và n - 1 tâm chẵn {{(i, i + 1)}}.'
   ],
   solution: `### Ý tưởng
-Tương tự bài Longest Palindromic Substring, nhưng thay vì lưu chuỗi dài nhất, ta đếm số lần mở rộng thành công. Với mỗi vị trí i, mở rộng từ tâm {{(i, i)}} và tâm {{(i, i + 1)}}; mỗi khi s.charAt(left) == s.charAt(right) thì tìm được một palindrome mới, tăng biến đếm.
+Cùng kỹ thuật "mở rộng từ tâm" như bài Longest Palindromic Substring (algo-128), nhưng thay vì giữ cái dài nhất ta **đếm**. Từ tâm {{(left, right)}}:
+- Nếu {{s[left] == s[right]}} thì {{s[left..right]}} là palindrome → đếm 1, rồi mở rộng {{left--}}, {{right++}}.
+- Dừng khi khác nhau hoặc chạm biên: palindrome lớn hơn với cùng tâm chắc chắn không tồn tại (vì nó phải chứa palindrome nhỏ hơn ở giữa).
 
-Có n vị trí, mỗi vị trí mở rộng tối đa O(n) bước nên tổng O(n²), bộ nhớ O(1).
+~~~text
+s = "aaa"
+tâm lẻ i=0: "a"                → 1
+tâm lẻ i=1: "a", "aaa"         → 2
+tâm lẻ i=2: "a"                → 1
+tâm chẵn (0,1): "aa"           → 1
+tâm chẵn (1,2): "aa"           → 1
+tổng = 6
+~~~
 
 ~~~java
 class Solution {
     public int countSubstrings(String s) {
         int count = 0;
         for (int i = 0; i < s.length(); i++) {
-            count += expandAroundCenter(s, i, i);
-            count += expandAroundCenter(s, i, i + 1);
+            count += countFrom(s, i, i);       // palindrome do dai le, tam o i
+            count += countFrom(s, i, i + 1);   // palindrome do dai chan, tam giua i va i+1
         }
         return count;
     }
 
-    private int expandAroundCenter(String s, int left, int right) {
-        int count = 0;
+    // so palindrome co tam (left, right)
+    private int countFrom(String s, int left, int right) {
+        int c = 0;
         while (left >= 0 && right < s.length() && s.charAt(left) == s.charAt(right)) {
-            count++;
+            c++;                               // s[left..right] la mot palindrome moi
             left--;
             right++;
         }
-        return count;
+        return c;
     }
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- Cần xử lý cả hai loại tâm: "{{i, i}}" cho độ dài lẻ và "{{i, i + 1}}" cho độ dài chẵn.
-- Chuỗi con khác nhau theo vị trí, nên "aaa" có 6 palindrome (ba ô đơn, hai "aa", một "aaa").
-- Có thể dùng bảng DP 2D nhưng tốn O(n²) bộ nhớ.`,
-  starter: "class Solution {\\n    public int countSubstrings(String s) {\\n        \\n    }\\n}",
-  tests: `public class Main {
+### Độ phức tạp
+2n - 1 tâm, mỗi tâm mở rộng tối đa O(n) bước → O(n²) thời gian (n = 1000 → khoảng 10^6 bước). Bộ nhớ O(1).
 
+### Lưu ý khi phỏng vấn
+- Kết quả tối đa n(n+1)/2 ≈ 500.500 với n = 1000, vừa {{int}}.
+- Cách DP: {{isPal[i][j] = s[i] == s[j] && (j - i < 2 || isPal[i+1][j-1])}}, đếm số ô true. Cùng O(n²) thời gian nhưng tốn O(n²) bộ nhớ.
+
+> Senior tip: Hai bài 128 và 129 dùng chung một hàm "mở rộng từ tâm", chỉ khác cách gom kết quả (max hay đếm). Nhận ra lõi chung giữa các bài giúp bạn giải nhanh bài mới trong phỏng vấn.`,
+  complexity: 'Time O(n^2), Space O(1)',
+  starter: 'class Solution {\n    public int countSubstrings(String s) {\n        // TODO\n        return 0;\n    }\n}',
+  tests: `public class Main {
     static int passed = 0, total = 0;
     interface Case { Object get() throws Throwable; }
     static void run(String name, Object expected, Case c) {
         total++;
         try {
             Object actual = c.get();
-            if (Objects.deepEquals(expected, actual)) {
-                passed++;
-                System.out.println("PASS " + name);
-            } else {
-                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
-            }
-        } catch (Throwable t) {
-            System.out.println("FAIL " + name + ": threw " + t);
-        }
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
     }
-
+    static String repeat(char ch, int k) { char[] a = new char[k]; Arrays.fill(a, ch); return new String(a); }
     public static void main(String[] args) {
         run("abc", 3, () -> new Solution().countSubstrings("abc"));
         run("aaa", 6, () -> new Solution().countSubstrings("aaa"));
         run("abba", 6, () -> new Solution().countSubstrings("abba"));
         run("single", 1, () -> new Solution().countSubstrings("a"));
         run("two same", 3, () -> new Solution().countSubstrings("aa"));
+        run("racecar", 10, () -> new Solution().countSubstrings("racecar"));
+        run("large 1000 same", 500500, () -> new Solution().countSubstrings(repeat('a', 1000)));
         System.out.println("RESULT " + passed + "/" + total);
     }
 }`,
-  complexity: 'Time O(n^2), Space O(1)',
-  follow: ['Nếu cần liệt kê tất cả các palindrome thì làm thế nào?', 'Có cách nào đạt O(n) không?']
+  follow: ['Nếu cần đếm palindrome **khác nhau về nội dung** (không tính trùng) thì làm thế nào?', 'Viết lời giải DP bảng isPal và so sánh với cách mở rộng từ tâm.']
 },
 {
   id: 'algo-130',
@@ -13786,104 +14513,115 @@ class Solution {
   difficulty: 'hard',
   pattern: 'Dynamic Programming',
   tags: ['string', 'palindrome', 'dp', 'bytebytego'],
-  prompt: `Cho chuỗi {{s}}, cắt sao cho mỗi phần đều là palindrome. Tìm số lần cắt ít nhất (tức có ít nhất bao nhiêu phần — 1).
+  prompt: `Cho chuỗi {{s}}. Cắt {{s}} thành nhiều đoạn liên tiếp sao cho **mỗi đoạn đều là palindrome** (đọc xuôi hay ngược đều giống nhau). Trả về **số lần cắt ít nhất** (bằng số đoạn ít nhất trừ 1).
 
 ### Ví dụ
 ~~~text
 Input:  s = "aab"
 Output: 1
-Giải thích: cắt thành "aa" và "b", 1 lần cắt.
+Giải thích: cắt thành "aa" | "b", chỉ 1 lần cắt.
 
 Input:  s = "a"
 Output: 0
-Giải thích: đã là palindrome, không cần cắt.
+Giải thích: bản thân "a" đã là palindrome, không cần cắt.
 
-Input:  s = "noon"
-Output: 0
+Input:  s = "leet"
+Output: 2
+Giải thích: "l" | "ee" | "t".
 ~~~
 
 ### Ràng buộc
 - {{1 <= s.length <= 2000}}
 - {{s}} chỉ gồm chữ cái thường tiếng Anh.`,
   hints: [
-    'Xây dựng bảng DP {{isPal[i][j]}} cho biết s[i..j] có phải palindrome không.',
-    'dp[i] là số lần cắt tối thiểu cho tiền tố {{s[0..i]}}; cập nhật nếu {{isPal[j][i]}} và dp[j-1] + 1.',
-    'Bất kể i là đầu của một palindrome kéo dài từ j, số cắt cho s[0..i] là dp[j-1] + 1.'
+    'Trước hết hãy trả lời nhanh câu hỏi "s[j..i] có phải palindrome không?" cho mọi cặp (j, i). Một bảng boolean {{isPal[j][i]}} làm được việc đó: s[j..i] là palindrome khi {{s[j] == s[i]}} và đoạn bên trong {{s[j+1..i-1]}} cũng là palindrome (hoặc đoạn dài ≤ 2).',
+    'Gọi {{cut[i]}} = số lần cắt ít nhất cho tiền tố {{s[0..i]}}. Đoạn palindrome **cuối cùng** của tiền tố đó bắt đầu ở một vị trí j nào đó.',
+    'Nếu {{s[0..i]}} đã là palindrome thì {{cut[i] = 0}}. Ngược lại {{cut[i] = min(cut[j-1] + 1)}} với mọi j ≥ 1 mà {{isPal[j][i]}} đúng.'
   ],
   solution: `### Ý tưởng
-Hai bước Dynamic Programming:
+Bài này ghép hai bảng DP:
+1. {{isPal[j][i]}}: đoạn {{s[j..i]}} có phải palindrome không. Tính một lần, sau đó tra cứu O(1).
+2. {{cut[i]}}: số lần cắt ít nhất cho tiền tố {{s[0..i]}}.
 
-**Bước 1:** Dựng bảng {{isPal[i][j]}} — s[i..j] có phải palindrome hay không. Công thức: nếu {{s[i] == s[j]}} và ({{j - i < 2}} hoặc {{isPal[i+1][j-1]}}).
-
-**Bước 2:** {{dp[i]}} là số lần cắt tối thiểu cho tiền tố {{s[0..i]}}. Với mỗi vị trí {{i}}, thử mọi {{j <= i}} sao cho {{isPal[j][i]}}; nếu được, cập nhật {{dp[i] = min(dp[i], (j > 0 ? dp[j-1] + 1 : 0))}}.
-
-Độ phức tạp: O(n²) thời gian và O(n²) bộ nhớ cho bảng isPal; dp dùng O(n).
+Vì sao công thức của {{cut}} đúng? Xét cách cắt tối ưu của {{s[0..i]}}. Đoạn cuối cùng của nó là một palindrome {{s[j..i]}}. Phần phía trước {{s[0..j-1]}} cũng phải được cắt tối ưu (nếu không, ta thay bằng cách cắt tốt hơn và được kết quả tốt hơn, mâu thuẫn). Vậy chỉ cần thử mọi j làm "điểm bắt đầu đoạn cuối":
+- j = 0: cả tiền tố là palindrome, không cần cắt → 0.
+- j ≥ 1: cắt một nhát ngay trước j → {{cut[j-1] + 1}}.
 
 ~~~java
 class Solution {
     public int minCut(String s) {
         int n = s.length();
+        // isPal[j][i] = true neu s[j..i] la palindrome
         boolean[][] isPal = new boolean[n][n];
-        for (int i = n - 1; i >= 0; i--) {
-            for (int j = i; j < n; j++) {
-                isPal[i][j] = s.charAt(i) == s.charAt(j)
-                    && (j - i < 2 || isPal[i + 1][j - 1]);
+        // j di tu phai sang trai de khi can isPal[j+1][i-1] thi o do da duoc tinh
+        for (int j = n - 1; j >= 0; j--) {
+            for (int i = j; i < n; i++) {
+                isPal[j][i] = s.charAt(j) == s.charAt(i)
+                        && (i - j < 2 || isPal[j + 1][i - 1]); // doan dai 1-2 hoac phan trong la palindrome
             }
         }
-        int[] dp = new int[n];
+        int[] cut = new int[n]; // cut[i] = so lan cat it nhat cho s[0..i]
         for (int i = 0; i < n; i++) {
-            if (isPal[0][i]) {
-                dp[i] = 0;
-            } else {
-                dp[i] = i;
-                for (int j = 1; j <= i; j++) {
-                    if (isPal[j][i]) {
-                        dp[i] = Math.min(dp[i], dp[j - 1] + 1);
-                    }
+            if (isPal[0][i]) {          // ca tien to la palindrome: khong can cat
+                cut[i] = 0;
+                continue;
+            }
+            cut[i] = i;                 // truong hop xau nhat: cat sau moi ky tu
+            for (int j = 1; j <= i; j++) {
+                if (isPal[j][i]) {      // doan cuoi s[j..i] la palindrome
+                    cut[i] = Math.min(cut[i], cut[j - 1] + 1);
                 }
             }
         }
-        return dp[n - 1];
+        return cut[n - 1];
     }
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- Dòng {{isPal[i][j]}} được tính từ {{i}} giảm dần để {{isPal[i+1][...}} đã có giá trị.
-- Nếu chỉ cần O(n) bộ nhớ, có thể dùng expand-from-center và cập nhật dp trong quá trình mở rộng, nhưng code phức tạp hơn.
-- Câu hỏi thường gặp: "trả về cách cắt", không chỉ số lần cắt — cần lưu thêm trạng thái để backtrack.`,
-  starter: "class Solution {\\n    public int minCut(String s) {\\n        \\n    }\\n}",
-  tests: `public class Main {
+### Chạy tay với s = "aab"
+- Bảng palindrome: "a"(0..0), "a"(1..1), "b"(2..2), "aa"(0..1) đúng; "ab"(1..2), "aab"(0..2) sai.
+- {{cut[0]}} = 0 ("a").
+- {{cut[1]}} = 0 vì "aa" là palindrome.
+- {{cut[2]}}: "aab" không phải palindrome. Thử j = 2: "b" là palindrome → {{cut[1] + 1 = 1}}. Thử j = 1: "ab" không phải. Kết quả 1.
 
+### Độ phức tạp
+- Bảng {{isPal}}: n² ô, mỗi ô O(1) → O(n²) thời gian và O(n²) bộ nhớ (n = 2000 → 4 triệu boolean ≈ 4 MB).
+- Vòng {{cut}}: hai vòng lồng nhau → O(n²).
+- Nếu kiểm tra palindrome bằng cách so từng ký tự mỗi lần (không có bảng) thì thành O(n³) = 8·10^9 phép với n = 2000, quá chậm.
+
+### Lưu ý khi phỏng vấn
+- Thứ tự tính bảng là điểm hay sai: {{isPal[j][i]}} cần {{isPal[j+1][i-1]}}, nên j phải đi **giảm dần**.
+- Có cách O(n) bộ nhớ: với mỗi tâm, "mở rộng ra hai phía" (expand around center) và cập nhật {{cut}} ngay khi tìm thấy palindrome. Nêu được ý này là điểm cộng.
+- Đừng nhầm với Palindrome Partitioning (liệt kê mọi cách cắt, cần backtracking): ở đây chỉ cần **con số nhỏ nhất** nên DP là đủ.
+
+> Senior tip: Khi một bài DP cần hỏi đi hỏi lại cùng một câu "đoạn này có tính chất X không?", hãy tính trước bảng đó một lần. Đây là cùng tư duy với việc cache kết quả kiểm tra tốn kém trong hệ thống thật.`,
+  complexity: 'Time O(n^2), Space O(n^2)',
+  starter: 'class Solution {\n    public int minCut(String s) {\n        // TODO\n        return 0;\n    }\n}',
+  tests: `public class Main {
     static int passed = 0, total = 0;
     interface Case { Object get() throws Throwable; }
     static void run(String name, Object expected, Case c) {
         total++;
         try {
             Object actual = c.get();
-            if (Objects.deepEquals(expected, actual)) {
-                passed++;
-                System.out.println("PASS " + name);
-            } else {
-                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
-            }
-        } catch (Throwable t) {
-            System.out.println("FAIL " + name + ": threw " + t);
-        }
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
     }
-
+    static String repeat(String s, int k) { StringBuilder sb = new StringBuilder(); for (int i = 0; i < k; i++) sb.append(s); return sb.toString(); }
     public static void main(String[] args) {
-        run("aab", 1, () -> new Solution().minCut("aab"));
-        run("single", 0, () -> new Solution().minCut("a"));
-        run("noon", 0, () -> new Solution().minCut("noon"));
-        run("bbab", 1, () -> new Solution().minCut("bbab"));
-        run("abc", 2, () -> new Solution().minCut("abc"));
-        run("long", 2, () -> new Solution().minCut("aabbcbb"));
+        run("example aab", 1, () -> new Solution().minCut("aab"));
+        run("single char", 0, () -> new Solution().minCut("a"));
+        run("whole palindrome", 0, () -> new Solution().minCut("noon"));
+        run("leet", 2, () -> new Solution().minCut("leet"));
+        run("all distinct", 4, () -> new Solution().minCut("abcde"));
+        run("aa + bbcbb", 1, () -> new Solution().minCut("aabbcbb"));
+        run("banana", 1, () -> new Solution().minCut("banana"));
+        run("long 2000 chars", 1, () -> new Solution().minCut(repeat("ab", 1000)));
         System.out.println("RESULT " + passed + "/" + total);
     }
 }`,
-  complexity: 'Time O(n^2), Space O(n^2)',
-  follow: ['Nếu cần trả về cách cắt thực sự thì backtrack như thế nào?', 'Có cách giảm bộ nhớ xuống O(n) không?']
+  follow: ['Nếu cần trả về chính các đoạn palindrome (không chỉ số lần cắt) thì lưu thêm gì để truy vết?', 'Làm sao giảm bộ nhớ xuống O(n) bằng expand-around-center?']
 },
 {
   id: 'algo-131',
@@ -13891,44 +14629,44 @@ class Solution {
   difficulty: 'medium',
   pattern: 'Dynamic Programming',
   tags: ['string', 'palindrome', 'dp', 'bytebytego'],
-  prompt: `Cho chuỗi {{s}}, tìm độ dài của dãy con (không nhất thiết liên tiếp) dài nhất là palindrome.
+  prompt: `Cho chuỗi {{s}}. Tìm độ dài **dãy con** (subsequence) dài nhất là palindrome. Dãy con được tạo bằng cách **xoá bớt** một số ký tự (có thể không xoá) và giữ nguyên thứ tự các ký tự còn lại, nên **không cần liên tiếp**.
 
 ### Ví dụ
 ~~~text
 Input:  s = "bbbab"
 Output: 4
-Giải thích: "bbbb" là palindrome dài nhất.
+Giải thích: xoá chữ "a" được "bbbb".
 
 Input:  s = "cbbd"
 Output: 2
-Giải thích: "bb" là palindrome dài nhất.
+Giải thích: "bb".
 ~~~
 
 ### Ràng buộc
 - {{1 <= s.length <= 1000}}
 - {{s}} chỉ gồm chữ cái thường tiếng Anh.`,
   hints: [
-    'Nếu lật ngược s, dãy con chung dài nhất giữa s và s đảo ngược chính là dãy con palindrome dài nhất.',
-    'dp[i][j] là độ dài LPS (Longest Palindromic Subsequence) của s[i..j].',
-    'Nếu s[i] == s[j], dp[i][j] = dp[i+1][j-1] + 2; ngược lại dp[i][j] = max(dp[i+1][j], dp[i][j-1]).'
+    'Gọi {{dp[i][j]}} = độ dài dãy con palindrome dài nhất trong đoạn {{s[i..j]}}. Đáp án là {{dp[0][n-1]}}; mỗi ký tự đơn có {{dp[i][i] = 1}}.',
+    'Xét hai đầu {{s[i]}} và {{s[j]}}. Nếu bằng nhau: cả hai làm hai đầu của palindrome → {{dp[i][j] = dp[i+1][j-1] + 2}}. Nếu khác: ít nhất một đầu bị bỏ → {{max(dp[i+1][j], dp[i][j-1])}}.',
+    '{{dp[i][j]}} cần các đoạn ngắn hơn bên trong, nên duyệt {{i}} từ n-1 **giảm dần** và {{j}} từ i+1 **tăng dần**.'
   ],
   solution: `### Ý tưởng
-Dãy con palindrome dài nhất của s bằng dãy con chung dài nhất (LCS) của s và s đảo ngược. Đây là cách nhận biết nhanh trong phỏng vấn.
-
-Cách DP trực tiếp: {{dp[i][j] độ dài LPS của s[i..j]}}. Nếu {{s.charAt(i) == s.charAt(j)}}: dp[i][j] = dp[i+1][j-1] + 2. Ngược lại: dp[i][j] = max(dp[i+1][j], dp[i][j-1]). Tính từ {{i}} giảm dần.
+Phân biệt hai khái niệm: **chuỗi con** (substring) phải liên tiếp; **dãy con** (subsequence) được bỏ qua ký tự. Với dãy con, ta quyết định ở hai đầu đoạn:
+- {{s[i] == s[j]}}: dùng cả hai làm cặp ngoài cùng, phần giữa lấy tốt nhất của {{s[i+1..j-1]}} → {{dp[i+1][j-1] + 2}}.
+- {{s[i] != s[j]}}: hai ký tự này không thể cùng là cặp ngoài cùng, nên bỏ một trong hai → {{max(dp[i+1][j], dp[i][j-1])}}.
 
 ~~~java
 class Solution {
-    public int longestPalinSubseq(String s) {
+    public int longestPalindromeSubseq(String s) {
         int n = s.length();
-        int[][] dp = new int[n][n];
-        for (int i = n - 1; i >= 0; i--) {
-            dp[i][i] = 1;
-            for (int j = i + 1; j < n; j++) {
+        int[][] dp = new int[n][n];           // dp[i][j] = LPS cua s[i..j]
+        for (int i = n - 1; i >= 0; i--) {    // i giam dan: dp[i+1][..] da co
+            dp[i][i] = 1;                     // mot ky tu
+            for (int j = i + 1; j < n; j++) { // j tang dan: dp[i][j-1] da co
                 if (s.charAt(i) == s.charAt(j)) {
-                    dp[i][j] = dp[i + 1][j - 1] + 2;
+                    dp[i][j] = dp[i + 1][j - 1] + 2;   // hai dau ghep thanh cap
                 } else {
-                    dp[i][j] = Math.max(dp[i + 1][j], dp[i][j - 1]);
+                    dp[i][j] = Math.max(dp[i + 1][j], dp[i][j - 1]); // bo mot dau
                 }
             }
         }
@@ -13936,42 +14674,56 @@ class Solution {
     }
 }
 ~~~
+Khi {{j = i + 1}} và hai ký tự bằng nhau, {{dp[i+1][j-1]}} là {{dp[i+1][i]}}: ô "đoạn rỗng" có giá trị mặc định 0, nên kết quả 2 là đúng.
+
+### Chạy tay với "cbbd"
+| | c | b | b | d |
+|---|---|---|---|---|
+| c | 1 | 1 | 2 | 2 |
+| b | | 1 | 2 | 2 |
+| b | | | 1 | 1 |
+| d | | | | 1 |
+Ô (1,2) "bb": hai đầu bằng nhau → 0 + 2 = 2. Ô (0,3) "cbbd": c ≠ d → max(dp[1][3], dp[0][2]) = 2.
+
+### Độ phức tạp
+O(n²) thời gian (n = 1000 → 5·10^5 ô), O(n²) bộ nhớ (4 MB với int). Có thể giảm còn O(n) vì hàng i chỉ cần hàng i + 1.
 
 ### Lưu ý khi phỏng vấn
-- Dãy con khác với chuỗi con: dãy con có thể bỏ qua ký tự, nên không cần liên tiếp.
-- Phân biệt với Longest Palindromic Substring: substring yêu cầu liên tiếp, subsequence thì không.
-- Có thể tối ưu bộ nhớ xuống O(n) bằng cách chỉ lưu hàng hiện tại và hàng kế.`,
-  starter: "class Solution {\\n    public int longestPalinSubseq(String s) {\\n        \\n    }\\n}",
-  tests: `public class Main {
+- Mẹo nhận diện: LPS của s = **LCS** (dãy con chung dài nhất) của s và chuỗi đảo ngược của s.
+- Đừng nhầm với Longest Palindromic Substring (algo-128): substring yêu cầu liên tiếp nên dùng mở rộng từ tâm.
+- Hệ quả hay được hỏi: số ký tự ít nhất cần xoá để s thành palindrome = {{n - LPS}}.
 
+> Senior tip: DP trên đoạn {{[i..j]}} (interval DP) có khuôn chung: trạng thái là một đoạn, quyết định ở hai đầu, duyệt theo độ dài tăng dần. Nắm khuôn này thì các bài như Burst Balloons hay Matrix Chain Multiplication không còn xa lạ.`,
+  complexity: 'Time O(n^2), Space O(n^2)',
+  starter: 'class Solution {\n    public int longestPalindromeSubseq(String s) {\n        // TODO\n        return 0;\n    }\n}',
+  tests: `public class Main {
     static int passed = 0, total = 0;
     interface Case { Object get() throws Throwable; }
     static void run(String name, Object expected, Case c) {
         total++;
         try {
             Object actual = c.get();
-            if (Objects.deepEquals(expected, actual)) {
-                passed++;
-                System.out.println("PASS " + name);
-            } else {
-                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
-            }
-        } catch (Throwable t) {
-            System.out.println("FAIL " + name + ": threw " + t);
-        }
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
     }
-
     public static void main(String[] args) {
-        run("bbbab", 4, () -> new Solution().longestPalinSubseq("bbbab"));
-        run("cbbd", 2, () -> new Solution().longestPalinSubseq("cbbd"));
-        run("single", 1, () -> new Solution().longestPalinSubseq("a"));
-        run("all same", 5, () -> new Solution().longestPalinSubseq("aaaaa"));
-        run("two distinct", 1, () -> new Solution().longestPalinSubseq("ab"));
+        run("bbbab", 4, () -> new Solution().longestPalindromeSubseq("bbbab"));
+        run("cbbd", 2, () -> new Solution().longestPalindromeSubseq("cbbd"));
+        run("single", 1, () -> new Solution().longestPalindromeSubseq("a"));
+        run("all same", 5, () -> new Solution().longestPalindromeSubseq("aaaaa"));
+        run("two distinct", 1, () -> new Solution().longestPalindromeSubseq("ab"));
+        run("non-contiguous", 5, () -> new Solution().longestPalindromeSubseq("agbdba"));
+        run("character", 5, () -> new Solution().longestPalindromeSubseq("character"));
+        run("large alternating 1000", 999, () -> {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < 500; i++) sb.append("ab");
+            return new Solution().longestPalindromeSubseq(sb.toString());
+        });
         System.out.println("RESULT " + passed + "/" + total);
     }
 }`,
-  complexity: 'Time O(n^2), Space O(n^2)',
-  follow: ['Nếu cần trả về dãy con palindrome thực sự thì backtrack như thế nào?', 'Có cách giảm bộ nhớ xuống O(n) không?']
+  follow: ['Truy vết bảng dp để in ra chính dãy con palindrome thế nào?', 'Giảm bộ nhớ xuống O(n) bằng cách nào?']
 },
 {
   id: 'algo-132',
@@ -13979,16 +14731,18 @@ class Solution {
   difficulty: 'medium',
   pattern: 'Greedy',
   tags: ['array', 'greedy', 'gas-station', 'bytebytego'],
-  prompt: `Có {{n}} trạm xăng tròn, mỗi trạm có {{gas[i]}} lit xăng. Từ trạm i sang trạm i+1 tốn {{cost[i]}} lit. Xe bình ban đầu, bình không giới hạn dung tích. Tìm chỉ số trạm khởi đầu để xe đi vòng quanh toàn bộ vòng tròn, hoặc trả về -1 nếu không thể.
+  prompt: `Có {{n}} trạm xăng xếp trên một **vòng tròn**. Trạm {{i}} cho bạn {{gas[i]}} lít xăng; đi từ trạm {{i}} sang trạm {{(i + 1) % n}} tốn {{cost[i]}} lít. Xe xuất phát với bình **rỗng** tại một trạm bạn chọn, bình chứa không giới hạn. Trả về chỉ số trạm xuất phát để đi **hết một vòng** quay lại trạm đó, hoặc {{-1}} nếu không thể. Đề đảm bảo nếu có đáp án thì đáp án là **duy nhất**.
 
 ### Ví dụ
 ~~~text
 Input:  gas = [1,2,3,4,5], cost = [3,4,5,1,2]
 Output: 3
-Giải thích: khởi tại trạm 3, bình có đủ xăng để đi hết vòng.
+Giải thích: xuất phát ở trạm 3: đổ 4 lít, đi tốn 1 → còn 3; trạm 4: +5 = 8, đi tốn 2 → 6;
+trạm 0: +1 = 7, tốn 3 → 4; trạm 1: +2 = 6, tốn 4 → 2; trạm 2: +3 = 5, tốn 5 → 0. Về lại trạm 3.
 
 Input:  gas = [2,3,4], cost = [3,4,3]
 Output: -1
+Giải thích: tổng xăng 9 < tổng chi phí 10, không trạm nào đi hết vòng được.
 ~~~
 
 ### Ràng buộc
@@ -13996,72 +14750,88 @@ Output: -1
 - {{1 <= n <= 10^5}}
 - {{0 <= gas[i], cost[i] <= 10^4}}`,
   hints: [
-    'Nếu tổng xăng nhỏ hơn tổng chi phí, chắc chắn không thể đi hết vòng.',
-    'Nếu bắt đầu tại trạm {{start}} mà bình rỗng ở trạm {{k}}, thì mọi trạm từ {{start}} đến {{k}} cũng không thể là khởi đầu.',
-    'Tìm trạm đầu tiên mà bình không bao giờ rỗng trên đoạn đi từ đó đến cuối mảng.'
+    'Nếu tổng {{gas}} nhỏ hơn tổng {{cost}} thì chắc chắn không đi hết vòng được, dù xuất phát ở đâu.',
+    'Giả sử xuất phát ở trạm {{start}} và lần đầu bình bị âm khi rời trạm {{i}}. Hãy chứng minh: xuất phát ở bất kỳ trạm nào giữa {{start}} và {{i}} cũng sẽ bị âm, không muộn hơn {{i}}.',
+    'Vậy chỉ cần duyệt một lần: giữ {{tank}}; khi {{tank < 0}} thì đặt {{start = i + 1}} và reset {{tank = 0}}. Nếu tổng xăng ≥ tổng chi phí thì {{start}} cuối cùng là đáp án.'
   ],
   solution: `### Ý tưởng
-Hai điều kiện quan trọng:
+Gọi {{diff[i] = gas[i] - cost[i]}}: lượng xăng "lời" (dương) hoặc "lỗ" (âm) khi đi qua trạm i.
 
-1. Nếu {{tổng gas < tổng cost}}, trả về -1 ngay (không đủ xăng cho cả vòng).
-2. Nếu tổng đủ, thì chắc chắn có một trạm khởi đầu hợp lệ. Tìm nó bằng cách duyệt một lần: duy trì {{tank}} (xăng còn lại). Nếu tại trạm {{i}}, {{tank < 0}}, thì khởi đầu không thể là bất kỳ trạm nào từ điểm bắt đầu hiện tại đến {{i}} — đặt khởi đầu mới là {{i + 1}} và reset tank.
+**Quan sát 1:** nếu tổng tất cả {{diff}} < 0 thì đi hết vòng là không thể, vì cả vòng tiêu nhiều hơn số xăng nhận được.
 
-Lý do: từ trạm A đến B, nếu tank trở nên âm, nghĩa là đoạn A→B hụt xăng, không thể bắt đầu ở bất kỳ trạm nào trong đoạn này.
+**Quan sát 2 (mấu chốt):** xuất phát ở {{start}}, đi tới trạm {{i}} thì lần đầu bình âm. Mọi trạm {{k}} nằm giữa {{start}} và {{i}} đều không thể là điểm xuất phát. Vì sao? Khi xe từ {{start}} đến {{k}}, bình luôn ≥ 0 (chưa âm lần nào). Xuất phát thẳng từ {{k}} nghĩa là bỏ đi phần xăng ≥ 0 đó, nên bình chỉ có thể ít hơn hoặc bằng, và chắc chắn cũng âm tại {{i}}. Do đó ta nhảy luôn {{start}} tới {{i + 1}}, không cần thử lại các trạm ở giữa.
+
+**Quan sát 3:** nếu tổng ≥ 0 thì {{start}} cuối cùng chắc chắn đi hết vòng: phần từ {{start}} tới cuối mảng không âm, và phần đầu mảng (các đoạn đã bị "lỗ") được bù bằng tổng dương.
 
 ~~~java
 class Solution {
     public int canCompleteCircuit(int[] gas, int[] cost) {
-        int totalGas = 0, totalCost = 0;
-        int tank = 0, start = 0;
+        int total = 0;  // tong (gas - cost) cua ca vong
+        int tank = 0;   // xang trong binh tinh tu diem xuat phat hien tai
+        int start = 0;  // ung vien diem xuat phat
         for (int i = 0; i < gas.length; i++) {
-            totalGas += gas[i];
-            totalCost += cost[i];
-            tank += gas[i] - cost[i];
-            if (tank < 0) {
-                start = i + 1;
-                tank = 0;
+            int diff = gas[i] - cost[i];
+            total += diff;
+            tank += diff;
+            if (tank < 0) {        // tu start khong toi duoc tram i + 1
+                start = i + 1;     // moi tram trong [start, i] deu bi loai
+                tank = 0;          // xuat phat lai voi binh rong
             }
         }
-        return totalGas < totalCost ? -1 : start;
+        return total < 0 ? -1 : start; // tong am: khong co dap an
     }
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- Chỉ số start có thể vượt qua {{gas.length}} nếu mảng được duyệt hết; nhưng vì kiểm tra total trước, nếu có đáp án thì start sẽ nằm trong [0, n-1].
-- Đây là dạng "greedy prefix sum": khi tiền tố tổng âm, cắt đoạn và bắt đầu mới.
-- Trong thực tế, mô hình này xuất hiện khi lập lịch job cyclic hoặc kiểm tra cân bằng tải trên vòng quay.`,
-  starter: "class Solution {\\n    public int canCompleteCircuit(int[] gas, int[] cost) {\\n        \\n    }\\n}",
-  tests: `public class Main {
+### Chạy tay với ví dụ 1
+{{diff = [-2, -2, -2, 3, 3]}}, tổng = 0 ≥ 0.
+- i = 0: tank = -2 < 0 → start = 1, tank = 0.
+- i = 1: tank = -2 → start = 2, tank = 0.
+- i = 2: tank = -2 → start = 3, tank = 0.
+- i = 3: tank = 3. i = 4: tank = 6.
+Kết quả: start = 3.
 
+### Độ phức tạp
+Một vòng lặp qua n trạm → O(n) thời gian, O(1) bộ nhớ. Cách ngây thơ "thử từng trạm rồi mô phỏng cả vòng" là O(n²).
+
+### Lưu ý khi phỏng vấn
+- {{start}} có thể bằng {{n}} sau vòng lặp (khi trạm cuối cũng bị âm), nhưng khi đó tổng chắc chắn âm nên ta đã trả {{-1}}.
+- Tổng tối đa 10^5 × 10^4 = 10^9, vẫn vừa {{int}}; nếu giới hạn lớn hơn thì đổi sang {{long}}.
+- Hãy nói rõ hai lập luận (tổng âm → -1; bỏ qua cả đoạn khi tank âm). Interviewer thường hỏi "vì sao được bỏ qua các trạm ở giữa?".
+
+> Senior tip: Mẫu "cộng dồn, khi âm thì reset" xuất hiện ở nhiều bài (Kadane cho Maximum Subarray cũng vậy). Nhận ra cùng một khuôn giúp bạn giải nhanh và giải thích tự tin hơn.`,
+  complexity: 'Time O(n), Space O(1)',
+  starter: 'class Solution {\n    public int canCompleteCircuit(int[] gas, int[] cost) {\n        // TODO\n        return -1;\n    }\n}',
+  tests: `public class Main {
     static int passed = 0, total = 0;
     interface Case { Object get() throws Throwable; }
     static void run(String name, Object expected, Case c) {
         total++;
         try {
             Object actual = c.get();
-            if (Objects.deepEquals(expected, actual)) {
-                passed++;
-                System.out.println("PASS " + name);
-            } else {
-                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
-            }
-        } catch (Throwable t) {
-            System.out.println("FAIL " + name + ": threw " + t);
-        }
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
     }
-
     public static void main(String[] args) {
         run("example", 3, () -> new Solution().canCompleteCircuit(new int[]{1, 2, 3, 4, 5}, new int[]{3, 4, 5, 1, 2}));
         run("impossible", -1, () -> new Solution().canCompleteCircuit(new int[]{2, 3, 4}, new int[]{3, 4, 3}));
         run("single ok", 0, () -> new Solution().canCompleteCircuit(new int[]{5}, new int[]{4}));
+        run("single exact", 0, () -> new Solution().canCompleteCircuit(new int[]{2}, new int[]{2}));
         run("single fail", -1, () -> new Solution().canCompleteCircuit(new int[]{3}, new int[]{4}));
-        run("start zero", 0, () -> new Solution().canCompleteCircuit(new int[]{5, 1, 2, 3, 4}, new int[]{4, 4, 1, 5, 1}));
+        run("start zero", 0, () -> new Solution().canCompleteCircuit(new int[]{3, 1, 1}, new int[]{1, 2, 2}));
+        run("start near end", 4, () -> new Solution().canCompleteCircuit(new int[]{5, 1, 2, 3, 4}, new int[]{4, 4, 1, 5, 1}));
+        run("large only last works", 9999, () -> {
+            int n = 10000;
+            int[] gas = new int[n], cost = new int[n];
+            for (int i = 0; i < n - 1; i++) { gas[i] = 0; cost[i] = 1; }
+            gas[n - 1] = n - 1; cost[n - 1] = 0;
+            return new Solution().canCompleteCircuit(gas, cost);
+        });
         System.out.println("RESULT " + passed + "/" + total);
     }
 }`,
-  complexity: 'Time O(n), Space O(1)',
-  follow: ['Nếu xăng bị rò rỉ theo thời gian thì sửa thế nào?', 'Làm sao tìm tất cả trạm khởi đầu hợp lệ?']
+  follow: ['Nếu đề không đảm bảo đáp án duy nhất và cần liệt kê mọi trạm xuất phát hợp lệ thì làm thế nào trong O(n)?', 'Nếu bình xăng có dung tích tối đa C thì thuật toán thay đổi ra sao?']
 },
 {
   id: 'algo-133',
@@ -14069,13 +14839,14 @@ class Solution {
   difficulty: 'medium',
   pattern: 'Greedy',
   tags: ['string', 'greedy', 'intervals', 'bytebytego'],
-  prompt: `Cho chuỗi {{s}}. Phân đoạn s thành nhiều phần sao cho mỗi chữ cái chỉ xuất hiện trong một phần duy nhất. Trả về độ dài các phần theo thứ tự.
+  prompt: `Cho chuỗi {{s}}. Chia {{s}} thành **nhiều đoạn nhất có thể** sao cho mỗi chữ cái chỉ xuất hiện trong **đúng một** đoạn. Ghép các đoạn theo thứ tự phải được lại đúng {{s}}. Trả về danh sách độ dài các đoạn theo thứ tự.
 
 ### Ví dụ
 ~~~text
 Input:  s = "ababcbacadefegdehijhklij"
 Output: [9, 7, 8]
-Giải thích: "ababcbaca", "defegde", "hijhklij".
+Giải thích: "ababcbaca" | "defegde" | "hijhklij".
+Cách chia "ababcbacadefegde" | "hijhklij" cũng hợp lệ nhưng ít đoạn hơn.
 
 Input:  s = "eccbbbbdec"
 Output: [10]
@@ -14085,76 +14856,80 @@ Output: [10]
 - {{1 <= s.length <= 500}}
 - {{s}} chỉ gồm chữ cái thường tiếng Anh.`,
   hints: [
-    'Ghi lại vị trí xuất hiện cuối cùng của mỗi chữ cái.',
-    'Duyệt từ trái sang phải, duy trì cửa sổ. Nếu một chữ cái trong cửa sổ có vị trí cuối nằm bên phải, mở rộng cửa sổ đến đó.',
-    'Khi chỉ số hiện tại đạt được biên phải xa nhất của cửa sổ, đóng cửa sổ và ghi độ dài.'
+    'Nếu chữ {{c}} nằm trong một đoạn thì đoạn đó phải kéo dài tới **lần xuất hiện cuối cùng** của {{c}}. Hãy ghi lại vị trí cuối của từng chữ cái trước.',
+    'Duyệt từ trái sang phải, giữ {{end}} = vị trí xa nhất mà đoạn hiện tại bắt buộc phải kéo tới. Mỗi ký tự mới có thể đẩy {{end}} ra xa hơn.',
+    'Khi chỉ số {{i}} đúng bằng {{end}}, mọi chữ cái trong đoạn đã xuất hiện lần cuối: đóng đoạn tại đây (càng đóng sớm càng được nhiều đoạn).'
   ],
   solution: `### Ý tưởng
-Hai bước:
+Mỗi chữ cái tạo ra một "khoảng" từ lần xuất hiện đầu tiên tới lần cuối. Hai chữ có khoảng chồng nhau bắt buộc nằm chung một đoạn. Vậy đáp án chính là: gộp các khoảng chồng nhau lại, mỗi khối sau khi gộp là một đoạn.
 
-**Bước 1:** Dựng mảng {{last[26]}} lưu chỉ số xuất hiện cuối cùng của mỗi chữ cái.
+Cách làm không cần tạo khoảng tường minh:
+1. Duyệt một lần, lưu {{last[c]}} = chỉ số cuối cùng của chữ {{c}}.
+2. Duyệt lần hai với {{start}} (đầu đoạn hiện tại) và {{end}} (đoạn phải kéo tới đâu). Gặp ký tự {{s[i]}} thì {{end = max(end, last[s[i]])}}.
+3. Khi {{i == end}}: không còn chữ nào trong đoạn xuất hiện ở phía sau → đóng đoạn, ghi độ dài {{end - start + 1}}, bắt đầu đoạn mới ở {{i + 1}}.
 
-**Bước 2:** Duyệt chuỗi với hai con trỏ {{start}} và {{end}}. Với mỗi ký tự {{s[i]}}, cập nhật {{end = max(end, last[s[i] - 'a'])}}. Khi {{i == end}}, cửa sổ đã đóng: ghi {{end - start + 1}} và đặt {{start = i + 1}}.
-
-Mỗi ký tự được xem xét một lần, nên O(n) thời gian và O(1) bộ nhớ (bảng 26 ô).
+Vì sao tham lam (đóng đoạn sớm nhất) cho **nhiều đoạn nhất**? Vị trí {{end}} là điểm sớm nhất có thể đóng đoạn hợp lệ; đóng muộn hơn chỉ gộp thêm ký tự vào đoạn, không bao giờ làm tăng số đoạn.
 
 ~~~java
 class Solution {
     public List<Integer> partitionLabels(String s) {
-        int[] last = new int[26];
+        int[] last = new int[26];                 // last[c] = vi tri cuoi cung cua chu c
         for (int i = 0; i < s.length(); i++) {
             last[s.charAt(i) - 'a'] = i;
         }
-        List<Integer> result = new ArrayList<>();
+        List<Integer> sizes = new ArrayList<>();
         int start = 0, end = 0;
         for (int i = 0; i < s.length(); i++) {
-            end = Math.max(end, last[s.charAt(i) - 'a']);
-            if (i == end) {
-                result.add(end - start + 1);
-                start = i + 1;
+            end = Math.max(end, last[s.charAt(i) - 'a']); // doan phai keo toi it nhat day
+            if (i == end) {                        // moi chu trong doan da het
+                sizes.add(end - start + 1);
+                start = i + 1;                     // doan moi bat dau ngay sau
             }
         }
-        return result;
+        return sizes;
     }
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- Mảng {{last}} chỉ cần 26 phần tử vì chỉ có 26 chữ cái thường; nếu Unicode, dùng HashMap.
-- Phần cuối cùng luôn được đóng khi i đạt đến last ký tự cuối cùng.
-- Có thể hiểu từng phần là một "khoảng không giao nhau" sau khi hợp nhất các khoảng của cùng một chữ cái.`,
-  starter: "class Solution {\\n    public List<Integer> partitionLabels(String s) {\\n        \\n    }\\n}",
-  tests: `public class Main {
+### Chạy tay với s = "abaccbdeffed"
+{{last}}: a=2, b=5, c=4, d=11, e=10, f=9.
+- i=0 'a' → end=2; i=1 'b' → end=5; i=2..4 không đổi; i=5 'b', i == end → đoạn [0..5] dài 6.
+- i=6 'd' → end=11; ... i=11 == end → đoạn [6..11] dài 6.
+Kết quả [6, 6].
 
+### Độ phức tạp
+Hai lần duyệt → O(n) thời gian. Mảng {{last}} 26 phần tử → O(1) bộ nhớ phụ (không tính kết quả).
+
+### Lưu ý khi phỏng vấn
+- Nếu bảng chữ cái không cố định (Unicode) thì dùng {{HashMap<Character, Integer>}} thay cho mảng 26.
+- Liên hệ được với bài Merge Intervals là điểm cộng: đây chính là gộp khoảng nhưng tận dụng được việc các khoảng đã "tự sắp xếp" theo vị trí đầu.
+
+> Senior tip: Kỹ thuật "tính trước vị trí xuất hiện cuối" cũng dùng khi chia batch dữ liệu sao cho các bản ghi cùng key không bị tách sang hai batch (ví dụ khi chia file log theo session).`,
+  complexity: 'Time O(n), Space O(1)',
+  starter: 'class Solution {\n    public List<Integer> partitionLabels(String s) {\n        // TODO\n        return new ArrayList<>();\n    }\n}',
+  tests: `public class Main {
     static int passed = 0, total = 0;
     interface Case { Object get() throws Throwable; }
     static void run(String name, Object expected, Case c) {
         total++;
         try {
             Object actual = c.get();
-            if (Objects.deepEquals(expected, actual)) {
-                passed++;
-                System.out.println("PASS " + name);
-            } else {
-                System.out.println("FAIL " + name + ": expected " + Arrays.deepToString(new Object[]{expected})
-                    + " got " + Arrays.deepToString(new Object[]{actual}));
-            }
-        } catch (Throwable t) {
-            System.out.println("FAIL " + name + ": threw " + t);
-        }
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
     }
-
     public static void main(String[] args) {
-        run("example", java.util.List.of(9, 7, 8), () -> new Solution().partitionLabels("ababcbacadefegdehijhklij"));
-        run("single", java.util.List.of(10), () -> new Solution().partitionLabels("eccbbbbdec"));
-        run("all same", java.util.List.of(3), () -> new Solution().partitionLabels("aaa"));
-        run("distinct", java.util.List.of(1, 1, 1), () -> new Solution().partitionLabels("abc"));
-        run("two", java.util.List.of(2, 2), () -> new Solution().partitionLabels("abab"));
+        run("example", Arrays.asList(9, 7, 8), () -> new Solution().partitionLabels("ababcbacadefegdehijhklij"));
+        run("one block", Arrays.asList(10), () -> new Solution().partitionLabels("eccbbbbdec"));
+        run("single char", Arrays.asList(1), () -> new Solution().partitionLabels("z"));
+        run("all same", Arrays.asList(3), () -> new Solution().partitionLabels("aaa"));
+        run("all distinct", Arrays.asList(1, 1, 1), () -> new Solution().partitionLabels("abc"));
+        run("interleaved", Arrays.asList(4), () -> new Solution().partitionLabels("abab"));
+        run("two blocks", Arrays.asList(6, 6), () -> new Solution().partitionLabels("abaccbdeffed"));
         System.out.println("RESULT " + passed + "/" + total);
     }
 }`,
-  complexity: 'Time O(n), Space O(1)',
-  follow: ['Nếu muốn mỗi phần tối đa K ký tự thì làm thế nào?', 'Làm sao xử lý nếu chữ cái có thể là Unicode?']
+  follow: ['Nếu thêm điều kiện mỗi đoạn dài tối đa K ký tự (có thể không có lời giải) thì xử lý thế nào?', 'Nếu chuỗi là một stream rất dài không đọc lại được thì có làm được trong một lần duyệt không?']
 },
 {
   id: 'algo-134',
@@ -14162,88 +14937,99 @@ class Solution {
   difficulty: 'medium',
   pattern: 'Greedy',
   tags: ['array', 'greedy', 'intervals', 'bytebytego'],
-  prompt: `Có nhiều màu trên không phẳng, mỗi màu biểu diễn bằng khoảng trampion {{[x_start, x_end]}}. Một cung bắn tại tọa độ x sẽ nổ mọi màu có {{x_start <= x <= x_end}}. Tìm số cung ít nhất để nổ hết mọi màu.
+  prompt: `Có nhiều quả bóng bay dán trên một bức tường phẳng. Quả bóng thứ {{i}} được mô tả bằng đoạn ngang {{points[i] = [xStart, xEnd]}}. Một mũi tên bắn thẳng đứng tại hoành độ {{x}} sẽ làm nổ **mọi** quả bóng có {{xStart <= x <= xEnd}} (kể cả chạm đúng mép). Tìm **số mũi tên ít nhất** để làm nổ tất cả bóng.
 
 ### Ví dụ
 ~~~text
 Input:  points = [[10,16],[2,8],[1,6],[7,12]]
 Output: 2
-Giải thích: bắn tại x = 6 nổ [1,6] và [2,8]; bắn tại x = 11 não [10,16] và [7,12].
+Giải thích: bắn tại x = 6 làm nổ [2,8] và [1,6]; bắn tại x = 11 làm nổ [10,16] và [7,12].
 
 Input:  points = [[1,2],[3,4],[5,6],[7,8]]
 Output: 4
+
+Input:  points = [[1,2],[2,3],[3,4],[4,5]]
+Output: 2
+Giải thích: bắn tại x = 2 (nổ [1,2],[2,3]) và x = 4 (nổ [3,4],[4,5]).
 ~~~
 
 ### Ràng buộc
 - {{1 <= points.length <= 10^5}}
 - {{points[i].length == 2}}
-- {{-2^31 <= x_start < x_end <= 2^31 - 1}}`,
+- {{-2^31 <= xStart < xEnd <= 2^31 - 1}}`,
   hints: [
-    'Sắp xếp các khoảng theo đầu phải (x_end) tăng dần.',
-    'Luôn bắn tại đầu phải của khoảng chưa bị nổ đầu tiên — cách này tối ưu vì chạm được nhiều khoảng nhất.',
-    'Khi sang một khoảng mới, nếu đầu trái lớn hơn vị trí cung vừa bắn, cần bắn thêm một cung.'
+    'Xét quả bóng có **mép phải nhỏ nhất**. Chắc chắn phải có một mũi tên bắn tại vị trí ≤ mép phải đó. Bắn ở đâu thì có lợi nhất?',
+    'Bắn đúng tại mép phải đó: mũi tên vẫn làm nổ quả bóng này, và nằm xa nhất về bên phải nên trúng được nhiều quả khác nhất.',
+    'Sắp xếp theo {{xEnd}} tăng dần. Giữ vị trí mũi tên vừa bắn; quả bóng tiếp theo có {{xStart}} lớn hơn vị trí đó thì cần một mũi tên mới. Cẩn thận overflow khi so sánh.'
   ],
   solution: `### Ý tưởng
-Sắp xếp các khoảng theo {{x_end}} tăng dần. Giữ vị trí cung bắn gần nhất {{arrowPos}}. Khi xét khoảng mới:
+Tham lam theo mép phải:
+1. Sắp xếp các quả bóng theo {{xEnd}} tăng dần.
+2. Bắn mũi tên đầu tiên tại {{xEnd}} của quả bóng đầu tiên.
+3. Duyệt các quả tiếp theo. Nếu {{xStart <= arrow}} thì quả này đã nổ (vì {{xEnd}} của nó ≥ {{arrow}} do đã sắp xếp, nên {{arrow}} nằm trong đoạn). Ngược lại cần mũi tên mới tại {{xEnd}} của quả này.
 
-- Nếu {{x_start > arrowPos}}, khoảng này chưa bị nổ → bắn cung mới tại {{x_end}}, cập nhật {{arrowPos = x_end}}.
-- Nếu {{x_start <= arrowPos}}, khoảng này đã bị nổ bởi cung trước → bỏ qua.
-
-Vì sắp xếp theo đầu phải, cung bắn tại điểm nhỏ nhất có thể bên trái nhưng vẫn chạm được khoảng hiện tại, tạo điều kiện chạm được nhiều khoảng sau này nhất.
+**Vì sao đúng?** Quả có mép phải nhỏ nhất bắt buộc phải bị bắn ở một điểm ≤ mép phải của nó. Đẩy điểm bắn sang phải hết mức (đúng mép phải) không làm mất quả nào mà mũi tên cũ trúng được, chỉ có thể trúng thêm. Lặp lại lập luận cho phần còn lại.
 
 ~~~java
 class Solution {
     public int findMinArrowShots(int[][] points) {
         if (points.length == 0) return 0;
+        // Integer.compare: KHONG dung a[1] - b[1] vi co the tran so voi gia tri gan +-2^31
         Arrays.sort(points, (a, b) -> Integer.compare(a[1], b[1]));
         int arrows = 1;
-        int arrowPos = points[0][1];
+        int arrowX = points[0][1];        // ban tai mep phai cua qua dau tien
         for (int i = 1; i < points.length; i++) {
-            if (points[i][0] > arrowPos) {
+            if (points[i][0] > arrowX) {  // mui ten cu nam ben trai qua bong nay
                 arrows++;
-                arrowPos = points[i][1];
+                arrowX = points[i][1];    // ban mui moi tai mep phai qua nay
             }
+            // nguoc lai: xStart <= arrowX <= xEnd, qua bong da no
         }
         return arrows;
     }
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- Cẩn thận overflow khi so sánh: dùng {{Integer.compare}} hoặc {{Long.compare}} thay vì {{a[1] - b[1]}} vì giá trị có thể gần {{Integer.MAX_VALUE}}.
-- Nếu hai khoảng chỉ chạm nhau ở điểm biên (ví dụ [1,2] và [2,3]), cung tại x=2 nổ cả hai — được xử lý đúng bởi điều kiện {{points[i][0] > arrowPos}}.
-- Đây là bài "interval scheduling" điển hình: chọn điểm chờ nhiều khoảng nhất.`,
-  starter: "class Solution {\\n    public int findMinArrowShots(int[][] points) {\\n        \\n    }\\n}",
-  tests: `public class Main {
+### Chạy tay với ví dụ 1
+Sau sắp xếp theo {{xEnd}}: [1,6], [2,8], [7,12], [10,16].
+- Mũi tên 1 tại x = 6. [2,8]: 2 ≤ 6 → nổ. [7,12]: 7 > 6 → mũi tên 2 tại 12. [10,16]: 10 ≤ 12 → nổ.
+Kết quả 2.
 
+### Độ phức tạp
+Sắp xếp O(n log n), duyệt O(n). Bộ nhớ O(log n) cho sắp xếp (TimSort trên mảng object có thể tới O(n)).
+
+### Lưu ý khi phỏng vấn
+- **Bẫy overflow:** comparator {{a[1] - b[1]}} sai khi một số gần {{2^31 - 1}} và số kia gần {{-2^31}} (hiệu vượt phạm vi int, đổi dấu). Luôn dùng {{Integer.compare}}.
+- Bóng chạm nhau ở mép ({{[1,2]}} và {{[2,3]}}) bị một mũi tên làm nổ, nên điều kiện là {{>}} chứ không phải {{>=}}.
+- Bài này tương đương "số điểm ít nhất đâm xuyên mọi đoạn", họ hàng với Non-overlapping Intervals: số mũi tên = số đoạn không giao nhau tối đa.
+
+> Senior tip: Lỗi comparator dạng {{a - b}} đã gây bug thật trên production khi dữ liệu là timestamp hoặc ID lớn. Code review nên bắt lỗi này ngay.`,
+  complexity: 'Time O(n log n), Space O(log n)',
+  starter: 'class Solution {\n    public int findMinArrowShots(int[][] points) {\n        // TODO\n        return 0;\n    }\n}',
+  tests: `public class Main {
     static int passed = 0, total = 0;
     interface Case { Object get() throws Throwable; }
     static void run(String name, Object expected, Case c) {
         total++;
         try {
             Object actual = c.get();
-            if (Objects.deepEquals(expected, actual)) {
-                passed++;
-                System.out.println("PASS " + name);
-            } else {
-                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
-            }
-        } catch (Throwable t) {
-            System.out.println("FAIL " + name + ": threw " + t);
-        }
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
     }
-
     public static void main(String[] args) {
         run("example", 2, () -> new Solution().findMinArrowShots(new int[][]{{10, 16}, {2, 8}, {1, 6}, {7, 12}}));
         run("disjoint", 4, () -> new Solution().findMinArrowShots(new int[][]{{1, 2}, {3, 4}, {5, 6}, {7, 8}}));
+        run("chain touching", 2, () -> new Solution().findMinArrowShots(new int[][]{{1, 2}, {2, 3}, {3, 4}, {4, 5}}));
         run("single", 1, () -> new Solution().findMinArrowShots(new int[][]{{1, 2}}));
-        run("nested", 1, () -> new Solution().findMinArrowShots(new int[][]{{1, 10}, {2, 3}, {4, 5}}));
-        run("touching", 1, () -> new Solution().findMinArrowShots(new int[][]{{1, 2}, {2, 3}}));
+        run("big contains two disjoint", 2, () -> new Solution().findMinArrowShots(new int[][]{{1, 10}, {2, 3}, {4, 5}}));
+        run("fully nested", 1, () -> new Solution().findMinArrowShots(new int[][]{{1, 10}, {2, 5}, {3, 4}}));
+        run("touching edge", 1, () -> new Solution().findMinArrowShots(new int[][]{{1, 2}, {2, 3}}));
+        run("int extremes", 2, () -> new Solution().findMinArrowShots(new int[][]{{2147483646, 2147483647}, {-2147483648, -2147483647}}));
         System.out.println("RESULT " + passed + "/" + total);
     }
 }`,
-  complexity: 'Time O(n log n), Space O(1)',
-  follow: ['Nếu cung bắn tốn chi phí khác nhau theo vị trí thì làm thế nào?', 'Làm sao trả về tọa độ các cung bắn?']
+  follow: ['Làm sao trả về danh sách toạ độ các mũi tên thay vì chỉ số lượng?', 'Liên hệ bài này với Non-overlapping Intervals thế nào?']
 },
 {
   id: 'algo-135',
@@ -14251,20 +15037,16 @@ class Solution {
   difficulty: 'hard',
   pattern: 'Backtracking',
   tags: ['backtracking', 'chess', 'search', 'bytebytego'],
-  prompt: `Cho bàn cờ {{n x n}}, đặt {{n}} quân hậu sao cho không có hai quân nào tấn công nhau. Một quân hậu tấn công theo hàng ngang, hàng dọc và hai đường chéo chính/phụ. Trả về tất cả các cách sắp xếp hợp lệ dưới dạng bàn cờ ký tự, với '.' là ô trống và 'Q' là hậu.
+  prompt: `Đặt {{n}} quân hậu lên bàn cờ {{n x n}} sao cho không có hai quân nào ăn được nhau (hậu ăn theo hàng ngang, hàng dọc và cả hai đường chéo). Trả về **tất cả** cách đặt; mỗi cách là danh sách {{n}} chuỗi, chuỗi thứ i mô tả hàng i với {{'Q'}} là hậu và {{'.'}} là ô trống. Thứ tự các cách đặt không quan trọng.
 
 ### Ví dụ
 ~~~text
 Input:  n = 4
-Output: [[".Q..",
-          "...Q",
-          "Q...",
-          "..Q."],
-         ["..Q.",
-          "Q...",
-          "...Q",
-          ".Q.."]]
-Giải thích: có đúng 2 cách sắp xếp cho bàn cờ 4x4.
+Output: [[".Q..",     [["..Q.",
+          "...Q",       "Q...",
+          "Q...",       "...Q",
+          "..Q."],      ".Q.."]]
+Giải thích: bàn 4x4 có đúng 2 cách.
 
 Input:  n = 1
 Output: [["Q"]]
@@ -14273,98 +15055,124 @@ Output: [["Q"]]
 ### Ràng buộc
 - {{1 <= n <= 9}}`,
   hints: [
-    'Mỗi hàng đặt đúng một hậu. Dùng mảng {{col[i]}} cho biết hàng i có hậu ở cột col[i].',
-    'Cần theo dõi các cột, đường chéo chính (row - col không đổi) và đường chéo phụ (row + col không đổi) đã bận chưa.',
-    'Cắt tỉa: khi đặt hậu ở cột c bị conflict, bỏ qua ngay thay vì đệ qua sâu hơn.'
+    'Mỗi hàng có **đúng một** hậu (hai hậu cùng hàng sẽ ăn nhau). Vậy đặt lần lượt theo từng hàng, mỗi hàng chọn một cột.',
+    'Để biết ô {{(row, col)}} có bị ăn không trong O(1): đánh dấu cột đã dùng; đường chéo "\\" có {{row - col}} không đổi; đường chéo "/" có {{row + col}} không đổi.',
+    'Dùng ba mảng boolean {{cols[n]}}, {{diag[2n-1]}} (chỉ số {{row - col + n - 1}} để không âm), {{anti[2n-1]}} (chỉ số {{row + col}}). Đặt hậu → đánh dấu → đệ quy hàng sau → gỡ đánh dấu.'
   ],
   solution: `### Ý tưởng
-Backtracking theo hàng. Với mỗi hàng, thử đặt hậu ở mỗi cột và kiểm tra xem: cột đó đã bận chưa, đường chéo chính {{(row - col)}} đã bận chưa, hay đường chéo phụ {{(row + col)}} đã bận chưa. Nếu không xung đột, đánh dấu các dải này là bận và chuyển sang hàng tiếp theo.
+Backtracking theo hàng: ở hàng {{row}}, thử từng cột {{col}}. Nếu ô an toàn thì đặt hậu, đánh dấu, rồi xử lý hàng {{row + 1}}. Đặt đủ n hàng → ghi nhận một lời giải. Quay lui thì gỡ đánh dấu để thử cột khác.
 
-Để kiểm tra O(1), dùng ba tập hợp boolean: {{cols}}, {{diag1}} (chéo chính), {{diag2}} (chéo phụ). Chéo chính có chỉ số {{row - col + n - 1}} để tránh số âm; chéo phụ có chỉ số {{row + col}}.
+**Nhận diện đường chéo trong O(1):**
+~~~text
+row - col (chéo "\\")      row + col (chéo "/")
+ 0 -1 -2 -3                 0  1  2  3
+ 1  0 -1 -2                 1  2  3  4
+ 2  1  0 -1                 2  3  4  5
+ 3  2  1  0                 3  4  5  6
+~~~
+Các ô trên cùng một đường chéo "\\" có cùng {{row - col}}; cộng thêm {{n - 1}} để chỉ số không âm. Các ô trên cùng đường chéo "/" có cùng {{row + col}}.
 
 ~~~java
 class Solution {
+    private int n;
+    private boolean[] cols, diag, anti;     // cot / cheo "\\" / cheo "/" da co hau
+    private int[] queenCol;                 // queenCol[row] = cot dat hau o hang row
+    private List<List<String>> result;
+
     public List<List<String>> solveNQueens(int n) {
-        List<List<String>> result = new ArrayList<>();
-        boolean[] cols = new boolean[n];
-        boolean[] diag1 = new boolean[2 * n - 1];
-        boolean[] diag2 = new boolean[2 * n - 1];
-        int[] placement = new int[n];
-        backtrack(0, n, cols, diag1, diag2, placement, result);
+        this.n = n;
+        cols = new boolean[n];
+        diag = new boolean[2 * n - 1];
+        anti = new boolean[2 * n - 1];
+        queenCol = new int[n];
+        result = new ArrayList<>();
+        place(0);
         return result;
     }
 
-    private void backtrack(int row, int n, boolean[] cols, boolean[] diag1,
-                           boolean[] diag2, int[] placement, List<List<String>> result) {
-        if (row == n) {
-            result.add(buildBoard(placement, n));
+    private void place(int row) {
+        if (row == n) {                     // da dat du n hau
+            result.add(board());
             return;
         }
         for (int col = 0; col < n; col++) {
-            int d1 = row - col + n - 1;
-            int d2 = row + col;
-            if (cols[col] || diag1[d1] || diag2[d2]) continue;
-            cols[col] = diag1[d1] = diag2[d2] = true;
-            placement[row] = col;
-            backtrack(row + 1, n, cols, diag1, diag2, placement, result);
-            cols[col] = diag1[d1] = diag2[d2] = false;
+            int d = row - col + n - 1, a = row + col;
+            if (cols[col] || diag[d] || anti[a]) continue; // o bi an: cat nhanh
+            cols[col] = diag[d] = anti[a] = true;          // dat hau
+            queenCol[row] = col;
+            place(row + 1);
+            cols[col] = diag[d] = anti[a] = false;         // go hau (backtrack)
         }
     }
 
-    private List<String> buildBoard(int[] placement, int n) {
-        List<String> board = new ArrayList<>();
-        for (int i = 0; i < n; i++) {
-            StringBuilder sb = new StringBuilder();
-            for (int j = 0; j < n; j++) {
-                sb.append(j == placement[i] ? 'Q' : '.');
-            }
-            board.add(sb.toString());
+    private List<String> board() {
+        List<String> rows = new ArrayList<>();
+        for (int r = 0; r < n; r++) {
+            char[] line = new char[n];
+            Arrays.fill(line, '.');
+            line[queenCol[r]] = 'Q';
+            rows.add(new String(line));
         }
-        return board;
+        return rows;
     }
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- Đừng dùng mảng 2D lớn để biểu diễn bàn cờ trong quá trình backtracking; chỉ cần dãy {{placement}} với O(n) bộ nhớ.
-- Số lời giải cho n quân hậu tăng rất nhanh (n=8 có 92 lời giải), nên nên hỏi xem cần liệt kê hay chỉ đếm.
-- Bài toán mở rộng "N-Queens II" chỉ đếm số lời giải — tối ưu bộ nhớ hơn.`,
-  starter: "class Solution {\\n    public List<List<String>> solveNQueens(int n) {\\n        \\n    }\\n}",
-  tests: `public class Main {
+### Độ phức tạp
+- Thời gian: hàng đầu n lựa chọn, hàng sau tối đa n - 1... → cận trên O(n!), thực tế nhỏ hơn nhiều nhờ cắt tỉa đường chéo. Mỗi lời giải tốn thêm O(n²) để dựng bàn cờ.
+- Bộ nhớ: O(n) cho các mảng đánh dấu và đệ quy (không tính kết quả).
 
+### Lưu ý khi phỏng vấn
+- Số lời giải: n = 1 → 1, 2 và 3 → 0, 4 → 2, 5 → 10, 6 → 4, 8 → 92, 9 → 352.
+- N-Queens II chỉ cần **đếm**: bỏ phần dựng bàn cờ; có thể dùng bitmask cho cả ba tập để nhanh hơn nữa.
+- Đừng biểu diễn bàn cờ bằng mảng 2D rồi quét hàng/cột/chéo mỗi lần kiểm tra: tốn O(n) mỗi lần thay vì O(1).
+
+> Senior tip: N-Queens là bài mẫu của "constraint satisfaction": chọn biến (hàng), miền giá trị (cột), ràng buộc kiểm tra O(1) và cắt tỉa sớm. Cùng khuôn này dùng cho xếp lịch, phân ca, hay giải Sudoku.`,
+  complexity: 'Time O(n!) cận trên, Space O(n)',
+  starter: 'class Solution {\n    public List<List<String>> solveNQueens(int n) {\n        // TODO\n        return new ArrayList<>();\n    }\n}',
+  tests: `public class Main {
     static int passed = 0, total = 0;
     interface Case { Object get() throws Throwable; }
     static void run(String name, Object expected, Case c) {
         total++;
         try {
             Object actual = c.get();
-            if (Objects.deepEquals(expected, actual)) {
-                passed++;
-                System.out.println("PASS " + name);
-            } else {
-                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    // tra ve so loi giai neu tat ca hop le va khong trung; nguoc lai mo ta loi
+    static Object verify(int n, List<List<String>> sols) {
+        Set<List<String>> seen = new HashSet<>();
+        for (List<String> b : sols) {
+            if (!seen.add(b)) return "duplicate solution " + b;
+            if (b.size() != n) return "board has " + b.size() + " rows";
+            int[] qc = new int[n];
+            for (int r = 0; r < n; r++) {
+                String row = b.get(r);
+                if (row.length() != n || row.replace(".", "").length() != 1 || row.indexOf('Q') < 0) return "bad row " + row;
+                qc[r] = row.indexOf('Q');
             }
-        } catch (Throwable t) {
-            System.out.println("FAIL " + name + ": threw " + t);
+            for (int r1 = 0; r1 < n; r1++)
+                for (int r2 = r1 + 1; r2 < n; r2++)
+                    if (qc[r1] == qc[r2] || Math.abs(qc[r1] - qc[r2]) == r2 - r1) return "queens attack in " + b;
         }
+        return sols.size();
     }
-    static int countSolutions(int n) {
-        List<List<String>> result = new Solution().solveNQueens(n);
-        return result.size();
-    }
-
     public static void main(String[] args) {
-        run("n=1", 1, () -> countSolutions(1));
-        run("n=2", 0, () -> countSolutions(2));
-        run("n=3", 0, () -> countSolutions(3));
-        run("n=4", 2, () -> countSolutions(4));
-        run("n=5", 10, () -> countSolutions(5));
-        run("n=6", 4, () -> countSolutions(6));
+        run("n=4 exact boards", new HashSet<>(Arrays.asList(Arrays.asList(".Q..", "...Q", "Q...", "..Q."), Arrays.asList("..Q.", "Q...", "...Q", ".Q.."))),
+            () -> new HashSet<>(new Solution().solveNQueens(4)));
+        run("n=1", Arrays.asList(Arrays.asList("Q")), () -> new Solution().solveNQueens(1));
+        run("n=2 none", 0, () -> verify(2, new Solution().solveNQueens(2)));
+        run("n=3 none", 0, () -> verify(3, new Solution().solveNQueens(3)));
+        run("n=5", 10, () -> verify(5, new Solution().solveNQueens(5)));
+        run("n=6", 4, () -> verify(6, new Solution().solveNQueens(6)));
+        run("n=8", 92, () -> verify(8, new Solution().solveNQueens(8)));
+        run("n=9", 352, () -> verify(9, new Solution().solveNQueens(9)));
         System.out.println("RESULT " + passed + "/" + total);
     }
 }`,
-  complexity: 'Time O(n!), Space O(n)',
-  follow: ['Nếu chỉ cần đếm không cần liệt kê thì tối ưu thế nào?', 'Làm sao giản lược symmetry để giảm thời gian?']
+  follow: ['Nếu chỉ cần đếm số lời giải (N-Queens II) thì tối ưu bằng bitmask thế nào?', 'Tận dụng tính đối xứng của bàn cờ để giảm một nửa thời gian ra sao?']
 },
 {
   id: 'algo-136',
@@ -14372,97 +15180,103 @@ class Solution {
   difficulty: 'medium',
   pattern: 'Backtracking',
   tags: ['backtracking', 'matrix', 'dfs', 'bytebytego'],
-  prompt: `Cho bảng ký tự {{board}} {{m x n}} và chuỗi {{word}}. Kiểm tra có thể tìm được {{word}} trong bảng bằng cách đi qua các ô kề nhau (trên/dưới/trái/phải) mà mỗi ô chỉ dùng một lần hay không.
+  prompt: `Cho bảng ký tự {{board}} kích thước {{m x n}} và chuỗi {{word}}. Kiểm tra có thể ghép được {{word}} từ các ô **kề cạnh** liên tiếp (trên/dưới/trái/phải) hay không, mỗi ô dùng **không quá một lần** trong cùng một lần ghép.
 
 ### Ví dụ
 ~~~text
-Input:  board = [["A","B","C","E"],["S","F","C","S"],["A","D","E","E"]], word = "ABCCED"
-Output: true
-Giải thích: "ABCCED" đi qua bảng như sau.
+board = [["A","B","C","E"],
+         ["S","F","C","S"],
+         ["A","D","E","E"]]
 
-Input:  board = [["A","B","C","E"],["S","F","C","S"],["A","D","E","E"]], word = "SEE"
-Output: true
+word = "ABCCED" → true   (A → B → C → C → E → D)
+word = "SEE"    → true
+word = "ABCB"   → false  (muốn quay lại "B" phải dùng ô đó hai lần)
 ~~~
 
 ### Ràng buộc
-- {{m == board.length, n == board[0].length}}
 - {{1 <= m, n <= 6}}
 - {{1 <= word.length <= 15}}
-- {{board[i][j]}} và {{word[i]}} là chữ cái in hoa hoặc thường.`,
+- {{board}} và {{word}} chỉ gồm chữ cái tiếng Anh (phân biệt hoa thường).`,
   hints: [
-    'Với mỗi ô trong bảng có ký tự bằng ký tự đầu của word, bắt đầu DFS.',
-    'DFS tại (r, c, idx): nếu board[r][c] != word.charAt(idx), trả về false. Nếu idx đã cuối, trả về true.',
-    'Đánh dấu ô đã dùng (ví dụ đặt thanh dấu) trước khi đệ qua 4 hướng, rồi khôi phục sau khi quay lại.'
+    'Thử bắt đầu từ mọi ô. Từ một ô, DFS sang 4 ô kề để khớp ký tự tiếp theo của {{word}}.',
+    'Hàm {{dfs(r, c, k)}}: ô {{(r, c)}} phải khớp {{word[k]}}. Nếu {{k}} là ký tự cuối → tìm thấy. Ngược lại thử 4 hướng với {{k + 1}}.',
+    'Để không dùng lại ô trên **đường đi hiện tại**, tạm ghi đè ô bằng ký tự đặc biệt (ví dụ {{\'#\'}}) trước khi đi tiếp, và **trả lại** ký tự cũ khi quay lui, để các đường đi khác vẫn dùng được ô đó.'
   ],
   solution: `### Ý tưởng
-DFS backtracking trên bảng 2D. Với mỗi ô {{(r, c)}} có ký tự trùng với {{word.charAt(idx)}}, thử đi qua 4 hướng lân cận. Đánh dấu ô đã dùng bằng cách thay đổi giá trị (ví dụ thành ' ') để tránh dùng lại trong cùng một đường đi, sau đó khôi phục khi backtrack.
+Backtracking (DFS có quay lui) trên lưới:
+1. Với mỗi ô của bảng, thử xem {{word}} có bắt đầu ở đó không.
+2. {{dfs(r, c, k)}}: kiểm tra ô nằm trong bảng và {{board[r][c] == word[k]}}. Sai → false.
+3. Nếu {{k == word.length() - 1}} → đã khớp hết → true.
+4. Đánh dấu ô bằng {{'#'}}, thử 4 hướng với {{k + 1}}, rồi **khôi phục** ký tự gốc.
 
-Nếu tìm thấy {{idx == word.length() - 1}}, trả về true.
+Vì sao phải khôi phục? Ô bị đánh dấu chỉ "bận" đối với **đường đi hiện tại**. Khi quay lui để thử nhánh khác (hoặc điểm bắt đầu khác), ô đó lại hợp lệ.
 
 ~~~java
 class Solution {
+    private static final int[][] DIRS = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+
     public boolean exist(char[][] board, String word) {
-        int m = board.length, n = board[0].length;
-        for (int r = 0; r < m; r++) {
-            for (int c = 0; c < n; c++) {
-                if (dfs(board, word, r, c, 0)) return true;
-            }
-        }
+        for (int r = 0; r < board.length; r++)
+            for (int c = 0; c < board[0].length; c++)
+                if (dfs(board, word, r, c, 0)) return true;  // thu moi diem bat dau
         return false;
     }
 
-    private boolean dfs(char[][] board, String word, int r, int c, int idx) {
-        if (idx == word.length()) return true;
+    // o (r, c) co khop word[k] va tu do ghep tiep duoc phan con lai khong
+    private boolean dfs(char[][] board, String word, int r, int c, int k) {
         if (r < 0 || r >= board.length || c < 0 || c >= board[0].length) return false;
-        if (board[r][c] != word.charAt(idx)) return false;
-        char temp = board[r][c];
-        board[r][c] = '#';
-        boolean found = dfs(board, word, r + 1, c, idx + 1)
-            || dfs(board, word, r - 1, c, idx + 1)
-            || dfs(board, word, r, c + 1, idx + 1)
-            || dfs(board, word, r, c - 1, idx + 1);
-        board[r][c] = temp;
+        if (board[r][c] != word.charAt(k)) return false;  // ky tu khong khop (hoac o dang ban '#')
+        if (k == word.length() - 1) return true;          // da khop ky tu cuoi
+        char saved = board[r][c];
+        board[r][c] = '#';                                 // danh dau: o dang nam tren duong di
+        boolean found = false;
+        for (int[] d : DIRS) {
+            if (dfs(board, word, r + d[0], c + d[1], k + 1)) { found = true; break; }
+        }
+        board[r][c] = saved;                               // khoi phuc cho cac nhanh khac
         return found;
     }
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- Cần khôi phục giá trị ô đã thay đổi sau khi backtrack; nếu quên, các nhánh khác sẽ bị ảnh hưởng.
-- Điều kiện dừng {{idx == word.length()}} nên kiểm tra trước khi truy cập board để tránh out-of-bound.
-- Nếu word dài và bảng nhỏ, có thể tối ưu bằng cách kiểm tra số lượng ký tự trong board trước.`,
-  starter: "class Solution {\\n    public boolean exist(char[][] board, String word) {\\n        \\n    }\\n}",
-  tests: `public class Main {
+### Độ phức tạp
+- Có m·n điểm bắt đầu; từ mỗi điểm, bước đầu có 4 hướng, các bước sau tối đa 3 hướng (không quay lại ô vừa đi) → O(m·n·3^L) với L = độ dài {{word}}.
+- Bộ nhớ O(L) cho đệ quy (đánh dấu tại chỗ, không cần mảng {{visited}}).
 
+### Lưu ý khi phỏng vấn
+- Khôi phục ô **trước khi return**, kể cả khi đã tìm thấy, để không làm hỏng {{board}} của người gọi.
+- Cắt tỉa hay được khen: nếu {{word}} dài hơn {{m·n}}, hoặc bảng không đủ số lượng một ký tự nào đó trong {{word}} → false ngay. Có thể đảo ngược {{word}} nếu ký tự cuối hiếm hơn ký tự đầu để giảm số điểm bắt đầu.
+- Tìm **nhiều** từ cùng lúc thì chuyển sang Word Search II (algo-114) với Trie.
+
+> Senior tip: Kỹ thuật "đánh dấu tạm, khôi phục khi quay lui" tiết kiệm bộ nhớ nhưng sửa dữ liệu dùng chung, nên không an toàn khi nhiều thread cùng đọc {{board}}. Trong code đa luồng, dùng mảng {{visited}} riêng cho mỗi lần tìm.`,
+  complexity: 'Time O(m * n * 3^L), Space O(L) với L = word.length()',
+  starter: 'class Solution {\n    public boolean exist(char[][] board, String word) {\n        // TODO\n        return false;\n    }\n}',
+  tests: `public class Main {
     static int passed = 0, total = 0;
     interface Case { Object get() throws Throwable; }
     static void run(String name, Object expected, Case c) {
         total++;
         try {
             Object actual = c.get();
-            if (Objects.deepEquals(expected, actual)) {
-                passed++;
-                System.out.println("PASS " + name);
-            } else {
-                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
-            }
-        } catch (Throwable t) {
-            System.out.println("FAIL " + name + ": threw " + t);
-        }
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
     }
-
+    static char[][] example() { return new char[][]{{'A', 'B', 'C', 'E'}, {'S', 'F', 'C', 'S'}, {'A', 'D', 'E', 'E'}}; }
     public static void main(String[] args) {
-        run("abcced", true, () -> new Solution().exist(new char[][]{{'A','B','C','E'},{'S','F','C','S'},{'A','D','E','E'}}, "ABCCED"));
-        run("see", true, () -> new Solution().exist(new char[][]{{'A','B','C','E'},{'S','F','C','S'},{'A','D','E','E'}}, "SEE"));
-        run("single", true, () -> new Solution().exist(new char[][]{{'A'}}, "A"));
-        run("two same", true, () -> new Solution().exist(new char[][]{{'A','B'},{'C','D'}}, "AB"));
-        run("not found", false, () -> new Solution().exist(new char[][]{{'A','B'},{'C','E'}}, "ABCB"));
-        run("reuse fails", false, () -> new Solution().exist(new char[][]{{'A','A'}}, "AAA"));
+        run("ABCCED", true, () -> new Solution().exist(example(), "ABCCED"));
+        run("SEE", true, () -> new Solution().exist(example(), "SEE"));
+        run("ABCB reuse", false, () -> new Solution().exist(example(), "ABCB"));
+        run("single cell", true, () -> new Solution().exist(new char[][]{{'A'}}, "A"));
+        run("single cell miss", false, () -> new Solution().exist(new char[][]{{'A'}}, "B"));
+        run("cannot reuse cell", false, () -> new Solution().exist(new char[][]{{'A', 'A'}}, "AAA"));
+        run("needs backtracking", true, () -> new Solution().exist(new char[][]{{'A', 'B', 'C', 'E'}, {'S', 'F', 'E', 'S'}, {'A', 'D', 'E', 'E'}}, "ABCESEEEFS"));
+        run("case sensitive", false, () -> new Solution().exist(new char[][]{{'a', 'b'}}, "AB"));
+        run("board restored", "[[A, B, C, E], [S, F, C, S], [A, D, E, E]]", () -> { char[][] b = example(); new Solution().exist(b, "ABCCED"); new Solution().exist(b, "XYZ"); return Arrays.deepToString(b); });
         System.out.println("RESULT " + passed + "/" + total);
     }
 }`,
-  complexity: 'Time O(m * n * 4^L), Space O(L) where L = word.length()',
-  follow: ['Nếu cần tìm tất cả các từ trong một từ điển thì làm thế nào?', 'Làm sao xử lý nếu được phép đi chéo ngưỡng?']
+  follow: ['Nếu cần tìm nhiều từ cùng lúc thì vì sao nên dùng Trie (Word Search II)?', 'Những cách cắt tỉa nào giúp tránh trường hợp xấu như bảng toàn chữ A và word = "AAAAAAAAAAAAAB"?']
 },
 {
   id: 'algo-137',
@@ -14470,30 +15284,38 @@ class Solution {
   difficulty: 'medium',
   pattern: 'Backtracking',
   tags: ['backtracking', 'string', 'partition', 'bytebytego'],
-  prompt: `Cho chuỗi {{s}}, cắt sao cho mỗi phần đều là palindrome. Trả về tất cả cách cắt thỏa mãn.
+  prompt: `Cho chuỗi {{s}}. Liệt kê **tất cả** cách cắt {{s}} thành các đoạn liên tiếp sao cho mỗi đoạn đều là palindrome. Thứ tự các cách cắt trong kết quả không quan trọng.
 
 ### Ví dụ
 ~~~text
 Input:  s = "aab"
 Output: [["a","a","b"], ["aa","b"]]
-Giải thích: "a","a","b" và "aa","b" đều có mỗi phần là palindrome.
 
 Input:  s = "a"
 Output: [["a"]]
+
+Input:  s = "aba"
+Output: [["a","b","a"], ["aba"]]
 ~~~
 
 ### Ràng buộc
 - {{1 <= s.length <= 16}}
 - {{s}} chỉ gồm chữ cái thường tiếng Anh.`,
   hints: [
-    'Tại mỗi vị trí, thử mọi độ dài palindrome bắt đầu từ đó: dùng hàm kiểm tra palindrome.',
-    'Sau khi tìm được một đoạn palindrome, thêm vào đường đi và đệ quy phần còn lại của chuỗi.',
-    'Khi đến cuối chuỗi, đường đi hiện tại là một cách cắt hợp lệ, thêm vào kết quả.'
+    'Đứng ở vị trí {{start}}, đoạn tiếp theo là {{s[start..end]}} với {{end}} chạy từ {{start}} tới cuối. Chỉ đi tiếp khi đoạn đó là palindrome.',
+    'Viết hàm đệ quy {{backtrack(start, path)}}: thêm đoạn vào {{path}}, gọi đệ quy từ {{end + 1}}, rồi **xoá đoạn vừa thêm** để thử {{end}} khác.',
+    'Khi {{start == s.length()}} thì {{path}} là một cách cắt hoàn chỉnh: thêm một **bản sao** của {{path}} vào kết quả.'
   ],
   solution: `### Ý tưởng
-Backtracking với đường đi (path) là danh sách các đoạn palindrome tính đến thời điểm hiện tại. Với mỗi vị trí {{start}}, thử mọi vị trí kết thúc {{end}} sao cho {{s[start..end]}} là palindrome. Nếu có, thêm đoạn vào path, đệ quy từ {{end + 1}}, rồi xóa để thử đoạn khác.
+Hãy tưởng tượng một cây quyết định: ở mỗi bước ta chọn "đoạn tiếp theo dài bao nhiêu". Mỗi đường đi từ gốc tới lá (đã dùng hết chuỗi) là một cách cắt. Backtracking chính là duyệt cây đó bằng đệ quy, và **cắt bỏ** nhánh ngay khi đoạn vừa chọn không phải palindrome.
 
-Khi {{start}} đạt đến cuối chuỗi, thêm bản sao của path vào kết quả.
+Cây của {{"aab"}}:
+~~~text
+start=0: "a" ✔ → start=1: "a" ✔ → start=2: "b" ✔ → hết chuỗi: [a,a,b]
+                           "ab" ✘ (bỏ nhánh)
+         "aa" ✔ → start=2: "b" ✔ → hết chuỗi: [aa,b]
+         "aab" ✘ (bỏ nhánh)
+~~~
 
 ~~~java
 class Solution {
@@ -14503,67 +15325,74 @@ class Solution {
         return result;
     }
 
+    // path = cac doan da chon cho s[0..start-1]
     private void backtrack(String s, int start, List<String> path, List<List<String>> result) {
-        if (start == s.length()) {
-            result.add(new ArrayList<>(path));
+        if (start == s.length()) {              // da cat het chuoi
+            result.add(new ArrayList<>(path));  // PHAI copy: path con bi sua tiep
             return;
         }
         for (int end = start; end < s.length(); end++) {
-            if (isPalindrome(s, start, end)) {
-                path.add(s.substring(start, end + 1));
-                backtrack(s, end + 1, path, result);
-                path.remove(path.size() - 1);
-            }
+            if (!isPalindrome(s, start, end)) continue; // cat tia nhanh khong hop le
+            path.add(s.substring(start, end + 1));      // chon doan s[start..end]
+            backtrack(s, end + 1, path, result);        // cat phan con lai
+            path.remove(path.size() - 1);               // bo chon de thu end khac
         }
     }
 
     private boolean isPalindrome(String s, int left, int right) {
         while (left < right) {
-            if (s.charAt(left) != s.charAt(right)) return false;
-            left++;
-            right--;
+            if (s.charAt(left++) != s.charAt(right--)) return false;
         }
         return true;
     }
 }
 ~~~
 
-### Lưu ý khi phỏng vấn
-- Nên tính trước bảng {{isPal[i][j]}} để kiểm tra palindrome trong O(1) thay vì O(n) mỗi lần gọi.
-- Phải sao chép path ({{new ArrayList<>(path)}}) trước khi thêm vào kết quả; nếu thêm trực tiếp list, mọi phần tử sẽ thay đổi khi backtrack.
-- Số lượng kết quả tăng nhanh với độ dài chuỗi; hỏi interviewer có cần đếm hay liệt kê.`,
-  starter: "class Solution {\\n    public List<List<String>> partition(String s) {\\n        \\n    }\\n}",
-  tests: `public class Main {
+### Vì sao phải copy path?
+{{path}} là **một** đối tượng List dùng chung cho cả quá trình đệ quy. Nếu {{result.add(path)}} trực tiếp, mọi phần tử của {{result}} cùng trỏ tới một list, và cuối cùng list đó rỗng (vì đã bị {{remove}} hết). {{new ArrayList<>(path)}} chụp lại trạng thái ở thời điểm đó.
 
+### Độ phức tạp
+- Chuỗi dài n có n-1 chỗ có thể cắt → tối đa {{2^(n-1)}} cách cắt (ví dụ "aaaa...a"). Mỗi cách tốn O(n) để copy và kiểm tra palindrome → O(n · 2^n).
+- Bộ nhớ đệ quy O(n) (không tính kết quả).
+
+### Lưu ý khi phỏng vấn
+- Tối ưu: tính trước bảng {{isPal[i][j]}} bằng DP (O(n²)) để mỗi lần kiểm tra chỉ O(1). Với n ≤ 16 thì cách đơn giản vẫn đủ nhanh, nhưng nên nhắc tới.
+- Nếu chỉ cần **số lần cắt ít nhất** thì đây là bài khác (Palindrome Partitioning II), giải bằng DP O(n²), không cần liệt kê.
+
+> Senior tip: Khi kết quả có thể tăng theo hàm mũ, hãy hỏi lại nhu cầu thật: cần liệt kê, cần đếm, hay chỉ cần một lời giải? Trả lời câu đó thường quyết định thuật toán.`,
+  complexity: 'Time O(n * 2^n), Space O(n)',
+  starter: 'class Solution {\n    public List<List<String>> partition(String s) {\n        // TODO\n        return new ArrayList<>();\n    }\n}',
+  tests: `public class Main {
     static int passed = 0, total = 0;
     interface Case { Object get() throws Throwable; }
     static void run(String name, Object expected, Case c) {
         total++;
         try {
             Object actual = c.get();
-            if (Objects.deepEquals(expected, actual)) {
-                passed++;
-                System.out.println("PASS " + name);
-            } else {
-                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
-            }
-        } catch (Throwable t) {
-            System.out.println("FAIL " + name + ": threw " + t);
-        }
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
     }
-
+    // chuan hoa: thu tu cac cach cat khong quan trong
+    static List<String> norm(List<List<String>> parts) {
+        List<String> r = new ArrayList<>();
+        for (List<String> p : parts) r.add(String.join("|", p));
+        Collections.sort(r);
+        return r;
+    }
+    static List<String> exp(String... rows) { List<String> r = new ArrayList<>(Arrays.asList(rows)); Collections.sort(r); return r; }
     public static void main(String[] args) {
-        run("aab", 2, () -> new Solution().partition("aab").size());
-        run("single", 1, () -> new Solution().partition("a").size());
-        run("all same", 8, () -> new Solution().partition("aaa").size());
-        run("two", 2, () -> new Solution().partition("ab").size());
-        run("all distinct", 1, () -> new Solution().partition("abc").size());
-        run("palindrome", 4, () -> new Solution().partition("aba").size());
+        run("example aab", exp("a|a|b", "aa|b"), () -> norm(new Solution().partition("aab")));
+        run("single", exp("a"), () -> norm(new Solution().partition("a")));
+        run("two distinct", exp("a|b"), () -> norm(new Solution().partition("ab")));
+        run("aaa", exp("a|a|a", "aa|a", "a|aa", "aaa"), () -> norm(new Solution().partition("aaa")));
+        run("aba", exp("a|b|a", "aba"), () -> norm(new Solution().partition("aba")));
+        run("abc", exp("a|b|c"), () -> norm(new Solution().partition("abc")));
+        run("16 same chars count", 32768, () -> new Solution().partition("aaaaaaaaaaaaaaaa").size());
         System.out.println("RESULT " + passed + "/" + total);
     }
 }`,
-  complexity: 'Time O(n * 2^n), Space O(n)',
-  follow: ['Nếu chỉ cần số lượng cách cắt thì tối ưu thế nào?', 'Làm sao tìm cách cắt có ít nhất K phần palindrome?']
+  follow: ['Nếu chỉ cần đếm số cách cắt thì có cách nào nhanh hơn liệt kê?', 'Tính trước bảng isPal bằng DP như thế nào và tiết kiệm được bao nhiêu?']
 }
 );
 (window.ALGOS = window.ALGOS || []).push(
@@ -14573,11 +15402,11 @@ class Solution {
   difficulty: 'medium',
   pattern: 'Backtracking',
   tags: ['backtracking', 'array', 'subset', 'bytebytego'],
-  prompt: `Cho mảng số nguyên {{nums}} không có phần tử trùng. Trả về tất cả các tập con (subset) có thể tạo ra. Thứ tự các tập con và thứ tự phần tử trong tập con không quan trọng.
+  prompt: `Cho mảng số nguyên {{nums}} gồm các phần tử **khác nhau**. Trả về **tất cả** các tập con (kể cả tập rỗng và chính mảng). Không được có tập con trùng lặp; thứ tự các tập con và thứ tự phần tử trong mỗi tập con không quan trọng.
 
 ### Ví dụ
 ~~~text
-Input:  nums = [1, 2, 3]
+Input:  nums = [1,2,3]
 Output: [[],[1],[2],[1,2],[3],[1,3],[2,3],[1,2,3]]
 
 Input:  nums = [0]
@@ -14587,16 +15416,28 @@ Output: [[],[0]]
 ### Ràng buộc
 - {{1 <= nums.length <= 10}}
 - {{-10 <= nums[i] <= 10}}
-- Mọi phần tử trong {{nums}} là duy nhất.`,
+- Mọi phần tử trong {{nums}} khác nhau.`,
   hints: [
-    'Mỗi phần tử có hai lựa chọn: chọn hoặc không chọn — đây là cấu trúc cây nhị phân tự nhiên.',
-    'Dùng backtracking: tại vị trí {{i}}, thêm {{nums[i]}} vào đường đi rồi đệ quy, sau đó bỏ ra (backtrack) rồi đệ quy.',
-    'Khi đã xét hết tất cả các vị trí, đường đi hiện tại là một tập con hợp lệ, thêm vào kết quả.'
+    'Mỗi phần tử có đúng hai lựa chọn: có mặt hoặc không có mặt trong tập con. Vậy có tất cả {{2^n}} tập con.',
+    'Backtracking: hàm {{backtrack(start, path)}} ghi nhận {{path}} là một tập con, rồi thử thêm lần lượt {{nums[i]}} với {{i >= start}}, đệ quy từ {{i + 1}}, sau đó bỏ {{nums[i]}} ra.',
+    'Chỉ đi về phía trước ({{i + 1}}) nên {{[1,2]}} và {{[2,1]}} không bao giờ cùng xuất hiện. Nhớ thêm **bản sao** của {{path}} vào kết quả.'
   ],
   solution: `### Ý tưởng
-Backtracking từng phần tử. Tại mỗi bước {{i}}, ta có hai nhánh: (1) không chọn {{nums[i]}} — chuyển sang {{i+1}}; (2) chọn {{nums[i]}} — thêm vào path, chuyển sang {{i+1}}, rồi bỏ ra sau khi quay lại. Khi {{i == n}}, path là một tập con, thêm bản sao vào kết quả.
+Mỗi tập con được sinh ra **đúng một lần** nếu ta luôn chọn phần tử theo thứ tự chỉ số tăng dần. Hàm {{backtrack(start, path)}}:
+1. {{path}} hiện tại đã là một tập con hợp lệ → thêm bản sao vào kết quả.
+2. Với mỗi {{i}} từ {{start}} tới cuối: thêm {{nums[i]}} vào {{path}}, đệ quy với {{start = i + 1}} (chỉ xét phần tử sau i), rồi bỏ {{nums[i]}} ra (backtrack) để thử phần tử khác.
 
-Tổng số tập con là {{2^n}}, mỗi tập con được xây dựng trong O(n) (do sao chép), tổng thời gian {{O(n * 2^n)}}.
+Cây đệ quy với {{[1,2,3]}} (mỗi nút là một tập con được ghi nhận):
+~~~text
+[]
+├─ [1]
+│  ├─ [1,2]
+│  │  └─ [1,2,3]
+│  └─ [1,3]
+├─ [2]
+│  └─ [2,3]
+└─ [3]
+~~~
 
 ~~~java
 class Solution {
@@ -14607,94 +15448,64 @@ class Solution {
     }
 
     private void backtrack(int[] nums, int start, List<Integer> path, List<List<Integer>> result) {
-        // Mỗi lần gọi, path hiện tại là một tập con hợp lệ
-        result.add(new ArrayList<>(path));
+        result.add(new ArrayList<>(path));      // moi trang thai cua path la mot tap con
         for (int i = start; i < nums.length; i++) {
-            path.add(nums[i]);             // chọn nums[i]
-            backtrack(nums, i + 1, path, result);
-            path.remove(path.size() - 1);  // bỏ chọn nums[i] (backtrack)
+            path.add(nums[i]);                  // chon nums[i]
+            backtrack(nums, i + 1, path, result); // chi xet phan tu phia sau -> khong trung
+            path.remove(path.size() - 1);       // bo chon (backtrack)
         }
     }
 }
 ~~~
 
+### Cách khác: bitmask
+Số nguyên {{mask}} từ 0 tới {{2^n - 1}}: bit thứ i bằng 1 nghĩa là chọn {{nums[i]}}. Hai vòng lặp lồng nhau là đủ, không cần đệ quy. Cách này gọn nhưng chỉ dùng được khi n ≤ 30.
+
+### Độ phức tạp
+Có {{2^n}} tập con, mỗi tập copy tốn tối đa O(n) → O(n · 2^n) thời gian. Bộ nhớ đệ quy O(n) (không tính kết quả).
+
 ### Lưu ý khi phỏng vấn
-- Không cần mảng {{used}} vì ta chỉ tiến về phía trước ({{i + 1}}), tránh lặp lại.
-- Phải sao chép {{path}} khi thêm vào kết quả ({{new ArrayList<>(path)}}); nếu thêm trực tiếp, mọi phần tử sẽ bị thay đổi khi backtrack.
-- Thứ tự kết quả: rỗng -> size 1 -> size 2... phù hợp với ý nghĩa "chọn/không chọn".
-- Nếu input có phần tử trùng (Subsets II), cần sort và bỏ qua {{nums[i] == nums[i-1]}} khi {{i > start}}.
+- Quên copy {{path}} là lỗi số 1: mọi phần tử trong kết quả sẽ trỏ cùng một list.
+- Biến thể Subsets II (có phần tử trùng): sắp xếp trước, và bỏ qua {{nums[i] == nums[i-1]}} khi {{i > start}}.
+- Bài này **trùng nội dung với algo-040 (Subsets)**; giữ lại để luyện thêm theo bộ ByteByteGo.
 
-> Senior tip: Subsets là mẫu hình của backtracking "chọn/không chọn". Trong thực tế, biến thể này dùng cho feature selection, A/B testing combinations, và configuration space exploration.`,
-  starter: "class Solution {\\n    public List<List<Integer>> subsets(int[] nums) {\\n        \\n    }\\n}",
+> Senior tip: Mẫu "chọn / không chọn" là nền của rất nhiều bài khó hơn (Combination Sum, Partition, Knapsack liệt kê). Nắm chắc cây đệ quy này thì các biến thể chỉ khác ở điều kiện dừng và cắt tỉa.`,
+  complexity: 'Time O(n * 2^n), Space O(n)',
+  starter: 'class Solution {\n    public List<List<Integer>> subsets(int[] nums) {\n        // TODO\n        return new ArrayList<>();\n    }\n}',
   tests: `public class Main {
-
     static int passed = 0, total = 0;
     interface Case { Object get() throws Throwable; }
     static void run(String name, Object expected, Case c) {
         total++;
         try {
             Object actual = c.get();
-            if (Objects.deepEquals(expected, actual)) {
-                passed++;
-                System.out.println("PASS " + name);
-            } else {
-                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
-            }
-        } catch (Throwable t) {
-            System.out.println("FAIL " + name + ": threw " + t);
-        }
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
     }
-    static void norm(List<List<Integer>> x) {
-        List<List<Integer>> copy = new ArrayList<>();
-        for (List<Integer> row : x) {
-            List<Integer> r = new ArrayList<>(row);
-            Collections.sort(r);
-            copy.add(r);
-        }
-        Collections.sort(copy, (a, b) -> {
-            int n = Math.min(a.size(), b.size());
-            for (int i = 0; i < n; i++) {
-                int c = Integer.compare(a.get(i), b.get(i));
-                if (c != 0) return c;
-            }
-            return Integer.compare(a.size(), b.size());
-        });
-        return copy;
+    // chuan hoa: sort trong tung tap con, roi sort danh sach theo chuoi
+    static List<String> norm(List<List<Integer>> x) {
+        List<String> r = new ArrayList<>();
+        for (List<Integer> row : x) { List<Integer> c = new ArrayList<>(row); Collections.sort(c); r.add(c.toString()); }
+        Collections.sort(r);
+        return r;
     }
-
+    static List<String> exp(int[]... rows) {
+        List<List<Integer>> x = new ArrayList<>();
+        for (int[] row : rows) { List<Integer> c = new ArrayList<>(); for (int v : row) c.add(v); x.add(c); }
+        return norm(x);
+    }
     public static void main(String[] args) {
-        run("example [1,2,3]", norm(Arrays.asList(
-            Arrays.asList(),
-            Arrays.asList(1),
-            Arrays.asList(2),
-            Arrays.asList(1, 2),
-            Arrays.asList(3),
-            Arrays.asList(1, 3),
-            Arrays.asList(2, 3),
-            Arrays.asList(1, 2, 3)
-        )), () -> norm(new Solution().subsets(new int[]{1, 2, 3})));
-        run("single [0]", norm(Arrays.asList(
-            Arrays.asList(),
-            Arrays.asList(0)
-        )), () -> norm(new Solution().subsets(new int[]{0})));
-        run("two elements", norm(Arrays.asList(
-            Arrays.asList(),
-            Arrays.asList(1),
-            Arrays.asList(2),
-            Arrays.asList(1, 2)
-        )), () -> norm(new Solution().subsets(new int[]{1, 2})));
-        run("negative", norm(Arrays.asList(
-            Arrays.asList(),
-            Arrays.asList(-1),
-            Arrays.asList(1),
-            Arrays.asList(-1, 1)
-        )), () -> norm(new Solution().subsets(new int[]{-1, 1})));
-        run("max length 10", 1024, () -> new Solution().subsets(new int[]{1,2,3,4,5,6,7,8,9,10}).size());
+        run("example [1,2,3]", exp(new int[]{}, new int[]{1}, new int[]{2}, new int[]{1, 2}, new int[]{3}, new int[]{1, 3}, new int[]{2, 3}, new int[]{1, 2, 3}),
+            () -> norm(new Solution().subsets(new int[]{1, 2, 3})));
+        run("single [0]", exp(new int[]{}, new int[]{0}), () -> norm(new Solution().subsets(new int[]{0})));
+        run("two elements", exp(new int[]{}, new int[]{1}, new int[]{2}, new int[]{1, 2}), () -> norm(new Solution().subsets(new int[]{1, 2})));
+        run("negative", exp(new int[]{}, new int[]{-1}, new int[]{1}, new int[]{-1, 1}), () -> norm(new Solution().subsets(new int[]{-1, 1})));
+        run("max length 10: 1024 distinct", 1024, () -> new HashSet<>(norm(new Solution().subsets(new int[]{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}))).size());
         System.out.println("RESULT " + passed + "/" + total);
     }
 }`,
-  complexity: 'Time O(n * 2^n), Space O(n)',
-  follow: ['Nếu mảng có phần tử trùng (Subsets II) thì sửa thế nào?', 'Làm sao sinh tập con theo thứ từ điển (lexicographic) mà không cần sort cuối?']
+  follow: ['Nếu mảng có phần tử trùng (Subsets II) thì sửa thế nào để không sinh tập con trùng?', 'Viết lại bằng bitmask: ưu và nhược điểm so với backtracking?']
 },
 );
 (window.ALGOS = window.ALGOS || []).push(
@@ -14704,14 +15515,14 @@ class Solution {
   difficulty: 'medium',
   pattern: 'Backtracking',
   tags: ['backtracking', 'array', 'permutation', 'bytebytego'],
-  prompt: `Cho mảng số nguyên {{nums}} không có phần tử trùng. Trả về tất cả các hoán vị (permutation) có thể tạo ra. Thứ tự các hoán vị không quan trọng.
+  prompt: `Cho mảng số nguyên {{nums}} gồm các phần tử **khác nhau**. Trả về **tất cả** các hoán vị (cách sắp xếp thứ tự) của mảng. Thứ tự các hoán vị trong kết quả không quan trọng.
 
 ### Ví dụ
 ~~~text
-Input:  nums = [1, 2, 3]
+Input:  nums = [1,2,3]
 Output: [[1,2,3],[1,3,2],[2,1,3],[2,3,1],[3,1,2],[3,2,1]]
 
-Input:  nums = [0, 1]
+Input:  nums = [0,1]
 Output: [[0,1],[1,0]]
 
 Input:  nums = [1]
@@ -14721,111 +15532,96 @@ Output: [[1]]
 ### Ràng buộc
 - {{1 <= nums.length <= 6}}
 - {{-10 <= nums[i] <= 10}}
-- Mọi phần tử trong {{nums}} là duy nhất.`,
+- Mọi phần tử trong {{nums}} khác nhau.`,
   hints: [
-    'Mỗi vị trí trong hoán vị có thể đặt một phần tử chưa dùng. Dùng mảng boolean {{used}} để theo dõi.',
-    'Tại mỗi bước, thử mọi phần tử chưa dùng: đánh dấu used, thêm vào path, đệ quy, sau đó bỏ dấu và xóa path (backtrack).',
-    'Khi độ dài path bằng {{n}}, đã có một hoán vị hoàn chỉnh, thêm bản sao vào kết quả.'
+    'Điền lần lượt từng vị trí của hoán vị: vị trí đầu có n lựa chọn, vị trí sau có n-1 lựa chọn... Tổng cộng {{n!}} hoán vị.',
+    'Dùng mảng {{boolean[] used}} để biết phần tử nào đã nằm trong {{path}}. Mỗi bước thử mọi phần tử chưa dùng.',
+    'Sau khi đệ quy xong, nhớ **trả lại trạng thái**: bỏ phần tử khỏi {{path}} và đặt {{used[i] = false}}. Khi {{path}} đủ n phần tử thì thêm bản sao vào kết quả.'
   ],
   solution: `### Ý tưởng
-Backtracking với mảng {{used}} theo dõi phần tử đã dùng. Tại mỗi bước đệ quy, duyệt qua tất cả các phần tử; nếu chưa dùng thì thêm vào path, đánh dấu used, đệ quy; sau khi quay lại thì bỏ dấu và xóa khỏi path. Khi path đạt độ dài {{n}}, thêm bản sao vào kết quả.
+Khác với Subsets, trong hoán vị **thứ tự có ý nghĩa**: {{[1,2]}} và {{[2,1]}} là hai kết quả khác nhau. Vì vậy ở mỗi bước ta được chọn **bất kỳ** phần tử nào chưa dùng (không chỉ phần tử phía sau như Subsets).
 
-Số hoán vị là {{n!}}. Mỗi hoán vị tốn O(n) để copy, tổng {{O(n * n!)}}.
+Các bước của {{backtrack(path, used)}}:
+1. Nếu {{path}} đã đủ n phần tử → thêm bản sao vào kết quả.
+2. Ngược lại, với mỗi {{i}} chưa dùng: đánh dấu {{used[i]}}, thêm {{nums[i]}}, đệ quy, rồi gỡ ra và bỏ đánh dấu.
 
 ~~~java
 class Solution {
     public List<List<Integer>> permute(int[] nums) {
         List<List<Integer>> result = new ArrayList<>();
-        boolean[] used = new boolean[nums.length];
-        backtrack(nums, new ArrayList<>(), used, result);
+        backtrack(nums, new ArrayList<>(), new boolean[nums.length], result);
         return result;
     }
 
     private void backtrack(int[] nums, List<Integer> path, boolean[] used, List<List<Integer>> result) {
-        if (path.size() == nums.length) {
-            result.add(new ArrayList<>(path));
+        if (path.size() == nums.length) {       // da dien du n vi tri
+            result.add(new ArrayList<>(path));  // copy vi path con bi sua
             return;
         }
         for (int i = 0; i < nums.length; i++) {
-            if (used[i]) continue;
+            if (used[i]) continue;              // nums[i] da nam trong path
             used[i] = true;
-            path.add(nums[i]);
+            path.add(nums[i]);                  // dat nums[i] vao vi tri tiep theo
             backtrack(nums, path, used, result);
-            path.remove(path.size() - 1);
+            path.remove(path.size() - 1);       // tra lai trang thai
             used[i] = false;
         }
     }
 }
 ~~~
 
+### Chạy tay với [1,2,3] (rút gọn)
+~~~text
+[] → [1] → [1,2] → [1,2,3] ✔
+         → [1,3] → [1,3,2] ✔
+   → [2] → [2,1] → [2,1,3] ✔ ...
+~~~
+Mỗi nhánh "gỡ ra" phần tử cuối rồi thử phần tử chưa dùng tiếp theo.
+
+### Độ phức tạp
+Có {{n!}} hoán vị, mỗi hoán vị copy O(n) → O(n · n!) thời gian. Bộ nhớ đệ quy O(n) cho {{path}}, {{used}} và stack.
+
 ### Lưu ý khi phỏng vấn
-- Phải dùng mảng {{used}} (hoặc Set) vì thứ tự trong hoán vị quan trọng — không thể chỉ dùng {{start}} như Subsets.
-- Phải sao chép {{path}} khi thêm vào kết quả ({{new ArrayList<>(path)}}); nếu thêm trực tiếp, mọi phần tử sẽ bị thay đổi khi backtrack.
-- Nếu input có phần tử trùng (Permutations II), cần sort và bỏ qua {{nums[i] == nums[i-1] && !used[i-1]}}.
-- Có thể hoán đổi tại chỗ (swap) để tiết kiệm bộ nhớ {{used}}, nhưng cách dùng {{used}} dễ hiểu và dễ mở rộng hơn.
+- Cách khác: hoán đổi tại chỗ ({{swap(nums, start, i)}}), không cần {{used}}; tiết kiệm bộ nhớ nhưng khó giải thích hơn.
+- Permutations II (có phần tử trùng): sắp xếp trước, và bỏ qua {{nums[i] == nums[i-1] && !used[i-1]}}.
+- Bài này **trùng nội dung với algo-041 (Permutations)**; giữ lại để luyện thêm theo bộ ByteByteGo.
 
-> Senior tip: Permutations là bài backtracking kinh điển cho "sắp xếp". Trong production, thường gặp biến thể "tìm hoán vị tiếp theo" (next permutation) hoặc "k-th permutation" — biết thuật toán next_permutation O(n) quan trọng hơn liệt kê tất cả.`,
-  starter: "class Solution {\\n    public List<List<Integer>> permute(int[] nums) {\\n        \\n    }\\n}",
+> Senior tip: n! tăng cực nhanh (10! ≈ 3,6 triệu, 12! ≈ 479 triệu). Trong thực tế hầu như không bao giờ liệt kê mọi hoán vị; câu hỏi tiếp theo thường là "next permutation" hoặc "hoán vị thứ k", giải được trong O(n) hoặc O(n²).`,
+  complexity: 'Time O(n * n!), Space O(n)',
+  starter: 'class Solution {\n    public List<List<Integer>> permute(int[] nums) {\n        // TODO\n        return new ArrayList<>();\n    }\n}',
   tests: `public class Main {
-
     static int passed = 0, total = 0;
     interface Case { Object get() throws Throwable; }
     static void run(String name, Object expected, Case c) {
         total++;
         try {
             Object actual = c.get();
-            if (Objects.deepEquals(expected, actual)) {
-                passed++;
-                System.out.println("PASS " + name);
-            } else {
-                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
-            }
-        } catch (Throwable t) {
-            System.out.println("FAIL " + name + ": threw " + t);
-        }
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
     }
-    static void norm(List<List<Integer>> x) {
-        List<List<Integer>> copy = new ArrayList<>();
-        for (List<Integer> row : x) {
-            List<Integer> r = new ArrayList<>(row);
-            copy.add(r);
-        }
-        Collections.sort(copy, (a, b) -> {
-            int n = Math.min(a.size(), b.size());
-            for (int i = 0; i < n; i++) {
-                int c = Integer.compare(a.get(i), b.get(i));
-                if (c != 0) return c;
-            }
-            return Integer.compare(a.size(), b.size());
-        });
-        return copy;
+    // chuan hoa: giu nguyen thu tu trong moi hoan vi, chi sort danh sach
+    static List<String> norm(List<List<Integer>> x) {
+        List<String> r = new ArrayList<>();
+        for (List<Integer> row : x) r.add(row.toString());
+        Collections.sort(r);
+        return r;
     }
-
+    static List<String> exp(int[]... rows) {
+        List<List<Integer>> x = new ArrayList<>();
+        for (int[] row : rows) { List<Integer> c = new ArrayList<>(); for (int v : row) c.add(v); x.add(c); }
+        return norm(x);
+    }
     public static void main(String[] args) {
-        run("example [1,2,3]", norm(Arrays.asList(
-            Arrays.asList(1, 2, 3),
-            Arrays.asList(1, 3, 2),
-            Arrays.asList(2, 1, 3),
-            Arrays.asList(2, 3, 1),
-            Arrays.asList(3, 1, 2),
-            Arrays.asList(3, 2, 1)
-        )), () -> norm(new Solution().permute(new int[]{1, 2, 3})));
-        run("two elements [0,1]", norm(Arrays.asList(
-            Arrays.asList(0, 1),
-            Arrays.asList(1, 0)
-        )), () -> norm(new Solution().permute(new int[]{0, 1})));
-        run("single [1]", norm(Arrays.asList(
-            Arrays.asList(1)
-        )), () -> norm(new Solution().permute(new int[]{1})));
-        run("negative", norm(Arrays.asList(
-            Arrays.asList(-1, 1),
-            Arrays.asList(1, -1)
-        )), () -> norm(new Solution().permute(new int[]{-1, 1})));
-        run("max length 6", 720, () -> new Solution().permute(new int[]{1,2,3,4,5,6}).size());
+        run("example [1,2,3]", exp(new int[]{1, 2, 3}, new int[]{1, 3, 2}, new int[]{2, 1, 3}, new int[]{2, 3, 1}, new int[]{3, 1, 2}, new int[]{3, 2, 1}),
+            () -> norm(new Solution().permute(new int[]{1, 2, 3})));
+        run("two elements [0,1]", exp(new int[]{0, 1}, new int[]{1, 0}), () -> norm(new Solution().permute(new int[]{0, 1})));
+        run("single [1]", exp(new int[]{1}), () -> norm(new Solution().permute(new int[]{1})));
+        run("negative", exp(new int[]{-1, 1}, new int[]{1, -1}), () -> norm(new Solution().permute(new int[]{-1, 1})));
+        run("max length 6: 720 distinct", 720, () -> new HashSet<>(norm(new Solution().permute(new int[]{1, 2, 3, 4, 5, 6}))).size());
         System.out.println("RESULT " + passed + "/" + total);
     }
 }`,
-  complexity: 'Time O(n * n!), Space O(n)',
   follow: ['Nếu mảng có phần tử trùng (Permutations II) thì sửa thế nào?', 'Làm sao tìm hoán vị thứ k (k-th permutation) mà không liệt kê tất cả?']
 },
 );
@@ -14836,133 +15632,122 @@ class Solution {
   difficulty: 'medium',
   pattern: 'Backtracking',
   tags: ['backtracking', 'array', 'combination', 'bytebytego'],
-  prompt: `Cho mảng số nguyên {{candidates}} **không trùng** và số mục tiêu {{target}}. Tìm tất cả các tổ hợp (combination) các số trong {{candidates}} có tổng bằng {{target}}. Mỗi số trong {{candidates}} có thể dùng **nhiều lần**. Hai tổ hợp được coi là giống nhau nếu chứa cùng các số với cùng số lần xuất hiện (thứ tự không quan trọng).
+  prompt: `Cho mảng số nguyên dương {{candidates}} gồm các phần tử **khác nhau** và số {{target}}. Tìm **tất cả** tổ hợp các số trong {{candidates}} có tổng bằng {{target}}. Mỗi số được dùng **không giới hạn số lần**. Hai tổ hợp là một nếu chứa cùng các số với cùng số lần (thứ tự không quan trọng), nên không được trả trùng.
 
 ### Ví dụ
 ~~~text
-Input:  candidates = [2, 3, 6, 7], target = 7
+Input:  candidates = [2,3,6,7], target = 7
 Output: [[2,2,3],[7]]
-Giải thích: 2+2+3=7 và 7=7.
+Giải thích: 2 + 2 + 3 = 7 và 7 = 7.
 
-Input:  candidates = [2, 3, 5], target = 8
+Input:  candidates = [2,3,5], target = 8
 Output: [[2,2,2,2],[2,3,3],[3,5]]
+
+Input:  candidates = [2], target = 1
+Output: []
 ~~~
 
 ### Ràng buộc
 - {{1 <= candidates.length <= 30}}
-- {{1 <= candidates[i] <= 200}}
-- Các phần tử trong {{candidates}} là duy nhất.
-- {{1 <= target <= 500}}`,
+- {{2 <= candidates[i] <= 40}}
+- Các phần tử trong {{candidates}} khác nhau.
+- {{1 <= target <= 40}}`,
   hints: [
-    'Vì mỗi số có thể dùng nhiều lần, tại mỗi bước ta có thể chọn lại số đó hoặc chuyển sang số tiếp theo.',
-    'Để tránh tổ hợp trùng lặp do thứ tự (ví dụ [2,3] và [3,2] là một), chỉ xét các số từ vị trí {{start}} trở đi — đảm bảo tổ hợp luôn không giảm.',
-    'Khi tổng hiện tại vượt {{target}}, cắt tỉa (prune) ngay vì các số đều dương.'
+    'Đệ quy với "phần còn thiếu" {{remain = target - tổng đã chọn}}. Khi {{remain == 0}} là tìm được một tổ hợp.',
+    'Để không sinh {{[2,3]}} và {{[3,2]}} như hai kết quả, chỉ cho phép chọn các phần tử có chỉ số **≥ chỉ số vừa chọn** (tổ hợp luôn "không giảm" theo chỉ số).',
+    'Vì được dùng lại, đệ quy tiếp từ {{i}} (không phải {{i + 1}}). Sắp xếp {{candidates}} trước thì khi {{candidates[i] > remain}} có thể {{break}} luôn.'
   ],
   solution: `### Ý tưởng
-Backtracking với tham số {{start}} chỉ số phần tử bắt đầu xét. Tại mỗi bước, từ {{start}} đến cuối mảng, thử thêm {{candidates[i]}} vào path. Vì được dùng nhiều lần, đệ quy tiếp tục từ {{i}} (không phải {{i+1}}). Nếu tổng bằng {{target}}, thêm bản sao path vào kết quả. Nếu tổng vượt {{target}}, break (cắt tỉa) vì mảng có thể sort trước để các số sau lớn hơn.
+Backtracking với hai tham số:
+- {{remain}}: tổng còn thiếu. Bằng 0 → ghi nhận kết quả.
+- {{start}}: chỉ được chọn {{candidates[i]}} với {{i >= start}}. Nhờ vậy mỗi tổ hợp chỉ được sinh theo **một** thứ tự duy nhất, không trùng.
 
-Sort {{candidates}} trước giúp cắt tỉa sớm hơn.
+Điểm khác Subsets: sau khi chọn {{candidates[i]}}, ta đệ quy với {{start = i}} (được chọn lại chính nó), không phải {{i + 1}}.
+
+Cắt tỉa: sắp xếp tăng dần; nếu {{candidates[i] > remain}} thì mọi số phía sau còn lớn hơn → {{break}}.
 
 ~~~java
 class Solution {
     public List<List<Integer>> combinationSum(int[] candidates, int target) {
+        int[] nums = candidates.clone();   // khong sua mang dau vao cua nguoi goi
+        Arrays.sort(nums);                 // sap xep de cat tia bang break
         List<List<Integer>> result = new ArrayList<>();
-        Arrays.sort(candidates);  // giúp cắt tỉa sớm
-        backtrack(candidates, target, 0, new ArrayList<>(), result);
+        backtrack(nums, target, 0, new ArrayList<>(), result);
         return result;
     }
 
-    private void backtrack(int[] candidates, int target, int start,
-                           List<Integer> path, List<List<Integer>> result) {
-        if (target == 0) {
+    private void backtrack(int[] nums, int remain, int start, List<Integer> path, List<List<Integer>> result) {
+        if (remain == 0) {                       // du tong: ghi nhan mot to hop
             result.add(new ArrayList<>(path));
             return;
         }
-        for (int i = start; i < candidates.length; i++) {
-            int val = candidates[i];
-            if (val > target) break;  // cắt tỉa nhờ đã sort
-            path.add(val);
-            backtrack(candidates, target - val, i, path, result);  // i: có thể dùng lại
-            path.remove(path.size() - 1);
+        for (int i = start; i < nums.length; i++) {
+            if (nums[i] > remain) break;         // cac so sau con lon hon: dung
+            path.add(nums[i]);
+            backtrack(nums, remain - nums[i], i, path, result); // i: duoc dung lai nums[i]
+            path.remove(path.size() - 1);        // backtrack
         }
     }
 }
 ~~~
 
+### Chạy tay với [2,3,6,7], target 7
+~~~text
+chọn 2 (còn 5) → chọn 2 (còn 3) → chọn 2 (còn 1) → 2 > 1 dừng
+                               → chọn 3 (còn 0) ✔ [2,2,3]
+               → chọn 3 (còn 2) → 3 > 2 dừng
+chọn 3 (còn 4) → chọn 3 (còn 1) → dừng ; 6 > 4 dừng
+chọn 6 (còn 1) → dừng
+chọn 7 (còn 0) ✔ [7]
+~~~
+
+### Độ phức tạp
+Khó tính chính xác. Gọi T = target, M = số nhỏ nhất: cây đệ quy sâu tối đa T/M tầng, mỗi tầng tối đa n nhánh → cận trên O(n^(T/M)), thực tế nhỏ hơn nhiều nhờ cắt tỉa. Bộ nhớ đệ quy O(T/M).
+
 ### Lưu ý khi phỏng vấn
-- Khác với Subsets/Permutations: có tham số {{target}} giảm dần, và {{start}} chỉ tăng (không giảm) để tránh tổ hợp trùng.
-- Vì số dương, {{val > target}} là điều kiện cắt tỉa hiệu quả.
-- Phải sao chép {{path}} khi thêm kết quả ({{new ArrayList<>(path)}}).
-- Biến thể Combination Sum II: mỗi số chỉ dùng **một lần** -> đệ quy từ {{i+1}}, và bỏ qua trùng {{candidates[i] == candidates[i-1] && i > start}}.
+- Combination Sum II (mỗi số dùng **một lần**, mảng có trùng): đệ quy từ {{i + 1}} và bỏ qua {{i > start && nums[i] == nums[i-1]}}.
+- Nếu chỉ cần **đếm** số tổ hợp thì dùng DP kiểu Coin Change II, O(n · target), nhanh hơn liệt kê rất nhiều.
+- Bài này **trùng nội dung với algo-042 (Combination Sum)**; giữ lại để luyện thêm theo bộ ByteByteGo.
 
-> Senior tip: Combination Sum là bài "unbounded knapsack" dạng liệt kê. Trong thực tế, gặp khi tìm cách thanh toán (coin change variants), resource allocation. Nếu target lớn (5000+) mà chỉ cần đếm, dùng DP đếm O(n*target) nhanh hơn backtracking rất nhiều.`,
-  starter: "class Solution {\\n    public List<List<Integer>> combinationSum(int[] candidates, int target) {\\n        \\n    }\\n}",
+> Senior tip: Sắp xếp rồi {{break}} sớm là kỹ thuật cắt tỉa rẻ nhưng hiệu quả. Khi review code backtracking, hãy hỏi "nhánh nào chắc chắn vô ích và có thể bỏ sớm?".`,
+  complexity: 'Time O(n^(T/M)) với T = target, M = số nhỏ nhất (cận trên), Space O(T/M)',
+  starter: 'class Solution {\n    public List<List<Integer>> combinationSum(int[] candidates, int target) {\n        // TODO\n        return new ArrayList<>();\n    }\n}',
   tests: `public class Main {
-
     static int passed = 0, total = 0;
     interface Case { Object get() throws Throwable; }
     static void run(String name, Object expected, Case c) {
         total++;
         try {
             Object actual = c.get();
-            if (Objects.deepEquals(expected, actual)) {
-                passed++;
-                System.out.println("PASS " + name);
-            } else {
-                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
-            }
-        } catch (Throwable t) {
-            System.out.println("FAIL " + name + ": threw " + t);
-        }
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
     }
-    static void norm(List<List<Integer>> x) {
-        List<List<Integer>> copy = new ArrayList<>();
-        for (List<Integer> row : x) {
-            List<Integer> r = new ArrayList<>(row);
-            Collections.sort(r);
-            copy.add(r);
-        }
-        Collections.sort(copy, (a, b) -> {
-            int n = Math.min(a.size(), b.size());
-            for (int i = 0; i < n; i++) {
-                int c = Integer.compare(a.get(i), b.get(i));
-                if (c != 0) return c;
-            }
-            return Integer.compare(a.size(), b.size());
-        });
-        return copy;
+    // chuan hoa: sort trong tung to hop, roi sort danh sach (giu ban trung neu co de bat loi trung)
+    static List<String> norm(List<List<Integer>> x) {
+        List<String> r = new ArrayList<>();
+        for (List<Integer> row : x) { List<Integer> c = new ArrayList<>(row); Collections.sort(c); r.add(c.toString()); }
+        Collections.sort(r);
+        return r;
     }
-
+    static List<String> exp(int[]... rows) {
+        List<List<Integer>> x = new ArrayList<>();
+        for (int[] row : rows) { List<Integer> c = new ArrayList<>(); for (int v : row) c.add(v); x.add(c); }
+        return norm(x);
+    }
     public static void main(String[] args) {
-        run("example 1", norm(Arrays.asList(
-            Arrays.asList(2, 2, 3),
-            Arrays.asList(7)
-        )), () -> norm(new Solution().combinationSum(new int[]{2, 3, 6, 7}, 7)));
-        run("example 2", norm(Arrays.asList(
-            Arrays.asList(2, 2, 2, 2),
-            Arrays.asList(2, 3, 3),
-            Arrays.asList(3, 5)
-        )), () -> norm(new Solution().combinationSum(new int[]{2, 3, 5}, 8)));
-        run("single candidate", norm(Arrays.asList(
-            Arrays.asList(2, 2, 2)
-        )), () -> norm(new Solution().combinationSum(new int[]{2}, 6)));
-        run("target equals candidate", norm(Arrays.asList(
-            Arrays.asList(5)
-        )), () -> norm(new Solution().combinationSum(new int[]{2, 5}, 5)));
-        run("no solution", norm(new ArrayList<>()), () -> norm(new Solution().combinationSum(new int[]{3, 5}, 7)));
-        run("larger target", norm(Arrays.asList(
-            Arrays.asList(1, 1, 1, 1, 1, 1, 1, 1, 1, 1),
-            Arrays.asList(1, 1, 1, 1, 1, 1, 1, 1, 2),
-            Arrays.asList(1, 1, 1, 1, 1, 1, 2, 2),
-            Arrays.asList(1, 1, 1, 1, 2, 2, 2),
-            Arrays.asList(1, 1, 2, 2, 2, 2),
-            Arrays.asList(2, 2, 2, 2, 2)
-        )), () -> norm(new Solution().combinationSum(new int[]{1, 2}, 10)));
+        run("example 1", exp(new int[]{2, 2, 3}, new int[]{7}), () -> norm(new Solution().combinationSum(new int[]{2, 3, 6, 7}, 7)));
+        run("example 2", exp(new int[]{2, 2, 2, 2}, new int[]{2, 3, 3}, new int[]{3, 5}), () -> norm(new Solution().combinationSum(new int[]{2, 3, 5}, 8)));
+        run("no solution", exp(), () -> norm(new Solution().combinationSum(new int[]{2}, 1)));
+        run("single candidate repeated", exp(new int[]{2, 2, 2}), () -> norm(new Solution().combinationSum(new int[]{2}, 6)));
+        run("unsorted input", exp(new int[]{2, 2, 3}, new int[]{7}), () -> norm(new Solution().combinationSum(new int[]{7, 3, 2}, 7)));
+        run("impossible odd", exp(), () -> norm(new Solution().combinationSum(new int[]{4, 6}, 7)));
+        run("2 and 3 to 12", exp(new int[]{2, 2, 2, 2, 2, 2}, new int[]{2, 2, 2, 3, 3}, new int[]{3, 3, 3, 3}),
+            () -> norm(new Solution().combinationSum(new int[]{2, 3}, 12)));
         System.out.println("RESULT " + passed + "/" + total);
     }
 }`,
-  complexity: 'Time O(N^(target/min)) phấp phới, Space O(target/min)',
-  follow: ['Combination Sum II: mỗi số chỉ dùng một lần thì sửa thế nào?', 'Nếu target rất lớn (5000+) mà chỉ cần số lượng cách thì dùng thuật toán nào?']
+  follow: ['Combination Sum II: mỗi số chỉ dùng một lần và mảng có phần tử trùng thì sửa thế nào?', 'Nếu chỉ cần số lượng tổ hợp với target lớn (vài nghìn) thì dùng thuật toán nào?']
 },
 );
 })();
