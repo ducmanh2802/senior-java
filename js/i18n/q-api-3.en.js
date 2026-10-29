@@ -1,5 +1,5 @@
 /*
- * English translation of js/data/q-api.js — task T187. Format: js/core/i18n.js (content overlay).
+ * English translation of js/data/q-api.js — task T509. Format: js/core/i18n.js (content overlay).
  * ids: api-018 api-019 api-020 api-021 api-022
  */
 App.i18n.content({
@@ -12,7 +12,7 @@ App.i18n.content({
 - {{detail}} is human-readable text, may change language, not a contract.
 - {{type}} is a **machine-readable error code**, stable, can point to a docs page explaining how to fix it.
 
-~~~json
+~~~text
 HTTP/1.1 422 Unprocessable Content
 Content-Type: application/problem+json
 
@@ -35,6 +35,8 @@ spring:
     problemdetails:
       enabled: true   # framework exceptions (404, 405, binding errors) -> problem+json
 ~~~
+
+> This property only registers a default {{ResponseEntityExceptionHandler}} **when you do not already have** a bean of that kind. If you write your own advice {{extends ResponseEntityExceptionHandler}} as below, your advice replaces it (it still returns ProblemDetail for framework exceptions), and the property no longer has any effect.
 
 ~~~java
 @RestControllerAdvice
@@ -144,6 +146,7 @@ return { allowed, math.floor(tokens) }
 - Entire read-modify-write runs in one Lua execution; Redis is single-threaded so no race.
 - Don't do GET then SET from Java: two requests interleaving will both see tokens available and both allow.
 - Script touches only one key, safe on Redis Cluster.
+- {{nowMs}} comes from the pod's clock: if pods drift apart by a few hundred milliseconds, the bucket refills incorrectly. You can call {{redis.call('TIME')}} inside the script (allowed since Redis 5) so every pod shares Redis's clock instead of its own.
 
 ~~~java
 public Decision check(String consumer, String endpoint, int cost) {
@@ -168,7 +171,7 @@ Content-Type: application/problem+json
 {"type":"https://api.bank.vn/problems/rate-limited","title":"Too many requests","status":429}
 ~~~
 - {{Retry-After}} in seconds (or HTTP-date) — client knows how long to wait instead of retrying immediately.
-- {{RateLimit-*}} per IETF draft; many legacy clients only read {{X-RateLimit-*}}, can emit both during transition.
+- {{RateLimit-Limit/-Remaining/-Reset}} is the shape used by the older IETF drafts (many gateways still emit it); the newer draft (draft-ietf-httpapi-ratelimit-headers) merges them into two structured headers, {{RateLimit}} and {{RateLimit-Policy}}. It is not an RFC yet, so document the exact format in your API docs; many legacy clients only read {{X-RateLimit-*}}.
 - Client retries **must add jitter**, otherwise all clients come back at the same second and create a second wave.
 
 ### Keys and policies
@@ -231,7 +234,9 @@ public ResponseEntity<?> update(@PathVariable long id,
         return ResponseEntity.status(428).header("ETag", currentEtag(id))
             .body(problem("precondition-required", 428, "Send If-Match with current version"));
     }
-    long expected = parseEtag(ifMatch);          // strip W/ and quotes, parse number
+    // If-Match uses STRONG comparison (RFC 9110): a weak ETag W/"7" never matches.
+    // -> parseEtag returns -1 for the W/ form, so the service matches no version -> 412
+    long expected = parseEtag(ifMatch);
     try {
         Beneficiary saved = service.update(id, expected, req);
         String etag = '"' + String.valueOf(saved.getVersion()) + '"';
@@ -252,7 +257,7 @@ How service uses expected version:
 int updateIfVersion(long id, long expected, String name, BigDecimal limit);
 ~~~
   Returns 0 rows → throw {{OptimisticLockingFailureException}}. Single statement, atomic, no race window.
-- **Method B**: load entity in transaction, set fields, let {{@Version}} check on flush/commit. Cleaner but entity must be loaded **in the same transaction** as the write, and exception only thrown at commit.
+- **Method B**: inside the transaction, load the entity, **compare {{entity.getVersion()}} with {{expected}} and throw {{OptimisticLockingFailureException}} if they differ**, then set the fields; {{@Version}} covers the remaining race between load and flush. Note: assigning {{setVersion(expected)}} on a managed entity does **not** work — Hibernate uses the version it loaded — so you must do the comparison yourself. The @Version exception is only thrown at flush/commit.
 
 ### Pitfalls
 - **Reading version in controller then comparing**: two requests can still race between compare and write. Let the DB be the judge.
@@ -344,12 +349,12 @@ The sender only guarantees "deliver at least once": timeouts, lost ACKs, deploys
 ~~~text
 POST /webhooks/bank
   │
-  ├─ 1. verify HMAC + timestamp + key id        (cheap, sync)
+  ├─ 1. verify HMAC + timestamp + key id        (cheap, synchronous)
   ├─ 2. INSERT event (unique provider+event_id) ← block dupes at DB
-  ├─ 3. return 200/202 immediately (not processed yet)
+  ├─ 3. return 200/202 immediately (business logic not processed yet)
   │
-  └─ worker (async, own retries)
-        ├─ process idempotently by event_id
+  └─ worker (async, with its own retries)
+        ├─ process idempotently per event_id
         ├─ transient error → retry with backoff
         └─ permanent error → DLQ + alert
 ~~~
