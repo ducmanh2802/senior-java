@@ -1,6 +1,6 @@
 # T467 — Dịch sang tiếng Anh: lessons-api (2 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-api-1.en.js`
 
@@ -16,3 +16,8 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-api-1.en.js` và `node scripts/check-i18n.js lessons-api-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã dịch đủ 2 mục `lesson-api-001`, `lesson-api-002` trong `js/i18n/lessons-api-1.en.js`: title, goals, body (giữ nguyên toàn bộ mục `###`, bảng, danh sách, code block `~~~text`/`~~~json`), exercises[0].title/prompt/hints/explain, check[0..3].q/options/explain. Không chép `starter`/`tests`/`reference`.
+- Nhãn cố định: "### Liên hệ phỏng vấn" → "### Interview relevance" (theo các bài học EN đã có). Trong code block `~~~json` của Problem Details, dịch các chuỗi người đọc được (`detail`, `message`) sang tiếng Anh, giữ nguyên cấu trúc JSON.
+- `node scripts/check-i18n.js lessons-api-1` → `OK — 2 mục đã dịch.`; `node scripts/validate.js` → `OK — không có lỗi.` (`node --check` bị chặn bởi quyền shell trong phiên này, nhưng check-i18n chạy file trong `vm` nên đã xác nhận cú pháp).
+- Không sửa file nào ngoài `js/i18n/lessons-api-1.en.js` và file task này.
+Reviewed-by: check-i18n (translation, no LLM review)
