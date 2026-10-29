@@ -3445,4 +3445,1026 @@ private final Semaphore dbPermits = new Semaphore(40);
     { type: 'doc', title: 'JEP 491: Synchronize Virtual Threads without Pinning', url: 'https://openjdk.org/jeps/491' }
   ]
 },
+{
+  id: 'scenario-072',
+  topic: 'scenario',
+  level: 'senior',
+  q: '22 giờ tối thứ Bảy, request vào {{POST /api/auth/login}} tăng từ 50 lên 3.000 request/giây, 98% trả 401, CPU các pod auth lên 95% và người dùng thật không đăng nhập được. Sáng hôm sau có 40 khách báo tài khoản bị đổi số điện thoại. Mỗi IP chỉ gửi vài request. Bạn xử lý thế nào?',
+  a: `**Tóm tắt:** đây là **credential stuffing**: kẻ tấn công thử cặp email/mật khẩu bị lộ từ site khác, mỗi tài khoản chỉ thử 1 lần, qua hàng chục nghìn IP proxy, nên rate limit theo IP và khoá theo số lần sai đều không bắt được. Xử lý theo thứ tự: chặn ở biên (WAF rate-based + bot rule, challenge), giới hạn theo tín hiệu tổng hợp (tỉ lệ fail toàn cục, số username khác nhau trên mỗi IP/ASN, fingerprint), đồng thời **cứu tài khoản đã bị chiếm** (thu hồi session, buộc đặt lại mật khẩu, khoá đổi số điện thoại), rồi dài hạn là MFA, kiểm tra mật khẩu đã lộ và step-up khi thao tác nhạy cảm.
+
+### Hiểu nhanh
+Brute force giống một tên trộm thử 10.000 chìa khoá vào **một cánh cửa**. Credential stuffing là tên trộm có sẵn chùm chìa khoá ghi tên chủ nhà (lộ từ vụ hack site khác), đi **mỗi nhà thử đúng một chìa**. Vì người dùng hay dùng lại mật khẩu, tỉ lệ trúng thường khoảng 0,1–2%: 1 triệu lần thử có thể chiếm vài nghìn tài khoản.
+
+### Triệu chứng và cách xác minh
+| Tín hiệu | Brute force | Credential stuffing |
+|---|---|---|
+| Số username khác nhau | ít | rất nhiều, gần như mỗi request một user |
+| Số lần thử mỗi user | nhiều | 1–2 |
+| Số IP | ít | hàng chục nghìn (residential proxy) |
+| Tỉ lệ thành công | gần 0 | 0,1–2% |
+
+Lệnh/metric để xác minh:
+- Đếm username khác nhau và IP khác nhau trong 10 phút từ log đăng nhập (nhớ log **hash** username, không log mật khẩu).
+- Xem User-Agent, ASN, quốc gia: bot thường dùng vài UA giống hệt nhau, tập trung vài nhà mạng hosting/proxy.
+- So tỉ lệ login thành công từ IP mới, thiết bị mới với baseline.
+
+### Vì sao CPU lên 95%
+Mật khẩu lưu bằng bcrypt cost 10–12: mỗi lần verify tốn khoảng 50–250ms CPU (cố tình chậm để chống bẻ mật khẩu). 3.000 request/giây × 0,1 giây = **300 core**. Cuộc tấn công vừa chiếm tài khoản vừa là DoS. Vì vậy phải chặn **trước** bước băm mật khẩu.
+
+### Xử lý trong giờ đầu
+1. **Biên**: bật AWS WAF rate-based rule cho đường dẫn login, managed rule Bot Control / Account Takeover Prevention nếu có, hoặc challenge/CAPTCHA cho toàn bộ login trong lúc bị tấn công.
+2. **Ứng dụng**: chặn rẻ trước bcrypt.
+3. **Cứu nạn nhân**: lọc các login thành công trong cửa sổ tấn công từ IP/ASN đáng ngờ, thu hồi session/refresh token, buộc reset mật khẩu, tạm khoá thao tác đổi số điện thoại/email 24 giờ và gửi thông báo cho khách.
+
+~~~java
+// Kiểm tra rẻ (Redis) chạy TRƯỚC khi gọi AuthenticationManager (bcrypt)
+public void preCheck(String ip, String username) {
+    long perIp = redis.opsForValue().increment("login:ip:" + ip);          // tổng lần thử theo IP
+    redis.expire("login:ip:" + ip, Duration.ofMinutes(10));
+    redis.opsForHyperLogLog().add("login:ipusers:" + ip, sha256(username)); // số user khác nhau/IP
+    long distinctUsers = redis.opsForHyperLogLog().size("login:ipusers:" + ip);
+    if (perIp > 20 || distinctUsers > 5) {
+        throw new ChallengeRequiredException(); // trả 429 hoặc yêu cầu CAPTCHA, không băm mật khẩu
+    }
+}
+~~~
+- Đặt cùng thông báo lỗi chung "Email hoặc mật khẩu không đúng" để không lộ email nào tồn tại.
+- **Không khoá cứng tài khoản sau N lần sai**: kẻ tấn công có thể cố tình khoá hàng loạt khách thật. Dùng khoá mềm có thời hạn hoặc yêu cầu challenge.
+
+### Dài hạn
+- **MFA** (ưu tiên passkey/TOTP hơn SMS), ít nhất bắt buộc với thiết bị mới.
+- Khi đăng ký/đổi mật khẩu, kiểm tra mật khẩu đã nằm trong danh sách lộ (ví dụ API Pwned Passwords theo k-anonymity: chỉ gửi 5 ký tự đầu của SHA-1).
+- **Step-up authentication** cho thao tác nhạy cảm: đổi số điện thoại, email, thêm người nhận tiền.
+- Dashboard: tỉ lệ fail toàn cục, số username/IP, login thành công từ thiết bị mới; alert khi lệch baseline.
+
+### Lỗi hay gặp
+1. Chỉ rate limit theo IP: bot xoay hàng chục nghìn IP, mỗi IP vài request.
+2. Khoá cứng tài khoản: tự gây DoS cho khách thật.
+3. Chỉ chặn tấn công mà quên **khách đã bị chiếm**: thiệt hại thật nằm ở đó.
+4. Log mật khẩu hoặc username dạng rõ trong log debug khi điều tra.
+
+### Trả lời miệng 1 phút
+"Mỗi IP vài request nhưng username gần như không lặp lại, tỉ lệ thành công khoảng 1%: đó là credential stuffing chứ không phải brute force. Tôi chặn ở biên bằng WAF rate-based và bot rule, bật challenge cho login, và trong app thêm kiểm tra rẻ bằng Redis trước bcrypt, vì bcrypt 3.000 lần mỗi giây đã tự gây DoS. Song song tôi tìm các login thành công đáng ngờ, thu hồi session, buộc reset mật khẩu và khoá đổi số điện thoại. Dài hạn là MFA, kiểm tra mật khẩu đã lộ và step-up cho thao tác nhạy cảm."
+
+> Senior tip: theo dõi **số username khác nhau trên mỗi IP, ASN và fingerprint thiết bị**, không chỉ số request. Và luôn có sẵn một "công tắc" bật challenge cho toàn bộ login (feature flag hoặc rule WAF để sẵn ở chế độ Count) để bật trong 1 phút khi bị tấn công, thay vì viết code lúc 22 giờ đêm.`,
+  follow: [
+    'Vì sao khoá cứng tài khoản sau 5 lần sai lại nguy hiểm trong trường hợp này?',
+    'Làm sao phát hiện tài khoản đã bị chiếm sau khi cuộc tấn công đã qua?',
+    'Step-up authentication khác MFA khi đăng nhập thế nào?'
+  ],
+  tags: ['credential stuffing', 'account takeover', 'WAF', 'rate limit', 'bcrypt', 'MFA'],
+  refs: [
+    { type: 'doc', title: 'OWASP Credential Stuffing Prevention Cheat Sheet', url: 'https://cheatsheetseries.owasp.org/cheatsheets/Credential_Stuffing_Prevention_Cheat_Sheet.html' },
+    { type: 'doc', title: 'AWS WAF rate-based rule statement', url: 'https://docs.aws.amazon.com/waf/latest/developerguide/waf-rule-statement-type-rate-based.html' }
+  ]
+},
+{
+  id: 'scenario-073',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Tính năng "đổi avatar bằng URL" của bạn tải ảnh từ URL người dùng nhập. Pentester nhập {{http://169.254.169.254/latest/meta-data/iam/security-credentials/}} và nhận về nội dung có tên IAM role của máy chủ. Bạn đánh giá mức độ và sửa thế nào?',
+  a: `**Tóm tắt:** đây là **SSRF (Server-Side Request Forgery)**: server của bạn đi gọi URL thay cho kẻ tấn công, từ bên **trong** mạng, nên với tới được những chỗ Internet không với tới: metadata của cloud, admin nội bộ, Redis, actuator. Ngay lập tức: tắt tính năng hoặc chặn bằng allowlist, bắt buộc **IMDSv2** và kiểm tra CloudTrail xem credential của role có bị dùng từ ngoài không. Sửa đúng: chỉ cho {{https}}, phân giải DNS rồi chặn mọi IP nội bộ/link-local, không tự follow redirect, giới hạn kích thước/thời gian, và quan trọng nhất là **chặn egress ở tầng mạng** (proxy có allowlist), vì kiểm tra trong code luôn có kẽ hở.
+
+### Hiểu nhanh
+Bạn nhờ lễ tân toà nhà (server) "lấy giùm tôi tập tài liệu ở địa chỉ này". Kẻ xấu đưa địa chỉ "phòng két sắt tầng hầm". Người ngoài không vào được phòng đó, nhưng lễ tân thì có thẻ ra vào.
+
+### Vì sao 169.254.169.254 nguy hiểm
+Đó là Instance Metadata Service của EC2 (link-local). Với **IMDSv1**, một GET đơn giản tới {{/latest/meta-data/iam/security-credentials/<role>}} trả về **access key tạm thời** của role. Kẻ tấn công dùng key đó từ máy họ để đọc S3, DynamoDB... với quyền của server. Pentester mới thấy tên role, nhưng chỉ cần thêm tên role vào URL là lấy được key.
+
+**IMDSv2** yêu cầu trước tiên gửi PUT để lấy token rồi đính token vào header; tính năng tải ảnh thường chỉ gửi GET và không cho kẻ tấn công đặt header, nên IMDSv2 chặn được kiểu SSRF phổ biến này. Đặt thêm hop limit = 1 để container không với tới metadata qua thêm một bước mạng (trên EKS nên dùng IRSA/EKS Pod Identity thay vì role của node).
+
+### Xác minh mức độ
+1. Kiểm tra instance đang ở {{HttpTokens=optional}} (IMDSv1 còn bật) hay {{required}}.
+2. CloudTrail: tìm các API call dùng credential của role đó từ IP **không phải** của instance. Có thì coi là bị xâm nhập: thu hồi session của role, xoay vòng mọi secret role đọc được.
+3. Log ứng dụng: các URL avatar trỏ tới IP nội bộ, {{localhost}}, {{file:}}, cổng lạ (6379, 8080/actuator).
+
+### Sửa trong code
+~~~java
+HttpClient client = HttpClient.newBuilder()
+    .followRedirects(HttpClient.Redirect.NEVER)   // redirect tới IP nội bộ là đường vòng phổ biến
+    .connectTimeout(Duration.ofSeconds(3))
+    .build();
+
+void validate(URI uri) throws UnknownHostException {
+    if (!"https".equals(uri.getScheme())) throw new BadRequest("chỉ chấp nhận https");
+    for (InetAddress ip : InetAddress.getAllByName(uri.getHost())) {   // kiểm tra MỌI IP
+        if (ip.isLoopbackAddress() || ip.isLinkLocalAddress() || ip.isSiteLocalAddress()
+                || ip.isAnyLocalAddress() || ip.isMulticastAddress() || isUniqueLocalV6(ip)) {
+            throw new BadRequest("địa chỉ không được phép");
+        }
+    }
+}
+~~~
+- Giới hạn kích thước đọc (ví dụ 5 MB) và tổng thời gian; giải mã thử thành ảnh, không trả nội dung thô cho người dùng (SSRF "mù" vẫn nguy hiểm nhưng bớt lộ dữ liệu).
+- Hàm chặn phải bao cả IPv6 (ví dụ {{fc00::/7}} không nằm trong {{isSiteLocalAddress}}), dải {{100.64.0.0/10}} và IPv4 viết lạ ({{http://2852039166}}, {{0x7f.1}}): dùng parser chuẩn rồi kiểm tra IP đã phân giải, không so chuỗi.
+
+### Vì sao code thôi chưa đủ: DNS rebinding
+Kẻ tấn công điều khiển DNS của domain: lần phân giải để kiểm tra trả IP công khai, lần phân giải khi kết nối (vài ms sau) trả {{169.254.169.254}}. Kiểm tra trong code đã qua nhưng kết nối vẫn đi vào trong. Cách chặn chắc: cho mọi request ra ngoài của tính năng này đi qua **egress proxy** riêng chỉ cho phép IP công khai (hoặc chỉ cho phép danh sách domain cụ thể), đặt service vào subnet/NetworkPolicy không có đường tới mạng nội bộ.
+
+### Phương án thay thế tốt hơn
+| Cách | Rủi ro SSRF | Ghi chú |
+|---|---|---|
+| Server tải từ URL bất kỳ | cao | cần đủ mọi lớp chặn |
+| Allowlist domain (chỉ Gravatar, CDN đối tác) | thấp | đủ cho đa số nhu cầu |
+| Client upload thẳng lên S3 qua presigned URL | gần như không | server không gọi URL lạ |
+
+### Lỗi hay gặp
+1. Blacklist chuỗi "169.254" hoặc "localhost": bị vượt bằng IP dạng thập phân, IPv6, domain trỏ về IP nội bộ.
+2. Kiểm tra URL đầu nhưng để HTTP client tự follow redirect.
+3. Trả lỗi chi tiết ("connection refused port 6379"), biến SSRF mù thành công cụ quét cổng.
+
+### Trả lời miệng 1 phút
+"Đây là SSRF, mức nghiêm trọng cao vì trên EC2 với IMDSv1 bước tiếp theo là lấy được access key của role. Tôi tắt tính năng, bật IMDSv2 bắt buộc, hop limit 1, rồi tra CloudTrail xem credential role có bị dùng từ IP lạ không. Về code, chỉ cho https, phân giải DNS và chặn mọi IP nội bộ, link-local, IPv6 local, không follow redirect, giới hạn kích thước và timeout. Nhưng vì DNS rebinding, tôi bắt mọi request ra ngoài đi qua egress proxy có allowlist, và nếu được thì đổi thiết kế sang upload qua presigned URL."
+
+> Senior tip: mỗi khi thấy tính năng "nhập URL" (webhook, import từ link, preview link, PDF render HTML), coi như một bề mặt SSRF. Tôi gom tất cả về **một** HTTP client dùng chung có sẵn chặn IP, timeout, giới hạn kích thước và đi qua egress proxy, để dev mới không tự viết lại và quên một bước.`,
+  follow: [
+    'IMDSv2 chặn được SSRF qua cơ chế nào, và trường hợp nào nó không chặn được?',
+    'DNS rebinding hoạt động thế nào và vì sao kiểm tra IP trong code không đủ?',
+    'Webhook do khách hàng đăng ký URL thì bạn áp dụng các biện pháp trên ra sao?'
+  ],
+  tags: ['SSRF', 'IMDSv2', 'AWS', 'egress', 'DNS rebinding', 'OWASP'],
+  refs: [
+    { type: 'doc', title: 'OWASP Server-Side Request Forgery Prevention Cheat Sheet', url: 'https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html' },
+    { type: 'doc', title: 'AWS: Configure the Instance Metadata Service options', url: 'https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-service.html' }
+  ]
+},
+{
+  id: 'scenario-074',
+  topic: 'scenario',
+  level: 'mid',
+  q: 'GitHub gửi cảnh báo secret scanning: một AWS access key nằm trong {{application-dev.yml}} của repo, được commit từ 3 tuần trước. Dev đã "sửa" bằng một commit xoá dòng đó và nói "xong rồi". Vì sao chưa xong, và bạn làm từng bước thế nào?',
+  a: `**Tóm tắt:** commit xoá chỉ làm secret biến mất khỏi **phiên bản mới nhất**; Git lưu toàn bộ lịch sử, nên ai clone repo, mở commit cũ, xem pull request cũ hay fork đều thấy key. Thứ tự đúng: **thu hồi/xoay vòng key trước** (vài phút), kiểm tra CloudTrail xem key đã bị dùng chưa, rồi mới dọn lịch sử bằng {{git filter-repo}} hoặc BFG, force push, yêu cầu mọi người clone lại, và chặn tái phát bằng push protection + pre-commit scan + dùng Secrets Manager.
+
+### Hiểu nhanh
+Git giống một cuốn sổ nhật ký **không bao giờ xé trang**: commit mới chỉ là một trang mới ghi "dòng kia đã xoá", trang cũ vẫn còn nguyên. Và cuốn sổ đã được photo cho mọi người clone repo.
+
+### Vì sao phải xoay key trước khi dọn lịch sử
+- Repo public: bot quét GitHub tìm AWS key liên tục; key lộ thường bị thử trong vài phút. 3 tuần là quá đủ.
+- Dọn lịch sử không xoá được bản đã nằm trong clone của người khác, fork, CI cache, bản sao trong log.
+- Vì vậy: **coi key đã bị lộ**. Dọn lịch sử chỉ là vệ sinh, không phải biện pháp chính.
+
+### Các bước
+1. **Thu hồi**: trong IAM, tạo key mới cho ứng dụng (nếu thật sự cần key dài hạn), cập nhật nơi dùng, rồi **deactivate** và sau đó xoá key cũ.
+2. **Điều tra**: CloudTrail Event history lọc theo access key id để xem có API call lạ (tạo EC2 đào coin, đọc S3, tạo IAM user mới để duy trì truy cập). Có thì chuyển sang quy trình sự cố bảo mật.
+3. **Dọn lịch sử** (khi đã báo team tạm dừng push):
+
+~~~bash
+# Cách 1: git filter-repo (công cụ được Git khuyến nghị thay cho filter-branch)
+git clone --mirror git@github.com:acme/order-service.git
+cd order-service.git
+# replacements.txt chứa từng secret, mỗi dòng: AKIAXXXXXXXX==>***REMOVED***
+git filter-repo --replace-text ../replacements.txt
+git push --force --mirror origin
+
+# Cách 2: BFG Repo-Cleaner (Java, nhanh với repo lớn)
+java -jar bfg.jar --replace-text ../replacements.txt order-service.git
+cd order-service.git && git reflog expire --expire=now --all && git gc --prune=now --aggressive
+git push --force
+~~~
+- BFG mặc định **không sửa commit mới nhất** (HEAD được bảo vệ): phải xoá secret ở commit mới trước, điều mà commit "xoá dòng" đã làm.
+- Ghi lại: filter-repo/BFG **đổi hash mọi commit** từ điểm có secret trở đi; PR đang mở và branch của người khác sẽ lệch.
+4. **Sau force push**: mọi người clone lại (không pull/merge từ bản cũ, nếu không secret quay lại). Trên GitHub, commit cũ còn có thể truy cập qua ref của pull request hoặc cache; theo tài liệu GitHub, cần liên hệ GitHub Support để xoá hẳn.
+5. **Đóng alert** secret scanning với lý do "revoked".
+
+### Chặn tái phát
+| Lớp | Công cụ | Chặn ở đâu |
+|---|---|---|
+| Máy dev | pre-commit hook (gitleaks, git-secrets) | trước khi commit |
+| GitHub | secret scanning + **push protection** | từ chối push có secret nhận diện được |
+| CI | quét secret trong pipeline | trước khi merge |
+| Kiến trúc | Secrets Manager, IAM role/IRSA thay cho access key | không có secret để lộ |
+
+Trong Spring Boot, file cấu hình chỉ nên tham chiếu biến môi trường, ví dụ placeholder trỏ tới biến môi trường {{DB_PASSWORD}}, còn giá trị do Secrets Manager / Kubernetes Secret cung cấp lúc chạy.
+
+### Lỗi hay gặp
+1. Dọn lịch sử trước, xoay key sau (hoặc quên xoay).
+2. Chỉ {{git rm}} file rồi commit.
+3. Force push nhưng một đồng nghiệp push lại branch cũ, secret quay lại.
+4. Thay key bằng key mới nhưng vẫn để trong file YAML.
+
+### Trả lời miệng 1 phút
+"Commit xoá chỉ sửa phiên bản mới nhất; lịch sử, clone, fork và PR cũ vẫn chứa key, và bot quét GitHub tìm key trong vài phút. Nên việc đầu tiên là deactivate key trong IAM, thay key mới, rồi tra CloudTrail xem key đã bị dùng chưa. Sau đó tôi dọn lịch sử bằng git filter-repo hoặc BFG trên mirror clone, force push, yêu cầu mọi người clone lại và nhờ GitHub Support xoá cache nếu cần. Cuối cùng bật push protection, pre-commit scan và chuyển hẳn sang Secrets Manager hoặc IAM role để không còn access key dài hạn."
+
+> Senior tip: mục tiêu thật là **không có secret dài hạn nào để lộ**: ứng dụng trên AWS dùng IAM role (EC2 instance profile, IRSA/EKS Pod Identity, ECS task role), CI dùng OIDC federation thay cho access key lưu trong secret của pipeline. Khi đó một commit lỡ tay chỉ lộ cấu hình, không lộ quyền.`,
+  follow: [
+    'Nếu repo là private thì quy trình có khác không, có được bỏ bước xoay key không?',
+    'Push protection của GitHub chặn được và không chặn được loại secret nào?',
+    'CI dùng OIDC để vào AWS thay cho access key hoạt động thế nào?'
+  ],
+  tags: ['secret leak', 'git filter-repo', 'BFG', 'GitHub secret scanning', 'push protection', 'IAM'],
+  refs: [
+    { type: 'doc', title: 'GitHub Docs: Removing sensitive data from a repository', url: 'https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository' },
+    { type: 'doc', title: 'GitHub Docs: About push protection', url: 'https://docs.github.com/en/code-security/secret-scanning/introduction/about-push-protection' },
+    { type: 'doc', title: 'git-filter-repo', url: 'https://github.com/newren/git-filter-repo' }
+  ]
+},
+{
+  id: 'scenario-075',
+  topic: 'scenario',
+  level: 'senior',
+  q: '17 giờ thứ Sáu, một CVE điểm CVSS 10 được công bố cho một thư viện Java phổ biến (kiểu Log4Shell), đã có mã khai thác công khai. Công ty bạn có 35 service, không ai chắc service nào dùng thư viện đó. Bạn điều phối 72 giờ tiếp theo thế nào?',
+  a: `**Tóm tắt:** chạy theo 4 pha song song có người phụ trách: (1) **kiểm kê** trong 2–4 giờ: service nào có thư viện, phiên bản nào, kể cả phụ thuộc bắc cầu và image đang chạy thật; (2) **giảm thiểu tạm** cho cái lộ ra Internet (WAF rule, cờ cấu hình, gỡ class bị lỗi) trong khi chờ bản vá; (3) **vá** theo thứ tự rủi ro: public-facing trước, nội bộ sau, build lại image và xác minh trong artifact; (4) **kiểm tra đã bị khai thác chưa** qua log. Sau đó mới là bài học: SBOM, quét dependency tự động, quy trình vá khẩn có SLA.
+
+### Hiểu nhanh
+Giống thông báo thu hồi một loại phanh xe lỗi: trước hết phải biết **xe nào** trong đội lắp phanh đó (kể cả phanh nằm trong bộ phận mua từ hãng khác), rồi cấm xe chạy đường đèo (giảm thiểu), thay phanh xe chở khách trước, và kiểm tra xe nào đã từng gặp sự cố.
+
+### Pha 1: kiểm kê (giờ 0–4)
+Không dựa vào trí nhớ của team. Phụ thuộc bắc cầu là chỗ hay sót.
+~~~bash
+# Maven: tìm thư viện ở mọi tầng phụ thuộc
+mvn dependency:tree -Dincludes=org.apache.logging.log4j
+# Gradle
+./gradlew dependencyInsight --dependency log4j-core --configuration runtimeClasspath
+# Kiểm tra artifact đang CHẠY thật (code trên main có thể khác image đang deploy)
+unzip -l app.jar | grep log4j-core
+trivy image registry.acme.vn/order-service:1.42.0
+~~~
+Ghi kết quả vào một bảng chung: service, phiên bản, lộ Internet không, owner, trạng thái. Đây là "nguồn sự thật" cho mọi cập nhật.
+
+Ví dụ Log4Shell: Spring Boot mặc định dùng **Logback**; {{log4j-api}} và {{log4j-to-slf4j}} có mặt trong starter logging nhưng không chứa lỗ hổng, chỉ {{log4j-core}} bị ảnh hưởng (khi dùng {{spring-boot-starter-log4j2}} hoặc kéo vào qua thư viện khác như Elasticsearch cũ). Hiểu đúng điều này tránh hoảng loạn vá nhầm chỗ.
+
+### Pha 2: giảm thiểu tạm
+- WAF rule chặn mẫu khai thác đã biết (chỉ là lớp mỏng, payload biến thể sẽ lọt).
+- Cờ cấu hình hoặc gỡ class lỗi theo khuyến nghị của nhà phát triển (với Log4Shell: gỡ {{JndiLookup.class}} khỏi jar; cờ {{formatMsgNoLookups}} về sau được chứng minh là chưa đủ).
+- Chặn egress: service không cần gọi ra Internet thì không cho gọi; nhiều khai thác cần tải payload từ ngoài.
+
+### Pha 3: vá
+- Spring Boot quản lý phiên bản qua BOM: ghi đè bằng property (ví dụ {{log4j2.version}} trong Maven với {{spring-boot-starter-parent}}) rồi kiểm tra lại bằng {{dependency:tree}}, vì một thư viện có thể shade (đóng gói sẵn) thư viện lỗi bên trong jar của nó.
+- Thứ tự: public-facing, xử lý input người dùng, có dữ liệu nhạy cảm, rồi nội bộ.
+- Theo dõi bản vá kế tiếp: Log4Shell cần 4 lần nâng (2.15.0, 2.16.0, 2.17.0, 2.17.1) vì các CVE liên quan nối tiếp. Đừng tuyên bố "xong" khi nhà phát triển còn đang phân tích.
+
+### Pha 4: đã bị khai thác chưa?
+- Tìm chuỗi khai thác trong access log, WAF log từ **trước** ngày công bố (lỗ hổng có thể bị dùng trước khi công khai).
+- Kết nối ra ngoài bất thường (VPC Flow Logs, DNS query lạ).
+- Có dấu hiệu thì chuyển sang quy trình sự cố bảo mật: cô lập, xoay vòng secret service đó đọc được.
+
+### Điều phối con người
+| Vai trò | Việc |
+|---|---|
+| Điều phối | giữ bảng trạng thái, cập nhật mỗi 2–4 giờ cho lãnh đạo/security |
+| Kiểm kê | 1–2 người chạy script trên toàn bộ repo + registry |
+| Owner từng service | vá, deploy, xác nhận trong bảng |
+| Security | theo dõi khuyến nghị mới, phân tích log khai thác |
+Chia ca: không ai làm 30 giờ liên tục; người mệt deploy nhầm còn tệ hơn chậm vài giờ.
+
+### Lỗi hay gặp
+1. Chỉ kiểm tra code trên nhánh main, bỏ qua image đang chạy và service "không ai đụng 2 năm".
+2. Quên phụ thuộc bắc cầu và jar shade.
+3. Tin rằng WAF rule là đủ rồi dừng vá.
+4. Không ghi lại tiến độ, đến thứ Hai không ai biết service nào đã xong.
+
+### Trả lời miệng 1 phút
+"Tôi chia bốn pha có người phụ trách. Đầu tiên kiểm kê trong vài giờ bằng dependency tree và quét image đang chạy thật, vì phụ thuộc bắc cầu là chỗ hay sót, ghi vào một bảng chung. Song song, giảm thiểu tạm cho service lộ Internet bằng WAF rule, cấu hình hoặc gỡ class lỗi và chặn egress. Rồi vá theo thứ tự rủi ro, ghi đè phiên bản trong BOM của Spring Boot và xác minh trong artifact. Cuối cùng tra log xem đã bị khai thác chưa, kể cả trước ngày công bố. Sau sự cố, tôi đưa SBOM và quét dependency vào CI để lần sau kiểm kê mất vài phút thay vì vài giờ."
+
+> Senior tip: thời gian trả lời câu "chúng ta có bị ảnh hưởng không?" là thước đo độ trưởng thành. Khi mỗi build sinh **SBOM** (ví dụ CycloneDX) và lưu cùng image, kiểm kê chỉ còn là một truy vấn. Tôi cũng đặt SLA vá theo mức độ (ví dụ critical lộ Internet: 48 giờ) và có sẵn pipeline "rebuild tất cả service" để nâng một thư viện cho 35 service trong một buổi chiều.`,
+  follow: [
+    'SBOM là gì và nó giúp gì khi có CVE mới?',
+    'Làm sao phát hiện một thư viện bị shade (đóng gói lại) bên trong jar khác?',
+    'Bạn ưu tiên vá service nào trước khi không đủ người làm cùng lúc?'
+  ],
+  tags: ['CVE', 'Log4Shell', 'dependency', 'SBOM', 'incident', 'patching'],
+  refs: [
+    { type: 'doc', title: 'Apache Log4j Security Vulnerabilities', url: 'https://logging.apache.org/log4j/2.x/security.html' },
+    { type: 'doc', title: 'NVD: CVE-2021-44228', url: 'https://nvd.nist.gov/vuln/detail/CVE-2021-44228' },
+    { type: 'doc', title: 'OWASP Vulnerable Dependency Management Cheat Sheet', url: 'https://cheatsheetseries.owasp.org/cheatsheets/Vulnerable_Dependency_Management_Cheat_Sheet.html' }
+  ]
+},
+{
+  id: 'scenario-076',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Hoá đơn AWS tháng này là 36.000 USD, gấp 3 tháng trước, trong khi traffic chỉ tăng 15%. CFO hỏi nguyên nhân trong 2 ngày. Bạn tìm và xử lý thế nào?',
+  a: `**Tóm tắt:** đừng đoán; đi từ trên xuống bằng **Cost Explorer**: nhóm theo service, rồi theo **usage type**, theo account/tag, theo ngày để thấy **ngày bắt đầu tăng**, rồi đối chiếu với lịch deploy. Các "thủ phạm" hay gặp khi chi phí tăng mà traffic không tăng: **NAT Gateway data processing**, **CloudWatch Logs ingestion**, **data transfer giữa AZ/ra Internet**, tài nguyên bị bỏ quên (EBS, snapshot, môi trường test), và autoscaling không scale xuống. Sửa xong thì gắn chặn: Budgets, Cost Anomaly Detection, tag bắt buộc và người sở hữu chi phí.
+
+### Hiểu nhanh
+Hoá đơn điện tăng gấp ba thì không đi kiểm tra từng bóng đèn; bạn xem đồng hồ từng tầng, rồi từng phòng, rồi ngày nào bắt đầu tăng và hôm đó ai lắp thêm cái gì.
+
+### Bước 1: khoanh vùng trong 1 giờ
+1. Cost Explorer, granularity **Daily**, group by **Service**: thấy đường gấp khúc tăng từ ngày 8.
+2. Lọc service tăng nhiều nhất, group by **Usage type**. Ví dụ: EC2-Other tăng mạnh, usage type là {{NatGateway-Bytes}}; CloudWatch tăng, usage type là {{DataProcessing-Bytes}} (log ingestion).
+3. Group by **tag** (team, service) hoặc linked account để biết ai sở hữu.
+4. Đối chiếu ngày 8 với lịch deploy: release đó thêm gì?
+
+### Ví dụ một ca thật (số làm tròn, giá us-east-1 tham khảo)
+| Hạng mục | Tháng trước | Tháng này | Nguyên nhân |
+|---|---|---|---|
+| NAT Gateway xử lý dữ liệu | 600 | 9.000 | service ảnh mới tải ảnh gốc từ S3 qua NAT: khoảng 200 TB × 0,045 USD/GB |
+| CloudWatch Logs ingestion | 900 | 7.500 | release ngày 8 để log DEBUG, khoảng 15 TB × 0,50 USD/GB |
+| Data transfer giữa AZ | 700 | 3.500 | consumer gọi chéo AZ cho mỗi message |
+| EBS + snapshot mồ côi | 300 | 1.800 | job test tạo volume không xoá |
+
+Bài học: **dịch vụ "phụ" (NAT, log, transfer) mới là thứ tăng âm thầm**, vì chúng tính theo GB và không ai nhìn.
+
+### Bước 2: sửa
+- **S3 qua Gateway VPC Endpoint**: lưu lượng tới S3 (và DynamoDB) cùng region đi qua gateway endpoint, không qua NAT, và gateway endpoint không tính phí.
+- Log: trả về INFO, sampling log request thành công, đặt **retention** cho log group (mặc định là giữ vĩnh viễn), đưa log ít dùng sang lớp lưu rẻ hơn.
+- Data transfer: ưu tiên gọi trong cùng AZ (topology-aware routing trên Kubernetes, Kafka consumer {{client.rack}} để đọc từ replica cùng AZ), nén payload.
+- Dọn dẹp: volume unattached, snapshot quá hạn, môi trường preview không ai dùng; đặt lịch tắt môi trường dev ngoài giờ.
+
+### Bước 3: chặn tái phát
+- **AWS Budgets** cảnh báo theo ngưỡng thực tế và dự báo; **Cost Anomaly Detection** báo khi một service tăng bất thường (đợt này lẽ ra được báo từ ngày 9 chứ không phải cuối tháng).
+- Tag bắt buộc (team, service, env) bằng policy; báo cáo chi phí theo team mỗi tuần.
+- Với phân tích sâu: xuất dữ liệu chi phí chi tiết (Cost and Usage Report / Data Exports) vào S3 và truy vấn bằng Athena.
+- Review chi phí trong design review: "tính năng này chuyển bao nhiêu GB qua NAT/AZ mỗi ngày?".
+
+### Lỗi hay gặp
+1. Đi thẳng vào mua Savings Plans/Reserved Instance: giảm giá cho cái đang lãng phí, khoá cam kết 1–3 năm.
+2. Chỉ nhìn EC2/RDS, bỏ qua EC2-Other (NAT, EBS, transfer) và CloudWatch.
+3. Tắt log/metric hàng loạt để tiết kiệm rồi mù khi có sự cố.
+
+### Trả lời miệng 1 phút
+"Tôi không đoán mà dùng Cost Explorer theo ngày, nhóm theo service rồi theo usage type để thấy chính xác hạng mục nào tăng và tăng từ ngày nào, rồi đối chiếu với lịch deploy. Khi chi phí tăng mà traffic không tăng, thủ phạm thường là NAT Gateway, CloudWatch Logs, data transfer giữa AZ hoặc tài nguyên bị bỏ quên. Ví dụ tải S3 qua NAT thì chuyển sang gateway endpoint miễn phí, log DEBUG thì về INFO và đặt retention. Sau đó tôi bật Budgets, Cost Anomaly Detection và tag theo team để lần sau phát hiện trong một ngày chứ không phải cuối tháng."
+
+> Senior tip: báo cáo cho CFO bằng ba cột: **nguyên nhân, số tiền, đã sửa chưa**, kèm dự báo tháng sau. Lãnh đạo chấp nhận sai sót, không chấp nhận "chưa biết". Và tôi đưa chi phí thành một metric của team như latency: khi mỗi team thấy hoá đơn của mình hằng tuần, phần lớn lãng phí tự biến mất.`,
+  follow: [
+    'Vì sao NAT Gateway hay là nguồn chi phí bất ngờ trên AWS?',
+    'Khi nào nên mua Savings Plans, và vì sao không mua ngay khi thấy hoá đơn cao?',
+    'Bạn thiết kế tag và phân bổ chi phí cho 10 team dùng chung một EKS cluster thế nào?'
+  ],
+  tags: ['AWS', 'cost', 'FinOps', 'NAT Gateway', 'CloudWatch Logs', 'Cost Explorer'],
+  refs: [
+    { type: 'doc', title: 'AWS Cost Explorer', url: 'https://docs.aws.amazon.com/cost-management/latest/userguide/ce-what-is.html' },
+    { type: 'doc', title: 'Gateway endpoints for Amazon S3', url: 'https://docs.aws.amazon.com/vpc/latest/privatelink/vpc-endpoints-s3.html' },
+    { type: 'doc', title: 'AWS Cost Anomaly Detection', url: 'https://docs.aws.amazon.com/cost-management/latest/userguide/manage-ad.html' }
+  ]
+},
+{
+  id: 'scenario-077',
+  topic: 'scenario',
+  level: 'mid',
+  q: 'Pipeline CI của service order đỏ khoảng 1/4 số lần chạy, bấm "Re-run" thì thường xanh. Team đã quen bấm re-run, và tuần trước một bug thật bị merge vì ai cũng nghĩ "lại flaky". Bạn tìm và sửa test flaky thế nào ở mức code?',
+  a: `**Tóm tắt:** test flaky là test cho kết quả khác nhau khi **code không đổi**. Nguyên nhân gần như luôn thuộc vài nhóm: phụ thuộc **thứ tự chạy/state dùng chung**, **thời gian thật**, **bất đồng bộ dùng sleep**, **thứ tự không xác định** (HashMap, query không ORDER BY), **tài nguyên dùng chung** (port, DB, file). Quy trình: thu thập dữ liệu test nào flaky, tái hiện bằng cách chạy lặp và xáo thứ tự, sửa đúng nhóm nguyên nhân, và trong lúc chờ sửa thì **cách ly** (quarantine) có chủ và hạn chót thay vì bấm re-run.
+
+### Hiểu nhanh
+Một chiếc cân lúc đúng lúc sai thì người ta thôi tin cân, kể cả khi nó báo đúng. Test flaky làm hỏng chính thứ test sinh ra để cung cấp: **niềm tin**.
+
+### Bước 1: biết test nào flaky
+- Bật rerun có ghi nhận của Surefire: {{mvn test -Dsurefire.rerunFailingTestsCount=2}}; test fail rồi pass khi chạy lại sẽ được báo là "flaky" trong report thay vì im lặng.
+- Lưu kết quả test qua nhiều lần build (report JUnit XML) để xếp hạng test fail nhiều nhất.
+
+### Bước 2: tái hiện
+~~~bash
+# Chạy một test lặp 50 lần, đếm số lần fail
+for i in $(seq 1 50); do mvn -q test -Dtest=OrderServiceTest || echo "FAIL lần $i"; done
+# Xáo thứ tự class test để lộ phụ thuộc thứ tự
+mvn test -Dsurefire.runOrder=random
+~~~
+Trong JUnit 5 có thể tạm đổi {{@Test}} thành {{@RepeatedTest(200)}} để thấy tỉ lệ fail, và dùng {{@TestMethodOrder(MethodOrderer.Random.class)}}.
+
+### Bước 3: sửa theo nhóm nguyên nhân
+| Nhóm | Dấu hiệu | Cách sửa |
+|---|---|---|
+| State dùng chung | chạy riêng thì pass, chạy cả bộ thì fail | dọn DB sau mỗi test, không dùng biến static, không phụ thuộc test khác |
+| Thời gian thật | fail gần nửa đêm, cuối tháng, khác timezone CI | inject {{Clock}}, dùng {{Clock.fixed}} trong test |
+| Async + sleep | fail khi máy CI chậm | chờ theo điều kiện có timeout (Awaitility) |
+| Thứ tự không xác định | so sánh list từ HashMap/query | so sánh không theo thứ tự hoặc thêm ORDER BY |
+| Tài nguyên chung | port bị chiếm, Testcontainers chậm | port ngẫu nhiên, mỗi test dữ liệu riêng |
+
+~~~java
+// Sai: phụ thuộc thời gian thật và sleep cố định
+order.place();
+Thread.sleep(500);                                   // máy CI chậm hơn 500ms -> fail
+assertEquals(LocalDate.now(), order.getDate());      // 23:59:59.9 -> 00:00 -> fail
+
+// Đúng: thời gian cố định, chờ theo điều kiện
+Clock clock = Clock.fixed(Instant.parse("2026-01-15T10:00:00Z"), ZoneOffset.UTC);
+OrderService service = new OrderService(repo, clock);    // service nhận Clock qua constructor
+service.place(order);
+await().atMost(Duration.ofSeconds(5))                    // Awaitility: tối đa 5s, xong sớm thì đi tiếp
+       .untilAsserted(() -> assertEquals(PLACED, repo.status(order.id())));
+~~~
+
+### Bước 4: cách ly có kỷ luật
+- Đánh {{@Tag("quarantine")}}, loại khỏi pipeline chặn merge nhưng vẫn chạy ở job riêng để theo dõi.
+- Mỗi test bị cách ly phải có ticket, **người sở hữu và hạn chót** (ví dụ 2 tuần), nếu không danh sách cách ly thành bãi rác.
+- Theo dõi chỉ số: tỉ lệ build đỏ do flaky, số test đang cách ly.
+
+### Lỗi hay gặp
+1. Tăng sleep từ 500ms lên 2s: chậm hơn và vẫn flaky trên máy chậm hơn.
+2. Bật retry toàn bộ test vĩnh viễn: che cả race condition thật trong code production.
+3. Xoá test "vì flaky": đôi khi test flaky đang bắt một bug concurrency thật.
+
+### Trả lời miệng 1 phút
+"Test flaky là test cho kết quả khác nhau khi code không đổi, và nó làm team mất niềm tin vào CI, như tuần trước bug thật đã lọt. Tôi bật rerun của Surefire để report đánh dấu test flaky, rồi tái hiện bằng cách chạy lặp và xáo thứ tự. Nguyên nhân thường là state dùng chung giữa test, thời gian thật, sleep cố định với code async, thứ tự không xác định hoặc port/DB dùng chung. Tôi sửa bằng inject Clock, Awaitility, dọn dữ liệu mỗi test. Trong lúc chờ sửa, test bị cách ly có ticket, người sở hữu và hạn chót, không bấm re-run vô hạn."
+
+> Senior tip: một phần đáng kể test flaky thực ra là **bug thật** trong code production (race condition, phụ thuộc timezone). Trước khi "sửa test", tôi luôn hỏi: người dùng có thể gặp đúng tình huống này không? Nếu có, sửa code chứ không sửa test.`,
+  follow: [
+    'Vì sao inject Clock tốt hơn dùng mock static cho LocalDate.now()?',
+    'Retry tự động test fail trên CI có hại gì nếu để lâu dài?',
+    'Làm sao cô lập dữ liệu giữa các test integration dùng chung một database Testcontainers?'
+  ],
+  tags: ['flaky test', 'CI', 'JUnit 5', 'Awaitility', 'Clock', 'Surefire'],
+  refs: [
+    { type: 'doc', title: 'Maven Surefire: Rerun failing tests', url: 'https://maven.apache.org/surefire/maven-surefire-plugin/examples/rerun-failing-tests.html' },
+    { type: 'article', title: 'Martin Fowler: Eradicating Non-Determinism in Tests', url: 'https://martinfowler.com/articles/nonDeterminism.html' }
+  ]
+},
+{
+  id: 'scenario-078',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Đội on-call nhận khoảng 300 alert mỗi tuần, hơn 90% không cần làm gì, nhiều người tắt thông báo ban đêm. Tuần trước API thanh toán lỗi 40 phút mà không ai phản ứng vì alert thật chìm giữa đống alert rác. Bạn xử lý alert fatigue thế nào?',
+  a: `**Tóm tắt:** alert gọi người dậy (page) chỉ nên dành cho thứ **người dùng đang chịu ảnh hưởng và cần con người hành động ngay**. Tôi kiểm kê toàn bộ alert theo dữ liệu (alert nào kêu, bao nhiêu lần, có ai hành động không), xoá hoặc hạ cấp alert không hành động được thành ticket/dashboard, chuyển sang **alert theo triệu chứng dựa trên SLO** (burn rate) thay vì theo nguyên nhân (CPU, GC), gom nhóm và chống lặp ở Alertmanager, và bắt buộc mỗi page phải có runbook. Mục tiêu đo được: vài page mỗi ca trực, gần như tất cả đều cần hành động.
+
+### Hiểu nhanh
+Chuông báo cháy kêu mỗi khi có người nấu ăn thì cả toà nhà sẽ học cách lờ nó đi, và hôm cháy thật cũng không ai chạy. Vấn đề không phải người trực lười, mà là **hệ thống dạy họ lờ đi**.
+
+### Bước 1: kiểm kê bằng dữ liệu
+Xuất lịch sử alert 4 tuần, mỗi alert ghi: số lần kêu, số lần có người hành động, thời gian tự hết.
+| Alert | Lần/tuần | Có hành động | Quyết định |
+|---|---|---|---|
+| CPU > 80% | 85 | 0 | xoá (CPU cao mà latency tốt là hiệu quả, không phải sự cố) |
+| Disk > 70% | 40 | 2 | chuyển thành ticket, đổi sang "đầy trong 4 giờ nữa" dựa trên tốc độ tăng |
+| Pod restart | 60 | 3 | gom theo service, chỉ page khi ảnh hưởng SLO |
+| Error rate payment > 5% | 2 | 2 | giữ, đây là alert thật |
+
+### Bước 2: alert theo triệu chứng và SLO
+Ví dụ SLO: 99,9% request thanh toán thành công trong 30 ngày, tức error budget 0,1%. **Burn rate** là tốc độ tiêu budget: burn rate 1 nghĩa là tiêu hết đúng sau 30 ngày; burn rate 14,4 nghĩa là trong 1 giờ đã tiêu 2% budget của cả tháng.
+Theo SRE Workbook của Google, dùng **nhiều cửa sổ**:
+- Page: burn rate > 14,4 trong 1 giờ **và** trong 5 phút (cửa sổ ngắn giúp alert tự tắt nhanh khi đã hết lỗi).
+- Page: burn rate > 6 trong 6 giờ và 30 phút.
+- Ticket: burn rate > 1 trong 3 ngày.
+
+~~~yaml
+- alert: PaymentErrorBudgetFastBurn
+  expr: |
+    (sum(rate(http_server_requests_seconds_count{service="payment",status=~"5.."}[1h]))
+      / sum(rate(http_server_requests_seconds_count{service="payment"}[1h]))) > (14.4 * 0.001)
+    and
+    (sum(rate(http_server_requests_seconds_count{service="payment",status=~"5.."}[5m]))
+      / sum(rate(http_server_requests_seconds_count{service="payment"}[5m]))) > (14.4 * 0.001)
+  labels:
+    severity: page
+  annotations:
+    runbook_url: https://wiki.acme.vn/runbooks/payment-errors
+~~~
+Vụ 40 phút lỗi tuần trước: lỗi 30% thì burn rate là 300, alert này kêu trong vài phút.
+
+### Bước 3: giảm nhiễu kỹ thuật
+- Alertmanager: {{group_by}} theo service/alertname để 50 pod restart thành **một** thông báo; {{repeat_interval}} hợp lý; {{inhibit_rules}} để khi "cả cluster mất kết nối DB" thì không kêu thêm 30 alert con.
+- Mỗi alert severity page phải có runbook: kiểm tra gì, lệnh gì, khi nào escalate.
+
+### Bước 4: quy trình
+- Review alert hằng tuần trong buổi bàn giao on-call: alert nào kêu mà không hành động thì sửa hoặc xoá ngay tuần đó.
+- Đo: số page mỗi ca, tỉ lệ page có hành động, thời gian từ page đến acknowledge.
+
+### Lỗi hay gặp
+1. Alert theo nguyên nhân (CPU, heap, GC) thay vì theo triệu chứng người dùng thấy.
+2. Ngưỡng tĩnh không cửa sổ thời gian: chạm ngưỡng một lần cũng kêu.
+3. Gửi mọi alert vào cùng một kênh Slack, kể cả cảnh báo thông tin.
+4. Sợ xoá alert: "lỡ cần thì sao". Alert không ai hành động có hại hơn không có.
+
+### Trả lời miệng 1 phút
+"Alert rác dạy người trực lờ đi, nên alert thật bị bỏ qua. Tôi kiểm kê bốn tuần lịch sử: alert nào kêu mà không ai hành động thì xoá hoặc hạ thành ticket. Page chỉ dành cho triệu chứng ảnh hưởng người dùng, đo bằng SLO và burn rate nhiều cửa sổ, ví dụ burn rate 14,4 trong cả 1 giờ và 5 phút. Tôi gom nhóm và inhibit ở Alertmanager, mỗi page có runbook, và review alert mỗi tuần khi bàn giao on-call. Mục tiêu là vài page mỗi ca và gần như page nào cũng cần hành động."
+
+> Senior tip: con số tôi theo dõi là **tỉ lệ page có hành động**. Dưới khoảng 50% là hệ thống alert đang hỏng. Và khi thuyết phục team xoá alert, tôi đổi câu hỏi từ "lỡ cần thì sao" thành "lần cuối alert này giúp ta phát hiện sự cố là khi nào?". Thường không ai nhớ.`,
+  follow: [
+    'Vì sao alert theo burn rate cần cả cửa sổ dài và cửa sổ ngắn?',
+    'Alert theo nguyên nhân như CPU, heap có còn chỗ đứng không, đặt ở đâu?',
+    'Bạn thiết kế lịch on-call và bàn giao thế nào cho team 6 người?'
+  ],
+  tags: ['alert fatigue', 'SLO', 'burn rate', 'Prometheus', 'Alertmanager', 'on-call'],
+  refs: [
+    { type: 'book', title: 'Google SRE Workbook: Alerting on SLOs', url: 'https://sre.google/workbook/alerting-on-slos/' },
+    { type: 'doc', title: 'Prometheus Alertmanager', url: 'https://prometheus.io/docs/alerting/latest/alertmanager/' }
+  ]
+},
+{
+  id: 'scenario-079',
+  topic: 'scenario',
+  level: 'mid',
+  q: '2 giờ sáng, service report chạy trên VM báo {{java.io.IOException: No space left on device}}, ghi file tạm thất bại và app ngừng nhận request. On-call đã {{rm}} file log 40 GB nhưng {{df -h}} vẫn báo 100%. Bạn xử lý thế nào, và làm sao để không tái diễn (cả trên VM và Kubernetes)?',
+  a: `**Tóm tắt:** xoá file đang được process mở **không giải phóng dung lượng**: Linux chỉ xoá tên file, dữ liệu còn đó cho tới khi process đóng file. Tìm bằng {{lsof +L1}}, giải phóng bằng cách truncate qua {{/proc/<pid>/fd}} hoặc restart process. Nguyên nhân gốc thường là log không có giới hạn tổng dung lượng (Spring Boot mặc định {{total-size-cap}} = 0, tức không giới hạn) cộng với một vòng lặp log exception. Phòng ngừa: rolling policy có {{max-file-size}}, {{max-history}}, {{total-size-cap}}; trên Kubernetes thì log ra stdout và đặt giới hạn {{ephemeral-storage}}; alert theo **tốc độ đầy** chứ không chỉ theo phần trăm.
+
+### Hiểu nhanh
+File trên Linux giống một cuốn sách trong thư viện có **phiếu mục lục**. {{rm}} chỉ xé phiếu mục lục. Nếu còn người đang đọc cuốn sách (process đang mở file), sách vẫn nằm trên kệ, chiếm chỗ, cho tới khi người đó trả sách.
+
+### Xử lý khẩn từng bước
+~~~bash
+df -h                                   # phân vùng nào đầy
+df -i                                   # hết inode cũng báo "No space left" dù còn GB
+du -xsh /var/log/* | sort -h | tail     # thư mục nào lớn (-x: không nhảy sang phân vùng khác)
+lsof +L1                                # file đã bị xoá nhưng còn được mở (link count 0)
+# Ví dụ: java 4121 ... /var/log/report/app.log (deleted) 42949672960
+: > /proc/4121/fd/7                     # truncate về 0 qua file descriptor, không cần restart
+~~~
+- Nếu file chưa xoá: dùng {{truncate -s 0 app.log}} hoặc {{: > app.log}} thay cho {{rm}}.
+- Sau khi có chỗ trống, kiểm tra app tự hồi phục chưa; nhiều app cần restart vì đã ở trạng thái lỗi.
+
+### Tìm nguyên nhân gốc: vì sao log tới 40 GB
+1. Mở cuối file log: thường thấy **một exception lặp lại** hàng nghìn lần mỗi giây (ví dụ retry kết nối DB không backoff, mỗi lần in đủ stack trace 80 dòng).
+2. Cấu hình rolling: không có hoặc có rolling theo ngày nhưng không giới hạn kích thước.
+3. Logrotate của hệ điều hành dùng {{create}} (đổi tên file rồi tạo file mới) trong khi app vẫn ghi vào file cũ đã đổi tên; khi đó cần {{copytruncate}} hoặc để chính Logback rotate.
+
+### Sửa cấu hình Spring Boot 3 (Logback)
+~~~yaml
+logging:
+  file:
+    name: /var/log/report/app.log
+  logback:
+    rollingpolicy:
+      max-file-size: 100MB        # mỗi file tối đa 100MB rồi cắt
+      max-history: 7              # giữ 7 ngày
+      total-size-cap: 2GB         # mặc định 0 = KHÔNG giới hạn, đây là chỗ hay quên
+~~~
+Và sửa vòng lặp: retry có backoff, log lần đầu đầy đủ, các lần sau chỉ đếm (hoặc log mỗi N lần).
+
+### Trên Kubernetes thì khác gì
+| Khía cạnh | VM | Kubernetes |
+|---|---|---|
+| Ghi log ở đâu | file trên đĩa | **stdout/stderr**, agent (Fluent Bit…) gom về |
+| Ai rotate | Logback / logrotate | kubelet rotate log container ({{containerLogMaxSize}}, {{containerLogMaxFiles}}) |
+| Khi đầy | app lỗi I/O | node bị **DiskPressure**, kubelet evict pod |
+| Chặn | total-size-cap | {{resources.limits.ephemeral-storage}}: pod vượt sẽ bị evict thay vì làm đầy node |
+App ghi file log vào filesystem của container hoặc {{emptyDir}} không giới hạn có thể làm đầy đĩa node và ảnh hưởng **mọi pod khác** trên node đó.
+
+### Phòng ngừa
+- Alert theo **dự báo**: "phân vùng sẽ đầy trong 4 giờ nữa" (ví dụ {{predict_linear}} trên metric filesystem của node exporter), không chỉ "trên 80%".
+- Log và dữ liệu (file tạm, upload) ở phân vùng khác nhau để log đầy không làm chết tính năng chính.
+- Rate limit log lặp lại; không log stack trace đầy đủ cho lỗi đã biết, lặp liên tục.
+
+### Lỗi hay gặp
+1. {{rm}} file đang mở rồi tưởng đã xong.
+2. Chỉ đặt {{max-history}} mà không có {{total-size-cap}}: 7 ngày × 40 GB vẫn đầy.
+3. Quên kiểm tra inode ({{df -i}}): hàng triệu file nhỏ (file tạm, session) làm hết inode khi vẫn còn GB.
+
+### Trả lời miệng 1 phút
+"Xoá file đang được process mở thì Linux chỉ xoá tên, dữ liệu còn tới khi process đóng file, nên df vẫn 100%. Tôi dùng lsof +L1 tìm file đã xoá còn mở và truncate qua /proc/pid/fd, hoặc restart process. Rồi tìm vì sao log tới 40 GB: thường là một exception lặp lại không backoff, cộng với rolling policy không có total-size-cap, mà mặc định của Spring Boot là không giới hạn. Tôi đặt max-file-size, max-history, total-size-cap, sửa vòng lặp, alert theo tốc độ đầy. Trên Kubernetes thì log ra stdout và đặt giới hạn ephemeral-storage để một pod không làm đầy cả node."
+
+> Senior tip: trong mọi template service, tôi đặt sẵn {{total-size-cap}} và giới hạn {{ephemeral-storage}}, vì sự cố đầy đĩa gần như luôn đến vào ban đêm, do một lỗi khác kích hoạt. Đầy đĩa hiếm khi là nguyên nhân gốc; nó là **triệu chứng thứ hai** che khuất lỗi thật, nên sau khi dọn chỗ hãy đọc phần log trước lúc đầy.`,
+  follow: [
+    'Vì sao logrotate với tuỳ chọn create có thể không giải phóng dung lượng cho app Java?',
+    'Node Kubernetes bị DiskPressure thì kubelet xử lý thế nào, pod nào bị evict trước?',
+    'Làm sao giới hạn log lặp lại trong Logback mà không mất thông tin lỗi?'
+  ],
+  tags: ['disk full', 'logback', 'lsof', 'log rotation', 'ephemeral-storage', 'Kubernetes'],
+  refs: [
+    { type: 'doc', title: 'Spring Boot Reference: Logging', url: 'https://docs.spring.io/spring-boot/reference/features/logging.html' },
+    { type: 'doc', title: 'Kubernetes: Node-pressure Eviction', url: 'https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/' }
+  ]
+},
+{
+  id: 'scenario-080',
+  topic: 'scenario',
+  level: 'lead',
+  q: '20 giờ tối thứ Sáu, tỉ lệ thanh toán thành công giảm từ 99% xuống 60%. Trong 15 phút, 9 kỹ sư nhảy vào cùng một kênh chat, mỗi người debug một hướng, có người đã restart DB replica mà không báo ai, CSKH không biết trả lời khách, CEO nhắn riêng hỏi bạn. Bạn nhận vai điều phối (incident commander) thế nào?',
+  a: `**Tóm tắt:** việc đầu tiên của incident commander (IC) **không phải debug** mà là tạo trật tự: tuyên bố mức độ, nhận vai IC, giao vai rõ ràng (người dẫn kỹ thuật, người lo giao tiếp, người ghi chép), một kênh duy nhất, **mọi thay đổi production phải báo trước trong kênh**. Ưu tiên **giảm tác động trước, tìm nguyên nhân sau** (rollback, tắt feature flag, failover). Cập nhật trạng thái theo nhịp cố định (ví dụ 30 phút) bằng mẫu có sẵn, và chính thức đóng sự cố bằng tiêu chí rõ ràng.
+
+### Hiểu nhanh
+Một vụ cháy có 9 người tự cầm vòi phun mỗi người một hướng thì còn tệ hơn 3 người làm theo một chỉ huy. IC giống chỉ huy hiện trường: không tự dập lửa, mà quyết định ai làm gì, thông tin đi đâu.
+
+### 5 phút đầu: câu nói cụ thể
+Gõ vào kênh (hoặc nói trên call):
+"Tôi là IC cho sự cố này, mức **SEV1**: thanh toán thành công 60%. Kênh duy nhất là #inc-0412-payment, call ở link X.
+- **Nam** dẫn kỹ thuật, quyết định hướng điều tra.
+- **Lan** lo giao tiếp: CSKH, trang trạng thái, lãnh đạo. Không ai khác trả lời lãnh đạo.
+- **Huy** ghi timeline: thời điểm, hành động, ai làm.
+- **Từ giờ, mọi thay đổi trên production (restart, deploy, đổi config) phải gõ vào kênh và chờ Nam đồng ý.**
+- Ai không có vai thì rời call, ở chế độ sẵn sàng; cần ai tôi sẽ gọi tên."
+
+Câu trả lời cho CEO (qua Lan, hoặc một lần duy nhất từ bạn): "Sự cố thanh toán, khoảng 40% giao dịch lỗi từ 19:52. Team đã được huy động, cập nhật tiếp lúc 20:45."
+
+### Vai trò và vì sao tách
+| Vai | Làm | Không làm |
+|---|---|---|
+| IC | quyết định, phân việc, nhịp cập nhật | tự debug sâu |
+| Tech lead | dẫn điều tra, đề xuất và duyệt thao tác | trả lời lãnh đạo |
+| Comms | CSKH, status page, stakeholder | sửa hệ thống |
+| Scribe | timeline chính xác | bàn luận |
+IC mà tự debug sẽ mất toàn cảnh: không ai thấy 2 người đang làm hai thay đổi xung đột.
+
+### Giảm tác động trước
+Câu IC hỏi liên tục: **"Có gì thay đổi gần đây? Ta có thể quay lại không?"**
+- Deploy trong 2 giờ qua? Rollback ngay, kể cả khi chưa chắc nó là nguyên nhân (rollback rẻ, đoán sai thì rollback lại).
+- Feature flag mới bật? Tắt.
+- Một đối tác thanh toán lỗi? Chuyển traffic sang đối tác dự phòng.
+Tìm nguyên nhân gốc là việc của postmortem; trong sự cố, mục tiêu là **khách thanh toán được**.
+
+### Nhịp cập nhật: mẫu cố định
+~~~text
+[20:45] SEV1 thanh toán - Cập nhật #2
+Tác động: ~40% giao dịch thanh toán lỗi từ 19:52, khách nhận thông báo "thử lại".
+Đã làm: rollback payment-service về 3.18 lúc 20:31, chưa cải thiện.
+Đang làm: kiểm tra pool kết nối tới đối tác X (Nam, Hà).
+Quyết định tiếp: nếu 21:00 chưa rõ, chuyển 100% sang đối tác Y.
+Cập nhật tiếp: 21:15.
+~~~
+
+### Khung ra quyết định khi chưa chắc chắn
+- Hành động **đảo ngược được** và rẻ (rollback, tắt flag, chuyển traffic): làm ngay, không cần chắc chắn.
+- Hành động **khó đảo ngược** (xoá dữ liệu, failover DB chính, chạy script sửa dữ liệu): cần tech lead + IC đồng ý, ghi lại lý do.
+- Đặt **mốc thời gian quyết định**: "nếu 21:00 chưa rõ thì làm phương án B", tránh tê liệt.
+
+### Đóng sự cố và bàn giao
+- Tiêu chí đóng: tỉ lệ thành công trở lại baseline trong 30 phút liên tục.
+- Sự cố kéo dài hơn 3–4 giờ: bàn giao IC cho người mới bằng một bản tóm tắt, người mệt ra quyết định tồi.
+- Hẹn postmortem trong 2–3 ngày làm việc; xử lý giao dịch dở dang (đối soát) là việc tiếp theo, có người nhận.
+
+### Lỗi hay gặp
+1. Người có kinh nghiệm nhất làm IC rồi lao vào debug, không ai điều phối.
+2. Không khoá thay đổi: hai người cùng sửa, không biết thay đổi nào có tác dụng.
+3. Im lặng với stakeholder vì "chưa có gì để nói": im lặng làm lãnh đạo nhắn từng kỹ sư, gây nhiễu thêm.
+4. Ưu tiên tìm nguyên nhân trong khi khách vẫn lỗi.
+
+### Trả lời miệng 1 phút
+"Việc đầu tiên của tôi không phải debug mà là tạo trật tự. Tôi tuyên bố SEV1, nhận vai IC, giao người dẫn kỹ thuật, người lo giao tiếp và người ghi timeline, dồn về một kênh, và khoá thay đổi: mọi thao tác production phải báo trong kênh và được duyệt. Người không có vai rời call. Tôi ưu tiên giảm tác động: rollback, tắt flag, chuyển đối tác, vì hành động đảo ngược được thì làm ngay. Tôi cập nhật mỗi 30 phút theo mẫu tác động, đã làm, đang làm, lần cập nhật tiếp, để CEO và CSKH không phải hỏi từng người. Đóng sự cố khi chỉ số ổn định đủ lâu, rồi hẹn postmortem."
+
+> Senior tip: thứ quyết định một sự cố được xử lý tốt nằm ở **trước** sự cố: định nghĩa SEV sẵn, kênh tạo tự động, mẫu cập nhật, danh sách người dự phòng, và luyện tập (game day). Tôi cũng xoay vòng vai IC cho cả người không phải giỏi kỹ thuật nhất, vì IC cần bình tĩnh và giao tiếp rõ hơn là biết sâu mọi hệ thống.`,
+  follow: [
+    'Khi tech lead và IC bất đồng về rollback trong lúc sự cố, ai quyết định?',
+    'Bạn định nghĩa các mức SEV1, SEV2, SEV3 thế nào cho hệ thanh toán?',
+    'Bạn chuẩn bị và luyện tập incident response cho team thế nào khi chưa có sự cố?'
+  ],
+  tags: ['incident commander', 'incident response', 'communication', 'SEV', 'lead', 'on-call'],
+  refs: [
+    { type: 'book', title: 'Google SRE Book: Managing Incidents', url: 'https://sre.google/sre-book/managing-incidents/' },
+    { type: 'doc', title: 'PagerDuty Incident Response Documentation', url: 'https://response.pagerduty.com/' }
+  ]
+},
+{
+  id: 'scenario-081',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Một kỹ sư 1 năm kinh nghiệm chạy migration {{CREATE INDEX}} trên bảng {{orders}} 80 triệu dòng lúc 10 giờ sáng, khoá ghi bảng 40 phút, không ai đặt được hàng. Trưởng phòng muốn postmortem "ghi rõ ai làm sai để rút kinh nghiệm". Bạn viết postmortem không đổ lỗi thế nào và nói gì với trưởng phòng?',
+  a: `**Tóm tắt:** postmortem không đổ lỗi (blameless) **không có nghĩa là không ai chịu trách nhiệm**; nó có nghĩa là hỏi "**hệ thống nào cho phép** một thao tác bình thường gây sập 40 phút?" thay vì "ai sai?". Lý do thực dụng: khi bị nêu tên, mọi người giấu thông tin, và lần sau một người khác sẽ mắc đúng lỗi đó vì hệ thống không đổi. Postmortem gồm: tóm tắt, tác động có số liệu, timeline, nguyên nhân và các yếu tố góp phần, điều gì làm tốt, **action item có người sở hữu và hạn chót**. Với trưởng phòng, tôi chuyển mục tiêu "rút kinh nghiệm" sang "**không để ai lặp lại được**", và đó là việc của hệ thống.
+
+### Hiểu nhanh
+Nếu một y tá tiêm nhầm thuốc vì hai lọ thuốc có nhãn giống hệt nhau, đuổi y tá không làm bệnh viện an toàn hơn; đổi nhãn thì có. Hàng không và y tế học được điều này sớm: phạt cá nhân làm báo cáo sự cố biến mất.
+
+### Hiểu kỹ thuật trước khi viết
+Trên PostgreSQL, {{CREATE INDEX}} thường lấy khoá chặn **INSERT/UPDATE/DELETE** (vẫn cho đọc) suốt thời gian build index; 80 triệu dòng mất 40 phút. {{CREATE INDEX CONCURRENTLY}} không chặn ghi nhưng chậm hơn, không chạy được trong transaction, và nếu lỗi sẽ để lại index INVALID cần dọn. Không có gì trong quy trình nói với kỹ sư điều này.
+
+### Cấu trúc postmortem
+~~~text
+1. Tóm tắt: 10:02-10:43, không tạo được đơn hàng do migration khoá ghi bảng orders.
+2. Tác động: ~3.100 đơn thất bại, ước tính 1,2 tỉ đồng doanh thu chậm/mất, 420 ticket CSKH.
+3. Timeline: 09:58 merge PR #1842 | 10:02 Flyway chạy khi deploy | 10:05 alert lỗi tạo đơn
+   | 10:21 xác định khoá trên orders | 10:43 index xong, tự hồi phục.
+4. Nguyên nhân và yếu tố góp phần (xem dưới).
+5. Điều làm tốt: alert kêu sau 3 phút; CSKH được báo lúc 10:12.
+6. Điều chưa tốt / may mắn: không có cách huỷ an toàn khi đang chạy.
+7. Action item: việc, người sở hữu, hạn chót, ticket.
+~~~
+
+### Viết lại câu đổ lỗi thành câu về hệ thống
+| Đổ lỗi | Không đổ lỗi |
+|---|---|
+| "An đã chạy migration sai." | "Migration tạo index không có CONCURRENTLY được chạy tự động khi deploy vào giờ cao điểm." |
+| "Reviewer không đọc kỹ." | "Checklist review không có mục về khoá bảng; CI không phát hiện câu lệnh khoá trên bảng lớn." |
+| "An thiếu kinh nghiệm." | "Kiến thức về khoá của DDL chỉ nằm trong đầu 2 người; không có tài liệu hay công cụ kiểm tra." |
+
+### Các yếu tố góp phần (nhiều hơn một, luôn luôn)
+1. Flyway chạy migration trong lúc deploy, không tách migration nguy hiểm.
+2. Không có {{lock_timeout}}: nếu đặt {{SET lock_timeout = '5s'}}, migration sẽ tự huỷ thay vì chặn 40 phút.
+3. CI không có linter cho migration (ví dụ cảnh báo CREATE INDEX không CONCURRENTLY trên bảng lớn).
+4. Staging có 50 nghìn dòng, migration chạy 1 giây nên không ai thấy rủi ro.
+5. Deploy lúc 10 giờ sáng giờ cao điểm.
+
+### Action item tốt và tồi
+- Tồi: "Cẩn thận hơn khi viết migration." (không đo được, không ai sở hữu)
+- Tốt: "Thêm kiểm tra migration trong CI chặn CREATE INDEX không CONCURRENTLY, ALTER TABLE đổi kiểu cột; owner: Huy; hạn: 15/11."
+- Tốt: "Mặc định lock_timeout 5s cho user chạy migration; owner: Lan; hạn: 08/11."
+
+### Nói với trưởng phòng: kịch bản
+"Em hiểu anh muốn chắc chuyện này không lặp lại, em cũng muốn vậy. Nếu postmortem ghi tên An, lần sau người mắc lỗi sẽ im lặng 20 phút trước khi báo, và sự cố sẽ dài hơn. Quan trọng hơn: bất kỳ ai trong team cũng có thể chạy đúng migration này, vì không có gì chặn họ. Em đề xuất postmortem tập trung vào 4 thay đổi hệ thống, có owner và hạn chót, em chịu trách nhiệm theo dõi chúng. Về phát triển cá nhân của An, em sẽ trao đổi riêng, không qua tài liệu sự cố."
+Trách nhiệm (accountability) vẫn còn: thuộc về **người sở hữu action item** và về bạn, người lead.
+
+### Lỗi hay gặp
+1. Postmortem chỉ có một nguyên nhân ("lỗi con người").
+2. Action item không có owner/hạn chót, 3 tháng sau không ai làm.
+3. Họp postmortem như phiên toà; người liên quan im lặng.
+4. Không chia sẻ rộng: team khác lặp lại đúng lỗi đó.
+
+### Trả lời miệng 1 phút
+"Blameless không phải là không ai chịu trách nhiệm, mà là hỏi hệ thống nào cho phép một thao tác bình thường làm sập 40 phút. Ở đây có ít nhất bốn yếu tố: migration chạy tự động lúc deploy giờ cao điểm, không có lock_timeout, CI không kiểm tra câu lệnh khoá bảng, staging quá nhỏ để thấy rủi ro. Postmortem gồm tác động có số liệu, timeline, các yếu tố góp phần, điều làm tốt và action item có owner, hạn chót. Với trưởng phòng, tôi giải thích nêu tên làm người ta giấu lỗi và bất kỳ ai cũng có thể mắc lỗi này; trách nhiệm nằm ở owner action item và ở tôi."
+
+> Senior tip: tôi đo chất lượng văn hoá postmortem bằng **tỉ lệ action item hoàn thành đúng hạn** và bằng việc người gây ra sự cố có **tự nguyện** viết hoặc trình bày postmortem không. Khi một junior tự đứng lên kể "em đã làm gì và vì sao lúc đó em nghĩ nó đúng", team đó đang học nhanh hơn mọi team khác.`,
+  follow: [
+    'Nếu một người lặp lại cùng một sai sót sau khi đã có biện pháp, bạn xử lý khác thế nào?',
+    'Vì sao "5 Whys" có thể dẫn tới kết luận sai, và bạn bổ sung gì?',
+    'Bạn theo dõi để action item sau postmortem thực sự được làm thế nào?'
+  ],
+  tags: ['postmortem', 'blameless', 'incident', 'PostgreSQL', 'migration', 'lead'],
+  refs: [
+    { type: 'book', title: 'Google SRE Book: Postmortem Culture', url: 'https://sre.google/sre-book/postmortem-culture/' },
+    { type: 'doc', title: 'PostgreSQL: CREATE INDEX', url: 'https://www.postgresql.org/docs/current/sql-createindex.html' }
+  ]
+},
+{
+  id: 'scenario-082',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Hai senior trong team bạn tranh luận 3 tuần về thiết kế luồng hoàn tiền: một người muốn event-driven qua Kafka, người kia muốn gọi REST đồng bộ kèm outbox. PR bị comment qua lại 60 lần, các thành viên khác chờ, sprint trễ. Bạn là lead, xử lý thế nào?',
+  a: `**Tóm tắt:** vấn đề không còn là kỹ thuật mà là **thiếu cơ chế ra quyết định**. Tôi: (1) rút cuộc tranh luận khỏi PR; (2) xác định loại quyết định (dễ hay khó đảo ngược) để biết cần đầu tư bao nhiêu; (3) thống nhất **tiêu chí trước, phương án sau**, viết thành ADR ngắn; (4) nếu dữ liệu còn thiếu thì làm spike có thời hạn và tiêu chí đo; (5) nói rõ **ai quyết** và hạn chót; (6) sau quyết định, "disagree and commit", ghi lại điều kiện để xem xét lại. Song song, nói chuyện riêng với từng người.
+
+### Hiểu nhanh
+Hai đầu bếp giỏi cãi nhau món nên hấp hay nướng; cả bếp đứng chờ. Bếp trưởng không cần giỏi hơn cả hai, chỉ cần hỏi "khách cần gì, trong bao lâu, bếp có gì", rồi quyết, và cam kết chịu trách nhiệm quyết định đó.
+
+### Bước 1: dừng tranh luận trên PR
+PR là nơi review **code**, không phải nơi quyết kiến trúc. 60 comment chữ là kênh tồi nhất cho bất đồng: mất giọng điệu, ai cũng muốn thắng trước khán giả.
+Câu nói: "Hai bạn đều có lý lẽ tốt. Mình dừng thảo luận trên PR. Thứ Năm mình họp 45 phút, mỗi bạn viết 1 trang theo cùng mẫu trước buổi họp. Cuối buổi sẽ có quyết định."
+
+### Bước 2: loại quyết định
+| Loại | Ví dụ | Cách quyết |
+|---|---|---|
+| Dễ đảo ngược (cửa hai chiều) | tên class, thư viện nội bộ | người làm quyết, nhanh |
+| Khó đảo ngược (cửa một chiều) | đồng bộ hay bất đồng bộ cho luồng tiền, schema event công khai | ADR, tiêu chí, có thể spike |
+Luồng hoàn tiền thuộc loại khó đảo ngược (ảnh hưởng đối soát, team khác tiêu thụ event), nên đáng 1–2 ngày phân tích, **không đáng 3 tuần**.
+
+### Bước 3: tiêu chí trước, phương án sau
+Hỏi cả hai đồng ý tiêu chí và trọng số **trước khi** chấm phương án; đây là bước gỡ được phần lớn bất đồng, vì thường hai người đang tối ưu hai thứ khác nhau.
+| Tiêu chí (trọng số) | Kafka event-driven | REST + outbox |
+|---|---|---|
+| Đúng tiền, không mất/trùng (3) | 2 | 3 |
+| Khách thấy kết quả ngay (2) | 1 | 3 |
+| Team khác cần nghe sự kiện hoàn tiền (2) | 3 | 2 (outbox vẫn phát event) |
+| Team đã vận hành được (2) | 1 (chưa có Kafka ở team này) | 3 |
+| Tổng | 15 | 23 |
+Bảng không ra quyết định thay bạn, nhưng làm lộ ra đúng chỗ bất đồng thật.
+
+### Bước 4: thiếu dữ liệu thì spike
+"Chúng ta không biết Kafka cluster của platform có đáp ứng SLA 99,95% không. Minh có 3 ngày để đo, tiêu chí là X; kết quả quyết định cột 4."
+
+### Bước 5: ai quyết, và disagree and commit
+- Nói rõ từ đầu: "Nếu sau buổi họp chưa đồng thuận, tôi sẽ quyết, vì tôi chịu trách nhiệm thiết kế này."
+- Ghi ADR: bối cảnh, các phương án, quyết định, hệ quả, **điều kiện xem xét lại** (ví dụ: khi có thêm 3 consumer cần event hoàn tiền, đánh giá lại).
+- Với người "thua": "Phương án của bạn không sai; với tiêu chí hiện tại, phương án kia phù hợp hơn. Mình ghi điều kiện xem xét lại trong ADR. Mình cần bạn cùng làm cho phương án đã chọn thành công, và bạn review phần outbox vì bạn hiểu rủi ro mất event nhất."
+
+### Bước 6: nói chuyện riêng
+Tranh luận 3 tuần thường có lý do ngoài kỹ thuật: muốn được ghi nhận, lo bị đánh giá thấp, muốn học công nghệ mới. Hỏi riêng: "Với bạn, điều gì quan trọng nhất ở thiết kế này?" Câu trả lời giúp bạn giao việc phù hợp (ví dụ người muốn làm Kafka có thể dẫn POC cho một luồng khác ít rủi ro).
+
+### Lỗi hay gặp
+1. Để tranh luận "tự hết": nó không hết, chỉ ngầm hơn.
+2. Lead chọn phe sớm, không cho mỗi bên trình bày.
+3. Biểu quyết đa số cho quyết định kỹ thuật khó: số đông không chịu trách nhiệm.
+4. Quyết xong không ghi lại; 6 tháng sau tranh luận lại từ đầu.
+
+### Trả lời miệng 1 phút
+"Ba tuần tranh luận nghĩa là thiếu cơ chế quyết định chứ không thiếu ý tưởng. Tôi rút tranh luận khỏi PR, hẹn một buổi họp có hạn chót và nói rõ nếu không đồng thuận thì tôi quyết. Luồng hoàn tiền là quyết định khó đảo ngược nên đáng phân tích, nhưng tính bằng ngày chứ không bằng tuần. Tôi cho hai bên thống nhất tiêu chí và trọng số trước, rồi mới chấm phương án; phần thiếu dữ liệu thì spike có thời hạn. Quyết xong ghi ADR kèm điều kiện xem xét lại, yêu cầu disagree and commit, và nói chuyện riêng với người không được chọn để giữ động lực của họ."
+
+> Senior tip: tôi đưa vào team quy tắc "**tranh luận quá 2 vòng comment thì chuyển sang gặp trực tiếp**" và mẫu ADR một trang. Phần lớn bất đồng kỹ thuật kéo dài là do hai người tối ưu cho hai tiêu chí khác nhau mà không ai nói ra; buộc viết tiêu chí trước giải quyết được nhiều hơn mọi cuộc tranh luận về công nghệ.`,
+  follow: [
+    'Nếu chính bạn là một trong hai bên tranh luận thì bạn đảm bảo công bằng thế nào?',
+    'ADR nên chứa những gì, và lưu ở đâu để team thực sự đọc?',
+    'Bạn làm gì nếu người không được chọn tiếp tục âm thầm làm khó phương án đã chọn?'
+  ],
+  tags: ['lead', 'conflict', 'ADR', 'decision making', 'disagree and commit', 'architecture'],
+  refs: [
+    { type: 'article', title: 'Martin Fowler: Scaling the Practice of Architecture, Conversationally', url: 'https://martinfowler.com/articles/scaling-architecture-conversationally.html' },
+    { type: 'doc', title: 'Architectural Decision Records', url: 'https://adr.github.io/' }
+  ]
+},
+{
+  id: 'scenario-083',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Còn 6 tuần đến ngày ra mắt tính năng trả góp, ngày này đã hứa với đối tác ngân hàng và marketing đã chạy quảng cáo. Team 5 người mới xong khoảng 55% việc; theo tốc độ thực tế, phần còn lại cần 10 tuần. PM vẫn nói "cố gắng thêm giờ là kịp". Bạn xử lý thế nào?',
+  a: `**Tóm tắt:** báo tin xấu **sớm, bằng số liệu, kèm phương án**: dựng dự báo từ tốc độ thực tế (không phải ước lượng lạc quan), đưa ra 3–4 lựa chọn có trade-off rõ (cắt scope, dời ngày, ra mắt từng phần sau feature flag, thêm người có giới hạn), đề xuất một phương án và để người có quyền quyết định. Thường đáp án là **giữ ngày, cắt scope** theo MoSCoW: giữ "lát cắt" đi trọn luồng nghiệp vụ chính, chuyển phần còn lại sang đợt 2. Không chấp nhận "làm thêm giờ" làm kế hoạch, và không cắt chất lượng (test, bảo mật, đối soát) với tính năng liên quan tiền.
+
+### Hiểu nhanh
+Xe còn 60 km tới sân bay, máy bay cất cánh sau 30 phút, và xe chỉ chạy được 60 km/h. "Cố gắng chạy nhanh hơn" không phải kế hoạch. Các lựa chọn thật: đổi chuyến (dời ngày), bỏ bớt hành lý để đi xe máy (cắt scope), hoặc gửi trước người quan trọng nhất (ra mắt từng phần).
+
+### Bước 1: số liệu, không cảm tính
+~~~text
+Tốc độ 4 sprint gần nhất: 18, 22, 19, 21 điểm / 2 tuần -> trung bình ~20
+Còn lại: 100 điểm (đã gồm việc phát sinh trung bình 10% mỗi sprint)
+6 tuần = 3 sprint -> năng lực ~60 điểm
+Thiếu ~40 điểm, tương đương ~4 tuần
+~~~
+Làm thêm giờ: 2 tuần đầu có thể nhanh 10–20%, sau đó lỗi tăng, người mệt, tốc độ **giảm**. Thêm người mới: theo định luật Brooks, giai đoạn cuối thêm người thường làm chậm hơn vì phải hướng dẫn và phối hợp; chỉ hiệu quả nếu người đó đã quen codebase và nhận phần việc tách biệt.
+
+### Bước 2: liệt kê scope theo MoSCoW
+| Hạng mục | Mức | Ghi chú |
+|---|---|---|
+| Đăng ký trả góp 3/6/12 tháng, 1 ngân hàng đối tác | Must | cam kết hợp đồng |
+| Đối soát, hoàn tiền, audit log | Must | liên quan tiền, không cắt |
+| Trả góp 24 tháng | Should | ít khách chọn (dữ liệu thị trường ~5%) |
+| Trang quản trị tự cấu hình biểu phí | Could | tạm cấu hình bằng file/DB, ops hỗ trợ |
+| Thông báo nhắc kỳ hạn qua app | Could | dùng SMS có sẵn trong đợt 1 |
+| Ngân hàng đối tác thứ hai | Won't (đợt 1) | |
+
+### Bước 3: phương án trình lên
+| Phương án | Ngày | Scope | Rủi ro |
+|---|---|---|---|
+| A. Giữ ngày, cắt Should/Could | đúng hạn | luồng chính đầy đủ | đợt 2 sau 4–5 tuần |
+| B. Dời 4 tuần | trễ | đủ | vỡ cam kết đối tác, phí quảng cáo |
+| C. Giữ ngày, giữ scope, làm thêm giờ | "đúng hạn" | đủ trên giấy | chất lượng thấp ở tính năng tiền, rủi ro sự cố cao |
+| D. Ra mắt cho 10% khách sau feature flag, mở dần | đúng hạn | luồng chính | cần thống nhất với marketing |
+Đề xuất: A kết hợp D.
+
+### Kịch bản nói với PM
+"Em muốn báo sớm để mình còn lựa chọn. Theo tốc độ 4 sprint gần nhất, với scope hiện tại team cần khoảng 10 tuần, mình còn 6. Làm thêm giờ chỉ bù được một phần nhỏ và tăng rủi ro lỗi ở luồng tiền. Em có 4 phương án, em đề xuất giữ ngày, ra mắt luồng đăng ký trả góp 3/6/12 tháng với một ngân hàng, đầy đủ đối soát; phần trả góp 24 tháng và trang quản trị chuyển sang đợt 2 sau 4–5 tuần. Anh/chị cần quyết định trước thứ Sáu để team tập trung. Em sẽ cập nhật dự báo mỗi tuần."
+Nếu PM vẫn ép: "Em hiểu áp lực. Nếu giữ toàn bộ scope, em cần ghi nhận rủi ro bằng văn bản và anh/chị cùng em báo lên trên, vì với tính năng tiền, lỗi sau ra mắt đắt hơn trễ vài tuần."
+
+### Sau khi quyết
+- Cập nhật kế hoạch và **thông báo rõ những gì không có** ở đợt 1 cho marketing, CSKH, đối tác.
+- Ẩn phần chưa xong sau feature flag thay vì branch dài.
+- Theo dõi dự báo hằng tuần; nếu tốc độ đổi thì báo tiếp, không đợi tuần cuối.
+
+### Lỗi hay gặp
+1. Báo trễ ở tuần cuối: không còn lựa chọn nào ngoài trễ.
+2. Đưa vấn đề không kèm phương án, hoặc đưa phương án không kèm đề xuất.
+3. Cắt test, review, đối soát để kịp: nợ trả bằng sự cố production.
+4. Hứa "cố gắng" để tránh cuộc nói chuyện khó.
+
+### Trả lời miệng 1 phút
+"Tôi báo sớm bằng số liệu: tốc độ thực tế 4 sprint, phần việc còn lại, khoảng thiếu bao nhiêu tuần. Làm thêm giờ không phải kế hoạch, thêm người giai đoạn cuối thường làm chậm hơn. Tôi xếp scope theo MoSCoW, giữ nguyên đối soát và bảo mật vì là tính năng tiền, rồi đưa 3–4 phương án có trade-off và một đề xuất, thường là giữ ngày, cắt phần Should/Could sang đợt 2 và mở dần bằng feature flag. Người có quyền quyết định; nếu họ chọn giữ toàn bộ scope, tôi ghi nhận rủi ro bằng văn bản. Sau đó cập nhật dự báo mỗi tuần."
+
+> Senior tip: tôi không đợi tới khi trễ mới nói chuyện scope. Ngay từ đầu dự án, tôi thống nhất với PM danh sách Must và thứ tự cắt; khi số liệu xấu đi, cuộc nói chuyện chỉ còn là "kích hoạt kế hoạch đã thống nhất" thay vì một cuộc đàm phán căng thẳng.`,
+  follow: [
+    'Bạn ước lượng và dự báo ngày hoàn thành khi team mới, chưa có số liệu tốc độ, thế nào?',
+    'Nếu lãnh đạo bắt buộc giữ cả ngày lẫn scope, bạn làm gì?',
+    'Làm sao giữ tinh thần team khi phải cắt phần việc họ đã làm dở?'
+  ],
+  tags: ['lead', 'scope', 'deadline', 'MoSCoW', 'stakeholder', 'feature flag'],
+  refs: [
+    { type: 'article', title: 'Martin Fowler: Feature Toggles', url: 'https://martinfowler.com/articles/feature-toggles.html' }
+  ]
+},
+{
+  id: 'scenario-084',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Team bạn nhận 2 kỹ sư mới vào một monolith legacy 400 nghìn dòng (Spring 4, Java 8, gần như không có tài liệu, test bao phủ 15%). Hai người trước đó mất hơn 3 tháng mới có PR đáng kể đầu tiên, một người đã nghỉ. Bạn thiết kế onboarding thế nào?',
+  a: `**Tóm tắt:** coi onboarding là một **sản phẩm có số đo** (thời gian đến PR đầu tiên, đến PR thứ 10, đến lần trực on-call đầu tiên). Bốn trụ: (1) môi trường chạy được trong **một ngày** bằng một lệnh; (2) bản đồ hệ thống tối thiểu: sơ đồ ngữ cảnh/container, một request đi xuyên hệ thống, từ điển nghiệp vụ; (3) **việc thật nhỏ từ tuần đầu** có buddy và pair programming, độ khó tăng dần; (4) người mới **cập nhật tài liệu** khi gặp chỗ sai, nên tài liệu tốt lên theo mỗi lượt onboarding. Với code thiếu test, dạy họ viết **characterization test** trước khi sửa.
+
+### Hiểu nhanh
+Đưa người mới vào thành phố lạ mà không có bản đồ, bảo "đi lòng vòng rồi sẽ quen" thì 3 tháng sau họ chỉ biết vài con phố. Cho bản đồ khu trung tâm, một người dẫn đường đi cùng tuyến chính, rồi giao việc đi các tuyến phụ, họ tự đi được sau vài tuần.
+
+### Vì sao 3 tháng
+- Mất 1–2 tuần chỉ để chạy được app (cấu hình rải rác, phụ thuộc DB dùng chung).
+- Không biết bắt đầu đọc từ đâu trong 400 nghìn dòng.
+- Sợ sửa vì không có test: sửa một chỗ vỡ chỗ khác.
+- Không có người được giao trách nhiệm hướng dẫn; ai cũng bận.
+
+### Kế hoạch theo tuần
+| Thời gian | Mục tiêu | Đầu ra đo được |
+|---|---|---|
+| Ngày 1–2 | chạy app và test local | {{docker compose up}} + một script, app chạy với dữ liệu mẫu |
+| Tuần 1 | hiểu bản đồ | đi cùng buddy theo một request "đặt hàng" từ controller tới DB; PR đầu tiên (sửa log, thêm test) |
+| Tuần 2–4 | việc thật nhỏ | 3–5 PR bug nhỏ ở một module, pair 2 buổi/tuần |
+| Tháng 2 | tính năng vừa | một tính năng có thiết kế ngắn, review kỹ |
+| Tháng 3 | tự chủ | trực on-call cùng người cũ (shadow), rồi đảo vai (reverse shadow) |
+
+### Tài liệu tối thiểu, không phải tài liệu đầy đủ
+- **Sơ đồ ngữ cảnh và container** (theo mô hình C4): hệ thống nói chuyện với ai, gồm những khối nào.
+- "Một request đi đâu": luồng đặt hàng qua những class/bảng nào.
+- Từ điển nghiệp vụ: "hợp đồng", "kỳ", "tất toán" trong code tên là gì.
+- Danh sách "vùng nguy hiểm": module nào ít test, chạm vào phải hỏi ai.
+- Quy tắc: **người mới sửa tài liệu ngay khi thấy sai**, đó là PR đầu tiên lý tưởng.
+
+### Kỹ thuật an toàn khi sửa code legacy
+~~~java
+// Characterization test: ghi lại hành vi HIỆN TẠI (kể cả hành vi lạ) trước khi sửa
+@Test
+void feeCalculation_currentBehavior() {
+    FeeCalculator calc = new FeeCalculator();
+    // Giá trị kỳ vọng lấy từ kết quả chạy thật, không phải từ đặc tả
+    assertEquals(new BigDecimal("15000"), calc.fee(new BigDecimal("1000000"), 3));
+    assertEquals(new BigDecimal("0"), calc.fee(BigDecimal.ZERO, 3)); // hành vi biên đang có
+}
+// Sau khi có lưới test này, người mới refactor/sửa bug mà biết ngay nếu làm đổi hành vi
+~~~
+
+### Vai trò buddy
+- Một người cụ thể, được **giảm 20–30% khối lượng sprint** trong tháng đầu; không giảm thì buddy chỉ còn trên giấy.
+- Gặp 15 phút mỗi ngày tuần đầu; quy tắc "kẹt quá 30 phút thì hỏi".
+- Lead hỏi người mới sau 2 tuần và 6 tuần: "Điều gì làm bạn chậm nhất?" rồi sửa đúng điều đó.
+
+### Lỗi hay gặp
+1. Tuần đầu cho "đọc code" không mục tiêu: người mới đọc mà không nhớ gì.
+2. Giao việc lớn sớm để "học nhanh": thất bại, mất tự tin.
+3. Viết bộ tài liệu 80 trang một lần: lỗi thời sau 2 tháng.
+4. Không đo, nên không biết lần onboarding này tốt hơn lần trước không.
+
+### Trả lời miệng 1 phút
+"Tôi coi onboarding như sản phẩm có số đo: thời gian tới PR đầu tiên, PR thứ 10, lần on-call đầu tiên. Ngày đầu phải chạy được app bằng một lệnh. Tuần đầu, buddy dẫn đi một request xuyên hệ thống cùng sơ đồ C4 tối thiểu và từ điển nghiệp vụ, và người mới có PR nhỏ ngay. Việc tăng dần, có pair programming; với code ít test, tôi dạy viết characterization test trước khi sửa. Buddy được giảm tải thật, người mới sửa tài liệu khi thấy sai, và tôi hỏi họ điều gì làm chậm nhất để sửa cho lượt sau."
+
+> Senior tip: mỗi người mới là **cơ hội kiểm thử miễn phí** cho tài liệu và môi trường dev của team. Tôi yêu cầu họ ghi lại mọi chỗ bị kẹt trong 2 tuần đầu; danh sách đó luôn chỉ ra nợ kỹ thuật thật mà người cũ đã quen tới mức không còn thấy.`,
+  follow: [
+    'Characterization test khác unit test viết theo đặc tả thế nào?',
+    'Bạn chọn việc đầu tiên cho người mới trong codebase legacy theo tiêu chí gì?',
+    'Bạn đo hiệu quả onboarding bằng chỉ số nào ngoài thời gian đến PR đầu tiên?'
+  ],
+  tags: ['lead', 'onboarding', 'legacy', 'characterization test', 'C4', 'mentoring'],
+  refs: [
+    { type: 'doc', title: 'The C4 model for visualising software architecture', url: 'https://c4model.com/' }
+  ]
+},
+{
+  id: 'scenario-085',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Bạn được nhờ review một PR 4.200 dòng thay đổi logic retry thanh toán, đồng thời refactor package và thêm migration DB. Tác giả muốn merge trước bản phát hành chiều thứ Sáu. Bạn review và xử lý thế nào để giảm rủi ro?',
+  a: `**Tóm tắt:** PR lớn trộn nhiều loại thay đổi thì **không review hiệu quả được**: con người bỏ sót nhiều hơn hẳn khi phải đọc hàng nghìn dòng một lúc. Tôi đề nghị **tách** (refactor thuần, migration, thay đổi hành vi), review theo **rủi ro** chứ không theo thứ tự file (logic tiền, concurrency, idempotency, migration trước), kiểm tra bằng cách chạy chứ không chỉ đọc, và đưa phần rủi ro lên production có kiểm soát (feature flag, canary, kế hoạch rollback). Nếu không tách kịp thì phần thay đổi hành vi không lên bản thứ Sáu.
+
+### Hiểu nhanh
+Kiểm tra 4.200 dòng một lần giống soát lỗi chính tả một cuốn sách trong một buổi: mắt lướt, lỗi lọt. Kinh nghiệm phổ biến (ví dụ nghiên cứu của SmartBear tại Cisco) là hiệu quả review giảm mạnh khi vượt khoảng vài trăm dòng mỗi lần và quá khoảng một giờ.
+
+### Bước 1: phân loại thay đổi
+~~~bash
+git diff --stat main...feature/payment-retry   # file nào thay đổi nhiều
+git diff -M --stat main...feature/payment-retry # -M: phát hiện file chỉ đổi tên/di chuyển
+~~~
+Thường thấy: 3.300 dòng là di chuyển package/đổi tên (rủi ro thấp), 600 dòng logic retry (rủi ro cao), 300 dòng migration + test.
+
+### Bước 2: đề nghị tách, kèm câu nói cụ thể
+"PR này có ba loại thay đổi với mức rủi ro rất khác nhau. Mình đề nghị tách: PR1 refactor thuần, không đổi hành vi, mình duyệt nhanh trong hôm nay; PR2 migration; PR3 logic retry. PR1 và PR2 có thể lên bản thứ Sáu. PR3 đụng tới tiền, mình cần thời gian review kỹ và muốn nó chạy sau feature flag. Bạn thấy sao?"
+Mục tiêu là cùng giảm rủi ro, không phải chặn người khác; luôn đưa đường đi tiếp.
+
+### Bước 3: review theo rủi ro
+| Vùng | Câu hỏi bắt buộc |
+|---|---|
+| Retry thanh toán | Retry có **idempotency key** không? Timeout không rõ kết quả có bị trừ tiền hai lần? Lỗi nào retry, lỗi nào không (4xx nghiệp vụ không retry)? Có backoff và giới hạn số lần? |
+| Transaction | Gọi HTTP bên trong {{@Transactional}}? Trạng thái được lưu trước hay sau khi gọi đối tác? |
+| Concurrency | Hai instance cùng retry một giao dịch thì sao? Có khoá hoặc trạng thái chặn không? |
+| Migration | Khoá bảng lớn? Tương thích ngược với bản code cũ đang chạy trong lúc rolling deploy? |
+| Quan sát | Có metric số lần retry, log có correlation id, alert khi retry tăng? |
+| Test | Có test cho timeout, lỗi giữa chừng, trùng request, không chỉ happy path? |
+
+### Bước 4: kiểm tra bằng cách chạy
+- Checkout branch, chạy test, cố ý làm hỏng một dòng quan trọng xem test có fail không (nếu không, test chưa bảo vệ gì).
+- Với migration: chạy trên bản sao dữ liệu cỡ production hoặc ít nhất ước lượng thời gian và loại khoá.
+
+### Bước 5: đưa lên production có kiểm soát
+- Logic retry mới sau **feature flag**, bật cho 5% giao dịch, theo dõi tỉ lệ thành công, số lần retry, giao dịch trùng.
+- Kế hoạch rollback viết sẵn: tắt flag; migration phải tương thích ngược để không cần rollback DB.
+- Không phát hành thay đổi tiền chiều thứ Sáu khi cuối tuần ít người trực, trừ khi bắt buộc.
+
+### Lỗi hay gặp
+1. Duyệt "LGTM" vì ngại hoặc vì quá dài để đọc.
+2. Comment 80 ý về đặt tên trong khi bỏ sót lỗi idempotency.
+3. Chặn PR mà không đưa cách đi tiếp, gây căng thẳng.
+4. Tin vào CI xanh khi test chỉ phủ happy path.
+
+### Trả lời miệng 1 phút
+"PR 4.200 dòng trộn refactor, migration và logic tiền thì không ai review hiệu quả được. Tôi xem diff stat để phân loại, đề nghị tách thành refactor thuần, migration và thay đổi hành vi, và đưa đường đi tiếp: phần rủi ro thấp lên bản thứ Sáu, phần retry review kỹ sau. Tôi review theo rủi ro: idempotency, transaction, concurrency, tương thích ngược của migration, test cho lỗi giữa chừng. Tôi chạy thử, cố ý làm hỏng code xem test có bắt không. Cuối cùng đưa logic mới lên sau feature flag với tỉ lệ nhỏ và có kế hoạch rollback."
+
+> Senior tip: tôi tách comment thành "**chặn**" (đúng sai, an toàn, dữ liệu) và "**gợi ý**" (đặt tên, phong cách), ghi rõ ở đầu comment. Tác giả biết chính xác điều gì phải sửa trước khi merge, và reviewer buộc mình ưu tiên thứ quan trọng. Về lâu dài, PR nhỏ là văn hoá: tôi khuyến khích stacked PR và feature flag để không ai phải chọn giữa "PR to" và "branch sống 3 tuần".`,
+  follow: [
+    'Làm sao chia một thay đổi lớn thành nhiều PR nhỏ mà vẫn merge được vào main từng phần?',
+    'Bạn xử lý thế nào khi tác giả là người cấp cao hơn và không muốn tách PR?',
+    'Checklist review cho code có retry gọi đối tác thanh toán gồm những gì?'
+  ],
+  tags: ['code review', 'pull request', 'risk', 'feature flag', 'idempotency', 'migration'],
+  refs: [
+    { type: 'doc', title: 'Google Engineering Practices: Small CLs', url: 'https://google.github.io/eng-practices/review/developer/small-cls.html' },
+    { type: 'doc', title: 'Google Engineering Practices: What to look for in a code review', url: 'https://google.github.io/eng-practices/review/reviewer/looking-for.html' }
+  ]
+},
+{
+  id: 'scenario-086',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Kỹ sư duy nhất hiểu module đối soát thanh toán vừa báo nghỉ việc, còn 4 tuần. Module chạy batch mỗi đêm, mỗi tháng có 2–3 lần lệch số phải xử lý tay, và chỉ anh ấy biết cách. Bạn lên kế hoạch chuyển giao kiến thức thế nào để không có sự cố sau khi anh ấy đi?',
+  a: `**Tóm tắt:** đây là rủi ro "**bus factor = 1**" đã thành hiện thực. Kế hoạch 4 tuần dựa trên **làm thật** chứ không chỉ họp: tuần 1 kiểm kê kiến thức và rủi ro; tuần 2 người nhận **quan sát** (shadow) mọi việc thật; tuần 3 **đảo vai** (reverse shadow): người nhận làm, người cũ chỉ quan sát; tuần 4 người nhận tự xử lý, người cũ chỉ là phương án dự phòng. Đầu ra đo được: runbook cho từng loại lệch, người nhận tự xử lý ít nhất một ca lệch thật, và có ít nhất **hai** người nắm module. Song song, nói chuyện thẳng thắn với người sắp nghỉ để có sự hợp tác thật.
+
+### Hiểu nhanh
+Học lái xe bằng cách nghe giảng 10 buổi thì ra đường vẫn lúng túng; ngồi ghế phụ quan sát, rồi đổi sang cầm lái có thầy ngồi cạnh, rồi tự lái, mới thật sự học được. Kiến thức vận hành phần lớn là **kiến thức ngầm** (tacit): người giỏi không tự biết mình biết gì cho tới khi bị hỏi đúng tình huống.
+
+### Tuần 1: kiểm kê
+- Danh sách mọi thứ module làm: job nào, chạy lúc nào, đọc/ghi bảng nào, gọi đối tác nào, cấu hình ở đâu, quyền truy cập gì.
+- Lịch sử 6 tháng các ca lệch: loại lệch, nguyên nhân, cách xử lý, script đã chạy. Từ đó xếp hạng "5 loại sự cố hay gặp nhất".
+- Kiểm tra quyền và tài sản chỉ một người có: tài khoản SFTP đối tác, key, cron trên máy riêng, script trong thư mục home. Chuyển sang tài khoản team **ngay tuần 1**.
+- Chọn **hai** người nhận (một chính, một phụ), không chỉ một, để không tạo lại bus factor 1.
+
+### Tuần 2–4: làm thật
+| Tuần | Người cũ | Người nhận | Đầu ra |
+|---|---|---|---|
+| 2 | làm, nói to từng bước | quan sát, ghi runbook | runbook nháp cho 5 loại lệch |
+| 3 | quan sát, chỉ can thiệp khi sắp sai | làm theo runbook | runbook sửa lại sau mỗi lần |
+| 4 | dự phòng, không chủ động | tự xử lý, kể cả trực đêm batch | ít nhất 1 ca lệch thật được xử lý độc lập |
+Nếu trong 4 tuần không có ca lệch thật: dựng lại ca lệch trên môi trường staging với dữ liệu mẫu để luyện.
+
+### Câu hỏi giúp lộ kiến thức ngầm
+- "Lần gần nhất anh thức dậy lúc 3 giờ sáng vì module này là khi nào, chuyện gì?"
+- "Có gì trong code mà nếu người mới sửa 'cho đẹp' sẽ gây lỗi?"
+- "Anh kiểm tra gì đầu tiên khi số tổng không khớp? Vì sao lại là cái đó?"
+- "Đối tác nào hay gửi file trễ/sai, liên hệ ai?"
+Ghi âm/ghi hình buổi giải thích (có đồng ý), vì hỏi lại sau khi người đó đi là không được.
+
+### Nói chuyện với người sắp nghỉ: kịch bản
+"Cảm ơn anh đã báo sớm 4 tuần. Module đối soát là thứ anh hiểu nhất, và em muốn sau khi anh đi, không ai phải gọi điện làm phiền anh. Em đề xuất trong 4 tuần này anh giảm việc tính năng, tập trung chuyển giao cho Minh và Hà theo kế hoạch này. Anh thấy thiếu gì không?"
+Người sắp nghỉ hợp tác tốt khi việc chuyển giao được công nhận là **công việc chính**, không phải việc thêm vào sau giờ.
+
+### Báo lên cấp trên
+Nói rõ rủi ro còn lại sau 4 tuần (ví dụ: "loại lệch do đối tác đổi định dạng file mới chỉ xảy ra một lần mỗi năm, chưa luyện được") và đề xuất phương án: thoả thuận hỗ trợ có trả phí trong 1–2 tháng sau khi nghỉ, nếu công ty và người đó đồng ý.
+
+### Lỗi hay gặp
+1. Chỉ yêu cầu "viết tài liệu": tài liệu viết vội không có chỗ người khác thật sự cần.
+2. Chuyển giao cho một người duy nhất, lặp lại vấn đề.
+3. Bỏ quên quyền truy cập, key, cron cá nhân: phát hiện ra khi tài khoản bị khoá ngày nghỉ.
+4. Người nhận vẫn giữ nguyên khối lượng sprint, không có thời gian học.
+
+### Trả lời miệng 1 phút
+"Đây là bus factor 1 đã thành hiện thực. Tuần đầu tôi kiểm kê: job, bảng, đối tác, các loại lệch trong 6 tháng, và chuyển ngay mọi quyền, key, cron cá nhân sang tài khoản team. Tôi chọn hai người nhận. Tuần 2 họ quan sát người cũ làm thật và viết runbook, tuần 3 đảo vai, tuần 4 họ tự xử lý, người cũ chỉ dự phòng; không có ca thật thì dựng lại trên staging. Tôi hỏi những câu lộ kiến thức ngầm và ghi hình buổi giải thích. Với người sắp nghỉ, tôi biến chuyển giao thành việc chính của họ. Và tôi báo cấp trên rủi ro còn lại cùng phương án dự phòng."
+
+> Senior tip: thời điểm rẻ nhất để xử lý bus factor là **trước** khi có người nghỉ. Tôi rà định kỳ mỗi quý: module nào chỉ một người từng deploy, từng trực sự cố hoặc từng review? Rồi luân chuyển on-call và review chéo cho đúng những module đó. Câu hỏi "nếu người này nghỉ phép 3 tuần thì sao?" nên có câu trả lời trước khi nó thành "nghỉ việc".`,
+  follow: [
+    'Bạn đo bus factor của team thế nào bằng dữ liệu có sẵn (Git, on-call)?',
+    'Nếu người sắp nghỉ không hợp tác, bạn làm gì?',
+    'Runbook tốt cho một ca lệch đối soát gồm những phần nào?'
+  ],
+  tags: ['lead', 'bus factor', 'knowledge transfer', 'runbook', 'handover', 'risk']
+},
 );
