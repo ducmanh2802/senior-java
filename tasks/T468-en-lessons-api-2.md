@@ -1,6 +1,6 @@
 # T468 — Dịch sang tiếng Anh: lessons-api (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-api-2.en.js`
 
@@ -16,3 +16,5 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-api-2.en.js` và `node scripts/check-i18n.js lessons-api-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+Translated lesson-api-003 (Idempotency key for POST) to English. All validation checks pass.
+Reviewed-by: check-i18n (translation, no LLM review)
