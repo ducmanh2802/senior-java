@@ -1,6 +1,6 @@
 # T478 — Dịch sang tiếng Anh: lessons-claude (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-claude-1.en.js`
 
@@ -16,3 +16,8 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-claude-1.en.js` và `node scripts/check-i18n.js lessons-claude-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã dịch đầy đủ `lesson-claude-001`: title, 3 goals, body (giữ nguyên 3 khối ~~~json, ~~~java và bảng stop_reason; dịch comment/chuỗi minh hoạ tiếng Việt trong ví dụ), exercises[0] (title, prompt, 3 hints, explain), check[0..2] (q, 4 options, explain). Không chép starter/tests/reference.
+- Giữ nhãn chuẩn: "### Liên hệ phỏng vấn" → "### Interview notes"; "**Tóm tắt:**" không có trong bài này.
+- `node --check` bị chặn bởi chính sách shell của phiên (lệnh `node --check ...` bị từ chối), nhưng `scripts/check-i18n.js` nạp file qua `vm.runInNewContext` nên đã xác nhận file parse được: `node scripts/check-i18n.js lessons-claude-1` → `OK — 1 mục đã dịch.`
+- `node scripts/validate.js` → `OK — không có lỗi.`
+Reviewed-by: check-i18n (translation, no LLM review)
