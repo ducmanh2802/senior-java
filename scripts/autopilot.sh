@@ -101,6 +101,8 @@ while true; do
   for f in tasks/T*.md; do
     id=$(basename "$f" | cut -d- -f1)
     case "$id" in *R) continue ;; esac
+    # ONLY_RE='-en-' limits autopilot to matching task files (e.g. while Claude edits files owned by old DONE tasks)
+    [ -n "${ONLY_RE:-}" ] && ! [[ "$f" =~ $ONLY_RE ]] && continue
     grep -q '^Status: DONE$' "$f" || continue
     grep -q '^Verify-failed:' "$f" && continue
     dirty "$f" || continue
