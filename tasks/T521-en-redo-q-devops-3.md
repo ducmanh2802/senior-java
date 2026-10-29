@@ -1,6 +1,6 @@
 # T521 — Dịch lại (nội dung đã sửa): q-devops-3 (5 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-devops-3.en.js`
 
@@ -13,3 +13,4 @@ Với MỖI mục trên: đọc bản tiếng Việt hiện tại trong `js/data
 node scripts/check-i18n.js q-devops-3 → OK; node scripts/validate.js → OK.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
