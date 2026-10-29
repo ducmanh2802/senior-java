@@ -1,6 +1,6 @@
 # T454 — Dịch sang tiếng Anh: lessons-microservices (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-microservices-6.en.js`
 
@@ -16,3 +16,11 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-microservices-6.en.js` và `node scripts/check-i18n.js lessons-microservices-6` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch `lesson-microservices-007` (title, goals, body, 1 exercise với title/prompt/hints/explain, 3 câu check) trong `js/i18n/lessons-microservices-6.en.js`.
+- Giữ nguyên markup, thuật ngữ (207 Multi-Status, compensation ledger, saga, idempotency key, reconcile, outbox, 2PC…), block `~~~text` và placeholder `{{detail}}`.
+- Nhãn: "**Tóm tắt:**" → "**Summary:**", "> Senior tip:" giữ nguyên, "### Liên hệ phỏng vấn" → "### Interview notes".
+- Không chép code (starter/tests/reference), không backtick, không `${`.
+- Kiểm tra: `node scripts/check-i18n.js lessons-microservices-6` → `OK — 1 mục đã dịch.` (file được nạp và chạy trong VM nên cú pháp hợp lệ); `node scripts/validate.js` → `OK — không có lỗi.` Lưu ý: lệnh `node --check ...` bị shell policy của phiên chặn, nên dùng check-i18n thay thế tương đương (nó parse + thực thi file).
+- File đã có trong `js/i18n/manifest.js` (dòng 80), không cần sửa manifest.
+Reviewed-by: check-i18n (translation, no LLM review)
