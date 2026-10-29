@@ -1,6 +1,6 @@
 # T448 — Dịch sang tiếng Anh: labs-sql (2 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/labs-sql-5.en.js`
 
@@ -16,3 +16,10 @@ Yêu cầu dịch:
 - `node --check js/i18n/labs-sql-5.en.js` và `node scripts/check-i18n.js labs-sql-5` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đầy đủ `lab-sql-009` và `lab-sql-010` vào `js/i18n/labs-sql-5.en.js` (title, scenario, questions, hints, answer, rubric).
+- Giữ nguyên markup (`**`, `{{...}}`, `###`, bảng, `~~~text`/`~~~sql`), số liệu và tên riêng; chỉ dịch comment tiếng Việt trong code block; `artifacts` không chép (không phải field dịch).
+- Đã kiểm tra: `node scripts/check-i18n.js labs-sql-5` → `OK — 2 mục đã dịch.`; `node scripts/validate.js` → `OK — không có lỗi.`
+- `js/i18n/manifest.js` đã có sẵn `labs-sql-5`, không cần sửa file của integrator.
+- Lưu ý: lệnh `node --check` bị chặn quyền trong phiên này; file đã được parse thành công qua `vm.runInNewContext` trong `check-i18n.js` nên cú pháp hợp lệ.
+Reviewed-by: check-i18n (translation, no LLM review)
