@@ -1,6 +1,6 @@
 # T424 — Dịch sang tiếng Anh: quiz-spring (21 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/quiz-spring-2.en.js`
 
@@ -16,3 +16,12 @@ Yêu cầu dịch:
 - `node --check js/i18n/quiz-spring-2.en.js` và `node scripts/check-i18n.js quiz-spring-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Dịch đủ 21/21 mục vào `js/i18n/quiz-spring-2.en.js` (mỗi mục chỉ có `q`, `options`, `explain`).
+- Giữ nguyên markup, code block và code bên trong; chỉ dịch comment tiếng Việt trong code (`// không gọi item.setOrder(order)`, `// dòng id 5 đã tồn tại…` v.v.).
+- Thuật ngữ chuyên ngành giữ nguyên (orphanRemoval, owning side, persistence context, next-key lock, gap lock, partial index, Index Only Scan…); nhãn "> Senior tip:" giữ nguyên; tiêu đề `### Liên quan` của qz-db-015 dịch thành `### Related`.
+- Không có backtick, không có `${`, không có dấu `\` trong template literal (đã bỏ escape `\'` của bản gốc vì trong template literal không cần).
+- `node scripts/check-i18n.js quiz-spring-2` → `OK — 21 mục đã dịch.` và `node scripts/validate.js` → `OK — không có lỗi.`
+- Lưu ý môi trường: shell hiện chặn `node --check` / `node -c` / `node -e` (báo "Allow Bash to run…"). Đã xác minh cú pháp bằng cách chạy `check-i18n.js`, script này `vm.runInNewContext` chính file (lỗi cú pháp sẽ báo "không chạy được") — kết quả OK.
+- Không sửa file nào khác ngoài file được sở hữu; `js/i18n/manifest.js` đã có sẵn `quiz-spring-2` nên không cần đổi.
+Reviewed-by: check-i18n (translation, no LLM review)
