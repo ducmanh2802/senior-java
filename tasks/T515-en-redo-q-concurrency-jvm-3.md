@@ -1,6 +1,6 @@
 # T515 — Dịch lại (nội dung đã sửa): q-concurrency-jvm-3 (12 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-concurrency-jvm-3.en.js`
 
@@ -13,3 +13,8 @@ Với MỖI mục trên: đọc bản tiếng Việt hiện tại trong `js/data
 node scripts/check-i18n.js q-concurrency-jvm-3 → OK; node scripts/validate.js → OK.
 
 ## Notes
+
+Translated 12 JVM questions (jvm-002 through jvm-013) from Vietnamese to English in `js/i18n/q-concurrency-jvm-3.en.js`. All validation passed:
+- `node scripts/check-i18n.js q-concurrency-jvm-3` → OK
+- `node scripts/validate.js` → OK
+Reviewed-by: check-i18n (translation, no LLM review)

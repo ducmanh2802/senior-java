@@ -45,7 +45,7 @@ java -XX:+UseG1GC -XX:MaxGCPauseMillis=50 -Xlog:gc* ...   # Java 9+
   },
   'jvm-003': {
     q: 'Tuning JVM heap for containers (Kubernetes): why should you not set Xmx equal to the pod RAM limit? How does {{-XX:MaxRAMPercentage}} work?',
-    a: `**Summary:** JVM RSS = heap + metaspace + stack per thread + code cache + direct memory + other native. Setting Xmx = RAM limit takes all space for heap, leaving no room for native — container gets OOMKilled (exit 137) even though heap hasn’t OOMed. {{-XX:MaxRAMPercentage}} (default 25%) sets heap as % of RAM limit; rest is for native; in practice 50–75% depending on profile.
+    a: `**Summary:** JVM RSS = heap + metaspace + stack per thread + code cache + direct memory + other native. Setting Xmx = RAM limit takes all space for heap, leaving no room for native — container gets OOMKilled (exit 137) even though heap hasn't OOMed. {{-XX:MaxRAMPercentage}} (default 25%) sets heap as % of RAM limit; rest is for native; in practice 50–75% depending on profile.
 
 ### Why Xmx = RAM limit is a trap
 
@@ -66,7 +66,7 @@ OOMKilled is different from OOM "Java heap space": no exception in JVM log, only
 - {{-Xss256k}} if you have thousands of threads — saves GB of native reserve for stacks.
 
 ### Pitfall production
-- Repeated kube event OOMKilled is the first sign; don’t just read JVM log.
+- Repeated kube event OOMKilled is the first sign; don't just read JVM log.
 - Heap below limit does not mean safe: RSS still grows with native; alert on RSS (host metrics), not just heap.
 - 65% heap is often a safe level for Spring Boot/Netty which consume significant native memory.
 
@@ -177,7 +177,7 @@ The first RUNNABLE frame usually points to the method burning CPU.
 
 ~~~text
 loadClass(name):
-  1. ask parent.loadClass(name); if parent finds it => use parent\'s
+  1. ask parent.loadClass(name); if parent finds it => use parent's
   2. parent not found => self findClass(name)
 ~~~
 
@@ -251,7 +251,7 @@ int sum() {
 - Spring Boot 3 AOT + GraalVM feasible for small apps; native integration libraries need clear reflection/proxy config.
 
 > Senior tip: my rule: long-running workloads (hours) keep JVM — best peak perf after warm-up; serverless/burst keep native image. Benchmark your own workload before deciding — fast startup and high peak throughput are trade-offs, not win-win.`,
-    follow: ["What does an object \"escaping\" mean, what conditions allow escape analysis to work?", "What does native image lose compared to JIT hot path?"],
+    follow: ["What does an object \\\"escaping\\\" mean, what conditions allow escape analysis to work?", "What does native image lose compared to JIT hot path?"],
   },
   'jvm-009': {
     q: 'Stop-the-world, safepoint — what are they, and how to read GC log to detect issues?',
@@ -314,7 +314,7 @@ byte[100]: 12 + 4 (length) + 100 = 116 -> 120 B
 - Can reduce 20–40% heap in apps with many duplicate URLs/config/tokens; enable by age threshold (default 3) and measure before/after.
 - Java 9+ String uses internal byte[] (compact strings): Latin-1 String 1 byte per char — "1 billion ASCII chars ~ 1 GB" not 2 GB.
 
-> Senior tip: measure with tools (JOL + heap dump), don’t estimate from memory: 1 million HashMap entries often demands 60–100 MB heap before the data itself — a 2 GB heap can drain with just a few un-evicted caches; calculating header + ref + padding is a highlight skill in JVM interviews.`,
+> Senior tip: measure with tools (JOL + heap dump), don't estimate from memory: 1 million HashMap entries often demands 60–100 MB heap before the data itself — a 2 GB heap can drain with just a few un-evicted caches; calculating header + ref + padding is a highlight skill in JVM interviews.`,
     follow: ["Why is 31 GB sometimes better than 33 GB?", "How much does compact strings (Java 9) save with ASCII text?"],
   },
   'jvm-011': {
@@ -432,7 +432,7 @@ Retained of one Session: about 4 KB
 ### Process in MAT
 1. **Leak Suspects report**: quick start, points out groups occupying most heap and accumulation paths.
 2. **Dominator Tree**, sort by Retained Heap; use "Group by class" or "Group by class loader" when app server runs multiple webapps.
-3. **Path to GC Roots** with option to exclude phantom/weak/soft: keep only strong paths, because weak/soft don’t prevent GC so not leak cause.
+3. **Path to GC Roots** with option to exclude phantom/weak/soft: keep only strong paths, because weak/soft don't prevent GC so not leak cause.
 4. **Merge Shortest Paths to GC Roots** on a set of objects (e.g., all {{Session}}) to see common holder.
 5. Histogram and **OQL** to count/filter, e.g., {{SELECT * FROM java.util.HashMap s WHERE s.size > 10000}}.
 6. Slow leak: take two dumps hours apart, compare histogram to see which class grows steadily.
@@ -443,10 +443,10 @@ Retained of one Session: about 4 KB
 - Common culprits: static Map as unbounded cache, ThreadLocal in thread pool, registered listener not removed, Hibernate persistence context in long batch, old classloader after redeploy.
 
 ### Pitfall
-- 20 GB dump won’t open on laptop: run MAT headless ({{ParseHeapDump.sh}}) on a high-RAM machine, increase {{-Xmx}} in MemoryAnalyzer.ini, build index and report first then open GUI.
+- 20 GB dump won't open on laptop: run MAT headless ({{ParseHeapDump.sh}}) on a high-RAM machine, increase {{-Xmx}} in MemoryAnalyzer.ini, build index and report first then open GUI.
 - Dump on container filesystem lost on pod restart. {{HeapDumpPath}} must point to persistent volume.
 
-> Senior tip: for slow leaks I don’t take continuous dumps in production because each is an STW. I monitor old-gen trend after GC via metric, then take only two dumps on a pod pulled from traffic, hours apart. Comparing histograms almost always points straight to the accumulating class; then Path to GC Roots tells which code holds it.`,
-    follow: ["When do you use Unreachable Objects Histogram?", "20 GB heap dump — how to analyze without hanging the machine?", "Retained sizes of objects don’t sum to used heap — why?"],
+> Senior tip: for slow leaks I don't take continuous dumps in production because each is an STW. I monitor old-gen trend after GC via metric, then take only two dumps on a pod pulled from traffic, hours apart. Comparing histograms almost always points straight to the accumulating class; then Path to GC Roots tells which code holds it.`,
+    follow: ["When do you use Unreachable Objects Histogram?", "20 GB heap dump — how to analyze without hanging the machine?", "Retained sizes of objects don't sum to used heap — why?"],
   }
 });
