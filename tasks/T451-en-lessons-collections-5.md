@@ -1,6 +1,6 @@
 # T451 — Dịch sang tiếng Anh: lessons-collections (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-collections-5.en.js`
 
@@ -16,3 +16,8 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-collections-5.en.js` và `node scripts/check-i18n.js lessons-collections-5` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã dịch đầy đủ `lesson-collections-005` (title, 3 goals, body, 2 exercises với title/prompt/hints/explain, 3 check với q/options/explain) sang `js/i18n/lessons-collections-5.en.js`; giữ nguyên markup, tên riêng (PriorityQueue, ArrayDeque, PriorityBlockingQueue…), công thức độ phức tạp và sơ đồ ASCII; chỉ dịch comment tiếng Việt trong code block, giữ `accept`/`offer` code nguyên vẹn.
+- Giữ đúng thứ tự và số phần tử của mảng `exercises` (2) và `check` (3); không chép `starter`/`tests`/`reference`; `answer` không chép (overlay merge theo index giữ nguyên đáp án gốc).
+- `node scripts/check-i18n.js lessons-collections-5` → OK (1 mục), `node scripts/validate.js` → OK. Lệnh `node --check` bị chặn bởi quyền shell của phiên; check-i18n.js nạp file bằng `vm.runInNewContext` nên cú pháp đã được xác nhận.
+- Không sửa file nào khác; không commit.
+Reviewed-by: check-i18n (translation, no LLM review)
