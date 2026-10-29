@@ -1,8 +1,10 @@
 # T387 — Dịch sang tiếng Anh: q-scenario (5 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-scenario-5.en.js`
+
+Translated scenarios scenario-057 through scenario-061 into English and added to `js/i18n/q-scenario-5.en.js`. Verified with `node scripts/check-i18n.js q-scenario-5`.
 
 Người dùng bấm EN thì **cả trang** chuyển sang tiếng Anh: file này phủ bản dịch lên dữ liệu gốc theo `id` (đọc comment "content translation" trong `js/core/i18n.js`). Đọc AGENTS.md mục 5 (markup) và các mục sau trong `js/data/q-scenario.js`: **scenario-057, scenario-058, scenario-059, scenario-060, scenario-061**.
 
@@ -16,3 +18,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-scenario-5.en.js` và `node scripts/check-i18n.js q-scenario-5` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
