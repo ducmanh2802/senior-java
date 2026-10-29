@@ -10,7 +10,7 @@ window.COMPANIES = [
     name: 'Techcombank',
     type: 'bank',
     icon: '🏦',
-    summary: 'Ngân hàng cloud-first: case study AWS ghi nhận Retail và Corporate Digital Banking chuyển lên AWS, với EKS, Aurora MySQL, MSK/Kafka, ElastiCache, OpenSearch và hơn 8 triệu giao dịch/ngày. Annual report 2024 cũng ghi nhận đầu tư công nghệ AWS. Chia sẻ phỏng vấn Java công khai vẫn chủ yếu cũ; quy trình hiện tại cần xác nhận với recruiter.',
+    summary: 'Ngân hàng công khai định hướng cloud-first; case study của AWS mô tả việc đưa các hệ thống digital banking lên AWS (container, managed database, Kafka). Stack bên dưới tổng hợp từ nguồn công khai và JD, có thể khác theo team. Chia sẻ phỏng vấn Java công khai chủ yếu từ 2021–2022, nên chỉ coi là mẫu thường gặp; quy trình hiện tại cần xác nhận với recruiter.',
     stack: ['Java', 'Spring Boot', 'Microservices', 'Kafka (Amazon MSK)', 'Amazon EKS', 'Aurora MySQL', 'ElastiCache (Redis)', 'Oracle', 'PostgreSQL', 'AWS'],
     process: [
       { round: 'Vòng 1 — Bài test online', detail: 'Một review vị trí Senior/Techlead Java (2022) kể vòng đầu là bài test trên iMocha: Java core (exception, thread, collections), Spring (bean, DI/IoC, JPA) và design pattern.' },
@@ -35,8 +35,8 @@ window.COMPANIES = [
       'Ôn chắc Java core (exception, thread, collections) và Spring core vì có thể có bài test trắc nghiệm trước vòng phỏng vấn.',
       'Chuẩn bị 1–2 dự án kể theo mạch bối cảnh → vấn đề → giải pháp → kết quả, sẵn sàng bị hỏi tình huống giả định xoay quanh dự án đó.',
       'Đọc sách System Design Interview (Alex Xu) và kiến thức hệ phân tán — ứng viên từng phỏng vấn khuyên như vậy.',
-      'Tìm hiểu stack AWS (EKS, MSK/Kafka, Aurora) vì ngân hàng đã chuyển phần lớn hệ thống digital lên AWS.',
-      'Lồng ghép yếu tố tuân thủ, bảo mật và quản trị rủi ro vào câu trả lời; chuẩn bị chứng chỉ tiếng Anh (TOEIC) vì từng được yêu cầu.'
+      'Tìm hiểu kiến thức cloud/AWS cơ bản (container, managed database, Kafka) vì ngân hàng công khai định hướng cloud; hỏi recruiter stack cụ thể của team.',
+      'Lồng ghép yếu tố tuân thủ, bảo mật và quản trị rủi ro vào câu trả lời; một số vị trí ngân hàng có thể hỏi chứng chỉ tiếng Anh, hãy xác nhận trong JD.'
     ],
     sources: [
       { title: 'voz.vn — [Review Phỏng Vấn] Các công ty CNTT, trang 78 (Techcombank Senior/Techlead Java, 2022)', url: 'https://voz.vn/t/review-phong-van-cac-cong-ty-cntt.206897/page-78' },
@@ -54,7 +54,7 @@ window.COMPANIES = [
     name: 'VPBank',
     type: 'bank',
     icon: '🏦',
-    summary: 'Core banking Temenos (dùng từ 2006) đã được container hóa trên Red Hat OpenShift trong private cloud on-premise, AWS hỗ trợ kiến trúc hybrid; đợt nâng cấp migrate hơn 18 triệu tài khoản. Hầu như không có review phỏng vấn công khai cho vị trí Java có kinh nghiệm, nên mục quy trình rất mỏng.',
+    summary: 'Theo success story công khai của Temenos, VPBank dùng core banking Temenos và đã nâng cấp, container hóa nền tảng này. Stack bên dưới lấy từ JD tuyển dụng, có thể khác theo team. Hầu như không có review phỏng vấn công khai cho vị trí Java có kinh nghiệm, nên mục quy trình rất mỏng; hãy coi phần dưới là mẫu chung của ngân hàng, không phải kịch bản cố định.',
     stack: ['Java', 'Spring Boot', 'Spring Cloud', 'MS SQL', 'MySQL', 'Oracle', 'MongoDB', 'Microservices', 'REST API', 'CI/CD'],
     process: [
       { round: 'Chưa có dữ liệu review tin cậy về vòng phỏng vấn Senior Java', detail: 'Chưa tìm thấy chia sẻ ứng viên 2025–2026 đủ chi tiết để xác nhận quy trình. Trang tuyển dụng chính thức đăng Senior Backend Developer (Java/Spring Boot), yêu cầu kinh nghiệm banking/fintech, Java frameworks, MS SQL/Oracle và đọc viết tiếng Anh; đây là yêu cầu tuyển dụng, không phải mô tả phỏng vấn.' },
@@ -71,7 +71,7 @@ window.COMPANIES = [
       'Dùng JD chính thức mới làm nguồn ưu tiên: Java/Spring Boot, MS SQL/Oracle và kiến thức quy trình banking; stack có thể khác theo domain.',
       'Chuẩn bị tình huống microservice/API, hỗ trợ production và xử lý incident vì JD senior nêu rõ thiết kế, triển khai và vận hành dịch vụ.',
       'Vì thiếu review công khai, hãy hỏi người quen nội bộ hoặc HR về format vòng kỹ thuật trước khi phỏng vấn.',
-      'Chuẩn bị câu chuyện về làm việc với hệ thống legacy — một số người từng được offer cho biết có thể phải bảo trì công nghệ cũ.'
+      'Chuẩn bị câu chuyện về làm việc với hệ thống legacy, vì ngân hàng nói chung thường vừa phát triển mới vừa bảo trì hệ thống cũ.'
     ],
     sources: [
       { title: 'Temenos — VPBank success story', url: 'https://www.temenos.com/success-story/vpbank/' },
@@ -308,8 +308,8 @@ window.COMPANIES = [
     name: 'NAB Innovation Centre Vietnam',
     type: 'bank',
     icon: '🏛️',
-    summary: 'NAB Innovation Centre Vietnam làm sản phẩm công nghệ ngân hàng với Java/Spring và nền tảng cloud. Review Java/Senior cụ thể nhất vẫn là chia sẻ cũ; review 2026 của các role khác ghi nhận technical, peer/manager và culture rounds, có ứng viên đánh giá quy trình nhanh, chuyên nghiệp và interviewer thân thiện. Không áp dụng tự động cho Java role.',
-    stack: ['Java', 'Spring Boot', 'Node.js', 'TypeScript', 'Golang', 'AWS (Lambda, ECS, S3, SNS/SQS, API Gateway)', 'PostgreSQL', 'Kubernetes', 'Kong', 'Terraform', 'Jenkins', 'GCP'],
+    summary: 'NAB Innovation Centre Vietnam làm sản phẩm công nghệ ngân hàng với Java/Spring và nền tảng cloud. Review Java/Senior cụ thể nhất vẫn là chia sẻ cũ; review 2026 của các role khác ghi nhận technical, peer/manager và culture rounds, có ứng viên đánh giá quy trình nhanh, chuyên nghiệp và interviewer thân thiện. Không áp dụng tự động cho Java role; stack bên dưới tổng hợp từ JD công khai và khác nhau theo team.',
+    stack: ['Java', 'Spring Boot', 'Node.js', 'AWS', 'PostgreSQL', 'Kubernetes', 'Terraform'],
     process: [
       { round: 'Vòng 1 — Recruiter call (tiếng Anh)', detail: 'Kiểm tra tiếng Anh và profile, sau đó gửi bài home assignment.' },
       { round: 'Vòng 2 — Home assignment trên Codility (70–80 phút)', detail: 'Review Senior Java (3/2022): 1 phần trắc nghiệm Java + 1 bài viết API nhỏ trên Spring MVC phải pass bộ test. Một review Java engineer khác (5/2022) kể có vòng live coding với 1 bài LeetCode hard.' },
@@ -350,7 +350,7 @@ window.COMPANIES = [
     name: 'Axon (Vietnam)',
     type: 'product',
     icon: '📹',
-    summary: 'Công ty sản phẩm Mỹ (body camera và cloud quản lý bằng chứng cho cảnh sát) có trung tâm kỹ sư tại TP.HCM; backend dùng Java, Scala, Go, .NET, Python. Phỏng vấn kiểu product company: OA khó, vòng onsite dài nhiều phần. Review chi tiết từ 2022.',
+    summary: 'Công ty sản phẩm Mỹ (body camera và cloud quản lý bằng chứng cho cảnh sát) có trung tâm kỹ sư tại TP.HCM; backend dùng Java, Scala, Go, .NET, Python. Theo các review ứng viên năm 2022, phỏng vấn theo kiểu product company: có bài online assessment và vòng kỹ thuật dài nhiều phần. Quy trình có thể đã đổi, hãy coi đây là mẫu thường gặp.',
     stack: ['Java', 'Scala', 'Golang', '.NET', 'Python', 'ReactJS'],
     process: [
       { round: 'Vòng 0 — Recruiter screen', detail: 'Giới thiệu công ty/role, kiểm tra tiếng Anh qua vài câu behavioral.' },
@@ -389,7 +389,7 @@ window.COMPANIES = [
     type: 'fintech',
     icon: '🏦',
     summary: 'GoTyme mô tả Việt Nam là Technology & Product Development Hub, xây dựng digital bank cho các thị trường mới nổi. Trang tuyển dụng công khai nêu quy trình application review, technical interview, culture fit; chưa có review Java Senior Việt Nam đủ chi tiết để khẳng định câu hỏi cụ thể.',
-    stack: ['Java', 'Spring Boot', 'Microservices', 'AWS', 'Kubernetes', 'Kafka', 'PostgreSQL'],
+    stack: ['Java', 'Spring Boot', 'Microservices', 'Cloud'],
     process: [
       { round: 'Vòng 1 — Application review', detail: 'Sàng lọc CV theo role và kinh nghiệm.' },
       { round: 'Vòng 2 — Technical interview', detail: 'Được công ty xác nhận là một bước chính thức; nội dung và bài coding tùy vị trí/team. Hỏi recruiter về ngôn ngữ, thời lượng và system design.' },
@@ -483,7 +483,7 @@ window.COMPANIES = [
     name: 'GFT Technologies Vietnam',
     type: 'service',
     icon: '🏦',
-    summary: 'Đề xuất đáng cân nhắc cho Java banking: ITviec hiển thị 4.8/5 từ 156 đánh giá và 97% khuyến khích làm việc tại đây; JD gần đây tuyển Senior Java/Spring, Kafka, AWS, microservices cho digital bank. Chưa có bằng chứng đủ tốt về trải nghiệm phỏng vấn, vì vậy không suy ra phỏng vấn dễ hoặc minh bạch từ đánh giá nhân viên.',
+    summary: 'Công ty dịch vụ công nghệ chuyên mảng tài chính, ngân hàng; JD công khai trên ITviec tuyển Senior Java/Spring với Kafka, AWS, microservices. Chưa có review phỏng vấn đủ tin cậy, nên phần dưới chỉ là mẫu chung cho công ty outsourcing mảng banking (thường có vòng tiếng Anh và có thể có vòng với khách hàng).',
     stack: ['Java', 'Spring Boot', 'JPA', 'Kafka', 'AWS', 'Microservices', 'JUnit', 'Mockito'],
     process: [{ round: 'Quy trình chưa được xác minh', detail: 'Không tìm được review phỏng vấn Java Việt Nam mới đủ chi tiết. Hỏi recruiter về các vòng technical, tiếng Anh và bài coding.' }],
     focus: ['spring', 'jpa', 'microservices', 'aws', 'db', 'english', 'architecture'],
@@ -502,7 +502,7 @@ window.COMPANIES = [
     name: 'NAVER VIETNAM',
     type: 'bigtech',
     icon: '🔎',
-    summary: 'ITviec hiển thị 4.8/5 từ 256 đánh giá và 100% khuyến khích làm việc tại đây (số liệu có thể thay đổi); hiện có tin Senior Backend Engineer Java/Spring cho GSaaS và Backend Engineer Java/Spring cho Naver Clip. Chưa tìm được phỏng vấn Java Việt Nam công khai đủ tin cậy để mô tả quy trình hay trải nghiệm.',
+    summary: 'Chi nhánh tại Việt Nam của tập đoàn công nghệ Hàn Quốc NAVER; có đăng tin tuyển Backend Engineer Java/Spring trên ITviec. Chưa tìm được review phỏng vấn Java Việt Nam công khai đủ tin cậy, nên phần dưới chỉ là mẫu thường gặp ở công ty sản phẩm quy mô lớn (coding, system design, Java nền tảng).',
     stack: ['Java', 'Spring', 'Backend', 'Large-scale systems'],
     process: [{ round: 'Quy trình chưa được xác minh', detail: 'Ứng tuyển theo JD Java/Spring hiện hành và xác nhận với recruiter về coding, system design, tiếng Anh và số vòng.' }],
     focus: ['core', 'jvm', 'spring', 'microservices', 'design', 'db', 'concurrency'],
@@ -521,7 +521,7 @@ window.COMPANIES = [
     name: 'Rakuten Fintech Vietnam',
     type: 'fintech',
     icon: '💳',
-    summary: 'Rakuten Fintech Vietnam phát triển sản phẩm trong lĩnh vực fintech, gồm hệ thống phục vụ mảng thẻ tín dụng của Rakuten Card. ITviec có tin tuyển Java; chưa có nguồn phỏng vấn Java tại Việt Nam mới đủ cụ thể để kết luận quy trình hay trải nghiệm.',
+    summary: 'Đơn vị phát triển phần mềm cho các dịch vụ fintech của tập đoàn Rakuten (Nhật Bản). ITviec có tin tuyển Java; chưa có nguồn phỏng vấn Java tại Việt Nam đủ cụ thể, nên phần dưới chỉ là mẫu thường gặp ở công ty fintech: Java/Spring, giao dịch, bảo mật dữ liệu.',
     stack: ['Java', 'Spring', 'Fintech', 'SQL'],
     process: [{ round: 'Quy trình chưa được xác minh', detail: 'Các trang công khai đã tìm được không mô tả nhất quán interview rounds cho Java. Xác nhận với recruiter trước khi chuẩn bị theo format cụ thể.' }],
     focus: ['core', 'spring', 'db', 'security', 'microservices', 'scenario'],

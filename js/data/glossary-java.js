@@ -13,7 +13,7 @@
     id: 'happens-before',
     term: 'Happens-before',
     aliases: ['happens-before', 'happens before', 'quan hệ happens-before'],
-    short: 'Quy tắc bảo đảm thay đổi ở một luồng được luồng khác nhìn thấy đúng thứ tự.',
+    short: 'Quy tắc của Java Memory Model: nếu A happens-before B thì B chắc chắn thấy mọi thứ A đã ghi, ví dụ ghi biến volatile rồi luồng khác đọc biến đó.',
     body: `### Ví dụ đời thường
 Bạn ghi một khoản nợ vào sổ rồi đưa sổ cho đồng nghiệp. Chỉ khi việc đưa sổ xảy ra trước việc họ đọc, họ mới thấy khoản nợ. Nếu hai người mỗi người giữ một cuốn sổ riêng thì không ai thấy phần của người kia.
 
@@ -47,13 +47,13 @@ Không phải "chạy trước theo đồng hồ thực". Hai thao tác có th�
     id: 'volatile',
     term: 'Volatile',
     aliases: ['volatile', 'biến volatile', 'từ khóa volatile'],
-    short: 'Từ khóa bắt mọi lần đọc ghi đi thẳng bộ nhớ chung và không được đổi thứ tự.',
+    short: 'Từ khóa bảo đảm giá trị một luồng ghi vào biến được luồng khác thấy ngay và không bị đổi thứ tự, ví dụ cờ dừng vòng lặp.',
     body: `### Ví dụ đời thường
 Một bảng thông báo treo ở hành lang công ty. Ai muốn biết tin mới phải ra đọc bảng, không được ghi nhớ riêng trong đầu rồi đoán. Khi có tin mới, người phụ trách cập nhật bảng ngay để người khác thấy.
 
 ### Cơ chế
 Khi một trường được đánh dấu volatile:
-- Mỗi lần đọc, JVM bảo đảm lấy giá trị mới nhất từ bộ nhớ chung, không dùng bản sao trong cache của luồng.
+- Mỗi lần đọc thấy được lần ghi mới nhất vào biến đó, không đọc một bản sao cũ mà JIT đã giữ trong register hay cache. (Đây là mô hình đơn giản hóa; về mặt chính xác, JMM định nghĩa bằng quan hệ happens-before.)
 - Mỗi lần ghi, giá trị được đẩy ra bộ nhớ chung trước khi thao tác sau chạy.
 - Trình biên dịch và CPU không được đổi thứ tự các truy cập volatile với các truy cập bộ nhớ xung quanh theo những hướng nguy hiểm.
 - Ghi volatile happens-before lần đọc volatile cùng biến.
@@ -80,7 +80,7 @@ Dùng cho cờ hiệu đơn giản: cờ dừng, cờ trạng thái đã khởi 
     id: 'cas',
     term: 'CAS (compare-and-swap)',
     aliases: ['cas', 'compare-and-swap', 'compare and swap', 'compare-and-set'],
-    short: 'Một phép của CPU chỉ đổi giá trị nếu nó vẫn đúng như lúc đọc.',
+    short: 'Lệnh nguyên tử của CPU: chỉ ghi giá trị mới nếu ô nhớ vẫn bằng giá trị đã đọc, nền tảng của AtomicInteger.',
     body: `### Ví dụ đời thường
 Bạn muốn đổi chỗ ngồi từ ghế A sang ghế B. Lễ tân kiểm tra: nếu ghế của bạn vẫn đang là A thì đổi sang B, còn nếu ai đó đã đổi mất thì báo thất bại để bạn làm lại. Không cần khóa cả quầy.
 
@@ -146,7 +146,7 @@ Kết quả: 20, nhưng hai đơn 80 đều được duyệt
 Hai người cùng vào một hành lang hẹp. Người A giữ cửa phòng 1 và chờ cửa phòng 2; người B giữ cửa phòng 2 và chờ cửa phòng 1. Cả hai đứng mãi vì không ai chịu nhả cửa mình đang giữ.
 
 ### Cơ chế
-Deadlock xảy ra khi hội đủ bốn điều kiện: tài nguyên bị giữ độc quyền, một luồng giữ ít nhất một tài nguyên và chờ tài nguyên khác, không có cơ chế cưỡng bức thu hồi, và tồn tại chu trình chờ. Trong Java, nguyên nhân thường là hai khóa monitor hoặc hai hàng trong cơ sở dữ liệu được khóa theo thứ tự ngược nhau. JVM không tự phá vỡ deadlock; luồng chỉ chờ mãi. Công cụ chẩn đoán là jstack, in ra "Found one Java-level deadlock" kèm chuỗi luồng và khóa.
+Deadlock xảy ra khi hội đủ bốn điều kiện: tài nguyên bị giữ độc quyền, một luồng giữ ít nhất một tài nguyên và chờ tài nguyên khác, không có cơ chế cưỡng bức thu hồi, và tồn tại chu trình chờ. Trong Java, nguyên nhân thường là hai khóa monitor hoặc hai hàng trong cơ sở dữ liệu được khóa theo thứ tự ngược nhau. JVM không tự phá vỡ deadlock; luồng chỉ chờ mãi. Ngược lại, cơ sở dữ liệu (PostgreSQL, MySQL InnoDB) tự phát hiện deadlock giữa các transaction và hủy một bên với lỗi deadlock detected, nên ứng dụng cần retry. Công cụ chẩn đoán là jstack, in ra "Found one Java-level deadlock" kèm chuỗi luồng và khóa.
 
 Cách phòng: khóa theo một thứ tự toàn cục, dùng tryLock có timeout rồi nhả và thử lại, gộp về một khóa, hoặc giảm phạm vi khóa. Với cơ sở dữ liệu, giữ transaction ngắn và cập nhật bảng theo thứ tự cố định.
 
@@ -319,7 +319,7 @@ GC root (stack, static)
 Dùng khi chọn và tinh chỉnh GC, đọc GC log, điều tra ứng dụng chậm do pause, hoặc tìm memory leak do giữ tham chiếu không cần thiết.
 
 ### Hay nhầm với
-**Reference counting** đếm số tham chiếu và giải phóng khi về 0, không xử lý được chu trình. **Finalizer** là cơ chế chạy code trước khi thu hồi, không đảm bảo thời điểm. **Metaspace** chứa metadata lớp, không phải nơi chứa object thông thường.`,
+**Reference counting** đếm số tham chiếu và giải phóng khi về 0, không xử lý được chu trình. **Finalizer** là cơ chế chạy code trước khi thu hồi, không đảm bảo thời điểm, và đã bị đánh dấu deprecated để gỡ bỏ (JEP 421, Java 18); dùng try-with-resources hoặc Cleaner thay thế. **Metaspace** chứa metadata lớp, không phải nơi chứa object thông thường.`,
     related: ['stop-the-world', 'heap', 'generations', 'metaspace'],
     refs: [{ type: 'doc', title: 'Java Garbage Collection Tuning Guide', url: 'https://docs.oracle.com/en/java/javase/21/gctuning/' }],
   },
@@ -332,7 +332,7 @@ Dùng khi chọn và tinh chỉnh GC, đọc GC log, điều tra ứng dụng ch
 Siêu thị tạm đóng cửa vài phút để kiểm kê hàng. Trong lúc đó không khách nào mua được, dù việc kiểm kê chỉ diễn ra ở kho. Thời gian đóng cửa càng dài thì càng nhiều khách phải chờ ngoài.
 
 ### Cơ chế
-Stop-the-world xảy ra khi JVM cần một trạng thái nhất quán của toàn bộ heap hoặc metadata: thu gom rác, một số thao tác deoptimization, revoke bias lock, hoặc in thread dump. JVM đưa các luồng tới safepoint, nơi chúng có thể dừng an toàn, rồi chờ tất cả vào trạng thái dừng. Chỉ sau đó công việc mới chạy.
+Stop-the-world xảy ra khi JVM cần một trạng thái nhất quán của toàn bộ heap hoặc metadata: thu gom rác, một số thao tác deoptimization, nạp lại class (class redefinition khi dùng agent), hoặc in thread dump. (Biased locking từng gây safepoint khi revoke, nhưng đã bị tắt mặc định từ JDK 15 và gỡ bỏ ở JDK 18, nên không còn trên Java 21.) JVM đưa các luồng tới safepoint, nơi chúng có thể dừng an toàn, rồi chờ tất cả vào trạng thái dừng. Chỉ sau đó công việc mới chạy.
 
 GC hiện đại cố gắng giảm pause: G1 có các pause ngắn theo vùng, ZGC và Shenandoah dùng barrier và concurrent marking để phần lớn công việc chạy song song với ứng dụng. Tuy vậy vẫn có những pause nhỏ không tránh khỏi. Pause dài thường do heap quá lớn so với mục tiêu, cấp phát quá nhanh, hoặc GC cũ.
 
@@ -417,7 +417,7 @@ Một thư viện có kệ riêng để lưu hồ sơ mô tả từng loại sá
 ### Cơ chế
 Từ Java 8, metadata của lớp (tên, method, field, bytecode đã phân tích, constant pool) nằm trong metaspace, một vùng bộ nhớ native thay cho PermGen cũ. Metaspace được cấp phát theo nhu cầu từ bộ nhớ hệ điều hành và mặc định không có giới hạn cứng, nên có thể lớn dần tới khi hết RAM. Đặt -XX:MaxMetaspaceSize để chặn.
 
-Metadata thuộc về một ClassLoader. Khi ClassLoader không còn reachable, các lớp của nó có thể bị dỡ và metaspace được giải phóng. Vì vậy rò rỉ ClassLoader (ví dụ hot deploy, sinh lớp động, proxy không đóng) làm metaspace tăng mãi và cuối cùng ném OutOfMemoryError: Metaspace.
+Metadata thuộc về một ClassLoader. Khi ClassLoader không còn reachable, các lớp của nó có thể bị dỡ và metaspace được giải phóng. Vì vậy rò rỉ ClassLoader (ví dụ hot deploy lại ứng dụng trên Tomcat mà ClassLoader cũ vẫn bị giữ, hoặc thư viện sinh lớp động liên tục) làm metaspace tăng mãi và cuối cùng ném OutOfMemoryError: Metaspace.
 
 ~~~text
 ClassLoader A ---> metadata lớp A1, A2, A3  \
@@ -466,7 +466,7 @@ Dùng khi hiểu hiệu năng Java, viết benchmark đúng, đọc JIT compilat
     id: 'escape-analysis',
     term: 'Escape analysis',
     aliases: ['escape analysis', 'escape-analysis', 'phân tích escape'],
-    short: 'Phân tích của trình biên dịch xem một đối tượng có bị lộ ra ngoài phạm vi dùng không.',
+    short: 'JIT kiểm tra object tạo trong method có bị lộ ra ngoài không; nếu không, có thể bỏ hẳn việc cấp phát nó trên heap.',
     body: `### Ví dụ đời thường
 Bạn trộn nước sốt trong một cái bát nhỏ rồi dùng ngay trong bếp. Nếu nước sốt chỉ dùng một lần và không ai mang ra ngoài, bạn không cần đóng gói cẩn thận. Còn nếu phải giao cho khách, bạn buộc phải đóng hộp và dán nhãn.
 
@@ -527,7 +527,7 @@ Container khởi động
 Dùng khi làm việc với Spring: service, repository, controller, cấu hình, client gọi dịch vụ ngoài. Hiểu scope và vòng đời giúp tránh lỗi trạng thái chia sẻ và lỗi khởi tạo vòng.
 
 ### Hay nhầm với
-**POJO** chỉ là object Java bình thường, không được container quản lý. **Component** là annotation đánh dấu để Spring quét, bản thân nó tạo ra bean. **Entity** là object ánh xạ bảng cơ sở dữ liệu, không nên là bean singleton.`,
+**POJO** chỉ là object Java bình thường, không được container quản lý. **Component** là annotation đánh dấu để Spring quét, bản thân nó tạo ra bean. **Entity** là object ánh xạ bảng cơ sở dữ liệu, do JPA quản lý chứ không phải Spring container, nên không phải là bean.`,
     related: ['dependency-injection', 'ioc-container', 'proxy'],
     refs: [{ type: 'doc', title: 'Spring Framework — The IoC Container', url: 'https://docs.spring.io/spring-framework/reference/core/beans.html' }],
   },
@@ -610,7 +610,7 @@ Proxy là object cùng kiểu với object thật, nhận lời gọi rồi chuy
 - JDK dynamic proxy: tạo lớp động implements một hoặc nhiều interface, dùng InvocationHandler để xử lý lời gọi. Chỉ áp dụng cho interface.
 - CGLIB: sinh lớp con của class thật và ghi đè method. Không dùng được với class final hoặc method final, private.
 
-Spring dùng proxy để hiện thực AOP, @Transactional, @Cacheable, @Async, security. Với JDK proxy, bean được inject dưới dạng interface. Với CGLIB, bean là lớp con nên vẫn inject theo class được, nhưng getClass trả về lớp con chứ không phải lớp gốc. Proxy cũng có chi phí nhỏ mỗi lời gọi.
+Spring dùng proxy để hiện thực AOP, @Transactional, @Cacheable, @Async, security. Spring Boot mặc định dùng CGLIB (spring.aop.proxy-target-class=true) kể cả khi class có interface. Với JDK proxy, bean chỉ inject được dưới dạng interface. Với CGLIB, bean là lớp con nên vẫn inject theo class được, nhưng getClass trả về lớp con chứ không phải lớp gốc. Proxy cũng có chi phí nhỏ mỗi lời gọi.
 
 ~~~text
 Client --> Proxy --> (before) --> Object thật --> (after) --> Client
@@ -630,7 +630,7 @@ Dùng khi cần chèn hành vi xuyên suốt mà không sửa object thật: tra
     id: 'aop',
     term: 'AOP (aspect-oriented programming)',
     aliases: ['aop', 'aspect-oriented programming', 'aspect oriented programming', 'aspect', 'aspects'],
-    short: 'Cách gom những việc lặp lại như log, bảo mật, transaction ra khỏi logic chính.',
+    short: 'Cách gom những việc lặp lại như log, bảo mật, transaction ra một chỗ (aspect) rồi áp cho nhiều method, ví dụ @Transactional.',
     body: `### Ví dụ đời thường
 Một tòa nhà có quầy bảo vệ chung ở cổng. Mọi người ra vào đều đi qua đó để quẹt thẻ, không phòng nào phải tự lắp máy kiểm soát riêng. Việc kiểm soát được tách ra một chỗ và áp cho nhiều phòng.
 
@@ -732,7 +732,7 @@ Dùng khi ghép nhiều service trong một use case, khi cần ghi log hoặc a
     id: 'persistence-context',
     term: 'Persistence context',
     aliases: ['persistence context', 'persistence contexts', 'entity manager', 'entitymanager'],
-    short: 'Vùng nhớ đệm giữ các entity đang được quản lý trong một phiên làm việc với DB.',
+    short: 'Bộ nhớ đệm của EntityManager giữ các entity đang được quản lý; find cùng id hai lần trong một transaction chỉ query DB một lần.',
     body: `### Ví dụ đời thường
 Thủ thư có một cuốn sổ tay ghi các cuốn sách đang được mượn trong ca trực. Khi cần kiểm tra, bà xem sổ trước; chỉ khi sổ không có mới ra kho tìm. Cuối ca, sổ được đối chiếu và cập nhật.
 
@@ -756,7 +756,7 @@ EntityManager (persistence context)
 Dùng khi làm việc với JPA/Hibernate, khi cần hiểu vì sao không thấy dữ liệu vừa sửa bằng câu SQL khác, hoặc khi debug lazy loading và dirty checking.
 
 ### Hay nhầm với
-**Second-level cache** dùng chung giữa nhiều session và cần cấu hình riêng. **Session** trong Hibernate là EntityManager theo nghĩa cũ. **Connection** là kết nối vật lý tới DB, không giữ entity.`,
+**Second-level cache** dùng chung giữa nhiều session và cần cấu hình riêng. **Session** là API gốc của Hibernate; từ Hibernate 5.2, Session kế thừa EntityManager nên có thể coi là cùng một thứ. **Connection** là kết nối vật lý tới DB, không giữ entity.`,
     related: ['dirty-checking', 'lazy-loading', 'entity-state'],
     refs: [{ type: 'doc', title: 'Hibernate ORM 6.6 User Guide', url: 'https://docs.jboss.org/hibernate/orm/6.6/userguide/html_single/Hibernate_User_Guide.html' }],
   },
@@ -774,7 +774,7 @@ Khi Hibernate nạp một entity vào persistence context, nó giữ một bản
 - Nếu không khác, không làm gì.
 - Nếu entity mới, sinh INSERT; nếu bị remove, sinh DELETE.
 
-Mặc định Hibernate dùng kiểm tra toàn bộ thuộc tính khi flush. Có thể bật DynamicUpdate để chỉ đưa cột thay đổi vào câu SQL. Dirty checking giúp code gọn nhưng có thể gây bất ngờ: thay đổi ngoài transaction, hoặc câu bulk update không cập nhật snapshot, khiến context chứa dữ liệu cũ.
+Mặc định Hibernate so sánh toàn bộ thuộc tính của mọi entity managed khi flush, nên context chứa hàng nghìn entity sẽ làm flush chậm. Mặc định câu UPDATE ghi lại mọi cột; có thể gắn @DynamicUpdate lên entity để chỉ đưa cột thay đổi vào câu SQL. Dirty checking giúp code gọn nhưng có thể gây bất ngờ: thay đổi ngoài transaction, hoặc câu bulk update không cập nhật snapshot, khiến context chứa dữ liệu cũ.
 
 ~~~text
 Load entity --> snapshot(name=An, age=20)
@@ -802,7 +802,7 @@ Dùng khi muốn cập nhật entity trong transaction mà không gọi save/mer
 Bạn đặt một bộ tủ lắp ghép. Nhà giao hàng chỉ mang đúng phần bạn cần lắp trước, phần còn lại để trong kho và giao khi bạn yêu cầu. Đỡ chật nhà, nhưng nếu cần gấp mà kho xa thì phải chờ.
 
 ### Cơ chế
-Với JPA, quan hệ mặc định thường là lazy cho collection và có thể chọn lazy cho many-to-one. Hibernate không nạp dữ liệu ngay mà tạo proxy hoặc PersistentCollection. Khi bạn gọi getter hoặc duyệt collection lần đầu, Hibernate phát câu SQL để nạp, gọi là initialize.
+Với JPA, mặc định @OneToMany và @ManyToMany là LAZY, còn @ManyToOne và @OneToOne là EAGER; nên khai báo fetch = FetchType.LAZY cho @ManyToOne để tránh nạp thừa. Hibernate không nạp dữ liệu ngay mà tạo proxy hoặc PersistentCollection. Khi bạn gọi getter hoặc duyệt collection lần đầu, Hibernate phát câu SQL để nạp, gọi là initialize.
 
 Lazy loading giúp tránh đọc cả đồ thị lớn khi chỉ cần vài trường. Nhưng nếu entity đã detached (sau khi transaction đóng), việc nạp sẽ ném LazyInitializationException. Ngoài ra, duyệt collection của N entity trong vòng lặp sẽ tạo N+1 query. Cách xử lý: fetch join, @EntityGraph, batch size, hoặc DTO projection.
 
@@ -895,12 +895,12 @@ Dùng cho ứng dụng web, tranh chấp thấp tới vừa, transaction ngắn,
     id: 'pessimistic-locking',
     term: 'Pessimistic locking',
     aliases: ['pessimistic locking', 'pessimistic lock', 'pessimistic', 'khóa bi quan'],
-    short: 'Khóa dữ liệu ngay khi đọc để người khác không thể sửa cùng lúc.',
+    short: 'Khóa dòng dữ liệu ngay khi đọc (SELECT ... FOR UPDATE) để transaction khác không sửa được cho tới khi bạn commit.',
     body: `### Ví dụ đời thường
 Bạn đến quầy thuê xe và giữ chìa khóa chiếc xe duy nhất. Trong lúc bạn còn giữ, nhân viên không thể cho người khác thuê xe đó. Cách này chắc chắn nhưng người sau phải chờ.
 
 ### Cơ chế
-Với JPA, dùng LockModeType.PESSIMISTIC_WRITE sẽ phát SELECT ... FOR UPDATE (tùy DB), khóa dòng cho tới khi transaction kết thúc. Người khác muốn đọc/ghi dòng đó sẽ bị chặn hoặc phải chờ, tùy isolation và tùy chế độ. PESSIMISTIC_READ thường dùng khóa chia sẻ, cho phép nhiều người đọc nhưng chặn ghi.
+Với JPA, dùng LockModeType.PESSIMISTIC_WRITE sẽ phát SELECT ... FOR UPDATE (tùy DB), khóa dòng cho tới khi transaction kết thúc. Transaction khác muốn UPDATE/DELETE hoặc cũng SELECT ... FOR UPDATE dòng đó sẽ phải chờ. Lưu ý: SELECT thường (không FOR UPDATE) trên PostgreSQL và MySQL InnoDB vẫn đọc được ngay nhờ MVCC, chỉ thấy bản đã commit trước đó. PESSIMISTIC_READ thường dùng khóa chia sẻ, cho phép nhiều người đọc nhưng chặn ghi.
 
 Ưu điểm là ngăn lost update tuyệt đối, không cần retry. Nhược điểm là giảm throughput, dễ gây chờ lâu, và có thể deadlock nếu khóa nhiều bảng theo thứ tự khác nhau. Luôn đặt timeout và giữ transaction ngắn. Với DB như PostgreSQL, FOR UPDATE chỉ khóa dòng thực sự khớp điều kiện.
 
@@ -923,7 +923,7 @@ Dùng khi tranh chấp cao và nghiệp vụ không cho phép thử lại: trừ
     id: 'entity-state',
     term: 'Entity state (transient / managed / detached)',
     aliases: ['entity state', 'entity states', 'trạng thái entity', 'detached', 'transient state', 'trạng thái transient', 'managed entity'],
-    short: 'Trạng thái của một đối tượng dữ liệu so với phiên làm việc với cơ sở dữ liệu.',
+    short: 'Vòng đời của entity JPA: transient (mới new), managed (Hibernate đang theo dõi), detached (đã rời persistence context), removed.',
     body: `### Ví dụ đời thường
 Một nhân viên có thể ở ba trạng thái: mới nộp hồ sơ chưa vào hệ thống, đang làm việc và có mã số trong hệ thống, hoặc đã nghỉ và hồ sơ chỉ còn là bản sao. Mỗi trạng thái cho phép hành động khác nhau.
 
@@ -934,13 +934,13 @@ Với JPA/Hibernate, entity đi qua các trạng thái:
 - Detached: từng managed nhưng context đã đóng hoặc gọi detach/clear. Có id nhưng không còn được theo dõi. Gọi merge để đưa lại thành managed.
 - Removed: đã đánh dấu xóa, sẽ bị DELETE khi flush.
 
-Chuyển trạng thái sai gây lỗi quen thuộc: LazyInitializationException trên detached, hoặc persist một object đã có id gây lỗi trùng khóa. Hiểu vòng đời giúp chọn persist, merge, refresh, detach đúng chỗ.
+Chuyển trạng thái sai gây lỗi quen thuộc: LazyInitializationException trên detached, hoặc gọi persist trên một entity detached gây lỗi "detached entity passed to persist". Hiểu vòng đời giúp chọn persist, merge, refresh, detach đúng chỗ.
 
 ~~~text
 new --> transient --persist--> managed --detach/close--> detached
-                 <--merge--                     |
-                 |                             +--merge--> managed
-                 +--remove--> removed --flush--> xóa khỏi DB
+                                  |    ^                     |
+                                  |    +------- merge -------+
+                                  +--remove--> removed --flush--> DELETE
 ~~~
 
 ### Khi nào dùng
@@ -1079,17 +1079,17 @@ Dùng khi lỗi là một phần hợp đồng và người gọi có cách xử
     id: 'type-erasure',
     term: 'Generics type erasure',
     aliases: ['type erasure', 'erasure', 'generic type erasure', 'xóa kiểu'],
-    short: 'Việc compiler xóa thông tin kiểu generic sau khi kiểm tra, để chạy trên JVM cũ.',
+    short: 'Compiler kiểm tra kiểu generic rồi xóa nó khỏi bytecode, nên lúc chạy List<String> và List<Integer> chỉ còn là List.',
     body: `### Ví dụ đời thường
 Ở cổng sân bay, nhân viên kiểm tra vali có đúng quy định không rồi dán nhãn. Khi vali đã lên máy bay, nhãn chi tiết bị gỡ, khoang chứa chỉ còn một vali chung chung. Việc kiểm tra đã xong trước đó, nhưng bên trong khoang không còn phân biệt loại.
 
 ### Cơ chế
-Java triển khai generic bằng type erasure để tương thích với code cũ:
+Java triển khai generic bằng type erasure để code và thư viện viết trước Java 5 (không có generic) vẫn chạy chung được:
 - Tham số kiểu bị xóa, thay bằng bound hoặc Object. List<String> và List<Integer> cùng là List ở runtime.
 - Compiler chèn ép kiểu (cast) ở nơi cần thiết và kiểm tra kiểu lúc biên dịch.
 - Sinh bridge method để giữ tính đa hình khi lớp con override method generic.
 - Không thể dùng new T(), new T[], instanceof List<String>, hay overload chỉ khác tham số generic vì cả hai xóa về cùng chữ ký.
-- Không có thông tin kiểu tại runtime, nên không thể kiểm tra Collection<String> bằng reflection trực tiếp.
+- Nhìn vào một object List lúc runtime không biết phần tử kiểu gì. Chỉ chữ ký khai báo (kiểu của field, tham số method, lớp cha) còn giữ generic trong class file, và TypeToken khai thác điều này.
 
 Muốn giữ thông tin kiểu, truyền Class<T> hoặc dùng TypeToken. Một số ngôn ngữ khác như C# reify generic, nghĩa là giữ kiểu tại runtime.
 
