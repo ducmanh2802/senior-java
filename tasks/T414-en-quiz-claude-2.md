@@ -1,6 +1,6 @@
 # T414 — Dịch sang tiếng Anh: quiz-claude (30 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/quiz-claude-2.en.js`
 
@@ -16,3 +16,9 @@ Yêu cầu dịch:
 - `node --check js/i18n/quiz-claude-2.en.js` và `node scripts/check-i18n.js quiz-claude-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đủ 30/30 mục qz-claude-064…093 (q, options, explain) trong `js/i18n/quiz-claude-2.en.js`, giữ nguyên markup, số liệu, tên mã lỗi/header/tham số và thứ tự phương án.
+- qz-claude-078: khối `~~~json` giữ nguyên cấu trúc, chỉ dịch câu prompt tiếng Việt trong `text`; 086/087 giữ nguyên object `tool_choice`/`thinking` trong chuỗi (escape `\"`).
+- `node scripts/check-i18n.js quiz-claude-2` → OK — 30 mục đã dịch; `node scripts/validate.js` → OK. (`node --check` bị sandbox chặn quyền chạy; checker nạp file trong VM node nên cú pháp đã được xác nhận.)
+- Không sửa file nào khác ngoài file sở hữu và file task này.
+Reviewed-by: check-i18n (translation, no LLM review)
