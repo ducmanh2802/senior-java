@@ -11362,3 +11362,1381 @@ public class Main {
   follow: ['Nếu n rất lớn (10^8) thì sieve có đủ bộ nhớ không?']
 }
 );
+
+(function() {
+  'use strict';
+  (window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-128',
+  title: 'Longest Palindromic Substring',
+  difficulty: 'medium',
+  pattern: 'Dynamic Programming',
+  tags: ['string', 'palindrome', 'dp', 'bytebytego'],
+  prompt: `Cho chuỗi {{s}}, tìm chuỗi con liên tiếp dài nhất là palindrome (đọc xuôi ngả như nhau). Nếu có nhiều chuỗi dài nhất bằng nhau, trả về bất kỳ chuỗi nào.
+
+### Ví dụ
+~~~text
+Input:  s = "cbbd"
+Output: "bb"
+
+Input:  s = "a"
+Output: "a"
+
+Input:  s = "abb"
+Output: "bb"
+~~~
+
+### Ràng buộc
+- {{1 <= s.length <= 1000}}
+- {{s}} chỉ gồm chữ cái và chữ số.`,
+  hints: [
+    'Với mỗi vị trí, coi nó là tâm của palindrome và mở rộng ra hai phía bằng hai con trỏ cho đến khi ký tự khác nhau.',
+    'Có hai loại tâm: một ký tự (palindrome độ dài lẻ) và hai ký tự liền kề (palindrome độ dài chẵn).',
+    'Lưu chuỗi dài nhất tìm được; mỗi vị trí được xét hai lần nên tổng số bước là O(n²) nhưng không tốn thêm bộ nhớ.'
+  ],
+  solution: `### Ý tưởng
+Dùng phương pháp "mở rộng từ tâm" (expand around center). Với mỗi vị trí i trong chuỗi, coi nó là tâm của palindrome lẻ (tâm là một ký tự) và tâm của palindrome chẵn (tâm nằm giữa hai ký tự). Mở rộng ra trái phải cho đến khi ký tự khác nhau hoặc đạt biên chuỗi.
+
+Mỗi mở rộng tốn O(n), có n vị trí nên tổng O(n²). Không dùng bảng DP 2D nên bộ nhớ chỉ O(1).
+
+~~~java
+class Solution {
+    public String longestPalindrome(String s) {
+        if (s == null || s.length() < 1) return "";
+        int start = 0, end = 0;
+        for (int i = 0; i < s.length(); i++) {
+            int len1 = expandAroundCenter(s, i, i);
+            int len2 = expandAroundCenter(s, i, i + 1);
+            int len = Math.max(len1, len2);
+            if (len > end - start) {
+                start = i - (len - 1) / 2;
+                end = i + len / 2;
+            }
+        }
+        return s.substring(start, end + 1);
+    }
+
+    private int expandAroundCenter(String s, int left, int right) {
+        while (left >= 0 && right < s.length() && s.charAt(left) == s.charAt(right)) {
+            left--;
+            right++;
+        }
+        return right - left - 1;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Cần xử lý cả hai loại tâm: "{{i, i}}" cho độ dài lẻ và "{{i, i + 1}}" cho độ dài chẵn.
+- Có thể dùng bảng DP {{dp[i][j]}} cho biết s[i..j] có phải palindrome hay không, nhưng tốn O(n²) bộ nhớ.
+- Khi s chứa Unicode, so sánh ký tự bằng {{charAt}} có thể chưa chính xác với surrogate pair.`,
+  starter: "class Solution {\\n    public String longestPalindrome(String s) {\\n        \\n    }\\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected '"
+                    + expected + "' got '" + actual + "'");
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+
+    public static void main(String[] args) {
+        run("cbbd", "bb", () -> new Solution().longestPalindrome("cbbd"));
+        run("single", "a", () -> new Solution().longestPalindrome("a"));
+        run("abb", "bb", () -> new Solution().longestPalindrome("abb"));
+        run("bbbb", "bbbb", () -> new Solution().longestPalindrome("bbbb"));
+        run("racecar", "racecar", () -> new Solution().longestPalindrome("racecar"));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n^2), Space O(1)',
+  follow: ['Nếu cần trả về độ dài thay vì chuỗi thì sửa thế nào?', 'Có cách nào đạt O(n) không?']
+},
+{
+  id: 'algo-129',
+  title: 'Palindromic Substrings Count',
+  difficulty: 'medium',
+  pattern: 'Dynamic Programming',
+  tags: ['string', 'palindrome', 'dp', 'bytebytego'],
+  prompt: `Cho chuỗi {{s}}, tính số lượng chuỗi con liên tiếp là palindrome. Hai chuỗi con khác nhau nếu chúng có vị trí bắt đầu hoặc kết thúc khác nhau, kể cả cùng nội dung.
+
+### Ví dụ
+~~~text
+Input:  s = "abc"
+Output: 3
+Giải thích: "a", "b", "c".
+
+Input:  s = "aaa"
+Output: 6
+Giải thích: "a", "a", "a", "aa", "aa", "aaa".
+~~~
+
+### Ràng buộc
+- {{1 <= s.length <= 1000}}
+- {{s}} chỉ gồm chữ cái thường tiếng Anh.`,
+  hints: [
+    'Với mỗi vị trí làm tâm, mở rộng ra hai phía và đếm mỗi lần tìm được palindrome.',
+    'Có hai loại tâm: một ký tự (độ dài lẻ) và hai ký tự liền kề (độ dài chẵn).',
+    'Mỗi mở rộng thành công tăng biến đếm 1; có n vị trí nên tổng O(n²).'
+  ],
+  solution: `### Ý tưởng
+Tương tự bài Longest Palindromic Substring, nhưng thay vì lưu chuỗi dài nhất, ta đếm số lần mở rộng thành công. Với mỗi vị trí i, mở rộng từ tâm {{(i, i)}} và tâm {{(i, i + 1)}}; mỗi khi s.charAt(left) == s.charAt(right) thì tìm được một palindrome mới, tăng biến đếm.
+
+Có n vị trí, mỗi vị trí mở rộng tối đa O(n) bước nên tổng O(n²), bộ nhớ O(1).
+
+~~~java
+class Solution {
+    public int countSubstrings(String s) {
+        int count = 0;
+        for (int i = 0; i < s.length(); i++) {
+            count += expandAroundCenter(s, i, i);
+            count += expandAroundCenter(s, i, i + 1);
+        }
+        return count;
+    }
+
+    private int expandAroundCenter(String s, int left, int right) {
+        int count = 0;
+        while (left >= 0 && right < s.length() && s.charAt(left) == s.charAt(right)) {
+            count++;
+            left--;
+            right++;
+        }
+        return count;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Cần xử lý cả hai loại tâm: "{{i, i}}" cho độ dài lẻ và "{{i, i + 1}}" cho độ dài chẵn.
+- Chuỗi con khác nhau theo vị trí, nên "aaa" có 6 palindrome (ba ô đơn, hai "aa", một "aaa").
+- Có thể dùng bảng DP 2D nhưng tốn O(n²) bộ nhớ.`,
+  starter: "class Solution {\\n    public int countSubstrings(String s) {\\n        \\n    }\\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+
+    public static void main(String[] args) {
+        run("abc", 3, () -> new Solution().countSubstrings("abc"));
+        run("aaa", 6, () -> new Solution().countSubstrings("aaa"));
+        run("abba", 6, () -> new Solution().countSubstrings("abba"));
+        run("single", 1, () -> new Solution().countSubstrings("a"));
+        run("two same", 3, () -> new Solution().countSubstrings("aa"));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n^2), Space O(1)',
+  follow: ['Nếu cần liệt kê tất cả các palindrome thì làm thế nào?', 'Có cách nào đạt O(n) không?']
+},
+{
+  id: 'algo-130',
+  title: 'Minimum Cuts for Palindrome Partitioning',
+  difficulty: 'hard',
+  pattern: 'Dynamic Programming',
+  tags: ['string', 'palindrome', 'dp', 'bytebytego'],
+  prompt: `Cho chuỗi {{s}}, cắt sao cho mỗi phần đều là palindrome. Tìm số lần cắt ít nhất (tức có ít nhất bao nhiêu phần — 1).
+
+### Ví dụ
+~~~text
+Input:  s = "aab"
+Output: 1
+Giải thích: cắt thành "aa" và "b", 1 lần cắt.
+
+Input:  s = "a"
+Output: 0
+Giải thích: đã là palindrome, không cần cắt.
+
+Input:  s = "noon"
+Output: 0
+~~~
+
+### Ràng buộc
+- {{1 <= s.length <= 2000}}
+- {{s}} chỉ gồm chữ cái thường tiếng Anh.`,
+  hints: [
+    'Xây dựng bảng DP {{isPal[i][j]}} cho biết s[i..j] có phải palindrome không.',
+    'dp[i] là số lần cắt tối thiểu cho tiền tố {{s[0..i]}}; cập nhật nếu {{isPal[j][i]}} và dp[j-1] + 1.',
+    'Bất kể i là đầu của một palindrome kéo dài từ j, số cắt cho s[0..i] là dp[j-1] + 1.'
+  ],
+  solution: `### Ý tưởng
+Hai bước Dynamic Programming:
+
+**Bước 1:** Dựng bảng {{isPal[i][j]}} — s[i..j] có phải palindrome hay không. Công thức: nếu {{s[i] == s[j]}} và ({{j - i < 2}} hoặc {{isPal[i+1][j-1]}}).
+
+**Bước 2:** {{dp[i]}} là số lần cắt tối thiểu cho tiền tố {{s[0..i]}}. Với mỗi vị trí {{i}}, thử mọi {{j <= i}} sao cho {{isPal[j][i]}}; nếu được, cập nhật {{dp[i] = min(dp[i], (j > 0 ? dp[j-1] + 1 : 0))}}.
+
+Độ phức tạp: O(n²) thời gian và O(n²) bộ nhớ cho bảng isPal; dp dùng O(n).
+
+~~~java
+class Solution {
+    public int minCut(String s) {
+        int n = s.length();
+        boolean[][] isPal = new boolean[n][n];
+        for (int i = n - 1; i >= 0; i--) {
+            for (int j = i; j < n; j++) {
+                isPal[i][j] = s.charAt(i) == s.charAt(j)
+                    && (j - i < 2 || isPal[i + 1][j - 1]);
+            }
+        }
+        int[] dp = new int[n];
+        for (int i = 0; i < n; i++) {
+            if (isPal[0][i]) {
+                dp[i] = 0;
+            } else {
+                dp[i] = i;
+                for (int j = 1; j <= i; j++) {
+                    if (isPal[j][i]) {
+                        dp[i] = Math.min(dp[i], dp[j - 1] + 1);
+                    }
+                }
+            }
+        }
+        return dp[n - 1];
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Dòng {{isPal[i][j]}} được tính từ {{i}} giảm dần để {{isPal[i+1][...}} đã có giá trị.
+- Nếu chỉ cần O(n) bộ nhớ, có thể dùng expand-from-center và cập nhật dp trong quá trình mở rộng, nhưng code phức tạp hơn.
+- Câu hỏi thường gặp: "trả về cách cắt", không chỉ số lần cắt — cần lưu thêm trạng thái để backtrack.`,
+  starter: "class Solution {\\n    public int minCut(String s) {\\n        \\n    }\\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+
+    public static void main(String[] args) {
+        run("aab", 1, () -> new Solution().minCut("aab"));
+        run("single", 0, () -> new Solution().minCut("a"));
+        run("noon", 0, () -> new Solution().minCut("noon"));
+        run("bbab", 1, () -> new Solution().minCut("bbab"));
+        run("abc", 2, () -> new Solution().minCut("abc"));
+        run("long", 2, () -> new Solution().minCut("aabbcbb"));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n^2), Space O(n^2)',
+  follow: ['Nếu cần trả về cách cắt thực sự thì backtrack như thế nào?', 'Có cách giảm bộ nhớ xuống O(n) không?']
+},
+{
+  id: 'algo-131',
+  title: 'Longest Palindromic Subsequence',
+  difficulty: 'medium',
+  pattern: 'Dynamic Programming',
+  tags: ['string', 'palindrome', 'dp', 'bytebytego'],
+  prompt: `Cho chuỗi {{s}}, tìm độ dài của dãy con (không nhất thiết liên tiếp) dài nhất là palindrome.
+
+### Ví dụ
+~~~text
+Input:  s = "bbbab"
+Output: 4
+Giải thích: "bbbb" là palindrome dài nhất.
+
+Input:  s = "cbbd"
+Output: 2
+Giải thích: "bb" là palindrome dài nhất.
+~~~
+
+### Ràng buộc
+- {{1 <= s.length <= 1000}}
+- {{s}} chỉ gồm chữ cái thường tiếng Anh.`,
+  hints: [
+    'Nếu lật ngược s, dãy con chung dài nhất giữa s và s đảo ngược chính là dãy con palindrome dài nhất.',
+    'dp[i][j] là độ dài LPS (Longest Palindromic Subsequence) của s[i..j].',
+    'Nếu s[i] == s[j], dp[i][j] = dp[i+1][j-1] + 2; ngược lại dp[i][j] = max(dp[i+1][j], dp[i][j-1]).'
+  ],
+  solution: `### Ý tưởng
+Dãy con palindrome dài nhất của s bằng dãy con chung dài nhất (LCS) của s và s đảo ngược. Đây là cách nhận biết nhanh trong phỏng vấn.
+
+Cách DP trực tiếp: {{dp[i][j] độ dài LPS của s[i..j]}}. Nếu {{s.charAt(i) == s.charAt(j)}}: dp[i][j] = dp[i+1][j-1] + 2. Ngược lại: dp[i][j] = max(dp[i+1][j], dp[i][j-1]). Tính từ {{i}} giảm dần.
+
+~~~java
+class Solution {
+    public int longestPalinSubseq(String s) {
+        int n = s.length();
+        int[][] dp = new int[n][n];
+        for (int i = n - 1; i >= 0; i--) {
+            dp[i][i] = 1;
+            for (int j = i + 1; j < n; j++) {
+                if (s.charAt(i) == s.charAt(j)) {
+                    dp[i][j] = dp[i + 1][j - 1] + 2;
+                } else {
+                    dp[i][j] = Math.max(dp[i + 1][j], dp[i][j - 1]);
+                }
+            }
+        }
+        return dp[0][n - 1];
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Dãy con khác với chuỗi con: dãy con có thể bỏ qua ký tự, nên không cần liên tiếp.
+- Phân biệt với Longest Palindromic Substring: substring yêu cầu liên tiếp, subsequence thì không.
+- Có thể tối ưu bộ nhớ xuống O(n) bằng cách chỉ lưu hàng hiện tại và hàng kế.`,
+  starter: "class Solution {\\n    public int longestPalinSubseq(String s) {\\n        \\n    }\\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+
+    public static void main(String[] args) {
+        run("bbbab", 4, () -> new Solution().longestPalinSubseq("bbbab"));
+        run("cbbd", 2, () -> new Solution().longestPalinSubseq("cbbd"));
+        run("single", 1, () -> new Solution().longestPalinSubseq("a"));
+        run("all same", 5, () -> new Solution().longestPalinSubseq("aaaaa"));
+        run("two distinct", 1, () -> new Solution().longestPalinSubseq("ab"));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n^2), Space O(n^2)',
+  follow: ['Nếu cần trả về dãy con palindrome thực sự thì backtrack như thế nào?', 'Có cách giảm bộ nhớ xuống O(n) không?']
+},
+{
+  id: 'algo-132',
+  title: 'Gas Station',
+  difficulty: 'medium',
+  pattern: 'Greedy',
+  tags: ['array', 'greedy', 'gas-station', 'bytebytego'],
+  prompt: `Có {{n}} trạm xăng tròn, mỗi trạm có {{gas[i]}} lit xăng. Từ trạm i sang trạm i+1 tốn {{cost[i]}} lit. Xe bình ban đầu, bình không giới hạn dung tích. Tìm chỉ số trạm khởi đầu để xe đi vòng quanh toàn bộ vòng tròn, hoặc trả về -1 nếu không thể.
+
+### Ví dụ
+~~~text
+Input:  gas = [1,2,3,4,5], cost = [3,4,5,1,2]
+Output: 3
+Giải thích: khởi tại trạm 3, bình có đủ xăng để đi hết vòng.
+
+Input:  gas = [2,3,4], cost = [3,4,3]
+Output: -1
+~~~
+
+### Ràng buộc
+- {{n == gas.length == cost.length}}
+- {{1 <= n <= 10^5}}
+- {{0 <= gas[i], cost[i] <= 10^4}}`,
+  hints: [
+    'Nếu tổng xăng nhỏ hơn tổng chi phí, chắc chắn không thể đi hết vòng.',
+    'Nếu bắt đầu tại trạm {{start}} mà bình rỗng ở trạm {{k}}, thì mọi trạm từ {{start}} đến {{k}} cũng không thể là khởi đầu.',
+    'Tìm trạm đầu tiên mà bình không bao giờ rỗng trên đoạn đi từ đó đến cuối mảng.'
+  ],
+  solution: `### Ý tưởng
+Hai điều kiện quan trọng:
+
+1. Nếu {{tổng gas < tổng cost}}, trả về -1 ngay (không đủ xăng cho cả vòng).
+2. Nếu tổng đủ, thì chắc chắn có một trạm khởi đầu hợp lệ. Tìm nó bằng cách duyệt một lần: duy trì {{tank}} (xăng còn lại). Nếu tại trạm {{i}}, {{tank < 0}}, thì khởi đầu không thể là bất kỳ trạm nào từ điểm bắt đầu hiện tại đến {{i}} — đặt khởi đầu mới là {{i + 1}} và reset tank.
+
+Lý do: từ trạm A đến B, nếu tank trở nên âm, nghĩa là đoạn A→B hụt xăng, không thể bắt đầu ở bất kỳ trạm nào trong đoạn này.
+
+~~~java
+class Solution {
+    public int canCompleteCircuit(int[] gas, int[] cost) {
+        int totalGas = 0, totalCost = 0;
+        int tank = 0, start = 0;
+        for (int i = 0; i < gas.length; i++) {
+            totalGas += gas[i];
+            totalCost += cost[i];
+            tank += gas[i] - cost[i];
+            if (tank < 0) {
+                start = i + 1;
+                tank = 0;
+            }
+        }
+        return totalGas < totalCost ? -1 : start;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Chỉ số start có thể vượt qua {{gas.length}} nếu mảng được duyệt hết; nhưng vì kiểm tra total trước, nếu có đáp án thì start sẽ nằm trong [0, n-1].
+- Đây là dạng "greedy prefix sum": khi tiền tố tổng âm, cắt đoạn và bắt đầu mới.
+- Trong thực tế, mô hình này xuất hiện khi lập lịch job cyclic hoặc kiểm tra cân bằng tải trên vòng quay.`,
+  starter: "class Solution {\\n    public int canCompleteCircuit(int[] gas, int[] cost) {\\n        \\n    }\\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+
+    public static void main(String[] args) {
+        run("example", 3, () -> new Solution().canCompleteCircuit(new int[]{1, 2, 3, 4, 5}, new int[]{3, 4, 5, 1, 2}));
+        run("impossible", -1, () -> new Solution().canCompleteCircuit(new int[]{2, 3, 4}, new int[]{3, 4, 3}));
+        run("single ok", 0, () -> new Solution().canCompleteCircuit(new int[]{5}, new int[]{4}));
+        run("single fail", -1, () -> new Solution().canCompleteCircuit(new int[]{3}, new int[]{4}));
+        run("start zero", 0, () -> new Solution().canCompleteCircuit(new int[]{5, 1, 2, 3, 4}, new int[]{4, 4, 1, 5, 1}));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n), Space O(1)',
+  follow: ['Nếu xăng bị rò rỉ theo thời gian thì sửa thế nào?', 'Làm sao tìm tất cả trạm khởi đầu hợp lệ?']
+},
+{
+  id: 'algo-133',
+  title: 'Partition Labels',
+  difficulty: 'medium',
+  pattern: 'Greedy',
+  tags: ['string', 'greedy', 'intervals', 'bytebytego'],
+  prompt: `Cho chuỗi {{s}}. Phân đoạn s thành nhiều phần sao cho mỗi chữ cái chỉ xuất hiện trong một phần duy nhất. Trả về độ dài các phần theo thứ tự.
+
+### Ví dụ
+~~~text
+Input:  s = "ababcbacadefegdehijhklij"
+Output: [9, 7, 8]
+Giải thích: "ababcbaca", "defegde", "hijhklij".
+
+Input:  s = "eccbbbbdec"
+Output: [10]
+~~~
+
+### Ràng buộc
+- {{1 <= s.length <= 500}}
+- {{s}} chỉ gồm chữ cái thường tiếng Anh.`,
+  hints: [
+    'Ghi lại vị trí xuất hiện cuối cùng của mỗi chữ cái.',
+    'Duyệt từ trái sang phải, duy trì cửa sổ. Nếu một chữ cái trong cửa sổ có vị trí cuối nằm bên phải, mở rộng cửa sổ đến đó.',
+    'Khi chỉ số hiện tại đạt được biên phải xa nhất của cửa sổ, đóng cửa sổ và ghi độ dài.'
+  ],
+  solution: `### Ý tưởng
+Hai bước:
+
+**Bước 1:** Dựng mảng {{last[26]}} lưu chỉ số xuất hiện cuối cùng của mỗi chữ cái.
+
+**Bước 2:** Duyệt chuỗi với hai con trỏ {{start}} và {{end}}. Với mỗi ký tự {{s[i]}}, cập nhật {{end = max(end, last[s[i] - 'a'])}}. Khi {{i == end}}, cửa sổ đã đóng: ghi {{end - start + 1}} và đặt {{start = i + 1}}.
+
+Mỗi ký tự được xem xét một lần, nên O(n) thời gian và O(1) bộ nhớ (bảng 26 ô).
+
+~~~java
+class Solution {
+    public List<Integer> partitionLabels(String s) {
+        int[] last = new int[26];
+        for (int i = 0; i < s.length(); i++) {
+            last[s.charAt(i) - 'a'] = i;
+        }
+        List<Integer> result = new ArrayList<>();
+        int start = 0, end = 0;
+        for (int i = 0; i < s.length(); i++) {
+            end = Math.max(end, last[s.charAt(i) - 'a']);
+            if (i == end) {
+                result.add(end - start + 1);
+                start = i + 1;
+            }
+        }
+        return result;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Mảng {{last}} chỉ cần 26 phần tử vì chỉ có 26 chữ cái thường; nếu Unicode, dùng HashMap.
+- Phần cuối cùng luôn được đóng khi i đạt đến last ký tự cuối cùng.
+- Có thể hiểu từng phần là một "khoảng không giao nhau" sau khi hợp nhất các khoảng của cùng một chữ cái.`,
+  starter: "class Solution {\\n    public List<Integer> partitionLabels(String s) {\\n        \\n    }\\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected " + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+
+    public static void main(String[] args) {
+        run("example", java.util.List.of(9, 7, 8), () -> new Solution().partitionLabels("ababcbacadefegdehijhklij"));
+        run("single", java.util.List.of(10), () -> new Solution().partitionLabels("eccbbbbdec"));
+        run("all same", java.util.List.of(3), () -> new Solution().partitionLabels("aaa"));
+        run("distinct", java.util.List.of(1, 1, 1), () -> new Solution().partitionLabels("abc"));
+        run("two", java.util.List.of(2, 2), () -> new Solution().partitionLabels("abab"));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n), Space O(1)',
+  follow: ['Nếu muốn mỗi phần tối đa K ký tự thì làm thế nào?', 'Làm sao xử lý nếu chữ cái có thể là Unicode?']
+},
+{
+  id: 'algo-134',
+  title: 'Minimum Number of Arrows to Burst Balloons',
+  difficulty: 'medium',
+  pattern: 'Greedy',
+  tags: ['array', 'greedy', 'intervals', 'bytebytego'],
+  prompt: `Có nhiều màu trên không phẳng, mỗi màu biểu diễn bằng khoảng trampion {{[x_start, x_end]}}. Một cung bắn tại tọa độ x sẽ nổ mọi màu có {{x_start <= x <= x_end}}. Tìm số cung ít nhất để nổ hết mọi màu.
+
+### Ví dụ
+~~~text
+Input:  points = [[10,16],[2,8],[1,6],[7,12]]
+Output: 2
+Giải thích: bắn tại x = 6 nổ [1,6] và [2,8]; bắn tại x = 11 não [10,16] và [7,12].
+
+Input:  points = [[1,2],[3,4],[5,6],[7,8]]
+Output: 4
+~~~
+
+### Ràng buộc
+- {{1 <= points.length <= 10^5}}
+- {{points[i].length == 2}}
+- {{-2^31 <= x_start < x_end <= 2^31 - 1}}`,
+  hints: [
+    'Sắp xếp các khoảng theo đầu phải (x_end) tăng dần.',
+    'Luôn bắn tại đầu phải của khoảng chưa bị nổ đầu tiên — cách này tối ưu vì chạm được nhiều khoảng nhất.',
+    'Khi sang một khoảng mới, nếu đầu trái lớn hơn vị trí cung vừa bắn, cần bắn thêm một cung.'
+  ],
+  solution: `### Ý tưởng
+Sắp xếp các khoảng theo {{x_end}} tăng dần. Giữ vị trí cung bắn gần nhất {{arrowPos}}. Khi xét khoảng mới:
+
+- Nếu {{x_start > arrowPos}}, khoảng này chưa bị nổ → bắn cung mới tại {{x_end}}, cập nhật {{arrowPos = x_end}}.
+- Nếu {{x_start <= arrowPos}}, khoảng này đã bị nổ bởi cung trước → bỏ qua.
+
+Vì sắp xếp theo đầu phải, cung bắn tại điểm nhỏ nhất có thể bên trái nhưng vẫn chạm được khoảng hiện tại, tạo điều kiện chạm được nhiều khoảng sau này nhất.
+
+~~~java
+class Solution {
+    public int findMinArrowShots(int[][] points) {
+        if (points.length == 0) return 0;
+        Arrays.sort(points, (a, b) -> Integer.compare(a[1], b[1]));
+        int arrows = 1;
+        int arrowPos = points[0][1];
+        for (int i = 1; i < points.length; i++) {
+            if (points[i][0] > arrowPos) {
+                arrows++;
+                arrowPos = points[i][1];
+            }
+        }
+        return arrows;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Cẩn thận overflow khi so sánh: dùng {{Integer.compare}} hoặc {{Long.compare}} thay vì {{a[1] - b[1]}} vì giá trị có thể gần {{Integer.MAX_VALUE}}.
+- Nếu hai khoảng chỉ chạm nhau ở điểm biên (ví dụ [1,2] và [2,3]), cung tại x=2 nổ cả hai — được xử lý đúng bởi điều kiện {{points[i][0] > arrowPos}}.
+- Đây là bài "interval scheduling" điển hình: chọn điểm chờ nhiều khoảng nhất.`,
+  starter: "class Solution {\\n    public int findMinArrowShots(int[][] points) {\\n        \\n    }\\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+
+    public static void main(String[] args) {
+        run("example", 2, () -> new Solution().findMinArrowShots(new int[][]{{10, 16}, {2, 8}, {1, 6}, {7, 12}}));
+        run("disjoint", 4, () -> new Solution().findMinArrowShots(new int[][]{{1, 2}, {3, 4}, {5, 6}, {7, 8}}));
+        run("single", 1, () -> new Solution().findMinArrowShots(new int[][]{{1, 2}}));
+        run("nested", 1, () -> new Solution().findMinArrowShots(new int[][]{{1, 10}, {2, 3}, {4, 5}}));
+        run("touching", 1, () -> new Solution().findMinArrowShots(new int[][]{{1, 2}, {2, 3}}));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n log n), Space O(1)',
+  follow: ['Nếu cung bắn tốn chi phí khác nhau theo vị trí thì làm thế nào?', 'Làm sao trả về tọa độ các cung bắn?']
+},
+{
+  id: 'algo-135',
+  title: 'N-Queens',
+  difficulty: 'hard',
+  pattern: 'Backtracking',
+  tags: ['backtracking', 'chess', 'search', 'bytebytego'],
+  prompt: `Cho bàn cờ {{n x n}}, đặt {{n}} quân hậu sao cho không có hai quân nào tấn công nhau. Một quân hậu tấn công theo hàng ngang, hàng dọc và hai đường chéo chính/phụ. Trả về tất cả các cách sắp xếp hợp lệ dưới dạng bàn cờ ký tự, với '.' là ô trống và 'Q' là hậu.
+
+### Ví dụ
+~~~text
+Input:  n = 4
+Output: [[".Q..",
+          "...Q",
+          "Q...",
+          "..Q."],
+         ["..Q.",
+          "Q...",
+          "...Q",
+          ".Q.."]]
+Giải thích: có đúng 2 cách sắp xếp cho bàn cờ 4x4.
+
+Input:  n = 1
+Output: [["Q"]]
+~~~
+
+### Ràng buộc
+- {{1 <= n <= 9}}`,
+  hints: [
+    'Mỗi hàng đặt đúng một hậu. Dùng mảng {{col[i]}} cho biết hàng i có hậu ở cột col[i].',
+    'Cần theo dõi các cột, đường chéo chính (row - col không đổi) và đường chéo phụ (row + col không đổi) đã bận chưa.',
+    'Cắt tỉa: khi đặt hậu ở cột c bị conflict, bỏ qua ngay thay vì đệ qua sâu hơn.'
+  ],
+  solution: `### Ý tưởng
+Backtracking theo hàng. Với mỗi hàng, thử đặt hậu ở mỗi cột và kiểm tra xem: cột đó đã bận chưa, đường chéo chính {{(row - col)}} đã bận chưa, hay đường chéo phụ {{(row + col)}} đã bận chưa. Nếu không xung đột, đánh dấu các dải này là bận và chuyển sang hàng tiếp theo.
+
+Để kiểm tra O(1), dùng ba tập hợp boolean: {{cols}}, {{diag1}} (chéo chính), {{diag2}} (chéo phụ). Chéo chính có chỉ số {{row - col + n - 1}} để tránh số âm; chéo phụ có chỉ số {{row + col}}.
+
+~~~java
+class Solution {
+    public List<List<String>> solveNQueens(int n) {
+        List<List<String>> result = new ArrayList<>();
+        boolean[] cols = new boolean[n];
+        boolean[] diag1 = new boolean[2 * n - 1];
+        boolean[] diag2 = new boolean[2 * n - 1];
+        int[] placement = new int[n];
+        backtrack(0, n, cols, diag1, diag2, placement, result);
+        return result;
+    }
+
+    private void backtrack(int row, int n, boolean[] cols, boolean[] diag1,
+                           boolean[] diag2, int[] placement, List<List<String>> result) {
+        if (row == n) {
+            result.add(buildBoard(placement, n));
+            return;
+        }
+        for (int col = 0; col < n; col++) {
+            int d1 = row - col + n - 1;
+            int d2 = row + col;
+            if (cols[col] || diag1[d1] || diag2[d2]) continue;
+            cols[col] = diag1[d1] = diag2[d2] = true;
+            placement[row] = col;
+            backtrack(row + 1, n, cols, diag1, diag2, placement, result);
+            cols[col] = diag1[d1] = diag2[d2] = false;
+        }
+    }
+
+    private List<String> buildBoard(int[] placement, int n) {
+        List<String> board = new ArrayList<>();
+        for (int i = 0; i < n; i++) {
+            StringBuilder sb = new StringBuilder();
+            for (int j = 0; j < n; j++) {
+                sb.append(j == placement[i] ? 'Q' : '.');
+            }
+            board.add(sb.toString());
+        }
+        return board;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Đừng dùng mảng 2D lớn để biểu diễn bàn cờ trong quá trình backtracking; chỉ cần dãy {{placement}} với O(n) bộ nhớ.
+- Số lời giải cho n quân hậu tăng rất nhanh (n=8 có 92 lời giải), nên nên hỏi xem cần liệt kê hay chỉ đếm.
+- Bài toán mở rộng "N-Queens II" chỉ đếm số lời giải — tối ưu bộ nhớ hơn.`,
+  starter: "class Solution {\\n    public List<List<String>> solveNQueens(int n) {\\n        \\n    }\\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static int countSolutions(int n) {
+        List<List<String>> result = new Solution().solveNQueens(n);
+        return result.size();
+    }
+
+    public static void main(String[] args) {
+        run("n=1", 1, () -> countSolutions(1));
+        run("n=2", 0, () -> countSolutions(2));
+        run("n=3", 0, () -> countSolutions(3));
+        run("n=4", 2, () -> countSolutions(4));
+        run("n=5", 10, () -> countSolutions(5));
+        run("n=6", 4, () -> countSolutions(6));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n!), Space O(n)',
+  follow: ['Nếu chỉ cần đếm không cần liệt kê thì tối ưu thế nào?', 'Làm sao giản lược symmetry để giảm thời gian?']
+},
+{
+  id: 'algo-136',
+  title: 'Word Search',
+  difficulty: 'medium',
+  pattern: 'Backtracking',
+  tags: ['backtracking', 'matrix', 'dfs', 'bytebytego'],
+  prompt: `Cho bảng ký tự {{board}} {{m x n}} và chuỗi {{word}}. Kiểm tra có thể tìm được {{word}} trong bảng bằng cách đi qua các ô kề nhau (trên/dưới/trái/phải) mà mỗi ô chỉ dùng một lần hay không.
+
+### Ví dụ
+~~~text
+Input:  board = [["A","B","C","E"],["S","F","C","S"],["A","D","E","E"]], word = "ABCCED"
+Output: true
+Giải thích: "ABCCED" đi qua bảng như sau.
+
+Input:  board = [["A","B","C","E"],["S","F","C","S"],["A","D","E","E"]], word = "SEE"
+Output: true
+~~~
+
+### Ràng buộc
+- {{m == board.length, n == board[0].length}}
+- {{1 <= m, n <= 6}}
+- {{1 <= word.length <= 15}}
+- {{board[i][j]}} và {{word[i]}} là chữ cái in hoa hoặc thường.`,
+  hints: [
+    'Với mỗi ô trong bảng có ký tự bằng ký tự đầu của word, bắt đầu DFS.',
+    'DFS tại (r, c, idx): nếu board[r][c] != word.charAt(idx), trả về false. Nếu idx đã cuối, trả về true.',
+    'Đánh dấu ô đã dùng (ví dụ đặt thanh dấu) trước khi đệ qua 4 hướng, rồi khôi phục sau khi quay lại.'
+  ],
+  solution: `### Ý tưởng
+DFS backtracking trên bảng 2D. Với mỗi ô {{(r, c)}} có ký tự trùng với {{word.charAt(idx)}}, thử đi qua 4 hướng lân cận. Đánh dấu ô đã dùng bằng cách thay đổi giá trị (ví dụ thành ' ') để tránh dùng lại trong cùng một đường đi, sau đó khôi phục khi backtrack.
+
+Nếu tìm thấy {{idx == word.length() - 1}}, trả về true.
+
+~~~java
+class Solution {
+    public boolean exist(char[][] board, String word) {
+        int m = board.length, n = board[0].length;
+        for (int r = 0; r < m; r++) {
+            for (int c = 0; c < n; c++) {
+                if (dfs(board, word, r, c, 0)) return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean dfs(char[][] board, String word, int r, int c, int idx) {
+        if (idx == word.length()) return true;
+        if (r < 0 || r >= board.length || c < 0 || c >= board[0].length) return false;
+        if (board[r][c] != word.charAt(idx)) return false;
+        char temp = board[r][c];
+        board[r][c] = '#';
+        boolean found = dfs(board, word, r + 1, c, idx + 1)
+            || dfs(board, word, r - 1, c, idx + 1)
+            || dfs(board, word, r, c + 1, idx + 1)
+            || dfs(board, word, r, c - 1, idx + 1);
+        board[r][c] = temp;
+        return found;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Cần khôi phục giá trị ô đã thay đổi sau khi backtrack; nếu quên, các nhánh khác sẽ bị ảnh hưởng.
+- Điều kiện dừng {{idx == word.length()}} nên kiểm tra trước khi truy cập board để tránh out-of-bound.
+- Nếu word dài và bảng nhỏ, có thể tối ưu bằng cách kiểm tra số lượng ký tự trong board trước.`,
+  starter: "class Solution {\\n    public boolean exist(char[][] board, String word) {\\n        \\n    }\\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+
+    public static void main(String[] args) {
+        run("abcced", true, () -> new Solution().exist(new char[][]{{'A','B','C','E'},{'S','F','C','S'},{'A','D','E','E'}}, "ABCCED"));
+        run("see", true, () -> new Solution().exist(new char[][]{{'A','B','C','E'},{'S','F','C','S'},{'A','D','E','E'}}, "SEE"));
+        run("single", true, () -> new Solution().exist(new char[][]{{'A'}}, "A"));
+        run("two same", true, () -> new Solution().exist(new char[][]{{'A','B'},{'C','D'}}, "AB"));
+        run("not found", false, () -> new Solution().exist(new char[][]{{'A','B'},{'C','E'}}, "ABCB"));
+        run("reuse fails", false, () -> new Solution().exist(new char[][]{{'A','A'}}, "AAA"));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(m * n * 4^L), Space O(L) where L = word.length()',
+  follow: ['Nếu cần tìm tất cả các từ trong một từ điển thì làm thế nào?', 'Làm sao xử lý nếu được phép đi chéo ngưỡng?']
+},
+{
+  id: 'algo-137',
+  title: 'Palindrome Partitioning',
+  difficulty: 'medium',
+  pattern: 'Backtracking',
+  tags: ['backtracking', 'string', 'partition', 'bytebytego'],
+  prompt: `Cho chuỗi {{s}}, cắt sao cho mỗi phần đều là palindrome. Trả về tất cả cách cắt thỏa mãn.
+
+### Ví dụ
+~~~text
+Input:  s = "aab"
+Output: [["a","a","b"], ["aa","b"]]
+Giải thích: "a","a","b" và "aa","b" đều có mỗi phần là palindrome.
+
+Input:  s = "a"
+Output: [["a"]]
+~~~
+
+### Ràng buộc
+- {{1 <= s.length <= 16}}
+- {{s}} chỉ gồm chữ cái thường tiếng Anh.`,
+  hints: [
+    'Tại mỗi vị trí, thử mọi độ dài palindrome bắt đầu từ đó: dùng hàm kiểm tra palindrome.',
+    'Sau khi tìm được một đoạn palindrome, thêm vào đường đi và đệ quy phần còn lại của chuỗi.',
+    'Khi đến cuối chuỗi, đường đi hiện tại là một cách cắt hợp lệ, thêm vào kết quả.'
+  ],
+  solution: `### Ý tưởng
+Backtracking với đường đi (path) là danh sách các đoạn palindrome tính đến thời điểm hiện tại. Với mỗi vị trí {{start}}, thử mọi vị trí kết thúc {{end}} sao cho {{s[start..end]}} là palindrome. Nếu có, thêm đoạn vào path, đệ quy từ {{end + 1}}, rồi xóa để thử đoạn khác.
+
+Khi {{start}} đạt đến cuối chuỗi, thêm bản sao của path vào kết quả.
+
+~~~java
+class Solution {
+    public List<List<String>> partition(String s) {
+        List<List<String>> result = new ArrayList<>();
+        backtrack(s, 0, new ArrayList<>(), result);
+        return result;
+    }
+
+    private void backtrack(String s, int start, List<String> path, List<List<String>> result) {
+        if (start == s.length()) {
+            result.add(new ArrayList<>(path));
+            return;
+        }
+        for (int end = start; end < s.length(); end++) {
+            if (isPalindrome(s, start, end)) {
+                path.add(s.substring(start, end + 1));
+                backtrack(s, end + 1, path, result);
+                path.remove(path.size() - 1);
+            }
+        }
+    }
+
+    private boolean isPalindrome(String s, int left, int right) {
+        while (left < right) {
+            if (s.charAt(left) != s.charAt(right)) return false;
+            left++;
+            right--;
+        }
+        return true;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Nên tính trước bảng {{isPal[i][j]}} để kiểm tra palindrome trong O(1) thay vì O(n) mỗi lần gọi.
+- Phải sao chép path ({{new ArrayList<>(path)}}) trước khi thêm vào kết quả; nếu thêm trực tiếp list, mọi phần tử sẽ thay đổi khi backtrack.
+- Số lượng kết quả tăng nhanh với độ dài chuỗi; hỏi interviewer có cần đếm hay liệt kê.`,
+  starter: "class Solution {\\n    public List<List<String>> partition(String s) {\\n        \\n    }\\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+
+    public static void main(String[] args) {
+        run("aab", 2, () -> new Solution().partition("aab").size());
+        run("single", 1, () -> new Solution().partition("a").size());
+        run("all same", 8, () -> new Solution().partition("aaa").size());
+        run("two", 2, () -> new Solution().partition("ab").size());
+        run("all distinct", 1, () -> new Solution().partition("abc").size());
+        run("palindrome", 4, () -> new Solution().partition("aba").size());
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n * 2^n), Space O(n)',
+  follow: ['Nếu chỉ cần số lượng cách cắt thì tối ưu thế nào?', 'Làm sao tìm cách cắt có ít nhất K phần palindrome?']
+}
+);
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-138',
+  title: 'Subsets',
+  difficulty: 'medium',
+  pattern: 'Backtracking',
+  tags: ['backtracking', 'array', 'subset', 'bytebytego'],
+  prompt: `Cho mảng số nguyên {{nums}} không có phần tử trùng. Trả về tất cả các tập con (subset) có thể tạo ra. Thứ tự các tập con và thứ tự phần tử trong tập con không quan trọng.
+
+### Ví dụ
+~~~text
+Input:  nums = [1, 2, 3]
+Output: [[],[1],[2],[1,2],[3],[1,3],[2,3],[1,2,3]]
+
+Input:  nums = [0]
+Output: [[],[0]]
+~~~
+
+### Ràng buộc
+- {{1 <= nums.length <= 10}}
+- {{-10 <= nums[i] <= 10}}
+- Mọi phần tử trong {{nums}} là duy nhất.`,
+  hints: [
+    'Mỗi phần tử có hai lựa chọn: chọn hoặc không chọn — đây là cấu trúc cây nhị phân tự nhiên.',
+    'Dùng backtracking: tại vị trí {{i}}, thêm {{nums[i]}} vào đường đi rồi đệ quy, sau đó bỏ ra (backtrack) rồi đệ quy.',
+    'Khi đã xét hết tất cả các vị trí, đường đi hiện tại là một tập con hợp lệ, thêm vào kết quả.'
+  ],
+  solution: `### Ý tưởng
+Backtracking từng phần tử. Tại mỗi bước {{i}}, ta có hai nhánh: (1) không chọn {{nums[i]}} — chuyển sang {{i+1}}; (2) chọn {{nums[i]}} — thêm vào path, chuyển sang {{i+1}}, rồi bỏ ra sau khi quay lại. Khi {{i == n}}, path là một tập con, thêm bản sao vào kết quả.
+
+Tổng số tập con là {{2^n}}, mỗi tập con được xây dựng trong O(n) (do sao chép), tổng thời gian {{O(n * 2^n)}}.
+
+~~~java
+class Solution {
+    public List<List<Integer>> subsets(int[] nums) {
+        List<List<Integer>> result = new ArrayList<>();
+        backtrack(nums, 0, new ArrayList<>(), result);
+        return result;
+    }
+
+    private void backtrack(int[] nums, int start, List<Integer> path, List<List<Integer>> result) {
+        // Mỗi lần gọi, path hiện tại là một tập con hợp lệ
+        result.add(new ArrayList<>(path));
+        for (int i = start; i < nums.length; i++) {
+            path.add(nums[i]);             // chọn nums[i]
+            backtrack(nums, i + 1, path, result);
+            path.remove(path.size() - 1);  // bỏ chọn nums[i] (backtrack)
+        }
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Không cần mảng {{used}} vì ta chỉ tiến về phía trước ({{i + 1}}), tránh lặp lại.
+- Phải sao chép {{path}} khi thêm vào kết quả ({{new ArrayList<>(path)}}); nếu thêm trực tiếp, mọi phần tử sẽ bị thay đổi khi backtrack.
+- Thứ tự kết quả: rỗng -> size 1 -> size 2... phù hợp với ý nghĩa "chọn/không chọn".
+- Nếu input có phần tử trùng (Subsets II), cần sort và bỏ qua {{nums[i] == nums[i-1]}} khi {{i > start}}.
+
+> Senior tip: Subsets là mẫu hình của backtracking "chọn/không chọn". Trong thực tế, biến thể này dùng cho feature selection, A/B testing combinations, và configuration space exploration.`,
+  starter: "class Solution {\\n    public List<List<Integer>> subsets(int[] nums) {\\n        \\n    }\\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void norm(List<List<Integer>> x) {
+        List<List<Integer>> copy = new ArrayList<>();
+        for (List<Integer> row : x) {
+            List<Integer> r = new ArrayList<>(row);
+            Collections.sort(r);
+            copy.add(r);
+        }
+        Collections.sort(copy, (a, b) -> {
+            int n = Math.min(a.size(), b.size());
+            for (int i = 0; i < n; i++) {
+                int c = Integer.compare(a.get(i), b.get(i));
+                if (c != 0) return c;
+            }
+            return Integer.compare(a.size(), b.size());
+        });
+        return copy;
+    }
+
+    public static void main(String[] args) {
+        run("example [1,2,3]", norm(Arrays.asList(
+            Arrays.asList(),
+            Arrays.asList(1),
+            Arrays.asList(2),
+            Arrays.asList(1, 2),
+            Arrays.asList(3),
+            Arrays.asList(1, 3),
+            Arrays.asList(2, 3),
+            Arrays.asList(1, 2, 3)
+        )), () -> norm(new Solution().subsets(new int[]{1, 2, 3})));
+        run("single [0]", norm(Arrays.asList(
+            Arrays.asList(),
+            Arrays.asList(0)
+        )), () -> norm(new Solution().subsets(new int[]{0})));
+        run("two elements", norm(Arrays.asList(
+            Arrays.asList(),
+            Arrays.asList(1),
+            Arrays.asList(2),
+            Arrays.asList(1, 2)
+        )), () -> norm(new Solution().subsets(new int[]{1, 2})));
+        run("negative", norm(Arrays.asList(
+            Arrays.asList(),
+            Arrays.asList(-1),
+            Arrays.asList(1),
+            Arrays.asList(-1, 1)
+        )), () -> norm(new Solution().subsets(new int[]{-1, 1})));
+        run("max length 10", 1024, () -> new Solution().subsets(new int[]{1,2,3,4,5,6,7,8,9,10}).size());
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n * 2^n), Space O(n)',
+  follow: ['Nếu mảng có phần tử trùng (Subsets II) thì sửa thế nào?', 'Làm sao sinh tập con theo thứ từ điển (lexicographic) mà không cần sort cuối?']
+},
+);
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-139',
+  title: 'Permutations',
+  difficulty: 'medium',
+  pattern: 'Backtracking',
+  tags: ['backtracking', 'array', 'permutation', 'bytebytego'],
+  prompt: `Cho mảng số nguyên {{nums}} không có phần tử trùng. Trả về tất cả các hoán vị (permutation) có thể tạo ra. Thứ tự các hoán vị không quan trọng.
+
+### Ví dụ
+~~~text
+Input:  nums = [1, 2, 3]
+Output: [[1,2,3],[1,3,2],[2,1,3],[2,3,1],[3,1,2],[3,2,1]]
+
+Input:  nums = [0, 1]
+Output: [[0,1],[1,0]]
+
+Input:  nums = [1]
+Output: [[1]]
+~~~
+
+### Ràng buộc
+- {{1 <= nums.length <= 6}}
+- {{-10 <= nums[i] <= 10}}
+- Mọi phần tử trong {{nums}} là duy nhất.`,
+  hints: [
+    'Mỗi vị trí trong hoán vị có thể đặt một phần tử chưa dùng. Dùng mảng boolean {{used}} để theo dõi.',
+    'Tại mỗi bước, thử mọi phần tử chưa dùng: đánh dấu used, thêm vào path, đệ quy, sau đó bỏ dấu và xóa path (backtrack).',
+    'Khi độ dài path bằng {{n}}, đã có một hoán vị hoàn chỉnh, thêm bản sao vào kết quả.'
+  ],
+  solution: `### Ý tưởng
+Backtracking với mảng {{used}} theo dõi phần tử đã dùng. Tại mỗi bước đệ quy, duyệt qua tất cả các phần tử; nếu chưa dùng thì thêm vào path, đánh dấu used, đệ quy; sau khi quay lại thì bỏ dấu và xóa khỏi path. Khi path đạt độ dài {{n}}, thêm bản sao vào kết quả.
+
+Số hoán vị là {{n!}}. Mỗi hoán vị tốn O(n) để copy, tổng {{O(n * n!)}}.
+
+~~~java
+class Solution {
+    public List<List<Integer>> permute(int[] nums) {
+        List<List<Integer>> result = new ArrayList<>();
+        boolean[] used = new boolean[nums.length];
+        backtrack(nums, new ArrayList<>(), used, result);
+        return result;
+    }
+
+    private void backtrack(int[] nums, List<Integer> path, boolean[] used, List<List<Integer>> result) {
+        if (path.size() == nums.length) {
+            result.add(new ArrayList<>(path));
+            return;
+        }
+        for (int i = 0; i < nums.length; i++) {
+            if (used[i]) continue;
+            used[i] = true;
+            path.add(nums[i]);
+            backtrack(nums, path, used, result);
+            path.remove(path.size() - 1);
+            used[i] = false;
+        }
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Phải dùng mảng {{used}} (hoặc Set) vì thứ tự trong hoán vị quan trọng — không thể chỉ dùng {{start}} như Subsets.
+- Phải sao chép {{path}} khi thêm vào kết quả ({{new ArrayList<>(path)}}); nếu thêm trực tiếp, mọi phần tử sẽ bị thay đổi khi backtrack.
+- Nếu input có phần tử trùng (Permutations II), cần sort và bỏ qua {{nums[i] == nums[i-1] && !used[i-1]}}.
+- Có thể hoán đổi tại chỗ (swap) để tiết kiệm bộ nhớ {{used}}, nhưng cách dùng {{used}} dễ hiểu và dễ mở rộng hơn.
+
+> Senior tip: Permutations là bài backtracking kinh điển cho "sắp xếp". Trong production, thường gặp biến thể "tìm hoán vị tiếp theo" (next permutation) hoặc "k-th permutation" — biết thuật toán next_permutation O(n) quan trọng hơn liệt kê tất cả.`,
+  starter: "class Solution {\\n    public List<List<Integer>> permute(int[] nums) {\\n        \\n    }\\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void norm(List<List<Integer>> x) {
+        List<List<Integer>> copy = new ArrayList<>();
+        for (List<Integer> row : x) {
+            List<Integer> r = new ArrayList<>(row);
+            copy.add(r);
+        }
+        Collections.sort(copy, (a, b) -> {
+            int n = Math.min(a.size(), b.size());
+            for (int i = 0; i < n; i++) {
+                int c = Integer.compare(a.get(i), b.get(i));
+                if (c != 0) return c;
+            }
+            return Integer.compare(a.size(), b.size());
+        });
+        return copy;
+    }
+
+    public static void main(String[] args) {
+        run("example [1,2,3]", norm(Arrays.asList(
+            Arrays.asList(1, 2, 3),
+            Arrays.asList(1, 3, 2),
+            Arrays.asList(2, 1, 3),
+            Arrays.asList(2, 3, 1),
+            Arrays.asList(3, 1, 2),
+            Arrays.asList(3, 2, 1)
+        )), () -> norm(new Solution().permute(new int[]{1, 2, 3})));
+        run("two elements [0,1]", norm(Arrays.asList(
+            Arrays.asList(0, 1),
+            Arrays.asList(1, 0)
+        )), () -> norm(new Solution().permute(new int[]{0, 1})));
+        run("single [1]", norm(Arrays.asList(
+            Arrays.asList(1)
+        )), () -> norm(new Solution().permute(new int[]{1})));
+        run("negative", norm(Arrays.asList(
+            Arrays.asList(-1, 1),
+            Arrays.asList(1, -1)
+        )), () -> norm(new Solution().permute(new int[]{-1, 1})));
+        run("max length 6", 720, () -> new Solution().permute(new int[]{1,2,3,4,5,6}).size());
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n * n!), Space O(n)',
+  follow: ['Nếu mảng có phần tử trùng (Permutations II) thì sửa thế nào?', 'Làm sao tìm hoán vị thứ k (k-th permutation) mà không liệt kê tất cả?']
+},
+);
+(window.ALGOS = window.ALGOS || []).push(
+{
+  id: 'algo-140',
+  title: 'Combination Sum',
+  difficulty: 'medium',
+  pattern: 'Backtracking',
+  tags: ['backtracking', 'array', 'combination', 'bytebytego'],
+  prompt: `Cho mảng số nguyên {{candidates}} **không trùng** và số mục tiêu {{target}}. Tìm tất cả các tổ hợp (combination) các số trong {{candidates}} có tổng bằng {{target}}. Mỗi số trong {{candidates}} có thể dùng **nhiều lần**. Hai tổ hợp được coi là giống nhau nếu chứa cùng các số với cùng số lần xuất hiện (thứ tự không quan trọng).
+
+### Ví dụ
+~~~text
+Input:  candidates = [2, 3, 6, 7], target = 7
+Output: [[2,2,3],[7]]
+Giải thích: 2+2+3=7 và 7=7.
+
+Input:  candidates = [2, 3, 5], target = 8
+Output: [[2,2,2,2],[2,3,3],[3,5]]
+~~~
+
+### Ràng buộc
+- {{1 <= candidates.length <= 30}}
+- {{1 <= candidates[i] <= 200}}
+- Các phần tử trong {{candidates}} là duy nhất.
+- {{1 <= target <= 500}}`,
+  hints: [
+    'Vì mỗi số có thể dùng nhiều lần, tại mỗi bước ta có thể chọn lại số đó hoặc chuyển sang số tiếp theo.',
+    'Để tránh tổ hợp trùng lặp do thứ tự (ví dụ [2,3] và [3,2] là một), chỉ xét các số từ vị trí {{start}} trở đi — đảm bảo tổ hợp luôn không giảm.',
+    'Khi tổng hiện tại vượt {{target}}, cắt tỉa (prune) ngay vì các số đều dương.'
+  ],
+  solution: `### Ý tưởng
+Backtracking với tham số {{start}} chỉ số phần tử bắt đầu xét. Tại mỗi bước, từ {{start}} đến cuối mảng, thử thêm {{candidates[i]}} vào path. Vì được dùng nhiều lần, đệ quy tiếp tục từ {{i}} (không phải {{i+1}}). Nếu tổng bằng {{target}}, thêm bản sao path vào kết quả. Nếu tổng vượt {{target}}, break (cắt tỉa) vì mảng có thể sort trước để các số sau lớn hơn.
+
+Sort {{candidates}} trước giúp cắt tỉa sớm hơn.
+
+~~~java
+class Solution {
+    public List<List<Integer>> combinationSum(int[] candidates, int target) {
+        List<List<Integer>> result = new ArrayList<>();
+        Arrays.sort(candidates);  // giúp cắt tỉa sớm
+        backtrack(candidates, target, 0, new ArrayList<>(), result);
+        return result;
+    }
+
+    private void backtrack(int[] candidates, int target, int start,
+                           List<Integer> path, List<List<Integer>> result) {
+        if (target == 0) {
+            result.add(new ArrayList<>(path));
+            return;
+        }
+        for (int i = start; i < candidates.length; i++) {
+            int val = candidates[i];
+            if (val > target) break;  // cắt tỉa nhờ đã sort
+            path.add(val);
+            backtrack(candidates, target - val, i, path, result);  // i: có thể dùng lại
+            path.remove(path.size() - 1);
+        }
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Khác với Subsets/Permutations: có tham số {{target}} giảm dần, và {{start}} chỉ tăng (không giảm) để tránh tổ hợp trùng.
+- Vì số dương, {{val > target}} là điều kiện cắt tỉa hiệu quả.
+- Phải sao chép {{path}} khi thêm kết quả ({{new ArrayList<>(path)}}).
+- Biến thể Combination Sum II: mỗi số chỉ dùng **một lần** -> đệ quy từ {{i+1}}, và bỏ qua trùng {{candidates[i] == candidates[i-1] && i > start}}.
+
+> Senior tip: Combination Sum là bài "unbounded knapsack" dạng liệt kê. Trong thực tế, gặp khi tìm cách thanh toán (coin change variants), resource allocation. Nếu target lớn (5000+) mà chỉ cần đếm, dùng DP đếm O(n*target) nhanh hơn backtracking rất nhiều.`,
+  starter: "class Solution {\\n    public List<List<Integer>> combinationSum(int[] candidates, int target) {\\n        \\n    }\\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void norm(List<List<Integer>> x) {
+        List<List<Integer>> copy = new ArrayList<>();
+        for (List<Integer> row : x) {
+            List<Integer> r = new ArrayList<>(row);
+            Collections.sort(r);
+            copy.add(r);
+        }
+        Collections.sort(copy, (a, b) -> {
+            int n = Math.min(a.size(), b.size());
+            for (int i = 0; i < n; i++) {
+                int c = Integer.compare(a.get(i), b.get(i));
+                if (c != 0) return c;
+            }
+            return Integer.compare(a.size(), b.size());
+        });
+        return copy;
+    }
+
+    public static void main(String[] args) {
+        run("example 1", norm(Arrays.asList(
+            Arrays.asList(2, 2, 3),
+            Arrays.asList(7)
+        )), () -> norm(new Solution().combinationSum(new int[]{2, 3, 6, 7}, 7)));
+        run("example 2", norm(Arrays.asList(
+            Arrays.asList(2, 2, 2, 2),
+            Arrays.asList(2, 3, 3),
+            Arrays.asList(3, 5)
+        )), () -> norm(new Solution().combinationSum(new int[]{2, 3, 5}, 8)));
+        run("single candidate", norm(Arrays.asList(
+            Arrays.asList(2, 2, 2)
+        )), () -> norm(new Solution().combinationSum(new int[]{2}, 6)));
+        run("target equals candidate", norm(Arrays.asList(
+            Arrays.asList(5)
+        )), () -> norm(new Solution().combinationSum(new int[]{2, 5}, 5)));
+        run("no solution", norm(new ArrayList<>()), () -> norm(new Solution().combinationSum(new int[]{3, 5}, 7)));
+        run("larger target", norm(Arrays.asList(
+            Arrays.asList(1, 1, 1, 1, 1, 1, 1, 1, 1, 1),
+            Arrays.asList(1, 1, 1, 1, 1, 1, 1, 1, 2),
+            Arrays.asList(1, 1, 1, 1, 1, 1, 2, 2),
+            Arrays.asList(1, 1, 1, 1, 2, 2, 2),
+            Arrays.asList(1, 1, 2, 2, 2, 2),
+            Arrays.asList(2, 2, 2, 2, 2)
+        )), () -> norm(new Solution().combinationSum(new int[]{1, 2}, 10)));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(N^(target/min)) phấp phới, Space O(target/min)',
+  follow: ['Combination Sum II: mỗi số chỉ dùng một lần thì sửa thế nào?', 'Nếu target rất lớn (5000+) mà chỉ cần số lượng cách thì dùng thuật toán nào?']
+},
+);
+})();
