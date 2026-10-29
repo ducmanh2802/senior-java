@@ -1,6 +1,6 @@
 # T399 — Dịch sang tiếng Anh: q-claude (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-claude-6.en.js`
 
@@ -16,3 +16,7 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-claude-6.en.js` và `node scripts/check-i18n.js q-claude-6` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã dịch đầy đủ `claude-042` (q, a, follow), giữ nguyên markup, số liệu và code.
+- `node scripts/check-i18n.js q-claude-6`: OK — 1 mục đã dịch (script parse và chạy file bằng `vm`).
+- `node scripts/validate.js`: OK — không có lỗi.
+Reviewed-by: check-i18n (translation, no LLM review)
