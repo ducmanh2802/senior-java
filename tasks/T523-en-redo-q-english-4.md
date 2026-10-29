@@ -1,6 +1,6 @@
 # T523 — Dịch lại (nội dung đã sửa): q-english-4 (18 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-english-4.en.js`
 
@@ -13,3 +13,5 @@ Với MỖI mục trên: đọc bản tiếng Việt hiện tại trong `js/data
 node scripts/check-i18n.js q-english-4 → OK; node scripts/validate.js → OK.
 
 ## Notes
+Translated all 18 English questions (english-040 through english-057) from Vietnamese in js/data/q-english.js to English in js/i18n/q-english-4.en.js. Both validation scripts pass: check-i18n and validate.
+Reviewed-by: check-i18n (translation, no LLM review)
