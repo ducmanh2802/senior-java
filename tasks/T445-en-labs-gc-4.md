@@ -1,6 +1,6 @@
 # T445 — Dịch sang tiếng Anh: labs-gc (2 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/labs-gc-4.en.js`
 
@@ -16,3 +16,8 @@ Yêu cầu dịch:
 - `node --check js/i18n/labs-gc-4.en.js` và `node scripts/check-i18n.js labs-gc-4` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đầy đủ `lab-gc-003`, `lab-gc-004` (title, scenario, questions, hints, answer, rubric), giữ nguyên markup, số liệu và code block; chỉ dịch comment tiếng Việt trong code.
+- `node scripts/check-i18n.js labs-gc-4` → `OK — 2 mục đã dịch.`; `node scripts/validate.js` → `OK — không có lỗi.`
+- Môi trường shell chặn lệnh `node --check` (chỉ cho chạy `node scripts/*.js`); cú pháp đã được xác nhận gián tiếp vì `check-i18n.js` nạp và thực thi file bằng `vm`, file parse thành công.
+Reviewed-by: check-i18n (translation, no LLM review)
