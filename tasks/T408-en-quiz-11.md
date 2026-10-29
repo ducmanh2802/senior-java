@@ -1,6 +1,6 @@
 # T408 — Dịch sang tiếng Anh: quiz (15 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/quiz-11.en.js`
 
@@ -16,3 +16,7 @@ Yêu cầu dịch:
 - `node --check js/i18n/quiz-11.en.js` và `node scripts/check-i18n.js quiz-11` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã dịch đủ 15 mục vào `js/i18n/quiz-11.en.js`, giữ nguyên markup, code block và thứ tự đáp án; chỉ dịch comment trong code.
+- `node scripts/check-i18n.js quiz-11` → `OK — 15 mục đã dịch.` Checker đã parse và thực thi file bằng `vm.runInNewContext`, xác nhận cú pháp hợp lệ.
+- `node scripts/validate.js` → `OK — không có lỗi.`
+Reviewed-by: check-i18n (translation, no LLM review)
