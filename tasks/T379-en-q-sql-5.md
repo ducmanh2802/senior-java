@@ -1,6 +1,6 @@
 # T379 — Dịch sang tiếng Anh: q-sql (2 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-sql-5.en.js`
 
@@ -16,3 +16,6 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-sql-5.en.js` và `node scripts/check-i18n.js q-sql-5` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Dịch hoàn tất sql-029, sql-030.
+- Kiểm tra bằng `node --check` và `node scripts/check-i18n.js q-sql-5` đều OK.
+Reviewed-by: check-i18n (translation, no LLM review)
