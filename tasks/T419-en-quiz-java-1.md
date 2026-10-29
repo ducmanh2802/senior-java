@@ -1,6 +1,6 @@
 # T419 — Dịch sang tiếng Anh: quiz-java (23 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/quiz-java-1.en.js`
 
@@ -16,3 +16,12 @@ Yêu cầu dịch:
 - `node --check js/i18n/quiz-java-1.en.js` và `node scripts/check-i18n.js quiz-java-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đủ 23/23 mục (14 `qz-core-007…020`, 9 `qz-collections-007…015`) vào `js/i18n/quiz-java-1.en.js`, mỗi mục chỉ gồm `q`, `options`, `explain`.
+- Giữ nguyên markup và khối code; chỉ dịch comment tiếng Việt trong code (`// drop the smallest element`, comment ở sơ đồ ASCII của `qz-core-009`, `(hundreds of MB)` trong `qz-core-016`). Số fence `~~~` khớp bản gốc: 38 (19 block).
+- Nhãn cố định: `**Tóm tắt:**` không có trong nhóm này; `> Senior tip:` giữ nguyên; `### Vì sao đúng` → `### Why it is correct`; `### Vì sao các phương án còn lại sai` → `### Why the other options are wrong`.
+- Thuật ngữ giữ nguyên tiếng Anh: HashMap, HashSet, TreeSet, EnumMap, LinkedHashMap, String pool, fail-fast, PECS, defensive copy, ordinal, accessOrder…, kèm giải thích ngay trong câu khi là khái niệm ít gặp (this$0, humongous object, circular buffer, heavy hitters).
+- Kiểm tra: `node scripts/check-i18n.js quiz-java-1` → `OK — 23 mục đã dịch.`; `node scripts/validate.js` → `OK — không có lỗi.`
+- Lưu ý: lệnh `node --check <file>` bị lớp phân quyền shell của phiên chặn (mọi biến thể đều bị từ chối), nên việc parse được xác nhận gián tiếp qua `check-i18n.js` — script này `vm.runInNewContext` toàn bộ file (parse + thực thi, sẽ ném lỗi nếu sai cú pháp hoặc có `${`/backtick).
+- Không sửa file ngoài phạm vi sở hữu; không commit.
+Reviewed-by: check-i18n (translation, no LLM review)
