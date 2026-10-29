@@ -1,6 +1,6 @@
 # T420 — Dịch sang tiếng Anh: quiz-java (23 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/quiz-java-2.en.js`
 
@@ -16,3 +16,12 @@ Yêu cầu dịch:
 - `node --check js/i18n/quiz-java-2.en.js` và `node scripts/check-i18n.js quiz-java-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đủ 23/23 mục vào `js/i18n/quiz-java-2.en.js`, mỗi mục chỉ gồm `q`, `options`, `explain`.
+- Giữ nguyên số lượng và thứ tự `options` (kể cả câu `multi`), giữ nguyên id đáp án đúng trong phần giải thích.
+- Giữ nguyên markup (`**`, `{{code}}`, `###`, bảng, `~~~java`), code block chép y nguyên, chỉ dịch comment tiếng Việt trong code (ví dụ `// vòng lặp bận` → `// busy loop, calls no method`).
+- Nhãn thống nhất với các file `quiz-*.en.js` khác: `**Correct answer: …**`, `### Why it is correct`, `### Why the other options are wrong`, `> Senior tip:`; câu nhiều đáp án dùng `(Choose N)`.
+- Không có backtick, không có `${` trong nội dung.
+- Kiểm tra: `node scripts/check-i18n.js quiz-java-2` → `OK — 23 mục đã dịch.` (script này parse file trong VM nên cũng xác nhận cú pháp); `node scripts/validate.js` → `OK — không có lỗi.`
+- Lưu ý môi trường: lệnh `node --check js/i18n/quiz-java-2.en.js` bị chặn quyền trên máy này nên không chạy trực tiếp được; cú pháp đã được xác nhận qua `check-i18n.js` (chạy file bằng `vm.runInNewContext`).
+Reviewed-by: check-i18n (translation, no LLM review)
