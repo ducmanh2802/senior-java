@@ -1,6 +1,6 @@
 # T493 — Dịch lại (nội dung đã sửa): labs-thread-5 (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/labs-thread-5.en.js`
 
@@ -13,3 +13,5 @@ Với MỖI mục trên: đọc bản tiếng Việt hiện tại trong `js/data
 node scripts/check-i18n.js labs-thread-5 → OK; node scripts/validate.js → OK.
 
 ## Notes
+Đã dịch lại lab-thread-005 (ReDoS regex catastrophic backtracking) theo bản tiếng Việt hiện tại. Validation OK.
+Reviewed-by: check-i18n (translation, no LLM review)

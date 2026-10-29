@@ -1,10 +1,10 @@
 /*
- * English translation of js/data/labs-thread.js — task T251. Format: js/core/i18n.js (content overlay).
+ * English translation of js/data/labs-thread.js — task T493. Format: js/core/i18n.js (content overlay).
  * ids: lab-thread-005
  */
 App.i18n.content({
   'lab-thread-005': {
-    title: 'CPU at 200% but API only slows down — find hot threads using top -H and nid',
+    title: 'CPU 200% but API only slows down — find hot threads using top -H and nid',
     scenario: `**Context:** **PayVN Transfer** (Java 21, Spring Boot 3.4) just released a feature allowing merchants to configure their own **reference patterns** ({{reference pattern}}) for transfers. The pattern is stored in the DB as a regex string and compiled using {{Pattern.compile}} every time it is validated. The pod is limited to 2 vCPUs.
 
 **Symptoms:** Since **11:20 on October 22, 2026**, CPU usage on the pod has climbed to **~199%** (exactly 2 cores) and remained there; API latency has increased from 80ms to over 8 seconds, and requests are queueing up. {{/actuator/health}} still returns {{UP}}, and the liveness probe does not restart. There are no exceptions, no deadlocks, and heap usage is stable (using 38% and not increasing). A new merchant (MC-8841) configured a very "creative" pattern and began sending a large batch of reconciliation requests.
@@ -86,6 +86,6 @@ The pattern is compiled and matched in {{TransferValidator.isValidReference}} li
       'Identify the root cause as catastrophic backtracking of regex ^(([0-9]+)+)?[A-Z]$ with a 42-digit input, explaining exponential complexity (nested repeating groups) and why the thread is RUNNABLE burning 100% CPU.',
       'Explain why health check is still UP because it doesn\'t measure CPU saturation/latency, and suggest alerting on throttling/p99/queue depth.',
       'Propose fixes: allowlist/length limit, rewrite linear regex or RE2/J, disable pattern and restart pod, including JFR ReDoS testing prevention.'
-    ]
-  }
+    ],
+    }
 });
