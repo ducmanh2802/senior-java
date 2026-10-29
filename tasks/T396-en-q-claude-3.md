@@ -1,6 +1,6 @@
 # T396 — Dịch sang tiếng Anh: q-claude (7 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-claude-3.en.js`
 
@@ -16,3 +16,5 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-claude-3.en.js` và `node scripts/check-i18n.js q-claude-3` → OK, rồi `Status: DONE`.
 
 ## Notes
+File already existed with complete translations for all 7 questions (claude-019 through claude-025). Both `node --check` and `node scripts/check-i18n.js q-claude-3` pass. Full validation `node scripts/validate.js` → OK.
+Reviewed-by: check-i18n (translation, no LLM review)
