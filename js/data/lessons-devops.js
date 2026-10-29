@@ -18,7 +18,7 @@ Container không phải VM: process Java chạy chung kernel với host, chỉ b
 - **Bộ nhớ**: {{/sys/fs/cgroup/memory.max}} (cgroup v2) hoặc {{memory.limit_in_bytes}} (v1). Vượt limit, kernel **OOM-kill** process — đó là OOMKilled trên Kubernetes, **không phải** Java {{OutOfMemoryError}}.
 - **CPU**: {{cpu.max}} dạng {{"200000 100000"}} nghĩa là 200ms CPU mỗi period 100ms = **2 core**. Vượt quota, process bị **throttle** (đứng im chờ period sau), không bị kill.
 
-Từ Java 10, {{UseContainerSupport}} (mặc định bật, Java 17 là {{UseContainerSupport}} chuẩn) cho JVM đọc limit của cgroup: heap mặc định chỉ chiếm khoảng **25%** bộ nhớ container ({{MaxRAMPercentage}} mặc định 25.0). Nhiều team thấy heap "nhỏ quá" nên viết cứng {{-Xmx4g}} vào Dockerfile cho mọi môi trường — sai ngay khi limit pod là 2Gi: JVM tin vào Xmx, chạm limit thì **kernel kill**, log dừng giữa chừng, khó chẩn đoán.
+Từ Java 10 (và được backport về 8u191), cờ {{-XX:+UseContainerSupport}} **mặc định bật**: JVM đọc limit của cgroup thay vì RAM/CPU của cả máy host. Java 17 hiểu cả cgroup v1 lẫn v2 (cgroup v2 được hỗ trợ từ 15 và backport về 11.0.16). Khi không đặt {{-Xmx}}, heap tối đa mặc định chỉ bằng **25%** bộ nhớ container ({{MaxRAMPercentage}} mặc định 25.0). Nhiều team thấy heap "nhỏ quá" nên viết cứng {{-Xmx4g}} vào Dockerfile cho mọi môi trường — sai ngay khi limit pod là 2Gi: JVM tin vào Xmx, heap phình tới gần 2Gi cộng thêm native memory thì chạm limit, **kernel kill** process, log dừng giữa chừng, khó chẩn đoán.
 
 Cách đúng: **để JVM tự đọc limit rồi tinh chỉnh tỉ lệ**:
 
@@ -30,29 +30,30 @@ java -XX:MaxRAMPercentage=75.0 \\
 ~~~
 
 ### Bộ nhớ container đi đâu ngoài heap?
-Heap chỉ là một phần. Phần còn lại gồm: **metaspace** (lớp Java, ~100–200MB với Spring Boot), **code cache** (JIT, ~100–240MB), **thread stacks** (mỗi thread ~1MB mặc định trên Linux x64), **direct buffers** (Netty/NIO), và **native memory** của JVM/GC. Nếu heap chiếm 75% thì 25% còn lại phải trả cho tất cả thứ đó — đặt {{MaxRAMPercentage}} quá cao (ví dụ 90) là công thức OOM native hoặc container kill.
+Heap chỉ là một phần. Phần còn lại gồm: **metaspace** (metadata của class, thường 80–200MB với app Spring Boot), **code cache** (mã máy do JIT sinh ra; trần mặc định {{ReservedCodeCacheSize}} = 240MB, thực tế thường dùng 30–80MB), **thread stacks** (mỗi thread được *dành* 1MB địa chỉ trên Linux x64, nhưng RAM thật chỉ tốn theo phần stack thực sự dùng), **direct buffers** (Netty/NIO), và **native memory** của chính JVM/GC (GC của G1 tốn thêm vài % heap cho cấu trúc nội bộ). Nếu heap chiếm 75% thì 25% còn lại phải trả cho tất cả thứ đó — đặt {{MaxRAMPercentage}} quá cao (ví dụ 90) là công thức bị OOMKilled.
 
-**Công thức sizing** mà bạn có thể trình bày trước phỏng vấn (M = memory limit MiB, P = MaxRAMPercentage, C = CPU quota, S = kích thước stack MiB, R = mức reserve cho metaspace + code cache + native, thường 128–256 MiB):
+**Công thức sizing** mà bạn có thể trình bày khi phỏng vấn (M = memory limit MiB, P = MaxRAMPercentage, C = CPU quota tính bằng core, S = kích thước stack MiB, R = mức reserve cho metaspace + code cache + native, thường 128–256 MiB):
 
 1. {{heap = M × P / 100}}
-2. {{dư bộ nhớ cho thread = M − heap − R}} (âm nghĩa là cấu hình chết, phải giảm P)
-3. {{maxWorkerThreads = dư / S}} — quá lớn thì chính các thread stack này giết container
-4. {{webPool ≈ 2 × C}} — quy tắc kinh điển của Tomcat/Jetty cho pool nền tảng blocking; app I/O-bound dùng virtual thread (Java 21) thì đếm bằng request đồng thời, không bằng core
-5. {{gcThreads}} của G1 theo CPU: C ≤ 8 thì bằng C; C > 8 thì {{8 + (C − 8) × 5 / 8}} (giới hạn dần, không tuyến tính — GC parallel quá mức chỉ giành CPU với app)
+2. {{dư bộ nhớ cho thread = M − heap − R}} (âm nghĩa là cấu hình chết, phải giảm P hoặc tăng M)
+3. {{maxWorkerThreads = dư / S}} — **cận trên an toàn** (giả sử mọi stack dùng hết 1MB); vượt nhiều quá thì chính thread stack có thể đẩy container chạm limit
+4. Pool cho tác vụ blocking theo công thức của Brian Goetz (Java Concurrency in Practice): {{threads = C × (1 + W / S)}}, với W là thời gian **chờ** (I/O, DB) và S là thời gian **tính toán** CPU của một request. Request chờ DB 90ms, tính 10ms trên 2 core → {{2 × (1 + 90/10) = 20}} thread. Tác vụ thuần CPU (W ≈ 0) thì pool ≈ số core. Đây là điểm xuất phát, sau đó đo tải thật để chỉnh; app dùng virtual thread (Java 21) thì không cần pool lớn nữa mà giới hạn bằng số request đồng thời / connection pool.
+5. Số thread GC song song mặc định ({{ParallelGCThreads}}, G1 và Parallel GC dùng chung công thức): C ≤ 8 thì bằng C; C > 8 thì {{8 + (C − 8) × 5 / 8}} (tăng chậm dần — quá nhiều GC thread chỉ giành CPU với app)
 
-| Limit pod | MaxRAMPercentage | Heap | Web pool (2×C) | Nhận xét |
+| Limit pod | MaxRAMPercentage | Heap | Còn cho thread (R = 128) | Nhận xét |
 |---|---|---|---|---|
-| 512Mi, 1 core | 75% | 384Mi | 2 | Spring Boot nhỏ; reserve 128 → dư 0 cho worker extra |
-| 1Gi, 2 core | 75% | 768Mi | 4 | 128Mi còn lại vừa stack cho vài chục thread hệ thống |
-| 4Gi, 4 core | 50% | 2Gi | 8 | Team hay gặp GC churn: hạ P để trả chỗ cho metaspace/native |
+| 512Mi, 1 core | 75% | 384Mi | 0Mi | Quá chật: Spring Boot nhỏ nhất; nên hạ P về 60–65% |
+| 1Gi, 2 core | 75% | 768Mi | 128Mi | Đủ cho Tomcat 200 thread (stack thật mỗi thread thường < 512KB) |
+| 4Gi, 4 core | 70% | 2867Mi | 1101Mi | Dư rộng: có thể nâng P lên 75–80% nếu GC log cho thấy heap thiếu |
 
 > CPU throttling "giả chết": CPU trung bình chỉ 40% nhưng p99 tăng vọt vì process bị throttle từng chu kỳ 100ms. Kiểm tra {{cpu.stat}} (bộ đếm {{nr_throttled}}) thay vì nhìn CPU usage suông.
 
 ### Bẫy production hay gặp
 - **Đặt Xmx cứng trong Dockerfile**: mọi môi trường dùng chung một giá trị, sang env khác limit đổi là OOMKilled hoặc waste RAM. Dùng {{MaxRAMPercentage}} + resource limit trong manifest.
-- **GC log dày, heap chỉ 40% limit**: thường do CPU throttling hoặc {{ParallelGCThreads}} để mặc định theo **số core máy host** (với {{ActiveProcessorCount}} sai) — container 2 core nhưng JVM nghĩ máy 64 core, sinh hàng chục GC thread giành nhau 2 core.
-- **Thread pool quá lớn trên container nhỏ**: {{server.tomcat.threads.max=200}} × 1MB stack ≈ 200MB — vượt cả reserve, OOM native. Công thức {{maxWorkerThreads}} ở trên chặn sớm điều này.
-- **Quên {{ActiveProcessorCount}}** khi limit CPU không được JVM nhận đúng (cgroup v1 cũ, runtime khác): thêm {{-XX:ActiveProcessorCount=2}} để báo đúng quota.
+- **Pod không đặt CPU limit** (chỉ có {{requests}}): từ JDK 17.0.5/19, JVM **không** dùng CPU request (cpu shares) để đếm core nữa, nên nó thấy toàn bộ core của node — container "2 core" trên node 64 core sẽ sinh ~43 GC thread và pool {{ForkJoinPool.commonPool}} 63 thread giành nhau CPU. Kiểm tra {{Runtime.getRuntime().availableProcessors()}} ngay khi app khởi động.
+- **Thread pool quá lớn trên container nhỏ**: mặc định {{server.tomcat.threads.max=200}}; mỗi thread được dành 1MB stack, phần thật sự dùng thường vài trăm KB — 200 thread vẫn có thể ăn 50–100MB RAM. Trên pod 512Mi, kết hợp heap 75% là đủ để bị OOMKilled. Công thức {{maxWorkerThreads}} ở trên cho bạn cận trên an toàn.
+- **Container nhỏ âm thầm dùng Serial GC**: nếu JVM thấy dưới 2 CPU hoặc dưới 1792MB RAM, nó coi máy không phải "server-class" và chọn **Serial GC** (một thread, stop-the-world toàn bộ) thay vì G1. Pod 1 core/1Gi hay gặp pause dài vì lý do này. Muốn chắc chắn thì ghi rõ {{-XX:+UseG1GC}} và xác nhận bằng {{java -XX:+PrintFlagsFinal -version}} hoặc GC log.
+- **Số core JVM nhận sai** (cgroup v1 cũ, không đặt limit, runtime lạ): thêm {{-XX:ActiveProcessorCount=2}} để ép JVM coi như có 2 core — số GC thread, JIT compiler thread và commonPool đều tính theo con số này.
 
 ### Liên hệ phỏng vấn
 Interviewer hay hỏi: "Pod 2 CPU/4Gi, CPU dùng mới 40% nhưng latency xấu, bạn kiểm tra gì?" — trả lời theo thứ tự: (1) JVM có đọc đúng container limit không ({{Runtime.availableProcessors}}, GC log), (2) có bị throttling không ({{cpu.stat}}), (3) MaxRAMPercentage và số thread hợp lý chưa. Bài tập dưới đây bắt bạn tự cài các công thức sizing đó thành hàm Java kiểm thử được.`,
@@ -63,7 +64,7 @@ Interviewer hay hỏi: "Pod 2 CPU/4Gi, CPU dùng mới 40% nhưng latency xấu,
 
 - {{heapMiB(memoryMiB, percent)}}: {{memoryMiB × percent / 100}} (chia nguyên, floor với số dương).
 - {{gcThreads(cpuQuota)}}: {{cpuQuota ≤ 8}} thì bằng {{cpuQuota}}; lớn hơn thì {{8 + (cpuQuota − 8) × 5 / 8}} (chia nguyên).
-- {{webPoolSize(cpuQuota)}}: {{2 × cpuQuota}}.
+- {{blockingPoolSize(cpuQuota, waitMs, computeMs)}}: công thức Goetz {{cpuQuota × (1 + waitMs / computeMs)}}. Để không mất phần lẻ, tính bằng số nguyên theo dạng {{cpuQuota × (computeMs + waitMs) / computeMs}} (nhân trước, chia sau). {{computeMs}} luôn ≥ 1, {{waitMs}} ≥ 0.
 - {{maxWorkerThreads(memoryMiB, percent)}}: {{max(0, (memoryMiB − heapMiB(memoryMiB, percent) − RESERVED_MIB) / STACK_MIB)}} — không bao giờ trả số âm.
 
 {{cpuQuota}} luôn ≥ 1, {{percent}} trong 1..100.`,
@@ -79,7 +80,7 @@ Interviewer hay hỏi: "Pod 2 CPU/4Gi, CPU dùng mới 40% nhưng latency xấu,
         throw new UnsupportedOperationException("TODO");
     }
 
-    static int webPoolSize(int cpuQuota) {
+    static int blockingPoolSize(int cpuQuota, int waitMs, int computeMs) {
         throw new UnsupportedOperationException("TODO");
     }
 
@@ -111,10 +112,11 @@ Interviewer hay hỏi: "Pod 2 CPU/4Gi, CPU dùng mới 40% nhưng latency xấu,
             eq(23, ContainerSizer.gcThreads(32));    // 8 + 24*5/8 = 8+15
             eq(43, ContainerSizer.gcThreads(64));    // 8 + 56*5/8 = 8+35
         });
-        check("webPoolSize is 2x cpu", () -> {
-            eq(4, ContainerSizer.webPoolSize(2));
-            eq(8, ContainerSizer.webPoolSize(4));
-            eq(16, ContainerSizer.webPoolSize(8));
+        check("blockingPoolSize follows C*(1+W/S)", () -> {
+            eq(20, ContainerSizer.blockingPoolSize(2, 90, 10));     // 2 * (1 + 9)
+            eq(4, ContainerSizer.blockingPoolSize(4, 0, 10));       // CPU-bound: = số core
+            eq(12, ContainerSizer.blockingPoolSize(8, 50, 100));    // 8 * 150 / 100, không mất phần lẻ 0.5
+            eq(101, ContainerSizer.blockingPoolSize(1, 1000, 10));
         });
         check("workers: 1024Mi at 75% leaves 128Mi", () -> eq(128, ContainerSizer.maxWorkerThreads(1024, 75)));
         check("workers: 256Mi at 75% clamps to 0", () -> eq(0, ContainerSizer.maxWorkerThreads(256, 75)));
@@ -135,8 +137,9 @@ Interviewer hay hỏi: "Pod 2 CPU/4Gi, CPU dùng mới 40% nhưng latency xấu,
         return 8 + (cpuQuota - 8) * 5 / 8;           // công thức ParallelGCThreads của G1
     }
 
-    static int webPoolSize(int cpuQuota) {
-        return 2 * cpuQuota;                          // quy tắc 2x core cho pool blocking
+    static int blockingPoolSize(int cpuQuota, int waitMs, int computeMs) {
+        // C * (1 + W/S) viết lại thành C * (S + W) / S: nhân trước, chia sau để không mất phần lẻ
+        return cpuQuota * (computeMs + waitMs) / computeMs;
     }
 
     static int maxWorkerThreads(int memoryMiB, int percent) {
@@ -147,18 +150,21 @@ Interviewer hay hỏi: "Pod 2 CPU/4Gi, CPU dùng mới 40% nhưng latency xấu,
       hints: [
         'heapMiB: phép nhân rồi chia nguyên {{memoryMiB * percent / 100}} — không cần {{Math.floor}} vì cả hai là số nguyên dương.',
         'gcThreads: chia hai nhánh theo {{cpuQuota <= 8}}; nhánh lớn dùng {{8 + (cpuQuota - 8) * 5 / 8}} (chia nguyên).',
-        'maxWorkerThreads: tính {{free = memoryMiB - heapMiB(...) - RESERVED_MIB}} rồi {{Math.max(0, free / STACK_MIB)}} — chia số âm trong Java vẫn là floor, nên clamp trước.',
+        'blockingPoolSize: viết {{cpuQuota * (computeMs + waitMs) / computeMs}}. Nếu viết {{cpuQuota * (1 + waitMs / computeMs)}} thì {{waitMs / computeMs}} là phép chia nguyên, 50/100 thành 0 và kết quả sai.',
+        'maxWorkerThreads: tính {{free = memoryMiB - heapMiB(...) - RESERVED_MIB}} rồi {{Math.max(0, free / STACK_MIB)}} — clamp về 0 vì free có thể âm.',
       ],
-      explain: `Các hàm mô phỏng đúng pipeline sizing mà một SRE Java hay dùng trước khi viết {{-XX:MaxRAMPercentage}}: heap lấy phần trăm bộ nhớ, phần dư trả cho native + stack; số GC thread tăng chậm để không cướp CPU; web pool gấp đôi core vì mỗi request blocking chiếm một thread.
+      explain: `Các hàm mô phỏng pipeline sizing mà một SRE Java hay làm trước khi chọn {{-XX:MaxRAMPercentage}}: heap lấy phần trăm bộ nhớ, phần dư trả cho native + stack; số GC thread tăng chậm dần để không cướp CPU của app; pool blocking lớn hơn số core vì phần lớn thời gian thread chỉ **ngồi chờ** I/O, không tốn CPU.
+
+Vì sao công thức Goetz đúng? Một request chờ DB 90ms rồi tính 10ms: trong 100ms, mỗi thread chỉ dùng CPU 10% thời gian. Muốn 2 core bận liên tục thì cần 2 / 0.1 = 20 thread chạy song song — đúng bằng {{2 × (1 + 90/10)}}.
 
 Lỗi hay gặp:
-- Tính heap bằng {{(int) (memory * percent / 100.0)}} — chạy được nhưng dễ trôi dấu khi truyền tham số sai kiểu; chia nguyên trên hai {{int}} đã đủ chính xác ở đây.
-- Quên clamp {{maxWorkerThreads}} về 0: với 256Mi và 75%, heap 192 + reserve 128 đã vượt limit, kết quả số âm vô nghĩa.
-- Áp dụng công thức G1 sai chỗ: {{8 + (C-8)*5/8}} chỉ dành cho ParallelGCThreads; với ZGC/CPU limit thấp thì chỉ cần {{ActiveProcessorCount}} đúng.
+- Viết {{cpuQuota * (1 + waitMs / computeMs)}} với {{int}}: phép chia nguyên chạy trước, 50/100 = 0, pool 8 core ra 8 thay vì 12. Luôn nhân trước rồi chia sau (hoặc dùng {{double}} rồi làm tròn có chủ đích).
+- Quên clamp {{maxWorkerThreads}} về 0: với 256Mi và 75%, heap 192 + reserve 128 đã vượt limit, kết quả âm là vô nghĩa — đó là tín hiệu cấu hình sai, không phải số thread.
+- Nghĩ {{8 + (C-8)*5/8}} áp dụng cho mọi GC: nó là mặc định của {{ParallelGCThreads}} (G1, Parallel). ZGC/Shenandoah có công thức riêng; điều quan trọng chung là JVM phải nhận đúng số core ({{ActiveProcessorCount}}).
 
-Ở production, bảng sizing này nên nằm trong wiki của team và mỗi lần đổi limit resource thì đối chiếu lại — tránh "tăng memory limit x2" mà quên rằng stack và pool cũ đã được tính cho limit cũ.
+Ở production, bảng sizing này nên nằm trong wiki của team và mỗi lần đổi resource limit thì tính lại — tránh "tăng memory limit gấp đôi" mà quên rằng pool và reserve được tính cho limit cũ.
 
-> Senior tip: Một lần nâng memory từ 2Gi → 4Gi mà vẫn giữ {{-XX:MaxRAMPercentage=75.0}} và không tăng {{terminationGracePeriodSeconds}} khiến heap tăng từ 1.5Gi → 3Gi, GC chạy dài hơn, và graceful shutdown bị SIGKILL ở 30s — tất cả vì sizing không được cập nhật đồng thời với resource manifest. Luôn đối chiếu lại bảng này mỗi lần thay đổi limit.`
+> Senior tip: Đừng chỉ tin công thức — sau khi deploy, so sánh RSS của container ({{container_memory_working_set_bytes}} trên Kubernetes) với heap đang dùng. Bật {{-XX:NativeMemoryTracking=summary}} rồi chạy {{jcmd <pid> VM.native_memory summary}} để thấy từng vùng (metaspace, thread, code cache, GC) chiếm bao nhiêu MB; con số thật này mới là căn cứ để chọn R và P.`
     },
   ],
   check: [
@@ -178,7 +184,7 @@ Lỗi hay gặp:
       q: 'Container CPU quota = 2 core. Số {{ParallelGCThreads}} mặc định của G1 theo công thức trong bài là bao nhiêu?',
       options: ['1', '2', '4', '8'],
       answer: 1,
-      explain: `Công thức: C ≤ 8 thì ParallelGCThreads = C; C > 8 thì 8 + (C−8)×5/8. Với C = 2 → 2 GC thread. 8 là nhầm với ngưỡng chuyển công thức; 4 là nhầm với web pool (2×C); 1 là bịa.`,
+      explain: `Công thức: C ≤ 8 thì ParallelGCThreads = C; C > 8 thì 8 + (C−8)×5/8. Với C = 2 → 2 GC thread (với điều kiện JVM nhận đúng quota 2 core). "8" là nhầm với ngưỡng chuyển công thức; "4" là nhân đôi số core, không có trong công thức; "1" là số thread của Serial GC — JVM chỉ tự chọn Serial khi container dưới 2 CPU hoặc dưới 1792MB RAM; câu hỏi đã nói rõ đang dùng G1 nên không áp dụng.`,
     },
   ],
   related: ['devops-002', 'devops-005', 'devops-015'],
@@ -203,7 +209,7 @@ Kubernetes điều khiển container hoàn toàn qua các **probe**. Trộn lẫ
 |---|---|---|---|
 | **Liveness** | Process còn **sống** không? | K8s **restart** container | {{/actuator/health/liveness}} |
 | **Readiness** | Pod có **nhận request mới** không? | Pod bị gỡ khỏi {{Endpoints}}, **không** restart | {{/actuator/health/readiness}} |
-| **Startup** | App đã **boot xong** chưa? | Chưa đếm vào failure của liveness — dành cho app boot lâu | {{/actuator/health}} hoặc custom, với {{failureThreshold}} lớn |
+| **Startup** | App đã **boot xong** chưa? | Hết {{failureThreshold}} lần thì restart; khi startup đang chạy, liveness/readiness **chưa được kiểm tra** | Thường dùng lại {{/actuator/health/liveness}}, với {{failureThreshold}} lớn |
 
 Vì sao không trỏ cả ba vào {{/actuator/health}} đầy đủ? Vì health mặc định includes DB, disk, downstream: PostgreSQL chết thì **liveness fail** → K8s restart Pod hàng loạt → outage lan ra (thay vì chỉ một Pod "not ready" dừng nhận traffic). Spring Boot cho phép tách health group:
 
@@ -220,18 +226,22 @@ management:
           include: livenessState               # liveness CHỈ nhìn process
 ~~~
 
-{{readinessState}} và {{livenessState}} là health indicator riêng của Spring Boot, phản ánh ApplicationReadinessState / ApplicationAvailability.
+{{readinessState}} và {{livenessState}} là health indicator có sẵn của Spring Boot, phản ánh trạng thái {{ReadinessState}} ({{ACCEPTING_TRAFFIC}} / {{REFUSING_TRAFFIC}}) và {{LivenessState}} ({{CORRECT}} / {{BROKEN}}) mà app quản lý qua {{ApplicationAvailability}}. Khi Spring Boot phát hiện chạy trong Kubernetes, nhóm probes được bật tự động; chạy ngoài K8s thì cần {{management.endpoint.health.probes.enabled=true}} như trên.
+
+Lưu ý: đưa {{db}} vào readiness là lựa chọn có trade-off. Nếu DB chết thì **mọi** Pod cùng not ready, Service không còn endpoint nào và client nhận lỗi kết nối thay vì một response 503 rõ ràng. Nhiều team chỉ để readinessState và xử lý DB lỗi bằng circuit breaker trong code.
 
 ### Startup: dành riêng cho app boot chậm
 Spring Boot 3 với Hibernate validate + Kafka consumer + cache nóng có thể mất 60–90 giây. Nếu liveness có {{failureThreshold: 3}} {{periodSeconds: 10}} thì sau 30 giây Pod bị restart vô hạn (CrashLoopBackOff giả). {{startupProbe}} với {{failureThreshold: 30}} {{periodSeconds: 10}} cho app 300 giây để boot; trong lúc startup, liveness **chưa được đánh giá**. Boot xong thì startup probe ngừng, hai probe còn lại đảm nhiệm.
 
 ### Graceful shutdown: thứ tự quan trọng hơn tốc độ
-Khi nhận SIGTERM, Kubernetes:
-1. Xóa Pod khỏi Endpoints (**readiness fail ngay**) — nhưng tín hiệu này tới load balancer có thể trễ vài giây.
-2. Gửi SIGTERM cho process. Spring Boot ({{server.shutdown=graceful}}) ngừng nhận kết nối mới, đợi request đang chạy tới {{spring.lifecycle.timeout-per-shutdown-phase}} (mặc định 30s).
-3. Quá thời gian → SIGKILL. Mọi request đang chạy chết thẳng, mọi message trong consumer chưa xong mất.
+Khi bạn xoá Pod (rolling update, scale down), Kubernetes làm **hai việc song song**, không theo thứ tự:
+1. Đánh dấu Pod là Terminating và gỡ nó khỏi EndpointSlice của Service. Thông tin này lan tới kube-proxy, Ingress controller, load balancer **mất vài giây** — trong khoảng đó traffic mới vẫn có thể tới Pod.
+2. Kubelet chạy hook {{preStop}} (nếu có), xong rồi mới gửi **SIGTERM** cho process. Spring Boot với graceful shutdown (bật sẵn mặc định từ Spring Boot 3.4; bản cũ hơn cần {{server.shutdown=graceful}}) chuyển readiness sang {{REFUSING_TRAFFIC}}, ngừng nhận kết nối mới, đợi request đang chạy tối đa {{spring.lifecycle.timeout-per-shutdown-phase}} (mặc định 30s).
+3. Hết {{terminationGracePeriodSeconds}} (mặc định 30s, **tính từ lúc bắt đầu xoá, gồm cả thời gian preStop**) mà process chưa thoát → **SIGKILL**. Request đang chạy bị cắt ngang; message Kafka chưa commit offset sẽ bị consumer khác xử lý **lại** (không mất, nhưng trùng — nên consumer phải idempotent).
 
-Trong lúc chờ, app vẫn phải: readiness trả **false** (để lũ Pod khác trong cùng Service nhận traffic), nhưng **không restart** và **vẫn phục vụ** request đã nhận. Đó chính là trạng thái **DRAINING** (đang rút). Tóm tắt state machine:
+Vì bước 1 và 2 chạy song song, nếu app tắt ngay khi nhận SIGTERM thì những request "đến muộn" (LB chưa kịp biết Pod đã bị gỡ) sẽ lỗi 502. Đó là lý do cần {{preStop}} sleep vài giây.
+
+Trong lúc chờ, app phải: readiness trả **false** (để các Pod khác trong cùng Service nhận traffic mới), nhưng **không restart** và **vẫn phục vụ xong** request đã nhận. Đó chính là trạng thái **DRAINING** (đang rút). Tóm tắt state machine:
 
 ~~~text
 STARTING --markReady()--> READY --beginDraining()--> DRAINING
@@ -247,10 +257,10 @@ Hai quy tắc bắt buộc của DRAINING:
 - Request **đang chạy** không bị hủy: chúng giữ "in-flight" counter; chỉ khi counter về 0 (hoặc hết timeout) process mới đóng.
 
 ### Bẫy production hay gặp
-- **Deploy vẫn mất request 502/503**: readiness và liveness trỏ cùng endpoint; endpoint đó nhanh nhưng app chưa đăng ký vào Service kịp, hoặc không có preStop delay — LB xóa Pod khỏi Endpoint nhưng connection đã mở trong tiến trình đi tới vẫn chết. Thêm lifecycle hook {{preStop}} chạy {{sleep 5}} để có độ trễ an toàn.
-- **Liveness includes DB**: một lần DB chập chờn → restart cả cụm app. Tách health group như trên.
-- **Không có startupProbe** + app boot chậm → CrashLoopBackOff, log chỉ thấy những bean nửa vời.
-- **Graceful shutdown nhưng consumer Kafka bị SIGTERM giữa chừng**: {{server.shutdown=graceful}} chỉ lo HTTP; với Kafka listener phải bật {{spring.kafka.listener.ack-mode}} phù hợp và để container có đủ {{terminationGracePeriodSeconds}} (nếu mặc định 30s mà xử lý cần 45s thì vẫn bị kill).
+- **Deploy vẫn mất request 502**: không có preStop delay — Pod nhận SIGTERM và đóng cổng trong khi load balancer chưa kịp gỡ nó, request đang trên đường tới bị từ chối. Thêm lifecycle hook {{preStop}} chạy {{sleep 5}} (hoặc {{preStop.sleep}} có sẵn từ Kubernetes 1.30 nếu image không có lệnh {{sleep}}) để LB kịp cập nhật.
+- **Liveness include DB**: một lần DB chập chờn → restart cả cụm app, khởi động lại hàng loạt còn dồn thêm tải lên DB. Tách health group như trên.
+- **Không có startupProbe** + app boot chậm → liveness giết Pod trước khi boot xong, Pod rơi vào CrashLoopBackOff dù code không có lỗi.
+- **Kafka consumer bị cắt giữa chừng**: {{server.shutdown}} chỉ lo HTTP. Listener container của Spring Kafka được dừng khi ApplicationContext đóng, nhưng nếu một batch xử lý lâu hơn thời gian còn lại thì vẫn bị SIGKILL; offset chưa commit thì message được xử lý lại. Giữ batch nhỏ, consumer idempotent, và đặt {{terminationGracePeriodSeconds}} > preStop + {{timeout-per-shutdown-phase}}.
 
 ### Liên hệ phỏng vấn
 Câu kinh điển khi phỏng vấn deploy: "Mỗi lần rolling update có vài chục request 502, bạn sửa gì?" — câu trả lời đủ bộ: tách ba probe, startup probe cho app chậm, readiness fail ngay khi SIGTERM + preStop sleep, {{server.shutdown=graceful}} với timeout đủ lớn, và termination grace period > shutdown timeout. Bài tập dưới đây xây chính state machine điều khiển phần "readiness fail ngay, request cũ vẫn xong".`,
@@ -420,13 +430,13 @@ Câu kinh điển khi phỏng vấn deploy: "Mỗi lần rolling update có vài
       explain: `State machine này chính là phần ứng dụng của graceful shutdown: {{canServe()==false}} tương đương readiness probe fail → Pod rời Endpoints; {{beginRequest()==−1}} là app tự chặn request đi lạc (ví dụ kết nối cũ từ LB); {{endRequest}} giữ cho request đang chạy hoàn tất; {{isDrained()==true}} là điều kiện để process đóng ServerSocket và thoát 0.
 
 Lỗi hay gặp:
-- Cho {{markReady}} chạy từ DRAINING: instance "sống lại" sau khi LB đã cắt traffic — request không tới, hoặc worse, pod bị xoá mà traffic nghĩ nó còn.
-- Đếm in-flight bằng biến nguyên không kèm id: {{endRequest}} gọi hai lần cho cùng một request thì counter âm, {{isDrained}} báo true sớm, request đang chạy bị kill.
-- Quên cả timeout: trong thực tế {{isDrained}} phải kèm deadline ({{spring.lifecycle.timeout-per-shutdown-phase}}); nếu không, một request treo giữ pod sống mãi rồi bị SIGKILL đúng lúc. State machine trong JVM nên ghép với timer của container.
+- Cho {{markReady}} chạy từ DRAINING (ví dụ một warm-up task chạy xong muộn rồi gọi markReady): instance "sống lại", readiness báo true trong khi process sắp bị kill — LB lại gửi request mới tới và chúng chết theo process.
+- Đếm in-flight bằng một biến int không kèm id: {{endRequest}} bị gọi hai lần cho cùng một request (ví dụ cả trong {{finally}} lẫn trong callback) thì counter về 0 sớm, {{isDrained}} báo true trong khi request khác vẫn đang chạy, process thoát và cắt ngang nó.
+- Quên timeout: trong thực tế chờ drain phải có hạn ({{spring.lifecycle.timeout-per-shutdown-phase}}); nếu không, một request treo giữ process tới khi Kubernetes SIGKILL, và mọi bước dọn dẹp sau đó (flush log, đóng connection pool) không kịp chạy.
 
 Khi phỏng vấn, ghép đoạn code này với cấu hình K8s (readiness probe → {{/actuator/health/readiness}}, preStop sleep, graceful shutdown timeout) thành một câu chuyện hoàn chỉnh thay vì nói chung chung "dùng probe".
 
-> Senior tip: Một instance đang DRAINING nhưng không giảm in-flight vì một request treo (ví dụ DB transaction khóa) sẽ giữ pod sống quá 30s rồi bị SIGKILL — luôn đặt {{spring.lifecycle.timeout-per-shutdown-phase}} thấp hơn {{terminationGracePeriodSeconds}} và thêm circuit breaker cho request treo.`,
+> Senior tip: Một instance đang DRAINING nhưng không giảm in-flight vì một request treo (ví dụ DB transaction khóa) sẽ giữ pod sống quá 30s rồi bị SIGKILL — luôn đặt preStop + {{spring.lifecycle.timeout-per-shutdown-phase}} nhỏ hơn {{terminationGracePeriodSeconds}} (ví dụ 5s + 20s < 30s), và đặt timeout cho mọi query DB / HTTP client để không request nào có thể treo vô hạn.`,
     },
   ],
   check: [
@@ -434,13 +444,13 @@ Khi phỏng vấn, ghép đoạn code này với cấu hình K8s (readiness prob
       q: 'Spring Boot mất 90 giây để khởi động (Hibernate validate + nạp cache). Cấu hình probe nào đúng?',
       options: ['Liveness periodSeconds=10, failureThreshold=3', 'Chỉ readiness probe', 'StartupProbe với failureThreshold đủ lớn, liveness/readiness sau khi boot xong', 'Không cần probe, K8s tự đợi'],
       answer: 2,
-      explain: `Startup probe "kéo dài" thời gian đánh giá liveness: tới khi nó pass, liveness chưa bị tính failure, tránh restart vô hạn. Liveness period 10s × 3 = 30s sẽ restart giữa chừng. Chỉ readiness thì liveness vẫn thiếu, và K8s không tự đợi — crash loop là hệ quả.`,
+      explain: `Startup probe "kéo dài" thời gian đánh giá liveness: tới khi nó pass, liveness chưa bị tính failure, tránh restart vô hạn. Liveness period 10s × 3 = 30s sẽ restart container giữa lúc boot (90s), lặp lại mãi. Chỉ có readiness thì không bị restart lúc boot, nhưng app treo (deadlock) sau này sẽ không bao giờ được restart vì thiếu liveness. "Không cần probe": K8s coi container sẵn sàng ngay khi process chạy, đưa traffic vào app chưa boot xong → lỗi hàng loạt.`,
     },
     {
       q: 'Trong lúc graceful shutdown, readiness probe nên trả gì?',
       options: ['200 để LB còn gửi request tới', '503 (not ready) để Pod rời Endpoints, trong khi request đang chạy vẫn hoàn tất', 'Chỉ trả lời sau khi in-flight = 0', 'Endpoint bị xoá, probe fail cứng mọi giá trị'],
       answer: 1,
-      explain: `Readiness false ngay từ lúc nhận SIGTERM: LB ngừng gửi request **mới**, nhưng Pod vẫn xử lý xong request **đang chạy** — đó là ý nghĩa của DRAINING. Trả 200 thì request mới vẫn dồn vào instance sắp chết; "chờ in-flight = 0" trễ phản xạ; probe không hoạt động thì K8s không biết đâu là trạng thái rút.`,
+      explain: `Readiness false ngay từ lúc nhận SIGTERM: LB ngừng gửi request **mới**, nhưng Pod vẫn xử lý xong request **đang chạy** — đó là ý nghĩa của DRAINING. Trả 200 thì request mới vẫn dồn vào instance sắp chết. "Chỉ trả lời sau khi in-flight = 0" nghĩa là trong suốt lúc drain readiness vẫn còn báo sẵn sàng — quá muộn. "Probe fail cứng mọi giá trị" (ví dụ tắt hẳn endpoint) lẫn lộn readiness với liveness: nếu liveness cũng fail, K8s có thể restart container giữa lúc nó đang hoàn tất request.`,
     },
     {
       q: 'Liveness và readiness cùng trỏ {{/actuator/health}} (include cả DB). DB chậm 30 giây. Điều gì xảy ra?',
@@ -468,49 +478,49 @@ Khi phỏng vấn, ghép đoạn code này với cấu hình K8s (readiness prob
 | Chiến lược | Blast radius | Chi phí | Rollback | Ràng buộc dữ liệu |
 |---|---|---|---|---|
 | **Rolling update** | Cả cụm theo chu kỳ, version lẫn lộn trong lúc deploy | Thấp nhất (giữ {{maxSurge}}/{{maxUnavailable}}) | Rollback = deploy lại bản cũ, chậm | Migration phải tương thích cả hai version |
-| **Blue-green** | Switch một lần, nhưng switch sai là 100% traffic | Đôi tài nguyên (hai environment) | Nhanh: đổi service selector về blue | Migration phải "đổi hướng" ngay được, thường kèm feature flag |
+| **Blue-green** | Switch một lần, nhưng switch sai là 100% traffic | Gấp đôi tài nguyên (hai môi trường chạy song song) | Nhanh: đổi selector của Service về blue | Schema DB phải tương thích cả hai bản để còn quay về blue được |
 | **Canary** | Theo % traffic, thường 1→5→25→100 | Trung bình (thêm vài pod canary) | Nhanh: giảm % về 0 | Version cũ/mới cùng serve; DB tương thích tuyệt đối |
-  
-  Canary mạnh ở chỗ **dữ liệu production thật** quyết định có tiếp tục không: sau 5% traffic trong 15 phút, error rate, latency p99 và log của bản mới đã có ý nghĩa thống kê — điều blue-green không có trước khi switch.
-  
+
+Canary mạnh ở chỗ **dữ liệu production thật** quyết định có tiếp tục không: sau 5% traffic trong 15 phút, error rate, latency p99 và log của bản mới đã có ý nghĩa thống kê — điều blue-green không có trước khi switch.
+
 ### Chia traffic: hash ổn định thay vì "ngẫu nhiên mỗi request"
-  Load balancer chia đều theo connection/request sẽ khiến **cùng một user** chạm cả hai version trong một phiên: user tạo đơn trên bản mới, bước thanh toán trên bản cũ → lỗi schema kinh điển. Giải pháp: **sticky theo userId** bằng hàm hash ổn định:
-  
-  ~~~text
-  bucket = floorMod(userId.hashCode(), 100)     // 0..99
-  bucket < canaryPercent  →  version "canary"
-  ngược lại               →  version "stable"
-  ~~~
-  
-  {{String.hashCode()}} được định nghĩa trong specification của JVM nên **giữa các tiến trình là như nhau** (không giống identity hashCode). Nhờ vậy mọi replica, mọi gateway tự quyết định route mà không cần session store chung. Tỉ lệ xấp xỉ {{canaryPercent}}% trên tập user đủ lớn; mỗi user riêng lẻ vẫn luôn về cùng một version — vừa chống "split session", vừa cho phép quan sát đúng tập user canary.
-  
-  Chiến thuật rollout: 1% → 5% → 20% → 50% → 100%, mỗi bước có cửa sổ quan sát. Ở mọi mức %, hash quyết định tập user là **tập con** của % thấp hơn (user canary 1% vẫn là canary khi nâng lên 20%) — nâng dần không làm user nhảy version giữa chừng.
-  
+Load balancer chia đều theo connection/request sẽ khiến **cùng một user** chạm cả hai version trong một phiên: user tạo đơn trên bản mới, bước thanh toán trên bản cũ → lỗi schema kinh điển. Giải pháp: **sticky theo userId** bằng hàm hash ổn định:
+
+~~~text
+bucket = floorMod(userId.hashCode(), 100)     // 0..99
+bucket < canaryPercent  →  version "canary"
+ngược lại               →  version "stable"
+~~~
+
+Công thức của {{String.hashCode()}} được ghi rõ trong Javadoc của lớp String ({{s[0]×31^(n−1) + s[1]×31^(n−2) + … + s[n−1]}}), nên mọi JVM, mọi tiến trình, mọi lần restart đều tính ra **cùng một số** — khác với {{Object.hashCode()}} mặc định (identity hash) thay đổi mỗi lần chạy. Nhờ vậy mọi replica, mọi gateway tự quyết định route mà không cần session store chung. (Hệ thống thật thường dùng hash phân bố đều hơn như MurmurHash, cộng thêm "salt" theo tên experiment để mỗi đợt canary chọn một tập user khác nhau; ý tưởng giữ nguyên.) Tỉ lệ xấp xỉ {{canaryPercent}}% trên tập user đủ lớn; mỗi user riêng lẻ vẫn luôn về cùng một version — vừa chống "split session", vừa cho phép quan sát đúng tập user canary.
+
+Chiến thuật rollout: 1% → 5% → 20% → 50% → 100%, mỗi bước có cửa sổ quan sát. Ở mọi mức %, hash quyết định tập user là **tập con** của % thấp hơn (user canary 1% vẫn là canary khi nâng lên 20%) — nâng dần không làm user nhảy version giữa chừng.
+
 ### Tự rollback: ngưỡng + mẫu tối thiểu + cửa sổ trượt
-  Canary chỉ có ý nghĩa khi **so sánh** được. Tự động rollback cần ba thứ:
-  
+Canary chỉ có ý nghĩa khi **so sánh** được. Tự động rollback cần ba thứ:
+
 1. **Error rate** theo version: {{failures / total}} trong cửa sổ trượt (ví dụ 5 phút gần nhất), không phải cumulative từ đầu đời — bug có thể ở một cụm user cụ thể.
 2. **Ngưỡng mẫu tối thiểu** (minSamples): 3 request lỗi trên 3 request đầu = 100% error rate, nhưng chưa đủ bằng chứng để kill release. Kinh điển: ≥ 20–50 request hoặc ≥ 5 phút.
 3. **Ngưỡng so sánh** (error threshold): thường là max(abs, factor × baseline). Đơn giản: {{errorRate("canary") > 0.02}} (2%) và canary đã có ≥ 30 mẫu.
-  
-  ~~~text
-  record(version, success)           // append vào cửa sổ
-  nếu canary.samples >= minSamples
-     và canary.errorRate > threshold:
-         rollback(): canaryPercent = 0  →  100% traffic về stable
-  ~~~
-  
-  Sau rollback, **không** dừng quan sát: logs, traces của đoạn canary ngắn là vàng cho postmortem. Ngoài ra cần phân biệt rollback **tự động** (an toàn, chỉ giảm %) với promote 100% (cần tín hiệu đủ tốt: error rate ≤ baseline, không có anomaly khác).
-  
+
+~~~text
+record(version, success)           // append vào cửa sổ
+nếu canary.samples >= minSamples
+   và canary.errorRate > threshold:
+       rollback(): canaryPercent = 0  →  100% traffic về stable
+~~~
+
+Sau rollback, **không** dừng quan sát: logs, traces của đoạn canary ngắn là vàng cho postmortem. Ngoài ra cần phân biệt rollback **tự động** (an toàn, chỉ giảm %) với promote 100% (cần tín hiệu đủ tốt: error rate ≤ baseline, không có anomaly khác).
+
 ### Bẫy production hay gặp
-- **Hash theo {{Random()}} mỗi request**: user đổi version liên tục; thậm chí hai request song song của cùng user đi hai nơi. Phải hash **thứ tự ổn định của user** (userId, hoặc accountId cho luồng tiền).
-- **CanaryPercent đổi giữa chừng giữa hai lần tính hash của cùng user session**: khi roll 5% → 20%, user 5% giữ nguyên (đúng), nhưng nếu code dùng "random < percent" thì user nhảy lung tung. Dùng bucket cố định 0..99 rồi so với percent.
-- **Rollback vì noise**: 100 request đầu mà 3 lỗi đã kill release vào 2h sáng; ngày hôm sau 5% traffic cả tuần cũng không được thử. Min samples + ngưỡng so sánh với baseline của stable mới công bằng.
+- **Hash theo {{Random()}} mỗi request**: user đổi version liên tục; thậm chí hai request song song của cùng user đi hai nơi. Phải hash **định danh ổn định của user** (userId, hoặc accountId cho luồng tiền).
+- **Tăng % giữa chừng làm user nhảy version**: khi nâng 5% → 20%, user đang ở canary phải **ở lại** canary. Với bucket cố định 0..99 so với percent thì điều này tự đúng (bucket 3 < 5 và cũng < 20); còn nếu code dùng "random < percent" hoặc đổi công thức hash giữa hai lần deploy thì user nhảy lung tung.
+- **Rollback vì noise**: 3 lỗi trong 3 request đầu (có thể do một sự cố mạng chung) đã kill release lúc 2 giờ sáng, team mất cả ngày điều tra một bản vốn không có lỗi. Min samples + ngưỡng so sánh với baseline của stable mới công bằng.
 - **Migration DB một chiều**: canary ghi dữ liệu kiểu mới trong lúc stable còn đọc kiểu cũ — deploy canary xong thì rollback **không thể** vì data đã ghi. Kỹ thuật expand-contract (mở rộng schema tương thích cả hai, migrate, thu hẹp) là điều kiện tiên quyết của canary trên hệ thống có state.
-- **Quên giới hạn canary ở hạ tầng**: traffic 5% nhưng metrics/log chỉ có nhãn version khi code tự tag; so sánh p99 không làm được nếu gateway không truyền header {{X-Version}}.
-  
+- **Metrics không có nhãn version**: canary nhận 5% traffic nhưng dashboard chỉ có error rate gộp của cả service — lỗi 10% ở canary chỉ làm số gộp tăng 0.5%, không ai thấy. Mọi metric/log phải gắn nhãn version (ví dụ label {{version}} trên Pod, hoặc header {{X-Version}} do gateway thêm) để so sánh canary với stable.
+
 ### Liên hệ phỏng vấn
-  Câu hỏi senior kinh điển: "Service thanh toán, bạn chọn chiến lược gì và tự rollback thế nào?" — trả lời: canary theo % với hash ổn định của userId (sticky session, không cần store chung), quan sát error rate theo version với min samples, rollback bằng cách hạ % về 0; điều kiện tiên quyết là migration expand-contract để bản cũ luôn rollback được. Bài tập dưới đây dựng chính bộ định tuyến + auto-rollback đó bằng Java thuần.`,
+Câu hỏi senior kinh điển: "Service thanh toán, bạn chọn chiến lược gì và tự rollback thế nào?" — trả lời: canary theo % với hash ổn định của userId (sticky session, không cần store chung), quan sát error rate theo version với min samples, rollback bằng cách hạ % về 0; điều kiện tiên quyết là migration expand-contract để bản cũ luôn rollback được. Bài tập dưới đây dựng chính bộ định tuyến + auto-rollback đó bằng Java thuần.`,
   exercises: [
     {
       title: 'CanaryRouter: hash ổn định chia traffic và tự rollback khi error rate vượt ngưỡng',
@@ -643,7 +653,7 @@ Khi phỏng vấn, ghép đoạn code này với cấu hình K8s (readiness prob
     String route(String userId) {
         if (canaryPercent <= 0) return "stable";
         if (canaryPercent >= 100) return "canary";
-        // String.hashCode là chuẩn specification: mọi tiến trình tính cùng bucket → sticky theo user
+        // công thức String.hashCode cố định trong Javadoc: mọi tiến trình tính cùng bucket → sticky theo user
         int bucket = Math.floorMod(userId.hashCode(), 100);
         return bucket < canaryPercent ? "canary" : "stable";
     }
@@ -683,7 +693,7 @@ Lỗi hay gặp:
 - Tính route bằng {{ThreadLocalRandom.current().nextInt(100) < percent}}: mỗi request một lần tung xúc xắc, user liên tục đổi version — đúng cho phân phối traffic, sai cho sticky session. Phải hash định danh user.
 - Dùng cumulative error rate từ đầu đời release: một incident nửa giờ trước làm lệch mãi mãi, không thấy hồi phục. Cửa sổ trượt (hoặc reset stats định kỳ) là cần thiết.
 - Rollback bằng redeploy bản cũ: chậm 5–10 phút, trong khi hạ % về 0 là vài giây. Với DB tương thích cả hai version (expand-contract) thì % = 0 luôn an toàn.
-- Sau khi rollback mà quên {{minSamples}} khi tăng % tiếp: nâng 1% → 50% với cùng ngưỡng tuyệt đối thì 50% chỉ cần vài mẫu là "đủ", không công bằng. Ở production thường đặt minSamples tuyến tính theo %.
+- Đặt điều kiện "đủ mẫu" theo thời gian thay vì số request: ở 1% traffic lúc 3 giờ sáng, 15 phút có thể chỉ được vài request — chưa đủ để kết luận tốt hay xấu. Đừng promote lên % cao hơn khi canary chưa gom đủ {{minSamples}}.
 
 Khi phỏng vấn, nối ba mảnh: chiến lược (canary), định tuyến (hash ổn định của userId), và cơ chế dừng (error rate + minSamples + hạ % về 0), kèm điều kiện migration để rollback data an toàn.
 
@@ -717,392 +727,447 @@ Khi phỏng vấn, nối ba mảnh: chiến lược (canary), định tuyến (h
   id: 'lesson-devops-004',
   track: 'devops',
   order: 4,
-  title: 'ECM Protocol Adapters: Phân loại lỗi Final vs Retry và chiến lược hồi đáp',
+  title: 'Retry đúng cách khi gọi provider ngoài: phân loại lỗi FINAL/RETRY, backoff và jitter',
   level: 'senior',
-  minutes: 50,
+  minutes: 45,
   goals: [
-    'Thiết kế được Pattern Adapter cho ECM (Enterprise Content Management) tích hợp nhiều provider (EFSS, OneDrive)',
-    'Phân loại được lỗi thành Final (không retry) và Retryable (có thể thử lại) để tối ưu tài nguyên và API quota',
-    'Cài đặt được cơ chế retry với exponential backoff và mapping mã lỗi động theo từng provider',
+    'Dùng Adapter để gom các provider lưu trữ tài liệu (ECM/EFSS, OneDrive…) về một interface và một bảng phân loại lỗi chung',
+    'Phân loại được lỗi thành FINAL (không retry) và RETRY (thử lại được), giải thích vì sao retry sai loại lỗi gây hại',
+    'Cài đặt retry có giới hạn với exponential backoff có trần (cap), hiểu vai trò của jitter, Retry-After và idempotency',
   ],
-  body: `### Tại sao cần Adapter và Phân loại lỗi trong hệ thống Enterprise?
-Trong các hệ thống ngân hàng hoặc doanh nghiệp lớn, việc tích hợp với các kho lưu trữ nội dung (ECM - Enterprise Content Management) là một phần không thể thiếu. Các hệ thống này có thể là giải pháp on-premise như IBM FileNet, OpenText, hoặc các dịch vụ cloud hiện đại như OneDrive, Box, và các hệ thống lưu trữ tệp tin doanh nghiệp (EFSS - Enterprise File Synchronization and Sharing). 
+  body: `### Bối cảnh: một service, nhiều provider
+Trong ngân hàng hoặc doanh nghiệp lớn, ứng dụng Java thường phải đọc/ghi tài liệu ở nhiều kho khác nhau: hệ ECM on-premise (IBM FileNet, OpenText…), kho EFSS (Enterprise File Sync and Share) nội bộ, hoặc cloud như OneDrive/SharePoint qua Microsoft Graph. Mỗi provider có giao thức riêng (REST, SOAP, CMIS), **bộ mã lỗi riêng** và **rate limit riêng**.
 
-Thử thách lớn nhất khi làm việc với nhiều provider là sự dị biệt: mỗi provider có một giao thức riêng (REST, SOAP, CMIS), bộ mã lỗi riêng và các giới hạn về lưu lượng (Rate Limit) hoàn toàn khác nhau. Nếu chúng ta viết code logic nghiệp vụ trực tiếp gọi API của từng provider, mã nguồn sẽ trở nên cực kỳ rối rắm, khó bảo trì và không thể mở rộng. **Pattern Adapter** ra đời để giải quyết vấn đề này bằng cách trừu tượng hóa các provider thành một interface thống nhất. Tuy nhiên, một Adapter ở cấp độ Senior không chỉ đơn thuần là chuyển đổi tham số gọi hàm, mà nó phải sở hữu một chiến lược xử lý lỗi thông minh.
+Nếu code nghiệp vụ gọi thẳng từng provider, logic "lỗi này có nên thử lại không" bị rải khắp nơi và mỗi chỗ xử lý một kiểu. **Adapter pattern** giải quyết bằng cách: mỗi provider có một adapter cài cùng một interface ({{EcmConnector}}), và **mỗi adapter tự dịch mã lỗi của provider sang một phân loại chung** (FINAL hoặc RETRY). Phần retry chỉ viết **một lần** ở tầng service, dựa trên phân loại chung đó.
 
-### Phân loại lỗi: Ranh giới giữa Hiệu năng và Outage
-Việc xử lý lỗi sai cách là nguyên nhân hàng đầu dẫn đến sự cố lan truyền (Cascading Failures). Chúng ta phân loại lỗi thành hai nhóm chiến lược:
+### Hai loại lỗi
+**FINAL — thử lại vẫn hỏng y như cũ:**
+- {{400 Bad Request}} (tham số sai), {{403 Forbidden}} (service account thiếu quyền), {{404 Not Found}} (file đã bị xoá), {{413}} (file quá lớn).
+- Hành động: dừng ngay, báo lỗi rõ ràng. Retry chỉ tốn thời gian, tốn quota, và nếu bạn bắn hàng nghìn request 403 thì hệ thống bảo vệ của provider có thể khoá luôn tài khoản tích hợp.
 
-1. **Final Errors (Lỗi cuối cùng)**: Đây là những lỗi mà bản chất của nó là do cấu hình, quyền truy cập hoặc logic dữ liệu sai.
-- **Ví dụ**: {{403 Forbidden}} (Sai quyền truy cập), {{404 Not Found}} (File đã bị xóa), {{400 Bad Request}} (Tham số không hợp lệ).
-- **Hành động**: Dừng ngay lập tức. Việc thử lại (retry) trong trường hợp này chỉ làm lãng phí CPU, băng thông mạng và quan trọng nhất là làm cạn kiệt API quota của hệ thống. Nếu bạn retry một lỗi 403 hàng ngàn lần, hệ thống giám sát của provider có thể coi đó là một cuộc tấn công và khóa luôn tài khoản tích hợp của bạn.
+**RETRY — lỗi tạm thời, chờ một chút có thể thành công:**
+- {{429 Too Many Requests}} (chạm rate limit), {{503 Service Unavailable}} (provider quá tải/bảo trì), {{502}}/{{504}} (gateway lỗi hoặc timeout), lỗi mạng như connection reset, {{SocketTimeoutException}}.
+- Hành động: chờ rồi thử lại, **có giới hạn số lần**.
 
-2. **Retryable Errors (Lỗi có thể thử lại)**: Những lỗi mang tính tạm thời, thường do áp lực tải hoặc sự cố mạng nhất thời.
-- **Ví dụ**: {{429 Too Many Requests}} (Chạm ngưỡng Rate Limit), {{503 Service Unavailable}} (Server đang bảo trì hoặc quá tải), {{504 Gateway Timeout}}, hoặc các lỗi {{SocketTimeout}}.
-- **Hành động**: Thử lại sau một khoảng trễ. Tuy nhiên, "thử lại thế nào" mới là điều làm nên sự khác biệt.
+**Trường hợp đặc biệt — 401 do token hết hạn:** không phải retry "mù". Phải **lấy token mới trước**, rồi thử lại **đúng một lần**; nếu vẫn 401 thì là lỗi cấu hình (FINAL). Trong bảng bên dưới, mã {{TOKEN_EXPIRED}} được xếp RETRY với ngầm định adapter đã refresh token trước khi ném lỗi lên.
 
-### Chiến lược Retry: Exponential Backoff và Jitter
-Đừng bao giờ retry theo kiểu "thử lại sau mỗi 1 giây". Nếu server đang quá tải, việc hàng ngàn client cùng thử lại sau đúng 1 giây sẽ tạo ra một đợt sóng tải mới (thường được gọi là **Thundering Herd problem**), khiến server không bao giờ có cơ hội hồi phục.
+### Exponential backoff có trần
+Đừng retry kiểu "cứ 1 giây thử lại một lần". Provider đang quá tải mà mọi client cùng dội lại sau đúng 1 giây thì tạo ra đợt tải mới (**thundering herd**), provider không bao giờ hồi phục.
 
-Chiến lược chuẩn Senior là **Exponential Backoff kèm Jitter**:
-- **Exponential Backoff**: Thời gian chờ tăng theo hàm mũ (ví dụ: $wait = base \times 2^{attempt}$). Lần 1 chờ 1s, lần 2 chờ 2s, lần 3 chờ 4s... Điều này giúp dãn cách áp lực lên provider.
-- **Jitter (Độ nhiễu ngẫu nhiên)**: Chúng ta thêm một khoảng thời gian ngẫu nhiên nhỏ vào mỗi lần chờ (ví dụ: $1s + rand(0, 500ms)$). Jitter đảm bảo rằng hàng loạt instance của chúng ta không bao giờ cùng "đập" vào server tại cùng một thời điểm.
+**Exponential backoff**: lần chờ thứ n = base × 2^(n−1), nhưng **không vượt quá trần** (cap). Với base = 100ms, cap = 1000ms:
 
-### Mapping mã lỗi động (Error Mapping Table)
-Mỗi Adapter phải chịu trách nhiệm "dịch" các mã lỗi đặc thù của provider sang phân loại chung của hệ thống.
+| Lần retry | 1 | 2 | 3 | 4 | 5 | 6 trở đi |
+|---|---|---|---|---|---|---|
+| Chờ (ms) | 100 | 200 | 400 | 800 | 1000 | 1000 |
 
-| Provider | Mã lỗi | Phân loại | Giải thích |
+Trần là bắt buộc: không có cap thì lần thứ 20 phải chờ 100ms × 2^19 ≈ 14 tiếng; tệ hơn, nếu tính bằng phép dịch bit {{base << n}} với n lớn thì số bị **tràn** (overflow) thành số âm.
+
+### Jitter: đừng để mọi client chờ y hệt nhau
+Backoff giãn cách theo thời gian, nhưng 1000 instance cùng lỗi ở giây thứ 0 vẫn cùng thử lại ở 100ms, 300ms, 700ms… — vẫn là những đợt sóng. **Jitter** thêm ngẫu nhiên vào thời gian chờ. Cách phổ biến nhất là **full jitter**: chờ một số ngẫu nhiên trong khoảng 0..backoff(n). Các lần retry khi đó rải đều theo thời gian thay vì dồn thành cột.
+
+~~~java
+long backoff = Math.min(CAP_MS, BASE_MS << Math.min(retry - 1, 20)); // giới hạn số bit dịch để không tràn
+long sleep = ThreadLocalRandom.current().nextLong(backoff + 1);     // full jitter: 0..backoff
+~~~
+
+Trong bài tập, ta tách phần tính backoff (xác định, kiểm thử được) khỏi phần ngẫu nhiên, và ghi lại thời gian chờ vào một list thay vì gọi {{Thread.sleep}} để test chạy nhanh và cho kết quả cố định.
+
+### Retry-After: provider nói chờ bao lâu thì nghe theo
+Với {{429}} và {{503}}, chuẩn HTTP cho phép server trả header {{Retry-After}} (số giây hoặc một thời điểm). Microsoft Graph (OneDrive/SharePoint) trả header này khi throttle. Nếu có, hãy chờ **ít nhất** khoảng đó thay vì dùng backoff tự tính — retry sớm hơn thường bị throttle tiếp và có thể kéo dài thời gian bị giới hạn.
+
+### Bảng dịch mã lỗi theo provider
+| Provider | Mã lỗi | Phân loại | Ý nghĩa |
 |---|---|---|---|
-| **EFSS** | {{RATE_LIMIT}} | RETRY | Chạm giới hạn số request/giây |
-| | {{TOKEN_EXPIRED}} | RETRY | Token hết hạn, cần lấy token mới và thử lại |
-| | {{PERMISSION_DENIED}}| FINAL | Cần can thiệp vào phân quyền của Service Account |
-| **OneDrive** | {{throttledError}} | RETRY | OneDrive đang bận, thường trả kèm {{Retry-After}} |
-| | {{policyViolation}} | FINAL | File vi phạm chính sách bảo mật của tenant |
-| | {{itemLocked}} | RETRY | File đang bị process khác mở độc quyền |
+| EFSS (nội bộ, ví dụ minh hoạ) | {{RATE_LIMIT}} | RETRY | Chạm giới hạn request/giây |
+| | {{SERVER_BUSY}} | RETRY | Provider quá tải tạm thời |
+| | {{TOKEN_EXPIRED}} | RETRY | Adapter đã refresh token, gọi lại một lần |
+| | {{PERMISSION_DENIED}} | FINAL | Phải sửa phân quyền service account |
+| | {{FILE_NOT_FOUND}} | FINAL | File không tồn tại |
+| OneDrive (Microsoft Graph) | {{activityLimitReached}} | RETRY | Bị throttle (HTTP 429), thường kèm Retry-After |
+| | {{serviceNotAvailable}} | RETRY | Dịch vụ tạm thời không sẵn sàng (HTTP 503) |
+| | {{accessDenied}} | FINAL | Không có quyền |
+| | {{itemNotFound}} | FINAL | Không tìm thấy item |
 
-### Idempotency: Điều kiện tiên quyết để Retry an toàn
-Trước khi quyết định retry, bạn phải đảm bảo thao tác đó là **Idempotent** (có tính độc lập với số lần thực hiện). Với thao tác READ (fetch file), retry luôn an toàn. Nhưng với thao tác WRITE (upload file), bạn phải đảm bảo provider hỗ trợ ghi đè (overwrite) hoặc sử dụng một Idempotency-Key để tránh việc tạo ra hàng loạt file trùng lặp khi request đầu tiên thực chất đã thành công nhưng phản hồi bị timeout.
+Mã lạ (adapter chưa biết) mặc định xếp **FINAL**: thà báo lỗi sớm cho người vận hành bổ sung bảng còn hơn retry mù một lỗi có thể là vĩnh viễn.
+
+### Idempotency: điều kiện để retry thao tác ghi
+Retry chỉ an toàn khi thao tác là **idempotent** — làm 1 lần hay 3 lần thì kết quả như nhau. Đọc file (GET) luôn an toàn. Upload thì nguy hiểm: request đầu có thể **đã thành công** ở provider nhưng response bị timeout trên đường về; retry tạo thêm một bản trùng. Cách xử lý: upload vào **đường dẫn cố định** với chế độ ghi đè (PUT theo tên file), hoặc gửi **idempotency key** nếu provider hỗ trợ, hoặc kiểm tra "file đã tồn tại chưa" trước khi retry.
+
+### Bẫy production hay gặp
+- **Retry chồng nhiều tầng**: HTTP client retry 3 lần, service retry 3 lần, message consumer retry 3 lần → một lỗi thành 27 request. Chỉ retry ở **một** tầng.
+- **Retry không có tổng deadline**: request của user chờ 30 giây vì retry, trong khi gateway đã timeout ở 10 giây — retry thêm chỉ làm phí tài nguyên.
+- **Retry khi provider sập hẳn**: mọi request đều chờ hết lượt retry, thread pool cạn. Kết hợp **circuit breaker** (ví dụ Resilience4j): khi tỉ lệ lỗi vượt ngưỡng thì "mở mạch", fail nhanh trong một khoảng thời gian rồi thử lại dè dặt.
 
 ### Liên hệ phỏng vấn
-Interviewer: "Bạn xử lý thế nào nếu một provider ECM thi thoảng bị chậm hoặc lỗi 5xx?"
-Bạn: "Tôi sử dụng kiến trúc Adapter kết hợp với Circuit Breaker. Mỗi Adapter map lỗi provider sang hai nhóm Final và Retryable. Với lỗi Retryable, tôi dùng Exponential Backoff kèm Jitter. Tuy nhiên, nếu tỉ lệ lỗi vượt ngưỡng, Circuit Breaker sẽ ngắt kết nối hoàn toàn để tránh làm sập provider và bảo vệ tài nguyên của hệ thống mình. Tôi cũng đảm bảo các API upload phải có tính Idempotent trước khi cho phép retry."
+Câu hỏi hay gặp: "Provider bên ngoài thỉnh thoảng trả 5xx hoặc 429, bạn xử lý thế nào?" Trả lời đủ ý: (1) adapter dịch mã lỗi sang FINAL/RETRY, mã lạ là FINAL; (2) chỉ retry lỗi RETRY, tối đa N lần, exponential backoff có cap + full jitter, tôn trọng Retry-After; (3) chỉ retry thao tác idempotent; (4) circuit breaker khi provider sập; (5) retry ở đúng một tầng và có tổng deadline. Bài tập dưới đây cài chính phần lõi (1)–(2).
 
-> Senior tip: Trong các hệ thống cực kỳ quan trọng, hãy cân nhắc dùng **Advisory Retry**. Một số provider như OneDrive trả về header {{Retry-After}} trong phản hồi 429. Thay vì tự tính toán backoff, hãy tuân thủ tuyệt đối giá trị mà provider yêu cầu. Điều này thể hiện sự tôn trọng "hợp đồng" tích hợp và giảm thiểu rủi ro bị khóa API.`,
+> Senior tip: Hãy đếm metric số lần retry theo provider và theo mã lỗi. Retry tăng vọt là tín hiệu sớm nhất cho thấy provider sắp sập hoặc bạn sắp chạm quota — thường xuất hiện trước khi error rate của chính service bạn tăng.`,
   exercises: [
     {
-      title: 'EcmConnector: Implement adapters with Error Classification',
-      prompt: `Xây dựng hệ thống Adapter cho ECM với các yêu cầu sau:
-1. Định nghĩa {{ErrorKind}} gồm {{FINAL}} và {{RETRY}}.
-2. Implement 2 adapter:
-- {{EfssAdapter}}: Map {{RATE_LIMIT}}, {{TOKEN_EXPIRED}}, {{SERVER_BUSY}} thành {{RETRY}}. Các lỗi khác mặc định là {{FINAL}}.
-- {{OneDriveAdapter}}: Map {{throttledError}}, {{itemLocked}} thành {{RETRY}}. Các lỗi khác là {{FINAL}}.
-3. Hoàn thiện hàm {{fetchWithRetry}} trong {{EcmService}}:
-- Gọi {{connector.fetch(id)}}.
-- Nếu ném ngoại lệ, dùng {{connector.getPolicy()}} để classify message của ngoại lệ đó.
-- Nếu là {{RETRY}}, thử lại tối đa **3 lần** (tổng cộng 4 lần gọi).
-- Nếu là {{FINAL}} hoặc đã hết lượt retry, ném ngoại lệ ra ngoài.
-- Mỗi lần retry, in ra log: {{"Retrying <id> (attempt <n>)..."}}.`,
+      title: 'Phân loại lỗi theo provider và retry với exponential backoff có trần',
+      prompt: `Starter đã có {{ErrorKind}}, {{ErrorPolicy}}, {{EcmConnector}} và {{ProviderException}} (mang mã lỗi trong field {{code}}). Bạn cần hoàn thiện:
+
+1. {{EfssPolicy.classify(code)}}: {{RATE_LIMIT}}, {{SERVER_BUSY}}, {{TOKEN_EXPIRED}} → {{RETRY}}; mọi mã khác (kể cả mã lạ) → {{FINAL}}.
+2. {{OneDrivePolicy.classify(code)}}: {{activityLimitReached}}, {{serviceNotAvailable}} → {{RETRY}}; mọi mã khác → {{FINAL}}.
+3. {{EcmService.backoffMs(retry)}} với {{retry}} ≥ 1: {{min(CAP_MS, BASE_MS × 2^(retry − 1))}}, {{BASE_MS = 100}}, {{CAP_MS = 1000}}. Không được tràn số với {{retry}} rất lớn (ví dụ 60).
+4. {{EcmService.fetchWithRetry(connector, id)}}:
+- Gọi {{connector.fetch(id)}}; thành công thì trả kết quả.
+- Bắt {{ProviderException}}, phân loại {{e.code}} bằng {{connector.policy()}}.
+- {{RETRY}} và chưa quá {{MAX_RETRIES = 3}} lần retry: thêm {{backoffMs(n)}} vào list {{sleeps}} (n = 1, 2, 3 — thay cho Thread.sleep) rồi gọi lại. Tổng cộng tối đa **4 lần gọi**.
+- {{FINAL}}, hoặc đã retry đủ 3 lần: ném lại **chính exception** vừa bắt.`,
       starter: `enum ErrorKind { FINAL, RETRY }
 
-interface ErrorPolicy {
-    ErrorKind classify(String code);
+interface ErrorPolicy { ErrorKind classify(String code); }
+
+class ProviderException extends Exception {
+    final String code;
+    ProviderException(String code) { super(code); this.code = code; }
 }
 
 interface EcmConnector {
-    String fetch(String id) throws Exception;
-    ErrorPolicy getPolicy();
+    String fetch(String id) throws ProviderException;
+    ErrorPolicy policy();
 }
 
-class EcmService {
-    String fetchWithRetry(EcmConnector connector, String id) throws Exception {
-        // Hoàn thiện logic retry tối đa 3 lần
+class EfssPolicy implements ErrorPolicy {
+    public ErrorKind classify(String code) {
         throw new UnsupportedOperationException("TODO");
     }
 }
 
-// Cần implement EfssAdapter và OneDriveAdapter`,
+class OneDrivePolicy implements ErrorPolicy {
+    public ErrorKind classify(String code) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+
+class EcmService {
+    static final int MAX_RETRIES = 3;
+    static final long BASE_MS = 100, CAP_MS = 1000;
+    final List<Long> sleeps = new ArrayList<>();   // thời gian chờ trước mỗi lần retry (thay cho Thread.sleep)
+
+    static long backoffMs(int retry) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    String fetchWithRetry(EcmConnector connector, String id) throws ProviderException {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
       tests: `public class Main {
     static int passed = 0, total = 0;
-    static void check(String name, Runnable r) {
+    interface Body { void run() throws Exception; }
+    static void check(String name, Body r) {
         total++;
         try { r.run(); passed++; System.out.println("PASS " + name); }
         catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
     }
-
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    // Provider giả: trả lần lượt theo kịch bản; "ERR:X" nghĩa là ném ProviderException mã X
+    static class FakeConnector implements EcmConnector {
+        final ErrorPolicy policy; final String[] script; int calls;
+        FakeConnector(ErrorPolicy policy, String... script) { this.policy = policy; this.script = script; }
+        public String fetch(String id) throws ProviderException {
+            String r = script[Math.min(calls, script.length - 1)];
+            calls++;
+            if (r.startsWith("ERR:")) throw new ProviderException(r.substring(4));
+            return r + ":" + id;
+        }
+        public ErrorPolicy policy() { return policy; }
+    }
+    static ProviderException expectFail(EcmService s, EcmConnector c) {
+        try { s.fetchWithRetry(c, "doc-1"); } catch (ProviderException e) { return e; }
+        throw new AssertionError("expected ProviderException");
+    }
     public static void main(String[] args) {
-        check("EfssAdapter classifies correctly", () -> {
-            EfssAdapter adapter = new EfssAdapter(new HashMap<>());
-            ErrorPolicy p = adapter.getPolicy();
-            if (p.classify("RATE_LIMIT") != ErrorKind.RETRY) throw new AssertionError();
-            if (p.classify("PERMISSION_DENIED") != ErrorKind.FINAL) throw new AssertionError();
+        check("EfssPolicy maps codes, unknown is FINAL", () -> {
+            ErrorPolicy p = new EfssPolicy();
+            eq(ErrorKind.RETRY, p.classify("RATE_LIMIT"));
+            eq(ErrorKind.RETRY, p.classify("SERVER_BUSY"));
+            eq(ErrorKind.RETRY, p.classify("TOKEN_EXPIRED"));
+            eq(ErrorKind.FINAL, p.classify("PERMISSION_DENIED"));
+            eq(ErrorKind.FINAL, p.classify("FILE_NOT_FOUND"));
+            eq(ErrorKind.FINAL, p.classify("SOMETHING_NEW"));
         });
-
-        check("EcmService success on first try", () -> {
-            Map<String, String> data = new HashMap<>();
-            data.put("f1", "content1");
-            EfssAdapter adapter = new EfssAdapter(data);
-            EcmService service = new EcmService();
-            try {
-                if (!"content1".equals(service.fetchWithRetry(adapter, "f1"))) throw new AssertionError();
-            } catch (Exception e) { throw new RuntimeException(e); }
+        check("OneDrivePolicy maps Graph codes", () -> {
+            ErrorPolicy p = new OneDrivePolicy();
+            eq(ErrorKind.RETRY, p.classify("activityLimitReached"));
+            eq(ErrorKind.RETRY, p.classify("serviceNotAvailable"));
+            eq(ErrorKind.FINAL, p.classify("accessDenied"));
+            eq(ErrorKind.FINAL, p.classify("itemNotFound"));
+            eq(ErrorKind.FINAL, p.classify("RATE_LIMIT"));      // mã của provider khác
         });
-
-        check("EcmService retries on RETRY error and succeeds", () -> {
-            Map<String, String> data = new HashMap<>();
-            data.put("f2_1", "ERROR:RATE_LIMIT");
-            data.put("f2_2", "ERROR:TOKEN_EXPIRED");
-            data.put("f2_3", "content-recovered");
-            EfssAdapter adapter = new EfssAdapter(data);
-            EcmService service = new EcmService();
-            try {
-                String res = service.fetchWithRetry(adapter, "f2");
-                if (!"content-recovered".equals(res)) throw new AssertionError("Got: " + res);
-            } catch (Exception e) { throw new RuntimeException(e); }
+        check("backoff doubles then caps, no overflow", () -> {
+            eq(100L, EcmService.backoffMs(1));
+            eq(200L, EcmService.backoffMs(2));
+            eq(400L, EcmService.backoffMs(3));
+            eq(800L, EcmService.backoffMs(4));
+            eq(1000L, EcmService.backoffMs(5));
+            eq(1000L, EcmService.backoffMs(60));
         });
-
-        check("EcmService stops on FINAL error", () -> {
-            Map<String, String> data = new HashMap<>();
-            data.put("f3_1", "ERROR:PERMISSION_DENIED");
-            EfssAdapter adapter = new EfssAdapter(data);
-            EcmService service = new EcmService();
-            try {
-                service.fetchWithRetry(adapter, "f3");
-                throw new AssertionError("Should have failed");
-            } catch (Exception e) {
-                if (!e.getMessage().equals("PERMISSION_DENIED")) throw new AssertionError();
-            }
+        check("success on first call: 1 call, no sleep", () -> {
+            EcmService s = new EcmService();
+            FakeConnector c = new FakeConnector(new EfssPolicy(), "content");
+            eq("content:doc-1", s.fetchWithRetry(c, "doc-1"));
+            eq(1, c.calls);
+            eq(List.of(), s.sleeps);
         });
-
-        check("EcmService fails after 3 retries (4 total attempts)", () -> {
-            Map<String, String> data = new HashMap<>();
-            for(int i=1; i<=5; i++) data.put("f4_"+i, "ERROR:SERVER_BUSY");
-            EfssAdapter adapter = new EfssAdapter(data);
-            EcmService service = new EcmService();
-            try {
-                service.fetchWithRetry(adapter, "f4");
-                throw new AssertionError("Should have failed after 3 retries");
-            } catch (Exception e) {
-                if (!e.getMessage().equals("SERVER_BUSY")) throw new AssertionError();
-            }
+        check("retryable errors then success", () -> {
+            EcmService s = new EcmService();
+            FakeConnector c = new FakeConnector(new EfssPolicy(), "ERR:RATE_LIMIT", "ERR:TOKEN_EXPIRED", "content");
+            eq("content:doc-1", s.fetchWithRetry(c, "doc-1"));
+            eq(3, c.calls);
+            eq(List.of(100L, 200L), s.sleeps);
         });
-
+        check("FINAL stops immediately and rethrows same code", () -> {
+            EcmService s = new EcmService();
+            FakeConnector c = new FakeConnector(new EfssPolicy(), "ERR:PERMISSION_DENIED", "content");
+            eq("PERMISSION_DENIED", expectFail(s, c).code);
+            eq(1, c.calls);
+            eq(List.of(), s.sleeps);
+        });
+        check("gives up after 3 retries = 4 calls", () -> {
+            EcmService s = new EcmService();
+            FakeConnector c = new FakeConnector(new EfssPolicy(), "ERR:SERVER_BUSY");
+            eq("SERVER_BUSY", expectFail(s, c).code);
+            eq(4, c.calls);
+            eq(List.of(100L, 200L, 400L), s.sleeps);
+        });
+        check("retry then FINAL stops at the FINAL error", () -> {
+            EcmService s = new EcmService();
+            FakeConnector c = new FakeConnector(new OneDrivePolicy(), "ERR:activityLimitReached", "ERR:itemNotFound", "content");
+            eq("itemNotFound", expectFail(s, c).code);
+            eq(2, c.calls);
+            eq(List.of(100L), s.sleeps);
+        });
         System.out.println("RESULT " + passed + "/" + total);
     }
-}
-
-class EfssAdapter implements EcmConnector {
-    private final Map<String, String> data;
-    private final Map<String, Integer> count = new HashMap<>();
-    private final ErrorPolicy policy = code -> {
-        if (code.equals("RATE_LIMIT") || code.equals("TOKEN_EXPIRED") || code.equals("SERVER_BUSY")) return ErrorKind.RETRY;
-        return ErrorKind.FINAL;
-    };
-
-    EfssAdapter(Map<String, String> data) { this.data = data; }
-
-    public String fetch(String id) throws Exception {
-        int c = count.merge(id, 1, Integer::sum);
-        String val = data.get(id + "_" + c);
-        if (val == null) val = data.get(id);
-        if (val != null && val.startsWith("ERROR:")) throw new Exception(val.substring(6));
-        return val;
-    }
-    public ErrorPolicy getPolicy() { return policy; }
-}
-
-class OneDriveAdapter implements EcmConnector {
-    private final Map<String, String> data;
-    private final Map<String, Integer> count = new HashMap<>();
-    private final ErrorPolicy policy = code -> {
-        if (code.equals("throttledError") || code.equals("itemLocked")) return ErrorKind.RETRY;
-        return ErrorKind.FINAL;
-    };
-
-    OneDriveAdapter(Map<String, String> data) { this.data = data; }
-
-    public String fetch(String id) throws Exception {
-        int c = count.merge(id, 1, Integer::sum);
-        String val = data.get(id + "_" + c);
-        if (val == null) val = data.get(id);
-        if (val != null && val.startsWith("ERROR:")) throw new Exception(val.substring(6));
-        return val;
-    }
-    public ErrorPolicy getPolicy() { return policy; }
 }`,
       reference: `enum ErrorKind { FINAL, RETRY }
 
 interface ErrorPolicy { ErrorKind classify(String code); }
-interface EcmConnector { String fetch(String id) throws Exception; ErrorPolicy getPolicy(); }
 
-class EfssAdapter implements EcmConnector {
-    private final Map<String, String> data;
-    private final Map<String, Integer> count = new HashMap<>();
-    private final ErrorPolicy policy = code -> {
-        if (code.equals("RATE_LIMIT") || code.equals("TOKEN_EXPIRED") || code.equals("SERVER_BUSY")) return ErrorKind.RETRY;
-        return ErrorKind.FINAL;
-    };
-    EfssAdapter(Map<String, String> data) { this.data = data; }
-    public String fetch(String id) throws Exception {
-        int c = count.merge(id, 1, Integer::sum);
-        String val = data.get(id + "_" + c);
-        if (val == null) val = data.get(id);
-        if (val != null && val.startsWith("ERROR:")) throw new Exception(val.substring(6));
-        return val;
-    }
-    public ErrorPolicy getPolicy() { return policy; }
+class ProviderException extends Exception {
+    final String code;
+    ProviderException(String code) { super(code); this.code = code; }
 }
 
-class OneDriveAdapter implements EcmConnector {
-    private final Map<String, String> data;
-    private final Map<String, Integer> count = new HashMap<>();
-    private final ErrorPolicy policy = code -> {
-        if (code.equals("throttledError") || code.equals("itemLocked")) return ErrorKind.RETRY;
-        return ErrorKind.FINAL;
-    };
-    OneDriveAdapter(Map<String, String> data) { this.data = data; }
-    public String fetch(String id) throws Exception {
-        int c = count.merge(id, 1, Integer::sum);
-        String val = data.get(id + "_" + c);
-        if (val == null) val = data.get(id);
-        if (val != null && val.startsWith("ERROR:")) throw new Exception(val.substring(6));
-        return val;
+interface EcmConnector {
+    String fetch(String id) throws ProviderException;
+    ErrorPolicy policy();
+}
+
+class EfssPolicy implements ErrorPolicy {
+    private static final Set<String> RETRYABLE = Set.of("RATE_LIMIT", "SERVER_BUSY", "TOKEN_EXPIRED");
+    public ErrorKind classify(String code) {
+        return RETRYABLE.contains(code) ? ErrorKind.RETRY : ErrorKind.FINAL;   // mã lạ → FINAL
     }
-    public ErrorPolicy getPolicy() { return policy; }
+}
+
+class OneDrivePolicy implements ErrorPolicy {
+    private static final Set<String> RETRYABLE = Set.of("activityLimitReached", "serviceNotAvailable");
+    public ErrorKind classify(String code) {
+        return RETRYABLE.contains(code) ? ErrorKind.RETRY : ErrorKind.FINAL;
+    }
 }
 
 class EcmService {
-    String fetchWithRetry(EcmConnector connector, String id) throws Exception {
-        int maxRetries = 3;
-        for (int attempt = 0; attempt <= maxRetries; attempt++) {
+    static final int MAX_RETRIES = 3;
+    static final long BASE_MS = 100, CAP_MS = 1000;
+    final List<Long> sleeps = new ArrayList<>();
+
+    static long backoffMs(int retry) {
+        long d = BASE_MS;
+        for (int i = 1; i < retry && d < CAP_MS; i++) d *= 2;   // dừng nhân khi đã chạm trần → không tràn số
+        return Math.min(d, CAP_MS);
+    }
+
+    String fetchWithRetry(EcmConnector connector, String id) throws ProviderException {
+        int retries = 0;
+        while (true) {
             try {
                 return connector.fetch(id);
-            } catch (Exception e) {
-                String code = e.getMessage();
-                if (attempt < maxRetries && connector.getPolicy().classify(code) == ErrorKind.RETRY) {
-                    System.out.println("Retrying " + id + " (attempt " + (attempt + 1) + ")...");
-                    continue;
-                }
-                throw e;
+            } catch (ProviderException e) {
+                boolean retryable = connector.policy().classify(e.code) == ErrorKind.RETRY;
+                if (!retryable || retries >= MAX_RETRIES) throw e;   // ném lại chính exception gốc
+                retries++;
+                sleeps.add(backoffMs(retries));                      // production: Thread.sleep(random 0..backoff)
             }
         }
-        throw new Exception("Exceeded max retries");
     }
 }`,
       hints: [
-        'Dùng vòng lặp {{for (int attempt = 0; attempt <= maxRetries; attempt++)}} để quản lý số lần thử.',
-        'Trong khối {{catch}}, lấy mã lỗi từ {{e.getMessage()}} rồi đưa vào {{connector.getPolicy().classify(code)}}.',
-        'Chỉ retry khi kết quả là {{RETRY}} và {{attempt < maxRetries}}.'
+        'Hai policy chỉ cần một {{Set<String>}} các mã RETRY; không có trong set thì trả {{FINAL}} — mã lạ tự động thành FINAL.',
+        'backoffMs: bắt đầu từ {{BASE_MS}}, nhân đôi {{retry - 1}} lần nhưng dừng ngay khi đã ≥ {{CAP_MS}}, cuối cùng lấy {{Math.min}} với trần. Cách này không bao giờ tràn số.',
+        'fetchWithRetry: dùng vòng {{while (true)}} với biến đếm {{retries}}; trong {{catch}}, nếu không retry được thì {{throw e}}, ngược lại tăng {{retries}}, ghi {{backoffMs(retries)}} vào {{sleeps}} rồi lặp lại.',
       ],
-      explain: `Bài tập mô phỏng cách thiết kế Adapter kết hợp với chính sách xử lý lỗi linh hoạt. Việc tách biệt {{ErrorPolicy}} giúp logic retry của {{EcmService}} trở nên thuần khiết (agnostic) với từng provider. 
+      explain: `Lời giải tách ba trách nhiệm: **adapter/policy** biết ngôn ngữ lỗi của từng provider; **backoffMs** là hàm thuần (cùng input luôn cùng output) nên test dễ; **fetchWithRetry** chỉ biết FINAL/RETRY, không biết provider nào — thêm provider thứ ba chỉ cần thêm một policy.
+
+Vì sao ném lại **chính** exception gốc thay vì bọc trong exception mới như "Exceeded max retries"? Vì caller (và log) cần biết **mã lỗi cuối cùng** để quyết định: SERVER_BUSY sau 4 lần là provider đang sập, PERMISSION_DENIED là phải sửa cấu hình — hai hành động hoàn toàn khác nhau.
 
 Lỗi hay gặp:
-- Retry vô hạn hoặc retry cả lỗi {{FINAL}}: làm cạn kiệt tài nguyên hệ thống và có thể bị provider ban IP/account.
-- Không log lần retry: gây khó khăn khi debug vì không biết tại sao request thành công sau một khoảng thời gian dài.
-- Quên "map" mã lỗi: dẫn đến việc đối xử mọi lỗi như nhau.
+- Viết {{BASE_MS << (retry - 1)}} không giới hạn: với retry = 60, phép dịch làm tràn {{long}} thành số âm hoặc 0, {{Math.min}} trả về số âm — test "no overflow" bắt lỗi này.
+- Đếm nhầm: "retry 3 lần" là **4 lần gọi** (1 lần đầu + 3 lần thử lại). Viết {{for (attempt = 0; attempt < 3; ...)}} chỉ gọi 3 lần.
+- Mặc định mã lạ là RETRY: một lỗi vĩnh viễn mới xuất hiện sẽ bị retry khắp hệ thống mà không ai để ý.
+- Retry cả lỗi FINAL "cho chắc": phí quota, và với 403 có thể khiến provider khoá tài khoản.
 
-Trong thực tế, bạn nên dùng các thư viện như **Resilience4j** để có các tính năng cao cấp hơn như Circuit Breaker, Bulkhead và Rate Limiter.`
+Ở production, thay vì tự viết vòng lặp, thường dùng Resilience4j {{Retry}} (cấu hình {{maxAttempts}}, {{IntervalFunction.ofExponentialRandomBackoff}}, {{retryOnException}} dựa trên policy) kết hợp {{CircuitBreaker}}. Nhưng hiểu vòng lặp này giúp bạn cấu hình thư viện đúng.
+
+> Senior tip: Ghi lại thời gian chờ thay vì ngủ thật (như list {{sleeps}}) không chỉ để test nhanh — ở production, inject một {{Sleeper}}/{{Clock}} giúp bạn viết unit test cho mọi nhánh retry mà không làm CI chậm thêm hàng phút.`
     }
   ],
   check: [
     {
-      q: 'Trong phân loại lỗi integration, lỗi nào sau đây nên được đánh dấu là RETRYABLE?',
-      options: ['401 Unauthorized', '404 Not Found', '429 Too Many Requests', '400 Bad Request'],
+      q: 'Khi gọi API của provider ngoài, lỗi nào sau đây nên được xếp loại RETRY?',
+      options: ['401 Unauthorized lặp lại ngay cả sau khi đã lấy token mới', '404 Not Found', '429 Too Many Requests', '400 Bad Request'],
       answer: 2,
-      explain: `429 (Rate Limit) là lỗi tạm thời, thử lại sau một khoảng thời gian thường sẽ thành công. 401, 404, 400 là các lỗi "Final": cấu hình sai, file không tồn tại hoặc dữ liệu sai, retry sẽ không thay đổi kết quả.`
+      explain: `429 là lỗi tạm thời (chạm rate limit): chờ một lúc — tốt nhất theo header Retry-After — rồi thử lại thường sẽ thành công. 401 **sau khi đã refresh token** nghĩa là credential/cấu hình sai, retry bao nhiêu cũng vậy (chỉ có 401 lần đầu do token hết hạn mới đáng refresh rồi thử lại một lần). 404: file không tồn tại, gọi lại vẫn không tồn tại. 400: request sai định dạng, gửi lại y hệt vẫn sai.`
     },
     {
-      q: 'Tại sao nên thêm Jitter vào chiến lược Exponential Backoff?',
-      options: ['Để làm code chạy nhanh hơn', 'Để tránh việc hàng loạt client cùng retry một lúc gây quá tải server', 'Để giảm dung lượng bộ nhớ', 'Để bảo mật dữ liệu'],
+      q: 'Tại sao nên thêm jitter vào exponential backoff?',
+      options: ['Để mỗi lần retry nhanh hơn', 'Để tránh nhiều client gặp lỗi cùng lúc lại cùng retry đúng một thời điểm', 'Để giảm bộ nhớ dùng cho retry', 'Để tăng số lần retry tối đa'],
       answer: 1,
-      explain: `Nếu không có Jitter, hàng loạt client gặp lỗi cùng lúc sẽ có thời gian chờ giống hệt nhau và cùng "đập" vào server tại cùng một thời điểm ở lần retry tiếp theo, gây ra các đỉnh tải (spikes) làm server khó hồi phục.`
+      explain: `Không có jitter, mọi client lỗi ở cùng thời điểm sẽ chờ y hệt nhau (100ms, 200ms, 400ms…) và dội vào provider thành từng đợt, khiến provider khó hồi phục. Jitter rải các lần retry ra theo thời gian. Jitter không làm retry nhanh hơn (full jitter trung bình còn chờ ít hơn nhưng mục đích là phân tán, không phải tốc độ), không liên quan bộ nhớ, và không thay đổi số lần retry tối đa.`
+    },
+    {
+      q: 'Service upload file lên provider, request đầu bị timeout ở phía client. Retry ngay có rủi ro gì và xử lý thế nào?',
+      options: ['Không rủi ro gì vì timeout nghĩa là provider chưa nhận file', 'Có thể tạo file trùng vì request đầu có thể đã thành công; cần upload idempotent (ghi đè theo đường dẫn cố định hoặc idempotency key)', 'Rủi ro là provider khoá tài khoản ngay lập tức', 'Chỉ cần tăng timeout là hết rủi ro'],
+      answer: 1,
+      explain: `Timeout phía client chỉ có nghĩa là client không nhận được response — provider có thể đã lưu file xong. Retry thao tác không idempotent sẽ tạo bản trùng, nên phải thiết kế upload idempotent. "Không rủi ro" là sai vì giả định provider chưa nhận. Provider không khoá tài khoản vì một lần retry. Tăng timeout giảm tần suất nhưng không loại bỏ khả năng response bị mất trên đường về.`
     }
   ],
   related: ['devops-013', 'devops-018'],
-  tags: ['ECM', 'Adapter', 'Retry', 'Error Handling', 'Integration']
+  tags: ['Retry', 'Exponential backoff', 'Jitter', 'Adapter', 'Error Handling', 'Idempotency']
 },
 {
   id: 'lesson-devops-005',
   track: 'devops',
   order: 5,
-  title: 'Ingestion Loop: Kiểm soát Rate Limit với Token Bucket và Rotation Credential',
+  title: 'Vòng lặp ingestion: rate limit bằng token bucket và xoay vòng credential trước khi hết hạn',
   level: 'senior',
   minutes: 45,
   goals: [
-    'Cài đặt được thuật toán Token Bucket để kiểm soát lưu lượng (Rate Limiting) trong các tiến trình xử lý hàng loạt (Batch)',
-    'Thiết kế được cơ chế tự động rotate Credential từ Secret Store khi sắp hết hạn (Pre-emptive rotation)',
-    'Xây dựng được vòng lặp Ingestion bền bỉ, có khả năng tự điều chỉnh nhịp độ (Self-pacing) và xử lý quota theo cửa sổ thời gian',
+    'Cài đặt token bucket đúng: nạp token theo thời gian, giới hạn burst bằng capacity, không làm mất phần thời gian lẻ',
+    'Thiết kế xoay vòng credential chủ động (pre-emptive rotation) trước khi token hết hạn, kèm phương án dự phòng khi vẫn gặp 401',
+    'Xây vòng lặp ingestion theo chu kỳ: tự giảm nhịp khi hết quota, xử lý theo thứ tự, đánh dấu phần còn lại để chạy phiên sau',
   ],
-  body: `### Thử thách khi xử lý Ingestion quy mô lớn
-Trong các bài toán Ingestion (đẩy dữ liệu từ nguồn vào kho lưu trữ), chúng ta thường đối mặt với hai giới hạn "cứng" từ phía đích (Destination) mà nếu không xử lý khéo léo sẽ làm sập hệ thống hoặc gây mất mát dữ liệu:
+  body: `### Bài toán: đẩy hàng nghìn file trong nhiều giờ
+Một job ingestion (đọc dữ liệu từ nguồn rồi đẩy vào kho đích) chạy hàng giờ thường vướng hai giới hạn "cứng" từ phía đích:
 
-1. **Rate Limit (Quota)**: Các hệ thống như SharePoint, AWS S3 hay Google Drive chỉ cho phép bạn thực hiện một số lượng thao tác nhất định trong một đơn vị thời gian (ví dụ: 100 request/phút). Nếu đẩy quá nhanh, bạn sẽ nhận về lỗi {{429 Too Many Requests}}. Nếu tiếp tục vi phạm, tài khoản của bạn có thể bị tạm khóa (throttle) trong thời gian dài.
-2. **Credential Expiry (Hết hạn chứng thực)**: Để đảm bảo an toàn, các hệ thống Enterprise thường cấp các Temporary Credentials hoặc OAuth2 Access Token có thời hạn ngắn (ví dụ: 30 phút đến 1 tiếng). Một tiến trình batch chạy trong 5 tiếng sẽ chắc chắn gặp lỗi xác thực nếu không có cơ chế tự động làm mới (refresh) token.
+1. **Rate limit (quota)**: provider chỉ cho phép một số request trong một khoảng thời gian. SharePoint/OneDrive (Microsoft Graph) trả {{429 Too Many Requests}} kèm header {{Retry-After}}; Amazon S3 giới hạn theo prefix (khoảng 3.500 PUT và 5.500 GET mỗi giây) và trả {{503 Slow Down}} khi vượt. Cố đẩy nhanh hơn chỉ nhận thêm lỗi, và provider có thể throttle lâu hơn.
+2. **Credential hết hạn**: access token OAuth2 hoặc temporary credentials (ví dụ AWS STS) thường sống 15 phút đến 1 giờ. Job chạy 5 giờ chắc chắn sẽ gặp token hết hạn nếu không tự làm mới.
 
-### Kiểm soát lưu lượng với thuật toán Token Bucket
-Thuật toán **Token Bucket** là một giải pháp kinh điển và hiệu quả để thực thi Rate Limiting. Hãy tưởng tượng bạn có một cái xô (bucket) chứa các token:
-- **Nạp Token**: Cứ sau mỗi đơn vị thời gian (ví dụ: mỗi giây), một lượng token mới được nạp vào xô theo tốc độ quy định (Refill Rate). Xô có một dung lượng tối đa (Capacity) để tránh việc tích lũy quá nhiều token khi hệ thống rảnh rỗi.
-- **Tiêu thụ Token**: Để thực hiện một hành động (ví dụ: upload 1 file), hệ thống phải lấy ra 1 token từ xô. Nếu xô rỗng, hệ thống phải dừng lại và chờ cho đến khi có token mới được nạp vào.
+### Token bucket: cơ chế từng bước
+Hình dung một cái xô chứa token:
+- Xô có **capacity** C (số token tối đa). Lúc đầu xô đầy.
+- Cứ mỗi **refillIntervalMs** thì nạp thêm **refillTokens** token, nhưng không vượt quá C.
+- Mỗi request phải lấy 1 token. Xô rỗng thì request phải chờ (hoặc bị từ chối).
 
-**Tại sao chọn Token Bucket thay vì Fixed Window?**
-Trong Fixed Window (ví dụ: cho phép 60 request mỗi phút từ giây thứ 0 đến giây thứ 59), nếu bạn gửi 60 request vào giây thứ 59 và 60 request khác vào giây thứ 60, thực tế server phải chịu 120 request trong vòng 2 giây — vượt quá năng lực xử lý. Token Bucket giải quyết được vấn đề này bằng cách nạp token liên tục theo thời gian, đồng thời cho phép một lượng "Burst" (đột biến) nhất định bằng dung lượng của xô.
+Ta không cần một thread chạy nền để "nạp" token. Cách chuẩn là **nạp lười (lazy refill)**: mỗi lần có request, tính xem từ lần nạp trước đã trôi qua **bao nhiêu chu kỳ trọn vẹn**, rồi cộng token tương ứng:
 
-### Pre-emptive Rotation: Đổi mới Credential trước khi "chết"
-Sai lầm phổ biến của các dev Junior là đợi đến khi nhận lỗi {{401 Unauthorized}} mới đi lấy token mới. Điều này làm gián đoạn tiến trình và khiến logic xử lý lỗi trở nên phức tạp.
+~~~java
+long periods = (now - lastRefill) / refillIntervalMs;      // số chu kỳ trọn vẹn đã qua
+if (periods > 0) {
+    tokens = Math.min(capacity, tokens + periods * refillTokens);
+    lastRefill += periods * refillIntervalMs;              // KHÔNG gán lastRefill = now
+}
+~~~
 
-Một kiến trúc Senior sử dụng **Pre-emptive Rotation (Xoay vòng chủ động)**:
-- Trước mỗi chu kỳ xử lý (Cycle), hệ thống kiểm tra thời gian hết hạn (TTL) của token hiện tại.
-- Nếu $TTL < threshold$ (ngưỡng an toàn, ví dụ: 2-5 phút), hệ thống sẽ chủ động gọi Secret Provider (như HashiCorp Vault, AWS Secrets Manager) để lấy token mới.
-- Khoảng thời gian 2-5 phút dự phòng giúp chúng ta đối phó với độ trễ mạng hoặc lỗi tạm thời của chính Secret Store mà không làm dừng tiến trình chính.
+Vì sao {{lastRefill += periods × interval}} mà không phải {{lastRefill = now}}? Giả sử interval 1000ms, request đến ở 1500ms: có 1 chu kỳ trọn, nạp 1 token. Nếu gán {{lastRefill = 1500}} thì 500ms lẻ bị **vứt mất**: token tiếp theo phải đợi tới 2500ms thay vì 2000ms. Lặp lại nhiều lần, tốc độ thực tế thấp hơn hẳn cấu hình.
 
-### Thiết kế Vòng lặp Ingestion (The Loop)
-Một vòng lặp Ingestion bền bỉ thường được tổ chức theo các chu kỳ (Cycles). Mỗi chu kỳ thực hiện các bước:
+### Vì sao token bucket thay vì fixed window?
+**Fixed window** đếm request trong từng phút cố định (từ giây 0 đến 59). Client gửi 60 request ở giây 59 và 60 request nữa ở giây 60 (cửa sổ mới): cả hai cửa sổ đều hợp lệ, nhưng thực tế provider nhận **120 request trong 2 giây** — gấp đôi giới hạn. Token bucket không có "ranh giới" như vậy: trong bất kỳ khoảng thời gian T nào, số request tối đa là {{C + tốc độ nạp × T}}. Capacity cho phép một **burst có giới hạn** (ví dụ lúc vừa khởi động), sau đó tốc độ bị ép về tốc độ nạp.
 
-1. **Safety Check**: Kiểm tra và rotate credential nếu sắp hết hạn.
-2. **Pacing**: Kiểm tra Token Bucket. Nếu không đủ quota, vòng lặp sẽ ngủ (sleep) hoặc bỏ qua lượt này để chờ cửa sổ thời gian tiếp theo.
-3. **Batch Execution**: Thực hiện xử lý một nhóm bản ghi (ví dụ: 10 file).
-4. **Advisory Handling**: Nếu provider phản hồi một "Advisory Delay" (ví dụ: header {{Retry-After}}), vòng lặp phải tôn trọng và tạm dừng lâu hơn.
-5. **Progress Persistence**: Lưu lại trạng thái (Checkpoint) sau mỗi chu kỳ để nếu có sự cố, hệ thống có thể tiếp tục từ điểm dừng gần nhất.
+| Thuật toán | Ưu điểm | Nhược điểm |
+|---|---|---|
+| Fixed window | Đơn giản, một bộ đếm | Burst gấp đôi ở ranh giới cửa sổ |
+| Sliding window log | Chính xác | Lưu timestamp từng request, tốn bộ nhớ |
+| Token bucket | Burst có giới hạn, O(1) bộ nhớ | Phải chọn capacity hợp lý |
 
-Nếu sau một số lượng chu kỳ quy định mà vẫn còn dữ liệu chưa được xử lý, chúng ta nên đánh dấu các bản ghi đó là {{SKIPPED}} để xử lý ở phiên sau, thay vì cố gắng chạy quá lâu làm ảnh hưởng đến các tiến trình khác trên cùng một server.
+### Xoay vòng credential chủ động
+Cách ngây thơ là đợi nhận {{401 Unauthorized}} rồi mới lấy token mới: batch đang chạy dở bị lỗi, phải có logic retry riêng, và nếu nhiều thread cùng gặp 401 thì cùng lao đi xin token mới.
+
+Cách tốt hơn — **pre-emptive rotation**: trước mỗi chu kỳ, kiểm tra thời gian còn lại của token. Nếu {{expiresAt − now < ngưỡng an toàn}} (ví dụ 2 phút) thì chủ động lấy token mới từ secret store / identity provider (HashiCorp Vault, AWS Secrets Manager, Azure AD…). Ngưỡng 2–5 phút dự phòng cho độ trễ mạng, lệch đồng hồ giữa các máy, và cho một chu kỳ xử lý dài.
+
+Lưu ý: rotation chủ động **không thay thế** việc xử lý 401. Token vẫn có thể bị thu hồi (revoke) trước hạn; khi gặp 401, hãy lấy token mới và thử lại **đúng một lần**.
+
+### Vòng lặp ingestion theo chu kỳ
+1. **Kiểm tra credential**: còn ít hơn ngưỡng thì lấy token mới.
+2. **Xử lý theo quota**: lấy file theo thứ tự, mỗi file tiêu 1 token. Hết token thì **dừng chu kỳ này** và chờ chu kỳ sau — không quay vòng gọi {{tryConsume}} vô ích.
+3. **Tôn trọng Retry-After**: nếu provider trả 429 kèm Retry-After, chờ ít nhất khoảng đó.
+4. **Checkpoint**: lưu tiến độ sau mỗi chu kỳ để job chết giữa chừng có thể chạy tiếp từ chỗ dừng.
+5. **Giới hạn số chu kỳ**: hết số chu kỳ cho phép mà còn file thì đánh dấu {{SKIPPED}} để phiên sau xử lý, thay vì chạy mãi chiếm tài nguyên.
+
+### Bẫy production hay gặp
+- **Mỗi instance một bucket riêng**: quota là của **tài khoản** tại provider, nhưng 4 pod mỗi pod một bucket 10 req/phút thì tổng là 40 — vẫn bị 429. Chia quota cho số instance, hoặc dùng bucket chung (ví dụ trên Redis).
+- **Dùng đồng hồ hệ thống cho bucket**: {{System.currentTimeMillis()}} có thể nhảy lùi khi NTP chỉnh giờ; dùng {{System.nanoTime()}} (đơn điệu) để đo khoảng thời gian.
+- **Đọc nguồn nhanh hơn ghi đích**: dữ liệu dồn trong bộ nhớ tới OOM. Đặt một {{BlockingQueue}} có giới hạn giữa luồng đọc và luồng ghi để tạo **backpressure** tự nhiên.
 
 ### Liên hệ phỏng vấn
-Interviewer: "Bạn xử lý thế nào để một ứng dụng Java chạy batch dài hạn luôn có token hợp lệ mà không bị 401?"
-Bạn: "Tôi triển khai cơ chế Pre-emptive Rotation. Tôi không đợi lỗi 401 mới refresh mà sẽ kiểm tra TTL của token trước mỗi batch. Tôi sử dụng một ngưỡng an toàn (Safety Buffer) khoảng 2 phút. Nếu token sắp hết hạn, tôi sẽ lấy token mới từ Secret Store. Ngoài ra, tôi kết hợp với Token Bucket để đảm bảo tốc độ đẩy dữ liệu luôn nằm trong ngưỡng cho phép của provider, tránh bị throttle."
+Câu hỏi hay gặp: "Job chạy 5 tiếng gọi API có quota và token sống 1 giờ, bạn thiết kế thế nào?" Trả lời: token bucket (giải thích lazy refill, capacity = burst), quota chia theo số instance; rotation chủ động với ngưỡng an toàn + fallback refresh-một-lần khi 401; vòng lặp theo chu kỳ có checkpoint; tôn trọng Retry-After. Bài tập dưới đây cài token bucket và vòng lặp đó.
 
-> Senior tip: Khi triển khai Ingestion quy mô lớn, hãy chú ý đến vấn đề **Backpressure**. Nếu tốc độ đọc dữ liệu từ nguồn (Source) nhanh hơn tốc độ đẩy vào đích (Destination), bộ nhớ của ứng dụng sẽ nhanh chóng bị đầy. Sử dụng một Blocking Queue với kích thước giới hạn giữa luồng đọc và luồng ghi là cách tốt nhất để tạo ra áp lực ngược tự nhiên, giữ cho hệ thống ổn định dưới tải cao.`,
+> Senior tip: Đặt tốc độ của bucket thấp hơn quota thật khoảng 10–20%. Provider thường đếm theo cách riêng (cửa sổ lệch pha với bạn, tính cả request retry), nên chạy sát 100% quota gần như chắc chắn thỉnh thoảng nhận 429.`,
   exercises: [
     {
-      title: 'IngestionLoop: TokenBucket + Secret Rotation',
-      prompt: `Hoàn thiện hệ thống {{IngestionLoop}} với các yêu cầu:
-1. **TokenBucket**: Khởi tạo với 10 token, tốc độ nạp 10 token mỗi phút. Hàm {{tryConsume()}} trả về true nếu đủ token.
-2. **SecretProvider**: Cung cấp {{getSecret(key)}} trả về một object chứa {{token}} và {{expiryMs}}.
-3. **IngestionLoop**: 
-- Có 25 file cần xử lý, chạy tối đa trong 3 chu kỳ (Cycles).
-- Mỗi chu kỳ:
-- Kiểm tra token từ {{SecretProvider}}. Nếu expiry còn lại **< 2 phút** (120,000ms), phải gọi {{getSecret}} để refresh.
-- Kiểm tra Quota: Nếu không đủ token trong {{TokenBucket}}, phải đợi (mô phỏng bằng log) cho đến cửa sổ tiếp theo. Trong bài tập này, nếu không đủ token, hãy thoát chu kỳ hiện tại và chờ chu kỳ sau.
-- Mỗi file xử lý thành công: {{fetch -> upload -> stateChange}}.
-- Kết thúc 3 chu kỳ, nếu vẫn còn file chưa xử lý, đánh dấu các file đó là {{SKIPPED}}.`,
-      starter: `class TokenBucket {
-    private int tokens;
-    private long lastRefill;
-    private final int capacity = 10;
-    private final int refillRate = 10; // per minute
+      title: 'TokenBucket nạp lười + IngestionLoop có xoay vòng credential',
+      prompt: `Mọi thời gian tính bằng mili-giây và được **truyền vào** (không đọc đồng hồ thật) để test xác định.
 
-    TokenBucket(long now) {
-        this.tokens = capacity;
+**1. {{TokenBucket(capacity, refillTokens, refillIntervalMs, now)}}** — lúc tạo, xô đầy ({{capacity}} token), mốc nạp là {{now}}.
+- {{tryConsume(now)}}: nạp lười rồi lấy 1 token nếu còn (trả true), hết token thì trả false.
+- {{available(now)}}: nạp lười rồi trả số token hiện có.
+- Nạp lười: số chu kỳ trọn {{periods = (now − lastRefill) / refillIntervalMs}}; nếu > 0 thì {{tokens = min(capacity, tokens + periods × refillTokens)}} và {{lastRefill += periods × refillIntervalMs}} (giữ lại phần thời gian lẻ).
+
+**2. {{IngestionLoop.run(secrets, bucket, files, startTime)}}** — chạy {{MAX_CYCLES = 3}} chu kỳ, chu kỳ thứ k (k = 0, 1, 2) diễn ra tại {{now = startTime + k × CYCLE_MS}} ({{CYCLE_MS = 60000}}):
+- Credential: nếu chưa có secret, hoặc {{secret.expiresAtMs − now < ROTATE_BEFORE_MS}} ({{120000}}), gọi {{secrets.fetch("ingest", now)}} để lấy secret mới.
+- Duyệt {{files}} theo thứ tự; bỏ qua file không ở trạng thái {{NEW}}. Với mỗi file NEW: nếu {{bucket.tryConsume(now)}} thì đặt {{state = "PROCESSED"}} và {{token = secret.token}}; nếu hết token thì **dừng chu kỳ này** (break).
+- Sau 3 chu kỳ, mọi file còn {{NEW}} chuyển thành {{SKIPPED}}.`,
+      starter: `class TokenBucket {
+    private final long capacity, refillTokens, refillIntervalMs;
+    private long tokens, lastRefill;
+
+    TokenBucket(long capacity, long refillTokens, long refillIntervalMs, long now) {
+        this.capacity = capacity;
+        this.refillTokens = refillTokens;
+        this.refillIntervalMs = refillIntervalMs;
+        this.tokens = capacity;      // lúc đầu xô đầy
         this.lastRefill = now;
     }
 
     boolean tryConsume(long now) {
-        // Refill tokens based on time passed since lastRefill
-        // 1 minute = 60,000ms
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    long available(long now) {
         throw new UnsupportedOperationException("TODO");
     }
 }
 
-class IngestionLoop {
-    void run(SecretProvider secrets, List<File> files, long startTime) {
-        // Chạy tối đa 3 cycle, mỗi cycle xử lý file dựa trên TokenBucket
-        // Rotate secret nếu expiry < 2 mins
-        // Đánh dấu SKIPPED nếu hết cycle
-    }
+class Secret {
+    final String token;
+    final long expiresAtMs;          // thời điểm hết hạn (cùng thang thời gian với now)
+    Secret(String token, long expiresAtMs) { this.token = token; this.expiresAtMs = expiresAtMs; }
 }
 
 interface SecretProvider {
-    Secret getSecret(String key);
+    Secret fetch(String key, long now);
 }
 
-class Secret {
-    String token;
-    long expiryMs;
-    Secret(String t, long e) { token = t; expiryMs = e; }
+class FileItem {
+    final String id;
+    String state = "NEW";            // NEW | PROCESSED | SKIPPED
+    String token;                    // token đã dùng để xử lý file
+    FileItem(String id) { this.id = id; }
 }
 
-class File {
-    String id;
-    String state = "NEW";
-    File(String id) { this.id = id; }
+class IngestionLoop {
+    static final int MAX_CYCLES = 3;
+    static final long CYCLE_MS = 60_000, ROTATE_BEFORE_MS = 120_000;
+
+    void run(SecretProvider secrets, TokenBucket bucket, List<FileItem> files, long startTime) {
+        throw new UnsupportedOperationException("TODO");
+    }
 }`,
       tests: `public class Main {
     static int passed = 0, total = 0;
@@ -1111,220 +1176,201 @@ class File {
         try { r.run(); passed++; System.out.println("PASS " + name); }
         catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
     }
-
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static List<FileItem> files(int n) {
+        List<FileItem> l = new ArrayList<>();
+        for (int i = 0; i < n; i++) l.add(new FileItem("f" + i));
+        return l;
+    }
+    static long count(List<FileItem> l, String state) { return l.stream().filter(f -> f.state.equals(state)).count(); }
     public static void main(String[] args) {
-        check("TokenBucket refills correctly", () -> {
-            TokenBucket tb = new TokenBucket(0);
-            for(int i=0; i<10; i++) if(!tb.tryConsume(0)) throw new AssertionError();
-            if(tb.tryConsume(0)) throw new AssertionError("Should be empty");
-            if(!tb.tryConsume(60000)) throw new AssertionError("Should have refilled 10");
+        check("bucket: burst = capacity, then empty until a full interval", () -> {
+            TokenBucket b = new TokenBucket(10, 10, 60_000, 0);
+            for (int i = 0; i < 10; i++) eq(true, b.tryConsume(0));
+            eq(false, b.tryConsume(0));
+            eq(false, b.tryConsume(59_999));
+            eq(true, b.tryConsume(60_000));
+            eq(9L, b.available(60_000));
         });
-
-        check("IngestionLoop rotates secret before expiry", () -> {
-            final int[] calls = {0};
-            SecretProvider sp = key -> {
-                calls[0]++;
-                return new Secret("t"+calls[0], 150000); // 2.5 mins
-            };
-            List<File> files = new ArrayList<>();
-            for(int i=0; i<5; i++) files.add(new File("f"+i));
-            
-            IngestionLoop loop = new IngestionLoop();
-            // Start at 0, expiry at 150000. After 1 min (60000), expiry is 90000 (< 120000), should rotate.
-            loop.run(sp, files, 0); 
-            if (calls[0] < 2) throw new AssertionError("Should rotate secret. Calls: " + calls[0]);
+        check("bucket: keeps the leftover part of an interval", () -> {
+            TokenBucket b = new TokenBucket(1, 1, 1_000, 0);
+            eq(true, b.tryConsume(0));
+            eq(true, b.tryConsume(1_500));     // 1 chu kỳ trọn
+            eq(false, b.tryConsume(1_999));
+            eq(true, b.tryConsume(2_000));     // mốc nạp là 1000 → 2000, không phải 1500 → 2500
         });
-
-        check("IngestionLoop respects TokenBucket quota", () -> {
-            SecretProvider sp = key -> new Secret("t", 1000000);
-            List<File> files = new ArrayList<>();
-            for(int i=0; i<25; i++) files.add(new File("f"+i));
-            
-            IngestionLoop loop = new IngestionLoop();
-            loop.run(sp, files, 0); 
-            
-            long processed = files.stream().filter(f -> f.state.equals("PROCESSED")).count();
-            // Max 10 tokens at start + 10 at 60s + 10 at 120s = 30. 
-            // But we only have 25 files.
-            if (processed != 25) throw new AssertionError("Processed: " + processed);
+        check("bucket: never exceeds capacity after long idle", () -> {
+            TokenBucket b = new TokenBucket(5, 5, 1_000, 0);
+            for (int i = 0; i < 5; i++) b.tryConsume(0);
+            eq(5L, b.available(1_000_000));
         });
-
-        check("IngestionLoop marks SKIPPED if quota exceeded after 3 cycles", () -> {
-             SecretProvider sp = key -> new Secret("t", 1000000);
-             List<File> files = new ArrayList<>();
-             for(int i=0; i<50; i++) files.add(new File("f"+i)); // 50 files
-             
-             IngestionLoop loop = new IngestionLoop();
-             loop.run(sp, files, 0); 
-             
-             long processed = files.stream().filter(f -> f.state.equals("PROCESSED")).count();
-             long skipped = files.stream().filter(f -> f.state.equals("SKIPPED")).count();
-             // Cycle 1 (0s): 10 tokens -> 10 processed
-             // Cycle 2 (60s): 10 tokens -> 10 processed
-             // Cycle 3 (120s): 10 tokens -> 10 processed
-             // Total 30 processed. 20 skipped.
-             if (processed != 30) throw new AssertionError("Processed: " + processed);
-             if (skipped != 20) throw new AssertionError("Skipped: " + skipped);
+        check("loop: 25 files fit in 3 cycles of 10 tokens", () -> {
+            List<FileItem> fs = files(25);
+            new IngestionLoop().run((k, now) -> new Secret("t", now + 10_000_000), new TokenBucket(10, 10, 60_000, 0), fs, 0);
+            eq(25L, count(fs, "PROCESSED"));
+            eq(0L, count(fs, "SKIPPED"));
         });
-
+        check("loop: 50 files -> first 30 processed in order, 20 skipped", () -> {
+            List<FileItem> fs = files(50);
+            new IngestionLoop().run((k, now) -> new Secret("t", now + 10_000_000), new TokenBucket(10, 10, 60_000, 0), fs, 0);
+            eq(30L, count(fs, "PROCESSED"));
+            eq(20L, count(fs, "SKIPPED"));
+            eq("PROCESSED", fs.get(29).state);
+            eq("SKIPPED", fs.get(30).state);
+        });
+        check("loop: rotates only when < 2 min left, new token used afterwards", () -> {
+            int[] calls = {0};
+            SecretProvider sp = (k, now) -> { calls[0]++; return new Secret("t" + calls[0], now + 200_000); };
+            List<FileItem> fs = files(6);
+            new IngestionLoop().run(sp, new TokenBucket(2, 2, 60_000, 0), fs, 0);
+            eq(2, calls[0]);                   // t=0 lấy t1 (hết hạn 200s); t=60s còn 140s; t=120s còn 80s → lấy t2
+            List<String> used = new ArrayList<>();
+            for (FileItem f : fs) used.add(f.token);
+            eq(List.of("t1", "t1", "t1", "t1", "t2", "t2"), used);
+        });
+        check("loop: long-lived secret is fetched only once", () -> {
+            int[] calls = {0};
+            SecretProvider sp = (k, now) -> { calls[0]++; return new Secret("x", now + 3_600_000); };
+            List<FileItem> fs = files(3);
+            new IngestionLoop().run(sp, new TokenBucket(10, 10, 60_000, 0), fs, 0);
+            eq(1, calls[0]);
+            eq(3L, count(fs, "PROCESSED"));
+        });
+        check("loop: rotation compares expiry with now (startTime != 0)", () -> {
+            int[] calls = {0};
+            SecretProvider sp = (k, now) -> { calls[0]++; return new Secret("t" + calls[0], now + 200_000); };
+            List<FileItem> fs = files(6);
+            new IngestionLoop().run(sp, new TokenBucket(2, 2, 60_000, 500_000), fs, 500_000);
+            eq(2, calls[0]);                   // lúc 620000 secret t1 (hết hạn 700000) chỉ còn 80s
+            eq("t2", fs.get(5).token);
+        });
+        check("loop: files already processed are not touched again", () -> {
+            List<FileItem> fs = files(3);
+            fs.get(0).state = "PROCESSED"; fs.get(0).token = "old";
+            new IngestionLoop().run((k, now) -> new Secret("t", now + 10_000_000), new TokenBucket(1, 1, 60_000, 0), fs, 0);
+            eq("old", fs.get(0).token);
+            eq(List.of("PROCESSED", "PROCESSED", "PROCESSED"), List.of(fs.get(0).state, fs.get(1).state, fs.get(2).state));
+        });
         System.out.println("RESULT " + passed + "/" + total);
     }
-}
-
-class TokenBucket {
-    private int tokens;
-    private long lastRefill;
-    private final int capacity = 10;
-    private final int refillRate = 10; 
-
-    TokenBucket(long now) {
-        this.tokens = capacity;
-        this.lastRefill = now;
-    }
-
-    boolean tryConsume(long now) {
-        long delta = now - lastRefill;
-        if (delta >= 60000) {
-            int toAdd = (int) (delta / 60000) * refillRate;
-            tokens = Math.min(capacity, tokens + toAdd);
-            lastRefill = now;
-        }
-        if (tokens > 0) {
-            tokens--;
-            return true;
-        }
-        return false;
-    }
-}
-
-class IngestionLoop {
-    void run(SecretProvider secrets, List<File> files, long startTime) {
-        TokenBucket bucket = new TokenBucket(startTime);
-        Secret currentSecret = secrets.getSecret("main");
-        long currentTime = startTime;
-
-        for (int cycle = 0; cycle < 3; cycle++) {
-            // Check rotation
-            long remaining = currentSecret.expiryMs - (currentTime - startTime);
-            if (remaining < 120000) {
-                currentSecret = secrets.getSecret("main");
-            }
-
-            for (File f : files) {
-                if (f.state.equals("NEW")) {
-                    if (bucket.tryConsume(currentTime)) {
-                        f.state = "PROCESSED";
-                    }
-                }
-            }
-            currentTime += 60000; // Next cycle after 1 min
-        }
-
-        for (File f : files) {
-            if (f.state.equals("NEW")) f.state = "SKIPPED";
-        }
-    }
-}
-
-interface SecretProvider { Secret getSecret(String key); }
-class Secret {
-    String token; long expiryMs;
-    Secret(String t, long e) { token = t; expiryMs = e; }
 }`,
       reference: `class TokenBucket {
-    private int tokens;
-    private long lastRefill;
-    private final int capacity = 10;
-    private final int refillRate = 10; 
+    private final long capacity, refillTokens, refillIntervalMs;
+    private long tokens, lastRefill;
 
-    TokenBucket(long now) {
+    TokenBucket(long capacity, long refillTokens, long refillIntervalMs, long now) {
+        this.capacity = capacity;
+        this.refillTokens = refillTokens;
+        this.refillIntervalMs = refillIntervalMs;
         this.tokens = capacity;
         this.lastRefill = now;
     }
 
-    boolean tryConsume(long now) {
-        long delta = now - lastRefill;
-        if (delta >= 60000) {
-            int toAdd = (int) (delta / 60000) * refillRate;
-            tokens = Math.min(capacity, tokens + toAdd);
-            lastRefill = now;
+    private void refill(long now) {
+        long periods = (now - lastRefill) / refillIntervalMs;   // số chu kỳ trọn vẹn
+        if (periods > 0) {
+            tokens = Math.min(capacity, tokens + periods * refillTokens);
+            lastRefill += periods * refillIntervalMs;            // giữ phần lẻ cho lần sau
         }
-        if (tokens > 0) {
-            tokens--;
-            return true;
-        }
-        return false;
     }
+
+    boolean tryConsume(long now) {
+        refill(now);
+        if (tokens == 0) return false;
+        tokens--;
+        return true;
+    }
+
+    long available(long now) {
+        refill(now);
+        return tokens;
+    }
+}
+
+class Secret {
+    final String token;
+    final long expiresAtMs;
+    Secret(String token, long expiresAtMs) { this.token = token; this.expiresAtMs = expiresAtMs; }
+}
+
+interface SecretProvider {
+    Secret fetch(String key, long now);
+}
+
+class FileItem {
+    final String id;
+    String state = "NEW";
+    String token;
+    FileItem(String id) { this.id = id; }
 }
 
 class IngestionLoop {
-    void run(SecretProvider secrets, List<File> files, long startTime) {
-        TokenBucket bucket = new TokenBucket(startTime);
-        Secret currentSecret = secrets.getSecret("main");
-        long currentTime = startTime;
+    static final int MAX_CYCLES = 3;
+    static final long CYCLE_MS = 60_000, ROTATE_BEFORE_MS = 120_000;
 
-        for (int cycle = 0; cycle < 3; cycle++) {
-            // Pre-emptive Secret Rotation
-            long elapsed = currentTime - startTime;
-            long timeUntilExpiry = currentSecret.expiryMs - elapsed;
-            if (timeUntilExpiry < 120000) { // < 2 mins
-                currentSecret = secrets.getSecret("main");
+    void run(SecretProvider secrets, TokenBucket bucket, List<FileItem> files, long startTime) {
+        Secret secret = null;
+        for (int cycle = 0; cycle < MAX_CYCLES; cycle++) {
+            long now = startTime + cycle * CYCLE_MS;
+            // 1. Rotation chủ động: còn < 2 phút thì lấy secret mới
+            if (secret == null || secret.expiresAtMs - now < ROTATE_BEFORE_MS) {
+                secret = secrets.fetch("ingest", now);
             }
-
-            // Process batch based on quota
-            for (File f : files) {
-                if ("NEW".equals(f.state)) {
-                    if (bucket.tryConsume(currentTime)) {
-                        f.state = "PROCESSED";
-                    }
-                }
+            // 2. Xử lý theo quota, theo thứ tự; hết token thì nhường cho chu kỳ sau
+            for (FileItem f : files) {
+                if (!"NEW".equals(f.state)) continue;
+                if (!bucket.tryConsume(now)) break;
+                f.state = "PROCESSED";
+                f.token = secret.token;
             }
-            
-            currentTime += 60000; 
         }
-
-        // Final state cleanup
-        for (File f : files) {
-            if ("NEW".equals(f.state)) {
-                f.state = "SKIPPED";
-            }
+        // 3. Phần còn lại để phiên sau
+        for (FileItem f : files) {
+            if ("NEW".equals(f.state)) f.state = "SKIPPED";
         }
     }
-}
-
-interface SecretProvider { Secret getSecret(String key); }
-class Secret { String token; long expiryMs; Secret(String t, long e) { token = t; expiryMs = e; } }
-class File { String id; String state = "NEW"; File(String id) { this.id = id; } }`,
+}`,
       hints: [
-        'Token Bucket: Tính {{delta = now - lastRefill}}, nếu đủ 60,000ms thì nạp thêm {{refillRate}} token (không vượt {{capacity}}).',
-        'Rotation: Tính thời gian còn lại của token. Nếu {{expiry - elapsed < 120000}} thì gọi provider.',
-        'Kết thúc loop: Duyệt lại danh sách file, file nào vẫn là {{NEW}} thì chuyển sang {{SKIPPED}}.'
+        'Viết một hàm private {{refill(now)}} dùng chung cho {{tryConsume}} và {{available}}; nhớ cộng {{lastRefill += periods * refillIntervalMs}} thay vì gán {{lastRefill = now}}.',
+        'Trong {{run}}, tính {{now = startTime + cycle * CYCLE_MS}} cho từng chu kỳ; giữ biến {{secret}} bên ngoài vòng lặp, chỉ gọi {{fetch}} khi null hoặc {{expiresAtMs - now < ROTATE_BEFORE_MS}}.',
+        'Khi {{tryConsume}} trả false thì {{break}} — các chu kỳ sau bucket sẽ có token mới. Cuối cùng một vòng duyệt chuyển NEW thành SKIPPED.',
       ],
-      explain: `Thiết kế này giải quyết hai vấn đề sống còn của các hệ thống tích hợp: Quota và Auth. 
+      explain: `**TokenBucket**: nạp lười chỉ làm việc khi có người hỏi, nên không cần thread nền, chi phí O(1). Điểm tinh tế là giữ phần thời gian lẻ: test "keeps the leftover" kiểm tra đúng điều này — gán {{lastRefill = now}} sẽ làm request ở 2000ms bị từ chối. Phép {{Math.min(capacity, ...)}} giới hạn burst: nghỉ 1000 giây cũng chỉ tích được 5 token chứ không phải 5000.
+
+**IngestionLoop**: thứ tự các bước trong một chu kỳ là có chủ đích — kiểm tra credential **trước** khi xử lý, để không file nào được xử lý bằng token sắp hết hạn. Trong test rotation: lúc 0s lấy t1 (hết hạn ở 200s); lúc 60s còn 140s ≥ 120s nên giữ t1; lúc 120s còn 80s < 120s nên lấy t2 — vì vậy 4 file đầu dùng t1, 2 file cuối dùng t2.
 
 Lỗi hay gặp:
-- Quên nạp lại token trong Token Bucket: khiến hệ thống dừng hẳn sau khi dùng hết xô đầu tiên.
-- Tính toán thời gian expiry sai: dẫn đến việc rotate quá muộn (token đã chết) hoặc quá sớm (spam Secret Store).
-- Không handle các bản ghi còn dư: bản ghi treo ở trạng thái "NEW" mà không biết là do lỗi hay do chưa kịp xử lý.
+- So sánh thời điểm hết hạn với thời gian **đã trôi qua từ lúc bắt đầu** thay vì với {{now}}: chạy đúng khi startTime = 0 nhưng sai khi startTime khác 0 (test "startTime != 0" bắt lỗi này: lúc 620000, secret hết hạn ở 700000 chỉ còn 80 giây).
+- Gọi {{fetch}} ở mọi chu kỳ: tốn request tới secret store, có thể bị chính secret store rate limit.
+- Không {{break}} khi hết token mà tiếp tục duyệt: kết quả có thể vẫn đúng, nhưng lãng phí và trong code thật mỗi lần thử là một request lỗi 429.
+- Quên đánh dấu SKIPPED: file kẹt ở NEW, không phân biệt được "chưa tới lượt" với "bị bỏ sót do lỗi".
 
-Trong thực tế, bạn nên dùng **KEDA** (Kubernetes Event-driven Autoscaling) để tự động scale số lượng Pod dựa trên độ dài hàng đợi (queue length) kết hợp với các bộ thư viện rate limit chuyên dụng.`
+> Senior tip: Trong code thật, đừng tự viết bucket nếu đã có thư viện: Resilience4j {{RateLimiter}} hoặc Bucket4j (hỗ trợ cả bucket phân tán trên Redis/Hazelcast). Nhưng hãy kiểm tra thư viện có giữ phần thời gian lẻ và dùng nguồn thời gian đơn điệu hay không — đó chính là hai lỗi bài này luyện bạn nhận ra.`
     }
   ],
   check: [
     {
-      q: 'Tại sao Token Bucket lại tốt hơn Fixed Window (chia cửa sổ cố định) trong Rate Limiting?',
-      options: ['Vì nó dễ cài đặt hơn', 'Vì nó cho phép xử lý các đợt tải đột biến (Burst traffic) trong giới hạn cho phép', 'Vì nó không cần dùng bộ nhớ', 'Vì nó an toàn hơn'],
+      q: 'Ưu điểm chính của token bucket so với fixed window khi giới hạn tốc độ gọi API là gì?',
+      options: ['Dễ cài đặt hơn vì chỉ cần một bộ đếm', 'Không bị burst gấp đôi ở ranh giới cửa sổ; burst luôn bị giới hạn bởi capacity', 'Không tốn chút bộ nhớ nào', 'Đảm bảo provider không bao giờ trả 429'],
       answer: 1,
-      explain: `Token Bucket cho phép tích lũy token khi hệ thống rảnh rỗi, giúp client có thể thực hiện một loạt yêu cầu nhanh chóng (burst) khi cần, miễn là không vượt quá dung lượng xô. Fixed Window thường bị vấn đề "boundary" (gấp đôi quota ở ranh giới giữa 2 cửa sổ).`
+      explain: `Fixed window cho phép dồn quota của hai cửa sổ liền nhau vào vài giây quanh ranh giới (gấp đôi giới hạn). Token bucket nạp liên tục theo thời gian nên trong bất kỳ khoảng nào cũng không vượt capacity + tốc độ nạp × thời gian. "Dễ cài đặt hơn": thực ra fixed window mới là cái chỉ cần một bộ đếm. "Không tốn bộ nhớ": bucket vẫn cần lưu số token và mốc thời gian (rất ít, nhưng không phải 0). "Không bao giờ 429": provider đếm theo cách riêng và quota có thể bị chia cho nhiều instance, nên vẫn có thể nhận 429.`
     },
     {
-      q: 'Chiến lược "Pre-emptive Rotation" giúp ích gì nhất cho hệ thống?',
-      options: ['Tiết kiệm băng thông mạng', 'Đảm bảo tiến trình không bị ngắt quãng giữa chừng do lỗi 401 Unauthorized', 'Mã hóa dữ liệu tốt hơn', 'Giảm độ trễ p99'],
+      q: 'Vì sao token bucket nạp lười phải cập nhật {{lastRefill += periods * interval}} thay vì {{lastRefill = now}}?',
+      options: ['Để tránh tràn số long', 'Để không vứt bỏ phần thời gian lẻ chưa đủ một chu kỳ, giữ đúng tốc độ nạp cấu hình', 'Để bucket nạp nhanh hơn cấu hình', 'Hai cách cho kết quả như nhau'],
       answer: 1,
-      explain: `Bằng cách chủ động đổi mới credential trước khi nó hết hạn, hệ thống luôn ở trạng thái "sẵn sàng", tránh được các ngoại lệ và logic retry phức tạp khi token chết giữa chừng.`
+      explain: `Gán bằng now sẽ bỏ mất phần lẻ (ví dụ 500ms của khoảng 1500ms), nên token tiếp theo đến muộn hơn và tốc độ thực tế thấp hơn cấu hình. Không liên quan tràn số. Cách đúng cũng không nạp nhanh hơn cấu hình — nó chỉ giữ đúng tốc độ. Hai cách khác nhau rõ ràng mỗi khi request đến lệch khỏi mốc chu kỳ.`
+    },
+    {
+      q: 'Đã có pre-emptive rotation, có còn cần xử lý 401 Unauthorized không?',
+      options: ['Không, rotation chủ động đảm bảo không bao giờ gặp 401', 'Có: token có thể bị thu hồi trước hạn hoặc đồng hồ lệch; khi gặp 401 thì lấy token mới và thử lại đúng một lần', 'Có: retry 401 vô hạn tới khi thành công', 'Không, 401 luôn là lỗi cấu hình'],
+      answer: 1,
+      explain: `Rotation chủ động giảm hầu hết lỗi 401 nhưng không loại bỏ hết: token có thể bị revoke, đồng hồ giữa các máy có thể lệch. Fallback chuẩn là refresh rồi thử lại một lần; nếu vẫn 401 thì đó mới là lỗi cấu hình. Retry vô hạn sẽ spam provider và secret store. "401 luôn là lỗi cấu hình" sai vì token hết hạn/bị thu hồi cũng trả 401.`
     }
   ],
   related: ['devops-006', 'devops-010'],
-  tags: ['Ingestion', 'Token Bucket', 'Secret', 'Rotation', 'Batch Processing']
+  tags: ['Ingestion', 'Token Bucket', 'Rate limiting', 'Secret rotation', 'Batch Processing']
 },
 );

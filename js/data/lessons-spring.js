@@ -10,7 +10,7 @@
 Nếu {{OrderService}} tự gọi {{new JdbcOrderRepository()}}, service vừa chứa nghiệp vụ vừa quyết định cách tạo persistence. Khi đổi sang repository khác, code phụ thuộc phải sửa và test khó thay thế dependency. IoC đảo chiều quyền điều khiển: ứng dụng khai báo component và quan hệ, container chịu trách nhiệm lắp ráp.
 
 ### DI và constructor injection
-DI là kỹ thuật đưa dependency từ bên ngoài. Constructor injection làm dependency bắt buộc hiện rõ, giữ object hợp lệ sau khi khởi tạo và dễ tạo unit test bằng fake. Spring Boot 3 dùng component scanning cho stereotype như {{@Component}}, {{@Service}}, {{@Repository}}; {{@Bean}} hữu ích với object cấu hình thủ công. Container chọn constructor phù hợp, resolve tham số theo type và qualifier, rồi gọi constructor.
+DI là kỹ thuật đưa dependency từ bên ngoài. Constructor injection làm dependency bắt buộc hiện rõ, giữ object hợp lệ sau khi khởi tạo và dễ tạo unit test bằng fake. Spring Boot 3 dùng component scanning cho stereotype như {{@Component}}, {{@Service}}, {{@Repository}}; {{@Bean}} hữu ích với object cấu hình thủ công. Container chọn constructor phù hợp, resolve tham số theo type và qualifier, rồi gọi constructor. Nếu class chỉ có **một** constructor thì không cần {{@Autowired}} (từ Spring 4.3); có nhiều constructor thì phải đánh dấu constructor nào dùng để inject.
 
 ~~~java
 @Service
@@ -32,7 +32,7 @@ Mặc định bean trong một Spring ApplicationContext là singleton: một in
 | Service locator | Có thể tra cứu linh hoạt | Dependency ẩn trong method |
 
 ### Circular dependency và production
-Nếu A cần B trong constructor và B cần A, không tồn tại thứ tự tạo hoàn chỉnh. Spring có một số cơ chế xử lý tham chiếu vòng trong tình huống cụ thể, nhưng constructor cycle là thiết kế cần sửa, không nên dựa vào workaround. Tách phần chung thành C, hoặc đảo phụ thuộc qua interface/event. Các lỗi thường gặp gồm nhiều bean cùng type không có qualifier, component scan thiếu package, hoặc singleton giữ request-specific state khiến dữ liệu người dùng rò sang request khác.
+Nếu A cần B trong constructor và B cần A, không tồn tại thứ tự tạo hoàn chỉnh: muốn tạo A phải có B, muốn tạo B phải có A. Spring báo {{BeanCurrentlyInCreationException}} ngay khi khởi động. Với field/setter injection, Spring **có thể** phá vòng bằng cách đưa ra một tham chiếu "sớm" tới bean chưa khởi tạo xong (early singleton reference), nhưng từ **Spring Boot 2.6** tính năng này bị **tắt mặc định** ({{spring.main.allow-circular-references=false}}): mọi vòng phụ thuộc đều làm app fail lúc khởi động. Đừng bật lại cờ đó như một cách sửa; constructor cycle là thiết kế cần sửa. Tách phần chung thành C, hoặc đảo phụ thuộc qua interface/event. Các lỗi thường gặp gồm nhiều bean cùng type không có qualifier, component scan thiếu package, hoặc singleton giữ request-specific state khiến dữ liệu người dùng rò sang request khác.
 
 ### Liên hệ phỏng vấn
 Hãy giải thích sự khác nhau giữa IoC và DI bằng một ví dụ, rồi lần theo cách container resolve constructor. Khi debug, kiểm tra bean definition, type ambiguity và dependency cycle trước khi thêm annotation tùy tiện. Với Spring Boot 3, ưu tiên constructor injection; dùng setter cho dependency thực sự optional.
@@ -40,7 +40,11 @@ Hãy giải thích sự khác nhau giữa IoC và DI bằng một ví dụ, rồ
 > Senior tip: Một service singleton nên giữ cấu hình bất biến, không giữ dữ liệu của request trong field. Nếu có nhiều implementation, dùng qualifier có ý nghĩa nghiệp vụ thay vì dựa vào thứ tự scan.`,
     exercises: [{
       title: 'Tạo MiniContainer singleton bằng constructor injection',
-      prompt: `Hoàn thiện {{MiniContainer}}. {{register(type)}} đăng ký class; {{get(type)}} tạo singleton đúng một lần và inject constructor qua reflection khi các tham số đã đăng ký. Constructor không tham số được hỗ trợ. Báo {{IllegalStateException}} cho type chưa đăng ký và circular dependency; {{get}} lặp lại phải trả cùng instance.`,
+      prompt: `Hoàn thiện {{MiniContainer}} — một DI container tí hon mô phỏng cách Spring tạo singleton bằng constructor injection:
+- {{register(type)}}: đăng ký class (giống một bean definition).
+- {{get(type)}}: nếu đã tạo thì trả **đúng instance cũ** (singleton). Nếu chưa, lấy constructor duy nhất của class qua reflection ({{type.getDeclaredConstructors()[0]}} — giả định mỗi class có đúng một constructor), gọi {{get}} đệ quy cho từng kiểu tham số, rồi gọi constructor. Constructor không tham số cũng phải hoạt động.
+- Ném {{IllegalStateException}} khi: type chưa đăng ký (kể cả khi đó là dependency của bean khác), hoặc có circular dependency (A cần B, B cần A).
+- Sau khi một lần {{get}} thất bại vì vòng phụ thuộc, container vẫn phải dùng được cho các bean khác.`,
       starter: `
 class MiniContainer {
     <T> void register(Class<T> type) { throw new UnsupportedOperationException("TODO"); }
@@ -57,6 +61,9 @@ class LoopB { LoopB(LoopA a) {} }`,
   check("singleton and injection", () -> { MiniContainer c=new MiniContainer(); c.register(Repo.class); c.register(Service.class); Service a=c.get(Service.class); if(a!=c.get(Service.class)||a.repo!=c.get(Repo.class)) throw new AssertionError(); });
   check("unknown", () -> { MiniContainer c=new MiniContainer(); fails(() -> c.get(Repo.class)); });
   check("cycle", () -> { MiniContainer c=new MiniContainer(); c.register(LoopA.class); c.register(LoopB.class); fails(() -> c.get(LoopA.class)); });
+  check("no-arg constructor", () -> { MiniContainer c=new MiniContainer(); c.register(Repo.class); Repo r=c.get(Repo.class); if(r==null||r!=c.get(Repo.class)) throw new AssertionError(); });
+  check("unregistered dependency", () -> { MiniContainer c=new MiniContainer(); c.register(Service.class); fails(() -> c.get(Service.class)); });
+  check("container usable after cycle failure", () -> { MiniContainer c=new MiniContainer(); c.register(LoopA.class); c.register(LoopB.class); c.register(Repo.class); c.register(Service.class); fails(() -> c.get(LoopA.class)); fails(() -> c.get(LoopB.class)); Service s=c.get(Service.class); if(s.repo!=c.get(Repo.class)) throw new AssertionError(); });
   System.out.println("RESULT " + passed + "/" + total);
  }
 }`,
@@ -85,10 +92,19 @@ class Repo {}
 class Service { final Repo repo; Service(Repo repo) { this.repo = repo; } }
 class LoopA { LoopA(LoopB b) {} }
 class LoopB { LoopB(LoopA a) {} }`,
-      hints: ['Tách registry definition, registry singleton và tập type đang tạo.', 'Đánh dấu type trước khi gọi supplier; luôn gỡ dấu trong finally để lỗi tạo bean không làm container kẹt.', 'Kiểm tra singleton bằng containsKey vì giá trị null không nên bị nhầm với chưa tạo.'],
-      explain: `Container tối giản quản lý definition và cache singleton. Supplier đại diện bước dựng bean, có thể gọi get() cho dependency. Tập {{creating}} là đường đi hiện tại của DFS; gặp lại cùng type trước khi hoàn tất nghĩa là có chu trình. Bài tập đóng gói constructor injection bên trong supplier để tập trung vào registry; Spring còn introspect constructor, chọn candidate, resolve qualifier và thực hiện lifecycle callback. Trong ứng dụng thật, tạo bean có thể thất bại giữa chừng, nên cache chỉ sau khi supplier thành công. Test cycle bắt trường hợp hai supplier gọi lồng nhau và unknown type xác nhận lỗi rõ ràng.`
+      hints: ['Dùng ba cấu trúc: {{Set}} các type đã đăng ký, {{Map}} type → instance đã tạo (cache singleton), và {{Set}} các type **đang được tạo**.', 'Thêm type vào tập "đang tạo" trước khi resolve tham số constructor; nếu {{add}} trả false nghĩa là type đang được tạo dở ở tầng trên — đó là vòng phụ thuộc.', 'Luôn gỡ type khỏi tập "đang tạo" trong {{finally}}, nếu không một lần lỗi sẽ làm container báo vòng phụ thuộc giả cho mọi lần gọi sau.'],
+      explain: `Container tối giản giữ ba thứ: danh sách definition, cache singleton, và tập {{creating}}. Khi {{get(Service)}} chạy, nó đánh dấu Service đang tạo, thấy constructor cần Repo nên gọi {{get(Repo)}} đệ quy, tạo Repo, rồi mới gọi constructor của Service — đây chính là duyệt đồ thị phụ thuộc theo chiều sâu (DFS), dependency được tạo trước bean dùng nó.
+
+Tập {{creating}} là "đường đi hiện tại" của DFS: {{get(LoopA)}} đánh dấu LoopA → cần LoopB → đánh dấu LoopB → cần LoopA → LoopA đã có trong tập → phát hiện vòng. Spring làm đúng điều này và báo {{BeanCurrentlyInCreationException}}.
+
+Lỗi hay gặp:
+- Quên {{finally}}: sau lần lỗi đầu, LoopA/LoopB còn kẹt trong {{creating}}; test "container usable after cycle failure" bắt lỗi này.
+- Đưa instance vào cache **trước** khi constructor chạy xong (hoặc khi constructor ném lỗi): lần {{get}} sau trả về object hỏng.
+- Kiểm tra đăng ký sau khi kiểm tra vòng: báo sai loại lỗi, khó debug.
+
+Spring thật còn làm nhiều hơn: chọn constructor khi có nhiều cái, resolve theo {{@Qualifier}}/{{@Primary}} khi nhiều bean cùng type, chạy BeanPostProcessor (nơi tạo AOP proxy) và lifecycle callback.`
     }],
-    check: [{ q: 'Vì sao constructor injection thường được ưu tiên?', options: ['Làm dependency bắt buộc rõ và cho phép object bất biến', 'Tự làm bean thread-safe', 'Bỏ qua việc tạo bean', 'Chỉ dùng được với prototype'], answer: 0, explain: `Constructor cho thấy dependency bắt buộc và object chỉ được tạo khi có đủ collaborator. Nó không tự bảo đảm thread-safety và vẫn cần container tạo bean; mọi scope đều có thể dùng constructor injection.` }, { q: 'Trong thiết kế này, ranh giới nào giúp kiểm soát lỗi dễ hơn?', options: ['Ranh giới rõ theo trách nhiệm', 'Một method khổng lồ', 'Nuốt mọi exception', 'Chia sẻ mutable state toàn cục'], answer: 0, explain: `Ranh giới rõ theo trách nhiệm giúp thay đổi và kiểm thử từng phần độc lập.` }],
+    check: [{ q: 'Vì sao constructor injection thường được ưu tiên?', options: ['Làm dependency bắt buộc rõ và cho phép object bất biến', 'Tự làm bean thread-safe', 'Bỏ qua việc tạo bean', 'Chỉ dùng được với prototype'], answer: 0, explain: `Constructor cho thấy dependency bắt buộc (field final), object chỉ tạo được khi đủ collaborator và test dễ bằng {{new Service(fakeRepo)}}. Nó không tự làm bean thread-safe — state mutable vẫn cần đồng bộ. Container vẫn phải tạo bean, không "bỏ qua" được. Constructor injection dùng được với mọi scope, không riêng prototype.` }, { q: 'App Spring Boot 3 có OrderService inject PaymentService qua field {{@Autowired}}, và PaymentService cũng inject OrderService qua field. Khi khởi động chuyện gì xảy ra?', options: ['Chạy bình thường vì field injection luôn phá được vòng', 'Khởi động thất bại vì từ Spring Boot 2.6 circular reference bị cấm mặc định', 'Spring tự tạo hai instance của mỗi bean', 'Chỉ lỗi khi gọi method lần đầu'], answer: 1, explain: `Từ Spring Boot 2.6, {{spring.main.allow-circular-references}} mặc định là false nên mọi vòng phụ thuộc (kể cả qua field/setter) làm context fail lúc khởi động. Phương án 1 đúng với Spring Boot cũ hoặc khi bật lại cờ, không đúng mặc định hiện nay. Spring không tạo thêm instance để phá vòng. Lỗi xảy ra lúc tạo context, không đợi tới lúc gọi method.` }],
     related: ['spring-001'], tags: ['IoC', 'DI', 'container', 'singleton']
   },
   {
@@ -101,7 +117,7 @@ class LoopB { LoopB(LoopA a) {} }`,
 Logging, transaction và security là hành vi xuyên suốt nhiều service. Nếu mỗi method tự lặp logging hoặc transaction code, nghiệp vụ bị trộn với hạ tầng và khó áp dụng nhất quán. AOP mô tả điểm cắt và advice; proxy đứng giữa caller với target để thực hiện hành vi bổ sung.
 
 ### JDK dynamic proxy
-{{java.lang.reflect.Proxy}} tạo object runtime triển khai các interface đã chỉ định. InvocationHandler nhận method và arguments, có thể ghi log, gọi method trên target rồi trả kết quả. Proxy JDK yêu cầu interface; Spring cũng có thể dùng subclass proxy tùy cấu hình và loại bean. Proxy không biến method call tùy ý thành AOP: caller phải giữ và gọi reference proxy.
+{{java.lang.reflect.Proxy}} tạo object runtime triển khai các interface đã chỉ định. InvocationHandler nhận method và arguments, có thể ghi log, gọi method trên target rồi trả kết quả. Proxy JDK yêu cầu interface. Spring còn có **CGLIB proxy**: sinh một lớp con của class target lúc runtime và override các method để chèn advice. **Spring Boot mặc định dùng CGLIB** cho mọi bean cần proxy (kể cả bean có interface), vì {{spring.aop.proxy-target-class=true}} là mặc định từ Boot 2.0 — nhờ vậy inject theo class cụ thể không bị lỗi kiểu. Dù loại nào, proxy không biến method call tùy ý thành AOP: caller phải giữ và gọi qua reference proxy (chính là bean được inject).
 
 ~~~java
 Object proxy = Proxy.newProxyInstance(loader, interfaces, (p, method, args) -> {
@@ -112,7 +128,7 @@ Object proxy = Proxy.newProxyInstance(loader, interfaces, (p, method, args) -> {
 ~~~
 
 ### Self-invocation và @Transactional
-Giả sử caller gọi {{proxy.outer()}}, proxy chuyển tới target.outer(). Bên trong target, {{this.inner()}} là lời gọi trực tiếp trên cùng target, không qua proxy; do đó advice của inner, bao gồm transaction annotation, không được kích hoạt theo proxy model. Tách inner method sang bean khác để lời gọi đi qua bean proxy, hoặc đặt transaction boundary ở method ngoài phù hợp với nghiệp vụ. Self injection/call-through hack làm luồng khó hiểu và nên tránh.
+Giả sử caller gọi {{proxy.outer()}}, proxy chuyển tới target.outer(). Bên trong target, {{this.inner()}} là lời gọi trực tiếp trên cùng target, không qua proxy; do đó advice của inner, bao gồm transaction annotation, không được kích hoạt theo proxy model. Cách sửa theo thứ tự ưu tiên: (1) tách inner sang bean khác để lời gọi đi qua proxy của bean đó; (2) đặt transaction boundary ở method ngoài cho đúng nghiệp vụ; (3) dùng {{TransactionTemplate}} để mở transaction bằng code ngay trong method. Các mẹo như tự inject chính mình ({{@Lazy}} self-injection) hoặc {{AopContext.currentProxy()}} (cần bật {{exposeProxy}}) chạy được nhưng làm luồng khó hiểu, nên tránh.
 
 | Proxy | Cách tạo | Lưu ý |
 |---|---|---|
@@ -120,7 +136,7 @@ Giả sử caller gọi {{proxy.outer()}}, proxy chuyển tới target.outer(). 
 | Subclass | Tạo lớp con target | Final class/method hạn chế override |
 
 ### Lỗi production
-Private method thường không phải điểm cắt hữu ích với proxy; method final không override được bằng subclass proxy. Một lỗi phổ biến khác là gọi qua reference được tạo bằng {{new}} thay vì bean do Spring quản lý. Khi đo thời gian, dùng finally để ghi cả thành công và lỗi, nhưng tránh log payload nhạy cảm. Proxy cũng có overhead; hãy dùng metric có cardinality kiểm soát thay vì tag theo user ID.
+Method **private** không bao giờ được proxy chặn (lớp con không override được private); method **final** cũng vậy với CGLIB. Từ Spring Framework 6.0, {{@Transactional}} trên method protected/package-private có hiệu lực với CGLIB proxy, nhưng public vẫn là cách an toàn và dễ hiểu nhất. Một lỗi phổ biến khác là gọi qua reference được tạo bằng {{new}} thay vì bean do Spring quản lý. Khi đo thời gian, dùng finally để ghi cả thành công và lỗi, nhưng tránh log payload nhạy cảm. Proxy cũng có overhead; hãy dùng metric có cardinality kiểm soát thay vì tag theo user ID.
 
 ### Liên hệ phỏng vấn
 Vẽ luồng caller → proxy → target để giải thích self-invocation. Nêu rõ đây là giới hạn của proxy-based AOP, không phải transaction manager tự phát hiện mọi method call. Với yêu cầu cross-cutting cần bao cả self-call, cân nhắc đổi ranh giới bean hoặc giải pháp weaving phù hợp.
@@ -128,11 +144,15 @@ Vẽ luồng caller → proxy → target để giải thích self-invocation. N�
 > Senior tip: Khi transaction bất ngờ không mở, kiểm tra bean reference và call path trước khi chỉnh propagation. Trace một request qua proxy thường tìm ra nguyên nhân nhanh hơn đọc annotation rời rạc.`,
     exercises: [{
       title: 'Logging proxy và lời gọi nội bộ',
-      prompt: `Dùng {{Proxy}} tạo proxy cho {{Worker}}. Handler ghi tên method vào list trước khi invoke target. Gọi {{proxy.outer()}} phải ghi một lần vì outer gọi {{this.inner()}} trực tiếp; gọi {{proxy.inner()}} riêng phải ghi thêm một lần.`,
-      starter: `interface Worker { String outer(); String inner(); }
+      prompt: `Hoàn thiện {{ProxyFactory.wrap(target, calls)}}: dùng {{java.lang.reflect.Proxy}} tạo proxy cài interface {{Worker}}. InvocationHandler ghi tên method vào {{calls}} **trước** khi gọi method tương ứng trên target, rồi trả kết quả của target.
+- Gọi {{proxy.outer()}} chỉ ghi {{["outer"]}}, vì bên trong target, outer gọi {{this.inner()}} trực tiếp — không qua proxy.
+- Gọi {{proxy.inner()}} từ bên ngoài thì ghi {{["inner"]}}.
+- Nếu target ném exception (ví dụ {{boom()}} ném {{IllegalArgumentException}}), caller của proxy phải nhận **đúng exception đó**, không phải exception bọc của reflection.`,
+      starter: `interface Worker { String outer(); String inner(); String boom(); }
 class WorkerImpl implements Worker {
  public String outer() { return "outer:" + inner(); }
  public String inner() { return "inner"; }
+ public String boom() { throw new IllegalArgumentException("bad input"); }
 }
 class ProxyFactory {
  static Worker wrap(Worker target, List<String> calls) { throw new UnsupportedOperationException("TODO"); }
@@ -143,13 +163,16 @@ class ProxyFactory {
   check("self call bypasses proxy", () -> { List<String> l=new ArrayList<>(); Worker w=ProxyFactory.wrap(new WorkerImpl(),l); if(!w.outer().equals("outer:inner")||!l.equals(List.of("outer"))) throw new AssertionError(l); });
   check("external call passes proxy", () -> { List<String> l=new ArrayList<>(); Worker w=ProxyFactory.wrap(new WorkerImpl(),l); w.inner(); if(!l.equals(List.of("inner"))) throw new AssertionError(l); });
   check("proxy implements interface", () -> { Worker w=ProxyFactory.wrap(new WorkerImpl(),new ArrayList<>()); if(!java.lang.reflect.Proxy.isProxyClass(w.getClass())) throw new AssertionError(); });
+  check("calls recorded in order", () -> { List<String> l=new ArrayList<>(); Worker w=ProxyFactory.wrap(new WorkerImpl(),l); w.outer(); w.inner(); w.outer(); if(!l.equals(List.of("outer","inner","outer"))) throw new AssertionError(l); });
+  check("target exception is unwrapped", () -> { List<String> l=new ArrayList<>(); Worker w=ProxyFactory.wrap(new WorkerImpl(),l); try { w.boom(); throw new AssertionError("expected exception"); } catch (IllegalArgumentException e) { if(!"bad input".equals(e.getMessage())) throw new AssertionError(e); } if(!l.equals(List.of("boom"))) throw new AssertionError(l); });
   System.out.println("RESULT " + passed + "/" + total);
  }
 }`,
-      reference: `interface Worker { String outer(); String inner(); }
+      reference: `interface Worker { String outer(); String inner(); String boom(); }
 class WorkerImpl implements Worker {
  public String outer() { return "outer:" + inner(); }
  public String inner() { return "inner"; }
+ public String boom() { throw new IllegalArgumentException("bad input"); }
 }
 class ProxyFactory {
  static Worker wrap(Worker target, List<String> calls) {
@@ -160,10 +183,16 @@ class ProxyFactory {
   });
  }
 }`,
-      hints: ['Proxy.newProxyInstance recibe class loader, interfaces y InvocationHandler.', 'El handler ve llamadas realizadas sobre proxy; target.outer() ejecuta inner dentro del target.', 'Method.invoke envuelve la excepción del target en InvocationTargetException.'],
-      explain: `Test đầu xác nhận proxy nhận outer, sau đó target tự gọi inner nên handler chỉ được chạy một lần. Khi gọi inner trực tiếp qua proxy, handler ghi lần thứ hai. Đây là mô hình cốt lõi giải thích vì sao self-invocation không kích hoạt {{@Transactional}} trong proxy-based Spring AOP. InvocationTargetException cần unwrap để caller nhìn thấy lỗi gốc thay vì wrapper reflection.`
+      hints: ['{{Proxy.newProxyInstance}} nhận ba tham số: class loader (ví dụ {{Worker.class.getClassLoader()}}), mảng các interface cần cài (chỉ gồm {{Worker.class}}) và một InvocationHandler (lambda {{(proxy, method, args) -> ...}}).', 'Handler chỉ thấy những lời gọi đi **qua proxy**. Trong {{target.outer()}}, lời gọi {{inner()}} là {{this.inner()}} trên chính target nên handler không thấy.', '{{method.invoke(target, args)}} bọc exception của target trong {{InvocationTargetException}}; bắt nó và ném lại {{e.getCause()}}.'],
+      explain: `Test đầu xác nhận proxy nhận outer, sau đó target tự gọi inner nên handler chỉ chạy một lần. Khi gọi inner trực tiếp qua proxy, handler ghi lần thứ hai. Đây là mô hình cốt lõi giải thích vì sao self-invocation không kích hoạt {{@Transactional}} trong Spring AOP dựa trên proxy: annotation trên inner chỉ có tác dụng khi lời gọi tới inner đi qua proxy.
+
+Vì sao phải unwrap {{InvocationTargetException}}? {{Method.invoke}} bọc mọi exception của target trong {{InvocationTargetException}} (một checked exception). Nếu handler ném nguyên nó ra, mà interface {{Worker}} không khai báo checked exception đó, JVM sẽ bọc thêm một lớp nữa thành {{UndeclaredThrowableException}} — caller không bắt được {{IllegalArgumentException}} như khi gọi target trực tiếp. Spring làm đúng việc unwrap này, nên với bạn proxy "trong suốt".
+
+Lỗi hay gặp:
+- Gọi {{method.invoke(proxy, args)}} thay vì {{target}}: proxy gọi lại chính nó, đệ quy vô hạn tới {{StackOverflowError}}.
+- Ghi log sau khi invoke mà không dùng {{finally}}: lời gọi ném exception sẽ không được ghi.`
     }],
-    check: [{ q: 'Trong proxy-based Spring AOP, vì sao this.inner() thường không kích hoạt advice của inner?', options: ['Method private nên JVM không chạy', 'Lời gọi đi thẳng từ target tới target, không qua proxy', 'Transaction manager chỉ theo dõi HTTP', 'AOP chỉ hoạt động khi compile bằng Java 21'], answer: 1, explain: `Advice được proxy áp dụng khi lời gọi đi qua proxy. this.inner() chạy trực tiếp trên target. Visibility không phải nguyên nhân tổng quát; transaction không giới hạn ở HTTP và Java 21 không phải điều kiện.` }, { q: 'Trong thiết kế này, ranh giới nào giúp kiểm soát lỗi dễ hơn?', options: ['Ranh giới rõ theo trách nhiệm', 'Một method khổng lồ', 'Nuốt mọi exception', 'Chia sẻ mutable state toàn cục'], answer: 0, explain: `Ranh giới rõ theo trách nhiệm giúp thay đổi và kiểm thử từng phần độc lập.` }],
+    check: [{ q: 'Trong proxy-based Spring AOP, vì sao this.inner() thường không kích hoạt advice của inner?', options: ['Method private nên JVM không chạy', 'Lời gọi đi thẳng từ target tới target, không qua proxy', 'Transaction manager chỉ theo dõi HTTP', 'AOP chỉ hoạt động khi compile bằng Java 21'], answer: 1, explain: `Advice được proxy áp dụng khi lời gọi đi qua proxy; this.inner() chạy trực tiếp trên target nên proxy không biết. "Method private": inner trong ví dụ là public và vẫn bị bỏ qua, nên visibility không phải nguyên nhân. Transaction không gắn với HTTP. AOP của Spring chạy trên mọi phiên bản Java được hỗ trợ, không cần Java 21.` }, { q: 'Một bean Spring Boot 3 có method {{@Transactional private void saveAll()}}, được gọi từ một method public của chính bean đó. Transaction có được mở không?', options: ['Có, vì Spring quét mọi method có annotation', 'Không: private không bị proxy chặn được, và lời gọi nội bộ không đi qua proxy', 'Có, nếu bật CGLIB proxy', 'Chỉ khi method trả về void'], answer: 1, explain: `Có hai lý do cộng dồn: proxy (JDK hay CGLIB) không override được method private, và lời gọi từ trong bean là this.saveAll() không qua proxy. Spring không "quét rồi tự chạy" annotation, nó chỉ chèn advice tại proxy. CGLIB là mặc định của Spring Boot rồi và vẫn không chặn được private. Kiểu trả về không liên quan.` }],
     related: ['spring-002'], tags: ['AOP', 'proxy', 'JDK Proxy', 'self-invocation']
   },
   {
@@ -176,7 +205,7 @@ class ProxyFactory {
 Transaction interceptor bao quanh method được gọi qua proxy. Nó lấy hoặc tạo transaction theo propagation, gọi nghiệp vụ, rồi commit khi thành công hoặc rollback theo rule. Vì vậy call path qua proxy và transaction manager đều quan trọng. Annotation chỉ là metadata, không tự biến mọi method call thành transaction.
 
 ### REQUIRED và REQUIRES_NEW
-Trong một transaction T1, method REQUIRED thường dùng lại T1. Nếu method tham gia đánh dấu rollback-only, outer commit cuối cùng có thể báo unexpected rollback. REQUIRES_NEW suspend T1, mở T2 và kết thúc T2 độc lập; nếu T2 commit nhưng T1 rollback, dữ liệu T2 vẫn còn. Khi connection pool nhỏ, transaction suspended vẫn giữ connection trong khi T2 cần connection khác, có thể gây cạn pool dưới tải.
+Trong một transaction T1, method REQUIRED dùng lại chính T1 (cùng connection). Bẫy kinh điển: method inner (REQUIRED, qua proxy) ném RuntimeException → interceptor của inner đánh dấu T1 là **rollback-only**; method outer bắt exception đó và "nuốt" đi, tưởng là xong; đến khi outer kết thúc và Spring thử commit thì phát hiện cờ rollback-only, rollback toàn bộ và ném {{UnexpectedRollbackException}}. Bắt exception không gỡ được cờ rollback-only. REQUIRES_NEW suspend T1, mở T2 và kết thúc T2 độc lập; nếu T2 commit nhưng T1 rollback, dữ liệu T2 vẫn còn. Khi connection pool nhỏ, transaction suspended vẫn giữ connection trong khi T2 cần connection khác, có thể gây cạn pool dưới tải.
 
 | Propagation | Có transaction ngoài | Kết quả |
 |---|---|---|
@@ -185,7 +214,7 @@ Trong một transaction T1, method REQUIRED thường dùng lại T1. Nếu meth
 | REQUIRES_NEW | Có | Suspend ngoài, chạy transaction độc lập |
 
 ### Rollback rules
-Spring mặc định rollback cho {{RuntimeException}} và {{Error}}. Checked exception mặc định không buộc rollback. Có thể khai báo rollback rule phù hợp trên {{@Transactional}}, nhưng rule cụ thể và rule tổng quát cần thiết kế cẩn thận để không vô tình đổi hành vi. Không nên nuốt exception rồi kỳ vọng interceptor biết rằng nghiệp vụ thất bại.
+Spring mặc định rollback cho {{RuntimeException}} và {{Error}}. Với **checked exception** (ví dụ {{IOException}}), Spring mặc định **commit** những gì đã ghi rồi mới ném exception tiếp cho caller — hành vi này làm nhiều người bất ngờ (nó kế thừa quy ước của EJB: checked exception được coi là "lỗi nghiệp vụ dự kiến"). Muốn rollback thì khai báo {{rollbackFor = IOException.class}}; rule áp dụng cho cả **lớp con** (ví dụ {{FileNotFoundException}}). Ngược lại, {{noRollbackFor}} giữ commit cho một exception unchecked cụ thể. Không nên nuốt exception rồi kỳ vọng interceptor biết rằng nghiệp vụ thất bại: interceptor chỉ thấy exception thoát ra khỏi method.
 
 ~~~java
 @Transactional(rollbackFor = IOException.class)
@@ -202,39 +231,70 @@ Với ghi audit cần tồn tại dù nghiệp vụ chính rollback, REQUIRES_NE
 
 > Senior tip: Đừng dùng REQUIRES_NEW như cách sửa mọi lỗi transaction. Theo dõi connection-pool active/pending cùng thời gian transaction; boundary dài thường là nguyên nhân gây nghẽn trước khi propagation trở thành vấn đề.`,
     exercises: [{
-      title: 'Mô phỏng transaction rollback rule',
-      prompt: `Mô phỏng rollback rule bằng {{TxManager.run(work)}}: successful work commit tăng bộ đếm commit; {{RuntimeException}} và {{Error}} rollback; một exception marker được rollback chỉ khi {{rollbackMarker}} là true. Truyền exception về caller. Exception marker này chỉ mô phỏng nhánh cấu hình, không phải checked exception Java.`,
-      starter: `class MarkerFailure extends RuntimeException {}\nclass TxManager {
+      title: 'Mô phỏng rollback rule của @Transactional',
+      prompt: `Mô phỏng phần "commit hay rollback" của transaction interceptor bằng {{TxManager.run(rollbackFor, work)}}:
+- {{work}} là {{TxWork}} — giống Runnable nhưng được phép ném checked exception.
+- {{work}} chạy xong không lỗi → {{commits++}}.
+- {{work}} ném {{RuntimeException}} hoặc {{Error}} → {{rollbacks++}} (mặc định của Spring).
+- {{work}} ném checked exception: nếu nó là instance của **một trong các class** trong {{rollbackFor}} (tính cả lớp con) → {{rollbacks++}}; nếu không → {{commits++}} (đúng mặc định của Spring: checked exception vẫn commit).
+- Trong mọi trường hợp lỗi, ném lại **chính exception gốc** cho caller (không bọc). Method đã khai báo {{throws Exception}} nên ném lại được mọi loại.`,
+      starter: `interface TxWork { void run() throws Exception; }
+class TxManager {
  int commits, rollbacks;
- void run(boolean rollbackMarker, Runnable work) { throw new UnsupportedOperationException("TODO"); }
+ void run(Set<Class<? extends Throwable>> rollbackFor, TxWork work) throws Exception { throw new UnsupportedOperationException("TODO"); }
 }`,
       tests: `public class Main {
- static int passed=0, total=0;\n static void check(String n, Runnable r) { total++; try { r.run(); passed++; System.out.println("PASS " + n); } catch(Throwable t) { System.out.println("FAIL " + n + ": " + t); } }
-
+ static int passed=0, total=0;
+ interface Body { void run() throws Exception; }
+ static void check(String n, Body r) { total++; try { r.run(); passed++; System.out.println("PASS " + n); } catch(Throwable t) { System.out.println("FAIL " + n + ": " + t); } }
+ static void counts(TxManager t, int c, int r) { if (t.commits != c || t.rollbacks != r) throw new AssertionError("commits=" + t.commits + " rollbacks=" + t.rollbacks + ", expected " + c + "/" + r); }
+ static Throwable thrown(TxManager t, Set<Class<? extends Throwable>> rules, Throwable ex) {
+  try { t.run(rules, () -> { if (ex instanceof Exception) throw (Exception) ex; throw (Error) ex; }); }
+  catch (Throwable e) { return e; }
+  throw new AssertionError("exception was swallowed");
+ }
  public static void main(String[] a) {
-  check("success commits", () -> { TxManager t=new TxManager(); t.run(false,()->{}); if(t.commits!=1||t.rollbacks!=0) throw new AssertionError(); });
-  check("runtime rolls back", () -> { TxManager t=new TxManager(); try { t.run(false,()->{throw new IllegalStateException();}); } catch(IllegalStateException e) {} if(t.rollbacks!=1||t.commits!=0) throw new AssertionError(); });
-  check("configured marker policy", () -> { TxManager t=new TxManager(); try { t.run(false,()->{throw new MarkerFailure();}); } catch(MarkerFailure e) {} if(t.commits!=1||t.rollbacks!=0) throw new AssertionError(); TxManager u=new TxManager(); try { u.run(true,()->{throw new MarkerFailure();}); } catch(MarkerFailure e) {} if(u.rollbacks!=1) throw new AssertionError(); });
+  check("success commits", () -> { TxManager t=new TxManager(); t.run(Set.of(), ()->{}); counts(t,1,0); });
+  check("runtime exception rolls back and is rethrown as-is", () -> { TxManager t=new TxManager(); IllegalStateException ex=new IllegalStateException("x"); if (thrown(t, Set.of(), ex)!=ex) throw new AssertionError("not same exception"); counts(t,0,1); });
+  check("Error rolls back", () -> { TxManager t=new TxManager(); AssertionError ex=new AssertionError("boom"); if (thrown(t, Set.of(), ex)!=ex) throw new AssertionError("not same error"); counts(t,0,1); });
+  check("checked exception commits by default", () -> { TxManager t=new TxManager(); java.io.IOException ex=new java.io.IOException("disk"); if (thrown(t, Set.of(), ex)!=ex) throw new AssertionError("not same exception"); counts(t,1,0); });
+  check("rollbackFor matches checked exception", () -> { TxManager t=new TxManager(); thrown(t, Set.of(java.io.IOException.class), new java.io.IOException()); counts(t,0,1); });
+  check("rollbackFor matches subclasses", () -> { TxManager t=new TxManager(); thrown(t, Set.of(java.io.IOException.class), new java.io.FileNotFoundException()); counts(t,0,1); });
+  check("unrelated rule does not apply", () -> { TxManager t=new TxManager(); thrown(t, Set.of(java.sql.SQLException.class), new java.io.IOException()); counts(t,1,0); });
   System.out.println("RESULT " + passed + "/" + total);
  }
 }`,
-      reference: `class MarkerFailure extends RuntimeException {}\nclass TxManager {
+      reference: `interface TxWork { void run() throws Exception; }
+class TxManager {
  int commits, rollbacks;
- void run(boolean rollbackMarker, Runnable work) {
-  try { work.run(); commits++; }
-  catch (Throwable failure) {
-   if (!(failure instanceof MarkerFailure) || rollbackMarker) rollbacks++;
-   else commits++;
-   if (failure instanceof RuntimeException) throw (RuntimeException) failure;
-   if (failure instanceof Error) throw (Error) failure;
-   throw new IllegalStateException(failure);
+ void run(Set<Class<? extends Throwable>> rollbackFor, TxWork work) throws Exception {
+  try {
+   work.run();
+  } catch (RuntimeException | Error unchecked) {
+   rollbacks++;                       // mặc định: unchecked luôn rollback
+   throw unchecked;
+  } catch (Exception checked) {
+   boolean rule = false;
+   for (Class<? extends Throwable> c : rollbackFor) if (c.isInstance(checked)) rule = true;   // tính cả lớp con
+   if (rule) rollbacks++; else commits++;                // checked: commit trừ khi có rollbackFor
+   throw checked;                     // ném lại chính exception gốc
   }
+  commits++;
  }
 }`,
-      hints: ['Phân loại exception trước khi cập nhật bộ đếm.', 'Dù không rollback theo policy, exception vẫn được ném lại.', 'MarkerFailure là RuntimeException dùng riêng để kiểm tra rule cấu hình; không gọi nó là checked exception.'],
-      explain: `Harness mô phỏng rollback rule chứ không mở database transaction thật. MarkerFailure kế thừa RuntimeException để có thể truyền qua Runnable; nó chỉ đại diện cho một exception được policy cấu hình riêng, không đại diện cho checked exception của Java. Trong Spring, checked exception không rollback mặc định, nhưng vẫn có thể được ném cho caller; rollback policy và exception propagation là hai quyết định khác nhau. RuntimeException và Error rollback mặc định. REQUIRED/REQUIRES_NEW chọn transaction context, độc lập với phân loại exception.`
+      hints: ['Dùng hai khối catch: {{catch (RuntimeException | Error e)}} trước, rồi {{catch (Exception e)}} cho checked exception.', '{{c.isInstance(e)}} trả true cả khi e là lớp con của c — đúng như cách Spring so khớp {{rollbackFor}}.', 'Đừng bọc exception ({{new RuntimeException(e)}}): caller và Spring cần thấy đúng loại exception gốc.'],
+      explain: `Bài tập tái hiện đúng quyết định mà {{TransactionInterceptor}} của Spring đưa ra khi method thoát: không lỗi thì commit; lỗi thì hỏi rule "exception này có rollback không" (mặc định: có với RuntimeException/Error, không với checked), sau đó **luôn** ném exception tiếp cho caller. Rollback hay commit và việc exception có tới tay caller hay không là hai chuyện độc lập.
+
+Ví dụ thật: {{importFile()}} đã {{save()}} 500 dòng rồi gặp {{IOException}} khi đọc dòng 501. Không có {{rollbackFor}}, 500 dòng đó được **commit** và caller vẫn nhận IOException — dữ liệu "nửa vời" nằm trong DB. Đây là bug production rất hay gặp.
+
+Lỗi hay gặp:
+- Viết {{catch (Exception e)}} trước rồi mới {{catch (RuntimeException e)}}: không biên dịch được (catch sau không bao giờ tới), hoặc nếu gộp chung thì quên phân biệt checked/unchecked.
+- So khớp bằng {{c == e.getClass()}}: bỏ sót lớp con, test {{FileNotFoundException}} bắt lỗi này.
+- Bọc exception trước khi ném lại: caller bắt {{IOException}} không còn bắt được.
+
+Propagation (REQUIRED/REQUIRES_NEW) quyết định **transaction nào** được dùng; rollback rule quyết định **kết thúc** nó thế nào — hai trục khác nhau.`
     }],
-    check: [{ q: 'Method bên trong chạy REQUIRED khi đã có transaction ngoài thì thường thế nào?', options: ['Luôn tạo transaction mới độc lập', 'Tham gia transaction hiện có', 'Tắt transaction ngoài', 'Chỉ chạy được với checked exception'], answer: 1, explain: `REQUIRED dùng transaction hiện có nếu có, nếu không mới tạo. REQUIRES_NEW mới suspend transaction ngoài và mở transaction độc lập.` }, { q: 'Trong thiết kế này, ranh giới nào giúp kiểm soát lỗi dễ hơn?', options: ['Ranh giới rõ theo trách nhiệm', 'Một method khổng lồ', 'Nuốt mọi exception', 'Chia sẻ mutable state toàn cục'], answer: 0, explain: `Ranh giới rõ theo trách nhiệm giúp thay đổi và kiểm thử từng phần độc lập.` }],
+    check: [{ q: 'Method bên trong chạy REQUIRED khi đã có transaction ngoài thì thường thế nào?', options: ['Luôn tạo transaction mới độc lập', 'Tham gia transaction hiện có', 'Tắt transaction ngoài', 'Chỉ chạy được với checked exception'], answer: 1, explain: `REQUIRED dùng transaction hiện có nếu có, nếu không mới tạo. "Luôn tạo transaction mới" là REQUIRES_NEW. Không propagation nào "tắt" transaction ngoài; NOT_SUPPORTED chỉ tạm treo nó. Propagation không liên quan loại exception.` }, { q: 'Method {{@Transactional public void importFile() throws IOException}} lưu 500 bản ghi rồi ném {{IOException}}. Không cấu hình gì thêm. Kết quả?', options: ['Rollback cả 500 bản ghi', '500 bản ghi được commit, caller vẫn nhận IOException', 'Spring nuốt IOException và commit', 'Spring bọc thành RuntimeException rồi rollback'], answer: 1, explain: `Mặc định Spring chỉ rollback với RuntimeException và Error; IOException là checked nên transaction được commit, sau đó exception vẫn được ném cho caller. Muốn rollback phải thêm rollbackFor = IOException.class. Spring không nuốt exception và cũng không bọc lại thành RuntimeException.` }],
     related: ['spring-003'], tags: ['Transactional', 'propagation', 'rollback', 'JPA']
   },
   {
@@ -244,7 +304,21 @@ Với ghi audit cần tồn tại dù nghiệp vụ chính rollback, REQUIRES_NE
     body: `**Tóm tắt:** Spring tạo bean, inject dependency, chạy callback khởi tạo rồi đưa bean vào sử dụng; khi context đóng, callback hủy được gọi cho bean do context quản lý. Singleton được giữ trong context, còn prototype tạo instance mới mỗi lần yêu cầu và lifecycle destroy không được container tự quản lý như singleton.
 
 ### Lifecycle cơ bản
-Container tạo instance từ constructor hoặc factory method, inject dependency, gọi các callback trước khi bean sẵn sàng, rồi công bố bean. Trong Spring có nhiều extension point như BeanPostProcessor; callback phổ biến gồm {{@PostConstruct}} và {{@PreDestroy}} (Jakarta). Initialization callback phù hợp kiểm tra cấu hình hoặc chuẩn bị resource, nhưng không nên thực hiện công việc startup dài khó retry.
+Với một singleton, Spring đi qua các bước theo đúng thứ tự sau:
+
+1. **Tạo instance**: gọi constructor (hoặc factory method {{@Bean}}); constructor injection xảy ra ở đây.
+2. **Inject field/setter** ({{@Autowired}} trên field hoặc setter).
+3. **Aware callback**: ví dụ {{BeanNameAware}}, {{ApplicationContextAware}} — bean nhận tên của nó, nhận context.
+4. **BeanPostProcessor#postProcessBeforeInitialization**: chính ở bước này {{@PostConstruct}} được gọi (do {{CommonAnnotationBeanPostProcessor}} xử lý).
+5. **Init callback khác**: {{InitializingBean.afterPropertiesSet()}}, rồi init-method khai báo trong {{@Bean(initMethod = ...)}}.
+6. **BeanPostProcessor#postProcessAfterInitialization**: đây là nơi Spring **bọc bean bằng AOP proxy** (cho {{@Transactional}}, {{@Async}}…). Thứ được đưa vào context và inject cho bean khác là proxy này.
+7. Bean sẵn sàng sử dụng.
+
+Khi context đóng, singleton được hủy theo thứ tự: {{@PreDestroy}} → {{DisposableBean.destroy()}} → destroy-method. {{@PostConstruct}}/{{@PreDestroy}} thuộc package {{jakarta.annotation}} (Spring Boot 3; bản cũ là {{javax.annotation}}).
+
+Hệ quả quan trọng của bước 6: trong {{@PostConstruct}}, bean **chưa** được bọc proxy, và gọi method của chính nó là self-call — nên {{@Transactional}} trên method được gọi từ {{@PostConstruct}} không có tác dụng. Việc cần transaction lúc khởi động hãy đặt trong listener {{ApplicationReadyEvent}} hoặc gọi qua một bean khác.
+
+Initialization callback phù hợp để kiểm tra cấu hình hoặc chuẩn bị resource nhẹ; không nên làm công việc dài (nạp cache vài phút, gọi API ngoài) vì nó chặn cả quá trình khởi động và lỗi ở đây làm app không lên được.
 
 ~~~java
 @Component
@@ -255,7 +329,7 @@ class Cache {
 ~~~
 
 ### Scope
-Singleton là một instance cho mỗi bean definition trong ApplicationContext. Prototype tạo object mới mỗi lần container resolve bean. Inject prototype vào singleton chỉ resolve một lần khi singleton được tạo; nếu cần object mới mỗi lần, dùng provider/factory hoặc lookup phù hợp.
+Singleton là một instance cho mỗi bean definition trong ApplicationContext. Prototype tạo object mới mỗi lần container resolve bean; Spring chạy init callback cho prototype nhưng **không** gọi destroy callback, vì sau khi giao object đi container không giữ nó nữa. Inject prototype vào singleton chỉ resolve **một lần** khi singleton được tạo; nếu cần object mới mỗi lần, inject {{ObjectProvider<T>}} rồi gọi {{getObject()}}, hoặc dùng {{@Lookup}} method. Web app còn có scope {{request}} và {{session}}: inject chúng vào singleton cần một scoped proxy (Spring tự tạo khi dùng {{@RequestScope}}).
 
 | Scope | Tạo | Destroy callback |
 |---|---|---|
@@ -274,7 +348,10 @@ Hãy nêu ai sở hữu vòng đời và ai chịu trách nhiệm đóng resourc
 > Senior tip: Lifecycle callback nên ngắn, idempotent và có log rõ. Không coi @PreDestroy là nơi duy nhất bảo vệ dữ liệu quan trọng; process có thể bị kill hoặc hết thời gian shutdown.`,
     exercises: [{
       title: 'Mô phỏng scope và lifecycle callback',
-      prompt: `Viết {{BeanFactory}} hỗ trợ SINGLETON và PROTOTYPE. Mỗi lần tạo bean ghi {{init:name}}; {{close()}} gọi destroy cho singleton theo thứ tự ngược tạo và ghi {{destroy:name}}. Prototype mỗi lần lấy là object mới.`,
+      prompt: `Viết {{BeanFactory}} mô phỏng hai scope SINGLETON và PROTOTYPE:
+- {{get(name, scope)}}: SINGLETON thì chỉ tạo lần đầu, các lần sau trả lại cùng object; PROTOTYPE thì mỗi lần tạo object mới. **Mỗi lần thật sự tạo** một {{Bean}} thì ghi sự kiện {{init:name}} vào {{events}}.
+- {{close()}}: ghi {{destroy:name}} cho các **singleton** theo thứ tự **ngược** với thứ tự tạo (bean tạo sau hủy trước). Prototype không được destroy. Gọi {{close()}} lần hai không làm gì.
+- Sau khi đã {{close()}}, gọi {{get}} phải ném {{IllegalStateException}}.`,
       starter: `enum Scope { SINGLETON, PROTOTYPE }
 class Bean { final String name; Bean(String n) { name=n; } }
 class BeanFactory {
@@ -288,6 +365,8 @@ class BeanFactory {
   check("scope behavior", () -> { BeanFactory f=new BeanFactory(); if(f.get("a",Scope.SINGLETON)!=f.get("a",Scope.SINGLETON)) throw new AssertionError(); if(f.get("p",Scope.PROTOTYPE)==f.get("p",Scope.PROTOTYPE)) throw new AssertionError(); });
   check("reverse singleton destruction", () -> { BeanFactory f=new BeanFactory(); f.get("a",Scope.SINGLETON); f.get("b",Scope.SINGLETON); f.close(); if(!f.events.equals(List.of("init:a","init:b","destroy:b","destroy:a"))) throw new AssertionError(f.events); });
   check("close idempotent and prototype excluded", () -> { BeanFactory f=new BeanFactory(); f.get("p",Scope.PROTOTYPE); f.close(); f.close(); if(!f.events.equals(List.of("init:p"))) throw new AssertionError(f.events); });
+  check("init logged once per singleton, every time per prototype", () -> { BeanFactory f=new BeanFactory(); f.get("s",Scope.SINGLETON); f.get("s",Scope.SINGLETON); f.get("p",Scope.PROTOTYPE); f.get("p",Scope.PROTOTYPE); if(!f.events.equals(List.of("init:s","init:p","init:p"))) throw new AssertionError(f.events); });
+  check("get after close throws", () -> { BeanFactory f=new BeanFactory(); f.get("a",Scope.SINGLETON); f.close(); try { f.get("a",Scope.SINGLETON); throw new AssertionError("expected IllegalStateException"); } catch (IllegalStateException ok) {} });
   System.out.println("RESULT " + passed + "/" + total);
  }
 }`,
@@ -311,9 +390,16 @@ class BeanFactory {
  }
 }`,
       hints: ['Dùng LinkedHashMap để giữ thứ tự tạo singleton.', 'Prototype không đưa vào registry singleton.', 'Đóng factory lần hai không được lặp callback.'],
-      explain: `Ví dụ mô phỏng scope và callback bằng event log. Singleton cache theo tên; prototype luôn tạo object mới. Factory giữ thứ tự tạo để hủy ngược. Spring lifecycle phức tạp hơn do post processor và dependency graph; destroy ordering dựa trên quan hệ bean, không chỉ thứ tự đăng ký. Prototype cleanup thuộc về consumer vì container không giữ quyền sở hữu sau khi cấp instance.`
+      explain: `Ví dụ mô phỏng scope và callback bằng event log. Singleton được cache theo tên trong một {{LinkedHashMap}} (giữ thứ tự chèn), nên khi đóng chỉ cần đảo danh sách để hủy ngược. Prototype không vào cache: container tạo xong là giao đi và quên luôn, vì vậy không thể gọi destroy cho nó — việc dọn dẹp thuộc về code đã lấy nó.
+
+Vì sao hủy **ngược** thứ tự tạo? Nếu A dùng B thì B được tạo trước A. Khi tắt, A phải dừng trước (có thể nó còn đang flush dữ liệu qua B), rồi mới tới B. Spring thật xác định thứ tự này theo đồ thị phụ thuộc giữa các bean, không chỉ theo thứ tự tạo.
+
+Lỗi hay gặp:
+- Dùng {{HashMap}}: thứ tự duyệt không theo thứ tự tạo, destroy lộn xộn.
+- Ghi {{init}} trước khi kiểm tra cache: singleton bị ghi init nhiều lần dù chỉ tạo một object.
+- Không có cờ {{closed}}: gọi close hai lần thì destroy hai lần — với resource thật (connection pool) có thể ném lỗi khi đóng lần hai.`
     }],
-    check: [{ q: 'Prototype bean được inject một lần vào singleton thì chuyện gì xảy ra?', options: ['Mỗi lần gọi method singleton tự nhận prototype mới', 'Singleton giữ instance đã resolve lúc inject', 'Prototype chuyển thành request scope', 'Container không tạo prototype'], answer: 1, explain: `Dependency được resolve khi singleton được tạo, nên reference đó giữ nguyên. Muốn instance mới mỗi lần cần provider/factory hoặc cơ chế lookup.` }, { q: 'Trong thiết kế này, ranh giới nào giúp kiểm soát lỗi dễ hơn?', options: ['Ranh giới rõ theo trách nhiệm', 'Một method khổng lồ', 'Nuốt mọi exception', 'Chia sẻ mutable state toàn cục'], answer: 0, explain: `Ranh giới rõ theo trách nhiệm giúp thay đổi và kiểm thử từng phần độc lập.` }],
+    check: [{ q: 'Prototype bean được inject một lần vào singleton thì chuyện gì xảy ra?', options: ['Mỗi lần gọi method singleton tự nhận prototype mới', 'Singleton giữ instance đã resolve lúc inject', 'Prototype chuyển thành request scope', 'Container không tạo prototype'], answer: 1, explain: `Dependency được resolve một lần khi singleton được tạo, nên field đó luôn trỏ tới cùng một object. Container không tự "làm mới" field mỗi lần gọi method; muốn instance mới mỗi lần cần {{ObjectProvider}} hoặc {{@Lookup}}. Scope không tự đổi thành request. Container vẫn tạo prototype — đúng một lần lúc inject.` }, { q: 'Service có method {{@Transactional void loadData()}} và được gọi từ {{@PostConstruct void init()}} của chính service đó. Vì sao transaction không được mở?', options: ['Vì @PostConstruct chạy trước khi bean được bọc proxy (postProcessAfterInitialization), và lời gọi là self-call', 'Vì @PostConstruct luôn chạy trong thread riêng', 'Vì transaction manager chỉ khởi tạo sau khi HTTP server bật', 'Vì @Transactional không hỗ trợ method trả về void'], answer: 0, explain: `@PostConstruct chạy ở bước postProcessBeforeInitialization, trước khi Spring tạo AOP proxy; hơn nữa init() gọi this.loadData() trên chính object gốc, không qua proxy. Cách sửa: chạy trong listener ApplicationReadyEvent hoặc gọi qua bean khác. @PostConstruct chạy trên thread đang tạo context, không phải thread riêng. Transaction manager là bean bình thường, không chờ HTTP server. Kiểu trả về void hoàn toàn được hỗ trợ.` }],
     related: ['spring-004'], tags: ['lifecycle', 'scope', 'singleton', 'prototype']
   },
   {
@@ -323,7 +409,14 @@ class BeanFactory {
     body: `**Tóm tắt:** Spring MVC nhận request tại DispatcherServlet, tìm handler phù hợp, chuyển đổi và validate input, gọi controller rồi serialize response. Lỗi validation nên được ánh xạ thành response có schema ổn định; Spring Framework 6 hỗ trợ {{ProblemDetail}} theo RFC 9457.
 
 ### Request flow
-Servlet container chuyển request tới DispatcherServlet. HandlerMapping chọn controller/method; HandlerAdapter gọi handler. HttpMessageConverter đọc JSON thành DTO, Bean Validation kiểm tra constraint khi cấu hình validation phù hợp, rồi controller/service thực hiện nghiệp vụ. Converter serialize object trả về thành response. ExceptionResolver xử lý exception xuyên suốt pipeline và chọn status/body.
+Đi từng bước với request {{POST /users}} có body JSON:
+
+1. Servlet container (Tomcat) nhận HTTP request, chạy qua các **Filter** (ví dụ Spring Security), rồi giao cho **DispatcherServlet** — servlet duy nhất của Spring MVC.
+2. **HandlerMapping** ({{RequestMappingHandlerMapping}}) tìm method controller khớp URL + HTTP method. Không có method nào khớp → 404 (Spring 6 ném {{NoHandlerFoundException}}/{{NoResourceFoundException}}).
+3. **HandlerAdapter** chuẩn bị tham số cho method. Với {{@RequestBody}}, một **HttpMessageConverter** (Jackson) đọc JSON thành DTO; JSON sai cú pháp → {{HttpMessageNotReadableException}} → 400.
+4. Nếu tham số có {{@Valid}} (cần dependency {{spring-boot-starter-validation}}), Bean Validation kiểm tra constraint như {{@NotBlank}}, {{@Email}}; vi phạm → {{MethodArgumentNotValidException}} → 400. Controller **không hề được gọi**.
+5. Controller gọi service, trả về object; converter serialize object đó thành JSON response.
+6. Exception ở bất kỳ bước nào được chuyển cho **HandlerExceptionResolver** — trong đó có các method {{@ExceptionHandler}} của bạn (thường đặt trong {{@RestControllerAdvice}}) — để chọn status và body.
 
 ~~~java
 record CreateUser(@NotBlank String email) {}
@@ -335,7 +428,16 @@ ResponseEntity<?> create(@Valid @RequestBody CreateUser request) { ... }
 Validate syntax và invariant đơn giản ngay tại API boundary, ví dụ field bắt buộc hoặc range. Quy tắc nghiệp vụ cần dữ liệu hiện tại như email đã tồn tại phải được kiểm tra ở service/domain và vẫn cần database constraint để chống race. Không trả stack trace hay nội dung exception nội bộ cho client.
 
 ### ProblemDetail
-{{ProblemDetail}} biểu diễn lỗi theo RFC 9457 với status, title, detail, instance và properties mở rộng. Có thể tạo response tại exception handler hoặc dùng cơ chế hỗ trợ của Spring MVC. Giữ {{type}} ổn định để client phân loại; {{detail}} nên hữu ích nhưng không lộ dữ liệu nhạy cảm. Validation error nên có danh sách field/message đã chuẩn hóa, thứ tự ổn định nếu client hoặc snapshot test phụ thuộc.
+{{ProblemDetail}} biểu diễn lỗi theo RFC 9457 (bản thay thế RFC 7807) với các field {{type}}, {{title}}, {{status}}, {{detail}}, {{instance}} và properties mở rộng; content type của response là {{application/problem+json}}. Hai cách dùng: trả {{ProblemDetail}} từ method {{@ExceptionHandler}} của bạn, hoặc trong Spring Boot 3 bật {{spring.mvc.problemdetails.enabled=true}} để các exception chuẩn của Spring MVC (400 validation, 404, 405…) tự trả về dạng ProblemDetail.
+
+~~~java
+@ExceptionHandler(EmailTakenException.class)
+ProblemDetail handle(EmailTakenException e) {
+    ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, "Email đã được dùng");
+    pd.setType(URI.create("https://api.example.com/errors/email-taken")); // client phân loại theo type
+    return pd;
+}
+~~~ Giữ {{type}} ổn định để client phân loại; {{detail}} nên hữu ích nhưng không lộ dữ liệu nhạy cảm. Validation error nên có danh sách field/message đã chuẩn hóa, thứ tự ổn định nếu client hoặc snapshot test phụ thuộc.
 
 | Lỗi | HTTP thường dùng | Xử lý |
 |---|---|---|
@@ -352,7 +454,10 @@ Mô tả request từ servlet tới handler và ngược lại qua converter. Ph
 > Senior tip: Một error response tốt giúp client quyết định retry hay sửa request. Đừng retry 400; với 409/5xx hãy định nghĩa semantics rõ và dùng idempotency cho thao tác có side effect.`,
     exercises: [{
       title: 'Dispatcher nhỏ với validation và ProblemDetail',
-      prompt: `Cài {{MiniDispatcher.dispatch(path, email)}}: {{POST /users}} hợp lệ khi email chứa đúng một dấu @ và hai vế không rỗng, trả {{Response(201,"created")}}. Email sai trả 400 với body kiểu ProblemDetail có type {{validation-error}}. URL khác trả 404 với type {{not-found}}.`,
+      prompt: `Cài {{MiniDispatcher.dispatch(path, email)}} mô phỏng thứ tự xử lý của Spring MVC cho {{POST /users}} ({{Response}} chỉ giữ {{status}} và {{type}} — phần quan trọng nhất của một ProblemDetail):
+1. **Routing trước**: path khác {{/users}} → {{Response(404, "not-found")}}, bất kể email ra sao (giống HandlerMapping không tìm thấy handler thì validation không bao giờ chạy).
+2. **Validation sau**: email hợp lệ khi khác null, chứa **đúng một** dấu {{@}}, và cả phần trước lẫn phần sau {{@}} đều không rỗng. Không hợp lệ → {{Response(400, "validation-error")}}.
+3. Hợp lệ → {{Response(201, "created")}}.`,
       starter: `class Response { final int status; final String type; Response(int s,String t){status=s;type=t;} }
 class MiniDispatcher {
  Response dispatch(String path, String email) { throw new UnsupportedOperationException("TODO"); }
@@ -364,6 +469,9 @@ class MiniDispatcher {
   check("validation error", () -> { Response r=new MiniDispatcher().dispatch("/users","bad"); if(r.status!=400||!r.type.equals("validation-error")) throw new AssertionError(); });
   check("not found", () -> { Response r=new MiniDispatcher().dispatch("/missing","a@b"); if(r.status!=404||!r.type.equals("not-found")) throw new AssertionError(); });
   check("malformed email", () -> { Response r=new MiniDispatcher().dispatch("/users","a@@b"); if(r.status!=400) throw new AssertionError(); });
+  check("empty local or domain part", () -> { MiniDispatcher d=new MiniDispatcher(); for (String e : new String[]{"@b", "a@", "@", ""}) { Response r=d.dispatch("/users", e); if(r.status!=400||!r.type.equals("validation-error")) throw new AssertionError(e); } });
+  check("null email is a validation error", () -> { Response r=new MiniDispatcher().dispatch("/users", null); if(r.status!=400) throw new AssertionError(); });
+  check("routing happens before validation", () -> { Response r=new MiniDispatcher().dispatch("/orders", null); if(r.status!=404||!r.type.equals("not-found")) throw new AssertionError(r.status + " " + r.type); });
   System.out.println("RESULT " + passed + "/" + total);
  }
 }`,
@@ -378,9 +486,16 @@ class MiniDispatcher {
  }
 }`,
       hints: ['Route matching trước validation payload.', 'Một @ duy nhất phải có ký tự hai phía.', 'Dùng type ổn định cho client thay vì câu lỗi tự do.'],
-      explain: `Dispatcher tách routing, validation và response mapping thành ba nhánh dễ kiểm thử. Đây là mô phỏng luồng MVC: Spring dùng DispatcherServlet/HandlerMapping/HandlerAdapter và converter thay vì if path trực tiếp. ProblemDetail chuẩn hóa metadata lỗi; trong API thật nên thêm field errors có cấu trúc và không tiết lộ exception nội bộ. Validation format email ở ví dụ chỉ minh họa boundary, không thay thế validator chuẩn hoặc nghiệp vụ.`
+      explain: `Dispatcher tách routing, validation và tạo response thành ba bước theo đúng thứ tự của Spring MVC: không tìm thấy handler thì trả 404 ngay, tham số của handler (và validation của nó) chưa bao giờ được xét. Vì vậy {{/orders}} với email null vẫn là 404, không phải 400.
+
+Kiểm tra email bằng {{indexOf('@')}} và {{lastIndexOf('@')}}: hai giá trị bằng nhau nghĩa là chỉ có một dấu @; {{at > 0}} nghĩa là phần trước không rỗng; {{at < length - 1}} nghĩa là phần sau không rỗng. Ở dự án thật hãy dùng {{@Email}} của Bean Validation thay vì tự viết.
+
+Lỗi hay gặp:
+- Validate trước rồi mới route: request sai URL lại nhận 400, client hiểu nhầm là dữ liệu sai.
+- Quên null: {{email.indexOf}} ném {{NullPointerException}} → server trả 500 cho một lỗi đáng lẽ là 400.
+- Trả {{type}} là câu lỗi tự do ("Email không hợp lệ!"): client không thể phân loại ổn định; {{type}} phải là mã cố định, câu chữ để trong {{detail}}.`
     }],
-    check: [{ q: 'Validation cho email chưa tồn tại nên nằm ở đâu?', options: ['Chỉ trong regex ở controller', 'Service/domain và constraint DB khi cần chống race', 'Trong serializer JSON', 'Trong DispatcherServlet'], answer: 1, explain: `Kiểm tra tồn tại phụ thuộc dữ liệu và là invariant nghiệp vụ, nên xử lý ở service/domain; unique constraint DB bảo vệ race condition. Regex chỉ kiểm tra hình dạng.` }, { q: 'Trong thiết kế này, ranh giới nào giúp kiểm soát lỗi dễ hơn?', options: ['Ranh giới rõ theo trách nhiệm', 'Một method khổng lồ', 'Nuốt mọi exception', 'Chia sẻ mutable state toàn cục'], answer: 0, explain: `Ranh giới rõ theo trách nhiệm giúp thay đổi và kiểm thử từng phần độc lập.` }],
+    check: [{ q: 'Validation cho email chưa tồn tại nên nằm ở đâu?', options: ['Chỉ trong regex ở controller', 'Service/domain và constraint DB khi cần chống race', 'Trong serializer JSON', 'Trong DispatcherServlet'], answer: 1, explain: `Kiểm tra "email đã tồn tại chưa" cần đọc dữ liệu hiện tại, nên thuộc service/domain; thêm unique constraint ở DB vì hai request đồng thời có thể cùng vượt qua bước kiểm tra trong code. Regex chỉ kiểm tra hình dạng email, không biết DB có gì. Serializer chỉ chuyển JSON ↔ object. DispatcherServlet chỉ điều phối request, không chứa nghiệp vụ.` }, { q: 'Controller có {{create(@Valid @RequestBody CreateUser req)}}, client gửi email rỗng vi phạm {{@NotBlank}}. Điều gì xảy ra?', options: ['Controller được gọi với req.email() rỗng, tự kiểm tra lấy', 'Spring ném MethodArgumentNotValidException trước khi gọi controller, mặc định trả 400', 'Spring trả 500 vì validation lỗi', 'Jackson từ chối parse JSON và trả 415'], answer: 1, explain: `Validation chạy khi HandlerAdapter chuẩn bị tham số, nên controller không được gọi; MethodArgumentNotValidException được ExceptionResolver chuyển thành 400 (dạng ProblemDetail nếu bật). Phương án 1 chỉ đúng khi thiếu @Valid hoặc thiếu starter-validation. 500 dành cho lỗi phía server. Jackson parse JSON hợp lệ bình thường; 415 là lỗi Content-Type không được hỗ trợ.` }],
     related: ['spring-005'], tags: ['Spring MVC', 'validation', 'ProblemDetail', 'HTTP']
   },
   {
@@ -619,31 +734,47 @@ class MigrationRunner {
     },
   {
     id: 'lesson-spring-007', track: 'spring', order: 7,
-    title: 'Annotation-driven mapper kiểu Jackson: reflection và FAIL_ON_MISSING', level: 'senior', minutes: 50,
-    goals: ['Dùng reflection để serialize object theo annotation', 'Hiểu vì sao field non-public không annotation bị bỏ qua im lặng', 'Bật chế độ strict để phát hiện field bị thiếu trong JSON'],
-    body: `**Tóm tắt:** Mapper kiểu Jackson dùng reflection để đọc field và annotation quyết định tên JSON. Nếu field không public và không có {{@JsonProperty}}, mapper mặc định bỏ qua im lặng; chế độ strict biến lỗi này thành exception để phát hiện field bị thiếu trong JSON.
+    title: 'Mapper JSON kiểu Jackson: reflection, annotation và chế độ strict chống mất field im lặng', level: 'senior', minutes: 50,
+    goals: ['Dùng reflection để serialize object theo annotation', 'Hiểu quy tắc visibility: vì sao field private không getter, không annotation bị bỏ qua im lặng', 'Tự viết chế độ strict để phát hiện field bị bỏ sót, và biết các cờ tương ứng của Jackson thật'],
+    body: `**Tóm tắt:** Jackson dùng reflection để tìm các "property" của object (field public, getter public, hoặc thứ có {{@JsonProperty}}) và annotation để quyết định tên JSON. Field private không có getter và không có annotation thì **bị bỏ qua im lặng** — JSON thiếu dữ liệu mà không có lỗi nào. Bài này tự viết một mapper nhỏ để hiểu cơ chế, kèm một chế độ strict biến việc bỏ sót đó thành exception.
 
 ### Reflection và annotation runtime
-Annotation chỉ có tác dụng ở runtime nếu khai báo {{@Retention(RUNTIME)}} và target field. Mapper duyệt {{getDeclaredFields()}}, đọc {{@JsonProperty}} và {{@JsonIgnore}}, rồi {{setAccessible(true)}} để lấy giá trị. Thứ tự field theo khai báo trong class. Cache metadata theo class trong production để tránh lặp reflection.
+Annotation chỉ đọc được lúc runtime qua reflection nếu khai báo {{@Retention(RetentionPolicy.RUNTIME)}} (mặc định là {{CLASS}}: có trong file .class nhưng reflection không thấy). {{@Target(ElementType.FIELD)}} chỉ giới hạn chỗ được gắn annotation. Mapper duyệt {{getDeclaredFields()}}, đọc {{@JsonProperty}} và {{@JsonIgnore}}, rồi {{setAccessible(true)}} để đọc được cả field không public.
 
-### Quy tắc đặt tên
-Có {{@JsonProperty("name")}} thì dùng tên đó. Không annotation nhưng field public thì dùng tên field. Không annotation và field không public thì bị bỏ qua im lặng; đây là bug thường gặp khi port từ Jackson sang mapper tự viết hoặc khi field thiếu getter. {{@JsonIgnore}} luôn bỏ qua, kể cả khi có {{@JsonProperty}} nếu cả hai cùng xuất hiện, vì bỏ qua an toàn hơn serialize nhầm dữ liệu nhạy cảm.
+Lưu ý: Javadoc của {{getDeclaredFields()}} nói rõ mảng trả về **không theo thứ tự nào cụ thể**. Trên HotSpot thực tế nó theo thứ tự khai báo (bài tập dựa vào điều này), nhưng code production cần thứ tự cố định thì phải tự sắp xếp — Jackson có {{@JsonPropertyOrder}} cho việc này.
 
-### FAIL_ON_MISSING
-Chế độ strict không thay đổi output khi mọi field đều hợp lệ; nó chỉ kiểm tra trước khi serialize: gặp field non-public/không annotation thì ném exception. Điều này giúp phát hiện field bị drop. Trong Jackson thật, FAIL_ON_UNKNOWN_PROPERTIES và visibility rules phức tạp hơn; bài tập mô phỏng ý tưởng cốt lõi: silent drop là nguy hiểm vì không có lỗi nào được ném.
+### Jackson thật quyết định property thế nào?
+Mặc định (visibility mặc định của {{ObjectMapper}}):
 
-### Empty object và giá trị
-Object không có field hợp lệ serialize thành {{}}. String phải escape quote, backslash và ký tự điều khiển. Số và boolean serialize trực tiếp. Null serialize thành null. Object lồng nhau có thể serialize đệ quy, nhưng phải tránh vòng tham chiếu trong production.
+| Thành phần | Được nhận là property khi |
+|---|---|
+| Field | là **public**, hoặc có {{@JsonProperty}} |
+| Getter {{getX()}} / {{isX()}} | là **public** |
+| Bất kỳ | có {{@JsonIgnore}} thì bị loại |
+
+Ví dụ: {{private String nick;}} **có** {{public String getNick()}} → vẫn được serialize qua getter. Nhưng {{private String nick;}} không getter, không annotation → biến mất khỏi JSON mà không ai hay. Đó là lỗi hay gặp khi dùng Lombok mà quên {{@Getter}}, hoặc khi đổi tên getter.
+
+### Quy tắc của mapper trong bài tập
+Đơn giản hoá: chỉ xét field. Có {{@JsonProperty("name")}} thì dùng tên đó. Không annotation nhưng field public thì dùng tên field. Không annotation và field không public thì bỏ qua im lặng (giống Jackson khi không có getter). {{@JsonIgnore}} luôn thắng: bỏ qua an toàn hơn lỡ serialize dữ liệu nhạy cảm như số CCCD, mật khẩu.
+
+### Chế độ strict
+Jackson **không** có cờ nào tên "FAIL_ON_MISSING". Các cờ gần nhất:
+- {{DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES}} (mặc định bật): khi **đọc** JSON có field lạ thì ném lỗi — Spring Boot tắt cờ này mặc định.
+- {{SerializationFeature.FAIL_ON_EMPTY_BEANS}} (mặc định bật): khi **ghi** một object không có property nào thì ném lỗi thay vì trả về một object JSON rỗng.
+
+Chế độ strict của bài tập là một kiểm tra tự viết: không đổi output khi mọi field đều hợp lệ, nhưng gặp field không public mà không annotation thì ném exception — buộc developer quyết định rõ: đánh {{@JsonProperty}} hay {{@JsonIgnore}}.
+
+### Giá trị và object rỗng
+String phải escape dấu nháy kép, backslash và ký tự điều khiển (xuống dòng, tab). Số và boolean ghi trực tiếp. Null ghi thành null. Object lồng nhau serialize đệ quy, nhưng phải chống vòng tham chiếu (A trỏ B, B trỏ A) — Jackson có {{@JsonManagedReference}}/{{@JsonBackReference}} hoặc {{@JsonIdentityInfo}}. Mapper của bài trả object JSON rỗng (cặp ngoặc nhọn mở rồi đóng) cho object không có field hợp lệ (khác mặc định của Jackson nói ở trên).
 
 ### Pitfall production
-- Bỏ qua field im lặng gây thiếu dữ liệu mà không lỗi.
-- Reflection chậm; cache metadata per class trong production.
-- Field mutable và setAccessible có thể bị chặn bởi module system hoặc SecurityManager.
-- JSON injection nếu không escape đúng.
-- Thứ tự field không ổn định nếu dùng map; giữ declared order để snapshot test ổn định.
+- Field bị bỏ im lặng: API trả thiếu dữ liệu, client hiển thị trống, không có log lỗi nào.
+- Reflection tốn chi phí: cache metadata theo class (Jackson cache serializer cho từng class).
+- {{setAccessible(true)}} bị chặn bởi module system (Java 16+ mặc định đóng các package nội bộ của JDK) với class nằm trong module không {{opens}} package cho mapper.
+- Tự nối chuỗi JSON mà không escape: dữ liệu người dùng chứa dấu nháy kép làm vỡ JSON hoặc chèn thêm field (JSON injection).
 
 ### Liên hệ phỏng vấn
-Hãy mô tả cách Jackson quyết định property, visibility và unknown property handling. Giải thích vì sao silent drop là nguy hiểm và cách bật strict mode. Nêu trade-off reflection so với code generation và bean introspection.
+Hãy mô tả cách Jackson tìm property (field public, getter public, annotation), vì sao bỏ sót im lặng nguy hiểm, và cách phòng: test snapshot JSON, chú ý Lombok/getter, các cờ {{FAIL_ON_UNKNOWN_PROPERTIES}} / {{FAIL_ON_EMPTY_BEANS}}. Nêu trade-off giữa reflection (linh hoạt, chậm lúc khởi động) và sinh code lúc compile (nhanh, ít "phép màu" hơn).
 
 > Senior tip: Trong API contract, thiếu field thường nghiêm trọng hơn thừa field. Hãy có test snapshot JSON và bật strict validation trong môi trường dev/test để phát hiện regression sớm.`,
     exercises: [{
@@ -798,9 +929,9 @@ class SimpleJsonMapper {
     }
 }`,
       hints: ['Dùng {{getDeclaredFields()}} và {{getAnnotation(...)}} để đọc metadata runtime.', '{{JsonIgnore}} được kiểm tra trước {{JsonProperty}}.', 'Field public không annotation vẫn được include theo tên field.', 'strict chỉ kiểm tra trước khi append, không đổi output của object hợp lệ.'],
-      explain: `Mapper mô phỏng ý tưởng cốt lõi của Jackson: annotation quyết định tên, reflection đọc giá trị, và chế độ strict phát hiện field bị drop. Ở chế độ thường, field non-public không annotation bị bỏ qua im lặng, nên output của User chỉ còn {{full_name}}. Ở strict, mapper ném exception ngay khi gặp {{id}} hoặc {{nick}}, giúp test phát hiện regression. {{JsonIgnore}} luôn thắng để tránh serialize dữ liệu nhạy cảm. Escape đúng là bắt buộc để không tạo JSON injection. Trong production, nên cache metadata per class và cân nhắc code generation để giảm chi phí reflection.`,
+      explain: `Mapper mô phỏng ý tưởng cốt lõi của Jackson: annotation quyết định tên, reflection đọc giá trị, và chế độ strict (tự viết, Jackson không có cờ này) phát hiện field bị drop. Ở chế độ thường, field non-public không annotation bị bỏ qua im lặng, nên output của User chỉ còn {{full_name}}. Ở strict, mapper ném exception ngay khi gặp {{id}} hoặc {{nick}}, giúp test phát hiện regression. {{JsonIgnore}} luôn thắng để tránh serialize dữ liệu nhạy cảm. Escape đúng là bắt buộc để không tạo JSON injection. Trong production, nên cache metadata per class và cân nhắc code generation để giảm chi phí reflection.`,
     }],
-    check: [{ q: 'Vì sao field {{long id;}} trong User bị bỏ qua ở chế độ thường?', options: ['Vì không public và không có @JsonProperty', 'Vì kiểu long không serialize được', 'Vì @JsonIgnore áp dụng cho cả class', 'Vì mapper chỉ đọc getter'], answer: 0, explain: `Mapper chỉ include field public hoặc có @JsonProperty. Field long id không public và không annotation nên bị drop im lặng, đây là bug cần strict mode để phát hiện.` }, { q: 'Chế độ strict thay đổi điều gì?', options: ['Biến field bị drop thành exception, output hợp lệ không đổi', 'Tự động thêm getter', 'Bỏ qua @JsonIgnore', 'Sắp xếp field theo tên'], answer: 0, explain: `strict không thay đổi JSON của object hợp lệ; nó chỉ kiểm tra và ném exception khi gặp field non-public không annotation. @JsonIgnore vẫn được tôn trọng và thứ tự field giữ nguyên.` }, { q: 'Trong thiết kế này, ranh giới nào giúp kiểm soát lỗi dễ hơn?', options: ['Ranh giới rõ theo trách nhiệm', 'Một method khổng lồ', 'Nuốt mọi exception', 'Chia sẻ mutable state toàn cục'], answer: 0, explain: `Ranh giới rõ theo trách nhiệm giúp thay đổi và kiểm thử từng phần độc lập.` }],
-      related: ['spring-005', 'spring-006'], tags: ['Jackson', 'reflection', 'annotation', 'JSON', 'FAIL_ON_MISSING']
+    check: [{ q: 'Vì sao field {{long id;}} trong User bị bỏ qua ở chế độ thường?', options: ['Vì không public và không có @JsonProperty', 'Vì kiểu long không serialize được', 'Vì @JsonIgnore áp dụng cho cả class', 'Vì mapper chỉ đọc getter'], answer: 0, explain: `Mapper chỉ include field public hoặc có @JsonProperty; id là package-private và không annotation nên bị drop im lặng — đúng loại bug strict mode sinh ra để bắt. Kiểu long serialize bình thường (số). @JsonIgnore chỉ gắn trên field ssn, không áp cho cả class. Mapper của bài không đọc getter; và User cũng không có getter nào.` }, { q: 'Chế độ strict thay đổi điều gì?', options: ['Biến field bị drop thành exception, output hợp lệ không đổi', 'Tự động thêm getter', 'Bỏ qua @JsonIgnore', 'Sắp xếp field theo tên'], answer: 0, explain: `strict không thay đổi JSON của object hợp lệ; nó chỉ kiểm tra và ném exception khi gặp field không public mà không annotation. Nó không sinh code hay getter. @JsonIgnore vẫn được tôn trọng (field bị ignore không làm strict ném lỗi). Thứ tự field giữ nguyên như khai báo.` }, { q: 'Với ObjectMapper mặc định của Jackson, class có {{private String nick;}} và {{public String getNick()}}. Khi serialize, nick có xuất hiện không?', options: ['Có, vì getter public được nhận là property', 'Không, vì field private luôn bị bỏ qua', 'Chỉ khi thêm @JsonProperty lên field', 'Chỉ khi bật FAIL_ON_EMPTY_BEANS'], answer: 0, explain: `Jackson tìm property từ field public, getter public và annotation; getNick() public nên nick được serialize qua getter dù field private. "Field private luôn bị bỏ qua" sai vì bỏ qua field không có nghĩa là bỏ qua property — getter vẫn mang nó ra. @JsonProperty là cách khác để lộ field, không bắt buộc ở đây. FAIL_ON_EMPTY_BEANS chỉ quyết định có ném lỗi khi object không có property nào.` }],
+      related: ['spring-005', 'spring-006'], tags: ['Jackson', 'reflection', 'annotation', 'JSON', 'visibility']
   }
 );
