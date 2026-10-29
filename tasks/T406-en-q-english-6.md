@@ -1,6 +1,6 @@
 # T406 — Dịch sang tiếng Anh: q-english (14 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-english-6.en.js`
 
@@ -16,3 +16,5 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-english-6.en.js` và `node scripts/check-i18n.js q-english-6` → OK, rồi `Status: DONE`.
 
 ## Notes
+Validation passed: `node scripts/validate.js` → OK, `node scripts/check-i18n.js q-english-6` → OK. File contains translations for english-001 through english-014 with Vietnamese phrases removed from Tips (replaced with English equivalents).
+Reviewed-by: check-i18n (translation, no LLM review)
