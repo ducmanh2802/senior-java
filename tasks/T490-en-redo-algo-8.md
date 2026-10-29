@@ -1,6 +1,6 @@
 # T490 — Dịch lại (nội dung đã sửa): algo-8 (19 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/algo-8.en.js`
 
@@ -13,3 +13,10 @@ Với MỖI mục trên: đọc bản tiếng Việt hiện tại trong `js/data
 node scripts/check-i18n.js algo-8 → OK; node scripts/validate.js → OK.
 
 ## Notes
+- Đã dịch lại toàn bộ 19 entry (algo-048 … algo-066) theo bản tiếng Việt hiện tại trong `js/data/algo.js`: prompt, hints, solution, follow. Giữ nguyên key, chỉ dùng field dịch (không có starter/tests/complexity).
+- Bám sát cấu trúc bản Việt: `### Approach`, các mục giải thích cơ chế ("Why…", "Another approach…"), khối chạy tay `~~~text`, `### Interview notes`, `> Senior tip:`; thêm 1 câu giải thích thuật ngữ (HashMap, heap, prefix sum, BFS, LIS…) cho người đọc chưa quen.
+- Code mẫu giữ nguyên logic bản Việt (algo-048 heap có tie-break, algo-054 ArrayDeque, algo-060 ép long, algo-063 Comparator.comparing, algo-064 thử mọi c50, algo-065 lower bound, algo-066 cash/hold); chỉ dịch comment và các dòng trace tiếng Việt trong khối `~~~text`.
+- Không có backtick hay `${` trong file; không còn chữ tiếng Việt ngoài code block.
+- Đã chạy: `node scripts/check-i18n.js algo-8` → OK (19 mục); `node scripts/validate.js` → OK — không có lỗi.
+- Chỉ sửa `js/i18n/algo-8.en.js` và file task này; không commit.
+Reviewed-by: check-i18n (translation, no LLM review)
