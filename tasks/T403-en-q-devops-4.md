@@ -1,6 +1,6 @@
 # T403 — Dịch sang tiếng Anh: q-devops (5 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-devops-4.en.js`
 
@@ -16,3 +16,7 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-devops-4.en.js` và `node scripts/check-i18n.js q-devops-4` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã dịch đầy đủ q/a/follow cho devops-023..027, giữ nguyên markup, code và số liệu.
+- `node scripts/check-i18n.js q-devops-4`: OK — 5 mục đã dịch; file được parse thành công.
+- `node scripts/validate.js`: OK — không có lỗi.
+Reviewed-by: check-i18n (translation, no LLM review)
