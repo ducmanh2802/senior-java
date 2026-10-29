@@ -1,6 +1,6 @@
 # T433 — Dịch sang tiếng Anh: algo (8 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/algo-12.en.js`
 
@@ -16,3 +16,10 @@ Yêu cầu dịch:
 - `node --check js/i18n/algo-12.en.js` và `node scripts/check-i18n.js algo-12` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đủ 8 mục (algo-028 → algo-034, algo-084) trong `js/i18n/algo-12.en.js`, chỉ gồm `prompt, hints, solution, follow`; code trong `~~~java` giữ nguyên, chỉ comment tiếng Việt được dịch (hoặc giữ comment tiếng Anh vốn có).
+- Giữ đúng markup (`**`, `{{code}}`, `###`, danh sách, `> Senior tip:`); nhãn dịch: `### Ví dụ` → `### Example`, `### Ràng buộc` → `### Constraints`, `### Ý tưởng` → `### Approach`, `### Lưu ý khi phỏng vấn` → `### Interview notes`.
+- `node scripts/check-i18n.js algo-12` → `OK — 8 mục đã dịch.`; `node scripts/validate.js` → `OK — không có lỗi.`
+- `node --check` bị sandbox chặn quyền chạy; file đã được `check-i18n.js` nạp qua `vm.runInNewContext` nên cú pháp đã được xác nhận hợp lệ.
+- `js/i18n/manifest.js` đã có sẵn `algo-12` nên không phải sửa file khác.
+Reviewed-by: check-i18n (translation, no LLM review)
