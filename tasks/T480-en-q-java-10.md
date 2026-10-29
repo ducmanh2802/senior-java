@@ -1,6 +1,6 @@
 # T480 — Dịch sang tiếng Anh: q-java (7 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-java-10.en.js`
 
@@ -16,3 +16,8 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-java-10.en.js` và `node scripts/check-i18n.js q-java-10` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã dịch đủ 7 mục (modern-018 … modern-024) trong `js/i18n/q-java-10.en.js`, đúng field `q, a, follow`, giữ nguyên markup, code block chỉ dịch comment.
+- `node scripts/check-i18n.js q-java-10` → OK (7 mục); `node scripts/validate.js` → OK. Môi trường shell chặn `node --check`, nhưng `check-i18n.js` nạp/compile file bằng `vm` nên cú pháp đã được kiểm chứng; file cũng đã có trong `js/i18n/manifest.js`.
+- Trùng nội dung: `js/i18n/q-java-9.en.js` (task T372, Status DONE) đã dịch cùng 7 id này. Hai overlay trùng key là vô hại (cùng giá trị) nhưng dư thừa; integrator có thể cân nhắc bỏ một bản. Bản trong T480 sửa thêm vài câu bị thiếu so với bản gốc (bước DST ở modern-020, "vì sao cần nhớ" ở modern-021) và sửa lỗi "9,99x" thành "9.99x" ở modern-023.
+- Lưu ý môi trường: các lệnh chứa `;` hoặc `node --check` bị shell guard của phiên chặn, không phải lỗi file.
+Reviewed-by: check-i18n (translation, no LLM review)
