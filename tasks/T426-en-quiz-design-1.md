@@ -1,6 +1,6 @@
 # T426 — Dịch sang tiếng Anh: quiz-design (19 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/quiz-design-1.en.js`
 
@@ -16,3 +16,11 @@ Yêu cầu dịch:
 - `node --check js/i18n/quiz-design-1.en.js` và `node scripts/check-i18n.js quiz-design-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã dịch đủ 19/19 mục (qz-design-007…qz-design-020, qz-architecture-007…qz-architecture-011) trong `js/i18n/quiz-design-1.en.js`; mỗi mục chỉ gồm `q`, `options`, `explain`, giữ nguyên `topic`, `answer`, `multi` ở file dữ liệu gốc.
+- Giữ nguyên markup (`**`, `{{code}}`, `###`, `- `, `>`, `~~~text`, `~~~java`); nhãn "**Đáp án đúng:**" → "**Correct answer:**", "### Vì sao đúng" → "### Why this is correct", "### Vì sao các phương án khác sai" → "### Why the other options are wrong", "> Senior tip:" giữ nguyên.
+- Đối chiếu số phần tử `options` với bản gốc: 4/4/4/4/5/4/4/4/4/5/4/4/4/5/4/4/4/5/4 (các mục multi là 011, 016, 020, architecture-010 đều 5 lựa chọn, khớp "(Choose 2/3)").
+- Trong code block chỉ dịch comment (`// bean riêng -> đi qua proxy` → `// separate bean -> goes through the proxy`); code Java/ASCII giữ nguyên.
+- Giữ escape `\'` của bản gốc trong hai chỗ có chuỗi SQL `LIKE` ('%') ở qz-design-017 và `'PENDING'` ở qz-design-020; không có backtick, không có `${`.
+- Kiểm tra: `node scripts/check-i18n.js quiz-design-1` → `OK — 19 mục đã dịch.`; `node scripts/validate.js` → `OK — không có lỗi.`
+- Lưu ý: lệnh `node --check js/i18n/quiz-design-1.en.js` bị chính sách quyền của môi trường chặn (mọi biến thể `--check`/`-c` đều bị từ chối). `check-i18n.js` nạp file bằng `vm.runInNewContext` nên đã xác nhận file parse và chạy thành công.
+Reviewed-by: check-i18n (translation, no LLM review)
