@@ -1,6 +1,6 @@
 # T398 — Dịch sang tiếng Anh: q-claude (8 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-claude-5.en.js`
 
@@ -16,3 +16,9 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-claude-5.en.js` và `node scripts/check-i18n.js q-claude-5` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đầy đủ `q`, `a`, `follow` cho claude-034..041, giữ markup và code block.
+- `node scripts/check-i18n.js q-claude-5` → `OK — 8 mục đã dịch.` (script cũng parse file bằng `vm`).
+- `node scripts/validate.js` → `OK — không có lỗi.`
+- Lệnh `node --check js/i18n/q-claude-5.en.js` không được môi trường cấp quyền thực thi; không có lỗi cú pháp khi `check-i18n` parse file.
+Reviewed-by: check-i18n (translation, no LLM review)
