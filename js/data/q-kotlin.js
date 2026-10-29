@@ -109,7 +109,7 @@ Extension trên nullable receiver có thể hợp lệ, nhưng hãy xử lý nul
 
 Coroutine suspend tại suspension point thì nhường thread cho dispatcher; continuation được tiếp tục sau đó. Nó giảm số thread bị giữ khi chờ IO, nhưng chỉ thư viện suspend/non-blocking hoặc bridge đúng cách mới tận dụng được. Gọi JDBC blocking trên dispatcher không biến JDBC thành non-blocking.
 
-Virtual thread gắn một Java Thread nhẹ với carrier khi chạy; khi blocking operation tương thích, JVM có thể unmount virtual thread và giải phóng carrier. Code vẫn đồng bộ, nhưng DB connection, HTTP connection, CPU và rate limit vẫn là tài nguyên hữu hạn.
+Virtual thread gắn một Java Thread nhẹ với carrier khi chạy; khi blocking operation tương thích, JVM có thể unmount virtual thread và giải phóng carrier. Code vẫn đồng bộ, nhưng DB connection, HTTP connection, CPU và rate limit vẫn là tài nguyên hữu hạn. Ở JDK 21–23, blocking bên trong {{synchronized}} làm virtual thread bị **pin** vào carrier (không unmount được); JDK 24 (JEP 491) đã gỡ hạn chế này.
 
 ### Ma trận chọn
 | Tiêu chí | Coroutines | Virtual threads | CompletableFuture |
@@ -136,20 +136,26 @@ Pitfall: tăng concurrency có thể làm cạn DB pool trước khi CPU bận; 
 ### Vì sao cần plugin
 Spring AOP, transaction và một số proxy tạo subclass bằng CGLIB; class/method final cản việc override. Kotlin Spring plugin là preset của all-open, tự mở loại annotation Spring đã biết, chẳng hạn {{@Component}}, {{@Service}}, {{@Configuration}} và meta-annotation liên quan.
 
-JPA provider cần khởi tạo entity theo chuẩn persistence và có thể tạo proxy cho lazy loading. Plugin no-arg sinh constructor synthetic cho entity annotation. Ở Kotlin plugin trước 2.3.20, {{kotlin-jpa}} cấu hình no-arg nhưng không tự mở entity; cần cấu hình all-open riêng hoặc khai báo entity open theo yêu cầu provider. Từ Kotlin 2.3.20, plugin JPA cũng bật all-open với preset JPA. Xác nhận plugin/version và annotation namespace Jakarta đang dùng (Spring Boot 3 dùng {{jakarta.persistence}}); {{kotlin-spring}} chỉ mở các lớp có annotation Spring, không mặc nhiên mở entity JPA.
+JPA provider cần khởi tạo entity theo chuẩn persistence và có thể tạo proxy cho lazy loading. Plugin {{kotlin-jpa}} là preset của no-arg: nó sinh constructor không tham số (synthetic, chỉ gọi được qua reflection) cho class có {{@Entity}}, {{@Embeddable}}, {{@MappedSuperclass}}. Theo truyền thống nó **không** mở class (việc tự mở entity chỉ có ở các phiên bản Kotlin rất mới, cần đối chiếu release notes của đúng phiên bản bạn dùng). Cách chắc chắn trên mọi phiên bản, cũng là cấu hình Spring Initializr sinh ra, là khai báo all-open tường minh cho các annotation JPA như ví dụ dưới. {{kotlin-spring}} chỉ mở class có annotation Spring, **không** mở entity. Spring Boot 3 dùng namespace {{jakarta.persistence}}, nên annotation trong cấu hình phải là {{jakarta.persistence.Entity}}, không phải {{javax}}.
 
 ~~~text
 plugins {
     kotlin("jvm")
-    kotlin("plugin.spring")
-    kotlin("plugin.jpa")
+    kotlin("plugin.spring")   // mở @Component, @Service, @Configuration, @Transactional...
+    kotlin("plugin.jpa")      // no-arg constructor cho @Entity/@Embeddable/@MappedSuperclass
+}
+
+allOpen {                     // mở entity để Hibernate tạo proxy lazy
+    annotation("jakarta.persistence.Entity")
+    annotation("jakarta.persistence.MappedSuperclass")
+    annotation("jakarta.persistence.Embeddable")
 }
 ~~~
 
 ### Entity Kotlin: cẩn trọng
 - Entity thường là class mutable với constructor phù hợp; không biến mọi entity thành data class vì {{equals/hashCode/toString}} có thể chạm lazy association, đệ quy hai chiều hoặc đổi hash sau persist.
 - Không đưa collection lazy vào {{toString()}} hoặc equality. Tải entity trong transaction rồi map sang DTO trước khi serialize response.
-- No-arg constructor synthetic không có nghĩa mọi field được khởi tạo như constructor domain; kiểm tra nullability và defaults khi hydrate.
+- Constructor synthetic của no-arg mặc định **không chạy** property initializer hay khối {{init}} (trừ khi bật {{invokeInitializers}}); Hibernate sau đó gán field từ ResultSet. Đừng đặt invariant quan trọng trong {{init}}, và nhớ rằng property non-null có thể tạm thời là null cho tới khi Hibernate gán xong.
 - Open class/method đúng chỗ cho proxy; không mở toàn bộ domain một cách mù quáng.
 
 ### Kiểm chứng production
@@ -217,7 +223,7 @@ val first = items.asSequence()
 Nếu pipeline chỉ có một phép biến đổi trên list nhỏ, Sequence có thể chậm hơn do abstraction/dispatch. Nếu nguồn lớn và nhiều bước hoặc terminal short-circuit, giảm allocations trung gian có thể đáng kể. Đo bằng workload đại diện.
 
 ### So với Java Stream
-Stream được tiêu thụ một lần, có terminal operation, hỗ trợ primitive stream và parallel mode; Kotlin Sequence không có parallel execution tích hợp như parallelStream. Java Stream từ resource (ví dụ {{Files.lines}}) phải đóng bằng try-with-resources; Kotlin {{sequence}} thông thường không tự quản lý resource lifetime. Không giữ lazy pipeline vượt quá thời gian resource còn mở.
+Stream được tiêu thụ một lần, có terminal operation, hỗ trợ primitive stream và parallel mode; Kotlin Sequence không có parallel execution tích hợp như parallelStream. Java Stream từ resource (ví dụ {{Files.lines}}) phải đóng bằng try-with-resources; Kotlin {{Sequence}} không tự quản lý resource lifetime; với file hãy dùng {{File.useLines}}: hàm này nhận một lambda xử lý Sequence các dòng và đóng file khi lambda kết thúc. Không trả lazy pipeline ra ngoài phạm vi resource còn mở, vì khi được tiêu thụ thì file đã đóng.
 
 ### Pitfall và lựa chọn
 - Side effect trong lambda làm thứ tự/lần chạy phụ thuộc terminal operation; giữ pipeline pure.
@@ -346,7 +352,7 @@ data class CreateUserRequest(
 ~~~
 
 ### Hành vi cần kiểm chứng
-- Thiếu {{email}} hoặc gửi {{"email": null}} thường ném {{MissingKotlinParameterException}} (một dạng bind error); hãy map thành 400 thay vì để rơi vào 500.
+- Thiếu {{email}} hoặc gửi {{"email": null}} đều khiến jackson-module-kotlin ném {{MissingKotlinParameterException}} (lớp con của {{MismatchedInputException}}). Spring MVC bọc nó thành {{HttpMessageNotReadableException}} và mặc định trả 400; việc của bạn là trả thông báo lỗi có tên field rõ ràng (qua {{@RestControllerAdvice}}), không để lộ stack trace.
 - {{age}} vắng mặt và {{age: null}} đều thành {{null}}: Kotlin không phân biệt được nếu chỉ dùng {{Int?}}. Với PATCH, cần wrapper như {{JsonNullable}}, {{Optional}} hoặc một kiểu {{FieldUpdate}} có trạng thái missing.
 - {{newsletter}} vắng mặt nhận default; gửi null tường minh vẫn là lỗi vì kiểu không nullable.
 - Spring Boot tự đăng ký {{jackson-module-kotlin}} khi có trên classpath, nhưng nếu tự tạo {{ObjectMapper}} thì phải đăng ký thủ công.
@@ -382,7 +388,7 @@ data class CreateUserRequest(
   a: `**Tóm tắt:** Spring MVC và WebFlux đều gọi được {{suspend fun}} trong controller, nhưng cơ chế khác nhau: MVC chạy trên servlet async, WebFlux chạy trên event loop với chuỗi non-blocking. Điểm nguy hiểm là state gắn với thread như {{@Transactional}} JDBC, {{SecurityContext}}, MDC và request attributes không tự theo coroutine khi nó resume ở thread khác.
 
 ### Spring chạy suspend function thế nào
-Spring MVC từ 5.2 hỗ trợ method controller là suspend: framework gọi qua cầu coroutine, trả về async result và giải phóng request thread tại điểm suspend. Nhưng nó không biến JDBC thành non-blocking; số request đồng thời vẫn bị giới hạn bởi Tomcat thread pool, DB connection pool và các tài nguyên khác.
+Spring MVC từ Spring Framework 5.3 hỗ trợ method controller là suspend (WebFlux hỗ trợ từ 5.2): framework gọi qua cầu coroutine, trả về async result và giải phóng request thread tại điểm suspend. Nhưng nó không biến JDBC thành non-blocking; số request đồng thời vẫn bị giới hạn bởi Tomcat thread pool, DB connection pool và các tài nguyên khác.
 
 WebFlux hỗ trợ {{suspend fun}} và {{Flow}}; {{kotlinx-coroutines-reactor}} chuyển đổi qua lại với {{Mono}}/{{Flux}}. Trên event loop, một lời gọi JDBC blocking có thể chặn toàn bộ luồng xử lý của nhiều request, nên phải chuyển sang {{Dispatchers.IO}} hoặc dùng driver reactive.
 
@@ -398,7 +404,7 @@ class OrderController(private val service: OrderService) {
 ~~~
 
 ### Transaction: chỗ dễ sai nhất
-{{@Transactional}} của Spring với JDBC/JPA dựa trên transaction gắn với thread hiện tại ({{ThreadLocal}}). Khi coroutine suspend rồi resume trên thread khác, connection/transaction đang mở không tự đi theo. Mức hỗ trợ coroutine-aware transaction phụ thuộc phiên bản Spring và loại {{TransactionManager}} (JDBC thread-bound so với R2DBC reactive), nên đừng suy ra từ việc code biên dịch được.
+{{@Transactional}} của Spring với JDBC/JPA dựa trên transaction gắn với thread hiện tại ({{ThreadLocal}}). Khi coroutine suspend rồi resume trên thread khác, connection/transaction đang mở không tự đi theo. Spring chỉ hỗ trợ {{@Transactional}} trên {{suspend fun}} khi dùng **ReactiveTransactionManager** (ví dụ R2DBC), vì transaction được giữ trong Reactor Context chứ không trong ThreadLocal. Với JDBC/JPA, đừng suy ra là đúng chỉ vì code biên dịch được.
 
 Cách an toàn:
 - Viết integration test có rollback thật, cho method suspend đi qua proxy Spring, kiểm tra dữ liệu sau khi lỗi.
@@ -441,7 +447,7 @@ suspend fun dashboard(userId: Long): Dashboard = coroutineScope {
 }
 ~~~
 
-Với {{launch}}, exception không được ném ở call site mà đi tới {{CoroutineExceptionHandler}} (hoặc làm hỏng scope). Với {{async}}, exception được giữ lại và ném khi {{await}}. Đây là lý do phải {{await}} hoặc join mọi {{Deferred}} trước khi scope kết thúc.
+Bên trong {{coroutineScope}}, coroutine con lỗi (dù tạo bằng {{launch}} hay {{async}}) sẽ **lập tức** hủy scope cha và các nhánh anh em; {{coroutineScope}} chờ mọi con kết thúc rồi ném lỗi ra ngoài. Khác biệt giữa hai builder chỉ rõ ở coroutine **gốc** hoặc trong {{supervisorScope}}: {{launch}} không có ai nhận kết quả nên exception đi tới {{CoroutineExceptionHandler}}, còn {{async}} giữ exception trong {{Deferred}} và ném ra khi {{await}}. Vì vậy trong {{supervisorScope}}, một {{async}} lỗi mà không ai {{await}} sẽ bị lặng lẽ bỏ qua.
 
 ### Cancellation là hợp tác
 Coroutine chỉ dừng ở điểm suspend hoặc khi gọi {{ensureActive()}}; vòng lặp CPU chặt không tự dừng. Blocking JDBC cũng không bị cancel; {{runInterruptible}} chỉ hữu ích nếu driver tôn trọng interrupt. Dọn dẹp trong {{finally}} nên tránh suspend, hoặc bọc {{withContext(NonCancellable)}} cho phần cleanup bắt buộc.
@@ -449,7 +455,7 @@ Coroutine chỉ dừng ở điểm suspend hoặc khi gọi {{ensureActive()}}; 
 Không bắt {{CancellationException}} rồi trả kết quả bình thường: điều đó phá vỡ structured concurrency và khiến request bị hủy vẫn tiếp tục ghi dữ liệu.
 
 ### Dispatchers.IO
-{{Dispatchers.IO}} là pool elastic có giới hạn mặc định 64 thread (có thể đổi bằng system property {{kotlinx.coroutines.io.parallelism}}), không phải "bao nhiêu cũng được". Nếu DB pool có 20 connection mà mở 500 coroutine gọi DB, phần lớn sẽ chờ connection; latency tăng và timeout dây chuyền.
+{{Dispatchers.IO}} là pool elastic có giới hạn mặc định 64 thread (hoặc bằng số core nếu máy có hơn 64 core; đổi bằng system property {{kotlinx.coroutines.io.parallelism}}), không phải "bao nhiêu cũng được". Nếu DB pool có 20 connection mà mở 500 coroutine gọi DB, phần lớn sẽ chờ connection; latency tăng và timeout dây chuyền.
 
 - Dùng {{Dispatchers.Default}} cho CPU, {{Dispatchers.IO}} cho blocking IO.
 - Đặt bulkhead bằng {{Semaphore}} hoặc {{limitedParallelism}} cho từng dependency.
@@ -457,9 +463,9 @@ Không bắt {{CancellationException}} rồi trả kết quả bình thường: 
 - Mỗi lần chuyển dispatcher có chi phí; gom {{withContext}} một lần thay vì bọc từng lời gọi nhỏ.
 
 ### So với Java 21 StructuredTaskScope
-{{StructuredTaskScope}} (preview ở JDK 21, cần {{--enable-preview}}) cũng đảm bảo con không sống lâu hơn cha, với {{ShutdownOnFailure}}/{{ShutdownOnSuccess}}. Coroutine có hệ sinh thái cancellation, Flow và tích hợp suspend rộng hơn; virtual thread + structured concurrency phù hợp code Java blocking.
+{{StructuredTaskScope}} (preview từ JDK 21, cần {{--enable-preview}}; API còn thay đổi qua các bản JDK sau) cũng đảm bảo task con không sống lâu hơn scope cha, với chính sách như {{ShutdownOnFailure}}/{{ShutdownOnSuccess}} ở JDK 21. Coroutine có hệ sinh thái cancellation, Flow và tích hợp suspend rộng hơn; virtual thread + structured concurrency phù hợp code Java blocking.
 
-Không trộn hai mô hình tùy tiện: nếu đã dùng coroutine, giữ scope xuyên suốt; nếu gọi API Java trả {{CompletableFuture}}, bridge bằng {{await()}} của {{kotlinx-coroutines-jdk8}} thay vì tự tạo thread.
+Không trộn hai mô hình tùy tiện: nếu đã dùng coroutine, giữ scope xuyên suốt; nếu gọi API Java trả {{CompletableFuture}}, bridge bằng extension {{CompletableFuture.await()}} (package {{kotlinx.coroutines.future}}, nằm trong {{kotlinx-coroutines-core}} từ bản 1.7; trước đó là module {{kotlinx-coroutines-jdk8}}) thay vì tự tạo thread hay gọi {{get()}} chặn thread.
 
 ### Observability
 Đặt {{CoroutineName}} theo request/job, bật {{-Dkotlinx.coroutines.debug}} ở staging để thread dump hiện tên coroutine, và log khi scope bị cancel. Thiếu tên và context là lý do phổ biến khiến debug coroutine khó hơn thread.
@@ -481,9 +487,9 @@ Collection lazy trong {{equals}} biến một phép so sánh thành truy vấn D
 {{copy()}} của data class tạo object mới cùng id nhưng state khác; Hibernate coi đó là detached/duplicate, dễ dẫn tới {{merge}} ngoài ý muốn.
 
 ### Vì sao entity phải "open"
-Hibernate tạo proxy bằng subclass cho lazy loading. Class/method final chặn subclass, nên entity phải được mở bằng plugin all-open (hoặc khai báo {{open}} thủ công cả class và property); plugin {{kotlin-spring}} chỉ mở class có annotation Spring, không mở entity. Plugin {{kotlin-jpa}} sinh constructor không tham số; từ Kotlin 2.3.20 plugin này còn bật all-open preset JPA, còn phiên bản trước chỉ no-arg — kiểm tra version trước khi dựa vào hành vi.
+Hibernate tạo proxy bằng subclass cho lazy loading. Class/method final chặn subclass, nên entity phải được mở bằng plugin all-open (hoặc khai báo {{open}} thủ công cả class và property); plugin {{kotlin-spring}} chỉ mở class có annotation Spring, không mở entity. Plugin {{kotlin-jpa}} sinh constructor không tham số; việc mở entity thì nên khai báo tường minh bằng khối {{allOpen}} chứa {{annotation("jakarta.persistence.Entity")}} trong build.gradle.kts thay vì dựa vào hành vi mặc định của từng phiên bản plugin.
 
-Constructor không tham số của Kotlin có thể gán default/0/null ở mức bytecode, không chạy logic domain. Đừng đặt invariant quan trọng trong {{init}} và hy vọng Hibernate chạy nó.
+Constructor không tham số do plugin sinh ra mặc định không chạy property initializer hay khối {{init}}: field ở giá trị mặc định của JVM (0/null) cho tới khi Hibernate gán từ ResultSet. Đừng đặt invariant quan trọng trong {{init}} và hy vọng Hibernate chạy nó.
 
 ### Cách làm an toàn
 ~~~kotlin
@@ -510,13 +516,13 @@ open class Order protected constructor() {
 
 - Business key phải immutable, unique và có ý nghĩa nghiệp vụ; nếu không có, dùng id nhưng xử lý null nhất quán.
 - Không đưa collection, quan hệ lazy, timestamp audit hay field thay đổi vào {{equals}}/{{hashCode}}.
-- Dùng {{Hibernate.getClass(other)}} khi cần so sánh qua proxy; {{other is Order}} có thể đúng với proxy nhưng truy cập field sẽ trigger load.
+- Proxy lazy là subclass của entity, nên {{other is Order}} vẫn đúng với proxy; còn {{javaClass == other.javaClass}} thì sai (class proxy khác class thật). Hãy đọc giá trị của {{other}} qua **property (getter)**, vì getter của proxy sẽ khởi tạo proxy và trả giá trị thật; nếu property bị final (quên all-open), Kotlin đọc thẳng field của proxy, vốn là null, và equals trả sai. Cần so class chính xác thì dùng {{Hibernate.getClass(other)}}.
 - Với id do application gán, Spring Data thấy id khác null nên coi là entity cũ và gọi {{merge}} (SELECT trước). Cài {{Persistable}} với cờ {{isNew}} để {{save}} dùng {{persist}}.
 
 ### Pitfall production
 - Test bằng cách thêm entity vào {{HashSet}}, flush, rồi {{contains}} lại; nếu hash đổi, test sẽ lộ ngay.
 - {{equals}} dựa trên id: hai entity mới cùng null id có thể bị coi là bằng nhau; trả về false trừ khi cùng instance.
-- Kế thừa entity: proxy subclass làm {{getClass()}} khác nhau; dùng {{canEqual}} hoặc business key.
+- Kế thừa entity: đừng so bằng {{getClass()}} vì proxy là subclass; dùng business key hoặc {{Hibernate.getClass}}.
 - Đừng dùng data class cho entity chỉ để giảm boilerplate; chi phí debug lớn hơn nhiều.
 
 > Senior tip: chọn identity trước khi viết entity. Nếu nghiệp vụ đã có mã đơn hàng/mã giao dịch bất biến, dùng nó làm business key và viết test hash ổn định sau persist; nếu không, dùng id với {{Persistable}} và chấp nhận rằng entity mới chưa có identity.`,
@@ -623,7 +629,7 @@ Extension không có constructor nên không nhận dependency qua DI. Nếu ext
 Extension property không có backing field; nếu dùng delegate như {{by lazy}}, delegate không gắn với từng receiver. Đừng dùng extension để cache state theo instance.
 
 ### Interop
-Java thấy extension như static method trong facade {{TenFileKt}}; đổi tên file đổi binary API. Dùng {{@file:JvmName}} để ổn định, {{@JvmName}} khi có xung đột signature. Default parameter cần {{@JvmOverloads}} nếu muốn Java gọi overload.
+Java thấy extension như static method trong facade class mang tên file, ví dụ file {{StringExt.kt}} thành {{StringExtKt.slugify(s)}}; đổi tên file là đổi binary API. Dùng {{@file:JvmName}} để ổn định, {{@JvmName}} khi có xung đột signature. Default parameter cần {{@JvmOverloads}} nếu muốn Java gọi overload.
 
 ### Quy ước review
 - Helper thuần, ngắn, không IO, tên nói rõ domain.
@@ -668,7 +674,7 @@ fun stream(@PathVariable id: String): Flow<Price> = service.prices(id)
 ### Context và interop
 {{kotlinx-coroutines-reactive}}/{{kotlinx-coroutines-reactor}} cung cấp {{Flow.asFlux()}}, {{Publisher.asFlow()}}, {{awaitSingle()}}, {{awaitFirst()}} và {{ReactorContext}} để bridge context. Bridge không tự đồng bộ mọi {{ThreadLocal}}; MDC, security, tenant phải xử lý riêng.
 
-Trong WebFlux, trả {{Flow}} từ controller được adapt sang {{Flux}}. Trong Spring MVC, {{suspend fun}} được hỗ trợ, còn {{Flow}} không nên mặc định coi là được adapt; hãy kiểm tra phiên bản và kiểu trả về.
+Trong WebFlux, trả {{Flow}} từ controller được adapt sang {{Flux}}. Spring MVC (từ 5.3) cũng chấp nhận {{Flow}} làm kiểu trả về thông qua cơ chế reactive adapter (cần {{kotlinx-coroutines-reactor}} trên classpath) và stream kết quả bằng servlet async; tuy vậy mỗi kết nối streaming vẫn giữ tài nguyên servlet, nên với rất nhiều client SSE đồng thời WebFlux phù hợp hơn.
 
 ### Chọn cái nào
 | Bối cảnh | Lựa chọn |
@@ -704,7 +710,7 @@ Trong WebFlux, trả {{Flow}} từ controller được adapt sang {{Flux}}. Tron
 ### Build và annotation processing
 - kapt chạy Java annotation processor, sinh stub, làm chậm build và phá incremental; cần cho processor chưa hỗ trợ KSP.
 - KSP nhanh hơn và Kotlin-first nhưng chỉ dùng được với processor hỗ trợ; kiểm tra MapStruct, Hibernate metamodel, Dagger/Hilt trước khi chuyển.
-- Bật {{javaParameters = true}} để Spring MVC đọc tên parameter; thiếu nó có thể lỗi 400 khi bind.
+- Spring Framework 6.1 bỏ cơ chế đọc tên tham số từ debug info: code Java cần biên dịch với {{-parameters}}. Với Kotlin, Spring đọc tên tham số qua kotlin-reflect, nhưng vẫn nên bật {{javaParameters = true}} (Spring Boot Gradle plugin tự bật) để tránh lỗi bind {{@PathVariable}}/{{@RequestParam}} không có tên tường minh.
 - Cấu hình {{kotlin("plugin.spring")}}, {{kotlin("plugin.jpa")}}, all-open/no-arg; kiểm tra version plugin khớp compiler.
 - {{jvm-default}} phải nhất quán giữa các module; thay đổi nó ảnh hưởng interface default method khi Java gọi.
 - Pin Kotlin stdlib, dùng BOM, đo build time trước/sau; kapt thường là chi phí lớn nhất.
@@ -720,7 +726,7 @@ Trong WebFlux, trả {{Flow}} từ controller được adapt sang {{Flux}}. Tron
 - Entity cần open/no-arg đúng cách; {{@Transactional}} trên class final hoặc self-invocation vẫn bị bypass.
 - Jackson cần Kotlin module; kiểm tra {{ObjectMapper}} tự tạo.
 - Test integration thật cho proxy, rollback, lazy loading và serialization; đừng chỉ test gọi trực tiếp class.
-- MockK thường thuận hơn Mockito với final class; dùng {{runTest}} thay {{runBlocking}} trong test coroutine.
+- MockK hiểu Kotlin tốt hơn (final class, {{suspend}}, object, extension); Mockito 5 mock được final class nhờ inline mock maker nhưng kém tự nhiên với suspend. Dùng {{runTest}} thay {{runBlocking}} trong test coroutine.
 - Đo APM/agent có hỗ trợ coroutine context không trước khi rollout.
 
 ### Vận hành và đội ngũ
@@ -730,7 +736,7 @@ Trong WebFlux, trả {{Flow}} từ controller được adapt sang {{Flux}}. Tron
 - Giữ khả năng quay lại: module mới có thể revert mà không ảnh hưởng module cũ.
 
 ### Pitfall
-- Big-bang rewrite; trộn kapt và KSP trong cùng module gây lỗi khó hiểu.
+- Big-bang rewrite. Chạy cả kapt và KSP trong cùng module là được phép (thường gặp khi đang chuyển dần), nhưng nhân thời gian build và dễ nhầm processor nào sinh code nào; hãy có kế hoạch bỏ kapt.
 - Quên {{javaParameters}} hoặc Kotlin module → lỗi runtime chỉ xuất hiện ở môi trường thật.
 - Nâng Kotlin compiler nhưng quên plugin Spring/JPA; proxy và no-arg hỏng.
 - Public API Kotlin đổi signature ngầm khi thêm default parameter hoặc đổi nullability.

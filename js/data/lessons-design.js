@@ -23,14 +23,14 @@ if T >= cost: T := T - cost; allow
 else: reject
 ~~~
 
-Thời gian phải là input để thuật toán xác định và kiểm thử được. Trong production dùng monotonic clock cho thời lượng, không dùng wall clock có thể nhảy khi NTP chỉnh giờ. Nếu nhiều instance cùng giới hạn một tenant, bộ đếm trong RAM mỗi instance làm tổng quota tăng theo số instance. Cần state chung như Redis với thao tác nguyên tử (thường Lua script), hoặc phân quota có chủ ý; phép đọc rồi ghi riêng rẽ có race.
+Thời gian phải là input để thuật toán xác định và kiểm thử được. Trong production dùng monotonic clock ({{System.nanoTime()}}) để đo thời lượng, không dùng wall clock ({{System.currentTimeMillis()}}) vì nó có thể nhảy lùi hoặc tiến khi NTP chỉnh giờ. Nếu nhiều instance cùng giới hạn một tenant, bộ đếm trong RAM mỗi instance làm tổng quota tăng theo số instance. Cần state chung như Redis với thao tác nguyên tử (thường Lua script), hoặc phân quota có chủ ý; phép đọc rồi ghi riêng rẽ có race.
 
 ### Sliding window log
-Lưu timestamp của từng request được nhận trong cửa sổ. Khi thời điểm t đến, bỏ các timestamp ≤ t-window, rồi nhận nếu số còn lại nhỏ hơn limit. Thuật toán diễn đạt đúng giới hạn cho mọi đoạn cửa sổ, nhưng bộ nhớ O(requests trong window) trên từng key và cleanup tốn công. Với tải lớn, sliding window counter chia cửa sổ thành bucket nhỏ để giảm bộ nhớ nhưng có sai số gần ranh giới. Fixed window rẻ hơn nhưng cho phép burst gần gấp đôi tại ranh giới hai phút liên tiếp.
+Lưu timestamp của từng request được nhận trong cửa sổ. Khi thời điểm t đến, bỏ các timestamp ≤ t-window, rồi nhận nếu số còn lại nhỏ hơn limit. Thuật toán diễn đạt đúng giới hạn cho mọi đoạn cửa sổ, nhưng bộ nhớ O(requests trong window) trên từng key và cleanup tốn công. Với tải lớn, sliding window counter chia cửa sổ thành bucket nhỏ để giảm bộ nhớ nhưng có sai số gần ranh giới. Fixed window (đếm theo từng phút tròn) rẻ nhất nhưng cho phép burst gần gấp đôi tại ranh giới hai cửa sổ: với giới hạn 100 request/phút, client gửi 100 request lúc 00:59 và 100 request lúc 01:00, cả hai cửa sổ đều hợp lệ, nhưng thực tế 200 request đã lọt qua trong 2 giây.
 
 | Thuật toán | Burst | Bộ nhớ | Sai số |
 |---|---|---|---|
-| Token bucket | Có, tối đa capacity | O(1)/key | Không cho quota dài hạn |
+| Token bucket | Có, tối đa capacity | O(1)/key | Đúng tốc độ trung bình; không giới hạn cứng số request trong một cửa sổ |
 | Sliding log | Không vượt limit trong mọi cửa sổ | O(request/window) | Gần như chính xác |
 | Fixed window | Có thể dồn ở ranh giới | O(1)/key | Cao ở ranh giới |
 
@@ -158,8 +158,8 @@ Giải thích vì sao LRU dùng map cộng list để giữ O(1), rồi hỏi wo
       hints: ['Node lưu key để eviction có thể xoá đúng entry khỏi map.', 'Tạo sentinel head/tail; mọi lần get hoặc put existing đều unlink rồi nối ngay trước tail.'],
       explain: `Map cho phép tìm node trong O(1), list giữ thứ tự truy cập. Sentinel làm unlink không phải xử lý riêng node đầu/cuối. Khi vượt capacity, {{head.next}} là nạn nhân; phải xoá đồng thời khỏi cả list và map. LFU mở rộng ý tưởng bằng nhiều list theo frequency, kèm quy tắc tie-break recency.`,
     }, [
-      { q: 'get trong LinkedHashMap access-order có phải thao tác chỉ đọc?', options: ['Có, thứ tự không thay đổi', 'Không, nó thay đổi recency của entry', 'Chỉ thay đổi khi map đầy', 'Nó luôn xoá entry'], answer: 1, explain: `Access-order phải chuyển entry vừa đọc về cuối nên get làm thay đổi cấu trúc. Điều này khiến cần đồng bộ khi dùng chung. Các lựa chọn khác mô tả insertion-order hoặc sai hành vi.` },
-      { q: 'Trong LFU, khi nhiều key cùng tần suất thấp nhất thì tie-break phổ biến nào?', options: ['Loại key mới nhất', 'Loại key LRU trong bucket tần suất đó', 'Loại key có hash nhỏ nhất', 'Không thể phân biệt'], answer: 1, explain: `Dùng recency trong mỗi frequency bucket tạo quyết định ổn định và hỗ trợ O(1). Hash không thể hiện độ hữu ích; không có tie-break làm semantics mơ hồ.` },
+      { q: 'get trong LinkedHashMap access-order có phải thao tác chỉ đọc?', options: ['Có, thứ tự không thay đổi', 'Không, nó thay đổi recency của entry', 'Chỉ thay đổi khi map đầy', 'Nó luôn xoá entry'], answer: 1, explain: `Với accessOrder=true, get chuyển entry vừa đọc về cuối danh sách, tức là sửa cấu trúc bên trong. Vì vậy nhiều thread chỉ "đọc" vẫn cần đồng bộ. "Thứ tự không đổi" là hành vi của insertion-order (mặc định). Việc dịch chuyển xảy ra ở mọi lần get chứ không chỉ khi map đầy; và get không bao giờ xoá entry (xoá là việc của removeEldestEntry sau put).` },
+      { q: 'Trong LFU, khi nhiều key cùng tần suất thấp nhất thì tie-break phổ biến nào?', options: ['Loại key mới được thêm gần nhất', 'Loại key có hash nhỏ nhất', 'Loại key ít được dùng gần đây nhất (LRU) trong bucket tần suất thấp nhất', 'Không cần tie-break, chọn ngẫu nhiên là đủ'], answer: 2, explain: `Mỗi bucket tần suất là một danh sách theo recency, nên lấy phần tử đầu (LRU) của bucket minFreq vừa xác định, vừa O(1). Loại key mới nhất là sai hướng: key mới luôn có tần suất 1, loại nó ngay khiến key mới không bao giờ có cơ hội ở lại. Hash không phản ánh độ hữu ích. Chọn ngẫu nhiên làm kết quả không xác định, khó test và khó giải thích.` },
     ], ['cache', 'lru', 'lfu']),
 
     lesson('003', 3, 'Consistent hashing và virtual nodes', 'senior', [
@@ -197,7 +197,9 @@ Consistent hashing phù hợp cache phân tán, partition routing hoặc shard p
 ### Liên hệ phỏng vấn
 Nói rõ hash ring, successor lookup, và vì sao movement cục bộ. Sau đó lượng hoá movement bằng workload, nhắc virtual nodes, hot key, replication và đồng bộ membership. Bài tập dùng hash đơn giản deterministic để tập trung vào ownership, không giả làm production cryptographic hash.`, {
       title: 'Đo movement khi thêm node trên hash ring',
-      prompt: `Cài {{Ring}} với {{addNode(name, virtualNodes)}} và {{owner(key)}}. Dùng hash ổn định {{Math.floorMod(String.hashCode(), 100000)}}; đặt vnode theo chuỗi {{name + "#" + i}}. owner chọn vị trí vnode đầu tiên >= hash(key), vòng lại đầu.`,
+      prompt: `Cài {{Ring}} với {{addNode(name, virtualNodes)}} và {{owner(key)}}. Dùng hash ổn định {{Math.floorMod(String.hashCode(), 100000)}}; đặt vnode theo chuỗi {{name + "#" + i}}. owner chọn vị trí vnode đầu tiên >= hash(key); nếu không có thì vòng lại vị trí nhỏ nhất.
+- Nếu hai vnode trùng vị trí, dò tới vị trí kế tiếp {{(h + 1) % 100000}} cho tới khi trống (không được ghi đè vnode cũ).
+- {{addNode}} ném {{IllegalArgumentException}} nếu tên node đã tồn tại hoặc {{virtualNodes < 1}}.`,
       starter: `class Ring {
     void addNode(String name, int virtualNodes) { throw new UnsupportedOperationException("TODO"); }
     String owner(String key) { throw new UnsupportedOperationException("TODO"); }
@@ -209,6 +211,11 @@ Nói rõ hash ring, successor lookup, và vì sao movement cục bộ. Sau đó 
   r.addNode("b",3);c("lookup is deterministic",r.owner("customer-42").equals(r.owner("customer-42")));
   int moved=0;Ring old=new Ring();old.addNode("a",20);old.addNode("b",20);Ring added=new Ring();added.addNode("a",20);added.addNode("b",20);added.addNode("c",20);for(int i=0;i<1000;i++)if(!old.owner("key"+i).equals(added.owner("key"+i)))moved++;
   c("adding node preserves some owners",moved>0&&moved<1000);
+  boolean onlyToNew=true;for(int i=0;i<1000;i++){String k="key"+i;if(!old.owner(k).equals(added.owner(k))&&!added.owner(k).equals("c"))onlyToNew=false;}
+  c("moved keys go only to the new node",onlyToNew);
+  TreeMap<Integer,String> pts=new TreeMap<>();for(String nm:new String[]{"a","b"})for(int i=0;i<20;i++){int h=Math.floorMod((nm+"#"+i).hashCode(),100000);while(pts.containsKey(h))h=(h+1)%100000;pts.put(h,nm);}
+  boolean exact=true;for(int i=0;i<1000;i++){String k="key"+i;Map.Entry<Integer,String> e=pts.ceilingEntry(Math.floorMod(k.hashCode(),100000));String exp=(e==null?pts.firstEntry():e).getValue();if(!exp.equals(old.owner(k)))exact=false;}
+  c("successor lookup with wrap-around",exact);
   Ring dup=new Ring();dup.addNode("x",2);boolean thrown=false;try{dup.addNode("x",2);}catch(IllegalArgumentException e){thrown=true;}c("duplicate node rejected",thrown);
   boolean bad=false;try{r.addNode("bad",0);}catch(IllegalArgumentException e){bad=true;}c("zero vnode rejected",bad);
   System.out.println("RESULT "+p+"/"+n);
@@ -222,7 +229,7 @@ Nói rõ hash ring, successor lookup, và vì sao movement cục bộ. Sau đó 
       hints: ['Dùng TreeMap để ceilingEntry tìm vnode kế tiếp; null nghĩa là quay vòng.', 'Xử lý collision điểm hash deterministic bằng cách dò điểm kế tiếp; từ chối tên trùng để tránh ghi đè.'],
       explain: `Ring đặt nhiều điểm cho mỗi physical node. {{ceilingEntry}} thực hiện successor lookup; nếu không có điểm phía sau thì vòng về {{firstEntry}}. Collision cần được giải quyết thay vì để TreeMap ghi đè. Tỉ lệ movement nên đo bằng key thực tế và cùng thuật toán hash ở hai cấu hình.`,
     }, [
-      { q: 'Thêm node vào consistent hash ring thường thay đổi owner của bao nhiêu key?', options: ['Tất cả key', 'Một phần liên tiếp của ring', 'Không key nào', 'Chỉ key có tên node mới'], answer: 1, explain: `Node mới tiếp quản đoạn ring từ predecessor đến điểm mới, nên chỉ key trong vùng đó remap (xấp xỉ 1/(N+1) khi cân bằng).` },
+      { q: 'Ring đang có 4 node cân bằng tốt. Thêm node thứ 5 thì khoảng bao nhiêu key đổi owner, và chúng đi đâu?', options: ['Gần như tất cả key, chia đều cho 5 node', 'Không key nào, node mới chỉ nhận key mới', 'Khoảng 1/5 số key, và tất cả đều chuyển sang node mới', 'Khoảng 1/4 số key, chuyển qua lại giữa các node cũ'], answer: 2, explain: `Node mới chỉ tiếp quản các đoạn ring nằm ngay trước các vnode của nó, nên chỉ key trong những đoạn đó đổi owner, xấp xỉ 1/(N+1) = 1/5, và đích luôn là node mới; key giữa các node cũ không đổi chỗ cho nhau. "Gần như tất cả" là hành vi của {{hash % N}}. Key cũ nằm trong đoạn node mới tiếp quản bắt buộc phải chuyển, nên không thể "không key nào".` },
       { q: 'Virtual nodes chủ yếu giải quyết vấn đề nào?', options: ['Hot key đơn lẻ', 'Phân phối không đều khi mỗi node chỉ có một điểm', 'Replication consistency', 'Mã hoá dữ liệu'], answer: 1, explain: `Nhiều điểm lấy mẫu giúp cân bằng tải tốt hơn. Hot key vẫn tập trung; virtual node không replicate hay mã hoá dữ liệu.` },
     ], ['consistent-hashing', 'sharding', 'virtual-nodes']),
 
@@ -287,7 +294,7 @@ Mô tả state transitions cùng semantics của probe, rồi phân biệt timeo
       hints: ['OPEN chỉ chuyển HALF_OPEN khi now-openedAt đạt wait; HALF_OPEN chỉ cấp một permit.', 'Failure trong HALF_OPEN mở lại ngay; success trong HALF_OPEN đóng và reset chuỗi lỗi.'],
       explain: `Bài tập dùng lỗi liên tiếp để giữ state machine nhỏ; thư viện production thường hỗ trợ sliding window theo số call hoặc thời gian. Probe permit cần atomic trong code concurrent. Timeout của remote call vẫn phải riêng biệt; breaker không tự dừng một call đang treo.`,
     }, [
-      { q: 'Circuit breaker thay thế cơ chế nào?', options: ['Timeout hoàn toàn', 'Không thay timeout; nó ngăn call mới khi dependency lỗi', 'Database transaction', 'Load balancing'], answer: 1, explain: `Breaker reject call mới theo state; request đã đi vẫn cần timeout. Nó không quản lý transaction hoặc chọn node như load balancer.` },
+      { q: 'Đã có circuit breaker, bạn có còn cần timeout cho từng call không?', options: ['Không, breaker thay thế hoàn toàn timeout', 'Không, vì breaker tự huỷ call đang treo khi chuyển OPEN', 'Chỉ cần khi breaker ở HALF_OPEN', 'Có; breaker chỉ chặn call mới, call đã gửi đi vẫn cần deadline'], answer: 3, explain: `Breaker quyết định có cho call **mới** đi hay không; nó không dừng một call đang chờ. Không có timeout, call treo vẫn giữ thread/connection, và breaker cũng không nhận được tín hiệu lỗi để mở. Chuyển OPEN không huỷ call đang chạy. Timeout cần ở mọi trạng thái, không riêng HALF_OPEN.` },
       { q: 'HALF_OPEN dùng probe để làm gì?', options: ['Tạo thêm tải bất kể kết quả', 'Thử giới hạn call để quyết định đóng hay mở lại', 'Xoá lỗi khỏi log', 'Bỏ qua timeout'], answer: 1, explain: `Probe nhỏ kiểm chứng dependency hồi phục trước khi cho traffic bình thường. Nó không xoá log, bỏ timeout hay tự tạo tải vô hạn.` },
     ], ['circuit-breaker', 'resilience', 'state-machine']),
 
@@ -309,7 +316,7 @@ key đã có + payload khác → conflict
 Đây là transaction boundary khó: nếu ghi key rồi process crash trước charge, key bị kẹt; nếu charge thành công rồi crash trước khi lưu response, retry có thể charge lần nữa. Cần transaction cùng ledger nếu cùng database, hoặc workflow/outbox và downstream idempotency nếu gọi payment provider. Trạng thái PROCESSING cần lease/timeout và cách reconcile; không chỉ dùng ConcurrentHashMap trong ứng dụng đa instance.
 
 ### Retry policy
-Exponential backoff tăng khoảng chờ theo attempt: base × 2^attempt, có cap để tránh giá trị quá lớn. Jitter ngẫu nhiên giảm đồng bộ retry của nhiều client sau outage. Retry chỉ lỗi transient (timeout, 429 theo Retry-After, một số 5xx), giới hạn attempt/deadline tổng, không retry lỗi validation hay mọi 4xx. Timeout mỗi attempt phải nằm trong deadline caller. Retry ở nhiều layer nhân số lần gọi: 3 lần ở gateway × 3 ở service = 9 request.
+Exponential backoff tăng khoảng chờ theo attempt: base × 2^attempt, có cap để tránh giá trị quá lớn. Jitter ngẫu nhiên giảm đồng bộ retry của nhiều client sau outage. Cách phổ biến là "full jitter": chờ một khoảng ngẫu nhiên trong [0, min(cap, base×2^attempt)]. Không có jitter, hàng nghìn client lỗi cùng lúc sẽ retry đúng cùng các mốc 100 ms, 200 ms, 400 ms… và đánh sập dependency thêm lần nữa. Retry chỉ lỗi transient (timeout, 429 theo Retry-After, một số 5xx), giới hạn attempt/deadline tổng, không retry lỗi validation hay mọi 4xx. Timeout mỗi attempt phải nằm trong deadline caller. Retry ở nhiều layer nhân số lần gọi: nếu gateway thử tối đa 3 lần và mỗi lần service bên dưới lại thử tối đa 3 lần với dependency, một request người dùng có thể thành 9 lần gọi; thêm một tầng nữa là 27. Nên chỉ retry ở một tầng.
 
 ### Mô phỏng thời gian
 Bài tập dùng danh sách thời điểm retry thay vì sleep: delay attempt i là min(cap, base×2^i), tổng thời gian kiểm tra bằng số học. Trong production scheduler dùng monotonic clock; test chỉ kiểm tra policy, không chờ thời gian. Không giữ thread ngủ để backoff trong reactive/event-loop; schedule async. Resilience4j Retry cấu hình max attempts, interval function và exception predicate; policy không tự cung cấp idempotency storage.
@@ -356,7 +363,7 @@ class Backoff {
       explain: `Bài mô phỏng lưu kết quả theo key để retry trả lại cùng receipt và không tăng số charge. Cùng key với payload khác phải conflict. Hai map ở đây đơn giản hoá trạng thái; hệ thống thật cần unique constraint/transaction để hai instance không xử lý đồng thời. Backoff có cap và tránh overflow; thêm jitter trong production nhưng test policy cơ bản nên deterministic.`,
     }, [
       { q: 'Client timeout sau khi server đã charge. Retry an toàn cần gì?', options: ['Tạo key mới cho lần retry', 'Gửi lại cùng idempotency key và payload', 'Bỏ qua lưu kết quả', 'Retry vô hạn'], answer: 1, explain: `Cùng key và payload cho phép server nhận diện cùng ý định và trả kết quả đã ghi. Key mới tạo operation mới; không lưu kết quả dẫn tới duplicate; retry vô hạn gây tải và không đảm bảo an toàn.` },
-      { q: 'Vì sao thêm jitter vào exponential backoff?', options: ['Để mọi client retry cùng lúc', 'Để giảm đồng bộ retry sau outage', 'Để bỏ timeout', 'Để thay idempotency key'], answer: 1, explain: `Jitter phân tán thời điểm retry, giảm thundering herd. Nó không thay timeout hay idempotency; đồng bộ retry là điều cần tránh.` },
+      { q: 'Vì sao thêm jitter vào exponential backoff?', options: ['Để giảm việc nhiều client retry cùng một thời điểm sau outage', 'Để mọi client retry cùng lúc cho nhanh', 'Để không cần timeout nữa', 'Để thay idempotency key'], answer: 0, explain: `Jitter phân tán thời điểm retry, tránh thundering herd khi dependency vừa hồi phục; retry đồng loạt chính là điều cần tránh. Jitter không liên quan timeout (mỗi attempt vẫn cần deadline) và không thay idempotency (retry vẫn có thể gửi trùng nên server vẫn phải nhận diện bằng key).` },
     ], ['idempotency', 'retry', 'payments'])
   );
 })();
