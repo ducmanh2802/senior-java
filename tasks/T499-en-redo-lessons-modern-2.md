@@ -1,6 +1,6 @@
 # T499 — Dịch lại (nội dung đã sửa): lessons-modern-2 (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-modern-2.en.js`
 
@@ -13,3 +13,8 @@ Với MỖI mục trên: đọc bản tiếng Việt hiện tại trong `js/data
 node scripts/check-i18n.js lessons-modern-2 → OK; node scripts/validate.js → OK.
 
 ## Notes
+- Dịch lại toàn bộ entry `lesson-modern-005` theo bản tiếng Việt hiện tại: bổ sung OffsetDateTime, Period vs Duration + DST, mục "Bẫy kinh điển khi format" (YYYY/yyyy, MM/mm, HH/hh, SimpleDateFormat không thread-safe), cut-off UTC vs giờ VN + ngày lễ, mục Clock/now() injection, Senior tip mới.
+- Exercise: prompt 5 gạch đầu dòng (thêm quy tắc 16:00:00 vs 16:00:01, không cần ngày lễ), hint 3 mới, explain theo thứ tự 3 bước + bug quên gán lại `d`.
+- Check: 3 câu (thêm câu bẫy `YYYY`), đáp án vẫn index 1, giải thích đầy đủ cho cả phương án sai.
+- Chỉ sửa `js/i18n/lessons-modern-2.en.js`. `node scripts/check-i18n.js lessons-modern-2` → OK (1 mục); `node scripts/validate.js` → OK — không có lỗi.
+Reviewed-by: check-i18n (translation, no LLM review)
