@@ -1,6 +1,7 @@
 # T389 — Dịch sang tiếng Anh: q-scenario (6 mục)
 
-Status: TODO
+Status: DONE
+Note: Translated scenario-068 to scenario-073 to js/i18n/q-scenario-7.en.js. Verified with check-i18n.js.
 Agent: opencode
 Owns: `js/i18n/q-scenario-7.en.js`
 
@@ -16,3 +17,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-scenario-7.en.js` và `node scripts/check-i18n.js q-scenario-7` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
