@@ -10,7 +10,6 @@ window.I18N_FILES = [
   'algo-16',
   'algo-17',
   'algo-18',
-  'algo-19',
   'algo-2',
   'algo-3',
   'algo-4',
