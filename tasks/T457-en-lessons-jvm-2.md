@@ -1,6 +1,6 @@
 # T457 — Dịch sang tiếng Anh: lessons-jvm (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-jvm-2.en.js`
 
@@ -16,3 +16,8 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-jvm-2.en.js` và `node scripts/check-i18n.js lessons-jvm-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch `lesson-jvm-003` (Class loading và static init) sang `js/i18n/lessons-jvm-2.en.js`: title, goals, body, 2 exercises (title/prompt/hints/explain) và 4 câu check (q/options/explain). Không chép code (starter/tests/reference).
+- Giữ nguyên markup và toàn bộ `~~~java` block (dịch comment `in ra` → `prints`); thuật ngữ (holder idiom, initialization lock, Metaspace, `<clinit>`, classloader…) giữ nguyên.
+- `node scripts/check-i18n.js lessons-jvm-2` → `OK — 1 mục đã dịch.`; `node scripts/validate.js` → `OK — không có lỗi.`
+Reviewed-by: check-i18n (translation, no LLM review)
