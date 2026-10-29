@@ -1,7 +1,9 @@
 # T384 — Dịch sang tiếng Anh: q-microservices (5 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
+
+Đã dịch 5 câu hỏi microservices (039-043) sang tiếng Anh. Validated OK.
 Owns: `js/i18n/q-microservices-5.en.js`
 
 Người dùng bấm EN thì **cả trang** chuyển sang tiếng Anh: file này phủ bản dịch lên dữ liệu gốc theo `id` (đọc comment "content translation" trong `js/core/i18n.js`). Đọc AGENTS.md mục 5 (markup) và các mục sau trong `js/data/q-microservices.js`: **microservices-039, microservices-040, microservices-041, microservices-042, microservices-043**.
@@ -16,3 +18,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-microservices-5.en.js` và `node scripts/check-i18n.js q-microservices-5` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
