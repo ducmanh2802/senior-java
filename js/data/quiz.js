@@ -66,12 +66,12 @@
   q: 'Một hàm Kotlin trả về {{String?}} và Java gọi hàm đó. Ranh giới nullability này nên được hiểu thế nào?',
   options: [
     'Java compiler bắt buộc mọi caller kiểm tra null như Kotlin compiler làm với String?',
-    'Kotlin có thể trả null; Java thường thấy kiểu platform hoặc annotation tùy metadata/tooling nên caller Java vẫn phải xử lý null rõ ràng',
+    'Kotlin có thể trả null; Java chỉ thấy kiểu String kèm annotation @Nullable mà compiler Java không cưỡng chế, nên caller Java vẫn phải tự kiểm tra null',
     'Kotlin tự đổi null thành chuỗi rỗng khi đi qua JVM boundary',
     'Nullable type không thể xuất hiện trong bytecode JVM nên hàm không gọi được từ Java'
   ],
   answer: 1,
-  explain: `**Đáp án đúng: Kotlin cho phép trả null, còn mức kiểm tra tại Java phụ thuộc chữ ký bytecode, annotation và tooling.** Nullability của Kotlin được biểu diễn qua metadata/annotation, nhưng Java không có cùng hệ kiểu bắt buộc như Kotlin.
+  explain: `**Đáp án đúng: Kotlin cho phép trả null, còn Java chỉ nhận được gợi ý qua annotation.** Trong bytecode, kiểu trả về vẫn là {{java.lang.String}}; Kotlin compiler gắn thêm {{@org.jetbrains.annotations.Nullable}} (và Kotlin metadata). Java compiler bỏ qua annotation này; chỉ IDE hoặc công cụ phân tích tĩnh (IntelliJ inspection, NullAway, Error Prone…) mới cảnh báo. ("Platform type" là khái niệm theo chiều ngược lại: kiểu Java nhìn từ Kotlin, ví dụ {{String!}}.)
 
 ### Vì sao các phương án còn lại sai
 - **Java bắt buộc check**: Java compiler không cưỡng chế null check chỉ vì Kotlin khai báo nullable.
@@ -4573,7 +4573,7 @@ ENTRYPOINT ["java","-jar","/app.jar"]
   answer: 3,
   explain: `**Đáp án đúng: migration tương thích ngược theo expand-contract.**
 
-Trong canary, phiên bản cũ và mới **cùng chạy đồng thời** trên cùng database. Vì vậy schema phải là giao của hai phiên bản: thêm cột/table mới (expand), backfill dữ liệu, cho code mới đọc/ghi tương thích, chỉ khi version cũ đã biến mất mới xóa cột/thứ không dùng (contract). Thay đổi phá vỡ tương thích như đổi tên cột, đổi kiểu, thêm NOT NULL không default sẽ làm version cũ lỗi ngay khi canary nhận traffic.
+Trong canary, phiên bản cũ và mới **cùng chạy đồng thời** trên cùng database. Vì vậy schema phải tương thích với **cả hai** phiên bản: thêm cột/bảng mới (expand), backfill dữ liệu, cho code mới đọc/ghi tương thích, và chỉ khi version cũ đã ngừng chạy hoàn toàn mới xóa cột/bảng không còn dùng (contract). Thay đổi phá vỡ tương thích như đổi tên cột, đổi kiểu, thêm NOT NULL không default sẽ làm version cũ lỗi ngay khi canary nhận traffic.
 
 ### Vì sao các phương án còn lại sai
 - **Xóa dữ liệu cũ trước**: phá hủy dữ liệu và không giải quyết tương thích; version cũ vẫn đang chạy và sẽ lỗi.
@@ -4586,7 +4586,7 @@ Trong canary, phiên bản cũ và mới **cùng chạy đồng thời** trên c
 3. **Rollout canary** 1–5–25–100%, so sánh error rate, latency, business metric với baseline.
 4. **Contract**: sau khi version cũ ngừng hoàn toàn mới xóa phần dư.
 
-> Senior tip: luôn thiết kế migration theo hướng **rollback được trong vài phút**. Với PostgreSQL, thêm cột nullable gần như tức thời, còn thêm default cho bảng lớn có thể rewrite bảng ở version cũ — hãy kiểm tra phiên bản cụ thể. Đừng gộp migration và deploy code vào một bước không thể tách rời.`
+> Senior tip: luôn thiết kế migration theo hướng **rollback được trong vài phút**. Với PostgreSQL, thêm cột nullable gần như tức thời; thêm cột có default hằng số cũng tức thời từ PostgreSQL 11, nhưng ở bản cũ hơn (hoặc default volatile như {{random()}}) sẽ rewrite cả bảng — hãy kiểm tra phiên bản cụ thể. Đừng gộp migration và deploy code vào một bước không thể tách rời.`
 },
 {
   id: 'qz-devops-006',
@@ -4604,7 +4604,7 @@ Trong canary, phiên bản cũ và mới **cùng chạy đồng thời** trên c
 Flaky test thường đến từ **trạng thái chia sẻ** giữa các test (cùng database, cùng user, cùng file), **phụ thuộc thứ tự chạy**, **thời gian thật** (sleep, múi giờ), **bất đồng bộ** (thread, message đến muộn), **cổng/port cố định**, hoặc **dữ liệu ngẫu nhiên không seed**. Cách sửa là làm test độc lập và xác định: dữ liệu riêng, transaction rollback hoặc dọn dẹp, inject {{Clock}}, dùng {{Awaitility}} thay sleep, cấp port động. Sau đó chạy lặp nhiều lần để xác nhận đã hết flake.
 
 ### Vì sao các phương án còn lại sai
-- **Retry trong CI**: che giấu lỗi thật, làm pipeline xanh giả và tăng thời gian; người dùng vẫn gặp lỗi ở production.
+- **Retry trong CI**: che giấu lỗi thật, làm pipeline xanh giả và tăng thời gian; nếu flake bắt nguồn từ race condition trong code (không phải trong test) thì người dùng vẫn gặp lỗi ở production.
 - **Tăng timeout**: chỉ làm test chậm hơn, không sửa nguyên nhân; có lỗi còn trở nên khó thấy hơn.
 - **Chạy song song nhiều hơn**: với test đang chia sẻ trạng thái, song song làm xung đột nhiều hơn và flake nặng hơn.
 
@@ -4614,7 +4614,7 @@ Flaky test thường đến từ **trạng thái chia sẻ** giữa các test (c
 - Đọc log thời điểm fail, tìm tài nguyên chia sẻ hoặc giả định về thời gian.
 - Sửa gốc, sau đó chạy lại nhiều lần trước khi bỏ nhãn.
 
-> Senior tip: hãy đo **tỉ lệ flake** theo tuần và đặt ngưỡng cảnh báo. Một test flaky 1% trong bộ 100 test làm pipeline đỏ khoảng 63% số lần chạy (1 - 0.99^100), nên flake nhỏ vẫn rất tốn kém. Và đừng dùng {{Thread.sleep}} trong test — nếu buộc phải chờ, hãy chờ theo điều kiện với timeout rõ ràng.`
+> Senior tip: hãy đo **tỉ lệ flake** theo tuần và đặt ngưỡng cảnh báo. Nếu bộ có 100 test và mỗi test flaky 1%, pipeline đỏ khoảng 63% số lần chạy (1 - 0.99^100), nên flake nhỏ vẫn rất tốn kém. Và đừng dùng {{Thread.sleep}} trong test — nếu buộc phải chờ, hãy chờ theo điều kiện với timeout rõ ràng.`
 },
 {
   id: 'qz-devops-007',
@@ -4641,7 +4641,7 @@ Flaky test thường đến từ **trạng thái chia sẻ** giữa các test (c
 kubectl describe pod my-api | grep -A3 "Last State"
 kubectl exec my-api -- jcmd 1 VM.native_memory summary
 ~~~
-So sánh **RSS** với limit, xem direct buffer và số thread. Nếu RSS tăng dần theo tải thì tìm leak (buffer, ThreadLocal, cache không giới hạn) trước khi chỉ tăng limit.
+Lệnh {{VM.native_memory}} chỉ chạy khi JVM được khởi động với {{-XX:NativeMemoryTracking=summary}} (tốn thêm vài % overhead). So sánh **RSS** với limit, xem direct buffer và số thread. Nếu RSS tăng dần theo tải thì tìm leak (buffer, ThreadLocal, cache không giới hạn) trước khi chỉ tăng limit.
 
 > Senior tip: đặt {{-XX:MaxRAMPercentage=75}} thay vì hard-code {{-Xmx}} để cùng một image chạy được với nhiều mức limit. Với Netty, đặt thêm {{-XX:MaxDirectMemorySize}} và kiểm tra leak detector. Đừng đặt limit sát mức dùng trung bình — cần biên cho đỉnh tải và cho phần native.`
 },
@@ -4695,7 +4695,7 @@ Image và registry lưu **tất cả layer**, kể cả layer đã bị layer sa
 
 ### Lưu ý khi dùng Dispatchers.IO
 - Pool IO cũng có giới hạn (mặc định 64 thread hoặc số core, lấy mức lớn hơn), nên nếu database pool chỉ có 10 connection thì chạy 64 lời gọi song song cũng vô ích. Dùng {{limitedParallelism(10)}} để khớp connection pool.
-- JDBC không hỗ trợ hủy; có thể bọc bằng {{runInterruptible}} nếu driver phản ứng với interrupt, nhưng phải kiểm tra thực tế.
+- Lời gọi JDBC blocking không phản ứng với cancellation của coroutine; có thể bọc bằng {{runInterruptible}} nếu driver phản ứng với interrupt, hoặc đặt {{Statement.setQueryTimeout}}, nhưng phải kiểm tra thực tế.
 - Trên Java 21 có thể dùng virtual thread cho tác vụ blocking, nhưng vẫn cần giới hạn theo tài nguyên thật.
 
 > Senior tip: quy tắc là **blocking đi với IO, tính toán đi với Default**. Hãy đặt timeout cho mọi lời gọi ra ngoài và đo thời gian chờ; nếu thấy coroutine chờ thread thay vì chờ I/O thì đó là dấu hiệu dispatcher bị dùng sai.`
@@ -4728,7 +4728,7 @@ Image và registry lưu **tất cả layer**, kể cả layer đã bị layer sa
 | Nguồn vô hạn hoặc đọc dần từ file | Sequence |
 | Cần song song hóa | Java parallel stream hoặc coroutine, không phải Sequence |
 
-> Senior tip: đừng tối ưu hóa sớm. Hãy đo trước; nếu profiler cho thấy nhiều collection trung gian và bộ nhớ tăng vọt thì mới chuyển sang sequence. Và nhớ rằng Sequence khác {{Stream}} của Java: stream chỉ dùng một lần, còn sequence có thể lặp lại (dù phải tính lại).`
+> Senior tip: đừng tối ưu hóa sớm. Hãy đo trước; nếu profiler cho thấy nhiều collection trung gian và bộ nhớ tăng vọt thì mới chuyển sang sequence. Và nhớ rằng Sequence khác {{Stream}} của Java: stream chỉ dùng một lần, còn đa số sequence có thể lặp lại (dù phải tính lại); ngoại lệ là sequence tạo từ iterator hoặc {{constrainOnce()}}.`
 },
 {
   id: 'qz-kotlin-005',
@@ -4737,7 +4737,7 @@ Image và registry lưu **tất cả layer**, kể cả layer đã bị layer sa
   options: [
     'Dùng reified type parameter trong inline function để compiler chèn kiểu thật; nếu không thể inline thì truyền KClass hoặc TypeReference tường minh',
     'Dùng T::class trực tiếp trong mọi hàm generic, kể cả hàm không inline',
-    'Ép kiểu (T) Any() rồi đọc javaClass để lấy kiểu thật',
+    'Tạo Any() as T rồi đọc javaClass để lấy kiểu thật',
     'Kotlin tự giữ type token cho mọi generic nên không cần làm gì thêm'
   ],
   answer: 0,
@@ -4747,7 +4747,7 @@ Trên JVM, generic bị **type erasure**: bên trong hàm, {{T}} không còn t�
 
 ### Vì sao các phương án còn lại sai
 - **T::class trong mọi hàm generic**: chỉ hợp lệ khi {{T}} là reified trong inline function; nếu không, compiler báo lỗi.
-- **Ép kiểu (T) Any()**: tạo object kiểu Any, không mang thông tin T; đọc {{javaClass}} chỉ ra {{Any}}, và ép kiểu còn có thể ném ClassCastException.
+- **Any() as T**: tạo object kiểu Any, không mang thông tin T; đây là unchecked cast (bị erasure nên không kiểm tra ngay), {{javaClass}} chỉ trả về {{java.lang.Object}}, và ClassCastException sẽ nổ muộn ở nơi dùng giá trị.
 - **Kotlin tự giữ type token**: không đúng; Kotlin cũng chịu type erasure như Java.
 
 ### Ví dụ
@@ -4831,7 +4831,7 @@ Kotlin cung cấp ba chế độ:
   topic: 'kotlin',
   q: 'Một data class được dùng làm key trong HashMap, sau đó một property var của nó bị thay đổi. Điều gì xảy ra?',
   options: [
-    'hashCode được cache nên map vẫn tìm thấy bình thường',
+    'Data class cache hashCode lúc tạo object nên map vẫn tìm thấy bình thường',
     'HashMap tự rehash lại khi object thay đổi',
     'Chỉ ảnh hưởng nếu property là nullable',
     'hashCode thay đổi nên object rơi vào bucket khác; get/contains trả về null/false dù object vẫn nằm trong map, vì vậy key phải immutable hoặc không mutate sau khi đưa vào hash-based collection'
@@ -4842,7 +4842,7 @@ Kotlin cung cấp ba chế độ:
 {{data class}} sinh {{equals}}, {{hashCode}} và {{toString}} từ **tất cả property trong primary constructor**. Khi object được đưa vào {{HashMap}}, vị trí bucket được tính từ hashCode tại thời điểm đó. Nếu một property tham gia hashCode bị thay đổi, hashCode mới dẫn tới bucket khác; {{get}} sẽ tìm sai chỗ và trả về null dù object vẫn còn trong map. Đây là **memory leak logic**: entry không truy cập được nhưng vẫn chiếm chỗ.
 
 ### Vì sao các phương án còn lại sai
-- **hashCode được cache**: {{HashMap}} không cache hashCode của key; nó gọi lại mỗi lần cần.
+- **Data class cache hashCode**: hashCode của data class được tính lại từ property mỗi lần gọi. Chính {{HashMap}} mới lưu hash cũ trong node lúc put; khi get, nó tính hash mới từ key đã đổi, nên không khớp node cũ (và thường tìm sai bucket).
 - **HashMap tự rehash**: chỉ rehash khi số phần tử vượt ngưỡng và bảng resize, không theo dõi thay đổi nội dung object.
 - **Chỉ ảnh hưởng nếu nullable**: kiểu của property không liên quan; bất kỳ property nào trong hashCode đổi giá trị đều gây lỗi.
 
@@ -4955,7 +4955,7 @@ Khi consumer nhận message, SQS ẩn message trong **visibility timeout**. Hế
 
 DynamoDB giới hạn tài nguyên **theo từng partition** (khoảng 3000 RCU và 1000 WCU, cùng giới hạn dung lượng). Một userId có lưu lượng áp đảo sẽ dồn vào một partition và bị throttle dù bảng còn nhiều capacity. Cách xử lý:
 - **Write sharding**: thêm hậu tố ngẫu nhiên (0..N-1) vào partition key, ghi rải đều; khi đọc phải đọc N shard rồi gộp.
-- **Composite key** theo access pattern: ví dụ {{PK = TENANT#id}}, {{SK = TYPE#timestamp}} để phân bố đều hơn.
+- **Composite key** theo access pattern: thêm chiều có cardinality cao vào partition key, ví dụ {{PK = USER#id#2026-10}} (bucket theo tháng), {{SK = TYPE#timestamp}}, để dữ liệu của một user nóng trải trên nhiều partition.
 - Với đọc nóng, dùng **DAX** hoặc cache tầng ứng dụng, và retry với exponential backoff.
 - Tránh {{Scan}} vì tốn capacity và chậm.
 
@@ -4964,7 +4964,7 @@ DynamoDB giới hạn tài nguyên **theo từng partition** (khoảng 3000 RCU 
 - **Scan toàn bảng**: đọc toàn bộ dữ liệu, tốn kém và chậm hơn nhiều, càng tệ khi bảng lớn.
 - **Partition key là timestamp**: ghi có thể rải đều theo thời gian nhưng truy vấn theo user sẽ phải scan; đồng thời ghi cùng một giây vẫn tạo hot partition.
 
-> Senior tip: thiết kế DynamoDB bắt đầu từ **access pattern**, không phải từ mô hình quan hệ. Nếu một key tự nhiên có thể nóng, hãy chấp nhận thêm shard và xử lý gộp ở tầng ứng dụng. Đo {{ConsumedWriteCapacityUnits}} theo partition key để phát hiện sớm trước khi user thấy lỗi throttle.`
+> Senior tip: thiết kế DynamoDB bắt đầu từ **access pattern**, không phải từ mô hình quan hệ. Nếu một key tự nhiên có thể nóng, hãy chấp nhận thêm shard và xử lý gộp ở tầng ứng dụng. Metric {{ConsumedWriteCapacityUnits}} của CloudWatch chỉ ở mức bảng/index; để thấy key nào nóng, bật **CloudWatch Contributor Insights for DynamoDB** và theo dõi throttle event trước khi user thấy lỗi.`
 },
 {
   id: 'qz-ai-007',
