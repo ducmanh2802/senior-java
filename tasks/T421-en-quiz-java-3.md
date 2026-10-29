@@ -1,6 +1,6 @@
 # T421 — Dịch sang tiếng Anh: quiz-java (22 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/quiz-java-3.en.js`
 
@@ -16,3 +16,10 @@ Yêu cầu dịch:
 - `node --check js/i18n/quiz-java-3.en.js` và `node scripts/check-i18n.js quiz-java-3` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đủ 22/22 mục vào `js/i18n/quiz-java-3.en.js` (chỉ q, options, explain; không chép `answer`/`multi`/`topic`).
+- Giữ nguyên markup và thứ tự options nên index `answer` của bản gốc vẫn đúng; các câu nhiều đáp án giữ dạng "(Choose N)" khớp `answer.length`.
+- Code block giữ nguyên code, chỉ dịch comment tiếng Việt. Nhãn mở đầu quiz dùng "**Correct answer: …**" (các mục này không có "Tóm tắt:"), giữ "### Why it is correct", "### Why the other options are wrong", "> Senior tip:" đúng quy ước của quiz-java-1/2/4.
+- Kiểm tra: `node scripts/check-i18n.js quiz-java-3` → `OK — 22 mục đã dịch.` (script biên dịch file trong `vm` nên cũng xác nhận cú pháp; lệnh `node --check` bị chặn quyền trong phiên này). `node scripts/validate.js` → `OK — không có lỗi.`
+- Không sửa file ngoài quyền sở hữu; `quiz-java-3` đã có sẵn trong `js/i18n/manifest.js` nên không cần đăng ký thêm.
+Reviewed-by: check-i18n (translation, no LLM review)
