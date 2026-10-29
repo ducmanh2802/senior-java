@@ -1,6 +1,6 @@
 # T442 — Dịch sang tiếng Anh: labs-thread (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/labs-thread-7.en.js`
 
@@ -16,3 +16,9 @@ Yêu cầu dịch:
 - `node --check js/i18n/labs-thread-7.en.js` và `node scripts/check-i18n.js labs-thread-7` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch `lab-thread-003` sang `js/i18n/labs-thread-7.en.js` (title, scenario, questions, hints, answer, rubric); không chép artifacts/code.
+- Giữ nguyên markup, bảng, code block; chỉ dịch comment tiếng Việt trong code. Số liệu giữ nguyên giá trị, đổi dấu thập phân sang dạng Anh (10,4ms → 10.4ms) và phân cách nghìn (1 400 → 1,400).
+- `node scripts/check-i18n.js labs-thread-7` → OK (1 mục). `node scripts/validate.js` → OK — không có lỗi.
+- Không commit; người tích hợp review và commit.
+Reviewed-by: check-i18n (translation, no LLM review)
