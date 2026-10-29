@@ -1,6 +1,6 @@
 # T534 — Dịch lại (nội dung đã sửa): q-microservices-1 (10 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-microservices-1.en.js`
 
@@ -13,3 +13,6 @@ Với MỖI mục trên: đọc bản tiếng Việt hiện tại trong `js/data
 node scripts/check-i18n.js q-microservices-1 → OK; node scripts/validate.js → OK.
 
 ## Notes
+
+Dịch lại toàn bộ 10 mục (microservices-001…010) từ bản tiếng Việt hiện tại trong `js/data/q-microservices.js`, gồm cả các mục mới thêm sau lần dịch trước: `### Hiểu nhanh`, `### Thuật ngữ`, `### Lỗi hay gặp`, `### Trả lời miệng 1 phút`. Giữ nguyên key, id, url và tập field `q`/`a`/`follow`; comment và chuỗi trong code mẫu (ArchUnit, Outbox, YAML Resilience4j…) đã dịch sang tiếng Anh. Không backtick, không `${`, không còn dấu tiếng Việt ngoài khối `~~~`. Chỉ sửa `js/i18n/q-microservices-1.en.js`.
+Kiểm tra: `node scripts/check-i18n.js q-microservices-1` → `OK — 10 mục đã dịch.`; `node scripts/validate.js` → `OK — không có lỗi.`Reviewed-by: check-i18n (translation, no LLM review)
