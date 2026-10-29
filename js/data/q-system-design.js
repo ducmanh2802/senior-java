@@ -70,9 +70,8 @@ Luôn trả lời được: "Nếu Redis chết thì sao?", "Nếu traffic tăng
   tags: ['system design', 'interview framework', 'estimation']
 ,
   refs: [
-    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
-    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' },
+    { type: 'book', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
   ]
 },
 {
@@ -181,9 +180,8 @@ Khi vượt 1 tỷ URL: shard theo {{hash(code)}} với consistent hashing, ho�
   tags: ['URL shortener', 'base62', 'cache', 'Kafka']
 ,
   refs: [
-    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
-    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+    { type: 'doc', title: 'System Design Primer: Pastebin / URL shortener solution', url: 'https://github.com/donnemartin/system-design-primer/blob/master/solutions/system_design/pastebin/README.md' },
+    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' },
   ]
 },
 {
@@ -272,9 +270,8 @@ Ngoài 429, nên trả thêm thời gian chờ và hướng dẫn. Client tốt 
   tags: ['rate limiter', 'token bucket', 'Redis', 'Lua']
 ,
   refs: [
-    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
-    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+    { type: 'article', title: 'Scaling your API with rate limiters (Stripe)', url: 'https://stripe.com/blog/rate-limiters' },
+    { type: 'doc', title: 'Redis INCR: rate limiter pattern', url: 'https://redis.io/docs/latest/commands/incr/' },
   ]
 }
 ,
@@ -282,7 +279,10 @@ Ngoài 429, nên trả thêm thời gian chờ và hướng dẫn. Client tốt 
   id: 'design-004',
   topic: 'design',
   level: 'lead',
-  refs: [{"type": "doc", "title": "System Design Primer", "url": "https://github.com/donnemartin/system-design-primer"}, {"type": "doc", "title": "High Scalability", "url": "https://highscalability.com/"}],
+  refs: [
+    { type: 'doc', title: 'Redis: Scripting with Lua', url: 'https://redis.io/docs/latest/develop/interact/programmability/eval-intro/' },
+    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' },
+  ],
   q: 'Thiết kế hệ thống flash sale: 100.000 request trong 1 giây cho 1.000 sản phẩm, mỗi người chỉ mua 1, tuyệt đối không oversell. Trình bày cả luồng và cách xử lý sự cố.',
   a: `**Tóm tắt:** Flash sale là bài toán **tranh chấp tài nguyên hữu hạn dưới tải cực lớn**. Nguyên tắc: chặn và quyết định càng sớm càng tốt, trừ kho bằng thao tác **nguyên tử có điều kiện**, tạo đơn bất đồng bộ, và luôn có tầng DB làm chốt chặn cuối cùng chống oversell.
 
@@ -388,7 +388,10 @@ Với 1.000 sản phẩm, sharding theo bucket thường thắng vì tính đún
   id: 'design-005',
   topic: 'design',
   level: 'lead',
-  refs: [{"type": "doc", "title": "System Design Primer", "url": "https://github.com/donnemartin/system-design-primer"}, {"type": "doc", "title": "High Scalability", "url": "https://highscalability.com/"}],
+  refs: [
+    { type: 'article', title: 'Designing robust and predictable APIs with idempotency (Stripe)', url: 'https://stripe.com/blog/idempotency' },
+    { type: 'doc', title: 'Pattern: Transactional outbox', url: 'https://microservices.io/patterns/data/transactional-outbox.html' },
+  ],
   q: 'Thiết kế hệ thống thanh toán / ví điện tử. Làm sao đảm bảo idempotency, ledger không sai lệch và reconciliation với đối tác?',
   a: `**Tóm tắt:** Thanh toán là bài toán **đúng đắn và truy vết**, không phải bài toán tốc độ. Ba trụ cột: idempotency key cho mọi lệnh ghi, **double-entry ledger** bất biến làm nguồn sự thật, và **reconciliation** hằng ngày với sao kê đối tác. Không có "exactly-once" thần kỳ — chỉ có at-least-once cộng với xử lý idempotent.
 
@@ -672,9 +675,8 @@ Tách ranking khỏi storage; cache kết quả ngắn hạn. Không chạy mode
   tags: ['news feed', 'fan-out', 'Redis sorted set', 'celebrity']
 ,
   refs: [
-    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
-    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+    { type: 'doc', title: 'System Design Primer: Twitter timeline solution', url: 'https://github.com/donnemartin/system-design-primer/blob/master/solutions/system_design/twitter/README.md' },
+    { type: 'doc', title: 'Redis sorted sets', url: 'https://redis.io/docs/latest/develop/data-types/sorted-sets/' },
   ]
 },
 {
@@ -771,9 +773,8 @@ Nhóm 100k thành viên (kênh cộng đồng) không thể fan-out từng ngư�
   tags: ['chat', 'WebSocket', 'presence', 'message ordering']
 ,
   refs: [
-    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
-    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+    { type: 'doc', title: 'RFC 6455: The WebSocket Protocol', url: 'https://datatracker.ietf.org/doc/html/rfc6455' },
+    { type: 'doc', title: 'Spring Framework: WebSockets', url: 'https://docs.spring.io/spring-framework/reference/web/websocket.html' },
   ]
 },
 {
@@ -870,7 +871,10 @@ Một key được đọc hàng trăm nghìn lần/giây làm một node Redis q
   id: 'design-010',
   topic: 'design',
   level: 'lead',
-  refs: [{"type": "doc", "title": "System Design Primer", "url": "https://github.com/donnemartin/system-design-primer"}, {"type": "doc", "title": "High Scalability", "url": "https://highscalability.com/"}],
+  refs: [
+    { type: 'article', title: 'How to do distributed locking (Martin Kleppmann)', url: 'https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html' },
+    { type: 'doc', title: 'Redis: Distributed Locks', url: 'https://redis.io/docs/latest/develop/use/patterns/distributed-locks/' },
+  ],
   q: 'Distributed lock: Redis Redlock có thực sự an toàn? Khi nào dùng ZooKeeper/etcd, và fencing token giải quyết vấn đề gì?',
   a: `**Tóm tắt:** Distributed lock chỉ an toàn tuyệt đối khi có **fencing token** — một số thứ tự tăng dần mà tài nguyên đích kiểm tra được. Redis single-node với SET NX PX + token là đủ cho phần lớn nhu cầu "tránh làm trùng". Redlock nhiều node giảm rủi ro mất lock nhưng vẫn phụ thuộc đồng hồ và không cứu được client bị dừng (GC pause) sau khi lock hết hạn. Với tính đúng đắn cao, ưu tiên ràng buộc DB/optimistic lock hơn là lock phân tán.
 
@@ -1016,16 +1020,18 @@ Với hệ replicated N node: ghi thành công khi W node xác nhận, đọc t�
   tags: ['CAP', 'PACELC', 'consistency', 'database selection']
 ,
   refs: [
-    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
-    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+    { type: 'article', title: 'Please stop calling databases CP or AP (Martin Kleppmann)', url: 'https://martin.kleppmann.com/2015/05/11/please-stop-calling-databases-cp-or-ap.html' },
+    { type: 'doc', title: 'Jepsen: Consistency Models', url: 'https://jepsen.io/consistency' },
   ]
 },
 {
   id: 'design-012',
   topic: 'design',
   level: 'lead',
-  refs: [{"type": "doc", "title": "System Design Primer", "url": "https://github.com/donnemartin/system-design-primer"}, {"type": "doc", "title": "High Scalability", "url": "https://highscalability.com/"}],
+  refs: [
+    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
+    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' },
+  ],
   q: 'Hệ thống hiện có 1.000 người dùng, sếp muốn chuẩn bị cho 1 triệu. Bạn vạch lộ trình kiến trúc theo từng mốc, mỗi mốc gắn với tín hiệu nào cần scale?',
   a: `**Tóm tắt:** Scale không phải là làm kiến trúc của Google ngay từ đầu, mà là **giải quyết điểm nghẽn tiếp theo** ở mỗi mốc. 1k user cần một monolith gọn gàng và backup; 100k cần stateless + cache + replica; 1M cần shard, tách async, multi-region. Mỗi bước phải có **tín hiệu đo được** và chi phí vận hành tương xứng.
 
@@ -1240,9 +1246,9 @@ Job có thể chạy lại do retry, lease hết hạn, hoặc chạy tay. Mọi
   tags: ['job scheduler', 'batch', 'SKIP LOCKED', 'idempotency']
 ,
   refs: [
-    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
-    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+    { type: 'doc', title: 'PostgreSQL SELECT: The Locking Clause (SKIP LOCKED)', url: 'https://www.postgresql.org/docs/current/sql-select.html' },
+    { type: 'doc', title: 'ShedLock', url: 'https://github.com/lukas-krecan/ShedLock' },
+    { type: 'doc', title: 'Spring Batch Reference', url: 'https://docs.spring.io/spring-batch/reference/' },
   ]
 }
 ,
@@ -1672,9 +1678,9 @@ Service không biết thanh toán là Stripe hay Momo, không biết lưu bằng
   tags: ['clean architecture', 'hexagonal', 'package structure', 'ArchUnit']
 ,
   refs: [
-    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
-    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+    { type: 'article', title: 'Hexagonal Architecture (Alistair Cockburn)', url: 'https://alistair.cockburn.us/hexagonal-architecture/' },
+    { type: 'article', title: 'The Clean Architecture (Robert C. Martin)', url: 'https://blog.cleancoder.com/uncle-bob/2012/08/13/the-clean-architecture.html' },
+    { type: 'doc', title: 'ArchUnit User Guide', url: 'https://www.archunit.org/userguide/html/000_Index.html' },
   ]
 }
 ,
@@ -1803,9 +1809,9 @@ Hệ CRUD, báo cáo, admin tool: entity + service là đủ. DDD có chi phí n
   tags: ['DDD', 'aggregate', 'value object', 'domain event']
 ,
   refs: [
-    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
-    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+    { type: 'article', title: 'DDD Aggregate (Martin Fowler)', url: 'https://martinfowler.com/bliki/DDD_Aggregate.html' },
+    { type: 'article', title: 'Value Object (Martin Fowler)', url: 'https://martinfowler.com/bliki/ValueObject.html' },
+    { type: 'article', title: 'Domain Event (Martin Fowler)', url: 'https://martinfowler.com/eaaDev/DomainEvent.html' },
   ]
 },
 {
@@ -1909,9 +1915,8 @@ Rewrite big-bang thường mất 2–3 lần ước tính và bỏ sót business
   tags: ['technical debt', 'legacy', 'strangler fig', 'refactoring']
 ,
   refs: [
-    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
-    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+    { type: 'article', title: 'Strangler Fig Application (Martin Fowler)', url: 'https://martinfowler.com/bliki/StranglerFigApplication.html' },
+    { type: 'article', title: 'Technical Debt Quadrant (Martin Fowler)', url: 'https://martinfowler.com/bliki/TechnicalDebtQuadrant.html' },
   ]
 },
 {
@@ -2016,16 +2021,18 @@ Một quyết định lớn có thể có RFC trước, ADR sau khi chốt, và 
   tags: ['ADR', 'architecture decision', 'trade-off', 'documentation']
 ,
   refs: [
-    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
-    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+    { type: 'doc', title: 'Architectural Decision Records (adr.github.io)', url: 'https://adr.github.io/' },
+    { type: 'article', title: 'Documenting Architecture Decisions (Michael Nygard)', url: 'https://cognitect.com/blog/2011/11/15/documenting-architecture-decisions' },
   ]
 },
 {
   id: 'architecture-008',
   topic: 'architecture',
   level: 'lead',
-  refs: [{"type": "doc", "title": "System Design Primer", "url": "https://github.com/donnemartin/system-design-primer"}, {"type": "doc", "title": "High Scalability", "url": "https://highscalability.com/"}],
+  refs: [
+    { type: 'article', title: 'Anemic Domain Model (Martin Fowler)', url: 'https://martinfowler.com/bliki/AnemicDomainModel.html' },
+    { type: 'doc', title: 'Refactoring.Guru: Code Smells', url: 'https://refactoring.guru/refactoring/smells' },
+  ],
   q: 'Phân tích các anti-pattern kiến trúc hay gặp: God class, anemic domain model, distributed monolith. Nhận diện và sửa thế nào?',
   a: `**Tóm tắt:** Anti-pattern là giải pháp **có vẻ đúng lúc đầu nhưng gây chi phí tăng dần**. Ba cái phổ biến nhất: God class (một class biết quá nhiều), anemic domain model (dữ liệu và hành vi tách rời, invariant không được bảo vệ), và distributed monolith (nhiều service nhưng vẫn phụ thuộc chặt như monolith). Nhận diện bằng dấu hiệu đo được, sửa bằng thay đổi tăng dần — không rewrite.
 
@@ -2220,9 +2227,8 @@ Ngân hàng gửi **không thể tự trừ tiền tài khoản ở ngân hàng 
   tags: ['IBFT', 'NAPAS', 'banking', 'reconciliation', 'ledger', 'timeout']
 ,
   refs: [
-    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
-    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+    { type: 'doc', title: 'ISO 20022', url: 'https://www.iso20022.org/' },
+    { type: 'doc', title: 'Saga distributed transactions pattern (Azure)', url: 'https://learn.microsoft.com/en-us/azure/architecture/reference-architectures/saga/saga' },
   ]
 },
 {
@@ -2312,9 +2318,9 @@ ID theo thời gian chỉ là "gần đúng": hai node sinh trong cùng ms có t
   tags: ['Snowflake', 'ULID', 'UUIDv7', 'distributed ID', 'clock skew', 'sequence']
 ,
   refs: [
-    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
-    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+    { type: 'doc', title: 'RFC 9562: Universally Unique IDentifiers (UUIDv7)', url: 'https://www.rfc-editor.org/rfc/rfc9562' },
+    { type: 'doc', title: 'ULID Specification', url: 'https://github.com/ulid/spec' },
+    { type: 'doc', title: 'PostgreSQL CREATE SEQUENCE', url: 'https://www.postgresql.org/docs/current/sql-createsequence.html' },
   ]
 },
 {
@@ -2397,16 +2403,18 @@ Phòng chờ ảo là thành phần quan trọng nhất: thay vì để 500.000 
   tags: ['booking', 'overbooking', 'hold', 'TTL', 'waiting room', 'concurrency']
 ,
   refs: [
-    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
-    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+    { type: 'doc', title: 'Redis SET (NX, PX options)', url: 'https://redis.io/docs/latest/commands/set/' },
+    { type: 'doc', title: 'PostgreSQL: Explicit Locking', url: 'https://www.postgresql.org/docs/current/explicit-locking.html' },
   ]
 },
 {
   id: 'design-017',
   topic: 'design',
   level: 'lead',
-  refs: [{"type": "doc", "title": "System Design Primer", "url": "https://github.com/donnemartin/system-design-primer"}, {"type": "doc", "title": "High Scalability", "url": "https://highscalability.com/"}],
+  refs: [
+    { type: 'article', title: 'The LMAX Architecture (Martin Fowler)', url: 'https://martinfowler.com/articles/lmax.html' },
+    { type: 'doc', title: 'LMAX Disruptor', url: 'https://lmax-exchange.github.io/disruptor/' },
+  ],
   q: 'Thiết kế order matching engine cho một sàn giao dịch chứng khoán/crypto: khớp lệnh theo giá rồi thời gian, độ trễ thấp, không mất lệnh khi crash. Vì sao các engine thường chạy đơn luồng?',
   a: `**Tóm tắt:** Lệnh đi qua gateway và kiểm tra rủi ro, rồi vào một **sequencer** gán số thứ tự và ghi journal bền vững. Sau đó **một luồng duy nhất cho mỗi nhóm mã** khớp lệnh trên order book trong RAM theo nguyên tắc giá tốt nhất trước, cùng giá thì lệnh đến trước khớp trước. Đơn luồng giúp engine **deterministic** nếu journal ghi đủ input có thứ tự, timestamp và kết quả phụ thuộc bên ngoài; khi đó replay tái tạo được trạng thái, phục hồi/HA đơn giản hơn và không cần lock trên order book.
 
@@ -2633,16 +2641,18 @@ Tương tự với tag {{uri}} chứa ID thật thay vì template. Đặt giới
   tags: ['logging', 'metrics', 'observability', 'Kafka', 'cardinality', 'retention']
 ,
   refs: [
-    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
-    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+    { type: 'doc', title: 'OpenTelemetry Documentation', url: 'https://opentelemetry.io/docs/' },
+    { type: 'doc', title: 'Prometheus: Metric and label naming', url: 'https://prometheus.io/docs/practices/naming/' },
+    { type: 'doc', title: 'Grafana Loki Documentation', url: 'https://grafana.com/docs/loki/latest/' },
   ]
 },
 {
   id: 'design-020',
   topic: 'design',
   level: 'lead',
-  refs: [{"type": "doc", "title": "System Design Primer", "url": "https://github.com/donnemartin/system-design-primer"}, {"type": "doc", "title": "High Scalability", "url": "https://highscalability.com/"}],
+  refs: [
+    { type: 'doc', title: 'Redis INCR', url: 'https://redis.io/docs/latest/commands/incr/' },
+  ],
   q: 'Thiết kế hệ thống phát hiện gian lận thời gian thực cho giao dịch thẻ/ví điện tử: phải ra quyết định chấp nhận, yêu cầu xác thực thêm hay từ chối trong khoảng 100 ms. Bạn kết hợp rule engine, feature store và model thế nào?',
   a: `**Tóm tắt:** Tách hai đường: **đường đồng bộ** nằm trong luồng thanh toán, chỉ đọc feature đã tính sẵn (Redis) rồi chạy rule + model trong ngân sách thời gian cố định và có chính sách dự phòng khi quá hạn; **đường bất đồng bộ** dùng stream processing (Kafka + Flink) tính các velocity feature theo cửa sổ thời gian, cập nhật feature store, phát hiện mẫu phức tạp và đưa case cho analyst. Rule cho phép phản ứng trong vài phút với kiểu gian lận mới; model bắt các mẫu tinh vi; nhãn (chargeback, khiếu nại) quay lại để huấn luyện.
 
@@ -2794,9 +2804,9 @@ OTP Service -> Kafka topic sms.otp (ưu tiên cao, tách khỏi SMS marketing)
   tags: ['OTP', '2FA', 'TOTP', 'SMS', 'brute force', 'Redis', 'security']
 ,
   refs: [
-    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
-    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+    { type: 'doc', title: 'RFC 6238: TOTP', url: 'https://datatracker.ietf.org/doc/html/rfc6238' },
+    { type: 'doc', title: 'RFC 4226: HOTP', url: 'https://datatracker.ietf.org/doc/html/rfc4226' },
+    { type: 'doc', title: 'OWASP Multifactor Authentication Cheat Sheet', url: 'https://cheatsheetseries.owasp.org/cheatsheets/Multifactor_Authentication_Cheat_Sheet.html' },
   ]
 },
 {
@@ -3115,9 +3125,8 @@ Cách sửa, theo thứ tự ưu tiên:
   tags: ['Proxy', 'Spring AOP', '@Transactional', 'CGLIB', 'self-invocation']
 ,
   refs: [
-    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
-    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+    { type: 'doc', title: 'Spring Framework: Understanding AOP Proxies', url: 'https://docs.spring.io/spring-framework/reference/core/aop/proxying.html' },
+    { type: 'doc', title: 'Spring Framework: Declarative Transaction Management', url: 'https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative.html' },
   ]
 },
 {
@@ -3206,9 +3215,9 @@ Client (mobile app, BFF) chỉ biết {{open()}}. Facade không cấm gọi tr�
   tags: ['Adapter', 'Facade', 'Decorator', 'Proxy', 'integration', 'design pattern']
 ,
   refs: [
-    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
-    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+    { type: 'doc', title: 'Refactoring.Guru: Adapter', url: 'https://refactoring.guru/design-patterns/adapter' },
+    { type: 'doc', title: 'Refactoring.Guru: Facade', url: 'https://refactoring.guru/design-patterns/facade' },
+    { type: 'doc', title: 'Refactoring.Guru: Decorator', url: 'https://refactoring.guru/design-patterns/decorator' },
   ]
 },
 {
@@ -3355,9 +3364,8 @@ Lợi ích: thêm sản phẩm mới phần lớn là **cấu hình** (đọc t�
   tags: ['composition', 'inheritance', 'fragile base class', 'sealed', 'refactoring']
 ,
   refs: [
-    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
-    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+    { type: 'doc', title: 'JEP 409: Sealed Classes', url: 'https://openjdk.org/jeps/409' },
+    { type: 'doc', title: 'Refactoring: Replace Superclass with Delegate', url: 'https://refactoring.com/catalog/replaceSuperclassWithDelegate.html' },
   ]
 },
 {
@@ -3434,9 +3442,8 @@ boolean overdue = loan.isOverdue(today);
   tags: ['code smell', 'refactoring', 'primitive obsession', 'feature envy', 'code review']
 ,
   refs: [
-    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
-    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+    { type: 'doc', title: 'Refactoring.Guru: Code Smells', url: 'https://refactoring.guru/refactoring/smells' },
+    { type: 'doc', title: 'Catalog of Refactorings (Martin Fowler)', url: 'https://refactoring.com/catalog/' },
   ]
 },
 {
@@ -3494,9 +3501,8 @@ Ví dụ thương mại điện tử: {{OrderPlaced}} dạng notification thì k
   tags: ['event-driven', 'Kafka', 'event notification', 'event-carried state transfer', 'observability']
 ,
   refs: [
-    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
-    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+    { type: 'article', title: 'What do you mean by Event-Driven? (Martin Fowler)', url: 'https://martinfowler.com/articles/201701-event-driven.html' },
+    { type: 'doc', title: 'OpenTelemetry Documentation', url: 'https://opentelemetry.io/docs/' },
   ]
 },
 {
@@ -3583,16 +3589,17 @@ Nếu module chưa sạch phụ thuộc ở trong monolith, tách ra chỉ tạo
   tags: ['Spring Modulith', 'modular monolith', 'bounded context', 'events', 'architecture']
 ,
   refs: [
-    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
-    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+    { type: 'doc', title: 'Spring Modulith Reference', url: 'https://docs.spring.io/spring-modulith/reference/' },
   ]
 },
 {
   id: 'architecture-019',
   topic: 'architecture',
   level: 'lead',
-  refs: [{"type": "doc", "title": "System Design Primer", "url": "https://github.com/donnemartin/system-design-primer"}, {"type": "doc", "title": "High Scalability", "url": "https://highscalability.com/"}],
+  refs: [
+    { type: 'doc', title: 'Anti-corruption Layer pattern (Azure)', url: 'https://learn.microsoft.com/en-us/azure/architecture/patterns/anti-corruption-layer' },
+    { type: 'article', title: 'Strangler Fig Application (Martin Fowler)', url: 'https://martinfowler.com/bliki/StranglerFigApplication.html' },
+  ],
   q: 'Ngân hàng xây kênh số mới (app, open API) nhưng phải tích hợp core banking legacy (T24, Flexcube...). Bạn thiết kế anti-corruption layer thế nào để mô hình legacy không lan vào hệ thống mới?',
   a: `**Tóm tắt:** Anti-corruption layer (ACL, khái niệm từ DDD) là lớp **dịch** giữa bounded context mới và hệ thống legacy: domain mới chỉ nói chuyện qua một **port** bằng ngôn ngữ của mình ({{holdFunds}}, {{postTransfer}}, {{Money}}, {{AccountStatus}}); ACL lo phần còn lại: giao thức và định dạng của core, mapping mã lỗi và mã sản phẩm, idempotency, timeout/retry, cache dữ liệu tham chiếu, và xử lý lúc core đóng sổ cuối ngày. Mục tiêu: đổi core (hoặc nâng cấp phiên bản core) chỉ phải sửa ACL, không phải sửa mọi kênh.
 
@@ -3751,9 +3758,9 @@ Bẫy: quên {{@Order}} thì thứ tự không được đảm bảo; handler c�
   tags: ['Template Method', 'Observer', 'Chain of Responsibility', 'Spring events', 'design pattern']
 ,
   refs: [
-    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
-    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+    { type: 'doc', title: 'Refactoring.Guru: Template Method', url: 'https://refactoring.guru/design-patterns/template-method' },
+    { type: 'doc', title: 'Refactoring.Guru: Observer', url: 'https://refactoring.guru/design-patterns/observer' },
+    { type: 'doc', title: 'Refactoring.Guru: Chain of Responsibility', url: 'https://refactoring.guru/design-patterns/chain-of-responsibility' },
   ]
 },
 {
@@ -3834,16 +3841,17 @@ Cách thực dụng: luật quan trọng nhất (domain không phụ thuộc h�
   tags: ['ArchUnit', 'architecture test', 'hexagonal', 'dependency rules', 'package cycle']
 ,
   refs: [
-    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
-    { type: 'doc', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' }
+    { type: 'doc', title: 'ArchUnit User Guide', url: 'https://www.archunit.org/userguide/html/000_Index.html' },
   ]
 },
 {
   id: 'architecture-022',
   topic: 'architecture',
   level: 'lead',
-  refs: [{"type": "doc", "title": "System Design Primer", "url": "https://github.com/donnemartin/system-design-primer"}, {"type": "doc", "title": "High Scalability", "url": "https://highscalability.com/"}],
+  refs: [
+    { type: 'doc', title: 'Hibernate ORM User Guide (multitenancy)', url: 'https://docs.jboss.org/hibernate/orm/6.6/userguide/html_single/Hibernate_User_Guide.html' },
+    { type: 'doc', title: 'PostgreSQL: Row Security Policies', url: 'https://www.postgresql.org/docs/current/ddl-rowsecurity.html' },
+  ],
   q: 'Bạn xây nền tảng SaaS (ví dụ phần mềm quản lý bán hàng hoặc core cho nhiều quỹ tín dụng) phục vụ 2.000 khách hàng doanh nghiệp. So sánh database-per-tenant, schema-per-tenant và discriminator column; triển khai với Hibernate 6 thế nào và những bẫy rò rỉ dữ liệu giữa tenant?',
   a: `**Tóm tắt:** Ba mức cô lập đánh đổi giữa **an toàn/linh hoạt** và **chi phí/vận hành**. Database-per-tenant cô lập mạnh nhất, dễ đáp ứng yêu cầu khách lớn nhưng tốn tài nguyên và khó migrate hàng nghìn DB. Schema-per-tenant là trung gian. Discriminator column (một cột {{tenant_id}} trên mọi bảng) rẻ và dễ scale số tenant nhất nhưng một câu query quên điều kiện là lộ dữ liệu của khách khác. Hibernate 6 hỗ trợ cả hai kiểu: {{MultiTenantConnectionProvider}} cho DB/schema riêng, {{@TenantId}} cho discriminator. Thực tế thường **lai**: đa số tenant nhỏ dùng chung (discriminator + Row Level Security), tenant lớn hoặc yêu cầu đặc biệt có DB riêng.
 

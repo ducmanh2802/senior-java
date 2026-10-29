@@ -145,9 +145,9 @@ if (lock.tryLock(200, TimeUnit.MILLISECONDS)) {
   ],
   tags: ['synchronized', 'ReentrantLock', 'ReadWriteLock', 'StampedLock'],
   refs: [
-    { type: 'doc', title: 'Java Concurrency Utilities', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/package-summary.html' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'JEP 425: Virtual Threads Preview', url: 'https://openjdk.org/jeps/425' }
+    { type: 'doc', title: 'ReentrantLock API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/locks/ReentrantLock.html' },
+    { type: 'doc', title: 'StampedLock API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/locks/StampedLock.html' },
+    { type: 'doc', title: 'JEP 491: Synchronize Virtual Threads without Pinning', url: 'https://openjdk.org/jeps/491' },
   ]
 },
 {
@@ -235,9 +235,8 @@ new ThreadPoolExecutor(
   ],
   tags: ['ThreadPoolExecutor', 'thread pool', 'sizing'],
   refs: [
-    { type: 'doc', title: 'Java Concurrency Utilities', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/package-summary.html' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'JEP 425: Virtual Threads Preview', url: 'https://openjdk.org/jeps/425' }
+    { type: 'doc', title: 'ThreadPoolExecutor API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ThreadPoolExecutor.html' },
+    { type: 'book', title: 'Java Concurrency in Practice', url: 'https://jcip.net/' },
   ]
 }
 ,
@@ -320,9 +319,8 @@ Rule tôi áp cho team khi review: mọi pool trên production phải có (1) qu
   ],
   tags: ['Executors', 'thread pool', 'OOM'],
   refs: [
-    { type: 'doc', title: 'Java Concurrency Utilities', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/package-summary.html' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'JEP 425: Virtual Threads Preview', url: 'https://openjdk.org/jeps/425' }
+    { type: 'doc', title: 'ThreadPoolExecutor API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ThreadPoolExecutor.html' },
+    { type: 'doc', title: 'Executors API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/Executors.html' },
   ]
 },
 {
@@ -401,9 +399,8 @@ Ví dụ số: gọi 3 dịch vụ giá, lần lượt mất 120 ms, 80 ms, 300 
   ],
   tags: ['CompletableFuture', 'async', 'ForkJoinPool'],
   refs: [
-    { type: 'doc', title: 'Java Concurrency Utilities', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/package-summary.html' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'JEP 425: Virtual Threads Preview', url: 'https://openjdk.org/jeps/425' }
+    { type: 'doc', title: 'CompletableFuture API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/CompletableFuture.html' },
+    { type: 'doc', title: 'ForkJoinPool API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ForkJoinPool.html' },
   ]
 },
 {
@@ -575,9 +572,9 @@ synchronized (lock) {        // Java 21: block I/O trong khối này...
   ],
   tags: ['virtual threads', 'Java 21', 'pinning', 'ThreadLocal'],
   refs: [
-    { type: 'doc', title: 'Java Concurrency Utilities', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/package-summary.html' },
     { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'JEP 425: Virtual Threads Preview', url: 'https://openjdk.org/jeps/425' }
+    { type: 'doc', title: 'JEP 491: Synchronize Virtual Threads without Pinning', url: 'https://openjdk.org/jeps/491' },
+    { type: 'doc', title: 'Virtual Threads (Oracle JDK 21 guide)', url: 'https://docs.oracle.com/en/java/javase/21/core/virtual-threads.html' },
   ]
 },
 {
@@ -741,9 +738,8 @@ Ví dụ số (cỡ độ lớn, tuỳ máy): 16 thread cùng tăng counter, Ato
   ],
   tags: ['CAS', 'AtomicInteger', 'ABA', 'LongAdder'],
   refs: [
-    { type: 'doc', title: 'Java Concurrency Utilities', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/package-summary.html' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'JEP 425: Virtual Threads Preview', url: 'https://openjdk.org/jeps/425' }
+    { type: 'doc', title: 'AtomicInteger API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/atomic/AtomicInteger.html' },
+    { type: 'doc', title: 'LongAdder API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/atomic/LongAdder.html' },
   ]
 }
 ,
@@ -912,9 +908,10 @@ Ví dụ số để phân biệt Semaphore và rate limit: Semaphore(5) với m�
   ],
   tags: ['CountDownLatch', 'CyclicBarrier', 'Semaphore', 'Phaser'],
   refs: [
-    { type: 'doc', title: 'Java Concurrency Utilities', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/package-summary.html' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'JEP 425: Virtual Threads Preview', url: 'https://openjdk.org/jeps/425' }
+    { type: 'doc', title: 'CountDownLatch API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/CountDownLatch.html' },
+    { type: 'doc', title: 'CyclicBarrier API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/CyclicBarrier.html' },
+    { type: 'doc', title: 'Semaphore API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/Semaphore.html' },
+    { type: 'doc', title: 'Phaser API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/Phaser.html' },
   ]
 },
 {
@@ -1086,9 +1083,9 @@ ScopedValue.where(CURRENT_USER, user)
   ],
   tags: ['structured concurrency', 'ScopedValue', 'Java 21'],
   refs: [
-    { type: 'doc', title: 'Java Concurrency Utilities', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/package-summary.html' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'JEP 425: Virtual Threads Preview', url: 'https://openjdk.org/jeps/425' }
+    { type: 'doc', title: 'JEP 453: Structured Concurrency (Preview)', url: 'https://openjdk.org/jeps/453' },
+    { type: 'doc', title: 'JEP 505: Structured Concurrency (Fifth Preview)', url: 'https://openjdk.org/jeps/505' },
+    { type: 'doc', title: 'JEP 506: Scoped Values', url: 'https://openjdk.org/jeps/506' },
   ]
 },
 {
@@ -1181,9 +1178,8 @@ class SumTask extends RecursiveTask<Long> {
   ],
   tags: ['ForkJoinPool', 'work stealing', 'commonPool', 'parallel stream'],
   refs: [
-    { type: 'doc', title: 'Java Concurrency Utilities', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/package-summary.html' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'JEP 425: Virtual Threads Preview', url: 'https://openjdk.org/jeps/425' }
+    { type: 'doc', title: 'ForkJoinPool API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ForkJoinPool.html' },
+    { type: 'doc', title: 'ForkJoinTask API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ForkJoinTask.html' },
   ]
 },
 {
@@ -1290,9 +1286,8 @@ Dùng Little's Law: số task trong hệ thống = throughput × thời gian ch�
   ],
   tags: ['BlockingQueue', 'backpressure', 'bounded queue', 'producer-consumer'],
   refs: [
-    { type: 'doc', title: 'Java Concurrency Utilities', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/package-summary.html' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'JEP 425: Virtual Threads Preview', url: 'https://openjdk.org/jeps/425' }
+    { type: 'doc', title: 'BlockingQueue API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/BlockingQueue.html' },
+    { type: 'doc', title: 'ThreadPoolExecutor API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ThreadPoolExecutor.html' },
   ]
 },
 {
@@ -1405,9 +1400,9 @@ Không cần vừa gọi {{interrupt()}} vừa ném lại InterruptedException: 
   ],
   tags: ['interrupt', 'InterruptedException', 'Future.cancel', 'shutdown'],
   refs: [
-    { type: 'doc', title: 'Java Concurrency Utilities', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/package-summary.html' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'JEP 425: Virtual Threads Preview', url: 'https://openjdk.org/jeps/425' }
+    { type: 'doc', title: 'ExecutorService API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ExecutorService.html' },
+    { type: 'doc', title: 'Future API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/Future.html' },
+    { type: 'book', title: 'Java Concurrency in Practice', url: 'https://jcip.net/' },
   ]
 },
 {
@@ -1589,9 +1584,9 @@ public final class FxQuote {                  // immutable: publish kiểu nào 
   ],
   tags: ['safe publication', 'immutability', 'final', 'JMM'],
   refs: [
-    { type: 'doc', title: 'Java Concurrency Utilities', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/package-summary.html' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'JEP 425: Virtual Threads Preview', url: 'https://openjdk.org/jeps/425' }
+    { type: 'doc', title: 'JLS 17.4: Memory Model', url: 'https://docs.oracle.com/javase/specs/jls/se21/html/jls-17.html#jls-17.4' },
+    { type: 'doc', title: 'JLS 17.5: final Field Semantics', url: 'https://docs.oracle.com/javase/specs/jls/se21/html/jls-17.html#jls-17.5' },
+    { type: 'book', title: 'Java Concurrency in Practice', url: 'https://jcip.net/' },
   ]
 },
 {
@@ -1795,9 +1790,8 @@ scheduler.scheduleAtFixedRate(() -> {
   ],
   tags: ['shutdown', 'shutdownNow', 'awaitTermination', 'ScheduledExecutorService'],
   refs: [
-    { type: 'doc', title: 'Java Concurrency Utilities', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/package-summary.html' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'JEP 425: Virtual Threads Preview', url: 'https://openjdk.org/jeps/425' }
+    { type: 'doc', title: 'ExecutorService API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ExecutorService.html' },
+    { type: 'doc', title: 'ScheduledThreadPoolExecutor API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ScheduledThreadPoolExecutor.html' },
   ]
 },
 {
@@ -1879,9 +1873,8 @@ jcmd <pid> VM.metaspace                  # chi tiết metaspace
   ],
   tags: ['heap', 'metaspace', 'direct memory', 'code cache'],
   refs: [
-    { type: 'doc', title: 'Java Concurrency Utilities', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/package-summary.html' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'JEP 425: Virtual Threads Preview', url: 'https://openjdk.org/jeps/425' }
+    { type: 'doc', title: 'Native Memory Tracking (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/vm/native-memory-tracking.html' },
+    { type: 'doc', title: 'The java Command (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/docs/specs/man/java.html' },
   ]
 },
 {
@@ -1962,9 +1955,9 @@ java -XX:+UseG1GC -XX:MaxGCPauseMillis=50 -Xlog:gc* ...
   ],
   tags: ['G1', 'ZGC', 'Shenandoah', 'Parallel GC'],
   refs: [
-    { type: 'doc', title: 'Java Concurrency Utilities', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/package-summary.html' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'JEP 425: Virtual Threads Preview', url: 'https://openjdk.org/jeps/425' }
+    { type: 'doc', title: 'HotSpot Garbage Collection Tuning Guide (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/gctuning/' },
+    { type: 'doc', title: 'JEP 439: Generational ZGC', url: 'https://openjdk.org/jeps/439' },
+    { type: 'doc', title: 'JEP 379: Shenandoah (Production)', url: 'https://openjdk.org/jeps/379' },
   ]
 }
 ,
@@ -2047,9 +2040,8 @@ kubectl describe pod <pod>          # Last State: OOMKilled, Exit Code 137
   ],
   tags: ['Kubernetes', 'MaxRAMPercentage', 'OOMKilled', 'container'],
   refs: [
-    { type: 'doc', title: 'Java Concurrency Utilities', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/package-summary.html' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'JEP 425: Virtual Threads Preview', url: 'https://openjdk.org/jeps/425' }
+    { type: 'doc', title: 'The java Command (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/docs/specs/man/java.html' },
+    { type: 'doc', title: 'Kubernetes: Resource Management for Pods and Containers', url: 'https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/' },
   ]
 },
 {
@@ -2128,9 +2120,8 @@ Retained khác shallow: bám theo retained mới tìm đúng gốc, vì kẻ gi�
   ],
   tags: ['OutOfMemoryError', 'MAT', 'heap dump'],
   refs: [
-    { type: 'doc', title: 'Java Concurrency Utilities', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/package-summary.html' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'JEP 425: Virtual Threads Preview', url: 'https://openjdk.org/jeps/425' }
+    { type: 'doc', title: 'Troubleshooting Memory Leaks (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/troubleshoot/troubleshooting-memory-leaks.html' },
+    { type: 'doc', title: 'Eclipse Memory Analyzer (MAT)', url: 'https://eclipse.dev/mat/' },
   ]
 },
 {
@@ -2211,9 +2202,8 @@ jmap -histo <pid> | head -30
   ],
   tags: ['memory leak', 'MAT', 'heap dump'],
   refs: [
-    { type: 'doc', title: 'Java Concurrency Utilities', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/package-summary.html' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'JEP 425: Virtual Threads Preview', url: 'https://openjdk.org/jeps/425' }
+    { type: 'doc', title: 'Troubleshooting Memory Leaks (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/troubleshoot/troubleshooting-memory-leaks.html' },
+    { type: 'doc', title: 'Eclipse Memory Analyzer (MAT)', url: 'https://eclipse.dev/mat/' },
   ]
 }
 ,
@@ -2472,9 +2462,8 @@ int sum() {
   ],
   tags: ['JIT', 'C2', 'escape analysis', 'GraalVM'],
   refs: [
-    { type: 'doc', title: 'Java Concurrency Utilities', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/package-summary.html' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'JEP 425: Virtual Threads Preview', url: 'https://openjdk.org/jeps/425' }
+    { type: 'doc', title: 'The java Command (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/docs/specs/man/java.html' },
+    { type: 'doc', title: 'GraalVM Native Image', url: 'https://www.graalvm.org/latest/reference-manual/native-image/' },
   ]
 }
 ,
@@ -2802,9 +2791,8 @@ jcmd <pid> JFR.start name=probe settings=profile duration=2m filename=/data/jfr/
   ],
   tags: ['JFR', 'JMC', 'profiling', 'production'],
   refs: [
-    { type: 'doc', title: 'Java Concurrency Utilities', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/package-summary.html' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'JEP 425: Virtual Threads Preview', url: 'https://openjdk.org/jeps/425' }
+    { type: 'doc', title: 'JDK Flight Recorder API Programmer Guide (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/jfapi/' },
+    { type: 'doc', title: 'Diagnostic Tools (JDK 21 Troubleshooting)', url: 'https://docs.oracle.com/en/java/javase/21/troubleshoot/diagnostic-tools.html' },
   ]
 },
 {
@@ -2885,9 +2873,8 @@ Retained của một Session: khoảng 4 KB
   ],
   tags: ['heap dump', 'MAT', 'dominator tree', 'retained size', 'GC roots'],
   refs: [
-    { type: 'doc', title: 'Java Concurrency Utilities', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/package-summary.html' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'JEP 425: Virtual Threads Preview', url: 'https://openjdk.org/jeps/425' }
+    { type: 'doc', title: 'Eclipse Memory Analyzer (MAT)', url: 'https://eclipse.dev/mat/' },
+    { type: 'doc', title: 'Troubleshooting Memory Leaks (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/troubleshoot/troubleshooting-memory-leaks.html' },
   ]
 },
 {
@@ -2978,9 +2965,8 @@ Trên Kubernetes, pod bị OOMKilled (exit 137) khi RSS vượt memory limit, v�
   ],
   tags: ['NMT', 'native memory', 'RSS', 'metaspace', 'malloc arena'],
   refs: [
-    { type: 'doc', title: 'Java Concurrency Utilities', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/package-summary.html' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'JEP 425: Virtual Threads Preview', url: 'https://openjdk.org/jeps/425' }
+    { type: 'doc', title: 'Native Memory Tracking (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/vm/native-memory-tracking.html' },
+    { type: 'doc', title: 'The java Command (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/docs/specs/man/java.html' },
   ]
 },
 {
@@ -3260,9 +3246,10 @@ Load và verify hàng chục nghìn class; Spring quét classpath và tạo bean
   ],
   tags: ['CDS', 'AppCDS', 'Spring AOT', 'CRaC', 'GraalVM', 'startup'],
   refs: [
-    { type: 'doc', title: 'Java Concurrency Utilities', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/package-summary.html' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'JEP 425: Virtual Threads Preview', url: 'https://openjdk.org/jeps/425' }
+    { type: 'doc', title: 'Class Data Sharing (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/vm/class-data-sharing.html' },
+    { type: 'doc', title: 'JEP 483: Ahead-of-Time Class Loading and Linking', url: 'https://openjdk.org/jeps/483' },
+    { type: 'doc', title: 'JEP 515: Ahead-of-Time Method Profiling', url: 'https://openjdk.org/jeps/515' },
+    { type: 'doc', title: 'Spring Framework: JVM Checkpoint Restore', url: 'https://docs.spring.io/spring-framework/reference/integration/checkpoint-restore.html' },
   ]
 },
 {
@@ -3354,9 +3341,7 @@ asprof -d 60 -e cpu,alloc,lock -f /tmp/profile.jfr <pid>
   ],
   tags: ['async-profiler', 'flame graph', 'profiling', 'CPU', 'wall-clock', 'alloc', 'lock'],
   refs: [
-    { type: 'doc', title: 'Java Concurrency Utilities', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/package-summary.html' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'JEP 425: Virtual Threads Preview', url: 'https://openjdk.org/jeps/425' }
+    { type: 'doc', title: 'async-profiler', url: 'https://github.com/async-profiler/async-profiler' },
   ]
 },
 {
@@ -3744,9 +3729,8 @@ class AccountService {
   ],
   tags: ['synchronized', 'class lock', 'object lock', 'monitor'],
   refs: [
-    { type: 'doc', title: 'Java Concurrency Utilities', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/package-summary.html' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'JEP 425: Virtual Threads Preview', url: 'https://openjdk.org/jeps/425' }
+    { type: 'doc', title: 'JLS 8.4.3.6: synchronized Methods', url: 'https://docs.oracle.com/javase/specs/jls/se21/html/jls-8.html#jls-8.4.3.6' },
+    { type: 'doc', title: 'JLS 14.19: The synchronized Statement', url: 'https://docs.oracle.com/javase/specs/jls/se21/html/jls-14.html#jls-14.19' },
   ]
 },
 {
@@ -3957,9 +3941,8 @@ Semaphore permits = new Semaphore(10, true);     // semaphore fair
   ],
   tags: ['livelock', 'starvation', 'fair lock', 'ReentrantLock', 'deadlock'],
   refs: [
-    { type: 'doc', title: 'Java Concurrency Utilities', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/package-summary.html' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'JEP 425: Virtual Threads Preview', url: 'https://openjdk.org/jeps/425' }
+    { type: 'doc', title: 'ReentrantLock API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/locks/ReentrantLock.html' },
+    { type: 'book', title: 'Java Concurrency in Practice', url: 'https://jcip.net/' },
   ]
 },
 {
@@ -4077,9 +4060,8 @@ Bean scope singleton nghĩa là "một instance cho mỗi ApplicationContext", d
   ],
   tags: ['singleton', 'holder idiom', 'enum', 'reflection', 'serialization', 'class loader'],
   refs: [
-    { type: 'doc', title: 'Java Concurrency Utilities', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/package-summary.html' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'JEP 425: Virtual Threads Preview', url: 'https://openjdk.org/jeps/425' }
+    { type: 'doc', title: 'JLS 12.4.2: Detailed Initialization Procedure', url: 'https://docs.oracle.com/javase/specs/jls/se21/html/jls-12.html#jls-12.4.2' },
+    { type: 'doc', title: 'JLS 8.9: Enum Classes', url: 'https://docs.oracle.com/javase/specs/jls/se21/html/jls-8.html#jls-8.9' },
   ]
 },
 {
@@ -4259,9 +4241,8 @@ Cách tìm: chụp heap dump rồi dùng Path to GC Roots trong MAT trên object
   ],
   tags: ['GC roots', 'reachability', 'reference counting', 'memory leak'],
   refs: [
-    { type: 'doc', title: 'Java Concurrency Utilities', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/package-summary.html' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'JEP 425: Virtual Threads Preview', url: 'https://openjdk.org/jeps/425' }
+    { type: 'doc', title: 'HotSpot Garbage Collection Tuning Guide (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/gctuning/' },
+    { type: 'doc', title: 'Troubleshooting Memory Leaks (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/troubleshoot/troubleshooting-memory-leaks.html' },
   ]
 },
 {
@@ -4348,9 +4329,8 @@ Nguyên nhân thường gặp: allocation rate rất cao; young gen quá nhỏ (
   ],
   tags: ['minor GC', 'major GC', 'full GC', 'promotion', 'tenuring', 'G1'],
   refs: [
-    { type: 'doc', title: 'Java Concurrency Utilities', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/package-summary.html' },
-    { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
-    { type: 'doc', title: 'JEP 425: Virtual Threads Preview', url: 'https://openjdk.org/jeps/425' }
+    { type: 'doc', title: 'HotSpot Garbage Collection Tuning Guide (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/gctuning/' },
+    { type: 'doc', title: 'Garbage-First (G1) Garbage Collector (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/gctuning/garbage-first-g1-garbage-collector1.html' },
   ]
 },
 {

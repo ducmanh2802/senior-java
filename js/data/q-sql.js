@@ -1667,7 +1667,7 @@ Oracle dùng {{MINUS}} (từ 21c có thêm {{EXCEPT}}); MySQL hỗ trợ {{EXCEP
 **MySQL không có FULL OUTER JOIN**: giả lập bằng {{LEFT JOIN}} (A với B) {{UNION ALL}} phần "chỉ B" lấy bằng {{RIGHT JOIN … WHERE a.order_id IS NULL}} (hoặc anti-join NOT EXISTS). Dùng UNION ALL kèm điều kiện loại phần chung chứ không dùng UNION, vì UNION sẽ gộp mất những dòng trùng hợp lệ và tốn thêm sort.
 
 ### Hiệu năng
-- Cả hai bảng cần index (hoặc unique) trên {{order_id}}; planner thường làm hash join: quét A xây hash, quét B probe, tốn bộ nhớ theo cỡ bảng A.
+- Hash join **không cần index**: PostgreSQL thường chọn {{Hash Full Join}} – quét bảng nhỏ hơn để xây hash table trong {{work_mem}}, quét bảng còn lại để probe, rồi trả thêm các dòng chưa khớp của cả hai phía. Bảng nhỏ vượt {{work_mem}} thì hash chia batch và ghi tạm ra đĩa. Nếu cả hai đã có index/sort theo {{order_id}} thì planner có thể chọn {{Merge Full Join}}. Thứ thật sự cần là **unique constraint** trên {{order_id}} ở mỗi nguồn để không nhân bản dòng.
 - Staging hàng triệu dòng: nên đếm theo nhóm trước, hoặc so **tổng theo ngày** ({{SUM(amount)}} {{GROUP BY}} ngày) để phát hiện lệch rồi mới đối soát chi tiết.
 - Thu hẹp khoảng ngày trước khi join để giảm quét; chỉ đọc thì thêm {{WHERE}} ở hai vế.
 
@@ -1709,33 +1709,34 @@ Planner giống một người lập kế hoạch giao hàng chỉ có **số li
 
 ### Mô hình ước lượng
 ~~~text
-estimate = reltuples × sel(status='PAID') × sel(amount>1e6)        (giả định độc lập)
-         = 20.000.000 × 0,30 × 0,01 = 60.000
-thực tế  = 20.000.000 × 0,30 × 0,90 = 5.400.000      → lệch 90 lần
-hậu quả  : planner nghĩ 60k dòng → chọn Nested Loop + Index Scan
-           thực tế 5,4 triệu dòng → hàng triệu lần nhảy index, chậm hàng phút
+estimate = reltuples × sel(status='REFUNDED') × sel(refund_state='DONE')   (giả định độc lập)
+         = 20.000.000 × 0,02 × 0,018 = 7.200
+thực tế  = mọi dòng refund_state='DONE' đều là REFUNDED
+         = 20.000.000 × 0,018 = 360.000                → lệch 50 lần
+hậu quả  : planner nghĩ 7 nghìn dòng → chọn Nested Loop + Index Scan
+           thực tế 360 nghìn dòng → 360 nghìn lần nhảy index ngẫu nhiên, chậm hơn hash join nhiều lần
 ~~~
 
 ### Planner tính thế nào
-Với {{WHERE status = 'PAID' AND amount > 1000000}} trên bảng {{reltuples}} = 20 triệu:
-1. {{status = 'PAID'}}: nếu 'PAID' nằm trong most common values thì lấy đúng tỉ lệ (vd 30%); nếu không nằm thì ước bằng histogram, xem thêm {{null_frac}} và {{n_distinct}}.
-2. {{amount > 1000000}}: tìm mốc trong histogram rồi lấy tỉ lệ khoảng chia.
-3. Nhân hai tỉ lệ: {{20.000.000 x 0,3 x 0,01 = 60.000}} – giả định **hai cột độc lập**. Nếu 90% đơn PAID đều có amount > 1.000.000 thì con số thật là 5.400.000, tức ước lượng 60.000 **thấp hơn thực tế 90 lần**.
+Với {{WHERE status = 'REFUNDED' AND refund_state = 'DONE'}} trên bảng {{reltuples}} = 20 triệu:
+1. Điều kiện **bằng** ({{status = 'REFUNDED'}}): nếu giá trị nằm trong {{most_common_vals}} thì lấy đúng tần suất đã ghi (vd 2%). Nếu không nằm trong MCV thì planner **không** dùng histogram mà chia đều phần còn lại: (1 − tổng tần suất MCV − {{null_frac}}) / (số giá trị distinct còn lại).
+2. Điều kiện **khoảng** (ví dụ {{amount > 1000000}}): tìm mốc trong {{histogram_bounds}} rồi nội suy tỉ lệ dòng nằm trong khoảng (cộng thêm phần MCV thoả điều kiện).
+3. Nhân các tỉ lệ: {{20.000.000 x 0,02 x 0,018 = 7.200}} – giả định **hai cột độc lập**. Thực tế {{refund_state}} chỉ có giá trị ở đơn đã hoàn tiền, nên {{refund_state = 'DONE'}} đã **kéo theo** {{status = 'REFUNDED'}} ⇒ con số thật là 360.000, ước lượng **thấp hơn 50 lần**.
 4. Nhân kết quả với {{reltuples}} để ra số dòng ước tính của node; số này đi tiếp lên các node join/aggregate phía trên. Vì sao sai số nguy hiểm: mỗi tầng join lại nhân thêm một lần ước lượng nên sai số **cộng dồn**.
 
 ### Tình huống lệch dù statistics mới
 | Tình huống | Vì sao estimate sai | Cách xử lý |
 |---|---|---|
-| Hai cột **tương quan** (PAID luôn đi với amount lớn) | nhân độc lập ⇒ sai số tích luỹ | {{CREATE STATISTICS st_pair (dependencies, mcv) ON status, amount FROM sales;}} rồi {{ANALYZE sales;}} (xem lưu ý bên dưới về loại điều kiện) |
-| Phân phối lệch: 99% dòng là giá trị phổ biến, giá trị cần tìm nằm ngoài top MCV | giá trị ngoài MCV chỉ ước được bằng histogram trung bình | tăng {{default_statistics_target}} cho bảng hot rồi {{ANALYZE}} |
+| Hai cột **tương quan** ({{refund_state}} chỉ có ở đơn REFUNDED) | nhân độc lập ⇒ sai số tích luỹ | {{CREATE STATISTICS st_pair (dependencies, mcv) ON status, refund_state FROM sales;}} rồi {{ANALYZE sales;}} (xem lưu ý bên dưới về loại điều kiện) |
+| Phân phối lệch: 99% dòng là giá trị phổ biến, giá trị cần tìm nằm ngoài top MCV | giá trị ngoài MCV bị ước bằng "phần còn lại chia đều" cho mọi giá trị hiếm, lệch xa giá trị thật | tăng {{default_statistics_target}} cho bảng hot rồi {{ANALYZE}} |
 | Bulk load / đổi pattern giữa hai lần {{ANALYZE}} | thống kê mô tả quá khứ | {{ANALYZE}} sau ETL; kiểm tra {{pg_stats}} theo bảng con của partition |
 | {{PreparedStatement}} thành **generic plan** | planner không biết giá trị tham số | {{SET plan_cache_mode = force_custom_plan;}} cho câu critical, hoặc viết lại bằng literal/JOIN |
 | Điều kiện bọc hàm / ép kiểu ({{lower(email) = ...}}) | không có thống kê cho biểu thức đó | viết lại query SARGable, hoặc tạo index biểu thức riêng cho {{lower(email)}} (ANALYZE sẽ thu thống kê cho biểu thức của index); PostgreSQL 14+ còn cho {{CREATE STATISTICS}} trên biểu thức |
 | Join nhiều bảng | sai số **nhân dồn** qua từng bước | thống kê cho cột join, viết lại query gộp, đổi thứ tự join |
 
 - Tăng {{default_statistics_target}} (100 → 500) cho bảng truy vấn đa dạng: histogram dày hơn nhưng {{ANALYZE}} lâu hơn và catalog to hơn – chỉ làm cho vài bảng nóng.
-- {{CREATE STATISTICS st_pair (dependencies, ndistinct) ON status, amount FROM sales;}} (kinds ra mắt là {{dependencies}} và {{ndistinct}} từ PostgreSQL 10, {{mcv}} từ PostgreSQL 12) cho tổ hợp cột hay xuất hiện cùng nhau, rồi {{ANALYZE sales;}} để planner đọc lại.
-- Lưu ý quan trọng: thống kê {{dependencies}} chỉ được planner dùng cho điều kiện **bằng** ({{=}}, và {{IN}} từ PostgreSQL 13); với điều kiện khoảng như {{amount > 1000000}} nó không giúp gì. Khi đó kind {{mcv}} (PostgreSQL 12+) có thể giúp nếu các tổ hợp giá trị lặp lại đủ nhiều; cột liên tục như số tiền thì hiệu quả hạn chế ⇒ cân nhắc cột phân loại (ví dụ {{amount_bucket}}), partial index cho tổ hợp hay dùng, hoặc viết lại query.
+- {{CREATE STATISTICS st_pair (dependencies, ndistinct) ON status, refund_state FROM sales;}} (kinds ra mắt là {{dependencies}} và {{ndistinct}} từ PostgreSQL 10, {{mcv}} từ PostgreSQL 12) cho tổ hợp cột hay xuất hiện cùng nhau, rồi {{ANALYZE sales;}} để planner đọc lại.
+- Lưu ý quan trọng: thống kê {{dependencies}} chỉ được planner dùng cho điều kiện **bằng** ({{=}}, và {{IN}} từ PostgreSQL 13); với điều kiện khoảng như {{status = 'PAID' AND amount > 1000000}} nó không giúp gì. Khi đó kind {{mcv}} (PostgreSQL 12+) có thể giúp nếu các tổ hợp giá trị lặp lại đủ nhiều; cột liên tục như số tiền thì hiệu quả hạn chế ⇒ cân nhắc cột phân loại (ví dụ {{amount_bucket}}), partial index cho tổ hợp hay dùng, hoặc viết lại query.
 - Xem nhanh thống kê: {{SELECT attname, n_distinct, most_common_vals FROM pg_stats WHERE tablename = 'sales';}}
 
 ### Ước sai có nhất thiết dẫn đến plan sai?
@@ -1804,7 +1805,7 @@ CREATE INDEX CONCURRENTLY idx_msg_thread_cover
 ~~~
 
 ### Partial index hoạt động thế nào
-- Index chỉ lưu những dòng khớp predicate **tại thời điểm build** (và các dòng mới được chèn thêm khi match). Nếu 98% tin đã đọc thì index chỉ cỡ 2–5% bảng ⇒ tốn ít RAM, ít lần đọc trang, và ghi cũng rẻ hơn index full.
+- Index chỉ chứa những dòng thoả predicate. Mỗi {{INSERT}}/{{UPDATE}} đều được kiểm tra predicate: dòng mới có {{is_read = false}} được thêm vào index; khi tin được đánh dấu đã đọc, phiên bản dòng mới không còn thoả nên không được đưa vào index (entry cũ trỏ tới phiên bản chết sẽ bị {{VACUUM}} dọn). Nếu 98% tin đã đọc thì index chỉ cỡ 2–5% bảng ⇒ tốn ít RAM, ít lần đọc trang, và ghi cũng rẻ hơn index full.
 - Planner dùng được chỉ khi **WHERE của query bao hàm được predicate của index**:
   - {{WHERE recipient_id = $1 AND is_read = false}} → đúng, dùng được.
   - {{WHERE recipient_id = $1 AND is_read = $2}} với {{is_read = false}}: ở **generic plan** planner không biết giá trị của {{is_read}} ⇒ không chứng minh được ⇒ **bỏ qua index**; custom plan (vài lần chạy đầu với giá trị cụ thể) thì có thể dùng.

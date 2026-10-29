@@ -151,9 +151,9 @@ Order Service                   Payment Service
   ],
   tags: ['DDD', 'bounded context', 'database per service', 'API composition'],
   refs: [
-    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
-    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
-    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+    { type: 'article', title: 'Bounded Context (Martin Fowler)', url: 'https://martinfowler.com/bliki/BoundedContext.html' },
+    { type: 'doc', title: 'Pattern: Database per service', url: 'https://microservices.io/patterns/data/database-per-service.html' },
+    { type: 'doc', title: 'Pattern: API Composition', url: 'https://microservices.io/patterns/data/api-composition.html' },
   ]
 },
 {
@@ -224,7 +224,10 @@ Mỗi service sẵn sàng 99,9%:
   id: 'microservices-004',
   topic: 'microservices',
   level: 'lead',
-  refs: [{"type": "doc", "title": "Microservices - Martin Fowler", "url": "https://martinfowler.com/articles/microservices.html"}, {"type": "doc", "title": "microservices.io patterns", "url": "https://microservices.io/patterns/"}, {"type": "doc", "title": "Enterprise Integration Patterns", "url": "https://www.enterpriseintegrationpatterns.com/"}],
+  refs: [
+    { type: 'doc', title: 'Pattern: Saga', url: 'https://microservices.io/patterns/data/saga.html' },
+    { type: 'doc', title: 'Saga distributed transactions pattern (Azure)', url: 'https://learn.microsoft.com/en-us/azure/architecture/reference-architectures/saga/saga' },
+  ],
   q: 'Một nghiệp vụ phải ghi dữ liệu ở 3 service khác nhau. Vì sao không dùng 2PC? Bạn thiết kế Saga theo choreography và orchestration như thế nào, và compensation xử lý failure ra sao?',
   a: `**Tóm tắt:** 2PC (two-phase commit) bắt mọi participant giữ lock và chờ coordinator quyết định; khi mạng có sự cố hay coordinator chết, participant bị **kẹt lock**. Nó đánh đổi availability và throughput để lấy nhất quán tức thời, quá đắt với workload online và nhiều broker/DB không hỗ trợ. Thay vào đó dùng **Saga**: chuỗi transaction cục bộ, mỗi bước có **compensation** (hành động bù) để lùi lại khi bước sau thất bại.
 
@@ -368,9 +371,8 @@ App ─► [orders DB: orders + outbox] ─(WAL / logical replication)─► Deb
   ],
   tags: ['outbox', 'CDC', 'Debezium', 'dual-write'],
   refs: [
-    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
-    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
-    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+    { type: 'doc', title: 'Pattern: Transactional outbox', url: 'https://microservices.io/patterns/data/transactional-outbox.html' },
+    { type: 'doc', title: 'Debezium Outbox Event Router', url: 'https://debezium.io/documentation/reference/stable/transformations/outbox-event-router.html' },
   ]
 },
 {
@@ -457,9 +459,8 @@ ON CONFLICT (order_id) DO NOTHING;   -- MySQL: INSERT IGNORE / ON DUPLICATE KEY 
   ],
   tags: ['idempotency', 'delivery semantics', 'exactly-once', 'retry'],
   refs: [
-    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
-    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
-    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+    { type: 'doc', title: 'Pattern: Idempotent Consumer', url: 'https://microservices.io/patterns/communication-style/idempotent-consumer.html' },
+    { type: 'doc', title: 'Kafka design: Message delivery semantics', url: 'https://kafka.apache.org/documentation/#semantics' },
   ]
 },
 {
@@ -572,9 +573,9 @@ Tomcat 200 thread, 10 downstream: bulkhead 25/downstream
   ],
   tags: ['Resilience4j', 'circuit breaker', 'bulkhead', 'timeout'],
   refs: [
-    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
-    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
-    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+    { type: 'doc', title: 'Resilience4j CircuitBreaker', url: 'https://resilience4j.readme.io/docs/circuitbreaker' },
+    { type: 'doc', title: 'Resilience4j Bulkhead', url: 'https://resilience4j.readme.io/docs/bulkhead' },
+    { type: 'doc', title: 'Spring Cloud Circuit Breaker', url: 'https://docs.spring.io/spring-cloud-circuitbreaker/reference/' },
   ]
 },
 {
@@ -645,9 +646,8 @@ Thread A: 200 thread / (90s mỗi request) ≈ 2,2 request/giây → sập ở t
   ],
   tags: ['retry storm', 'cascading failure', 'backpressure', 'thundering herd'],
   refs: [
-    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
-    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
-    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+    { type: 'article', title: 'Timeouts, retries, and backoff with jitter (Amazon Builders Library)', url: 'https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/' },
+    { type: 'book', title: 'Google SRE Book: Addressing Cascading Failures', url: 'https://sre.google/sre-book/addressing-cascading-failures/' },
   ]
 },
 {
@@ -730,9 +730,8 @@ factory.setCommonErrorHandler(handler);
   ],
   tags: ['Kafka', 'partition', 'consumer group', 'DLQ'],
   refs: [
-    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
-    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
-    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+    { type: 'doc', title: 'Kafka documentation: Introduction', url: 'https://kafka.apache.org/documentation/#intro' },
+    { type: 'doc', title: 'Spring for Apache Kafka: Error Handling', url: 'https://docs.spring.io/spring-kafka/reference/kafka/annotation-error-handling.html' },
   ]
 },
 {
@@ -883,9 +882,9 @@ Web ────┘ (TLS, JWT,     └─► BFF-web ────┴─► revie
   ],
   tags: ['API Gateway', 'BFF', 'service discovery', 'load balancing'],
   refs: [
-    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
-    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
-    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+    { type: 'doc', title: 'Pattern: API Gateway', url: 'https://microservices.io/patterns/apigateway.html' },
+    { type: 'doc', title: 'Spring Cloud Gateway', url: 'https://docs.spring.io/spring-cloud-gateway/reference/' },
+    { type: 'article', title: 'Backends For Frontends (Sam Newman)', url: 'https://samnewman.io/patterns/architectural/bff/' },
   ]
 },
 {
@@ -968,16 +967,20 @@ thêm label user_id (1 triệu user)  = 1,2 tỉ series             → sập
   ],
   tags: ['observability', 'OpenTelemetry', 'RED/USE', 'tracing'],
   refs: [
-    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
-    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
-    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+    { type: 'doc', title: 'OpenTelemetry Documentation', url: 'https://opentelemetry.io/docs/' },
+    { type: 'doc', title: 'Spring Boot: Observability', url: 'https://docs.spring.io/spring-boot/reference/actuator/observability.html' },
+    { type: 'book', title: 'Google SRE Book: Monitoring Distributed Systems', url: 'https://sre.google/sre-book/monitoring-distributed-systems/' },
   ]
 },
 {
   id: 'microservices-013',
   topic: 'microservices',
   level: 'lead',
-  refs: [{"type": "doc", "title": "Microservices - Martin Fowler", "url": "https://martinfowler.com/articles/microservices.html"}, {"type": "doc", "title": "microservices.io patterns", "url": "https://microservices.io/patterns/"}, {"type": "doc", "title": "Enterprise Integration Patterns", "url": "https://www.enterpriseintegrationpatterns.com/"}],
+  refs: [
+    { type: 'doc', title: 'RFC 6749: Client Credentials Grant', url: 'https://datatracker.ietf.org/doc/html/rfc6749#section-4.4' },
+    { type: 'doc', title: 'Istio Security Concepts', url: 'https://istio.io/latest/docs/concepts/security/' },
+    { type: 'doc', title: 'NIST SP 800-207: Zero Trust Architecture', url: 'https://csrc.nist.gov/pubs/sp/800/207/final' },
+  ],
   q: 'Hai service nội bộ gọi nhau. Bạn chọn OAuth2 client credentials, mTLS hay service mesh? Giải thích trade-off và cách phân quyền từng phía.',
 a: `**Tóm tắt:** **mTLS** trả lời câu hỏi "đây là service nào" (danh tính ở mức workload, chứng minh bằng certificate), **OAuth2 client credentials** trả lời "service này được làm gì" (quyền theo scope/audience trong JWT). Hai thứ bổ sung cho nhau, không thay thế nhau: service mesh lo transport + danh tính (auto mTLS), còn ứng dụng vẫn lo authorization nghiệp vụ + audit. Mesh không thay được app.
 
@@ -1135,16 +1138,19 @@ consumer CI: test ─► pact file ─► Pact Broker ◄─ provider CI: verify
   ],
   tags: ['API versioning', 'backward compatibility', 'contract testing', 'Pact'],
   refs: [
-    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
-    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
-    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+    { type: 'doc', title: 'Pact Documentation', url: 'https://docs.pact.io/' },
+    { type: 'doc', title: 'Spring Cloud Contract', url: 'https://docs.spring.io/spring-cloud-contract/reference/' },
   ]
 },
 {
   id: 'microservices-015',
   topic: 'microservices',
   level: 'lead',
-  refs: [{"type": "doc", "title": "Microservices - Martin Fowler", "url": "https://martinfowler.com/articles/microservices.html"}, {"type": "doc", "title": "microservices.io patterns", "url": "https://microservices.io/patterns/"}, {"type": "doc", "title": "Enterprise Integration Patterns", "url": "https://www.enterpriseintegrationpatterns.com/"}],
+  refs: [
+    { type: 'article', title: 'CQRS (Martin Fowler)', url: 'https://martinfowler.com/bliki/CQRS.html' },
+    { type: 'article', title: 'Event Sourcing (Martin Fowler)', url: 'https://martinfowler.com/eaaDev/EventSourcing.html' },
+    { type: 'doc', title: 'Pattern: CQRS', url: 'https://microservices.io/patterns/data/cqrs.html' },
+  ],
   q: 'Khi nào áp CQRS và khi nào thêm cả event sourcing? Liệt kê lợi ích, chi phí thật và những cái bẫy gặp phải trên production.',
   a: `**Tóm tắt:** **CQRS** tách mô hình ghi và mô hình đọc (có thể chỉ là 2 bảng, 2 service hoặc 2 database). **Event sourcing (ES)** lưu **chuỗi sự kiện** làm nguồn sự thật thay vì lưu trạng thái hiện tại. CQRS không đòi hỏi ES; ES thì hầu như luôn đi kèm CQRS. Cả hai đều là **trade-off: đổi độ phức tạp lấy khả năng query/scale/audit**, không phải mặc định đúng.
 
@@ -1301,16 +1307,19 @@ ALTER TABLE orders DROP COLUMN status;
   ],
   tags: ['blue-green', 'canary', 'feature flag', 'database migration'],
   refs: [
-    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
-    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
-    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+    { type: 'article', title: 'BlueGreenDeployment (Martin Fowler)', url: 'https://martinfowler.com/bliki/BlueGreenDeployment.html' },
+    { type: 'article', title: 'CanaryRelease (Martin Fowler)', url: 'https://martinfowler.com/bliki/CanaryRelease.html' },
+    { type: 'article', title: 'Feature Toggles (martinfowler.com)', url: 'https://martinfowler.com/articles/feature-toggles.html' },
   ]
 },
 {
   id: 'microservices-017',
   topic: 'microservices',
   level: 'lead',
-  refs: [{"type": "doc", "title": "Microservices - Martin Fowler", "url": "https://martinfowler.com/articles/microservices.html"}, {"type": "doc", "title": "microservices.io patterns", "url": "https://microservices.io/patterns/"}, {"type": "doc", "title": "Enterprise Integration Patterns", "url": "https://www.enterpriseintegrationpatterns.com/"}],
+  refs: [
+    { type: 'article', title: 'Strangler Fig Application (Martin Fowler)', url: 'https://martinfowler.com/bliki/StranglerFigApplication.html' },
+    { type: 'doc', title: 'Anti-corruption Layer pattern (Azure)', url: 'https://learn.microsoft.com/en-us/azure/architecture/patterns/anti-corruption-layer' },
+  ],
   q: 'Bạn dẫn dắt chuyển một monolith 500k dòng sang microservices mà không downtime. Kế hoạch strangler fig từng bước, gồm cả migration data và anti-corruption layer.',
   a: `**Tóm tắt:** **Strangler fig** là đặt một facade/proxy trước monolith, rồi từng bước thay các phần của monolith bằng service mới, chuyển traffic dần qua canary/feature flag, đồng bộ data bằng CDC và đối soát, cho tới khi phần cũ có thể xóa hẳn. Mục tiêu không phải "viết lại cho sạch" mà là **thu nhỏ dần monolith trong khi sản phẩm vẫn chạy, không downtime**. Anti-corruption layer giữ cho model cũ không "lây" sang service mới.
 
@@ -1523,9 +1532,7 @@ spring:
   ],
   tags: ['Kafka', 'partition', 'rebalance', 'cooperative sticky', 'static membership'],
   refs: [
-    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
-    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
-    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+    { type: 'doc', title: 'Kafka consumer configuration', url: 'https://kafka.apache.org/documentation/#consumerconfigs' },
   ]
 },
 {
@@ -1611,9 +1618,8 @@ public void dlt(OrderCreatedEvent evt) { /* log + alert */ }
   ],
   tags: ['Kafka', 'Spring Kafka', '@RetryableTopic', 'DLQ', 'non-blocking retry'],
   refs: [
-    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
-    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
-    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+    { type: 'doc', title: 'Spring for Apache Kafka: Non-Blocking Retries', url: 'https://docs.spring.io/spring-kafka/reference/retrytopic.html' },
+    { type: 'doc', title: 'Spring for Apache Kafka: Error Handling', url: 'https://docs.spring.io/spring-kafka/reference/kafka/annotation-error-handling.html' },
   ]
 },
 {
@@ -1692,9 +1698,8 @@ Các mode {{*_TRANSITIVE}} kiểm tra với **mọi** version cũ, không chỉ 
   ],
   tags: ['Schema Registry', 'Avro', 'Protobuf', 'backward compatibility', 'forward compatibility'],
   refs: [
-    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
-    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
-    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+    { type: 'doc', title: 'Confluent Schema Evolution and Compatibility', url: 'https://docs.confluent.io/platform/current/schema-registry/fundamentals/schema-evolution.html' },
+    { type: 'doc', title: 'Apache Avro Specification', url: 'https://avro.apache.org/docs/current/specification/' },
   ]
 },
 {
@@ -1784,16 +1789,19 @@ public void handlePayment(PaymentEvent evt) {
   ],
   tags: ['Inbox pattern', 'Outbox pattern', 'idempotent consumer', 'exactly-once'],
   refs: [
-    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
-    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
-    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+    { type: 'doc', title: 'Pattern: Transactional outbox', url: 'https://microservices.io/patterns/data/transactional-outbox.html' },
+    { type: 'doc', title: 'Pattern: Idempotent Consumer', url: 'https://microservices.io/patterns/communication-style/idempotent-consumer.html' },
   ]
 },
 {
   id: 'microservices-023',
   topic: 'microservices',
   level: 'lead',
-  refs: [{"type": "doc", "title": "Microservices - Martin Fowler", "url": "https://martinfowler.com/articles/microservices.html"}, {"type": "doc", "title": "microservices.io patterns", "url": "https://microservices.io/patterns/"}, {"type": "doc", "title": "Enterprise Integration Patterns", "url": "https://www.enterpriseintegrationpatterns.com/"}],
+  refs: [
+    { type: 'doc', title: 'Pattern: Saga', url: 'https://microservices.io/patterns/data/saga.html' },
+    { type: 'doc', title: 'Temporal Documentation', url: 'https://docs.temporal.io/' },
+    { type: 'doc', title: 'Camunda 8 Documentation', url: 'https://docs.camunda.io/' },
+  ],
   q: 'Hệ thống dùng choreography (event-driven) nhưng flow đơn hàng qua 6 service, debug khó, timeout lẫn nhau. Bạn chuyển sang orchestration (Temporal/Camunda) khi nào, và so sánh hai cách về observability, compensation, versioning.',
   a: `**Tóm tắt:** **Choreography**: mỗi service tự phát và tự phản ứng với event, không ai điều phối; đơn giản lúc đầu, nhưng khi flow dài (quá 3–4 service) sẽ thành "spaghetti event": khó thấy toàn cảnh, timeout chồng chéo, compensation rải rác. **Orchestration**: một **workflow engine** (Temporal, Camunda) hoặc orchestrator tự viết điều phối từng bước, state tập trung, observability tốt, compensation có thứ tự. Tôi chuyển khi flow phức tạp, cross-team, cần timeout/retry tập trung, cần chờ tín hiệu bên ngoài, hoặc bắt buộc có audit trail.
 
@@ -1981,9 +1989,8 @@ terminationGracePeriodSeconds: 45          # >= 10 (preStop) + 30 (shutdown phas
   ],
   tags: ['Kubernetes', 'Spring Boot 3', 'probe', 'graceful shutdown', 'resource limit'],
   refs: [
-    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
-    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
-    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+    { type: 'doc', title: 'Kubernetes: Configure Liveness, Readiness and Startup Probes', url: 'https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/' },
+    { type: 'doc', title: 'Spring Boot: Graceful Shutdown', url: 'https://docs.spring.io/spring-boot/reference/web/graceful-shutdown.html' },
   ]
 },
 {
@@ -2065,9 +2072,8 @@ headers.set("x-request-timeout-ms", String.valueOf(remaining));
   ],
   tags: ['timeout budget', 'deadline propagation', 'tapered timeout', 'distributed systems'],
   refs: [
-    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
-    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
-    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+    { type: 'article', title: 'Timeouts, retries, and backoff with jitter (Amazon Builders Library)', url: 'https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/' },
+    { type: 'doc', title: 'gRPC Deadlines', url: 'https://grpc.io/docs/guides/deadlines/' },
   ]
 },
 {
@@ -2166,16 +2172,18 @@ Catalog: 500 req/s × 0,05s (p99)            = 25  → đặt 35
   ],
   tags: ['Bulkhead', 'thread pool isolation', 'semaphore isolation', 'Resilience4j', 'concurrency limit'],
   refs: [
-    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
-    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
-    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+    { type: 'doc', title: 'Resilience4j Bulkhead', url: 'https://resilience4j.readme.io/docs/bulkhead' },
+    { type: 'doc', title: 'Bulkhead pattern (Azure)', url: 'https://learn.microsoft.com/en-us/azure/architecture/patterns/bulkhead' },
   ]
 },
 {
   id: 'microservices-027',
   topic: 'microservices',
   level: 'lead',
-  refs: [{"type": "doc", "title": "Microservices - Martin Fowler", "url": "https://martinfowler.com/articles/microservices.html"}, {"type": "doc", "title": "microservices.io patterns", "url": "https://microservices.io/patterns/"}, {"type": "doc", "title": "Enterprise Integration Patterns", "url": "https://www.enterpriseintegrationpatterns.com/"}],
+  refs: [
+    { type: 'article', title: 'Bounded Context (Martin Fowler)', url: 'https://martinfowler.com/bliki/BoundedContext.html' },
+    { type: 'doc', title: 'Pattern: Decompose by subdomain', url: 'https://microservices.io/patterns/decomposition/decompose-by-subdomain.html' },
+  ],
   q: 'Hệ thống 15 service, team phàn nàn "mọi thay đổi phải deploy 5 service cùng lúc", latency cao do gọi lặp qua HTTP. Dấu hiệu chia sai bounded context (chatty, distributed monolith) là gì, và bạn gộp/tách lại như thế nào?',
   a: `**Tóm tắt:** **chatty services** là cần rất nhiều call mạng cho một nghiệp vụ đơn giản; **distributed monolith** là các service tách rời về mặt deploy nhưng vẫn dính chặt về logic (share DB, chuỗi sync call, phải deploy cùng nhau). Dấu hiệu: một use case fan-out quá 3 service, DB dùng chung, phụ thuộc vòng, các team phải đồng bộ lịch release. Cách sửa: **gộp** những service luôn thay đổi cùng nhau, **tách** những service chứa nhiều bounded context, và dùng API composition/CQRS cho query xuyên service thay vì gọi lặp.
 
@@ -2324,9 +2332,8 @@ Tuần tự: 50 + 30 + 40 + 30 = 150ms     Song song: 50 + max(30, 40, 30) = 90m
   ],
   tags: ['API Composition', 'CQRS', 'read model', 'data lake', 'query federation'],
   refs: [
-    { type: 'doc', title: 'Spring Cloud Reference', url: 'https://docs.spring.io/spring-cloud/docs/current/reference/html/' },
-    { type: 'doc', title: 'AWS Prescriptive Guidance', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-integrating-microservices/welcome.html' },
-    { type: 'doc', title: 'Microservices Patterns', url: 'https://microservices.io/patterns/' }
+    { type: 'doc', title: 'Pattern: API Composition', url: 'https://microservices.io/patterns/data/api-composition.html' },
+    { type: 'doc', title: 'Pattern: CQRS', url: 'https://microservices.io/patterns/data/cqrs.html' },
   ]
 },
 {
@@ -2630,10 +2637,10 @@ Sau đó:        c42=Platinum            (c77 biến mất hẳn)
 ### Kết hợp và cấu hình
 ~~~bash
 # topic audit: giữ 90 ngày
-kafka-configs.sh --alter --entity-type topics --entity-name audit.events \\
+kafka-configs.sh --bootstrap-server localhost:9092 --alter --entity-type topics --entity-name audit.events \\
   --add-config retention.ms=7776000000
 # topic trạng thái khách hàng: compact
-kafka-configs.sh --alter --entity-type topics --entity-name customer.state \\
+kafka-configs.sh --bootstrap-server localhost:9092 --alter --entity-type topics --entity-name customer.state \\
   --add-config cleanup.policy=compact,min.compaction.lag.ms=60000
 ~~~
 - Có thể bật **cả hai**: {{cleanup.policy=compact,delete}}, compaction giữ bản mới nhất theo key, retention giới hạn tuổi/dung lượng. Nhưng retention có thể xóa luôn bản mới nhất của key ít thay đổi, làm mất dữ liệu cần để rebuild, nên phải khớp với yêu cầu khôi phục.
@@ -2764,7 +2771,7 @@ Một siêu thị đông gấp ba, hàng chờ thanh toán dài ra. Mở thêm q
 ~~~text
 vào: 3.000 rec/s   ra: 2.000 rec/s   → lag tăng 1.000 rec/s ≈ 3,6 triệu/giờ
 consumer: 12 pod / 12 partition (không thêm được)
-mỗi record: 6ms, trong đó 5ms chờ DB pool (pool 10, DB max 500 write/s)
+mỗi record: 6ms, trong đó 5ms là write DB (pool 10 connection, DB đã chạm trần ~2.000 write/s)
 => nút thắt là DB, KHÔNG phải số consumer
 ~~~
 
@@ -2777,7 +2784,7 @@ mỗi record: 6ms, trong đó 5ms chờ DB pool (pool 10, DB max 500 write/s)
 ### Backpressure (từng bước)
 1. Kafka là bộ đệm bền vững **trong giới hạn retention**, không vô hạn: lag lớn hơn retention nghĩa là mất dữ liệu.
 2. Khi downstream cạn, consumer **pause** partition (Spring Kafka: pause container hoặc listener), vẫn tiếp tục poll để giữ heartbeat/membership, và **không commit** offset của phần chưa xử lý.
-3. Giới hạn số việc đang chạy song song (semaphore/bulkhead) bằng capacity downstream: DB chịu 500 write/s, mỗi write 20ms → khoảng 10 việc song song là đủ (Little's Law).
+3. Giới hạn số việc đang chạy song song (semaphore/bulkhead) bằng capacity downstream: DB chịu tối đa ~2.000 write/s, mỗi write 5ms → 2.000 × 0,005 = 10 việc song song là đủ (Little's Law); mở thêm chỉ làm các write xếp hàng trong DB.
 4. Nếu quá tải kéo dài: giảm tốc producer, bỏ bớt việc không quan trọng (shed load), hoặc tăng capacity downstream. Hàng đợi chỉ trì hoãn sự cố và tốn đĩa.
 
 ### Autoscaling an toàn
