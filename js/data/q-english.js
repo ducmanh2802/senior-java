@@ -1042,9 +1042,9 @@ In my current team of eight (5 devs, 1 QA, 1 PO, 1 SM), I act as the **tech lead
 **Initiative:** I proposed a **Payment Platform Unification** — extract common domain (reconciliation, settlement, idempotency, webhook delivery) into a shared library, and build a **Payment Orchestrator** service that all three countries call. The orchestrator handles routing, retry, and settlement; country-specific logic stays in thin adapters.
 
 **How I led it:**
-1. **Build the coalition:** I met 1:1 with each country's tech lead and the EMs and listened to their concerns (Singapore worried about latency, Indonesia about compliance). Documented a **shared vision doc** with success criteria: onboarding time < 2 weeks, zero duplicate bugs, single on-call rotation.
-2. **Design together:** Ran a 2-day design workshop (RFC process). We agreed on: shared library in Java 17, gRPC for orchestrator communication, feature flags for gradual rollout. I wrote the RFC, received 15 comments, and revised it twice.
-3. **Slice the work:** Broke into 3 phases — (a) shared library + contract tests, (b) orchestrator service + Vietnam migration, (c) Singapore + Indonesia migration. Each phase had clear exit criteria and a rollback plan.
+1. **Build the coalition:** I met 1:1 with each country's tech lead and the EMs and listened to their concerns (Singapore worried about latency, Indonesia about compliance). Then I wrote a **shared vision doc** with clear success criteria: onboarding a new acquirer in under two weeks, no more duplicate bug fixes, and a single on-call rotation.
+2. **Design together:** I ran a two-day design workshop, followed by an RFC. We agreed on a shared library in Java 17, gRPC between the country services and the orchestrator, and feature flags for a gradual rollout. I wrote the RFC, got about 15 comments, and revised it twice.
+3. **Slice the work:** We split it into three phases — (a) shared library + contract tests, (b) orchestrator service + Vietnam migration, (c) Singapore + Indonesia migration. Each phase had clear exit criteria and a rollback plan.
 4. **Governance:** We held a weekly sync with all tech leads. A Jira epic tracked migration progress, and a shared Grafana dashboard showed error rate and p99 latency. If a country team was blocked for more than a week, I escalated to the EMs with data.
 5. **Communication:** We ran a demo for stakeholders every two weeks and sent a monthly update to all engineers with progress and lessons learned.
 
@@ -1074,25 +1074,30 @@ In my current team of eight (5 devs, 1 QA, 1 PO, 1 SM), I act as the **tech lead
   topic: 'english',
   level: 'senior',
   q: 'Tell me about a project where you had measurable impact.',
-  a: `**T?m t?t:** I describe the problem, my contribution, and a measured outcome. I identify the metric and time window, distinguish my work from the team?s work, and explain the trade-off. I never invent impact figures.
+  a: `**Tóm tắt:** Kể theo khung **vấn đề → phần việc của tôi → kết quả đo được → trade-off**. Số liệu phải thật, có baseline (trước/sau), khoảng thời gian và cách đo; tách rõ "I" (việc bạn làm) với "we" (việc cả team làm), và thành thật nếu kết quả còn bị yếu tố khác ảnh hưởng.
 
 ### Sample answer
-I describe the problem, my contribution, and a measured outcome. I identify the metric and time window, distinguish my work from the team?s work, and explain the trade-off. I never invent impact figures.
+Sure. Last year our checkout API had a p99 latency of about 1.8 seconds at peak, and the funnel data showed that slow checkouts lined up with abandoned carts. I owned the investigation. Profiling with JFR showed that most of the time went into three sequential calls — pricing, inventory and promotions.
 
-### Practice
-Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+I proposed running those calls in parallel with {{CompletableFuture}} on a dedicated, bounded executor, and caching promotion rules for 60 seconds, because they rarely change. I wrote the change and the load tests; a teammate handled cache invalidation on the admin side.
 
-> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+We rolled it out over two weeks behind a feature flag. p99 dropped to around 650 milliseconds, and checkout conversion went up by roughly 2 percent the following month. To be fair, marketing ran a campaign at the same time, so I'm confident about the latency gain but I'd only claim part of the conversion gain. The trade-off was that a promotion change could take up to a minute to show up, which the business was happy to accept.
 
-### Build a natural spoken answer
-Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+### Useful phrases
+- **I owned the investigation**: tôi chịu trách nhiệm chính phần điều tra
+- **lined up with / correlated with**: trùng khớp, tương quan với
+- **We rolled it out behind a feature flag**: triển khai dần sau cờ tính năng
+- **dropped from X to Y / went up by X percent**: giảm từ X xuống Y / tăng thêm X%
+- **To be fair, ...**: công bằng mà nói (dùng khi thừa nhận yếu tố khác)
 
-### Follow-up practice
-Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+### Lỗi người Việt hay mắc
+- Nói chung chung "I improved performance a lot" → phải có con số: "from 1.8 seconds to 650 milliseconds".
+- Sai giới từ: "increase 2%" → **"increased by 2 percent"**; "reduce from 10 to 5" → **"reduced from 10 to 5"** (nhớ đuôi -ed vì là quá khứ).
+- Dùng "we" cho mọi thứ → interviewer không biết bạn làm gì. Dùng "I" cho phần của mình, "we" cho phần của team.
 
-> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
-  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
-  tags: ['fluency', 'speaking', 'interview'],
+> Senior tip: Interviewer senior hay hỏi tiếp "How did you measure that?" và "What else could explain the change?". Chủ động nói trước như câu "To be fair, marketing ran a campaign..." khiến bạn đáng tin hơn hẳn so với khoe con số lớn. Chuẩn bị sẵn 2–3 câu chuyện có số liệu thật và ghi lại nguồn (dashboard nào, khoảng thời gian nào).`,
+  follow: ['How did you measure the impact, and what else could explain the change?', 'What would you have done if the latency improvement had not moved the business metric?', 'What was the hardest part to get agreement on?'],
+  tags: ['impact', 'metrics', 'star', 'speaking'],
   lang: 'en',
 },
 {
@@ -1100,25 +1105,30 @@ Record a short response, listen once for whether the main point appears early, a
   topic: 'english',
   level: 'senior',
   q: 'How do you explain a recommendation clearly?',
-  a: `**T?m t?t:** I state the recommendation first, connect it to the key constraint, and explain one benefit and one cost. For example, I would keep a request synchronous when its caller needs the result immediately; otherwise I would evaluate asynchronous processing and its recovery requirements.
+  a: `**Tóm tắt:** Nói **khuyến nghị trước** (bottom line up front), rồi mới đến lý do chính, chi phí, phương án thay thế và bước tiếp theo. Người Việt hay kể bối cảnh dài rồi mới đến kết luận; trong phỏng vấn tiếng Anh, người nghe muốn biết ngay bạn đề xuất gì.
 
 ### Sample answer
-I state the recommendation first, connect it to the key constraint, and explain one benefit and one cost. For example, I would keep a request synchronous when its caller needs the result immediately; otherwise I would evaluate asynchronous processing and its recovery requirements.
+I put the recommendation in the first sentence, and then I support it. For example:
 
-### Practice
-Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+"My recommendation is to move PDF report generation to a background job. The main reason is that our largest reports take around 40 seconds, which is longer than the gateway timeout, so users see an error even when the report is actually generated. The cost is a few extra moving parts: a queue, a job-status endpoint, and retry handling. I think that's worth it, because export failures are our second most common support ticket. The alternative would be to raise the timeout, but that just moves the problem and ties up threads. I'd suggest we try it with our three biggest customers first and watch the export success rate."
 
-> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+So the order is always the same: what I recommend, why, what it costs, what the alternative is, and how we'll know it worked.
 
-### Build a natural spoken answer
-Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+### Useful phrases
+- **My recommendation is to...**: tôi đề xuất...
+- **The main reason is that...**: lý do chính là...
+- **The cost is... / The downside is...**: cái giá phải trả là...
+- **The alternative would be..., but...**: phương án khác là..., nhưng...
+- **I'd suggest we start with...**: tôi đề nghị bắt đầu với...
 
-### Follow-up practice
-Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+### Lỗi người Việt hay mắc
+- Kể bối cảnh 2–3 phút rồi mới nói đề xuất → người nghe mất kiên nhẫn.
+- Rào đón quá nhiều: "Maybe we can possibly consider..." → nghe thiếu tự tin. Nói thẳng: **"I recommend..."**, "I'd suggest...".
+- "I think" ở đầu mọi câu. Dùng một lần cho phần ý kiến cá nhân là đủ.
 
-> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
-  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
-  tags: ['fluency', 'speaking', 'interview'],
+> Senior tip: Khi người nghe là manager, mỗi lý do nên gắn với một con số kinh doanh (số ticket, tỉ lệ lỗi, chi phí). Kết thúc bằng một **tiêu chí đo thành công** ("watch the export success rate") — đó là dấu hiệu bạn nghĩ như owner, không chỉ như người code.`,
+  follow: ['What would you do if your manager chose the alternative instead?', 'How do you present a recommendation when you are not fully sure?', 'How do you adapt the explanation for an engineer versus a business stakeholder?'],
+  tags: ['communication', 'recommendation', 'speaking'],
   lang: 'en',
 },
 {
@@ -1126,25 +1136,32 @@ Record a short response, listen once for whether the main point appears early, a
   topic: 'english',
   level: 'senior',
   q: 'When would you choose synchronous or asynchronous processing?',
-  a: `**T?m t?t:** I use synchronous processing when the caller needs an immediate result and latency and availability budgets permit it. I consider asynchronous processing for deferrable work, while planning for eventual consistency, duplicate delivery, bounded retries, idempotency, and queue monitoring.
+  a: `**Tóm tắt:** Đồng bộ (sync) khi người gọi **cần kết quả ngay** để đi tiếp; bất đồng bộ (async) khi việc có thể **làm sau**. Async giúp tách phụ thuộc và hấp thụ đỉnh tải nhưng kéo theo chi phí vận hành: at-least-once delivery, idempotency, dead-letter queue, theo dõi consumer lag, eventual consistency.
 
 ### Sample answer
-I use synchronous processing when the caller needs an immediate result and latency and availability budgets permit it. I consider asynchronous processing for deferrable work, while planning for eventual consistency, duplicate delivery, bounded retries, idempotency, and queue monitoring.
+I start from what the caller actually needs. If the user can't continue without the result — for example, checking whether a payment was authorized — I keep it synchronous. But I protect that call with a tight timeout, a small retry budget and a circuit breaker, so one slow dependency doesn't drag down the whole request.
 
-### Practice
-Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+If the work can wait — sending the receipt email, updating the search index, generating a report — I move it to a queue like Kafka or SQS. That decouples the services and smooths out traffic spikes, but it isn't free. Most setups give you at-least-once delivery, so consumers have to be idempotent; I usually store the processed message ID or use a unique key in the database. You also need a dead-letter queue, alerts on consumer lag, and a way for the user to see that something is still pending.
 
-> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+One more thing: if I publish an event after a database write, I use the transactional outbox pattern, so we don't lose the event if the service crashes between the commit and the publish.
 
-### Build a natural spoken answer
-Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+So my rule of thumb is: synchronous for what the user is waiting on, asynchronous for the rest — as long as the team is ready to operate it.
 
-### Follow-up practice
-Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+### Useful phrases
+- **I start from what the caller actually needs**: tôi bắt đầu từ nhu cầu thật của bên gọi
+- **drag down / take down**: kéo chậm / làm sập
+- **it isn't free**: không miễn phí, có cái giá
+- **smooth out traffic spikes**: làm phẳng đỉnh tải
+- **rule of thumb**: nguyên tắc kinh nghiệm
 
-> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
-  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
-  tags: ['fluency', 'speaking', 'interview'],
+### Phát âm
+- **asynchronous** /eɪˈsɪŋkrənəs/: nhấn âm thứ hai "SYN".
+- **queue** /kjuː/: đọc như chữ "Q", không đọc "quây-ơ".
+- **idempotent** /ˌaɪdəmˈpoʊtənt/ (phổ biến ở Mỹ) hoặc /ɪˈdempətənt/.
+
+> Senior tip: Virtual threads (Java 21) làm lời gọi đồng bộ rẻ hơn về tài nguyên thread, nhưng **không** giải quyết vấn đề coupling: service B chết thì request vẫn lỗi. Đừng chọn async chỉ vì "nó nhanh hơn" — chọn vì việc đó thực sự có thể làm sau và team đủ sức vận hành queue.`,
+  follow: ['How do you make a Kafka consumer idempotent?', 'How do you show the user the status of an asynchronous job?', 'What problem does the transactional outbox pattern solve?'],
+  tags: ['async', 'kafka', 'system-design', 'speaking'],
   lang: 'en',
 },
 {
@@ -1152,25 +1169,30 @@ Record a short response, listen once for whether the main point appears early, a
   topic: 'english',
   level: 'senior',
   q: 'How do you structure an answer when you need a moment?',
-  a: `**T?m t?t:** I take a brief pause and say, ?Let me organize my thoughts. I would look at this from two angles.? Then I answer directly, explain my reasoning, and stop when I have addressed the question. A short pause is better than filling the silence with repeated fillers.
+  a: `**Tóm tắt:** Dừng 3–5 giây là bình thường. Dùng một câu "mua thời gian" tự nhiên, nói trước **khung trả lời** (ví dụ "two angles"), rồi trả lời từng phần và dừng khi đã đủ. Im lặng ngắn tốt hơn nhiều so với "uhm... ờ..." kéo dài.
 
 ### Sample answer
-I take a brief pause and say, ?Let me organize my thoughts. I would look at this from two angles.? Then I answer directly, explain my reasoning, and stop when I have addressed the question. A short pause is better than filling the silence with repeated fillers.
+If the question is complex, I'm comfortable taking a short pause. I'll say something like, "That's a good question — let me think about it for a second." Then I give a structure before the details, because that helps me and the interviewer.
 
-### Practice
-Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+For example, if someone asks, "How would you split a monolithic database?", I might say: "Let me look at it from two angles: first, how to find the boundaries, and second, how to migrate the data safely without downtime." Then I go through each part and stop when I've covered both.
 
-> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+If I lose my train of thought, I just say, "Sorry, let me go back to the main point," and continue. I'd rather have a three-second pause than fill the silence with "um" and "uh".
 
-### Build a natural spoken answer
-Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+### Useful phrases
+- **Let me think about that for a second.**: để tôi nghĩ một chút
+- **Let me look at it from two angles.**: tôi sẽ nhìn từ hai góc độ
+- **There are three things I'd consider.**: có ba điều tôi sẽ xem xét
+- **Let me go back to the main point.**: quay lại ý chính
+- **lose my train of thought**: quên mất mạch đang nói
 
-### Follow-up practice
-Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+### Lỗi người Việt hay mắc
+- Lấp khoảng lặng bằng "ờ", "à" tiếng Việt hoặc "uhm" liên tục.
+- Nói "Wait." hoặc "Wait a minute." → nghe cộc lốc như ra lệnh. Dùng **"Give me a second"** hoặc **"Let me think"**.
+- Hứa "three points" nhưng chỉ nói hai → hãy đếm trên ngón tay khi nói.
 
-> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
-  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
-  tags: ['fluency', 'speaking', 'interview'],
+> Senior tip: Câu "mua thời gian" chỉ dùng **một lần** mỗi câu hỏi; lặp lại nhiều lần nghe như né tránh. Luyện với đồng hồ: đặt khung trong 10 giây đầu, trả lời mỗi ý trong khoảng 30–45 giây. Câu hỏi system design lớn thì có thể xin thêm thời gian: "Could I take a minute to sketch my thoughts?" — hoàn toàn được chấp nhận.`,
+  follow: ['What do you do if you completely blank on a question?', 'How long is too long for a pause in an interview?', 'How do you get back on track after going off topic?'],
+  tags: ['fluency', 'structure', 'speaking'],
   lang: 'en',
 },
 {
@@ -1178,25 +1200,30 @@ Record a short response, listen once for whether the main point appears early, a
   topic: 'english',
   level: 'senior',
   q: 'How do you keep a technical explanation easy to follow?',
-  a: `**T?m t?t:** I start with the conclusion, give only the necessary context, and explain the mechanism in ordered steps. For caching, for example, I explain that a stored copy can reduce repeated database reads, then cover freshness and invalidation because they are the main trade-offs.
+  a: `**Tóm tắt:** Ba thói quen: **nói kết luận trước**, giải thích cơ chế theo **các bước đánh số** (first, then, finally), và **kiểm tra người nghe** bằng câu hỏi tự nhiên thay vì "Do you understand?". Giữ một mức độ chi tiết, đừng nhảy qua lại giữa tổng quan và chi tiết code.
 
 ### Sample answer
-I start with the conclusion, give only the necessary context, and explain the mechanism in ordered steps. For caching, for example, I explain that a stored copy can reduce repeated database reads, then cover freshness and invalidation because they are the main trade-offs.
+I try to keep three habits. First, I give the short version up front. Second, I walk through the mechanism step by step. And third, I check in with the listener before going deeper.
 
-### Practice
-Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+For example, if I'm explaining our product cache, I'd say: "The short version is: we put Redis in front of the product service, and it cut database reads by about 80 percent. Here's how it works. First, the service checks Redis. If the product is there — that's a cache hit — we return it in about a millisecond. If it isn't, we read it from Postgres, store it in Redis with a ten-minute TTL, and return it. The tricky part is freshness: when a price changes, we delete the key, so the next read loads the new value."
 
-> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+Then I ask, "Does that level of detail work, or should I go deeper into how we handle invalidation?" That way the interviewer decides where to zoom in.
 
-### Build a natural spoken answer
-Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+### Useful phrases
+- **The short version is...**: nói ngắn gọn thì...
+- **Here's how it works.**: nó hoạt động thế này
+- **The tricky part is...**: phần khó là...
+- **Does that make sense so far?**: tới đây có rõ không?
+- **Should I go deeper into...?**: tôi có nên đi sâu vào... không?
 
-### Follow-up practice
-Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+### Lỗi người Việt hay mắc
+- Hỏi **"Do you understand?"** → nghe như đang kiểm tra người nghe, dễ bị coi là thiếu lịch sự. Dùng "Does that make sense?" hoặc "Is that clear so far?".
+- Chồng nhiều thuật ngữ trong một câu ("we use write-behind cache-aside with TTL-based eviction").
+- Không có từ nối → người nghe không biết bạn đang ở bước mấy. Dùng "First... Then... Finally...".
 
-> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
-  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
-  tags: ['fluency', 'speaking', 'interview'],
+> Senior tip: Một con số cụ thể ("about 80 percent", "about a millisecond") giúp người nghe hình dung tốt hơn mọi tính từ ("very fast", "much better"). Với interviewer kỹ thuật, câu "The tricky part is..." là chỗ ghi điểm: nó cho thấy bạn hiểu pitfall, không chỉ happy path.`,
+  follow: ['How would you explain the same cache to a product manager?', 'What happens if the cache delete fails after the price update?', 'How do you know when you are going into too much detail?'],
+  tags: ['communication', 'explanation', 'caching', 'speaking'],
   lang: 'en',
 },
 {
@@ -1204,25 +1231,32 @@ Record a short response, listen once for whether the main point appears early, a
   topic: 'english',
   level: 'senior',
   q: 'What would you say if you did not hear a question?',
-  a: `**T?m t?t:** I say, ?Could you repeat the last part of the question, please?? If I caught part of it, I paraphrase it: ?Are you asking how I would handle duplicate messages after a consumer restart?? I confirm before answering rather than guessing.
+  a: `**Tóm tắt:** Nói thẳng là bạn không nghe rõ, xin nhắc lại **đúng phần bị lỡ**, hoặc **diễn đạt lại** phần bạn nghe được để xác nhận. Đừng đoán rồi trả lời sai câu hỏi — điều đó mất điểm hơn nhiều so với hỏi lại một lần.
 
 ### Sample answer
-I say, ?Could you repeat the last part of the question, please?? If I caught part of it, I paraphrase it: ?Are you asking how I would handle duplicate messages after a consumer restart?? I confirm before answering rather than guessing.
+It depends on what I missed. If the connection drops, I just say so: "Sorry, you cut out for a second — could you repeat the last part of the question?"
 
-### Practice
-Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+If I caught most of it, I paraphrase it to confirm: "I think I got most of that. Are you asking how I'd handle duplicate messages after a consumer restarts?" That's quicker than asking them to repeat everything, and it shows I was listening.
 
-> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+If it's just one word, I ask about that word: "Sorry, I didn't quite catch the last word — did you say 'rebalance'?"
 
-### Build a natural spoken answer
-Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+And if the audio keeps breaking up, I suggest a fix rather than struggling through it: "The audio is a bit choppy on my side. Would it help if I turned off my video?"
 
-### Follow-up practice
-Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+### Useful phrases
+- **You cut out / You broke up for a second.**: tiếng bạn bị mất một lúc
+- **I didn't quite catch that.**: tôi chưa nghe rõ
+- **Could you repeat the last part?**: bạn nhắc lại phần cuối được không?
+- **Are you asking...?**: có phải bạn đang hỏi...?
+- **The audio is a bit choppy.**: âm thanh bị ngắt quãng
 
-> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
-  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
-  tags: ['fluency', 'speaking', 'interview'],
+### Lỗi người Việt hay mắc
+- Nói **"What?"** hoặc "Huh?" → thiếu lịch sự. "Pardon?" đúng nhưng hơi trang trọng; "Sorry?" tự nhiên hơn.
+- **"Can you repeat again?"** → thừa từ (repeat đã có nghĩa "again"). Nói **"Could you repeat that?"** hoặc **"Could you say that again?"**.
+- Ngại hỏi lại, đoán ý rồi trả lời lạc đề.
+
+> Senior tip: Trước buổi phỏng vấn online, kiểm tra tai nghe, micro và mạng; nên dùng tai nghe có dây. Hỏi lại **một lần** là hoàn toàn bình thường — người bản xứ cũng làm vậy. Nếu phải hỏi lại liên tục, hãy chủ động đề xuất đổi kênh (tắt video, gọi lại) thay vì cố đoán.`,
+  follow: ['What if you still do not understand after they repeat the question?', 'How do you handle an interviewer with a strong accent?', 'How do you confirm a long, multi-part question?'],
+  tags: ['clarify', 'listening', 'online-interview', 'speaking'],
   lang: 'en',
 },
 {
@@ -1230,25 +1264,32 @@ Record a short response, listen once for whether the main point appears early, a
   topic: 'english',
   level: 'senior',
   q: 'How do you respond about a technology you have not used?',
-  a: `**T?m t?t:** I am transparent that I have not used the technology in production. I connect relevant experience to its underlying concepts, explain how I would evaluate it through documentation and a small proof of concept, and state what I would need to learn.
+  a: `**Tóm tắt:** Trả lời trung thực ngay câu đầu ("Not in production"), nối sang **kinh nghiệm gần nhất** bạn có, nói ngắn gọn bạn **hiểu khái niệm** thế nào, rồi mô tả **cách bạn sẽ học** (docs, proof of concept nhỏ, rủi ro cần chú ý). Đừng bịa, cũng đừng chỉ nói "I don't know" rồi dừng.
 
 ### Sample answer
-I am transparent that I have not used the technology in production. I connect relevant experience to its underlying concepts, explain how I would evaluate it through documentation and a small proof of concept, and state what I would need to learn.
+*Interviewer: "Have you worked with Kubernetes operators?"*
 
-### Practice
-Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+"Not in production, no. I've deployed our services to Kubernetes with Helm charts and set up readiness and liveness probes, but I haven't written an operator myself.
 
-> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+From what I understand, an operator is a controller that watches a custom resource and keeps reconciling the actual state of the cluster toward the desired state — similar in spirit to how the Deployment controller manages ReplicaSets.
 
-### Build a natural spoken answer
-Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+If I needed to build one, I'd start with the official docs and the Java Operator SDK, build a small proof of concept for one resource, and pay close attention to how it behaves when reconciliation fails halfway. I'd expect to be productive within a couple of weeks, and I'd ask someone who's run operators in production to review the design."
 
-### Follow-up practice
-Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+### Useful phrases
+- **Not in production, no.**: chưa dùng trên production
+- **The closest thing I've done is...**: việc gần nhất tôi từng làm là...
+- **From what I understand, ...**: theo tôi hiểu thì...
+- **The way I'd get up to speed is...**: cách tôi bắt nhịp nhanh là...
+- **similar in spirit to...**: về ý tưởng thì giống với...
 
-> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
-  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
-  tags: ['fluency', 'speaking', 'interview'],
+### Lỗi người Việt hay mắc
+- "I don't know." rồi im lặng → mất cơ hội thể hiện tư duy.
+- Bịa kinh nghiệm → interviewer hỏi thêm 2 câu là lộ, mất hết uy tín.
+- Câu chung chung "I can learn anything quickly" → không có bằng chứng. Hãy nêu **kế hoạch học cụ thể**.
+
+> Senior tip: Senior không cần biết mọi công nghệ, nhưng phải cho thấy cách **đánh giá rủi ro** khi áp dụng thứ mới: "what happens when it fails", "who will operate it", "how do we roll back". Câu "From what I understand..." vừa trung thực vừa để interviewer sửa nếu bạn hiểu sai.`,
+  follow: ['How would you decide whether the team should adopt this technology?', 'Tell me about a time you had to learn a new technology quickly.', 'What are the risks of introducing a technology nobody on the team knows?'],
+  tags: ['honesty', 'learning', 'speaking'],
   lang: 'en',
 },
 {
@@ -1256,25 +1297,30 @@ Record a short response, listen once for whether the main point appears early, a
   topic: 'english',
   level: 'senior',
   q: 'What if you realize you misstated a technical detail?',
-  a: `**T?m t?t:** I correct the detail promptly: ?I want to correct one point. I said exactly-once delivery, but I meant at-least-once delivery.? I then explain that duplicate delivery is possible and consumers need idempotent processing, and clarify whether my conclusion changes.
+  a: `**Tóm tắt:** Sửa **ngay khi nhận ra**, ngắn gọn, không xin lỗi quá mức: nói bạn đã nói gì, đúng ra là gì, và kết luận có thay đổi không. Tự sửa sai là tín hiệu tốt về sự trung thực và hiểu biết sâu.
 
 ### Sample answer
-I correct the detail promptly: ?I want to correct one point. I said exactly-once delivery, but I meant at-least-once delivery.? I then explain that duplicate delivery is possible and consumers need idempotent processing, and clarify whether my conclusion changes.
+I correct it as soon as I notice — briefly, and without making a big deal of it. For example:
 
-### Practice
-Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+"Sorry, let me correct something I said earlier. I said Kafka gives us exactly-once delivery by default — that's not accurate. On the consumer side, the default is effectively at-least-once: if a consumer crashes after processing a message but before committing the offset, it will get that message again. Kafka does support exactly-once semantics with idempotent producers and transactions, but that only covers reads and writes inside Kafka. Once the consumer writes to an external database, we still need idempotent processing.
 
-> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+The good news is that it doesn't change my design, because the consumer already uses an idempotency key — but I wanted to be precise."
 
-### Build a natural spoken answer
-Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+### Useful phrases
+- **Let me correct something I said earlier.**: cho tôi sửa lại một điều vừa nói
+- **What I meant was...**: ý tôi là...
+- **To be precise, ...**: nói cho chính xác thì...
+- **That doesn't change my conclusion, because...**: điều này không thay đổi kết luận vì...
+- **That changes things a bit — ...**: điều này làm thay đổi một chút...
 
-### Follow-up practice
-Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+### Lỗi người Việt hay mắc
+- Lờ đi, mong interviewer không để ý → nếu họ để ý, bạn mất điểm gấp đôi.
+- Xin lỗi quá mức: "I'm so sorry, I'm very bad at this" → làm giảm uy tín. Một chữ **"Sorry"** là đủ.
+- Sửa nhưng không nói kết luận có đổi không → người nghe phải tự đoán.
 
-> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
-  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
-  tags: ['fluency', 'speaking', 'interview'],
+> Senior tip: Ví dụ Kafka ở trên rất hay gặp: từ Kafka 3.0, producer bật idempotence mặc định (chống trùng do retry phía producer), nhưng điều đó **không** làm consumer hết nhận trùng. Nắm chắc những chỗ dễ nói nhầm như vậy giúp bạn tự sửa kịp thời và ghi điểm "deep understanding".`,
+  follow: ['How does Kafka achieve exactly-once semantics inside a stream processing pipeline?', 'Tell me about a time you were wrong about a technical decision.', 'How do you handle it when a colleague misstates something in a meeting?'],
+  tags: ['honesty', 'kafka', 'communication', 'speaking'],
   lang: 'en',
 },
 {
@@ -1282,25 +1328,35 @@ Record a short response, listen once for whether the main point appears early, a
   topic: 'english',
   level: 'senior',
   q: 'How would you begin an English interview naturally?',
-  a: `**T?m t?t:** I greet the interviewer, thank them for their time, and give a short introduction tied to the role: ?I am a backend engineer focused on Java services and reliability. I was interested in this role because ?? I use genuine details rather than a memorized biography.
+  a: `**Tóm tắt:** Mở đầu gồm hai phần: **small talk ngắn** (chào, cảm ơn, đáp "How are you?" tự nhiên) và **phần giới thiệu bản thân 60–90 giây**: bạn là ai, đang làm gì, một thành tích nổi bật, vì sao quan tâm vị trí này. Không đọc lại CV theo thứ tự thời gian.
 
 ### Sample answer
-I greet the interviewer, thank them for their time, and give a short introduction tied to the role: ?I am a backend engineer focused on Java services and reliability. I was interested in this role because ?? I use genuine details rather than a memorized biography.
+*Small talk:*
+"Hi, nice to meet you. Thanks for taking the time today."
+*"How are you?"* — "I'm good, thanks — a little excited, to be honest. How about you?"
 
-### Practice
-Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+*"So, tell me about yourself."*
+"Sure. I'm a backend engineer with about six years of experience, mostly with Java and Spring Boot. For the last three years I've been at a fintech company, working on the payment platform. I own the settlement service, and I'm part of the on-call rotation for it.
 
-> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+Recently I've been focusing on reliability. I led the move from synchronous calls to an event-driven flow with Kafka, which cut our timeout errors by about 70 percent.
 
-### Build a natural spoken answer
-Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+I'm now looking for a role where I can work on larger-scale distributed systems and spend more time mentoring, which is why this position caught my attention."
 
-### Follow-up practice
-Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+### Useful phrases
+- **Thanks for taking the time today.**: cảm ơn anh/chị đã dành thời gian
+- **a little excited, to be honest**: thật lòng thì hơi hồi hộp (tự nhiên, thân thiện)
+- **I own the... service**: tôi chịu trách nhiệm chính service...
+- **Recently I've been focusing on...**: gần đây tôi tập trung vào...
+- **That's why this position caught my attention.**: đó là lý do vị trí này thu hút tôi
 
-> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
-  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
-  tags: ['fluency', 'speaking', 'interview'],
+### Lỗi người Việt hay mắc
+- **"I'm fine, thank you, and you?"** → nghe như sách giáo khoa. Tự nhiên hơn: "I'm good, thanks. How about you?" / "Doing well, thanks!"
+- Bắt đầu bằng "My name is..., I'm 30 years old, I graduated from..." → tuổi và trường không cần thiết với senior.
+- Nói quá 2 phút → interviewer chưa kịp hỏi gì đã mất hứng.
+
+> Senior tip: Chuẩn bị bản giới thiệu theo công thức **present → past → future**: hiện tại làm gì, một thành tích có số liệu, vì sao muốn vị trí này. Luyện đến mức nói tự nhiên nhưng **đừng học thuộc từng chữ** — nghe như đọc bài sẽ mất điểm. Phát âm **experience** /ɪkˈspɪəriəns/, nhấn âm "SPEE".`,
+  follow: ['Why are you interested in this role specifically?', 'Which part of your current job do you enjoy the most?', 'What is one achievement you are most proud of?'],
+  tags: ['introduction', 'small-talk', 'speaking'],
   lang: 'en',
 },
 {
@@ -1308,25 +1364,35 @@ Record a short response, listen once for whether the main point appears early, a
   topic: 'english',
   level: 'senior',
   q: 'How would you close an interview professionally?',
-  a: `**T?m t?t:** I thank the interviewer, refer to one specific topic from our discussion, briefly reinforce my interest, and ask about next steps and timing. I keep it warm and professional without presuming the outcome.
+  a: `**Tóm tắt:** Cảm ơn, nhắc tới **một chủ đề cụ thể** trong buổi nói chuyện, khẳng định ngắn gọn sự quan tâm, hỏi **bước tiếp theo và thời gian** phản hồi. Ấm áp, chuyên nghiệp, không hỏi "Did I pass?". Sau buổi phỏng vấn, gửi email cảm ơn ngắn trong vòng 24 giờ.
 
 ### Sample answer
-I thank the interviewer, refer to one specific topic from our discussion, briefly reinforce my interest, and ask about next steps and timing. I keep it warm and professional without presuming the outcome.
+"Thank you so much for your time today. I really enjoyed the discussion about how you're splitting the order service — it's a problem I've worked on before, and it made me even more interested in the role.
 
-### Practice
-Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+Could you tell me what the next steps in the process look like, and roughly when I might hear back?"
 
-> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+*Interviewer: "We'll get back to you within a week."*
 
-### Build a natural spoken answer
-Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+"Great, that sounds good. Thanks again, and have a good rest of your day."
 
-### Follow-up practice
-Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+*Follow-up email (same day):*
+"Hi Anna, thank you for the conversation today. I especially enjoyed discussing the order service migration. I'm excited about the role and look forward to hearing about the next steps. Best regards, Minh"
 
-> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
-  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
-  tags: ['fluency', 'speaking', 'interview'],
+### Useful phrases
+- **I really enjoyed the discussion about...**: tôi rất thích phần trao đổi về...
+- **It made me even more interested in the role.**: điều đó khiến tôi càng quan tâm vị trí này
+- **What do the next steps look like?**: các bước tiếp theo thế nào?
+- **roughly when I might hear back**: khoảng khi nào tôi nhận được phản hồi
+- **Have a good rest of your day.**: chúc anh/chị một ngày tốt lành
+
+### Lỗi người Việt hay mắc
+- **"Thank you for your listening."** → sai. Đúng: **"Thank you for listening"** hoặc "Thank you for your time".
+- **"So... did I pass?"** → đặt interviewer vào thế khó.
+- **"I hope I will have a chance to work with you."** → đúng ngữ pháp nhưng hơi cứng. Tự nhiên hơn: "I'd love to work with the team" hoặc "I look forward to hearing from you."
+
+> Senior tip: Câu nhắc lại chủ đề cụ thể ("the order service migration") cho thấy bạn thực sự lắng nghe và giúp interviewer nhớ đến bạn khi viết đánh giá. Chú ý ngữ pháp: **look forward to + V-ing** ("look forward to hearing"), không phải "look forward to hear".`,
+  follow: ['What should you include in a follow-up email after the interview?', 'How do you follow up if you have not heard back after the promised date?', 'What would you say if the interviewer asks whether you have other offers?'],
+  tags: ['closing', 'etiquette', 'speaking'],
   lang: 'en',
 },
 {
@@ -1334,25 +1400,36 @@ Record a short response, listen once for whether the main point appears early, a
   topic: 'english',
   level: 'senior',
   q: 'What questions would you ask the interviewer?',
-  a: `**T?m t?t:** I ask about success in the first six months, the team?s current technical challenge, and how it balances feature delivery with reliability work. I choose questions not already answered and use follow-ups to understand the real expectations.
+  a: `**Tóm tắt:** Ở level senior, câu hỏi ngược lại là một phần của đánh giá. Chọn 2–3 câu **mở** (không trả lời được bằng yes/no), **hợp với người đang phỏng vấn** (engineer, manager hay director), về thành công trong 6 tháng đầu, thách thức kỹ thuật thật, và cách team cân bằng feature với reliability. Hỏi thêm một câu nối tiếp dựa trên câu trả lời của họ.
 
 ### Sample answer
-I ask about success in the first six months, the team?s current technical challenge, and how it balances feature delivery with reliability work. I choose questions not already answered and use follow-ups to understand the real expectations.
+"Yes, I have a few. First, what would a successful first six months look like for someone in this role?
 
-### Practice
-Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+Second, what's the biggest technical challenge the team is dealing with right now — is it more about scale, reliability, or legacy code?
 
-> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+And how does the team balance feature work with tech debt and reliability work? Is there a dedicated budget for it, or is it negotiated sprint by sprint?"
 
-### Build a natural spoken answer
-Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+*Interviewer: "Mostly legacy code — we're breaking up a monolith."*
 
-### Follow-up practice
-Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+"Interesting. How are you deciding which parts to extract first?"
 
-> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
-  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
-  tags: ['fluency', 'speaking', 'interview'],
+If I'm talking to an engineer, I might also ask: "What does on-call look like, and how often do you get paged?" With a director, I'd rather ask about the team's priorities for the next year.
+
+### Useful phrases
+- **What would success look like in...?**: thành công trong... trông như thế nào?
+- **What's the biggest challenge the team is dealing with?**: thách thức lớn nhất team đang gặp là gì?
+- **Is it more about X, Y, or Z?**: chủ yếu là X, Y hay Z?
+- **How are you deciding...?**: team quyết định... như thế nào?
+- **What does on-call look like?**: on-call ở đây thế nào?
+
+### Lỗi người Việt hay mắc
+- "No, I think everything is clear." → bỏ lỡ cơ hội thể hiện sự quan tâm.
+- Hỏi câu có sẵn trên website ("What does your company do?").
+- Hỏi câu yes/no ("Do you use microservices?") → khó mở ra cuộc trò chuyện. Thay bằng "How do you...?".
+
+> Senior tip: Câu hỏi nối tiếp ("How are you deciding which parts to extract first?") là phần ghi điểm nhất — nó biến buổi phỏng vấn thành cuộc trao đổi giữa hai đồng nghiệp. Câu trả lời của họ cũng giúp **bạn** đánh giá công ty: team có thời gian cho tech debt không, on-call có quá tải không.`,
+  follow: ['What would you ask a hiring manager versus a peer engineer?', 'How do you use the answers to decide whether to accept an offer?', 'What red flags do you listen for in the answers?'],
+  tags: ['questions-to-ask', 'closing', 'speaking'],
   lang: 'en',
 },
 {
@@ -1360,25 +1437,34 @@ Record a short response, listen once for whether the main point appears early, a
   topic: 'english',
   level: 'senior',
   q: 'How would you discuss salary expectations?',
-  a: `**T?m t?t:** I explain that I am seeking compensation appropriate to the role?s scope and market, ask about the full package, and share a researched range if appropriate. I clarify currency and pay period, stay open to discussion, and do not invent figures.
+  a: `**Tóm tắt:** Ở vòng đầu (recruiter screen), hãy hỏi trước **khoảng ngân sách** của vị trí; nếu bị hỏi tiếp, đưa ra **khoảng lương đã tìm hiểu**, nói rõ **gross hay net**, theo tháng hay năm, và phụ thuộc vào **tổng gói đãi ngộ**. Không bịa con số, không nói "salary is not important to me".
 
 ### Sample answer
-I explain that I am seeking compensation appropriate to the role?s scope and market, ask about the full package, and share a researched range if appropriate. I clarify currency and pay period, stay open to discussion, and do not invent figures.
+*Recruiter: "What are your salary expectations?"*
 
-### Practice
-Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+"That's a fair question. I'd like to understand the scope of the role a bit better before I give a precise number. Could you share the budgeted range for this position?"
 
-> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+*Recruiter: "We'd prefer to hear your number first."*
 
-### Build a natural spoken answer
-Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+"Sure. Based on my research for senior backend roles in Ho Chi Minh City and on my current package, I'm looking for something in the range of X to Y million dong gross per month. That depends on the total package, of course — things like the bonus, the 13th-month salary, insurance, and remote flexibility. Is that roughly in line with your range?"
 
-### Follow-up practice
-Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+Notice that I say **gross** clearly. In Vietnam people often talk about net salary, while many international companies quote gross, so it's worth confirming that you're both talking about the same number.
 
-> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
-  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
-  tags: ['fluency', 'speaking', 'interview'],
+### Useful phrases
+- **Could you share the budgeted range?**: bạn có thể chia sẻ khoảng ngân sách không?
+- **I'm looking for something in the range of...**: tôi mong muốn trong khoảng...
+- **gross / net per month**: lương trước thuế / sau thuế mỗi tháng
+- **depending on the total package**: tuỳ vào tổng gói đãi ngộ
+- **Is that roughly in line with your range?**: con số đó có gần với khoảng của bạn không?
+
+### Lỗi người Việt hay mắc
+- "Salary is not important to me." → không ai tin, và bạn mất vị thế đàm phán.
+- "How much can you pay?" → nghe thô. Dùng "Could you share the range?".
+- Nói lương net trong khi công ty hiểu là gross (hoặc ngược lại) → chênh lệch rất lớn khi nhận offer.
+
+> Senior tip: Chuẩn bị trước ba con số: **mức thấp nhất bạn chấp nhận**, **mức mục tiêu**, và **mức đưa ra** (cao hơn mục tiêu một chút). Khi nói khoảng, đặt mức mục tiêu ở **đầu dưới** của khoảng, vì công ty thường chốt gần đầu dưới. Đàm phán chi tiết sau khi có offer sẽ có lợi hơn — xem câu english-057.`,
+  follow: ['What would you say if the offer is below your range?', 'How do you answer when asked about your current salary?', 'Which benefits besides base salary matter most to you?'],
+  tags: ['salary', 'negotiation', 'speaking'],
   lang: 'en',
 },
 {
@@ -1386,25 +1472,30 @@ Record a short response, listen once for whether the main point appears early, a
   topic: 'english',
   level: 'senior',
   q: 'How would you discuss your start date?',
-  a: `**T?m t?t:** I state my actual notice period and earliest realistic date, including any handover commitments. I distinguish the earliest date from a preferred date and confirm the timing before promising it.
+  a: `**Tóm tắt:** Nói **notice period thật** theo hợp đồng, ngày sớm nhất có thể bắt đầu, và cam kết **bàn giao tử tế** cho công ty cũ. Nếu có thể linh hoạt, nói rõ điều kiện; đừng hứa "start immediately" khi chưa chắc.
 
 ### Sample answer
-I state my actual notice period and earliest realistic date, including any handover commitments. I distinguish the earliest date from a preferred date and confirm the timing before promising it.
+"My contract has a 30-day notice period, so if I sign this month, the earliest I could start would be around the beginning of next month.
 
-### Practice
-Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+I'd also like to leave my current team in good shape. I'm the main owner of our settlement service, so I want to do a proper handover — documentation and a couple of knowledge-transfer sessions.
 
-> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+If you need someone sooner, I can ask my manager whether a shorter notice period would be possible, but I don't want to promise that until I've talked to them. Is there a particular date you have in mind?"
 
-### Build a natural spoken answer
-Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+### Useful phrases
+- **notice period**: thời gian báo trước khi nghỉ việc
+- **30 days' notice**: báo trước 30 ngày (chú ý dấu sở hữu **days'**)
+- **the earliest I could start would be...**: ngày sớm nhất tôi có thể bắt đầu là...
+- **a proper handover**: bàn giao đầy đủ
+- **I don't want to promise that until...**: tôi không muốn hứa điều đó trước khi...
 
-### Follow-up practice
-Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+### Lỗi người Việt hay mắc
+- "I can start immediately." trong khi vẫn đang đi làm → nếu không đúng, công ty mới sẽ mất niềm tin.
+- "I will quit my job tomorrow." → nghe thiếu chuyên nghiệp, interviewer nghĩ bạn cũng sẽ bỏ họ như vậy.
+- Giới từ: "start **on** March 3rd" (ngày cụ thể), "start **in** March" (tháng), "start **at the beginning of** next month".
 
-> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
-  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
-  tags: ['fluency', 'speaking', 'interview'],
+> Senior tip: Việc bạn nhắc tới bàn giao là tín hiệu tốt: công ty mới hiểu rằng sau này bạn cũng sẽ rời đi một cách có trách nhiệm. Kiểm tra kỹ notice period trong hợp đồng hiện tại và ngày phép còn lại trước khi trả lời, đừng ước lượng.`,
+  follow: ['What if we need you to start in two weeks?', 'How would you plan the handover at your current job?', 'Do you have any planned time off in the next few months?'],
+  tags: ['start-date', 'notice-period', 'speaking'],
   lang: 'en',
 },
 {
@@ -1412,25 +1503,34 @@ Record a short response, listen once for whether the main point appears early, a
   topic: 'english',
   level: 'senior',
   q: 'Could you walk me through a recent Java project?',
-  a: `**T?m t?t:** I give the project purpose and users, clarify my scope versus the team?s work, then explain one decision, its constraint and trade-off, and an outcome supported by a real metric. I can then invite questions about design or delivery.
+  a: `**Tóm tắt:** Theo thứ tự: **dự án làm gì, cho ai, quy mô** → **tech stack ngắn gọn** → **vai trò của bạn** → **một quyết định kỹ thuật** (vấn đề, phương án, trade-off) → **kết quả có số liệu** → mời interviewer hỏi sâu. Khoảng 2 phút.
 
 ### Sample answer
-I give the project purpose and users, clarify my scope versus the team?s work, then explain one decision, its constraint and trade-off, and an outcome supported by a real metric. I can then invite questions about design or delivery.
+"Sure. The most recent one is a loyalty points service for an e-commerce platform with about two million active users. It's a Spring Boot 3 service on Java 21, running on EKS, with PostgreSQL and Kafka.
 
-### Practice
-Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+The team was four engineers. I was the most senior, so I drove the design and owned the points ledger.
 
-> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+The most interesting decision was how to store balances. The first idea was a single balance column that we update in place, but that makes auditing and fixing mistakes really hard. I proposed an append-only ledger table instead — every earn or spend is a row — with a balance column that's updated in the same transaction, and a version column for optimistic locking to handle concurrent spends.
 
-### Build a natural spoken answer
-Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+It cost us a bit more storage and a more complex history query. But when a promotion rule had a bug, we recomputed the affected balances from the ledger in an afternoon instead of guessing.
 
-### Follow-up practice
-Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+Since launch, it's handled peaks of around 1,500 writes per second during flash sales, with p99 latency under 100 milliseconds. I'm happy to go deeper into the data model or how we tested it."
 
-> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
-  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
-  tags: ['fluency', 'speaking', 'interview'],
+### Useful phrases
+- **The most recent one is...**: dự án gần nhất là...
+- **I drove the design and owned...**: tôi dẫn dắt thiết kế và chịu trách nhiệm...
+- **The most interesting decision was...**: quyết định đáng chú ý nhất là...
+- **It cost us... But...**: cái giá là... Nhưng...
+- **I'm happy to go deeper into...**: tôi sẵn sàng đi sâu vào...
+
+### Lỗi người Việt hay mắc
+- Liệt kê tech stack dài 1 phút ("Java, Spring, Hibernate, Redis, Kafka, Docker, Jenkins...") → không ai nhớ. Nêu 3–4 thứ chính là đủ.
+- Không có quyết định hay trade-off nào → nghe như người chỉ làm theo ticket.
+- Lẫn thì: việc đã xong dùng quá khứ ("I proposed"), trạng thái hiện tại dùng hiện tại ("It's a Spring Boot service"), kết quả tính đến nay dùng present perfect ("it's handled peaks of...").
+
+> Senior tip: Chọn một quyết định mà bạn **giải thích được cả phương án bị loại**. Interviewer senior gần như chắc chắn sẽ hỏi "Why not just use X?" — ví dụ ở đây: "Why not use a pessimistic lock?" hay "Why not event sourcing?". Chuẩn bị trước 2–3 câu trả lời đó.`,
+  follow: ['Why did you choose optimistic locking instead of a pessimistic lock?', 'How did you test the concurrent spend scenario?', 'What would you change if you built it again?'],
+  tags: ['project', 'java', 'architecture', 'speaking'],
   lang: 'en',
 },
 {
@@ -1438,25 +1538,32 @@ Record a short response, listen once for whether the main point appears early, a
   topic: 'english',
   level: 'senior',
   q: 'Tell me about a production incident you helped resolve.',
-  a: `**T?m t?t:** I describe customer impact, my role, the evidence used to find the cause, mitigation, and the signal that confirmed recovery. I finish with a concrete prevention action, distinguish team work from my contribution, and protect confidential details.
+  a: `**Tóm tắt:** Kể theo dòng thời gian: **ảnh hưởng tới người dùng → vai trò của bạn → bằng chứng tìm ra nguyên nhân → cách giảm thiệt hại (mitigation) → tín hiệu xác nhận đã phục hồi → sửa gốc và phòng ngừa**. Dùng thì quá khứ, nêu rõ phần việc của bạn, không tiết lộ thông tin mật.
 
 ### Sample answer
-I describe customer impact, my role, the evidence used to find the cause, mitigation, and the signal that confirmed recovery. I finish with a concrete prevention action, distinguish team work from my contribution, and protect confidential details.
+"One Friday evening, our order API started returning errors — about 15 percent of requests failed for roughly 40 minutes. I was the on-call engineer, so I was the first responder.
 
-### Practice
-Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+The first thing I checked was the database. It looked healthy — CPU was low — but the HikariCP metrics showed all 50 connections in use, and request threads were waiting for a connection until they timed out after 30 seconds. A thread dump confirmed it: most threads were inside a {{@Transactional}} method that called the fraud-check service over HTTP, and that service had slowed down to about eight seconds per call. So every slow call was holding a database connection the whole time.
 
-> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+To stop the bleeding, I lowered the HTTP client timeout to two seconds through our config and switched on the fallback that sends orders to manual fraud review. Errors dropped to almost zero within five minutes, and we confirmed recovery when the pending-connection count went back to zero.
 
-### Build a natural spoken answer
-Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+The following week, I moved the remote call out of the transaction and added an alert for pool usage above 80 percent for five minutes. We wrote a blameless postmortem, and I presented it to the wider engineering team."
 
-### Follow-up practice
-Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+### Useful phrases
+- **I was the first responder.**: tôi là người xử lý đầu tiên
+- **The first thing I checked was...**: việc đầu tiên tôi kiểm tra là...
+- **That pointed to... / A thread dump confirmed it.**: điều đó chỉ ra... / thread dump xác nhận
+- **To stop the bleeding, ...**: để cầm máu (giảm thiệt hại ngay)
+- **We confirmed recovery when...**: chúng tôi xác nhận đã phục hồi khi...
 
-> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
-  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
-  tags: ['fluency', 'speaking', 'interview'],
+### Lỗi người Việt hay mắc
+- Lẫn thì: "the API return error" → **"the API returned errors"**. Cả câu chuyện là quá khứ.
+- "The system was die." → sai. Đúng: **"The system went down"** / "The service crashed".
+- "I fixed the bug." mà không nói **làm sao biết** đó là nguyên nhân → thiếu phần bằng chứng, chỗ interviewer quan tâm nhất.
+
+> Senior tip: Tách rõ **mitigation** (giảm thiệt hại ngay, ví dụ giảm timeout, bật fallback) và **root-cause fix** (đưa lời gọi HTTP ra khỏi transaction). Interviewer đánh giá cao người biết "cầm máu trước, chữa bệnh sau". Giữ một lời gọi mạng bên trong {{@Transactional}} là lỗi kinh điển làm cạn connection pool — rất đáng kể.`,
+  follow: ['How did you communicate with stakeholders during the incident?', 'Why is calling a remote service inside a transaction dangerous?', 'What did you change in your monitoring afterwards?'],
+  tags: ['incident', 'hikaricp', 'star', 'speaking'],
   lang: 'en',
 },
 {
@@ -1464,25 +1571,32 @@ Record a short response, listen once for whether the main point appears early, a
   topic: 'english',
   level: 'senior',
   q: 'How would you explain an architecture decision to a business stakeholder?',
-  a: `**T?m t?t:** I translate the architecture choice into customer and business effects. For background report generation, for example, asynchronous work can make requests responsive, while requiring job tracking, safe retries, and a clear failure experience. I name the measure we monitor.
+  a: `**Tóm tắt:** Dịch quyết định kiến trúc sang **tác động tới khách hàng và kinh doanh**: hôm nay đang có vấn đề gì, thay đổi gì người dùng sẽ thấy, tốn bao nhiêu, và đo thành công bằng **một con số**. Tránh thuật ngữ như queue, worker, Kafka.
 
 ### Sample answer
-I translate the architecture choice into customer and business effects. For background report generation, for example, asynchronous work can make requests responsive, while requiring job tracking, safe retries, and a clear failure experience. I name the measure we monitor.
+"Right now, when a customer clicks Export, the system builds the whole report while they wait. For our bigger customers that takes more than a minute, so the request times out. That's where the 'failed export' tickets come from — about 120 of them last month.
 
-### Practice
-Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+What we're proposing is to build the report in the background. The customer clicks Export, sees a message saying 'Your report is being prepared', and gets an email when it's ready — usually within a couple of minutes.
 
-> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+For the business, that means no more failed exports and fewer support tickets. The cost is about three weeks of engineering time, and one small change in the experience: customers wait for a notification instead of getting the file right away.
 
-### Build a natural spoken answer
-Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+We'll track one number: the percentage of exports that finish successfully. Today it's about 92 percent, and our goal is 99.5 percent. Does that trade-off work for you?"
 
-### Follow-up practice
-Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+### Useful phrases
+- **Right now, when a customer..., ...**: hiện tại, khi khách hàng...
+- **That's where... come from.**: đó là nguồn gốc của...
+- **What we're proposing is...**: điều chúng tôi đề xuất là...
+- **For the business, that means...**: với kinh doanh, điều đó có nghĩa là...
+- **We'll track one number: ...**: chúng tôi sẽ theo dõi một chỉ số...
 
-> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
-  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
-  tags: ['fluency', 'speaking', 'interview'],
+### Lỗi người Việt hay mắc
+- Nói "we will add a message queue and async workers" → stakeholder không biết điều đó có ý nghĩa gì với họ.
+- Chỉ nói lợi ích, giấu chi phí (thời gian làm, thay đổi trải nghiệm).
+- Không có chỉ số đo → không ai biết dự án thành công hay chưa.
+
+> Senior tip: Bắt đầu từ **nỗi đau mà stakeholder đã biết** (ticket support, khách phàn nàn), không bắt đầu từ kiến trúc. Câu hỏi kết thúc "Does that trade-off work for you?" trao quyền quyết định cho họ — họ là người chịu trách nhiệm về trải nghiệm khách hàng.`,
+  follow: ['What if the stakeholder asks why we cannot just make the export faster?', 'How would you explain a delay in this project to the same stakeholder?', 'How do you choose the success metric?'],
+  tags: ['stakeholder', 'communication', 'architecture', 'speaking'],
   lang: 'en',
 },
 {
@@ -1490,25 +1604,38 @@ Record a short response, listen once for whether the main point appears early, a
   topic: 'english',
   level: 'senior',
   q: 'How do you make plural and past tense endings clearer?',
-  a: `**T?m t?t:** I practice endings in short pairs: ?one request? and ?several requests?; ?we deploy? and ?we deployed.? Final s and regular past-tense endings vary by surrounding sounds. I slow slightly, finish the sound, then return to a natural pace without exaggerating it.
+  a: `**Tóm tắt:** Tiếng Việt không có phụ âm cuối dạng cụm (/sts/, /kst/), nên người Việt hay **nuốt đuôi -s và -ed** — "we deploy it last week" nghe như thì hiện tại. Học ba cách đọc của mỗi đuôi, luyện theo cặp, và ghi âm lại để tự nghe.
 
 ### Sample answer
-I practice endings in short pairs: ?one request? and ?several requests?; ?we deploy? and ?we deployed.? Final s and regular past-tense endings vary by surrounding sounds. I slow slightly, finish the sound, then return to a natural pace without exaggerating it.
+"Since my first language is Vietnamese, where words don't end in consonant clusters, I used to drop endings. I'd say 'we deploy it last week', and it sounded like present tense.
 
-### Practice
-Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+What helped was learning the three sounds for each ending and practicing in pairs: 'one request — two requests', 'we deploy — we deployed'. I also record myself explaining a past project, because that's full of past tense, and I listen only for endings. Now I slow down slightly on the ending, finish the sound, and then go back to my normal pace."
 
-> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+### Ba cách đọc đuôi -s / -es
+| Âm cuối của từ | Đọc là | Ví dụ |
+|---|---|---|
+| vô thanh /p t k f θ/ | /s/ | requests, locks, chips |
+| hữu thanh, nguyên âm | /z/ | logs, deploys, nodes, servers |
+| /s z ʃ tʃ dʒ/ | /ɪz/ | caches, services, branches, pages |
 
-### Build a natural spoken answer
-Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+### Ba cách đọc đuôi -ed
+| Âm cuối của từ | Đọc là | Ví dụ |
+|---|---|---|
+| vô thanh /p k f s ʃ tʃ/ | /t/ | fixed /fɪkst/, pushed, stopped |
+| hữu thanh, nguyên âm | /d/ | deployed, logged, configured |
+| /t/ hoặc /d/ | /ɪd/ | migrated, added, tested |
 
-### Follow-up practice
-Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+### Câu luyện tập
+"Last week we **migrated** two **services**, **fixed** three **bugs**, and **deployed** the **changes** to all **regions**."
 
-> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
-  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
-  tags: ['fluency', 'speaking', 'interview'],
+### Lỗi người Việt hay mắc
+- Đọc "fixed" thành "fix-ed" /fɪksɪd/ → sai; chỉ thêm /ɪd/ sau /t/ và /d/.
+- Nuốt hoàn toàn đuôi → "two request", "we test it yesterday".
+- Đọc quá mạnh, kéo dài "requests-sss" → nghe gượng; chỉ cần **hoàn thành âm**, không cần nhấn.
+
+> Senior tip: Interviewer bản xứ hiểu được giọng Việt, nhưng thiếu đuôi -ed làm họ **hiểu sai thời điểm**: "we deploy it" (thường xuyên) khác hẳn "we deployed it" (đã xong). Khi kể dự án đã xong, có thể thêm mốc thời gian ("last year", "in 2023") để người nghe hiểu đúng ngay cả khi bạn lỡ nuốt đuôi.`,
+  follow: ['Which other sounds are hard for Vietnamese speakers in technical English?', 'How do you practice pronunciation without a teacher?', 'How do you keep your pace natural while finishing every ending?'],
+  tags: ['pronunciation', 'grammar', 'speaking'],
   lang: 'en',
 },
 {
@@ -1516,25 +1643,37 @@ Record a short response, listen once for whether the main point appears early, a
   topic: 'english',
   level: 'senior',
   q: 'How do you pronounce unfamiliar technical terms?',
-  a: `**T?m t?t:** I check a reliable dictionary or the product?s own material, notice the stressed syllable, and practice the term in a sentence. If usage is team-specific, I ask how colleagues say it. Clear, consistent speech matters more than imitating an accent.
+  a: `**Tóm tắt:** Kiểm tra cách đọc chuẩn (từ điển, tài liệu hoặc talk chính thức của dự án), chú ý **âm được nhấn**, rồi luyện trong cả câu. Nếu team có cách đọc riêng, hỏi đồng nghiệp. Nói rõ ràng và nhất quán quan trọng hơn bắt chước giọng.
 
 ### Sample answer
-I check a reliable dictionary or the product?s own material, notice the stressed syllable, and practice the term in a sentence. If usage is team-specific, I ask how colleagues say it. Clear, consistent speech matters more than imitating an accent.
+"First, I check how the creators or the community say it — many projects mention it in their docs or in conference talks. For example, nginx is 'engine-x', not 'n-jinx'. For normal English words, I use a dictionary with audio and pay attention to the stressed syllable, because wrong stress is what usually makes a word hard to recognize.
 
-### Practice
-Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+Then I practice the word in a full sentence, like 'We put a cache in front of the database', so it feels natural when I say it under pressure.
 
-> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+And if a team has its own way of saying something — some people say 'sequel', some say 'S-Q-L' — I just follow what my colleagues use. Both are fine."
 
-### Build a natural spoken answer
-Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+### Những từ hay đọc sai
+| Từ | Cách đọc | Ghi chú |
+|---|---|---|
+| cache | /kæʃ/ | đọc giống hệt "cash", không phải "ca-shê" |
+| queue | /kjuː/ | đọc giống chữ "Q" |
+| architecture | /ˈɑːrkɪtektʃər/ | "ch" đọc là /k/ |
+| Kubernetes | /ˌkuːbərˈnetiːz/ | nhấn "NET" |
+| YAML | /ˈjæməl/ | vần với "camel" |
+| JSON | /ˈdʒeɪsən/ | giống tên "Jason" |
+| Linux | /ˈlɪnəks/ | không đọc "lai-nớt" |
+| suite | /swiːt/ | giống "sweet", không phải "suit" |
+| Hibernate | /ˈhaɪbərneɪt/ | nhấn âm đầu "HI" |
+| PostgreSQL | "post-gres-Q-L" | hoặc gọi tắt "Postgres" |
 
-### Follow-up practice
-Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+### Lỗi người Việt hay mắc
+- Đọc mọi âm tiết đều nhau, không có trọng âm → người bản xứ khó nhận ra từ.
+- Bỏ phụ âm cuối: "cache" thành "ca", "queue" thành "kiu" ngắn.
+- Ngại nói từ khó nên dùng từ khác lòng vòng → cứ nói, nếu sai interviewer vẫn hiểu từ ngữ cảnh.
 
-> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
-  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
-  tags: ['fluency', 'speaking', 'interview'],
+> Senior tip: Làm một danh sách 20–30 thuật ngữ bạn hay dùng nhất khi kể dự án (tên công nghệ trong CV) và luyện cho đến khi đọc trơn. Interviewer sẽ nghe những từ này nhiều lần trong một buổi, nên sửa chúng mang lại hiệu quả lớn nhất.`,
+  follow: ['How do you handle it when you realize you mispronounced a word?', 'Which word stress mistakes make you hardest to understand?', 'How would you ask a colleague how to pronounce a term without sounding awkward?'],
+  tags: ['pronunciation', 'vocabulary', 'speaking'],
   lang: 'en',
 },
 {
@@ -1542,25 +1681,32 @@ Record a short response, listen once for whether the main point appears early, a
   topic: 'english',
   level: 'senior',
   q: 'How do you describe completed work and current responsibilities?',
-  a: `**T?m t?t:** I use present tense for current responsibilities and past tense for completed work. I give a concrete example for each, make ownership clear, and verify the project timeline so my wording does not imply ongoing work is finished.
+  a: `**Tóm tắt:** Dùng **hiện tại đơn** cho trách nhiệm thường xuyên, **quá khứ đơn** cho việc đã xong (có mốc thời gian), **hiện tại hoàn thành** cho kết quả tính đến nay (không có mốc cụ thể), **hiện tại tiếp diễn** cho việc đang làm. Dùng sai thì làm interviewer hiểu nhầm việc nào bạn đã làm xong.
 
 ### Sample answer
-I use present tense for current responsibilities and past tense for completed work. I give a concrete example for each, make ownership clear, and verify the project timeline so my wording does not imply ongoing work is finished.
+"At my current company, I'm responsible for the payment gateway integration. I maintain the adapters for three acquirers, and I'm on the on-call rotation.
 
-### Practice
-Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+Before that, I worked on the merchant onboarding service, where I built the document upload flow for identity checks.
 
-> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+Right now I'm leading our migration to Spring Boot 3. We've moved six of our nine services so far, and we're planning to finish by the end of the quarter."
 
-### Build a natural spoken answer
-Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+### Chọn thì nào?
+| Ý muốn nói | Thì | Ví dụ |
+|---|---|---|
+| Trách nhiệm thường xuyên | Present simple | I **maintain** the adapters. |
+| Việc đã xong, có thời điểm | Past simple | In 2023 I **built** the upload flow. |
+| Kết quả tính đến nay | Present perfect | We**'ve moved** six services so far. |
+| Đang diễn ra | Present continuous | I**'m leading** the migration. |
+| Bắt đầu trong quá khứ, vẫn tiếp tục | Present perfect continuous | I**'ve been working** here since 2021. |
 
-### Follow-up practice
-Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+### Lỗi người Việt hay mắc
+- "I **have worked** on that project **in 2022**." → sai; có mốc thời gian cụ thể thì dùng quá khứ: **"I worked on that project in 2022."**
+- "I **am working** here **since** 2021." → **"I've been working here since 2021."**
+- "I responsible for..." / "I in charge of..." → thiếu động từ: **"I'm responsible for..."**, **"I'm in charge of..."**.
 
-> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
-  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
-  tags: ['fluency', 'speaking', 'interview'],
+> Senior tip: Cẩn thận với việc **chưa xong**: nói "I migrated the system to Spring Boot 3" khi mới xong 6/9 service sẽ bị coi là phóng đại nếu interviewer hỏi sâu. "We've moved six of nine so far" vừa đúng ngữ pháp vừa trung thực.`,
+  follow: ['What are you working on right now?', 'What is one thing you have achieved in your current role that you are proud of?', 'How has your role changed since you joined?'],
+  tags: ['grammar', 'tenses', 'speaking'],
   lang: 'en',
 },
 {
@@ -1568,37 +1714,51 @@ Record a short response, listen once for whether the main point appears early, a
   topic: 'english',
   level: 'senior',
   q: 'How do you avoid common article mistakes?',
-  a: `**T?m t?t:** I check whether a noun is singular and countable, already identified, or general. I introduce one item with a or an, use the for a specific known item, and often use no article for plural or uncountable nouns discussed generally, such as ?information.?
+  a: `**Tóm tắt:** Tiếng Việt không có mạo từ nên người Việt hay **bỏ a/an/the**. Tự hỏi hai câu: (1) danh từ có **đếm được, số ít** không? → phải có a/an hoặc the; (2) người nghe **đã biết** đó là cái nào chưa? → nếu rồi dùng the. Danh từ số nhiều hoặc không đếm được nói chung chung thì **không cần mạo từ**.
 
 ### Sample answer
-I check whether a noun is singular and countable, already identified, or general. I introduce one item with a or an, use the for a specific known item, and often use no article for plural or uncountable nouns discussed generally, such as ?information.?
+"Vietnamese doesn't have articles, so I used to drop them — I'd say 'I fixed bug in payment service'. Now I ask myself two quick questions.
 
-### Practice
-Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+First: is it one countable thing? Then it needs an article. So it's 'I fixed **a** bug', not 'I fixed bug'.
 
-> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+Second: does the listener already know which one I mean? Then I use 'the'. For example: 'We added **a** cache last year. **The** cache cut our database load in half.' The first time it's 'a', because it's new information; after that it's 'the'.
 
-### Build a natural spoken answer
-Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+If I'm talking about things in general, I usually don't need an article at all: 'Caches can return stale data', 'We store data in PostgreSQL'."
 
-### Follow-up practice
-Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+### Danh từ không đếm được hay gặp trong IT
+Không dùng "a" và không thêm "-s": **information, feedback, advice, software, hardware, equipment, traffic, research, knowledge, documentation, code**.
+- "some feedback" (không phải "some feedbacks")
+- "a piece of code" hoặc "some code" (không phải "a code" hay "codes" khi nói về mã nguồn)
 
-> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
-  follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
-  tags: ['fluency', 'speaking', 'interview'],
+### Sửa lỗi nhanh
+| Sai | Đúng |
+|---|---|
+| I am backend developer. | I'm **a** backend developer. |
+| I fixed bug in payment service. | I fixed **a** bug in **the** payment service. |
+| Can you give me some feedbacks? | Can you give me some **feedback**? |
+| We had a high traffic. | We had high traffic. / We had **a** traffic spike. |
+| We use the Kafka. | We use Kafka. (nhưng: **the** Kafka cluster) |
+
+> Senior tip: Đừng cố hoàn hảo khi nói — thiếu mạo từ hiếm khi làm người nghe hiểu sai. Ưu tiên sửa **3 lỗi xuất hiện nhiều nhất** trong câu chuyện của bạn: "I'm **a** ... engineer", "**the** + tên service của bạn", và các danh từ không đếm được (feedback, code, information). Ghi âm phần giới thiệu bản thân rồi đếm lỗi mạo từ là cách luyện nhanh nhất.`,
+  follow: ['When do you use "the" with technology or product names?', 'How do you practice grammar while speaking without slowing down too much?', 'Which grammar mistake do you most want to fix, and how?'],
+  tags: ['grammar', 'articles', 'speaking'],
   lang: 'en',
-}
-,
+},
 {
   id: 'english-052',
   topic: 'english',
   level: 'senior',
   q: 'Walk me through a system you designed recently. (2-3 minutes)',
-  a: `**Tóm tắt:** I will describe the problem, the key constraints, the architecture, and one trade-off I made.
+  a: `**Tóm tắt:** Theo thứ tự **vấn đề → ràng buộc chính (tải, latency, nhất quán) → kiến trúc → một trade-off → kết quả đo được**. Đừng kể theo dòng thời gian; dùng số liệu thật của bạn (ví dụ dưới đây chỉ là mẫu).
 
 ### Sample answer
-For a real example, I would state the measured baseline, peak load, and latency objective, then explain which calls could safely become asynchronous. In one hypothetical design, the API records the order and an outbox entry in one database transaction; a publisher sends the event to Kafka, and payment and inventory consumers process it idempotently. A saga coordinates the steps and defines compensating actions, but those actions do not make the workflow an ACID transaction. Fraud checks stay synchronous only if the business must decide before accepting the order; otherwise they can be an explicit pending step. The trade-off is that the customer may see a pending state while downstream work completes, and operations must handle retries, duplicate delivery, lag, and reconciliation. In your own answer, use verified before-and-after measurements and explain how you measured them.
+"Sure. Last year I redesigned our order placement flow. The problem was that the order API called payment, inventory and fraud services one after another, synchronously. At peak — around 300 orders per second during sales — p99 latency went above three seconds, and if any one service was slow, the whole order failed.
+
+The key constraint was that we couldn't lose or double-charge an order. So the API now does just one thing synchronously: it saves the order and an outbox record in the same database transaction, and returns 'order received'. A small publisher reads the outbox and sends an event to Kafka. Payment and inventory consumers process it idempotently, using the order ID as the key. A saga coordinates the steps, and if payment fails, it releases the reserved stock — that's a compensating action, not a real rollback.
+
+We kept the fraud check synchronous, because the business wanted to reject risky orders before accepting them.
+
+The trade-off is that customers now see a 'pending' state for a few seconds, and we have to operate retries, consumer lag alerts and a nightly reconciliation job. In return, p99 for the order API dropped to about 250 milliseconds, and a slow inventory service no longer fails orders."
 
 ### Cụm từ hữu ích
 - "The main bottleneck was..."
@@ -1619,10 +1779,16 @@ For a real example, I would state the measured baseline, peak load, and latency 
   topic: 'english',
   level: 'senior',
   q: 'Tell me about a production incident you handled. (STAR, past tense)',
-  a: `**Tóm tắt:** Use STAR with concrete numbers and your own action, then end with the prevention you added.
+  a: `**Tóm tắt:** Kể theo STAR, **toàn bộ ở thì quá khứ**: Situation (ảnh hưởng tới người dùng) → Task (trách nhiệm của bạn) → Action (bằng chứng tìm ra nguyên nhân, vì sao chọn cách giảm thiệt hại đó) → Result (thời gian phục hồi, dữ liệu có bị ảnh hưởng không) + phòng ngừa. Mọi con số phải khớp với timeline thật của sự cố.
 
 ### Sample answer
-Use a real incident and verify every number against the incident timeline. Structure it as: Situation and user impact; Task and your responsibility; Action, including the evidence that identified the cause and why you chose mitigation; Result, including recovery time and any data impact. For example, if database connections were exhausted, check pool metrics and database activity before concluding that a query or missing index caused it. A rollback may restore service faster than a schema change, but confirm compatibility and reversibility first. Follow up with a prevention tied to the cause, such as a representative query plan review or an alert based on sustained pool saturation and request failures. Do not claim “no data loss” unless reconciliation or other evidence supports it.
+"**Situation:** After a routine deployment on a Tuesday morning, our notification service fell behind. Consumer lag on the order-events topic grew from almost zero to about 400,000 messages in an hour, so customers got their order confirmations up to 50 minutes late.
+
+**Task:** I owned that service, so I led the investigation.
+
+**Action:** The logs showed the consumer group rebalancing every few minutes. The new release had added a call to a template service for each message, so processing a batch of 500 records now took longer than {{max.poll.interval.ms}}, which is five minutes by default. Kafka treated the consumer as dead, rebalanced, and the next consumer got the same batch again — so we were stuck in a loop. To mitigate, I rolled back the release, because that was the fastest safe option and the change was backward compatible. Lag started dropping within ten minutes.
+
+**Result:** We were fully caught up after about 40 minutes. Because the consumer was idempotent, the reprocessed messages didn't send duplicate emails — we checked that against the email provider's logs. Afterwards I reduced {{max.poll.records}}, cached the templates, and added an alert on consumer lag and on rebalance rate."
 
 ### Cụm từ hữu ích
 - "The symptom was..."
@@ -1643,7 +1809,7 @@ Use a real incident and verify every number against the incident timeline. Struc
   topic: 'english',
   level: 'senior',
   q: 'Explain the trade-off between Kafka and REST to a non-technical manager.',
-  a: `**Tóm tắt:** Compare by business impact: speed, coupling, and failure handling, using a simple analogy.
+  a: `**Tóm tắt:** So sánh bằng tác động kinh doanh — có cần câu trả lời ngay không, hai hệ thống phụ thuộc nhau đến đâu, lỗi được xử lý thế nào — kèm một phép so sánh đời thường dễ hiểu.
 
 ### Sample answer
 REST is like asking a colleague a question and waiting for the reply: it fits when the caller needs an immediate result, but the caller depends on the other service being reachable and responsive. Kafka is closer to leaving a durable message for another team to process: the producer and consumer can work at different times, which can absorb bursts when the system is provisioned and monitored for them. It does not guarantee that either service cannot fail, and it adds operational work such as retries, duplicate handling, lag monitoring, and eventual consistency. I would choose based on whether the business needs an immediate answer and whether asynchronous processing is acceptable, not on traffic peaks alone.
@@ -1667,10 +1833,10 @@ REST is like asking a colleague a question and waiting for the reply: it fits wh
   topic: 'english',
   level: 'senior',
   q: 'How would you politely disagree with your tech lead?',
-  a: `**Tóm tắt:** Acknowledge, state your concern with evidence, and offer a small experiment to decide.
-  
+  a: `**Tóm tắt:** Ghi nhận quan điểm của tech lead, nêu mối lo ngại kèm bằng chứng, rồi đề xuất một bước kiểm chứng nhỏ để cùng quyết định.
+
 ### Sample answer
-I would say: "I see your point about shipping faster. My concern is that this migration may hold a lock on the orders table during peak traffic, based on the behavior we saw in testing. Could we check its lock behavior and duration on production-like data, then choose a rollout window or a safer migration plan? We could also put the application change behind a flag if that is compatible with the schema." This keeps respect, brings evidence, and proposes concrete ways to reduce risk without promising that a flag or maintenance window removes it.
+I would say: "I see your point about shipping faster. My concern is that this migration may hold a lock on the orders table during peak traffic, based on the behavior we saw in testing. Could we check its lock behavior and duration on production-like data, then choose a rollout window or a safer migration plan? We could also put the application change behind a flag if that is compatible with the schema." This stays respectful, brings evidence, and offers concrete ways to reduce the risk — without pretending that a flag or a maintenance window removes it completely.
 
 ### Chi tiết và VÌ SAO
 Việc bất đồng với tech lead là chuyện bình thường trong một môi trường kỹ thuật lành mạnh. Tech lead thường ưu tiên tính toàn vẹn của hệ thống, nhưng đôi khi họ cũng bị áp lực về tiến độ từ cấp quản lý hoặc khách hàng. Điểm mấu chốt là cách bạn trình bày sự bất đồng: không phải "tôi đúng - anh sai", mà là "tôi có một mối lo ngại về rủi ro kỹ thuật, chúng ta hãy cùng giải quyết nó".
@@ -1703,10 +1869,14 @@ Việc này giúp bảo vệ tiêu chuẩn kỹ thuật của team mà vẫn gi�
   topic: 'english',
   level: 'mid',
   q: 'Why are you leaving your current role, and why this bank?',
-  a: `**Tóm tắt:** Connect past growth to a future goal that this role offers; avoid complaining.
+  a: `**Tóm tắt:** Nối những gì bạn đã học được ở công ty hiện tại với một mục tiêu mà vị trí mới mang lại; nói tích cực, không phàn nàn. Phần "why this bank" phải dựa trên thông tin thật bạn đã tìm hiểu.
 
 ### Sample answer
-I have learned a lot in my current role, especially about [relevant skill or domain]. I am now looking for [specific responsibility or challenge], and this role interests me because [verified detail from the job description or company research]. I would like to understand how the team approaches [relevant goal]. Keep the reason for moving truthful and constructive; do not invent a project, roadmap, or career path you have not verified.
+"I've learned a lot in my current role, especially about building payment integrations and running services in production. But the product is quite stable now, and most of my work is maintenance. I'm looking for a place where I can work on larger-scale systems with stricter reliability requirements.
+
+That's what attracted me to this bank. From the job description, the team is moving its core payment flows from a legacy platform to Spring Boot services, and that's exactly the kind of migration I'd like to contribute to — and I've done a smaller version of it before. I also like that the role includes mentoring. I'd be curious to hear how the team is planning that migration."
+
+(Thay các chi tiết bằng thông tin thật của bạn và của công ty — đừng bịa dự án hay lộ trình bạn chưa kiểm chứng.)
 
 ### Chi tiết và VÌ SAO
 Đây là câu hỏi về thái độ và tư duy phát triển của bạn. Interviewer không muốn nghe lý do "vì sếp khó tính" hay "vì lương thấp". Họ muốn một ứng viên có mục tiêu rõ ràng và tìm kiếm cơ hội để đóng góp giá trị cao hơn.
@@ -1735,7 +1905,7 @@ Việc chuẩn bị kỹ lưỡng cho câu hỏi này giúp bạn thể hiện s
   topic: 'english',
   level: 'senior',
   q: 'How do you answer salary expectation and negotiation questions?',
-  a: `**Tóm tắt:** Give a researched range, anchor on total compensation, and ask about their band before committing.
+  a: `**Tóm tắt:** Đưa ra khoảng lương đã tìm hiểu kỹ, nói theo tổng thu nhập (total compensation), và hỏi khoảng ngân sách của họ trước khi chốt.
 
 ### Sample answer
 I would say: "Based on comparable roles, my experience, and the responsibilities we have discussed, I am targeting a total compensation range of [your researched range]. I am open to discussing the mix of base pay and any benefits or variable compensation that apply to this role. Could you share the budgeted range for the position?" Research the relevant location and level; do not assume equity or a bonus is part of the package.
@@ -1768,7 +1938,7 @@ I would say: "Based on comparable roles, my experience, and the responsibilities
   topic: 'english',
   level: 'mid',
   q: 'What questions should you ask the interviewer at the end?',
-  a: `**Tóm tắt:** Ask about success metrics, team health, and the real challenge; avoid questions answered on the website.
+  a: `**Tóm tắt:** Hỏi về tiêu chí thành công, sức khoẻ của team và thách thức thật; tránh những câu đã có câu trả lời trên website.
 
 ### Sample answer
 Choose questions that are still unanswered and fit the interview stage. For example: "What would success look like in the first few months?" or "What technical challenge is the team prioritizing?" Ask about on-call expectations, compensation, or leave when the interviewer or process makes those topics appropriate; none is inherently off limits. You can close with: "Is there anything about my experience you would like me to clarify?" That invites useful discussion without pressuring the interviewer.
@@ -1789,7 +1959,7 @@ Câu hỏi cuối cùng phải thể hiện sự chuyên nghiệp, chuẩn bị 
 
 ### Lỗi người Việt hay mắc
 - Nói "I have no questions" → thiếu chủ động.
-- Hỏi lương/ngày nghỉ ở vòng đầu.
+- Hỏi lương/ngày nghỉ với technical interviewer khi họ không phụ trách chuyện đó → để dành cho recruiter hoặc khi được hỏi.
 - Hỏi câu trả lời có sẵn trên website.`,
   follow: ['How do you close an interview professionally?', 'What follow-up email should you send?'],
   tags: ['interview', 'closing', 'soft-skills'],
@@ -1800,10 +1970,10 @@ Câu hỏi cuối cùng phải thể hiện sự chuyên nghiệp, chuẩn bị 
   topic: 'english',
   level: 'senior',
   q: 'How do you clarify an ambiguous requirement with a stakeholder?',
-  a: `**Tóm tắt:** Restate the goal, list assumptions, and propose a small validation step before building.
+  a: `**Tóm tắt:** Nhắc lại mục tiêu bằng lời của mình, nêu các giả định, và đề xuất một bước kiểm chứng nhỏ trước khi bắt tay vào làm.
 
 ### Sample answer
-I would say: "Let me make sure I understand. The goal is to reduce failed payments by 20% this quarter. I assume we mean failed due to timeout, not fraud, and that we can change the retry policy. Before I build, I will run a 2-day analysis of failure reasons and share a one-page proposal. Does that match your expectation?" This avoids building the wrong thing and shows ownership.
+I would say: "Let me make sure I understand. The goal is to reduce failed payments by 20 percent this quarter. I'm assuming we mean failures caused by timeouts, not fraud declines, and that we're allowed to change the retry policy. Before I build anything, I'd like to spend two days analyzing the failure reasons and then share a one-page proposal. Does that match what you had in mind?" This avoids building the wrong thing and shows ownership.
 
 ### Chi tiết và VÌ SAO
 Sự mơ hồ là kẻ thù của hiệu suất. Đừng bắt tay vào làm khi yêu cầu chưa rõ ràng, vì chi phí để sửa lại sau này sẽ cao gấp nhiều lần.
@@ -1832,7 +2002,7 @@ Cách tiếp cận này thể hiện tư duy của một kỹ sư senior: không
   topic: 'english',
   level: 'senior',
   q: 'How do you give and receive code review feedback?',
-  a: `**Tóm tắt:** Focus on code and impact, ask questions, and separate blocking from non-blocking comments.
+  a: `**Tóm tắt:** Góp ý vào code và tác động của nó (không vào con người), dùng câu hỏi, và tách rõ góp ý bắt buộc sửa (blocking) với góp ý nhỏ (non-blocking).
 
 ### Sample answer
 When giving feedback, focus on correctness, maintainability, and risk; let configured automation handle style where practical. Explain the impact and suggest a path forward, for example: "Could this query load more rows than expected? What does the plan look like for the largest tenant?" Mark severity using the team's review conventions rather than assuming every team uses the same labels. When receiving feedback, ask about the underlying concern, verify it, and explain your reasoning with evidence if you still disagree.
@@ -1863,10 +2033,14 @@ Mục tiêu cuối cùng là chất lượng của sản phẩm, không phải v
   topic: 'english',
   level: 'mid',
   q: 'Describe a weakness honestly in an interview.',
-  a: `**Tóm tắt:** Name a real but non-fatal weakness, show evidence of improvement, and avoid humble-brag.
+  a: `**Tóm tắt:** Nêu một điểm yếu có thật nhưng không chí mạng cho vị trí, cho thấy bạn đã làm gì để cải thiện và có bằng chứng tiến bộ; tránh kiểu khoe khéo (humble-brag).
 
 ### Sample answer
-I used to [truthful, relevant weakness]. In [brief real example], it affected [specific outcome]. I changed my approach by [concrete action], and I check whether it is working through [evidence you can support]. I am still improving, especially when [honest context]. Avoid claiming a weakness or result that is not yours; choose something real that does not undermine a core requirement of the role.
+"One thing I've been working on is speaking up early in design discussions. I used to keep my concerns to myself in meetings and raise them later in code review. On one project, I noticed a problem with the data model during the design review but didn't say anything, and we had to rework two weeks of code later.
+
+Since then, I've changed two things. I read the design doc before the meeting and write down my questions, and I make a point of raising at least one of them during the discussion. My manager has noticed the difference — in my last review, she mentioned that I'm contributing much more in design sessions. I'm still more comfortable writing than speaking, especially in English, but it's getting easier."
+
+(Hãy chọn điểm yếu thật của bạn; ví dụ trên chỉ là mẫu cấu trúc.)
 
 ### Chi tiết và VÌ SAO
 Interviewer hỏi câu này không phải để tìm lỗi, mà để xem bạn có khả năng tự nhận thức (self-awareness) và tinh thần cầu tiến hay không.
@@ -1895,10 +2069,16 @@ Tư duy này cho thấy bạn là một kỹ sư có tinh thần học hỏi và
   topic: 'english',
   level: 'senior',
   q: 'Tell me about a time you mentored a junior developer.',
-  a: `**Tóm tắt:** Describe the gap, your approach, and measurable growth of the mentee.
+  a: `**Tóm tắt:** Mô tả khoảng trống của người được mentor, cách bạn hỗ trợ, và sự tiến bộ có thể thấy được của họ.
 
 ### Sample answer
-A junior teammate was building confidence in [specific skill]. I asked what they had tried, then paired on a real task and made my reasoning visible. Next I gave them an appropriately scoped task with a runbook and review support, so they could take ownership without being left alone with production risk. We checked progress through [specific evidence, with permission to share it]. The lesson was to adjust support to the person and create safe opportunities to practice; use a real example and do not disclose confidential details.
+"Last year a junior developer joined our team, and she was technically solid but nervous about anything touching production. She avoided on-call and asked someone else to deploy her changes.
+
+First, I asked her what exactly worried her. It turned out she didn't know how to tell whether a deployment was healthy. So we paired on a few real releases, and I talked through what I was looking at — error rates, latency, and the logs — and why.
+
+Next, I gave her a small, low-risk service to own, with a runbook, and I reviewed her first few deployments. After about two months, she joined the on-call rotation as a secondary, and by the end of the quarter she was handling incidents on that service on her own. She even updated the runbook herself.
+
+What I learned is that the gap was confidence, not knowledge, so the right approach was safe practice, not more lectures."
 
 ### Chi tiết và VÌ SAO
 Việc mentor không phải chỉ là "dạy kỹ thuật", mà là tạo ra môi trường để người khác phát triển.
@@ -1927,10 +2107,16 @@ Người mentor giỏi là người biết rút lui đúng lúc, nhường lại
   topic: 'english',
   level: 'senior',
   q: 'Describe a time you missed a deadline and how you handled it.',
-  a: `**Tóm tắt:** Own the miss early, communicate, renegotiate scope, and add a prevention.
+  a: `**Tóm tắt:** Nhận trách nhiệm sớm, báo ngay khi có dấu hiệu trễ, đưa ra các phương án (giảm scope, đổi thứ tự, dời ngày), và bổ sung biện pháp phòng ngừa.
 
 ### Sample answer
-I underestimated [real task] and realized [when] that the date was at risk. I told the relevant people as soon as I had evidence, explained the remaining uncertainty, and offered options such as reducing scope, changing sequencing, or moving the date. We agreed on [actual outcome and impact]. Afterward I changed [estimation or discovery practice] and checked whether it reduced surprises on later work. Take responsibility for your estimate while being clear about external dependencies; do not promise that no customer was affected unless that is known.
+"Last year I committed to integrating a new payment provider in three weeks. I underestimated it — I'd assumed their sandbox behaved like production, and it didn't.
+
+At the end of the first week, I realized the date was at risk, because their webhook format was different from the documentation. I told my manager and the product owner that same day. I explained what was still uncertain and gave them three options: ship card payments on time and move e-wallets to the next sprint, delay everything by one week, or add another engineer — which I didn't recommend, because onboarding would take too long.
+
+We chose the first option. Card payments went live on the original date, and e-wallets followed eight days later. No customer commitments were affected.
+
+Since then, for any new external integration, I add a two-day spike to test the real API before I give an estimate."
 
 ### Cụm từ hữu ích
 - "I realized early that..."
@@ -1967,20 +2153,22 @@ I underestimated [real task] and realized [when] that the date was at risk. I to
   topic: 'english',
   level: 'senior',
   q: 'Explain how virtual threads work in Java 21. When would you use them, and what are the trade-offs compared to platform threads?',
-  a: `**Tóm tắt:** Virtual threads (Project Loom) là thread nhẹ, do JVM quản lý thay vì OS. Khi bị block (ví dụ I/O), JVM suspend và resume tự động, không chặn platform thread. Tốt cho high-concurrency I/O-bound; không phù hợp CPU-bound vì cooperative scheduling và có thể pin carrier khi dùng synchronized.
+  a: `**Tóm tắt:** Virtual threads (Project Loom) là thread nhẹ, do JVM quản lý thay vì OS. Khi bị block (ví dụ I/O), JVM tự unmount virtual thread khỏi carrier (platform thread) và mount lại khi I/O xong, nên carrier được giải phóng cho việc khác. Tốt cho high-concurrency I/O-bound; không giúp gì cho CPU-bound (số core không đổi), và trên Java 21 {{synchronized}} có thể pin carrier.
 
 ### Sample answer
-Virtual threads in Java 21 are lightweight threads managed by the JVM rather than the operating system. A platform thread maps to an OS thread and costs about one megabyte of stack memory; a virtual thread uses a few kilobytes of heap-allocated continuation stack. When a virtual thread reaches a blocking operation, the JVM parks its continuation on the heap and frees the underlying platform thread (carrier) to run another virtual thread. This is implemented via JEP 444 and a work-stealing ForkJoinPool.
+Virtual threads, which became final in Java 21 through JEP 444, are lightweight threads managed by the JVM rather than the operating system. A platform thread maps one-to-one to an OS thread and usually reserves around a megabyte of stack, so you can only have a few thousand of them. A virtual thread's stack lives on the heap and starts at a few kilobytes, so you can easily have hundreds of thousands.
 
-When to use them: high-concurrency, blocking-I/O workloads such as a Spring Boot service calling multiple downstream APIs. Trade-offs: CPU-bound work does not benefit; synchronized blocks can pin the carrier and reduce scalability; debugging is more complex because a virtual thread may mount on different carriers over its lifetime. My recommendation: use virtual threads for I/O-heavy services and platform threads for CPU-intensive batch work.
+Here's how it works: virtual threads run on a small pool of carrier threads — a work-stealing ForkJoinPool, roughly one carrier per CPU core. When a virtual thread hits a blocking call, like a JDBC query or an HTTP request, the JVM unmounts it and saves its stack to the heap, and the carrier picks up another virtual thread. When the I/O completes, the virtual thread is scheduled again, possibly on a different carrier.
+
+I'd use them for high-concurrency, I/O-bound services — for example, a Spring Boot 3.2 app that calls several downstream APIs; you just set {{spring.threads.virtual.enabled=true}}. The trade-offs: CPU-bound work doesn't get faster, because you still have the same number of cores. On Java 21, blocking inside a {{synchronized}} block pins the virtual thread to its carrier, so I'd use {{ReentrantLock}} on hot paths — this was fixed in JDK 24. And you shouldn't pool virtual threads or cache expensive objects in {{ThreadLocal}}, because each task gets a new thread. Finally, the bottleneck often moves to the database: a million virtual threads still share a connection pool of, say, 50.
 
 ### Useful phrases
-- **managed by the JVM rather than the OS**
-- **park the continuation on the heap**
-- **pinned to its carrier**
-- **cooperative, not preemptive**
+- **managed by the JVM rather than the OS**: do JVM quản lý thay vì hệ điều hành
+- **unmount from / mount on a carrier**: tháo khỏi / gắn vào carrier thread
+- **pinned to its carrier**: bị ghim vào carrier (không nhả ra được khi block)
+- **the bottleneck moves to the database**: nút thắt chuyển sang database
 
-> Senior tip: Đừng chỉ nói "virtual threads nhanh hơn" — nói rõ cho use case nào và vì sao không phù hợp CPU-bound. Cảnh báo: synchronized trong virtual thread pin carrier. Dùng ReentrantLock thay thế.
+> Senior tip: Đừng chỉ nói "virtual threads nhanh hơn" — chúng tăng **throughput** khi chờ I/O, không làm một request nhanh hơn. Trên Java 21, {{synchronized}} bao quanh lời gọi blocking sẽ pin carrier; dùng {{ReentrantLock}} hoặc lên JDK 24+ (JEP 491). Theo dõi pinning bằng JFR event {{jdk.VirtualThreadPinned}}. Và nhớ giới hạn concurrency tới tài nguyên hữu hạn (DB pool, API bên ngoài) bằng {{Semaphore}}.
 
 ### Lỗi người Việt hay mắc
 - Nhầm virtual thread với thread pool.
@@ -2001,17 +2189,23 @@ When to use them: high-concurrency, blocking-I/O workloads such as a Spring Boot
   a: `**Tóm tắt:** Đừng bắt đầu thiết kế khi chưa hiểu rõ yêu cầu. Cấu trúc: xác nhận lại bằng lời mình → hỏi 1-2 câu có lý do → nêu giả định → đề xuất bước tiếp theo.
 
 ### Sample answer
-Before drawing any box, I repeat the problem: "So, a system processing one thousand orders per second, multi-region within six months, budget under fifty thousand dollars — did I miss anything?" That buys time and catches misunderstandings. Then I ask at most two clarifying questions with reasons: "Is order processing idempotent by design? That affects whether I need an idempotency layer." I state assumptions explicitly: "I assume peak load, latency priority, existing Kubernetes cluster." Then I propose a high-level structure and ask to confirm.
+Before I draw any boxes, I play the problem back in my own words: "So we need a system that processes about a thousand orders per second, goes multi-region within six months, and stays under fifty thousand dollars a month — did I miss anything?" That buys me a few seconds and catches misunderstandings early.
+
+Then I ask a few clarifying questions, each with a reason: "Do clients retry failed requests? If they do, I'll need idempotency keys to avoid duplicate orders." Or: "Is a thousand per second the average or the peak? That changes how much headroom I plan for."
+
+Next, I state my assumptions out loud: "I'll assume the thousand is peak traffic, latency matters more than cost, and we already run on Kubernetes. Please stop me if any of that is wrong." Then I sketch a high-level design and check that we're aligned before going deeper.
 
 ### Useful phrases
-- **repeat the problem in my own words**
-- **that buys me ten seconds**
-- **each question comes with a reason**
+- **play the problem back in my own words**: nhắc lại đề bài bằng lời của mình
+- **That buys me a few seconds.**: giúp tôi có thêm vài giây suy nghĩ
+- **each question comes with a reason**: mỗi câu hỏi đi kèm lý do
+- **Please stop me if any of that is wrong.**: nếu có gì sai, anh/chị cứ ngắt lời tôi
 
 > Senior tip: Đừng bắt đầu từ công cụ. Hỏi scope, scale, latency, budget, constraints trước. Nếu không hiểu, nói: "Could you clarify what you mean by 'scalable'?"
 
 ### Lỗi người Việt hay mắc
-- Nói "Can you repeat again?" (sai, đúng "Could you say that again?").`,
+- Nói "Can you repeat again?" (thừa từ; nói "Could you say that again?").
+- Hỏi 10 câu liền một lúc → nên hỏi 3–5 câu quan trọng nhất (scale, consistency, latency), phần còn lại nêu thành giả định.`,
   follow: [
     'What if the interviewer says "just design it"?',
     'How many clarifying questions is too many?',
@@ -2028,7 +2222,11 @@ Before drawing any box, I repeat the problem: "So, a system processing one thous
   a: `**Tóm tắt:** Đừng nói thuật ngữ kỹ thuật. Dùng ẩn dụ hoặc ví dụ từ đời sống + chi phí rõ ràng + đề xuất cụ thể. Kết thúc bằng một khuyến nghị, không phải "it depends" rồi dừng. Stakeholder cần ra quyết định, không học kiến trúc.
 
 ### Sample answer
-I use a concrete analogy: "A monolith is one kitchen; microservices are food trucks. Trucks scale but cost more to manage." Then I put numbers: "With our team of eight and six deployments a week, splitting adds 20-30% overhead before any feature. The split pays off with separate teams or ten-times scale differences. We are not there. I recommend keeping the monolith with clear module boundaries so splitting is a two-week change, not a two-year rewrite."
+I start with a concrete analogy: "A monolith is like one big restaurant kitchen; microservices are like a row of food trucks. Food trucks can grow independently, but you have to manage many more of them."
+
+Then I put numbers on it: "We're a team of eight, and we deploy six times a week without problems. Splitting into services would mean extra infrastructure, monitoring and on-call — I'd estimate that takes a quarter or more of our time for the first few months, before we ship any new feature. Splitting pays off when you have several teams that block each other, or when one part of the system needs ten times more capacity than the rest. We're not there yet.
+
+So I recommend we keep the monolith but enforce clear module boundaries. That way, if we do need to split later, it's a few weeks of work, not a two-year rewrite."
 
 ### Useful phrases
 - **put numbers on it**
@@ -2058,9 +2256,11 @@ I use a concrete analogy: "A monolith is one kitchen; microservices are food tru
   a: `**Tóm tắt:** Đừng phòng thủ. Cấu trúc: thừa nhận điểm hợp lý → hỏi rõ thách thức → điều chỉnh hoặc đưa bằng chứng → đề xuất kiểm tra. Điều này cho thấy bạn có thể hợp tác dưới áp lực và sẵn sàng điều chỉnh thiết kế dựa trên dữ liệu mới.
 
 ### Sample answer
-First, I listen fully and acknowledge the valid point: "That is a fair challenge — if we only have one database node, my read-replica idea does not solve anything." Then I ask for clarification: "Are you concerned about cost, complexity, or a specific failure mode? Because my recommendation would differ depending on the primary risk."
+First, I listen to the whole challenge and acknowledge what's valid: "That's a fair challenge — read replicas help with read load, but they don't help if the primary goes down." Then I ask what the concern really is: "Are you more worried about cost, complexity, or a specific failure mode? My answer would be different depending on the main risk."
 
-Next, I bring evidence or adjust: "If the primary concern is cost, I would keep the single database but add a read cache with a 30-second TTL and a write-through pattern. If the concern is availability during database downtime, then a second zone with automatic failover is worth the cost. Here is the trade-off table I would use." Then I ask: "Given that our budget is limited and the business requires 99.9% uptime, does the single-zone approach with a clear upgrade path satisfy the requirement?" If pushed further: "I see your point. Let me adjust: add connection pool limit, circuit breaker, manual failover runbook. Revisit multi-region after real traffic data. Would that work?"
+Next, I either bring evidence or adjust the design: "If the main concern is cost, I'd keep one primary database and add a cache for the hot reads, with a short TTL. If it's availability, then a standby in a second availability zone with automatic failover is worth the extra cost — for example, Multi-AZ on RDS. With a 99.9 percent uptime target, I'd lean towards the standby, because a single-zone database makes that target hard to meet."
+
+If they push further: "I see your point. Let me adjust: we start with a single region and a Multi-AZ database, add connection pool limits and circuit breakers, and write a runbook for failover. We revisit multi-region once we have real traffic data. Would that work?"
 
 ### Useful phrases
 - **that is a fair challenge**
@@ -2088,7 +2288,11 @@ Next, I bring evidence or adjust: "If the primary concern is cost, I would keep 
   topic: 'english',
   level: 'senior',
   q: 'How do you politely say you do not understand the technical question or you do not know the answer?',
-  a: `**Tóm tắt:** Đừng bịa, đừng im lặng. Dùng cấu trúc: thừa nhận + giải thích lý do ngắn + nêu cách bạn sẽ tìm ra + đưa hướng đi tạm thời (nếu có). Điều này thể hiện trung thực, khả năng giải quyết vấn đề và trách nhiệm.\n\n### Sample answer\nIf unclear: "Could you please clarify what you mean by 'scalable'? Vertical, horizontal, or over time? Once confirmed, I can design concretely." If unknown technology: "Great question — I have not worked directly with eBPF in production, so I cannot give confident data. Here is my approach: read docs, benchmark, ask platform team. Meanwhile, I share our current iptables approach. Would that work?" Always show a method: document, benchmark, ask expert, propose temporary solution. That turns a gap into evidence of problem-solving.\n\n### Useful phrases\n- **could you please clarify**\n- **I want to be honest**\n- **here is how I would approach it**\n- **would that work for you?**\n- **in the meantime**\n\n> Senior tip: Đừng nói "I would Google it" — nghe thiếu chuyên nghiệp. Hãy nói các bước cụ thể và thời gian dự kiến: "Concrete answer by tomorrow morning." Nếu kiến thức cơ bản bạn nên biết (ví dụ "How does a HashMap work?"), đừng nói không biết — hãy nêu phần bạn nhớ và nói phần còn lại bạn sẽ kiểm tra lại: "I know the spread function and load factor; I will verify the exact treeify threshold and confirm with the Java 21 source."\n\n### Lỗi người Việt hay mắc\n- Nói "I do not know" rồi dừng, không nói thêm gì\n- Bịa câu trả lời rồi bị bắt — mất hoàn toàn uy tín\n- Dùng "Can you repeat again?" (sai, đúng là "Could you say that again?")`,
+  a: `**Tóm tắt:** Đừng bịa, đừng im lặng. Dùng cấu trúc: thừa nhận + giải thích lý do ngắn + nêu cách bạn sẽ tìm ra + đưa hướng đi tạm thời (nếu có). Điều này thể hiện trung thực, khả năng giải quyết vấn đề và trách nhiệm.\n\n### Sample answer\nIf the question is unclear: "Could you clarify what you mean by 'scalable' here? Do you mean handling more traffic, more data, or more teams working on it? Once I know that, I can give you a more concrete answer."
+
+If I don't know the technology: "I want to be honest — I haven't used eBPF in production, so I can't give you numbers I'm confident about. Here's how I'd approach it: read the docs, run a small benchmark against our current iptables setup, and talk to the platform team. In the meantime, I can walk you through how we handle it today. Would that be useful?"
+
+Either way, I show a method — check the docs, measure, ask someone with experience, and offer a temporary answer. That turns a gap into evidence of how I solve problems.\n\n### Useful phrases\n- **could you please clarify**\n- **I want to be honest**\n- **here is how I would approach it**\n- **would that work for you?**\n- **in the meantime**\n\n> Senior tip: Đừng nói "I would Google it" — nghe thiếu chuyên nghiệp. Hãy nói các bước cụ thể và thời gian dự kiến: "Concrete answer by tomorrow morning." Nếu kiến thức cơ bản bạn nên biết (ví dụ "How does a HashMap work?"), đừng nói không biết — hãy nêu phần bạn nhớ và nói phần còn lại bạn sẽ kiểm tra lại: "I know the spread function and load factor; I will verify the exact treeify threshold and confirm with the Java 21 source."\n\n### Lỗi người Việt hay mắc\n- Nói "I do not know" rồi dừng, không nói thêm gì\n- Bịa câu trả lời rồi bị bắt — mất hoàn toàn uy tín\n- Dùng "Can you repeat again?" (thừa từ; nói "Could you say that again?")`,
   follow: [
     'How do you handle it when the interviewer insists you guess anyway?',
     'How do you handle a question about a fundamental concept you should know?',
@@ -2102,7 +2306,7 @@ Next, I bring evidence or adjust: "If the primary concern is cost, I would keep 
   topic: 'english',
   level: 'senior',
   q: 'Walk me through how you explain the concept of eventual consistency to a product manager, using a concrete example.',
-  a: `**Tóm tắt:** Tránh thuật ngữ phân tán. Dùng ví dụ từ đời sống (mua hàng online), giải thích cơ chế đơn giản (bản sao đồng bộ dần), nêu chi phí và lợi ích cụ thể, rồi kết thúc bằng câu hỏi xác nhận hiểu biết từ phía PM.\n\n### Sample answer\nI would start with a real-world analogy: "Imagine you and a friend both update the same shared shopping list from different phones at the same time. Your phone shows 'milk' and your friend's shows 'bread.' For a few seconds, each of you sees a slightly different list. But as soon as both phones sync, you both see 'milk and bread.' That is eventual consistency: everyone sees the same list eventually, but not instantly."\n\nThen I explain the business implication: "In our payment system, we have two data centers — one in Vietnam and one in Singapore. When a user updates their profile in Vietnam, the Singapore copy might lag by about two seconds. That means if the same user tries to log in from Singapore immediately after the update, they might see the old profile for a moment. The benefit is that the system stays available even if the network link between Vietnam and Singapore is temporarily down. The cost is that we must design features that can tolerate a brief delay."\n\nThen I make it concrete: "For a financial transaction, eventual consistency is dangerous — you never want a payment to appear completed in Vietnam but missing in Singapore. That is why we use a strong consistency model for payments, with a single source of truth database. But for user preferences, notifications, or analytics, eventual consistency is fine because a two-second delay does not affect the business."\n\nFinally, I ask: "Does that match the kind of delay your feature can tolerate?" This turns the explanation into a design decision rather than a lecture.\n\n### Useful phrases\n- **everyone sees the same list eventually**\n- **the system stays available even if**\n- **a brief delay does not affect the business**\n- **does that match the kind of delay**\n- **turn the explanation into a design decision**\n\n> Senior tip: Đừng nói "eventual consistency means data will be consistent eventually" rồi dừng — PM cần biết thời gian cụ thể, rủi ro nghiệp vụ, và phần nào của hệ thống dùng nó. Luôn nói rõ: "For payments, we need immediate consistency; for notifications, a 5-second delay is acceptable." Nếu PM hỏi "Can we make it faster?", đừng chỉ nói "yes" hoặc "no" — nói chi phí: "Yes, but it requires a synchronous cross-region write, which increases latency by 150ms and costs twice as much."\n\n### Lỗi người Việt hay mắc\n- Dùng thuật ngữ "partition tolerance", "replica", "CAP theorem" với người không chuyên\n- Không nêu ví dụ cụ thể từ hệ thống công ty\n- Kết thúc bằng "it depends" mà không đưa khuyến nghị`,
+  a: `**Tóm tắt:** Tránh thuật ngữ phân tán. Dùng ví dụ từ đời sống (mua hàng online), giải thích cơ chế đơn giản (bản sao đồng bộ dần), nêu chi phí và lợi ích cụ thể, rồi kết thúc bằng câu hỏi xác nhận hiểu biết từ phía PM.\n\n### Sample answer\nI would start with a real-world analogy: "Imagine you and a friend both update the same shared shopping list from different phones at the same time. Your phone shows 'milk' and your friend's shows 'bread.' For a few seconds, each of you sees a slightly different list. But as soon as both phones sync, you both see 'milk and bread.' That is eventual consistency: everyone sees the same list eventually, but not instantly."\n\nThen I explain the business implication: "In our payment system, we have two data centers — one in Vietnam and one in Singapore. When a user updates their profile in Vietnam, the Singapore copy might lag by about two seconds. That means if the same user tries to log in from Singapore immediately after the update, they might see the old profile for a moment. The benefit is that the system stays available even if the network link between Vietnam and Singapore is temporarily down. The cost is that we must design features that can tolerate a brief delay."\n\nThen I make it concrete: "For a financial transaction, eventual consistency is dangerous — you never want a payment to appear completed in Vietnam but missing in Singapore. That is why we use a strong consistency model for payments, with a single source of truth database. But for user preferences, notifications, or analytics, eventual consistency is fine because a two-second delay does not affect the business."\n\nFinally, I ask: "Does that match the kind of delay your feature can tolerate?" This turns the explanation into a design decision rather than a lecture.\n\n### Useful phrases\n- **everyone sees the same list eventually**\n- **the system stays available even if**\n- **a brief delay does not affect the business**\n- **does that match the kind of delay**\n- **turn the explanation into a design decision**\n\n> Senior tip: Đừng nói "eventual consistency means data will be consistent eventually" rồi dừng — PM cần biết thời gian cụ thể, rủi ro nghiệp vụ, và phần nào của hệ thống dùng nó. Luôn nói rõ: "For payments, we need immediate consistency; for notifications, a 5-second delay is acceptable." Nếu PM hỏi "Can we make it faster?", đừng chỉ nói "yes" hoặc "no" — nói chi phí: "Yes, but every write would have to wait for the other region to confirm, which adds a cross-region round trip — roughly 30 to 50 milliseconds between Vietnam and Singapore — and the write fails if the link between regions is down."\n\n### Lỗi người Việt hay mắc\n- Dùng thuật ngữ "partition tolerance", "replica", "CAP theorem" với người không chuyên\n- Không nêu ví dụ cụ thể từ hệ thống công ty\n- Kết thúc bằng "it depends" mà không đưa khuyến nghị`,
   follow: [
     'How would you explain strong consistency to the same manager?',
     'What is the business cost if the consistency window is violated?',
@@ -2116,7 +2320,7 @@ Next, I bring evidence or adjust: "If the primary concern is cost, I would keep 
   topic: 'english',
   level: 'lead',
   q: 'How do you estimate the number of servers or services needed for a new feature and explain the numbers to the team?',
-  a: `**Tóm tắt:** Đừng đoán. Dùng số liệu thực tế từ hệ thống hiện tại (QPS, latency, data size) → tính toán theo công thức đơn giản → thêm buffer 30% → nêu giả định rõ ràng. Giải thích bằng ngôn ngữ dễ hiểu.\n\n### Sample answer\nFirst, I collect baseline metrics from our current system: peak QPS, average request latency, CPU and memory usage per request, and database connection pool size. If we are adding a new feature that processes orders, I look at the current order rate: say, 200 orders per second at peak, with an average processing time of 50 milliseconds per request.\n\nThen I calculate: one server with 4 CPU cores and 8 GB of memory can handle roughly 200 concurrent requests at 50ms each (using Little's Law). So if the new feature needs to handle 1,000 orders per second, I need at least 5 servers for processing. I add 30% buffer for spikes, maintenance windows, and future growth: 5 times 1.3 = 6.5, so 7 servers. For the database, I check the current connection pool: if each server uses 20 connections, 7 servers need 140 connections; our database can handle 500, so we are safe.\n\nThen I explain it to the team: "We need 7 processing servers based on peak load with a 30% buffer. The cost is about X dollars per month. If traffic grows 50% in the next quarter, we need 10 servers. If we want to reduce that, we can optimize the processing time from 50ms to 20ms, which would cut the server count almost in half. What is the priority: lower cost now, or lower cost long term?"\n\nThis approach shows that I based the number on data, not guesswork, and it invites collaboration on the trade-off rather than presenting a final number.\n\n### Useful phrases\n- **peak QPS and average latency**\n- **using Little's Law**\n- **30% buffer for spikes**\n- **what is the priority**\n- **invites collaboration on the trade-off**\n\n> Senior tip: Đừng nói "we need 5 servers" mà không giải thích từ đâu ra. Interviewer muốn nghe công thức, giả định, và buffer. Nếu bạn không có dữ liệu thực tế, nói rõ: "Based on similar services in our system, I estimate 5 servers. Once we deploy to staging, I will measure actual CPU and latency and adjust within one week." Luôn có kế hoạch điều chỉnh sau khi có dữ liệu thực tế.\n\n### Lỗi người Việt hay mắc\n- Đưa số "5 servers" mà không giải thích từ đâu ra\n- Quên thêm buffer cho đột biến và bảo trì\n- Nói "it depends" mà không đưa con số tạm thời`,
+  a: `**Tóm tắt:** Đừng đoán. Dùng số liệu thực tế từ hệ thống hiện tại (QPS, latency, data size) → tính toán theo công thức đơn giản → thêm buffer 30% → nêu giả định rõ ràng. Giải thích bằng ngôn ngữ dễ hiểu.\n\n### Sample answer\nFirst, I collect baseline numbers from a similar service we already run: peak requests per second, average latency, and — most importantly — how much traffic one instance can handle. I get that last number from a load test, not from a formula. Say one 4-core instance handles about 250 requests per second before CPU reaches 70 percent or p99 latency goes over our target.\n\nThen I do the math. If the new feature needs to handle 1,000 requests per second at peak, that's 1,000 divided by 250, so 4 instances. I add about 30 percent headroom for spikes, deployments and losing one instance: 4 times 1.3 is 5.2, so I'd round up to 6, spread across availability zones.\n\nI use Little's Law to check the database side. Concurrency equals throughput times time. If each request holds a database connection for about 10 milliseconds, then 1,000 per second times 0.01 seconds is about 10 connections busy on average. So a pool of 10 to 15 per instance is plenty, and 6 instances means at most 90 connections — well under our database limit of 500.\n\nThen I explain it to the team: "We need 6 instances, based on a load test and 30 percent headroom. If traffic grows 50 percent next quarter, we'll need about 8. If we cut the CPU cost per request in half, we could drop to 3 or 4. These are estimates — once we're in staging, I'll rerun the load test and adjust."\n\nThis shows the number comes from data, not guesswork, and it makes the assumptions easy to challenge.\n\n### Useful phrases\n- **peak requests per second**: số request mỗi giây lúc cao điểm\n- **headroom**: phần dư công suất để dự phòng\n- **round up to**: làm tròn lên\n- **concurrency equals throughput times time** (Little's Law)\n- **makes the assumptions easy to challenge**: giúp người khác dễ phản biện giả định\n\n> Senior tip: Đừng nói "we need 5 servers" mà không giải thích từ đâu ra. Interviewer muốn nghe công thức, giả định, và buffer. Nếu bạn không có dữ liệu thực tế, nói rõ: "Based on similar services in our system, I estimate 5 servers. Once we deploy to staging, I will measure actual CPU and latency and adjust within one week." Luôn có kế hoạch điều chỉnh sau khi có dữ liệu thực tế.\n\n### Lỗi người Việt hay mắc\n- Đưa số "5 servers" mà không giải thích từ đâu ra\n- Quên thêm buffer cho đột biến và bảo trì\n- Nói "it depends" mà không đưa con số tạm thời`,
   follow: [
     'How would you adjust the estimate if processing time improved by 50%?',
     'What if the database becomes the bottleneck before the servers?',
@@ -2130,7 +2334,7 @@ Next, I bring evidence or adjust: "If the primary concern is cost, I would keep 
   topic: 'english',
   level: 'mid',
   q: 'How do you politely ask for clarification when you do not understand an English interview question?',
-  a: `**Tóm tắt:** Đừng nói "What?" hoặc im lặng. Dùng câu hỏi lịch sự + lý do để cho interviewer thấy bạn đang cố gắng hiểu, không phải lười nghe. Luôn nhắc lại phần bạn hiểu trước để xác nhận.\n\n### Sample answer\nIf I miss part of the question, I say: "Could you please repeat the last part? I want to make sure I answer the right thing." If the vocabulary is unfamiliar, I say: "Could you clarify what you mean by 'idempotency'? I understand it as a property where the same operation produces the same result, but I want to confirm you are referring to the API design aspect or the database transaction aspect."\n\nThen I repeat the full question back: "So just to make sure I understand: you want me to explain how I would make a POST endpoint idempotent, considering both the client-sent key and the server-side state. Is that correct?" That shows I listened, I am precise, and I value accuracy over speed.\n\nIf the interviewer uses an idiom I do not know, I ask politely: "I am not familiar with that phrase — could you explain what 'move the needle' means in this context?" This is better than pretending to understand and answering the wrong question.\n\n### Useful phrases\n- **could you please repeat the last part**\n- **I want to make sure I answer the right thing**\n- **could you clarify what you mean by**\n- **just to make sure I understand**\n- **I am not familiar with that phrase**\n\n> Senior tip: Đừng nói "Can you repeat again?" — đó là lỗi ngữ pháp phổ biến (dùng "repeat" và "again" cùng lúc). Đúng là "Could you say that again?" hoặc "Could you repeat that?". Cũng đừng nói "Sorry, my English is not good" — điều đó làm giảm uy tín. Hãy nói: "Could you speak a little slower? I want to make sure I understand every detail."\n\n### Lỗi người Việt hay mắc\n- Nói "Can you repeat again?" (sai ngữ pháp)\n- Nói "Sorry, my English is bad" (giảm uy tín)\n- Im lặng rồi đoán và trả lời sai hoàn toàn`,
+  a: `**Tóm tắt:** Đừng nói "What?" hoặc im lặng. Dùng câu hỏi lịch sự + lý do để cho interviewer thấy bạn đang cố gắng hiểu, không phải lười nghe. Luôn nhắc lại phần bạn hiểu trước để xác nhận.\n\n### Sample answer\nIf I miss part of the question, I say: "Could you please repeat the last part? I want to make sure I answer the right thing." If the vocabulary is unfamiliar, I say: "Could you clarify what you mean by 'idempotency'? My understanding is that repeating the same request has the same effect as sending it once — but are you asking about it from the API design side or the database side?"\n\nThen I repeat the full question back: "So just to make sure I understand: you want me to explain how I would make a POST endpoint idempotent, considering both the client-sent key and the server-side state. Is that correct?" That shows I listened, I am precise, and I value accuracy over speed.\n\nIf the interviewer uses an idiom I do not know, I ask politely: "I am not familiar with that phrase — could you explain what 'move the needle' means in this context?" This is better than pretending to understand and answering the wrong question.\n\n### Useful phrases\n- **could you please repeat the last part**\n- **I want to make sure I answer the right thing**\n- **could you clarify what you mean by**\n- **just to make sure I understand**\n- **I am not familiar with that phrase**\n\n> Senior tip: Đừng nói "Can you repeat again?" — lỗi thừa từ rất phổ biến ("repeat" đã có nghĩa là "nói lại"). Đúng là "Could you say that again?" hoặc "Could you repeat that?". Cũng đừng nói "Sorry, my English is not good" — điều đó làm giảm uy tín. Hãy nói: "Could you speak a little slower? I want to make sure I understand every detail."\n\n### Lỗi người Việt hay mắc\n- Nói "Can you repeat again?" (thừa từ)\n- Nói "Sorry, my English is bad" (giảm uy tín)\n- Im lặng rồi đoán và trả lời sai hoàn toàn`,
   follow: [
     'How do you handle a very fast-talking interviewer?',
     'What if the interviewer uses a lot of idioms?',
