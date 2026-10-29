@@ -1,6 +1,6 @@
 # T535 — Dịch lại (nội dung đã sửa): q-microservices-2 (10 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-microservices-2.en.js`
 
@@ -13,3 +13,10 @@ Với MỖI mục trên: đọc bản tiếng Việt hiện tại trong `js/data
 node scripts/check-i18n.js q-microservices-2 → OK; node scripts/validate.js → OK.
 
 ## Notes
+
+- Đã dịch lại toàn bộ 10 entry (microservices-011 → 020) từ bản tiếng Việt hiện tại trong `js/data/q-microservices.js`; giữ nguyên key, chỉ dùng field `q`/`a`/`follow` như các entry còn lại trong file.
+- Bản dịch bám đủ cấu trúc mới: Tóm tắt → Quick understanding → Terminology → cơ chế từng bước → bảng/bullets trade-off → Common pitfalls → 1-minute interview answer → Senior tip, gồm cả code/yaml/sql/text block và các con số (43 phút error budget, burn rate 14,4, công thức 50×4×6 = 1.200 series…). Comment trong code mẫu đã dịch sang tiếng Anh; `\${HOSTNAME}` giữ escape đúng template literal.
+- Không backtick, không `${` chưa escape (đã kiểm bằng grep), không còn ký tự tiếng Việt ngoài code block.
+- Kiểm tra: `node scripts/check-i18n.js q-microservices-2` → OK (10 mục); `node scripts/validate.js` → OK — không có lỗi.
+- Lưu ý: khi thay nội dung file, một lần ghi thử đã làm rỗng file nhưng đã ghi lại đầy đủ ngay sau đó; không có thay đổi nào ngoài `js/i18n/q-microservices-2.en.js` và file task này.
+Reviewed-by: check-i18n (translation, no LLM review)
