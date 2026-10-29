@@ -1,0 +1,79 @@
+{
+  "date": "2026-10-30",
+  "intro": "Hôm nay có bài học migration lên Graviton ở quy mô lớn của BMW, bài về mô hình immutable data trong Java tương lai (value classes, withers, lazy constants), một ca AI review bot bịa ra CVE, cùng vài kiến trúc AWS thực tế cho API Gateway và LLM.",
+  "editor": "claude",
+  "items": [
+    {
+      "title_vi": "BMW chuyển nền tảng connected vehicle sang AWS Graviton",
+      "title": "How BMW Group accelerated connected vehicle workloads on AWS Graviton",
+      "url": "https://aws.amazon.com/blogs/architecture/how-bmw-group-accelerated-connected-vehicle-workloads-on-aws-graviton/",
+      "source": "AWS Architecture Blog",
+      "category": "cloud",
+      "summary": "BMW chuyển nền tảng phục vụ hơn 24,5 triệu xe kết nối từ x86 sang Arm Graviton mà không gián đoạn dịch vụ. Họ dùng Karpenter, image multi-arch (manifest list cho amd64 và arm64), runner CI/CD native trên Graviton, và node pool có taint để workload tự opt-in. Rollback về x86 không cần build lại image. Số liệu nổi bật: NGINX ingress giảm khoảng 57% CPU, price-performance tốt hơn khoảng 40%.",
+      "why": "Service Java chạy trên EKS thường chuyển Arm khá dễ vì JVM đa nền tảng, nhưng cần build image multi-arch và kiểm tra native dependency. Bài cho thấy cách rollout an toàn bằng taint, toleration, affinity.",
+      "interview_q": "Bạn muốn chuyển các Spring Boot service trên EKS từ x86 sang Graviton để giảm chi phí. Bạn sẽ build image, lập lịch node và rollback thế nào để không gián đoạn?",
+      "related": ["aws-001"],
+      "tags": ["graviton", "kubernetes", "karpenter"]
+    },
+    {
+      "title_vi": "Immutable data trong Java: value classes, withers và lazy constants",
+      "title": "Episode 73 “Immutable Data Beyond Value Classes” [AtA]",
+      "url": "https://inside.java/2026/10/29/podcast-073/",
+      "source": "Inside Java",
+      "category": "tech",
+      "summary": "Tập podcast Ask the Architects ghi tại JavaOne 2026: Nicolai Parlog trò chuyện với Dan Smith (Oracle, Amber/Valhalla) về việc Java đang giúp định nghĩa, khởi tạo, sao chép và truy cập dữ liệu bất biến dễ hơn. Show notes nhắc flexible constructor bodies (JEP 513), value objects (JEP 401, preview), derived record creation (JEP 468, preview) và lazy constants (JEP 547, preview).",
+      "why": "Record, value class và withers sẽ thay đổi cách bạn viết DTO, domain value object và cache key. Biết lộ trình giúp bạn trả lời tự tin về hướng đi của Java.",
+      "interview_q": "Record đã có từ Java 16, vậy value classes giải quyết thêm vấn đề gì? Khi nào bạn chọn record, khi nào chọn class bất biến viết tay?",
+      "related": ["modern-003"],
+      "tags": ["valhalla", "record", "jep"]
+    },
+    {
+      "title_vi": "Khi AI code review bot bịa ra một CVE không tồn tại",
+      "title": "Coding Agent Horror Stories: The CVE That Did Not Exist",
+      "url": "https://www.docker.com/blog/coding-agent-horror-stories-the-cve-that-did-not-exist/",
+      "source": "Docker Blog",
+      "category": "devops",
+      "summary": "Một bot review code chạy model local trong CI, chỉ có quyền đọc, đã từ chối bản vá PostgreSQL 16.11 lên 16.13 bằng báo cáo dài viện dẫn một CVE chưa từng được cấp và tài nguyên Kubernetes không có thật, thậm chí khuyên thu hồi toàn bộ IAM access. Kỹ sư phát hiện sau vài phút. Bài học: quyền chỉ đọc không ngăn được lời khuyên nguy hiểm, nên coi output agent là input không tin cậy, cô lập môi trường và tự động kiểm chứng những gì kiểm tra được.",
+      "why": "Nhiều team đang đưa LLM vào CI, review code và vận hành. Dev senior cần biết thiết kế ranh giới quyền và quy trình kiểm chứng đầu ra AI trước khi hành động.",
+      "interview_q": "Team muốn tích hợp AI agent review PR và gợi ý khắc phục trong CI. Bạn sẽ giới hạn quyền, kiểm chứng output và ngăn nó gây sự cố thế nào?",
+      "related": ["ai-008", "ai-001"],
+      "tags": ["ai-agent", "security", "ci"]
+    },
+    {
+      "title_vi": "Revinate mở API cho đối tác bằng API Gateway, EKS và Lambda authorizer",
+      "title": "How Revinate accelerated API adoption with Amazon API Gateway",
+      "url": "https://aws.amazon.com/blogs/architecture/how-revinate-accelerated-api-adoption-with-amazon-api-gateway/",
+      "source": "AWS Architecture Blog",
+      "category": "cloud",
+      "summary": "Revinate đặt CloudFront, WAF và API Gateway phía trước backend trên EKS, xác thực OAuth 2.0 client credentials bằng Lambda authorizer, dùng usage plan để throttle, đặt quota và quy chi phí theo từng consumer. Trong bốn cách nối EKS với API Gateway, họ chọn target group binding qua AWS Load Balancer Controller để bỏ thêm một hop ingress. Hạ tầng quản bằng Terraform; thời gian onboard đối tác giảm từ vài tuần xuống vài ngày.",
+      "why": "Pattern này là bài toán thật khi mở public API cho đối tác từ service Spring: auth, rate limit, quota và đo chi phí theo khách hàng nên đẩy ra gateway thay vì code trong từng service.",
+      "interview_q": "Bạn cần mở API cho đối tác với quota và rate limit riêng cho từng khách hàng. Bạn đặt phần nào ở API Gateway, phần nào trong service Spring Boot, và vì sao?",
+      "related": ["microservices-011", "aws-017"],
+      "tags": ["api-gateway", "eks", "oauth2"]
+    },
+    {
+      "title_vi": "boAt xây AI Coach trên Amazon Bedrock và Lambda",
+      "title": "How boAt delivers personalized fitness coaching with Amazon Bedrock",
+      "url": "https://aws.amazon.com/blogs/architecture/how-boat-delivers-personalized-fitness-coaching-with-amazon-bedrock/",
+      "source": "AWS Architecture Blog",
+      "category": "cloud",
+      "summary": "boAt dùng Lambda làm lớp điều phối: lấy dữ liệu lịch sử người dùng, dựng prompt, gọi Llama 3.3 70B Instruct trên Bedrock (on-demand) rồi parse kết quả. Họ đổi key JSON ngắn thành tên mô tả rõ nghĩa (ví dụ weight_in_kg) để cải thiện cá nhân hoá, và thêm lớp parse gán giá trị mặc định khi LLM trả thiếu key, vì chỉnh prompt thôi không đủ do output không tất định. Chi phí được theo dõi qua CloudWatch và application inference profile.",
+      "why": "Khi gọi LLM từ backend Java, bạn cần lớp validate/parse chặt cho output và cách đo chi phí theo tính năng; bài này là ví dụ cụ thể, nhưng đây là góc nhìn của chính AWS và khách hàng.",
+      "interview_q": "Backend của bạn gọi LLM và cần JSON đúng schema cho app mobile. Bạn xử lý output sai định dạng, thiếu field và kiểm soát chi phí theo từng user thế nào?",
+      "related": ["ai-001"],
+      "tags": ["bedrock", "lambda", "llm"]
+    },
+    {
+      "title_vi": "Podcast Bootiful với Lukas Eder, tác giả jOOQ",
+      "title": "A Bootiful Podcast: 'Data Geekery' with JOOQ creator Lukas Eder",
+      "url": "https://spring.io/blog/2026/10/29/a-bootiful-podcast-lukas-eder",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Josh Long phỏng vấn Lukas Eder về jOOQ, thư viện dựng SQL type-safe bằng fluent API trong Java. Hai bên nói về dynamic SQL có thể ghép (composable), hỗ trợ nhiều dialect, các CSDL hiện đại như DuckDB, ClickHouse, Redshift, nguồn gốc dự án, vai trò của SQL trong thời AI và việc strong typing giảm tải nhận thức. Bài đăng chỉ là giới thiệu tập podcast, không có số liệu kỹ thuật.",
+      "why": "Nếu bạn đang dùng JPA/Hibernate cho mọi thứ, tập này gợi ý khi nào nên chuyển sang SQL type-safe cho truy vấn báo cáo và query phức tạp.",
+      "interview_q": "Khi nào bạn bỏ JPA để dùng jOOQ hoặc native query? Làm sao tránh rủi ro khi trộn hai cách trong cùng một transaction?",
+      "related": ["jpa-008"],
+      "tags": ["jooq", "sql", "spring"]
+    }
+  ]
+}
