@@ -1,6 +1,6 @@
 # T439 — Dịch sang tiếng Anh: algo (7 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/algo-18.en.js`
 
@@ -16,3 +16,9 @@ Yêu cầu dịch:
 - `node --check js/i18n/algo-18.en.js` và `node scripts/check-i18n.js algo-18` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đủ 7 mục algo-131 → algo-137, chỉ gồm field prompt, hints, solution, follow; markup, bảng, code block và số liệu giữ nguyên, comment tiếng Việt trong code đã dịch.
+- Kiểm tra: `node scripts/check-i18n.js algo-18` → `OK — 7 mục đã dịch.`; `node scripts/validate.js` → `OK — không có lỗi.`
+- `node --check` bị chặn bởi quyền shell của môi trường; file đã được check-i18n nạp và thực thi qua vm nên cú pháp hợp lệ.
+- Lưu ý ngoài phạm vi task: `js/i18n/algo-17.en.js` (T438) hiện vẫn là file rỗng, manifest đã khai báo `algo-17`.
+Reviewed-by: check-i18n (translation, no LLM review)
