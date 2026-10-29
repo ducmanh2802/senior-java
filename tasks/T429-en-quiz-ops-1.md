@@ -1,6 +1,6 @@
 # T429 — Dịch sang tiếng Anh: quiz-ops (23 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/quiz-ops-1.en.js`
 
@@ -16,3 +16,10 @@ Yêu cầu dịch:
 - `node --check js/i18n/quiz-ops-1.en.js` và `node scripts/check-i18n.js quiz-ops-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đủ 23/23 mục (qz-devops-009…022, qz-aws-009…017) vào `js/i18n/quiz-ops-1.en.js`, mỗi mục chỉ gồm `q`, `options`, `explain`; options giữ đúng số phần tử/thứ tự để merge theo index.
+- Giữ nguyên markup `**`, `{{code}}`, `###`, danh sách, bảng `|`, khối `~~~text/bash/yaml/json/java~~~`; comment tiếng Việt trong code block đã dịch, code giữ nguyên. Không có backtick, không có `${`.
+- Nhãn: "**Tóm tắt:**" → "**Summary:**", "> Senior tip:" giữ nguyên; "### Vì sao các phương án còn lại sai" → "### Why the other options are wrong" (thống nhất với các file quiz-*.en.js khác).
+- Kiểm tra: `node scripts/check-i18n.js quiz-ops-1` → OK (23 mục); `node scripts/validate.js` → OK. Lưu ý: lệnh `node --check js/i18n/quiz-ops-1.en.js` bị môi trường chặn quyền chạy nên đã xác nhận cú pháp qua vm trong check-i18n (file parse và chạy được).
+- Không sửa file nào ngoài phạm vi task; `js/i18n/manifest.js` đã có sẵn `quiz-ops-1`.
+Reviewed-by: check-i18n (translation, no LLM review)
