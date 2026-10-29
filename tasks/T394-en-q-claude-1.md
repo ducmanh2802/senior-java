@@ -1,7 +1,8 @@
 # T394 — Dịch sang tiếng Anh: q-claude (9 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
+Notes: Translated claude-001 through claude-009 to js/i18n/q-claude-1.en.js. Verified with check-i18n.js.
 Owns: `js/i18n/q-claude-1.en.js`
 
 Người dùng bấm EN thì **cả trang** chuyển sang tiếng Anh: file này phủ bản dịch lên dữ liệu gốc theo `id` (đọc comment "content translation" trong `js/core/i18n.js`). Đọc AGENTS.md mục 5 (markup) và các mục sau trong `js/data/q-claude.js`: **claude-001, claude-002, claude-003, claude-004, claude-005, claude-006, claude-007, claude-008, claude-009**.
@@ -16,3 +17,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-claude-1.en.js` và `node scripts/check-i18n.js q-claude-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
