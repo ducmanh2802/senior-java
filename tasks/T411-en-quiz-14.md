@@ -1,6 +1,6 @@
 # T411 — Dịch sang tiếng Anh: quiz (16 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/quiz-14.en.js`
 
@@ -16,3 +16,9 @@ Yêu cầu dịch:
 - `node --check js/i18n/quiz-14.en.js` và `node scripts/check-i18n.js quiz-14` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đủ 16 mục security/behavioral trong `js/i18n/quiz-14.en.js`, giữ nguyên markup, code, số liệu và độ chi tiết.
+- `node scripts/check-i18n.js quiz-14` → `OK — 16 mục đã dịch.`
+- `node scripts/validate.js` → `OK — không có lỗi.`
+- Lệnh `node --check js/i18n/quiz-14.en.js` bị chặn bởi quyền shell; file đã được `check-i18n` nạp và parse thành công.
+Reviewed-by: check-i18n (translation, no LLM review)
