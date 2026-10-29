@@ -1,6 +1,6 @@
 # T434 — Dịch sang tiếng Anh: algo (8 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/algo-13.en.js`
 
@@ -16,3 +16,11 @@ Yêu cầu dịch:
 - `node --check js/i18n/algo-13.en.js` và `node scripts/check-i18n.js algo-13` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đủ 8 mục algo-085 … algo-092 (prompt, hints, solution, follow); không chép starter/tests.
+- Giữ nguyên markup (`**`, `{{code}}`, `###`, `~~~java`/`~~~text`, bảng, `PriorityQueue{{<Integer>}}`); chỉ dịch comment tiếng Việt trong code block và các dòng "Giải thích:" → "Explanation:".
+- Nhãn chuẩn: "### Lưu ý khi phỏng vấn" → "### Interview notes", "> Senior tip:" giữ nguyên.
+- Câu trong `~~~text` (Input/Output/Explanation) đã dịch; tên hàm/biến và số liệu giữ nguyên.
+- `node scripts/validate.js` → OK. `node scripts/check-i18n.js algo-13` → OK — 8 mục đã dịch.
+- Lưu ý: lệnh `node --check` bị chặn bởi chính sách quyền của shell trong phiên này; cú pháp đã được kiểm chứng gián tiếp vì `check-i18n.js` nạp file qua `vm.runInNewContext` và chạy không lỗi.
+Reviewed-by: check-i18n (translation, no LLM review)
