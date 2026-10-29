@@ -2218,5 +2218,645 @@ Gather  (cost=1000.00..412000.00 rows=3800000 width=48)
     'Khi nào thì việc đánh dấu hàm {{PARALLEL SAFE}} là sai lầm?'
   ],
   tags: ['parallel query', 'Gather', 'PostgreSQL', 'performance', 'planner'],
+},
+{
+  id: 'sql-023',
+  topic: 'sql',
+  level: 'mid',
+  q: 'Bảng {{customer}} và {{orders}} (một khách nhiều đơn). Bạn giải thích INNER JOIN, LEFT JOIN, FULL JOIN và CROSS JOIN bằng dữ liệu cụ thể thế nào? Vì sao báo cáo "tổng tiền đơn hàng và tổng tiền thanh toán theo khách" bị gấp đôi khi join thêm bảng {{payment}}, và sửa ra sao?',
+  a: `**Tóm tắt:** JOIN ghép dòng của hai bảng theo điều kiện {{ON}}. INNER chỉ giữ cặp khớp; LEFT giữ **mọi** dòng bảng trái, phía phải không khớp thì điền NULL; FULL giữ cả hai phía; CROSS ghép mọi dòng với mọi dòng. Báo cáo bị gấp đôi vì join hai bảng con một-nhiều cùng lúc làm **nhân dòng** (fan-out): 2 đơn x 3 lần thanh toán = 6 dòng, SUM cộng lặp. Cách sửa: **gộp (aggregate) từng bảng con trước rồi mới join**.
+
+### Hiểu nhanh
+Hãy tưởng tượng hai danh sách giấy: danh sách khách và danh sách đơn. JOIN là việc bạn **ghim** mỗi tờ đơn vào đúng tờ khách của nó.
+- INNER JOIN: chỉ giữ những tờ khách **có ghim** ít nhất một đơn.
+- LEFT JOIN: giữ **mọi** tờ khách, ai không có đơn thì ghim một tờ trắng (NULL).
+- CROSS JOIN: ghim **mọi** đơn vào **mọi** khách, kể cả không liên quan (thường là lỗi, trừ khi cố ý sinh tổ hợp như "mọi cửa hàng x mọi ngày").
+
+### Thuật ngữ
+- **Điều kiện join (ON)**: quy tắc quyết định hai dòng có "khớp" nhau không, ví dụ {{o.customer_id = c.id}}.
+- **Quan hệ một-nhiều (1-n)**: một khách có nhiều đơn; join từ phía "1" sang phía "n" làm dòng phía "1" lặp lại.
+- **Fan-out / nhân dòng**: số dòng sau join lớn hơn số thực thể bạn muốn đếm.
+- **Anti-join**: tìm dòng **không** có cặp, ví dụ LEFT JOIN ... WHERE phải IS NULL hoặc NOT EXISTS.
+
+### Dữ liệu mẫu và kết quả
+~~~text
+customer            orders
+id | name           id | customer_id | amount
+1  | An             10 | 1           | 100
+2  | Bình           11 | 1           | 50
+3  | Chi            12 | 9           | 70    <- khách 9 không tồn tại
+~~~
+
+| Loại join | Dòng kết quả | Giải thích |
+|---|---|---|
+| INNER | (An,10), (An,11) | chỉ cặp khớp; Bình, Chi, đơn 12 bị loại |
+| LEFT (customer trái) | (An,10), (An,11), (Bình,NULL), (Chi,NULL) | giữ mọi khách |
+| RIGHT | (An,10), (An,11), (NULL,12) | giữ mọi đơn; ít dùng, viết lại thành LEFT cho dễ đọc |
+| FULL | 5 dòng: cả khách không đơn lẫn đơn mồ côi | dùng để đối soát hai nguồn |
+| CROSS | 3 x 3 = 9 dòng | không có ON |
+
+### Cơ chế nhân dòng từng bước
+Bảng {{payment}}: An trả 3 lần (40, 40, 70). Câu sai:
+~~~sql
+SELECT c.name, SUM(o.amount) AS total_order, SUM(p.amount) AS total_paid
+FROM customer c
+JOIN orders  o ON o.customer_id = c.id
+JOIN payment p ON p.customer_id = c.id     -- join bảng con thứ hai
+GROUP BY c.name;
+-- An: total_order = 450 (đúng 150), total_paid = 300 (đúng 150)
+~~~
+1. Join An với orders → 2 dòng (đơn 10, 11).
+2. Mỗi dòng đó lại join với 3 payment → 2 x 3 = **6 dòng**.
+3. SUM(o.amount) cộng mỗi đơn 3 lần: (100 + 50) x 3 = 450. SUM(p.amount) cộng mỗi payment 2 lần: 150 x 2 = 300.
+4. Vì sao không báo lỗi: SQL đúng cú pháp, chỉ là dữ liệu bị lặp. Đây là lỗi "âm thầm" nguy hiểm nhất.
+
+### Cách sửa: gộp trước, join sau
+~~~sql
+WITH o AS (SELECT customer_id, SUM(amount) AS total_order
+           FROM orders GROUP BY customer_id),          -- mỗi khách 1 dòng
+     p AS (SELECT customer_id, SUM(amount) AS total_paid
+           FROM payment GROUP BY customer_id)          -- mỗi khách 1 dòng
+SELECT c.name,
+       COALESCE(o.total_order, 0) AS total_order,      -- khách chưa có đơn → 0
+       COALESCE(p.total_paid, 0)  AS total_paid
+FROM customer c
+LEFT JOIN o ON o.customer_id = c.id
+LEFT JOIN p ON p.customer_id = c.id;
+~~~
+Mỗi CTE trả tối đa **một dòng mỗi khách**, nên join 1-1 không còn nhân dòng. Có thể thay CTE bằng subquery tương quan trong SELECT nếu chỉ cần cho vài khách.
+
+### Lỗi hay gặp
+1. **Lọc bảng phải trong WHERE sau LEFT JOIN**. Triệu chứng: {{LEFT JOIN orders o ON ... WHERE o.status = 'PAID'}} làm mất khách không có đơn, LEFT biến thành INNER (vì NULL = 'PAID' không đúng). Cách tránh: đưa điều kiện vào {{ON o.customer_id = c.id AND o.status = 'PAID'}}.
+2. **Join hai bảng con cùng lúc rồi SUM/COUNT**. Triệu chứng: số liệu gấp N lần, chỉ lộ ra khi đối chiếu với kế toán. Cách tránh: gộp trước, join sau; hoặc test bằng khách có nhiều dòng ở cả hai bảng.
+3. **Vá bằng DISTINCT hay SUM(DISTINCT)**. Triệu chứng: hai đơn cùng 50 nghìn bị tính là một. Cách tránh: không dùng DISTINCT để che fan-out.
+4. **Quên ON tạo CROSS JOIN ngầm** (cú pháp cũ {{FROM a, b}}). Triệu chứng: query chạy rất lâu, ra hàng triệu dòng. Cách tránh: luôn viết JOIN ... ON tường minh.
+5. **MySQL không có FULL JOIN**. Cách tránh: LEFT JOIN UNION ALL phần chỉ có ở bảng phải.
+
+### Trả lời miệng 1 phút
+"INNER JOIN giữ các cặp khớp điều kiện ON, LEFT JOIN giữ mọi dòng bảng trái và điền NULL khi không khớp, FULL giữ cả hai phía, CROSS ghép mọi tổ hợp. Lỗi tôi gặp nhiều nhất là fan-out: join khách với hai bảng con một-nhiều như đơn hàng và thanh toán, số dòng thành tích của hai bên nên SUM bị nhân lên. Tôi sửa bằng cách gộp từng bảng con theo customer_id trong CTE trước, rồi mới LEFT JOIN vào bảng khách, kèm COALESCE về 0. Một bẫy khác là đặt điều kiện của bảng phải vào WHERE sau LEFT JOIN, làm nó thành INNER JOIN; điều kiện đó phải nằm trong ON."
+
+> Senior tip: khi review một báo cáo tài chính, tôi luôn hỏi "mỗi dòng kết quả đại diện cho cái gì?" (grain) rồi đếm {{COUNT(*)}} trước và sau mỗi JOIN. Nếu số dòng tăng mà grain không đổi thì chắc chắn có fan-out. Thói quen 30 giây này bắt được phần lớn lỗi báo cáo lệch số mà unit test không thấy.`,
+  follow: [
+    'Vì sao đặt điều kiện của bảng phải trong WHERE lại biến LEFT JOIN thành INNER JOIN?',
+    'Khi nào bạn thực sự cần CROSS JOIN trong báo cáo?',
+    'Làm sao giả lập FULL OUTER JOIN trên MySQL?'
+  ],
+  tags: ['JOIN', 'LEFT JOIN', 'fan-out', 'GROUP BY', 'báo cáo']
+},
+{
+  id: 'sql-024',
+  topic: 'sql',
+  level: 'mid',
+  q: 'Code Java của bạn kiểm tra "email đã tồn tại chưa" rồi mới INSERT, nhưng production vẫn xuất hiện hai tài khoản trùng email, và có đơn hàng trỏ tới khách đã bị xoá. Vì sao kiểm tra ở tầng ứng dụng không đủ? Bạn dùng PRIMARY KEY, UNIQUE, FOREIGN KEY, CHECK, NOT NULL thế nào để database tự bảo vệ dữ liệu?',
+  a: `**Tóm tắt:** Kiểm tra "đọc rồi mới ghi" ở Java có **khe hở thời gian**: hai request cùng đọc thấy "chưa có", cùng INSERT, thế là trùng. Constraint trong database được kiểm tra **ngay lúc ghi, có khoá**, nên không thể bị vượt qua dù có bao nhiêu instance hay script chạy tay. Quy tắc: luật dữ liệu bất biến (duy nhất, tham chiếu, miền giá trị) để DB đảm bảo; Java chỉ kiểm tra trước để báo lỗi thân thiện và **bắt exception** từ DB.
+
+### Hiểu nhanh
+Kiểm tra ở Java giống nhân viên lễ tân **nhìn sổ** xem phòng 12 còn trống không rồi mới đưa chìa. Hai lễ tân cùng nhìn sổ cùng lúc, cùng thấy trống, cùng đưa chìa: hai khách một phòng. Constraint giống **ổ khoá của chính căn phòng**: chỉ một chìa mở được, ai đến sau sẽ bị từ chối, không phụ thuộc lễ tân cẩn thận hay không.
+
+### Thuật ngữ
+- **PRIMARY KEY**: định danh duy nhất của dòng, ngầm định UNIQUE + NOT NULL, có index.
+- **UNIQUE**: không cho hai dòng trùng giá trị trên cột (hoặc bộ cột); DB tạo unique index để kiểm tra nhanh.
+- **FOREIGN KEY (FK)**: giá trị cột phải tồn tại ở bảng cha; chặn "đơn hàng mồ côi".
+- **CHECK**: biểu thức phải đúng với mọi dòng, ví dụ {{amount > 0}}.
+- **Race condition**: kết quả sai do hai luồng xen kẽ nhau đúng lúc.
+
+### Vì sao check-then-insert thất bại: từng bước
+~~~text
+Thời gian   Request A (pod 1)                 Request B (pod 2)
+t1          SELECT ... WHERE email='a@x' → 0
+t2                                            SELECT ... WHERE email='a@x' → 0
+t3          INSERT email='a@x'  (ok)
+t4                                            INSERT email='a@x'  (ok!)  → TRÙNG
+~~~
+Dù dùng {{@Transactional}}, ở mức READ COMMITTED mặc định cả hai vẫn không nhìn thấy dòng chưa commit của nhau, nên vẫn trùng. Có UNIQUE thì ở t4, DB phát hiện key đã có (hoặc đang chờ A commit rồi kiểm tra), và B nhận lỗi {{duplicate key value violates unique constraint}} (PostgreSQL, SQLSTATE 23505).
+
+### Khai báo constraint
+~~~sql
+CREATE TABLE customer (
+  id     BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  email  VARCHAR(255) NOT NULL,
+  status VARCHAR(20)  NOT NULL DEFAULT 'ACTIVE'
+         CHECK (status IN ('ACTIVE', 'LOCKED', 'CLOSED')),
+  CONSTRAINT uq_customer_email UNIQUE (email)     -- đặt tên để log lỗi dễ đọc
+);
+CREATE TABLE orders (
+  id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  customer_id BIGINT NOT NULL REFERENCES customer(id) ON DELETE RESTRICT,
+  amount      NUMERIC(12,2) NOT NULL CHECK (amount > 0)
+);
+CREATE INDEX idx_orders_customer ON orders(customer_id);  -- PostgreSQL KHÔNG tự tạo
+~~~
+
+### Chọn hành vi ON DELETE
+| Tuỳ chọn | Khi xoá khách | Dùng khi |
+|---|---|---|
+| RESTRICT / NO ACTION (mặc định) | báo lỗi nếu còn đơn | dữ liệu tài chính, không bao giờ xoá dây chuyền |
+| CASCADE | xoá luôn mọi đơn | dữ liệu con vô nghĩa khi mất cha (ví dụ dòng giỏ hàng) |
+| SET NULL | đặt customer_id = NULL | quan hệ tuỳ chọn |
+
+### Bắt lỗi trong Spring
+~~~java
+try {
+    customerRepository.saveAndFlush(c);           // flush để lỗi nổ ngay tại đây
+} catch (DataIntegrityViolationException e) {     // Spring dịch lỗi 23505 thành exception này
+    throw new EmailAlreadyUsedException(c.getEmail());  // trả 409 cho client
+}
+~~~
+Vẫn nên kiểm tra trước bằng SELECT để báo lỗi đẹp trong trường hợp thường; UNIQUE là **lưới an toàn** cho trường hợp đua nhau.
+
+### Lỗi hay gặp
+1. **Không index cột FK trên PostgreSQL**. Triệu chứng: xoá một khách chậm vài giây vì DB phải quét toàn bảng orders để kiểm tra; JOIN theo customer_id cũng chậm. Cách tránh: tạo index cho cột FK (MySQL InnoDB tự tạo, PostgreSQL thì không).
+2. **Email trùng khác hoa thường** ({{An@x.com}} và {{an@x.com}}). Cách tránh: chuẩn hoá về chữ thường trước khi lưu, hoặc unique index trên {{lower(email)}}.
+3. **UNIQUE cho phép nhiều NULL**. Triệu chứng: cột tax_code UNIQUE nhưng có nhiều dòng NULL. Đây là hành vi chuẩn; nếu muốn chặn, thêm NOT NULL hoặc PostgreSQL 15+ dùng {{UNIQUE NULLS NOT DISTINCT}}.
+4. **Thêm FK vào bảng lớn đang chạy**. Triệu chứng: lệnh khoá bảng lâu để kiểm tra toàn bộ dữ liệu cũ. Cách tránh (PostgreSQL): {{ADD CONSTRAINT ... NOT VALID}} rồi {{VALIDATE CONSTRAINT}} riêng, bước sau chỉ cần khoá nhẹ.
+5. **Tin rằng CHECK chạy trên MySQL cũ**. MySQL trước 8.0.16 đọc cú pháp CHECK nhưng bỏ qua; kiểm tra phiên bản.
+
+### Trả lời miệng 1 phút
+"Kiểm tra tồn tại rồi mới insert ở tầng Java có khe hở: hai request trên hai pod cùng đọc thấy chưa có rồi cùng insert. Chỉ database mới kiểm tra được ở đúng thời điểm ghi, có khoá, nên tôi đặt UNIQUE cho email, FOREIGN KEY cho quan hệ cha con, CHECK cho miền giá trị và NOT NULL cho cột bắt buộc. Java vẫn kiểm tra trước để báo lỗi thân thiện, nhưng luôn bắt DataIntegrityViolationException và trả 409. Trên PostgreSQL tôi nhớ tạo index cho cột FK vì nó không tự tạo, và chọn ON DELETE RESTRICT cho dữ liệu tài chính."
+
+> Senior tip: constraint là "unit test chạy mãi mãi trên production": nó chặn cả script sửa tay của DBA, job import, service khác dùng chung DB. Ở các dự án tôi review, gần như mọi lần dữ liệu bẩn (trùng, mồ côi, số âm) đều truy ra được một bảng thiếu constraint vì "đã kiểm tra trong code rồi".`,
+  follow: [
+    'Vì sao {{@Transactional}} ở READ COMMITTED không ngăn được việc insert trùng?',
+    'Khi nào chọn ON DELETE CASCADE, khi nào RESTRICT?',
+    'Thêm UNIQUE vào bảng đã có dữ liệu trùng thì bạn làm thế nào?'
+  ],
+  tags: ['constraint', 'UNIQUE', 'foreign key', 'CHECK', 'race condition', 'data integrity']
+},
+{
+  id: 'sql-025',
+  topic: 'sql',
+  level: 'mid',
+  q: 'Bạn thiết kế bảng giao dịch cho ví điện tử. Cột số tiền nên dùng kiểu gì và vì sao không dùng FLOAT/DOUBLE? Cột thời gian nên là {{timestamp}} hay {{timestamptz}} (PostgreSQL), {{DATETIME}} hay {{TIMESTAMP}} (MySQL), và map sang kiểu Java nào?',
+  a: `**Tóm tắt:** Tiền dùng {{NUMERIC(p,s)}}/{{DECIMAL(p,s)}} (số thập phân chính xác) và {{BigDecimal}} trong Java; FLOAT/DOUBLE lưu số nhị phân gần đúng nên 0.1 + 0.2 không bằng 0.3. Thời điểm xảy ra sự kiện (giao dịch, đăng nhập) trên PostgreSQL dùng {{timestamptz}}, map sang {{Instant}}/{{OffsetDateTime}}; {{timestamp}} không múi giờ chỉ dành cho "giờ trên đồng hồ treo tường" như giờ mở cửa. Trên MySQL, TIMESTAMP tự đổi theo múi giờ nhưng chỉ tới năm 2038, DATETIME không đổi múi giờ: hay chọn DATETIME và quy ước luôn lưu UTC.
+
+### Hiểu nhanh
+- FLOAT giống **cân điện tử làm tròn**: đủ tốt để cân rau, nhưng ngân hàng cộng 1 triệu lần sai số nhỏ thì lệch tiền thật.
+- NUMERIC giống **đếm tiền bằng tay**: từng đồng chính xác, chậm hơn chút nhưng không bao giờ lệch.
+- {{timestamptz}} giống ghi **"lúc 3:00 giờ quốc tế"**: ai ở múi giờ nào đọc cũng quy đổi đúng. {{timestamp}} giống ghi **"lúc 10 giờ"** mà không nói ở đâu: người Hà Nội và người London hiểu khác nhau.
+
+### Thuật ngữ
+- **Precision (p)**: tổng số chữ số; **scale (s)**: số chữ số sau dấu phẩy. {{NUMERIC(19,4)}} chứa tối đa 15 chữ số phần nguyên, 4 chữ số lẻ.
+- **Floating point (IEEE 754)**: lưu số dạng nhị phân với phần định trị và số mũ; nhiều số thập phân (0.1) không biểu diễn chính xác được.
+- **UTC**: giờ chuẩn quốc tế, không có giờ mùa hè.
+- **Session time zone**: múi giờ của kết nối, DB dùng để hiển thị và quy đổi.
+
+### Vì sao FLOAT sai với tiền
+~~~sql
+SELECT 0.1::float8 + 0.2::float8 = 0.3::float8;   -- false (0.30000000000000004)
+SELECT 0.1::numeric + 0.2::numeric = 0.3;         -- true
+~~~
+1. 0.1 trong hệ nhị phân là số vô hạn tuần hoàn (giống 1/3 = 0.333... trong hệ thập phân).
+2. DOUBLE chỉ giữ 53 bit, nên phải làm tròn, sai số khoảng 1e-17.
+3. Cộng dồn hàng triệu giao dịch, so sánh bằng ({{=}}) và làm tròn khi xuất hoá đơn sẽ lệch vài đồng, đủ để đối soát thất bại.
+NUMERIC lưu **từng chữ số thập phân**, phép cộng trừ chính xác tuyệt đối; đổi lại tính toán chậm hơn số thực, nhưng với nghiệp vụ tiền thì không đáng kể.
+
+### timestamptz thực sự lưu gì
+~~~sql
+SET TIME ZONE 'Asia/Ho_Chi_Minh';
+INSERT INTO tx(created_at) VALUES ('2026-03-01 10:00:00+07');
+-- PostgreSQL quy đổi và lưu 03:00 UTC (không lưu chữ "+07")
+SET TIME ZONE 'UTC';
+SELECT created_at FROM tx;      -- 2026-03-01 03:00:00+00, vẫn là cùng một thời điểm
+~~~
+Với cột {{timestamp}} (không múi giờ), DB lưu nguyên "10:00" và **không biết** đó là giờ Việt Nam; server ứng dụng chạy UTC đọc ra sẽ hiểu sai 7 tiếng.
+
+### Bảng chọn kiểu
+| Dữ liệu | PostgreSQL | MySQL | Java |
+|---|---|---|---|
+| Tiền | NUMERIC(19,4) | DECIMAL(19,4) | BigDecimal |
+| Thời điểm sự kiện | timestamptz | DATETIME(6) lưu UTC (hoặc TIMESTAMP nếu chắc chắn trước 2038) | Instant / OffsetDateTime |
+| Ngày sinh, ngày hiệu lực | date | DATE | LocalDate |
+| Giờ mở cửa hằng ngày | time | TIME | LocalTime |
+| Chuỗi | text hoặc varchar(n) | VARCHAR(n) | String |
+
+PostgreSQL: {{text}} và {{varchar(n)}} có hiệu năng như nhau; {{n}} chỉ là ràng buộc độ dài. MySQL TIMESTAMP lưu UTC và đổi theo {{time_zone}} của session, giới hạn tới 2038-01-19.
+
+### Phía Java
+~~~java
+BigDecimal fee = new BigDecimal("0.1");            // dùng String, KHÔNG dùng new BigDecimal(0.1)
+BigDecimal total = amount.add(fee)
+        .setScale(0, RoundingMode.HALF_UP);        // VND không có số lẻ: làm tròn rõ ràng
+boolean same = a.compareTo(b) == 0;                // 2.0 và 2.00: equals() trả false!
+Instant createdAt = Instant.now();                 // lưu vào timestamptz
+~~~
+Đặt {{spring.jpa.properties.hibernate.jdbc.time_zone=UTC}} và chạy JVM với {{-Duser.timezone=UTC}} để mọi tầng thống nhất; chỉ đổi sang giờ Việt Nam ở tầng hiển thị.
+
+### Lỗi hay gặp
+1. **Dùng double cho tiền trong entity**. Triệu chứng: tổng cuối ngày lệch vài đồng so với ngân hàng. Cách tránh: NUMERIC + BigDecimal ở mọi tầng, kể cả JSON (gửi dạng chuỗi hoặc số nguyên đơn vị nhỏ nhất).
+2. **new BigDecimal(0.1)**. Triệu chứng: giá trị thành 0.1000000000000000055511151231257827. Cách tránh: {{new BigDecimal("0.1")}} hoặc {{BigDecimal.valueOf(0.1)}}.
+3. **Cột timestamp không múi giờ + server khác múi giờ**. Triệu chứng: báo cáo "giao dịch trong ngày" thiếu 7 tiếng. Cách tránh: timestamptz, mọi server chạy UTC.
+4. **Scale quá nhỏ**. Triệu chứng: tỉ giá, lãi suất bị cắt mất số lẻ. Cách tránh: tiền 2–4 số lẻ, tỉ giá/lãi suất 6–8 số lẻ.
+
+### Trả lời miệng 1 phút
+"Với tiền tôi dùng NUMERIC hoặc DECIMAL có precision và scale rõ ràng, map sang BigDecimal, vì FLOAT và DOUBLE lưu số nhị phân gần đúng nên 0.1 cộng 0.2 không bằng 0.3, cộng dồn sẽ lệch tiền. Trong Java tôi tạo BigDecimal từ chuỗi, so sánh bằng compareTo và làm tròn có RoundingMode rõ ràng. Với thời điểm sự kiện trên PostgreSQL tôi dùng timestamptz, nó quy đổi và lưu theo UTC nên đúng với mọi múi giờ, map sang Instant hoặc OffsetDateTime. Trên MySQL tôi thường dùng DATETIME và quy ước lưu UTC, vì TIMESTAMP chỉ tới năm 2038. Toàn hệ thống chạy UTC, chỉ đổi múi giờ khi hiển thị."
+
+> Senior tip: hãy quyết định kiểu dữ liệu tiền **một lần cho cả công ty** (ví dụ NUMERIC(19,4), làm tròn HALF_UP ở bước xuất hoá đơn) và ghi vào guideline. Lệch kiểu giữa các service (một bên double, một bên decimal) là nguồn gốc của những sự cố đối soát lệch vài đồng mỗi ngày, rất tốn thời gian để truy ra.`,
+  follow: [
+    'Vì sao {{new BigDecimal(0.1)}} cho kết quả lạ, còn {{BigDecimal.valueOf(0.1)}} thì không?',
+    'timestamptz có lưu múi giờ gốc của client không? Nếu cần biết giờ địa phương lúc giao dịch thì lưu thêm gì?',
+    'Khi nào lưu tiền dạng số nguyên (đơn vị nhỏ nhất) thay vì NUMERIC?'
+  ],
+  tags: ['NUMERIC', 'DECIMAL', 'BigDecimal', 'timestamptz', 'time zone', 'kiểu dữ liệu']
+},
+{
+  id: 'sql-026',
+  topic: 'sql',
+  level: 'mid',
+  q: 'Trong một transaction PostgreSQL, câu INSERT thứ hai lỗi, và mọi câu sau đó đều báo {{current transaction is aborted, commands ignored until end of transaction block}}. Bạn giải thích autocommit, BEGIN/COMMIT/ROLLBACK, SAVEPOINT hoạt động thế nào, PostgreSQL và MySQL xử lý lỗi giữa transaction khác nhau ra sao, và vì sao transaction mở quá lâu lại nguy hiểm?',
+  a: `**Tóm tắt:** Mặc định mỗi câu SQL tự là một transaction (autocommit). {{BEGIN}} mở transaction nhiều câu, {{COMMIT}} ghi vĩnh viễn, {{ROLLBACK}} huỷ tất cả. PostgreSQL coi **một lỗi bất kỳ** làm hỏng cả transaction: các câu sau bị từ chối cho tới khi ROLLBACK (hoặc ROLLBACK TO SAVEPOINT). MySQL InnoDB với đa số lỗi chỉ huỷ **câu bị lỗi**, transaction vẫn tiếp tục (trừ deadlock: huỷ cả transaction). Transaction mở lâu giữ khoá, chặn người khác và cản dọn dẹp dữ liệu cũ, nên phải giữ transaction ngắn.
+
+### Hiểu nhanh
+Transaction giống **giỏ hàng khi đi siêu thị**: bạn bỏ nhiều món vào giỏ (nhiều câu SQL), tới quầy mới thanh toán một lần (COMMIT) hoặc bỏ cả giỏ lại (ROLLBACK). Autocommit giống **mua từng món, trả tiền ngay từng món**. SAVEPOINT giống **đánh dấu "từ đây trở đi"**: món nào bỏ sau dấu đó có thể trả lại mà không phải bỏ cả giỏ. Còn transaction mở lâu giống người **đứng chắn ở quầy thanh toán** để nghe điện thoại: cả hàng phía sau phải chờ.
+
+### Thuật ngữ
+- **Autocommit**: chế độ mỗi câu lệnh tự commit; JDBC bật mặc định, Spring {{@Transactional}} tắt nó trong phạm vi method.
+- **SAVEPOINT**: điểm mốc bên trong transaction để rollback một phần.
+- **Idle in transaction**: kết nối đã BEGIN nhưng đang không chạy câu nào (thường do code gọi API ngoài giữa transaction).
+- **MVCC**: cơ chế giữ nhiều phiên bản dòng để người đọc không chặn người ghi; phiên bản cũ chỉ được dọn khi không còn transaction nào cần.
+
+### Cơ chế từng bước trên PostgreSQL
+~~~sql
+BEGIN;
+INSERT INTO account(id, balance) VALUES (1, 100);   -- ok
+INSERT INTO account(id, balance) VALUES (1, 200);   -- ERROR: duplicate key
+SELECT * FROM account;                              -- ERROR: current transaction is aborted
+COMMIT;                                             -- PostgreSQL thực ra làm ROLLBACK
+~~~
+1. Lỗi ở câu thứ hai: PostgreSQL đánh dấu transaction là **aborted**.
+2. Vì sao chặn mọi câu sau: DB không biết câu lỗi đã làm được một nửa hay chưa, nên chọn an toàn: không cho phép tiếp tục trên trạng thái có thể không nhất quán.
+3. Lệnh COMMIT lúc này trả về ROLLBACK; câu INSERT đầu tiên **cũng mất**.
+
+Muốn bỏ qua lỗi một câu mà giữ phần trước, dùng SAVEPOINT:
+~~~sql
+BEGIN;
+INSERT INTO account VALUES (1, 100);
+SAVEPOINT before_dup;
+INSERT INTO account VALUES (1, 200);       -- lỗi
+ROLLBACK TO SAVEPOINT before_dup;          -- quay về mốc, transaction sống lại
+COMMIT;                                    -- dòng (1, 100) được lưu
+~~~
+
+### PostgreSQL vs MySQL khi có lỗi
+| Tình huống | PostgreSQL | MySQL InnoDB |
+|---|---|---|
+| Lỗi duplicate key, sai kiểu | cả transaction aborted | chỉ câu đó bị huỷ, transaction tiếp tục |
+| Deadlock | huỷ transaction bị chọn | huỷ cả transaction bị chọn |
+| DDL (ALTER TABLE) trong transaction | có thể rollback | tự commit ngầm, không rollback được |
+
+Hệ quả cho MySQL: code bắt exception rồi vẫn COMMIT sẽ lưu **một nửa** công việc. Trong Spring, exception unchecked thoát khỏi method {{@Transactional}} sẽ rollback cả hai DB, đó là cách an toàn.
+
+### Vì sao transaction dài nguy hiểm
+~~~java
+@Transactional
+public void checkout(Long orderId) {
+    Order o = orderRepo.findByIdForUpdate(orderId);  // khoá dòng đơn hàng
+    paymentClient.charge(o);                          // gọi API ngoài 5 giây!
+    o.markPaid();                                     // khoá bị giữ suốt 5 giây
+}
+~~~
+- **Khoá bị giữ**: request khác cùng đơn hàng phải chờ, pool kết nối cạn dần.
+- **Cản dọn dẹp**: PostgreSQL không VACUUM được các phiên bản dòng cũ mà transaction này còn "nhìn thấy", bảng phình to; MySQL thì undo log tăng.
+- Cách sửa: gọi API ngoài **trước hoặc sau** transaction, transaction chỉ bao các câu SQL.
+
+### Lỗi hay gặp
+1. **Bắt exception rồi chạy tiếp trong cùng transaction PostgreSQL**. Triệu chứng: lỗi "current transaction is aborted" ở câu sau, che mất lỗi gốc. Cách tránh: đọc lỗi **đầu tiên** trong log; dùng savepoint hoặc tách transaction nếu cần bỏ qua lỗi.
+2. **Gọi HTTP, gửi email trong {{@Transactional}}**. Triệu chứng: nhiều kết nối "idle in transaction" trong {{pg_stat_activity}}. Cách tránh: đưa I/O ngoài ra khỏi transaction; đặt {{idle_in_transaction_session_timeout}} làm lưới an toàn.
+3. **Quên COMMIT khi chạy tay trên DBeaver/psql** (đã tắt autocommit). Triệu chứng: bảng bị khoá, ứng dụng treo. Cách tránh: luôn kết thúc bằng COMMIT/ROLLBACK, kiểm tra pg_stat_activity.
+4. **Tin rằng ALTER TABLE trên MySQL rollback được**. Cách tránh: migration DDL tách riêng, có kế hoạch quay lui.
+
+### Trả lời miệng 1 phút
+"Mỗi câu SQL mặc định là một transaction nhờ autocommit; BEGIN mở transaction nhiều câu, COMMIT lưu, ROLLBACK huỷ. Trên PostgreSQL, chỉ cần một câu lỗi là cả transaction ở trạng thái aborted, mọi câu sau bị từ chối và COMMIT thực chất thành ROLLBACK; muốn bỏ qua lỗi một câu thì dùng SAVEPOINT. MySQL InnoDB thì đa số lỗi chỉ huỷ câu đó, nên nếu code nuốt exception rồi commit sẽ lưu một nửa công việc. Tôi giữ transaction ngắn, không gọi API ngoài bên trong, vì transaction dài giữ khoá, làm cạn pool và cản PostgreSQL dọn dữ liệu cũ."
+
+> Senior tip: thêm cảnh báo trên metric "transaction lâu nhất đang mở" (tính từ {{xact_start}} trong {{pg_stat_activity}}). Ở một hệ thống tôi từng xử lý, một job báo cáo giữ transaction 6 tiếng làm bảng đơn hàng phình gấp 3 lần vì VACUUM không dọn được; cảnh báo ở ngưỡng 5 phút sẽ bắt được ngay từ đầu.`,
+  follow: [
+    'Spring {{@Transactional}} bật/tắt autocommit thế nào trên connection lấy từ HikariCP?',
+    'Khi nào nên dùng SAVEPOINT (hoặc propagation NESTED) trong code Java?',
+    'Bạn tìm và xử lý một kết nối "idle in transaction" đang giữ khoá trên production thế nào?'
+  ],
+  tags: ['transaction', 'autocommit', 'SAVEPOINT', 'PostgreSQL', 'MySQL', 'idle in transaction']
+},
+{
+  id: 'sql-027',
+  topic: 'sql',
+  level: 'mid',
+  q: 'Đơn hàng đang nằm ở hai bảng {{orders}} (6 tháng gần nhất) và {{orders_archive}} (cũ hơn). Bạn cần một danh sách gộp, rồi cần tìm khách "mua cả năm 2025 lẫn 2026" và khách "đã mua 2025 nhưng chưa quay lại 2026". Bạn dùng UNION, UNION ALL, INTERSECT, EXCEPT thế nào, chúng khác nhau ra sao và bẫy nào hay gặp?',
+  a: `**Tóm tắt:** Các phép tập hợp ghép **kết quả của hai câu SELECT** theo chiều dọc (chồng dòng lên nhau), khác JOIN ghép theo chiều ngang. {{UNION ALL}} nối hai kết quả, giữ nguyên dòng trùng, rẻ nhất; {{UNION}} nối rồi **loại trùng** (tốn sort/hash); {{INTERSECT}} lấy dòng có ở **cả hai**; {{EXCEPT}} lấy dòng có ở bên trái mà **không** có ở bên phải. Mặc định dùng UNION ALL, chỉ dùng UNION khi thật sự cần loại trùng.
+
+### Hiểu nhanh
+Hai danh sách khách mời của hai buổi tiệc:
+- UNION ALL: **ghim hai tờ** lại với nhau, ai dự cả hai buổi xuất hiện hai lần.
+- UNION: ghim lại rồi **gạch tên trùng**, mỗi người một lần.
+- INTERSECT: những người **dự cả hai buổi**.
+- EXCEPT: những người dự buổi 1 mà **vắng** buổi 2.
+
+### Thuật ngữ
+- **Set operation**: phép toán trên tập kết quả: UNION, INTERSECT, EXCEPT (Oracle gọi là MINUS).
+- **Tương thích cột**: hai câu SELECT phải có **cùng số cột** và kiểu tương thích **theo thứ tự**; tên cột lấy theo câu đầu tiên.
+- **Loại trùng (dedup)**: so sánh toàn bộ các cột của dòng; DB phải sort hoặc dựng bảng băm để làm việc này.
+
+### Ví dụ với dữ liệu
+~~~text
+Khách mua năm 2025: {An, Bình, Chi}
+Khách mua năm 2026: {Bình, Chi, Dũng}
+UNION ALL  → An, Bình, Chi, Bình, Chi, Dũng   (6 dòng)
+UNION      → An, Bình, Chi, Dũng              (4 dòng)
+INTERSECT  → Bình, Chi                        (mua cả hai năm)
+2025 EXCEPT 2026 → An                         (khách "ngủ đông")
+~~~
+
+### SQL mẫu
+~~~sql
+-- 1) Danh sách đơn gộp: hai bảng không chồng nhau nên UNION ALL là đủ
+SELECT id, customer_id, amount, created_at FROM orders
+UNION ALL
+SELECT id, customer_id, amount, created_at FROM orders_archive
+ORDER BY created_at DESC          -- ORDER BY áp dụng cho TOÀN BỘ kết quả
+LIMIT 50;
+
+-- 2) Khách mua 2025 nhưng chưa quay lại 2026
+SELECT customer_id FROM all_orders
+WHERE created_at >= '2025-01-01' AND created_at < '2026-01-01'
+EXCEPT
+SELECT customer_id FROM all_orders
+WHERE created_at >= '2026-01-01' AND created_at < '2027-01-01';
+~~~
+({{all_orders}} có thể là một view bọc câu UNION ALL ở trên.)
+
+### Cơ chế bên trong: vì sao UNION chậm hơn
+1. UNION ALL: DB chạy câu 1, trả dòng; chạy câu 2, trả tiếp. Không cần nhớ gì, có thể **trả dòng ngay** (streaming).
+2. UNION: DB phải biết dòng nào đã xuất hiện, nên phải **sort toàn bộ** rồi bỏ dòng liền kề trùng nhau, hoặc dựng **bảng băm** của mọi dòng. Với 10 triệu dòng, bước này có thể tràn ra đĩa và tốn hàng giây.
+3. INTERSECT/EXCEPT cũng cần sort/hash tương tự. Với tập lớn, {{EXISTS}}/{{NOT EXISTS}} thường linh hoạt hơn vì dùng được index và chọn cột trả về tuỳ ý.
+
+### So sánh nhanh
+| Phép | Giữ trùng? | Chi phí | Dùng khi |
+|---|---|---|---|
+| UNION ALL | có | thấp | gộp bảng hiện tại + archive, gộp nhiều nguồn chắc chắn không trùng |
+| UNION | không | sort/hash | gộp nguồn có thể trùng và cần mỗi dòng một lần |
+| INTERSECT | không | sort/hash | "có ở cả hai", đối soát |
+| EXCEPT | không | sort/hash | "có ở A mà không có ở B", đối soát, tìm khách rời bỏ |
+
+Hỗ trợ: PostgreSQL có đủ; MySQL có INTERSECT và EXCEPT từ 8.0.31; Oracle dùng MINUS (bản mới hỗ trợ thêm EXCEPT).
+
+### Lỗi hay gặp
+1. **Dùng UNION theo thói quen**. Triệu chứng: query gộp hai bảng lớn chậm vì sort khổng lồ, lại còn **mất dòng hợp lệ** (hai đơn cùng khách, cùng số tiền, cùng ngày nếu không chọn id). Cách tránh: mặc định UNION ALL.
+2. **Lệch thứ tự cột**. Triệu chứng: cột amount nằm dưới cột customer_id, không báo lỗi nếu cùng kiểu số. Cách tránh: liệt kê cột tường minh, không dùng SELECT *.
+3. **Đặt ORDER BY/LIMIT ở câu đầu mà không có ngoặc**. Triệu chứng: lỗi cú pháp hoặc sắp xếp sai ý. Cách tránh: ORDER BY cuối cùng cho cả kết quả; cần LIMIT riêng từng nhánh thì bọc ngoặc: {{(SELECT ... ORDER BY ... LIMIT 10) UNION ALL (...)}}.
+4. **Quên rằng phép tập hợp coi NULL bằng NULL**. Khác với dấu {{=}} trong WHERE, UNION/EXCEPT coi hai NULL là trùng nhau; kết quả đối soát có thể khác khi đổi sang JOIN.
+
+### Trả lời miệng 1 phút
+"UNION, UNION ALL, INTERSECT, EXCEPT ghép kết quả của hai câu SELECT theo chiều dọc, hai câu phải cùng số cột và kiểu tương thích theo thứ tự. UNION ALL chỉ nối, giữ dòng trùng và rẻ nhất; UNION nối rồi loại trùng nên DB phải sort hoặc hash toàn bộ. INTERSECT lấy phần chung, EXCEPT lấy phần có ở bên trái mà không có ở bên phải, rất tiện để đối soát hoặc tìm khách rời bỏ. Tôi mặc định dùng UNION ALL, ví dụ gộp bảng orders với orders_archive, chỉ dùng UNION khi thật sự cần loại trùng, và luôn liệt kê cột tường minh để không lệch thứ tự."
+
+> Senior tip: khi thấy UNION trong code review, tôi hỏi "hai nhánh có thể trùng không?". Trong phần lớn trường hợp câu trả lời là không, và đổi sang UNION ALL bỏ được một bước sort lớn. Khi gộp bảng archive, thêm cột hằng {{'archive' AS source}} vào mỗi nhánh để biết dòng đến từ đâu, rất có ích khi điều tra dữ liệu.`,
+  follow: [
+    'Khi nào nên dùng NOT EXISTS thay cho EXCEPT?',
+    'Vì sao UNION có thể làm "mất" dòng hợp lệ?',
+    'Bạn lấy 10 đơn mới nhất từ mỗi bảng rồi gộp lại thế nào?'
+  ],
+  tags: ['UNION', 'UNION ALL', 'INTERSECT', 'EXCEPT', 'set operation']
+},
+{
+  id: 'sql-028',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Mỗi đêm bạn nhận bảng {{staging_price(sku, price)}} 2 triệu dòng và phải cập nhật giá vào {{product}}, đồng thời đánh dấu hết hạn các đơn PENDING quá 30 ngày (khoảng 5 triệu dòng). Bạn viết UPDATE ... FROM / UPDATE JOIN / DELETE USING thế nào, làm sao để chạy an toàn trên production mà không khoá bảng lâu?',
+  a: `**Tóm tắt:** Cập nhật từ bảng khác dùng {{UPDATE ... FROM}} (PostgreSQL) hoặc {{UPDATE ... JOIN}} (MySQL), một câu set-based thay vì vòng lặp Java từng dòng. Để an toàn: (1) xem trước bằng SELECT cùng điều kiện, (2) bảo đảm mỗi dòng đích khớp **tối đa một** dòng nguồn, (3) bỏ qua dòng không đổi ({{IS DISTINCT FROM}}), (4) với hàng triệu dòng thì **chia lô** vài nghìn dòng mỗi transaction để không giữ khoá lâu và không gây replication lag.
+
+### Hiểu nhanh
+Cập nhật giá giống **dán lại nhãn giá cho cả siêu thị**. Làm từng món một (vòng lặp Java, mỗi món một lượt đi lại) thì mất cả đêm. Làm một lần cho cả siêu thị (một câu UPDATE khổng lồ) thì phải **đóng cửa** suốt lúc dán. Cách đúng: dán **từng kệ một** (chia lô), khách vẫn mua bình thường ở các kệ khác.
+
+### Thuật ngữ
+- **Set-based**: một câu SQL xử lý cả tập dòng; DB tự tối ưu, ít round-trip.
+- **Row lock**: UPDATE khoá từng dòng bị sửa cho tới khi COMMIT; người khác sửa cùng dòng phải chờ.
+- **Replication lag**: replica chậm hơn primary vì phải áp lại một lượng lớn thay đổi.
+- **WAL / binlog**: nhật ký thay đổi; câu UPDATE 5 triệu dòng sinh ra nhật ký hàng GB.
+
+### Cú pháp theo từng DB
+~~~sql
+-- PostgreSQL: cập nhật giá từ staging, chỉ dòng thực sự thay đổi
+UPDATE product p
+SET    price = s.price, updated_at = now()
+FROM   staging_price s
+WHERE  p.sku = s.sku
+  AND  p.price IS DISTINCT FROM s.price     -- bỏ dòng giá không đổi (an toàn với NULL)
+RETURNING p.id;                             -- trả về id đã đổi để ghi audit
+
+-- MySQL
+UPDATE product p
+JOIN   staging_price s ON s.sku = p.sku
+SET    p.price = s.price
+WHERE  NOT (p.price <=> s.price);           -- <=> là so sánh an toàn với NULL của MySQL
+
+-- Xoá theo bảng khác: PostgreSQL / MySQL
+DELETE FROM cart_item c USING product p WHERE c.product_id = p.id AND p.discontinued;
+DELETE c FROM cart_item c JOIN product p ON p.id = c.product_id WHERE p.discontinued;
+~~~
+Vì sao cần {{IS DISTINCT FROM}}: PostgreSQL ghi **phiên bản dòng mới** cho mọi dòng được UPDATE, kể cả khi giá trị y hệt. Bỏ 1,9 triệu dòng không đổi giúp giảm WAL, giảm bloat và chạy nhanh hơn nhiều lần.
+
+### Bẫy: một dòng đích khớp nhiều dòng nguồn
+Nếu staging có 2 dòng cùng sku (giá 100 và 120), PostgreSQL chỉ dùng **một** trong hai và tài liệu nói rõ **không đoán trước được** là dòng nào. Không có lỗi nào được báo. Trước khi chạy:
+~~~sql
+SELECT sku, COUNT(*) FROM staging_price GROUP BY sku HAVING COUNT(*) > 1;  -- phải rỗng
+~~~
+Tốt hơn: thêm UNIQUE(sku) cho bảng staging để lỗi nổ ngay lúc nạp file.
+
+### Chia lô cho 5 triệu dòng
+~~~sql
+-- Chạy lặp lại tới khi số dòng bị ảnh hưởng = 0, mỗi lần một transaction ngắn
+WITH batch AS (
+  SELECT id FROM orders
+  WHERE  status = 'PENDING' AND created_at < now() - interval '30 days'
+  ORDER  BY id
+  LIMIT  5000
+  FOR UPDATE SKIP LOCKED          -- bỏ qua dòng đang bị request khác khoá
+)
+UPDATE orders o SET status = 'EXPIRED'
+FROM batch WHERE o.id = batch.id;
+~~~
+Cơ chế từng bước:
+1. CTE chọn 5.000 id cần sửa (có index trên {{(status, created_at)}} thì rất nhanh).
+2. UPDATE khoá đúng 5.000 dòng đó, commit sau vài trăm ms, khoá được nhả.
+3. Request của người dùng chỉ phải chờ tối đa một lô, không phải chờ cả 5 triệu dòng.
+4. Giữa các lô có thể nghỉ ngắn để replica theo kịp; theo dõi lag và dừng nếu vượt ngưỡng.
+
+### So sánh cách làm
+| Cách | Thời gian | Khoá | Rủi ro |
+|---|---|---|---|
+| Vòng lặp Java {{save()}} từng dòng | hàng giờ | ngắn | quá chậm, 5 triệu round-trip |
+| Một câu UPDATE 5 triệu dòng | vài phút | giữ suốt câu lệnh | treo request, replication lag, rollback rất lâu nếu lỗi |
+| Chia lô 5.000 dòng | vài phút | ngắn từng lô | phải viết vòng lặp, chạy lại được (idempotent) |
+
+### Lỗi hay gặp
+1. **Không xem trước**. Triệu chứng: quên một điều kiện WHERE, cập nhật cả bảng. Cách tránh: chạy SELECT COUNT(*) với đúng FROM/WHERE trước; chạy tay thì BEGIN, kiểm tra số dòng, rồi mới COMMIT.
+2. **Staging có key trùng**. Triệu chứng: giá cập nhật ngẫu nhiên giữa các lần chạy. Cách tránh: UNIQUE trên staging, kiểm tra GROUP BY HAVING.
+3. **Câu UPDATE khổng lồ trong giờ cao điểm**. Triệu chứng: API timeout, replica trễ vài phút, người dùng đọc dữ liệu cũ. Cách tránh: chia lô, chạy ngoài giờ cao điểm.
+4. **Dùng LIMIT trực tiếp trong UPDATE trên PostgreSQL**. PostgreSQL không hỗ trợ {{UPDATE ... LIMIT}}; dùng CTE chọn id như trên. MySQL có UPDATE ... LIMIT nhưng chỉ với câu một bảng.
+
+### Trả lời miệng 1 phút
+"Tôi cập nhật từ bảng staging bằng một câu set-based: UPDATE FROM trên PostgreSQL hoặc UPDATE JOIN trên MySQL, thay vì vòng lặp save từng dòng. Trước khi chạy tôi kiểm tra staging không có key trùng, vì nếu một dòng đích khớp nhiều dòng nguồn, PostgreSQL chọn ngẫu nhiên mà không báo lỗi. Tôi thêm điều kiện IS DISTINCT FROM để bỏ các dòng không đổi, giảm WAL và bloat. Với hàng triệu dòng, tôi chia lô vài nghìn dòng mỗi transaction bằng CTE chọn id kèm FOR UPDATE SKIP LOCKED, lặp đến khi hết, để khoá ngắn và replica theo kịp."
+
+> Senior tip: mọi job sửa dữ liệu hàng loạt nên **chạy lại được** (idempotent) và **dừng được giữa chừng**: điều kiện WHERE tự loại dòng đã xử lý (như {{status = 'PENDING'}}), mỗi lô log số dòng và thời gian. Khi job chết lúc 3 giờ sáng, bạn chỉ việc chạy lại, không cần tìm xem nó đã dừng ở đâu.`,
+  follow: [
+    'Vì sao PostgreSQL vẫn ghi phiên bản dòng mới khi UPDATE với giá trị không đổi?',
+    'Khi nào nên dùng MERGE (PostgreSQL 15+) thay cho UPDATE ... FROM?',
+    'Bạn chọn kích thước lô thế nào và theo dõi replication lag ra sao trong lúc chạy?'
+  ],
+  tags: ['UPDATE FROM', 'UPDATE JOIN', 'DELETE USING', 'batch', 'SKIP LOCKED', 'replication lag']
+},
+{
+  id: 'sql-029',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Kế toán yêu cầu số hoá đơn phải liên tục, không được nhảy số (HD-2026-000001, 000002...), nhưng bảng dùng sequence/AUTO_INCREMENT và thỉnh thoảng bị nhảy từ 105 lên 107. Vì sao sequence luôn có thể có lỗ hổng? Bạn thiết kế việc cấp số không lỗ hổng thế nào, và cái giá về hiệu năng là gì?',
+  a: `**Tóm tắt:** Sequence được thiết kế để **nhanh và không chặn nhau**, nên số đã cấp **không bao giờ được trả lại** khi transaction rollback; vì vậy lỗ hổng là bình thường. Muốn số liên tục, dùng **bảng bộ đếm** và tăng số **trong cùng transaction** với việc tạo hoá đơn: rollback thì bộ đếm cũng rollback. Cái giá: mọi giao dịch cùng một dãy số phải **xếp hàng** qua một dòng bị khoá, nên throughput bị giới hạn bởi thời gian giữ khoá.
+
+### Hiểu nhanh
+Sequence giống **máy bấm số thứ tự ở ngân hàng**: ai bấm cũng lấy được số ngay, không phải chờ ai. Nhưng nếu khách bấm số 106 rồi bỏ về, số 106 vẫn mất; máy không thu lại vé. Bảng bộ đếm giống **cuốn sổ hoá đơn giấy có một cây bút duy nhất**: muốn viết hoá đơn phải cầm được cây bút, viết xong mới chuyền cho người sau. Không bao giờ nhảy số, nhưng chỉ một người viết tại một thời điểm.
+
+### Thuật ngữ
+- **Sequence**: object sinh số tăng dần, độc lập với transaction.
+- **Gap (lỗ hổng)**: số bị bỏ qua trong dãy.
+- **Row lock**: khoá trên một dòng, giữ tới khi transaction kết thúc.
+- **Contention**: nhiều transaction tranh nhau cùng một khoá.
+
+### Vì sao sequence có lỗ hổng
+1. **Rollback**: transaction A lấy 106 rồi lỗi. Nếu DB thu hồi 106, transaction B đang giữ 107 phải chờ A kết thúc mới biết lấy số nào, tức là mọi insert phải xếp hàng. DB chọn không thu hồi để không ai phải chờ.
+2. **Cache / preallocate**: Hibernate với {{allocationSize = 50}} lấy trước 50 số; restart ứng dụng là mất phần chưa dùng. PostgreSQL cũng ghi log trước một nhóm giá trị sequence, nên sau crash có thể nhảy vài chục số.
+3. **MySQL AUTO_INCREMENT**: insert lỗi (duplicate key), {{INSERT IGNORE}}, rollback, insert hàng loạt với {{innodb_autoinc_lock_mode = 2}} (mặc định từ 8.0) đều có thể tạo lỗ hổng.
+Kết luận: **id kỹ thuật** dùng sequence là đúng; **số nghiệp vụ** cần liên tục phải là cột riêng với cơ chế riêng.
+
+### Thiết kế bảng bộ đếm
+~~~sql
+CREATE TABLE invoice_counter (
+  series  VARCHAR(20) PRIMARY KEY,       -- mỗi dãy số một dòng: 'HD-2026', 'HD-CN2-2026'
+  last_no BIGINT NOT NULL
+);
+
+BEGIN;
+-- 1) Lấy số tiếp theo: UPDATE khoá dòng, người khác cùng series phải chờ
+UPDATE invoice_counter SET last_no = last_no + 1
+WHERE  series = 'HD-2026'
+RETURNING last_no;                       -- ví dụ trả về 106
+-- 2) Tạo hoá đơn với số vừa lấy, TRONG CÙNG transaction
+INSERT INTO invoice(series, invoice_no, customer_id, amount)
+VALUES ('HD-2026', 106, 42, 1500000);
+COMMIT;                                  -- nhả khoá; lỗi ở bước 2 thì ROLLBACK cả hai
+~~~
+MySQL không có RETURNING; dùng mẹo {{UPDATE invoice_counter SET last_no = LAST_INSERT_ID(last_no + 1) WHERE series = ?}} rồi {{SELECT LAST_INSERT_ID()}} (giá trị gắn với từng connection nên an toàn khi chạy song song). Thêm {{UNIQUE(series, invoice_no)}} làm lưới an toàn.
+
+### Cái giá: tính throughput
+~~~text
+T1: [khoá counter ---- tạo hoá đơn ---- commit]
+T2:        chờ.....................[khoá ---- ... ---- commit]
+T3:                                       chờ.......................[...]
+~~~
+Nếu từ lúc UPDATE counter tới COMMIT mất 20 ms, một series tối đa khoảng **50 hoá đơn/giây**. Cách giữ hiệu năng:
+| Kỹ thuật | Tác dụng |
+|---|---|
+| Lấy số ở **bước cuối** (chỉ khi phát hành), nháp dùng id thường | khoá chỉ giữ vài ms |
+| Không gọi API ngoài trong transaction cấp số | tránh giữ khoá hàng giây |
+| Mỗi chi nhánh/ký hiệu một series | chia khoá thành nhiều dòng độc lập |
+| Một worker duy nhất phát hành theo lô | xếp hàng ở tầng ứng dụng thay vì ở DB |
+
+### Lỗi hay gặp
+1. **Dùng {{MAX(invoice_no) + 1}}**. Triệu chứng: hai transaction cùng đọc MAX = 105, cùng tạo 106. Cách tránh: bảng counter có khoá dòng, hoặc ít nhất UNIQUE để phát hiện.
+2. **Lấy số trong transaction riêng ({{REQUIRES_NEW}})**. Triệu chứng: counter đã commit 106, hoá đơn lỗi rollback, vẫn lỗ hổng. Cách tránh: cùng một transaction.
+3. **Xoá hoá đơn đã phát hành**. Triệu chứng: lỗ hổng do chính người dùng tạo. Cách tránh: không xoá, chuyển trạng thái "đã huỷ" và giữ số.
+4. **Dùng sequence cho số nghiệp vụ rồi "vá" lỗ hổng bằng job**. Cách tránh: tách id kỹ thuật và số nghiệp vụ ngay từ thiết kế.
+
+### Trả lời miệng 1 phút
+"Sequence không bao giờ trả lại số khi transaction rollback, vì nếu trả lại thì mọi insert phải chờ nhau; cộng thêm cache và crash, lỗ hổng là bình thường. Vì vậy tôi dùng sequence cho id kỹ thuật, còn số hoá đơn liên tục là cột riêng, cấp từ bảng bộ đếm mỗi series một dòng: UPDATE last_no cộng 1 RETURNING trong cùng transaction với insert hoá đơn, rollback thì cả hai cùng rollback, kèm UNIQUE(series, invoice_no). Cái giá là các transaction cùng series xếp hàng qua một khoá dòng, nên tôi lấy số ở bước phát hành cuối cùng, giữ transaction thật ngắn và chia series theo chi nhánh nếu cần throughput cao."
+
+> Senior tip: trước khi xây cơ chế không lỗ hổng, hãy hỏi lại nghiệp vụ **chính xác** yêu cầu gì: thường chỉ số **hoá đơn đã phát hành** phải liên tục theo từng ký hiệu, còn mã đơn hàng, mã giao dịch thì không. Thu hẹp phạm vi như vậy giúp chỉ một bước nhỏ phải xếp hàng, phần còn lại của hệ thống vẫn chạy song song thoải mái.`,
+  follow: [
+    'Vì sao {{MAX(invoice_no) + 1}} sai ngay cả khi đặt trong {{@Transactional}}?',
+    'Nếu cần 1.000 hoá đơn/giây trên một series thì bạn thiết kế lại thế nào?',
+    'Hibernate allocationSize ảnh hưởng thế nào tới lỗ hổng id và hiệu năng insert?'
+  ],
+  tags: ['sequence', 'gapless', 'AUTO_INCREMENT', 'row lock', 'hoá đơn', 'contention']
+},
+{
+  id: 'sql-030',
+  topic: 'sql',
+  level: 'lead',
+  q: 'Hệ thống cần biết "giá (hoặc biểu phí) của sản phẩm tại một thời điểm bất kỳ trong quá khứ", hỗ trợ đặt giá mới có hiệu lực từ ngày tương lai, và tuyệt đối không có hai mức giá chồng lên nhau. Bạn thiết kế bảng lịch sử có hiệu lực (valid_from/valid_to) thế nào, truy vấn "as of" ra sao, và để database chặn chồng lấp trên PostgreSQL và MySQL thế nào?',
+  a: `**Tóm tắt:** Mỗi mức giá là một dòng có **khoảng hiệu lực nửa mở** [from, to): to = NULL nghĩa là còn hiệu lực. Truy vấn "as of t" lấy dòng có {{from <= t < to}}. Đổi giá = trong một transaction **đóng** dòng hiện tại và **chèn** dòng mới. PostgreSQL chặn chồng lấp ở mức DB bằng kiểu {{tstzrange}} và **exclusion constraint**; MySQL không có tính năng này nên phải tuần tự hoá việc ghi theo sản phẩm (khoá dòng cha) và kiểm tra chồng lấp trong cùng transaction. Đơn hàng vẫn phải **chụp lại giá** lúc mua, không tra lịch sử khi in hoá đơn.
+
+### Hiểu nhanh
+Bảng giá có hiệu lực giống **bảng niêm yết giá điện của EVN**: mỗi bậc giá ghi "áp dụng từ ngày X đến trước ngày Y". Muốn biết tháng 3/2025 trả giá nào, bạn tìm dòng có khoảng chứa tháng 3/2025. Quy tắc bất di bất dịch: tại mỗi thời điểm chỉ có **đúng một** giá, không chồng, không hở (nếu nghiệp vụ yêu cầu).
+
+### Thuật ngữ
+- **Khoảng nửa mở [from, to)**: gồm from, không gồm to. Hai khoảng liền nhau [1/1, 1/4) và [1/4, 1/7) không chồng, không hở.
+- **As-of query**: truy vấn trạng thái tại một thời điểm.
+- **SCD Type 2** (Slowly Changing Dimension): mô hình kho dữ liệu lưu mỗi lần thay đổi thành một dòng mới có khoảng hiệu lực.
+- **Exclusion constraint**: ràng buộc PostgreSQL "không có hai dòng nào thoả cùng lúc các điều kiện so sánh", tổng quát hoá của UNIQUE.
+- **Bitemporal**: lưu cả **thời gian hiệu lực** (giá áp dụng khi nào) lẫn **thời gian ghi nhận** (ta biết điều đó khi nào).
+
+### Thiết kế trên PostgreSQL
+~~~sql
+CREATE EXTENSION IF NOT EXISTS btree_gist;   -- cho phép dùng toán tử = trong index GiST
+CREATE TABLE product_price (
+  id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  product_id   BIGINT NOT NULL REFERENCES product(id),
+  price        NUMERIC(12,2) NOT NULL CHECK (price >= 0),
+  valid_during TSTZRANGE NOT NULL,            -- mặc định nửa mở [from, to)
+  created_by   VARCHAR(50) NOT NULL,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- cùng product_id (=) thì khoảng hiệu lực không được giao nhau (&&)
+  CONSTRAINT no_overlap EXCLUDE USING gist (product_id WITH =, valid_during WITH &&)
+);
+
+-- Giá tại một thời điểm (index GiST của constraint phục vụ luôn câu này)
+SELECT price FROM product_price
+WHERE  product_id = 42 AND valid_during @> timestamptz '2026-03-01 10:00+07';
+~~~
+Đổi giá từ 01/04/2026 (đặt trước cho tương lai):
+~~~sql
+BEGIN;
+UPDATE product_price                                -- 1) đóng dòng đang mở
+SET    valid_during = tstzrange(lower(valid_during), '2026-04-01 00:00+07')
+WHERE  product_id = 42 AND upper_inf(valid_during);
+INSERT INTO product_price(product_id, price, valid_during, created_by)
+VALUES (42, 120000, tstzrange('2026-04-01 00:00+07', NULL), 'pricing-job');  -- 2) dòng mới
+COMMIT;
+~~~
+Cơ chế: mỗi lần INSERT/UPDATE, PostgreSQL dùng index GiST tìm dòng cùng product_id có khoảng giao nhau; thấy là báo lỗi {{conflicting key value violates exclusion constraint}}. Kể cả hai request song song, request sau phải chờ request trước commit rồi mới kiểm tra, nên không lọt.
+
+### Trên MySQL (không có range type và exclusion constraint)
+~~~sql
+-- cột valid_from DATETIME(6) NOT NULL, valid_to DATETIME(6) NULL, index (product_id, valid_from)
+START TRANSACTION;
+SELECT id FROM product WHERE id = 42 FOR UPDATE;    -- tuần tự hoá mọi thay đổi giá của SP 42
+SELECT COUNT(*) FROM product_price                  -- [a1,a2) và [b1,b2) chồng nhau khi
+WHERE  product_id = 42                              --   a1 < b2 AND b1 < a2
+  AND  valid_from < '2026-07-01' AND COALESCE(valid_to, '9999-12-31') > '2026-04-01';
+-- = 0 thì INSERT, ngược lại báo lỗi nghiệp vụ
+COMMIT;
+~~~
+Vì sao phải khoá dòng product: hai transaction cùng kiểm tra "không chồng" rồi cùng insert là kiểu race kinh điển; khoá dòng cha bắt chúng xếp hàng.
+
+### Trade-off các cách lưu lịch sử
+| Cách | Ưu | Nhược |
+|---|---|---|
+| Chỉ cột price + bảng audit log | đơn giản | không trả lời được "giá có hiệu lực ngày X" một cách tin cậy, không đặt giá tương lai |
+| Bảng hiệu lực [from, to) | as-of query nhanh, đặt giá tương lai | phải bảo đảm không chồng/hở |
+| Bitemporal (thêm thời gian ghi nhận) | trả lời "ngày 5/3 hệ thống **tưởng** giá là bao nhiêu" (kiểm toán) | phức tạp, chỉ cần cho tài chính/bảo hiểm |
+
+### Lỗi hay gặp
+1. **Dùng khoảng đóng [from, to] hoặc BETWEEN**. Triệu chứng: đúng nửa đêm 01/04 có hai giá. Cách tránh: luôn nửa mở.
+2. **valid_to = '9999-12-31' trộn lẫn với NULL**. Triệu chứng: query "giá hiện tại" bỏ sót dòng. Cách tránh: chọn một quy ước duy nhất.
+3. **Hoá đơn tra lịch sử giá thay vì chụp giá**. Triệu chứng: in lại hoá đơn cũ ra số khác sau khi ai đó sửa lịch sử. Cách tránh: order_item lưu unit_price tại thời điểm mua.
+4. **Sửa đè dòng lịch sử** (UPDATE price của dòng cũ). Triệu chứng: mất dấu vết kiểm toán. Cách tránh: chỉ đóng khoảng và thêm dòng mới; sửa sai quá khứ thì ghi nhận bằng bitemporal hoặc audit.
+5. **Múi giờ của mốc hiệu lực**. "Từ 01/04" là 00:00 giờ Việt Nam, không phải UTC. Cách tránh: dùng timestamptz và ghi rõ offset.
+
+### Trả lời miệng 1 phút
+"Tôi lưu mỗi mức giá thành một dòng có khoảng hiệu lực nửa mở from tới to, to rỗng là còn hiệu lực; giá tại thời điểm t là dòng có from nhỏ hơn hoặc bằng t và t nhỏ hơn to. Đổi giá là đóng dòng đang mở và chèn dòng mới trong cùng transaction, nên đặt giá tương lai rất tự nhiên. Trên PostgreSQL tôi dùng cột tstzrange và exclusion constraint với btree_gist để database tự chặn hai khoảng chồng nhau, an toàn cả khi ghi song song. MySQL không có tính năng này nên tôi khoá dòng sản phẩm bằng FOR UPDATE rồi kiểm tra chồng lấp trước khi insert. Đơn hàng vẫn chụp lại giá lúc mua để hoá đơn không bao giờ thay đổi."
+
+> Senior tip: ở vai trò lead, hãy chuẩn hoá **một pattern temporal** dùng chung cho mọi bảng "có hiệu lực" (giá, biểu phí, lãi suất, hạn mức): cùng tên cột, cùng quy ước nửa mở, cùng cách đóng/mở trong một service dùng chung. Tôi từng gặp hệ thống có 5 bảng biểu phí với 5 quy ước khác nhau (đóng, mở, 9999, NULL), và mọi lỗi tính phí lệch một ngày đều đến từ sự không nhất quán đó.`,
+  follow: [
+    'Vì sao exclusion constraint vẫn đúng khi hai transaction cùng chèn khoảng chồng nhau?',
+    'Bitemporal khác SCD Type 2 thế nào, khi nào thực sự cần?',
+    'Nếu nghiệp vụ yêu cầu "không được hở" giữa các khoảng thì bạn kiểm tra thế nào?'
+  ],
+  tags: ['temporal', 'valid_from', 'tstzrange', 'exclusion constraint', 'SCD Type 2', 'as-of query']
 }
 );
