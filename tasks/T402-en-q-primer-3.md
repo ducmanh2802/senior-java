@@ -1,6 +1,6 @@
 # T402 — Dịch sang tiếng Anh: q-primer (4 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-primer-3.en.js`
 
@@ -16,3 +16,8 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-primer-3.en.js` và `node scripts/check-i18n.js q-primer-3` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đầy đủ primer-014, primer-015, primer-016, primer-017; giữ markup, code, số liệu và các thuật ngữ kỹ thuật.
+- `node scripts/check-i18n.js q-primer-3` → `OK — 4 mục đã dịch.`; `node scripts/validate.js` → `OK — không có lỗi.`
+- Lệnh `node --check` bị chặn bởi permission prompt của môi trường; `check-i18n.js` đã nạp và thực thi file bằng Node VM nên cú pháp cũng được kiểm chứng.
+Reviewed-by: check-i18n (translation, no LLM review)
