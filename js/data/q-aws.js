@@ -1979,5 +1979,642 @@ Dùng dịch vụ "PCI compliant" không làm hệ thống của bạn compliant
     'Pháp chế yêu cầu dữ liệu khách hàng phải ở Việt Nam: kiến trúc hybrid của bạn ra sao?'
   ],
   tags: ['PCI DSS', 'compliance', 'CloudTrail', 'KMS', 'shared responsibility', 'data residency']
+},
+{
+  id: 'aws-023',
+  topic: 'aws',
+  level: 'mid',
+  q: 'Region, Availability Zone và edge location khác nhau thế nào? Khách hàng chủ yếu ở Việt Nam thì bạn chọn region nào, tiêu chí gì, và dịch vụ nào là global còn dịch vụ nào gắn với region?',
+  a: `**Tóm tắt:** **Region** là một khu vực địa lý (ví dụ Singapore) chứa nhiều **Availability Zone (AZ)**; mỗi AZ là một hoặc vài datacenter độc lập về điện, làm mát và mạng. **Edge location** là điểm mạng của CDN đặt gần người dùng để phục vụ nội dung tĩnh nhanh. EC2, RDS, ECS, Lambda, S3 bucket… gắn với region; IAM, Route 53, CloudFront là dịch vụ global. Với người dùng Việt Nam, mặc định là **ap-southeast-1 (Singapore)**, cân nhắc ap-southeast-3 (Jakarta) hoặc ap-east-1 (Hong Kong) theo giá, độ trễ đo thật và dịch vụ cần dùng.
+
+### Hiểu nhanh
+Hãy hình dung **region** là một thành phố, **AZ** là các toà nhà trong thành phố đó: mỗi toà có máy phát điện và đường mạng riêng, nên cháy một toà thì các toà khác vẫn chạy, nhưng cả thành phố vẫn có thể mất điện. **Edge location** giống các điểm giao hàng nhỏ rải khắp nơi: hàng phổ biến (ảnh, JS, CSS) để sẵn ở điểm gần nhà, còn hàng đặc biệt vẫn phải lấy từ kho trung tâm (region). **Global service** giống tổng đài dùng chung toàn quốc: bạn không chọn "tổng đài của thành phố nào", trong khi **regional service** giống bệnh viện: phải chọn đúng thành phố mới có.
+
+### Thuật ngữ
+- **Region**: vùng địa lý độc lập, ví dụ {{ap-southeast-1}} là Singapore, {{us-east-1}} là Bắc Virginia.
+- **AZ**: một trung tâm dữ liệu (hoặc cụm) trong region, tên dạng {{ap-southeast-1a}}; khoảng cách giữa các AZ trong cùng region thường vài km đến vài chục km.
+- **AZ ID**: mã ổn định cho một AZ vật lý (ví dụ {{apse1-az2}}). Tên {{a/b/c}} được gán ngẫu nhiên cho từng AWS account, nên "AZ a" của bạn có thể là "AZ c" của đồng nghiệp.
+- **Edge location / POP**: điểm hiện diện của CloudFront; không phải nơi bạn chạy EC2.
+- **Regional service**: tài nguyên tạo ra nằm cố định trong một region và không tự xuất hiện ở region khác.
+- **Global service**: dữ liệu/cấu hình dùng chung toàn cầu, không chọn region khi tạo.
+- **Data transfer**: phí truyền dữ liệu ra Internet hoặc giữa các AZ/region; thường bị bỏ qua khi ước lượng chi phí.
+
+### Cơ chế từng bước: một request từ Hà Nội tới Spring Boot trên ECS
+1. Người dùng mở {{https://api.example.com/orders}}. Trình duyệt hỏi DNS; bản ghi do **Route 53** (global) trả lời. Nếu tên là alias trỏ tới CloudFront, DNS của CloudFront trả IP của edge gần nhất với resolver của người dùng (thường là edge ở Việt Nam hoặc Singapore).
+2. **CloudFront** bắt tay TLS tại edge, kiểm tra cache. Ảnh/CSS/JS tĩnh có thể trả ngay tại edge, không đi tiếp. Vì sao: rút ngắn đường truyền từ ~30–50 ms (Hà Nội → Singapore) xuống vài ms.
+3. Cache miss thì CloudFront gọi **origin** là ALB đặt tại {{ap-southeast-1}}. Đoạn Hà Nội → Singapore vẫn phải đi, đây là độ trễ sàn của API động.
+4. **ALB** nằm ở 2–3 AZ, DNS của nó trả nhiều IP. Request vào một AZ, ALB chuyển tới target (task ECS hoặc EC2) trong **target group**. ALB bật cross-zone mặc định nên request vào AZ-a vẫn có thể được chuyển tới target ở AZ-b — tải đều hơn, đổi lại có thêm một bước nhảy giữa AZ.
+5. Task gọi **RDS primary**. Nếu primary ở AZ khác trong cùng region, độ trễ thêm khoảng 0,5–2 ms mỗi round-trip; nhân với 20 query N+1 là 10–40 ms — đủ thấy trong p99.
+6. Task ghi **S3**: bucket thuộc một region. Ghi từ region khác vừa chậm hơn vừa bị tính phí data transfer ra ngoài region.
+
+~~~text
+Hà Nội (user)
+   | DNS (Route 53 alias -> CloudFront) -> IP edge gần nhất
+   v
+CloudFront edge HN --- cache hit --> trả luôn
+   | cache miss (TLS, ~30-50 ms)
+   v
+ALB ap-southeast-1 (AZ-a + AZ-b)  [public subnet]
+   | forward theo path /api/*
+   v
+ECS task (private subnet, AZ-a) --(5)--> RDS primary (AZ-b, cùng region)
+   |--(6)--> S3 bucket ap-southeast-1
+~~~
+
+### Dịch vụ nào global, dịch vụ nào regional
+| Phạm vi | Dịch vụ | Ghi nhớ |
+|---|---|---|
+| Global | IAM, STS, Route 53, CloudFront, Organizations, WAF gắn CloudFront | Tạo một lần, dùng mọi region; nhưng dữ liệu IAM là global nên lỗi quyền ảnh hưởng tất cả |
+| Regional | EC2, EBS, ECS, EKS, Lambda, RDS/Aurora, ElastiCache, SQS, SNS, Kinesis, KMS key, Secrets Manager | Phải tạo lại ở region dự phòng nếu muốn DR |
+| Regional + namespace global | S3 | Tên bucket duy nhất toàn cầu, nhưng dữ liệu nằm ở region bạn chọn và **không** tự nhân bản sang region khác |
+| Regional (đặc biệt) | ACM certificate | Cert cho ALB phải ở cùng region với ALB; cert cho CloudFront bắt buộc ở {{us-east-1}} |
+
+### Chọn region cho người dùng Việt Nam
+1. **Đo độ trễ thật**, đừng đoán: dùng {{curl}} với tuỳ chọn {{-w}} in ra time_connect tới endpoint health check của từng region, hoặc CloudWatch RUM từ máy thật ở nhiều mạng (Viettel, VNPT, FPT, 4G). Từ Việt Nam thường thấy Singapore thấp nhất, sau đó Hong Kong, Tokyo, Jakarta; con số thay đổi theo ISP và tuyến cáp.
+2. **Dịch vụ có sẵn**: không phải region nào cũng có mọi instance family, dịch vụ mới hay tính năng mới. Region lớn như {{us-east-1}} nhận tính năng trước; region nhỏ có thể chậm vài tháng.
+3. **Giá**: cùng một cấu hình có thể chênh 5–20% giữa các region; Singapore thường đắt hơn Bắc Virginia. Nhưng tiết kiệm vài USD/tháng mà p99 tăng 20 ms là đánh đổi sai với API tương tác.
+4. **Tuân thủ và hợp đồng khách hàng**: dữ liệu cá nhân có được rời Việt Nam không, khách doanh nghiệp có yêu cầu lưu trong nước không.
+5. **DR**: nếu cần multi-region, chọn cặp region có dịch vụ tương đương và đường truyền ổn định; khoảng cách càng xa thì replication async càng trễ.
+
+Với một team nhỏ chỉ có một môi trường, đặt mọi thứ ở một region và trải trên **ít nhất 2 AZ**; multi-region là bài toán riêng, đắt hơn nhiều.
+
+### Lỗi hay gặp
+- **Làm theo tutorial mặc định {{us-east-1}}.** Triệu chứng: API từ Việt Nam p50 đã 200 ms dù server "khoẻ". Cách tránh: kiểm tra region của mọi tài nguyên trước khi tạo; đặt region mặc định trong profile AWS CLI và trong CI.
+- **Chạy production trong một AZ.** Triệu chứng: một sự cố AZ làm dịch vụ chết toàn bộ dù region còn sống. Cách tránh: ALB tối thiểu 2 subnet khác AZ, ECS service trải trên 2 AZ, RDS Multi-AZ.
+- **Nghĩ S3 là global nên tự nhân bản.** Triệu chứng: region chính sự cố, bucket region phụ rỗng vì chưa từng bật replication. Cách tránh: hiểu bucket thuộc region; cần DR thì bật Cross-Region Replication hoặc AWS Backup.
+- **Hard-code region trong code.** Triệu chứng: deploy sang region dự phòng thì ứng dụng vẫn gọi region cũ. Cách tránh: đọc region từ biến môi trường hoặc từ SDK credential/region provider chain, không viết {{Region.AP_SOUTHEAST_1}} (SDK v2) rải khắp code.
+- **Bỏ qua phí cross-AZ.** Triệu chứng: microservice chatty gọi nhau 5.000 request/giây giữa hai AZ, hoá đơn data transfer tăng vài trăm USD. Cách tránh: theo dõi metric data transfer, giảm chat, dùng cùng AZ khi hợp lý hoặc chấp nhận đánh đổi availability.
+
+### Trả lời miệng 1 phút
+"Region là khu vực địa lý, trong đó có nhiều AZ độc lập về điện và mạng; edge location là điểm CDN gần người dùng. Hầu hết dịch vụ tôi dùng hằng ngày như EC2, ECS, RDS, Lambda, S3 bucket đều gắn với region, còn IAM, Route 53, CloudFront là global. Với khách ở Việt Nam, tôi mặc định Singapore vì độ trễ thấp, nhưng quyết định bằng cách đo thật từ nhiều ISP, so sánh giá, kiểm tra dịch vụ cần có và yêu cầu tuân thủ. Production luôn trải ít nhất hai AZ; multi-region chỉ làm khi RTO/RPO yêu cầu. Tôi cũng nhớ cert ACM cho ALB phải cùng region, và dùng AZ ID thay vì tên a/b/c khi cần đối chiếu giữa các account."
+
+> Senior tip: đừng tin cảm giác "Singapore nhanh nhất" — hãy đo bằng CloudWatch RUM hoặc script từ nhiều mạng, vì tuyến cáp và ISP có thể đổi. Khi làm multi-AZ, dùng **AZ ID** trong tài liệu và dashboard: tên AZ a/b/c được map ngẫu nhiên cho từng account, nên hai account cùng ghi "AZ a" có thể đang chạy ở hai toà nhà khác nhau và bạn sẽ vẽ sai sơ đồ sự cố.`,
+  follow: [
+    'Vì sao tên AZ a/b/c không dùng để đối chiếu giữa các AWS account?',
+    'Một API chạy ở Singapore nhưng người dùng ở Việt Nam phàn nàn chậm: bạn đo và cải thiện từ đâu?',
+    'Khi nào cần multi-region thay vì chỉ multi-AZ?'
+  ],
+  tags: ['region', 'availability zone', 'edge location', 'latency', 'multi-AZ'],
+  refs: [
+    { type: 'doc', title: 'AWS Regions and Availability Zones', url: 'https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-regions-availability-zones.html' }
+  ]
+},
+{
+  id: 'aws-024',
+  topic: 'aws',
+  level: 'mid',
+  q: 'Một service Spring Boot chạy trên EC2: bạn chọn instance family và size thế nào, dùng EBS hay instance store, mua theo hình thức nào để tối ưu chi phí, và vào server an toàn ra sao?',
+  a: `**Tóm tắt:** Chọn **instance family** theo hình dạng tải (compute, memory, general), chọn **size** theo số đo thật (CPU p95, RSS, heap) chứ không theo cảm giác. Dữ liệu bền để trên **EBS** (gp3), instance store chỉ dùng cho cache tạm. Mua **Savings Plans** cho phần chạy 24/7, **Spot** cho batch chịu được gián đoạn. Truy cập server qua **SSM Session Manager**, không mở cổng 22 và không giữ key pair.
+
+### Hiểu nhanh
+Thuê EC2 giống thuê xe: **family** là dòng xe (xe tải nhẹ, xe 16 chỗ, xe tải nặng), **size** là số ghế và dung tích, **generation** là đời xe (số càng lớn càng mới, cùng tiền thường nhanh hơn). **EBS** giống ổ cứng gắn ngoài: máy hỏng thì tháo ổ sang máy khác, dữ liệu còn; **instance store** giống ngăn kéo gắn liền trong máy: nhanh nhưng máy hỏng hoặc stop/start là mất sạch, chỉ dùng làm cache. **Savings Plan** giống vé tháng, **Spot** giống vé máy bay giá rẻ: rẻ hơn nhiều nhưng hãng có thể đổi chuyến với báo trước ngắn.
+
+### Thuật ngữ
+- **vCPU**: đơn vị CPU ảo; trên phần lớn instance Intel/AMD, 1 vCPU là một hyperthread, không phải một core vật lý.
+- **Instance family**: chữ cái đầu trong tên, ví dụ {{t}} burstable, {{m}} general purpose, {{c}} compute, {{r}} memory, {{i}} storage; số là generation ({{m7}} mới hơn {{m5}}).
+- **Hậu tố**: {{g}} là chip ARM Graviton, {{i}} Intel, {{a}} AMD, {{d}} có ổ NVMe local, {{n}} tối ưu mạng.
+- **Burstable / CPU credit**: {{t3}}, {{t4g}} có baseline CPU thấp và tích luỹ credit; chạy lâu trên 100% baseline thì bị bóp CPU hoặc bị tính thêm tiền ở chế độ unlimited.
+- **EBS**: ổ đĩa mạng gắn vào instance, dữ liệu tồn tại độc lập với vòng đời instance.
+- **gp3**: loại EBS cân bằng, mặc định 3.000 IOPS và 125 MB/s, có thể tăng riêng.
+- **IMDS**: dịch vụ metadata nội bộ tại {{169.254.169.254}} để instance lấy credential role.
+- **SSM Session Manager**: mở shell qua agent có sẵn, không cần inbound port, có log phiên.
+- **Spot interruption**: AWS thu hồi máy Spot, thường báo trước khoảng 2 phút qua metadata/EventBridge.
+
+### Cơ chế từng bước: từ tải thật tới kích thước instance
+1. **Đo tải**: request/giây, CPU p95, RSS (bộ nhớ thực dùng), heap sau full GC, số thread, số connection DB. Đừng dùng CPU trung bình — nó che mất đỉnh.
+2. **Tính bộ nhớ JVM**: heap + Metaspace + code cache + thread stack + direct buffer + overhead của OS và agent. Một service Spring Boot 200 thread, Metaspace 256 MB, heap 2,5 GB thường cần instance 4 GB **trở lên**.
+3. **Đặt heap theo phần trăm RAM** thay vì con số tuyệt đối: {{-XX:MaxRAMPercentage=75}} để chừa 25% cho OS, page cache, thread stack và JNI. Với instance 8 GB, heap tối đa khoảng 6 GB.
+4. **Chọn family**: API CRUD thông thường dùng {{m7g}} hoặc {{t4g}}; service tính toán nặng (báo cáo, mã hoá, xử lý ảnh) dùng {{c7g}}; cache in-memory lớn dùng {{r7g}}.
+5. **Chọn size**: nếu p95 heap 2,5 GB và CPU p95 40% thì 2 vCPU/8 GB là hợp lý; nếu CPU p95 85% thì tăng vCPU trước khi tăng RAM.
+6. **Kiểm chứng bằng load test** (Gatling/k6) ở mức 1,5–2 lần tải đỉnh dự kiến, rồi theo dõi 2 tuần. Right-size định kỳ bằng **Compute Optimizer** và số liệu CloudWatch.
+
+~~~text
+Ví dụ 8 GB RAM, MaxRAMPercentage=75
+heap        6 000 MB
+metaspace     256 MB
+code cache    240 MB
+200 thread x 1 MB stack = 200 MB
+direct/netty buffer     200 MB
+OS + agent + page cache 1 100 MB
+Tổng ~ 8 000 MB: vừa khít, vì thế không nên vượt 75%
+Nếu đặt -Xmx8g: tổng vượt RAM -> Linux OOM killer giết process java
+~~~
+
+### Chọn family theo tải
+| Family | Hình dạng tải | Ví dụ dùng |
+|---|---|---|
+| t4g / t3 | Tải thấp, có đỉnh ngắn | API nội bộ, cron, môi trường dev |
+| m7g / m6i | Cân bằng CPU và RAM | Phần lớn service Spring Boot |
+| c7g / c6i | CPU-bound | Báo cáo, tính giá, nén, mã hoá |
+| r7g / r6i | RAM lớn | Cache, xử lý file lớn, session in-memory |
+| i4i | Cần NVMe local | Search index, cache tái tạo được |
+
+Graviton ({{g}}) thường rẻ hơn 10–20% cùng hiệu năng nhưng phải kiểm tra native library: JDK, Netty, RocksDB, thư viện nén đều có bản ARM; một số driver cũ hoặc agent monitoring có thể chưa hỗ trợ.
+
+### EBS hay instance store
+- **EBS gp3** cho root volume và dữ liệu cần bền: snapshot incremental, có thể resize online, gắn lại instance khác.
+- **io2/io1** khi cần IOPS cao và độ bền cao hơn (database tự quản lý); **st1/sc1** cho throughput tuần tự lớn, rẻ.
+- **Instance store** chỉ dùng cho dữ liệu tái tạo được: cache, scratch, temp file. Stop/start hoặc hardware failure là mất.
+- Luôn tách **root volume nhỏ** (ví dụ 30 GB) và **volume dữ liệu riêng** để snapshot và thay instance dễ hơn.
+
+### Mua thế nào cho hợp lý
+| Hình thức | Giảm giá | Phù hợp |
+|---|---|---|
+| On-Demand | 0% | Thử nghiệm, tải không đoán được |
+| Savings Plans (1–3 năm) | tới ~66% (Compute SP), ~72% (EC2 Instance SP) | Phần tải ổn định 24/7; Compute SP áp cả Fargate, Lambda |
+| Reserved Instance | tới ~72% | Tương tự, cam kết theo instance type/region |
+| Spot | tới ~90% | Batch, CI runner, worker không giữ state |
+
+Mức giảm thật phụ thuộc kỳ hạn và cách trả trước: cam kết 1 năm không trả trước thường chỉ giảm khoảng 20–30%.
+
+Spot không dùng cho instance chạy singleton, không dùng cho database tự quản lý trên một máy, và cần code chịu được việc bị dừng: job phải idempotent, worker phải nhận tín hiệu interruption và thoát sạch.
+
+### Truy cập an toàn
+Cách cũ: mở Security Group cổng 22 cho IP văn phòng, giữ file {{.pem}} trong repo — dễ mất key, khó biết ai đã vào.
+Cách nên dùng: gắn instance profile có {{AmazonSSMManagedInstanceCore}}, SSM Agent có sẵn trên AMI Amazon Linux 2/2023; instance phải gọi ra được endpoint của SSM (qua NAT hoặc VPC endpoint {{ssm}}, {{ssmmessages}}, {{ec2messages}}), rồi:
+
+~~~bash
+aws ssm start-session --target i-0abc123def456 --region ap-southeast-1
+# Không cần mở port 22, không cần key pair.
+# Phiên có thể ghi vào S3/CloudWatch để audit.
+~~~
+
+Không có inbound SSH cũng có nghĩa một lỗ hổng SSH không thể bị quét từ Internet. Với quyền shell, dùng IAM để giới hạn ai được start-session vào instance nào (tag condition).
+
+### Lỗi hay gặp
+- **Đặt {{-Xmx}} bằng đúng RAM của máy.** Triệu chứng: process java bị Linux OOM killer giết (dmesg có "Out of memory: Killed process"), log không kịp ghi. Cách tránh: {{MaxRAMPercentage}} 70–75 và đo RSS thực tế.
+- **Chạy {{t3}}/{{t4g}} cho tải CPU đều mà không theo dõi credit.** Triệu chứng: ở chế độ standard CPU bị bóp về baseline khi hết credit; ở chế độ unlimited (mặc định của t3/t4g) thì không bị bóp nhưng hoá đơn tăng vì phí surplus credit. Cách tránh: xem metric {{CPUCreditBalance}}, tải đều thì chọn {{m}}/{{c}}.
+- **Dùng instance store cho dữ liệu cần giữ.** Triệu chứng: reboot mất file, hàng đợi mất message. Cách tránh: dữ liệu bền đặt trên EBS/S3, instance store chỉ cho cache.
+- **Chạy singleton trên Spot.** Triệu chứng: máy bị thu hồi đúng giờ cao điểm, scheduler chết. Cách tránh: Spot cho worker không state, primary chạy On-Demand/Savings Plan.
+- **SSH mở {{0.0.0.0/0}} và key pair nằm trong repo.** Triệu chứng: bị quét và thử đăng nhập liên tục, key lộ là mất máy. Cách tránh: SSM Session Manager, không phát hành key dài hạn, bật GuardDuty.
+- **Dùng AMI cũ nhiều năm.** Triệu chứng: thiếu bản vá bảo mật, JDK cũ. Cách tránh: golden AMI + pipeline rebuild định kỳ, hoặc dùng Systems Manager Patch Manager.
+
+### Trả lời miệng 1 phút
+"Tôi chọn instance theo số đo: CPU p95, RSS, heap sau full GC và số thread, rồi chọn family theo hình dạng tải — m7g cho cân bằng, c7g cho CPU, r7g cho RAM lớn. Với JVM tôi đặt MaxRAMPercentage khoảng 75 để chừa chỗ cho Metaspace, thread stack và OS, và load test ở 1,5–2 lần tải đỉnh. Dữ liệu bền nằm trên EBS gp3, instance store chỉ làm cache vì stop/start là mất. Phần chạy 24/7 tôi mua Savings Plan, batch và CI dùng Spot với code idempotent và xử lý tín hiệu interruption. Tôi không mở SSH: vào máy bằng SSM Session Manager, không key pair, có audit. Định kỳ right-size bằng Compute Optimizer."
+
+> Senior tip: món tiết kiệm lớn nhất thường không phải mặc cả giá instance mà là **giảm instance thừa**. Một service 2 vCPU chạy 15% CPU suốt ngày là tiền đổ đi; hãy gộp service, giảm replica hoặc chuyển sang Fargate/Lambda trước khi mua Savings Plan 3 năm cho một cấu hình sai.`,
+  follow: [
+    'Vì sao không nên đặt -Xmx bằng toàn bộ RAM của instance?',
+    'Khi nào chọn Graviton và rủi ro cần kiểm tra là gì?',
+    'Bạn bảo vệ EC2 khỏi bị truy cập trái phép mà không mở cổng 22 thế nào?'
+  ],
+  tags: ['EC2', 'EBS', 'instance type', 'Spot', 'Savings Plans', 'SSM']
+},
+{
+  id: 'aws-025',
+  topic: 'aws',
+  level: 'mid',
+  q: 'Bạn được giao đưa service Spring Boot đầu tiên của team lên ECS Fargate sau một ALB. Hãy đi từng bước: image để ở đâu, task definition khai báo những gì, service và target group nối với nhau thế nào, và làm sao một bản deploy lỗi tự rollback?',
+  a: `**Tóm tắt:** Build image và đẩy lên **ECR**; viết **task definition** (image theo tag/digest, CPU/RAM, cổng 8080, log driver {{awslogs}}, task role và execution role); tạo **ECS service** chạy N task trong private subnet, gắn vào **target group** (target type {{ip}}) của ALB; rolling update với {{minimumHealthyPercent}}/{{maximumPercent}} và bật **deployment circuit breaker** kèm rollback để bản lỗi tự quay về bản cũ.
+
+### Hiểu nhanh
+Hãy coi ECS như một **công ty cho thuê nhân viên thời vụ**. **ECR** là kho đồng phục (image). **Task definition** là bản mô tả công việc: mặc đồng phục nào, cần bao nhiêu sức (CPU/RAM), ngồi cổng nào, ghi sổ ở đâu (log), được cầm chìa khoá nào (IAM role). **Service** là hợp đồng "luôn có đúng 3 người làm ca này; ai nghỉ thì thay ngay". **ALB + target group** là quầy lễ tân chia khách cho những nhân viên đang sẵn sàng. **Fargate** nghĩa là bạn không phải lo văn phòng (máy EC2) — AWS lo chỗ ngồi.
+
+### Thuật ngữ
+- **ECR**: registry Docker riêng của AWS, quyền kéo image kiểm soát bằng IAM.
+- **Task definition**: bản khai báo có version ({{orders-api:12}}) mô tả container cần chạy. Sửa là tạo **revision** mới, không sửa đè.
+- **Task**: một bản chạy của task definition (giống Pod trong Kubernetes).
+- **Service**: giữ số task mong muốn, thay task chết, đăng ký task vào target group, điều phối rolling update.
+- **Execution role**: quyền của **ECS agent** (kéo image từ ECR, đọc secret lúc khởi động, ghi log). **Task role**: quyền của **code bạn** (gọi S3, SQS…).
+- **awsvpc**: chế độ mạng bắt buộc với Fargate — mỗi task có ENI và IP riêng trong subnet, nên target group phải dùng target type {{ip}}.
+- **Deployment circuit breaker**: cơ chế ECS tự đánh dấu deployment thất bại khi task mới liên tục không lên được, và (nếu bật rollback) quay về revision cũ.
+
+### Cơ chế từng bước
+1. **Build và push**: CI build image, tag bằng git SHA, {{docker push}} lên ECR. Vì sao không dùng {{latest}}: task definition trỏ tới tag cố định thì biết chính xác bản nào đang chạy và rollback được.
+2. **Task definition**: chọn CPU/RAM theo cặp hợp lệ của Fargate (ví dụ 1 vCPU = {{1024}} đi với 2–8 GB), khai báo {{portMappings}} 8080, biến môi trường, secret lấy từ Secrets Manager/Parameter Store, log driver {{awslogs}}.
+3. **Service**: chọn cluster, số task (ví dụ 2), **ít nhất 2 private subnet ở 2 AZ**, security group chỉ cho ALB vào cổng 8080.
+4. **Nối ALB**: listener 443 của ALB → rule {{/api/*}} → target group (type {{ip}}, health check {{/actuator/health/readiness}}). Service tự đăng ký IP của task mới và gỡ IP task cũ.
+5. **Rolling update**: đổi revision → ECS chạy task mới, đợi target group báo healthy, rồi mới dừng task cũ. Với {{minimumHealthyPercent=100}} và {{maximumPercent=200}}, số task phục vụ không bao giờ giảm dưới mức mong muốn.
+6. **Circuit breaker**: nếu task mới cứ crash hoặc fail health check lặp đi lặp lại, ECS đánh dấu deployment FAILED và với {{rollback: true}} tự triển khai lại revision cũ đã chạy tốt.
+
+~~~text
+CI ──push──► ECR (orders-api:3f9c2a1)
+                    │ task def orders-api:12
+                    ▼
+ALB :443 ──/api/*──► target group (type ip, health /actuator/health/readiness)
+                    ├── task 10.0.11.23 (AZ-a, private subnet)
+                    └── task 10.0.12.41 (AZ-b, private subnet)
+                         │ log → CloudWatch Logs /ecs/orders-api
+~~~
+
+### Đoạn task definition quan trọng
+~~~json
+{
+  "family": "orders-api",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024", "memory": "2048",
+  "executionRoleArn": "arn:aws:iam::123456789012:role/orders-exec",
+  "taskRoleArn": "arn:aws:iam::123456789012:role/orders-task",
+  "containerDefinitions": [{
+    "name": "app",
+    "image": "123456789012.dkr.ecr.ap-southeast-1.amazonaws.com/orders-api:3f9c2a1",
+    "portMappings": [{ "containerPort": 8080 }],
+    "environment": [{ "name": "JAVA_TOOL_OPTIONS", "value": "-XX:MaxRAMPercentage=75" }],
+    "logConfiguration": { "logDriver": "awslogs", "options": {
+      "awslogs-group": "/ecs/orders-api", "awslogs-region": "ap-southeast-1",
+      "awslogs-stream-prefix": "app" } }
+  }]
+}
+~~~
+Phía service, phần deploy an toàn nằm trong {{deploymentConfiguration}}: {{deploymentCircuitBreaker}} với {{enable: true}} và {{rollback: true}}, cộng {{healthCheckGracePeriodSeconds}} (ví dụ 90) để ALB không giết task Spring Boot đang khởi động.
+
+### So sánh nhanh các kiểu chạy container trên AWS
+| Lựa chọn | Bạn phải lo | Hợp với |
+|---|---|---|
+| ECS trên Fargate | Image, task definition | Team nhỏ, muốn ít vận hành nhất |
+| ECS trên EC2 | Thêm: vá OS, scale node | Cần GPU, instance đặc thù, tối ưu giá sâu |
+| EKS | Thêm: Kubernetes, add-on, nâng cấp cluster | Đã có chuẩn Kubernetes, nhiều team |
+
+### Lỗi hay gặp
+- **Nhầm task role với execution role.** Triệu chứng: task lên được nhưng code gọi S3 bị {{AccessDenied}}; hoặc ngược lại task không kéo được image ({{CannotPullContainerError}}). Cách tránh: quyền của code → task role; kéo image, đọc secret, ghi log → execution role.
+- **Target group type {{instance}} với Fargate.** Triệu chứng: không tạo được service. Fargate dùng awsvpc nên phải là {{ip}}.
+- **Private subnet không có đường ra ECR.** Triệu chứng: task treo ở PENDING rồi STOPPED với lỗi pull image. Cách tránh: NAT gateway hoặc VPC endpoint cho ECR ({{ecr.api}}, {{ecr.dkr}}), S3 gateway endpoint (layer image nằm trên S3) và CloudWatch Logs.
+- **Health check grace period quá ngắn.** Triệu chứng: Spring Boot cần 60 giây để lên, ALB đánh dấu unhealthy ở giây 30, ECS giết task, vòng lặp vô tận. Cách tránh: grace period lớn hơn thời gian khởi động thật, health check trỏ readiness.
+- **Deploy bằng tag {{latest}}.** Triệu chứng: "deploy lại" không đổi gì, hoặc task mới scale ra kéo bản khác task cũ. Cách tránh: tag bằng git SHA, bật tag immutability trên ECR.
+
+### Trả lời miệng 1 phút
+"Tôi đẩy image lên ECR với tag là git SHA. Task definition khai báo image đó, CPU/RAM theo cặp hợp lệ của Fargate, cổng 8080, log driver awslogs và hai role: execution role cho ECS kéo image, đọc secret, ghi log; task role cho code gọi AWS. ECS service chạy ít nhất hai task trên hai private subnet ở hai AZ, gắn vào target group kiểu ip của ALB, health check trỏ readiness của Actuator và có grace period đủ dài cho Spring Boot khởi động. Deploy là tạo revision mới; rolling update với minimumHealthyPercent 100 nên không giảm năng lực phục vụ, và tôi bật deployment circuit breaker kèm rollback để bản lỗi tự quay về revision cũ."
+
+> Senior tip: hãy để CI **render task definition từ file trong repo** (thay image bằng SHA mới) rồi register, thay vì sửa tay trên console — console là nơi cấu hình "trôi" khỏi Git. Circuit breaker chỉ bắt được task không lên hoặc fail health check; bản deploy "lên được nhưng trả sai" vẫn lọt, nên vẫn cần alarm 5xx/latency trên ALB gắn với quy trình rollback.`,
+  follow: [
+    'Vì sao Fargate bắt buộc network mode awsvpc và điều đó ảnh hưởng gì tới số IP trong subnet?',
+    'Circuit breaker không phát hiện được bản deploy trả sai dữ liệu: bạn bổ sung gì?',
+    'Khi nào bạn chọn blue/green bằng CodeDeploy thay cho rolling update của ECS?'
+  ],
+  tags: ['ECS', 'Fargate', 'ECR', 'ALB', 'task definition', 'circuit breaker'],
+  refs: [
+    { type: 'doc', title: 'Amazon ECS deployment circuit breaker', url: 'https://docs.aws.amazon.com/AmazonECS/latest/developerguide/deployment-circuit-breaker.html' }
+  ]
+},
+{
+  id: 'aws-026',
+  topic: 'aws',
+  level: 'mid',
+  q: 'Team cần đưa API lên domain api.shop.vn với HTTPS, đứng sau ALB. Bạn cấu hình Route 53 và ACM thế nào: bản ghi alias khác CNAME ra sao, TTL nên đặt bao nhiêu, chứng chỉ được xác thực và gia hạn thế nào, và những lỗi nào khiến khách vẫn thấy cảnh báo chứng chỉ?',
+  a: `**Tóm tắt:** Tạo **hosted zone** cho {{shop.vn}} trên Route 53 và trỏ nameserver của nhà đăng ký tên miền về đó; xin chứng chỉ **ACM** cho {{api.shop.vn}} bằng **DNS validation** (thêm một bản ghi CNAME, ACM tự gia hạn chừng nào bản ghi còn đó và cert còn được dùng); gắn cert vào listener 443 của ALB, listener 80 redirect sang 443; cuối cùng tạo bản ghi **alias A** {{api.shop.vn}} → ALB. Alias khác CNAME ở chỗ dùng được ở **zone apex** ({{shop.vn}}), Route 53 tự theo IP thay đổi của ALB và không tính phí truy vấn tới tài nguyên AWS.
+
+### Hiểu nhanh
+DNS là **danh bạ điện thoại** của Internet: đổi tên ({{api.shop.vn}}) thành địa chỉ (IP). **Hosted zone** là cuốn danh bạ riêng cho {{shop.vn}}. **CNAME** giống ghi "gọi số của anh Nam" — phải tra thêm một lần nữa. **Alias** là tính năng riêng của Route 53: danh bạ tự chép thẳng số hiện tại của ALB, ALB đổi số thì danh bạ tự cập nhật. **Chứng chỉ TLS** giống giấy tờ tuỳ thân có dấu của cơ quan cấp (CA): trình duyệt kiểm tra tên trên giấy có khớp tên miền và còn hạn không.
+
+### Thuật ngữ
+- **Hosted zone**: tập bản ghi DNS của một domain trên Route 53; public zone trả lời Internet, private zone chỉ trả lời trong VPC.
+- **NS record / delegation**: nhà đăng ký tên miền ({{.vn}} qua nhà cung cấp trong nước) phải trỏ NS về 4 nameserver Route 53 cấp cho zone.
+- **TTL**: số giây resolver được phép nhớ câu trả lời; TTL càng dài thì đổi bản ghi càng lâu có hiệu lực.
+- **Alias record**: bản ghi A/AAAA của Route 53 trỏ tới tài nguyên AWS (ALB, CloudFront, S3 website…); TTL do Route 53 quản lý theo tài nguyên đích.
+- **Zone apex**: tên gốc {{shop.vn}}; chuẩn DNS **không cho** CNAME ở đây.
+- **ACM**: dịch vụ cấp và gia hạn chứng chỉ public miễn phí, dùng được với ALB, CloudFront, API Gateway; không xuất private key ra để cài lên EC2.
+- **DNS validation**: chứng minh sở hữu domain bằng một CNAME đặc biệt ACM yêu cầu.
+
+### Cơ chế từng bước
+1. **Tạo hosted zone** {{shop.vn}}, lấy 4 NS, khai báo ở nhà đăng ký. Vì sao bước này hay chậm: NS của tên miền cấp trên có TTL dài, có thể mất vài giờ.
+2. **Xin cert ACM** ở **đúng region của ALB** (ví dụ {{ap-southeast-1}}), tên {{api.shop.vn}} (hoặc thêm {{*.shop.vn}}). Chọn DNS validation, bấm tạo bản ghi CNAME trong Route 53 — ACM chuyển trạng thái Issued sau vài phút.
+3. **Listener 443** của ALB gắn cert; chọn security policy TLS hiện đại (TLS 1.2 trở lên). **Listener 80** chỉ có một action: redirect 301 sang HTTPS.
+4. **Bản ghi alias A** {{api.shop.vn}} → ALB (và AAAA nếu ALB dualstack). Bật "evaluate target health" nếu dùng routing failover.
+5. **Kiểm tra** bằng {{dig api.shop.vn}} và {{curl -v https://api.shop.vn/actuator/health}}: xem IP trả về và tên trên cert.
+6. **Gia hạn**: ACM tự gia hạn cert DNS-validated trước khi hết hạn, miễn là CNAME validation vẫn còn và cert đang gắn với tài nguyên.
+
+~~~text
+Trình duyệt ─ hỏi api.shop.vn ─► resolver ISP ─► NS .vn ─► NS Route 53 (zone shop.vn)
+                                                           │ alias A → ALB (IP hiện tại)
+Trình duyệt ─ TLS (SNI: api.shop.vn) ─► ALB :443  cert ACM CN=api.shop.vn
+                                         └─► target group → task Spring Boot :8080 (HTTP nội bộ)
+~~~
+
+### Alias hay CNAME
+| Tiêu chí | Alias (Route 53) | CNAME |
+|---|---|---|
+| Dùng ở zone apex | Có | Không (trái chuẩn DNS) |
+| Trỏ tới | Tài nguyên AWS, bản ghi khác trong zone | Bất kỳ tên miền nào |
+| Phí truy vấn | Miễn phí khi trỏ tới tài nguyên AWS | Tính phí như truy vấn thường |
+| Số lần tra | Trả IP ngay | Resolver phải tra thêm tên đích |
+| TTL | Theo tài nguyên đích | Bạn tự đặt |
+
+### TTL đặt bao nhiêu
+- Bản ghi ổn định: 300–3600 giây.
+- **Trước một đợt chuyển đổi** (đổi ALB, đổi region): hạ TTL xuống 60 giây **trước ít nhất một chu kỳ TTL cũ**, chuyển xong ổn định mới nâng lại. Vì sao: resolver đang nhớ giá trị cũ cho tới hết TTL cũ, hạ TTL đúng lúc chuyển là đã muộn.
+- Nhớ JVM cũng cache DNS: Java có {{networkaddress.cache.ttl}}; để quá dài thì client Java gọi vào IP ALB cũ.
+
+### Lỗi hay gặp
+- **Xin cert ở sai region.** Triệu chứng: không thấy cert trong danh sách khi gắn vào ALB. Cách tránh: cert cho ALB ở cùng region với ALB; cert cho CloudFront phải ở {{us-east-1}}.
+- **Cert chỉ có {{*.shop.vn}} nhưng truy cập {{shop.vn}}.** Wildcard không bao gồm tên gốc, cũng không bao gồm {{a.b.shop.vn}}. Cách tránh: thêm cả {{shop.vn}} vào subject alternative names.
+- **Xoá CNAME validation "cho gọn".** Triệu chứng: một năm sau cert không gia hạn được, khách thấy cảnh báo hết hạn. Cách tránh: giữ nguyên bản ghi, đặt alarm theo sự kiện sắp hết hạn của ACM.
+- **Quên redirect 80 → 443** hoặc app tự sinh link {{http://}} vì không đọc header {{X-Forwarded-Proto}}. Cách tránh: listener 80 redirect; trong Spring Boot đặt {{server.forward-headers-strategy=native}} (hoặc framework) để app biết request gốc là HTTPS.
+- **Đổi NS ở nhà đăng ký trước khi zone mới có đủ bản ghi.** Triệu chứng: email và website cũ chết. Cách tránh: chép đủ mọi bản ghi (MX, TXT…) sang Route 53 trước rồi mới đổi NS.
+
+### Trả lời miệng 1 phút
+"Tôi tạo hosted zone shop.vn trên Route 53 và trỏ NS ở nhà đăng ký về đó sau khi đã chép đủ bản ghi cũ. Cert xin bằng ACM ở đúng region của ALB, xác thực bằng DNS — một bản ghi CNAME, và chừng nào bản ghi đó còn và cert còn được dùng thì ACM tự gia hạn. ALB có listener 443 gắn cert với TLS policy hiện đại, listener 80 chỉ redirect sang HTTPS. Cuối cùng là bản ghi alias A trỏ tới ALB: alias dùng được ở zone apex, tự theo IP của ALB và không tính phí truy vấn, còn CNAME thì không đặt được ở apex. Trước khi chuyển đổi hạ TTL sớm, và trong app bật forward headers để Spring biết request gốc là HTTPS."
+
+> Senior tip: hai sự cố chứng chỉ tôi gặp nhiều nhất đều không phải do ACM mà do con người: xoá bản ghi validation và cert nằm ở sai region/thiếu tên. Đưa Route 53 record và ACM cert vào IaC cùng nhau (Terraform/CDK) để không ai xoá tay, và đặt alarm EventBridge cho sự kiện ACM sắp hết hạn — rẻ hơn rất nhiều so với một buổi sáng khách hàng báo "trang web không an toàn".`,
+  follow: [
+    'Khi nào cần private hosted zone và nó giúp gì cho service nội bộ trong VPC?',
+    'Route 53 failover routing hoạt động thế nào với health check?',
+    'Vì sao TLS kết thúc ở ALB và đoạn ALB → task là HTTP có chấp nhận được không?'
+  ],
+  tags: ['Route 53', 'ACM', 'DNS', 'TLS', 'ALB', 'alias'],
+  refs: [
+    { type: 'doc', title: 'Choosing between alias and non-alias records', url: 'https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resource-record-sets-choosing-alias-non-alias.html' }
+  ]
+},
+{
+  id: 'aws-027',
+  topic: 'aws',
+  level: 'mid',
+  q: 'Lúc 14:05 một dev chạy nhầm DELETE thiếu điều kiện WHERE trên bảng orders của RDS PostgreSQL production, xoá 120.000 dòng; các bảng khác vẫn đang nhận ghi. Bạn khôi phục thế nào bằng automated backup, point-in-time recovery và snapshot, và vì sao không thể "restore đè" lên instance đang chạy?',
+  a: `**Tóm tắt:** RDS **luôn restore ra một instance MỚI** — nó không quay ngược instance đang chạy. Cách làm: dùng **point-in-time recovery (PITR)** tạo instance tạm ở thời điểm ngay trước lệnh xoá (lệnh chạy lúc 14:05:12 thì chọn **14:05:00**), rồi **chỉ chép bảng orders** (hoặc đúng 120.000 dòng bị xoá) từ instance tạm về production, sau đó xoá instance tạm. Không restore đè cả DB vì các bảng khác vẫn nhận ghi sau 14:05 — đè lên là mất dữ liệu đúng của chúng.
+
+### Hiểu nhanh
+Automated backup giống **camera an ninh quay liên tục**: mỗi ngày có một ảnh chụp toàn cảnh (snapshot), giữa các ảnh có đoạn video ghi mọi thay đổi (transaction log). Muốn xem "lúc 14:04:59 kho có gì", AWS lấy ảnh gần nhất rồi tua video tới đúng giây đó — nhưng kết quả được dựng thành **một kho mới bên cạnh**, không phải tua ngược kho thật. Bạn sang kho mới lấy đúng món bị mất mang về, kho thật vẫn tiếp tục bán hàng.
+
+### Thuật ngữ
+- **Automated backup**: RDS tự chụp snapshot hằng ngày trong backup window và lưu transaction log liên tục; giữ theo **retention period** (1–35 ngày; đặt 0 là tắt hẳn).
+- **PITR**: restore về một thời điểm bất kỳ trong retention, chính xác tới giây; thời điểm muộn nhất có thể restore thường chỉ trễ vài phút so với hiện tại.
+- **Manual snapshot**: snapshot bạn tự chụp, tồn tại tới khi bạn xoá (kể cả khi xoá instance) — dùng trước migration lớn.
+- **Restore**: luôn tạo **DB instance mới** với endpoint mới; bạn chọn instance class, subnet group, security group, parameter group cho nó.
+- **RPO/RTO**: dữ liệu tối đa chấp nhận mất / thời gian tối đa để khôi phục.
+
+### Cơ chế từng bước
+1. **Dừng chảy máu**: xác định thời điểm chính xác từ log ứng dụng hoặc {{pg_stat_activity}}/log của PostgreSQL (log_statement, audit) — giả sử lệnh xoá chạy lúc 14:05:12. Báo team, tạm khoá tính năng ghi vào orders nếu cần.
+2. **PITR**: Console → Restore to point in time → chọn **14:05:00** (trước lệnh xoá vài giây), instance class nhỏ hơn cũng được, **đặt vào private subnet, security group chỉ cho máy thao tác vào**. Vì sao phải chọn tay: nếu để mặc định, instance mới có thể dùng default security group/parameter group khác production.
+3. **Chờ instance available** — thời gian tỉ lệ với dung lượng và lượng log cần tua, từ vài chục phút tới vài giờ. Đây là phần lớn RTO.
+4. **Lấy dữ liệu ra**: {{pg_dump --table=orders --data-only}} từ instance tạm, hoặc tạo bảng {{orders_restored}} trên production rồi {{INSERT ... SELECT}} qua {{postgres_fdw}}/dblink. Chỉ chèn những dòng **không còn** trên production (so theo khoá chính) để không đụng dữ liệu ghi mới sau 14:05.
+5. **Kiểm tra**: đếm dòng, so tổng tiền, đối soát với bảng liên quan (order_items, payments).
+6. **Dọn dẹp**: xoá instance tạm (tính tiền theo giờ), viết postmortem, bổ sung rào chắn.
+
+~~~text
+00:30          backup window: snapshot hằng ngày
+00:30 ... 14:05 transaction log liên tục ───────────────►
+                                   14:05:12 DELETE orders (sự cố)
+PITR = snapshot 00:30 + tua log tới 14:05:00
+     → instance MỚI "orders-restore" (endpoint khác)
+     → chép 120.000 dòng orders về production
+~~~
+
+### So sánh các cách khôi phục
+| Cách | Đơn vị khôi phục | Mất gì | Khi nào dùng |
+|---|---|---|---|
+| PITR ra instance mới + chép bảng | Bảng/dòng cụ thể | Gần như không | Xoá nhầm một phần dữ liệu (ca này) |
+| PITR rồi chuyển app sang instance mới | Toàn bộ DB | Mọi ghi sau thời điểm restore | DB hỏng toàn bộ, chấp nhận mất cửa sổ |
+| Restore từ manual snapshot | Toàn bộ DB tại lúc chụp | Mọi thứ sau lúc chụp | Migration lớn thất bại, có snapshot ngay trước đó |
+| Read replica | — | — | **Không** cứu được: lệnh DELETE đã được replicate sang |
+
+### Lỗi hay gặp
+- **Tưởng Multi-AZ hay read replica là backup.** Triệu chứng: DELETE chạy trên primary, standby và replica cùng mất dữ liệu trong vài giây. Cách tránh: hiểu Multi-AZ/replica chống **hỏng máy**, còn backup/PITR chống **lỗi con người**.
+- **Retention để 1 ngày hoặc tắt (0)** cho tiết kiệm. Triệu chứng: sự cố phát hiện sau 2 ngày thì không còn điểm khôi phục. Cách tránh: production tối thiểu 7–14 ngày, dữ liệu tài chính dài hơn và sao lưu thêm bằng AWS Backup.
+- **Restore với cấu hình mặc định.** Triệu chứng: instance tạm mở ra security group rộng hoặc thiếu parameter group tuỳ chỉnh. Cách tránh: chỉ định rõ subnet group, security group, parameter group khi restore.
+- **Restore đè rồi chuyển app sang instance mới** chỉ vì một bảng. Triệu chứng: mất mọi đơn hàng, thanh toán ghi sau 14:05. Cách tránh: chỉ chép phần bị mất.
+- **Dev có quyền ghi trực tiếp trên production.** Cách tránh: tài khoản read-only cho truy vấn tay, thay đổi dữ liệu qua script được review, chạy trong transaction kèm kiểm tra số dòng bị ảnh hưởng trước khi COMMIT.
+
+### Trả lời miệng 1 phút
+"RDS không quay ngược instance đang chạy; mọi restore đều tạo instance mới. Vì các bảng khác vẫn nhận ghi sau 14:05, tôi không restore đè cả DB. Tôi xác định chính xác thời điểm lệnh xoá từ log, dùng point-in-time recovery tạo instance tạm ở thời điểm ngay trước đó, đặt nó trong private subnet với security group và parameter group chỉ định rõ. Khi instance tạm sẵn sàng, tôi dump riêng bảng orders, hoặc dùng postgres_fdw chèn lại những dòng không còn trên production theo khoá chính, rồi đối soát số dòng và tổng tiền, cuối cùng xoá instance tạm. Bài học đi kèm: Multi-AZ và read replica không phải backup, retention phải đủ dài, và dev không được có quyền ghi trực tiếp production."
+
+> Senior tip: hãy **diễn tập restore** mỗi quý và đo thời gian thật — đa số team chỉ biết RTO của mình khi đang có sự cố, và thường bất ngờ vì PITR một DB vài trăm GB mất cả giờ. Với Aurora, **database cloning** (copy-on-write) cho bạn bản sao để điều tra trong vài phút; với Aurora MySQL còn có Backtrack quay ngược cả cluster, nhưng tính năng này không có trên Aurora PostgreSQL.`,
+  follow: [
+    'Multi-AZ, read replica và automated backup mỗi thứ bảo vệ bạn khỏi loại sự cố nào?',
+    'Làm sao giảm RTO khi DB lên tới vài TB?',
+    'Bạn thiết kế quyền truy cập production DB cho dev thế nào để tránh sự cố như trên?'
+  ],
+  tags: ['RDS', 'PITR', 'backup', 'snapshot', 'PostgreSQL', 'incident'],
+  refs: [
+    { type: 'doc', title: 'Restoring a DB instance to a specified time for Amazon RDS', url: 'https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_PIT.html' }
+  ]
+},
+{
+  id: 'aws-028',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Lambda Java đọc SQS để gửi email xác nhận đơn hàng, batch 10 message. Chỉ cần 1 message lỗi là cả 10 bị xử lý lại, khách nhận email trùng, và message độc cứ quay vòng mãi. Bạn cấu hình event source mapping, visibility timeout, partial batch response và DLQ thế nào?',
+  a: `**Tóm tắt:** Mặc định, nếu function ném lỗi thì **cả batch** được coi là thất bại và mọi message quay lại queue sau visibility timeout. Sửa bằng **partial batch response**: bật {{ReportBatchItemFailures}} trên event source mapping và trả về danh sách {{messageId}} lỗi — chỉ những message đó được thử lại. Đặt **visibility timeout của queue ≥ 6 lần timeout của function**, cấu hình **redrive policy** ({{maxReceiveCount}}) để message độc sang DLQ, và làm handler **idempotent** vì SQS vẫn là at-least-once.
+
+### Hiểu nhanh
+SQS giống **băng chuyền phát thư**: Lambda bốc một xấp 10 lá, đọc xong lá nào phải báo "xong" thì lá đó mới bị huỷ. Không báo gì mà lại kêu "lỗi" thì cả xấp quay về băng chuyền, kể cả 9 lá đã gửi email rồi — đó là lý do email trùng. **Partial batch response** giống trả lại đúng lá có vấn đề. **DLQ** là thùng "thư không phát được": lá nào thử quá N lần thì bỏ vào đó để người xem xét, không chặn băng chuyền.
+
+### Thuật ngữ
+- **Event source mapping (ESM)**: thành phần của Lambda tự **poll** SQS, gom batch và gọi function; bạn không viết code poll.
+- **Batch size / batching window**: số message tối đa mỗi lần gọi và thời gian chờ gom thêm; FIFO tối đa 10 message mỗi batch.
+- **Visibility timeout**: khi một message được nhận, nó bị ẩn khỏi consumer khác trong khoảng này; hết hạn mà chưa bị xoá thì hiện lại.
+- **ReportBatchItemFailures**: chế độ cho phép function trả {{batchItemFailures}} — danh sách id message lỗi.
+- **Redrive policy / maxReceiveCount**: đặt trên **queue nguồn**; message bị nhận quá số lần này thì SQS chuyển sang DLQ.
+- **Maximum concurrency**: giới hạn số function đồng thời mà ESM gọi cho một queue (tối thiểu 2), bảo vệ hệ thống phía sau.
+
+### Cơ chế từng bước
+1. ESM long-poll SQS, nhận 10 message; mỗi message bị ẩn theo visibility timeout của queue.
+2. ESM gọi function với {{SQSEvent}} chứa 10 record.
+3. **Không bật partial batch**: function ném exception → ESM không xoá message nào → hết visibility timeout cả 10 hiện lại → 9 email gửi lần hai.
+4. **Có partial batch**: function bắt lỗi từng message, trả về id của message lỗi; ESM **xoá 9 message thành công**, chỉ message lỗi hiện lại sau visibility timeout.
+5. Message lỗi được nhận lại; mỗi lần nhận tăng {{ApproximateReceiveCount}}. Vượt {{maxReceiveCount}} (ví dụ 5) → SQS chuyển sang DLQ.
+6. Vì sao visibility timeout phải ≥ 6 lần timeout function: ESM có thể retry gọi function khi bị throttle; nếu message hiện lại trong lúc lần xử lý đầu chưa xong thì hai function cùng xử lý một message.
+
+~~~text
+Batch: m1 m2 m3 m4 m5 m6 m7 m8 m9 m10   (m7 lỗi: email không hợp lệ)
+Không partial  : throw → cả 10 quay lại → 9 email trùng
+Có partial     : trả [m7] → xoá 9, m7 quay lại
+m7 nhận lần 1..5 vẫn lỗi → maxReceiveCount=5 → DLQ orders-email-dlq → alarm
+~~~
+
+### Code
+~~~java
+public class EmailHandler implements RequestHandler<SQSEvent, SQSBatchResponse> {
+    @Override
+    public SQSBatchResponse handleRequest(SQSEvent event, Context ctx) {
+        List<SQSBatchResponse.BatchItemFailure> failures = new ArrayList<>();
+        for (SQSEvent.SQSMessage msg : event.getRecords()) {
+            try {
+                OrderEvent e = parse(msg.getBody());
+                if (sentLog.alreadySent(e.orderId())) continue;   // idempotent: đã gửi thì bỏ qua
+                mailer.send(e);
+                sentLog.markSent(e.orderId());
+            } catch (Exception ex) {
+                // chỉ báo message này lỗi, các message khác vẫn được xoá
+                failures.add(new SQSBatchResponse.BatchItemFailure(msg.getMessageId()));
+            }
+        }
+        return new SQSBatchResponse(failures);   // danh sách rỗng = cả batch thành công
+    }
+}
+~~~
+Code trên chỉ có tác dụng khi ESM có {{FunctionResponseTypes = ReportBatchItemFailures}}; thiếu cấu hình này thì Lambda bỏ qua giá trị trả về.
+
+### Bảng cấu hình gợi ý
+| Tham số | Giá trị ví dụ | Vì sao |
+|---|---|---|
+| Function timeout | 30 giây | Đủ cho 10 lần gọi SMTP/API email |
+| Visibility timeout (queue) | 180 giây | ≥ 6 × timeout function |
+| Batch size | 10 | Cân bằng số lần gọi và độ trễ |
+| maxReceiveCount | 5 | Lỗi tạm có cơ hội tự hết, message độc không quay vòng mãi |
+| Maximum concurrency | 20 | Không làm sập nhà cung cấp email |
+| DLQ retention | 14 ngày | Đủ thời gian điều tra và redrive |
+
+### Lỗi hay gặp
+- **Ném exception cho cả batch.** Triệu chứng: email trùng, chi phí gọi tăng. Cách tránh: partial batch response.
+- **Trả {{batchItemFailures}} nhưng quên bật ReportBatchItemFailures.** Triệu chứng: message lỗi bị xoá như thành công — mất dữ liệu im lặng. Cách tránh: kiểm tra cấu hình ESM trong IaC.
+- **Visibility timeout ngắn hơn thời gian xử lý.** Triệu chứng: cùng một message được hai function xử lý song song. Cách tránh: quy tắc 6 lần.
+- **Đặt DLQ ở cấu hình async của Lambda thay vì redrive policy của queue.** Với nguồn SQS, DLQ phải nằm ở **queue nguồn**; DLQ "on-failure destination" của Lambda chỉ dành cho gọi bất đồng bộ.
+- **FIFO mà vẫn xử lý tiếp sau message lỗi.** Triệu chứng: sai thứ tự. Cách tránh: với FIFO, gặp message lỗi thì dừng và trả cả message đó lẫn các message phía sau trong batch.
+- **Không có alarm trên DLQ.** Message nằm trong DLQ 14 ngày rồi bị xoá mà không ai biết. Cách tránh: alarm {{ApproximateNumberOfMessagesVisible}} > 0 trên DLQ.
+
+### Trả lời miệng 1 phút
+"Với nguồn SQS, Lambda dùng event source mapping để poll và gọi function theo batch; mặc định một exception làm cả batch quay lại queue, nên 9 message đã xử lý bị làm lại. Tôi bật ReportBatchItemFailures và trả về id của từng message lỗi, để ESM xoá phần thành công. Visibility timeout của queue tôi đặt ít nhất 6 lần timeout function để message không hiện lại khi đang xử lý. Redrive policy với maxReceiveCount khoảng 5 đưa message độc sang DLQ, có alarm khi DLQ khác 0 và quy trình redrive sau khi sửa lỗi. Vì SQS là at-least-once, handler luôn idempotent theo orderId, và tôi giới hạn maximum concurrency để không đè sập dịch vụ phía sau."
+
+> Senior tip: phân biệt **lỗi tạm** (timeout nhà cung cấp email) và **lỗi vĩnh viễn** (email sai định dạng). Lỗi vĩnh viễn thì ghi nhận và **coi như thành công** (hoặc đẩy thẳng sang một queue lỗi nghiệp vụ) thay vì để nó quay 5 vòng tốn tiền rồi mới vào DLQ. DLQ nên chỉ chứa thứ thật sự cần người xem — nếu DLQ ngày nào cũng có vài trăm message thì nó đã thành bãi rác, không ai nhìn nữa.`,
+  follow: [
+    'Với SQS FIFO, partial batch response phải xử lý thế nào để giữ thứ tự?',
+    'Maximum concurrency của event source mapping khác reserved concurrency của function ra sao?',
+    'Bạn redrive message từ DLQ về queue nguồn an toàn thế nào sau khi sửa lỗi?'
+  ],
+  tags: ['Lambda', 'SQS', 'DLQ', 'partial batch response', 'idempotency'],
+  refs: [
+    { type: 'doc', title: 'Using Lambda with Amazon SQS', url: 'https://docs.aws.amazon.com/lambda/latest/dg/with-sqs.html' }
+  ]
+},
+{
+  id: 'aws-029',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Service Spring Boot chạy 4 task trên ECS có một job @Scheduled đối soát giao dịch lúc 23:30 giờ Việt Nam. Sau khi scale lên 4 task, job chạy 4 lần và sinh 4 file đối soát. Bạn sửa thế nào: ShedLock, tách job ra EventBridge Scheduler gọi ECS task/Lambda, hay cách khác? So sánh và chọn.',
+  a: `**Tóm tắt:** {{@Scheduled}} chạy trong **mỗi** instance, nên 4 task là 4 lần chạy. Có hai hướng: (1) giữ job trong service và dùng **khoá phân tán** như **ShedLock** (khoá trong DB) để chỉ một instance chạy; (2) **tách job khỏi service**: **EventBridge Scheduler** (cron có múi giờ, retry, DLQ) kích hoạt **ECS RunTask** hoặc **Lambda** chạy job một lần. Job ngắn, nhẹ, gắn chặt với service thì ShedLock là đủ; job nặng, quan trọng (đối soát tài chính) thì tách ra lịch quản lý được. Dù cách nào, job phải **idempotent** vì lịch vẫn có thể kích hoạt hơn một lần.
+
+### Hiểu nhanh
+{{@Scheduled}} giống mỗi nhân viên ca đêm đều đặt báo thức 23:30 để "khoá cửa kho". Có 4 nhân viên thì cửa bị khoá 4 lần và có 4 biên bản. **ShedLock** giống quy định "ai khoá cửa thì treo thẻ lên bảng; thấy thẻ rồi thì thôi". **EventBridge Scheduler** giống bảo vệ toà nhà có lịch riêng: đúng 23:30 bảo vệ gọi **một** người tới làm việc đó, nếu không ai nghe thì gọi lại, gọi mãi không được thì ghi sổ sự cố.
+
+### Thuật ngữ
+- **@Scheduled**: lịch chạy trong JVM của Spring; mỗi instance có lịch riêng, không biết instance khác.
+- **ShedLock**: thư viện dùng một bảng (hoặc Redis…) làm khoá; {{lockAtMostFor}} là thời gian giữ khoá tối đa phòng khi instance chết giữa chừng, {{lockAtLeastFor}} chống chạy lại khi đồng hồ các máy lệch nhau.
+- **EventBridge Scheduler**: dịch vụ lịch serverless: biểu thức {{cron}}/{{rate}}/một lần, có **múi giờ**, retry policy, DLQ, flexible time window; target gồm Lambda, ECS RunTask, SQS, Step Functions và nhiều API khác.
+- **ECS RunTask**: chạy một task độc lập (không thuộc service), task tự kết thúc khi job xong.
+- **Idempotent**: chạy lại cùng tham số không tạo kết quả trùng — ví dụ khoá theo ngày đối soát.
+
+### Cơ chế từng bước (hướng tách job)
+1. Đóng gói job thành entrypoint riêng: cùng image, nhưng chạy với profile {{reconcile}} — {{spring.main.web-application-type=none}}, chạy job rồi thoát với exit code (0 thành công, khác 0 thất bại).
+2. Tạo schedule: {{cron(30 23 * * ? *)}} với timezone {{Asia/Ho_Chi_Minh}}. Vì sao cần timezone: biểu thức cron mặc định theo UTC, quên là job chạy lúc 6:30 sáng.
+3. Target là ECS RunTask (Fargate, task definition {{reconcile-job}}, subnet private) kèm input chứa ngày đối soát.
+4. Retry policy (ví dụ tối đa 3 lần, max event age 1 giờ) cho lỗi **gọi target** (throttle, thiếu capacity). DLQ (SQS) nhận sự kiện không gọi được.
+5. Job ghi bảng {{reconcile_run(business_date PK, status)}} trước khi chạy: nếu ngày đó đã DONE thì thoát — đây là lớp idempotent.
+6. Alarm: không thấy bản ghi DONE trước 01:00 → báo on-call.
+
+~~~text
+Trước:  task1 @Scheduled 23:30 ─┐
+        task2 @Scheduled 23:30 ─┼─► 4 file đối soát
+        task3 @Scheduled 23:30 ─┤
+        task4 @Scheduled 23:30 ─┘
+Sau:    EventBridge Scheduler (cron 23:30, Asia/Ho_Chi_Minh, retry 3, DLQ)
+             └─► ECS RunTask reconcile-job (1 task) ─► reconcile_run[2026-10-29]=DONE
+~~~
+
+### Code: phương án ShedLock (giữ trong service)
+~~~java
+@Configuration
+@EnableScheduling
+@EnableSchedulerLock(defaultLockAtMostFor = "PT30M")   // khoá tối đa 30 phút nếu task chết
+class SchedulingConfig {
+    @Bean LockProvider lockProvider(DataSource ds) {
+        return new JdbcTemplateLockProvider(ds);      // bảng shedlock trong DB dùng chung
+    }
+}
+
+@Scheduled(cron = "0 30 23 * * *", zone = "Asia/Ho_Chi_Minh")
+@SchedulerLock(name = "daily-reconcile", lockAtLeastFor = "PT5M")
+void reconcile() {
+    service.reconcile(LocalDate.now(ZoneId.of("Asia/Ho_Chi_Minh")));  // bên trong vẫn idempotent theo ngày
+}
+~~~
+
+### So sánh
+| Tiêu chí | ShedLock trong service | EventBridge Scheduler → ECS task/Lambda |
+|---|---|---|
+| Hạ tầng thêm | Một bảng DB | Schedule, task definition/Lambda, IAM role |
+| Tài nguyên khi chạy | Ăn CPU/RAM của task đang phục vụ API | Task riêng, không ảnh hưởng API |
+| Retry, DLQ, lịch sử | Tự viết | Có sẵn retry, DLQ; job ghi trạng thái |
+| Deploy trùng giờ chạy | Job có thể bị kill giữa chừng khi rolling update | Không phụ thuộc vòng đời service |
+| Job dài | Phải chỉnh lockAtMostFor cẩn thận | Lambda tối đa 15 phút; ECS task không giới hạn kiểu đó |
+| Hợp với | Job nhẹ, vài giây–vài phút | Job quan trọng, nặng, cần giám sát |
+
+### Lỗi hay gặp
+- **Cron theo UTC.** Triệu chứng: job chạy lệch 7 tiếng. Cách tránh: khai báo {{zone}} trong {{@Scheduled}} hoặc timezone của schedule.
+- **lockAtMostFor ngắn hơn thời gian job.** Triệu chứng: job chưa xong khoá đã hết hạn, instance khác chạy chồng. Cách tránh: đặt lớn hơn thời gian chạy dài nhất đo được, và vẫn idempotent.
+- **Tin "exactly-once" của scheduler.** EventBridge Scheduler đảm bảo **ít nhất một lần** gọi target. Cách tránh: khoá theo business_date trong DB.
+- **Chạy job nặng trong task API.** Triệu chứng: 23:30 p99 API tăng vọt, health check fail, ECS giết task đang chạy job. Cách tránh: tách task riêng.
+- **Job dùng Lambda nhưng chạy quá 15 phút.** Lambda bị cắt giữa chừng. Cách tránh: ECS task, hoặc chia nhỏ qua Step Functions.
+
+### Trả lời miệng 1 phút
+"@Scheduled chạy trong mọi instance nên 4 task là 4 lần chạy. Nếu job nhẹ và gắn với service, tôi thêm ShedLock: một bảng khoá trong DB, chỉ instance giành được khoá mới chạy, đặt lockAtMostFor lớn hơn thời gian chạy dài nhất. Với job đối soát tài chính, tôi tách hẳn ra: EventBridge Scheduler với cron và múi giờ Asia/Ho_Chi_Minh, target là ECS RunTask chạy cùng image ở chế độ không web, có retry policy và DLQ, nên job không ăn tài nguyên của API và không bị rolling update giết. Trong cả hai cách, job idempotent theo ngày nghiệp vụ bằng bảng trạng thái, vì scheduler chỉ đảm bảo ít nhất một lần, và có alarm nếu tới hạn mà chưa thấy trạng thái DONE."
+
+> Senior tip: alarm quan trọng nhất của job định kỳ không phải "job lỗi" mà là **"job không chạy"** — lỗi thì còn log, không chạy thì im lặng tuyệt đối. Hãy để job ghi một metric/bản ghi "heartbeat" khi xong và alarm khi thiếu dữ liệu (CloudWatch alarm với missing data = breaching). Tôi từng thấy job đối soát chết im lặng 3 ngày chỉ vì IAM role của scheduler bị sửa.`,
+  follow: [
+    'Vì sao lockAtLeastFor cần thiết khi đồng hồ các instance lệch nhau?',
+    'Job đối soát chạy 2 tiếng: bạn chia nhỏ hoặc điều phối nó thế nào để chạy lại từng phần khi lỗi?',
+    'EventBridge Scheduler khác EventBridge rule có schedule ở điểm nào?'
+  ],
+  tags: ['EventBridge Scheduler', 'ShedLock', 'ECS', 'scheduled job', 'idempotency'],
+  refs: [
+    { type: 'doc', title: 'What is Amazon EventBridge Scheduler?', url: 'https://docs.aws.amazon.com/scheduler/latest/UserGuide/what-is-scheduler.html' }
+  ]
+},
+{
+  id: 'aws-030',
+  topic: 'aws',
+  level: 'lead',
+  q: 'Bạn dẫn dắt việc đưa hệ thống on-premise (12 service Spring Boot trên VM, một Oracle 3 TB) lên AWS trong 9 tháng, downtime cutover tối đa 1 giờ. Bạn chọn chiến lược cho từng phần thế nào (rehost, replatform, refactor…), di chuyển database ra sao, và lên kế hoạch cutover, rollback thế nào?',
+  a: `**Tóm tắt:** Phân loại từng thành phần theo **7 R** (retire, retain, rehost, relocate, repurchase, replatform, refactor) dựa trên giá trị nghiệp vụ và rủi ro — đa số service Spring Boot đi **replatform** (container lên ECS/EKS, đổi cấu hình, không viết lại), chỉ refactor chỗ thật sự có lý do. Database dùng **AWS DMS** chạy **full load + CDC** (đồng bộ thay đổi liên tục) để cutover chỉ còn vài phút dừng ghi; quyết định Oracle → RDS for Oracle (ít rủi ro) hay → Aurora PostgreSQL (tiết kiệm license, tốn công chuyển schema/PLSQL) là quyết định riêng. Cutover theo **runbook có diễn tập**, tiêu chí go/no-go rõ, và đường **rollback** (giữ on-prem đồng bộ ngược) trong vài ngày đầu.
+
+### Hiểu nhanh
+Chuyển hệ thống lên cloud giống **chuyển một nhà hàng đang mở cửa sang địa điểm mới**. Có món mang nguyên nồi sang (rehost), có món đổi bếp ga sang bếp từ nhưng giữ công thức (replatform), có món làm lại công thức (refactor), có món bỏ khỏi thực đơn (retire). Kho nguyên liệu (database) là phần khó nhất: không thể đóng cửa một tuần để chuyển, nên chở dần hàng tồn sang trước (full load), mỗi lần nhập hàng mới thì giao luôn cho cả hai kho (CDC), tới ngày khai trương chỉ cần đóng cửa một giờ để kiểm kê lần cuối.
+
+### Thuật ngữ
+- **Rehost**: chuyển nguyên VM lên EC2 (ví dụ bằng AWS Application Migration Service), không sửa code.
+- **Replatform**: thay nền tảng mà không viết lại — VM → container trên ECS, Oracle tự quản → RDS.
+- **Refactor**: viết lại/đổi kiến trúc để dùng dịch vụ cloud-native; đắt nhất, chỉ làm khi có lợi ích rõ.
+- **AWS DMS**: dịch vụ di chuyển dữ liệu; **full load** chép dữ liệu hiện có, **CDC** đọc log thay đổi của nguồn (với Oracle là redo log qua LogMiner/Binary Reader) và áp sang đích liên tục.
+- **Schema conversion**: chuyển schema, view, PL/SQL sang engine khác (DMS Schema Conversion hoặc AWS SCT) — luôn có phần phải sửa tay.
+- **Cutover**: thời điểm chuyển traffic thật sang hệ thống mới.
+- **Wave**: nhóm thành phần được chuyển cùng đợt.
+
+### Cơ chế từng bước
+1. **Khảo sát (tháng 1–2)**: lập bản đồ phụ thuộc (service nào gọi service nào, gọi DB nào, gọi hệ thống on-prem nào còn ở lại), đo tải, đo dung lượng thay đổi DB mỗi ngày. Vì sao: dependency ẩn là nguyên nhân số một khiến cutover thất bại.
+2. **Nền tảng (landing zone)**: account, VPC, kết nối on-prem ↔ AWS bằng **Direct Connect hoặc Site-to-Site VPN** — vì DMS và các service còn ở on-prem cần đường mạng ổn định trong nhiều tháng.
+3. **Chọn chiến lược theo từng thành phần** (bảng dưới). Ưu tiên ít thay đổi cùng lúc: đổi nền tảng **hoặc** đổi engine DB, tránh đổi cả hai trong một wave.
+4. **Database**: tạo đích, chuyển schema, chạy DMS full load, bật CDC, theo dõi **độ trễ CDC** và dùng DMS data validation để so dữ liệu. Diễn tập trên bản sao nhiều lần để đo thời gian.
+5. **Chuyển service theo wave**: service ít phụ thuộc trước; trong thời gian chuyển tiếp, service trên AWS gọi DB on-prem (hoặc ngược lại) qua Direct Connect — đo độ trễ, đừng để service "chatty" vắt qua hai nơi lâu.
+6. **Cutover database (cửa sổ 1 giờ)**: dừng ghi ở nguồn → chờ CDC lag về 0 → kiểm tra số dòng/checksum các bảng trọng yếu → đổi cấu hình kết nối (DNS nội bộ) → mở ghi ở đích → smoke test nghiệp vụ.
+7. **Rollback**: chuẩn bị sẵn DMS task **chiều ngược** (AWS → on-prem) bật ngay sau cutover để on-prem không bị bỏ lại phía sau; tiêu chí rollback (ví dụ lỗi nghiệp vụ nghiêm trọng trong 72 giờ) được thống nhất trước.
+
+~~~text
+Tháng   1-2        3-4            5-7                 8            9
+      Khảo sát → Landing zone → Wave 1..3 service → Diễn tập DB → Cutover DB
+                  DX/VPN         (replatform ECS)     2-3 lần      cửa sổ 1h
+DB:   Oracle on-prem ══ DMS full load ══ CDC liên tục ════════╗
+                                                               ╚═► đích (RDS/Aurora)
+                                                     sau cutover: CDC ngược → on-prem (rollback)
+~~~
+
+### Chọn chiến lược
+| Thành phần | Chiến lược | Lý do |
+|---|---|---|
+| 10 service Spring Boot stateless | Replatform → ECS Fargate | Đã đóng gói jar, container hoá nhanh, bỏ vá OS |
+| Service báo cáo ít dùng | Retire hoặc gộp | 3 người dùng/tháng, không đáng chi phí chuyển |
+| Service gọi mainframe còn ở on-prem | Retain tạm thời | Phụ thuộc chưa chuyển được |
+| Oracle 3 TB, nhiều PL/SQL | RDS for Oracle trước, cân nhắc PostgreSQL sau | Không đổi engine cùng lúc với đổi hạ tầng |
+| Cron/batch trên VM | Replatform → ECS task + EventBridge Scheduler | Bỏ máy chạy cron đơn lẻ |
+
+### Lỗi hay gặp
+- **Đổi mọi thứ cùng lúc** (cloud + container + PostgreSQL + microservice hoá). Triệu chứng: lỗi không biết do tầng nào, dự án trễ. Cách tránh: mỗi wave một loại thay đổi.
+- **Không đo băng thông cho full load.** 3 TB qua VPN 200 Mbps mất hơn một ngày; CDC không đuổi kịp nếu thay đổi mỗi ngày lớn. Cách tránh: tính trước, cân nhắc Direct Connect hoặc load ban đầu bằng backup/Snowball rồi CDC từ thời điểm đó.
+- **Bỏ qua kiểu dữ liệu và LOB.** DMS có giới hạn với LOB lớn và một số kiểu đặc thù; phát hiện lúc cutover là quá muộn. Cách tránh: chạy full load thử sớm, đọc báo cáo lỗi/validation.
+- **Sequence và trigger ở đích.** Sau cutover, sequence chưa được nâng → lỗi trùng khoá chính. Cách tránh: bước cutover có mục "đặt lại sequence", tắt trigger ở đích trong lúc CDC rồi bật lại.
+- **Không có đường rollback.** Triệu chứng: phát hiện lỗi sau 6 giờ, dữ liệu mới chỉ có trên AWS, không quay về được. Cách tránh: CDC ngược và tiêu chí rollback có thời hạn.
+
+### Trả lời miệng 1 phút
+"Tôi bắt đầu bằng khảo sát phụ thuộc và đo tải, rồi xếp từng thành phần vào 7 R: phần lớn service Spring Boot replatform sang ECS vì đã có jar, thành phần ít giá trị thì retire, phần còn phụ thuộc on-prem thì retain tạm. Nền tảng gồm landing zone và kết nối Direct Connect hoặc VPN đủ băng thông. Database tôi không đổi engine cùng lúc với đổi hạ tầng: Oracle sang RDS for Oracle trước, dùng DMS full load cộng CDC để dữ liệu đồng bộ liên tục, có data validation và diễn tập cutover ít nhất hai lần để đo thời gian. Cửa sổ một giờ chỉ gồm dừng ghi, chờ CDC lag về 0, kiểm tra checksum, đổi DNS nội bộ và smoke test. Sau cutover tôi bật CDC ngược về on-prem và giữ tiêu chí rollback 72 giờ."
+
+> Senior tip: thứ quyết định thành bại thường là **runbook cutover** chứ không phải công nghệ: từng bước có người chịu trách nhiệm, thời gian dự kiến lấy từ lần diễn tập, điểm go/no-go và người có quyền quyết định rollback. Hãy diễn tập đầy đủ trên môi trường giống production ít nhất hai lần — lần đầu luôn lộ ra vài việc mất gấp ba thời gian dự kiến (đặt lại sequence, rebuild index, đổi DNS trong hệ thống cũ không ai nhớ).`,
+  follow: [
+    'Khi nào nên đổi Oracle sang Aurora PostgreSQL ngay trong đợt migration, khi nào để sau?',
+    'Trong giai đoạn chuyển tiếp, service trên AWS gọi DB on-prem: rủi ro độ trễ và cách giảm?',
+    'Bạn đo và báo cáo tiến độ, rủi ro migration cho lãnh đạo thế nào?'
+  ],
+  tags: ['migration', '7R', 'DMS', 'CDC', 'cutover', 'Oracle'],
+  refs: [
+    { type: 'doc', title: 'What is AWS Database Migration Service?', url: 'https://docs.aws.amazon.com/dms/latest/userguide/Welcome.html' }
+  ]
 }
 );

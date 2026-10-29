@@ -1814,5 +1814,718 @@ public ResponseEntity<Void> receive(
       'Webhook receiver nên dùng chung hàng đợi với event nội bộ hay tách riêng?'
     ],
     tags: ['Webhook', 'At-least-once', 'Idempotency', 'HMAC', 'Reliability']
+  },
+  {
+    id: 'api-023',
+    topic: 'api',
+    level: 'mid',
+    q: 'API ngân hàng cho khách hàng upload sao kê, ảnh CCCD (tối đa 100 MB). Bạn thiết kế endpoint upload như thế nào: multipart/form-data hoạt động ra sao, giới hạn kích thước phải đặt ở những tầng nào, và khi nào nên để client tải thẳng lên object storage bằng presigned URL thay vì đi qua server?',
+    a: `**Tóm tắt:** File nhỏ (dưới vài MB) nhận bằng {{multipart/form-data}} ngay tại server: body được cắt thành nhiều phần ngăn nhau bằng chuỗi boundary, Spring trả {{MultipartFile}} để validate rồi **stream** từng phần lên kho file — tuyệt đối không đọc hết vào RAM. File lớn thì tách hai bước: server chỉ cấp **presigned URL** (URL có chữ ký, có hạn, cho phép client PUT thẳng tới S3), xong client báo lại để server ghi metadata.
+
+### Hiểu nhanh
+Upload file giống gửi bưu kiện. **multipart/form-data** là cái "hộp có nhiều ngăn": ngăn một là thông tin kèm theo (mã khách, loại tài liệu), ngăn hai là chính file; các ngăn ngăn cách bằng một chuỗi ngẫu nhiên gọi là **boundary** (giống màng bọc hộp). **presigned URL** giống bưu cục cấp phiếu gửi có chữ ký và hạn dùng: bạn dán phiếu lên bưu kiện bỏ vào thùng, bên kho (S3) tin phiếu chữ ký nên nhận file mà không cần biết bạn là ai. **Giới hạn kích thước** giống quy định "tối đa 10 kg" — phải dán ở cả quầy tiếp nhận lẫn cửa kho, thiếu tầng nào cũng hỏng.
+
+### Thuật ngữ
+- **multipart/form-data**: định dạng body HTTP chia nhiều phần, mỗi phần có header riêng ({{Content-Disposition}}, {{Content-Type}}); chuẩn RFC 7578.
+- **boundary**: chuỗi phân cách các phần trong body; client sinh ra, server tự biết khi đọc.
+- **MultipartFile**: interface của Spring bọc một phần file trong request — có {{getSize()}}, {{getContentType()}}, {{getInputStream()}}.
+- **Object storage (S3)**: kho lưu object của AWS — lưu byte + metadata chứ không phải bảng quan hệ; tính tiền theo dung lượng và số request.
+- **presigned URL**: URL mang chữ ký khoá sẵn (method, đường dẫn, hạn) do server ký; ai cầm URL cũng làm được đúng một thao tác đó trong thời gian hiệu lực.
+- **413 Payload Too Large**: HTTP status báo body vượt giới hạn cho phép.
+
+### Cơ chế từng bước (upload qua server)
+1. Client {{POST /api/documents}} với {{Content-Type: multipart/form-data; boundary=----Bd123}}, gồm phần metadata và phần file.
+2. Tầng chặn trước (nginx {{client_max_body_size}}, API gateway) đo kích thước. Vì sao phải chặn sớm: tránh mất công parse body xong mới từ chối; vượt thì trả **413**.
+3. {{StandardServletMultipartResolver}} của Spring cho servlet đọc multipart; vượt {{max-file-size}} ném {{MaxUploadSizeExceededException}}. Tuỳ phiên bản Spring và cấu hình, khách có thể nhận 413 hoặc 500 khó hiểu — nên tự bắt trong @ControllerAdvice để luôn trả 413 kèm ProblemDetail rõ ràng.
+4. Controller nhận {{MultipartFile}} và **validate lại**: kích thước, phần mở rộng, và **đoạn đầu file** (magic bytes) thay vì tin header — kẻ xấu có thể đổi {{Content-Type}} thành image/jpeg cho file HTML.
+5. {{file.getInputStream()}} rồi ghi tiếp: {{transferTo(...)}} xuống đĩa tạm, hoặc truyền thẳng {{InputStream}} vào SDK S3 — byte chảy từng buffer, không cộng dồn trong heap.
+6. Trả **201 Created** + {{Location: /api/documents/8821}}; nếu còn bước quét virus thì để trạng thái PROCESSING.
+
+~~~text
+Upload 5 MB qua server:
+client ──POST multipart──► nginx ──► Spring(MultipartFile) ──stream──► S3
+                             │              │
+                      chặn 413 nếu to    validate + ghi metadata
+~~~
+
+### Code
+~~~java
+static final long MAX = 100L * 1024 * 1024;              // 100 MB, trùng với cấu hình 3 tầng
+
+@PostMapping("/api/documents")
+ResponseEntity<DocumentDto> upload(@RequestPart("meta") CreateDocument meta,   // phần JSON đi kèm
+        @RequestPart("file") MultipartFile file,
+        @RequestHeader(value = "X-Upload-Id", required = false) String uploadId) throws IOException {
+    if (file.getSize() > MAX)
+        throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE, "File quá lớn");  // 413
+    if (!allowedMagic(file))                                                     // soi đầu file
+        throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "Sai định dạng"); // 422
+    String key = "docs/" + userId() + "/"                           // tiền tố user: không ghi đè được file của người khác
+            + (uploadId != null ? requireUuid(uploadId) : UUID.randomUUID()); // chỉ nhận UUID hợp lệ
+    try (InputStream in = file.getInputStream()) {                                // stream, KHÔNG getBytes()
+        storage.put(key, in);
+    }
+    DocumentDto saved = docs.save(meta, key);                                     // lưu metadata, DB sinh id
+    return ResponseEntity.created(URI.create("/api/documents/" + saved.id())).body(saved);
+}
+~~~
+
+### Giới hạn phải đặt ở ba tầng
+| Tầng | Cấu hình | Nếu thiếu |
+|---|---|---|
+| Proxy (nginx) | {{client_max_body_size 100m}} | nginx trả 413 trước khi chạm app, log app không có gì |
+| Spring Boot | {{spring.servlet.multipart.max-file-size: 100MB}} và {{max-request-size: 105MB}} (mặc định chỉ 1MB và 10MB) | {{MaxUploadSizeExceededException}}; nếu không tự bắt, khách dễ nhận 500 hoặc thông báo khó hiểu |
+| Nghiệp vụ | quota upload theo khách, giới hạn số file đồng thời | một client gửi 200 file một lúc làm đầy đĩa |
+
+### Presigned URL cho file lớn
+~~~text
+1. client  POST /api/documents {name,size,contentType}  → 202 + {uploadUrl, expiresAt}
+2. server  ký URL PUT cho obj-8821, hết hạn 5 phút
+           (presigned PUT không có policy giới hạn khoảng kích thước)
+3. client  PUT uploadUrl với chính file                  → 200 (S3 trả, không qua app)
+4. client  POST /api/documents/8821/complete → server headObject dò size/ETag → 200
+~~~
+Server **không nhìn thấy byte nào**: không tốn RAM, không tốn băng thông, không bị proxy cắt kết nối.
+> Muốn chặn cứng dung lượng **ngay lúc upload** thì phải dùng presigned **POST** kèm policy có {{content-length-range}} (trình duyệt gửi form thẳng lên S3). Với presigned **PUT**, chữ ký ràng buộc method + khoá + hạn (và các header được ký kèm) nhưng không có điều kiện kiểu "tối đa 100 MB", nên server vẫn phải {{headObject}} ở bước complete rồi xoá file quá cỡ.
+
+| Tiêu chí | Qua server (multipart) | Presigned URL |
+|---|---|---|
+| RAM/băng thông app | Trọn file đi qua app | Không qua app |
+| Ép giới hạn kích thước | Ngay tại chỗ | Presigned POST: policy {{content-length-range}}; presigned PUT: chỉ kiểm tra sau ở bước complete |
+| Quét virus, kiểm tra nghiệp vụ | Làm ngay lúc nhận | Phải làm ở bước complete (PROCESSING) |
+| Retry | Tự nghĩ idempotency | {{POST /documents}} idempotent bằng khoá client |
+| Chi phí code | Ít | Ký URL, kiểm tra sau, dọn file mồ côi |
+
+### Lỗi hay gặp
+- **Đọc hết file vào RAM** bằng {{file.getBytes()}}: 100 MB × 20 người cùng upload = 2 GB heap → OOM và full GC liên tục. Cách tránh: luôn {{getInputStream()}} hoặc {{transferTo}}.
+- **Chỉ siết giới hạn ở một tầng**: sửa Spring quên nginx → khách gặp 413 mà log app trống trơn.
+- **Tin header Content-Type**: file HTML giả danh .jpg lưu vào bucket cho phép mở web → XSS. Cách tránh: soi magic bytes, không serve trực tiếp từ bucket, luôn buộc {{Content-Disposition: attachment}}.
+- **Làm tên file từ client thành đường dẫn**: {{filename=../../config/app.yml}}. Tên hiển thị phải lược bỏ dấu chấm gạch chéo; khoá object thì do server ghép (tiền tố user + UUID), không lấy nguyên tên file.
+- **Retry tạo bản sao**: client timeout rồi gửi lại multipart → 2 file trùng. Cách tránh: client sinh {{X-Upload-Id}} dạng UUID, server kiểm tra định dạng rồi ghép khoá {{docs/<userId>/<uploadId>}} để lần gửi lại ghi đè đúng chỗ — nhớ có tiền tố user, nếu không client A có thể ghi đè file của client B bằng cách gửi id của B.
+
+### Trả lời miệng 1 phút
+"Tôi tách upload theo kích thước. Dưới khoảng 10 MB thì nhận multipart tại server: body chia phần bằng boundary, Spring ra {{MultipartFile}}, tôi kiểm tra kích thước, phần mở rộng và magic bytes rồi stream {{InputStream}} lên S3, không bao giờ {{getBytes()}}. Bắt buộc siết ở cả nginx lẫn {{spring.servlet.multipart}} vì mặc định Spring chỉ cho 1 MB — thiếu tầng nào khách cũng gặp 413 hoặc 500. Trên 10 MB tôi chuyển sang presigned URL: client xin URL ký sẵn, PUT thẳng lên S3 rồi báo {{complete}} để server đối chiếu kích thước và ETag; server không đi qua byte nào nên vừa không tốn RAM vừa không bị proxy cắt. Mọi đường upload đều idempotent theo mã upload do client sinh để retry không tạo file trùng."
+
+> Senior tip: mặc định cho hệ ngân hàng là **presigned PUT cho file trên 10 MB**, kèm khoá object do server sinh (không tin filename), URL hết hạn sau 3–5 phút, bucket khoá toàn bộ chỉ đọc qua chữ ký, và trạng thái PROCESSING cho tới khi quét virus xong. Nếu cần chặn cứng dung lượng ngay lúc upload thì dùng presigned **POST** kèm policy {{content-length-range}}; còn presigned PUT thì luôn {{headObject}} ở bước complete để phát hiện file quá cỡ rồi xoá. Phân loại lỗi upload theo tầng (413 ở nginx hay timeout ở app) trong log — nó cho biết đúng tầng nào đang siết sai.`,
+    follow: [
+      'Quét virus cho file upload nên đặt ở bước nào để không chặn trải nghiệm người dùng?',
+      'Nếu S3 ghi dở dang rồi timeout thì làm sao không để lại file mồ côi và metadata nửa vời?',
+      'Client cần upload 20 file trong một lần gọi thì endpoint nên thiết kế ra sao?'
+    ],
+    tags: ['File Upload', 'multipart', 'presigned URL', 'S3', 'REST Design']
+  },
+  {
+    id: 'api-024',
+    topic: 'api',
+    level: 'mid',
+    q: 'API trả sao kê PDF 50 MB cho khách hàng. Bạn sẽ stream file xuống client thế nào để JVM không bị nuốt RAM, cho phép tải tiếp khi đứt mạng (HTTP Range), và không bị proxy cắt giữa chừng?',
+    a: `**Tóm tắt:** Trả file bằng {{ResponseEntity<Resource>}} để byte chảy từng buffer 8–64 KB ra socket thay vì gom hết vào {{byte[]}}. Nhớ kỹ: Spring MVC **không** xử lý {{Range}} cho {{InputStreamResource}} (stream chỉ đọc được một lần) — muốn tải tiếp khi đứt mạng phải dùng {{Resource}} đọc lại được như {{FileSystemResource}}/{{PathResource}} để Spring tự trả **206 Partial Content**, hoặc tự đọc {{Range}} rồi trả {{ResourceRegion}}, hoặc đẩy sang **presigned GET** của S3 (S3 hỗ trợ Range sẵn). File trên khoảng 20 MB thì tốt nhất là cấp presigned GET để client tải thẳng từ S3/CDN, server chẳng tốn băng thông.
+
+### Hiểu nhanh
+Stream file giống **vòi nước**: nước (byte) chảy thẳng ra chậu, không cần một cái xô lớn bằng 50 MB chứa sẵn trong nhà. Đọc hết vào bộ nhớ là rót 50 lít vào xô rồi bê ra cửa — tốn chỗ và nếu 20 người cùng làm thì sập nhà. **HTTP Range** giống tua băng: biết bạn đã xem tới giây 60 nên băng mới nối tiếp từ giây 60 chứ không phát lại từ đầu — nhờ đó đứt mạng giữa chừng vẫn tải tiếp được.
+
+### Thuật ngữ
+- **Streaming**: đọc/ghi dữ liệu từng phần, không giữ toàn bộ trong bộ nhớ.
+- **InputStreamResource**: bản bọc InputStream kiểu Spring, nói "hãy copy dần ra response"; nó **chỉ đọc được một lần** nên Spring loại nó khỏi cơ chế Range tự động.
+- **Content-Length**: độ dài byte của body; biết trước thì trình duyệt hiện % tải và tải tiếp được.
+- **Range / If-Range**: header client yêu cầu "cho tôi từ byte X tới Y"; If-Range mang ETag để chắc bản tin vẫn là bản mình đang tải.
+- **206 Partial Content** + **Content-Range**: server trả một phần, kèm dải byte đã trả và tổng kích thước.
+- **Accept-Ranges: bytes**: server báo "tôi hỗ trợ Range".
+- **Idle timeout của proxy**: ngưỡng thời gian không có byte nào đi qua mà nginx/gateway cắt kết nối (nginx: {{proxy_read_timeout}} chờ app, {{send_timeout}} chờ client, mặc định đều 60 giây).
+
+### Cơ chế từng bước
+1. Client {{GET /api/statements/8821/pdf}}. Server đọc **metadata** trước (kích thước, khoá object) — vì sao: phải set {{Content-Length}} được thì trình duyệt mới hiện %.
+2. Mở {{Resource}} từ nguồn (đĩa, S3, hoặc cột bytea trong DB) — **không đọc hết**, chỉ đọc khi container hỏi; muốn Spring tự trả Range thì Resource phải đọc lại được.
+3. Set header: {{Content-Type}}, {{Content-Length}}, {{Content-Disposition: attachment}} để trình duyệt tải về thay vì mở trong tab.
+4. Container Servlet copy từ Resource/stream ra socket theo từng buffer. Lưu ý: **thread bị giữ suốt thời gian tải** (một request một thread trong Servlet truyền thống) nên download 50 MB ở mạng chậm có thể giữ thread hàng chục giây.
+5. Client đứt mạng → kết nối hỏng; client mở lại và gửi {{Range: bytes=<đã nhận>}} + {{If-Range: <etag>}}. Với {{Resource}} đọc lại được ({{FileSystemResource}}, {{PathResource}}…) Spring MVC tự parse Range và trả 206; với {{InputStreamResource}} thì **không** — phải tự xử lý (đọc đúng khoảng byte, trả {{ResourceRegion}}/206) hoặc chuyển sang presigned GET.
+
+~~~text
+So sánh bộ nhớ với 20 người tải cùng lúc (file 50 MB):
+byte[]          : [=========== 50 MB ===========] trong heap  × 20 = 1 GB   → OOM
+InputStream     : [64 KB][64 KB][64 KB]...        trong heap  × 20 ≈ 1,3 MB → ổn
+
+Range yêu cầu:  Range: bytes=1048576-            If-Range: "v7"
+Server trả:     206 Partial Content
+                Content-Range: bytes 1048576-52428799/52428800
+                Accept-Ranges: bytes
+~~~
+
+### Code
+~~~java
+@GetMapping("/api/statements/{id}/pdf")
+ResponseEntity<Resource> download(@PathVariable long id) {
+    StatementMeta meta = service.meta(id);              // chỉ đọc metadata, KHÔNG đọc blob
+    Resource body = storage.resource(meta.objectKey());  // FileSystemResource/PathResource: đọc lại được
+    return ResponseEntity.ok()                          // status 200 là điều kiện để Spring xử lý Range
+            .contentType(MediaType.APPLICATION_PDF)
+            .header(HttpHeaders.CONTENT_DISPOSITION,
+                    ContentDisposition.attachment()     // tạo header an toàn cho tên tiếng Việt
+                        .filename("sao-ke-" + id + ".pdf", StandardCharsets.UTF_8).build())
+            .contentLength(meta.size())                 // biết trước kích thước → trình duyệt hiện %
+            .body(body);                                // Spring tự cắt Range và trả 206
+}
+~~~
+> Nếu nguồn chỉ cho đọc **một lần** (S3 {{GetObject}} trả {{InputStream}}), đừng bọc {{InputStreamResource}} rồi tưởng Range tự chạy. Hoặc đọc header {{Range}} của request, truyền đúng khoảng byte xuống lời gọi S3 ({{GetObjectRequest.range(...)}}) rồi trả 206 + {{Content-Range}}, hoặc đơn giản nhất là cấp presigned GET để S3/CDN lo Range.
+
+### Bốn cách tải file
+| Cách | Ưu điểm | Nhược điểm | Dùng khi |
+|---|---|---|---|
+| {{ResponseEntity<byte[]>}} | Đơn giản nhất | 50 MB nằm trong heap, dễ OOM/full GC | File dưới 1 MB |
+| {{FileSystemResource}} / {{PathResource}} (stream) | Gần như không tốn RAM; Spring tự lo Range → 206 | Giữ thread suốt download; nguồn phải đọc lại được nhiều lần | File 1–20 MB trên đĩa/network share, tải qua server |
+| {{InputStreamResource}} | Gần như không tốn RAM, dùng được với stream một lần (S3) | **Không** hỗ trợ Range, giữ thread suốt download | File nhỏ hoặc khi không cần tải tiếp |
+| presigned GET + CDN | Không tốn băng thông app, CDN có Range sẵn, tải song song | Phải quản lý hạn URL, kiểm tra quyền trước khi cấp | File trên 20 MB, ảnh, video |
+
+### Lỗi hay gặp
+- **Đọc toàn bộ bằng {{Files.readAllBytes}} hay {{getBytes()}}**: 50 MB × vài chục request = heap đầy, GC dừng cả giây. Cách tránh: truyền {{InputStream}} đi tới cùng.
+- **Không set {{Content-Length}}**: body chuyển sang dạng chunked, trình duyệt không hiện phần trăm và không chắc hỗ trợ tải tiếp. Cách tránh: luôn đọc kích thước từ metadata trước.
+- **Tên file tiếng Việt không có {{filename*=UTF-8''...}}** trong Content-Disposition: khách tải về thành {{sao-ke-????.pdf}}. Dùng {{ContentDisposition.filename(name, StandardCharsets.UTF_8)}} của Spring.
+- **Kiểm tra quyền/tồn tại file quá muộn**: nếu lỗi (file mất, không có quyền) chỉ lộ ra khi đang ghi body thì header 200 đã gửi đi, không đổi sang 404/403 được nữa → client nhận file hỏng. Cách tránh: kiểm tra quyền và metadata (kích thước, tồn tại) **trước** khi trả response.
+- **Tưởng {{InputStreamResource}} tự hỗ trợ Range**: Spring chỉ tự xử lý Range cho {{Resource}} **không phải** InputStreamResource (stream loại này không đọc lại được), nên client không bao giờ nhận 206. Cách tránh: dùng Resource đọc lại được, tự xử lý Range, hoặc presigned GET.
+- **Proxy cắt kết nối**: nếu app mất hơn 60 giây mới gửi byte đầu (ví dụ chờ lấy file từ kho chậm) thì nginx trả 504 ({{proxy_read_timeout}}); nếu client đọc quá chậm thì {{send_timeout}} của nginx cắt kết nối giữa chừng. Cách tránh: gửi byte đầu sớm, chỉnh hai timeout này cho route download, hoặc đẩy sang presigned URL.
+- **Nén gzip cho PDF**: PDF đã nén sẵn, bật thêm chỉ tốn CPU và tăng độ trễ. Chỉ nén JSON/text.
+
+### Trả lời miệng 1 phút
+"Trước hết tôi không bao giờ đọc cả file vào bộ nhớ: response trả {{Resource}} với {{contentLength}} lấy từ metadata, nên 50 MB không nằm trong heap mà chỉ có buffer 64 KB; đổi lại tải chậm thì thread bị giữ, vì thế tôi giới hạn số download đồng thời. Để khách tải tiếp được khi đứt mạng, tôi dùng {{Resource}} đọc lại được để Spring tự xử lý {{Range}}/{{If-Range}} và trả 206 — lưu ý {{InputStreamResource}} **không** được Spring hỗ trợ Range, nếu nguồn chỉ cho stream một lần thì tôi truyền khoảng byte xuống S3 hoặc cấp presigned GET. Tên file tiếng Việt dùng {{ContentDisposition.filename(..., UTF_8)}} tránh thành dấu chấm hỏi. Thực tế với file trên 20 MB tôi cấp presigned GET có hạn để client tải thẳng từ S3/CDN: server không tốn băng thông, CDN lo Range và timeout, tôi chỉ kiểm tra quyền trước khi ký URL."
+
+> Senior tip: ngưỡng tôi dùng là 20 MB — dưới thì stream qua server, trên thì presigned GET + CDN. Đo bằng hai chỉ số: dung lượng trung bình mỗi lần tải và tỉ lệ request tải lại (resume) — tải lại nhiều nghĩa là timeout/Range đang hỏng. Và đừng bao giờ cấp presigned URL cho tài liệu nhạy cảm mà không kiểm tra quyền ngay tại thời điểm ký: URL đã ký là bearer token có hạn, cấp một lần là ai cũng tải được trong vài phút.`,
+    follow: [
+      'Nếu file nằm trong PostgreSQL (bytea) thì stream ra sao mà không load cả blob?',
+      'Giữ thread suốt thời gian download thì làm sao tránh cạn thread pool khi nhiều người tải?',
+      'Khi nào nên dùng HEAD trước khi GET để kiểm tra kích thước và ETag?'
+    ],
+    tags: ['File Download', 'Streaming', 'HTTP Range', '206', 'S3']
+  },
+  {
+    id: 'api-025',
+    topic: 'api',
+    level: 'mid',
+    q: 'Bạn kiểm tra dữ liệu ở tầng service với Bean Validation như thế nào: tạo custom annotation kiểu @ValidVietnamPhone, dùng validation nhóm cho Create vs Update, validate object lồng, và phân biệt lỗi "sai định dạng" với lỗi nghiệp vụ "email đã tồn tại"?',
+    a: `**Tóm tắt:** Bean Validation (chuẩn Jakarta, Spring Boot 3 dùng bản thực hiện Hibernate Validator) kiểm tra **định dạng/sai lệch** ngay trên DTO bằng annotation — custom annotation = annotation mới + class {{ConstraintValidator}}; **nhóm** (groups) là các interface rỗng dùng để bỏ qua một ràng buộc khi sửa bản ghi; object lồng phải đánh dấu {{@Valid}} (cascade) mới kiểm tra tiếp. Còn lỗi **nghiệp vụ với dữ liệu trong DB** (email trùng, số dư không đủ) **không viết trong validator** — validator phải nhanh, không được gọi DB và dễ có race — làm ở service rồi trả 409/422.
+
+### Hiểu nhanh
+Giống quầy tiếp nhận ở bệnh viện: **kiểm tra form** (đủ chữ ký, có ảnh, chọn đúng mẫu đơn) làm ngay tại quầy bằng cách nhìn giấy — đó là Bean Validation, nhanh và không cần máy tính. **Tra cứu nghiệp vụ** (bệnh nhân này đã hẹn lần trước chưa, còn nợ tiền không?) phải hỏi hệ thống phía sau — đó là service layer, chậm hơn, có thể thay đổi giữa chừng và cần mã lỗi riêng. Cố dồn cả hai vào quầy giấy thì vừa chậm vừa sai.
+
+### Thuật ngữ
+- **Bean Validation / Jakarta Validation**: chuẩn {{jakarta.validation.*}} (trước là javax) — khai báo ràng buộc bằng annotation như {{@NotNull}}, {{@Email}}, {{@Size}}.
+- **Hibernate Validator (HV)**: bản thực hiện (implementation) tham chiếu của chuẩn; {{spring-boot-starter-validation}} mang theo HV và Spring Boot tự dùng làm bản mặc định khi có trong classpath.
+- **Constraint**: một ràng buộc; gồm annotation + class kiểm tra {{ConstraintValidator<A, T>}}.
+- **Groups**: interface rỗng (vd {{Create}}, {{Update}}) để bật/tắt tập ràng buộc theo ngữ cảnh, tránh phải tách 2 DTO.
+- **Cascading**: {{@Valid}} nói "kiểm tra luôn object bên trong"; với list viết {{List<@Valid Item>}}.
+- **Method validation**: validate **tham số của method** — với service cần {{@Validated}} trên class (Spring tự cấu hình {{MethodValidationPostProcessor}}), lỗi là {{ConstraintViolationException}}; riêng controller từ Spring Framework 6.1 (Boot 3.2+) đã được validate sẵn, không cần {{@Validated}}.
+
+### Cơ chế từng bước
+1. Dev đặt annotation trên DTO. Vì sao: ràng buộc nằm cạnh dữ liệu, ai đọc DTO cũng thấy ngay.
+2. Controller nhận {{@Valid @RequestBody CreateAccountRequest req}}. Spring chạy HV **trước khi vào method**; nếu sai thì ném {{MethodArgumentNotValidException}}, gom tất cả lỗi field chứ không dừng ở lỗi đầu.
+3. Với {{@PathVariable}}/{{@RequestParam}} trên controller: từ Spring Framework 6.1 (Boot 3.2+) Spring MVC tự validate tham số và ném {{HandlerMethodValidationException}} (thường trả 400), không cần {{@Validated}}. Ở tầng **service** thì {{@Validated}} trên class bật proxy method validation, lỗi là {{ConstraintViolationException}}.
+4. Lỗi được @ControllerAdvice chuyển thành ProblemDetail kèm danh sách {{field, message}}.
+5. Kiểm tra nghiệp vụ (email trùng) nằm ở service: ưu tiên để **DB chặn cuối** bằng unique constraint, bắt {{DataIntegrityViolationException}} rồi trả 409.
+
+~~~text
+Hai request cùng gửi email moi@x.vn (cách nhau 1 ms):
+t=0ms  A: SELECT ... WHERE email='moi@x.vn'  → chưa có  → hợp lệ
+t=1ms  B: SELECT ... WHERE email='moi@x.vn'  → chưa có  → hợp lệ
+t=2ms  A: INSERT ok                            B: INSERT bị unique chặn → trả 409
+Kiểm tra trong service không thấy gì sai ở t=1ms — đó là race, chỉ DB chặn được.
+~~~
+
+### Code: custom annotation
+~~~java
+// 1. Annotation mới: chạy được trên field/param, có class kiểm tra kèm theo
+@Target({ElementType.FIELD, ElementType.PARAMETER})
+@Retention(RetentionPolicy.RUNTIME)
+@Constraint(validatedBy = VietnamPhoneValidator.class)
+public @interface ValidVietnamPhone {
+    String message() default "{phone.invalid}";   // khoá trong ngoặc nhọn → tra ValidationMessages.properties
+    Class<?>[] groups() default {};
+    Class<? extends Payload>[] payload() default {};
+}
+
+// 2. Logic kiểm tra — CHỈ kiểm tra chuỗi, không gọi DB trong đây
+class VietnamPhoneValidator implements ConstraintValidator<ValidVietnamPhone, String> {
+    @Override public boolean isValid(String v, ConstraintValidatorContext ctx) {
+        if (v == null) return true;                 // để @NotNull lo phần null
+        return v.length() >= 10 && v.length() <= 11
+            && v.charAt(0) == '0'
+            && v.chars().allMatch(Character::isDigit);
+    }
+}
+~~~
+
+### Code: nhóm (Create vs Update) và object lồng
+~~~java
+public interface Create {}                 // interface rỗng — chỉ là cờ
+public interface Update {}
+
+public record BeneficiaryReq(
+        @Null(groups = Create.class)          // tạo mới thì id phải null
+        @NotNull(groups = Update.class)       // cập nhật thì bắt buộc có id
+        Long id,
+        @NotBlank String name,
+        @Valid AccountRef account,             // cascade xuống object lồng
+        List<@Positive Long> amounts) {}       // ràng buộc áp lên TỪNG phần tử (container element)
+~~~
+Lúc validate phải chỉ rõ nhóm: ở controller dùng {{@Validated(Create.class) @RequestBody BeneficiaryReq req}} ({{@Valid}} không nhận tham số nhóm), gọi tay thì {{validator.validate(req, Create.class)}}. Nếu gọi validate ở nhóm mặc định (Default) thì các ràng buộc đã gán nhóm **không chạy**; ngược lại khi gọi {{Create.class}}, các ràng buộc **không gán nhóm** (như {{@NotBlank name}} ở trên, thuộc Default) cũng bị bỏ qua. Vì vậy hoặc gán nhóm cho mọi ràng buộc, hoặc truyền cả hai: {{validator.validate(req, Create.class, Default.class)}} — đây là lỗi im lặng hay gặp nhất của groups.
+
+### Lỗi format hay nghiệp vụ? Đặt status đúng
+| Loại | Ai bắt | Ví dụ | Status |
+|---|---|---|---|
+| Sai định dạng (thiếu field, sai kiểu, sai pattern) | Bean Validation | email thiếu @, số điện thoại 8 số | 400 hoặc 422 |
+| Đúng format nhưng sai nghiệp vụ | Service | số dư không đủ, ngày sinh tương lai | 422 |
+| Xung đột dữ liệu đã tồn tại | DB unique + service | email đã đăng ký | 409 |
+| Thiếu quyền | Security | sửa tài khoản người khác | 403 |
+
+### Lỗi hay gặp
+- **Gọi DB trong {{isValid()}}**: mỗi lần validate là một câu SELECT tiềm ẩn, service chậm khó hiểu và ẩn trong annotation. Cách tránh: validator chỉ check format; check DB ở service.
+- **Check "email chưa tồn tại" rồi mới insert vẫn race**: hai request cùng thấy "chưa có". Cách tránh: unique constraint trong DB — DB là trọng tài, bắt lỗi trùng và trả 409.
+- **Nhầm {{@Valid}} với {{@Validated}}**: {{@Valid}} để cascade object và validate body; {{@Validated}} bật method validation (kèm nhóm) cho service. Với controller, từ Spring 6.1 ràng buộc trên {{@PathVariable}}/{{@RequestParam}} đã chạy sẵn nên đặt {{@Validated}} lên controller class chỉ tạo proxy không cần thiết. Đặt sai chỗ thì ràng buộc im lặng không chạy — lỗi nguy hiểm vì code vẫn xanh.
+- **Nhóm không đặt khi dùng chung DTO**: bản Update gửi thiếu id bị chặn vì {{@NotNull}} của Create. Cách tránh: gán {{groups}} ngay từ đầu cho mọi ràng buộc bắt buộc.
+- **Thông báo mặc định tiếng Anh**: khách không hiểu. Dùng {{ValidationMessages.properties}} (hoặc {{messages_vi.properties}}) và đọc theo {{LocaleContextHolder.getLocale()}}.
+
+### Trả lời miệng 1 phút
+"Bean Validation là lưới kiểm tra thứ nhất, dành cho định dạng: annotation trên DTO, Spring chạy Hibernate Validator trước khi vào controller, gom hết lỗi field rồi trả 400/422 kèm danh sách lỗi. Custom annotation như @ValidVietnamPhone gồm hai phần: annotation khai báo {{Constraint}} và class {{ConstraintValidator}} — phần kiểm tra chỉ được động tới chuỗi, không được gọi DB. Nhóm Create/Update dùng interface rỗng để cùng một DTO áp đúng bộ ràng buộc theo ngữ cảnh, còn object lồng phải có {{@Valid}} nếu không ràng buộc bên trong không chạy. Lưới thứ hai là nghiệp vụ ở service: email trùng, số dư không đủ thì trả 409/422, và cuối cùng unique constraint của DB là trọng tài vì check trước insert bao giờ cũng có race."
+
+> Senior tip: hãy chốt một quy ước chung cho cả team: **400/422 = client sai ngay (sửa input), 409 = client đúng nhưng dữ liệu đã thay đổi (bấm lại hoặc reload), 403 = không đủ quyền**. Và đừng bao giờ tin unique check viết trong service — tôi đã thấy cảnh "đăng ký email" vẫn trùng khi hai request vào cùng 10 ms; thêm unique index là xong, code validator giữ nguyên.`,
+    follow: [
+      'Validate ở tầng service với {{@Validated}} thì exception khác gì so với validate ở controller?',
+      'Làm sao hiển thị lỗi theo field cho front-end highlight đúng ô nhập?',
+      'Kiểm tra nghiệp vụ nhiều bước (trùng email, kiểm tra hạn mức) nên đặt ở service hay domain model?'
+    ],
+    tags: ['Bean Validation', 'Hibernate Validator', 'Custom Constraint', 'Groups', 'Validation']
+  },
+  {
+    id: 'api-026',
+    topic: 'api',
+    level: 'mid',
+    q: 'Số dư tài khoản là dữ liệu cá nhân nhưng client gọi GET /api/accounts/{id} liên tục. Bạn cấu hình caching cho API thế nào ở ba tầng trình duyệt, proxy/CDN và ứng dụng: directive nào của Cache-Control, khi nào no-cache khác no-store, và làm sao không bao giờ hiển thị số dư cũ?',
+    a: `**Tóm tắt:** Phân biệt **no-store** (không được lưu ở bất kỳ đâu — dùng cho số dư, số thẻ), **no-cache** (được lưu nhưng trước khi dùng phải hỏi lại server qua ETag nên trả 304 không có body), **private** (chỉ trình duyệt được lưu, proxy/CDN cấm). Dữ liệu công khai thì đổi thành {{public}} + {{max-age}} + {{Vary}}. Mọi response cache được đều nên kèm ETag để lần gọi sau chỉ tốn một request 304 nhẹ.
+
+### Hiểu nhanh
+**Cache** là sổ tay ghi chép tạm: thay vì mỗi lần cần là chạy sang nhà kho lấy, ta ghi lại một bản sao để lần sau xem nhanh. Ba quy tắc giống hệt thói quen ghi chép: **no-store** là "đừng ghi gì ra giấy cả" (số dư không được để ở đâu cả); **no-cache** là "có ghi nhưng mỗi lần mở phải đối chiếu sổ gốc trước khi dùng"; **private** là "chỉ mình tôi được giữ bản sao, nhân viên kho (CDN) không được sao chép". Sai một chữ trong ba chữ này là số dư cũ hiện ra cho khách, hoặc dữ liệu cá nhân bị lưu ở nơi công cộng.
+
+### Thuật ngữ
+- **Cache-Control**: header quyết định ai được lưu response và trong bao lâu.
+- **no-store**: cấm lưu tại mọi tầng (RAM, đĩa, service worker).
+- **no-cache**: được lưu, nhưng trước khi dùng **bắt buộc revalidate** (hỏi lại server) — nếu server nói "vẫn còn đúng" thì trả **304 Not Modified** không kèm body.
+- **private / public**: private = chỉ trình duyệt của người dùng; public = proxy/CDN được phép lưu chung.
+- **max-age / must-revalidate / stale-while-revalidate**: sống bao lâu, quá hạn phải hỏi lại, hay được dùng bản cũ trong lúc tải bản mới (RFC 5861).
+- **ETag / If-None-Match**: mã định danh phiên bản của body; client gửi lại mã cũ, server đối chiếu.
+- **Vary**: danh sách header mà cache dùng làm **một phần của khoá cache** — thiếu nó cache sẽ trộn response của người khác.
+
+### Cơ chế từng bước
+~~~text
+lần 1: GET /api/accounts/1
+       ← 200 + ETag: "v7" + Cache-Control: private, no-cache
+         (trình duyệt LƯU body và ETag)
+lần 2: GET /api/accounts/1  với If-None-Match: "v7"
+       ← 304 Not Modified, không có body   (tiết kiệm băng thông, đúng số dư)
+lần 3 (số dư đã đổi, ETag là v8): If-None-Match: "v7"
+       ← 200 + body mới + ETag: "v8"
+~~~
+1. Server sinh ETag gắn với **phiên bản dữ liệu** ({{version}} hoặc {{updated_at}}), không gắn timestamp của request. Vì sao: ETag đổi theo request thì không bao giờ khớp, không khác gì không có.
+2. Client lưu response kèm Cache-Control và ETag.
+3. Lần sau client tự thêm {{If-None-Match}}; server so và trả 304 nếu khớp.
+4. Server đổi dữ liệu → ETag đổi → 304 trở thành 200 với bản mới. Nhờ đó "không bao giờ hiện số dư cũ" mà vẫn gọi ít request.
+
+### Chọn directive theo loại dữ liệu
+| Loại dữ liệu | Cache-Control | Vì sao |
+|---|---|---|
+| Số dư, số thẻ, thông tin cá nhân | {{no-store}} | Không được để bản sao ở RAM/đĩa của bất kỳ tầng nào |
+| Dữ liệu cá nhân nhưng cần rẻ | {{private, no-cache}} kèm ETag | Lưu được ở máy người dùng, mỗi lần dùng phải đối chiếu |
+| Danh mục, biểu phí, cấu hình public | {{public, max-age=300, stale-while-revalidate=60}} | CDN trả lời gần như tức thời, cũ vài phút chấp nhận được |
+| Response có Cookie cá nhân mà để {{public}} | **Cấm** | CDN trả số dư của người này cho người khác |
+
+~~~java
+@GetMapping("/api/accounts/{id}")
+ResponseEntity<AccountDto> get(@PathVariable long id, WebRequest req) { // WebRequest mới có checkNotModified
+    AccountDto dto = service.get(id);                    // luôn đọc bản mới nhất từ DB, không tin bản sao cũ
+    char q = '"';                                        // ETag chuẩn phải bọc nháy kép
+    String etag = q + "v" + dto.version() + q;
+    if (req.checkNotModified(etag)) return null;         // khớp If-None-Match → Spring tự trả 304
+    return ResponseEntity.ok()                           // không khớp → trả body + ETag
+            .header(HttpHeaders.ETAG, etag)
+            .cacheControl(CacheControl.noCache().cachePrivate()) // private, no-cache: chỉ trình duyệt lưu, dùng phải hỏi lại
+            .body(dto);
+}
+~~~
+Nếu quy định bảo mật cấm lưu số dư ở máy người dùng thì dùng {{CacheControl.noStore()}} và **bỏ luôn ETag/304**: không có bản lưu thì trình duyệt cũng không bao giờ gửi {{If-None-Match}}, mỗi lần gọi đều nhận body đầy đủ.
+
+### Ba tầng nghĩ khác nhau
+| Tầng | Ai quyết định | Cái hay sai |
+|---|---|---|
+| Trình duyệt | Tôn trọng Cache-Control của response | Service worker lưu đè cả {{no-store}} nếu code không kiểm tra |
+| Proxy/CDN | Chỉ cache được {{public}}; khoá theo URL + {{Vary}} | Bật cache cho response sau đăng nhập (thay vì {{private}}/{{no-store}}) → trộn dữ liệu giữa các user |
+| Ứng dụng (Spring/HTTP client) | Đọc header và cache hoặc revalidate | Giữ cache nội bộ quá hạn rồi hiển thị số dư cũ |
+
+### Lỗi hay gặp
+- **Nhầm no-cache với no-store**: {{no-cache}} vẫn cho lưu — đúng ý khi bạn muốn tiết kiệm bằng 304. Muốn "không để ở đâu cả" phải là {{no-store}}.
+- **CDN cache response có thông tin cá nhân**: triệu chứng là người này thấy số dư người kia. Cách tránh: {{private}} hoặc {{no-store}} cho mọi endpoint cần đăng nhập. Đừng dựa vào {{Vary: Authorization}} để "chia khoá theo user": phần lớn CDN không cache response có Authorization (đúng theo RFC), còn nếu có cache thì giá trị token khác nhau từng user làm hit ratio gần bằng 0.
+- **ETag sinh từ thời điểm request**: luôn đổi → 304 không bao giờ xảy ra, tốn băng thông y như không cache.
+- **GET có side effect** (tăng số lượt xem, sinh log nghiệp vụ): proxy cache nuốt mất lượt gọi. Cách tránh: việc ghi phải nằm ở POST hoặc xử lý riêng.
+- **Chỉ bật cache ở server mà quên client**: fetch của trình duyệt mặc định vẫn dùng cache HTTP; muốn luôn lấy mới thì client phải {{cache: "no-store"}} — nhưng nhớ lý do thật sự là gì.
+
+### Trả lời miệng 1 phút
+"Tôi bắt đầu bằng việc phân loại dữ liệu. Số dư và thông tin cá nhân thì {{no-store}} — không tầng nào được giữ bản sao; nếu muốn rẻ hơn thì {{private, no-cache}} kèm ETag để trình duyệt chỉ tốn một request 304. Dữ liệu công khai như biểu phí thì {{public, max-age}} để CDN trả lời, kèm {{Vary}} để cache không trộn bản theo header. ETag phải sinh từ phiên bản dữ liệu, không sinh từ thời điểm request, nếu không sẽ không bao giờ khớp. Điều tôi luôn kiểm tra là response sau đăng nhập không bao giờ được để {{public}}: khoá cache mặc định chỉ là URL, nên nếu CDN bị cấu hình cache bừa thì nó có thể trả số dư của người này cho người kia — đó là sự cố bảo mật chứ không phải lỗi hiệu năng."
+
+> Senior tip: đo **cache hit ratio** theo từng endpoint trước khi tinh chỉnh — đa số team đếm được nó ở CDN. Quy tắc của tôi: mọi endpoint sau khi đăng nhập mặc định {{private, no-cache}} + ETag; đổi sang {{public}} là quyết định cần bản ghi (data classification), không phải flag bật cho nhanh. Và luôn nhớ {{max-age=0, must-revalidate}} hoạt động giống {{no-cache}} — đây là hai chữ ký hay gặp nhất trong log của proxy.`,
+    follow: [
+      'CDN cache theo URL thì làm sao phân biệt response của từng người dùng?',
+      'stale-while-revalidate hữu ích ở đâu và có rủi ro hiển thị dữ liệu cũ không?',
+      'Nếu dữ liệu đổi ở service khác thì làm sao invalidate cache của API này?'
+    ],
+    tags: ['HTTP Caching', 'Cache-Control', 'ETag', 'CDN', 'Vary']
+  },
+  {
+    id: 'api-027',
+    topic: 'api',
+    level: 'mid',
+    q: 'Client gửi Accept: application/json, Accept-Language: vi/en, Accept-Encoding: gzip. Server xử lý "thương lượng nội dung" (content negotiation) trong Spring như thế nào? Khi nào trả 406 Not Acceptable, và vì sao có cache thì bắt buộc phải có header Vary?',
+    a: `**Tóm tắt:** Content negotiation là việc server chọn **bản đại diện (representation)** hợp ý client: Spring so {{Accept}} với danh sách {{HttpMessageConverter}} và chọn media type match tốt nhất (theo trọng số q) — không khớp thì trả **406**; {{Accept-Language}} chọn ngôn ngữ thông báo qua {{MessageSource}}; {{Accept-Encoding}} quyết định có nén (gzip) hay không, và khi nén thì **bắt buộc** {{Vary: Accept-Encoding}} để cache không trộn bản nén với bản thường.
+
+### Hiểu nhanh
+Giống một nhà hàng hỏi trước: "anh ăn chay hay mặn, nói tiếng Anh hay Việt, lấy bản in hay bản số?" — tuỳ câu trả lời mà nhà hàng dọn đúng món, đúng ngôn ngữ, đúng định dạng. **Accept** nói muốn định dạng gì, **Accept-Language** nói muốn ngôn ngữ nào, **Accept-Encoding** nói "tôi hiểu nén kiểu này". Nếu nhà hàng không làm được món khách yêu cầu thì phải nói thẳng "không có" (**406**) thay vì im lặng bưng ra một món khác.
+
+### Thuật ngữ
+- **Representation**: một bản thể hiện của resource (JSON, CSV, HTML) tuỳ theo header client.
+- **Media type**: định dạng body, ví dụ {{application/json}}, {{text/csv}}, {{application/problem+json}} cho lỗi RFC 9457.
+- **q (quality value)**: độ ưu tiên trong Accept, ví dụ {{application/json;q=0.9, */*;q=0.8}} — q cao hơn thì được chọn trước.
+- **HttpMessageConverter**: lớp của Spring đọc/ghi body theo media type (Jackson cho JSON, Jackson XML cho {{application/xml}} nếu có {{jackson-dataformat-xml}}…).
+- **406 Not Acceptable**: không có converter nào khớp Accept.
+- **MessageSource**: bảng thông báo đa ngôn ngữ của Spring, đọc theo {{LocaleContextHolder.getLocale()}}.
+- **Vary**: header nói "khóa cache còn phụ thuộc vào các header này nữa".
+- **Content-Encoding**: kiểu nén thật sự đã áp lên body ({{gzip}}, {{br}}).
+
+### Cơ chế từng bước
+1. Client gửi {{Accept: application/problem+json, application/json;q=0.5, */*;q=0.1}}. Vì sao phải có q: khi client cần JSON chung cho data nhưng **lỗi** phải là problem+json thì nhờ trọng số mà server chọn đúng.
+2. Spring so với các converter đã đăng ký; chọn match có q cao nhất. {{*/*}} khớp mọi thứ nên converter đầu tiên thắng (thường là JSON).
+3. Không converter nào khớp → **406**. Không có header Accept (coi như {{*/*}}) → lấy mặc định.
+4. {{Accept-Language: en}} → đọc {{messages_en.properties}}; không có ngôn ngữ đó thì dùng ngôn ngữ mặc định.
+5. {{Accept-Encoding: gzip}} → tầng nén (Tomcat nhúng khi bật {{server.compression.enabled}}, hoặc nginx) nén body, thêm {{Content-Encoding: gzip}} và **{{Vary: Accept-Encoding}}**.
+
+~~~text
+Accept: application/json            ─┐
+Accept-Language: en                 ─┼─► Spring chọn converter + locale + nén ─► response
+Accept-Encoding: gzip, deflate      ─┘         │
+                                       không khớp Accept → 406 Not Acceptable
+~~~
+
+### Cấu hình Spring
+~~~java
+@GetMapping(value = "/api/reports/{id}", produces = MediaType.APPLICATION_JSON_VALUE)
+ReportDto report(@PathVariable long id) { ... }   // ép JSON, không phụ thuộc Accept
+
+@GetMapping(value = "/api/transactions.csv", produces = "text/csv")
+ResponseEntity<String> csv() { ... }              // trả CSV cho client yêu cầu text/csv
+~~~
+
+~~~yaml
+spring:
+  messages:
+    basename: messages          # messages_vi.properties, messages_en.properties
+    encoding: UTF-8             # tránh lỗi dấu tiếng Việt khi dịch thông báo lỗi
+~~~
+
+~~~java
+// Đọc thông báo lỗi theo ngôn ngữ của client; field type (mã lỗi cho máy đọc) giữ nguyên
+String detail = messageSource.getMessage(
+        "error.insufficient-funds", null, LocaleContextHolder.getLocale());
+~~~
+
+### Bảng header → việc server làm
+| Header | Server làm gì | Cấu hình/lỗi hay gặp |
+|---|---|---|
+| {{Accept}} | Chọn converter, {{produces}} | Thiếu converter → 406; {{@RestController}} trả {{String}} sẽ là {{text/plain}} — bọc trong DTO nếu client cần JSON |
+| {{Accept-Language}} | Chọn bundle thông báo | Thiếu {{Vary: Accept-Language}} khi có cache → người này thấy ngôn ngữ người kia |
+| {{Accept-Encoding}} | Nén gzip/br | Bật nén ở cả app lẫn nginx → khó biết tầng nào nén, dễ nén lặp ở proxy không kiểm tra {{Content-Encoding}}; thiếu {{Vary: Accept-Encoding}} → cache trả gzip cho client không hiểu |
+| {{Accept-Charset}} | Hầu như bỏ qua | Spring Boot 3 mặc định UTF-8; đừng ép ISO-8859-1 |
+
+### Lỗi hay gặp
+- **406 do client gửi Accept lạ** ({{application/xml}} nhưng không đăng ký converter): triệu chứng client báo "không có dữ liệu". Cách tránh: thống nhất JSON cho mọi client, hoặc đăng ký thêm converter, hoặc trả rõ 406 kèm danh sách type hỗ trợ.
+- **Cấu hình nén chồng nhau**: app và nginx cùng bật nén thì rất khó biết body do tầng nào nén; proxy tự viết lại (hoặc CDN không kiểm tra {{Content-Encoding}}) có thể nén thêm lần nữa → CPU phung phí, đôi khi body hỏng. Chọn **một nơi** nén (thường là proxy) và để nén ở app tắt ({{server.compression.enabled}} mặc định là false).
+- **Thiếu {{Vary}}**: cache có một ô khoá duy nhất là URL → bản gzip và bản thường, bản vi và bản en cùng một khoá → lỗi ngẫu nhiên rất khó debug. Khi có nén hoặc đa ngôn ngữ, {{Vary}} là bắt buộc chứ không phải lựa chọn.
+- **Trả thẳng {{String}} từ controller**: client kỳ vọng JSON nhận được {{text/plain}}. Trả object hoặc set {{produces}}.
+
+### Trả lời miệng 1 phút
+"Content negotiation gồm ba trục. Trục định dạng: Spring so {{Accept}} với danh sách {{HttpMessageConverter}}, chọn theo trọng số q, không khớp thì 406 — vì vậy tôi luôn khai {{produces}} rõ ràng cho từng endpoint. Trục ngôn ngữ: {{Accept-Language}} quyết định bundle trong {{MessageSource}}, tôi dùng nó cho thông báo lỗi nhưng giữ nguyên {{type}} cho máy đọc. Trục nén: {{Accept-Encoding}} cho phép gzip, và đây là chỗ hay sai nhất — phải kèm {{Vary: Accept-Encoding}} nếu không cache sẽ trộn bản nén với bản thường, cũng như thiếu {{Vary: Accept-Language}} sẽ làm người dùng thấy sai ngôn ngữ. Nén thì tôi chỉ bật ở một tầng, thường là proxy, để tránh nén kép."
+
+> Senior tip: hãy mặc định JSON thống nhất và chỉ mở CSV/PDF cho endpoint thật sự cần — càng nhiều representation thì càng nhiều đường test. Khi bật cache/CDN, tôi luôn kiểm tra hai header {{Vary}} ({{Accept-Encoding}}, {{Accept-Language}}) trong phản hồi thật bằng curl trước khi giao: cache trả sai bản là loại bug chỉ xuất hiện ở môi trường có traffic thật, không bao giờ thấy trên máy dev.`,
+    follow: [
+      'Làm sao cho client tự biết server hỗ trợ định dạng nào thay vì đoán đến khi gặp 406?',
+      'Nén nên bật ở Spring hay ở nginx? Tiêu chí chọn là gì?',
+      'Thiết kế thông báo lỗi đa ngôn ngữ sao cho client vẫn phân loại được lỗi bằng máy?'
+    ],
+    tags: ['Content Negotiation', 'Accept', '406', 'Vary', 'Spring MVC']
+  },
+  {
+    id: 'api-028',
+    topic: 'api',
+    level: 'senior',
+    q: 'Khách hàng muốn sửa một phần hồ sơ: người thì chỉ đổi số điện thoại, người thì dời nhà và đổi email cùng lúc. So sánh JSON Merge Patch (RFC 7396) và JSON Patch (RFC 6902) cho REST API: cú pháp, idempotency, cách Spring/Jackson nhận và áp dụng, và khi nào chọn cách nào?',
+    a: `**Tóm tắt:** **JSON Merge Patch** là một object nêu phần muốn đổi, field để {{null}} là xoá — ngắn gọn, áp kiểu gộp, thường idempotent; **JSON Patch** là mảng thao tác có thứ tự ({{add}}, {{remove}}, {{replace}}, {{move}}, {{copy}}, {{test}}) kèm **JSON Pointer** — mạnh hơn (chèn vào mảng, so sánh điều kiện trước khi sửa) nhưng dễ sai khi thao tác chồng lên trạng thái cũ. Hai định dạng có media type riêng: {{application/merge-patch+json}} và {{application/json-patch+json}}; sai Content-Type thì Spring trả **415**.
+
+### Hiểu nhanh
+**Merge Patch** giống tờ ghi "số điện thoại mới: 0912…" — bạn chỉ viết ra điều mình muốn thay, phần còn lại giữ nguyên. **JSON Patch** giống biên bản sửa điều lệ: từng dòng có số hiệu và hành động ("điều 3: thay thế", "điều 5: xoá", "điều 7: thêm cuối mục tags"), kèm cả điều kiện "chỉ sửa khi bản hiện tại đúng là bản 7". Tờ ghi thì ai cũng viết được; biên bản thì phải đúng luật — nên đúng hơn nhưng dễ hỏng khi viết tay.
+
+### Thuật ngữ
+- **PATCH (RFC 5789)**: method cập nhật **một phần** resource, khác PUT (thay thế toàn bộ).
+- **Delta**: phần chênh lệch giữa trạng thái cũ và mới, chỉ chứa thay đổi.
+- **JSON Pointer (RFC 6901)**: chuỗi trỏ tới một chỗ trong JSON, ví dụ {{/addresses/1/city}}; {{/tags/-}} nghĩa là "cuối mảng tags".
+- **Media type**: định dạng khai báo trong {{Content-Type}}; server dùng nó để chọn cách đọc body.
+- **Idempotency**: áp lại cùng input cho cùng kết quả; rất quan trọng khi client retry.
+- **415 Unsupported Media Type**: {{Content-Type}} không hợp lệ với endpoint đó.
+- **If-Match / 412**: điều kiện trước, cho phép từ chối ghi đè khi bản đã bị người khác đổi (lost update).
+
+### Cú pháp hai bên
+~~~json
+{ "phone": "0912345678", "email": null, "city": "Ha Noi" }
+~~~
+Merge Patch trên: đổi phone, **xoá** email (null = xoá, không phải "đặt thành null"), giữ nguyên mọi field khác.
+
+~~~json
+[
+  { "op": "replace", "path": "/phone", "value": "0912345678" },
+  { "op": "remove",  "path": "/email" },
+  { "op": "add",     "path": "/tags/-", "value": "priority" },
+  { "op": "test",    "path": "/version", "value": 7 }
+]
+~~~
+JSON Patch trên: cùng kết quả, nhưng thêm được phần tử vào cuối mảng và có {{test}} — "chỉ áp khi version đúng bằng 7"; nếu không khớp thì **cả patch** bị huỷ (RFC 6902 yêu cầu áp nguyên tử) và server trả **409 Conflict** như RFC 5789 gợi ý cho trạng thái xung đột.
+
+### Bảng so sánh
+| Tiêu chí | JSON Merge Patch | JSON Patch |
+|---|---|---|
+| Cú pháp | Object delta | Mảng thao tác có thứ tự |
+| Media type | {{application/merge-patch+json}} | {{application/json-patch+json}} |
+| Xoá field | Để {{null}} | {{op: remove}} |
+| Chèn/cuối mảng | Không làm được | {{path: /tags/-}} |
+| So sánh điều kiện | Không | {{op: test}} |
+| Idempotent | Có | Gần như có, trừ {{add}} vào {{/-}} (áp lại thêm lần nữa) |
+| Client dễ viết | Rất dễ | Phải hiểu JSON Pointer |
+| Dùng khi | Đổi vài field phổ biến (90% trường hợp) | Thao tác cấu trúc, cần nguyên tử/điều kiện |
+
+### Spring: nhận body và áp delta
+~~~java
+@PatchMapping(value = "/api/profiles/{id}", consumes = "application/merge-patch+json")
+ResponseEntity<ProfileDto> patch(@PathVariable long id, @RequestBody JsonNode patch,   // om: ObjectMapper inject qua constructor
+        @RequestHeader(value = "If-Match", required = false) String ifMatch) {
+    Profile cur = repo.find(id);                        // 1. luôn đọc trạng thái MỚI NHẤT ở server
+    if (ifMatch != null && !ifMatch.equals(etagOf(cur)))
+        return ResponseEntity.status(HttpStatus.PRECONDITION_FAILED).build();  // 412
+    JsonNode next = merge(om.valueToTree(cur), patch);   // 2. áp delta theo RFC 7396
+    Profile saved = repo.save(om.treeToValue(next, Profile.class));            // 3. validate rồi ghi
+    return ResponseEntity.ok(dto(saved));
+}
+~~~
+
+~~~java
+// Toàn bộ RFC 7396: null = xoá, object = gộp đệ quy, giá trị khác = thay thế cả giá trị
+static JsonNode merge(JsonNode base, JsonNode patch) {
+    if (!patch.isObject()) return patch;                 // scalar/mảng/null: thay nguyên giá trị
+    ObjectNode out = base != null && base.isObject()
+            ? ((ObjectNode) base).deepCopy()             // gộp vào bản cũ
+            : JsonNodeFactory.instance.objectNode();     // base không phải object → coi như {}
+    Iterator<Map.Entry<String, JsonNode>> it = patch.fields();
+    while (it.hasNext()) {
+        Map.Entry<String, JsonNode> e = it.next();
+        if (e.getValue().isNull()) out.remove(e.getKey());                        // null → xoá
+        else out.set(e.getKey(), merge(out.get(e.getKey()), e.getValue()));       // gộp đệ quy
+    }
+    return out;
+}
+~~~
+Với JSON Patch, Jackson (jackson-core) chỉ có {{JsonPointer}} và {{JsonNode.at(...)}} để trỏ đường dẫn, **không** có sẵn class áp patch trong {{jackson-databind}}. Muốn nhận {{application/json-patch+json}} phải thêm thư viện như {{com.github.java-json-tools:json-patch}} (API {{JsonPatch.fromJson(node).apply(target)}}) hoặc {{com.flipkart.zjsonpatch:zjsonpatch}}; trỏ sai đường dẫn hay {{test}} không khớp sẽ ném {{JsonPatchException}} → trả 400 (patch sai cú pháp), 422 (patch không áp được lên tài liệu) hoặc 409 (test/trạng thái xung đột) kèm chi tiết.
+
+### Lỗi hay gặp
+- **Gửi sai Content-Type** ({{application/json}} thay vì {{application/merge-patch+json}}) → 415. Đây là lỗi phía client, nhưng phải ghi rõ trong tài liệu và trả ProblemDetail dễ hiểu.
+- **PATCH dựa trên trạng thái client đang giữ**: client soạn patch sau khi mở form 5 phút, giữa chừng có người khác sửa → ghi đè mất thay đổi. Cách tránh: kèm {{If-Match}} với ETag; 412 báo client đọc lại.
+- **Dùng PUT với body thiếu field**: PUT nghĩa là "thay thế toàn bộ", field không gửi sẽ bị mất. Đây là lý do form sửa một phần nên chọn PATCH.
+- **JSON Patch {{test}} fail**: trả **409 Conflict** (RFC 5789), không phải 400 — vì cú pháp đúng, chỉ trạng thái hiện tại không khớp. Dành **412** cho header điều kiện {{If-Match}}.
+- **Mạng/WAF chặn PATCH**: một số proxy, WAF hoặc gateway mặc định không cho {{PATCH}} qua (405). Kiểm tra tầng ngoài trước khi đổ lỗi cho code.
+
+### Trả lời miệng 1 phút
+"PATCH là cập nhật một phần, và tôi chia hai định dạng theo mức độ phức tạp của client. Merge Patch là một object nêu phần muốn đổi, null nghĩa là xoá, phần còn lại giữ nguyên — idempotent, dễ sinh, nên tôi dùng làm mặc định cho các form sửa thông tin. JSON Patch là mảng thao tác kèm JSON Pointer, mạnh hơn với chèn vào mảng và phép {{test}} điều kiện, nhưng client phải hiểu cấu trúc và có chỗ áp lại là không idempotent, vì vậy tôi chỉ dùng khi cần thao tác cấu trúc. Điểm quan trọng nhất không phải chọn định dạng mà là đọc trạng thái mới nhất ở server rồi mới áp delta, kèm If-Match để trả 412 nếu dữ liệu đã đổi — nếu không thì patch chính xác đến đâu cũng mất thay đổi của người khác."
+
+> Senior tip: hãy chọn **một** định dạng cho cả hệ thống (gần như luôn là Merge Patch) và quy định trong OpenAPI — để hai định dạng sống song song nghĩa là mọi SDK, mọi test, mọi trang tài liệu phải nhân đôi. Luôn kèm {{If-Match}} cho PATCH của dữ liệu nhiều người cùng sửa: tôi đã thấy báo cáo của khách "địa chỉ bị người khác ghi đè" đúng vào lúc hàng trăm user cập nhật hạn mức trong ngày cao điểm.`,
+    follow: [
+      'Merge Patch dùng null để xoá field, vậy nếu client thật sự muốn đặt một field thành null tường minh thì xử lý thế nào?',
+      'JSON Patch có đảm bảo nguyên tử (toàn bộ mảng thao tác hay không phần nào) không?',
+      'PATCH nên trả 200 kèm body mới hay 204? Vì sao?'
+    ],
+    tags: ['PATCH', 'JSON Merge Patch', 'JSON Patch', 'RFC 7396', 'Idempotency']
+  },
+  {
+    id: 'api-029',
+    topic: 'api',
+    level: 'senior',
+    q: 'Màn hình "Giao dịch mới nhất" phải hiện ngay khi khách chuyển tiền thành công. So sánh polling (kèm conditional request), SSE và WebSocket cho REST API: độ trễ, chi phí kết nối, vận hành sau load balancer nhiều instance, và hành xử trên mobile — khi nào chọn cách nào?',
+    a: `**Tóm tắt:** **Polling** là client hỏi lại theo lịch — đơn giản nhất, độ trễ bằng chu kỳ hỏi, tốn request; **SSE** là client mở một HTTP request, server giữ kết nối mở và đẩy event dạng {{text/event-stream}} — một chiều, tự nối lại, đi qua được proxy/load balancer cũ; **WebSocket** là kết nối hai chiều sau khi bắt tay {{Upgrade: websocket}} — cần trạng thái kết nối và pub-sub giữa các instance. Nên bắt đầu bằng polling + ETag, thêm SSE khi cần độ trễ dưới khoảng 1 giây, WebSocket chỉ khi client thật sự phải **gửi** dữ liệu real-time.
+
+### Hiểu nhanh
+**Polling** giống hỏi mẹ "cơm chưa?" mỗi phút: chắc chắn biết được, nhưng vừa tốn công vừa phải đợi tới câu hỏi kế tiếp. **SSE** giống mẹ bấm chuông khi cơm chín: bạn chỉ cần đứng đó, không phải hỏi lại. **WebSocket** giống điện thoại hai chiều: vừa nghe vừa nói được, nhưng phải giữ máy (giữ kết nối) và đổi máy (mạng) là mất cuộc gọi.
+
+### Thuật ngữ
+- **Polling**: gửi request lặp lại theo lịch; **conditional poll** là kèm {{If-None-Match}} để server trả 304 nhẹ thay vì cả body.
+- **SSE (Server-Sent Events)**: chuẩn HTTP/HTML cho server đẩy sự kiện một chiều; trình duyệt có API {{EventSource}} tự nghe và tự nối lại.
+- **text/event-stream**: định dạng body của SSE — các dòng {{event:}}, {{data:}}, {{id:}}, ngăn cách bằng dòng trống.
+- **Last-Event-ID**: header trình duyệt tự gửi khi nối lại để xin các event từ chỗ đứt.
+- **WebSocket**: giao thức riêng, thường chạy qua cổng 80/443, bắt đầu bằng một HTTP request {{Upgrade: websocket}}, sau đó trao đổi **frame** hai chiều.
+- **Sticky session**: load balancer ghim cùng client vào một instance (bằng cookie/IP) để kết nối dài không bị đá sang máy khác.
+- **Pub/Sub (Redis)**: "kênh phát tin chung" giữa các instance — instance nào sinh event thì phát lên kênh, instance đang giữ kết nối của client nhận và đẩy xuống. Redis ở đây là một máy chủ key-value chạy riêng, được dùng làm kênh tin nhanh giữa các service.
+- **Heartbeat**: byte gửi định kỳ để tầng trung gian không cắt kết nối đang im lặng.
+
+### Cơ chế và chi phí
+~~~text
+polling : client ──GET──► server   mỗi 5 giây    độ trễ TB ~2,5 giây, 12 request/phút/người
+SSE     : client ──GET──► server GIỮ MỞ ◄────── server đẩy:
+                                                   event: transaction
+                                                   id: 918273
+                                                   data: {"id":918273,"amount":500000}
+
+                                                   (dòng trống = kết thúc một event)
+WebSocket: client ══HTTP Upgrade: websocket══► sau bắt tay: hai chiều, có nhịp (ping/pong)
+~~~
+
+### Bảng so sánh
+| Tiêu chí | Polling + ETag | SSE | WebSocket |
+|---|---|---|---|
+| Độ trễ | Bằng chu kỳ (1–30 giây) | Gần như tức thì | Tức thì |
+| Số kết nối | Nhiều request lặp | 1 kết nối mở mỗi client | 1 kết nối mỗi client |
+| Qua proxy/CDN cũ | Rất tốt | Tốt nếu proxy tắt buffering | Cần proxy hiểu Upgrade |
+| Nhiều instance | Không cần trạng thái | Cần sticky hoặc pub-sub | Cần sticky hoặc pub-sub |
+| Hai chiều | Không | Không (client vẫn gọi API bình thường) | Có |
+| Tự nối lại | Không cần (cứ hỏi lại đều) | {{EventSource}} tự, kèm {{Last-Event-ID}} | Tự viết (mất kết nối thì gọi lại handshake) |
+| Phức tạp | Rất thấp | Thấp | Cao nhất (kết nối, khung hình, nhịp, thứ tự) |
+
+### SSE trong Spring Boot
+~~~java
+private final Map<Long, SseEmitter> clients = new ConcurrentHashMap<>();
+
+@GetMapping(value = "/api/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+SseEmitter stream() throws IOException {
+    SseEmitter em = new SseEmitter(30 * 60 * 1000L);  // timeout 30 phút: lớn hơn async timeout mặc định,
+                                                      // chặn kết nối "mồ côi" (client chết mà không đóng)
+    clients.put(userId(), em);                   // lưu theo user để event tới đúng người
+    em.onCompletion(() -> clients.remove(userId()));
+    em.onError(e -> clients.remove(userId()));
+    em.send(SseEmitter.event().id("" + lastSeq).name("connected").data("ok")); // gửi sớm để header và byte đầu tới client ngay
+    return em;                                   // trả về NGAY: Spring chạy async, luồng container được thả
+}
+
+// Ở nơi sinh event (sau khi commit transaction): phát cho đúng người
+void onTransferDone(Transfer t) throws IOException {   // send lỗi (client đã đi) → bắt và remove emitter
+    SseEmitter em = clients.get(t.customerId());
+    if (em != null) em.send(SseEmitter.event().id("" + t.seq()).name("transaction").data(toJson(t)));
+}
+~~~
+
+### Nhiều instance: chỗ hay vỡ nhất
+~~~text
+                    ┌──► instance A ──► DB     (client X đang nối ở đây)
+client ──LB giao───┤
+                    └──► instance B ──► DB     (giao dịch sinh ra Ở ĐÂY)
+Muốn client X thấy event thì B phải phát lên kênh chung (Redis Pub/Sub),
+A đang giữ kết nối của X nhận được rồi đẩy xuống.
+~~~
+Không có pub-sub thì triệu chứng là **"một nửa số client thấy giao dịch mới, một nửa không"**, và còn tệ hơn sau mỗi lần có instance khởi động lại — rất khó tái hiện vì trên máy dev chỉ có một instance.
+
+### Lỗi hay gặp
+- **Proxy giữ buffer**: nginx gom response rồi mới gửi → client thấy event đến trễ hàng giây hoặc không thấy. Cách tránh: {{proxy_buffering off}} cho endpoint SSE (hoặc header {{X-Accel-Buffering: no}}), không bật gzip cho {{text/event-stream}}.
+- **Không heartbeat**: 60 giây không có byte nào là tầng trung gian cắt; client tưởng mất server. Gửi ping mỗi 15–30 giây.
+- **Nhiều instance mà không pub-sub/sticky**: event chỉ tới client của đúng instance sinh ra.
+- **Giữ thread cho từng kết nối**: nếu tự đọc kết nối kiểu synchronous thì 10.000 client = 10.000 thread. Dùng {{SseEmitter}}/WebFlux (async, không giữ thread sau khi trả về).
+- **Sự kiện trùng hoặc lệch khi nối lại**: gửi kèm {{id}} (sequence); client bỏ qua id đã thấy.
+- **Mobile**: app vào nền thì hệ điều hành cắt kết nối; ngoài SSE còn cần push notification (FCM) làm lưới an toàn.
+
+### Trả lời miệng 1 phút
+"Tôi chọn theo yêu cầu độ trễ và trạng thái phía server. Polling kèm ETag là nền: mỗi lượt chỉ tốn một request 304, độ trễ bằng chu kỳ hỏi, không cần giữ trạng thái nên chạy sau bao nhiêu instance cũng được. Khi nghiệp vụ yêu cầu dưới một giây thì tôi thêm SSE: client mở một request, server giữ kết nối và đẩy text/event-stream, EventSource tự nối lại và gửi Last-Event-ID để lấy phần bị đứt — điều kiện là proxy phải tắt buffering, có heartbeat, và đa instance phải có pub-sub để event sinh bên này tới được client đang nối bên kia. WebSocket tôi chỉ dùng khi client thật sự phải gửi dữ liệu real-time cùng lúc, vì giá của nó là trạng thái kết nối, sticky session và rất nhiều ca lỗi chỉ xuất hiện khi có hàng nghìn kết nối."
+
+> Senior tip: bắt đầu bằng polling + ETag cho mọi màn hình, nâng lên SSE đúng một chỗ cần thật sự tức thì — tôi đã thấy đội trả giá rất đắt cho WebSocket khi chỉ cần push một chiều. Trước khi mở SSE cho production, test bằng curl giữ kết nối qua đúng dải proxy/ingress thật và đo thời gian từ lúc sinh event tới lúc client nhận; nếu con số không dưới ngưỡng mục tiêu thì vấn đề nằm ở buffer/heartbeat, không nằm ở code Java.`,
+    follow: [
+      'Nếu dùng SSE thì quyền truy cập kiểm tra lúc nào, khi EventSource không gửi được header Authorization tùy ý?',
+      'Điều phối pub-sub giữa nhiều instance với Redis có mất event khi Redis restart không?',
+      'Polling với chu kỳ bao nhiêu là hợp lý cho màn hình tài khoản, vì sao càng ngắn càng nguy hiểm?'
+    ],
+    tags: ['SSE', 'WebSocket', 'Polling', 'Real-time', 'Load Balancer']
+  },
+  {
+    id: 'api-030',
+    topic: 'api',
+    level: 'lead',
+    q: 'App mobile v2.3 đã phát hành từ năm ngoái và bạn không thể ép người dùng nâng cấp. Bạn phải đổi response của API (thêm, đổi tên, bỏ field, thêm giá trị enum) mà không làm app cũ crash. Quy tắc dung thứ (tolerant reader) cụ thể là gì, cấu hình nằm ở đâu, và kiểm chứng bằng cách nào trước khi deploy?',
+    a: `**Tóm tắt:** Trong cùng một major version, server chỉ được **cộng thêm** field optional — không đổi tên, không bỏ, không đổi kiểu; muốn đổi thì thêm field mới, giữ field cũ đọc-được và ghi dấu deprecated. Client phải là **tolerant reader**: bỏ qua field lạ, có nhánh mặc định cho enum lạ, không giả định mọi field đều có mặt. Kiểm chứng trước khi deploy bằng **contract test**: kéo response mẫu của app cũ qua đúng parser của app cũ trong CI, cộng staging chạy APK cũ chạm server mới.
+
+### Hiểu nhanh
+App đã lên store giống sách in đã phát hành: **không thu hồi được**, người ta còn cầm trên tay bản in năm ngoái. Thêm một chương mới thì sách cũ vẫn đọc được (bỏ qua chương lạ); còn **đổi tên chương** là mục lục sách cũ trỏ vào chỗ không tồn tại. Tolerant reader chính là quy ước "sách mới in vẫn mở được bằng mục lục cũ": người đọc bỏ qua phần mình không biết, người viết không xoá thứ người đọc đang dựa vào.
+
+### Thuật ngữ
+- **Tolerant reader / tolerant writer**: bên đọc bỏ qua dữ liệu không nhận ra; bên ghi không ghi gì ngoài phạm vi hợp đồng đã hứa.
+- **Additive-only change**: chỉ thêm, không sửa/bỏ trong cùng major version.
+- **Unknown properties**: field JSON mà class không khai báo. {{ObjectMapper}} của Jackson **mặc định báo lỗi** với field lạ (cờ {{FAIL_ON_UNKNOWN_PROPERTIES}} đang bật); Spring Boot đã tắt cờ này nên app đọc được, còn SDK viết tay hay app Kotlin/Swift dùng parser strict thì phải tự bật thái độ dung thứ.
+- **Enum evolution**: thêm giá trị mới vào enum; client viết {{switch}} không có {{default}} thì vỡ.
+- **Support window (N-2)**: cam kết đọc được response cho 2 phiên bản app trở lại.
+- **Deprecation field**: field vẫn trả về nhiều tháng sau khi có phương án thay thế.
+
+### Bảng quyết định: đổi gì thì an toàn
+| Thay đổi response | An toàn? | Rủi ro với app cũ | Cách an toàn |
+|---|---|---|---|
+| Thêm field optional | Có | Thường không | Chỉ thêm, đánh dấu trong OpenAPI |
+| Đổi tên field | **Không** | Field cũ thành null → trắng UI, NPE | Thêm field mới, vẫn trả field cũ, deprecated |
+| Bỏ field | **Không** | app cũ đọc ra null | Giữ trả về thêm nhiều tháng, đo lượt đọc trước |
+| Đổi kiểu (int → string) | **Không** | Lỗi parse ngay | Tạo field mới kiểu mới |
+| Thêm giá trị enum | **Có điều kiện** | switch thiếu default → hiện sai hoặc crash | Client có nhánh mặc định, server tài liệu hoá |
+| Thêm field **bắt buộc** vào request | **Không** | Request cũ bị 400 | Server tự điền default khi thiếu |
+| Đổi định dạng/ngày/giờ/mặc định | **Không** | Parse được nhưng **sai hiển thị** | Giữ nguyên format, thêm tham số nếu muốn đổi |
+| Thêm endpoint / thêm header | Có | Không | Yêu cầu client không chặt header lạ |
+
+### Cấu hình dung thứ
+~~~yaml
+spring:
+  jackson:
+    deserialization:
+      fail-on-unknown-properties: false   # đọc request lạ không nổ (mặc định của Spring Boot)
+~~~
+Vị trí quan trọng: cấu hình dung thứ này phải có ở **client** (app mobile, SDK Java của đối tác) — nơi đọc response của bạn; ở server thì cần khi bạn đọc JSON của đối tác bên thứ ba. Riêng phần enum lạ thì bật bằng {{ObjectMapper}} như dưới đây:
+
+~~~java
+public enum TxStatus {
+    PENDING, SUCCESS, FAILED,
+    @JsonEnumDefaultValue
+    UNKNOWN;                    // giá trị rơi xuống khi gặp giá trị lạ trong tương lai
+}
+// client: mapper.enable(DeserializationFeature.READ_UNKNOWN_ENUM_VALUES_USING_DEFAULT_VALUE);
+// UI viết theo UNKNOWN thay vì giả định hết mọi nhánh đã liệt kê
+~~~
+
+### Vòng đời một field
+~~~text
+T0     thêm receiptUrl (optional); VẪN trả url cũ      → cả hai field cùng xuất hiện
+T+3    log tỉ lệ request còn đọc field cũ (nhóm theo X-Client-Version)
+T+6    còn dưới 1% lượt đọc → đưa vào danh sách bỏ
+major  ngừng trả field cũ (đây là lúc cần version mới, xem chính sách deprecation)
+~~~
+
+### Kiểm chứng trước khi deploy
+1. **Golden response test**: lưu đúng JSON mà app v2.3 từng nhận làm file mẫu; CI của repo app deserialize lại bằng code app — server đổi là test đỏ ngay.
+2. **Consumer-driven contract (Pact)**: app cũ là consumer, mỗi lần server sửa spec phải chạy verify với consumer cũ trước.
+3. **E2E staging**: dựng server mới, chạy APK cũ trên emulator/thiết bị thật — lỗi decode chỉ lộ ra khi chạy đủ luồng thật.
+4. **Đo trên production**: theo tỉ lệ crash theo phiên bản app (Crashlytics/Firebase) **theo từng version**; bump server vào giờ thấp điểm và so tỉ lệ lỗi trong 1 giờ kế tiếp.
+
+### Lỗi hay gặp
+- **"Chắc không ai dùng field đó" rồi xoá**: triệu chứng là app cũ trắng màn hình sau deploy. Cách tránh: đo lượt đọc trước bằng log/metric theo phiên bản client.
+- **Client Kotlin/Swift ép kiểu non-null**: server ngừng trả field = null → crash ngay dòng khởi tạo. Cách tránh: field optional có default, không bao giờ bỏ bắt buộc giữa chừng.
+- **Đổi định dạng ngày (2024-01-05 → 05/01/2024)**: cùng tên field, parse vẫn qua nhưng hiển thị sai — lặng lẽ và nguy hiểm hơn crash vì người dùng tin vào dữ liệu sai.
+- **Trả field mới dạng chuỗi rỗng**: client hiện ô trống hoặc chữ "null". Tốt hơn là **không trả field đó** khi không có giá trị.
+- **Tin vào "đợt này ép cập nhật app"**: tỉ lệ tắt cập nhật tự động rất cao và store duyệt mất vài ngày; ngay trong ngày đầu, người dùng cũ vẫn chạm API của bạn.
+
+### Trả lời miệng 1 phút
+"Nguyên tắc của tôi là trong cùng major version chỉ cộng thêm, không sửa xoá: thêm field optional thì an toàn, còn đổi tên hay bỏ field thì phải thêm field mới và giữ field cũ đọc được thêm vài tháng, sau đó đo xem còn ai dùng mới bỏ ở lần nâng cấp version. Ở phía đọc, client luôn là tolerant reader: bỏ qua field lạ, có nhánh mặc định cho enum lạ bằng JsonEnumDefaultValue, và không giả định mọi field đều có mặt — vì app đã lên store thì không sửa được. Để chắc chắn, tôi dựng contract test: JSON mẫu của app cũ phải parse được bằng đúng parser của app cũ ngay trong CI, rồi chạy staging với APK cũ trước khi lên production. Thay đổi format ngày giờ hay default cũng coi là breaking, vì nó làm hiển thị sai thay vì crash nên càng khó phát hiện."
+
+> Senior tip: hãy xem **"broke được bao nhiêu version client"** là chỉ số của mỗi lần deploy API, ngang bằng với tỉ lệ lỗi 5xx. Công cụ rẻ nhất là contract test với JSON golden file của N-2 phiên bản; thứ hai là telemetry theo {{X-Client-Version}} để biết field nào sắp hết người dùng trước khi xoá. Và khi buộc phải breaking thì nâng major version đúng nghĩa (giữ song song, có {{Sunset}}), đừng "nói nội bộ thôi rồi đổi luôn" — mọi tích hợp bên thứ ba đều coi đó là sự cố.`,
+    follow: [
+      'Nếu cả hai version cũ và mới phải chạy song song một thời gian thì code và database sắp xếp thế nào?',
+      'Làm sao đo được "còn bao nhiêu client đọc field này" nếu client không gửi phiên bản app?',
+      'Khi nào thì nên tạo major version mới thay vì vẫn cố cộng thêm?'
+    ],
+    tags: ['Backward Compatibility', 'Tolerant Reader', 'API Evolution', 'Jackson', 'Contract Test']
   }
 );

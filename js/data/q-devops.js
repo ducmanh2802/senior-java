@@ -1878,5 +1878,670 @@ Tôi chia việc rõ ràng: Micrometer là facade cho metric, Actuator phơi /ac
       'Làm sao giữ traceId xuyên qua Kafka và thread pool để log tương quan đúng?'
     ],
     tags: ['Observability', 'Micrometer', 'OpenTelemetry', 'Tracing', 'SLO']
+  },
+  {
+    id: 'devops-023',
+    topic: 'devops',
+    level: 'mid',
+    q: 'Dev mới vào team mất 2 ngày để cài PostgreSQL, Redis, Kafka trên máy mới chạy được service. Bạn dựng môi trường dev bằng Docker Compose thế nào: file compose gồm gì, làm sao app chỉ khởi động khi DB đã sẵn sàng, dữ liệu có mất khi tắt máy không, và Spring Boot hỗ trợ gì?',
+    a: `**Tóm tắt:** Viết một file {{compose.yaml}} trong repo khai báo các **service** phụ thuộc (postgres, redis, kafka) với image có version cố định, cổng, biến môi trường, **healthcheck**, và **named volume** để giữ dữ liệu. Dùng {{depends_on}} với {{condition: service_healthy}} để thứ tự khởi động dựa trên trạng thái "sẵn sàng" chứ không chỉ "đã chạy". Một lệnh {{docker compose up -d}} là xong. Từ Spring Boot 3.1, module {{spring-boot-docker-compose}} còn tự chạy compose khi start app và tự cấu hình datasource.
+
+### Hiểu nhanh
+Compose giống **tờ thực đơn đặt bàn tiệc**: thay vì gọi từng món (cài tay từng phần mềm, mỗi máy một kiểu), bạn đưa một tờ ghi đủ "1 PostgreSQL 16, 1 Redis 7, 1 Kafka", nhà bếp (Docker) dọn đúng như nhau cho mọi người. **Healthcheck** là người phục vụ kiểm tra món đã chín chưa trước khi mời khách ăn. **Volume** là tủ lạnh: tắt bếp (dừng container) thì đồ ăn vẫn còn trong tủ.
+
+### Thuật ngữ
+- **Service (trong Compose)**: một container được khai báo trong file, có tên — tên này cũng là **hostname** để các container khác gọi tới.
+- **Healthcheck**: lệnh Docker chạy định kỳ trong container để biết nó đã sẵn sàng phục vụ chưa (ví dụ {{pg_isready}}).
+- **depends_on + condition**: thứ tự khởi động; {{service_started}} chỉ đợi container chạy, {{service_healthy}} đợi healthcheck báo healthy.
+- **Named volume**: vùng lưu dữ liệu do Docker quản lý, tồn tại độc lập với container.
+- **Compose profiles**: nhóm service tuỳ chọn, chỉ bật khi cần ({{--profile kafka}}).
+- **.env**: file biến môi trường Compose tự đọc khi chạy, để không hard-code mật khẩu trong file compose.
+
+### Cơ chế từng bước
+1. Dev clone repo, chạy {{docker compose up -d}}. Compose đọc {{compose.yaml}}, tạo một **network riêng** cho project, kéo image nếu chưa có.
+2. Tạo container postgres, redis; healthcheck bắt đầu chạy. Vì sao cần healthcheck: PostgreSQL cần vài giây khởi tạo; container "đang chạy" chưa có nghĩa là nhận kết nối được.
+3. Service nào khai báo {{depends_on: postgres: condition: service_healthy}} sẽ chờ tới khi postgres healthy mới được tạo.
+4. App chạy trên máy (IDE) kết nối {{localhost:5432}} nhờ cổng được publish; container khác trong cùng compose kết nối bằng tên service {{postgres:5432}}.
+5. {{docker compose down}} xoá container và network nhưng **giữ named volume** → lần sau dữ liệu vẫn còn. {{docker compose down -v}} mới xoá volume (reset sạch dữ liệu).
+
+### File compose ví dụ
+~~~yaml
+services:
+  postgres:
+    image: postgres:16.4             # version cố định, không dùng latest
+    environment:
+      POSTGRES_DB: orders
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: devpass     # chỉ dùng cho máy dev
+    ports: ["5432:5432"]             # host:container, để app chạy trong IDE kết nối
+    volumes: ["pgdata:/var/lib/postgresql/data"]   # dữ liệu sống qua lần down/up
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d orders"]
+      interval: 5s
+      retries: 10
+  redis:
+    image: redis:7.4
+    ports: ["6379:6379"]
+  orders-api:                        # tuỳ chọn: chạy cả app trong container
+    build: .
+    profiles: ["full"]               # chỉ chạy khi: docker compose --profile full up
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/orders   # tên service, không phải localhost
+    depends_on:
+      postgres:
+        condition: service_healthy   # đợi DB sẵn sàng thật sự
+volumes:
+  pgdata:
+~~~
+
+### Spring Boot hỗ trợ gì
+Thêm dependency {{spring-boot-docker-compose}} (scope chỉ cho dev, ví dụ Maven {{optional}} hoặc Gradle {{developmentOnly}}). Khi bạn chạy app, Spring Boot tìm {{compose.yaml}}, chạy {{docker compose up}}, đợi container sẵn sàng, rồi tự tạo **ServiceConnection** cho các image nó nhận ra (PostgreSQL, Redis, Kafka…) — bạn không cần khai {{spring.datasource.url}} cho máy dev. Module này mặc định bị tắt khi chạy test.
+
+### So sánh cách dựng môi trường dev
+| Cách | Ưu | Nhược |
+|---|---|---|
+| Cài tay trên máy | Không cần Docker | Mỗi máy một version, mất hàng giờ, khó reset |
+| Docker Compose | Một lệnh, giống nhau mọi máy, reset dễ | Cần Docker Desktop/Engine, tốn RAM |
+| Testcontainers (cho test) | Container sống theo vòng đời test, cô lập | Không dùng để chạy app hằng ngày |
+| DB dev dùng chung trên server | Không tốn RAM máy | Dev đè dữ liệu của nhau, phụ thuộc mạng |
+
+### Lỗi hay gặp
+- **Dùng {{depends_on}} không có condition.** Triệu chứng: app khởi động lỗi "Connection refused" ngẫu nhiên vì DB chưa sẵn sàng. Cách tránh: healthcheck + {{service_healthy}}; app vẫn nên có retry khi kết nối.
+- **App trong container gọi {{localhost:5432}}.** Triệu chứng: Connection refused. Trong container, localhost là chính container app. Cách tránh: dùng tên service {{postgres}}.
+- **Image {{latest}}.** Triệu chứng: hôm nay chạy được, mai lỗi vì image mới lên major version. Cách tránh: ghim version, cập nhật có chủ đích.
+- **Tưởng {{down}} xoá dữ liệu** hoặc ngược lại, chạy {{down -v}} rồi mất dữ liệu test đã chuẩn bị. Cách tránh: hiểu volume; có script seed dữ liệu.
+- **Mật khẩu thật trong compose commit lên Git.** Cách tránh: file compose chỉ dành cho dev với mật khẩu giả; giá trị nhạy cảm để trong {{.env}} không commit.
+- **Kafka cấu hình listener sai.** Triệu chứng: app trên máy kết nối được bootstrap nhưng sau đó treo vì broker quảng bá địa chỉ nội bộ container. Cách tránh: cấu hình advertised listeners riêng cho truy cập từ host và từ trong network.
+
+### Trả lời miệng 1 phút
+"Tôi đặt một file compose.yaml trong repo, khai báo PostgreSQL, Redis, Kafka với version cố định, cổng publish cho app chạy trong IDE, named volume để dữ liệu còn sau khi down, và healthcheck cho từng dịch vụ. Service nào phụ thuộc DB thì depends_on với condition service_healthy để đợi DB sẵn sàng thật chứ không chỉ container chạy. Trong cùng compose, container gọi nhau bằng tên service chứ không phải localhost. Từ Spring Boot 3.1, tôi thêm spring-boot-docker-compose để app tự chạy compose và tự cấu hình kết nối. Kết quả: dev mới chỉ cần clone và chạy một lệnh, và reset sạch bằng down -v."
+
+> Senior tip: hãy coi {{compose.yaml}} là **tài liệu sống** của hệ thống — dev mới đọc nó để biết service cần những gì. Đặt mục tiêu "clone tới chạy được trong 15 phút" và đo lại mỗi quý bằng một máy sạch. Với máy dev RAM 16 GB, Kafka + vài DB đã ăn 3–4 GB; dùng profiles để chỉ bật thứ thật sự cần cho task đang làm.`,
+    follow: [
+      'Khi nào dùng Testcontainers thay vì Docker Compose cho test tích hợp?',
+      'Kafka trong compose: advertised listeners cần cấu hình thế nào để cả app trên máy và container khác đều kết nối được?',
+      'Làm sao seed dữ liệu mẫu cho PostgreSQL khi khởi tạo lần đầu?'
+    ],
+    tags: ['Docker Compose', 'dev environment', 'healthcheck', 'volume', 'Spring Boot']
+  },
+  {
+    id: 'devops-024',
+    topic: 'devops',
+    level: 'mid',
+    q: 'Bạn chạy service Spring Boot trong Docker và gặp ba lỗi: app báo không kết nối được PostgreSQL ở localhost:5432 (dù DB đang chạy trên máy), mở trình duyệt localhost:8080 không vào được app, và mỗi lần xoá container thì mất file upload. Giải thích mạng và lưu trữ của Docker để sửa cả ba.',
+    a: `**Tóm tắt:** Mỗi container có **network namespace riêng**: {{localhost}} bên trong container là chính container đó, không phải máy host. Muốn gọi ra host dùng {{host.docker.internal}} (Docker Desktop; trên Linux thêm {{--add-host=host.docker.internal:host-gateway}}), hoặc tốt hơn là cho DB và app vào **cùng một user-defined network** rồi gọi bằng tên container. Muốn từ host vào app phải **publish cổng** {{-p 8080:8080}} và app phải lắng nghe {{0.0.0.0}}. Dữ liệu ghi trong **lớp ghi của container** mất khi xoá container — phải dùng **volume** hoặc **bind mount**.
+
+### Hiểu nhanh
+Mỗi container giống **một căn hộ trong chung cư**: có địa chỉ nội bộ riêng, "nhà tôi" (localhost) là căn hộ của chính nó, không phải nhà ban quản lý (host). **Publish cổng** giống đặt chuông ở cổng chung cư nối thẳng vào căn hộ: khách bên ngoài bấm số 8080 thì chuông kêu trong căn hộ. **User-defined network** giống chung cư có danh bạ nội bộ: gọi "postgres" là tới đúng căn. **Lớp ghi của container** giống đồ đạc trong phòng thuê — trả phòng (xoá container) là dọn sạch; **volume** là kho gửi đồ riêng, đổi phòng vẫn còn.
+
+### Thuật ngữ
+- **Network namespace**: ngăn xếp mạng riêng (IP, cổng, localhost) của mỗi container.
+- **Bridge network**: mạng ảo mặc định trên host nối các container. Mạng {{bridge}} mặc định **không** phân giải tên container; **user-defined bridge** (tự tạo, hoặc do Compose tạo) có DNS nội bộ theo tên.
+- **Publish port** ({{-p HOST:CONTAINER}}): ánh xạ cổng trên host vào cổng trong container. {{EXPOSE}} trong Dockerfile chỉ là tài liệu, **không** tự publish.
+- **Writable layer**: lớp ghi mỏng trên image của mỗi container; xoá container là mất.
+- **Volume**: thư mục do Docker quản lý (nằm trong vùng dữ liệu của Docker), bền qua vòng đời container.
+- **Bind mount**: gắn một thư mục cụ thể của host vào container ({{-v /data/uploads:/app/uploads}}).
+
+### Cơ chế từng bước: sửa từng lỗi
+1. **App → DB "localhost:5432" lỗi.** App trong container gọi localhost tức là gọi chính nó, nơi không có PostgreSQL. Sửa: tạo network {{docker network create backend}}, chạy cả hai container với {{--network backend}}, đặt {{SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/orders}}. Nếu DB chạy trực tiếp trên host: dùng {{host.docker.internal}}.
+2. **Host → app "localhost:8080" không vào được.** Nguyên nhân thường gặp: quên {{-p 8080:8080}}, hoặc publish nhầm thứ tự ({{-p 8080:80}} trong khi app nghe 8080), hoặc app chỉ bind {{127.0.0.1}} bên trong container. Spring Boot mặc định nghe mọi interface nên thường chỉ là thiếu {{-p}}.
+3. **Mất file upload.** App ghi vào {{/app/uploads}} nằm trong writable layer. Sửa: {{-v uploads:/app/uploads}} (named volume) hoặc bind mount. Production thì tốt nhất lưu file ở object storage (S3), không lưu trên đĩa container.
+
+~~~text
+Host (máy bạn)                     user-defined network "backend"
+ localhost:8080 ──-p 8080:8080──►  [orders-api 172.18.0.3]
+                                        │  jdbc:postgresql://postgres:5432
+                                        ▼
+                                   [postgres  172.18.0.2]
+                                        │ volume pgdata → /var/lib/postgresql/data
+ Trong orders-api: localhost = chính orders-api, KHÔNG phải host
+~~~
+
+### Lệnh minh hoạ
+~~~bash
+docker network create backend
+docker volume create uploads
+docker run -d --name postgres --network backend -e POSTGRES_PASSWORD=dev postgres:16.4
+docker run -d --name orders-api --network backend \\
+  -p 8080:8080 \\
+  -v uploads:/app/uploads \\
+  -e SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/postgres \\
+  orders-api:1.4.2
+# Kiểm tra: tên có phân giải trong network không
+docker exec orders-api getent hosts postgres
+~~~
+
+### Volume hay bind mount
+| Tiêu chí | Named volume | Bind mount |
+|---|---|---|
+| Ai quản lý đường dẫn | Docker | Bạn chọn thư mục host |
+| Quyền file | Docker khởi tạo theo nội dung image | Theo quyền thư mục host, hay lỗi khi container chạy non-root |
+| Hiệu năng trên Mac/Windows | Tốt | Chậm hơn với nhiều file nhỏ |
+| Dùng khi | Dữ liệu DB, dữ liệu app | Mount source code khi dev, file cấu hình |
+
+### Lỗi hay gặp
+- **Dùng mạng bridge mặc định rồi gọi theo tên.** Triệu chứng: {{UnknownHostException: postgres}}. Cách tránh: user-defined network hoặc Compose.
+- **Tưởng {{EXPOSE 8080}} là đủ.** Không publish thì host không vào được.
+- **Ghi log/file quan trọng vào container.** Mất khi container bị thay. Log ghi ra stdout; file ghi ra volume hoặc object storage.
+- **Bind mount và container chạy non-root.** Triệu chứng: {{AccessDeniedException}} khi ghi. Cách tránh: chỉnh quyền/UID thư mục host, hoặc dùng named volume.
+- **Publish cổng DB ra {{0.0.0.0}} trên server.** Triệu chứng: DB lộ ra Internet. Cách tránh: chỉ publish {{127.0.0.1:5432:5432}} hoặc không publish, để container gọi nhau trong network.
+
+### Trả lời miệng 1 phút
+"Mỗi container có network namespace riêng nên localhost bên trong là chính container, không phải host. Để app gọi DB, tôi cho cả hai vào cùng user-defined network rồi gọi bằng tên container; mạng bridge mặc định không có DNS theo tên. Nếu DB nằm trên host thì dùng host.docker.internal. Để từ host vào app phải publish cổng với -p host:container; EXPOSE chỉ là tài liệu. Còn dữ liệu, mọi thứ ghi vào writable layer sẽ mất khi xoá container, nên tôi dùng named volume cho dữ liệu cần giữ, bind mount khi cần map thư mục cụ thể, và production thì lưu file lên object storage."
+
+> Senior tip: khi debug mạng container, **vào trong container mà thử** ({{docker exec -it orders-api sh}}, rồi {{getent hosts postgres}}, {{nc -zv postgres 5432}}) thay vì đoán từ host — đa số lỗi là nhầm "đang đứng ở đâu". Và trên server, kiểm tra kỹ cổng publish: Docker tự thêm rule iptables nên cổng publish có thể vượt qua firewall kiểu ufw mà bạn tưởng đã chặn.`,
+    follow: [
+      'Vì sao cổng Docker publish có thể vượt qua firewall ufw trên Linux?',
+      'Network mode host khác bridge thế nào, khi nào dùng?',
+      'Trên Kubernetes, khái niệm tương đương volume là gì và vì sao Pod không nên lưu file upload trên đĩa?'
+    ],
+    tags: ['Docker', 'networking', 'volume', 'bind mount', 'port mapping']
+  },
+  {
+    id: 'devops-025',
+    topic: 'devops',
+    level: 'mid',
+    q: 'Cùng một image Spring Boot phải chạy ở DEV, UAT, PROD trên Kubernetes với URL database, feature flag và mật khẩu khác nhau. Bạn đưa cấu hình từ ConfigMap và Secret vào Spring thế nào (biến môi trường hay file), thứ tự ưu tiên ra sao, và sửa ConfigMap xong thì app có tự nhận không?',
+    a: `**Tóm tắt:** Image **không chứa** cấu hình riêng của môi trường. Giá trị thường (URL, flag) để trong **ConfigMap**, giá trị nhạy cảm trong **Secret**; đưa vào Pod theo hai cách: **biến môi trường** (Spring tự map {{SPRING_DATASOURCE_URL}} → {{spring.datasource.url}} nhờ relaxed binding) hoặc **mount thành file** rồi đọc bằng {{spring.config.import=optional:configtree:/etc/secrets/}}. Biến môi trường có độ ưu tiên cao hơn {{application.yml}} trong jar. Sửa ConfigMap thì biến môi trường **không đổi** tới khi Pod restart; file mount được kubelet cập nhật sau một lúc nhưng app phải tự reload — cách an toàn là **rollout restart** có kiểm soát.
+
+### Hiểu nhanh
+Image giống **một chiếc xe xuất xưởng**: giống hệt nhau cho mọi khách. ConfigMap/Secret là **bộ chìa khoá và giấy tờ theo từng khách** giao kèm khi bàn giao xe. Biến môi trường giống dán thông tin lên táp-lô lúc nổ máy — muốn đổi phải tắt máy mở lại. Mount file giống để giấy tờ trong hộc xe — có thể thay giấy trong hộc, nhưng tài xế (app) phải tự mở hộc ra đọc lại mới biết.
+
+### Thuật ngữ
+- **ConfigMap**: object Kubernetes lưu cặp key–value không nhạy cảm.
+- **Secret**: giống ConfigMap nhưng dành cho dữ liệu nhạy cảm; mặc định chỉ **mã hoá base64** (không phải mã hoá bảo mật) — cần bật encryption at rest cho etcd và RBAC chặt.
+- **envFrom / valueFrom**: nạp toàn bộ hoặc từng key thành biến môi trường của container.
+- **Relaxed binding**: Spring map biến môi trường viết HOA, gạch dưới sang property: {{SPRING_DATASOURCE_URL}} → {{spring.datasource.url}}.
+- **configtree**: nguồn cấu hình Spring Boot đọc **mỗi file là một property**: tên file là key, nội dung file là value.
+- **Profile**: bộ cấu hình theo môi trường ({{application-prod.yml}}), bật bằng {{SPRING_PROFILES_ACTIVE}}.
+
+### Cơ chế từng bước
+1. Tạo ConfigMap {{orders-config}} (DB URL, flag) và Secret {{orders-secret}} (mật khẩu DB) **riêng từng namespace/môi trường**.
+2. Deployment khai báo {{envFrom}} cho ConfigMap → container có biến {{SPRING_DATASOURCE_URL}}, {{FEATURE_NEW_CHECKOUT}}.
+3. Secret được mount thành thư mục {{/etc/secrets}}, mỗi key một file: {{/etc/secrets/spring.datasource.password}}. Vì sao thích file hơn env cho secret: biến môi trường dễ lộ qua {{/proc}}, crash dump, log in ra env, và các process con thừa hưởng.
+4. App khởi động với {{spring.config.import=optional:configtree:/etc/secrets/}} → Spring đọc file thành property {{spring.datasource.password}}.
+5. Spring gộp các nguồn theo thứ tự ưu tiên: tham số dòng lệnh > biến môi trường > file config ngoài jar > {{application-<profile>.yml}} trong jar > {{application.yml}} trong jar.
+6. Đổi ConfigMap: biến môi trường không đổi; file mount (không dùng {{subPath}}) được cập nhật sau khoảng thời gian đồng bộ của kubelet (thường dưới vài phút). Muốn áp dụng an toàn: {{kubectl rollout restart deployment/orders-api}} để Pod mới lên dần, có readiness kiểm tra.
+
+### Manifest ví dụ
+~~~yaml
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: orders-config, namespace: uat }
+data:
+  SPRING_DATASOURCE_URL: jdbc:postgresql://pg-uat:5432/orders
+  SPRING_PROFILES_ACTIVE: uat
+  FEATURE_NEW_CHECKOUT: "true"          # giá trị luôn là chuỗi
+---
+# trong Deployment, phần container:
+envFrom:
+  - configMapRef: { name: orders-config }
+env:
+  - name: SPRING_CONFIG_IMPORT
+    value: optional:configtree:/etc/secrets/
+volumeMounts:
+  - { name: secrets, mountPath: /etc/secrets, readOnly: true }
+# phần pod:
+volumes:
+  - name: secrets
+    secret:
+      secretName: orders-secret          # key "spring.datasource.password" → file cùng tên
+~~~
+
+### Env hay file
+| Tiêu chí | Biến môi trường | File mount + configtree |
+|---|---|---|
+| Đơn giản | Rất đơn giản | Cần thêm spring.config.import |
+| Cập nhật khi sửa | Chỉ khi Pod restart | File đổi sau một lúc, app phải tự reload |
+| Rủi ro lộ | Cao hơn (dump env, process con) | Thấp hơn, giới hạn quyền đọc file |
+| Hợp với | URL, flag, cấu hình thường | Mật khẩu, khoá, chứng chỉ |
+
+### Lỗi hay gặp
+- **Build image riêng cho từng môi trường** (nhét application-prod.yml chứa mật khẩu vào image). Cách tránh: một image, cấu hình ngoài image; mật khẩu không bao giờ nằm trong image hay Git.
+- **Tưởng Secret là đã mã hoá.** Ai có quyền {{get secret}} trong namespace đều đọc được bằng base64 decode. Cách tránh: RBAC tối thiểu, encryption at rest, hoặc lấy secret từ kho ngoài (Secrets Manager, Vault).
+- **Dùng {{subPath}} rồi chờ file tự cập nhật.** Mount dạng subPath **không bao giờ** được cập nhật. Cách tránh: mount cả thư mục, hoặc restart.
+- **Sửa ConfigMap rồi tưởng đã áp dụng.** Các Pod vẫn chạy giá trị cũ, Pod mới (scale ra) chạy giá trị mới → hai hành vi cùng lúc. Cách tránh: đổi cấu hình kèm rollout restart, hoặc đặt hash của ConfigMap vào annotation của Pod template để mỗi lần đổi là một rollout.
+- **Viết sai tên biến môi trường** ({{SPRING_DATASOURCE-URL}}). Spring bỏ qua im lặng, dùng giá trị mặc định. Cách tránh: kiểm tra {{/actuator/env}} (đã che giá trị nhạy cảm) trên môi trường test.
+
+### Trả lời miệng 1 phút
+"Tôi build một image duy nhất và đưa cấu hình theo môi trường từ ngoài vào. Cấu hình thường như URL, profile, feature flag đặt trong ConfigMap và nạp bằng envFrom; Spring relaxed binding map SPRING_DATASOURCE_URL thành spring.datasource.url, và biến môi trường đè application.yml trong jar. Secret tôi mount thành file và đọc bằng spring.config.import configtree, vì biến môi trường dễ lộ qua dump. Secret chỉ là base64 nên phải có RBAC và encryption at rest. Khi sửa ConfigMap, biến môi trường không đổi cho tới khi Pod restart, nên tôi luôn đi kèm rollout restart có readiness, hoặc gắn hash ConfigMap vào annotation để mỗi thay đổi cấu hình là một lần rollout có kiểm soát."
+
+> Senior tip: hãy coi **thay đổi cấu hình như một lần deploy**: có review, có rollout từng Pod, có rollback. Tự động reload cấu hình nóng nghe hấp dẫn nhưng làm khó trả lời câu hỏi "lúc 14:00 Pod nào đang chạy giá trị nào". Kỹ thuật checksum annotation (Helm hay dùng) cho bạn lịch sử rõ ràng mà không cần thư viện reload nào.`,
+    follow: [
+      'Khi nào nên lấy secret trực tiếp từ AWS Secrets Manager/Vault thay vì Secret của Kubernetes?',
+      'Làm sao xem app đang thực sự dùng giá trị cấu hình nào mà không lộ mật khẩu?',
+      'Feature flag nên để trong ConfigMap hay một dịch vụ flag riêng? Vì sao?'
+    ],
+    tags: ['ConfigMap', 'Secret', 'Spring Boot', 'configtree', 'Kubernetes', 'configuration']
+  },
+  {
+    id: 'devops-026',
+    topic: 'devops',
+    level: 'mid',
+    q: 'Team đang build image với tag latest và deploy lên Kubernetes. Có lần rollback "về bản cũ" nhưng thực ra vẫn chạy bản mới, và hai Pod cùng Deployment chạy hai phiên bản khác nhau. Giải thích vì sao, và bạn đặt chiến lược tag, digest, imagePullPolicy, dọn dẹp registry thế nào?',
+    a: `**Tóm tắt:** **Tag là nhãn di động**: {{latest}} hôm qua và hôm nay có thể là hai image khác nhau, còn node nào đã có sẵn image cũ trong cache thì có thể không kéo lại — nên các Pod chạy lệch phiên bản và "rollback" về {{latest}} chẳng quay về đâu cả. Cách làm đúng: tag **bất biến, duy nhất** cho mỗi build (git SHA, kèm semver khi release), bật **tag immutability** ở registry, deploy bằng tag cụ thể hoặc **digest** ({{@sha256:...}}), và có **lifecycle policy** dọn image cũ.
+
+### Hiểu nhanh
+Tag giống **tên tệp "bao-cao-moi-nhat.docx"**: ai cũng có thể ghi đè, và mỗi người trong phòng có thể đang mở một bản khác nhau mà tưởng là cùng một tệp. **Digest** giống **mã băm của chính nội dung tệp**: nội dung đổi một byte là mã đổi, nên nói "chạy bản sha256:ab12…" thì chắc chắn mọi người cùng chạy một thứ. Tag theo git SHA giống đặt tên tệp kèm mã phiên bản: mỗi bản một tên, không ai ghi đè.
+
+### Thuật ngữ
+- **Image tag**: tên gắn vào image ({{orders-api:1.4.2}}); có thể bị trỏ sang image khác (mutable).
+- **Digest**: mã SHA-256 của manifest image; bất biến, xác định chính xác nội dung.
+- **imagePullPolicy**: khi nào kubelet kéo image: {{Always}} (luôn hỏi registry), {{IfNotPresent}} (có sẵn trên node thì dùng), {{Never}}.
+- **Mặc định của Kubernetes**: nếu tag là {{latest}} hoặc không ghi tag → mặc định {{Always}}; tag khác → {{IfNotPresent}}.
+- **Tag immutability**: cấu hình registry (ví dụ ECR) cấm ghi đè tag đã tồn tại.
+- **Lifecycle policy**: quy tắc tự xoá image cũ (giữ N bản gần nhất, xoá image không tag sau X ngày).
+
+### Cơ chế: vì sao hai Pod chạy hai phiên bản
+1. Thứ hai: build A, push {{orders-api:latest}} → trỏ tới A. Pod trên node-1 kéo A.
+2. Thứ ba: build B, push lại {{latest}} → giờ trỏ tới B.
+3. Scale thêm Pod lên node-2: kéo {{latest}} = B. Node-1 vẫn chạy A. **Cùng Deployment, hai phiên bản.** (Nếu ai đó đặt {{IfNotPresent}} cho {{latest}} thì còn tệ hơn: node đã có A trong cache sẽ tiếp tục dùng A cho cả Pod mới.)
+4. Rollback: {{kubectl rollout undo}} quay về Pod template cũ — nhưng template cũ cũng ghi {{latest}}, nên vẫn kéo B. Kubernetes chỉ biết template, không biết nội dung image đằng sau tag.
+5. Với tag {{3f9c2a1}} (git SHA): template cũ ghi {{3f9c2a1}}, template mới ghi {{8be0d47}} → rollback thật sự quay về đúng bản.
+
+~~~text
+Tag latest:  latest ──(thứ hai)──► image A
+             latest ──(thứ ba)───► image B      ← tag "di chuyển"
+Tag SHA:     orders-api:3f9c2a1 ──► image A     (mãi mãi)
+             orders-api:8be0d47 ──► image B
+Digest:      orders-api@sha256:ab12... ──► đúng một nội dung, không thể đổi
+~~~
+
+### Chiến lược đề xuất
+| Mục | Cách làm | Vì sao |
+|---|---|---|
+| Tag mỗi build | git SHA ngắn ({{3f9c2a1}}) | Truy ngược được commit, duy nhất |
+| Tag release | thêm {{1.4.2}} trỏ cùng image | Người đọc dễ hiểu |
+| Registry | Bật tag immutability | Không ai ghi đè được bản đã phát hành |
+| Manifest deploy | Tag SHA hoặc {{image@sha256:...}} | Mọi Pod chạy cùng nội dung, rollback chính xác |
+| Promote môi trường | Dùng lại **cùng digest** từ DEV → UAT → PROD | Build một lần, thứ đã test là thứ lên production |
+| Dọn dẹp | Lifecycle: giữ 50 bản gần nhất, xoá untagged sau 14 ngày | Registry không phình, giảm chi phí lưu trữ |
+
+### Lệnh minh hoạ
+~~~bash
+SHA=$(git rev-parse --short HEAD)
+docker build -t orders-api:$SHA .
+docker tag orders-api:$SHA 123456789012.dkr.ecr.ap-southeast-1.amazonaws.com/orders-api:$SHA
+docker push 123456789012.dkr.ecr.ap-southeast-1.amazonaws.com/orders-api:$SHA
+# Xem digest để ghi vào manifest/biên bản release
+docker images --digests 123456789012.dkr.ecr.ap-southeast-1.amazonaws.com/orders-api
+~~~
+
+### Lỗi hay gặp
+- **Deploy bằng {{latest}}.** Triệu chứng: Pod lệch phiên bản, rollback vô tác dụng, không biết production đang chạy commit nào. Cách tránh: tag SHA + immutability.
+- **Build lại image cho từng môi trường.** Triệu chứng: UAT pass nhưng PROD lỗi vì image PROD build lúc khác, kéo dependency khác. Cách tránh: build một lần, promote cùng digest.
+- **Lifecycle policy xoá cả image đang chạy.** Triệu chứng: node mới không kéo được image, Pod ImagePullBackOff khi scale. Cách tránh: giữ đủ số bản, đặc biệt các bản đang chạy ở mọi môi trường và bản có thể rollback.
+- **Đặt {{imagePullPolicy: Always}} mà registry chậm/rate-limit.** Mỗi Pod mới đều hỏi registry; Docker Hub có rate limit cho pull ẩn danh. Cách tránh: registry riêng/mirror, tag bất biến thì {{IfNotPresent}} là đủ.
+- **Không ghi lại digest đã deploy.** Khi sự cố, không chứng minh được bản nào đã chạy. Cách tránh: pipeline ghi tag + digest vào release note.
+
+### Trả lời miệng 1 phút
+"latest là tag di động: mỗi lần push nó trỏ sang image mới, nên Pod trên node khác nhau kéo ở thời điểm khác nhau sẽ chạy phiên bản khác nhau, và rollback về template cũ vẫn ghi latest nên chẳng quay về đâu. Tôi tag mỗi build bằng git SHA, thêm semver khi release, bật tag immutability trên registry để không ai ghi đè. Manifest dùng tag SHA hoặc digest, nên mọi Pod cùng nội dung và rollout undo quay về đúng bản cũ. Image được build một lần rồi promote cùng digest qua DEV, UAT, PROD. Cuối cùng có lifecycle policy giữ đủ số bản để rollback và xoá image không tag."
+
+> Senior tip: hỏi nhanh "production đang chạy commit nào?" — nếu team mất hơn 30 giây để trả lời thì chiến lược tag đang có vấn đề. Tôi luôn để pipeline gắn thêm label OCI {{org.opencontainers.image.revision}} chứa git SHA vào image, và expose nó qua {{/actuator/info}}: một lệnh curl là biết ngay, kể cả khi ai đó đã deploy tay.`,
+    follow: [
+      'Deploy bằng digest thay vì tag có nhược điểm gì với việc đọc manifest và GitOps?',
+      'Ký image (cosign) và kiểm tra chữ ký khi deploy giải quyết rủi ro gì?',
+      'Docker Hub rate limit ảnh hưởng tới cluster thế nào và bạn xử lý ra sao?'
+    ],
+    tags: ['Docker', 'image tag', 'digest', 'imagePullPolicy', 'registry', 'ECR']
+  },
+  {
+    id: 'devops-027',
+    topic: 'devops',
+    level: 'mid',
+    q: 'Pipeline GitHub Actions của bạn đang lưu AWS access key dài hạn trong repository secrets để deploy, build Maven mất 8 phút vì tải lại dependency mỗi lần, và hai lần merge liên tiếp từng deploy chồng lên nhau. Bạn sửa workflow thế nào (OIDC, cache, environment, concurrency, permissions)?',
+    a: `**Tóm tắt:** Bỏ access key, dùng **OIDC**: workflow xin token OIDC của GitHub ({{permissions: id-token: write}}), AWS STS đổi lấy credential tạm của một **IAM role** có trust policy giới hạn đúng repo và nhánh/environment. Cache Maven bằng {{actions/setup-java}} với {{cache: maven}}. Job deploy gắn **environment** (có required reviewers cho production), dùng **concurrency group** để hai lần deploy không chạy chồng. Đặt **permissions** tối thiểu cho {{GITHUB_TOKEN}} và ghim action bên thứ ba theo commit SHA.
+
+### Hiểu nhanh
+Access key dài hạn trong secrets giống **chìa khoá kho cất trong ngăn bàn chung**: ai lấy được là vào kho mãi mãi. **OIDC** giống thẻ ra vào tạm: mỗi lần chạy, GitHub đưa "giấy giới thiệu có chữ ký" (token OIDC) nói rõ "đây là workflow của repo X, nhánh main", AWS kiểm tra rồi phát **thẻ có hạn một giờ**. **Cache** giống giữ lại nguyên liệu đã sơ chế, lần sau không phải đi chợ lại. **Concurrency** giống quy định "mỗi lúc chỉ một xe vào bãi giao hàng".
+
+### Thuật ngữ
+- **Workflow / job / step**: file YAML trong {{.github/workflows}}; mỗi job chạy trên một runner riêng, các step chạy tuần tự trong job.
+- **OIDC token**: token có chữ ký do GitHub cấp cho mỗi lần chạy, chứa thông tin repo, nhánh, environment (claim {{sub}}).
+- **IAM OIDC identity provider**: khai báo trong AWS để tin token của {{token.actions.githubusercontent.com}}.
+- **Trust policy**: điều kiện để được assume role — ví dụ claim {{sub}} phải là {{repo:acme/orders-api:environment:production}}.
+- **Environment**: khái niệm GitHub cho môi trường deploy: có secret riêng, required reviewers, giới hạn nhánh được deploy.
+- **Concurrency group**: các lần chạy cùng group thì xếp hàng hoặc huỷ bản cũ.
+- **GITHUB_TOKEN permissions**: quyền của token tự động trong workflow; nên đặt tối thiểu.
+
+### Cơ chế từng bước (OIDC)
+1. Job deploy khai báo {{permissions: id-token: write}} để được xin OIDC token.
+2. Action {{aws-actions/configure-aws-credentials}} xin token từ GitHub, gọi {{sts:AssumeRoleWithWebIdentity}} với role ARN.
+3. AWS kiểm tra chữ ký token, audience {{sts.amazonaws.com}}, và claim {{sub}} khớp trust policy. Vì sao phải giới hạn {{sub}}: thiếu điều kiện này thì **mọi repo trên GitHub** có thể assume role của bạn.
+4. STS trả credential tạm (mặc định 1 giờ), action đặt vào biến môi trường cho các step sau.
+5. Hết job, credential tự hết hạn; không có gì để rò rỉ lâu dài hay phải xoay vòng.
+
+### Workflow rút gọn
+~~~yaml
+name: ci-cd
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read                      # mặc định tối thiểu cho mọi job
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven                # cache ~/.m2 theo hash của pom.xml
+      - run: ./mvnw -B verify
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production           # required reviewers duyệt trước khi chạy
+    concurrency:
+      group: deploy-production        # mỗi lúc chỉ một deploy production
+      cancel-in-progress: false       # đang deploy thì xếp hàng, không huỷ giữa chừng
+    permissions:
+      id-token: write                 # được xin OIDC token
+      contents: read
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/gha-orders-deploy
+          aws-region: ap-southeast-1
+      - run: ./deploy.sh "$GITHUB_SHA"
+~~~
+Trust policy của role {{gha-orders-deploy}} có điều kiện {{token.actions.githubusercontent.com:aud}} = {{sts.amazonaws.com}} và {{token.actions.githubusercontent.com:sub}} = {{repo:acme/orders-api:environment:production}}.
+
+### So sánh cách cấp quyền cho CI
+| Cách | Rò rỉ thì sao | Vận hành |
+|---|---|---|
+| Access key trong secrets | Dùng được tới khi bị thu hồi, có thể nhiều tháng | Phải xoay vòng định kỳ, dễ quên |
+| OIDC + role | Token sống vài phút, credential vài giờ, chỉ hợp lệ cho đúng repo/environment | Cấu hình một lần |
+| Self-hosted runner có instance role | Ai chạy được workflow trên runner đó đều có quyền | Phải cô lập runner theo repo |
+
+### Lỗi hay gặp
+- **Trust policy chỉ kiểm tra audience, không kiểm tra {{sub}}.** Rủi ro: repo khác (kể cả của người lạ) assume được role. Cách tránh: luôn ràng buộc {{sub}} theo repo và nhánh/environment.
+- **Quên {{id-token: write}}.** Triệu chứng: action báo không lấy được token. Lưu ý: khai báo permissions ở job sẽ thay thế mặc định, nên phải liệt kê đủ quyền cần.
+- **Cache sai khoá.** Triệu chứng: cache không bao giờ trúng, hoặc dùng mãi bản cũ. {{setup-java}} tự đặt khoá theo hash file build; tự viết {{actions/cache}} thì khoá phải gồm hash của {{pom.xml}}.
+- **Dùng action bên thứ ba theo tag {{@v1}}.** Tag có thể bị trỏ lại sang code độc. Cách tránh: action ngoài tổ chức ghim theo **full commit SHA**, cập nhật qua Dependabot.
+- **Workflow chạy cho pull request từ fork với {{pull_request_target}}** rồi checkout code của PR. Code lạ chạy với secret của bạn. Cách tránh: tránh pattern này, hoặc tách job không có secret.
+- **{{cancel-in-progress: true}} cho deploy.** Huỷ giữa chừng có thể để hệ thống ở trạng thái nửa vời. Cách tránh: dùng cho build/test, còn deploy thì xếp hàng.
+
+### Trả lời miệng 1 phút
+"Tôi bỏ access key dài hạn và chuyển sang OIDC: job deploy có quyền id-token write, action configure-aws-credentials đổi token OIDC của GitHub lấy credential tạm của một IAM role, và trust policy ràng buộc audience lẫn claim sub đúng repo và environment production, nên repo khác không assume được và không còn key nào để lộ. Build dùng setup-java với cache maven để không tải lại dependency. Job deploy gắn environment production có required reviewers, cộng concurrency group để hai lần merge không deploy chồng, và cancel-in-progress tắt cho deploy. Cuối cùng permissions mặc định chỉ contents read, và action bên thứ ba ghim theo commit SHA."
+
+> Senior tip: sau khi chuyển sang OIDC, hãy **xoá hẳn** access key cũ trong IAM chứ không chỉ xoá khỏi GitHub secrets — key "không dùng nữa" nhưng còn hiệu lực là thứ hay bị khai thác nhất. Tách role theo môi trường (deploy UAT không assume được role production), và bật CloudTrail để mỗi lần deploy đều truy được về đúng lần chạy workflow qua tên session.`,
+    follow: [
+      'Claim sub của token OIDC khác nhau thế nào giữa job có environment và job không có environment?',
+      'Reusable workflow giúp gì khi 30 repo cùng cần một pipeline chuẩn?',
+      'Self-hosted runner có rủi ro bảo mật gì so với runner do GitHub cung cấp?'
+    ],
+    tags: ['GitHub Actions', 'OIDC', 'CI/CD', 'IAM', 'cache', 'concurrency'],
+    refs: [
+      { type: 'doc', title: 'Configuring OpenID Connect in Amazon Web Services', url: 'https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services' }
+    ]
+  },
+  {
+    id: 'devops-028',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Bạn chuyển job tính lãi cuối ngày (Spring Boot, chạy khoảng 40 phút) sang Kubernetes CronJob. Hôm thì job chạy hai lần, hôm thì không chạy, có lần chạy tới sáng không dừng. Bạn cấu hình schedule, timeZone, concurrencyPolicy, startingDeadlineSeconds, backoffLimit, activeDeadlineSeconds thế nào, và viết app Spring Boot cho đúng kiểu "chạy xong thì thoát"?',
+    a: `**Tóm tắt:** CronJob tạo **Job**, Job tạo **Pod**; mỗi tầng có quy tắc riêng. Chống chạy chồng bằng {{concurrencyPolicy: Forbid}}; chống "lỡ giờ thì thôi" bằng {{startingDeadlineSeconds}} hợp lý; giới hạn số lần thử bằng {{backoffLimit}}; chặn chạy vô hạn bằng {{activeDeadlineSeconds}}; đặt {{timeZone: Asia/Ho_Chi_Minh}} để khỏi tính nhầm UTC. Kubernetes chỉ hứa CronJob **xấp xỉ** một lần mỗi lịch — đôi khi hai, đôi khi không — nên job phải **idempotent** và có alarm "không chạy". App Spring Boot chạy với {{web-application-type=none}}, làm xong thì thoát với exit code đúng.
+
+### Hiểu nhanh
+CronJob giống **quản đốc có đồng hồ báo thức**: tới giờ thì giao phiếu việc (Job) cho một tổ; tổ cử người (Pod) làm. Nếu người làm hỏng, tổ cử người khác làm lại, tối đa vài lần (backoffLimit). **Forbid** là "việc hôm qua chưa xong thì hôm nay không giao thêm". **startingDeadlineSeconds** là "lỡ giờ quá X phút thì bỏ ca này". **activeDeadlineSeconds** là "làm quá 2 tiếng thì dừng lại báo cáo". Và vì quản đốc đôi khi giao trùng phiếu, phiếu việc phải ghi rõ "lãi ngày 29/10" để tổ biết đã làm rồi thì thôi.
+
+### Thuật ngữ
+- **CronJob**: tạo Job theo lịch cron; {{timeZone}} chọn múi giờ (ổn định từ Kubernetes 1.27).
+- **Job**: chạy Pod tới khi đủ số lần thành công; {{backoffLimit}} (mặc định 6) là số lần thử lại trước khi coi Job thất bại.
+- **concurrencyPolicy**: {{Allow}} (mặc định — cho chạy chồng), {{Forbid}} (bỏ lần mới nếu lần cũ chưa xong), {{Replace}} (huỷ lần cũ, chạy lần mới).
+- **startingDeadlineSeconds**: nếu vì lý do nào đó (controller bận, cluster nâng cấp) không tạo được Job đúng giờ, còn trong khoảng này thì vẫn tạo bù; quá thì bỏ lần đó.
+- **activeDeadlineSeconds**: thời gian sống tối đa của Job; vượt thì mọi Pod bị dừng và Job thất bại.
+- **ttlSecondsAfterFinished**: tự xoá Job đã xong sau một khoảng thời gian.
+- **restartPolicy**: Pod của Job chỉ được {{OnFailure}} hoặc {{Never}}.
+
+### Cơ chế từng bước
+1. 23:00 (theo timeZone), CronJob controller thấy tới lịch → tạo Job {{daily-interest-29029120}} (tên CronJob + thời điểm lịch).
+2. Job tạo Pod chạy image app với profile {{batch}}. Pod lỗi (exit code khác 0) → Job tạo Pod mới với thời gian chờ tăng dần, tối đa {{backoffLimit}} lần.
+3. Lần chạy hôm sau tới giờ mà Job hôm trước còn chạy: với {{Forbid}} thì bỏ qua lần mới; với {{Allow}} mặc định thì **hai job tính lãi chạy song song** — nguồn gốc của "chạy hai lần".
+4. Controller bận hoặc bị tắt lúc 23:00 (đang nâng cấp control plane): nếu quay lại trong {{startingDeadlineSeconds}} thì tạo bù; nếu không đặt trường này, controller đếm số lịch bị lỡ, lỡ quá 100 lần thì ngừng lên lịch cho CronJob đó — nguồn gốc của "không chạy".
+5. Job treo (deadlock DB, chờ khoá) → {{activeDeadlineSeconds}} dừng nó, Job chuyển Failed → alarm.
+6. App Spring Boot: không mở cổng web, chạy logic trong {{ApplicationRunner}}, rồi {{System.exit(SpringApplication.exit(ctx))}} để exit code phản ánh kết quả; nếu không thoát, Pod chạy mãi.
+
+### Manifest
+~~~yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: daily-interest }
+spec:
+  schedule: "0 23 * * *"
+  timeZone: Asia/Ho_Chi_Minh          # không có trường này = theo múi giờ của controller (thường UTC)
+  concurrencyPolicy: Forbid           # không bao giờ hai job tính lãi chạy cùng lúc
+  startingDeadlineSeconds: 1800       # lỡ giờ trong 30 phút vẫn chạy bù
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5           # giữ Job lỗi để xem log
+  jobTemplate:
+    spec:
+      backoffLimit: 2                 # thử tối đa 3 lần (1 + 2), không phải 7 như mặc định
+      activeDeadlineSeconds: 7200     # quá 2 giờ là dừng, báo lỗi
+      ttlSecondsAfterFinished: 86400
+      template:
+        spec:
+          restartPolicy: Never        # để mỗi lần thử là một Pod mới, dễ xem log
+          containers:
+            - name: job
+              image: registry.example.com/core-batch:3f9c2a1
+              args: ["--spring.profiles.active=batch", "--spring.main.web-application-type=none"]
+~~~
+
+### Code: app chạy xong thì thoát
+~~~java
+@Component
+@Profile("batch")
+class InterestRunner implements ApplicationRunner {
+    public void run(ApplicationArguments args) {
+        LocalDate day = LocalDate.now(ZoneId.of("Asia/Ho_Chi_Minh"));
+        if (runs.isDone(day)) return;          // idempotent: ngày này đã tính rồi thì thôi
+        interestService.accrue(day);           // ghi theo lô, mỗi lô một transaction
+        runs.markDone(day);
+    }
+}
+// main: thoát JVM với exit code từ Spring (exception trong runner → khác 0 → Job tính là lỗi)
+public static void main(String[] a) {
+    System.exit(SpringApplication.exit(SpringApplication.run(BatchApp.class, a)));
+}
+~~~
+
+### Lỗi hay gặp
+- **Để concurrencyPolicy mặc định (Allow).** Triệu chứng: job hôm trước chạy chậm, job hôm nay chồng lên, lãi tính hai lần. Cách tránh: {{Forbid}} + idempotent theo ngày.
+- **Không đặt startingDeadlineSeconds.** Triệu chứng: sau một sự cố dài, CronJob báo lỗi quá nhiều lịch bị lỡ và ngừng tạo Job. Cách tránh: đặt giá trị cụ thể (vài chục phút).
+- **App không tự thoát.** Triệu chứng: Pod Running mãi, lần sau bị Forbid chặn. Cách tránh: {{web-application-type=none}}, thoát rõ ràng, và {{activeDeadlineSeconds}} làm lưới an toàn.
+- **Cron theo UTC.** Triệu chứng: tính lãi lúc 6 giờ sáng. Cách tránh: {{timeZone}}.
+- **backoffLimit mặc định 6 với job không idempotent.** Mỗi lần thử làm lại từ đầu, có thể ghi trùng. Cách tránh: giảm backoffLimit, ghi theo lô có checkpoint.
+- **Job bị Pod khác tranh tài nguyên rồi bị evict.** Cách tránh: đặt requests đủ, PriorityClass cao hơn cho batch quan trọng.
+
+### Trả lời miệng 1 phút
+"CronJob tạo Job, Job tạo Pod, và Kubernetes chỉ hứa xấp xỉ một lần mỗi lịch, nên tôi thiết kế job idempotent theo ngày nghiệp vụ trước. Về cấu hình: timeZone Asia/Ho_Chi_Minh để khỏi lệch UTC; concurrencyPolicy Forbid để job chậm hôm trước không chạy chồng với hôm nay; startingDeadlineSeconds khoảng 30 phút để lỡ giờ vẫn chạy bù và tránh tình trạng ngừng lên lịch sau quá nhiều lịch bị lỡ; backoffLimit nhỏ; activeDeadlineSeconds để job treo không chạy tới sáng. App Spring Boot chạy không web, logic trong ApplicationRunner, cuối cùng System.exit với exit code của Spring để Job biết thành công hay thất bại. Cuối cùng là alarm khi job thất bại và cả khi tới hạn mà không thấy lần chạy thành công."
+
+> Senior tip: job tài chính nên chạy **theo lô có checkpoint** (ví dụ 10.000 tài khoản một lô, ghi lại lô cuối đã xong) để khi bị dừng giữa chừng thì chạy lại tiếp tục từ lô đó thay vì làm lại 40 phút. Và hãy theo dõi **thời lượng job theo ngày** — job tăng từ 40 lên 90 phút trong ba tháng là tín hiệu sớm trước khi nó đụng activeDeadlineSeconds vào một đêm cuối tháng.`,
+    follow: [
+      'Khi nào dùng Spring Batch thay vì tự viết ApplicationRunner cho job dài?',
+      'concurrencyPolicy Replace phù hợp với loại job nào?',
+      'Làm sao chạy thủ công lại job cho một ngày cụ thể mà không sửa CronJob?'
+    ],
+    tags: ['Kubernetes', 'CronJob', 'Job', 'batch', 'Spring Boot', 'idempotency'],
+    refs: [
+      { type: 'doc', title: 'Kubernetes CronJob', url: 'https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/' }
+    ]
+  },
+  {
+    id: 'devops-029',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Mỗi lần team platform nâng cấp node Kubernetes (drain từng node), service thanh toán 3 replica lại có vài phút lỗi 503, có lần cả 3 Pod nằm trên cùng một node. Bạn dùng PodDisruptionBudget, topologySpreadConstraints và anti-affinity thế nào để việc bảo trì node không làm gián đoạn dịch vụ?',
+    a: `**Tóm tắt:** Drain dùng **Eviction API**, và Eviction API tôn trọng **PodDisruptionBudget (PDB)**: đặt {{minAvailable: 2}} (hoặc {{maxUnavailable: 1}}) thì drain chỉ được đuổi Pod khi vẫn còn đủ Pod sẵn sàng. Nhưng PDB vô dụng nếu cả 3 Pod nằm chung một node hoặc một zone — vì vậy phải **rải Pod** bằng {{topologySpreadConstraints}} theo node và zone (hoặc pod anti-affinity). Cộng thêm readiness probe đúng và graceful shutdown thì drain trở thành sự kiện không ai thấy.
+
+### Hiểu nhanh
+Cluster giống **một bệnh viện có nhiều phòng trực**, Pod là bác sĩ trực. Bảo trì phòng (drain node) là mời bác sĩ trong phòng đó sang phòng khác. **PDB** là quy định "lúc nào cũng phải có ít nhất 2 bác sĩ đang trực" — người điều phối chỉ được mời bác sĩ đi khi còn đủ người. **Topology spread** là quy định "không xếp cả 3 bác sĩ vào cùng một phòng hay cùng một tầng" — nếu không, đóng một phòng là mất sạch, quy định nào cũng không cứu được.
+
+### Thuật ngữ
+- **Voluntary disruption**: gián đoạn chủ động — drain node, nâng cấp cluster, autoscaler thu node. PDB chỉ bảo vệ loại này.
+- **Involuntary disruption**: node chết, mất điện, kernel panic — PDB **không** ngăn được; chỉ có rải Pod và đủ replica mới giảm thiệt hại.
+- **Eviction API**: cách "lịch sự" để đuổi Pod; bị từ chối (HTTP 429) nếu vi phạm PDB, và {{kubectl drain}} sẽ thử lại.
+- **PodDisruptionBudget**: {{minAvailable}} hoặc {{maxUnavailable}} cho một nhóm Pod theo label selector.
+- **topologySpreadConstraints**: yêu cầu scheduler rải Pod đều theo một **topology key** ({{kubernetes.io/hostname}} theo node, {{topology.kubernetes.io/zone}} theo zone), với {{maxSkew}} là độ chênh tối đa.
+- **Pod anti-affinity**: "đừng xếp tôi chung chỗ với Pod có label X"; cứng ({{required}}) hoặc mềm ({{preferred}}).
+
+### Cơ chế từng bước khi drain node-1
+1. Platform chạy {{kubectl drain node-1}}: node bị **cordon** (không nhận Pod mới).
+2. Với mỗi Pod trên node-1, drain gọi Eviction API. API server kiểm tra PDB của service thanh toán: hiện có 3 Pod ready, {{minAvailable: 2}} → được phép đuổi 1.
+3. Pod bị đuổi nhận SIGTERM, bị gỡ khỏi endpoint, chạy graceful shutdown. Deployment thấy thiếu replica → tạo Pod mới trên node khác.
+4. Nếu node-1 có **2** Pod thanh toán: Pod thứ hai bị từ chối (429) cho tới khi Pod mới ở node khác **ready** — drain chờ, không phá dịch vụ. Vì sao readiness quan trọng: PDB đếm Pod **ready**, readiness sai thì PDB đếm sai.
+5. Nếu cả 3 Pod trên node-1 và không có PDB: drain đuổi cả 3 gần như cùng lúc → 503 tới khi Pod mới khởi động xong (Spring Boot cần 30–60 giây).
+6. Có topology spread theo hostname: 3 Pod luôn nằm 3 node khác nhau → drain một node chỉ mất một Pod, PDB cho phép ngay.
+
+~~~text
+Không rải, không PDB:          Có spread + PDB minAvailable=2:
+node-1 [P1 P2 P3]  ← drain     node-1 [P1] ← drain: đuổi P1 (còn P2, P3 ready)
+node-2 [ ]                     node-2 [P2]
+node-3 [ ]                     node-3 [P3]       P1' lên ở node-4, ready rồi mới drain tiếp
+→ 0 Pod sẵn sàng → 503         → luôn ≥ 2 Pod phục vụ
+~~~
+
+### Manifest
+~~~yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: payment-pdb }
+spec:
+  minAvailable: 2                     # với 3 replica: mỗi lúc chỉ đuổi được 1
+  selector:
+    matchLabels: { app: payment }
+---
+# trong Pod template của Deployment payment:
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone       # rải đều các zone
+    whenUnsatisfiable: ScheduleAnyway              # thiếu zone vẫn chạy được
+    labelSelector:
+      matchLabels: { app: payment }
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname            # không chung node
+    whenUnsatisfiable: DoNotSchedule
+    labelSelector:
+      matchLabels: { app: payment }
+~~~
+
+### PDB nên đặt thế nào
+| Replica | Cấu hình | Hệ quả |
+|---|---|---|
+| 1 | {{minAvailable: 1}} | **Chặn drain vĩnh viễn** — nâng cấp node bị kẹt |
+| 2 | {{maxUnavailable: 1}} | Drain được, lúc drain chỉ còn 1 Pod gánh tải |
+| 3+ | {{maxUnavailable: 1}} hoặc {{minAvailable}} = N-1 | Cân bằng giữa an toàn và tốc độ nâng cấp |
+| HPA thay đổi số replica | Ưu tiên {{maxUnavailable}} | Không phải sửa PDB khi scale |
+
+### Lỗi hay gặp
+- **PDB cho Deployment 1 replica với minAvailable 1.** Triệu chứng: drain treo hàng giờ, platform team phải force xoá Pod — tệ hơn không có PDB. Cách tránh: service quan trọng chạy tối thiểu 2–3 replica; service 1 replica chấp nhận gián đoạn hoặc dùng maxUnavailable 1.
+- **Có PDB nhưng Pod dồn một node.** PDB làm drain chậm lại nhưng node chết đột ngột thì mất hết. Cách tránh: topology spread theo hostname và zone.
+- **Tưởng PDB bảo vệ khi rolling update.** Rolling update của Deployment dùng {{maxUnavailable}}/{{maxSurge}} của chính nó, không dùng PDB.
+- **Readiness luôn trả UP.** PDB đếm Pod "ready" nhưng thực ra chưa phục vụ được → drain đi tiếp, người dùng gặp lỗi. Cách tránh: readiness phản ánh khả năng nhận request thật.
+- **DoNotSchedule theo zone trong cluster chỉ còn đủ chỗ ở một zone.** Pod mới Pending mãi. Cách tránh: zone dùng {{ScheduleAnyway}}, node dùng {{DoNotSchedule}} nếu đủ node.
+
+### Trả lời miệng 1 phút
+"Drain node dùng Eviction API, và Eviction API tôn trọng PodDisruptionBudget, nên tôi đặt PDB cho service thanh toán, thường maxUnavailable 1 với 3 replica: drain chỉ đuổi Pod khi còn đủ Pod ready, Pod thứ hai phải chờ Pod thay thế ready. Nhưng PDB không cứu được nếu cả ba Pod chung một node, và không bảo vệ khi node chết đột ngột, nên tôi thêm topologySpreadConstraints theo hostname và theo zone để Pod luôn rải ra. Readiness phải đúng vì PDB đếm Pod ready, và graceful shutdown để Pod bị đuổi không làm rơi request. Tôi tránh PDB minAvailable 1 cho Deployment 1 replica vì nó chặn drain vĩnh viễn."
+
+> Senior tip: hãy đưa **"drain một node bất kỳ giữa giờ làm việc"** vào bài kiểm tra định kỳ — nếu dashboard lỗi không nhúc nhích thì cấu hình đã đúng. Tôi cũng thêm policy (Kyverno/Gatekeeper) cảnh báo mọi Deployment production thiếu PDB hoặc có PDB chặn drain, vì platform team thường chỉ phát hiện vào đúng đêm nâng cấp cluster.`,
+    follow: [
+      'Cluster autoscaler thu hồi node có tôn trọng PDB không, và điều đó ảnh hưởng chi phí thế nào?',
+      'topologySpreadConstraints khác podAntiAffinity ở điểm nào, khi nào dùng cái nào?',
+      'Với StatefulSet như Kafka hay PostgreSQL, PDB nên đặt khác gì so với service stateless?'
+    ],
+    tags: ['Kubernetes', 'PodDisruptionBudget', 'topology spread', 'drain', 'high availability'],
+    refs: [
+      { type: 'doc', title: 'Specifying a Disruption Budget for your Application', url: 'https://kubernetes.io/docs/tasks/run-application/configure-pdb/' }
+    ]
+  },
+  {
+    id: 'devops-030',
+    topic: 'devops',
+    level: 'lead',
+    q: 'Công ty quyết định 8 team dùng chung một cluster Kubernetes thay vì mỗi team một cluster. Là tech lead platform, bạn thiết kế ranh giới giữa các team thế nào (namespace, RBAC, ResourceQuota, LimitRange, NetworkPolicy, Pod Security) để một team không làm sập, không đọc trộm và không "ăn" hết tài nguyên của team khác?',
+    a: `**Tóm tắt:** Mỗi team (và môi trường) một **namespace**; **RBAC** cho team quyền trong namespace của mình, không quyền cluster-wide; **ResourceQuota** giới hạn tổng CPU/RAM/số Pod mỗi namespace, **LimitRange** đặt request/limit mặc định để Pod không khai báo cũng không chiếm vô hạn; **NetworkPolicy** mặc định chặn mọi traffic vào rồi mở đúng đường cần; **Pod Security Admission** ở mức {{restricted}} chặn container privileged, chạy root. Bao ngoài là **policy as code** (Kyverno/Gatekeeper) và tách hẳn cluster cho thứ cần cô lập mạnh (PCI, production nhạy cảm). Namespace là ranh giới **mềm** — đủ cho các team tin nhau trong công ty, không đủ cho khách hàng lạ.
+
+### Hiểu nhanh
+Cluster dùng chung giống **một toà văn phòng chia cho 8 công ty con**. **Namespace** là các tầng riêng. **RBAC** là thẻ từ chỉ mở tầng của mình. **ResourceQuota** là hạn mức điện nước mỗi tầng — một tầng bật máy sưởi cả ngày không làm cả toà mất điện. **LimitRange** là quy định mặc định cho từng thiết bị mang vào. **NetworkPolicy** là cửa giữa các tầng: mặc định khoá, chỉ mở cửa nào có lý do. **Pod Security** là quy định "không được mang bình gas vào phòng". Toà nhà vẫn chung móng (control plane, node, kernel) — nên ai cần cách ly tuyệt đối thì thuê toà riêng.
+
+### Thuật ngữ
+- **Namespace**: phạm vi tên và chính sách; phần lớn object (Pod, Service, Secret) thuộc một namespace; node, PersistentVolume, ClusterRole thì không.
+- **Role/RoleBinding vs ClusterRole/ClusterRoleBinding**: quyền trong một namespace vs toàn cluster.
+- **ResourceQuota**: tổng hạn mức của namespace ({{requests.cpu}}, {{limits.memory}}, {{pods}}, số Service LoadBalancer…). Khi quota có CPU/memory, **mọi Pod phải khai báo** request/limit tương ứng, nếu không bị từ chối.
+- **LimitRange**: giá trị mặc định và min/max cho từng container trong namespace.
+- **NetworkPolicy**: luật firewall ở tầng Pod; chỉ có hiệu lực khi **CNI hỗ trợ** (Calico, Cilium…), nếu không thì tạo ra cũng không có tác dụng.
+- **Pod Security Admission**: cơ chế có sẵn, gắn label namespace {{pod-security.kubernetes.io/enforce}} với mức {{privileged}}, {{baseline}}, {{restricted}}.
+- **Policy as code**: Kyverno hoặc OPA Gatekeeper kiểm tra mọi manifest khi tạo (bắt buộc label owner, cấm image latest, bắt buộc PDB…).
+
+### Cơ chế từng bước khi onboarding một team
+1. **Tạo namespace** {{payments-prod}}, {{payments-uat}} với label owner, cost-center, mức Pod Security. Vì sao tách môi trường bằng namespace: quota, quyền và NetworkPolicy khác nhau theo môi trường.
+2. **RBAC**: nhóm SSO của team được Role {{edit}} trong namespace UAT, chỉ {{view}} ở production (deploy production đi qua pipeline/GitOps, không qua kubectl tay).
+3. **Quota và LimitRange**: dựa trên số đo thật, ví dụ 40 vCPU request, 80 Gi RAM, 150 Pod; LimitRange mặc định request 250m/512Mi để Pod quên khai báo vẫn được tính vào quota.
+4. **NetworkPolicy default deny ingress**, rồi mở: từ namespace ingress-controller vào cổng 8080; từ {{orders-prod}} vào {{payments-prod}} cổng 8080; egress tới DB/Kafka nếu bật chặn egress.
+5. **Admission**: Pod Security {{restricted}} (không root, không privileged, drop capabilities); Kyverno bắt buộc có request/limit, probe, label owner, image từ registry nội bộ.
+6. **Quan sát và chi phí**: dashboard theo namespace, chia chi phí theo label (OpenCost/Kubecost), alert khi namespace dùng trên 85% quota.
+
+~~~text
+Cluster dùng chung
+├── ns payments-prod  [RBAC: view | Quota 40 CPU/80Gi | PSA restricted | NetPol default-deny]
+│      ▲ chỉ cho phép: ingress-nginx → :8080, orders-prod → :8080
+├── ns orders-prod    [RBAC: view | Quota 30 CPU/60Gi | PSA restricted]
+├── ns payments-uat   [RBAC: edit | Quota 10 CPU/20Gi]
+└── ns platform-*     (ingress, monitoring, Kyverno) — chỉ platform team
+~~~
+
+### Manifest cốt lõi
+~~~yaml
+apiVersion: v1
+kind: ResourceQuota
+metadata: { name: quota, namespace: payments-prod }
+spec:
+  hard:
+    requests.cpu: "40"
+    requests.memory: 80Gi
+    limits.memory: 120Gi
+    pods: "150"
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: default-deny-ingress, namespace: payments-prod }
+spec:
+  podSelector: {}                     # áp cho mọi Pod trong namespace
+  policyTypes: ["Ingress"]            # không khai báo rule ingress nào = chặn hết
+~~~
+
+### Chung cluster hay tách cluster
+| Tiêu chí | Một cluster nhiều namespace | Mỗi team một cluster |
+|---|---|---|
+| Chi phí | Thấp: chung control plane, node đầy hơn | Cao: control plane, add-on nhân 8 |
+| Vận hành | Một lần nâng cấp, một bộ add-on | 8 lần nâng cấp, dễ lệch phiên bản |
+| Cô lập | Mềm: chung kernel, chung API server | Mạnh |
+| Blast radius | Lỗi control plane/add-on ảnh hưởng mọi team | Giới hạn trong một team |
+| Hợp với | Các team nội bộ tin nhau | Dữ liệu PCI, khách hàng ngoài, yêu cầu pháp lý |
+
+### Lỗi hay gặp
+- **Cấp cluster-admin "cho nhanh".** Một lệnh sai xoá CRD hay namespace của team khác. Cách tránh: quyền theo namespace, cluster-wide chỉ cho platform.
+- **Quota mà không có LimitRange.** Triệu chứng: Pod không khai báo request bị từ chối với lỗi khó hiểu, team kêu "cluster hỏng". Cách tránh: LimitRange đặt mặc định, kèm tài liệu.
+- **Tạo NetworkPolicy trên CNI không hỗ trợ.** Tưởng đã chặn nhưng thực tế mọi Pod vẫn gọi được nhau. Cách tránh: kiểm thử bằng Pod thật ({{curl}} chéo namespace) sau khi áp.
+- **Default deny egress mà quên DNS.** Triệu chứng: mọi Pod không phân giải được tên. Cách tránh: mở egress tới CoreDNS cổng 53 UDP/TCP trước tiên.
+- **Quota đặt theo cảm tính.** Quá chặt thì team không deploy được giữa sự cố, quá lỏng thì vô nghĩa. Cách tránh: đặt theo số đo, xem lại hằng quý, có quy trình xin tăng nhanh.
+
+### Trả lời miệng 1 phút
+"Tôi chia ranh giới theo namespace cho mỗi team và môi trường. RBAC gắn với nhóm SSO: team có quyền edit ở UAT, chỉ view ở production vì deploy production đi qua pipeline. ResourceQuota giới hạn tổng CPU, RAM, số Pod mỗi namespace, LimitRange đặt request mặc định để Pod quên khai báo vẫn bị tính quota. NetworkPolicy default deny ingress rồi mở đúng đường, với điều kiện CNI hỗ trợ và nhớ mở DNS nếu chặn egress. Pod Security Admission mức restricted chặn container root và privileged, Kyverno bắt buộc probe, request, label owner, image nội bộ. Namespace là ranh giới mềm vì chung kernel và control plane, nên workload PCI hay của khách hàng ngoài tôi tách cluster riêng."
+
+> Senior tip: **thành công của cluster dùng chung đo bằng thời gian onboarding** — nếu một team mới phải chờ platform hai tuần để có namespace thì họ sẽ đòi cluster riêng. Hãy đóng gói toàn bộ bộ ranh giới (namespace, RBAC, quota, NetworkPolicy, PSA label) thành một template trong GitOps: team mở một pull request, review xong là có môi trường chuẩn trong một giờ.`,
+    follow: [
+      'Khi nào ranh giới namespace không đủ và phải tách cluster hoặc dùng node pool riêng?',
+      'Bạn xử lý thế nào khi một team liên tục chạm trần quota giữa sự cố?',
+      'Làm sao chia chi phí cluster dùng chung cho từng team một cách công bằng?'
+    ],
+    tags: ['Kubernetes', 'multi-tenancy', 'RBAC', 'ResourceQuota', 'NetworkPolicy', 'Pod Security'],
+    refs: [
+      { type: 'doc', title: 'Kubernetes Multi-tenancy', url: 'https://kubernetes.io/docs/concepts/security/multi-tenancy/' }
+    ]
   }
 );
