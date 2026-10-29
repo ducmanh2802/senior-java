@@ -1,6 +1,6 @@
 # T453 — Dịch sang tiếng Anh: lessons-microservices (2 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-microservices-5.en.js`
 
@@ -16,3 +16,9 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-microservices-5.en.js` và `node scripts/check-i18n.js lessons-microservices-5` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đủ 2 mục (`lesson-microservices-005`, `lesson-microservices-006`): title, goals, body, exercises[].title/prompt/hints/explain, check[].q/options/explain. Không chép code (starter/tests/reference).
+- Giữ nguyên markup: table, `{{…}}`, danh sách, `~~~java`; comment trong code block dịch sang tiếng Anh, traceparent/HTTP/ConcurrentHashMap… giữ nguyên.
+- `node scripts/check-i18n.js lessons-microservices-5` → OK (2 mục); `node scripts/validate.js` → OK.
+- `js/i18n/manifest.js` đã có sẵn `lessons-microservices-5`, không cần sửa.
+Reviewed-by: check-i18n (translation, no LLM review)
