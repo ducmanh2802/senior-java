@@ -1,6 +1,6 @@
 # T444 — Dịch sang tiếng Anh: labs-thread (2 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/labs-thread-9.en.js`
 
@@ -16,3 +16,9 @@ Yêu cầu dịch:
 - `node --check js/i18n/labs-thread-9.en.js` và `node scripts/check-i18n.js labs-thread-9` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đủ 2 mục (`lab-thread-007`, `lab-thread-008`), giữ nguyên toàn bộ markup (bảng, `~~~text`/`~~~java`, `> Senior tip:`), số liệu, tên class/thread id và mọi `{{inline code}}`. Comment tiếng Việt trong code block Java đã dịch sang tiếng Anh.
+- `node scripts/check-i18n.js labs-thread-9` → `OK — 2 mục đã dịch.` (script này cũng parse file trong vm nên xác nhận cú pháp hợp lệ; lệnh `node --check <file>` bị policy shell của máy chặn).
+- `node scripts/validate.js` → `OK — không có lỗi.`
+- Không có backtick và `${` trong nội dung dịch.
+Reviewed-by: check-i18n (translation, no LLM review)
