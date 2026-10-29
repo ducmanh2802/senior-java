@@ -1,6 +1,6 @@
 # T475 — Dịch sang tiếng Anh: lessons-architecture (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-architecture-4.en.js`
 
@@ -16,3 +16,9 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-architecture-4.en.js` và `node scripts/check-i18n.js lessons-architecture-4` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Translated `lesson-architecture-006` (Splitwise: split strategies + net balance + greedy settle) into `js/i18n/lessons-architecture-4.en.js`.
+- Fields covered: title, goals, body, both `exercises` entries (title/prompt/hints/explain) and all 4 `check` entries (q/options/explain); code fields (starter/tests/reference) intentionally omitted; array order preserved for by-index merge.
+- Markup kept intact (`**`, `{{}}`, `###`, lists, `~~~text` diagram, blockquote); Vietnamese labels/comments inside the `~~~text` diagram translated, structure unchanged.
+- Fixed labels: "**Tóm tắt:**" -> "**Summary:**", "> Senior tip:" kept, "### Liên hệ phỏng vấn" -> "### Interview relevance" (matches sibling files).
+- Verified: `node scripts/check-i18n.js lessons-architecture-4` -> OK (1 mục; the file is executed in a VM so it also parses), `node scripts/validate.js` -> OK.
+Reviewed-by: check-i18n (translation, no LLM review)
