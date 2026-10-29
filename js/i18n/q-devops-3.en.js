@@ -1,12 +1,11 @@
-
 /*
  * English translation of js/data/q-devops.js — task T215. Format: js/core/i18n.js (content overlay).
  * ids: devops-018 devops-019 devops-020 devops-021 devops-022
  */
 App.i18n.content({
   'devops-018': {
-    q: 'HPA based on CPU does not react to an I/O-bound service. How do you bring custom metrics such as RPS, queue depth or Kafka lag into HPA? Present the metrics pipeline architecture, how to choose the metric, and traps when scaling a Java service.',
-    a: `**Summary:** metrics-server only provides CPU/memory; to make HPA scale by RPS, queue depth or Kafka lag you must feed metrics into {{custom.metrics.k8s.io}} or {{external.metrics.k8s.io}} via Prometheus Adapter, or use KEDA. Choose a metric as close to real load as possible, but HPA is still a slow control loop: scrape, sync 15 s, then JVM startup time, so combine minReplicas and schedule-based scaling.
+    q: 'CPU-based HPA does not react to an I/O-bound service. How do you bring custom metrics such as RPS, queue depth, or Kafka lag into HPA? Present the metrics pipeline architecture, how to choose the metric, and traps when scaling a Java service.',
+    a: `**Summary:** metrics-server only provides CPU/memory; to make HPA scale by RPS, queue depth, or Kafka lag you must feed metrics into {{custom.metrics.k8s.io}} or {{external.metrics.k8s.io}} via Prometheus Adapter, or use KEDA. Choose a metric as close to real load as possible, but HPA is still a slow control loop: scrape, sync 15 s, then JVM startup time, so combine minReplicas and schedule-based scaling.
 
 ### Metrics pipeline architecture
 ~~~text
@@ -17,7 +16,7 @@ Pod /actuator/prometheus
         +------> KEDA (external metrics) --------+--> HPA --> Deployment
 ~~~
 - {{metrics-server}} only serves {{metrics.k8s.io}} (CPU/RAM from kubelet), it does not read Prometheus.
-- {{prometheus-adapter}} turns PromQL into a metric API. Map metric names, selectors and formulas.
+- {{prometheus-adapter}} turns PromQL into a metric API. Map metric names, selectors, and formulas.
 - {{KEDA}} is strong with built-in scalers (Kafka, RabbitMQ, SQS, cron), supports scaling to zero; under the hood KEDA still creates HPA.
 
 Example HPA by average RPS per Pod:
@@ -49,7 +48,7 @@ spec:
 desired = ceil(currentReplicas * currentMetric / target)
 example: 6 Pods * 450 RPS / 300 = 9 Pods
 ~~~
-Each HPA loop includes: Prometheus scrape (10–30 s), adapter, HPA sync (default 15 s), scheduler, pull image, Spring Boot startup 30–90 s and JIT warm-up. From load spike to new Pods serving well can be 2–4 minutes.
+Each HPA loop includes: Prometheus scrape (10–30 s), adapter, HPA sync (default 15 s), scheduler, pull image, Spring Boot startup 30–90 s, and JIT warm-up. From load spike to new Pods serving well can be 2–4 minutes.
 
 ### KEDA for Kafka consumers
 KEDA has a built-in Kafka scaler: declare {{ScaledObject}} with {{lagThreshold}} and {{maxReplicaCount}}; under the hood it still creates HPA and can scale to zero. Set maxReplicaCount not exceeding partition count, scale down slowly to avoid rebalance storm, and only scale to zero for workers/batch because Java API startup is slow.
@@ -72,7 +71,7 @@ Choose a metric close to real load: RPS/concurrency for I/O-bound APIs, queue de
     ]
   },
   'devops-019': {
-    q: 'For a core banking and payment system, which do you choose: rolling update, blue-green or canary? Compare cost, blast radius, rollback and data constraints; when do you use each strategy and who has authority to decide rollback?',
+    q: 'For a core banking and payment system, which do you choose: rolling update, blue-green, or canary? Compare cost, blast radius, rollback, and data constraints; when do you use each strategy and who has authority to decide rollback?',
     a: `**Summary:** Rolling update is the default because it is cheap and simple but mixes two versions during deploy; blue-green switches all traffic to the new environment, rollback is instant but requires double resources; canary reduces blast radius by sending a portion of traffic through the new version, but needs traffic-splitting infrastructure and reliable metrics. For core banking, I use rolling for small changes, canary with automatic analysis for risky changes, and blue-green for large infrastructure or platform version changes.
 
 ### Comparison
@@ -86,8 +85,8 @@ Choose a metric close to real load: RPS/concurrency for I/O-bound APIs, queue de
 | Best for | Stateless, small changes | Large releases, clean cutover needed | Risky changes, enough traffic |
 
 ### Rolling update
-- Control with {{maxSurge}}, {{maxUnavailable}}, {{minReadySeconds}}, probes and graceful shutdown.
-- Old and new versions run in parallel, so API, message schema and DB must be backward compatible.
+- Control with {{maxSurge}}, {{maxUnavailable}}, {{minReadySeconds}}, probes, and graceful shutdown.
+- Old and new versions run in parallel, so API, message schema, and DB must be backward compatible.
 - There is no "golden window" to compare two versions; if the new version is broken, some users are already affected before rollout stops.
 - {{kubectl rollout undo}} reverts to the previous ReplicaSet; but if a DB migration has already run, rolling back the app can break things.
 
@@ -110,7 +109,7 @@ All three strategies require **expand-contract** when changing schema: add new c
 
 ### Who decides rollback
 - Before release, agree on **quantitative criteria**: 5xx errors above 1% in 5 minutes, p99 above 800 ms, payment success rate down more than 2%, or SLO burn rate alert.
-- Release owner and SRE
+- Release owner and SRE on-call both have authority to stop. With canary, Argo Rollouts can auto-abort when analysis fails.
 
 > Senior tip: For core banking, never roll back DB with a simple script; always have a forward-fix migration ready. Use feature flags to disable risky paths instantly without redeploying.
 `,
@@ -231,7 +230,7 @@ WHERE status_new IS NULL
 ### When forced to go back
 - **App rollback**: deploy the old digest. With expand-contract, the old version can still read the new schema.
 - **DB forward-fix**: write a new migration to fix the error. Faster than restore.
-- **Restore/PITR**: only for serious data loss; accept losing data written after the backup, stop writes and notify.
+- **Restore/PITR**: only for serious data loss; accept losing data written after the backup, stop writes, and notify.
 
 > Senior tip: Always keep a forward-fix SQL script in version control; it is faster than restoring a multi-TB DB and less risky than manual fixes.
 `,
@@ -242,7 +241,7 @@ WHERE status_new IS NULL
     ]
   },
   'devops-022': {
-    q: 'You design observability for 20 Spring Boot microservices: metrics, distributed tracing and correlated logs. How do Micrometer, Micrometer Tracing/OpenTelemetry and OTel Collector divide the work, how to configure them, and which traps cause cost spikes?',
+    q: 'You design observability for 20 Spring Boot microservices: metrics, distributed tracing, and correlated logs. How do Micrometer, Micrometer Tracing/OpenTelemetry, and OTel Collector divide the work, how to configure them, and which traps cause cost spikes?',
     a: `**Summary:** Observability is not about installing as many tools as possible, but answering "what is the system doing and why" with good enough signals. With Spring Boot, Micrometer is the facade for metrics, Micrometer Tracing/OpenTelemetry handles traces, and JSON logs with traceId/spanId connect the three pillars. At 20 services, cost and cardinality become the main constraints, so standardize through a shared starter and filter at OTel Collector.
 
 ### Reference architecture
@@ -259,7 +258,7 @@ Spring Boot
 
 ### Metrics: few but correct
 - Enable histograms for HTTP to calculate percentiles and SLOs, for example {{management.metrics.distribution.percentiles-histogram.http.server.requests=true}} and buckets around 100/300/500/1000 ms.
-- Use low-cardinality tags: {{service}}, {{method}}, {{uri}} templated, {{status}}. **Do not** attach {{userId}}, {{accountId}}, {{requestId}} or raw path to metrics.
+- Use low-cardinality tags: {{service}}, {{method}}, {{uri}} templated, {{status}}. **Do not** attach {{userId}}, {{accountId}}, {{requestId}}, or raw path to metrics.
 - Control with {{MeterFilter}}: limit meters, deny dangerous tags, rename by standard.
 - Business metrics matter more than infrastructure metrics: successful transactions, queued transactions, error rate by channel. Use clear names and units.
 
@@ -274,18 +273,18 @@ Spring Boot
 - JSON logs with {{timestamp}}, {{level}}, {{service}}, {{traceId}}, {{spanId}}, {{message}}; do not log card numbers, national IDs, tokens, passwords.
 - Error logs need enough context to reproduce: transaction code, business error code, not full payload.
 
-### SLO, alerts and cost
+### SLO, alerts, and cost
 - Pick 2–4 SLIs per service: availability, latency p99, business error rate. Set SLO and error budget; alert by burn rate instead of alerting each failure.
 - Standard dashboards: RED for API (rate, errors, duration), USE for infrastructure (utilization, saturation, errors), and one business dashboard.
 - Cardinality is cost number one: each tag combination is a time series. One {{userId}} tag can multiply series to millions.
 - Trace and log also cost money: tail sampling, limit attributes, filter debug logs at Collector, do not send all to vendor.
 
-> Senior tip: Standardize metrics names with a common prefix per domain (e.g. {{payment.transaction}}); this makes queries portable across the 20 services.
+> Senior tip: Standardize metrics names with a common prefix per domain (e.g., {{payment.transaction}}); this makes queries portable across the 20 services.
 `,
     follow: [
       'If HTTP metric cardinality spikes because paths contain IDs, do you fix it in the app or in Prometheus?',
       'How does tail sampling work at OTel Collector and why is it needed for error traces?',
       'How do you keep traceId through Kafka and thread pools for correct log correlation?'
     ]
-  },
+  }
 });

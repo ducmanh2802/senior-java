@@ -1,6 +1,6 @@
 # T400 — Dịch sang tiếng Anh: q-primer (7 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-primer-1.en.js`
 
@@ -16,3 +16,8 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-primer-1.en.js` và `node scripts/check-i18n.js q-primer-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đủ primer-001..007 (q, a, follow), giữ nguyên markup, code, số liệu và độ chi tiết.
+- `node scripts/check-i18n.js q-primer-1`: OK — 7 mục đã dịch. `node scripts/validate.js`: OK — không có lỗi.
+- Lệnh `node --check js/i18n/q-primer-1.en.js` bị chặn bởi quyền shell; file đã được `check-i18n.js` nạp và parse thành công.
+Reviewed-by: check-i18n (translation, no LLM review)

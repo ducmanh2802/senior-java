@@ -1,6 +1,6 @@
 # T542 — Dịch lại (nội dung đã sửa): q-soft-2 (3 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-soft-2.en.js`
 
@@ -13,3 +13,5 @@ Với MỖI mục trên: đọc bản tiếng Việt hiện tại trong `js/data
 node scripts/check-i18n.js q-soft-2 → OK; node scripts/validate.js → OK.
 
 ## Notes
+Đã dịch lại 3 mục behavioral-002, behavioral-006, behavioral-007 từ bản tiếng Việt mới nhất trong q-soft.js. Cả hai script validation đều pass.
+Reviewed-by: check-i18n (translation, no LLM review)

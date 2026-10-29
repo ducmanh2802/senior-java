@@ -1,5 +1,5 @@
 /*
- * English translation of js/data/q-devops.js — task T214. Format: js/core/i18n.js (content overlay).
+ * English translation of js/data/q-devops.js — task T520. Format: js/core/i18n.js (content overlay).
  * ids: devops-010 devops-011 devops-012 devops-013 devops-014 devops-015 devops-016 devops-017
  */
 App.i18n.content({
@@ -12,16 +12,16 @@ App.i18n.content({
 commit/PR
   1. Build + unit test           mvn -B verify (JUnit, JaCoCo)
   2. Integration test            Testcontainers: PostgreSQL/Oracle, real Kafka
-  3. Quality & security        SonarQube quality gate, SAST, SCA (OWASP Dependency-Check/Trivy)
+  3. Quality & security          SonarQube quality gate, SAST, SCA (OWASP Dependency-Check/Trivy)
   4. Package                     image tag = version + git sha; SBOM (CycloneDX); sign image (cosign)
   5. Image scan                  Trivy/Harbor scanner: block CRITICAL with patch
   6. Push                        Nexus (jar) / Harbor (image), immutable tag
 merge main
-  7. Auto deploy DEV              smoke test, contract test
+  7. Auto deploy DEV             smoke test, contract test
   8. Deploy SIT                  automatic regression API test, integration test with simulated core banking
   9. Deploy UAT                  business test, performance test (k6/JMeter), DAST
- 10. CAB approval               linked to change request
- 11. Deploy PROD                 canary/rolling, monitor error rate, auto rollback
+  10. CAB approval               linked to change request
+  11. Deploy PROD                canary/rolling, monitor error rate, auto rollback
 ~~~
 
 ### Why "build once, promote many"
@@ -51,6 +51,14 @@ Flyway/Liquibase runs as a separate step (Job or init) before app deploy; script
 - "Run tests after deploying prod": gates must come first.
 - "More pipeline stages is always better": a 60-minute pipeline causes devs to batch changes, increasing risk; run in parallel and keep CI under 15 minutes.
 
+### Common pitfalls
+1. **Rebuilding for each environment**: prod runs a different build than what was tested because of SNAPSHOT dependency or base image update. Avoid: build once, promote by digest.
+2. **Unbounded CVE exceptions**: exception list grows, security gate loses effect. Avoid: each exception has an owner and expiry date.
+3. **CI holds admin kubeconfig for prod cluster**: leaking CI creds leaks the whole cluster. Avoid: GitOps pull-based, or short-lived OIDC with minimal permissions.
+
+### 1-minute spoken answer
+My pipeline has two parts. CI runs on every commit: build and unit test, integration test with Testcontainers, SonarQube quality gate, SAST and dependency scan, package image with version plus git sha, generate SBOM, sign image, scan image then push to Harbor with immutable tag. CD promotes that exact digest through DEV, SIT, UAT then PROD; each leg has gates like smoke test, regression, performance test, and CAB approval linked to change request. Principles I enforce: build once promote many, environment config outside the image, and full traceability. For CD I prefer GitOps because Git is the audit log, rollback is revert, and CI does not need prod credentials. Trade-off: more stages slow the pipeline, so I run in parallel and keep CI under 15 minutes. DB migration runs as a separate step and must be backward-compatible.
+
 > Senior tip: In banking, auditors ask "prove the build on prod is the one approved in UAT". Store digest, SBOM, scan results, and approver together with change request; Kubernetes admission policy (Kyverno/OPA Gatekeeper) only allows signed images from internal Harbor. When a new CVE like Log4Shell appears, SBOM lets you answer in minutes "which services are affected" instead of days.`,
     follow: [
       'A Critical CVE appears in a library but has no patch yet. The gate blocks the pipeline; how do you still release?',
@@ -65,58 +73,36 @@ Flyway/Liquibase runs as a separate step (Job or init) before app deploy; script
 ### Helm
 ~~~yaml
 # templates/deployment.yaml (truncated example)
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: {{ include "spring-boot.fullname" . }}
 spec:
-  replicas: {{ .Values.replicaCount }}
-  selector:
-    matchLabels:
-      app: {{ include "spring-boot.name" . }}
+  replicas: {{ .Values.replicas }}
   template:
     metadata:
-      labels:
-        app: {{ include "spring-boot.name" . }}
+      annotations:
+        # change ConfigMap -> checksum changes -> Pod gets rolling restart
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
     spec:
       containers:
-      - name: {{ .Chart.Name }}
-        image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
-        env:
-        {{- range .Values.extraEnv }}
-        - name: {{ .name }}
-          value: {{ .value | quote }}
-        {{- end }}
+        - name: app
+          image: "{{ .Values.image.repository }}@{{ .Values.image.digest }}"
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+~~~
+~~~bash
+helm upgrade --install payment ./springboot-chart -n payment \\
+  -f values.yaml -f values-prod.yaml --wait --timeout 10m
+helm history payment -n payment     # revisions
+helm rollback payment 12 -n payment # rollback to revision 12
+helm template ... | kubectl diff -f - # preview changes
 ~~~
 
 ### Kustomize
-~~~yaml
-# kustomization.yaml (base)
-resources:
-- deployment.yaml
-- service.yaml
-- ingress.yaml
-
-# overlays/dev/kustomization.yaml
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-resources:
-- ../../base
-patchesStrategicMerge:
-- patch-replicas.yaml
-configMapGenerator:
-- name: app-config
-  literals:
-  - ENV=dev
+~~~text
+base/              deployment.yaml, service.yaml, kustomization.yaml
+overlays/sit/      kustomization.yaml (namespace, replicas: 2, image tag)
+overlays/prod/     kustomization.yaml + patch-resources.yaml (replicas: 6, larger limits)
 ~~~
+Run {{kubectl apply -k overlays/prod}} or let Argo CD render. {{configMapGenerator}} auto-adds hash suffix to ConfigMap name, so config change renames it and triggers rolling update automatically.
 
-### Secrets
-- Never put secrets in {{values.yaml}} or ConfigMap.
-- Use {{External Secrets Operator}} to sync from Vault/AWS SM.
-- If Git must hold them, use {{Sealed Secrets}} (encrypted with cluster public key) or {{SOPS}} (encrypted with KMS).
-- Rotate regularly and audit access.
-
-### Trade-off
+### Comparison
 | Criteria | Helm | Kustomize |
 |---|---|---|
 | Template power | High (loops, conditionals, functions) | Low (only patches) |
@@ -125,16 +111,36 @@ configMapGenerator:
 | Sharing charts | Yes (Helm Hub, artifact repo) | No (copy YAML) |
 | Built into kubectl | No (needs helm binary) | Yes |
 
-### Production pitfalls
-- {{values.yaml}} grows to 500 lines; split into {{values-dev.yaml}}, {{values-prod.yaml}}.
-- Over-parameterizing: every new env creates more branches; prefer fewer overlays.
-- Secret rotation requires redeploy; plan for zero-downtime rotation.
+Can combine: Argo CD renders Helm chart then applies Kustomize patches for environment-specific tweaks.
 
-> Senior tip: At scale, manage manifests in one repo (GitOps) with folder-per-service. For banks, require code reviewers different from deployers, and use admission controllers to enforce image registry, resource limits, and namespace isolation.`,
+### Secrets
+Kubernetes Secret is just base64; anyone with read access to Secret in namespace or unencrypted etcd sees the password.
+| Method | Mechanism | Note |
+|---|---|---|
+| External Secrets Operator | CRD points to Vault/AWS Secrets Manager, operator creates K8s Secret and syncs periodically | Central rotation, Git only holds reference |
+| Vault Agent/CSI | Inject secret file into Pod | No Secret stored in etcd (CSI) |
+| Sealed Secrets | Encrypted with cluster controller public key, can commit to Git | Losing controller private key loses all |
+| SOPS | Encrypts values in file using KMS/age/PGP | Fits GitOps, needs plugin at render time |
+
+Also enable encryption at rest for etcd and strict RBAC (dev cannot get secret in prod).
+
+### Common wrong answers
+- "Each environment copies a full YAML set": 30 services × 4 envs = 120 sets, fix a probe means fixing 120 places, config drift.
+- "Secret is base64 so commit is fine": base64 is not encryption.
+- "Change ConfigMap and app picks it up": env var only read at startup; need checksum annotation or hash suffix.
+
+### Common pitfalls
+- Prod values wrong due to multi-layer overrides: always run {{helm template}}/{{kubectl diff}} in pipeline and save output for review.
+- Helm release stuck in pending-upgrade when pipeline cancelled mid-way: need manual rollback before next deploy.
+- Shared chart overloaded with if/else per service: nobody dares touch it; keep chart small, test it ({{helm lint}}, {{helm unittest}} plugin).
+
+### 1-minute spoken answer
+With 30 services and 4 environments, I don't copy YAML per env because fixing one probe means 120 edits. I use one Helm chart managed by platform team, each service has a small values file, each environment has an override values file. Helm gives templates, release history, rollback, and is the de facto standard for third-party software. Kustomize has no templates, just patches pure YAML via base and overlay, easier to review, fits when env differences are small; the two can combine via Argo CD. Secrets never committed as base64: I use External Secrets Operator pulling from Vault, or Sealed Secrets/SOPS if must store in Git, plus etcd encryption at rest and strict RBAC. In pipeline I always run helm template and kubectl diff to review before applying to prod.
+
+> Senior tip: In banking, the model auditors accept: one standard chart managed by platform team, each service a small values file in GitOps repo, secrets in Vault with namespace-scoped policy, Argo CD syncs, and every prod change goes through merge request with approval. When rotating DB password, ESO updates Secret but app keeps old connection; need controlled restart process or Spring Cloud Vault with dynamic credentials.`,
     follow: [
-      'When should you place a value in values.yaml versus a ConfigMap versus a Secret?',
-      'How do you handle secret rotation without restarting all pods at once?',
-      'Compare rollback in Helm with rollback via Git revert in Kustomize for a banking use case.'
+      'Rotate DB password without downtime: how to coordinate Vault, ESO and HikariCP?',
+      'Helm release stuck in pending-upgrade. How do you handle it?'
     ],
   },
   'devops-012': {
@@ -149,11 +155,11 @@ configMapGenerator:
 ### Architecture
 ~~~text
 Spring Boot (stdout JSON)
-  → Container runtime (node log)
-  → DaemonSet agent (Fluent Bit / Vector / Alloy)
-  → Enrichment (namespace, pod name, labels)
-  → Storage (Elasticsearch / OpenSearch / Loki / ClickHouse)
-  → Query / Dashboard (Grafana / Kibana)
+  -> Container runtime (node log)
+  -> DaemonSet agent (Fluent Bit / Vector / Alloy)
+  -> Enrichment (namespace, pod name, labels)
+  -> Storage (Elasticsearch / OpenSearch / Loki / ClickHouse)
+  -> Query / Dashboard (Grafana / Kibana)
 ~~~
 
 ### Trace across services
@@ -283,7 +289,7 @@ server {
 ### How JVM sees resources
 - **CPU**: JVM reads {{cpu.max}} (cgroup v2) or quotas (v1). With {{-XX:+UseContainerSupport}} (default in 17+), it sets available processors accordingly.
 - **RAM**: JVM reads {{memory.limit_in_bytes}} (v1) or {{memory.max}} (v2) and calculates heap automatically unless {{-XX:MaxRAMPercentage}} is set.
-- Without container awareness, JVM uses the host’s CPU count (e.g., 64) and memory (e.g., 128 Gi), creating wrong GC threads, wrong heap sizing, and poor performance.
+- Without container awareness, JVM uses the host's CPU count (e.g., 64) and memory (e.g., 128 Gi), creating wrong GC threads, wrong heap sizing, and poor performance.
 
 ### Recommended settings
 - {{-XX:MaxRAMPercentage=75}}: leaves room for metaspace, thread stacks, native memory, direct buffers.
@@ -397,17 +403,17 @@ startupProbe:
 6. Container stops; volume unmount; Pod removed.
 
 ### What graceful shutdown does not do
-- It does not wait for custom {{ExecutorService}} threads that are not part of Spring’s thread pool.
+- It does not wait for custom {{ExecutorService}} threads that are not part of Spring's thread pool.
 - It does not wait for @Scheduled tasks or async methods not tracked by Spring.
 - It does not wait for Kafka consumer @KafkaListener threads unless specifically configured with a graceful stop listener.
-- It does not stop database connection pools automatically if not integrated with Spring’s lifecycle.
+- It does not stop database connection pools automatically if not integrated with Spring's lifecycle.
 
 ### Correct configuration
 - {{terminationGracePeriodSeconds: 60}} or more (match worst-case drain time).
 - {{preStop: { exec: { command: ["/bin/sh","-c","sleep 10"] } } }}: gives time for endpoint removal to propagate and connections to finish.
 - Spring Boot: {{server.shutdown=graceful}}, {{spring.lifecycle.timeout-per-shutdown-phase=30s}}.
 - Kafka: add a shutdown hook or use {{@KafkaListener}} with container factory that stops on context close; commit offsets before exit.
-- Custom executors: register as {{DisposableBean}} or use {{TaskExecutor} with graceful termination.
+- Custom executors: register as {{DisposableBean}} or use {{TaskExecutor}} with graceful termination.
 
 ### Verification
 - Check Kubernetes events for SIGTERM to SIGKILL delay; if 30 s, increase {{terminationGracePeriodSeconds}}.

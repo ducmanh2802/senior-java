@@ -34,7 +34,7 @@ App.i18n.content({
     follow: [`What if the incident happened at 2 AM and you were not on call — how did you learn about it?`, `Have you ever had to decide on rollback when real money was at stake? What was your decision criteria?`, `After the incident, what did you do to make sure the postmortem did not become a blame-finding ritual?`]
   }
   ,
-  'behavioral-002': {
+'behavioral-002': {
     q: `Have you ever disagreed with a tech lead, architect, or PM? How did you handle it, and what was the outcome?`,
     a: `**Summary:** The interviewer is not asking "have you ever disagreed" but assessing **whether you argue with data and product benefit rather than personal temper**, and most importantly **whether you still commit to the final decision** after discussion. A strong answer shows maturity: I persuaded, or I could not persuade but still executed fully and still proposed a measurement plan.
 
@@ -53,15 +53,24 @@ App.i18n.content({
 
 ### Sample answer
 > "There was one very clear case. My tech lead proposed putting all cart data into Redis cache to reduce Postgres load. His reason was fully reasonable: cart queries accounted for 40% of total DB load and were slowing other flows.
-> I did not oppose the problem; I opposed **the solution**. I proposed measuring first: build a trial with 5% real traffic over 3 days. Result: cache hit rate was only 18% because cart data changes continuously (cart edited 3–4 times per minute), and serialization time when reading from cache raised the read-flow p99 by 12 ms — meaning total latency barely decreased, while the infra team had to operate an additional Redis cluster.
-> I presented with exactly this sentence: 'your proposal targets 40% DB load, but with 18% hit rate DB load drops little, user latency is almost unchanged, and we add 3 new failure sources'. The tech lead agreed to stop, and the team chose a second direction: add the correct index on Postgres and bring only finalized orders into Redis. After 2 weeks: DB load dropped 45% **without** new infrastructure, p99 from 380 ms to 210 ms.
+> I did not oppose the problem; I opposed **the solution**. I proposed measuring first: build a trial with 5% real traffic over 3 days. Result: cache hit rate was only 18% because cart data changes continuously (cart edited 3–4 times per minute), and serialization time when reading from cache raised the read-flow p99 by 12 ms — meaning total latency barely decreased, while the infra team had to operate an additional Redis cluster. While measuring, I also checked {{pg_stat_statements}} and found 2/3 of cart load came from a query missing an index and an API header that called cart item count on **every** page.
+> I presented with exactly this sentence: 'your proposal targets 40% DB load, but with 18% hit rate DB load drops little, latency is almost unchanged, and we add 3 new failure sources including cache staleness'. The tech lead agreed to stop, and the team chose a second direction: add a composite index for that query and return the cart item count in the cart response itself instead of a separate call. Result after 2 weeks: total DB load dropped about 28% **without** new infrastructure, cart API p99 dropped from 380 ms to 210 ms. The tech lead later invited me to review subsequent cache proposals together.
 > What I learned: if I had only said 'this approach is not good', the meeting would end with him still doing what he wanted. Evidence is what turns disagreement into a shared decision."
+
+### Preparing a "losing" story
+A good interviewer will follow up: "have you ever failed to persuade?" Short example: "I wanted to extract payment into a separate service; the architect wanted to keep it in the monolith for two more quarters because the team only had 4 people. I presented my case, he kept his decision. I recorded the rationale and the condition for revisiting (when blocked deploys due to other modules exceed 2/month) in an ADR, then did my assigned work in the monolith to the best of my ability, including writing package boundaries to make future extraction easy. Six months later that condition was met, and extraction took 3 weeks instead of the estimated 2 months because boundaries were already in place." This is **disagree and commit**: argue clearly, then commit fully, and leave a way to measure for a revisit.
 
 ### Things to avoid
 - **Stories without evidence**: "I think that will be slow" — have numbers or say clearly how you measured.
 - **Personal attack or saying "my manager was wrong"**: even if right, the tone decides the outcome.
+- **Putting yourself above others**: "I warned you" is the answer of someone who does not know how to take responsibility.
+- **Stories ending at "I won"**: the interviewer wants to know how you handle **both winning and losing**.
+- **Ignoring the human side**: a disagreement story without details on how you protected the working relationship will lack conviction.
+
+> Senior tip: prepare **two versions** of the same event: one for a senior role and one for a lead role. At senior level, you focus on **clarifying the issue and presenting evidence**; at lead level, you focus on **presenting trade-offs with opportunity cost and making the call when consensus is impossible**. Same event, completely different expectations.
+
 `,
-    follow: [`Have you ever failed to persuade someone? How did you handle that?`, `With a PM, what is the difference between opposing a solution and opposing the goal?`, `If the final decision went against you and then an incident occurred, how did you handle it?`]
+    follow: [`Have you ever **failed** to persuade someone? How did you handle that?`, `With a PM, what is the difference between opposing a solution and opposing the goal?`, `If the final decision went against you and then an incident occurred, how did you handle it?`]
   }
   ,
   'behavioral-003': {
@@ -157,7 +166,7 @@ App.i18n.content({
     follow: [`Do you use story points, and do they really help?`, `When the PM does not agree to cut scope, what options do you have besides overworking?`, `Have your estimates ever been way off? How did you calibrate your estimation?`]
   }
   ,
-  'behavioral-006': {
+'behavioral-006': {
     q: `Business only wants to ship features, but your team is buried under technical debt. How do you handle this situation?`,
     a: `**Summary:** At the lead level, the key is **valuing technical debt in business units** (money, time, risk), not "code is hard to read." Then you must propose a **fixed resource mechanism** — usually a 20% budget each sprint — so reducing debt becomes a process, not dependent on who has enthusiasm.
 
@@ -176,18 +185,26 @@ App.i18n.content({
 
 ### Sample answer
 > "I once led a 3-year-old service. When I joined, the product backlog proposed adding ~40 story points each sprint, while engineers could only do 25–28 points — meaning every sprint silently turned 12 points into debt.
-> I did not propose "do less feature to pay debt," because that is an argument PM will reject. I measured first. I took APM and error-log data, and found a very clear link: **revenue reports** accounted for 35% of total system query time, running on a table of 80 million records with 3 sub-queries per load. p95 for this screen was 4.2 seconds; 240 staff used it daily and 30% had to close and reopen the tab.
+> I did not propose 'do less feature to pay debt,' because that is an argument PM will reject. I measured first. I took APM and error-log data, and found a very clear link: **revenue reports** accounted for 35% of total system query time, running on a table of 80 million records with 3 sub-queries per load. p95 for this screen was 4.2 seconds; 240 staff used it daily and 30% had to close and reopen the tab.
 > I presented to the PM in their language: 'this screen takes 4.2 seconds, 240 users daily, every second of waiting is a sales staff who cannot call a customer.' The specific proposal: dedicate **20% capacity each sprint** to technical debt — about 5–6 points — and commit to providing data after 2 sprints. We fixed by moving reports to a daily-updated aggregate table instead of direct joins.
 > After 2 sprints: p95 dropped from 4.2 s to 0.9 s; P1 tickets related to the report screen dropped 70%; and most importantly, **the 20% budget became a team convention**, so when I moved to another role afterward, it still held — the next sprint still dedicated 5 points to debt.
 > Lesson: technical debt does not convince anyone with only technical terms, and does not disappear without a fixed capacity budget. Before I joined, the team had tried both ways: requesting more people did not work, and proposing feature cuts was rejected."
 
 ### Things to avoid
-- **Complaining with technical terms**: "legacy code is hard to maintain" does not change the decision-maker’s mind.
+- **Complaining with technical terms**: "legacy code is hard to maintain" does not change the decision-maker's mind.
+- **Giving debt numbers without source**: "still have 5000 lines of technical debt" — no one acts on that number.
+- **Only saying 'need more people'**: this makes you sound like you control nothing.
+- **Promising 'will clean up later'**: without a concrete budget, debt just gets pushed to the next sprint.
+- **Arguing technical principles instead of product goals**: e.g., debating which framework to use.
+- **Not stating clearly what you measured** before proposing.
+
+> Senior tip: prepare **one conversion formula** you use to speak about technical debt to non-technical people — e.g., '3.3 seconds excess wait × 240 staff × ~50 report opens per day ≈ 11 staff-hours lost daily'. Show the math so listeners can verify it themselves. One sentence like that persuades better than an entire architecture slide.
+
 `,
     follow: [`How do you value technical debt besides "hours to fix"?`, `If business continuously breaks the 20% agreement, what do you do?`, `Have you ever had to accept technical debt and record it rather than fix it?`]
   }
   ,
-  'behavioral-007': {
+'behavioral-007': {
     q: `Tell me about a large project or migration you led from start to finish. What did you do to make it successful?`,
     a: `**Summary:** This question is a test of **leadership at project level**: ability to split work, plan with risk, keep information flowing, and — an often-overlooked factor — **handle when the plan goes wrong**. A strong answer always includes a section on "where the initial plan was wrong and how I corrected it."
 
@@ -206,13 +223,20 @@ App.i18n.content({
 
 ### Sample answer
 > "Last year I led splitting a monolith order service (~400,000 lines) into 4 services. The biggest constraint: **no downtime allowed**, and the system was running during sale season with traffic 8x normal.
-> I began by **clarifying the goal before planning**: not "split everything," but "split the most painful part and reduce release risk." I proposed starting with the report module because it was independent, had few users, but was causing pain. Then I divided into 5 phases with completion criteria expressed in numbers: measure what, shift what percentage of traffic, and under what conditions to roll back.
+> I began by **clarifying the goal before planning**: not 'split everything,' but 'split the most painful part and reduce release risk.' I proposed starting with the report module because it was independent, had few users, but was causing pain. Then I divided into 5 phases with completion criteria expressed in numbers: measure what, shift what percentage of traffic, and under what conditions to roll back.
 > Three risks I anticipated and prepared for: (1) shared data across modules → solved with **dual-write with on/off flags and backfill process**; (2) deploy during sale season → locked deployment windows before sale season, with feature flags to disable; (3) team unfamiliar with the new service → I spent the first 2 weeks on **training and writing runbooks**, not asking anyone to write production code before understanding the old system.
 > The initial plan was **wrong in one place**: I estimated data synchronization history backfill at 3 days, but it actually took 11 days due to data type inconsistencies from multiple sources. When discovered, I stopped the backfill phase, proposed a new option: only backfill the last 6 months and keep old data in the monolith, reading via API when needed. This delayed that phase by about 1 week, but still stayed within the buffer, so the launch milestone was preserved.
 > Result: 4 services split and running in production, **zero downtime** throughout, endpoint count in monolith dropped from 210 to 47, deployment time for a small change dropped from 25 minutes to 4 minutes. Not fully achieved: payment module was not split — it remains in the monolith and is a recorded debt with the reason and risk assessment."
 
 ### Things to avoid
-- **Using "I" for everything**: you need to clearly state your part and the team’s part; interviewer wants to know you led, not that you did everything.
+- **Using "I" for everything**: you need to clearly state your part and the team's part; interviewer wants to know you led, not that you did everything.
+- **Only describing the plan, no results**: need before/after numbers.
+- **Hiding the failure part**: a 100% perfect story makes interviewers suspicious; the part "plan was wrong and how I fixed it" is actually the most convincing.
+- **Not mentioning risk and people**: if there's nothing about how you handled risk, the answer lacks the depth expected of a lead role.
+- **Throwing numbers without source**: "300% performance increase" without saying how it was measured will get challenged.
+
+> Senior tip: prepare the story in **a 3-part slide structure**: goals and constraints, phased plan with risks, and results with the unmet parts. A structured story makes you sound like you are **managing**, not just storytelling — and that is exactly what they are looking for in a lead candidate.
+
 `,
     follow: [`How do you estimate work when a project has unclear parts?`, `If a team member opposes your plan, how do you handle it?`, `Have you ever had to stop a project midway, and what was the basis for that decision?`]
   }

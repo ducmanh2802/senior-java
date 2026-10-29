@@ -387,34 +387,34 @@ s3.putObject(req, RequestBody.fromFile(tmpFile)); // SDK v2, upload from file: R
     ],
   },
   'scenario-011': {
-    q: 'The user needs to upload a 2 GB file to the system. How do you design the upload flow for stability and resumable retries?',
-    a: `**Summary:** do not send a 2 GB file through the JVM (multipart consumes RAM/disk, easily cut by timeout) — client uploads directly to S3 via presigned URL with multipart upload; choose part size and concurrency by S3 limits, throughput, and retry capability; concurrent uploads with limits, retry each part individually (resumable); after complete, use an S3 event to scan the virus (Lambda + ClamAV) before the file enters the clean bucket.
+    q: 'The user needs to upload a 2 GB file to the system. How do you design the upload flow for stability and resumable retries on network errors?',
+    a: `**Summary:** do not let a 2 GB file pass through the JVM (multipart consumes RAM/disk, easily cut by timeout) — client uploads straight to S3 via presigned URL with multipart upload; choose part size and concurrency based on S3 limits, throughput, and retry capability; limited parallel uploads, each part retries independently (resumable); after completion, use an S3 event to virus-scan (Lambda + ClamAV) before the file enters the clean bucket.
 
 ### Clarify requirements
-- Max size, file type, user network (office 4G)? Is resumable needed when interrupted?
-- Who scans viruses, target bucket is S3 or an internal system? SLA for file availability after upload?
+- Max size, file type, user network (office 4G)? Is resumable needed when interrupted mid-way?
+- Who scans for viruses, is the destination bucket S3 or an internal system? SLA for file availability after upload?
 - Is a per-part progress bar needed?
 
 ### Investigate / Analyze
-- Current approach: Spring Multipart keeps temp files in the JVM, Tomcat has max-post-size; LB idle timeout cuts the data stream; JVM heap/disk at peak.
-- Over 2 GB, most requests fail due to proxy timeout; if retrying from the beginning, users usually give up.
+- Current approach: Spring Multipart keeps temp files in the JVM, Tomcat has max-post-size; LB idle timeout cuts the data stream mid-flight; JVM heap/disk spikes at peak.
+- Over 2 GB, most requests fail due to proxy timeout; if the user must retry from the beginning, they usually give up.
 
 ### Solution
 - Standard flow:
   1. Client calls {{POST /uploads/init}} — backend creates a multipart upload (CreateMultipartUpload), returns uploadId and a list of presigned URLs for each part.
-  2. Client uploads parts in parallel; failed parts retry individually; saves state (uploadId, completed parts) to resume.
-  3. Complete: client calls {{/uploads/complete}} — S3 assembles the file; an S3 event triggers Lambda running ClamAV; clean files move to the clean bucket, suspicious ones stay in quarantine.
-- Backend receives no bytes — only signs URLs (a few ms of CPU) and stores metadata (owner, per-part md5) for reconciliation.
-- Validation does not rely on file name or MIME header; reads magic bytes to confirm real file type; limits a whitelist of extensions.
+  2. Client uploads parts in parallel; failed parts retry individually; save state (uploadId, completed parts) to resume.
+  3. Done: client calls {{/uploads/complete}} — S3 assembles the file; an S3 event triggers Lambda running ClamAV; clean files move to the clean bucket, suspicious ones stay in quarantine.
+- Backend receives no bytes — only signs URLs (a few ms of CPU) and stores metadata (owner, md5 per part) for later reconciliation.
+- Validation does not rely on file name or MIME header; read magic bytes to confirm the real file type; enforce a whitelist of extensions.
 
 ### Trade-off & pitfall
 - Presigned URLs expire (max 7 days, recommend 24h); resume requires requesting new URLs for unfinished parts.
 - CORS must be configured for presigned upload; test with a real browser, not just Postman/curl.
 - Separate three buckets: upload-raw / quarantine / clean; only the clean bucket is read by the app — fail-safe when scanning fails.
 
-> Senior tip: uploading straight to S3 reduces service CPU/RAM by up to 90% when handling large files. Choose part size/concurrency based on measurement of the target client and network; limit concurrent parts so you do not exhaust the device's bandwidth/connections. Per-part retry lets the upload continue without sending the entire file again.`,
+> Senior tip: when switching to direct S3 upload, the service only issues presigned URLs and receives callbacks, so CPU/RAM/bandwidth for large files nearly vanishes from the service (measure before/after to get numbers for your own system). Choose part size/concurrency by measuring on the target client and network; limit concurrent parts so you do not exhaust the device's bandwidth/connections. Per-part retry lets the upload continue without resending the entire file.`,
     follow: [
-      'If the client loses network after uploading 5 of 12 parts, how is the resume flow designed?',
+      'The client loses network after uploading 5 of 12 parts — how is the resume flow designed?',
       'How do you use S3 ListParts to know which parts the client has finished and where to start retrying?'
     ],
   },

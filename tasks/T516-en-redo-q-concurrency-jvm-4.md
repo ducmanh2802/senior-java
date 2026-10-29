@@ -1,6 +1,6 @@
 # T516 — Dịch lại (nội dung đã sửa): q-concurrency-jvm-4 (8 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-concurrency-jvm-4.en.js`
 
@@ -13,3 +13,8 @@ Với MỖI mục trên: đọc bản tiếng Việt hiện tại trong `js/data
 node scripts/check-i18n.js q-concurrency-jvm-4 → OK; node scripts/validate.js → OK.
 
 ## Notes
+
+- Đã dịch lại toàn bộ 8 entry (jvm-014..018, concurrency-021..023) từ bản tiếng Việt hiện tại, giữ nguyên key và chỉ dùng field q/a/follow như các entry khác. Code mẫu giữ nguyên, comment trong code dịch sang tiếng Anh; không backtick, không `${`, code block `~~~` giữ đủ.
+- Chỉ sửa `js/i18n/q-concurrency-jvm-4.en.js`.
+- Kiểm tra: `node scripts/check-i18n.js q-concurrency-jvm-4` → `OK — 8 mục đã dịch.`; `node scripts/validate.js` → `OK — không có lỗi.`
+Reviewed-by: check-i18n (translation, no LLM review)

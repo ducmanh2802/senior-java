@@ -70,36 +70,44 @@ A valid example is the template method: {{AbstractStatementExporter}} has a {{fi
 
   'core-021': {
     q: `Overloading vs overriding: what are the rules with {{static}}, {{private}}, {{final}}, covariant return types and exceptions? Predict the output when calling a static method through a parent-type reference.`,
-    a: `**Summary:** Overloading means many methods with the same name but different parameter lists; the compiler chooses at **compile time** based on the **declared type** of the argument. Overriding means a subclass redefines an instance method with the same signature; the JVM chooses at **runtime** based on the **real object**. {{static}} methods cannot be overridden — only **hidden**; {{private}} and {{final}} methods cannot be overridden.
+    a: `**Summary:** Overloading means several methods with the same name but different parameter lists; the **compiler** chooses one at **compile time**, based on the **declared type** of the argument (the type written in the variable declaration, not the type of the object stored inside it). Overriding means a subclass redefines an instance method with the same signature; the **JVM** chooses the implementation at **runtime**, from the **real object**. {{static}} methods cannot be overridden — they are only **hidden**; {{private}} and {{final}} methods cannot be overridden at all.
 
-### Rules table
+### The rules in one table
 | Rule | Overloading | Overriding |
 |---|---|---|
-| When chosen | Compile time, by static type | Runtime, by dynamic type (vtable) |
+| When chosen | Compile time, by the declared (static) type | Runtime, by the real (dynamic) type, through the vtable |
 | Signature | Same name, different parameter list | Same name and parameter list |
-| Return type | Any, but cannot differ only by return type | Identical, or subtype (covariant) if a reference type |
-| Access modifier | Any | Cannot be narrower (protected → public okay, reverse not) |
-| Checked exception | Any | Cannot declare a new or wider checked exception; unchecked is free |
-| static / private / final | Can overload | Cannot override (static is hidden) |
+| Return type | Anything, but you cannot differentiate only by return type | Identical, or a subtype (covariant) if it is a reference type |
+| Access modifier | Anything | Cannot be narrower (protected to public is fine, the reverse is a compile error) |
+| Checked exception | Anything | Cannot add a new or broader checked exception; unchecked is free |
+| static / private / final | Can be overloaded | Cannot be overridden (static is hidden; private and final are blocked) |
 
-### Predict output: static hiding vs dynamic dispatch
+- **Signature** = method name + parameter types. The return type and {{throws}} are not part of it; that is why two methods that differ only in return type do not compile — the compiler sees the same signature declared twice.
+- **Covariant return** = the override returns a subtype of the parent return type: {{Object.clone()}} returns {{Object}}, and a class may override it to return its own type. Callers that expect an {{Object}} still compile, because the subclass instance is also an {{Object}}.
+- **Checked exception** = an exception the compiler forces you to declare with {{throws}} or to catch (a subclass of {{Exception}} but not of {{RuntimeException}}, e.g. {{IOException}}). Unchecked means {{RuntimeException}} and its subclasses, which the compiler does not track.
+- **vtable** = "virtual method table": one array per loaded class with a slot per overridable method. A subclass starts by copying the parent table, then points the overridden slots at its own code.
+
+### Predict the output: static hiding vs dynamic dispatch
 ~~~java
 class Parent {
     static String who()  { return "Parent.static"; }
     String name()        { return "Parent.instance"; }
 }
 class Child extends Parent {
-    static String who()  { return "Child.static"; }      // hiding
-    @Override String name() { return "Child.instance"; } // overriding
+    static String who()  { return "Child.static"; }      // hiding, not overriding
+    @Override String name() { return "Child.instance"; } // a real override
 }
 
 Parent p = new Child();
-System.out.println(p.who());   // Parent.static  (chosen by declared type Parent)
-System.out.println(p.name());  // Child.instance (chosen by real object)
+System.out.println(p.who());   // Parent.static  (chosen by the declared type Parent)
+System.out.println(p.name());  // Child.instance (chosen by the real object)
 ~~~
-Why: static calls are compile-bound as {{invokestatic Parent.who}}, so the real object does not matter. Instance methods compile to {{invokevirtual}} and the JVM looks up the method table of the real class at runtime.
+What happens, step by step:
+1. {{p.who()}} compiles to the instruction {{invokestatic Parent.who}} — the class name is baked into the instruction, so the object inside {{p}} is never consulted. Static methods do not sit in the vtable at all, which is why {{Child.who()}} only **hides** {{Parent.who()}} instead of overriding it.
+2. {{p.name()}} compiles to {{invokevirtual Parent.name}}. At runtime the JVM reads the real class of the object ({{Child}}), looks up the slot for {{name()}} in {{Child}}'s vtable, and jumps to {{Child.name}}. That lookup — "which implementation do I actually run?" — is what people call **dynamic dispatch**. The JIT usually removes it once it has seen only one receiver type (devirtualization), so in a hot loop it costs nothing.
+3. Calling a static method through an instance ({{p.who()}}) or through the subclass name ({{Child.who()}}) only changes what the reader thinks is happening; the compiled call is always the one from the declared type.
 
-### Predict output: overload resolution
+### Predict the output: overload resolution
 ~~~java
 static void print(Object o)  { System.out.println("Object"); }
 static void print(String s)  { System.out.println("String"); }
@@ -107,28 +115,35 @@ static void print(long x)    { System.out.println("long"); }
 static void print(Integer x) { System.out.println("Integer"); }
 
 Object obj = "hello";
-print(obj);   // Object: chosen by static type, not runtime type
-print("hi");  // String: most specific method
+print(obj);   // Object: chosen by the static type, not the runtime type
+print("hi");  // String: the most specific method wins
 print(5);     // long: widening (phase 1) beats boxing (phase 2)
-// print(null); -> compile error "ambiguous": String and Integer are equal
+// print(null); -> compile error "ambiguous": String and Integer are equally specific
 ~~~
-The compiler searches in 3 phases: (1) no boxing, no varargs; (2) allowed boxing/unboxing; (3) allowed varargs. The first phase that finds a match stops, then selects the most specific method.
+The compiler resolves overloads in 3 phases and stops at the first phase where any method applies:
+1. **No boxing, no varargs** — exact types plus widening primitive conversions ({{int}} to {{long}} is widening: the value fits, no object is created).
+2. **Boxing allowed** — boxing = wrapping a primitive into its wrapper object ({{int}} to {{Integer}}), which allocates.
+3. **Varargs allowed** — the arguments may be packed into an array.
+
+Inside the winning phase it picks the **most specific** method (the one whose parameter type is a subtype of the others). So {{print(5)}} picks {{print(long)}} in phase 1, and {{print(Integer)}} is never even considered. With {{print(null)}}, both {{String}} and {{Integer}} apply and neither is more specific, so the call is ambiguous.
 
 ### private and final
-- {{private}} methods are not inherited. A subclass method with the same name is a **new** method; adding {{@Override}} causes a compile error. Code in the parent that calls the method still runs the parent version.
-- {{final}} methods prevent overriding and are used to lock an algorithm (e.g., a signature-check step inside a template method).
+- {{private}} methods are not inherited and are not in the vtable. A call inside the parent compiles to {{invokespecial}}, a direct call with no lookup, so it always runs the parent code even when the object is a subclass. A same-name method in the child is a **new** method unrelated to the parent one; adding {{@Override}} makes the compiler reject it ("method does not override or implement a method from a supertype").
+- {{final}} methods cannot be overridden, which is how an algorithm is frozen (for example the signature-check step inside a template method). A subclass declaring the same method gets a compile error instead of silently hiding it.
+- Hiding a static method with an access modifier narrower than the parent's is also a compile error, the same visibility rule as overriding.
 
 ### Common wrong answers
-- "Changing only the return type is still overloading": wrong, compile error.
-- "Static methods can be overridden because they can be called through an instance": wrong, that is hiding and calling through an instance is just misleading syntax.
-- "Overloading selects by the real object": wrong, it selects by the declared type.
+- "Changing only the return type is still overloading": wrong. In the same class it is a compile error ("method is already defined"); in a subclass with the same parameters it is either covariant overriding (the new type is a subtype) or an error.
+- "Static methods are overridden because you can call them through an instance": wrong, that is hiding, and {{p.who()}} is just {{Parent.who()}} written in a misleading way.
+- "Overloading selects by the real object": wrong — the choice was fixed by the compiler from the declared types, and the runtime object only matters when the JVM executes {{invokevirtual}}.
+- "An override may throw any exception": wrong — it may throw fewer or narrower checked exceptions, never a new or broader one.
 
 ### Production pitfall
-- Writing {{public boolean equals(Account other)}}: this is **overloading**, not overriding {{equals(Object)}}. {{HashSet}} and {{List.contains}} call the {{Object}} version, so your method is never used. Always add {{@Override}}.
-- {{List<Integer>}} has {{remove(int index)}} and {{remove(Object o)}}: calling {{list.remove(1)}} deletes the element at **index 1**, not the value 1. To remove by value use {{list.remove(Integer.valueOf(1))}}.
-- Two overloads {{f(List<String>)}} and {{f(List<Integer>)}} cause a compile error "name clash" because after type erasure they have the same signature.
+- Writing {{public boolean equals(Account other)}}: that is an **overload**, not an override of {{equals(Object)}}. {{HashSet}}, {{HashMap}} and {{List.contains}} call the {{Object}} version, so your method is never used and duplicates silently slip through. Always add {{@Override}} and let the compiler check.
+- {{List<Integer>}} has both {{remove(int index)}} and {{remove(Object o)}}. {{list.remove(1)}} deletes the element at **index 1**, because {{int}} is an exact match while boxing to {{Integer}} only happens in phase 2. To remove a value use {{list.remove(Integer.valueOf(1))}}.
+- Two overloads {{f(List<String>)}} and {{f(List<Integer>)}} do not compile ("name clash"): generics are erased to their raw type at compile time (type erasure), so both signatures become {{f(List)}}.
 
-> Senior tip: turn on the missing-{{@Override}} warning in your IDE/Sonar and treat it as an error. For public APIs, avoid overloads with the same arity and easily-autoboxed types (int/Integer/long/Object), because callers can easily point to the wrong method without realizing it.`,
+> Senior tip: turn on the "missing @Override" warning in your IDE/Sonar and treat it as an error — it costs nothing and catches the {{equals(Account)}} family of bugs. For public APIs, avoid overloads with the same arity whose types convert into each other automatically (int/Integer/long/Object), because callers aim at the wrong method without noticing. In an interview, say the rule first — "overloading is compile time on the declared type, overriding is runtime on the real object" — and then walk through the two predictions above; that answer is short, correct and hard to poke holes in.`,
     follow: [`Why do fields not have polymorphism? What does {{p.field}} return when {{p}} is declared with the parent type?`, `Why is calling an overridable method from a parent constructor dangerous?`, `What is the bridge method that the compiler generates when overriding a generic method?`]
   },
 
@@ -193,14 +208,17 @@ These results assume the default settings; the flag {{-XX:AutoBoxCacheMax}} can 
 
   'core-023': {
     q: `Predict the output: {{return}} inside {{try}} then modifying the variable in {{finally}}, {{return}} inside {{finally}}, exceptions inside {{finally}}, and {{System.exit}} inside {{try}}. How do these situations cause production bugs?`,
-    a: `**Summary:** When {{try}} executes {{return expr}}, the value of {{expr}} is evaluated and saved temporarily **before** {{finally}} runs; modifying a primitive variable in {{finally}} does not change the returned value, but modifying the object the reference points to does. {{return}} or {{throw}} inside {{finally}} **replaces** the {{try}} result and swallows the original exception. {{System.exit}} stops the JVM, so {{finally}} does not run.
+    a: `**Summary:** When {{try}} executes {{return expr}}, the value of {{expr}} is computed and copied into a hidden local variable **before** {{finally}} runs; changing a primitive variable in {{finally}} therefore does not change what is returned, but mutating the object that a reference points to does. {{return}} or {{throw}} inside {{finally}} **replaces** the result of the {{try}} and silently swallows the original exception. {{System.exit}} shuts the JVM down immediately (after running shutdown hooks), so {{finally}} never runs.
+
+### 0. How the compiler lays this out
+{{finally}} is not a block that "runs later". At compile time the compiler **copies the finally code into every exit path** of the try/catch: the normal exit, every catch block, every return and every throw. That single fact explains all the answers below.
 
 ### 1. Execution order
 ~~~java
 static int order() {
     try {
         System.out.println("try");
-        return value("return-expr");   // return expression evaluated first
+        return value("return-expr");   // the return expression is evaluated first
     } finally {
         System.out.println("finally");
     }
@@ -211,13 +229,14 @@ static int value(String s) { System.out.println(s); return 1; }
 // return-expr
 // finally
 ~~~
+The JVM (a) evaluates {{value("return-expr")}}, (b) stores 1 in a hidden local slot, (c) runs the copied finally code, (d) loads the slot and returns it. So the expression is evaluated before {{finally}}, but the method only returns after it.
 
 ### 2. Modifying variables in finally
 ~~~java
 static int primitive() {
     int x = 1;
     try {
-        return x;          // value 1 copied into a temporary slot
+        return x;          // the value 1 is copied into a temporary slot
     } finally {
         x = 2;             // changes the local variable, not the temporary slot
     }
@@ -226,26 +245,42 @@ static int primitive() {
 static StringBuilder reference() {
     StringBuilder sb = new StringBuilder("a");
     try {
-        return sb;         // copies the reference, both point to same object
+        return sb;         // the reference is copied, both point to the same object
     } finally {
-        sb.append("b");    // modifies the object itself
+        sb.append("b");    // mutates the object itself
     }
 }                          // reference() returns "ab"
 ~~~
-Why: the compiler generates bytecode that saves the return value into a hidden local variable, runs the {{finally}} code (inlined into each exit path), then returns the hidden value with {{ireturn}} / {{areturn}}. For references, what is copied is the pointer, not the object.
+Memory picture for the primitive case:
+~~~text
+x = 1
+return x        -> hidden slot = 1     (copy of the value)
+finally         -> x = 2               (the hidden slot is still 1)
+return          -> pushes 1
+~~~
+For a reference the copy is the pointer, not the object:
+~~~text
+sb -----------> [StringBuilder: "a"]
+hidden slot = sb                       (same pointer)
+finally: sb.append("b")
+               [StringBuilder: "ab"]
+return hidden  -> the same object, now "ab"
+~~~
+In bytecode these are {{ireturn}} (return an int) and {{areturn}} (return an object reference); the value in the hidden slot is what they consume.
 
-### 3. return in finally swallows exception
+### 3. return inside finally swallows the exception
 ~~~java
 static int swallow() {
     try {
         throw new RuntimeException("boom");
     } finally {
-        return 2;          // compiler warns: finally does not complete normally
+        return 2;          // javac warns: finally block does not complete normally
     }
-}                          // swallow() returns 2, "boom" disappears without a trace
+}                          // swallow() returns 2 and "boom" disappears without a trace
 ~~~
+The {{athrow}} instruction for "boom" is never reached, because the copy of {{finally}} on the exception path ends with {{ireturn 2}} instead. Nothing is logged and nothing is chained: the caller sees an ordinary return value and the stack trace of "boom" is dropped with it.
 
-### 4. Exception in finally replaces the original exception
+### 4. Exception inside finally replaces the original exception
 ~~~java
 try {
     try {
@@ -256,9 +291,9 @@ try {
 } catch (RuntimeException e) {
     System.out.println(e.getMessage() + " suppressed=" + e.getSuppressed().length);
 }
-// Output: B suppressed=0   -> "A" is lost, not in suppressed
+// Output: B suppressed=0   -> "A" is gone, and it is not even in suppressed
 ~~~
-Only try-with-resources automatically attaches the close-time exception to {{getSuppressed()}}; hand-written {{finally}} does not.
+Only **try-with-resources** attaches the exception thrown by {{close()}} to the primary exception, readable through {{getSuppressed()}}. A hand-written {{finally}} has no such mechanism: the new throw simply replaces the pending one and the original exception is lost.
 
 ### 5. System.exit
 ~~~java
@@ -266,31 +301,38 @@ try {
     System.out.println("try");
     System.exit(0);
 } finally {
-    System.out.println("finally");   // never prints
+    System.out.println("finally");   // never printed
 }
 // Output: try
 ~~~
-{{System.exit}} does not return; the JVM runs shutdown hooks then stops. {{finally}} also does not run with {{Runtime.halt}}, when the process is killed with {{kill -9}}, JVM crash, or when a daemon thread is interrupted and the JVM exits.
+{{System.exit}} does not return. It starts the shutdown sequence (shutdown hooks run, then the JVM halts), so the copied finally code is never reached. The same happens with {{Runtime.getRuntime().halt()}}, a process killed with {{kill -9}} (SIGKILL cannot be caught), a JVM crash, or the JVM exiting while a daemon thread is still working.
 
 ### Common wrong answers
-- "Finally runs after return, so the returned value is 2": wrong for primitives.
-- "Finally always runs": wrong with {{System.exit}}, halt, kill -9.
-- "Exception in finally is appended to the old exception": wrong, the old exception is fully lost.
+- "Finally runs after return, so the method returns 2": wrong for primitives — the return value was already copied.
+- "Finally always runs": wrong with {{System.exit}}, {{Runtime.halt()}}, SIGKILL and crashes.
+- "The exception thrown in finally is attached to the original one": wrong, the original is lost completely; only try-with-resources keeps it as suppressed.
+- "Mutating the object in finally cannot matter because the value was copied": wrong — what was copied is the reference, so both the caller and finally see the same object.
 
 ### Production pitfall
-- Calling {{conn.close()}} in {{finally}} where {{close()}} throws an exception hides the real SQL error; logs only show "connection already closed". Use try-with-resources.
-- {{return}} in {{finally}} makes a method report success while the transaction has already failed, so callers do not rollback or retry. Very hard to investigate because logs are clean.
-- Calling {{System.exit}} inside a library or Spring job skips {{finally}} and can leave a batch partially written.
+- Closing a connection in {{finally}} when {{close()}} itself throws hides the real SQL error: the log only shows "connection already closed". Use try-with-resources and read {{e.getSuppressed()}} if you need both errors.
+- {{return}} inside {{finally}} makes a method report success while the transaction has already failed, so the caller neither rolls back nor retries — and because the logs look clean, this bug is very expensive to investigate.
+- {{System.exit}} inside a library or a scheduled job skips {{finally}} and can leave a batch half-written or a lock file on disk.
 
-> Senior tip: ban {{return}} / {{throw}} in {{finally}} via static analysis (Sonar has a rule "jump statements should not occur in finally blocks"). In {{finally}} only clean up, never handle business logic; if cleanup can fail, wrap it in its own try/catch and log that error — do not let it override the real error.`,
+> Senior tip: ban {{return}} and {{throw}} inside {{finally}} with static analysis (Sonar has the rule "jump statements should not occur in finally blocks"). Keep {{finally}} for cleanup only; if cleanup can fail, wrap it in its own try/catch and log that error instead of letting it overwrite the main error. When someone reports "the exception disappeared", look for a return in finally first — it is almost always there.`,
     follow: [`How does try-with-resources generate bytecode to preserve suppressed exceptions?`, `Does a shutdown hook run when the container receives SIGTERM? What about SIGKILL?`, `If {{catch}} also has {{return}} and {{finally}} also has {{return}}, which value is returned?`]
   },
 
   'core-024': {
     q: `Predict the output: the execution order of static block, instance block, field initializer and constructor with inheritance. Why is calling an overridable method inside a parent constructor dangerous?`,
-    a: `**Summary:** Static blocks and static fields run **once**, when the class is first initialized, parent before child. Each {{new}}: the child constructor calls {{super()}} first; only after the parent constructor finishes do the field initializers and instance blocks of the child class run (in source order), then the child constructor body. Therefore an overridden method called from the parent constructor sees the child fields **not yet assigned** (null / 0).
+    a: `**Summary:** Static blocks and static field initializers run **once**, when the class is initialized for the first time, parent before child. On every {{new}}: the child constructor calls {{super()}} first; only after the parent constructor finishes do the child's field initializers and instance blocks run (in the order they appear in the source), then the child constructor body. Therefore an overridden method called from the parent constructor sees the child fields **not yet assigned** (null / 0).
 
-### Predict output: basic
+### The vocabulary first
+- **Static initializer** = a {{static { ... }}} block, or a static field with an initial value. It runs once per class loader.
+- **Instance initializer** = a {{ { ... } }} block inside the class body. The compiler copies it into **every constructor**, right after {{super(...)}}.
+- **Field initializer** = the {{= value}} part of a field declaration; it behaves exactly like an instance initializer snippet at that position.
+- Before any constructor runs, the JVM has already allocated the object and filled every field with its **default value**: {{null}}, {{0}}, {{0.0}}, {{false}}.
+
+### Predict the output: basic
 ~~~java
 class Parent {
     static { System.out.println("Parent static"); }
@@ -317,9 +359,14 @@ Parent constructor
 Child instance block
 Child constructor
 ~~~
-Why: to initialize {{Child}}, the JVM must initialize {{Parent}} first (JLS 12.4). The second {{new}} skips static output because the class is already initialized. The compiler copies field initializers and instance blocks into **every constructor**, right after the {{super(...)}} call, so they always run after the parent constructor.
+What happens, step by step:
+1. The first {{new Child()}} triggers initialization of Child. JLS 12.4 says a class is initialized only after its superclass, so Parent's static block runs first, then Child's; inside one class the static initializers run top to bottom.
+2. The JVM allocates the object with all fields set to their default values.
+3. {{Child()}} starts with an implicit {{super()}}, so Parent's instance initializer runs, then Parent's constructor body.
+4. Back in Child, its instance initializers run in source order, then its constructor body.
+5. The second {{new}} prints no static lines: a class is initialized only once per class loader, however many objects you create.
 
-### Trap 1: overridden method called from parent constructor
+### Trap 1: an overridden method called from the parent constructor
 ~~~java
 class Base {
     Base() { init(); }                 // calls a method that may be overridden
@@ -327,7 +374,7 @@ class Base {
 }
 class Derived extends Base {
     private String name = "derived";   // assigned only AFTER Base() finishes
-    private final int size = 10;       // constant variable: compiler inlines 10
+    private final int size = 10;       // constant variable: the compiler inlines 10
     @Override void init() {
         System.out.println(name + " " + size);
     }
@@ -335,7 +382,11 @@ class Derived extends Base {
 new Derived();
 // Output: null 10
 ~~~
-{{name}} is still the default null because {{Derived}} initializers have not run yet. {{size}} prints 10 because it is a {{final}} primitive assigned a compile-time constant, so every use is replaced with the literal 10. Removing {{final}} would print {{null 0}}.
+Why {{null 10}}:
+- When {{init()}} runs (inside {{Base()}}), the object is already a {{Derived}}, but {{Derived}}'s field initializers have not run yet, so {{name}} still holds the default null.
+- {{size}} prints 10 because {{private final int size = 10}} is a **constant variable**: a final field of a primitive or String type initialized with a compile-time constant. The compiler replaces every use with the literal 10, so nothing is read from the object at all.
+- Remove {{final}}, or initialize the field with a method call, and the output becomes {{null 0}}.
+- This is exactly why Effective Java says constructors must not call overridable methods: the subclass sees a half-built object.
 
 ### Trap 2: static field order
 ~~~java
@@ -346,30 +397,36 @@ class Config {
 }
 System.out.println(Config.counter);          // Output: 0
 ~~~
-When initializing the class, all static fields start at default values (counter = 0). Line 1 creates an object and increments counter to 1, then line 2 assigns counter = 0 again. Swapping the two lines makes the output 1.
+When the class is initialized, every static field first receives its default value (counter = 0). Then the static initializers run in textual order: line 1 creates an object, whose constructor increments counter to 1; line 2 then assigns counter = 0 again, overwriting the increment. Swap the two lines and the output is 1.
 
-### When a class is initialized
-- First {{new}}, static method call, reading/writing a non-constant static field, {{Class.forName}}, or initializing a subclass.
-- Reading a {{static final}} compile-time constant (e.g., {{static final int MAX = 5}}) **does not** trigger static blocks, because the value is inlined into the calling class.
-- This is the foundation of the Holder pattern: a {{static class Holder}} contains a lazy singleton instance, initialized thread-safely by the JVM during class init.
+### When is a class initialized
+- First {{new}}, a static method call, a read or write of a non-constant static field, {{Class.forName}}, or initialization of a subclass.
+- Reading a {{static final}} **compile-time constant** (e.g. {{static final int MAX = 5}}) does **not** trigger initialization, because the value was inlined into the calling class at compile time (JLS 12.4.1). The downside: changing such a constant requires recompiling every class that uses it.
+- Initialization is guarded by a per-class lock, so two threads that touch the class at the same moment still see exactly one execution. That is the base of the Holder pattern ({{static class Holder}} holds the singleton instance) and of lazy enum singletons.
 
 ### Common wrong answers
-- "Instance block runs before parent constructor": wrong, it runs after {{super()}}.
-- "Static block runs on every new": wrong, only once per class loader.
-- Thinking {{final}} fields always have their value when called from the parent constructor: only true for compile-time constants.
+- "The instance block runs before the parent constructor": wrong, it runs after {{super()}}.
+- "The static block runs on every new": wrong, once per class loader.
+- "{{final}} fields always already have their value when called from the parent constructor": only true for compile-time constants.
+- "The parent's field initializers run before the parent constructor": wrong, initializers and the constructor body run together in source order, after {{super()}}.
 
 ### Production pitfall
-- A parent class calls {{init()}} or {{validate()}} in its constructor, a child overrides it and uses unassigned fields, causing a confusing NPE. Effective Java recommends: constructors must not call overridable methods (directly or indirectly).
-- Exceptions in static blocks produce {{ExceptionInInitializerError}} on the first attempt and {{NoClassDefFoundError}} afterwards. Someone reading only the latest log will think a jar is missing.
-- Two classes with static init dependencies that reference each other, initialized from two different threads, can deadlock at startup.
+- A parent class calls {{init()}} or {{validate()}} in its constructor, a child overrides it and uses unassigned fields, producing a confusing NPE. Keep constructors free of overridable calls.
+- An exception inside a static block produces {{ExceptionInInitializerError}} on the first attempt and {{NoClassDefFoundError}} afterwards, with the real cause usually hidden inside the first log line. Someone reading only the latest log will think a jar is missing.
+- Two classes whose static initializers reference each other, initialized from two different threads, can deadlock at startup: each thread holds one class lock and waits for the other.
 
-> Senior tip: keep static blocks thin (no network/DB calls, no complex config reads). In Spring, prefer constructor injection and {{@PostConstruct}} over logic in static / instance blocks; when encountering {{NoClassDefFoundError}} in production, search for {{ExceptionInInitializerError}} first in the logs.`,
+> Senior tip: keep static blocks thin — no network, no DB, no complex config reads. In Spring, prefer constructor injection and {{@PostConstruct}} over logic in static or instance blocks. When you see {{NoClassDefFoundError}} in production, search the logs for {{ExceptionInInitializerError}} first: it is almost always the real root cause.`,
     follow: [`Why is a static nested Holder class a lazy singleton that is thread-safe without {{synchronized}}?`, `Distinguish {{ExceptionInInitializerError}} and {{NoClassDefFoundError}} when investigating startup errors.`, `Do records and enums have special initialization orders?`]
   },
 
   'core-025': {
     q: `Stack vs heap in the JVM: where do local variables, objects, references, static fields and the String pool live? When does {{StackOverflowError}} occur in production and how do you handle it?`,
-    a: `**Summary:** Each thread has its own **JVM stack** made of frames; each method call creates a frame holding local variables (primitive and **reference**) and an operand stack; when the method returns the frame is destroyed. All **objects** (including arrays and fields inside objects) live on the shared **heap**, managed by GC. Static fields live with the {{Class}} object on the heap, class metadata lives in Metaspace, and the String pool lives on the heap since Java 7. {{StackOverflowError}} occurs when the call chain exceeds the stack size ({{-Xss}}), usually due to infinite recursion.
+    a: `**Summary:** Every thread has its own **JVM stack** made of frames; each method call pushes one frame holding the local variables (primitives and **references**) and an operand stack, and the frame is destroyed when the method returns. All **objects** — including arrays and the fields inside objects — live on the shared **heap**, which the garbage collector manages. Static fields live inside the {{Class}} object on the heap, class metadata lives in Metaspace, and the String pool has been on the heap since Java 7. {{StackOverflowError}} happens when the call chain is deeper than the stack size ({{-Xss}}), usually because of recursion that never stops.
+
+### What a frame really is
+- A frame has two parts: an array of **local variables** ({{this}}, the parameters and the locals; each slot holds a primitive value or a reference) and an **operand stack**, a scratch area where bytecode pushes and pops intermediate values (push a, push b, add, store the result into a local).
+- A **reference** is a small value, about the size of a pointer, that tells the JVM where an object is. The reference sits in the frame; the object it points to sits on the heap.
+- Frames are allocated LIFO — the last call is the first to be destroyed. That is why recursion grows the stack while a plain loop does not.
 
 ### Example: what lives where
 ~~~java
@@ -379,38 +436,55 @@ class TransferService {
     void transfer(Account from, long amount) {   // 'from': reference, lives in frame
         int fee = 1_000;                          // primitive local: lives in frame
         Receipt r = new Receipt(amount, fee);     // 'r' in frame, Receipt object on heap
-        from.debit(amount + fee);                 // new frame pushed for debit()
-    }   // frame popped: fee and r disappear; Receipt becomes garbage if no reference holds it
+        from.debit(amount + fee);                 // a new frame is pushed for debit()
+    }   // frame popped: fee and r disappear; Receipt becomes garbage if nothing references it
 }
 ~~~
-Note: the {{int}} fields of an object live on the **heap** inside that object, not on the stack.
+~~~text
+Thread A stack (private)                Heap (shared, GC-managed)
++--------------------------+            +-------------------------------+
+| transfer() frame         |            | Account object                |
+|  from   = ref -----------+----------->|   balance = 900000            |
+|  amount = 100000         |            |   ...                         |
+|  fee    = 1000           |            +-------------------------------+
+|  r      = ref -----------+----------->| Receipt object                |
++--------------------------+            |   amount = 100000             |
+| debit() frame            |            |   fee = 1000                  |
+|  this   = same ref ------+----------->+-------------------------------+
+|  x      = 101000         |            | String pool: "VND" ...        |
++--------------------------+            | Class<Account> mirror         |
+                                        |   static LIMITS -> HashMap    |
+                                        +-------------------------------+
+~~~
+Note: the {{int}} field of an object lives on the **heap**, inside that object, not on the stack. Only the reference to the object is in the frame.
 
 ### Comparison
 | | Stack (per thread) | Heap (shared) |
 |---|---|---|
-| Holds | Frame: local variables, references, operand stack | Objects, arrays, object fields, String pool |
-| Lifetime | Method call duration (LIFO) | Until unreachable and GC collects |
-| Size | {{-Xss}} (Linux 64-bit default ~1 MB) | {{-Xms}} / {{-Xmx}} |
+| Holds | Frames: local variables, references, operand stack | Objects, arrays, object fields, String pool |
+| Lifetime | Duration of the method call (LIFO) | Until unreachable and collected by the GC |
+| Size | {{-Xss}} (Linux 64-bit default around 1 MB per thread) | {{-Xms}} / {{-Xmx}} |
 | Error when exhausted | {{StackOverflowError}} | {{OutOfMemoryError: Java heap space}} |
-| Thread-safety | Local variables are naturally thread-confined | Needs synchronization when shared |
+| Thread-safety | Local variables are thread-confined by nature | Needs synchronization when shared |
 
-### Why this design
-- Stack allocation/deallocation is just pointer arithmetic, extremely cheap, and requires no GC; but size must be predictable per method and lives short.
-- Objects have unpredictable lifetimes (returned, cached) so they must live in a shared GC-managed region.
-- JIT has **escape analysis**: objects that do not escape the method can be scalar-replaced (fields turned into local variables), avoiding heap allocation. This is an optimization, not a guarantee.
-- Virtual threads (Java 21): when unmounted, their stack is saved as chunk objects on the heap, allowing millions of virtual threads.
+### Why the JVM splits memory this way
+- Stack allocation and release is just moving a pointer: extremely cheap and needing no GC. But the lifetime must be short and the size must be known per method.
+- Objects have unpredictable lifetimes (returned, cached, shared between threads), so they belong in a shared region that the GC can trace.
+- **Escape analysis**: the JIT can prove that an object never leaves a method and then apply **scalar replacement** — it splits the object into plain local variables and never allocates it on the heap. This is an optimization, not a guarantee; verify with {{-XX:+PrintEscapeAnalysis}} or a profiler before relying on it.
+- **Metaspace** replaced PermGen in Java 8: class metadata (bytecode, constant pool, method info) moved from the heap to native memory and grows on demand up to {{-XX:MaxMetaspaceSize}}.
+- **Virtual threads** (Java 21) keep their stack as ordinary heap objects and, when they block, are unmounted from the carrier thread — that is how millions of them can exist. A virtual thread blocked inside a {{synchronized}} block stays pinned to its carrier and cannot be unmounted (the pinning problem).
 
 ### StackOverflowError in production
-- Bidirectional JPA entities ({{Order}} has a list {{OrderItem}}, {{OrderItem}} points back to {{Order}}) using Lombok {{@Data}}: {{toString()}} / {{hashCode()}} call each other infinitely. Jackson serialization of bidirectional relations is the same.
-- Recursion over user-controlled data: deep category trees, deeply nested JSON, large regex backtracking.
-- Handling: rewrite to loop + explicit {{ArrayDeque}} stack; exclude relationship fields from {{toString}} / {{equals}}; use {{@JsonManagedReference}} / {{@JsonBackReference}} or DTOs; limit input depth. Increasing {{-Xss}} is only temporary and costs memory multiplied by thread count.
+- Bidirectional JPA entities ({{Order}} has a list of {{OrderItem}}, each {{OrderItem}} points back to its {{Order}}) with Lombok {{@Data}}: the generated {{toString()}} and {{hashCode()}} call each other forever. Jackson serializing the same two-way relation does the same.
+- Recursion over user-controlled data: deep category trees, JSON nested thousands of levels, catastrophic regex backtracking.
+- Handling: rewrite the recursion as a loop with an explicit {{ArrayDeque}} used as a stack; remove relation fields from {{toString}}/{{equals}}; use {{@JsonManagedReference}}/{{@JsonBackReference}} or DTOs; cap the input depth. Raising {{-Xss}} only buys time and costs memory multiplied by the number of threads.
 
 ### Common wrong answers
-- "Primitives always live on the stack": wrong; primitive fields of an object live on the heap.
-- "Static lives on the stack" or "String pool lives in PermGen": PermGen was removed in Java 8; String pool moved to heap in Java 7.
-- "Java passes objects by reference": Java is always pass-by-value; the copied value is the reference.
+- "Primitives always live on the stack": wrong; a primitive field of an object lives on the heap inside that object.
+- "Static lives on the stack" or "the String pool lives in PermGen": PermGen was removed in Java 8, and the String pool moved to the heap in Java 7.
+- "Java passes objects by reference": Java is always pass-by-value; what is copied is the reference.
 
-> Senior tip: when you see {{StackOverflowError}}, read the stack trace to find the repeating segment (often {{toString}} or {{hashCode}} alternating between two classes). Do not try to catch {{StackOverflowError}} to continue, because state may be partially broken. For {{OutOfMemoryError: unable to create native thread}}, the cause is too many threads (each takes its own stack), not missing heap.`,
+> Senior tip: on {{StackOverflowError}}, read the stack trace and find the repeating segment — it is usually {{toString}} or {{hashCode}} alternating between two classes. Do not catch {{StackOverflowError}} and continue, because the state may be partially broken. And {{OutOfMemoryError: unable to create native thread}} means too many threads (each reserves its own stack), not a missing heap — lowering thread count or switching to virtual threads fixes it, increasing {{-Xmx}} does not.`,
     follow: [`How does escape analysis and scalar replacement work? How can you tell if it is happening?`, `How is Metaspace different from PermGen? When do you get {{OutOfMemoryError: Metaspace}}?`, `Why can a virtual thread still be pinned to a carrier thread in Java 21?`]
   },
 

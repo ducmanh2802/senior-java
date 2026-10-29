@@ -1,6 +1,6 @@
 # T527 — Dịch lại (nội dung đã sửa): q-java-2 (5 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-java-2.en.js`
 
@@ -13,3 +13,5 @@ Với MỖI mục trên: đọc bản tiếng Việt hiện tại trong `js/data
 node scripts/check-i18n.js q-java-2 → OK; node scripts/validate.js → OK.
 
 ## Notes
+Đã dịch lại 5 mục: collections-004 (Fail-fast vs fail-safe iterator), collections-006 (TreeMap/NavigableMap), collections-007 (CopyOnWriteArrayList & BlockingQueue), collections-009 (PriorityQueue), collections-011 (List.of vs unmodifiableList vs copy). Cả hai script check-i18n.js và validate.js đều báo OK.
+Reviewed-by: check-i18n (translation, no LLM review)

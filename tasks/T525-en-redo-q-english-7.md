@@ -1,6 +1,6 @@
 # T525 — Dịch lại (nội dung đã sửa): q-english-7 (8 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-english-7.en.js`
 
@@ -13,3 +13,5 @@ Với MỖI mục trên: đọc bản tiếng Việt hiện tại trong `js/data
 node scripts/check-i18n.js q-english-7 → OK; node scripts/validate.js → OK.
 
 ## Notes
+Re-translated all 8 entries (english-064 through english-071) in q-english-7.en.js based on the updated Vietnamese content in q-english.js. Both validation scripts pass: `node scripts/check-i18n.js q-english-7` → OK, `node scripts/validate.js` → OK.
+Reviewed-by: check-i18n (translation, no LLM review)

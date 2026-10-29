@@ -102,97 +102,120 @@ record OrderKey(String tenant, List<String> regions) {
     ]
   },
   'core-028': {
-    q: 'A cache holds millions of repeated Strings and a heap dump shows many identical byte arrays. How do you consider compact strings, String deduplication, and intern?',
-    a: `**Summary:** Compact Strings reduce bytes for Latin-1 content directly inside each String; G1 String dedup shares backing byte arrays between different String objects; {{intern()}} canonicalizes the whole object with pool lookup cost. Choose by heap profile and benchmark for workload; don't enable all three by feeling.
+    q: 'A cache holds millions of repeated Strings and a heap dump shows many identical byte arrays. How do you weigh compact strings, String deduplication, and intern?',
+    a: `**Summary:** Compact Strings reduce the bytes stored for Latin-1 content directly inside each String; GC String deduplication makes different String objects share an identical backing byte array; {{intern()}} canonicalizes the whole object and pays the cost of a table lookup. Decide from the heap profile and a benchmark of your workload; don't switch on all three out of intuition.
 
 ### Three different mechanisms
-- From Java 9, {{String}} stores content with {{byte[]}} and coder: Latin-1 content usually needs one byte per char, UTF-16 content needs two. This is the default String representation, not a separate flag.
-- G1 can find equal Strings and make them share backing array; String objects remain separate. Option {{-XX:+UseStringDeduplication}} has CPU overhead and requires G1.
-- {{String.intern()}} returns canonical instance from string table. Every caller uses that same instance, but lookup and pool management also cost; with high cardinality data it can become a contention point and retain extra structure.
+- Since Java 9, {{String}} stores its content in a {{byte[]}} plus a coder: Latin-1 content usually takes one byte per character, while content that needs UTF-16 takes two. This is the default String representation, not a flag you enable separately.
+- The GC can find equal Strings (that have survived a few GC cycles) and make them share one backing array; the String objects themselves stay separate. Enable it with {{-XX:+UseStringDeduplication}}, which is off by default and costs CPU. JDK 17 supports it only with G1 and Shenandoah; from JDK 18 it also supports Serial, Parallel and ZGC.
+- {{String.intern()}} returns the canonical instance from the string table. Every caller uses exactly that instance, but the lookup and pool management also cost time; with high-cardinality data it can become a contention point and retain extra structure.
 
-### When to consider
-1. Measure retained heap: if most capacity is Latin-1 content, compact strings already help.
-2. If many different String objects share the same content, try dedup on staging, measure CPU, pause, and heap after GC.
-3. Only use intern for small, highly repeated strings with clear boundaries like schema names; avoid request IDs or user data with high cardinality.
+### When to consider it
+1. Measure retained heap: if most of the size is Latin-1 content, compact strings already help by default.
+2. If many different String objects hold the same content, try dedup on staging, then measure CPU, pauses and heap after GC.
+3. Use intern only for a small, highly repeated set with clear boundaries, such as schema names; avoid it for request ids or user data with high cardinality.
 
 ~~~bash
--Xlog:gc+stringdedup=debug
+# JDK 17 + G1
+-XX:+UseStringDeduplication -Xlog:gc+stringdedup=debug
+# JDK 18+ (new log tag)
+-XX:+UseStringDeduplication -Xlog:stringdedup*=debug
 jcmd <pid> GC.heap_info
 ~~~
 
-Dedup logs show number of strings inspected, deduplicated, and bytes saved; compare with throughput and p99 rather than just heap reduction.
+The dedup log reports how many strings were inspected and deduplicated and how many bytes were saved; compare that with throughput and p99 instead of only looking at the smaller heap.
 
-### Production pitfalls
-- Dedup doesn't reduce String object count, only shares backing content array; if object and reference overhead dominates, benefit is low.
-- Running dedup can increase CPU and add GC work. A one-point heap snapshot is also easy to mislead if workload isn't stable.
-- Don't rely on fixed object layout details between JDK versions; compressed oops, alignment, and header affect real size.
+### Operational pitfalls
+- Dedup does not reduce the number of String objects, it only shares the content array; if object and reference overhead dominates, the benefit is small.
+- Running dedup can add CPU load and extra GC work. A heap snapshot at one moment also easily leads to wrong conclusions if the workload is not stable.
+- Don't rely on fixed object layout details across JDK versions; compressed oops, alignment and the object header affect the real size.
 
-> Senior tip: set measurable targets, e.g., reduce retained heap 10% with CPU under agreed threshold; test with representative traffic and keep rollback via JVM flag.`,
+> Senior tip: set a measurable target, e.g. cut retained heap by 10% while CPU stays under an agreed threshold; test with representative traffic and keep a rollback path through the JVM flag.`,
     follow: [
-      'What does String dedup share, but not share?',
-      'Why is intern not a general-purpose string caching solution?'
+      'What does String dedup share, and what does it not share?',
+      'Why is intern not a general-purpose string cache?'
     ]
   },
   'core-029': {
-    q: 'How do you design equals/hashCode for a JPA entity with a generated id so the entity doesn\'t disappear from HashSet after persist?',
-    a: `**Summary:** Entity equality must stay stable across the lifecycle transient → managed → detached. If hashCode relies on a generated id that is null and then changes after persist, the entity already in HashSet will be in the wrong bucket; choose an immutable business key or a class-stable strategy with collision awareness.
+    q: 'How do you design equals/hashCode for a JPA entity with a generated id so the entity does not disappear from a HashSet after persist?',
+    a: `**Summary:** Entity equality must stay stable across the lifecycle transient → managed → detached. If hashCode depends on a generated id that is null and then changes after persist, an entity already inside a HashSet ends up in the wrong bucket; pick an immutable business key or a class-stable strategy with awareness of collisions.
 
 ### Two common strategies
-- **Business key**: use a unique, immutable attribute available at creation, like a country code. Equality is stable, but not every entity has such a key.
-- **Generated id**: easy to think of, but id is null before persist. If equals treats two null ids as equal, or hashCode changes when the id is assigned, collections break.
-- Some systems use equality by id only when id is non-null, with hashCode stable by class. This keeps the bucket stable but many same-class entities collide; measure before considering it a problem.
+- **Business key**: use an attribute that is unique, immutable and available from the moment the entity is created, such as a country code. Equality stays stable, but not every entity has such a key.
+- **Generated id**: the obvious choice, but the id is null before persist. If equals treats two null ids as equal, or hashCode changes when the id is assigned, collections break.
+- Some systems compare by id only when the id is non-null, while hashCode stays stable per class. This keeps the bucket stable, but many entities of the same class collide; measure before treating that as a problem.
 
 ### Hibernate proxy
-- Proxy may be a subclass or wrapper depending on mapping/enhancement. Checking with hard getClass() may treat proxy and entity as different.
-- Use Hibernate APIs like persistentClass when needed, but avoid depending on Hibernate in pure domain if unnecessary.
-- Don't include association/lazy collection in equals/hashCode: easily triggers unexpected queries, bidirectional recursion, or N+1.
+- Hibernate's lazy proxy is a **subclass** of the entity (generated with ByteBuddy). So {{getClass() != o.getClass()}} treats a proxy and the real entity row as different objects; use {{instanceof}} or {{Hibernate.getClass(o)}} (which unwraps the proxy and returns the real class).
+- In equals, read the other object's id through the **getter** ({{other.getId()}}), not the field directly: the proxy's field is not initialized, and only the getter is forwarded by the proxy.
+- Avoid making a pure domain depend on the Hibernate API when {{instanceof}} is enough.
+
+~~~java
+@Override public boolean equals(Object o) {
+    if (this == o) return true;
+    if (!(o instanceof Account other)) return false; // proxy is a subclass, so it still matches
+    return id != null && id.equals(other.getId());   // null id (not persisted yet) => equal only to itself
+}
+@Override public int hashCode() {
+    return Account.class.hashCode(); // constant: does not change when the id is assigned
+}                                     // (do not use getClass(): a proxy returns a different class)
+~~~
+- Do not put associations or lazy collections into equals/hashCode: it easily triggers unexpected queries, two-way recursion or N+1.
 
 ### Decision
-Write tests for new entities: after persist, with proxy, detached, and with two instances having the same id. Don't use mutable fields, timestamps, or the whole object graph.
+Write tests for a new entity, after persist, with a proxy, detached, and with two instances that have the same id. Do not use mutable fields, timestamps or the whole object graph.
 
-> Senior tip: pick one rule for the whole system and verify with HashSet tests before and after persist; entity equality is an identity decision, not just boilerplate.`,
+> Senior tip: pick one rule for the whole system and verify it with HashSet tests before and after persist; entity equality is an identity decision, not just boilerplate.`,
     follow: [
-      'Why should lazy associations not be included in hashCode?',
+      'Why should a lazy association stay out of hashCode?',
       'What trade-off does a class-stable hashCode have?'
     ]
   },
   'core-030': {
-    q: 'A domain has three finite result states and the team wants an exhaustive switch. How do you model it with sealed interface/record, and how do you maintain version compatibility?',
-    a: `**Summary:** Sealed interface limits allowed subtypes directly; record fits as an immutable data variant. Pattern matching switch can check exhaustiveness by known type, but adding a variant is a source/binary change to manage, and preview features need clear support levels.
+    q: 'A domain has three finite result states and the team wants an exhaustive switch. How do you model it with a sealed interface and records, and how do you keep version compatibility?',
+    a: `**Summary:** A sealed interface directly limits which subtypes are allowed; a record fits each immutable data variant. Sealed classes are standard since Java 17, and pattern matching for switch is standard since Java 21 (JEP 441), so the compiler can check that a switch is exhaustive without a {{default}} branch. The price: adding a variant is a breaking change for every consumer and must be managed like an API change.
 
 ### Model
-- Declare sealed interface with explicit permits, then create records for results like Accepted, Rejected, and Pending.
-- Consumer switch on the parent type must handle all known branches; compiler reports missing branches when recompiled.
-- Record components need deep immutability if shared; record only guarantees field reference final.
+- Declare a sealed interface with explicit permits, then create a record for each result such as Accepted, Rejected and Pending.
+- A consumer switch over the parent type must handle every known branch; the compiler reports the missing branch when you recompile.
+- Record components must be deeply immutable if the object is shared; a record only guarantees that the field reference is final.
 
 ~~~java
 sealed interface Result permits Accepted, Rejected {}
 record Accepted(String id) implements Result {}
 record Rejected(String reason) implements Result {}
+
+String describe(Result r) {
+    return switch (r) {              // no default needed: the compiler knows both branches
+        case Accepted a -> "OK " + a.id();
+        case Rejected x -> "Rejected: " + x.reason();
+    };
+}
 ~~~
 
 ### Module boundaries
-- The same module can restrict subtypes by permits rules; different modules/packages require named modules and subtype modifiers.
-- When adding a subtype, recompile consumers to detect missing switch branches. Old compiled consumers don't automatically know the new domain; design a fallback if the protocol/version may expand independently.
-- Java 21 pattern matching for switch is a standard feature; StructuredTaskScope in Java 21 is preview. Don't mix these stability levels.
+- Every permitted subtype must be declared {{final}}, {{sealed}} or {{non-sealed}} (records are final by default). If the sealed interface lives in a named module, the subtypes must be in the same module; if it is in the unnamed module (classpath), they must be in the same package. {{permits}} can be omitted when all subtypes are in the same file.
+- When you add a subtype, recompile the consumers to catch switches missing a branch. Consumers already compiled against the old version still run, but when they meet the new variant the exhaustive switch throws {{MatchException}} at runtime; if the protocol or version can expand independently, design a fallback (for example an {{Unknown}} variant).
+- Java 21 pattern matching for switch is a standard feature; StructuredTaskScope in Java 21 is still preview. Do not mix these two stability levels.
 
 ### When to use
-Fits an algebraic data type with a finite variant set within a bounded context. Not suitable when a third-party plugin needs to add subtypes or the hierarchy is an open API extension.
+Fits an algebraic data type with a finite set of variants inside one bounded context. Does not fit when a third-party plugin must add subtypes or the hierarchy is an open API extension.
 
-> Senior tip: clearly document who owns the variant set and versioning policy. Exhaustive switch is very useful in synchronized codebases, but messages from external systems still need unknown-value handling.`,
+> Senior tip: state clearly who owns the variant set and the versioning policy. Exhaustive switch is very useful in a synchronized codebase, but messages from external systems still need handling for unknown values.`,
     follow: [
       'How does adding a new subtype affect already compiled consumers?',
-      'How do you distinguish a standard Java 21 feature from a preview API?'
+      'How do you tell a standard Java 21 feature from a preview API?'
     ]
   },
   'core-031': {
-    q: 'An API returns List but keeps the caller\'s mutable list internally. How do you design defensive copy and collection contract?',
-    a: `**Summary:** Copy at the input boundary so the caller can't modify internal state; if the getter returns a collection, return an immutable snapshot or view only when the contract clearly states it. Shallow copy doesn't protect mutable elements inside.
+    q: 'An API returns a List but internally keeps the caller\'s mutable list. How do you design the defensive copy and the collection contract?',
+    a: `**Summary:** Copy at the input boundary so the caller cannot modify internal state; if a getter returns a collection, return an immutable snapshot, or a view only when the contract says so explicitly. A shallow copy does not protect mutable objects inside the elements.
 
 ### Constructor and accessor
-- Constructor receives a list that needs null/value checks, then uses List.copyOf to create a structural snapshot and reject null elements.
-- Getter can return that immutable snapshot directly; if elements are mutable and need deep isolation, copy each element or use an immutable element type.
-- Collections.unmodifiableList is just a wrapper: anyone with a reference to the original list can still modify its content.
+- The constructor receives a list, needs null/value checks, then uses List.copyOf to create a structural snapshot that also rejects null elements.
+- The getter can return that immutable snapshot directly; if the elements are mutable and must be isolated deeply, copy each element or use an immutable element type.
+- Collections.unmodifiableList is only a wrapper: anyone who still holds a reference to the original list can modify its content.
+- {{List.copyOf}} is smart enough: if the input is already an immutable list created by {{List.of}}/{{List.copyOf}}, it returns that same instance without copying again; but an {{ArrayList}} or an unmodifiable view is always copied. Note that it throws {{NullPointerException}} if any element is null.
 
 ~~~java
 final class Batch {
@@ -204,13 +227,13 @@ final class Batch {
 
 ### Trade-off
 - Copy costs O(n) time and memory; for large lists, consider clear ownership transfer or a streaming API.
-- Don't return mutable internal state just to avoid copying; concurrency bugs and invariant breaks are usually more expensive.
-- Defensive copy doesn't change transaction semantics: a data snapshot doesn't guarantee multiple fields read at the same time.
+- Don't return mutable internal state just to avoid copying; concurrency bugs and broken invariants usually cost more.
+- A defensive copy does not change transaction semantics: a data snapshot does not guarantee that several fields were read at the same moment.
 
-> Senior tip: check the collection both ways: caller modifies input after constructor, and caller tries to modify output. If elements are mutable, add a test for nested mutation.`,
+> Senior tip: test the collection in both directions: the caller modifies the input after the constructor, and the caller tries to modify the output. If the elements are mutable, add a test for nested mutation.`,
     follow: [
-      'How is an unmodifiable view different from an immutable snapshot?',
-      'When is deep copy not worth the cost?'
+      'How does an unmodifiable view differ from an immutable snapshot?',
+      'When is a deep copy not worth the cost?'
     ]
   }
 });

@@ -38,4 +38,9 @@ jobs:
           if [ -n "$INPUT_FILE" ]; then files="$INPUT_FILE"
           else files=$(git diff --name-only --diff-filter=AM HEAD~1 HEAD -- 'digests/*.json'); fi
           [ -n "$files" ] || { echo "No digest changed"; exit 0; }
-          for f in $files; do node scripts/publish-digest.js "$f" || exit 1; done
+          [ -n "$SUPABASE_URL" ] || echo "::error::secret SUPABASE_URL is empty or missing"
+          [ -n "$SUPABASE_SECRET_KEY" ] || echo "::error::secret SUPABASE_SECRET_KEY is empty or missing"
+          # the script masks the key in its messages; surface them as annotations (readable without opening the log)
+          for f in $files; do
+            node scripts/publish-digest.js "$f" 2> err.txt || { echo "::error::$(head -c 600 err.txt | tr '\n' ' ')"; exit 1; }
+          done

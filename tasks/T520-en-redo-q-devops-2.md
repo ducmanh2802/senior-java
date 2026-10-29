@@ -1,6 +1,6 @@
 # T520 — Dịch lại (nội dung đã sửa): q-devops-2 (8 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-devops-2.en.js`
 
@@ -13,3 +13,10 @@ Với MỖI mục trên: đọc bản tiếng Việt hiện tại trong `js/data
 node scripts/check-i18n.js q-devops-2 → OK; node scripts/validate.js → OK.
 
 ## Notes
+Đã dịch lại 8 mục devops-010 đến devops-017 từ tiếng Việt sang tiếng Anh. Cả hai validation đều pass: check-i18n.js báo "OK — 8 mục đã dịch" và validate.js báo "OK — không có lỗi".
+
+## Nghiệm thu
+node scripts/check-i18n.js q-devops-2 → OK; node scripts/validate.js → OK.
+
+## Notes
+Reviewed-by: check-i18n (translation, no LLM review)

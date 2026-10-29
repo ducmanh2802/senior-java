@@ -68,7 +68,7 @@ synchronized (f) {                     // f = first node of bucket
 ### Real world
 - Most backend code uses {{ArrayList}}; queue/stack uses {{ArrayDeque}}; priority uses {{PriorityQueue}}; concurrent queue uses {{ArrayBlockingQueue}} / {{LinkedBlockingQueue}}.
 - {{LinkedList}} is sometimes used as a {{Deque}} in older code, but {{ArrayDeque}} is ~several times faster in benchmarks.
-- Don’t pick a collection based on pure Big-O; constants and memory matter a lot.
+- Don't pick a collection based on pure Big-O; constants and memory matter a lot.
 
 > Senior tip: if you see {{LinkedList}} in code, ask immediately "is middle insertion/removal with an iterator truly needed?"; 90% of cases switching to {{ArrayList}} or {{ArrayDeque}} will be faster and reduce heap. Measure with JMH on real data instead of gut feeling.`,
     follow: [
@@ -123,7 +123,7 @@ list.removeIf(String::isEmpty);
       `Why can {{Collections.synchronizedList}} still throw CME during iteration?`,
       `Does {{CopyOnWriteArrayList}} iterator support {{remove}}, and why?`,
       `In a multi-threaded app is CME always caused by multi-threading?`
-    ],
+    ]
   },
   'collections-005': {
     q: `How do you use {{LinkedHashMap}} as an LRU cache? How do {{removeEldestEntry}} and access-order work, and should it be used in production?`,
@@ -169,7 +169,7 @@ class LruCache<K, V> extends LinkedHashMap<K, V> {
       `Why can access-order {{get}} cause CME when iterating over the map?`,
       `What are the drawbacks of LRU compared to LFU / W-TinyLFU?`,
       `How do you add TTL to a custom LinkedHashMap cache?`
-    ],
+    ]
   },
   'collections-006': {
     q: `When should {{TreeMap}} / {{NavigableMap}} be used? Why must the comparator be consistent with {{equals}} and what happens if it isn't?`,
@@ -205,7 +205,7 @@ class LruCache<K, V> extends LinkedHashMap<K, V> {
       `Why is {{BigDecimal}} a trap when used as a TreeMap key?`,
       `Is {{subMap}} a view or a copy, and how does that affect behavior?`,
       `When should you use {{TreeMap}} instead of sorting a {{HashMap}} when needed?`
-    ],
+    ]
   },
   'collections-007': {
     q: `When should {{CopyOnWriteArrayList}} and {{BlockingQueue}} be used? Compare {{ArrayBlockingQueue}}, {{LinkedBlockingQueue}}, {{SynchronousQueue}}.`,
@@ -251,7 +251,7 @@ class LruCache<K, V> extends LinkedHashMap<K, V> {
       `Why can {{Executors.newFixedThreadPool}} cause OOM when load increases?`,
       `How does {{SynchronousQueue}} work when no consumer is waiting?`,
       `When is {{CopyOnWriteArrayList}} a bad choice despite many reads?`
-    ],
+    ]
   },
   'collections-008': {
     q: `Need to store 10 million elements in memory — which collection to choose? Analyze memory footprint, boxing and primitive collections.`,
@@ -329,7 +329,7 @@ List<Long> top100 = minHeap.stream().sorted(Comparator.reverseOrder()).toList();
 
 ### Complexity
 | Operation | Complexity |
-|---|---|---|
+|---|---|
 | {{offer}} / {{add}} | O(log n) |
 | {{poll}} / {{remove}} | O(log n) |
 | {{peek}} | O(1) |
@@ -349,7 +349,7 @@ List<Long> top100 = minHeap.stream().sorted(Comparator.reverseOrder()).toList();
       `Why does {{PriorityQueue}} use a min-heap for the largest-top-K problem?`,
       `How does {{PriorityBlockingQueue}} differ from {{PriorityQueue}}?`,
       `When should you use {{TreeSet}} instead of {{PriorityQueue}}?`
-    ],
+    ]
   },
   'collections-010': {
     q: `{{ArrayDeque}} vs {{Stack}} / {{LinkedList}} as stack / queue; why is {{Stack}} discouraged?`,
@@ -451,7 +451,7 @@ List<String> copy = List.copyOf(source);       // immutable copy (Java 10)
       `Why does {{List.of}} forbid null while {{ArrayList}} allows it?`,
       `Does {{List.copyOf}} optimize when the source is already immutable?`,
       `How do you create an immutable list that allows null (if truly needed)?`
-    ],
+    ]
   },
   'collections-012': {
     q: `{{WeakHashMap}}, {{IdentityHashMap}}: mechanism and real use cases (class-key cache, graph traversal).`,
@@ -509,6 +509,6 @@ Meta getMeta(Class<?> clazz) {
       `Why should a {{WeakHashMap}} value not hold a reference back to the key?`,
       `How does {{IdentityHashMap}} use {{System.identityHashCode}} — how are collisions handled?`,
       `When should you use {{WeakHashMap}} instead of manually managing {{ReferenceQueue}} + {{WeakReference}}?`
-    ],
+    ]
   }
 });

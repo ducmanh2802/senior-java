@@ -468,8 +468,8 @@ export default function () {
     ]
   },
   'testing-009': {
-    q: `As a lead, how do you design quality gates in CI/CD pipeline? How do you handle flaky tests without making the team lose trust in the pipeline?`,
-    a: `**Summary:** Pipeline must **fail fast and fail right**: lint → compile → unit → integration → contract → E2E → deploy, each tier with its own time budget. Flaky tests are **infrastructure failures, not author failures** — handle by measuring, isolating, setting fix deadlines, and banning "retry to green".
+    q: `As a lead, how do you design quality gates in the CI/CD pipeline? How do you handle flaky tests without making the team lose trust in the pipeline?`,
+    a: `**Summary:** Pipeline must **fail fast and fail right**: lint → compile → unit → integration → contract → E2E → deploy, each tier with its own time budget. Flaky tests are **technical debt for the whole team** (the cause may be in the test, in the code, or in the CI infrastructure), not a fault to pin on one person — handle it by measuring, isolating, setting fix deadlines and banning "retry to green".
 
 ### Tiered pipeline design
 | Tier | Content | Budget | When runs |
@@ -478,40 +478,40 @@ export default function () {
 | 2. Compile + unit | build, unit test | < 3 min | every PR |
 | 3. Integration | Testcontainers, slice test | < 10 min | every PR |
 | 4. Contract | pact verify | < 5 min | PR + main |
-| 5. E2E | k6 smoke, API flow | < 15 min | main, before deploy |
+| 5. E2E | API flow, smoke test (Playwright/REST Assured) | < 15 min | main, before deploy |
 | 6. Deploy | canary + smoke + auto rollback | — | after merge |
 
-Rule: **cheap tiers must fail first**. No point running 15-minute E2E when compile is broken. For urgent branches, allow bypassing tiers 4–6 but **not** bypassing unit test.
+Rule: **cheap tiers must fail first**. There's no point running a 15-minute E2E when compile is already broken. For urgent branches, allow bypassing tiers 4–6 but **not** bypassing unit tests.
 
 ### Specific quality gates
-- **Coverage delta**: PR must not reduce quality of new code (block by "ratchet" rather than total threshold).
-- **Mutation score** on domain module (nightly or periodic, because heavy).
-- **Dependency & container scan**: OWASP Dependency-Check, Trivy for image.
-- **Don't merge when pipeline red**: enable branch protection on GitHub/GitLab, merge only through pipeline.
+- **Coverage delta**: a PR must not reduce the quality of the new code (block by "ratchet" instead of a total threshold).
+- **Mutation score** on domain module (nightly or periodic, because it is time-consuming).
+- **Dependency & container scan**: OWASP Dependency-Check, Trivy for images.
+- **Don't merge when the pipeline is red**: enable branch protection on GitHub/GitLab, merge rights only through the pipeline.
 
 ### Flaky test — 5-step process
-1. **Measure first**: track random failure rate by test id (CI provider usually provides).
-2. **Reproduce**: rerun failing test 20 times in CI to confirm randomness, not code change.
-3. **Isolate immediately**: label {{flaky}} and run in separate job, don't block merge — but **must have ticket and owner**.
-4. **Set deadline**: e.g., 7 days to fix; overdue then delete test or convert to integration test.
-5. **Fix root cause** by group: order dependency, shared data, time, real network, resource contention.
+1. **Measure first**: track the rate of random red runs by test id (CI providers usually have this built in).
+2. **Reproduce**: rerun the failing test 20 times in CI to confirm it is random, not caused by a code change.
+3. **Isolate immediately**: tag {{flaky}} and run it in a separate job, don't block merge — but **must have a ticket and an owner**.
+4. **Set a deadline**: e.g., 7 days to fix; past the deadline delete that test and rewrite it at a lower, more stable tier (e.g., replace a flaky E2E with unit/integration tests covering the same behavior) — a test quarantined forever protects nothing.
+5. **Fix the root cause** by cause group: order dependency, shared data, time, real network, resource contention.
 
 ~~~bash
-# Reproduce flake: loop a test class 20 times, count red
+# Reproduce flake: loop a test class 20 times, count red runs
 for i in $(seq 1 20); do mvn -q test -Dtest=OrderServiceIT || echo "FAIL run $i"; done
-# note: -Dsurefire.rerunFailingTestsCount only reruns ALREADY failed (hides flake), don't use for reproduction
+# note: -Dsurefire.rerunFailingTestsCount only reruns tests that ALREADY failed (hides flake), don't use it for reproduction
 ~~~
 
 ### Common traps
-- **Using retry to make pipeline green**: hides symptoms and loses warning signals. If retry is forced for infrastructure issues, separate retry to another job and alert when retry rate increases.
-- **Quarantine without deadline**: quarantine becomes a dump site. Always attach ticket + deadline.
-- **E2E on PR**: makes PR take 20 minutes and everyone pushes multiple times, increasing CI load.
-- **Only measuring "test count"** without quality: 2,000 tests with 8% flaky is meaningless.
+- **Using retry to make the pipeline green**: hides the symptom and loses the warning signal too. If you are forced to retry to survive infrastructure incidents, move retry to a separate job and alert when the retry rate increases.
+- **Quarantine without a deadline**: quarantine turns into a dump site. Always attach ticket + deadline.
+- **E2E running on PR**: makes the PR take 20 minutes and everyone starts pushing many times, increasing CI load.
+- **Only measuring "test count"** without measuring quality: 2,000 tests with 8% flaky is meaningless.
 
-> Senior tip: track 4 DORA metrics — deploy frequency, lead time, change failure rate, MTTR. They directly connect test quality to business value: reducing change failure rate is the most convincing argument when asking for engineering resources.`,
+> Senior tip: track the 4 DORA metrics — deploy frequency, lead time, change failure rate, MTTR. They connect test quality directly to business value: reducing change failure rate is the most convincing argument when asking for more engineering resources.`,
     follow: [
-      'Do you use "test sharding" (split suite by class to run in parallel) and what criteria do you use?',
-      'How do you ensure CI runs exactly like local without creating another config problem?',
+      'Do you use "test sharding" (splitting the suite by class to run in parallel), and by what criteria?',
+      'How do you ensure tests on CI run exactly like the local environment without creating another configuration problem?',
       'When should a flaky test be deleted rather than fixed?'
     ]
   },

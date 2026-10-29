@@ -1,6 +1,6 @@
 # T543 — Dịch lại (nội dung đã sửa): q-soft-4 (3 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-soft-4.en.js`
 
@@ -13,3 +13,9 @@ Với MỖI mục trên: đọc bản tiếng Việt hiện tại trong `js/data
 node scripts/check-i18n.js q-soft-4 → OK; node scripts/validate.js → OK.
 
 ## Notes
+- Đã dịch lại toàn bộ 3 entry trong `js/i18n/q-soft-4.en.js` theo bản tiếng Việt hiện tại của `js/data/q-soft.js`: testing-016, behavioral-016, behavioral-019.
+- testing-016: cập nhật phần giải thích Toxiproxy (TCP proxy, bật/tắt "toxics" qua API), steady-state hypothesis có p99/503, và pitfall timeout giảm dần theo chiều sâu lời gọi; comment code dịch sang tiếng Anh.
+- behavioral-016: dịch lại phần mở đầu theo vai lead và câu trả lời mẫu (5 → 2 ngày công, không xung đột sở hữu); bổ sung mảng `follow` còn thiếu cho khớp bản tiếng Việt.
+- behavioral-019: bổ sung mục "Sample answer (STAR)" (bản tiếng Việt mới có) và dịch lại toàn bộ theo bản hiện tại.
+- Đã chạy `node scripts/check-i18n.js q-soft-4` → OK — 8 mục đã dịch; `node scripts/validate.js` → OK — không có lỗi. Không sửa file nào khác, không commit.
+Reviewed-by: check-i18n (translation, no LLM review)

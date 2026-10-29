@@ -1,6 +1,6 @@
 # T536 — Dịch lại (nội dung đã sửa): q-microservices-3 (9 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-microservices-3.en.js`
 
@@ -13,3 +13,10 @@ Với MỖI mục trên: đọc bản tiếng Việt hiện tại trong `js/data
 node scripts/check-i18n.js q-microservices-3 → OK; node scripts/validate.js → OK.
 
 ## Notes
+
+Đã dịch lại toàn bộ 9 entry (microservices-021…029) trong `js/i18n/q-microservices-3.en.js` theo bản tiếng Việt hiện tại của `js/data/q-microservices.js`:
+- Giữ nguyên key, cùng tập field `q`/`a`/`follow`; q và follow dịch lại sát nghĩa.
+- Bổ sung đầy đủ các mục mới của bản Việt: Quick intuition, Glossary, từng bước, bảng so sánh, Common mistakes, One-minute spoken answer, Senior tip.
+- Dịch cả comment/chuỗi tiếng Việt trong code mẫu (Java/SQL/YAML/text) sang tiếng Anh; chỉ dùng markup `{{...}}`, không backtick, không `${`.
+- Kiểm tra: `node scripts/check-i18n.js q-microservices-3` → OK (9 mục); `node scripts/validate.js` → OK; không sửa file nào khác ngoài 2 file của task.
+Reviewed-by: check-i18n (translation, no LLM review)

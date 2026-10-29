@@ -1,6 +1,7 @@
 /*
  * English translation of js/data/q-security.js — task T189. Format: js/core/i18n.js (content overlay).
  * ids: security-008 security-009 security-010 security-011 security-012 security-013 security-014
+ * Updated for security-013 and security-014 per task T540.
  */
 App.i18n.content({
   'security-008': {
@@ -433,8 +434,8 @@ mapper.activateDefaultTyping(ptv, ObjectMapper.DefaultTyping.NON_FINAL);
     ]
   },
   'security-013': {
-    q: `Library vulnerability (Log4Shell CVE-2021-44228): SCA, SBOM, the emergency patching process in a bank. Root cause analysis and lessons learned?`,
-    a: `**Summary:** **Log4Shell** (CVE-2021-44228, CVSS 10.0) — a JNDI lookup in Log4j 2.x when the log message contains a JNDI payload → RCE. Root cause: the **message lookup substitution** feature allows JNDI lookups without any restriction. Lessons: SCA (Software Composition Analysis) is mandatory in CI/CD, an SBOM (Software Bill of Materials) tells you the dependency tree, a 24-72h emergency patching process for critical CVEs, defense-in-depth (WAF, egress firewall, runtime protection).
+    q: `Library vulnerability (Log4Shell CVE-2021-44228): SCA, SBOM, emergency patching process in a bank. Root cause analysis and lessons learned?`,
+    a: `**Summary:** **Log4Shell** (CVE-2021-44228, CVSS 10.0) — a JNDI lookup in Log4j 2.x when a log message contains a JNDI payload → RCE. Root cause: the **message lookup substitution** feature allows JNDI lookups without any restriction. Lessons: SCA (Software Composition Analysis) is mandatory in CI/CD, an SBOM (Software Bill of Materials) tells you the dependency tree, a 24-72h emergency patching process for critical CVEs, defense-in-depth (WAF, egress firewall, runtime protection).
 
 ### Root Cause Analysis
 - Log4j 2.0-beta9 through 2.14.1: {{MessagePatternConverter}} processes
@@ -477,6 +478,8 @@ mapper.activateDefaultTyping(ptv, ObjectMapper.DefaultTyping.NON_FINAL);
 | **Verify** | T+48h | Rescan, penetration test, confirm the fix |
 | **Report** | T+72h | Report to CISO/Regulator, update the SBOM, lessons learned |
 
+> Note on history: the initial workaround {{-Dlog4j2.formatMsgNoLookups=true}} (2.10+) was later proven **insufficient** (CVE-2021-45046 still exploited via Context Lookup in pattern layout). Only upgrading or removing {{JndiLookup.class}} is a reliable mitigation.
+
 ### Defense-in-depth (not only patching)
 - **WAF**: a rule blocking lookup strings containing {{jndi:}} and nested lookup forms in headers/body — only a temporary layer, obfuscated payloads can slip through.
 - **Egress firewall**: block outbound LDAP (389), RMI (1099), DNS to unknown resolvers.
@@ -498,7 +501,7 @@ mapper.activateDefaultTyping(ptv, ObjectMapper.DefaultTyping.NON_FINAL);
 | Layer | Scope | Algorithm | Example config |
 |---|---|---|---|
 | **Network/WAF** | IP | Token bucket | 100 req/min/IP, burst 20 |
-| **Application** | IP + User | Sliding window log | 5 req/15min/IP, 10 req/15min/user |
+| **Application** | IP + User | Sliding window | 50 req/15min/IP (corporate NAT / 4G share IP), 10 req/15min/user |
 | **Login endpoint** | User | Fixed window + exponential backoff | 5 fails → lock 15m, 10 fails → lock 1h, 20 fails → lock 24h |
 
 ### Account Lockout — Exponential Backoff
@@ -515,13 +518,15 @@ mapper.activateDefaultTyping(ptv, ObjectMapper.DefaultTyping.NON_FINAL);
 public class LoginProtectionService {
     private final RedisTemplate<String, String> redis;
     private static final int MAX_ATTEMPTS = 5;
-    private static final int WINDOW_MINUTES = 15;
+    // Counting window must be LONGER than lock duration (15 min), otherwise
+    // counter resets after each lock and never escalates to 1h/24h locks
+    private static final Duration COUNT_WINDOW = Duration.ofHours(24);
 
     public void recordFailedAttempt(String username, String ip) {
         // Count per USER (do not merge with IP — botnets rotate IPs constantly) and count per IP separately
         String key = "login:fail:user:" + username;
         Long count = redis.opsForValue().increment(key);
-        if (count == 1) redis.expire(key, Duration.ofMinutes(WINDOW_MINUTES)); // should be made atomic with Lua
+        if (count == 1) redis.expire(key, COUNT_WINDOW); // should be made atomic with Lua
         Long ipCount = redis.opsForValue().increment("login:fail:ip:" + ip); // used for per-IP rate limiting/CAPTCHA
 
         if (count >= MAX_ATTEMPTS) {
@@ -561,8 +566,9 @@ public boolean isPwned(String password) {
     String suffix = sha1.substring(5);
     String response = webClient.get().uri("https://api.pwnedpasswords.com/range/" + prefix)
         .retrieve().bodyToMono(String.class).block();
+    // Each response line is "SUFFIX:COUNT" (35 hex chars + count)
     return Arrays.stream(response.split("\\r?\\n"))
-        .anyMatch(line -> line.startsWith(suffix));
+        .anyMatch(line -> line.startsWith(suffix + ":"));
 }
 ~~~
 

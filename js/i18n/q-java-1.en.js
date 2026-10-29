@@ -108,20 +108,20 @@ System.out.println(x);                 // orig added
     follow: [`Write a {{swap}} method for two {{Integer}} — why is it impossible?`, `If you pass a {{List}} to a method and assign {{list = new ArrayList<>()}} inside, does it affect the caller?`, `Where should defensive copy be placed: constructor, getter, or both?`]
   },
   'core-004': {
-    q: `How should you design an exception hierarchy for a Spring service? Checked or unchecked, when to wrap, and how to avoid swallowing errors?`,
-    a: `**Summary:** use a base **unchecked** {{BusinessException}} carrying an {{errorCode}} for business errors, leave framework RuntimeExceptions intact, wrap infrastructure errors with {{cause}}, and map to HTTP in one place only ({{@RestControllerAdvice}}).
+    q: `How should you design an exception hierarchy for a Spring service? Checked or unchecked, when to wrap, and how do you avoid swallowing errors?`,
+    a: `**Summary:** use a base **unchecked** {{BusinessException}} that carries an {{errorCode}} for business errors, leave the framework's RuntimeExceptions untouched, wrap infrastructure errors with their {{cause}}, and map them to HTTP in exactly one place ({{@RestControllerAdvice}}).
 
 ### Checked vs unchecked
-- **Checked** (extends {{Exception}}): compiler forces handling. Suitable for conditions **recoverable** and that the caller must decide, e.g., {{IOException}} when reading a file, {{InterruptedException}}. Downside: clutters signatures, hard to use in lambda/stream, easy to create empty {{catch (Exception e)}}.
-- **Unchecked** (extends {{RuntimeException}}): programming errors or unrecoverable business errors. Most modern services choose unchecked to keep APIs clean; errors are handled centrally at the web layer.
-- **Error** ({{OutOfMemoryError}}, {{StackOverflowError}}): never catch, never declare; the JVM is in an untrustworthy state.
+- **Checked** (extends {{Exception}}): the compiler forces you to handle it. It fits conditions that are **recoverable** and that the caller must decide about, for example {{IOException}} when reading a file, or {{InterruptedException}}. Downside: it clutters method signatures, is awkward inside lambda/stream code, and easily produces empty {{catch (Exception e)}} blocks.
+- **Unchecked** (extends {{RuntimeException}}): programming errors, or business errors that cannot be recovered at the call site. Most modern services choose unchecked to keep their APIs clean; errors are handled centrally at the web layer.
+- **Error** ({{OutOfMemoryError}}, {{StackOverflowError}}): do not catch and do not declare them; the JVM is in a state you cannot trust.
 
-### Suggested hierarchy
+### A suggested hierarchy
 ~~~java
 public class BusinessException extends RuntimeException {
     private final String code;                 // "ORDER_NOT_FOUND"
     public BusinessException(String code, String msg, Throwable cause) {
-        super(msg, cause);                     // always keep cause
+        super(msg, cause);                     // always keep the cause
         this.code = code;
     }
     public String getCode() { return code; }
@@ -132,75 +132,75 @@ public class NotFoundException extends BusinessException {
 }
 ~~~
 
-- Domain layer throws {{NotFoundException("ORDER_NOT_FOUND", ...)}}; web layer maps code to 404, 409, 422.
-- Do not expose stack traces or DB/table names in responses; log fully on the server, return safe messages to clients.
-- Validation errors should aggregate multiple fields (a list of errors), not throw one at a time.
+- The domain layer throws {{NotFoundException("ORDER_NOT_FOUND", ...)}}; the web layer maps the code to 404, 409 or 422.
+- Do not expose stack traces or table/DB names in the response; log everything on the server and return a safe message to the client.
+- Validation errors should aggregate several fields (a list of errors) instead of throwing one at a time.
 
 ### When to wrap
-- Wrap when adding **business context** or changing the error type for an upper layer: catch {{SQLException}} then {{throw new RepositoryException(msg, e)}} to keep cause and add context.
-- Do not wrap if nothing is added — only makes the stack longer and harder to read.
-- Always pass {{cause}}; never {{throw new RuntimeException(e.getMessage())}} because the original stack is lost.
-- Avoid **log then throw again**: one error logged at 3 layers causes noise and increases cost. Choose one logging location (advice or consumer boundary).
+- Wrap when you add **business context** or change the error type for an upper layer: catch {{SQLException}} and then {{throw new RepositoryException(msg, e)}} to keep the cause and add context.
+- Do not wrap when nothing is added — it only makes the stack longer and harder to read.
+- Always pass the {{cause}}; never {{throw new RuntimeException(e.getMessage())}}, because the original stack is lost.
+- Avoid **log then rethrow**: one error logged at 3 layers creates noise and extra cost. Pick one logging location (the advice, or the consumer boundary).
 
-### Swallowing and try-with-resources
-- {{catch (Exception e)}} with no action is an anti-pattern; at minimum log with context and decide clearly (ignore, retry, fallback).
-- {{finally}} is for cleanup; for resources implementing {{AutoCloseable}}, use try-with-resources so that an exception on close is attached to {{getSuppressed()}} instead of hiding the primary error.
-- In async/CompletableFuture, errors live inside the future; must handle with {{exceptionally}}/{{handle}} or log in {{whenComplete}}, otherwise they disappear silently.
+### Swallowing errors and try-with-resources
+- {{catch (Exception e)}} with an empty body is an anti-pattern; at the very least log with context and make an explicit decision (ignore, retry, fallback).
+- {{finally}} is for cleanup; for resources that implement {{AutoCloseable}}, use try-with-resources so an exception thrown while closing is attached to {{getSuppressed()}} instead of hiding the primary error.
+- In async/CompletableFuture code the error lives inside the future; you must handle it with {{exceptionally}}/{{handle}} or log it in {{whenComplete}}, otherwise it disappears silently.
 
-> Senior tip: define {{errorCode}} as a stable enum/constant and never change the meaning of an old code; clients and monitoring often parse that code.`,
-    follow: [`Why should a base exception for a service be unchecked rather than checked?`, `When is it correct to wrap a framework exception and when should you leave it?`, `How do you avoid swallowing errors in catch blocks and in async pipelines?`]
+> Senior tip: keep {{errorCode}} in a stable enum/constant and never change the meaning of an old code; clients and monitoring often parse it. For 5xx errors, log a correlation id (a request id shared by every log line of the same request) and do not log the full payload when it contains personal data.`,
+    follow: [`Why must you call {{Thread.currentThread().interrupt()}} when you catch {{InterruptedException}}?`, `How do the default {{@Transactional}} rollback rules differ for checked and unchecked exceptions?`, `How do you keep the {{cause}} without leaking internal details into the response?`]
   },
   'core-005': {
     q: `Distinguish {{final}}, {{finally}}, {{finalize}}. Why is {{finalize}} deprecated, and how do {{Cleaner}} / try-with-resources replace it?`,
-    a: `**Summary:** {{final}} is a modifier (immutable reference / non-overridable / non-inheritable), {{finally}} is a block that always runs when exiting try, and {{finalize}} is a GC hook that has been deprecated because it does not guarantee timing, runs slowly, and is dangerous; replaced by try-with-resources or {{Cleaner}}.
+    a: `**Summary:** {{final}} is a modifier (a reference that cannot be reassigned / a method that cannot be overridden / a class that cannot be extended), {{finally}} is a block that always runs when leaving a try, and {{finalize}} is a GC hook that is deprecated because it gives no timing guarantee, runs slowly and is dangerous; replace it with try-with-resources or {{Cleaner}}.
 
 ### final
-- **Variable/field**: assigned once, reference cannot change. For objects, content is still mutable ({{final List}} can still {{add}}).
-- **Method**: prevents override.
-- **Class**: prevents inheritance ({{String}}, {{Integer}}).
-- Important for the **memory model**: a {{final}} field is "frozen" after the constructor, so other threads reading it see the correct value if the object is safely published. This is the foundation of immutable objects.
-- {{final}} local variables can be used in lambda/anonymous classes (effectively final also works).
+- **Variable/field**: assigned once, the reference cannot change. For an object the content can still be mutable (a {{final List}} can still be {{add}}ed to).
+- **Method**: cannot be overridden.
+- **Class**: cannot be extended ({{String}}, {{Integer}}).
+- Important for the **memory model**: a {{final}} field is "frozen" after the constructor, so other threads that read it see the correct value if the object is published safely. This is the foundation of immutable objects.
+- A {{final}} local can be used inside a lambda/anonymous class (effectively final works the same way).
 
 ### finally
-- Runs when try exits normally, when an exception occurs, when {{return}}, {{break}}, {{continue}}.
-- **Does not run** if the JVM dies: {{System.exit}}, {{Runtime.halt}}, native crash, kill -9.
-- {{return}} inside {{finally}} **masks** an earlier exception/return — extremely dangerous, avoid absolutely.
+- Runs when the try exits normally, when an exception is thrown, and on {{return}}, {{break}}, {{continue}}.
+- **Does not run** when the JVM dies: {{System.exit}}, {{Runtime.halt}}, a native crash, kill -9.
+- A {{return}} inside {{finally}} **hides** an earlier exception/return — extremely dangerous, avoid it absolutely.
 
 ### finalize
-- Called by GC **before** reclaiming, with no timing guarantee, possibly never called, and runs on a single finalizer thread so it can block.
-- Can **resurrect** the object by assigning {{this}} to a static field — breaking lifecycle assumptions.
-- Exceptions thrown inside are swallowed; no useful exception can be thrown.
-- From Java 18, finalization is **deprecated for removal** (JEP 421) and can be disabled via {{--finalization=disabled}}; {{Cleaner}} has been official since Java 9.
-- Why it still exists: backward compatibility with old code and some native libraries.
+- Called by the GC **before** reclaiming the object, with no timing guarantee, possibly never called, and it runs on a single finalizer thread, so it easily becomes a bottleneck.
+- It can **resurrect** the object by assigning {{this}} to a static field — breaking assumptions about the lifecycle.
+- It cannot throw a useful exception; exceptions thrown inside it are swallowed.
+- From Java 18, finalization is **deprecated for removal** (JEP 421) and can be switched off with {{--finalization=disabled}}; {{Cleaner}} has been official since Java 9.
+- Why it still exists: backward compatibility with old code and with some native libraries.
 
 ### Replacements
-- **try-with-resources**: the standard for any {{AutoCloseable}} resource (file, socket, JDBC). Closes in reverse order; exceptions on close are attached to {{getSuppressed()}}.
-- **Cleaner** ({{java.lang.ref.Cleaner}}): registers an action to run when the object becomes phantom-reachable; used for native resources without a close API, but still **does not guarantee timing** — just a safety net.
-- For direct {{ByteBuffer}}, use the internal JDK {{Cleaner}} or try to reuse buffers.
+- **try-with-resources**: the standard way for any {{AutoCloseable}} resource (file, socket, JDBC). It closes in reverse order and attaches close-time exceptions to {{getSuppressed()}}.
+- **Cleaner** ({{java.lang.ref.Cleaner}}): registers an action that runs when the object becomes phantom-reachable, meaning the GC has proven nothing can ever read it again. It is used for native resources that have no close API, but it still **does not guarantee** timing; it is only a safety net.
+- For a direct {{ByteBuffer}}, use the JDK's internal {{Cleaner}} or try to reuse the buffer.
 
 ~~~java
 try (var in = Files.newInputStream(path);
      var out = Files.newOutputStream(dest)) {
-    in.transferTo(out);                  // automatic close, even on error
+    in.transferTo(out);                  // closes automatically, even on error
 }
 ~~~
 
-> Senior tip: never put critical business logic inside {{finalize}}. If you see {{finalize}} in old code, replace with {{AutoCloseable}} + try-with-resources first; keep {{Cleaner}} only for native resources.`,
-    follow: [`Why can a {{return}} inside {{finally}} swallow an exception?`, `How does a {{final}} field help with safe publication between threads?`, `How is {{Cleaner}} different from {{finalize}}, and what limitations remain?`]
+> Senior tip: never put important business logic inside {{finalize}}. If you find {{finalize}} in an old codebase, replace it with {{AutoCloseable}} + try-with-resources first; keep {{Cleaner}} only for native resources.`,
+    follow: [`Why can a {{return}} inside {{finally}} swallow an exception?`, `How does a {{final}} field help publish an object safely between threads?`, `How does {{Cleaner}} differ from {{finalize}}, and what limitations remain?`]
   },
   'core-006': {
     q: `How does type erasure affect generics? Explain wildcards and the PECS rule with {{? extends}} / {{? super}}.`,
-    a: `**Summary:** generics are checked at compile time then **erased** from bytecode; wildcards increase flexibility, and PECS: **Producer Extends, Consumer Super** — read with {{? extends T}}, write with {{? super T}}.
+    a: `**Summary:** generics are only checked at compile time and then **erased** from the bytecode; wildcards make APIs more flexible, and PECS means **Producer Extends, Consumer Super** — use {{? extends T}} when you read values out, {{? super T}} when you write values in.
 
 ### Type erasure
-- {{List<String>}} and {{List<Integer>}} are both {{List}} in bytecode; no {{new T()}}, no {{instanceof T}}, no array {{new T[]}}, no overloading by type parameter alone.
-- Compiler inserts **casts** and **bridge methods** to preserve polymorphism. For example, {{Comparable}} has {{compareTo(Object)}} bridge calling {{compareTo(MyType)}}.
-- Consequence: generic types cannot be checked at runtime; {{List<String>}} can suffer "heap pollution" if wrongly inserted via a raw type. {{@SafeVarargs}} is just the programmer's guarantee.
-- Generic type information remains in metadata ({{getGenericSuperclass}}, {{ParameterizedType}}) if declared on class/field/method. Jackson uses this via {{TypeReference}}.
+- {{List<String>}} and {{List<Integer>}} are the same {{List}} in bytecode; there is no {{new T()}}, no {{instanceof T}}, no array {{new T[]}}, and no overloading that differs only by type parameter.
+- The compiler inserts **casts** and **bridge methods** to preserve polymorphism. For example {{Comparable}} has a {{compareTo(Object)}} bridge method that calls {{compareTo(MyType)}}.
+- Consequence: generic types cannot be checked at runtime; {{List<String>}} suffers "heap pollution" if the wrong type is inserted through a raw type. {{@SafeVarargs}} is only the programmer's promise.
+- Generic types are not fully visible to reflection, but they **still exist** in metadata ({{getGenericSuperclass}}, {{ParameterizedType}}) when declared on a class/field/method. Jackson exploits this through {{TypeReference}}.
 
 ### Why wildcards are needed
-- Generics are **invariant**: {{List<Integer>}} is **not** a subtype of {{List<Number>}}, even though {{Integer}} is a subtype of {{Number}}. If allowed, one could {{add(3.14)}} to a List<Integer>.
-- Wildcards extend safely in one direction:
+- Generics are **invariant**: {{List<Integer>}} is **not** a subtype of {{List<Number>}}, even though {{Integer}} is a subtype of {{Number}}. If it were allowed, we could {{add(3.14)}} to a list of Integer.
+- Wildcards extend in one safe direction:
 
 ~~~java
 Number sum(List<? extends Number> src) {   // producer: can read Number
@@ -213,24 +213,24 @@ void addInts(List<? super Integer> dst) {  // consumer: can write Integer
 }
 ~~~
 
-- {{? extends T}}: can only read {{T}}, **cannot** write (except {{null}}) because the compiler does not know the specific subtype.
-- {{? super T}}: can write {{T}}, but can only read {{Object}}.
-- {{?}} = {{? extends Object}}, can read Object, cannot write.
+- {{? extends T}}: you can only read {{T}}, you **cannot** write (except {{null}}), because the compiler does not know the concrete subtype.
+- {{? super T}}: you can write {{T}}, but reading only gives {{Object}}.
+- {{?}} = {{? extends Object}}: you can read Object, but you cannot write.
 
-### PECS application
+### Applying PECS
 - {{Collections.copy(List<? super T> dest, List<? extends T> src)}} is the classic example.
-- API receiving a collection only for reading: use {{Collection<? extends T>}} to accept {{List<Sub>}}.
-- API only for writing: {{Consumer<? super T>}}.
-- Return should use the concrete type, not wildcard (except to hide implementation).
+- An API that takes a collection only to read it: use {{Collection<? extends T>}} so it also accepts {{List<Sub>}}.
+- An API that only writes: {{Consumer<? super T>}}.
+- For return types use the concrete type, not a wildcard (unless you want to hide the implementation).
 - {{Comparable<? super T>}} allows comparison with a supertype.
 
 ### Pitfalls
-- Raw type ({{List}} without parameter) disables compile-time checks, causes warnings, and can trigger {{ClassCastException}} elsewhere.
-- Cannot create generic arrays: {{new List<String>[10]}} is invalid; use {{List<List<String>>}} or {{Array.newInstance}} with controlled cast.
-- {{List<Object>}} does not accept {{List<String>}}; {{List<?>}} accepts but nothing can be added.
+- A raw type ({{List}} without a parameter) disables compile-time checks, produces warnings, and can blow up with {{ClassCastException}} somewhere else.
+- You cannot create a generic array: {{new List<String>[10]}} is invalid; use {{List<List<String>>}} or {{Array.newInstance}} plus a controlled cast.
+- {{List<Object>}} does not accept {{List<String>}}; {{List<?>}} accepts it but nothing can be added.
 
-> Senior tip: when designing a library API, use wildcards on **input** so users can pass more types; do not overuse wildcards on return because it forces callers to handle useless {{?}}. And remember generics cost 0 at runtime — only bridge methods and small casts.`,
-    follow: [`Why is {{new T[]}} or {{new List<String>[10]}} impossible?`, `What is the bridge method for and how does it preserve polymorphism?`, `How does PECS apply to method signatures in collections?`]
+> Senior tip: when designing a library API, use wildcards on the **input** so callers can pass more types; do not overuse wildcards on the return type because it forces callers to deal with a useless {{?}}. And remember that generics cost 0 at runtime — only bridge methods and a small cast.`,
+    follow: [`Why can you not write {{new T[]}} or {{new List<String>[10]}}?`, `What is a bridge method for, and how does it affect reflection?`, `When should you use {{List<?>}} instead of {{List<Object>}}?`]
   },
   'core-007': {
     q: `How do you design an immutable class correctly? Where should defensive copy be placed and why?`,
@@ -277,14 +277,14 @@ public final class Period {
     follow: [`How does {{Collections.unmodifiableList}} differ from {{List.copyOf}}?`, `Does a record automatically protect against mutable components?`, `What is leaking {{this}} and how can it break invariants?`]
   },
   'core-008': {
-    q: `Distinguish static nested class and inner class. Why does inner class easily cause memory leaks?`,
-    a: `**Summary:** static nested class does **not** hold a reference to the outer instance; inner (non-static) implicitly keeps {{this$0}}, so the inner object lives as long as the outer. By default use static nested; only use inner when you truly need access to the outer state.
+    q: `Distinguish a static nested class from an inner class. Why does an inner class easily cause a memory leak?`,
+    a: `**Summary:** a static nested class does **not** hold a reference to the outer instance; an inner (non-static) class implicitly keeps {{this$0}}, so as long as the inner object is alive the outer object is alive too. So default to a static nested class and use an inner class only when you truly need to access the outer state.
 
 ### Basic differences
-- **Static nested**: declared {{static class Foo}} inside the outer. No outer instance needed, no {{this$0}}, behaves like a top-level class (only different in name scope).
-- **Inner (non-static)**: each instance is tied to an outer instance; compiler generates a field {{final Outer this$0}} and a constructor taking the outer. Can call outer fields/methods directly.
-- **Local class**: declared inside a method, also holds a reference to the outer and captures effectively final local variables.
-- **Anonymous class**: like local, holds outer and captured variables; commonly seen in listeners/callbacks.
+- **Static nested**: declared as {{static class Foo}} inside the outer class. It needs no outer instance, has no {{this$0}}, and works like a top-level class (only its name scope differs).
+- **Inner (non-static)**: every instance is bound to one outer instance; the compiler generates a {{final Outer this$0}} field and a constructor that takes the outer instance. It can call the outer fields/methods directly.
+- **Local class**: declared inside a method; it also keeps a reference to the outer instance and captures effectively final local variables.
+- **Anonymous class**: like a local class, it keeps the outer instance and the captured variables; you commonly see it in listeners/callbacks.
 
 ~~~java
 public class Service {
@@ -301,94 +301,94 @@ public class Service {
 }
 ~~~
 
-### Why leaks happen
-- Registering an inner listener/callback in a long-lived registry (static list, singleton, thread pool, event bus). The registry holds the inner instance, the inner holds the outer, so the **entire service object** is not collected even after the business operation is done.
-- In desktop/Android apps, inner classes holding Activity/Context are classic leaks; in backend, inner tasks holding large services with caches and connection pool references.
-- Anonymous classes in {{ThreadLocal}} or scheduled tasks hold the outer similarly.
-- Furthermore, the inner class prevents the outer object from being GC'd even if only a small callback remains; the actual kept size can be very large.
+### Why the leak happens
+- You register an inner listener/callback in a long-lived registry (a static list, a singleton, a thread pool, an event bus). The registry holds the inner object, the inner object holds the outer object, so the **whole service object** is never collected even though the business operation has finished.
+- In desktop/Android apps, an inner class holding an Activity/Context is the classic leak; in the backend, an inner task holds the whole large service, including its caches and connection pool references.
+- An anonymous class stored in a {{ThreadLocal}} or used as a scheduled task holds the outer object in the same way.
+- On top of that, the inner class keeps the outer object from being GC'd even when only a tiny callback remains; the real amount of memory retained can be very large.
 
-### How to avoid
-- Default to {{static}} for nested classes; pass required dependencies through the constructor instead of accessing {{Outer.this}}.
-- For listeners, hold the reference and **unregister** in {{close()}}/{{@PreDestroy}}; or use {{WeakReference}} for short-lived callbacks.
-- For periodic tasks, use static nested + parameters, avoid capturing {{this}} unexpectedly.
-- Verify with a heap dump (Eclipse MAT) looking for abnormal {{this$0}} references.
+### How to avoid it
+- Default to {{static}} for nested classes; pass the dependencies you need through the constructor instead of reaching for {{Outer.this}}.
+- For listeners, keep the reference and **unregister** in {{close()}}/{{@PreDestroy}}; or use a {{WeakReference}} for short-lived callbacks.
+- For periodic tasks, use a static nested class plus parameters and avoid capturing {{this}} by accident.
+- Check with a heap dump (Eclipse MAT) and look for unexpected {{this$0}} references pointing back.
 
-### When to use inner
-- When the child object is truly part of the outer lifecycle and needs access to private state of the outer, e.g., {{Iterator}} of a collection ({{ArrayList.Itr}} is inner, accessing {{elementData}} and {{modCount}}).
-- When you want the API {{outer.new Inner()}} to express a tight relationship. Otherwise static nested is clearer and safer.
+### When an inner class is justified
+- When the child object really is part of the outer object's lifecycle and needs to read the outer object's private state, for example a collection's {{Iterator}} ({{ArrayList.Itr}} is an inner class that accesses {{elementData}} and {{modCount}}).
+- When you want the {{outer.new Inner()}} API to express a tight relationship. Otherwise a static nested class is clearer and safer.
 
-> Senior tip: in code review, if a {{private class X}} does not use any field/method of the outer class, it should be changed to {{static}}; this also reduces one reference and makes serialization cleaner.`,
-    follow: [`What field does the compiler generate for an inner class, and how does it affect serialization?`, `How can you detect an inner class memory leak with a heap dump?`, `When is it justified to use a non-static inner class instead of static nested?`]
+> Senior tip: in code review, a {{private class X}} that uses no field/method of the outer class is a signal to make it {{static}}; this also removes one reference and makes serialization cleaner.`,
+    follow: [`What field does the compiler generate for an inner class, and how does that field affect serialization?`, `How do you detect a memory leak caused by an inner class with a heap dump?`, `Why is {{ArrayList}}'s {{Iterator}} a legitimate inner class?`]
   },
   'core-009': {
-    q: `Java serialization: what is {{serialVersionUID}} for, what are the security risks of deserialization, and what should replace it?`,
-    a: `**Summary:** {{serialVersionUID}} is the class "version" to avoid {{InvalidClassException}} when structure changes; Java deserialization on untrusted data can lead to **gadget chains causing RCE**, so modern systems prefer JSON/Protobuf/Avro, and if forced to use it, apply {{ObjectInputFilter}}.
+    q: `Java serialization: what is {{serialVersionUID}} for, what are the security risks of deserialization, and what should you replace it with?`,
+    a: `**Summary:** {{serialVersionUID}} is the class "version" that prevents {{InvalidClassException}} when the structure changes; deserializing untrusted Java data can be exploited with a **gadget chain that leads to RCE (remote code execution)**, so modern systems prefer JSON/Protobuf/Avro, and if you are forced to use Java serialization you must add an {{ObjectInputFilter}}.
 
 ### serialVersionUID
-- If not declared, JVM computes it from the class signature (fields, methods, modifiers); adding one field changes the value and old data becomes unreadable.
-- Explicitly declare {{private static final long serialVersionUID = 1L;}} to control compatibility.
-- Change the version when altering **incompatibly** (removing fields, changing types); adding a new field is usually compatible and the new field receives its default value.
-- Default serialization writes the **entire object graph** by class name; changing package/class name also breaks it.
+- If you do not declare it, the JVM computes it from the class signature (fields, methods, modifiers); adding a single field changes the value and old data can no longer be read.
+- Declare it explicitly: {{private static final long serialVersionUID = 1L;}} so you control compatibility.
+- Bump the version when you make an **incompatible** change (removing a field, changing a type); adding a new field is usually compatible and the new field receives its default value.
+- Default serialization writes the **whole object graph** by class name; renaming the package/class also breaks it.
 
 ### How it works
-- {{Serializable}} is a marker; {{ObjectOutputStream}} writes metadata + non-{{transient}} fields; {{readObject}} restores **without calling the constructor** (except for non-Serializable parent classes).
-- {{transient}} excludes fields from the stream; {{Externalizable}} allows full self-control.
+- {{Serializable}} is a marker; {{ObjectOutputStream}} writes metadata plus the non-{{transient}} fields; {{readObject}} restores the object **without calling the constructor** (except for non-Serializable parent classes).
+- {{transient}} removes a field from the stream; {{Externalizable}} lets you control everything yourself.
 - {{writeReplace}}/{{readResolve}} are used for singletons/proxies.
 
 ### Risks
-- An attacker sends a byte stream containing a chain of existing classes (Apache Commons Collections, Spring, ROME...) creating a **gadget chain**: each {{readObject}} executes code, eventually calling {{Runtime.exec}}. Your own code does not even need a vulnerability.
-- Deserialization happens **before** you can validate data, so validating fields does not help.
-- Famous vulnerabilities (CommonsCollections, WebLogic, JBoss) all go through this path.
+- An attacker sends a byte stream containing a chain of classes that already exist on your classpath (Apache Commons Collections, Spring, ROME...), forming a **gadget chain**: each {{readObject}} executes code and eventually calls {{Runtime.exec}} (start a process). There does not need to be any bug in your own code.
+- Deserialization happens **before** you can validate the data, so validating fields cannot save you.
+- Famous vulnerabilities (CommonsCollections, WebLogic, JBoss) all travel through this path.
 
 ### Defenses
-- **Do not accept Java serialization over network/HTTP**, even from internal services. Use JSON (Jackson), Protobuf, Avro, CBOR.
-- If forced (RMI, old session), set an {{ObjectInputFilter}} whitelist of classes and limit depth/size (JEP 290, {{jdk.serialFilter}}), enable filters by context (JEP 415).
-- Do not use {{ObjectInputStream}} on client-controlled cookies/sessions; if unavoidable, sign and encrypt.
-- For distributed caches (Redis), do not use default Java serialization; use JSON/Protobuf to avoid both compatibility and security issues.
+- **Do not accept Java serialization over the network/HTTP**, even from internal services. Use JSON (Jackson), Protobuf, Avro or CBOR.
+- If you are forced to (RMI, an old session store), set an {{ObjectInputFilter}} whitelist of allowed classes and limit depth/size (JEP 290, {{jdk.serialFilter}}), and enable filters per context (JEP 415).
+- Do not use {{ObjectInputStream}} on cookies/sessions controlled by the client; if you must, sign and encrypt them.
+- For distributed caches (Redis), do not use Java serialization by default; use JSON/Protobuf to avoid both compatibility and security problems.
 
 ### Replacements
-- DTO record + Jackson/Protobuf with clear schema, easy versioning, safer.
+- DTO records plus Jackson/Protobuf give a clear schema, are easy to version and are safer.
 - For sessions, store JSON or use stateless tokens (JWT) instead of serializing objects.
-- For internal snapshots, {{Externalizable}} is possible but still requires controlling the source.
+- For internal snapshots you can use {{Externalizable}}, but you still need to control where the bytes come from.
 
-> Senior tip: if your legacy system still uses Java serialization in Redis/session, treat it as a **P1 security debt**; set filters first, then migrate to JSON. Do not just increment {{serialVersionUID}} and feel safe — it has nothing to do with security.`,
-    follow: [`Why does deserialization not call the constructor, and how does that affect immutability?`, `Where should {{ObjectInputFilter}} whitelist be configured in Spring Boot?`, `Which alternatives to Java serialization are recommended for session and cache?`]
+> Senior tip: if a legacy system still uses Java serialization for Redis/session, treat it as a **P1 security debt**; install filters first, then migrate to JSON. Do not just bump {{serialVersionUID}} and feel safe — it has nothing to do with security.`,
+    follow: [`Why does deserialization not call the constructor, and how does that affect immutability?`, `Where should the {{ObjectInputFilter}} whitelist be configured in Spring Boot?`, `When is {{transient}} mandatory rather than just an optimization?`]
   },
   'core-010': {
-    q: `Reflection and annotation processing: what are the costs, where do frameworks use them, and what production pitfalls occur?`,
-    a: `**Summary:** reflection allows inspecting and calling classes at runtime but is slower than direct calls (lookup, access checks, boxing, hard to inline); annotation processing runs at **compile** time and generates code, so it has almost zero runtime cost. Spring/Hibernate/Jackson use reflection; Lombok/MapStruct use annotation processing.
+    q: `Reflection and annotation processing: what do they cost, where do frameworks use them, and which pitfalls show up in production?`,
+    a: `**Summary:** reflection lets you inspect and call classes at runtime but is slower than a direct call (method lookup, access checks, boxing, and it cannot be inlined); annotation processing runs at **compile time** and generates code, so it costs almost nothing at runtime. Spring/Hibernate/Jackson use reflection; Lombok/MapStruct use annotation processing.
 
 ### Reflection
-- APIs: {{Class.forName}}, {{getDeclaredFields}}, {{Method.invoke}}, {{Constructor.newInstance}}, {{setAccessible}}.
+- API: {{Class.forName}}, {{getDeclaredFields}}, {{Method.invoke}}, {{Constructor.newInstance}}, {{setAccessible}}.
 - Costs:
-  - **Lookup** of method/field names on each call is very expensive; must cache {{Method}}/{{Field}}.
-  - **Access checks** and boxing/unboxing for primitive parameters.
-  - **Cannot be inlined** by JIT like direct calls; from Java 18 core reflection was rewritten on {{MethodHandle}} making it faster, but still not equal to static calls.
-  - Class initialization, metadata loading, can increase startup time.
-- {{MethodHandle}}/{{VarHandle}} are faster choices for hot paths; {{LambdaMetafactory}} turns reflective calls into functional interfaces once.
-- Reflection breaks encapsulation: {{setAccessible(true)}} can be blocked by modules ({{InaccessibleObjectException}}) from Java 9/17; may require {{--add-opens}} (usually only temporary compatibility).
+  - **Lookup** of the method/field name on every call is very expensive; you must cache the {{Method}}/{{Field}}.
+  - **Access checks** plus boxing/unboxing of primitive arguments.
+  - It **cannot be inlined** by the JIT the way a direct call can; since Java 18 core reflection has been rewritten on top of {{MethodHandle}} and is faster than before, but it is still not equal to a static call.
+  - Class initialization and metadata loading can increase startup time.
+- {{MethodHandle}}/{{VarHandle}} are the faster choice for hot paths; {{LambdaMetafactory}} turns a reflective call into a functional interface once.
+- Reflection breaks encapsulation: {{setAccessible(true)}} can be blocked by the module system ({{InaccessibleObjectException}}) since Java 9/17; you may need {{--add-opens}} (usually only as a temporary compatibility measure).
 
-### How frameworks use them
-- **Spring**: scans classes, reads annotations, creates proxies (CGLIB/JDK dynamic proxy), injects fields/constructors. Slow startup but runtime uses already-generated proxies.
-- **Hibernate**: maps entities via metadata, uses bytecode enhancement/reflection to read fields, lazy proxies.
-- **Jackson**: reads getters/constructors/record components for serialization; caches {{BeanDescription}} to reduce cost.
+### How frameworks use it
+- **Spring**: scans classes, reads annotations, creates proxies (CGLIB, a library that generates subclasses at runtime, or the JDK dynamic proxy), and injects fields/constructors. Startup is slow but at runtime it uses the proxies it already generated.
+- **Hibernate**: maps entities from metadata, uses bytecode enhancement or reflection to read fields, and creates lazy proxies.
+- **Jackson**: reads getters/constructors/record components to serialize; it caches a {{BeanDescription}} to reduce the cost.
 - **JUnit/Mockito**: creates instances, injects mocks, verifies calls.
 
 ### Annotation processing
-- Runs inside {{javac}} via {{Processor}}; reads annotations and **generates source/bytecode** (or reports compile errors).
-- **Lombok** intercepts AST via internal javac APIs, generating getters/setters/constructors into bytecode — convenient but fragile when JDK changes, controversial with tooling.
-- **MapStruct** generates type-safe mappers at compile time, fast at runtime like hand-written code; **Dagger** generates the DI graph.
-- Runtime cost = 0; build cost increases; needs processor configuration in Maven/Gradle and sometimes errors are hard to read when generated code is wrong.
+- Runs inside {{javac}} through a {{Processor}}; it reads annotations and **generates source code/bytecode** (or reports a compile error).
+- **Lombok** manipulates the compiler's internal AST (the syntax tree javac builds while parsing) through internal javac APIs and generates getters/setters/constructors into the bytecode — convenient but fragile when the JDK changes, and controversial with tooling.
+- **MapStruct** generates type-safe mappers at compile time, so runtime is as fast as hand-written code; **Dagger** generates the DI graph.
+- Runtime cost = 0; build cost goes up; you need processor configuration in Maven/Gradle, and errors are sometimes hard to read when generated code is wrong.
 
 ### Production pitfalls
-- Calling {{getMethods()}}/{{getDeclaredFields()}} in a request loop without caching: CPU spikes, GC increases.
-- Using reflection to set private JDK fields: breaks on JDK upgrade (strong encapsulation), native image/AOT also does not support well.
-- Reflection + {{setAccessible}} loses type checking; errors only explode at runtime.
-- Slow startup due to overly broad scanning; consider AOT, CDS, or limiting package scan.
-- With GraalVM native image, reflection needs configuration; libraries using dynamic reflection easily fail.
+- Calling {{getMethods()}}/{{getDeclaredFields()}} inside a request loop without caching: CPU spikes and more GC.
+- Using reflection to set private JDK fields: it breaks when you upgrade the JDK (strong encapsulation), and native image/AOT does not support it well either.
+- Reflection + {{setAccessible}} loses type checking, so errors only explode at runtime.
+- Slow startup because of an overly broad scan; consider AOT, CDS (class data sharing, a JVM feature that loads pre-processed classes faster) or limiting the scanned packages.
+- With GraalVM native image (an ahead-of-time compiled binary), reflection needs configuration; libraries that use dynamic reflection easily fail.
 
-> Senior tip: cache reflection metadata in a {{ConcurrentHashMap}} or use {{MethodHandle}}; measure with JMH before deciding.`,
-    follow: [`What are the costs of reflection lookup and why does caching help?`, `How does annotation processing differ from reflection in terms of runtime performance?`, `What production issues arise from broad classpath scanning and dynamic reflection?`]
+> Senior tip: cache reflection metadata in a {{ConcurrentHashMap}} or use {{MethodHandle}}; measure with JMH (the Java Microbenchmark Harness) before optimizing. And do not use reflection for everyday business logic — keep it in the infrastructure/framework layer.`,
+    follow: [`Why is {{Method.invoke}} slower than a direct call, and what does {{MethodHandle}} improve?`, `How does strong encapsulation since Java 17 affect older libraries?`, `How does annotation processing differ from runtime annotations?`]
   },
   'core-011': {
     q: `List the methods of {{Object}}. Should {{clone()}} be used, and how does it compare to a copy constructor?`,
