@@ -389,7 +389,7 @@ Khi dùng Mockito, bài này tương đương {{when(repo.find("ACC-1")).thenRet
       explain: `Fake cài đặt cùng interface bằng cấu trúc dữ liệu đơn giản, nên test được trạng thái sau nhiều bước mà không cần verify từng lời gọi. "Interface chưa có cài đặt thật" không phải lý do để chọn fake thay vì mock — trường hợp đó dùng được cả hai tuỳ mục đích. Muốn kiểm tra thứ tự gọi thì dùng mock/spy với {{InOrder}}; mô phỏng lỗi mạng ngẫu nhiên là fault injection, không phải ưu điểm của fake.`,
     },
   ],
-  related: ['testing-003', 'testing-018', 'testing-010'],
+  related: ['testing-003', 'testing-010'],
   tags: ['test double', 'fake', 'stub', 'mock', 'spy', 'unit test'],
 },
 {
@@ -652,7 +652,7 @@ Trong Spring Boot, hãy khai báo {{Clock}} là bean và inject; đừng gọi {
       explain: `Mốc hết hạn là thời điểm tuyệt đối, nên {{Instant}} (hoặc {{OffsetDateTime}} khi cần offset) là lựa chọn đúng; đọc thời gian hiện tại qua {{Clock}} để test được. So sánh chuỗi ngày sai thứ tự và mất giờ; {{LocalDateTime}} theo timezone JVM sẽ lệch khi server đổi múi giờ; cộng tay mili giây dễ sai và bỏ qua API lịch.`,
     },
   ],
-  related: ['testing-005', 'testing-022', 'testing-010'],
+  related: ['testing-005', 'testing-010'],
   tags: ['Clock', 'time', 'flaky test', 'Instant', 'timezone'],
 },
 {
@@ -945,7 +945,7 @@ Lỗi hay gặp:
       explain: `Phân phối input quyết định vùng không gian mà test thực sự chạm tới. Chỉ sinh 0..10 sẽ bỏ qua số âm, giá trị lớn, trùng lặp ở biên và mảng rỗng, nên bug ở các vùng đó không lộ ra. Generator hẹp không làm test chậm hơn; seed cố định vẫn tái hiện; và property không nhất thiết fail — nó chỉ yếu đi.`,
     },
   ],
-  related: ['testing-015', 'testing-006', 'testing-023'],
+  related: ['testing-015', 'testing-006'],
   tags: ['property-based testing', 'PBT', 'seed', 'merge sort', 'jqwik'],
 },
 {

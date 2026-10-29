@@ -394,7 +394,7 @@ Nên làm cả 2: thứ tự khoá là chính, retry là lưới an toàn.
         `Vỡ ở khoá dòng của ví merchant: mọi transfer tới merchant đều UPDATE cùng một dòng, nên dù có 20 pod, các transaction vẫn xếp hàng. Nếu giữ khoá 2 ms thì trần lý thuyết khoảng 500 TPS cho ví đó. Cách xử lý: (1) chia ví merchant thành N sub-account, chọn ngẫu nhiên khi ghi Có và cộng tổng khi đọc; ghi Có không cần kiểm tra số dư nên chia rất an toàn. (2) Hoặc với ví chỉ nhận tiền, không UPDATE balance trong transaction mà chỉ insert ledger entry, rồi job tổng hợp số dư mỗi vài giây. Ngoài ra rút ngắn transaction: không gọi mạng hay serialize JSON lớn trong lúc giữ khoá. Tôi sẽ đo trước bằng k6 kịch bản 1 merchant để có số liệu thật trước khi chọn.`
       ]
     },
-    related: ['lesson-spring-001', 'api-004', 'scenario-025', 'design-022', 'design-005', 'microservices-005', 'api-015', 'scenario-008', 'testing-020', 'db-010']
+    related: ['lesson-spring-001', 'api-004', 'scenario-025', 'design-022', 'design-005', 'microservices-005', 'api-015', 'scenario-008', 'testing-002', 'db-010']
   },
   {
     id: 'proj-shortlink', title: 'Rút gọn URL có quota và rate limit', level: 'mid', weeks: 4,
