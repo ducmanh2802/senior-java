@@ -1,6 +1,6 @@
 # T458 — Dịch sang tiếng Anh: lessons-sql (2 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-sql-1.en.js`
 
@@ -16,3 +16,8 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-sql-1.en.js` và `node scripts/check-i18n.js lessons-sql-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã dịch đủ 2 mục `lesson-sql-001`, `lesson-sql-002` trong `js/i18n/lessons-sql-1.en.js`: title, goals, body, exercises[].title/prompt/hints/explain, check[].q/options/explain. Không chép code (starter/tests/reference), không thêm field lạ.
+- Giữ nguyên markup (`**`, `{{code}}`, `###`, bảng, `~~~java`/`~~~sql`/`~~~text`), giữ nguyên số liệu (n × m, 100.020, 48.210, Batches…); chỉ dịch comment tiếng Việt trong code block và các heading ("### Liên hệ phỏng vấn" → "### Interview notes").
+- Đổi hậu tố giải thích của đáp án sai "**Phương án N**" → "**Option N**" cho tự nhiên; nội dung lập luận giữ nguyên.
+- `node scripts/check-i18n.js lessons-sql-1` → OK — 2 mục đã dịch; `node scripts/validate.js` → OK — không có lỗi. (Lệnh `node --check` bị chặn quyền trong phiên này; script check-i18n đã nạp file qua `vm.runInNewContext` nên cú pháp đã được kiểm chứng.)
+Reviewed-by: check-i18n (translation, no LLM review)
