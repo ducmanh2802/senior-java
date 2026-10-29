@@ -18,7 +18,7 @@ HotSpot chia heap thành các vùng theo **tuổi** của object. Hiểu vùng n
 
 - **Young generation** gồm **Eden** và hai **Survivor** (S0, S1). Hầu hết object được sinh ra ở Eden bằng một phép tăng con trỏ trong **TLAB** (Thread-Local Allocation Buffer), gần như miễn phí. Khi Eden đầy, một **minor GC** copy các object còn sống sang Survivor rồi tăng tuổi; object sống qua vài lần được **promote** sang old generation.
 - **Old generation** chứa object sống lâu: cache, singleton, connection pool. Đây là nơi **major/full GC** làm việc, và cũng là nơi memory leak biểu hiện rõ nhất: heap dùng tăng dần qua các lần full GC mà không giảm.
-- **Metaspace** (từ Java 8, thay PermGen) chứa metadata class. Nó nằm ngoài heap Java nhưng vẫn là bộ nhớ native; nạp quá nhiều class sinh ra bởi proxy, script engine hay hot reload có thể làm đầy metaspace.
+- **Metaspace** (từ Java 8, thay PermGen) chứa metadata class (cấu trúc method, bytecode, constant pool). Nó **không** nằm trong heap Java mà là bộ nhớ native của tiến trình, nên {{-Xmx}} không giới hạn nó (giới hạn bằng {{-XX:MaxMetaspaceSize}}). Nạp quá nhiều class sinh ra bởi proxy, script engine hay hot reload có thể làm đầy metaspace.
 
 Điều quan trọng: **GC không đếm reference, nó tìm object không còn đường đi từ GC root**. Một object còn một tham chiếu từ biến local đang sống, từ static field, từ JNI hay từ monitor đang giữ thì vẫn sống, dù không ai dùng nó nữa. Đây chính là gốc của mọi memory leak trong Java.
 
@@ -26,11 +26,11 @@ HotSpot chia heap thành các vùng theo **tuổi** của object. Hiểu vùng n
 | Loại | Bị xoá khi nào | Dùng để |
 |---|---|---|
 | **Strong** | Không còn đường đi từ GC root | Mặc định; biến local, field thường |
-| **Soft** | Khi JVM **sắp hết bộ nhớ**, trước khi ném {{OutOfMemoryError}} | Cache nhạy cảm bộ nhớ |
-| **Weak** | Ở **lần GC tới** nếu chỉ còn weak reference | {{WeakHashMap}}, canonical map, metadata |
-| **Phantom** | Sau khi object đã bị finalize/clear, chỉ để nhận thông báo | Dọn tài nguyên native qua {{ReferenceQueue}} |
+| **Soft** | Tuỳ GC quyết định theo áp lực bộ nhớ; **chắc chắn** bị xoá trước khi ném {{OutOfMemoryError}} | Cache nhạy cảm bộ nhớ |
+| **Weak** | Ở **lần GC tới quét vùng chứa object** nếu chỉ còn weak reference | {{WeakHashMap}}, canonical map, metadata |
+| **Phantom** | Không giữ object; được đưa vào queue khi object đã không còn reachable theo mọi cách khác | Biết chắc object đã chết để dọn tài nguyên native qua {{ReferenceQueue}} |
 
-Cả bốn loại đều có hàm {{get()}}, trừ {{PhantomReference}}: {{phantom.get()}} **luôn** trả về null theo đặc tả. Lý do: phantom dùng để biết object **đã chết hẳn**, không phải để lấy lại object. JDK dùng cơ chế này cho {{Cleaner}} của {{DirectByteBuffer}} để giải phóng bộ nhớ off-heap.
+Strong reference chỉ là biến thường. Ba loại còn lại là class trong {{java.lang.ref}}, đều có hàm {{get()}} để lấy lại object (trả null nếu đã bị clear), riêng {{phantom.get()}} **luôn** trả về null theo đặc tả. Lý do: phantom dùng để biết object **đã chết hẳn**, không phải để lấy lại object. JDK dùng cơ chế này cho {{Cleaner}} của {{DirectByteBuffer}} để giải phóng bộ nhớ off-heap.
 
 ~~~java
 Object strong = new Object();                         // không bao giờ bị xoá khi biến còn sống
@@ -40,15 +40,15 @@ ReferenceQueue<Object> queue = new ReferenceQueue<>();
 PhantomReference<Object> phantom = new PhantomReference<>(new Object(), queue);
 ~~~
 
-Một điểm rất dễ hỏi khi phỏng vấn: **soft reference không đảm bảo cache của bạn còn dữ liệu**. JVM có thể xoá nó sớm hơn dự kiến, và trên thực tế HotSpot xoá soft reference khi heap gần đầy chứ không chờ tới sát OOM. Vì vậy cache production dùng thư viện như Caffeine với **kích thước tối đa** và **expiry** tường minh, không dựa vào soft reference.
+Một điểm rất dễ hỏi khi phỏng vấn: **soft reference không đảm bảo cache của bạn còn dữ liệu**. Đặc tả chỉ hứa một điều: mọi soft reference sẽ bị xoá trước khi JVM ném OOM. Còn xoá lúc nào thì tuỳ GC. HotSpot dùng chính sách kiểu LRU: một soft reference không được {{get()}} trong khoảng {{SoftRefLRUPolicyMSPerMB}} (mặc định 1000 ms) nhân với số MB heap còn trống thì bị xoá. Hệ quả: heap càng đầy, soft reference càng bị xoá sớm, đúng lúc hệ thống đang chịu tải; ngược lại, cache soft lớn khiến mỗi GC phải làm việc nhiều hơn và heap luôn trông như gần đầy. Vì vậy cache production dùng thư viện như Caffeine với **kích thước tối đa** và **expiry** tường minh, không dựa vào soft reference.
 
 ### WeakHashMap bên trong
 {{WeakHashMap}} trông như {{HashMap}} nhưng key là **weak**. Mỗi entry kế thừa {{WeakReference}} tới key, và map giữ một {{ReferenceQueue}}. Khi key không còn strong reference, GC clear referent và đẩy entry vào queue. Trước mỗi thao tác {{get}}/{{put}}/{{size}}, map gọi {{expungeStaleEntries()}} để dọn các entry đã chết. Vì vậy bạn có thể thấy map tự nhỏ lại mà không gọi hàm xoá nào.
 
 Hai cái bẫy chết người:
 
-1. **Key phải không còn ai giữ**. Nếu bạn giữ key trong một field khác, hoặc trong chính value, weak reference không bao giờ bị clear. Ví dụ {{map.put(session, session)}}: map giữ value mạnh, value chính là key, nên key luôn reachable từ map — entry sống mãi.
-2. **Value trỏ ngược key**. Ngay cả khi key chỉ có weak reference từ map, nếu value (được map giữ mạnh) có field trỏ tới key thì key vẫn reachable. Đây là lỗi rất khó thấy khi value là một object lớn chứa tham chiếu tới key để log hoặc callback.
+1. **Key phải thực sự không còn ai giữ ở bên ngoài**. Nếu một field khác, một list khác, hay một cache khác vẫn trỏ tới key thì entry không bao giờ bị dọn. Trường hợp kín đáo nhất: key là String literal ({{"abc"}} được intern, sống suốt đời class) hoặc {{Integer}} nhỏ từ {{Integer.valueOf}} (cache -128..127). Các key này không bao giờ chết, nên dùng chúng làm key của {{WeakHashMap}} là vô nghĩa.
+2. **Value trỏ ngược key**. Map giữ value bằng strong reference. Nếu value có field trỏ tới key thì key luôn reachable theo đường map → entry → value → key, nên weak reference không bao giờ bị clear. Trường hợp cực đoan là {{map.put(session, session)}}: value chính là key, entry sống mãi. Đây là lỗi rất khó thấy khi value là một object lớn chứa tham chiếu tới key để log hoặc callback. Javadoc của {{WeakHashMap}} gợi ý: nếu value buộc phải biết key, hãy bọc value trong {{WeakReference}}.
 
 {{WeakHashMap}} **không thread-safe**, không có giới hạn kích thước, không có thống kê hit/miss, và việc entry biến mất phụ thuộc GC nên không phù hợp làm cache chính. Nó hợp với **canonical map**: ánh xạ một object tạm sang metadata mà không giữ object sống.
 
@@ -169,26 +169,36 @@ class WeakValueCache<K, V> {
         check("entry bị enqueue được drain xoá và lần sau nạp lại", () -> {
             int[] calls = {0};
             WeakValueCache<String, String> c = new WeakValueCache<>(k -> { calls[0]++; return "v-" + k; });
-            c.get("x");
-            c.get("y");
+            // giữ value bằng biến local để GC thật không clear chúng giữa chừng (test xác định)
+            String vx = c.get("x");
+            String vy = c.get("y");
             eq(2, c.size());
             eq(0, c.drain());
-            c.ref("x").enqueue();
+            c.ref("x").enqueue();          // giả lập GC: clear value và đưa entry vào queue
             eq(1, c.drain());
             eq(1, c.size());
-            eq("v-x", c.get("x"));
+            String vx2 = c.get("x");
+            eq("v-x", vx2);
             eq(3, calls[0]);
             eq(2, c.size());
+            java.lang.ref.Reference.reachabilityFence(vx);
+            java.lang.ref.Reference.reachabilityFence(vy);
+            java.lang.ref.Reference.reachabilityFence(vx2);
         });
-        check("entry cũ bị enqueue không xoá entry mới cùng key", () -> {
+        check("entry cũ tới queue muộn không xoá entry mới cùng key", () -> {
             int[] calls = {0};
             WeakValueCache<String, String> c = new WeakValueCache<>(k -> { calls[0]++; return "v" + calls[0]; });
-            c.get("k");
+            String v1 = c.get("k");
             WeakValueCache.Entry<String, String> old = c.ref("k");
-            old.enqueue();
+            old.clear();                   // value bị clear nhưng entry chưa vào queue
+            String v2 = c.get("k");        // value null -> nạp lại, entry mới thay entry cũ
+            eq("v2", v2);
+            old.enqueue();                 // entry cũ bây giờ mới tới queue
+            eq(1, c.size());               // drain không được xoá entry mới
             eq("v2", c.get("k"));
             eq(2, calls[0]);
-            eq(1, c.size());
+            java.lang.ref.Reference.reachabilityFence(v1);
+            java.lang.ref.Reference.reachabilityFence(v2);
         });
         System.out.println("RESULT " + passed + "/" + total);
     }
@@ -263,7 +273,9 @@ Lỗi hay gặp:
 - Quên {{drain}} trong {{get}}: value đã chết nhưng map vẫn còn entry, {{size}} báo sai và bộ nhớ entry (không phải value) vẫn tích.
 - Tưởng weak value là cache đủ tốt: entry có thể biến mất bất cứ lúc nào, hit rate không ổn định. Production dùng cache có **max size + TTL**, weak chỉ để tránh giữ object không cần thiết.
 
-Điều thú vị: nếu value trỏ ngược lại key, key vẫn reachable qua map (map → entry → value → key), nên weak reference không bao giờ bị clear. Đó là lý do phải kiểm tra đồ thị tham chiếu, không chỉ nhìn kiểu reference.`,
+Về test: trong test, {{enqueue()}} được gọi thủ công để giả lập việc GC clear value và đưa entry vào queue (từ Java 9, {{enqueue()}} cũng clear referent). Gọi {{System.gc()}} thì không xác định, vì JVM không bắt buộc chạy GC ngay. Test cuối mô phỏng tình huống thật: GC clear value, cache nạp lại entry mới cho cùng key, rồi entry cũ mới tới queue; nếu {{drain}} xoá theo key thì entry mới bị mất.
+
+Lưu ý đối xứng với {{WeakHashMap}}: ở đây weak nằm ở **value**, nên nếu có ai giữ value mạnh (ví dụ key hay một object khác trỏ tới value) thì value không bao giờ bị clear. Luôn phải nhìn cả đồ thị tham chiếu, không chỉ nhìn kiểu reference.`,
     },
   ],
   check: [
@@ -358,7 +370,7 @@ Sweep đi qua toàn bộ heap, object nào không mark thì giải phóng. Có h
 - **Free-list**: ghi các khoảng trống vào danh sách, cấp phát lại theo kích thước phù hợp. Không di chuyển object nhưng dễ **phân mảnh**: còn nhiều byte rảnh nhưng không có khối liền đủ lớn.
 - **Compaction** (mark-compact): dồn object sống về một đầu, cập nhật mọi tham chiếu. Hết phân mảnh, cấp phát lại kiểu bump-pointer cực nhanh, nhưng phải di chuyển object nên đắt và cần dừng thế giới lâu hơn.
 
-Đây là lý do các collector hiện đại không dùng mark-sweep thuần: G1, ZGC, Shenandoah đều có cơ chế **evacuation** (copy object sống sang vùng mới) hoặc compaction theo vùng. Copy vừa dọn rác vừa chống phân mảnh, đổi lại tốn bộ nhớ cho vùng đích và cần cập nhật con trỏ.
+Đây là lý do các collector hiện đại không dùng mark-sweep thuần (CMS là collector mark-sweep concurrent cuối cùng, đã bị xoá ở Java 14 một phần vì phân mảnh): G1, ZGC, Shenandoah đều có cơ chế **evacuation** (copy object sống sang vùng mới) hoặc compaction theo vùng. Copy vừa dọn rác vừa chống phân mảnh, đổi lại tốn bộ nhớ cho vùng đích và cần cập nhật con trỏ.
 
 ### Tri-color: cách GC chạy song song với ứng dụng
 Để giảm pause, GC đánh dấu **concurrent** trong khi ứng dụng vẫn chạy. Nó chia object thành ba màu:
@@ -375,13 +387,13 @@ Bất biến cần giữ: **object đen không được trỏ tới object trắ
 Cả hai đều cần **write barrier**: một đoạn code nhỏ chèn vào mỗi lệnh ghi reference. Barrier làm chậm ứng dụng một chút, nhưng đổi lấy pause ngắn hơn nhiều.
 
 ### Generational: tận dụng "hầu hết object chết trẻ"
-Weak generational hypothesis: phần lớn object chết rất sớm. Vì vậy GC chia heap và **chỉ quét young** trong minor GC. Object sống sót được promote sang old. Để tìm tham chiếu từ old generation trỏ vào young mà không quét cả old, JVM dùng **card table** (mỗi card vài trăm byte) hoặc **remembered set** (G1). Khi ghi một tham chiếu old → young, write barrier đánh dấu card bẩn; minor GC chỉ quét các card bẩn.
+Weak generational hypothesis: phần lớn object chết rất sớm. Vì vậy GC chia heap và **chỉ quét young** trong minor GC. Object sống sót được promote sang old. Để tìm tham chiếu từ old generation trỏ vào young mà không quét cả old, JVM dùng **card table** (trong HotSpot mỗi card ứng với 512 byte heap, mỗi card là 1 byte trong bảng) và G1 có thêm **remembered set** cho từng region. Khi ghi một tham chiếu old → young, write barrier đánh dấu card bẩn; minor GC chỉ quét các card bẩn.
 
-G1 chia heap thành nhiều **region** (mặc định 1–32 MB), không cần young/old liền nhau. Mỗi region có thể là Eden, Survivor, Old hoặc **Humongous** (object lớn hơn 50% region). G1 chọn tập region thu gom theo **pause target** ({{-XX:MaxGCPauseMillis}}, mặc định 200ms) thay vì cố định. ZGC và Shenandoah tiến xa hơn: marking, relocation hầu như concurrent, pause chỉ còn sub-millisecond tới vài ms, đổi lại throughput và yêu cầu heap/CPU cao hơn.
+G1 chia heap thành nhiều **region** bằng nhau, không cần young/old liền nhau. Kích thước region là luỹ thừa của 2 từ 1 MB tới 32 MB (từ JDK 18 có thể tới 512 MB), JVM tự chọn sao cho heap có khoảng 2048 region, hoặc bạn đặt bằng {{-XX:G1HeapRegionSize}}. Mỗi region có thể là Eden, Survivor, Old hoặc **Humongous** (object lớn hơn 50% region). G1 chọn tập region thu gom theo **pause target** ({{-XX:MaxGCPauseMillis}}, mặc định 200ms) thay vì cố định. ZGC và Shenandoah tiến xa hơn: marking, relocation hầu như concurrent, pause thường dưới 1 ms (ZGC) tới vài ms, đổi lại throughput thấp hơn một chút và cần dư heap/CPU. ZGC có chế độ generational từ Java 21 ({{-XX:+UseZGC -XX:+ZGenerational}}) và từ Java 23 đó là chế độ mặc định.
 
 | Collector | Điểm mạnh | Khi chọn |
 |---|---|---|
-| Serial | Đơn giản, ít overhead | Container nhỏ, heap vài trăm MB |
+| Serial | Đơn giản, ít overhead | Container nhỏ, heap vài trăm MB; JVM tự chọn Serial khi máy có dưới 2 CPU hoặc dưới khoảng 1.8 GB RAM |
 | Parallel | Throughput cao | Batch, ít quan tâm pause |
 | G1 | Cân bằng, mặc định từ Java 9 | Phần lớn service |
 | ZGC / Shenandoah | Pause rất thấp | Heap lớn, SLA latency chặt |
@@ -390,9 +402,9 @@ G1 chia heap thành nhiều **region** (mặc định 1–32 MB), không cần y
 Bật log thống nhất từ Java 9: {{-Xlog:gc*:file=gc.log:time,uptime,level,tags}}. Cần nhìn **allocation rate**, **live set sau full GC**, **pause distribution**, không chỉ "GC chạy nhiều". Nếu live set sau full GC vẫn tăng theo thời gian, đó là leak chứ không phải thiếu heap. Nếu pause cao nhưng live set nhỏ, có thể do allocation rate quá lớn hoặc region/young quá nhỏ.
 
 Ba lỗi tuning hay gặp:
-- Đặt {{-Xms}} nhỏ hơn {{-Xmx}} nhiều rồi ngạc nhiên vì service chậm lúc khởi động: JVM phải resize heap liên tục.
-- Đặt {{-Xmn}} quá lớn làm old generation nhỏ, gây full GC liên tục; hoặc quá nhỏ làm object promote sớm.
-- Gọi {{System.gc()}} trong code nghiệp vụ: thường chỉ làm tệ hơn — tốt nhất là không gọi, và bật {{-XX:+DisableExplicitGC}} để chặn cả những call vô tình từ thư viện.
+- Đặt {{-Xms}} nhỏ hơn {{-Xmx}} nhiều: lúc warm-up heap phải giãn dần, GC chạy dày hơn và latency dao động. Service production thường đặt {{-Xms}} bằng {{-Xmx}} (trong container hay dùng {{-XX:MaxRAMPercentage}}).
+- Đặt {{-Xmn}} quá lớn làm old generation nhỏ, gây full GC liên tục; quá nhỏ làm object promote sớm. Với G1, đặt cứng {{-Xmn}} còn tắt luôn khả năng tự co giãn young gen để đạt pause target, nên thường không nên đặt.
+- Gọi {{System.gc()}} trong code nghiệp vụ: nó kích hoạt full GC (với G1 mặc định là stop-the-world), thường chỉ làm tệ hơn. Có thể chặn bằng {{-XX:+DisableExplicitGC}}, nhưng cẩn thận: JDK gọi {{System.gc()}} khi thiếu bộ nhớ direct cho {{ByteBuffer.allocateDirect}} (Netty, NIO), tắt nó có thể dẫn tới {{OutOfMemoryError: Direct buffer memory}}.
 
 > Đừng tối ưu GC bằng cách tăng heap vô hạn. Heap lớn làm mỗi full GC đắt hơn và che giấu leak. Hãy tìm retained set trước, rồi mới chỉnh collector.
 
@@ -657,10 +669,10 @@ Vài chi tiết dễ sai:
   body: `### Một class đi qua ba chặng
 Khi lần đầu chạm tới một class, JVM không "chạy code" ngay. Nó đi qua:
 
-1. **Loading**: classloader tìm bytecode (từ đĩa, jar, network), đọc và định nghĩa một {{Class}} object trong Metaspace.
+1. **Loading**: classloader tìm bytecode (từ đĩa, jar, network), đọc và định nghĩa class: metadata nội bộ của class nằm trong Metaspace, còn object {{java.lang.Class}} đại diện cho nó (thứ bạn lấy bằng {{Foo.class}}) nằm trên heap.
 2. **Linking** gồm ba phần:
    - **Verification**: kiểm tra bytecode hợp lệ, không làm hỏng JVM (ví dụ stack không tràn, kiểu đúng).
-   - **Preparation**: cấp phát static field và gán **giá trị mặc định** (0, false, null), chưa chạy initializer. Ngoại lệ duy nhất: static final constant variable — compiler ghi giá trị vào thuộc tính {{ConstantValue}} của bytecode nên field được gán ngay ở pha này.
+   - **Preparation**: cấp phát static field và gán **giá trị mặc định** (0, false, null), chưa chạy initializer. Riêng static final constant variable (ví dụ {{static final int MAX = 100}}) thì compiler ghi giá trị vào thuộc tính {{ConstantValue}} trong file class, JVM gán giá trị đó trực tiếp mà không cần chạy code initializer nào.
    - **Resolution**: thay tham chiếu symbolic bằng tham chiếu thật; có thể lười, tới lúc dùng mới làm.
 3. **Initialization**: chạy static field initializer và static block theo thứ tự, đây là lúc code của bạn thực sự chạy.
 
@@ -672,15 +684,15 @@ JVM khởi tạo class khi có **active use**:
 - gọi hoặc ghi một static field **không phải** constant variable;
 - gọi static method;
 - dùng reflection {{Class.forName("...")}} (mặc định initialize = true);
-- khởi tạo subclass (lớp cha phải xong trước);
-- gọi default method của interface trên một instance (interface đó được khởi tạo).
+- khởi tạo subclass (lớp cha phải xong trước; interface cha chỉ được khởi tạo kèm nếu nó khai báo default method);
+- class chứa hàm {{main}} khi JVM khởi động.
 
 Không kích hoạt khởi tạo:
 - đọc constant variable đã biết giá trị lúc compile;
 - tạo mảng {{new Foo[10]}} (chỉ tạo mảng, chưa tạo Foo);
 - {{Foo.class}}, {{instanceof}}, cast;
 - khai báo biến kiểu {{Foo}};
-- gọi static method qua subclass khi method được khai báo ở superclass (chỉ superclass được init).
+- đọc static field hoặc gọi static method qua tên subclass khi field/method đó được khai báo ở superclass, ví dụ {{Child.parentField}}: chỉ class khai báo nó (superclass) được init, subclass thì không.
 
 ### Thứ tự bên trong một class
 Quy tắc rất ngắn: **lớp cha trước, rồi tới lớp con; trong mỗi class, static field và static block chạy theo thứ tự văn bản từ trên xuống**. Không có chuyện "field trước block" hay ngược lại — compiler gộp tất cả vào một hàm {{<clinit>}} theo đúng thứ tự xuất hiện.
@@ -703,7 +715,7 @@ class Child extends Parent {
 ### Thread safety và deadlock khởi tạo
 JVM dùng **initialization lock** riêng cho từng class. Nhiều thread cùng gọi lần đầu sẽ có một thread chạy {{<clinit>}}, các thread khác block chờ. Vì vậy holder idiom không cần {{synchronized}} thủ công — JVM đã đảm bảo.
 
-Nhưng chính lock này tạo ra deadlock nếu hai class khởi tạo chéo: thread 1 giữ lock của A và chờ B, thread 2 giữ lock của B và chờ A. Lỗi này hiếm nhưng rất khó debug vì stack trace chỉ hiện {{<clinit>}}. Nguyên tắc: **static initializer phải ngắn, không gọi service, không mở connection, không chờ thread khác**.
+Nhưng chính lock này tạo ra deadlock nếu hai class khởi tạo chéo: thread 1 giữ lock của A và chờ B, thread 2 giữ lock của B và chờ A. Lỗi này hiếm nhưng rất khó debug: lock khởi tạo không phải monitor thông thường nên {{jstack}} thường không in "Found one Java-level deadlock", bạn chỉ thấy hai thread đứng yên trong {{<clinit>}} của hai class trỏ chéo nhau. Nguyên tắc: **static initializer phải ngắn, không gọi service, không mở connection, không chờ thread khác**.
 
 ### Singleton: holder idiom và những cách sai
 Cách tốt nhất trong Java hiện đại:
@@ -986,7 +998,7 @@ Trong JVM thật, nếu {{<clinit>}} ném exception, class bị đánh dấu l�
         'Không class nào chạy static init',
       ],
       answer: 2,
-      explain: `JVM luôn khởi tạo superclass trước subclass. Nếu Parent có static field/block, chúng chạy xong mới tới Child. Chỉ Child chạy là sai vì subclass không thể dùng trạng thái chưa init của cha; new luôn là active use.`,
+      explain: `JVM luôn khởi tạo superclass trước subclass. Nếu Parent có static field/block, chúng chạy xong mới tới Child. "Child trước" và "chỉ Child chạy" đều sai vì subclass có thể dùng static state của cha, nên cha phải sẵn sàng trước. "Không class nào chạy" sai vì {{new}} luôn là active use.`,
     },
     {
       q: 'Vì sao holder idiom vừa lazy vừa thread-safe mà không cần {{synchronized}}?',
