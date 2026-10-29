@@ -105,11 +105,11 @@ Sau đó test khẳng định {{calls.size() == 1}} và {{calls.get(0).equals("A
 Một quy tắc thực dụng: **mock ở biên của hệ thống, fake ở biên của tầng, còn logic thuần thì không cần double nào**. Nếu một class cần mock 6 dependency, vấn đề không nằm ở test mà ở thiết kế class đang ôm quá nhiều trách nhiệm.
 
 ### Bẫy production hay gặp
-- **Mock trả về null theo mặc định**: gọi method chưa stub trên mock trả {{null}} (hoặc 0/false), gây {{NullPointerException}} khó hiểu. Với {{@MockitoBean}}, hãy bật strict stubbing để phát hiện stub thừa.
+- **Mock trả giá trị "rỗng" theo mặc định**: method chưa stub trên mock Mockito trả {{null}} cho object thường, 0/false cho kiểu nguyên thuỷ, collection rỗng và {{Optional.empty()}} — nên test có thể "xanh" vì đi nhầm nhánh "không tìm thấy", hoặc đỏ vì {{NullPointerException}} khó hiểu. Dùng {{@ExtendWith(MockitoExtension.class)}}: chế độ strict stubs mặc định báo {{UnnecessaryStubbingException}} khi có stub không được dùng tới, giúp phát hiện stub sai tham số.
 - **Verify quá chặt**: {{verify(repo, times(2)).save(any())}} làm test đỏ khi refactor sang {{saveAll}}. Ưu tiên state verification khi có thể.
 - **Fake lệch thật**: fake cho phép hai bản ghi trùng key trong khi database có unique constraint. Test xanh, production lỗi. Những ràng buộc quan trọng phải được test ở tầng tích hợp.
 - **Chia sẻ fake có trạng thái giữa các test**: dữ liệu rò rỉ làm test phụ thuộc thứ tự. Tạo fake mới trong mỗi test hoặc có hàm {{clear()}} gọi ở {{@BeforeEach}}.
-- **Mock thứ không sở hữu**: đừng mock {{String}}, {{List}}, {{BigDecimal}}. Hãy dùng object thật; mock JDK type khiến test khó hiểu và dễ sai.
+- **Mock value object và kiểu JDK**: đừng mock {{List}}, {{BigDecimal}}, {{LocalDate}} hay DTO của bạn — tạo object thật vừa rẻ vừa đúng hơn. Tương tự nguyên tắc "don't mock what you don't own": thay vì mock trực tiếp client của thư viện bên thứ ba (AWS SDK, RestTemplate), hãy bọc nó sau một interface của mình rồi mock/fake interface đó, còn client thật thì test tích hợp (WireMock, Testcontainers).
 
 > Senior tip: khi review test, hãy hỏi "nếu ngày mai tôi đổi cách cài đặt bên trong service, test này có đỏ không?". Nếu có mà hành vi nghiệp vụ không đổi, test đang kiểm tra implementation chứ không kiểm tra hợp đồng. Đội trưởng giỏi thường giữ tỉ lệ verify interaction rất thấp, chỉ ở những biên như thanh toán, thông báo và event.
 
@@ -386,7 +386,7 @@ Khi dùng Mockito, bài này tương đương {{when(repo.find("ACC-1")).thenRet
         'Khi cần mô phỏng lỗi mạng ngẫu nhiên',
       ],
       answer: 0,
-      explain: `Fake cài đặt cùng interface bằng cấu trúc dữ liệu đơn giản, nên test được trạng thái sau nhiều bước mà không cần verify từng lời gọi. Interface không có cài đặt thật vẫn có thể dùng fake hoặc stub/mock tuỳ mục đích, nên phương án 1 không phải lý do quyết định. Muốn kiểm tra thứ tự gọi thì dùng mock/spy với {{InOrder}}; mô phỏng lỗi mạng ngẫu nhiên là fault injection, không phải ưu điểm của fake.`,
+      explain: `Fake cài đặt cùng interface bằng cấu trúc dữ liệu đơn giản, nên test được trạng thái sau nhiều bước mà không cần verify từng lời gọi. "Interface chưa có cài đặt thật" không phải lý do để chọn fake thay vì mock — trường hợp đó dùng được cả hai tuỳ mục đích. Muốn kiểm tra thứ tự gọi thì dùng mock/spy với {{InOrder}}; mô phỏng lỗi mạng ngẫu nhiên là fault injection, không phải ưu điểm của fake.`,
     },
   ],
   related: ['testing-003', 'testing-018', 'testing-010'],
@@ -480,13 +480,13 @@ class TimeConfig {
 }
 ~~~
 
-Trong test có thể dùng {{@TestConfiguration}} trả {{Clock.fixed(...)}}, hoặc tạo service trực tiếp với clock giả nếu là unit test. Với legacy code chưa inject được, một số đội dùng {{Mockito.mockStatic(Instant.class)}} hoặc thư viện như Clockify — nhưng đó là giải pháp tạm: static mocking dễ vỡ, không chạy song song tốt và che giấu thiết kế phụ thuộc ẩn.
+Unit test thì tạo service trực tiếp với clock giả, không cần Spring. Với integration test cần cả context dùng chung một clock giả, hãy khai báo trong {{@TestConfiguration}} một bean {{Clock}} **tên khác** và đánh dấu {{@Primary}} (Spring Boot mặc định cấm ghi đè bean cùng tên). Với legacy code chưa inject được, một số đội dùng {{Mockito.mockStatic(...)}} (mockito-inline, mặc định từ Mockito 5) để giả lập phương thức static trả thời gian — nhưng đó là giải pháp tạm: mock static chỉ có hiệu lực trên thread hiện tại, phải đóng đúng lúc ({{try-with-resources}}), dễ vỡ và che giấu thiết kế phụ thuộc ẩn.
 
 ### Bẫy production hay gặp
 - **Quên truyền clock vào nhánh code khác**: service nhận clock nhưng một helper vẫn gọi {{LocalDate.now()}}. Test xanh vì nhánh đó không chạy, production sai vào nửa đêm.
 - **Clock mutable dùng chung giữa các test**: test này advance làm test khác lệch. Tạo clock mới mỗi test, hoặc reset trong {{@BeforeEach}}.
 - **Lưu {{LocalDateTime}} vào database**: mất offset, đọc lại ở múi giờ khác bị lệch. Ưu tiên {{Instant}}/{{OffsetDateTime}} với cột {{timestamptz}}.
-- **So sánh thời gian bằng {{equals}}**: hai instant cùng thời điểm nhưng khác độ chính xác (nano) có thể không bằng nhau. So bằng {{isBefore}}/{{isAfter}} hoặc cắt về đơn vị nghiệp vụ.
+- **So sánh thời gian bằng {{equals}} sau khi qua database**: {{Instant.now()}} trên JDK 17 có độ phân giải tới micro giây (thậm chí nano), còn cột {{timestamptz}} của PostgreSQL chỉ lưu micro giây, MySQL {{DATETIME}} mặc định chỉ lưu giây. Lưu rồi đọc lại, giá trị bị cắt nên {{equals}} trả false. Dùng clock cố định trong test, hoặc {{truncatedTo(ChronoUnit.MICROS)}} trước khi lưu và so.
 - **Test quá phụ thuộc đồng hồ thật ở tầng tích hợp**: với schedule, hãy tách phần "quyết định có chạy không" thành hàm nhận {{clock}}, còn phần trigger framework để integration test riêng.
 
 > Senior tip: khi hệ thống có bug "chỉ lỗi sau 23h" hoặc "chỉ lỗi ngày cuối tháng", gần như luôn là do timezone hoặc do tính ngày bằng {{LocalDate.now()}} không có clock. Một đội trưởng tốt đặt quy ước: **không có {{now()}} không tham số trong domain code**, chỉ có {{clock.instant()}}; review có thể grep là thấy ngay chỗ vi phạm.
@@ -539,7 +539,7 @@ public class Main {
     static final Instant START = Instant.parse("2026-03-01T00:00:00Z");
     static Clock at(String instant) { return Clock.fixed(Instant.parse(instant), ZoneOffset.UTC); }
     public static void main(String[] args) {
-        check("expiry adds exact calendar days on the instant", () -> {
+        check("expiry adds exact 24-hour days on the instant", () -> {
             TrialService s = new TrialService(at("2026-03-01T00:00:00Z"));
             eq(Instant.parse("2026-03-08T00:00:00Z"), s.expiry(START, 7));
             eq(Instant.parse("2027-03-01T00:00:00Z"), s.expiry(START, 365));
@@ -609,8 +609,8 @@ class TrialService {
       explain: `Bài này cho thấy lợi ích rõ nhất của clock injection: cùng một đoạn code, test kiểm tra được chính xác **một giây trước expiry**, **đúng expiry**, và **sau expiry** mà không cần ngủ. Nếu dùng {{Instant.now()}} bên trong, ba case này gần như không thể viết ổn định.
 
 Lỗi hay gặp:
-- Dùng {{ChronoUnit.DAYS}} trên {{LocalDateTime}} thay vì {{Instant}} rồi so sánh với {{Instant.now()}}; kết quả đổi theo timezone JVM.
-- Dùng {{isAfter}} thay vì {{isBefore}} cho {{active}}: tại đúng mốc expiry, {{isAfter}} trả false nên tình cờ đúng, nhưng nếu viết {{!isBefore}} thì tại mốc lại thành true. Hãy viết test biên để khoá ngữ nghĩa.
+- Đổi sang {{LocalDateTime}} bằng timezone mặc định của JVM rồi mới cộng ngày và so sánh: cùng một đoạn code cho kết quả khác nhau trên laptop (giờ Việt Nam) và server (UTC).
+- Viết {{active}} là {{!clock.instant().isAfter(expiry)}}: trông tương đương {{isBefore}} nhưng tại **đúng** mốc expiry, {{isAfter}} trả false nên {{active}} lại thành true — lệch một tích tắc so với hợp đồng. Chỉ test biên "đúng mốc expiry" mới bắt được lỗi này.
 - Tính {{daysRemaining}} bằng phép chia nguyên thông thường: còn 1 giây sẽ ra 0 ngày, trong khi nghiệp vụ muốn "còn 1 ngày". Phải làm tròn lên.
 - Cộng ngày bằng {{86_400_000}} mili giây: đúng với Instant nhưng sai với {{ZonedDateTime}} qua DST. Dùng API thời gian thay vì số học tay.
 
@@ -627,7 +627,7 @@ Trong Spring Boot, hãy khai báo {{Clock}} là bean và inject; đừng gọi {
         'Vì Java không cho sleep trong test',
       ],
       answer: 2,
-      explain: `Sleep làm suite chậm và chỉ "hy vọng" thời gian trôi đủ; trên CI tải cao, lịch trình thread có thể trễ hơn 2 giây hoặc ngược lại. Nó cũng không cho phép kiểm tra chính xác thời điểm một giây trước expiry. Sleep không làm hỏng đồng hồ, chỉ ném InterruptedException khi bị ngắt (có thể khai báo), và hoàn toàn hợp lệ về mặt ngôn ngữ — vấn đề là độ tin cậy và tốc độ.`,
+      explain: `Sleep làm suite chậm và chỉ "hy vọng" thời gian trôi đủ: trên CI tải cao, thread có thể thức dậy muộn hơn nhiều so với 2 giây, còn token có thể hết hạn sớm/muộn hơn dự kiến một chút tuỳ lúc test tạo nó — kết quả lúc xanh lúc đỏ. Nó cũng không cho phép kiểm tra chính xác thời điểm một giây trước expiry. Sleep không làm hỏng đồng hồ, chỉ ném InterruptedException khi bị ngắt (có thể khai báo), và hoàn toàn hợp lệ về mặt ngôn ngữ — vấn đề là độ tin cậy và tốc độ.`,
     },
     {
       q: '{{Clock.offset(clock, Duration.ofHours(23))}} khác {{Clock.fixed(instant, zone)}} ở điểm nào?',
@@ -643,7 +643,7 @@ Trong Spring Boot, hãy khai báo {{Clock}} là bean và inject; đừng gọi {
     {
       q: 'Nghiệp vụ "gói trial hết hạn sau 7 ngày kể từ lúc kích hoạt". Nên lưu và tính bằng gì?',
       options: [
-        'Chuỗi ngày sinh theo định dạng dd/MM/yyyy và so sánh chuỗi',
+        'Chuỗi ngày theo định dạng dd/MM/yyyy và so sánh chuỗi',
         '{{LocalDateTime}} theo timezone mặc định của JVM',
         'Số mili giây từ epoch tự cộng tay',
         '{{Instant}} cho mốc tuyệt đối, tính expiry bằng {{plus(7, ChronoUnit.DAYS)}} và đọc giờ qua {{Clock}}',
@@ -679,7 +679,7 @@ Một test thường có dạng: đưa vào ba mảng mẫu, so với kết qu�
 | Oracle | So với cài đặt đã biết là đúng | So với {{Arrays.sort}} trên bản sao |
 | Round-trip | Biến đổi rồi đảo ngược trở về gốc | encode rồi decode phải bằng input |
 | Idempotence | Làm hai lần như một lần | sort(sort(a)) bằng sort(a) |
-| Metamorphic | Thay đổi input theo cách biết trước ảnh hưởng | merge(a,b) có cùng đa tập phần tử với a+b |
+| Metamorphic | Đổi input theo cách biết trước thì output đổi theo cách biết trước | merge(a, b) bằng merge(b, a); cộng k vào mọi phần tử input thì mọi phần tử output cũng tăng k |
 | Bất biến theo hoán vị | Đổi thứ tự input không đổi kết quả | sort(hoán vị của a) bằng sort(a) |
 
 Với merge, ba property mạnh nhất là: **kết quả đã sắp xếp**, **đa tập phần tử bằng hợp của hai input**, và **độ dài đúng bằng tổng độ dài**. Chỉ cần ba điều này, gần như mọi bug "bỏ phần tử", "sai thứ tự", "xử lý trùng sai" đều lộ ra.
@@ -699,7 +699,7 @@ for (int trial = 0; trial < 300; trial++) {
 
 {{new Random(42)}} luôn sinh cùng một chuỗi số trên mọi máy, mọi JDK. Khi một property thất bại, thông báo phải chứa **seed và số trial** (và nếu được thì cả input) để người khác chạy lại đúng một case trong vài giây.
 
-Lưu ý: {{Random}} có đồng bộ nội bộ nên dùng chung được, nhưng mọi lời gọi sẽ tranh chấp cùng một seed và làm test chạy song song chậm, chưa kể thứ tự gọi giữa các test ảnh hưởng lẫn nhau. Vì vậy mỗi test nên có instance riêng; đừng dùng một {{Random}} tĩnh dùng chung. Trong code production cần số ngẫu nhiên nhanh, {{ThreadLocalRandom}} hoặc {{SplittableRandom}} phù hợp hơn, nhưng với test ưu tiên khả năng tái hiện.
+Lưu ý: {{Random}} thread-safe (seed nằm trong một {{AtomicLong}} cập nhật bằng CAS) nên dùng chung không hỏng dữ liệu, nhưng các thread tranh nhau cùng một seed làm chậm, và quan trọng hơn: test nào lấy số nào phụ thuộc thứ tự chạy, nên mất khả năng tái hiện. Vì vậy mỗi test (mỗi trial) nên có instance riêng; đừng dùng một {{Random}} tĩnh dùng chung. {{ThreadLocalRandom}} nhanh nhưng **không đặt được seed** ({{setSeed}} ném {{UnsupportedOperationException}}), nên không dùng cho test cần tái hiện; {{SplittableRandom}} thì nhận seed được.
 
 ### Một harness tối giản
 Harness chỉ cần ba việc: sinh input theo seed, chạy property, và bọc lỗi kèm ngữ cảnh:
@@ -722,7 +722,7 @@ static void check(String name, long seed, int trials, Consumer<Random> property)
 Property nhận {{Random}} và tự sinh dữ liệu, nên cùng một harness dùng được cho mảng, chuỗi, map hay cặp input. Đây chính là ý tưởng cốt lõi của jqwik, QuickCheck hay Hypothesis; thư viện thật còn thêm generator có kiểu, shrinking và phân phối thông minh.
 
 ### Shrinking: từ counterexample lớn về case nhỏ
-Giả sử property hỏng với mảng 27 phần tử. Mảng đó khó đọc. **Shrinking** là quá trình tự động thử các biến thể nhỏ hơn (bỏ phần tử, giảm giá trị, rút ngắn chuỗi) mà vẫn làm property sai, để báo cho bạn case tối giản nhất — thường chỉ còn một vài phần tử. Ví dụ bug merge bỏ phần tử cuối sẽ thu về {{[1]}} và {{[2]}} thay vì hai mảng dài.
+Giả sử property hỏng với mảng 27 phần tử. Mảng đó khó đọc. **Shrinking** là quá trình tự động thử các biến thể nhỏ hơn (bỏ phần tử, giảm giá trị, rút ngắn chuỗi) mà vẫn làm property sai, để báo cho bạn case tối giản nhất — thường chỉ còn một vài phần tử. Ví dụ bug "quên chép phần còn lại của mảng b" sẽ được thu về kiểu {{a = []}}, {{b = [0]}} thay vì hai mảng 20 phần tử.
 
 Harness tự viết trong bài này không có shrinking; đó là lý do trong dự án thật nên dùng jqwik. Nhưng hiểu shrinking giúp bạn đọc báo cáo lỗi của PBT đúng cách: **input báo cáo chỉ là một counterexample, không phải toàn bộ không gian lỗi**. Sau khi sửa, hãy chạy lại nhiều seed và thêm case tối giản vào bộ example test.
 
@@ -744,7 +744,7 @@ Interviewer hay hỏi: "Property-based testing khác unit test thường thế n
 
 **1. {{merge(a, b)}}**: trả về mảng mới chứa toàn bộ phần tử của {{a}} và {{b}}, đã sắp xếp tăng dần. Hai input đã được sắp xếp sẵn và có thể rỗng. Phần tử trùng phải được giữ đủ (merge không phải union). Không được sửa mảng input.
 
-**2. {{check(name, seed, trials, property)}}**: chạy {{property}} đúng {{trials}} lần. Ở trial thứ {{i}}, tạo {{new Random(seed + i)}} và truyền cho property. Nếu property ném bất kỳ lỗi nào, ném lại {{AssertionError}} với message chứa {{name}}, {{seed}} của trial và số trial, kèm cause gốc. {{trials <= 0}} thì ném {{IllegalArgumentException}}.
+**2. {{check(name, seed, trials, property)}}**: chạy {{property}} đúng {{trials}} lần. Ở trial thứ {{i}}, tạo {{new Random(seed + i)}} và truyền cho property. Nếu property ném bất kỳ lỗi nào, dừng ngay và ném {{AssertionError}} với message chứa {{name}}, {{seed=<seed của trial>}} và {{trial=<số trial>}} (ví dụ seed 42, lỗi ở trial 3 → {{seed=45}}, {{trial=3}}), kèm lỗi gốc làm cause. {{trials <= 0}} thì ném {{IllegalArgumentException}}.
 
 Test sẽ dùng harness để chạy 300 trial với seed 42, kiểm tra kết quả merge vừa được sắp xếp vừa giữ đúng đa tập phần tử.`,
       starter: `class Pbt {
@@ -830,6 +830,29 @@ Test sẽ dùng harness để chạy 300 trial với seed 42, kiểm tra kết q
                 if (merged.length > 0 && merged[merged.length - 1] != Integer.MAX_VALUE)
                     throw new AssertionError("giả lập bug");
             }));
+        });
+        check("harness runs exactly trials times with new Random(seed + i)", () -> {
+            List<Integer> got = new ArrayList<>();
+            Pbt.check("record", 100L, 5, r -> got.add(r.nextInt()));
+            List<Integer> want = new ArrayList<>();
+            for (int i = 0; i < 5; i++) want.add(new Random(100L + i).nextInt());
+            eq(want, got);
+        });
+        check("failure message names the exact seed, trial and keeps the cause", () -> {
+            int[] calls = { 0 };
+            try {
+                Pbt.check("fails at trial 3", 42L, 10, r -> {
+                    if (calls[0]++ == 3) throw new IllegalStateException("gia lap bug");
+                });
+            } catch (AssertionError e) {
+                String m = String.valueOf(e.getMessage());
+                if (!m.contains("fails at trial 3") || !m.contains("seed=45") || !m.contains("trial=3"))
+                    throw new AssertionError("message sai: " + m);
+                if (!(e.getCause() instanceof IllegalStateException)) throw new AssertionError("mat cause goc: " + e.getCause());
+                eq(4, calls[0]);                          // dung lai ngay o trial loi
+                return;
+            }
+            throw new AssertionError("mong đợi AssertionError từ harness");
         });
         check("same seed produces the same sequence", () -> {
             int[] first = new int[5], second = new int[5];
