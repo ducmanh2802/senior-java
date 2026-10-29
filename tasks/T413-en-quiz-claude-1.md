@@ -1,6 +1,6 @@
 # T413 — Dịch sang tiếng Anh: quiz-claude (63 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/quiz-claude-1.en.js`
 
@@ -16,3 +16,10 @@ Yêu cầu dịch:
 - `node --check js/i18n/quiz-claude-1.en.js` và `node scripts/check-i18n.js quiz-claude-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đủ 63/63 mục (qz-claude-001…063) trong `js/i18n/quiz-claude-1.en.js`, mỗi mục chỉ gồm `q`, `options`, `explain`; giữ nguyên thứ tự options, số đáp án và toàn bộ markup (`**`, `{{code}}`, `###`, `- `, `1. `, `>`, `~~~json`).
+- Không dùng backtick, không có `${`; dấu `"` bên trong chuỗi đã escape (`\"`), xuống dòng dùng `\n`.
+- Nhãn: "> Lưu ý" → "> Note", "> Mẹo phỏng vấn" → "> Interview tip", "> Gợi ý thực tế" → "> Practical tip", "> Kiểm tra cache…" → "> To check whether…". Tiêu đề "### Vì sao các phương án còn lại sai" → "### Why the other options are wrong".
+- qz-claude-063: khối `~~~json` giữ cấu trúc code, chỉ dịch câu ví dụ tiếng Việt trong trường `text` ("Order ORD-100200 was delivered on 20/10.") để câu mẫu đọc được bằng tiếng Anh.
+- Kiểm tra: `node scripts/check-i18n.js quiz-claude-1` → `OK — 63 mục đã dịch.`; `node scripts/validate.js` → `OK — không có lỗi.`. Lưu ý: `node --check` bị chặn bởi chính sách quyền shell trong phiên này, nhưng `check-i18n.js` biên dịch file bằng `vm.runInNewContext` nên lỗi cú pháp (nếu có) sẽ bị bắt; không còn lỗi.
+Reviewed-by: check-i18n (translation, no LLM review)
