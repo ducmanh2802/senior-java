@@ -1,6 +1,6 @@
 # T447 — Dịch sang tiếng Anh: labs-gc (2 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/labs-gc-6.en.js`
 
@@ -16,3 +16,8 @@ Yêu cầu dịch:
 - `node --check js/i18n/labs-gc-6.en.js` và `node scripts/check-i18n.js labs-gc-6` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã dịch đủ 2 mục (`lab-gc-007`, `lab-gc-008`): title, scenario, questions, hints, answer, rubric. Không chép `artifacts`/code; code block chỉ dịch comment tiếng Việt (yaml comment, ASCII diagram, comment Java).
+- `labs-gc-6` đã có trong `js/i18n/manifest.js` (không sửa file ngoài quyền sở hữu).
+- `node scripts/check-i18n.js labs-gc-6` → `OK — 2 mục đã dịch.`; `node scripts/validate.js` → `OK — không có lỗi.`
+- Lưu ý: lệnh `node --check` bị chặn bởi chính sách quyền shell của phiên; `check-i18n.js` đã chạy file qua `vm.runInNewContext` nên cú pháp được xác nhận tương đương (file không có lỗi parse).
+Reviewed-by: check-i18n (translation, no LLM review)
