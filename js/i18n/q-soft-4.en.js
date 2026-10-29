@@ -4,15 +4,15 @@
  */
 App.i18n.content({
   'testing-016': {
-    q: 'How do you test the system\'s resilience — injecting network failures, timeouts, downstream service crashes, Kafka connection losses? What do you do in staging environments, and what tools do you use (WireMock, Resilience4j, Toxiproxy)?',
-    a: `**Summary:** Resilience testing has **three layers**: unit tests for fallback/retry logic with fake dependencies, integration tests with **WireMock** to reproduce timeouts, 5xx errors, and connection resets, and **chaos tests in staging** with Toxiproxy to simulate network partitions and pod kills. Fundamental principle: every fault injection must be tied to a **steady-state hypothesis** and an **abort condition** — without them, chaos testing is just causing disorder.
+    q: 'How do you test the system\'s resilience — injecting network failures, timeouts, downstream service crashes, Kafka broker disconnections? What do you do in the staging environment, and which tools do you use (WireMock, Resilience4j, Toxiproxy)?',
+    a: `**Summary:** Resilience testing has **three layers**: unit tests for fallback/retry-limit logic with fake dependencies, integration tests with **WireMock** to reproduce timeouts, 5xx responses, and real connection resets, and **chaos tests in staging** with Toxiproxy to cut the network and kill pods. A non-negotiable principle: every fault injection must be tied to a **steady-state hypothesis** and an **abort condition** — without those two, chaos testing is just causing disorder.
 
 ### Three layers of resilience testing
-| Layer | Tool | Simulated impact | Answers |
+| Layer | Tool | Simulated impact | Question it answers |
 |---|---|---|---|
-| Unit | fake client, fake clock | throw exception, return error | Is fallback/retry logic correct? |
-| Integration | WireMock | 500, delay, connection reset | Is the circuit breaker opening correctly? Are timeouts handled? |
-| Staging / chaos | Toxiproxy, kill pod | real network loss, broker crash | Does the system survive dependency failures? |
+| Unit | fake client, fake clock | throw exception, return error | is fallback logic and the retry limit correct |
+| Integration | WireMock | 500, delay, connection reset | does the breaker open correctly, is the timeout enforced |
+| Staging / chaos | Toxiproxy, kill pod | real network loss, broker crash | can the system still serve when a dependency dies |
 
 ### Integration layer — WireMock + Resilience4j
 ~~~java
@@ -22,49 +22,49 @@ App.i18n.content({
     server.stubFor(get("/api/inventory").willReturn(serverError()));   // downstream returns 500
     var client = RestClient.create("http://localhost:" + server.port());
     var breaker = CircuitBreaker.of("inventory", CircuitBreakerConfig.custom()
-        .slidingWindowSize(4).minimumNumberOfCalls(4)   // default requires 100 calls to evaluate
+        .slidingWindowSize(4).minimumNumberOfCalls(4)   // by default it needs 100 calls before evaluating
         .failureRateThreshold(50).build());
     Supplier<String> guarded = CircuitBreaker.decorateSupplier(breaker,
         () -> client.get().uri("/api/inventory").retrieve().body(String.class));
 
-    for (int i = 0; i < 4; i++)                         // 4 actual 500s over HTTP
+    for (int i = 0; i < 4; i++)                         // 4 real 500s over HTTP
         assertThrows(HttpServerErrorException.class, guarded::get);
     assertThat(breaker.getState()).isEqualTo(CircuitBreaker.State.OPEN);
-    assertThrows(CallNotPermittedException.class, guarded::get);  // blocked, call not made
+    assertThrows(CallNotPermittedException.class, guarded::get);  // blocked, nothing is called downstream
     server.verify(4, getRequestedFor(urlEqualTo("/api/inventory")));
     server.stop();
 }
 ~~~
-- WireMock also simulates {{withFixedDelay}} to create **real timeouts** and {{Fault.CONNECTION_RESET_BY_PEER}} to simulate partial connection loss — the two most common errors in production.
-- With resilience4j-spring-boot3 (also where Spring Cloud CircuitBreaker reads config), thresholds are set via property {{resilience4j.circuitbreaker.instances.inventory.sliding-window-size}}.
-- To inject network faults directly in integration tests, Testcontainers has a {{ToxiproxyContainer}} placed between the app and Postgres/Kafka containers.
-- **Always assert both fallback behavior** (return cache, empty list, clear error code), not just that the breaker is OPEN.
+- WireMock also simulates {{withFixedDelay}} to create **real timeouts** and {{Fault.CONNECTION_RESET_BY_PEER}} to simulate a connection dropping mid-way — the two most common failures in production.
+- With resilience4j-spring-boot3 (also where Spring Cloud CircuitBreaker reads its config from), thresholds are set through the property {{resilience4j.circuitbreaker.instances.inventory.sliding-window-size}}.
+- To inject network faults right inside an integration test, Testcontainers offers a {{ToxiproxyContainer}} placed between the app and the Postgres/Kafka containers.
+- **Always assert the fallback behavior too** (return cached data, return an empty list, return an error with a clear code), not only that the breaker is OPEN.
 
 ### Staging layer — Toxiproxy to inject real network faults
-Toxiproxy sits between the service and Postgres: define a proxy pointing to Postgres and enable "poisons" on the fly: {{latency}}, {{bandwidth}}, {{timeout}}, {{reset_peer}}, {{slow_close}}, {{slicer}} — sufficient to simulate almost any network event without changing application code.
+Toxiproxy is a TCP proxy standing between the service and Postgres: the app connects to the proxy, the proxy forwards to Postgres, and you can turn "toxics" on and off through its API at any moment: {{latency}}, {{bandwidth}}, {{timeout}}, {{reset_peer}}, {{slow_close}}, {{slicer}} — enough to simulate almost any network incident without changing application code.
 
-### Chaos scenarios to have in staging
-1. **Latency**: add 800 ms to Postgres ⇒ is the client timeout appropriate, can the connection pool handle it?
-2. **Connection loss**: {{reset_peer}} during a write ⇒ does the transaction rollback correctly?
-3. **Broker crash**: stop Kafka container ⇒ does the consumer retry, have DLT, does the service survive?
-4. **Pod kill**: delete pod while processing an order ⇒ is order processing partial or duplicated, does graceful shutdown work?
+### Chaos scenarios you should have in staging
+1. **Latency**: add 800 ms to Postgres ⇒ is the client timeout appropriate, can the connection pool still cope?
+2. **Connection loss**: {{reset_peer}} while a write is in progress ⇒ does the transaction roll back correctly?
+3. **Broker crash**: stop the Kafka container ⇒ does the consumer retry, is there a DLT, does the service survive?
+4. **Pod killed**: delete a pod while an order is being processed ⇒ is the order left half-processed or processed twice, does graceful shutdown work?
 
-### Ordered and safe chaos procedure
-- Write a **steady-state hypothesis** first: "when Postgres lags by 800 ms, the order API returns 503 within 2 seconds and error rate is below 1%".
-- Write an **abort condition**: "if error rate exceeds 5% for 2 minutes, stop immediately and rollback".
-- Have a **monitor** watching the dashboard and debug commands ready; run only in **staging** with simulated data, production needs permission and small time windows.
+### Running chaos safely
+- Write the **steady-state hypothesis** first: "when Postgres gets 800 ms slower, the order API still has p99 under 2 seconds and an error rate under 1%; any request that exceeds the timeout must get a clear 503 instead of hanging".
+- Write the **abort condition**: "if the error rate goes above 5% for 2 minutes, stop immediately and roll back".
+- Have a **watcher** following the dashboard with debugging commands ready; only run in **staging** with simulated data — production needs permission and a small time window.
 
 ### Common pitfalls
-- **Retry without jitter** ⇒ when downstream recovers, all clients retry simultaneously and kill it a second time.
-- **Circuit breaker without fallback** ⇒ errors propagate directly from the faulty service upstream; add **bulkhead** to limit concurrent requests.
-- **Client timeout larger than caller timeout** ⇒ caller runs out of time before client can return an error, and the thread remains blocked.
-- **Writing "resilience tests" by mocking a 500 return** ⇒ mocks don\'t simulate pool exhaustion, blocked threads, or DNS failures.
+- **Retry without jitter** ⇒ when the downstream recovers, all clients retry at the same instant and kill it a second time.
+- **Circuit breaker without a fallback** ⇒ errors propagate straight from the failing service upstream; add a **bulkhead** to cap the number of waiting requests.
+- **The downstream timeout being larger than the timeout upstream sets for itself** (e.g. the gateway waits 3 seconds, but the service waits 10 seconds for the DB) ⇒ the gateway has already given up and returned an error to the user, yet the service still holds a thread + connection for 7 more seconds for a result nobody will take. Timeouts must shrink as you go deeper into the call chain.
+- **Writing "resilience tests" by just mocking a 500 response** ⇒ a mock cannot reproduce pool exhaustion, blocked threads, or DNS failure.
 
-> Senior tip: measure **SLO before and after** every resilience configuration change. E.g., "adding circuit breaker with 50% error threshold over 20 calls, fallback returning cache ⇒ API p99 order reduced from 4.2 seconds to 300 ms". This number turns a config decision into one defensible to the boss and the team.`,
+> Senior tip: measure the **SLO before and after** every resilience config change. For example "adding a circuit breaker with a 50% error threshold over a 20-call window and a fallback returning the old cache ⇒ p99 of the order API dropped from 4.2 seconds to 300 ms". That number turns a config decision into something you can defend in front of your boss and your team.`,
     follow: [
         'How do you define the steady-state hypothesis and abort condition for each service?',
-        'How do you control blast radius when running chaos in staging with near-production data?',
-        'Do you automate chaos test runs by schedule (nightly), and how do you handle results?'
+        'How do you control the blast radius when running chaos in staging with near-real data?',
+        'Do you automate chaos test runs on a schedule (nightly), and how do you handle the results?'
     ]
   },
   'behavioral-013': {
@@ -195,46 +195,51 @@ State the **behavior** (S: situation, B: behavior, I: impact), then clear the pa
 > Senior tip: prepare **three versions**: bad news due to your fault, bad news due to external causes, and a time you **detected early** risk and reported before it happened. The third version is often the most impressive, showing you have an early warning system, not just reacting when things break.`
   },
   'behavioral-016': {
-    q: 'Project progress is blocked by another team and you cannot decide alone. What do you do to unblock without ruining relationships and without losing credibility?',
-    a: `**Summary:** Being blocked by other teams is daily life, and the real question is do you **call the problem by its name**. Effective process: **quantify the block → find the owner → understand their constraints → propose beneficial options → decouple what you can do yourself → escalate with evidence and decision milestones**. Key point: escalate to **ask for a decision**, not to tattle.
+    q: 'Your project progress is blocked by another team and you cannot decide on your own. What do you do to unblock the situation without ruining the relationship and without losing credibility?',
+    a: `**Summary:** As a lead, being blocked by another team is everyday life, and the real question is whether you **call the problem by its right name**. An effective process: **quantify the block → find the person actually accountable → understand their constraints → propose an option that benefits them → separate out what you can do yourself → escalate with evidence and a decision milestone**. The key point: escalate to **ask for a decision**, not to report someone.
 
-### Interviewer objectives
-- Do you distinguish between "blocked due to priority" and "blocked due to lack of competence"?
-- Are you proactively unblocking instead of waiting?
-- Do you bring options beneficial to **both sides**, or just push the ball?
-- Do you escalate in the right order and way?
-- Do you know when to stop persuading and turn to deciding?
+### What the interviewer is assessing
+- Can you tell "blocked because of priority" apart from "blocked because of incompetence"?
+- Do you proactively look for a way to unblock instead of waiting?
+- Can you bring an option that helps **both sides**, or do you just pass the ball?
+- Do you escalate in the right order and in the right way?
+- Do you know when to stop persuading and move to making a decision?
 
 ### Five steps to unblock
-1. **Quantify specific blocking**: not "Platform team is slow" but "Item X needs 5 person-days and depends on Item Y". No numbers, no negotiation.
-2. **Find the owner** of that item, not the person who replies to emails.
-3. **Understand their constraints**: what they are busy with, who is pushing them, what they need to prioritize you.
-4. **Propose beneficial options**: share work, lend staff or resources, or take the heaviest prep work yourself.
-5. **Decouple what you can do yourself** to keep the project moving while waiting.
+1. **Quantify the specific block**: not "the Platform team is slow" but "item X needs 5 person-days and depends on item Y". Without numbers there is no negotiation.
+2. **Find the person with decision power** over that item, not the person who replies to emails.
+3. **Understand their constraints**: what they are busy with, who is pushing them, what they need in order to prioritize you.
+4. **Propose an option that benefits them**: split the work, lend people or resources, or take the heaviest preparation work on your own side.
+5. **Separate out what you can do yourself** so the project keeps moving while you wait.
 
 ### Sample answer
-> "In the new payment method launch project, my progress was blocked by the Platform team: they needed to rewrite the signature validation class to support new algorithms, and their backlog was full through Q2.
-> Step one, I quantified the block: not 'their team is slow', but 'validation item takes 5 person-days and needs 2 days of internal review'. Knowing that clearly, I could find the right person and problem.
-> I met their tech lead before the lead of my side, and asked two questions: 'Is this really a high priority for you, and if not, what matters more to you?'. Real answer: they were also on an B2B contract deadline and couldn\'t prioritize mine.
-> From there I proposed sharing parts: I took 2 person-days from my side, wrote the test vectors and sample signatures myself — the input they needed — then asked them to only do the core part. Waiting time dropped from 5 days to 2, and the part I wrote was outside their code so it didn\'t create technical debt.
-> Result: feature launched on time. Afterward, I proposed a process change: every blocking item must have a commitment milestone **in writing** from the dependent team and put on a dependency board so the whole team sees it."
+> "On the project launching a new payment method, my progress was blocked by the Platform team: they needed to rewrite the signature validation class to support the new algorithm, and their backlog was already full through Q2.
+> First I quantified the block: not 'their team is slow', but 'the validation item takes 5 person-days and needs 2 days of internal review'. Knowing that clearly is what let me go to the right person with the right problem.
+> I went to see their tech lead before seeing my own lead, and asked two questions: 'Is this really a high priority for you, and if not, what matters more to you?'. The real answer: they were also under a B2B contract deadline and could not prioritize me.
+> From there I proposed splitting the work: I took 2 person-days from an engineer on my side, wrote the test-vector set and the sample signatures myself — that is, the input they needed — and then asked them to do only the core part. The work on their side dropped from 5 to 2 person-days — small enough that their tech lead could slot it into the middle of a sprint without missing the B2B commitment. The part I did was tests and sample data, without touching their code, so it created no ownership conflict.
+> Result: the feature shipped on the milestone we had committed to the customer. After that I proposed a process change: every item that blocks progress must have a commitment milestone **in writing** from the team being depended on, and be put on a dependency board so the whole team can see it."
 
-### Proper escalation order
-1. Talk directly to owner (relational channel first).
-2. Bring to a common meeting with a trusted neutral party on both sides.
-3. Put it in writing: describe block, progress impact in days, tried options, specific proposal, and **milestone requiring decision**.
-4. Escalate to management when priority or resource decisions are beyond your reach.
-Principle: escalate **with data and options**, not to "tattle on someone". Opening sentence should be "I have identified this as a priority issue, not a competence issue. I tried two directions, need you to decide which one by date X".
+### Escalating in the right order
+1. Talk directly to the owner (the relationship channel first).
+2. Bring it to a joint meeting with a neutral party both sides trust.
+3. Put it in writing: describe the block, the impact on progress in days, the options already tried, a concrete proposal, and the **milestone at which a decision is needed**.
+4. Escalate to management when the priority or resource decision is beyond your reach.
+Principle: escalate **with data and options**, not to "report someone". The opening sentence should be "I have determined this is a priority issue, not a competence issue. I have tried two directions, and I need you to decide which one before date X".
 
 ### Things to avoid
-- **Reporting upwards immediately**, skipping those who could solve in 5 minutes.
-- **Blaming** ("team is slow") — loses credibility and helps nothing.
-- **Silently suffering then screaming when late**: then you lose both leverage and proposal right.
-- **Doing the team\'s work yourself**: creates technical debt and conflict.
-- **Ultimatums or threats**: loses relationship while the issue remains.
-- **Changing proposals constantly** without explanation — they no longer trust any proposal of yours.
+- **Reporting upwards immediately**, skipping the person who could solve it in 5 minutes.
+- **Blaming** ("that team is slow") — it damages your credibility and helps nothing.
+- **Suffering in silence** and then shouting after it is already late: by then you have lost even the right to propose.
+- **Doing another team's work on your own**: creates technical debt and conflict.
+- **Issuing ultimatums or threats**: you lose the relationship while the problem remains.
+- **Constantly changing your proposal** without explaining why — people will stop trusting any of your proposals.
 
-> Senior tip: a strong answer for this isn\'t "I solved the block" — because sometimes you can\'t. What\'s evaluated is that you **called the problem by its name**, **tried what was in your power**, **brought a specific option**, and **knew when to require an upward decision** instead of just persuading forever.`
+> Senior tip: a strong answer to this question is not "I got the block resolved" — because often you cannot. What is assessed is whether you **called the problem by its right name**, **tried what was within your reach**, **brought a concrete option**, and **knew when a decision from above was needed** instead of just persuading forever.`,
+    follow: [
+        'What do you do when the owner on the other side also has no authority to prioritize you?',
+        'Have you ever had to escalate and been turned down? How did you handle it?',
+        'How do you measure the size of the block so you can report progress upward honestly?'
+    ]
   },
   'behavioral-017': {
     q: 'Tell us about a time you received tough feedback — not praise. How did you react, and what changed afterward?',
@@ -322,54 +327,62 @@ Treat these as **tendencies to adapt**, not laws about people. The safe approach
 > Senior tip: the simplest and most effective tool when working across time zones is **three principles**: write every decision into docs, set deadlines by reader time zone, and always end with a specific question with date/time. Those three things eliminate most time zone mismatch incidents, without needing to "learn cultural communication" in general.`
   },
   'behavioral-019': {
-    q: 'As a senior/lead, how do you interview candidates? How do you design the interview round, and what criteria do you base evaluation on?',
-    a: `**Summary:** The role of the interviewer is **assessing competence via observable evidence**, not just asking questions. A good interview round has **pre-written grading criteria**, every question tied to a **signal to find**, and scores based on evidence. The hardest part is **consistency between interviewers** in the same decision.
+    q: 'As a senior/lead, how do you interview candidates? How do you design the interview loop, and what criteria do you evaluate candidates on?',
+    a: `**Summary:** The interviewer's role is **assessing competence through observable evidence**, not just getting through the questions. A good interview loop has **grading criteria written in advance**, every question tied to a **signal to look for**, and scores based on evidence. The hardest part is **keeping consistency across several interviewers** in the same decision.
 
-### Interviewer objectives
-- Do you **design the hiring process** instead of saying "I ask a few questions then feel it"?
-- Can you distinguish great candidates from **great talkers**, and prepare grading criteria **before** the interview?
+### What the interviewer is assessing
+- Can you **design a hiring process** instead of saying "I ask a few questions and go by feel"?
+- Can you tell a strong candidate apart from a candidate who **talks well**, and do you prepare grading criteria **before** the interview?
 - Can you handle disagreement between interviewers professionally?
-- Do you evaluate **risk of hiring wrong** (cost, impact on progress and team morale)?
+- Do you assess the **risk of a bad hire** (cost, impact on progress and team morale)?
 
-### Interview round design
-| Round | Goal | Format | Signal to find | Interviewer |
+### Designing the interview loop
+| Round | Goal | Format | Signal to look for | Interviewer |
 |---|---|---|---|---|
-| 0. Screening | experience, salary, availability | 20–30m | motivation, salary expectation, reason for leaving | recruiter or tech lead |
-| 1. Tech basics | knowledge depth, analytical mind | 45m, ask about built systems | decomposing, tradeoff talk | senior dev |
-| 2. Coding | real code under eyes | 60m, problem with edge cases | decomposition, edge handling, communication | senior dev |
-| 3. System design | design at scale | 45m | tradeoff, measurement, operation, cost | tech lead or architect |
-| 4. Culture/Role | working style, situation handling | 30m | responsibility, feedback approach | lead or manager |
+| 0. Screening | experience, salary, availability | 20–30 min | motivation, salary expectation, reason for leaving | recruiter or tech lead |
+| 1. Technical fundamentals | depth of knowledge, analytical thinking | 45 min, ask about systems they have built | how they break the problem down, talk about trade-offs | senior dev |
+| 2. Coding round | write real code while the interviewer watches | 60 min, a problem with edge cases | breaking into steps, handling edge cases, communication | senior dev |
+| 3. System design | design at large scale | 45 min | trade-offs, measurement, operations, cost | tech lead or architect |
+| 4. Culture and role | working style, handling situations | 30 min | sense of responsibility, how they respond to feedback | lead or manager |
 
-### Rubric — write before, grade after
-Each criterion needs **3 levels** described by observable behavior.
+### Rubric — write it before, grade after
+Each criterion needs **3 levels**, each described by observable behavior.
 | Criterion | Below level | At level | Above level |
 |---|---|---|---|
-| Problem solving | needs hand-holding | decomposes and asks right questions | redirects with new information |
-| Systems thinking | CRUD only | knows tradeoff of choices | states operational risk and measurement |
-| Code quality | runs but messy | clear, with tests | handles edge cases and boundaries |
-| Communication | answers off-topic | answers correctly and specifically | adjusts presentation to listener |
+| Problem solving | needs to be led by the hand | breaks the problem down and asks the right questions | changes direction when new information arrives |
+| Systems thinking | only talks about CRUD | understands the trade-offs of the choice | states operational risk and how to measure it |
+| Code quality | runs but is messy | clear, with tests | also handles error paths and boundaries |
+| Communication | answers a different question | answers correctly and concretely | adjusts the presentation to the listener |
 
-### Open questions and accompanying signals
-- "Tell me about the time you had to fix a technical decision that had a major impact. What did you do?" → signal: admit error, have data, have process change.
-- "Once you had to work with a non-technical stakeholder. How did you translate the issue to their language?" → signal: translates to business value.
-- "What did you do when you knew you would miss a deadline?" → signal: report early, have option.
+### Open questions and the signals that go with them
+- "Tell me about a time you had to undo a technical decision that had the biggest impact. What did you do?" → signal: admits the mistake, has numbers, has a process change.
+- "Tell me about a time you worked with a non-technical stakeholder. How did you translate the problem into their language?" → signal: translates into business value.
+- "What did you do when you knew you would miss a deadline?" → signal: reports early, has an option.
 
 ### Preparation and grading process
-1. **Before interview**: read CV, select 2–3 most important criteria, confirm signal to find.
-2. **During interview**: open with open questions, let candidate talk most, do not lead.
-3. **Right after interview, in 15 mins**: record evidence and grade by rubric — **before** seeing others\' grades.
-4. **Debrief**: compare evidence, not feelings; when disagreeing, the dissenter must bring evidence.
-5. **Decision**: based on evidence and risk, not overall impression.
+1. **Before the interview**: read the CV, pick the 2–3 most important criteria, lock in the signal to look for.
+2. **During the interview**: open with open-ended questions, let the candidate talk for most of the time, do not lead.
+3. **Right after the interview, within 15 minutes**: record the evidence and grade by the rubric — **before** looking at anyone else's score.
+4. **Debrief**: compare evidence, not feelings; when there is disagreement, the dissenter must bring evidence.
+5. **Decision**: based on evidence and risk, not on the overall impression.
+
+### Sample answer (STAR)
+> "Last year my team needed to hire 3 backend seniors. **S**: the old process was that each person asked whatever they liked and then the debrief ran on feelings; in 6 months, 2 hires failed probation because they could not design a feature on their own. **T**: I was assigned to redo the technical round. **A**: I wrote a rubric with the 4 criteria in the table above, each round got one fixed exercise (the coding exercise was realistic: add idempotency to an existing payment API with code already in place, instead of a puzzle-style algorithm), required every interviewer to submit a score with evidence before entering the debrief, and had the 4 people on the team run mock interviews with each other for 2 sessions to align on how to grade. **R**: the time from round 1 to offer dropped from 5 to 3 weeks; the spread of scores between interviewers narrowed clearly (before, there were cases where one gave 1 and another gave 4); all 3 people hired that cycle passed probation. What I have not done yet is go back after 1 year and check whether interview scores correlate with actual performance."
 
 ### Things to avoid
-- **Asking "how many years of experience"**: cannot distinguish great people from average people.
+- **Asking "how many years of experience do you have"**: it cannot separate strong people from people who are just coasting.
 - **Leading too much** so the candidate feels "great": you are measuring comfort, not competence.
-- **Asking for opinion instead of action**: "what do you think about Kafka" cannot distinguish; "how do you handle Kafka failure" does.
-- **Vibe check**: feeling "compatible" is a weak signal, tends to exclude minorities.
-- **Not grading by rubric**, or letting others\' grades sway your own.
-- **Not reading CV beforehand**: asking back what\'s already written, wasting time.
-- **Forcing candidates to tell current company secrets** (business data, sensitive architecture): candidate telling is a bad signal on security mindset, and you create legal risk.
+- **Asking for opinions instead of actions**: "what do you think about Kafka" cannot tell candidates apart; "how do you handle it when Kafka fails" can.
+- **Vibe check**: a feeling of "fitting in" is a weak signal and tends to exclude minority groups.
+- **Not grading by the rubric**, or letting other people's scores sway your own.
+- **Not reading the CV beforehand**: asking back what is already written wastes both sides' time.
+- **Pushing candidates to tell confidential details of their current company** (business numbers, sensitive internal architecture): a candidate who is willing to tell is a bad signal about security mindset, and you create legal risk.
 
-> Senior tip: great interviewers don\'t try to prove they are smart, but try to make the candidate feel **fairly evaluated and having the best opportunity to perform** — even when they answer wrong. If candidates feel they are "taking a test", they will perform, and you will hire the great actor.`
+> Senior tip: a good interviewer does not try to prove they are smart, but tries to make the candidate feel **fairly evaluated and given the best chance to perform** — even when they answer wrong. If candidates feel they are "sitting an exam", they will act, and you will hire the person who is good at acting.`,
+    follow: [
+        'What do you do when one interviewer on the team gives a score that is completely out of line with the others?',
+        'Do you have a criterion for deciding a candidate is "good enough" for this position?',
+        'How do you hire strong candidates when the market is highly competitive and candidates have many options?'
+    ]
   }
 });
