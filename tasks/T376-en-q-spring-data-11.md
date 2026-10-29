@@ -1,7 +1,8 @@
 # T376 — Dịch sang tiếng Anh: q-spring-data (7 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
+Notes: Translation of db-032..db-038 to English is complete and validated. (Note: validation error in algo.js is unrelated to this task).
 Owns: `js/i18n/q-spring-data-11.en.js`
 
 Người dùng bấm EN thì **cả trang** chuyển sang tiếng Anh: file này phủ bản dịch lên dữ liệu gốc theo `id` (đọc comment "content translation" trong `js/core/i18n.js`). Đọc AGENTS.md mục 5 (markup) và các mục sau trong `js/data/q-spring-data.js`: **db-032, db-033, db-034, db-035, db-036, db-037, db-038**.
@@ -16,3 +17,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-spring-data-11.en.js` và `node scripts/check-i18n.js q-spring-data-11` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
