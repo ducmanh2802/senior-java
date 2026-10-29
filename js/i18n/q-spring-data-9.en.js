@@ -5,26 +5,26 @@
 App.i18n.content({
   'spring-028': {
     q: 'Why does calling a {{@Transactional}} method from another method in the same bean usually not open a transaction? How do you handle self-invocation, and how do JDK proxy and CGLIB differ?',
-    a: `**Summary:** Spring transactions are usually applied through an AOP proxy: the caller invokes the proxy, an interceptor opens the transaction and only then delegates into the target. When a method inside the target calls {{this.otherMethod()}}, the call goes straight into the real object and bypasses the proxy; the annotation on the invoked method is never processed by the interceptor. The JDK proxy only exposes interfaces, while CGLIB creates a subclass that overrides methods, but neither can fix self-invocation.
+    a: `**Summary:** Spring transactions are usually applied through an AOP proxy, a wrapper object that Spring generates at startup (AOP = Aspect-Oriented Programming: extra behaviour is woven around your method without editing it). The caller calls the proxy, a transaction interceptor inside the proxy opens the transaction, and only then does the call reach your real object, the target. When a method inside the target calls {{this.otherMethod()}}, the call goes straight into the real object and bypasses the proxy, so the annotation on the invoked method is never seen by the interceptor. A JDK proxy only exposes interfaces, while CGLIB creates a subclass that overrides methods, but neither of them can repair self-invocation.
 
 ### Call flow
-For an external call, the flow is Controller → proxy → transaction interceptor → service target. The interceptor reads the metadata, obtains the transaction manager, decides to join or create a transaction, then commits or rolls back based on the exception. Inside the target, {{this.saveAudit()}} never goes back through the proxy, so the propagation, isolation or timeout of that method is not applied independently.
+For an external call the flow is Controller → proxy → transaction interceptor → service target. The interceptor reads the method metadata (propagation, isolation, timeout, readOnly), obtains the transaction manager (the component that talks to the DataSource and issues BEGIN, COMMIT or ROLLBACK), decides whether to join a running transaction or start a new one, and finally commits or rolls back based on the exception that escapes. Inside the target, {{this.saveAudit()}} never goes back through the proxy, so the propagation, isolation or timeout configured on that method is not applied independently: it just runs inside whatever transaction is already open, or with no transaction at all.
 
 ### JDK proxy and CGLIB
 | | JDK dynamic proxy | CGLIB subclass |
 |---|---|---|
-| Proxy type | Interface | Subclass of the concrete class |
-| Requirement | Has an interface | Class not final, method not final/private |
-| Call through interface | Yes | Possible |
+| Proxy type | Implements the bean's interfaces | Subclass of the concrete class |
+| Requirement | The bean has at least one interface | The class is not final, the method is not final/private |
+| Call through the interface | Yes | Yes (the subclass also implements the interface) |
 | Internal self-call | Bypasses the interceptor | Bypasses the interceptor |
 
-Boot by default usually uses CGLIB for Spring AOP, but you should not rely on the proxy type to cure a self-call. Final classes/methods and private methods still cannot be overridden in order to be advised.
+Boot by default usually uses CGLIB for Spring AOP, but you should not rely on the proxy type to cure a self-call. Final classes/methods and private methods still cannot be overridden in order to be advised, so an annotation placed on them silently does nothing.
 
 ### Maintainable ways to fix it
-Extract the part that needs a transaction into a separate bean, so the call goes through a dependency's proxy. Or place the transaction on a public entry point that wraps the entire use case. Self-injection or {{AopContext.currentProxy()}} can make the proxy get invoked again, but it creates coupling and makes the flow hard to read; only use it when the class boundary cannot be changed.
+Extract the part that needs its own transaction into a separate bean, so the call goes through a dependency's proxy. Or place the transaction on a public entry point that wraps the entire use case. Self-injection or {{AopContext.currentProxy()}} can make the proxy get invoked again, but it creates coupling and makes the flow hard to read; only use it when the class boundary really cannot be changed.
 
 ### Production pitfalls
-Tests that call the method directly on an object created with {{new}} have no transaction proxy. Likewise, invoking an annotated method through a private method or from the constructor does not trigger the advice. Verify with integration tests that use a real transaction manager and observe commit/rollback, not merely by asserting that the annotation exists.
+Tests that call the method directly on an object created with {{new}} have no transaction proxy, so they never prove the annotation works. Likewise, invoking an annotated method through a private method or from the constructor does not trigger the advice. Verify with integration tests that use a real transaction manager and observe commit/rollback, not merely by asserting that the annotation exists.
 
 > Senior tip: treat the transaction boundary as the public use-case boundary. A short service method, invoked through the bean's proxy, is usually safer than sprinkling annotations over internal helpers.`,
     follow: [
@@ -106,15 +106,15 @@ Measuring latency between services needs reasonably synchronized clocks, but the
   },
   'spring-032': {
     q: 'A Spring Boot 3 application running blocking workloads wants to enable virtual threads via {{spring.threads.virtual.enabled}}. How do you assess the benefits, the limits and a rollout plan?',
-    a: `**Summary:** On Java 21+, setting {{spring.threads.virtual.enabled=true}} asks Spring Boot to use virtual threads in the supported integrations. Virtual threads lower the thread cost of many concurrent blocking tasks, but they do not make the CPU faster, do not raise connection limits, and do not turn blocking code into non-blocking; you must verify the Boot version, pinning and downstream resources.
+    a: `**Summary:** From Spring Boot 3.2, running on Java 21+, setting {{spring.threads.virtual.enabled=true}} asks Spring Boot to use virtual threads in the supported integrations (Tomcat/Jetty request handling, the {{@Async}}/task executor, the scheduler, some messaging listeners). Virtual threads lower the thread cost of many concurrent blocking tasks, but they do not make the CPU faster, do not raise connection limits, and do not turn blocking code into non-blocking; you must verify the Boot version, pinning and downstream resources.
 
 ### The model
-A platform thread is tied to an OS thread, so a large number of threads waiting on I/O consumes stack and scheduling resources. A virtual thread is mounted by the runtime onto a carrier thread while running and usually unmounts during compatible blocking operations. When it completes, it returns results like an ordinary thread, which makes it easy to keep imperative code. It pays off when the number of concurrent tasks is large and most of the time is spent waiting for I/O.
+A platform thread is tied to an OS thread, so a large number of threads waiting on I/O consumes stack and scheduling resources. A virtual thread is mounted by the runtime onto a carrier thread (a platform thread borrowed for execution) while it runs, and usually unmounts during compatible blocking operations. When it completes, it returns results like an ordinary thread, which makes it easy to keep imperative code. It pays off when the number of concurrent tasks is large and most of the time is spent waiting for I/O.
 
 ### Limits and rollout
-- CPU-bound work is still bounded by cores; millions of virtual threads do not increase compute throughput.
+- CPU-bound work is still bounded by the number of cores; millions of virtual threads do not increase compute throughput.
 - JDBC pools, remote API quotas, file descriptors and memory are still limits. Throttle with semaphores/bulkheads and appropriately sized pools.
-- Pinning can occur in some synchronized/native regions while a virtual thread blocks; check the JDK documentation and the diagnostics of the runtime's JFR.
+- Pinning: on Java 21–23, a virtual thread that blocks inside {{synchronized}} or inside a native frame keeps its carrier thread stuck with it; detect it with the JFR event {{jdk.VirtualThreadPinned}} (JFR = Java Flight Recorder, the profiler built into the JDK). JEP 491 (Java 24) removed pinning caused by {{synchronized}}, but native frames still pin.
 - Verify the Boot version and which components use the virtual-thread executor; do not assume every scheduler or third-party library switches over by itself.
 - Benchmark latency, throughput, heap, carrier utilization and downstream saturation before/after under representative load.
 
@@ -129,13 +129,14 @@ Tuning thread count while ignoring the connection pool can create tens of thousa
   },
   'spring-033': {
     q: 'When deploying a new version, how do you design graceful shutdown for Spring Boot so in-flight requests are not lost while still meeting the orchestrator\'s deadline?',
-    a: `**Summary:** Graceful shutdown stops accepting new requests, gives in-flight requests a window to complete, then closes resources in order. Spring Boot supports graceful shutdown for the embedded web server; you must coordinate readiness/load balancer behavior, platform timeouts and stopping consumers/jobs to bound the total exit time.
+    a: `**Summary:** Graceful shutdown stops accepting new requests, gives in-flight requests a window to complete, then closes resources in order. Spring Boot supports graceful shutdown for the embedded web server; you must coordinate readiness/load balancer behaviour, platform timeouts and stopping consumers/jobs to bound the total exit time.
 
 ### Sequence
-When the shutdown signal arrives, the instance must quickly leave the traffic-serving endpoint (readiness false), the load balancer needs time to update, and then the server stops accepting new connections/requests gracefully. Running requests are drained within the configured window. The bean lifecycle stops workers and releases resources; finally the process exits before the orchestrator sends SIGKILL.
+When the shutdown signal arrives, the instance must quickly leave the traffic-serving endpoint (readiness false), the load balancer needs time to update, and then the server stops accepting new connections/requests gracefully. Running requests are drained within the configured window. The bean lifecycle stops workers and releases resources; finally the process exits before the orchestrator sends SIGKILL (the force-kill signal that cannot be handled).
 
 ### Design
-- Enable Boot's graceful shutdown and set the shutdown phase timeout based on real request durations.
+- Web server graceful shutdown: {{server.shutdown=graceful}} (from Boot 3.4 this is the default; older versions default to {{immediate}}). The wait time per phase is {{spring.lifecycle.timeout-per-shutdown-phase}} (default 30s); set it from the real p99 of request duration.
+- On Kubernetes, removing the pod from the Endpoints list happens in parallel with SIGTERM, so you usually add a {{preStop}} sleep of a few seconds so the load balancer stops sending traffic before the server stops accepting requests.
 - The orchestrator's total grace period must exceed readiness propagation + drain window + consumer stop/cleanup, with buffer.
 - For queue consumers, pause message intake, finish or nack so the broker redelivers; make the handling idempotent to avoid duplicates.
 - Stop scheduled jobs and executors with a timeout; avoid cleanup that calls external services without bounds.
@@ -152,15 +153,15 @@ If readiness flips only after the process has begun shutting down, the load bala
   },
   'jpa-022': {
     q: 'How does Hibernate\'s persistence context track entities, when does dirty checking happen, and what does the flush order mean for a transaction that both inserts and updates?',
-    a: `**Summary:** The persistence context is an identity map and the unit that tracks managed entities within a transaction/session. Hibernate keeps the loaded state (snapshot); dirty checking compares entities at flush time to generate SQL; flushing synchronizes changes down to the DB but is not the same as commit. Hibernate uses a defined action order, not necessarily the order of the Java statements.
+    a: `**Summary:** The persistence context is an identity map (one in-memory object per row, so you never hold two copies of the same entity) and the unit that tracks managed entities within a transaction/session. Hibernate keeps the loaded state (snapshot); dirty checking compares entities at flush time to generate SQL; flushing synchronizes changes down to the DB but is not the same as commit. Hibernate uses a defined action order, not necessarily the order of the Java statements.
 
 ### Lifecycle and dirty checking
-A transient entity is unmanaged; after {{persist}} it becomes managed. When an entity is loaded, Hibernate stores a snapshot plus an entry in the persistence context. Changing a Java field does not immediately emit SQL; at flush (usually before a query that needs synchronization or before commit), Hibernate detects the difference, creates the update and binds the values. A detached entity is no longer tracked automatically.
+A transient entity is a plain new object Hibernate does not know about yet; after {{persist}} it becomes managed. When an entity is loaded, Hibernate stores a snapshot (a copy of the column values as read from the DB) plus an entry in the persistence context. Changing a Java field does not immediately emit SQL; at flush (usually before a query that needs synchronization, or before commit) Hibernate detects the difference, creates the update and binds the values. A detached entity (persistence context closed, or {{detach}} called) is no longer tracked automatically.
 
 A context holds exactly one instance per entity type and primary key: loading the same key twice returns the same managed object. This guarantees consistent identity within the transaction, but a large context keeps many objects and snapshots in memory.
 
 ### Flush order
-Hibernate executes its action queue in groups (for example inserts, updates, collection actions, deletes) rather than preserving the order of the source code. Database constraints remain the source of truth. If ordering dependencies exist, design the FK/associations correctly, flush deliberately, or split the transaction along business lines; do not rely on the order of repository calls.
+Hibernate executes its action queue in groups (for example inserts, then updates, collection actions, then deletes) rather than preserving the order of the source code. The classic example: in the same transaction you {{remove}} a row whose {{code = 'VIP'}} and then {{persist}} a new row with the same {{code = 'VIP'}} (a unique column). At flush the INSERT runs before the DELETE, so the DB reports a unique constraint violation even though the Java code "deletes first, inserts later". The fix is to call {{flush()}} right after {{remove}}, or to update the old row instead of deleting and re-creating it. Database constraints remain the source of truth. If ordering dependencies exist, design the FK/associations correctly, flush deliberately, or split the transaction along business lines; do not rely on the order of repository calls.
 
 ### Production pitfalls
 A bulk JPQL update/delete runs directly in the DB and bypasses dirty checking of entities already in the context, so managed objects can become stale; use clear/refresh appropriately after a bulk operation. Flush does not make data durable: a rollback still undoes the SQL. Changing large collections can create many snapshots/SQL statements and grow the heap.
@@ -173,19 +174,19 @@ A bulk JPQL update/delete runs directly in the DB and bypasses dirty checking of
   },
   'jpa-023': {
     q: 'You hit {{LazyInitializationException}} after returning an entity from the service. How does Open Session in View fix the symptom, and why should you usually replace it with an explicit fetch plan?',
-    a: `**Summary:** A lazy association is only loaded when accessed while the persistence context is still open. If the service ends the transaction and the entity detaches before the serializer reads the association, Hibernate cannot run another query and throws {{LazyInitializationException}}. Open Session in View keeps the session open for the whole request so lazy access still works, but it easily generates SQL outside the service and hides invisible N+1.
+    a: `**Summary:** A lazy association is only loaded when accessed while the persistence context is still open. If the service ends the transaction and the entity detaches before the serializer reads the association, Hibernate cannot run another query and throws {{LazyInitializationException}}. Open Session in View (OSIV, keeping the persistence context open for the whole HTTP request) keeps lazy access working, but it easily runs SQL outside the service and hides invisible N+1 (one query for the list plus one query per row).
 
 ### Cause along the flow
 The repository loads the entity with lazy associations not initialized. The service transaction commits, the persistence context closes or the entity detaches. The controller/Jackson serializes the relations; the proxy needs the session in order to query, but the session is gone. This is not a random mapping bug but a fetch plan that does not match where the data is consumed.
 
 ### Options
-- Use DTO projections for API responses: fetch only the needed columns and stop letting serialization decide the SQL.
+- Use DTO projections (small classes or records holding only the fields the API needs) for API responses: fetch only the needed columns and stop letting serialization decide the SQL.
 - Use a fetch join or {{@EntityGraph}} for the specific use case, and check the query count and pagination.
 - Initialize the association inside the transaction if the logic genuinely needs it.
 - Open Session in View can be useful in a simple server-rendered application, but you must understand the queries it generates at view time and control them with metrics/logs.
 
 ### Production pitfalls
-Enabling OSIV does not guarantee the business transaction stays open; it only keeps the persistence context open, so lazy queries can run after the commit with a different transaction/autocommit depending on configuration. Serializing a list of 100 entities and then reading each collection can produce 101 queries. Returning entities also leaks internal structure and risks recursion on bidirectional associations.
+Spring Boot **enables OSIV by default** ({{spring.jpa.open-in-view=true}}) and prints a warning at startup; for a REST API you should set {{false}} so fetch-plan mistakes surface early. Enabling OSIV does not keep the business transaction open; it only keeps the persistence context open, so lazy queries can run after the commit with a different transaction/autocommit depending on configuration. Serializing a list of 100 entities and then reading each collection can produce 101 queries. Returning entities also leaks internal structure and risks recursion on bidirectional associations.
 
 > Senior tip: service APIs should return DTOs with a reviewed fetch plan. Enable SQL statistics or a datasource proxy in tests to catch N+1; the exception going away does not prove the endpoint is efficient.`,
     follow: [
@@ -198,7 +199,7 @@ Enabling OSIV does not guarantee the business transaction stays open; it only ke
     a: `**Summary:** Hibernate uses the version column in the update statement: the update only succeeds if the DB version still equals the version of the entity that was read. If another request committed first, the row count is 0 and Hibernate reports an optimistic lock conflict. A retry must rerun the whole use case in a new transaction, re-read the fresh data and make the business decision again; it must not merely resend the old update.
 
 ### Mechanism by example
-Two transactions read a balance with version 7. T1 updates with the condition {{where id=? and version=7}}, bumps the version to 8 and commits. T2 also updates version 7; the condition does not match, and Hibernate raises a conflict instead of silently overwriting. The version can be an integer or a timestamp; a numeric version usually expresses ordering more clearly.
+Two transactions read a balance with version 7. T1 updates with the condition {{where id=? and version=7}}, bumps the version to 8 and commits. T2 also updates version 7; the condition does not match (the update returns 0 rows), so Hibernate throws {{StaleObjectStateException}}/JPA {{OptimisticLockException}} and Spring translates it into {{ObjectOptimisticLockingFailureException}} instead of silently overwriting. The version can be an integer or a timestamp; a numeric version usually expresses ordering more clearly.
 
 ### Safe retries
 - Retry only transient/conflict errors, with a bounded number of attempts and jittered backoff.
@@ -217,10 +218,10 @@ Retrying inside the same transaction, which is already marked rollback-only, usu
   },
   'jpa-025': {
     q: 'A bulk insert with Hibernate does not reach the expected throughput. How do you configure batching, and why does the {{IDENTITY}} generation strategy usually break JDBC insert batching?',
-    a: `**Summary:** Hibernate JDBC batching collects several prepared statements of the same shape and sends them as a batch; configuring {{hibernate.jdbc.batch_size}} and flushing/clearing per chunk reduces round trips and memory. With {{IDENTITY}}, the database has to create the row in order to return the generated key for each insert, so Hibernate usually must insert immediately to obtain the ID, and insert batching becomes limited or disabled.
+    a: `**Summary:** Hibernate JDBC batching collects several prepared statements of the same shape and sends them as one batch (one network round trip instead of many); configuring {{hibernate.jdbc.batch_size}} and flushing/clearing per chunk reduces round trips and memory. With {{IDENTITY}}, the database has to create the row in order to return the generated key for each insert, so Hibernate usually must insert immediately to obtain the ID, and insert batching becomes limited or disabled.
 
 ### Configuration and writing data
-Set a sensible batch size (commonly starting around a few dozen, then measure), make sure the driver supports batch rewrites where available, and avoid SQL statement shapes that keep changing. The persistence context still holds entities, so process in chunks: persist N entities, flush, clear, then continue. Hibernate can sort inserts/updates by entity type to increase batch compatibility; verify via configuration and SQL logs on the real DB/driver.
+Set a sensible batch size (commonly starting around a few dozen, then measure), turn on {{hibernate.order_inserts=true}}/{{hibernate.order_updates=true}} so statements for the same table are grouped, enable the driver's batch rewrite where available ({{reWriteBatchedInserts=true}} on PostgreSQL JDBC, {{rewriteBatchedStatements=true}} on MySQL Connector/J), and avoid SQL statement shapes that keep changing. The persistence context still holds entities, so process in chunks: persist N entities, flush, clear, then continue. Hibernate can sort inserts/updates by entity type to increase batch compatibility; verify via configuration and SQL logs on the real DB/driver.
 
 ### ID generation
 Sequences allow obtaining the ID before the insert, so Hibernate can accumulate inserts; the sequence allocation/block size needs balancing between round trips and ID gaps. {{IDENTITY}} needs a DB-generated value after each row is inserted in order to assign it to the entity, which usually forces an early insert. Do not change the strategy just for batching: weigh portability, the schema and the semantics of the ID.
@@ -239,14 +240,14 @@ Batching reduces network round trips but not the number of index updates, WAL wr
     a: `**Summary:** {{@EntityGraph}} declares a fetch plan per use case, while JOIN FETCH writes the join directly in JPQL; both can remove N+1, but a collection fetch join combined with pagination duplicates SQL rows. Hibernate may then fetch the entire result set and paginate in memory, emitting the HHH000104 warning, trading a database-side limit for heavy in-memory loading.
 
 ### How to choose
-EntityGraph fits when you want repository queries to stay readable and pick the associations to fetch at runtime; check whether the graph is fetch or load semantics per the mapping. JOIN FETCH is useful when the query needs conditions/sorting tied to the association, but you cannot fetch several bag collections arbitrarily because of duplicates/cartesian explosion.
+EntityGraph fits when you want repository queries to stay readable and choose the associations to fetch per method. Spring Data uses {{EntityGraphType.FETCH}} by default (an attribute not listed in the graph is treated as LAZY); {{LOAD}} keeps the fetch type declared in the mapping for attributes not listed. JOIN FETCH is useful when the query needs conditions/sorting tied to the association, but fetching two {{List}} collections (bags) at the same time hits {{MultipleBagFetchException}}, and even with {{Set}} it still creates a cartesian product with a huge number of rows.
 
 ### Safe pagination
 1. Page over the root entity id with a bounded query and a stable ordering.
 2. Run a second query that fetches the needed associations for that id set, using IN.
 3. Restore the page order if the second query does not preserve it, and consider a separate count query.
 
-Hibernate can be configured to fail when paginating a collection fetch instead of silently paginating in memory. For to-many relations, batch fetching or DTO projection are also options depending on the response shape.
+You can set {{hibernate.query.fail_on_pagination_over_collection_fetch=true}} so Hibernate throws instead of silently paginating in memory. For to-many relations, batch fetching or DTO projection are also options depending on the response shape.
 
 ### Production pitfalls
 A page of 20 roots can turn into thousands of SQL rows if each root has many children; paginating rows is not the same as paginating roots. The warning is easy to ignore in a small test data set, but production heap/latency can jump suddenly. Sorting by a child column also needs a clear definition: when one root has multiple values, how is the order determined?
@@ -262,10 +263,10 @@ A page of 20 roots can turn into thousands of SQL rows if each root has many chi
     a: `**Summary:** The second-level cache lives outside the persistence context and shares entity/collection caching across Sessions. It fits read-heavy, rarely changing data with a consistent invalidation strategy; it should not be enabled broadly for mutable/hot data or for strict consistency requirements, where the cost of synchronization and stale reads exceeds the benefit.
 
 ### Telling the caches apart
-The first-level cache is the persistence context of a single Session and is always tied to the identity map. The second-level cache belongs to the SessionFactory and has its own provider/configuration. The query cache stores query results (usually ID references); it does not replace the entity cache and must be invalidated when the related data changes. A cache hit still requires checking the mapping, version and provider semantics.
+The first-level cache is the persistence context of a single Session and is always tied to the identity map. The second-level cache belongs to the SessionFactory and has its own provider/configuration. The query cache stores query results (usually a list of ID references); it does not replace the entity cache, and Hibernate invalidates every cached result of a table whenever a write hits that table through Hibernate (tracked by a table timestamp), so on a frequently written table the query cache almost always misses. A cache hit still requires checking the mapping, version and provider semantics.
 
 ### When to consider it
-- Small reference catalogs, read frequently and updated rarely.
+- Small reference catalogs (countries, currencies, categories), read frequently and updated rarely.
 - Freshness that can be accepted under a clear policy, or a provider that offers coherence suitable for the topology.
 - A measurable cache hit ratio, evictions, heap/network cost and reduced DB load.
 
