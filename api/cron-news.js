@@ -1,123 +1,10 @@
 'use strict';
 
 const { send, supabase, supabaseConfigured } = require('./_lib');
+// feed list + RSS/Atom parsing live in api/_feeds.js (shared with scripts/news-candidates.js)
+const { FEEDS, fetchFeed } = require('./_feeds');
 
 const CRON_SECRET = process.env.CRON_SECRET;
-
-const FEEDS = [
-  // tech: Java / Spring ecosystem blogs
-  { id: 'inside-java', name: 'Inside Java', category: 'tech', url: 'https://inside.java/feed.xml' },
-  { id: 'spring-blog', name: 'Spring Blog', category: 'tech', url: 'https://spring.io/blog.atom' },
-  { id: 'infoq-java', name: 'InfoQ Java', category: 'tech', url: 'https://feed.infoq.com/java/' },
-  { id: 'baeldung', name: 'Baeldung', category: 'tech', url: 'https://www.baeldung.com/feed' },
-  { id: 'vlad-mihalcea', name: 'Vlad Mihalcea', category: 'tech', url: 'https://vladmihalcea.com/feed/' },
-  { id: 'jetbrains-idea', name: 'JetBrains IntelliJ Blog', category: 'tech', url: 'https://blog.jetbrains.com/idea/feed/' },
-  { id: 'bytebytego', name: 'ByteByteGo', category: 'tech', url: 'https://blog.bytebytego.com/feed' },
-  { id: 'pragmatic-engineer', name: 'The Pragmatic Engineer', category: 'tech', url: 'https://newsletter.pragmaticengineer.com/feed' },
-  { id: 'martin-fowler', name: 'Martin Fowler', category: 'tech', url: 'https://martinfowler.com/feed.atom' },
-  { id: 'hn-300', name: 'Hacker News ≥300 pts', category: 'tech', url: 'https://hnrss.org/newest?points=300' },
-
-  // company: engineering blogs of big tech
-  { id: 'netflix-tech', name: 'Netflix Tech Blog', category: 'company', url: 'https://netflixtechblog.com/feed' },
-  { id: 'meta-eng', name: 'Engineering at Meta', category: 'company', url: 'https://engineering.fb.com/feed/' },
-  { id: 'github-eng', name: 'GitHub Engineering', category: 'company', url: 'https://github.blog/engineering/feed/' },
-  { id: 'cloudflare-blog', name: 'Cloudflare Blog', category: 'company', url: 'https://blog.cloudflare.com/rss/' },
-  { id: 'stripe-blog', name: 'Stripe Blog', category: 'company', url: 'https://stripe.com/blog/feed.rss' },
-  { id: 'shopify-eng', name: 'Shopify Engineering', category: 'company', url: 'https://shopify.engineering/blog.atom' },
-  { id: 'discord-blog', name: 'Discord Blog', category: 'company', url: 'https://discord.com/blog/rss.xml' },
-  { id: 'slack-eng', name: 'Slack Engineering', category: 'company', url: 'https://slack.engineering/feed/' },
-  { id: 'dropbox-tech', name: 'Dropbox Tech', category: 'company', url: 'https://dropbox.tech/feed' },
-  { id: 'pinterest-eng', name: 'Pinterest Engineering', category: 'company', url: 'https://medium.com/feed/@Pinterest_Engineering' },
-  { id: 'grab-eng', name: 'Grab Engineering', category: 'company', url: 'https://engineering.grab.com/feed.xml' },
-  { id: 'aws-arch', name: 'AWS Architecture Blog', category: 'company', url: 'https://aws.amazon.com/blogs/architecture/feed/' },
-];
-
-function parseRSS(text) {
-  const items = [];
-  const itemRegex = /<item>([\s\S]*?)<\/item>/gi;
-  let match;
-  while ((match = itemRegex.exec(text)) !== null) {
-    const content = match[1];
-    const title = extract(content, '<title>', '</title>');
-    const link = extract(content, '<link>', '</link>');
-    const pubDate = extract(content, '<pubDate>', '</pubDate>') || extract(content, '<published>', '</published>');
-    const description = extract(content, '<description>', '</description>') || extract(content, '<summary>', '</summary>');
-    if (title && link) {
-      items.push({ title: clean(title), url: clean(link), published: pubDate ? parseDate(pubDate) : null, summary: clean(description) });
-    }
-  }
-  return items;
-}
-
-function parseAtom(text) {
-  const items = [];
-  const entryRegex = /<entry>([\s\S]*?)<\/entry>/gi;
-  let match;
-  while ((match = entryRegex.exec(text)) !== null) {
-    const content = match[1];
-    const title = extract(content, '<title>', '</title>');
-    const linkMatch = content.match(/<link[^>]*href=["']([^"']+)["']/i);
-    const link = linkMatch ? linkMatch[1] : null;
-    const updated = extract(content, '<updated>', '</updated>') || extract(content, '<published>', '</published>');
-    const summary = extract(content, '<summary>', '</summary>') || extract(content, '<content>', '</content>');
-    if (title && link) {
-      items.push({ title: clean(title), url: clean(link), published: updated ? parseDate(updated) : null, summary: clean(summary) });
-    }
-  }
-  return items;
-}
-
-function extract(text, start, end) {
-  const i = text.indexOf(start);
-  if (i === -1) return null;
-  const j = text.indexOf(end, i + start.length);
-  if (j === -1) return null;
-  return text.slice(i + start.length, j).trim();
-}
-
-function clean(text) {
-  if (!text) return '';
-  return text
-    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&/g, '&')
-    .replace(/</g, '<')
-    .replace(/>/g, '>')
-    .replace(/"/g, '"')
-    .replace(/'/g, "'")
-    .replace(/'/g, "'")
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function parseDate(str) {
-  const d = new Date(str);
-  return isNaN(d.getTime()) ? null : d.toISOString();
-}
-
-async function fetchFeed(feed) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000);
-  try {
-    const res = await fetch(feed.url, { signal: controller.signal });
-    clearTimeout(timeout);
-    if (!res.ok) return { id: feed.id, ok: false, count: 0, error: `HTTP ${res.status}` };
-    const text = await res.text();
-    const isAtom = text.includes('<feed ') || text.includes('<entry>');
-    const items = isAtom ? parseAtom(text) : parseRSS(text);
-    const now = new Date();
-    const weekAgo = new Date(now.getTime() - 7 * 86400000);
-    const recent = items
-      .filter(it => it.published && new Date(it.published) >= weekAgo)
-      .slice(0, 15)
-      .map(it => ({ ...it, category: feed.category, source: feed.name }));
-    return { id: feed.id, ok: true, count: recent.length, items: recent };
-  } catch (e) {
-    clearTimeout(timeout);
-    return { id: feed.id, ok: false, count: 0, error: e.message };
-  }
-}
 
 async function upsertNews(allItems) {
   if (!supabaseConfigured() || allItems.length === 0) return { inserted: 0 };
@@ -133,16 +20,26 @@ async function upsertNews(allItems) {
     summary: it.summary ? it.summary.slice(0, 300) : null,
     published: it.published,
   }));
-  const r = await supabase('/rest/v1/news_items?on_conflict=url', {
+  const insert = list => supabase('/rest/v1/news_items?on_conflict=url', {
     method: 'POST',
     headers: { 'Prefer': 'resolution=ignore-duplicates, return=minimal' },
-    body: JSON.stringify(rows),
+    body: JSON.stringify(list),
   });
+  let r = await insert(rows);
+  let sent = rows;
   if (!r.ok) {
-    const err = await r.text();
-    throw new Error('upsert failed: ' + r.status + ' ' + err);
+    let err = await r.text();
+    // 23514 = check violation: the db still has the old category check (before the devops/cloud migration
+    // in docs/NEWS-DIGEST.md) — keep the old categories flowing instead of failing the whole batch
+    if (/23514/.test(err)) {
+      sent = rows.filter(x => ['tech', 'hiring', 'company'].includes(x.category));
+      console.warn('cron-news: news_items rejects new categories, run the migration in docs/NEWS-DIGEST.md');
+      r = await insert(sent);
+      if (!r.ok) err = await r.text();
+    }
+    if (!r.ok) throw new Error('upsert failed: ' + r.status + ' ' + err);
   }
-  return { inserted: rows.length };   // attempted; duplicates of existing urls are ignored by the db
+  return { inserted: sent.length };   // attempted; duplicates of existing urls are ignored by the db
 }
 
 async function cleanupOldNews() {
@@ -168,7 +65,7 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    const results = await Promise.all(FEEDS.map(fetchFeed));
+    const results = await Promise.all(FEEDS.map(f => fetchFeed(f)));
     const allItems = results.flatMap(r => r.ok ? r.items : []);
     const { inserted } = await upsertNews(allItems);
     await cleanupOldNews();

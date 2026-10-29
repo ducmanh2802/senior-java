@@ -113,13 +113,18 @@ grant select on public.my_ai_usage_today to authenticated;
 create table if not exists public.news_items (
   id          bigint generated always as identity primary key,
   url         text unique not null,
-  category    text not null check (category in ('tech','hiring','company')),
+  category    text not null,
   source      text not null,
   title       text not null,
   summary     text,
   published   timestamptz not null,
   fetched_at  timestamptz not null default now()
 );
+
+-- categories: keep in sync with api/_feeds.js CATEGORIES (drop + add so re-running upgrades an old table)
+alter table public.news_items drop constraint if exists news_items_category_check;
+alter table public.news_items add constraint news_items_category_check
+  check (category in ('tech','hiring','company','devops','cloud'));
 
 create index if not exists news_items_published_desc on public.news_items (published desc);
 
@@ -129,3 +134,20 @@ drop policy if exists "news_items: public read" on public.news_items;
 create policy "news_items: public read" on public.news_items
   for select using (true);
 -- no insert/update/delete policy for anon/authenticated: only server (service role) writes
+
+-- ---------- news_digest: daily curated digest ("Bản tin hôm nay"), written by the editor via
+-- scripts/publish-digest.js with the secret key; see docs/NEWS-DIGEST.md ----------
+create table if not exists public.news_digest (
+  date          date primary key,
+  items         jsonb not null check (jsonb_typeof(items) = 'array'),
+  intro         text,
+  published_at  timestamptz not null default now(),
+  editor        text
+);
+
+alter table public.news_digest enable row level security;
+
+drop policy if exists "news_digest: public read" on public.news_digest;
+create policy "news_digest: public read" on public.news_digest
+  for select using (true);
+-- no insert/update/delete policy for anon/authenticated: only the secret (service role) key writes
