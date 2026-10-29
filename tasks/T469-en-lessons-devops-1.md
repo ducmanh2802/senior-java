@@ -1,6 +1,6 @@
 # T469 — Dịch sang tiếng Anh: lessons-devops (2 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-devops-1.en.js`
 
@@ -16,3 +16,9 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-devops-1.en.js` và `node scripts/check-i18n.js lessons-devops-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đủ 2 mục `lesson-devops-001`, `lesson-devops-002`: title, goals (3 + 3), body, exercises[0] (title, prompt, hints, explain), check (3 + 3, gồm q, options, explain). Không chép starter/tests/reference.
+- Thuật ngữ giữ nguyên (MaxRAMPercentage, OOMKilled, ParallelGCThreads, cgroup, preStop, SIGTERM, readiness/liveness/startup probe…), số liệu và bảng giữ nguyên; nhãn "### Liên hệ phỏng vấn" → "### Interview notes", "> Senior tip:" giữ nguyên.
+- Giữ nguyên markup `**`, `{{code}}`, `###`, danh sách, bảng, `~~~bash/yaml/text`; comment tiếng Việt trong code block (YAML) đã dịch. Escape `\\` trong code bash giữ đúng như bản gốc.
+- Kiểm tra: `node scripts/check-i18n.js lessons-devops-1` → `OK — 2 mục đã dịch.`; `node scripts/validate.js` → `OK — không có lỗi.` (`node --check` bị chặn quyền shell trong phiên này, nhưng file được biên dịch qua `vm` của check-i18n nên cú pháp hợp lệ).
+Reviewed-by: check-i18n (translation, no LLM review)
