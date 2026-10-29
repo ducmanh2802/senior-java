@@ -1,6 +1,6 @@
 # T383 — Dịch sang tiếng Anh: q-security (2 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-security-4.en.js`
 
@@ -16,3 +16,6 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-security-4.en.js` và `node scripts/check-i18n.js q-security-4` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Translated security-023 and security-024 to English in `js/i18n/q-security-4.en.js`.
+- Validated with `node --check` and `node scripts/check-i18n.js`.
+Reviewed-by: check-i18n (translation, no LLM review)
