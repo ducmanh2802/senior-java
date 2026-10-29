@@ -3887,6 +3887,937 @@ final class Batch {
 > Senior tip: kiểm tra collection ở cả hai chiều: caller sửa input sau constructor và caller thử sửa output. Nếu phần tử mutable, thêm test cho mutation lồng sâu.`,
   follow: ['Unmodifiable view khác immutable snapshot thế nào?', 'Khi nào deep copy không đáng chi phí?'],
   tags: ['immutability', 'defensive copy', 'collections', 'API design']
+},
+{
+  id: 'collections-019',
+  topic: 'collections',
+  level: 'mid',
+  q: 'Bạn cần đếm số đơn hàng theo trạng thái và gom danh sách đơn theo khách hàng bằng {{HashMap}}. Bạn viết thế nào với {{getOrDefault}}, {{putIfAbsent}}, {{computeIfAbsent}} và {{merge}}? Mỗi hàm có bẫy gì?',
+  a: `**Tóm tắt:** Đếm tần suất dùng {{map.merge(key, 1, Integer::sum)}}; gom nhóm dùng {{map.computeIfAbsent(key, k -> new ArrayList<>()).add(value)}}. Hai hàm này thay cho kiểu "get rồi kiểm tra null rồi put" vừa dài vừa dễ sai. Bẫy chính: {{merge}} xoá key khi hàm trả {{null}}, {{computeIfAbsent}} không lưu gì nếu hàm trả {{null}}, và {{HashMap}} ném {{ConcurrentModificationException}} nếu hàm tính toán lại sửa chính map đó.
+
+### Hiểu nhanh
+Hình dung một cuốn sổ ghi chép: mỗi trang là một khách hàng. Cách cũ là "mở sổ tìm trang, không có thì xé trang mới, rồi mới ghi". Java 8 cho bạn các lệnh gộp: "ghi vào trang của khách X, chưa có trang thì tự tạo" ({{computeIfAbsent}}), hoặc "cộng thêm 1 vào số đếm của X, chưa có thì bắt đầu từ 1" ({{merge}}).
+
+### Thuật ngữ
+- **getOrDefault(k, d)**: trả value nếu có mapping, ngược lại trả {{d}}; không ghi gì vào map.
+- **putIfAbsent(k, v)**: chỉ put khi key chưa có (hoặc đang map tới null); luôn tạo sẵn {{v}} dù không dùng.
+- **computeIfAbsent(k, f)**: key chưa có thì gọi {{f}} để tạo value, lưu lại và trả về value đó.
+- **merge(k, v, f)**: key chưa có thì lưu {{v}}; đã có thì lưu {{f(cũ, v)}}.
+
+### Cơ chế từng bước
+~~~java
+Map<Status, Integer> countByStatus = new EnumMap<>(Status.class);
+Map<Long, List<Order>> byCustomer = new HashMap<>();
+for (Order o : orders) {
+    // 1. merge: lần đầu lưu 1, các lần sau gọi Integer.sum(cũ, 1)
+    countByStatus.merge(o.status(), 1, Integer::sum);
+    // 2. computeIfAbsent: chỉ tạo ArrayList khi khách chưa có list, rồi add
+    byCustomer.computeIfAbsent(o.customerId(), k -> new ArrayList<>()).add(o);
+}
+int pending = countByStatus.getOrDefault(Status.PENDING, 0); // không có thì 0
+~~~
+1. {{merge}} tìm bucket theo hash của key **một lần**, vì vậy nhanh hơn cặp {{get}} + {{put}} (hai lần tìm).
+2. {{computeIfAbsent}} chỉ gọi lambda khi thật sự thiếu key. Vì sao quan trọng: {{putIfAbsent(k, new ArrayList<>())}} tạo một list mới ở **mọi** vòng lặp rồi vứt đi, tốn rác cho GC.
+3. Giá trị trả về của {{computeIfAbsent}} là value **đang nằm trong map**, nên gọi {{.add(o)}} ngay trên đó là ghi thẳng vào map.
+
+### So sánh nhanh
+| Hàm | Khi key chưa có | Khi key đã có | Dùng cho |
+|---|---|---|---|
+| getOrDefault | trả default, không ghi | trả value | đọc an toàn |
+| putIfAbsent | put v | giữ nguyên | giá trị rẻ, có sẵn |
+| computeIfAbsent | gọi f, lưu kết quả | giữ nguyên | gom nhóm, cache nhỏ |
+| compute | gọi f(k, null) | gọi f(k, cũ) | logic cập nhật phức tạp |
+| merge | lưu v | lưu f(cũ, v) | đếm, cộng dồn |
+
+### Lỗi hay gặp
+1. **merge trả null là xoá key**: {{map.merge(k, -1, (a, b) -> a + b == 0 ? null : a + b)}} sẽ xoá key khi về 0, có khi đúng ý, có khi làm mất dữ liệu. Ngoài ra truyền {{v = null}} vào {{merge}} ném NPE.
+2. **getOrDefault không cứu được value null**: nếu key đang map tới {{null}}, hàm trả {{null}} chứ không trả default.
+3. **Sửa chính map trong lambda**: từ Java 9, {{HashMap.computeIfAbsent}} phát hiện map bị đổi cấu trúc trong lúc tính và ném {{ConcurrentModificationException}} (ví dụ hàm đệ quy tính Fibonacci có memo bằng chính map đó).
+4. **Nghĩ là thread-safe**: các hàm này trên {{HashMap}} không atomic giữa các thread; cần {{ConcurrentHashMap}}, và khi đó đừng làm I/O trong lambda vì nó chạy khi đang giữ lock của bin.
+
+### Trả lời miệng 1 phút
+"Đếm thì tôi dùng merge với Integer::sum, gom nhóm thì computeIfAbsent rồi add. Chúng chỉ tìm bucket một lần và tránh tạo object thừa như putIfAbsent. Cần nhớ ba bẫy: merge trả null là xoá key, getOrDefault vẫn trả null nếu value là null, và lambda không được sửa chính map. Nếu nhiều thread cùng ghi thì đổi sang ConcurrentHashMap, nơi các hàm này mới atomic theo key."
+
+> Senior tip: nếu dữ liệu đã nằm trong một collection, {{Collectors.groupingBy(Order::customerId)}} và {{groupingBy(Order::status, counting())}} thường gọn hơn vòng for; còn khi đọc dữ liệu theo luồng (Kafka, file từng dòng) thì {{merge}}/{{computeIfAbsent}} là lựa chọn tự nhiên. Với key là enum, dùng {{EnumMap}} để vừa nhanh vừa in ra đúng thứ tự khai báo.`,
+  follow: ['Vì sao putIfAbsent(k, new ArrayList<>()) tốn hơn computeIfAbsent trong vòng lặp lớn?', 'Trên ConcurrentHashMap, merge có atomic không và có rủi ro gì khi lambda chậm?', 'Viết lại đoạn đếm trên bằng Collectors.groupingBy thế nào?'],
+  tags: ['HashMap', 'merge', 'computeIfAbsent', 'getOrDefault', 'Java 8']
+},
+{
+  id: 'collections-020',
+  topic: 'collections',
+  level: 'mid',
+  q: 'Class {{Employee}} cần được sắp xếp theo mã nhân viên ở hầu hết mọi nơi, nhưng màn hình báo cáo lại cần sắp theo lương giảm dần rồi theo tên. Bạn dùng {{Comparable}} hay {{Comparator}} cho từng nhu cầu, và viết {{compareTo}} thế nào cho đúng?',
+  a: `**Tóm tắt:** {{Comparable}} định nghĩa **thứ tự tự nhiên** duy nhất, nằm trong chính class ({{compareTo}}), phù hợp cho mã nhân viên. {{Comparator}} là thứ tự **bên ngoài**, có thể có nhiều cái, phù hợp cho báo cáo "lương giảm dần rồi tên". Khi viết so sánh, dùng {{Integer.compare}}/{{Long.compare}} hoặc {{Comparator.comparing}}, tuyệt đối không dùng phép trừ vì có thể tràn số.
+
+### Hiểu nhanh
+{{Comparable}} giống quy ước "xếp hàng theo số báo danh" in sẵn trên thẻ học sinh: ai cũng hiểu, chỉ có một. {{Comparator}} giống tờ giấy cô giáo cầm tay: hôm nay xếp theo chiều cao, mai xếp theo điểm, mỗi tờ là một luật riêng và không phải sửa thẻ học sinh.
+
+### Thuật ngữ
+- **compareTo(o)**: trả số âm nếu this đứng trước o, 0 nếu bằng nhau, dương nếu đứng sau.
+- **Natural ordering**: thứ tự mà {{TreeMap}}, {{TreeSet}}, {{Collections.sort(list)}} dùng khi không truyền comparator.
+- **Consistent with equals**: {{compareTo == 0}} khi và chỉ khi {{equals}} là true.
+
+### Cách viết
+~~~java
+record Employee(long id, String name, BigDecimal salary) implements Comparable<Employee> {
+    @Override
+    public int compareTo(Employee o) {
+        return Long.compare(id, o.id);     // KHÔNG viết (int) (id - o.id)
+    }
+}
+// Báo cáo: lương giảm dần, cùng lương thì theo tên A-Z
+Comparator<Employee> report = Comparator
+        .comparing(Employee::salary, Comparator.reverseOrder())
+        .thenComparing(Employee::name);
+list.sort(report);              // list.sort() không sửa class Employee
+Collections.sort(list);          // dùng natural ordering: theo id
+~~~
+Từng bước khi {{list.sort(report)}} so sánh hai người: (1) lấy salary của cả hai, so sánh ngược; (2) nếu khác nhau, trả kết quả luôn; (3) nếu bằng (trả 0), mới chuyển sang {{thenComparing}} so tên. Vì sao chuỗi như vậy an toàn: mỗi bước chỉ chạy khi bước trước hòa.
+
+### Vì sao phép trừ là bẫy
+{{a - b}} với {{int}} có thể tràn: {{Integer.MIN_VALUE - 1}} thành {{Integer.MAX_VALUE}} (số dương), nghĩa là số nhỏ nhất lại bị xếp **sau**. Với {{long}} ép về {{int}} còn tệ hơn: {{(int) (5_000_000_000L - 0)}} ra một số âm. Bug này chỉ lộ với dữ liệu cực trị nên thường lọt qua test.
+
+### Khi nào chọn cái nào
+| Tình huống | Chọn |
+|---|---|
+| Class có một thứ tự hiển nhiên (id, ngày, số tiền) | Comparable |
+| Nhiều cách sắp, tùy màn hình | Comparator |
+| Class không sửa được (thư viện, class của team khác) | Comparator |
+| Key của TreeMap/TreeSet | Comparable hoặc truyền Comparator vào constructor |
+
+### Lỗi hay gặp
+1. **compareTo không nhất quán với equals**: {{TreeSet}} coi hai object có {{compareTo == 0}} là trùng và **bỏ mất** một cái, dù {{equals}} khác nhau.
+2. **Lỗi suy luận kiểu với reversed()**: {{Comparator.comparing(e -> e.salary()).reversed()}} không biên dịch vì lambda bị suy ra kiểu {{Object}}; dùng method reference {{Employee::salary}} hoặc ghi rõ kiểu {{(Employee e) -> ...}}.
+3. **Quên null**: field null làm {{compareTo}} ném NPE; dùng {{Comparator.nullsLast(...)}}.
+
+### Trả lời miệng 1 phút
+"Comparable là thứ tự tự nhiên viết trong class, chỉ một cái, TreeMap và Collections.sort dùng mặc định; ở đây tôi cho Employee so sánh theo id bằng Long.compare. Comparator là thứ tự bên ngoài, dùng cho báo cáo: comparing salary reverseOrder rồi thenComparing name. Tôi không dùng phép trừ vì tràn số, và giữ compareTo nhất quán với equals để TreeSet không nuốt phần tử."
+
+> Senior tip: đừng cho entity/DTO implement {{Comparable}} chỉ vì một màn hình cần sắp xếp; thứ tự nghiệp vụ thay đổi theo yêu cầu, nên để nó thành các hằng {{Comparator}} có tên ({{Employee.BY_SALARY_DESC}}) và viết unit test với dữ liệu trùng lương, null và giá trị cực trị.`,
+  follow: ['Vì sao TreeSet có thể "mất" phần tử khi compareTo không nhất quán với equals?', 'Comparator.comparing(...).reversed() đảo cả chuỗi hay chỉ khoá đầu?', 'BigDecimal có compareTo nhất quán với equals không?'],
+  tags: ['Comparable', 'Comparator', 'sorting', 'compareTo']
+},
+{
+  id: 'collections-021',
+  topic: 'collections',
+  level: 'mid',
+  q: 'Cho 5 bài toán: tra cứu sản phẩm theo mã, danh sách mã đã xử lý (không trùng), lịch sử thao tác theo thứ tự thời gian, bảng xếp hạng điểm luôn sắp xếp, hàng đợi việc cần làm. Bạn chọn collection nào cho từng bài và lý do là gì?',
+  a: `**Tóm tắt:** Chọn collection bằng cách trả lời 3 câu hỏi: **tra cứu theo gì** (vị trí, key, hay chỉ "có hay không"), **có cho trùng không**, và **cần thứ tự gì** (không cần, thứ tự chèn, hay sắp xếp). Với 5 bài: {{HashMap}}, {{HashSet}}, {{ArrayList}}, {{TreeMap}}/{{TreeSet}}, {{ArrayDeque}} (hoặc {{PriorityQueue}} nếu có độ ưu tiên).
+
+### Hiểu nhanh
+Collection giống các loại tủ đồ: kệ sách đánh số ({{List}}, lấy theo vị trí), tủ có nhãn tên ({{Map}}, lấy theo key), túi đựng bi không cho bi trùng ({{Set}}), và ống xếp hàng ({{Queue}}/{{Deque}}, vào đầu này ra đầu kia). Chọn sai tủ thì vẫn cất được đồ, nhưng tìm lại rất chậm.
+
+### Thuật ngữ
+- **O(1)**: thời gian gần như không đổi dù dữ liệu lớn; **O(log n)**: tăng rất chậm (1 triệu phần tử chỉ khoảng 20 bước); **O(n)**: phải duyệt hết.
+- **Insertion order**: duyệt ra đúng thứ tự đã thêm vào.
+- **Sorted order**: duyệt ra theo thứ tự so sánh (Comparable/Comparator).
+
+### Cây quyết định
+~~~text
+Lấy theo key?  ── có ──> Map: cần sorted? TreeMap : cần thứ tự chèn? LinkedHashMap : HashMap
+      │ không
+Chỉ hỏi "có/không", không trùng? ── có ──> Set: TreeSet / LinkedHashSet / HashSet
+      │ không
+Lấy/xoá ở hai đầu (FIFO/LIFO)? ── có ──> ArrayDeque (ưu tiên: PriorityQueue)
+      │ không
+Danh sách theo vị trí ──> ArrayList
+~~~
+
+### Áp dụng cho 5 bài
+| Bài toán | Chọn | Vì sao |
+|---|---|---|
+| Tra sản phẩm theo mã | HashMap<String, Product> | get theo key O(1) trung bình |
+| Mã đã xử lý | HashSet<String> | contains O(1), tự loại trùng |
+| Lịch sử thao tác | ArrayList<Action> | thêm cuối O(1) khấu hao, giữ thứ tự |
+| Bảng xếp hạng | TreeMap<Integer, List<Player>> | luôn sắp xếp, có firstKey, headMap, O(log n) |
+| Hàng đợi việc | ArrayDeque<Job> (PriorityQueue nếu có ưu tiên) | offer/poll hai đầu O(1) |
+
+Với bảng xếp hạng, dùng {{TreeMap}} theo điểm và value là list người chơi vì nhiều người có thể cùng điểm; nếu dùng {{TreeSet<Player>}} thì comparator phải phân định cả khi cùng điểm (thêm id), nếu không người cùng điểm bị coi là trùng và biến mất.
+
+### Lỗi hay gặp
+1. **Dùng List để kiểm tra tồn tại**: {{list.contains(x)}} là O(n); trong vòng lặp 100.000 phần tử thành 10 tỷ phép so sánh. Đổi sang {{HashSet}}.
+2. **Dựa vào thứ tự duyệt của HashMap/HashSet**: thứ tự không được đảm bảo và có thể đổi khi map resize. Cần thứ tự chèn thì dùng {{LinkedHashMap}}/{{LinkedHashSet}}.
+3. **Dùng Stack hoặc LinkedList làm hàng đợi** khi chỉ chạy một thread: {{ArrayDeque}} nhanh và ít rác hơn.
+4. **Key của HashMap là object mutable** hoặc chưa override {{equals}}/{{hashCode}}: tra không ra dữ liệu.
+5. **Dùng collection thường giữa nhiều thread**: cần {{ConcurrentHashMap}}, {{BlockingQueue}}... thay vì {{HashMap}}/{{ArrayDeque}}.
+
+### Trả lời miệng 1 phút
+"Tôi hỏi ba câu: tra theo gì, có trùng không, cần thứ tự gì. Tra theo mã dùng HashMap, tập mã đã xử lý dùng HashSet, lịch sử theo thời gian dùng ArrayList, bảng xếp hạng luôn sắp xếp dùng TreeMap theo điểm, hàng đợi dùng ArrayDeque hoặc PriorityQueue nếu có ưu tiên. Nếu nhiều thread cùng truy cập, tôi đổi sang bản concurrent tương ứng."
+
+> Senior tip: khi review code, cứ thấy {{contains}}, {{indexOf}} hay {{remove(Object)}} trên {{List}} nằm trong vòng lặp là đáng nghi ngờ; một lần đổi sang {{Set}} từng giúp tôi giảm job đối soát từ hàng chục phút xuống vài giây. Còn với dữ liệu bảng xếp hạng thật sự lớn hoặc chia sẻ giữa nhiều instance, chuyển sang Redis Sorted Set thay vì giữ {{TreeMap}} trong heap.`,
+  follow: ['Nếu bảng xếp hạng cần lấy top 10 rất thường xuyên nhưng cập nhật điểm liên tục, bạn chọn gì?', 'Khi nào LinkedHashMap tốt hơn TreeMap?', 'Khi nào chọn PriorityQueue thay vì TreeSet?'],
+  tags: ['collections', 'HashMap', 'TreeMap', 'ArrayDeque', 'choosing collection']
+},
+{
+  id: 'collections-022',
+  topic: 'collections',
+  level: 'mid',
+  q: 'Job đối chiếu 100.000 giao dịch với 100.000 bản ghi ngân hàng chạy mất 40 phút, profiler chỉ vào {{ArrayList.contains}}. Bạn giải thích vì sao chậm và sửa thế nào? Nêu độ phức tạp các thao tác chính của ArrayList, LinkedList, HashMap, TreeMap.',
+  a: `**Tóm tắt:** {{ArrayList.contains}} phải duyệt tuần tự và gọi {{equals}} từng phần tử, tức O(n). Gọi nó trong vòng lặp n lần thành O(n²): 100.000 × 100.000 = 10 tỷ lần so sánh. Sửa bằng cách đưa một phía vào {{HashSet}}/{{HashMap}} (O(1) trung bình), tổng còn O(n), thường chỉ mất dưới một giây.
+
+### Hiểu nhanh
+Tìm một cái tên trong danh sách lớp **không sắp xếp** thì phải đọc từ đầu tới cuối. Nếu phải tìm 100.000 cái tên như vậy, bạn đọc lại cả danh sách 100.000 lần. {{HashSet}} giống một tủ có nhãn chữ cái: biết tên là mở thẳng ngăn tương ứng, không cần đọc ngăn khác.
+
+### Thuật ngữ
+- **Big-O**: cách đo thời gian tăng thế nào khi dữ liệu tăng, bỏ qua hằng số.
+- **Trung bình (average) vs xấu nhất (worst)**: {{HashMap.get}} trung bình O(1), xấu nhất O(log n) từ Java 8 khi bucket đã được treeify.
+- **Khấu hao (amortized)**: {{ArrayList.add}} thỉnh thoảng phải copy mảng sang mảng lớn hơn, nhưng chia đều thì vẫn O(1).
+
+### Cơ chế từng bước
+~~~java
+// Chậm: O(n * m)
+List<String> bankIds = loadBankIds();          // ArrayList 100k phần tử
+for (Txn t : txns) {                           // 100k vòng
+    if (!bankIds.contains(t.ref())) missing.add(t);  // mỗi lần duyệt tới 100k
+}
+// Nhanh: O(n + m)
+Set<String> bankSet = new HashSet<>(bankIds);  // build một lần: O(m)
+for (Txn t : txns) {
+    if (!bankSet.contains(t.ref())) missing.add(t);  // O(1) trung bình
+}
+~~~
+1. {{new HashSet<>(bankIds)}} tính {{hashCode}} từng chuỗi và đặt vào bucket: 100.000 thao tác.
+2. Mỗi {{contains}} tính hash của chuỗi cần tìm, nhảy thẳng tới bucket và chỉ so {{equals}} với vài phần tử trong bucket.
+3. Tổng khoảng 200.000 thao tác thay vì 10 tỷ. Vì sao chênh lệch lớn vậy: n² tăng bùng nổ, nhân đôi dữ liệu thì O(n²) chậm gấp 4, còn O(n) chỉ chậm gấp 2.
+
+### Bảng độ phức tạp
+| Thao tác | ArrayList | LinkedList | HashMap/HashSet | TreeMap/TreeSet |
+|---|---|---|---|---|
+| get theo index | O(1) | O(n) | - | - |
+| tìm theo giá trị/key | O(n) | O(n) | O(1) tb | O(log n) |
+| thêm cuối | O(1) khấu hao | O(1) | O(1) tb | O(log n) |
+| chèn/xoá ở giữa | O(n) dịch mảng | O(n) tìm vị trí + O(1) nối | - | - |
+| duyệt có thứ tự | thứ tự chèn | thứ tự chèn | không đảm bảo | sắp xếp |
+
+Lưu ý: {{LinkedList}} chỉ O(1) khi bạn **đã đứng sẵn** tại node (qua iterator); còn {{list.add(i, x)}} phải đi bộ tới vị trí i nên vẫn O(n).
+
+### Lỗi hay gặp
+1. **{{list.remove(Object)}} và {{indexOf}} trong vòng lặp**: cũng O(n) mỗi lần, dẫn tới O(n²) giống hệt.
+2. **{{stream().filter(x -> other.contains(x))}}** với {{other}} là List: cùng bug, chỉ là viết đẹp hơn.
+3. **Key thiếu {{equals}}/{{hashCode}}**: chuyển sang HashSet thì tra không ra; với object tự viết, dùng {{record}} hoặc override đúng cả hai.
+4. **{{removeAll(list)}}**: {{ArrayList.removeAll}} gọi {{contains}} trên collection truyền vào, nên truyền {{HashSet}} thay vì List.
+
+### Trả lời miệng 1 phút
+"ArrayList.contains duyệt tuần tự O(n), gọi trong vòng lặp n lần thành O(n²), 10 tỷ phép so sánh. Tôi build một HashSet từ phía bản ghi ngân hàng một lần rồi tra O(1), tổng O(n), từ 40 phút xuống dưới một giây. Ngoài ra tôi nhớ bảng: ArrayList get theo index O(1) nhưng tìm O(n), HashMap tra O(1) trung bình, TreeMap O(log n) nhưng có thứ tự."
+
+> Senior tip: khi đối soát dữ liệu lớn hơn nhiều so với heap (hàng chục triệu dòng), đừng nạp cả hai phía vào Java; đẩy việc so khớp xuống DB bằng {{JOIN}}/{{EXCEPT}} trên cột có index, hoặc sort hai file rồi merge tuần tự. Big-O đúng mà tràn heap thì vẫn là sự cố.`,
+  follow: ['HashMap.get khi nào thoái hoá và Java 8 cải thiện gì?', 'Vì sao LinkedList.add(index, x) không phải O(1)?', 'Với 50 triệu bản ghi bạn đối soát thế nào?'],
+  tags: ['Big-O', 'complexity', 'ArrayList', 'HashSet', 'performance']
+},
+{
+  id: 'collections-023',
+  topic: 'collections',
+  level: 'mid',
+  q: 'Unit test so sánh chuỗi JSON in ra từ một {{HashMap}} (hoặc từ {{Set.of}}) lúc pass lúc fail, và sau khi nâng JDK thì fail hẳn. Vì sao? Bạn duyệt Map thế nào cho đúng và hiệu quả?',
+  a: `**Tóm tắt:** {{HashMap}}, {{HashSet}}, {{Set.of}}, {{Map.of}} **không đảm bảo thứ tự duyệt**. Thứ tự phụ thuộc hash, capacity hiện tại (đổi khi resize), phiên bản JDK, và riêng {{Set.of}}/{{Map.of}} còn được xáo theo một giá trị "salt" ngẫu nhiên nên có thể khác nhau giữa các lần chạy JVM. Test không được dựa vào thứ tự đó; cần thứ tự thì dùng {{LinkedHashMap}} (thứ tự chèn) hoặc {{TreeMap}} (sắp xếp). Khi duyệt cần cả key và value, dùng {{entrySet()}} hoặc {{forEach((k, v) -> ...)}}, không dùng {{keySet()}} rồi {{get(k)}}.
+
+### Hiểu nhanh
+{{HashMap}} giống bãi giữ xe chia ô theo biển số: xe nằm ở ô do công thức quyết định, không theo giờ vào. Khi bãi mở rộng (resize), công thức chia lại ô và xe đổi chỗ. Nếu bạn đi dọc bãi đọc biển số, thứ tự đọc được hôm nay khác hôm qua là bình thường.
+
+### Thuật ngữ
+- **Iteration order**: thứ tự mà vòng for-each trả phần tử.
+- **Resize/rehash**: khi số phần tử vượt {{capacity × 0.75}}, HashMap gấp đôi mảng bucket và phân bổ lại phần tử.
+- **Entry**: cặp key-value, kiểu {{Map.Entry<K, V>}}.
+
+### Vì sao thứ tự thay đổi
+1. Vị trí bucket = {{(hash ^ (hash >>> 16)) & (capacity - 1)}}. Capacity đổi từ 16 lên 32 thì phép {{&}} lấy thêm 1 bit, phần tử bị chia sang ô khác, nên thứ tự duyệt đổi.
+2. Cài đặt {{hashCode}}/{{HashMap}} có thể khác giữa các bản JDK (Java 8 từng đổi cách xử lý bucket so với Java 7), nên nâng JDK là test lộ bug.
+3. {{Set.of}}/{{Map.of}} (Java 9+) cố ý trộn thứ tự bằng một "salt" ngẫu nhiên (javadoc ghi rõ thứ tự duyệt là unspecified và có thể thay đổi) để chính bạn không vô tình phụ thuộc vào thứ tự. Kết quả: test pass/fail tùy lần chạy.
+
+### Duyệt Map đúng cách
+~~~java
+Map<String, Integer> stock = new LinkedHashMap<>(); // cần thứ tự chèn ổn định
+// Tốt: một lần duyệt, có sẵn key và value
+for (Map.Entry<String, Integer> e : stock.entrySet()) {
+    System.out.println(e.getKey() + "=" + e.getValue());
+}
+stock.forEach((sku, qty) -> System.out.println(sku + "=" + qty)); // gọn hơn
+// Kém: mỗi vòng thêm một lần tra cứu; với TreeMap là O(log n) mỗi lần
+for (String sku : stock.keySet()) {
+    Integer qty = stock.get(sku);
+}
+~~~
+
+### Cách sửa test
+| Cách | Khi nào |
+|---|---|
+| So sánh object: {{assertEquals(expectedMap, actualMap)}} | {{Map.equals}} không quan tâm thứ tự |
+| So sánh JSON theo ngữ nghĩa (JSONAssert, AssertJ {{containsExactlyInAnyOrderEntriesOf}}) | test API |
+| Dùng LinkedHashMap/TreeMap trong code | khi thứ tự là yêu cầu nghiệp vụ thật |
+| Jackson {{ORDER_MAP_ENTRIES_BY_KEYS}} | output JSON cần ổn định để so sánh, cache, ký số |
+
+### Lỗi hay gặp
+1. **Trả {{Set.of(...)}} hoặc {{HashSet}} ra API rồi frontend hiển thị theo thứ tự đó**: mỗi lần deploy thứ tự lại khác.
+2. **Tạo chữ ký/hash từ việc nối các entry của HashMap**: hai server cho hai chữ ký khác nhau cho cùng dữ liệu.
+3. **Lấy "phần tử đầu tiên" của HashSet** làm giá trị mặc định: kết quả không xác định.
+
+### Trả lời miệng 1 phút
+"HashMap và Set.of không đảm bảo thứ tự: nó phụ thuộc hash, capacity và bản JDK, còn Set.of cố ý xáo theo salt ngẫu nhiên nên có thể khác giữa các lần chạy, nên test lúc pass lúc fail. Tôi sửa test để so sánh theo nội dung, còn nếu nghiệp vụ cần thứ tự thì dùng LinkedHashMap hoặc TreeMap. Khi duyệt tôi dùng entrySet hoặc forEach thay vì keySet rồi get."
+
+> Senior tip: test "flaky" kiểu này hay xuất hiện ngay sau khi nâng JDK hoặc đổi {{List}} sang {{Set}} cho nhanh; trước khi nâng version, grep các chỗ serialize {{HashMap}}/{{HashSet}} ra chuỗi để so sánh, ký HMAC hoặc làm cache key. Từ Java 21, {{LinkedHashMap}}/{{LinkedHashSet}} còn là {{SequencedMap}}/{{SequencedSet}} nên lấy phần tử đầu, cuối rất tiện.`,
+  follow: ['Map.equals so sánh hai map khác class (HashMap và TreeMap) được không?', 'Vì sao Set.of cố ý xáo thứ tự?', 'Bạn sinh chữ ký HMAC cho một payload dạng Map thế nào để ổn định?'],
+  tags: ['HashMap', 'iteration order', 'Set.of', 'LinkedHashMap', 'flaky test']
+},
+{
+  id: 'collections-024',
+  topic: 'collections',
+  level: 'senior',
+  q: 'Đồng nghiệp gọi {{map.keySet().remove(k)}}, sửa {{entry.setValue()}}, rồi trả {{bigList.subList(0, 10)}} cho cache. Sau đó dữ liệu gốc bị đổi bất ngờ và heap phình to. Collection "view" hoạt động thế nào và bạn xử lý ra sao?',
+  a: `**Tóm tắt:** {{keySet()}}, {{values()}}, {{entrySet()}}, {{subList()}}, {{headMap()}}... không phải bản copy mà là **view**: một cửa sổ nhìn vào collection gốc. Sửa qua view là sửa gốc, sửa gốc thì view thấy ngay (hoặc hỏng với {{ConcurrentModificationException}}), và view giữ reference tới toàn bộ gốc nên {{subList}} 10 phần tử vẫn giữ cả list 1 triệu phần tử trong heap. Cần dữ liệu độc lập thì copy: {{new ArrayList<>(list.subList(0, 10))}} hoặc {{List.copyOf(...)}}.
+
+### Hiểu nhanh
+View giống cửa kính nhìn vào kho: bạn nhìn qua kính thấy hàng thật, thò tay qua cửa (nếu cửa cho phép) là lấy hàng thật ra khỏi kho. Copy thì giống chụp ảnh kho: ảnh không đổi khi kho đổi, nhưng tốn giấy in.
+
+### Thuật ngữ
+- **View**: object implement Collection/Map nhưng không có dữ liệu riêng, mọi thao tác chuyển tiếp xuống collection gốc.
+- **Write-through**: thao tác ghi trên view ghi thẳng xuống gốc.
+- **Structural modification**: thay đổi số phần tử (add/remove), khác với chỉ thay giá trị ({{set}}).
+
+### Cơ chế từng bước
+~~~java
+Map<String, Integer> stock = new HashMap<>(Map.of("A", 1, "B", 0));
+stock.values().removeIf(q -> q == 0);    // xoá luôn entry "B" khỏi map gốc
+stock.keySet().remove("A");              // map gốc giờ rỗng
+// stock.keySet().add("C");              // UnsupportedOperationException: view không biết value
+
+List<Integer> big = new ArrayList<>(bigData);   // 1 triệu phần tử
+List<Integer> top = big.subList(0, 10);         // giữ reference tới big
+big.add(42);                                    // đổi cấu trúc gốc
+top.get(0);                                     // ConcurrentModificationException
+~~~
+1. {{subList}} của {{ArrayList}} lưu {{parent}}, {{offset}}, {{size}} và {{modCount}} tại thời điểm tạo. Mỗi thao tác kiểm tra {{modCount}} của gốc; lệch là ném CME. Vì sao: sau khi gốc thêm/bớt, offset cũ không còn trỏ đúng phần tử.
+2. Vì giữ {{parent}}, GC không thu hồi được list lớn: cache 10.000 subList nhỏ có thể giữ 10.000 list lớn.
+3. {{entry.setValue(v)}} trên {{HashMap.entrySet()}} ghi thẳng vào node của map, an toàn trong lúc duyệt; còn {{Map.of(...)}} hay {{Map.entry(k, v)}} thì entry là bất biến và ném {{UnsupportedOperationException}}.
+4. {{TreeMap.headMap(k)}}/{{subMap}} cũng là view có giới hạn khoảng: thêm key nằm ngoài khoảng qua view sẽ ném {{IllegalArgumentException}}.
+
+### Mẹo hữu ích từ view
+- Xoá một đoạn: {{list.subList(from, to).clear()}} nhanh hơn xoá từng phần tử bằng vòng lặp.
+- Lọc map tại chỗ: {{map.entrySet().removeIf(e -> e.getValue() == 0)}}.
+
+### Bảng so sánh
+| | View | Copy |
+|---|---|---|
+| Chi phí tạo | O(1) | O(n) |
+| Thấy thay đổi của gốc | có | không |
+| Giữ gốc trong heap | có | không |
+| An toàn để cache/trả qua API | không | có |
+
+### Lỗi hay gặp
+1. **Cache {{subList}}** hoặc trả nó ra khỏi method: rò bộ nhớ và CME khó tái hiện.
+2. **Truyền {{map.keySet()}} cho code khác** rồi code đó {{removeAll}} làm mất dữ liệu map.
+3. **Nghĩ {{Collections.unmodifiableList(list)}} là snapshot**: nó vẫn là view, gốc đổi thì nó đổi theo.
+4. **Duyệt {{subList}} trong khi thread khác sửa gốc**: lỗi ngẫu nhiên.
+
+### Trả lời miệng 1 phút
+"keySet, values, entrySet, subList, headMap là view chứ không phải copy: ghi qua view là ghi vào gốc, gốc đổi cấu trúc thì subList ném CME, và view giữ reference tới gốc nên cache subList nhỏ vẫn giữ cả list lớn. Tôi dùng view cho thao tác tại chỗ như entrySet().removeIf hay subList().clear(), còn khi cần lưu hoặc trả ra ngoài thì copy bằng List.copyOf."
+
+> Senior tip: một sự cố tôi từng gặp là heap dump cho thấy hàng nghìn {{ArrayList}} 200.000 phần tử bị giữ bởi {{ArrayList$SubList}} trong cache "top 20". Trong MAT, xem dominator tree, nếu thấy {{SubList}} hay {{KeySet}} giữ retained size lớn bất thường thì gần như chắc chắn ai đó cache view thay vì copy.`,
+  follow: ['Vì sao keySet().add() bị cấm nhưng keySet().remove() lại được?', 'List.copyOf có copy lại nếu list đầu vào đã immutable không?', 'Làm sao phát hiện subList giữ bộ nhớ trong heap dump?'],
+  tags: ['view', 'subList', 'keySet', 'entrySet', 'memory leak']
+},
+{
+  id: 'collections-025',
+  topic: 'collections',
+  level: 'senior',
+  q: 'Bạn biết trước sẽ nạp 100.000 phần tử vào {{HashMap}} và {{ArrayList}}. Có nên khai báo initial capacity không, tính thế nào cho đúng? Vì sao {{new HashMap<>(100_000)}} chưa chắc tránh được resize, và {{HashMap.newHashMap}} (Java 19) giải quyết gì?',
+  a: `**Tóm tắt:** Nên khai báo khi biết trước kích thước và dữ liệu đủ lớn (hàng chục nghìn phần tử trở lên, hoặc code nóng chạy liên tục). Với {{ArrayList}}, {{new ArrayList<>(n)}} là đủ. Với {{HashMap}}, tham số constructor là **số bucket**, không phải số phần tử: map resize khi số phần tử vượt {{capacity × 0.75}}, nên phải truyền khoảng {{n / 0.75}}. Java 19 thêm {{HashMap.newHashMap(n)}}, {{HashSet.newHashSet(n)}}, {{LinkedHashMap.newLinkedHashMap(n)}} nhận thẳng **số phần tử dự kiến** và tự tính.
+
+### Hiểu nhanh
+Đặt bàn tiệc cho 100 khách: nhà hàng có quy định "bàn chỉ được lấp 75% chỗ cho thoáng". Nếu bạn đặt đúng 100 ghế thì đến khách thứ 76 họ phải dọn sang phòng lớn hơn (resize), xếp lại toàn bộ khách. Đặt sẵn khoảng 134 ghế thì không phải dọn.
+
+### Thuật ngữ
+- **Capacity**: số bucket (HashMap) hoặc độ dài mảng bên trong (ArrayList).
+- **Load factor**: tỉ lệ lấp đầy cho phép trước khi resize, mặc định 0,75.
+- **Threshold**: {{capacity × loadFactor}}; vượt ngưỡng này thì resize.
+
+### Cơ chế từng bước
+1. **ArrayList**: mặc định mảng rỗng, lần add đầu cấp 10, mỗi lần đầy tăng khoảng 1,5 lần ({{old + (old >> 1)}}) và copy toàn bộ sang mảng mới. Từ 10 lên 100.000 mất khoảng 23 lần copy, tổng số phần tử bị copy cỡ 2 lần n, tạo nhiều mảng rác.
+2. **HashMap**: capacity luôn là lũy thừa của 2. {{new HashMap<>(100)}} làm tròn lên 128, threshold là 96, nên phần tử thứ 97 gây resize lên 256: mọi entry bị tính lại vị trí.
+3. **newHashMap(100)**: tính {{ceil(100 / 0.75) = 134}}, làm tròn lên 256, threshold 192, chứa đủ 100 phần tử mà không resize.
+
+~~~java
+List<Order> orders = new ArrayList<>(rows.size());      // đúng ngay
+Map<Long, Order> byId = HashMap.newHashMap(rows.size()); // Java 19+
+// Java 17: tự tính, tránh resize
+Map<Long, Order> byId17 = new HashMap<>((int) Math.ceil(rows.size() / 0.75));
+// Hoặc dùng Guava: Maps.newHashMapWithExpectedSize(n)
+~~~
+
+### Số liệu minh hoạ
+| Kích thước | Không khai báo | Khai báo đúng |
+|---|---|---|
+| ArrayList 100.000 | ~23 lần cấp mảng mới | 1 lần |
+| HashMap 100.000 | resize 14 lần (16 → 32 → ... → 262.144) | 0 lần |
+
+Mức lợi thực tế thường là vài đến vài chục phần trăm thời gian nạp và ít rác hơn, không phải gấp nhiều lần. Đáng làm ở code nóng hoặc batch lớn, không đáng làm cho map 5 phần tử.
+
+### Khi nào không nên
+- Không biết trước kích thước: đoán quá lớn thì phí bộ nhớ (mảng bucket rỗng vẫn chiếm chỗ).
+- Collection nhỏ, tạo một lần: code thêm rối mà không đo được lợi.
+- Đừng tăng load factor lên 1.0 để "tiết kiệm": nhiều va chạm hơn, tra chậm hơn.
+
+### Lỗi hay gặp
+1. **{{new HashMap<>(n)}} với n là số phần tử**: vẫn resize một lần như ví dụ trên.
+2. **Nhầm {{new ArrayList<>(n)}} là list có n phần tử**: {{size()}} vẫn là 0, gọi {{set(5, x)}} ném {{IndexOutOfBoundsException}}.
+3. **Khai báo capacity khổng lồ "cho chắc"** cho map tạo theo từng request: mỗi request cấp mảng lớn, GC chịu khổ.
+
+### Trả lời miệng 1 phút
+"ArrayList thì truyền n là đủ. HashMap thì tham số là số bucket, map resize khi vượt 75% nên phải truyền n chia 0,75; new HashMap(100) vẫn resize ở phần tử 97. Java 19 có HashMap.newHashMap(n) nhận số phần tử dự kiến. Tôi chỉ làm việc này ở batch lớn hoặc code nóng, có đo trước và sau."
+
+> Senior tip: trong một job nạp 5 triệu entry vào {{HashMap}}, việc tính đúng capacity giảm đáng kể thời gian nạp và các đợt GC do cấp mảng lớn; nhưng lợi ích lớn hơn nhiều thường đến từ việc không giữ 5 triệu object boxed trong heap ngay từ đầu. Đo bằng JMH hoặc ít nhất bằng GC log trước khi kết luận.`,
+  follow: ['Vì sao capacity của HashMap phải là lũy thừa của 2?', 'Tăng load factor lên 1.0 được gì, mất gì?', 'ArrayList.trimToSize dùng khi nào?'],
+  tags: ['HashMap', 'ArrayList', 'initial capacity', 'load factor', 'Java 19']
+},
+{
+  id: 'collections-026',
+  topic: 'collections',
+  level: 'lead',
+  q: 'Bạn review code của một team và đặt guideline dùng collection cho cả dự án. Những anti-pattern nào về collection bạn hay thấy gây sự cố production, và bạn biến chúng thành quy tắc (kèm cách kiểm tra tự động) thế nào?',
+  a: `**Tóm tắt:** Các sự cố collection hay gặp nhất không đến từ thuật toán phức tạp mà từ vài thói quen: **cache bằng static Map không giới hạn** (rò bộ nhớ), **nạp toàn bộ bảng vào List** (OOM), **O(n²) do contains trên List**, **chia sẻ collection không thread-safe**, **trả null thay vì collection rỗng**, và **lộ collection mutable nội bộ**. Guideline tốt nêu quy tắc ngắn, lý do, ví dụ đúng/sai, và được kiểm tra bằng công cụ (static analysis, ArchUnit, test tải) chứ không chỉ dựa vào trí nhớ người review.
+
+### Hiểu nhanh
+Collection giống thùng chứa trong nhà kho: lỗi hiếm khi là "chọn sai loại thùng", mà là "thùng không có nắp nên đầy tràn", "hai người cùng bốc một thùng", hoặc "đưa chìa khoá kho cho khách". Guideline là nội quy kho, còn công cụ tự động là camera.
+
+### Thuật ngữ
+- **Unbounded**: không có giới hạn kích thước, lớn dần theo thời gian chạy.
+- **Static analysis**: công cụ đọc code tìm mẫu lỗi (Sonar, Error Prone, SpotBugs).
+- **ArchUnit**: thư viện viết test kiểm tra quy tắc kiến trúc trong code Java.
+
+### Bảng anti-pattern và quy tắc
+| Anti-pattern | Hậu quả production | Quy tắc |
+|---|---|---|
+| {{static Map}} làm cache, không eviction | heap tăng dần, Full GC rồi OOM sau vài ngày | dùng Caffeine/Spring Cache có maximumSize và TTL |
+| {{findAll()}} rồi lọc trong Java | OOM khi bảng lớn lên | phân trang, stream hoặc lọc ở SQL |
+| {{list.contains}} trong vòng lặp | job chạy chậm theo n² | tra cứu dùng Set/Map |
+| HashMap/ArrayList dùng chung giữa thread | mất dữ liệu, có thể treo CPU | dùng concurrent collection hoặc giữ bất biến |
+| Trả {{null}} cho danh sách | NPE ở caller | trả {{List.of()}} |
+| Getter trả field mutable | caller sửa trạng thái nội bộ | {{List.copyOf}} ở constructor |
+| Key mutable hoặc thiếu equals/hashCode | tra không ra, "mất" phần tử | key là record/giá trị bất biến |
+| Dựa vào thứ tự HashMap/Set.of | test flaky, output khác nhau giữa server | LinkedHashMap/TreeMap khi cần thứ tự |
+
+### Quy trình đặt guideline (từng bước)
+1. **Thu thập bằng chứng**: gom postmortem, heap dump, slow job của 6-12 tháng; chỉ đưa vào guideline những lỗi đã thực sự xảy ra. Vì sao: quy tắc có câu chuyện thật thì team tin và nhớ.
+2. **Viết ngắn**: mỗi quy tắc một dòng, kèm ví dụ sai/đúng và link sự cố.
+3. **Tự động hoá**: bật rule Sonar/Error Prone phù hợp; viết ArchUnit cấm field {{static}} kiểu {{Map}} không final trong package service; thêm test tải với dữ liệu cỡ production cho các job batch.
+4. **Đo trong runtime**: metric kích thước cache ({{cache.size}}, hit ratio), alert heap sau Full GC tăng dần.
+5. **Review lại định kỳ**: bỏ quy tắc không còn giá trị, thêm quy tắc từ sự cố mới.
+
+~~~java
+// Sai: cache không giới hạn, sống bằng vòng đời ứng dụng
+private static final Map<String, Rate> RATES = new HashMap<>();
+// Đúng: có giới hạn, có hết hạn, thread-safe (Caffeine)
+private final Cache<String, Rate> rates = Caffeine.newBuilder()
+        .maximumSize(10_000)
+        .expireAfterWrite(Duration.ofMinutes(10))
+        .recordStats()                      // để xuất hit ratio ra metric
+        .build();
+~~~
+
+### Lỗi hay gặp khi làm guideline
+1. **Quá dài, quá chung chung** ("dùng collection phù hợp"): không ai áp dụng được.
+2. **Cấm tuyệt đối** (cấm LinkedList, cấm stream): gây tranh cãi vô ích; nên nêu "mặc định" và "ngoại lệ có lý do".
+3. **Không có công cụ**: quy tắc chỉ sống trong đầu reviewer, nghỉ phép là lỗi quay lại.
+
+### Trả lời miệng 1 phút
+"Lỗi collection gây sự cố thường là cache static không giới hạn, findAll rồi lọc trong Java, contains trên List trong vòng lặp, chia sẻ HashMap giữa thread, trả null và lộ collection mutable. Tôi viết guideline ngắn dựa trên sự cố thật, mỗi quy tắc có ví dụ sai/đúng, rồi tự động hoá bằng Sonar, ArchUnit, test tải và metric kích thước cache, và rà lại định kỳ."
+
+> Senior tip: quy tắc có giá trị nhất tôi từng đưa vào là "mọi Map dùng làm cache phải có giới hạn và metric". Một service thanh toán từng Full GC liên tục sau 5 ngày uptime chỉ vì {{static HashMap}} lưu token theo request; sau khi đổi sang Caffeine có {{maximumSize}} và dashboard hit ratio, heap phẳng và lỗi không tái diễn.`,
+  follow: ['Bạn viết ArchUnit rule thế nào để cấm static mutable Map?', 'Làm sao phát hiện cache không giới hạn từ heap dump?', 'Khi nào static Map vẫn chấp nhận được?'],
+  tags: ['code review', 'guideline', 'memory leak', 'Caffeine', 'anti-pattern']
+},
+{
+  id: 'modern-017',
+  topic: 'modern',
+  level: 'mid',
+  q: 'Bạn review đoạn code {{orders.stream().filter(...).forEach(o -> result.add(o.id()))}} và một chỗ khác dùng mảng một phần tử {{int[] total}} để cộng dồn trong lambda. Code này sai hoặc rủi ro ở đâu, và bạn viết lại thế nào cho đúng tinh thần Stream API?',
+  a: `**Tóm tắt:** Lambda trong stream nên là **hàm thuần**: chỉ nhận input và trả output, không sửa biến bên ngoài (side-effect). Đổ kết quả vào {{result.add}} hay cộng vào {{total[0]}} chạy được ở stream tuần tự nhưng **sai khi chuyển sang parallel** (mất phần tử, tổng sai, có thể ném exception), khó đọc và khó test. Viết lại bằng các thao tác có sẵn: {{map(...).toList()}}, {{collect(...)}}, {{mapToLong(...).sum()}}, {{reduce}}.
+
+### Hiểu nhanh
+Stream giống dây chuyền nhà máy: mỗi trạm (filter, map) nhận sản phẩm, xử lý, chuyển tiếp; cuối dây có thùng gom hàng (collect). Side-effect giống công nhân ở giữa dây tự ý ôm sản phẩm bỏ vào túi riêng. Khi nhà máy chạy một dây thì còn tạm ổn; khi mở thêm nhiều dây song song (parallel), nhiều người cùng nhét vào một cái túi thì hàng rơi mất.
+
+### Thuật ngữ
+- **Side-effect**: lambda thay đổi trạng thái bên ngoài nó (thêm vào list, tăng biến đếm, ghi log, gọi DB).
+- **Stateless / non-interfering**: yêu cầu của Stream API: lambda không phụ thuộc trạng thái thay đổi và không sửa nguồn dữ liệu đang duyệt.
+- **Reduction**: gộp nhiều phần tử thành một kết quả (tổng, list, map) bằng {{reduce}}/{{collect}}.
+
+### Vì sao side-effect nguy hiểm
+1. {{ArrayList}} không thread-safe. Ở parallel stream, nhiều thread của ForkJoinPool cùng gọi {{add}}: hai thread ghi vào cùng một ô mảng, kết quả mất phần tử, có khi ném {{ArrayIndexOutOfBoundsException}} lúc mảng đang được mở rộng.
+2. Mảng một phần tử {{int[] total = new int[1]}} là mẹo lách luật "effectively final" (biến mảng không đổi, nhưng phần tử thì đổi). Ở parallel, {{total[0] += x}} là đọc-cộng-ghi không atomic nên tổng bị thiếu.
+3. Ngay cả khi tuần tự, người đọc phải tìm xem {{result}} được khai báo ở đâu, ai khác sửa nó. Còn {{collect}} cho thấy rõ "đầu ra là gì".
+4. Stream lazy: nếu bạn quên terminal operation, lambda có side-effect **không bao giờ chạy**, nên logic "tranh thủ" ghi gì đó trong {{map}}/{{peek}} có thể biến mất.
+
+### Viết lại
+~~~java
+// Trước: side-effect
+List<Long> result = new ArrayList<>();
+orders.stream().filter(o -> o.paid()).forEach(o -> result.add(o.id()));
+// Sau: biểu thức trả về kết quả
+List<Long> ids = orders.stream()
+        .filter(Order::paid)
+        .map(Order::id)
+        .toList();                         // Java 16+, list không sửa được
+
+long total = orders.stream()
+        .filter(Order::paid)
+        .mapToLong(Order::amountCents)     // tránh boxing Long
+        .sum();                            // reduction an toàn kể cả parallel
+
+Map<String, Long> countByCity = orders.stream()
+        .collect(Collectors.groupingBy(Order::city, Collectors.counting()));
+~~~
+
+### Khi nào forEach vẫn đúng
+{{forEach}} là terminal operation hợp lệ khi **mục đích chính** là hành động bên ngoài: gửi từng event, in log, ghi file. Khi đó viết rõ ràng, thậm chí vòng for thường còn dễ đọc hơn, và không được dùng parallel nếu đích ghi không thread-safe.
+
+| Mục đích | Dùng |
+|---|---|
+| Tạo list/set/map mới | {{toList()}}, {{collect(...)}} |
+| Tính tổng, đếm, min/max | {{sum}}, {{count}}, {{max}}, {{reduce}} |
+| Gửi/ghi từng phần tử ra ngoài | {{forEach}} hoặc vòng for |
+
+### Lỗi hay gặp
+1. **Dùng {{peek}} để làm logic nghiệp vụ**: {{peek}} chỉ dành cho debug; JDK có thể bỏ qua nó (ví dụ {{count()}} trên nguồn biết trước size từ Java 9 không chạy pipeline).
+2. **Sửa chính collection nguồn trong lambda** ({{list.stream().forEach(x -> list.remove(x))}}): {{ConcurrentModificationException}}.
+3. **Dùng {{Collections.synchronizedList}} để "chữa" parallel**: chạy đúng nhưng mọi thread tranh nhau một lock, mất hết lợi ích song song; dùng {{collect}} thì mỗi thread gom riêng rồi mới gộp.
+
+### Trả lời miệng 1 phút
+"Lambda trong stream nên là hàm thuần. Đổ kết quả vào list bên ngoài hay cộng vào int[] chạy được ở stream tuần tự nhưng sai ở parallel vì ArrayList và phép cộng không thread-safe, và làm code khó đọc. Tôi viết lại bằng map rồi toList, mapToLong rồi sum, groupingBy với counting. forEach tôi chỉ dùng khi mục đích chính là hành động ra ngoài như gửi event."
+
+> Senior tip: khi review, tôi tìm nhanh các mẫu {{forEach(x -> list.add}}, {{new int[1]}}, {{AtomicInteger}} trong lambda và {{peek(}}: phần lớn đều viết lại được bằng {{collect}}/{{reduce}} ngắn hơn. Sonar có rule cảnh báo một số mẫu này; bật nó để reviewer không phải nhắc lại mãi.`,
+  follow: ['Vì sao collect an toàn ở parallel stream còn forEach + add thì không?', 'Khi nào JDK bỏ qua peek?', 'Dùng AtomicLong trong lambda có phải giải pháp tốt không?'],
+  tags: ['Stream', 'side-effect', 'collect', 'parallel stream', 'forEach']
+},
+{
+  id: 'modern-018',
+  topic: 'modern',
+  level: 'mid',
+  q: 'Team đang dùng Lombok {{@Data}}, {{@Value}}, {{@Builder}} ở khắp nơi và có người đề xuất chuyển sang {{record}}. Với DTO request/response, value object (Money, Email), class cấu hình và JPA entity, bạn chọn record, Lombok hay class viết tay? Vì sao?',
+  a: `**Tóm tắt:** {{record}} (Java 16) là lựa chọn mặc định cho dữ liệu **bất biến**: DTO, value object, class cấu hình ({{@ConfigurationProperties}}), projection. Lombok {{@Value}} gần giống record nhưng là thư viện ngoài; {{@Data}} sinh setter nên tạo object mutable, chỉ hợp khi framework cần setter. JPA entity giữ là **class thường** (có thể dùng vài annotation Lombok an toàn như {{@Getter}}), không dùng record và tránh {{@Data}}. {{@Builder}} vẫn hữu ích khi object có nhiều field tuỳ chọn.
+
+### Hiểu nhanh
+Record giống tờ hoá đơn đã in: ghi một lần, ai cũng đọc được, không ai sửa được, hai tờ cùng nội dung là bằng nhau. Lombok {{@Data}} giống tờ giấy nháp ghi bằng bút chì: tiện sửa, nhưng ai cầm cũng sửa được. Lombok là "máy in tự động" chạy lúc compile, còn record là tính năng có sẵn của ngôn ngữ.
+
+### Thuật ngữ
+- **Record**: class final, field {{private final}}, tự sinh constructor, accessor dạng {{name()}}, {{equals}}, {{hashCode}}, {{toString}}.
+- **Lombok**: annotation processor can thiệp vào quá trình biên dịch để sinh code (getter, setter, builder...).
+- **Value object**: object được nhận diện bằng giá trị (hai {{Money(100, VND)}} là như nhau), không có danh tính riêng.
+
+### So sánh
+| | record | Lombok @Value | Lombok @Data | Class viết tay |
+|---|---|---|---|---|
+| Bất biến | có | có | không (có setter) | tuỳ |
+| Phụ thuộc ngoài | không | có (Lombok + plugin IDE) | có | không |
+| Accessor | {{name()}} | {{getName()}} | {{getName()}}/{{setName()}} | tuỳ |
+| Kế thừa class khác | không | không (final) | được | được |
+| Builder | tự viết | thêm {{@Builder}} | thêm {{@Builder}} | tự viết |
+| JPA entity | không | không | rủi ro | nên dùng |
+
+### Chọn cho từng loại (từng bước)
+1. **DTO request/response**: record. Jackson 2.12+ map được record, Bean Validation đặt annotation trên component ({{record CreateOrder(@NotBlank String sku, @Positive int qty)}}).
+2. **Value object**: record + compact constructor để validate và chuẩn hoá. Vì sao: bất biến làm value object an toàn khi dùng làm key Map hoặc chia sẻ giữa thread.
+3. **Class cấu hình**: record với {{@ConfigurationProperties}} (Spring Boot 3 binding qua constructor), không cần setter.
+4. **JPA entity**: class thường. JPA cần constructor không tham số, field không final và Hibernate tạo proxy bằng cách kế thừa class; record là final nên không đáp ứng được. Tránh {{@Data}} trên entity vì {{equals}}/{{hashCode}} trên mọi field và {{toString}} chạm vào quan hệ lazy.
+
+~~~java
+// Value object bằng record: validate một lần, sau đó không ai sửa được
+public record Email(String value) {
+    public Email {                                  // compact constructor
+        Objects.requireNonNull(value, "email");
+        value = value.strip().toLowerCase();        // chuẩn hoá trước khi gán field
+        if (!value.contains("@")) throw new IllegalArgumentException("email không hợp lệ");
+    }
+}
+~~~
+
+### Lỗi hay gặp
+1. **Record chứa {{List}} mutable**: record chỉ "nông" bất biến; caller giữ list gốc vẫn sửa được. Dùng {{List.copyOf}} trong compact constructor.
+2. **Chuyển {{@Data}} sang record rồi code gọi {{getName()}} vỡ**: accessor record tên là {{name()}}; một số thư viện cũ (JSP EL, BeanUtils đời cũ) chỉ hiểu getter kiểu JavaBean.
+3. **Record có quá nhiều field (15+)**: constructor dài, dễ truyền nhầm vị trí; tách thành record con hoặc dùng builder.
+4. **Trộn Lombok {{@Data}} với kế thừa**: {{equals}} sinh ra mặc định không gọi {{super.equals}}, kèm cảnh báo; dễ có hai object khác nhau bị coi là bằng.
+
+### Trả lời miệng 1 phút
+"Dữ liệu bất biến tôi dùng record: DTO, value object, cấu hình. Nó có sẵn trong ngôn ngữ, không phụ thuộc Lombok, bất biến và equals theo giá trị. Lombok @Data tạo object mutable nên tôi chỉ dùng khi framework cần setter. JPA entity giữ class thường vì cần no-arg constructor, field không final và proxy; trên entity tôi không dùng @Data. Builder thì vẫn dùng Lombok @Builder khi có nhiều field tuỳ chọn."
+
+> Senior tip: đừng chuyển hàng loạt từ Lombok sang record trong một PR; đi theo từng module và bắt đầu ở DTO của API mới. Lombok vẫn là phụ thuộc compile-time cần theo kịp mỗi lần nâng JDK (các bản Lombok cũ từng vỡ khi lên Java 16+ do strong encapsulation), nên càng ít chỗ phụ thuộc vào nó thì nâng cấp càng nhẹ.`,
+  follow: ['Record có implement interface và có static factory method được không?', 'Vì sao @Data trên JPA entity gây StackOverflowError hoặc LazyInitializationException?', 'Bạn thêm builder cho record thế nào khi không dùng Lombok?'],
+  tags: ['record', 'Lombok', 'DTO', 'value object', 'Java 16']
+},
+{
+  id: 'modern-019',
+  topic: 'modern',
+  level: 'mid',
+  q: 'Form đăng ký nhận chuỗi người dùng dán vào có khoảng trắng lạ, xuống dòng, và bạn cần sinh nội dung email có định dạng. Bạn dùng các String API từ Java 11 trở đi ({{strip}}, {{isBlank}}, {{lines}}, {{repeat}}, {{formatted}}...) thế nào, và {{strip()}} khác {{trim()}} ra sao?',
+  a: `**Tóm tắt:** {{trim()}} chỉ cắt các ký tự có mã nhỏ hơn hoặc bằng U+0020 (space và ký tự điều khiển ASCII), còn {{strip()}} (Java 11) cắt mọi ký tự mà {{Character.isWhitespace}} coi là khoảng trắng, kể cả khoảng trắng Unicode như U+3000 hay U+2003. {{isBlank()}} kiểm tra chuỗi rỗng hoặc toàn khoảng trắng, {{lines()}} tách dòng thành Stream, {{repeat(n)}} lặp chuỗi, {{formatted(...)}} (Java 15) là {{String.format}} viết gọn. Lưu ý: cả {{strip}} lẫn {{trim}} đều **không** cắt non-breaking space U+00A0.
+
+### Hiểu nhanh
+Người dùng copy từ Word, Excel hay web thường kéo theo "khoảng trắng tàng hình": nhìn như dấu cách nhưng là ký tự khác. {{trim()}} chỉ biết dấu cách kiểu máy chữ cũ; {{strip()}} biết thêm các dấu cách của bảng mã Unicode. Giống bảo vệ chỉ nhận diện đồng phục cũ so với bảo vệ có danh sách đồng phục mới.
+
+### Thuật ngữ
+- **Whitespace Unicode**: các ký tự khoảng trắng ngoài space thường, ví dụ em space (U+2003), ideographic space (U+3000).
+- **NBSP (U+00A0)**: dấu cách "không ngắt dòng", hay gặp khi copy từ HTML; {{Character.isWhitespace}} trả false cho nó.
+- **Line terminator**: {{\\n}}, {{\\r}}, {{\\r\\n}}; {{lines()}} hiểu cả ba.
+
+### Các API đáng nhớ
+| API | Từ | Dùng để |
+|---|---|---|
+| {{isBlank()}} | 11 | validate input rỗng hoặc toàn khoảng trắng |
+| {{strip()}}, {{stripLeading()}}, {{stripTrailing()}} | 11 | cắt khoảng trắng Unicode |
+| {{lines()}} | 11 | tách dòng thành Stream, không tạo mảng lớn |
+| {{repeat(n)}} | 11 | lặp chuỗi (kẻ đường, padding) |
+| {{indent(n)}}, {{transform(f)}} | 12 | thụt lề từng dòng, áp hàm lên chuỗi |
+| {{formatted(...)}}, {{stripIndent()}} | 15 | format gọn, xử lý text block |
+| {{String.join}}, {{chars()}} | 8 | nối có dấu phân cách, duyệt ký tự |
+
+### Ví dụ xử lý input từng bước
+~~~java
+String raw = "\\u3000 Nguyễn Văn A\\u00A0\\n";
+raw.trim();        // vẫn còn U+3000 ở đầu (mã > U+0020) và NBSP ở cuối
+raw.strip();       // cắt U+3000 và \\n, nhưng NBSP vẫn còn
+String name = raw.replace('\\u00A0', ' ').strip();   // xử lý NBSP trước rồi mới strip
+if (name.isBlank()) throw new IllegalArgumentException("Tên trống");
+
+long nonEmpty = csvText.lines().filter(l -> !l.isBlank()).count(); // đếm dòng có dữ liệu
+String line = "-".repeat(40);
+String body = "Xin chào %s, đơn %d đã giao.".formatted(name, orderId);
+~~~
+1. {{replace('\\u00A0', ' ')}} đổi NBSP thành space thường. Vì sao phải làm tay: {{strip}} dựa trên {{isWhitespace}}, mà hàm này cố ý loại trừ các dấu cách "không ngắt".
+2. {{strip()}} cắt ở hai đầu, còn khoảng trắng giữa chữ giữ nguyên; muốn gộp nhiều space liên tiếp thì dùng {{replaceAll("\\\\s+", " ")}} (lưu ý {{\\s}} mặc định chỉ khớp ASCII).
+3. {{lines()}} trả Stream lazy, hợp khi xử lý chuỗi nhiều dòng mà không muốn {{split("\\n")}} tạo cả mảng.
+
+### Lỗi hay gặp
+1. **Dùng {{trim()}} cho dữ liệu copy từ Excel/web**: so sánh tên, email bị lệch, tạo bản ghi trùng.
+2. **Nghĩ {{strip()}} xử lý được mọi thứ**: NBSP và zero-width space (U+200B) vẫn lọt; cần chuẩn hoá riêng.
+3. **{{isEmpty()}} thay cho {{isBlank()}}**: chuỗi "   " lọt validate.
+4. **{{String.format}}/{{formatted}} trong vòng lặp nóng**: chậm hơn nối chuỗi nhiều lần vì phải parse pattern; dùng cho log/thông báo, không dùng cho xử lý hàng triệu dòng.
+5. **Phụ thuộc locale**: {{toLowerCase()}} không truyền {{Locale.ROOT}} có thể cho kết quả khác trên máy cấu hình tiếng Thổ Nhĩ Kỳ (chữ I).
+
+### Trả lời miệng 1 phút
+"trim chỉ cắt ký tự có mã tới U+0020, strip từ Java 11 cắt khoảng trắng Unicode theo Character.isWhitespace, nhưng cả hai đều không cắt NBSP nên tôi thay NBSP trước. Validate dùng isBlank thay vì isEmpty. Tách dòng dùng lines, kẻ đường dùng repeat, sinh nội dung dùng formatted hoặc text block. Với input người dùng, tôi chuẩn hoá ở một chỗ duy nhất trước khi lưu."
+
+> Senior tip: đặt một hàm chuẩn hoá chung (thay NBSP, zero-width, {{strip}}, Unicode {{Normalizer.normalize(s, Form.NFC)}} cho tiếng Việt) và gọi ở biên nhận dữ liệu. Tiếng Việt có thể ở dạng dựng sẵn (NFC) hoặc tổ hợp (NFD, hay gặp khi copy từ macOS): hai chuỗi trông giống hệt nhưng {{equals}} trả false, gây trùng khách hàng khi tìm theo tên.`,
+  follow: ['Vì sao Character.isWhitespace không coi NBSP là khoảng trắng?', 'NFC và NFD khác nhau thế nào, ảnh hưởng gì tới tìm kiếm tiếng Việt?', 'Khi nào dùng StringBuilder thay vì formatted?'],
+  tags: ['String', 'strip', 'isBlank', 'Unicode', 'Java 11']
+},
+{
+  id: 'modern-020',
+  topic: 'modern',
+  level: 'mid',
+  q: 'Bạn cần tính ngày đến hạn "sau 1 tháng", số ngày quá hạn, và nhắc lịch "cùng giờ ngày mai" cho khách ở nhiều múi giờ. Dùng {{Period}}, {{Duration}}, {{ChronoUnit}} thế nào? Các bẫy cuối tháng, DST và định dạng {{YYYY}} là gì, và bạn test code phụ thuộc thời gian ra sao?',
+  a: `**Tóm tắt:** {{Period}} đo khoảng thời gian **theo lịch** (năm, tháng, ngày), {{Duration}} đo **thời lượng chính xác** (giây, nano). Cộng tháng dùng {{plusMonths}}/{{Period}} (31/1 + 1 tháng = 29/2 năm nhuận, tự kẹp về ngày cuối tháng); đếm ngày dùng {{ChronoUnit.DAYS.between}}. "Cùng giờ ngày mai" ở vùng có DST phải dùng {{plusDays(1)}} trên {{ZonedDateTime}}, không phải cộng 24 giờ. Định dạng năm dùng {{yyyy}}, không dùng {{YYYY}} (năm theo tuần). Code phụ thuộc "bây giờ" nhận {{Clock}} qua constructor để test cố định thời gian.
+
+### Hiểu nhanh
+{{Period}} giống lịch treo tường: "sau 1 tháng" là lật sang trang tháng sau, tháng 2 ngắn thì dừng ở ngày cuối. {{Duration}} giống đồng hồ bấm giờ: đúng 86.400 giây, không quan tâm hôm đó có đổi giờ mùa hè hay không.
+
+### Thuật ngữ
+- **DST (Daylight Saving Time)**: giờ mùa hè, một số nước vặn đồng hồ lên/xuống 1 giờ, tạo ra ngày dài 23 hoặc 25 giờ. Việt Nam không có DST, nhưng khách ở Mỹ, châu Âu thì có.
+- **ChronoUnit**: đơn vị thời gian ({{DAYS}}, {{MONTHS}}...), có {{between(a, b)}} đếm số đơn vị trọn vẹn.
+- **Week-based year**: năm tính theo tuần ISO; vài ngày cuối tháng 12 có thể thuộc "năm tuần" sau.
+
+### Cơ chế từng bước
+~~~java
+LocalDate.of(2024, 1, 31).plusMonths(1);   // 2024-02-29: kẹp về ngày cuối tháng
+LocalDate.of(2024, 1, 31).plusMonths(1).plusMonths(1); // 2024-03-29, KHÔNG phải 31/3
+LocalDate.of(2024, 1, 31).plusMonths(2);   // 2024-03-31
+
+long overdue = ChronoUnit.DAYS.between(dueDate, today);   // số ngày trọn vẹn
+
+ZonedDateTime ny = ZonedDateTime.of(2024, 3, 9, 12, 0, 0, 0, ZoneId.of("America/New_York"));
+ny.plusDays(1);                    // 2024-03-10T12:00-04:00: cùng giờ trên đồng hồ
+ny.plus(Duration.ofHours(24));     // 2024-03-10T13:00-04:00: ngày 10/3 chỉ dài 23 giờ
+~~~
+1. {{plusMonths}} giữ nguyên ngày nếu được; tháng đích không có ngày đó thì lấy ngày cuối tháng. Vì vậy cộng hai lần một tháng khác với cộng một lần hai tháng: lịch trả góp phải luôn tính từ **ngày gốc** ({{start.plusMonths(i)}}), không cộng dồn từ kỳ trước.
+2. {{plusDays}} trên {{ZonedDateTime}} làm việc trên giờ địa phương rồi mới quy về offset mới; {{plus(Duration)}} cộng trên timeline tuyệt đối. Vì sao khác: ngày 10/3/2024 ở New York đồng hồ nhảy từ 2:00 lên 3:00.
+3. Với hạn chót tính theo giờ (token hết hạn sau 24h), dùng {{Instant.plus(Duration)}}, vì đó là thời lượng thật.
+
+### Bảng chọn
+| Nhu cầu | Dùng |
+|---|---|
+| Sau N tháng/năm (hợp đồng, trả góp) | {{LocalDate.plusMonths}}, {{Period}} |
+| Hết hạn sau N giờ/phút (token, OTP) | {{Instant.plus(Duration)}} |
+| Đếm ngày giữa hai ngày | {{ChronoUnit.DAYS.between}} |
+| Nhắc lịch theo giờ địa phương của khách | {{ZonedDateTime.plusDays}} với ZoneId của khách |
+
+### Lỗi hay gặp
+1. **{{YYYY}} trong pattern**: {{DateTimeFormatter.ofPattern("YYYY-MM-dd")}} in ngày 30/12/2024 thành "2025-12-30" vì {{Y}} là năm theo tuần. Dùng {{yyyy}} (hoặc {{uuuu}}).
+2. **{{hh}} thay vì {{HH}}**: {{hh}} là giờ 1-12, thiếu AM/PM thì 14:00 thành 02:00.
+3. **Gọi {{LocalDate.now()}} rải rác**: phụ thuộc múi giờ mặc định của server (container thường là UTC), test không cố định được.
+4. **Dùng {{SimpleDateFormat}} static chung**: không thread-safe; {{DateTimeFormatter}} bất biến nên dùng chung thoải mái.
+5. **{{Period.between(a, b).getDays()}} để lấy tổng số ngày**: nó chỉ trả phần "ngày" sau khi đã trừ tháng (1 tháng 3 ngày thì ra 3).
+
+### Test với Clock
+~~~java
+class DueService {
+    private final Clock clock;                        // inject, không gọi now() trực tiếp
+    DueService(Clock clock) { this.clock = clock; }
+    boolean isOverdue(LocalDate due) { return LocalDate.now(clock).isAfter(due); }
+}
+var fixed = Clock.fixed(Instant.parse("2024-12-31T17:30:00Z"), ZoneId.of("Asia/Ho_Chi_Minh"));
+new DueService(fixed).isOverdue(LocalDate.of(2024, 12, 31)); // true: ở VN đã là 1/1/2025
+~~~
+
+### Trả lời miệng 1 phút
+"Period cho khoảng theo lịch như tháng, năm; Duration cho thời lượng chính xác như token 24 giờ; đếm ngày dùng ChronoUnit.DAYS.between. Cộng tháng sẽ kẹp về cuối tháng nên lịch trả góp luôn tính từ ngày gốc. Nhắc lịch cùng giờ ngày mai thì plusDays trên ZonedDateTime theo múi giờ khách, vì ngày đổi DST chỉ có 23 hoặc 25 giờ. Pattern dùng yyyy chứ không YYYY, và tôi inject Clock để test."
+
+> Senior tip: bug {{YYYY}} thường chỉ lộ đúng tuần cuối tháng 12, khi cả team nghỉ lễ; thêm unit test với ngày 29-31/12 cho mọi pattern ngày tháng. Với Spring, khai báo một bean {{Clock}} ({{Clock.systemUTC()}}) và cho mọi service nhận qua constructor; test chỉ việc thay bằng {{Clock.fixed}}.`,
+  follow: ['Lịch trả góp ngày 31 hàng tháng bạn tính thế nào cho đúng?', 'Instant, LocalDateTime và ZonedDateTime nên dùng ở tầng nào?', 'Khi một giờ địa phương không tồn tại do DST (2:30 sáng), ZonedDateTime xử lý ra sao?'],
+  tags: ['java.time', 'Period', 'Duration', 'DST', 'Clock']
+},
+{
+  id: 'modern-021',
+  topic: 'modern',
+  level: 'mid',
+  q: 'Bạn cần truyền logic tuỳ biến (kiểm tra, chuyển đổi, tạo object) vào một method dùng chung. Khi nào dùng sẵn {{Function}}, {{Predicate}}, {{Supplier}}, {{Consumer}}, {{UnaryOperator}}, khi nào dùng bản primitive như {{IntPredicate}}, và ghép chúng bằng {{andThen}}, {{compose}}, {{Predicate.not}} thế nào? Khi nào nên tự định nghĩa interface?',
+  a: `**Tóm tắt:** Gói {{java.util.function}} có sẵn các "hình dạng" hàm phổ biến: {{Function<T, R>}} (T vào, R ra), {{Predicate<T>}} (T vào, boolean ra), {{Supplier<T>}} (không vào, T ra), {{Consumer<T>}} (T vào, không ra), {{UnaryOperator<T>}}/{{BinaryOperator<T>}} (cùng kiểu vào ra). Bản primitive ({{IntPredicate}}, {{ToLongFunction}}...) tránh boxing ở code nóng. Ghép hàm bằng {{andThen}}/{{compose}}, ghép điều kiện bằng {{and}}/{{or}}/{{negate}}/{{Predicate.not}} (Java 11). Tự định nghĩa {{@FunctionalInterface}} khi cần **tên nghiệp vụ rõ nghĩa**, cần ném checked exception hoặc có nhiều hơn 2 tham số.
+
+### Hiểu nhanh
+Functional interface giống ổ cắm điện chuẩn: {{Predicate}} là ổ "cắm vào cho kết quả đúng/sai", {{Supplier}} là ổ "không cần đưa gì, trả ra một thứ". Lambda là phích cắm. Dùng ổ chuẩn thì phích nào cũng cắm được, không phải tự chế ổ riêng cho từng thiết bị.
+
+### Thuật ngữ
+- **Functional interface**: interface có đúng một method abstract, lambda có thể "đóng vai" nó.
+- **Boxing**: đổi {{int}} thành {{Integer}} (object trên heap); xảy ra khi dùng {{Function<Integer, Integer>}}.
+- **Composition**: ghép hàm nhỏ thành hàm lớn mà không viết lại logic.
+
+### Bảng chọn
+| Hình dạng | Interface | Ví dụ |
+|---|---|---|
+| T vào, R ra | {{Function<T, R>}} | {{Order::total}} |
+| T vào, boolean ra | {{Predicate<T>}} | {{o -> o.paid()}} |
+| không vào, T ra | {{Supplier<T>}} | {{() -> new ArrayList<>()}} |
+| T vào, không ra | {{Consumer<T>}} | {{log::info}} |
+| T, U vào, R ra | {{BiFunction<T, U, R>}} | {{(a, b) -> a.add(b)}} |
+| T vào, T ra | {{UnaryOperator<T>}} | {{String::strip}} |
+| int vào, boolean ra | {{IntPredicate}} | {{n -> n > 0}} (không boxing) |
+
+### Ghép hàm từng bước
+~~~java
+Function<String, String> clean = String::strip;
+Function<String, String> lower = s -> s.toLowerCase(Locale.ROOT);
+Function<String, String> normalize = clean.andThen(lower);  // strip trước, lower sau
+// compose ngược thứ tự: lower.compose(clean) cũng là strip trước rồi lower
+
+Predicate<Order> paid = Order::paid;
+Predicate<Order> bigPaid = paid.and(o -> o.totalCents() > 10_000_000);
+List<String> nonBlank = names.stream()
+        .filter(Predicate.not(String::isBlank))   // gọn hơn s -> !s.isBlank()
+        .toList();
+
+// Supplier: chỉ tạo giá trị khi thực sự cần (lazy)
+String v = cache.getOrDefault(key, null);
+String r = Optional.ofNullable(v).orElseGet(() -> loadFromDb(key));
+~~~
+1. {{f.andThen(g)}} nghĩa là "chạy f, lấy kết quả đưa cho g"; {{f.compose(g)}} là "chạy g trước rồi f". Vì sao cần nhớ: đọc nhầm thứ tự thì strip/lower đổi chỗ, thường vô hại, nhưng với "validate rồi mã hoá" thì sai nghiêm trọng.
+2. {{Predicate.not(String::isBlank)}} tồn tại vì method reference không thể viết {{!String::isBlank}}.
+3. {{Supplier}} trì hoãn việc tính toán: {{orElseGet(supplier)}} chỉ gọi DB khi không có giá trị, khác {{orElse(loadFromDb(key))}} luôn gọi.
+
+### Khi nào tự định nghĩa interface
+~~~java
+@FunctionalInterface
+interface FeeCalculator {                  // tên nghiệp vụ rõ hơn BiFunction<Order, Customer, BigDecimal>
+    BigDecimal fee(Order order, Customer customer);
+}
+~~~
+- Tên nói lên ý nghĩa, Javadoc được, IDE gợi ý tốt.
+- Cần ném checked exception (các interface chuẩn không khai báo {{throws}}).
+- Có từ 3 tham số trở lên (JDK không có {{TriFunction}}).
+
+### Lỗi hay gặp
+1. **{{Function<Integer, Integer>}} trong vòng lặp hàng triệu lần**: boxing tạo rác; dùng {{IntUnaryOperator}}.
+2. **Chữ ký method nhận {{BiFunction<Map<String, Object>, List<Long>, Optional<Result>>}}**: không ai đọc nổi; đặt interface riêng.
+3. **Lambda có trạng thái** (đếm số lần gọi bên trong): khó test, sai khi chạy song song.
+4. **Nhầm thứ tự {{andThen}}/{{compose}}**.
+
+### Trả lời miệng 1 phút
+"Tôi chọn theo hình dạng: Function cho biến đổi, Predicate cho điều kiện, Supplier để tạo lười, Consumer cho hành động, UnaryOperator khi cùng kiểu vào ra. Code nóng với số nguyên thì dùng bản primitive để tránh boxing. Ghép bằng andThen, compose, and, or, Predicate.not. Khi chữ ký generic quá dài, cần checked exception hoặc nhiều tham số, tôi tự định nghĩa @FunctionalInterface có tên nghiệp vụ."
+
+> Senior tip: trong code nghiệp vụ, interface tự đặt tên như {{FeeCalculator}}, {{DiscountRule}} giúp người mới đọc hiểu ngay và dễ biến thành bean Spring (mỗi rule một class) khi logic lớn dần. Interface chuẩn của JDK hợp nhất ở tầng tiện ích và trong stream pipeline.`,
+  follow: ['Vì sao JDK không có TriFunction?', 'Lambda và method reference có khác nhau về hiệu năng không?', 'Bạn biến các rule viết bằng Predicate thành cấu hình được thế nào?'],
+  tags: ['functional interface', 'Function', 'Predicate', 'Supplier', 'composition']
+},
+{
+  id: 'modern-022',
+  topic: 'modern',
+  level: 'senior',
+  q: 'Bạn có nhiều loại phương thức thanh toán (thẻ, ví, chuyển khoản). Khi nào bạn đặt logic vào method ghi đè trong từng class (đa hình), khi nào dùng sealed interface + record + {{switch}} pattern matching (Java 21) bên ngoài? Trade-off khi thêm loại mới và thêm thao tác mới là gì?',
+  a: `**Tóm tắt:** Đây là bài toán kinh điển "thêm loại hay thêm thao tác". **Đa hình** (mỗi class tự cài method) dễ **thêm loại mới** (thêm class, không sửa code cũ) nhưng mỗi khi **thêm thao tác** phải sửa mọi class. **Sealed + switch pattern matching** thì ngược lại: thêm thao tác chỉ là viết thêm một method có {{switch}}, còn thêm loại mới bắt compiler chỉ ra mọi {{switch}} cần sửa. Chọn đa hình cho hành vi gắn chặt với đối tượng và tập loại mở; chọn sealed + switch khi tập loại **đóng, ổn định** và có nhiều thao tác khác nhau nằm ở các tầng khác nhau (tính phí, hiển thị, báo cáo, mapping).
+
+### Hiểu nhanh
+Đa hình giống mỗi nhân viên tự biết làm việc của mình: tuyển thêm người dễ, nhưng thêm một loại công việc mới thì phải đào tạo lại từng người. Sealed + switch giống bảng phân công treo tường: thêm một loại công việc chỉ cần thêm một bảng; tuyển thêm người thì mọi bảng phải có thêm một dòng, và compiler là người quản lý kiểm tra không bảng nào bị sót.
+
+### Thuật ngữ
+- **Sealed interface**: interface chỉ cho phép một danh sách class xác định implement ({{permits}}), từ Java 17.
+- **Pattern matching for switch**: {{switch}} theo kiểu và tách dữ liệu ra biến, chính thức từ Java 21 (JEP 441).
+- **Exhaustive**: switch phủ mọi trường hợp; với sealed type, compiler kiểm tra và không cần {{default}}.
+
+### Hai cách viết
+~~~java
+// Cách 1: đa hình
+interface Payment { BigDecimal fee(); }
+record Card(BigDecimal amount) implements Payment {
+    public BigDecimal fee() { return amount.multiply(new BigDecimal("0.02")); }
+}
+// Cách 2: sealed + record + switch (Java 21)
+sealed interface Pay permits CardPay, WalletPay, BankPay {}
+record CardPay(BigDecimal amount, String bin) implements Pay {}
+record WalletPay(BigDecimal amount, String provider) implements Pay {}
+record BankPay(BigDecimal amount) implements Pay {}
+
+static BigDecimal fee(Pay p) {
+    return switch (p) {                    // không có default: thiếu case là lỗi compile
+        case CardPay c   -> c.amount().multiply(new BigDecimal("0.02"));
+        case WalletPay w when w.provider().equals("MOMO") -> BigDecimal.ZERO;
+        case WalletPay w -> new BigDecimal("1000");
+        case BankPay b   -> new BigDecimal("3300");
+    };
+}
+~~~
+
+### Trade-off (từng bước khi hệ thống lớn lên)
+1. **Thêm loại "Trả góp"**: đa hình chỉ cần class mới. Sealed: thêm vào {{permits}}, compiler báo lỗi ở mọi {{switch}} chưa có case mới. Vì sao đây là ưu điểm: bạn không thể quên sửa chỗ tính phí hay báo cáo.
+2. **Thêm thao tác "xuất đối soát"**: đa hình phải thêm method vào interface và sửa mọi class (và class domain dính phụ thuộc vào tầng báo cáo). Sealed: viết một method mới ở module báo cáo, domain record không đổi.
+3. **Plugin bên thứ ba thêm loại**: chỉ đa hình làm được; sealed cấm class ngoài danh sách.
+
+| Tiêu chí | Đa hình | Sealed + switch |
+|---|---|---|
+| Thêm loại mới | dễ, không sửa code cũ | phải sửa mọi switch (compiler nhắc) |
+| Thêm thao tác mới | sửa mọi class | thêm một method |
+| Tập loại | mở, có plugin | đóng, ổn định |
+| Dữ liệu và hành vi | gói chung | tách: record là dữ liệu, logic ở nơi dùng |
+
+### Lỗi hay gặp
+1. **Thêm {{default}} vào switch trên sealed type**: mất kiểm tra exhaustive, loại mới lọt vào nhánh default âm thầm.
+2. **Thứ tự case sai**: case tổng quát ({{case WalletPay w}}) đặt trước case có guard cùng kiểu thì compiler báo lỗi vì case sau không bao giờ chạy tới (dominance).
+3. **Dùng switch theo kiểu cho tập loại mở** (class không sealed): bắt buộc có {{default}}, mất lợi ích chính.
+4. **Rải switch giống nhau ở 10 nơi**: nếu cùng một logic lặp lại, đó là dấu hiệu nên đưa về method của chính type.
+
+### Trả lời miệng 1 phút
+"Đa hình dễ thêm loại mới nhưng thêm thao tác thì phải sửa mọi class. Sealed cộng record cộng switch Java 21 thì ngược lại: thêm thao tác là một method mới, thêm loại thì compiler chỉ ra mọi switch cần sửa nhờ kiểm tra exhaustive. Tập loại đóng như phương thức thanh toán, trạng thái, kết quả xử lý mà nhiều tầng cần xử lý khác nhau thì tôi chọn sealed; tập mở có plugin thì chọn đa hình. Và tôi không đặt default trên switch của sealed type."
+
+> Senior tip: hai cách không loại trừ nhau. Tôi hay để hành vi cốt lõi, bất biến của domain ở method trong type (ví dụ {{amount()}}), còn các thao tác "của tầng khác" như mapping DTO, hiển thị, đối soát thì viết bằng switch ở tầng đó. Nhớ rằng sealed chỉ có giá trị khi mọi module được biên dịch lại cùng nhau; với hợp đồng API giữa các service, vẫn cần xử lý giá trị lạ ở runtime.`,
+  follow: ['Vì sao không nên đặt default trong switch trên sealed interface?', 'Sealed interface có dùng được qua ranh giới module/thư viện không?', 'Visitor pattern còn cần thiết khi đã có Java 21 không?'],
+  tags: ['sealed', 'pattern matching', 'switch', 'polymorphism', 'Java 21'],
+  refs: [
+    { type: 'doc', title: 'JEP 441: Pattern Matching for switch', url: 'https://openjdk.org/jeps/441' },
+    { type: 'doc', title: 'JEP 409: Sealed Classes', url: 'https://openjdk.org/jeps/409' }
+  ]
+},
+{
+  id: 'modern-023',
+  topic: 'modern',
+  level: 'senior',
+  q: 'Trong stream, bạn gọi một method ném checked exception ({{Files.readString}}, gọi API trả {{IOException}}) và code không biên dịch. Bạn xử lý thế nào: bọc unchecked, sneaky throw, hay gom lỗi thành kết quả? Khi xử lý 10.000 file mà vài file lỗi thì nên làm gì?',
+  a: `**Tóm tắt:** Các functional interface chuẩn ({{Function}}, {{Consumer}}...) không khai báo {{throws}}, nên lambda không được ném checked exception. Có ba hướng: (1) **bọc thành unchecked** ({{UncheckedIOException}}) khi một lỗi nghĩa là dừng cả lô; (2) **biến lỗi thành dữ liệu** (một record kết quả thành công/thất bại) khi cần xử lý tiếp các phần tử còn lại và báo cáo phần lỗi; (3) **quay về vòng for** khi logic lỗi phức tạp. Tránh "sneaky throw" vì nó lừa compiler và làm caller không biết phải bắt lỗi gì.
+
+### Hiểu nhanh
+Stream như dây chuyền đóng gói: nếu một hộp hỏng, có hai chính sách. "Dừng cả dây chuyền" (ném exception) hợp khi hộp hỏng nghĩa là cả lô có vấn đề. "Dán nhãn lỗi rồi để hộp đi tiếp" (lỗi thành dữ liệu) hợp khi bạn muốn đóng gói hết hộp tốt và gom hộp hỏng ra một thùng riêng để xem sau.
+
+### Thuật ngữ
+- **Checked exception**: exception compiler bắt phải khai báo hoặc bắt ({{IOException}}, {{SQLException}}).
+- **UncheckedIOException**: lớp unchecked có sẵn từ Java 8 để bọc {{IOException}}.
+- **Sneaky throw**: mẹo dùng generic để ném checked exception mà compiler không biết.
+
+### Cách 1: bọc unchecked (fail fast)
+~~~java
+List<String> contents = paths.stream()
+        .map(p -> {
+            try {
+                return Files.readString(p);
+            } catch (IOException e) {
+                throw new UncheckedIOException("Không đọc được " + p, e); // giữ cause và tên file
+            }
+        })
+        .toList();
+~~~
+Từng bước: phần tử lỗi ném exception, stream dừng ngay, các phần tử sau không chạy. Vì sao hợp lý: ví dụ nạp file cấu hình, thiếu một file thì cả ứng dụng không nên khởi động.
+
+### Cách 2: lỗi thành dữ liệu (xử lý tiếp)
+~~~java
+sealed interface Outcome permits Ok, Failed {}
+record Ok(Path path, String content) implements Outcome {}
+record Failed(Path path, String error) implements Outcome {}
+
+static Outcome read(Path p) {
+    try { return new Ok(p, Files.readString(p)); }
+    catch (IOException e) { return new Failed(p, e.toString()); }
+}
+Map<Boolean, List<Outcome>> parts = paths.stream()
+        .map(Main::read)
+        .collect(Collectors.partitioningBy(o -> o instanceof Ok));
+// parts.get(true): xử lý tiếp; parts.get(false): ghi báo cáo, retry, gửi cảnh báo
+~~~
+Với 10.000 file mà vài file lỗi: đi theo cách này, xử lý 9.99x file tốt, xuất danh sách lỗi kèm lý do, và đặt ngưỡng (ví dụ lỗi trên 1% thì đánh dấu job FAILED) để không âm thầm bỏ qua sự cố lớn.
+
+### So sánh
+| Cách | Ưu | Nhược | Dùng khi |
+|---|---|---|---|
+| Bọc unchecked | đơn giản, giữ stack trace | dừng cả lô | một lỗi = cả lô hỏng |
+| Lỗi thành dữ liệu | xử lý được phần còn lại, có báo cáo | thêm kiểu dữ liệu | batch, import, đối soát |
+| Vòng for + try/catch | rõ ràng, có retry, có continue | dài hơn | logic lỗi phức tạp |
+| Sneaky throw | ngắn | caller không biết phải bắt gì | hầu như không nên |
+
+### Lỗi hay gặp
+1. **Nuốt lỗi**: bắt {{IOException}} rồi {{return null}}, sau đó {{filter(Objects::nonNull)}}: dữ liệu mất mà không ai biết.
+2. **Bọc nhưng mất nguyên nhân**: {{new RuntimeException(e.getMessage())}} làm mất stack trace gốc; luôn truyền {{e}} làm cause.
+3. **Bắt exception ở ngoài stream mong lấy phần đã xử lý**: khi stream ném, kết quả của {{toList()}} không tồn tại; phần đã chạy (nếu có side-effect) dở dang.
+4. **Parallel stream + exception**: các phần tử khác có thể vẫn đang chạy hoặc đã chạy khi exception nổi lên; không giả định "chưa có gì xảy ra".
+
+### Trả lời miệng 1 phút
+"Function và Consumer không khai báo throws nên lambda không ném được checked exception. Nếu một lỗi nghĩa là dừng cả lô, tôi bọc thành UncheckedIOException và giữ cause. Nếu là batch nhiều file, tôi biến lỗi thành dữ liệu bằng record Ok/Failed, partitioningBy để xử lý phần tốt và báo cáo phần lỗi, kèm ngưỡng tỉ lệ lỗi. Logic phức tạp có retry thì tôi dùng vòng for. Tôi tránh sneaky throw."
+
+> Senior tip: trong job import thật, "lỗi thành dữ liệu" còn giúp idempotent và chạy lại được: lưu danh sách {{Failed}} vào bảng hoặc file, lần sau chỉ chạy lại những phần tử đó thay vì chạy lại 10.000 file. Đặt metric số lỗi theo loại để phát hiện khi đối tác đổi định dạng file.`,
+  follow: ['Vì sao sneaky throw bị coi là nguy hiểm?', 'Exception trong parallel stream được ném ra thế nào?', 'Bạn thiết kế retry cho phần tử lỗi trong batch ra sao?'],
+  tags: ['checked exception', 'lambda', 'Stream', 'UncheckedIOException', 'error handling']
+},
+{
+  id: 'modern-024',
+  topic: 'modern',
+  level: 'lead',
+  q: 'Là tech lead, bạn đặt chính sách phiên bản Java cho hơn 20 service: chạy JDK nào (LTS hay bản 6 tháng), bản phân phối nào (Temurin, Corretto, Oracle...), có cho dùng preview feature không, và nâng cấp theo nhịp nào?',
+  a: `**Tóm tắt:** Java ra bản mới mỗi 6 tháng (từ Java 10, năm 2018), và cứ 2 năm có một bản **LTS** (17 năm 2021, 21 năm 2023, 25 năm 2025). Production nên chạy **LTS** từ một bản phân phối OpenJDK có cam kết cập nhật bảo mật (Eclipse Temurin, Amazon Corretto, Microsoft Build of OpenJDK, Azul Zulu, hoặc Oracle JDK nếu chấp nhận điều khoản license của Oracle). **Không dùng preview feature** trong code production vì chúng có thể đổi hoặc bị bỏ, và class biên dịch với preview chỉ chạy trên đúng bản JDK đó. Nâng cấp theo nhịp: áp bản vá (patch) hằng quý, lên LTS mới trong khoảng 6-12 tháng sau khi phát hành khi framework chính đã hỗ trợ.
+
+### Hiểu nhanh
+LTS giống mẫu xe được hãng bảo hành nhiều năm; các bản 6 tháng giống xe trưng bày đời mới, chỉ được bảo dưỡng tới khi đời sau ra. Preview feature giống tính năng "thử nghiệm" trên xe trưng bày: lái thử thoải mái, nhưng không chở khách thật bằng nó.
+
+### Thuật ngữ
+- **LTS (Long-Term Support)**: bản được vendor vá lỗi, bảo mật nhiều năm.
+- **Bản phân phối (distribution)**: bản build của OpenJDK do một nhà cung cấp đóng gói và vá; mã nguồn gần như giống nhau, khác ở thời hạn hỗ trợ, license và kênh hỗ trợ trả phí.
+- **Preview feature**: tính năng ngôn ngữ/API hoàn chỉnh nhưng chưa chốt, phải bật {{--enable-preview}} khi biên dịch và khi chạy.
+- **CPU (Critical Patch Update)**: đợt vá bảo mật theo quý (tháng 1, 4, 7, 10).
+
+### Chính sách đề xuất (từng bước)
+1. **Chuẩn hoá một LTS mục tiêu** cho toàn bộ service (ví dụ 21), có danh sách ngoại lệ có thời hạn. Vì sao: một base image, một bộ tuning GC, một quy trình vá.
+2. **Chọn một bản phân phối** và dùng thống nhất trong base image Docker, CI và máy dev. Chạy trên AWS thường chọn Corretto; trung lập thì Temurin. Ghi rõ lý do license nếu dùng Oracle JDK.
+3. **Vá theo quý**: base image tự rebuild khi có bản patch mới (ví dụ 21.0.x), pipeline chạy test rồi rollout dần. Vì sao: lỗ hổng TLS/crypto trong JDK là có thật, chậm vá là rủi ro.
+4. **Lên LTS mới theo đợt**: chờ Spring Boot, Hibernate, agent APM, build tool hỗ trợ chính thức; thử trên 1-2 service ít rủi ro, đo GC và latency, rồi mở rộng. Có thể build bằng JDK mới nhưng giữ {{--release}} cũ trong giai đoạn chuyển tiếp.
+5. **Preview**: cho phép trong spike, công cụ nội bộ, code thử; cấm trong code production bằng kiểm tra trong build (không có {{--enable-preview}} trong cấu hình).
+
+~~~bash
+# Kiểm tra JDK đang chạy trong container (cột vendor, version)
+java -XshowSettings:properties -version 2>&1 | grep -E "java.vendor|java.version"
+# Biên dịch nhắm đích LTS bất kể JDK dùng để build
+javac --release 21 -d out $(find src -name "*.java")
+~~~
+
+### Bảng trade-off
+| Lựa chọn | Lợi | Rủi ro |
+|---|---|---|
+| Chỉ dùng LTS | ổn định, hệ sinh thái hỗ trợ | chậm có tính năng mới |
+| Theo bản 6 tháng | có tính năng, cải tiến GC sớm | phải nâng cấp mỗi 6 tháng, hết hỗ trợ nhanh |
+| Dùng preview | thử tính năng mới | API đổi, bị khoá vào đúng bản JDK |
+| Nhiều vendor khác nhau | team tự chọn | khó vá đồng bộ, khó tái hiện lỗi |
+
+### Lỗi hay gặp
+1. **Mỗi service một JDK, một vendor**: vá bảo mật không đồng bộ, bug chỉ tái hiện trên một máy.
+2. **Image dùng tag trôi ({{latest}})**: sáng mai build ra JDK khác, hành vi GC hoặc TLS đổi mà không ai biết. Ghim version, cập nhật có chủ đích.
+3. **Bật preview "cho vui" trong service production**: lần nâng JDK sau, code không biên dịch nữa.
+4. **Quên đồng bộ JDK ở CI và runtime**: test xanh trên 21 nhưng production chạy 17, hoặc ngược lại.
+5. **Bỏ qua license**: dùng Oracle JDK mà không đọc điều khoản, tới khi audit mới phát hiện.
+
+### Trả lời miệng 1 phút
+"Production tôi chạy LTS, hiện là 21 hoặc 25, từ một bản phân phối thống nhất như Temurin hoặc Corretto, ghim version trong base image và vá theo quý. Không dùng preview trong production vì nó có thể đổi và class bị khoá vào đúng bản JDK đó. Lên LTS mới theo đợt sau khi Spring Boot và các agent hỗ trợ, thử trên vài service trước, đo GC và latency rồi mở rộng."
+
+> Senior tip: đặt một "golden base image" cho Java do platform team sở hữu, kèm dashboard đếm số service theo phiên bản JDK; chỉ một biểu đồ đó đã đủ để thuyết phục quản lý dành thời gian nâng cấp. Khi lên LTS mới, lợi ích hay thấy nhất không phải cú pháp mà là GC và hiệu năng tốt hơn với cùng cấu hình máy.`,
+  follow: ['Vì sao class biên dịch với --enable-preview không chạy được trên JDK khác?', 'javac --release khác -source/-target thế nào?', 'Bạn thuyết phục quản lý dành thời gian nâng LTS thế nào?'],
+  tags: ['LTS', 'JDK', 'preview feature', 'upgrade', 'governance']
 }
 );
 
