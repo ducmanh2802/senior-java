@@ -1,6 +1,6 @@
 # T481 — Dịch sang tiếng Anh: q-sql (2 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-sql-6.en.js`
 
@@ -16,3 +16,9 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-sql-6.en.js` và `node scripts/check-i18n.js q-sql-6` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã tạo `js/i18n/q-sql-6.en.js` với bản dịch đầy đủ cho sql-029 (sequence gap / bảng bộ đếm) và sql-030 (bảng giá hiệu lực / exclusion constraint), chỉ gồm field `q`, `a`, `follow`.
+- Giữ nguyên toàn bộ markup, bảng, code block (chỉ dịch comment trong SQL) và các nhãn cố định (`**Summary:**`, `> Senior tip:`); không có backtick hay `${` trong nội dung.
+- `node scripts/check-i18n.js q-sql-6` → `OK — 2 mục đã dịch.`; file cũng được `vm.runInNewContext` trong checker nạp thành công nên cú pháp hợp lệ (lệnh `node --check` bị chính sách quyền của shell chặn, không chạy được).
+- `node scripts/validate.js` → `OK — không có lỗi.`
+- Lưu ý cho người review: sql-029/sql-030 đã từng được dịch ở `q-sql-5.en.js` (T379); file mới `q-sql-6` nạp sau trong `js/i18n/manifest.js` nên sẽ phủ lên bản cũ — đúng như đặc tả task.
+Reviewed-by: check-i18n (translation, no LLM review)
