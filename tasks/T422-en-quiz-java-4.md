@@ -1,6 +1,6 @@
 # T422 — Dịch sang tiếng Anh: quiz-java (2 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/quiz-java-4.en.js`
 
@@ -16,3 +16,10 @@ Yêu cầu dịch:
 - `node --check js/i18n/quiz-java-4.en.js` và `node scripts/check-i18n.js quiz-java-4` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Dịch đủ 2 mục: qz-jvm-019 (6 options, multi, đáp án 0/1/4) và qz-jvm-020 (4 options, đáp án 3).
+- Giữ nguyên markup, bảng, `~~~text` trong đề qz-jvm-020, các `{{...}}` (`-Xlog:safepoint`, `Reaching safepoint: …`, `jdk.SafepointBegin`…), nhãn "> Senior tip:".
+- Giải thích giữ đúng độ chi tiết bản gốc (lý do đúng + lý do từng phương án sai), thuật ngữ kỹ thuật giữ nguyên tiếng Anh.
+- `node scripts/check-i18n.js quiz-java-4` → `OK — 2 mục đã dịch.`; `node scripts/validate.js` → `OK — không có lỗi.`
+- Không sửa file nào khác; `quiz-java-4` đã có sẵn trong `js/i18n/manifest.js`.
+Reviewed-by: check-i18n (translation, no LLM review)
