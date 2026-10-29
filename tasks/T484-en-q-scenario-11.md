@@ -1,6 +1,6 @@
 # T484 — Dịch sang tiếng Anh: q-scenario (6 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-scenario-11.en.js`
 
@@ -16,3 +16,10 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-scenario-11.en.js` và `node scripts/check-i18n.js q-scenario-11` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã dịch đủ 6 mục: scenario-081…086, chỉ gồm field `q`, `a`, `follow`.
+- Giữ nguyên markup (`**`, `{{code}}`, `###`, bảng, `~~~text/java/bash`), giữ số liệu, tên công cụ và thuật ngữ (CREATE INDEX CONCURRENTLY, lock_timeout, idempotency key, outbox, bus factor, ADR, MoSCoW…). Comment tiếng Việt trong code block (postmortem structure, velocity, characterization test, git diff) đã dịch sang tiếng Anh.
+- Nhãn cố định: "**Tóm tắt:**" → "**Summary:**", "> Senior tip:" giữ nguyên. Không có mục "### Lưu ý khi phỏng vấn" trong 6 câu này.
+- Không có backtick và không có `${` trong file; chuỗi dài dùng template literal.
+- Kiểm tra: `node scripts/check-i18n.js q-scenario-11` → OK — 6 mục đã dịch; `node scripts/check-i18n.js` (toàn bộ) → OK — 1793 mục; `node scripts/validate.js` → OK — không có lỗi.
+- Lưu ý môi trường: lệnh `node --check <file>` bị lớp quyền shell chặn trong phiên này, nên cú pháp được xác nhận qua `check-i18n.js` (script này nạp file bằng `vm.runInNewContext`, tức là parse toàn bộ file y như `--check`).
+Reviewed-by: check-i18n (translation, no LLM review)
