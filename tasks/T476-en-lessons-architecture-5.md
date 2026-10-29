@@ -1,6 +1,6 @@
 # T476 — Dịch sang tiếng Anh: lessons-architecture (2 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-architecture-5.en.js`
 
@@ -16,3 +16,10 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-architecture-5.en.js` và `node scripts/check-i18n.js lessons-architecture-5` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đầy đủ 2 mục `lesson-architecture-007`, `lesson-architecture-008` trong `js/i18n/lessons-architecture-5.en.js`: title, goals, body, exercises[].title/prompt/hints/explain, check[].q/options/explain. Không chép starter/tests/reference, giữ nguyên markup, bảng, code block và số liệu.
+- `node scripts/check-i18n.js lessons-architecture-5` → `OK — 2 mục đã dịch.` (script nạp file bằng vm nên cũng xác nhận file parse được).
+- `node scripts/validate.js` → `OK — không có lỗi.`
+- Lưu ý môi trường: lệnh `node --check` bị sandbox từ chối quyền chạy, nên kiểm cú pháp thực hiện qua `check-i18n.js` (vm.runInNewContext báo lỗi nếu file không parse được).
+- Không sửa file nào khác; manifest đã có sẵn `lessons-architecture-5`.
+Reviewed-by: check-i18n (translation, no LLM review)
