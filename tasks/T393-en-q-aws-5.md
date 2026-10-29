@@ -1,6 +1,6 @@
 # T393 — Dịch sang tiếng Anh: q-aws (3 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-aws-5.en.js`
 
@@ -16,3 +16,7 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-aws-5.en.js` và `node scripts/check-i18n.js q-aws-5` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Translated questions aws-028, aws-029, aws-030 to English and updated js/i18n/q-aws-5.en.js.
+- Validation for js/data/q-aws.js and translation passed. 
+- Note: There is a pre-existing validation error in algo.js (algo-106) that is unrelated to this task, so I did not fix it to comply with Rule 2.
+Reviewed-by: check-i18n (translation, no LLM review)
