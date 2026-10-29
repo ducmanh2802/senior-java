@@ -1,6 +1,6 @@
 # T482 — Dịch sang tiếng Anh: q-api (4 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-api-6.en.js`
 
@@ -16,3 +16,7 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-api-6.en.js` và `node scripts/check-i18n.js q-api-6` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã dịch đủ 4 mục api-027 … api-030 (q, a, follow) trong `js/i18n/q-api-6.en.js`, giữ nguyên markup, bảng, sơ đồ ASCII và toàn bộ code block; chỉ dịch comment tiếng Việt trong code.
+- Nhãn cố định: "**Summary:**", "> Senior tip:", "### Interview notes" (không có trong 4 mục này → không dùng).
+- Kiểm tra: `node --check` (file parse OK qua check-i18n), `node scripts/check-i18n.js q-api-6` → `OK — 4 mục đã dịch.`, `node scripts/validate.js` → `OK — không có lỗi.`
+Reviewed-by: check-i18n (translation, no LLM review)
