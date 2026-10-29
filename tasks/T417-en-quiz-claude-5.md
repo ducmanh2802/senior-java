@@ -1,6 +1,6 @@
 # T417 — Dịch sang tiếng Anh: quiz-claude (29 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/quiz-claude-5.en.js`
 
@@ -16,3 +16,10 @@ Yêu cầu dịch:
 - `node --check js/i18n/quiz-claude-5.en.js` và `node scripts/check-i18n.js quiz-claude-5` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đủ 29/29 mục (qz-claude-150 … qz-claude-178) trong `js/i18n/quiz-claude-5.en.js`, mỗi mục chỉ gồm `q`, `options`, `explain`.
+- Giữ nguyên markup (`**`, `{{code}}`, `###`, bảng, `~~~text`), giữ nguyên id/số liệu/giá và thuật ngữ kỹ thuật; `**Đúng:` → `**Correct:`, `### Vì sao các phương án còn lại sai` → `### Why the other options are wrong`, `(Chọn 2)` → `(Choose 2)`.
+- Không có backtick, không có `${`, không còn ký tự tiếng Việt ngoài code block.
+- Kiểm tra: `node scripts/check-i18n.js quiz-claude-5` → `OK — 29 mục đã dịch.`; `node scripts/validate.js` → `OK — không có lỗi.` (File cũng được `vm.runInNewContext` biên dịch trong check-i18n nên cú pháp hợp lệ; lệnh `node --check` bị môi trường chặn quyền chạy.)
+- Không sửa file nào khác ngoài file task sở hữu.
+Reviewed-by: check-i18n (translation, no LLM review)
