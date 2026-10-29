@@ -139,8 +139,8 @@ for (int i = list.size() - 1; i >= 0; i--) {
     ],
   },
   'collections-018': {
-    q: 'What traps does {{Arrays.asList}} have (fixed-size, view of array, primitive array)? Predict output and tell which replacement you choose in each case.',
-    a: `**Summary:** {{Arrays.asList}} does not create {{java.util.ArrayList}} but returns an inner class {{Arrays$ArrayList}} wrapping the **original array**. Thus it has fixed size ({{add}}/{{remove}} throw {{UnsupportedOperationException}}), {{set}} writes through to the array and vice versa, and passing a primitive array produces a list with **one element** which is the whole array. Need a modifiable list? Wrap with {{new ArrayList<>(...)}}; need immutable? Use {{List.of}}/{{List.copyOf}}.
+    q: 'What traps does {{Arrays.asList}} hide — fixed size, being only a view over the array, primitive arrays? Predict the output and say what you would use instead in each situation.',
+    a: `**Summary:** {{Arrays.asList}} does not create a {{java.util.ArrayList}}. It returns an internal class, {{Arrays$ArrayList}}, that wraps **the original array itself**. Three consequences: the size is fixed ({{add}}/{{remove}} throw {{UnsupportedOperationException}}, shortened to UOE below), {{set}} writes straight through to the array and array edits show up in the list, and a primitive array becomes a list with **a single element**, which is the whole array. Need a list you can modify? Wrap it with {{new ArrayList<>(...)}}. Need an immutable one? Use {{List.of}}/{{List.copyOf}}.
 
 ### Predicted output
 ~~~java
@@ -148,57 +148,57 @@ String[] arr = {"b", "a", "c"};
 List<String> list = Arrays.asList(arr);
 
 list.set(0, "z");
-System.out.println(arr[0]);                 // z          (list writes through to array)
+System.out.println(arr[0]);                 // z          (the list writes through to the array)
 arr[1] = "y";
-System.out.println(list);                   // [z, y, c]  (array change visible to list)
+System.out.println(list);                   // [z, y, c]  (an array edit is visible from the list)
 Collections.sort(list);
-System.out.println(Arrays.toString(arr));   // [c, y, z]  (sort list sorts array)
+System.out.println(Arrays.toString(arr));   // [c, y, z]  (sorting the list sorts the array)
 list.add("d");                              // UnsupportedOperationException
 
 int[] nums = {1, 2, 3};
-System.out.println(Arrays.asList(nums).size());    // 1 -> type is List<int[]>
+System.out.println(Arrays.asList(nums).size());    // 1 -> the type is List<int[]>
 Integer[] boxed = {1, 2, 3};
 System.out.println(Arrays.asList(boxed).size());   // 3
 ~~~
 
-### Why
-- **View, not copy**: {{Arrays$ArrayList}} only holds a reference to the array, so creating the list is O(1) with no memory cost. Changing size is forbidden because arrays cannot grow. The class extends {{AbstractList}}, where {{add}}/{{remove}} throw UOE by default; {{clear()}} or {{removeIf}} on any match also throw UOE because they eventually call {{remove}}.
-- **Primitive array**: the signature is {{asList(T... a)}}; generics do not accept primitives, so {{int[]}} cannot match {{T[]}} and becomes a single {{T}}. The result is {{List<int[]>}} with 1 element. Need a number list: use {{Arrays.stream(nums).boxed().toList()}} or declare {{Integer[]}}.
-- **Null**: {{Arrays.asList}} accepts null, but {{List.of}} throws NPE on creation, and {{List.of(...).contains(null)}} also throws NPE.
+### Why it behaves like this
+- **A view, not a copy**: {{Arrays$ArrayList}} only keeps a reference to the array, so building the list is O(1) and costs no extra memory. In exchange, an array cannot grow, so every size-changing operation is rejected. The class extends {{AbstractList}}, where {{add}}/{{remove}} throw UOE by default; {{clear()}}, or a {{removeIf}} that matches any element, also throws UOE because both eventually call {{remove}}.
+- **Primitive arrays**: the signature is {{asList(T... a)}}; generics do not accept primitives, so {{int[]}} cannot be matched as {{T[]}}: the whole {{int[]}} becomes the single {{T}}. The result is a {{List<int[]>}} of size 1. If you need a list of numbers, use {{Arrays.stream(nums).boxed().toList()}} or declare the array as {{Integer[]}}.
+- **Null**: {{Arrays.asList}} accepts null, whereas {{List.of}} throws NPE on creation, and even {{List.of(...).contains(null)}} throws NPE.
 
-### Which replacement to choose
+### What to use instead
 | Need | Use | Note |
 |---|---|---|
-| Modifiable list, add/remove | {{new ArrayList<>(Arrays.asList(arr))}} | Copy, separate from array |
-| Immutable list, no null | {{List.of(...)}} / {{List.copyOf(c)}} | Throws UOE for {{set}} |
-| View array as list, sortable | {{Arrays.asList(arr)}} | Accepts writes through |
-| Primitive to List<Integer> | {{IntStream.of(...).boxed().toList()}} | Or primitive collection library |
+| A modifiable list, add/remove | {{new ArrayList<>(Arrays.asList(arr))}} | A copy, detached from the array |
+| An immutable list, null-free | {{List.of(...)}} / {{List.copyOf(c)}} | Throws UOE even for {{set}} |
+| A list view of an array, sort/set allowed | {{Arrays.asList(arr)}} | Accepts write-through |
+| From a primitive array | {{IntStream.of(...).boxed().toList()}} | Or a primitive-collection library |
 
 ### Common wrong answers
-- "Arrays.asList returns ArrayList": correct class name but it is the inner class in {{Arrays}}, not {{java.util.ArrayList}}.
-- "Arrays.asList is immutable": wrong, {{set}} and {{sort}} still work and modify the original array.
-- "Arrays.asList(intArray) gives List<Integer>": wrong, gives {{List<int[]>}}.
+- "Arrays.asList returns an ArrayList": the name is right, but it is a class nested inside {{Arrays}}, not {{java.util.ArrayList}}.
+- "Arrays.asList is immutable": wrong, {{set}} and {{sort}} still run and even modify the array underneath.
+- "Arrays.asList(intArray) gives a List<Integer>": wrong, it gives a {{List<int[]>}}.
 
 ### Production pitfall
-- Function A returns {{Arrays.asList(...)}}, function B in another module receives a {{List}} and calls {{add}}: A's tests pass, error only appears at integration time on production with {{UnsupportedOperationException}}, very hard to understand.
-- Passing {{Arrays.asList(arr)}} to a component, then later reusing or modifying array {{arr}} (reused buffer): that component suddenly sees changed data.
-- Assigning {{Arrays.asList(...)}} to a JPA entity collection at initialization, then business code calls {{getItems().add(...)}} and breaks. Initialize entity collections with {{new ArrayList<>()}}.
+- Method A returns {{Arrays.asList(...)}}, method B in another module receives a {{List}} and calls {{add}}: A's tests pass, and the {{UnsupportedOperationException}} only appears on the combined path in production, where it is very hard to diagnose.
+- You hand {{Arrays.asList(arr)}} to a component, then reuse or modify the array {{arr}} (a recycled buffer): that component suddenly sees different data.
+- You assign {{Arrays.asList(...)}} to a JPA entity collection during initialization; later business code calls {{getItems().add(...)}} and breaks. Initialize entity collections with {{new ArrayList<>()}}.
 
-> Senior tip: internal API convention: a public method returning {{List}} should either be clearly immutable ({{List.copyOf}}), or explicitly document in Javadoc that callers may modify. Never return {{Arrays.asList}} across module boundaries, because it is the hardest-to-predict "half-modifiable" state.`,
+> Senior tip: an internal API rule: if a public method returns a {{List}}, it must either be clearly immutable ({{List.copyOf}}) or its Javadoc must state that callers may modify it. Never return {{Arrays.asList}} across a module boundary, because it is the most confusing "half-modifiable" state there is.`,
     follow: [
-      'How does {{List.of}} differ from {{Collections.unmodifiableList}} when the original list changes?',
+      'How is {{List.of}} different from {{Collections.unmodifiableList}} when the original list changes?',
       'Why does {{Arrays.asList(1, 2, 3).contains(1L)}} return false?',
-      'How to convert {{int[]}} to {{List<Integer}} efficiently with millions of elements?'
+      'How do you convert an {{int[]}} to a {{List<Integer>}} efficiently for an array of several million elements?'
     ],
   },
   'modern-011': {
-    q: '{{Stream.toList()}} (Java 16) differs from {{collect(Collectors.toList())}} and {{Collectors.toUnmodifiableList()}} in mutability, null handling, and return type? Is bulk replacement by IDE safe?',
-    a: `**Summary:** {{collect(Collectors.toList())}} (Java 8) returns a list whose spec **does not promise** anything about type or mutability (in practice it is {{ArrayList}}, modifiable). {{Collectors.toUnmodifiableList()}} (Java 10) returns an unmodifiable list and **throws NPE if any null** is present. {{Stream.toList()}} (Java 16) returns an unmodifiable list but **allows null**. Replacing all {{collect(toList())}} with {{toList()}} is not safe: any code that calls {{add}}/{{sort}}/{{set}} on the result will throw {{UnsupportedOperationException}} at runtime.
+    q: 'How do {{Stream.toList()}} (Java 16), {{collect(Collectors.toList())}} and {{Collectors.toUnmodifiableList()}} differ in mutability, null handling and return type? Is a blanket IDE replacement safe?',
+    a: `**Summary:** {{collect(Collectors.toList())}} (Java 8) returns a list about whose concrete type and mutability the spec **promises nothing** (today it happens to be a modifiable {{ArrayList}}). {{Collectors.toUnmodifiableList()}} (Java 10) returns an unmodifiable list and **throws NPE if any element is null**. {{Stream.toList()}} (Java 16) returns an unmodifiable list but **allows null**. A blanket replacement of {{collect(toList())}} with {{toList()}} is not safe: any later {{add}}/{{sort}}/{{set}} on the result throws {{UnsupportedOperationException}} at runtime.
 
 ### Predicted output
 ~~~java
 List<String> a = Stream.of("x", "y").collect(Collectors.toList());
-a.add("z");                 // works (currently ArrayList), but spec does not guarantee
+a.add("z");                 // works (it is an ArrayList today), but the spec does not guarantee it
 
 List<String> b = Stream.of("x", "y").toList();
 b.add("z");                 // UnsupportedOperationException
@@ -212,46 +212,46 @@ List<String> d = Stream.of("x", null)
 ### Comparison table
 | | collect(toList()) | toUnmodifiableList() | Stream.toList() |
 |---|---|---|---|
-| From version | Java 8 | Java 10 | Java 16 |
+| Since | Java 8 | Java 10 | Java 16 |
 | Modifiable | Not guaranteed (in practice yes) | No | No |
 | Null elements | Allowed | NPE | Allowed |
-| Type inference | By target type | By target type | Fixed by stream element type |
+| Type inference | Follows the target type | Follows the target type | Fixed to the stream's element type |
 | Code length | Long | Long | Shortest |
 
-### Type difference trap (when migrating)
+### Return-type difference (the migration trap)
 ~~~java
-// Compiles: T of collector inferred as Number from target type
+// Compiles: T of the collector is inferred as Number from the target type
 List<Number> ok = Stream.of(1, 2).collect(Collectors.toList());
 
-// Compile error: toList() of Stream<Integer> returns exactly List<Integer>
+// Compile error: toList() on Stream<Integer> returns exactly List<Integer>
 // List<Number> err = Stream.of(1, 2).toList();
 ~~~
-{{toList()}} is a method of {{Stream<T>}} and returns {{List<T>}}, so there is no room for the compiler to infer a broader type. To do that you must {{map}} to the parent type or use {{Stream.<Number>of(1, 2)}}.
+{{toList()}} is a method of {{Stream<T>}} returning {{List<T>}}, so the compiler has no room to infer a wider type. To get one you must {{map}} to the parent type or write {{Stream.<Number>of(1, 2)}}.
 
 ### Why Java added toList()
-- Pattern {{collect(Collectors.toList())}} appears everywhere and is verbose.
-- Most cases only need to read the result; returning immutable prevents shared-state bugs.
-- Allowing null replaces much old code without immediately breaking due to NPE (unlike {{toUnmodifiableList}}).
+- The {{collect(Collectors.toList())}} pattern is everywhere and verbose.
+- Most call sites only read the result; returning something immutable prevents shared-state bugs.
+- Allowing null lets it replace a large amount of old code without suddenly failing with NPE (unlike {{toUnmodifiableList}}).
 
 ### When to use which
 - Default for new code: {{toList()}}.
-- Need modifiable list (will sort, add more): {{collect(Collectors.toCollection(ArrayList::new))}}, ensuring explicit type instead of relying on hidden behavior of {{Collectors.toList()}}.
-- Want to catch null data early (e.g., transaction code list must not be null): {{toUnmodifiableList()}}.
+- Need a modifiable list (you will sort or add): {{collect(Collectors.toCollection(ArrayList::new))}}, which makes the type explicit instead of relying on the undocumented behaviour of {{Collectors.toList()}}.
+- Want null data caught early (for example a list of transaction codes that must never be null): {{toUnmodifiableList()}}.
 
 ### Common wrong answers
-- "toList() is just shorthand for collect(Collectors.toList())": wrong, different in both mutability and type inference.
-- "toList() and toUnmodifiableList() are identical": different in null handling.
-- "Immutable list means elements are also immutable": wrong, only the list structure is immutable; inner objects are still mutable.
+- "toList() is just shorthand for collect(Collectors.toList())": wrong, it differs in both mutability and type inference.
+- "toList() and toUnmodifiableList() are identical": they differ in null handling.
+- "An immutable list means the elements are immutable": wrong, only the list structure is immutable; the objects inside can still change.
 
 ### Production pitfall
-- Sonar/IDE suggests "Replace with toList()", dev applies to the whole project; a distant service calls {{result.sort(...)}} or {{removeIf}} and explodes with UOE on production, because tests did not cover that branch.
-- Returning an immutable list to Jackson is fine, but assigning to a JPA entity collection and letting another piece of code call {{add}} causes failure.
+- Sonar or the IDE suggests "Replace with toList()" and the dev applies it to the whole project; some distant service calls {{result.sort(...)}} or {{removeIf}} and blows up with UOE in production, because no test covered that branch.
+- Returning an immutable list to Jackson is fine, but assigning it to a JPA entity collection and letting other code call {{add}} fails.
 
-> Senior tip: when migrating, proceed module by module and grep for places where the result list is modified ({{add}}, {{sort}}, {{remove}}, {{set}}) before switching. Add a coding convention: "lists returned from streams are immutable; if modification is needed use {{toCollection(ArrayList::new)}}" so intent is visible in code.`,
+> Senior tip: when migrating, go module by module and grep for places that modify the result list ({{add}}, {{sort}}, {{remove}}, {{set}}) before switching. Adopt a coding convention: "lists returned from a stream are immutable; if you need to modify one, use {{toCollection(ArrayList::new)}}" so the intent is visible in the code itself.`,
     follow: [
-      'Why does {{Collectors.toList()}} not promise to return {{ArrayList}}? How does that affect JDK upgrades?',
+      'Why does {{Collectors.toList()}} not promise to return an {{ArrayList}}? How does that affect JDK upgrades?',
       'How do {{Collectors.toMap}} and {{Collectors.toUnmodifiableMap}} handle duplicate keys and null?',
-      'When would you actively want null elements blocked early instead of allowed?'
+      'When would you deliberately want null elements in a list blocked early instead of allowed through?'
     ],
   },
   'modern-012': {
@@ -460,46 +460,46 @@ Additionally, Java 8 added: {{HashMap}} treeifies buckets on collision, Metaspac
     ],
   },
   'modern-015': {
-    q: 'Distinguish {{map}} vs {{flatMap}}, {{reduce}} vs {{collect}}, and {{peek}} in Stream. Give business examples and common errors, including predicted output with {{peek}}.',
-    a: `**Summary:** {{map}} turns each element into **exactly one** element; {{flatMap}} turns each element into **a stream** then flattens those streams together (one to many or none). {{reduce}} combines values into an **immutable** result (sum, max), while {{collect}} is mutable reduction into a container such as list or map. {{peek}} is for debug only: it is lazy and the JVM may skip it, so it must not be used to change state.
+    q: 'Explain {{map}} vs {{flatMap}}, {{reduce}} vs {{collect}}, and {{peek}} in Stream. Give business examples and common mistakes, including predicting the output with {{peek}}.',
+    a: `**Summary:** {{map}} turns each element into **exactly one** element; {{flatMap}} turns each element into **a stream** and then flattens those streams together (one to many, or one to none). {{reduce}} folds values into a single **immutable** result (sum, max), while {{collect}} is a mutable reduction into a container such as a list or a map. {{peek}} is for debugging only: it is lazy and the JVM is allowed to skip it, so it must never be used to change state.
 
 ### map vs flatMap
 ~~~java
-// Stream<List<OrderItem>>: each order produces a list, still nested
+// Stream<List<OrderItem>>: each order becomes a list, still nested
 List<List<OrderItem>> nested = orders.stream()
         .map(Order::getItems)
         .toList();
 
-// Stream<OrderItem>: flatten to a list of all items from all orders
+// Stream<OrderItem>: flattened into one list of every item of every order
 List<OrderItem> items = orders.stream()
         .flatMap(o -> o.getItems().stream())
         .toList();
 
-// Optional: when mapper returns Optional, use flatMap to avoid Optional<Optional<...>>
+// Optional: when the mapper already returns Optional, use flatMap to avoid Optional<Optional<...>>
 Optional<String> city = findCustomer(id)
         .flatMap(Customer::getAddress)       // getAddress() returns Optional<Address>
         .map(Address::getCity);
 ~~~
-Java 16 added {{mapMulti}} to emit 0..n elements without creating intermediate streams, useful when each element produces only a few results.
+Java 16 added {{mapMulti}}, which emits 0..n elements without creating a nested stream; handy when each element yields only a few results.
 
 ### reduce vs collect
 ~~~java
-// reduce: right place, combining immutable values
+// reduce: the right tool, folding immutable values
 BigDecimal total = txns.stream()
         .map(Txn::amount)
         .reduce(BigDecimal.ZERO, BigDecimal::add);   // ZERO is a true identity
 
-// WRONG: using reduce to collect into a mutable container
+// WRONG: using reduce to gather into a mutable container
 List<String> ids = txns.stream().reduce(new ArrayList<>(),
         (acc, t) -> { acc.add(t.id()); return acc; },
-        (a, b) -> { a.addAll(b); return a; });       // parallel: many threads modify one ArrayList
+        (a, b) -> { a.addAll(b); return a; });       // parallel: many threads mutate one ArrayList
 
-// RIGHT: collect creates a separate container per branch
+// RIGHT: collect creates a separate container per branch, then merges
 List<String> ids2 = txns.stream().map(Txn::id).collect(Collectors.toList());
 ~~~
-Why: {{reduce}} assumes identity and intermediate results are immutable; in parallel streams the same identity is used for every branch. {{collect}} calls a supplier to create a **new** container for each branch, so it is safe.
+Why: {{reduce}} assumes the identity and every intermediate result are immutable values; in a parallel stream the same identity is reused for every branch. {{collect}} calls a supplier to create a **new** container per branch, so it is safe.
 
-Another trap: identity must be a true neutral element. {{Stream.of(1, 2, 3).reduce(10, Integer::sum)}} returns 16 sequentially, but with {{parallel()}} it may return 36 because 10 is added for each split (3 splits = added 3 times).
+One more trap: the identity must really be the neutral element. {{Stream.of(1, 2, 3).reduce(10, Integer::sum)}} returns 16 when run sequentially, but {{parallel()}} may return 36 because 10 is added once per split (3 splits = added 3 times).
 
 ### peek: predicted output
 ~~~java
@@ -507,33 +507,33 @@ long n = List.of("a", "b", "c").stream()
         .peek(s -> System.out.println("peek " + s))
         .count();
 System.out.println(n);
-// Java 9+: prints only "3", no "peek" lines at all
+// Java 9+: prints only "3", not a single "peek" line
 ~~~
-Since Java 9, {{count()}} can compute directly from the source size when the pipeline has no {{filter}}/{{flatMap}}, so it skips iteration and {{peek}} never runs. Also, without a terminal operation {{peek}} never runs.
+Since Java 9, {{count()}} can be computed straight from the source size when the pipeline contains no {{filter}}/{{flatMap}}: the source is SIZED, meaning it knows its exact element count up front, so iteration is skipped and {{peek}} never runs. Also, with no terminal operation at all, {{peek}} never runs.
 
 ### Summary table
 | Operation | Input -> Output | Use for |
 |---|---|---|
-| map | 1 -> 1 | Change type, extract field |
-| flatMap | 1 -> 0..n (stream) | Flatten parent-child relations, nested Optional |
-| reduce | n -> 1 immutable value | Sum, min/max, combine values |
+| map | 1 -> 1 | Changing type, extracting a field |
+| flatMap | 1 -> 0..n (a stream) | Flattening parent-child relations, nested Optional |
+| reduce | n -> 1 immutable value | Sum, min/max, joining values |
 | collect | n -> container | List, Map, groupingBy, joining |
-| peek | No change | Log debug, no important side effect |
+| peek | No change | Debug logging, nothing that matters |
 
 ### Common wrong answers
-- "flatMap is for flattening Map": wrong, it flattens nested streams.
-- "reduce and collect are the same": different in mutability and parallel safety.
+- "flatMap is for flattening a Map": wrong, it flattens nested streams.
+- "reduce and collect are the same": they differ in mutability and in parallel safety.
 - "peek is like forEach but does not end the stream": peek is not guaranteed to run, while forEach is terminal and always runs.
 
 ### Production pitfall
-- Using {{peek(o -> o.setStatus(PROCESSED))}} to update order status: someday someone changes the terminal operation to {{count()}} or adds {{limit}}, and some orders never get updated.
-- {{flatMap}} over lazy JPA relations inside a loop causes N+1 queries; fetch join before streaming.
+- Using {{peek(o -> o.setStatus(PROCESSED))}} to update order status: one day someone changes the terminal operation to {{count()}} or adds a {{limit}}, and some orders are never updated.
+- {{flatMap}} over a lazy JPA relation inside a loop causes N+1 queries; use a fetch join before streaming.
 
-> Senior tip: team convention: lambdas inside streams must be **stateless** (except final {{forEach}}). Seeing {{peek}} containing a setter, or {{reduce}} with {{ArrayList}}, in code review means it needs rewriting immediately.`,
+> Senior tip: team convention: lambdas inside streams must be **side-effect free** (except the final {{forEach}}). Seeing {{peek}} containing a setter, or {{reduce}} with an {{ArrayList}}, in code review is a signal to rewrite immediately.`,
     follow: [
-      'When does {{reduce}} use its 3-argument form (identity, accumulator, combiner)? When is the combiner used?',
-      'When should {{mapMulti}} be used instead of {{flatMap}}?',
-      'Why should lambdas in streams be stateless? Give an example of a stateful lambda causing wrong results under parallel execution.'
+      '{{reduce}} has a 3-argument form (identity, accumulator, combiner): when is the combiner actually used?',
+      'When should you use {{mapMulti}} instead of {{flatMap}}?',
+      'Why should lambdas in streams be stateless? Give an example of a stateful lambda that produces wrong results in parallel.'
     ],
   }
 });
