@@ -1,6 +1,6 @@
 # T436 — Dịch sang tiếng Anh: algo (8 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/algo-15.en.js`
 
@@ -16,3 +16,9 @@ Yêu cầu dịch:
 - `node --check js/i18n/algo-15.en.js` và `node scripts/check-i18n.js algo-15` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đủ 8 mục algo-101 … algo-108 (prompt, hints, solution, follow) trong `js/i18n/algo-15.en.js`.
+- Giữ nguyên markup (`**`, `{{}}`, `###`, `-`, bảng, `~~~`), code Java trong `solution` chỉ dịch comment; không chép `starter`/`tests`.
+- Nhãn cố định: `### Ví dụ` → `### Example`, `### Ràng buộc` → `### Constraints`, `### Ý tưởng` → `### Approach`, `### Lưu ý khi phỏng vấn` → `### Interview notes`, `Giải thích:` → `Explanation:`, `> Senior tip:` giữ nguyên.
+- `node scripts/validate.js` → `OK — không có lỗi.`; `node scripts/check-i18n.js algo-15` → `OK — 8 mục đã dịch.` (script này chạy file trong `vm` nên cũng xác nhận cú pháp; `node --check` bị chặn bởi quyền shell nên dùng checker thay thế).
+Reviewed-by: check-i18n (translation, no LLM review)
