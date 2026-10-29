@@ -149,7 +149,7 @@ In my current team of eight (5 devs, 1 QA, 1 PO, 1 SM), I act as the **tech lead
 
   'english-031': {
     q: `Tell me about a time you led a technical initiative across teams.`,
-    a: `**Summary:** Lead across teams: **build consensus → design together → slice work → track progress → communicate continuously**. Show influence without authority, handle conflict with priority, and deliver results.
+    a: `**Summary:** Leading across teams: **build consensus → design together → slice the work → track progress → communicate continuously**. You must show influence without authority, handle conflicts over priorities, and deliver results.
 
 ### Sample answer
 **Context:** Our company ran three separate payment services (Vietnam, Singapore, Indonesia), each with its own reconciliation logic, acquirer adapters, and settlement flow. The same bugs had to be fixed three times, onboarding a new acquirer took six weeks per country, and each country team had almost no visibility into the other two codebases.
@@ -157,9 +157,9 @@ In my current team of eight (5 devs, 1 QA, 1 PO, 1 SM), I act as the **tech lead
 **Initiative:** I proposed a **Payment Platform Unification** — extract common domain (reconciliation, settlement, idempotency, webhook delivery) into a shared library, and build a **Payment Orchestrator** service that all three countries call. The orchestrator handles routing, retry, and settlement; country-specific logic stays in thin adapters.
 
 **How I led it:**
-1. **Build the coalition:** I met 1:1 with each country's tech lead and the EMs and listened to their concerns (Singapore worried about latency, Indonesia about compliance). Documented a **shared vision doc** with success criteria: onboarding time < 2 weeks, zero duplicate bugs, single on-call rotation.
-2. **Design together:** Ran a 2-day design workshop (RFC process). We agreed on: shared library in Java 17, gRPC for orchestrator communication, feature flags for gradual rollout. I wrote the RFC, received 15 comments, and revised it twice.
-3. **Slice the work:** Broke into 3 phases — (a) shared library + contract tests, (b) orchestrator service + Vietnam migration, (c) Singapore + Indonesia migration. Each phase had clear exit criteria and a rollback plan.
+1. **Build the coalition:** I met 1:1 with each country's tech lead and the EMs and listened to their concerns (Singapore worried about latency, Indonesia about compliance). Then I wrote a **shared vision doc** with clear success criteria: onboarding a new acquirer in under two weeks, no more duplicate bug fixes, and a single on-call rotation.
+2. **Design together:** I ran a two-day design workshop, followed by an RFC. We agreed on a shared library in Java 17, gRPC between the country services and the orchestrator, and feature flags for a gradual rollout. I wrote the RFC, got about 15 comments, and revised it twice.
+3. **Slice the work:** We split it into three phases — (a) shared library + contract tests, (b) orchestrator service + Vietnam migration, (c) Singapore + Indonesia migration. Each phase had clear exit criteria and a rollback plan.
 4. **Governance:** We held a weekly sync with all tech leads. A Jira epic tracked migration progress, and a shared Grafana dashboard showed error rate and p99 latency. If a country team was blocked for more than a week, I escalated to the EMs with data.
 5. **Communication:** We ran a demo for stakeholders every two weeks and sent a monthly update to all engineers with progress and lessons learned.
 
@@ -168,14 +168,14 @@ In my current team of eight (5 devs, 1 QA, 1 PO, 1 SM), I act as the **tech lead
 **What I learned:** I'd say technical design was maybe 30% of the work; **alignment and trust were the other 70%**. If I had pushed the design without 1:1s, Singapore would have blocked. The feature flag strategy let us prove value incrementally without big-bang risk.
 
 ### Useful phrases
-- **influence without authority**: influence without authority
-- **consensus building**: consensus building
-- **feature flag**: feature flag
-- **gradual rollout**: gradual rollout
-- **rollback plan**: rollback plan
-- **big-bang risk**: big-bang risk
+- **influence without authority**: getting other teams to follow a direction when you are not their manager
+- **consensus building**: getting everyone to agree before the work starts
+- **feature flag**: a toggle that turns a feature on or off without redeploying
+- **gradual rollout**: releasing to more and more users step by step
+- **rollback plan**: how to return to the previous version safely
+- **big-bang risk**: the risk of switching everything over in one go
 
-> Senior tip: Across-team initiatives usually fail due to **no executive sponsor** or **no clear exit criteria**. Always have: (1) sponsor from VP/CTO, (2) success metrics with numbers, (3) rollback plan for each phase. Don't try to "standardize everything" — let each team keep autonomy in adapters, only unify the core domain. Pronounce **initiative** /ɪˈnɪʃətɪv/ with stress on the second syllable (-ni-).`,
+> Senior tip: Across-team initiatives usually fail because there is **no executive sponsor** or **no clear exit criteria**. Always have: (1) a sponsor at VP/CTO level, (2) success metrics with numbers, (3) a rollback plan for each phase. Don't try to "standardize everything" — let each team keep autonomy in its adapters and unify only the core domain. Pronounce **initiative** /ɪˈnɪʃətɪv/ with the stress on the second syllable (-ni-).`,
     follow: [
       'How did you handle a team that refused to migrate?',
       'What would you do differently if you had to do it again?',
@@ -185,178 +185,224 @@ In my current team of eight (5 devs, 1 QA, 1 PO, 1 SM), I act as the **tech lead
 
   'english-032': {
     q: `Tell me about a project where you had measurable impact.`,
-    a: `**Summary:** I describe the problem, my contribution, and a measured outcome. I identify the metric and time window, distinguish my work from the team?s work, and explain the trade-off. I never invent impact figures.
+    a: `**Summary:** Tell it in this frame: **problem → my part → measured result → trade-off**. The numbers must be real, with a baseline (before and after), a time window and how it was measured; separate "I" (what you did) from "we" (what the team did), and be honest when other factors also influenced the result.
 
 ### Sample answer
-I describe the problem, my contribution, and a measured outcome. I identify the metric and time window, distinguish my work from the team?s work, and explain the trade-off. I never invent impact figures.
+Sure. Last year our checkout API had a p99 latency of about 1.8 seconds at peak, and the funnel data showed that slow checkouts lined up with abandoned carts. I owned the investigation. Profiling with JFR showed that most of the time went into three sequential calls — pricing, inventory and promotions.
 
-### Practice
-Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+I proposed running those calls in parallel with {{CompletableFuture}} on a dedicated, bounded executor, and caching promotion rules for 60 seconds, because they rarely change. I wrote the change and the load tests; a teammate handled cache invalidation on the admin side.
 
-> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+We rolled it out over two weeks behind a feature flag. p99 dropped to around 650 milliseconds, and checkout conversion went up by roughly 2 percent the following month. To be fair, marketing ran a campaign at the same time, so I'm confident about the latency gain but I'd only claim part of the conversion gain. The trade-off was that a promotion change could take up to a minute to show up, which the business was happy to accept.
 
-### Build a natural spoken answer
-Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+### Useful phrases
+- **I owned the investigation**: I was the main person responsible for the investigation
+- **lined up with / correlated with**: coincided with, moved together with
+- **We rolled it out behind a feature flag**: we released it gradually behind a toggle
+- **dropped from X to Y / went up by X percent**: fell from X to Y / increased by X percent
+- **To be fair, ...**: in fairness (used when you acknowledge other factors)
 
-### Follow-up practice
-Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+### Common mistakes for Vietnamese speakers
+- Speaking vaguely ("I improved performance a lot") → always give the number: "from 1.8 seconds to 650 milliseconds".
+- Wrong prepositions: "increase 2%" → **"increased by 2 percent"**; "reduce from 10 to 5" → **"reduced from 10 to 5"** (keep the -ed ending because it is past tense).
+- Using "we" for everything → the interviewer cannot tell what you did. Use "I" for your part and "we" for the team's part.
 
-> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
-    follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
+> Senior tip: Senior interviewers often follow up with "How did you measure that?" and "What else could explain the change?". Volunteering the caveat yourself — "To be fair, marketing ran a campaign..." — makes you far more credible than showing off a big number. Prepare two or three stories with real numbers, and write down the source (which dashboard, which time window).`,
+    follow: ['How did you measure the impact, and what else could explain the change?', 'What would you have done if the latency improvement had not moved the business metric?', 'What was the hardest part to get agreement on?'],
   },
 
   'english-033': {
     q: `How do you explain a recommendation clearly?`,
-    a: `**Summary:** I state the recommendation first, connect it to the key constraint, and explain one benefit and one cost. For example, I would keep a request synchronous when its caller needs the result immediately; otherwise I would evaluate asynchronous processing and its recovery requirements.
+    a: `**Summary:** Give the **recommendation first** (bottom line up front), then the main reason, the cost, the alternative and the next step. Vietnamese speakers often tell a long background story before reaching the conclusion; in an English interview the listener wants to know what you recommend straight away.
 
 ### Sample answer
-I state the recommendation first, connect it to the key constraint, and explain one benefit and one cost. For example, I would keep a request synchronous when its caller needs the result immediately; otherwise I would evaluate asynchronous processing and its recovery requirements.
+I put the recommendation in the first sentence, and then I support it. For example:
 
-### Practice
-Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+"My recommendation is to move PDF report generation to a background job. The main reason is that our largest reports take around 40 seconds, which is longer than the gateway timeout, so users see an error even when the report is actually generated. The cost is a few extra moving parts: a queue, a job-status endpoint, and retry handling. I think that's worth it, because export failures are our second most common support ticket. The alternative would be to raise the timeout, but that just moves the problem and ties up threads. I'd suggest we try it with our three biggest customers first and watch the export success rate."
 
-> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+So the order is always the same: what I recommend, why, what it costs, what the alternative is, and how we'll know it worked.
 
-### Build a natural spoken answer
-Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+### Useful phrases
+- **My recommendation is to...**: I suggest that we...
+- **The main reason is that...**: the main reason is that...
+- **The cost is... / The downside is...**: the price we pay is...
+- **The alternative would be..., but...**: the other option would be..., but...
+- **I'd suggest we start with...**: I suggest we begin with...
 
-### Follow-up practice
-Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+### Common mistakes for Vietnamese speakers
+- Telling two or three minutes of background before stating the recommendation → the listener loses patience.
+- Hedging too much: "Maybe we can possibly consider..." → it sounds unsure. Say it directly: **"I recommend..."**, "I'd suggest...".
+- Starting every sentence with "I think". Once, for the personal opinion, is enough.
 
-> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
-    follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
+> Senior tip: When the listener is a manager, tie each reason to a business number (ticket count, error rate, cost). Finish with a **success criterion** ("watch the export success rate") — that signals you think like an owner, not just someone who writes code.`,
+    follow: ['What would you do if your manager chose the alternative instead?', 'How do you present a recommendation when you are not fully sure?', 'How do you adapt the explanation for an engineer versus a business stakeholder?'],
   },
 
   'english-034': {
     q: `When would you choose synchronous or asynchronous processing?`,
-    a: `**Summary:** I use synchronous processing when the caller needs an immediate result and latency and availability budgets permit it. I consider asynchronous processing for deferrable work, while planning for eventual consistency, duplicate delivery, bounded retries, idempotency, and queue monitoring.
+    a: `**Summary:** Go synchronous when the caller **needs the result immediately** in order to continue; go asynchronous when the work **can be done later**. Async decouples services and absorbs traffic peaks, but it brings operational costs: at-least-once delivery, idempotency, a dead-letter queue, consumer-lag monitoring and eventual consistency.
 
 ### Sample answer
-I use synchronous processing when the caller needs an immediate result and latency and availability budgets permit it. I consider asynchronous processing for deferrable work, while planning for eventual consistency, duplicate delivery, bounded retries, idempotency, and queue monitoring.
+I start from what the caller actually needs. If the user can't continue without the result — for example, checking whether a payment was authorized — I keep it synchronous. But I protect that call with a tight timeout, a small retry budget and a circuit breaker, so one slow dependency doesn't drag down the whole request.
 
-### Practice
-Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+If the work can wait — sending the receipt email, updating the search index, generating a report — I move it to a queue like Kafka or SQS. That decouples the services and smooths out traffic spikes, but it isn't free. Most setups give you at-least-once delivery, so consumers have to be idempotent; I usually store the processed message ID or use a unique key in the database. You also need a dead-letter queue, alerts on consumer lag, and a way for the user to see that something is still pending.
 
-> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+One more thing: if I publish an event after a database write, I use the transactional outbox pattern, so we don't lose the event if the service crashes between the commit and the publish.
 
-### Build a natural spoken answer
-Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+So my rule of thumb is: synchronous for what the user is waiting on, asynchronous for the rest — as long as the team is ready to operate it.
 
-### Follow-up practice
-Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+### Useful phrases
+- **I start from what the caller actually needs**: I start from what the caller really needs
+- **drag down / take down**: slow down / bring down
+- **it isn't free**: it is not free; there is a price to pay
+- **smooth out traffic spikes**: flatten the load peaks
+- **rule of thumb**: a practical rule based on experience
 
-> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
-    follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
+### Pronunciation
+- **asynchronous** /eɪˈsɪŋkrənəs/: stress the second syllable, "SYN".
+- **queue** /kjuː/: pronounced like the letter "Q", not "kway-oh".
+- **idempotent** /ˌaɪdəmˈpoʊtənt/ (common in the US) or /ɪˈdempətənt/.
+
+> Senior tip: Virtual threads (Java 21) make synchronous calls cheaper in terms of thread resources, but they do **not** solve the coupling problem: if service B is down, the request still fails. Don't choose async just because "it is faster" — choose it because the work really can be done later and the team is able to operate the queue.`,
+    follow: ['How do you make a Kafka consumer idempotent?', 'How do you show the user the status of an asynchronous job?', 'What problem does the transactional outbox pattern solve?'],
   },
 
   'english-035': {
     q: `How do you structure an answer when you need a moment?`,
-    a: `**Summary:** I take a brief pause and say, ?Let me organize my thoughts. I would look at this from two angles.? Then I answer directly, explain my reasoning, and stop when I have addressed the question. A short pause is better than filling the silence with repeated fillers.
+    a: `**Summary:** Pausing for three to five seconds is normal. Use one natural "buying time" sentence, state the **structure of your answer** up front (for example "two angles"), then answer each part and stop once you have covered them. A short silence is far better than a long chain of "um... uh...".
 
 ### Sample answer
-I take a brief pause and say, ?Let me organize my thoughts. I would look at this from two angles.? Then I answer directly, explain my reasoning, and stop when I have addressed the question. A short pause is better than filling the silence with repeated fillers.
+If the question is complex, I'm comfortable taking a short pause. I'll say something like, "That's a good question — let me think about it for a second." Then I give a structure before the details, because that helps me and the interviewer.
 
-### Practice
-Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+For example, if someone asks, "How would you split a monolithic database?", I might say: "Let me look at it from two angles: first, how to find the boundaries, and second, how to migrate the data safely without downtime." Then I go through each part and stop when I've covered both.
 
-> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+If I lose my train of thought, I just say, "Sorry, let me go back to the main point," and continue. I'd rather have a three-second pause than fill the silence with "um" and "uh".
 
-### Build a natural spoken answer
-Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+### Useful phrases
+- **Let me think about that for a second.**: give me a moment to think
+- **Let me look at it from two angles.**: I will look at it from two angles
+- **There are three things I'd consider.**: there are three things I would consider
+- **Let me go back to the main point.**: let me return to the main point
+- **lose my train of thought**: forget what I was in the middle of saying
 
-### Follow-up practice
-Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+### Common mistakes for Vietnamese speakers
+- Filling the silence with Vietnamese filler sounds or a stream of "um" and "uh".
+- Saying **"Wait."** or "Wait a minute." → it sounds blunt, almost like an order. Use **"Give me a second"** or **"Let me think"**.
+- Promising "three points" but only making two → count them on your fingers as you speak.
 
-> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
-    follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
+> Senior tip: Use the "buying time" sentence **once** per question; repeating it sounds evasive. Practice with a timer: set the frame in the first 10 seconds, then spend 30–45 seconds on each point. For a big system-design question you can ask for more time: "Could I take a minute to sketch my thoughts?" — that is perfectly acceptable.`,
+    follow: ['What do you do if you completely blank on a question?', 'How long is too long for a pause in an interview?', 'How do you get back on track after going off topic?'],
   },
 
   'english-036': {
     q: `How do you keep a technical explanation easy to follow?`,
-    a: `**Summary:** I start with the conclusion, give only the necessary context, and explain the mechanism in ordered steps. For caching, for example, I explain that a stored copy can reduce repeated database reads, then cover freshness and invalidation because they are the main trade-offs.
+    a: `**Summary:** Three habits: **state the conclusion first**, explain the mechanism in **numbered steps** (first, then, finally), and **check in with the listener** using a natural question instead of "Do you understand?". Stay at one level of detail; don't jump back and forth between the big picture and code-level detail.
 
 ### Sample answer
-I start with the conclusion, give only the necessary context, and explain the mechanism in ordered steps. For caching, for example, I explain that a stored copy can reduce repeated database reads, then cover freshness and invalidation because they are the main trade-offs.
+I try to keep three habits. First, I give the short version up front. Second, I walk through the mechanism step by step. And third, I check in with the listener before going deeper.
 
-### Practice
-Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+For example, if I'm explaining our product cache, I'd say: "The short version is: we put Redis in front of the product service, and it cut database reads by about 80 percent. Here's how it works. First, the service checks Redis. If the product is there — that's a cache hit — we return it in about a millisecond. If it isn't, we read it from Postgres, store it in Redis with a ten-minute TTL, and return it. The tricky part is freshness: when a price changes, we delete the key, so the next read loads the new value."
 
-> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+Then I ask, "Does that level of detail work, or should I go deeper into how we handle invalidation?" That way the interviewer decides where to zoom in.
 
-### Build a natural spoken answer
-Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+### Useful phrases
+- **The short version is...**: in short...
+- **Here's how it works.**: this is how it works
+- **The tricky part is...**: the hard part is...
+- **Does that make sense so far?**: is that clear at this point?
+- **Should I go deeper into...?**: would you like me to go deeper into...?
 
-### Follow-up practice
-Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+### Common mistakes for Vietnamese speakers
+- Asking **"Do you understand?"** → it sounds like you are testing the listener and can come across as rude. Use "Does that make sense?" or "Is that clear so far?".
+- Stacking many terms in one sentence ("we use write-behind cache-aside with TTL-based eviction").
+- No linking words → the listener loses track of which step you are on. Use "First... Then... Finally...".
 
-> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
-    follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
+> Senior tip: One concrete number ("about 80 percent", "about a millisecond") helps the listener picture things better than any adjective ("very fast", "much better"). With a technical interviewer, "The tricky part is..." is where you score points: it shows you understand the pitfalls, not just the happy path.`,
+    follow: ['How would you explain the same cache to a product manager?', 'What happens if the cache delete fails after the price update?', 'How do you know when you are going into too much detail?'],
   },
 
   'english-037': {
     q: `What would you say if you did not hear a question?`,
-    a: `**Summary:** I say, ?Could you repeat the last part of the question, please?? If I caught part of it, I paraphrase it: ?Are you asking how I would handle duplicate messages after a consumer restart?? I confirm before answering rather than guessing.
+    a: `**Summary:** Say plainly that you did not hear clearly, ask them to repeat **just the part you missed**, or **paraphrase** what you did hear to confirm it. Never guess and answer the wrong question — that costs far more points than asking once.
 
 ### Sample answer
-I say, ?Could you repeat the last part of the question, please?? If I caught part of it, I paraphrase it: ?Are you asking how I would handle duplicate messages after a consumer restart?? I confirm before answering rather than guessing.
+It depends on what I missed. If the connection drops, I just say so: "Sorry, you cut out for a second — could you repeat the last part of the question?"
 
-### Practice
-Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+If I caught most of it, I paraphrase it to confirm: "I think I got most of that. Are you asking how I'd handle duplicate messages after a consumer restarts?" That's quicker than asking them to repeat everything, and it shows I was listening.
 
-> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+If it's just one word, I ask about that word: "Sorry, I didn't quite catch the last word — did you say 'rebalance'?"
 
-### Build a natural spoken answer
-Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+And if the audio keeps breaking up, I suggest a fix rather than struggling through it: "The audio is a bit choppy on my side. Would it help if I turned off my video?"
 
-### Follow-up practice
-Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+### Useful phrases
+- **You cut out / You broke up for a second.**: your audio dropped for a moment
+- **I didn't quite catch that.**: I did not hear that clearly
+- **Could you repeat the last part?**: could you say the last part again?
+- **Are you asking...?**: do you mean...?
+- **The audio is a bit choppy.**: the sound keeps breaking up
 
-> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
-    follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
+### Common mistakes for Vietnamese speakers
+- Saying **"What?"** or "Huh?" → rude. "Pardon?" is correct but rather formal; "Sorry?" sounds more natural.
+- **"Can you repeat again?"** → redundant (repeat already means "again"). Say **"Could you repeat that?"** or **"Could you say that again?"**.
+- Being too shy to ask, guessing instead, and then answering the wrong question.
+
+> Senior tip: Before an online interview, check your headset, microphone and network; a wired headset is safest. Asking once is completely normal — native speakers do it too. If you have to keep asking, propose a fix (turn off the video, call back) instead of trying to guess.`,
+    follow: ['What if you still do not understand after they repeat the question?', 'How do you handle an interviewer with a strong accent?', 'How do you confirm a long, multi-part question?'],
   },
 
   'english-038': {
     q: `How do you respond about a technology you have not used?`,
-    a: `**Summary:** I am transparent that I have not used the technology in production. I connect relevant experience to its underlying concepts, explain how I would evaluate it through documentation and a small proof of concept, and state what I would need to learn.
+    a: `**Summary:** Answer honestly in the first sentence ("Not in production"), move to the **closest experience** you do have, briefly say how you **understand the concept**, then describe **how you would learn it** (docs, a small proof of concept, the risks to watch). Don't make things up, and don't just say "I don't know" and stop.
 
 ### Sample answer
-I am transparent that I have not used the technology in production. I connect relevant experience to its underlying concepts, explain how I would evaluate it through documentation and a small proof of concept, and state what I would need to learn.
+*Interviewer: "Have you worked with Kubernetes operators?"*
 
-### Practice
-Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+"Not in production, no. I've deployed our services to Kubernetes with Helm charts and set up readiness and liveness probes, but I haven't written an operator myself.
 
-> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+From what I understand, an operator is a controller that watches a custom resource and keeps reconciling the actual state of the cluster toward the desired state — similar in spirit to how the Deployment controller manages ReplicaSets.
 
-### Build a natural spoken answer
-Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+If I needed to build one, I'd start with the official docs and the Java Operator SDK, build a small proof of concept for one resource, and pay close attention to how it behaves when reconciliation fails halfway. I'd expect to be productive within a couple of weeks, and I'd ask someone who's run operators in production to review the design."
 
-### Follow-up practice
-Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+### Useful phrases
+- **Not in production, no.**: I have not used it in production
+- **The closest thing I've done is...**: the nearest thing I have done is...
+- **From what I understand, ...**: as far as I understand...
+- **The way I'd get up to speed is...**: the way I would get up to speed is...
+- **similar in spirit to...**: the same idea as...
 
-> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
-    follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
+### Common mistakes for Vietnamese speakers
+- "I don't know." and then silence → you lose the chance to show how you think.
+- Inventing experience → two follow-up questions expose it and you lose all credibility.
+- A vague "I can learn anything quickly" → no evidence. Give a **concrete learning plan**.
+
+> Senior tip: A senior engineer does not need to know every technology, but must show how they **assess the risk** of adopting something new: "what happens when it fails", "who will operate it", "how do we roll back". "From what I understand..." is both honest and an invitation for the interviewer to correct you if you got something wrong.`,
+    follow: ['How would you decide whether the team should adopt this technology?', 'Tell me about a time you had to learn a new technology quickly.', 'What are the risks of introducing a technology nobody on the team knows?'],
   },
 
   'english-039': {
     q: `What if you realize you misstated a technical detail?`,
-    a: `**Summary:** I correct the detail promptly: ?I want to correct one point. I said exactly-once delivery, but I meant at-least-once delivery.? I then explain that duplicate delivery is possible and consumers need idempotent processing, and clarify whether my conclusion changes.
+    a: `**Summary:** Correct it **the moment you notice** — briefly, without over-apologizing: say what you said, what is actually true, and whether your conclusion changes. Correcting yourself is a good signal of honesty and depth of understanding.
 
 ### Sample answer
-I correct the detail promptly: ?I want to correct one point. I said exactly-once delivery, but I meant at-least-once delivery.? I then explain that duplicate delivery is possible and consumers need idempotent processing, and clarify whether my conclusion changes.
+I correct it as soon as I notice — briefly, and without making a big deal of it. For example:
 
-### Practice
-Answer in your own words and use a real example where the question asks about experience. Keep the first response concise, then expand when the interviewer asks a follow-up.
+"Sorry, let me correct something I said earlier. I said Kafka gives us exactly-once delivery by default — that's not accurate. On the consumer side, the default is effectively at-least-once: if a consumer crashes after processing a message but before committing the offset, it will get that message again. Kafka does support exactly-once semantics with idempotent producers and transactions, but that only covers reads and writes inside Kafka. Once the consumer writes to an external database, we still need idempotent processing.
 
-> Senior tip: Be precise about what you know, what you did, and what evidence supports your statement.
+The good news is that it doesn't change my design, because the consumer already uses an idempotency key — but I wanted to be precise."
 
-### Build a natural spoken answer
-Treat the sample as a model for organization, not as a script to memorize. First answer the question in one sentence. Add only the context the listener needs, then give a reason, example, or next step that directly supports your point. Use signposts such as ?The main reason is?,? ?For example?,? and ?The trade-off is??. These short phrases help the interviewer follow your reasoning and give you a moment to plan the next sentence. Prefer familiar words and specific verbs over long abstract phrases. If you need a detail you do not have, say what you would verify instead of guessing. Keep confidential names, customer data, and internal figures out of the example.
+### Useful phrases
+- **Let me correct something I said earlier.**: let me take back one thing I said
+- **What I meant was...**: I meant...
+- **To be precise, ...**: to be precise...
+- **That doesn't change my conclusion, because...**: that does not change my conclusion because...
+- **That changes things a bit — ...**: that changes things a little...
 
-### Follow-up practice
-Record a short response, listen once for whether the main point appears early, and listen again for one language habit to improve. Do not try to correct pronunciation, grammar, vocabulary, and pace all at once. Then answer a likely follow-up in two or three sentences. For experience questions, prepare a truthful example and be ready to explain your own contribution. For hypothetical questions, state the assumptions that affect your choice. End when the question is answered; invite a deeper discussion only when a useful detail remains. This makes the response concise without sounding abrupt and helps you adapt if the interviewer changes a constraint.
+### Common mistakes for Vietnamese speakers
+- Ignoring it and hoping the interviewer did not notice → if they did, you lose twice as many points.
+- Over-apologizing: "I'm so sorry, I'm very bad at this" → it lowers your credibility. A single **"Sorry"** is enough.
+- Correcting the detail but not saying whether the conclusion changes → the listener has to guess.
 
-> Senior tip: Clear structure and accurate details make spoken English easier to follow than speed or elaborate vocabulary.`,
-    follow: ['What would you change if a key constraint were different?', 'How would you measure whether your approach worked?'],
+> Senior tip: The Kafka example above comes up a lot: since Kafka 3.0 the producer enables idempotence by default (it prevents duplicates caused by producer retries), but that does **not** stop the consumer from receiving duplicates. Knowing the easily-confused details like this lets you correct yourself in time and earn "deep understanding" points.`,
+    follow: ['How does Kafka achieve exactly-once semantics inside a stream processing pipeline?', 'Tell me about a time you were wrong about a technical decision.', 'How do you handle it when a colleague misstates something in a meeting?'],
   },
 
 });
