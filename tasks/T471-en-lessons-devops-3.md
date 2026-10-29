@@ -1,6 +1,6 @@
 # T471 — Dịch sang tiếng Anh: lessons-devops (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-devops-3.en.js`
 
@@ -16,3 +16,5 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-devops-3.en.js` và `node scripts/check-i18n.js lessons-devops-3` → OK, rồi `Status: DONE`.
 
 ## Notes
+Translated lesson-devops-005 (Token bucket rate limiting + pre-emptive credential rotation + cyclic ingestion loop) to English. All validations pass.
+Reviewed-by: check-i18n (translation, no LLM review)
