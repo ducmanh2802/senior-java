@@ -1,7 +1,10 @@
 # T386 — Dịch sang tiếng Anh: q-system-design (2 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
+
+Đã hoàn thành dịch design-028 và design-029 sang tiếng Anh theo chuẩn yêu cầu.
+Đã chạy node scripts/check-i18n.js q-system-design-9 báo OK.
 Owns: `js/i18n/q-system-design-9.en.js`
 
 Người dùng bấm EN thì **cả trang** chuyển sang tiếng Anh: file này phủ bản dịch lên dữ liệu gốc theo `id` (đọc comment "content translation" trong `js/core/i18n.js`). Đọc AGENTS.md mục 5 (markup) và các mục sau trong `js/data/q-system-design.js`: **design-028, design-029**.
@@ -16,3 +19,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-system-design-9.en.js` và `node scripts/check-i18n.js q-system-design-9` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
