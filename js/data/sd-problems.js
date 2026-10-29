@@ -1291,5 +1291,574 @@ Các chỉ số: queue lag theo priority, tỉ lệ thành công theo provider, 
     'Làm sao đo chất lượng gửi email mà không đọc nội dung người dùng?'
   ],
   related: ['design-006']
+},
+{
+  id: 'sd-011',
+  title: 'Đặt vé concert có chọn chỗ ngồi',
+  kind: 'bigtech',
+  level: 'senior',
+  prompt: `Thiết kế hệ thống bán vé concert cho phép **chọn chỗ ngồi** trên sơ đồ. Sân có 50.000 ghế, lúc mở bán có 500.000 người vào cùng lúc. Người dùng giữ ghế trong 10 phút để thanh toán; hết giờ ghế được trả lại. Tuyệt đối không bán một ghế cho hai người, và hệ thống không được sập trong 15 phút đầu. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Functional: xem sơ đồ ghế, giữ 1–6 ghế, thanh toán, nhận vé. Non-functional: không oversell (consistency mạnh ở ghế), chịu spike 500k người, sơ đồ ghế được phép trễ vài giây. Hỏi: giới hạn số ghế mỗi người, có hàng chờ ảo (waiting room) không, thời gian giữ ghế, có bán lại vé không. Out-of-scope: chống bot nâng cao, resale.` },
+    { name: 'Estimation', minutes: 5, guide: `500k người refresh sơ đồ mỗi 5 giây => 100k req/s đọc. Sơ đồ 50k ghế, mỗi ghế 1 bit trạng thái ~6,25 KB; kèm metadata ~10 KB => 100k x 10 KB = 1 GB/s. Ghi: nếu không có waiting room, ~25k lần giữ ghế/giây; có waiting room cho vào 2.000 người/phút thì chỉ ~100 lần/giây. Dữ liệu ghế: 50k dòng x 100 B = 5 MB, rất nhỏ.` },
+    { name: 'API & data model', minutes: 5, guide: `GET /events/{id}/seatmap?section=A (cache được), POST /holds {eventId, seatIds[], Idempotency-Key} -> holdId + expiresAt, POST /orders {holdId} -> thanh toán, DELETE /holds/{id}. Bảng seats(event_id, seat_id, status, hold_id, held_until, version), holds, orders. Ràng buộc: PK (event_id, seat_id).` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: CDN -> waiting room -> API gateway -> Seat service (DB là nguồn sự thật) -> Payment service; seat map snapshot đẩy lên cache/CDN mỗi 1–2 giây; job/consumer xử lý thanh toán thành công sau khi hold đã hết hạn.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: giữ nhiều ghế nguyên tử (UPDATE có điều kiện hoặc Lua), hết hạn lazy thay vì cron, thanh toán về muộn, waiting room công bằng, bot, hot section, consistency giữa sơ đồ và thực tế.` }
+  ],
+  rubric: [
+    'Chốt yêu cầu: không oversell, thời gian giữ ghế, giới hạn ghế mỗi người',
+    'Ước lượng đọc sơ đồ và nhận ra đọc lớn hơn ghi rất nhiều',
+    'Waiting room giới hạn tốc độ vào để biến spike thành luồng đều',
+    'Giữ nhiều ghế nguyên tử bằng UPDATE có điều kiện (kiểm tra số dòng) hoặc Lua script',
+    'Hết hạn giữ ghế theo held_until (lazy), không phụ thuộc cron chính xác',
+    'Sơ đồ ghế là bản cache gần đúng; nguồn sự thật là thao tác giữ ghế',
+    'Xử lý thanh toán thành công sau khi hold hết hạn (refund hoặc giữ lại có điều kiện)',
+    'Idempotency cho tạo hold và thanh toán',
+    'Chống bot và giới hạn mỗi người',
+    'Giám sát: tỉ lệ giữ ghế thất bại, độ dài hàng chờ, oversell = 0'
+  ],
+  reference: `**Tóm tắt:** Bài này có hai bài toán khác nhau: **đọc** sơ đồ ghế rất nhiều (chấp nhận trễ vài giây, phục vụ từ cache/CDN) và **ghi** giữ ghế rất ít nhưng phải đúng tuyệt đối (một câu UPDATE có điều kiện trên DB). Thêm **waiting room** để 500k người không ập vào cùng lúc; giữ ghế bằng {{held_until}} để ghế tự "nhả" mà không cần cron.
+
+### 1. Yêu cầu
+- Xem sơ đồ ghế theo khu (section), chọn 1–6 ghế, giữ 10 phút, thanh toán, nhận vé.
+- **Không oversell**: một ghế chỉ thuộc một đơn hàng. Đây là yêu cầu consistency mạnh, nhưng chỉ ở mức từng ghế.
+- Sơ đồ ghế được phép trễ 1–3 giây: nếu người dùng thấy ghế "trống" nhưng bấm vào thì báo "vừa có người giữ" là chấp nhận được.
+- Chịu được 500k người trong 15 phút đầu.
+
+### 2. Ước lượng (có phép tính)
+| Đại lượng | Phép tính | Kết quả |
+|---|---|---|
+| Đọc sơ đồ | 500.000 người / refresh 5 giây | 100.000 req/s |
+| Kích thước sơ đồ | 50.000 ghế x 1 bit = 6,25 KB, thêm metadata | ~10 KB |
+| Băng thông sơ đồ | 100.000 x 10 KB | ~1 GB/s (~8 Gbps) => bắt buộc CDN/chia theo khu |
+| Giữ ghế nếu không có hàng chờ | 500k người, ~3 lần thử trong 1 phút đầu | ~25.000 lần/s |
+| Giữ ghế có waiting room | 2.000 người/phút x 3 lần thử / 60 giây | ~100 lần/s |
+| Thời gian bán hết | 50.000 ghế / 2,5 ghế mỗi đơn = 20.000 đơn; 2.000 người/phút x 70% mua thành công = 1.400 đơn/phút | ~14 phút |
+| Lưu trữ ghế | 50.000 dòng x 100 B | 5 MB |
+
+Kết luận: dữ liệu nhỏ, cái khó là **đỉnh tải** và **tranh chấp cùng một ghế**. Waiting room giảm tải ghi 250 lần (25.000 => 100/s), một Postgres thường xử lý thoải mái.
+
+### 3. Kiến trúc
+~~~text
+ Người dùng
+    |
+    v
+ [CDN] -- seatmap snapshot (JSON theo section, TTL 2s) <-- [Snapshot builder]
+    |                                                          ^ đọc DB mỗi 1-2s
+    v                                                          |
+ [Waiting room] -- token "được vào" (ký HMAC, hết hạn 15 phút) |
+    |                                                          |
+    v                                                          |
+ [API gateway] -> [Seat service] --UPDATE có điều kiện--> [Postgres: seats, holds, orders]
+                        |                                       ^
+                        v                                       |
+                  [Payment service] --webhook--> [Order consumer]
+~~~
+- **Waiting room**: người dùng vào hàng (Redis list hoặc sorted set theo thời điểm vào), mỗi phút cấp token cho 2.000 người đầu hàng. Token ký HMAC nên gateway kiểm tra không cần gọi DB.
+- **Seat map**: không query DB cho mỗi người xem. Một job đọc trạng thái mỗi 1–2 giây, tạo file JSON theo section, đẩy lên cache/CDN.
+
+### 4. Giữ ghế nguyên tử (trái tim của bài)
+~~~sql
+-- Giữ 3 ghế cùng lúc: hoặc được cả 3, hoặc không được ghế nào
+UPDATE seats
+SET status = 'HELD', hold_id = :holdId, held_until = now() + interval '10 minutes'
+WHERE event_id = :eventId
+  AND seat_id IN (:s1, :s2, :s3)
+  AND (status = 'AVAILABLE' OR (status = 'HELD' AND held_until < now()));
+-- Ứng dụng kiểm tra số dòng bị ảnh hưởng: khác 3 => ROLLBACK cả transaction
+~~~
+**Vì sao đúng?** Postgres khoá từng dòng được UPDATE. Hai người cùng giữ ghế A12: người đến sau phải chờ khoá, sau đó điều kiện WHERE được kiểm tra lại trên dữ liệu mới (READ COMMITTED re-check), thấy status = HELD nên không cập nhật => số dòng = 2 thay vì 3 => rollback. Không cần distributed lock.
+
+**Vì sao dùng held_until thay vì cron nhả ghế?** Cron chạy mỗi phút thì ghế bị "kẹt" thêm tới 1 phút, và cron chết thì ghế kẹt mãi. Điều kiện held_until < now() làm ghế hết hạn ngay khi tới giờ (lazy expiry); cron chỉ còn là việc dọn dẹp để sơ đồ hiển thị đẹp.
+
+Xác nhận đơn sau khi thanh toán:
+~~~sql
+UPDATE seats SET status = 'SOLD'
+WHERE hold_id = :holdId AND status = 'HELD' AND held_until > now();
+-- 0 dòng: hold đã hết hạn và có thể đã sang tay người khác => refund
+~~~
+
+### 5. Trade-off: DB hay Redis để giữ ghế
+| Tiêu chí | Postgres UPDATE có điều kiện | Redis Lua (SET NX nhiều key) |
+|---|---|---|
+| Đúng tuyệt đối | Có, durable | Mất dữ liệu khi failover nếu chưa replicate |
+| Thông lượng | Vài nghìn/s là đủ khi có waiting room | 50–100k/s |
+| Độ phức tạp | Thấp, một nguồn sự thật | Phải đồng bộ về DB, xử lý lệch |
+| Khi nào chọn | Mặc định | Không có waiting room, tải ghi thật sự lớn |
+
+### 6. Thanh toán về muộn
+Cổng thanh toán có thể báo thành công ở phút 11 khi hold đã hết. Cách xử lý: thử UPDATE xác nhận; nếu 0 dòng thì thử giữ lại đúng ghế đó (nếu vẫn trống), nếu không được thì **refund tự động** và báo người dùng. Muốn giảm tình huống này: chỉ cho bắt đầu thanh toán khi hold còn ít nhất 2 phút, và đặt timeout của phiên thanh toán ngắn hơn hold.
+
+### 7. Senior vs Lead trả lời khác gì
+- **Senior**: đúng câu UPDATE có điều kiện, waiting room, lazy expiry, refund khi thanh toán muộn, idempotency.
+- **Lead** thêm: kế hoạch load test với dữ liệu sân thật trước ngày mở bán, chế độ suy giảm (tắt chọn chỗ, chuyển sang "ghế tốt nhất còn lại" khi quá tải), chính sách công bằng (random thứ tự cho người vào trước giờ mở bán thay vì ai nhanh tay), chi phí CDN, phối hợp với đội chống bot và CSKH (kịch bản refund hàng loạt).
+
+### Lỗi hay gặp
+- Kiểm tra "ghế trống?" bằng SELECT rồi mới UPDATE ở hai câu riêng: hai người cùng thấy trống và cùng giữ (race check-then-act).
+- Dùng SELECT ... FOR UPDATE nhưng khoá ghế theo thứ tự khác nhau giữa các request => deadlock. Nếu dùng FOR UPDATE thì sắp xếp seat_id trước.
+- Cho 500k người query sơ đồ trực tiếp từ DB.
+- Quên trường hợp thanh toán thành công sau khi hold hết hạn.
+
+### Trả lời miệng 1 phút
+"Tôi tách đọc và ghi. Đọc sơ đồ là 100k req/s nhưng chấp nhận trễ 2 giây, nên tôi build snapshot theo khu và đẩy lên CDN. Ghi là thao tác giữ ghế, phải đúng tuyệt đối, nên tôi dùng một câu UPDATE có điều kiện trên Postgres, kiểm tra số dòng bị ảnh hưởng để giữ nhiều ghế nguyên tử, và held_until để ghế tự hết hạn. Để DB không bị dội 25k lần ghi/giây, tôi đặt waiting room cấp 2.000 người/phút, giảm còn khoảng 100 lần/giây. Thanh toán về sau khi hold hết hạn thì xác nhận có điều kiện, thất bại thì refund."
+
+> Senior tip: trong các vụ bán vé sập thật, thủ phạm thường không phải câu UPDATE mà là **trang sơ đồ ghế** và **trang thanh toán** gọi sang cổng thanh toán đồng bộ. Hãy load test riêng hai luồng này, và đặt waiting room ngay cả khi bạn tin DB chịu được: nó còn là công tắc để bạn giảm tốc độ vào khi có sự cố.`,
+  followups: [
+    'Nếu ban tổ chức muốn bỏ chọn chỗ và chuyển sang "ghế tốt nhất còn lại" khi quá tải, bạn đổi thiết kế thế nào?',
+    'Làm sao để waiting room công bằng với người vào trước giờ mở bán và chống một người mở 50 tab?',
+    'Nếu dùng Redis để giữ ghế, Redis failover mất 1 giây dữ liệu thì chuyện gì xảy ra và bạn phòng thế nào?',
+    'Làm sao gợi ý 4 ghế liền nhau khi sơ đồ bị lấp lỗ chỗ?'
+  ],
+  related: ['design-016', 'design-004']
+},
+{
+  id: 'sd-012',
+  title: 'Ví điện tử: chuyển tiền P2P giữa các shard',
+  kind: 'bank',
+  level: 'lead',
+  prompt: `Thiết kế tính năng chuyển tiền P2P cho một ví điện tử 20 triệu người dùng (5 triệu hoạt động mỗi ngày). Ví được chia thành nhiều shard theo wallet_id, nên người gửi và người nhận thường nằm ở **hai database khác nhau**. Yêu cầu: không mất tiền, không trừ tiền hai lần khi app bấm lại, hạn mức ngày, chuyển cho số điện thoại chưa đăng ký ví. Đỉnh tải là tối mùng 1 Tết. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Functional: chuyển theo số điện thoại/wallet, lời nhắn, hạn mức ngày, lịch sử, chuyển cho người chưa có ví (giữ tiền chờ nhận 7 ngày). Non-functional: không mất/tạo tiền, idempotent, p99 < 1 giây cho người gửi, người nhận thấy tiền trong vài giây. Hỏi: số shard, có cần chuyển ra ngân hàng không (out-of-scope), quy định lưu trữ.` },
+    { name: 'Estimation', minutes: 5, guide: `5M DAU x 2 giao dịch = 10M/ngày => 10M / 86.400 ~ 116 TPS trung bình; đỉnh Tết gấp 10 => ~1.200 TPS. Mỗi giao dịch: 1 dòng transfer ~500 B + 2 bút toán x 200 B + outbox ~300 B ~ 1,2 KB => 12 GB/ngày ~ 4,4 TB/năm. Lưu 10 năm => partition theo tháng, archive.` },
+    { name: 'API & data model', minutes: 5, guide: `POST /transfers {toPhone, amount, note} + header Idempotency-Key -> {transferId, status}. Bảng wallets(id, balance, version), ledger_entries(wallet_id, transfer_id, amount, type), transfers(id, from, to, amount, status), idempotency_keys(wallet_id, key, response), daily_limits(wallet_id, day, used), outbox.` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: App -> Gateway -> Transfer service -> shard người gửi (trừ tiền + outbox trong 1 transaction) -> Kafka -> Credit consumer -> shard người nhận (cộng tiền, unique transfer_id). Tài khoản trung gian "tiền đang chuyển". Notification sau credit.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: vì sao không 2PC, saga và bù trừ, idempotency 2 tầng, hạn mức ngày không race, hot wallet (merchant nhận nhiều), đối soát cuối ngày, người nhận chưa có ví.` }
+  ],
+  rubric: [
+    'Ước lượng TPS trung bình và đỉnh, dung lượng có phép tính',
+    'Cùng shard: một local transaction; khác shard: saga qua outbox, không 2PC',
+    'Tài khoản trung gian (in-flight) để tổng tiền luôn cân',
+    'Trừ tiền bằng UPDATE có điều kiện balance >= amount',
+    'Idempotency-Key từ client và unique transfer_id ở phía credit',
+    'Hạn mức ngày cập nhật trong cùng transaction với trừ tiền',
+    'Bù trừ khi credit thất bại vĩnh viễn (hoàn tiền người gửi)',
+    'Hot wallet: chia sub-account hoặc gom credit',
+    'Đối soát định kỳ tổng các shard',
+    'Người nhận chưa có ví: giữ ở tài khoản chờ nhận, hết hạn thì hoàn'
+  ],
+  reference: `**Tóm tắt:** Nếu người gửi và người nhận cùng shard thì chỉ cần một local transaction. Khác shard thì **không dùng 2PC** mà dùng saga: trừ tiền người gửi + ghi outbox trong một transaction, rồi consumer cộng tiền người nhận một cách idempotent; trong lúc "đang bay", tiền nằm ở tài khoản trung gian để sổ cái lúc nào cũng cân. Idempotency ở cả hai đầu và hạn mức ngày cập nhật cùng transaction với trừ tiền.
+
+### 1. Yêu cầu
+- Chuyển theo số điện thoại, có lời nhắn, hạn mức 100 triệu/ngày.
+- Không bao giờ mất hoặc "đẻ" ra tiền. App mất mạng bấm lại không được trừ hai lần.
+- Người gửi nhận kết quả < 1 giây; người nhận thấy tiền sau vài giây là chấp nhận được (eventual cho phía nhận, strong cho phía gửi).
+- Người nhận chưa có ví: tiền chờ 7 ngày, quá hạn thì hoàn.
+
+### 2. Ước lượng
+| Đại lượng | Phép tính | Kết quả |
+|---|---|---|
+| Giao dịch/ngày | 5M DAU x 2 | 10M |
+| TPS trung bình | 10.000.000 / 86.400 | ~116 |
+| TPS đỉnh (Tết, x10) | 116 x 10 | ~1.200 |
+| Dung lượng mỗi giao dịch | 500 B + 2 x 200 B + 300 B | ~1,2 KB |
+| Dung lượng/ngày | 10M x 1,2 KB | ~12 GB |
+| Dung lượng/năm | 12 GB x 365 | ~4,4 TB |
+1.200 TPS ghi chia cho 8 shard là ~150 TPS mỗi shard: con số nhỏ. Cái khó ở bài này là **đúng**, không phải **nhanh**.
+
+### 3. Vì sao không dùng 2PC (XA)?
+2PC khoá dòng ở cả hai DB cho tới khi coordinator quyết định. Coordinator chết giữa chừng thì dòng bị khoá tới khi phục hồi, và mỗi giao dịch tốn thêm round-trip. Saga chấp nhận một khoảng thời gian ngắn tiền "đang bay" nhưng mỗi bước chỉ là local transaction, không có khoá xuyên DB.
+
+### 4. Luồng saga
+~~~text
+ App --(Idempotency-Key)--> Transfer service
+                                |
+         [Shard người gửi - 1 local transaction]
+           1. INSERT idempotency_keys (unique) -- trùng => trả kết quả cũ
+           2. UPDATE daily_limits ... used + amt <= limit
+           3. UPDATE wallets SET balance = balance - amt WHERE id=A AND balance >= amt
+           4. INSERT ledger: A -amt, IN_FLIGHT +amt
+           5. INSERT transfers(status=DEBITED), INSERT outbox
+                                |
+                         outbox relay -> Kafka (key = transferId)
+                                |
+         [Shard người nhận - 1 local transaction]
+           6. INSERT processed(transfer_id) UNIQUE -- trùng => bỏ qua
+           7. UPDATE wallets SET balance = balance + amt WHERE id=B
+           8. INSERT ledger: IN_FLIGHT -amt, B +amt
+                                |
+                    event CREDITED -> cập nhật transfers=COMPLETED, push notification
+~~~
+- **Outbox** đảm bảo "đã trừ tiền thì chắc chắn có sự kiện", vì cả hai được ghi trong cùng transaction. Gửi Kafka trực tiếp trong code thì có thể trừ tiền xong rồi chết trước khi gửi.
+- Kafka giao **at-least-once**, nên bước 6 dùng unique key để cộng tiền đúng một lần.
+- Tài khoản IN_FLIGHT: tổng mọi số dư + IN_FLIGHT luôn bằng tổng tiền hệ thống. Đối soát chỉ cần kiểm tra IN_FLIGHT có giao dịch nào "bay" quá 5 phút.
+
+### 5. Bù trừ (compensation)
+Ví người nhận bị khoá hoặc đã đóng => credit thất bại vĩnh viễn. Consumer phát sự kiện CREDIT_FAILED, shard người gửi chạy transaction ngược: IN_FLIGHT -amt, A +amt, hoàn hạn mức, transfers = REFUNDED. Lỗi tạm thời (DB timeout) thì **retry**, không bù trừ ngay.
+
+### 6. Hạn mức ngày không bị race
+~~~sql
+-- Cùng transaction với trừ tiền: hai request song song không thể cùng vượt hạn mức
+INSERT INTO daily_limits(wallet_id, day, used) VALUES (:w, :d, 0) ON CONFLICT DO NOTHING;
+UPDATE daily_limits SET used = used + :amt
+WHERE wallet_id = :w AND day = :d AND used + :amt <= :limit;  -- 0 dòng => vượt hạn mức
+~~~
+Đếm hạn mức trong Redis riêng thì nhanh nhưng lệch với DB khi transaction rollback.
+
+### 7. Hot wallet
+Một merchant/KOL nhận 2.000 lần cộng tiền/giây vào **một dòng** => tất cả xếp hàng chờ khoá dòng đó. Cách xử lý:
+- Chia ví nhận thành N sub-account (wallet_id#0..N-1), cộng vào sub-account ngẫu nhiên; số dư = tổng. Rút tiền thì gom về.
+- Hoặc ghi ledger entry (chỉ INSERT, không khoá) và cộng dồn vào balance theo lô mỗi giây.
+
+### 8. Trade-off
+| Lựa chọn | Ưu | Nhược |
+|---|---|---|
+| 2PC/XA | Nguyên tử tức thì | Khoá xuyên DB, coordinator là điểm chết, chậm |
+| Saga + outbox | Mỗi bước local, chịu lỗi tốt | Có trạng thái trung gian, cần bù trừ và đối soát |
+| Đặt cả hai ví vào một DB lớn | Đơn giản nhất | Không scale qua giới hạn một DB |
+
+### 9. Senior vs Lead trả lời khác gì
+- **Senior**: luồng saga đúng, outbox, idempotency hai tầng, UPDATE có điều kiện, hạn mức trong cùng transaction.
+- **Lead** thêm: đối soát end-of-day theo từng shard và với ngân hàng giữ tiền (tiền ví phải khớp tài khoản đảm bảo), runbook khi IN_FLIGHT kẹt, kế hoạch resharding (di chuyển ví giữa shard mà không dừng hệ thống), yêu cầu pháp lý về lưu trữ và audit, cách tổ chức đội (ai sở hữu ledger), feature flag tắt chuyển tiền P2P khi sự cố.
+
+### Lỗi hay gặp
+- Đọc số dư, kiểm tra trong Java rồi mới UPDATE balance = :newBalance => mất cập nhật khi hai request song song.
+- Sinh transferId ở server mỗi lần gọi => app retry tạo ra hai giao dịch. Phải dựa vào Idempotency-Key client gửi.
+- Retry vô hạn credit vào ví đã đóng thay vì bù trừ.
+- Coi Kafka là exactly-once rồi bỏ unique key ở phía nhận.
+
+### Trả lời miệng 1 phút
+"Đỉnh khoảng 1.200 TPS nên tải không phải vấn đề, vấn đề là đúng. Cùng shard tôi dùng một local transaction. Khác shard tôi tránh 2PC, dùng saga: trong shard người gửi, một transaction vừa kiểm tra idempotency key, cập nhật hạn mức, trừ tiền có điều kiện balance >= amount, ghi bút toán sang tài khoản trung gian và ghi outbox. Consumer ở shard người nhận cộng tiền với unique transfer_id nên chạy lại không cộng hai lần. Credit thất bại vĩnh viễn thì bù trừ hoàn tiền. Cuối cùng có đối soát để bắt giao dịch kẹt ở tài khoản trung gian."
+
+> Senior tip: hãy đặt alert "số giao dịch trong IN_FLIGHT quá 5 phút > 0". Ở các ví thật, sự cố tiền "biến mất" thường là consumer bị dừng (deploy lỗi, consumer group rebalance liên tục) chứ không phải sai logic; alert này phát hiện trong vài phút thay vì đợi khách gọi tổng đài.`,
+  followups: [
+    'Bạn di chuyển (reshard) 1 triệu ví sang shard mới mà không dừng chuyển tiền thế nào?',
+    'Người nhận chưa có ví: tiền nằm ở đâu, hết 7 ngày thì hoàn ra sao, và đối soát thế nào?',
+    'Nếu yêu cầu đổi thành người nhận phải thấy tiền ngay khi người gửi thấy "thành công", bạn trả giá gì?',
+    'Bạn phát hiện và xử lý một giao dịch bị cộng tiền nhưng chưa trừ tiền (sai lệch) thế nào?'
+  ],
+  related: ['design-005', 'design-022']
+},
+{
+  id: 'sd-013',
+  title: 'Gợi ý từ khoá (autocomplete) cho ô tìm kiếm',
+  kind: 'bigtech',
+  level: 'senior',
+  prompt: `Thiết kế tính năng gợi ý từ khoá khi gõ vào ô tìm kiếm của một sàn thương mại điện tử: 10 triệu người dùng hoạt động mỗi ngày, trả về 10 gợi ý cho mỗi lần gõ, độ trễ phía server p99 < 20 ms. Hỗ trợ tiếng Việt gõ không dấu, cập nhật xu hướng mới (ví dụ sản phẩm vừa ra mắt) trong vòng 1 giờ, và lọc từ khoá nhạy cảm. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Functional: gợi ý theo prefix, xếp theo độ phổ biến, gõ không dấu vẫn ra, lọc từ cấm. Non-functional: p99 < 20 ms server, xu hướng cập nhật < 1 giờ, sẵn sàng cao (lỗi thì ẩn gợi ý, không chặn tìm kiếm). Hỏi: có cá nhân hoá không, có sửa lỗi chính tả không (thường out-of-scope), số gợi ý.` },
+    { name: 'Estimation', minutes: 5, guide: `10M DAU x 5 lần tìm x ~4 request (đã debounce) = 200M req/ngày => ~2.300 QPS, đỉnh x3 ~7.000 QPS. 5M query phổ biến x tối đa 20 prefix, sau gộp ~30M prefix x ~60 B (key + 10 id) ~ 1,8 GB => vừa RAM một máy. Response ~1 KB => 7 MB/s.` },
+    { name: 'API & data model', minutes: 5, guide: `GET /suggest?q=dien+th&limit=10 -> [{text, type}]; Cache-Control cho prefix ngắn. Dữ liệu: bảng query_stats(query, normalized, score, updated_at) offline; trên server: map prefix_normalized -> top 10 query id + mảng text.` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ hai đường: online (Client -> CDN -> Suggest service đọc trie/map trong RAM) và offline (search log -> Kafka -> job tổng hợp mỗi giờ -> build snapshot -> S3 -> các node nạp snapshot mới kiểu blue/green).` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: precompute top-k mỗi prefix vs duyệt trie lúc query, chuẩn hoá tiếng Việt, decay theo thời gian, trending gần realtime, cache prefix ngắn, lọc từ cấm, chống thao túng.` }
+  ],
+  rubric: [
+    'Ước lượng QPS có tính debounce và dung lượng prefix có phép tính',
+    'Tách đường online (đọc RAM) và offline (tổng hợp log, build snapshot)',
+    'Precompute top-k cho mỗi prefix thay vì duyệt cả cây lúc query',
+    'Chuẩn hoá tiếng Việt (bỏ dấu, lowercase) làm key, giữ chuỗi có dấu để hiển thị',
+    'Điểm có decay theo thời gian và lớp trending gần realtime',
+    'Cache phía client/CDN cho prefix 1–2 ký tự',
+    'Nạp snapshot mới không downtime (blue/green, atomic swap)',
+    'Lọc từ nhạy cảm và chống bot đẩy từ khoá',
+    'Client debounce và huỷ request cũ'
+  ],
+  reference: `**Tóm tắt:** Autocomplete là bài toán **đọc cực nhiều, dữ liệu thay đổi chậm**. Vì vậy tính sẵn "prefix => 10 gợi ý tốt nhất" ở offline mỗi giờ, nạp toàn bộ vào RAM của service, mỗi request chỉ là một lần tra map O(1). Client debounce, prefix ngắn được cache ở CDN, tiếng Việt được chuẩn hoá bỏ dấu làm key.
+
+### 1. Yêu cầu
+- Người dùng gõ "dien th" thấy "điện thoại samsung", "điện thoại iphone 15"…
+- Server p99 < 20 ms (tính cả mạng thì người dùng cảm nhận < 100 ms).
+- Xu hướng mới lên gợi ý trong vòng 1 giờ. Không gợi ý từ tục, tên hàng cấm.
+- Service lỗi thì ô tìm kiếm vẫn dùng được (gợi ý chỉ là "nice to have").
+
+### 2. Ước lượng
+| Đại lượng | Phép tính | Kết quả |
+|---|---|---|
+| Request/ngày | 10M DAU x 5 lần tìm x 4 request (debounce 150 ms) | 200M |
+| QPS trung bình | 200.000.000 / 86.400 | ~2.300 |
+| QPS đỉnh (x3 buổi tối) | 2.300 x 3 | ~7.000 |
+| Số prefix | 5M query x tối đa 20 ký tự, sau gộp trùng | ~30M |
+| RAM | 30M x 60 B (key ~20 B + 10 id x 4 B) + 5M text x 40 B | ~1,8 GB + 0,2 GB = ~2 GB |
+| Băng thông | 7.000 x 1 KB | ~7 MB/s |
+2 GB vừa trong RAM mỗi pod (heap 4 GB) nên **không cần DB online**: mỗi node có bản sao đầy đủ, scale ngang bằng thêm pod.
+
+### 3. Kiến trúc
+~~~text
+ ONLINE (đường nóng)
+ Browser --debounce 150ms--> [CDN: cache q có 1-2 ký tự, TTL 10 phút]
+                                  | miss
+                                  v
+                         [Suggest service x N pod]
+                          HashMap<prefix, int[] top10>  (snapshot trong RAM)
+                          + overlay trending (cập nhật mỗi 1 phút)
+
+ OFFLINE (đường nguội)
+ search logs -> Kafka -> [Job mỗi giờ: đếm, decay, lọc từ cấm]
+                               -> build snapshot (file nhị phân) -> S3
+                               -> pod tải bản mới, build xong mới swap tham chiếu
+~~~
+
+### 4. Vì sao precompute top-k mỗi prefix?
+Trie "thuần" lưu mỗi ký tự một node; lúc query phải đi xuống node của prefix rồi **duyệt toàn bộ cây con** để tìm 10 query điểm cao nhất. Prefix "d" có thể có hàng trăm nghìn query con => chậm. Precompute: lúc build, mỗi node lưu sẵn top 10 => query chỉ còn là tra prefix, O(độ dài prefix) hoặc O(1) với HashMap. Đổi lại tốn RAM (đã tính ~2 GB) và dữ liệu chỉ mới theo chu kỳ build.
+
+~~~java
+// Swap snapshot không khoá: request đang chạy vẫn đọc bản cũ đến khi xong
+private volatile Snapshot current;          // volatile: thread khác thấy ngay bản mới
+
+List<String> suggest(String raw) {
+    String key = Normalizer.vi(raw);        // "Điện Th" -> "dien th"
+    Snapshot s = current;                   // đọc tham chiếu một lần
+    int[] ids = s.top.getOrDefault(key, EMPTY);
+    return s.render(ids);                   // trả text CÓ dấu để hiển thị
+}
+void reload(Snapshot fresh) { current = fresh; } // build xong mới gán
+~~~
+
+### 5. Tiếng Việt
+- Key chuẩn hoá: lowercase, bỏ dấu (java.text.Normalizer NFD rồi bỏ ký tự dấu, đổi đ thành d), gộp khoảng trắng.
+- "dien thoai" và "điện thoại" cùng key; hiển thị bản có dấu phổ biến nhất.
+- Người gõ có dấu một phần ("điên tho") vẫn chuẩn hoá về cùng key.
+
+### 6. Xếp hạng và xu hướng
+- score = tổng số lần tìm có **decay**: mỗi ngày nhân 0,9, để từ khoá cũ (khuyến mãi năm ngoái) tự chìm.
+- Có thể cộng tín hiệu chất lượng: tỉ lệ click, có kết quả hay không (query ra 0 sản phẩm thì không gợi ý).
+- Trending: stream job đếm theo cửa sổ 1 giờ, các query tăng đột biến được đẩy vào một overlay nhỏ (vài nghìn mục) mà pod tải mỗi phút và trộn với snapshot.
+
+### 7. Trade-off
+| Phương án | Ưu | Nhược |
+|---|---|---|
+| Snapshot trong RAM mỗi pod | Nhanh nhất, không phụ thuộc mạng | Mỗi pod tốn 2 GB, cập nhật theo chu kỳ |
+| Redis (prefix -> ZSET) | Cập nhật realtime, pod nhẹ | Thêm round-trip, Redis thành điểm phụ thuộc |
+| Elasticsearch completion suggester | Có sẵn fuzzy, ít code | Vận hành cụm ES, khó tinh chỉnh xếp hạng |
+
+### 8. Senior vs Lead trả lời khác gì
+- **Senior**: tách online/offline, precompute top-k, chuẩn hoá tiếng Việt, cache prefix ngắn, swap snapshot an toàn.
+- **Lead** thêm: đo hiệu quả bằng A/B (tỉ lệ dùng gợi ý, số ký tự gõ tiết kiệm, conversion), quy trình xử lý khi một gợi ý gây khủng hoảng truyền thông (kill switch xoá một từ khoá trong vài phút, không đợi build lại), chống seller dùng bot đẩy tên shop lên gợi ý, chi phí so với dùng dịch vụ có sẵn.
+
+### Lỗi hay gặp
+- Gọi API ở mọi keystroke mà không debounce và không huỷ request cũ: kết quả về sai thứ tự, gợi ý nhảy lung tung.
+- Query DB bằng LIKE 'abc%' cho mỗi lần gõ: chết ngay ở 7.000 QPS.
+- Build snapshot mới ngay trong pod đang phục vụ, GC pause dài => p99 tăng vọt. Build offline, pod chỉ tải và swap.
+- Không lọc query của bot, khiến gợi ý bị thao túng.
+
+### Trả lời miệng 1 phút
+"Khoảng 7.000 QPS đỉnh, dữ liệu prefix chỉ khoảng 2 GB nên tôi giữ toàn bộ trong RAM mỗi pod. Mỗi giờ một job offline đọc search log từ Kafka, đếm có decay, lọc từ cấm, rồi tính sẵn top 10 cho mỗi prefix đã chuẩn hoá bỏ dấu, ghi snapshot lên S3; pod tải và swap tham chiếu volatile. Request chỉ là một lần tra HashMap nên dưới 1 ms. Prefix 1–2 ký tự được cache ở CDN, client debounce 150 ms. Xu hướng mới dùng một overlay nhỏ cập nhật mỗi phút."
+
+> Senior tip: 1–2 ký tự đầu chiếm phần rất lớn traffic nhưng chỉ có vài nghìn giá trị khác nhau, nên cache chúng ở CDN/browser giảm tải đáng kể. Và luôn có **danh sách chặn khẩn cấp** đọc realtime: sớm muộn sẽ có một gợi ý gây phản cảm lên mạng xã hội, lúc đó không ai muốn đợi job chạy lại.`,
+  followups: [
+    'Bạn thêm cá nhân hoá (lịch sử tìm của chính người dùng) mà vẫn giữ p99 < 20 ms thế nào?',
+    'Người dùng gõ sai chính tả "iphon" vẫn muốn ra "iphone": bạn mở rộng thiết kế ra sao?',
+    'Nếu dữ liệu tăng lên 50 GB không còn vừa RAM một pod, bạn shard thế nào?',
+    'Làm sao xoá một gợi ý độc hại khỏi toàn hệ thống trong 5 phút?'
+  ],
+  related: ['design-018']
+},
+{
+  id: 'sd-014',
+  title: 'Hệ thống hẹn giờ thực thi hàng chục triệu job',
+  kind: 'bigtech',
+  level: 'lead',
+  prompt: `Thiết kế dịch vụ hẹn giờ (delayed/scheduled job) dùng chung cho cả công ty: các team đăng ký "gọi webhook X lúc 09:00 ngày mai", "nhắc thanh toán sau 3 ngày", hoặc lịch cron. Quy mô 50 triệu job/ngày, nhiều job dồn vào đúng 08:00 và 09:00. Yêu cầu chạy trễ không quá 5 giây so với giờ hẹn, không mất job, và không làm sập service đích. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Functional: tạo/huỷ job một lần, cron có timezone, payload, retry policy, callback HTTP hoặc message Kafka. Non-functional: at-least-once, trễ < 5 giây, multi-tenant, rate limit theo service đích. Hỏi: độ chính xác cần thiết, job xa nhất (1 năm?), có cần exactly-once không (thường không, đích phải idempotent).` },
+    { name: 'Estimation', minutes: 5, guide: `50M/ngày => ~580 job/giây trung bình. Nếu 20% (10M) hẹn đúng 09:00:00 thì cần 10M trong vài giây - không thể; dàn đều trong 10 phút => ~16.700/giây. Lưu: 50M x 500 B = 25 GB/ngày; giữ lịch sử 30 ngày ~ 750 GB => partition theo ngày.` },
+    { name: 'API & data model', minutes: 5, guide: `POST /jobs {tenant, runAt | cron + tz, target, payload, idempotencyKey, maxDelaySec} -> jobId; DELETE /jobs/{id}. Bảng jobs(id, shard, due_at, status, attempt, lease_until, tenant, target, payload), partition theo due_at, index (shard, status, due_at).` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: API -> DB (sharded) ; Scheduler node sở hữu một số shard (lease) -> quét job sắp tới hạn -> timing wheel trong RAM -> đúng giờ đẩy vào Kafka -> Executor gọi đích (rate limit theo target) -> cập nhật trạng thái; retry với backoff; DLQ.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: claim job không trùng (SKIP LOCKED + lease), node chết, giờ cao điểm 09:00, backpressure khi đích chậm, cron và DST, fairness giữa tenant, chỉ số lag.` }
+  ],
+  rubric: [
+    'Ước lượng trung bình và đỉnh tại giờ tròn, nhận ra cần dàn tải',
+    'Lưu job bền vững trong DB, partition theo thời gian',
+    'Claim job bằng FOR UPDATE SKIP LOCKED + lease, node chết thì job được claim lại',
+    'Hai tầng: DB cho job xa, timing wheel/hàng đợi trong RAM cho job sắp tới',
+    'At-least-once + idempotency key gửi kèm cho đích',
+    'Rate limit và backpressure theo service đích',
+    'Retry có backoff, DLQ',
+    'Cron: tính lần chạy kế tiếp theo timezone, xử lý DST và misfire',
+    'Fairness giữa tenant',
+    'Metric lag = thời điểm chạy thật - due_at'
+  ],
+  reference: `**Tóm tắt:** Job được lưu bền trong DB chia shard theo id và partition theo ngày. Mỗi scheduler node giữ **lease** trên một nhóm shard, cứ vài giây quét các job sắp tới hạn bằng {{FOR UPDATE SKIP LOCKED}}, nạp vào timing wheel trong RAM, đến giờ thì đẩy sang Kafka cho executor gọi đích. Giao **at-least-once** nên đích phải idempotent; đỉnh giờ tròn được xử lý bằng dàn tải và rate limit theo đích.
+
+### 1. Yêu cầu
+- Job một lần (runAt) và cron có timezone. Đích là HTTP callback hoặc topic Kafka.
+- Trễ < 5 giây, không mất job, chạy ít nhất một lần (exactly-once thật sự là không thể khi gọi HTTP ra ngoài).
+- Không biến scheduler thành "vũ khí DDoS" bắn 1 triệu request vào service đích lúc 09:00.
+
+### 2. Ước lượng
+| Đại lượng | Phép tính | Kết quả |
+|---|---|---|
+| Trung bình | 50.000.000 / 86.400 | ~580 job/s |
+| Dồn đúng 09:00 | 20% x 50M = 10M job | không thể chạy trong 1 giây |
+| Dàn trong 10 phút | 10.000.000 / 600 | ~16.700 job/s |
+| Lưu trữ/ngày | 50M x 500 B | 25 GB |
+| Giữ 30 ngày | 25 GB x 30 | ~750 GB |
+Bài học: phải hỏi chủ job "có cần đúng 09:00:00 không?". Phần lớn job nhắc nhở chấp nhận trễ vài phút => API có trường maxDelaySec để scheduler được phép dàn ra.
+
+### 3. Kiến trúc
+~~~text
+ Team A/B/C --POST /jobs--> [Job API] --INSERT--> [DB shards 0..63, partition theo ngày]
+                                                        ^      |
+                                     lease shard 0..15  |      | quét: due_at <= now() + 60s
+                                                        |      v
+                                   [Scheduler node 1] timing wheel (RAM, ô 1 giây)
+                                   [Scheduler node 2] ...       |
+                                   [Scheduler node 3] ...       | đến giờ
+                                                                v
+                                                     [Kafka: jobs.due, key = target]
+                                                                |
+                                   [Executor pool] -- rate limit theo target --> service đích
+                                          | thành công: DONE | lỗi: retry backoff | hết lượt: DLQ
+~~~
+
+### 4. Claim job không trùng
+~~~sql
+-- Chạy mỗi 5 giây trên mỗi shard mà node đang giữ lease
+WITH due AS (
+  SELECT id FROM jobs
+  WHERE shard = :shard AND status = 'PENDING' AND due_at <= now() + interval '60 seconds'
+  ORDER BY due_at
+  LIMIT 1000
+  FOR UPDATE SKIP LOCKED          -- node khác đang claim thì bỏ qua, không chờ
+)
+UPDATE jobs j SET status = 'CLAIMED', lease_until = now() + interval '2 minutes'
+FROM due WHERE j.id = due.id
+RETURNING j.id, j.due_at, j.target;
+~~~
+- **Vì sao cần lease?** Node claim xong rồi chết thì job kẹt ở CLAIMED. Một tiến trình dọn đưa job có lease_until < now() về PENDING => node khác chạy. Đây là nguồn chạy trùng duy nhất, chấp nhận được vì at-least-once.
+- **Vì sao 2 tầng (DB + timing wheel)?** Quét DB mỗi giây để bắt đúng giây là rất tốn. Quét trước 60 giây, nạp vào timing wheel (mảng 60 ô, mỗi ô là danh sách job của giây đó) rồi một thread tick mỗi giây lấy ô hiện tại => chính xác tới giây mà DB chỉ bị quét mỗi 5 giây.
+
+### 5. Backpressure và fairness
+- Kafka key = target nên một đích chậm chỉ làm chậm partition của nó.
+- Executor có token bucket cho từng target (ví dụ billing-service tối đa 500 req/s). Vượt thì job chờ, lag tăng có chủ đích thay vì làm sập đích.
+- Mỗi tenant có quota job/phút; một team đăng ký 10M job không được làm trễ job thanh toán của team khác => hàng đợi ưu tiên theo tier.
+
+### 6. Cron, timezone, DST
+- Lưu biểu thức cron + timezone (Asia/Ho_Chi_Minh), sau mỗi lần chạy tính next_fire_at bằng java.time (ZonedDateTime) rồi INSERT lần kế tiếp **trong cùng transaction** với đánh dấu DONE.
+- Ở vùng có DST, 02:30 có thể không tồn tại hoặc xảy ra hai lần: quy định rõ chính sách.
+- Misfire (scheduler dừng 1 giờ): chạy bù tất cả, chỉ chạy lần gần nhất, hay bỏ qua? Cho tenant chọn.
+
+### 7. Trade-off
+| Phương án | Ưu | Nhược |
+|---|---|---|
+| DB + SKIP LOCKED + timing wheel | Bền, truy vấn/huỷ job dễ, quen thuộc | Phải tự viết lease, tune index |
+| Redis sorted set (score = due_at) | Rất nhanh, ZRANGEBYSCORE đơn giản | Bền vững kém hơn, RAM đắt khi giữ job 1 năm |
+| Dịch vụ cloud (ví dụ EventBridge Scheduler) | Không phải vận hành | Quota, chi phí theo số lần gọi, khoá vào nhà cung cấp |
+| Quartz cluster | Có sẵn cho Spring | Khoá DB tập trung, khó lên hàng chục triệu job/ngày |
+
+### 8. Senior vs Lead trả lời khác gì
+- **Senior**: SKIP LOCKED + lease, at-least-once + idempotency key, retry/DLQ, timing wheel, partition theo ngày.
+- **Lead** thêm: SLO rõ ràng (99,9% job trễ < 5 giây) và metric lag theo tenant, onboarding/quota như một platform nội bộ, chính sách khi đích chậm (ai chịu trách nhiệm), kế hoạch rebalance shard khi thêm node, chi phí tự xây so với dịch vụ cloud, và dàn tải giờ tròn như một chính sách sản phẩm (maxDelaySec) chứ không chỉ là kỹ thuật.
+
+### Lỗi hay gặp
+- Mọi node cùng SELECT job tới hạn không có SKIP LOCKED => chạy trùng hàng loạt hoặc chờ khoá nhau.
+- Một leader duy nhất quét toàn bộ DB: leader trở thành nút thắt và điểm chết.
+- Không gửi idempotency key cho đích, rồi trách scheduler khi khách bị nhắc hai lần.
+- Lưu job đã chạy chung bảng không partition => bảng phình, index chậm dần; xoá bằng DELETE thay vì DROP PARTITION.
+
+### Trả lời miệng 1 phút
+"Trung bình chỉ ~580 job/giây, nhưng giờ tròn có thể dồn 10 triệu job, nên tôi dàn tải trong cửa sổ maxDelay, khoảng 16.700 job/giây trong 10 phút. Job lưu bền trong DB chia 64 shard, partition theo ngày. Scheduler node giữ lease trên nhóm shard, mỗi 5 giây claim job sắp tới hạn trong 60 giây bằng FOR UPDATE SKIP LOCKED, nạp vào timing wheel để bắn đúng giây sang Kafka. Executor gọi đích có rate limit theo target, retry backoff, DLQ. Giao at-least-once nên mỗi lần gọi kèm idempotency key. Metric chính là lag giữa giờ chạy thật và due_at."
+
+> Senior tip: metric quan trọng nhất của scheduler là **lag** (now - due_at) theo percentile và theo tenant, không phải số job chạy. Alert khi p99 lag > 5 giây sẽ bắt được mọi sự cố: DB chậm, node mất lease, đích bị rate limit, consumer Kafka dừng.`,
+  followups: [
+    'Một job hẹn chạy sau 1 năm: lưu ở đâu cho rẻ, và huỷ nó thế nào?',
+    'Nếu một team cần đúng exactly-once (ví dụ trừ phí định kỳ), bạn phối hợp với service đích ra sao?',
+    'Thêm scheduler node mới thì chia lại shard thế nào mà không chạy trùng hoặc bỏ sót?',
+    'Service đích chết 2 giờ: 3 triệu job tồn đọng xử lý thế nào khi nó sống lại?'
+  ],
+  related: ['design-013', 'design-029']
+},
+{
+  id: 'sd-015',
+  title: 'Gọi xe: tìm tài xế gần nhất theo thời gian thực',
+  kind: 'bigtech',
+  level: 'senior',
+  prompt: `Thiết kế phần tìm và ghép tài xế cho một ứng dụng gọi xe: 300.000 tài xế online giờ cao điểm, mỗi tài xế gửi vị trí 4 giây một lần; 1 triệu chuyến mỗi ngày. Khách mở app thấy xe quanh mình, đặt xe thì hệ thống phải ghép được tài xế phù hợp trong vài giây, **không giao một tài xế cho hai khách**. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Functional: tài xế cập nhật vị trí, khách xem xe quanh mình, đặt xe -> mời tài xế -> tài xế nhận/từ chối, theo dõi chuyến. Non-functional: ghép trong < 10 giây, vị trí trên bản đồ trễ vài giây được, không double-assign. Hỏi: phạm vi (một nước, nhiều thành phố), loại xe, có ghép theo lô không. Out-of-scope: tính giá, thanh toán.` },
+    { name: 'Estimation', minutes: 5, guide: `300k tài xế / 4 giây = 75.000 cập nhật/giây, mỗi gói ~200 B => 15 MB/s. Vị trí hiện tại: 300k x 100 B = 30 MB (vừa RAM). Lịch sử: 75k x 100 B = 7,5 MB/s ~ 650 GB/ngày => đổ sang object storage. Đặt chuyến: 1M/86.400 ~ 12/s, đỉnh x3 ~ 35/s. Xem xe quanh: ~1.000 QPS đỉnh.` },
+    { name: 'API & data model', minutes: 5, guide: `Driver: gửi vị trí qua kết nối WebSocket/gRPC stream {lat, lng, heading, ts}. Rider: GET /nearby?lat&lng, POST /rides {pickup, dropoff, Idempotency-Key}. Lưu: driver_state(driver_id, status, ride_id, version) và geo index theo thành phố; rides(id, rider, driver, status).` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: Driver app -> Location gateway (kết nối lâu dài) -> Location service ghi geo index trong RAM/Redis theo thành phố + đẩy Kafka cho lịch sử; Rider -> Matching service: tìm ứng viên quanh điểm đón, xếp theo ETA, mời từng người với timeout; Driver state service đổi trạng thái nguyên tử.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: geohash/H3 vs Redis GEO, ô biên, khoảng cách đường đi vs đường chim bay, khoá tài xế khi mời, timeout và mời người kế, hot spot sân bay, mất kết nối, ghép theo lô.` }
+  ],
+  rubric: [
+    'Ước lượng 75k cập nhật vị trí/giây và nhận ra đây là luồng ghi chính',
+    'Vị trí hiện tại giữ trong RAM/Redis, lịch sử đẩy qua stream sang storage rẻ',
+    'Geo index (geohash, H3 hoặc Redis GEO) và xử lý ô lân cận',
+    'Shard theo thành phố/vùng',
+    'Xếp ứng viên theo ETA đường đi, không chỉ đường chim bay',
+    'Đổi trạng thái tài xế nguyên tử (AVAILABLE -> OFFERED) để không double-assign',
+    'Mời tài xế có timeout, hết giờ thì mời người kế',
+    'Xử lý tài xế mất kết nối (vị trí cũ quá N giây thì loại)',
+    'Hot spot (sân bay) và ghép theo lô khi cầu cao'
+  ],
+  reference: `**Tóm tắt:** Luồng nặng nhất là **75.000 cập nhật vị trí/giây**, nên vị trí hiện tại chỉ giữ trong RAM (Redis GEO hoặc index trong service) theo từng thành phố, còn lịch sử đổ qua Kafka sang storage rẻ. Khi khách đặt xe, tìm ứng viên trong ô lưới quanh điểm đón, xếp theo ETA, rồi **đổi trạng thái tài xế nguyên tử** (AVAILABLE -> OFFERED) trước khi mời để không giao một tài xế cho hai khách.
+
+### 1. Yêu cầu
+- Tài xế gửi vị trí 4 giây/lần; khách thấy xe quanh mình (trễ vài giây không sao).
+- Đặt xe: ghép tài xế trong < 10 giây; một tài xế chỉ được mời cho một chuyến tại một thời điểm.
+- Phạm vi nhiều thành phố; tài xế mất sóng thì không được mời.
+
+### 2. Ước lượng
+| Đại lượng | Phép tính | Kết quả |
+|---|---|---|
+| Cập nhật vị trí | 300.000 / 4 giây | 75.000/s |
+| Băng thông vào | 75.000 x 200 B | 15 MB/s |
+| Vị trí hiện tại | 300.000 x 100 B | 30 MB |
+| Lịch sử vị trí | 75.000 x 100 B x 86.400 | ~650 GB/ngày |
+| Đặt chuyến trung bình | 1.000.000 / 86.400 | ~12/s |
+| Đặt chuyến đỉnh (x3) | 12 x 3 | ~35/s |
+Nhận xét: dữ liệu nóng chỉ 30 MB nhưng **ghi** 75k lần/s. Không đưa luồng này vào Postgres (mỗi UPDATE sinh một phiên bản dòng mới, vacuum không theo kịp). Một Redis shard chịu khoảng 100k thao tác đơn giản/giây, nên shard theo thành phố là đủ: Hà Nội, TP.HCM mỗi nơi một shard riêng.
+
+### 3. Geo index: tìm "ai ở gần" thế nào?
+Không thể tính khoảng cách tới 300k tài xế cho mỗi lần tìm. Ý tưởng: chia bản đồ thành ô lưới, mỗi tài xế thuộc một ô; tìm thì chỉ xét ô của khách và các ô xung quanh.
+- **Geohash**: mã hoá (lat, lng) thành chuỗi; prefix chung = gần nhau. Độ dài 6 ~ ô 1,2 km x 0,6 km; độ dài 7 ~ 153 m x 153 m.
+- **Bẫy ô biên**: khách đứng sát mép ô, tài xế cách 50 m nhưng ở ô bên cạnh có mã khác hẳn => luôn tìm ô hiện tại **cộng 8 ô lân cận**.
+- **Redis GEO**: GEOADD lưu vào sorted set (score là geohash 52 bit), GEOSEARCH ... BYRADIUS 3 km ASC COUNT 50 tự lo phần ô lân cận.
+- **H3** (lưới lục giác): khoảng cách từ tâm tới các ô kề đều nhau, tiện cho phân tích cung/cầu theo vùng.
+
+~~~text
+ Driver app --stream 4s--> [Location gateway] --> [Location service]
+                                                    | GEOADD drivers:hcm lng lat id
+                                                    | SET last_seen:id ts (TTL 30s)
+                                                    v
+                                     [Redis shard / thành phố]      [Kafka: locations] -> S3 (lịch sử)
+                                                    ^
+ Rider --POST /rides--> [Matching service] --GEOSEARCH 3km, 50 ứng viên--+
+                              | lọc AVAILABLE + last_seen < 15s
+                              | gọi ETA service (đường đi thật) -> xếp hạng
+                              v
+                       [Driver state] CAS AVAILABLE -> OFFERED (TTL 15s) -> push lời mời
+~~~
+
+### 4. Không giao một tài xế cho hai khách
+Hai matching worker có thể cùng chọn tài xế D cho hai khách. Giải pháp: trước khi mời phải **giành** tài xế bằng một thao tác nguyên tử.
+~~~sql
+UPDATE driver_state SET status = 'OFFERED', ride_id = :rideId, offer_until = now() + interval '15 seconds'
+WHERE driver_id = :d AND status = 'AVAILABLE';
+-- 1 dòng: giành được, gửi lời mời; 0 dòng: người khác đã giành, thử ứng viên kế
+~~~
+(Tương đương bằng Redis: SET offer:D rideId NX EX 15.) Tài xế từ chối hoặc hết 15 giây => trả về AVAILABLE và mời người kế. Tài xế nhận => OFFERED -> ON_TRIP với điều kiện ride_id khớp.
+
+### 5. Trade-off
+| Lựa chọn | Ưu | Nhược |
+|---|---|---|
+| Redis GEO theo thành phố | Có sẵn, đơn giản, đủ nhanh | Một thành phố quá lớn vẫn có thể thành hot shard |
+| Index trong RAM của service (geohash -> set) | Nhanh nhất, không round-trip | Phải tự lo sharding, replication, khởi động lại mất dữ liệu (tài xế gửi lại sau 4 giây) |
+| PostGIS | Truy vấn không gian mạnh | Không chịu 75k UPDATE/s |
+| Mời lần lượt từng tài xế | Đơn giản, công bằng với tài xế | Chậm nếu nhiều người từ chối |
+| Ghép theo lô mỗi 2 giây | Tối ưu tổng ETA toàn vùng | Phức tạp, thêm độ trễ nhỏ |
+
+### 6. Senior vs Lead trả lời khác gì
+- **Senior**: ước lượng đúng luồng ghi, geo index + ô lân cận, ETA theo đường đi, CAS trạng thái tài xế, timeout mời, loại tài xế mất sóng.
+- **Lead** thêm: ghép theo lô để tối ưu toàn cục giờ cao điểm, hot spot sân bay (hàng chờ FIFO tài xế riêng), chế độ suy giảm khi ETA service chết (dùng đường chim bay nhân hệ số), multi-region và cách di chuyển một thành phố sang cụm khác, chỉ số kinh doanh (tỉ lệ ghép thành công, thời gian chờ) gắn với SLO kỹ thuật.
+
+### Lỗi hay gặp
+- Lưu mỗi lần cập nhật vị trí vào bảng SQL chính.
+- Chỉ tìm trong một ô geohash, bỏ sót tài xế ngay bên kia ranh giới.
+- Xếp theo đường chim bay: tài xế cách 300 m nhưng bên kia sông/cao tốc có thể mất 15 phút.
+- Mời tài xế mà không khoá trạng thái => hai khách cùng được báo "đã có tài xế".
+- Không loại tài xế có vị trí cũ (mất sóng 2 phút) khỏi danh sách ứng viên.
+
+### Trả lời miệng 1 phút
+"Luồng nặng nhất là 300k tài xế gửi vị trí mỗi 4 giây, tức 75k ghi/giây, nhưng dữ liệu hiện tại chỉ khoảng 30 MB. Nên tôi giữ vị trí hiện tại trong Redis GEO chia theo thành phố, lịch sử đẩy qua Kafka sang S3. Khi đặt xe, matching service lấy khoảng 50 tài xế trong bán kính 3 km, lọc người đang rảnh và còn tín hiệu, xếp theo ETA đường đi thật. Trước khi mời, tôi đổi trạng thái tài xế từ AVAILABLE sang OFFERED bằng một thao tác nguyên tử có TTL 15 giây, nên không ai bị giao hai chuyến; từ chối hoặc hết giờ thì mời người kế."
+
+> Senior tip: 4 giây/lần là con số cân bằng giữa pin điện thoại tài xế và độ chính xác; nhiều hệ thống cho app tự giảm tần suất khi tài xế đứng yên và tăng khi đang chạy, giảm đáng kể tải ghi. Và luôn đo **thời gian từ lúc đặt tới lúc có tài xế nhận** theo từng khu vực; đó là chỉ số khách hàng cảm nhận được, không phải latency của GEOSEARCH.`,
+  followups: [
+    'Khu vực sân bay có 2.000 tài xế chờ: bạn xếp hàng công bằng thế nào thay vì chọn người gần nhất?',
+    'ETA service chết giữa giờ cao điểm: hệ thống suy giảm ra sao?',
+    'Bạn hiển thị xe quanh khách cho 1.000 QPS mà không đè lên luồng matching thế nào?',
+    'Chuyển sang ghép theo lô mỗi 2 giây: thuật toán và trade-off là gì?'
+  ],
+  related: ['design-010']
 }
 ];
