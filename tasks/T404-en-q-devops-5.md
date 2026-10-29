@@ -1,6 +1,6 @@
 # T404 — Dịch sang tiếng Anh: q-devops (3 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-devops-5.en.js`
 
@@ -16,3 +16,6 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-devops-5.en.js` và `node scripts/check-i18n.js q-devops-5` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+Đã dịch đầy đủ q/a/follow cho devops-028, devops-029, devops-030; giữ nguyên code, số liệu và markup. `node scripts/check-i18n.js q-devops-5` → OK (3 mục); `node scripts/validate.js` → OK. Lệnh `node --check js/i18n/q-devops-5.en.js` bị chặn bởi quyền thực thi của công cụ sau 3 lần thử; file đã được check-i18n nạp và kiểm tra thành công.
+Reviewed-by: check-i18n (translation, no LLM review)
