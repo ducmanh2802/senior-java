@@ -31,7 +31,7 @@ jobs:
 
       - name: Publish changed digests
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL || 'https://nmzqgokntdkikfussphh.supabase.co' }}   # public (already in the browser code)
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
           INPUT_FILE: ${{ github.event.inputs.file }}
         run: |
