@@ -1,6 +1,6 @@
 # T449 — Dịch sang tiếng Anh: labs-incident (2 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/labs-incident-4.en.js`
 
@@ -16,3 +16,10 @@ Yêu cầu dịch:
 - `node --check js/i18n/labs-incident-4.en.js` và `node scripts/check-i18n.js labs-incident-4` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đủ 2 mục `lab-incident-010`, `lab-incident-011` trong `js/i18n/labs-incident-4.en.js` với các field `title, scenario, questions, hints, answer, rubric`; giữ nguyên markup, bảng, code block và mọi số liệu (400/397, 640, 3.000→410–640 msg/s, 29 rebalance, 18.400 SMS…).
+- Code block `~~~text` mô tả (chú thích Little's law và trần năng lực) được dịch sang tiếng Anh vì là văn xuôi giải thích, không phải code cần giữ.
+- `node scripts/check-i18n.js` (file + lần chạy đầy đủ) → OK, 1721 mục. `node scripts/check-i18n.js labs-incident-4` → OK, 2/2 mục.
+- `node scripts/validate.js` → `OK — không có lỗi.`
+- Không sửa file ngoài phạm vi sở hữu.
+Reviewed-by: check-i18n (translation, no LLM review)
