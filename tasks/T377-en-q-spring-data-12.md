@@ -1,6 +1,6 @@
 # T377 — Dịch sang tiếng Anh: q-spring-data (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-spring-data-12.en.js`
 
@@ -16,3 +16,4 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-spring-data-12.en.js` và `node scripts/check-i18n.js q-spring-data-12` → OK, rồi `Status: DONE`.
 
 ## Notes
+Reviewed-by: check-i18n (translation, no LLM review)
