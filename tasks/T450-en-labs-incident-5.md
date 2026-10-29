@@ -1,6 +1,6 @@
 # T450 — Dịch sang tiếng Anh: labs-incident (2 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/labs-incident-5.en.js`
 
@@ -16,3 +16,8 @@ Yêu cầu dịch:
 - `node --check js/i18n/labs-incident-5.en.js` và `node scripts/check-i18n.js labs-incident-5` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã dịch đủ 2 mục `lab-incident-012`, `lab-incident-013` vào `js/i18n/labs-incident-5.en.js` với các field title, scenario, questions, hints, answer, rubric; giữ nguyên markup, code block (chỉ dịch comment tiếng Việt), số liệu và thuật ngữ (Hikari, cache-aside, stampede, bulkhead, liveness/readiness…).
+- `node scripts/check-i18n.js labs-incident-5` → `OK — 2 mục đã dịch.` (script nạp file bằng `vm`, xác nhận file parse được; lệnh `node --check` bị chặn bởi quyền shell trên máy nên dùng check-i18n làm cổng kiểm cú pháp).
+- `node scripts/validate.js` → `OK — không có lỗi.`
+- Số khối `###`, `>`, `~~~` khớp bản gốc (24/24 cho 2 mục), bảng probe và sơ đồ ASCII giữ nguyên cấu trúc.
+Reviewed-by: check-i18n (translation, no LLM review)
