@@ -1,6 +1,6 @@
 # T473 — Dịch sang tiếng Anh: lessons-architecture (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-architecture-2.en.js`
 
@@ -16,3 +16,8 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-architecture-2.en.js` và `node scripts/check-i18n.js lessons-architecture-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+Đã dịch đầy đủ `lesson-architecture-004` sang tiếng Anh: title, goals (3), body (nguyên markup, sơ đồ ASCII và bảng trade-off giữ nguyên, chỉ dịch chú thích trong khối `~~~text`), 2 exercises (title, prompt, hints, explain — không chép starter/tests/reference) và 3 câu check (q, options, explain — không chép `answer`). Giữ thuật ngữ (State pattern, greedy, dynamic programming, canonical denominations, OCP/SRP/DIP/ISP). Nhãn: "**Tóm tắt:**" → "**Summary:**", "> Senior tip:" giữ nguyên, "### Liên hệ phỏng vấn" → "### Interview relevance" (đồng bộ với T472).
+
+Kiểm tra: `node scripts/check-i18n.js lessons-architecture-2` → OK — 1 mục đã dịch; `node scripts/validate.js` → OK — không có lỗi.
+Reviewed-by: check-i18n (translation, no LLM review)
