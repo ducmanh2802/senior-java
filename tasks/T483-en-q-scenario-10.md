@@ -1,6 +1,6 @@
 # T483 — Dịch sang tiếng Anh: q-scenario (6 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-scenario-10.en.js`
 
@@ -16,3 +16,9 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-scenario-10.en.js` và `node scripts/check-i18n.js q-scenario-10` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã dịch đủ 6 mục scenario-062 … scenario-067 vào `js/i18n/q-scenario-10.en.js` (chỉ q/a/follow), giữ nguyên markup, code block, số liệu và thuật ngữ; dịch comment tiếng Việt trong code/ASCII diagram.
+- `node scripts/check-i18n.js q-scenario-10` → `OK — 6 mục đã dịch.` (vm đã parse toàn bộ file nên cú pháp hợp lệ).
+- `node scripts/validate.js` → `OK — không có lỗi.`
+- Lưu ý: trên máy này lệnh `node --check <file>` bị chặn bởi lớp quyền của shell (các lệnh còn lại chạy bình thường); cú pháp đã được xác nhận gián tiếp qua `check-i18n.js` (chạy file trong `vm.runInNewContext`).
+- Không commit, không sửa file ngoài phạm vi sở hữu.
+Reviewed-by: check-i18n (translation, no LLM review)
