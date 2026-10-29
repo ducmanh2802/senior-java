@@ -1,6 +1,6 @@
 # T441 — Dịch sang tiếng Anh: labs-thread (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/labs-thread-6.en.js`
 
@@ -16,3 +16,5 @@ Yêu cầu dịch:
 - `node --check js/i18n/labs-thread-6.en.js` và `node scripts/check-i18n.js labs-thread-6` → OK, rồi `Status: DONE`.
 
 ## Notes
+Done: Translated lab-thread-002 (Flash sale HikariPool exhaustion) to English. All validation checks pass: `node --check` OK, `node scripts/check-i18n.js labs-thread-6` → "OK — 1 mục đã dịch.", `node scripts/validate.js` → "OK — không có lỗi."
+Reviewed-by: check-i18n (translation, no LLM review)
