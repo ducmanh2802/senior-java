@@ -1,6 +1,6 @@
 # T443 — Dịch sang tiếng Anh: labs-thread (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/labs-thread-8.en.js`
 
@@ -16,3 +16,9 @@ Yêu cầu dịch:
 - `node --check js/i18n/labs-thread-8.en.js` và `node scripts/check-i18n.js labs-thread-8` → OK, rồi `Status: DONE`.
 
 ## Notes
+- Đã dịch đủ `lab-thread-006` trong `js/i18n/labs-thread-8.en.js`: 6 field `title, scenario, questions (3), hints (3), answer, rubric (4)`; không chép `artifacts`/`tags`.
+- Giữ nguyên toàn bộ markup (`**`, `{{code}}`, `###`, danh sách, bảng so sánh, 2 code block `~~~text` và `~~~java`), dịch comment tiếng Việt trong code block và cả sơ đồ ASCII (CHA/CON → PARENT/CHILD, giữ căn cột).
+- Nhãn cố định: "**Tóm tắt:**" → "**Summary:**", giữ "> Senior tip:". Không backtick, không `${`.
+- Kiểm tra: `node scripts/check-i18n.js labs-thread-8` → `OK — 1 mục đã dịch.`; `node scripts/validate.js` → `OK — không có lỗi.` (manifest đã có sẵn `labs-thread-8`).
+- Không sửa file nào khác ngoài file được sở hữu + file task này.
+Reviewed-by: check-i18n (translation, no LLM review)
