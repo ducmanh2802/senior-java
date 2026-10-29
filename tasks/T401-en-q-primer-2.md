@@ -1,6 +1,6 @@
 # T401 — Dịch sang tiếng Anh: q-primer (6 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-primer-2.en.js`
 
@@ -16,3 +16,6 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-primer-2.en.js` và `node scripts/check-i18n.js q-primer-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đầy đủ primer-008..013 (q, a, follow), giữ nguyên markup/code; `node scripts/check-i18n.js q-primer-2` và `node scripts/validate.js` đều OK.
+Reviewed-by: check-i18n (translation, no LLM review)
