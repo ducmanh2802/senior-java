@@ -179,6 +179,33 @@ When you call {{repo.findByCustomerId(1L, PageRequest.of(0, 20))}}, Spring Data 
     q: 'PostgreSQL uses MVCC: when an {{UPDATE}} creates a new row version, what happens to the old data? How are VACUUM, bloat and transaction ID wraparound related to each other, and how do long transactions cause harm?',
     a: `**Summary:** In PostgreSQL's MVCC every row carries {{xmin}} (the transaction id that created it) and {{xmax}} (the transaction id that deleted/updated it). Each {{UPDATE}} creates **a new tuple** and marks the old tuple with {{xmax}} – the old data is **not deleted right away**, it becomes a **dead tuple** and is only cleaned up when {{VACUUM}} runs. Accumulating dead tuples produce **bloat**. Meanwhile, transaction ids are 32-bit (~4.3 billion); if the cycle is about to run out while old tuples are still not "frozen", **wraparound** happens and PostgreSQL can **refuse to accept writes**. **Long transactions are the culprit behind both**.
 
+### Quick intuition
+Imagine a notebook you **never erase**: to change a balance you cross out the old line and write a new one underneath, because someone else may still be reading the old line. Over time the notebook fills with crossed-out lines (dead tuples) – it gets thicker even though it holds no more real information (bloat). VACUUM is the cleaner: it removes crossed-out lines that nobody reads any more, so the space becomes reusable. Each line also records the "writer's number" (xid), but the notebook only has 4 billion numbers and then has to start over – so very old lines must be stamped "permanently old" (frozen) before the number wraps around. A slow reader who keeps the notebook open for hours (a long transaction) prevents any line from being cleaned or stamped.
+
+### Terms
+- **Tuple**: one physical version of a row in a PostgreSQL table.
+- **Dead tuple**: a version that was deleted/replaced and is no longer visible to any transaction, waiting for VACUUM to clean it up.
+- **Bloat**: table/index size far larger than the real data because it contains dead tuples or free space.
+- **xid (transaction id)**: the 32-bit number handed to each writing transaction.
+- **Freeze**: marking a tuple old enough as "visible to every transaction" so xids no longer need to be compared.
+- **Wraparound**: when xids wrap around, an old tuple that was not frozen is misread as "from the future" and disappears from read results.
+- **Autovacuum**: the background process that runs VACUUM/ANALYZE on its own when a table passes the change threshold.
+- **xmin horizon**: the smallest xid that a still-live snapshot needs; VACUUM cannot clean anything newer than that mark.
+
+### Lifecycle of one UPDATE, step by step
+~~~text
+t0  UPDATE id=1 (xid 100):  [v1 xmin=90 xmax=100 (dead)] [v2 xmin=100 xmax=0 (live)]
+t1  Session X has been in a transaction since before xid 100 -> still needs v1 -> VACUUM skips v1
+t2  Session X commits -> the xmin horizon moves forward -> VACUUM marks v1's space as free
+t3  A later INSERT/UPDATE reuses that free space (the file does not shrink, it just stops growing)
+age(datfrozenxid): 0 ... 200 million (autovacuum forces a freeze) ... ~2.1 billion (stops accepting writes)
+~~~
+1. **UPDATE writes a new version**, it does not modify in place. Why: a reader on an old snapshot must still see v1.
+2. **v1 becomes dead** once every live snapshot is newer than xid 100. Why wait: cleaning too early would make old readers lose data.
+3. **VACUUM cleans it and records the space in the free space map**. Why the file does not shrink: giving space back to the OS means rewriting the file (VACUUM FULL), far too expensive while the table is live.
+4. **VACUUM freezes old tuples**, pushing {{datfrozenxid}} forward. Why it is mandatory: only ~2.1 billion xids count as "the past", so without freezing the DB eventually has to stop writes to protect itself.
+5. **A long transaction blocks both step 2 and step 4**: the xmin horizon does not move, so dead tuples are not cleaned and tuples cannot be frozen.
+
 ### How tuple versioning works
 ~~~sql
 -- Initial state
@@ -246,6 +273,15 @@ SET lock_timeout = '5s';
 - **Fast-growing tables**: for append-only tables, partition by time so old data is removed by {{DROP TABLE}} of a partition (or DETACH then DROP) instead of {{DELETE}}-ing millions of rows.
 - **Temp tables**: autovacuum cannot handle temp tables; with a connection pool sessions almost never end, so temp tables never get dropped, accumulate dead tuples and hold on to XID age – always drop them (or use {{ON COMMIT DROP}}).
 
+### Common mistakes
+- **The application forgets to commit (idle in transaction)** after a swallowed exception. Symptom – a heavily updated table grows 5–10× larger, queries get slower over several days. How to avoid: {{idle_in_transaction_session_timeout}}, plus an alert on transactions open longer than 5 minutes using {{pg_stat_activity.xact_start}}.
+- **An abandoned replication slot** (the CDC consumer was shut down): the slot holds an old xmin/WAL. Symptom – the disk fills with WAL and vacuum cleans nothing. How to avoid: monitor {{pg_replication_slots}}, drop unused slots, set {{max_slot_wal_keep_size}}.
+- **Running VACUUM FULL in peak hours to "free disk space"**: it takes an ACCESS EXCLUSIVE lock and the whole table freezes. How to avoid: use the {{pg_repack}} extension (online rewrite), or accept the bloat and tune autovacuum.
+- **Ignoring the xid age warning**: symptom – the log says "database must be vacuumed within N transactions". How to avoid: monitor {{age(datfrozenxid)}} in {{pg_database}} and alert at a few hundred million.
+
+### One-minute spoken answer
+"In PostgreSQL, an UPDATE does not modify in place: it writes a new tuple and stamps the old one with xmax, turning it into a dead tuple once no live snapshot needs it any more. VACUUM cleans dead tuples so the free space can be reused, and it freezes old tuples because xids are only 32-bit – if freezing falls behind, PostgreSQL will stop accepting writes near wraparound. Bloat is the consequence of cleaning too late. Long transactions are the common culprit: they hold the xmin horizon, blocking both garbage collection and freezing, and they also hold locks and connections. The MVCC trade-off is that reads do not block writes, but you pay with the cleanup work. In practice I tune autovacuum per large table, set idle_in_transaction_session_timeout, and alert on long transactions, replication slots and xid age."
+
 > Senior tip: track the **dead tuple ratio and transaction age** as two daily metrics. In practice, most "mysteriously slow database" incidents can be traced back to one or more sessions stuck {{idle in transaction}}. A simple monitoring query – {{SELECT count(*) FROM pg_stat_activity WHERE state = 'idle in transaction'}} – can save you from a serious incident.`,
     follow: [
       'Why doesn\'t {{VACUUM}} release disk space to the operating system?',
@@ -255,6 +291,32 @@ SET lock_timeout = '5s';
   'db-013': {
     q: 'PostgreSQL has many index types: B-tree, partial, expression, GIN, BRIN. What problem does each one solve, when can the optimizer not use them, and which would you choose for a huge transactional log table?',
     a: `**Summary:** B-tree is the default and handles equality, range and {{ORDER BY}} well. The other index types do things B-tree cannot: a **partial index** indexes only part of the data (small, cheap, fits a "pending" state); an **expression index** indexes an **expression**, so the query must be written with **exactly that expression**; **GIN** is an inverted index for JSONB, arrays and full-text; **BRIN** is a tiny index based on **physical correlation**, meant for append-only tables that grow over time. The key point to remember: **the optimizer can only use an index when it can prove the query condition implies the index condition**.
+
+### Quick intuition
+Each index type is a different kind of **lookup book**. B-tree is an alphabetical index – an exact lookup or a range is fast either way. A partial index is a **book that only lists unprocessed orders** – thin, extremely fast to search, but useless if you are looking for completed orders. An expression index is an index by **lower-case name** – you have to search with the lower-case name to find anything. GIN is the **keyword index at the back of a book**: each word points to every page that contains it, which suits JSON, arrays and full-text. BRIN is a **label on the spine of each archive box** saying "January 2026": it does not point to the exact sheet, but it tells you which boxes not to open – effective when the records are stored in time order.
+
+### Terms
+- **Partial index**: an index with a {{WHERE}} clause that holds only the rows satisfying the condition.
+- **Expression index**: an index over the result of an expression/function instead of a raw column.
+- **GIN (Generalized Inverted Index)**: an inverted index mapping each element (JSON key, word, array element) to the rows that contain it.
+- **BRIN (Block Range Index)**: stores the min/max for each range of consecutive pages.
+- **Correlation**: how closely the order of a column's values matches the physical order of rows on disk ({{pg_stats.correlation}} close to 1 is good for BRIN).
+- **Recheck / lossy**: the index only answers "may match", so the DB has to read the real row to verify.
+- **Pending list**: GIN's buffer of new entries not yet merged into the main structure.
+- **Generic plan**: a plan shared by every parameter value of a prepared statement.
+
+### Choosing an index for a log table, step by step
+~~~text
+transaction_log: 2 billion rows, ~400GB, INSERT only, created_at increasing
+B-tree(created_at): ~45GB, every INSERT updates the tree
+BRIN(created_at)  : a few hundred KB, a 1-hour query reads only a few page ranges
+ page range: [0-127] 01/01 00:00-00:07 | [128-255] 00:07-00:15 | ...
+~~~
+1. **List the real queries**: "logs of account X over 7 days", "totals per hour". Why: an index serves queries, not tables.
+2. **Check the correlation** of {{created_at}}: ~1 because the table is append-only. Why: BRIN only helps when each page range holds a narrow range of values.
+3. **Use BRIN for the time column**; exact-lookup columns such as {{account_id}} still need a B-tree (usually composite {{(account_id, created_at)}}). Why: BRIN cannot find one value scattered across the whole table.
+4. **Use a partial index for a rare business state** ("FAILED needs reconciliation"). Why: it holds a few thousand rows instead of billions.
+5. **Measure with EXPLAIN** – for BRIN look at "Rows Removed by Index Recheck" and the number of "lossy heap blocks" to judge accuracy.
 
 ### Index types
 | Type | Used for | Notes |
@@ -316,6 +378,15 @@ CREATE INDEX idx_log_created_brin ON transaction_log USING brin (created_at)
 - With a **random UUID** as primary key, the B-tree gets fragmented ⇒ write latency grows. Use UUIDv7 or an incrementing key.
 - **GIN index + missed vacuum** ⇒ the pending list grows ⇒ queries get gradually slower with no clear warning. Monitor {{pgstatginindex}} and tune autovacuum for those tables.
 
+### Common mistakes
+- **Creating BRIN on an uncorrelated column** (e.g. {{customer_id}}, or data that is updated a lot so rows move). Symptom – the index exists but the plan still reads nearly the whole table. How to avoid: check {{pg_stats.correlation}} before creating it.
+- **Expression index with a non-IMMUTABLE function**: PostgreSQL refuses to create it (e.g. the one-argument {{to_tsvector}} depends on configuration). How to avoid: use the fixed-parameter form such as {{to_tsvector('simple', body)}}.
+- **A GIN index over a whole large JSONB document just to query one key**: big index, slow writes. How to avoid: a B-tree expression index on {{(payload->>'orderId')}}.
+- **Partial index with a parameterised condition**: the ORM emits {{status = ?}}, and after 5 executions the plan may switch to a generic plan and stop using the partial index. How to avoid: use a literal in the query (a fixed value, not user input) or verify the plan with parameters.
+
+### One-minute spoken answer
+"B-tree is the default for equality, range and sorting. A partial index indexes only the data matching a condition, such as PENDING orders, so it is small and cheap, but the planner must be able to prove the query condition implies the index condition. An expression index is built on an expression such as lower(email), and the query must use exactly that expression. GIN is an inverted index for JSONB, arrays and full-text – very fast to read but more expensive to write. BRIN stores only min/max per page range, extremely small, suited to append-only data in time order. For a huge log table I use BRIN on created_at, a composite B-tree on account_id plus time, a partial index for rare states, and usually combine it with monthly partitioning. Always verify with EXPLAIN instead of guessing."
+
 > Senior tip: when picking an index type, start from **the shape of the data and the actual query**. Three commonly overlooked findings: huge log tables often do **not** need B-tree – BRIN is enough and hundreds of times cheaper; JSONB lookups on **one specific key** are usually served better by an expression index; a partial index on a business status saves a lot of I/O.`,
     follow: [
       'Why is a partial index often not used when the query uses a parameter instead of a literal value?',
@@ -325,6 +396,33 @@ CREATE INDEX idx_log_created_brin ON transaction_log USING brin (created_at)
   'db-014': {
     q: 'Your transaction table has 800 million rows and you want to split it by month, deleting old data by dropping partitions. How does partition pruning work, how do you manage partitions day to day, and which PostgreSQL constraints might force you to redesign your primary key?',
     a: `**Summary:** Partitioning by time range is the classic answer for a large transactional table: data is split by {{RANGE}} on a time column, each partition being a child table. When a query has a condition on the partition column, the planner **prunes** – it drops the unrelated partitions entirely. The biggest benefit is not read speed but **deleting old data almost instantly** with {{DROP TABLE partition}} instead of {{DELETE}}-ing tens of millions of rows. The price: every **unique constraint** must **contain the partition column**.
+
+### Quick intuition
+Partitioning is like storing **invoices in one box per month** instead of piling them all into one warehouse. When you need March invoices you only open the March box (pruning). When the 5-year retention ends you **throw away the whole box** for the oldest month (drop partition) instead of pulling out one sheet at a time (DELETE). But there is one rule: to guarantee "no duplicate invoice numbers", each box can only check inside itself – so the unique key must include the **month**, because the DB has no shared ledger to check across boxes.
+
+### Terms
+- **Partitioned table (parent)**: a logical table that stores no data, it only routes rows into partitions.
+- **Partition key**: the column (or expression) that decides which partition a row belongs to, here {{created_at}}.
+- **Partition pruning**: eliminating partitions that cannot contain matching data – at plan time or at execution time.
+- **DEFAULT partition**: a partition that catches every row outside all ranges.
+- **ATTACH / DETACH**: attaching an existing table as a partition / detaching a partition into a standalone table.
+- **Global index**: a single index spanning every partition – PostgreSQL **does not have** one, each partition has its own index.
+- **Metadata lock**: (MySQL) a lock on the table definition; DDL needs it and will block queries while waiting.
+
+### A day running a partitioned table, step by step
+~~~text
+transaction_log (parent, PARTITION BY RANGE created_at)
+ |- _2024_01 ... _2026_03   (old, read-only)      -> after 24 months: DETACH CONCURRENTLY, archive to S3, DROP
+ |- _2026_04                (current month, ~27 million writes)
+ |- _2026_05, _2026_06      (created 2 months ahead by a daily job)
+ '- _default                (must always be empty - any row here is an alert)
+800 million rows / 30 months ≈ 27 million rows per partition
+~~~
+1. **A daily job creates partitions for the next 1–2 months** (pg_partman or a home-grown cron). Why: an INSERT into a range with no partition fails.
+2. **Queries always carry a time condition**: the planner prunes down to 1–2 partitions. Why: each partition holds 27 million rows, its index is small and fits in RAM.
+3. **Old partitions can move to a cheaper tablespace** or be compressed, because they are read-only. Why: hot and cold data are kept apart.
+4. **When retention ends, DETACH then DROP**: done in milliseconds, without generating WAL for millions of rows or creating dead tuples. Why versus DELETE: deleting 27 million rows generates tens of GB of WAL, makes replicas lag and leaves bloat behind.
+5. **Monitor the DEFAULT partition** and "does next month's partition exist yet" with alerts.
 
 ### Declaration
 ~~~sql
@@ -365,7 +463,7 @@ ALTER TABLE transaction_log ATTACH PARTITION transaction_log_2025_01
 ~~~
 Note: {{DETACH ... CONCURRENTLY}} cannot run inside a transaction block and **cannot be used when the table has a DEFAULT partition**. {{ATTACH PARTITION}} (PG 12+) only takes {{SHARE UPDATE EXCLUSIVE}} on the parent, but the attached table is locked and scanned to verify constraints (the DEFAULT partition is scanned as well if one exists). Tip: pre-create a {{CHECK}} constraint matching the value range so PostgreSQL can skip that scan.
 - **Delete old data**: {{DROP TABLE transaction_log_2024_01;}} – almost instant, because it only unlinks files instead of writing millions of rows.
-- **Patch wrongly dated data**: you can {{ATTACH}} a table that already contains data into the matching partition (note it must have an index with the same structure, and the command will lock).
+- **Patch wrongly dated data**: you can {{ATTACH}} a table that already contains data into the matching partition (if the table lacks an index matching the parent's, PostgreSQL creates one during the attach – time-consuming and holding locks, so create the index beforehand).
 
 ### Important constraints
 1. **The unique constraint must contain the partition column**. This is the most painful part:
@@ -388,6 +486,14 @@ Note: {{DETACH ... CONCURRENTLY}} cannot run inside a transaction block and **ca
 - **Bloated partition (skew)**: if data is not evenly distributed across months (e.g. a promotion campaign), that partition becomes very large.
 - **Partitioned tables carry overhead**: every statement has to go through the partitions' "append node" ⇒ a small cost compared to a normal table. For small tables partitioning can make things slower.
 
+### Common mistakes
+- **Looking up by {{id}} without {{created_at}}**: the plan scans the index of every partition (30+ index lookups). Symptom – the "get transaction by id" API gets slow after partitioning. How to avoid: put {{created_at}} into the API/URL key, or encode the time in the id (UUIDv7/snowflake) so the partition can be inferred.
+- **A Hibernate entity with the new composite PK**: forgetting to change the mapping to {{@IdClass}}/{{@EmbeddedId}}. How to avoid: change the mapping together with the migration, or keep {{@Id}} on id while understanding that uniqueness is now only guaranteed by the sequence.
+- **Creating an index on the parent after dozens of large partitions exist**: the command holds a write lock for a very long time ({{CONCURRENTLY}} cannot be used directly on the parent). How to avoid: create the index {{ON ONLY}} on the parent, build it {{CONCURRENTLY}} on each partition, then {{ALTER INDEX ... ATTACH PARTITION}}.
+
+### One-minute spoken answer
+"For an 800-million-row transaction table I partition by RANGE on created_at, one partition per month. When a query has a time condition the planner prunes and reads only the relevant partitions, including runtime pruning with parameters. The biggest win is deleting old data with detach and drop partition, almost instantly, without the WAL and bloat that DELETE produces. Day-to-day operations include pre-creating partitions with a job and alerting when the DEFAULT partition holds data. The most painful constraint is that unique and primary keys must contain the partition column, so the PK becomes (id, created_at) and every access path by id must know the time. My experience is that you decide this key design before the table grows, because changing it later is very expensive."
+
 > Senior tip: before partitioning, answer three questions: **(1) how often do I delete old data?** (this is the real reason to partition) **(2) can the unique constraint contain the partition column?** If not, you have to change the key design – that change is very expensive, so decide early. **(3) how many partitions will there be after 3 years?**`,
     follow: [
       'Why must a unique constraint contain the partition column, and how does that affect the primary key?',
@@ -397,6 +503,30 @@ Note: {{DETACH ... CONCURRENTLY}} cannot run inside a transaction block and **ca
   'db-015': {
     q: 'How do the three join algorithms of PostgreSQL (nested loop, hash join, merge join) differ? What does it take to read an execution plan and work out why the optimizer picked the wrong algorithm?',
     a: `**Summary:** There are three main join algorithms. **Nested loop**: take each row of the outer table and find matching rows in the inner table using an index – cheap when the outer table is small, expensive if the inner table has no index. **Hash join**: build a hash table from the smaller table then scan the larger one – good for large joins without an index, but it needs **memory** (it spills to disk once {{work_mem}} is exceeded). **Merge join**: both tables are already sorted, then walk the two lists in parallel – good when both are large and an index provides the right order. The optimizer picks the wrong plan mostly **not because of the algorithm** but because of **wrong statistics**.
+
+### Quick intuition
+Joining a list of 1000 orders with a customer list can be done in three ways. **Nested loop**: take each order and look the customer up in the directory (index) – fast with only 10 orders, painful with 1 million. **Hash join**: copy the customer list into a notebook divided into sections by first letter (a hash table), then run through the orders, each one opening the right section – fast for large volumes but you need a table wide enough to spread the notebook out (memory). **Merge join**: both lists are already sorted by customer code, so you walk two fingers down in parallel. The optimizer chooses based on its **estimated row count** – estimate wrong, choose wrong.
+
+### Terms
+- **Outer / inner (build / probe)**: the side iterated outside the loop / the side being looked up; in a hash join the build side builds the hash table and the probe side scans.
+- **Cardinality estimate**: the number of rows the optimizer predicts each node will return.
+- **work_mem**: memory for each sort/hash operation; since PostgreSQL 13 a hash may use {{work_mem × hash_mem_multiplier}} (2.0 by default since v15).
+- **Spill / Batches**: data that does not fit in memory is written to temporary disk files, split into batches.
+- **default_statistics_target**: the number of samples / histogram buckets collected per column by ANALYZE.
+- **Extended statistics**: statistics over several columns at once so the optimizer knows the columns are correlated.
+- **Visibility map**: a map marking pages where every tuple is visible, letting an index-only scan skip the heap.
+
+### How the optimizer picks wrong, step by step
+~~~text
+WHERE country = 'VN' AND city = 'Hanoi'
+estimate: P(VN)=0.1 x P(Hanoi)=0.05 x 1,000,000 = 5,000 rows (assuming independence)
+reality : every Hanoi is VN -> 50,000 rows (off by 10x)
+=> picks Nested Loop for 5,000 rows, actually runs 50,000 index lookups
+~~~
+1. **Estimate rows per node** from the column statistics. Why this goes wrong easily: by default the optimizer treats columns as **independent** and multiplies probabilities.
+2. **Compute the cost of each algorithm** with those row counts: nested loop ~ rows_outer × cost_lookup; hash join ~ build + linear probe; merge join ~ sort (if not already ordered) + merge. Why: with few outer rows nested loop wins; with many, hash wins.
+3. **Pick the lowest-cost plan**. When it estimates 5,000 but reality is 50,000, nested loop's cost is underrated by 10×.
+4. **Fix it at the root**: {{CREATE STATISTICS ... (dependencies)}} on {{(country, city)}} then {{ANALYZE}} → the estimate moves to ~50,000 → the planner picks a hash join by itself.
 
 ### Comparison
 | Algorithm | Mechanism | Good when | Bad when |
@@ -439,6 +569,14 @@ Signs worth paying attention to:
 - A prepared statement's **generic plan** may be fine when data is evenly distributed and terrible when it is skewed ⇒ do not just tune the literal statement and then put it into code with parameters.
 - Raising {{work_mem}} **globally** can bring the server down when many sessions use it at once. Set it per session/role, and remember it is charged for **every** node of the plan.
 - Tuning for a **plan that looks pretty** instead of for real measurements is a common mistake: a strange-looking plan can still be faster.
+
+### Common mistakes
+- **Using {{enable_nestloop = off}} in production to "fix" a plan**: it rescues one query but breaks other queries sharing that session/role. How to avoid: use it only for diagnosis and fix with statistics/indexes; if you must force a plan, use {{SET LOCAL}} inside the right transaction.
+- **A large batch insert followed by an immediate query**: autoanalyze has not run yet, so the statistics still think the table is empty. Symptom – the ETL job is unusually slow in the step right after the load. How to avoid: call {{ANALYZE table}} explicitly after loading.
+- **Joining columns of different types** ({{bigint}} with {{varchar}}, or {{numeric}} with {{int}}): the index cannot be used and every row has to be cast. How to avoid: keep FK and PK column types consistent.
+
+### One-minute spoken answer
+"Nested loop iterates the outer rows and looks up the inner side through an index, good when the outer side is small. Hash join builds a hash table from the smaller side then scans the larger side, good for large joins without an index but it needs work_mem – when short, it spills to disk with Batches greater than 1. Merge join merges two already-sorted sequences, good when both are large and the sort order is available. Reading a plan, I compare estimated rows with actual rows at each node: a large gap is almost always why the optimizer picked the wrong algorithm, usually due to stale statistics, correlated columns, or a generic plan. I fix it with ANALYZE, a higher statistics target and extended statistics, and I only turn enable_hashjoin off for diagnosis. Experience: fix the estimates and the planner picks correctly by itself; forcing a plan is just a temporary band-aid."
 
 > Senior tip: store {{EXPLAIN (ANALYZE)}} output of your important queries in CI or keep it over time so you can detect **plan regressions** before they reach production.`,
     follow: [
