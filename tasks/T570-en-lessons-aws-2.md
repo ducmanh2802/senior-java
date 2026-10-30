@@ -1,6 +1,6 @@
 # T570 — Dịch sang tiếng Anh: lessons-aws (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-aws-2.en.js`
 
@@ -16,3 +16,5 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-aws-2.en.js` và `node scripts/check-i18n.js lessons-aws-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+Translated lesson-aws-002 (S3 for backend devs) to English. All markup preserved, technical terms kept in English, Vietnamese comments in code blocks translated. Both node --check and check-i18n.js pass.
+Reviewed-by: check-i18n (translation, no LLM review)
