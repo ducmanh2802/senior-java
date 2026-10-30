@@ -1,6 +1,6 @@
 # T567 — Dịch sang tiếng Anh: quiz-gaps (22 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/quiz-gaps-2.en.js`
 
@@ -16,3 +16,8 @@ Yêu cầu dịch:
 - `node --check js/i18n/quiz-gaps-2.en.js` và `node scripts/check-i18n.js quiz-gaps-2` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đủ 22/22 mục (qz-testing-020, qz-ai-009…020, qz-kotlin-009…017) trong `js/i18n/quiz-gaps-2.en.js`, mỗi mục chỉ gồm `q`, `options`, `explain`; giữ nguyên markup, code block và số lượng option/đoạn code so với bản gốc; comment tiếng Việt trong code block đã dịch.
+- Tiêu đề cố định dùng: "**Correct answer:**", "### Why the other options are wrong", "> Senior tip:" (giữ nguyên); nhãn "### Lưu ý khi triển khai (Java)" dịch thành "### Implementation notes (Java)".
+- `node scripts/check-i18n.js quiz-gaps-2` → `OK — 22 mục đã dịch.`; `node scripts/validate.js` → `OK — không có lỗi.` (file cũng được vm parse thành công trong checker nên cú pháp hợp lệ).
+Reviewed-by: check-i18n (translation, no LLM review)
