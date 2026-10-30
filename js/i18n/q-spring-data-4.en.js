@@ -4,8 +4,33 @@
  */
 App.i18n.content({
   'db-010': {
-    q: 'How do you use {{SELECT ... FOR UPDATE SKIP LOCKED}} to build a job queue in the database, and which points need attention?',
+    q: 'How do you build a job queue in the database with {{SELECT ... FOR UPDATE SKIP LOCKED}}, and what points need attention?',
     a: `**Summary:** {{FOR UPDATE SKIP LOCKED}} lets multiple workers **claim different jobs in parallel** without waiting for each other: worker A locks job row 1, worker B sees that the row is locked so it **skips** it and takes the next one. This is a simple way to build a job queue without a broker, and it leverages the database's own transaction to guarantee consistency.
+
+### Quick intuition
+Imagine a **chore board pinned to the wall** and 5 employees. Each person walks up, looks for a slip nobody has taken yet, writes their name on it and carries it away. With plain {{FOR UPDATE}}, when two people aim at the first slip at the same time, the second one has to **stand and wait** until the other has finished writing their name. With {{SKIP LOCKED}}, the second person sees that slip is already "held by someone" and **takes the next one instead** – nobody waits for anybody. Once the name is written (commit) you walk away from the board immediately to do the work; you do not stand there hugging the board.
+
+### Terms
+- **Row lock ({{FOR UPDATE}})**: lock the row so that nobody else can update or lock it until the transaction ends. Like putting a "reserved" sign on a chair.
+- **{{SKIP LOCKED}}**: when a row is already locked, skip it instead of waiting. The result is deliberately inconsistent (you may see a different sub-set of rows on every call), which is only acceptable for a queue.
+- **CTE ({{WITH ... AS}})**: a named sub-query that you can use like a temporary table inside a statement.
+- **Lease**: a "rental contract" with an expiry – the job belongs to the worker until {{locked_at + timeout}}; past that moment someone else may take it back.
+- **At-least-once**: every job is guaranteed to be processed at least once, possibly more than once.
+- **Idempotent**: running it many times gives the same result as running it once – like pressing an elevator button twice, the elevator still comes once.
+- **Dead tuple**: an old version of a row inside PostgreSQL waiting for VACUUM to clean it up; a jobs table that updates constantly produces a huge number of them.
+- **Dead-letter**: a place that holds jobs which failed more times than the retry limit, so a human can look at them.
+
+### Lifecycle of one job
+~~~text
+PENDING --(worker claims + commits)--> RUNNING --(finished)--> DONE
+   ^                                     |  |
+   |  (error, attempts < 5, run_at = now() + backoff)
+   +-------------------------------------+  +--(attempts >= 5)--> FAILED (dead-letter)
+   ^
+   +--(reaper: RUNNING whose locked_at < now() - 10 minutes)
+Worker A: claims jobs 1..10   Worker B: skips 1..10 (locked) -> claims 11..20
+~~~
+The key point: the row lock only lives for the **few milliseconds** of the claiming transaction; after the commit, "ownership" of the job is expressed by the {{RUNNING}} status + {{locked_at}} stored in the row, so if a worker dies the reaper can still recognise it.
 
 ### SQL to pick up jobs
 ~~~sql
@@ -53,6 +78,15 @@ Under heavy load, move to Kafka/RabbitMQ/SQS: lower latency, with retry and dead
 - Keeping the transaction open while processing the job ⇒ lower throughput and more deadlocks.
 - The job-picking query must use a proper **index**, otherwise it scans the whole table on every poll.
 
+### Common mistakes
+- **No index for the claim condition**: the jobs table holds 10 million DONE rows and every poll scans all of them. Symptom: DB CPU is high even though only a handful of jobs are PENDING. How to avoid it: a partial index {{CREATE INDEX ON jobs (run_at) WHERE status = 'PENDING'}} (PostgreSQL), plus moving or deleting old DONE jobs periodically.
+- **Polling too hard from too many workers**: 50 workers polling every 100ms = 500 queries/s just to ask "is there any work?". How to avoid it: poll with backoff when the queue is empty, or use PostgreSQL's {{LISTEN/NOTIFY}} to wake workers up.
+- **The reaper's timeout is shorter than the real processing time**: a job that is still running is reset to PENDING and a second worker runs it too. How to avoid it: leave headroom above the p99, let the worker renew {{locked_at}} (heartbeat) for long jobs, and keep jobs idempotent.
+- **Writing the result without checking ownership**: the old worker (already reclaimed by the reaper) still writes DONE on top of the other worker's work. How to avoid it: {{UPDATE ... WHERE id = ? AND locked_by = ? AND status = 'RUNNING'}} and check how many rows were updated.
+
+### One-minute spoken answer
+"FOR UPDATE SKIP LOCKED lets several workers claim jobs from one table without waiting for each other: any row another worker has locked is skipped and the next one is taken instead. I claim a small batch, flip the status to RUNNING with a locked_at, commit right away, process the job outside the transaction, and write DONE or FAILED in a separate transaction. Because it is at-least-once, jobs must be idempotent, and I need a reaper that returns overdue RUNNING jobs to PENDING. The trade-off: simple, no extra broker, and the job row can be written in the same transaction as the business data – but it does not suit very high load or complex routing. I have used it for sending emails and syncing partners at a few hundred jobs per second, stable thanks to a partial index on PENDING jobs."
+
 > Senior tip: {{SKIP LOCKED}} is a beautiful example of "using the right principle of the database engine instead of standing up extra infrastructure". Before choosing it, ask: is the job volume big enough to justify a broker, and is the team willing to operate an extra RabbitMQ/Kafka? If the answer is "not yet needed", start with the DB – and design the API so you can later switch to a broker without rewriting the business logic.`,
     follow: [
       'Why must you commit right after claiming the job instead of processing the job in the same transaction?',
@@ -62,6 +96,31 @@ Under heavy load, move to Kafka/RabbitMQ/SQS: lower latency, with retry and dead
   'db-011': {
     q: 'Compare Oracle and PostgreSQL: which differences does a Java dev need to know, especially when working with systems built on Oracle (very common in Vietnamese banks)?',
     a: `**Summary:** Both are strong RDBMSes with solid transactions, partitioning and optimizers. The most important differences for a Java dev: **sequences and how ids are generated**, **how empty strings and NULL are handled**, **pagination syntax and date functions**, **drivers and how to read the execution plan**. Many Vietnamese banking systems run Oracle, so knowing these differences makes reading legacy code and debugging much faster.
+
+### Quick intuition
+Oracle and PostgreSQL are like two luxury car makers in the same class: both have a steering wheel, brakes and airbags (transactions, indexes, MVCC), but the **buttons sit in different places** – if you are used to one car, switching to the other you easily hit the wipers instead of the indicator. For a Java dev the "buttons" are: how ids are generated, how empty strings are treated, pagination syntax, date-time types, and the tool used to read the plan. Pure JPA code is barely affected, but native queries, stored procedures and existing data are hit directly. Understanding the differences lets you read a bank's legacy code and avoid the "works fine on local PostgreSQL, breaks on Oracle" bug.
+
+### Terms
+- **Sequence**: an object that generates increasing numbers independently of any table; {{CACHE n}} pre-allocates n numbers in memory, so it is fast but may jump (leave gaps) when the instance restarts.
+- **VARCHAR2**: Oracle's main string type; an empty string stored into it becomes NULL.
+- **ROWNUM**: the row number Oracle assigns while returning a result, used for pagination on old versions.
+- **PL/SQL / PL/pgSQL**: the procedural language running inside the DB (stored procedures, triggers) for Oracle / PostgreSQL.
+- **Undo segment**: where Oracle stores the old data for rollback and for consistent reads (similar to InnoDB's undo log).
+- **RAC / Data Guard**: Oracle's cluster of several nodes sharing one storage / a standby replica at another site.
+- **DBMS_XPLAN**: an Oracle package that displays the execution plan.
+- **allocationSize**: the JPA parameter of {{@SequenceGenerator}} – how many ids Hibernate takes from the sequence per call (50 by default).
+
+### Generating ids with a sequence in JPA, step by step
+~~~text
+DB:  CREATE SEQUENCE order_seq START WITH 1 INCREMENT BY 50 CACHE 20;
+JPA: @SequenceGenerator(name="ord", sequenceName="order_seq", allocationSize=50)
+ Call 1: Hibernate calls nextval -> 1   => it hands out ids 1..50 from memory
+ Call 2: calls nextval -> 51            => hands out 51..100
+~~~
+1. **Hibernate calls the sequence once for a whole batch of ids**. Why: fewer round-trips, so bulk inserts are far faster than with identity.
+2. **The sequence's INCREMENT BY must equal allocationSize**. Why: Hibernate 6 reads the sequence metadata at startup and by default reports an error when they disagree (configurable with {{hibernate.id.sequence.increment_size_mismatch_strategy}}); if you switch the check off and leave them mismatched, two instances can produce duplicate ids or huge jumps.
+3. **Gaps are normal**: restarting the app throws away the unused part of the id range, and Oracle's {{CACHE}} throws away cached numbers when the instance shuts down. Why it does not matter: ids only need to be unique, not continuous; if you need gap-free document numbers, generate them with a different mechanism.
+4. **On Oracle RAC**, {{NOORDER}} + {{CACHE}} means ids coming from different nodes do not increase in time order. Why it matters: never sort "by creation time" using the id.
 
 ### Comparison table
 | Criterion | Oracle | PostgreSQL |
@@ -77,14 +136,14 @@ Under heavy load, move to Kafka/RabbitMQ/SQS: lower latency, with retry and dead
 | PL/SQL | PL/SQL (its own, powerful) | PL/pgSQL |
 | Read consistency | MVCC based on undo; READ COMMITTED by default (statement-level snapshot), has SERIALIZABLE; no dirty reads | MVCC by row versioning ({{xmin}}/{{xmax}}); READ COMMITTED by default, has REPEATABLE READ/SERIALIZABLE |
 | JDBC driver | {{ojdbc11}} (JDK 11+), {{ojdbc17}} for JDK 17 | {{org.postgresql:postgresql}} |
-| Partitioning | Range/list/hash, partition exchange, reference partitioning | Declarative partitioning, declarative sharding (Citus) |
+| Partitioning | Range/list/hash, partition exchange, reference partitioning | Declarative partitioning; sharding via the Citus extension |
 
 ### Differences that "cause bugs" if you don't know them
 1. **Empty string**: on Oracle, inserting {{''}} into a {{VARCHAR2}} column becomes NULL. Java code comparing with {{"".equals(value)}} behaves differently between the two DBs.
 2. **Pagination**: {{LIMIT 20 OFFSET 100}} is PostgreSQL/MySQL syntax; Oracle uses {{OFFSET 100 ROWS FETCH NEXT 20 ROWS ONLY}}. The same native query cannot run on both.
-3. **Dates**: Oracle {{SYSDATE}} returns the system time in the server's timezone; PostgreSQL should use {{now()}} (in the session's timezone). With {{TIMESTAMPTZ}}, PostgreSQL stores UTC and displays it in the session's timezone – this behavior is closer to Oracle than to {{TIMESTAMP}}.
+3. **Dates**: Oracle {{SYSDATE}} returns the system time in the server's timezone; PostgreSQL should use {{now()}} (in the session's timezone). With {{TIMESTAMPTZ}}, PostgreSQL stores UTC and displays it in the session's timezone – the closest Oracle equivalent is {{TIMESTAMP WITH LOCAL TIME ZONE}}, while Oracle's {{DATE}}/{{TIMESTAMP}} do not store a timezone at all, just like PostgreSQL's {{timestamp}} (without time zone).
 4. **NULL comparisons**: both use {{IS NULL}}; a {{NOT IN}} with a NULL value in the result set returns **no rows at all** (both DBs behave this way – a classic bug).
-5. **Identifiers**: Oracle treats column names as case-insensitive (reads them as uppercase); you need to quote names when case matters.
+5. **Identifiers**: unquoted names are case-insensitive, but Oracle folds them to **UPPERCASE** while PostgreSQL folds them to **lowercase**; a name created inside double quotes ({{"OrderId"}}) must be quoted exactly the same way every time it is used.
 6. **Date arithmetic**: Oracle {{date + 1}} = add 1 day; PostgreSQL needs {{date + interval '1 day'}}.
 7. **String concatenation with NULL**: Oracle's {{||}} skips NULL ({{'abc' || NULL}} = {{'abc'}}), while PostgreSQL's {{'abc' || NULL}} = NULL – to skip NULL on PostgreSQL use {{concat()}} or {{coalesce}}. Queries ported from Oracle often surprise you with an unexpected NULL here.
 
@@ -98,6 +157,15 @@ Under heavy load, move to Kafka/RabbitMQ/SQS: lower latency, with retry and dead
 - Migrating a schema from Oracle to PostgreSQL: you need to map data types, sequences, indexes, and **Oracle-specific constraints** (virtual columns, function-based indexes).
 - Reading execution plans: Oracle uses {{V$SQL}} + {{DBMS_XPLAN}}; PostgreSQL uses {{pg_stat_statements}} – two completely different toolsets.
 - Be careful with Oracle {{NUMBER}} without scale: comparing monetary amounts as floats can drift at boundaries.
+
+### Common mistakes
+- **Validating empty strings in the DB**: on Oracle a {{NOT NULL}} column that receives {{''}} raises ORA-01400, because {{''}} becomes NULL. Symptom: a form with an optional field works on PostgreSQL and fails on Oracle. How to avoid it: normalise in the Java layer (empty string → null, or make the field required) and test against a real Oracle (Testcontainers ships an Oracle Free image).
+- **Using {{java.util.Date}} / {{LocalDateTime}} with an Oracle {{DATE}} column and forgetting the timezone**: data ends up 7 hours off when the server runs UTC. How to avoid it: agree to store UTC, use {{Instant}}/{{OffsetDateTime}} and set {{hibernate.jdbc.time_zone}}.
+- **An {{IN}} expression that is too long**: Oracle caps the list inside {{IN}} at 1000 elements (ORA-01795). Symptom: a large batch fails out of nowhere. How to avoid it: split into batches, or use a temporary table / join.
+- **allocationSize not matching INCREMENT BY**: duplicate ids or a startup error after switching DB. How to avoid it: declare both explicitly and check them in the migration.
+
+### One-minute spoken answer
+"Oracle and PostgreSQL are both full RDBMSes with MVCC and READ COMMITTED by default, so transaction logic is nearly the same. The differences that cause the most bugs in my experience: Oracle treats an empty string as NULL, pagination syntax differs – ROWNUM or FETCH NEXT versus LIMIT OFFSET –, string concatenation with NULL gives different results, and Oracle's DATE type includes the time. For ids, both use sequences; I always keep INCREMENT BY aligned with Hibernate's allocationSize and accept the gaps. Trade-off when choosing: Oracle is strong in the enterprise ecosystem with RAC and Data Guard but its licence is expensive; PostgreSQL is free and its JSONB and extensions are very powerful. On banking systems I keep native queries per dialect and run integration tests against the exact DB type used in production."
 
 > Senior tip: in Vietnamese banking environments, the question "have you worked with Oracle before, and how does it differ from PostgreSQL?" comes up very often. A good answer mentions 2–3 differences with **real impact** (empty strings treated as NULL, pagination syntax, sequence-based id generation where {{CACHE}} causes gaps in ids) and explains how you handled it in code. Remember to check the legacy system's SQL: a lot of statements use {{NVL}}, {{SYSDATE}}, {{ROWNUM}} – a clear telltale sign of Oracle.`,
     follow: [

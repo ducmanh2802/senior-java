@@ -1,6 +1,6 @@
 # T547 — Dịch lại (nội dung đã sửa): q-spring-data-6 (4 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-spring-data-6.en.js`
 
@@ -13,3 +13,9 @@ Với MỖI mục trên: đọc bản tiếng Việt hiện tại trong `js/data
 node scripts/check-i18n.js q-spring-data-6 → OK; node scripts/validate.js → OK.
 
 ## Notes
+- Đã dịch lại toàn bộ 4 entry db-012, db-013, db-014, db-015 sang tiếng Anh theo bản tiếng Việt hiện tại, bổ sung các mục mới mà bản cũ thiếu: Hiểu nhanh (Quick intuition), Thuật ngữ (Terms), các khối "từng bước" (lifecycle UPDATE / chọn index / vận hành partition / optimizer chọn sai), Lỗi hay gặp (Common mistakes) và Trả lời miệng 1 phút (One-minute spoken answer).
+- db-014: sửa lại bullet ATTACH cho khớp nội dung mới (PostgreSQL tự tạo index khớp trong lúc attach nếu thiếu; nên tạo trước).
+- Giữ nguyên key, tập field (q/a/follow), code mẫu; comment tiếng Việt trong code đã dịch sang tiếng Anh.
+- Chỉ sửa `js/i18n/q-spring-data-6.en.js` và file task này.
+- `node scripts/check-i18n.js q-spring-data-6` → OK (8 mục); `node scripts/validate.js` → OK — không có lỗi.
+Reviewed-by: check-i18n (translation, no LLM review)
