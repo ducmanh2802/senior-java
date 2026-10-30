@@ -300,332 +300,291 @@ Do not turn every switch into Strategy — that is over-engineering.
       'When do you choose enum + switch instead of Strategy?'
     ],
   },
-  'architecture-004': {
-    q: 'Present the package structure for Clean/Hexagonal Architecture in Spring Boot. What are the advantages and disadvantages compared to layered architecture?',
-    a: `**Summary:** Clean/Hexagonal places **domain at the center**; dependencies only point inward: domain knows nothing about Spring, JPA, or HTTP. Application contains use cases and defines **ports**; adapters (web, persistence, messaging) implement ports. In exchange for clarity and testability, you pay with more mapping layers and longer code.
+'architecture-004': {
+    q: 'Design a flash sale system: 100,000 requests in 1 second for 1,000 products, each user buys at most 1, absolutely no oversell. Present both the flow and incident handling.',
+    a: `**Summary:** Flash sale is a **finite resource contention under extreme load** problem. Principle: reject and decide as early as possible, deduct stock with **conditional atomic operations**, create orders asynchronously, and always have a DB layer as the final guard against oversell.
 
-### Package structure
+### Requirements
+- **Functional:** open sale at exact time, max 1 order per user per product, hold stock for 10 minutes for payment, sold-out items go to waitlist.
+- **Non-functional:** 100k req/s for a few seconds, p99 response < 500 ms, **never sell more than stock**, eventual consistency acceptable for notifications and stats.
+- **Priority:** stock correctness > latency > absolute fairness.
+
+### Quick estimation
+1,000 products, 100,000 requests \u21d2 over 99% requests will fail. So **most work is rejecting fast**, not creating orders. Goal: only let ~1,000 requests reach deep into the system.
+
+### Overall architecture
 ~~~text
-com.example.order
-+-- domain
-|   +-- model          Order, OrderLine, Money (record)
-|   +-- event          OrderPaid
-|   +-- exception      DomainException
-|   +-- port
-|       +-- in         PlaceOrderUseCase (interface)
-|       +-- out        OrderRepository, PaymentPort (interface)
-+-- application
-|   +-- service        PlaceOrderService (implements in-port)
-|   +-- dto            PlaceOrderCommand
-+-- adapter
-|   +-- in.web         OrderController, mapper
-|   +-- in.messaging   OrderEventConsumer
-|   +-- out.persistence JpaOrderRepository, OrderJpaEntity, mapper
-|   +-- out.payment    StripePaymentAdapter
-+-- config             Spring wiring, bean configuration
+Client -> CDN/WAF -> LB -> API gateway (rate limit, auth)
+                                 |
+                          Sale service
+                           |         |
+                   Redis (Lua)     Kafka (order created)
+                   stock + user      |
+                   dedup set         v
+                               Order worker -> DB (conditional update)
+                                                    |
+                                               Payment service
 ~~~
-There is a variant that places ports inside application rather than domain; what matters is the **dependency direction**, not the folder name.
+Before sale: **warmup** stock and valid user list into Redis. After sale: reconcile Redis with DB.
 
-### Dependency rule
+### Layer 1 \u2014 block at gateway
+- Rate limit by user/IP/device fingerprint, e.g., 5 req/s.
+- Authenticate before sale service to filter unauthenticated bots.
+- Optional "waiting room" issuing tokens at a controlled pace to flatten traffic; users see queue position instead of errors.
+
+### Layer 2 \u2014 decide in Redis with Lua
+This is where oversell is prevented. One script does 3 things atomically: check if user already bought, check stock, deduct and record user.
+
 ~~~text
-adapter in --> application/domain <-- adapter out
-                    ^
-                    |
-                 config (Spring)
+-- KEYS[1]=stock:sku, KEYS[2]=buyers:sku ; ARGV[1]=userId
+if redis.call('SISMEMBER', KEYS[2], ARGV[1]) == 1 then
+  return -1                      -- already bought
+end
+local left = tonumber(redis.call('GET', KEYS[1]) or '0')
+if left <= 0 then
+  return 0                       -- out of stock
+end
+redis.call('DECR', KEYS[1])
+redis.call('SADD', KEYS[2], ARGV[1])
+return 1                         -- success, reserved
 ~~~
-- Domain does not import {{org.springframework}}, {{jakarta.persistence}}, {{com.fasterxml.jackson}}.
-- Application only depends on domain + port interfaces.
-- Adapters depend on domain/application; never the reverse.
-If domain imports JPA annotations, you have tied domain to infrastructure and lost most of the benefit.
 
-### Example use case
-~~~java
-public interface PlaceOrderUseCase {
-    OrderId place(PlaceOrderCommand cmd);
-}
+Because Redis is single-threaded and scripts are atomic, two concurrent requests cannot both read {{left = 1}}. This is a **reservation**, not the final order.
 
-@Service
-public class PlaceOrderService implements PlaceOrderUseCase {
-    private final OrderRepository orders;      // out-port
-    private final PaymentPort payments;        // out-port
-    private final DomainEventPublisher events; // out-port
+### Layer 3 \u2014 create order asynchronously
+Successful requests go to Kafka with pre-generated {{orderId}} and {{reservationId}}. API returns "processing" with a tracking code immediately, without waiting for DB write. Worker consumes and creates the order.
 
-    public PlaceOrderService(OrderRepository orders,
-                             PaymentPort payments,
-                             DomainEventPublisher events) {
-        this.orders = orders;
-        this.payments = payments;
-        this.events = events;
-    }
-
-    @Override
-    public OrderId place(PlaceOrderCommand cmd) {
-        Order order = Order.create(cmd.customerId(), cmd.lines());
-        payments.authorize(order.total());     // calls outward through port
-        orders.save(order);
-        events.publishAll(order.pullEvents());
-        return order.id();
-    }
-}
-~~~
-The service does not know whether payment is Stripe or Momo, nor whether persistence is JPA or MongoDB. Changing adapters does not require modifying the use case.
-
-### Mapping between layers
-- Web DTO → Command: validates format, does not validate business rules.
-- Command → Domain: builds entity/value object; domain enforces its own invariants.
-- Domain → JPA entity: separate mapper. Many people skip this by using JPA entities as domain — faster but ties domain to JPA and makes testing harder.
-- Domain → Response DTO: do not expose entities externally (lazy loading, leaking internal fields, coupling API to DB).
-
-### Advantages
-- **Test domain without Spring**: fast, stable, no DB needed.
-- **Easy infrastructure swap**: change payment provider, DB, or message broker by adding a new adapter.
-- **Clear boundaries**: business rules live in one place, not scattered across controllers/services/JPA listeners.
-- **Supports modularization**: each module has its own ports, making future service extraction easy.
-- **Legacy migration**: write a new adapter while keeping domain clean.
-
-### Disadvantages
-- **More code**: mappers, DTOs, interfaces. For simple CRUD, this cost is not worth it.
-- **Harder trace for newcomers**: controller → use case → port → adapter path is longer.
-- **Pressure to use JPA entity as domain** for convenience; without discipline, architecture degrades into layered with a different name.
-- **Transaction boundary** must be placed correctly: usually in the application service, not in domain (domain knows nothing about transactions).
-- **Over-engineering** when domain is simple: 3 tables, no complex rules.
-
-### Comparison with layered
-| Criterion | Layered | Clean/Hexagonal |
-|---|---|---|
-| Dependency | Service calls repository, controller calls service; domain often depends on JPA | Only points inward |
-| Domain test | Needs many mocks, sometimes DB | Pure unit tests |
-| Initial speed | Fast | Slower |
-| Complex business rules | Rules scattered, invariants hard to protect | Domain centralized |
-| Simple CRUD | Fits well | Overkill |
-
-### Practical adoption
-- Start with **modular monolith**: package by business module, each module has internal domain/application/adapter.
-- Only create ports when there is real variation or when a testing seam is needed. Do not create a port for every repository if you accept DB-based testing.
-- Keep domain clean for important modules (billing, pricing); allow simplicity in auxiliary modules (admin CRUD).
-- Use ArchUnit to **automatically enforce dependency direction** in CI; without automation, architecture will be broken within a few sprints.
-
-> Senior tip: I once saw a project claiming "Clean Architecture" where domain imported JPA and controllers returned entities directly — the architecture existed only on a diagram. If you decide to adopt it, write an ArchUnit test on day one; automated discipline is more reliable than human discipline.`,
-    follow: [
-      'Where do you place the transaction boundary in hexagonal architecture and why?',
-      'How do you avoid domain/JPA entity mapping becoming a burden?',
-      'What ArchUnit rules should be enforced for this structure?'
-    ],
-  },
-  'architecture-005': {
-    q: 'DDD: distinguish entity vs value object, aggregate vs domain event. How do you choose aggregate boundaries and manage transactions across aggregates?',
-    a: `**Summary:** **Entity** has identity over time; **value object** has no id, is immutable, and equality is by value. **Aggregate** is a cluster of entities/value objects protected by a root; it is the **consistency and transaction unit**. Between aggregates, reference by id only and maintain eventual consistency through **domain events**. Rule: one transaction modifies only one aggregate.
-
-### Entity vs Value Object
-| Criterion | Entity | Value Object |
-|---|---|---|
-| Identity | Has id, exists over time | No id, describes value |
-| Equality | By id | By all attributes |
-| Mutability | State can change | Should be immutable; create a new one to change |
-| Example | Order, Customer, Account | Money, Email, Address, DateRange |
-| DB storage | Separate table or inside aggregate | Usually embedded |
-
-~~~java
-public record Money(long amountMinor, String currency) {
-    public Money {
-        if (amountMinor < 0) throw new IllegalArgumentException("negative");
-        if (currency == null || currency.length() != 3) throw new IllegalArgumentException("currency");
-    }
-    public Money plus(Money other) {
-        if (!currency.equals(other.currency)) throw new IllegalArgumentException("currency mismatch");
-        return new Money(amountMinor + other.amountMinor, currency);
-    }
-}
-~~~
-{{Money}} has no id, validates invariants on creation, and addition returns a new instance. Comparing {{new Money(100, "USD").equals(new Money(100, "USD"))}} is true — correct value semantics.
-
-### Aggregate
-An aggregate is a consistency boundary. All changes go through the **aggregate root**; outsiders must not modify child entities directly.
-~~~java
-public class Order {                    // aggregate root
-    private final OrderId id;
-    private final List<OrderLine> lines;
-    private OrderStatus status;
-    private long version;               // optimistic locking
-
-    public void addLine(ProductId productId, Money price, int qty) {
-        if (status != OrderStatus.DRAFT) throw new IllegalStateException("locked");
-        if (qty <= 0) throw new IllegalArgumentException("qty");
-        lines.add(new OrderLine(productId, price, qty));
-        // invariant: total is always derived from lines, not stored separately
-    }
-
-    public Money total() {
-        return lines.stream().map(OrderLine::subtotal)
-                    .reduce(Money.zero("USD"), Money::plus);
-    }
-}
-~~~
-- Invariants are protected in the root: for example, "do not add a line when the order is locked", "total matches the lines".
-- Child entities ({{OrderLine}}) have no separate repository; modifications must go through Order.
-- The smaller the aggregate, the better: less contention, less data loaded, easier caching.
-
-### Choosing aggregate boundaries
-Questions to decide:
-1. **What must be immediately consistent?** If two things must be correct together in one transaction, they may share an aggregate.
-2. **What changes independently?** If frequency and actors differ, split them.
-3. **Is there high write contention?** Grouping too much creates long locks and reduces throughput.
-4. **Is the full set needed for work?** If only a part is needed, the boundary may be wrong.
-
-Examples:
-- **Order + OrderLine**: same aggregate. Total and status must be consistent with lines.
-- **Order and Customer**: different aggregates. Order references {{CustomerId}}, not the full Customer object. Changing a customer's address does not lock Order.
-- **Order and Inventory**: different aggregates, often different services. Decrease inventory through event/saga, not shared transaction.
-- **Product + Price**: depends on business rules; if price must be fixed at order time, OrderLine stores a **copy of the price** (value object) rather than referencing Product.
-
-### Domain event
-A domain event is something that happened in the domain, named in the past tense: {{OrderPlaced}}, {{PaymentCaptured}}. It separates side effects from the aggregate:
-- The aggregate only records the event in an internal list.
-- The application service publishes after the transaction commits.
-- Consumers handle email, update read models, adjust inventory.
-
-**Do not publish events directly to a broker while the aggregate is processing** — if the transaction rolls back, the event will be wrong. Use the **outbox pattern**: write the event into an outbox table in the same transaction, and a relay reads and publishes afterward.
+### Layer 4 \u2014 DB as final guard
+Redis can be wrong due to manual ops, backup restore, or script bugs. DB must protect itself:
 
 ~~~sql
-CREATE TABLE outbox (
-  id BIGSERIAL PRIMARY KEY,
-  aggregate_id UUID NOT NULL,
-  event_type TEXT NOT NULL,
-  payload JSONB NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  published_at TIMESTAMPTZ
-);
+UPDATE inventory
+   SET available = available - 1, version = version + 1
+ WHERE sku = 'SKU-1' AND available >= 1;
+-- affected rows = 0 => out of stock, cancel reservation
+
+ALTER TABLE orders ADD CONSTRAINT uk_user_sku UNIQUE (user_id, sku);
 ~~~
-The relay reads {{published_at IS NULL}} in batches, publishes, and marks it. At-least-once delivery requires idempotent consumers.
+- Conditional UPDATE is atomic at row level, no {{SELECT ... FOR UPDATE}} then compute in app.
+- Unique constraint blocks case where two requests of same user slip through Redis.
+- If affected rows = 0, worker marks reservation failed and releases stock.
 
-### Transaction across aggregates
-Rule: **one transaction = one aggregate**. If consistency is needed between two aggregates:
-1. **Saga/process manager**: a sequence of steps, each in its own transaction, with compensation on failure.
-2. **Eventual consistency with domain events**: aggregate A writes + emits event; aggregate B updates later.
-3. **Accept an intermediate state** and show it to the user ("processing").
+### Stock hold and expiry
+Reservation has TTL 10 minutes (Redis key + {{expires_at}} column in DB). A job scans expired reservations to release stock. Must be **idempotent**: release only when reservation is still PENDING, using conditional update to avoid double-release.
 
-Example order placement: Order is created as PENDING, emits {{OrderPlaced}}; Inventory reserves; if failure, emit {{OrderCancelled}} and Order becomes CANCELLED. Do not combine Order and Inventory in one transaction — that creates coupling and cross-locks.
-
-### Aggregate and JPA
-- Use {{@Version}} for optimistic locking; handle {{OptimisticLockException}} with retry or conflict reporting.
-- Avoid {{@OneToMany(cascade = ALL, orphanRemoval = true)}} on huge collections: loading an aggregate with 100k lines is a disaster. Keep aggregate size bounded.
-- Do not inject repositories into entities. Entities should not call the DB; the application service coordinates.
-- Lazy loading outside a transaction causes {{LazyInitializationException}}; fix by fetching only what is needed or using DTO projections, not by opening sessions arbitrarily.
-
-### Pitfalls
-| Pitfall | Consequence | Avoidance |
+### Oversell prevention: real incidents
+| Bug | Consequence | Prevention |
 |---|---|---|
-| Aggregate too large | Slow load, long locks | Split by real invariant |
-| Referencing objects instead of ids | Cascade load, coupling | Only keep ids between aggregates |
-| Calling repository inside entity | Domain depends on infrastructure | Move coordination to service |
-| Publishing event before commit | Wrong event on rollback | Outbox, publish after commit |
-| Multiple aggregates in one transaction | Cross-lock, deadlock | Saga/eventual |
-| Anemic domain | Invariants scattered | Put behavior inside aggregate |
+| Read stock then write in app | Lost update, oversell | Conditional UPDATE or Lua |
+| Trust only Redis | Redis restore causes oversell | DB constraint + reconciliation |
+| Retry order creation | One user gets multiple orders | Unique (user, sku), idempotency key |
+| Double stock release | Sell more than actual | Reservation state + conditional update |
+| Expiry job runs before payment callback | Paid order cancelled | Callback and job both lock by orderId |
 
-### When DDD is not needed
-Simple CRUD, reporting, admin tools: entity + service is enough. DDD has high cognitive cost; invest only when business rules are complex, there are many invariants, many actors, and frequent changes. Do not turn every table into an aggregate.
+### Hot row and sharding
+1,000 products but one hot SKU may get 50k req/s. That inventory row becomes a bottleneck. Two approaches:
+- **Shard stock** into N buckets (each bucket 1/N quantity), request picks random bucket with stock. Increases throughput, but accepts one bucket empty while others have stock.
+- **Serialize by SKU** via Kafka partition key = sku: simple, throughput ~few thousand/s per partition, easier to get right.
 
-> Senior tip: the question I use to test DDD understanding is "if two people order the same last product at the same time, where is the transaction?". Answering "combine Order and Inventory in one transaction" shows lack of boundary understanding; answering "two aggregates, reserve via saga/event and DB constraint" is the answer from someone who has actually operated a real system.`,
+With 1,000 products, bucket sharding usually wins because DB still guards correctness.
+
+### Incidents and operations
+- **Redis dies before sale:** cancel sale or fall back to DB-only with very low rate limit \u2014 better slow than oversell.
+- **Kafka backs up:** reservations still held, users see "processing"; alert on lag and scale consumers.
+- **Reconciliation:** end of day compare {{successful orders + expired reservations}} with initial stock; mismatch = P1 incident.
+- **Transparency:** showing exact remaining stock can cause contention; usually only show "in stock/out of stock".
+
+> Senior tip: I always design flash sale so it can be **turned off in 1 minute** via feature flag returning "technical issue" instead of selling wrong. Oversell is not just a data bug, it's a PR crisis \u2014 one undelivered order costs far more than rejecting early.`,
     follow: [
-      'How do you choose aggregate size when there is a very large collection?',
-      'How do you handle optimistic lock conflict without showing an error to the user?',
-      'When should you use a process manager instead of choreography with events?'
-    ],
+      'If requirement changes to max 3 products per user, how does the Lua script change?',
+      'How do you handle payment callback arriving after reservation expired?',
+      'How to reconcile Redis and DB stock without blocking ongoing sales?'
+    ]
   },
-  'architecture-006': {
-    q: 'How do you manage technical debt and refactor a running production legacy codebase without causing incidents?',
-    a: `**Summary:** Technical debt must be **visible, measurable, and paid down gradually** — not through a rewrite campaign. Main tools: characterization tests before fixing, strangler fig / branch by abstraction for gradual replacement, feature flags for control, and small PRs. Big-bang rewrites are the most common way to fail.
+'architecture-005': {
+    q: 'Design a payment / e-wallet system. How to ensure idempotency, ledger correctness, and reconciliation with partners?',
+    a: `**Summary:** Payment is a **correctness and traceability** problem, not a speed problem. Three pillars: idempotency key for every write command, **double-entry ledger** as immutable source of truth, and daily **reconciliation** with partner statements. There is no magical "exactly-once" \u2014 only at-least-once plus idempotent handling.
 
-### Making debt visible
-- **Debt register**: each item records description, risk, estimated cost, impact, and owner. Attach to backlog; do not keep it in heads only.
-- **Hotspot analysis**: combine complexity (cyclomatic, cognitive) with change frequency (git churn). Files that are both complex and frequently edited are top priority.
-- **SonarQube/SpotBugs**: code smells, duplication, coverage. Do not turn them into rigid KPIs — that creates gaming.
-- **Production incidents**: link each incident to contributing debt; this is the most convincing evidence for the business.
-- **Onboarding time**: where new people lose days is real debt.
+### Requirements
+- **Functional:** deposit/withdraw, internal transfer, pay via provider (card, wallet), refund, view balance and history.
+- **Non-functional:** no lost money, no created money; every change auditable; p99 < 1s for internal commands; availability 99.99%; audit retention 7+ years.
+- **Out of scope:** ML fraud, complex multi-currency (but design must have currency field).
 
-### Before fixing: build a safety net
-Legacy code often lacks tests. Write **characterization tests** (golden master) to capture current behavior — including bad behavior, if it is a contract with clients.
-~~~java
-@Test
-void goldenMaster_pricing() {
-    // record current output for 200 representative inputs
-    for (TestCase tc : fixtures()) {
-        assertEquals(tc.expected, legacyPricer.price(tc.input));
-    }
-}
+### Data model: double-entry ledger
+Every transaction consists of **multiple entries** where total debit = total credit. Never UPDATE balance directly; only **append** entries, balance is derived (or materialized view updated in same transaction).
+
+~~~sql
+CREATE TABLE ledger_entry (
+  id           BIGSERIAL PRIMARY KEY,
+  txn_id       UUID NOT NULL,
+  account_id   BIGINT NOT NULL,
+  direction    CHAR(1) NOT NULL CHECK (direction IN ('D','C')),
+  amount_minor BIGINT NOT NULL CHECK (amount_minor > 0),
+  currency     CHAR(3) NOT NULL,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX uk_idem ON ledger_entry (txn_id, account_id, direction);
 ~~~
-- This test does not claim the behavior is **correct**, only that it **does not change** during refactoring.
-- For code hard to test due to static/global state, create a **seam**: add an interface or parameter for injection.
-- If testing is impossible, refactor in very small steps with rollback capability.
+- Money stored as **integer smallest unit** (VND = dong, USD = cents). No {{double}}/{{float}} due to binary floating-point errors.
+- Table is **append-only**: fix mistakes with reversal entry, never delete. This is an audit requirement, not preference.
+- Balance can be recomputed from ledger anytime; balance table is just a read cache and must be reconciled periodically.
 
-### Replacement strategies
-| Strategy | How | When to use |
-|---|---|---|
-| Boy scout rule | Small improvement in the code you are already editing | Default, continuous |
-| Strangler fig | Build new path in parallel, shift traffic gradually, turn off old path | Replace large module, rewrite part by part |
-| Branch by abstraction | Create interface, two implementations, switch by flag | Replace algorithm/library |
-| Dark launch / shadow | Run new code in parallel, compare results, not serving yet | High risk, needs verification |
-| Freeze + refactor | Stop adding features to the module, clean up completely | Small, well-scoped debt |
+### Idempotency
+Client sends {{Idempotency-Key}} (UUID) per command. Server stores key with request hash and response:
+1. New key: process, store response in same transaction as ledger entries.
+2. Key exists, request hash matches: return **exact previous response**, no reprocessing.
+3. Key exists, body differs: return 409 to detect client bug.
+Network retries, timeouts, double-clicks all safe.
 
-### Strangler fig in practice
-1. Place a **facade/proxy** in front of the old module, route by traffic % or tenant.
-2. Build the new module with full tests.
-3. Shift 1% → 10% → 50% → 100%, tracking error rate, latency, and business metrics.
-4. Keep rollback capability via flag throughout the process.
-5. Once stable, delete old code and temporary facade.
-
-Do not move everything at once; each step must have success criteria and observation time.
-
-### Branch by abstraction
-~~~java
-public interface TaxCalculator { Money tax(Order o); }
-
-@Component
-class LegacyTaxCalculator implements TaxCalculator { ... }
-
-@Component
-class NewTaxCalculator implements TaxCalculator { ... }
-
-@Component
-class TaxCalculatorRouter implements TaxCalculator {
-    private final TaxCalculator legacy;
-    private final TaxCalculator modern;
-    private final FeatureFlags flags;
-
-    public Money tax(Order o) {
-        // flag per tenant, can be turned off instantly if error
-        return flags.newTax(o.tenantId()) ? modern.tax(o) : legacy.tax(o);
-    }
-}
+### Transaction state machine
+~~~text
+INITIATED -> AUTHORIZED -> CAPTURED -> SETTLED
+     |            |            |
+     +----------> FAILED <-----+
+     |                         |
+     +--> EXPIRED       REFUNDED (from CAPTURED/SETTLED)
 ~~~
-This is the seam to run in parallel and compare. Log both results in shadow mode to detect differences before switching traffic.
+Each transition is a **conditional update** ({{WHERE status = 'AUTHORIZED'}}). No arbitrary jumps; unexpected events logged and queued for investigation.
 
-### Small and safe PRs
-- One PR does one thing: rename, extract method, add test, or move code. Do not mix refactoring with new features.
-- Separate mechanical refactoring (rename, extract) commits from behavioral changes for easier review.
-- Run automated tests + careful review of behavior-changing parts.
-- Avoid "refactor the whole package" in a giant PR — nobody can review it.
+### Architecture
+~~~text
+Client -> Payment API -> Payment service -> Ledger DB (primary)
+                               |                  |
+                               |            outbox table
+                               v                  |
+                         Provider gateway <-- outbox relay -> Kafka
+                               |                                  |
+                        webhook receiver ----------------------+
+                                                               v
+                                                      Settlement/recon job
+~~~
+- **Outbox pattern:** write ledger + write event in same DB transaction; relay reads outbox and publishes Kafka. Avoids dual-write "write DB then call Kafka" \u2014 if Kafka fails, both sides drift.
+- **Webhook** from provider must be idempotent by {{provider_event_id}} because providers retry.
 
-### Measuring results
-- Lead time, deploy frequency, change failure rate, MTTR.
-- Bugs related to the module, onboarding time.
-- Module coverage after refactoring (not total repo coverage).
-- Latency/resource if refactoring for performance.
-Without measurement, debt will be cut when there is a deadline — always.
+### Distributed transaction: saga, not 2PC
+Transfer between two wallets in different services: debit A, credit B. No distributed transaction. Use saga:
+1. Debit A (write ledger, status PENDING).
+2. Emit event to service B.
+3. Credit B succeeds \u21d2 mark complete.
+4. If step 3 fails after N retries \u21d2 compensating entry (credit back A).
+All steps idempotent and retryable. Intermediate state shown to user ("processing"), never silent.
 
-### When to rewrite
-Only rewrite when:
-1. Long-term maintenance cost exceeds rewrite cost **including risk**.
-2. Parallel operation and gradual migration are possible.
-3. The team has enough capacity and time, without feature pressure.
-4. There is a data plan: migration, dual-write, backfill, rollback.
-Big-bang rewrites usually take 2–3 times the estimate and miss hidden business rules — rules that no one wrote down but customers depend on.
+### Reconciliation
+Daily (or hourly) fetch partner statement, match by {{provider_ref}}:
+- **In us, not in partner:** stuck transaction \u2014 investigate, maybe provider timeout but not actually charged.
+- **In partner, not in us:** lost webhook \u2014 actively query provider by ref.
+- **Amount/fee/currency mismatch:** alert immediately, do not auto-fix.
+- **Duplicate:** provider sent twice, ensure ledger has only one entry.
 
-> Senior tip: I always talk to stakeholders in risk language, not code language: "this module caused 40% of incidents in 6 months, each incident costs 2 hours and affects 5,000 users". With numbers, getting time for refactoring is much easier than saying "the code is bad".`,
+Reconciliation result must be stored and dashboarded; "no discrepancy" is also a result that needs proof.
+
+### Concurrency and locking
+- Balance update: use {{UPDATE ... WHERE balance >= amount}} or row lock, and **lock by ascending account_id** to avoid deadlock on two-way transfers.
+- Isolation level: for ledger, prefer short transactions and DB constraints; SERIALIZABLE may cause retries, measure before wide adoption.
+
+### Security and compliance
+- Never log card numbers/CVV; tokenize via provider.
+- Least privilege access; manual adjustments need 4-eyes approval.
+- Immutable audit log, exportable for auditors.
+
+> Senior tip: my most expensive lesson was **never let balance be the only source of truth**. When incidents happen, append-only ledger lets you reconstruct full history and prove to partners; a balance table with wrong UPDATE leaves no way to know when it broke.`,
     follow: [
-      'How do you persuade a product owner to sacrifice 20% capacity for refactoring?',
-      'How do you write characterization tests for code that depends heavily on time and randomness?',
-      'When do you decide to fully delete the old module after traffic migration?'
-    ],
+      'How do you handle webhook arriving before API finishes creating the transaction?',
+      'If provider does not offer detailed statements, what does reconciliation rely on?',
+      'How to design partial refund API on ledger?'
+    ]
+  },
+'architecture-006': {
+    q: 'Design a notification service sending email/SMS/push to millions of users. How to handle retry, priority, and avoid duplicate sends?',
+    a: `**Summary:** Notification service is a **fire-and-forget, accept at-least-once** system needing per-channel priority queues, retry with backoff, dedup by event, and complete separation from core business flow. User OTP must not queue behind marketing campaigns.
+
+### Requirements
+- **Functional:** send email, SMS, push, in-app; templating with variables; user preference per notification type; view send history; cancel unsent notifications.
+- **Non-functional:** 1M notifications/day, peak 10k/min; OTP p99 < 3s end-to-end; never lose transactional notifications; marketing can be delayed.
+- **Constraints:** third-party providers have rate limits and downtime.
+
+### Architecture
+~~~text
+Service A --\
+Service B ---> Notification API -> DB (notification, template)
+Service C --/         |
+                       v
+                 Priority router
+              /        |         \
+         high(OTP)   normal      low(marketing)
+              \        |         /
+               Kafka topics (3 levels)
+                     |
+               Channel workers (email/sms/push)
+                     |
+               Provider adapters (SES, Twilio, FCM)
+                     |
+               Delivery status -> DB + webhook
+~~~
+API **only accepts and returns 202**, never calls provider synchronously. Synchronous call means provider latency and reliability become yours.
+
+### Data model
+~~~sql
+CREATE TABLE notification (
+  id            UUID PRIMARY KEY,
+  user_id       BIGINT NOT NULL,
+  channel       VARCHAR(10) NOT NULL,
+  template_code VARCHAR(50) NOT NULL,
+  payload       JSONB NOT NULL,
+  dedup_key     VARCHAR(200) NOT NULL,
+  priority      SMALLINT NOT NULL,
+  status        VARCHAR(20) NOT NULL,
+  attempts      INT NOT NULL DEFAULT 0,
+  next_retry_at TIMESTAMPTZ,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX uk_notif_dedup ON notification (dedup_key, channel);
+~~~
+{{dedup_key}} example {{order-paid:12345:email}} \u2014 same business event creates only one notification per channel.
+
+### Priority
+Three separate topics, three separate worker groups (or same worker reading topics by ratio):
+- **High:** OTP, security alerts, money transactions. Never blocked by marketing.
+- **Normal:** order confirmation, appointment reminders.
+- **Low:** promotions, newsletters. Can delay hours.
+
+If using single queue with priority field, marketing surge makes OTP wait \u2014 classic bug. Separate topics is cheap and guaranteed.
+
+### Retry
+- Retry only **transient** errors: timeout, 429, 5xx. Permanent errors (invalid email format, non-existent phone, 4xx) marked FAILED, no retry.
+- **Exponential backoff + jitter**: 1s, 5s, 30s, 2m, 10m; jitter prevents thundering herd.
+- Cap at 5\u20138 attempts then move to **DLQ**. DLQ must have monitoring and replay tool.
+- For provider rate limits, worker self-throttles (token bucket) instead of letting provider return 429 repeatedly.
+
+### Duplicate prevention
+System is at-least-once, so duplicates are real. Three layers:
+1. Unique {{dedup_key}} on ingestion \u2014 block duplicates at source.
+2. Before calling provider, mark SENDING via conditional update; if already SENDING/SENT, skip.
+3. Some providers offer their own idempotency key (some SMS APIs), use if available.
+Cannot guarantee absolute dedup if provider lacks support; marketing accepts rare duplicates, OTP resend is acceptable (user enters latest code).
+
+### Templates and content
+- Templates stored in DB with version; template change needs no deploy.
+- Render with validated data; **escape** user content to prevent HTML email injection.
+- Multi-language by user locale.
+- SMS length limits, safe truncation by Unicode graphemes.
+
+### User preferences and regulations
+- Preference table by {{user_id, channel, category}}; respect opt-out immediately.
+- Quiet hours: no marketing at night per user timezone.
+- Log consent (who agreed to what, when) \u2014 needed for compliance.
+
+### Provider failover
+Each channel should have at least two providers. Common adapter interface; when primary fails repeatedly (circuit breaker opens), switch to secondary. Costs and quality differ; failover must alert to avoid silently burning money.
+
+### Observability
+Must-have metrics: queue lag by priority, success rate by provider, p99 latency, DLQ size, email bounce/complaint rate. Rising bounce rate = domain reputation degrading \u2014 fix before blacklist.
+
+> Senior tip: OTP is what I always **fully separate** from general notifications, sometimes with dedicated provider. One marketing campaign sending 2M emails by mistake can clog the queue and delay OTP by 10 minutes \u2014 that's an incident where users cannot log in, not just "slow email".`,
+    follow: [
+      'How do you design cancel for a notification already in queue?',
+      'If primary provider triples price, how does architecture help you switch?',
+      'How to measure email delivery quality without reading user content?'
+    ]
   }
 });
