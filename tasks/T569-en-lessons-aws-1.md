@@ -1,6 +1,6 @@
 # T569 — Dịch sang tiếng Anh: lessons-aws (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/lessons-aws-1.en.js`
 
@@ -16,3 +16,10 @@ Yêu cầu dịch:
 - `node --check js/i18n/lessons-aws-1.en.js` và `node scripts/check-i18n.js lessons-aws-1` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+- Đã dịch đầy đủ `lesson-aws-001` (title, goals, body, exercises[0].title/prompt/hints/explain, check[0..2].q/options/explain) sang tiếng Anh, giữ nguyên markup, code block (chỉ dịch comment), tên API/ARN/số liệu.
+- Không chép `starter`/`tests`/`reference`; không có backtick hay `${` trong file.
+- `node scripts/check-i18n.js lessons-aws-1` → `OK — 1 mục đã dịch.`; file parse/execute thành công qua vm của checker (lệnh `node --check` bị chặn bởi chính sách quyền shell của môi trường, không phải lỗi cú pháp).
+- `node scripts/validate.js` → `OK — không có lỗi.`
+- Chỉ sửa `js/i18n/lessons-aws-1.en.js`; không commit.
+Reviewed-by: check-i18n (translation, no LLM review)
