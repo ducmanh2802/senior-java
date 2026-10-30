@@ -25,7 +25,7 @@ Cơ chế chuẩn để gom log CloudWatch Logs **xuyên account** là **cross-a
 - **C:** Export task (CreateExportTask) là batch, có độ trễ tới hàng giờ và mỗi account chỉ chạy được một export task tại một thời điểm. Không đạt "near-real time".
 - **D:** Viết Lambda polling là custom code, dễ mất/trùng event, bị throttle API, vi phạm yêu cầu.
 
-> Exam tip: Thấy "centralize logs cross-account + near real-time" thì nghĩ ngay **Logs destination + subscription filter + Kinesis Data Streams/Firehose**. Mỗi log group có tối đa 2 subscription filter. "Xem tập trung" (không cần copy dữ liệu) thì mới là cross-account observability.`,
+> Exam tip: Thấy "centralize logs cross-account + near real-time" thì nghĩ ngay **Logs destination + subscription filter + Kinesis Data Streams/Firehose**. Mỗi log group có tối đa 5 subscription filter (trước đây là 2). "Xem tập trung" (không cần copy dữ liệu) thì mới là cross-account observability.`,
   services: ['Amazon CloudWatch Logs', 'Amazon Kinesis Data Firehose', 'Amazon S3', 'AWS Organizations'],
   refs: [{ type: 'doc', title: 'Cross-account cross-Region log data sharing using subscriptions', url: 'https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CrossAccountSubscriptions.html' }],
 },
