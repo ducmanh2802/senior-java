@@ -156,7 +156,7 @@ private static final Map<String, String> SORT = Map.of(
     "newest", "created_at");
 
 String col = SORT.get(sortParam);
-if (col == null) throw new BadRequestException("sort không hợp lệ");
+if (col == null) throw new BadRequestException("invalid sort field");
 String dir = "desc".equalsIgnoreCase(dirParam) ? "DESC" : "ASC";
 String sql = "SELECT id, name, price FROM products ORDER BY " + col + " " + dir + ", id";
 ~~~

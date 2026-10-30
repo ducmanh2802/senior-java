@@ -35,7 +35,7 @@ class ShippingService {
 
     BigDecimal fee(Order order, String type) {
         ShippingStrategy s = strategies.get(type);
-        if (s == null) throw new IllegalArgumentException("loại phí không hợp lệ: " + type);
+        if (s == null) throw new IllegalArgumentException("invalid fee type: " + type);
         return s.fee(order);
     }
 }
@@ -150,10 +150,10 @@ This allows you to replace JPA with jOOQ, or switch from REST to gRPC, without t
 // Value object: immutable and compared by value
 public record Money(BigDecimal amount, String currency) {
     public Money {
-        if (amount.signum() < 0) throw new IllegalArgumentException("số tiền âm không hợp lệ");
+        if (amount.signum() < 0) throw new IllegalArgumentException("negative amount is not allowed");
     }
     public Money add(Money other) {
-        if (!currency.equals(other.currency())) throw new IllegalArgumentException("khác loại tiền");
+        if (!currency.equals(other.currency())) throw new IllegalArgumentException("currency mismatch");
         return new Money(amount.add(other.amount()), currency);
     }
 }
@@ -165,7 +165,7 @@ public class Order {
     private OrderStatus status;
 
     public void addLine(OrderLine line) {
-        if (status != OrderStatus.NEW) throw new IllegalStateException("đơn đã xử lý không thể thêm dòng");
+        if (status != OrderStatus.NEW) throw new IllegalStateException("cannot add lines to a processed order");
         lines.add(line);                 // the invariant is enforced here
     }
 }
@@ -204,7 +204,7 @@ if (order.getTotal() <= 0) throw new BusinessException("sai");
 
 // After: the rule lives in the aggregate itself and cannot be bypassed
 public void confirm() {
-    if (lines.isEmpty()) throw new IllegalStateException("đơn hàng chưa có sản phẩm");
+    if (lines.isEmpty()) throw new IllegalStateException("order has no items");
     status = OrderStatus.CONFIRMED;
 }
 ~~~
