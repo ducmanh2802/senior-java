@@ -1,6 +1,6 @@
 # T557 — Dịch lại (nội dung đã sửa): q-system-design-4 (6 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-system-design-4.en.js`
 
@@ -13,3 +13,5 @@ Với MỖI mục trên: đọc bản tiếng Việt hiện tại trong `js/data
 node scripts/check-i18n.js q-system-design-4 → OK; node scripts/validate.js → OK.
 
 ## Notes
+Đã dịch lại toàn bộ 6 entry: architecture-007, architecture-008, design-014, design-015, design-016, design-017. Kiểm tra `node scripts/check-i18n.js q-system-design-4` → OK, `node scripts/validate.js` → OK (lỗi aws-plan.js là pre-existing, không liên quan).
+Reviewed-by: check-i18n (translation, no LLM review)
