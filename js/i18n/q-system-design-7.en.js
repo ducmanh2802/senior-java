@@ -325,7 +325,7 @@ Client -> Transfer API -> DB transaction
                          COMMIT -> event relay
 ~~~
 1. Insert idempotency record with {{INSERT ... ON CONFLICT DO NOTHING}} (unique violation usually aborts the whole PostgreSQL transaction); if it exists, compare payload hash and return the old result.
-2. Lock both accounts in ascending ID order ({{SELECT ... FOR UPDATE}}) so A→B and B→A in parallel don't deadlock. Debit only succeeds if available >= amount: check on the locked row, or conditional update {{UPDATE ... WHERE posted - reserved >= :amount}} then check row count = 1. Reading balance with a plain SELECT (no lock) then checking in Java and writing later is a race: two requests see enough money at the same time.
+2. Lock both accounts in ascending ID order ({{SELECT ... FOR UPDATE}}) so A->B and B->A in parallel don't deadlock. Debit only succeeds if available >= amount: check on the locked row, or conditional update {{UPDATE ... WHERE posted - reserved >= :amount}} then check row count = 1. Reading balance with a plain SELECT (no lock) then checking in Java and writing later is a race: two requests see enough money at the same time.
 3. Write debit, credit, balance projection, transfer state, and outbox event in the same transaction. Only report success after commit. Don't publish Kafka before committing DB or the systems can diverge.
 4. Outbox relay at-least-once; consumer deduplicates event ID. For inter-bank, create a hold then call the external network; then capture or release.
 
@@ -429,7 +429,7 @@ Transaction:   Payment API -> Challenge Store (immutable digest + nonce + expiry
 4. Changing phones: revoke the old device, step-up for new enrollment, alert the old channel, and apply restrictions according to risk policy. Emergency lost-device recovery needs an audited identity verification process.
 
 ### Abuse defense and failure modes
-- TOTP (RFC 6238: HMAC over time steps, default 30 seconds) only proves possession of the seed within a time window, not that the transaction content matches what the user sees. If still used, allow at most ±1 step deviation and remember the step used so the code can't be replayed. Transaction signing/challenge-response binds the transaction better, but requires device protection and a trustworthy display UX.
+- TOTP (RFC 6238: HMAC over time steps, default 30 seconds) only proves possession of the seed within a time window, not that the transaction content matches what the user sees. If still used, allow at most +-1 step deviation and remember the step used so the code can't be replayed. Transaction signing/challenge-response binds the transaction better, but requires device protection and a trustworthy display UX.
 - Rate limit by user, device, IP, transaction, and resend; counters must be atomic. Soft lock/cooldown prevents attackers from locking accounts indefinitely.
 - KMS/HSM failure: don't silently downgrade to SMS for high-risk transactions. Refuse securely or use a fallback approved by risk policy.
 - Push approve is convenient but creates push fatigue; display the full transaction, limit pushes, and don't use a generic approve button for multiple requests.
