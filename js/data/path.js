@@ -70,7 +70,8 @@ window.PATH = [
   {
     id: 'path-09', order: 9, phase: 'Vững vàng', title: 'DevOps, Docker & CI/CD', weeks: '20–21',
     goal: 'Triển khai container, cấu hình pipeline và hiểu môi trường production từ góc nhìn Senior.',
-    lessons: ['lesson-devops-001', 'lesson-devops-002', 'lesson-devops-003', 'lesson-devops-004', 'lesson-devops-005'],
+    lessons: ['lesson-devops-001', 'lesson-devops-002', 'lesson-devops-003', 'lesson-devops-004', 'lesson-devops-005',
+      'lesson-aws-001', 'lesson-aws-002', 'lesson-aws-003', 'lesson-aws-004'],
     questions: ['devops-001', 'devops-002', 'devops-003', 'devops-004', 'devops-005', 'devops-006'],
     quizTopics: ['devops'], requires: ['path-08'],
   },
