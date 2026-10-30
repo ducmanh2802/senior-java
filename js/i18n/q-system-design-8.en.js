@@ -50,7 +50,7 @@ Scheduler -> Job table -> workers -> read replica / snapshot
     a: `**Summary:** The real-time runtime uses an immutable, versioned, and pre-warmed rule bundle; governance/rollout lives outside the request path. Replay, shadow, and canary detect impact before scaling; decisions store reason, feature freshness, and version for explanation, rollback, or quick kill switch.
 
 ### Requirements and load assumptions
-- Assumption: 15 million transactions/day, peak 2,000 TPS, all fraud checks p99 ≤ 100 ms, engine portion 30 ms. This is a sizing assumption.
+- Assumption: 15 million transactions/day, peak 2,000 TPS, all fraud checks p99 <= 100 ms, engine portion 30 ms. This is a sizing assumption.
 - Output approve/challenge/decline. False positive loses customers; false negative causes losses; don't optimize a single metric like AUC alone.
 - Decision must be traceable to input, model/rule version, threshold, and publisher.
 
@@ -87,10 +87,10 @@ Analyst labels -> case system -> evaluation -> approved bundle
   },
   'design-027': {
     q: 'Design loyalty points and cashback between a bank, merchants, and partners. How do you prevent duplicate accrual, handle expiry, refunds, and reconciliation when partner files arrive late?',
-    a: `**Summary:** Points need a separate append-only ledger, with pending/available lots and event accrual, redemption, expiry, reversal. Deduplicate by business event ID, version earn rules, and reconcile settlement batches; repeated webhooks must never accrue points twice.
+    a: `**Summary:** Points need a separate append-only ledger, with pending/available lots and event accrual, redemption, expiry, reversal. Dedupe by business event ID, version earn rules, and reconcile settlement batches; repeated webhooks must never accrue points twice.
 
 ### Requirements and sizing assumptions
-- Assumption: 4 million members, 10 million transactions/day (~116/s, peak 2,000/s), each event creates 1–3 postings. This is a sizing assumption.
+- Assumption: 4 million members, 10 million transactions/day (~116/s, peak 2,000/s), each event creates 1-3 postings. This is a sizing assumption.
 - Points have economic value: need audit, transparent expiry policy, explainable balance. Separate pending points from available points; real-cash cashback uses a separate cash ledger.
 - Refunds may occur after redemption; policy must handle negative balance/recovery in a later period/manual review.
 
@@ -106,7 +106,7 @@ Settlement file -> matcher -> activate / exception case
 Redemption -> reserve lots -> confirm -> posting
 Refund -> reversal posting -> balance policy
 ~~~
-1. Receive webhook/file into a durable inbox; verify signature, deduplicate event ID/hash. Same ID with different payload is an exception/security alert.
+1. Receive webhook/file into a durable inbox; verify signature, dedupe event ID/hash. Same ID with different payload is an exception/security alert.
 2. Create a pending lot according to the rule at the time of the transaction; activate after settlement or when the return period ends. Don't depend on events arriving in order.
 3. Redemption selects lots by policy (e.g., earliest expiry first), reserves with conditional update/transaction, then confirms/cancels. Retry with the same key doesn't create a new redemption.
 4. Expiry worker processes by expiry date; only expires remaining with lock/conditional update. Unique expiry reference makes retry safe.
