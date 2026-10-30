@@ -1,0 +1,103 @@
+/* AWS Pro track (#/aws) — mọi selector bắt đầu bằng .view-aws; chỉ dùng biến màu để dark mode tự chạy */
+.view-aws .aws-tabs { margin: 0 0 16px; }
+.view-aws .aws-tabs a.chip { text-decoration: none; }
+
+/* tổng quan */
+.view-aws .aws-start { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.view-aws .aws-start .input { width: auto; max-width: 100%; }
+.view-aws .aws-start p { flex-basis: 100%; margin: 0; }
+.view-aws .aws-stats { margin: 12px 0 16px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr)); }
+.view-aws .aws-stats .num { font-size: 1.4rem; overflow-wrap: anywhere; }
+.view-aws .aws-stats .progress { margin-top: 8px; }
+.view-aws .aws-now { border-left: 4px solid var(--accent); }
+.view-aws .aws-now-head { margin-bottom: 6px; }
+.view-aws .aws-goals { margin: 6px 0 12px; padding-left: 20px; }
+.view-aws .aws-goals li { margin: 4px 0; }
+.view-aws .aws-hist { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+
+/* thanh độ chính xác + vạch 75% */
+.view-aws .aws-bar { display: grid; grid-template-columns: minmax(0, 260px) minmax(0, 1fr) 110px; gap: 10px; align-items: center; margin: 8px 0; }
+.view-aws .aws-bar-label { overflow-wrap: anywhere; }
+.view-aws .aws-meter { position: relative; display: block; }
+.view-aws .aws-mark { position: absolute; top: -4px; bottom: -4px; width: 2px; background: var(--text); opacity: .55; border-radius: 1px; }
+.view-aws .aws-bar-val { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* kế hoạch 26 tuần */
+.view-aws .aws-weeks { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+.view-aws .aws-week { margin: 0; padding: 0; }
+.view-aws .aws-week > summary { display: flex; gap: 12px; align-items: flex-start; padding: 14px 16px; cursor: pointer; list-style: none; }
+.view-aws .aws-week > summary::-webkit-details-marker { display: none; }
+.view-aws .aws-week.now { border-color: var(--accent); }
+.view-aws .aws-wk-n { flex: none; width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; font-weight: 700;
+  background: var(--surface-2); color: var(--text); font-variant-numeric: tabular-nums; }
+.view-aws .aws-week.done .aws-wk-n { background: var(--ok-soft); color: var(--ok); }
+.view-aws .aws-week.now .aws-wk-n { background: var(--accent-soft); color: var(--accent); }
+.view-aws .aws-wk-title { flex: 1; min-width: 0; }
+.view-aws .aws-wk-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 4px; }
+.view-aws .aws-week-body { padding: 0 16px 16px; border-top: 1px solid var(--border); }
+.view-aws .aws-week-body h4 { margin: 14px 0 6px; }
+.view-aws .aws-week-body > .chips { margin-top: 12px; }
+.view-aws .aws-study { margin: 0; padding-left: 20px; }
+.view-aws .aws-study li { margin: 4px 0; overflow-wrap: anywhere; }
+.view-aws .aws-lab { background: var(--surface-2); border-radius: 10px; padding: 4px 14px; }
+.view-aws .aws-week-actions { margin-top: 14px; gap: 8px; }
+
+/* luyện tập + thi thử: câu hỏi */
+.view-aws .aws-filters .row { gap: 8px; margin-bottom: 10px; }
+.view-aws .aws-filters .select { width: auto; max-width: 100%; }
+.view-aws .aws-meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 6px; }
+.view-aws .aws-opts { list-style: none; padding: 0; margin: 12px 0; display: grid; gap: 8px; }
+.view-aws .aws-opt { width: 100%; display: flex; gap: 10px; align-items: flex-start; text-align: left; padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text); cursor: pointer; font: inherit; }
+.view-aws .aws-opt:hover:not([disabled]) { border-color: var(--accent); }
+.view-aws .aws-opt[disabled] { cursor: default; }
+.view-aws .aws-opt.selected { border-color: var(--accent); background: var(--accent-soft); }
+.view-aws .aws-opt.correct { border-color: var(--ok); background: var(--ok-soft); }
+.view-aws .aws-opt.wrong { border-color: var(--bad); background: var(--bad-soft); }
+.view-aws .aws-key { font-weight: 700; min-width: 1.8em; flex: none; }
+.view-aws .aws-opt-text { min-width: 0; overflow-wrap: anywhere; }
+.view-aws .aws-explain { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 10px; }
+.view-aws .aws-explain h4 { margin: 0 0 6px; }
+.view-aws .aws-svc { align-items: center; margin: 8px 0; gap: 6px; }
+.view-aws .aws-refs { margin: 0; padding-left: 20px; overflow-wrap: anywhere; }
+.view-aws .aws-nav { gap: 8px; margin-top: 8px; }
+
+/* thi thử */
+.view-aws .aws-resume { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; border-left: 4px solid var(--warn); }
+.view-aws .aws-mock-cards { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); }
+.view-aws .aws-mock-card { margin: 0; }
+.view-aws .aws-mock-card h3 { margin-top: 0; }
+.view-aws .aws-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; position: sticky; top: 0; z-index: 2; }
+.view-aws .aws-progress { flex: 1; min-width: 140px; }
+.view-aws .aws-timer { font-variant-numeric: tabular-nums; font-weight: 700; font-size: 1.1rem; }
+.view-aws .aws-timer.low { color: var(--bad); }
+.view-aws .aws-body { display: grid; grid-template-columns: minmax(0, 1fr) 240px; gap: 12px; align-items: start; }
+.view-aws .aws-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(34px, 1fr)); gap: 6px; }
+.view-aws .aws-cell { height: 34px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer; font: inherit; }
+.view-aws .aws-cell.done { background: var(--accent-soft); }
+.view-aws .aws-cell.flagged { box-shadow: inset 0 -3px 0 var(--warn); }
+.view-aws .aws-cell.current { outline: 2px solid var(--accent); }
+
+/* kết quả */
+.view-aws .aws-score { text-align: center; }
+.view-aws .aws-score h2 { margin-top: 0; }
+.view-aws .aws-score-num { font-size: 3rem; font-weight: 800; line-height: 1.1; }
+.view-aws .aws-score-num small { font-size: 1rem; color: var(--muted); }
+.view-aws .aws-score-num.ok { color: var(--ok); }
+.view-aws .aws-score-num.bad { color: var(--bad); }
+.view-aws .aws-verdict { display: inline-block; margin: 6px 0; font-size: 1rem; }
+.view-aws .aws-actions { justify-content: center; gap: 8px; margin-top: 10px; }
+.view-aws .aws-review-head { justify-content: space-between; margin: 16px 0 8px; }
+.view-aws .aws-review-head h3 { margin: 0; }
+.view-aws .aws-review summary { cursor: pointer; overflow-wrap: anywhere; }
+.view-aws .aws-review.bad { border-left: 4px solid var(--bad); }
+.view-aws .aws-review.ok { border-left: 4px solid var(--ok); }
+
+@media (max-width: 760px) {
+  .view-aws .aws-body { grid-template-columns: 1fr; }
+  .view-aws .aws-grid-card { order: -1; }
+  .view-aws .aws-bar { grid-template-columns: 1fr; gap: 4px; }
+  .view-aws .aws-bar-val { text-align: left; }
+  .view-aws .aws-week > summary { padding: 12px; gap: 10px; }
+  .view-aws .aws-week-body { padding: 0 12px 12px; }
+}

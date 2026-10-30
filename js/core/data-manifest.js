@@ -36,6 +36,8 @@
       drills: ['drills-shadow.js', 'drills-qa.js', 'drills-term.js'],
       glossary: ['glossary-dist.js', 'glossary-java.js', 'glossary-infra.js'],
       projects: ['projects.js'],
+      // AWS Pro track (#/aws): plan + SAP-C02/DOP-C02 exam-style pools (docs/AWS-TRACK.md, scripts/check-aws.js)
+      aws: ['aws-plan.js', 'aws-sap-1.js', 'aws-sap-2.js', 'aws-dop-1.js', 'aws-dop-2.js'],
     },
     routes: {
       // dashboard: SRS due list + stats, next lesson, today's plan, interview plan — all from the light index via
@@ -63,9 +65,10 @@
       sd: ['sd', 'questions', 'glossary'],
       projects: ['projects', 'lessons', 'questions', 'glossary'],
       career: ['questions', 'companies'],
+      aws: ['aws'],                                           // window.AWS_PLAN + window.AWS_QUESTIONS
     },
     // idle prefetch order after the first render (most likely next screens first)
-    prefetch: ['index', 'questions', 'glossary', 'lessons', 'algos', 'quiz', 'exams', 'companies', 'sd', 'drills', 'labs', 'projects'],
+    prefetch: ['index', 'questions', 'glossary', 'lessons', 'algos', 'quiz', 'exams', 'companies', 'sd', 'drills', 'labs', 'projects', 'aws'],
   };
   /** Groups a resolved view needs: needsFor('legal', 'privacy') → routes['legal/privacy'] ?? routes.legal ?? []. */
   M.needsFor = function (view, param) {
