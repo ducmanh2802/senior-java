@@ -1,6 +1,6 @@
 # T565 — Dịch sang tiếng Anh: q-java (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-java-11.en.js`
 
@@ -16,3 +16,6 @@ Yêu cầu dịch:
 - `node --check js/i18n/q-java-11.en.js` và `node scripts/check-i18n.js q-java-11` → OK, rồi `Status: DONE`.
 
 ## Notes
+
+Translated core-014 (autoboxing: Integer cache, == on wrapper, NPE when unboxing, boxing cost in hot loops) to English. Validation passes: `node --check`, `node scripts/check-i18n.js q-java-11`, and `node scripts/validate.js` all OK.
+Reviewed-by: check-i18n (translation, no LLM review)
