@@ -1,6 +1,6 @@
 # T559 — Dịch lại (nội dung đã sửa): q-system-design-6 (6 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/q-system-design-6.en.js`
 
@@ -13,3 +13,5 @@ Với MỖI mục trên: đọc bản tiếng Việt hiện tại trong `js/data
 node scripts/check-i18n.js q-system-design-6 → OK; node scripts/validate.js → OK.
 
 ## Notes
+Đã dịch lại 6 mục: architecture-012, architecture-013, architecture-015, architecture-016, architecture-017, architecture-018. Giữ nguyên architecture-014 (không trong danh sách cần dịch lại). Cả hai script validation đều pass.
+Reviewed-by: check-i18n (translation, no LLM review)
