@@ -6,7 +6,7 @@ App.i18n.content({
   'qz-kotlin-008': {
     q: 'A data class is used as a key in a HashMap, and then one of its {{var}} properties is mutated. What happens?',
     options: [
-      'The hashCode is cached, so the map still finds the object normally',
+      'The data class caches hashCode at object creation so the map still finds it normally',
       'The HashMap automatically rehashes when the object changes',
       'It only affects the map if the property is nullable',
       'The hashCode changes, so the object lands in a different bucket; get/contains return null/false even though the object is still in the map, so keys must be immutable or not mutated after being put into hash-based collections'
@@ -16,9 +16,9 @@ App.i18n.content({
 A {{data class}} generates {{equals}}, {{hashCode}}, and {{toString}} based on **all properties in the primary constructor**. When the object is put into a {{HashMap}}, the bucket index is calculated from the hashCode at that moment. If a property involved in the hashCode is mutated, the new hashCode leads to a different bucket; {{get}} will search in the wrong place and return null even if the object is still in the map. This is a **logic memory leak**: the entry is inaccessible but still occupies space.
 
 ### Why the other options are wrong
-- **hashCode is cached**: {{HashMap}} does not cache the hashCode of keys; it recalculates it whenever needed.
-- **HashMap automatically rehashes**: it only rehashes when the number of elements exceeds the threshold and the table resizes, not when the object's content changes.
-- **Only affects nullable properties**: the type of the property is irrelevant; any property involved in hashCode that changes its value will cause this issue.
+- **Data class caches hashCode**: the {{data class}} hashCode is recalculated from properties on every call. The {{HashMap}} stores the old hash in the node at put time; when get is called, it computes a new hash from the mutated key, so it does not match the old node (and usually lands in a different bucket).
+- **HashMap automatically rehashes**: it only rehashes when the element count exceeds the threshold and the table resizes, not when the object's content changes.
+- **Only affects nullable properties**: the property type is irrelevant; any property involved in hashCode that changes its value will cause this issue.
 
 ### Prevention
 - Use **immutable keys**: {{val}} for all properties involved in equals/hashCode, and ensure internal collections are not mutated either.
@@ -117,7 +117,7 @@ When a consumer receives a message, SQS hides the message for the **visibility t
 
 DynamoDB limits resources **per partition** (about 3000 RCU and 1000 WCU, along with a storage limit). A single userId with overwhelming traffic will be concentrated in one partition and throttled even if the table has plenty of capacity. Solutions:
 - **Write sharding**: append a random suffix (0..N-1) to the partition key, write evenly; when reading, read N shards and merge.
-- **Composite key** based on access pattern: e.g., {{PK = TENANT#id}}, {{SK = TYPE#timestamp}} to distribute more evenly.
+- **Composite key** based on access pattern: add a high-cardinality dimension to the partition key, e.g., {{PK = USER#id#2026-10}} (bucket by month), {{SK = TYPE#timestamp}}, so that a hot user's data spreads across multiple partitions.
 - For hot reads, use **DAX** or application-level caching, and retry with exponential backoff.
 - Avoid {{Scan}} as it consumes capacity and is slow.
 

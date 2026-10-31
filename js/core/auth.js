@@ -131,6 +131,23 @@
     const ra = a.roadmap || {}, rb = b.roadmap || {};
     const starts = [ra.start, rb.start].filter(Boolean).sort();
     out.roadmap = { start: starts[0] || null, done: Object.assign({}, rb.done, ra.done) };
+
+    // AWS Pro track (#/aws): start the earliest, done weeks union, per question the newer answer wins, mocks union by time
+    if (a.aws || b.aws) {
+      const wa = a.aws || {}, wb = b.aws || {};
+      const answers = Object.assign({}, wb.answers);
+      Object.entries(wa.answers || {}).forEach(([id, x]) => {
+        if (!answers[id] || ((x && x.at) || 0) >= (answers[id].at || 0)) answers[id] = x;
+      });
+      const mocks = new Map();
+      [].concat(wb.mocks || [], wa.mocks || []).forEach(m => { if (m) mocks.set(m.at || JSON.stringify(m), m); });
+      out.aws = Object.assign({}, wb, wa, {
+        start: [wa.start, wb.start].filter(Boolean).sort()[0] || null,
+        done: Object.assign({}, wb.done, wa.done),
+        answers,
+        mocks: [...mocks.values()].sort((p, q) => (q.at || 0) - (p.at || 0)).slice(0, 20),
+      });
+    }
     return out;
   }
 

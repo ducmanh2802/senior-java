@@ -479,6 +479,12 @@ for (const g of sandbox.window.GLOSSARY || []) {
 }
 
 
+// ---- AWS Pro track (#/aws): plan + exam-style pools, checked by scripts/check-aws.js ----
+{
+  const aws = require('./check-aws.js')();
+  aws.errors.forEach(m => err('aws', m));
+}
+
 // ---- summary ----
 const Q = sandbox.window.QUESTIONS || [], Z = sandbox.window.QUIZ || [];
 console.log('Questions per topic:');

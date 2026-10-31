@@ -77,7 +77,7 @@ Fixes, in priority order:
       'Does a checked exception cause @Transactional rollback? How is rollbackFor configured?',
       'What is the proxy ordering when a method has both @Transactional and @Cacheable?',
       'Why does @Async on a method that returns void make exceptions disappear, and how do you handle it?'
-    ],
+    ]
   },
   'architecture-013': {
     q: 'Distinguish Adapter, Facade and Decorator in a partner integration scenario: the system calls an e-wallet SDK, adds retry/metrics, and provides a public account-opening API that calls 4 backend systems.',
@@ -138,7 +138,7 @@ public class AccountOpeningFacade {
     }
 }
 ~~~
-Clients (mobile app, BFF) only know {{open()}}. A facade doesn't prevent calling subsystems directly; it only provides a simpler path. Note: a facade calling 4 systems sequentially must think about partial failures (CIF created but card issuance fails) → needs saga/compensation steps or a process state to resume.
+Clients (mobile app, BFF) only know {{open()}}. A facade doesn't prevent calling subsystems directly; it only provides a simpler path. Note: a facade calling 4 systems sequentially must think about partial failures (CIF created but card issuance fails) \u2192 needs saga/compensation steps or a process state to resume.
 
 ### Comparison table
 | | Adapter | Decorator | Facade | Proxy |
@@ -158,7 +158,7 @@ Clients (mobile app, BFF) only know {{open()}}. A facade doesn't prevent calling
       'Where do you place retry: in the decorator, in the HTTP client, or in the message queue? What are the selection criteria?',
       'When the facade fails at step 3, how do you design it so the customer can continue instead of starting over?',
       'Does Spring have a clean way to declare a decorator chain without nested new statements?'
-    ],
+    ]
   },
   'architecture-014': {
     q: 'How are IoC, Dependency Injection, and Dependency Inversion Principle different? Can you use DI and still violate DIP?',
@@ -195,9 +195,9 @@ domain.TransferService                       domain.TransferService
    | inject                                     | depends on
    v                                            v
 infra.JdbcAccountRepository                domain.AccountRepository (interface, owned by domain)
-                                              ^
-                                              | implements
-                                           infra.JdbcAccountRepository
+                                               ^
+                                               | implements
+                                            infra.JdbcAccountRepository
 ~~~
 On the left, Spring still injects (there is DI), but the domain imports the infrastructure package: changing JDBC to JPA requires changing the domain. On the right, the dependency arrow points **into** the domain from infrastructure — that's the "inversion". A critical detail many miss: the interface lives in the **domain package** and is named according to domain needs ({{AccountRepository.findForUpdate}}), not a generic interface defined by infrastructure.
 
@@ -210,7 +210,7 @@ On the left, Spring still injects (there is DI), but the domain imports the infr
 | Examples | Servlet, listener, template method | Constructor injection | Port in domain, adapter in infra |
 
 ### Common wrong answers
-- "IoC and DI are the same thing — they're Spring." Spring is an IoC container that uses DI; the concepts predate Spring and are independent.
+- "IoC and DI are the same thing \u2014 they're Spring." Spring is an IoC container that uses DI; the concepts predate Spring and are independent.
 - "Having an interface achieves DIP." Not true: if the interface lives in the infrastructure layer and the domain imports it, the dependency direction is still wrong.
 - "Every service needs an interface." DIP applies at **boundaries** (domain with infrastructure, with partners); internal services with a single implementation don't need interfaces.
 
@@ -219,11 +219,11 @@ On the left, Spring still injects (there is DI), but the domain imports the infr
       'A service constructor has 9 parameters: how do you handle it?',
       'Why is field injection harder to test, and what risk does it have with null beans?',
       'In Hexagonal Architecture, how do ports and adapters relate to DIP?'
-    ],
+    ]
   },
   'architecture-015': {
     q: 'What does "Composition over inheritance" mean in practice? Give an example of an inheritance tree that hurts in business code and how you would refactor it.',
-    a: `**Summary:** Inheritance tightly couples the subclass to the **implementation details** of the parent (fragile base class) and can only extend in one dimension; when business needs change along multiple independent axes (product type × fee × limit × channel), the number of subclasses explodes. Composition separates each dimension of change into its own object (policy/strategy) that is assembled together, allowing runtime changes and independent testing. Inheritance is still appropriate when there is a true "is-a" relationship and the parent class is **designed to be inherited**; Java 17 sealed interfaces + records are a safe way to model data-variant trees.
+    a: `**Summary:** Inheritance tightly couples the subclass to the **implementation details** of the parent (fragile base class) and can only extend in one dimension; when business needs change along multiple independent axes (product type \u00d7 fee \u00d7 limit \u00d7 channel), the number of subclasses explodes. Composition separates each dimension of change into its own object (policy/strategy) that is assembled together, allowing runtime changes and independent testing. Inheritance is still appropriate when there is a true "is-a" relationship and the parent class is **designed to be inherited**; Java 17 sealed interfaces + records are a safe way to model data-variant trees.
 
 ### Harmful example: deposit product inheritance tree
 ~~~text
@@ -232,8 +232,8 @@ AbstractAccount
  |    |-- OnlineSavingsAccount          (different fee)
  |    |-- OnlineSavingsWithdrawAnytime  (allows early withdrawal)
  |-- CurrentAccount
-      |-- CurrentAccountOverdraft
-      |-- CurrentAccountOverdraftPremium (free + overdraft)
+       |-- CurrentAccountOverdraft
+       |-- CurrentAccountOverdraftPremium (free + overdraft)
 ~~~
 Each product is a combination of: interest calculation method, fee schedule, withdrawal rules, limits. Inheritance only lets you choose **one** axis; the other axes get copied or stuffed into the parent with boolean flags like {{if (isPremium)}}. Changing {{AbstractAccount.withdraw()}} for one product can break five others.
 
@@ -293,7 +293,7 @@ Benefits: a new product is mostly a **configuration** (read from a product table
       "How do sealed interfaces with records differ from traditional inheritance, and why don't they suffer from fragile base class?",
       'How do you refactor an inheritance tree running in production with JPA inheritance without corrupting stored data?',
       'Is delegation overhead in composition significant for performance?'
-    ],
+    ]
   },
   'architecture-016': {
     q: 'What code smells do you most often encounter during code review (long method, primitive obsession, feature envy...)? For each smell, how do you refactor without introducing production errors?',
@@ -305,7 +305,7 @@ Benefits: a new product is mostly a **configuration** (read from a product table
 | Long method | More than ~50 lines, comments like "// step 1" | Extract Method by step, name by business action |
 | Large class | Thousands of lines, unrelated field groups | Extract Class from common field/method groups |
 | Primitive obsession | {{String accountNo}}, separate {{BigDecimal}} + {{String}} for currency | Value object ({{record}}) with validation |
-| Feature envy | {{a.getB().getC()...}} then compute | Move Method to the class that owns the data |
+| Feature envy | {{a.getB().getC()....}} then compute | Move Method to the class that owns the data |
 | Data clumps / long params | (fromDate, toDate) or (amount, currency) always together | Introduce Parameter Object |
 | Shotgun surgery | Adding one fee requires editing 7 files | Gather logic into one place (Move Method, Strategy) |
 | Divergent change | One class changes for many unrelated reasons | Split by reason for change (SRP) |
@@ -362,7 +362,7 @@ This is also how to gradually cure an anemic domain model without a full rewrite
       'How do you write characterization tests for a 500-line method that depends on DB and external services?',
       'What numbers do you show a PM to justify time spent on refactoring?',
       'Which smells does static analysis (Sonar, PMD) catch, and which ones only a reviewer can see?'
-    ],
+    ]
   },
   'architecture-017': {
     q: 'Compare event notification and event-carried state transfer in event-driven architecture. Why is an event-driven system hard to debug, and what do you do to mitigate the risk?',
@@ -397,7 +397,7 @@ Example in e-commerce: {{OrderPlaced}} as notification makes inventory, promotio
 - **Poison message:** one malformed event can block a partition if the consumer retries infinitely.
 
 ### Mitigation measures
-1. **Trace ID in headers** across Kafka, connecting HTTP → producer → consumer. Spring Boot 3 + Micrometer Tracing supports this when observation is enabled ({{spring.kafka.template.observation-enabled}}, {{spring.kafka.listener.observation-enabled}}).
+1. **Trace ID in headers** across Kafka, connecting HTTP \u2192 producer \u2192 consumer. Spring Boot 3 + Micrometer Tracing supports this when observation is enabled ({{spring.kafka.template.observation-enabled}}, {{spring.kafka.listener.observation-enabled}}).
 2. **Managed schema:** Schema Registry with backward-compatibility rules; only add optional fields; document events with AsyncAPI or an event catalog so anyone knows who produces and consumes.
 3. **Outbox** for consistency between DB and events; **idempotent consumers** ({{processed_event}} table with unique {{eventId}}).
 4. **Limited retries + DLQ** (Spring Kafka {{DefaultErrorHandler}} with {{DeadLetterPublishingRecoverer}}), with a dashboard and an owner who handles DLQ.
@@ -412,7 +412,7 @@ Example in e-commerce: {{OrderPlaced}} as notification makes inventory, promotio
       'How do you evolve an event schema (rename a field, split a field) with 6 consumers from 4 teams?',
       'A consumer needs the latest customer data but only receives event-carried state: how do you handle stale data?',
       'How do you build a "track order status" screen in a choreography-based system?'
-    ],
+    ]
   },
   'architecture-018': {
     q: 'The team wants to move from a messy monolith to microservices. You propose a modular monolith with Spring Modulith: how are module boundaries defined and checked, how do modules communicate, and when should a module actually become a service?',
@@ -461,7 +461,7 @@ public void approve(LoanId id) {
 @ApplicationModuleListener                         // = @Async + @Transactional(REQUIRES_NEW) + @TransactionalEventListener
 void on(LoanApproved event) { disbursementService.schedule(event.loanId(), event.amount()); }
 ~~~
-With a storage starter (e.g. {{spring-modulith-starter-jpa}}), each publish writes to an event publication table in the same transaction; the listener runs only after the event is fully persisted. If the app crashes, unfinished publications are resent (configured to resend on startup or actively). This is the internal outbox pattern. When needed, events can be pushed to Kafka ({{@Externalized}}) without changing module code — a natural intermediate step before splitting into a service.
+With a storage starter (e.g. {{spring-modulith-starter-jpa}}), each publish writes to an event publication table in the same transaction; the listener runs only after the event is fully persisted. If the app crashes, unfinished publications are resent (configured to resend on startup or actively). This is the internal outbox pattern. When needed, events can be pushed to Kafka ({{@Externalized}}) without changing module code \u2014 a natural intermediate step before splitting into a service.
 
 ### Testing per module
 {{@ApplicationModuleTest}} only starts beans from one module (and allowed dependencies), making tests faster and exposing hidden dependencies.
@@ -491,6 +491,6 @@ If the module doesn't have clean internal dependencies in the monolith, splittin
       "Module A needs data from module B to render a screen: call B's API, join tables, or keep a copy via events?",
       'An event publication stays in an unfinished state: how do you monitor and fix it?',
       'What is the roadmap to bring a 300,000-line monolith with no boundaries to a modular monolith?'
-    ],
+    ]
   }
 });

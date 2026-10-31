@@ -1,6 +1,6 @@
 # T562 — Dịch lại (nội dung đã sửa): quiz-1 (1 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/quiz-1.en.js`
 
@@ -13,3 +13,5 @@ Với MỖI mục trên: đọc bản tiếng Việt hiện tại trong `js/data
 node scripts/check-i18n.js quiz-1 → OK; node scripts/validate.js → OK.
 
 ## Notes
+Đã dịch lại entry qz-kotlin-002 trong js/i18n/quiz-1.en.js để khớp với bản tiếng Việt hiện tại trong js/data/quiz.js. Cả hai script kiểm tra đều pass.
+Reviewed-by: check-i18n (translation, no LLM review)

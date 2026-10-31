@@ -1,6 +1,6 @@
 # T563 — Dịch lại (nội dung đã sửa): quiz-10 (2 mục)
 
-Status: TODO
+Status: DONE
 Agent: opencode
 Owns: `js/i18n/quiz-10.en.js`
 
@@ -13,3 +13,5 @@ Với MỖI mục trên: đọc bản tiếng Việt hiện tại trong `js/data
 node scripts/check-i18n.js quiz-10 → OK; node scripts/validate.js → OK.
 
 ## Notes
+Đã cập nhật bản dịch tiếng Anh cho qz-kotlin-008 và qz-aws-008 khớp với nội dung tiếng Việt hiện tại. Cả hai entry đã được dịch lại toàn bộ (q, options, explain) giữ nguyên markup, không dùng backtick hay `${`.
+Reviewed-by: check-i18n (translation, no LLM review)

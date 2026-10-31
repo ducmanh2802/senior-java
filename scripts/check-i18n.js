@@ -15,6 +15,7 @@ const only = process.argv[2];
 const ALLOWED = new Set(['name', 'group', 'q', 'a', 'follow', 'options', 'explain', 'prompt', 'hints', 'solution',
   'title', 'goals', 'body', 'exercises', 'check', 'scenario', 'questions', 'answer', 'rubric', 'short', 'phase', 'goal']);
 
+const VI = /[ăâđêôơưạảấầẩẫậắằẳẵặẹẻẽếềểễệịỉĩọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ]/i;
 const errors = [];
 let total = 0;
 for (const f of fs.readdirSync(OUT).filter(f => f.endsWith('.en.js') && (!only || f === only + '.en.js'))) {
@@ -35,6 +36,9 @@ for (const f of fs.readdirSync(OUT).filter(f => f.endsWith('.en.js') && (!only |
     if (/"(starter|tests|reference|artifacts|code)"/.test(text)) errors.push(`${f}: ${id} chép cả code/artifact — chỉ chép field dịch`);
     if (/[ăâđêôơưạảấầẩẫậắằẳẵặẹẻẽếềểễệịỉĩọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ]{1}.*[ăâđêôơưạảấầẩẫậắằẳẵặẹẻẽếềểễệ]/i.test(text.replace(/~~~[\s\S]*?~~~/g, '')))
       errors.push(`${f}: ${id} còn chữ tiếng Việt`);
+    // code blocks are kept, but their string literals and comments must be translated too
+    const viCode = (text.match(/~~~[\s\S]*?~~~/g) || []).join('\\n').split('\\n').filter(l => VI.test(l));
+    if (viCode.length) errors.push(`${f}: ${id} còn tiếng Việt trong code (chuỗi/comment): ${viCode[0].trim().slice(0, 80)}`);
   }
   if (header && only && Object.keys(map).length < ids.size) errors.push(`${f}: mới dịch ${Object.keys(map).length}/${ids.size} mục`);
 }

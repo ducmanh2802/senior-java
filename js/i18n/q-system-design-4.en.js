@@ -1,5 +1,5 @@
 /*
- * English translation of js/data/q-system-design.js — task T197. Format: js/core/i18n.js (content overlay).
+ * English translation of js/data/q-system-design.js — task T557. Format: js/core/i18n.js (content overlay).
  * ids: architecture-007 architecture-008 design-014 design-015 design-016 design-017
  */
 App.i18n.content({
@@ -184,7 +184,7 @@ Do not expose setters for fields that have business rules.
 
 ### Clarifying requirements and scale
 - Function: query recipient name, fast 24/7 transfer via switch (NAPAS), view status, investigate/complain, daily reconciliation.
-- Non-functional: no lost transactions, no "phantom money", full audit, 24/7 with no maintenance window; complies with limits and authentication rules of the State Bank (per Decision 2345/QĐ-NHNN effective 01/07/2024, biometric verification is required for transactions over 10 million VND per transaction or total online transactions over 20 million VND/day; check the specific text and current regulations during real deployment).
+- Non-functional: no lost transactions, no "phantom money", full audit, 24/7 with no maintenance window; complies with limits and authentication rules of the State Bank (per Decision 2345/QD-NHNN effective 01/07/2024, biometric verification is required for transactions over 10 million VND per transaction or total online transactions over 20 million VND/day; check the specific text and current regulations during real deployment).
 - Estimate (large bank assumption): 5 million transactions/day → 5,000,000 / 86,400 ≈ 58 TPS average; peak (payroll, before Tet) assume 10x → ~600 TPS. Not large in throughput; the hard part is correctness.
 - Message protocol, standard (e.g. ISO 8583/ISO 20022), error codes and timeouts depend on the service, version and connection specification of the switch; do not infer from service names.
 
@@ -194,13 +194,13 @@ App/Internet Banking -> API Gateway -> Transfer Service (stateless)
                                             |
                          +------------------+------------------+
                          |                                     |
-                  PostgreSQL (txn + ledger)            Outbox -> Kafka
+                   PostgreSQL (txn + ledger)            Outbox -> Kafka
                          |                                     |
-                  Core Banking (hold/post)          Switch Connector (ISO 8583)
-                                                               |
-                                                         NAPAS switch
-                                                               |
-                                                     Beneficiary bank
+                   Core Banking (hold/post)          Switch Connector (ISO 8583)
+                                                                |
+                                                          NAPAS switch
+                                                                |
+                                                      Beneficiary bank
 ~~~
 
 ### State machine
@@ -399,13 +399,13 @@ Client -> Gateway (auth, validate) -> Pre-trade risk (buying power, limits)
                                           |
                                      Sequencer: assign seq, write journal (fsync + replicate)
                                           |
-                     +--------------------+--------------------+
-                     |                    |                    |
-              Engine shard A        Engine shard B       Engine standby (replay same journal)
-              (symbol 1..N, 1 thread) (symbol N+1..M)
-                     |
-              Output events: ack, trade, cancel  ->  Market data feed
-                                                ->  Clearing/settlement, OMS, history (DB)
+                      +--------------------+--------------------+
+                      |                    |                    |
+                Engine shard A        Engine shard B       Engine standby (replay same journal)
+                (symbol 1..N, 1 thread) (symbol N+1..M)
+                      |
+                Output events: ack, trade, cancel  ->  Market data feed
+                                                  ->  Clearing/settlement, OMS, history (DB)
 ~~~
 Database is not on the hot path: trades are written to DB asynchronously from output events.
 
