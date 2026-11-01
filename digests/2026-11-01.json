@@ -1,0 +1,67 @@
+{
+  "date": "2026-11-01",
+  "intro": "Cuối tuần này có Spring Boot 4.2.0-RC1 và Spring Cloud 2026.0.0-RC1 (Paddington) với nhiều thay đổi cần để mắt khi nâng cấp, cùng Spring AI 2.1 thiết kế lại message để giữ reasoning của model. Ngoài ra là chương trình AI Conformance của Kubernetes và một ca dùng Claude skill để tự động hoá Well-Architected review.",
+  "editor": "claude",
+  "items": [
+    {
+      "title_vi": "Spring Boot 4.2.0-RC1: builder Buildpacks mới và khởi động nhanh hơn",
+      "title": "Spring Boot 4.2.0-RC1 available now",
+      "url": "https://spring.io/blog/2026/10/23/spring-boot-4-2-0-RC1-available-now",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Spring Boot 4.2.0-RC1 ra ngày 23/10/2026 với 113 mục gồm enhancement, sửa lỗi, nâng dependency và tài liệu. Điểm đáng chú ý: builder Buildpacks mặc định chuyển sang {{paketobuildpacks/ubuntu-resolute-builder}} dựa trên Ubuntu 26.04; {{spring-boot-properties-migrator}} có thể làm ứng dụng fail khi gặp lỗi hoặc cảnh báo; và tìm class/resource trong executable jar nhanh hơn nên startup cải thiện. Bài chỉ nêu tóm tắt, chi tiết nằm trong release notes.",
+      "why": "Nếu build image bằng {{spring-boot:build-image}}, base image đổi sang Ubuntu 26.04 có thể ảnh hưởng đến thư viện native, scan bảo mật và kích thước image. Properties migrator giúp bắt sớm config bị đổi tên khi nâng từ 4.1 lên 4.2.",
+      "interview_q": "Bạn sẽ nâng cấp một service Spring Boot lớn lên minor release mới thế nào để giảm rủi ro? Bạn dùng công cụ gì để phát hiện property bị đổi hoặc bỏ?",
+      "related": ["jvm-017"],
+      "tags": ["spring-boot", "release", "buildpacks"]
+    },
+    {
+      "title_vi": "Spring Cloud 2026.0.0-RC1 (Paddington): Bus gộp vào Stream, nhiều module bị deprecate",
+      "title": "Spring Cloud 2026.0.0-RC1 (aka Paddington) Has Been Released",
+      "url": "https://spring.io/blog/2026/10/23/spring-cloud-2026-0-0-RC1-has-been-released",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Release train Spring Cloud 2026.0.0-RC1 dựa trên Spring Boot 4.2.0-RC1; các module chính ở 5.1.0-RC1. Spring Cloud Bus không còn là project riêng mà nằm trong Spring Cloud Stream (coordinates giữ nguyên). Config Client hỗ trợ OAuth 2 khi gọi Config Server, Gateway MVC thêm WebSocket, Kubernetes Configuration Watcher có HA. Bị deprecate: module RSocket và gRPC của Function, cùng reactive Kafka Binder và Schema Registry của Stream.",
+      "why": "Team dùng Spring Cloud Stream với reactive Kafka binder cần lên kế hoạch thay thế sớm. Việc Bus gộp vào Stream và các deprecate cho thấy hướng đi của hệ sinh thái microservices Spring.",
+      "interview_q": "Service của bạn dùng thư viện sắp bị deprecate (ví dụ một binder). Bạn đánh giá và lên kế hoạch di chuyển thế nào mà không ảnh hưởng production?",
+      "related": [],
+      "tags": ["spring-cloud", "release", "kafka"]
+    },
+    {
+      "title_vi": "Spring AI 2.1 Message Parts: giữ nguyên reasoning của model qua nhiều lượt",
+      "title": "Spring AI 2.1 Message Parts: Reasoning That Survives the Round Trip",
+      "url": "https://spring.io/blog/2026/10/28/spring-ai-message-parts-reasoning-replay",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Reasoning model trả về dữ liệu (chữ ký, reasoning mã hoá) phải được gửi lại nguyên vẹn và đúng thứ tự, nhưng {{AssistantMessage}} cũ chỉ có text, tool call và media riêng rẽ nên mất thứ tự và làm rơi reasoning khi lưu memory. Spring AI 2.1 thêm danh sách {{parts}} có thứ tự (sealed interface {{MessagePart}}: Text, Reasoning, ToolCall, ToolResult, Media, Unknown) và {{OpaquePayload}} mà chỉ model gốc mới replay. Session memory lưu mọi part vào JDBC; {{ChatMemory}} bị deprecate và sẽ bỏ ở 3.0.0.",
+      "why": "Ứng dụng agent trên Spring AI dùng tool calling nhiều vòng sẽ gặp lỗi hoặc giảm chất lượng nếu mất reasoning giữa các lượt. Cần biết để chuyển từ {{ChatMemory}} sang session memory.",
+      "interview_q": "Chatbot dùng LLM có tool calling, lưu lịch sử hội thoại vào DB. Bạn thiết kế mô hình dữ liệu và chiến lược cắt/nén lịch sử thế nào để không phá vỡ ngữ cảnh?",
+      "related": ["ai-002", "ai-005"],
+      "tags": ["spring-ai", "llm", "agent"]
+    },
+    {
+      "title_vi": "Kubernetes AI Conformance chuyển thành subproject của SIG Architecture",
+      "title": "From Working Group to SIG Architecture: spotlight on AI Conformance",
+      "url": "https://kubernetes.io/blog/2026/10/29/sig-arch-ai-conformance-2026/",
+      "source": "Kubernetes Blog",
+      "category": "devops",
+      "summary": "AI Conformance là chương trình chứng nhận của CNCF cho nền tảng Kubernetes chạy workload AI, nhằm tránh phân mảnh và lock-in bằng một baseline trung lập ở tầng hạ tầng (ví dụ Dynamic Resource Allocation cho accelerator). Yêu cầu được công bố dạng KAR theo mô hình bậc thang: bắt đầu là SHOULD rồi lên MUST khi API ổn định. Số nền tảng được chứng nhận tăng từ 18 lên 31, và chương trình nay thuộc SIG Architecture với kế hoạch tự động hoá kiểm tra conformance.",
+      "why": "Backend Java phục vụ inference hoặc pipeline AI trên K8s sẽ hưởng lợi từ hành vi scheduling, networking và accelerator nhất quán giữa các cloud, giảm rủi ro khi đổi nhà cung cấp.",
+      "interview_q": "Bạn cần chạy service gọi mô hình trên GPU trong Kubernetes. Bạn xử lý scheduling, giới hạn tài nguyên và tính portable giữa các cloud thế nào?",
+      "related": ["jvm-003"],
+      "tags": ["kubernetes", "ai", "cncf"]
+    },
+    {
+      "title_vi": "Tự động hoá Well-Architected review cho hệ thống agentic AI bằng Claude skill",
+      "title": "Automating agentic AI Well-Architected reviews with the AWS Agentic AI Lens",
+      "url": "https://aws.amazon.com/blogs/architecture/automating-agentic-ai-well-architected-reviews-with-the-aws-agentic-ai-lens/",
+      "source": "AWS Architecture Blog",
+      "category": "cloud",
+      "summary": "Agentic AI Lens là hướng dẫn Well-Architected gồm 150 best practice, 41 câu hỏi, 6 trụ cột. Smarsh bọc lens này thành Claude skill: dataset 150 mục, hướng dẫn đánh giá bắt buộc có bằng chứng (thiếu thì ghi Not Reviewed) và script Python xuất Excel. Skill đọc repo (docs, IaC, CI/CD, test) rồi liệt kê rủi ro cao; kỹ sư vẫn phải kiểm chứng. Bản nháp đầy đủ mất vài giờ thay vì vài ngày.",
+      "why": "Giúp dev/architect biết checklist cần chuẩn bị khi đưa agent lên production (xác thực ingress, chống prompt injection) và cách dùng review tự động như một cổng chất lượng.",
+      "interview_q": "Bạn sẽ review kiến trúc một hệ thống agent dùng LLM trước khi lên production thế nào? Những rủi ro nào bạn kiểm tra đầu tiên?",
+      "related": ["aws-016", "ai-021"],
+      "tags": ["aws", "well-architected", "agentic-ai"]
+    }
+  ]
+}
