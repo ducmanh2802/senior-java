@@ -1,0 +1,79 @@
+{
+  "date": "2026-11-03",
+  "intro": "Hôm nay có một cải tiến đáng chú ý cho MySQL/Aurora khi commit transaction lớn, các tính năng AWS mới biến Step Functions thành tool cho AI agent, cùng vài bài về DR và bảo mật agent đáng đọc cho dev backend.",
+  "editor": "claude",
+  "items": [
+    {
+      "title_vi": "AWS đóng góp tối ưu binlog cho transaction lớn (BOLT) vào MySQL",
+      "title": "AWS contributes a large-transaction binary log optimization to MySQL",
+      "url": "https://aws.amazon.com/blogs/database/aws-contributes-a-large-transaction-binary-log-optimization-to-mysql/",
+      "source": "AWS Database Blog",
+      "category": "cloud",
+      "summary": "Commit transaction lớn vào binary log bị tuần tự hoá qua một global lock, nên một transaction 50 GiB có thể chặn mọi commit khác vài phút. BOLT bỏ bước copy: file spill của transaction được đổi tên thành file binlog kế tiếp, nên thời gian commit gần như không phụ thuộc kích thước, crash recovery cũng nhanh hơn. AWS đã đưa phần này lên MySQL community, dự kiến vào một bản innovation tương lai; số liệu là benchmark của AWS.",
+      "why": "Batch job, migration hoặc bulk update trong Spring/JPA hay tạo transaction khổng lồ; hiểu cơ chế binlog giúp giải thích vì sao cả hệ thống đứng và vì sao vẫn nên chia nhỏ batch.",
+      "interview_q": "Một job cập nhật hàng chục triệu dòng trong một transaction làm mọi commit khác trên MySQL bị treo và replica lag tăng. Bạn chẩn đoán và xử lý thế nào?",
+      "related": ["db-019"],
+      "tags": ["mysql", "binlog", "aurora"]
+    },
+    {
+      "title_vi": "AWS Weekly Roundup: Step Functions thành tool cho agent, KMS hỗ trợ ML-KEM, EKS Gateway API",
+      "title": "AWS Weekly Roundup: GPT-6.1 Terra on Bedrock, Step Functions as agent tools, and more (November 2, 2026)",
+      "url": "https://aws.amazon.com/blogs/aws/aws-weekly-roundup-gpt-6-1-terra-on-bedrock-step-functions-as-agent-tools-and-more-november-2-2026/",
+      "source": "AWS News Blog",
+      "category": "cloud",
+      "summary": "Workflow Step Functions (Standard và Express) giờ có thể được agent gọi như tool qua Bedrock AgentCore Gateway bằng MCP: agent quyết định khi nào chạy và truyền input, còn các bước vẫn do Step Functions điều phối. Tuần này cũng có AWS KMS hỗ trợ ML-KEM (post-quantum), EKS Auto Mode hỗ trợ Kubernetes Gateway API và Aurora PostgreSQL có post-quantum TLS cho PostgreSQL 18 trở lên.",
+      "why": "Backend Java trên AWS đã có sẵn workflow/saga bằng Step Functions có thể mở cho agent mà không viết lại; Gateway API và KMS post-quantum cũng ảnh hưởng thiết kế ingress và mã hoá.",
+      "interview_q": "Bạn muốn cho một AI agent kích hoạt quy trình hoàn tiền nhiều bước. Vì sao nên để agent gọi một workflow có sẵn thay vì tự gọi từng API, và bạn kiểm soát rủi ro thế nào?",
+      "related": ["ai-005", "ai-017", "aws-018"],
+      "tags": ["step-functions", "mcp", "eks"]
+    },
+    {
+      "title_vi": "Blueprint Alliance: kiến trúc tham chiếu mở để bảo mật AI agent",
+      "title": "The Ecosystem is the Answer: Docker, the Blueprint Alliance, and the Importance of Collaboration in the Agentic Era",
+      "url": "https://www.docker.com/blog/docker-blueprint-alliance-agent-baseline/",
+      "source": "Docker Blog",
+      "category": "devops",
+      "summary": "Docker cùng 11 công ty khác (gồm Okta, AWS, CrowdStrike, Google Cloud, Wiz…) lập Blueprint Alliance, công bố kiến trúc tham chiếu để bảo mật AI agent xoay quanh bốn câu hỏi: agent ở đâu, làm được gì, đang làm gì, và phản ứng thế nào. Các thành viên cam kết kiểm thử tương thích qua MCP, OCSF, SSF, CAEP. Docker nhấn mạnh vai trò kiểm soát môi trường thực thi của agent.",
+      "why": "Khi backend Java tích hợp agent/MCP, bạn phải trả lời được câu hỏi về danh tính, quyền hạn và audit của agent; đây là khung tham chiếu để thiết kế.",
+      "interview_q": "Bạn cho một AI agent quyền gọi API nội bộ. Bạn thiết kế danh tính, phân quyền, audit log và cơ chế thu hồi quyền như thế nào?",
+      "related": ["ai-017"],
+      "tags": ["agent-security", "docker", "mcp"]
+    },
+    {
+      "title_vi": "Docker Sandbox: nên đặt code của agent ở đâu (mount, worktree hay clone)?",
+      "title": "Where should your code live in a Docker Sandbox?",
+      "url": "https://www.docker.com/blog/docker-sandbox-code-checkout-workflows/",
+      "source": "Docker Blog",
+      "category": "devops",
+      "summary": "Bài so sánh ba cách tổ chức code cho agent trong Docker Sandbox. Shared mount cho phép theo dõi trực tiếp nhưng dùng chung working tree. Git worktree phù hợp chạy song song nhưng agent không chạy được lệnh Git cần metadata của host. Clone mode cô lập hoàn toàn và agent có đủ Git, nhưng kết quả phải đưa về qua fetch hoặc push.",
+      "why": "Dev Java ngày càng chạy coding agent trên repo thật; chọn sai chế độ dẫn tới agent ghi đè công việc đang làm hoặc dependency lệch giữa host và container.",
+      "interview_q": "Bạn cần chạy nhiều coding agent song song trên cùng một repo Spring Boot. Bạn cô lập working tree, dependency và quyền truy cập thế nào, và gộp kết quả ra sao?",
+      "related": ["devops-023"],
+      "tags": ["docker", "git", "agent"]
+    },
+    {
+      "title_vi": "Tự động hoá vòng đời AWS DRS agent: cài đặt, tự chữa và gỡ bỏ",
+      "title": "Automating the full AWS DRS agent lifecycle: Install, heal, and offboard",
+      "url": "https://aws.amazon.com/blogs/architecture/automating-the-full-aws-drs-agent-lifecycle-install-heal-and-offboard/",
+      "source": "AWS Architecture Blog",
+      "category": "cloud",
+      "summary": "Một doanh nghiệp bảo vệ hơn 300 EC2 bằng AWS DRS gặp agent bị dừng sau khi đổi mạng và server đã loại khỏi phạm vi vẫn replicate tốn phí. Giải pháp dùng Systems Manager State Manager và Automation cùng EventBridge, không cần Lambda, điều khiển bằng một DR tag. Healing theo bậc (restart rồi mới cài lại), offboarding có các chốt chặn an toàn và có thể thêm bước phê duyệt.",
+      "why": "Mẫu thiết kế reconciliation idempotent, event-driven kèm chốt an toàn trước thao tác phá huỷ áp dụng được cho nhiều hệ thống vận hành của backend.",
+      "interview_q": "Bạn thiết kế cơ chế tự phục hồi cho một agent chạy trên hàng trăm instance sao cho idempotent và không vô tình xoá nhầm tài nguyên?",
+      "related": ["aws-009"],
+      "tags": ["disaster-recovery", "eventbridge", "automation"]
+    },
+    {
+      "title_vi": "Ba quyết định kinh doanh quyết định thành bại của DR",
+      "title": "Three business decisions that define your DR success",
+      "url": "https://aws.amazon.com/blogs/architecture/three-business-decisions-that-define-your-dr-success/",
+      "source": "AWS Architecture Blog",
+      "category": "cloud",
+      "summary": "Phần 1 của loạt bài về DR: trước khi chọn pattern kiến trúc, hãy xác định ranh giới phục hồi theo chức năng nghiệp vụ, gắn RTO/RPO với hậu quả kinh doanh cụ thể, và tính cả chuỗi phụ thuộc. RTO thực tế bị quyết định bởi dependency chậm nhất, ví dụ app đặt 1 giờ nhưng phụ thuộc dịch vụ identity 4 giờ. Nên cam kết bằng văn bản với team sở hữu dependency dùng chung.",
+      "why": "Senior thường phải bảo vệ con số RTO/RPO trước business; bài chỉ ra các lỗi điển hình như quên dịch vụ auth dùng chung và phụ thuộc control plane một Region.",
+      "interview_q": "Team cam kết RTO 1 giờ cho dịch vụ của bạn nhưng nó phụ thuộc một dịch vụ auth dùng chung. Bạn đánh giá và đảm bảo cam kết đó như thế nào?",
+      "related": ["aws-009"],
+      "tags": ["disaster-recovery", "rto-rpo"]
+    }
+  ]
+}
