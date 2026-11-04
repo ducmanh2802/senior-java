@@ -11,31 +11,10 @@
   <link rel="stylesheet" href="css/base.css">
   <link rel="stylesheet" href="css/glossary.css">
   <link rel="stylesheet" href="css/related.css">
-  <link rel="stylesheet" href="css/views/dashboard.css">
-  <link rel="stylesheet" href="css/views/roadmap.css">
-  <link rel="stylesheet" href="css/views/bank.css">
-  <link rel="stylesheet" href="css/views/flash.css">
-  <link rel="stylesheet" href="css/views/quiz.css">
-  <link rel="stylesheet" href="css/views/exam.css">
-  <link rel="stylesheet" href="css/views/algo.css">
-  <link rel="stylesheet" href="css/views/mock.css">
-  <link rel="stylesheet" href="css/views/companies.css">
-  <link rel="stylesheet" href="css/views/labs.css">
-  <link rel="stylesheet" href="css/views/account.css">
-  <link rel="stylesheet" href="css/views/legal.css">
-  <link rel="stylesheet" href="css/views/interview.css">
-  <link rel="stylesheet" href="css/views/learn.css">
-  <link rel="stylesheet" href="css/views/path.css">
-  <link rel="stylesheet" href="css/views/speak.css">
-  <link rel="stylesheet" href="css/views/news.css">
-  <link rel="stylesheet" href="css/views/sd.css">
-  <link rel="stylesheet" href="css/views/projects.css">
-  <link rel="stylesheet" href="css/views/career.css">
-  <link rel="stylesheet" href="css/views/aws.css">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <link rel="manifest" href="manifest.json">
-  <meta name="theme-color" content="#d9620b">
+  <meta name="theme-color" content="#e8650c">
 </head>
 <body>
   <header class="topbar">
@@ -65,6 +44,7 @@
             <a href="#/algo" data-route="algo" data-i18n="nav.algo">🧠 Thuật toán</a>
             <a href="#/labs" data-route="labs" data-i18n="nav.labs">🔧 Debug lab</a>
             <a href="#/sd" data-route="sd" data-i18n="nav.sd">🏗️ Luyện System Design</a>
+            <a href="#/sdlc" data-route="sdlc" data-i18n="nav.sdlc">🔄 Mô phỏng SDLC</a>
             <a href="#/projects" data-route="projects" data-i18n="nav.projects">🛠️ Pet project</a>
             <a href="#/speak" data-route="speak" data-i18n="nav.speak">🗣️ Luyện nói tiếng Anh</a>
             <a href="#/interview" data-route="interview" data-i18n="nav.interview">🎙️ Phỏng vấn AI (giọng nói)</a>
@@ -101,7 +81,7 @@
   <!-- accounts: supabase-js (optional — the app works without it, e.g. offline) + public config -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3/dist/umd/supabase.js" integrity="sha384-BWcjm9OdFth9TbhCxZPdm+gAOUMAzQy9nmTs12ioXdCcbVnJaPMn+fMUoQCLt60R" crossorigin="anonymous"></script>
   <script src="js/config.js"></script>
-  <!-- core + views -->
+  <!-- core (views load per route: App.loadView, js/core/data-manifest.js views) -->
   <script src="js/core/data-manifest.js"></script>
   <script src="js/core/app.js"></script>
   <script src="js/i18n/manifest.js"></script>
@@ -111,26 +91,5 @@
   <script src="js/core/glossary.js"></script>
   <script src="js/core/news.js"></script>
   <script src="js/core/related.js"></script>
-  <script src="js/views/dashboard.js"></script>
-  <script src="js/views/roadmap.js"></script>
-  <script src="js/views/bank.js"></script>
-  <script src="js/views/flash.js"></script>
-  <script src="js/views/quiz.js"></script>
-  <script src="js/views/exam.js"></script>
-  <script src="js/views/algo.js"></script>
-  <script src="js/views/mock.js"></script>
-  <script src="js/views/companies.js"></script>
-  <script src="js/views/labs.js"></script>
-  <script src="js/views/account.js"></script>
-  <script src="js/views/legal.js"></script>
-  <script src="js/views/interview.js"></script>
-  <script src="js/views/learn.js"></script>
-  <script src="js/views/path.js"></script>
-  <script src="js/views/speak.js"></script>
-  <script src="js/views/news.js"></script>
-  <script src="js/views/sd.js"></script>
-  <script src="js/views/projects.js"></script>
-  <script src="js/views/career.js"></script>
-  <script src="js/views/aws.js"></script>
 </body>
 </html>

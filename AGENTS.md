@@ -336,3 +336,20 @@ refs: [
 - `await App.ai.coach.star({situation, theme?, lang?})` → `{title, themes[], situation, task, action, result, spoken, gaps[], follow_ups[]}` (ghi chú < 80 ký tự → 400).
 - `await App.ai.coach.cv({cv, target?})` → `{score 1-5, verdict, strengths[], issues[{where, problem, fix}], missing_keywords[], likely_questions[]}` (CV < 300 ký tự → 400). Mỗi lần gọi = 1 lượt hạn mức.
 - Dữ liệu người dùng lưu trong `App.store.data.stories` và `App.store.data.interviewLog`: **mảng object có `id` (chuỗi duy nhất) và `updatedAt` (ms)**; sửa xong gọi `App.store.save()`. Sync gộp theo id, bản `updatedAt` mới hơn thắng — luôn cập nhật `updatedAt` khi sửa, xoá thì đặt `deleted: true` (không xoá khỏi mảng, để thiết bị khác biết).
+
+## 16. Mô phỏng SDLC: `window.SDLC` (`js/data/sdlc.js`, view `#/sdlc`)
+
+Mỗi kịch bản đưa người học đi trọn một tính năng thật. **Bài mẫu: `sdlc-001`; đọc kỹ trước khi viết.**
+```js
+{ id: 'sdlc-002', title, level: 'mid|senior|lead', domain: 'Thương mại điện tử',
+  context: `markup ≥ 300 ký tự: công ty, team, quy trình, hệ thống liên quan`,
+  stages: [   // ĐÚNG 8 giai đoạn, ĐÚNG thứ tự: requirement, analysis, design, dev, review, test, deploy, bugfix
+    { key: 'requirement', title, role: 'ai làm gì ở bước này', story: `markup`,
+      artifacts: [{ name, lang: 'text|java|sql|yaml|json|bash', content }],   // tuỳ chọn; giống thật, tự nhất quán
+      task: `markup: việc người học phải làm`, answer: `markup ≥ 1200 ký tự, mở đầu **Tóm tắt:**, kết > Senior tip:`,
+      pitfalls: ['…'] },                                                       // tuỳ chọn
+  ],
+  interview: { story: `markup STAR có số liệu`, questions: [{ q, a /* ≥ 200 ký tự */ }] /* ≥ 4 */ },
+  tags: ['…'] }
+```
+Các giai đoạn phải nối nhau: số liệu, tên service, quyết định ở bước trước được dùng lại ở bước sau; lỗi ở `bugfix` phải bắt nguồn từ một quyết định/giả định ở các bước trước.

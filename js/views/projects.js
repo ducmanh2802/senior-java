@@ -13,6 +13,7 @@
       'projects.requirements': 'Yêu cầu',
       'projects.architecture': 'Kiến trúc',
       'projects.milestonesTitle': 'Các mốc thực hiện',
+      'projects.guide': '🧭 Hướng dẫn từng bước',
       'projects.completionCriteria': 'Tiêu chí hoàn thành',
       'projects.technicalChallenges': 'Thách thức kỹ thuật',
       'projects.challenge': 'Thách thức',
@@ -51,6 +52,7 @@
       'projects.requirements': 'Requirements',
       'projects.architecture': 'Architecture',
       'projects.milestonesTitle': 'Milestones',
+      'projects.guide': '🧭 Step-by-step guide',
       'projects.completionCriteria': 'Completion Criteria',
       'projects.technicalChallenges': 'Technical Challenges',
       'projects.challenge': 'Challenge',
@@ -136,7 +138,7 @@
       ${hasDesign ? `<section class="card md" id="pr-design"><h2>${App.t('projects.designHeading')}</h2>${App.md(p.design)}</section>` : ''}
       <section class="pr-milestones" id="pr-milestones"><h2>${App.t('projects.milestonesTitle')}</h2><div class="progress" aria-label="${App.t('projects.percent')} ${percent}"><i data-progress-bar style="width:${percent}%"></i></div>
       ${p.milestones.map((m, i) => `<article class="card pr-milestone"><label class="pr-check"><input type="checkbox" data-milestone="${i}"${checked[i] ? ' checked' : ''}><span><b>${i + 1}. ${esc(m.title)}</b></span></label>
-        <div class="md">${App.md(m.tasks)}</div><details><summary>${App.t('projects.completionCriteria')}</summary><div class="md">${App.md(m.done)}</div></details></article>`).join('')}</section>
+        <div class="md">${App.md(m.tasks)}</div>${m.guide ? `<details class="pr-guide"><summary>${App.t('projects.guide')}</summary><div class="md">${App.md(m.guide)}</div></details>` : ''}<details><summary>${App.t('projects.completionCriteria')}</summary><div class="md">${App.md(m.done)}</div></details></article>`).join('')}</section>
       <section class="pr-challenges" id="pr-challenges"><h2>${App.t('projects.technicalChallenges')}</h2>${p.challenges.map((c, i) => `<details class="card"><summary>${App.t('projects.challenge')} ${i + 1}</summary><div class="md">${App.md(c)}</div></details>`).join('')}</section>
       <section class="card pr-readme" id="pr-readme"><h2>${App.t('projects.readmeTemplate')}</h2><button type="button" class="btn sm" data-copy>${App.t('projects.copyReadme')}</button><span class="muted" data-copy-status aria-live="polite"></span><pre class="pr-readme-text">${esc(p.readme)}</pre></section>
       <section class="card md" id="pr-interview">${App.md(p.interview.story)}<h3>${App.t('projects.interviewQuestions')}</h3><ol>${p.interview.questions.map((q, i) => {

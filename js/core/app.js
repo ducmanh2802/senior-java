@@ -398,6 +398,37 @@
   }
   function hasData(groups) { return (groups || []).every(g => groupDone[g]); }
 
+  // ---------- lazy views: css/views/<v>.css + js/views/<v>.js on first visit ----------
+  // Must run after DOMContentLoaded (a view script needs App.i18n/App.ai…); before that only preloadView().
+  const VIEW_NAMES = MANIFEST.views || [];
+  const viewState = {};
+  function loadCss(href) {
+    return new Promise(resolve => {
+      const l = document.createElement('link');
+      l.rel = 'stylesheet'; l.href = href;
+      l.onload = () => resolve(true);
+      l.onerror = () => { console.error('Không tải được ' + href); resolve(false); };
+      document.head.appendChild(l);
+    });
+  }
+  function loadView(name) {
+    if (views[name] || VIEW_NAMES.indexOf(name) < 0) return Promise.resolve();
+    if (!viewState[name]) {
+      viewState[name] = Promise.all([loadCss('css/views/' + name + '.css'), loadScript('js/views/' + name + '.js')])
+        .then(oks => { if (!oks[1]) delete viewState[name]; });   // script failed → retry on next visit
+    }
+    return viewState[name];
+  }
+  // download (not run) the landing view while the rest of the shell is still parsing
+  function preloadView(name) {
+    if (VIEW_NAMES.indexOf(name) < 0) return;
+    [['script', 'js/views/' + name + '.js'], ['style', 'css/views/' + name + '.css']].forEach(([as, href]) => {
+      const l = document.createElement('link');
+      l.rel = 'preload'; l.as = as; l.href = href;
+      document.head.appendChild(l);
+    });
+  }
+
   let prefetchStarted = false;
   function prefetchAll() {
     if (prefetchStarted) return;
@@ -405,8 +436,10 @@
     const idle = window.requestIdleCallback ? fn => window.requestIdleCallback(fn, { timeout: 3000 }) : fn => setTimeout(fn, 1200);
     const queue = (MANIFEST.prefetch || Object.keys(MANIFEST.groups)).filter(g => MANIFEST.groups[g]);
     Object.keys(MANIFEST.groups).forEach(g => { if (queue.indexOf(g) < 0) queue.push(g); });
-    // one group per idle slot, so a navigation in between is not stuck behind the whole bank
-    const next = () => { const g = queue.shift(); if (g) idle(() => loadGroup(g).then(next)); };
+    // likely next views first (small), then data; one item per idle slot, so a navigation in between is not
+    // stuck behind the whole bank
+    const items = (MANIFEST.prefetchViews || []).map(v => () => loadView(v)).concat(queue.map(g => () => loadGroup(g)));
+    const next = () => { const it = items.shift(); if (it) idle(() => it().then(next)); };
     next();
   }
 
@@ -425,7 +458,7 @@
 
   function route() {
     const parts = routeParts();
-    const name = views[parts[0]] ? parts[0] : 'dashboard';
+    const name = views[parts[0]] || VIEW_NAMES.indexOf(parts[0]) >= 0 ? parts[0] : 'dashboard';
     const seq = ++routeSeq;
     if (cleanup) { try { cleanup(); } catch (e) { console.error(e); } cleanup = null; }
     document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('active', a.dataset.route === name));
@@ -433,17 +466,20 @@
     const root = document.getElementById('main');
     root.innerHTML = '';
     root.className = 'container view-' + name;
-    const view = views[name];
-    if (!view) { root.innerHTML = '<p class="muted">' + App.t('app.noView') + '</p>'; return; }
     const groups = MANIFEST.needsFor(name, parts[1]);
-    if (hasData(groups)) { renderView(view, root, parts); prefetchAll(); return; }
-    root.innerHTML = '<div class="route-loading muted" role="status" aria-live="polite">' +
-      (App.lang === 'en' ? 'Loading…' : 'Đang tải dữ liệu…') + '</div>';
-    need(groups).then(() => {
-      if (seq !== routeSeq) return;          // the user navigated away meanwhile
-      root.innerHTML = '';
+    const show = () => {
+      const view = views[name];
+      if (!view) { root.innerHTML = '<p class="muted">' + App.t('app.noView') + '</p>'; return; }
       renderView(view, root, parts);
       prefetchAll();
+    };
+    if (views[name] && hasData(groups)) { show(); return; }
+    root.innerHTML = '<div class="route-loading muted" role="status" aria-live="polite">' +
+      (App.lang === 'en' ? 'Loading…' : 'Đang tải dữ liệu…') + '</div>';
+    Promise.all([loadView(name), need(groups)]).then(() => {
+      if (seq !== routeSeq) return;          // the user navigated away meanwhile
+      root.innerHTML = '';
+      show();
     });
   }
 
@@ -512,14 +548,15 @@
   window.App = {
     LEVELS, STATUS, store, esc, md, highlight, shuffle, onKey, fmtDate,
     questions, quiz, algos, lessons, topics, dueItems, lite, lightIndex, dayKey, startOfDay, DAY, topic, filterQuestions, stats,
-    registerView, navigate, route, need, hasData,
+    registerView, navigate, route, need, hasData, loadView,
   };
 
-  // start downloading the landing route's data now, in parallel with the remaining core/view scripts
+  // start downloading the landing route's data + view now, in parallel with the remaining core scripts
   (function () {
     const p = routeParts();
-    const name = MANIFEST.routes[p[0]] ? p[0] : 'dashboard';
+    const name = VIEW_NAMES.indexOf(p[0]) >= 0 ? p[0] : 'dashboard';
     need(MANIFEST.needsFor(name, p[1]));
+    preloadView(name);
   })();
 
   window.addEventListener('hashchange', route);
