@@ -4772,8 +4772,142 @@ javac --release 21 -d out $(find src -name "*.java")
 > Senior tip: đặt một "golden base image" cho Java do platform team sở hữu, kèm dashboard đếm số service theo phiên bản JDK; chỉ một biểu đồ đó đã đủ để thuyết phục quản lý dành thời gian nâng cấp. Khi lên LTS mới, lợi ích hay thấy nhất không phải cú pháp mà là GC và hiệu năng tốt hơn với cùng cấu hình máy.`,
   follow: ['Vì sao class biên dịch với --enable-preview không chạy được trên JDK khác?', 'javac --release khác -source/-target thế nào?', 'Bạn thuyết phục quản lý dành thời gian nâng LTS thế nào?'],
   tags: ['LTS', 'JDK', 'preview feature', 'upgrade', 'governance']
+},
+{
+  id: 'collections-027',
+  topic: 'collections',
+  level: 'senior',
+  q: 'Key mutable trong HashMap/HashSet làm "mất" phần tử: cơ chế và cách phòng tránh?',
+  a: `**Tóm tắt:** HashMap định vị entry theo {{hashCode}} tại thời điểm {{put()}}. Nếu một field dùng trong {{hashCode}}/{{equals}} của key bị thay đổi sau khi {{put()}}, {{get()}}/{{remove()}} sẽ tính hashCode mới và tìm sai bucket, nên không tìm thấy entry cũ dù entry vẫn còn trong map.
+
+### Cơ chế
+- {{put(key, value)}} tính {{hashCode()}} của key tại thời điểm đó để chọn bucket, lưu entry vào bucket đó.
+- Nếu key là mutable và bạn sửa field tham gia {{equals()}}/{{hashCode()}} sau {{put()}}, entry vẫn nằm ở bucket cũ.
+- {{get(key)}} và {{remove(key)}} tính {{hashCode()}} mới (theo trạng thái hiện tại của key) và tìm ở bucket khác → không khớp, trả về {{null}}/không xóa được entry cũ.
+- {{HashSet}} dùng {{HashMap}} nội bộ nên cùng vấn đề.
+
+### Cách phòng tránh
+- **Dùng immutable làm key**: tốt nhất ({{String}}, {{Integer}}, {{Long}}, {{record}} có các component immutable).
+- **Không sửa field tham gia {{equals}}/{{hashCode}} sau khi đưa key vào {{HashMap}}/{{HashSet}}**.
+- **Với JPA entity làm key**: cần cực kỳ cẩn thận. Nếu {{hashCode}} dùng business key mutable hoặc dùng id tự sinh gán sau {{put()}}, rất dễ gây "mất" entry. Thường không nên dùng entity làm map key.
+- **Nếu bắt buộc thay đổi**: phải {{remove()}} key **trước khi** sửa các field ảnh hưởng {{hashCode}}/{{equals}} (dùng cùng đối tượng và trạng thái lúc còn hashCode cũ), sau đó sửa, rồi {{put()}} lại. Nếu đã sửa rồi, bạn không thể tìm/xóa bằng {{remove(key)}} với đối tượng đã bị mutate; đôi khi chỉ có cách duyệt bucket (không thực tế) hoặc tránh hoàn toàn.
+
+> Senior tip: Chỉ dùng immutable object làm key trong {{HashMap}}/{{HashSet}}. Đừng bao giờ sửa field tham gia {{hashCode}}/{{equals}} sau khi put.`,
+  follow: ['HashSet ảnh hưởng thế nào?', 'Tại sao entry vẫn tồn tại nhưng không tìm thấy?', 'JPA entity làm key có cạm bẫy gì?'],
+  tags: ['HashMap', 'HashSet', 'mutable key']
+},
+{
+  id: 'collections-028',
+  topic: 'collections',
+  level: 'lead',
+  q: 'Chọn cấu trúc cho cache in-memory 1 triệu entry: HashMap vs ConcurrentHashMap vs LinkedHashMap(LRU) vs Caffeine. Trade-off và footprint?',
+  a: `**Tóm tắt:** Khi thiết kế cache in-memory cần cân nhắc thread-safety (an toàn đồng bộ), chính sách loại bỏ (eviction) như LRU/W-TinyLFU, giới hạn dung lượng, TTL/refresh, và chi phí bộ nhớ (object overhead). Với cache production hiện nay, thư viện {{Caffeine}} thường là lựa chọn thực tế nhất vì đã xử lý nhiều cạm bẫy (eviction hiệu quả, tránh cache stampede, thống kê). Tuy nhiên không phải lúc nào cũng cần dùng thư viện - cần chọn đúng theo yêu cầu.
+
+### So sánh
+| Cấu trúc | Thread-safe | Eviction tự động | Ghi chú |
+|---|---|---|---|
+| {{HashMap}} | Không | Không | Chỉ dùng single-thread. Không phù hợp đa luồng. |
+| {{ConcurrentHashMap}} | Có (concurrent) | Không tự động | Đọc/ghi đồng thời tốt, khóa mịn. Chỉ là map, không có chính sách loại bỏ theo dung lượng/thời gian. |
+| {{LinkedHashMap}} ({{accessOrder}} = {{true}}) + {{removeEldestEntry()}} | Không | Có thể làm LRU đơn giản (theo thứ tự truy cập) | Dễ cài, nhưng toàn bộ map không thread-safe; eviction diễn ra đồng bộ khi put và dễ gây hiệu ứng phụ; không có TTL/refresh/statistics. |
+| {{Caffeine}} | Có | Có (LRU, W-TinyLFU, TTL, tối đa kích thước, v.v.) | Thư viện ngoài JDK. Async eviction, xử lý tốt cache stampede, theo dõi thống kê, hiệu quả bộ nhớ cao hơn nhiều so với tự triển khai đơn giản. |
+
+### Khi nào chọn
+- **Chỉ cần map đồng thời, không giới hạn dung lượng**: {{ConcurrentHashMap}}.
+- **Cần LRU đơn giản, single-thread hoặc tự đồng bộ hóa**: {{LinkedHashMap}} với {{removeEldestEntry()}} (chỉ phù hợp trường hợp rất đơn giản).
+- **Cần cache production đa luồng, giới hạn dung lượng, eviction hiệu quả**: {{Caffeine}} (khuyến nghị).
+- **Rất đơn giản, hoàn toàn single-thread**: {{HashMap}}.
+
+### Lưu ý về footprint (kích thước bộ nhớ)
+- Mỗi entry tốn overhead: key, value, tham chiếu node/hash/next. Với 1 triệu entry, overhead có thể đáng kể (hàng chục MB) tùy cấu trúc.
+- {{ConcurrentHashMap}} có overhead node/phân đoạn (trong các phiên bản JDK cũ) nhưng vẫn là map thuần túy.
+- {{Caffeine}} tối ưu kích thước entry hơn, và eviction giúp giữ footprint dưới ngưỡng thay vì để map phình vô hạn.
+- Luôn **giới hạn dung lượng** cache để tránh OutOfMemoryError (OOM). Đừng để cache không giới hạn trong production.
+
+> Senior tip: Đừng tự viết cache phức tạp từ {{LinkedHashMap}} cho môi trường production đa luồng. Nếu cần eviction/LRU/TTL/statistics, {{Caffeine}} đã được chứng minh là giải pháp hiệu quả và an toàn hơn rất nhiều.`,
+  follow: ['Tại sao Caffeine dùng W-TinyLFU thay vì chỉ LRU?', 'Cache stampede là gì và cách tránh?', 'Ước lượng footprint bộ nhớ cache thế nào?'],
+  tags: ['cache', 'LRU', 'Caffeine', 'ConcurrentHashMap']
+},
+{
+  id: 'modern-025',
+  topic: 'modern',
+  level: 'lead',
+  q: 'Mô hình hoá domain bằng sealed interface + record + pattern matching switch (Java 21): tại sao tốt hơn enum/visitor?',
+  a: `**Tóm tắt:** Với Algebraic Data Type (ADT - kiểu dữ liệu đại số), {{sealed interface}} kiểm soát chặt chẽ tập hợp các subtype được phép kế thừa. Kết hợp {{record}} để biểu diễn dữ liệu bất biến và pattern matching switch (Java 17+ với cải tiến Java 21) cho phép **exhaustive switch** - trình biên dịch sẽ cảnh báo/nêu lỗi nếu bạn quên xử lý một subtype mới khi switch không có {{default}}. Điều này giúp phát hiện lỗi tại compile-time thay vì runtime.
+
+### Khi nào dùng
+- Domain có **tập loại cố định nhưng mỗi loại mang dữ liệu khác nhau** (ví dụ: PaymentMethod có CreditCard(cvv...), Wallet(token...), BankTransfer(iban...))
+- Cần thêm **hành vi** dễ dàng (thêm case trong switch) hoặc thêm **kiểu mới** (sealed buộc cập nhật)
+- Muốn bất biến, tránh state thay đổi
+
+### So sánh với enum
+- {{enum}} chỉ chứa hằng số - không thể gắn dữ liệu khác nhau cho từng trường hợp một cách linh hoạt. 
+- {{sealed interface}} + {{record}} cho phép mỗi subtype có trường dữ liệu riêng, mô hình hóa chính xác cấu trúc domain.
+
+### So sánh với Visitor pattern
+- **Thêm operation (method mới áp dụng cho tất cả subtype)**: pattern matching switch dễ hơn, ít boilerplate. Chỉ cần sửa switch.
+- **Thêm type mới (subtype mới)**: {{sealed interface}} + exhaustive switch buộc compiler yêu cầu bạn cập nhật **mọi** switch xử lý sealed type. Với Visitor, bạn buộc phải cập nhật interface Visitor và tất cả implementor - cũng an toàn nhưng nhiều boilerplate hơn.
+- Quy tắc: nếu tập type **tương đối ổn định**, thêm type hiếm hơn thêm operation → switch thường thuận tiện. Nếu tập type hay thay đổi → cần cân nhắc kỹ.
+
+> Senior tip: Compiler bắt buộc cập nhật exhaustive switch khi thêm type mới vào sealed hierarchy - đây chính là "trí thông minh" giúp tránh quên xử lý trường hợp (forgotten case) trong production.`,
+  follow: ['Khi nào dùng Visitor thay vì sealed+switch?', 'Exhaustiveness trong pattern matching switch là gì?', 'Tại sao record phù hợp để mô hình hóa ADT?'],
+  tags: ['sealed', 'record', 'pattern matching', 'ADT']
+},
+{
+  id: 'modern-026',
+  topic: 'modern',
+  level: 'lead',
+  q: 'Record làm JPA entity / DTO / Map key: được gì, mất gì? Best practice?',
+  a: `**Tóm tắt:** {{record}} là immutable (các component final, không setter), tự sinh {{equals()}}/{{hashCode()}}/{{toString()}} dựa trên components, không có no-arg constructor mặc định. Vì vậy nó **rất phù hợp** làm DTO, projection, value object và làm key trong {{Map}}/{{Set}}. Ngược lại, {{record}} **không phù hợp** làm JPA {{@Entity}} trong đa số trường hợp do yêu cầu của JPA/Hibernate.
+
+### Phân tích theo trường hợp sử dụng
+| Trường hợp | Khuyến nghị | Lý do |
+|---|---|---|
+| DTO/Request/Response | Rất tốt | Bất biến, ngắn gọn, an toàn khi truyền qua tầng. |
+| JPA Projection (constructor expression, interface-based ít gặp hơn) | Thường tốt | Hibernate/JPA có thể map constructor của record cho projection query. |
+| Value Object (domain) | Rất tốt | Phù hợp với immmutability, {{equals}} theo giá trị. |
+| Map key | Rất tốt | {{equals}}/{{hashCode}} bất biến → an toàn, không lo "mất" entry như key mutable. |
+| Embeddable ({{@Embeddable}}) | Cẩn thận/Tùy provider | Một số provider hỗ trợ, nhưng không phổ biến và có giới hạn. Cần kiểm tra kỹ. |
+| JPA Entity ({{@Entity}}) | Không khuyến khích | Xem chi tiết bên dưới. |
+
+### Tại sao không phù hợp làm JPA Entity
+- **Cần no-arg constructor**: JPA/Hibernate cần constructor không tham số để tạo instance khi hydrate entity. {{record}} không có no-arg constructor mặc định.
+- **Bất biến vs dirty tracking**: Entity cần thay đổi trạng thái (update field) để Hibernate theo dõi thay đổi (dirty checking) và flush. {{record}} immutable không phù hợp mô hình này.
+- **Proxy cho lazy loading**: Hibernate thường tạo proxy subclass để lazy load {{@ManyToOne}}/{{@OneToMany}}. {{record}} là {{final}} và không có constructor phù hợp để proxy hóa dễ dàng.
+- **Lifecycle phức tạp**: Entity có lifecycle (managed/detached/removed) - immutable đi ngược lại với thiết kế đó.
+
+### Best practice
+- **Entity = stateful, có identity, lifecycle** (có thể mutable). Dùng class bình thường.
+- **DTO/Record = data transfer, bất biến, không có identity nghiệp vụ phức tạp**.
+- **Làm Map key**: chỉ dùng khi các component của record **toàn bộ immutable**.
+
+> Senior tip: "Entity là về vòng đời và identity; DTO/ValueObject là về dữ liệu bất biến". Đừng ép record vào vai trò entity chỉ vì ngắn gọn - bạn sẽ đánh đổi khả năng lazy loading, proxy và dirty tracking.`,
+  follow: ['Tại sao JPA cần no-arg constructor?', 'Record dùng làm projection được không?', 'Tại sao record tốt làm Map key?'],
+  tags: ['record', 'JPA', 'DTO', 'projection']
+},
+{
+  id: 'modern-027',
+  topic: 'modern',
+  level: 'lead',
+  q: 'parallel stream trên production: khi nào chậm hơn, ForkJoinPool chung, side effect?',
+  a: `**Tóm tắt:** {{Stream.parallel()}} sử dụng {{ForkJoinPool.commonPool()}} (pool chung của toàn JVM). Việc dùng pool chung có nghĩa là tác vụ song song của bạn sẽ cạnh tranh thread với các tác vụ khác. parallel stream chỉ có lợi thực tế khi **CPU-bound**, dữ liệu đủ lớn, không blocking, không có side effect, và không cần thứ tự quá ngặt. Trong nhiều trường hợp I/O-bound hoặc nhỏ, nó có thể **chậm hơn** stream tuần tự.
+
+### Khi nào có thể chậm hơn
+- **Dữ liệu nhỏ**: overhead chia task, split, merge lớn hơn thời gian tính toán.
+- **I/O-bound (blocking)**: gọi blocking I/O (DB, HTTP, file) trong parallel stream sẽ block các thread trong {{commonPool}}. Vì pool chung có giới hạn, các tác vụ quan trọng khác của ứng dụng cũng bị ảnh hưởng.
+- **Ordered stream**: các operation cần giữ thứ tự tạo thêm overhead.
+- **Tác vụ không phân mảnh tốt**: một số source khó split hiệu quả.
+
+### Lưu ý quan trọng
+- **ForkJoinPool chung**: toàn bộ ứng dụng dùng chung. Không nên chiếm pool chung cho blocking call dài.
+- **Side effect**: tránh sửa biến bên ngoài (mutable shared state). parallel stream không đảm bảo thứ tự và dễ gây race condition. Luôn ưu tiên **stateless, non-interfering, side-effect-free**.
+
+### Khuyến nghị
+- **Chỉ dùng cho CPU-bound** (tính toán thuần túy, không chờ I/O).
+- **Đo trước khi dùng** (benchmark với dữ liệu thực tế).
+- **Nếu là blocking I/O**: dùng {{CompletableFuture}} với thread pool riêng ({{ExecutorService}} tùy chỉnh), hoặc reactive thay vì parallel stream.
+
+> Senior tip: "Đừng dùng parallel stream cho I/O". Blocking trong pool chung là một trong những lỗi phổ biến gây nghẽn toàn hệ thống.`,
+  follow: ['ForkJoinPool.commonPool có giới hạn như thế nào?', 'Tại sao blocking I/O nguy hiểm khi dùng parallel stream?', 'Khi nào dùng CompletableFuture thay thế parallel stream?'],
+  tags: ['parallel stream', 'ForkJoinPool', 'completablefuture']
 }
 );
-
-
-

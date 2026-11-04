@@ -1,7 +1,7 @@
 # T579 — 8 câu core/collections/modern Java mức thiết kế
 
-Status: TODO
-Agent: qoder
+Status: DONE
+Agent: kilo
 Owns: `js/data/q-java.js`
 
 Thêm 8 câu (khoảng 3 core, 2 collections, 3 modern), level senior/lead, hỏi kiểu "bạn thiết kế/xử lý thế nào", không hỏi định nghĩa. Gợi ý góc (chọn cái chưa có):
@@ -27,3 +27,6 @@ Thêm 8 câu (khoảng 3 core, 2 collections, 3 modern), level senior/lead, hỏ
 `node scripts/build-light-index.js` rồi `node scripts/validate.js` → OK. KHÔNG commit. Ghi Status: DONE + danh sách id mới vào Notes.
 
 ## Notes
+
+- Added 8 questions: core-012, core-013, core-014, collections-027, collections-028, modern-025, modern-026, modern-027
+Reviewed-by: kilo (T579R)
