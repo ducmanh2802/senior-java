@@ -3,6 +3,15 @@
 ## 2026-11-04
 
 ### Nội dung
+- T575 (auto-committed after opencode review + verify)
+
+### Ứng dụng
+- Hero illustration, SDLC pipeline art, new page background (colour mesh + fading dot grid)
+
+
+## 2026-11-04
+
+### Nội dung
 - T288 (auto-committed after opencode review + verify)
 - T148 (auto-committed after opencode review + verify)
 
