@@ -1657,6 +1657,726 @@ RestTemplate recoRestTemplate() {
     'Cấu hình probe đúng: management port riêng, liveness không phụ thuộc downstream, startupProbe, timeout/threshold hợp lý',
   ],
   tags: ['timeout', 'cascading-failure', 'liveness-probe', 'kubernetes', 'bulkhead', 'resttemplate'],
+},
+{
+  id: 'lab-incident-014',
+  category: 'incident',
+  title: 'Cuối tháng tăng thread Tomcat lên 400, doc-service bị OOMKilled mỗi 45 phút dù heap mới dùng 690 MB',
+  level: 'senior',
+  scenario: `**Bối cảnh.** **doc-service** (Spring Boot 3.3, Spring MVC trên Tomcat, JDK 21.0.5, G1) sinh hoá đơn điện tử dạng PDF rồi lưu xuống EFS mount ở {{/mnt/efs/invoices}}. Mỗi request {{POST /v1/invoices/:id/pdf}} render PDF vào một {{byte[]}} (trung bình 1.12 MB, p99 3.8 MB) rồi ghi xuống file, mất khoảng 1 giây. Pod: request 1Gi, **limit 2Gi**, 2 vCPU. {{JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=80 -XX:+UseG1GC -XX:NativeMemoryTracking=summary}}; không đặt {{-Xmx}}, {{-Xss}}, {{-XX:MaxDirectMemorySize}}.
+
+**Thay đổi gần đây.** Ngày 28/10/2026, để chuẩn bị đợt xuất hoá đơn cuối tháng, PR #812 tăng {{server.tomcat.threads.max}} từ **200 lên 400**. Load test chỉ chạy với 150 request/s nên không phát hiện gì.
+
+**Triệu chứng (30/10/2026).** Từ 18:00 traffic tăng từ khoảng 200 lên 370 request/s. Pod **doc-service-7b9c6d5f48-qm2zt** bị restart 4 lần (18:41, 19:12, 19:58, 20:47), lần nào cũng exit code 137, không có {{OutOfMemoryError}} trong log. Dashboard heap chỉ thấy heap used khoảng 690 MB trên tối đa 1.6 GB. Tuần trước, với 200 thread và khoảng 205 request/s, pod chưa restart lần nào.
+
+**Dữ liệu thu thập:** {{kubectl describe pod}} và log kernel, cờ JVM và thay đổi cấu hình, metric Prometheus từ lúc container khởi động 19:58:12 đến khi bị kill, {{jcmd 1 VM.native_memory summary}} chụp lúc 20:40.`,
+  artifacts: [
+    {
+      name: 'kubectl-describe-and-dmesg.txt',
+      lang: 'text',
+      content: `$ kubectl -n billing describe pod doc-service-7b9c6d5f48-qm2zt      (20:49:40)
+Name:             doc-service-7b9c6d5f48-qm2zt
+Namespace:        billing
+Node:             ip-10-30-12-84.ap-southeast-1.compute.internal/10.30.12.84
+Start Time:       Fri, 30 Oct 2026 16:57:40 +0700
+Containers:
+  app:
+    Image:          registry.example.vn/billing/doc-service:2.14.1
+    State:          Running
+      Started:      Fri, 30 Oct 2026 20:47:38 +0700
+    Last State:     Terminated
+      Reason:       OOMKilled
+      Exit Code:    137
+      Started:      Fri, 30 Oct 2026 19:58:12 +0700
+      Finished:     Fri, 30 Oct 2026 20:47:36 +0700
+    Ready:          True
+    Restart Count:  4
+    Limits:
+      cpu:     2
+      memory:  2Gi
+    Requests:
+      cpu:      1
+      memory:   1Gi
+    Environment:
+      JAVA_TOOL_OPTIONS:       -XX:MaxRAMPercentage=80 -XX:+UseG1GC -XX:NativeMemoryTracking=summary
+      SPRING_PROFILES_ACTIVE:  prod
+Events:
+  Type    Reason   Age                 From     Message
+  ----    ------   ----                ----     -------
+  Normal  Pulled   2m (x5 over 3h52m)  kubelet  Container image "registry.example.vn/billing/doc-service:2.14.1" already present on machine
+  Normal  Created  2m (x5 over 3h52m)  kubelet  Created container app
+  Normal  Started  2m (x5 over 3h52m)  kubelet  Started container app
+
+# dmesg -T trên node ip-10-30-12-84
+[Fri Oct 30 20:47:36 2026] java invoked oom-killer: gfp_mask=0xcc0(GFP_KERNEL), order=0, oom_score_adj=968
+[Fri Oct 30 20:47:36 2026] memory: usage 2097152kB, limit 2097152kB, failcnt 2291
+[Fri Oct 30 20:47:36 2026] Memory cgroup out of memory: Killed process 23817 (java) total-vm:6012448kB, anon-rss:2068840kB, file-rss:21960kB, shmem-rss:0kB, UID:1001 pgtables:5384kB oom_score_adj:968`
+    },
+    {
+      name: 'jvm-flags-config-code.txt',
+      lang: 'text',
+      content: `$ kubectl -n billing exec doc-service-7b9c6d5f48-qm2zt -- jcmd 1 VM.flags      (20:40, container cũ)
+1:
+-XX:CICompilerCount=2 -XX:ConcGCThreads=1 -XX:G1ConcRefinementThreads=2 -XX:G1HeapRegionSize=1048576 -XX:InitialHeapSize=33554432 -XX:MarkStackSize=4194304 -XX:MaxHeapSize=1717567488 -XX:MaxNewSize=1030750208 -XX:MaxRAMPercentage=80.000000 -XX:MinHeapDeltaBytes=1048576 -XX:MinHeapSize=8388608 -XX:NativeMemoryTracking=summary -XX:NonNMethodCodeHeapSize=5832780 -XX:NonProfiledCodeHeapSize=122912730 -XX:ProfiledCodeHeapSize=122912730 -XX:ReservedCodeCacheSize=251658240 -XX:+SegmentedCodeCache -XX:SoftMaxHeapSize=1717567488 -XX:+UseCompressedOops -XX:+UseFastUnorderedTimeStamps -XX:+UseG1GC
+
+$ kubectl -n billing exec doc-service-7b9c6d5f48-qm2zt -- jcmd 1 VM.system_properties | grep -c jdk.nio
+0
+
+# PR #812 (merge 28/10/2026): "Tăng thread cho đợt xuất hoá đơn cuối tháng" - application-prod.yml
+ server:
+   tomcat:
+     threads:
+-      max: 200
++      max: 400
+       min-spare: 20
+
+# Grafana tuần trước (threads.max = 200), cao điểm 23/10 20:30
+rps=205  tomcat_threads_current=200  direct_used=236 MB  working_set=1.49 GiB  restarts=0
+
+// ===== InvoiceStorage.java (rút gọn), gọi trong mỗi request POST /v1/invoices/{id}/pdf =====
+public void store(String invoiceId, byte[] pdf) throws IOException {     // pdf: trung bình 1.12 MB, p99 3.8 MB
+    Path target = baseDir.resolve(invoiceId + ".pdf");                   // baseDir = /mnt/efs/invoices
+    try (FileChannel ch = FileChannel.open(target, CREATE, WRITE, TRUNCATE_EXISTING)) {
+        ch.write(ByteBuffer.wrap(pdf));                                   // heap ByteBuffer, ghi cả file một lần
+    }
+}`
+    },
+    {
+      name: 'prometheus-1958-2047.txt',
+      lang: 'text',
+      content: `# pod doc-service-7b9c6d5f48-qm2zt, container khởi động 19:58:12
+# rps                = sum(rate(http_server_requests_seconds_count[1m]))
+# tc_busy / tc_cur   = tomcat_threads_busy_threads / tomcat_threads_current_threads   (tomcat_threads_config_max_threads = 400)
+# threads            = jvm_threads_live_threads
+# heap_u / heap_c    = jvm_memory_used_bytes / jvm_memory_committed_bytes {area="heap"}
+# direct_u / direct_n = jvm_buffer_memory_used_bytes / jvm_buffer_count_buffers {id="direct"}
+# ws                 = container_memory_working_set_bytes{container="app"}
+
+time      rps  tc_busy  tc_cur  threads  heap_u   heap_c   direct_u  direct_n  ws
+20:00     352       98     104      141  380 MB   512 MB    128 MB       121   0.97 GiB
+20:10     364      214     222      259  520 MB   736 MB    262 MB       245   1.35 GiB
+20:20     371      297     304      341  610 MB   864 MB    371 MB       328   1.59 GiB
+20:30     368      371     375      412  655 MB   960 MB    455 MB       401   1.77 GiB
+20:40     375      400     400      437  690 MB  1024 MB    489 MB       426   1.88 GiB
+20:45     381      400     400      437  742 MB  1088 MB    512 MB       426   1.96 GiB
+20:47:36  (container bị OOMKilled, series mất)
+
+# jvm_memory_max_bytes{area="heap"} = 1717567488  (1638 MiB)
+# http_server_requests_seconds{uri="/v1/invoices/{id}/pdf"}: p50 0.98 s, p99 2.4 s (không đổi suốt khung giờ)
+# invoice_pdf_size_bytes: avg 1.12 MB, p99 3.8 MB`
+    },
+    {
+      name: 'nmt-summary-2040.txt',
+      lang: 'text',
+      content: `$ kubectl -n billing exec doc-service-7b9c6d5f48-qm2zt -- jcmd 1 VM.native_memory summary scale=KB
+1:
+
+Native Memory Tracking:
+
+(Omitting categories weighting less than 1KB)
+
+Total: reserved=4273974KB, committed=1968828KB
+       malloc: 549898KB #1305420
+       mmap:   reserved=3714720KB, committed=1409574KB
+
+-                 Java Heap (reserved=1677312KB, committed=1048576KB)
+                            (mmap: reserved=1677312KB, committed=1048576KB)
+
+-                     Class (reserved=2860KB, committed=2860KB)
+                            (classes #19884)
+                            (  instance classes #18731, array classes #1153)
+                            (malloc=2860KB #62114)
+
+-                    Thread (reserved=449898KB, committed=107292KB)
+                            (thread #437)
+                            (stack: reserved=447488KB, committed=104882KB)
+                            (malloc=1498KB #2630)
+                            (arena=912KB #870)
+
+-                      Code (reserved=254680KB, committed=61204KB)
+                            (malloc=4160KB #13210)
+                            (mmap: reserved=250520KB, committed=57044KB)
+
+-                        GC (reserved=150112KB, committed=74088KB)
+                            (malloc=6744KB #14560)
+                            (mmap: reserved=143368KB, committed=67344KB)
+
+-                  Compiler (reserved=1302KB, committed=1302KB)
+                            (malloc=1170KB #1820)
+                            (arena=132KB #5)
+
+-                  Internal (reserved=2614KB, committed=2614KB)
+                            (malloc=2614KB #44380)
+
+-                     Other (reserved=501760KB, committed=501760KB)
+                            (malloc=501760KB #451)
+
+-                    Symbol (reserved=28160KB, committed=28160KB)
+                            (malloc=25904KB #309112)
+                            (arena=2256KB #1)
+
+-    Native Memory Tracking (reserved=6544KB, committed=6544KB)
+                            (malloc=488KB #6904)
+                            (tracking overhead=6056KB)
+
+-        Shared class space (reserved=16384KB, committed=12944KB)
+                            (mmap: reserved=16384KB, committed=12944KB)
+
+-               Arena Chunk (reserved=380KB, committed=380KB)
+                            (malloc=380KB)
+
+-                    Module (reserved=1104KB, committed=1104KB)
+                            (malloc=1104KB #5520)
+
+-           Synchronization (reserved=1216KB, committed=1216KB)
+                            (malloc=1216KB #12480)
+
+-                 Metaspace (reserved=1179648KB, committed=118784KB)
+                            (mmap: reserved=1179648KB, committed=118784KB)`
+    }
+  ],
+  questions: [
+    'Vì sao container bị OOMKilled khi heap used chỉ khoảng 690 MB và JVM không ném OutOfMemoryError? Lập "ngân sách bộ nhớ" của process từ NMT lúc 20:40.',
+    'Mục nào trong NMT tăng mạnh, nó là gì và vì sao nó tăng theo số thread Tomcat chứ không tăng đều theo thời gian như một leak? Dẫn chứng bằng số liệu từ các artifact.',
+    'Đề xuất cách sửa ngắn hạn (trong tối nay) và dài hạn, cấu hình JVM/container hợp lý, và cách phòng ngừa để lần sau lỗi lộ ra trước khi lên production.'
+  ],
+  hints: [
+    'Cộng các mục committed trong NMT rồi so với limit 2Gi. Với MaxRAMPercentage=80, heap được phép lớn tới bao nhiêu (xem MaxHeapSize)? Khi đó còn lại bao nhiêu cho phần ngoài heap?',
+    'So NMT Other với direct_used. Sau đó so direct_n với tc_cur ở từng thời điểm, và lấy direct_u chia direct_n để ra kích thước trung bình một buffer. Con số đó giống cái gì trong đề bài?',
+    'FileChannel.write nhận một heap ByteBuffer. Syscall write() không thể đọc trực tiếp từ heap (GC có thể di chuyển mảng), nên JDK phải copy sang một direct buffer tạm. Buffer tạm đó được giữ lại ở đâu sau khi ghi xong, và giữ trong bao lâu?'
+  ],
+  answer: `**Tóm tắt:** Không có leak. Pod bị kernel kill vì **tổng bộ nhớ process** (heap committed cộng native) vượt 2Gi. Hai yếu tố cộng dồn: (1) {{MaxRAMPercentage=80}} cho heap tới 1638 MiB, chỉ chừa khoảng 410 MiB cho phần ngoài heap; (2) mỗi thread Tomcat giữ một **direct buffer tạm cỡ một file PDF** do {{FileChannel.write(ByteBuffer.wrap(pdf))}}, nên khi PR #812 tăng thread từ 200 lên 400 và traffic lên 370 request/s, direct memory tăng gấp đôi lên khoảng 490–512 MB. Cộng thêm stack của 437 thread, phần ngoài heap lên khoảng 900 MiB, gấp đôi phần còn trống.
+
+### Nguyên nhân gốc
+
+**1. Cơ chế buffer tạm của NIO.** Khi gọi {{FileChannel.write}} hoặc {{SocketChannel.write}} với một heap ByteBuffer, JDK không đưa được địa chỉ mảng Java cho syscall {{write()}} vì GC có thể di chuyển mảng bất cứ lúc nào. Vì vậy JDK (lớp nội bộ {{sun.nio.ch.Util}}) lấy một **direct buffer tạm đúng bằng số byte cần ghi**, copy dữ liệu sang, ghi, rồi **trả buffer về cache của chính thread đó** thay vì giải phóng. Mặc định cache không giới hạn kích thước buffer (system property {{jdk.nio.maxCachedBufferSize}} không được đặt). Kết quả:
+- Mỗi thread từng ghi một PDF giữ khoảng 1 buffer, kích thước bằng file lớn gần đây nhất mà nó ghi (nếu buffer trong cache nhỏ hơn, JDK giải phóng nó và cấp buffer mới lớn hơn).
+- Thread Tomcat sống mãi trong pool khi traffic cao, nên buffer cũng sống mãi.
+- Vậy direct memory xấp xỉ **số thread × kích thước PDF lớn**. Tăng thread gấp đôi thì tăng direct gấp đôi.
+
+**2. Ngân sách bộ nhớ sai.** {{MaxRAMPercentage=80}} trên limit 2Gi cho {{MaxHeapSize=1717567488}} (1638 MiB). {{MaxDirectMemorySize}} không đặt nên mặc định bằng max heap, tức 1638 MiB nữa. Tổng giới hạn của JVM lớn hơn limit container rất nhiều, nên JVM không bao giờ tự ném {{OutOfMemoryError}}: kernel cgroup ra tay trước bằng SIGKILL (exit 137), không có log, không có heap dump.
+
+### Dẫn chứng
+
+Ngân sách lúc 20:40 (NMT, committed):
+
+| Thành phần | Committed | Ghi chú |
+|---|---|---|
+| Java Heap | 1024 MiB | used chỉ 690 MB, nhưng committed mới chiếm RAM; còn được phép lên 1638 MiB |
+| Other (direct buffer) | **490 MiB** | {{Other (reserved=501760KB, committed=501760KB)}} |
+| Metaspace + Class + Shared class space | 131 MiB | ổn định |
+| Thread (437 thread) | 105 MiB | {{stack: reserved=447488KB, committed=104882KB}} |
+| GC | 72 MiB | |
+| Code cache | 60 MiB | |
+| Symbol và các mục nhỏ | 40 MiB | |
+| **Tổng** | **1968828KB ≈ 1.88 GiB** | khớp {{ws 1.88 GiB}} lúc 20:40 |
+
+Phần ngoài heap là khoảng 900 MiB, trong khi heap còn có thể lớn thêm 614 MiB. Lúc 20:45 heap committed lên 1088 MB và direct lên 512 MB, working set 1.96 GiB; vài phút sau kernel ghi {{memory: usage 2097152kB, limit 2097152kB}} và {{anon-rss:2068840kB}}.
+
+Direct buffer bám theo **số thread**, không theo thời gian:
+- {{direct_n}} luôn bằng khoảng {{tc_cur}} cộng 20: 121/104, 245/222, 328/304, 401/375, 426/400. Mỗi thread Tomcat một buffer, cộng khoảng 20 buffer nền.
+- {{direct_u / direct_n}}: 489 MB / 426 ≈ **1.15 MB mỗi buffer**, đúng cỡ PDF trung bình 1.12 MB.
+- Từ 20:40 đến 20:45, số thread đứng yên ở 400 nhưng direct vẫn tăng từ 489 lên 512 MB mà số buffer không đổi (426): các thread lần lượt gặp file lớn hơn (p99 3.8 MB) nên thay buffer cũ bằng buffer to hơn. Đây là hành vi của cache, không phải leak.
+- Tuần trước với 200 thread: {{direct_used=236 MB}}, {{working_set=1.49 GiB}}, không restart. Chỉ thay đổi {{threads.max}} mà direct tăng gấp đôi.
+- Latency của request không đổi (p50 0.98 s), nên số thread bận tăng là do traffic (Little's law: 375 request/s × khoảng 1 s ≈ 375–400 request đồng thời), không phải do downstream chậm.
+
+### Cách sửa
+
+**Ngắn hạn (tối nay):**
+1. Thêm {{-Djdk.nio.maxCachedBufferSize=262144}}: buffer tạm lớn hơn 256 KB sẽ được giải phóng ngay sau khi ghi thay vì giữ trong cache. Đây là cờ chính thức của JDK, không cần sửa code.
+2. Giảm heap: {{-XX:MaxRAMPercentage=55}} (khoảng 1126 MiB) và đặt {{-XX:MaxDirectMemorySize=256m}}. Nếu direct vượt, JVM ném {{OutOfMemoryError: Cannot reserve ... bytes of direct buffer memory}} có stack trace, thay vì pod chết im lặng.
+3. Đưa {{threads.max}} về 200 và scale ngang (thêm pod qua HPA) thay vì nhồi thread vào một pod 2Gi.
+
+**Dài hạn: không đưa cả file vào một lần ghi.**
+
+~~~java
+// Cách 1: ghi theo lát 64 KB, buffer tạm tối đa 64 KB thay vì cả file
+try (FileChannel ch = FileChannel.open(target, CREATE, WRITE, TRUNCATE_EXISTING)) {
+    int off = 0;
+    while (off < pdf.length) {
+        int len = Math.min(64 * 1024, pdf.length - off);
+        ByteBuffer slice = ByteBuffer.wrap(pdf, off, len);
+        while (slice.hasRemaining()) {
+            off += ch.write(slice);            // write có thể ghi thiếu, phải lặp
+        }
+    }
+}
+
+// Cách 2 (tốt hơn): render thẳng ra stream, không giữ byte[] của cả file trên heap
+try (OutputStream out = new BufferedOutputStream(Files.newOutputStream(target), 64 * 1024)) {
+    pdfRenderer.render(invoice, out);
+}
+~~~
+
+Cách 2 còn giảm áp lực heap: 375 request/s × 1.12 MB {{byte[]}} là khoảng 420 MB rác mỗi giây chỉ riêng mảng PDF.
+
+### Phòng ngừa
+
+- **Ngân sách bộ nhớ là một phần của review:** heap max + MaxDirectMemorySize + metaspace + code cache + GC (khoảng 5–8% heap) + số thread × stack thực tế + 15% dự phòng ≤ limit. Thay đổi {{threads.max}}, pool size hay kích thước batch là thay đổi capacity, phải đi kèm phép tính này.
+- Đặt {{-Xms}} bằng {{-Xmx}} cho service quan trọng để heap committed cố định từ đầu; ngân sách sai sẽ lộ ra ngay trong load test thay vì lúc cao điểm.
+- Load test với **cấu hình và traffic production** (ở đây phải đạt 400 thread bận), và chụp NMT {{baseline}} rồi {{summary.diff}} trước/sau.
+- Alert: {{container_memory_working_set_bytes / limit > 0.9}} trong 5 phút; {{jvm_buffer_memory_used_bytes}} (id="direct") vượt ngưỡng; {{kube_pod_container_status_last_terminated_reason}} với reason="OOMKilled".
+
+> Senior tip: Khi thấy NMT {{Other}} lớn mà code không hề dùng {{ByteBuffer.allocateDirect}}, hãy nghĩ tới hai nguồn "ẩn": buffer tạm của NIO (mọi chỗ ghi heap buffer vào channel, kể cả thư viện) và pool của Netty. Mẹo nhanh: so {{jvm_buffer_count_buffers}} (id="direct") với số thread; nếu hai đường đi song song thì gần như chắc chắn là cache buffer tạm theo thread. Tôi luôn đặt {{jdk.nio.maxCachedBufferSize}} (256 KB là đủ) cho các service có nhiều thread ghi file hoặc socket blocking.`,
+  rubric: [
+    'Giải thích OOMKilled do tổng bộ nhớ process (heap committed cộng native) vượt limit 2Gi, không phải heap used; cộng NMT ra khoảng 1.88 GiB lúc 20:40 khớp working set.',
+    'Chỉ ra MaxRAMPercentage=80 cho heap tới 1638 MiB, chỉ chừa khoảng 410 MiB cho non-heap; MaxDirectMemorySize mặc định bằng max heap nên JVM không ném OutOfMemoryError mà kernel kill (exit 137).',
+    'Xác định NMT Other (490 MiB) là direct buffer, đến từ cache buffer tạm theo thread của NIO khi FileChannel.write nhận heap ByteBuffer; dẫn chứng direct_n bám tc_cur và khoảng 1.15 MB mỗi buffer gần bằng kích thước PDF.',
+    'Liên hệ với PR #812 (threads.max 200 lên 400) và traffic 370 request/s: direct và stack tăng theo số thread; phân biệt được đây không phải leak (số buffer đứng yên khi thread đứng yên).',
+    'Đề xuất sửa: jdk.nio.maxCachedBufferSize, ghi theo lát hoặc streaming, giảm heap và đặt MaxDirectMemorySize, scale ngang thay vì tăng thread; kèm alert working set / limit và load test với cấu hình production.'
+  ],
+  tags: ['oomkilled', 'kubernetes', 'native-memory', 'nmt', 'direct-buffer', 'nio', 'tomcat', 'container']
+},
+{
+  id: 'lab-incident-015',
+  category: 'incident',
+  title: 'Mỗi lần deploy pricing-api là 3 phút 502/503 rồi tự hết: probe sai, thiếu startupProbe và preStop',
+  level: 'senior',
+  scenario: `**Bối cảnh.** **pricing-api** (Spring Boot 3.2.5, Spring MVC, JDK 21, 8 replica, mỗi pod limit 1 CPU / 1.5Gi) tính giá cho giỏ hàng qua {{POST /v1/quotes}}, chiếm khoảng 70% trong 900 request/s đi qua ingress-nginx. Khi khởi động, một {{ApplicationRunner}} nạp khoảng 1.28 triệu price rule từ PostgreSQL vào Caffeine (khoảng 20 giây); trong lúc đó {{/v1/quotes}} trả 503 "price rules not loaded" để tránh tính sai giá. Từ lúc tạo pod đến lúc thật sự phục vụ được mất khoảng **70 giây**.
+
+**Triệu chứng.** Mỗi lần deploy (kể cả bản chỉ sửa log), dashboard ingress báo tỉ lệ 5xx tăng vọt trong **khoảng 3 phút** rồi tự về 0. App mobile hiện "Không tính được giá" và một số khách bỏ giỏ. Lần gần nhất: **03/11/2026 14:02:00**, deploy v4.8.0. {{application-prod.yml}} không cấu hình {{server.shutdown}} hay management probes.
+
+**Dữ liệu thu thập:** manifest Deployment, sự kiện Kubernetes và output {{kubectl rollout status}}, log Spring Boot của một pod mới và một pod cũ, log ingress-nginx và thống kê 5xx theo 30 giây.`,
+  artifacts: [
+    {
+      name: 'deployment-pricing-api.yaml',
+      lang: 'yaml',
+      content: `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pricing-api
+  namespace: commerce
+spec:
+  replicas: 8
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%           # = 2 pod
+      maxUnavailable: 25%     # = 2 pod
+  template:
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+      - name: app
+        image: registry.example.vn/commerce/pricing-api:4.8.0
+        ports:
+        - containerPort: 8080
+        resources:
+          requests: { cpu: 500m, memory: 1Gi }
+          limits:   { cpu: "1", memory: 1536Mi }
+        readinessProbe:
+          tcpSocket: { port: 8080 }
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          failureThreshold: 3
+        livenessProbe:
+          httpGet: { path: /actuator/health, port: 8080 }
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 1
+          failureThreshold: 3
+        # không có startupProbe, không có lifecycle.preStop
+
+# PriceRuleWarmup.java (rút gọn)
+@Component
+class PriceRuleWarmup implements ApplicationRunner {
+    public void run(ApplicationArguments args) {
+        log.info("Loading price rules into cache...");
+        ruleCache.loadAll(ruleRepository.streamAllActive());   // ~1.28 triệu rule, ~20 s
+        log.info("Loaded {} price rules in {} ms", ruleCache.size(), elapsed());
+    }
+}`
+    },
+    {
+      name: 'k8s-events-rollout.txt',
+      lang: 'text',
+      content: `$ kubectl -n commerce get events --sort-by=.lastTimestamp     (giờ đã đổi sang +07:00, rút gọn)
+TIME      TYPE     REASON             OBJECT                              MESSAGE
+14:02:00  Normal   ScalingReplicaSet  deployment/pricing-api              Scaled up replica set pricing-api-6f9d8c7b54 to 2 from 0
+14:02:00  Normal   ScalingReplicaSet  deployment/pricing-api              Scaled down replica set pricing-api-5c7b9d6f4d to 6 from 8
+14:02:00  Normal   ScalingReplicaSet  deployment/pricing-api              Scaled up replica set pricing-api-6f9d8c7b54 to 4 from 2
+14:02:00  Normal   Killing            pod/pricing-api-5c7b9d6f4d-2xkfp    Stopping container app
+14:02:00  Normal   Killing            pod/pricing-api-5c7b9d6f4d-9mzt7    Stopping container app
+14:02:03  Normal   Started            pod/pricing-api-6f9d8c7b54-r8wq4    Started container app
+14:02:03  Normal   Started            pod/pricing-api-6f9d8c7b54-k7x2m    Started container app
+14:02:43  Warning  Unhealthy          pod/pricing-api-6f9d8c7b54-r8wq4    Liveness probe failed: Get "http://10.42.6.22:8080/actuator/health": dial tcp 10.42.6.22:8080: connect: connection refused (x2 over 10s)
+14:02:43  Warning  Unhealthy          pod/pricing-api-6f9d8c7b54-r8wq4    Readiness probe failed: dial tcp 10.42.6.22:8080: connect: connection refused (x7 over 30s)
+14:02:49  Normal   ScalingReplicaSet  deployment/pricing-api              Scaled down replica set pricing-api-5c7b9d6f4d to 3 from 6
+14:02:49  Normal   ScalingReplicaSet  deployment/pricing-api              Scaled up replica set pricing-api-6f9d8c7b54 to 7 from 4
+14:02:49  Normal   Killing            pod/pricing-api-5c7b9d6f4d-h4q8n    Stopping container app    (tương tự lw6rc, p7vds)
+14:02:53  Warning  Unhealthy          pod/pricing-api-6f9d8c7b54-k7x2m    Liveness probe failed: Get "http://10.42.7.31:8080/actuator/health": dial tcp 10.42.7.31:8080: connect: connection refused (x3 over 20s)
+14:02:53  Normal   Killing            pod/pricing-api-6f9d8c7b54-k7x2m    Container app failed liveness probe, will be restarted
+14:02:55  Normal   Started            pod/pricing-api-6f9d8c7b54-k7x2m    Started container app
+14:03:45  Normal   ScalingReplicaSet  deployment/pricing-api              Scaled down replica set pricing-api-5c7b9d6f4d to 0 from 3
+14:03:45  Normal   ScalingReplicaSet  deployment/pricing-api              Scaled up replica set pricing-api-6f9d8c7b54 to 8 from 7
+14:03:45  Normal   Killing            pod/pricing-api-5c7b9d6f4d-t3bnx    Stopping container app    (tương tự vx8kd, zq5mh)
+
+# Pod mới đợt 1 (tạo 14:02:00): r8wq4 10.42.6.22, b5n2c 10.42.4.31, d9f6s 10.42.5.57, k7x2m 10.42.7.31
+# Pod mới đợt 2 (tạo 14:02:49): m3jtv, s6hpl, x2c8w;  đợt 3 (tạo 14:03:45): g4wzn
+# Pod cũ 2xkfp = 10.42.5.18;  h4q8n = 10.42.3.40
+# CPU throttled (container_cpu_cfs_throttled_periods_total / periods) 14:02:03-14:02:53: k7x2m 71%, r8wq4 48%
+
+$ kubectl -n commerce rollout status deploy/pricing-api
+Waiting for deployment "pricing-api" rollout to finish: 4 out of 8 new replicas have been updated...
+Waiting for deployment "pricing-api" rollout to finish: 7 out of 8 new replicas have been updated...
+Waiting for deployment "pricing-api" rollout to finish: 3 old replicas are pending termination...
+Waiting for deployment "pricing-api" rollout to finish: 7 of 8 updated replicas are available...
+deployment "pricing-api" successfully rolled out          (14:04:34)`
+    },
+    {
+      name: 'spring-boot-logs.txt',
+      lang: 'text',
+      content: `### Pod mới pricing-api-6f9d8c7b54-r8wq4 (container start 14:02:03)
+2026-11-03T14:02:03.912+07:00  INFO 1 --- [pricing-api] [           main] v.e.pricing.PricingApiApplication        : Starting PricingApiApplication v4.8.0 using Java 21.0.4 with PID 1 (/app/app.jar started by app in /app)
+2026-11-03T14:02:03.918+07:00  INFO 1 --- [pricing-api] [           main] v.e.pricing.PricingApiApplication        : The following 1 profile is active: "prod"
+2026-11-03T14:02:17.402+07:00  INFO 1 --- [pricing-api] [           main] o.s.b.w.embedded.tomcat.TomcatWebServer  : Tomcat initialized with port 8080 (http)
+2026-11-03T14:02:24.881+07:00  INFO 1 --- [pricing-api] [           main] com.zaxxer.hikari.HikariDataSource       : HikariPool-1 - Start completed.
+2026-11-03T14:02:33.517+07:00  INFO 1 --- [pricing-api] [           main] j.LocalContainerEntityManagerFactoryBean : Initialized JPA EntityManagerFactory for persistence unit 'default'
+2026-11-03T14:02:47.240+07:00  INFO 1 --- [pricing-api] [           main] o.s.b.w.embedded.tomcat.TomcatWebServer  : Tomcat started on port 8080 (http) with context path ''
+2026-11-03T14:02:47.302+07:00  INFO 1 --- [pricing-api] [           main] v.e.pricing.PricingApiApplication        : Started PricingApiApplication in 44.106 seconds (process running for 45.012)
+2026-11-03T14:02:47.305+07:00  INFO 1 --- [pricing-api] [           main] v.e.pricing.rules.PriceRuleWarmup        : Loading price rules into cache...
+2026-11-03T14:02:49.611+07:00  WARN 1 --- [pricing-api] [nio-8080-exec-3] v.e.pricing.web.QuoteController          : quote rejected with 503: price rules not loaded
+... (dòng WARN trên lặp lại 2,087 lần từ 14:02:49 đến 14:03:08)
+2026-11-03T14:03:08.981+07:00  INFO 1 --- [pricing-api] [           main] v.e.pricing.rules.PriceRuleWarmup        : Loaded 1284310 price rules in 21676 ms
+
+### Pod mới pricing-api-6f9d8c7b54-k7x2m, lần chạy đầu (container start 14:02:03)
+2026-11-03T14:02:04.371+07:00  INFO 1 --- [pricing-api] [           main] v.e.pricing.PricingApiApplication        : Starting PricingApiApplication v4.8.0 using Java 21.0.4 with PID 1 (/app/app.jar started by app in /app)
+2026-11-03T14:02:41.096+07:00  INFO 1 --- [pricing-api] [           main] j.LocalContainerEntityManagerFactoryBean : Initialized JPA EntityManagerFactory for persistence unit 'default'
+(log dừng ở đây, container bị kill lúc 14:02:53)
+
+### Pod cũ pricing-api-5c7b9d6f4d-2xkfp (nhận SIGTERM 14:02:00)
+2026-11-03T14:02:00.208+07:00  INFO 1 --- [pricing-api] [ionShutdownHook] o.apache.catalina.core.StandardService   : Stopping service [Tomcat]
+2026-11-03T14:02:00.219+07:00  INFO 1 --- [pricing-api] [ionShutdownHook] com.zaxxer.hikari.HikariDataSource       : HikariPool-1 - Shutdown initiated...
+2026-11-03T14:02:00.231+07:00 ERROR 1 --- [pricing-api] [io-8080-exec-41] o.a.c.c.C.[.[.[/].[dispatcherServlet]    : Servlet.service() for servlet [dispatcherServlet] in context with path [] threw exception
+java.sql.SQLException: HikariDataSource HikariDataSource (HikariPool-1) has been closed.
+2026-11-03T14:02:00.236+07:00  INFO 1 --- [pricing-api] [ionShutdownHook] com.zaxxer.hikari.HikariDataSource       : HikariPool-1 - Shutdown completed.
+(process kết thúc 14:02:00.4, chưa tới 1 giây sau SIGTERM)`
+    },
+    {
+      name: 'ingress-nginx.txt',
+      lang: 'text',
+      content: `### access log (log-format mặc định của ingress-nginx, trích)
+10.0.4.17 - - [03/Nov/2026:14:02:00 +0700] "POST /v1/quotes HTTP/1.1" 502 150 "-" "okhttp/4.12.0" 702 0.001 [commerce-pricing-api-8080] [] 10.42.5.18:8080 0 0.001 502 9c1e5b0f3a7d4e21b6f8a0c2d4e6f801
+10.0.4.22 - - [03/Nov/2026:14:02:00 +0700] "POST /v1/quotes HTTP/1.1" 502 150 "-" "okhttp/4.12.0" 688 0.034 [commerce-pricing-api-8080] [] 10.42.5.18:8080 0 0.034 502 3b7f0e2a91c84d6e8f1a2b3c4d5e6f70
+10.0.4.22 - - [03/Nov/2026:14:02:49 +0700] "POST /v1/quotes HTTP/1.1" 502 150 "-" "okhttp/4.12.0" 693 0.001 [commerce-pricing-api-8080] [] 10.42.3.40:8080 0 0.001 502 5d6e7f8091a2b3c4d5e6f708192a3b4c
+10.0.4.17 - - [03/Nov/2026:14:02:51 +0700] "POST /v1/quotes HTTP/1.1" 503 61 "-" "okhttp/4.12.0" 715 0.003 [commerce-pricing-api-8080] [] 10.42.6.22:8080 61 0.003 503 a41c7d2e5f6b4890b1c2d3e4f5a6b7c8
+10.0.4.31 - - [03/Nov/2026:14:02:51 +0700] "GET /v1/products/88213/price HTTP/1.1" 200 412 "-" "okhttp/4.12.0" 402 0.019 [commerce-pricing-api-8080] [] 10.42.6.22:8080 412 0.019 200 e8d2c4b6a0f14e3d9c7b5a3f1e2d4c6b
+
+### error log
+2026/11/03 14:02:00 [error] 812#812: *4410981 connect() failed (111: Connection refused) while connecting to upstream, client: 10.0.4.17, server: api.shop.example.vn, request: "POST /v1/quotes HTTP/1.1", upstream: "http://10.42.5.18:8080/v1/quotes", host: "api.shop.example.vn"
+2026/11/03 14:02:00 [error] 812#812: *4410977 upstream prematurely closed connection while reading response header from upstream, client: 10.0.4.22, server: api.shop.example.vn, request: "POST /v1/quotes HTTP/1.1", upstream: "http://10.42.5.18:8080/v1/quotes", host: "api.shop.example.vn"
+2026/11/03 14:02:49 [error] 813#813: *4455102 connect() failed (111: Connection refused) while connecting to upstream, client: 10.0.4.22, server: api.shop.example.vn, request: "POST /v1/quotes HTTP/1.1", upstream: "http://10.42.3.40:8080/v1/quotes", host: "api.shop.example.vn"
+
+### Thống kê theo 30 giây (tổng khoảng 27,000 request mỗi khung)
+khung bắt đầu   502    503 (upstream_status=503)   ghi chú
+14:01:30          0      0
+14:02:00        341      0                         2 pod cũ bị kill
+14:02:30        436  3,412                         3 pod mới Ready từ 14:02:48; 3 pod cũ bị kill 14:02:49
+14:03:00          0  2,861
+14:03:30        389  6,118                         3 pod cũ cuối bị kill 14:03:45
+14:04:00          0    347
+14:04:30          0  1,641                         g4wzn Ready 14:04:34
+14:05:00          0      0
+# Không có dòng nào upstream_addr = "-" (ingress luôn có endpoint): mọi 503 đều do pod trả về.`
+    }
+  ],
+  questions: [
+    'Phân loại lỗi: 502 và 503 đến từ đâu (ingress hay pod), mỗi loại xảy ra ở pha nào của rollout? Dẫn chứng bằng dòng log, IP và timestamp cụ thể.',
+    'Vì sao pod k7x2m bị restart, và vì sao cấu hình probe hiện tại là "bom hẹn giờ" dù hôm nay rollout vẫn xong?',
+    'Bạn sửa Deployment và cấu hình Spring Boot thế nào để rollout không mất request? Giải thích thứ tự các bước khi một pod cũ bị dừng.'
+  ],
+  hints: [
+    'Đọc cột upstream_addr và upstream_status trong access log: 502 với upstream là IP pod cũ, 503 với upstream là IP pod mới. Đối chiếu IP với danh sách pod.',
+    'Readiness đang là tcpSocket: nó pass ngay khi Tomcat mở cổng. So thời điểm "Tomcat started" với thời điểm warmup xong trong log Spring Boot.',
+    'Khi pod bị xoá, việc gỡ endpoint khỏi ingress và việc gửi SIGTERM cho container chạy song song, không theo thứ tự. Spring Boot 3.2 mặc định server.shutdown là gì? Liveness có initialDelay 30 s, period 10 s, failureThreshold 3: pod phải mở cổng trước giây thứ bao nhiêu?'
+  ],
+  answer: `**Tóm tắt:** Có ba lỗi cấu hình cộng lại. (1) **Readiness là tcpSocket** nên pod mới được đưa vào load balancing ngay khi Tomcat mở cổng, trong khi {{ApplicationRunner}} còn nạp price rule thêm khoảng 20 giây: chính pod trả 503 cho {{/v1/quotes}}, và vì Deployment tưởng pod đã sẵn sàng nên nó kill pod cũ sớm, làm tỉ lệ 503 lên tới hơn 50% ở một số thời điểm. (2) **Pod cũ chết ngay khi nhận SIGTERM** (không có preStop, Spring Boot 3.2 mặc định {{server.shutdown=immediate}}) trong khi ingress vẫn còn gửi request tới nó: 502. (3) **Không có startupProbe**, liveness chỉ cho pod khoảng 50 giây để mở cổng; pod khởi động chậm vì bị throttle CPU thì bị kill (k7x2m).
+
+### Nguyên nhân gốc
+
+**503 từ pod mới.** Spring Boot chỉ chuyển trạng thái readiness sang {{ACCEPTING_TRAFFIC}} **sau khi các ApplicationRunner chạy xong**. Nhưng probe hiện tại là {{tcpSocket}}, không hỏi Spring gì cả: Tomcat mở cổng lúc 14:02:47 là probe pass lúc 14:02:48, trong khi rule chỉ nạp xong lúc 14:03:08. Trong 20 giây đó pod nhận traffic thật và trả 503.
+
+Tệ hơn, Deployment controller tính "available" theo readiness. Thấy 3 pod mới Ready, nó lập tức scale old ReplicaSet từ 6 xuống 3 (14:02:49). Lúc đó 3 trên 6 endpoint đang ở giai đoạn warmup, nên khoảng một nửa request quote bị 503. Điều tương tự lặp lại lúc 14:03:45: 3 pod cũ cuối bị kill trong khi 4 trên 7 pod mới (đợt 2 và k7x2m) còn warmup, khung 14:03:30 có 6,118 lỗi 503.
+
+**502 từ pod cũ.** Khi một pod bị xoá, Kubernetes làm **song song** hai việc: kubelet gửi SIGTERM cho container, và endpoint controller gỡ IP khỏi Endpoints/EndpointSlice để ingress-nginx cập nhật upstream. Việc thứ hai cần thời gian lan truyền (thường từ dưới 1 đến vài giây). Không có {{preStop}}, Spring Boot 3.2 với {{server.shutdown}} mặc định là immediate dừng Tomcat ngay ({{Stopping service [Tomcat]}} lúc 14:02:00.208) và đóng Hikari; request đang chạy bị cắt, request mới bị từ chối kết nối. Ingress-nginx không tự retry POST (không idempotent), nên client nhận 502 trực tiếp.
+
+**Liveness quá chặt khi khởi động.** Probe đầu tiên ở giây 30, kill sau 3 lần fail liên tiếp, tức ở giây 50. Pod bình thường mở cổng ở giây 44 (r8wq4), sát nút. k7x2m bị throttle 71% CPU, tới 14:02:41 mới xong JPA, chưa mở cổng ở giây 50 nên bị kill lúc 14:02:53 và phải khởi động lại từ đầu, kéo dài rollout thêm khoảng một phút.
+
+### Dẫn chứng
+
+- 502 luôn đi với IP pod cũ đúng lúc pod đó bị kill: {{10.42.5.18}} (2xkfp, kill 14:02:00) với {{connect() failed (111: Connection refused)}} và {{upstream prematurely closed connection}}; {{10.42.3.40}} (h4q8n, kill 14:02:49). Log pod cũ: {{HikariDataSource (HikariPool-1) has been closed}} cho request đang chạy, process thoát chưa tới 1 giây sau SIGTERM.
+- 503 có {{upstream_status 503}} và upstream là IP pod mới ({{10.42.6.22}} = r8wq4 lúc 14:02:51), không có dòng nào {{upstream_addr = "-"}}: ingress luôn có endpoint, chính pod trả 503. Cùng pod đó trả 200 cho {{GET /v1/products/88213/price}}: app đã chạy, chỉ thiếu rule.
+- Log r8wq4: {{Tomcat started}} 14:02:47.240, WARN 503 đầu tiên 14:02:49.611, {{Loaded 1284310 price rules in 21676 ms}} 14:03:08.981. Khoảng thời gian 503 khớp đúng giai đoạn warmup.
+- Event {{Scaled down replica set pricing-api-5c7b9d6f4d to 3 from 6}} lúc 14:02:49, chỉ 1 giây sau khi r8wq4 Ready.
+- k7x2m: {{Liveness probe failed ... connection refused (x3 over 20s)}} rồi {{Container app failed liveness probe, will be restarted}} lúc 14:02:53.
+- Các khung lỗi khớp từng đợt: kill pod cũ (14:02:00, 14:02:49, 14:03:45) cho 502; warmup của pod mới (14:02:48–14:03:08, 14:03:38–14:04:04, 14:04:34–14:04:55) cho 503. Sau 14:04:55 về 0.
+
+### Cách sửa
+
+~~~yaml
+spec:
+  strategy:
+    rollingUpdate: { maxSurge: 25%, maxUnavailable: 0 }   # không giảm capacity khi rollout
+  template:
+    spec:
+      terminationGracePeriodSeconds: 45                    # > preStop 10 s + shutdown 25 s
+      containers:
+      - name: app
+        lifecycle:
+          preStop:
+            exec: { command: ["sh", "-c", "sleep 10"] }   # chờ ingress gỡ endpoint trước khi app dừng
+        startupProbe:
+          httpGet: { path: /actuator/health/liveness, port: 8080 }
+          periodSeconds: 5
+          failureThreshold: 36                             # cho phép khởi động tới 180 s
+        readinessProbe:
+          httpGet: { path: /actuator/health/readiness, port: 8080 }
+          periodSeconds: 5
+          failureThreshold: 2
+        livenessProbe:
+          httpGet: { path: /actuator/health/liveness, port: 8080 }
+          periodSeconds: 10
+          timeoutSeconds: 2
+          failureThreshold: 3
+~~~
+
+~~~yaml
+# application-prod.yml
+server:
+  shutdown: graceful                       # Spring Boot 3.2 mặc định là immediate
+spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 25s
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true                      # tự bật khi chạy trên Kubernetes, ghi rõ cho chắc
+~~~
+
+Thứ tự khi pod cũ bị dừng sau khi sửa: pod chuyển Terminating, endpoint bị gỡ (song song) → preStop ngủ 10 giây, trong lúc đó pod vẫn phục vụ bình thường các request còn tới → SIGTERM → Tomcat ngừng nhận request mới, chờ request đang chạy xong (tối đa 25 giây) → đóng context, Hikari → thoát, trước khi hết 45 giây grace. Ở pod mới: readiness chỉ UP sau khi {{PriceRuleWarmup}} xong, nên không còn 503 và Deployment không kill pod cũ quá sớm. Liveness không bị đánh giá cho tới khi startupProbe pass.
+
+Lưu ý: {{exec sleep}} cần image có shell; image distroless thì dùng action {{sleep}} của preStop trên các bản Kubernetes mới hỗ trợ nó.
+
+### Phòng ngừa
+
+- Chuẩn hoá probe cho mọi service Spring Boot: startup, readiness, liveness dùng các group {{/actuator/health/*}} riêng; liveness **không** kiểm tra DB hay downstream (endpoint {{/actuator/health}} tổng hợp có cả DB, dùng làm liveness sẽ kill pod khi DB chậm).
+- Đưa warmup vào ApplicationRunner (hoặc tự publish {{ReadinessState.REFUSING_TRAFFIC}} rồi {{ACCEPTING_TRAFFIC}}) để readiness phản ánh đúng.
+- Kiểm tra rollout trong CI/staging: chạy load test liên tục trong lúc {{kubectl rollout restart}}, yêu cầu 0 lỗi 5xx.
+- Alert theo tỉ lệ 5xx gắn với sự kiện deploy, và giảm thời gian khởi động (CDS/AppCDS, lazy init có chọn lọc, tăng CPU request khi khởi động).
+
+> Senior tip: Một rollout "không mất request" cần đủ 4 thứ: readiness phản ánh đúng việc app đã sẵn sàng, maxUnavailable 0, preStop sleep vài giây để chờ endpoint được gỡ, và graceful shutdown có grace period lớn hơn tổng preStop cộng shutdown. Tôi luôn thử bằng cách chạy {{kubectl rollout restart}} trong khi bắn tải ổn định; nếu dashboard còn bất kỳ 502 nào, gần như chắc chắn thiếu preStop hoặc graceful shutdown.`,
+  rubric: [
+    'Phân biệt 502 (ingress gửi tới pod cũ đã dừng: connection refused, upstream prematurely closed, IP 10.42.5.18 / 10.42.3.40) và 503 (pod mới tự trả trong lúc warmup, upstream_status 503, IP 10.42.6.22).',
+    'Chỉ ra readiness tcpSocket pass khi Tomcat mở cổng (14:02:47) trong khi warmup xong lúc 14:03:08; Deployment coi pod đã available nên scale down pod cũ sớm, làm tỉ lệ 503 cao.',
+    'Giải thích pod cũ chết ngay vì thiếu preStop và server.shutdown mặc định immediate trong Spring Boot 3.2, trong khi việc gỡ endpoint khỏi ingress chạy song song với SIGTERM.',
+    'Giải thích k7x2m bị liveness kill: initialDelay 30 + 3 × 10 s = khoảng 50 s, pod bị throttle CPU chưa mở cổng; đề xuất startupProbe.',
+    'Đưa ra cấu hình sửa đúng: readiness/liveness/startup dùng /actuator/health/readiness và /liveness, preStop sleep, server.shutdown=graceful, terminationGracePeriodSeconds đủ lớn, maxUnavailable 0; kèm cách kiểm chứng bằng rollout dưới tải.'
+  ],
+  tags: ['kubernetes', 'rolling-update', 'readiness-probe', 'startup-probe', 'graceful-shutdown', 'prestop', 'ingress-nginx', 'spring-boot']
+},
+{
+  id: 'lab-incident-016',
+  category: 'incident',
+  title: 'p99 của order-api vọt lên 2,9 giây đúng mỗi 10 phút: job export chạy chung pod với API',
+  level: 'lead',
+  scenario: `**Bối cảnh.** **order-api** (Spring Boot 3.3, Spring Data JPA / Hibernate 6, JDK 21.0.5) phục vụ API đơn hàng cho app mobile, 2 replica, mỗi pod 4 CPU, limit 4Gi. JVM: {{-Xms3g -Xmx3g -XX:+UseG1GC -Xlog:gc*:file=/logs/gc.log:time,uptime,level,tags}}. SLO: p99 của {{GET /api/orders/:id}} dưới 300 ms. Traffic khoảng 1,100 request/s chia đều 2 pod.
+
+Ba tuần trước, team thêm **job đối soát cho đối tác vận chuyển LogiX** ngay trong order-api: {{@Scheduled(cron = "0 */10 * * * *")}}, mỗi 10 phút xuất các đơn thay đổi thành một file CSV lên S3 rồi gọi webhook báo đối tác. Code được review nhanh vì "chỉ là một job nhỏ".
+
+**Triệu chứng.** Alert p99 bắn đúng các phút :00, :10, :20…, mỗi lần khoảng 5–10 giây, cả hai pod cùng lúc. Ngoài khung đó p99 khoảng 85 ms. Tuần này LogiX phàn nàn nhận **mỗi file hai lần** và có lúc file "bị ghi đè giữa chừng". Trước khi có job, chưa từng có alert này.
+
+**Dữ liệu thu thập:** GC log của pod {{order-api-5d8f7c9b6-hx2rm}} quanh 10:20 (và một đoạn của pod {{pt4zq}}), metric Prometheus, log ứng dụng của cả hai pod, code của job.`,
+  artifacts: [
+    {
+      name: 'gc-hx2rm-1020.log',
+      lang: 'text',
+      content: `# pod order-api-5d8f7c9b6-hx2rm, container khởi động 2026-11-02 09:00:12
+[2026-11-02T09:00:13.105+0700][0.019s][info][gc] Using G1
+[2026-11-02T09:00:13.106+0700][0.020s][info][gc,init] Version: 21.0.5+11-LTS (release)
+[2026-11-02T09:00:13.106+0700][0.020s][info][gc,init] CPUs: 4 total, 4 available
+[2026-11-02T09:00:13.106+0700][0.020s][info][gc,init] Heap Region Size: 1M
+[2026-11-02T09:00:13.106+0700][0.020s][info][gc,init] Heap Min Capacity: 3G
+[2026-11-02T09:00:13.106+0700][0.020s][info][gc,init] Heap Initial Capacity: 3G
+[2026-11-02T09:00:13.106+0700][0.020s][info][gc,init] Heap Max Capacity: 3G
+[2026-11-02T09:00:13.106+0700][0.020s][info][gc,init] Parallel Workers: 4
+...
+[2026-11-02T10:19:45.418+0700][4772.332s][info][gc] GC(1405) Pause Young (Normal) (G1 Evacuation Pause) 2206M->638M(3072M) 14.105ms
+[2026-11-02T10:19:53.402+0700][4780.316s][info][gc] GC(1406) Pause Young (Normal) (G1 Evacuation Pause) 2214M->641M(3072M) 14.882ms
+[2026-11-02T10:20:01.874+0700][4788.788s][info][gc] GC(1407) Pause Young (Normal) (G1 Evacuation Pause) 2226M->1108M(3072M) 61.304ms
+[2026-11-02T10:20:03.063+0700][4789.977s][info][gc,start] GC(1408) Pause Young (Concurrent Start) (G1 Humongous Allocation)
+[2026-11-02T10:20:03.112+0700][4790.026s][info][gc,heap] GC(1408) Eden regions: 386->0(441)
+[2026-11-02T10:20:03.112+0700][4790.026s][info][gc,heap] GC(1408) Survivor regions: 74->91(96)
+[2026-11-02T10:20:03.112+0700][4790.026s][info][gc,heap] GC(1408) Old regions: 971->1177
+[2026-11-02T10:20:03.112+0700][4790.026s][info][gc,heap] GC(1408) Humongous regions: 389->134
+[2026-11-02T10:20:03.112+0700][4790.026s][info][gc] GC(1408) Pause Young (Concurrent Start) (G1 Humongous Allocation) 1820M->1402M(3072M) 48.770ms
+[2026-11-02T10:20:03.113+0700][4790.027s][info][gc] GC(1409) Concurrent Mark Cycle
+[2026-11-02T10:20:04.230+0700][4791.144s][info][gc] GC(1410) Pause Young (Normal) (G1 Humongous Allocation) 2388M->1786M(3072M) 71.215ms
+[2026-11-02T10:20:04.611+0700][4791.525s][info][gc] GC(1409) Pause Remark 2102M->2098M(3072M) 11.040ms
+[2026-11-02T10:20:04.702+0700][4791.616s][info][gc] GC(1409) Pause Cleanup 2160M->2160M(3072M) 0.402ms
+[2026-11-02T10:20:04.702+0700][4791.616s][info][gc] GC(1409) Concurrent Mark Cycle 1589.315ms
+[2026-11-02T10:20:05.318+0700][4792.232s][info][gc] GC(1411) Pause Young (Prepare Mixed) (G1 Evacuation Pause) 2650M->2398M(3072M) 88.602ms
+[2026-11-02T10:20:05.611+0700][4792.525s][info][gc,start] GC(1412) Pause Young (Normal) (G1 Evacuation Pause)
+[2026-11-02T10:20:06.004+0700][4792.918s][info][gc,heap] GC(1412) Eden regions: 560->0(122)
+[2026-11-02T10:20:06.004+0700][4792.918s][info][gc,heap] GC(1412) Survivor regions: 96->0(39)
+[2026-11-02T10:20:06.004+0700][4792.918s][info][gc,heap] GC(1412) Old regions: 1758->2410
+[2026-11-02T10:20:06.004+0700][4792.918s][info][gc,heap] GC(1412) Humongous regions: 620->444
+[2026-11-02T10:20:06.004+0700][4792.918s][info][gc] GC(1412) Pause Young (Normal) (G1 Evacuation Pause) (Evacuation Failure) 3034M->2854M(3072M) 392.715ms
+[2026-11-02T10:20:06.005+0700][4792.919s][info][gc,start] GC(1413) Pause Full (G1 Compaction Pause)
+[2026-11-02T10:20:08.323+0700][4795.237s][info][gc,heap] GC(1413) Old regions: 2410->1487
+[2026-11-02T10:20:08.323+0700][4795.237s][info][gc,heap] GC(1413) Humongous regions: 444->444
+[2026-11-02T10:20:08.323+0700][4795.237s][info][gc] GC(1413) Pause Full (G1 Compaction Pause) 2854M->1931M(3072M) 2318.402ms
+[2026-11-02T10:20:09.882+0700][4796.796s][info][gc] GC(1414) Pause Young (Normal) (G1 Evacuation Pause) 3001M->2140M(3072M) 41.633ms
+[2026-11-02T10:20:14.517+0700][4801.431s][info][gc,heap] GC(1415) Humongous regions: 620->0
+[2026-11-02T10:20:14.517+0700][4801.431s][info][gc] GC(1415) Pause Young (Normal) (G1 Evacuation Pause) 2968M->1503M(3072M) 22.910ms
+... GC(1416)-GC(1423): một chu kỳ concurrent mark và 5 lần Pause Young (Mixed) dọn phần entity còn nằm trong old; heap sau GC về 648M lúc 10:21:20
+... (đúng mẫu trên lặp lại ở 10:00 và 10:10)
+
+# pod order-api-5d8f7c9b6-pt4zq, cùng khung giờ (trích)
+[2026-11-02T10:20:06.288+0700][4791.903s][info][gc] GC(1397) Pause Young (Normal) (G1 Evacuation Pause) (Evacuation Failure) 3041M->2861M(3072M) 401.118ms
+[2026-11-02T10:20:08.541+0700][4794.156s][info][gc] GC(1398) Pause Full (G1 Compaction Pause) 2861M->1940M(3072M) 2251.733ms`
+    },
+    {
+      name: 'prometheus-1015-1025.txt',
+      lang: 'text',
+      content: `# alloc  = rate(jvm_gc_memory_allocated_bytes_total[15s])          (tổng 2 pod chia đôi, xấp xỉ nhau)
+# pause  = increase(jvm_gc_pause_seconds_sum[15s])                    (tổng thời gian STW trong 15 s, pod hx2rm)
+# mỗi dòng là khung 15 giây bắt đầu tại cột time
+# p99    = histogram_quantile(0.99, http_server_requests_seconds_bucket{uri="/api/orders/{id}"})  (cả service)
+# rps    = sum(rate(http_server_requests_seconds_count[15s]))
+
+time       alloc/pod   pause(hx2rm)   p99        rps
+10:19:30   186 MB/s       0.015 s      84 ms     1,096
+10:19:45   191 MB/s       0.029 s      86 ms     1,104
+10:20:00   1.74 GB/s      3.034 s    2,870 ms    1,088
+10:20:15   612 MB/s       0.064 s     310 ms     1,121
+10:20:30   196 MB/s       0.087 s      97 ms     1,102
+10:20:45   189 MB/s       0.031 s      88 ms     1,099
+
+# p99 tại các mốc khác: 10:00:00 -> 2,640 ms, 10:10:00 -> 2,910 ms, 10:30:00 -> 2,795 ms
+# jvm_gc_pause_seconds_max{action="end of major GC", cause="G1 Compaction Pause"} = 2.318 (hx2rm), 2.252 (pt4zq)
+# CPU pod hx2rm 10:20:00-10:20:15: 3.9 / 4 core; ngoài khung export: 1.1 core`
+    },
+    {
+      name: 'app-logs-and-code.txt',
+      lang: 'text',
+      content: `### order-api-5d8f7c9b6-hx2rm
+2026-11-02T10:20:00.004+07:00  INFO 1 --- [order-api] [   scheduling-1] v.e.o.settlement.SettlementExportJob     : export start window_from=2026-11-02T03:10:11.204Z
+2026-11-02T10:20:02.917+07:00  INFO 1 --- [order-api] [   scheduling-1] v.e.o.settlement.SettlementExportJob     : loaded 418260 orders in 2913 ms
+2026-11-02T10:20:05.602+07:00  INFO 1 --- [order-api] [   scheduling-1] v.e.o.settlement.SettlementExportJob     : csv built size=176553812 bytes
+2026-11-02T10:20:11.187+07:00  INFO 1 --- [order-api] [   scheduling-1] v.e.o.settlement.SettlementExportJob     : uploaded s3://acme-settlement/partner-logix/2026-11-02T10:20.csv, notified partner, took 11183 ms
+
+### order-api-5d8f7c9b6-pt4zq
+2026-11-02T10:20:00.002+07:00  INFO 1 --- [order-api] [   scheduling-1] v.e.o.settlement.SettlementExportJob     : export start window_from=2026-11-02T03:10:11.951Z
+2026-11-02T10:20:03.021+07:00  INFO 1 --- [order-api] [   scheduling-1] v.e.o.settlement.SettlementExportJob     : loaded 418260 orders in 3019 ms
+2026-11-02T10:20:11.940+07:00  INFO 1 --- [order-api] [   scheduling-1] v.e.o.settlement.SettlementExportJob     : uploaded s3://acme-settlement/partner-logix/2026-11-02T10:20.csv, notified partner, took 11938 ms
+
+// ===== SettlementExportJob.java (rút gọn) =====
+private Instant lastExportAt = Instant.now();      // giữ trong bộ nhớ của từng pod
+
+@Scheduled(cron = "0 */10 * * * *")
+public void export() {
+    List<Order> orders = orderRepository.findByUpdatedAtAfter(lastExportAt);   // entity đầy đủ
+    StringBuilder sb = new StringBuilder();
+    for (Order o : orders) {
+        sb.append(o.getId()).append(',').append(o.getMerchantId()).append(',')
+          .append(o.getAmount().toPlainString()).append(',').append(o.getStatus()).append(',')
+          .append(o.getItemsJson()).append('\n');                               // ~420 byte mỗi dòng
+    }
+    byte[] csv = sb.toString().getBytes(StandardCharsets.UTF_8);
+    String key = "partner-logix/" + LocalDateTime.now().truncatedTo(ChronoUnit.MINUTES) + ".csv";
+    s3.putObject(PutObjectRequest.builder().bucket("acme-settlement").key(key).build(),
+                 RequestBody.fromBytes(csv));                                   // SDK sao chép mảng
+    partnerClient.notifyNewFile(key);
+    lastExportAt = Instant.now();
+}`
+    }
+  ],
+  questions: [
+    'Giải thích chuỗi sự kiện trong GC log của hx2rm từ 10:20:00 đến 10:20:15: vì sao xuất hiện "G1 Humongous Allocation", rồi "(Evacuation Failure)" và cuối cùng là Pause Full? Trích dòng cụ thể và tính lượng bộ nhớ job giữ trên heap.',
+    'Vì sao cả hai replica cùng spike một lúc, và vì sao điều đó làm load balancer không cứu được p99? Ngoài GC, thiết kế job hiện tại còn gây lỗi nghiệp vụ gì cho LogiX?',
+    'Với vai trò lead, bạn đề xuất sửa thế nào ở mức code, mức kiến trúc (tách workload) và vận hành? Vì sao tăng heap hoặc đổi GC không phải lời giải chính?'
+  ],
+  hints: [
+    'Heap Region Size là 1M, nên mọi mảng từ 512 KB trở lên là humongous object và cần các region liên tiếp. Một StringBuilder chứa 176 MB thì mảng bên trong trải qua bao nhiêu lần nhân đôi, và lần cuối lớn cỡ nào?',
+    'Đếm các bản sao của dữ liệu trên heap cùng lúc: List entity, mảng của StringBuilder, String từ toString(), byte[] từ getBytes(), và bản sao trong RequestBody.fromBytes. Biến orders còn được tham chiếu tới khi nào?',
+    'So sánh log "export start" của hai pod và tên key S3. @Scheduled chạy ở đâu khi có 2 replica? lastExportAt nằm ở đâu và chuyện gì xảy ra khi pod restart?'
+  ],
+  answer: `**Tóm tắt:** Mỗi 10 phút, job export chạy **trên cả hai replica cùng lúc** và nạp toàn bộ 418,260 entity cộng nhiều bản sao của một file CSV 176 MB vào heap 3 GB. Allocation tăng từ khoảng 190 MB/s lên 1.74 GB/s, các mảng humongous chiếm hàng trăm region liên tiếp, G1 hết chỗ để evacuate ({{(Evacuation Failure)}}) rồi phải {{Pause Full (G1 Compaction Pause)}} 2.3 giây. Vì hai pod dừng cùng lúc, không còn replica khoẻ nào để nhận traffic, nên p99 của cả service lên 2.9 giây. Cùng thiết kế đó còn gửi trùng file cho LogiX và mất/trùng dữ liệu khi pod restart.
+
+### Nguyên nhân gốc
+
+**1. Job giữ cả tập dữ liệu trên heap, nhiều bản cùng lúc.** Ước lượng lúc đỉnh (khoảng 10:20:06):
+
+| Thứ đang sống | Kích thước | Ghi chú |
+|---|---|---|
+| {{List<Order>}} 418,260 entity | khoảng 700 MB | biến {{orders}} còn trong scope tới hết method, kể cả lúc upload |
+| Mảng bên trong StringBuilder | khoảng 268 MB | nhân đôi 1, 2, 4, …, 134, 268 MB; các mảng cũ thành rác humongous |
+| String từ {{toString()}} | 176 MB | rác ngay sau {{getBytes}} |
+| {{byte[] csv}} | 176 MB | sống tới hết upload |
+| Bản sao trong {{RequestBody.fromBytes}} | 176 MB | SDK sao chép mảng đầu vào |
+
+Với region 1 MB ({{Heap Region Size: 1M}}), mọi mảng từ 512 KB là **humongous object**: không cấp trong eden mà cấp thẳng một dãy region **liên tiếp** trong old. Mảng 268 MB cần 268 region liền nhau. Heap 3 GB vốn đã có khoảng 640 MB dữ liệu sống thường trực, nên chỗ trống liền mạch cạn rất nhanh.
+
+**2. Chuỗi GC.**
+- {{GC(1407)}} pause 61 ms thay vì 14 ms, heap sau GC từ 641M lên 1108M: entity đang được nạp sống sót và bị copy.
+- {{GC(1408) Pause Young (Concurrent Start) (G1 Humongous Allocation)}}: cấp mảng humongous làm vượt ngưỡng IHOP, G1 bắt đầu concurrent mark. {{Humongous regions: 389->134}}: các mảng cũ của StringBuilder đã chết được thu hồi sớm (eager reclaim), mảng hiện tại 134 MB còn sống.
+- {{GC(1412) ... (Evacuation Failure) 3034M->2854M}}: 560 region eden và 96 region survivor cần chỗ để copy object sống, nhưng heap gần đầy; G1 phải giữ nguyên tại chỗ các object không copy được ({{Old regions: 1758->2410}}), pause 392 ms. Trên JDK 17 trở về trước, cùng hiện tượng này được log là {{To-space exhausted}}.
+- Sau đó lệnh cấp 176 MB liên tiếp cho bản sao của SDK vẫn không có chỗ, nên G1 chạy {{Pause Full (G1 Compaction Pause) 2854M->1931M}} trong **2318 ms**, dừng toàn bộ ứng dụng. Heap sau Full GC vẫn 1931M vì entity và các mảng còn đang được tham chiếu.
+- Khi job xong (10:20:11), {{GC(1415)}} thu hồi hết humongous ({{Humongous regions: 620->0}}); phần entity đã lên old phải chờ mixed GC, tới 10:21:20 heap mới về 648M.
+
+**3. Chạy trên mọi replica cùng lúc.** {{@Scheduled}} chạy trong từng JVM: N replica là N lần chạy, cùng một cron nên cùng giây. Pod pt4zq có {{Pause Full ... 2251.733ms}} cùng lúc 10:20:06–10:20:08. Load balancer chỉ giúp khi còn replica khoẻ; ở đây cả hai cùng dừng, request xếp hàng chờ, p99 toàn service 2,870 ms.
+
+### Dẫn chứng
+
+- Đúng thời điểm: log {{export start}} 10:20:00.004 (hx2rm) và 10:20:00.002 (pt4zq); alloc {{1.74 GB/s}} và {{pause 3.034 s}} trong khung 10:20:00; p99 spike ở mọi mốc :00, :10, :20, :30.
+- {{csv built size=176553812 bytes}} khớp với các mảng humongous 176 MB; {{loaded 418260 orders}} khớp với old regions tăng ở GC(1407)–GC(1408).
+- Tổng STW ở hx2rm: 61 + 49 + 71 + 11 + 89 + 393 + 2318 + 42 ≈ 3,034 ms, khớp {{pause 3.034 s}} trong khung 15 giây bắt đầu 10:20:00. Riêng một Full GC đã chiếm 2.3 giây.
+- CPU pod lên 3.9/4 core trong khung export: 4 Parallel Workers của GC dùng hết CPU, request không có CPU để chạy.
+- Lỗi nghiệp vụ: hai pod upload **cùng key** {{partner-logix/2026-11-02T10:20.csv}} và cùng gọi {{notifyNewFile}}: LogiX nhận 2 thông báo, và nếu đọc file khi lần upload thứ hai đang ghi đè, họ có thể đọc bản đã bị thay. {{lastExportAt}} nằm trong bộ nhớ: pod restart thì khởi tạo lại bằng {{Instant.now()}}, mất các đơn của khoảng thời gian trước đó. Mốc còn được lấy **sau** khi upload: {{window_from=2026-11-02T03:10:11.204Z}} là 10:10:11, không phải 10:10:00, nên đơn cập nhật trong 11 giây chạy export trước bị bỏ sót vĩnh viễn; hai pod còn có hai mốc khác nhau (.204Z và .951Z).
+
+### Cách sửa
+
+**Code: streaming, không giữ cả file trên heap.**
+
+~~~java
+@Transactional(readOnly = true)    // PostgreSQL chỉ stream theo fetch size khi đang trong transaction
+public Path writeCsv(Instant from, Instant to) throws IOException {
+    Path tmp = Files.createTempFile("settlement-", ".csv");
+    try (BufferedWriter w = Files.newBufferedWriter(tmp, StandardCharsets.UTF_8);
+         Stream<OrderCsvRow> rows = orderRepository.streamRows(from, to)) {   // projection DTO, fetch size 1000
+        rows.forEach(r -> {
+            try { w.write(r.toCsvLine()); w.newLine(); }
+            catch (IOException e) { throw new UncheckedIOException(e); }
+        });
+    }
+    return tmp;   // sau đó: s3.putObject(req, RequestBody.fromFile(tmp)) rồi xoá file tạm
+}
+~~~
+
+Repository dùng {{@Query}} trả về projection (không phải entity, không vào persistence context) kèm hint {{org.hibernate.fetchSize}}. Bộ nhớ của job giảm từ khoảng 1.5 GB xuống vài MB. File lớn hơn nữa thì dùng multipart upload.
+
+**Kiến trúc: tách workload.** Đưa export ra khỏi pod phục vụ API: Kubernetes {{CronJob}} ({{schedule: "*/10 * * * *"}}, {{concurrencyPolicy: Forbid}}) hoặc một deployment worker riêng, có resource và JVM riêng, đọc từ read replica. Nếu buộc phải để trong app, dùng distributed lock (ví dụ ShedLock trên DB) để chỉ một instance chạy, nhưng pod đó vẫn chịu tải: tách hẳn vẫn là lựa chọn đúng.
+
+**Đúng nghiệp vụ:** lưu watermark ({{last_exported_to}}) trong DB, mỗi lần export cửa sổ {{(from, to]}} với {{to}} chốt **trước** khi query; key S3 suy ra từ cửa sổ, upload xong mới ghi watermark và mới gọi webhook. Làm vậy thì chạy lại là idempotent: cùng cửa sổ cho ra cùng file.
+
+**Vì sao không phải tuning GC.** Tăng heap chỉ dời điểm vỡ: dữ liệu tăng theo số đơn, tháng sau sẽ vỡ lại. Tăng {{G1HeapRegionSize}} lên 32 MB thì mảng 176 MB vẫn là humongous. Generational ZGC ({{-XX:+UseZGC -XX:+ZGenerational}} trên JDK 21) giảm pause nhưng 1.74 GB/s allocation vẫn ăn CPU và có thể gây allocation stall. Gốc rễ là **thiết kế bộ nhớ của job và việc chạy chung với API**, không phải GC.
+
+### Phòng ngừa
+
+- Quy tắc review: job batch không được {{findAll}}/{{List}} cả tập dữ liệu, không build cả file trong bộ nhớ; mọi {{@Scheduled}} trong service nhiều replica phải trả lời "chạy ở đâu, mấy lần, có idempotent không".
+- Alert theo {{jvm_gc_pause_seconds_max}} với cause "G1 Compaction Pause" (bất kỳ Full GC nào cũng là sự cố), và theo allocation rate tăng đột biến.
+- Load test có cả job nền chạy song song với traffic, không chỉ test API riêng.
+
+> Senior tip: Khi latency spike theo chu kỳ đều đặn (đúng mỗi 10 phút, mỗi giờ), hãy tìm **thứ gì chạy theo lịch** trước khi đọc GC log: cron, @Scheduled, TTL cache hết hạn đồng loạt, backup. Ghép timestamp log của job với dòng GC đầu tiên bất thường là ra thủ phạm trong 5 phút. Với vai trò lead, tôi coi "workload batch chạy chung pod với API có SLO" là một anti-pattern kiến trúc: nó luôn gây ra đúng loại sự cố này, chỉ là sớm hay muộn.`,
+  rubric: [
+    'Giải thích humongous object với region 1M (mảng từ 512 KB, cần region liên tiếp), và chuỗi GC(1408) Humongous Allocation, GC(1412) Evacuation Failure, GC(1413) Pause Full 2318 ms, có trích dòng log.',
+    'Ước lượng được bộ nhớ job giữ: 418,260 entity, các mảng StringBuilder nhân đôi, String, byte[] csv và bản sao của SDK (tổng hơn 1 GB) trên heap 3 GB vốn đã có khoảng 640 MB dữ liệu sống; liên hệ với allocation 1.74 GB/s.',
+    'Chỉ ra @Scheduled chạy trên cả 2 replica cùng giây nên cả hai pod pause cùng lúc, load balancer không cứu được p99; đồng thời gây upload trùng key và webhook trùng cho LogiX.',
+    'Phát hiện lỗi nghiệp vụ của watermark: lastExportAt trong bộ nhớ (mất khi restart, mỗi pod một giá trị) và lấy Instant.now() sau upload nên bỏ sót đơn; đề xuất watermark trong DB, cửa sổ (from, to] và key idempotent.',
+    'Đề xuất sửa: streaming (projection, fetch size, ghi file tạm, RequestBody.fromFile hoặc multipart) và tách workload (Kubernetes CronJob/worker riêng, concurrencyPolicy Forbid hoặc ShedLock); giải thích vì sao tăng heap, đổi region size hay đổi GC chỉ là giảm triệu chứng.'
+  ],
+  tags: ['g1', 'gc-log', 'humongous', 'full-gc', 'scheduled', 'workload-isolation', 'kubernetes', 'export', 'latency']
 }
 );
 // APPEND_END
