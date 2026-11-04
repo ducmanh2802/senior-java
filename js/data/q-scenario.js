@@ -4468,4 +4468,269 @@ Nói rõ rủi ro còn lại sau 4 tuần (ví dụ: "loại lệch do đối t�
   ],
   tags: ['lead', 'bus factor', 'knowledge transfer', 'runbook', 'handover', 'risk']
 },
+{
+  id: 'scenario-087',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Review PR này (code do AI sinh). Đoạn dưới dùng ConcurrentHashMap để đếm lượt truy cập theo userId. Tìm lỗi và cách sửa.\n~~~java\npublic class AccessCounter {\n    private final ConcurrentHashMap<String, Integer> counts = new ConcurrentHashMap<>();\n    public void hit(String userId) {\n        if (!counts.containsKey(userId)) {\n            counts.put(userId, 1);\n        } else {\n            counts.put(userId, counts.get(userId) + 1);\n        }\n    }\n    public int get(String userId) {\n        return counts.getOrDefault(userId, 0);\n    }\n}\n~~~',
+  a: `**Tóm tắt:** đoạn code có hai lỗi thật: check-then-act trên ConcurrentHashMap không atomic (hai thread cùng userId có thể ghi đè nhau, mất lượt đếm), và dùng {{Integer}} + {{get+put}} thay vì {{AtomicInteger}}/{{LongAdder}} nên mỗi lần tăng là allocate object mới và vẫn không nguyên tử. Sửa bằng {{merge}} hoặc {{compute}} với {{LongAdder}}; nếu chỉ cần tổng toàn cục thì {{LongAdder}} riêng.
+
+### Lỗi theo mức nghiêm trọng
+
+**1. Critical — mất đếm do race condition (check-then-act).**
+Hai thread cùng userId: cả hai thấy {{containsKey == false}} hoặc cùng {{get}} rồi {{put}}, một lượt bị ghi đè. Trên traffic cao, số đếm thấp hơn thực tế — sai silently, khó phát hiện.
+
+**2. Major — dùng Integer immutable + get/put thay vì counter nguyên tử.**
+{{counts.get(userId) + 1}} tạo Integer mới mỗi lần; dưới tải cao gây GC pressure. Đồng thời không giải quyết race.
+
+**3. Minor — API get có thể trả null nếu không dùng getOrDefault (đã OK ở đây), và không có snapshot an toàn cho report.**
+
+### Cách sửa
+~~~java
+public class AccessCounter {
+    private final ConcurrentHashMap<String, LongAdder> counts = new ConcurrentHashMap<>();
+    public void hit(String userId) {
+        counts.computeIfAbsent(userId, k -> new LongAdder()).increment();
+    }
+    public long get(String userId) {
+        LongAdder a = counts.get(userId);
+        return a == null ? 0 : a.sum();
+    }
+}
+~~~
+{{computeIfAbsent}} + {{LongAdder}}: atomic, contention thấp (LongAdder tách cell theo thread), không allocate per-increment.
+
+### Cách nói khi review
+"Logic này chạy đúng single-thread, nhưng production có nhiều thread. Hai chỗ: check-then-act không atomic, và Integer immutable nên mỗi increment allocate. Em đề xuất LongAdder + computeIfAbsent — vừa đúng vừa nhanh. Nếu chỉ cần tổng toàn cục, dùng một LongAdder chung đơn giản hơn."
+
+### Khi nào dùng gì
+- Đếm per-key nhiều thread: {{ConcurrentHashMap<String, LongAdder>}}.
+- Chỉ tổng toàn cục: một {{LongAdder}}.
+- Cần snapshot nhất quán nhiều key: copy map rồi tổng, hoặc dùng {{AtomicLongMap}} (Guava).
+
+> Senior tip: khi review code AI sinh ra, tôi luôn hỏi "đoạn này có thể chạy concurrent không?" — AI hay viết code đúng single-thread. ConcurrentHashMap chỉ bảo vệ chính map, không bảo vệ logic check-then-act của bạn; phải dùng compute/merge/Atomic* mới an toàn.`,
+  follow: [
+    'LongAdder khác AtomicLong thế nào, khi nào chọn cái nào?',
+    'Nếu cần reset counter theo ngày thì thiết kế thế nào để không mất dữ liệu?'
+  ],
+  tags: ['code-review', 'concurrency', 'ConcurrentHashMap', 'LongAdder', 'atomic']
+},
+
+{
+  id: 'scenario-088',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Review PR này (code do AI sinh). Service tạo đơn hàng và gọi payment gateway trong @Transactional. Tìm lỗi.\n~~~java\n@Service\npublic class OrderService {\n    @Transactional\n    public Order createOrder(Cart cart) {\n        Order order = orderRepo.save(new Order(cart));\n        paymentClient.charge(order.getId(), cart.total());\n        order.setStatus(PAID);\n        return orderRepo.save(order);\n    }\n}\n~~~',
+  a: `**Tóm tắt:** hai lỗi nghiêm trọng: (1) gọi HTTP bên trong transaction giữ connection DB lâu, dễ cạn pool và lock; (2) nếu payment thành công nhưng save thứ hai fail, tiền đã trừ nhưng đơn chưa PAID (không nhất quán). Sửa bằng outbox pattern: ghi đơn PENDING trong tx, publish event sau commit, worker gọi payment và cập nhật trạng thái.
+
+### Lỗi theo mức nghiêm trọng
+
+**1. Critical — gọi HTTP trong transaction.**
+Transaction giữ connection DB trong suốt thời gian charge (vài trăm ms đến vài s). Dưới tải cao: cạn connection pool, lock row đơn hàng lâu, deadlock với luồng khác.
+
+**2. Critical — không nhất quán khi payment OK nhưng DB fail.**
+paymentClient.charge đã trừ tiền, rồi save thứ hai throw → transaction rollback → đơn biến mất nhưng tiền đã trừ. Không có cơ chế compensate.
+
+**3. Major — không idempotent.**
+Nếu retry createOrder (do timeout client), charge chạy lại → trừ tiền hai lần. Cần idempotency key.
+
+**4. Minor — @Transactional mặc định rollback chỉ RuntimeException; nếu charge throw checked exception thì không rollback.**
+
+### Cách sửa (outbox)
+~~~java
+@Transactional
+public Order createOrder(Cart cart) {
+    Order order = orderRepo.save(new Order(cart, PENDING));
+    outboxRepo.save(new OutboxEvent("OrderCreated", order.getId()));
+    return order; // commit tx, connection trả về pool
+}
+// listener AFTER_COMMIT gọi payment async, cập nhật PAID/FAILED
+~~~
+Payment client dùng idempotency key = orderId.
+
+### Cách nói khi review
+"Em thấy hai vấn đề production-critical: HTTP trong tx giữ connection lâu, và trạng thái tiền/đơn có thể lệch. Em đề xuất outbox: ghi đơn PENDING + event trong tx, worker gọi payment sau commit với idempotency key. HTTP ra ngoài tx."
+
+> Senior tip: khi review code AI sinh ra liên quan DB/transaction, tôi luôn tìm "có network call nào bên trong @Transactional không?" — AI hay đặt mọi thứ trong một method transactional cho "đơn giản", đó là nguồn cạn pool và data inconsistency kinh điển.`,
+  follow: [
+    'Outbox pattern hoạt động thế nào, tại sao không dùng @TransactionalEventListener trực tiếp?',
+    'Idempotency key cho payment gateway thiết kế ra sao?'
+  ],
+  tags: ['code-review', 'transaction', 'outbox', 'idempotency', 'Spring']
+},
+
+{
+  id: 'scenario-089',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Review PR này (code do AI sinh). Đọc file config và gọi HTTP, exception bị nuốt. Tìm lỗi.\n~~~java\npublic String loadConfig(String url) {\n    InputStream in = null;\n    HttpURLConnection c = null;\n    try {\n        c = (HttpURLConnection) new URL(url).openConnection();\n        in = c.getInputStream();\n        return new String(in.readAllBytes(), UTF_8);\n    } catch (Exception e) {\n        log.warn("load failed");\n        return null;\n    }\n}\n~~~',
+  a: `**Tóm tắt:** ba lỗi: (1) InputStream/HttpURLConnection không đóng → connection leak; (2) nuốt exception (chỉ log warn, trả null) → caller không biết lỗi, khó debug; (3) readAllBytes() load toàn bộ vào RAM, nếu response lớn thì OOM. Sửa bằng try-with-resources, ném exception có ngữ cảnh, stream với giới hạn kích thước.
+
+### Lỗi theo mức nghiêm trọng
+
+**1. Critical — connection leak.**
+{{InputStream}} và {{HttpURLConnection}} không đóng. Mỗi lần gọi leak một connection; sau vài nghìn lần, pool cạn và request treo.
+
+**2. Major — nuốt exception.**
+{{catch (Exception e)}} chỉ log warn rồi trả null. Caller không phân biệt "không có dữ liệu" vs "lỗi mạng"; stack trace mất. Debug production cực khó.
+
+**3. Major — readAllBytes load toàn bộ vào RAM.**
+Nếu response lớn (hoặc endpoint bị tấn công trả payload lớn), OOM. Cần giới hạn kích thước và timeout.
+
+**4. Minor — không set connect/read timeout → có thể treo vô hạn.**
+
+### Cách sửa
+~~~java
+public String loadConfig(String url) throws IOException {
+    HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+    c.setConnectTimeout(5000);
+    c.setReadTimeout(5000);
+    try (InputStream in = c.getInputStream()) {
+        byte[] buf = in.readNBytes(1 << 20); // giới hạn 1MB
+        return new String(buf, StandardCharsets.UTF_8);
+    } finally {
+        c.disconnect();
+    }
+}
+~~~
+
+### Cách nói khi review
+"Em thấy leak connection (không đóng stream), nuốt exception (trả null che lỗi), và load toàn bộ response vào RAM. Em đề xuất try-with-resources, set timeout, giới hạn kích thước, và propagate exception hoặc wrap với ngữ cảnh. Log warn hiện tại là không đủ cho production."
+
+> Senior tip: khi review code AI sinh ra có I/O, tôi luôn kiểm "resource có đóng không, exception có propagate không, có timeout không" — ba câu hỏi này bắt được phần lớn bug production liên quan network/file.`,
+  follow: [
+    'Khi nào nên retry và khi nào nên fail fast cho HTTP client?',
+    'Làm sao giới hạn kích thước response để chống OOM?'
+  ],
+  tags: ['code-review', 'resource-leak', 'exception-handling', 'HTTP', 'try-with-resources']
+},
+
+{
+  id: 'scenario-090',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Review PR này (code do AI sinh). Dùng object làm key trong HashSet. Tìm lỗi.\n~~~java\npublic class UserKey {\n    private String name;\n    public UserKey(String name) { this.name = name; }\n    public String getName() { return name; }\n    public void setName(String name) { this.name = name; }\n    @Override\n    public boolean equals(Object o) {\n        return o instanceof UserKey && ((UserKey)o).name.equals(name);\n    }\n}\nSet<UserKey> set = new HashSet<>();\nset.add(new UserKey("a"));\nSystem.out.println(set.contains(new UserKey("a")));\n~~~',
+  a: `**Tóm tắt:** hai lỗi: (1) override {{equals}} nhưng không override {{hashCode}} → contract broken, HashSet lookup fail (in ra false) vì bucket khác; (2) key mutable (setName) → nếu mutate sau khi add, hash bucket sai, object "mất" trong set/map. Sửa: override cả hashCode, và làm key immutable.
+
+### Lỗi theo mức nghiêm trọng
+
+**1. Critical — equals mà không hashCode.**
+Contract Object: equal objects phải có cùng hashCode. HashSet dùng hashCode để chọn bucket; hai object equal nhưng hashCode khác → bucket khác → contains trả false (in ra false). Đây là bug kinh điển.
+
+**2. Critical — key mutable.**
+{{setName}} cho phép thay đổi name sau khi đã add vào set. Bucket được chọn theo hashCode cũ; sau mutate, hashCode mới → object không tìm thấy nữa ("mất" trong collection). Trong HashMap/HashSet, key phải immutable.
+
+**3. Minor — equals không null-safe (name null → NPE), và không dùng Objects.equals.**
+
+### Cách sửa
+~~~java
+public final class UserKey {
+    private final String name;
+    public UserKey(String name) { this.name = Objects.requireNonNull(name); }
+    public String getName() { return name; }
+    @Override public boolean equals(Object o) {
+        return o instanceof UserKey && Objects.equals(name, ((UserKey)o).name);
+    }
+    @Override public int hashCode() { return Objects.hash(name); }
+}
+~~~
+
+### Cách nói khi review
+"Em thấy vi phạm contract equals/hashCode: override equals mà không hashCode làm HashSet lookup sai. Và key mutable: mutate sau khi add làm object 'mất' trong collection. Em đề xuất immutable key + override cả hai, dùng Objects.equals/hashCode."
+
+> Senior tip: khi review code AI sinh ra dùng object làm key trong Map/Set, tôi luôn kiểm "có override cả equals và hashCode không, và key có mutable không?" — AI hay override một cái hoặc để setter.`,
+  follow: [
+    'Vì sao record Java 16+ giải quyết vấn đề này tự động?',
+    'Nếu bắt buộc key mutable, xử lý thế nào?'
+  ],
+  tags: ['code-review', 'equals', 'hashCode', 'HashSet', 'immutable']
+},
+{
+  id: 'scenario-091',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Review PR này (code do AI sinh). Retry khi gọi payment gateway. Tìm lỗi.\n~~~java\npublic PaymentResult charge(String orderId, BigDecimal amount) {\n    int attempts = 0;\n    while (attempts < 3) {\n        try {\n            return gateway.charge(orderId, amount);\n        } catch (Exception e) {\n            attempts++;\n            if (attempts == 3) throw e;\n        }\n    }\n    throw new IllegalStateException("unreachable");\n}\n~~~',
+  a: `**Tóm tắt:** retry không backoff/jitter → thundering herd khi gateway chậm; retry mọi exception (kể cả 4xx/insufficient funds) → charge lại tiền sai; không idempotent → retry charge có thể trừ tiền hai lần. Sửa: retry chỉ transient error (5xx, timeout, 429), exponential backoff + jitter, idempotency key = orderId.
+
+### Lỗi theo mức nghiêm trọng
+
+**1. Critical — không idempotent.**
+Retry charge có thể trừ tiền hai lần nếu lần đầu gateway đã xử lý nhưng response bị timeout. Cần idempotency key (orderId) gửi kèm để gateway dedup.
+
+**2. Critical — retry mọi exception.**
+Charge sai số tiền/insufficient funds (4xx) retry vô ích và có thể gây side effect. Chỉ retry transient: 5xx, timeout, connection refused, 429.
+
+**3. Major — không backoff/jitter.**
+Retry ngay lập tức → khi gateway chậm, tất cả client retry đồng thời → thundering herd, gateway càng chậm.
+
+**4. Minor — không log attempt, không metric; không giới hạn tổng thời gian.**
+
+### Cách sửa
+~~~java
+public PaymentResult charge(String orderId, BigDecimal amount) {
+    for (int i = 0; i < 3; i++) {
+        try {
+            return gateway.charge(orderId, amount, orderId); // idempotency key
+        } catch (TransientPaymentException e) {
+            if (i == 2) throw e;
+            long backoff = (long)(Math.pow(2, i) * 100 + Math.random() * 100);
+            sleep(backoff);
+        }
+    }
+    throw new IllegalStateException("unreachable");
+}
+~~~
+
+### Cách nói khi review
+"Em thấy retry thiếu ba thứ production-critical: idempotency key (tránh trừ tiền hai lần), phân loại exception (chỉ retry transient), và backoff+jitter (tránh thundering herd). Em đề xuất sửa cả ba; với payment, idempotency là bắt buộc."
+
+> Senior tip: khi review code AI sinh ra có retry, tôi luôn hỏi "retry có idempotent không, có backoff+jitter không, retry exception nào?" — ba câu này quyết định retry có an toàn hay chỉ khuếch đại sự cố.`,
+  follow: [
+    'Idempotency key cho payment gateway thiết kế thế nào?',
+    'Exponential backoff với jitter: full jitter vs decorrelated jitter?'
+  ],
+  tags: ['code-review', 'retry', 'idempotency', 'backoff', 'payment']
+},
+{
+  id: 'scenario-092',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Review PR này (code do AI sinh). Cache static và format ngày. Tìm lỗi.\n~~~java\npublic class UserCache {\n    private static final Map<String, User> cache = new HashMap<>();\n    private static final SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");\n    public User get(String id) {\n        return cache.computeIfAbsent(id, k -> loadFromDb(k));\n    }\n    public String formatDate(Date d) {\n        return sdf.format(d);\n    }\n}\n~~~',
+  a: `**Tóm tắt:** ba lỗi: (1) static HashMap không thread-safe + không giới hạn kích thước → race condition và memory leak (cache lớn dần); (2) SimpleDateFormat không thread-safe và dùng chung static → corruption dữ liệu ngày khi nhiều thread; (3) cache không có TTL/eviction → stale data và OOM lâu dài. Sửa: ConcurrentHashMap + Caffeine (size + TTL), và DateTimeFormatter (immutable, thread-safe) thay SimpleDateFormat.
+
+### Lỗi theo mức nghiêm trọng
+
+**1. Critical — SimpleDateFormat dùng chung giữa thread.**
+SimpleDateFormat không thread-safe. Nhiều thread cùng format → kết quả sai/không xác định, thậm chí ArrayIndexOutOfBounds. Đây là bug production kinh điển.
+
+**2. Critical — static HashMap không thread-safe.**
+{{computeIfAbsent}} trên HashMap không atomic → race condition, mất entry, hoặc infinite loop (Java 7) / corruption. Phải dùng ConcurrentHashMap.
+
+**3. Major — cache không giới hạn + không TTL.**
+cache lớn dần theo số user → memory leak; dữ liệu stale (user đổi tên nhưng cache cũ). Cần size limit + TTL + eviction.
+
+**4. Minor — loadFromDb chạy trong computeIfAbsent giữ lock map → nếu DB chậm, block mọi thread khác cùng map (với CHM lock stripe).**
+
+### Cách sửa
+~~~java
+public class UserCache {
+    private static final Cache<String, User> cache = Caffeine.newBuilder()
+        .maximumSize(10_000).expireAfterWrite(5, java.util.concurrent.TimeUnit.MINUTES).build();
+    private static final DateTimeFormatter FMT =
+        DateTimeFormatter.ofPattern("yyyy-MM-dd");
+    public User get(String id) { return cache.get(id, k -> loadFromDb(k)); }
+    public String formatDate(LocalDate d) { return FMT.format(d); }
+}
+~~~
+
+### Cách nói khi review
+"Em thấy ba vấn đề: SimpleDateFormat không thread-safe dùng chung static (corrupt ngày), HashMap không thread-safe, và cache không giới hạn/TTL (leak + stale). Em đề xuất Caffeine (size+TTL) và DateTimeFormatter immutable. Nếu không thêm lib, dùng ConcurrentHashMap + manual eviction."
+
+> Senior tip: khi review code AI sinh ra có cache/static field, tôi luôn hỏi "thread-safe không, có giới hạn kích thước không, có TTL không, có stale không?" — bốn câu này bắt được phần lớn bug cache production.`,
+  follow: [
+    'Caffeine khác Guava Cache thế nào?',
+    'Khi nào nên cache local vs distributed (Redis)?'
+  ],
+  tags: ['code-review', 'cache', 'thread-safety', 'SimpleDateFormat', 'Caffeine']
+},
 );
