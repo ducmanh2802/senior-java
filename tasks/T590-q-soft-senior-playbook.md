@@ -1,6 +1,7 @@
 # T590 — 10 câu "bí kíp" pass phỏng vấn Senior (topic behavioral)
 
-Status: TODO
+Status: DONE
+Reviewed-by: claude (self-checked: validate)
 Agent: qoder
 Owns: `js/data/q-soft.js`
 
@@ -21,3 +22,7 @@ Level: 2 mid, 6 senior, 2 lead. Mỗi đáp án 2500–4000 ký tự theo chuẩ
 `node scripts/build-light-index.js`, `node scripts/validate.js` → OK. KHÔNG commit. Ghi Status: DONE + tóm tắt vào Notes.
 
 ## Notes
+- Thêm behavioral-021 … behavioral-030 (10 câu; mid: 021, 023; lead: 024, 026; còn lại senior). Mỗi câu 2900–3400 ký tự, cấu trúc như câu behavioral cũ: Tóm tắt → Interviewer muốn đánh giá gì → chiến thuật/bảng → câu nói mẫu → Những điều nên tránh → Senior tip.
+- 021 câu không biết (ví dụ ZGC/G1), 022 rubric + giữ nhịp system design (không lặp phân bổ thời gian của design-001), 023 live coding bị bí, 024 mid vs senior vs lead (ví dụ cache), 025 dự án khó nhất + 3 lớp đào sâu, 026 role-play bất đồng với architect (khác behavioral-002 là kể chuyện cũ), 027 take-home, 028 vòng HR/manager thời layoff + tín hiệu công ty khó khăn, 029 kế hoạch 14 ngày, 030 sau phỏng vấn: follow-up, bị từ chối, nhiều offer.
+- Thêm dấu phẩy sau entry cuối cũ (testing-024) để nối mảng; không đổi nội dung câu cũ.
+- build-light-index + validate: OK.
