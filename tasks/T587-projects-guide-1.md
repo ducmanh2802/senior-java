@@ -1,6 +1,7 @@
 # T587 — Hướng dẫn từng bước cho pet project (1/3)
 
-Status: TODO
+Status: DONE
+Reviewed-by: claude (self-checked: validate)
 Agent: qoder
 Owns: `js/data/projects.js`
 
@@ -20,3 +21,4 @@ Mỗi guide gồm:
 `node scripts/validate.js` → OK. KHÔNG commit. Ghi Status: DONE + tóm tắt vào Notes.
 
 ## Notes
+- Đã thêm field `guide` (Các bước / Code khung / Kiểm tra / Bẫy hay gặp / Interview tip, mỗi guide ~3.2–4.4 nghìn ký tự) cho mọi milestone của: proj-wallet (5), proj-shortlink (5), proj-flash-sale (5), proj-notifications (5). Chỉ thêm field guide, không đổi field khác. node scripts/validate.js → OK.

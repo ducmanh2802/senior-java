@@ -208,7 +208,59 @@ public record Money(BigDecimal amount, String currency) {
 -- Query đối soát: phải trả về 0 dòng
 SELECT transfer_id, SUM(amount) FROM ledger_entry
 GROUP BY transfer_id HAVING SUM(amount) <> 0;
-~~~`, done: `Flyway migrate thành công trên PostgreSQL 16 sạch; INSERT amount âm hoặc balance âm bị CHECK chặn (có test); query đối soát trả 0 dòng sau bộ test; grep toàn repo không có {{double}} cho tiền.` },
+~~~`, done: `Flyway migrate thành công trên PostgreSQL 16 sạch; INSERT amount âm hoặc balance âm bị CHECK chặn (có test); query đối soát trả 0 dòng sau bộ test; grep toàn repo không có {{double}} cho tiền.`,
+        guide: `### Các bước
+1. Sinh project: vào start.spring.io chọn Maven, Java 21, Spring Boot 3.3.x, group {{com.example}}, artifact {{wallet}}; thêm Spring Web, Spring Data JPA, Validation, Flyway Migration, PostgreSQL Driver, Spring Boot Actuator, Testcontainers. Giải nén, chạy {{./mvnw -v}} để chắc Maven wrapper dùng JDK 21.
+2. Tạo {{compose.yaml}} ở thư mục gốc (đoạn "Chạy local" trong phần thiết kế), chạy {{docker compose up -d postgres}} rồi {{docker compose ps}} thấy trạng thái healthy/running.
+3. Trong {{application.yml}} khai báo datasource {{jdbc:postgresql://localhost:5432/wallet}}, user/pass {{app}}; đặt {{spring.jpa.hibernate.ddl-auto=validate}} để Hibernate chỉ kiểm tra schema, còn Flyway là nơi duy nhất tạo bảng.
+4. Tạo {{src/main/resources/db/migration/V1__init.sql}} chép đúng 4 bảng wallet, transfer, ledger_entry, outbox kèm index. Khởi động app bằng {{./mvnw spring-boot:run}}, log phải có "Successfully applied 1 migration".
+5. Tạo {{V2__system_wallets.sql}}: chèn ví hệ thống "cash-in" (kind = SYSTEM) với UUID cố định. Vì CHECK balance >= 0, ví cash-in không thể âm; cách đơn giản là cho nó balance ban đầu rất lớn (ví dụ 10^12) và ghi rõ trong README đây là "nguồn tiền mô phỏng".
+6. Viết entity {{Wallet}}, {{Transfer}}, {{LedgerEntry}} trong package {{domain}}; cột tiền khai báo {{@Column(precision = 19, scale = 2)}} kiểu BigDecimal. LedgerEntry không có setter: append-only ngay từ code.
+7. Viết record {{Money}} như trong phần tasks và unit test: cộng khác currency ném lỗi, làm tròn HALF_EVEN, 0.1 + 0.2 = 0.30 chính xác.
+8. Viết test tích hợp {{SchemaConstraintsIT}} với Testcontainers PostgreSQL 16 ({{@ServiceConnection}}): INSERT amount âm, balance âm, ledger amount = 0 đều phải ném {{DataIntegrityViolationException}}.
+9. Lưu 2 query đối soát (tổng theo transfer = 0; balance = tổng entry theo ví) vào {{src/main/resources/sql/reconcile.sql}} để milestone sau và job đêm dùng lại.
+
+### Code khung
+~~~java
+@Entity @Table(name = "wallet")
+public class Wallet {
+    @Id private UUID id;                       // tự sinh trong code: UUID.randomUUID()
+    @Column(name = "owner_id", nullable = false) private String ownerId; // = jwt sub
+    @Column(nullable = false, length = 3) private String currency;
+    @Column(nullable = false, precision = 19, scale = 2)
+    private BigDecimal balance = BigDecimal.ZERO.setScale(2);
+    @Column(nullable = false) private String kind = "USER";
+    @Version private long version;             // optimistic lock cho các thao tác đọc-sửa-ghi khác
+
+    protected Wallet() { }                     // JPA cần constructor rỗng
+    public Wallet(UUID id, String ownerId, String currency) {
+        this.id = id; this.ownerId = ownerId; this.currency = currency;
+    }
+    // KHÔNG có setBalance: số dư chỉ đổi qua UPDATE có điều kiện ở repository
+}
+~~~
+~~~sql
+-- reconcile.sql: số dư phải khớp tổng bút toán (trả về 0 dòng mới đúng)
+SELECT w.id, w.balance, COALESCE(SUM(e.amount), 0) AS ledger_sum
+FROM wallet w LEFT JOIN ledger_entry e ON e.wallet_id = w.id
+WHERE w.kind = 'USER'
+GROUP BY w.id, w.balance
+HAVING w.balance <> COALESCE(SUM(e.amount), 0);
+~~~
+
+### Kiểm tra
+- {{./mvnw verify}} xanh; test constraint chứng minh 3 CHECK hoạt động.
+- {{docker compose exec postgres psql -U app -d wallet}} rồi gõ lệnh describe bảng ledger_entry (d kèm dấu gạch chéo ngược) thấy CHECK và index {{ix_ledger_wallet_time}}.
+- Xoá volume ({{docker compose down -v}}), chạy lại app: Flyway migrate từ đầu không lỗi (chứng minh migration tái lập được).
+- {{grep -rnEi "double|float" src/main/java}} không có kết quả nào liên quan tới tiền.
+
+### Bẫy hay gặp
+- **So sánh BigDecimal bằng equals:** {{new BigDecimal("2.0").equals(new BigDecimal("2.00"))}} là false vì khác scale. Dùng {{compareTo(...) == 0}} hoặc chuẩn hoá scale 2 ngay khi tạo (Money làm việc này).
+- **Tạo BigDecimal từ double:** {{new BigDecimal(0.1)}} cho 0.1000000000000000055…; luôn dùng {{new BigDecimal("0.1")}} hoặc {{BigDecimal.valueOf(...)}}.
+- **ddl-auto=update:** Hibernate tự sửa schema, lệch với Flyway và không tạo CHECK. Giữ {{validate}}; sai mapping thì app không khởi động, đó là điều tốt.
+- **Sửa file migration đã chạy:** Flyway báo checksum mismatch. Migration đã apply là bất biến; muốn đổi thì viết V3 mới.
+
+> Interview tip: Kể rằng bạn đẩy bất biến xuống DB (CHECK, UNIQUE, append-only bằng REVOKE) để dù code có bug thì dữ liệu tiền vẫn không sai, và có query đối soát chứng minh điều đó.` },
       { title: 'API và xác thực', tasks: `1. Thêm {{spring-boot-starter-oauth2-resource-server}}; cấu hình issuer (Keycloak trong compose hoặc JWT ký bằng khoá local cho profile dev).
 2. Viết {{SecurityFilterChain}}: mọi /api/** cần JWT, Actuator health mở.
 3. Viết controller ví và lịch sử; lấy ownerId từ {{jwt.getSubject()}}, không nhận ownerId từ body.
@@ -230,7 +282,57 @@ class SecurityConfig {
         return http.build();
     }
 }
-~~~`, done: `Test chứng minh user A gọi GET/POST trên ví của B nhận 404; request không token nhận 401; body lỗi không chứa stack trace hay số dư.` },
+~~~`, done: `Test chứng minh user A gọi GET/POST trên ví của B nhận 404; request không token nhận 401; body lỗi không chứa stack trace hay số dư.`,
+        guide: `### Các bước
+1. Thêm dependency {{spring-boot-starter-oauth2-resource-server}} và {{spring-security-test}} (scope test) vào pom.xml.
+2. Chọn issuer cho môi trường dev: cách nhanh là thêm Keycloak vào compose ({{quay.io/keycloak/keycloak:25.0}} chạy {{start-dev}}, cổng 8180), tạo realm {{wallet}}, client {{wallet-cli}} bật Direct Access Grants để lấy token bằng curl, 2 user alice và bob.
+3. Cấu hình {{spring.security.oauth2.resourceserver.jwt.issuer-uri: http://localhost:8180/realms/wallet}}; Boot tự tải JWKS và kiểm tra chữ ký, exp, iss.
+4. Viết {{SecurityConfig}} như phần tasks: /actuator/health mở, mọi thứ khác cần JWT, stateless, tắt CSRF.
+5. Viết {{WalletController}}: {{POST /api/wallets}}, {{GET /api/wallets/:id}}, {{GET /api/wallets/:id/entries}}; tham số {{@AuthenticationPrincipal Jwt jwt}}, ownerId luôn là {{jwt.getSubject()}}.
+6. Repository: {{Optional<Wallet> findByIdAndOwnerId(UUID id, String ownerId)}}; rỗng thì ném {{WalletNotFoundException}} → 404. Tạo ví trùng bắt {{DataIntegrityViolationException}} của UNIQUE (owner_id, currency) → 409.
+7. Lịch sử phân trang bằng cursor: {{WHERE wallet_id = ? AND id < :cursor ORDER BY id DESC LIMIT :size}}; nextCursor = id nhỏ nhất của trang, null khi hết.
+8. Viết {{ApiExceptionHandler}} ({{@RestControllerAdvice}}) trả {{ProblemDetail}}; bật {{spring.mvc.problemdetails.enabled=true}} để lỗi mặc định của Spring cũng ra problem+json.
+9. Viết {{WalletControllerTest}} ({{@WebMvcTest}} + {{@Import(SecurityConfig.class)}}) với {{jwt().jwt(j -> j.subject("alice"))}} và "bob".
+
+### Code khung
+~~~java
+@RestControllerAdvice
+class ApiExceptionHandler {
+    @ExceptionHandler(WalletNotFoundException.class)
+    ProblemDetail notFound(WalletNotFoundException e) {
+        // 404 cho cả "không tồn tại" lẫn "không phải của bạn": không lộ ví người khác
+        ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, "Wallet not found");
+        pd.setType(URI.create("/errors/wallet-not-found"));
+        return pd;
+    }
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    ProblemDetail conflict(DataIntegrityViolationException e) {
+        log.warn("constraint violated", e);            // log server, KHÔNG trả message SQL cho client
+        return ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, "Wallet already exists");
+    }
+}
+// Test: alice đọc ví của bob phải ra 404
+mvc.perform(get("/api/wallets/{id}", bobWalletId).with(jwt().jwt(j -> j.subject("alice"))))
+   .andExpect(status().isNotFound());
+~~~
+
+### Kiểm tra
+- Lấy token: {{curl -s -d "grant_type=password&client_id=wallet-cli&username=alice&password=alice" http://localhost:8180/realms/wallet/protocol/openid-connect/token}}, lấy field access_token.
+- Tạo ví (lần 1 → 201, gọi lần 2 → 409):
+~~~bash
+curl -i -X POST localhost:8080/api/wallets -H "Authorization: Bearer $TOKEN" \\
+  -H "Content-Type: application/json" -d '{"currency":"VND"}'
+~~~
+- Gọi không header Authorization → 401; token của bob đọc ví alice → 404; body lỗi chỉ có type/title/status/detail.
+- Test {{@WebMvcTest}} chạy dưới 5 giây vì không cần Keycloak thật.
+
+### Bẫy hay gặp
+- **Tin ownerId từ body hoặc query:** chỉ cần sửa JSON là đọc ví người khác (IDOR). Owner luôn lấy từ token.
+- **findById rồi so owner trong Java và trả 403:** 403 xác nhận ví tồn tại; trả 404 và lọc owner ngay trong query.
+- **Issuer không khớp:** token lấy qua {{localhost:8180}} nhưng app cấu hình {{keycloak:8080}} thì claim iss khác → 401 khó hiểu. Dùng cùng một hostname cho cả hai phía.
+- **OFFSET cho lịch sử:** trang sâu chậm dần và trùng/sót dòng khi có giao dịch mới; cursor theo id DESC ổn định và dùng được index.
+
+> Interview tip: Nhấn mạnh quyết định trả 404 thay vì 403 và lấy owner từ JWT để chống IDOR, kèm test hai user chứng minh điều đó.` },
       { title: 'Chuyển tiền an toàn khi retry và đồng thời', tasks: `1. Tính {{request_hash}} = SHA-256 của payload đã chuẩn hoá (thứ tự field cố định).
 2. Trong transaction: {{INSERT INTO transfer ... ON CONFLICT (owner_id, idem_key) DO NOTHING}}.
 3. Nếu 0 dòng được chèn: đọc transfer cũ; hash khác → 422, giống → trả lại kết quả cũ (200).
@@ -262,7 +364,51 @@ public Transfer transfer(UUID from, UUID to, BigDecimal amt) {
 private void mustDebit(UUID id, BigDecimal amt) {
     if (walletRepo.debit(id, amt) == 0) throw new InsufficientFundsException(id);
 }
-~~~`, done: `Test Testcontainers: 100 thread rút 50.000 từ ví 1.000.000 → đúng 20 thành công, balance = 0; 10 thread cùng idempotency key → 1 transfer, 2 ledger entry; 200 cặp chuyển ngược chiều không có deadlock.` },
+~~~`, done: `Test Testcontainers: 100 thread rút 50.000 từ ví 1.000.000 → đúng 20 thành công, balance = 0; 10 thread cùng idempotency key → 1 transfer, 2 ledger entry; 200 cặp chuyển ngược chiều không có deadlock.`,
+        guide: `### Các bước
+1. Viết {{RequestHasher}}: chuẩn hoá payload thành chuỗi cố định thứ tự field (ví dụ {{from|to|amount.toPlainString()}}), băm SHA-256 bằng {{MessageDigest}}, mã hoá hex 64 ký tự (Java 17+ có {{HexFormat.of().formatHex(...)}}).
+2. Controller {{POST /api/transfers}} nhận header {{Idempotency-Key}} (bắt buộc, 8–64 ký tự, thiếu → 400) và body đã {{@Valid}} (amount > 0, tối đa 2 chữ số thập phân).
+3. Viết {{TransferService.transfer}} có {{@Transactional}}; bước đầu là native INSERT ... ON CONFLICT (owner_id, idem_key) DO NOTHING RETURNING id.
+4. Không có dòng trả về: đọc transfer theo (owner_id, idem_key); khác request_hash → 422 IDEMPOTENCY_MISMATCH; giống → trả transfer cũ kèm HTTP 200 (controller phân biệt created/replay).
+5. Kiểm tra ví nguồn thuộc owner (query theo id + owner_id), ví đích tồn tại; rồi gọi debit/credit theo thứ tự UUID tăng dần như code trong tasks.
+6. debit trả 0 dòng → ném {{InsufficientFundsException}} (RuntimeException nên Spring tự rollback, kể cả dòng transfer vừa chèn) → 422.
+7. Chèn 2 ledger_entry (-amount ví nguồn, +amount ví đích) và 1 dòng outbox event TransferCompleted (payload JSON có eventId UUID) trong cùng transaction.
+8. Viết {{TransferConcurrencyIT}} với Testcontainers: ExecutorService 100 thread + CountDownLatch xuất phát cùng lúc; 3 kịch bản như phần done. Lặp mỗi kịch bản vài lần ({{@RepeatedTest(5)}}).
+
+### Code khung
+~~~java
+// Bước chống trùng: dùng native query vì JPQL không có ON CONFLICT
+@Modifying
+@Query(value = """
+    INSERT INTO transfer (id, idem_key, owner_id, request_hash, type, from_wallet,
+                          to_wallet, amount, status)
+    VALUES (:id, :key, :owner, :hash, 'TRANSFER', :from, :to, :amt, 'COMPLETED')
+    ON CONFLICT (owner_id, idem_key) DO NOTHING
+    """, nativeQuery = true)
+int tryInsert(UUID id, String key, String owner, String hash, UUID from, UUID to, BigDecimal amt);
+
+// Trong service (@Transactional):
+if (transferRepo.tryInsert(newId, key, owner, hash, from, to, amt) == 0) {
+    // request khác đã giữ key: nếu nó chưa commit, INSERT ở trên đã CHỜ nó xong rồi mới trả 0
+    Transfer old = transferRepo.findByOwnerIdAndIdemKey(owner, key).orElseThrow();
+    if (!old.getRequestHash().equals(hash)) throw new IdempotencyMismatchException(key);
+    return TransferResult.replay(old);              // controller trả 200 thay vì 201
+}
+~~~
+
+### Kiểm tra
+- {{./mvnw verify -Dit.test=TransferConcurrencyIT}}: 100 thread rút 50.000 từ ví 1.000.000 → đúng 20 thành công, 80 nhận InsufficientFunds, balance = 0, query đối soát 0 dòng.
+- 10 thread cùng key → {{SELECT count(*) FROM transfer}} = 1 và ledger_entry = 2.
+- 200 cặp A→B và B→A song song: không có lỗi SQLState 40P01 (deadlock) trong log.
+- curl 2 lần cùng key: lần 1 201, lần 2 200 với cùng id; đổi amount giữ key → 422.
+
+### Bẫy hay gặp
+- **Bắt exception rồi vẫn để transaction commit:** nếu catch InsufficientFundsException bên trong method @Transactional và return bình thường, dòng transfer đã chèn vẫn commit. Để exception bay ra khỏi biên transaction (hoặc ghi REJECTED một cách có chủ ý).
+- **Gọi method @Transactional từ cùng class:** proxy bị bỏ qua, không có transaction. Gọi qua bean khác hoặc đặt annotation ở method public được gọi từ controller.
+- **Hash JSON thô của client:** cùng nội dung nhưng khác khoảng trắng/thứ tự field sẽ thành "payload khác". Hash từ object đã parse và chuẩn hoá.
+- **Persistence context cũ sau UPDATE bulk:** thiếu {{clearAutomatically = true}} thì entity Wallet đã load vẫn hiện số dư cũ.
+
+> Interview tip: Kể theo thứ tự "unique index là hàng rào cuối, UPDATE có điều kiện chặn số dư âm, khoá theo thứ tự id chống deadlock", rồi đưa con số 100 thread → đúng 20 thành công làm bằng chứng.` },
       { title: 'Outbox relay và consumer idempotent', tasks: `1. Thêm spring-kafka; topic {{wallet.events}} với 6 partition, key = walletId để giữ thứ tự theo ví.
 2. Viết relay {{@Scheduled(fixedDelay = 500)}} lấy tối đa 100 dòng chưa phát bằng {{FOR UPDATE SKIP LOCKED}} (nhiều instance chạy song song không tranh nhau).
 3. Gửi Kafka và chờ ack (có timeout) rồi mới đánh dấu {{published_at}}.
@@ -288,7 +434,54 @@ public void relay() {
         }
     }
 }
-~~~`, done: `Dừng container Kafka 2 phút trong lúc gọi 1.000 transfer: API vẫn 201; sau khi Kafka chạy lại, outbox pending về 0 trong < 30 giây; consumer nhận event trùng (test gọi 2 lần) chỉ tạo 1 notification.` },
+~~~`, done: `Dừng container Kafka 2 phút trong lúc gọi 1.000 transfer: API vẫn 201; sau khi Kafka chạy lại, outbox pending về 0 trong < 30 giây; consumer nhận event trùng (test gọi 2 lần) chỉ tạo 1 notification.`,
+        guide: `### Các bước
+1. Thêm {{spring-kafka}}; trong compose đã có {{apache/kafka:3.7.0}}. Tạo topic bằng bean {{NewTopic}} ({{TopicBuilder.name("wallet.events").partitions(6).replicas(1).build()}}), KafkaAdmin của Boot tự tạo khi khởi động.
+2. Cấu hình producer: {{spring.kafka.producer.acks=all}}, {{key-serializer}} String, {{value-serializer}} String (payload outbox đã là JSON), {{properties.enable.idempotence=true}}.
+3. Viết native query {{lockBatch}}: SELECT * FROM outbox WHERE published_at IS NULL ORDER BY id LIMIT :n FOR UPDATE SKIP LOCKED; bật {{@EnableScheduling}}.
+4. Viết {{OutboxRelay}} như code trong tasks; thêm metric Gauge {{wallet.outbox.pending}} đếm dòng chưa phát (query count nhẹ nhờ partial index).
+5. Tạo module/package {{notification}} có {{@KafkaListener(topics = "wallet.events", groupId = "notification")}}; migration V3 tạo bảng {{processed_event(event_id UUID PRIMARY KEY, processed_at TIMESTAMPTZ)}} và {{notification}}.
+6. Consumer chạy trong 1 transaction DB: INSERT processed_event ON CONFLICT DO NOTHING; 0 dòng → đã xử lý, bỏ qua; 1 dòng → tạo notification. Commit DB xong mới commit offset (mặc định ack mode BATCH của Spring Kafka sau khi listener trả về).
+7. Job dọn {{@Scheduled(cron = "0 0 3 * * *")}}: DELETE FROM outbox WHERE published_at < now() - interval '7 days', xoá theo lô 10.000 dòng để không giữ khoá lâu.
+8. Viết {{OutboxRelayIT}} (Testcontainers PostgreSQL + Kafka): tạo transfer, chờ bằng Awaitility tới khi consumer thấy event.
+
+### Code khung
+~~~java
+@Component
+class TransferEventListener {
+    private final JdbcTemplate jdbc;
+    private final NotificationService notifications;
+    // ...constructor
+
+    @KafkaListener(topics = "wallet.events", groupId = "notification")
+    @Transactional                                  // INSERT processed_event + notification cùng commit
+    public void on(String payload) throws JsonProcessingException {
+        TransferEvent ev = mapper.readValue(payload, TransferEvent.class);
+        int inserted = jdbc.update(
+            "INSERT INTO processed_event(event_id, processed_at) VALUES (?, now()) " +
+            "ON CONFLICT (event_id) DO NOTHING", ev.eventId());
+        if (inserted == 0) {                        // event lặp do relay gửi lại: bỏ qua an toàn
+            log.info("duplicate event {}", ev.eventId());
+            return;
+        }
+        notifications.create(ev.toWalletId(), "Bạn vừa nhận " + ev.amount() + " VND");
+    }
+}
+~~~
+
+### Kiểm tra
+- Chạy k6 hoặc vòng lặp curl 1.000 transfer; giữa chừng {{docker compose stop kafka}} 2 phút: API vẫn trả 201, {{SELECT count(*) FROM outbox WHERE published_at IS NULL}} tăng dần.
+- {{docker compose start kafka}}: pending về 0 trong < 30 giây (100 dòng/500 ms ≈ 200 event/giây).
+- Unit test gọi listener 2 lần cùng payload → bảng notification có đúng 1 dòng.
+- {{kafka-console-consumer.sh --topic wallet.events --from-beginning --property print.key=true}} thấy key là walletId.
+
+### Bẫy hay gặp
+- **Gửi Kafka không chờ ack rồi đánh dấu published:** {{send()}} trả CompletableFuture; không {{get()}} thì broker chết là mất event vĩnh viễn.
+- **Relay giữ transaction quá lâu:** gửi 100 event mà mỗi cái chờ timeout 5 giây sẽ giữ khoá và connection rất lâu. Giới hạn batch, dừng ngay ở lỗi đầu tiên (break) như code mẫu.
+- **Khử lặp bằng SELECT rồi INSERT:** 2 consumer (sau rebalance) cùng thấy "chưa có". Dùng PRIMARY KEY + ON CONFLICT trong cùng transaction với hiệu ứng nghiệp vụ.
+- **Key sai làm mất thứ tự:** key là transferId thì event của cùng một ví rơi vào nhiều partition, thứ tự không còn đảm bảo.
+
+> Interview tip: Giải thích vì sao outbox + consumer idempotent tương đương "exactly-once về hiệu ứng" trong khi Kafka chỉ đảm bảo at-least-once, và minh hoạ bằng thí nghiệm tắt Kafka 2 phút.` },
       { title: 'Rate limit, quan sát và đóng gói', tasks: `1. Rate limit theo user: 20 transfer/phút bằng Redis INCR + EXPIRE trong một Lua script (nguyên tử).
 2. Redis lỗi → fail-open cho GET, fail-closed cho chuyển tiền là lựa chọn cần ghi rõ trong README.
 3. Thêm metric Micrometer như phần Quan sát; bật {{management.endpoints.web.exposure.include=health,prometheus}}.
@@ -312,7 +505,58 @@ class TransferRateLimiter {
         return n != null && n <= 20;
     }
 }
-~~~`, done: `Request thứ 21 trong 1 phút nhận 429 kèm header Retry-After; dashboard hiện throughput, p95, outbox lag; k6 100 req/s trong 5 phút: p95 < 300 ms, 0 lỗi 5xx, đối soát không lệch.` }
+~~~`, done: `Request thứ 21 trong 1 phút nhận 429 kèm header Retry-After; dashboard hiện throughput, p95, outbox lag; k6 100 req/s trong 5 phút: p95 < 300 ms, 0 lỗi 5xx, đối soát không lệch.`,
+        guide: `### Các bước
+1. Thêm {{spring-boot-starter-data-redis}}; compose đã có Redis 7. Viết {{TransferRateLimiter}} như phần tasks, gọi ở đầu controller transfer; vượt hạn mức → 429 kèm header {{Retry-After}} = số giây còn lại của cửa sổ.
+2. Bọc lời gọi Redis bằng try/catch {{RedisConnectionFailureException}}: transfer → fail-closed (503), GET → fail-open; ghi lý do vào README mục "Quyết định thiết kế".
+3. Thêm {{micrometer-registry-prometheus}}; cấu hình {{management.endpoints.web.exposure.include=health,prometheus}} và {{management.metrics.distribution.percentiles-histogram.wallet.transfer.duration=true}}.
+4. Đăng ký metric: Counter {{wallet.transfer}} tag result, Timer {{wallet.transfer.duration}}, Gauge outbox pending và lag (tuổi dòng cũ nhất).
+5. Thêm Prometheus ({{prom/prometheus}}) và Grafana ({{grafana/grafana}}) vào compose với {{profiles: ["obs"]}}; file {{prometheus.yml}} scrape {{host.docker.internal:8080/actuator/prometheus}} mỗi 5 giây; chạy {{docker compose --profile obs up -d}}.
+6. Tạo dashboard 4 panel: throughput ({{rate(wallet_transfer_total[1m])}}), p95 ({{histogram_quantile(0.95, sum by (le) (rate(wallet_transfer_duration_seconds_bucket[1m])))}}), outbox pending, hikaricp pending. Export JSON vào repo.
+7. Viết {{load/transfer.js}} cho k6: scenario {{ramping-arrival-rate}} lên 100 iterations/giây, mỗi VU dùng token và ví riêng, header Idempotency-Key ngẫu nhiên. Nhớ nâng hạn mức rate limit trong profile perf để không đo nhầm 429.
+8. Chạy {{k6 run load/transfer.js}}, chụp kết quả + dashboard, chạy query đối soát sau test; ghi cấu hình máy (CPU, RAM, JDK, heap) vào README.
+
+### Code khung
+~~~java
+@Component
+class TransferMetrics {
+    private final MeterRegistry registry;
+    TransferMetrics(MeterRegistry registry, JdbcTemplate jdbc) {
+        this.registry = registry;
+        // Gauge đọc giá trị mỗi lần Prometheus scrape: tuổi (giây) của event chưa phát cũ nhất
+        Gauge.builder("wallet.outbox.lag.seconds", jdbc, j -> {
+                Double v = j.queryForObject(
+                    "SELECT COALESCE(EXTRACT(EPOCH FROM now() - min(created_at)), 0) " +
+                    "FROM outbox WHERE published_at IS NULL", Double.class);
+                return v == null ? 0 : v;
+            }).register(registry);
+    }
+    <T> T record(Supplier<T> call) {
+        Timer.Sample s = Timer.start(registry);
+        String result = "ok";
+        try { return call.get(); }
+        catch (InsufficientFundsException e) { result = "insufficient"; throw e; }
+        catch (RuntimeException e) { result = "error"; throw e; }
+        finally {
+            s.stop(registry.timer("wallet.transfer.duration", "result", result));
+            registry.counter("wallet.transfer", "result", result).increment();
+        }
+    }
+}
+~~~
+
+### Kiểm tra
+- Vòng lặp 21 curl trong 1 phút: lần 21 nhận 429 và Retry-After; {{redis-cli KEYS "rl:tx:*"}} thấy key có TTL ({{TTL key}} ≤ 60).
+- {{curl localhost:8080/actuator/prometheus | grep wallet_}} có đủ counter, histogram bucket, gauge.
+- k6 100 req/s trong 5 phút: {{http_req_duration p(95) < 300ms}} (đặt thành threshold trong script để k6 trả exit code ≠ 0 nếu trượt), 0 lỗi 5xx; sau đó reconcile.sql trả 0 dòng.
+
+### Bẫy hay gặp
+- **INCR và EXPIRE hai lệnh riêng:** app chết giữa chừng thì key không có TTL, user bị khoá vĩnh viễn. Lua script chạy nguyên tử trên Redis.
+- **Fixed window cho phép burst gấp đôi ở ranh giới phút** (20 request cuối phút + 20 đầu phút sau). Chấp nhận được ở đây; nếu cần mượt hơn thì dùng sliding window hoặc token bucket và nói rõ trade-off.
+- **Tag có cardinality cao:** gắn userId hoặc walletId vào metric làm Prometheus nổ bộ nhớ. Chỉ dùng tag có tập giá trị nhỏ (result, endpoint).
+- **Benchmark trên máy đang chạy IDE/Chrome:** số liệu dao động mạnh. Warm-up 1 phút, chạy 3 lần, báo trung vị.
+
+> Interview tip: Trình bày con số thật (100 req/s, p95, outbox lag) kèm ảnh dashboard và nói bạn chọn fail-closed cho chuyển tiền vì sai về tiền đắt hơn mất khả dụng vài giây.` }
     ],
     challenges: [
       `### Race khi chuyển tiền (lost update)
@@ -574,7 +818,53 @@ static URI validateTarget(String raw) {
     if (uri.getHost() == null) throw new InvalidUrlException("host");
     return uri;
 }
-~~~`, done: `Swagger UI hiển thị đủ 5 endpoint có ví dụ; 15+ unit test validator pass, gồm javascript:alert(1), data:, URL 3.000 ký tự và URL không có host; mọi lỗi trả problem+json đúng status.` },
+~~~`, done: `Swagger UI hiển thị đủ 5 endpoint có ví dụ; 15+ unit test validator pass, gồm javascript:alert(1), data:, URL 3.000 ký tự và URL không có host; mọi lỗi trả problem+json đúng status.`,
+        guide: `### Các bước
+1. Sinh project ở start.spring.io: Maven, Java 21, Boot 3.3.x, artifact {{shortlink}}; chọn Web, Validation, Data JPA, Flyway, PostgreSQL Driver, Spring Data Redis, Actuator. Thêm tay {{org.springdoc:springdoc-openapi-starter-webmvc-ui}} (dòng 2.x cho Boot 3) vào pom.xml.
+2. Tạo package theo tính năng: {{link}} (controller, service, repo), {{common.error}} (exception + handler). Chưa cần DB ở milestone này: tạm cấu hình {{spring.autoconfigure.exclude}} cho DataSource hoặc bật luôn compose Postgres cho đơn giản.
+3. Viết DTO dạng record: {{CreateLinkRequest}}, {{LinkResponse(code, shortUrl, expiresAt, quotaRemaining)}}, {{StatsItem(day, clicks)}}, {{PageResponse(items, nextCursor)}}.
+4. Viết {{LinkController}} đủ 5 endpoint trong bảng API, tạm trả dữ liệu giả; khai báo {{@ResponseStatus(HttpStatus.CREATED)}} cho POST và {{@Operation}}/{{@ApiResponse}} để Swagger có mô tả mã lỗi.
+5. Viết {{UrlValidator}} như phần tasks, bổ sung: trim, giới hạn 2.048 ký tự trước khi parse, từ chối host rỗng hoặc chứa ký tự trắng.
+6. Viết {{AliasPolicy}}: regex (chữ, số, gạch ngang, dài 3–30) đã có trong record; thêm danh sách cấm (api, admin, health, actuator, swagger-ui, v3) so sánh không phân biệt hoa thường.
+7. Viết {{ApiErrorHandler}} map {{InvalidUrlException}} → 400 INVALID_URL, {{AliasTakenException}} → 409, {{QuotaExceededException}} → 429; mã lỗi đặt trong property "code" của ProblemDetail.
+8. Viết {{UrlValidatorTest}} dạng {{@ParameterizedTest}} + {{@CsvSource}} với ≥ 15 dòng, mỗi dòng gồm URL và kết quả mong đợi.
+
+### Code khung
+~~~java
+@RestControllerAdvice
+class ApiErrorHandler {
+    // Mã lỗi ổn định: client dựa vào "code", không dựa vào câu chữ của detail
+    private ProblemDetail problem(HttpStatus s, String code, String detail) {
+        ProblemDetail pd = ProblemDetail.forStatusAndDetail(s, detail);
+        pd.setType(URI.create("/errors/" + code.toLowerCase().replace('_', '-')));
+        pd.setProperty("code", code);                 // trường mở rộng của RFC 7807
+        return pd;
+    }
+    @ExceptionHandler(InvalidUrlException.class)
+    ProblemDetail invalidUrl(InvalidUrlException e) {
+        return problem(HttpStatus.BAD_REQUEST, "INVALID_URL", "URL must be http(s) with a host");
+    }
+    @ExceptionHandler(MethodArgumentNotValidException.class) // lỗi của @Valid trên record
+    ProblemDetail invalidBody(MethodArgumentNotValidException e) {
+        ProblemDetail pd = problem(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", "Invalid request");
+        pd.setProperty("fields", e.getFieldErrors().stream().map(FieldError::getField).toList());
+        return pd;
+    }
+}
+~~~
+
+### Kiểm tra
+- {{./mvnw spring-boot:run}} rồi mở {{http://localhost:8080/swagger-ui.html}}: thấy 5 endpoint, mỗi cái có ví dụ request và mã lỗi.
+- {{./mvnw test -Dtest=UrlValidatorTest}}: tối thiểu các case javascript:alert(1), data:text/html, file:///etc/passwd, ftp://x, http:// (không host), URL 3.000 ký tự, URL có khoảng trắng đều bị từ chối; https://a.vn/x?y=1 hợp lệ.
+- POST body URL sai: response có header {{Content-Type: application/problem+json}}, status 400 và code INVALID_URL.
+
+### Bẫy hay gặp
+- **Dùng {{new URL(...)}} để validate:** constructor URL đã deprecated từ Java 20 và chấp nhận nhiều dạng lạ; dùng {{URI}} rồi tự kiểm scheme/host.
+- **So scheme phân biệt hoa thường:** "JavaScript:alert(1)" lọt qua nếu chỉ so "javascript". Luôn lowercase trước khi so.
+- **Quên route /{code} nuốt /swagger-ui hay /actuator:** route resolve có biến code ở đường dẫn một cấp nên khớp mọi đường dẫn một cấp. Đặt regex cho biến (chỉ ký tự base62 và dấu gạch) và cấm alias trùng tên đường dẫn hệ thống.
+- **Lộ stack trace:** mặc định Boot không trả stack trace, nhưng đừng bật {{server.error.include-stacktrace=always}} khi debug rồi quên tắt.
+
+> Interview tip: Nói rằng bạn thiết kế contract và mã lỗi ổn định trước khi viết logic, và chặn scheme nguy hiểm ngay ở biên để link rút gọn không thành công cụ XSS/phishing.` },
       { title: 'Sinh mã, alias và persistence', tasks: `1. Viết migration {{V1__link.sql}} theo phần Schema.
 2. Viết {{CodeGenerator}} dùng {{SecureRandom}} sinh 7 ký tự base62.
 3. Service tạo link: insert; nếu vi phạm unique index thì sinh lại (tối đa 3 lần), với alias thì trả 409 ngay.
@@ -602,7 +892,54 @@ INSERT INTO link (code, owner_id, target_url)
 SELECT substr(md5(g::text), 1, 7), 'seed', 'https://example.com/p/' || g
 FROM generate_series(1, 1000000) g
 ON CONFLICT DO NOTHING;
-~~~`, done: `Test collision: generator trả mã trùng 2 lần rồi mã mới → link tạo thành công, link cũ không bị ghi đè; 2 thread cùng alias → 1 nhận 201, 1 nhận 409; seed 1 triệu dòng < 1 phút.` },
+~~~`, done: `Test collision: generator trả mã trùng 2 lần rồi mã mới → link tạo thành công, link cũ không bị ghi đè; 2 thread cùng alias → 1 nhận 201, 1 nhận 409; seed 1 triệu dòng < 1 phút.`,
+        guide: `### Các bước
+1. Bật compose ({{docker compose up -d postgres redis}}), tạo {{db/migration/V1__link.sql}} chứa bảng link, ux_link_code, ix_link_owner, link_click_daily, create_quota; chạy app để Flyway migrate.
+2. Viết entity {{Link}} (id IDENTITY, code, ownerId, targetUrl, status dạng enum String, expiresAt) và {{LinkRepository}} có {{findByCodeIgnoreCase}} hoặc native query {{WHERE lower(code) = lower(:code)}} để dùng được index biểu thức.
+3. Viết {{CodeGenerator}} như phần tasks; tách thành interface để test có thể thay bằng generator giả.
+4. Viết {{LinkWriter.insert(...)}} đánh dấu {{@Transactional(propagation = REQUIRES_NEW)}} (hoặc dùng {{TransactionTemplate}}), mỗi lần thử là 1 transaction riêng, gọi {{saveAndFlush}} để lỗi unique ném ra ngay tại đó.
+5. Viết {{LinkService.create}}: có alias → gọi insert 1 lần, lỗi unique → {{AliasTakenException}} (409); không alias → vòng lặp tối đa 3 lần sinh mã mới, hết lượt → 503.
+6. Viết {{CreateLinkCollisionIT}} (Testcontainers): chèn sẵn mã "aaaaaaa", generator giả trả "aaaaaaa", "aaaaaaa", "bbbbbbb" → link mới có code bbbbbbb, link cũ giữ nguyên target.
+7. Viết test 2 thread cùng alias "sale" với {{CountDownLatch}} → một 201 một 409.
+8. Chạy câu seed 1 triệu dòng trong tasks bằng psql, bật đo thời gian bằng lệnh timing của psql, rồi {{ANALYZE link}}.
+
+### Code khung
+~~~java
+@Service
+class LinkService {
+    private final LinkWriter writer;          // bean riêng để @Transactional qua proxy hoạt động
+    private final CodeGenerator codes;
+
+    LinkResponse create(String owner, CreateLinkRequest req, URI target) {
+        if (req.alias() != null) {
+            try { return writer.insert(owner, req.alias(), target, req.expiresAt()); }
+            catch (DataIntegrityViolationException e) { throw new AliasTakenException(req.alias()); }
+        }
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            try {
+                return writer.insert(owner, codes.next(), target, req.expiresAt());
+            } catch (DataIntegrityViolationException e) {
+                // transaction của lần thử này đã rollback xong; lần sau mở transaction mới
+                log.info("code collision, attempt {}", attempt);
+            }
+        }
+        throw new CodeSpaceExhaustedException();     // map sang 503, hiếm khi xảy ra
+    }
+}
+~~~
+
+### Kiểm tra
+- {{./mvnw verify}}: test collision và test alias song song xanh.
+- {{EXPLAIN ANALYZE SELECT * FROM link WHERE lower(code) = lower('sale-tet');}} trên 1 triệu dòng phải ra Index Scan using ux_link_code, thời gian dưới 1 ms.
+- Seed 1 triệu dòng hoàn tất dưới 1 phút; {{SELECT count(*) FROM link;}} khoảng 1.000.000 (ít hơn chút vì ON CONFLICT bỏ mã md5 trùng).
+
+### Bẫy hay gặp
+- **Retry trong cùng một transaction:** PostgreSQL đánh dấu transaction là aborted sau lỗi unique ("current transaction is aborted, commands ignored until end of transaction block"); mọi lệnh sau đều lỗi. Mỗi lần thử phải là transaction riêng.
+- **save() không flush:** lỗi unique chỉ ném ra lúc commit, ngoài vòng try/catch của bạn. Dùng {{saveAndFlush}}.
+- **Unique theo lower(code) nhưng mã sinh ra có cả hoa và thường:** "AbC1234" và "abc1234" coi là trùng, không gian mã thực tế nhỏ hơn 62^7; vẫn đủ lớn nhưng hãy ghi rõ trong README.
+- **Random không an toàn:** {{java.util.Random}} đoán được chuỗi kế tiếp; người khác có thể dò link riêng tư. Dùng {{SecureRandom}}.
+
+> Interview tip: Giải thích vì sao chọn mã ngẫu nhiên + unique index + retry thay vì counter base62 (không lộ số lượng link, không đoán được), và đưa con số xác suất trùng để thể hiện bạn đã tính.` },
       { title: 'Quota, auth và rate limit', tasks: `1. Bật OAuth2 Resource Server (JWT) cho /api/**; /{code} để public.
 2. Quota tạo link: UPSERT {{create_quota}} cộng 1 trong cùng transaction với insert link; vi phạm CHECK → 429.
 3. Rate limit resolve theo IP: Redis Lua fixed window 1 giây, 50 request.
@@ -623,7 +960,58 @@ catch (DataIntegrityViolationException e) {
         throw new QuotaExceededException();
     throw e;
 }
-~~~`, done: `120 request tạo link song song của 1 user → đúng 100 thành công, 20 nhận 429; IP gọi 60 lần/giây nhận 10 lần 429 có Retry-After; user B không sửa hay xem stats link của A.` },
+~~~`, done: `120 request tạo link song song của 1 user → đúng 100 thành công, 20 nhận 429; IP gọi 60 lần/giây nhận 10 lần 429 có Retry-After; user B không sửa hay xem stats link của A.`,
+        guide: `### Các bước
+1. Thêm {{spring-boot-starter-oauth2-resource-server}}; cấu hình issuer (Keycloak trong compose hoặc khoá ký cục bộ cho profile dev) giống dự án ví.
+2. {{SecurityFilterChain}}: {{/api/**}} authenticated; {{/actuator/health}}, swagger và đường resolve một cấp permitAll; stateless, tắt CSRF.
+3. Viết native query UPSERT quota trong tasks vào {{QuotaRepository.consume(owner)}} và gọi nó **trong cùng transaction** với insert link: hết quota thì link cũng không được tạo.
+4. Bắt {{DataIntegrityViolationException}} có SQLState 23514 → {{QuotaExceededException}} → 429 kèm property quotaRemaining = 0; trả quotaRemaining = 100 - used trong response 201.
+5. Viết {{IpRateLimiter}} dùng Lua INCR + EXPIRE 1 giây trên key {{rl:ip:<ip>:<epochSecond>}}; gọi trong một {{OncePerRequestFilter}} chỉ áp cho đường resolve.
+6. Cấu hình {{server.forward-headers-strategy=native}} chỉ khi app đứng sau proxy bạn kiểm soát; khi đó {{request.getRemoteAddr()}} đã là IP thật, code không tự đọc X-Forwarded-For.
+7. PATCH và stats: {{findByCodeAndOwnerId}}; không thấy → 404 dù link tồn tại của người khác.
+8. Viết {{QuotaConcurrencyIT}}: 120 task trên {{Executors.newFixedThreadPool(32)}} cùng owner, đếm 201 và 429.
+
+### Code khung
+~~~java
+@Component
+class IpRateLimitFilter extends OncePerRequestFilter {
+    private static final RedisScript<Long> INCR = RedisScript.of(
+        "local c = redis.call('INCR', KEYS[1]) " +
+        "if c == 1 then redis.call('EXPIRE', KEYS[1], 1) end return c", Long.class);
+    private final StringRedisTemplate redis;
+    IpRateLimitFilter(StringRedisTemplate redis) { this.redis = redis; }
+
+    @Override
+    protected boolean shouldNotFilter(HttpServletRequest req) {
+        return req.getRequestURI().startsWith("/api/");   // chỉ chặn đường resolve public
+    }
+    @Override
+    protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res,
+                                    FilterChain chain) throws ServletException, IOException {
+        long sec = Instant.now().getEpochSecond();
+        Long n = redis.execute(INCR, List.of("rl:ip:" + req.getRemoteAddr() + ":" + sec));
+        if (n != null && n > 50) {
+            res.setStatus(429);
+            res.setHeader("Retry-After", "1");
+            return;                                       // không gọi chain: request dừng tại đây
+        }
+        chain.doFilter(req, res);
+    }
+}
+~~~
+
+### Kiểm tra
+- QuotaConcurrencyIT: đúng 100 lần 201, 20 lần 429; {{SELECT used FROM create_quota}} = 100.
+- Bắn 60 request trong 1 giây vào một code (k6 với {{constant-arrival-rate}} rate 60): khoảng 10 lần 429 có Retry-After; IP khác gọi cùng lúc không bị ảnh hưởng.
+- Token của user B gọi PATCH link của A → 404; gọi không token → 401; resolve không token → 302.
+
+### Bẫy hay gặp
+- **Tin header X-Forwarded-For từ client:** kẻ tấn công gửi mỗi request một IP giả và né rate limit. Chỉ để proxy tin cậy ghi header, app dùng cấu hình forward-headers của Boot.
+- **Đếm quota rồi mới insert ở hai transaction:** link insert lỗi nhưng quota đã trừ (hoặc ngược lại). Đặt cả hai trong một transaction.
+- **Kiểm quota bằng SELECT used rồi so trong Java:** 120 request song song cùng thấy used = 99. Để CHECK của DB làm trọng tài.
+- **Ngày quota theo múi giờ server:** CURRENT_DATE phụ thuộc timezone của session PostgreSQL; yêu cầu là reset 00:00 UTC nên đặt timezone UTC cho datasource hoặc truyền ngày tính bằng {{LocalDate.now(ZoneOffset.UTC)}}.
+
+> Interview tip: Kể rằng quota được bảo vệ bằng CHECK constraint thay vì khoá trong Java, và test 120 request song song cho đúng 100 thành công là bằng chứng.` },
       { title: 'Cache resolve và vô hiệu hoá', tasks: `1. Viết {{ResolveService}} cache-aside: đọc Redis, miss thì đọc DB rồi SET kèm TTL.
 2. TTL = min(300 giây, thời gian còn lại tới expiresAt); link đã hết hạn thì không cache.
 3. Cache cả kết quả "không tồn tại" 30 giây (negative cache) để bot quét mã ngẫu nhiên không dập DB.
@@ -649,7 +1037,51 @@ public Optional<String> resolve(String code) {
     if (!ttl.isNegative() && !ttl.isZero()) safeSet(key, l.getTargetUrl(), ttl);
     return Optional.of(l.getTargetUrl());
 }
-~~~`, done: `Test: link hết hạn sau 2 giây trả 410 ngay khi hết hạn dù đã nằm trong cache; tắt link rồi resolve ngay → 410; dừng Redis → resolve vẫn 302 (chậm hơn) và không có 5xx.` },
+~~~`, done: `Test: link hết hạn sau 2 giây trả 410 ngay khi hết hạn dù đã nằm trong cache; tắt link rồi resolve ngay → 410; dừng Redis → resolve vẫn 302 (chậm hơn) và không có 5xx.`,
+        guide: `### Các bước
+1. Cấu hình Lettuce timeout: {{spring.data.redis.timeout=50ms}} và {{spring.data.redis.connect-timeout=200ms}}; Redis chậm sẽ ném lỗi nhanh thay vì kéo p99 lên.
+2. Thêm {{io.github.resilience4j:resilience4j-spring-boot3}} và {{spring-boot-starter-aop}}; khai báo circuit breaker {{redis}}: cửa sổ 20 lời gọi, ngưỡng lỗi 50%, chờ 10 giây ở trạng thái open.
+3. Viết {{safeGet}}/{{safeSet}} bọc RedisTemplate bằng circuit breaker; mọi lỗi trả null/bỏ qua và tăng counter {{shortlink.cache.error}}.
+4. Viết {{ResolveService.resolve}} như phần tasks; repository {{findActiveByCode(code, now)}} lọc status = ACTIVE và (expires_at IS NULL OR expires_at > now).
+5. Trong controller: có URL → 302 kèm Location; empty → phân biệt 404 (không tồn tại) và 410 (hết hạn/đã tắt) bằng một query phụ chỉ khi miss, hoặc cache giá trị "-gone" riêng.
+6. Khi PATCH tắt link: trong service @Transactional, sau khi update status thì publish {{LinkDisabledEvent}}; listener {{@TransactionalEventListener(phase = AFTER_COMMIT)}} xoá key có dạng {{link:}} + mã link (viết thường).
+7. Đo: Timer {{shortlink.resolve}} tag result=hit|miss|not_found|gone.
+8. Viết {{ResolveCacheIT}} (Testcontainers Postgres + Redis): link hết hạn sau 2 giây; tắt rồi resolve; dừng container Redis bằng {{redis.stop()}} rồi resolve.
+
+### Code khung
+~~~java
+@Component
+class LinkCacheInvalidator {
+    private final StringRedisTemplate redis;
+    LinkCacheInvalidator(StringRedisTemplate redis) { this.redis = redis; }
+
+    // Chạy SAU khi transaction tắt link commit: nếu xoá trước commit, một request
+    // resolve chen giữa có thể đọc DB cũ (vẫn ACTIVE) và nạp lại cache sai.
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    void onDisabled(LinkDisabledEvent e) {
+        try {
+            redis.delete("link:" + e.code().toLowerCase());
+        } catch (RuntimeException ex) {
+            // Không ném lỗi: DB đã đúng; TTL tối đa 5 phút là giới hạn trên của dữ liệu cũ
+            log.warn("cache evict failed for {}", e.code(), ex);
+        }
+    }
+}
+~~~
+
+### Kiểm tra
+- Gọi resolve 2 lần cùng code: metric result=miss rồi result=hit; {{redis-cli TTL link:sale-tet}} ≤ 300.
+- Link expiresAt = now + 2 giây: resolve ngay → 302; chờ 3 giây → 410 (TTL cache đã bị giới hạn theo expiresAt).
+- PATCH tắt link rồi resolve ngay trong cùng test → 410.
+- {{docker stop}} container Redis giữa lúc chạy k6: resolve vẫn 302, p95 tăng nhưng không có 5xx; log thấy circuit breaker chuyển OPEN.
+
+### Bẫy hay gặp
+- **Xoá cache trước commit hoặc trong transaction:** race nạp lại dữ liệu cũ như comment trong code. Luôn xoá sau commit.
+- **TTL cố định 5 phút cho link sắp hết hạn:** link hết hạn sau 10 giây vẫn được cache phục vụ thêm gần 5 phút. TTL phải là min(5 phút, thời gian còn lại).
+- **Negative cache quá dài:** user vừa tạo alias trùng với mã bot đã quét sẽ bị 404 tới 30 giây. Giữ ngắn, hoặc xoá key "-" ngay khi tạo link.
+- **Cache stampede khi link viral hết TTL:** hàng trăm request cùng miss đánh DB. Thêm single-flight trong pod (ConcurrentHashMap của CompletableFuture theo code) như bảng xử lý lỗi.
+
+> Interview tip: Trình bày cache-aside kèm 3 quyết định: TTL không vượt hạn link, xoá sau commit, Redis lỗi thì đọc DB, và nói rõ giới hạn trên của dữ liệu cũ là bao nhiêu giây.` },
       { title: 'Thống kê click, đo tải và README', tasks: `1. {{ClickBuffer}}: {{ConcurrentHashMap}} của {{LongAdder}} theo link id; resolve chỉ gọi increment.
 2. {{@Scheduled(fixedDelay = 10000)}} hoán đổi map và UPSERT cộng dồn vào {{link_click_daily}} theo lô (batch update).
 3. Flush thêm một lần khi tắt app ({{@PreDestroy}}) để giảm mất dữ liệu khi deploy.
@@ -675,7 +1107,51 @@ class ClickBuffer {
         snapshot.forEach((id, n) -> statsRepo.addClicks(id, LocalDate.now(ZoneOffset.UTC), n.sum()));
     }
 }
-~~~`, done: `Sau 10.000 resolve, bảng thống kê lệch ≤ 0,1%; README có bảng benchmark 2 kịch bản (ví dụ hit p95 < 20 ms ở 2.000 req/s) và ghi rõ giới hạn mất click khi pod crash.` }
+~~~`, done: `Sau 10.000 resolve, bảng thống kê lệch ≤ 0,1%; README có bảng benchmark 2 kịch bản (ví dụ hit p95 < 20 ms ở 2.000 req/s) và ghi rõ giới hạn mất click khi pod crash.`,
+        guide: `### Các bước
+1. Viết {{ClickBuffer}} như phần tasks; resolve gọi {{clickBuffer.hit(link.id)}} sau khi có kết quả (cache cần lưu cả id, ví dụ giá trị dạng id|url).
+2. Viết {{ClickStatsRepository.addClicks}} bằng {{JdbcTemplate.batchUpdate}} với UPSERT vào link_click_daily (code khung bên dưới), gom cả snapshot vào một batch thay vì gọi từng dòng.
+3. Thêm {{@PreDestroy}} gọi flush; cấu hình {{server.shutdown=graceful}} và {{spring.lifecycle.timeout-per-shutdown-phase=20s}} để request đang chạy xong trước khi flush cuối.
+4. Endpoint {{GET /api/links/:code/stats?from=&to=}}: kiểm owner, query link_click_daily theo khoảng ngày, giới hạn tối đa 90 ngày.
+5. Bật {{micrometer-registry-prometheus}}, đăng ký Gauge {{shortlink.click.buffer.size}} = current.size().
+6. Seed 1 triệu link (milestone 2), viết {{load/resolve-hot.js}} (1.000 code nóng) và {{load/resolve-random.js}} (code ngẫu nhiên trong 1 triệu), k6 executor {{constant-arrival-rate}} 2.000 iterations/giây, tắt follow redirect ({{redirects: 0}} trong options).
+7. Chạy mỗi kịch bản: 1 phút warm-up, 3 phút đo, lặp 3 lần; ghi p95/p99 từ metric server và hit ratio.
+8. README: bảng kết quả, cấu hình máy, giới hạn "pod crash mất tối đa 10 giây click".
+
+### Code khung
+~~~java
+@Repository
+class ClickStatsRepository {
+    private final JdbcTemplate jdbc;
+    ClickStatsRepository(JdbcTemplate jdbc) { this.jdbc = jdbc; }
+
+    // Một round-trip cho cả lô: cộng dồn clicks theo (link_id, day)
+    void addAll(LocalDate day, Map<Long, LongAdder> snapshot) {
+        List<Object[]> rows = snapshot.entrySet().stream()
+            .map(e -> new Object[] { e.getKey(), day, e.getValue().sum() })
+            .toList();
+        jdbc.batchUpdate("""
+            INSERT INTO link_click_daily (link_id, day, clicks) VALUES (?, ?, ?)
+            ON CONFLICT (link_id, day) DO UPDATE
+            SET clicks = link_click_daily.clicks + EXCLUDED.clicks
+            """, rows);
+    }
+}
+~~~
+Thêm {{reWriteBatchedInserts=true}} vào JDBC URL của PostgreSQL để driver gộp batch thành ít câu lệnh hơn.
+
+### Kiểm tra
+- Test tích hợp: gọi resolve 10.000 lần (nhiều thread), chờ 1 lần flush, {{SELECT sum(clicks) FROM link_click_daily}} lệch ≤ 0,1% so với 10.000.
+- {{curl -s localhost:8080/actuator/prometheus | grep shortlink_}} có timer resolve và gauge buffer.
+- Kịch bản hit nóng: mục tiêu p95 < 20 ms, p99 < 50 ms ở 2.000 req/s, hit ratio > 99%; kịch bản miss: p95 < 60 ms.
+
+### Bẫy hay gặp
+- **Ghi DB trên đường resolve** (UPDATE clicks = clicks + 1 mỗi request): link nóng thành hot row, p99 tăng vọt. Chỉ tăng bộ đếm trong RAM.
+- **Đo latency từ k6 chạy cùng máy:** k6 tranh CPU với app làm số liệu xấu đi; ghi rõ hoặc chạy k6 trên máy khác. Ưu tiên p95 đo tại server qua Micrometer.
+- **Đo kết quả 302 nhưng k6 tự follow redirect:** k6 đi tiếp tới URL đích ngoài internet và đo cả nó. Đặt redirects = 0.
+- **Ngày thống kê theo giờ local:** flush lúc 00:00:05 gán click của 23:59 sang ngày mới; chấp nhận được nhưng phải dùng UTC thống nhất với quota.
+
+> Interview tip: Kể bạn tách ghi nhận click khỏi đường nóng bằng buffer trong RAM, đánh đổi có ý thức việc mất tối đa 10 giây dữ liệu, và có bảng benchmark 2 kịch bản hit/miss làm bằng chứng.` }
     ],
     challenges: [
       `### Mã ngắn bị đoán (enumeration)
@@ -953,7 +1429,58 @@ FROM campaign_stock s
 LEFT JOIN reservation r ON r.campaign_id = s.campaign_id AND r.status = 'PENDING'
 GROUP BY s.campaign_id, s.reserved
 HAVING s.reserved <> COUNT(r.id);   -- phải trả 0 dòng
-~~~`, done: `Migration chạy sạch; UPDATE làm lệch tổng bị CHECK chặn (có test); 16 unit test chuyển trạng thái pass; query invariant trả 0 dòng sau seed.` },
+~~~`, done: `Migration chạy sạch; UPDATE làm lệch tổng bị CHECK chặn (có test); 16 unit test chuyển trạng thái pass; query invariant trả 0 dòng sau seed.`,
+        guide: `### Các bước
+1. Sinh project ở start.spring.io: Java 21, Boot 3.3.x, artifact {{flash-sale}}; chọn Web, Data JPA, Validation, Flyway, PostgreSQL Driver, Data Redis, Spring for Apache Kafka, Actuator, Testcontainers. Chép {{compose.yaml}} trong phần Chạy local, chạy {{docker compose up -d}}.
+2. Vẽ state machine vào {{docs/state-machine.md}} (ASCII là đủ): PENDING là trạng thái duy nhất có cạnh đi ra; CONFIRMED, EXPIRED, CANCELLED là trạng thái cuối.
+3. Tạo {{db/migration/V1__init.sql}} chép đúng 4 bảng campaign, campaign_stock, reservation, outbox kèm partial index; đặt {{spring.jpa.hibernate.ddl-auto=validate}}.
+4. Viết enum {{ReservationStatus}} như phần tasks, và entity {{Reservation}} có method {{transitionTo(next)}} ném {{IllegalStateException}} khi chuyển sai; không có setter public cho status.
+5. Viết {{StockInvariantIT}} (Testcontainers PostgreSQL 16): UPDATE campaign_stock SET available = available - 1 (không tăng reserved) phải ném lỗi CHECK; tạo 2 reservation cùng (campaign_id, user_id) phải ném lỗi unique.
+6. Lưu 2 query kiểm tra vào {{src/test/resources/sql/invariants.sql}}: tổng 3 cột = total (DB đã chặn, query dùng cho alert) và reserved = số PENDING (query chéo bảng trong tasks).
+7. Viết {{V2__seed_local.sql}} chỉ chạy ở profile local ({{spring.flyway.locations=classpath:db/migration,classpath:db/seed}} trong {{application-local.yml}}) tạo campaign 1.000 suất mở ngay.
+8. Viết {{ReservationStatusTest}} với {{@ParameterizedTest}} + {{@MethodSource}} sinh đủ 16 cặp (from, to) và kết quả mong đợi.
+
+### Code khung
+~~~java
+@Entity @Table(name = "reservation")
+public class Reservation {
+    @Id private UUID id;
+    @Column(name = "campaign_id") private long campaignId;
+    @Column(name = "user_id") private String userId;
+    @Column(name = "idem_key") private String idemKey;
+    @Enumerated(EnumType.STRING) private ReservationStatus status;  // lưu chữ, không lưu số thứ tự
+    @Column(name = "expires_at") private Instant expiresAt;
+
+    protected Reservation() { }
+
+    public void transitionTo(ReservationStatus next) {
+        // Mọi thay đổi trạng thái đi qua một cửa duy nhất: dễ test, dễ audit
+        if (!status.canTransitionTo(next))
+            throw new IllegalStateException(status + " -> " + next + " is not allowed");
+        this.status = next;
+    }
+}
+
+// 16 tổ hợp: chỉ 3 cặp PENDING -> {CONFIRMED, EXPIRED, CANCELLED} hợp lệ
+static Stream<Arguments> pairs() {
+    return Arrays.stream(ReservationStatus.values()).flatMap(f ->
+        Arrays.stream(ReservationStatus.values()).map(t ->
+            Arguments.of(f, t, f == PENDING && t != PENDING)));
+}
+~~~
+
+### Kiểm tra
+- {{./mvnw test}}: 16 case của ReservationStatusTest xanh; StockInvariantIT chứng minh CHECK và UNIQUE hoạt động.
+- {{docker compose down -v}} rồi khởi động lại app profile local: Flyway chạy V1 và seed, {{SELECT * FROM campaign_stock}} cho total = available = 1000.
+- Chạy invariants.sql: 0 dòng.
+
+### Bẫy hay gặp
+- **{{@Enumerated}} mặc định ORDINAL:** chèn thêm trạng thái vào giữa enum làm dữ liệu cũ đổi nghĩa. Luôn dùng EnumType.STRING, khớp CHECK trong SQL.
+- **Chỉ kiểm invariant ở Java:** 2 pod cùng chạy thì kiểm tra trong bộ nhớ vô nghĩa. CHECK trên một dòng và UNIQUE là hàng rào duy nhất đáng tin.
+- **Tách available/reserved/sold ra nhiều bảng:** mất khả năng dùng CHECK một dòng, phải dùng trigger hoặc khoá phức tạp. Thiết kế một dòng chấp nhận hot row và xử lý ở milestone mở rộng.
+- **Seed lẫn vào migration production:** để seed ở thư mục riêng chỉ bật trong profile local.
+
+> Interview tip: Mở đầu bằng invariant "available + reserved + sold = total" và cho thấy nó được DB bảo vệ, rồi mới nói tới tối ưu, vì interviewer flash sale luôn hỏi "làm sao chắc chắn không oversell".` },
       { title: 'Đặt suất bằng conditional update và idempotency', tasks: `1. Viết service {{reserve(campaignId, userId, idemKey)}} trong 1 transaction.
 2. INSERT reservation trước với {{ON CONFLICT DO NOTHING}}; 0 dòng thì đọc lại để phân biệt trùng key (trả bản cũ) hay trùng user (409).
 3. UPDATE kho có điều kiện {{available > 0}}; 0 dòng thì ném {{SoldOutException}} để rollback cả dòng reservation.
@@ -984,7 +1511,54 @@ void neverOversells() throws Exception {
     assertThat(soldOut.get()).isEqualTo(900);
     assertThat(stockRepo.find(campaignId).available()).isZero();
 }
-~~~`, done: `Test trên pass 30/30 lần; 5 request cùng user khác key → 1 thành công + 4 lần 409; retry cùng key → cùng reservation id, available chỉ giảm 1.` },
+~~~`, done: `Test trên pass 30/30 lần; 5 request cùng user khác key → 1 thành công + 4 lần 409; retry cùng key → cùng reservation id, available chỉ giảm 1.`,
+        guide: `### Các bước
+1. Tạo {{ReservationRepository}} với 3 native query: {{tryInsert}} (INSERT ... ON CONFLICT DO NOTHING), {{findByUserIdAndIdemKey}}, {{findByCampaignIdAndUserId}}.
+2. Tạo {{StockRepository.reserveOne(campaignId)}}: UPDATE campaign_stock SET available = available - 1, reserved = reserved + 1 WHERE campaign_id = :id AND available > 0; trả số dòng.
+3. Viết {{ReservationService.reserve}} có {{@Transactional}}: kiểm campaign đang mở (starts_at ≤ now < ends_at, không thì 409 NOT_STARTED), rồi INSERT, rồi trừ kho, rồi outbox.
+4. Khi INSERT trả 0: thử tìm theo (user_id, idem_key); có → replay (200); không có → chắc chắn trùng (campaign_id, user_id) → 409 ALREADY_RESERVED.
+5. Trừ kho trả 0 → ném {{SoldOutException}} (RuntimeException) để rollback cả dòng reservation vừa chèn → 409 SOLD_OUT.
+6. Ghi outbox ReservationCreated với payload {{reservationId, campaignId, userId, expiresAt, eventId}} bằng JdbcTemplate.
+7. Controller {{POST /api/campaigns/:id/reservations}} đọc header Idempotency-Key, userId từ JWT (hoặc header X-User-Id ở profile local), trả 201 hoặc 200.
+8. Viết test neverOversells trong tasks, thêm {{@RepeatedTest(30)}} hoặc vòng lặp; test 5 request cùng user khác key và test retry cùng key.
+
+### Code khung
+~~~java
+@Transactional
+public ReserveResult reserve(long campaignId, String userId, String idemKey) {
+    Campaign c = campaigns.findOpen(campaignId, Instant.now())
+        .orElseThrow(NotStartedException::new);
+    UUID id = UUID.randomUUID();
+    Instant expiresAt = Instant.now().plusSeconds(c.getHoldSecs());
+
+    if (reservations.tryInsert(id, campaignId, userId, idemKey, expiresAt) == 0) {
+        // Trùng một trong hai UNIQUE: phân biệt để trả lời đúng
+        return reservations.findByUserIdAndIdemKey(userId, idemKey)
+            .map(ReserveResult::replay)                       // retry hợp lệ: 200, không trừ kho
+            .orElseThrow(AlreadyReservedException::new);      // cùng user, key khác: 409
+    }
+    if (stock.reserveOne(campaignId) == 0) {
+        throw new SoldOutException();   // rollback luôn dòng reservation vừa INSERT
+    }
+    outbox.append(id, "ReservationCreated", Map.of("reservationId", id,
+        "campaignId", campaignId, "userId", userId, "expiresAt", expiresAt));
+    return ReserveResult.created(id, expiresAt);
+}
+~~~
+
+### Kiểm tra
+- neverOversells pass 30/30 lần; sau mỗi lần chạy invariants.sql trả 0 dòng.
+- 5 thread cùng user khác key → 1 created + 4 AlreadyReserved; available giảm đúng 1.
+- curl 2 lần cùng Idempotency-Key → cùng id, lần 2 status 200; {{SELECT available FROM campaign_stock}} chỉ giảm 1.
+- Campaign có starts_at trong tương lai → 409 NOT_STARTED, kho không đổi.
+
+### Bẫy hay gặp
+- **Trừ kho trước, insert sau:** user trùng làm INSERT lỗi sau khi đã trừ kho; nếu bắt lỗi sai chỗ là rò suất. Insert trước giúp lọc trùng rẻ, và mọi lỗi đều rollback cùng nhau.
+- **SELECT available rồi UPDATE:** đọc-rồi-ghi ở READ COMMITTED cho phép 2 transaction cùng thấy available = 1. Điều kiện phải nằm trong câu UPDATE.
+- **Nâng isolation lên SERIALIZABLE cho "chắc":** đúng nhưng hàng trăm request sẽ lỗi 40001 và phải retry, throughput tụt mạnh. UPDATE có điều kiện đủ đúng ở READ COMMITTED.
+- **Giữ transaction lâu:** gọi Redis/HTTP trong transaction kéo dài thời gian giữ khoá dòng kho nóng. Transaction chỉ gồm 3–4 câu SQL.
+
+> Interview tip: Giải thích vì sao PostgreSQL đánh giá lại WHERE available > 0 trên phiên bản mới nhất sau khi transaction trước commit, và đưa kết quả test 1.000 request / 100 suất pass 30 lần liên tiếp.` },
       { title: 'Admission control và backpressure', tasks: `1. Mỗi pod có {{Semaphore(50)}} bao quanh đoạn chạm DB; {{tryAcquire(100, MILLISECONDS)}} thất bại → 503 + Retry-After: 1.
 2. Đặt HikariCP {{maximum-pool-size}} khoảng 20 và {{connection-timeout}} 500 ms để không treo 30 giây mặc định.
 3. Redis gate: khi campaign mở, SET {{stock:42}} = total; mỗi request chạy Lua DECR, âm thì 409 SOLD_OUT ngay.
@@ -1011,7 +1585,58 @@ public Reservation reserveGuarded(long campaignId, String user, String key) thro
     try { return service.reserve(campaignId, user, key); }            // DB vẫn là trọng tài cuối
     finally { dbSlots.release(); }
 }
-~~~`, done: `k6 5.000 req/s với stock 1.000: 0 oversell; phần lớn request sau khi hết hàng trả 409 trong < 20 ms; không có request nào chờ > 1 giây; HikariCP pending không vượt 50.` },
+~~~`, done: `k6 5.000 req/s với stock 1.000: 0 oversell; phần lớn request sau khi hết hàng trả 409 trong < 20 ms; không có request nào chờ > 1 giây; HikariCP pending không vượt 50.`,
+        guide: `### Các bước
+1. Cấu hình HikariCP trong {{application.yml}}: {{maximum-pool-size: 20}}, {{connection-timeout: 500}}; thêm Gauge {{flash.admission.inflight}} = 50 - dbSlots.availablePermits().
+2. Viết {{AdmissionGuard.reserveGuarded}} như phần tasks; map {{OverloadedException}} → 503 kèm header Retry-After: 1 trong {{@RestControllerAdvice}}.
+3. Khi campaign mở (endpoint admin hoặc job lúc starts_at): {{SET stock:42 <available>}} trong Redis; script Lua TAKE trả -2 khi key không tồn tại để bỏ qua gate thay vì từ chối nhầm.
+4. Khi reservation EXPIRED/CANCELLED (milestone 4) gọi INCR stock key để trả token.
+5. Viết {{TokenSyncJob}} {{@Scheduled(fixedDelay = 30000)}}: đọc available từ DB, SET lại key; gate chỉ là bộ lọc nên lệch vài giây là chấp nhận được.
+6. Rate limit 5 request/giây/user bằng Lua INCR + EXPIRE trên key {{rl:u:<user>:<epochSecond>}}, vượt → 429.
+7. Viết {{load/flash.js}} cho k6: executor {{ramping-arrival-rate}} từ 0 lên 5.000/giây trong 5 giây, giữ 10 giây, preAllocatedVUs đủ lớn (ví dụ 2.000), userId ngẫu nhiên trong 50.000.
+8. Chạy 2 instance (port 8081/8082) sau một load balancer đơn giản (nginx trong compose) hoặc chia đôi traffic trong k6; ghi số 201/409/503/429 và p95 từng loại.
+
+### Code khung
+~~~java
+@RestControllerAdvice
+class AdmissionErrors {
+    @ExceptionHandler(OverloadedException.class)
+    ResponseEntity<ProblemDetail> overloaded() {
+        ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE,
+            "Too many requests in flight, retry shortly");
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+            .header(HttpHeaders.RETRY_AFTER, "1")     // client (và k6) biết chờ bao lâu
+            .body(pd);
+    }
+    @ExceptionHandler(SoldOutException.class)
+    ProblemDetail soldOut() {
+        ProblemDetail pd = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        pd.setType(URI.create("/errors/sold-out"));
+        pd.setTitle("Sold out");
+        return pd;                                   // trả nhanh, không log stack trace
+    }
+}
+
+@Scheduled(fixedDelay = 30_000)
+void syncTokens() {
+    // DB là sự thật; Redis chỉ là bộ lọc nên được ghi đè định kỳ
+    stockRepo.openCampaigns().forEach(s ->
+        redis.opsForValue().set("stock:" + s.campaignId(), String.valueOf(s.available())));
+}
+~~~
+
+### Kiểm tra
+- k6 5.000 req/s, stock 1.000: invariants.sql trả 0 dòng (0 oversell); sau khi hết hàng, p95 của response 409 < 20 ms vì không chạm DB.
+- {{hikaricp_connections_pending}} trên Prometheus không vượt 50; không request nào > 1 giây (threshold {{http_req_duration: ['max<1000']}} trong k6 options).
+- Dừng Redis giữa test: hệ thống vẫn đúng (DB chặn), chỉ tỉ lệ 503 tăng.
+
+### Bẫy hay gặp
+- **Chờ semaphore bằng {{acquire()}} không timeout:** thread Tomcat dồn ứ, request treo tới timeout client. Luôn tryAcquire có hạn và trả 503 sớm.
+- **Quên trả token khi bị 503 hoặc rollback:** gate đếm lệch xuống, campaign "hết hàng" trong khi DB còn suất (bán thiếu). Trả token ở mọi đường lỗi, và có job đồng bộ làm lưới an toàn.
+- **Pool DB quá lớn:** đặt 200 connection mỗi pod cho "nhanh" làm PostgreSQL tranh khoá dòng nóng tệ hơn. Ít connection + hàng đợi ở app thường cho throughput cao hơn.
+- **Đọc log từng request bị từ chối:** 5.000 dòng log/giây làm nghẽn I/O. Chỉ tăng counter, log tổng hợp định kỳ.
+
+> Interview tip: Kể về "3 lớp lọc": Redis gate cắt phần lớn tải hết hàng, semaphore bảo vệ DB khỏi quá tải, PostgreSQL là trọng tài cuối, kèm bảng số 201/409/503 từ k6.` },
       { title: 'Thanh toán qua outbox, Kafka và hết hạn', tasks: `1. Relay outbox như dự án ví ({{FOR UPDATE SKIP LOCKED}}, chờ ack rồi đánh dấu).
 2. Payment simulator consume ReservationCreated, trả PaymentSucceeded/Failed sau 0–3 giây.
 3. Consumer xác nhận bằng UPDATE có điều kiện {{WHERE id = ? AND status = 'PENDING'}} rồi cập nhật kho (reserved - 1, sold + 1) chỉ khi số dòng = 1; 0 dòng nghĩa là event trùng hoặc đã EXPIRED.
@@ -1036,7 +1661,57 @@ UPDATE campaign_stock s
 SET available = s.available + x.n, reserved = s.reserved - x.n
 FROM (SELECT campaign_id, COUNT(*) AS n FROM upd GROUP BY campaign_id) x
 WHERE s.campaign_id = x.campaign_id;
-~~~`, done: `100 reservation hết hạn, 2 worker chạy cùng lúc → available tăng đúng 100; gửi PaymentSucceeded 2 lần → sold tăng 1; thanh toán sau hạn → reservation vẫn EXPIRED và có event RefundRequested.` },
+~~~`, done: `100 reservation hết hạn, 2 worker chạy cùng lúc → available tăng đúng 100; gửi PaymentSucceeded 2 lần → sold tăng 1; thanh toán sau hạn → reservation vẫn EXPIRED và có event RefundRequested.`,
+        guide: `### Các bước
+1. Viết {{OutboxRelay}} giống dự án ví: native query lockBatch 100 dòng FOR UPDATE SKIP LOCKED, {{kafkaTemplate.send(...).get(5, SECONDS)}} rồi set published_at; topic {{flash.reservations}} key = reservationId.
+2. Tạo package {{payment.simulator}} (có thể chạy trong cùng app ở profile local): {{@KafkaListener}} đọc ReservationCreated, ngủ ngẫu nhiên 0–3 giây ({{ThreadLocalRandom}}), gửi PaymentSucceeded (90%) hoặc PaymentFailed lên topic {{flash.payments}}.
+3. Viết {{PaymentResultListener}} (code khung): UPDATE có điều kiện status = 'PENDING' rồi chỉnh kho chỉ khi đổi được 1 dòng.
+4. PaymentFailed: chuyển CANCELLED và trả kho (available + 1, reserved - 1), INCR token Redis sau commit.
+5. Viết native query {{expireBatch()}} chính là câu CTE trong tasks; {{ExpiryWorker}} {{@Scheduled(fixedDelay = 5000)}} gọi lặp tới khi số dòng xử lý < 100; tăng Counter {{flash.expiry.released}}.
+6. Thanh toán về khi đã EXPIRED (UPDATE trả 0, đọc lại thấy EXPIRED) → ghi outbox RefundRequested trong cùng transaction.
+7. Viết {{ExpiryIT}}: tạo 100 reservation có expires_at quá khứ, chạy 2 lời gọi expireBatch trên 2 thread song song, assert available tăng đúng 100.
+8. Viết {{PaymentIdempotencyIT}}: gửi cùng PaymentSucceeded 2 lần → sold tăng 1.
+
+### Code khung
+~~~java
+@KafkaListener(topics = "flash.payments", groupId = "reservation")
+@Transactional
+public void onPayment(PaymentEvent ev) {
+    if (ev.succeeded()) {
+        // Chỉ thắng được khi còn PENDING: event trùng hoặc đến sau hạn đều trả 0
+        int changed = jdbc.update(
+            "UPDATE reservation SET status = 'CONFIRMED' WHERE id = ? AND status = 'PENDING'",
+            ev.reservationId());
+        if (changed == 1) {
+            jdbc.update("UPDATE campaign_stock SET reserved = reserved - 1, sold = sold + 1 " +
+                        "WHERE campaign_id = ?", ev.campaignId());
+            return;
+        }
+        String now = jdbc.queryForObject(
+            "SELECT status FROM reservation WHERE id = ?", String.class, ev.reservationId());
+        if ("EXPIRED".equals(now) || "CANCELLED".equals(now)) {
+            outbox.append(ev.reservationId(), "RefundRequested", Map.of(
+                "reservationId", ev.reservationId(), "paymentId", ev.paymentId()));
+        }   // CONFIRMED: event trùng, bỏ qua an toàn
+    } else {
+        cancelAndRelease(ev.reservationId(), ev.campaignId());  // cùng mẫu UPDATE có điều kiện
+    }
+}
+~~~
+
+### Kiểm tra
+- ExpiryIT: 2 worker song song → available tăng đúng 100, reserved giảm 100, 100 dòng EXPIRED, không dòng nào bị xử lý 2 lần.
+- PaymentIdempotencyIT: sold = 1 sau 2 event trùng; invariants.sql 0 dòng.
+- Đặt expires_at quá khứ rồi gửi PaymentSucceeded: reservation vẫn EXPIRED, outbox có RefundRequested.
+- Chạy toàn luồng ở local: đặt 1.000 suất, chờ 6 phút, {{SELECT status, count(*) FROM reservation GROUP BY status}} chỉ còn CONFIRMED/CANCELLED/EXPIRED.
+
+### Bẫy hay gặp
+- **Đặt expiry đúng giờ hết hạn, không có ân hạn:** thanh toán thành công lúc 4:59 về tới hệ thống lúc 5:01 thì suất đã bị bán cho người khác. Thêm 30 giây ân hạn và có luồng hoàn tiền.
+- **Dùng {{@Scheduled}} trên nhiều pod không SKIP LOCKED:** 2 pod cùng EXPIRE một dòng, kho bị cộng 2 lần (available lớn hơn thật). SKIP LOCKED + UPDATE có điều kiện chặn điều này.
+- **Commit offset trước khi DB commit:** consumer crash giữa chừng là mất kết quả thanh toán. Để Spring Kafka commit offset sau khi listener (và transaction DB) xong.
+- **Retry vô hạn với event lỗi định dạng:** một message hỏng chặn cả partition. Cấu hình {{DefaultErrorHandler}} với số lần thử hữu hạn và DeadLetterPublishingRecoverer.
+
+> Interview tip: Nói rõ mọi chuyển trạng thái đều là "UPDATE ... WHERE status = 'PENDING'" nên event trùng, worker song song và thanh toán đến muộn đều được xử lý bằng cùng một nguyên tắc, không cần khoá phân tán.` },
       { title: 'Đóng gói, Kubernetes và quan sát', tasks: `1. Dockerfile nhiều stage (build bằng Maven, chạy trên JRE 21), chạy user không phải root.
 2. Thêm Actuator probes: {{management.endpoint.health.probes.enabled=true}}; readiness kiểm DB, liveness không kiểm DB (DB chậm không nên làm pod bị restart).
 3. Manifest Kubernetes: 3 replica, resources requests/limits, {{-XX:MaxRAMPercentage=75}}.
@@ -1063,7 +1738,58 @@ spring:
     hikari:
       maximum-pool-size: 20
       connection-timeout: 500       # ms: thà fail nhanh còn hơn treo
-~~~`, done: `Pod khởi động và readiness OK; giết 1 pod giữa load test không gây oversell và tỉ lệ lỗi < 1%; README có ảnh dashboard và bảng k6 (RPS, p95, p99, 201/409/503).` }
+~~~`, done: `Pod khởi động và readiness OK; giết 1 pod giữa load test không gây oversell và tỉ lệ lỗi < 1%; README có ảnh dashboard và bảng k6 (RPS, p95, p99, 201/409/503).`,
+        guide: `### Các bước
+1. Viết {{Dockerfile}} 2 stage: stage build {{eclipse-temurin:21-jdk}} chạy {{./mvnw -q package -DskipTests}}; stage chạy {{eclipse-temurin:21-jre}}, tạo user không phải root ({{useradd}}) và {{USER app}}, ENTRYPOINT {{java -XX:MaxRAMPercentage=75 -jar app.jar}}. Build bằng {{docker build -t flash-sale:0.1 .}}.
+2. Bật probes và group readiness như YAML trong tasks; thêm {{server.shutdown=graceful}} để pod bị xoá không cắt ngang request đang ghi DB.
+3. Tạo cụm local bằng kind ({{kind create cluster}}) và nạp image ({{kind load docker-image flash-sale:0.1}}); PostgreSQL/Redis/Kafka có thể giữ trong compose và trỏ bằng host.docker.internal, hoặc cài bằng Helm chart.
+4. Viết {{k8s/deployment.yaml}} (code khung), {{k8s/service.yaml}}, ConfigMap cho profile, Secret cho mật khẩu DB; {{kubectl apply -f k8s/}}.
+5. Thêm {{micrometer-registry-prometheus}}; dashboard Grafana có panel: available theo campaign, RPS theo result, p95, inflight semaphore, outbox lag, consumer lag.
+6. Chạy k6 kịch bản đầy đủ qua {{kubectl port-forward}} hoặc Ingress; giữa test chạy {{kubectl delete pod <tên-pod>}} và quan sát.
+7. Thêm cột {{enabled BOOLEAN NOT NULL DEFAULT true}} cho campaign bằng migration mới; service từ chối khi enabled = false. Viết {{docs/runbook.md}}: câu SQL tắt campaign, lệnh {{kubectl rollout undo deployment/flash-sale}}, cách kiểm invariant sau sự cố.
+8. Hoàn thiện README: sơ đồ, cách chạy, bảng k6 (RPS, p95, p99, số 201/409/503), ảnh dashboard.
+
+### Code khung
+~~~yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: flash-sale }
+spec:
+  replicas: 3
+  selector: { matchLabels: { app: flash-sale } }
+  template:
+    metadata: { labels: { app: flash-sale } }
+    spec:
+      terminationGracePeriodSeconds: 40       # > thời gian graceful shutdown của Spring
+      containers:
+        - name: app
+          image: flash-sale:0.1
+          ports: [{ containerPort: 8080 }]
+          resources:
+            requests: { cpu: "500m", memory: "768Mi" }
+            limits: { memory: "768Mi" }       # heap = 75% của limit nhờ MaxRAMPercentage
+          readinessProbe:                      # rớt khi DB lỗi: ngừng nhận traffic
+            httpGet: { path: /actuator/health/readiness, port: 8080 }
+            periodSeconds: 5
+          livenessProbe:                       # KHÔNG kiểm DB: DB chậm không được làm restart pod
+            httpGet: { path: /actuator/health/liveness, port: 8080 }
+            initialDelaySeconds: 30
+            periodSeconds: 10
+~~~
+
+### Kiểm tra
+- {{kubectl get pods}}: 3 pod READY 1/1; {{kubectl describe pod}} không có sự kiện probe failed.
+- Xoá 1 pod giữa load test: tỉ lệ lỗi < 1%, invariants.sql vẫn 0 dòng, pod mới READY trong < 60 giây.
+- {{curl localhost:8080/actuator/health/readiness}} trả DOWN khi dừng PostgreSQL, liveness vẫn UP.
+- README có bảng số liệu và ảnh dashboard.
+
+### Bẫy hay gặp
+- **Liveness kiểm DB:** DB chậm 30 giây làm Kubernetes restart toàn bộ pod cùng lúc, biến sự cố nhỏ thành sập hẳn.
+- **Không đặt memory limit hoặc đặt heap cố định -Xmx lớn hơn limit:** container bị OOMKilled. Dùng MaxRAMPercentage và chừa chỗ cho metaspace, thread stack, direct buffer.
+- **Dựa vào HPA cho burst 10 giây:** HPA phản ứng theo phút; flash sale cần scale trước giờ mở bán và warm-up JIT.
+- **CPU limit quá thấp:** JVM bị throttle trong lúc GC và JIT, p99 tăng vọt; nhiều team chỉ đặt CPU request, không đặt CPU limit.
+
+> Interview tip: Kể về thí nghiệm xoá pod giữa load test mà vẫn 0 oversell, và giải thích vì sao liveness không kiểm DB, vì đó là câu hỏi vận hành interviewer Senior rất hay đào.` }
     ],
     challenges: [
       `### Oversell do đọc rồi ghi
@@ -1311,7 +2037,58 @@ public record NotificationRequested(
         Category category,                 // TRANSACTIONAL | MARKETING
         Map<String, Object> params,        // chỉ dữ liệu cần render, không gửi cả entity
         Set<Channel> channels) {}
-~~~`, done: `POST cùng notificationId 2 lần trả 202 cả 2 nhưng DB có 1 dòng; cùng id khác params trả 409; 10 test preference pass, gồm OTP vẫn gửi khi user tắt hết.` },
+~~~`, done: `POST cùng notificationId 2 lần trả 202 cả 2 nhưng DB có 1 dòng; cùng id khác params trả 409; 10 test preference pass, gồm OTP vẫn gửi khi user tắt hết.`,
+        guide: `### Các bước
+1. Sinh project ở start.spring.io: Java 21, Boot 3.3.x, artifact {{notification-service}}; chọn Web, Validation, Data JPA, Flyway, PostgreSQL Driver, Spring for Apache Kafka, Actuator, Mustache, Testcontainers. Chép compose (postgres, kafka, mailpit, wiremock), chạy {{docker compose up -d}}.
+2. Viết {{V1__init.sql}}: notification, delivery, user_preference như phần Schema, thêm bảng {{template(key, locale, channel, subject, body, PRIMARY KEY (key, locale, channel))}} và vài dòng mẫu cho {{order.paid}} (vi, en).
+3. Tạo package {{contract}} chứa record {{NotificationRequested}}, enum {{Channel}}, {{Category}}; viết {{docs/events.md}} ghi luật tiến hoá: chỉ thêm field optional, đổi nghĩa thì tăng schemaVersion và tạo topic mới.
+4. Viết {{PayloadHasher}}: serialize request bằng ObjectMapper có {{SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS}} và {{MapperFeature.SORT_PROPERTIES_ALPHABETICALLY}} để cùng nội dung luôn ra cùng chuỗi, rồi SHA-256 hex.
+5. Viết {{NotificationController}} {{POST /api/notifications}} trả 202: kiểm template tồn tại (không có → 400), INSERT ON CONFLICT DO NOTHING; 0 dòng → so payload_hash, khác → 409, giống → 202 (idempotent).
+6. Viết {{PreferenceService.isAllowed(userId, channel, category)}}: TRANSACTIONAL luôn true; MARKETING mặc định true nếu chưa có dòng, có dòng thì theo enabled.
+7. Viết {{PUT /api/users/:id/preferences}}: chỉ chính user (sub trong JWT hoặc header giả lập ở local) được sửa, khác → 403; UPSERT từng dòng.
+8. Viết {{PreferenceTest}} dạng {{@ParameterizedTest}} với 10 tổ hợp (kênh × category × có/không dòng × enabled).
+
+### Code khung
+~~~java
+@Service
+class NotificationIntake {
+    private final JdbcTemplate jdbc;
+    private final PayloadHasher hasher;
+    // ...constructor
+
+    @Transactional
+    public void accept(NotificationRequested req) {
+        String hash = hasher.sha256(req);
+        int inserted = jdbc.update("""
+            INSERT INTO notification (id, user_id, template_key, locale, category, params, payload_hash)
+            VALUES (?, ?, ?, ?, ?, ?::jsonb, ?)
+            ON CONFLICT (id) DO NOTHING""",
+            req.notificationId(), req.userId(), req.templateKey(), req.locale(),
+            req.category().name(), hasher.json(req.params()), hash);
+        if (inserted == 0) {
+            String old = jdbc.queryForObject(
+                "SELECT payload_hash FROM notification WHERE id = ?", String.class, req.notificationId());
+            if (!hash.equals(old)) throw new IdempotencyConflictException(req.notificationId()); // 409
+            return;                                   // trùng hoàn toàn: coi như đã nhận, 202
+        }
+        // milestone 2: ghi outbox để router xử lý
+    }
+}
+~~~
+
+### Kiểm tra
+- POST cùng body 2 lần → cả 2 trả 202, {{SELECT count(*) FROM notification}} = 1.
+- Cùng notificationId nhưng params khác → 409 problem+json.
+- templateKey không tồn tại → 400.
+- {{./mvnw test -Dtest=PreferenceTest}}: 10 case xanh, có case OTP (TRANSACTIONAL) vẫn gửi khi user tắt mọi kênh.
+
+### Bẫy hay gặp
+- **Hash JSON không chuẩn hoá:** Map params của Jackson không bảo đảm thứ tự key, cùng nội dung ra 2 hash khác nhau, retry hợp lệ nhận 409 oan.
+- **Để server sinh notificationId:** producer retry sẽ tạo id mới và gửi trùng. Khoá idempotency phải do producer sinh và gửi kèm.
+- **Đưa cả entity Order vào params:** event phình to, lộ dữ liệu, consumer phụ thuộc cấu trúc nội bộ. Chỉ gửi biến cần render.
+- **Cho phép MARKETING khi thiếu dòng preference mà không ghi rõ:** đây là quyết định pháp lý (opt-in/opt-out), ghi vào README.
+
+> Interview tip: Kể rằng contract event có schemaVersion và luật tiến hoá rõ ràng, idempotency key do producer sinh và được DB bảo vệ, đó là nền để mọi tầng sau chỉ cần at-least-once.` },
       { title: 'Outbox phía producer và router idempotent', tasks: `1. Ở order service giả lập: ghi order và outbox trong cùng {{@Transactional}}.
 2. Viết relay đọc outbox theo lô 100 dòng bằng {{FOR UPDATE SKIP LOCKED}}, gửi Kafka, đánh dấu đã gửi.
 3. Router consume {{notification.requested}}: INSERT notification và delivery với ON CONFLICT DO NOTHING.
@@ -1341,7 +2118,49 @@ public void route(NotificationRequested e) {
     deliveryRepo.findPending(e.notificationId())
         .forEach(d -> kafka.send("notification." + d.channel().topic(), e.userId(), d.id()));
 }
-~~~`, done: `Integration test: gửi cùng event 3 lần thì có 1 notification, 2 delivery; kill relay giữa lô 100 rồi chạy lại thì cả 100 event tới Kafka, consumer đếm không thiếu.` },
+~~~`, done: `Integration test: gửi cùng event 3 lần thì có 1 notification, 2 delivery; kill relay giữa lô 100 rồi chạy lại thì cả 100 event tới Kafka, consumer đếm không thiếu.`,
+        guide: `### Các bước
+1. Tạo module/package {{orderdemo}} giả lập order service: bảng {{orders}} và {{outbox(id, topic, msg_key, payload JSONB, created_at, published_at)}} trong migration V2; {{POST /demo/orders}} ghi order + outbox trong cùng {{@Transactional}}.
+2. Viết {{OutboxRelay}} {{@Scheduled(fixedDelay = 500)}}: chạy câu SELECT trong tasks, gửi {{kafkaTemplate.send(topic, msgKey, payload).get(5, SECONDS)}}, set published_at; lỗi thì dừng lô.
+3. Tạo topic bằng bean NewTopic: {{notification.requested}} (6 partition, key = userId), {{notification.email}}, {{notification.sms}}, {{notification.push}}.
+4. Cấu hình consumer: {{spring.kafka.consumer.enable-auto-commit=false}} (Spring mặc định đã tắt và tự commit sau listener), JsonDeserializer với {{spring.json.trusted.packages}} trỏ đúng package contract.
+5. Viết {{RouterListener.route}} như phần tasks; {{deliveryRepo.insertIfAbsent}} dùng INSERT ... ON CONFLICT (notification_id, channel) DO NOTHING.
+6. Để chắc message đã tới broker trước khi offset được commit, chờ từng {{send}} bằng {{CompletableFuture.allOf(...).get(10, SECONDS)}} ở cuối listener.
+7. Viết {{RouterIdempotencyIT}} (Testcontainers Kafka + PostgreSQL): publish cùng event 3 lần, Awaitility chờ, đếm notification = 1, delivery = 2.
+8. Viết test crash: relay có hook ném exception sau khi send 50 dòng; chạy lại relay, consumer thử đếm đủ 100 eventId khác nhau.
+
+### Code khung
+~~~java
+@KafkaListener(topics = "notification.requested", groupId = "router")
+@Transactional
+public void route(NotificationRequested e) throws Exception {
+    repo.insertIfAbsent(e);
+    for (Channel ch : e.channels()) {
+        String st = prefs.isAllowed(e.userId(), ch, e.category()) ? "PENDING" : "SKIPPED";
+        deliveryRepo.insertIfAbsent(e.notificationId(), ch, st);
+    }
+    List<CompletableFuture<SendResult<String, Object>>> sends = new ArrayList<>();
+    for (Delivery d : deliveryRepo.findPending(e.notificationId())) {
+        sends.add(kafka.send("notification." + d.channel().topic(), e.userId(), d.id()));
+    }
+    // Chờ broker ack trước khi listener trả về: nếu ném lỗi ở đây, offset KHÔNG được commit,
+    // record được giao lại; nhờ ON CONFLICT nên chạy lại không tạo dòng trùng.
+    CompletableFuture.allOf(sends.toArray(CompletableFuture[]::new)).get(10, TimeUnit.SECONDS);
+}
+~~~
+
+### Kiểm tra
+- RouterIdempotencyIT: 3 lần cùng event → 1 notification, 2 delivery (EMAIL, SMS).
+- Crash relay giữa lô: sau khi chạy lại, {{SELECT count(*) FROM outbox WHERE published_at IS NULL}} = 0; consumer test đếm đủ 100 eventId (có thể vài cái lặp, không thiếu cái nào).
+- {{kafka-console-consumer.sh --topic notification.email --from-beginning}} thấy deliveryId; user opt-out kênh SMS → delivery SMS là SKIPPED và không có message trên topic sms.
+
+### Bẫy hay gặp
+- **Nghĩ @Transactional trên listener bao luôn Kafka:** transaction ở đây là của DB; send Kafka nằm ngoài. Thứ tự đúng: ghi DB, gửi Kafka và chờ ack, rồi mới để offset commit. Lặp lại an toàn nhờ idempotency.
+- **Gửi lại chỉ khi vừa INSERT:** nếu router crash sau commit DB nhưng trước khi publish, lần giao lại INSERT trả 0 và bạn không publish nữa, tin bị kẹt PENDING mãi. Luôn publish mọi delivery còn PENDING.
+- **JsonDeserializer từ chối class:** lỗi "not in the trusted packages" khi package producer khác consumer. Khai báo trusted packages hoặc dùng type mapping.
+- **Key là notificationId:** thứ tự tin của cùng user (OTP rồi xác nhận) không còn đảm bảo. Key theo userId.
+
+> Interview tip: Giải thích chuỗi outbox → Kafka → router idempotent và vì sao bạn cố ý gửi lại mọi delivery PENDING khi record bị giao lại, cho thấy bạn nghĩ tới từng điểm crash.` },
       { title: 'Channel worker, template và chống gửi trùng', tasks: `1. Mỗi kênh một {{@KafkaListener}} và một adapter ({{EmailAdapter}} dùng JavaMailSender tới Mailpit, SMS/push gọi WireMock bằng RestClient).
 2. Claim delivery bằng UPDATE có điều kiện; 0 dòng thì bỏ qua.
 3. Kiểm tra lại opt-out ngay trước khi gửi.
@@ -1362,7 +2181,58 @@ String render(Template t, Map<String, Object> params) {
     // JMustache mặc định ném MustacheException khi thiếu biến: đúng ý, không gửi "Xin chào ,"
     return Mustache.compiler().escapeHTML(true).compile(t.body()).execute(params);
 }
-~~~`, done: `Gửi cùng delivery id vào topic 2 lần song song thì Mailpit chỉ có 1 email; template thiếu biến cho FAILED trong < 1 giây và không retry; sweeper khôi phục delivery kẹt trong test.` },
+~~~`, done: `Gửi cùng delivery id vào topic 2 lần song song thì Mailpit chỉ có 1 email; template thiếu biến cho FAILED trong < 1 giây và không retry; sweeper khôi phục delivery kẹt trong test.`,
+        guide: `### Các bước
+1. Viết interface {{ChannelAdapter}} với method {{String send(Delivery d, Rendered msg)}} trả provider_msg_id; ba implementation: {{EmailAdapter}} (JavaMailSender, {{spring.mail.host=localhost}}, port 1025 tới Mailpit), {{SmsAdapter}} và {{PushAdapter}} (RestClient tới WireMock 8089).
+2. Tạo stub WireMock: file {{wiremock/mappings/sms.json}} trả 200 với id; mount vào container ở {{/home/wiremock/mappings}}.
+3. Viết {{ChannelWorker.process(deliveryId)}}: claim (UPDATE có điều kiện trong tasks), không claim được → return.
+4. Đọc lại preference; opt-out → UPDATE status = 'SKIPPED' và return.
+5. Đọc template theo (key, locale, channel), thiếu locale thì fallback "vi"; render bằng JMustache; {{MustacheException}} → FAILED với last_error TEMPLATE_ERROR, không ném lỗi ra ngoài (không retry).
+6. Gửi qua adapter kèm header {{Idempotency-Key: notificationId:channel}}; thành công → UPDATE SENT + provider_msg_id.
+7. Viết {{StuckSweeper}} {{@Scheduled(fixedDelay = 60000)}}: UPDATE delivery SET status = 'PENDING' WHERE status = 'SENDING' AND updated_at < now() - interval '5 minutes' RETURNING id, rồi publish lại từng id.
+8. Viết test gửi cùng deliveryId 2 lần song song (2 thread gọi process) và kiểm Mailpit API {{GET http://localhost:8025/api/v1/messages}} chỉ có 1 email.
+
+### Code khung
+~~~java
+@Component
+class SmsAdapter implements ChannelAdapter {
+    private final RestClient http;
+    SmsAdapter(RestClient.Builder builder) {          // builder của Boot: có sẵn metric, tracing
+        this.http = builder.baseUrl("http://localhost:8089").build();
+    }
+    @Override
+    public String send(Delivery d, Rendered msg) {
+        try {
+            SmsResponse r = http.post().uri("/sms")
+                .header("Idempotency-Key", d.notificationId() + ":" + d.channel())
+                .body(new SmsRequest(d.phone(), msg.body()))
+                .retrieve()
+                .body(SmsResponse.class);
+            return r.messageId();
+        } catch (HttpClientErrorException.TooManyRequests e) {
+            throw new TransientProviderException("429", e);     // thử lại sau
+        } catch (HttpClientErrorException e) {
+            throw new PermanentProviderException(e.getStatusCode().toString(), e); // 4xx khác: bỏ
+        } catch (HttpServerErrorException | ResourceAccessException e) {
+            throw new TransientProviderException(e.getMessage(), e);  // 5xx, timeout
+        }
+    }
+}
+~~~
+
+### Kiểm tra
+- Gửi 1 thông báo EMAIL+SMS: mở {{http://localhost:8025}} thấy email đúng subject đã render; WireMock {{GET /__admin/requests}} có 1 request SMS mang header Idempotency-Key.
+- 2 thread cùng process một deliveryId → Mailpit chỉ có 1 email; delivery attempts = 1.
+- Template thiếu biến → status FAILED, last_error TEMPLATE_ERROR trong < 1 giây, không có message trên retry topic.
+- Ép delivery thành SENDING với updated_at lùi 10 phút, chạy sweeper → về PENDING rồi SENT.
+
+### Bẫy hay gặp
+- **Gọi provider trong transaction DB:** giữ connection suốt thời gian HTTP (có thể vài giây), pool cạn nhanh. Claim trong transaction ngắn, gửi ngoài transaction, cập nhật SENT bằng transaction ngắn khác.
+- **Không kiểm lại opt-out ở worker:** tin nằm trong queue 10 phút, user đã tắt marketing vẫn nhận, vi phạm cam kết. Kiểm lại ngay trước khi gửi.
+- **Sweeper quá nhanh:** đưa SENDING về PENDING sau 30 giây trong khi provider chậm 40 giây → gửi trùng. Ngưỡng phải lớn hơn timeout HTTP khá nhiều và luôn gửi kèm idempotency key.
+- **Không escape HTML trong email:** params do user nhập (tên) chèn được thẻ HTML; bật escapeHTML của JMustache.
+
+> Interview tip: Nói rõ "exactly-once" khi gửi ra ngoài là không có thật; bạn đạt hiệu quả gần như vậy bằng claim có điều kiện, idempotency key gửi cho provider và sweeper có ngưỡng lớn hơn timeout.` },
       { title: 'Retry có backoff, DLT và replay', tasks: `1. Phân loại lỗi: {{TransientProviderException}} (timeout, 429, 5xx) và {{PermanentProviderException}} (4xx khác).
 2. Bật non-blocking retry bằng {{@RetryableTopic}}: 5 lần, backoff 10 giây nhân 3, tối đa 10 phút.
 3. Lỗi vĩnh viễn đưa vào {{exclude}} để đi thẳng DLT và set FAILED.
@@ -1385,7 +2255,54 @@ public void onSms(@Payload Long deliveryId) {
 public void dead(Long deliveryId, @Header(KafkaHeaders.EXCEPTION_MESSAGE) String error) {
     deliveryRepo.markDead(deliveryId, error);          // support thấy lý do trong GET
 }
-~~~`, done: `Scenario 503, 503, 200 cho SENT với attempts = 3; 503 liên tục cho DEAD sau 5 lần và có tin trong topic -dlt; replay 20 tin DEAD thì 20 SENT, tin đã SENT không gửi lại.` },
+~~~`, done: `Scenario 503, 503, 200 cho SENT với attempts = 3; 503 liên tục cho DEAD sau 5 lần và có tin trong topic -dlt; replay 20 tin DEAD thì 20 SENT, tin đã SENT không gửi lại.`,
+        guide: `### Các bước
+1. Tạo 2 exception trong package {{provider}}: {{TransientProviderException}} và {{PermanentProviderException}} (đều RuntimeException); adapter ở milestone 3 đã phân loại.
+2. Thêm {{@RetryableTopic}} như phần tasks lên listener của từng kênh; bật {{@EnableKafka}} (Boot đã có) và để Spring tự tạo các topic retry (đuôi -retry-0..3) và -dlt.
+3. Trong worker: TransientProviderException → UPDATE status = 'PENDING', last_error = message (để lần retry claim lại được) rồi ném tiếp để Spring đưa sang retry topic.
+4. PermanentProviderException → UPDATE FAILED với last_error; vì nằm trong exclude nên đi thẳng DLT, {{@DltHandler}} thấy trạng thái FAILED thì giữ nguyên, không đổi thành DEAD.
+5. {{@DltHandler}} cho lỗi tạm thời đã hết lượt: {{markDead(deliveryId, error)}} → DEAD.
+6. Viết {{POST /admin/dlt/replay}} (role NOTIF_ADMIN): với mỗi id, UPDATE delivery SET status = 'PENDING', attempts = 0 WHERE id = ? AND status = 'DEAD'; dòng nào đổi được thì publish lại và ghi bảng {{replay_audit(delivery_id, actor, at)}}.
+7. Viết WireMock scenario (code khung) cho SMS: lần 1 và 2 trả 503, lần 3 trả 200.
+8. Trong test, rút backoff xuống mili giây bằng property (ví dụ delayExpression đọc từ cấu hình) để test không chờ hàng phút.
+
+### Code khung
+~~~java
+// Test: dựng scenario WireMock 503 -> 503 -> 200 bằng Java DSL (wiremock 3.x)
+@Test
+void retriesThenSucceeds() {
+    wm.stubFor(post("/sms").inScenario("flaky").whenScenarioStateIs(STARTED)
+        .willReturn(aResponse().withStatus(503)).willSetStateTo("fail-2"));
+    wm.stubFor(post("/sms").inScenario("flaky").whenScenarioStateIs("fail-2")
+        .willReturn(aResponse().withStatus(503)).willSetStateTo("ok"));
+    wm.stubFor(post("/sms").inScenario("flaky").whenScenarioStateIs("ok")
+        .willReturn(okJson("""
+            {"messageId": "m-881"}""")));
+
+    UUID id = sendNotification(Set.of(Channel.SMS));
+
+    await().atMost(Duration.ofSeconds(30)).untilAsserted(() -> {
+        Delivery d = deliveryRepo.find(id, Channel.SMS);
+        assertThat(d.status()).isEqualTo("SENT");
+        assertThat(d.attempts()).isEqualTo(3);          // 1 lần đầu + 2 lần retry
+    });
+    wm.verify(3, postRequestedFor(urlEqualTo("/sms")));
+}
+~~~
+
+### Kiểm tra
+- Test scenario trên xanh: SENT, attempts = 3.
+- Stub luôn 503: sau 5 lần delivery là DEAD; {{kafka-console-consumer.sh --topic notification.sms-dlt --from-beginning}} có message.
+- Stub 400: FAILED ngay, WireMock chỉ nhận 1 request.
+- Replay 20 tin DEAD bằng curl với token admin → 20 SENT; gọi replay với id đã SENT → không gửi lại (UPDATE có điều kiện trả 0), audit vẫn ghi.
+
+### Bẫy hay gặp
+- **Retry chặn partition:** dùng DefaultErrorHandler với backoff dài trên topic chính làm cả partition dừng lại chờ. Retry topic (non-blocking) cho các tin khác chạy tiếp; đổi lại không còn đảm bảo thứ tự cho tin đang retry.
+- **Quên trả status về PENDING trước khi retry:** lần retry claim (WHERE status = 'PENDING') trả 0 và bỏ qua, tin kẹt SENDING tới khi sweeper chạy.
+- **Retry cả lỗi vĩnh viễn:** số điện thoại sai bị gửi 5 lần, tốn tiền và có thể bị provider chặn. Phân loại lỗi kỹ và dùng exclude.
+- **Replay không có audit/giới hạn:** ai đó replay 100.000 tin marketing nhầm. Yêu cầu role riêng, giới hạn số id mỗi lần và ghi audit.
+
+> Interview tip: So sánh retry chặn (blocking) và retry topic (non-blocking), nêu trade-off về thứ tự, rồi kể bạn có công cụ replay DLT có audit, vì vận hành DLT là thứ interviewer Senior hay hỏi.` },
       { title: 'Rate limit, metric và load test', tasks: `1. Mỗi provider một RateLimiter Resilience4j (50/giây cho SMS); chạy nhiều pod thì chia hạn mức hoặc dùng Redis.
 2. Bọc adapter bằng circuit breaker để provider chết không làm mọi tin chờ timeout.
 3. Thêm metric như phần Quan sát, dashboard Grafana.
@@ -1406,7 +2323,52 @@ resilience4j:
         slidingWindowSize: 50
         failureRateThreshold: 50
         waitDurationInOpenState: 30s
-~~~`, done: `WireMock ghi nhận tối đa 50 request SMS/giây suốt load test; success ≥ 99% với 5% lỗi tạm thời; README có bảng kết quả và dashboard có đủ 4 metric.` }
+~~~`, done: `WireMock ghi nhận tối đa 50 request SMS/giây suốt load test; success ≥ 99% với 5% lỗi tạm thời; README có bảng kết quả và dashboard có đủ 4 metric.`,
+        guide: `### Các bước
+1. Thêm {{resilience4j-spring-boot3}} và {{spring-boot-starter-aop}}; dán cấu hình YAML trong tasks; bọc {{SmsAdapter.send}} bằng {{@RateLimiter(name = "sms")}} và {{@CircuitBreaker(name = "sms")}}.
+2. Khi RateLimiter chờ quá timeoutDuration nó ném {{RequestNotPermitted}}; bắt và đổi thành TransientProviderException để tin đi retry topic thay vì mất. Circuit breaker mở ném {{CallNotPermittedException}}, xử lý tương tự.
+3. Thêm {{micrometer-registry-prometheus}} và đăng ký metric: Counter {{notification.delivery}} (tag channel, result), Timer {{notification.delivery.latency}} đo từ created_at của notification tới lúc SENT.
+4. Resilience4j tự xuất metric khi có Actuator + Micrometer ({{resilience4j.ratelimiter.available.permissions}}, {{resilience4j.circuitbreaker.state}}); thêm Prometheus/Grafana vào compose và dashboard 4 panel: throughput theo kênh, success rate, p95 latency, consumer lag.
+5. Cấu hình WireMock trả lỗi ngẫu nhiên 5%: dùng 2 stub cùng URL với priority khác nhau và một stub trả 503 theo header ngẫu nhiên do producer script gắn (ví dụ 5% request mang header X-Fail: 1).
+6. Viết producer script (một {{CommandLineRunner}} ở profile {{load}}, hoặc k6 gọi {{POST /api/notifications}}) bơm 500 event/giây trong 10 phút.
+7. Chạy, theo dõi dashboard; sau khi dừng bơm, đo thời gian lag về 0; ghi kết quả vào README.
+8. Nếu chạy 2 pod: chia hạn mức (25/giây mỗi pod) và ghi rõ hạn chế, hoặc ghi hướng chuyển sang Redis token bucket.
+
+### Code khung
+~~~java
+@Component
+class DeliveryMetrics {
+    private final MeterRegistry registry;
+    DeliveryMetrics(MeterRegistry registry) { this.registry = registry; }
+
+    void sent(Channel ch, Instant createdAt) {
+        registry.counter("notification.delivery", "channel", ch.name(), "result", "sent").increment();
+        // Latency giao nhận end-to-end: từ lúc nhận yêu cầu tới lúc provider nhận
+        Timer.builder("notification.delivery.latency")
+            .tag("channel", ch.name())
+            .publishPercentileHistogram()           // để Prometheus tính p95 qua histogram_quantile
+            .register(registry)
+            .record(Duration.between(createdAt, Instant.now()));
+    }
+    void finished(Channel ch, String result) {      // skipped | failed | dead
+        registry.counter("notification.delivery", "channel", ch.name(), "result", result).increment();
+    }
+}
+~~~
+
+### Kiểm tra
+- WireMock {{GET /__admin/requests}} (hoặc log có timestamp) cho thấy không giây nào quá 50 request SMS.
+- Success rate = sent / (sent + failed + dead) ≥ 99% với 5% lỗi tạm thời (retry cứu gần hết).
+- Lag (metric {{kafka_consumer_fetch_manager_records_lag_max}}) về 0 trong < 1 phút sau khi dừng bơm.
+- README có bảng: event/giây, success rate, p95 latency theo kênh, lag tối đa, cấu hình máy.
+
+### Bẫy hay gặp
+- **RateLimiter Resilience4j là cục bộ từng instance:** 3 pod × 50/giây = 150/giây tới provider, vượt hợp đồng. Chia hạn mức hoặc dùng limiter dùng chung (Redis).
+- **timeoutDuration quá dài:** thread consumer ngồi chờ lượt, quá {{max.poll.interval.ms}} thì Kafka đá consumer khỏi group và rebalance liên tục.
+- **Circuit breaker đếm cả lỗi 4xx:** số điện thoại sai làm mạch mở và chặn cả tin hợp lệ. Chỉ ghi nhận lỗi tạm thời ({{recordExceptions}}/{{ignoreExceptions}}).
+- **Tag userId trên metric:** cardinality nổ. Chỉ tag channel và result.
+
+> Interview tip: Trình bày số liệu 500 event/giây, success ≥ 99% dù provider lỗi 5%, và nói rõ giới hạn của rate limiter cục bộ cùng hướng mở rộng, cho thấy bạn biết thiết kế của mình vỡ ở đâu.` }
     ],
     challenges: [
       `### Gửi trùng khi worker crash
@@ -1670,7 +2632,56 @@ Path download(String bucket, String key, Path dir) throws Exception {
     this.lastSha256 = HexFormat.of().formatHex(sha.digest());
     return target;
 }
-~~~`, done: `Upload cùng file 2 lần thì chỉ 1 recon_file; file 1,2 GB tải về với heap < 100 MB; 3 test file hỏng đều FAILED với lý do rõ ràng.` },
+~~~`, done: `Upload cùng file 2 lần thì chỉ 1 recon_file; file 1,2 GB tải về với heap < 100 MB; 3 test file hỏng đều FAILED với lý do rõ ràng.`,
+        guide: `### Các bước
+1. Sinh project ở start.spring.io: Java 21, Boot 3.3.x, artifact {{recon}}; chọn Spring Batch, JDBC API, Flyway, PostgreSQL Driver, Actuator, Testcontainers. Thêm tay {{software.amazon.awssdk:s3}} (import BOM {{software.amazon.awssdk:bom}} 2.x trong dependencyManagement).
+2. Chép compose (postgres + minio), {{docker compose up -d}}; mở console MinIO {{http://localhost:9001}} tạo bucket {{recon-bucket}} với prefix incoming/ và reports/.
+3. Đặt {{spring.batch.job.enabled=false}} (không tự chạy job khi khởi động) và {{spring.batch.jdbc.initialize-schema=always}} để Boot tạo bảng metadata BATCH_*; Flyway lo bảng nghiệp vụ (recon_file, recon_run, stg_partner_txn, recon_result, recon_invalid, payment_txn giả).
+4. Viết {{docs/file-format.md}}: header cố định, 6 cột (partner_ref, amount, currency, status, txn_time, note), amount dấu chấm, txn_time ISO-8601 có offset, dòng cuối {{TRAILER,rows,total}}.
+5. Viết {{tools/GenerateFile.java}} (chạy bằng {{java tools/GenerateFile.java 10000 out.csv}}, Java 11+ chạy được file nguồn trực tiếp): sinh dòng ngẫu nhiên với tỉ lệ cố định lệch tiền, lệch status, thiếu, trùng ref; đồng thời sinh file SQL insert payment_txn tương ứng và file đáp án số lượng từng nhóm.
+6. Tạo bean {{S3Client}} trỏ MinIO ở profile local: {{endpointOverride(URI.create("http://localhost:9000"))}}, {{forcePathStyle(true)}}, region bất kỳ, credentials minio/minio123.
+7. Viết {{FileIntakeService}}: download theo stream như phần tasks, kiểm trailer (code khung), INSERT recon_file; vi phạm unique (partner, sha256) → log "duplicate file" và trả fileId cũ với cờ skipped.
+8. Viết {{FileIntakeIT}} (Testcontainers PostgreSQL + MinIO qua {{GenericContainer}}): file trùng, file thiếu trailer, file trailer sai tổng.
+
+### Code khung
+~~~java
+// Kiểm trailer trước khi nạp: đọc tuần tự, không giữ cả file trong bộ nhớ
+record TrailerCheck(long rows, BigDecimal total) {}
+
+TrailerCheck verifyTrailer(Path file) throws IOException {
+    long rows = 0;
+    BigDecimal sum = BigDecimal.ZERO;
+    String trailer = null;
+    try (BufferedReader r = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
+        r.readLine();                                  // bỏ header
+        for (String line; (line = r.readLine()) != null; ) {
+            if (line.startsWith("TRAILER,")) { trailer = line; break; }
+            rows++;
+            sum = sum.add(new BigDecimal(line.split(",", -1)[1])); // cột amount, không qua double
+        }
+    }
+    if (trailer == null) throw new BadFileException("missing trailer");
+    String[] t = trailer.split(",");
+    long expRows = Long.parseLong(t[1]);
+    BigDecimal expTotal = new BigDecimal(t[2]);
+    if (expRows != rows || expTotal.compareTo(sum) != 0)   // compareTo: 10.0 == 10.00
+        throw new BadFileException("trailer mismatch rows=" + rows + "/" + expRows);
+    return new TrailerCheck(rows, sum);
+}
+~~~
+
+### Kiểm tra
+- Upload cùng file 2 lần ({{aws s3 cp out.csv s3://recon-bucket/incoming/ --endpoint-url http://localhost:9000}}) rồi gọi POST /api/recon/files 2 lần → {{SELECT count(*) FROM recon_file}} = 1, lần 2 trả 409.
+- File 1,2 GB: chạy app với {{-Xmx256m}}, theo dõi {{jcmd <pid> GC.heap_info}}, heap dùng < 100 MB.
+- 3 file hỏng → recon_run.status = FAILED kèm lý do "missing trailer", "trailer mismatch".
+
+### Bẫy hay gặp
+- **Đọc cả file bằng {{Files.readAllLines}} hoặc {{readAllBytes}}:** file 1 GB làm OOM. Luôn stream.
+- **Tính checksum trên chuỗi đã decode:** khác byte gốc (BOM, CRLF) nên checksum không khớp với đối tác. Băm trên byte thô như code trong tasks.
+- **Parse tiền bằng {{Double.parseDouble}}:** tổng 10 triệu dòng sai lệch vài đồng, control total không bao giờ khớp. Dùng BigDecimal từ chuỗi.
+- **Dùng {{@EnableBatchProcessing}} trên Boot 3:** annotation này tắt auto-config Batch của Boot (bảng metadata, JobLauncher mặc định); chỉ thêm khi bạn thật sự muốn tự cấu hình.
+
+> Interview tip: Kể rằng bạn "tin file nhưng kiểm tra": checksum chống xử lý trùng, trailer chống file cụt, và tất cả xảy ra trước khi chạm dữ liệu nghiệp vụ.` },
       { title: 'Step load: chunk, skip, restart', tasks: `1. Khai báo job với tham số định danh {{fileId}} và {{version}}.
 2. {{FlatFileItemReader}} đọc file tạm, bỏ dòng header, mapper sang record {{PartnerLine}}.
 3. Processor validate và chuẩn hoá (status, currency, thời gian sang UTC); dòng lỗi ném {{ValidationException}}.
@@ -1694,7 +2705,61 @@ Step loadStep(JobRepository repo, PlatformTransactionManager tx,
         .listener(invalidRowListener)                // ghi dòng lỗi + lý do vào recon_invalid
         .build();
 }
-~~~`, done: `Restart sau lỗi ở dòng 60.001: staging có đúng 10.000.000 dòng, không trùng; file 1.500 dòng lỗi cho job FAILED; nạp 10 triệu dòng ≥ 20.000 dòng/giây.` },
+~~~`, done: `Restart sau lỗi ở dòng 60.001: staging có đúng 10.000.000 dòng, không trùng; file 1.500 dòng lỗi cho job FAILED; nạp 10 triệu dòng ≥ 20.000 dòng/giây.`,
+        guide: `### Các bước
+1. Viết {{ReconJobConfig}}: {{new JobBuilder("reconJob", repo).start(loadStep).next(matchStep).next(reportStep).build()}}; tham số định danh {{fileId}}, {{version}}.
+2. Reader dùng {{FlatFileItemReaderBuilder}} có {{@StepScope}} để nhận đường dẫn file từ job parameters; {{linesToSkip(1)}} bỏ header và {{comments("TRAILER")}} để dòng trailer bị bỏ qua như comment.
+3. Viết record {{PartnerLine}} và {{FieldSetMapper}} đọc chuỗi thô (chưa parse) để lỗi định dạng được xử lý ở processor với thông báo rõ.
+4. Viết {{PartnerLineValidator}} (ItemProcessor): parse amount bằng BigDecimal, chuẩn hoá status (SUCCESS → COMPLETED), {{OffsetDateTime.parse(...).toInstant()}}; sai thì ném ValidationException kèm số dòng.
+5. Writer {{JdbcBatchItemWriterBuilder}} với INSERT ... ON CONFLICT (business_date, file_id, line_no) DO NOTHING; datasource URL thêm {{reWriteBatchedInserts=true}}.
+6. Cấu hình fault tolerant như phần tasks; {{InvalidRowListener}} (SkipListener) ghi dòng lỗi vào recon_invalid (line_no, raw, reason).
+7. Lấy số dòng từ {{FlatFileItemReader}}: implement {{LineCallbackHandler}} không cần; dùng {{ItemCountAware}} trên PartnerLine để biết line_no (reader tự set số thứ tự item).
+8. Viết {{LoadRestartIT}} dùng {{JobLauncherTestUtils}} và {{@SpringBatchTest}}: processor test có cờ ném RuntimeException ở dòng 60.001 lần đầu; chạy lại cùng JobParameters, assert staging đủ dòng, không trùng.
+
+### Code khung
+~~~java
+@Bean @StepScope
+FlatFileItemReader<PartnerLine> reader(@Value("#{jobParameters['localPath']}") String path) {
+    return new FlatFileItemReaderBuilder<PartnerLine>()
+        .name("partnerReader")                 // tên dùng làm khoá lưu vị trí đọc trong ExecutionContext
+        .resource(new FileSystemResource(path))
+        .encoding("UTF-8")
+        .linesToSkip(1)                         // header
+        .comments("TRAILER")                    // dòng bắt đầu bằng TRAILER bị bỏ qua
+        .delimited().delimiter(",")
+        .names("partnerRef", "amount", "currency", "status", "txnTime", "note")
+        .targetType(PartnerLine.class)          // ánh xạ theo tên field (record cũng được)
+        .saveState(true)                        // mặc định true: restart đọc tiếp từ dòng đã commit
+        .build();
+}
+
+@Bean
+JdbcBatchItemWriter<StagingRow> writer(DataSource ds) {
+    return new JdbcBatchItemWriterBuilder<StagingRow>()
+        .dataSource(ds)
+        .sql("""
+            INSERT INTO stg_partner_txn (business_date, file_id, line_no, partner_ref, amount,
+                                         currency, status, txn_time)
+            VALUES (:businessDate, :fileId, :lineNo, :partnerRef, :amount, :currency, :status, :txnTime)
+            ON CONFLICT (business_date, file_id, line_no) DO NOTHING""")
+        .beanMapped()                           // lấy tham số :tên từ getter/accessor
+        .build();
+}
+~~~
+
+### Kiểm tra
+- LoadRestartIT: lần 1 status FAILED, lần 2 COMPLETED; {{SELECT count(*), count(DISTINCT line_no) FROM stg_partner_txn WHERE file_id = ?}} hai số bằng nhau và bằng số dòng file.
+- {{SELECT step_name, read_count, write_count, skip_count, commit_count FROM batch_step_execution}} thấy commit_count khoảng rows/5.000.
+- File có 1.500 dòng lỗi → job FAILED với SkipLimitExceededException; 900 dòng lỗi → COMPLETED và recon_invalid có 900 dòng.
+- File 10 triệu dòng: thời gian step load từ batch_step_execution, mục tiêu ≥ 20.000 dòng/giây.
+
+### Bẫy hay gặp
+- **Chạy lại với JobParameters khác (ví dụ thêm timestamp):** Spring Batch coi là JobInstance mới, chạy lại từ đầu thay vì tiếp tục. Restart phải dùng đúng tham số định danh cũ.
+- **Reader không có name hoặc saveState=false:** vị trí đọc không được lưu, restart đọc lại từ dòng 1; nhờ ON CONFLICT không trùng nhưng tốn thời gian gấp đôi.
+- **Processor có trạng thái (biến đếm trong bean singleton):** khi skip, Spring Batch xử lý lại chunk (scan từng item) nên biến đếm bị cộng lặp. Lưu trạng thái trong ExecutionContext hoặc tính bằng SQL.
+- **Chunk quá lớn:** 100.000 dòng/chunk thì một dòng lỗi làm rollback và quét lại cả chunk, đồng thời giữ nhiều object trong heap. 5.000 là điểm khởi đầu hợp lý, đo ở milestone 5.
+
+> Interview tip: Giải thích checkpoint của Spring Batch nằm trong cùng transaction với chunk dữ liệu nên restart không trùng không thiếu, kèm thí nghiệm lỗi ở dòng 60.001.` },
       { title: 'Step match: quy tắc đối soát bằng SQL', tasks: `1. Viết tasklet chạy trong 1 transaction: DELETE kết quả cũ của run rồi INSERT ... SELECT.
 2. Tính khung ngày theo múi giờ Asia/Ho_Chi_Minh bằng {{ZonedDateTime}} rồi đổi sang Instant.
 3. Xử lý DUPLICATE trước: dòng có cùng ref, dòng thứ 2 trở đi ghi DUPLICATE và loại khỏi join.
@@ -1717,7 +2782,51 @@ FULL OUTER JOIN
      (SELECT ref, amount, status FROM payment_txn
       WHERE partner = :partner AND created_at >= :dayStart AND created_at < :dayEnd) i
   ON i.ref = p.partner_ref;
-~~~`, done: `File mẫu 10.000 dòng cho đúng số lượng từng nhóm như đáp án; chạy step match 2 lần cho cùng kết quả; 10 triệu dòng match < 5 phút, có ảnh EXPLAIN ANALYZE trong README.` },
+~~~`, done: `File mẫu 10.000 dòng cho đúng số lượng từng nhóm như đáp án; chạy step match 2 lần cho cùng kết quả; 10 triệu dòng match < 5 phút, có ảnh EXPLAIN ANALYZE trong README.`,
+        guide: `### Các bước
+1. Tạo {{matchStep}} dạng tasklet: {{new StepBuilder("match", repo).tasklet(matchTasklet, tx).build()}}; toàn bộ tasklet chạy trong 1 transaction.
+2. Tính khung ngày: {{ZoneId vn = ZoneId.of("Asia/Ho_Chi_Minh")}}, dayStart = businessDate.atStartOfDay(vn).toInstant(), dayEnd = businessDate.plusDays(1).atStartOfDay(vn).toInstant(); truyền xuống SQL dưới dạng Timestamp/OffsetDateTime.
+3. Trong tasklet, chạy theo thứ tự: DELETE FROM recon_result WHERE run_id = :runId; đánh dấu is_dup và ghi DUPLICATE (code khung); INSERT ... SELECT FULL OUTER JOIN như phần tasks.
+4. Thêm quy tắc PENDING_NEXT_DAY: với MISSING_PARTNER có created_at trong 10 phút cuối ngày, UPDATE result = 'PENDING_NEXT_DAY' (đối tác thường ghi sang file ngày sau).
+5. Dùng {{NamedParameterJdbcTemplate}} để truyền tham số có tên; dung sai tiền (tolerance) đọc từ cấu hình theo đối tác, mặc định 0.
+6. Chạy {{ANALYZE stg_partner_txn}} ngay sau step load để planner có thống kê đúng, rồi {{EXPLAIN (ANALYZE, BUFFERS)}} câu matching trên dữ liệu 10 triệu dòng; tìm "Hash Full Join" và xem dòng "Batches" (lớn hơn 1 nghĩa là hash bị chia lô ra đĩa).
+7. Nếu spill nhiều: tăng work_mem chỉ cho session này bằng {{SET LOCAL work_mem = '512MB'}} đầu tasklet, không đổi cấu hình toàn server.
+8. Viết {{MatchStepIT}}: file 10.000 dòng từ generator kèm file đáp án; so {{SELECT result, count(*) FROM recon_result WHERE run_id = ? GROUP BY result}} với đáp án; chạy step 2 lần, kết quả như nhau.
+
+### Code khung
+~~~sql
+-- Bước 1: đánh dấu dòng lặp ref (giữ dòng đầu tiên theo line_no)
+WITH ranked AS (
+  SELECT line_no,
+         ROW_NUMBER() OVER (PARTITION BY partner_ref ORDER BY line_no) AS rn
+  FROM stg_partner_txn
+  WHERE business_date = :day AND file_id = :fileId
+)
+UPDATE stg_partner_txn s SET is_dup = true
+FROM ranked r
+WHERE s.business_date = :day AND s.file_id = :fileId
+  AND s.line_no = r.line_no AND r.rn > 1;
+
+-- Bước 2: ghi kết quả DUPLICATE trước khi chạy FULL OUTER JOIN (join chỉ lấy NOT is_dup)
+INSERT INTO recon_result (run_id, partner_ref, result, partner_amount)
+SELECT :runId, partner_ref, 'DUPLICATE', amount
+FROM stg_partner_txn
+WHERE business_date = :day AND file_id = :fileId AND is_dup;
+~~~
+
+### Kiểm tra
+- MatchStepIT khớp đáp án từng nhóm (MATCHED, AMOUNT_MISMATCH, STATUS_MISMATCH, MISSING_INTERNAL, MISSING_PARTNER, DUPLICATE).
+- Chạy step match 2 lần cho cùng run: tổng số dòng recon_result không đổi (nhờ DELETE trước INSERT trong cùng transaction).
+- 10 triệu dòng: step match < 5 phút; ảnh EXPLAIN ANALYZE đưa vào README, chỉ ra Hash Full Join và số Batches.
+- Giao dịch lúc 23:55 giờ Việt Nam (16:55 UTC) được tính đúng vào ngày nghiệp vụ.
+
+### Bẫy hay gặp
+- **Lọc theo ngày bằng {{created_at::date = :day}}:** vừa sai múi giờ (date theo timezone của session), vừa không dùng được index. Dùng khoảng nửa mở [dayStart, dayEnd).
+- **So trùng bằng vòng lặp Java với Map 10 triệu phần tử:** tốn vài GB heap. Để PostgreSQL làm hash join, đó là việc nó giỏi nhất.
+- **Điều kiện lọc của bảng nội bộ đặt ở WHERE ngoài FULL OUTER JOIN:** dòng MISSING_INTERNAL (phía nội bộ NULL) bị loại mất, biến full join thành inner join. Lọc trong subquery như tasks.
+- **Quên ANALYZE sau khi nạp 10 triệu dòng:** planner tưởng bảng rỗng, chọn Nested Loop, câu chạy hàng giờ.
+
+> Interview tip: Kể rằng bạn chuyển matching từ vòng lặp Java sang một câu FULL OUTER JOIN, đo bằng EXPLAIN ANALYZE và nêu con số thời gian trước/sau, cho thấy bạn biết đặt việc ở đúng tầng.` },
       { title: 'Báo cáo, control total và audit', tasks: `1. Step report đọc kết quả bằng {{JdbcCursorItemReader}} (fetchSize 5.000) ghi CSV, upload S3 theo key có run id.
 2. Tính control total: tổng tiền file phải bằng tổng các nhóm phía đối tác.
 3. API rerun tạo version mới (job parameters mới), ghi audit người bấm và lý do.
@@ -1737,7 +2846,45 @@ public long rerun(long fileId, String reason, String user) {
     jobLauncher.run(reconJob, params);
     return runId;
 }
-~~~`, done: `Control total đúng trên 3 file mẫu và báo sai khi cố tình xoá 1 dòng staging; rerun tạo version 2, version 1 vẫn truy vấn được; mọi rerun/resolve có dòng audit.` },
+~~~`, done: `Control total đúng trên 3 file mẫu và báo sai khi cố tình xoá 1 dòng staging; rerun tạo version 2, version 1 vẫn truy vấn được; mọi rerun/resolve có dòng audit.`,
+        guide: `### Các bước
+1. Tạo {{reportStep}} chunk 5.000: {{JdbcCursorItemReaderBuilder}} với sql SELECT ... FROM recon_result WHERE run_id = ? ORDER BY result, partner_ref, {{fetchSize(5000)}}; writer {{FlatFileItemWriterBuilder}} ghi CSV ra đĩa tạm.
+2. Thêm {{StepExecutionListener.afterStep}} upload file CSV lên {{reports/<businessDate>/run-<runId>.csv}} bằng S3Client {{putObject(..., RequestBody.fromFile(path))}}; lưu key vào recon_run.
+3. Tính control total (code khung) và lưu summary JSON (đếm theo nhóm, controlTotalOk) vào recon_run; sai thì đánh dấu run cần điều tra và tăng metric.
+4. Tạo bảng {{audit_log(id, actor, action, target, detail, at)}} bằng migration mới; ghi audit trong cùng transaction với thay đổi.
+5. Viết {{POST /api/recon/runs/:fileId/rerun}}: kiểm không có run nào RUNNING của file (409 nếu có), gọi hàm rerun trong tasks; job chạy bất đồng bộ bằng JobLauncher có TaskExecutor ({{TaskExecutorJobLauncher}} + {{setTaskExecutor}}) để API trả 202 ngay.
+6. Viết {{PATCH /api/recon/results/:id}}: chỉ nhận note (bắt buộc, ≤ 500 ký tự), set resolved_by từ user đăng nhập; DTO không có field amount nên không thể sửa tiền.
+7. Viết {{GET /api/recon/runs/:id}} trả status + summary như ví dụ JSON trong phần API.
+8. Test: rerun tạo version 2, query version 1 vẫn đủ kết quả cũ; xoá 1 dòng staging rồi chạy lại report → controlTotalOk = false.
+
+### Code khung
+~~~sql
+-- Control total: tổng tiền phía đối tác trong kết quả + dòng lỗi phải bằng trailer
+SELECT f.trailer_total,
+       COALESCE((SELECT SUM(partner_amount) FROM recon_result
+                 WHERE run_id = :runId AND partner_amount IS NOT NULL), 0)
+     + COALESCE((SELECT SUM(amount) FROM recon_invalid
+                 WHERE file_id = :fileId AND amount IS NOT NULL), 0) AS accounted,
+       (SELECT COUNT(*) FROM recon_invalid WHERE file_id = :fileId AND amount IS NULL)
+         AS unparsed_rows     -- dòng không đọc được tiền: phải báo riêng, không được "bỏ qua"
+FROM recon_file f
+WHERE f.id = :fileId;
+-- Java: controlTotalOk = trailer_total.compareTo(accounted) == 0 && unparsed_rows == 0
+~~~
+
+### Kiểm tra
+- 3 file mẫu: controlTotalOk = true; xoá 1 dòng staging rồi chạy lại match + report → false và có alert/log rõ ràng.
+- {{aws s3 ls s3://recon-bucket/reports/ --recursive --endpoint-url http://localhost:9000}} thấy file CSV theo run id; mở file đếm dòng bằng {{wc -l}} khớp tổng recon_result + 1 header.
+- Rerun 2 lần song song → 1 lần 202, 1 lần 409; {{SELECT * FROM audit_log ORDER BY at DESC}} có dòng RERUN với lý do.
+- PATCH body có amount → field bị bỏ qua (hoặc 400 nếu bật {{spring.jackson.deserialization.fail-on-unknown-properties=true}}).
+
+### Bẫy hay gặp
+- **JdbcCursorItemReader không đặt fetchSize:** driver PostgreSQL mặc định tải hết kết quả vào bộ nhớ; ngoài fetchSize, driver chỉ stream khi autocommit tắt (Spring Batch chạy trong transaction nên thoả).
+- **Ghi đè kết quả cũ khi rerun:** mất bằng chứng cho kiểm toán. Mỗi rerun là version mới, kết quả cũ chỉ đọc.
+- **Cho phép sửa số tiền qua API resolve:** đối soát mất ý nghĩa. Chỉ ghi chú và trạng thái xử lý, có audit.
+- **Upload báo cáo trước khi step commit:** step lỗi sau upload thì S3 có file "ma". Upload trong afterStep khi status COMPLETED, key chứa run id để ghi đè an toàn.
+
+> Interview tip: Nhấn mạnh control total và audit, vì với hệ thống tài chính "chứng minh được số liệu đúng" quan trọng ngang việc tính ra số liệu.` },
       { title: 'AWS, tải lớn và vận hành', tasks: `1. Đóng gói Docker, chạy ECS Fargate task theo lịch bằng EventBridge Scheduler.
 2. IAM role: {{s3:GetObject}} chỉ trên prefix {{incoming/}}, {{s3:PutObject}} chỉ trên {{reports/}}.
 3. Bucket bật SSE-KMS, lifecycle xoá file gốc sau 400 ngày (theo chính sách lưu trữ bạn đặt ra).
@@ -1752,7 +2899,61 @@ public long rerun(long fileId, String reason, String user) {
       "Resource": "arn:aws:s3:::recon-bucket/incoming/*" },
     { "Effect": "Allow", "Action": "s3:PutObject",
       "Resource": "arn:aws:s3:::recon-bucket/reports/*" } ] }
-~~~`, done: `10 triệu dòng hoàn tất < 30 phút, heap tối đa < 1 GB; README có bảng chunk size và thời gian; runbook có các bước kiểm tra, restart và báo cáo.` }
+~~~`, done: `10 triệu dòng hoàn tất < 30 phút, heap tối đa < 1 GB; README có bảng chunk size và thời gian; runbook có các bước kiểm tra, restart và báo cáo.`,
+        guide: `### Các bước
+1. Viết {{Dockerfile}} 2 stage (temurin 21 JDK build, temurin 21 JRE chạy, user không phải root); main dùng {{System.exit(SpringApplication.exit(...))}} để exit code phản ánh kết quả job (code khung).
+2. Thêm {{CommandLineRunner}} ở profile {{ecs}}: đọc partner và businessDate từ biến môi trường, gọi FileIntakeService rồi chạy job đồng bộ (JobLauncher không có TaskExecutor) và thoát.
+3. Đẩy image lên ECR ({{aws ecr get-login-password | docker login ...}}, {{docker push}}); tạo ECS task definition Fargate 2 vCPU / 4 GB, biến môi trường {{JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=75}}.
+4. IAM task role: policy S3 trong tasks + {{kms:Decrypt}} trên key của bucket; mật khẩu DB đọc từ Secrets Manager qua field {{secrets}} của task definition, không đặt trong biến môi trường thô.
+5. Tạo lịch bằng EventBridge Scheduler (code khung CloudFormation) chạy 06:00 giờ Việt Nam; bật retry policy 2 lần và DLQ SQS cho lần gọi thất bại.
+6. Bucket: bật default encryption SSE-KMS, Block Public Access, lifecycle rule xoá incoming/ sau 400 ngày.
+7. Đo tải: chạy file 10 triệu dòng với chunk 1.000 / 5.000 / 20.000, ghi thời gian từng step (bảng batch_step_execution), heap tối đa (log GC {{-Xlog:gc}}), CPU và IOPS của RDS trong CloudWatch.
+8. Viết {{docs/runbook.md}}: job FAILED lúc 6 giờ → xem exit code và log CloudWatch, xem bảng batch_step_execution, sửa nguyên nhân, chạy lại cùng tham số (restart) hoặc rerun có lý do; alert như phần Quan sát.
+
+### Code khung
+~~~java
+@SpringBootApplication
+public class ReconApplication {
+    public static void main(String[] args) {
+        // Boot gom ExitCodeGenerator (Batch có JobExecutionExitCodeGenerator khi job chạy
+        // qua runner của Boot): job FAILED => exit code khác 0 => ECS task báo thất bại
+        System.exit(SpringApplication.exit(SpringApplication.run(ReconApplication.class, args)));
+    }
+}
+~~~
+~~~yaml
+# CloudFormation: lịch chạy ECS task mỗi sáng 06:00 giờ Việt Nam
+ReconSchedule:
+  Type: AWS::Scheduler::Schedule
+  Properties:
+    ScheduleExpression: "cron(0 6 * * ? *)"
+    ScheduleExpressionTimezone: Asia/Ho_Chi_Minh
+    FlexibleTimeWindow: { Mode: "OFF" }
+    Target:
+      Arn: !GetAtt ReconCluster.Arn             # ARN của ECS cluster
+      RoleArn: !GetAtt SchedulerRole.Arn        # role được phép ecs:RunTask + iam:PassRole
+      RetryPolicy: { MaximumRetryAttempts: 2 }
+      DeadLetterConfig: { Arn: !GetAtt ReconDlq.Arn }
+      EcsParameters:
+        TaskDefinitionArn: !Ref ReconTaskDef
+        LaunchType: FARGATE
+        NetworkConfiguration:
+          AwsvpcConfiguration: { Subnets: [subnet-aaa, subnet-bbb], AssignPublicIp: DISABLED }
+~~~
+
+### Kiểm tra
+- Chạy task thủ công ({{aws ecs run-task}}) với file 10 triệu dòng: hoàn tất < 30 phút, heap tối đa < 1 GB trong log GC; exit code 0.
+- Cố tình đặt sai tên file: task kết thúc exit code ≠ 0, alert bắn.
+- Thử IAM: từ task, {{s3:GetObject}} trên reports/ bị AccessDenied (chứng minh quyền tối thiểu).
+- README có bảng chunk size (1.000 / 5.000 / 20.000) với thời gian load, match, report và heap tối đa.
+
+### Bẫy hay gặp
+- **main không trả exit code:** job FAILED nhưng process thoát 0, ECS và Scheduler tưởng thành công, không ai biết tới khi kế toán hỏi.
+- **Dùng biểu thức cron UTC mà quên timezone:** job chạy lúc 13:00 giờ Việt Nam. Đặt ScheduleExpressionTimezone rõ ràng.
+- **Fargate task trong subnet private không có NAT hoặc VPC endpoint:** không kéo được image từ ECR, không gọi được S3. Thêm VPC endpoint cho ECR, S3, CloudWatch Logs, Secrets Manager.
+- **Chunk càng lớn càng nhanh:** sau một ngưỡng, heap và thời gian rollback khi skip tăng mạnh. Đo, đừng đoán; thường 5.000 đến 10.000 là điểm cân bằng.
+
+> Interview tip: Trình bày bảng so sánh chunk size và quyết định chạy batch bằng ECS task theo lịch thay vì một service luôn bật, kèm lý do chi phí và ranh giới quyền IAM.` }
     ],
     challenges: [
       `### Restart gây nạp trùng
@@ -1989,7 +3190,51 @@ public record HomeV1(
 public record CardDto(String id, String maskedPan, String status) {
     // không bao giờ nhận/trả PAN đầy đủ: che ở downstream, BFF chỉ chuyển tiếp
 }
-~~~`, done: `OpenAPI có ví dụ cho mọi field; GET /v1/home trên WireMock trả đủ dữ liệu; tài liệu trust boundary có trong README.` },
+~~~`, done: `OpenAPI có ví dụ cho mọi field; GET /v1/home trên WireMock trả đủ dữ liệu; tài liệu trust boundary có trong README.`,
+        guide: `### Các bước
+1. Vẽ trust boundary vào {{docs/trust-boundary.md}}: Internet → gateway (kiểm JWT, rate limit, TLS) → mạng nội bộ → BFF (kiểm JWT lần nữa, kiểm scope) → downstream (kiểm JWT + ownership theo sub). Ghi rõ: không tầng nào tin header do tầng trước tự thêm nếu header đó có thể bị client giả mạo.
+2. Tạo thư mục {{gateway}}: start.spring.io chọn Gateway (Spring Cloud Gateway, nền WebFlux), OAuth2 Resource Server, Actuator, Data Redis Reactive; Boot 3.3.x và Spring Cloud release train tương ứng (2023.0.x).
+3. Tạo thư mục {{bff}}: Web, OAuth2 Resource Server, Actuator, Data Redis, Validation; thêm tay {{io.github.resilience4j:resilience4j-spring-boot3}}, {{spring-boot-starter-aop}}, {{springdoc-openapi-starter-webmvc-ui}}. BFF chạy port 8081, gateway 8080.
+4. Viết {{bff/src/main/resources/openapi/home-v1.yaml}} (hoặc annotation springdoc): đánh dấu accounts là required, cards/recentTxns/promotions nullable, degraded là mảng enum (cards, recentTxns, promotions).
+5. Dựng WireMock theo compose: thư mục {{wiremock/mappings}} có 4 file stub (accounts.json, cards.json, transactions.json, promotions.json) trả dữ liệu mẫu; {{wiremock/__files}} chứa body JSON.
+6. Bật {{spring.threads.virtual.enabled=true}} trong BFF; Tomcat xử lý mỗi request bằng một virtual thread.
+7. Viết các record v1 như phần tasks và {{HomeController}} tạm gọi tuần tự 4 downstream để có skeleton chạy được end-to-end.
+8. Cấu hình route đơn giản ở gateway ({{Path=/bff/mobile/**}} → {{http://localhost:8081}}) và kiểm tra request đi qua gateway tới BFF tới WireMock.
+
+### Code khung
+~~~java
+@Configuration
+class DownstreamClients {
+    // Mỗi downstream một RestClient riêng: base URL, timeout và metric tách bạch
+    @Bean
+    RestClient accountClient(RestClient.Builder builder,
+                             @Value("\${downstream.account.url}") String url) {
+        return builder.clone()                            // clone để cấu hình không lan sang client khác
+            .baseUrl(url)
+            .requestFactory(factory(Duration.ofMillis(300)))
+            .build();
+    }
+    static ClientHttpRequestFactory factory(Duration readTimeout) {
+        var f = new JdkClientHttpRequestFactory(
+            HttpClient.newBuilder().connectTimeout(Duration.ofMillis(200)).build());
+        f.setReadTimeout(readTimeout);                    // timeout ở tầng HTTP: thật sự cắt call
+        return f;
+    }
+}
+~~~
+
+### Kiểm tra
+- {{docker compose up -d}}, chạy BFF và gateway; {{curl -s localhost:8080/bff/mobile/v1/home -H "Authorization: Bearer $TOKEN"}} trả đủ 4 phần (tạm thời có thể tắt security bằng profile dev cho bước này).
+- {{http://localhost:8081/swagger-ui.html}} hiển thị /v1/home và /transactions với ví dụ cho mọi field.
+- README có sơ đồ trust boundary và bảng "ai kiểm tra gì".
+
+### Bẫy hay gặp
+- **Đặt business rule vào BFF** (tính phí, kiểm hạn mức): BFF thành monolith thứ hai, các kênh (web, mobile) tính khác nhau. BFF chỉ ghép và định dạng dữ liệu cho màn hình.
+- **Dùng chung một RestClient.Builder đã sửa:** builder của Boot là prototype nhưng nếu bạn sửa rồi tái dùng sẽ lẫn baseUrl/timeout; dùng {{clone()}}.
+- **Trộn Spring MVC vào project gateway:** Spring Cloud Gateway (bản reactive) chạy trên WebFlux, thêm spring-boot-starter-web làm app không khởi động.
+- **Trả PAN thẻ đầy đủ "vì downstream trả":** BFF là nơi cuối cùng kiểm soát dữ liệu ra app; contract chỉ có maskedPan.
+
+> Interview tip: Mở đầu bằng sơ đồ trust boundary và câu "gateway lo concern biên, BFF chỉ ghép dữ liệu cho một màn hình", cho thấy bạn phân vai rõ trước khi viết code.` },
       { title: 'OAuth2/OIDC và token relay', tasks: `1. Tạo realm Keycloak: public client {{mobile-app}} (PKCE), audience {{bff}}, scope {{accounts:read}}.
 2. Gateway và BFF đều là Resource Server: kiểm tra issuer, chữ ký (JWKS), hạn, audience.
 3. BFF kiểm tra scope bằng {{@PreAuthorize}} hoặc cấu hình {{authorizeHttpRequests}}.
@@ -2012,7 +3257,57 @@ spring:
 public HomeV1 home(@AuthenticationPrincipal Jwt jwt) {
     return homeService.load(jwt.getTokenValue());     // truyền token tường minh vào fan-out
 }
-~~~`, done: `5 test bảo mật pass: không token 401, sai audience 401, hết hạn 401, thiếu scope 403, truy cập chéo 404; log không chứa token.` },
+~~~`, done: `5 test bảo mật pass: không token 401, sai audience 401, hết hạn 401, thiếu scope 403, truy cập chéo 404; log không chứa token.`,
+        guide: `### Các bước
+1. Chạy Keycloak bằng compose, vào {{http://localhost:8180}} (admin/admin) tạo realm {{bank}}; export realm ra {{realm/bank-realm.json}} để lần sau {{--import-realm}} tự nạp.
+2. Tạo client {{mobile-app}}: Client authentication OFF (public), Standard flow ON, PKCE method S256, redirect URI {{com.example.bank:/callback}} và {{http://localhost:8000/*}} cho test.
+3. Tạo client scope {{accounts:read}} gán cho mobile-app; thêm mapper "Audience" (Included Client Audience = bff) để token có aud chứa bff.
+4. Gateway: cấu hình resource server với issuer-uri giống BFF (YAML trong tasks); gateway từ chối sớm token sai để BFF không tốn tài nguyên.
+5. BFF: YAML resource server với {{audiences: bff}}; {{SecurityFilterChain}} stateless, {{/actuator/health/**}} permitAll, còn lại authenticated; bật {{@EnableMethodSecurity}} để dùng {{@PreAuthorize}}.
+6. Tạo {{ClientHttpRequestInterceptor}} cho từng RestClient: thêm header Authorization từ token được truyền vào (không đọc SecurityContextHolder bên trong thread fan-out).
+7. Trong WireMock account-service, stub {{GET /accounts/acc-2}} trả 404 khi header Authorization là token của user-a (mô phỏng downstream kiểm ownership); BFF chuyển 404 nguyên trạng.
+8. Viết {{HomeSecurityTest}} ({{@SpringBootTest}} + MockMvc) với {{jwt()}} của spring-security-test cho các case scope/audience; case token hết hạn và sai issuer dùng JWT tự ký với khoá test.
+
+### Code khung
+~~~java
+@Configuration
+@EnableMethodSecurity
+class BffSecurity {
+    @Bean
+    SecurityFilterChain api(HttpSecurity http) throws Exception {
+        return http
+            .authorizeHttpRequests(a -> a
+                .requestMatchers("/actuator/health/**", "/bff/mobile/config").permitAll()
+                .anyRequest().authenticated())
+            .oauth2ResourceServer(o -> o.jwt(Customizer.withDefaults()))
+            .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+            .csrf(c -> c.disable())          // không cookie, chỉ Bearer token
+            .build();
+    }
+}
+
+// Relay token: nhận token tường minh, không phụ thuộc thread hiện tại
+record BearerRelay(String token) implements ClientHttpRequestInterceptor {
+    public ClientHttpResponse intercept(HttpRequest req, byte[] body,
+                                        ClientHttpRequestExecution ex) throws IOException {
+        req.getHeaders().setBearerAuth(token);
+        return ex.execute(req, body);
+    }
+}
+~~~
+
+### Kiểm tra
+- Lấy token bằng Authorization Code + PKCE (dùng {{oauth2c}} hoặc Postman tab Authorization, chọn PKCE); giải mã ở jwt.io thấy aud chứa bff, scope chứa accounts:read.
+- 5 test bảo mật: không token 401, sai audience 401, hết hạn 401, thiếu scope 403, token A đọc tài khoản B 404.
+- {{grep -riE "bearer|eyJ" logs/}} không ra kết quả: log không chứa token.
+
+### Bẫy hay gặp
+- **Dùng Implicit flow hoặc client secret trong app mobile:** secret trong app bị dịch ngược dễ dàng. Public client + PKCE là chuẩn hiện nay (OAuth 2.0 for Native Apps).
+- **Không kiểm audience:** token cấp cho một client khác cùng realm vẫn gọi được BFF. Đặt audiences hoặc validator riêng.
+- **Đọc SecurityContextHolder trong supplyAsync:** context gắn ThreadLocal nên thread mới thấy null, downstream nhận request không token (401) một cách ngẫu nhiên. Lấy token ở thread request rồi truyền vào.
+- **Gateway thêm header X-User-Id và downstream tin luôn:** ai gọi thẳng downstream (bỏ qua gateway) giả mạo được. Mỗi service tự kiểm JWT.
+
+> Interview tip: Giải thích token relay và vì sao mỗi tầng tự kiểm JWT (zero trust), kèm chi tiết bug SecurityContext mất khi fan-out sang thread khác, đó là chi tiết thể hiện bạn đã làm thật.` },
       { title: 'Fan-out song song có deadline, timeout, circuit breaker, bulkhead', tasks: `1. Mỗi downstream một {{RestClient}} từ {{RestClient.Builder}} của Boot (để có metric), read timeout ở HTTP client.
 2. Bọc mỗi call bằng Resilience4j CircuitBreaker + Bulkhead (semaphore).
 3. Gọi song song bằng {{CompletableFuture}} trên executor virtual thread, mỗi call có {{orTimeout}}.
@@ -2038,7 +3333,52 @@ public HomeV1 load(String token) {
     // orTimeout chỉ hoàn thành future, KHÔNG huỷ HTTP call: vẫn cần read timeout ở client
     return CompletableFuture.supplyAsync(s, virtualThreads).orTimeout(ms, TimeUnit.MILLISECONDS);
 }
-~~~`, done: `card-service chậm 5 giây: Home vẫn trả trong < 400 ms với degraded ["cards"]; account-service lỗi: 503 trong < 350 ms; breaker OPEN thì không còn request nào tới mock.` },
+~~~`, done: `card-service chậm 5 giây: Home vẫn trả trong < 400 ms với degraded ["cards"]; account-service lỗi: 503 trong < 350 ms; breaker OPEN thì không còn request nào tới mock.`,
+        guide: `### Các bước
+1. Hoàn thiện mỗi client RestClient với read timeout riêng (account/card 300 ms, transaction 400 ms) như code milestone 1; không dựa vào timeout mặc định (vô hạn ở một số client).
+2. Cấu hình Resilience4j trong YAML (code khung): circuit breaker và bulkhead semaphore riêng cho account, card, transaction.
+3. Tạo executor {{Executors.newVirtualThreadPerTaskExecutor()}} làm bean {{virtualThreads}}; fan-out bằng hàm {{call}} trong tasks.
+4. Bọc từng client bằng decorator lập trình (không dùng annotation để thấy rõ thứ tự): {{Decorators.ofSupplier(s).withBulkhead(bh).withCircuitBreaker(cb).decorate()}}.
+5. Viết {{optional(future, field, degraded)}}: join; lỗi bất kỳ (timeout, breaker open, bulkhead full) → thêm field vào degraded, tăng counter {{bff.degraded}} tag field, trả null.
+6. Lỗi bắt buộc (account) → {{DependencyUnavailableException}} → 503 ACCOUNT_UNAVAILABLE; huỷ các future còn lại ({{cancel(true)}}) để không tốn tài nguyên.
+7. Phân biệt lỗi 401 từ downstream (token hết hạn) với lỗi hạ tầng: 401 phải trả 401, không biến thành degraded hay 503.
+8. Viết test WireMock: card chậm 5 giây, account 500 liên tục (đếm request tới mock sau khi breaker OPEN), transaction treo dưới tải để bulkhead từ chối.
+
+### Code khung
+~~~yaml
+resilience4j:
+  circuitbreaker:
+    instances:
+      account:
+        slidingWindowType: COUNT_BASED
+        slidingWindowSize: 20
+        minimumNumberOfCalls: 10          # đủ mẫu mới đánh giá, tránh mở mạch vì 1-2 lỗi
+        failureRateThreshold: 50
+        slowCallDurationThreshold: 250ms  # call chậm cũng tính là "xấu"
+        slowCallRateThreshold: 80
+        waitDurationInOpenState: 10s
+        permittedNumberOfCallsInHalfOpenState: 3
+      card:
+        baseConfig: account               # dùng lại cấu hình, chỉnh riêng nếu cần
+  bulkhead:
+    instances:
+      transaction:
+        maxConcurrentCalls: 50            # call thứ 51 bị từ chối ngay
+        maxWaitDuration: 0                # không xếp hàng: thà degraded còn hơn chờ
+~~~
+
+### Kiểm tra
+- Test card chậm 5 giây: Home < 400 ms, degraded = ["cards"] (xem test mẫu ở milestone 5).
+- account-service 500 liên tục: sau khoảng 10 request, {{curl localhost:8081/actuator/circuitbreakers}} thấy account OPEN; WireMock {{/__admin/requests}} không nhận thêm request trong 10 giây; BFF trả 503 trong < 10 ms.
+- k6 300 RPS khi transaction treo: metric {{resilience4j_bulkhead_available_concurrent_calls}} về 0, request vẫn trả 200 với degraded, không có 5xx.
+
+### Bẫy hay gặp
+- **Chỉ dùng orTimeout mà không có read timeout:** future hoàn thành sau 300 ms nhưng HTTP call vẫn chạy ngầm tới khi socket timeout, giữ connection và virtual thread; dưới tải sẽ cạn pool kết nối.
+- **Thứ tự decorator sai:** breaker bọc ngoài bulkhead thì lỗi "bulkhead full" bị tính là lỗi của downstream, mạch mở dù downstream khoẻ. Cân nhắc thứ tự và dùng {{ignoreExceptions}} cho BulkheadFullException.
+- **ThreadPoolBulkhead với virtual thread:** virtual thread rẻ nên giới hạn số luồng không còn ý nghĩa; giới hạn số call đồng thời bằng semaphore bulkhead mới bảo vệ downstream.
+- **Retry trong Home:** 300 RPS × 3 lần retry khi downstream chậm là tự tạo DDoS cho chính hệ thống của mình.
+
+> Interview tip: Vẽ timeline 800 ms và giải thích vai trò từng cơ chế (timeout cắt chờ, breaker ngừng gọi dịch vụ đang chết, bulkhead giới hạn tài nguyên), rồi đưa con số "card chậm 5 giây mà Home vẫn < 400 ms".` },
       { title: 'Cache, phân trang, rate limit và versioning', tasks: `1. Cache khuyến mãi bằng {{@Cacheable}} + RedisCacheManager TTL 5 phút; key gồm segment và locale, không gồm userId.
 2. Cursor phân trang: Base64URL của (bookedAt, id), downstream query keyset {{WHERE (booked_at, id) < (?, ?)}}.
 3. Gateway: RequestRateLimiter dùng Redis, key theo principal.
@@ -2061,7 +3401,53 @@ spring:
                 redis-rate-limiter.replenishRate: 20     # 20 token mỗi giây
                 redis-rate-limiter.burstCapacity: 40     # cho phép dồn ngắn 40
                 key-resolver: "#{@principalNameKeyResolver}"
-~~~`, done: `Promotion chỉ gọi downstream 1 lần trong 5 phút dưới tải; 25 req/giây từ 1 user cho khoảng 5 lần 429, user khác không bị; app v1 và v2 cùng chạy trên một BFF.` },
+~~~`, done: `Promotion chỉ gọi downstream 1 lần trong 5 phút dưới tải; 25 req/giây từ 1 user cho khoảng 5 lần 429, user khác không bị; app v1 và v2 cùng chạy trên một BFF.`,
+        guide: `### Các bước
+1. Thêm {{spring-boot-starter-cache}} vào BFF, {{@EnableCaching}}; cấu hình {{RedisCacheManager}} với TTL 5 phút cho cache {{promo}} và 1 giờ cho {{ref}}, serializer JSON.
+2. {{PromoService.current(segment, locale)}} đánh dấu {{@Cacheable(cacheNames = "promo", key = "#segment + ':' + #locale")}}; segment lấy từ claim trong JWT, không bao giờ đưa userId vào key.
+3. Viết {{Cursor}} encode/decode (code khung) và endpoint {{GET /bff/mobile/v1/accounts/:id/transactions?cursor=&limit=}}: limit mặc định 20, > 50 trả 400.
+4. Ở gateway, viết bean {{principalNameKeyResolver}} (KeyResolver trả {{exchange.getPrincipal().map(Principal::getName)}}) và cấu hình route RequestRateLimiter như YAML trong tasks.
+5. Tạo {{/bff/mobile/v2/home}} dùng cùng HomeService, mapper {{HomeV2Mapper}} đổi amount thành object {value, currency}; v1 trả thêm header {{Deprecation}} và {{Sunset}} (ngày lấy từ v1_sunset_at).
+6. Migration Flyway cho bảng app_version_policy; endpoint {{/bff/mobile/config?platform=&version=}} so phiên bản bằng {{Runtime.Version.parse}} hoặc tự tách số (không so chuỗi).
+7. Test cache: gọi Home 100 lần, WireMock chỉ nhận 1 request promotion trong 5 phút.
+8. Test cursor: lấy trang 1, chèn giao dịch mới (stub đổi), lấy trang 2 không trùng và không sót dòng.
+
+### Code khung
+~~~java
+// Cursor mờ (opaque) cho client: Base64URL của "bookedAt|id", client không tự tạo được nghĩa
+public record Cursor(Instant bookedAt, String id) {
+    public String encode() {
+        String raw = bookedAt.toEpochMilli() + "|" + id;
+        return Base64.getUrlEncoder().withoutPadding()
+            .encodeToString(raw.getBytes(StandardCharsets.UTF_8));
+    }
+    public static Cursor decode(String s) {
+        try {
+            String raw = new String(Base64.getUrlDecoder().decode(s), StandardCharsets.UTF_8);
+            int bar = raw.indexOf('|');
+            return new Cursor(Instant.ofEpochMilli(Long.parseLong(raw.substring(0, bar))),
+                              raw.substring(bar + 1));
+        } catch (RuntimeException e) {
+            throw new BadCursorException();                 // 400, không để lộ stack trace
+        }
+    }
+}
+// Downstream: WHERE account_id = ? AND (booked_at, id) < (?, ?) ORDER BY booked_at DESC, id DESC LIMIT ?
+~~~
+
+### Kiểm tra
+- Dưới tải 300 RPS trong 5 phút, WireMock {{/__admin/requests/count}} với URL promotions trả 1 (hoặc 1 mỗi segment/locale).
+- {{redis-cli KEYS "promo*"}} không có key nào chứa userId; {{TTL}} ≤ 300.
+- k6 25 req/giây từ 1 user (burst 40, refill 20): sau giây đầu bắt đầu có 429 (khoảng 5 lần/giây), user khác chạy song song không bị 429; header {{X-RateLimit-Remaining}} có trong response.
+- Gọi /v1/home có header Sunset; /v2/home trả amount dạng object; config với version thấp hơn min_supported trả forceUpdate = true.
+
+### Bẫy hay gặp
+- **Cache dữ liệu theo user trong cache chung:** key thiếu userId thì user B thấy số dư của A; vì vậy chỉ cache dữ liệu chung (khuyến mãi theo segment), không cache số dư.
+- **Phân trang OFFSET khi có giao dịch mới:** chèn 1 dòng ở đầu làm trang 2 lặp lại 1 dòng. Keyset theo (booked_at, id) ổn định.
+- **So phiên bản app bằng chuỗi:** "1.10.0" < "1.9.0" theo thứ tự chữ. Tách từng phần số rồi so.
+- **Key resolver theo IP sau NAT nhà mạng:** hàng nghìn user di động chung IP bị chặn cùng lúc. Rate limit theo principal (sub), IP chỉ cho request chưa xác thực.
+
+> Interview tip: Nêu rõ cái gì được cache và cái gì tuyệt đối không, kèm lý do bảo mật, rồi kể cách bạn chạy song song v1/v2 với header Sunset để rút v1 có kế hoạch.` },
       { title: 'Contract test, đo p95 và rollout', tasks: `1. Viết consumer contract (Pact hoặc Spring Cloud Contract) cho account và transaction service.
 2. Bật Micrometer Tracing + OTLP, xem trace trong Jaeger hoặc Grafana Tempo.
 3. Dashboard: p95/p99 Home, p95 từng downstream, degraded rate, breaker state.
@@ -2083,7 +3469,59 @@ void slowCardServiceDoesNotBlockHome() {
     assertThat(home.degraded()).containsExactly("cards");
     assertThat(ms).isLessThan(500);                    // timeout 300 ms + overhead
 }
-~~~`, done: `CI chặn thay đổi phá contract; README có bảng k6: 1 call BFF so với 5 call tuần tự (p95), kịch bản downstream chậm; dashboard và ngưỡng canary được ghi rõ.` }
+~~~`, done: `CI chặn thay đổi phá contract; README có bảng k6: 1 call BFF so với 5 call tuần tự (p95), kịch bản downstream chậm; dashboard và ngưỡng canary được ghi rõ.`,
+        guide: `### Các bước
+1. Chọn Spring Cloud Contract (cùng hệ sinh thái Spring) hoặc Pact JVM; với Pact: BFF viết consumer test bằng {{@PactConsumerTest}}, sinh file pact JSON, đẩy lên Pact Broker (chạy {{pactfoundation/pact-broker}} trong compose).
+2. Phía account/transaction service (có thể là project mock nhỏ), viết provider verification trong CI; thay đổi phá contract (đổi tên field, bỏ field bắt buộc) làm CI đỏ.
+3. Thêm {{micrometer-tracing-bridge-otel}} và {{opentelemetry-exporter-otlp}} vào gateway và BFF; {{management.tracing.sampling.probability=1.0}} ở local; {{management.otlp.tracing.endpoint=http://localhost:4318/v1/traces}}; chạy Jaeger ({{jaegertracing/all-in-one}}, bật OTLP) trong compose.
+4. Dashboard Grafana: p95/p99 Home từ {{http_server_requests_seconds_bucket}} (uri="/bff/mobile/v1/home"), p95 từng downstream từ {{http_client_requests_seconds_bucket}} theo client.name, tỉ lệ {{bff_degraded_total}}, trạng thái breaker.
+5. k6 kịch bản A: 300 RPS 10 phút gọi Home qua gateway; kịch bản B: app gọi 4 API downstream tuần tự (giả lập trước khi có BFF) để so sánh; kịch bản C: như A nhưng bật delay 5 giây cho card qua WireMock admin API.
+6. Kubernetes: Deployment BFF với readiness {{/actuator/health/readiness}}, resources, HPA ({{autoscaling/v2}}, CPU 70%); canary bằng route trọng số ở gateway (predicate {{Weight=bff-group, 90}} và {{Weight=bff-group, 10}} cho 2 route tới bản cũ/mới).
+7. Ghi ngưỡng rollback vào {{docs/rollout.md}}: p95 > 350 ms hoặc 5xx > 1% trong 5 phút thì đổi trọng số về 100/0.
+8. README: bảng k6 3 kịch bản (p50, p95, p99, lỗi), ảnh trace thấy 4 span downstream chạy song song.
+
+### Code khung
+~~~java
+// Pact consumer test (pact-jvm 4.6, JUnit 5): BFF mô tả điều nó CẦN từ account-service
+@ExtendWith(PactConsumerTestExt.class)
+@PactTestFor(providerName = "account-service")
+class AccountContractTest {
+    @Pact(consumer = "bff-mobile")
+    V4Pact accounts(PactDslWithProvider b) {
+        return b.given("user-a has 1 account")
+            .uponReceiving("list accounts of current user")
+            .path("/accounts").method("GET")
+            .matchHeader("Authorization", "Bearer .+")
+            .willRespondWith().status(200)
+            .body(PactDslJsonArray.arrayMinLike(1)
+                .stringType("id", "acc-1")             // chỉ ràng buộc field BFF dùng
+                .stringType("name")
+                .numberType("balance")
+                .stringType("currency", "VND")
+                .closeObject())
+            .toPact(V4Pact.class);
+    }
+    @Test
+    void parsesAccounts(MockServer server) {
+        var client = new AccountClient(RestClient.builder().baseUrl(server.getUrl()).build());
+        assertThat(client.list("token-a")).hasSize(1);
+    }
+}
+~~~
+
+### Kiểm tra
+- Sửa provider bỏ field balance → provider verification fail trong CI.
+- Jaeger UI ({{http://localhost:16686}}) mở 1 trace Home: 4 span client chồng lên nhau theo thời gian (song song), tổng ≈ span dài nhất.
+- k6: Home qua BFF p95 < 300 ms ở 300 RPS; so với 4 call tuần tự thấy p95 giảm rõ; kịch bản card chậm vẫn 0 lỗi 5xx.
+- Canary: đổi trọng số 90/10, theo dõi dashboard theo version label; giả lập bản mới lỗi để thấy rollback theo ngưỡng.
+
+### Bẫy hay gặp
+- **Contract ràng buộc quá chặt** (giá trị cụ thể, đủ mọi field): provider không thể thêm/đổi gì mà không vỡ CI. Chỉ ràng buộc kiểu và field consumer thật sự dùng.
+- **Sampling 100% trên production:** tốn chi phí lưu trữ trace; production thường 1–10% hoặc tail sampling theo lỗi/độ trễ.
+- **Mất trace context khi fan-out:** supplyAsync trên executor thường không mang theo context; bọc executor bằng {{ContextExecutorService.wrap(...)}} của Micrometer context-propagation hoặc tạo observation thủ công.
+- **So sánh benchmark khác điều kiện:** kịch bản tuần tự đo từ máy local không có độ trễ mạng di động; ghi rõ giả định (thêm 150 ms RTT mỗi call) khi so.
+
+> Interview tip: Kể bạn chứng minh giá trị của BFF bằng số (1 call song song so với 4 call tuần tự), bảo vệ thay đổi bằng contract test và rollout có ngưỡng rollback rõ ràng.` }
     ],
     challenges: [
       `### Fan-out khuếch đại tải và cạn tài nguyên
@@ -3339,7 +4777,55 @@ RegisteredClient bff = RegisteredClient.withId(UUID.randomUUID().toString())
         .build())
     .build();
 if (repo.findByClientId("web-bff") == null) repo.save(bff); // idempotent khi khởi động lại
-~~~`, done: `Discovery trả đủ authorization_endpoint, token_endpoint, jwks_uri; bảng oauth2_registered_client có 1 dòng web-bff với secret đã băm; khởi động lại không tạo trùng.` },
+~~~`, done: `Discovery trả đủ authorization_endpoint, token_endpoint, jwks_uri; bảng oauth2_registered_client có 1 dòng web-bff với secret đã băm; khởi động lại không tạo trùng.`,
+        guide: `### Các bước
+1. Sinh project {{auth-server}} ở start.spring.io: Java 21, Boot 3.5.x; chọn OAuth2 Authorization Server, JDBC API, Flyway, PostgreSQL Driver, Actuator. Chạy {{docker compose up -d postgres}}.
+2. Không cần sửa file hosts: mọi tên miền con của {{localtest.me}} đều trỏ về 127.0.0.1. Đặt {{server.port=9000}} và mở app bằng {{http://auth.localtest.me:9000}} để cookie của auth-server và web-bff tách biệt.
+3. Tìm 3 file schema trong jar spring-security-oauth2-authorization-server (đường dẫn {{org/springframework/security/oauth2/server/authorization/}}: oauth2-registered-client-schema.sql, oauth2-authorization-schema.sql, oauth2-authorization-consent-schema.sql), chép nội dung vào {{V1__sas_schema.sql}}. Với PostgreSQL, đổi các cột kiểu {{blob}} thành {{text}} (schema gốc viết cho HSQLDB).
+4. Viết {{V2__users.sql}} (app_user, user_role, index principal_name như phần Schema) và chèn 2 user mẫu với mật khẩu dạng {{bcrypt}}... sinh bằng {{PasswordEncoderFactories.createDelegatingPasswordEncoder().encode("secret")}}.
+5. Khai báo 2 filter chain: {{@Order(1)}} cho endpoint của authorization server (code khung), {{@Order(2)}} cho phần còn lại với formLogin (milestone 2 hoàn thiện).
+6. Khai báo bean {{JdbcRegisteredClientRepository}}, {{JdbcOAuth2AuthorizationService}}, {{JdbcOAuth2AuthorizationConsentService}} (đều nhận JdbcTemplate) và đăng ký client web-bff như code trong tasks trong một {{ApplicationRunner}}; secret đọc từ biến môi trường {{BFF_CLIENT_SECRET}}.
+7. Khai báo {{JWKSource}}: sinh RSA 2048 bằng {{KeyPairGenerator}}, bọc thành {{RSAKey}} (Nimbus) có keyID cố định, trả {{new ImmutableJWKSet<>(new JWKSet(rsaKey))}}. Tạm thời sinh khi khởi động; milestone 5 sẽ nạp từ nơi lưu bền.
+8. {{AuthorizationServerSettings.builder().issuer("http://auth.localtest.me:9000").build()}}; khởi động và mở discovery.
+
+### Code khung
+~~~java
+@Bean @Order(1)
+SecurityFilterChain authServer(HttpSecurity http) throws Exception {
+    // API mới từ Spring Authorization Server 1.4 (Boot 3.4/3.5)
+    OAuth2AuthorizationServerConfigurer as = OAuth2AuthorizationServerConfigurer.authorizationServer();
+    http.securityMatcher(as.getEndpointsMatcher())    // chain này chỉ áp cho /oauth2/**, /connect/**...
+        .with(as, a -> a.oidc(Customizer.withDefaults()))  // bật OIDC: id_token, userinfo, logout
+        .authorizeHttpRequests(a -> a.anyRequest().authenticated())
+        // Trình duyệt chưa đăng nhập gọi /oauth2/authorize: chuyển tới trang /login của chain 2
+        .exceptionHandling(e -> e.defaultAuthenticationEntryPointFor(
+            new LoginUrlAuthenticationEntryPoint("/login"),
+            new MediaTypeRequestMatcher(MediaType.TEXT_HTML)));
+    return http.build();
+}
+
+@Bean @Order(2)
+SecurityFilterChain app(HttpSecurity http) throws Exception {
+    return http.authorizeHttpRequests(a -> a
+                .requestMatchers("/actuator/health/**").permitAll()
+                .anyRequest().authenticated())
+        .formLogin(Customizer.withDefaults())          // trang login mặc định, đủ cho pet project
+        .build();
+}
+~~~
+
+### Kiểm tra
+- {{curl -s http://auth.localtest.me:9000/.well-known/openid-configuration}} có issuer đúng, authorization_endpoint, token_endpoint, jwks_uri, end_session_endpoint.
+- {{curl -s http://auth.localtest.me:9000/oauth2/jwks}} trả 1 khoá RSA có kid.
+- {{SELECT client_id, client_secret FROM oauth2_registered_client;}} có 1 dòng, secret bắt đầu bằng {{bcrypt}}... (đã băm); khởi động lại app không thêm dòng.
+
+### Bẫy hay gặp
+- **Issuer không khớp hostname thật:** token có iss = localhost:9000 nhưng resource server cấu hình auth.localtest.me thì mọi request 401. Đặt issuer tường minh và dùng một hostname thống nhất.
+- **Tự viết schema thay vì chép file gốc:** sai tên/kiểu cột là JdbcOAuth2AuthorizationService lỗi lúc chạy. Chép file gốc, chỉ đổi kiểu cột cho PostgreSQL.
+- **Sinh khoá RSA mỗi lần khởi động ở production:** restart là mọi token đang lưu hành không còn kiểm được chữ ký. Chấp nhận ở dev, xử lý ở milestone 5.
+- **Hai chain cùng khớp một URL:** thiếu securityMatcher ở chain 1 làm chain 2 không bao giờ chạy. Chain có matcher hẹp phải đứng trước (Order nhỏ hơn).
+
+> Interview tip: Giải thích bạn tự dựng authorization server để hiểu từng endpoint (authorize, token, jwks, discovery) chứ không chỉ "cấu hình Keycloak", và lưu client/authorization trong DB để chạy nhiều instance.` },
       { title: 'Đăng nhập bằng user trong DB và đưa vai trò vào JWT', tasks: `1. Viết {{UserDetailsService}} đọc {{app_user}} + {{user_role}}; mật khẩu dùng {{PasswordEncoderFactories.createDelegatingPasswordEncoder()}} (bcrypt).
 2. Filter chain thứ 2 ({{@Order(2)}}) bật {{formLogin}} cho trang đăng nhập.
 3. Viết {{OAuth2TokenCustomizer<JwtEncodingContext>}} thêm claim {{roles}} vào access token.
@@ -3361,7 +4847,57 @@ OAuth2TokenCustomizer<JwtEncodingContext> rolesClaim() {
         }
     };
 }
-~~~`, done: `JWT có iss, sub, aud = web-bff, scope, roles, exp sau 5 phút; sai mật khẩu 5 lần liên tiếp bị khoá 15 phút (tự viết, có test).` },
+~~~`, done: `JWT có iss, sub, aud = web-bff, scope, roles, exp sau 5 phút; sai mật khẩu 5 lần liên tiếp bị khoá 15 phút (tự viết, có test).`,
+        guide: `### Các bước
+1. Viết {{DbUserDetailsService}}: một query JOIN app_user và user_role theo username, trả {{User.withUsername(...).password(hash).roles(...).disabled(!enabled).accountLocked(...).build()}}.
+2. Khai báo bean {{PasswordEncoder}} = {{PasswordEncoderFactories.createDelegatingPasswordEncoder()}}; hash trong DB có tiền tố bcrypt trong ngoặc nhọn để sau này nâng thuật toán mà không bắt mọi người đổi mật khẩu.
+3. Migration V3 thêm cột {{failed_attempts INT NOT NULL DEFAULT 0}} và {{locked_until TIMESTAMPTZ}} vào app_user.
+4. Viết {{LoginAttemptListener}} (code khung) nghe sự kiện đăng nhập thất bại/thành công của Spring Security; sai 5 lần liên tiếp → locked_until = now + 15 phút.
+5. Trong UserDetailsService, {{accountLocked(lockedUntil != null && lockedUntil.isAfter(now))}}; Spring Security tự trả lỗi LockedException, form login hiện thông báo chung (không nói rõ "sai mật khẩu" hay "không tồn tại").
+6. Viết {{OAuth2TokenCustomizer}} thêm claim roles như phần tasks; không thêm email/phone.
+7. Test tích hợp với MockMvc: POST /login với csrf() sai 5 lần → lần 6 dù đúng mật khẩu vẫn bị từ chối; chỉnh locked_until về quá khứ → đăng nhập được.
+8. Test lấy token trọn luồng (MockMvc: /oauth2/authorize với code_challenge → login → lấy code từ Location → POST /oauth2/token với httpBasic web-bff và code_verifier), giải mã access token bằng {{JwtDecoder}} kiểm claim roles.
+
+### Code khung
+~~~java
+@Component
+class LoginAttemptListener {
+    private final JdbcTemplate jdbc;
+    LoginAttemptListener(JdbcTemplate jdbc) { this.jdbc = jdbc; }
+
+    @EventListener
+    public void onFailure(AuthenticationFailureBadCredentialsEvent e) {
+        String username = String.valueOf(e.getAuthentication().getPrincipal());
+        // Một câu UPDATE nguyên tử: tăng đếm, đủ 5 thì khoá 15 phút và reset đếm
+        jdbc.update("""
+            UPDATE app_user SET
+              failed_attempts = CASE WHEN failed_attempts + 1 >= 5 THEN 0 ELSE failed_attempts + 1 END,
+              locked_until    = CASE WHEN failed_attempts + 1 >= 5
+                                     THEN now() + interval '15 minutes' ELSE locked_until END
+            WHERE username = ?""", username);
+    }
+
+    @EventListener
+    public void onSuccess(AuthenticationSuccessEvent e) {
+        jdbc.update("UPDATE app_user SET failed_attempts = 0 WHERE username = ?",
+            e.getAuthentication().getName());
+    }
+}
+~~~
+Spring Boot tự đăng ký {{AuthenticationEventPublisher}} nên các sự kiện này được phát cho form login.
+
+### Kiểm tra
+- Token sau khi đăng nhập có: iss, sub (username), aud = web-bff, scope, roles (ví dụ ["USER"]), exp − iat = 300 giây.
+- Test khoá: 5 lần sai → {{SELECT failed_attempts, locked_until FROM app_user}} cho locked_until ≈ now + 15 phút; lần 6 đúng mật khẩu vẫn thất bại.
+- Đăng nhập thành công reset failed_attempts về 0.
+
+### Bẫy hay gặp
+- **Thông báo lỗi phân biệt "user không tồn tại" và "sai mật khẩu":** cho kẻ tấn công dò danh sách username. Luôn trả một thông báo chung.
+- **Khoá vĩnh viễn sau N lần sai:** kẻ xấu cố tình nhập sai để khoá tài khoản người khác (DoS). Khoá có thời hạn, kết hợp rate limit theo IP.
+- **Nhét quá nhiều claim vào access token:** JWT chỉ là base64, ai cầm cũng đọc; token to làm mọi request nặng thêm. Chỉ claim cần cho phân quyền.
+- **Sửa id_token thay vì access token:** quên kiểm token type trong customizer làm cả id_token cũng mang roles (không hại lớn nhưng sai mục đích). Kiểm {{OAuth2TokenType.ACCESS_TOKEN}}.
+
+> Interview tip: Kể chi tiết chống brute force (khoá có thời hạn, thông báo lỗi chung, UPDATE nguyên tử) và giải thích vì sao access token chỉ chứa roles, cho thấy bạn nghĩ cả về bảo mật lẫn kích thước token.` },
       { title: 'Resource server: kiểm JWT và RBAC', tasks: `1. orders-api thêm {{spring-boot-starter-oauth2-resource-server}}.
 2. Cấu hình {{spring.security.oauth2.resourceserver.jwt.issuer-uri}}: app tự tải discovery và JWKS, tự kiểm chữ ký, exp, iss.
 3. Kiểm audience bằng property {{spring.security.oauth2.resourceserver.jwt.audiences}} (Spring Boot 3.2+).
@@ -3383,7 +4919,55 @@ JwtAuthenticationConverter jwtAuthConverter() {
 @PreAuthorize("hasRole('ADMIN') or @orderGuard.isOwner(#id, authentication.name)")
 @DeleteMapping("/orders/{id}")
 void cancel(@PathVariable long id) { service.cancel(id); }
-~~~`, done: `Test: không token 401; token hết hạn 401; token đúng nhưng aud khác 401; USER xoá đơn người khác 403; ADMIN 204; mỗi request xác thực không gọi mạng (log chỉ thấy 1 lần tải JWKS).` },
+~~~`, done: `Test: không token 401; token hết hạn 401; token đúng nhưng aud khác 401; USER xoá đơn người khác 403; ADMIN 204; mỗi request xác thực không gọi mạng (log chỉ thấy 1 lần tải JWKS).`,
+        guide: `### Các bước
+1. Tạo project {{orders-api}} (port 8081): Web, OAuth2 Resource Server, Data JPA hoặc JDBC, Flyway, PostgreSQL; schema riêng {{orders}} với bảng {{purchase_order(id, owner, status, total)}}.
+2. YAML: {{issuer-uri: http://auth.localtest.me:9000}} và {{audiences: web-bff}} dưới {{spring.security.oauth2.resourceserver.jwt}}; Boot tạo JwtDecoder tự kiểm chữ ký, exp, nbf, iss, aud.
+3. Khai báo bean {{JwtAuthenticationConverter}} như code trong tasks để claim roles thành ROLE_*.
+4. {{SecurityFilterChain}}: stateless, csrf tắt (chỉ Bearer), {{/actuator/health/**}} permitAll, còn lại authenticated, {{.oauth2ResourceServer(o -> o.jwt(j -> j.jwtAuthenticationConverter(conv)))}}.
+5. Viết bean {{orderGuard}} (code khung) dùng trong {{@PreAuthorize}}; GET đơn cũng kiểm owner, không chỉ DELETE.
+6. Bật log {{logging.level.org.springframework.security.oauth2.jwt=DEBUG}} khi test để thấy JWKS chỉ tải một lần rồi được cache.
+7. Viết {{OrderSecurityTest}} ({{@WebMvcTest}}) với {{jwt().jwt(j -> j.subject("alice").claim("roles", List.of("USER"))).authorities(...)}} cho USER chủ đơn, USER khác, ADMIN.
+8. Test tích hợp riêng cho 401: JWT tự ký bằng khoá RSA khác, JWT hết hạn, JWT aud khác (dùng {{NimbusJwtEncoder}} trong test để tạo token).
+
+### Code khung
+~~~java
+@Component("orderGuard")
+class OrderGuard {
+    private final OrderRepository orders;
+    OrderGuard(OrderRepository orders) { this.orders = orders; }
+
+    // Gọi từ SpEL: @orderGuard.isOwner(#id, authentication.name)
+    public boolean isOwner(long orderId, String username) {
+        return orders.findOwner(orderId)          // SELECT owner FROM purchase_order WHERE id = ?
+            .map(username::equals)
+            .orElse(false);                       // không tồn tại cũng là false
+    }
+}
+
+// Test RBAC: USER xoá đơn người khác phải nhận 403
+@Test
+void userCannotCancelOthersOrder() throws Exception {
+    given(orders.findOwner(42L)).willReturn(Optional.of("bob"));
+    mvc.perform(delete("/orders/42").with(jwt()
+            .jwt(j -> j.subject("alice"))
+            .authorities(new SimpleGrantedAuthority("ROLE_USER"))))
+       .andExpect(status().isForbidden());
+}
+~~~
+
+### Kiểm tra
+- 5 case: không token 401; hết hạn 401 kèm header {{WWW-Authenticate: Bearer error="invalid_token"}}; aud khác 401; USER xoá đơn người khác 403; ADMIN xoá 204.
+- Log DEBUG: chỉ 1 lần tải {{/oauth2/jwks}} cho nhiều request (khoá được cache), không gọi auth-server mỗi request.
+- Gọi bằng token thật lấy từ milestone 2: {{curl -i localhost:8081/orders/1 -H "Authorization: Bearer $TOKEN"}} → 200 nếu là chủ đơn.
+
+### Bẫy hay gặp
+- **Quên prefix ROLE_:** claim roles = ["ADMIN"] mà converter không thêm prefix thì {{hasRole('ADMIN')}} luôn false (hasRole tự thêm ROLE_ khi so).
+- **Chỉ dùng RBAC:** USER có quyền "xoá đơn" nhưng phải là đơn của mình; thiếu kiểm owner là lỗ IDOR kinh điển.
+- **Gọi introspection hoặc userinfo mỗi request:** mất lợi thế của JWT tự kiểm, thêm độ trễ và làm auth-server thành điểm nghẽn.
+- **Trả 403 cho đơn không tồn tại và 404 cho đơn của người khác** (hoặc ngược lại không nhất quán): lộ thông tin. Chọn một chính sách và test nó.
+
+> Interview tip: Nói rõ resource server kiểm JWT cục bộ bằng khoá công khai đã cache (không gọi mạng), còn phân quyền gồm hai lớp RBAC và kiểm chủ sở hữu, kèm test cho từng lớp.` },
       { title: 'BFF: oauth2Login, cookie và CSRF', tasks: `1. web-bff thêm {{spring-boot-starter-oauth2-client}}, khai báo provider {{issuer-uri}} và registration {{bff}}.
 2. Bật PKCE cho confidential client: {{OAuth2AuthorizationRequestCustomizers.withPkce()}} trên {{DefaultOAuth2AuthorizationRequestResolver}}.
 3. BFF gọi orders-api bằng {{RestClient}} gắn access token của người đang đăng nhập (Spring Security 6.4+ có {{OAuth2ClientHttpRequestInterceptor}}); token hết hạn thì tự refresh.
@@ -3406,7 +4990,64 @@ SecurityFilterChain bff(HttpSecurity http, ClientRegistrationRepository regs) th
         .build();
 }
 ~~~
-Lưu ý: SPA cần xử lý thêm phần CSRF token "deferred" của Spring Security 6; xem mục CSRF cho Single-Page Applications trong reference.`, done: `Redirect tới /oauth2/authorize có code_challenge và code_challenge_method=S256; DevTools không thấy JWT; POST không có X-XSRF-TOKEN nhận 403; logout xong mở lại app phải đăng nhập lại.` },
+Lưu ý: SPA cần xử lý thêm phần CSRF token "deferred" của Spring Security 6; xem mục CSRF cho Single-Page Applications trong reference.`, done: `Redirect tới /oauth2/authorize có code_challenge và code_challenge_method=S256; DevTools không thấy JWT; POST không có X-XSRF-TOKEN nhận 403; logout xong mở lại app phải đăng nhập lại.`,
+        guide: `### Các bước
+1. Tạo project {{web-bff}} (port 8080): Web, OAuth2 Client, Actuator; thêm Spring Session JDBC hoặc giữ session trong bộ nhớ cho bản đầu.
+2. Khai báo provider và registration trong YAML (code khung); secret lấy từ biến môi trường, không commit vào git.
+3. Viết filter chain như code trong tasks (PKCE, CookieCsrfTokenRepository, OIDC logout).
+4. Khai báo {{RestClient}} gọi orders-api với {{OAuth2ClientHttpRequestInterceptor}} (Spring Security 6.4+, có trong Boot 3.4/3.5): nó lấy access token của user hiện tại từ {{OAuth2AuthorizedClientManager}}, tự refresh khi gần hết hạn.
+5. Viết {{OrdersProxyController}}: {{GET /api/orders}} và {{DELETE /api/orders/:id}} chuyển tiếp sang orders-api; lỗi 401/403 từ orders-api trả nguyên trạng cho SPA.
+6. Thêm filter nhỏ làm "nạp" CSRF token mỗi request (Spring Security 6 trì hoãn việc sinh token) theo mục CSRF cho SPA trong tài liệu; SPA đọc cookie XSRF-TOKEN và gửi header X-XSRF-TOKEN.
+7. Cấu hình cookie session: {{server.servlet.session.cookie.http-only=true}}, {{same-site=lax}}, {{secure=true}} khi chạy HTTPS.
+8. Kiểm bằng trình duyệt (khi người tích hợp test) và bằng MockMvc: {{oauth2Login()}} của spring-security-test cho các request đã đăng nhập; POST thiếu csrf() → 403.
+
+### Code khung
+~~~yaml
+spring:
+  security:
+    oauth2:
+      client:
+        provider:
+          auth:
+            issuer-uri: http://auth.localtest.me:9000      # tự đọc discovery
+        registration:
+          bff:
+            provider: auth
+            client-id: web-bff
+            client-secret: \${BFF_CLIENT_SECRET}            # biến môi trường, không ghi thẳng
+            client-authentication-method: client_secret_basic
+            authorization-grant-type: authorization_code
+            redirect-uri: "{baseUrl}/login/oauth2/code/{registrationId}"
+            scope: openid,orders.read,orders.write
+server:
+  servlet:
+    session:
+      cookie:
+        http-only: true          # JavaScript không đọc được cookie phiên
+        same-site: lax           # chặn phần lớn CSRF từ site khác, vẫn cho redirect đăng nhập
+~~~
+~~~java
+@Bean
+RestClient ordersClient(RestClient.Builder b, OAuth2AuthorizedClientManager manager) {
+    var oauth = new OAuth2ClientHttpRequestInterceptor(manager);   // gắn Bearer, tự refresh
+    return b.baseUrl("http://localhost:8081").requestInterceptor(oauth).build();
+}
+// Khi gọi: .attributes(RequestAttributeClientRegistrationIdResolver.clientRegistrationId("bff"))
+~~~
+
+### Kiểm tra
+- {{curl -i http://app.localtest.me:8080/api/orders}} chưa đăng nhập → 302 tới {{/oauth2/authorization/bff}}, rồi tới auth-server với tham số {{code_challenge}} và {{code_challenge_method=S256}}.
+- Sau khi đăng nhập: cookie SESSION có HttpOnly; không có JWT nào trong localStorage hay response trả cho SPA.
+- POST/DELETE không có header X-XSRF-TOKEN → 403; có header đúng → chuyển tiếp thành công.
+- Logout → về trang chủ; gọi lại /api/orders phải đăng nhập lại (session ở auth-server cũng đã kết thúc).
+
+### Bẫy hay gặp
+- **Trả access token cho SPA "cho tiện":** mất toàn bộ lợi ích của BFF; một lỗ XSS là lộ token. Token chỉ nằm phía server.
+- **Tắt CSRF ở BFF vì "đã có SameSite":** SameSite=Lax không chặn mọi trường hợp (subdomain, trình duyệt cũ); BFF dùng cookie nên vẫn cần CSRF token.
+- **Cookie của auth-server và BFF đè nhau trên localhost:** cookie không phân biệt cổng, hai app cùng tên cookie JSESSIONID trên localhost làm mất phiên liên tục. Dùng hai hostname khác nhau như phần Chạy local.
+- **Quên post-logout redirect URI đã đăng ký ở client:** auth-server từ chối yêu cầu logout. Giá trị phải khớp với {{postLogoutRedirectUri}} khi đăng ký client.
+
+> Interview tip: Trình bày mô hình BFF: trình duyệt chỉ cầm cookie HttpOnly, token ở server, CSRF bằng double-submit cookie; đây là khuyến nghị hiện hành cho SPA (OAuth 2.0 for Browser-Based Apps).` },
       { title: 'Đăng xuất mọi thiết bị, xoay khoá và demo', tasks: `1. Endpoint {{POST /account/sessions/revoke-all}}: tìm các authorization theo {{principal_name}} (query JDBC riêng, interface không có hàm tìm theo user) rồi gọi {{OAuth2AuthorizationService.remove}} từng cái.
 2. Đổi mật khẩu thì gọi luôn revoke-all.
 3. Access token JWT vẫn sống tới khi hết hạn: chấp nhận tối đa 5 phút, hoặc thêm cơ chế chặn (xem challenges).
@@ -3426,7 +5067,47 @@ public int revokeAll(String username) {
     audit.info("revoke-all user={} count={}", username, ids.size());
     return ids.size();
 }
-~~~`, done: `Đăng nhập trên 3 trình duyệt, gọi revoke-all: cả 3 refresh lần sau nhận invalid_grant và phải đăng nhập lại trong ≤ 5 phút; xoay khoá trong lúc chạy k6 không phát sinh 401.` }
+~~~`, done: `Đăng nhập trên 3 trình duyệt, gọi revoke-all: cả 3 refresh lần sau nhận invalid_grant và phải đăng nhập lại trong ≤ 5 phút; xoay khoá trong lúc chạy k6 không phát sinh 401.`,
+        guide: `### Các bước
+1. Viết {{AccountController}} {{POST /account/sessions/revoke-all}} ở auth-server (user đã đăng nhập, có CSRF), gọi hàm revokeAll trong tasks với username hiện tại; trả số phiên đã thu hồi.
+2. Viết {{changePassword}}: kiểm mật khẩu cũ, băm mật khẩu mới, cập nhật password_changed_at, rồi gọi revokeAll trong cùng request.
+3. Ghi rõ trong README: access token JWT còn hiệu lực tối đa 5 phút sau revoke; nếu cần chặn ngay thì resource server kiểm thêm danh sách chặn (jti hoặc thời điểm revoke theo user) trong Redis.
+4. Chuyển khoá ký sang lưu bền: đọc khoá RSA từ keystore hoặc secret manager khi khởi động; giữ danh sách nhiều khoá, mỗi khoá có kid.
+5. Quy trình xoay khoá: (a) thêm khoá mới vào JWKS nhưng vẫn ký bằng khoá cũ, chờ ít nhất thời gian cache JWKS của resource server; (b) chuyển sang ký bằng khoá mới; (c) chờ hết vòng đời access token (5 phút) rồi bỏ khoá cũ.
+6. Viết {{OAuth2TokenCustomizer}} đặt kid trong header bằng khoá đang hoạt động (code khung), để encoder chọn đúng một khoá khi JWKS có nhiều khoá.
+7. Viết k6 {{load/token-refresh.js}}: mỗi VU có một refresh token (chuẩn bị trước bằng script), gọi {{POST /oauth2/token}} grant_type=refresh_token với basic auth web-bff, lưu refresh token mới (vì rotation) cho lần sau; mục tiêu 200 req/s, p95 < 150 ms.
+8. Viết {{docs/demo.md}} kịch bản 5 phút: đăng nhập 3 trình duyệt, revoke-all, xoay khoá trong lúc k6 chạy, mở dashboard.
+
+### Code khung
+~~~java
+@Bean
+JWKSource<SecurityContext> jwkSource(KeyStoreLoader keys) {
+    RSAKey current  = keys.load("signing-2027-02");   // khoá mới: dùng để KÝ
+    RSAKey previous = keys.load("signing-2027-01");   // khoá cũ: chỉ còn để KIỂM token đang lưu hành
+    // /oauth2/jwks công bố cả hai khoá công khai trong giai đoạn chuyển tiếp
+    return new ImmutableJWKSet<>(new JWKSet(List.of(current, previous)));
+}
+
+@Bean
+OAuth2TokenCustomizer<JwtEncodingContext> signingKeyId(KeyStoreLoader keys) {
+    String activeKid = keys.activeKid();               // "signing-2027-02"
+    return ctx -> ctx.getJwsHeader().keyId(activeKid); // encoder chọn đúng khoá theo kid
+}
+~~~
+Nếu đã có customizer thêm roles ở milestone 2, gộp hai việc vào một bean customizer để tránh hai bean cùng kiểu.
+
+### Kiểm tra
+- Đăng nhập trên 3 trình duyệt (3 authorization), gọi revoke-all → trả 3; {{SELECT count(*) FROM oauth2_authorization WHERE principal_name = 'alice'}} = 0; mỗi BFF ở lần refresh kế tiếp nhận invalid_grant và bắt đăng nhập lại trong ≤ 5 phút.
+- Xoay khoá trong lúc k6 chạy: 0 lỗi 401 ở orders-api; {{/oauth2/jwks}} có 2 khoá trong giai đoạn chuyển tiếp.
+- k6: p95 /oauth2/token (refresh) < 150 ms ở 200 req/s, ghi vào README; tỉ lệ 400 bằng 0 (nếu có là script dùng lại refresh token cũ).
+
+### Bẫy hay gặp
+- **Bỏ khoá cũ ngay khi đổi khoá ký:** token ký bằng khoá cũ còn sống tới 5 phút bị 401 hàng loạt. Luôn có giai đoạn chồng lấn.
+- **JWKS có 2 khoá mà không đặt kid:** encoder không biết chọn khoá nào và báo lỗi; resource server cũng không biết dùng khoá nào để kiểm.
+- **Nghĩ revoke-all làm access token chết ngay:** JWT tự chứa, không ai hỏi lại auth-server. Hoặc chấp nhận trễ bằng TTL ngắn, hoặc thêm danh sách chặn và nói rõ chi phí.
+- **k6 dùng lại cùng refresh token:** với reuseRefreshTokens(false), lần thứ hai nhận invalid_grant; script phải lưu token mới sau mỗi lần refresh.
+
+> Interview tip: Kể trade-off "JWT tự kiểm nhanh nhưng khó thu hồi" và cách bạn giải quyết bằng TTL 5 phút + rotation refresh token + revoke-all, rồi mô tả quy trình xoay khoá ba bước không downtime.` }
     ],
     challenges: [
       `### JWT không thu hồi được ngay
@@ -3655,7 +5336,58 @@ INSERT INTO order_item (order_id, product_id, qty)
 SELECT o.id, (random() * 49999)::int + 1, 1 + (random() * 4)::int
 FROM orders o, generate_series(1, 3);
 ANALYZE;   -- cập nhật thống kê cho planner trước khi đo
-~~~`, done: `3 lần đo baseline lệch p95 < 10%; README có bảng baseline và điểm gãy (ví dụ 140 req/s); có dashboard Grafana với p95, pool pending, GC.` },
+~~~`, done: `3 lần đo baseline lệch p95 < 10%; README có bảng baseline và điểm gãy (ví dụ 140 req/s); có dashboard Grafana với p95, pool pending, GC.`,
+        guide: `### Các bước
+1. Sinh {{catalog-api}} ở start.spring.io: Java 21, Boot 3.5.x; Web, Data JPA, Flyway, PostgreSQL Driver, Actuator, Prometheus. Viết entity Order (items {{@OneToMany(fetch = LAZY)}}), OrderItem, Product và 3 endpoint "cài lỗi" đúng như bảng (gọi tuần tự, chưa index, chưa cache).
+2. Viết {{V1__schema.sql}} theo phần Dữ liệu (cố ý chưa có index phụ) và {{V2__products.sql}}; chạy câu seed trong tasks bằng psql (không đặt vào Flyway để migration nhẹ).
+3. Viết stub WireMock {{wiremock/mappings/price.json}}: urlPathPattern {{/price/.*}}, response 200 body "123.45", {{fixedDelayMilliseconds}} 300.
+4. Đóng gói app thành container ({{./mvnw spring-boot:build-image}} hoặc Dockerfile) để giới hạn tài nguyên giống Postgres: 2 CPU, 2 GB, {{JAVA_TOOL_OPTIONS=-Xms1g -Xmx1g -XX:StartFlightRecording=settings=default,maxage=30m}}.
+5. Thêm Prometheus + Grafana vào compose, scrape {{catalog-api:8080/actuator/prometheus}} mỗi 5 giây; import dashboard JVM có sẵn và tự thêm panel p95 theo uri, Hikari pending, GC pause.
+6. Viết {{k6/mixed.js}} theo mẫu phần Kịch bản: 3 hàm theo tỉ lệ 50/35/15 (chọn bằng Math.random), tag name cho từng nhóm URL.
+7. Quy trình đo: chạy k6 1 phút warm-up (bỏ kết quả), rồi 5 phút đo; lặp 3 lần, lấy trung vị p50/p95/p99, throughput, tỉ lệ lỗi, CPU app và DB ({{docker stats}}).
+8. Tìm điểm gãy: chạy lại với rate 100, 200, 300… mỗi mức 2 phút; điểm gãy là mức đầu tiên p95 > 1 giây hoặc lỗi > 1%. Ghi tất cả vào {{docs/results.md}} với commit hash.
+
+### Code khung
+~~~yaml
+# application.yml cho lab: đủ metric để giải thích con số, không chỉ có con số
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true       # bucket để Prometheus tính p95/p99 chính xác
+    tags:
+      app: catalog-api
+spring:
+  jpa:
+    open-in-view: false
+    properties:
+      hibernate:
+        generate_statistics: true        # chỉ bật trong lab: đếm statement mỗi request
+logging:
+  level:
+    org.hibernate.stat: info             # in thống kê mỗi session (số câu JDBC, thời gian)
+server:
+  tomcat:
+    threads:
+      max: 200                           # ghi rõ giá trị mặc định để bước 4 so sánh
+~~~
+
+### Kiểm tra
+- {{SELECT count(*) FROM orders}} = 1.000.000, order_item = 3.000.000; seed xong dưới vài phút.
+- 3 lần đo baseline: p95 chênh nhau < 10% (lớn hơn nghĩa là môi trường chưa ổn định, tìm nguyên nhân trước).
+- Dashboard hiện p95 theo uri, Hikari pending, GC pause trong lúc k6 chạy; bảng baseline + điểm gãy có trong README.
+
+### Bẫy hay gặp
+- **Chạy k6 trên cùng CPU với app:** công cụ đo tranh tài nguyên với thứ bị đo, số liệu xấu ngẫu nhiên. Giới hạn CPU riêng cho từng container hoặc chạy k6 ở máy khác.
+- **Dùng số VU cố định:** server chậm thì tải tự giảm (coordinated omission), p95 đẹp giả. Dùng constant-arrival-rate như mẫu.
+- **Đo một lần rồi kết luận:** nhiễu từ JIT, GC, cache hệ điều hành làm hai lần chạy lệch 20–30%. Warm-up, lặp 3 lần, báo trung vị.
+- **Lấy trung bình thay vì percentile:** trung bình che mất đuôi chậm mà người dùng cảm nhận. Luôn báo p95/p99.
+
+> Interview tip: Kể rằng trước khi tối ưu bạn dựng môi trường đo tái lập được (tài nguyên cố định, arrival-rate, 3 lần đo) vì "tối ưu mà không đo được thì chỉ là đoán".` },
       { title: 'Bước 1: index và N+1', tasks: `1. Profile lúc chạy tải: flame graph {{wall}} cho thấy phần lớn thời gian nằm trong chờ JDBC; Hibernate statistics: 21 statement cho 1 request.
 2. Chạy {{EXPLAIN (ANALYZE, BUFFERS)}} câu lọc theo customer_id: Seq Scan trên 1 triệu dòng.
 3. Thêm index {{orders(customer_id, created_at DESC)}} và {{order_item(order_id)}} (Flyway, {{CREATE INDEX CONCURRENTLY}} trên bảng thật).
@@ -3672,7 +5404,55 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
 // Phương án cho trang có phân trang (fetch join collection + limit sẽ phân trang trong RAM):
 // spring.jpa.properties.hibernate.default_batch_fetch_size=50
 // -> items của 20 đơn được nạp bằng 1 câu IN (...) thay vì 20 câu
-~~~`, done: `Query/request từ 21 còn ≤ 2; p95 orders giảm (ghi số trước/sau); test integration fail nếu statement > 3.` },
+~~~`, done: `Query/request từ 21 còn ≤ 2; p95 orders giảm (ghi số trước/sau); test integration fail nếu statement > 3.`,
+        guide: `### Các bước
+1. Trong lúc k6 chạy, lấy flame graph chế độ wall: {{asprof -d 30 -e wall -f wall.html <pid>}} (hoặc JFR {{jcmd <pid> JFR.start duration=60s filename=b1.jfr}}); thấy phần lớn thời gian ở socket read của driver PostgreSQL.
+2. Bật log thống kê Hibernate: một request orders in khoảng 21 JDBC statement (1 câu orders + 20 câu items).
+3. Copy câu SQL lọc theo customer_id từ log, chạy {{EXPLAIN (ANALYZE, BUFFERS)}} trong psql: Seq Scan trên 1 triệu dòng, "Buffers: shared read" lớn.
+4. Viết {{V3__indexes.sql}}: index orders (customer_id, created_at DESC) và order_item (order_id). Trên bảng production dùng CREATE INDEX CONCURRENTLY và đặt dòng {{-- flyway:executeInTransaction=false}} ở đầu file vì lệnh này không chạy trong transaction.
+5. Sửa N+1 bằng {{@EntityGraph}} như tasks cho truy vấn top 20; nếu endpoint có phân trang thì bật {{hibernate.default_batch_fetch_size=50}} thay vì fetch join collection.
+6. Viết test đếm statement (code khung) chạy với Testcontainers PostgreSQL và dữ liệu nhỏ.
+7. Chạy lại EXPLAIN: Index Scan, thời gian từ hàng trăm ms còn dưới 1 ms.
+8. Đo lại 3 lần như quy trình, thêm dòng "Bước 1" vào bảng kết quả, commit kèm số liệu.
+
+### Code khung
+~~~java
+@SpringBootTest
+@Testcontainers
+class OrdersQueryCountIT {
+    @Container @ServiceConnection
+    static PostgreSQLContainer<?> pg = new PostgreSQLContainer<>("postgres:16-alpine");
+
+    @Autowired EntityManagerFactory emf;
+    @Autowired OrderQueryService service;
+
+    @Test
+    void ordersByCustomerUsesAtMostThreeStatements() {
+        Statistics stats = emf.unwrap(SessionFactory.class).getStatistics();
+        stats.setStatisticsEnabled(true);
+        stats.clear();                                   // chỉ đếm từ đây
+
+        service.recentOrders(42L);                       // đi qua đúng code của endpoint
+
+        // N+1 quay lại thì con số này nhảy lên 21 và test đỏ
+        assertThat(stats.getPrepareStatementCount()).isLessThanOrEqualTo(3);
+    }
+}
+~~~
+
+### Kiểm tra
+- EXPLAIN trước/sau chụp vào README: Seq Scan → Index Scan using orders_customer_id_created_at_idx.
+- Log Hibernate statistics: số statement mỗi request orders ≤ 2.
+- Bảng kết quả: p95 orders và throughput tối đa trước/sau; CPU DB giảm rõ.
+- Xoá @EntityGraph thử: OrdersQueryCountIT đỏ (chứng minh test có tác dụng), rồi khôi phục.
+
+### Bẫy hay gặp
+- **JOIN FETCH collection kèm phân trang:** Hibernate 6 cảnh báo "firstResult/maxResults specified with collection fetch; applying in memory" và tải hết dữ liệu về RAM rồi mới cắt trang. Dùng batch fetch hoặc 2 bước (lấy id trang, rồi fetch theo id).
+- **Thêm index cho mọi cột:** mỗi index làm chậm INSERT/UPDATE và tốn RAM cache. Chỉ thêm index được chứng minh bằng EXPLAIN của câu truy vấn thật.
+- **Thứ tự cột trong index sai:** index (created_at, customer_id) không phục vụ tốt WHERE customer_id = ? ORDER BY created_at. Cột so bằng đứng trước, cột sắp xếp sau.
+- **Sửa cả index lẫn N+1 rồi đo một lần:** không biết mỗi thay đổi đóng góp bao nhiêu. Lý tưởng là đo riêng từng thay đổi.
+
+> Interview tip: Kể theo chuỗi "triệu chứng → bằng chứng (flame graph, 21 statement, Seq Scan) → sửa → số liệu sau → test chặn lùi", vì interviewer muốn thấy cách bạn tìm nguyên nhân chứ không chỉ cách sửa.` },
       { title: 'Bước 2: kích thước connection pool', tasks: `1. Đọc metric: {{hikaricp.connections.pending}} > 0 liên tục, {{hikaricp.connections.acquire}} p95 hàng trăm ms: request đang xếp hàng chờ connection.
 2. Đo thời gian giữ connection ({{hikaricp.connections.usage}}): nếu dài do transaction ôm việc khác (gọi HTTP trong {{@Transactional}}) thì sửa code trước, đừng tăng pool.
 3. Ước lượng: connection cần ≈ req/s × thời gian giữ connection (giây). 360 req/s × 0,03 s ≈ 11, cộng dư → 20.
@@ -3688,7 +5468,50 @@ spring:
       connection-timeout: 2000   # chờ tối đa 2s rồi báo lỗi rõ thay vì treo 30s mặc định
   jpa:
     open-in-view: false          # không giữ connection suốt lúc render response
-~~~`, done: `Pending về ~0 ở 360 req/s; bảng so sánh pool 10/20/50 (p95, CPU DB); README giải thích công thức và vì sao không chọn 50.` },
+~~~`, done: `Pending về ~0 ở 360 req/s; bảng so sánh pool 10/20/50 (p95, CPU DB); README giải thích công thức và vì sao không chọn 50.`,
+        guide: `### Các bước
+1. Trong lúc chạy tải ở mức mới (sau bước 1), mở Grafana xem {{hikaricp_connections_pending}}, {{hikaricp_connections_acquire_seconds}} và {{hikaricp_connections_usage_seconds}}; pending > 0 liên tục là dấu hiệu pool là nút thắt.
+2. Đọc code tìm transaction ôm việc khác: method {{@Transactional}} gọi HTTP, gửi email, hay xử lý nặng sau khi đọc DB. Sửa trước (code khung), đo lại, rồi mới tính tới kích thước pool.
+3. Tính ước lượng: connection cần ≈ throughput × thời gian giữ connection (định luật Little). Ví dụ 360 req/s × 0,03 giây ≈ 11; cộng dự phòng cho đột biến, thử 20.
+4. Đặt cấu hình YAML trong tasks (pool cố định 20, connection-timeout 2 giây, open-in-view false) và khởi động lại.
+5. Thử lần lượt pool 10, 20, 50 với cùng kịch bản; mỗi mức đo 3 lần; ghi p95, throughput, CPU DB, số tiến trình active trong {{pg_stat_activity}}.
+6. Khi pool 50: xem {{SELECT wait_event_type, wait_event, count(*) FROM pg_stat_activity GROUP BY 1, 2}} để thấy DB bắt đầu chờ lock/IO nhiều hơn.
+7. Kiểm ràng buộc tổng: số pod × maximum-pool-size ≤ max_connections trừ phần dành cho admin/migration (ví dụ 100 − 10).
+8. Ghi bảng so sánh và đoạn giải thích vào README; commit.
+
+### Code khung
+~~~java
+// TRƯỚC: giữ connection DB suốt 300 ms gọi pricing => pool cạn dù DB rảnh
+@Transactional(readOnly = true)
+public QuoteDto quoteSlow(long orderId) {
+    Order o = orders.findWithItems(orderId).orElseThrow();
+    BigDecimal price = pricing.quote(orderId);          // HTTP 300 ms trong transaction!
+    return QuoteDto.of(o, price);
+}
+
+// SAU: transaction chỉ bao phần đọc DB; HTTP chạy khi đã trả connection
+public QuoteDto quote(long orderId) {
+    OrderSnapshot o = tx.execute(s -> OrderSnapshot.of(  // TransactionTemplate: giữ connection vài ms
+        orders.findWithItems(orderId).orElseThrow()));
+    BigDecimal price = pricing.quote(orderId);          // không chiếm connection
+    return QuoteDto.of(o, price);
+}
+~~~
+Chuyển entity sang snapshot/DTO trong transaction để không chạm LAZY ngoài transaction (LazyInitializationException khi open-in-view tắt).
+
+### Kiểm tra
+- Sau khi tách transaction: {{hikaricp_connections_usage_seconds}} p95 giảm từ hơn 300 ms xuống vài chục ms.
+- Ở 360 req/s: pending ≈ 0, acquire p95 vài ms.
+- Bảng pool 10/20/50: thường 20 cho p95 tốt nhất hoặc ngang 50 nhưng CPU DB thấp hơn; ghi rõ vì sao chọn 20.
+- {{SHOW max_connections;}} và phép tính số pod × pool ghi trong README.
+
+### Bẫy hay gặp
+- **Tăng pool để chữa mọi chậm:** nếu DB đã bão hoà CPU/IO, thêm connection chỉ thêm tranh chấp và context switch, p95 tệ hơn.
+- **Để open-in-view mặc định (true):** connection bị giữ tới khi render xong response, kể cả lúc serialize JSON; Boot in cảnh báo khi khởi động vì lý do này.
+- **connection-timeout 30 giây mặc định:** khi pool cạn request treo 30 giây rồi mới lỗi, người dùng và k6 thấy timeout khó hiểu. Đặt ngắn để lỗi rõ ràng.
+- **Quên rằng mỗi pod có pool riêng:** HPA nhân pod lên 10 với pool 20 là 200 connection, vượt max_connections 100 và pod mới không khởi động được.
+
+> Interview tip: Dùng định luật Little để giải thích con số pool bạn chọn và kể bạn sửa transaction ôm HTTP trước khi tăng pool, đó là câu trả lời interviewer chờ khi hỏi "pool bao nhiêu là đủ".` },
       { title: 'Bước 3: cache sản phẩm bằng Caffeine', tasks: `1. Xác nhận dữ liệu đọc nhiều ghi ít: product đổi vài lần/ngày, đọc 140 lần/giây.
 2. Thêm {{spring-boot-starter-cache}} + {{com.github.ben-manes.caffeine:caffeine}}, bật {{@EnableCaching}}.
 3. Cấu hình kích thước và TTL; bật {{recordStats}} để Micrometer có hit/miss.
@@ -3710,7 +5533,56 @@ class ProductService {
 // spring.cache.cache-names: products
 // spring.cache.caffeine.spec: maximumSize=50000,expireAfterWrite=60s,recordStats
 ~~~
-Lưu ý: cache trong từng pod; chạy 5 pod thì sau khi sửa, 4 pod khác có thể trả dữ liệu cũ tới 60 giây. Ghi rõ đây là trade-off đã chấp nhận.`, done: `Hit ratio > 90% sau warm-up; DB QPS và p95 có số trước/sau; test evict: sửa sản phẩm rồi đọc lại thấy giá mới ở pod đó.` },
+Lưu ý: cache trong từng pod; chạy 5 pod thì sau khi sửa, 4 pod khác có thể trả dữ liệu cũ tới 60 giây. Ghi rõ đây là trade-off đã chấp nhận.`, done: `Hit ratio > 90% sau warm-up; DB QPS và p95 có số trước/sau; test evict: sửa sản phẩm rồi đọc lại thấy giá mới ở pod đó.`,
+        guide: `### Các bước
+1. Đo xác nhận: tỉ lệ đọc/ghi product (đọc khoảng 140 lần/giây, ghi vài lần/ngày) và số query product chiếm bao nhiêu % QPS của DB ({{pg_stat_statements}} nếu đã bật extension).
+2. Thêm dependency {{spring-boot-starter-cache}} và {{com.github.ben-manes.caffeine:caffeine}}; bật {{@EnableCaching}}.
+3. Cấu hình cache bằng spec trong tasks, hoặc bean riêng (code khung) nếu cần TTL khác nhau cho từng cache.
+4. Đánh dấu {{@Cacheable}} và {{@CacheEvict}} như tasks; cache DTO bất biến (record), không cache entity JPA (entity gắn với session, có thể bị sửa ngoài ý muốn).
+5. Thêm {{sync = true}} cho @Cacheable của sản phẩm nóng để nhiều request cùng miss chỉ có 1 lần gọi DB (chống stampede trong một pod).
+6. Kiểm metric {{cache_gets_total}} tag result hit/miss trên Prometheus; panel hit ratio = hit / (hit + miss).
+7. Đo 2 kịch bản: cache nóng (sau warm-up) và cache lạnh (restart app rồi đo ngay 1 phút đầu).
+8. Ghi trade-off vào README: cache cục bộ từng pod, dữ liệu cũ tối đa 60 giây ở pod khác; nếu không chấp nhận được thì dùng Redis hoặc phát sự kiện evict.
+
+### Code khung
+~~~java
+@Configuration
+@EnableCaching
+class CacheConfig {
+    @Bean
+    CacheManager cacheManager() {
+        CaffeineCacheManager m = new CaffeineCacheManager();
+        // Cache sản phẩm: nhiều, đổi ít
+        m.registerCustomCache("products", Caffeine.newBuilder()
+            .maximumSize(50_000)                    // giới hạn RAM: không bao giờ để cache vô hạn
+            .expireAfterWrite(Duration.ofSeconds(60))
+            .recordStats()                          // để Micrometer xuất hit/miss
+            .build());
+        // Danh mục: rất ít, đổi rất hiếm
+        m.registerCustomCache("categories", Caffeine.newBuilder()
+            .maximumSize(1_000)
+            .expireAfterWrite(Duration.ofMinutes(10))
+            .recordStats()
+            .build());
+        return m;
+    }
+}
+// Ước lượng RAM: 50.000 DTO x ~1 KB ≈ 50 MB heap, ghi vào README cùng cấu hình -Xmx
+~~~
+
+### Kiểm tra
+- Hit ratio > 90% sau warm-up; QPS DB giảm (đo bằng {{pg_stat_database}} xact_commit hoặc pg_stat_statements trước/sau).
+- p95 của nhóm products giảm còn vài ms; p95 tổng thể trong bảng kết quả giảm.
+- Test evict: gọi update giá rồi get ngay trong cùng pod → giá mới.
+- Kịch bản cache lạnh: p95 phút đầu cao hơn, ghi số để thấy rủi ro khi deploy giờ cao điểm.
+
+### Bẫy hay gặp
+- **Gọi method @Cacheable từ cùng class:** proxy bị bỏ qua, cache không bao giờ dùng. Gọi qua bean khác.
+- **Cache không giới hạn kích thước:** ConcurrentMapCache mặc định của Spring không có eviction, heap tăng dần tới OOM. Luôn đặt maximumSize.
+- **Cache đối tượng mutable:** code phía sau sửa object lấy từ cache là sửa luôn bản trong cache cho mọi request. Dùng record/DTO bất biến.
+- **Cache dữ liệu theo user với key thiếu userId:** lộ dữ liệu giữa người dùng. Product là dữ liệu chung nên an toàn; với dữ liệu riêng phải cân nhắc kỹ.
+
+> Interview tip: Kể quyết định cache dựa trên số liệu tỉ lệ đọc/ghi, nêu rõ giới hạn dữ liệu cũ 60 giây giữa các pod là trade-off có ý thức, và đưa hit ratio cùng QPS DB trước/sau.` },
       { title: 'Bước 4: virtual threads và chặn lùi trong CI', tasks: `1. Endpoint /quote gọi pricing 300 ms: Tomcat mặc định tối đa 200 thread, nên trần ≈ 200 / 0,3 ≈ 660 req/s cho riêng endpoint này; tăng tải thì request xếp hàng.
 2. Bật {{spring.threads.virtual.enabled=true}} (Boot 3.2+, Java 21): mỗi request một virtual thread, chờ I/O không chiếm thread hệ điều hành.
 3. Bắt pinning bằng JFR event {{jdk.VirtualThreadPinned}}: trên JDK 21, chờ I/O bên trong {{synchronized}} giữ chặt carrier thread; đổi sang {{ReentrantLock}} (JDK 24 đã bỏ phần lớn hạn chế này).
@@ -3733,7 +5605,55 @@ class PricingClient {
         }
     }
 }
-~~~`, done: `Ở 900 req/s vào /quote p95 ≈ 300 ms cộng chi phí nhỏ (trước đó vài giây); JFR không có event VirtualThreadPinned dài; CI đỏ khi cố tình bỏ index.` }
+~~~`, done: `Ở 900 req/s vào /quote p95 ≈ 300 ms cộng chi phí nhỏ (trước đó vài giây); JFR không có event VirtualThreadPinned dài; CI đỏ khi cố tình bỏ index.`,
+        guide: `### Các bước
+1. Đo riêng endpoint /quote với rate tăng dần (300, 600, 900 req/s): trước khi bật virtual thread, quanh 660 req/s p95 vọt lên vài giây vì 200 thread Tomcat đều đang chờ pricing.
+2. Bật {{spring.threads.virtual.enabled=true}}; Boot 3.2+ cho Tomcat xử lý request trên virtual thread, đồng thời các executor của @Async/@Scheduled cũng dùng virtual thread.
+3. Thêm Semaphore giới hạn đồng thời tới pricing như tasks; khi không còn giới hạn thread, phải chủ động bảo vệ dịch vụ phía sau và pool DB.
+4. Ghi JFR trong lúc chạy tải: {{jcmd <pid> JFR.start duration=60s filename=vt.jfr}}, rồi {{jfr print --events jdk.VirtualThreadPinned vt.jfr}}; event mặc định chỉ ghi khi bị pin lâu hơn 20 ms.
+5. Nếu thấy pinning trong code của bạn (synchronized bao quanh I/O): đổi sang ReentrantLock; nếu pinning nằm trong thư viện, nâng phiên bản hoặc ghi chú.
+6. Đo lại /quote ở 900 req/s, cập nhật bảng kết quả (dòng Bước 4).
+7. Tạo {{.github/workflows/perf.yml}} (code khung): dựng compose, seed dữ liệu nhỏ, chạy k6 2 phút với thresholds; k6 trả exit code ≠ 0 khi vượt ngưỡng nên job đỏ.
+8. Thử "phá" để chứng minh CI có tác dụng: tạo nhánh xoá index ở bước 1, đẩy lên, xác nhận job perf đỏ; ghi lại vào README.
+
+### Code khung
+~~~yaml
+# .github/workflows/perf.yml: chặn lùi hiệu năng trên mỗi pull request
+name: perf-gate
+on: [pull_request]
+jobs:
+  k6:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "21" }
+      - name: Build image
+        run: ./mvnw -q spring-boot:build-image -DskipTests
+      - name: Start stack and seed small dataset
+        run: |
+          docker compose up -d postgres pricing-stub catalog-api
+          ./scripts/wait-for-health.sh http://localhost:8080/actuator/health
+          docker compose exec -T postgres psql -U lab -d lab -f /seed/ci-seed.sql
+      - name: Run k6 (thresholds fail the job)
+        run: docker compose run --rm k6 run /scripts/ci.js   # ci.js: 2 phút, rate thấp hơn lab
+~~~
+Ngưỡng trong CI nên rộng hơn lab (ví dụ p95 < 2 lần số đo trên runner) vì máy CI dùng chung, dao động lớn.
+
+### Kiểm tra
+- /quote ở 900 req/s: p95 ≈ 300 ms cộng vài chục ms (trước đó vài giây); thread hệ điều hành của JVM ({{jcmd <pid> Thread.print}} hoặc metric {{jvm.threads.live}}) không tăng theo tải.
+- JFR không có event jdk.VirtualThreadPinned dài trong code của bạn.
+- Pricing stub (WireMock {{/__admin/requests}}) không bao giờ nhận quá 300 request đồng thời.
+- PR xoá index làm job perf-gate đỏ; PR bình thường xanh.
+
+### Bẫy hay gặp
+- **Nghĩ virtual thread làm code nhanh hơn:** nó chỉ tăng số request chờ I/O đồng thời; CPU-bound không nhanh hơn, và DB vẫn là giới hạn nếu pool nhỏ.
+- **Bỏ giới hạn đồng thời:** trước đây 200 thread Tomcat vô tình là bulkhead; bật virtual thread có thể bắn hàng nghìn request vào pricing hoặc DB cùng lúc. Thêm Semaphore/bulkhead.
+- **Pooling virtual thread:** đưa virtual thread vào ThreadPoolExecutor kích thước cố định là phản mẫu; tạo mới cho mỗi tác vụ, giới hạn tài nguyên bằng Semaphore.
+- **CI perf với ngưỡng bằng số lab:** runner dùng chung dao động mạnh, job đỏ ngẫu nhiên và team sẽ tắt nó. Ngưỡng rộng, chạy lặp lại khi đỏ, chỉ bắt lùi lớn.
+
+> Interview tip: Giải thích bằng con số trần 200 / 0,3 ≈ 660 req/s vì sao virtual thread giúp endpoint chờ I/O, kèm cảnh báo pinning và việc thêm bulkhead, rồi kể CI chặn lùi hiệu năng đã bắt được lỗi thật.` }
     ],
     challenges: [
       `### Số đo không ổn định, mỗi lần một kiểu

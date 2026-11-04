@@ -1,6 +1,6 @@
 # T588 — Hướng dẫn từng bước cho pet project (2/3)
 
-Status: TODO
+Status: DONE
 Agent: qoder
 Owns: `js/data/projects.js`
 After: T587
@@ -21,3 +21,5 @@ Mỗi guide gồm:
 `node scripts/validate.js` → OK. KHÔNG commit. Ghi Status: DONE + tóm tắt vào Notes.
 
 ## Notes
+Xong guide cho proj-reconciliation, proj-bff, proj-auth-sso, proj-perf-lab. proj-search-cdc chuyển sang T589.
+Reviewed-by: claude (self-checked: validate)
