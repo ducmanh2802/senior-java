@@ -390,6 +390,343 @@ Kiểu multi-window này (theo Google SRE Workbook) vừa bắt lỗi nhanh vừ
 
 > Senior tip: theo dõi tỉ lệ "page có hành động" mỗi tuần; mục tiêu thường là dưới 2 page mỗi ca trực. Mỗi alert nên kèm link runbook, nếu không viết được runbook cho nó thì có lẽ nó không đáng để page.`
 },
+{
+  id: 'qz-devops-023', topic: 'devops',
+  q: 'Pod chạy Spring Boot trên Java 17 với {{limits.memory: 2Gi}}, đặt trên node 64 GiB RAM. Biến {{JAVA_TOOL_OPTIONS}} không có cờ heap nào. Heap tối đa (MaxHeapSize) của JVM là bao nhiêu, và vì sao?',
+  options: [
+    'Khoảng 16 GiB: JVM thấy RAM của node (64 GiB) và lấy 1/4',
+    'Khoảng 512 MiB: JVM đọc memory limit từ cgroup (2 GiB) và MaxRAMPercentage mặc định là 25%',
+    'Đúng 2 GiB: JVM dùng toàn bộ memory limit cho heap',
+    'Khoảng 1.5 GiB: JVM mặc định dành 75% limit cho heap và 25% cho phần ngoài heap'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** từ JDK 10 (và 8u191), JVM **nhận diện container**: nó đọc memory limit của cgroup (v1 hoặc v2) và coi đó là "RAM vật lý". Khi không có cờ heap, heap tối đa = {{MaxRAMPercentage}} (mặc định **25%**) × 2 GiB = **512 MiB**.
+
+### Kiểm chứng ngay trong Pod
+~~~bash
+kubectl exec -it orders-7c9f -- java -XX:+PrintFlagsFinal -version | grep -E "MaxHeapSize|MaxRAMPercentage"
+kubectl exec -it orders-7c9f -- java -Xlog:os+container=info -version   # in limit JVM đọc được
+~~~
+### Hệ quả
+512 MiB heap trong khi Pod được 2 GiB: GC chạy dày, p99 xấu, còn khoảng 1.5 GiB nằm không. Cách đúng là đặt {{-XX:MaxRAMPercentage=70}} (khoảng 65–75%) để heap **tự co giãn theo limit**, chừa phần còn lại cho metaspace, thread stack, code cache, direct buffer. Tránh hard-code {{-Xmx}}: lần sau ai đó đổi limit mà quên sửa Xmx là lệch ngay.
+
+### Vì sao các phương án còn lại sai
+- **16 GiB theo RAM node**: đó là hành vi của JVM rất cũ (trước 8u191) chưa hiểu container. Java 17 bật container support mặc định ({{UseContainerSupport}}).
+- **Đúng 2 GiB**: JVM không bao giờ mặc định dùng toàn bộ RAM cho heap; nếu làm vậy, phần off-heap sẽ đẩy process vượt limit và bị OOMKilled.
+- **75% limit**: 75% là con số **bạn nên tự đặt** gần mức đó, không phải mặc định. Mặc định chỉ 25% (riêng máy RAM rất nhỏ thì JVM dùng quy tắc {{MinRAMPercentage}} 50%).
+
+> Senior tip: đưa {{jvm_memory_max_bytes}} với nhãn {{area="heap"}} (Micrometer) lên dashboard cạnh memory limit của Pod. Chênh lệch kiểu "limit 2 GiB, heap max 512 MiB" là dấu hiệu quên cấu hình gặp rất thường xuyên khi team mới chuyển lên Kubernetes.`
+},
+{
+  id: 'qz-devops-024', topic: 'devops', multi: true,
+  q: 'Service Spring Boot có liveness probe trỏ vào {{/actuator/health}} (bao gồm cả kiểm tra DB). PostgreSQL failover mất 40 giây, và cả 6 Pod bị restart cùng lúc, kéo dài sự cố thêm 3 phút vì Pod khởi động lại chậm. Hai thay đổi nào đúng? (Chọn 2)',
+  options: [
+    'Tăng failureThreshold của liveness lên 100 để Pod gần như không bao giờ bị restart',
+    'Trỏ liveness vào {{/actuator/health/liveness}}: chỉ phản ánh trạng thái nội bộ của app, không kiểm tra DB hay hệ thống bên ngoài',
+    'Thêm kiểm tra Kafka vào liveness để phát hiện sự cố hạ tầng sớm hơn',
+    'Không đưa DB vào liveness; nếu cần thì chỉ cân nhắc đưa vào readiness, vì readiness fail chỉ rút Pod khỏi endpoint chứ không restart, và Pod tự nhận lại traffic khi DB hồi phục',
+    'Đặt initialDelaySeconds của liveness = 300 để Pod có thời gian chờ DB phục hồi'
+  ],
+  answer: [1, 3],
+  explain: `**Tóm tắt:** liveness trả lời câu hỏi "process này có hỏng tới mức **restart sẽ chữa được** không?". DB failover không phải lỗi của Pod, restart không chữa được, chỉ làm mọi thứ tệ hơn: 6 Pod cùng khởi động lại (mỗi Pod 40–60 giây), trong lúc đó không còn Pod nào phục vụ.
+
+### Cấu hình đúng với Actuator
+~~~yaml
+livenessProbe:
+  httpGet: { path: /actuator/health/liveness, port: 8081 }    # chỉ livenessState
+readinessProbe:
+  httpGet: { path: /actuator/health/readiness, port: 8081 }   # readinessState (+ phụ thuộc nếu thật sự cần)
+~~~
+Spring Boot tự bật hai health group này khi chạy trên Kubernetes (hoặc đặt {{management.endpoint.health.probes.enabled=true}}). Muốn readiness kiểm tra DB: {{management.endpoint.health.group.readiness.include=readinessState,db}} — nhưng nhớ rằng nếu mọi Pod cùng mất DB thì mọi Pod cùng unready và Service vẫn trả 503; nhiều team chọn để app tự trả lỗi nhanh (timeout ngắn, circuit breaker) thay vì đưa DB vào probe.
+
+### Vì sao các phương án còn lại sai
+- **failureThreshold 100**: liveness gần như bị vô hiệu hoá, Pod deadlock thật sẽ không bao giờ được restart. Sửa sai chỗ: vấn đề là liveness kiểm tra **sai thứ**, không phải ngưỡng.
+- **Thêm Kafka vào liveness**: lặp lại đúng lỗi cũ với một phụ thuộc khác — Kafka chập chờn là cả cluster restart dây chuyền.
+- **initialDelaySeconds = 300**: tham số này chỉ áp dụng **một lần lúc container khởi động**. DB sập giữa lúc đang chạy thì nó không có tác dụng gì; còn đặt 300 giây thì Pod bị treo lúc khởi động sẽ không được phát hiện trong 5 phút (dùng startupProbe cho chuyện khởi động chậm).
+
+> Senior tip: quy tắc tôi dùng khi review manifest: **liveness không bao giờ được phụ thuộc vào thứ nằm ngoài process**. Mỗi lần thấy {{db}}, {{redis}}, {{kafka}} trong nhóm liveness là một sự cố restart dây chuyền đang chờ ngày xảy ra.`
+},
+{
+  id: 'qz-devops-025', topic: 'devops',
+  q: 'Node bị memory pressure. Bốn Pod cùng PriorityClass: A là Guaranteed (request = limit 2Gi, đang dùng 1.8Gi); B là Burstable (request 1Gi, limit 4Gi, đang dùng 2.5Gi); C là BestEffort (đang dùng 200Mi); D là Burstable (request 2Gi, đang dùng 1Gi). Kubelet evict Pod nào đầu tiên?',
+  options: [
+    'C: Pod BestEffort luôn bị evict đầu tiên, bất kể dùng bao nhiêu memory',
+    'D: Pod có request lớn nhưng dùng ít, nên bị thu hồi để giải phóng phần request bỏ trống',
+    'B: trong các Pod dùng vượt request (B và C), cùng priority thì Pod vượt request nhiều hơn (B vượt 1.5Gi) bị evict trước',
+    'Không Pod nào: kubelet chỉ evict khi có container vượt memory limit của nó'
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** khi node thiếu memory, kubelet xếp hạng Pod theo ba bước: (1) usage có **vượt request** không, (2) **Priority**, (3) **vượt request bao nhiêu**. B vượt 1.5Gi, C vượt 200Mi (request bằng 0), A và D dùng dưới request → B bị evict đầu tiên.
+
+| Pod | Request | Usage | Vượt request |
+|---|---|---|---|
+| A (Guaranteed) | 2Gi | 1.8Gi | không |
+| B (Burstable) | 1Gi | 2.5Gi | **+1.5Gi** |
+| C (BestEffort) | 0 | 200Mi | +200Mi |
+| D (Burstable) | 2Gi | 1Gi | không |
+
+### Vì sao các phương án còn lại sai
+- **C luôn đầu tiên**: QoS class không phải tiêu chí trực tiếp của eviction. BestEffort thường chết sớm vì request bằng 0 nên mọi usage đều là "vượt", nhưng một Pod Burstable "xin ít, dùng nhiều" còn vượt nhiều hơn. (QoS ảnh hưởng trực tiếp tới **OOM killer của kernel** qua {{oom_score_adj}}, đó là cơ chế khác.)
+- **D vì request bỏ trống**: kubelet không "thu hồi" request chưa dùng; Pod dùng dưới request gần như an toàn trước memory pressure.
+- **Chỉ khi vượt limit**: vượt limit là việc của OOM killer trong cgroup (OOMKilled). Node-pressure eviction là cơ chế riêng, kích hoạt khi {{memory.available}} của node xuống dưới ngưỡng (mặc định hard là 100Mi), kể cả khi không container nào chạm limit.
+
+> Senior tip: với service Java, đặt **memory request = limit**: Pod không bao giờ dùng vượt request nên không bao giờ đứng đầu hàng eviction; nếu phình quá limit thì chỉ chính nó bị OOMKilled, rõ ràng và dễ điều tra.`
+},
+{
+  id: 'qz-devops-026', topic: 'devops',
+  q: 'Pod ở namespace {{shop}} dùng resolv.conf mặc định: search {{shop.svc.cluster.local svc.cluster.local cluster.local}} và {{options ndots:5}}. App gọi {{api.partner.com}}. Truy vấn DNS đầu tiên resolver gửi đi là gì?',
+  options: [
+    '{{api.partner.com}}: tên miền công khai luôn được hỏi trước',
+    '{{api.partner.com.cluster.local}}: resolver thử search domain ngắn nhất trước',
+    'Không có truy vấn nào tới CoreDNS: tên bên ngoài cluster phải được khai báo bằng Service kiểu ExternalName mới phân giải được',
+    '{{api.partner.com.shop.svc.cluster.local}}: tên có 2 dấu chấm, ít hơn ndots 5, nên resolver ghép search domain đầu tiên trước'
+  ],
+  answer: 3,
+  explain: `**Tóm tắt:** quy tắc của resolver: tên có **số dấu chấm ≥ ndots** thì hỏi tên gốc trước; ngược lại thì thử **lần lượt từng search domain theo thứ tự**, cuối cùng mới hỏi tên gốc. {{api.partner.com}} có 2 dấu chấm < 5.
+
+~~~text
+api.partner.com.shop.svc.cluster.local   -> NXDOMAIN
+api.partner.com.svc.cluster.local        -> NXDOMAIN
+api.partner.com.cluster.local            -> NXDOMAIN
+api.partner.com                          -> IP thật
+(mỗi bước gửi cả A và AAAA: 8 truy vấn, 6 NXDOMAIN)
+~~~
+Hậu quả: CoreDNS gánh nhiều truy vấn rác, và mỗi gói UDP thêm là một cơ hội bị rớt — rớt một gói thì glibc chờ timeout 5 giây.
+
+### Cách giảm
+~~~yaml
+spec:
+  dnsConfig:
+    options:
+      - name: ndots
+        value: "2"     # tên >= 2 dấu chấm hỏi tên gốc trước
+~~~
+Kèm NodeLocal DNSCache, connection pool keep-alive để ít phải phân giải lại.
+
+### Vì sao các phương án còn lại sai
+- **Tên công khai luôn hỏi trước**: resolver không phân biệt "công khai" hay "nội bộ"; nó chỉ đếm dấu chấm so với ndots.
+- **Search domain ngắn nhất trước**: search list được thử **theo đúng thứ tự** trong file, bắt đầu từ {{shop.svc.cluster.local}}.
+- **Cần ExternalName**: CoreDNS chuyển tiếp tên ngoài cluster lên upstream resolver (plugin forward); ExternalName chỉ là cách tạo bí danh CNAME trong cluster, không bắt buộc.
+
+> Senior tip: khi p99 có "đuôi" đúng khoảng 5 giây, hãy nghi DNS trước tiên: đếm tỷ lệ NXDOMAIN trên CoreDNS ({{coredns_dns_responses_total}} theo rcode) — con số đó thường cao bất ngờ.`
+},
+{
+  id: 'qz-devops-027', topic: 'devops', multi: true,
+  q: 'Hai kỹ sư chạy terraform apply gần như cùng lúc vào môi trường prod; state nằm trên S3 nhưng chưa bật lock, và sau đó state mất dấu một security group vừa tạo. Hai biện pháp nào ngăn chuyện này lặp lại? (Chọn 2)',
+  options: [
+    'Bật state locking của backend: S3 với {{use_lockfile = true}} (Terraform 1.10+), hoặc bảng DynamoDB ở cấu hình cũ',
+    'Commit file terraform.tfstate vào Git để mọi người luôn có bản mới nhất',
+    'Chỉ cho CI apply: mỗi state chỉ một job chạy cùng lúc (concurrency group) và apply đúng file plan đã được review trong PR',
+    'Chạy apply với {{-lock=false}} để tránh bị treo vì lock',
+    'Yêu cầu mỗi người chạy {{terraform refresh}} trước khi apply'
+  ],
+  answer: [0, 2],
+  explain: `**Tóm tắt:** hai apply song song cùng đọc state serial N, mỗi bên tạo tài nguyên riêng rồi ghi state của mình — bên ghi sau **đè** bên ghi trước, nên tài nguyên của bên kia vẫn tồn tại trên AWS nhưng biến mất khỏi state. Cần **lock** ở backend (lớp bảo vệ cuối) và **quy trình** để chỉ một luồng apply có kiểm soát.
+
+### Lock hoạt động thế nào
+Apply thứ hai gặp {{Error acquiring the state lock}} kèm Lock ID, người giữ và thời điểm. Chỉ dùng {{terraform force-unlock}} khi chắc chắn tiến trình giữ lock đã chết (ví dụ job CI bị kill), nếu không sẽ có hai tiến trình cùng ghi.
+~~~bash
+terraform plan -input=false -lock-timeout=5m -out=tfplan   # chờ lock tối đa 5 phút thay vì fail ngay
+terraform apply tfplan                                     # plan cũ (state đã đổi) sẽ bị từ chối
+~~~
+Sửa hậu quả hiện tại: đưa security group về state bằng {{terraform import}} hoặc khối {{import}}, rồi plan phải sạch.
+
+### Vì sao các phương án còn lại sai
+- **Commit state vào Git**: Git không có khái niệm lock, merge conflict trên state rất nguy hiểm, và state chứa secret dạng plain text. Đây chính là một trong các nguyên nhân gốc.
+- **{{-lock=false}}**: tắt đúng cơ chế đang cần, chỉ dùng trong tình huống đặc biệt có kiểm soát.
+- **{{terraform refresh}} trước apply**: chỉ cập nhật state theo thực tế tại thời điểm đó; hai người vẫn có thể apply chồng nhau một giây sau. (Lệnh này cũng đã deprecated, thay bằng {{plan -refresh-only}}.)
+
+> Senior tip: con người không nên có quyền ghi state prod hằng ngày. Khi CI là "người apply" duy nhất, lock gần như không bao giờ bị tranh chấp — và mỗi thay đổi đều có plan, người review và log đi kèm.`
+},
+{
+  id: 'qz-devops-028', topic: 'devops',
+  q: 'Argo CD bật auto-sync và self-heal. Manifest Deployment {{orders}} trong Git có {{replicas: 3}}, còn HPA scale lên 10 Pod lúc cao điểm. Argo CD liên tục báo OutOfSync và kéo số replica về 3, rồi HPA lại scale lên. Cách sửa đúng là gì?',
+  options: [
+    'Bỏ field {{replicas}} khỏi manifest trong Git để HPA là bên duy nhất quản lý số replica (hoặc khai báo ignoreDifferences cho /spec/replicas trong Application)',
+    'Tắt self-heal cho toàn bộ cluster để Argo CD không can thiệp nữa',
+    'Đặt {{minReplicas}} của HPA bằng 3 cho khớp với Git',
+    'Bỏ HPA; mỗi lần cao điểm thì sửa replicas trong Git rồi chờ Argo CD sync'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** đây là **hai controller giành nhau một field**. Git (qua Argo CD) nói "3", HPA nói "10"; self-heal coi giá trị của HPA là **drift** và sửa lại, HPA lại scale lên — Pod bị tạo/xoá liên tục. Nguyên tắc: mỗi field chỉ có **một chủ**. Số replica động thì chủ là HPA, nên Git không được khai báo nó.
+
+~~~yaml
+# Cách 1 (khuyến nghị): manifest Deployment không có spec.replicas
+# Cách 2: trong Argo CD Application
+spec:
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers: [/spec/replicas]
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Tắt self-heal toàn cluster**: mất luôn khả năng sửa drift thật (ai đó {{kubectl edit}} image hay env trên prod). Chữa một field bằng cách bỏ cả cơ chế.
+- **minReplicas = 3**: HPA vẫn scale lên 10 lúc cao điểm, Git vẫn nói 3 — cuộc giằng co còn nguyên.
+- **Bỏ HPA, sửa Git bằng tay**: phản ứng chậm theo tốc độ con người và tốc độ sync, đúng lúc cao điểm cần nhanh nhất.
+
+> Senior tip: khi bỏ {{replicas}} khỏi manifest của Deployment **đang chạy**, client-side apply có thể xoá field đó khỏi object và Kubernetes đặt về mặc định 1 trong chốc lát trước khi HPA kéo lên lại. Tài liệu Kubernetes có hướng dẫn riêng cho việc chuyển sang autoscaling; làm ngoài giờ cao điểm hoặc dùng server-side apply. Drift kiểu này cũng gặp với annotation do mesh/sidecar injector thêm vào — xử lý cùng nguyên tắc "một field, một chủ".`
+},
+{
+  id: 'qz-devops-029', topic: 'devops',
+  q: 'Pipeline ký image bằng cosign keyless; Kyverno chỉ cho chạy image có chữ ký với danh tính là workflow {{release.yml}} trên nhánh main. Kẻ tấn công có quyền push registry đẩy một image khác đè lên tag {{payment:1.8.0}} (tag này từng được ký hợp lệ). Khi Pod mới được tạo với tag đó, điều gì xảy ra?',
+  options: [
+    'Pod chạy bình thường vì tag 1.8.0 đã từng được ký hợp lệ',
+    'Pod bị từ chối: chữ ký gắn với digest của image cũ, còn tag giờ trỏ tới digest mới không có chữ ký hợp lệ từ đúng danh tính workflow',
+    'cosign phát hiện image mới có lỗ hổng CVE nên chặn lại',
+    'Kyverno tự động dùng lại image cũ còn trong cache của node theo tag'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** cosign ký **digest** (sha256 của manifest image), không ký tag. Tag chỉ là con trỏ có thể bị ghi đè. Kyverno phân giải tag thành digest hiện tại, tìm chữ ký cho **digest đó** và kiểm tra chứng chỉ có đúng issuer/subject của workflow release không. Image của kẻ tấn công có digest mới, không có chữ ký nào từ danh tính đó → admission từ chối.
+
+~~~bash
+cosign verify registry.bank.vn/payment:1.8.0 --certificate-identity https://github.com/bank/payment/.github/workflows/release.yml@refs/heads/main --certificate-oidc-issuer https://token.actions.githubusercontent.com
+# image bị đè: "no matching signatures" -> verify thất bại
+~~~
+Kẻ tấn công cũng không tự ký được: keyless yêu cầu OIDC token của **đúng workflow trên đúng nhánh**, và chữ ký nằm trong log công khai Rekor.
+
+### Vì sao các phương án còn lại sai
+- **Tag từng được ký**: chữ ký không đi theo tag. Nếu verify theo tag thì toàn bộ cơ chế vô nghĩa, vì ai đè tag cũng "thừa hưởng" chữ ký.
+- **cosign phát hiện CVE**: ký và verify chỉ chứng minh **nguồn gốc và tính toàn vẹn**, không đánh giá lỗ hổng. Quét CVE là việc của Trivy/Grype.
+- **Kyverno dùng image cũ trong cache**: admission controller không chọn image thay bạn; nó chỉ cho phép hoặc từ chối (và có thể đổi tag thành digest **đã verify** khi bật {{mutateDigest}}).
+
+> Senior tip: ngoài verify chữ ký, hãy bật **tag immutability** ở registry (ECR, Harbor đều hỗ trợ) và deploy theo digest. Ba lớp: tag không đè được, manifest ghim digest, admission verify chữ ký — kẻ tấn công phải vượt cả ba.`
+},
+{
+  id: 'qz-devops-030', topic: 'devops', multi: true,
+  q: 'Phát biểu nào về SBOM và quét lỗ hổng image là đúng? (Chọn 2)',
+  options: [
+    'Image đã pass Trivy lúc build thì an toàn suốt vòng đời, không cần quét lại',
+    'Ký image bằng cosign bảo đảm image không chứa lỗ hổng đã biết',
+    'SBOM lưu danh sách thành phần của image, nên khi một CVE mới được công bố bạn tra ra service bị ảnh hưởng mà không cần build lại',
+    'SBOM sinh từ plugin CycloneDX của Maven đã bao gồm cả gói hệ điều hành của base image',
+    'Cờ {{--ignore-unfixed}} của Trivy bỏ qua lỗ hổng chưa có bản vá, giúp gate chỉ chặn những gì team thực sự sửa được bằng cách nâng version'
+  ],
+  answer: [2, 4],
+  explain: `**Tóm tắt:** SBOM là "danh sách nguyên liệu" (gói OS, JRE, từng jar kèm version, purl) — tài sản dùng **lâu dài** để tra cứu. Gate trong CI nên chặn lỗ hổng **có bản vá** ({{--ignore-unfixed}}), còn lỗ hổng chưa có bản vá thì đánh giá và theo dõi riêng.
+
+~~~bash
+syft registry.bank.vn/payment@sha256:... -o cyclonedx-json > sbom.cdx.json
+trivy image --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 registry.bank.vn/payment@sha256:...
+trivy sbom sbom.cdx.json      # hằng ngày: quét lại SBOM đã lưu với DB lỗ hổng mới nhất
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Pass lúc build là an toàn mãi**: CVE được công bố mỗi ngày; image "sạch" hôm nay có thể dính CVE CRITICAL tuần sau mà không ai đổi một byte. Phải quét lại image **đang chạy** (dựa trên SBOM, Trivy Operator, Dependency-Track…).
+- **Ký bảo đảm không có lỗ hổng**: chữ ký chỉ chứng minh image do pipeline của bạn tạo ra và chưa bị sửa. Một image đầy lỗ hổng vẫn ký được bình thường.
+- **SBOM từ Maven có cả gói OS**: plugin Maven chỉ thấy dependency Java trong project; nó không biết base image chứa glibc, openssl phiên bản nào. Cần SBOM sinh từ **image** (Syft, Trivy) cho phần OS.
+
+> Senior tip: đặt ngoại lệ (CVE chưa có bản vá, hoặc không khai thác được trong ngữ cảnh của bạn) kèm **ngày hết hạn** và người duyệt. Danh sách ignore không có hạn là nơi các CVE nghiêm trọng nằm yên suốt nhiều năm.`
+},
+{
+  id: 'qz-devops-031', topic: 'devops',
+  q: 'Service Java gọi API đối tác khoảng 800 lần/giây. Lúc cao điểm log báo {{java.net.BindException: Cannot assign requested address}}; {{ss -tan state time-wait}} đếm được khoảng 28.000 socket, gần như tất cả tới cùng IP:443 của đối tác. Nguyên nhân gốc và cách sửa đúng nhất là gì?',
+  options: [
+    'Process chạm giới hạn file descriptor; tăng {{ulimit -n}} lên 1.000.000',
+    'TIME_WAIT kéo dài do {{tcp_fin_timeout}}; giảm tham số này xuống 5 giây để TIME_WAIT hết nhanh',
+    'Hết ephemeral port vì mỗi request mở một kết nối TCP mới rồi đóng; dùng chung một HTTP client có connection pool và keep-alive để tái sử dụng kết nối',
+    'Bật {{net.ipv4.tcp_tw_recycle}} để kernel tái chế socket TIME_WAIT'
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** kết nối tới **cùng một đích** chỉ khác nhau ở port nguồn, lấy từ {{ip_local_port_range}} (mặc định 32768–60999 ≈ 28 nghìn port). Socket đóng chủ động nằm ở TIME_WAIT **60 giây**, nên trần là khoảng 28.000 / 60 ≈ **470 kết nối mới mỗi giây**. 800 request/giây, mỗi request một kết nối mới → hết port. Lỗi EADDRNOTAVAIL ("Cannot assign requested address") chính là triệu chứng đó.
+
+~~~java
+// Lỗi điển hình: tạo client mới cho mỗi lần gọi
+HttpClient client = HttpClient.newHttpClient();          // SAI nếu nằm trong method xử lý request
+// Sửa: một instance dùng chung (thread-safe), kết nối được giữ và tái sử dụng
+private static final HttpClient CLIENT = HttpClient.newBuilder()
+        .connectTimeout(Duration.ofSeconds(2)).build();
+~~~
+Biện pháp phụ (nới biên, không thay sửa code): mở rộng {{ip_local_port_range}}, bật {{net.ipv4.tcp_tw_reuse=1}} để kết nối đi ra được tái dùng socket TIME_WAIT an toàn (dựa trên TCP timestamps).
+
+### Vì sao các phương án còn lại sai
+- **Giới hạn file descriptor**: hết fd cho lỗi khác hẳn — "Too many open files" (EMFILE). Socket TIME_WAIT đã được đóng, không còn giữ fd của process.
+- **Giảm {{tcp_fin_timeout}}**: đây là nhầm lẫn rất phổ biến. Tham số này điều khiển FIN_WAIT_2; thời gian TIME_WAIT trên Linux cố định 60 giây trong kernel.
+- **{{tcp_tw_recycle}}**: đã bị **xoá khỏi kernel từ bản 4.12** vì làm rớt kết nối của client đứng sau NAT. Trên kernel hiện đại, sysctl này không tồn tại.
+
+> Senior tip: thấy TIME_WAIT dồn về một đích, câu hỏi đầu tiên luôn là "HTTP client được tạo ở đâu, bao nhiêu lần?". Nếu nhiều Pod đi ra qua một NAT gateway, nhớ thêm trần của NAT (AWS NAT Gateway khoảng 55.000 kết nối đồng thời tới mỗi đích) — cùng một bug, thêm một chỗ nổ.`
+},
+{
+  id: 'qz-devops-032', topic: 'devops',
+  q: 'Service Java chạy bằng systemd báo "Too many open files". Bạn SSH vào server, gõ {{ulimit -n}} thấy 65536, và {{/etc/security/limits.conf}} cũng đặt nofile 65536. Cách nào cho biết đúng giới hạn mà process Java đang thực sự chịu?',
+  options: [
+    'Tin kết quả {{ulimit -n}} trong phiên SSH, vì mọi process trên máy dùng chung giới hạn này',
+    'Đọc {{sysctl fs.file-max}}, vì đó là giới hạn số file của từng process',
+    'Đọc {{/etc/security/limits.conf}}, vì systemd áp dụng file này cho mọi service',
+    'Đọc {{/proc/PID/limits}} của chính process Java (dòng "Max open files") và so với số fd đang mở trong {{/proc/PID/fd}}'
+  ],
+  answer: 3,
+  explain: `**Tóm tắt:** giới hạn fd là thuộc tính **của từng process**, thừa kế từ process cha lúc khởi động. Nguồn sự thật duy nhất là {{/proc/PID/limits}} của chính process đó.
+
+~~~bash
+PID=$(pgrep -f orders.jar)
+grep "Max open files" /proc/$PID/limits     # soft và hard thật
+ls /proc/$PID/fd | wc -l                    # đang mở bao nhiêu
+systemctl show orders.service -p LimitNOFILE
+~~~
+Service systemd lấy giới hạn từ {{LimitNOFILE=}} trong unit file (hoặc mặc định của systemd), **không** đi qua PAM nên không đọc limits.conf. Sửa: thêm {{LimitNOFILE=65536}} vào unit (drop-in qua {{systemctl edit}}), rồi restart service. HotSpot trên Linux mặc định nâng soft limit lên bằng hard limit lúc khởi động, nên hard limit là con số quyết định.
+
+### Vì sao các phương án còn lại sai
+- **{{ulimit -n}} trong SSH**: đó là giới hạn của **shell của bạn**, được PAM đặt khi đăng nhập. Process do systemd khởi động có cây process cha khác hẳn.
+- **{{fs.file-max}}**: giới hạn **toàn hệ thống** (tổng fd kernel cấp được), không phải giới hạn mỗi process. Xem mức dùng tổng ở {{/proc/sys/fs/file-nr}}.
+- **systemd đọc limits.conf**: sai — limits.conf được áp dụng bởi module {{pam_limits}} cho phiên đăng nhập; service systemd không đi qua PAM.
+
+> Senior tip: nâng limit chỉ là một nửa câu chuyện. Nếu số fd tăng đều theo giờ (đường thẳng đi lên trên metric {{process_files_open_files}}), đó là **rò rỉ** — stream, socket không được đóng — và limit cao hơn chỉ dời giờ nổ sang lúc khó chịu hơn.`
+},
+{
+  id: 'qz-devops-033', topic: 'devops',
+  q: 'SLO của API thanh toán là 99.9% request thành công trong 30 ngày. Trong 1 giờ vừa qua, tỷ lệ lỗi ổn định ở mức 1.44%. Phát biểu nào đúng?',
+  options: [
+    'Burn rate là 14.4: giờ vừa qua đã tiêu khoảng 2% error budget của cả 30 ngày, nếu kéo dài thì budget cạn sau khoảng 50 giờ — đủ mức để page on-call ngay',
+    'Burn rate là 1.44: vẫn nằm trong budget nên chỉ cần tạo ticket',
+    'Chưa vi phạm SLO vì SLO tính trên 30 ngày, nên chưa cần cảnh báo cho tới khi hết tháng',
+    'Burn rate là 144: error budget đã cạn hoàn toàn trong giờ vừa qua'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** error budget = 1 − 0.999 = **0.1%**. Burn rate = tỷ lệ lỗi / budget = 1.44% / 0.1% = **14.4**, tức tiêu budget nhanh gấp 14.4 lần mức "vừa đủ cho 30 ngày".
+
+### Tính từng bước
+- Cửa sổ 30 ngày = 720 giờ. Ở burn rate 1, budget hết đúng sau 720 giờ.
+- 1 giờ ở burn rate 14.4 tiêu 14.4 / 720 = **2%** budget.
+- Nếu tiếp tục: 720 / 14.4 = **50 giờ** là cạn budget cả tháng.
+- Theo SRE Workbook, burn rate 14.4 trên cửa sổ 1 giờ (kèm cửa sổ 5 phút để xác nhận lỗi **vẫn đang diễn ra**) là ngưỡng **page**.
+
+~~~yaml
+expr: payment:error_ratio:rate1h > (14.4 * 0.001) and payment:error_ratio:rate5m > (14.4 * 0.001)
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Burn rate 1.44**: nhầm giữa tỷ lệ lỗi (1.44%) và burn rate; phải chia cho budget 0.1%, không phải cho 1.
+- **Chờ hết tháng**: SLO đo trên 30 ngày nhưng cảnh báo phải dựa vào **tốc độ tiêu**. Chờ tới khi vi phạm thật thì đã quá muộn để hành động.
+- **Burn rate 144, budget đã cạn**: tính sai bậc độ lớn; một giờ ở 14.4 mới tiêu 2% budget, còn xa mới cạn.
+
+> Senior tip: với service ít traffic, 3 lỗi trên 100 request đã là 3% — burn rate vọt lên 30 dù chỉ là nhiễu. Thêm điều kiện số request tối thiểu trong cửa sổ, hoặc bơm synthetic traffic, trước khi bật page theo burn rate.`
+},
+{
+  id: 'qz-devops-034', topic: 'devops',
+  q: 'Deployment {{orders}} có 4 replica, strategy RollingUpdate với {{maxSurge: 1}} và {{maxUnavailable: 0}}. Bản mới có lỗi khiến readiness probe luôn fail (liveness vẫn pass). Sau khi apply, điều gì xảy ra?',
+  options: [
+    'Kubernetes tự động rollback về ReplicaSet cũ sau progressDeadlineSeconds',
+    'Cả 4 Pod cũ lần lượt bị thay bằng Pod mới, service trả 503 cho tới khi sửa',
+    'Pod mới bị kubelet restart liên tục vì readiness fail và rơi vào CrashLoopBackOff',
+    'Rollout kẹt: 1 Pod mới được tạo nhưng không bao giờ Ready, 4 Pod cũ vẫn phục vụ; sau progressDeadlineSeconds (mặc định 600 giây) Deployment báo ProgressDeadlineExceeded nhưng không tự rollback'
+  ],
+  answer: 3,
+  explain: `**Tóm tắt:** {{maxUnavailable: 0}} nghĩa là số Pod **sẵn sàng** không được xuống dưới 4. Controller tạo thêm 1 Pod mới (nhờ {{maxSurge: 1}}) và chỉ xoá một Pod cũ khi Pod mới **Ready**. Pod mới không bao giờ Ready → không Pod cũ nào bị xoá → rollout đứng yên, người dùng **không bị ảnh hưởng**.
+
+~~~bash
+kubectl rollout status deployment/orders --timeout=10m   # thất bại với ProgressDeadlineExceeded
+kubectl get rs -l app=orders                             # RS cũ 4/4 ready, RS mới 1 desired, 0 ready
+kubectl rollout undo deployment/orders                   # rollback do BẠN (hoặc pipeline) thực hiện
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Tự rollback**: Deployment chỉ đặt condition {{Progressing=False}} với reason {{ProgressDeadlineExceeded}}; rollback là việc của pipeline, của người vận hành, hoặc của công cụ như Argo Rollouts.
+- **Thay hết 4 Pod cũ**: điều đó chỉ xảy ra khi bản mới Ready. Đây chính là giá trị của readiness probe kết hợp maxUnavailable 0: chặn bản hỏng ngay ở Pod đầu tiên.
+- **CrashLoopBackOff**: readiness fail **không bao giờ** làm restart container — nó chỉ khiến Pod bị loại khỏi endpoint của Service. Restart là hệ quả của liveness fail hoặc process tự thoát.
+
+> Senior tip: pipeline nên chạy {{kubectl rollout status}} với timeout và tự gọi rollback khi thất bại; nếu không, một rollout kẹt có thể nằm đó nhiều ngày, và lần deploy kế tiếp sẽ chồng lên trạng thái nửa vời này.`
+},
 
 /* ===================== AWS ===================== */
 {
