@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-04
+
+### Nội dung
+
+
+### Ứng dụng
+- Tasks T573/T574: free agents draft 30+30 AWS exam questions (empty pools registered; Claude reviews before content lands)
+
+
 ## 2026-10-29
 
 ### Nội dung
