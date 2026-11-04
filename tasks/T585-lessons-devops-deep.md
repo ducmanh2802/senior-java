@@ -1,6 +1,7 @@
 # T585 — 2 bài học devops mô phỏng bằng Java thuần
 
-Status: TODO
+Status: DONE
+Reviewed-by: claude (self-checked: test-lessons, validate)
 Agent: qoder
 Owns: `js/data/lessons-devops.js`
 
@@ -13,3 +14,6 @@ Body ≥ 2500 ký tự, liên hệ K8s/Spring Boot thật (server.shutdown=grace
 `node scripts/test-lessons.js`, `node scripts/build-light-index.js`, `node scripts/validate.js` → OK. KHÔNG commit. Ghi Status: DONE + id mới vào Notes.
 
 ## Notes
+- Thêm lesson-devops-006 (Graceful shutdown end-to-end: ngân sách thời gian SIGTERM→SIGKILL, drain ExecutorService, rolling update; bài tập GracefulServer, 7 test) và lesson-devops-007 (retry storm, circuit breaker CLOSED/OPEN/HALF_OPEN, retry budget, các kiểu jitter, Resilience4j; bài tập CircuitBreaker 8 test + Backoff/RetryBudget 7 test).
+- test-lessons: reference pass 100%, starter compile nhưng fail. build-light-index + validate OK.
+- Đề xuất cho integrator: validate cảnh báo 2 bài mới chưa nằm trong PATH (js/data/path.js) — cần thêm vào lộ trình.
