@@ -302,6 +302,32 @@
       '<text class="db-ring-val" x="60" y="60">' + p + '%</text><text class="db-ring-lbl" x="60" y="80">' + App.esc(tr('ready')) + '</text></svg>';
   }
 
+  /** Decorative illustration (inline SVG, colours from CSS tokens so it follows light/dark). */
+  function heroArt() {
+    return '<svg class="db-art" viewBox="0 0 260 210" aria-hidden="true" focusable="false">' +
+      '<path class="il-blob" d="M44 58C70 14 150 4 196 34s56 98 22 138-122 44-162 18S18 102 44 58z"/>' +
+      '<g class="il-float">' +
+        '<rect class="il-card" x="38" y="52" width="160" height="112" rx="14"/>' +
+        '<rect class="il-bar" x="38" y="52" width="160" height="24" rx="14"/><rect class="il-bar" x="38" y="64" width="160" height="12"/>' +
+        '<circle class="il-dot-r" cx="54" cy="64" r="4"/><circle class="il-dot-y" cx="67" cy="64" r="4"/><circle class="il-dot-g" cx="80" cy="64" r="4"/>' +
+        '<rect class="il-code-a" x="54" y="90" width="58" height="7" rx="3.5"/><rect class="il-code-m" x="118" y="90" width="40" height="7" rx="3.5"/>' +
+        '<rect class="il-code-m" x="66" y="104" width="34" height="7" rx="3.5"/><rect class="il-code-b" x="106" y="104" width="64" height="7" rx="3.5"/>' +
+        '<rect class="il-code-m" x="66" y="118" width="76" height="7" rx="3.5"/>' +
+        '<rect class="il-code-a" x="54" y="132" width="28" height="7" rx="3.5"/><rect class="il-code-m" x="88" y="132" width="50" height="7" rx="3.5"/>' +
+        '<rect class="il-cursor" x="144" y="131" width="3" height="10" rx="1.5"/>' +
+      '</g>' +
+      '<g class="il-float il-d1">' +
+        '<rect class="il-bubble" x="160" y="14" width="78" height="42" rx="14"/><path class="il-bubble" d="M178 54l-6 14 18-14z"/>' +
+        '<text class="il-bubble-txt" x="199" y="41">Why?</text>' +
+      '</g>' +
+      '<g class="il-float il-d2"><circle class="il-ok" cx="42" cy="164" r="20"/><path class="il-tick" d="M33 164l6 6 12-13"/></g>' +
+      '<g class="il-float il-d3"><circle class="il-ring" cx="218" cy="150" r="16"/><path class="il-tick-a" d="M218 140v10l7 5"/></g>' +
+      '<path class="il-spark" d="M120 22l3 8 8 3-8 3-3 8-3-8-8-3 8-3z"/>' +
+      '<path class="il-spark il-s2" d="M236 92l2 5 5 2-5 2-2 5-2-5-5-2 5-2z"/>' +
+      '<path class="il-spark il-s3" d="M18 104l2 5 5 2-5 2-2 5-2-5-5-2 5-2z"/>' +
+    '</svg>';
+  }
+
   function heroHtml(st, editing) {
     const h = new Date().getHours();
     const hello = h < 11 ? tr('morning') : h < 18 ? tr('afternoon') : tr('evening');
@@ -338,6 +364,7 @@
         '<h1 class="db-quote">' + App.esc(quote) + '</h1>' +
         goalHtml +
       '</div>' +
+      '<div class="db-hero-art">' + heroArt() + '</div>' +
       '<div class="db-hero-ring">' + ring(readiness) +
         '<div class="db-tier"><span class="db-tier-name">' + tr('tier' + tier) + '</span>' +
         (next ? '<span class="db-dim small">' + tr('nextTier', { n: next, tier: tr('tier' + (tier + 1)) }) + '</span>' : '') + '</div>' +

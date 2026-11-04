@@ -78,7 +78,15 @@
 
   function renderList(root) {
     const items = list();
-    root.innerHTML = '<div class="page-head"><h1>🔄 ' + t('title') + '</h1><p class="muted">' + t('sub') + '</p></div>' +
+    const keys = Object.keys(ICONS);
+    const art = '<svg class="sd-art" viewBox="0 0 520 70" aria-hidden="true" focusable="false">' +
+      '<path class="sd-art-line" d="M30 35H490"/>' +
+      keys.map((k, i) => {
+        const x = 30 + i * (460 / (keys.length - 1));
+        return '<g class="sd-art-node" style="animation-delay:' + (i * 0.25) + 's"><circle cx="' + x + '" cy="35" r="22"/>' +
+          '<text x="' + x + '" y="36">' + ICONS[k] + '</text></g>';
+      }).join('') + '</svg>';
+    root.innerHTML = '<div class="page-head sd-list-head"><div><h1>🔄 ' + t('title') + '</h1><p class="muted">' + t('sub') + '</p></div>' + art + '</div>' +
       (items.length ? '<div class="sd-list">' + items.map(s => {
         const total = s.stages.length + 1, done = doneCount(s);
         return '<a class="card sd-card" href="#/sdlc/' + encodeURIComponent(s.id) + '">' +

@@ -22,6 +22,10 @@
   --code-bg: #161a22;
   --code-text: #e6e9ef;
   --glow: rgba(232, 101, 12, .10);
+  --mesh-a: rgba(232, 101, 12, .16);   /* background mesh: orange */
+  --mesh-b: rgba(245, 158, 11, .14);   /* amber */
+  --mesh-c: rgba(37, 99, 235, .10);    /* blue */
+  --grid-dot: rgba(18, 24, 38, .10);
   --shadow: 0 1px 2px rgba(16, 24, 40, .04), 0 6px 20px rgba(16, 24, 40, .06);
   --shadow-lg: 0 2px 4px rgba(16, 24, 40, .05), 0 16px 40px rgba(16, 24, 40, .12);
   --radius: 14px;
@@ -40,6 +44,7 @@
     --ok: #4ade80; --ok-soft: #13301f; --warn: #fbbf24; --warn-soft: #382a10;
     --bad: #f87171; --bad-soft: #3b1a1d; --info: #7fb0ff; --info-soft: #172741;
     --code-bg: #0a0d12; --glow: rgba(255, 138, 61, .10);
+    --mesh-a: rgba(255, 138, 61, .16); --mesh-b: rgba(251, 191, 36, .08); --mesh-c: rgba(99, 102, 241, .16); --grid-dot: rgba(232, 236, 242, .07);
     --shadow: 0 1px 2px rgba(0,0,0,.35), 0 6px 20px rgba(0,0,0,.28);
     --shadow-lg: 0 2px 4px rgba(0,0,0,.4), 0 16px 40px rgba(0,0,0,.45);
     color-scheme: dark;
@@ -52,6 +57,7 @@
   --ok: #4ade80; --ok-soft: #13301f; --warn: #fbbf24; --warn-soft: #382a10;
   --bad: #f87171; --bad-soft: #3b1a1d; --info: #7fb0ff; --info-soft: #172741;
   --code-bg: #0a0d12; --glow: rgba(255, 138, 61, .10);
+    --mesh-a: rgba(255, 138, 61, .16); --mesh-b: rgba(251, 191, 36, .08); --mesh-c: rgba(99, 102, 241, .16); --grid-dot: rgba(232, 236, 242, .07);
   --shadow: 0 1px 2px rgba(0,0,0,.35), 0 6px 20px rgba(0,0,0,.28);
   --shadow-lg: 0 2px 4px rgba(0,0,0,.4), 0 16px 40px rgba(0,0,0,.45);
   color-scheme: dark;
@@ -264,7 +270,23 @@ body::after {   /* the trail: dots climbing from the bottom-left to the summit *
 @media print { body::before, body::after { display: none; } }
 
 /* ---------- visual refresh (2026-11-04): layered on top, tokens only ---------- */
-body { background: radial-gradient(1200px 420px at 50% -120px, var(--glow), transparent 70%) no-repeat, var(--bg); min-height: 100vh; }
+body { background: var(--bg); min-height: 100vh; }
+/* fixed decorative background: soft colour mesh + dot grid fading out downwards (behind all content) */
+body::before, body::after { content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none; }
+body::before {
+  background:
+    radial-gradient(900px 520px at 8% -8%, var(--mesh-a), transparent 62%),
+    radial-gradient(760px 480px at 96% 2%, var(--mesh-b), transparent 60%),
+    radial-gradient(900px 600px at 70% 108%, var(--mesh-c), transparent 62%);
+}
+body::after {
+  background-image: radial-gradient(var(--grid-dot) 1px, transparent 1.4px);
+  background-size: 22px 22px;
+  -webkit-mask-image: linear-gradient(to bottom, #000 0, rgba(0, 0, 0, .55) 380px, transparent 820px);
+  mask-image: linear-gradient(to bottom, #000 0, rgba(0, 0, 0, .55) 380px, transparent 820px);
+}
+.topbar { background: color-mix(in srgb, var(--bg) 72%, transparent); backdrop-filter: blur(14px) saturate(1.4); -webkit-backdrop-filter: blur(14px) saturate(1.4); }
+.card { background: color-mix(in srgb, var(--surface) 92%, transparent); }
 h1, h2, h3 { letter-spacing: -.015em; font-weight: 700; }
 ::selection { background: var(--accent-soft); color: var(--text); }
 .topbar { box-shadow: 0 1px 0 var(--border), 0 6px 24px -18px rgba(0,0,0,.35); border-bottom-color: transparent; }

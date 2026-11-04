@@ -35,3 +35,14 @@
   .view-sdlc .sd-step-lbl { max-width: 9em; overflow: hidden; text-overflow: ellipsis; }
   .view-sdlc .sd-nav .btn { flex: 1 1 auto; text-align: center; }
 }
+
+/* list header illustration: the 8 stages as a pipeline */
+.view-sdlc .sd-list-head { display: grid; grid-template-columns: 1fr; gap: 14px; }
+.view-sdlc .sd-art { width: 100%; max-width: 620px; height: auto; }
+.view-sdlc .sd-art-line { stroke: var(--border); stroke-width: 3; stroke-dasharray: 6 6; animation: sd-flow 1.2s linear infinite; }
+.view-sdlc .sd-art-node circle { fill: var(--surface); stroke: var(--accent); stroke-width: 2; filter: drop-shadow(0 4px 8px rgba(0,0,0,.12)); }
+.view-sdlc .sd-art-node text { font-size: 20px; text-anchor: middle; dominant-baseline: middle; }
+.view-sdlc .sd-art-node { animation: sd-pop 3.2s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+@keyframes sd-flow { to { stroke-dashoffset: -12; } }
+@keyframes sd-pop { 0%, 70%, 100% { transform: scale(1); } 80% { transform: scale(1.12); } }
+@media (prefers-reduced-motion: reduce) { .view-sdlc .sd-art-line, .view-sdlc .sd-art-node { animation: none; } }
