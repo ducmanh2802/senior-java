@@ -327,6 +327,27 @@ for (const p of projects) {
     if (m && m.guide != null && (typeof m.guide !== 'string' || m.guide.length < 800)) err(f, `${id}.milestones[${i}].guide: phải là chuỗi markup ≥ 800 ký tự`);
     Object.keys(m || {}).forEach(k => { if (!['title', 'tasks', 'done', 'guide'].includes(k)) err(f, `${id}.milestones[${i}]: field lạ "${k}"`); });
   });
+  if (p.business != null) {   // optional business primer (view: 🏦 Hiểu nghiệp vụ)
+    const b = p.business, B = id + '.business';
+    if (typeof b !== 'object' || typeof b.intro !== 'string' || b.intro.length < 1200) err(f, B + ': cần intro markup ≥ 1200 ký tự');
+    else checkMarkup(f, id, 'business.intro', b.intro);
+    Object.keys(b || {}).forEach(k => { if (!['intro', 'journeys', 'diagrams', 'glossary'].includes(k)) err(f, B + ': field lạ "' + k + '"'); });
+    (Array.isArray(b.journeys) && b.journeys.length ? b.journeys : (err(f, B + '.journeys: cần ≥ 1 hành trình'), [])).forEach((j, i) => {
+      if (!j.title || !Array.isArray(j.steps) || j.steps.length < 3) err(f, B + '.journeys[' + i + ']: cần title và ≥ 3 steps');
+      (j.steps || []).forEach((st, k) => { if (!st.screen || typeof st.text !== 'string') err(f, B + '.journeys[' + i + '].steps[' + k + ']: cần screen + text'); else checkMarkup(f, id, 'business.journeys.text', st.text); });
+    });
+    (Array.isArray(b.diagrams) && b.diagrams.length ? b.diagrams : (err(f, B + '.diagrams: cần ≥ 1 sơ đồ'), [])).forEach((d, i) => {
+      const n = Array.isArray(d.actors) ? d.actors.length : 0, D = B + '.diagrams[' + i + ']';
+      if (!d.title || n < 2 || n > 6) err(f, D + ': cần title và 2–6 actors');
+      if (!Array.isArray(d.steps) || d.steps.length < 3) err(f, D + ': cần ≥ 3 steps');
+      (d.steps || []).forEach((st, k) => {
+        const ok = st.note != null ? (typeof st.note === 'string' && Array.isArray(st.over) && st.over.length >= 1 && st.over.every(x => Number.isInteger(x) && x >= 0 && x < n))
+          : (typeof st.text === 'string' && st.text && [st.from, st.to].every(x => Number.isInteger(x) && x >= 0 && x < n));
+        if (!ok) err(f, D + '.steps[' + k + ']: cần {from,to,text[,reply]} hoặc {note,over:[i..]} với index trong actors');
+      });
+    });
+    if (b.glossary != null) (Array.isArray(b.glossary) ? b.glossary : []).forEach((g, i) => { if (!g.term || typeof g.meaning !== 'string') err(f, B + '.glossary[' + i + ']: cần term + meaning'); });
+  }
   if (!Array.isArray(p.challenges) || p.challenges.length < 3) err(f, `${id}: challenges cần ít nhất 3 mục`);
   (Array.isArray(p.challenges) ? p.challenges : []).forEach((x, i) => checkMarkup(f, id, `challenges[${i}]`, x));
   if (!p.interview || typeof p.interview.story !== 'string' || !Array.isArray(p.interview.questions) || p.interview.questions.length < 5) err(f, `${id}: interview cần story và ít nhất 5 questions`);
@@ -353,7 +374,7 @@ for (const p of projects) {
   }
   if (p.related != null && !Array.isArray(p.related)) err(f, `${id}: related phải là mảng`);
   (Array.isArray(p.related) ? p.related : []).forEach(r => { if (!questionIds.has(r) && !lessonIds.has(r)) err(f, `${id}: related "${r}" không phải question/lesson có thật`); });
-  const allowed = new Set(['id', 'title', 'level', 'weeks', 'skills', 'pitch', 'requirements', 'architecture', 'milestones', 'challenges', 'readme', 'design', 'interview', 'related']);
+  const allowed = new Set(['id', 'title', 'level', 'weeks', 'skills', 'pitch', 'requirements', 'architecture', 'milestones', 'challenges', 'readme', 'design', 'business', 'interview', 'related']);
   Object.keys(p).forEach(k => { if (!allowed.has(k)) err(f, `${id}: field lạ "${k}"`); });
 }
 

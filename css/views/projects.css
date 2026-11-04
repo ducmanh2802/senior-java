@@ -43,3 +43,31 @@
   .view-projects .pr-card-head { align-items: flex-start; }
   .view-projects .pr-toc { font-size: 0.85rem; }
 }
+
+/* Business primer: journeys, sequence diagrams, glossary */
+.view-projects .pr-business h3 { margin: 22px 0 8px; }
+.view-projects .pr-journey { margin: 10px 0 18px; }
+.view-projects .pr-journey h3 { margin: 0 0 4px; font-size: 1rem; }
+.view-projects .pr-steps { list-style: none; padding: 0; margin: 10px 0 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 210px), 1fr)); gap: 12px; counter-reset: step; }
+.view-projects .pr-step { counter-increment: step; position: relative; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2); padding: 12px; min-width: 0; }
+.view-projects .pr-step::before { content: counter(step); position: absolute; top: -10px; left: -6px; width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: var(--accent-text); font-size: 0.8rem; font-weight: 700; display: grid; place-items: center; }
+.view-projects .pr-phone { display: flex; align-items: center; gap: 8px; padding: 8px 10px; margin-bottom: 8px; border-radius: 12px; border: 2px solid var(--border); background: var(--surface); }
+.view-projects .pr-step-icon { font-size: 1.4rem; line-height: 1; }
+.view-projects .pr-step .md { font-size: 0.92rem; }
+.view-projects .pr-figure { margin: 12px 0 20px; }
+.view-projects .pr-figure figcaption { margin-bottom: 8px; }
+.view-projects .pr-svg-wrap { overflow-x: auto; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+.view-projects .sq { display: block; max-width: none; font-family: var(--font); }
+.view-projects .sq-actor { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+.view-projects .sq-actor-t { fill: var(--text); font-size: 13px; font-weight: 700; }
+.view-projects .sq-life { stroke: var(--border); stroke-width: 1.5; stroke-dasharray: 5 5; }
+.view-projects .sq-line { stroke: var(--text); stroke-width: 1.5; fill: none; }
+.view-projects .sq-reply { stroke: var(--muted); stroke-dasharray: 6 4; }
+.view-projects .sq-head { fill: var(--text); }
+.view-projects .sq-label { fill: var(--text); font-size: 12px; }
+.view-projects .sq-note { fill: var(--surface-2); stroke: var(--warn); stroke-width: 1.2; }
+.view-projects .sq-note-t { fill: var(--text); font-size: 12px; font-style: italic; }
+.view-projects .pr-glossary { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap: 10px; margin: 0; }
+.view-projects .pr-glossary > div { padding: 10px 12px; border-radius: var(--radius-sm); background: var(--surface-2); }
+.view-projects .pr-glossary dt { font-weight: 700; color: var(--accent); }
+.view-projects .pr-glossary dd { margin: 4px 0 0; }

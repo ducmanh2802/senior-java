@@ -3,6 +3,95 @@ window.PROJECTS = [
   {
     id: 'proj-wallet', title: 'Ví điện tử và ledger kế toán kép', level: 'senior', weeks: 8,
     skills: ['Spring Boot 3', 'PostgreSQL', 'OAuth2/JWT', 'Redis', 'Kafka', 'Docker', 'Testcontainers'],
+    business: {
+      intro: `**Tóm tắt:** Ví điện tử là "một tài khoản tiền" do công ty ví (hoặc ngân hàng) giữ hộ người dùng. Mọi lần nạp, chuyển, hoàn tiền đều phải được ghi vào **sổ cái (ledger)** theo nguyên tắc **kế toán kép**: tiền đi ra từ đâu thì phải đi vào đâu, tổng luôn cân bằng.
+
+### Ngoài đời, người dùng làm gì với ví?
+Hãy nghĩ tới các ví bạn đã dùng (MoMo, ZaloPay, ViettelMoney…) hoặc tài khoản thanh toán trong app ngân hàng:
+- **Nạp tiền:** Lan liên kết tài khoản ngân hàng rồi nạp 500.000đ vào ví. Ngân hàng trừ tiền tài khoản của Lan, chuyển cho công ty ví; công ty ví ghi tăng số dư ví của Lan.
+- **Chuyển tiền (P2P):** Lan chuyển 100.000đ tiền trà sữa cho Minh. Hai người cùng dùng ví, nên **tiền thật không rời công ty ví**: hệ thống chỉ ghi giảm ví Lan, ghi tăng ví Minh.
+- **Thanh toán / hoàn tiền:** Lan mua vé xem phim 120.000đ, rạp huỷ suất chiếu, tiền được **hoàn** về ví. Hoàn tiền là **một giao dịch mới đảo chiều**, không phải xoá giao dịch cũ.
+- **Xem lịch sử:** Lan mở tab "Lịch sử" để biết tiền đi đâu; mỗi dòng phải khớp với số dư.
+
+### Vì sao không chỉ dùng một cột balance?
+Nếu chỉ có {{UPDATE wallet SET balance = balance - 100000}}, khi có sai lệch bạn **không trả lời được** "tiền này từ đâu ra?". Ngân hàng và kiểm toán yêu cầu mỗi đồng phải truy vết được. Vì vậy:
+1. Mỗi giao dịch (transfer) sinh **ít nhất 2 bút toán (entry)**: một bên **Nợ** (debit), một bên **Có** (credit), cùng số tiền.
+2. Bút toán **chỉ được thêm, không sửa, không xoá** (append-only). Sai thì ghi bút toán đảo.
+3. Số dư = tổng các bút toán của ví. Cột balance chỉ là bản cache để đọc nhanh, đêm nào cũng được **đối soát** lại với ledger.
+
+### Một ví dụ bằng số
+Lan chuyển 100.000đ cho Minh:
+
+| Bút toán | Tài khoản | Nợ | Có |
+|---|---|---|---|
+| 1 | Ví Lan | 100.000 | |
+| 2 | Ví Minh | | 100.000 |
+| **Tổng** | | **100.000** | **100.000** |
+
+> Quy ước trong dự án này: với ví của khách, **Nợ làm giảm số dư, Có làm tăng số dư** (nhìn từ phía công ty ví, ví khách là khoản "nợ phải trả" cho khách). Đừng lo nhớ thuật ngữ kế toán; chỉ cần nhớ **tổng Nợ = tổng Có** cho mỗi giao dịch.
+
+### Những gì có thể sai ngoài đời
+- **Bấm 2 lần / mạng chập chờn:** app gửi lại yêu cầu chuyển tiền → nếu không có **idempotency key**, Minh nhận 200.000đ.
+- **Hai giao dịch cùng lúc:** Lan còn 150.000đ, đồng thời chuyển 100.000đ cho Minh và 100.000đ cho Hà → nếu không khoá đúng, số dư thành âm.
+- **Thông báo gửi trùng:** Minh nhận 2 thông báo "bạn vừa nhận tiền" → người dùng hoảng hốt gọi tổng đài.
+
+Dự án này giúp bạn xây đủ các lớp bảo vệ đó, và đó chính là điều interviewer ngân hàng muốn nghe.
+
+> Senior tip: khi kể dự án, hãy mở đầu bằng một tình huống người dùng thật ("khách bấm chuyển tiền 2 lần do mạng yếu") rồi mới nói giải pháp kỹ thuật. Interviewer ngân hàng đánh giá rất cao người hiểu **vì sao** nghiệp vụ cần ledger và idempotency.`,
+      journeys: [
+        { title: 'Lan chuyển 100.000đ tiền trà sữa cho Minh', persona: 'Lan, 26 tuổi, dân văn phòng, dùng ví hằng ngày; Minh là đồng nghiệp, cũng có ví.',
+          steps: [
+            { icon: '📱', screen: 'Màn hình Chuyển tiền', text: 'Lan nhập số điện thoại của Minh. App gọi {{GET /wallets/lookup}} và hiện tên **"NGUYEN VAN MINH"** để Lan chắc chắn không chuyển nhầm.' },
+            { icon: '💸', screen: 'Nhập số tiền', text: 'Lan nhập **100.000đ**, lời nhắn "tra sua". App hiện số dư hiện tại **350.000đ** và phí **0đ**.' },
+            { icon: '🔐', screen: 'Xác thực', text: 'Lan nhập PIN hoặc dùng vân tay. App sinh một **Idempotency-Key** (UUID) cho lần bấm này rồi gọi {{POST /transfers}}.' },
+            { icon: '⏳', screen: 'Đang xử lý', text: 'Mạng 4G chập chờn, app không nhận được phản hồi sau 10 giây nên **tự gửi lại** với **cùng key**. Server nhận ra key cũ và trả lại kết quả lần đầu, không chuyển lần 2.' },
+            { icon: '✅', screen: 'Thành công', text: 'App hiện biên lai: mã giao dịch, thời gian, số dư mới **250.000đ**.' },
+            { icon: '🔔', screen: 'Điện thoại của Minh', text: 'Minh nhận **đúng 1** thông báo "Bạn vừa nhận 100.000đ từ Lan", dù consumer thông báo có thể chạy lại.' },
+          ] },
+        { title: 'Rạp phim huỷ suất chiếu, Lan được hoàn tiền', persona: 'Lan đã trả 120.000đ mua vé; nhân viên vận hành (admin) xử lý hoàn tiền.',
+          steps: [
+            { icon: '🎬', screen: 'Thanh toán vé', text: 'Lan thanh toán 120.000đ cho rạp từ ví; số dư giảm còn 130.000đ.' },
+            { icon: '🧑‍💼', screen: 'Trang quản trị', text: 'Rạp báo huỷ suất chiếu. Admin tìm giao dịch và bấm **Hoàn tiền**.' },
+            { icon: '↩️', screen: 'Giao dịch hoàn', text: 'Hệ thống tạo transfer **REVERSAL** mới với bút toán đảo chiều; giao dịch cũ **giữ nguyên**. Bấm hoàn lần 2 sẽ bị từ chối.' },
+            { icon: '📜', screen: 'Lịch sử của Lan', text: 'Lan thấy 2 dòng: "-120.000đ Thanh toán vé" và "+120.000đ Hoàn tiền vé". Số dư trở lại 250.000đ.' },
+          ] },
+      ],
+      diagrams: [
+        { title: 'Luồng chuyển tiền có idempotency và outbox',
+          caption: 'Mũi tên liền là yêu cầu, mũi tên đứt là phản hồi. Mọi thứ trong khung ghi chú vàng xảy ra trong **một transaction** PostgreSQL.',
+          actors: ['App của Lan', 'Wallet API', 'PostgreSQL', 'Outbox relay', 'Kafka', 'Notification service'],
+          steps: [
+            { from: 0, to: 1, text: 'POST /transfers + Idempotency-Key' },
+            { from: 1, to: 2, text: 'Tìm key trong bảng idempotency' },
+            { from: 2, to: 1, text: 'Chưa có: tiếp tục', reply: true },
+            { note: 'BEGIN; khoá 2 ví theo thứ tự id (tránh deadlock); kiểm tra số dư; INSERT transfer + 2 ledger entry; UPDATE balance; INSERT outbox; lưu key + response; COMMIT', over: [1, 2] },
+            { from: 1, to: 0, text: '201 Created + biên lai', reply: true },
+            { from: 3, to: 2, text: 'Đọc outbox chưa gửi' },
+            { from: 3, to: 4, text: 'Publish TransferCompleted' },
+            { from: 4, to: 5, text: 'Consumer nhận event' },
+            { from: 5, to: 5, text: 'Bỏ qua nếu eventId đã xử lý' },
+            { note: 'Nếu app gửi lại cùng key: Wallet API trả đúng response đã lưu, không ghi thêm gì', over: [0, 1] },
+          ] },
+        { title: 'Đối soát hằng đêm',
+          actors: ['Scheduler', 'Reconciliation job', 'PostgreSQL', 'Alert (Slack)'],
+          steps: [
+            { from: 0, to: 1, text: '02:00 chạy job' },
+            { from: 1, to: 2, text: 'SUM(ledger) theo ví so với balance' },
+            { from: 2, to: 1, text: 'Danh sách ví lệch', reply: true },
+            { from: 1, to: 3, text: 'Lệch dù 1 đồng: gửi alert kèm wallet id' },
+          ] },
+      ],
+      glossary: [
+        { term: 'Ví (wallet)', meaning: 'Tài khoản tiền điện tử của người dùng do công ty ví giữ hộ; tiền thật nằm trong tài khoản đảm bảo của công ty ở ngân hàng.' },
+        { term: 'Sổ cái (ledger)', meaning: 'Bảng ghi **mọi** biến động tiền, chỉ thêm không sửa. Là "sự thật" duy nhất về tiền.' },
+        { term: 'Bút toán (entry)', meaning: 'Một dòng trong ledger: tài khoản nào, Nợ hay Có, bao nhiêu tiền, thuộc transfer nào.' },
+        { term: 'Kế toán kép', meaning: 'Mỗi giao dịch có ít nhất 2 bút toán, **tổng Nợ = tổng Có**. Lệch nghĩa là có bug.' },
+        { term: 'Idempotency key', meaning: 'Mã duy nhất app gửi kèm mỗi lần bấm; server dùng nó để nhận ra yêu cầu gửi lại và không thực hiện 2 lần.' },
+        { term: 'Hoàn tiền (reversal)', meaning: 'Giao dịch mới đảo chiều giao dịch cũ. Không bao giờ xoá giao dịch đã hoàn tất.' },
+        { term: 'Đối soát (reconciliation)', meaning: 'So 2 nguồn số liệu (balance và ledger, hoặc hệ thống và ngân hàng) để phát hiện lệch.' },
+        { term: 'Outbox', meaning: 'Bảng lưu event trong cùng transaction với dữ liệu nghiệp vụ, rồi mới gửi sang Kafka, để không mất hoặc gửi event "ma".' },
+      ],
+    },
     pitch: `Xây dựng ví có nạp, chuyển và hoàn tiền với sổ cái bất biến, để interviewer thấy bạn hiểu tính đúng đắn của tiền trước khi tối ưu throughput. Điểm nhấn là mỗi giao dịch cân bằng Nợ/Có và có thể truy vết từ API tới event.`,
     requirements: `### User story
 1. **Tạo ví:** là người dùng đã đăng nhập, tôi tạo ví VND của mình.

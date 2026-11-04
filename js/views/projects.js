@@ -40,6 +40,11 @@
       'projects.tocChallenges': 'Challenges',
       'projects.tocReadme': 'README',
       'projects.tocInterview': 'Interview',
+      'projects.business': '🏦 Hiểu nghiệp vụ',
+      'projects.tocBusiness': 'Nghiệp vụ',
+      'projects.journeys': 'Người dùng trải nghiệm thế nào',
+      'projects.diagrams': 'Sơ đồ luồng xử lý',
+      'projects.glossary': 'Thuật ngữ nghiệp vụ',
     },
     en: {
       'projects.title': 'Pet Projects',
@@ -79,6 +84,11 @@
       'projects.tocChallenges': 'Challenges',
       'projects.tocReadme': 'README',
       'projects.tocInterview': 'Interview',
+      'projects.business': '🏦 Understand the business',
+      'projects.tocBusiness': 'Business',
+      'projects.journeys': 'What the user experiences',
+      'projects.diagrams': 'Flow diagrams',
+      'projects.glossary': 'Business glossary',
     }
   });
 
@@ -112,6 +122,66 @@
     </article>`;
   }
 
+  // ---- "Hiểu nghiệp vụ": user journeys, sequence diagrams (SVG drawn from data), glossary ----
+  function wrapText(text, max) {
+    const lines = []; let cur = '';
+    String(text).split(/\s+/).forEach(w => {
+      if (cur && (cur + ' ' + w).length > max) { lines.push(cur); cur = w; } else cur = cur ? cur + ' ' + w : w;
+    });
+    if (cur) lines.push(cur);
+    return lines;
+  }
+  function seqSvg(d) {
+    const n = d.actors.length, COL = 180, PAD = 20, HEAD = 46, W = n * COL;
+    const cx = i => PAD + COL / 2 + i * COL - PAD / 2;
+    let y = HEAD + 26, body = '';
+    let num = 0;
+    d.steps.forEach(s => {
+      if (s.note != null) {
+        const over = (s.over && s.over.length ? s.over : [0]).map(Number);
+        const a = Math.min(...over), b = Math.max(...over);
+        const x1 = cx(a) - COL / 2 + 12, x2 = cx(b) + COL / 2 - 12;
+        const lines = wrapText(s.note, Math.max(18, Math.floor((x2 - x1) / 7)));
+        const h = lines.length * 16 + 12;
+        body += `<rect class="sq-note" x="${x1}" y="${y}" width="${x2 - x1}" height="${h}" rx="6"/>` +
+          lines.map((l, i) => `<text class="sq-note-t" x="${(x1 + x2) / 2}" y="${y + 20 + i * 16}" text-anchor="middle">${esc(l)}</text>`).join('');
+        y += h + 16; return;
+      }
+      num++;
+      const f = Number(s.from), t = Number(s.to), x1 = cx(f), x2 = cx(t);
+      const label = num + '. ' + s.text;
+      if (f === t) {
+        const lines = wrapText(label, 24);
+        body += lines.map((l, i) => `<text class="sq-label" x="${x1 + 8}" y="${y + i * 15}">${esc(l)}</text>`).join('');
+        const top = y + (lines.length - 1) * 15 + 6;
+        body += `<path class="sq-line" d="M${x1} ${top} h34 v18 h-34" marker-end="url(#sq-arrow)"/>`;
+        y = top + 36; return;
+      }
+      const lines = wrapText(label, Math.max(16, Math.floor(Math.abs(x2 - x1) / 7)));
+      body += lines.map((l, i) => `<text class="sq-label" x="${(x1 + x2) / 2}" y="${y + i * 15}" text-anchor="middle">${esc(l)}</text>`).join('');
+      const ly = y + (lines.length - 1) * 15 + 8;
+      body += `<line class="sq-line${s.reply ? ' sq-reply' : ''}" x1="${x1}" y1="${ly}" x2="${x2 + (x2 > x1 ? -4 : 4)}" y2="${ly}" marker-end="url(#sq-arrow)"/>`;
+      y = ly + 30;
+    });
+    const H = y + 6;
+    const heads = d.actors.map((a, i) => {
+      const lines = wrapText(a, 20).slice(0, 2);
+      return `<line class="sq-life" x1="${cx(i)}" y1="${HEAD}" x2="${cx(i)}" y2="${H}"/>` +
+        `<rect class="sq-actor" x="${cx(i) - COL / 2 + 14}" y="4" width="${COL - 28}" height="${HEAD - 8}" rx="8"/>` +
+        lines.map((l, k) => `<text class="sq-actor-t" x="${cx(i)}" y="${(lines.length === 1 ? 30 : 22) + k * 15}" text-anchor="middle">${esc(l)}</text>`).join('');
+    }).join('');
+    return `<svg class="sq" viewBox="0 0 ${W} ${H}" width="${W}" role="img" aria-label="${esc(d.title)}"><defs><marker id="sq-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="sq-head"/></marker></defs>${heads}${body}</svg>`;
+  }
+  function business(b) {
+    const journeys = (b.journeys || []).map(j => `<div class="pr-journey"><h3>${esc(j.title)}</h3>${j.persona ? `<p class="muted">${esc(j.persona)}</p>` : ''}
+      <ol class="pr-steps">${j.steps.map(s => `<li class="pr-step"><div class="pr-phone"><span class="pr-step-icon" aria-hidden="true">${esc(s.icon || '📱')}</span><b>${esc(s.screen)}</b></div><div class="md">${App.md(s.text)}</div></li>`).join('')}</ol></div>`).join('');
+    const diagrams = (b.diagrams || []).map(d => `<figure class="pr-figure"><figcaption><b>${esc(d.title)}</b>${d.caption ? `<div class="md">${App.md(d.caption)}</div>` : ''}</figcaption><div class="pr-svg-wrap">${seqSvg(d)}</div></figure>`).join('');
+    const glossary = (b.glossary || []).length ? `<h3>${App.t('projects.glossary')}</h3><dl class="pr-glossary">${b.glossary.map(g => `<div><dt>${esc(g.term)}</dt><dd class="md">${App.md(g.meaning)}</dd></div>`).join('')}</dl>` : '';
+    return `<section class="card pr-business" id="pr-business"><h2>${App.t('projects.business')}</h2><div class="md">${App.md(b.intro)}</div>
+      ${journeys ? `<h3>${App.t('projects.journeys')}</h3>${journeys}` : ''}
+      ${diagrams ? `<h3>${App.t('projects.diagrams')}</h3>${diagrams}` : ''}${glossary}</section>`;
+  }
+
   function detail(root, p) {
     const questions = App.questions(), lessons = App.lessons();
     const checked = p.milestones.map((_, i) => App.store.getStatus(p.id + '#m' + i) === 'known');
@@ -119,6 +189,7 @@
     const answers = Array.isArray(p.interview.answers) ? p.interview.answers : [];
     const hasDesign = typeof p.design === 'string' && p.design.trim();
     const toc = [
+      p.business ? ['business', 'projects.tocBusiness'] : null,
       ['pitch', 'projects.tocPitch'],
       ['requirements', 'projects.tocRequirements'],
       ['architecture', 'projects.tocArchitecture'],
@@ -132,6 +203,7 @@
       <div class="page-head"><h1>${esc(p.title)}</h1><div class="row pr-meta"><span class="badge">${esc(App.LEVELS[p.level] || p.level)}</span><span class="badge">${p.weeks} ${App.t('projects.weeks')}</span><span class="badge" data-progress-label>${percent}${App.t('projects.percent')} ${App.t('projects.completionCriteria')}</span></div></div>
       <div class="chips pr-skills">${p.skills.map(s => `<span class="chip">${esc(s)}</span>`).join('')}</div>
       <nav class="pr-toc"><span class="muted">${App.t('projects.toc')}</span>${toc.map(([sec, key]) => `<a href="#pr-${sec}" data-scroll="${sec}">${App.t(key)}</a>`).join('')}</nav>
+      ${p.business ? business(p.business) : ''}
       <section class="card md" id="pr-pitch">${App.md(p.pitch)}</section>
       <section class="card md" id="pr-requirements">${App.md(p.requirements)}</section>
       <section class="card md" id="pr-architecture">${App.md(p.architecture)}</section>
