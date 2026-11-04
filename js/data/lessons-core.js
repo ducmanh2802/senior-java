@@ -333,6 +333,528 @@ So sánh nối chuỗi trong loop với builder, giải thích pool không phả
     hints: ['Không parse thành số vì sẽ làm mất số 0 đầu; lọc ký tự vào StringBuilder.', 'Chỉ sau chuẩn hoá mới tính suffix bốn ký tự và dựng kết quả mask.'],
     explain: `Chuẩn hoá phải theo hợp đồng đầu vào rõ ràng, ở đây chỉ cho bỏ space và hyphen ASCII. Mọi ký tự ngoài ASCII alphanumeric bị từ chối thay vì âm thầm xóa để tránh hai định danh khác nhau thành một. Builder giữ độ phức tạp tuyến tính O(n) và không tạo chuỗi mới cho từng ký tự.`
   }], check: [{q:'Pick the correct Java rule.',options:['Option A','Option B','Option C','Option D'],answer:1,explain:'This option follows the mechanism described above.'},{q:'Which choice avoids the production pitfall?',options:['Option A','Option B','Option C','Option D'],answer:2,explain:'This choice preserves the stated invariant.'}], related: ['core-001'], tags: ['String', 'StringBuilder', 'string pool']
+},
+{
+  id: 'lesson-core-006', track: 'core', order: 6,
+  title: 'equals, hashCode, compareTo: bộ ba quyết định hành vi trong collection', level: 'senior', minutes: 30,
+  goals: ['Nói được mặc định của Object.equals và vì sao value type phải override', 'Giữ đúng hợp đồng equals/hashCode và điều kiện compareTo nhất quán với equals', 'Viết Money bất biến dùng an toàn trong HashMap, HashSet, TreeSet và biết record sinh những gì'],
+  body: `**Tóm tắt:** {{equals}} trả lời "hai object này có phải cùng một giá trị không", {{hashCode}} quyết định object được đặt vào bucket nào của bảng băm, {{compareTo}} trả lời "object này đứng trước hay sau object kia". Bộ ba phải khớp nhau: {{equals}} và {{hashCode}} lệch nhau làm {{HashMap}} không tìm thấy key đã put; {{compareTo}} gộp hai giá trị mà {{equals}} coi là khác làm {{TreeSet}} âm thầm bỏ bản ghi.
+
+### Mặc định của Object: "tôi là tôi"
+Mọi class đều kế thừa {{Object}}, nên bạn nhận miễn phí {{equals}} và {{hashCode}}. Bản gốc của {{equals}} so bằng {{==}}, tức "hai biến có trỏ tới cùng một vùng nhớ không". Vì vậy hai lần viết {{new Money(1000, "USD")}} luôn là hai key khác nhau, dù với kế toán chúng là cùng một số tiền. Bản gốc {{hashCode}} sinh số từ danh tính object trong bộ nhớ, cũng không nhìn vào nội dung.
+Bạn PHẢI override khi class của mình là **value type**: giá trị tự nó có nghĩa (tiền, ngày, toạ độ, khoá phức hợp gồm nhiều cột). Bạn KHÔNG cần override khi muốn đúng nghĩa "cùng một đối tượng" (một entity đang được quản lý, một object khoá {{synchronized}}, một cache đang mutate).
+
+### Ai gọi method nào
+| Cấu trúc | Khi thêm hoặc tìm phần tử nó dùng | Nếu làm sai |
+|---|---|---|
+| {{HashMap}}, {{HashSet}} | {{hashCode}} để chọn bucket, rồi {{equals}} để xác nhận phần tử trong bucket | {{get}} trả null dù key đã được put; set chứa trùng |
+| {{TreeMap}}, {{TreeSet}} | {{compareTo}} (hoặc {{Comparator}}) để đi xuống cây; kết quả 0 nghĩa là "đã có rồi" | Mất bản ghi mà không có cảnh báo |
+| {{List.contains}}, {{distinct}}, {{removeIf}} | chỉ {{equals}} | Vẫn đúng nhưng tốn O(n) |
+
+> {{String}} và {{Integer}} đã override cả ba method, nên bạn dùng chúng làm key hàng năm trời mà không phải nghĩ. Với class tự viết, phần "miễn phí" đó không tồn tại.
+
+### Hợp đồng equals: năm điều
+1. **Phản xạ**: {{x.equals(x)}} luôn đúng.
+2. **Đối xứng**: {{x.equals(y)}} và {{y.equals(x)}} phải giống nhau. hay vỡ nhất khi class con thêm field: {{Point}} so với {{ColorPoint}} — chiều nhìn từ cha bỏ qua màu nên bằng, chiều nhìn từ con bắt bằng màu nên khác.
+3. **Bắt cầu**: nếu {{a}} bằng {{b}} và {{b}} bằng {{c}} thì {{a}} phải bằng {{c}}. Hay vỡ khi định nghĩa "gần đúng" kiểu {{Math.abs(a - b) < 0.01}}: a gần b, b gần c nhưng a có thể không gần c.
+4. **Nhất quán**: field không đổi thì kết quả không đổi trong suốt lần chạy chương trình.
+5. **Với null**: {{x.equals(null)}} phải trả {{false}}, không được ném exception.
+
+Khuôn an toàn cho một value type bất biến:
+
+~~~java
+@Override public boolean equals(Object o) {
+    if (this == o) return true;                    // đường tắt, và đúng cả khi o là chính nó
+    if (!(o instanceof Money m)) return false;     // instanceof với null cho false: khỏi cần check null riêng
+    return amountMinor == m.amountMinor && currency.equals(m.currency);
+}
+~~~
+
+{{o instanceof Money m}} là pattern matching for instanceof (Java 16 trở lên): đúng kiểu thì bind luôn vào biến {{m}}. Trước Java 16 phải viết hai dòng {{if (!(o instanceof Money)) return false; Money m = (Money) o;}}.
+
+### Hợp đồng hashCode: tấm bản đồ tới bucket
+{{HashMap}} chỉ nhìn vào MỘT bucket cho một khoá: nó dùng {{hashCode}} để chọn bucket, rồi dùng {{equals}} để tìm trong danh sách của bucket đó. Suy ra quy tắc duy nhất: **nếu {{a.equals(b)}} thì {{a.hashCode() == b.hashCode()}}**. Vi phạm thì hai object "bằng nhau" nằm ở hai bucket khác nhau, {{get}} không bao giờ gặp nhau để mà so {{equals}}, kết quả là {{null}}.
+Chiều ngược lại được phép: hai object khác nhau CÓ THỂ cùng hashCode (gọi là va chạm). Cái giá không phải tính đúng đắn mà là tốc độ: cùng bucket thì chuỗi dài ra, {{get}} trong bucket thành O(n).
+
+~~~java
+@Override public int hashCode() {                  // dùng ĐÚNG các field mà equals dùng
+    return Objects.hash(amountMinor, currency);
+}
+~~~
+
+{{Objects.hash}} tiện nhưng mỗi lần gọi cấp phát một mảng và đóng gói {{long}} thành {{Long}}; trong vòng lặp nóng hãy viết tay:
+
+~~~java
+@Override public int hashCode() {
+    int r = Long.hashCode(amountMinor);
+    return 31 * r + currency.hashCode();           // 31 là số nguyên tố lẻ: nhân rồi cộng giúp lan bit đều
+}
+~~~
+
+### Key mutable: lỗi "mất tiền trong map"
+{{hashCode}} còn phải **ổn định suốt thời gian object nằm trong collection**. Đây là lỗi kinh điển với khoá mutable:
+
+~~~text
+put(k, "orders/1")   hash(k) = 7    entry nằm ở bucket 7
+k.currency = "EUR"   hash(k) = 3    trạng thái đã đổi sau khi put
+get(k)               hash(k) = 3    nhìn vào bucket 3 (trống) => null
+remove(k)                        cũng null: bucket 7 không còn ai tìm ra => rò rỉ bộ nhớ
+~~~
+
+Vì vậy field tham gia tính hash nên là {{final}}, và khoá nên là record hoặc class bất biến. Nếu buộc dùng object mutable làm khoá thì đừng sửa nó khi còn trong map, nhưng tốt nhất là đừng thiết kế như vậy.
+
+### compareTo và "nhất quán với equals"
+{{Comparable<Money>}} khai báo thứ tự tự nhiên của kiểu. {{TreeSet}} không gọi {{equals}} để quyết định "đã có chưa", mà dựa vào {{compareTo}} trả về 0. Nếu {{compareTo}} bỏ qua {{currency}}:
+
+~~~java
+public int compareTo(Money o) { return Long.compare(amountMinor, o.amountMinor); }   // SAI khi dùng TreeSet
+~~~
+
+thêm {{USD 1000}} rồi {{EUR 1000}} vào {{TreeSet}} chỉ còn MỘT phần tử: số tiền biến mất im lặng. Điều kiện cần là {{compareTo(x, y)}} trả 0 khi và chỉ khi {{x.equals(y)}} (tài liệu tiếng Anh gọi là *consistent with equals*). Với tiền có hai thiết kế hợp lệ, chọn theo nghiệp vụ:
+- **Chỉ so sánh trong cùng tiền tệ**: khác {{currency}} thì ném {{IllegalArgumentException}}. An toàn nhất vì mọi phép so sánh đều có nghĩa, nhưng không sort được một danh sách hỗn hợp tiền tệ.
+- **So số tiền trước, lấy tiền tệ làm tie-break**: so {{amountMinor}} trước, nếu bằng 0 thì so tiếp {{currency.compareTo(o.currency)}}. Sort được mọi thứ, hợp lý với bảng kê đa tiền tệ.
+
+Đừng bao giờ trả hiệu số bằng phép trừ: {{(int)(a - b)}} với {{a = 5_000_000_000L}} và {{b = 0}} bị cắt xuống int ra số âm, thứ tự đảo ngược mà không báo lỗi. Luôn dùng {{Long.compare}}, {{Integer.compare}}; với chuỗi dùng {{String.compareTo}}.
+
+### Money: invariant và phép cộng
+~~~java
+Money add(Money other) {
+    if (other == null) throw new IllegalArgumentException("other null");
+    if (!currency.equals(other.currency))               // ràng buộc CHÉO giữa hai instance, record không tự sinh được
+        throw new IllegalArgumentException("Không cộng được " + currency + " với " + other.currency);
+    return new Money(Math.addExact(amountMinor, other.amountMinor), currency);
+}
+~~~
+
+{{amountMinor}} là số đơn vị nhỏ nhất (cent) kiểu {{long}}: 10.00 USD thành 1000. Dùng số nguyên để tránh dấu phẩy động nhị phân không biểu diễn đúng 0.1 ({{double}} cộng dồn sẽ lệch). {{Math.addExact}} ném {{ArithmeticException}} khi tràn thay vì quay số sang âm: trong nghiệp vụ tiền, một số dư tràn thành âm là tai nạn không ai muốn phát hiện sau một năm.
+
+### Record có thay được phần này không
+~~~java
+record Money(long amountMinor, String currency) implements Comparable<Money> {
+    Money {                                       // compact constructor: chỉ validate, không cần gán lại
+        if (currency == null || currency.length() != 3) throw new IllegalArgumentException("Cần mã ISO 4217 3 ký tự");
+    }
+    public int compareTo(Money o) { return 0; }   // vẫn phải tự viết
+}
+~~~
+
+Record tự sinh {{equals}}, {{hashCode}}, {{toString}} và accessor dựa trên TẤT CẢ component, nên "quên một field trong hashCode" không còn là chỗ để sai. Record **không** tự sinh {{compareTo}}; record có field {{List}} vẫn phải {{List.copyOf}} trong compact constructor; và ràng buộc chéo giữa hai instance như {{add}} vẫn là việc của bạn.
+
+### Pitfall production
+- Thêm field vào {{equals}} mà quên {{hashCode}} hoặc ngược lại. Hãy grep tên field và sửa cả hai chỗ: hai method phải liệt kê cùng một danh sách field.
+- {{hashCode}} trả một hằng số cho mọi object: vẫn đúng hợp đồng nhưng mọi khoá dồn vào một bucket, {{HashMap}} thoái hoá thành danh sách liên kết, CPU tăng bất thường dưới tải.
+- {{equals}} gọi {{field.equals(...)}} trên field có thể null → NPE. Dùng {{Objects.equals(a, b)}}.
+- So sánh bằng {{getClass() != other.getClass()}} khi object bị proxy (Hibernate): proxy luôn khác class nên mọi lookup thất bại âm thầm.
+- Dùng cùng một class vừa làm entity mutable vừa làm khoá trong {{HashMap}}: bug lộ ra sau vài giờ chạy và không reproduce được trong unit test.
+- Hai {{Comparator}} khác nhau cho cùng một kiểu, một chỗ dùng {{TreeSet}} một chỗ dùng {{sorted()}}: khái niệm "đã tồn tại" cho kết quả khác nhau. Tài liệu hoá rõ thứ tự nào được coi là duy nhất.
+
+### Liên hệ phỏng vấn
+Câu hỏi đào sâu thường là: vì sao {{equals}} cần cả {{this == o}} lẫn {{instanceof}}, làm gì khi phải thêm field vào khoá đã nằm trong map đang chạy (đáp án: migrate lại map hoặc đổi sang khoá record, đừng sửa hợp đồng retro), vì sao {{TreeSet}} nguy hiểm hơn {{HashSet}} khi {{compareTo}} không nhất quán, và khi nào chọn {{TreeSet}} thay {{HashSet}} (cần thứ tự, cần {{first()}}/{{last()}}/{{headSet()}}). Trả lời bằng cách vẽ đường đi của một lệnh {{put}} rồi chỉ đúng chỗ hợp đồng bị phá.`,
+  exercises: [{
+    title: 'Money bất biến dùng an toàn trong HashMap, HashSet, TreeSet',
+    prompt: `Viết {{Money}} là value type bất biến: {{amountMinor}} là số đơn vị nhỏ nhất (cent) và {{currency}} là mã tiền tệ ISO 4217 — chuẩn quốc tế ba chữ cái in hoa như USD, EUR, VND.
+Yêu cầu:
+- Constructor từ chối {{currency}} null, độ dài khác 3, hoặc chứa ký tự ngoài A-Z bằng {{IllegalArgumentException}}.
+- {{equals}} và {{hashCode}} dựa trên CẢ HAI field; {{equals(null)}} và so với kiểu khác trả {{false}}.
+- {{add}} trả {{Money}} mới, không làm thay đổi hai số hạng; khác {{currency}} hoặc {{other}} null thì ném {{IllegalArgumentException}}; dùng {{Math.addExact}} để bắt tràn số.
+- {{compareTo}} chỉ so hai {{Money}} cùng {{currency}}; khác {{currency}} ném {{IllegalArgumentException}}.
+- {{amountMinor()}} và {{currency()}} là accessor.
+Test sẽ dùng {{HashSet}}, {{TreeSet}}, {{HashMap}} và {{Collections.sort}} để kiểm tra hành vi thật, không chỉ kiểm tra giá trị trả về.`,
+    starter: `final class Money implements Comparable<Money> {
+    private final long amountMinor;
+    private final String currency;
+
+    Money(long amountMinor, String currency) {
+        this.amountMinor = amountMinor;
+        this.currency = currency;
+        throw new UnsupportedOperationException("TODO");   // kiểm tra currency ở đây
+    }
+    long amountMinor() { return amountMinor; }
+    String currency() { return currency; }
+    Money add(Money other) { throw new UnsupportedOperationException("TODO"); }
+    @Override public boolean equals(Object o) { throw new UnsupportedOperationException("TODO"); }
+    @Override public int hashCode() { throw new UnsupportedOperationException("TODO"); }
+    @Override public int compareTo(Money other) { throw new UnsupportedOperationException("TODO"); }
+}`,
+    tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    static void guard(String name, Supplier<Boolean> body) {
+        try { check(name, body.get(), "điều kiện không đạt"); }
+        catch (Throwable t) { check(name, false, t.getClass().getSimpleName() + ": " + t.getMessage()); }
+    }
+    static boolean rejects(Supplier<?> body) {
+        try { body.get(); return false; } catch (IllegalArgumentException expected) { return true; }
+    }
+    public static void main(String[] args) {
+        guard("hai Money cung gia tri thi equals va cung hashCode", () -> {
+            Money a = new Money(1000, "USD"), b = new Money(1000, "USD");
+            return a.equals(b) && b.equals(a) && a.hashCode() == b.hashCode()
+                && a.equals(a) && !a.equals(null) && !a.equals("USD 1000");
+        });
+        guard("HashSet khong giu hai phan tu trung gia tri", () ->
+            new HashSet<>(List.of(new Money(500, "VND"), new Money(500, "VND"), new Money(600, "VND"))).size() == 2);
+        guard("khac tien te thi khong equals du cung so tien", () -> {
+            Money a = new Money(1000, "USD"), b = new Money(1000, "EUR");
+            return !a.equals(b) && !b.equals(a);
+        });
+        guard("add tra object moi va khong lam doi hai so hang", () -> {
+            Money a = new Money(700, "USD"), b = new Money(450, "USD"), sum = a.add(b);
+            return sum.amountMinor() == 1150 && sum.currency().equals("USD")
+                && a.amountMinor() == 700 && b.amountMinor() == 450;
+        });
+        guard("add hai tien te khac nhau bi tu choi", () -> rejects(() -> new Money(100, "USD").add(new Money(100, "EUR"))));
+        guard("compareTo va Collections.sort sap xep theo so tien", () -> {
+            List<Money> xs = new ArrayList<>(List.of(new Money(300, "USD"), new Money(100, "USD"), new Money(200, "USD")));
+            Collections.sort(xs);
+            return xs.get(0).amountMinor() == 100 && xs.get(1).amountMinor() == 200 && xs.get(2).amountMinor() == 300
+                && xs.get(0).compareTo(xs.get(2)) < 0 && xs.get(2).compareTo(xs.get(0)) > 0 && xs.get(1).compareTo(new Money(200, "USD")) == 0;
+        });
+        guard("TreeSet dung compareTo de loai trung va khong gop hai tien te", () -> {
+            TreeSet<Money> ts = new TreeSet<>();
+            ts.add(new Money(300, "USD")); ts.add(new Money(300, "USD")); ts.add(new Money(100, "USD"));
+            boolean crossRejected = rejects(() -> ts.add(new Money(300, "EUR")));
+            return ts.size() == 2 && ts.first().amountMinor() == 100 && crossRejected;
+        });
+        guard("currency sai dinh dang bi tu choi ngay luc tao", () ->
+            rejects(() -> new Money(100, "us")) && rejects(() -> new Money(100, "USDX")) && rejects(() -> new Money(100, null)));
+        guard("Money dung duoc lam key trong HashMap", () -> {
+            Map<Money, String> ledger = new HashMap<>();
+            ledger.put(new Money(250, "VND"), "orders/1");
+            return "orders/1".equals(ledger.get(new Money(250, "VND")))
+                && "orders/1".equals(ledger.remove(new Money(250, "VND"))) && ledger.isEmpty();
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+    reference: `final class Money implements Comparable<Money> {
+    private final long amountMinor;
+    private final String currency;
+
+    Money(long amountMinor, String currency) {
+        if (currency == null || currency.length() != 3) throw new IllegalArgumentException("currency phai la ma 3 ky tu");
+        for (int i = 0; i < 3; i++) {
+            char c = currency.charAt(i);
+            if (c < 'A' || c > 'Z') throw new IllegalArgumentException("currency phai la chu hoa A-Z");
+        }
+        this.amountMinor = amountMinor;
+        this.currency = currency;
+    }
+    long amountMinor() { return amountMinor; }
+    String currency() { return currency; }
+
+    Money add(Money other) {
+        if (other == null) throw new IllegalArgumentException("other null");
+        if (!currency.equals(other.currency)) throw new IllegalArgumentException("khong cong duoc khac tien te");
+        return new Money(Math.addExact(amountMinor, other.amountMinor), currency);
+    }
+
+    @Override public boolean equals(Object o) {
+        if (this == o) return true;
+        if (!(o instanceof Money m)) return false;
+        return amountMinor == m.amountMinor && currency.equals(m.currency);
+    }
+    @Override public int hashCode() { return Objects.hash(amountMinor, currency); }
+
+    @Override public int compareTo(Money other) {
+        if (!currency.equals(other.currency)) throw new IllegalArgumentException("khong so sanh duoc khac tien te");
+        return Long.compare(amountMinor, other.amountMinor);
+    }
+}`,
+    hints: ['{{HashSet}} định vị trước bằng {{hashCode}}, chỉ gọi {{equals}} bên trong một bucket: nếu {{hashCode}} bỏ sót {{currency}} thì {{USD 1000}} và {{EUR 1000}} rơi vào hai bucket khác nhau và set giữ cả hai dù {{equals}} nói chúng khác — tức là {{equals}} và {{hashCode}} phải liệt kê đúng cùng một danh sách field.', 'compareTo ném IllegalArgumentException khi khác currency, còn add thì so bằng currency.equals và đừng quên kiểm tra other null trước khi chạm vào other.currency: giữ nguyên tắc "mọi phép so sánh đều phải có nghĩa" thì TreeSet và HashMap không bao giờ phải đoán.', 'Trong TreeSet, add phần tử thứ hai có compareTo trả 0 nghĩa là "đã tồn tại" nên bị bỏ; đó là lý do test cho {{USD 300}} vào sau {{EUR 300}} — nếu {{compareTo}} bỏ qua {{currency}} thì size vẫn là 2 và bài tập không phát hiện ra lỗi.'],
+    explain: `Bộ test không chỉ gọi {{equals}} mà còn đưa object vào {{HashSet}}, {{TreeSet}}, {{HashMap}} thật, vì đó là nơi hợp đồng bị kiểm tra. {{HashSet}} định vị bằng {{hashCode}} rồi xác nhận bằng {{equals}}: thiếu một trong hai field ở {{hashCode}} làm hai bản trùng nằm hai bucket và set phình to. {{TreeSet}} không dùng {{equals}} chút nào: nó tin {{compareTo}}, nên một {{compareTo}} bỏ qua {{currency}} sẽ gộp {{USD 300}} và {{EUR 300}} thành một. {{add}} phải trả object mới để giữ tính bất biến; nếu nó mutate {{this}} thì mọi entry đã put trong map có thể bị lệch bucket. {{Math.addExact}} bảo vệ khỏi tràn {{long}} — điều {{long}} thường không xảy ra nhưng cent thì va chạm được với hệ thống cộng dồn lớn.`
+  }], check: [{
+    q: 'Lớp Money có equals theo (amountMinor, currency) nhưng hashCode chỉ theo amountMinor. Chuyện gì xảy ra với HashSet?',
+    options: ['Không có gì sai: hashCode chỉ liên quan tới TreeMap', 'HashSet có thể giữ hai phần tử trùng vì chúng rơi vào hai bucket khác nhau và equals không bao giờ được gọi để so', 'HashSet ném IllegalStateException khi thêm phần tử', 'hashCode không ảnh hưởng equals, chỉ compareTo mới ảnh hưởng'],
+    answer: 1,
+    explain: 'HashMap và HashSet dùng hashCode để CHỌN bucket, chỉ sau đó mới dùng equals để xác nhận trong bucket đó. Equals đúng mà hash khác nghĩa là hai object không bao giờ đứng cùng chỗ để so với nhau, nên set chứa cả hai bản trùng.'
+  },{
+    q: 'compareTo của Money chỉ so amountMinor. Đưa vào TreeSet hai phần tử USD 1000 và EUR 1000, kết quả?',
+    options: ['Set giữ cả hai vì equals coi chúng là khác nhau', 'Set ném ClassCastException', 'Set chỉ giữ một phần tử, phần tử thêm sau bị bỏ im lặng', 'Không xác định được vì TreeSet sắp xếp theo hashCode'],
+    answer: 2,
+    explain: 'TreeSet định vị bằng compareTo và coi kết quả 0 nghĩa là phần tử đã tồn tại, nên nó bỏ qua luôn equals. Đây là kiểu mất dữ liệu không log, không exception — chỉ thấy khi đối soát số tiền.'
+  },{
+    q: 'Vì sao không viết compareTo là return (int)(amountMinor - other.amountMinor)?',
+    options: ['Vì javac cấm trừ hai số long', 'Vì hiệu luôn bằng 0 khi hai giá trị gần nhau', 'Vì cần cộng thêm currency vào hiệu đó', 'Vì hiệu có thể vượt phạm vi int, bị cắt narrow và đảo dấu nên thứ tự sai'],
+    answer: 3,
+    explain: 'Ép kiểu long xuống int chỉ giữ 32 bit thấp. Với a = 5_000_000_000 và b = 0, hiệu dương bị cắt thành số âm, comparator trả "a nhỏ hơn b". Long.compare so sánh trực tiếp nên không có bẫy này.'
+  },{
+    q: 'Chuyển Money sang record Money(long amountMinor, String currency). Việc nào vẫn phải tự làm?',
+    options: ['Viết equals và hashCode', 'Viết compareTo và kiểm tra ràng buộc chéo khi cộng hai instance', 'Viết accessor cho amountMinor', 'Viết toString'],
+    answer: 1,
+    explain: 'Record tự sinh equals, hashCode, toString và accessor dựa trên mọi component, cộng thêm compact constructor để validate. Nhưng thứ tự tự nhiên (Comparable) và ràng buộc giữa hai object như "cùng currency khi cộng" thì record không biết gì về nghiệp vụ.'
+  }], related: ['core-001', 'core-002'], tags: ['equals', 'hashCode', 'Comparable', 'value type']
+},
+{
+  id: 'lesson-core-007', track: 'core', order: 7,
+  title: 'Xử lý exception trong service: wrap giữ cause, retry có điều kiện và Result', level: 'senior', minutes: 30,
+  goals: ['Chọn checked hay unchecked theo câu hỏi ai là người sửa được lỗi', 'Chuyển đổi exception ở ranh giới tầng mà không mất cause và không nuốt lỗi', 'Thiết kế retry chỉ cho lỗi transient và gom mọi lần lỗi vào một exception duy nhất', 'Biết khi nào trả Result thay vì ném exception'],
+  body: `**Tóm tắt:** Exception trong service là thông điệp gửi cho một người ở tầng khác, nên câu hỏi thiết kế không phải "ném hay không" mà "**ai sửa được lỗi này**". Checked exception ép caller xử lý tại chỗ; unchecked đi thẳng lên boundary để bộ xử lý tập trung quyết định. Khi đổi lỗi ở ranh giới tầng luôn giữ {{cause}}, không bắt rồi bỏ, và chỉ retry đúng lỗi transient vì retry một lệnh ghi mà không có idempotency key có thể tạo giao dịch trùng.
+
+### Checked hay unchecked: nhìn vào người cứu được
+Checked exception là subclass của {{Exception}} nhưng không phải {{RuntimeException}}; compiler bắt khai báo {{throws}} hoặc catch. Chỉ nên dùng khi caller thật sự có lựa chọn phục hồi: đọc file khác, nhập lại, thử node khác trong danh sách. Nếu không, nó chỉ lan chữ ký {{throws}} qua controller → service → repository và làm rối API.
+**Bẫy Spring**: {{@Transactional}} mặc định chỉ rollback cho {{RuntimeException}} và {{Error}}. Bọc lỗi database thành checked exception rồi "xử lý" ở tầng trên có thể khiến transaction **commit** với trạng thái ghi dở dang. Phải khai báo {{rollbackFor}} nếu cố tình dùng checked.
+
+| Loại | Ai quyết định | Ví dụ | Ghi chú |
+|---|---|---|---|
+| Checked | Caller ngay tại chỗ gọi | File không tồn tại, cần chọn cái khác | Rò rỉ vào chữ ký API; Spring không rollback mặc định |
+| {{IllegalArgumentException}} | Người viết code sai hợp đồng | Input null, sai định dạng | Là lỗi của caller, không phải của hệ thống |
+| {{IllegalStateException}} | Trạng thái hệ thống sai | Đóng rồi mà vẫn ghi | Kiểm tra xem có phải race condition không |
+| {{RuntimeException}} do hạ tầng | Middleware, boundary | Timeout DB, 503 từ upstream | Retry hay circuit breaker ở đúng tầng đó |
+| {{Error}} | Không ai | {{OutOfMemoryError}} | Đừng bắt; để process chết và restart |
+
+### Wrap nhưng phải giữ cause
+Ở ranh giới tầng, người đọc cần ngữ cảnh nghiệp vụ (mã đơn hàng) chứ không cần class của driver. Viết lại message là đúng, nhưng phải truyền lỗi gốc vào tham số {{cause}}:
+
+~~~java
+try {
+    return jdbc.query(sql, rowMapper, orderId);
+} catch (DataAccessException e) {
+    throw new OrderRepositoryException("Không tải được đơn hàng " + orderId, e);
+}
+~~~
+
+Constructor có cause làm JVM in cả chuỗi: dòng đầu là message mới, tiếp theo là {{Caused by:}} kèm stack gốc. Bỏ cause thì mất luôn thông tin quý nhất: lỗi thật là timeout, unique constraint hay sai connection string — nhìn từ trên xuống tất cả đều là "lỗi rồi".
+Chỉ log full stack trace **một lần** ở boundary (filter, {{@ControllerAdvice}}, hoặc chỗ job kết thúc). Log ở mọi tầng khiến cùng một lỗi xuất hiện 5 lần trên Kibana, che mất các lỗi khác và tính tiền index log.
+
+### Không nuốt exception
+Ba dạng dưới đây đều phá khả năng điều tra:
+
+~~~java
+catch (Exception e) { }                       // mất hết: không còn gì để truy
+catch (Exception e) { log.warn("có lỗi"); }   // mất loại lỗi và stack trace
+catch (DataAccessException e) { return List.of(); }  // caller không phân biệt "trống" và "hỏng"
+~~~
+
+{{catch (Exception e)}} còn nuốt luôn cả {{RuntimeException}} do bug thuần túy (NPE, {{ClassCastException}}), biến lỗi code thành hành vi im lặng khó hiểu. {{catch (Throwable t)}} còn tệ hơn vì giữ cả {{OutOfMemoryError}}. Hướng đúng: bắt đúng loại lỗi mà tầng này xử lý được, hoặc bọc và ném tiếp. Nếu vòng lặp xử lý nhiều phần tử mà mỗi phần tử bắt rồi ghi log continue, hãy đếm số lỗi và báo cuối job, đừng để một job "thành công" khi 500 đơn vị thất bại.
+
+### try-with-resources vẫn là chỗ dễ mất thông tin
+Tài nguyên đóng theo thứ tự ngược lúc mở; nếu thân khối đã ném lỗi A còn {{close()}} ném B, caller nhận A và B nằm trong {{A.getSuppressed()}}. Chẩn đoán lỗi cleanup bằng cách duyệt {{getSuppressed()}}, vì {{close()}} của {{BufferedWriter}} chính là nơi flush diễn ra — bỏ qua nó nghĩa là chấp nhận mất dữ liệu không ai biết.
+Một chi tiết ít người để ý: nếu hệ thống dùng lại **cùng một instance exception** (exception static để tiết kiệm chi phí tạo), thì {{e.addSuppressed(e)}} sẽ ném {{IllegalStateException}} vì Java cấm một exception tự gắn chính nó làm suppressed.
+
+### Result: khi thất bại là một phần của luồng
+{{Result<T>}} là object chứa hoặc một giá trị hoặc một lỗi; caller buộc phải đi qua {{isSuccess()}} hoặc {{value()}}. Nó hợp ở ranh giới: parse payload từ bên ngoài, gọi API trả về kết quả nghiệp vụ, hoặc helper retry mà caller không muốn viết {{try/catch}}.
+
+~~~java
+Result<Quote> r = Result.of(() -> parser.parse(payload));
+if (!r.isSuccess()) return ResponseEntity.badRequest().body(describe(r.error()));
+~~~
+
+| Cách | Ưu | Nhược |
+|---|---|---|
+| Exception | Đi xuyên nhiều tầng không cần đổi chữ ký; giữ stack trace | Đắt khi ném vì {{fillInStackTrace}}; dễ bị nuốt; không hợp luồng dự đoán được |
+| {{Result}} | Tường minh, dễ test, không có đường đi "quên xử lý" | Không tự giữ stack nếu ta không cất {{Throwable}}; phải tự viết plumbing khi nested |
+
+Không dùng {{Result}} để thay exception trong toàn bộ hệ thống: lỗi hạ tầng vẫn nên ném để transaction, circuit breaker và alert của bạn hoạt động như cũ. {{Result}} chỉ nên là "viên nang" ở ranh giới.
+
+### Retry: chỉ transient, có trần, có idempotency
+{{retryOn}} là {{Predicate<Throwable>}} cho biết loại lỗi nào đáng thử lại — thay vì {{catch (Exception)}} rồi retry mọi thứ.
+
+~~~java
+Predicate<Throwable> netTransient = t -> t instanceof SocketTimeoutException;
+String body = Attempts.retry(() -> client.fetch(orderId), 3, netTransient);
+~~~
+
+- **Không retry**: lỗi validation, 400/401/403/404, nghiệp vụ bị từ chối (số dư không đủ). Chạy lại y nguyên input thì ra y nguyên kết quả; retry chỉ đốt tài nguyên và làm metrics lẫn tỷ lệ lỗi thật.
+- **Timeout của một lệnh ghi**: server có thể đã nhận và đã commit. Cần idempotency key (khoá duy nhất do client sinh, server chỉ cho qua lần đầu) trước khi nghĩ tới retry POST.
+- **Retry storm**: mọi instance retry cùng lúc khi DB chậm sẽ dồn tải ngược vào DB. Dùng exponential backoff có jitter, đặt trần số lần và tổng thời gian (deadline), kết hợp circuit breaker.
+- **Test deterministic**: đừng kiểm chứng retry bằng {{Thread.sleep}} hay đồng hồ. Đếm số lần {{action}} được gọi và kiểm tra danh sách lỗi — chạy 200 lần vẫn ra cùng kết quả.
+- **Gom lịch sử lỗi**: ném exception của lần cuối (message mô tả đúng lần fail mà người đọc quan tâm) và gắn các exception trước vào {{getSuppressed()}} theo thứ tự thời gian, để chỉ một dòng log cho thấy cả ba lần thử.
+
+### Mapping lỗi domain ra thế giới ngoài
+| Lỗi | HTTP | Ghi chú |
+|---|---|---|
+| {{NotFoundException}} | 404 | resource không tồn tại |
+| Validation, {{IllegalArgumentException}} | 400 | lỗi do caller, kèm danh sách field |
+| Nghiệp vụ bị từ chối (hạn mức, số dư) | 422 | request đúng cú pháp nhưng không xử lý được |
+| {{ConflictException}}, optimistic lock | 409 | phiên bản dữ liệu đã đổi |
+| Phụ thuộc tạm thời unavailable | 503 | kèm {{Retry-After}} để client tử tế lùi lại |
+| Còn lại | 500 | trả correlation id, KHÔNG trả stack trace hay SQL |
+
+### Pitfall production
+- {{e.getMessage().contains("timeout")}} để phân loại lỗi: mong manh khi driver hoặc upstream đổi câu chữ. Hãy phân loại bằng type hoặc mã lỗi ổn định.
+- Trả giá trị mặc định (0, rỗng, {{null}}) khi có lỗi: dữ liệu sai mà không ai biết, và báo cáo đối soát phát hiện sau một tháng.
+- Bọc lỗi rồi chỉ truyền message, mất cause (mất {{Caused by:}}).
+- Bọc exception trong một vòng {{for}} rồi chỉ ném cái cuối mà không gom suppressed: người đọc chỉ thấy một lần thử.
+- Log message có PAN, token, mật khẩu hoặc dữ liệu cá nhân: boundary phải mask trước khi log.
+- Nuốt {{InterruptedException}} mà không gọi {{Thread.currentThread().interrupt()}}: ứng dụng không kịp shutdown khi platform kill pod.
+- Bật retry ở tầng HTTP client VÀ tầng service AND tầng job: ba tầng nhân nhau thành 27 lần gọi cho một lỗi, và phía upstream coi bạn là tấn công.
+
+### Liên hệ phỏng vấn
+Hãy kể một lỗi production bị nuốt ở tầng giữa và bạn tìm ra nó thế nào; giải thích vì sao checked exception thay đổi hành vi rollback trong Spring; nêu tiêu chí chọn lỗi được retry kèm idempotency key cho lệnh ghi; và cho biết khi nào bạn chủ đích trả {{Result}} thay vì ném exception.`,
+  exercises: [{
+    title: 'retry có điều kiện, Result và suppressed exception',
+    prompt: `Viết {{Result<T>}} và {{Attempts}}.
+- {{Result.success(v)}} chứa giá trị; {{Result.failure(e)}} chứa lỗi, từ chối {{null}} error bằng {{IllegalArgumentException}}; {{Result.of(action)}} chạy {{action}} và bắt {{RuntimeException}} lẫn {{Error}} thành {{Result}} thất bại. {{isSuccess()}} cho biết thành công; {{value()}} trả giá trị hoặc ném đúng instance lỗi đã lưu (nếu là unchecked); {{error()}} trả lỗi hoặc {{null}}.
+- {{Attempts.retry(action, maxAttempts, retryOn)}}: nếu {{maxAttempts < 1}} ném {{IllegalArgumentException}} TRƯỚC khi gọi {{action}}. Gọi {{action}} tối đa {{maxAttempts}} lần. Nếu lỗi không được {{retryOn}} chấp nhận thì dừng ngay và ném đúng lỗi đó, không bọc lại. Nếu vẫn còn lỗi được phép mà hết lần, ném lỗi của lần CUỐI và gắn các lỗi của những lần trước vào {{getSuppressed()}} theo thứ tự thời gian.
+- {{Attempts.attempt(...)}} dùng {{retry}} bên trong nhưng trả {{Result}} thay vì ném.
+Không được dùng {{Thread.sleep}}, ngày giờ hay thứ tự không xác định: mọi test phải chạy lại cho cùng kết quả.`,
+    starter: `final class Result<T> {
+    private final T value;
+    private final Throwable error;
+    private Result(T value, Throwable error) { this.value = value; this.error = error; }
+
+    static <T> Result<T> success(T value) { throw new UnsupportedOperationException("TODO"); }
+    static <T> Result<T> failure(Throwable error) { throw new UnsupportedOperationException("TODO"); }
+    static <T> Result<T> of(Supplier<T> action) { throw new UnsupportedOperationException("TODO"); }
+    boolean isSuccess() { throw new UnsupportedOperationException("TODO"); }
+    T value() { throw new UnsupportedOperationException("TODO"); }
+    Throwable error() { throw new UnsupportedOperationException("TODO"); }
+}
+final class Attempts {
+    static <T> T retry(Supplier<T> action, int maxAttempts, Predicate<Throwable> retryOn) { throw new UnsupportedOperationException("TODO"); }
+    static <T> Result<T> attempt(Supplier<T> action, int maxAttempts, Predicate<Throwable> retryOn) { throw new UnsupportedOperationException("TODO"); }
+}`,
+    tests: `public class Main {
+    static int passed = 0, total = 0;
+    static final Predicate<Throwable> TRANSIENT = t -> t instanceof IllegalStateException;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    static void guard(String name, Supplier<Boolean> body) {
+        try { check(name, body.get(), "điều kiện không đạt"); }
+        catch (Throwable t) { check(name, false, t.getClass().getSimpleName() + ": " + t.getMessage()); }
+    }
+    static Throwable thrown(Runnable body) {
+        try { body.run(); return null; } catch (Throwable t) { return t; }
+    }
+    static Supplier<String> flaky(AtomicInteger calls, int succeedAt) {
+        return () -> {
+            int n = calls.incrementAndGet();
+            if (n < succeedAt) throw new IllegalStateException("attempt-" + n);
+            return "ok-" + n;
+        };
+    }
+    public static void main(String[] args) {
+        guard("thanh cong lan dau chi goi dung mot lan", () -> {
+            AtomicInteger calls = new AtomicInteger();
+            String value = Attempts.retry(flaky(calls, 1), 3, TRANSIENT);
+            return value.equals("ok-1") && calls.get() == 1;
+        });
+        guard("loi transient duoc thu lai cho toi khi co ket qua", () -> {
+            AtomicInteger calls = new AtomicInteger();
+            String value = Attempts.retry(flaky(calls, 3), 5, TRANSIENT);
+            return value.equals("ok-3") && calls.get() == 3;
+        });
+        guard("loi khong duoc phep retry thi dung sau lan dau va nem dung loi do", () -> {
+            AtomicInteger calls = new AtomicInteger();
+            IllegalArgumentException boom = new IllegalArgumentException("don khong hop le");
+            Throwable t = thrown(() -> Attempts.retry(() -> {
+                calls.incrementAndGet();
+                throw boom;
+            }, 5, TRANSIENT));
+            return t == boom && "don khong hop le".equals(t.getMessage())
+                && calls.get() == 1 && t.getSuppressed().length == 0;
+        });
+        guard("ket lan thu thi nem loi cuoi va gom loi truoc vao suppressed", () -> {
+            AtomicInteger calls = new AtomicInteger();
+            Throwable t = thrown(() -> Attempts.retry(() -> {
+                throw new IllegalStateException("attempt-" + calls.incrementAndGet());
+            }, 3, TRANSIENT));
+            return t != null && "attempt-3".equals(t.getMessage()) && t.getSuppressed().length == 2
+                && "attempt-1".equals(t.getSuppressed()[0].getMessage())
+                && "attempt-2".equals(t.getSuppressed()[1].getMessage()) && calls.get() == 3;
+        });
+        guard("maxAttempts nho hon 1 bi tu choi tru khi goi action", () -> {
+            AtomicInteger calls = new AtomicInteger();
+            Throwable t = thrown(() -> Attempts.retry(() -> { calls.incrementAndGet(); return "x"; }, 0, TRANSIENT));
+            return t instanceof IllegalArgumentException && calls.get() == 0;
+        });
+        guard("attempt tra Result that bai thay vi nem", () -> {
+            AtomicInteger calls = new AtomicInteger();
+            Result<String> r = Attempts.attempt(() -> {
+                throw new IllegalStateException("attempt-" + calls.incrementAndGet());
+            }, 2, TRANSIENT);
+            return !r.isSuccess() && r.error() != null && "attempt-2".equals(r.error().getMessage())
+                && r.error().getSuppressed().length == 1;
+        });
+        guard("Result giu dung instance loi goc", () -> {
+            Result<String> ok = Result.success("vip");
+            IllegalStateException boom = new IllegalStateException("loi goc");
+            Result<String> bad = Result.failure(boom);
+            Throwable rethrown = thrown(bad::value);
+            return ok.isSuccess() && "vip".equals(ok.value()) && !bad.isSuccess() && bad.error() == boom
+                && rethrown == boom && Result.of(() -> "tu of").isSuccess();
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+    reference: `final class Result<T> {
+    private final T value;
+    private final Throwable error;
+    private Result(T value, Throwable error) { this.value = value; this.error = error; }
+
+    static <T> Result<T> success(T value) { return new Result<>(value, null); }
+    static <T> Result<T> failure(Throwable error) {
+        if (error == null) throw new IllegalArgumentException("Result.failure can phai co loi");
+        return new Result<>(null, error);
+    }
+    static <T> Result<T> of(Supplier<T> action) {
+        try { return success(action.get()); }
+        catch (RuntimeException | Error e) { return failure(e); }
+    }
+    boolean isSuccess() { return error == null; }
+    T value() {
+        if (error == null) return value;
+        if (error instanceof RuntimeException re) throw re;
+        if (error instanceof Error er) throw er;
+        throw new IllegalStateException("Khong doc duoc gia tri tu Result that bai", error);
+    }
+    Throwable error() { return error; }
+}
+final class Attempts {
+    static <T> T retry(Supplier<T> action, int maxAttempts, Predicate<Throwable> retryOn) {
+        if (maxAttempts < 1) throw new IllegalArgumentException("maxAttempts phai lon hon 0");
+        List<Throwable> history = new ArrayList<>();
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                return action.get();
+            } catch (RuntimeException | Error e) {
+                if (!retryOn.test(e)) throw e;                       // loi khong duoc phep retry: dung ngay, giu nguyen loi
+                if (attempt == maxAttempts) {
+                    for (Throwable earlier : history)
+                        if (earlier != e) e.addSuppressed(earlier);   // Java cam gan mot exception vao chinh no
+                    throw e;                                          // loi lan cuoi nam trong message, phan con lai o suppressed
+                }
+                history.add(e);
+            }
+        }
+        throw new IllegalStateException("khong the xay ra");          // can vi maxAttempts la bien, compiler khong tu suy ra vong lap ket thuc
+    }
+    static <T> Result<T> attempt(Supplier<T> action, int maxAttempts, Predicate<Throwable> retryOn) {
+        try { return Result.success(retry(action, maxAttempts, retryOn)); }
+        catch (RuntimeException e) { return Result.failure(e); }      // Error khong bi bien thanh Result
+    }
+}`,
+    hints: ['Vòng for từ 1 tới maxAttempts; nếu retryOn trả false thì throw ngay lập tức, trước cả khi kịp gom lịch sử.', 'Giữ một List các lỗi đã gặp; chỉ khi tới lần cuối mới gắn chúng vào lỗi cuối bằng addSuppressed theo thứ tự thời gian rồi ném lỗi cuối.', 'maxAttempts cần kiểm tra ở đầu hàm, trước khi action được gọi lần nào — test sẽ đếm số lần gọi để bắt lỗi này.', 'attempt nên gọi retry rồi bắt RuntimeException để trả Result.failure(error), giữ nguyên instance lỗi để error() còn dùng được.'],
+    explain: `Quy tắc "ném lỗi của lần cuối" giữ cho message phản ánh đúng lần thất bại gần nhất, còn {{getSuppressed()}} cho thấy chuỗi {{attempt-1}}, {{attempt-2}} trong một lần đọc log — đúng cơ chế JVM dùng cho {{close()}} của try-with-resources. {{retryOn}} là {{Predicate}} chứ không phải {{catch (Exception)}} vì retry lỗi validation vừa vô ích vừa làm xấu metrics. Kiểm tra {{maxAttempts}} trước khi gọi {{action}} biến cấu hình sai thành lỗi rõ ràng thay vì im lặng chạy một lần rồi thôi. Cuối cùng, {{Result}} giữ nguyên instance lỗi nên caller vẫn đọc được stack trace và cause gốc; nếu ta chỉ cất message thì mất luôn phần {{Caused by:}}.`
+  }], check: [{
+    q: 'Repository bắt DataAccessException rồi ném new RuntimeException("Lỗi rồi") không truyền cause. Hệ quả nghiêm trọng nhất?',
+    options: ['Mất thông tin gốc: log ở boundary không còn cho biết là timeout, unique constraint hay sai kết nối, mọi lỗi trông giống nhau', 'Compiler báo lỗi vì không khai báo throws', 'Chương trình luôn crash vì RuntimeException không bắt được', 'Không có hệ quả gì, vì stack trace của chỗ ném mới đã đủ'],
+    answer: 0,
+    explain: 'Bọc lỗi là đúng để tách nghiệp vụ khỏi driver, nhưng constructor phải nhận cause để JVM in thêm dòng Caused by. Mất cause thì quá trình điều tra bắt đầu lại từ con số không, và lỗi hạ tầng khác nhau trở nên không phân biệt được.'
+  },{
+    q: 'Một method @Transactional của Spring ném checked exception. Mặc định chuyện gì xảy ra với transaction?',
+    options: ['Rollback đầy đủ vì mọi exception đều gây rollback', 'Rollback một phần', 'Không rollback: mặc định chỉ rollback cho RuntimeException và Error, muốn rollback checked phải khai báo rollbackFor', 'Spring ném ngược IllegalTransactionStateException'],
+    answer: 2,
+    explain: 'Rule mặc định của Spring là rollback trên RuntimeException và Error. Checked exception đi qua mà transaction vẫn commit, nên nếu bạn bọc lỗi database thành checked rồi xử lý ở tầng trên, hệ thống có thể commit trạng thái ghi dở dang.'
+  },{
+    q: 'Service trừ tiền gọi upstream qua mạng. Loại lỗi nào nên retry?',
+    options: ['Số dư không đủ (nghiệp vụ từ chối)', 'Timeout khi kết nối, kèm idempotency key cho lệnh ghi', 'Response 404 vì cấu hình sai đường dẫn', 'IllegalArgumentException từ bước validate input'],
+    answer: 1,
+    explain: 'Chỉ lỗi transient của hạ tầng đáng thử lại, và với lệnh ghi thì timeout không cho biết server đã commit hay chưa, nên bắt buộc có idempotency key. Ba lựa chọn còn lại cho kết quả y nguyên khi chạy lại, chỉ làm chậm và tăng tải.'
+  },{
+    q: 'Trong retry, vì sao ném exception của lần CUỐI cùng với các lần trước nằm trong getSuppressed, thay vì chỉ ném lần cuối hoặc chỉ log?',
+    options: ['Vì getSuppressed là cách duy nhất để đổi loại exception', 'Vì chỉ có exception lần cuối mới có message', 'Vì Java không cho phép ném exception đã bắt ở vòng lặp trước', 'Vì người đọc thấy một lần lỗi chính là lần mới nhất và vẫn có đầy đủ các lần thất bại trước đó trong cùng một dòng log'],
+    answer: 3,
+    explain: 'Đây đúng là cơ chế try-with-resources dùng cho lỗi close. Giữ toàn bộ lịch sử trong một exception giúp so sánh message giữa các lần thử (transient hay lặp lại y hệt) mà không phải lần ngược nhiều dòng log của cùng một request.'
+  }], related: ['core-001', 'core-003'], tags: ['Exception', 'retry', 'Result', 'observability']
 }
 );
 

@@ -995,6 +995,8 @@ window.DATA_INDEX = {
     {"id":"lesson-core-003","track":"core","order":3,"title":"Immutable object và defensive copy","level":"senior","minutes":25},
     {"id":"lesson-core-004","track":"core","order":4,"title":"BigDecimal cho tiền: scale, rounding và phân bổ chính xác","level":"senior","minutes":25},
     {"id":"lesson-core-005","track":"core","order":5,"title":"String, StringBuilder và String pool","level":"mid","minutes":25},
+    {"id":"lesson-core-006","track":"core","order":6,"title":"equals, hashCode, compareTo: bộ ba quyết định hành vi trong collection","level":"senior","minutes":30},
+    {"id":"lesson-core-007","track":"core","order":7,"title":"Xử lý exception trong service: wrap giữ cause, retry có điều kiện và Result","level":"senior","minutes":30},
     {"id":"lesson-modern-001","track":"modern","order":1,"title":"Stream: lazy evaluation, stateless/stateful và Collectors nhóm theo khách hàng, tháng","level":"senior","minutes":30},
     {"id":"lesson-modern-002","track":"modern","order":2,"title":"Optional trong API: orElse/orElseGet, tránh get()","level":"mid","minutes":25},
     {"id":"lesson-modern-003","track":"modern","order":3,"title":"Record, sealed interface và pattern matching (Java 21)","level":"lead","minutes":30},
