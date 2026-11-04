@@ -1,6 +1,7 @@
 # T582 — 8 câu phỏng vấn tiếng Anh thời layoff + AI
 
-Status: TODO
+Status: DONE
+Reviewed-by: claude (self-checked: validate)
 Agent: qoder
 Owns: `js/data/q-english.js`
 
@@ -28,3 +29,6 @@ Câu mẫu tiếng Anh tự nhiên, B2–C1, 120–200 từ, gắn bối cảnh 
 `node scripts/build-light-index.js` rồi `node scripts/validate.js` → OK. KHÔNG commit. Ghi Status: DONE + danh sách id mới vào Notes.
 
 ## Notes
+- Thêm english-072 … english-079 (8 câu, lang en; 2 mid: 072, 073; 6 senior). Cấu trúc như câu cũ: Tóm tắt → Sample answer (150–190 từ) → Vì sao hiệu quả → Useful phrases → Lỗi người Việt hay mắc → Senior tip.
+- Góc mới so với câu cũ: layoff (072), CV gap (073), why hire you (074), kiểm chứng code AI (075, khác 016), incident timeline OOM (076), PM hỏi dashboard real-time (077), offer thấp hơn range + lương cũ (078), câu hỏi kiểm tra headcount/ngân sách (079).
+- build-light-index + validate: OK.
