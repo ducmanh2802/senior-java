@@ -1,6 +1,6 @@
 # T578 — 5 câu jvm + 4 câu concurrency chuyên sâu
 
-Status: TODO
+Status: DONE
 Agent: qoder
 Owns: `js/data/q-concurrency-jvm.js`
 
@@ -28,3 +28,5 @@ Thêm **5 câu topic jvm** và **4 câu topic concurrency**, level senior/lead, 
 `node scripts/build-light-index.js` rồi `node scripts/validate.js` → OK. KHÔNG commit. Ghi Status: DONE + danh sách id mới vào Notes.
 
 ## Notes
+Thêm 5 câu JVM (jvm-028, jvm-029, jvm-030, jvm-031, jvm-032) và 4 câu concurrency (concurrency-008, concurrency-009, concurrency-010, concurrency-011). Chạy build-light-index.js và validate.js → OK.
+Reviewed-by: kilo (T578R)

@@ -1018,8 +1018,6 @@ window.DATA_INDEX = {
     {"id":"lesson-jvm-001","track":"jvm","order":1,"title":"Heap và bốn loại reference: vì sao static Map giữ object mãi mãi","level":"senior","minutes":30},
     {"id":"lesson-jvm-002","track":"jvm","order":2,"title":"GC mark-and-sweep từ con số 0: reachability, tri-color và vì sao cần compact","level":"senior","minutes":35},
     {"id":"lesson-jvm-003","track":"jvm","order":3,"title":"Class loading và static init: thứ tự khởi tạo, holder idiom và bẫy classloader","level":"senior","minutes":30},
-    {"id":"lesson-jvm-004","track":"jvm","order":4,"title":"Memory leak trong Java: vì sao GC không cứu được và cách lần ra thủ phạm bằng heap dump","level":"senior","minutes":35},
-    {"id":"lesson-jvm-005","track":"jvm","order":5,"title":"Bộ nhớ JVM trong container: vì sao pod bị OOMKilled khi heap mới dùng 60%","level":"senior","minutes":35},
     {"id":"lesson-sql-001","track":"sql","order":1,"title":"Join từ bên trong: nested loop, hash join, merge join và đếm phép so sánh","level":"senior","minutes":30},
     {"id":"lesson-sql-002","track":"sql","order":2,"title":"Offset và keyset pagination: vì sao trang càng xa càng chậm","level":"senior","minutes":25},
     {"id":"lesson-sql-003","track":"sql","order":3,"title":"Window function: ROW_NUMBER, RANK và running total, tự cài bằng Java","level":"senior","minutes":30},

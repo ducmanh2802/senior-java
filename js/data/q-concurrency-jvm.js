@@ -4931,7 +4931,631 @@ jcmd <pid> JFR.dump name=blackbox filename=/dumps/rec.jfr  # lấy tối đa 6 g
     { type: 'doc', title: 'Eclipse Memory Analyzer (MAT)', url: 'https://eclipse.dev/mat/' },
     { type: 'doc', title: 'async-profiler', url: 'https://github.com/async-profiler/async-profiler' }
   ]
+},
+{
+  id: 'jvm-028',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'Sau một đợt tải cao, pod Java vẫn giữ RSS gần mức đỉnh dù heap sau GC chỉ còn 20%. Vì sao JVM không trả bộ nhớ cho OS, và bạn chọn {{-Xms}}, {{AlwaysPreTouch}}, uncommit heap thế nào cho từng loại workload?',
+  a: `**Tóm tắt:** Heap có ba con số khác nhau: **used** (object đang chiếm), **committed** (vùng JVM đã xin OS) và **max** ({{-Xmx}}). RSS đi theo committed, không theo used. G1 chỉ thu nhỏ committed heap sau Full GC hoặc khi kết thúc một chu kỳ concurrent mark, nên service hết tải thì cũng hết GC và RSS đứng yên. Với API latency nhạy trên K8s, tôi đặt {{-Xms}} = {{-Xmx}} và chấp nhận RSS cố định; với batch hoặc nhiều JVM chung máy thì cho heap co lại bằng uncommit định kỳ.
+
+### Ba con số của heap
+~~~text
+max (Xmx)   |-----------------------------------------|  4 GB   (chỉ giữ chỗ địa chỉ ảo)
+committed   |----------------------------|               2.8 GB (đã xin OS)
+used        |-------|                                    600 MB (object còn sống)
+~~~
+- **Reserve**: lúc khởi động JVM giữ trước một dải địa chỉ ảo bằng Xmx; chưa tốn RAM thật.
+- **Commit**: JVM báo OS sẽ dùng vùng này. Linux cấp trang vật lý kiểu lười: trang chỉ tính vào RSS khi được ghi lần đầu.
+- **Uncommit**: JVM trả vùng lại cho OS. Chỉ lúc này RSS mới giảm.
+
+Vì sao JVM không trả ngay sau mỗi GC: commit/uncommit tốn system call, và mỗi trang xin lại phải chịu page fault khi chạm lần đầu. Nếu vừa trả xong tải lại tăng, latency xấu đúng lúc cần nhanh. Vì vậy GC giữ lại phần đã commit "để dành".
+
+### Khi nào mỗi GC thu nhỏ heap
+| GC | Khi nào uncommit | Flag liên quan |
+|---|---|---|
+| G1 | Sau Full GC và cuối chu kỳ concurrent, theo {{MinHeapFreeRatio}}/{{MaxHeapFreeRatio}} (mặc định 40/70) | {{-XX:G1PeriodicGCInterval=<ms>}} (JEP 346, JDK 12): rảnh quá lâu thì tự chạy một chu kỳ để co heap |
+| ZGC | Tự uncommit vùng không dùng sau một khoảng trễ (JEP 351) | {{-XX:ZUncommitDelay}} (giây, mặc định 300), {{-XX:-ZUncommit}} để tắt |
+Không GC nào co heap xuống dưới {{-Xms}}. Đặt Xms = Xmx nghĩa là tắt hẳn khả năng trả bộ nhớ.
+
+### Ví dụ thực tế
+Service báo cáo: ngày thường heap used 500 MB, cuối tháng chạy export đẩy committed lên 3.5 GB. Export xong, tải thấp nên young GC thưa, old gen chưa vượt ngưỡng IHOP nên không có concurrent cycle, không có Full GC. RSS giữ 3.5 GB cả tháng. Node chạy 6 pod như vậy bị memory pressure và kubelet evict pod khác.
+
+~~~bash
+# Batch / nhiều JVM chung node: cho phép heap co lại
+-Xms512m -Xmx4g -XX:+UseG1GC -XX:G1PeriodicGCInterval=60000   # rảnh 60 s thì chạy 1 chu kỳ
+# API latency nhạy, pod Guaranteed (request = limit): cố định heap, chạm trước mọi trang
+-Xms3g -Xmx3g -XX:+AlwaysPreTouch
+~~~
+
+### AlwaysPreTouch: đổi startup lấy latency ổn định
+{{-XX:+AlwaysPreTouch}} ghi vào mọi trang của heap ngay khi khởi động. Lợi: không còn page fault rải rác lúc phục vụ (GC copy object sang vùng mới chạm lần đầu sẽ làm pause dài thêm); RSS bằng Xms ngay từ đầu, nên nếu limit không đủ thì pod chết ngay lúc start thay vì chết lúc cao điểm. Hại: startup chậm hơn (heap càng lớn càng lâu), không hợp với tool CLI hay scale-to-zero.
+
+### Chọn theo workload
+| Workload | Xms | Uncommit | PreTouch |
+|---|---|---|---|
+| API latency nhạy, pod Guaranteed | = Xmx | Không cần | Bật |
+| Batch theo đợt, nhiều JVM chung node | Nhỏ (khoảng 25% Xmx) | G1PeriodicGCInterval hoặc ZGC | Tắt |
+| Dev, CI, tool nội bộ | Nhỏ | Bật | Tắt |
+
+### Pitfall production
+- Đặt Xms nhỏ cho API: heap nở dần qua nhiều GC, mấy phút đầu sau deploy GC dày và latency xấu; tệ hơn, chỉ biết limit thiếu khi heap nở hết vào giờ cao điểm.
+- Gọi {{System.gc()}} để "trả RAM": tốn một Full GC stop-the-world, và nhiều image đặt {{-XX:+DisableExplicitGC}} nên lệnh này vô tác dụng.
+- Nhìn {{jvm_memory_used_bytes}} để suy ra RSS: phải xem {{jvm_memory_committed_bytes}} và RSS của container ({{container_memory_working_set_bytes}}).
+- RSS cao nhưng committed heap thấp: thủ phạm nằm ngoài heap (metaspace, thread stack, direct buffer, malloc), cần NMT chứ không phải uncommit.
+
+> Senior tip: trên K8s tôi mặc định Xms = Xmx + AlwaysPreTouch cho service online, vì với pod Guaranteed scheduler đã dành sẵn phần RAM đó; trả lại OS cũng không pod nào khác dùng được mà còn mất latency. Uncommit chỉ đáng bật khi nhiều JVM thật sự chia nhau RAM hoặc job chạy theo đợt. Trước khi tune, vẽ ba đường used, committed, RSS cạnh nhau trên dashboard: phần lớn câu hỏi "vì sao RAM không giảm" được trả lời ngay bằng biểu đồ đó.`,
+  follow: [
+    'Vì sao Xms nhỏ có thể khiến pod chỉ bị OOMKilled vào giờ cao điểm thay vì ngay lúc khởi động?',
+    'G1PeriodicGCInterval ảnh hưởng gì tới CPU và latency của một service đang rảnh?',
+    'Metric nào giúp phân biệt "heap chưa co lại" với native memory leak?'
+  ],
+  tags: ['heap sizing', 'Xms', 'AlwaysPreTouch', 'uncommit', 'G1PeriodicGCInterval', 'RSS', 'Kubernetes'],
+  refs: [
+    { type: 'doc', title: 'JEP 346: Promptly Return Unused Committed Memory from G1', url: 'https://openjdk.org/jeps/346' },
+    { type: 'doc', title: 'JEP 351: ZGC: Uncommit Unused Memory', url: 'https://openjdk.org/jeps/351' }
+  ]
+},
+{
+  id: 'jvm-029',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'Log production đầy dòng {{java.lang.NullPointerException}} không có stack trace và không có message, trong khi lúc mới deploy vẫn có đủ. Vì sao JVM làm vậy, chi phí thật của việc tạo exception nằm ở đâu, và bạn xử lý thế nào?',
+  a: `**Tóm tắt:** Đây là tối ưu {{OmitStackTraceInFastThrow}} của C2 JIT, bật mặc định: khi một số exception **ngầm** do JVM ném (NullPointerException, ArithmeticException, ArrayIndexOutOfBoundsException, ArrayStoreException, ClassCastException) xảy ra lặp lại nhiều lần tại cùng một chỗ trong code đã compile, JVM thay bằng một object exception dựng sẵn, không stack trace, không message. Lý do: chụp stack trace là phần đắt nhất của exception. Xử lý: tìm lần xuất hiện sớm nhất trong log (còn đủ stack), cân nhắc chạy với {{-XX:-OmitStackTraceInFastThrow}}, và quan trọng nhất là sửa để luồng bình thường không ném exception lặp đi lặp lại.
+
+### Exception đắt ở đâu
+Constructor của {{Throwable}} gọi {{fillInStackTrace()}}: JVM đi ngược toàn bộ stack của thread và chụp từng frame. Stack của request Spring qua Tomcat, filter, proxy thường sâu 100–200 frame. Khi log, {{getStackTrace()}} còn đổi dữ liệu thô thành mảng {{StackTraceElement}} (class, method, file, dòng) và logger nối thành chuỗi vài KB.
+
+| Bước | Chi phí tương đối |
+|---|---|
+| {{throw}}/{{catch}} trong cùng method đã JIT | Rẻ, JIT có thể biến thành lệnh nhảy |
+| Tạo exception + fillInStackTrace | Đắt, tỉ lệ với độ sâu stack (cỡ micro giây) |
+| Log stack trace ra file/JSON | Đắt nhất: format chuỗi, I/O, chi phí lưu trữ log |
+
+So với một lệnh {{if}} cỡ nano giây, tạo exception có stack đắt hơn hàng nghìn lần. Ném vài lần mỗi phút thì không sao; ném hàng nghìn lần mỗi giây trong luồng bình thường thì thành vấn đề CPU.
+
+### Cơ chế fast throw từng bước
+1. Method {{sum()}} chạy nóng, C2 compile nó.
+2. Profile cho thấy nhánh "ném NPE ngầm" tại {{o.total()}} thực sự xảy ra nhiều lần.
+3. C2 recompile: thay vì tạo NPE mới, ném một instance NPE **dựng sẵn**, không stack trace, không message (kể cả helpful NPE message của JDK 14+).
+4. Từ đó log chỉ còn tên exception trơn.
+
+~~~text
+10:00:01 ERROR java.lang.NullPointerException: Cannot invoke "Order.total()" because "o" is null
+    at com.shop.Report.sum(Report.java:42) ...       <- những lần đầu: đủ stack
+10:07:45 ERROR java.lang.NullPointerException        <- sau khi C2 tối ưu: trống trơn
+~~~
+Chỉ áp dụng cho exception JVM ném ngầm. {{throw new IllegalArgumentException(...)}} do bạn viết thì không bị cắt.
+
+### Xử lý khi gặp
+- Tìm lần xuất hiện **sớm nhất** sau deploy/restart: những lần đầu vẫn có đủ stack.
+- Bật {{-XX:-OmitStackTraceInFastThrow}} để luôn có stack. Đánh đổi: nếu NPE thật sự xảy ra hàng nghìn lần mỗi giây thì CPU và log tăng; nhưng đó là bug cần sửa, không phải lý do để giấu.
+- Cảnh báo theo số dòng ERROR trùng lặp: exception lặp với tần suất cao mới kích hoạt tối ưu này.
+
+### Đừng dùng exception làm control flow
+~~~java
+// Sai: 30% dòng là rỗng, mỗi dòng rỗng tạo một exception có stack
+try { qty = Integer.parseInt(s); } catch (NumberFormatException e) { qty = 0; }
+
+// Đúng: kiểm tra trước, exception chỉ dành cho trường hợp thật sự bất thường
+qty = (s == null || s.isBlank()) ? 0 : Integer.parseInt(s.strip());
+
+// Lỗi nghiệp vụ biết trước, ném rất nhiều, stack không giúp gì:
+final class QuotaExceeded extends RuntimeException {
+    QuotaExceeded(String msg) {
+        super(msg, null, false, false); // tắt suppressed và không ghi stack trace
+    }
+}
+~~~
+Constructor 4 tham số {{(message, cause, enableSuppression, writableStackTrace)}} có từ Java 7, là protected nên chỉ gọi từ subclass. Chỉ dùng cho lỗi nghiệp vụ trả 4xx; lỗi kỹ thuật luôn giữ stack.
+
+### Pitfall production
+- Log đủ stack cho lỗi 4xx dự đoán được (validation, quota): log phình, chi phí lưu trữ tăng, lỗi thật bị chìm.
+- Catch rồi {{throw new XxxException(e.getMessage())}}: mất stack gốc; luôn truyền {{e}} làm cause.
+- Kết luận "logger cấu hình sai nên mất stack": thực ra là JIT.
+
+> Senior tip: thấy NPE trơn trong log, tôi hiểu ngay "lỗi này đã xảy ra rất nhiều lần", chưa cần đọc stack đã biết mức độ. Ở các service tôi phụ trách, {{-XX:-OmitStackTraceInFastThrow}} nằm trong bộ flag chuẩn: mất chút hiệu năng trong trường hợp xấu, đổi lại không bao giờ phải restart pod chỉ để lấy lại stack trace lúc đang sự cố.`,
+  follow: [
+    'Vì sao chỉ exception ngầm do JVM ném mới bị tối ưu, còn exception bạn tự throw thì không?',
+    'Khi nào bạn dùng writableStackTrace = false, khi nào tuyệt đối không?',
+    'Bạn đo chi phí tạo exception thế nào cho đáng tin thay vì đoán?'
+  ],
+  tags: ['OmitStackTraceInFastThrow', 'exception', 'stack trace', 'JIT', 'C2', 'NullPointerException']
+},
+{
+  id: 'jvm-030',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'Đồng nghiệp đo bằng vòng {{for}} + {{System.nanoTime()}} và kết luận cách B nhanh gấp 10 lần cách A. Vì sao micro-benchmark kiểu này thường sai trên JVM, và bạn viết lại bằng JMH thế nào để kết quả đáng tin?',
+  a: `**Tóm tắt:** JVM thay đổi code trong lúc chạy: interpreter, rồi C1, rồi C2; inline; xoá code có kết quả không được dùng; tính sẵn hằng số; thay vòng lặp đang chạy bằng bản compile (OSR). Vòng for tự viết thường đo nhầm giai đoạn warm-up, hoặc đo code mà JIT đã xoá. JMH (Java Microbenchmark Harness của OpenJDK) lo warm-up, chạy mỗi benchmark trong JVM riêng (fork), chống xoá code bằng giá trị trả về hoặc {{Blackhole}}, và báo kết quả kèm sai số. Ngay cả với JMH, micro-benchmark chỉ trả lời câu hỏi hẹp; quyết định production phải dựa trên profile dưới tải thật.
+
+### Năm cái bẫy của vòng for tự viết
+| Bẫy | Chuyện gì xảy ra | Hậu quả |
+|---|---|---|
+| Không warm-up | Đo lẫn thời gian interpreter và thời gian compile | Cách chạy trước chịu thiệt |
+| Dead-code elimination | Kết quả không ai dùng, C2 xoá cả phép tính | "Nhanh" vô lý, dưới 1 ns/op |
+| Constant folding | Input là hằng số, JIT tính sẵn lúc compile | Đo phép gán chứ không đo thuật toán |
+| OSR | Vòng lặp dài trong {{main}} được thay giữa chừng bằng bản compile kém tối ưu hơn | Số liệu khác hẳn khi code nằm trong method được gọi nhiều lần |
+| Đo A rồi B trong cùng JVM | Profile của A ảnh hưởng cách compile B (call site đa hình, trạng thái GC) | Đảo thứ tự là đảo kết quả |
+
+Ví dụ thật: "B nhanh gấp 10 lần" vì B tính xong không trả kết quả ra ngoài, C2 xoá gần hết thân method.
+
+### Viết lại bằng JMH
+~~~java
+@BenchmarkMode(Mode.AverageTime)
+@OutputTimeUnit(TimeUnit.NANOSECONDS)
+@Warmup(iterations = 5, time = 1)          // 5 lần x 1 giây cho JIT ổn định
+@Measurement(iterations = 5, time = 1)
+@Fork(2)                                   // 2 JVM riêng, profile không lẫn nhau
+@State(Scope.Thread)
+public class JoinBench {
+    @Param({"10", "1000"})                 // đo với nhiều kích thước input
+    int size;
+    List<String> items;
+
+    @Setup(Level.Trial)
+    public void setup() {                  // tạo dữ liệu ngoài phần được đo
+        items = IntStream.range(0, size).mapToObj(i -> "item" + i).toList();
+    }
+
+    @Benchmark
+    public String streamJoin() {           // trả kết quả: JMH tiêu thụ, JIT không xoá được
+        return items.stream().collect(Collectors.joining(","));
+    }
+
+    @Benchmark
+    public void stringJoin(Blackhole bh) { // cách khác: đưa kết quả vào Blackhole
+        bh.consume(String.join(",", items));
+    }
+}
+~~~
+Chạy: {{java -jar target/benchmarks.jar JoinBench -prof gc}}. Profiler {{gc}} in thêm {{gc.alloc.rate.norm}} (byte cấp phát mỗi op). Con số này thường quan trọng hơn ns/op, vì allocation đẩy áp lực GC lên cả service chứ không riêng hàm đang đo.
+
+### Đọc kết quả
+~~~text
+Benchmark             (size)  Mode  Cnt     Score     Error  Units
+JoinBench.streamJoin    1000  avgt   10  9120.4 ±  310.2  ns/op
+JoinBench.stringJoin    1000  avgt   10  7480.9 ±  255.7  ns/op
+~~~
+(số liệu minh hoạ)
+- Nhìn cột Error: nếu khoảng sai số của hai bên chồng lên nhau thì chưa kết luận được.
+- Chênh 20% của một thao tác 9 µs chỉ đáng quan tâm khi nó nằm trong hot path chạy rất nhiều lần mỗi giây.
+- Hai benchmark phải làm **cùng một việc** (cùng output); so hai hàm khác nghĩa là lỗi review hay gặp.
+
+### Pitfall khi dùng JMH
+- Chạy trong IDE hoặc trên laptop đang mở nhiều thứ: dùng máy yên tĩnh, cùng JDK, cùng GC, cùng số core với production.
+- {{@Setup(Level.Invocation)}} cho benchmark rất ngắn: chi phí setup lẫn vào phép đo.
+- Benchmark một hàm cô lập rồi suy ra cả service nhanh hơn: trong service thật, cache CPU, GC và lock contention khác hẳn.
+- Không ghi lại phiên bản JDK, flag, phần cứng: không ai tái lập được kết quả.
+
+> Senior tip: khi review PR "tối ưu hiệu năng", tôi yêu cầu ba thứ: (1) profile production hoặc load test chỉ ra đúng chỗ nóng, (2) JMH chứng minh cải thiện vượt sai số, kèm {{-prof gc}}, (3) đo lại p99 sau deploy. Thiếu (1) thường là tối ưu chỗ không ai quan tâm; thiếu (3) thì chưa biết cải thiện có thật hay không.`,
+  follow: [
+    'Vì sao JMH khuyên dùng @Fork thay vì chạy mọi benchmark trong cùng một JVM?',
+    'Khi nào đo throughput (Mode.Throughput) thay vì average time, và đo phân vị latency thế nào?',
+    'gc.alloc.rate.norm cho bạn biết điều gì mà ns/op không cho biết?'
+  ],
+  tags: ['JMH', 'benchmark', 'JIT', 'dead code elimination', 'warm-up', 'performance'],
+  refs: [
+    { type: 'doc', title: 'JMH (OpenJDK Code Tools)', url: 'https://github.com/openjdk/jmh' }
+  ]
+},
+{
+  id: 'jvm-031',
+  topic: 'jvm',
+  level: 'lead',
+  q: 'Team gắn OpenTelemetry/APM Java agent cho toàn bộ service: startup chậm thêm, CPU tăng, có lúc service không khởi động được vì {{VerifyError}}. Java agent hoạt động bên trong thế nào, rủi ro ở đâu, và bạn đưa agent lên production ra sao?',
+  a: `**Tóm tắt:** Java agent là một JAR được JVM nạp trước {{main}} qua {{-javaagent}}. Nó nhận object {{Instrumentation}} và đăng ký {{ClassFileTransformer}} để **sửa bytecode** của class ngay lúc class được load (hoặc retransform class đã load). APM agent chèn code đo thời gian và truyền trace context vào hàng trăm thư viện. Cái giá: startup chậm vì mọi class đi qua transformer, CPU và allocation tăng ở mọi điểm được gắn, bytecode sinh sai hoặc hai agent sửa cùng class có thể gây {{VerifyError}}. Đưa lên production cần đo overhead, tắt instrumentation thừa, cố định phiên bản và có công tắc gỡ agent nhanh.
+
+### Cơ chế từng bước
+1. JVM khởi động với {{-javaagent:/otel/opentelemetry-javaagent.jar}}. Manifest của JAR khai báo {{Premain-Class}}.
+2. Trước {{main}}, JVM gọi {{premain(String args, Instrumentation inst)}} của agent.
+3. Agent gọi {{inst.addTransformer(...)}}. Từ đó **mỗi class** được load (Spring, Hibernate, JDBC driver...) đi qua {{transform}}: nhận mảng byte bytecode, trả mảng byte mới, hoặc {{null}} nếu giữ nguyên.
+4. Agent dùng Byte Buddy/ASM chèn code vào đầu và cuối method, ví dụ quanh {{PreparedStatement.execute}}: mở span, đo thời gian, gắn câu SQL.
+5. Bytecode mới vẫn đi qua verifier như bình thường rồi mới chạy.
+
+~~~java
+public final class TimingAgent {
+    public static void premain(String args, Instrumentation inst) {
+        inst.addTransformer(new ClassFileTransformer() {
+            @Override
+            public byte[] transform(ClassLoader loader, String className,
+                                    Class<?> redefined, ProtectionDomain pd, byte[] bytes) {
+                if (className == null || !className.startsWith("com/shop/")) {
+                    return null;                 // null = không đổi, đường rẻ nhất
+                }
+                return Weaver.addTiming(bytes);  // lớp tự viết, dùng ASM sửa bytecode
+            }
+        }, true);                                // true: cho phép retransform về sau
+    }
+}
+~~~
+
+### Agent nạp lúc khởi động và agent nạp động
+| | {{-javaagent}} lúc khởi động | Attach vào JVM đang chạy |
+|---|---|---|
+| Entry point | {{premain}} | {{agentmain}} (manifest {{Agent-Class}}) |
+| Dùng cho | APM, tracing, code coverage | Profiler, công cụ chẩn đoán |
+| Từ JDK 21 | Bình thường | JVM in cảnh báo (JEP 451); dự kiến bản sau cấm mặc định, cho phép lại bằng {{-XX:+EnableDynamicAgentLoading}} |
+JEP 451 theo nguyên tắc "integrity by default": thư viện không được tự attach agent vào chính JVM của mình để vượt qua encapsulation. Nếu team cần một công cụ attach động thường xuyên, hãy bật flag tường minh để quyết định đó hiện ra trong cấu hình.
+
+### Chi phí và rủi ro thật
+- **Startup**: hàng chục nghìn class của app Spring Boot đều đi qua transformer; agent APM đầy đủ thường làm startup chậm thêm vài giây. Ảnh hưởng readiness probe và tốc độ autoscale.
+- **Runtime**: mỗi span là vài object; endpoint gọi 50 query là 50 span. Sampling giảm chi phí export và lưu trữ, nhưng code đã chèn vẫn chạy trên mọi request.
+- **Xung đột**: hai agent (APM + security agent) cùng sửa một class có thể sinh bytecode lỗi, gây {{VerifyError}} hoặc hành vi lạ chỉ xuất hiện theo thứ tự load nhất định.
+- **Lệ thuộc phiên bản**: agent cũ không đọc được class file của JDK mới hoặc không biết thư viện mới, nên khi nâng JDK, agent thường là thứ chặn đầu tiên.
+- **Bảo mật**: agent có toàn quyền trong JVM; JAR phải lấy từ nguồn tin cậy và kiểm checksum.
+
+### Quy trình đưa lên production
+1. Đo trước và sau trên load test: thời gian startup, p99, CPU, allocation rate.
+2. Tắt instrumentation không cần (OTel agent cho phép bật/tắt theo từng thư viện), cấu hình sampling phù hợp.
+3. Cố định phiên bản agent trong base image; nâng cấp như nâng thư viện: đọc changelog, canary.
+4. Có công tắc: biến môi trường bỏ {{-javaagent}} khi sự cố, không cần build lại image.
+5. Span nghiệp vụ thì viết bằng API (OpenTelemetry API, Micrometer Observation) thay vì bắt agent đoán.
+
+> Senior tip: sự cố tôi gặp nhiều nhất với agent không phải overhead mà là **nâng JDK**: nâng 17 lên 21, service không start được vì agent cũ không hiểu class file mới. Từ đó agent nằm trong danh sách dependency bắt buộc kiểm khi nâng JDK, và pipeline luôn chạy smoke test **có gắn agent**, thay vì test không agent ở CI rồi mới gắn agent ở production.`,
+  follow: [
+    'premain và agentmain khác nhau thế nào, và JEP 451 thay đổi gì với agent nạp động?',
+    'Khi nào bạn instrument bằng agent, khi nào bằng code (Micrometer Observation, OpenTelemetry API)?',
+    'Làm sao chứng minh một VerifyError là do xung đột giữa hai agent?'
+  ],
+  tags: ['java agent', 'instrumentation', 'bytecode', 'OpenTelemetry', 'APM', 'JEP 451'],
+  refs: [
+    { type: 'doc', title: 'JEP 451: Prepare to Disallow the Dynamic Loading of Agents', url: 'https://openjdk.org/jeps/451' },
+    { type: 'doc', title: 'java.lang.instrument (Java SE 21 API)', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.instrument/java/lang/instrument/package-summary.html' }
+  ]
+},
+{
+  id: 'jvm-032',
+  topic: 'jvm',
+  level: 'lead',
+  q: 'Service xử lý file lớn dùng {{ByteBuffer.allocateDirect}} và thỉnh thoảng gặp {{OutOfMemoryError}} về direct buffer memory dù heap còn trống. Vì sao bộ nhớ direct "không được trả", và Foreign Function & Memory API (Java 22) với {{Arena}} thay đổi cách quản lý off-heap ra sao?',
+  a: `**Tóm tắt:** {{allocateDirect}} cấp bộ nhớ ngoài heap, nhưng vùng đó chỉ được giải phóng khi **object ByteBuffer nhỏ trên heap** bị GC thu gom và Cleaner của nó chạy. Heap rảnh thì GC ít chạy, nên hàng GB off-heap có thể bị giữ bởi buffer đã "chết" nhưng chưa được dọn; chạm {{-XX:MaxDirectMemorySize}} (mặc định bằng max heap) thì JVM ném OOM. FFM API (JEP 454, chính thức ở Java 22, preview ở Java 21) cho phép cấp phát off-heap gắn với một {{Arena}} và giải phóng **xác định** khi đóng arena, có kiểm tra biên và chặn dùng sau khi giải phóng. Thường cách sửa tốt nhất lại đơn giản hơn: đừng cấp buffer mới cho mỗi request, hãy pool hoặc stream qua buffer cố định.
+
+### Vì sao direct buffer "dính"
+~~~text
+Heap:      [DirectByteBuffer, vài chục byte] --Cleaner--+
+Off-heap:  [================ 64 MB native ============]<+
+~~~
+1. {{allocateDirect(64 MB)}} xin 64 MB ngoài heap, đồng thời tạo object DirectByteBuffer nhỏ trên heap và đăng ký một Cleaner.
+2. Code không còn tham chiếu tới buffer, nhưng 64 MB vẫn bị giữ cho tới khi GC phát hiện object nhỏ kia unreachable.
+3. Object nhỏ thường đã lên old gen, mà old gen chỉ được dọn khi có mixed/full GC. Heap rảnh thì có thể hàng giờ không có chu kỳ đó.
+4. Lần cấp phát vượt giới hạn: JDK chờ xử lý reference, gọi {{System.gc()}}, thử lại vài lần; vẫn thiếu thì ném {{OutOfMemoryError: Cannot reserve ... bytes of direct buffer memory}}.
+5. Image đặt {{-XX:+DisableExplicitGC}} thì bước gọi GC ở trên vô tác dụng, OOM đến nhanh hơn.
+
+### So sánh các cách giữ dữ liệu
+| | Heap byte[] | Direct ByteBuffer | FFM MemorySegment + Arena |
+|---|---|---|---|
+| Giải phóng | GC | Khi GC dọn buffer (không xác định) | Khi đóng Arena (xác định) |
+| Kích thước | Tối đa ~2 GB mỗi mảng | Tối đa ~2 GB (index int) | Offset kiểu long, vượt 2 GB |
+| I/O với OS | Phải copy qua vùng native tạm | Không copy thêm | Không copy thêm |
+| An toàn | Hoàn toàn | Kiểm tra biên | Kiểm tra biên + chặn use-after-free |
+| Có từ | Mọi JDK | Java 1.4 | Final ở Java 22 |
+
+### FFM API: cấp phát và giải phóng xác định
+~~~java
+// Java 22+: vùng off-heap sống đúng bằng vòng đời arena
+try (Arena arena = Arena.ofConfined()) {                 // chỉ thread tạo ra được dùng
+    MemorySegment seg = arena.allocate(256L * 1024 * 1024); // 256 MB, kích thước kiểu long
+    for (long off = 0; off < seg.byteSize(); off += 4) {
+        seg.set(ValueLayout.JAVA_INT, off, 42);           // ghi int tại offset
+    }
+    int first = seg.get(ValueLayout.JAVA_INT, 0);
+}   // đóng arena: 256 MB trả lại ngay, không chờ GC
+// dùng seg sau khi đóng -> IllegalStateException, không đọc rác như con trỏ C
+~~~
+- {{Arena.ofConfined()}}: một thread, đóng rẻ. {{Arena.ofShared()}}: nhiều thread dùng chung, đóng tốn hơn vì phải bảo đảm không thread nào đang truy cập. {{Arena.ofAuto()}}: để GC quản lý, giống ByteBuffer. {{Arena.global()}}: sống tới khi JVM tắt.
+- Cần đưa vào API cũ nhận ByteBuffer: {{seg.asByteBuffer()}}.
+- Java 21 LTS: FFM còn là preview, cần {{--enable-preview}}, thường chưa dùng cho production; Java 25 LTS thì dùng được.
+
+### Xử lý sự cố direct buffer
+- Đo: {{BufferPoolMXBean}} pool tên "direct", hoặc metric Micrometer {{jvm_buffer_memory_used_bytes}} với tag id=direct.
+- Đặt {{-XX:MaxDirectMemorySize}} rõ ràng và tính vào ngân sách RAM của container; để mặc định bằng Xmx thì heap + direct có thể gấp đôi dự tính.
+- Không cấp direct buffer mới cho mỗi request/file: pool và tái sử dụng (Netty {{PooledByteBufAllocator}}), hoặc stream qua buffer cố định 64 KB.
+- Service phụ thuộc direct buffer thì đừng bật {{DisableExplicitGC}}; nếu muốn chặn {{System.gc()}} của thư viện gây Full GC, với G1 cân nhắc {{-XX:+ExplicitGCInvokesConcurrent}}.
+- {{sun.misc.Unsafe}} cho off-heap: các method truy cập bộ nhớ đã bị deprecate for removal (JEP 471, JDK 23) và in cảnh báo từ JDK 24 (JEP 498); FFM là thay thế chính thức.
+
+> Senior tip: thấy OOM direct memory, câu hỏi đầu tiên của tôi là "ai gọi allocateDirect, bao nhiêu lần mỗi giây?". Phần lớn trường hợp là code tự viết cấp buffer mới cho mỗi file hoặc mỗi request. Đổi sang buffer pool cố định thường giảm off-heap từ vài GB xuống vài chục MB, rẻ hơn nhiều so với tăng limit hay viết lại bằng API mới.`,
+  follow: [
+    'Vì sao MaxDirectMemorySize mặc định bằng max heap lại nguy hiểm khi tính memory limit cho pod?',
+    'Arena.ofConfined và Arena.ofShared khác nhau ở đâu, vì sao đóng shared arena đắt hơn?',
+    'Khi nào dữ liệu đáng đặt ở off-heap thay vì heap, và cái giá về độ phức tạp là gì?'
+  ],
+  tags: ['direct buffer', 'off-heap', 'FFM API', 'Arena', 'MemorySegment', 'MaxDirectMemorySize'],
+  refs: [
+    { type: 'doc', title: 'JEP 454: Foreign Function & Memory API', url: 'https://openjdk.org/jeps/454' },
+    { type: 'doc', title: 'JEP 471: Deprecate the Memory-Access Methods in sun.misc.Unsafe for Removal', url: 'https://openjdk.org/jeps/471' }
+  ]
+},
+{
+  id: 'concurrency-030',
+  topic: 'concurrency',
+  level: 'lead',
+  q: 'Một key cache nóng hết hạn, 500 request đồng thời cùng miss và cùng gọi một query DB đắt tiền. Trong một JVM, bạn gộp các lần tải trùng nhau (single-flight) thế nào cho đúng, xử lý lỗi và timeout ra sao, và khi có nhiều instance thì sao?',
+  a: `**Tóm tắt:** Request đầu tiên cho một key tạo **một** {{CompletableFuture}} đại diện cho lần tải và đặt vào {{ConcurrentHashMap<K, CompletableFuture<V>>}} bằng thao tác atomic; các request sau thấy future đó và chờ chung một kết quả. Tải xong thì gỡ future khỏi map. Ba điều phải làm đúng: không chạy I/O bên trong lock của map, lỗi không được "dính" cho các lần sau, và timeout của từng người chờ không được làm hỏng future dùng chung. Production tôi dùng Caffeine {{AsyncLoadingCache}} vì nó làm sẵn những việc này; nhiều instance thì single-flight cục bộ giảm số lần tải từ 500 × N xuống N, muốn còn 1 lần toàn cụm thì cần refresh chủ động hoặc lock phân tán.
+
+### Vì sao gọi trùng nguy hiểm
+Key "giá sản phẩm hot" hết hạn lúc 20:00:00. Trong 50 ms tiếp theo có 500 request; mỗi request thấy miss và chạy query 200 ms. DB nhận 500 query giống hệt nhau, pool 20 connection cạn, các API khác cũng kẹt theo. Đây là cache stampede ở phạm vi một instance.
+
+### Cài đặt single-flight
+~~~java
+final class SingleFlight<K, V> {
+    private final ConcurrentHashMap<K, CompletableFuture<V>> inFlight = new ConcurrentHashMap<>();
+    private final Executor loaderPool;                       // pool riêng, có giới hạn
+
+    SingleFlight(Executor loaderPool) { this.loaderPool = loaderPool; }
+
+    CompletableFuture<V> get(K key, Function<K, V> loader) {
+        CompletableFuture<V> created = new CompletableFuture<>();
+        CompletableFuture<V> existing = inFlight.putIfAbsent(key, created); // atomic, rất nhanh
+        if (existing != null) {
+            return existing;                                 // đã có người tải: chờ chung
+        }
+        loaderPool.execute(() -> {                           // I/O chạy NGOÀI lock của map
+            try {
+                created.complete(loader.apply(key));
+            } catch (Throwable t) {
+                created.completeExceptionally(t);            // mọi người chờ đều nhận lỗi
+            } finally {
+                inFlight.remove(key, created);               // lỗi không bị giữ cho lần sau
+            }
+        });
+        return created;
+    }
+}
+// Người gọi: sf.get(id, repo::loadPrice).copy().orTimeout(300, TimeUnit.MILLISECONDS)
+~~~
+
+### Từng quyết định và vì sao
+1. **putIfAbsent, không chạy loader trong computeIfAbsent**: hàm mapping của {{computeIfAbsent}} chạy khi đang giữ lock của bin; query 200 ms bên trong đó chặn mọi key khác rơi vào cùng bin.
+2. **remove(key, created)** dạng hai tham số: chỉ gỡ đúng future của lượt này, không gỡ nhầm future của lượt tải sau.
+3. **Không giữ future lỗi**: nếu future lỗi nằm lại trong map, mọi request sau đều nhận lỗi cũ cho tới khi restart.
+4. **Timeout riêng bằng {{copy()}}**: {{orTimeout}} hoàn tất **chính** future mà nó được gọi. Gọi thẳng trên future dùng chung thì người chờ đầu tiên hết kiên nhẫn sẽ làm cả 500 người nhận TimeoutException. {{copy()}} (Java 9) tạo future con riêng cho từng người chờ.
+5. **Loader pool có giới hạn**: không dùng commonPool; số lần tải song song bằng số key khác nhau đang miss, cần chặn trên.
+
+### So sánh lựa chọn
+| Cách | Gộp trong 1 instance | Gộp toàn cụm | Độ phức tạp |
+|---|---|---|---|
+| Không làm gì | Không | Không | Thấp |
+| Single-flight tự viết | Có | Không | Trung bình, dễ sai |
+| Caffeine AsyncLoadingCache | Có, kèm expire/refresh | Không | Thấp |
+| Lock phân tán (Redis SET NX) | Có | Có | Cao, thêm độ trễ và điểm lỗi |
+| Refresh trước khi hết hạn | Không cần gộp | Gần như | Trung bình |
+Caffeine với {{refreshAfterWrite}} trả giá trị cũ trong lúc tải giá trị mới ở nền, chỉ một lần reload mỗi key, người dùng không phải chờ.
+
+### Pitfall production
+- Key không chứa đủ tham số ảnh hưởng kết quả (tenant, quyền, ngôn ngữ): user A nhận dữ liệu của user B.
+- Kết quả là object mutable chia cho 500 người chờ: một người sửa, người khác thấy. Trả về object bất biến.
+- Key là input tuỳ ý từ client: kẻ tấn công gửi key ngẫu nhiên, mỗi key một lần tải, single-flight không giúp gì; cần validate và rate limit.
+
+> Senior tip: tôi đo hiệu quả bằng tỉ lệ "số lần gọi loader / số request miss": trước khi gộp gần bằng 1, sau khi gộp ở key nóng có thể còn 0.01. Nếu 20 instance mà DB vẫn không chịu nổi 20 lần tải đồng thời, giải pháp thường là refresh chủ động cộng jitter cho TTL, không phải lock phân tán.`,
+  follow: [
+    'Vì sao gọi orTimeout trực tiếp trên future dùng chung là bug, và copy() giải quyết thế nào?',
+    'refreshAfterWrite khác expireAfterWrite ở điểm nào đối với người dùng cuối?',
+    'Khi nào lock phân tán đáng giá hơn single-flight cục bộ?'
+  ],
+  tags: ['single-flight', 'cache stampede', 'CompletableFuture', 'ConcurrentHashMap', 'Caffeine'],
+  refs: [
+    { type: 'doc', title: 'Caffeine (GitHub)', url: 'https://github.com/ben-manes/caffeine' }
+  ]
+},
+{
+  id: 'concurrency-031',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'API chậm dần khi tăng tải nhưng CPU chỉ 30% và DB vẫn rảnh. Bạn nghi lock contention: chứng minh bằng dữ liệu nào (thread dump, JFR, async-profiler), và giảm tranh chấp thế nào mà không làm sai logic?',
+  a: `**Tóm tắt:** Dấu hiệu kinh điển của lock contention: throughput ngừng tăng dù còn CPU, latency tăng theo số request đồng thời, thread dump có nhiều thread {{BLOCKED}} "waiting to lock" cùng một địa chỉ monitor. Chứng minh bằng 3–5 thread dump cách nhau vài giây, JFR event {{jdk.JavaMonitorEnter}}/{{jdk.ThreadPark}}, hoặc async-profiler chế độ {{lock}}. Cách giảm theo thứ tự ưu tiên: đưa I/O ra khỏi vùng giữ lock, đọc không lock bằng snapshot bất biến, chia nhỏ lock, dùng cấu trúc không lock, cuối cùng mới tính đổi loại lock.
+
+### Vì sao lock làm "chậm mà không tốn CPU"
+Lock chỉ cho một thread vào vùng găng. Vùng găng mất 2 ms thì dù có 200 thread, lock đó phục vụ tối đa 500 lượt mỗi giây. Các thread còn lại không chạy mà xếp hàng, nên CPU thấp. Theo định luật Little, thời gian chờ bằng độ dài hàng đợi chia tốc độ phục vụ: càng nhiều request đang chờ, latency càng tăng tuyến tính.
+
+### Thu thập bằng chứng
+~~~text
+"http-nio-8080-exec-87" #112 daemon prio=5 ... waiting for monitor entry
+   java.lang.Thread.State: BLOCKED (on object monitor)
+        at com.shop.pricing.RateCache.get(RateCache.java:41)
+        - waiting to lock <0x00000006c1a2b3c8> (a com.shop.pricing.RateCache)
+
+"http-nio-8080-exec-12" #37 daemon prio=5 ... runnable
+   java.lang.Thread.State: RUNNABLE
+        at sun.nio.ch.NioSocketImpl.read(NioSocketImpl.java:...)
+        ...
+        at com.shop.pricing.RateCache.reload(RateCache.java:58)
+        - locked <0x00000006c1a2b3c8> (a com.shop.pricing.RateCache)
+~~~
+Đọc: 150 thread chờ cùng {{<0x00000006c1a2b3c8>}}, còn thread đang giữ lock lại đang **đọc socket** (gọi HTTP) bên trong synchronized. Nguyên nhân gốc: I/O trong vùng găng.
+- Chụp 3–5 dump cách nhau 5 giây ({{jcmd <pid> Thread.print}}): cùng một địa chỉ lock xuất hiện ở mọi dump thì không phải ngẫu nhiên.
+- JFR: {{jcmd <pid> JFR.start duration=60s filename=lock.jfr settings=profile}}, mở JMC xem {{jdk.JavaMonitorEnter}} (chờ synchronized) và {{jdk.ThreadPark}} (chờ ReentrantLock và các lock của java.util.concurrent). Event chỉ ghi khi chờ lâu hơn ngưỡng cấu hình sẵn (khoảng 10–20 ms), nên tổng thời gian chờ theo từng lock là con số đáng tin.
+- async-profiler: {{asprof -e lock -d 30 -f lock.html <pid>}} vẽ flame graph theo thời gian chờ lock, chỉ thẳng call site.
+
+### Các cách giảm, theo thứ tự ưu tiên
+| Cách | Ví dụ | Lưu ý |
+|---|---|---|
+| Đưa I/O, việc chậm ra khỏi lock | Gọi HTTP trước, chỉ khoá lúc gán kết quả | Hai thread có thể cùng tải: chấp nhận hoặc gộp (single-flight) |
+| Snapshot bất biến + volatile | Đọc không lock, ghi thay cả object | Hợp dữ liệu đọc nhiều ghi ít |
+| Chia nhỏ lock (striping) | ConcurrentHashMap thay synchronized Map | Thao tác trên nhiều key cần thiết kế riêng |
+| Cấu trúc không lock | LongAdder cho counter, AtomicReference | CAS lặp nhiều khi tranh chấp rất cao |
+| Đổi loại lock | ReadWriteLock/StampedLock khi đọc chiếm đa số | Chỉ đáng khi vùng đọc đủ dài; bên ghi có thể bị đói |
+
+Sửa ví dụ trên:
+~~~java
+final class RateCache {
+    private final RateClient client;                       // HTTP client gọi bảng tỉ giá
+    private volatile Map<String, BigDecimal> rates = Map.of(); // snapshot bất biến
+
+    RateCache(RateClient client) { this.client = client; }
+
+    BigDecimal get(String ccy) {
+        return rates.get(ccy);                // đọc không lock, luôn thấy một bản đầy đủ
+    }
+
+    void reload() {                           // gọi từ một scheduled thread
+        Map<String, BigDecimal> fresh = client.fetchAll();  // I/O ngoài mọi lock
+        rates = Map.copyOf(fresh);            // ghi volatile: publish an toàn cả map mới
+    }
+}
+~~~
+
+### Pitfall production
+- Đổi synchronized sang ReentrantLock nhưng vẫn giữ I/O bên trong: lock khác loại, tranh chấp y nguyên.
+- Lock trên object dùng chung ngoài ý muốn: {{synchronized}} trên chuỗi đã intern, trên class literal, hoặc method synchronized của bean singleton làm cả service đi qua một cửa.
+- Logging đồng bộ: appender ghi file/console có lock bên trong; log dày ở hot path biến logger thành điểm tranh chấp (dùng async appender).
+- Tăng thread pool để "chữa": thêm thread chỉ làm hàng đợi trước lock dài hơn và tốn thêm bộ nhớ.
+
+> Senior tip: trong incident, tôi tìm dòng "- locked <0x...>" trong thread dump rồi xem thread đang giữ lock **làm gì**. Chín trên mười lần nó đang làm I/O (HTTP, DB, ghi file) hoặc ghi log. Quy tắc review của tôi: không network call, query hay sleep bên trong synchronized/lock, trừ khi có comment giải thích vì sao bắt buộc.`,
+  follow: [
+    'Vì sao CPU thấp nhưng latency cao gợi ý lock contention hơn là thiếu CPU?',
+    'Khi nào StampedLock optimistic read thực sự giúp ích, và rủi ro của nó là gì?',
+    'Logging đồng bộ trở thành điểm tranh chấp thế nào, và async appender đánh đổi gì?'
+  ],
+  tags: ['lock contention', 'thread dump', 'JFR', 'async-profiler', 'synchronized', 'BLOCKED']
+},
+{
+  id: 'concurrency-032',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Bạn viết một class thread-safe (bộ đếm hạn mức, cache, rate limiter). Làm sao viết test chứng minh nó đúng khi chạy đồng thời, sao cho test fail ổn định với code sai mà không flaky với code đúng?',
+  a: `**Tóm tắt:** Test concurrency tốt có ba phần: (1) **ép các thread chạy thật sự cùng lúc** bằng cổng xuất phát ({{CountDownLatch}}), (2) **lặp đủ nhiều** để tăng xác suất trúng cửa sổ race, (3) **kiểm tra bất biến** sau khi mọi thread kết thúc, chờ bằng {{Future.get}} có timeout thay vì {{Thread.sleep}}. Test kiểu này chỉ chứng minh được "có lỗi", không chứng minh "không có lỗi"; với các đoạn tinh vi về memory model (cờ volatile, publication) thì dùng jcstress, với code bất đồng bộ thì dùng Awaitility để chờ điều kiện.
+
+### Vì sao test concurrency thường vô dụng
+- Tạo 10 thread bằng vòng lặp {{new Thread(...).start()}}: thread đầu đã xong trước khi thread thứ 10 được tạo, thực tế chạy tuần tự.
+- Mỗi thread chỉ làm 1 thao tác: cửa sổ race vài nano giây, gần như không bao giờ trúng.
+- Chờ bằng {{Thread.sleep(1000)}} rồi assert: CI chậm thì fail (flaky), máy nhanh thì pass dù code sai.
+- Assert bên trong thread phụ: AssertionError ném ở thread khác, JUnit không thấy, test vẫn xanh.
+
+### Khung test chuẩn
+~~~java
+@RepeatedTest(20)                                    // lặp cả test nhiều lần
+void quotaNeverExceeded() throws Exception {
+    QuotaCounter quota = new QuotaCounter(1_000);    // cho phép đúng 1000 lượt
+    int threads = 16, attemptsPerThread = 500;       // 8000 lần thử, chỉ 1000 được phép
+    ExecutorService pool = Executors.newFixedThreadPool(threads);
+    CountDownLatch start = new CountDownLatch(1);    // cổng xuất phát
+    AtomicInteger granted = new AtomicInteger();
+    List<Future<?>> futures = new ArrayList<>();
+
+    for (int t = 0; t < threads; t++) {
+        futures.add(pool.submit(() -> {
+            start.await();                           // mọi thread chờ ở vạch xuất phát
+            for (int i = 0; i < attemptsPerThread; i++) {
+                if (quota.tryAcquire()) granted.incrementAndGet();
+            }
+            return null;                             // Callable: exception lộ qua Future
+        }));
+    }
+    start.countDown();                               // thả tất cả cùng lúc
+    for (Future<?> f : futures) f.get(10, TimeUnit.SECONDS); // lỗi trong thread -> test fail
+    pool.shutdownNow();
+
+    assertEquals(1_000, granted.get());              // bất biến: không cấp thừa, không thiếu
+}
+~~~
+1. Latch giữ mọi thread ở vạch xuất phát nên đoạn quan trọng chạy chồng lên nhau thật sự.
+2. Số lần thử vượt xa hạn mức: race kiểu check-then-act ({{if (count < limit) count++}}) gần như lần nào cũng cấp quá 1000.
+3. {{Future.get}} có timeout: exception trong thread được ném lại ở thread test; deadlock thành fail sau 10 giây thay vì treo CI.
+4. Bất biến kiểm tra một lần ở cuối, sau khi {{Future.get}} đã tạo happens-before với mọi thao tác trong task.
+5. Số thread nhiều hơn số core giúp có context switch giữa chừng, tăng khả năng lộ race.
+
+### Khi nào cần công cụ khác
+| Tình huống | Công cụ |
+|---|---|
+| Race ở logic nghiệp vụ (đếm, cấp phát, cache) | Khung latch + lặp như trên |
+| Visibility, reordering (cờ volatile, double-checked locking, publication) | jcstress của OpenJDK: chạy hàng triệu lần và liệt kê mọi kết quả quan sát được |
+| Code bất đồng bộ (listener Kafka, @Async, scheduler) | Awaitility: {{await().atMost(5, SECONDS).until(...)}} thay cho sleep |
+| Deadlock tiềm ẩn | Test có timeout, in thread dump khi timeout, review thứ tự lấy lock |
+| Một thứ tự xen kẽ cụ thể | Đặt latch trong dependency giả để ép thread A dừng giữa chừng cho thread B chạy |
+
+### Pitfall
+- Test pass một lần trên laptop rồi coi là xong: chạy {{@RepeatedTest}} hoặc vòng lặp hàng nghìn lần trong job nightly.
+- Không shutdown executor: thread rò giữa các test, test sau bị ảnh hưởng.
+- Verify số lần gọi mock khi các thread chưa kết thúc: luôn chờ xong rồi mới verify.
+- Lẫn test chức năng với đo hiệu năng: "chạy nhanh hơn" thuộc về JMH, không thuộc unit test.
+
+> Senior tip: tôi luôn chạy test mới với **code cố tình sai** (bỏ synchronized, đổi AtomicInteger thành int) trước khi tin nó. Test vẫn xanh với code sai thì test vô giá trị. Mất 5 phút nhưng đã nhiều lần cho tôi thấy test "concurrency" của team thực chất chạy tuần tự.`,
+  follow: [
+    'Vì sao assert bên trong thread phụ có thể không làm test fail, và bạn đưa lỗi về thread test thế nào?',
+    'jcstress khác test JUnit lặp nhiều lần ở điểm nào?',
+    'Làm sao ép một thứ tự xen kẽ cụ thể giữa hai thread để tái hiện một bug đã biết?'
+  ],
+  tags: ['testing', 'concurrency test', 'CountDownLatch', 'jcstress', 'Awaitility', 'race condition'],
+  refs: [
+    { type: 'doc', title: 'jcstress (OpenJDK Code Tools)', url: 'https://github.com/openjdk/jcstress' },
+    { type: 'doc', title: 'Awaitility', url: 'https://github.com/awaitility/awaitility' }
+  ]
+},
+{
+  id: 'concurrency-033',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Bạn cần rate limiter trong một instance: mỗi API key tối đa 100 request/giây, cho phép burst 200, bị gọi khoảng 50.000 lần/giây từ nhiều thread. Bạn cài token bucket thread-safe thế nào (synchronized hay CAS), lưu state theo key ra sao và tránh những bẫy nào?',
+  a: `**Tóm tắt:** Token bucket chỉ cần hai số cho mỗi key: số token hiện có và thời điểm nạp gần nhất. Không cần thread nạp token định kỳ: mỗi lần gọi tính "lười" số token được cộng thêm theo thời gian đã trôi. Hai số phải đổi **cùng nhau**, nên gói chúng vào một record bất biến và cập nhật bằng vòng CAS trên {{AtomicReference}}, hoặc đơn giản dùng {{synchronized}} trên từng bucket (vùng găng chỉ vài phép tính nên cũng ổn). State theo key đặt trong {{ConcurrentHashMap}} có giới hạn và cơ chế dọn key cũ. Đồng hồ dùng {{System.nanoTime()}}, không dùng {{currentTimeMillis()}}.
+
+### Thuật toán
+- Capacity = 200: số request tối đa trong một đợt burst.
+- Rate = 100 token mỗi giây.
+- Mỗi request: tokens = min(capacity, tokens + (now − last) × rate). Nếu tokens ≥ 1 thì trừ 1 và cho qua, ngược lại trả 429.
+
+Ví dụ: key rảnh 3 giây nên bucket đầy 200. Client bắn 300 request trong 0.5 giây: 200 qua ngay, trong 0.5 giây được nạp thêm 50 nên thêm 50 qua, 50 bị từ chối. Sau đó tốc độ ổn định ở 100/giây.
+
+### Cài đặt bằng CAS
+~~~java
+final class TokenBucket {
+    private record State(double tokens, long lastNanos) {}   // bất biến: 2 số đi cùng nhau
+    private final double capacity, perNano;
+    private final AtomicReference<State> state;
+
+    TokenBucket(double capacity, double perSecond) {
+        this.capacity = capacity;
+        this.perNano = perSecond / 1_000_000_000.0;
+        this.state = new AtomicReference<>(new State(capacity, System.nanoTime()));
+    }
+
+    boolean tryAcquire() {
+        while (true) {
+            State cur = state.get();
+            long now = System.nanoTime();                     // đơn điệu, không nhảy khi chỉnh giờ
+            double refilled = Math.min(capacity, cur.tokens() + (now - cur.lastNanos()) * perNano);
+            if (refilled < 1) return false;                   // hết token: từ chối, không cần ghi
+            State next = new State(refilled - 1, now);
+            if (state.compareAndSet(cur, next)) return true;  // thua CAS: đọc lại và tính lại
+        }
+    }
+}
+~~~
+- Vì sao record: nếu dùng hai {{AtomicLong}} riêng, mỗi biến atomic nhưng **cặp** thì không; hai thread có thể cùng nạp từ một mốc thời gian và cấp thừa token.
+- {{compareAndSet}} so sánh **reference**, không gọi {{equals}}. Đây đúng là điều ta muốn: mỗi lần ghi tạo object mới, nên CAS thành công chỉ khi không ai ghi xen vào giữa lúc đọc và lúc ghi.
+
+### synchronized hay CAS
+| | synchronized trên bucket | CAS + record |
+|---|---|---|
+| Code | Đơn giản, dễ review | Vòng lặp, khó đọc hơn |
+| Tranh chấp thấp | Rất nhanh | Rất nhanh |
+| Một key cực nóng, nhiều thread | Thread xếp hàng, có thể bị park | Retry tốn CPU, tạo object mỗi lần thử |
+| Virtual thread trên JDK 21–23 | Không có I/O bên trong nên pin rất ngắn, chấp nhận được | Không pin |
+Thực tế cả hai đều đủ cho 50.000 lần/giây vì vùng găng chỉ vài phép tính. Chọn synchronized nếu team thấy dễ đọc; chọn CAS khi một key rất nóng bị nhiều thread gọi cùng lúc.
+
+### State theo key
+~~~java
+private final Map<String, TokenBucket> buckets = new ConcurrentHashMap<>();
+
+boolean allow(String apiKey) {               // apiKey đã được xác thực trước đó
+    return buckets.computeIfAbsent(apiKey, k -> new TokenBucket(200, 100)).tryAcquire();
+}
+~~~
+- Hàm tạo trong {{computeIfAbsent}} chỉ new object, không I/O, nên giữ lock bin rất ngắn.
+- Chỉ tạo bucket cho key đã xác thực; nếu không, kẻ tấn công gửi key ngẫu nhiên làm map phình tới OOM. Cần dọn key cũ thì dùng Caffeine với {{expireAfterAccess}} và {{maximumSize}}.
+- Bucket bị dọn rồi tạo lại sẽ đầy token: chấp nhận được với rate limit "mềm".
+
+### Bẫy hay gặp
+- {{System.currentTimeMillis()}}: NTP chỉnh giờ lùi tạo khoảng thời gian âm, chỉnh tới làm bucket đầy bất thường. {{nanoTime}} chỉ dùng để đo khoảng, đúng mục đích này.
+- Mỗi key một tác vụ nạp token trong {{ScheduledExecutorService}}: 100.000 key là 100.000 tác vụ định kỳ; tính lười không tốn gì khi key rảnh.
+- Nhiều instance: mỗi pod giới hạn riêng nên 10 pod là 10 × 100/giây. Muốn giới hạn toàn cục thì dùng Redis (script Lua atomic) hoặc chia quota theo số pod, đổi lại thêm độ trễ mạng hoặc kém chính xác khi scale.
+
+> Senior tip: Bucket4j hay Resilience4j RateLimiter đã làm sẵn và có bản phân tán; tôi chỉ tự viết khi cần logic đặc thù. Dù dùng gì, hãy trả header {{Retry-After}} và có metric số request bị từ chối theo từng key: khi khách hàng lớn kêu "bị chặn oan", metric đó là thứ giúp bạn trả lời trong 5 phút.`,
+  follow: [
+    'Vì sao compareAndSet trên AtomicReference so sánh reference chứ không dùng equals, và điều đó ảnh hưởng gì khi state là record?',
+    'Token bucket khác sliding window counter ở điểm nào về burst và bộ nhớ?',
+    'Nếu phải giới hạn toàn cục cho 20 instance, bạn chọn Redis hay chia quota tĩnh, vì sao?'
+  ],
+  tags: ['rate limiter', 'token bucket', 'CAS', 'AtomicReference', 'ConcurrentHashMap', 'nanoTime']
 }
 );
-
-
