@@ -4910,4 +4910,77 @@ javac --release 21 -d out $(find src -name "*.java")
   follow: ['ForkJoinPool.commonPool có giới hạn như thế nào?', 'Tại sao blocking I/O nguy hiểm khi dùng parallel stream?', 'Khi nào dùng CompletableFuture thay thế parallel stream?'],
   tags: ['parallel stream', 'ForkJoinPool', 'completablefuture']
 }
+,
+{
+  id: 'core-032',
+  topic: 'core',
+  level: 'senior',
+  q: '{{equals}}/{{hashCode}} với entity JPA và với kế thừa: dùng {{getClass()}} hay {{instanceof}}? Tại sao đưa entity vào {{HashSet}} trước khi {{persist}} là bug thật?',
+  a: `**Tóm tắt:** Với entity JPA, không nên dùng id tự sinh làm phần tham gia {{hashCode}}/{{equals}} nếu id có thể {{null}} trước khi {{persist}}. Với kế thừa, dùng {{instanceof}} có thể ảnh hưởng tính đối xứng còn {{getClass()}} chặt chẽ hơn. Đưa entity có hashCode phụ thuộc id null vào {{HashSet}}/{{HashMap}} trước khi persist rồi gán id sau dễ gây mất phần tử.`,
+  follow: ['Tại sao Hibernate khuyên dùng business key thay vì id trong equals/hashCode?', 'Dùng getClass() vs instanceof ảnh hưởng thế nào đến tính đối xứng của equals?', 'Nếu entity đã nằm trong HashSet trước khi persist và hashCode đổi, làm sao khắc phục?'],
+  tags: ['equals', 'hashCode', 'JPA', 'entity', 'HashSet']
+},
+{
+  id: 'core-033',
+  topic: 'core',
+  level: 'lead',
+  q: 'Generics: PECS, type erasure, heap pollution, {{@SafeVarargs}} và ảnh hưởng khi viết thư viện/API thế nào?',
+  a: `**Tóm tắt:** Type erasure xóa thông tin generic lúc runtime. PECS: Producer Extends, Consumer Super. Heap pollution xảy ra khi trộn raw type/generic sai. {{@SafeVarargs}} chỉ cho static/final/private. Khi viết API, dùng wildcard ở input, type cụ thể ở output, tránh raw type.`,
+  follow: ['Tại sao không thể tạo mảng generic new T[]?', 'Heap pollution xảy ra thế nào và phát hiện ra sao?', 'Khi nào dùng @SafeVarargs và tại sao chỉ cho static/final/private?'],
+  tags: ['generics', 'type erasure', 'PECS', 'heap pollution', 'SafeVarargs']
+},
+{
+  id: 'core-034',
+  topic: 'core',
+  level: 'lead',
+  q: '{{BigDecimal}} cho tiền tệ: scale, precision, {{RoundingMode}}, {{equals}} vs {{compareTo}}, phép chia và bug "lệch 1 xu"?',
+  a: `**Tóm tắt:** Với tiền không dùng float/double. {{equals}} so sánh cả scale, {{compareTo}} chỉ so sánh giá trị số. Phép chia không hết phải chỉ định scale và {{RoundingMode}}. Sai scale/rounding là nguyên nhân gây lệch 1 xu.`,
+  follow: ['Tại sao BigDecimal("1.00").equals(BigDecimal("1.0")) trả false?', 'Khi nào dùng RoundingMode.HALF_EVEN thay vì HALF_UP?', 'Làm sao tránh bug lệch 1 xu khi tính tổng nhiều khoản với tỷ lệ phần trăm?'],
+  tags: ['BigDecimal', 'money', 'rounding', 'equals', 'compareTo']
+},
+{
+  id: 'collections-029',
+  topic: 'collections',
+  level: 'senior',
+  q: '{{Iterator}} fail-fast, {{ConcurrentModificationException}} trong đơn luồng, {{removeIf}} và {{CopyOnWriteArrayList}}: khi nào hợp?',
+  a: `**Tóm tắt:** Fail-fast dùng modCount. CME có thể xảy ra trong đơn luồng khi xóa qua collection trong khi iterate. {{removeIf}} an toàn hơn. {{CopyOnWriteArrayList}} phù hợp đọc nhiều, ghi rất ít (iterator snapshot, không ném CME, ghi tốn copy).`,
+  follow: ['Tại sao for-each có thể gây ConcurrentModificationException?', 'Iterator.remove() khác collection.remove() thế nào?', 'CopyOnWriteArrayList iterator tại sao không ném CME?'],
+  tags: ['Iterator', 'fail-fast', 'ConcurrentModificationException', 'removeIf', 'CopyOnWriteArrayList']
+},
+{
+  id: 'collections-030',
+  topic: 'collections',
+  level: 'senior',
+  q: 'Sắp xếp/so sánh: {{Comparator}} chain, nullsFirst/nullsLast, {{consistent with equals}}, {{TreeMap}} "mất" phần tử khi comparator sai?',
+  a: `**Tóm tắt:** {{TreeMap}}/{{TreeSet}} dùng compare, không dùng equals/hashCode. Nếu comparator không consistent with equals hoặc vi phạm contract, có thể "mất" phần tử dù put thành công.`,
+  follow: ['Comparable và Comparator khác nhau thế nào?', 'Tại sao TreeMap không dùng equals/hashCode?', 'Comparator không consistent with equals gây ra vấn đề gì?'],
+  tags: ['Comparator', 'Comparable', 'TreeMap', 'TreeSet', 'sorting']
+},
+{
+  id: 'modern-028',
+  topic: 'modern',
+  level: 'lead',
+  q: 'Virtual threads (Java 21) cho service I/O-bound: khi nào dùng, chuyển đổi thế nào, pinning, {{ThreadLocal}}, giới hạn concurrency bằng {{Semaphore}}?',
+  a: `**Tóm tắt:** Virtual thread phù hợp I/O-bound. Chuyển đổi bằng Executors.newVirtualThreadPerTaskExecutor(). Chú ý pinning do synchronized/native → dùng ReentrantLock. ThreadLocal tốn nhớ với hàng triệu VT, cân nhắc ScopedValue. Cần giới hạn concurrency tới downstream bằng Semaphore.`,
+  follow: ['Pinning là gì và khi nào xảy ra?', 'Tại sao dùng ReentrantLock thay synchronized tốt hơn với virtual thread?', 'Khi nào vẫn cần giới hạn concurrency dù dùng virtual thread?'],
+  tags: ['virtual thread', 'pinning', 'ThreadLocal', 'ScopedValue', 'Semaphore']
+},
+{
+  id: 'modern-029',
+  topic: 'modern',
+  level: 'senior',
+  q: '{{Optional}} đúng/sai cách, {{Stream}} anti-pattern trên production, {{peek}}, {{collect(toMap)}} trùng key?',
+  a: `**Tóm tắt:** Optional chỉ dùng cho giá trị trả về có thể vắng, không dùng cho field/parameter/collection. Tránh side effect trong Stream. peek chủ yếu debug. toMap ném IllegalStateException nếu trùng key trừ khi chỉ định merge function.`,
+  follow: ['Tại sao không nên dùng Optional làm field?', 'peek() có nên dùng để sửa object không, tại sao?', 'Collectors.toMap ném IllegalStateException khi nào và giải quyết thế nào?'],
+  tags: ['Optional', 'Stream', 'peek', 'toMap', 'anti-pattern']
+},
+{
+  id: 'modern-030',
+  topic: 'modern',
+  level: 'lead',
+  q: 'Nâng cấp codebase Java 8 lên Java 21: {{Text blocks}}, {{var}}, {{switch expression}}, {{SequencedCollection}}, chú ý gì?',
+  a: `**Tóm tắt:** Java 21 có text blocks, var, switch expression, pattern matching, virtual thread, SequencedCollection. Nâng cấp từng bước 8->11->17->21, chú ý module system, strong encapsulation, reflection, deprecated API.`,
+  follow: ['var có thay đổi kiểu runtime không?', 'switch expression khác switch statement thế nào?', 'Khi nào SequencedCollection hữu ích hơn get(0)/get(size-1)?'],
+  tags: ['Java 21', 'text blocks', 'var', 'switch expression', 'SequencedCollection']
+}
 );
