@@ -3775,7 +3775,43 @@ logging:
 # --env đặt biến môi trường cho tiến trình server; -- tách tuỳ chọn của claude và lệnh chạy server
 claude mcp add --env DB_URL=jdbc:postgresql://localhost:5432/shop --env DB_USER=mcp_reader --transport stdio db-inspector -- java -jar target/db-inspector.jar
 claude mcp list
-~~~`, done: `Inspector liệt kê tool ping và gọi được; {{claude mcp list}} báo db-inspector connected; log nằm trong file, stdout không có dòng nào ngoài JSON-RPC.` },
+~~~`, done: `Inspector liệt kê tool ping và gọi được; {{claude mcp list}} báo db-inspector connected; log nằm trong file, stdout không có dòng nào ngoài JSON-RPC.`,
+        guide: `### Các bước
+1. Tạo project Spring Boot 3.5 (Java 21), import BOM Spring AI 1.1.x.
+2. Thêm starter MCP server stdio, JDBC, PostgreSQL driver.
+3. Tắt banner, web-application-type=none, log ra file.
+4. Viết tool ping bằng @McpTool.
+5. Build jar, chạy Inspector kiểm tra.
+6. Thêm vào Claude Code, kiểm tra connected.
+
+### Code khung
+~~~yaml
+spring:
+  main:
+    banner-mode: off
+    web-application-type: none
+  ai:
+    mcp:
+      server:
+        name: db-inspector
+        version: 0.1.0
+        stdio: true
+logging:
+  pattern:
+    console: ""
+  file:
+    name: ./logs/db-inspector.log
+~~~
+
+### Kiểm tra
+- Inspector liệt kê tool ping và gọi được.
+- claude mcp list báo connected.
+
+### Bẫy hay gặp
+- Banner in stdout làm hỏng JSON-RPC.
+- Quên web-application-type=none làm Tomcat khởi động.
+
+> Interview tip: Giải thích tại sao stdout chỉ dành cho JSON-RPC trong transport stdio.` },
       { title: 'Role chỉ-đọc, ReadOnlyExecutor và list_tables, describe_table', tasks: `1. Viết script init tạo role {{mcp_reader}} như phần Quyền DB; app chỉ biết user này.
 2. HikariCP {{maximum-pool-size: 2}}, {{connection-timeout: 3000}}.
 3. Viết {{ReadOnlyExecutor}}: mọi truy vấn chạy trong transaction READ ONLY, {{SET LOCAL statement_timeout}}, luôn rollback.
@@ -3798,7 +3834,35 @@ class ReadOnlyExecutor {
         });
     }
 }
-~~~`, done: `Test: trong {{run()}} thử {{INSERT}} nhận lỗi read-only; {{SELECT pg_sleep(10)}} với timeout 1 giây bị huỷ trong < 1,5 giây; describe_table bảng không tồn tại trả thông báo gợi ý list_tables.` },
+~~~`, done: `Test: trong {{run()}} thử {{INSERT}} nhận lỗi read-only; {{SELECT pg_sleep(10)}} với timeout 1 giây bị huỷ trong < 1,5 giây; describe_table bảng không tồn tại trả thông báo gợi ý list_tables.`,
+        guide: `### Các bước
+1. Tạo role mcp_reader và grant SELECT trên schema public.
+2. Cấu hình HikariCP pool-size 2, timeout 3s.
+3. Viết ReadOnlyExecutor: transaction READ ONLY, SET LOCAL statement_timeout, rollback.
+4. Viết list_tables đọc pg_class, describe_table đọc columns/indexes.
+5. Test bằng Testcontainers.
+
+### Code khung
+~~~java
+<T> T run(Duration timeout, Function<JdbcTemplate, T> work) {
+    return tx.execute(status -> {
+        status.setRollbackOnly();
+        jdbc.execute("SET TRANSACTION READ ONLY");
+        jdbc.execute("SET LOCAL statement_timeout = '" + timeout.toMillis() + "ms'");
+        return work.apply(jdbc);
+    });
+}
+~~~
+
+### Kiểm tra
+- INSERT trong run() báo read-only.
+- pg_sleep(10) với timeout 1s bị huỷ.
+
+### Bẫy hay gặp
+- SET TRANSACTION READ ONLY phải đứng trước query.
+- SET LOCAL chỉ hiệu lực trong transaction.
+
+> Interview tip: Nhấn mạnh 2 lớp bảo vệ: guard SQL + transaction READ ONLY.` },
       { title: 'explain_query: một câu, chỉ SELECT, có trần thời gian', tasks: `1. Viết {{ToolGuard.checkSingleSelect}}: bỏ khoảng trắng và một dấu ; ở cuối; còn ; nào khác thì từ chối (chấp nhận từ chối nhầm câu có ; trong chuỗi, đổi lại đơn giản và an toàn).
 2. Chỉ nhận câu bắt đầu bằng SELECT hoặc WITH (không phân biệt hoa thường), dài ≤ 10.000 ký tự.
 3. Tham số {{analyze}}: true thì EXPLAIN (ANALYZE, BUFFERS) (query chạy thật), false thì EXPLAIN thường (chỉ ước lượng, không chạy).
@@ -3823,7 +3887,32 @@ public String explainQuery(
     return shaper.limit(String.join("\\n", plan), 8_000);
 }
 ~~~
-Cách framework chuyển exception thành kết quả lỗi gửi cho model (cờ {{isError}} trong spec): xem tài liệu SDK và kiểm tra bằng Inspector.`, done: `20 biến thể SQL độc trong unit test đều bị chặn; test Testcontainers {{WITH d AS (DELETE FROM orders RETURNING *) SELECT * FROM d}} (giả sử qua được guard) nhận lỗi read-only và số dòng orders không đổi; plan 300 dòng bị cắt đúng 8.000 ký tự.` },
+Cách framework chuyển exception thành kết quả lỗi gửi cho model (cờ {{isError}} trong spec): xem tài liệu SDK và kiểm tra bằng Inspector.`, done: `20 biến thể SQL độc trong unit test đều bị chặn; test Testcontainers {{WITH d AS (DELETE FROM orders RETURNING *) SELECT * FROM d}} (giả sử qua được guard) nhận lỗi read-only và số dòng orders không đổi; plan 300 dòng bị cắt đúng 8.000 ký tự.`,
+        guide: `### Các bước
+1. Viết ToolGuard.checkSingleSelect: loại bỏ khoảng trắng và một dấu ; cuối; còn ; nào khác thì từ chối.
+2. Chỉ nhận câu bắt đầu bằng SELECT hoặc WITH, dài ≤ 10.000 ký tự.
+3. Tham số analyze: true thì EXPLAIN (ANALYZE, BUFFERS), false thì EXPLAIN thường.
+4. Cắt plan còn 8.000 ký tự.
+5. Test nhiều statement, CTE ghi dữ liệu, pg_sleep.
+
+### Code khung
+~~~java
+String q = guard.checkSingleSelect(sql);
+String prefix = Boolean.FALSE.equals(analyze) ? "EXPLAIN " : "EXPLAIN (ANALYZE, BUFFERS) ";
+List<String> plan = executor.run(Duration.ofSeconds(5),
+        jdbc -> jdbc.queryForList(prefix + q, String.class));
+return shaper.limit(String.join("\\n", plan), 8_000);
+~~~
+
+### Kiểm tra
+- 20 biến thể SQL độc đều bị chặn.
+- Plan 300 dòng bị cắt đúng 8.000 ký tự.
+
+### Bẫy hay gặp
+- Guard quá lỏng cho phép multi-statement.
+- analyze=true chạy thật query, cần timeout.
+
+> Interview tip: Nhấn mạnh analyze=true thực sự chạy query trong transaction chỉ-đọc.` },
       { title: 'sample_rows che PII và slow_queries', tasks: `1. Danh sách cột PII trong cấu hình (email, phone, national_id, address, password_hash, token) cộng quyền theo cột ở DB.
 2. {{sample_rows}}: chỉ nhận tên bảng (không nhận SQL), tự dựng {{SELECT cột... LIMIT n}} từ metadata, n = min(limit, 50).
 3. Che: email thành {{a***@domain}}, phone giữ 3 số cuối, cột bí mật thay bằng "[ẩn]"; mỗi ô text cắt 200 ký tự.
@@ -3855,7 +3944,32 @@ SELECT queryid, calls,
 FROM pg_stat_statements
 ORDER BY total_exec_time DESC
 LIMIT 10;
-~~~`, done: `sample_rows customer limit 1000 trả đúng 50 dòng, không có ký tự "@" ngoài dạng đã che; slow_queries trả top 10 sau khi chạy k6 tạo tải; khi extension chưa bật, thông báo lỗi có câu lệnh hướng dẫn.` },
+~~~`, done: `sample_rows customer limit 1000 trả đúng 50 dòng, không có ký tự "@" ngoài dạng đã che; slow_queries trả top 10 sau khi chạy k6 tạo tải; khi extension chưa bật, thông báo lỗi có câu lệnh hướng dẫn.`,
+        guide: `### Các bước
+1. Danh sách cột PII trong cấu hình.
+2. sample_rows chỉ nhận tên bảng, tự dựng SELECT cột... LIMIT n, n = min(limit, 50).
+3. Che PII: email a***@domain, phone giữ 3 số cuối, cột bí mật thành "[ẩn]".
+4. Bọc kết quả trong object JSON với khoá untrusted_data và note.
+5. slow_queries đọc pg_stat_statements; extension chưa bật trả lỗi kèm hướng dẫn.
+
+### Code khung
+~~~java
+int n = Math.min(limit == null ? 10 : Math.max(limit, 1), 50);
+String sql = "SELECT " + cols + " FROM public." + '"' + t.name() + '"' + " LIMIT " + n;
+List<Map<String, Object>> rows = executor.run(Duration.ofSeconds(3), j -> j.queryForList(sql));
+rows.forEach(r -> r.replaceAll((col, v) -> masker.mask(col, v)));
+return shaper.untrusted(t.name(), rows, 8_000);
+~~~
+
+### Kiểm tra
+- sample_rows customer limit 1000 trả đúng 50 dòng.
+- slow_queries trả top 10 sau tải.
+
+### Bẫy hay gặp
+- Tin vào limit từ model → clamp cứng 50.
+- Quên bọc untrusted_data → injection.
+
+> Interview tip: Nhấn mạnh output bọc untrusted_data chống prompt injection.` },
       { title: 'Audit, test giao thức và demo', tasks: `1. AuditLog ghi JSON từng dòng ra file riêng (logback appender riêng, không console).
 2. Metric {{mcp.tool.calls}}, {{mcp.tool.duration}} bằng Micrometer (dù app không có web, vẫn có thể xuất ra log định kỳ).
 3. Test "kẻ tấn công": seed bảng {{product}} có description chứa câu prompt injection; xác nhận output bọc untrusted_data và không có tool ghi nào trong tools/list.
@@ -3882,7 +3996,40 @@ class WriteAttemptIT {
     }
 }
 ~~~
-Lưu ý: test trên kết nối bằng user của container (owner); muốn kiểm cả lớp quyền thì tạo DataSource thứ hai đăng nhập bằng {{mcp_reader}}.`, done: `CI xanh với test cố ghi ở cả 2 lớp; CLI Inspector liệt kê đúng 5 tool; README có hướng dẫn 1 lệnh claude mcp add và GIF demo.` }
+Lưu ý: test trên kết nối bằng user của container (owner); muốn kiểm cả lớp quyền thì tạo DataSource thứ hai đăng nhập bằng {{mcp_reader}}.`, done: `CI xanh với test cố ghi ở cả 2 lớp; CLI Inspector liệt kê đúng 5 tool; README có hướng dẫn 1 lệnh claude mcp add và GIF demo.`,
+        guide: `### Các bước
+1. Tạo project Spring Boot 3.5 (Java 21), thêm BOM {{spring-ai-bom}} 1.1.x và starter {{spring-ai-starter-mcp-server}}.
+2. Tắt banner, web-application-type=none, log ra file; build jar.
+3. Viết tool {{ping}} bằng {{@McpTool}}; chạy Inspector kiểm tra.
+4. Đăng ký server vào Claude Code bằng {{claude mcp add}}; mở {{/mcp}} kiểm tra connected.
+
+### Code khung
+~~~yaml
+spring:
+  main:
+    banner-mode: off
+    web-application-type: none
+  ai:
+    mcp:
+      server:
+        name: db-inspector
+        stdio: true
+logging:
+  pattern:
+    console: ""
+  file:
+    name: ./logs/db-inspector.log
+~~~
+
+### Kiểm tra
+- Inspector liệt kê tool ping và gọi được.
+- stdout không có dòng nào ngoài JSON-RPC.
+
+### Bẫy hay gặp
+- Banner in ra stdout làm hỏng JSON-RPC.
+- Log console xuất hiện làm client báo parse error.
+
+> Interview tip: Nhấn mạnh stdout chỉ dành cho JSON-RPC, mọi log phải đi file.` }
     ],
     challenges: [
       `### EXPLAIN ANALYZE không "chỉ xem"
@@ -4108,7 +4255,32 @@ fs.writeFileSync('data/quiz.json', JSON.stringify(sandbox.window.QUIZ || []));
 fs.writeFileSync('data/topics.json', JSON.stringify(sandbox.window.TOPICS || []));
 console.log('questions:', sandbox.window.QUESTIONS.length);
 ~~~
-Lưu ý: kiểm tra tên biến toàn cục thật trong js/data/topics.js trước khi dùng.`, done: `3 file JSON được tạo; số câu in ra bằng số câu site hiển thị; Java đọc được bằng Jackson không lỗi.` },
+Lưu ý: kiểm tra tên biến toàn cục thật trong js/data/topics.js trước khi dùng.`, done: `3 file JSON được tạo; số câu in ra bằng số câu site hiển thị; Java đọc được bằng Jackson không lỗi.`,
+        guide: `### Các bước
+1. Đọc scripts/validate.js để hiểu cách nạp file data bằng module vm với window giả.
+2. Viết script export-data.js đọc q-*.js, topics.js, xuất questions.json, topics.json, index-light.json.
+3. Kiểm tra số câu khớp site.
+4. Java đọc bằng Jackson.
+
+### Code khung
+~~~js
+const vm = require('vm');
+const window = {};
+vm.createContext(window);
+// require file data
+const questions = window.QUESTIONS;
+fs.writeFileSync('questions.json', JSON.stringify(questions));
+~~~
+
+### Kiểm tra
+- 3 file JSON được tạo.
+- Java đọc được bằng Jackson.
+
+### Bẫy hay gặp
+- Thứ tự nạp file sai.
+- Thiếu window giả.
+
+> Interview tip: Nhấn mạnh cách nạp data không cần browser và đảm bảo thứ tự file đúng. Ngoài ra cần xử lý encoding UTF-8 khi ghi JSON và kiểm tra số lượng câu khớp với site trước khi build. Đây là bước nền tảng cho toàn bộ server MCP.` },
       { title: 'Server stdio và tool search_questions', tasks: `1. Tạo project Spring Boot 3.5, Java 21, BOM {{spring-ai-bom}} 1.1.x, starter {{spring-ai-starter-mcp-server}}.
 2. Cấu hình stdio: {{spring.ai.mcp.server.stdio=true}}, {{name: prep}}, tắt banner, {{web-application-type: none}}, log ra file (stdout chỉ dành cho JSON-RPC).
 3. {{QuestionBank}} nạp questions.json lúc khởi động (record {{Question}}), index theo topic.
@@ -4140,7 +4312,34 @@ class SearchTools {
         return json.writeValueAsString(cards);
     }
 }
-~~~`, done: `Inspector thấy search_questions với 4 tham số; gọi topic=concurrency, level=senior trả ≤ 10 câu, không có field a; topic sai trả thông báo kèm danh sách topic hợp lệ.` },
+~~~`, done: `Inspector thấy search_questions với 4 tham số; gọi topic=concurrency, level=senior trả ≤ 10 câu, không có field a; topic sai trả thông báo kèm danh sách topic hợp lệ.`,
+        guide: `### Các bước
+1. Tạo project Spring Boot 3.5, Java 21, BOM Spring AI 1.1.x, starter MCP server.
+2. Viết tool search_questions với 4 tham số: topic, level, q, limit.
+3. Trả câu hỏi không có field a (đáp án).
+4. Topic sai trả thông báo kèm danh sách topic hợp lệ.
+
+### Code khung
+~~~java
+@McpTool(name = "search_questions")
+public List<Question> searchQuestions(
+    @McpToolParam String topic,
+    @McpToolParam String level,
+    @McpToolParam String q,
+    @McpToolParam Integer limit) {
+    // filter và trả không có field a
+}
+~~~
+
+### Kiểm tra
+- Inspector thấy search_questions với 4 tham số.
+- Gọi topic=concurrency, level=senior trả ≤ 10 câu.
+
+### Bẫy hay gặp
+- Lộ đáp án trong kết quả.
+- Limit không clamp.
+
+> Interview tip: Nhấn mạnh không trả đáp án qua tool và clamp limit để tránh payload lớn.` },
       { title: 'Tiến độ: record_result và get_due_reviews', tasks: `1. {{ProgressStore}} lưu Map id thành {status, intervalDays, due} trong {{~/.prep-coach/progress.json}}.
 2. Lịch ôn đơn giản: known thì khoảng cách nhân 2,5 (tối thiểu 1 ngày, tối đa 60), review thì 1 ngày, unknown thì due = hôm nay.
 3. Ghi nguyên tử: ghi file tạm cùng thư mục rồi {{Files.move(..., ATOMIC_MOVE, REPLACE_EXISTING)}}.
@@ -4169,7 +4368,34 @@ private void save(Map<String, Entry> data) throws IOException {
     Files.move(tmp, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
 }
 ~~~
-Cách exception được gửi về model như một kết quả lỗi: xem tài liệu SDK và kiểm tra bằng Inspector.`, done: `Test với Clock cố định: known 3 lần liên tiếp cho khoảng cách 1, 3, 7 ngày (làm tròn); 100 lần record song song không làm hỏng file; get_due_reviews trả đúng thứ tự quá hạn.` },
+Cách exception được gửi về model như một kết quả lỗi: xem tài liệu SDK và kiểm tra bằng Inspector.`, done: `Test với Clock cố định: known 3 lần liên tiếp cho khoảng cách 1, 3, 7 ngày (làm tròn); 100 lần record song song không làm hỏng file; get_due_reviews trả đúng thứ tự quá hạn.`,
+        guide: `### Các bước
+1. ProgressStore lưu Map id thành {status, intervalDays, due} trong ~/.prep-coach/progress.json.
+2. Ghi nguyên tử: temp file + rename.
+3. record_result cập nhật status và tính due mới.
+4. get_due_reviews trả danh sách đến hạn, sắp xếp quá hạn trước.
+
+### Code khung
+~~~java
+public void recordResult(String id, String status) {
+    Progress p = store.getOrDefault(id, new Progress());
+    p.status = status;
+    p.intervalDays = nextInterval(status, p.intervalDays);
+    p.due = clock.now().plusDays(p.intervalDays);
+    store.put(id, p);
+    atomicWrite(store);
+}
+~~~
+
+### Kiểm tra
+- known 3 lần → khoảng cách 1, 3, 7 ngày.
+- 100 lần record song song không hỏng file.
+
+### Bẫy hay gặp
+- Ghi không nguyên tử → file hỏng.
+- Clock không inject → test không deterministic.
+
+> Interview tip: Nhấn mạnh ghi nguyên tử bằng temp+rename.` },
       { title: 'Resource đáp án, quiz và prompt phỏng vấn thử', tasks: `1. Resource template có URI dạng prep://answer/ + id (trong annotation khai báo uri là chuỗi prep://answer/ nối với biến id đặt trong ngoặc nhọn) bằng {{@McpResource}}, trả {{ReadResourceResult}} với {{TextResourceContents}} mime {{text/markdown}}.
 2. id không tồn tại: trả lỗi (spec yêu cầu lỗi JSON-RPC -32602 cho resource không tồn tại, không trả contents rỗng); kiểm tra hành vi thật bằng Inspector.
 3. {{random_quiz}} chọn ngẫu nhiên theo topic, trả quiz_id, câu hỏi, options; {{check_quiz_answer}} trả đúng/sai, đáp án và explain.
@@ -4201,7 +4427,31 @@ class AnswerResources {
             List.of(new PromptMessage(Role.USER, new TextContent(text))));
     }
 }
-~~~`, done: `Inspector hiện 1 resource template và 1 prompt; đọc prep://answer/core-001 ra đúng đáp án; id sai trả lỗi; prompt chạy được trong Claude Code và kết thúc bằng record_result.` },
+~~~`, done: `Inspector hiện 1 resource template và 1 prompt; đọc prep://answer/core-001 ra đúng đáp án; id sai trả lỗi; prompt chạy được trong Claude Code và kết thúc bằng record_result.`,
+        guide: `### Các bước
+1. Resource template URI prep://answer/{id} bằng @McpResource, trả ReadResourceResult với TextResourceContents mime text/markdown.
+2. Prompt phỏng vấn thử bằng @McpPrompt.
+3. Validate id, trả lỗi nếu sai.
+4. Prompt kết thúc bằng record_result.
+
+### Code khung
+~~~java
+@McpResource(uri = "prep://answer/{id}", name = "answer")
+public ReadResourceResult answer(@PathVariable String id) {
+    if (!questions.containsKey(id)) throw new ToolInputException("id không tồn tại");
+    return new ReadResourceResult(List.of(new TextResourceContents("prep://answer/" + id, "text/markdown", answers.get(id))));
+}
+~~~
+
+### Kiểm tra
+- Đọc prep://answer/core-001 ra đúng đáp án.
+- id sai trả lỗi.
+
+### Bẫy hoy gặp
+- URI template sai cú pháp.
+- Mime type sai.
+
+> Interview tip: Nhấn mạnh đáp án là resource, không phải tool.` },
       { title: 'Hoàn thiện, test và demo', tasks: `1. Thêm {{instructions}} cho server: "Không tiết lộ đáp án trước khi người học trả lời".
 2. Test tích hợp: dữ liệu mẫu 20 câu, 5 quiz; kiểm tra search không bao giờ chứa field a.
 3. CI: build jar, chạy Inspector CLI gọi tools/list và một tools/call.
@@ -4222,7 +4472,29 @@ class SearchToolsTest {
         arr.forEach(n -> assertThat(n.has("a")).isFalse()); // đáp án chỉ đi qua resource
     }
 }
-~~~`, done: `Toàn bộ test xanh; CI chạy được Inspector CLI; README có video demo; bạn dùng nó ôn ít nhất 5 ngày và có số liệu thật để kể.` }
+~~~`, done: `Toàn bộ test xanh; CI chạy được Inspector CLI; README có video demo; bạn dùng nó ôn ít nhất 5 ngày và có số liệu thật để kể.`,
+        guide: `### Các bước
+1. Thêm instructions cho server: không tiết lộ đáp án trước khi người học trả lời.
+2. Test Inspector CLI trong CI.
+3. Viết README với video demo.
+4. Dùng thực tế ít nhất 5 ngày.
+
+### Code khung
+~~~bash
+npx @modelcontextprotocol/inspector --cli java -jar target/prep-coach.jar --data=./data --method tools/list
+~~~
+
+### Kiểm tra
+- CI xanh.
+- README có video demo.
+
+### Bẫy hoy gặp
+- Instructions không rõ ràng.
+- Quên test CLI trong CI.
+- README thiếu video demo.
+- Không ghi lại số liệu thực tế.
+
+> Interview tip: Nhấn mạnh đáp án là resource không phải tool, và dùng thực tế ít nhất 5 ngày để có số liệu kể. Điều này giúp bạn có câu chuyện thật khi phỏng vấn về MCP server. Đồng thời kiểm tra CI chạy được Inspector CLI và README có video demo rõ ràng. Cuối cùng, hãy ghi lại các số liệu thực tế để kể trong phỏng vấn.` }
     ],
     challenges: [
       `### Model "nhìn trộm" đáp án
