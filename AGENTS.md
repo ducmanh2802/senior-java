@@ -238,6 +238,7 @@ Hiện file này là **contract**: các hàm đã có đủ nhưng báo "chưa c
 | `App.auth.enabled` / `App.auth.user` | `user = {id, email, name, avatar}` hoặc `null` |
 | `App.auth.onChange(fn)` | đăng ký theo dõi đăng nhập/đăng xuất; trả về hàm huỷ (nhớ gọi trong cleanup) |
 | `App.auth.signInWithGoogle()` / `signInWithEmail(email)` / `signOut()` | đăng nhập Google; email gửi magic link |
+| `App.auth.signInWithPassword(email, pw)` / `signUpWithPassword(email, pw)` → `{confirm}` / `resetPassword(email)` / `updatePassword(pw)` / `recovery` | email + mật khẩu (≥ 8 ký tự); `recovery = true` sau khi mở link đặt lại mật khẩu (`#/account` hiện form đặt mật khẩu mới) |
 | `await App.auth.profile()` / `updateDisplayName(name)` | `{display_name, role, ai_daily_limit}` |
 | `await App.auth.usageToday()` | `{used, limit, byKind}` |
 | `await App.auth.exportData()` / `deleteAccount({clearLocal})` | xuất toàn bộ dữ liệu; xoá tài khoản (bắt buộc confirm 2 bước) |

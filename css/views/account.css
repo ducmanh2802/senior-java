@@ -89,3 +89,15 @@
   .view-account .acc-benefits { grid-template-columns: 1fr; }
   .view-account .acc-stats { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
 }
+
+/* email + password form */
+.view-account .acc-pw { display: grid; gap: 12px; max-width: 420px; margin: 16px 0 8px; }
+.view-account .acc-pw-tabs { margin-bottom: 4px; }
+.view-account .acc-pw .btn.lg { justify-self: start; }
+.view-account .acc-pw-toggle { display: flex; align-items: center; gap: 6px; color: var(--muted); cursor: pointer; }
+.view-account .acc-magic { margin: 8px 0 12px; }
+.view-account .acc-magic summary { cursor: pointer; color: var(--link); }
+.view-account .acc-magic .acc-email { margin-top: 10px; }
+.view-account .acc-pw-set { display: grid; gap: 10px; max-width: 420px; }
+.view-account .acc-pw-set .btn { justify-self: start; }
+.view-account .acc-recovery { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow); }
