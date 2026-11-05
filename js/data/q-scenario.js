@@ -5371,4 +5371,229 @@ Tạo glossary riêng với format: {{Rule ID}} | {{Mô tả}} | {{Điều kiệ
   ],
   tags: ['business-rules', 'validation', 'domain-discovery', 'onboarding']
 },
+  {
+    id: 'scenario-109',
+    topic: 'scenario',
+    level: 'senior',
+    q: 'Interviewer ở Ninjavan hỏi: thiết kế Feature Flags bật/tắt feature cho một tập user, tối ưu performance — bạn làm thế nào?',
+    a: `**Tóm tắt:** Feature Flag là công tắc on/off cho tính năng, có thể bật theo user/segment; lưu DB + cache Redis, evaluate bằng hash bucket, refresh định kỳ.
+
+### Bối cảnh
+- Rollout dần, A/B test, kill switch khi sự cố.
+- Evaluate flag không được thêm > vài ms vào request path.
+
+### Cách làm
+1. Model: Flag (key, default, rules), Override (user/segment).
+2. Storage: Redis cache + DB; TTL 30s; invalidate qua pub/sub.
+3. Evaluate: hash userId vào bucket 0..99, so sánh rollout %; segment rules (country, plan).
+4. SDK cache in-memory với refresh.
+
+### Trade-off
+| Storage | Ưu | Nhược |
+| SQL | ACID, dễ query | join chậm khi nhiều rule |
+| NoSQL | scale tốt | eventual consistency |
+
+### Pitfall
+- Flag tích tụ → cleanup định kỳ.
+- Không audit ai bật/tắt → sự cố không truy vết.
+
+> Senior tip: Feature flag là technical debt có chủ đích; đặt expiry date và owner cho mỗi flag.`,
+    follow: ['Làm sao rollout an toàn 1% → 100%?', 'Kill switch khác feature flag thế nào?'],
+    tags: ['feature-flag', 'system-design'],
+    refs: [{ type: 'article', title: 'voz interview review Ninjavan', url: 'https://voz.vn/t/event-box-cntt-2023-chia-se-kinh-nghiem-phong-van.694369/page-1#post-22629633' }]
+  },
+  {
+    id: 'scenario-110',
+    topic: 'scenario',
+    level: 'senior',
+    q: 'Interviewer hỏi: API bị spam, làm sao rate limit hiệu quả ở scale lớn?',
+    a: `**Tóm tắt:** Rate limit dùng Token Bucket/Sliding Window trên Redis theo user/IP/API key; trả 429 + Retry-After.
+
+### Khái niệm
+- Token Bucket: xô token refill đều; request tốn 1 token.
+- Sliding Window: đếm request trong cửa sổ trượt.
+
+### Cách làm
+1. Key: userId hoặc ip hoặc apiKey.
+2. Redis: INCR + EXPIRE (fixed window); sorted set (sliding).
+3. Distributed: Lua script atomic.
+4. Response: HTTP 429, header Retry-After.
+
+### Trade-off
+| Thuật toán | Ưu | Nhược |
+| Fixed window | đơn giản | burst biên cửa sổ |
+| Sliding window | mượt | tốn memory |
+| Token bucket | linh hoạt | tune phức tạp |
+
+### Pitfall
+- Rate limit ở app layer bị bypass nếu nhiều instance → centralize ở gateway/Redis.
+- Key theo IP làm NAT user bị chặn nhầm.
+
+> Senior tip: Rate limit là bảo vệ, không phải business logic; đặt limit khác nhau cho read/write và tier.`,
+    follow: ['Rate limit theo tier free/pro thế nào?', 'Throttling vs rate limiting?'],
+    tags: ['rate-limit', 'redis', 'api']
+  },
+  {
+    id: 'scenario-111',
+    topic: 'scenario',
+    level: 'senior',
+    q: 'Interviewer hỏi: đặt vé concert, 2 user cùng lúc mua ghế cuối — xử lý concurrency thế nào?',
+    a: `**Tóm tắt:** Dùng pessimistic lock (SELECT ... FOR UPDATE) hoặc optimistic lock (version column) trên ghế; kết hợp idempotency key và transaction.
+
+### Cơ chế
+- Pessimistic: lock row ghế khi bắt đầu checkout; user khác chờ/timeout.
+- Optimistic: update ... where version = ?; nếu 0 row → conflict, retry.
+
+### Cách làm
+1. Trạng thái ghế: AVAILABLE/HELD/SOLD.
+2. Hold ghế với TTL (5 phút) qua Redis/DB.
+3. Payment thành công → SOLD; thất bại/hết TTL → release.
+
+### Trade-off
+| Cách | Ưu | Nhược |
+| Pessimistic | an toàn | throughput thấp |
+| Optimistic | throughput cao | retry storm |
+
+### Pitfall
+- Deadlock khi lock nhiều ghế → lock theo thứ tự id.
+- Hold không release → ghế "ma".
+
+> Senior tip: Kết hợp optimistic lock + idempotency key; monitor conflict rate.`,
+    follow: ['Idempotency key thiết kế thế nào?', 'Làm sao tránh double charge?'],
+    tags: ['concurrency', 'locking', 'booking']
+  },
+  {
+    id: 'scenario-112',
+    topic: 'scenario',
+    level: 'mid',
+    q: 'Interviewer hỏi: giải thích index trong DB, B-Tree vs Binary Tree, kiểm tra cột đã index chưa?',
+    a: `**Tóm tắt:** Index là cấu trúc phụ (thường B-Tree) giúp tìm nhanh; B-Tree cân bằng, phù hợp range query; kiểm tra qua EXPLAIN và catalog.
+
+### Khái niệm
+- B-Tree: cây cân bằng, mỗi node nhiều key; hỗ trợ =, <, >, BETWEEN, ORDER BY.
+- Binary tree: mỗi node 2 con; dễ lệch, không phù hợp disk.
+
+### Kiểm tra index
+~~~sql
+EXPLAIN ANALYZE SELECT ...;
+SELECT * FROM pg_indexes WHERE tablename='t';
+~~~
+
+### Khi nào không dùng index
+- Bảng nhỏ; cột cardinality thấp (boolean); write-heavy.
+
+### Pitfall
+- Index không được dùng do implicit cast hoặc function trên cột.
+- Quá nhiều index làm chậm write.
+
+> Senior tip: Index là đánh đổi read/write; đo plan thật, đừng đoán.`,
+    follow: ['Composite index thứ tự cột?', 'Index covering là gì?'],
+    tags: ['index', 'database', 'btree']
+  },
+  {
+    id: 'scenario-113',
+    topic: 'scenario',
+    level: 'senior',
+    q: 'Interviewer hỏi: isolation levels khác nhau thế nào, locking level ra sao?',
+    a: `**Tóm tắt:** Isolation levels (Read Uncommitted/Committed/Repeatable Read/Serializable) kiểm soát dirty/non-repeatable/phantom reads; locking (row/table, shared/exclusive) là cơ chế.
+
+### Bảng
+| Level | Dirty | Non-repeatable | Phantom |
+| Read Uncommitted | có | có | có |
+| Read Committed | không | có | có |
+| Repeatable Read | không | không | có* |
+| Serializable | không | không | không |
+
+*InnoDB RR cũng chặn phantom bằng gap lock.
+
+### Locking
+- Shared (S) cho read; Exclusive (X) cho write.
+- Row-level vs table-level; deadlock khi lock vòng.
+
+### Pitfall
+- Chọn Serializable cho mọi thứ → throughput thấp.
+- Long transaction giữ lock → contention.
+
+> Senior tip: Mặc định Read Committed + explicit lock khi cần; đo contention.`,
+    follow: ['MVCC hoạt động thế nào?', 'Gap lock là gì?'],
+    tags: ['isolation', 'transaction', 'locking']
+  },
+  {
+    id: 'scenario-114',
+    topic: 'scenario',
+    level: 'senior',
+    q: 'Interviewer hỏi: khi nào dùng Kafka thay vì REST/RPC, trade-off ra sao?',
+    a: `**Tóm tắt:** Kafka là log phân tán, phù hợp event streaming, decoupling, replay; REST/RPC cho request/response đồng bộ.
+
+### So sánh
+| Tiêu chí | Kafka | REST/RPC |
+| Coupling | lỏng | chặt |
+| Latency | ms-seconds | ms |
+| Ordering | per-partition | không đảm bảo |
+| Replay | có | không |
+
+### Khi dùng Kafka
+- Event sourcing, audit log, analytics pipeline, async task.
+- Cần decouple producer/consumer, scale độc lập.
+
+### Pitfall
+- Dùng Kafka cho request/response đơn giản → phức tạp không cần thiết.
+- Không idempotent consumer → duplicate xử lý.
+
+> Senior tip: Bắt đầu bằng REST; chuyển Kafka khi cần async/replay/scale.`,
+    follow: ['Consumer group là gì?', 'Exactly-once semantics?'],
+    tags: ['kafka', 'messaging', 'architecture']
+  },
+  {
+    id: 'scenario-115',
+    topic: 'scenario',
+    level: 'mid',
+    q: 'Interviewer hỏi: Redis cache, cache cái gì, xử lý cache hit/miss thế nào?',
+    a: `**Tóm tắt:** Cache dữ liệu ít thay đổi, đọc nhiều; hit trả từ cache, miss query DB rồi set cache; xử lý invalidation và stampede.
+
+### Chiến lược
+- Cache-aside: app tự get/set.
+- Write-through: ghi DB + cache cùng lúc.
+- TTL + invalidation qua event.
+
+### Cache hit/miss
+- Hit: trả ngay.
+- Miss: query DB, set cache với TTL, trả.
+
+### Pitfall
+- Cache stampede khi TTL hết đồng loạt → jitter TTL, locking.
+- Stale data → invalidation rõ ràng.
+- Cache penetration (key không tồn tại) → bloom filter/null cache.
+
+> Senior tip: Cache là tối ưu, không phải nguồn đúng; luôn có fallback DB.`,
+    follow: ['Cache avalanche là gì?', 'Write-behind cache?'],
+    tags: ['redis', 'cache', 'performance']
+  },
+  {
+    id: 'scenario-116',
+    topic: 'scenario',
+    level: 'senior',
+    q: 'Interviewer hỏi: tối ưu query trên bảng tỷ bản ghi đã có index đầy đủ nhưng vẫn chậm — bạn làm gì?',
+    a: `**Tóm tắt:** Kiểm tra index có thực sự được dùng (EXPLAIN), partition theo thời gian, rewrite query, kiểm tra statistics và I/O.
+
+### Điều tra
+- EXPLAIN (ANALYZE, BUFFERS): Seq Scan? Sort spill?
+- Statistics cũ → ANALYZE.
+- Index không khớp do function/cast.
+
+### Giải pháp
+1. Partition theo thời gian (range) cho dữ liệu lớn.
+2. Rewrite: tránh SELECT *, function trên cột.
+3. Covering index cho hot query.
+4. Read replica cho list nặng.
+
+### Pitfall
+- Chuyển non-partition → partition cần kế hoạch migrate.
+- Index "đầy đủ" nhưng planner không chọn → verify.
+
+> Senior tip: Luôn verify bằng plan thực tế, không tin giả định "đã có index".`,
+    follow: ['Partition pruning là gì?', 'Khi nào dùng materialized view?'],
+    tags: ['database', 'partition', 'performance']
+  }
+
 );
