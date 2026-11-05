@@ -2560,5 +2560,664 @@ class ErrorBudget {
   related: ['devops-005'],
   tags: ['Prometheus', 'SLO', 'Histogram', 'Error budget', 'Observability'],
 },
+{
+  id: 'lesson-devops-010',
+  track: 'devops',
+  order: 10,
+  title: 'Thuật toán HPA: desired = ceil(current x metric / target), tolerance 0.1, min/max và stabilization window',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Viết được công thức HPA {{ceil(currentReplicas x currentMetric / targetMetric)}} và giải thích vì sao làm tròn lên, vì sao tỉ lệ thuận',
+    'Giải thích được tolerance mặc định 0.1, clamp {{minReplicas}}/{{maxReplicas}} và stabilization window 300 giây khi scale down (lấy đề xuất lớn nhất trong cửa sổ)',
+    'Hiểu vì sao phần trăm CPU của HPA tính theo CPU **request** và vì sao JVM warm-up sinh vòng lặp scale-up xấu',
+    'Cài đặt {{HpaSim}} mô phỏng đúng thuật toán với đồng hồ giả để test deterministic',
+  ],
+  body: `### Ba khái niệm nền, đọc trước nếu chưa từng chạm Kubernetes
+- **Pod**: một bản thể đang chạy của service bạn (container Java + tài nguyên bị giới hạn của nó). Hiểu như "một quầy thu ngân đang mở".
+- **Deployment**: bản khai báo "tôi muốn {{N}} Pod chạy cùng image". Bạn sửa N, Kubernetes tự sắp xếp đặt Pod lên các node.
+- **HPA (HorizontalPodAutoscaler)**: một **controller** — chương trình chạy trong control plane, lặp mãi vòng "đo thực tế → tính N mong muốn → ghi lại vào Deployment".
+
+HPA **không** phản ứng theo từng request. Chu kỳ mặc định là **15 giây**: cứ 15s đo và chỉnh một lần, giống máy lạnh đọc nhiệt độ mỗi chục giây chứ không chỉnh van liên tục. Điều này cực quan trọng khi phỏng vấn: giữa lúc tải tăng và lúc Pod mới nhận traffic, bạn có **một khoảng trễ hữu cơ** (15s đo + 30-120s boot + warm-up), và mọi quyết định sizing phải tính khoảng trễ đó.
+
+~~~seq
+title: Mot vong reconcile cua HPA (15 giay)
+actors: HPA | metrics-server | kubelet | Deployment
+HPA -> metrics-server: hoi CPU trung binh cua cac Pod
+metrics-server -> kubelet: lay so do tai tu cgroup
+kubelet --> metrics-server: CPU usage tung Pod
+metrics-server --> HPA: CPU trung binh, quy ve % theo request
+HPA -> HPA: tinh desired va ap tolerance + clamp
+HPA -> Deployment: ghi replicas = desired
+note HPA..Deployment: scale xuong phai cho het stabilization window
+~~~
+
+### Công thức cốt lõi và vì sao nó là phép chia
+{{desiredReplicas = ceil(currentReplicas x currentMetricValue / targetMetricValue)}}
+
+{{currentMetricValue}} là cường độ tải **trung bình trên một Pod** (phần trăm CPU, hoặc RPS/pod, hoặc lag Kafka/pod). {{targetMetricValue}} là mức bạn muốn mỗi Pod gánh. Logic: tải tăng gấp đôi thì mỗi Pod đang gánh gấp đôi target; muốn mỗi Pod quay về target thì số Pod phải nhân đôi — nên {{desired = current x (currentMetric / target)}}. Kubernetes dùng {{ceil}} (làm tròn **lên**) vì làm tròn xuống cố tình để vượt target: tính ra 8.2 Pod mà lấy 8 thì mỗi Pod gánh 102% của target, chu kỳ sau lại đòi 9 — cụm cứ dao động quanh target mãi.
+
+Ví dụ thật, {{target = 50}}% CPU, đang có 4 Pod:
+
+| CPU trung bình | current/target | desired = ceil | Ý nghĩa |
+|---|---|---|---|
+| 20% | 0.4 | 2 | Tải giảm một nửa, xin bỏ 2 Pod (nhưng phải chờ window) |
+| 50% | 1.0 | 4 | Đúng target, giữ nguyên |
+| 90% | 1.8 | 8 | 7.2 → 8, mỗi Pod quay về ~45% |
+| 150% | 3.0 | 12 | Tải gấp 3, cần 12 Pod |
+
+~~~java
+// thuật toán rút gọn của "horizontal controller" trong kube-controller-manager
+static int desiredReplicas(int current, double metric, double target, double tolerance) {
+    double ratio = metric / target;                          // 1.0 = đúng target
+    if (Math.abs(ratio - 1.0) <= tolerance) return current;  // vùng chết: coi như không đổi
+    return (int) Math.ceil(current * ratio);                 // luôn làm tròn lên
+}
+~~~
+
+### Tolerance 0.1: "vùng chết" chống giật
+Flag {{--horizontal-pod-autoscaler-tolerance}} mặc định **0.1**. Nếu {{|current/target - 1| <= 0.1}} — tức metric chỉ dao động trong ±10% quanh target — HPA coi như "đang ổn" và **giữ nguyên số Pod**, bất kể {{ceil}} có đòi thêm. Không có vùng chết thì 5 Pod ở 54% CPU bị làm tròn lên 6 Pod; 6 Pod chia lại tải ra 45%, rồi dao động ngược lại — cụm nhảy lên xuống cả ngày (tiếng Anh gọi là {{flapping}}), mỗi lần nhảy là một lần Pod mới boot và tốn tiền.
+
+### minReplicas / maxReplicas: clamp hai đầu sau khi tính
+desired bị ép vào {{[minReplicas, maxReplicas]}}. Đây không phải hình thức:
+- {{minReplicas}} nên **>= 2** cho service có warm-up: nếu còn 1 Pod mà Pod đó đang khởi động lại thì service chết hẳn. Muốn {{minReplicas: 0}} (service tắt ban đêm) thì thực tế nên dùng KEDA cron scaler, vì HPA thuần đối xử rất khó lường khi không còn mẫu metric.
+- {{maxReplicas}} chặn chi phí **và** chặn hiệu ứng dây chuyền: 20 Pod x 200 connection = 4000 connection, database pool của bạn có thể sập trước khi CPU kịp hạ. Số Pod tối đa phải là số mà phần dưới của hệ thống (DB, Kafka, node capacity) gánh nổi.
+- Khi khai báo **nhiều metric**, HPA lấy desired **lớn nhất** trong các metric — an toàn cho bạn nhưng phải chắc metric nào cũng có nghĩa.
+
+### Stabilization window: scale lên ngay, scale xuống phải chờ
+Mặc định {{--horizontal-pod-autoscaler-downscale-stabilization = 300}} giây (trong manifest là {{behavior.scaleDown.stabilizationWindowSeconds}}). Cơ chế, nói cho chính xác: controller **ghi lại lịch sử các đề xuất**; khi đề xuất hiện tại **nhỏ hơn** số Pod đang có, nó lấy **giá trị lớn nhất trong cửa sổ 300s gần nhất** làm quyết định. Muốn xuống, bạn phải chờ mọi đề xuất cao "chết tuổi" khỏi cửa sổ. Scale lên thì {{stabilizationWindowSeconds: 0}}, dùng đề xuất ngay.
+
+Manifest khai báo rõ hai hành vi này:
+
+~~~yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: order-service
+spec:
+  scaleTargetRef:
+    kind: Deployment
+    name: order-service
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 60        # % của requests.cpu, KHÔNG phải của limit
+  - type: Pods
+    pods:
+      metric:
+        name: http_requests_per_second
+      target:
+        type: AverageValue
+        averageValue: "800"           # mỗi pod gánh tối đa 800 RPS
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0   # tăng tải: phản ứng ngay
+    scaleDown:
+      stabilizationWindowSeconds: 300 # mặc định: chờ đề xuất cũ hết hạn
+      policies:
+      - type: Percent
+        value: 50                     # mỗi 60s chỉ bỏ tối đa 50% pod
+        periodSeconds: 60
+~~~
+
+Vì sao bất đối xứng — đây là chỗ interviewer thích nghe:
+- **Thiệt hại không bằng nhau.** Scale chậm vài chu kỳ = user thấy chậm/5xx. Scale thừa vài Pod = tốn thêm ít tiền. Nên thà chậm bỏ Pod.
+- Pod Java mới mất 60-120s cho warm-up; mỗi lần co rồi duỗi là trả lại cái giá đó một lần nữa.
+- Đỉnh CPU do cron job hay batch 2-3 phút là nhiễu bình thường. 300s ~ 20 chu kỳ đo, đủ để phân biệt đỉnh nhiễu và đỉnh thật.
+- {{scaleDown.policies}} (ví dụ tối đa 50% số Pod mỗi 60s) chặn "rớt thang": đang 20 Pod mà metric tụt đột ngột, không có policy thì HPA đòi bỏ 18 Pod trong một nhịp.
+
+### Vì sao % CPU tính theo request, không phải limit
+{{percent = CPU usage / requests.cpu}}. Hệ quả thực tế:
+- **Không đặt {{requests.cpu}}** → HPA theo CPU **hoàn toàn không hoạt động** (log controller: "missing request for cpu"). Nhiều team mở HPA mà không thấy scale bao giờ, lỗi đúng chỗ này.
+- Đặt {{requests.cpu = 0.5}}, {{limits.cpu = 2}}: khi Pod ăn 1 core, HPA thấy **200%** và scale mạnh, dù node còn thừa CPU. Vậy request phải là "mức CPU mỗi Pod thật sự cần khi đầy tải", không phải con số xin quota cho rẻ.
+- Nếu Pod không đặt limit, JVM (từ 17.0.5) nhìn thấy **toàn bộ core của node** chứ không phải request — số thread JIT/GC/phương án thread pool đội lên, CPU usage tăng, HPA hiểu lầm là tải cao.
+
+### JVM warm-up: cái gai trong mọi autoscaler
+Pod Java vừa khởi động có CPU **cao giả** vì:
+1. Code mới chạy trên **interpreter** (chưa dịch sang machine code) và **JIT compiler** (C1 rồi C2) đang ngốn CPU nền để dịch các method nóng.
+2. Spring Boot nạp hàng nghìn class, proxy, auto-configuration; connection pool Hikari tạo kết nối; cache còn lạnh nên mỗi request phải truy vấn DB thật.
+3. Kết quả: request trong 1-2 phút đầu có thể chậm gấp 3-10 lần, và **chính phần CPU boot đó bị cộng vào trung bình** của cụm.
+
+Vòng lặp xấu kinh điển: tải tăng → HPA thêm Pod → Pod mới boot ngốn CPU → trung bình CPU tăng tiếp → HPA lại thêm Pod → càng lúc càng nhiều Pod lạnh → latency xấu đi chứ không tốt lên. Kubernetes giảm nó bằng cách bỏ qua mẫu của Pod mới khởi động trong một khoảng thời gian (flag {{--horizontal-pod-autoscaler-initial-readiness-delay}} ~30s và {{--horizontal-pod-autoscaler-cpu-initialization-period}} ~5 phút). Bạn phải làm phần còn lại:
+- **readiness probe** chỉ trả lời "sẵn sàng" sau khi warm-up thật (tự bắn request nội bộ trong {{ApplicationReadyEvent}} rồi mới mở {{/readiness}}); **startupProbe** cho app boot 60-90s để liveness không kill sớm; {{minReadySeconds}} để Pod "Ready rồi crash ngay" bị đá ra.
+- Với app I/O-bound (chờ DB, chờ HTTP), **đừng scale theo CPU**: dùng RPS hoặc lag Kafka làm custom metric — latency tăng mà CPU thấp thì HPA CPU đứng nhìn.
+- Pre-scale theo lịch (KEDA cron scaler) cho giờ cao điểm đã biết trước, đừng đợi hàng dài mới gọi thêm nhân viên.
+- Đặt target có headroom: {{averageUtilization: 90}} là tự sát, vì trong 15s chu kỳ tới tải có thể vượt nữa trước khi Pod mới kịp Ready. Thực tế 50-70%.
+
+### Bẫy production hay gặp
+- **Scale theo memory của JVM**: heap đã cấp gần như không bao giờ trả cho OS, metric chỉ đi lên → scale lên rồi đứng đó mãi. Dùng CPU/RPS/lag.
+- **HPA và Cluster Autoscaler đá nhau**: HPA sinh Pod mới nhưng cluster hết node → Pod pending. Phải đặt request đúng để chuỗi HPA → Cluster Autoscaler → node chạy được.
+- **Scale xuống giết job dài**: Pod đang xử lý batch 5 phút bị bỏ; cần {{terminationGracePeriodSeconds}} đủ dài + graceful shutdown, và PodDisruptionBudget cho drain node.
+- **DB/Kafka không theo kịp**: Pod tăng gấp 3, mỗi Pod mở 200 connection → pool sập, mọi thứ chậm hơn. Autoscaling chỉ hết nghẽn khi phần dưới cũng co giãn.
+- **Không có PDB ở minReplicas nhỏ**: một node drain bỏ sạch capacity.
+
+### Liên hệ phỏng vấn
+Câu hỏi: "Bạn cấu hình autoscaling cho service Java thế nào?" — trả lời có khung: (1) tôi chọn metric nào và **vì sao** (app tôi I/O-bound nên lấy RPS/lag, không lấy CPU), (2) target có headroom vì chu kỳ 15s + boot 90s, (3) min/max ràng buộc bởi gì (DB pool, chi phí), (4) tolerance và stabilization window để không giật, (5) JVM warm-up: readiness sau warm-up, startupProbe, flag che mẫu Pod mới, (6) cách phát hiện "scale nhưng không hết nghẽn" (Pod pending, p95 vẫn cao khi replica đã tăng). Bài tập dưới đây là chính thuật toán, viết thành {{HpaSim}} và test bằng đồng hồ giả.
+
+> Senior tip: Hãy nói con số thật khi trả lời: "target 60% CPU, request 1 core, min 3, max 20, stabilization 300s vì service boot 70s và DB pool trần 2000 connection". Người phỏng vấn chấm ở chỗ bạn biết **giới hạn nằm ở đâu**, không phải ở việc bạn biết có HPA.`,
+  exercises: [
+    {
+      title: 'HpaSim: observe(currentReplicas, metric) theo đúng luật HPA (tolerance, clamp, stabilization window)',
+      prompt: `Cài đặt {{HpaSim}} mô phỏng một vòng quyết định của HPA. Đồng hồ truyền vào dạng {{java.time.Clock}} để test chỉnh thời gian được (không dùng giờ thật).
+
+Hằng số có sẵn: {{TOLERANCE = 0.1}}, {{DEFAULT_DOWN_WINDOW_SECONDS = 300}}.
+
+- {{HpaSim(min, max, target, clock)}}: ủy quyền cho constructor 5 tham số với {{downWindowSeconds = DEFAULT_DOWN_WINDOW_SECONDS}}.
+- {{HpaSim(min, max, target, clock, downWindowSeconds)}}: ném {{IllegalArgumentException}} khi {{min < 1}}, {{max < min}}, {{target <= 0}}, {{clock == null}} hoặc {{downWindowSeconds < 0}}; lưu lại các tham số.
+- {{observe(currentReplicas, currentMetric)}}: ném {{IllegalArgumentException}} nếu {{currentReplicas < 0}} hoặc {{currentMetric < 0}}. Sau đó:
+  1. {{ratio = currentMetric / target}}. Nếu {{|ratio - 1| <= TOLERANCE}} thì {{raw = currentReplicas}} (vùng chết), ngược lại {{raw = ceil(currentReplicas x ratio)}}.
+  2. Clamp {{raw}} vào {{[min, max]}}.
+  3. Ghi {{(clock.millis(), raw)}} vào lịch sử đề xuất, rồi bỏ các bản ghi có {{clock.millis() - timestamp > downWindowSeconds x 1000}}.
+  4. Nếu {{raw >= currentReplicas}} (scale up hoặc giữ nguyên) thì trả {{raw}} ngay.
+  5. Nếu {{raw < currentReplicas}} (đòi scale down) thì trả **giá trị lớn nhất** trong lịch sử còn lại — tức đang bị stabilization window giữ lại.
+
+Ghi ý: lịch sử luôn chứa chính {{raw}} vừa ghi, nên ở lần scale down đầu tiên của một cụm chưa từng phình to, kết quả vẫn là {{raw}}.`,
+      starter: `import java.time.Clock;
+
+class HpaSim {
+    static final double TOLERANCE = 0.1;
+    static final long DEFAULT_DOWN_WINDOW_SECONDS = 300;
+
+    private final int min;
+    private final int max;
+    private final double target;
+    private final Clock clock;
+    private final long windowMillis;
+    private final Deque<long[]> history = new ArrayDeque<>();
+
+    HpaSim(int min, int max, double target, Clock clock) {
+        this(min, max, target, clock, DEFAULT_DOWN_WINDOW_SECONDS);
+    }
+
+    HpaSim(int min, int max, double target, Clock clock, long downWindowSeconds) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int observe(int currentReplicas, double currentMetric) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+
+public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(int expected, int actual) {
+        if (expected != actual) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static final class FakeClock extends Clock {
+        private Instant now;
+        FakeClock(long epochSecond) { now = Instant.ofEpochSecond(epochSecond); }
+        void advanceSeconds(long s) { now = now.plusSeconds(s); }
+        public ZoneId getZone() { return ZoneOffset.UTC; }
+        public Clock withZone(ZoneId zone) { return this; }
+        public Instant instant() { return now; }
+    }
+    public static void main(String[] args) {
+        check("scale up theo ti so va lam tron len", () -> {
+            HpaSim h = new HpaSim(2, 20, 50, new FakeClock(1000));
+            eq(12, h.observe(4, 150));
+        });
+        check("8.3 pod lam tron len 9", () -> {
+            HpaSim h = new HpaSim(1, 20, 60, new FakeClock(0));
+            eq(9, h.observe(5, 100));
+        });
+        check("tolerance gi nguyen trong +/-10 percent", () -> {
+            HpaSim h = new HpaSim(2, 20, 50, new FakeClock(0));
+            eq(5, h.observe(5, 54));
+            eq(5, h.observe(5, 46));
+        });
+        check("max clamp chan burst", () -> {
+            HpaSim h = new HpaSim(2, 10, 50, new FakeClock(0));
+            eq(10, h.observe(4, 1000));
+        });
+        check("min clamp san tai trong, scale down dau tien khong bi giu", () -> {
+            HpaSim h = new HpaSim(2, 10, 50, new FakeClock(0));
+            eq(2, h.observe(6, 5));
+        });
+        check("scale down bi window 300s giu lai", () -> {
+            FakeClock c = new FakeClock(0);
+            HpaSim h = new HpaSim(2, 20, 50, c);
+            eq(6, h.observe(2, 150));
+            c.advanceSeconds(100);
+            eq(6, h.observe(6, 25));
+        });
+        check("scale down duoc phep sau khi window het han", () -> {
+            FakeClock c = new FakeClock(0);
+            HpaSim h = new HpaSim(2, 20, 50, c);
+            eq(6, h.observe(2, 150));
+            c.advanceSeconds(400);
+            eq(3, h.observe(6, 25));
+        });
+        check("window tuy chinh ngan lai thi bo nhanh", () -> {
+            FakeClock c = new FakeClock(0);
+            HpaSim h = new HpaSim(2, 20, 50, c, 60);
+            eq(6, h.observe(2, 150));
+            c.advanceSeconds(120);
+            eq(3, h.observe(6, 25));
+        });
+        check("cau hinh hop ném IllegalArgumentException", () -> {
+            try { new HpaSim(3, 2, 50, new FakeClock(0)); throw new AssertionError("max < min phai bi tu choi"); }
+            catch (IllegalArgumentException e) { }
+            try { new HpaSim(1, 5, 0, new FakeClock(0)); throw new AssertionError("target = 0 phai bi tu choi"); }
+            catch (IllegalArgumentException e) { }
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.time.Clock;
+
+class HpaSim {
+    static final double TOLERANCE = 0.1;
+    static final long DEFAULT_DOWN_WINDOW_SECONDS = 300;
+
+    private final int min;
+    private final int max;
+    private final double target;
+    private final Clock clock;
+    private final long windowMillis;
+    private final Deque<long[]> history = new ArrayDeque<>();
+
+    HpaSim(int min, int max, double target, Clock clock) {
+        this(min, max, target, clock, DEFAULT_DOWN_WINDOW_SECONDS);
+    }
+
+    HpaSim(int min, int max, double target, Clock clock, long downWindowSeconds) {
+        if (min < 1) throw new IllegalArgumentException("min phai >= 1");
+        if (max < min) throw new IllegalArgumentException("max phai >= min");
+        if (!(target > 0)) throw new IllegalArgumentException("target phai > 0");
+        if (clock == null) throw new IllegalArgumentException("thieu clock");
+        if (downWindowSeconds < 0) throw new IllegalArgumentException("window phai >= 0");
+        this.min = min;
+        this.max = max;
+        this.target = target;
+        this.clock = clock;
+        this.windowMillis = downWindowSeconds * 1000L;
+    }
+
+    int observe(int currentReplicas, double currentMetric) {
+        if (currentReplicas < 0) throw new IllegalArgumentException("currentReplicas am");
+        if (currentMetric < 0) throw new IllegalArgumentException("currentMetric am");
+        double ratio = currentMetric / target;
+        int raw;
+        if (Math.abs(ratio - 1.0) <= TOLERANCE) {
+            raw = currentReplicas;
+        } else {
+            raw = (int) Math.ceil(currentReplicas * ratio);
+        }
+        if (raw < min) raw = min;
+        if (raw > max) raw = max;
+
+        long now = clock.millis();
+        history.addLast(new long[]{now, raw});
+        while (!history.isEmpty() && now - history.peekFirst()[0] > windowMillis) {
+            history.removeFirst();
+        }
+
+        if (raw >= currentReplicas) return raw;   // scale up / giu nguyen: dung ngay
+        int held = raw;
+        for (long[] entry : history) {
+            int value = (int) entry[1];
+            if (value > held) held = value;       // de xuat lon nhat trong cua so
+        }
+        return held;
+    }
+}`,
+      hints: [
+        'Buoc tolerance: dung {{Math.abs(ratio - 1.0) <= TOLERANCE}} truoc khi kip {{Math.ceil}}; neu nam trong vung chet thi desired = currentReplicas.',
+        'Lich su la cac cap {{(timestampMillis, recommendation)}}; ham {{clock.millis()}} cho thoi gian gia lap, khong dung {{System.currentTimeMillis()}}.',
+        'Chi ap dung "lay gia tri lon nhat trong cua so" khi {{raw < currentReplicas}}; scale up thi tra {{raw}} lien.',
+        'Xoa ban ghi cu: {{while (!history.isEmpty() && now - history.peekFirst()[0] > windowMillis) history.removeFirst();}}',
+      ],
+      explain: `Đây là nguyên văn những gì controller làm, chỉ bỏ phần gọi metrics-server. Ba lớp xử lý chồng nhau: (1) {{ceil}} đảm bảo không cố tình vượt target; (2) tolerance biến ±10% thành nhiễu được tha, chặn flapping; (3) stabilization window làm scale down **chậm hơn** scale up, bằng cách lấy đề xuất lớn nhất còn sống trong cửa sổ — nên một đỉnh tải 30s không đủ để bạn bỏ Pod, và một cụm vừa phình lên phải "nguội" đủ 300s mới được co.
+
+Lỗi người học hay mắc:
+- Quên clamp {{min}}/{{max}} **trước khi** ghi lịch sử, khiến giá trị bị clamp muộn thắng trong {{max(history)}} và giữ cụm ở số ngoài phạm vi.
+- Áp "max trong cửa sổ" cho cả scale up → cụm không bao giờ phình kịp khi tải tăng đột biến.
+- Dùng {{System.currentTimeMillis()}} trong hàm: test sẽ chạy đúng lúc 2h sáng và sai lúc 2h chiều, vì cửa sổ 300s liên quan thời gian thật. Đồng hồ giả là lý do {{Clock}} được truyền vào.
+- Quên rằng lịch sử chứa cả bản ghi vừa ghi, nên lần scale down đầu tiên ở cụm chưa từng phình vẫn trả đúng {{raw}}.
+
+Trả lời phỏng vấn: nêu công thức, rồi nói ngay ba hậu quả thực tế — request CPU phải tồn tại (% tính theo request), tolerance/window giải thích vì sao HPA "chậm" theo thiết kế, và Pod Java lạnh làm metric xấu nên cần warm-up gate.`,
+    },
+  ],
+  check: [
+    { q: 'Công thức desiredReplicas của HPA là gì?', options: ['ceil(current x currentMetric / targetMetric)', 'floor(currentMetric / targetMetric)', 'current + (currentMetric - target)', 'maxReplicas khi metric > target'], answer: 0, explain: 'Tải tỉ lệ nghịch số Pod: desired = current x (currentMetric / target), làm tròn lên bằng ceil để không cố tình vượt target.' },
+    { q: 'Phần trăm CPU mà HPA so với target được tính bằng cách nào?', options: ['usage chia cho CPU limit', 'usage chia cho CPU request', 'usage chia cho số core của node', 'usage chia cho CPU của Pod lâu đời nhất'], answer: 1, explain: 'Kubernetes dùng requests.cpu làm mẫu số. Không đặt request thì HPA theo CPU không hoạt động.' },
+    { q: 'Stabilization window 300s (mặc định) áp dụng cho hướng nào?', options: ['Cả scale up và scale down', 'Chỉ scale up', 'Chỉ scale down: lấy đề xuất lớn nhất trong cửa sổ', 'Chỉ khi metric là custom'], answer: 2, explain: 'Scale down phải chờ mọi đề xuất cao chết tuổi khỏi cửa sổ 300s; scale up dùng đề xuất ngay để không sập.' },
+    { q: 'Vì sao Pod Java mới khởi động làm HPA theo CPU dễ scale quá mức?', options: ['Vì Pod mới bị metrics-server tính gấp đôi', 'Vì JIT/Spring boot ngốn CPU nên CPU trung bình cao giả lúc chưa nhận tải', 'Vì HPA không biết Pod mới', 'Vì limit CPU bị bỏ qua khi pod mới'], answer: 1, explain: 'Interpreter + JIT compiler và khởi động Spring tiêu thụ CPU lớn trong 1-2 phút đầu, đẩy trung bình lên và trigger thêm Pod — vòng lặp xấu.' },
+  ],
+  related: ['devops-006'],
+  tags: ['Kubernetes', 'HPA', 'Autoscaling', 'tolerance', 'stabilization window', 'JVM warm-up'],
+},
+{
+  id: 'lesson-devops-011',
+  track: 'devops',
+  order: 11,
+  title: 'Canary analysis tự động: so sánh baseline với canary theo error rate và p95, ngưỡng tương đối + tuyệt đối, PROMOTE/CONTINUE/ROLLBACK',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Phân biệt canary **routing** (chia traffic) với canary **analysis** (máy so sánh số liệu hai nhóm rồi quyết định)',
+    'Thiết kế bộ quyết định: ngưỡng tuyệt đối, ngưỡng tương đối so với baseline, sàn tuyệt đối để khỏi chia cho 0, và số mẫu tối thiểu',
+    'Giải thích được vì sao quá ít request thì phải CONTINUE chứ không được ROLLBACK, và vì sao bằng chứng phải tăng theo bước rollout',
+    'Cài đặt {{CanaryJudge.decide(baseline, canary, step)}}, chạy một rollout nhiều bước bằng {{rollout}}',
+  ],
+  body: `### Canary routing khác canary analysis ở đâu
+Bài {{lesson-devops-003}} đã dạy phần **routing**: chia {{10}}% traffic sang bản mới bằng hash ổn định của {{userId}}, và giết release khi error rate vượt một ngưỡng cố định. Phần **analysis** — thứ mà Flagger/Argo Rollouts làm — tinh vi hơn: nó **so sánh cùng lúc hai nhóm** (gọi là {{baseline}} = bản cũ đang ăn {{90}}% và {{canary}} = bản mới ăn {{10}}%) trên cùng cửa sổ thời gian, rồi trả một trong ba quyết định:
+
+- {{PROMOTE}} — tín hiệu tốt, nâng lên bước tiếp theo ({{10}}% → {{25}}% → {{50}}% → {{100}}%).
+- {{CONTINUE}} — **chưa có kết luận**, giữ nguyên %, đợi chu kỳ sau. Đây không phải lỗi, đây là "chưa đủ bằng chứng".
+- {{ROLLBACK}} — tín hiệu xấu, hạ {{0}}% ngay (bản cũ vẫn còn chạy nên rollback chỉ là đổi weight, nhanh hơn nhiều so với deploy lại).
+
+~~~seq
+title: Canary analysis tu dong trong mot chu ky
+actors: Gateway | Stable | Canary | Prometheus | Analyzer
+Gateway -> Canary: 10 phan tram traffic theo userId
+Gateway -> Stable: 90 phan tram traffic con lai
+Canary --> Prometheus: error rate va p95 gan nhan version
+Stable --> Prometheus: cung metric, cung cua so thoi gian
+Analyzer -> Prometheus: query canary so voi baseline
+Prometheus --> Analyzer: hai day so lieu da doi chieu
+Analyzer -> Analyzer: kiem mau toi thieu roi so nguong
+Analyzer -> Gateway: PROMOTE 25, CONTINUE, hoac ROLLBACK 0
+note Analyzer..Gateway: rollback luon tu dong, promote can du bang chung
+~~~
+
+### Ba con số tối thiểu phải có, và ý nghĩa của chúng
+- **error rate** = số request thất bại / tổng request, trong cửa sổ (thường 1-5 phút). Phải tách {{5xx}} khỏi {{4xx}}: client gửi sai dữ liệu không phải regression của bạn.
+- **p95 latency**: sắp xếp toàn bộ thời gian response của cửa sổ rồi lấy giá trị ở vị trí 95%. **p50** là "một nửa số request nhanh hơn mức này" (cảm nhận của đa số), **p95/p99** bắt bệnh đuôi dài: một bản mới thêm {{synchronized}} hay một query N+1 chỉ làm xấu nhóm chậm, p50 vẫn đẹp. Dùng p95 vì nó ổn định hơn p99 khi mẫu ít.
+- **số request (samples)**: cái quyết định hai con số trên có nghĩa gì hay không.
+
+### Vì sao phải so với baseline, không dùng ngưỡng tuyệt đối suông
+Tuyệt đối một mình có hai lỗi kinh điển:
+1. Service của bạn **đã** error rate 3% vì một đối tác hay timeout. Canary 3.2% là "vượt ngưỡng 2%" → rollback oan, trong khi bản mới không xấu hơn gì.
+2. Ngược lại, ngưỡng tuyệt đối 5% quá rộng: baseline 0.1%, canary 4% là tệ hơn 40 lần nhưng vẫn "an toàn" → 100% traffic nhận bản hỏng.
+
+Nên bộ quyết định hiện đại luôn là **cặp**: một trần tuyệt đối (bảo vệ khỏi thảm họa) và một ngưỡng tương đối so với baseline (bắt regression thật).
+
+### Vì sao ngưỡng tương đối suông cũng hỏng: sàn tuyệt đối
+Nếu baseline error rate = {{0}} (một đêm yên tĩnh, không lỗi gì), thì {{1.5 x baseline = 0}} — canary chỉ cần **một** request lỗi là "vượt ngưỡng tương đối" và bị giết. Chia cho 0 là bug thiết kế phổ biến nhất của canary tự viết. Vì vậy, so sánh tương đối chỉ có nghĩa khi canary đã vượt một **sàn tuyệt đối nhỏ** (ví dụ {{1}}% lỗi, {{120}}ms p95). Sàn đó chính là "mức mà tôi chấp nhận dù baseline tốt cỡ nào".
+
+Bộ quy tắc của {{CanaryJudge}} (áp dụng cho cả error rate và p95):
+{{breach = (canary > CEILING && baseline <= CEILING) || (canary > FLOOR && canary > REL_FACTOR x baseline)}}
+
+- {{CEILING}}: trần tuyệt đối. Canary vượt là nghi phạm ngay — **nhưng chỉ khi baseline chưa vượt trần**, vì không được phạt canary vì bệnh sẵn của bản cũ.
+- {{FLOOR}}: sàn tuyệt đối để phép so sánh tương đối không chia cho 0.
+- {{REL_FACTOR}}: hệ số tương đối, 1.5 là mức thường dùng (canary tệ hơn baseline 50%).
+
+Ví dụ số, {{REL_FACTOR = 1.5}}, error {{FLOOR = 1}}%, {{CEILING = 5}}%:
+
+| baseline | canary | Trần tuyệt đối? | Tương đối? | Kết luận |
+|---|---|---|---|---|
+| 0.2% | 0.5% | không (0.5 < 5) | không (0.5 < 1% sàn) | tốt, PROMOTE |
+| 0.2% | 1.5% | không | có (1.5 > 1% và > 0.3%) | ROLLBACK |
+| 0% | 0.4% | không | không (dưới sàn) | PROMOTE — một vài lỗi chưa phải bằng chứng |
+| 9% | 10% | không (baseline đã vượt trần) | không (10 < 13.5) | PROMOTE — canary không tệ hơn baseline |
+| 1% | 8% | có | có | ROLLBACK |
+
+### Số mẫu tối thiểu: phần thống kê mà interview muốn nghe
+Error rate là một **ước lượng từ mẫu**, không phải sự thật. Với {{n}} request và tỉ lệ lỗi thật {{p}}, độ lệch chuẩn của error rate quan sát được xấp xỉ {{sqrt(p(1-p)/n)}}. Với {{p = 0.01}}:
+- {{n = 20}}: sai số ~2.2% — nghĩa là quan sát 0% hay 5% đều bình thường. Kết luận gì cũng chỉ là đoán mò.
+- {{n = 200}}: sai số ~0.7%.
+- {{n = 1000}}: sai số ~0.3% — lúc đó "canary 1.2% so với baseline 0.4%" mới là bằng chứng.
+
+Quy tắc ngón tay cái: cần đủ mẫu để **kỳ vọng thấy ít nhất vài lỗi** nếu tỉ lệ lỗi thật bằng ngưỡng; và p95 luôn cần mẫu lớn hơn vì nó lấy từ đuôi phân bố. Vì vậy bộ quyết định phải có {{MIN_SAMPLES}} cho **cả hai phía** (thiếu mẫu từ baseline thì cũng không có gì mà so).
+
+### Mẫu tối thiểu phải tăng theo bước rollout
+Logic cần nói được trong phỏng vấn: bước {{10}}% là thí nghiệm rẻ, sai thì rollback mất {{10}}% traffic; bước {{100}}% là đánh cược mọi thứ. Nên yêu cầu bằng chứng phải đi lên cùng blast radius. Trong bài tập, {{requiredSamples(step) = MIN_SAMPLES x max(1, ceil(step / 25))}}: {{10}}% và {{25}}% cần {{100}} mẫu, {{50}}% cần {{200}}, {{100}}% cần {{400}}. Chưa đủ mẫu thì kết luận duy nhất đúng là {{CONTINUE}} — tuyệt đối không {{PROMOTE}} và càng không {{ROLLBACK}}.
+
+~~~java
+// khung so sánh: ba nhịp, theo đúng thứ tự
+Decision decide(Metrics base, Metrics can, int step) {
+    long need = requiredSamples(step);
+    // chưa đủ mẫu thì chưa kết luận gì, dù số liệu trông rất xấu
+    if (can.requests < need || base.requests < need) return Decision.CONTINUE;
+    if (breach(base.errorRate, can.errorRate, ERR_CEILING, ERR_FLOOR)) return Decision.ROLLBACK;
+    if (breach(base.p95Millis, can.p95Millis, LAT_CEILING_MS, LAT_FLOOR_MS)) return Decision.ROLLBACK;
+    return Decision.PROMOTE;
+}
+~~~
+
+### Bẫy production hay gặp
+- **Rollback vì quá ít mẫu**: 12 request, 3 lỗi = error rate 25% → giết release lúc 2h sáng. Sai số mẫu (bảng trên) giải thích tại sao đây là hành vi sai.
+- **So sánh không cùng cửa sổ**: lấy canary 5 phút vừa rồi so với baseline "tuần trước". Traffic ban đêm khác ban ngày, user khác nhóm; phải so **hai nhóm chạy song song, cùng thời điểm**.
+- **Quên warm-up JVM**: canary có 3 Pod mới, phút đầu JIT/Spring boot làm p95 gấp 3 → rollback oan, y hệt bẫy của HPA. Khắc phục: chờ {{minReadySeconds}} và gate warm-up xong mới bắt đầu chu kỳ phân tích, hoặc cho vài chu kỳ đầu trọng số thấp hơn.
+- **Metric không có nhãn version**: nếu Prometheus chỉ có error rate gộp thì canary lỗi 10% chỉ làm số gộp tăng 1%. Mọi metric/trace/log phải có label {{version}} hoặc header {{X-Version}} do gateway gắn.
+- **Tăng % giữa chừng làm đổi tập user**: nếu routing dùng random thay vì hash ổn định, khi nâng {{10}}% lên {{25}}% thì tập user đổi chỗ, số liệu hai bước không so được với nhau và user nhảy version giữa phiên.
+- **Một chỉ số nói dối**: canary giảm error rate nhưng tăng p95 vì nó... retry nhiều hơn. Phải xem đồng thời và bắt **chuỗi** check đạt ({{consecutiveSuccess}}), không chỉ một chu kỳ đẹp.
+- **Không cho phép con người dừng**: luôn có nút "pause/abort" và gate thủ công ở bước {{50}}% hoặc {{100}}% với service tiền bạc, vì máy không biết hôm nay là ngày quyết toán.
+
+### Liên hệ phỏng vấn
+Câu hỏi hay gặp: "Bạn tự động hoá quyết định promote/rollback thế nào, và khi nào nó cho kết quả sai?" — trả lời: so canary với baseline **cùng cửa sổ** trên error rate (tách {{5xx}}/{{4xx}}) và p95, dùng **cặp** ngưỡng tuyệt đối + tương đối, bắt mẫu tối thiểu cho cả hai phía và tăng theo blast radius; false positive đến từ mẫu nhỏ, warm-up chưa xong, hoặc chia cho baseline = 0; false negative đến từ metric không gắn nhãn version, cửa sổ quá dài làm loãng sự cố, hoặc user canary không đại diện (chỉ toàn user nhẹ). Nêu được **cả hai chiều sai lầm** là dấu hiệu người từng vận hành canary thật.
+
+> Senior tip: Đặt {{CONTINUE}} thành trạng thái hữu hạn, không vô hạn: ví dụ tối đa 5 chu kỳ CONTINUE rồi rollback vì "mù số liệu" — canary nằm im ở 10% nhiều giờ là một kiểu sự cố ngụy trang, vì bạn đang chạy hai version song song với schema chung mà không ai còn nhìn.`,
+  exercises: [
+    {
+      title: 'CanaryJudge: decide(baseline, canary, step) và mô phỏng rollout 10/25/50/100',
+      prompt: `Cài đặt bộ quyết định canary. {{Decision}} và {{Metrics}} đã có sẵn ({{Metrics}} ném {{IllegalArgumentException}} khi {{requests < 0}}, {{errorRate}} ngoài {{0..1}} hoặc {{p95Millis < 0}} — không cần sửa).
+
+Hằng số có sẵn trong {{CanaryJudge}}: {{MIN_SAMPLES = 100}}, {{ERR_CEILING = 0.05}}, {{ERR_FLOOR = 0.01}}, {{LAT_CEILING_MS = 500.0}}, {{LAT_FLOOR_MS = 120.0}}, {{REL_FACTOR = 1.5}}.
+
+- {{requiredSamples(step)}}: ném {{IllegalArgumentException}} khi {{step < 1}} hoặc {{step > 100}}; trả về {{MIN_SAMPLES x max(1, ceil(step / 25.0))}} — bằng chứng phải tăng theo blast radius.
+- {{decide(baseline, canary, step)}}: ném {{IllegalArgumentException}} khi một trong hai {{Metrics}} là {{null}}. Sau đó:
+  1. Nếu {{canary.requests < requiredSamples(step)}} **hoặc** {{baseline.requests < requiredSamples(step)}} → trả {{CONTINUE}} (chưa đủ mẫu, dù số liệu xấu tới đâu).
+  2. Nếu vi phạm ở error rate **hoặc** ở p95 → trả {{ROLLBACK}}.
+  3. Ngược lại → {{PROMOTE}}.
+- {{breach(baseline, canary, ceiling, floor)}} (hàm private dùng chung hai chỉ số): trả {{true}} khi {{canary > ceiling}} và {{baseline <= ceiling}}, **hoặc** khi {{canary > floor}} và {{canary > baseline x REL_FACTOR}}.
+- {{rollout(baseline, canaryByStep, steps)}}: ném {{IllegalArgumentException}} khi {{canaryByStep == null}} hoặc {{steps == null}} hoặc độ dài không khớp. Duyệt các bước **theo thứ tự**, gọi {{decide}} cho từng cặp {{(canaryByStep.get(i), steps[i])}}, tích luỹ vào danh sách kết quả và **dừng ngay** khi gặp quyết định khác {{PROMOTE}} (rollback hoặc phải chờ). Trả về danh sách quyết định đã tích luỹ — rollout lành mạnh qua 4 bước trả về 4 phần tử {{PROMOTE}}.`,
+      starter: `import java.util.*;
+
+enum Decision { PROMOTE, CONTINUE, ROLLBACK }
+
+final class Metrics {
+    final long requests;
+    final double errorRate;
+    final double p95Millis;
+
+    Metrics(long requests, double errorRate, double p95Millis) {
+        if (requests < 0) throw new IllegalArgumentException("requests phai >= 0");
+        if (!(errorRate >= 0 && errorRate <= 1)) throw new IllegalArgumentException("errorRate phai trong 0..1");
+        if (p95Millis < 0) throw new IllegalArgumentException("p95Millis phai >= 0");
+        this.requests = requests;
+        this.errorRate = errorRate;
+        this.p95Millis = p95Millis;
+    }
+}
+
+class CanaryJudge {
+    static final long MIN_SAMPLES = 100;
+    static final double ERR_CEILING = 0.05;
+    static final double ERR_FLOOR = 0.01;
+    static final double LAT_CEILING_MS = 500.0;
+    static final double LAT_FLOOR_MS = 120.0;
+    static final double REL_FACTOR = 1.5;
+
+    long requiredSamples(int step) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    Decision decide(Metrics baseline, Metrics canary, int step) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    List<Decision> rollout(Metrics baseline, List<Metrics> canaryByStep, int[] steps) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `import java.util.*;
+
+public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(int expected, int actual) {
+        if (expected != actual) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void dec(Decision expected, Decision actual) {
+        if (expected != actual) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    public static void main(String[] args) {
+        CanaryJudge j = new CanaryJudge();
+        check("canary lanh o buoc 10 thi PROMOTE", () -> {
+            dec(Decision.PROMOTE, j.decide(new Metrics(1000, 0.002, 90), new Metrics(200, 0.003, 100), 10));
+        });
+        check("qua it request thi CONTINUE du loi 20 phan tram", () -> {
+            dec(Decision.CONTINUE, j.decide(new Metrics(1000, 0.002, 90), new Metrics(50, 0.20, 900), 10));
+        });
+        check("baseline qua it mau thi cung CONTINUE", () -> {
+            dec(Decision.CONTINUE, j.decide(new Metrics(30, 0.001, 90), new Metrics(500, 0.002, 95), 10));
+        });
+        check("buoc lon hon doi nhieu bang chung hon", () -> {
+            Metrics base = new Metrics(1000, 0.002, 90);
+            Metrics can = new Metrics(150, 0.002, 92);
+            dec(Decision.PROMOTE, j.decide(base, can, 25));
+            dec(Decision.CONTINUE, j.decide(base, can, 50));
+        });
+        check("regression tuong doi cua error rate thi ROLLBACK", () -> {
+            dec(Decision.ROLLBACK, j.decide(new Metrics(1000, 0.002, 90), new Metrics(400, 0.015, 95), 25));
+        });
+        check("vuot tran tuy doi cua error rate thi ROLLBACK", () -> {
+            dec(Decision.ROLLBACK, j.decide(new Metrics(1000, 0.010, 90), new Metrics(600, 0.080, 95), 25));
+        });
+        check("baseline da benh nang khong bi phat canary", () -> {
+            dec(Decision.PROMOTE, j.decide(new Metrics(1000, 0.090, 90), new Metrics(600, 0.100, 95), 25));
+        });
+        check("p95 regression thi ROLLBACK", () -> {
+            dec(Decision.ROLLBACK, j.decide(new Metrics(1000, 0.002, 100), new Metrics(500, 0.002, 200), 25));
+        });
+        check("noise duoi san khong bi coi la loi", () -> {
+            dec(Decision.PROMOTE, j.decide(new Metrics(1000, 0.0, 40), new Metrics(500, 0.008, 55), 25));
+        });
+        check("rollout lanh manh duoc bo 4 buoc", () -> {
+            Metrics base = new Metrics(5000, 0.002, 90);
+            List<Decision> d = j.rollout(base, Arrays.asList(
+                new Metrics(200, 0.002, 95), new Metrics(500, 0.003, 100),
+                new Metrics(1000, 0.002, 98), new Metrics(2500, 0.003, 96)), new int[]{10, 25, 50, 100});
+            eq(4, d.size());
+            dec(Decision.PROMOTE, d.get(3));
+        });
+        check("rollout dung ngay o buoc rollback", () -> {
+            Metrics base = new Metrics(5000, 0.002, 90);
+            List<Decision> d = j.rollout(base, Arrays.asList(
+                new Metrics(200, 0.002, 95), new Metrics(600, 0.030, 100),
+                new Metrics(1000, 0.002, 98), new Metrics(2500, 0.003, 96)), new int[]{10, 25, 50, 100});
+            eq(2, d.size());
+            dec(Decision.ROLLBACK, d.get(1));
+        });
+        check("buoc 100 doi 400 mau", () -> {
+            dec(Decision.CONTINUE, j.decide(new Metrics(5000, 0.002, 90), new Metrics(300, 0.002, 90), 100));
+            dec(Decision.PROMOTE, j.decide(new Metrics(5000, 0.002, 90), new Metrics(400, 0.002, 90), 100));
+        });
+        check("dau vao hop ném IllegalArgumentException", () -> {
+            try { j.decide(new Metrics(100, 0.0, 10), new Metrics(100, 0.0, 10), 0); throw new AssertionError("step 0 phai bi tu choi"); }
+            catch (IllegalArgumentException e) { }
+            try { new Metrics(-1, 0.0, 10); throw new AssertionError("requests am phai bi tu choi"); }
+            catch (IllegalArgumentException e) { }
+            try { j.rollout(new Metrics(100, 0.0, 10), Arrays.asList(new Metrics(100, 0.0, 10)), new int[]{10, 25}); throw new AssertionError("size lech phai bi tu choi"); }
+            catch (IllegalArgumentException e) { }
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.*;
+
+enum Decision { PROMOTE, CONTINUE, ROLLBACK }
+
+final class Metrics {
+    final long requests;
+    final double errorRate;
+    final double p95Millis;
+
+    Metrics(long requests, double errorRate, double p95Millis) {
+        if (requests < 0) throw new IllegalArgumentException("requests phai >= 0");
+        if (!(errorRate >= 0 && errorRate <= 1)) throw new IllegalArgumentException("errorRate phai trong 0..1");
+        if (p95Millis < 0) throw new IllegalArgumentException("p95Millis phai >= 0");
+        this.requests = requests;
+        this.errorRate = errorRate;
+        this.p95Millis = p95Millis;
+    }
+}
+
+class CanaryJudge {
+    static final long MIN_SAMPLES = 100;
+    static final double ERR_CEILING = 0.05;
+    static final double ERR_FLOOR = 0.01;
+    static final double LAT_CEILING_MS = 500.0;
+    static final double LAT_FLOOR_MS = 120.0;
+    static final double REL_FACTOR = 1.5;
+
+    long requiredSamples(int step) {
+        if (step < 1 || step > 100) throw new IllegalArgumentException("step phai trong 1..100");
+        return MIN_SAMPLES * Math.max(1L, (long) Math.ceil(step / 25.0));
+    }
+
+    Decision decide(Metrics baseline, Metrics canary, int step) {
+        if (baseline == null || canary == null) throw new IllegalArgumentException("thieu Metrics");
+        long need = requiredSamples(step);
+        if (canary.requests < need || baseline.requests < need) return Decision.CONTINUE;
+        if (breach(baseline.errorRate, canary.errorRate, ERR_CEILING, ERR_FLOOR)) return Decision.ROLLBACK;
+        if (breach(baseline.p95Millis, canary.p95Millis, LAT_CEILING_MS, LAT_FLOOR_MS)) return Decision.ROLLBACK;
+        return Decision.PROMOTE;
+    }
+
+    private boolean breach(double baseline, double canary, double ceiling, double floor) {
+        if (canary > ceiling && baseline <= ceiling) return true;   // thảm họa tuyệt đối, nhưng chỉ khi baseline chưa vượt trần
+        return canary > floor && canary > baseline * REL_FACTOR;    // regression tương đối, có sàn để khỏi chia cho 0
+    }
+
+    List<Decision> rollout(Metrics baseline, List<Metrics> canaryByStep, int[] steps) {
+        if (canaryByStep == null || steps == null) throw new IllegalArgumentException("thieu du lieu");
+        if (canaryByStep.size() != steps.length) throw new IllegalArgumentException("so quan sat khop so buoc");
+        List<Decision> decisions = new ArrayList<>();
+        for (int i = 0; i < steps.length; i++) {
+            Decision d = decide(baseline, canaryByStep.get(i), steps[i]);
+            decisions.add(d);
+            if (d != Decision.PROMOTE) break;   // rollback hoặc đang chờ: dừng rollout
+        }
+        return decisions;
+    }
+}`,
+      hints: [
+        'Cuoi cung theo thu tu: kiem mau toi thieu truoc, roi kiem vi pham, roi PROMOTE. Chua du mau thi khong duoc quyet dinh gi ca.',
+        'requiredSamples: dung {{Math.ceil(step / 25.0)}} (chia cho so thuc 25.0, khong phai 25 nguyen) roi nhan MIN_SAMPLES.',
+        'breach dung cho ca error rate va p95: {{canary > ceiling && baseline <= ceiling}} la nhanh tuy doi, {{canary > floor && canary > baseline * REL_FACTOR}} la nhanh tuong doi.',
+        'rollout: dung {{break}} ngay khi quyet dinh khac PROMOTE, neu khong test "dung o buoc rollback" se thay 4 phan tu thay vi 2.',
+      ],
+      explain: `Ba nhịp của {{decide}} chính là cách Argo Rollouts/Flagger đặt {{AnalysisTemplate}}. Nhịp 1 (mẫu tối thiểu) chặn false positive kinh điển: 3 lỗi trên 12 request là 25% error rate nhưng chưa có nghĩa gì về mặt thống kê. Nhịp 2 đặt **hai lớp ngưỡng chồng nhau**: trần tuyệt đối bắt thảm họa, hệ số tương đối bắt regression mà ngưỡng tuyệt đối bỏ sót; cả hai đều cần một điều kiện phụ — trần tuyệt đối chỉ được quyền giết khi baseline chưa vượt trần (không phạt canary vì bệnh sẵn), còn so sánh tương đối chỉ được quyền kết luận khi canary vượt một sàn tuyệt đối nhỏ (tránh "1.5 x 0 = 0" làm một request lỗi thành tội đồ). Nhịp 3 tăng số mẫu theo bước, vì blast radius tăng thì yêu cầu bằng chứng phải tăng.
+
+Lỗi hay gặp khi viết:
+- Quên kiểm tra mẫu của **baseline**: thiếu số liệu bên kia thì không có gì để so, nhưng code thường chỉ nhìn canary.
+- Dùng {{>=}} thay {{>}}: đúng ngưỡng thì chưa phải vi phạm, chọn nhất quán để test không nhạy cảm với con số tròn.
+- Chia cho baseline không chặn {{baseline == 0}} → rollout chết oan vào lúc nửa đêm khi traffic thấp và baseline hoàn hảo.
+- Cho {{CONTINUE}} là {{ROLLBACK}} (hoặc ngược lại): hai trạng thái này khác nhau về hành động, một bên là chờ, một bên là giết release.
+- {{rollout}} không dừng ở quyết định đầu tiên khác {{PROMOTE}}, khiến bản xấu vẫn được "promote" ở các bước sau.
+
+Khi trả lời phỏng vấn, hãy nói bằng ba phạm trù lỗi: **false positive** (mẫu nhỏ, warm-up JVM chưa xong, baseline = 0, cửa sổ lệch nhau), **false negative** (metric thiếu nhãn version, cửa sổ dài quá làm loãng sự cố, user canary không đại diện), và **an toàn vận hành** (rollback luôn tự động, promote tới 100% nên có gate thủ công cho service tiền; migration phải expand-contract để còn đường về).`,
+    },
+  ],
+  check: [
+    { q: 'Canary analysis khác gì canary routing?', options: ['Analysis là chia % traffic; routing là viết metric', 'Analysis so số liệu hai nhóm rồi quyết định PROMOTE/CONTINUE/ROLLBACK; routing chỉ quyết request nào sang bản mới', 'Hai cái là một', 'Analysis chỉ dùng cho blue-green'], answer: 1, explain: 'Routing quyết định đường đi của request. Analysis là bộ máy quan sát: so canary với baseline cùng cửa sổ rồi ra quyết định rollout.' },
+    { q: 'Canary mới có 12 request, 3 lỗi (25%). Nên làm gì?', options: ['ROLLBACK ngay', 'CONTINUE: chưa đủ mẫu để kết luận', 'PROMOTE vì lỗi chắc do bản mới', 'Gấp đôi traffic để đo nhanh'], answer: 1, explain: 'Với mẫu nhỏ, sai số của error rate rất lớn (cỡ vài %), chưa phải bằng chứng. Tăng traffic khi chưa hiểu nguyên nhân chỉ to thêm hỏng.' },
+    { q: 'Vì sao cần sàn tuyệt đối (floor) bên cạnh ngưỡng tương đối?', options: ['Để bắt trường hợp baseline = 0: 1.5 x 0 = 0 nên một request lỗi cũng "vượt ngưỡng"', 'Để tăng tốc rollback', 'Vì p95 luôn lớn hơn error rate', 'Để giảm số mẫu tối thiểu'], answer: 0, explain: 'So sánh tương đối chia cho baseline; baseline sạch làm mọi con số nhỏ thành "vô lần tệ hơn". Floor quy định mức tôi chấp nhận bất kể baseline.' },
+    { q: 'Vì sao không phạt canary khi nó vượt trần tuyệt đối mà baseline cũng đã vượt trần?', options: ['Vì trần tuyệt đối chỉ áp dụng cho p95', 'Vì đó là bệnh sẵn của hệ thống, canary không tạo ra; rollback không cải thiện gì', 'Vì baseline luôn đúng', 'Vì promotion không liên quan error rate'], answer: 1, explain: 'Mục tiêu của canary là phát hiện **regression do bản mới**. Nếu baseline đã hỏng sẵn, giết canary không làm user tốt hơn; phải mở issue cho bệnh nền.' },
+  ],
+  related: ['devops-019', 'devops-042', 'devops-054'],
+  tags: ['Canary', 'Argo Rollouts', 'Flagger', 'Error budget', 'Progressive delivery', 'Observability'],
+},
 );
 
