@@ -4916,7 +4916,51 @@ javac --release 21 -d out $(find src -name "*.java")
   topic: 'core',
   level: 'senior',
   q: '{{equals}}/{{hashCode}} với entity JPA và với kế thừa: dùng {{getClass()}} hay {{instanceof}}? Tại sao đưa entity vào {{HashSet}} trước khi {{persist}} là bug thật?',
-  a: `**Tóm tắt:** Với entity JPA, không nên dùng id tự sinh làm phần tham gia {{hashCode}}/{{equals}} nếu id có thể {{null}} trước khi {{persist}}. Với kế thừa, dùng {{instanceof}} có thể ảnh hưởng tính đối xứng còn {{getClass()}} chặt chẽ hơn. Đưa entity có hashCode phụ thuộc id null vào {{HashSet}}/{{HashMap}} trước khi persist rồi gán id sau dễ gây mất phần tử.`,
+  a: `**Tóm tắt:** Với entity JPA, equality phải giữ ổn định qua vòng đời transient → managed → detached. Nếu hashCode phụ thuộc vào id tự sinh (null trước persist), entity đã add vào HashSet sẽ bị "lạc" khi id được gán. Với kế thừa, dùng {{getClass()}} chặt chẽ hơn {{instanceof}} về tính đối xứng, nhưng cần cân nhắc proxy Hibernate.
+
+### Vấn đề với id tự sinh
+- Khi {{new Entity()}} thì id là null. Nếu hashCode dựa trên id, hai entity mới tạo có cùng hashCode (null) → bị coi là trùng trong HashSet.
+- Sau {{persist}}, id được gán → hashCode đổi → entity nằm ở bucket cũ, {{contains()}} và {{remove()}} không tìm thấy.
+- Đây là bug thật: add entity vào Set, persist, rồi remove → không xoá được, memory leak.
+
+### Business key
+- Dùng thuộc tính duy nhất, bất biến và có sẵn từ lúc tạo (mã quốc gia, email đã verify).
+- Ví dụ: {{Country.equals}} so sánh {{code}} (ISO 3166), không cần persist.
+- Không phải entity nào cũng có business key → khi đó cần chiến lược khác.
+
+### getClass() vs instanceof
+~~~java
+// getClass(): chỉ bằng nhau nếu cùng class
+@Override public boolean equals(Object o) {
+    if (this == o) return true;
+    if (o == null || getClass() != o.getClass()) return false;
+    return Objects.equals(id, ((Entity) o).id);
+}
+// instanceof: cho phép proxy (subclass) so sánh được
+if (!(o instanceof Entity e)) return false;
+~~~
+- {{getClass()}} đảm bảo tính đối xứng: nếu a.equals(b) thì b.equals(a) luôn. Với {{instanceof}}, subclass có thể equals superclass nhưng superclass không equals subclass → vi phạm đối xứng.
+- Tuy nhiên Hibernate lazy proxy là subclass của entity → {{getClass()}} coi proxy và entity thật là khác nhau. Vì vậy cần {{instanceof}} hoặc {{Hibernate.getClass(o)}}.
+
+### Strategy an toàn
+~~~java
+@Override public boolean equals(Object o) {
+    if (this == o) return true;
+    if (!(o instanceof Account e)) return false;
+    return id != null && id.equals(e.getId());   // id null → chỉ bằng chính nó
+}
+@Override public int hashCode() {
+    return Account.class.hashCode();   // ổn định, không đổi khi id được cấp
+}
+~~~
+- Không đưa association/lazy collection vào equals/hashCode (kích hoạt query, recursion, N+1).
+- Viết test: entity transient, managed, detached, proxy, hai instance cùng id.
+
+### Pitfall
+- Dùng {{@Data}} (Lombok) sinh hashCode theo mọi field, trong đó có id → entity bị mất khỏi Set sau persist.
+- Đưa entity vào Set trước khi persist rồi gọi {{set}} để thay đổi → hashCode đổi.
+
+> Senior tip: chọn một quy tắc cho toàn hệ thống và kiểm tra bằng test với HashSet trước/sau persist. Equality của entity là quyết định identity, không chỉ là boilerplate.`,
   follow: ['Tại sao Hibernate khuyên dùng business key thay vì id trong equals/hashCode?', 'Dùng getClass() vs instanceof ảnh hưởng thế nào đến tính đối xứng của equals?', 'Nếu entity đã nằm trong HashSet trước khi persist và hashCode đổi, làm sao khắc phục?'],
   tags: ['equals', 'hashCode', 'JPA', 'entity', 'HashSet']
 },
@@ -4925,7 +4969,32 @@ javac --release 21 -d out $(find src -name "*.java")
   topic: 'core',
   level: 'lead',
   q: 'Generics: PECS, type erasure, heap pollution, {{@SafeVarargs}} và ảnh hưởng khi viết thư viện/API thế nào?',
-  a: `**Tóm tắt:** Type erasure xóa thông tin generic lúc runtime. PECS: Producer Extends, Consumer Super. Heap pollution xảy ra khi trộn raw type/generic sai. {{@SafeVarargs}} chỉ cho static/final/private. Khi viết API, dùng wildcard ở input, type cụ thể ở output, tránh raw type.`,
+  a: `**Tóm tắt:** Generics chỉ kiểm tra lúc compile rồi bị xoá (type erasure) khỏi bytecode. PECS là quy tắc chọn wildcard: Producer Extends, Consumer Super. Heap pollution xảy ra khi trộn raw type với generic, khiến mảng chứa phần tử sai kiểu. {{@SafeVarargs}} chỉ được dùng cho method static/final/private và là cam kết của người viết — compiler không thể kiểm tra được.
+
+### Type erasure
+- {{List<String>}} và {{List<Integer>}} cùng là {{List}} trong bytecode; không thể {{new T()}}, {{instanceof T}}, hay overload chỉ khác type parameter.
+- Compiler chèn cast và bridge method để giữ đa hình. Bridge method của {{Comparable}} là {{compareTo(Object)}} gọi {{compareTo(MyType)}}.
+- Hệ quả: không thể kiểm tra generic runtime; reflection không có thông tin generic đầy đủ (nhưng metadata {{ParameterizedType}} vẫn còn nếu khai báo ở class/field/method — Jackson lợi dụng điều này).
+
+### PECS: Producer Extends, Consumer Super
+- Generic là invariant: {{List<Integer>}} không phải subtype của {{List<Number>}}. Nếu cho phép, ta có thể {{add(3.14)}} vào list Integer.
+- {{? extends T}}: chỉ đọc được {{T}}, không ghi (trừ {{null}}) — dùng cho producer.
+- {{? super T}}: ghi được {{T}}, đọc ra chỉ {{Object}} — dùng cho consumer.
+- {{?}} = {{? extends Object}}: đọc {{Object}}, không ghi.
+- Ví dụ kinh điển: {{Collections.copy(List<? super T> dest, List<? extends T> src)}}.
+
+### Heap pollution
+- Xảy ra khi một mảng generic chứa phần tử không đúng kiểu, nhưng do erasure nên runtime không phát hiện.
+- Ví dụ: {{List<String>[] = new List<?>[10]}} → assign {{List<Integer>}} vào mảng này là runtime error.
+- Dùng raw type ({{List}} không tham số) rồi add element generic vào: {{list.add(123)}} thành công vì raw type bỏ qua kiểm tra, nhưng {{list.get(0)}} sẽ nổ {{ClassCastException}} khi cast.
+- {{@SafeVarargs}} là cam kết: chỉ cho static/final/private method; nếu method không final và có varargs của generic array, caller có thể ghi array khác và gây heap pollution sau này.
+
+### Khi viết API
+- Dùng wildcard ở input để người dùng truyền được nhiều loại hơn; output dùng type cụ thể.
+- Không dùng raw type trong API mới; nó tắt kiểm tra compile và gây warning.
+- Tránh varargs generic trong public method nếu không thể đảm bảo an toàn → dùng collection thay vì varargs.
+
+> Senior tip: khi thiết kế thư viện, luôn dùng wildcard ở input (PECS) và type cụ thể ở output. {{@SafeVarargs}} chỉ là cam kết — nếu method không final/static/private, compiler sẽ cảnh báo. Không bao giờ tạo mảng generic {{new T[]}}; dùng {{List<List<T>>}} hoặc {{Array.newInstance}} + cast có kiểm soát.`,
   follow: ['Tại sao không thể tạo mảng generic new T[]?', 'Heap pollution xảy ra thế nào và phát hiện ra sao?', 'Khi nào dùng @SafeVarargs và tại sao chỉ cho static/final/private?'],
   tags: ['generics', 'type erasure', 'PECS', 'heap pollution', 'SafeVarargs']
 },
@@ -4934,7 +5003,47 @@ javac --release 21 -d out $(find src -name "*.java")
   topic: 'core',
   level: 'lead',
   q: '{{BigDecimal}} cho tiền tệ: scale, precision, {{RoundingMode}}, {{equals}} vs {{compareTo}}, phép chia và bug "lệch 1 xu"?',
-  a: `**Tóm tắt:** Với tiền không dùng float/double. {{equals}} so sánh cả scale, {{compareTo}} chỉ so sánh giá trị số. Phép chia không hết phải chỉ định scale và {{RoundingMode}}. Sai scale/rounding là nguyên nhân gây lệch 1 xu.`,
+  a: `**Tóm tắt:** Tiền tệ bắt buộc dùng {{BigDecimal}} vì {{double}}/{{float}} không biểu diễn chính xác số thập phân (0.1 + 0.2 ≠ 0.3). {{equals}} so sánh cả scale và giá trị; {{compareTo}} chỉ so sánh giá trị số học. Phép chia không hết phải chỉ định scale và {{RoundingMode}}. Sai scale/rounding là nguyên nhân gây lệch 1 xu.
+
+### Vì sao không dùng double
+- {{double}} tuân theo IEEE 754 nhị phân: số thập phân hữu hạn (0.1, 19.99) thường thành số lặp vô hạn trong nhị phân ⇒ sai số tròn tích lũy.
+- Ví dụ kinh điển: {{0.1 + 0.2 = 0.30000000000000004}}; tính lãi, chiết khấu sẽ lệch cent và cộng dồn qua nghìn giao dịch thành số lớn.
+- Các chuẩn kế toán/ngân hàng (ISO 4217, PCI DSS) yêu cầu độ chính xác tuyệt đối; {{double}} không đáp ứng được.
+
+### BigDecimal cơ bản
+~~~java
+// Tạo từ String — AN TOÀN
+BigDecimal price = new BigDecimal("19.99");
+
+// Tạo từ double — CẤM
+BigDecimal bad = new BigDecimal(0.1);   // 0.10000000000000000555...
+BigDecimal good = BigDecimal.valueOf(0.1); // dùng Double.toString -> "0.1"
+~~~
+- Luôn dùng constructor nhận {{String}} hoặc {{BigDecimal.valueOf(double)}}.
+- {{scale}} = số chữ số sau dấu phẩy; âm nghĩa là nhân 10^|scale|}.
+
+### equals vs compareTo
+~~~java
+new BigDecimal("1.0").equals(new BigDecimal("1.00"));  // false (scale khác)
+new BigDecimal("1.0").compareTo(new BigDecimal("1.00")); // 0 (giá trị bằng)
+~~~
+- {{equals}} so sánh cả scale và giá trị; {{compareTo}} chỉ so sánh giá trị số học.
+- Dùng {{compareTo}} cho logic nghiệp vụ (so sánh giá, kiểm tra âm/dương); dùng {{equals}} chỉ khi cần biết chính xác định dạng (serial hóa).
+- {{signum()}} trả -1/0/1 tiện cho điều kiện.
+
+### Phép chia và bug "lệch 1 xu"
+- {{divide(divisor)}} không chỉ định scale sẽ nthrows {{ArithmeticException}} nếu không chia hết (non-terminating decimal).
+- {{divide(divisor, scale, RoundingMode.HALF_UP)}} luôn chỉ định scale và rounding mode.
+- Bug "lệch 1 xu" xảy ra khi: dùng {{double}} trung gian, hoặc rounding mode không phù hợp (ví dụ {{HALF_DOWN}} khi should là {{HALF_UP}}), hoặc scale khác nhau giữa các bước tính.
+- Tính tổng nhiều khoản với tỷ lệ phần trăm: mỗi khoản round riêng rẽ → lệch lũyỹ. Cách đúng: tính tổng bằng {{BigDecimal}} rồi round một lần cuối.
+
+### Pitfall production
+- Quên {{divide}} kèm scale + rounding ⇒ exception lúc runtime khi chia 10/3.
+- Lưu DB: cột {{NUMERIC(19,4)}} hoặc {{DECIMAL}}; đừng dùng {{FLOAT}}/{{DOUBLE}}. Hibernate mapping {{@Column(precision = 19, scale = 4)}}.
+- Tiền tệ đa ngoại tệ: luôn kèm {{Currency}} (ISO 4217), không cộng/trừ tiền tệ khác nhau.
+- Tự viết {{Money}} wrapper (record {{Money(BigDecimal amount, Currency currency)}}) với validation ở constructor; tập trung logic làm tròn, chuyển đổi, so sánh vào một chỗ.
+
+> Senior tip: viết wrapper {{Money}} với validation ở constructor; tập trung logic làm tròn, chuyển đổi, so sánh vào một chỗ để tránh rải rác {{RoundingMode.HALF_UP}} throughout codebase. Với báo cáo tài chính, {{RoundingMode.HALF_EVEN}} (banker's rounding) là chuẩn kế toán, nhưng phải đồng bộ toàn hệ thống.`,
   follow: ['Tại sao BigDecimal("1.00").equals(BigDecimal("1.0")) trả false?', 'Khi nào dùng RoundingMode.HALF_EVEN thay vì HALF_UP?', 'Làm sao tránh bug lệch 1 xu khi tính tổng nhiều khoản với tỷ lệ phần trăm?'],
   tags: ['BigDecimal', 'money', 'rounding', 'equals', 'compareTo']
 },
@@ -4943,7 +5052,57 @@ javac --release 21 -d out $(find src -name "*.java")
   topic: 'collections',
   level: 'senior',
   q: '{{Iterator}} fail-fast, {{ConcurrentModificationException}} trong đơn luồng, {{removeIf}} và {{CopyOnWriteArrayList}}: khi nào hợp?',
-  a: `**Tóm tắt:** Fail-fast dùng modCount. CME có thể xảy ra trong đơn luồng khi xóa qua collection trong khi iterate. {{removeIf}} an toàn hơn. {{CopyOnWriteArrayList}} phù hợp đọc nhiều, ghi rất ít (iterator snapshot, không ném CME, ghi tốn copy).`,
+  a: `**Tóm tắt:** Fail-fast iterator kiểm tra {{modCount}} và nthrows {{ConcurrentModificationException}} nếu collection bị sửa ngoài iterator. Fail-safe (weakly consistent) như {{ConcurrentHashMap}} hay snapshot như {{CopyOnWriteArrayList}} thì không nthrows nhưng có thể thấy dữ liệu cũ/không đầy đủ.
+
+### Fail-fast cơ chế
+- {{ArrayList}}, {{HashMap}}, {{HashSet}}... có field {{modCount}} tăng mỗi lần thay đổi cấu trúc.
+- Iterator lưu {{expectedModCount}}; mỗi {{next()}}/{{remove()}} so sánh, lệch thì nthrows CME ngay.
+- Đây là **best-effort detection**, không phải cơ chế đồng bộ: không đảm bảo phát hiện mọi trường hợp, nhất là đa luồng.
+- CME có thể xảy ra cả trong **một thread** khi vừa for-each vừa {{list.remove(x)}} hoặc {{map.put}}.
+
+### Dự đoán output
+~~~java
+List<String> l1 = new ArrayList<>(List.of("a", "b", "c"));
+for (String s : l1) {
+    if (s.equals("a")) l1.remove(s);
+}
+// Ném ConcurrentModificationException
+
+List<String> l2 = new ArrayList<>(List.of("a", "b", "c"));
+for (String s : l2) {
+    if (s.equals("b")) l2.remove(s);
+}
+System.out.println(l2);
+// Output: [a, c]   -> KHÔNG nthrows lỗi, và "c" không bao giờ được kiểm tra
+~~~
+Vì sao trường hợp 2 không lỗi: sau khi xoá "b", size còn 2, con trỏ {{cursor}} của iterator cũng là 2. {{hasNext()}} chỉ kiểm tra {{cursor != size}} nên trả về false và vòng lặp kết thúc trước khi {{next()}} kịp kiểm tra {{modCount}}. Code "chạy được" nhưng bỏ sót phần tử cuối, một bug im lặng nguy hiểm hơn cả CME.
+
+### removeIf — giải pháp chuẩn
+~~~java
+orders.removeIf(Order::isExpired);
+balances.entrySet().removeIf(e -> e.getValue().signum() == 0);
+~~~
+- {{removeIf}} (Java 8+) là O(n) tổng, dịch mảng một lần, an toàn cả về mặt logic và hiệu năng.
+- Iterator.remove() vẫn hợp lệ khi cần logic phức tạp (audit trước khi xoá), nhưng mỗi lần xoá O(n) với ArrayList, tổng có thể O(n²).
+
+### CopyOnWriteArrayList
+- Mọi thao tác ghi ({{add}}, {{set}}, {{remove}}) tạo mảng mới rồi thay reference {{volatile}}; đọc không lock.
+- Iterator là **snapshot**: không nthrows CME, không {{remove}}; có thể thấy dữ liệu cũ.
+- Chi phí ghi O(n) cả về thời gian và bộ nhớ; ghi liên tục ⇒ GC pressure rất lớn.
+- Hợp: danh sách listener/observer ít thay đổi, cấu hình read-mostly. Không hợp: cache, queue, collection lớn cập nhật thường xuyên.
+
+### Cách tránh
+- Sửa qua iterator ({{it.remove()}}, {{it.set()}}).
+- Dùng {{removeIf}}, {{replaceAll}}, {{computeIfPresent}}.
+- Với map, dùng {{entrySet().removeIf}}, {{map.compute}} thay vì remove trong for-each.
+- Đa luồng: dùng collection concurrent đúng loại, hoặc copy sang list mới trước khi duyệt nếu chỉ cần snapshot.
+
+### Pitfall
+- Bắt CME rồi bỏ qua là che bug; CME là tín hiệu logic sai, không phải lỗi tạm thời để retry.
+- Duyệt {{subList}} rồi sửa list gốc cũng gây CME.
+- Sửa collection trong {{forEach}} của chính nó cũng CME (trừ concurrent).
+
+> Senior tip: trong code review, ưu tiên {{removeIf}}/{{computeIfAbsent}} vì vừa gọn vừa tránh CME; với CHM, đừng dựa vào {{size()}} để dừng vòng lặp trong môi trường đồng thời — dùng kết quả trả về của thao tác hoặc đếm cục bộ. Với batch lớn, chuyển từ vòng {{Iterator.remove}} sang {{removeIf}} có thể giảm thời gian từ vài giây xuống vài mili-giây.`,
   follow: ['Tại sao for-each có thể gây ConcurrentModificationException?', 'Iterator.remove() khác collection.remove() thế nào?', 'CopyOnWriteArrayList iterator tại sao không ném CME?'],
   tags: ['Iterator', 'fail-fast', 'ConcurrentModificationException', 'removeIf', 'CopyOnWriteArrayList']
 },
@@ -4952,7 +5111,41 @@ javac --release 21 -d out $(find src -name "*.java")
   topic: 'collections',
   level: 'senior',
   q: 'Sắp xếp/so sánh: {{Comparator}} chain, nullsFirst/nullsLast, {{consistent with equals}}, {{TreeMap}} "mất" phần tử khi comparator sai?',
-  a: `**Tóm tắt:** {{TreeMap}}/{{TreeSet}} dùng compare, không dùng equals/hashCode. Nếu comparator không consistent with equals hoặc vi phạm contract, có thể "mất" phần tử dù put thành công.`,
+  a: `**Tóm tắt:** {{TreeMap}}/{{TreeSet}} dùng {{compare()}} để định nghĩa thứ tự, không dùng {{equals}}/{{hashCode}}. Nếu comparator không consistent with equals (trả 0 khi equals false), map/set coi hai key khác nhau là một và mất dữ liệu âm thầm. Comparator phải symmetric, transitive và lý tưởng là consistent with equals.
+
+### Comparator chain
+~~~java
+// Sắp xếp: status ASC, createdAt DESC, name ASC
+Comparator<Order> cmp = Comparator
+    .comparing(Order::getStatus)
+    .thenComparing(Order::getCreatedAt, Comparator.reverseOrder())
+    .thenComparing(Order::getName, Comparator.nullsFirst(String::compareTo));
+orders.sort(cmp);
+~~~
+- {{comparing}}: key extractor + optional key comparator.
+- {{thenComparing}}: chain thêm comparator cho tie-break.
+- {{nullsFirst}}/{{nullsLast}}: wrapper cho comparator con, null coi là nhỏ/lớn nhất.
+- {{comparingInt}}/{{comparingLong}}/{{comparingDouble}} tránh boxing.
+
+### consistent with equals
+- Quy tắc: {{compare(a, b) == 0}} khi và chỉ khi {{a.equals(b)}}.
+- Nếu comparator trả 0 nhưng equals false, {{TreeMap}} coi là cùng một key: {{put(b, ...)}} ghi overwrite value của {{a}}, {{size()}} không tăng, {{get(b)}} trả value của a.
+- Ví dụ kinh điển: {{new TreeSet<>(Comparator.comparing(String::length))}} — "ab" và "cd" cùng length 2 nên chỉ giữ một.
+- {{BigDecimal}} là cái bẫy nổi tiếng: {{new BigDecimal("1.0").equals(new BigDecimal("1.00"))}} là false nhưng {{compareTo}} là 0 ⇒ dùng làm key TreeMap sẽ gộp.
+
+### TreeMap "mất" phần tử
+- {{TreeMap}} không dùng {{equals}}/{{hashCode}} để định danh key; nó dùng {{compare()}}.
+- Nếu comparator không symmetric hoặc transitive, cây đỏ-đen có thể mất cân bằng hoặc tìm kiếm sai.
+- Null: {{TreeMap}} không cho key null trừ khi comparator xử lý null; natural ordering nthrows NPE.
+- {{subMap}}, {{headMap}}, {{tailMap}} là view — thay đổi view ảnh hưởng map gốc.
+
+### Pitfall
+- Comparator dựa trên field nullable mà không xử lý null: {{a.getName().compareTo(b.getName())}} nthrows NPE hoặc vi phạm transitivity khi null xen vào.
+- Logic so sánh phức tạp sai: {{(a, b) -> a.x < b.x ? -1 : 1}} (quên case bằng nhau trả 0).
+- So sánh float/double với NaN: {{Double.compare}} xử lý NaN, nhưng tự viết {{a < b ? -1 : 1}} sai với NaN.
+- Primitive array sort không stable: {{Arrays.sort(int[])}} dùng quicksort; muốn stable dùng {{Integer[]}} hoặc {{List.sort}}.
+
+> Senior tip: khi dùng comparator tùy biến, viết unit test khẳng định các key **khác nhau** vẫn là phần tử riêng biệt; đây là loại bug không nthrows exception, chỉ làm mất record và cực khó phát hiện. Với BigDecimal, luôn normalize ({{stripTrailingZeros}}) trước khi làm key. Với data lớn, dùng {{comparingInt}}/{{comparingLong}} để tránh boxing. Đừng tự viết logic so sánh phức tạp — chain các comparator có sẵn.`,
   follow: ['Comparable và Comparator khác nhau thế nào?', 'Tại sao TreeMap không dùng equals/hashCode?', 'Comparator không consistent with equals gây ra vấn đề gì?'],
   tags: ['Comparator', 'Comparable', 'TreeMap', 'TreeSet', 'sorting']
 },
@@ -4961,7 +5154,40 @@ javac --release 21 -d out $(find src -name "*.java")
   topic: 'modern',
   level: 'lead',
   q: 'Virtual threads (Java 21) cho service I/O-bound: khi nào dùng, chuyển đổi thế nào, pinning, {{ThreadLocal}}, giới hạn concurrency bằng {{Semaphore}}?',
-  a: `**Tóm tắt:** Virtual thread phù hợp I/O-bound. Chuyển đổi bằng Executors.newVirtualThreadPerTaskExecutor(). Chú ý pinning do synchronized/native → dùng ReentrantLock. ThreadLocal tốn nhớ với hàng triệu VT, cân nhắc ScopedValue. Cần giới hạn concurrency tới downstream bằng Semaphore.`,
+  a: `**Tóm tắt:** Virtual thread (VT) là một loại thread do JVM tạo ra với chi phí khởi tạo rất thấp (chỉ một object trên heap, stack được lưu dưới dạng chunk). VT phù hợp với code I/O-bound (gọi DB, HTTP, file, message queue) vì khi bị block (như {{socket.read}}), JVM có thể unmount stack VT lên heap và reuse carrier thread cho VT khác. Pinning xảy ra khi VT chạy trong {{synchronized}} block hoặc gọi native method — carrier thread không thể được giải phóng. {{ThreadLocal}} với hàng triệu VT sẽ tốn nhiều bộ nhớ. {{Semaphore}} vẫn cần để giới hạn concurrency tới downstream (DB connection pool, API rate limit).
+
+### VT vs platform thread
+- Platform thread: một thread tương ứng một OS thread; chi phí cao (stack 1MB, context switch do OS).
+- Virtual thread: hàng nghìn/hàng triệu VT chạy trên một lượng nhỏ platform thread (carrier threads). VT bị block thì không làmcarrier thread bị block.
+- VT giải quyết vấn đề: viết code blocking (thread.sleep, synchronized, blocking I/O) một cách tự nhiên mà vẫn scale được nhiều đồng thời.
+
+### Chuyển đổi
+- Dùng {{Executors.newVirtualThreadPerTaskExecutor()}} để thay {{Executors.newFixedThreadPool}}.
+- Spring Boot 3.5+ hỗ trợ VT thông qua {{spring.threads.virtual.enabled=true}} (tự động dùng VT cho {{@RestController}}).
+- VT không nhanh hơn cho CPU-bound: nếu code tính toán nặng, VT không giúp; vẫn cần phân bố trên nhiều core.
+
+### Pinning
+- Pinning xảy ra khi VT chạy trong {{synchronized}} block hoặc gọi native method: JVM không thể unmount VT vì stack có thể bị truy cập bởi native code.
+- Giải pháp: dùng {{ReentrantLock}} thay vì {{synchronized}} (đặc biệt là trong code quan trọng).
+- Từ Java 24, pinning được giảm bớt nhờ cải tiến (JEP 487: Silently absorb pinning events; JEP 491: virtual thread-friendly synchronized).
+
+### ThreadLocal và ScopedValue
+- {{ThreadLocal}} với hàng triệu VT sẽ tạo hàng triệu entry → tốn bộ nhớ và có thể leak.
+- {{ScopedValue}} (Java 20, preview; chốt từ 24) là thay thế an toàn hơn: giá trị được truyền theo scope, không phải mỗi VT một entry.
+- Nếu phải dùng ThreadLocal: chỉ dùng cho dữ liệu ngắn, và dọn dẹp bằng {{remove()}}.
+
+### Semaphore và giới hạn concurrency
+- VT không tự giới hạn số lượng đồng thời: tạo 10.000 VT không thành vấn đề, nhưng 10.000 kết nối DB thì có.
+- Dùng {{Semaphore}} để giới hạn số request đồng thời tới downstream (connection pool, rate limit).
+- Ví dụ: {{Semaphore(20)}} để tối đa 20 request cùng lúc tới core banking API.
+
+### Pitfall
+- Dùng VT cho CPU-bound: không giúp, chỉ làm chậm thêm do overhead unmount/mount.
+- Block VT trong {{synchronized}}: carrier thread bị giữ, giảm hiệu năng.
+- Quên giới hạn concurrency: tạo quá nhiều kết nối DB → exhaust connection pool.
+- Debug stack trace dài do VT stack là sự kết hợp của carrier stack và virtual stack chunk.
+
+> Senior tip: dùng VT cho mọi I/O-bound code, nhưng luôn đo lường: số lượng connection/Thread pool tới downstream, CPU usage, và memory. Nếu downstream đã có connection pool (ví dụ HikariCP max 20), đặt {{Semaphore}} tương đương để tránh overflow. VT không thay thế kiến trúc, chỉ đơn giản hóa viết code blocking. Với service hiện tại, bật VT có thể giảm latency p99 rõ rệt khi tải cao do giảm overhead tạo thread.`,
   follow: ['Pinning là gì và khi nào xảy ra?', 'Tại sao dùng ReentrantLock thay synchronized tốt hơn với virtual thread?', 'Khi nào vẫn cần giới hạn concurrency dù dùng virtual thread?'],
   tags: ['virtual thread', 'pinning', 'ThreadLocal', 'ScopedValue', 'Semaphore']
 },
@@ -4970,7 +5196,66 @@ javac --release 21 -d out $(find src -name "*.java")
   topic: 'modern',
   level: 'senior',
   q: '{{Optional}} đúng/sai cách, {{Stream}} anti-pattern trên production, {{peek}}, {{collect(toMap)}} trùng key?',
-  a: `**Tóm tắt:** Optional chỉ dùng cho giá trị trả về có thể vắng, không dùng cho field/parameter/collection. Tránh side effect trong Stream. peek chủ yếu debug. toMap ném IllegalStateException nếu trùng key trừ khi chỉ định merge function.`,
+  a: `**Tóm tắt:** {{Optional}} là **kiểu trả về** để buộc caller xử lý "có thể không có"; không dùng làm field, tham số, hay phần tử collection. Stream anti-pattern chính là side-effect (đổ kết quả vào list bên ngoài, dùng {{peek}} làm nghiệp vụ). {{peek}} chỉ để debug, JVM có thể bỏ qua. {{collect(toMap)}} ném {{IllegalStateException}} khi key trùng nếu không chỉ định merge function.
+
+### Optional đúng cách
+- Method trả về có thể không có kết quả: {{Optional<User> findById(long id)}}.
+- Chuỗi xử lý: {{optional.map(User::email).filter(s -> !s.isBlank()).orElse(DEFAULT)}}.
+- {{orElseThrow(() -> new NotFoundException(...))}} để biến vắng mặt thành lỗi rõ ràng.
+- {{ifPresent}}, {{ifPresentOrElse}} (Java 9), {{stream()}} (Java 9) để chuyển thành stream.
+
+### Không nên dùng Optional
+- **Field** của entity/DTO: không Serializable, khó map JPA/Jackson (cần module), tăng phức tạp; dùng null + validate.
+- **Tham số method**: caller phải bọc {{Optional.of(...)}} vô ích; dùng overload hoặc validate null.
+- **Collection**: {{List<Optional<T>}} thường là dấu hiệu nên lọc bỏ null; trả list rỗng thay vì Optional rỗng.
+- **Primitive**: dùng {{OptionalInt}}/{{OptionalLong}}/{{OptionalDouble}} để tránh boxing.
+
+### orElse vs orElseGet
+~~~java
+// orElse: tham số được tính NGAY, kể cả khi Optional có giá trị
+User u1 = opt.orElse(loadFromDb());       // luôn gọi DB → lãng phí
+
+// orElseGet: supplier chỉ gọi khi rỗng
+User u2 = opt.orElseGet(() -> loadFromDb());
+~~~
+- {{orElse}} nhận giá trị đã có; nếu tạo object/đọc DB thì dùng {{orElseGet}}.
+- {{orElseThrow()}} (Java 10) ném {{NoSuchElementException}}; bản có supplier cho exception tùy biến.
+
+### Stream anti-pattern
+- **Side-effect**: lambda thay đổi trạng thái bên ngoài (thêm vào list, tăng biến đếm, ghi log, gọi DB). Chạy được ở stream tuần tự nhưng **sai khi chuyển sang parallel** (mất phần tử, tổng sai, có thể ném exception).
+- Dùng {{forEach(x -> list.add)}} hoặc mảng một phần tử {{int[] total}}: cả hai đều là side-effect.
+- Viết lại bằng {{map(...).toList()}}, {{collect(...)}}, {{mapToLong(...).sum()}}, {{reduce}}.
+
+### peek chỉ để debug
+- {{peek}} là intermediate operation dùng để xem dữ liệu giữa pipeline; JVM được phép bỏ qua nó (ví dụ {{count()}} trên nguồn biết trước size từ Java 9 không chạy pipeline).
+- Không dùng {{peek}} để làm logic nghiệp vụ (cập nhật trạng thái, ghi DB) — nếu terminal operation đổi, logic có thể biến mất.
+
+### collect(toMap) và duplicate key
+~~~java
+// Sai: trùng key → IllegalStateException
+Map<String, User> byEmail = users.stream()
+    .collect(Collectors.toMap(User::email, u -> u));
+
+// Đúng: chọn bản ghi thắng
+Map<String, User> byEmail = users.stream()
+    .collect(Collectors.toMap(
+        User::email,
+        u -> u,
+        (a, b) -> b,              // hoặc merge theo updatedAt
+        LinkedHashMap::new));     // giữ thứ nếu cần
+~~~
+- Key trùng: bản không có merge function ném {{IllegalStateException}} ("Duplicate key ...", từ Java 9 kèm cả hai value).
+- Value null: **NPE** — bản 2 tham số kiểm tra {{requireNonNull(value)}}, bản có merge function dùng {{Map.merge}} vốn cấm value null; lọc bằng {{filter(Objects::nonNull)}} hoặc thay bằng sentinel.
+- Key null: {{HashMap}} vẫn nhận (hash của null là 0) nhưng {{ConcurrentHashMap}} thì không; đừng dựa vào key null, hãy lọc hoặc đảm bảo key không null.
+
+### Pitfall production
+- Dùng {{Optional.get()}} không kiểm tra ⇒ {{NoSuchElementException}}, tương đương null nhưng khó debug hơn. Dùng {{orElseThrow}} với message.
+- {{opt.isPresent()}} rồi {{get()}} là code null-check trá hình; ưu tiên {{map}}/{{ifPresent}}.
+- So sánh {{opt == Optional.empty()}} sai; dùng {{isEmpty()}} (Java 11) hoặc {{isPresent()}}.
+- {{Optional}} trong entity JPA gây lỗi mapping; trong Jackson cần {{Jdk8Module}}.
+- Lạm dụng {{Optional}} cho mọi thứ làm code rối và chậm; đôi khi trả null có kiểm soát + {{@Nullable}} lại thực dụng hơn.
+
+> Senior tip: dùng {{Optional}} ở tầng service/repository, còn ở tầng controller/DTO hãy chuyển về giá trị hoặc lỗi rõ ràng. Đừng bọc Optional quanh collection — trả {{List.of()}} rỗng để caller không phải xử lý hai tầng "không có". Khi stream, ưu tiên {{toList()}} cho kết quả bất biến, {{toCollection(ArrayList::new)}} khi cần sửa. Với toMap, luôn giả định key có thể trùng và value có thể null; viết merge function rõ ràng (ví dụ giữ bản mới nhất theo timestamp) thay vì để exception nổ ở production. Với báo cáo, dùng {{LinkedHashMap}}/{{TreeMap}} để thứ tự ổn định giữa các lần chạy.`,
   follow: ['Tại sao không nên dùng Optional làm field?', 'peek() có nên dùng để sửa object không, tại sao?', 'Collectors.toMap ném IllegalStateException khi nào và giải quyết thế nào?'],
   tags: ['Optional', 'Stream', 'peek', 'toMap', 'anti-pattern']
 },
@@ -4979,7 +5264,55 @@ javac --release 21 -d out $(find src -name "*.java")
   topic: 'modern',
   level: 'lead',
   q: 'Nâng cấp codebase Java 8 lên Java 21: {{Text blocks}}, {{var}}, {{switch expression}}, {{SequencedCollection}}, chú ý gì?',
-  a: `**Tóm tắt:** Java 21 có text blocks, var, switch expression, pattern matching, virtual thread, SequencedCollection. Nâng cấp từng bước 8->11->17->21, chú ý module system, strong encapsulation, reflection, deprecated API.`,
+  a: `**Tóm tắt:** Nâng cấp từ Java 8 lên Java 21 là một dự án có kế hoạch, không phải đổi version trong pom. Java 21 có text blocks, var, switch expression, pattern matching, virtual thread, SequencedCollection. Nâng cấp từng bước 8 → 11 → 17 → 21, chú ý module system, strong encapsulation, reflection, deprecated API.
+
+### Text blocks (Java 15)
+- Mở bằng ba dấu nháy kép + xuống dòng bắt buộc; đóng bằng ba dấu nháy kép.
+- Incidental whitespace (indentation chung nhỏ nhất + whitespace cuối dòng) được bỏ; dùng semantics của {{stripIndent}}.
+- Escape vẫn hoạt động; có {{ \\s }} để giữ space cuối; không cần escape dấu nháy kép đơn lẻ.
+- Có {{formatted}} hoặc {{String.format}}; không có interpolation trực tiếp.
+- Rất hợp SQL/JSON/HTML/XML; nhưng **đừng** ghép dữ liệu người dùng vào SQL text block — vẫn dùng PreparedStatement.
+
+### var (Java 10)
+- Suy luận kiểu lúc compile từ initializer; không phải dynamic typing, không có chi phí runtime.
+- Chỉ dùng cho **biến local**, cả trong for/foreach, try-with-resources; không dùng cho field, tham số, return type.
+- Không dùng khi không có initializer: {{var x;}} sai; {{var x = null;}} cũng sai.
+- Nên dùng khi kiểu dài và lộ rõ từ vế phải: {{var users = new ArrayList<User>();}}.
+- Không nên khi kiểu không rõ: {{var result = service.process();}} — người đọc phải nhảy vào method. Ưu tiên tên biến mô tả kiểu hoặc giữ kiểu tường minh.
+
+### Switch expression (Java 14)
+- Dùng {{->}} không fallthrough, không cần {{break}}; có thể dùng block + {{yield}}.
+- Bắt buộc bao phủ hết (exhaustive) cho expression; enum/String phải có default nếu không đủ.
+- Selector null: nthrows NPE nếu không có {{case null}} (với switch trên reference type).
+- Có thể trả giá trị trực tiếp, giảm biến tạm và lỗi gán thiếu nhánh.
+- Switch statement vẫn có thể dùng cú pháp cũ; nên chuyển dần sang arrow để tránh fallthrough.
+- Với enum, thêm hằng số mới mà quên case sẽ lỗi compile ở switch expression — lợi ích lớn khi refactor.
+
+### SequencedCollection (Java 21)
+- {{getFirst()}} / {{getLast()}}: lấy phần tử đầu/cuối (nthrows {{NoSuchElementException}} nếu rỗng).
+- {{addFirst(E)}} / {{addLast(E)}}: thêm đầu/cuối (optional, {{UnsupportedOperationException}} nếu immutable).
+- {{removeFirst()}} / {{removeLast()}}: xoá đầu/cuối (optional).
+- {{reversed()}}: trả **view** đảo ngược (read-only, không copy, thay đổi gốc ảnh hưởng view).
+- Implementer chính: {{List}}, {{Deque}}, {{LinkedHashSet}}, {{LinkedHashMap}}, {{TreeSet}}, {{TreeMap}}.
+- **Không implement**: {{HashSet}}, {{HashMap}}, {{ConcurrentHashMap}} (vì không đảm bảo thứ tự ổn định).
+
+### Lộ trình migrate
+1. **Đo baseline**: test suite, JMH, heap/GC log, dependency tree.
+2. **8 → 11**: chạy {{jdeps --jdk-internals}}, thay API bị bỏ (JAXB, JAX-WS, CORBA, Nashorn), cập nhật TLS, xử lý {{--illegal-access}} (11 còn cho phép, 17 thì chặt).
+3. **11 → 17**: dọn reflection vào JDK internals ({{--add-opens}}), nâng Spring Boot 3 nếu dùng, kiểm tra thư viện bytecode (Lombok, CGLIB, Mockito) tương thích.
+4. **17 → 21**: tận dụng pattern matching/record, thử virtual thread ở nơi I/O-bound nhưng **đo lại** (pin carrier thread với synchronized trước Java 24; connection pool cần điều chỉnh).
+5. **CI**: chạy song song JDK cũ/mới, test integration, smoke test trên staging với tải thật.
+6. **Rollout**: container image mới, có thể blue-green; theo dõi GC, latency p99, memory.
+
+### Pitfall
+- Nhảy thẳng 8 → 21 làm gỡ lỗi khó hơn nhiều; đi từng LTS giúp khoanh vùng.
+- Reflection/bytecode instrumentation (agent APM, Lombok cũ) là chỗ vỡ nhiều nhất.
+- Thư viện cũ dùng {{sun.misc.Unsafe}}: vẫn chạy ở 17/21, nhưng các method truy cập bộ nhớ bị deprecate for removal từ Java 23 (JEP 471) và in cảnh báo runtime từ 24 (JEP 498); nên lên kế hoạch chuyển sang {{VarHandle}}/FFM API.
+- Virtual thread không nhanh hơn cho CPU-bound; đừng thay toàn bộ thread pool.
+- {{--add-opens}} là giải pháp tạm; hãy sửa code/thư viện.
+- Kiểm tra TLS, chứng chỉ, và độ tương thích của driver DB.
+
+> Senior tip: coi migrate JDK là dự án có kế hoạch, không phải đổi version trong pom. Bắt đầu bằng việc chạy test trên JDK mới trong CI **trước khi** đổi production; dùng jdeprscan để tìm API sắp bỏ và OpenRewrite để tự động hóa một phần. Đừng dùng preview feature trong production — chúng có thể đổi hoặc bị bỏ, và class biên dịch với preview chỉ chạy trên đúng bản JDK đó. Với text blocks, nhớ bỏ indentation theo {{stripIndent}}; với var, chỉ dùng khi vế phải đã nói rõ kiểu; với switch expression, thêm {{case null}} nếu dữ liệu có thể null; với SequencedCollection, {{reversed()}} là view không phải copy.`,
   follow: ['var có thay đổi kiểu runtime không?', 'switch expression khác switch statement thế nào?', 'Khi nào SequencedCollection hữu ích hơn get(0)/get(size-1)?'],
   tags: ['Java 21', 'text blocks', 'var', 'switch expression', 'SequencedCollection']
 }
