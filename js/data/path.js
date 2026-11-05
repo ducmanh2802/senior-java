@@ -105,4 +105,11 @@ window.PATH = [
     questions: ['ai-001', 'ai-005', 'ai-008', 'claude-001', 'claude-002', 'claude-004', 'claude-006'],
     quizTopics: ['ai', 'claude'], requires: ['path-12'],
   },
+  {
+    id: 'path-14', order: 14, phase: 'Senior', title: 'Nghiệp vụ ngân hàng, AI doanh nghiệp & maintain hệ thống lớn', weeks: '31–32',
+    goal: 'Nắm nghiệp vụ ngân hàng cốt lõi (core banking, NAPAS, sổ cái kép, idempotency, đối soát), vận hành hệ thống lớn (ITIL, hotfix, release/CAB, CVE, tech debt), áp dụng AI an toàn và bảo mật trong doanh nghiệp.',
+    lessons: ['lesson-banking-001', 'lesson-banking-002', 'lesson-banking-003', 'lesson-banking-004', 'lesson-ai-002', 'lesson-ai-003', 'lesson-ai-004', 'lesson-testing-005'],
+    questions: ['banking-003', 'banking-004', 'banking-005', 'ai-026', 'ai-030', 'scenario-093', 'scenario-095', 'scenario-103'],
+    quizTopics: ['banking', 'ai'], requires: ['path-13'],
+  },
 ];
