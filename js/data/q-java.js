@@ -5315,5 +5315,195 @@ Map<String, User> byEmail = users.stream()
 > Senior tip: coi migrate JDK là dự án có kế hoạch, không phải đổi version trong pom. Bắt đầu bằng việc chạy test trên JDK mới trong CI **trước khi** đổi production; dùng jdeprscan để tìm API sắp bỏ và OpenRewrite để tự động hóa một phần. Đừng dùng preview feature trong production — chúng có thể đổi hoặc bị bỏ, và class biên dịch với preview chỉ chạy trên đúng bản JDK đó. Với text blocks, nhớ bỏ indentation theo {{stripIndent}}; với var, chỉ dùng khi vế phải đã nói rõ kiểu; với switch expression, thêm {{case null}} nếu dữ liệu có thể null; với SequencedCollection, {{reversed()}} là view không phải copy.`,
   follow: ['var có thay đổi kiểu runtime không?', 'switch expression khác switch statement thế nào?', 'Khi nào SequencedCollection hữu ích hơn get(0)/get(size-1)?'],
   tags: ['Java 21', 'text blocks', 'var', 'switch expression', 'SequencedCollection']
+},
+{
+  id: 'modern-031',
+  topic: 'modern',
+  level: 'mid',
+  q: 'Sequenced collections (Java 21) thêm gì so với List/Set cũ?',
+  a: `**Tóm tắt:** Thêm interface SequencedCollection với first()/last()/reversed(); reversed() là view không copy.
+
+### Vì sao cần
+- Trước Java 21, lấy phần tử đầu/cuối của LinkedHashSet/Deque không thống nhất (get(0), getLast, peekFirst).
+- SequencedCollection chuẩn hoá: first(), last(), addFirst/addLast, removeFirst/removeLast, reversed().
+
+### Cách hoạt động
+- List, Deque, LinkedHashSet, SequencedSet implement interface.
+- reversed() trả về view đảo chiều, không copy → sửa view sẽ sửa gốc.
+
+### Pitfall
+- reversed() là view: sort reversed rồi mutate gốc sẽ ảnh hưởng.
+- Set không có index, chỉ first/last.
+
+> Senior tip: dùng reversed() để iterate ngược mà không copy list lớn; cẩn thận concurrent modification.`,
+  follow: ['reversed() có phải copy không?', 'SequencedMap khác gì?'],
+  tags: ['Java 21', 'SequencedCollection', 'collections']
+},
+{
+  id: 'modern-032',
+  topic: 'modern',
+  level: 'senior',
+  q: 'Record patterns và switch pattern exhaustiveness với sealed class hoạt động thế nào?',
+  a: `**Tóm tắt:** Record pattern destructure record trong pattern matching; switch trên sealed type được compiler kiểm tra exhaustiveness — thiếu case → lỗi compile.
+
+### Vì sao cần
+- Trước: instanceof + cast + getter. Java 21 cho phép if (o instanceof Point(int x,int y)).
+- Sealed class giới hạn subtype → compiler biết hết các case.
+
+### Cách hoạt động
+- switch (shape) { case Circle c -> ...; case Rect r -> ...; } không cần default nếu sealed.
+- Record pattern lồng nhau: case Line(Point p1, Point p2).
+
+### Pitfall
+- Switch trên non-sealed type cần default.
+- Pattern matching cho primitive chưa đầy đủ.
+
+> Senior tip: kết hợp sealed + record + switch expression để mô hình hoá domain; compiler bắt sót case khi thêm subtype mới.`,
+  follow: ['Sealed class là gì?', 'Khi nào cần default trong switch?'],
+  tags: ['Java 21', 'record patterns', 'sealed', 'pattern matching']
+},
+{
+  id: 'modern-033',
+  topic: 'modern',
+  level: 'senior',
+  q: 'String templates (JEP 430) hiện trạng ra sao? Có nên dùng trong production không?',
+  a: `**Tóm tắt:** String templates là preview trong JDK 21 và đã bị rút (withdrawn) khỏi JDK 22; KHÔNG dùng trong production. Dùng text blocks + formatted hoặc String.formatted.
+
+### Vì sao cần biết
+- Nhiều tutorial còn nhắc \\"\\"\\" không phải string templates.
+- Trạng thái preview/withdrawn thay đổi giữa JDK; production chỉ dùng API stable.
+
+### Cách làm an toàn
+- Dùng text blocks cho SQL/JSON.
+- Dùng String.formatted hoặc MessageFormat cho nội suy.
+- Không bật --enable-preview trong production.
+
+### Pitfall
+- Bật preview trong prod → class không chạy trên JDK khác.
+- Nhầm text block với string templates.
+
+> Senior tip: theo dõi JEP nhưng chỉ merge feature khi stable; ghi rõ JDK target trong pom.`,
+  follow: ['Text block vs string templates?', 'Khi nào bật preview?'],
+  tags: ['Java 21', 'string templates', 'preview', 'JEP']
+},
+{
+  id: 'modern-034',
+  topic: 'modern',
+  level: 'senior',
+  q: 'Scoped values và structured concurrency (preview) giải quyết vấn đề gì của ThreadLocal?',
+  a: `**Tóm tắt:** ScopedValue là ThreadLocal bất biến, có phạm vi lexical; StructuredTaskScope quản lý task con theo cấu trúc → dễ hủy, dễ propagate exception.
+
+### Vì sao cần
+- ThreadLocal mutable, dễ leak, khó cleanup, không tự propagate tới thread con.
+- Virtual threads nhiều → ThreadLocal tốn bộ nhớ.
+
+### Cách hoạt động
+- ScopedValue.where(KEY, val).run(() -> ...) → value chỉ tồn tại trong block.
+- StructuredTaskScope: fork task, join; cancel khi một fail.
+
+### Pitfall
+- Preview → không production.
+- StructuredTaskScope chưa stable API.
+
+> Senior tip: học khái niệm để chuẩn bị; production vẫn dùng ThreadLocal + ExecutorService có cleanup.`,
+  follow: ['ThreadLocal leak ở đâu?', 'Virtual threads + ThreadLocal?'],
+  tags: ['Java 21', 'scoped values', 'structured concurrency', 'preview']
+},
+{
+  id: 'modern-035',
+  topic: 'modern',
+  level: 'senior',
+  q: 'Generational ZGC (Java 21) cải thiện gì so với ZGC cũ?',
+  a: `**Tóm tắt:** Generational ZGC thêm young/old generation → giảm CPU overhead và pause time cho workload có nhiều short-lived objects; bật bằng -XX:+UseZGC -XX:+ZGenerational.
+
+### Vì sao cần
+- ZGC cũ non-generational quét toàn heap mỗi cycle → CPU cao với object churn lớn.
+- Generational tận dụng weak generational hypothesis.
+
+### Cách bật
+- JDK 21+: -XX:+UseZGC -XX:+ZGenerational.
+- JDK 23+ mặc định generational.
+
+### Pitfall
+- ZGC không compact theo region như G1? pause vẫn < 1ms nhưng CPU footprint.
+- Chọn GC theo workload: throughput vs latency.
+
+> Senior tip: đo với workload thật; G1 vẫn default an toàn cho đa số; ZGC cho latency-sensitive.`,
+  follow: ['So sánh G1 vs ZGC?', 'Khi nào dùng Shenandoah?'],
+  tags: ['Java 21', 'ZGC', 'GC', 'performance']
+},
+{
+  id: 'core-035',
+  topic: 'core',
+  level: 'senior',
+  q: 'Lộ trình nâng cấp dự án Java 8/11 lên Java 21 gồm những bước nào? jdeps, --add-opens, thư viện cũ?',
+  a: `**Tóm tắt:** Bước: nâng JDK build → chạy test → jdeps/jdeprscan tìm API bị xoá → xử lý --add-opens cho reflection → cập nhật thư viện → bật preview? không. Cuối cùng tune GC.
+
+### Các bước chi tiết
+1. Cài JDK 21, đổi source/target 21 trong build.
+2. Chạy full test; sửa compile errors (javax→jakarta nếu Spring 6).
+3. jdeps --jdk-internals tìm dùng internal API.
+4. jdeprscan tìm deprecated-for-removal.
+5. Nếu thư viện cũ dùng reflection sâu: thêm --add-opens module/pkg=ALL-UNNAMED tạm thời.
+6. Cập nhật dependency (Spring Boot 3, Hibernate 6).
+7. Bật GC phù hợp, đo.
+
+### Pitfall
+- --add-opens chỉ workaround; refactor để không cần.
+- Thư viện pre-JPMS không module-aware.
+
+> Senior tip: migrate theo service nhỏ trước; giữ dual build (JDK 11 và 21) trong CI một thời gian.`,
+  follow: ['jdeps output đọc thế nào?', 'Khi nào cần --add-exports?'],
+  tags: ['migration', 'Java 21', 'jdeps', 'upgrade']
+},
+{
+  id: 'modern-037',
+  topic: 'modern',
+  level: 'mid',
+  q: 'Text blocks trong SQL/JSON test giúp gì và lưu ý indentation?',
+  a: `**Tóm tắt:** Text block (""") cho chuỗi nhiều dòng; indentation được strip theo dòng ít thụt nhất; \\s giữ trailing space; dùng cho SQL/JSON test readable.
+
+### Vì sao cần
+- Trước: nối chuỗi + escape quote rườm rà.
+- Text block giữ format, dễ đọc SQL/JSON.
+
+### Cách hoạt động
+- Dòng đầu tiên sau """ phải là newline (hoặc \\).
+- Indentation tối thiểu bị strip; dùng {{stripIndent}} nếu cần.
+- Escape: \\\\ cho backslash, \\" cho quote trong block? quote không cần escape trong text block.
+
+### Pitfall
+- Trailing whitespace bị strip trừ khi dùng \\s.
+- Mixing indentation gây kết quả không như ý.
+
+> Senior tip: đặt closing """ thẳng hàng với code để strip đúng; viết test snapshot so sánh.`,
+  follow: ['Text block có phải compile-time constant?'],
+  tags: ['Java 15', 'text blocks', 'SQL', 'JSON']
+},
+{
+  id: 'modern-038',
+  topic: 'modern',
+  level: 'lead',
+  q: '(Lead) Chính sách nâng LTS cho 30 service: làm thế nào để đồng bộ và an toàn?',
+  a: `**Tóm tắt:** Lập policy: chuẩn JDK version, timeline theo wave, CI matrix, canary deploy, rollback; dùng jdeps/jdeprscan, contract test; theo dõi metric trước/sau.
+
+### Vì sao cần
+- 30 service không thể nâng cùng lúc; cần wave và tiêu chí.
+- Rủi ro: thư viện cũ, reflection, GC thay đổi latency.
+
+### Cách làm
+1. Chuẩn hoá build (Maven/Gradle plugin JDK 21).
+2. Wave 1: service ít traffic, không critical; wave 2: core; wave 3: còn lại.
+3. Mỗi service: test + staging + canary 5% → full.
+4. Theo dõi p99 latency, GC pause, error rate; rollback nếu regression.
+5. Tài liệu --add-opens tạm; backlog refactor.
+
+### Pitfall
+- Không có rollback plan.
+- Bỏ qua dependency CVE.
+
+> Senior tip: đặt "JDK 21 LTS baseline" trong RFC; review hàng quý; freeze version mới cho stability.`,
+  follow: ['Làm sao đo regression sau upgrade?'],
+  tags: ['lead', 'upgrade', 'policy', 'LTS']
 }
 );
