@@ -1,0 +1,48 @@
+/* #/sdlc — mô phỏng SDLC */
+.view-sdlc .sd-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+.view-sdlc .sd-card { display: flex; flex-direction: column; gap: 10px; color: inherit; text-decoration: none; transition: transform .15s, border-color .15s; }
+.view-sdlc .sd-card:hover { transform: translateY(-2px); border-color: var(--accent); }
+.view-sdlc .sd-card h3 { margin: 0; }
+.view-sdlc .sd-card-top { display: flex; gap: 6px; flex-wrap: wrap; }
+.view-sdlc .sd-dots { display: flex; gap: 4px; flex-wrap: wrap; }
+.view-sdlc .sd-dots span { opacity: .35; filter: grayscale(1); }
+.view-sdlc .sd-dots span.on { opacity: 1; filter: none; }
+.view-sdlc .sd-head { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.view-sdlc .sd-head h1 { margin: 0; }
+.view-sdlc .sd-steps { display: flex; gap: 6px; overflow-x: auto; padding: 4px 0 10px; margin-bottom: 12px; scrollbar-width: thin; }
+.view-sdlc .sd-step { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text); text-decoration: none; font-size: .9rem; white-space: nowrap; }
+.view-sdlc .sd-step:hover { border-color: var(--accent); }
+.view-sdlc .sd-step.done { border-color: var(--ok); }
+.view-sdlc .sd-step.done .sd-step-lbl::after { content: ' ✓'; color: var(--ok); }
+.view-sdlc .sd-step.active { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.view-sdlc .sd-step.active.done .sd-step-lbl::after { color: inherit; }
+.view-sdlc .sd-context { margin-bottom: 16px; }
+.view-sdlc .sd-context summary, .view-sdlc .sd-art summary, .view-sdlc .sd-q summary { cursor: pointer; }
+.view-sdlc .sd-stage-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.view-sdlc .sd-stage-head h2 { margin: 0; }
+.view-sdlc .sd-arts { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.view-sdlc .sd-art { border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 12px; background: var(--surface-2); }
+.view-sdlc .sd-art pre { max-height: 420px; overflow: auto; margin: 8px 0 0; }
+.view-sdlc .sd-task .textarea { width: 100%; margin-top: 8px; }
+.view-sdlc .sd-actions { margin-top: 10px; gap: 8px; flex-wrap: wrap; }
+.view-sdlc .sd-answer { margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--border); }
+.view-sdlc .sd-q { border-bottom: 1px solid var(--border); padding: 10px 0; }
+.view-sdlc .sd-q .md { margin-top: 8px; }
+.view-sdlc .sd-nav { justify-content: space-between; margin-top: 16px; gap: 8px; flex-wrap: wrap; }
+.view-sdlc .sd-keys { text-align: center; margin-top: 8px; }
+@media (max-width: 560px) {
+  .view-sdlc .sd-step-lbl { max-width: 9em; overflow: hidden; text-overflow: ellipsis; }
+  .view-sdlc .sd-nav .btn { flex: 1 1 auto; text-align: center; }
+}
+
+/* list header illustration: the 8 stages as a pipeline */
+.view-sdlc .sd-list-head { display: grid; grid-template-columns: 1fr; gap: 14px; }
+.view-sdlc .sd-art { width: 100%; max-width: 620px; height: auto; }
+.view-sdlc .sd-art-line { stroke: var(--border); stroke-width: 3; stroke-dasharray: 6 6; animation: sd-flow 1.2s linear infinite; }
+.view-sdlc .sd-art-node circle { fill: var(--surface); stroke: var(--accent); stroke-width: 2; filter: drop-shadow(0 4px 8px rgba(0,0,0,.12)); }
+.view-sdlc .sd-art-node text { font-size: 20px; text-anchor: middle; dominant-baseline: middle; }
+.view-sdlc .sd-art-node { animation: sd-pop 3.2s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+@keyframes sd-flow { to { stroke-dashoffset: -12; } }
+@keyframes sd-pop { 0%, 70%, 100% { transform: scale(1); } 80% { transform: scale(1.12); } }
+@media (prefers-reduced-motion: reduce) { .view-sdlc .sd-art-line, .view-sdlc .sd-art-node { animation: none; } }

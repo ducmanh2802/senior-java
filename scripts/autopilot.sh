@@ -76,18 +76,31 @@ make_review() {   # $1 = task file, $2 = task id
   log "created review task ${2}R"
 }
 
+# js/data/index-light.js is generated from the data files and validate.js fails when it is stale, but no task owns
+# it. Rebuild it from exactly what is staged (not the working tree, which holds other agents' half-done files)
+# and stage that blob.
+stage_light_index() {
+  local tmp; tmp=$(mktemp -d)
+  if git checkout-index -a --prefix="$tmp/" && node "$tmp/scripts/build-light-index.js" > /dev/null 2>&1; then
+    git update-index --add --cacheinfo "100644,$(git hash-object -w "$tmp/js/data/index-light.js"),js/data/index-light.js"
+  fi
+  rm -rf "$tmp"
+}
+
 commit_task() {   # $1 = task file, $2 = task id
   local r="tasks/${2}R-review.md" files
   files="$(owns "$1") $1 $([ -f "$r" ] && echo "$r")"
   node scripts/check-links.mjs --fix > /dev/null 2>&1   # drop dead learn-more links instead of blocking the task
   git reset -q
   git add $files
+  case " $files" in *" js/data/"*|*"\`js/data/"*) stage_light_index ;; esac
   if out=$(scripts/verify-staged.sh 2>&1); then
+    # commit the index as verified (a pathspec commit would take working-tree copies instead)
     git commit -q -m "Content: $2 (auto-committed after ${REVIEWER} review + verify)
 
 $(head -1 "$1" | sed 's/^# //')
 
-Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>" -- $files && touch logs/push-pending && log "committed $2 ($(git log --oneline -1 | cut -c1-7))"
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>" && touch logs/push-pending && log "committed $2 ($(git log --oneline -1 | cut -c1-7))"
   else
     git reset -q
     log "verify FAILED for $2 — left uncommitted: $(echo "$out" | tail -3 | tr '\n' ' ')"

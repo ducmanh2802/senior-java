@@ -275,6 +275,38 @@ for (const z of sandbox.window.LESSONS || []) {
   (z.goals || []).forEach((g, i) => checkMarkup(f, id, `goals[${i}]`, g));
 }
 
+// ---- SDLC simulation (#/sdlc) ----
+const SDLC_STAGES = ['requirement', 'analysis', 'design', 'dev', 'review', 'test', 'deploy', 'bugfix'];
+const sdlc = sandbox.window.SDLC || [];
+const seenSdlc = new Set();
+for (const s of sdlc) {
+  const f = 'sdlc.js', id = s.id || '(no id)';
+  if (!/^sdlc-\d{3}$/.test(s.id || '') || seenSdlc.has(s.id)) err(f, `id kịch bản thiếu/trùng/sai dạng (sdlc-NNN): ${id}`);
+  seenSdlc.add(s.id);
+  Object.keys(s).forEach(k => { if (!['id', 'title', 'level', 'domain', 'context', 'stages', 'interview', 'tags', '__file'].includes(k)) err(f, `${id}: field lạ "${k}"`); });
+  if (!s.title || !LEVELS.has(s.level) || !s.domain) err(f, `${id}: thiếu title/level/domain hợp lệ`);
+  if (typeof s.context !== 'string' || s.context.length < 300) err(f, `${id}: context cần ≥ 300 ký tự`); else checkMarkup(f, id, 'context', s.context);
+  const keys = (s.stages || []).map(x => x && x.key);
+  if (keys.join() !== SDLC_STAGES.join()) err(f, `${id}: stages phải đúng thứ tự ${SDLC_STAGES.join(' → ')} (đang là ${keys.join(', ')})`);
+  (s.stages || []).forEach((st, i) => {
+    const p = `${id}.stages[${i}]`;
+    Object.keys(st || {}).forEach(k => { if (!['key', 'title', 'role', 'story', 'artifacts', 'task', 'answer', 'pitfalls'].includes(k)) err(f, `${p}: field lạ "${k}"`); });
+    ['title', 'role', 'story', 'task', 'answer'].forEach(k => { if (typeof (st || {})[k] !== 'string' || !st[k].trim()) err(f, `${p}: thiếu ${k}`); });
+    if (st && typeof st.answer === 'string' && st.answer.length < 1200) err(f, `${p}: answer quá ngắn (${st.answer.length} < 1200)`);
+    ['story', 'task', 'answer'].forEach(k => checkMarkup(f, id, `stages[${i}].${k}`, st && st[k]));
+    (st && st.artifacts || []).forEach((a, j) => {
+      if (!a || !a.name || !['text', 'java', 'sql', 'yaml', 'json', 'bash'].includes(a.lang) || typeof a.content !== 'string' || a.content.length < 80) err(f, `${p}.artifacts[${j}]: cần name, lang hợp lệ, content ≥ 80 ký tự`);
+    });
+    if (st && st.pitfalls != null && (!Array.isArray(st.pitfalls) || st.pitfalls.some(x => typeof x !== 'string'))) err(f, `${p}.pitfalls: phải là mảng chuỗi`);
+  });
+  const iv = s.interview || {};
+  if (typeof iv.story !== 'string' || !Array.isArray(iv.questions) || iv.questions.length < 4) err(f, `${id}: interview cần story và ≥ 4 questions {q, a}`);
+  else {
+    checkMarkup(f, id, 'interview.story', iv.story);
+    iv.questions.forEach((x, i) => { if (!x || !x.q || typeof x.a !== 'string' || x.a.length < 200) err(f, `${id}.interview.questions[${i}]: cần q và a ≥ 200 ký tự`); else checkMarkup(f, id, `interview.questions[${i}].a`, x.a); });
+  }
+}
+
 // ---- pet projects ----
 const projects = sandbox.window.PROJECTS || [];
 const seenProject = new Set();
@@ -291,9 +323,31 @@ for (const p of projects) {
   if (!Array.isArray(p.milestones) || p.milestones.length < 4 || p.milestones.length > 7) err(f, `${id}: milestones cần 4–7 mục`);
   else p.milestones.forEach((m, i) => {
     if (!m || !m.title || typeof m.tasks !== 'string' || typeof m.done !== 'string') err(f, `${id}.milestones[${i}]: thiếu title/tasks/done`);
-    ['tasks', 'done'].forEach(k => checkMarkup(f, id, `milestones[${i}].${k}`, m && m[k]));
-    Object.keys(m || {}).forEach(k => { if (!['title', 'tasks', 'done'].includes(k)) err(f, `${id}.milestones[${i}]: field lạ "${k}"`); });
+    ['tasks', 'done', 'guide'].forEach(k => checkMarkup(f, id, `milestones[${i}].${k}`, m && m[k]));
+    if (m && m.guide != null && (typeof m.guide !== 'string' || m.guide.length < 800)) err(f, `${id}.milestones[${i}].guide: phải là chuỗi markup ≥ 800 ký tự`);
+    Object.keys(m || {}).forEach(k => { if (!['title', 'tasks', 'done', 'guide'].includes(k)) err(f, `${id}.milestones[${i}]: field lạ "${k}"`); });
   });
+  if (p.business != null) {   // optional business primer (view: 🏦 Hiểu nghiệp vụ)
+    const b = p.business, B = id + '.business';
+    if (typeof b !== 'object' || typeof b.intro !== 'string' || b.intro.length < 1200) err(f, B + ': cần intro markup ≥ 1200 ký tự');
+    else checkMarkup(f, id, 'business.intro', b.intro);
+    Object.keys(b || {}).forEach(k => { if (!['intro', 'journeys', 'diagrams', 'glossary'].includes(k)) err(f, B + ': field lạ "' + k + '"'); });
+    (Array.isArray(b.journeys) && b.journeys.length ? b.journeys : (err(f, B + '.journeys: cần ≥ 1 hành trình'), [])).forEach((j, i) => {
+      if (!j.title || !Array.isArray(j.steps) || j.steps.length < 3) err(f, B + '.journeys[' + i + ']: cần title và ≥ 3 steps');
+      (j.steps || []).forEach((st, k) => { if (!st.screen || typeof st.text !== 'string') err(f, B + '.journeys[' + i + '].steps[' + k + ']: cần screen + text'); else checkMarkup(f, id, 'business.journeys.text', st.text); });
+    });
+    (Array.isArray(b.diagrams) && b.diagrams.length ? b.diagrams : (err(f, B + '.diagrams: cần ≥ 1 sơ đồ'), [])).forEach((d, i) => {
+      const n = Array.isArray(d.actors) ? d.actors.length : 0, D = B + '.diagrams[' + i + ']';
+      if (!d.title || n < 2 || n > 6) err(f, D + ': cần title và 2–6 actors');
+      if (!Array.isArray(d.steps) || d.steps.length < 3) err(f, D + ': cần ≥ 3 steps');
+      (d.steps || []).forEach((st, k) => {
+        const ok = st.note != null ? (typeof st.note === 'string' && Array.isArray(st.over) && st.over.length >= 1 && st.over.every(x => Number.isInteger(x) && x >= 0 && x < n))
+          : (typeof st.text === 'string' && st.text && [st.from, st.to].every(x => Number.isInteger(x) && x >= 0 && x < n));
+        if (!ok) err(f, D + '.steps[' + k + ']: cần {from,to,text[,reply]} hoặc {note,over:[i..]} với index trong actors');
+      });
+    });
+    if (b.glossary != null) (Array.isArray(b.glossary) ? b.glossary : []).forEach((g, i) => { if (!g.term || typeof g.meaning !== 'string') err(f, B + '.glossary[' + i + ']: cần term + meaning'); });
+  }
   if (!Array.isArray(p.challenges) || p.challenges.length < 3) err(f, `${id}: challenges cần ít nhất 3 mục`);
   (Array.isArray(p.challenges) ? p.challenges : []).forEach((x, i) => checkMarkup(f, id, `challenges[${i}]`, x));
   if (!p.interview || typeof p.interview.story !== 'string' || !Array.isArray(p.interview.questions) || p.interview.questions.length < 5) err(f, `${id}: interview cần story và ít nhất 5 questions`);
@@ -320,7 +374,7 @@ for (const p of projects) {
   }
   if (p.related != null && !Array.isArray(p.related)) err(f, `${id}: related phải là mảng`);
   (Array.isArray(p.related) ? p.related : []).forEach(r => { if (!questionIds.has(r) && !lessonIds.has(r)) err(f, `${id}: related "${r}" không phải question/lesson có thật`); });
-  const allowed = new Set(['id', 'title', 'level', 'weeks', 'skills', 'pitch', 'requirements', 'architecture', 'milestones', 'challenges', 'readme', 'design', 'interview', 'related']);
+  const allowed = new Set(['id', 'title', 'level', 'weeks', 'skills', 'pitch', 'requirements', 'architecture', 'milestones', 'challenges', 'readme', 'design', 'business', 'interview', 'related']);
   Object.keys(p).forEach(k => { if (!allowed.has(k)) err(f, `${id}: field lạ "${k}"`); });
 }
 
@@ -501,6 +555,7 @@ const LS = sandbox.window.LESSONS || [];
 if (LS.length) console.log(`Bài học: ${LS.length} bài, ${LS.reduce((n, l) => n + (l.exercises || []).length, 0)} bài tập (` +
   [...new Set(LS.map(l => l.track))].map(t => t + ' ' + LS.filter(l => l.track === t).length).join(', ') + ')');
 console.log(`Pet project: ${projects.length} dự án`);
+console.log(`Mô phỏng SDLC: ${sdlc.length} kịch bản`);
 if (warns.length) console.log('\nCảnh báo:\n  ' + warns.join('\n  '));
 // ---- generated light index (js/data/index-light.js) must match the content (always reported, even with a file arg) ----
 {

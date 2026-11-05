@@ -1,235 +1,150 @@
-/* View "dashboard" — owner: task T09. Contract: see AGENTS.md "Views". */
+/* View "dashboard" (#/) — minimal, motivating home: mission hero, 3 metrics, today's mission, quick start.
+   Reads only the light index (App.lite / App.stats / App.dueItems), see docs/PERFORMANCE.md. */
 (function () {
   'use strict';
 
   App.i18n.add({
     vi: {
       'dash.title': 'Tổng quan',
-      'dash.heroTitle': 'Ôn luyện phỏng vấn Senior Java',
-      'dash.heroText': 'Kế hoạch 6 tháng từ Java core đến system design, microservices và phỏng vấn tiếng Anh — ôn theo lặp lại ngắt quãng để câu nào cũng "đã thuộc" khi đi phỏng vấn thật.',
-      'dash.mock': 'Phỏng vấn thử',
-      'dash.flash': 'Ôn flashcard',
-      'dash.bank': 'Ngân hàng câu hỏi',
-      'dash.ringAria': 'Đã thuộc {p}%',
-      'dash.ringLabel': 'đã thuộc',
-      'dash.known': 'Đã thuộc',
-      'dash.review': 'Cần ôn',
-      'dash.unknown': 'Chưa biết',
-      'dash.unseen': 'Chưa học',
-      'dash.topicsTitle': 'Tiến độ theo chủ đề',
-      'dash.noTopics': 'Chưa có chủ đề nào được đăng ký.',
-      'dash.other': 'Khác',
-      'dash.topicAria': '{name}: {p}% đã thuộc',
-      'dash.questions': 'Câu hỏi',
-      'dash.flashcard': 'Flashcard',
-      'dash.quizCorrect': '{correct}/{total} đúng',
-      'dash.score': 'điểm {score}',
-      'dash.mockBadge': 'Phỏng vấn thử',
-      'dash.quizBadge': 'Trắc nghiệm',
-      'dash.questionCount': '{n} câu',
-      'dash.planTitle': 'Kế hoạch hôm nay',
-      'dash.streakTitle': 'Số ngày học liên tục',
-      'dash.streakDays': '🔥 {n} ngày',
-      'dash.dueStrong': ' câu/bài đến hạn ôn lại',
-      'dash.dueExplain': 'Sau khi tự chấm, mỗi câu được lên lịch ôn lại: chấm “Chưa biết” sẽ quay lại ngày mai, “Cần ôn” sau 2+ ngày, “Đã thuộc” giãn dần 3 → 8 → 20+ ngày.',
-      'dash.dueBreakdown': '{q} câu hỏi',
-      'dash.dueBreakdownAlgo': ' · {a} bài thuật toán',
-      'dash.reviewNow': 'Ôn ngay',
-      'dash.noDue': 'Chưa có câu nào đến hạn ôn',
-      'dash.suggest': 'Gợi ý: {link} đang ở mức thấp nhất ({known}/{total} đã thuộc).',
-      'dash.startHint': 'Bắt đầu bằng cách đánh giá vài câu trong ngân hàng câu hỏi.',
-      'dash.openBank': 'Mở ngân hàng câu hỏi',
-      'dash.weekN': 'Tuần {n}',
-      'dash.weekDone': ' · đã xong {done}/{total} việc',
-      'dash.openRoadmap': 'Mở lộ trình',
-      'dash.noRoadmap': 'Chưa bắt đầu lộ trình 6 tháng',
-      'dash.noRoadmapHint': 'Chọn ngày bắt đầu để theo dõi tuần hiện tại và tiến độ từng giai đoạn.',
-      'dash.startRoadmap': 'Bắt đầu lộ trình 6 tháng',
-      'dash.actReview': '{n} câu đã ôn',
-      'dash.actKnown': '{n} đã thuộc',
-      'dash.actQuiz': '{n} bài trắc nghiệm',
-      'dash.actMock': '{n} phiên phỏng vấn',
-      'dash.actAlgo': '{n} bài thuật toán',
-      'dash.actMinutes': '{n} phút',
-      'dash.didToday': 'Hôm nay đã làm: {list}',
-      'dash.noActivity': 'Hôm nay chưa có hoạt động nào. Bắt đầu bằng 5 câu ôn nhé!',
-      'dash.historyTitle': 'Lịch sử gần đây',
-      'dash.noHistory': 'Chưa có phiên trắc nghiệm hay phỏng vấn thử nào.',
-      'dash.doQuiz': 'Làm một bài trắc nghiệm',
-      'dash.planHeading': '🎯 Buổi phỏng vấn sắp tới',
-      'dash.planSub': 'Lập kế hoạch ôn tập theo ngày phỏng vấn.',
-      'dash.deletePlan': 'Xoá kế hoạch',
+      'dash.morning': 'Chào buổi sáng', 'dash.afternoon': 'Chào buổi chiều', 'dash.evening': 'Chào buổi tối',
+      'dash.daysLeft': 'Còn {n} ngày tới buổi phỏng vấn',
+      'dash.daysLeftAt': 'Còn {n} ngày tới buổi phỏng vấn {company}',
+      'dash.today': 'Phỏng vấn hôm nay — bạn đã sẵn sàng! 💪',
+      'dash.passed': 'Buổi phỏng vấn đã qua. Đặt mục tiêu mới nhé.',
+      'dash.perDay': 'Mỗi ngày cần thuộc thêm ~{n} câu trong các chủ đề trọng tâm.',
+      'dash.setDate': 'Bạn phỏng vấn ngày nào?',
+      'dash.setDateHint': 'Đặt ngày để có đếm ngược và số câu cần ôn mỗi ngày.',
       'dash.date': 'Ngày phỏng vấn',
-      'dash.company': 'Công ty',
-      'dash.companyPlaceholder': 'Tên công ty (không bắt buộc)',
-      'dash.round': 'Vòng',
-      'dash.savePlan': 'Lưu kế hoạch',
-      'dash.pastDays': 'Đã qua {n} ngày',
-      'dash.today': 'Hôm nay',
-      'dash.daysLeft': 'Còn {n} ngày',
-      'dash.interviewPassed': 'Ngày phỏng vấn đã qua',
-      'dash.perDay': '{n} câu chưa thuộc/ngày',
-      'dash.priority': '3 chủ đề cần ưu tiên',
-      'dash.unlearned': '{n} câu chưa thuộc',
-      'dash.noTopicQuestions': 'Chưa có câu hỏi trong các chủ đề này.',
-      'dash.lastDay': 'Checklist ngày cuối',
-      'dash.lastDay1': 'Đọc lại STAR stories',
-      'dash.lastDay2': 'Làm một phiên mock',
-      'dash.lastDay3': 'Chuẩn bị 2–3 câu hỏi ngược cho interviewer',
-      'dash.planPrompt': 'Chọn ngày để tính ngược số câu cần ôn mỗi ngày và các chủ đề ưu tiên.',
-      'dash.todayTitle': 'Hôm nay học gì',
-      'dash.todaySub': 'Kế hoạch 60–90 phút, giữ nguyên trong ngày để bạn không phải nghĩ xem học gì.',
-      'dash.todayProgress': 'Đã xong {done}/{total} mục',
-      'dash.todayProgressAria': 'Tiến độ hôm nay {p}%',
-      'dash.todayMinutes': '≈ {m} phút',
-      'dash.changePlan': 'Đổi kế hoạch',
-      'dash.startStudy': '▶ Bắt đầu buổi học',
-      'dash.pauseStudy': '⏸ Tạm dừng',
-      'dash.resumeStudy': '▶ Tiếp tục',
-      'dash.resetTimer': 'Đặt lại',
-      'dash.pomoHint': 'Pomodoro 25 phút',
-      'dash.pomoDone': 'Hết 25 phút — nghỉ 5 phút rồi làm tiếp nhé!',
-      'dash.itemReview': 'Ôn đến hạn',
-      'dash.itemReviewSub': '{n} câu đến hạn ôn lại',
-      'dash.itemLesson': 'Bài học tiếp theo',
-      'dash.itemAlgo': 'Một bài thuật toán',
-      'dash.itemSpeak': 'Luyện nói 10 phút',
-      'dash.itemSd': 'Một đề system design',
-      'dash.itemMock': 'Phỏng vấn thử',
-      'dash.weekend': 'Cuối tuần',
-      'dash.duration': '≈ {n} phút',
+      'dash.company': 'Công ty (không bắt buộc)',
+      'dash.save': 'Đặt mục tiêu',
+      'dash.edit': 'Sửa',
+      'dash.clear': 'Xoá',
+      'dash.ready': 'sẵn sàng',
+      'dash.readyAria': 'Mức sẵn sàng phỏng vấn {p}%',
+      'dash.tier0': 'Khởi động', 'dash.tier1': 'Đang tăng tốc', 'dash.tier2': 'Vững Middle',
+      'dash.tier3': 'Sẵn sàng Senior', 'dash.tier4': 'Offer-ready 🏆',
+      'dash.nextTier': 'Thuộc thêm {n} câu để lên “{tier}”',
+      'dash.streak': 'ngày liên tục',
+      'dash.streakZero': 'Bắt đầu chuỗi hôm nay',
+      'dash.minutes': 'phút hôm nay',
+      'dash.goal': 'mục tiêu {n}',
+      'dash.known': 'câu đã thuộc',
+      'dash.knownToday': '+{n} hôm nay',
+      'dash.missionTitle': 'Nhiệm vụ hôm nay',
+      'dash.missionDone': 'Hoàn thành nhiệm vụ hôm nay! Chuỗi của bạn được giữ 🔥',
+      'dash.missionProgress': '{done}/{total} · ≈ {m} phút',
+      'dash.changePlan': 'Đổi',
+      'dash.changePlanAria': 'Đổi kế hoạch hôm nay',
+      'dash.emptyPlan': 'Chưa có dữ liệu để lập kế hoạch.',
       'dash.start': 'Bắt đầu',
       'dash.doneAria': 'Đánh dấu đã xong: {title}',
-      'dash.allDone': 'Xong hết kế hoạch hôm nay! 🎉',
-      'dash.emptyPlan': 'Chưa có dữ liệu để lập kế hoạch. Hãy thêm câu hỏi hoặc bài học.',
+      'dash.duration': '{n}′',
+      'dash.pomoStart': '▶ 25 phút tập trung', 'dash.pomoPause': '⏸ Tạm dừng', 'dash.pomoResume': '▶ Tiếp tục',
+      'dash.pomoReset': 'Đặt lại Pomodoro',
+      'dash.pomoDone': 'Hết 25 phút — nghỉ 5 phút nhé!',
+      'dash.itemReview': 'Ôn câu đến hạn', 'dash.itemReviewSub': '{n} câu cần nhắc lại hôm nay',
+      'dash.itemLesson': 'Bài học tiếp theo', 'dash.itemAlgo': 'Một bài thuật toán',
+      'dash.itemSpeak': 'Nói tiếng Anh 10 phút', 'dash.itemSd': 'Một đề system design',
+      'dash.itemMock': 'Phỏng vấn thử', 'dash.weekend': 'Cuối tuần',
+      'dash.quickTitle': 'Luyện nhanh',
+      'dash.qDue': 'Ôn đến hạn', 'dash.qDueSub': '{n} câu', 'dash.qDueNone': 'Không có câu đến hạn',
+      'dash.qInterview': 'Phỏng vấn AI', 'dash.qInterviewSub': 'Giọng nói, có chấm điểm',
+      'dash.qSdlc': 'Mô phỏng SDLC', 'dash.qSdlcSub': 'Từ requirement tới sự cố',
+      'dash.qRoadmap': 'Lộ trình', 'dash.qRoadmapSub': 'Tuần {n}/{total}', 'dash.qRoadmapStart': 'Chưa bắt đầu',
+      'dash.weekTitle': '14 ngày gần nhất',
+      'dash.dayAria': '{day}: {n} hoạt động',
+      'dash.weakTitle': 'Lỗ hổng cần lấp',
+      'dash.weakItem': '{known}/{total} đã thuộc',
+      'dash.weakNone': 'Chưa có dữ liệu. Tự chấm vài câu trong ngân hàng để thấy điểm yếu.',
+      'dash.quotes': [
+        'Interviewer không chấm bạn biết bao nhiêu, mà chấm bạn hiểu sâu tới đâu.',
+        'Mỗi câu bạn thuộc hôm nay là một câu không ai làm khó được bạn ngày phỏng vấn.',
+        '30 phút mỗi ngày trong 60 ngày thắng một tuần học dồn.',
+        'Senior không phải người không bao giờ sai, mà là người biết hệ thống hỏng thế nào.',
+        'Nói thành tiếng câu trả lời: hiểu trong đầu và nói ra được là hai kỹ năng khác nhau.',
+        'Thời layoff, công ty tuyển người gánh được việc ngay — hãy luyện kể impact bằng con số.',
+        'AI viết được code. Thứ AI không thay được: giải thích vì sao và chịu trách nhiệm khi nó hỏng.',
+        'Hôm nay mệt thì làm 1 mục thôi. Giữ chuỗi quan trọng hơn làm nhiều.',
+        'Câu hỏi khó nhất trong phỏng vấn thường là “Tại sao?”. Ôn để trả lời được nó.',
+        'Offer đến từ sự chuẩn bị lặp lại, không phải may mắn.',
+      ],
     },
     en: {
-      'dash.title': 'Dashboard',
-      'dash.heroTitle': 'Senior Java interview prep',
-      'dash.heroText': 'A 6-month plan from Java core to system design, microservices and English interviews — spaced repetition makes every answer stick by the time you interview for real.',
-      'dash.mock': 'Mock interview',
-      'dash.flash': 'Review flashcards',
-      'dash.bank': 'Question bank',
-      'dash.ringAria': '{p}% known',
-      'dash.ringLabel': 'known',
-      'dash.known': 'Known',
-      'dash.review': 'Review',
-      'dash.unknown': 'Don’t know',
-      'dash.unseen': 'Not studied',
-      'dash.topicsTitle': 'Progress by topic',
-      'dash.noTopics': 'No topics registered yet.',
-      'dash.other': 'Other',
-      'dash.topicAria': '{name}: {p}% known',
-      'dash.questions': 'Questions',
-      'dash.flashcard': 'Flashcards',
-      'dash.quizCorrect': '{correct}/{total} correct',
-      'dash.score': 'score {score}',
-      'dash.mockBadge': 'Mock interview',
-      'dash.quizBadge': 'Quiz',
-      'dash.questionCount': '{n} questions',
-      'dash.planTitle': 'Today’s plan',
-      'dash.streakTitle': 'Consecutive study days',
-      'dash.streakDays': '🔥 {n} days',
-      'dash.dueStrong': ' questions and problems due for review',
-      'dash.dueExplain': 'After you self-rate, each item is scheduled for review: “Don’t know” comes back tomorrow, “Review” after 2+ days, and “Known” stretches to 3 → 8 → 20+ days.',
-      'dash.dueBreakdown': '{q} questions',
-      'dash.dueBreakdownAlgo': ' · {a} algorithm problems',
-      'dash.reviewNow': 'Review now',
-      'dash.noDue': 'Nothing due for review',
-      'dash.suggest': 'Tip: {link} is your weakest topic ({known}/{total} known).',
-      'dash.startHint': 'Start by rating a few questions in the question bank.',
-      'dash.openBank': 'Open question bank',
-      'dash.weekN': 'Week {n}',
-      'dash.weekDone': ' · {done}/{total} tasks done',
-      'dash.openRoadmap': 'Open roadmap',
-      'dash.noRoadmap': '6-month roadmap not started',
-      'dash.noRoadmapHint': 'Pick a start date to track the current week and phase progress.',
-      'dash.startRoadmap': 'Start the 6-month roadmap',
-      'dash.actReview': '{n} reviewed',
-      'dash.actKnown': '{n} known',
-      'dash.actQuiz': '{n} quizzes',
-      'dash.actMock': '{n} mock sessions',
-      'dash.actAlgo': '{n} algorithm problems',
-      'dash.actMinutes': '{n} minutes',
-      'dash.didToday': 'Done today: {list}',
-      'dash.noActivity': 'No activity today yet. Start with 5 review questions!',
-      'dash.historyTitle': 'Recent history',
-      'dash.noHistory': 'No quiz or mock sessions yet.',
-      'dash.doQuiz': 'Take a quiz',
-      'dash.planHeading': '🎯 Upcoming interview',
-      'dash.planSub': 'Plan your prep around the interview date.',
-      'dash.deletePlan': 'Delete plan',
+      'dash.title': 'Home',
+      'dash.morning': 'Good morning', 'dash.afternoon': 'Good afternoon', 'dash.evening': 'Good evening',
+      'dash.daysLeft': '{n} days until your interview',
+      'dash.daysLeftAt': '{n} days until your {company} interview',
+      'dash.today': 'Interview day — you are ready! 💪',
+      'dash.passed': 'Your interview date has passed. Set a new goal.',
+      'dash.perDay': 'Learn ~{n} more questions a day in your focus topics.',
+      'dash.setDate': 'When is your interview?',
+      'dash.setDateHint': 'Set a date to get a countdown and a daily target.',
       'dash.date': 'Interview date',
-      'dash.company': 'Company',
-      'dash.companyPlaceholder': 'Company name (optional)',
-      'dash.round': 'Round',
-      'dash.savePlan': 'Save plan',
-      'dash.pastDays': '{n} days ago',
-      'dash.today': 'Today',
-      'dash.daysLeft': '{n} days left',
-      'dash.interviewPassed': 'Interview date has passed',
-      'dash.perDay': '{n} unlearned questions/day',
-      'dash.priority': '3 priority topics',
-      'dash.unlearned': '{n} unlearned questions',
-      'dash.noTopicQuestions': 'No questions in these topics yet.',
-      'dash.lastDay': 'Final-day checklist',
-      'dash.lastDay1': 'Re-read your STAR stories',
-      'dash.lastDay2': 'Do one mock session',
-      'dash.lastDay3': 'Prepare 2–3 questions to ask the interviewer',
-      'dash.planPrompt': 'Pick a date to work out how many questions to review per day and which topics to prioritise.',
-      'dash.todayTitle': 'What to study today',
-      'dash.todaySub': 'A 60–90 minute plan, fixed for the day so you never wonder what to study next.',
-      'dash.todayProgress': '{done}/{total} done',
-      'dash.todayProgressAria': 'Today’s progress {p}%',
-      'dash.todayMinutes': '≈ {m} min',
-      'dash.changePlan': 'Change plan',
-      'dash.startStudy': '▶ Start study session',
-      'dash.pauseStudy': '⏸ Pause',
-      'dash.resumeStudy': '▶ Resume',
-      'dash.resetTimer': 'Reset',
-      'dash.pomoHint': '25-minute pomodoro',
-      'dash.pomoDone': '25 minutes done — take a 5 minute break!',
-      'dash.itemReview': 'Due review',
-      'dash.itemReviewSub': '{n} questions due for review',
-      'dash.itemLesson': 'Next lesson',
-      'dash.itemAlgo': 'One algorithm problem',
-      'dash.itemSpeak': '10 minutes of speaking',
-      'dash.itemSd': 'One system design problem',
-      'dash.itemMock': 'Mock interview',
-      'dash.weekend': 'Weekend',
-      'dash.duration': '≈ {n} min',
+      'dash.company': 'Company (optional)',
+      'dash.save': 'Set goal',
+      'dash.edit': 'Edit',
+      'dash.clear': 'Clear',
+      'dash.ready': 'ready',
+      'dash.readyAria': 'Interview readiness {p}%',
+      'dash.tier0': 'Warming up', 'dash.tier1': 'Picking up speed', 'dash.tier2': 'Solid mid-level',
+      'dash.tier3': 'Senior-ready', 'dash.tier4': 'Offer-ready 🏆',
+      'dash.nextTier': 'Learn {n} more questions to reach “{tier}”',
+      'dash.streak': 'day streak',
+      'dash.streakZero': 'Start your streak today',
+      'dash.minutes': 'minutes today',
+      'dash.goal': 'goal {n}',
+      'dash.known': 'questions known',
+      'dash.knownToday': '+{n} today',
+      'dash.missionTitle': 'Today’s mission',
+      'dash.missionDone': 'Mission complete! Your streak is safe 🔥',
+      'dash.missionProgress': '{done}/{total} · ≈ {m} min',
+      'dash.changePlan': 'Shuffle',
+      'dash.changePlanAria': 'Change today’s plan',
+      'dash.emptyPlan': 'Not enough data to build a plan yet.',
       'dash.start': 'Start',
       'dash.doneAria': 'Mark as done: {title}',
-      'dash.allDone': 'Today’s plan is complete! 🎉',
-      'dash.emptyPlan': 'No data to build a plan yet. Add questions or lessons.',
+      'dash.duration': '{n}′',
+      'dash.pomoStart': '▶ 25-min focus', 'dash.pomoPause': '⏸ Pause', 'dash.pomoResume': '▶ Resume',
+      'dash.pomoReset': 'Reset Pomodoro',
+      'dash.pomoDone': '25 minutes done — take a 5-minute break!',
+      'dash.itemReview': 'Review due questions', 'dash.itemReviewSub': '{n} questions to recall today',
+      'dash.itemLesson': 'Next lesson', 'dash.itemAlgo': 'One algorithm problem',
+      'dash.itemSpeak': 'Speak English for 10 min', 'dash.itemSd': 'One system design problem',
+      'dash.itemMock': 'Mock interview', 'dash.weekend': 'Weekend',
+      'dash.quickTitle': 'Quick practice',
+      'dash.qDue': 'Due reviews', 'dash.qDueSub': '{n} questions', 'dash.qDueNone': 'Nothing due',
+      'dash.qInterview': 'AI interview', 'dash.qInterviewSub': 'Voice, with scoring',
+      'dash.qSdlc': 'SDLC simulation', 'dash.qSdlcSub': 'From requirement to incident',
+      'dash.qRoadmap': 'Roadmap', 'dash.qRoadmapSub': 'Week {n}/{total}', 'dash.qRoadmapStart': 'Not started',
+      'dash.weekTitle': 'Last 14 days',
+      'dash.dayAria': '{day}: {n} activities',
+      'dash.weakTitle': 'Gaps to close',
+      'dash.weakItem': '{known}/{total} known',
+      'dash.weakNone': 'No data yet. Self-grade a few questions in the bank to see your gaps.',
+      'dash.quotes': [
+        'Interviewers do not score how much you know, but how deeply you understand it.',
+        'Every question you master today is one nobody can trip you up on later.',
+        '30 minutes a day for 60 days beats one week of cramming.',
+        'A senior is not someone who is never wrong, but someone who knows how systems fail.',
+        'Say your answers out loud: understanding and explaining are two different skills.',
+        'In a layoff market, companies hire people who deliver from day one — practise telling impact in numbers.',
+        'AI can write code. It cannot explain why, or own it when it breaks.',
+        'Tired today? Do just one item. Keeping the streak beats doing a lot.',
+        'The hardest interview question is usually “Why?”. Study to answer it.',
+        'Offers come from repeated preparation, not luck.',
+      ],
     },
   });
 
   const tr = (key, vars) => App.t('dash.' + key, vars);
   const DAY = 86400000;
+  const GOAL_MIN = 60;
+  const TIERS = [0, 10, 30, 55, 80];   // readiness % thresholds for tier0..tier4
+  const pct = (a, b) => (b > 0 ? Math.round((a / b) * 100) : 0);
+  const dayNumber = () => Math.floor(App.startOfDay(Date.now()) / DAY);
+  const isWeekend = () => { const d = new Date().getDay(); return d === 0 || d === 6; };
 
-  function pct(a, b) { return b > 0 ? Math.round((a / b) * 100) : 0; }
-
-  /** SVG ring showing % of questions marked "Đã thuộc". */
-  function ring(percent) {
-    const r = 52;
-    const c = 2 * Math.PI * r;
-    const p = Math.max(0, Math.min(100, percent));
-    const off = c * (1 - p / 100);
-    return '<svg class="ring" viewBox="0 0 120 120" role="img" aria-label="' + App.esc(tr('ringAria', { p: p })) + '">' +
-      '<circle class="ring-bg" cx="60" cy="60" r="' + r + '"></circle>' +
-      '<circle class="ring-fg" cx="60" cy="60" r="' + r + '" stroke-dasharray="' + c.toFixed(1) + '" stroke-dashoffset="' + off.toFixed(1) + '"></circle>' +
-      '<text class="ring-val" x="60" y="58">' + p + '%</text>' +
-      '<text class="ring-lbl" x="60" y="78">' + App.esc(tr('ringLabel')) + '</text>' +
-      '</svg>';
-  }
-
-  function statTile(num, label, cls) {
-    return '<div class="stat"><div class="num' + (cls ? ' ' + cls : '') + '">' + num + '</div>' +
-      '<div class="lbl">' + App.esc(label) + '</div></div>';
-  }
-
-  /** Flatten ROADMAP phases into a list of weeks. */
+  // ---------- roadmap helpers ----------
   function allWeeks() {
     const rm = window.ROADMAP;
     if (!rm || !rm.phases) return [];
@@ -237,110 +152,50 @@
     rm.phases.forEach(ph => (ph.weeks || []).forEach(w => out.push(Object.assign({ phase: ph.name }, w))));
     return out;
   }
-
-  /** Parse roadmap.start (timestamp, numeric string or 'YYYY-MM-DD'). */
   function roadmapStart() {
-    const rd = App.store.data.roadmap || {};
-    const s = rd.start;
+    const s = (App.store.data.roadmap || {}).start;
     if (s == null || s === '') return null;
     if (typeof s === 'number') return s;
-    if (typeof s === 'string') {
-      if (/^\d+$/.test(s)) return Number(s);
-      const t = Date.parse(s);
-      return isNaN(t) ? null : t;
-    }
+    if (typeof s === 'string') { if (/^\d+$/.test(s)) return Number(s); const t = Date.parse(s); return isNaN(t) ? null : t; }
     return null;
   }
-
-  /** Current week object based on roadmap.start, or null when the plan has not started. */
-  function currentWeek() {
-    const start = roadmapStart();
-    if (!start) return null;
-    const weeks = allWeeks();
-    if (!weeks.length) return null;
-    const diff = App.startOfDay(Date.now()) - App.startOfDay(start);
-    let idx = Math.floor(diff / (7 * DAY)) + 1;
-    idx = Math.max(1, Math.min(weeks.length, idx));
-    return Object.assign({ index: idx, total: weeks.length }, weeks[idx - 1]);
-  }
-
-  /** Count of items due for review, split between questions and algo problems. */
-  function dueList() {
-    const items = App.dueItems();
-    const q = items.filter(x => String(x.id).indexOf('algo-') !== 0);
-    const a = items.filter(x => String(x.id).indexOf('algo-') === 0);
-    return { total: items.length, q: q.length, a: a.length };
-  }
-
-  // ---------- "Hôm nay học gì" (T288) ----------
-  const POMO_SECONDS = 25 * 60;
-  const dayNumber = () => Math.floor(App.startOfDay(Date.now()) / DAY);
-  const isWeekend = () => { const d = new Date().getDay(); return d === 0 || d === 6; };
-
-  /** Current week number, defaulting to week 1 when the roadmap has not started. */
   function weekNumber() {
-    const weeks = allWeeks();
-    if (!weeks.length) return 1;
-    const start = roadmapStart();
-    if (!start) return 1;
-    const diff = App.startOfDay(Date.now()) - App.startOfDay(start);
-    return Math.max(1, Math.min(weeks.length, Math.floor(diff / (7 * DAY)) + 1));
+    const weeks = allWeeks(), start = roadmapStart();
+    if (!weeks.length || !start) return 1;
+    return Math.max(1, Math.min(weeks.length, Math.floor((App.startOfDay(Date.now()) - App.startOfDay(start)) / (7 * DAY)) + 1));
   }
 
-  /** First lesson not marked known, walking window.PATH order then the full lesson list. */
+  // ---------- today's plan (persisted once per day) ----------
   function nextLesson() {
-    const lessons = App.lite('lessons');
-    const byId = {};
+    const lessons = App.lite('lessons'), byId = {}, order = [], seen = {};
     lessons.forEach(l => { byId[l.id] = l; });
-    const order = [], seen = {};
     const path = Array.isArray(window.PATH) ? window.PATH.slice().sort((a, b) => (a.order || 0) - (b.order || 0)) : [];
-    path.forEach(st => (st.lessons || []).forEach(id => {
-      if (!seen[id]) { seen[id] = 1; order.push(id); }
-    }));
+    path.forEach(st => (st.lessons || []).forEach(id => { if (!seen[id]) { seen[id] = 1; order.push(id); } }));
     lessons.forEach(l => { if (!seen[l.id]) { seen[l.id] = 1; order.push(l.id); } });
-    for (let i = 0; i < order.length; i++) {
-      const l = byId[order[i]];
-      if (l && App.store.getStatus(l.id) !== 'known') return l;
-    }
+    for (const id of order) { const l = byId[id]; if (l && App.store.getStatus(l.id) !== 'known') return l; }
     return null;
   }
-
-  /** Due algorithm first, otherwise an unsolved problem matching the current week's pattern. */
   function pickAlgo() {
     const algos = App.lite('algos');
     if (!algos.length) return null;
     const due = App.dueItems().filter(x => String(x.id).indexOf('algo-') === 0);
-    if (due.length) {
-      const a = algos.find(x => x.id === due[0].id);
-      if (a) return a;
-    }
+    if (due.length) { const a = algos.find(x => x.id === due[0].id); if (a) return a; }
     let pool = algos.filter(a => !App.store.getStatus(a.id));
     if (!pool.length) pool = algos.filter(a => App.store.getStatus(a.id) !== 'known');
     if (!pool.length) return null;
-    const weeks = allWeeks();
-    const raw = String((weeks[weekNumber() - 1] || {}).algo || '').toLowerCase();
+    const raw = String((allWeeks()[weekNumber() - 1] || {}).algo || '').toLowerCase();
     const stop = { bai: 1, on: 1, lai: 1, sai: 1, easy: 1, medium: 1, hard: 1, tron: 1, chon: 1, loc: 1 };
     const tokens = raw.split(/[^a-z0-9]+/).filter(t => t.length > 1 && !stop[t]);
     if (/\bdp\b/.test(raw)) tokens.push('dynamic');
-    if (tokens.length) {
-      const matched = pool.filter(a => tokens.some(t => String(a.pattern || '').toLowerCase().indexOf(t) >= 0));
-      if (matched.length) pool = matched;
-    }
+    if (tokens.length) { const m = pool.filter(a => tokens.some(t => String(a.pattern || '').toLowerCase().indexOf(t) >= 0)); if (m.length) pool = m; }
     const level = /easy/.test(raw) ? 'easy' : /hard/.test(raw) ? 'hard' : /medium/.test(raw) ? 'medium' : null;
-    if (level) {
-      const matched = pool.filter(a => a.difficulty === level);
-      if (matched.length) pool = matched;
-    }
+    if (level) { const m = pool.filter(a => a.difficulty === level); if (m.length) pool = m; }
     return pool[0];
   }
-
-  /** Rotate through system-design problems by day. */
   function pickSd() {
     const list = App.lite('sd').filter(x => x && x.id);
     return list.length ? list[dayNumber() % list.length] : null;
   }
-
-  /** Speaking drill (prefer not-known), falling back to an English question in the bank. */
   function pickSpeak() {
     const drills = App.lite('drills').filter(d => d && d.id);
     if (drills.length) {
@@ -351,511 +206,336 @@
     const q = App.lite('questions').find(x => x.lang === 'en');
     return q ? { kind: 'speak', q: q.id, minutes: 10 } : null;
   }
-
-  /** Build today's item list from current progress + roadmap data. */
   function buildPlan() {
     const items = [];
     const dueQ = App.dueItems().filter(x => String(x.id).indexOf('algo-') !== 0).slice(0, 10);
     if (dueQ.length) items.push({ kind: 'review', ids: dueQ.map(x => x.id), minutes: 15 });
-
     const lesson = nextLesson();
     if (lesson) items.push({ kind: 'lesson', id: lesson.id, minutes: lesson.minutes || 25 });
-
     if (isWeekend()) {
       const sd = pickSd();
-      if (sd) items.push({ kind: 'sd', id: sd.id, minutes: 45 });
-      else items.push({ kind: 'mock', minutes: 30 });
+      items.push(sd ? { kind: 'sd', id: sd.id, minutes: 45 } : { kind: 'mock', minutes: 30 });
     } else {
       const algo = pickAlgo();
       if (algo) items.push({ kind: 'algo', id: algo.id, minutes: 30 });
     }
-
     const speak = pickSpeak();
     if (speak) items.push(speak);
     return items;
   }
-
-  /** Persist the plan once per day; `force` rebuilds it ("Đổi kế hoạch"). */
   function ensurePlan(force) {
-    const data = App.store.data;
-    const today = App.dayKey(Date.now());
-    const old = data.todayPlan;
+    const data = App.store.data, today = App.dayKey(Date.now()), old = data.todayPlan;
     if (!force && old && old.day === today && Array.isArray(old.items) && old.items.length) {
       if (!old.done || typeof old.done !== 'object') old.done = {};
       return old;
     }
-    data.todayPlan = {
-      day: today,
-      items: buildPlan(),
-      done: (old && old.day === today && old.done && typeof old.done === 'object') ? old.done : {},
-    };
+    data.todayPlan = { day: today, items: buildPlan(), done: (old && old.day === today && old.done && typeof old.done === 'object') ? old.done : {} };
     App.store.save();
     return data.todayPlan;
   }
-
   function itemKey(it) {
     if (it.kind === 'review') return 'review:' + (it.ids || []).slice().sort().join(',');
     if (it.kind === 'speak') return 'speak:' + (it.drill || it.q || '');
     return it.kind + ':' + (it.id || '');
   }
-
-  /** Resolve a stored item to display data; null means the underlying content is gone. */
   function planItemView(it) {
     if (!it || !it.kind) return null;
     if (it.kind === 'review') {
       const n = (it.ids || []).filter(id => App.lite('questions').some(q => q.id === id)).length;
-      if (!n) return null;
-      return { icon: '🔁', title: tr('itemReview'), sub: tr('itemReviewSub', { n: n }), href: '#/flash/due' };
+      return n ? { icon: '🔁', title: tr('itemReview'), sub: tr('itemReviewSub', { n }), href: '#/flash/due' } : null;
     }
     if (it.kind === 'lesson') {
       const l = App.lite('lessons').find(x => x.id === it.id);
       if (!l) return null;
       const topic = App.topic(l.track);
-      return {
-        icon: '📘',
-        title: l.title,
-        sub: tr('itemLesson') + (topic && topic.name ? ' · ' + topic.name : ''),
-        href: '#/learn/' + encodeURIComponent(l.id),
-      };
+      return { icon: '📘', title: l.title, sub: tr('itemLesson') + (topic && topic.name ? ' · ' + topic.name : ''), href: '#/learn/' + encodeURIComponent(l.id) };
     }
     if (it.kind === 'algo') {
       const a = App.lite('algos').find(x => x.id === it.id);
-      if (!a) return null;
-      return {
-        icon: '🧩',
-        title: a.title,
-        sub: tr('itemAlgo') + (a.pattern ? ' · ' + a.pattern : ''),
-        href: '#/algo/' + encodeURIComponent(a.id),
-      };
+      return a ? { icon: '🧩', title: a.title, sub: tr('itemAlgo') + (a.pattern ? ' · ' + a.pattern : ''), href: '#/algo/' + encodeURIComponent(a.id) } : null;
     }
     if (it.kind === 'speak') {
       if (it.drill) {
-        const drills = App.lite('drills');
-        const d = drills.find(x => x.id === it.drill);
+        const d = App.lite('drills').find(x => x.id === it.drill);
         if (!d) return null;
         const detail = d.kind === 'qa' ? d.q : d.kind === 'term' ? d.term + ' — ' + d.example : d.en;
         return { icon: '🎤', title: tr('itemSpeak'), sub: detail || '', lang: 'en', href: '#/speak' };
       }
-      if (it.q) {
-        const q = App.lite('questions').find(x => x.id === it.q);
-        if (!q) return null;
-        return { icon: '🎤', title: tr('itemSpeak'), sub: q.q, lang: 'en', href: '#/bank/english' };
-      }
-      return null;
+      const q = it.q && App.lite('questions').find(x => x.id === it.q);
+      return q ? { icon: '🎤', title: tr('itemSpeak'), sub: q.q, lang: 'en', href: '#/bank/english' } : null;
     }
     if (it.kind === 'sd') {
-      const list = App.lite('sd');
-      const p = list.find(x => x.id === it.id);
-      if (!p) return null;
-      return { icon: '🏗️', title: p.title, sub: tr('itemSd'), href: '#/sd/' + encodeURIComponent(p.id) };
+      const p = App.lite('sd').find(x => x.id === it.id);
+      return p ? { icon: '🏗️', title: p.title, sub: tr('itemSd'), href: '#/sd/' + encodeURIComponent(p.id) } : null;
     }
     if (it.kind === 'mock') return { icon: '🎯', title: tr('itemMock'), sub: tr('weekend'), href: '#/mock' };
     return null;
   }
 
-  function planItemHtml(it, v, tp) {
-    const key = itemKey(it);
-    const done = !!(tp.done && tp.done[key]);
-    const aria = tr('doneAria', { title: v.title });
-    return '<li class="today-item' + (done ? ' is-done' : '') + '">' +
-      '<label class="today-check">' +
-        '<input type="checkbox" data-plan-done="' + App.esc(key) + '"' + (done ? ' checked' : '') + ' aria-label="' + App.esc(aria) + '">' +
-        '<span class="today-icon" aria-hidden="true">' + App.esc(v.icon) + '</span>' +
-      '</label>' +
-      '<div class="today-body">' +
-        '<div class="today-item-head"><strong>' + App.esc(v.title) + '</strong>' +
-          '<span class="badge">' + App.esc(tr('duration', { n: it.minutes || 0 })) + '</span></div>' +
-        (v.sub ? '<div class="small muted"' + (v.lang ? ' lang="' + App.esc(v.lang) + '"' : '') + '>' + App.esc(v.sub) + '</div>' : '') +
-      '</div>' +
-      '<a class="btn primary sm" href="' + App.esc(v.href) + '">' + App.esc(tr('start')) + '</a>' +
-    '</li>';
+  // ---------- interview goal ----------
+  function parseDate(s) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || '');
+    if (!m) return null;
+    const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    return d.getMonth() === Number(m[2]) - 1 ? d : null;
+  }
+  function goal() {
+    const plan = App.store.data.interviewPlan || {};
+    if (plan.deleted) return null;
+    const d = parseDate(plan.date);
+    if (!d) return null;
+    const days = Math.round((d.getTime() - App.startOfDay(Date.now())) / DAY);
+    const companies = App.lite('companies');
+    const company = companies.find(c => c.name === plan.company) || companies.find(c => c.id === plan.company);
+    const focus = company && Array.isArray(company.focus) && company.focus.length ? company.focus : App.topics().map(t => t.id);
+    const left = focus.reduce((n, id) => { const s = App.stats(id); return n + Math.max(0, s.total - s.known); }, 0);
+    return { plan, days, perDay: days > 0 ? Math.ceil(left / days) : 0 };
   }
 
-  function fmtClock(sec) {
-    const m = Math.floor(Math.max(0, sec) / 60);
-    const s = Math.max(0, sec) % 60;
-    return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+  // ---------- pieces ----------
+  function ring(p) {
+    const r = 52, c = 2 * Math.PI * r, off = c * (1 - Math.max(0, Math.min(100, p)) / 100);
+    return '<svg class="db-ring" viewBox="0 0 120 120" role="img" aria-label="' + App.esc(tr('readyAria', { p })) + '">' +
+      '<defs><linearGradient id="dbRingGrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" class="db-stop-a"/><stop offset="1" class="db-stop-b"/></linearGradient></defs>' +
+      '<circle class="db-ring-bg" cx="60" cy="60" r="' + r + '"/>' +
+      '<circle class="db-ring-fg" cx="60" cy="60" r="' + r + '" stroke-dasharray="' + c.toFixed(1) + '" stroke-dashoffset="' + off.toFixed(1) + '"/>' +
+      '<text class="db-ring-val" x="60" y="60">' + p + '%</text><text class="db-ring-lbl" x="60" y="80">' + App.esc(tr('ready')) + '</text></svg>';
+  }
+
+  /** Decorative illustration (inline SVG, colours from CSS tokens so it follows light/dark). */
+  function heroArt() {
+    return '<svg class="db-art" viewBox="0 0 260 210" aria-hidden="true" focusable="false">' +
+      '<path class="il-blob" d="M44 58C70 14 150 4 196 34s56 98 22 138-122 44-162 18S18 102 44 58z"/>' +
+      '<g class="il-float">' +
+        '<rect class="il-card" x="38" y="52" width="160" height="112" rx="14"/>' +
+        '<rect class="il-bar" x="38" y="52" width="160" height="24" rx="14"/><rect class="il-bar" x="38" y="64" width="160" height="12"/>' +
+        '<circle class="il-dot-r" cx="54" cy="64" r="4"/><circle class="il-dot-y" cx="67" cy="64" r="4"/><circle class="il-dot-g" cx="80" cy="64" r="4"/>' +
+        '<rect class="il-code-a" x="54" y="90" width="58" height="7" rx="3.5"/><rect class="il-code-m" x="118" y="90" width="40" height="7" rx="3.5"/>' +
+        '<rect class="il-code-m" x="66" y="104" width="34" height="7" rx="3.5"/><rect class="il-code-b" x="106" y="104" width="64" height="7" rx="3.5"/>' +
+        '<rect class="il-code-m" x="66" y="118" width="76" height="7" rx="3.5"/>' +
+        '<rect class="il-code-a" x="54" y="132" width="28" height="7" rx="3.5"/><rect class="il-code-m" x="88" y="132" width="50" height="7" rx="3.5"/>' +
+        '<rect class="il-cursor" x="144" y="131" width="3" height="10" rx="1.5"/>' +
+      '</g>' +
+      '<g class="il-float il-d1">' +
+        '<rect class="il-bubble" x="160" y="14" width="78" height="42" rx="14"/><path class="il-bubble" d="M178 54l-6 14 18-14z"/>' +
+        '<text class="il-bubble-txt" x="199" y="41">Why?</text>' +
+      '</g>' +
+      '<g class="il-float il-d2"><circle class="il-ok" cx="42" cy="164" r="20"/><path class="il-tick" d="M33 164l6 6 12-13"/></g>' +
+      '<g class="il-float il-d3"><circle class="il-ring" cx="218" cy="150" r="16"/><path class="il-tick-a" d="M218 140v10l7 5"/></g>' +
+      '<path class="il-spark" d="M120 22l3 8 8 3-8 3-3 8-3-8-8-3 8-3z"/>' +
+      '<path class="il-spark il-s2" d="M236 92l2 5 5 2-5 2-2 5-2-5-5-2 5-2z"/>' +
+      '<path class="il-spark il-s3" d="M18 104l2 5 5 2-5 2-2 5-2-5-5-2 5-2z"/>' +
+    '</svg>';
+  }
+
+  function heroHtml(st, editing) {
+    const h = new Date().getHours();
+    const hello = h < 11 ? tr('morning') : h < 18 ? tr('afternoon') : tr('evening');
+    const quotes = App.t('dash.quotes');
+    const quote = Array.isArray(quotes) ? quotes[dayNumber() % quotes.length] : '';
+    const readiness = pct(st.known, st.total);
+    let tier = 0;
+    TIERS.forEach((v, i) => { if (readiness >= v) tier = i; });
+    const next = tier < TIERS.length - 1 ? Math.max(1, Math.ceil(TIERS[tier + 1] / 100 * st.total) - st.known) : 0;
+    const g = goal();
+    let goalHtml;
+    if (g && !editing) {
+      const msg = g.days > 0
+        ? (g.plan.company ? tr('daysLeftAt', { n: g.days, company: App.esc(g.plan.company) }) : tr('daysLeft', { n: g.days }))
+        : g.days === 0 ? tr('today') : tr('passed');
+      goalHtml = '<div class="db-goal"><span class="db-goal-num" aria-hidden="true">' + (g.days > 0 ? g.days : '🎯') + '</span>' +
+        '<div><b>' + msg + '</b>' + (g.days > 0 ? '<div class="db-dim small">' + tr('perDay', { n: g.perDay }) + '</div>' : '') + '</div>' +
+        '<button type="button" class="btn ghost sm" data-goal-edit>' + tr('edit') + '</button></div>';
+    } else {
+      const p = App.store.data.interviewPlan || {};
+      const opts = App.lite('companies').map(c => '<option value="' + App.esc(c.name) + '"></option>').join('');
+      goalHtml = '<form class="db-goal-form" data-goal-form>' +
+        '<div class="db-goal-q"><b>' + tr('setDate') + '</b><span class="db-dim small">' + tr('setDateHint') + '</span></div>' +
+        '<input class="input" type="date" name="date" required aria-label="' + App.esc(tr('date')) + '" value="' + App.esc(p.deleted ? '' : p.date || '') + '">' +
+        '<input class="input" type="text" name="company" list="db-companies" placeholder="' + App.esc(tr('company')) + '" aria-label="' + App.esc(tr('company')) + '" value="' + App.esc(p.deleted ? '' : p.company || '') + '">' +
+        '<datalist id="db-companies">' + opts + '</datalist>' +
+        '<button type="submit" class="btn primary sm">' + tr('save') + '</button>' +
+        (g ? '<button type="button" class="btn ghost sm" data-goal-clear>' + tr('clear') + '</button>' : '') +
+      '</form>';
+    }
+    return '<section class="db-hero">' +
+      '<div class="db-hero-main">' +
+        '<p class="db-hello">' + hello + ' 👋</p>' +
+        '<h1 class="db-quote">' + App.esc(quote) + '</h1>' +
+        goalHtml +
+      '</div>' +
+      '<div class="db-hero-art">' + heroArt() + '</div>' +
+      '<div class="db-hero-ring">' + ring(readiness) +
+        '<div class="db-tier"><span class="db-tier-name">' + tr('tier' + tier) + '</span>' +
+        (next ? '<span class="db-dim small">' + tr('nextTier', { n: next, tier: tr('tier' + (tier + 1)) }) + '</span>' : '') + '</div>' +
+      '</div>' +
+    '</section>';
+  }
+
+  function metricsHtml(st) {
+    const streak = App.store.streak();
+    const day = App.store.day() || {};
+    const mins = day.minutes || 0;
+    const minP = Math.min(100, pct(mins, GOAL_MIN));
+    return '<section class="db-metrics">' +
+      '<div class="db-metric db-m-fire"><span class="db-m-ico" aria-hidden="true">🔥</span><div><b class="db-m-num">' + streak + '</b>' +
+        '<span class="db-m-lbl">' + (streak ? tr('streak') : tr('streakZero')) + '</span></div></div>' +
+      '<div class="db-metric"><span class="db-m-ico" aria-hidden="true">⏱️</span><div class="db-m-grow"><b class="db-m-num">' + mins + '</b>' +
+        '<span class="db-m-lbl">' + tr('minutes') + ' · ' + tr('goal', { n: GOAL_MIN }) + '</span>' +
+        '<div class="progress db-m-bar"><i class="accent" style="width:' + minP + '%"></i></div></div></div>' +
+      '<div class="db-metric"><span class="db-m-ico" aria-hidden="true">✅</span><div><b class="db-m-num">' + st.known + '<small>/' + st.total + '</small></b>' +
+        '<span class="db-m-lbl">' + tr('known') + (day.known ? ' · <em class="db-up">' + tr('knownToday', { n: day.known }) + '</em>' : '') + '</span></div></div>' +
+    '</section>';
   }
 
   function pomoLabel(pomo) {
-    if (pomo.running) return tr('pauseStudy');
-    if (pomo.left === POMO_SECONDS || pomo.left <= 0) return tr('startStudy');
-    return tr('resumeStudy');
+    if (pomo.running) return tr('pomoPause');
+    return pomo.left === POMO || pomo.left <= 0 ? tr('pomoStart') : tr('pomoResume');
   }
+  const POMO = 25 * 60;
+  const clock = s => String(Math.floor(Math.max(0, s) / 60)).padStart(2, '0') + ':' + String(Math.max(0, s) % 60).padStart(2, '0');
 
-  /** The "Hôm nay học gì" card; `pomo` holds the in-memory 25' timer state. */
-  function todayStudyCard(pomo) {
+  function missionHtml(pomo) {
     const tp = ensurePlan(false);
-    const rows = (tp.items || []).map(it => ({ it: it, v: planItemView(it) })).filter(x => x.v);
-    const total = rows.length;
-    const doneCount = rows.filter(x => tp.done && tp.done[itemKey(x.it)]).length;
-    const totalMin = rows.reduce((sum, x) => sum + (x.it.minutes || 0), 0);
-    const doneMin = rows.reduce((sum, x) => sum + (tp.done && tp.done[itemKey(x.it)] ? (x.it.minutes || 0) : 0), 0);
-    const p = totalMin ? Math.round((doneMin / totalMin) * 100) : 0;
-    const list = total
-      ? '<ul class="today-list">' + rows.map(x => planItemHtml(x.it, x.v, tp)).join('') + '</ul>'
-      : '<div class="empty"><p>' + tr('emptyPlan') + '</p></div>';
-    const allDone = total && doneCount === total ? '<p class="today-all-done">' + tr('allDone') + '</p>' : '';
-
-    return '<section class="card today-card">' +
-      '<div class="today-card-head">' +
-        '<div><h2>' + tr('todayTitle') + '</h2><p class="muted small">' + tr('todaySub') + '</p></div>' +
-        '<div class="today-actions">' +
-          '<button type="button" class="btn sm" data-plan-change>' + tr('changePlan') + '</button>' +
-          '<button type="button" class="btn primary sm" data-pomo-toggle>' + App.esc(pomoLabel(pomo)) + '</button>' +
-        '</div>' +
+    const rows = (tp.items || []).map(it => ({ it, v: planItemView(it) })).filter(x => x.v);
+    const isDone = x => !!(tp.done && tp.done[itemKey(x.it)]);
+    const done = rows.filter(isDone).length;
+    const totalMin = rows.reduce((s, x) => s + (x.it.minutes || 0), 0);
+    const p = rows.length ? pct(done, rows.length) : 0;
+    const firstOpen = rows.findIndex(x => !isDone(x));
+    const list = rows.length ? '<ol class="db-tasks">' + rows.map((x, i) => {
+      const key = itemKey(x.it), d = isDone(x);
+      return '<li class="db-task' + (d ? ' is-done' : '') + (i === firstOpen ? ' is-next' : '') + '">' +
+        '<label class="db-check"><input type="checkbox" data-plan-done="' + App.esc(key) + '"' + (d ? ' checked' : '') +
+          ' aria-label="' + App.esc(tr('doneAria', { title: x.v.title })) + '"><span aria-hidden="true">' + App.esc(x.v.icon) + '</span></label>' +
+        '<a class="db-task-body" href="' + App.esc(x.v.href) + '"><b>' + App.esc(x.v.title) + '</b>' +
+          (x.v.sub ? '<span class="db-dim small"' + (x.v.lang ? ' lang="' + x.v.lang + '"' : '') + '>' + App.esc(x.v.sub) + '</span>' : '') + '</a>' +
+        '<span class="badge">' + tr('duration', { n: x.it.minutes || 0 }) + '</span>' +
+        (i === firstOpen ? '<a class="btn primary sm" href="' + App.esc(x.v.href) + '">' + tr('start') + '</a>' : '') +
+      '</li>';
+    }).join('') + '</ol>' : '<p class="db-dim">' + tr('emptyPlan') + '</p>';
+    return '<section class="card db-mission">' +
+      '<div class="db-mission-head"><div><h2>🎯 ' + tr('missionTitle') + '</h2>' +
+        '<span class="db-dim small">' + tr('missionProgress', { done, total: rows.length, m: totalMin }) + '</span></div>' +
+        '<div class="db-pomo"><span class="db-pomo-time" data-pomo-time>' + clock(pomo.left) + '</span>' +
+          '<button type="button" class="btn sm" data-pomo-toggle>' + pomoLabel(pomo) + '</button>' +
+          '<button type="button" class="btn ghost sm" data-pomo-reset aria-label="' + App.esc(tr('pomoReset')) + '" title="' + App.esc(tr('pomoReset')) + '">↺</button>' +
+          '<button type="button" class="btn ghost sm" data-plan-change aria-label="' + App.esc(tr('changePlanAria')) + '">🔀 ' + tr('changePlan') + '</button></div>' +
       '</div>' +
-      '<div class="today-progress">' +
-        '<div class="today-progress-meta"><span>' + App.esc(tr('todayProgress', { done: doneCount, total: total })) + '</span>' +
-          '<span>' + App.esc(tr('todayMinutes', { m: totalMin })) + '</span></div>' +
-        '<div class="progress" role="progressbar" aria-label="' + App.esc(tr('todayProgressAria', { p: p })) + '" aria-valuenow="' + p + '" aria-valuemin="0" aria-valuemax="100">' +
-          '<i class="ok" style="width:' + p + '%"></i>' +
-        '</div>' +
-      '</div>' +
-      list + allDone +
-      '<div class="today-timer">' +
-        '<span class="today-timer-label">' + tr('pomoHint') + '</span>' +
-        '<span class="today-timer-time" data-pomo-time>' + fmtClock(pomo.left) + '</span>' +
-        '<button type="button" class="btn sm" data-pomo-reset>' + tr('resetTimer') + '</button>' +
-        '<span class="today-timer-msg" data-pomo-msg hidden>' + tr('pomoDone') + '</span>' +
-      '</div>' +
+      '<div class="progress db-mission-bar"><i class="accent" style="width:' + p + '%"></i></div>' +
+      '<p class="db-pomo-msg small" data-pomo-msg hidden>' + tr('pomoDone') + '</p>' +
+      list +
+      (rows.length && done === rows.length ? '<p class="db-celebrate">' + tr('missionDone') + '</p>' : '') +
     '</section>';
   }
 
-  /** Topic cards grouped by topic.group, each with known/total + progress bar. */
-  function topicGroups() {
-    const topics = App.topics();
-    if (!topics.length) return '';
-    const groups = [];
-    const byName = {};
-    topics.forEach(t => {
-      const g = t.group || tr('other');
-      if (!byName[g]) { byName[g] = { name: g, items: [] }; groups.push(byName[g]); }
-      byName[g].items.push(t);
-    });
-    return groups.map(g => {
-      const cards = g.items.map(t => {
-        const s = App.stats(t.id);
-        const p = pct(s.known, s.total);
-        const barCls = s.total === 0 ? '' : (p >= 70 ? 'ok' : (p >= 30 ? 'warn' : 'bad'));
-        return '<div class="topic-card">' +
-          '<div class="topic-head">' +
-            '<span class="topic-icon" aria-hidden="true">' + App.esc(t.icon || '•') + '</span>' +
-            '<span class="topic-name">' + App.esc(t.name) + '</span>' +
-            '<span class="badge' + (s.total ? '' : ' accent') + '">' + s.known + '/' + s.total + '</span>' +
-          '</div>' +
-          '<div class="progress" role="progressbar" aria-label="' + App.esc(tr('topicAria', { name: t.name, p: p })) + '" aria-valuenow="' + p + '" aria-valuemin="0" aria-valuemax="100">' +
-            '<i class="' + barCls + '" style="width:' + p + '%"></i>' +
-          '</div>' +
-          '<div class="topic-links">' +
-            '<a class="btn sm" href="#/bank/' + encodeURIComponent(t.id) + '">' + App.esc(tr('questions')) + '</a>' +
-            '<a class="btn sm" href="#/flash/' + encodeURIComponent(t.id) + '">' + App.esc(tr('flashcard')) + '</a>' +
-          '</div>' +
-        '</div>';
-      }).join('');
-      return '<section class="group"><h3 class="group-title">' + App.esc(g.name) + '</h3><div class="topic-grid">' + cards + '</div></section>';
-    }).join('');
-  }
-
-  /** Topic with the lowest known-ratio that still has questions (suggestion for today). */
-  function weakestTopic() {
-    let best = null;
-    App.topics().forEach(t => {
-      const s = App.stats(t.id);
-      if (!s.total) return;
-      const p = pct(s.known, s.total);
-      if (!best || p < best.p) best = { t: t, p: p, s: s };
-    });
-    return best;
-  }
-
-  /** Recent activity from mock + quiz history, newest first. */
-  function recentHistory() {
-    const d = App.store.data;
-    const rows = [];
-    (d.mockHistory || []).forEach(h => rows.push({ kind: 'mock', at: h.at, h: h }));
-    (d.quizHistory || []).forEach(h => rows.push({ kind: 'quiz', at: h.at, h: h }));
-    rows.sort((a, b) => (b.at || 0) - (a.at || 0));
-    return rows.slice(0, 5);
-  }
-
-  function historyRow(r) {
-    const h = r.h || {};
-    const total = h.total != null ? h.total : (h.questions != null ? h.questions : 0);
-    let score = '';
-    if (r.kind === 'quiz' && h.correct != null) score = tr('quizCorrect', { correct: h.correct, total: total });
-    else if (r.kind === 'mock' && h.score != null) score = tr('score', { score: h.score });
-    else if (h.score != null) score = tr('score', { score: h.score });
-    return '<li class="hist-item">' +
-      '<span class="badge ' + (r.kind === 'mock' ? 'accent' : 'info') + '">' + (r.kind === 'mock' ? tr('mockBadge') : tr('quizBadge')) + '</span>' +
-      '<span class="hist-meta">' + App.esc(score || tr('questionCount', { n: total })) + '</span>' +
-      '<span class="hist-date muted small">' + App.esc(App.fmtDate(r.at || Date.now())) + '</span>' +
-    '</li>';
-  }
-
-  /** Today's plan card (due items + current roadmap week + today's activity). */
-  function todayCard() {
-    const due = dueList();
-    const week = currentWeek();
-    const day = App.store.day();
-    const streak = App.store.streak();
-    const done = (App.store.data.roadmap && App.store.data.roadmap.done) || {};
-
-    let plan = '';
-    if (due.total > 0) {
-      plan += '<div class="plan-row">' +
-        '<div class="plan-num">' + due.total + '</div>' +
-        '<div class="plan-txt"><strong>' + tr('dueStrong') + '</strong>' +
-          '<div class="small muted">' + tr('dueExplain') + '</div>' +
-          '<div class="small muted">' + tr('dueBreakdown', { q: due.q }) + (due.a ? tr('dueBreakdownAlgo', { a: due.a }) : '') + '</div>' +
-        '</div>' +
-        '<a class="btn primary" href="#/flash/due">' + tr('reviewNow') + '</a>' +
-      '</div>';
-    } else {
-      const w = weakestTopic();
-      plan += '<div class="plan-row">' +
-        '<div class="plan-num">0</div>' +
-        '<div class="plan-txt"><strong>' + tr('noDue') + '</strong>' +
-          '<div class="small muted">' + (w
-            ? tr('suggest', { link: '<a href="#/bank/' + encodeURIComponent(w.t.id) + '">' + App.esc(w.t.name) + '</a>', known: w.s.known, total: w.s.total })
-            : tr('startHint')) + '</div>' +
-        '</div>' +
-        '<a class="btn" href="#/bank">' + tr('openBank') + '</a>' +
-      '</div>';
-    }
-
-    let weekPart = '';
-    if (week) {
-      const tasks = week.tasks || [];
-      const doneCount = tasks.filter((_, i) => done[week.id + '-' + i]).length;
-      weekPart += '<div class="plan-row">' +
-        '<div class="plan-num">' + week.index + '<span class="plan-den">/' + week.total + '</span></div>' +
-        '<div class="plan-txt"><strong>' + tr('weekN', { n: week.index }) + ': ' + App.esc(week.title) + '</strong>' +
-          '<div class="small muted">' + App.esc(week.phase || '') + (tasks.length ? tr('weekDone', { done: doneCount, total: tasks.length }) : '') + '</div>' +
-        '</div>' +
-        '<a class="btn" href="#/roadmap">' + tr('openRoadmap') + '</a>' +
-      '</div>';
-    } else {
-      weekPart += '<div class="plan-row">' +
-        '<div class="plan-num">–</div>' +
-        '<div class="plan-txt"><strong>' + tr('noRoadmap') + '</strong>' +
-          '<div class="small muted">' + tr('noRoadmapHint') + '</div>' +
-        '</div>' +
-        '<a class="btn primary" href="#/roadmap">' + tr('startRoadmap') + '</a>' +
-      '</div>';
-    }
-
-    const act = [
-      day.review ? tr('actReview', { n: day.review }) : '',
-      day.known ? tr('actKnown', { n: day.known }) : '',
-      day.quiz ? tr('actQuiz', { n: day.quiz }) : '',
-      day.mock ? tr('actMock', { n: day.mock }) : '',
-      day.algo ? tr('actAlgo', { n: day.algo }) : '',
-      day.minutes ? tr('actMinutes', { n: day.minutes }) : ''
-    ].filter(Boolean);
-
-    return '<section class="card plan-card">' +
-      '<div class="plan-head"><h2>' + tr('planTitle') + '</h2>' +
-        '<span class="streak" title="' + App.esc(tr('streakTitle')) + '">' + tr('streakDays', { n: streak }) + '</span></div>' +
-      plan + weekPart +
-      '<div class="plan-activity small muted">' +
-        (act.length ? App.esc(tr('didToday', { list: act.join(' · ') })) : tr('noActivity')) +
-      '</div>' +
+  function quickHtml() {
+    const due = App.dueItems().length;
+    const weeks = allWeeks(), started = !!roadmapStart();
+    const tile = (href, ico, title, sub, hot) => '<a class="db-tile' + (hot ? ' hot' : '') + '" href="' + href + '"><span class="db-tile-ico" aria-hidden="true">' + ico + '</span>' +
+      '<b>' + title + '</b><span class="db-dim small">' + sub + '</span></a>';
+    return '<section class="db-quick" aria-label="' + App.esc(tr('quickTitle')) + '">' +
+      tile('#/flash/due', '🔁', tr('qDue'), due ? tr('qDueSub', { n: due }) : tr('qDueNone'), due > 0) +
+      tile('#/interview', '🎙️', tr('qInterview'), tr('qInterviewSub')) +
+      tile('#/sdlc', '🔄', tr('qSdlc'), tr('qSdlcSub')) +
+      tile('#/roadmap', '🗺️', tr('qRoadmap'), started ? tr('qRoadmapSub', { n: weekNumber(), total: weeks.length }) : tr('qRoadmapStart')) +
     '</section>';
   }
 
-  /** Recent mock + quiz history. */
-  function historyCard() {
-    const rows = recentHistory();
-    if (!rows.length) {
-      return '<section class="card"><h2>' + tr('historyTitle') + '</h2>' +
-        '<div class="empty"><p>' + tr('noHistory') + '</p>' +
-        '<p><a class="btn" href="#/quiz">' + tr('doQuiz') + '</a></p></div></section>';
+  function bottomHtml() {
+    const cells = [];
+    for (let i = 13; i >= 0; i--) {
+      const key = App.dayKey(Date.now() - i * DAY);
+      const d = App.store.day(key) || {};
+      const n = (d.review || 0) + (d.known || 0) + (d.quiz || 0) + (d.mock || 0) + (d.algo || 0) + Math.floor((d.minutes || 0) / 10);
+      const lv = n === 0 ? 0 : n < 5 ? 1 : n < 15 ? 2 : 3;
+      cells.push('<i class="db-day l' + lv + (i === 0 ? ' now' : '') + '" title="' + App.esc(tr('dayAria', { day: key, n })) + '" aria-label="' + App.esc(tr('dayAria', { day: key, n })) + '"></i>');
     }
-    return '<section class="card"><h2>' + tr('historyTitle') + '</h2>' +
-      '<ul class="hist-list">' + rows.map(historyRow).join('') + '</ul></section>';
-  }
-
-  function localDateValue(date) {
-    const d = date || new Date();
-    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-  }
-
-  function interviewPlanCard() {
-    const plan = App.store.data.interviewPlan || {};
-    const companies = App.lite('companies');
-    const company = companies.find(c => c.name === plan.company) || companies.find(c => c.id === plan.company);
-    const focusIds = company && Array.isArray(company.focus) && company.focus.length
-      ? company.focus.filter(id => App.topics().some(t => t.id === id))
-      : App.topics().map(t => t.id);
-    const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(plan.date || '');
-    const parsedDate = dateMatch ? new Date(Number(dateMatch[1]), Number(dateMatch[2]) - 1, Number(dateMatch[3])) : null;
-    const validDate = !!dateMatch && parsedDate.getFullYear() === Number(dateMatch[1]) &&
-      parsedDate.getMonth() === Number(dateMatch[2]) - 1 && parsedDate.getDate() === Number(dateMatch[3]);
-    const days = validDate ? Math.ceil((parsedDate.getTime() - new Date(localDateValue() + 'T00:00:00').getTime()) / DAY) : null;
-    const totalUnlearned = focusIds.reduce((sum, id) => {
-      const s = App.stats(id);
-      return sum + s.total - s.known;
-    }, 0);
-    const daily = days == null ? null : Math.ceil(totalUnlearned / Math.max(1, days));
-    const weakest = focusIds.map(id => {
-      const t = App.topic(id), s = App.stats(id);
-      return { t, s, ratio: s.total ? s.known / s.total : 1 };
-    }).filter(x => x.s.total).sort((a, b) => a.ratio - b.ratio).slice(0, 3);
-    const companyOptions = companies.map(c => '<option value="' + App.esc(c.name) + '"></option>').join('');
-    const summary = validDate
-      ? '<div class="interview-plan-summary"><div class="interview-count"><strong>' + (days < 0 ? tr('pastDays', { n: Math.abs(days) }) : days === 0 ? tr('today') : tr('daysLeft', { n: days })) + '</strong><span>' + (days < 0 ? tr('interviewPassed') : tr('perDay', { n: daily })) + '</span></div>' +
-        '<div class="interview-plan-topics"><strong>' + tr('priority') + '</strong>' +
-          (weakest.length ? '<ol>' + weakest.map(x => '<li><a href="#/flash/' + encodeURIComponent(x.t.id) + '">' + App.esc(x.t.name) + '</a><span>' + tr('unlearned', { n: x.s.total - x.s.known }) + '</span></li>').join('') + '</ol>' : '<p class="muted small">' + tr('noTopicQuestions') + '</p>') +
-        '</div></div>' +
-        '<div class="interview-last-day"><strong>' + tr('lastDay') + '</strong><ul><li><a href="#/career">' + tr('lastDay1') + '</a></li><li><a href="#/interview">' + tr('lastDay2') + '</a></li><li>' + tr('lastDay3') + '</li></ul></div>'
-      : '<p class="muted small">' + tr('planPrompt') + '</p>';
-
-    return '<section class="card interview-plan-card"><div class="interview-plan-head"><div><h2>' + tr('planHeading') + '</h2><p class="muted small">' + tr('planSub') + '</p></div>' +
-      (plan.date || plan.company || plan.round ? '<button type="button" class="btn sm" data-interview-plan-delete>' + tr('deletePlan') + '</button>' : '') + '</div>' +
-      '<form class="interview-plan-form" data-interview-plan-form>' +
-        '<label>' + tr('date') + '<input class="input" type="date" name="date" required value="' + App.esc(plan.date || '') + '"></label>' +
-        '<label>' + tr('company') + '<input class="input" type="text" name="company" list="interview-company-list" placeholder="' + App.esc(tr('companyPlaceholder')) + '" value="' + App.esc(plan.company || '') + '"><datalist id="interview-company-list">' + companyOptions + '</datalist></label>' +
-        '<label>' + tr('round') + '<select class="select" name="round"><option value="HR"' + (plan.round === 'HR' ? ' selected' : '') + '>HR</option><option value="technical"' + (plan.round === 'technical' ? ' selected' : '') + '>Technical</option><option value="final"' + (plan.round === 'final' ? ' selected' : '') + '>Final</option></select></label>' +
-        '<button type="submit" class="btn primary">' + tr('savePlan') + '</button>' +
-      '</form>' + summary + '</section>';
+    const weak = App.topics().map(t => ({ t, s: App.stats(t.id) })).filter(x => x.s.total && (x.s.known || x.s.review || x.s.unknown))
+      .sort((a, b) => a.s.known / a.s.total - b.s.known / b.s.total).slice(0, 3);
+    return '<section class="db-bottom">' +
+      '<div class="card db-week"><h3>' + tr('weekTitle') + '</h3><div class="db-days">' + cells.join('') + '</div></div>' +
+      '<div class="card db-weak"><h3>' + tr('weakTitle') + '</h3>' + (weak.length
+        ? '<ul>' + weak.map(x => '<li><a href="#/flash/' + encodeURIComponent(x.t.id) + '"><span aria-hidden="true">' + App.esc(x.t.icon || '•') + '</span> ' + App.esc(x.t.name) + '</a>' +
+            '<span class="db-dim small">' + tr('weakItem', { known: x.s.known, total: x.s.total }) + '</span>' +
+            '<div class="progress"><i class="accent" style="width:' + pct(x.s.known, x.s.total) + '%"></i></div></li>').join('') + '</ul>'
+        : '<p class="db-dim small">' + tr('weakNone') + '</p>') + '</div>' +
+    '</section>';
   }
 
   App.registerView('dashboard', {
     get title() { return App.t('dash.title'); },
-    render(root, params) {
-      const st = App.stats();
-      const knownPct = pct(st.known, st.total);
-
-      const hero =
-        '<section class="card hero">' +
-          '<div class="hero-txt">' +
-            '<h1>' + tr('heroTitle') + '</h1>' +
-            '<p class="muted">' + tr('heroText') + '</p>' +
-            '<div class="row hero-actions">' +
-              '<a class="btn primary lg" href="#/mock">' + tr('mock') + '</a>' +
-              '<a class="btn lg" href="#/flash">' + tr('flash') + '</a>' +
-              '<a class="btn ghost" href="#/bank">' + tr('bank') + '</a>' +
-            '</div>' +
-          '</div>' +
-          '<div class="hero-ring">' + ring(knownPct) + '</div>' +
-        '</section>';
-
-      const stats =
-        '<section class="stat-grid">' +
-          statTile(st.known, tr('known'), 'ok') +
-          statTile(st.review, tr('review'), 'warn') +
-          statTile(st.unknown, tr('unknown'), 'bad') +
-          statTile(st.unseen, tr('unseen')) +
-        '</section>';
-
-      const topics = topicGroups();
-      const topicsSection = topics
-        ? '<section class="card"><h2>' + tr('topicsTitle') + '</h2>' + topics + '</section>'
-        : '<section class="card"><h2>' + tr('topicsTitle') + '</h2><div class="empty"><p>' + tr('noTopics') + '</p></div></section>';
-
-      const pomo = { left: POMO_SECONDS, id: null, running: false };
-
-      root.innerHTML =
-        todayStudyCard(pomo) +
-        hero +
-        interviewPlanCard() +
-        todayCard() +
-        stats +
-        topicsSection +
-        historyCard();
-
-      function paintPomo() {
+    render(root) {
+      const pomo = { left: POMO, id: null, running: false };
+      let editing = false;
+      const paint = () => {
+        const st = App.stats();
+        root.innerHTML = heroHtml(st, editing) + metricsHtml(st) + missionHtml(pomo) + quickHtml() + bottomHtml();
+      };
+      const paintPomo = () => {
         const time = root.querySelector('[data-pomo-time]');
-        if (time) time.textContent = fmtClock(pomo.left);
+        if (time) time.textContent = clock(pomo.left);
         const btn = root.querySelector('[data-pomo-toggle]');
         if (btn) btn.textContent = pomoLabel(pomo);
         const msg = root.querySelector('[data-pomo-msg]');
         if (msg) msg.hidden = pomo.left > 0;
-      }
-
-      function tick() {
-        if (pomo.left <= 0) return;
-        pomo.left -= 1;
+      };
+      const stopPomo = () => { if (pomo.id) clearInterval(pomo.id); pomo.id = null; pomo.running = false; };
+      const refreshMission = () => {
+        const card = root.querySelector('.db-mission');
+        if (card) card.outerHTML = missionHtml(pomo);
         paintPomo();
-        if (pomo.left <= 0 && pomo.running) {
-          clearInterval(pomo.id);
-          pomo.id = null;
-          pomo.running = false;
-          paintPomo();
-        }
-      }
-
-      function togglePomo() {
-        if (pomo.running) {
-          clearInterval(pomo.id);
-          pomo.id = null;
-          pomo.running = false;
-          paintPomo();
-          return;
-        }
-        if (pomo.left <= 0) pomo.left = POMO_SECONDS;
-        pomo.id = setInterval(tick, 1000);
-        pomo.running = true;
-        paintPomo();
-      }
-
-      function resetPomo() {
-        if (pomo.running) { clearInterval(pomo.id); pomo.id = null; pomo.running = false; }
-        pomo.left = POMO_SECONDS;
-        paintPomo();
-      }
-
-      function refreshStudyCard() {
-        const card = root.querySelector('.today-card');
-        if (card) card.outerHTML = todayStudyCard(pomo);
-        paintPomo();
-      }
+      };
+      const refreshHero = () => {
+        const hero = root.querySelector('.db-hero');
+        if (hero) hero.outerHTML = heroHtml(App.stats(), editing);
+      };
+      paint();
 
       const onSubmit = e => {
-        const form = e.target.closest('[data-interview-plan-form]');
+        const form = e.target.closest('[data-goal-form]');
         if (!form) return;
         e.preventDefault();
-        const values = new FormData(form);
-        App.store.data.interviewPlan = {
-          date: String(values.get('date') || ''),
-          company: String(values.get('company') || '').trim(),
-          round: String(values.get('round') || 'HR'),
-          updatedAt: Date.now(),
-        };
+        const v = new FormData(form);
+        App.store.data.interviewPlan = { date: String(v.get('date') || ''), company: String(v.get('company') || '').trim(), round: (App.store.data.interviewPlan || {}).round || 'technical', updatedAt: Date.now() };
         App.store.save();
-        const card = root.querySelector('.interview-plan-card');
-        if (card) card.outerHTML = interviewPlanCard();
+        editing = false;
+        refreshHero();
       };
       const onChange = e => {
         const cb = e.target.closest('[data-plan-done]');
         if (!cb) return;
-        const tp = ensurePlan(false);
-        const key = cb.getAttribute('data-plan-done');
+        const tp = ensurePlan(false), key = cb.getAttribute('data-plan-done');
         if (cb.checked) tp.done[key] = true; else delete tp.done[key];
         App.store.save();
-        refreshStudyCard();
+        refreshMission();
       };
       const onClick = e => {
-        if (e.target.closest('[data-plan-change]')) {
-          ensurePlan(true);
-          refreshStudyCard();
+        if (e.target.closest('[data-plan-change]')) { ensurePlan(true); refreshMission(); return; }
+        if (e.target.closest('[data-pomo-toggle]')) {
+          if (pomo.running) stopPomo();
+          else {
+            if (pomo.left <= 0) pomo.left = POMO;
+            pomo.running = true;
+            pomo.id = setInterval(() => { pomo.left -= 1; if (pomo.left <= 0) stopPomo(); paintPomo(); }, 1000);
+          }
+          paintPomo();
           return;
         }
-        if (e.target.closest('[data-pomo-toggle]')) { togglePomo(); return; }
-        if (e.target.closest('[data-pomo-reset]')) { resetPomo(); return; }
-        if (!e.target.closest('[data-interview-plan-delete]')) return;
-        App.store.data.interviewPlan = { deleted: true, updatedAt: Date.now() };   // a marker, so sync doesn't bring it back
-        App.store.save();
-        const card = root.querySelector('.interview-plan-card');
-        if (card) card.outerHTML = interviewPlanCard();
+        if (e.target.closest('[data-pomo-reset]')) { stopPomo(); pomo.left = POMO; paintPomo(); return; }
+        if (e.target.closest('[data-goal-edit]')) { editing = true; refreshHero(); return; }
+        if (e.target.closest('[data-goal-clear]')) {
+          App.store.data.interviewPlan = { deleted: true, updatedAt: Date.now() };   // marker so sync does not bring it back
+          App.store.save();
+          editing = false;
+          refreshHero();
+        }
       };
       root.addEventListener('submit', onSubmit);
       root.addEventListener('change', onChange);
       root.addEventListener('click', onClick);
-      paintPomo();
       return () => {
-        if (pomo.running) { clearInterval(pomo.id); pomo.id = null; pomo.running = false; }
+        stopPomo();
         root.removeEventListener('submit', onSubmit);
         root.removeEventListener('change', onChange);
         root.removeEventListener('click', onClick);

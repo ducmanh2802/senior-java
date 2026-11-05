@@ -2343,4 +2343,475 @@ Either way, I show a method — check the docs, measure, ask someone with experi
   tags: ['interview-skills', 'communication', 'clarify', 'english'],
   lang: 'en',
 },
+{
+  id: 'english-072',
+  topic: 'english',
+  level: 'mid',
+  q: 'I see your last role ended recently. Why are you looking for a new job right now? (You were affected by a layoff.)',
+  a: `**Tóm tắt:** Nói sự thật trong **1–2 câu, trung tính, không cảm xúc** ("the company closed the product line, the whole team was affected"), đưa ngay **một bằng chứng bạn vẫn có giá trị** (được giữ lại bàn giao, một kết quả có số liệu), rồi **hướng về tương lai** và nối với chính vị trí đang phỏng vấn. Cả câu trả lời dưới 60 giây.
+
+### Sample answer
+My last role ended in September because the company closed its payments product line, and the whole team of twelve engineers was affected. It was a business decision about the product, not about individual performance. In fact, I was asked to stay an extra month to hand over the settlement service to the core platform team, which I did.
+
+I'm proud of what we built there. I owned the Spring Boot services that handled refunds, and we cut the average refund time from two days to under four hours.
+
+So now I'm looking for a team where I can do the same kind of work at a larger scale: Java backend, transaction-heavy systems, and real ownership in production. That's why this role caught my attention. Your job description mentions rebuilding the ledger service, and that's exactly where my experience fits.
+
+I'm actively interviewing, and I could start within two weeks.
+
+### Vì sao câu trả lời này hiệu quả
+Khi biết bạn vừa bị layoff, interviewer thường có **ba nỗi lo ngầm** nhưng không hỏi thẳng. Câu trả lời tốt xử lý cả ba mà không cần họ hỏi:
+
+| Nỗi lo ngầm | Câu trong bài mẫu xử lý nó |
+|---|---|
+| Có phải bạn bị chọn vì làm kém? | "the whole team was affected", "a business decision about the product" |
+| Bạn có cay cú, nói xấu công ty cũ? | Giọng trung tính, "I'm proud of what we built" |
+| Bạn có đang tuyệt vọng, nhận bừa rồi bỏ đi? | Nêu rõ loại việc muốn làm và lý do chọn **đúng** công ty này |
+
+Cấu trúc 3 phần:
+1. **Sự thật ngắn** (1–2 câu). Càng giải thích dài càng nghe như đang biện hộ.
+2. **Bằng chứng giá trị**: được giữ lại bàn giao là tín hiệu rất mạnh rằng bạn không bị cắt vì năng lực. Thêm một con số kết quả.
+3. **Hướng tới tương lai**: loại việc bạn muốn + điểm cụ thể trong JD. Đây là phần chiếm nhiều thời gian nhất.
+
+Nếu layoff là cắt **một phần** team (ví dụ 30%), đừng nói dối là cả team. Nói: "The company reduced engineering by about thirty percent across all teams, and my role was one of them." Câu này vẫn trung tính và đúng sự thật.
+
+### Useful phrases
+- **my role was affected by a restructuring**: vị trí của tôi bị ảnh hưởng bởi đợt tái cấu trúc
+- **my position was eliminated**: vị trí của tôi bị cắt bỏ (không phải do cá nhân)
+- **it was a business decision, not about performance**: đó là quyết định kinh doanh, không liên quan hiệu suất
+- **I was asked to stay to hand over**: tôi được đề nghị ở lại để bàn giao
+- **that's exactly where my experience fits**: đó đúng là chỗ kinh nghiệm của tôi phù hợp
+- **I'm actively interviewing**: tôi đang tích cực phỏng vấn (ngầm nói: bạn có lựa chọn khác)
+
+### Lỗi người Việt hay mắc
+- Nói **"I was fired"** khi ý là bị layoff. "Fired" nghĩa là bị **đuổi vì lỗi cá nhân**. Đúng là **"I was laid off"** hoặc "my position was eliminated".
+- Kể chuyện công ty cũ quản lý tệ, CEO sai chiến lược: dù đúng, interviewer chỉ nghe thấy "người này hay đổ lỗi".
+- Nói dối là vẫn đang làm. Reference check, lịch sử BHXH hoặc LinkedIn sẽ lộ, và lúc đó bạn mất offer vì **trung thực**, không phải vì layoff.
+- Câu **"I'm open to anything"** nghe như tuyệt vọng. Hãy nói rõ loại việc bạn muốn.
+- Thì: "My company close the team" → **"My company closed the team"**, sự việc đã xong nên dùng quá khứ.
+
+> Senior tip: Thời 2025–2026, layoff là chuyện bình thường, interviewer đã nghe hàng chục lần và không đánh giá bạn vì nó; họ đánh giá **cách bạn kể**. Tập nói đoạn này to thành tiếng 10 lần, bấm giờ dưới 60 giây, đến mức giọng hoàn toàn bình thản. Chuẩn bị sẵn một người tham chiếu (tech lead cũ) đồng ý xác nhận "bạn bị ảnh hưởng do cắt dự án". Một câu xác nhận từ người ngoài mạnh hơn mọi lời tự giải thích.`,
+  follow: [
+    'Why do you think your role was selected and not others?',
+    'What did you learn from going through a layoff?',
+    'Are you also interviewing with other companies right now?',
+  ],
+  tags: ['layoff', 'why-leave', 'motivation', 'behavioral'],
+  lang: 'en',
+},
+{
+  id: 'english-073',
+  topic: 'english',
+  level: 'mid',
+  q: 'I see a gap of about eight months in your CV. What have you been doing during that time?',
+  a: `**Tóm tắt:** Đừng xin lỗi, đừng né. **Thừa nhận ngay**, trình bày khoảng trống như một **kế hoạch có chủ đích**, đưa ra **sản phẩm cụ thể kiểm chứng được** (repo, chứng chỉ, dự án freelance), lý do cá nhân chỉ nói một câu, rồi kết thúc bằng câu khẳng định bạn đã sẵn sàng làm lâu dài.
+
+### Sample answer
+That's right. After my role was cut in March, I made a deliberate decision not to jump into the first offer. I gave myself a plan for the gap, and I can show you what came out of it.
+
+First, I closed the skill gaps I kept noticing at work. I upgraded a side project from Java 11 to Java 21 and Spring Boot 3, deployed it on AWS with Terraform, and wrote two blog posts about the migration problems I hit, like the javax-to-jakarta package change. The code and the posts are on my GitHub.
+
+Second, I did about three months of freelance work for a logistics startup. I built their order-tracking API, and it's still running in production.
+
+I also took six weeks for a family matter, which is now fully resolved.
+
+So I'm not rusty. If anything, I'm more up to date than I was a year ago, and I'm ready to commit to a full-time team for the long term.
+
+### Vì sao câu trả lời này hiệu quả
+Interviewer hỏi về khoảng trống vì ba lo ngại:
+1. **Kỹ năng bị mai một** (rusty): 8 tháng không code production có còn bắt nhịp được không?
+2. **Tín hiệu thị trường**: tại sao 8 tháng chưa ai tuyển? Có vấn đề gì không?
+3. **Độ ổn định**: lý do cá nhân kia đã xong chưa, có làm bạn nghỉ giữa chừng không?
+
+Bài mẫu trả lời cả ba: (1) dự án Java 21, Spring Boot 3, AWS **kiểm chứng được qua GitHub**; (2) "deliberate decision" biến thời gian chờ thành lựa chọn có chủ đích; (3) "fully resolved" và "ready to commit for the long term".
+
+Cách diễn đạt theo từng loại lý do:
+
+| Lý do thật | Cách nói ngắn, trung thực |
+|---|---|
+| Tìm việc lâu sau layoff | "The market was slow, so I used the time to upgrade my skills. Here is what I built." |
+| Gia đình / sức khoẻ | "I took time off for a family matter. It's fully resolved now." (không kể chi tiết) |
+| Tự học, lấy chứng chỉ | "I studied for the AWS Solutions Architect Associate exam and passed it in June." |
+| Freelance, startup riêng | "I worked as a freelancer. I can walk you through one of the systems I built." |
+
+Nguyên tắc: **lý do cá nhân càng ngắn càng tốt**, phần **sản phẩm** càng chi tiết càng tốt. Interviewer không cần biết bệnh gì; họ cần biết bạn đã sẵn sàng.
+
+### Useful phrases
+- **I made a deliberate decision to**: tôi đã chủ động quyết định
+- **I closed the skill gaps I kept noticing**: tôi lấp những lỗ hổng kỹ năng mà tôi thường thấy
+- **it's still running in production**: nó vẫn đang chạy trên production
+- **a family matter, which is now fully resolved**: việc gia đình, nay đã giải quyết xong
+- **I'm not rusty**: tôi không bị "lụt nghề"
+- **ready to commit for the long term**: sẵn sàng gắn bó lâu dài
+
+### Lỗi người Việt hay mắc
+- Mở đầu bằng **"Sorry, I know it's not good..."**. Xin lỗi biến một sự kiện trung tính thành điểm yếu.
+- Trả lời **"I just relaxed"** hoặc "I was looking for a job" mà không có sản phẩm nào.
+- Kể quá nhiều chi tiết bệnh tật, chuyện gia đình: gây khó xử và lạc trọng tâm.
+- Bịa một công ty để lấp khoảng trống. Nhiều công ty ở Việt Nam kiểm tra lịch sử BHXH hoặc gọi reference; bị phát hiện là mất offer ngay.
+- Sai giới từ: "during eight months" → **"for eight months"** (độ dài thời gian) hoặc "during that time".
+
+> Senior tip: Nếu đang trong khoảng trống, hãy **ghi nhật ký khoảng trống** ngay từ bây giờ: mỗi tuần một dòng về commit, bài viết, chứng chỉ, dự án nhỏ. Khi phỏng vấn, bạn có số liệu thật để kể ("12 posts, 1 certification, 1 production API"). Một repo có README tốt, test chạy được và CI xanh có sức thuyết phục hơn mọi câu giải thích. Interviewer senior thường mở GitHub ngay trong buổi phỏng vấn, nên hãy đảm bảo repo bạn nhắc tới thực sự gọn gàng.`,
+  follow: [
+    'Why did it take eight months to find a new role?',
+    'Can you walk me through the side project you mentioned?',
+    'How would you get back up to speed in a new codebase in your first month?',
+  ],
+  tags: ['cv-gap', 'layoff', 'career', 'behavioral'],
+  lang: 'en',
+},
+{
+  id: 'english-074',
+  topic: 'english',
+  level: 'senior',
+  q: 'Why should we hire you over the other candidates?',
+  a: `**Tóm tắt:** Không so sánh với người khác (bạn không biết họ). **Ánh xạ bằng chứng của bạn vào đúng vấn đề trong JD**: 2 kết quả có số liệu trước/sau, 1 điểm về ownership/vận hành, rồi chốt bằng một câu tóm "nếu bạn cần X, tôi đã làm X". Chuẩn bị sẵn để bị đào sâu vào từng con số.
+
+### Sample answer
+I can't speak for the other candidates, but I can tell you what I'd bring in the first six months.
+
+Your job description mentions two problems: slow checkout during sales campaigns and a monolith that's hard to change. I've solved both before. At my last company, our order service fell over during every flash sale. I led the work to cache the product catalog in Redis and move stock reservation to a Kafka-based flow. Peak throughput went from about 800 to 5,000 requests per second, and p99 latency dropped from two seconds to around 300 milliseconds.
+
+I also helped split our payment module out of a Spring monolith using the strangler fig pattern. No big-bang rewrite, no downtime, and it took four months with a team of five.
+
+Beyond the code, I'm the person who writes the runbook and fixes the alert after an incident. That's why I was the on-call lead for two years.
+
+So if you need someone who can deliver on those exact problems quickly, I think I'm a strong fit.
+
+### Vì sao câu trả lời này hiệu quả
+Câu hỏi này thực chất là: **"Hãy nối kinh nghiệm của bạn vào nỗi đau của chúng tôi."** Thời layoff, mỗi vị trí senior có hàng trăm hồ sơ, nên câu chung chung như "hard-working, fast learner" không phân biệt được bạn với ai.
+
+Cách chuẩn bị (làm trước buổi phỏng vấn, khoảng 30 phút):
+1. Đọc JD và gạch chân **2–3 vấn đề kinh doanh/kỹ thuật** (scale, legacy, độ tin cậy, chi phí).
+2. Với mỗi vấn đề, chọn một câu chuyện của bạn có **số liệu trước và sau** (throughput, latency, error rate, thời gian deploy, chi phí cloud).
+3. Thêm một trụ cột **ngoài code**: on-call, mentoring, viết tài liệu, phối hợp nhiều team. Đây là thứ phân biệt senior với mid.
+4. Chốt bằng một câu tóm, không kéo dài.
+
+| Câu yếu | Câu mạnh |
+|---|---|
+| "I'm hard-working and I learn fast." | "I cut p99 latency from 2 seconds to 300 milliseconds during flash sales." |
+| "I have experience with microservices." | "I split payments out of a monolith in four months with zero downtime." |
+| "I'm a team player." | "I was on-call lead for two years and wrote our incident runbooks." |
+| "I'm better than other candidates." | "I can't speak for others, but here's what I'd bring." |
+
+**Con số phải bảo vệ được.** Interviewer gần như chắc chắn hỏi tiếp: "How did you measure p99?", "What was your part, and what was the team's?". Bạn cần trả lời được: đo bằng Micrometer + Prometheus/Grafana, so sánh 2 đợt sale trước và sau, phần bạn làm là thiết kế cache và review code reservation. Nếu không nhớ chính xác, dùng **"roughly"**, "about", đừng bịa số lẻ như "4,873".
+
+### Useful phrases
+- **I can't speak for the other candidates, but**: tôi không thể nói thay ứng viên khác, nhưng
+- **what I'd bring in the first six months**: những gì tôi mang lại trong 6 tháng đầu
+- **your job description mentions**: JD của anh/chị có nhắc tới
+- **I've solved both before**: tôi đã giải quyết cả hai vấn đề này trước đây
+- **deliver on those exact problems**: giải quyết đúng những vấn đề đó
+- **a strong fit**: rất phù hợp
+
+### Lỗi người Việt hay mắc
+- Quá khiêm tốn: "I think maybe I am not the best, but I will try my best." Văn hoá phỏng vấn quốc tế cần bạn **tự tin có bằng chứng**.
+- Dùng "we" cho mọi thứ: interviewer không biết bạn làm gì. Dùng **"I led", "I designed"** cho phần của bạn, "we" cho kết quả của team.
+- Liệt kê công nghệ ("Java, Spring, Kafka, Redis, Docker...") thay vì kết quả.
+- Đọc số sai: "5,000" là **"five thousand"**, "p99" đọc là **"p ninety-nine"**, "300 milliseconds" không nói "300 mili".
+
+> Senior tip: Viết sẵn một "brag document": 5–7 thành tựu, mỗi cái có bối cảnh, việc bạn làm, số liệu, cách đo. Trước mỗi buổi phỏng vấn, chọn 2–3 cái khớp nhất với JD. Ở cấp senior, interviewer đánh giá cao câu **"Here's the trade-off we accepted"**. Ví dụ: "Caching gave us speed, but we accepted that prices could be up to 30 seconds stale." Một kết quả kèm cái giá phải trả nghe thật hơn hẳn một thành công hoàn hảo.`,
+  follow: [
+    'How did you measure the p99 latency before and after?',
+    'What part of that project was yours, and what did the team do?',
+    'What would you do differently if you started that project again?',
+  ],
+  tags: ['why-hire-you', 'impact', 'behavioral', 'numbers'],
+  lang: 'en',
+},
+{
+  id: 'english-075',
+  topic: 'english',
+  level: 'senior',
+  q: 'A lot of code is now written with AI assistants. How do you make sure AI-generated code is correct before it reaches production? Give me a real example.',
+  a: `**Tóm tắt:** Trả lời bằng **quy trình kiểm chứng**, không phải bằng thái độ. Coi code AI như **pull request của một đồng nghiệp mới**: viết/duyệt test trước, đọc từng dòng, để pipeline (static analysis, integration test, load test) chặn lỗi. Kèm **một ví dụ thật** bạn đã bắt được lỗi AI sinh ra và cái giá nếu lọt lên production.
+
+### Sample answer
+I treat AI-generated code exactly like a pull request from a new teammate: useful, but unproven until it passes the same checks as everything else.
+
+My process has three steps. First, I write or review the tests before I trust the implementation, especially edge cases like null input, empty lists, time zones and concurrent access. Second, I read every line and ask myself, "Can I explain why this is correct?" If I can't, I rewrite it. Third, I let the pipeline do its job: static analysis, integration tests with Testcontainers against a real PostgreSQL, and a load test for anything on a hot path.
+
+Here's a real example. I asked an assistant to add retry logic to a payment call. The code looked clean, but it retried on every exception, including a read timeout after the payment had actually succeeded. That would have charged some customers twice. I caught it because my test simulated a timeout on a successful call. The fix was to send an idempotency key and retry only on errors that were safe to retry.
+
+So AI makes me faster, but the responsibility for correctness stays with me.
+
+### Vì sao câu trả lời này hiệu quả
+Năm 2026 hầu như team nào cũng dùng AI. Câu hỏi không còn là "có dùng không" mà là **"bạn có biết kiểm soát chất lượng không"**. Nhà tuyển dụng đang cắt người làm việc lặp lại và giữ người biết **đánh giá, review, chịu trách nhiệm**. Vì vậy, câu trả lời phải cho thấy bạn là người kiểm soát, không phải người bấm Accept.
+
+Những chỗ AI hay sai trong code Java backend (nêu 1–2 cái là đủ thể hiện kinh nghiệm):
+
+| Loại lỗi | Ví dụ cụ thể | Cách bắt |
+|---|---|---|
+| Retry không idempotent | Retry lời gọi thanh toán sau timeout → trừ tiền 2 lần | Test giả lập timeout sau khi thành công; idempotency key |
+| Transaction | Gọi method {{@Transactional}} từ cùng class (self-invocation) nên proxy không chạy | Integration test kiểm tra rollback thật |
+| Concurrency | Dùng {{HashMap}} chia sẻ giữa nhiều thread | Review + test đa luồng lặp nhiều lần |
+| API cũ / không tồn tại | Dùng {{javax.persistence}} trên Spring Boot 3 (phải là {{jakarta}}), hoặc gợi ý {{WebSecurityConfigurerAdapter}} đã bị xoá trong Spring Security 6 | Biên dịch + đọc docs chính thức |
+| Thiếu giới hạn | Cache không có size/expiry, query không phân trang | Load test, review checklist |
+
+Ví dụ trong bài mẫu mạnh vì có đủ **4 yếu tố**: code trông đúng → lỗi tinh vi → hậu quả kinh doanh (trừ tiền 2 lần) → cách bắt được nhờ quy trình (test), không nhờ may mắn.
+
+### Useful phrases
+- **unproven until it passes the same checks**: chưa được chứng minh cho đến khi qua cùng các bước kiểm tra
+- **Can I explain why this is correct?**: tôi có giải thích được vì sao nó đúng không?
+- **on a hot path**: trên luồng xử lý chạy nhiều, nhạy hiệu năng
+- **retry only on errors that are safe to retry**: chỉ retry với lỗi an toàn để thử lại
+- **the responsibility for correctness stays with me**: trách nhiệm về tính đúng đắn vẫn thuộc về tôi
+
+### Lỗi người Việt hay mắc
+- Trả lời chung chung "I always check carefully" mà không có quy trình hay ví dụ.
+- Khoe năng suất kiểu "AI writes 80 percent of my code" mà không nói cách kiểm soát; interviewer nghe thành "rủi ro".
+- Nhầm từ: "AI-generated code" (code do AI sinh), không phải "AI-generating code".
+- Thiếu mạo từ: "I asked assistant to add retry" → **"I asked an assistant to add retry logic"**.
+
+> Senior tip: Ở cấp senior/lead, hãy nói thêm một câu về **quy tắc cấp team**, không chỉ cá nhân: "In my team, AI-assisted pull requests go through the same review bar, and anything touching money, security or concurrency needs a second reviewer." Nếu có số liệu (ví dụ: thời gian viết test giảm khoảng 30%, số bug lọt lên production không tăng), hãy nêu. Đó là bằng chứng bạn dùng AI để **tăng năng suất có kiểm soát**, đúng thứ công ty đang tìm khi cắt giảm nhân sự.`,
+  follow: [
+    'Have you ever merged AI-generated code that later caused a bug?',
+    'How would you set rules for AI usage in a team of junior developers?',
+    'Which tasks do you think AI still cannot do well in backend development?',
+  ],
+  tags: ['ai', 'code-quality', 'testing', 'idempotency'],
+  lang: 'en',
+},
+{
+  id: 'english-076',
+  topic: 'english',
+  level: 'senior',
+  q: 'Walk me through a production incident you owned, step by step: the timeline, the impact, the root cause, the fix, and what you changed to prevent it.',
+  a: `**Tóm tắt:** Kể như một **postmortem nói bằng miệng**, đúng 5 phần theo thứ tự: **phát hiện + mốc giờ → ảnh hưởng có số liệu → giảm thiệt hại (mitigation) → nguyên nhân gốc có bằng chứng → sửa và phòng ngừa**. Dùng mốc thời gian cụ thể để câu chuyện có nhịp, nói rõ "I" cho phần của bạn, giọng blameless.
+
+### Sample answer
+At 10:05 on a Monday, we got an alert: the pricing service had restarted fourteen times in twenty minutes. The JVM was throwing OutOfMemoryError, health checks were failing, and Kubernetes kept restarting the pods.
+
+The impact was that, for about fifty minutes, roughly thirty percent of price requests from the mobile app failed, and we estimated around two thousand abandoned checkouts.
+
+At 10:15, I checked the deploy history and saw a release at 9:40. Since the timing matched, I rolled back instead of debugging live. Errors dropped to zero by 10:30.
+
+Afterwards, I analysed the heap dump we had captured on the crash. A new in-memory cache used a ConcurrentHashMap keyed by user and product, with no size limit and no expiry. Under real traffic, it grew until the heap was full.
+
+We replaced it with a Caffeine cache with a maximum size and a ten-minute expiry, and load-tested it with production-like traffic. To prevent it happening again, we added an alert on heap usage after GC and a review rule: every cache needs a size limit and an expiry.
+
+### Vì sao câu trả lời này hiệu quả
+Câu hỏi sự cố là câu **gần như chắc chắn có** ở vòng senior, vì nó cho thấy bạn hành xử thế nào dưới áp lực. Interviewer chấm theo 5 tín hiệu:
+
+| Phần | Interviewer kiểm tra gì | Câu trong bài mẫu |
+|---|---|---|
+| Phát hiện | Bạn biết bằng monitoring hay khách hàng báo? | "we got an alert" |
+| Ảnh hưởng | Bạn có nghĩ theo người dùng/kinh doanh không? | "30 percent of price requests", "2,000 abandoned checkouts" |
+| Mitigation | Bạn có biết "cầm máu trước, chữa sau"? | "I rolled back instead of debugging live" |
+| Root cause | Bạn có bằng chứng hay đoán? | "heap dump", "no size limit and no expiry" |
+| Phòng ngừa | Bạn có sửa hệ thống/quy trình, không chỉ sửa code? | alert + review rule |
+
+Vài chi tiết kỹ thuật nhỏ làm câu chuyện đáng tin:
+- **Rollback trước khi debug**: khi thời điểm deploy khớp với thời điểm lỗi, rollback là cách nhanh nhất giảm thiệt hại. Debug live trên production đang cháy là sai lầm hay gặp.
+- **Heap dump lúc crash**: JVM có thể tự ghi heap dump khi gặp OutOfMemoryError bằng {{-XX:+HeapDumpOnOutOfMemoryError}}. Nhắc tới nó cho thấy bạn đã chuẩn bị sẵn cho sự cố.
+- **"Heap usage after GC"**: heap trước GC luôn dao động; heap **sau GC** tăng dần mới là dấu hiệu rò rỉ. Đây là điểm cộng với interviewer kỹ thuật.
+
+Nếu bị ngắt lời và hỏi "Why not just give the pods more memory?", trả lời: "That would only delay the crash, because the cache had no upper bound. More memory would have hidden the bug for a few more hours."
+
+### Useful phrases
+- **we got an alert**: chúng tôi nhận được cảnh báo
+- **the timing matched**: thời điểm trùng khớp
+- **I rolled back instead of debugging live**: tôi rollback thay vì debug trực tiếp
+- **production-like traffic**: lưu lượng giống production
+- **to prevent it happening again**: để ngăn nó lặp lại
+
+### Lỗi người Việt hay mắc
+- Nhầm danh từ và động từ: **"a rollback"** (danh từ, viết liền) nhưng **"to roll back"** (động từ, hai chữ). Tương tự "a setup" / "to set up".
+- Đọc giờ: "10:05" đọc là **"ten oh five"**, không đọc "ten zero five".
+- Đổ lỗi: "My colleague deployed a bad version." → nói **"a release introduced a cache without limits"**. Blameless là chuẩn quốc tế.
+- Kể sự cố mà không có con số ảnh hưởng: interviewer không biết đó là sự cố nhỏ hay lớn.
+
+> Senior tip: Chuẩn bị **hai phiên bản**: bản 2 phút (như trên) và bản 5 phút (thêm cách giao tiếp với stakeholder, ai làm incident commander, viết postmortem thế nào). Bắt đầu bằng bản 2 phút rồi hỏi "Would you like me to go deeper into the root cause analysis?". Interviewer sẽ chọn phần họ quan tâm, và bạn tránh được việc nói lan man 10 phút.`,
+  follow: [
+    'Why did you roll back instead of fixing forward?',
+    'How did you communicate with the business while the incident was happening?',
+    'Why did your tests not catch the memory problem before release?',
+  ],
+  tags: ['incident', 'postmortem', 'oom', 'star'],
+  lang: 'en',
+},
+{
+  id: 'english-077',
+  topic: 'english',
+  level: 'senior',
+  q: 'A product manager asks why the sales dashboard is not real-time. Explain the technical trade-off you made, in business terms.',
+  a: `**Tóm tắt:** Dịch trade-off sang **đơn vị kinh doanh**: thời gian (tuần công), tiền (chi phí cloud/tháng), rủi ro vận hành (ai trực đêm) và **lợi ích thực tế** cho cách người dùng ra quyết định. Kết thúc bằng **khuyến nghị rõ ràng + điều kiện để xem xét lại + câu hỏi xác nhận**. Không bao giờ nói "it's impossible".
+
+### Sample answer
+Good question. We chose to refresh the dashboard every fifteen minutes instead of in real time, and the reason is mostly cost and risk, not technology.
+
+Right now, the dashboard reads from a copy of our database that updates every fifteen minutes. To make it real-time, we'd need a streaming pipeline, basically a system that copies every single order the moment it happens. That's about six weeks of work for two engineers, plus roughly fifteen hundred dollars a month in extra cloud costs, and one more system that someone has to watch at night.
+
+What would we get for that? Today, the sales team checks the dashboard a few times a day to plan promotions. A fifteen-minute delay doesn't change any of those decisions.
+
+So my recommendation is to keep it as it is and show a clear "last updated at 10:45" label, so nobody is confused. If we start running flash sales where people need to react within minutes, that changes the picture, and I'd be happy to revisit it.
+
+Does that match how your team uses the dashboard?
+
+### Vì sao câu trả lời này hiệu quả
+Đây là góc khác của câu "giải thích trade-off cho người không chuyên": bạn đang **nói "chưa" với một yêu cầu** mà vẫn giữ quan hệ tốt. Khung 5 bước:
+1. **Nêu quyết định** ngay câu đầu (15 phút, không real-time).
+2. **Chi phí để làm khác đi**, đổi ra thứ PM hiểu: tuần công, tiền/tháng, gánh nặng vận hành.
+3. **Lợi ích thực tế**: người dùng có ra quyết định khác đi không? Nếu không, real-time chỉ là chi phí.
+4. **Khuyến nghị + giải pháp rẻ** cho vấn đề thật (nhãn "last updated" giải quyết sự nhầm lẫn).
+5. **Điều kiện xem xét lại + câu hỏi xác nhận**, biến lời từ chối thành quyết định chung.
+
+Từ điển "dịch" thuật ngữ:
+
+| Thuật ngữ kỹ thuật | Cách nói với PM |
+|---|---|
+| Read replica / reporting database | "a copy of our database" |
+| CDC pipeline (Debezium + Kafka) | "a system that copies every order the moment it happens" |
+| Operational overhead, on-call | "one more system someone has to watch at night" |
+| Data freshness / staleness | "the numbers can be up to fifteen minutes old" |
+| Eventual consistency | "the dashboard catches up a few minutes later" |
+
+Về mặt kỹ thuật, real-time thật thường cần change data capture từ log của database (ví dụ Debezium đọc WAL của PostgreSQL) đẩy qua Kafka rồi vào kho phân tích. Mỗi thành phần cần giám sát, nâng cấp, xử lý lỗi. Bạn biết điều này, nhưng **không cần nói ra** với PM, trừ khi họ hỏi.
+
+### Useful phrases
+- **the reason is mostly cost and risk, not technology**: lý do chủ yếu là chi phí và rủi ro, không phải công nghệ
+- **What would we get for that?**: đổi lại chúng ta được gì?
+- **that changes the picture**: điều đó làm thay đổi bức tranh
+- **I'd be happy to revisit it**: tôi sẵn lòng xem xét lại
+- **Does that match how your team uses it?**: điều đó có khớp với cách team anh/chị dùng không?
+
+### Lỗi người Việt hay mắc
+- Nói **"It's impossible"** hoặc "It's too difficult": nghe như từ chối làm việc. Mọi thứ đều làm được, câu hỏi là **chi phí bao nhiêu**.
+- Giảng về CDC, Kafka, WAL cho người không cần biết.
+- Không có con số: "it costs a lot" thay vì "about six weeks and fifteen hundred dollars a month".
+- Đọc tiền sai: "$1,500" nói **"fifteen hundred dollars"** hoặc "one thousand five hundred dollars", không nói "one thousand and five hundreds dollar".
+
+> Senior tip: Thời cắt giảm chi phí, **tư duy chi phí (FinOps)** là tín hiệu tuyển dụng mạnh: công ty muốn senior biết hỏi "đáng tiền không?" trước khi xây. Sau cuộc nói chuyện, chốt bằng văn bản một **freshness SLA** ("dashboard data is at most 15 minutes old") để sau này không ai nói "sao số liệu sai". Khi bị hỏi trong phỏng vấn, kể thêm kết quả: "The PM agreed, we added the label in one day, and the request never came back."`,
+  follow: [
+    'What if the CEO insists on real-time anyway?',
+    'How did you estimate the six weeks and the monthly cost?',
+    'Tell me about a time you said no to a stakeholder and were wrong.',
+  ],
+  tags: ['stakeholder', 'trade-off', 'cost', 'communication'],
+  lang: 'en',
+},
+{
+  id: 'english-078',
+  topic: 'english',
+  level: 'senior',
+  q: "We'd like to make you an offer, but it's about fifteen percent below the range you gave us. How do you respond? And what do you say if we ask what you were earning before?",
+  a: `**Tóm tắt:** Bốn bước: **cảm ơn + khẳng định muốn làm → nêu khoảng chênh kèm lý do thị trường → hỏi có linh hoạt không, nếu không thì đề xuất phương án khác (signing bonus, review sau thử việc có tiêu chí ghi trong offer) → xin thời gian trả lời**. Về lương cũ: lịch sự chuyển trọng tâm sang giá trị vị trí mới; không nói dối, không bịa offer khác.
+
+### Sample answer
+First of all, thank you. I'm really excited about the role and the team, and I'd like to find a way to make this work.
+
+To be transparent, the offer is about fifteen percent below the range I mentioned, which I based on market data for senior backend roles with on-call responsibility. Is there any flexibility on the base salary?
+
+If the base is fixed because of your salary bands, I'm open to other options: a signing bonus, or a salary review after probation with clear criteria written into the offer.
+
+About my previous salary, I'd prefer to focus on the value of this role rather than my last package, because the scope here is quite different. What I can say is that my expectation is in line with what similar roles pay in the market.
+
+Could I have until Friday to think it over? I'd like to give you a clear answer rather than a quick one.
+
+### Vì sao câu trả lời này hiệu quả
+Sau layoff, nhiều người nhận ngay mọi offer vì sợ. Nhưng khi công ty đã nói "we'd like to make you an offer", **họ đã chọn bạn**, và một lời đề nghị đàm phán lịch sự gần như không làm mất offer. Bài mẫu giữ đúng tinh thần **hợp tác, không đối đầu**:
+
+| Bước | Mục đích |
+|---|---|
+| Cảm ơn + muốn làm | Cho họ biết bạn không đang tìm cớ từ chối |
+| Nêu khoảng chênh + lý do | Con số dựa trên thị trường và phạm vi việc, không dựa trên nhu cầu cá nhân |
+| Hỏi linh hoạt, rồi đưa phương án khác | Cho HR nhiều "nút" để xoay khi lương cơ bản bị khoá theo band |
+| Xin thời gian | Tránh quyết định cảm tính; cho bạn thời gian so sánh |
+
+Các phản hồi thường gặp từ công ty và cách đáp:
+- "This is our final offer." → "I understand. Could we agree on a review after probation, with the criteria in writing?"
+- "Other candidates accepted this range." → "That's fair. My range reflects the on-call and ownership scope we discussed."
+- "What were you earning before?" → chuyển trọng tâm như bài mẫu. Nếu họ hỏi lại lần hai và lương cũ của bạn **không thấp hơn** mức đang đòi, có thể nói thật kèm cấu trúc (gross, thưởng tháng 13, phụ cấp). Không bao giờ nói dối: một số công ty yêu cầu payslip hoặc xác nhận qua BHXH.
+
+Tình huống thời layoff: nếu bạn **không có offer khác**, đừng bịa ("I have another offer at 70 million"). HR có thể hỏi tên công ty hoặc bảo bạn nhận offer đó, và bạn mất uy tín. Bạn vẫn có quyền đàm phán chỉ dựa trên **dữ liệu thị trường và phạm vi công việc**.
+
+### Useful phrases
+- **I'd like to find a way to make this work**: tôi muốn tìm cách để việc này thành công
+- **to be transparent**: nói một cách minh bạch
+- **is there any flexibility on the base salary?**: lương cơ bản có linh hoạt được không?
+- **written into the offer**: ghi rõ vào thư mời nhận việc
+- **in line with what similar roles pay**: tương đương mức các vị trí tương tự đang trả
+- **think it over**: suy nghĩ kỹ
+
+### Lỗi người Việt hay mắc
+- Trả lời ngay **"OK, no problem"** vì ngại: mất cơ hội đàm phán duy nhất.
+- Lấy lý do cá nhân: "I need more because I have a house loan." HR trả lương theo **giá trị công việc**, không theo nhu cầu chi tiêu.
+- Ra tối hậu thư: "If you can't pay 65, I won't join." Nghe như đe doạ.
+- Chấp nhận lời hứa miệng "we'll review in six months" mà **không có văn bản** và tiêu chí.
+- Dùng sai: "I want to negotiate the salary more high" → **"I'd like to discuss the salary"** hoặc "Could we get closer to my range?".
+
+> Senior tip: Chỉ đàm phán **một vòng**, gom mọi yêu cầu vào một lần ("base X, or base Y plus signing bonus Z"). Kéo qua nhiều vòng sẽ làm HR mệt và hiring manager mất thiện cảm. Ở nhiều công ty, mức lương bị giới hạn bởi band, nên **thăng hạng level** (Senior I → Senior II) đôi khi dễ hơn tăng lương trong cùng level; hãy hỏi: "Is there any room to discuss the level, given the scope we talked about?" Mọi thứ đã thống nhất phải có trong offer letter trước khi bạn nghỉ việc cũ hoặc từ chối nơi khác.`,
+  follow: [
+    'What is the lowest number you would accept?',
+    'How do you compare an offer with a higher base against one with a bigger bonus?',
+    'What would you do if they withdrew the offer after you negotiated?',
+  ],
+  tags: ['salary', 'negotiation', 'offer', 'layoff'],
+  lang: 'en',
+},
+{
+  id: 'english-079',
+  topic: 'english',
+  level: 'senior',
+  q: 'Do you have any questions for us? (Use them to check the health of the team and the role without sounding negative.)',
+  a: `**Tóm tắt:** Thời layoff, phần hỏi ngược là lúc bạn **thẩm định công ty**: vị trí là headcount mới hay thay người, ngân sách và roadmap đã duyệt chưa, team có thay đổi quy mô không, thành công sau 90 ngày đo bằng gì. Mẹo là **đóng khung câu hỏi bằng mong muốn gắn bó lâu dài**, để nó nghe như sự cam kết chứ không phải nghi ngờ.
+
+### Sample answer
+Yes, thank you. I have a few questions.
+
+First, is this a new position or a replacement for someone who left? And has the team changed in size over the last year? I'm asking because I'd like to understand where the team is heading.
+
+Second, what does the roadmap look like for the next six to twelve months? For example, is the budget for the ledger migration already approved?
+
+Third, what would success look like for me after ninety days and after six months? That would help me focus on the right things from day one.
+
+And finally, how is the team using AI tools today, and has that changed how you plan work or hire?
+
+The reason I'm asking all this is that I'm looking for a place where I can stay and grow for several years, not just my next job. So I really appreciate any detail you can share.
+
+### Vì sao câu trả lời này hiệu quả
+Câu hỏi của bạn vừa cho bạn **thông tin**, vừa cho interviewer **tín hiệu** về cách bạn nghĩ. Một senior hỏi về ngân sách, roadmap và tiêu chí thành công cho thấy bạn nghĩ như người chịu trách nhiệm, không chỉ như người nhận ticket.
+
+Cách đọc câu trả lời:
+
+| Câu hỏi | Câu trả lời tốt | Tín hiệu cần cẩn trọng |
+|---|---|---|
+| New position or replacement? | "New headcount, approved in Q3 for the ledger project." | Vòng vo, "it's complicated" |
+| Has the team changed in size? | Nói rõ con số và lý do | Nhiều người vừa rời đi, không giải thích |
+| Is the budget approved? | Nêu sponsor, mốc thời gian | "We're still waiting for approval" |
+| Success after 90 days? | Mục tiêu cụ thể, đo được | Không ai trả lời được |
+| AI tools? | Có quy tắc, có đo hiệu quả | "We expect AI to replace part of the team" |
+
+Một câu trả lời mơ hồ **chưa chứng minh** công ty có vấn đề, nhưng là lý do để hỏi thêm ở vòng sau, đối chiếu với recruiter, và tiếp tục phỏng vấn nơi khác song song.
+
+Hỏi đúng người:
+- **Recruiter/HR**: quy trình, thử việc, onsite/hybrid, cấu trúc offer.
+- **Hiring manager**: headcount, ngân sách, roadmap, tiêu chí 90 ngày.
+- **Kỹ sư trong team**: on-call, chất lượng code, thực tế làm việc hằng ngày.
+
+Với công ty outsourcing, thêm: "How long is the current client contract, and what happens if the client stops the project?" Câu này hỏi gián tiếp về chính sách bench.
+
+### Useful phrases
+- **is this a new position or a replacement?**: vị trí này là mới hay thay thế người cũ?
+- **where the team is heading**: team đang đi về hướng nào
+- **what would success look like after ninety days?**: thành công sau 90 ngày trông thế nào?
+- **from day one**: ngay từ ngày đầu
+- **stay and grow for several years**: gắn bó và phát triển nhiều năm
+
+### Lỗi người Việt hay mắc
+- Trả lời **"No, I have no questions"**: interviewer nghe thành "không quan tâm".
+- Hỏi thẳng **"Will there be layoffs?"**: không ai trả lời "có", và câu này đặt interviewer vào thế khó. Hỏi về headcount và ngân sách sẽ cho bạn cùng thông tin.
+- Hỏi lương, ngày phép đầu tiên trong vòng kỹ thuật: để dành cho HR.
+- Đọc một danh sách 10 câu: chọn 3–4 câu hợp với người đang ngồi trước mặt.
+- Ngữ pháp câu hỏi gián tiếp: "Can you tell me what is the roadmap?" → **"Can you tell me what the roadmap is?"** (câu hỏi gián tiếp không đảo ngữ).
+
+> Senior tip: Ghi lại câu trả lời của **từng** interviewer và so sánh sau buổi phỏng vấn. Nếu hiring manager nói "new headcount" còn kỹ sư trong team nói "we're replacing two people who left last month", đó là thông tin quý. Hãy đặt câu hỏi về headcount **sau khi** đã thể hiện tốt ở phần kỹ thuật, và luôn kèm lý do "I'm looking for the long term". Lý do này biến một câu hỏi nhạy cảm thành dấu hiệu cam kết.`,
+  follow: [
+    'Why is it important for you to know if the position is new?',
+    'What would make you decline an offer from us?',
+    'What did you not like about how your last company handled the layoff?',
+  ],
+  tags: ['questions-to-ask', 'layoff', 'due-diligence', 'closing'],
+  lang: 'en',
+},
 );

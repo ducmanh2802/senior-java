@@ -1,5 +1,33 @@
 # Changelog
 
+## 2026-11-04
+
+### Nội dung
+- T575 (auto-committed after opencode review + verify)
+
+### Ứng dụng
+- Hero illustration, SDLC pipeline art, new page background (colour mesh + fading dot grid)
+
+
+## 2026-11-04
+
+### Nội dung
+- T288 (auto-committed after opencode review + verify)
+- T148 (auto-committed after opencode review + verify)
+
+### Ứng dụng
+- Email + password sign-in (sign up, sign in, reset, set new password); non-blocking fonts
+
+
+## 2026-11-04
+
+### Nội dung
+
+
+### Ứng dụng
+- Tasks T573/T574: free agents draft 30+30 AWS exam questions (empty pools registered; Claude reviews before content lands)
+
+
 ## 2026-10-29
 
 ### Nội dung

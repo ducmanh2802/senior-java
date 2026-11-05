@@ -8,7 +8,7 @@
  */
 'use strict';
 
-const VERSION = 'v2';
+const VERSION = 'v3';   // v3: views lazy (index.html no longer lists them)
 const CACHE = 'sjp-' + VERSION;
 const SHELL = ['/', '/css/base.css', '/js/core/app.js', '/manifest.json', '/icons/icon-192.png'];
 const CDN = /^https:\/\/(cdn\.jsdelivr\.net|fonts\.googleapis\.com|fonts\.gstatic\.com)\//;

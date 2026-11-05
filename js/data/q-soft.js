@@ -2091,5 +2091,541 @@ class OrderConsumerIT {
     'Khi nào nên dùng Kafka Streams thay vì consumer thủ công cho bài toán retry và dead-letter?'
   ],
   tags: ['kafka', 'consumer', 'dead-letter', 'retry', 'testcontainers', 'offset-management']
+},
+{
+  id: 'behavioral-021',
+  topic: 'behavioral',
+  level: 'mid',
+  q: 'Interviewer hỏi một câu bạn thật sự không biết, ví dụ "ZGC khác G1 thế nào trong cách giữ pause ngắn?". Bạn trả lời thế nào để vẫn ghi điểm thay vì im lặng hoặc đoán bừa?',
+  a: `**Tóm tắt:** Không biết một câu là bình thường; **bịa** hoặc **im lặng** mới mất điểm. Làm theo 4 bước: **nói rõ ranh giới kiến thức → nói phần mình biết chắc → suy luận thành tiếng từ nguyên lý → đề xuất cách kiểm chứng**. Interviewer chấm cách bạn suy nghĩ khi gặp thứ mới, vì đó là việc bạn sẽ làm hằng ngày.
+
+### Interviewer muốn đánh giá gì
+- **Trung thực về giới hạn**: người dám nói "tôi chưa dùng" sẽ không giấu rủi ro trên production.
+- **Khả năng suy luận**: từ kiến thức nền, bạn có đi tới một giả thuyết hợp lý không.
+- **Cách học**: gặp thứ chưa biết, bạn tìm hiểu bằng tài liệu, đo đạc hay đoán.
+- Interviewer giỏi **cố ý** hỏi tới biên giới kiến thức của bạn. Bị hỏi câu không biết thường có nghĩa là bạn đã trả lời tốt các câu trước.
+
+### Phân loại mức "không biết"
+| Mức | Nên nói |
+|---|---|
+| Biết công nghệ tương tự | "Tôi chưa dùng X, nhưng tôi đã dùng Y. Nếu X giống Y ở điểm A thì…" |
+| Biết khái niệm, không nhớ chi tiết | "Tôi nhớ nguyên lý là…, còn tên tham số chính xác thì tôi sẽ tra docs." |
+| Biết lờ mờ | "Tôi chỉ đọc qua, nên tôi sẽ suy luận và anh/chị sửa giúp nếu sai." |
+| Hoàn toàn không biết | "Tôi chưa gặp khái niệm này. Anh/chị có thể cho tôi một ví dụ bối cảnh không?" |
+
+Nguyên tắc **tách rõ "biết chắc" và "suy luận"**. Nói "tôi đoán là" trước phần suy luận giúp interviewer không coi nó là khẳng định sai.
+
+### Câu trả lời mẫu
+> "Tôi chưa chạy ZGC trên production, nên tôi sẽ tách phần tôi biết chắc và phần suy luận.
+> Phần tôi biết chắc: G1 dừng ứng dụng để evacuate các region, tức là copy object còn sống sang chỗ mới, nên pause tăng theo lượng object sống cần copy. Còn ZGC đặt mục tiêu pause dưới một mili giây, không phụ thuộc kích thước heap.
+> Từ đó tôi suy luận: muốn pause ngắn như vậy thì ZGC phải di chuyển object **trong khi ứng dụng vẫn chạy**. Vậy phải có cơ chế để khi thread ứng dụng đọc một reference trỏ tới object đang bị di chuyển, nó vẫn lấy được địa chỉ đúng. Tôi đoán đó là một dạng barrier chèn vào lúc đọc reference, và cái giá là tốn thêm CPU cho ứng dụng.
+> Nếu cần chọn cho service của team, tôi sẽ không chọn theo lý thuyết. Tôi sẽ chạy load test với cùng heap, so sánh p99 latency, throughput và CPU giữa G1 và ZGC, rồi mới quyết định."
+
+Suy luận này đúng hướng: ZGC dùng **load barrier** và **colored pointers** để relocate đồng thời, đổi lại tốn thêm CPU. Kể cả khi đoán sai chi tiết, cách lập luận vẫn ghi điểm.
+
+### Những điều nên tránh
+- **Bịa tự tin**: interviewer biết câu trả lời, và chỉ một câu bịa sẽ làm họ nghi ngờ mọi câu trước đó.
+- **"Em không biết" rồi im**: mất cơ hội thể hiện cách suy nghĩ.
+- **Xin lỗi liên tục**, tự hạ mình ("em kém phần này lắm"): một câu thừa nhận là đủ.
+- **Lái sang chủ đề khác quá lộ liễu**: "Em không biết ZGC nhưng em biết Kafka rất rõ…".
+- **Im lặng suy nghĩ quá 20–30 giây** mà không nói gì: hãy nói "Cho tôi 30 giây để sắp xếp ý."
+
+> Senior tip: Sau mỗi buổi phỏng vấn, trong vòng một giờ, ghi lại **mọi câu bạn không trả lời được** và tra lời giải ngay tối đó. Sau 5–6 buổi, danh sách này chính là lộ trình ôn sát nhất với thị trường thật. Khi phỏng vấn, hãy dùng thang 3 mức để tự định vị: "đã dùng trên production", "đã đọc và thử", "chỉ biết khái niệm". Người nói đúng mức của mình được tin tưởng hơn người tỏ ra biết mọi thứ.`,
+  follow: [
+    'Nếu interviewer tiếp tục hỏi sâu vào đúng phần bạn vừa thừa nhận không biết, bạn xử lý thế nào?',
+    'Kể một lần bạn phải học nhanh một công nghệ hoàn toàn mới để xử lý việc gấp.',
+    'Làm sao phân biệt "suy luận hợp lý" với "đoán bừa" khi trả lời?',
+  ],
+  tags: ['interview-skills', 'unknown-answer', 'reasoning', 'honesty'],
+},
+{
+  id: 'behavioral-022',
+  topic: 'behavioral',
+  level: 'senior',
+  q: 'Vòng system design 45 phút: interviewer thực sự chấm theo những tín hiệu nào? Nếu đến phút 25 bạn mới xong phần yêu cầu và API, hoặc interviewer kéo bạn sang hướng khác, bạn lấy lại nhịp ra sao?',
+  a: `**Tóm tắt:** Interviewer chấm theo rubric gồm **làm rõ phạm vi, ước lượng dẫn tới quyết định, thiết kế tổng thể, độ sâu ở một điểm nghẽn, trade-off và failure mode, khả năng tự dẫn dắt**. Kiểm soát nhịp bằng **mốc thời gian nói thành lời, check-in mỗi khoảng 10 phút, "parking lot" cho chi tiết**, và khi bị chậm thì **nén lại có chủ đích** thay vì cố làm hết.
+
+### Interviewer muốn đánh giá gì
+Rubric phổ biến (tên gọi khác nhau theo công ty, ý chính giống nhau):
+
+| Tín hiệu | Mid làm | Senior làm |
+|---|---|---|
+| Làm rõ phạm vi | Bắt đầu vẽ ngay | Chốt 3–5 use case, nói rõ cái **không** làm |
+| Ước lượng | Tính QPS rồi bỏ đó | Dùng con số để **chọn** công nghệ ("200 write/s thì một Postgres đủ") |
+| Thiết kế tổng thể | Liệt kê Kafka, Redis, K8s | Mỗi box có lý do tồn tại |
+| Độ sâu | Nói tên kỹ thuật | Giải thích cơ chế: idempotency key lưu ở đâu, TTL bao lâu |
+| Trade-off, lỗi | Không nhắc | "Nếu Redis chết thì…", "cái giá của eventual consistency là…" |
+| Dẫn dắt | Chờ interviewer hỏi | Tự đề xuất bước tiếp theo, hỏi ý interviewer |
+
+Phân bổ thời gian chuẩn đã có ở câu system design 45 phút trong mục Design. Câu này tập trung vào **giữ nhịp và phục hồi**.
+
+### Chiến thuật giữ nhịp
+1. **Nói mốc thời gian ra miệng**: "Tôi dành khoảng 5 phút làm rõ yêu cầu, rồi ước lượng nhanh."
+2. **Parking lot**: góc bảng ghi "để sau: rate limit, GDPR". Khi bị cuốn vào chi tiết: "Tôi ghi điểm này lại, quay lại nếu còn thời gian."
+3. **Check-in mỗi khoảng 10 phút**: "Đến đây anh/chị muốn tôi đi sâu vào phần ghi hay phần đọc?"
+4. **Interviewer kéo sang hướng khác là gợi ý**, không phải làm phiền. Đi theo ngay: họ đang cho bạn cơ hội ghi điểm ở phần rubric còn thiếu.
+
+### Khi bị chậm: nén có chủ đích
+> "Tôi thấy mình đã dùng nhiều thời gian cho API. Để kịp phần quan trọng, tôi sẽ vẽ nhanh luồng tổng thể trong 3 phút, rồi đi sâu vào một điểm rủi ro nhất là chống trừ tiền hai lần. Phần analytics tôi tạm để ngoài phạm vi."
+
+Câu này biến sai lầm về thời gian thành **tín hiệu dẫn dắt**: bạn biết ưu tiên, biết cắt phạm vi. Đó chính là kỹ năng senior cần khi dự án thật bị trễ.
+
+Khi interviewer phản biện thiết kế: đừng bảo vệ bằng mọi giá. "Anh/chị nói đúng, với 10 lần traffic thì một database ghi sẽ thành nút thắt. Tôi sẽ partition theo merchant_id, cái giá là query chéo merchant phải đi qua kho analytics."
+
+### Những điều nên tránh
+- **Độc thoại 20 phút** không hỏi ý interviewer.
+- Thiết kế cho quy mô Google khi đề bài chỉ có 1.000 người dùng: over-engineering cũng bị trừ điểm.
+- Bỏ qua gợi ý của interviewer để làm tiếp theo kế hoạch của mình.
+- Chọn deep dive ở phần mình thuộc nhất thay vì phần **rủi ro nhất** của hệ thống.
+- Hết giờ mà không có câu tóm tắt và không nhắc failure mode nào.
+
+> Senior tip: Luyện bằng đồng hồ thật: bấm 45 phút, ghi âm, nghe lại và đánh dấu chỗ bạn nói lan man. Sau 3–4 lần, bạn sẽ thấy mình luôn chậm ở cùng một chỗ (thường là làm rõ yêu cầu hoặc API). Chuẩn bị sẵn **3 deep dive "tủ"** dùng được cho nhiều đề: idempotency + retry, cache invalidation + stampede, và outbox để ghi DB và phát event nhất quán. Đề nào cũng có chỗ để dùng ít nhất một cái.`,
+  follow: [
+    'Nếu interviewer hoàn toàn im lặng suốt buổi, bạn làm sao biết mình đang đi đúng hướng?',
+    'Bạn chọn điểm deep dive dựa trên tiêu chí gì?',
+    'Interviewer bảo thiết kế của bạn quá phức tạp. Bạn phản hồi thế nào?',
+  ],
+  tags: ['system-design', 'interview-skills', 'time-management', 'rubric'],
+},
+{
+  id: 'behavioral-023',
+  topic: 'behavioral',
+  level: 'mid',
+  q: 'Vòng live coding, bạn bị bí sau 10 phút: chưa nghĩ ra lời giải tối ưu. Bạn giao tiếp thế nào, khi nào viết brute force, tự test ra sao, và khi nào nên xin gợi ý?',
+  a: `**Tóm tắt:** Live coding chấm **quá trình** chứ không chỉ kết quả. Bị bí thì: **nói thành tiếng điều đã thử → viết brute force chạy đúng trước → tự test bằng ví dụ nhỏ → tìm chỗ lặp lại để tối ưu → nếu im lặng quá 3–5 phút thì tóm tắt và xin gợi ý**. Một lời giải O(n²) đúng, có test, có giải thích hướng tối ưu thường được điểm cao hơn một lời giải O(n) viết dở.
+
+### Interviewer muốn đánh giá gì
+Hầu hết công ty chấm theo 4 trục:
+- **Problem solving**: làm rõ đề, tìm hướng, nhận ra độ phức tạp.
+- **Communication**: interviewer có theo kịp suy nghĩ của bạn không.
+- **Code quality**: tên biến, cấu trúc, xử lý biên.
+- **Testing**: bạn có tự kiểm tra trước khi nói "xong" không.
+Im lặng 15 phút rồi đưa ra code đúng vẫn mất điểm ở trục communication.
+
+### Chiến thuật theo thời gian (bài 30–40 phút)
+| Phút | Việc làm |
+|---|---|
+| 0–5 | Nhắc lại đề, hỏi ràng buộc (n lớn cỡ nào, có số âm, có trùng không), tự làm 1 ví dụ |
+| 5–10 | Nói brute force + độ phức tạp, dù chưa viết |
+| 10–25 | Viết code (brute force nếu chưa có hướng tốt hơn sau khoảng 5 phút suy nghĩ) |
+| 25–35 | Dry-run bằng tay, test biên, sửa lỗi, bàn hướng tối ưu |
+
+### Câu nói mẫu khi bị bí
+> "Tôi đang nghĩ theo hướng sort trước rồi dùng hai con trỏ, nhưng như vậy mất vị trí ban đầu của phần tử. Để chắc có lời giải đúng, tôi viết bản hai vòng lặp O(n²) trước, rồi tối ưu sau."
+> "Tôi đã thử sort và thử sliding window nhưng đều vướng ở chỗ phải nhớ những gì đã gặp. Anh/chị có thể gợi ý tôi nên nghĩ theo cấu trúc dữ liệu nào không?"
+
+Câu thứ hai là cách **xin gợi ý đúng**: cho thấy bạn đã thử gì, vướng ở đâu. Gợi ý trừ ít điểm hơn nhiều so với im lặng hết giờ.
+
+### Từ brute force sang tối ưu
+Câu hỏi thần chú: **"Vòng lặp trong đang tìm lại thứ gì đã gặp?"** Nếu có, một {{HashMap}} hoặc {{HashSet}} thường thay được vòng lặp đó.
+~~~java
+// Brute force O(n^2): với mỗi i, tìm j sao cho nums[i] + nums[j] == target
+// Tối ưu O(n): nhớ những số đã gặp -> vị trí
+Map<Integer, Integer> seen = new HashMap<>();
+for (int i = 0; i < nums.length; i++) {
+    Integer j = seen.get(target - nums[i]); // phần bù đã gặp chưa?
+    if (j != null) return new int[]{j, i};
+    seen.put(nums[i], i);                   // ghi SAU khi kiểm tra để không tự ghép với chính mình
 }
+return new int[0];
+~~~
+
+### Tự test trước khi nói "xong"
+Dry-run với ví dụ nhỏ, nói từng giá trị biến. Rồi kiểm tra biên: mảng rỗng, một phần tử, phần tử trùng, số âm, tràn {{int}} (dùng {{long}} khi cộng dồn). Tìm ra bug của chính mình là **điểm cộng**, không phải điểm trừ.
+
+### Những điều nên tránh
+- Nhảy vào code ngay khi chưa chốt ví dụ và ràng buộc.
+- Im lặng code dài, hoặc xoá hết viết lại mà không giải thích.
+- Cãi gợi ý của interviewer hoặc lờ đi.
+- Tên biến {{a}}, {{b}}, {{tmp2}}; không tách hàm khi logic dài.
+- Nói "code này chạy được" mà chưa dry-run lần nào.
+
+> Senior tip: Thuộc lòng API Java hay dùng để không tốn thời gian tra: {{getOrDefault}}, {{merge}}, {{computeIfAbsent}} của Map; {{ArrayDeque}} làm stack/queue (đừng dùng {{Stack}} cũ); {{PriorityQueue}} với comparator; {{Arrays.sort}}, {{StringBuilder}}. Luyện "nói thành tiếng" bằng cách tự ghi âm khi giải bài: lúc đầu rất ngượng, sau khoảng 10 bài sẽ thành phản xạ.`,
+  follow: [
+    'Nếu interviewer cho gợi ý mà bạn vẫn không hiểu, bạn nói gì?',
+    'Bạn làm gì khi phát hiện bug lớn lúc chỉ còn 3 phút?',
+    'Interviewer yêu cầu không dùng IDE và không chạy code. Bạn tự kiểm tra thế nào?',
+  ],
+  tags: ['live-coding', 'interview-skills', 'algorithm', 'communication'],
+},
+{
+  id: 'behavioral-024',
+  topic: 'behavioral',
+  level: 'lead',
+  q: 'Cùng một câu hỏi kỹ thuật, câu trả lời của mid và của senior/lead khác nhau ở đâu? Bạn thể hiện "seniority" thế nào khi trả lời, ví dụ với câu "Bạn sẽ cache danh mục sản phẩm thế nào?"',
+  a: `**Tóm tắt:** Seniority không nằm ở việc biết nhiều tên công nghệ, mà ở **5 lớp** đi kèm câu trả lời: **bối cảnh và giả định, trade-off có cái giá, số liệu, vận hành (đo, cảnh báo, sự cố), rủi ro và đường lui**. Lead thêm một lớp: **ảnh hưởng tới team và lộ trình triển khai**.
+
+### Interviewer muốn đánh giá gì
+Họ đã nghe hàng trăm câu "dùng Redis, TTL 10 phút". Cái họ tìm là: bạn có **hỏi đúng câu trước khi trả lời** không, có biết **cái gì sẽ hỏng** không, và có từng **vận hành** thứ mình thiết kế không.
+
+### So sánh trên cùng một câu hỏi
+**Câu trả lời mid** (đúng nhưng mỏng):
+> "Dùng Spring Cache với Redis, gắn @Cacheable lên method lấy sản phẩm, TTL 10 phút. Khi update thì @CacheEvict."
+
+**Câu trả lời senior**:
+> "Trước tiên tôi hỏi tỉ lệ đọc/ghi và mức chấp nhận dữ liệu cũ. Giả sử 2.000 request/s đọc, vài chục lần sửa mỗi giờ, và giá được phép cũ tối đa 30 giây.
+> Tôi dùng cache-aside với Redis, TTL 5 phút cộng jitter ngẫu nhiên để tránh nhiều key hết hạn cùng lúc. Khi sửa sản phẩm, tôi xoá key sau khi transaction commit, không xoá trước, để tránh request khác nạp lại dữ liệu cũ. Riêng **giá** thì không cache lâu: TTL 30 giây, vì sai giá là mất tiền.
+> Với key nóng, tôi chống stampede bằng cách chỉ cho một request nạp lại khi miss. Tôi đo hit rate, latency Redis và số lần miss; dưới 80% hit rate là dấu hiệu chọn sai key.
+> Nếu Redis chết, service đọc thẳng database nhưng có giới hạn đồng thời, để database không sập theo. Cái giá của cả thiết kế này là dữ liệu có thể cũ vài chục giây, và thêm một hệ thống phải trực."
+
+**Lead thêm**: "Tôi sẽ triển khai sau feature flag, bật cho 10% traffic, so sánh p99 và tải DB trong một tuần. Team chưa vận hành Redis bao giờ, nên tôi dùng dịch vụ managed và viết runbook trước khi bật 100%."
+
+### Bảng 5 lớp seniority
+| Lớp | Câu mở đầu dùng được |
+|---|---|
+| Bối cảnh, giả định | "Trước tiên tôi cần biết…", "Giả sử…" |
+| Trade-off có giá | "Tôi chọn X vì…, cái giá là…" |
+| Số liệu | "Ở quy mô 2.000 request/s thì…" |
+| Vận hành | "Tôi đo…, cảnh báo khi…, runbook gồm…" |
+| Rủi ro, đường lui | "Nếu Y hỏng thì…", "Quyết định này đảo ngược được bằng…" |
+
+Một mẹo cho lead: phân biệt quyết định **đảo ngược được** (chọn thư viện cache, cấu hình TTL) và **khó đảo ngược** (đổi database chính, đổi format event công khai). Quyết định đảo ngược được thì làm nhanh rồi đo; quyết định khó đảo ngược thì cần prototype, ADR và người review.
+
+### Những điều nên tránh
+- **"It depends" rồi dừng**: phải nói phụ thuộc vào cái gì và chọn gì trong từng trường hợp.
+- **Kể tên công nghệ** (Redis, Kafka, Kubernetes) như danh sách mua sắm, không có lý do.
+- **Over-engineering** để tỏ ra senior: multi-region cho hệ thống nội bộ 200 người dùng.
+- Số liệu bịa không bảo vệ được khi bị hỏi "đo bằng gì?".
+- Chỉ nói đường "happy path", không nói điều gì xảy ra khi thành phần hỏng.
+
+> Senior tip: Luyện bằng cách lấy 10 câu hỏi kỹ thuật quen thuộc, viết câu trả lời "mid" của bạn trước, rồi tự ép thêm đủ 5 lớp. Câu trả lời senior thường **dài hơn chưa tới 1 phút**, vì phần thêm vào là những câu ngắn có thông tin, không phải giảng lý thuyết. Kinh nghiệm thực tế mạnh nhất là một câu "lần trước chúng tôi bị đúng lỗi này": nó chứng minh bạn đã vận hành, không chỉ đọc sách.`,
+  follow: [
+    'Làm sao thể hiện seniority khi bạn chưa từng làm ở hệ thống quy mô lớn?',
+    'Khi nào câu trả lời "đơn giản" lại là câu trả lời senior nhất?',
+    'Bạn phân biệt quyết định đảo ngược được và khó đảo ngược thế nào trong dự án thật?',
+  ],
+  tags: ['seniority', 'interview-skills', 'trade-off', 'caching'],
+},
+{
+  id: 'behavioral-025',
+  topic: 'behavioral',
+  level: 'senior',
+  q: '"Kể về dự án khó nhất bạn từng làm." Bạn chọn dự án nào, kể theo cấu trúc gì, và chuẩn bị thế nào cho 3 lớp câu hỏi đào sâu mà interviewer chắc chắn sẽ hỏi?',
+  a: `**Tóm tắt:** Chọn dự án **gần đây, bạn giữ vai trò trung tâm, có độ khó kỹ thuật thật và có con số kết quả**. Kể theo STAR với tỉ lệ khoảng **20% bối cảnh, 60% hành động của bạn, 20% kết quả và bài học**. Chuẩn bị trước **3 lớp đào sâu**: vì sao chọn cách đó, cơ chế chi tiết, và nếu làm lại/quy mô gấp 10 thì sao.
+
+### Interviewer muốn đánh giá gì
+- **Mức độ khó bạn từng xử lý**: đây là thước đo trần năng lực của bạn.
+- **Vai trò thật**: phần nào là của bạn, phần nào là của team.
+- **Độ sâu**: bạn hiểu cơ chế hay chỉ dùng lại thiết kế người khác.
+- **Tự nhận thức**: bạn nhìn lại có thấy điều cần làm khác không.
+Câu này thường chiếm 15–20 phút vì interviewer đào liên tục; câu chuyện là "sân nhà" của bạn, nên chuẩn bị kỹ thì lợi thế rất lớn.
+
+### Tiêu chí chọn dự án
+| Tiêu chí | Vì sao |
+|---|---|
+| Trong 2–3 năm gần đây | Chi tiết còn nhớ rõ, công nghệ còn hợp thời |
+| Bạn là người thiết kế hoặc dẫn dắt một phần lớn | Trả lời được mọi câu "tại sao" |
+| Có ràng buộc thật: dữ liệu lớn, zero downtime, tiền bạc, deadline | Độ khó đến từ ràng buộc, không từ số công nghệ |
+| Có số liệu trước/sau | Bằng chứng cho kết quả |
+| Có ít nhất một lần sai rồi sửa | Câu chuyện thật luôn có vấp ngã |
+
+### Câu trả lời mẫu (bản 2 phút)
+> "Dự án khó nhất là tách luồng thanh toán ra khỏi monolith Spring Boot ở công ty ví điện tử, khi hệ thống đang xử lý khoảng 300 giao dịch mỗi giây và không được dừng.
+> Tôi thiết kế cách tách và trực tiếp làm phần nhất quán dữ liệu. Khó nhất là ghi giao dịch vào database và phát event sang Kafka mà không mất event khi service chết giữa chừng. Tôi dùng outbox pattern: ghi event vào bảng outbox trong cùng transaction, rồi một tiến trình riêng đọc bảng đó và đẩy lên Kafka. Phía consumer xử lý idempotent theo transaction id.
+> Lần chạy thử đầu tiên, lag outbox lên tới 40 giây vì query quét bảng không có index phù hợp. Tôi thêm index theo trạng thái và thời gian, xoá dần bản ghi đã gửi, lag giảm còn dưới 1 giây.
+> Sau 4 tháng chuyển dần traffic theo phần trăm, chúng tôi có 0 sự cố mất giao dịch, thời gian deploy luồng thanh toán giảm từ 2 giờ xuống 15 phút."
+
+### Chuẩn bị 3 lớp đào sâu
+1. **Vì sao (quyết định)**: "Sao không dùng 2PC?", "Sao không dùng Debezium?", "Sao tách payment trước mà không phải module khác?"
+2. **Cơ chế (chi tiết)**: "Nếu tiến trình đọc outbox chạy 2 instance thì sao?", "Idempotency key lưu ở đâu, unique constraint thế nào?", "Thứ tự event có được đảm bảo không?"
+3. **Nhìn lại, mở rộng**: "Làm lại bạn đổi gì?", "Traffic gấp 10 thì chỗ nào vỡ trước?", "Team học được gì?"
+Viết sẵn câu trả lời ngắn cho khoảng 10 câu hỏi như trên. Nếu bị hỏi trúng chỗ bạn không trực tiếp làm, nói thật: "Phần đó đồng nghiệp tôi làm, tôi hiểu ở mức…"
+
+### Những điều nên tránh
+- Chọn dự án bạn chỉ làm phần nhỏ: lớp đào sâu thứ 2 sẽ lộ ngay.
+- Dùng "chúng tôi" cho mọi thứ: interviewer không biết bạn làm gì.
+- Dành 5 phút kể bối cảnh công ty, sản phẩm.
+- Câu chuyện hoàn hảo không có sai lầm nào: nghe như kể lại slide.
+- Không có số liệu, hoặc số liệu không nói được đo bằng gì.
+
+> Senior tip: Viết câu chuyện ra giấy thành hai bản: bản 2 phút và bản 10 phút. Nhờ một người bạn hỏi "tại sao?" liên tục 5 lần vào từng quyết định; chỗ nào bạn ấp úng là chỗ cần ôn. Chuẩn bị **2 dự án** khác loại (một về hiệu năng/quy mô, một về nhất quán dữ liệu hoặc migration) để chọn cái khớp với JD.`,
+  follow: [
+    'Nếu dự án thú vị nhất của bạn thuộc NDA, bạn kể thế nào mà không lộ thông tin?',
+    'Trong dự án đó, quyết định nào bạn tranh luận nhiều nhất với team?',
+    'Nếu bắt đầu lại hôm nay với Java 21 và Spring Boot 3, bạn thay đổi gì?',
+  ],
+  tags: ['STAR', 'project', 'interview-skills', 'deep-dive'],
+},
+{
+  id: 'behavioral-026',
+  topic: 'behavioral',
+  level: 'lead',
+  q: 'Interviewer nhập vai: "Tôi là architect. Tôi muốn mọi service mới đều dùng event sourcing. Bạn thấy không hợp với team 5 người của mình. Thuyết phục tôi ngay bây giờ." Bạn xử lý màn role-play này thế nào?',
+  a: `**Tóm tắt:** Đây là bài kiểm tra **tranh luận trực tiếp dưới áp lực**, khác với kể lại chuyện bất đồng trong quá khứ. Làm theo 5 bước: **thừa nhận mục tiêu của đối phương → hỏi để hiểu động cơ → đưa chi phí và dữ liệu → đề xuất phạm vi hẹp hoặc thử nghiệm → chốt tiêu chí và cam kết với quyết định cuối**. Giữ giọng bình tĩnh khi interviewer cố tình cứng rắn.
+
+### Interviewer muốn đánh giá gì
+- **Bạn có giữ được quan điểm** khi bị ép không (không gật đầu ngay).
+- **Bạn có lắng nghe** không, hay chỉ chờ lượt nói.
+- **Lập luận bằng gì**: chi phí, rủi ro, dữ liệu, hay sở thích cá nhân.
+- **Bạn có biết dừng** và cam kết khi quyết định không theo ý mình.
+Interviewer thường **cố tình đưa ra lập trường cực đoan** và phản bác 2–3 lần. Họ không cần bạn thắng, họ xem bạn hành xử ra sao.
+
+### Đoạn hội thoại mẫu
+> **Bạn:** "Tôi hiểu mục tiêu của anh: có lịch sử thay đổi đầy đủ để audit và có thể dựng lại trạng thái. Với hệ thống tài chính thì đó là mục tiêu đúng. Cho tôi hỏi: yêu cầu đến từ audit, từ nhu cầu replay dữ liệu, hay từ việc muốn thống nhất kiến trúc?"
+> **Interviewer:** "Cả ba. Và tôi không muốn mỗi team làm một kiểu."
+> **Bạn:** "Tôi đồng ý cần thống nhất. Điều tôi lo là chi phí với team 5 người: event sourcing kéo theo versioning event, snapshot, projection cho mọi màn hình đọc, và xử lý khi projection lệch. Theo ước tính của tôi, mỗi service sẽ tốn thêm khoảng 30–40% thời gian phát triển ở giai đoạn đầu, trong khi 3 trên 4 service sắp làm chỉ là CRUD cấu hình.
+> Tôi đề xuất thế này: dùng event sourcing cho **ledger**, nơi audit và replay thật sự có giá trị. Các service còn lại dùng bảng audit cộng outbox để phát event, vẫn có lịch sử và vẫn tích hợp được. Sau 2 tháng, ta xem lại thời gian phát triển và số lỗi của ledger để quyết định có mở rộng không."
+> **Interviewer:** "Không. Tôi vẫn muốn tất cả dùng event sourcing."
+> **Bạn:** "Tôi hiểu. Đây là quyết định của anh và tôi sẽ thực hiện nghiêm túc. Tôi xin ghi lại rủi ro về tiến độ trong ADR, và đề nghị team được hỗ trợ một buổi review thiết kế event schema trước khi bắt đầu, để giảm rủi ro đó."
+
+### Vì sao cách này hiệu quả
+| Bước | Tác dụng |
+|---|---|
+| Thừa nhận mục tiêu | Hạ phòng thủ của đối phương, cho thấy bạn hiểu vấn đề |
+| Hỏi động cơ | Thường lộ ra nhu cầu thật hẹp hơn giải pháp được đề xuất |
+| Chi phí cụ thể | Chuyển từ "thích hay không" sang "đáng hay không" |
+| Phạm vi hẹp + thử nghiệm | Cho đối phương lối ra mà không mất mặt |
+| Disagree and commit + ADR | Thể hiện tính chuyên nghiệp khi thua |
+
+### Những điều nên tránh
+- **Đồng ý ngay** vì ngại: mất điểm "có chính kiến".
+- **Cãi tay đôi**, nâng giọng, lặp lại cùng một luận điểm khi bị bác.
+- Lập luận bằng sở thích: "Tôi thấy event sourcing phức tạp lắm."
+- Đe doạ leo thang ("Tôi sẽ báo CTO") ngay ở lượt đầu.
+- Phá vai: "Thật ra ngoài đời tôi sẽ…". Hãy ở trong vai đến hết.
+
+> Senior tip: Dùng câu **tóm lại ý đối phương** trước khi phản biện: "Nếu tôi hiểu đúng, điều anh cần nhất là…". Câu này vừa mua thời gian suy nghĩ, vừa cho interviewer thấy bạn nghe thật. Ở cấp lead, kết thúc bằng hành động cụ thể (ADR, review, mốc đánh giá lại) cho thấy bạn biết biến bất đồng thành quy trình, không thành mâu thuẫn cá nhân.`,
+  follow: [
+    'Nếu sau 2 tháng, dữ liệu chứng minh bạn sai, bạn nói gì với team?',
+    'Khi nào bạn sẽ leo thang bất đồng lên cấp cao hơn thay vì disagree and commit?',
+    'Bạn viết ADR cho quyết định này gồm những mục nào?',
+  ],
+  tags: ['role-play', 'disagreement', 'influence', 'architecture'],
+},
+{
+  id: 'behavioral-027',
+  topic: 'behavioral',
+  level: 'senior',
+  q: 'Công ty gửi bài take-home "xây API đặt hàng có quản lý tồn kho, làm trong 4–6 giờ". Bạn chọn phạm vi thế nào, README và test ra sao, và reviewer thực sự nhìn vào những gì?',
+  a: `**Tóm tắt:** Take-home chấm **khả năng ra quyết định và chất lượng làm việc thường ngày**, không chấm số tính năng. Làm **ít nhưng chắc**: chạy được bằng một lệnh, logic nghiệp vụ đúng ở các ca biên (hết hàng, đặt đồng thời, gửi trùng), test có ý nghĩa, và một README giải thích **giả định, trade-off, và việc chưa làm**.
+
+### Interviewer muốn đánh giá gì
+Reviewer thường dành 20–40 phút cho mỗi bài, theo thứ tự:
+1. **Chạy được không**: clone về, chạy theo README. Không chạy được thì nhiều nơi dừng chấm luôn.
+2. **Đúng nghiệp vụ ở ca khó**: hai người cùng đặt món cuối cùng thì sao?
+3. **Code đọc được**: cấu trúc package, tên gọi, xử lý lỗi.
+4. **Test**: có test cho logic quan trọng không, test có kiểm tra điều gì đó thật không.
+5. **README**: bạn có nghĩ về trade-off không.
+Sau đó thường có buổi **bảo vệ bài**: họ hỏi vì sao bạn làm thế, và yêu cầu sửa trực tiếp một chỗ.
+
+### Chọn phạm vi
+- Hỏi lại nếu đề mơ hồ, hoặc ghi rõ giả định trong README.
+- Một service Spring Boot, PostgreSQL chạy bằng Docker Compose. **Không** microservices, Kafka, Kubernetes nếu đề không yêu cầu.
+- Dành thời gian cho chỗ khó nhất: trừ tồn kho an toàn khi đặt đồng thời.
+~~~java
+// Trừ tồn kho nguyên tử bằng một câu UPDATE có điều kiện,
+// không đọc lên rồi trừ trong Java (hai request sẽ cùng đọc thấy còn 1)
+@Modifying
+@Query("update Product p set p.stock = p.stock - :qty where p.id = :id and p.stock >= :qty")
+int decreaseStock(@Param("id") long id, @Param("qty") int qty);
+// Trả về 0 -> không đủ hàng -> ném OutOfStockException -> HTTP 409
+~~~
+- Xử lý lỗi thống nhất: Spring Framework 6 có sẵn {{ProblemDetail}} (chuẩn RFC 7807) cho response lỗi.
+- Chống gửi trùng: header {{Idempotency-Key}} cộng unique constraint, nếu còn thời gian.
+
+### README mẫu
+~~~text
+## Run
+docker compose up -d && ./mvnw spring-boot:run
+
+## Assumptions
+- One currency, no partial shipment, stock is per product (no warehouse).
+
+## Design decisions
+- Atomic conditional UPDATE for stock instead of pessimistic lock: simpler, no lock held across calls.
+
+## Not done (would do with more time)
+- Auth, pagination on GET /orders, outbox for order events.
+
+## Tests
+./mvnw test  (unit + Testcontainers PostgreSQL, includes a 50-thread oversell test)
+~~~
+
+### Test nên có
+- Unit test cho logic tính tiền, kiểm tra trạng thái đơn.
+- Integration test với Testcontainers PostgreSQL cho luồng đặt hàng chính.
+- **Một test đồng thời**: 50 thread cùng đặt sản phẩm còn 10 cái, kiểm tra đúng 10 đơn thành công và tồn kho bằng 0. Test này nói nhiều hơn mọi lời giải thích.
+
+### Những điều nên tránh
+- Over-engineering để gây ấn tượng: reviewer đọc thành "không biết cân nhắc".
+- Không có README, hoặc README chỉ là template mặc định.
+- Một commit duy nhất "done"; nên có lịch sử commit có ý nghĩa.
+- Commit file {{.env}} có mật khẩu, thư mục {{target}}, file IDE.
+- Dùng AI sinh code mà không hiểu: buổi bảo vệ sẽ lộ ngay.
+- Làm quá thời gian gợi ý gấp 3 lần mà không nói: ghi rõ thời gian thực tế trong README là trung thực và được đánh giá cao.
+
+> Senior tip: Trước khi nộp, clone repo sang thư mục mới và làm đúng theo README như một người lạ. Rất nhiều bài bị loại chỉ vì thiếu một biến môi trường hoặc sai phiên bản Java. Khi bảo vệ bài, chủ động nói điểm yếu của bài mình ("nếu traffic lớn tôi sẽ đổi chỗ này") trước khi reviewer hỏi: đó là tín hiệu senior rất rõ.`,
+  follow: [
+    'Nếu đề yêu cầu 4 giờ nhưng bạn biết cần 10 giờ để làm tốt, bạn làm gì?',
+    'Trong buổi bảo vệ, reviewer yêu cầu thêm tính năng huỷ đơn ngay tại chỗ. Bạn tiếp cận thế nào?',
+    'Vì sao bạn chọn UPDATE có điều kiện thay vì optimistic locking với @Version?',
+  ],
+  tags: ['take-home', 'interview-skills', 'testing', 'readme'],
+},
+{
+  id: 'behavioral-028',
+  topic: 'behavioral',
+  level: 'senior',
+  q: 'Vòng phỏng vấn với engineering manager/HR thời layoff: bạn trả lời thế nào các câu "Bạn sẽ gắn bó bao lâu?", "Vì sao CV có 3 công ty trong 4 năm?", "Bạn đang phỏng vấn ở đâu khác?", và đọc tín hiệu công ty đang khó khăn ra sao?',
+  a: `**Tóm tắt:** Ở vòng này, công ty lo **bạn có ở lại không**, còn bạn cần biết **công ty có ổn định không**. Trả lời bằng **lý do nhất quán và bằng chứng**, không bằng lời hứa suông. Đồng thời quan sát các tín hiệu rủi ro: tuyển thay người vừa nghỉ, quy trình bị hoãn liên tục, phạm vi công việc mơ hồ, thưởng nhiều nhưng không chắc, ép nhận offer trong 24 giờ.
+
+### Interviewer muốn đánh giá gì
+- **Rủi ro nghỉ sớm**: tuyển một senior tốn nhiều tháng, mất người sau 6 tháng là thiệt hại lớn.
+- **Động lực thật**: bạn chọn họ, hay chỉ cần một công việc bất kỳ.
+- **Sự chín chắn**: bạn nói về công ty cũ và quyết định của mình thế nào.
+
+### Câu hỏi thường gặp và cách trả lời
+**"Bạn sẽ gắn bó bao lâu?"**
+> "Tôi tìm một nơi có thể ở ít nhất 3–4 năm, vì những việc tôi muốn làm như sở hữu một hệ thống thanh toán từ thiết kế đến vận hành cần thời gian. Ở công ty gần nhất tôi ở 3 năm và chỉ rời đi vì dự án bị đóng."
+Bằng chứng (thời gian ở công ty trước, lý do rời) thuyết phục hơn lời hứa "tôi sẽ ở đây lâu dài".
+
+**"Vì sao CV có 3 công ty trong 4 năm?"**
+> "Lần đầu tôi chuyển từ outsourcing sang product vì muốn tự vận hành hệ thống mình viết. Lần thứ hai công ty bị cắt giảm do mất vốn. Tôi hiểu nhìn trên CV thì giống nhảy việc, nên lần này tôi chọn kỹ hơn, và đó cũng là lý do tôi hỏi về roadmap và ngân sách của team."
+Mỗi lần chuyển một câu, lý do trung tính, rồi chứng minh bạn đã rút kinh nghiệm.
+
+**"Bạn đang phỏng vấn ở đâu khác?"**
+> "Tôi đang ở vòng cuối với một công ty fintech khác. Tôi không nêu tên, nhưng có thể nói là tôi ưu tiên vị trí này vì phạm vi công việc. Nếu có mốc thời gian nào tôi cần biết, tôi sẽ báo sớm."
+Trung thực về việc có quy trình khác (nếu có thật), không cần nêu tên, không bịa.
+
+**Kỳ vọng lương**: nêu khoảng dựa trên thị trường, chi tiết đàm phán xem câu riêng về lương và offer.
+
+### Đọc tín hiệu công ty đang khó khăn
+| Tín hiệu | Hỏi thêm |
+|---|---|
+| Không trả lời rõ headcount mới hay thay người | "Team có thay đổi quy mô trong 12 tháng qua không?" |
+| Lịch phỏng vấn bị dời nhiều lần, "đang chờ duyệt" | "Vị trí này đã được phê duyệt ngân sách chưa?" |
+| JD rất rộng: backend, DevOps, data, "wear many hats" | "Ba tháng đầu tôi dành phần lớn thời gian cho việc gì?" |
+| Lương cứng thấp, thưởng hứa hẹn cao | "Thưởng 2 năm qua thực tế chi bao nhiêu tháng?" |
+| Ép nhận offer trong 24 giờ, muốn đi làm trước khi ký | "Tôi cần offer bằng văn bản trước khi báo nghỉ." |
+Một tín hiệu đơn lẻ chưa chứng minh công ty có vấn đề; nhiều tín hiệu cùng lúc là lý do để hỏi kỹ hơn và giữ các quy trình khác song song.
+
+### Những điều nên tránh
+- Hứa "tôi sẽ làm ở đây cả đời": không ai tin.
+- Tỏ ra tuyệt vọng ("em nhận mức nào cũng được").
+- Nói xấu công ty cũ, sếp cũ.
+- Bịa offer khác để gây áp lực.
+- Báo nghỉ ở công ty hiện tại khi mới có lời hứa miệng.
+
+> Senior tip: Trước vòng này, xem trang LinkedIn của công ty: số nhân sự tăng hay giảm, nhiều kỹ sư rời đi trong 6 tháng gần đây không, các vị trí cũ đã tuyển lại chưa. Nếu được, nhắn hỏi một kỹ sư đang làm ở đó. Và luôn chỉ nghỉ việc cũ sau khi có **offer ký chính thức**, đã kiểm tra lương, ngày bắt đầu, thử việc và hình thức làm việc.`,
+  follow: [
+    'Bạn trả lời thế nào nếu bị hỏi "Bạn có bị cho nghỉ vì hiệu suất không?"',
+    'Công ty vừa layoff 20% nhưng vẫn tuyển vị trí của bạn. Bạn hỏi gì để quyết định?',
+    'Nếu manager hỏi thẳng mức lương hiện tại, bạn trả lời thế nào?',
+  ],
+  tags: ['layoff', 'hr-round', 'job-hopping', 'due-diligence'],
+},
+{
+  id: 'behavioral-029',
+  topic: 'behavioral',
+  level: 'senior',
+  q: 'Bạn còn 2 tuần trước vòng phỏng vấn Senior Java ở một công ty bạn rất muốn vào, và vẫn đang đi làm toàn thời gian. Bạn lập kế hoạch ôn thế nào?',
+  a: `**Tóm tắt:** Ôn **theo JD, không ôn dàn trải**. Ngày đầu phân tích JD thành danh sách chủ đề có trọng số và lỗ hổng của bạn; 10 ngày giữa chia đều cho kỹ thuật cốt lõi, thuật toán, system design, câu chuyện STAR; có **2 buổi mock** để đo; 2 ngày cuối ôn nhẹ, nghiên cứu công ty và nghỉ. Khoảng 2–3 giờ mỗi ngày làm việc, 5–6 giờ cuối tuần.
+
+### Interviewer muốn đánh giá gì
+Công ty đánh giá đúng những gì JD viết, cộng với vài câu kinh điển cho cấp senior (concurrency, transaction, thiết kế hệ thống, sự cố production). Ôn đúng 70% trọng tâm hiệu quả hơn ôn 100% kiến thức Java một cách hời hợt.
+
+### Ngày 1: phân tích JD
+Gạch chân từng kỹ năng, chấm trọng số 1–3 theo mức JD nhấn mạnh, tự chấm mức bạn đang có:
+| Kỹ năng trong JD | Trọng số | Mức hiện tại (1–5) | Ưu tiên |
+|---|---|---|---|
+| Spring Boot, microservices | 3 | 4 | Ôn nhanh |
+| Kafka, xử lý sự kiện | 3 | 2 | **Ôn sâu** |
+| PostgreSQL, tối ưu query | 2 | 3 | Ôn vừa |
+| AWS | 1 | 2 | Chỉ khái niệm chính |
+Trọng số cao, điểm thấp là nơi đặt nhiều giờ nhất.
+
+### Lịch 14 ngày
+| Ngày | Nội dung chính | Song song mỗi ngày |
+|---|---|---|
+| 1 | Phân tích JD, danh sách lỗ hổng, chọn câu hỏi | |
+| 2–6 | Chủ đề ưu tiên cao (Kafka, concurrency, transaction) | 1–2 bài thuật toán, ôn flashcard đến hạn |
+| 7 | **Mock 1**: 1 giờ kỹ thuật + 30 phút behavioral | Ghi lại câu yếu |
+| 8–9 | System design: 2 đề sát domain công ty | |
+| 10 | Viết 6–8 câu chuyện STAR | |
+| 11 | **Mock 2**, tập trung vào điểm yếu của mock 1 | |
+| 12 | Nghiên cứu công ty: sản phẩm, blog kỹ thuật, tin tức gần đây | |
+| 13 | Ôn nhẹ ghi chú, chuẩn bị câu hỏi hỏi ngược, kiểm tra thiết bị | |
+| 14 | Nghỉ, ngủ đủ | |
+
+### Bộ câu chuyện STAR tối thiểu
+Sự cố production, bất đồng kỹ thuật, một lần thất bại, dự án khó nhất, một lần dẫn dắt hoặc mentoring, một lần chủ động cải tiến. Mỗi câu chuyện nên dùng được cho 2–3 câu hỏi khác nhau.
+
+### Nghiên cứu công ty
+- Sản phẩm, mô hình kinh doanh, khách hàng chính.
+- Blog kỹ thuật, talk ở hội thảo, repo public: biết họ dùng gì và đang gặp bài toán gì.
+- Tin gần đây: gọi vốn, kết quả kinh doanh, tái cấu trúc.
+- Người phỏng vấn trên LinkedIn: họ làm mảng nào, để đoán câu hỏi.
+
+### Những điều nên tránh
+- Ôn lại toàn bộ Java từ đầu: hết 2 tuần mà chưa chạm tới phần JD nhấn mạnh.
+- Chỉ đọc, không **nói thành tiếng**: đọc hiểu khác hẳn trả lời trôi chảy.
+- Bỏ mock vì ngại: mock là cách duy nhất phát hiện bạn nói lan man hay ngập ngừng.
+- Thức khuya đêm trước phỏng vấn: trí nhớ làm việc giảm rõ khi thiếu ngủ.
+- Bỏ qua behavioral vì nghĩ "chỉ cần giỏi kỹ thuật".
+
+> Senior tip: Dùng chính câu hỏi trong ngân hàng của app: lọc theo chủ đề trong JD, trả lời to thành tiếng trong 2 phút rồi mới mở đáp án, tự chấm Đã thuộc / Cần ôn. Lịch ôn lặp lại tự đưa câu yếu quay lại đúng lúc. Nếu có nhiều vòng phỏng vấn trong cùng tháng, lặp lại chu trình JD → lỗ hổng → mock cho từng công ty; phần chung (STAR, concurrency) sẽ ngày càng chắc.`,
+  follow: [
+    'Nếu chỉ còn 3 ngày, bạn cắt bớt phần nào?',
+    'Bạn tìm người mock interview ở đâu, và nhờ họ chấm theo tiêu chí gì?',
+    'Làm sao cân bằng ôn thi với công việc hiện tại mà không bị kiệt sức?',
+  ],
+  tags: ['preparation', 'study-plan', 'interview-skills', 'jd'],
+},
+{
+  id: 'behavioral-030',
+  topic: 'behavioral',
+  level: 'senior',
+  q: 'Sau buổi phỏng vấn: bạn follow-up thế nào, xử lý ra sao khi bị từ chối, xin feedback thế nào để nhận được câu trả lời thật, và làm gì khi có hai offer với hạn trả lời khác nhau?',
+  a: `**Tóm tắt:** Sau phỏng vấn có 4 việc: **tự retro trong 1 giờ**, **email cảm ơn ngắn trong 24 giờ**, khi bị từ chối thì **trả lời lịch sự và xin feedback bằng một câu hỏi cụ thể**, khi có nhiều offer thì **đồng bộ thời hạn một cách trung thực**, so sánh bằng bảng tổng thể rồi đàm phán với nơi bạn muốn nhất.
+
+### Interviewer muốn đánh giá gì
+Câu này hay gặp ở vòng HR hoặc khi được hỏi về cách bạn quản lý sự nghiệp. Nhưng quan trọng hơn: đây là giai đoạn **nhiều ứng viên tự đánh mất cơ hội**, vì im lặng quá lâu, phản ứng tiêu cực khi bị từ chối, hoặc nhận offer rồi rút lui.
+
+### 1. Tự retro trong 1 giờ
+Ghi ngay: các câu đã được hỏi, câu nào trả lời yếu, câu hỏi đào sâu bất ngờ, cảm nhận về team. Sau vài buổi, danh sách này cho bạn biết chính xác cần ôn gì.
+
+### 2. Email cảm ơn
+Ngắn, cụ thể, không xin xỏ. Ở công ty nước ngoài thường viết tiếng Anh:
+~~~text
+Hi Minh, thank you for the conversation today. I enjoyed discussing
+how your team handles payment retries, especially the idempotency
+design. It made me even more interested in the role.
+I look forward to hearing about the next steps.
+~~~
+Nếu sau thời hạn đã hẹn chưa có tin, nhắc lại **một lần** sau 3–5 ngày làm việc.
+
+### 3. Bị từ chối
+> "Cảm ơn anh/chị đã báo. Tôi rất tiếc nhưng tôn trọng quyết định. Nếu được, anh/chị có thể chia sẻ một điểm tôi nên cải thiện nhất không, ví dụ ở vòng system design? Tôi vẫn rất quan tâm tới công ty và mong có dịp ứng tuyển lại."
+Câu hỏi **cụ thể, chỉ xin một điểm** dễ được trả lời hơn câu "cho em xin feedback". Nhiều công ty có chính sách không chia sẻ chi tiết; đừng ép. Trả lời lịch sự giữ cửa cho lần sau: recruiter thường nhớ ứng viên đã vào vòng cuối và chủ động liên hệ khi có vị trí mới.
+
+### 4. Hai offer, hạn khác nhau
+Ví dụ: offer A (bạn thích ít hơn) hạn thứ Sáu; công ty B (thích hơn) còn vòng cuối.
+- Với **B**: "Tôi vừa nhận một offer có hạn trả lời thứ Sáu. Tôi ưu tiên vị trí bên anh/chị; có thể đẩy nhanh vòng cuối không?" Đây là thông tin thật, và công ty muốn tuyển bạn thường sẽ đẩy nhanh.
+- Với **A**: "Cảm ơn anh/chị. Tôi cần thêm 3–5 ngày để quyết định một cách nghiêm túc, có được không?" Gia hạn ngắn thường được chấp nhận.
+So sánh bằng bảng tổng thể, không chỉ lương cứng:
+| Tiêu chí | Offer A | Offer B |
+|---|---|---|
+| Lương gross, thưởng chắc chắn / không chắc | | |
+| Bảo hiểm đóng trên lương nào | | |
+| Ổn định team: headcount mới, ngân sách đã duyệt | | |
+| Phạm vi việc, cơ hội học | | |
+| Thử việc: thời gian, % lương, tiêu chí | | |
+| Hybrid/remote, thời gian di chuyển | | |
+Khi đã chọn, đàm phán **một vòng** với nơi bạn chọn bằng offer thật, rồi từ chối nơi còn lại lịch sự và sớm.
+
+### Những điều nên tránh
+- Im lặng vài tuần rồi mới trả lời offer.
+- Phản ứng gay gắt hoặc tranh luận khi bị từ chối.
+- Bịa offer khác để ép giá.
+- Nhận offer A "cho chắc" rồi rút khi B tới: hợp pháp nhưng làm mất uy tín, và giới tuyển dụng IT ở Việt Nam khá nhỏ.
+- Nghỉ việc cũ trước khi có offer ký chính thức.
+
+> Senior tip: Lập một bảng theo dõi quy trình: công ty, vòng hiện tại, ngày hẹn phản hồi, người liên hệ, hạn offer. Khi phỏng vấn nhiều nơi cùng lúc, cố gắng xếp lịch để các vòng cuối rơi vào cùng 1–2 tuần; có các offer cùng thời điểm là lợi thế đàm phán lớn nhất, và hoàn toàn trung thực.`,
+  follow: [
+    'Bạn có nên nói với công ty A rằng bạn đang chờ kết quả công ty B không?',
+    'Nhận counter-offer từ công ty hiện tại thì bạn xử lý thế nào?',
+    'Bị từ chối ở vòng cuối 3 lần liên tiếp, bạn phân tích nguyên nhân ra sao?',
+  ],
+  tags: ['follow-up', 'rejection', 'feedback', 'offers'],
+},
 );

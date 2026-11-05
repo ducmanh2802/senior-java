@@ -2543,5 +2543,706 @@ spec:
     refs: [
       { type: 'doc', title: 'Kubernetes Multi-tenancy', url: 'https://kubernetes.io/docs/concepts/security/multi-tenancy/' }
     ]
+  },
+  {
+    id: 'devops-031',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Sau một vụ thư viện mã nguồn mở bị cài mã độc, CISO yêu cầu: mọi image chạy trên cluster production phải có SBOM, đã quét lỗ hổng và được ký bởi pipeline chính thức; image nào không thoả thì Kubernetes phải từ chối chạy. Bạn thiết kế chuỗi SBOM (CycloneDX/Syft), scan (Trivy/Grype), ký image (cosign) và chặn ở admission thế nào?',
+    a: `**Tóm tắt:** Trong CI, sau khi build và push image, tôi lấy **digest** của image, sinh **SBOM** dạng CycloneDX bằng Syft, quét lỗ hổng bằng Trivy (hoặc Grype) và fail pipeline theo ngưỡng, rồi dùng **cosign** ký image theo digest (keyless qua OIDC của CI) và gắn SBOM thành một **attestation** cũng được ký. Trên cluster, một admission controller (Kyverno {{verifyImages}} hoặc Sigstore policy-controller) kiểm tra chữ ký **đúng danh tính pipeline** trước khi cho Pod chạy. Vì CVE mới được công bố hằng ngày, SBOM được lưu tập trung để quét lại image **đang chạy**.
+
+### Mỗi mảnh giải quyết rủi ro gì
+- **SBOM** (Software Bill of Materials): danh sách mọi thành phần trong image — gói OS (glibc, openssl), Java runtime, từng jar trong {{BOOT-INF/lib}} kèm version và mã định danh purl. Khi có một Log4Shell mới, bạn tra SBOM trong vài phút để biết service nào dính thay vì grep từng repo.
+- **Scan lỗ hổng**: đối chiếu thành phần với cơ sở dữ liệu CVE, trả lời câu hỏi "image này có lỗ hổng đã biết không".
+- **Ký image**: chứng minh image do **pipeline của bạn** tạo ra và **không bị sửa** sau đó. Scan không chống được kẻ có quyền push registry đẩy image lạ lên; chữ ký thì có.
+- **Admission policy**: điểm thực thi. Không có bước này, chữ ký chỉ để trang trí: ai có quyền {{kubectl apply}} vẫn chạy được image tuỳ ý.
+
+### Luồng trong pipeline
+~~~bash
+IMAGE=registry.bank.vn/payment
+# 1. Build + push, lấy digest (định danh bất biến; tag thì ghi đè được)
+docker buildx build -t $IMAGE:1.8.0 --push --metadata-file meta.json .
+REF=$IMAGE@$(jq -r '."containerimage.digest"' meta.json)
+# 2. SBOM CycloneDX từ chính image (thấy cả gói OS lẫn jar)
+syft $REF -o cyclonedx-json > sbom.cdx.json
+# 3. Gate: chỉ fail với lỗ hổng nặng ĐÃ có bản vá
+trivy image --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 $REF
+# 4. Ký keyless: OIDC token của CI đổi lấy chứng chỉ ngắn hạn (Fulcio), chữ ký ghi vào log công khai (Rekor)
+cosign sign --yes $REF
+# 5. Gắn SBOM thành attestation đã ký, đi kèm image trong registry
+cosign attest --yes --type cyclonedx --predicate sbom.cdx.json $REF
+~~~
+Trên GitHub Actions, job ký cần {{permissions: id-token: write}} để lấy OIDC token. Thay Trivy bằng Grype cũng được: {{grype sbom:sbom.cdx.json --fail-on high}} quét thẳng từ SBOM.
+
+### Vì sao ký theo digest, vì sao keyless
+- Chữ ký cosign gắn với **digest** (sha256 của manifest). Ký theo tag là vô nghĩa: tag bị ghi đè thì nó trỏ sang nội dung khác. Manifest Deployment cũng nên dùng digest; Kyverno có thể tự đổi tag thành digest đã verify ({{mutateDigest}}).
+- **Keyless** nghĩa là không có private key dài hạn để bị lộ. Chứng chỉ ngắn hạn ghi **danh tính** người ký, ví dụ workflow {{https://github.com/bank/payment/.github/workflows/release.yml@refs/heads/main}}. Khi verify bạn bắt buộc đúng danh tính này, nên image ký từ nhánh feature hay từ laptop dev đều bị từ chối.
+- Môi trường air-gapped không gọi được Fulcio/Rekor công khai: dùng cặp key nằm trong KMS/HSM (cosign hỗ trợ AWS KMS, GCP KMS, Azure Key Vault, HashiCorp Vault) hoặc tự dựng Sigstore nội bộ.
+
+### Chặn ở admission (Kyverno)
+~~~yaml
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata: { name: require-signed-images }
+spec:
+  webhookTimeoutSeconds: 30
+  rules:
+    - name: verify-cosign
+      match:
+        any:
+          - resources: { kinds: [Pod] }
+      verifyImages:
+        - imageReferences: ["registry.bank.vn/*"]
+          failureAction: Enforce      # Kyverno bản cũ: spec.validationFailureAction
+          mutateDigest: true          # thay tag bằng digest đã verify
+          attestors:
+            - entries:
+                - keyless:
+                    issuer: https://token.actions.githubusercontent.com
+                    subject: https://github.com/bank/payment/.github/workflows/release.yml@refs/heads/main
+~~~
+
+### Ngưỡng scan hợp lý
+| Kết quả quét | Hành động |
+|---|---|
+| CRITICAL/HIGH **có** bản vá | Fail build, nâng version rồi build lại |
+| CRITICAL **chưa có** bản vá | Không chặn mù quáng: đánh giá khả năng khai thác, ghi ngoại lệ có **ngày hết hạn** và người duyệt |
+| MEDIUM/LOW | Báo cáo, gom vào đợt nâng base image định kỳ |
+| CVE mới trên image **đang chạy** | Quét lại SBOM đã lưu hằng ngày ({{trivy sbom}}, OWASP Dependency-Track), mở ticket cho owner |
+
+### Pitfall production
+- **Policy chỉ match registry nội bộ**: image từ {{docker.io}} không khớp {{imageReferences}} nên lọt qua không bị kiểm tra. Cần thêm rule chỉ cho phép registry nội bộ.
+- **Build lại cho từng môi trường**: digest đổi, chữ ký không còn khớp. Build một lần, promote bằng cách copy nguyên manifest ({{cosign copy}} copy cả chữ ký và attestation).
+- **Webhook là điểm lỗi**: Kyverno sập trong khi webhook ở chế độ fail-closed thì không tạo được Pod nào, kể cả lúc đang xử lý sự cố. Chạy Kyverno HA (≥ 3 replica), loại trừ namespace hệ thống, theo dõi độ trễ webhook.
+- **SBOM từ Maven và SBOM từ image khác nhau**: plugin CycloneDX của Maven chỉ thấy dependency Java, không thấy glibc/openssl. Spring Boot 3.3+ có thể nhúng SBOM của ứng dụng vào jar và phơi qua {{/actuator/sbom}}; vẫn cần thêm SBOM của image cho phần OS.
+- **Trivy tải DB lỗ hổng mỗi lần chạy**: pipeline chậm và hỏng khi mất mạng; cache hoặc mirror DB trong CI.
+
+> Senior tip: thước đo thật là câu hỏi "CVE kiểu Log4Shell công bố lúc 9 giờ sáng — 9 giờ 30 bạn đã có danh sách service, version và namespace đang chạy thư viện đó chưa?". Chỉ SBOM lưu tập trung mới trả lời được. Khi bật policy, tôi chạy chế độ **Audit** 2–4 tuần để thấy ai vi phạm (thường là image bên thứ ba và sidecar), rồi mới chuyển **Enforce** theo từng namespace.`,
+    follow: [
+      'SLSA provenance khác chữ ký image ở điểm nào, và mức SLSA nào là thực tế cho team bạn?',
+      'Một CVE CRITICAL chưa có bản vá xuất hiện trong base image ngay trước giờ release, bạn quyết định thế nào?',
+      'Bạn xử lý image bên thứ ba (Redis, Kafka, sidecar) không do pipeline của bạn ký ra sao?'
+    ],
+    tags: ['supply chain', 'SBOM', 'CycloneDX', 'Syft', 'Trivy', 'cosign', 'Kyverno', 'Sigstore'],
+    refs: [
+      { type: 'doc', title: 'Sigstore documentation', url: 'https://docs.sigstore.dev/' },
+      { type: 'doc', title: 'CycloneDX specification', url: 'https://cyclonedx.org/' },
+      { type: 'doc', title: 'SLSA: Supply-chain Levels for Software Artifacts', url: 'https://slsa.dev/' }
+    ]
+  },
+  {
+    id: 'devops-032',
+    topic: 'devops',
+    level: 'mid',
+    q: 'Image Spring Boot của team đang chạy trên một JDK image đầy đủ, nặng gần 500 MB và lần quét nào cũng báo hàng chục CVE. Bạn so sánh các lựa chọn base image cho Java: JRE thường (Ubuntu/Debian), distroless, runtime tự cắt bằng jlink, Alpine (musl). Bạn chọn cái nào, và đổi lại phải chịu gì khi cần debug trên production?',
+    a: `**Tóm tắt:** Production chỉ cần **JRE**, không cần JDK (javac, jshell, công cụ build). Lộ trình hay dùng: JRE trên Debian/Ubuntu (dễ, có shell) → **distroless Java** (không shell, không package manager, ít CVE hệ điều hành) → **jlink** runtime chỉ gồm module ứng dụng cần, đặt trên base tối giản (nhỏ nhất nhưng dễ thiếu module lúc chạy). **Alpine** nhỏ nhưng dùng **musl** thay glibc, có thể làm vỡ thư viện native và đổi hành vi DNS, nên chỉ dùng khi đã test kỹ. Cái giá chung của image tối giản: không có shell để {{kubectl exec}} và không có jcmd/jstack, nên phải chuẩn bị cách debug từ trước.
+
+### Image Java gồm những lớp gì
+~~~text
++-----------------------------+  lớp ứng dụng: dependency jar, code (thay đổi thường xuyên)
++-----------------------------+  Java runtime: JDK (~300 MB) hoặc JRE hoặc runtime jlink (~60-80 MB)
++-----------------------------+  userland OS: libc, ca-certificates, tzdata, shell, apt/apk...
+~~~
+Phần lớn CVE mà scanner báo nằm ở **lớp OS**: càng ít gói thì càng ít CVE, càng ít công cụ cho kẻ tấn công dùng sau khi chiếm được container. Lớp ứng dụng (jar) thì base image nào cũng phải tự lo.
+
+### So sánh
+| Lựa chọn | Kích thước (ước lượng) | Debug | CVE OS | Rủi ro chính |
+|---|---|---|---|---|
+| {{eclipse-temurin:21-jdk}} | ~450 MB | đủ shell, jcmd, jstack | nhiều | chở thừa compiler và công cụ |
+| {{eclipse-temurin:21-jre}} (Ubuntu) | ~250 MB | có shell, apt; **không có jcmd** | trung bình | vẫn có nhiều gói OS |
+| {{gcr.io/distroless/java21-debian12}} | ~200 MB | không shell; tag {{:debug}} có busybox | ít | không chạy được {{sh -c}} |
+| jlink runtime trên base tối giản | ~100–150 MB | tuỳ base | ít nhất | thiếu module, chỉ lộ ra lúc chạy |
+| {{eclipse-temurin:21-jre-alpine}} | ~180 MB | có sh (busybox), apk | ít | musl: thư viện native, DNS |
+Con số chỉ để định hướng; đo lại bằng {{docker images}} với image của bạn.
+
+### jlink: cắt runtime theo đúng nhu cầu
+~~~bash
+# Trong stage build (eclipse-temurin:21-jdk). Tách jar Spring Boot (Boot 3.3+)
+java -Djarmode=tools -jar app.jar extract --destination extracted
+# Hỏi jdeps: ứng dụng + dependency dùng những module nào
+jdeps --ignore-missing-deps -q --recursive --multi-release 21 --print-module-deps --class-path 'extracted/lib/*' extracted/app.jar > modules.txt
+# Thêm module jdeps không thấy (nạp qua ServiceLoader/reflection), rồi tạo runtime
+jlink --add-modules $(cat modules.txt),jdk.crypto.ec,jdk.management --strip-debug --no-man-pages --no-header-files --compress=zip-6 --output /opt/jre
+~~~
+- **Vì sao phải thêm module bằng tay**: jdeps phân tích bytecode tĩnh. Thứ nạp động thì nó không thấy: ví dụ trên JDK 21 thuật toán EC cho TLS nằm ở {{jdk.crypto.ec}} (từ JDK 22 đã gộp vào java.base) — thiếu nó thì handshake TLS hỏng **lúc chạy**, không phải lúc build. Bắt buộc có bộ test smoke (gọi HTTPS, kết nối DB, đọc locale) chạy trên chính image cuối.
+- {{--compress=zip-6}} là cú pháp từ JDK 21; bản cũ dùng {{--compress=2}}.
+
+### Distroless: những điều khác biệt
+- Không có shell: ENTRYPOINT phải ở dạng exec, ví dụ {{["java", "-jar", "/app/app.jar"]}}, không dùng biến môi trường bên trong ENTRYPOINT được. Truyền tham số JVM qua biến {{JAVA_TOOL_OPTIONS}} hoặc {{JDK_JAVA_OPTIONS}} trong spec của Pod.
+- preStop dạng {{sh -c "sleep 10"}} không chạy; dùng action {{sleep}} có sẵn của Kubernetes (bật mặc định từ 1.30).
+- Dùng tag {{:nonroot}} để chạy với UID 65532 thay vì root.
+
+### Debug khi không có shell
+~~~bash
+# Gắn ephemeral container có đủ công cụ, chung process namespace với container "app"
+kubectl debug -it pod/payment-7d9f8-x2k4q --image=eclipse-temurin:21-jdk --target=app -- bash
+# Bên trong: ps thấy process Java; jcmd chỉ attach được khi chạy cùng UID với process đó
+~~~
+Cách nhẹ nhàng hơn: bật Actuator {{threaddump}} và {{heapdump}} trên **management port riêng** không public, để lấy thread dump mà không cần công cụ nào trong image.
+
+### Alpine và musl
+- Temurin có bản build riêng cho Alpine, nên bản thân JVM chạy ổn.
+- Rủi ro nằm ở **thư viện JNI** được biên dịch cho glibc (một số bản native transport của Netty, RocksDB, snappy cũ, font cho xuất PDF): lỗi {{UnsatisfiedLinkError}} lúc chạy.
+- Resolver DNS của musl xử lý search domain và các option khác glibc (bỏ qua {{single-request-reopen}}) nên chẩn đoán DNS trên Kubernetes khó hơn.
+- So với distroless, Alpine chỉ tiết kiệm vài chục MB mà thêm một biến số; với Java tôi không chọn trừ khi cả công ty đã chuẩn hoá nó.
+
+### Pitfall production
+- **Chuyển sang image JRE rồi mới phát hiện không có jcmd/jstack** đúng lúc cần thread dump giữa sự cố. Chuẩn bị trước: Actuator, ephemeral container, hoặc JFR bật sẵn ghi ra volume.
+- **Không rebuild định kỳ**: base tối giản vẫn có CVE mới mỗi tháng. Pin base image theo digest để build tái lập được, và dùng Renovate/Dependabot tự mở PR nâng digest hằng tuần.
+- **Heap dump ghi vào filesystem của container**: image nhỏ không cứu được một file dump 3 GB làm Pod vượt giới hạn ephemeral-storage.
+
+> Senior tip: đổi từ JDK image sang distroless thường cắt số CVE mức OS từ vài chục xuống còn một con số — nhưng đó chỉ là phần dễ. Rủi ro thực tế thường nằm ở jar (Spring, Jackson, driver). Tôi trình bày với security team hai số tách biệt: CVE của base image (giải quyết bằng chọn base và rebuild định kỳ) và CVE của dependency (giải quyết bằng nâng version), để không ai nghĩ "đổi sang distroless là xong".`,
+    follow: [
+      'Làm sao lấy thread dump từ container distroless khi không có shell và không có jcmd?',
+      'Vì sao một thư viện native chạy tốt trên Debian nhưng báo UnsatisfiedLinkError trên Alpine?',
+      'CDS/AppCDS ảnh hưởng thế nào đến thời gian khởi động và cách bạn đóng gói image?'
+    ],
+    tags: ['Docker', 'distroless', 'jlink', 'Alpine', 'musl', 'base image', 'CVE'],
+    refs: [
+      { type: 'doc', title: 'The jlink Command (Java 21)', url: 'https://docs.oracle.com/en/java/javase/21/docs/specs/man/jlink.html' },
+      { type: 'doc', title: 'Distroless container images', url: 'https://github.com/GoogleContainerTools/distroless' }
+    ]
+  },
+  {
+    id: 'devops-033',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Team 6 người cùng quản lý hạ tầng AWS bằng Terraform, file state nằm trên laptop và được commit vào Git. Một hôm hai người apply gần như cùng lúc, sau đó plan đòi tạo mới con RDS đang chạy. Bạn giải thích chuyện gì đã xảy ra, rồi tổ chức lại remote state, lock, review plan trong PR, phát hiện drift và tách module/môi trường thế nào?',
+    a: `**Tóm tắt:** State là "bản đồ" nối code Terraform với tài nguyên thật. Có hai bản đồ song song (laptop và Git) và không có lock, nên apply của người sau **ghi đè** state của người trước: Terraform "quên" mất RDS và muốn tạo mới. Cách sửa: **remote backend** (S3 bật versioning, mã hoá) với **lock**, chỉ **CI** được apply đúng **plan đã review** trong PR, **tách state theo môi trường và theo thành phần** để thu nhỏ blast radius, và chạy plan định kỳ để **phát hiện drift**.
+
+### State là gì và vì sao quan trọng
+- Terraform không tự biết tài nguyên nào trên AWS do nó quản lý. Nó đọc state: địa chỉ {{aws_db_instance.main}} ↔ ID thật {{payment-prod-db}} kèm toàn bộ thuộc tính.
+- {{terraform plan}} so sánh ba thứ: **code** (mong muốn), **state** (lần trước biết gì) và **thực tế** (refresh qua API AWS).
+- State có số **serial** tăng sau mỗi lần ghi. State còn chứa giá trị nhạy cảm ở dạng plain text (password, output), nên **không bao giờ** được commit vào Git.
+
+### Chuyện gì đã xảy ra
+~~~text
+09:00  An và Bình cùng có state serial 40 (từ Git)
+09:10  An apply: tạo RDS, state trên laptop An -> serial 41 (có RDS). An chưa push.
+09:12  Bình apply: thêm security group, dựa trên serial 40 -> state của Bình (không có RDS)
+09:20  Bình push state lên Git trước; An pull về bị conflict, chọn "bản của Bình"
+=> state không còn aws_db_instance.main; RDS vẫn chạy trên AWS
+=> plan: + aws_db_instance.main will be created (sẽ lỗi trùng tên, hoặc tạo DB thứ hai)
+~~~
+Khắc phục ngay: **không apply**; đưa RDS về lại state bằng {{terraform import}} hoặc khối {{import}} (Terraform 1.5+), rồi plan phải sạch.
+
+### Remote backend và lock
+~~~text
+terraform {
+  backend "s3" {
+    bucket       = "bank-tfstate-prod"
+    key          = "payment/prod/terraform.tfstate"
+    region       = "ap-southeast-1"
+    encrypt      = true
+    use_lockfile = true   # lock bằng file .tflock trên S3 (Terraform 1.10+)
+    # cấu hình cũ: dynamodb_table = "tf-locks" (đang bị deprecate)
+  }
+}
+~~~
+- Bucket bật **versioning** (quay lại state cũ khi hỏng), chặn public, mã hoá KMS, chỉ role của CI và tài khoản break-glass được ghi.
+- Người thứ hai chạy apply sẽ gặp {{Error acquiring the state lock}} kèm Lock ID, ai giữ, từ lúc nào. Chỉ dùng {{terraform force-unlock}} khi **chắc chắn** tiến trình giữ lock đã chết (ví dụ job CI bị kill).
+
+### Quy trình review plan trong PR
+~~~bash
+terraform fmt -check && terraform validate
+terraform plan -input=false -lock-timeout=5m -out=tfplan
+terraform show -no-color tfplan > plan.txt            # đăng lên PR cho reviewer đọc
+# Đếm resource bị xoá hoặc thay thế: > 0 thì bắt buộc thêm người duyệt
+terraform show -json tfplan | jq '[.resource_changes[] | select(.change.actions | index("delete"))] | length'
+~~~
+1. Reviewer đọc **plan**, không chỉ đọc diff code: một dòng đổi tên trong code có thể sinh {{must be replaced}} (xoá rồi tạo lại) cho một database.
+2. Sau khi merge, CI apply **đúng file plan đã review** ({{terraform apply tfplan}}). Nếu state đã thay đổi kể từ lúc plan, Terraform từ chối plan cũ và bắt plan lại. Atlantis là cách phổ biến để tự động hoá vòng plan/apply qua comment PR.
+3. CI chỉ cho **một job mỗi state** chạy cùng lúc (concurrency group); lock là lớp bảo vệ cuối, không phải lớp duy nhất.
+4. Con người không có quyền ghi vào môi trường prod; quyền khẩn cấp (break-glass) có audit.
+
+### Phát hiện và xử lý drift
+- **Drift** = thực tế khác code/state, thường do ai đó sửa tay trên console lúc sự cố.
+- Job hằng đêm chạy {{terraform plan -detailed-exitcode}}: exit code 2 nghĩa là có thay đổi → cảnh báo. {{terraform plan -refresh-only}} chỉ cho xem những gì thay đổi từ bên ngoài.
+- Xử lý: thay đổi đúng thì **đưa vào code**; sai thì apply để ghi đè lại. Thuộc tính do hệ thống khác quản lý (số task do autoscaling chỉnh) thì khai báo {{ignore_changes}} trong khối lifecycle.
+
+### Tách module và môi trường
+~~~text
+modules/                 # module dùng chung, phát hành theo git tag (v1.4.0, v1.5.0)
+  rds/  vpc/  eks-service/
+envs/
+  dev/network/   dev/payment/      # mỗi thư mục = một state riêng
+  prod/network/  prod/payment/     # prod pin module ?ref=v1.4.0, dev thử v1.5.0 trước
+~~~
+- State nhỏ theo thành phần: plan nhanh, lock ít tranh chấp, apply lỗi chỉ ảnh hưởng một phần.
+- **Workspace CLI** dùng chung backend và credentials; tài liệu HashiCorp khuyên không dùng nó để tách các môi trường cần quyền khác nhau. Prod nên nằm ở **AWS account riêng**.
+
+| Rủi ro | Biện pháp |
+|---|---|
+| Hai apply cùng lúc | Lock + concurrency của CI |
+| State hỏng hoặc mất | Versioning S3, không sửa state bằng tay, {{terraform state pull}} để backup trước thao tác state |
+| Xoá nhầm database | {{prevent_destroy}} trong lifecycle, {{deletion_protection = true}} trên RDS, gate khi plan có delete |
+| Đổi tên resource làm destroy/create | Khối {{moved}} (Terraform 1.1+) |
+| Lộ secret qua state | {{manage_master_user_password = true}} để RDS tự giữ password trong Secrets Manager; hạn chế quyền đọc bucket |
+
+### Pitfall production
+- Không commit {{.terraform.lock.hcl}} và không pin version provider: máy mỗi người plan ra kết quả khác nhau.
+- {{force-unlock}} trong khi job kia vẫn chạy: hai tiến trình cùng ghi state.
+- Một state khổng lồ hàng nghìn resource: plan mất 15 phút, chạm rate limit API AWS, ai cũng ngại chạy nên drift tích tụ.
+
+> Senior tip: tôi đặt luật cứng: **plan có delete hoặc replace trên tài nguyên stateful** (RDS, S3, EBS, DynamoDB) thì cần hai người duyệt và phải ghi rõ lý do trong PR. Luật đơn giản này chặn được kiểu sự cố "đổi một tham số nhỏ khiến database bị tạo lại" — loại sự cố mà backup cũng không cứu kịp RPO.`,
+    follow: [
+      'Bạn đưa một tài nguyên đã tạo tay trên console vào Terraform quản lý thế nào mà không phải tạo lại?',
+      'Khi nào dùng terraform_remote_state, khi nào nên chia sẻ giá trị qua SSM Parameter Store?',
+      'So sánh Terraform với OpenTofu hoặc AWS CDK khi chọn công cụ IaC cho tổ chức?'
+    ],
+    tags: ['Terraform', 'IaC', 'state', 'lock', 'drift', 'S3 backend'],
+    refs: [
+      { type: 'doc', title: 'Terraform Backend Type: s3', url: 'https://developer.hashicorp.com/terraform/language/backend/s3' },
+      { type: 'doc', title: 'Terraform State Locking', url: 'https://developer.hashicorp.com/terraform/language/state/locking' }
+    ]
+  },
+  {
+    id: 'devops-034',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Service Java gọi sang API đối tác qua HTTPS. Lúc cao điểm, một Pod tràn lỗi "Too many open files", Pod khác báo "java.net.BindException: Cannot assign requested address", và node có hàng chục nghìn socket TIME_WAIT. Bạn chẩn đoán bằng ss, lsof, ulimit, /proc thế nào, và sửa ở tầng nào: code, JVM, OS hay hạ tầng?',
+    a: `**Tóm tắt:** Hai lỗi khác nhau nhưng thường chung một gốc: **code mở kết nối mới cho mỗi request** hoặc **không đóng tài nguyên**. "Too many open files" (EMFILE) là process chạm giới hạn **file descriptor** — mỗi socket cũng là một fd. "Cannot assign requested address" (EADDRNOTAVAIL) là hết **ephemeral port** để mở kết nối ra cùng một đích, vì socket đã đóng còn nằm ở **TIME_WAIT 60 giây**. Chẩn đoán: đếm fd theo loại ({{/proc/PID/fd}}, lsof) và đếm socket theo trạng thái, theo đích ({{ss}}). Sửa gốc ở code (dùng chung client, connection pool, đóng response); tăng ulimit hay chỉnh sysctl chỉ là nới biên.
+
+### Kiến thức nền
+- Mọi thứ process mở (file, socket, pipe, epoll) là một **file descriptor**. Giới hạn cho từng process là soft/hard limit {{RLIMIT_NOFILE}} ({{ulimit -n}}). HotSpot trên Linux mặc định tự nâng soft limit lên bằng hard limit khi khởi động, nên con số quyết định là **hard limit**.
+- Một kết nối TCP được xác định bởi bộ 4 (IP nguồn, port nguồn, IP đích, port đích). Gọi tới **cùng một đích** IP:443 thì chỉ còn port nguồn thay đổi, lấy từ dải {{net.ipv4.ip_local_port_range}} — mặc định 32768–60999, khoảng **28 nghìn port**.
+- **TIME_WAIT** nằm ở phía **đóng kết nối trước**, và trên Linux kéo dài cố định **60 giây**. Nó không chỉnh được bằng {{tcp_fin_timeout}} — tham số đó dành cho FIN_WAIT_2, đây là nhầm lẫn rất phổ biến.
+- Phép tính: 28 nghìn port / 60 giây ≈ **470 kết nối mới mỗi giây** tới một đích. Service 800 RPS mở kết nối mới cho mỗi lần gọi đối tác sẽ cạn port sau chưa tới một phút.
+- **CLOSE_WAIT**: phía bên kia đã đóng nhưng **app chưa gọi close**. Số CLOSE_WAIT tăng dần gần như luôn là bug trong app (response body không được đọc hết/đóng) và là một dạng rò fd.
+
+### Chẩn đoán từng bước
+~~~bash
+PID=$(pgrep -f payment.jar)                        # trong container thường là 1
+grep -i "open files" /proc/$PID/limits             # soft/hard THẬT của process
+ls /proc/$PID/fd | wc -l                           # số fd đang mở
+lsof -nP -p $PID | awk '{print $5}' | sort | uniq -c | sort -rn | head   # theo loại: IPv4, REG, FIFO
+ss -s                                              # tổng quan socket theo trạng thái
+ss -tan state time-wait | wc -l
+ss -tan state close-wait | wc -l
+ss -tan state time-wait | awk '{print $4}' | sort | uniq -c | sort -rn | head   # đích bị mở/đóng nhiều nhất
+sysctl net.ipv4.ip_local_port_range net.ipv4.tcp_tw_reuse
+cat /proc/sys/fs/file-nr                           # fd toàn hệ thống: đã cấp / rảnh / tối đa
+~~~
+| Quan sát | Kết luận |
+|---|---|
+| Số fd tăng đều theo giờ, nhiều dòng REG trỏ cùng một file | Rò file: stream mở không có try-with-resources |
+| Nhiều CLOSE_WAIT tới IP đối tác | Không đóng response/connection |
+| Hàng chục nghìn TIME_WAIT tới cùng IP:443, ít ESTABLISHED | Mỗi request một kết nối mới, không reuse |
+| ESTABLISHED rất nhiều và ổn định | Pool quá lớn hoặc đối tác chậm: giới hạn pool, đặt timeout |
+
+### Code gây lỗi điển hình
+~~~java
+// SAI: mỗi request tạo HttpClient mới -> pool mới, kết nối TCP + TLS handshake mới, không reuse
+public Quote fetch(String id) throws Exception {
+    HttpClient client = HttpClient.newHttpClient();
+    return parse(client.send(request(id), HttpResponse.BodyHandlers.ofString()).body());
+}
+
+// ĐÚNG: một client dùng chung (thread-safe), keep-alive giữ và tái sử dụng kết nối
+private static final HttpClient CLIENT = HttpClient.newBuilder()
+        .connectTimeout(Duration.ofSeconds(2))
+        .build();
+
+// Rò fd kiểu khác: Files.lines giữ file mở tới khi stream được close
+try (Stream<String> lines = Files.lines(path)) {
+    return lines.filter(l -> l.startsWith("ERR")).count();
+}
+~~~
+Với Spring, tạo **một** bean {{RestClient}}/{{WebClient}} cấu hình pool rồi inject; với Apache HttpClient thì luôn đóng response hoặc đọc hết entity để kết nối được trả về pool.
+
+### Sửa ở đâu
+| Tầng | Việc cần làm | Ghi chú |
+|---|---|---|
+| Code | Dùng chung client, pool có giới hạn, timeout, đóng response | Sửa gốc |
+| Giới hạn process | systemd: {{LimitNOFILE=65536}} trong unit; Docker: {{--ulimit nofile=65536:65536}}; Kubernetes: Pod spec **không có** field ulimit, giá trị đến từ container runtime trên node | {{/etc/security/limits.conf}} chỉ áp cho phiên đăng nhập qua PAM, **không** áp cho service systemd |
+| Kernel | Mở rộng {{ip_local_port_range}}; {{tcp_tw_reuse=1}} cho phép kết nối **đi ra** tái dùng socket TIME_WAIT (cần TCP timestamps) | Đừng tìm {{tcp_tw_recycle}}: đã bị xoá từ kernel 4.12 vì làm hỏng client đứng sau NAT |
+| Hạ tầng | NAT Gateway cũng có trần: AWS NAT Gateway hỗ trợ khoảng 55.000 kết nối đồng thời tới mỗi đích duy nhất, vượt thì metric {{ErrorPortAllocation}} tăng | Nhiều Pod sau một NAT cùng gọi một đối tác |
+
+Trong Kubernetes, {{ip_local_port_range}} thuộc nhóm sysctl "safe", đặt được ngay trong Pod:
+~~~yaml
+spec:
+  securityContext:
+    sysctls:
+      - name: net.ipv4.ip_local_port_range
+        value: "10240 65000"
+~~~
+{{tcp_tw_reuse}} thì không thuộc nhóm safe: phải bật {{--allowed-unsafe-sysctls}} trên kubelet hoặc chỉnh ở node.
+
+### Pitfall production
+- **Tăng ulimit lên 1 triệu để "hết lỗi"**: rò rỉ vẫn còn, chỉ nổ muộn hơn, và lúc đó có thể kéo cả node hết bộ nhớ kernel cho socket.
+- **Lo TIME_WAIT ở phía server**: server đóng trước thì server giữ TIME_WAIT, nhưng port server cố định (8080) nên không bị hết port; chỉ tốn một ít RAM.
+- **Keep-alive nhưng idle timeout của client dài hơn của đối tác hoặc load balancer**: client dùng lại kết nối mà phía kia đã đóng, nhận "Connection reset". Đặt idle timeout phía client ngắn hơn (LB 60 giây thì client khoảng 50 giây).
+- **Conntrack đầy** trên node Kubernetes ({{nf_conntrack: table full}} trong dmesg) cho triệu chứng giống hết port nhưng là giới hạn khác.
+
+> Senior tip: đưa {{process_files_open_files}} và {{process_files_max_files}} (Micrometer xuất sẵn qua Actuator) lên dashboard và cảnh báo khi vượt 80% — rò fd luôn là đường tăng dần đều nhiều giờ trước khi nổ, phát hiện sớm thì chỉ cần một bản sửa thường thay vì hotfix nửa đêm. Với lỗi hết port, tôi luôn hỏi một câu trước tiên: "client HTTP được tạo ở đâu, bao nhiêu lần?".`,
+    follow: [
+      'Vì sao TIME_WAIT tồn tại, và tắt nó bằng SO_LINGER = 0 gây rủi ro gì?',
+      'Bạn chọn kích thước connection pool tới API đối tác thế nào khi đối tác giới hạn 200 kết nối đồng thời?',
+      'Trong Kubernetes, conntrack table đầy biểu hiện ra sao và khác hết ephemeral port ở điểm nào?'
+    ],
+    tags: ['Linux', 'file descriptor', 'ulimit', 'TIME_WAIT', 'ephemeral port', 'ss', 'lsof'],
+    refs: [
+      { type: 'doc', title: 'ss(8) - Linux manual page', url: 'https://man7.org/linux/man-pages/man8/ss.8.html' },
+      { type: 'doc', title: 'IP Sysctl - The Linux Kernel documentation', url: 'https://docs.kernel.org/networking/ip-sysctl.html' }
+    ]
+  },
+  {
+    id: 'devops-035',
+    topic: 'devops',
+    level: 'mid',
+    q: 'Service Spring Boot trên Kubernetes gọi API api.partner.com: p99 thường khoảng 120 ms nhưng thỉnh thoảng nhảy lên đúng chừng 5 giây, và log CoreDNS đầy truy vấn NXDOMAIN kiểu api.partner.com.payments.svc.cluster.local. Giải thích cơ chế search domain và ndots:5, vì sao lại là 5 giây, và bạn sửa thế nào?',
+    a: `**Tóm tắt:** Trong Pod, file {{/etc/resolv.conf}} có danh sách **search domain** và {{options ndots:5}}: tên có **ít hơn 5 dấu chấm** bị coi là "tên tương đối", nên resolver ghép lần lượt với từng search domain **trước** khi hỏi tên gốc. {{api.partner.com}} chỉ có 2 dấu chấm nên một lần phân giải sinh 4–5 lượt hỏi, mỗi lượt cả bản ghi A và AAAA, phần lớn trả NXDOMAIN. Càng nhiều gói UDP thì càng dễ có gói bị rớt; rớt một gói là resolver của glibc chờ hết **timeout mặc định 5 giây** rồi mới gửi lại — đó là con số 5 giây. Sửa: giảm ndots cho Pod hay gọi ra ngoài, bật **NodeLocal DNSCache**, dùng chung connection pool và cache DNS hợp lý trong JVM, đủ replica CoreDNS.
+
+### resolv.conf trong Pod trông thế nào
+~~~text
+nameserver 10.96.0.10          # ClusterIP của Service kube-dns (CoreDNS)
+search payments.svc.cluster.local svc.cluster.local cluster.local ap-southeast-1.compute.internal
+options ndots:5
+~~~
+- Ba search domain đầu do Kubernetes thêm (namespace của Pod là {{payments}}); cái cuối thừa hưởng từ node (ví dụ EC2).
+- **Vì sao Kubernetes chọn ndots:5**: để tên ngắn như {{orders}}, {{orders.shop}}, {{orders.shop.svc}} đều phân giải được nhờ search list. Cái giá là tên miền bên ngoài cũng bị đem đi ghép.
+
+### Quy tắc của resolver và số truy vấn thực tế
+Nếu tên có **số dấu chấm ≥ ndots** thì hỏi tên gốc trước; ngược lại thì thử search list trước, cuối cùng mới hỏi tên gốc.
+~~~text
+api.partner.com.payments.svc.cluster.local        A + AAAA -> NXDOMAIN
+api.partner.com.svc.cluster.local                 A + AAAA -> NXDOMAIN
+api.partner.com.cluster.local                     A + AAAA -> NXDOMAIN
+api.partner.com.ap-southeast-1.compute.internal   A + AAAA -> NXDOMAIN (đi ra resolver của VPC)
+api.partner.com                                   A + AAAA -> trả về IP
+=> 10 truy vấn cho một lần phân giải, 8 truy vấn vô ích
+~~~
+
+### Vì sao đúng 5 giây
+1. glibc gửi truy vấn A và AAAA **song song từ cùng một socket UDP**.
+2. Trên node dùng kube-proxy chế độ iptables, gói tới ClusterIP của DNS đi qua DNAT và bảng **conntrack**. Hai gói gần như đồng thời có thể "đua" nhau khi tạo bản ghi conntrack, và một gói bị drop.
+3. Resolver không nhận được trả lời, chờ hết {{timeout}} (mặc định 5 giây) mới gửi lại → request HTTP chậm thêm đúng khoảng 5 giây.
+4. Càng nhiều truy vấn thừa thì xác suất trúng một lần drop càng cao, vì vậy p99 có một "đuôi" 5 giây.
+
+Nguyên nhân phụ: CoreDNS thiếu replica; còn trên AWS, resolver của VPC giới hạn khoảng 1024 gói/giây cho mỗi network interface — "bão NXDOMAIN" từ nhiều Pod trên cùng node chạm trần này.
+
+### JVM cache DNS thế nào
+- Java phân giải qua resolver của hệ điều hành, nên chịu đúng quy tắc search/ndots ở trên.
+- {{InetAddress}} cache kết quả thành công **30 giây** theo mặc định (khi không có security manager) và kết quả thất bại 10 giây. Chỉnh bằng property {{networkaddress.cache.ttl}} trong file {{java.security}} hoặc {{Security.setProperty}} lúc khởi động.
+- **Đừng** cache vĩnh viễn (TTL -1): khi đối tác hay AWS load balancer đổi IP, app tiếp tục gọi IP cũ tới khi restart.
+- Connection pool có keep-alive giảm số lần phân giải: kết nối được dùng lại thì không cần hỏi DNS.
+
+### Cách sửa
+~~~yaml
+spec:
+  dnsConfig:
+    options:
+      - name: ndots
+        value: "2"                    # tên có >= 2 dấu chấm: hỏi tên gốc trước
+      - name: single-request-reopen   # glibc: giảm lỗi do A/AAAA dùng chung socket (musl bỏ qua option này)
+~~~
+| Cách | Tác dụng | Lưu ý |
+|---|---|---|
+| ndots 2 cho Pod chủ yếu gọi ra ngoài | Bỏ 8 truy vấn thừa với {{api.partner.com}} | {{orders}}, {{orders.shop}} vẫn đi search list; dạng {{orders.shop.svc}} sẽ hỏi ra ngoài trước rồi mới search — nên cấu hình tên đầy đủ {{orders.shop.svc.cluster.local}} |
+| FQDN có dấu chấm cuối {{api.partner.com.}} | Không ghép search domain | Một số HTTP client đưa dấu chấm vào Host/SNI làm sai chứng chỉ hoặc virtual host; thường chỉ dùng cho tên nội bộ |
+| NodeLocal DNSCache | Cache DNS ngay trên mỗi node, Pod hỏi qua địa chỉ link-local và không đi qua conntrack | Thêm một DaemonSet phải vận hành |
+| CoreDNS: đủ replica (autoscaler), plugin {{cache}}, plugin {{autopath}} | {{autopath}} để CoreDNS tự thử search list phía server, client chỉ gửi một truy vấn | {{autopath}} cần chế độ {{pods verified}}, tốn thêm RAM để theo dõi Pod |
+| Pool keep-alive + JVM TTL 30–60 giây | Giảm tần suất phân giải | Không thay được các cách trên |
+
+### Kiểm chứng
+~~~bash
+kubectl exec -it payment-7d9f8-x2k4q -- cat /etc/resolv.conf
+# netshoot có dig; +search dùng search list, +showsearch in từng bước ghép
+kubectl debug -it pod/payment-7d9f8-x2k4q --image=nicolaka/netshoot -- dig +search +showsearch api.partner.com
+~~~
+Trên Prometheus, theo dõi {{coredns_dns_responses_total}} theo nhãn {{rcode}} (tỷ lệ NXDOMAIN) và {{coredns_dns_request_duration_seconds}}.
+
+### Pitfall production
+- **Image Alpine (musl)** xử lý search/ndots và các option khác glibc, nên cùng một cấu hình mà hành vi khác; luôn kiểm chứng trên đúng image.
+- **Đặt ndots 1 cho cả cluster**: tên dạng {{orders.shop}} bị hỏi ra resolver bên ngoài trước — thêm độ trễ và làm lộ tên dịch vụ nội bộ ra ngoài.
+- **Đổ lỗi cho đối tác**: trace chỉ cho thấy "HTTP client chậm 5 giây". Bật log/metric thời gian phân giải hoặc tách span DNS để nhìn thấy nó.
+
+> Senior tip: với cluster chưa tối ưu, NXDOMAIN thường chiếm phần lớn lưu lượng CoreDNS — hãy nhìn tỷ lệ này trước khi tăng replica. Khi thấy độ trễ **đúng bội số của 5 giây** (5 s, 10 s), nghĩ ngay tới timeout của resolver DNS; khi thấy đúng 1 hoặc 3 giây, nghĩ tới TCP SYN retransmit. Con số "tròn" là manh mối mạnh nhất trong chẩn đoán mạng.`,
+    follow: [
+      'NodeLocal DNSCache hoạt động thế nào và vì sao nó tránh được race conntrack?',
+      'Vì sao để JVM cache DNS vĩnh viễn là nguy hiểm khi gọi tới AWS ALB hoặc RDS sau failover?',
+      'Bạn phân biệt độ trễ do DNS với độ trễ do TLS handshake hoặc chờ connection pool trong trace thế nào?'
+    ],
+    tags: ['Kubernetes', 'DNS', 'CoreDNS', 'ndots', 'conntrack', 'latency'],
+    refs: [
+      { type: 'doc', title: 'DNS for Services and Pods', url: 'https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/' },
+      { type: 'doc', title: 'Using NodeLocal DNSCache in Kubernetes Clusters', url: 'https://kubernetes.io/docs/tasks/administer-cluster/nodelocaldns/' }
+    ]
+  },
+  {
+    id: 'devops-036',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Một node thiếu RAM lúc nửa đêm: Pod của service thanh toán (Java, memory request 1Gi, limit 4Gi, thực dùng 3Gi) bị Evicted dù chưa chạm limit, còn Pod batch không khai báo resources của team khác vẫn sống. Giải thích QoS class, thứ tự node-pressure eviction so với OOM killer, PriorityClass; rồi bạn đặt requests/limits cho service Java thế nào để chuyện này không lặp lại?',
+    a: `**Tóm tắt:** Kubernetes có **hai cơ chế giết Pod vì RAM**. (1) Container vượt **memory limit** của chính nó → kernel OOM-kill trong cgroup (OOMKilled, exit 137). (2) **Node** thiếu RAM tổng → kubelet **evict** Pod theo thứ tự: Pod **dùng vượt request** trước, rồi theo **Priority**, rồi theo **mức vượt request**. Payment xin 1Gi nhưng dùng 3Gi, vượt 2Gi — nhiều hơn hẳn Pod batch — nên đứng đầu danh sách. Với Java, memory không nén được: tôi đặt **memory request = limit**, heap theo phần trăm limit, CPU request theo mức dùng thật, gán **PriorityClass** cao cho service quan trọng, và khai báo ephemeral-storage.
+
+### QoS class
+| Class | Điều kiện | oom_score_adj | Ý nghĩa |
+|---|---|---|---|
+| Guaranteed | Mọi container đặt request = limit cho **cả** CPU và memory | -997 | OOM killer của kernel chọn sau cùng |
+| Burstable | Có ít nhất một request/limit nhưng không đủ điều kiện Guaranteed | 2…999 (memory request càng lớn so với RAM node thì càng thấp) | Phổ biến nhất |
+| BestEffort | Không đặt request/limit nào | 1000 | OOM killer chọn đầu tiên |
+
+### Hai cơ chế, hai triệu chứng
+~~~text
+Container dùng > memory limit             Node: memory.available < 100Mi (ngưỡng hard mặc định)
+  -> OOM killer trong cgroup                 -> kubelet chọn Pod để evict
+  -> container RESTART, OOMKilled, exit 137  -> Pod Failed, reason Evicted; ReplicaSet tạo Pod mới
+  -> xem: kubectl describe pod (Last State)  -> xem: kubectl get events ("The node was low on resource: memory")
+~~~
+Nếu RAM cạn quá nhanh, trước khi kubelet kịp evict, OOM killer của kernel ở mức **toàn node** sẽ ra tay theo {{oom_score_adj}} — lúc đó QoS class quyết định trực tiếp ai chết.
+
+### Thứ tự eviction khi node thiếu memory
+1. Pod có usage **vượt request** bị xét trước.
+2. Trong nhóm đó, Pod có **Priority thấp hơn** bị đuổi trước.
+3. Cùng priority thì Pod **vượt request nhiều hơn** bị đuổi trước.
+
+| Pod | Request | Usage thật | Vượt request |
+|---|---|---|---|
+| payment | 1Gi | 3Gi | **+2Gi → bị đuổi đầu tiên** |
+| batch (BestEffort) | 0 | 0.5Gi | +0.5Gi |
+| report | 2Gi | 1.5Gi | không vượt → gần như an toàn |
+Đó là lý do BestEffort **không phải lúc nào** cũng chết trước: một Pod Burstable "xin ít, dùng nhiều" còn nguy hiểm hơn. Pod dùng dưới request gần như không bao giờ bị evict vì memory.
+
+Thêm một điều quan trọng: với ngưỡng **hard eviction**, kubelet giết Pod **ngay**, không chờ graceful shutdown — request đang xử lý của Java bị cắt ngang.
+
+### PriorityClass
+~~~yaml
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata: { name: business-critical }
+value: 100000
+preemptionPolicy: PreemptLowerPriority
+description: "payment, auth: xếp lịch trước, bị evict sau"
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata: { name: batch-low }
+value: 1000
+preemptionPolicy: Never      # chờ chỗ trống, không đá Pod khác
+~~~
+- Priority tác động ở **hai nơi**: (a) scheduler **preemption** — Pod ưu tiên cao đang Pending được đuổi Pod thấp hơn để lấy chỗ (PDB chỉ được tôn trọng ở mức cố gắng); (b) thứ tự eviction ở trên.
+- Không gán {{system-cluster-critical}}/{{system-node-critical}} cho ứng dụng. Dùng ResourceQuota theo PriorityClass để team không tự gán "critical" cho mọi thứ.
+
+### Đặt resources cho service Java
+~~~yaml
+priorityClassName: business-critical
+containers:
+  - name: app
+    resources:
+      requests: { cpu: "1", memory: 3Gi, ephemeral-storage: 1Gi }
+      limits:   { memory: 3Gi, ephemeral-storage: 2Gi }   # memory request = limit, không đặt CPU limit
+    env:
+      - name: JAVA_TOOL_OPTIONS
+        value: "-XX:MaxRAMPercentage=70 -XX:ActiveProcessorCount=2 -XX:+ExitOnOutOfMemoryError"
+~~~
+- **Memory request = limit**: Pod không bao giờ dùng vượt request, nên không bao giờ đứng đầu hàng eviction vì memory. Nếu app phình quá limit thì bị OOMKilled — lỗi của chính nó, dễ thấy, không kéo theo Pod khác. Java dùng heap + metaspace + thread stack + code cache + direct buffer, nên heap chỉ nên khoảng 65–75% limit.
+- **CPU** nén được (bị throttle chứ không bị giết). Request theo mức p90–p95 thường ngày. Bỏ CPU limit giúp tránh throttling khi JIT, GC và lúc khởi động bùng CPU; khi đó JVM thấy toàn bộ CPU của node nên phải đặt {{ActiveProcessorCount}}. Nếu cần cô lập chặt thì đặt CPU limit = request để thành Guaranteed.
+- **ephemeral-storage**: log ghi file, heap dump vào filesystem container. Một file heap dump 3Gi vượt limit ephemeral-storage làm Pod bị evict; node hết đĩa thì kubelet evict hàng loạt.
+
+### Pitfall production
+- **Request thấp, limit cao** ("overcommit cho tiết kiệm"): scheduler xếp quá nhiều Pod lên node vì chỉ nhìn request → node pressure trở thành chuyện hằng đêm.
+- **Pod Evicted nằm lại** ở trạng thái Failed và chỉ được dọn khi vượt ngưỡng {{terminated-pod-gc-threshold}} (mặc định 12500) — danh sách Pod rối, dễ đọc nhầm khi điều tra.
+- **Mọi service đều gán priority cao**: priority mất ý nghĩa, preemption đá nhau lung tung.
+
+> Senior tip: mỗi tuần tôi xem tỷ lệ **usage/request memory** theo Pod (dùng VPA ở chế độ {{updateMode: "Off"}} chỉ để lấy gợi ý). Pod nào thường xuyên trên 100% là ứng viên bị evict tiếp theo — sửa request trước khi node thiếu RAM lúc 2 giờ sáng sửa giúp bạn.`,
+    follow: [
+      'Vì sao nhiều team bỏ CPU limit cho service Java, và rủi ro noisy neighbor khi làm vậy là gì?',
+      'Preemption theo PriorityClass tương tác với PodDisruptionBudget và cluster autoscaler thế nào?',
+      'Dùng VPA và HPA cùng lúc trên một Deployment gặp vấn đề gì?'
+    ],
+    tags: ['Kubernetes', 'QoS', 'eviction', 'PriorityClass', 'requests', 'limits', 'OOMKilled'],
+    refs: [
+      { type: 'doc', title: 'Node-pressure Eviction', url: 'https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/' },
+      { type: 'doc', title: 'Pod Quality of Service Classes', url: 'https://kubernetes.io/docs/concepts/workloads/pods/pod-qos/' },
+      { type: 'doc', title: 'Pod Priority and Preemption', url: 'https://kubernetes.io/docs/concepts/scheduling-eviction/pod-priority-preemption/' }
+    ]
+  },
+  {
+    id: 'devops-037',
+    topic: 'devops',
+    level: 'lead',
+    q: 'Bạn là tech lead platform cho service thanh toán chạy trên Kubernetes và sắp bị audit PCI DSS: chỉ đúng các luồng mạng cần thiết được phép, còn mật khẩu DB và API key của cổng thanh toán không được nằm trong Git hay lộ qua kubectl. Bạn thiết kế NetworkPolicy default-deny cho cả ingress lẫn egress thế nào, và chọn giữa External Secrets Operator, Vault, Sealed Secrets ra sao?',
+    a: `**Tóm tắt:** Mạng: trong namespace {{payments}} đặt **default-deny cả ingress và egress**, rồi mở từng luồng theo label: ingress controller → payment-api:8080, payment-api → DNS, → PostgreSQL:5432, → Kafka, → cổng thanh toán. NetworkPolicy chuẩn **không lọc theo tên miền**, nên egress ra internet đi qua một **egress proxy/gateway** hoặc CNI có policy FQDN (Cilium). Secret: nguồn sự thật đặt ở **secret manager** (AWS Secrets Manager hoặc Vault), đưa vào cluster bằng **External Secrets Operator** (đồng bộ thành Secret) hoặc **Vault Agent/CSI** (không qua etcd, có credential động). **Sealed Secrets** hợp GitOps nhỏ nhưng yếu về rotation và audit. Bổ sung: mã hoá etcd bằng KMS, RBAC chặt quyền đọc secrets, mount secret dạng file.
+
+### NetworkPolicy hoạt động thế nào
+- Mặc định Pod **không bị cô lập**: nhận và gửi mọi traffic. Khi có ít nhất một policy chọn Pod với policyType Ingress (hoặc Egress), chiều đó chỉ cho phép phần **hợp (union)** của mọi rule liệt kê. API chuẩn không có rule "deny": chỉ có "cô lập rồi mở dần".
+- Policy chỉ có tác dụng khi **CNI thực thi** nó (Calico, Cilium, AWS VPC CNI đã bật network policy…). CNI không hỗ trợ thì {{kubectl apply}} vẫn thành công nhưng không chặn gì — phải kiểm chứng bằng test thật.
+
+~~~yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: default-deny-all, namespace: payments }
+spec:
+  podSelector: {}                   # mọi Pod trong namespace
+  policyTypes: [Ingress, Egress]    # không có rule nào = chặn cả hai chiều
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: payment-api, namespace: payments }
+spec:
+  podSelector: { matchLabels: { app: payment-api } }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ingress-nginx } }
+          podSelector: { matchLabels: { app.kubernetes.io/name: ingress-nginx } }   # cùng một phần tử = AND
+      ports: [{ protocol: TCP, port: 8080 }]
+  egress:
+    - to:                           # DNS: quên mở là mọi cuộc gọi đều timeout khó hiểu
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+          podSelector: { matchLabels: { k8s-app: kube-dns } }
+      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    - to:
+        - ipBlock: { cidr: 10.20.8.0/24 }       # subnet của RDS (DB nằm ngoài cluster)
+      ports: [{ protocol: TCP, port: 5432 }]
+    - to:
+        - podSelector: { matchLabels: { app: egress-proxy } }   # đường duy nhất ra internet
+      ports: [{ protocol: TCP, port: 3128 }]
+~~~
+
+### Bẫy AND và OR trong selector
+~~~text
+from:
+  - namespaceSelector: {...}    # MỘT phần tử có hai khoá:
+    podSelector: {...}          #   Pod nhãn X TRONG namespace Y  (AND)
+from:
+  - namespaceSelector: {...}    # HAI phần tử:
+  - podSelector: {...}          #   MỌI Pod của namespace Y, HOẶC Pod nhãn X cùng namespace (OR)
+~~~
+Chỉ thêm một dấu gạch đầu dòng là policy mở rộng gấp nhiều lần — lỗi này rất hay lọt review.
+
+### Egress ra internet
+NetworkPolicy chuẩn chỉ hiểu IP/CIDR, mà IP của cổng thanh toán đổi theo CDN. Ba cách: CiliumNetworkPolicy với {{toFQDNs}}; egress proxy (Squid/Envoy) có allowlist tên miền; hoặc egress gateway với **IP NAT cố định** để đối tác whitelist ngược lại. Với PCI, proxy còn cho log mọi kết nối ra ngoài làm bằng chứng.
+
+### Secret: vì sao Secret của Kubernetes chưa đủ
+- Secret chỉ là **base64** (mã hoá ký tự, không phải mật mã) lưu trong etcd. Cần bật **encryption at rest** cho etcd (EncryptionConfiguration với provider KMS v2; trên EKS là envelope encryption bằng KMS).
+- Ai có quyền {{get}}/{{list}}/{{watch}} secrets trong namespace là đọc được; ai có quyền **tạo Pod** trong namespace cũng gián tiếp đọc được mọi Secret ở đó (mount vào Pod của mình). Ở prod, chỉ GitOps controller được tạo workload.
+- Không commit manifest Secret vào Git: base64 coi như plain text.
+
+| Tiêu chí | External Secrets Operator | Vault (Agent Injector / CSI) | Sealed Secrets |
+|---|---|---|---|
+| Nguồn sự thật | Secrets Manager, Vault, GCP… | Vault | Git (bản đã mã hoá) |
+| Có Secret trong etcd | Có (đồng bộ theo {{refreshInterval}}) | Không bắt buộc (file trong Pod) | Có |
+| Rotation | Sửa ở secret manager, ESO tự cập nhật | Credential **động** có TTL, tự thu hồi | Seal lại và commit |
+| Audit "ai đọc secret" | Log của secret manager (CloudTrail) | Audit log Vault chi tiết | Hạn chế |
+| Vận hành | Nhẹ | Nặng (HA, unseal, backup) | Nhẹ, nhưng phải giữ private key controller |
+| Hợp với | Đa số team trên cloud | Yêu cầu cao, credential DB động | Team nhỏ, GitOps thuần |
+
+~~~yaml
+apiVersion: external-secrets.io/v1     # ESO bản cũ: v1beta1
+kind: ExternalSecret
+metadata: { name: payment-db, namespace: payments }
+spec:
+  refreshInterval: 1h
+  secretStoreRef: { kind: ClusterSecretStore, name: aws-secrets-manager }
+  target: { name: payment-db }          # Secret được tạo ra
+  data:
+    - secretKey: password
+      remoteRef: { key: prod/payment/db, property: password }
+~~~
+
+### Đưa secret vào Spring Boot
+- Mount Secret dạng **file** và dùng {{spring.config.import=configtree:/etc/secrets/}}: mỗi file thành một property. Tránh biến môi trường cho secret nhạy cảm: env dễ lộ qua {{/proc/PID/environ}}, log khởi động, crash dump, và **không cập nhật** khi secret đổi.
+- Rotation mật khẩu DB không downtime: cần giai đoạn **hai credential cùng hợp lệ** (Secrets Manager có chiến lược luân phiên hai user), HikariCP {{maxLifetime}} thay dần connection cũ, app đọc credential mới khi tạo connection mới hoặc rolling restart sau khi rotate.
+
+### Pitfall production
+- Default-deny egress nhưng quên DNS, Kafka/Schema Registry, hoặc kube-apiserver (app dùng leader election qua API): sự cố ngay lần deploy đầu.
+- Test policy ở staging dùng CNI khác prod: staging "đúng", prod không chặn gì.
+- Sealed Secrets mất private key của controller là mất khả năng giải mã toàn bộ: backup key, có quy trình re-seal khi xoay key.
+- Vault là điểm lỗi tập trung: Vault sập thì Pod mới không khởi động được. Chạy HA và có runbook khẩn cấp.
+
+> Senior tip: với audit PCI, **bằng chứng quan trọng hơn cấu hình**. Tôi sinh ma trận luồng mạng (nguồn, đích, port, lý do) trực tiếp từ policy, chạy test kết nối tự động trong pipeline — một Pod thử gọi các luồng bị cấm và test **phải fail** — mỗi lần đổi policy, rồi xuất flow log (Cilium Hubble hoặc VPC Flow Logs) và log truy cập secret cho auditor. Audit lúc đó chỉ còn là đọc báo cáo.`,
+    follow: [
+      'Làm sao rotate mật khẩu DB của service đang chạy 20 Pod mà không có downtime?',
+      'Service mesh với mTLS (Istio, Linkerd) bổ sung hay thay thế NetworkPolicy?',
+      'Bạn kiểm thử tự động thế nào để chắc NetworkPolicy thực sự chặn trên production?'
+    ],
+    tags: ['Kubernetes', 'NetworkPolicy', 'secrets', 'External Secrets', 'Vault', 'Sealed Secrets', 'PCI DSS'],
+    refs: [
+      { type: 'doc', title: 'Kubernetes Network Policies', url: 'https://kubernetes.io/docs/concepts/services-networking/network-policies/' },
+      { type: 'doc', title: 'Encrypting Confidential Data at Rest', url: 'https://kubernetes.io/docs/tasks/administer-cluster/encrypt-data/' },
+      { type: 'doc', title: 'External Secrets Operator', url: 'https://external-secrets.io/latest/' }
+    ]
+  },
+  {
+    id: 'devops-038',
+    topic: 'devops',
+    level: 'lead',
+    q: 'On-call của team bạn nhận khoảng 40 cảnh báo mỗi tuần (CPU > 80%, heap > 85%, có request lỗi…), phần lớn tự hết, trong khi sự cố thật lại do khách hàng báo trước. Là tech lead, bạn xây lại hệ thống cảnh báo dựa trên SLI, SLO, error budget và burn rate thế nào, và tổ chức postmortem không đổ lỗi ra sao?',
+    a: `**Tóm tắt:** Cảnh báo phải dựa vào **triệu chứng người dùng cảm nhận**, không phải nguyên nhân có thể có. Chọn vài **SLI** (tỷ lệ request thành công, tỷ lệ request nhanh hơn ngưỡng), đặt **SLO** (ví dụ 99.9% trong 30 ngày) → **error budget** 0.1%. Chỉ page người on-call khi **burn rate** cao — đang tiêu budget nhanh đến mức sẽ cạn sớm — và dùng **hai cửa sổ** (1 giờ kèm 5 phút, 6 giờ kèm 30 phút) để vừa phát hiện nhanh vừa ít báo động giả. CPU và heap chuyển thành dashboard hoặc ticket. Sau sự cố, **postmortem blameless** đi tìm điều kiện của hệ thống đã cho phép lỗi xảy ra và kết thúc bằng hành động có owner, có hạn.
+
+### Thuật ngữ bằng ví dụ
+- **SLI** = sự kiện tốt / sự kiện hợp lệ. Ví dụ: request API thanh toán không trả 5xx; request hoàn tất dưới 300 ms.
+- **SLO**: mục tiêu cho SLI trong một cửa sổ, ví dụ 99.9% request thành công trong 30 ngày cuộn.
+- **Error budget** = 1 − SLO = 0.1%. Với 10 triệu request/tháng, được phép 10.000 request lỗi — tương đương khoảng 43 phút sập hoàn toàn trong 30 ngày.
+- **SLA**: cam kết hợp đồng với khách hàng (có phạt), luôn lỏng hơn SLO nội bộ.
+- **Burn rate** = tỷ lệ lỗi hiện tại / (1 − SLO). Tỷ lệ lỗi 1.44% với SLO 99.9% cho burn rate 14.4: nếu kéo dài, budget 30 ngày (720 giờ) cạn sau 720 / 14.4 = **50 giờ**.
+
+### Vì sao alert CPU, heap, từng lỗi là sai
+| Alert cũ | Vấn đề |
+|---|---|
+| CPU > 80% | Batch cuối ngày hay JIT lúc khởi động làm CPU cao mà người dùng không bị gì → page vô ích; còn deadlock thì CPU thấp → không báo |
+| Heap > 85% | Với G1, heap lên cao trước mỗi chu kỳ GC là bình thường |
+| Có request 5xx | Vài lỗi trong một triệu request vẫn nằm trong budget |
+| Tỷ lệ lỗi > 1% trong 5 phút | Nhạy với nhiễu, lại bỏ sót lỗi âm ỉ 0.5% kéo dài cả tuần (tiêu gấp 5 lần tốc độ cho phép) |
+
+### Multiwindow, multi-burn-rate (theo SRE Workbook)
+| Mức | Burn rate | Cửa sổ dài + ngắn | Budget bị tiêu | Hành động |
+|---|---|---|---|---|
+| Page | 14.4 | 1 giờ và 5 phút | 2% trong 1 giờ | Gọi on-call ngay |
+| Page | 6 | 6 giờ và 30 phút | 5% trong 6 giờ | Gọi on-call |
+| Ticket | 1 | 3 ngày và 6 giờ | 10% trong 3 ngày | Xử lý trong giờ hành chính |
+- **Cửa sổ dài** bảo đảm vấn đề đủ lớn. **Cửa sổ ngắn** bảo đảm vấn đề **vẫn đang diễn ra**, nhờ vậy alert tự tắt nhanh sau khi đã sửa thay vì kêu thêm cả giờ.
+
+~~~yaml
+groups:
+  - name: payment-slo
+    rules:
+      - record: payment:error_ratio:rate5m
+        expr: |
+          sum(rate(http_server_requests_seconds_count{job="payment", status=~"5.."}[5m]))
+          / sum(rate(http_server_requests_seconds_count{job="payment"}[5m]))
+      - record: payment:error_ratio:rate1h
+        expr: |
+          sum(rate(http_server_requests_seconds_count{job="payment", status=~"5.."}[1h]))
+          / sum(rate(http_server_requests_seconds_count{job="payment"}[1h]))
+      - alert: PaymentErrorBudgetFastBurn
+        expr: payment:error_ratio:rate1h > (14.4 * 0.001) and payment:error_ratio:rate5m > (14.4 * 0.001)
+        labels: { severity: page }
+        annotations:
+          summary: "payment đang tiêu error budget nhanh gấp 14.4 lần mức cho phép"
+~~~
+Với SLI độ trễ, Spring Boot tạo sẵn bucket ở ngưỡng SLO bằng {{management.metrics.distribution.slo.http.server.requests=300ms}}; tỷ lệ request nhanh = bucket {{le="0.3"}} chia cho tổng số request.
+
+### Error budget policy
+- Thoả thuận **bằng văn bản** với product **trước khi** có sự cố: budget còn thì release bình thường, được thử nghiệm; budget cạn thì đóng băng tính năng (trừ bản sửa lỗi và bảo mật), dồn sức cho reliability; một sự cố tiêu hơn 20% budget thì bắt buộc postmortem.
+- Nhờ vậy cuộc tranh luận "ra tính năng hay sửa ổn định" trở thành đọc số liệu, không còn là ai to tiếng hơn.
+
+### Postmortem không đổ lỗi
+- Mục đích là **hiểu hệ thống**, không tìm người để phạt. Người bị phạt lần sau sẽ giấu thông tin — mà thông tin thật là thứ quý nhất của postmortem.
+- Cấu trúc: tóm tắt và **tác động** (số request lỗi, % budget đã tiêu, số khách hàng, tiền); **timeline** có giờ cụ thể (bắt đầu, phát hiện, leo thang, giảm thiểu, khắc phục); **các yếu tố góp phần** (thường nhiều, không chỉ một "root cause"); điều đã làm tốt, chỗ nào may mắn; **action item** có owner, hạn, phân loại phòng ngừa / phát hiện / giảm thiểu.
+- Ngôn ngữ: viết "script migration chạy được trên prod vì không kiểm tra môi trường" thay vì "Nam chạy nhầm lệnh". Hỏi "vì sao hệ thống cho phép điều đó" thay vì "vì sao anh làm vậy".
+- Theo dõi action item tới khi đóng; đo MTTD (phát hiện) và MTTR (khắc phục) qua từng quý.
+
+### Pitfall production
+- **SLO 100% hoặc 99.99% cho mọi thứ**: không còn budget, mỗi lỗi nhỏ thành khủng hoảng, trong khi chính DB phía dưới chỉ đạt 99.95%.
+- **Chỉ đo SLI trong app**: request không tới được app (ingress lỗi, Pod chưa ready) không được đếm. Đo thêm ở load balancer hoặc bằng synthetic probe.
+- **Service ít traffic**: 3 lỗi trên 100 request là 3%, burn rate vọt lên; thêm điều kiện số request tối thiểu hoặc dùng synthetic traffic.
+- **Đếm 4xx là lỗi** thì client gửi sai cũng đốt budget; ngược lại trả 200 kèm body lỗi nghiệp vụ thì lỗi thật không bị đếm.
+- **Xoá sạch alert nguyên nhân**: vẫn giữ cảnh báo "sắp hỏng" như đĩa sắp đầy, chứng chỉ TLS sắp hết hạn — dạng ticket, hoặc page nếu thời gian còn lại quá ngắn.
+
+> Senior tip: đo chính hệ thống cảnh báo: **số page mỗi ca trực** và **tỷ lệ page dẫn tới hành động thật**. Mục tiêu của tôi là vài page mỗi tuần và gần như page nào cũng cần làm gì đó; page nào không cần hành động thì sửa hoặc xoá alert ngay trong tuần đó. On-call tin vào alert là điều kiện để họ phản ứng nhanh lúc 3 giờ sáng.`,
+    follow: [
+      'Bạn đặt SLO thế nào cho một service phụ thuộc vào DB và ba service khác, mỗi cái có độ sẵn sàng riêng?',
+      'Error budget đã cạn nhưng business muốn release một tính năng quan trọng: bạn xử lý thế nào?',
+      'Làm sao để action item của postmortem thực sự được làm chứ không nằm mãi trong backlog?'
+    ],
+    tags: ['SRE', 'SLO', 'SLI', 'error budget', 'burn rate', 'alerting', 'postmortem'],
+    refs: [
+      { type: 'doc', title: 'Alerting on SLOs - Google SRE Workbook', url: 'https://sre.google/workbook/alerting-on-slos/' },
+      { type: 'doc', title: 'Postmortem Culture: Learning from Failure', url: 'https://sre.google/sre-book/postmortem-culture/' },
+      { type: 'doc', title: 'Example Error Budget Policy', url: 'https://sre.google/workbook/error-budget-policy/' }
+    ]
   }
 );

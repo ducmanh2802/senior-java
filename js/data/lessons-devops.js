@@ -1373,4 +1373,949 @@ Lỗi hay gặp:
   related: ['devops-006', 'devops-010'],
   tags: ['Ingestion', 'Token Bucket', 'Rate limiting', 'Secret rotation', 'Batch Processing']
 },
+{
+  id: 'lesson-devops-006',
+  track: 'devops',
+  order: 6,
+  title: 'Graceful shutdown end-to-end: ngân sách thời gian từ SIGTERM tới SIGKILL, drain thread pool và rolling update không rớt request',
+  level: 'senior',
+  minutes: 45,
+  goals: [
+    'Vẽ được dòng thời gian tắt một Pod (Terminating → preStop → SIGTERM → Spring đóng context → SIGKILL) và chỉ ra bước nào chạy song song',
+    'Tính được ngân sách thời gian: terminationGracePeriodSeconds phải lớn hơn preStop + tổng thời gian các shutdown phase của Spring + dọn tài nguyên',
+    'Cài đặt mẫu drain chuẩn cho ExecutorService: shutdown → awaitTermination có hạn → shutdownNow, và báo cáo số request bị huỷ',
+    'Cấu hình rolling update (maxSurge, maxUnavailable, minReadySeconds) và nhận ra các bẫy như ENTRYPOINT dạng shell nuốt SIGTERM',
+  ],
+  body: `### Vì sao đã bật graceful shutdown mà deploy vẫn rớt request?
+Bài "Liveness, readiness, startup probe" đã dựng state machine READY → DRAINING. Bài này đi tiếp ở mức **toàn hệ thống**: nhìn cả dòng thời gian từ lúc Kubernetes quyết định xoá Pod đến lúc JVM thoát, **cộng thời gian** cho từng bước, và tự cài phần lõi mà Spring làm hộ bạn: **drain một thread pool** (chờ request đang chạy, hết hạn thì huỷ và báo cáo).
+
+Graceful shutdown chỉ đúng khi **ba tầng** cùng phối hợp. Hỏng một tầng là mất request:
+
+| Tầng | Nhiệm vụ | Cấu hình chính |
+|---|---|---|
+| Kubernetes | Gỡ Pod khỏi Service, chạy preStop, gửi SIGTERM, hạn chót thì SIGKILL | {{preStop}}, {{terminationGracePeriodSeconds}} |
+| Container (PID 1) | Chuyển SIGTERM tới JVM | {{ENTRYPOINT}} dạng exec |
+| Spring Boot / JVM | Ngừng nhận việc mới, chờ việc đang chạy, đóng tài nguyên theo thứ tự | {{server.shutdown}}, {{spring.lifecycle.timeout-per-shutdown-phase}}, {{spring.task.execution.shutdown.*}} |
+
+### Dòng thời gian tắt một Pod (ví dụ có số)
+~~~text
+t=0s    Pod chuyển Terminating (rolling update / scale down / kubectl delete)
+        ├─ song song A: EndpointSlice gỡ Pod; kube-proxy, Ingress, ALB cập nhật sau 1-5s
+        │               (trong khoảng này request MỚI vẫn có thể tới Pod)
+        └─ song song B: kubelet chạy preStop "sleep 10"
+t=10s   preStop xong → kubelet gửi SIGTERM tới PID 1 của container
+        JVM chạy shutdown hook → Spring đóng ApplicationContext:
+          1. readiness = REFUSING_TRAFFIC
+          2. web server ngừng nhận kết nối mới, chờ request đang chạy  (≤ 20s)
+          3. các SmartLifecycle khác dừng: Kafka listener, scheduler…   (mỗi phase ≤ 20s)
+          4. destroy bean: executor chờ task, HikariCP đóng connection
+t≈25s   JVM thoát (exit code 143 = 128 + 15, tức là thoát do SIGTERM) → Pod biến mất
+t=60s   hạn chót terminationGracePeriodSeconds: còn sống thì SIGKILL (exit 137)
+~~~
+
+Điểm then chốt: đồng hồ {{terminationGracePeriodSeconds}} bắt đầu chạy **từ t=0**, nghĩa là **tính cả thời gian preStop**. Nếu preStop vẫn chạy khi hết hạn, kubelet chỉ cho thêm một lần 2 giây rồi kill.
+
+### Ngân sách thời gian: phép cộng phải đúng
+~~~text
+terminationGracePeriodSeconds ≥ preStop
+                               + (số shutdown phase có việc chờ × timeout-per-shutdown-phase)
+                               + thời gian destroy bean (executor, connection pool)
+                               + dự phòng 5-10s
+~~~
+Ví dụ sai rất hay gặp: để mặc định {{terminationGracePeriodSeconds: 30}}, thêm preStop 10s, và Spring mặc định {{timeout-per-shutdown-phase: 30s}}. Tổng khả dĩ 40s+ > 30s → request dài nhất bị SIGKILL cắt ngang, Kafka offset chưa commit nên message bị xử lý lại. Cấu hình đúng tương ứng với dòng thời gian trên:
+
+~~~yaml
+# Deployment (trích)
+spec:
+  template:
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: app
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 10"]
+~~~
+
+~~~yaml
+# application.yml
+server:
+  shutdown: graceful                 # mặc định từ Spring Boot 3.4; bản cũ hơn phải ghi rõ
+spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 20s  # mỗi phase chờ tối đa 20s
+  task:
+    execution:
+      shutdown:
+        await-termination: true      # executor của @Async chờ task đang chạy
+        await-termination-period: 15s
+~~~
+
+### Bên trong JVM: Spring đóng context theo thứ tự nào?
+1. **SIGTERM → shutdown hook.** Spring Boot đăng ký sẵn một JVM shutdown hook ({{spring.main.register-shutdown-hook=true}} mặc định) để gọi {{context.close()}}.
+2. **Readiness = REFUSING_TRAFFIC.** Web application context phát {{AvailabilityChangeEvent}} trước khi dừng bean, nên {{/actuator/health/readiness}} trả 503.
+3. **Dừng các bean SmartLifecycle theo phase** (phase cao dừng trước). Graceful shutdown của web server là một phase: Tomcat/Jetty/Undertow ngừng nhận kết nối mới và chờ request đang chạy. Listener container của Spring Kafka, scheduler… là các phase khác. Mỗi phase chờ tối đa {{timeout-per-shutdown-phase}}; quá hạn thì Spring ghi log và **đi tiếp**, không chờ mãi.
+4. **Destroy singleton bean**: {{@PreDestroy}}, {{DisposableBean}}. {{ThreadPoolTaskExecutor}} theo mặc định **không chờ**: nó gọi {{shutdownNow()}} — task đang chạy bị interrupt, task trong queue bị bỏ. Muốn chờ phải bật {{await-termination}} như trên (tương ứng {{setWaitForTasksToCompleteOnShutdown(true)}} + {{setAwaitTerminationSeconds}}). HikariCP đóng pool; task nào vẫn chạy sau đó sẽ gặp lỗi "HikariDataSource has been closed".
+5. Mọi thread non-daemon kết thúc → JVM thoát.
+
+### Mẫu drain chuẩn cho ExecutorService
+Đây chính là phần lõi của bước 3–4, và là thứ bạn phải tự viết khi có thread pool riêng (consumer tự quản lý, batch worker):
+
+~~~java
+pool.shutdown();                                     // 1. không nhận task mới; task trong queue VẪN chạy
+if (!pool.awaitTermination(20, TimeUnit.SECONDS)) {  // 2. chờ có hạn, không bao giờ chờ vô hạn
+    List<Runnable> dropped = pool.shutdownNow();     // 3. lấy task chưa chạy ra + interrupt task đang chạy
+    log.warn("Shutdown timeout, dropped {} queued tasks", dropped.size());
+    pool.awaitTermination(5, TimeUnit.SECONDS);      // 4. cho task bị interrupt thời gian dọn dẹp
+}
+~~~
+
+| Lời gọi | Task mới | Task trong queue | Task đang chạy | Chặn thread gọi? |
+|---|---|---|---|---|
+| {{shutdown()}} | Bị từ chối ({{RejectedExecutionException}}) | Vẫn được chạy | Chạy tiếp | Không |
+| {{awaitTermination(t)}} | — | — | — | Có, tối đa t; trả true nếu đã xong hết |
+| {{shutdownNow()}} | Bị từ chối | Bị lấy ra, trả về dạng {{List<Runnable>}} | Bị **interrupt** | Không |
+
+Interrupt là **hợp tác**: task đang chặn ở {{socket.read()}} không có timeout sẽ không phản ứng. Vì vậy mọi lời gọi mạng phải có timeout, và code bắt {{InterruptedException}} phải khôi phục cờ ({{Thread.currentThread().interrupt()}}) chứ không nuốt.
+
+### Rolling update: tắt Pod cũ mới là một nửa câu chuyện
+- **maxSurge / maxUnavailable** (mặc định 25% / 25%; maxSurge làm tròn **lên**, maxUnavailable làm tròn **xuống**). Service quan trọng nên đặt {{maxUnavailable: 0}} để không bao giờ thiếu capacity, và {{maxSurge: 1}} hoặc 25% tuỳ quota tài nguyên.
+- Rolling update chỉ tắt Pod cũ khi Pod mới đã **Ready**. Readiness của Pod mới phải phản ánh warm-up thật (connection pool đã mở, cache đã nạp), nếu không Pod mới nhận traffic khi còn "lạnh" và p99 tăng vọt.
+- **minReadySeconds**: Pod mới phải Ready liên tục N giây mới được tính là available — chặn trường hợp Ready rồi crash ngay.
+- **progressDeadlineSeconds** (mặc định 600s): rollout không tiến triển sẽ bị đánh dấu thất bại, nhưng Deployment **không tự rollback**; việc đó là của pipeline (Argo Rollouts, kubectl rollout undo).
+- **PodDisruptionBudget** bảo vệ khi drain node (eviction tự nguyện), **không** áp dụng cho rolling update của Deployment.
+
+### Bẫy production hay gặp
+- **ENTRYPOINT dạng shell**: {{ENTRYPOINT java -jar app.jar}} khiến {{/bin/sh}} là PID 1; sh không chuyển SIGTERM cho JVM. Log không hề có dòng "Commencing graceful shutdown", Pod luôn mất đúng {{terminationGracePeriodSeconds}} rồi bị SIGKILL (exit 137). Sửa: dạng exec {{ENTRYPOINT ["java", "-jar", "app.jar"]}}, hoặc {{exec java …}} trong script, hoặc dùng init nhỏ như tini.
+- **Image distroless không có sh**: preStop {{sh -c "sleep 10"}} lỗi ngay (event FailedPreStopHook) nên không có độ trễ nào. Dùng {{preStop.sleep}} của Kubernetes (có sẵn từ 1.30).
+- **Request dài hơn timeout** (export báo cáo 2 phút, upload lớn): luôn bị cắt khi deploy. Chuyển thành job bất đồng bộ có idempotency key, client poll kết quả.
+- **Kết nối sống lâu** (WebSocket, gRPC stream): web server ngừng nhận kết nối **mới** nhưng kết nối cũ vẫn mở tới hạn chót. Chủ động gửi tín hiệu đóng (close frame, gRPC GOAWAY) để client kết nối lại sang Pod khác.
+- **Shutdown hook tự viết gọi {{System.exit()}}**: khi JVM đang chạy shutdown hook, {{System.exit}} chặn vĩnh viễn → treo tới SIGKILL.
+
+### Liên hệ phỏng vấn
+Câu hỏi hay gặp: "Bật server.shutdown=graceful rồi mà mỗi lần deploy vẫn có Pod bị SIGKILL và lỗi 502, bạn điều tra thế nào?" Trả lời theo dòng thời gian: (1) kiểm tra SIGTERM có tới JVM không (ENTRYPOINT, log "Commencing graceful shutdown", exit code 137 hay 143); (2) preStop để LB kịp gỡ Pod; (3) phép cộng ngân sách grace ≥ preStop + các phase + dọn dẹp; (4) executor và consumer riêng có drain với timeout, đếm số task bị huỷ; (5) rolling update {{maxUnavailable: 0}} + readiness thật + minReadySeconds. Bài tập dưới đây cài phần (4).
+
+> Senior tip: Hãy log và đưa thành metric ba con số cho mỗi lần shutdown: thời điểm nhận SIGTERM, thời gian drain thực tế và số request bị huỷ. Lấy p99.9 thời gian xử lý request làm cơ sở cho {{timeout-per-shutdown-phase}} (cộng thêm 50%), rồi mới tính ngược ra grace period. Đội nào làm vậy thường phát hiện ra "đuôi dài" — vài endpoint chạy 40 giây — mà không ai biết trước.`,
+  exercises: [
+    {
+      title: 'GracefulServer: ngừng nhận, drain có hạn, huỷ và đếm request bị bỏ',
+      prompt: `Mô phỏng phần "drain" của graceful shutdown bằng một {{ExecutorService}}. Starter đã tạo sẵn pool (thread daemon), các bộ đếm và {{shutdown(timeoutMs)}} = {{beginShutdown()}} + {{awaitDrain(timeoutMs)}}. Bạn cần hoàn thiện:
+
+- {{submit(Runnable request)}}: nếu server đang tắt thì trả **false** và **không** chạy request. Ngược lại đưa vào pool một wrapper: tăng {{running}} khi bắt đầu, chạy request, thành công thì tăng {{completed}}, luôn giảm {{running}} ở {{finally}}; request ném {{RuntimeException}} thì không được làm chết worker. Trả **true**. Nếu pool đã đóng ({{RejectedExecutionException}}) thì trả false.
+- {{beginShutdown()}}: ngừng nhận request mới (để {{isAccepting()}} trả false) và cho pool ngừng nhận task. **Không được chặn** và **không được huỷ** request đang chạy hay đang xếp hàng.
+- {{awaitDrain(timeoutMs)}}: chờ tối đa {{timeoutMs}} cho mọi request đã nhận (đang chạy **và** đang xếp hàng) xong. Xong kịp thì trả **0**. Hết hạn thì huỷ cưỡng bức: request chưa bắt đầu bị bỏ, request đang chạy bị interrupt; trả về **số request bị huỷ** = số đang chạy + số chưa bắt đầu.
+
+Gợi ý về thứ tự: đọc số request đang chạy **trước** khi interrupt chúng, vì request bị interrupt sẽ thoát và giảm bộ đếm.`,
+      starter: `class GracefulServer {
+    private final ExecutorService pool;
+    private final AtomicInteger running = new AtomicInteger();    // request đang chạy
+    private final AtomicInteger completed = new AtomicInteger();  // request chạy xong bình thường
+    private volatile boolean accepting = true;
+
+    GracefulServer(int workers) {
+        // thread daemon: JVM không bị treo nếu ai đó quên shutdown
+        this.pool = Executors.newFixedThreadPool(workers, r -> {
+            Thread t = new Thread(r, "request-worker");
+            t.setDaemon(true);
+            return t;
+        });
+    }
+
+    boolean submit(Runnable request) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean isAccepting() { return accepting; }
+
+    int completed() { return completed.get(); }
+
+    /** Bước 1 khi nhận SIGTERM: ngừng nhận việc mới, không chặn. */
+    void beginShutdown() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    /** Bước 2: chờ có hạn; hết hạn thì huỷ cưỡng bức và trả số request bị huỷ. */
+    int awaitDrain(long timeoutMs) throws InterruptedException {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int shutdown(long timeoutMs) throws InterruptedException {
+        beginShutdown();
+        return awaitDrain(timeoutMs);
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { void run() throws Exception; }
+    static void check(String name, Case c) {
+        total++;
+        try { c.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    // request chặn tới khi release mở (tối đa 10s); bị interrupt thì đếm và giữ cờ interrupt
+    static Runnable blocking(CountDownLatch started, CountDownLatch release, CountDownLatch interrupted) {
+        return () -> {
+            started.countDown();
+            try {
+                if (!release.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("release timeout");
+            } catch (InterruptedException e) {
+                interrupted.countDown();
+                Thread.currentThread().interrupt();
+            }
+        };
+    }
+    public static void main(String[] args) {
+        check("drain ok: every accepted request completes, 0 cancelled", () -> {
+            GracefulServer s = new GracefulServer(2);
+            CountDownLatch done = new CountDownLatch(6);
+            for (int i = 0; i < 6; i++) eq(true, s.submit(done::countDown));
+            eq(0, s.shutdown(5_000));
+            eq(0L, done.getCount());
+            eq(6, s.completed());
+        });
+        check("after beginShutdown: new requests rejected and never run", () -> {
+            GracefulServer s = new GracefulServer(1);
+            AtomicInteger ran = new AtomicInteger();
+            s.beginShutdown();
+            eq(false, s.isAccepting());
+            eq(false, s.submit(ran::incrementAndGet));
+            eq(0, s.awaitDrain(2_000));
+            eq(0, ran.get());
+        });
+        check("in-flight request finishes during drain (not interrupted)", () -> {
+            GracefulServer s = new GracefulServer(1);
+            CountDownLatch started = new CountDownLatch(1), release = new CountDownLatch(1), intr = new CountDownLatch(1);
+            eq(true, s.submit(blocking(started, release, intr)));
+            eq(true, started.await(5, TimeUnit.SECONDS));
+            s.beginShutdown();                       // phải trả về ngay, không chặn
+            eq(false, s.submit(() -> { }));
+            release.countDown();
+            eq(0, s.awaitDrain(5_000));
+            eq(1, s.completed());
+            eq(1L, intr.getCount());                 // không ai interrupt request này
+        });
+        check("queued requests still run (shutdown, not shutdownNow)", () -> {
+            GracefulServer s = new GracefulServer(1);
+            CountDownLatch started = new CountDownLatch(1), release = new CountDownLatch(1), intr = new CountDownLatch(1);
+            AtomicInteger queuedRan = new AtomicInteger();
+            eq(true, s.submit(blocking(started, release, intr)));
+            eq(true, started.await(5, TimeUnit.SECONDS));
+            for (int i = 0; i < 3; i++) eq(true, s.submit(queuedRan::incrementAndGet));
+            s.beginShutdown();
+            release.countDown();
+            eq(0, s.awaitDrain(5_000));
+            eq(3, queuedRan.get());
+            eq(4, s.completed());
+        });
+        check("timeout: cancels running + queued and returns the count", () -> {
+            GracefulServer s = new GracefulServer(2);
+            CountDownLatch started = new CountDownLatch(2), never = new CountDownLatch(1), intr = new CountDownLatch(2);
+            AtomicInteger queuedRan = new AtomicInteger();
+            eq(true, s.submit(blocking(started, never, intr)));
+            eq(true, s.submit(blocking(started, never, intr)));
+            eq(true, started.await(5, TimeUnit.SECONDS));     // cả 2 worker đang bận
+            for (int i = 0; i < 3; i++) eq(true, s.submit(queuedRan::incrementAndGet));
+            s.beginShutdown();
+            eq(5, s.awaitDrain(300));                         // 2 đang chạy + 3 chưa bắt đầu
+            eq(true, intr.await(5, TimeUnit.SECONDS));        // request đang chạy nhận interrupt
+            eq(0, queuedRan.get());                           // request trong queue bị bỏ
+        });
+        check("a failing request does not kill the worker", () -> {
+            GracefulServer s = new GracefulServer(1);
+            CountDownLatch done = new CountDownLatch(1);
+            eq(true, s.submit(() -> { throw new IllegalStateException("boom"); }));
+            eq(true, s.submit(done::countDown));
+            eq(0, s.shutdown(5_000));
+            eq(0L, done.getCount());
+            eq(1, s.completed());
+        });
+        check("shutdown twice is safe", () -> {
+            GracefulServer s = new GracefulServer(1);
+            eq(true, s.submit(() -> { }));
+            eq(0, s.shutdown(5_000));
+            eq(0, s.shutdown(100));
+            eq(false, s.submit(() -> { }));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class GracefulServer {
+    private final ExecutorService pool;
+    private final AtomicInteger running = new AtomicInteger();
+    private final AtomicInteger completed = new AtomicInteger();
+    private volatile boolean accepting = true;
+
+    GracefulServer(int workers) {
+        this.pool = Executors.newFixedThreadPool(workers, r -> {
+            Thread t = new Thread(r, "request-worker");
+            t.setDaemon(true);
+            return t;
+        });
+    }
+
+    boolean submit(Runnable request) {
+        if (!accepting) return false;                 // đang tắt: từ chối nhanh (readiness false)
+        try {
+            pool.execute(() -> {
+                running.incrementAndGet();
+                try {
+                    request.run();
+                    completed.incrementAndGet();
+                } catch (RuntimeException e) {
+                    // code thật: log lỗi; không để exception làm chết worker
+                } finally {
+                    running.decrementAndGet();
+                }
+            });
+            return true;
+        } catch (RejectedExecutionException e) {     // shutdown chen vào giữa lúc kiểm tra và execute
+            return false;
+        }
+    }
+
+    boolean isAccepting() { return accepting; }
+
+    int completed() { return completed.get(); }
+
+    void beginShutdown() {
+        accepting = false;
+        pool.shutdown();          // không nhận task mới; task trong queue VẪN được chạy
+    }
+
+    int awaitDrain(long timeoutMs) throws InterruptedException {
+        if (pool.awaitTermination(timeoutMs, TimeUnit.MILLISECONDS)) return 0;
+        int inFlight = running.get();                   // đọc TRƯỚC khi interrupt
+        List<Runnable> neverStarted = pool.shutdownNow(); // lấy queue ra + interrupt task đang chạy
+        return inFlight + neverStarted.size();
+    }
+
+    int shutdown(long timeoutMs) throws InterruptedException {
+        beginShutdown();
+        return awaitDrain(timeoutMs);
+    }
+}`,
+      hints: [
+        'Trong {{submit}}, kiểm tra cờ {{accepting}} trước; bọc request trong một lambda tăng/giảm {{running}} (giảm trong {{finally}}) và bắt {{RuntimeException}}. Đừng quên bắt {{RejectedExecutionException}} từ {{pool.execute}}.',
+        '{{beginShutdown}} chỉ cần đặt {{accepting = false}} và gọi {{pool.shutdown()}} — hàm này không chặn và vẫn cho task trong queue chạy. Đừng gọi {{shutdownNow()}} ở đây.',
+        'Trong {{awaitDrain}}: {{pool.awaitTermination(timeoutMs, TimeUnit.MILLISECONDS)}} trả true thì trả 0. Ngược lại đọc {{running.get()}} rồi mới gọi {{pool.shutdownNow()}}; kết quả = số đang chạy + kích thước list trả về.',
+      ],
+      explain: `**Ý tưởng**: tách shutdown thành hai bước giống Spring và Kubernetes. {{beginShutdown}} tương ứng lúc nhận SIGTERM: ngừng nhận việc mới nhưng **không đụng** vào việc đã nhận. {{awaitDrain}} tương ứng {{timeout-per-shutdown-phase}}: chờ có hạn, hết hạn thì huỷ cưỡng bức để kịp thoát trước SIGKILL, và **báo cáo** đã huỷ bao nhiêu để có metric.
+
+**Vì sao {{shutdown()}} chứ không phải {{shutdownNow()}} ở bước 1?** Test "queued requests still run" kiểm tra đúng điều này: 3 request đã được nhận (client đang chờ response) mà bị bỏ thì chẳng khác gì kill. {{shutdownNow()}} chỉ là phương án cuối khi đã hết thời gian.
+
+**Vì sao đọc {{running}} trước {{shutdownNow()}}?** Sau khi bị interrupt, request đang chạy thoát rất nhanh và giảm bộ đếm trong {{finally}}; đọc sau có thể ra 0 hoặc 1 thay vì 2, tức là test lúc pass lúc fail. Trong code thật con số này phục vụ log/metric nên một sai lệch nhỏ do race là chấp nhận được, nhưng thứ tự đúng giảm sai lệch tối đa.
+
+**Lỗi hay gặp:**
+- Chỉ đặt cờ {{accepting = false}} mà quên {{pool.shutdown()}}: {{awaitTermination}} không bao giờ trả true, mọi lần shutdown đều chờ hết timeout.
+- {{awaitTermination}} không có hạn ({{Long.MAX_VALUE}}): một request treo giữ Pod tới SIGKILL — mất luôn khả năng dọn dẹp có kiểm soát.
+- Không bắt {{RuntimeException}} trong wrapper: với {{execute()}}, exception làm chết worker thread (pool tạo thread mới, nhưng {{completed}}/{{running}} vẫn phải đúng nhờ {{finally}}).
+- Request bắt {{InterruptedException}} rồi nuốt (không khôi phục cờ, chạy tiếp): {{shutdownNow()}} mất tác dụng.
+
+> Senior tip: Spring Kafka, {{@Scheduled}} và {{@Async}} đều dựa trên đúng mẫu này. Khi review cấu hình, hỏi ba câu: pool có chờ task không (await-termination), chờ tối đa bao lâu, và tổng các thời gian đó có nằm gọn trong grace period trừ preStop không.`
+    }
+  ],
+  check: [
+    {
+      q: 'Deployment có {{terminationGracePeriodSeconds: 30}}, preStop {{sleep 10}}, Spring Boot {{timeout-per-shutdown-phase: 30s}}. Một request mất 25 giây đang chạy khi Pod bị xoá. Điều gì nhiều khả năng xảy ra?',
+      options: ['Request xong bình thường vì Spring chờ tới 30 giây', 'Request bị SIGKILL cắt ngang vì grace period tính từ lúc xoá Pod, gồm cả 10 giây preStop', 'Kubernetes tự kéo dài grace period cho tới khi Spring báo xong', 'preStop không tính vào grace period nên còn đủ 30 giây sau SIGTERM'],
+      answer: 1,
+      explain: `Đồng hồ grace period chạy từ lúc Pod chuyển Terminating, preStop ăn mất 10 giây, nên sau SIGTERM chỉ còn khoảng 20 giây — không đủ cho request 25 giây, SIGKILL đến trước. "Spring chờ tới 30 giây" đúng ở phía Spring nhưng Kubernetes không biết và không chờ. Kubernetes không kéo dài theo app; ngoại lệ duy nhất là thêm một lần 2 giây khi preStop còn chạy lúc hết hạn. Phương án cuối sai vì preStop được tính trong grace period.`
+    },
+    {
+      q: 'Khi tắt một {{ExecutorService}} để drain request, khác biệt đúng giữa {{shutdown()}} và {{shutdownNow()}} là gì?',
+      options: ['shutdown() chặn tới khi mọi task xong; shutdownNow() không chặn', 'shutdown() từ chối task mới nhưng vẫn chạy task trong queue; shutdownNow() lấy task trong queue ra (trả về list) và interrupt task đang chạy', 'shutdown() huỷ task trong queue; shutdownNow() kill thread ngay lập tức', 'Hai hàm như nhau, shutdownNow() chỉ nhanh hơn'],
+      answer: 1,
+      explain: `{{shutdown()}} chỉ đóng cửa nhận việc mới; việc đã xếp hàng vẫn chạy hết. {{shutdownNow()}} trả về các {{Runnable}} chưa chạy và gửi interrupt cho thread đang chạy. Cả hai đều **không chặn** — muốn chờ phải gọi {{awaitTermination}}, nên phương án đầu sai. {{shutdownNow()}} không kill thread: interrupt là hợp tác, task phải tự kiểm tra cờ hoặc đang chặn ở hàm phản ứng với interrupt. Hai hàm khác nhau về ngữ nghĩa chứ không phải tốc độ.`
+    },
+    {
+      q: 'Deployment 10 replicas, rolling update với {{maxSurge: 25%}} và {{maxUnavailable: 0}}. Phát biểu nào đúng?',
+      options: ['Tối đa 13 Pod cùng lúc và không lúc nào dưới 10 Pod available, vì maxSurge làm tròn lên (2,5 → 3)', 'Tối đa 12 Pod vì 25% của 10 làm tròn xuống thành 2', 'Cấu hình không hợp lệ vì maxUnavailable không được bằng 0', 'Kubernetes tắt Pod cũ trước rồi mới tạo Pod mới'],
+      answer: 0,
+      explain: `maxSurge làm tròn **lên** (2,5 → 3) nên có thể có tới 13 Pod; maxUnavailable bằng 0 nên số Pod available không bao giờ dưới 10 — Pod cũ chỉ bị tắt khi Pod mới đã Ready. Làm tròn xuống là quy tắc của maxUnavailable, không phải maxSurge. Chỉ không hợp lệ khi **cả hai** cùng bằng 0 (rollout không thể tiến). Với maxUnavailable = 0, Kubernetes buộc phải tạo Pod mới trước rồi mới tắt Pod cũ, nên phương án cuối sai.`
+    }
+  ],
+  related: ['devops-004', 'devops-017', 'concurrency-020', 'microservices-024'],
+  tags: ['Graceful shutdown', 'Kubernetes', 'SIGTERM', 'preStop', 'ExecutorService', 'Rolling update', 'Spring Boot']
+},
+{
+  id: 'lesson-devops-007',
+  track: 'devops',
+  order: 7,
+  title: 'Chống retry storm: circuit breaker CLOSED/OPEN/HALF_OPEN, retry budget và các kiểu jitter',
+  level: 'senior',
+  minutes: 50,
+  goals: [
+    'Giải thích được vì sao retry có thể biến một sự cố nhỏ thành sự cố kéo dài (retry storm, metastable failure) bằng phép tính tải cụ thể',
+    'Mô tả chính xác state machine của circuit breaker: sliding window, minimumNumberOfCalls, OPEN fail fast, HALF_OPEN với số lượt thử giới hạn',
+    'Cài đặt circuit breaker dùng đồng hồ giả để kiểm thử xác định, cùng full jitter không tràn số và retry budget',
+    'Cấu hình Resilience4j trên Spring Boot 3 đúng thứ tự decorator và tránh các bẫy như retry CallNotPermittedException',
+  ],
+  body: `### Retry storm: khi "thử lại cho chắc" đánh sập hệ thống
+Bài "Retry đúng cách khi gọi provider ngoài" đã dạy phân loại lỗi và backoff cho **một lời gọi**. Bài này nhìn ở **mức hệ thống**: hàng trăm Pod cùng retry vào một dependency đang yếu.
+
+Ví dụ có số: service Order nhận 1.000 req/s, mỗi request gọi Payment một lần. Payment chịu được tối đa khoảng 1.500 req/s. Một đợt GC dài làm Payment chậm vài giây, mọi lời gọi timeout. Order cấu hình retry 3 lần (tổng 4 lần gọi):
+
+| Thời điểm | Tỉ lệ lỗi | Tải thực tế lên Payment |
+|---|---|---|
+| Bình thường | 0% | 1.000 req/s |
+| Sự cố | 100% | 1.000 × 4 = **4.000 req/s** (gấp 2,7 lần sức chịu) |
+| GC đã xong, nhưng hàng đợi còn đầy | vẫn ~100% vì quá tải | vẫn 4.000 req/s |
+
+Hàng thứ ba là điều đáng sợ: nguyên nhân gốc đã hết, nhưng **chính retry** giữ Payment ở trạng thái quá tải. Hiện tượng này gọi là **metastable failure** — hệ thống kẹt ở trạng thái xấu cho tới khi có người cắt bớt tải bằng tay. Nhiều tầng retry còn nhân lên: gateway 2 lần × BFF 3 lần × Order 3 lần = **18 lời gọi** tới Payment cho một cú click của người dùng.
+
+Ba công cụ giải quyết ba phần khác nhau của vấn đề — cần cả ba:
+
+| Công cụ | Giải quyết | Không giải quyết |
+|---|---|---|
+| Backoff + jitter | Giãn và rải các lần retry theo thời gian | Tổng số retry vẫn y nguyên |
+| Retry budget | Giới hạn tổng retry theo tỉ lệ traffic gốc | Không fail nhanh khi dependency chết hẳn |
+| Circuit breaker | Ngừng gọi dependency đang hỏng, fail nhanh, thử lại dè dặt | Không giảm tải khi tỉ lệ lỗi còn dưới ngưỡng |
+
+### Các kiểu jitter
+Gọi {{c = min(cap, base × 2^attempt)}} là trần của lần chờ thứ {{attempt}}. Bài viết kinh điển "Exponential Backoff And Jitter" (Marc Brooker, AWS Architecture Blog) so sánh:
+
+| Kiểu | Thời gian chờ | Nhận xét |
+|---|---|---|
+| Không jitter | {{c}} | Mọi client đồng bộ → tải dồn thành từng đợt sóng |
+| Full jitter | ngẫu nhiên đều trong {{[0, c]}} | Rải đều nhất, tổng số lời gọi ít nhất; đôi khi retry rất sớm |
+| Equal jitter | {{c/2 + random[0, c/2]}} | Luôn chờ ít nhất c/2; rải kém hơn full jitter |
+| Decorrelated | {{min(cap, random[base, prev × 3])}} | Dựa trên lần chờ trước; hiệu quả gần full jitter |
+
+Kết luận của bài viết: có jitter tốt hơn hẳn không jitter; full jitter và decorrelated cho tổng công việc ít nhất. Chi tiết cài đặt quan trọng: tính {{c}} bằng phép nhân đôi **có kiểm tra trần**. Viết {{base << attempt}} thì với attempt ≥ 63 kết quả bị tràn (Java chỉ lấy 6 bit thấp của số lần dịch với kiểu long), ra 0 hoặc số âm.
+
+### Retry budget: giới hạn tổng số retry
+Ý tưởng (Finagle, gRPC retry throttling, chế độ retry "standard" của AWS SDK dùng retry quota dạng token bucket): retry chỉ được phép khi **tổng số retry ≤ X% số request gốc**, cộng một ít "dự trữ" để service traffic thấp vẫn retry được.
+- Dependency khoẻ, lỗi lẻ tẻ: budget còn nhiều, mọi lỗi tạm thời đều được retry.
+- Lỗi diện rộng: budget cạn ngay, tải tăng thêm **tối đa X%** thay vì gấp 4 lần.
+
+Với X = 20% và 100 request đều lỗi, mỗi request muốn retry 3 lần: không có budget là 300 retry, có budget chỉ khoảng 20 (+ dự trữ). Bài tập 2 kiểm tra đúng con số này.
+
+### Circuit breaker: state machine
+~~~text
+            failure rate ≥ ngưỡng (khi đã có ≥ minimumNumberOfCalls kết quả)
+   CLOSED ─────────────────────────────────────────────────► OPEN
+     ▲                                                          │
+     │ các lượt thử thành công                                  │ hết waitDurationInOpenState,
+     │                                                          │ có call tiếp theo
+     │                                                          ▼
+     └────────────────────────────────────────────────── HALF_OPEN
+                              lượt thử lỗi ──────────► OPEN (đếm lại thời gian)
+~~~
+
+- **CLOSED**: mọi call đi qua. Kết quả ghi vào **sliding window**: COUNT_BASED (N call gần nhất) hoặc TIME_BASED (các call trong N giây gần nhất). Failure rate chỉ được tính khi window đã có **ít nhất minimumNumberOfCalls** kết quả, để 1 lỗi trên 1 call không mở mạch. Kết quả cũ bị đẩy ra khỏi window, nên mạch phản ánh tình trạng **hiện tại** chứ không phải lịch sử từ lúc khởi động.
+- **Slow call**: Resilience4j còn đếm call chậm hơn {{slowCallDurationThreshold}}; tỉ lệ slow call vượt {{slowCallRateThreshold}} cũng mở mạch. Dependency **chậm** thường nguy hiểm hơn dependency **chết**: nó giữ thread và connection rất lâu.
+- **OPEN**: không gọi dependency, ném {{CallNotPermittedException}} ngay (vài micro giây). Thread được giải phóng, dependency có thời gian hồi phục.
+- **HALF_OPEN**: sau {{waitDurationInOpenState}}, cho đúng {{permittedNumberOfCallsInHalfOpenState}} lượt thử; call vượt số đó vẫn bị từ chối. Resilience4j tính failure rate trên các lượt thử: dưới ngưỡng thì về CLOSED (window làm mới), từ ngưỡng trở lên thì quay lại OPEN. Bài tập đơn giản hoá thành "một lượt thử lỗi là OPEN lại".
+- Mặc định Resilience4j chỉ chuyển OPEN → HALF_OPEN khi **có call tiếp theo** sau thời gian chờ; muốn chuyển tự động theo đồng hồ thì bật {{automaticTransitionFromOpenToHalfOpenEnabled}}.
+
+Vì sao bài tập dùng {{LongSupplier nowMs}} thay vì {{System.currentTimeMillis()}}? Để test "đúng 5000ms thì chuyển HALF_OPEN" chạy xác định trong vài mili-giây, không cần {{Thread.sleep}}. Resilience4j làm điều tương tự: nó nhận một {{Clock}} có thể thay khi test.
+
+### Resilience4j trên Spring Boot 3
+~~~yaml
+resilience4j:
+  circuitbreaker:
+    instances:
+      payment:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 20
+        minimum-number-of-calls: 10
+        failure-rate-threshold: 50
+        slow-call-duration-threshold: 2s
+        slow-call-rate-threshold: 80
+        wait-duration-in-open-state: 30s
+        permitted-number-of-calls-in-half-open-state: 3
+  retry:
+    instances:
+      payment:
+        max-attempts: 3                  # gồm cả lần gọi đầu tiên
+        wait-duration: 200ms
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+        ignore-exceptions:
+          - io.github.resilience4j.circuitbreaker.CallNotPermittedException
+~~~
+
+~~~java
+@Retry(name = "payment")
+@CircuitBreaker(name = "payment", fallbackMethod = "chargeFallback")
+public Receipt charge(ChargeRequest req) { return paymentClient.charge(req); }
+
+// cùng tham số + Throwable ở cuối; được gọi khi lỗi hoặc khi mạch OPEN
+private Receipt chargeFallback(ChargeRequest req, Throwable t) {
+    throw new PaymentUnavailableException("Payment tạm thời không sẵn sàng", t); // 503 nhanh, không giả vờ thành công
+}
+~~~
+
+Thứ tự mặc định của các aspect: {{Retry ( CircuitBreaker ( RateLimiter ( TimeLimiter ( Bulkhead ( hàm ) ) ) ) )}} — Retry ở **ngoài cùng**. Hệ quả: mỗi lần retry đi qua circuit breaker và được breaker đếm; khi mạch OPEN, Retry nhận {{CallNotPermittedException}}. Nếu không khai báo bỏ qua exception này, Retry sẽ "thử lại" một mạch đang mở: tốn thời gian chờ backoff mà chắc chắn thất bại. Lưu ý thêm: {{@TimeLimiter}} chỉ áp dụng cho method trả về {{CompletableFuture}}/{{CompletionStage}}; với call đồng bộ hãy đặt timeout ở HTTP client.
+
+### Bẫy production hay gặp
+- **Một breaker chung cho mọi dependency**: Payment chết làm mở mạch cả các lời gọi tới Inventory. Mỗi dependency (đôi khi mỗi endpoint quan trọng) một instance riêng.
+- **Đếm lỗi 4xx là failure**: client gửi request sai hàng loạt → mạch mở, chặn cả người dùng hợp lệ. Dùng {{recordExceptions}}/{{ignoreExceptions}} để chỉ đếm lỗi phía server và timeout.
+- **minimumNumberOfCalls không hợp traffic**: quá nhỏ thì mạch "nhấp nháy" (flapping) theo vài lỗi ngẫu nhiên; quá lớn so với traffic thấp thì mạch không bao giờ kịp mở.
+- **Fallback giả vờ thành công**: trả "OK" khi chưa trừ tiền là lỗi nghiệp vụ nghiêm trọng. Fallback hợp lệ: dữ liệu cache cũ (có ghi rõ là cũ), giá trị mặc định an toàn, hoặc lỗi 503 nhanh kèm {{Retry-After}}.
+- **Breaker theo từng Pod**: 30 Pod, mỗi Pod 3 lượt thử ở HALF_OPEN → 90 request thử cùng lúc tới dependency vừa hồi phục. Thường chấp nhận được; nếu không, giảm số lượt thử hoặc tăng jitter cho thời gian chờ OPEN.
+
+### Liên hệ phỏng vấn
+Câu hỏi hay gặp: "Một dependency chậm dần rồi cả hệ thống chết theo, bạn ngăn thế nào?" Trả lời đủ ý: (1) timeout ngắn hơn timeout của caller; (2) retry ở **một** tầng, có backoff + full jitter và retry budget; (3) circuit breaker theo từng dependency, có đếm slow call, Retry bỏ qua {{CallNotPermittedException}}; (4) bulkhead để dependency chậm không chiếm hết thread; (5) fallback đúng nghĩa nghiệp vụ; (6) metric trạng thái breaker và số retry để cảnh báo sớm. Bài tập dưới đây cài lõi của (2) và (3).
+
+> Senior tip: Khi postmortem một sự cố cascading failure, hãy vẽ đồ thị "request gốc/s" và "request thực tế tới dependency/s" chồng lên nhau. Khoảng cách giữa hai đường chính là phần tải do retry tạo ra — thường là bằng chứng thuyết phục nhất để đội chấp nhận thêm retry budget và circuit breaker.`,
+  exercises: [
+    {
+      title: 'CircuitBreaker với sliding window đếm theo số call và đồng hồ giả',
+      prompt: `Starter có sẵn các field, constructor, {{state()}} và {{rejectedCount()}}. Mọi thời gian lấy từ {{nowMs.getAsLong()}} (đồng hồ giả trong test). Hoàn thiện:
+
+**{{tryAcquire()}}** — có được phép gọi dependency không:
+- CLOSED: luôn true.
+- OPEN: nếu {{now − openedAt < openMs}} thì tăng {{rejected}} và trả false. Ngược lại chuyển sang HALF_OPEN (đặt lại bộ đếm lượt thử) rồi xử lý như HALF_OPEN.
+- HALF_OPEN: còn lượt thử ({{đã cấp < halfOpenPermits}}) thì cấp một lượt, trả true; hết lượt thì tăng {{rejected}}, trả false.
+
+**{{onSuccess()}} / {{onError()}}** — báo kết quả của một call đã được cấp phép:
+- CLOSED: ghi kết quả vào sliding window gồm **{{windowSize}} kết quả gần nhất** (kết quả cũ nhất bị đẩy ra). Khi window có **≥ {{minCalls}}** kết quả và {{số lỗi × 100 ≥ failureRatePercent × kích thước window}} thì mở mạch.
+- HALF_OPEN: {{onError}} → mở mạch lại ngay. {{onSuccess}}: đủ {{halfOpenPermits}} lượt thành công thì về CLOSED với window **rỗng**.
+- OPEN: bỏ qua (kết quả trễ của call bắt đầu trước khi mạch mở).
+- Mở mạch = state OPEN, {{openedAt = now}}, xoá window.
+
+**{{call(op, fallback)}}**: không được phép thì trả {{fallback.get()}} mà **không gọi** {{op}}. Được phép thì gọi {{op.get()}}: thành công → {{onSuccess()}} và trả kết quả; ném {{RuntimeException}} → {{onError()}} và trả {{fallback.get()}}.`,
+      starter: `class CircuitBreaker {
+    enum State { CLOSED, OPEN, HALF_OPEN }
+
+    private final int windowSize, minCalls, failureRatePercent, halfOpenPermits;
+    private final long openMs;
+    private final LongSupplier nowMs;
+    private final ArrayDeque<Boolean> window = new ArrayDeque<>();   // true = lỗi
+    private State state = State.CLOSED;
+    private long openedAt;
+    private int halfOpenIssued, halfOpenSucceeded, rejected;
+
+    CircuitBreaker(int windowSize, int minCalls, int failureRatePercent, long openMs,
+                   int halfOpenPermits, LongSupplier nowMs) {
+        this.windowSize = windowSize;
+        this.minCalls = minCalls;
+        this.failureRatePercent = failureRatePercent;
+        this.openMs = openMs;
+        this.halfOpenPermits = halfOpenPermits;
+        this.nowMs = nowMs;
+    }
+
+    synchronized State state() { return state; }
+
+    synchronized int rejectedCount() { return rejected; }
+
+    synchronized boolean tryAcquire() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    synchronized void onSuccess() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    synchronized void onError() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    <T> T call(Supplier<T> op, Supplier<T> fallback) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static final long[] now = {0};
+    static CircuitBreaker cb(int window, int min, int pct, long openMs, int permits) {
+        now[0] = 0;
+        return new CircuitBreaker(window, min, pct, openMs, permits, () -> now[0]);
+    }
+    static void ok(CircuitBreaker c) { if (!c.tryAcquire()) throw new AssertionError("call rejected"); c.onSuccess(); }
+    static void err(CircuitBreaker c) { if (!c.tryAcquire()) throw new AssertionError("call rejected"); c.onError(); }
+    static final CircuitBreaker.State CLOSED = CircuitBreaker.State.CLOSED, OPEN = CircuitBreaker.State.OPEN,
+        HALF_OPEN = CircuitBreaker.State.HALF_OPEN;
+
+    public static void main(String[] args) {
+        check("closed: below minimumNumberOfCalls never opens", () -> {
+            CircuitBreaker c = cb(10, 5, 50, 1_000, 1);
+            for (int i = 0; i < 4; i++) err(c);
+            eq(CLOSED, c.state());
+            eq(true, c.tryAcquire());
+        });
+        check("opens when failure rate >= threshold, not below", () -> {
+            CircuitBreaker a = cb(10, 5, 50, 1_000, 1);
+            ok(a); ok(a); ok(a); err(a); err(a);           // 2/5 = 40%
+            eq(CLOSED, a.state());
+            CircuitBreaker b = cb(10, 4, 50, 1_000, 1);
+            ok(b); ok(b); err(b);
+            eq(CLOSED, b.state());                          // mới 3 call < minCalls
+            err(b);                                         // 2/4 = 50% đúng bằng ngưỡng
+            eq(OPEN, b.state());
+        });
+        check("sliding window evicts old results", () -> {
+            CircuitBreaker c = cb(4, 4, 50, 1_000, 1);
+            err(c); ok(c); ok(c); ok(c);                    // [F,S,S,S] 25%
+            ok(c);                                          // [S,S,S,S] lỗi cũ bị đẩy ra
+            err(c);                                         // [S,S,S,F] 25%
+            eq(CLOSED, c.state());
+            err(c);                                         // [S,S,F,F] 50% (không có window: 3/7)
+            eq(OPEN, c.state());
+        });
+        check("open: fail fast, op not invoked, rejections counted", () -> {
+            CircuitBreaker c = cb(2, 2, 50, 5_000, 1);
+            err(c); err(c);
+            eq(OPEN, c.state());
+            AtomicInteger calls = new AtomicInteger();
+            for (int i = 0; i < 3; i++)
+                eq("fallback", c.call(() -> { calls.incrementAndGet(); return "ok"; }, () -> "fallback"));
+            eq(0, calls.get());
+            eq(3, c.rejectedCount());
+        });
+        check("open -> half_open exactly after openMs (fake clock)", () -> {
+            CircuitBreaker c = cb(2, 2, 50, 5_000, 1);
+            now[0] = 1_000;
+            err(c); err(c);                                 // mở lúc 1000
+            now[0] = 5_999;
+            eq(false, c.tryAcquire());
+            eq(OPEN, c.state());
+            now[0] = 6_000;
+            eq(true, c.tryAcquire());
+            eq(HALF_OPEN, c.state());
+        });
+        check("half_open: only N trial calls; N successes close with a fresh window", () -> {
+            CircuitBreaker c = cb(2, 2, 50, 5_000, 2);
+            err(c); err(c);
+            now[0] = 5_000;
+            eq(true, c.tryAcquire());
+            eq(true, c.tryAcquire());
+            eq(false, c.tryAcquire());                      // lượt thứ 3 bị từ chối
+            eq(1, c.rejectedCount());
+            c.onSuccess();
+            eq(HALF_OPEN, c.state());
+            c.onSuccess();
+            eq(CLOSED, c.state());
+            err(c);                                         // window mới chỉ có 1 kết quả < minCalls
+            eq(CLOSED, c.state());
+        });
+        check("half_open: a failed trial reopens and restarts the timer", () -> {
+            CircuitBreaker c = cb(2, 2, 50, 5_000, 1);
+            err(c); err(c);                                 // mở lúc 0
+            now[0] = 5_000;
+            eq(true, c.tryAcquire());
+            now[0] = 5_200;
+            c.onError();                                    // mở lại lúc 5200
+            eq(OPEN, c.state());
+            now[0] = 10_199;
+            eq(false, c.tryAcquire());
+            now[0] = 10_200;
+            eq(true, c.tryAcquire());
+            eq(HALF_OPEN, c.state());
+        });
+        check("call(): exception counts as failure and returns fallback", () -> {
+            CircuitBreaker c = cb(2, 2, 50, 5_000, 1);
+            Supplier<String> boom = () -> { throw new IllegalStateException("boom"); };
+            eq("v", c.call(() -> "v", () -> "fb"));
+            eq(CLOSED, c.state());
+            eq("fb", c.call(boom, () -> "fb"));             // [S,F] = 50%
+            eq(OPEN, c.state());
+            eq(0, c.rejectedCount());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class CircuitBreaker {
+    enum State { CLOSED, OPEN, HALF_OPEN }
+
+    private final int windowSize, minCalls, failureRatePercent, halfOpenPermits;
+    private final long openMs;
+    private final LongSupplier nowMs;
+    private final ArrayDeque<Boolean> window = new ArrayDeque<>();   // true = lỗi
+    private int failuresInWindow;                                    // đếm sẵn để khỏi duyệt window
+    private State state = State.CLOSED;
+    private long openedAt;
+    private int halfOpenIssued, halfOpenSucceeded, rejected;
+
+    CircuitBreaker(int windowSize, int minCalls, int failureRatePercent, long openMs,
+                   int halfOpenPermits, LongSupplier nowMs) {
+        this.windowSize = windowSize;
+        this.minCalls = minCalls;
+        this.failureRatePercent = failureRatePercent;
+        this.openMs = openMs;
+        this.halfOpenPermits = halfOpenPermits;
+        this.nowMs = nowMs;
+    }
+
+    synchronized State state() { return state; }
+
+    synchronized int rejectedCount() { return rejected; }
+
+    synchronized boolean tryAcquire() {
+        if (state == State.OPEN) {
+            if (nowMs.getAsLong() - openedAt < openMs) { rejected++; return false; }  // fail fast
+            state = State.HALF_OPEN;                  // hết thời gian chờ: cho thử dè dặt
+            halfOpenIssued = 0;
+            halfOpenSucceeded = 0;
+        }
+        if (state == State.HALF_OPEN) {
+            if (halfOpenIssued >= halfOpenPermits) { rejected++; return false; }
+            halfOpenIssued++;
+        }
+        return true;
+    }
+
+    synchronized void onSuccess() {
+        if (state == State.CLOSED) record(false);
+        else if (state == State.HALF_OPEN && ++halfOpenSucceeded >= halfOpenPermits) {
+            state = State.CLOSED;
+            clearWindow();                            // bắt đầu lại với lịch sử sạch
+        }
+    }
+
+    synchronized void onError() {
+        if (state == State.CLOSED) record(true);
+        else if (state == State.HALF_OPEN) open();    // dependency chưa hồi phục
+    }
+
+    private void record(boolean failed) {
+        window.addLast(failed);
+        if (failed) failuresInWindow++;
+        if (window.size() > windowSize && window.removeFirst()) failuresInWindow--;
+        if (window.size() >= minCalls && failuresInWindow * 100 >= failureRatePercent * window.size()) open();
+    }
+
+    private void open() {
+        state = State.OPEN;
+        openedAt = nowMs.getAsLong();
+        clearWindow();
+    }
+
+    private void clearWindow() {
+        window.clear();
+        failuresInWindow = 0;
+    }
+
+    // không synchronized: không giữ lock trong lúc gọi dependency
+    <T> T call(Supplier<T> op, Supplier<T> fallback) {
+        if (!tryAcquire()) return fallback.get();
+        T result;
+        try {
+            result = op.get();
+        } catch (RuntimeException e) {
+            onError();
+            return fallback.get();
+        }
+        onSuccess();
+        return result;
+    }
+}`,
+      hints: [
+        'Trong {{tryAcquire}}, xử lý OPEN trước: chưa hết {{openMs}} thì từ chối; hết rồi thì đổi state sang HALF_OPEN và **rơi xuống** nhánh HALF_OPEN ngay trong cùng lần gọi.',
+        'Sliding window: {{addLast}} kết quả mới, nếu {{size() > windowSize}} thì {{removeFirst()}}. Giữ thêm biến đếm số lỗi để tính tỉ lệ bằng số nguyên: {{failures * 100 >= percent * size}}.',
+        'Viết một hàm {{open()}} dùng chung: đặt OPEN, ghi {{openedAt = nowMs.getAsLong()}}, xoá window. Gọi nó khi tỉ lệ lỗi vượt ngưỡng ở CLOSED và khi một lượt thử ở HALF_OPEN lỗi.',
+      ],
+      explain: `**Cơ chế**: breaker là một state machine nhỏ, mọi chuyển trạng thái chỉ phụ thuộc vào kết quả call và đồng hồ. Đưa đồng hồ vào qua {{LongSupplier}} giúp test được kịch bản "đúng 5999ms vẫn từ chối, 6000ms cho thử" trong vài mili-giây.
+
+**Các điểm tinh tế mà test kiểm tra:**
+- **minCalls**: không có điều kiện này, 1 lỗi trên 1 call (100%) đã mở mạch — mạch nhấp nháy liên tục lúc traffic thấp.
+- **So sánh "≥"** và tính bằng số nguyên ({{failures * 100 >= percent * size}}) để tránh sai số số thực; 50% đúng bằng ngưỡng phải mở.
+- **Đẩy kết quả cũ ra**: test "evicts old results" với window 4 chỉ mở khi lỗi cũ đã bị đẩy ra; đếm dồn từ đầu (3/7 ≈ 43%) sẽ không mở — breaker phản ánh lịch sử chứ không phản ánh hiện tại.
+- **HALF_OPEN giới hạn lượt thử**: nếu cho mọi call đi qua, 1.000 request ập vào dependency vừa hồi phục và đánh sập nó lần nữa.
+- **Xoá window khi đóng mạch**: nếu giữ lỗi cũ, mạch vừa đóng có thể mở lại ngay vì lịch sử trước sự cố.
+- **{{call}} không synchronized**: giữ lock trong lúc gọi dependency chậm sẽ tuần tự hoá mọi request — chính breaker trở thành nút thắt cổ chai.
+
+**Khác với Resilience4j thật**: ở HALF_OPEN, Resilience4j chờ đủ các lượt thử rồi so failure rate với ngưỡng (không phải "một lỗi là mở"), và hỗ trợ thêm slow call, TIME_BASED window, ignore/record exception.
+
+> Senior tip: Luôn xuất metric trạng thái breaker (Resilience4j có sẵn cho Micrometer: {{resilience4j.circuitbreaker.state}}, {{resilience4j.circuitbreaker.not.permitted.calls}}) và cảnh báo khi một breaker ở OPEN quá vài phút. Breaker mở lâu mà không ai biết nghĩa là một tính năng đang âm thầm chạy bằng fallback.`
+    },
+    {
+      title: 'Full jitter không tràn số và RetryBudget chặn retry storm',
+      prompt: `**1. {{Backoff.ceiling(attempt, baseMs, capMs)}}** — trần của lần chờ thứ {{attempt}} (bắt đầu từ 0): {{min(capMs, baseMs × 2^attempt)}}. **Không được tràn số** với attempt lớn (63, 70, 1000…): khi giá trị vượt trần thì dừng ở trần. Giả định {{baseMs ≥ 1}}.
+
+**2. {{Backoff.delay(attempt, baseMs, capMs, rnd)}}** — full jitter: số nguyên ngẫu nhiên đều trong **[0, ceiling]**. Để test so khớp được với seed, hãy lấy đúng **một** số ngẫu nhiên bằng {{rnd.nextInt((int) c + 1)}} với {{c = ceiling(...)}} (giả định {{capMs}} không quá 1 tỉ).
+
+**3. {{RetryBudget(percent, reserve)}}**:
+- {{onRequest()}}: ghi nhận một request gốc (lần gọi đầu, không phải retry).
+- {{tryRetry()}}: cho phép retry nếu số retry đã cấp **nhỏ hơn** {{reserve + requests × percent / 100}} (chia nguyên); cho phép thì tăng số retry đã cấp và trả true, ngược lại trả false.`,
+      starter: `class Backoff {
+    static long ceiling(int attempt, long baseMs, long capMs) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static long delay(int attempt, long baseMs, long capMs, Random rnd) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+
+class RetryBudget {
+    private final int percent, reserve;
+    private long requests, retries;
+
+    RetryBudget(int percent, int reserve) {
+        this.percent = percent;
+        this.reserve = reserve;
+    }
+
+    synchronized void onRequest() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    synchronized boolean tryRetry() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void truth(boolean cond, String msg) { if (!cond) throw new AssertionError(msg); }
+
+    public static void main(String[] args) {
+        check("ceiling doubles then hits the cap", () -> {
+            List<Long> got = new ArrayList<>();
+            for (int a = 0; a < 6; a++) got.add(Backoff.ceiling(a, 100, 1_000));
+            eq(List.of(100L, 200L, 400L, 800L, 1_000L, 1_000L), got);
+        });
+        check("ceiling never overflows for large attempts", () -> {
+            eq(1_000L, Backoff.ceiling(63, 100, 1_000));
+            eq(1_000L, Backoff.ceiling(64, 100, 1_000));
+            eq(30_000L, Backoff.ceiling(1_000, 100, 30_000));
+            eq(Long.MAX_VALUE, Backoff.ceiling(70, 3, Long.MAX_VALUE));
+        });
+        check("delay matches the seeded Random and stays in [0, ceiling]", () -> {
+            Random r1 = new Random(42), r2 = new Random(42);
+            for (int a = 0; a < 10; a++) {
+                long c = Backoff.ceiling(a, 100, 1_000);
+                long d = Backoff.delay(a, 100, 1_000, r1);
+                eq((long) r2.nextInt((int) c + 1), d);
+                truth(d >= 0 && d <= c, "delay " + d + " out of [0," + c + "]");
+            }
+        });
+        check("full jitter spreads over the whole range (not fixed, not equal jitter)", () -> {
+            Random r = new Random(7);
+            long min = Long.MAX_VALUE, max = Long.MIN_VALUE;
+            Set<Long> distinct = new HashSet<>();
+            for (int i = 0; i < 500; i++) {
+                long d = Backoff.delay(4, 100, 10_000, r);     // ceiling = 1600
+                truth(d >= 0 && d <= 1_600, "out of range: " + d);
+                min = Math.min(min, d); max = Math.max(max, d); distinct.add(d);
+            }
+            truth(min < 160, "min " + min + " too high: waits must be able to be short");
+            truth(max > 1_440, "max " + max + " too low");
+            truth(distinct.size() > 100, "only " + distinct.size() + " distinct values");
+        });
+        check("budget: reserve first, then percent of requests", () -> {
+            RetryBudget b = new RetryBudget(20, 2);
+            eq(true, b.tryRetry());
+            eq(true, b.tryRetry());
+            eq(false, b.tryRetry());                    // hết dự trữ, chưa có request
+            for (int i = 0; i < 10; i++) b.onRequest(); // 2 + 10*20/100 = 4
+            eq(true, b.tryRetry());
+            eq(true, b.tryRetry());
+            eq(false, b.tryRetry());
+        });
+        check("budget stops a retry storm: 100 failing requests x 3 retries", () -> {
+            RetryBudget b = new RetryBudget(20, 2);
+            int granted = 0;
+            for (int i = 0; i < 100; i++) {
+                b.onRequest();
+                for (int k = 0; k < 3; k++) if (b.tryRetry()) granted++;
+            }
+            eq(22, granted);                            // thay vì 300
+        });
+        check("budget: integer division, low traffic gets only the reserve", () -> {
+            RetryBudget b = new RetryBudget(10, 1);
+            for (int i = 0; i < 9; i++) b.onRequest();  // 9*10/100 = 0
+            eq(true, b.tryRetry());
+            eq(false, b.tryRetry());
+            b.onRequest();                              // 10*10/100 = 1 → tổng 2
+            eq(true, b.tryRetry());
+            eq(false, b.tryRetry());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class Backoff {
+    static long ceiling(int attempt, long baseMs, long capMs) {
+        long c = Math.min(baseMs, capMs);
+        for (int i = 0; i < attempt && c < capMs; i++) {
+            c = c > capMs / 2 ? capMs : c * 2;   // nhân đôi chỉ khi chắc chắn không vượt trần → không tràn
+        }
+        return c;
+    }
+
+    static long delay(int attempt, long baseMs, long capMs, Random rnd) {
+        long c = ceiling(attempt, baseMs, capMs);
+        return rnd.nextInt((int) c + 1);         // full jitter: đều trong [0, c]
+    }
+}
+
+class RetryBudget {
+    private final int percent, reserve;
+    private long requests, retries;
+
+    RetryBudget(int percent, int reserve) {
+        this.percent = percent;
+        this.reserve = reserve;
+    }
+
+    synchronized void onRequest() {
+        requests++;
+    }
+
+    synchronized boolean tryRetry() {
+        long allowance = reserve + requests * percent / 100;   // dự trữ + X% traffic gốc
+        if (retries >= allowance) return false;
+        retries++;
+        return true;
+    }
+}`,
+      hints: [
+        'Đừng dùng {{baseMs << attempt}} hay {{Math.pow}}: với attempt 63/64 kết quả sai hoặc âm. Hãy nhân đôi trong vòng lặp và dừng khi chạm trần.',
+        'Để nhân đôi an toàn: nếu {{c > capMs / 2}} thì {{c * 2}} chắc chắn vượt trần → gán luôn {{capMs}}; ngược lại {{c * 2 ≤ capMs}} nên không thể tràn.',
+        'RetryBudget chỉ cần hai bộ đếm {{requests}} và {{retries}}; {{tryRetry}} so {{retries}} với {{reserve + requests * percent / 100}}.',
+      ],
+      explain: `**Backoff.ceiling**: vòng lặp tối đa chạy đến khi chạm trần (khoảng 60 vòng với long), nên chi phí không đáng kể. Điều kiện {{c > capMs / 2}} là cách kiểm tra tràn kinh điển: không bao giờ tính một số có thể vượt {{Long.MAX_VALUE}}. Test {{ceiling(70, 3, Long.MAX_VALUE)}} bắt mọi cách nhân trực tiếp. Lỗi hay gặp: {{100L << 63}} cho 0 và {{100L << 64}} cho lại 100 (Java chỉ lấy 6 bit thấp của số lần dịch với long), nên {{min(cap, ...)}} trả về 0 hoặc 100 thay vì trần.
+
+**Backoff.delay**: full jitter chọn đều trong cả khoảng [0, c]. Test "spreads over the whole range" bắt hai cách làm sai: trả cố định {{c}} (không jitter — mọi client đồng bộ) và equal jitter {{c/2 + random}} (không bao giờ dưới c/2 nên {{min < 160}} không thể đúng). Lấy đúng một số từ {{rnd}} để kết quả lặp lại được với seed — đó cũng là cách bạn nên viết code thật: nhận {{Random}}/{{RandomGenerator}} qua tham số thay vì gọi {{ThreadLocalRandom}} bên trong để test được.
+
+**RetryBudget**: 100 request lỗi, mỗi request muốn 3 retry → không có budget là 300 retry (tải ×4); có budget 20% + dự trữ 2 chỉ còn 22 retry (tải ×1,22). Budget thật (Finagle, gRPC) tính trong một cửa sổ thời gian trượt để "quên" traffic cũ; bài tập bỏ phần thời gian cho gọn. Lỗi hay gặp: dùng phép chia số thực rồi làm tròn lên, khiến traffic rất thấp vẫn được retry nhiều hơn dự kiến.
+
+> Senior tip: Ở Resilience4j, {{IntervalFunction.ofExponentialRandomBackoff(initialInterval, multiplier, randomizationFactor)}} dùng "randomization factor" (dao động ± quanh giá trị exponential), không phải full jitter. Nếu cần full jitter đúng nghĩa, viết một {{IntervalFunction}} riêng — lambda nhận số lần thử, trả số mili-giây chờ — dựa trên đúng công thức bài này.`
+    }
+  ],
+  check: [
+    {
+      q: 'Với Resilience4j trên Spring Boot, method có cả {{@Retry}} và {{@CircuitBreaker}}. Khi mạch đang OPEN, nếu cấu hình Retry mặc định (retry mọi exception) thì điều gì xảy ra?',
+      options: ['Circuit breaker nằm ngoài Retry nên Retry không bao giờ chạy khi mạch mở', 'Retry ở ngoài cùng nhận CallNotPermittedException và thử lại vô ích (tốn thời gian backoff); nên khai báo ignore-exceptions cho CallNotPermittedException', 'Retry tự động biết mạch đang mở và dừng ngay', 'Mỗi lần retry làm mạch đóng lại một lần'],
+      answer: 1,
+      explain: `Thứ tự aspect mặc định là Retry ( CircuitBreaker ( RateLimiter ( TimeLimiter ( Bulkhead ( hàm ) ) ) ) ): Retry bọc ngoài cùng. Mạch OPEN ném {{CallNotPermittedException}}, Retry coi đó là lỗi và thử lại sau backoff — chắc chắn thất bại, chỉ làm tăng latency. Phương án đầu đảo ngược thứ tự. Retry không "biết" trạng thái breaker trừ khi bạn cấu hình bỏ qua exception đó. Retry không làm mạch đóng lại; chỉ các lượt thử thành công ở HALF_OPEN mới đóng mạch.`
+    },
+    {
+      q: 'Vì sao circuit breaker cần trạng thái HALF_OPEN với số lượt thử giới hạn, thay vì chuyển thẳng OPEN → CLOSED khi hết thời gian chờ?',
+      options: ['Để tiết kiệm bộ nhớ của sliding window', 'Để kiểm tra dependency đã hồi phục bằng một ít request; nếu chuyển thẳng CLOSED, toàn bộ traffic dồn vào dependency vừa dậy và có thể đánh sập nó lần nữa', 'Vì HALF_OPEN cho phép mọi request đi qua nhưng không ghi kết quả', 'Vì Kubernetes yêu cầu ba trạng thái cho readiness probe'],
+      answer: 1,
+      explain: `HALF_OPEN là bước "thăm dò": chỉ vài request được gửi; thành công thì đóng mạch, lỗi thì mở lại và chờ tiếp. Chuyển thẳng CLOSED sẽ xả toàn bộ traffic (cộng cả hàng đợi tích tụ) vào dependency vừa hồi phục. Không liên quan bộ nhớ. HALF_OPEN chính là trạng thái **giới hạn** request và **có** ghi kết quả để quyết định. Kubernetes probe không liên quan đến circuit breaker.`
+    },
+    {
+      q: 'So sánh các kiểu backoff khi 1.000 client cùng lỗi một lúc, phát biểu nào đúng?',
+      options: ['Exponential backoff không jitter là đủ vì thời gian chờ đã giãn ra theo cấp số nhân', 'Full jitter chờ ngẫu nhiên trong [0, c], rải retry đều nhất và tạo ít tổng lời gọi nhất; equal jitter luôn chờ ít nhất c/2 nên rải kém hơn', 'Equal jitter tốt hơn full jitter vì không bao giờ retry quá sớm', 'Jitter làm tăng tổng số lần retry nên chỉ dùng khi ít client'],
+      answer: 1,
+      explain: `Không có jitter, 1.000 client vẫn retry đồng loạt ở cùng các mốc thời gian: giãn ra nhưng vẫn là từng đợt sóng. Full jitter rải đều trên cả khoảng nên tải tại mỗi thời điểm thấp nhất; theo mô phỏng trong bài "Exponential Backoff And Jitter" của AWS, full jitter (và decorrelated) cho tổng công việc ít nhất. Equal jitter tránh được retry quá sớm nhưng phải trả giá bằng độ rải kém hơn, không "tốt hơn" nói chung. Jitter không đổi số lần retry tối đa; nó chỉ đổi thời điểm retry và càng có ích khi càng nhiều client.`
+    }
+  ],
+  related: ['microservices-007', 'microservices-008'],
+  tags: ['Circuit breaker', 'Resilience4j', 'Retry storm', 'Jitter', 'Retry budget', 'Backoff']
+},
 );

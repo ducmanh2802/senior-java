@@ -4,25 +4,32 @@
    ========================================================================== */
 
 :root {
-  --bg: #f7f6f3;
+  --bg: #f6f7f9;
   --surface: #ffffff;
-  --surface-2: #f0eee9;
-  --border: #e3e0d8;
-  --text: #1d1b16;
-  --muted: #6b675d;
-  --accent: #d9620b;          /* Java orange */
-  --accent-soft: #fbe7d6;
+  --surface-2: #f1f3f6;
+  --border: #e4e7ec;
+  --text: #121826;
+  --muted: #5f6b7a;
+  --accent: #e8650c;          /* Java orange */
+  --accent-2: #f59e0b;        /* gradient partner (amber) */
+  --accent-soft: #fff0e3;
   --accent-text: #ffffff;
-  --link: #1f5fbf;
-  --ok: #1f8a4c;      --ok-soft: #dcf2e4;
-  --warn: #b7791f;    --warn-soft: #fbefd5;
-  --bad: #c43d3d;     --bad-soft: #fbe0e0;
-  --info: #2f6fd0;    --info-soft: #e0ebfb;
-  --code-bg: #1e1f24;
-  --code-text: #e6e6e6;
-  --shadow: 0 1px 2px rgba(20, 18, 10, .05), 0 4px 16px rgba(20, 18, 10, .06);
-  --radius: 12px;
-  --radius-sm: 8px;
+  --link: #1d5fd1;
+  --ok: #15803d;      --ok-soft: #dcf5e5;
+  --warn: #b45309;    --warn-soft: #fdf0d8;
+  --bad: #c62f2f;     --bad-soft: #fde3e3;
+  --info: #2563eb;    --info-soft: #e1ebfe;
+  --code-bg: #161a22;
+  --code-text: #e6e9ef;
+  --glow: rgba(232, 101, 12, .10);
+  --mesh-a: rgba(232, 101, 12, .16);   /* background mesh: orange */
+  --mesh-b: rgba(245, 158, 11, .14);   /* amber */
+  --mesh-c: rgba(37, 99, 235, .10);    /* blue */
+  --grid-dot: rgba(18, 24, 38, .10);
+  --shadow: 0 1px 2px rgba(16, 24, 40, .04), 0 6px 20px rgba(16, 24, 40, .06);
+  --shadow-lg: 0 2px 4px rgba(16, 24, 40, .05), 0 16px 40px rgba(16, 24, 40, .12);
+  --radius: 14px;
+  --radius-sm: 10px;
   --font: 'Be Vietnam Pro', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --mono: 'JetBrains Mono', ui-monospace, Consolas, monospace;
   --maxw: 1120px;
@@ -31,24 +38,28 @@
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #141412; --surface: #1d1c1a; --surface-2: #262522; --border: #34322e;
-    --text: #ecebe6; --muted: #a29e93;
-    --accent: #f08a3c; --accent-soft: #3a2616; --accent-text: #1a1008; --link: #79a8f0;
-    --ok: #4cc27f; --ok-soft: #173525; --warn: #e2b04a; --warn-soft: #3a2f15;
-    --bad: #ef7070; --bad-soft: #3d1c1c; --info: #79a8f0; --info-soft: #1a2a42;
-    --code-bg: #0f0f11;
-    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 4px 16px rgba(0,0,0,.25);
+    --bg: #0d1016; --surface: #151a22; --surface-2: #1d232d; --border: #2a313d;
+    --text: #e8ecf2; --muted: #9aa5b5;
+    --accent: #ff8a3d; --accent-2: #fbbf24; --accent-soft: #3a2414; --accent-text: #1a0f06; --link: #7fb0ff;
+    --ok: #4ade80; --ok-soft: #13301f; --warn: #fbbf24; --warn-soft: #382a10;
+    --bad: #f87171; --bad-soft: #3b1a1d; --info: #7fb0ff; --info-soft: #172741;
+    --code-bg: #0a0d12; --glow: rgba(255, 138, 61, .10);
+    --mesh-a: rgba(255, 138, 61, .16); --mesh-b: rgba(251, 191, 36, .08); --mesh-c: rgba(99, 102, 241, .16); --grid-dot: rgba(232, 236, 242, .07);
+    --shadow: 0 1px 2px rgba(0,0,0,.35), 0 6px 20px rgba(0,0,0,.28);
+    --shadow-lg: 0 2px 4px rgba(0,0,0,.4), 0 16px 40px rgba(0,0,0,.45);
     color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
-  --bg: #141412; --surface: #1d1c1a; --surface-2: #262522; --border: #34322e;
-  --text: #ecebe6; --muted: #a29e93;
-  --accent: #f08a3c; --accent-soft: #3a2616; --accent-text: #1a1008; --link: #79a8f0;
-  --ok: #4cc27f; --ok-soft: #173525; --warn: #e2b04a; --warn-soft: #3a2f15;
-  --bad: #ef7070; --bad-soft: #3d1c1c; --info: #79a8f0; --info-soft: #1a2a42;
-  --code-bg: #0f0f11;
-  --shadow: 0 1px 2px rgba(0,0,0,.3), 0 4px 16px rgba(0,0,0,.25);
+  --bg: #0d1016; --surface: #151a22; --surface-2: #1d232d; --border: #2a313d;
+  --text: #e8ecf2; --muted: #9aa5b5;
+  --accent: #ff8a3d; --accent-2: #fbbf24; --accent-soft: #3a2414; --accent-text: #1a0f06; --link: #7fb0ff;
+  --ok: #4ade80; --ok-soft: #13301f; --warn: #fbbf24; --warn-soft: #382a10;
+  --bad: #f87171; --bad-soft: #3b1a1d; --info: #7fb0ff; --info-soft: #172741;
+  --code-bg: #0a0d12; --glow: rgba(255, 138, 61, .10);
+    --mesh-a: rgba(255, 138, 61, .16); --mesh-b: rgba(251, 191, 36, .08); --mesh-c: rgba(99, 102, 241, .16); --grid-dot: rgba(232, 236, 242, .07);
+  --shadow: 0 1px 2px rgba(0,0,0,.35), 0 6px 20px rgba(0,0,0,.28);
+  --shadow-lg: 0 2px 4px rgba(0,0,0,.4), 0 16px 40px rgba(0,0,0,.45);
   color-scheme: dark;
 }
 
@@ -257,3 +268,46 @@ body::after {   /* the trail: dots climbing from the bottom-left to the summit *
   --trail: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1440 380' preserveAspectRatio='xMidYMax slice'%3E%3Cpath fill='none' stroke='%23000' stroke-width='5' stroke-linecap='round' stroke-dasharray='1 16' d='M140 380C260 340 380 330 470 300S600 250 650 225 760 190 800 150 860 80 900 44'/%3E%3C/svg%3E");
 }
 @media print { body::before, body::after { display: none; } }
+
+/* ---------- visual refresh (2026-11-04): layered on top, tokens only ---------- */
+body { background: var(--bg); min-height: 100vh; }
+/* fixed decorative background: soft colour mesh + dot grid fading out downwards (behind all content) */
+body::before, body::after { content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none; }
+body::before {
+  background:
+    radial-gradient(900px 520px at 8% -8%, var(--mesh-a), transparent 62%),
+    radial-gradient(760px 480px at 96% 2%, var(--mesh-b), transparent 60%),
+    radial-gradient(900px 600px at 70% 108%, var(--mesh-c), transparent 62%);
+}
+body::after {
+  background-image: radial-gradient(var(--grid-dot) 1px, transparent 1.4px);
+  background-size: 22px 22px;
+  -webkit-mask-image: linear-gradient(to bottom, #000 0, rgba(0, 0, 0, .55) 380px, transparent 820px);
+  mask-image: linear-gradient(to bottom, #000 0, rgba(0, 0, 0, .55) 380px, transparent 820px);
+}
+.topbar { background: color-mix(in srgb, var(--bg) 72%, transparent); backdrop-filter: blur(14px) saturate(1.4); -webkit-backdrop-filter: blur(14px) saturate(1.4); }
+.card { background: color-mix(in srgb, var(--surface) 92%, transparent); }
+h1, h2, h3 { letter-spacing: -.015em; font-weight: 700; }
+::selection { background: var(--accent-soft); color: var(--text); }
+.topbar { box-shadow: 0 1px 0 var(--border), 0 6px 24px -18px rgba(0,0,0,.35); border-bottom-color: transparent; }
+.brand-mark { background: linear-gradient(135deg, var(--accent), var(--accent-2)); box-shadow: 0 4px 12px -4px var(--accent); border-radius: 10px; }
+.nav-menu { box-shadow: var(--shadow-lg); border-radius: var(--radius); padding: 8px; }
+.nav-menu a:hover { background: var(--accent-soft); color: var(--accent); }
+.icon-btn { transition: border-color .15s, background .15s, transform .15s; }
+.icon-btn:hover { border-color: var(--accent); background: var(--accent-soft); }
+.btn { border-radius: var(--radius-sm); transition: background .15s, border-color .15s, box-shadow .15s, transform .08s; }
+.btn:hover { border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
+.btn.primary { background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 70%, var(--accent-2))); border-color: transparent; box-shadow: 0 6px 16px -8px var(--accent); }
+.btn.primary:hover { filter: brightness(1.06); box-shadow: 0 8px 20px -8px var(--accent); }
+.btn.ghost:hover { background: var(--surface-2); border-color: transparent; }
+.card { border-color: color-mix(in srgb, var(--border) 85%, transparent); transition: box-shadow .2s, transform .2s, border-color .2s; }
+a.card:hover { box-shadow: var(--shadow-lg); transform: translateY(-2px); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); text-decoration: none; }
+.chip { transition: border-color .15s, background .15s; }
+.badge { padding: 2px 9px; letter-spacing: .01em; }
+.progress { height: 8px; background: var(--surface-2); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--border) 60%, transparent); }
+.progress > .accent { background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
+.stat { box-shadow: var(--shadow); transition: transform .2s, box-shadow .2s; }
+.stat:hover { transform: translateY(-1px); box-shadow: var(--shadow-lg); }
+.input, .select, .textarea { transition: border-color .15s, box-shadow .15s; }
+details > summary { transition: color .15s; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; } a.card:hover, .stat:hover { transform: none; } }

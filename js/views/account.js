@@ -35,6 +35,18 @@
       'acc.emailLabel': 'Hoặc nhận link đăng nhập qua email',
       'acc.emailLabelNoG': 'Nhận link đăng nhập qua email',
       'acc.emailBtn': 'Gửi link đăng nhập',
+      'acc.pwTabIn': 'Đăng nhập', 'acc.pwTabUp': 'Tạo tài khoản', 'acc.pwTabReset': 'Quên mật khẩu',
+      'acc.pwEmail': 'Email', 'acc.pwPassword': 'Mật khẩu', 'acc.pwNew': 'Mật khẩu mới (≥ 8 ký tự)', 'acc.pwConfirm': 'Nhập lại mật khẩu',
+      'acc.pwShow': 'Hiện mật khẩu',
+      'acc.pwBtnIn': 'Đăng nhập', 'acc.pwBtnUp': 'Tạo tài khoản', 'acc.pwBtnReset': 'Gửi link đặt lại mật khẩu',
+      'acc.pwMismatch': 'Hai mật khẩu không khớp.', 'acc.pwWorking': 'Đang xử lý…',
+      'acc.pwConfirmSent': 'Đã tạo tài khoản. Mở email gửi tới {email} để xác nhận, rồi quay lại đăng nhập.',
+      'acc.pwResetSent': 'Nếu {email} có tài khoản, link đặt lại mật khẩu đã được gửi. Kiểm tra cả mục Spam.',
+      'acc.pwFail': 'Không thành công: {err}',
+      'acc.magicToggle': 'Đăng nhập không cần mật khẩu (link qua email)',
+      'acc.pwCardTitle': 'Mật khẩu', 'acc.pwCardSub': 'Đặt mật khẩu để đăng nhập bằng email + mật khẩu trên thiết bị khác (Google / link email vẫn dùng được).',
+      'acc.pwRecoveryTitle': '🔑 Đặt mật khẩu mới', 'acc.pwRecoverySub': 'Bạn vừa mở link đặt lại mật khẩu. Nhập mật khẩu mới để hoàn tất.',
+      'acc.pwSave': 'Lưu mật khẩu', 'acc.pwSaved': 'Đã lưu mật khẩu mới.',
       'acc.agree': 'Bằng cách đăng nhập bạn đồng ý với <a href="#/legal/privacy">Quyền riêng tư</a> và <a href="#/legal/terms">Điều khoản</a>.',
       'acc.profileTitle': 'Hồ sơ',
       'acc.noName': 'Chưa có tên',
@@ -124,6 +136,18 @@
       'acc.emailLabel': 'Or get a sign-in link by email',
       'acc.emailLabelNoG': 'Get a sign-in link by email',
       'acc.emailBtn': 'Email me a sign-in link',
+      'acc.pwTabIn': 'Sign in', 'acc.pwTabUp': 'Create account', 'acc.pwTabReset': 'Forgot password',
+      'acc.pwEmail': 'Email', 'acc.pwPassword': 'Password', 'acc.pwNew': 'New password (8+ characters)', 'acc.pwConfirm': 'Repeat password',
+      'acc.pwShow': 'Show password',
+      'acc.pwBtnIn': 'Sign in', 'acc.pwBtnUp': 'Create account', 'acc.pwBtnReset': 'Email me a reset link',
+      'acc.pwMismatch': 'Passwords do not match.', 'acc.pwWorking': 'Working…',
+      'acc.pwConfirmSent': 'Account created. Open the email sent to {email} to confirm it, then sign in.',
+      'acc.pwResetSent': 'If {email} has an account, a reset link is on its way. Check Spam too.',
+      'acc.pwFail': 'Failed: {err}',
+      'acc.magicToggle': 'Sign in without a password (email link)',
+      'acc.pwCardTitle': 'Password', 'acc.pwCardSub': 'Set a password to sign in with email + password on other devices (Google / email link keep working).',
+      'acc.pwRecoveryTitle': '🔑 Set a new password', 'acc.pwRecoverySub': 'You opened a password reset link. Enter a new password to finish.',
+      'acc.pwSave': 'Save password', 'acc.pwSaved': 'New password saved.',
       'acc.agree': 'By signing in you agree to the <a href="#/legal/privacy">Privacy notice</a> and <a href="#/legal/terms">Terms</a>.',
       'acc.profileTitle': 'Profile',
       'acc.noName': 'No name yet',
@@ -330,15 +354,98 @@
         '<div class="row acc-actions">' +
           '<button type="button" class="btn primary lg" id="accGoogle">' + tr('googleBtn') + '</button>' +
         '</div>') +
+      pwFormHtml() +
+      '<details class="acc-magic"><summary>' + tr('magicToggle') + '</summary>' +
       '<form class="acc-email" id="accEmailForm" novalidate>' +
         '<label class="field"><span>' + (App.auth.providers && !App.auth.providers.google ? tr('emailLabelNoG') : tr('emailLabel')) + '</span>' +
           '<input class="input" type="email" id="accEmail" placeholder="ban@example.com" autocomplete="email">' +
         '</label>' +
         '<button type="submit" class="btn" id="accEmailBtn">' + tr('emailBtn') + '</button>' +
-      '</form>' +
+      '</form></details>' +
       '<p class="small acc-msg" id="accEmailMsg" role="status"></p>' +
       '<p class="small muted">' + tr('agree') + '</p>' +
     '</section>';
+  }
+
+  /** Email + mật khẩu: 3 chế độ (đăng nhập / tạo tài khoản / quên mật khẩu). */
+  function pwFormHtml() {
+    const tab = (mode, label) => '<button type="button" class="chip" role="tab" data-pw-mode="' + mode + '" aria-selected="false">' + label + '</button>';
+    return '<form class="acc-pw" id="accPwForm" data-mode="in" novalidate>' +
+      '<div class="chips acc-pw-tabs" role="tablist">' + tab('in', tr('pwTabIn')) + tab('up', tr('pwTabUp')) + tab('reset', tr('pwTabReset')) + '</div>' +
+      '<label class="field"><span>' + tr('pwEmail') + '</span><input class="input" type="email" name="email" autocomplete="email" placeholder="ban@example.com" required></label>' +
+      '<label class="field" data-pw-show="in up"><span data-pw-label>' + tr('pwPassword') + '</span><input class="input" type="password" name="password" autocomplete="current-password"></label>' +
+      '<label class="field" data-pw-show="up"><span>' + tr('pwConfirm') + '</span><input class="input" type="password" name="confirm" autocomplete="new-password"></label>' +
+      '<label class="small acc-pw-toggle" data-pw-show="in up"><input type="checkbox" data-pw-reveal> ' + tr('pwShow') + '</label>' +
+      '<button type="submit" class="btn primary lg" data-pw-submit>' + tr('pwBtnIn') + '</button>' +
+      '<p class="small acc-msg" data-pw-msg role="status"></p>' +
+    '</form>';
+  }
+
+  /** Đặt / đổi mật khẩu khi đã đăng nhập; recovery = vừa mở link đặt lại mật khẩu. */
+  function pwCardHtml(recovery) {
+    return '<section class="card acc-card' + (recovery ? ' acc-recovery' : '') + '" id="accPwCard">' +
+      '<h2>' + (recovery ? tr('pwRecoveryTitle') : tr('pwCardTitle')) + '</h2>' +
+      '<p class="muted small">' + (recovery ? tr('pwRecoverySub') : tr('pwCardSub')) + '</p>' +
+      '<form class="acc-pw-set" id="accPwSet" novalidate>' +
+        '<label class="field"><span>' + tr('pwNew') + '</span><input class="input" type="password" name="password" autocomplete="new-password"></label>' +
+        '<label class="field"><span>' + tr('pwConfirm') + '</span><input class="input" type="password" name="confirm" autocomplete="new-password"></label>' +
+        '<button type="submit" class="btn' + (recovery ? ' primary' : '') + '">' + tr('pwSave') + '</button>' +
+      '</form><p class="small acc-msg" data-pw-set-msg role="status"></p></section>';
+  }
+
+  function wirePwForm(root) {
+    const form = root.querySelector('#accPwForm');
+    if (!form) return;
+    const msg = form.querySelector('[data-pw-msg]');
+    const btn = form.querySelector('[data-pw-submit]');
+    const field = n => form.querySelector('[name="' + n + '"]');
+    const setMode = mode => {
+      form.dataset.mode = mode;
+      form.querySelectorAll('[data-pw-mode]').forEach(b => { const on = b.dataset.pwMode === mode; b.classList.toggle('active', on); b.setAttribute('aria-selected', String(on)); });
+      form.querySelectorAll('[data-pw-show]').forEach(el => { el.hidden = el.dataset.pwShow.split(' ').indexOf(mode) < 0; });
+      field('password').setAttribute('autocomplete', mode === 'up' ? 'new-password' : 'current-password');
+      form.querySelector('[data-pw-label]').textContent = mode === 'up' ? tr('pwNew') : tr('pwPassword');
+      btn.textContent = mode === 'up' ? tr('pwBtnUp') : mode === 'reset' ? tr('pwBtnReset') : tr('pwBtnIn');
+      setMsg(msg, '', null);
+    };
+    setMode('in');
+    form.addEventListener('click', e => { const b = e.target.closest('[data-pw-mode]'); if (b) setMode(b.dataset.pwMode); });
+    form.querySelector('[data-pw-reveal]').addEventListener('change', e => {
+      field('password').type = field('confirm').type = e.target.checked ? 'text' : 'password';
+    });
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      const mode = form.dataset.mode, email = String(field('email').value || '').trim(), pw = field('password').value;
+      if (mode === 'up' && pw !== field('confirm').value) { setMsg(msg, tr('pwMismatch'), 'bad'); return; }
+      btn.disabled = true;
+      setMsg(msg, tr('pwWorking'), null);
+      try {
+        if (mode === 'in') { await auth.signInWithPassword(email, pw); setMsg(msg, '', null); }   // auth.onChange repaints the page
+        else if (mode === 'up') {
+          const r = await auth.signUpWithPassword(email, pw);
+          if (r && r.confirm) setMsg(msg, tr('pwConfirmSent', { email: email }), 'ok');
+        } else { await auth.resetPassword(email); setMsg(msg, tr('pwResetSent', { email: email }), 'ok'); }
+      } catch (err) {
+        setMsg(msg, tr('pwFail', { err: errText(err) }), 'bad');
+      } finally { btn.disabled = false; }
+    });
+  }
+
+  function wirePwCard(root) {
+    const form = root.querySelector('#accPwSet');
+    if (!form) return;
+    const msg = root.querySelector('[data-pw-set-msg]');
+    const field = n => form.querySelector('[name="' + n + '"]');
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      if (field('password').value !== field('confirm').value) { setMsg(msg, tr('pwMismatch'), 'bad'); return; }
+      const b = form.querySelector('button');
+      b.disabled = true;
+      setMsg(msg, tr('pwWorking'), null);
+      try { await auth.updatePassword(field('password').value); form.reset(); setMsg(msg, tr('pwSaved'), 'ok'); }
+      catch (err) { setMsg(msg, tr('pwFail', { err: errText(err) }), 'bad'); }
+      finally { b.disabled = false; }
+    });
   }
 
   /** Avatar: ảnh nếu có, nếu không thì chữ cái đầu. */
@@ -717,23 +824,24 @@
   function mount(root, repaint) {
     const unsubs = [];
     const user = auth.user;
+    const recovery0 = !!auth.recovery;
     const sub = user ? tr('subSignedIn') :
       (auth.enabled ? tr('subSignedOut') : tr('subLocal'));
 
     root.innerHTML = '<div class="page-head"><div><h1>' + tr('title') + '</h1>' +
       '<p>' + esc(sub) + '</p></div></div>' +
-      (auth.enabled ? (user ? signedInHtml(user) : signedOutHtml()) : notConfiguredHtml());
+      (auth.enabled ? (user ? (auth.recovery ? pwCardHtml(true) : '') + signedInHtml(user) + (auth.recovery || !auth.updatePassword ? '' : pwCardHtml(false)) : signedOutHtml()) : notConfiguredHtml());
 
     // Nút tài khoản trên thanh trên cùng luôn khớp với trạng thái đăng nhập.
     paintAccountBtn();
 
     if (!auth.enabled) wireNotConfigured(root);
-    else if (!user) wireSignedOut(root);
-    else wireSignedIn(root);
+    else if (!user) { wireSignedOut(root); wirePwForm(root); }
+    else { wireSignedIn(root); wirePwCard(root); }
 
     // Đăng nhập/đăng xuất: nếu chỉ đổi tên thì cập nhật tại chỗ, còn lại vẽ lại trang.
     unsubs.push(auth.onChange(u => {
-      if (user && u && user.id === u.id) { updateProfileUi(root, u); return; }
+      if (user && u && user.id === u.id && !!auth.recovery === recovery0) { updateProfileUi(root, u); return; }
       repaint();
     }));
     // Trạng thái đồng bộ thay đổi → cập nhật riêng dòng trạng thái.

@@ -758,7 +758,6 @@ Dùng khi làm việc với JPA/Hibernate, khi cần hiểu vì sao không thấ
 ### Hay nhầm với
 **Second-level cache** dùng chung giữa nhiều session và cần cấu hình riêng. **Session** là API gốc của Hibernate; từ Hibernate 5.2, Session kế thừa EntityManager nên có thể coi là cùng một thứ. **Connection** là kết nối vật lý tới DB, không giữ entity.`,
     related: ['dirty-checking', 'lazy-loading', 'entity-state'],
-    refs: [{ type: 'doc', title: 'Hibernate ORM 6.6 User Guide', url: 'https://docs.jboss.org/hibernate/orm/6.6/userguide/html_single/Hibernate_User_Guide.html' }],
   },
   {
     id: 'dirty-checking',
@@ -791,7 +790,6 @@ Dùng khi muốn cập nhật entity trong transaction mà không gọi save/mer
 ### Hay nhầm với
 **Explicit update** là gọi save/merge hoặc viết câu SQL trực tiếp. **Second-level cache** lưu dữ liệu giữa các session, không liên quan so sánh snapshot. **Optimistic locking** kiểm tra phiên bản khi ghi, không phát hiện thay đổi trong bộ nhớ.`,
     related: ['persistence-context', 'entity-state', 'optimistic-locking'],
-    refs: [{ type: 'doc', title: 'Hibernate ORM 6.6 User Guide', url: 'https://docs.jboss.org/hibernate/orm/6.6/userguide/html_single/Hibernate_User_Guide.html' }],
   },
   {
     id: 'lazy-loading',
@@ -821,7 +819,6 @@ Dùng cho quan hệ lớn hoặc ít dùng, danh sách chi tiết không cần t
 ### Hay nhầm với
 **Eager loading** nạp ngay khi tải entity chính. **N+1 query** là hậu quả thường gặp của lazy khi duyệt vòng lặp. **Pagination in memory** là nạp hết rồi cắt, khác với lazy.`,
     related: ['n-plus-one', 'persistence-context', 'entity-state'],
-    refs: [{ type: 'doc', title: 'Hibernate ORM 6.6 User Guide', url: 'https://docs.jboss.org/hibernate/orm/6.6/userguide/html_single/Hibernate_User_Guide.html' }],
   },
   {
     id: 'n-plus-one',
@@ -889,7 +886,6 @@ Dùng cho ứng dụng web, tranh chấp thấp tới vừa, transaction ngắn,
 ### Hay nhầm với
 **Pessimistic locking** khóa dòng ngay khi đọc, chặn người khác. **CAS** là phép nguyên tử ở bộ nhớ, ý tưởng tương tự nhưng không qua DB. **Isolation level** điều khiển khả năng nhìn thấy dữ liệu, không giải quyết lost update theo cách này.`,
     related: ['pessimistic-locking', 'cas', 'transaction-propagation'],
-    refs: [{ type: 'doc', title: 'Hibernate ORM 6.6 User Guide', url: 'https://docs.jboss.org/hibernate/orm/6.6/userguide/html_single/Hibernate_User_Guide.html' }],
   },
   {
     id: 'pessimistic-locking',
@@ -917,7 +913,6 @@ Dùng khi tranh chấp cao và nghiệp vụ không cho phép thử lại: trừ
 ### Hay nhầm với
 **Optimistic locking** không khóa khi đọc, chỉ kiểm tra lúc ghi và có thể thất bại. **Isolation level** là mức cô lập chung của transaction, không phải lệnh khóa tường minh. **Deadlock** là rủi ro đi kèm khi khóa nhiều tài nguyên.`,
     related: ['optimistic-locking', 'deadlock', 'transaction-propagation'],
-    refs: [{ type: 'doc', title: 'Hibernate ORM 6.6 User Guide', url: 'https://docs.jboss.org/hibernate/orm/6.6/userguide/html_single/Hibernate_User_Guide.html' }],
   },
   {
     id: 'entity-state',
@@ -949,7 +944,6 @@ Dùng khi thao tác CRUD với JPA, khi làm việc với DTO và mapper, hoặc
 ### Hay nhầm với
 **DTO** là object vận chuyển dữ liệu, không được quản lý bởi persistence context. **Persistence context** là tập hợp chứa các entity managed. **Value object** không có danh tính riêng, thường bất biến và không ánh xạ thành entity riêng.`,
     related: ['persistence-context', 'dirty-checking', 'lazy-loading'],
-    refs: [{ type: 'doc', title: 'Hibernate ORM 6.6 User Guide', url: 'https://docs.jboss.org/hibernate/orm/6.6/userguide/html_single/Hibernate_User_Guide.html' }],
   },
   {
     id: 'connection-pool',

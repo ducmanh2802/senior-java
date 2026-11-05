@@ -14,3 +14,4 @@ Owns: `js/data/drills-shadow.js`, `scripts/validate.js`
 
 ## Notes
 - Added 120 shadow drills (drill-shadow-001..120) across 7 themes; validate OK.
+Reviewed-by: kilo (T141R)

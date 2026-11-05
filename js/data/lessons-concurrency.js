@@ -1625,4 +1625,803 @@ Lỗi hay gặp:
   related: ['concurrency-007', 'concurrency-013', 'concurrency-008'],
   tags: ['virtual threads', 'Loom', 'pinning', 'JEP 444', 'JEP 491', 'Semaphore'],
 },
+{
+  id: 'lesson-concurrency-006',
+  track: 'concurrency',
+  order: 6,
+  title: 'CompletableFuture từ gốc: hộp kết quả, callback và cách nối việc',
+  level: 'mid',
+  minutes: 40,
+  goals: [
+    'Giải thích được {{CompletableFuture}} là "hộp chứa kết quả chưa có" và vì sao mô hình callback không chiếm thread khi chờ',
+    'Viết đúng {{thenApply}} (biến đổi) và {{thenCompose}} (nối hai việc bất đồng bộ) mà không bị hộp lồng hộp',
+    'Gom nhiều lời gọi song song bằng {{thenCombine}}/{{allOf}} và lấy kết quả của từng cái',
+    'Xử lý lỗi bằng {{exceptionally}}/{{handle}}, phân biệt {{CompletionException}} và {{ExecutionException}}, và luôn truyền executor riêng cho việc IO',
+  ],
+  body: `### Điểm xuất phát: chờ cũng tốn thread
+Bạn gọi một API mất 200 ms. Cách cổ điển với {{Future}} của {{ExecutorService}}:
+
+~~~java
+ExecutorService pool = Executors.newFixedThreadPool(4);
+Future<String> f = pool.submit(() -> httpGet("https://api.example/price"));
+String text = f.get();                 // DỪNG tại dòng này tới khi có dữ liệu
+int price = Integer.parseInt(text);    // chỉ chạy sau khi có text
+~~~
+
+{{get()}} là lời gọi **chặn (blocking)**: thread gọi đứng lại ngay đó, không làm gì trong 200 ms. Một request thì chẳng sao, nhưng server của bạn có lúc 1.000 request đồng thời, mỗi request chờ 2 backend 200 ms nghĩa là ~1.000 thread đang **chờ không**, mỗi thread là một **platform thread** (thread thật của hệ điều hành, stack mặc định khoảng 1 MB) và CPU mất thời gian cho **context switch** (lưu trạng thái thread này, nạp thread khác lên chạy).
+
+**CompletableFuture** (có từ Java 8) đảo mô hình: thay vì đứng chờ, bạn giao việc rồi đăng ký "khi nào có kết quả thì làm tiếp những gì". Ba thuật ngữ hay dùng:
+- **bất đồng bộ (asynchronous)**: phát việc đi rồi làm việc khác, không dừng tại chỗ chờ.
+- **callback**: một hàm bạn đưa cho người khác; khi tới lượt, họ gọi lại hàm đó.
+- **stage**: một bước trong chuỗi việc ("bước 1 lấy JSON, bước 2 parse, bước 3 tính thuế").
+
+### CompletableFuture là một cái hộp
+Hình dung một cái hộp có ba trạng thái: **chưa có gì**, **đã có giá trị**, **đã có lỗi**. Chỉ được chuyển từ "chưa có gì" sang một trong hai trạng thái sau, một lần duy nhất.
+
+~~~java
+CompletableFuture<Integer> box = new CompletableFuture<>();   // hộp rỗng
+box.thenApply(v -> System.out.println("được " + v));          // đăng ký việc khi hộp đầy
+box.complete(95);                                             // điền vào: in "được 95"
+box.complete(99);                                             // hộp đã đầy: lệnh này bị bỏ qua, KHÔNG lỗi
+~~~
+
+{{complete(value)}} điền giá trị; {{completeExceptionally(error)}} điền lỗi; {{cancel(true)}} điền lỗi {{CancellationException}}. Ai điền thì **chính thread đó** kích hoạt các việc đã đăng ký. Đây là toàn bộ cơ chế: mỗi future giữ kết quả (hoặc lỗi) và danh sách các stage phụ thuộc; khi được điền đầy, nó chạy lần lượt các stage phụ thuộc đó.
+
+Vì nó cũng là một {{Future}}, bạn vẫn có {{get()}} (ném checked {{ExecutionException}}) và {{join()}} (ném unchecked {{CompletionException}}) khi thật sự cần kết quả ngay.
+
+### thenApply: biến kết quả thành kết quả khác (map)
+Giống {{Stream.map}}: hàm của bạn nhận giá trị, trả giá trị **khác**, mọi thứ vẫn nằm trong một hộp.
+
+~~~java
+CompletableFuture<String> json = CompletableFuture.supplyAsync(() -> httpGet(url), ioPool);
+CompletableFuture<Integer> price = json
+        .thenApply(body -> parsePrice(body))     // String -> Integer
+        .thenApply(p -> p + tax(p));             // Integer -> Integer
+~~~
+
+Đọc theo kiểu "được cái gì thì làm gì": được json thì parse, được price thì cộng thuế. Không dòng nào chặn.
+
+**Callback chạy trên thread nào?** Đây là chỗ hay sai nhất:
+- {{thenApply(f)}} (không có hậu tố {{Async}}): chạy trên **thread đã hoàn thành stage trước**. Ngoại lệ: nếu stage trước **đã xong rồi** tại thời điểm bạn gọi {{thenApply}}, f chạy **ngay trên thread gọi**, đồng bộ.
+- {{thenApplyAsync(f, exec)}}: luôn chuyển {{f}} sang {{exec}}; không truyền executor thì dùng {{ForkJoinPool.commonPool()}}.
+
+Vì vậy "không Async" chỉ nên dùng cho việc **nhanh** (đổi định dạng, lọc). Nếu bạn tính nặng hoặc gọi tiếp IO trong {{thenApply}} đang chạy trên thread của HTTP client, bạn chiếm thread đó và làm nghẽn cả client.
+
+### thenCompose: khi bước tiếp theo cũng phải chờ (flatMap)
+Bước sau **của chính nó cũng trả về một CompletableFuture**. Dùng {{thenApply}} thì bạn nhận một cái hộp đựng một cái hộp khác, không dùng được trực tiếp:
+
+~~~java
+CompletableFuture<User> user = findUser(id);           // CompletableFuture<User>
+CompletableFuture<CompletableFuture<List<Order>>> bad = user.thenApply(u -> findOrders(u));   // hộp lồng hộp: sai
+CompletableFuture<List<Order>> good = user.thenCompose(u -> findOrders(u));                   // đúng: đã làm phẳng
+~~~
+
+Quy tắc để không bao giờ chọn sai: nhìn **kiểu trả về của hàm trong ngoặc**. Hàm trả về giá trị thường thì dùng {{thenApply}}; hàm trả về {{CompletableFuture}} thì dùng {{thenCompose}}. Giống cặp {{map}}/{{flatMap}} trong Stream và {{map}}/{{flatMap}} trong Optional.
+
+### thenCombine và allOf: khi có nhiều việc độc lập
+- {{a.thenCombine(b, (va, vb) -> ...)}}: hai việc **độc lập** chạy song song; hàm gộp chạy khi cả hai đều xong.
+- {{CompletableFuture.allOf(a, b, c)}}: chờ **tất cả**, trả về {{CompletableFuture<Void>}} — tức là "cái còi hiệu lệnh", không chứa kết quả. Muốn lấy kết quả phải {{join()}} từng future (lúc đó chúng đã xong nên {{join()}} không chặn).
+- {{anyOf(a, b, c)}}: xong khi **cái đầu tiên** xong, kể cả xong vì lỗi.
+
+~~~text
+  findUser   ─┐
+  findCart   ─┼─ allOf ──> thenApply(gộp 3 kết quả) ──> future cuối
+  findPromo  ─┘
+~~~
+
+### Executor: đừng dùng cái mặc định
+{{CompletableFuture.supplyAsync(supplier)}} **không truyền executor** sẽ chạy trên {{ForkJoinPool.commonPool()}} — pool dùng chung cho cả JVM (kể cả parallel stream), mặc định chỉ khoảng "số core - 1" thread. Bạn đặt 8 lời gọi HTTP chậm 2 giây vào đó thì commonPool hết thread, và **mọi** parallel stream, mọi thư viện dùng commonPool khác trong cùng JVM bị đứng theo. Quy tắc cứng:
+
+| Loại việc | Chạy ở đâu |
+|---|---|
+| Chặn chờ (HTTP, JDBC, file, API đối tác) | executor **riêng**, cỡ đặt theo tài nguyên phía sau; hoặc virtual thread (Java 21) |
+| Tính toán thuần CPU, ngắn | commonPool chấp nhận được |
+| Việc nhanh (đổi format, lọc, gộp object) | dùng {{thenApply}} không Async, tận dụng thread vừa hoàn thành |
+
+{{runAsync(runnable)}} giống {{supplyAsync}} nhưng runnable không trả giá trị, nên kiểu là {{CompletableFuture<Void>}}.
+
+### Lỗi đi theo chuỗi, và hai lớp bọc
+Nếu một stage ném exception, các stage phụ thuộc **bỏ qua hàm của chúng** và future cuối cùng hoàn thành bằng lỗi; lỗi gốc bị bọc trong {{CompletionException}}. Bộ bắt lỗi:
+
+~~~java
+findUser(id)
+    .thenCompose(u -> findOrders(u))
+    .exceptionally(ex -> {                      // chỉ chạy khi có lỗi
+        Throwable root = (ex instanceof CompletionException && ex.getCause() != null) ? ex.getCause() : ex;
+        if (root instanceof TimeoutException) return List.of();     // fallback: trả danh sách rỗng
+        throw new IllegalStateException(root);                       // lỗi khác: để cả request fail
+    })
+    .whenComplete((v, ex) -> metrics.record(ex == null));            // log/metric, không đổi kết quả
+~~~
+
+- {{exceptionally(fn)}}: chỉ chạy khi lỗi, trả giá trị thay thế.
+- {{handle((value, error) -> ...)}}: luôn chạy, nhận cả giá trị lẫn lỗi, trả kết quả mới (dùng để "biến lỗi thành giá trị an toàn").
+- {{whenComplete((value, error) -> ...)}}: luôn chạy, **trả lại nguyên** kết quả/lỗi — hợp để log.
+- Muốn "một nhánh lỗi thì cả request fail": đừng gắn handler ở mỗi nhánh, để lỗi tự lan tới tương lai cuối rồi bắt ở đó.
+
+{{join()}} ném {{CompletionException}} (unchecked, lan được qua lambda mà không khai báo); {{get()}} ném {{ExecutionException}} (checked, buộc try/catch). Cả hai có {{getCause()}} là lỗi gốc. Trong {{exceptionally}}/{{handle}}, tham số lỗi **đã bị bọc**, nên đừng so kiểu trực tiếp ở lớp ngoài cùng.
+
+### Timeout: tương lai xong không có nghĩa là việc đã dừng
+Java 9 thêm {{orTimeout(t, unit)}} (hết giờ thì hoàn thành bằng {{TimeoutException}}) và {{completeOnTimeout(value, t, unit)}} (hết giờ thì dùng giá trị dự phòng). Hai điều phải nhớ:
+1. Chúng **không dừng** công việc bên dưới. Lời gọi HTTP vẫn chạy tới khi xong và vẫn chiếm thread của pool. Vẫn phải đặt read timeout ở tầng client (HTTP client, JDBC).
+2. {{cancel(true)}} trên CompletableFuture bỏ qua tham số {{mayInterruptIfRunning}}: không có ai để interrupt.
+
+### Bài tập mẫu: "nguồn nào lỗi thì bỏ qua"
+Yêu cầu hay gặp: gọi 5 nguồn giá song song, bỏ qua nguồn lỗi, lấy giá nhỏ nhất, chỉ báo lỗi khi **không** nguồn nào dùng được. Khuôn giải quyết bài toán "một phần thất bại là bình thường":
+
+~~~java
+List<CompletableFuture<Integer>> calls = new ArrayList<>();
+for (Supplier<Integer> s : sources) {
+    calls.add(CompletableFuture.supplyAsync(s, executor)
+            .handle((v, e) -> e == null ? v : null));   // chuẩn hoá: không nguồn nào "lỗi" nữa
+}
+CompletableFuture.allOf(calls.toArray(new CompletableFuture[0])).join();
+// allOf luôn xong bình thường; join() từng cái không chặn vì đã xong hết
+~~~
+
+Sau đó lọc null và lấy min. Đây chính là bài tập bên dưới.
+
+### Lỗi production hay gặp
+- Gọi {{join()}} **bên trong** một task của cùng pool hữu hạn: task A chờ task B, pool hết thread, không ai chạy được B — treo kiểu starvation deadlock.
+- Không gắn handler nào và cũng không ai {{join}}: exception biến mất không dấu vết, chỉ thấy request "treo rồi timeout".
+- Mất MDC/traceId, SecurityContext: chúng là {{ThreadLocal}} của thread gốc, callback chạy trên thread khác nên rỗng. Cần executor bọc context ({{TaskDecorator}} của Spring, Micrometer Context Propagation).
+- Quên {{return}} trong lambda một khối {{if}} có nhiều nhánh: hàm trả về null, future "thành công với null", và NPE ở chỗ không ngờ tới.
+- Trộn lẫn {{get()}} và {{join()}} trong cùng chuỗi, bắt {{ExecutionException}} nhưng lỗi thật đến nơi lại là {{CompletionException}}.
+
+### Liên hệ phỏng vấn
+Người hỏi hay bắt đầu từ "Future khác CompletableFuture thế nào?" rồi đào: "callback chạy trên thread nào?", "thenApply khác thenCompose?", "5 service phía sau, 1 service chậm thì xử lý ra sao?". Cách trả lời ăn điểm: nói được **tên** executor mặc định và tai hại của nó, nói được rằng timeout của future không dừng được lời gọi bên dưới nên vẫn cần timeout ở client, và đưa ra được chiến lược lỗi rõ ràng (fail-fast toàn bộ, hay chuẩn hoá từng nguồn về giá trị trung tính rồi gom). Bài 4 trong track là phiên nâng cao của chính nội dung này: không chặn thread gọi, trả về {{CompletableFuture}} thẳng cho tầng web — đọc tiếp bài đó sau bài này.`,
+  exercises: [
+    {
+      title: 'Giá tốt nhất từ nhiều nguồn: chạy song song, bỏ qua nguồn lỗi',
+      prompt: `Viết {{PriceAggregator.best(sources, executor)}} — phiên bản **chặn** (dùng trong batch job), để lắp ghép từng mảnh của CompletableFuture cho chắc.
+
+Chữ ký: {{static int best(List<Supplier<Integer>> sources, Executor executor)}}
+
+- Phát **mọi** nguồn (mỗi nguồn là một {{Supplier<Integer>}}) chạy **song song** trên {{executor}} được truyền vào. Không nguồn nào được chờ một nguồn khác trước khi bắt đầu.
+- Chờ tới khi mọi nguồn đã xong (thành công, lỗi, hoặc trả {{null}}), rồi trả về giá **nhỏ nhất** trong các kết quả hợp lệ.
+- Nguồn ném {{RuntimeException}} hoặc trả về {{null}} coi như **không tồn tại**, nhưng vẫn phải được gọi.
+- Không nguồn nào hợp lệ (bao gồm cả danh sách rỗng): ném {{NoSuchElementException}}.
+- Không dùng {{ForkJoinPool.commonPool()}}. Không {{shutdown}} executor (người gọi sở hữu nó).
+- Không bắt checked exception ({{Supplier}} không ném loại đó), không dùng {{Thread.sleep}}.
+
+Bài kiểm tra dùng một pool cố định và {{CyclicBarrier}} để buộc các nguồn phải thực sự chạy **cùng lúc**: nếu bạn chạy tuần tự thì barrier hết giờ và bài tập fail. Nó cũng kiểm tra tên thread để chắc bạn dùng executor được truyền.`,
+      starter: `class PriceAggregator {
+    static int best(List<Supplier<Integer>> sources, Executor executor) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static ExecutorService pool(int n) {
+        AtomicInteger seq = new AtomicInteger();
+        return Executors.newFixedThreadPool(n, r -> { Thread t = new Thread(r, "src-" + seq.incrementAndGet()); t.setDaemon(true); return t; });
+    }
+    static Supplier<Integer> boom(String msg) { return () -> { throw new IllegalStateException(msg); }; }
+    public static void main(String[] args) {
+        check("every source succeeds: returns the minimum", () -> {
+            ExecutorService ex = pool(4);
+            try { eq(95, PriceAggregator.best(List.of(() -> 120, () -> 95, () -> 110), ex)); }
+            finally { ex.shutdownNow(); }
+        });
+        check("a throwing source is skipped, the rest still counted", () -> {
+            ExecutorService ex = pool(4);
+            AtomicInteger good = new AtomicInteger();
+            AtomicInteger bad = new AtomicInteger();
+            Supplier<Integer> ok = () -> { good.incrementAndGet(); return 80; };
+            Supplier<Integer> broken = () -> { bad.incrementAndGet(); throw new IllegalStateException("vendor B 500"); };
+            try {
+                eq(80, PriceAggregator.best(List.of(broken, ok, broken, ok), ex));
+                eq(2, good.get());
+                eq(2, bad.get());   // không được bỏ qua nguồn nào chỉ vì nguồn trước đó lỗi
+            } finally { ex.shutdownNow(); }
+        });
+        check("null results are treated as missing", () -> {
+            ExecutorService ex = pool(4);
+            try { eq(140, PriceAggregator.best(List.of(() -> null, () -> 140, () -> null, () -> 190), ex)); }
+            finally { ex.shutdownNow(); }
+        });
+        check("all sources fail: NoSuchElementException and every source called", () -> {
+            ExecutorService ex = pool(4);
+            AtomicInteger calls = new AtomicInteger();
+            try {
+                List<Supplier<Integer>> sources = List.of(boom("a"), boom("b"), () -> { calls.incrementAndGet(); return null; });
+                try {
+                    int v = PriceAggregator.best(sources, ex);
+                    throw new AssertionError("phải ném NoSuchElementException, nhưng trả về " + v);
+                } catch (NoSuchElementException expected) { }
+                eq(1, calls.get());
+            } finally { ex.shutdownNow(); }
+        });
+        check("empty list: NoSuchElementException, no task submitted", () -> {
+            ExecutorService ex = pool(4);
+            AtomicInteger submitted = new AtomicInteger();
+            Executor counted = r -> { submitted.incrementAndGet(); ex.execute(r); };
+            try {
+                try {
+                    int v = PriceAggregator.best(List.of(), counted);
+                    throw new AssertionError("danh sách rỗng phải ném NoSuchElementException, nhưng trả về " + v);
+                } catch (NoSuchElementException expected) { }
+                eq(0, submitted.get());
+            } finally { ex.shutdownNow(); }
+        });
+        check("sources really run at the same time, on the given executor", () -> {
+            ExecutorService ex = pool(3);
+            CyclicBarrier barrier = new CyclicBarrier(3);   // chỉ qua được khi 3 nguồn đang chạy ĐỒNG THỜI
+            Set<String> threads = ConcurrentHashMap.newKeySet();
+            Supplier<Integer> sync = () -> {
+                threads.add(Thread.currentThread().getName());
+                try { barrier.await(2, TimeUnit.SECONDS); }
+                catch (Exception e) { throw new IllegalStateException("nguồn không chạy song song: " + e); }
+                return 300;
+            };
+            try {
+                eq(300, PriceAggregator.best(List.of(sync, sync, sync), ex));
+                eq(3, threads.size());
+                for (String t : threads) if (!t.startsWith("src-")) throw new AssertionError("nguồn chạy trên " + t + ", không phải executor được truyền");
+            } finally { ex.shutdownNow(); }
+        });
+        check("works on a single-thread executor (caller must not block a pool thread)", () -> {
+            ExecutorService ex = pool(1);
+            try { eq(7, PriceAggregator.best(List.of(() -> 30, () -> 7, () -> 22), ex)); }
+            finally { ex.shutdownNow(); }
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class PriceAggregator {
+    static int best(List<Supplier<Integer>> sources, Executor executor) {
+        List<CompletableFuture<Integer>> calls = new ArrayList<>();
+        for (Supplier<Integer> source : sources) {
+            calls.add(CompletableFuture.supplyAsync(source, executor)        // dùng executor của người gọi, không dùng commonPool
+                    .handle((value, error) -> error == null ? value : null)); // lỗi -> null để allOf luôn xong bình thường
+        }
+        CompletableFuture.allOf(calls.toArray(new CompletableFuture[0])).join();  // chờ tất cả; không nguồn nào còn lỗi
+        return calls.stream()
+                .map(CompletableFuture::join)        // đã xong nên join không chặn nữa
+                .filter(Objects::nonNull)            // nguồn lỗi hoặc trả null bị loại
+                .min(Integer::compare)
+                .orElseThrow(() -> new NoSuchElementException("no price available"));
+    }
+}`,
+      hints: [
+        'Vòng lặp đầu tiên **chỉ phát việc**, chưa lấy kết quả: {{CompletableFuture.supplyAsync(source, executor)}} và nhét vào {{List}}. Nếu bạn gọi {{get()}} ngay trong vòng lặp thì mọi nguồn chạy tuần tự.',
+        'Biến nguồn lỗi thành nguồn "trả null" để {{allOf}} luôn xong bình thường: {{.handle((v, e) -> e == null ? v : null)}}.',
+        '{{CompletableFuture.allOf(list.toArray(new CompletableFuture[0])).join()}} chờ tất cả. Sau đó {{join()}} trên từng future không còn chặn nữa.',
+        'Lọc {{null}} rồi {{min(Integer::compare)}}; {{Optional.orElseThrow(() -> new NoSuchElementException("no price available"))}} ném thẳng {{NoSuchElementException}} vì đoạn này chạy trên thread của người gọi.',
+      ],
+      explain: `Bốn mảnh ghép trong lời giải:
+1. {{supplyAsync(source, executor)}} cho mỗi nguồn: toàn bộ nguồn được phát đi **trước khi** có bất kỳ lần chờ nào, nên chúng chồng lấn thời gian. Test dùng {{CyclicBarrier(3)}} để bắt lỗi chạy tuần tự: nếu chỉ một nguồn chạy tại một thời điểm thì barrier không bao giờ đủ người, hết 2 giây, nguồn đó ném exception và kết quả cuối không phải 300.
+2. {{handle}} chuẩn hoá lỗi thành {{null}}. Nếu bỏ bước này, một nguồn lỗi làm {{allOf}} hoàn thành bằng lỗi và bạn mất luôn các nguồn tốt.
+3. {{allOf(...).join()}}: chờ đủ. {{join()}} ở đây chấp nhận được vì đây là bài tập dạng chặn; trong ứng dụng web hãy trả về {{CompletableFuture}} và gắn {{thenApply}} thay vì chặn thread request.
+4. {{join()}} trên từng future đã xong: chỉ đọc kết quả đã nằm trong hộp.
+
+{{NoSuchElementException}} được ném **bên ngoài** chuỗi future (trong stream chạy trên thread gọi), nên người dùng {{best}} bắt được trực tiếp, không bị bọc trong {{CompletionException}}. Nếu bạn viết {{allOf(...).thenApply(v -> ...orElseThrow...)}} thì lỗi sẽ đi vào future và {{join()}}/{{get()}} mới là chỗ ném ra, có bọc một lớp.
+
+Lỗi hay gặp:
+- {{for (var s : sources) results.add(supplyAsync(s, ex).get())}}: đúng về kết quả nhưng chạy tuần tự, tổng thời gian bằng tổng từng nguồn.
+- Dùng {{anyOf}} để "lấy nguồn nhanh nhất": đây là {{min}} về **giá**, không phải về tốc độ, và {{anyOf}} "thắng" cả khi nguồn lỗi.
+- Quên tham số executor: chạy trên commonPool, test tên thread báo đỏ, và trên production bạn đang dùng chung pool với mọi thành phần khác trong JVM.
+- {{join()}} mà không chuẩn hoá lỗi: bạn sẽ nhận {{CompletionException}} thay vì {{NoSuchElementException}} khi mọi nguồn lỗi.
+- Gọi {{best}} từ **bên trong** một task của {{executor}} đó với pool hữu hạn: starve, treo. Muốn thế thì phải dùng pool khác hoặc viết lại thành chuỗi callback.`,
+    },
+  ],
+  check: [
+    {
+      q: '{{CompletableFuture.supplyAsync(() -> doWork())}} và {{CompletableFuture.runAsync(() -> doWork())}} khác nhau ở đâu?',
+      options: ['Không khác gì, chỉ là hai tên gọi', '{{supplyAsync}} trả {{CompletableFuture}} chứa giá trị do {{doWork}} trả về; {{runAsync}} trả {{CompletableFuture<Void>}} vì Runnable không có giá trị', '{{runAsync}} chạy trên thread gọi, {{supplyAsync}} chạy trên pool', '{{supplyAsync}} là blocking, {{runAsync}} là non-blocking'],
+      answer: 1,
+      explain: `{{Supplier<T>}} có giá trị trả về nên hộp chứa {{T}}; {{Runnable}} trả void nên hộp là {{CompletableFuture<Void>}}. Cả hai đều async và đều dùng {{ForkJoinPool.commonPool()}} khi không truyền executor. Không có cái nào "blocking".`,
+    },
+    {
+      q: 'Future {{f}} **đã hoàn thành** từ lâu. Bạn gọi {{f.thenApply(x -> calc(x))}}. Khi nào {{calc}} chạy và trên thread nào?',
+      options: ['Ngay lập tức, trên thread vừa gọi {{thenApply}}', 'Ngay lập tức, trên thread của {{ForkJoinPool.commonPool()}}', 'Chờ tới khi có ai gọi {{join()}}', 'Trên thread đã hoàn thành {{f}}, dù nó đã chết'],
+      answer: 0,
+      explain: `Stage trước đã đầy nên không có gì để chờ: các CompletableFuture được thiết kế chạy stage phụ **ngay trên thread thêm nó vào** (đường đi nhanh, tránh lập lịch thừa). Muốn chắc chắn đổi thread thì dùng {{thenApplyAsync(fn, executor)}}. Không có gì chặn tới {{join()}} và thread cũ đã chết thì không chạy được gì.`,
+    },
+    {
+      q: '{{CompletableFuture.allOf(a, b, c)}} trả về gì, và lấy kết quả của {{a}} thế nào?',
+      options: ['{{CompletableFuture<List<T>>}}, kết quả đã gom sẵn', '{{CompletableFuture<Void>}}; sau khi nó xong thì gọi {{a.join()}} để đọc kết quả của a', '{{CompletableFuture<Void>}}; phải gọi {{get()}} trên mỗi future và mỗi lần sẽ chặn vài giây', 'Trả về future của cái xong sớm nhất'],
+      answer: 1,
+      explain: `{{allOf}} chỉ là "còi hiệu lệnh": nó không chứa giá trị nên kiểu là {{Void}}, và không tự gom gì cả. Sau khi nó hoàn thành, các future thành phần **đã xong**, nên {{join()}} chỉ đọc kết quả đã có, không chặn. Đáp án đầu là cách bạn phải tự viết bằng {{thenApply}}. Mô tả "cái xong sớm nhất" là {{anyOf}}.`,
+    },
+    {
+      q: 'Một stage giữa chuỗi ném {{IOException}} ({{HttpClient}} bọc nó thành {{RuntimeException}} khi chạy thật, nhưng coi như lỗi gốc là {{IOException}}). Chuỗi không có handler. Người gọi cuối cùng dùng {{join()}}. Nhận được gì?',
+      options: ['{{IOException}}', '{{CompletionException}} mà {{getCause()}} là {{IOException}}', '{{ExecutionException}} có cause là {{IOException}}', 'Không nhận được gì, lỗi bị nuốt'],
+      answer: 1,
+      explain: `Lỗi lan qua các stage và được bọc một lớp {{CompletionException}}; {{join()}} ném loại unchecked đó, {{getCause()}} là lỗi gốc. {{ExecutionException}} là phiên bản checked của {{get()}}. Lỗi không bị nuốt vì future cuối đã hoàn thành bằng lỗi — ai {{join}}/{{get}} mới thấy; nếu không ai chờ thì đúng là... im lặng, đó là lý do luôn phải có handler hoặc điểm chờ.`,
+    },
+  ],
+  related: ['concurrency-005', 'concurrency-037', 'concurrency-013'],
+  tags: ['CompletableFuture', 'thenApply', 'thenCompose', 'allOf', 'executor', 'callback'],
+},
+{
+  id: 'lesson-concurrency-007',
+  track: 'concurrency',
+  order: 7,
+  title: 'Rate limiter và Semaphore: giới hạn tốc độ và giới hạn số việc đồng thời',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Phân biệt **tốc độ** (bao nhiêu việc mỗi giây) và **độ đồng thời** (bao nhiêu việc đang chạy cùng lúc), và biết công cụ nào chặn cái nào',
+    'Viết được token bucket và giải thích {{capacity}} (burst) khác {{refill rate}} ở đâu',
+    'Viết sliding window counter và chỉ ra vì sao fixed window cho phép gấp đôi hạn mức ở biên',
+    'Dùng {{Semaphore}} đúng: {{release()}} trong {{finally}}, {{tryAcquire}} có timeout, và cách làm test deterministic bằng đồng hồ giả',
+  ],
+  body: `### Hai thứ hay bị gọi chung là "giới hạn tải"
+- **Độ đồng thời (concurrency)**: tại một thời điểm có bao nhiêu việc **đang chạy**. Ví dụ hồ bơi chỉ cho 3 người nhảy cùng lúc.
+- **Tốc độ (rate)**: trong một khoảng thời gian có bao nhiêu việc **được bắt đầu**. Ví dụ quầy phát 100 vé mỗi phút, dù mỗi người chỉ ở trong 2 giây.
+
+Chúng không suy ra nhau. Nếu mỗi request tới DB mất 10 ms thì 3 request đồng thời tương đương ~300 request/giây; nếu DB chậm lại 2 giây thì cùng 3 request đồng thời chỉ còn ~1,5 request/giây. Vì vậy "Semaphore(3)" không phải là "100 request/giây", và ngược lại.
+
+| Nhu cầu | Công cụ |
+|---|---|
+| Bảo vệ tài nguyên đếm theo **số luồng đang dùng** (connection pool, số file đang mở, "tối đa 50 request đồng thời tới đối tác") | {{Semaphore}} |
+| Bảo vệ hạn mức theo **thời gian** (100 req/s, 1 triệu token LLM mỗi phút, chống spam) | rate limiter: token bucket / sliding window |
+| Cả hai (thường gặp trong thật) | bulkhead (Semaphore) + rate limiter đặt cạnh nhau |
+
+Vì sao phải **tự** giới hạn trước khi người khác giới hạn bạn: đối tác trả {{HTTP 429 Too Many Requests}} (kèm header {{Retry-After}} nói chờ bao lâu), DB bị quá tải, hóa đơn tăng theo số request, và tệ nhất là "retry storm": client bị từ chối rồi retry ngay lập tức, làm tải tăng gấp nhiều lần và hệ thống không bao giờ hồi phục.
+
+### Semaphore từng bước
+{{Semaphore}} là cái bình chứa {{n}} **permit** (vé). Lấy vé thì giảm số vé trong bình; trả vé thì tăng lại.
+
+~~~java
+Semaphore permits = new Semaphore(3);            // 3 vé
+void handle(Request r) throws InterruptedException {
+    permits.acquire();                            // hết vé thì DỪNG tại đây chờ
+    try {
+        partnerClient.call(r);                    // tối đa 3 lời gọi đang chạy đồng thời
+    } finally {
+        permits.release();                        // BẮT BUỘC nằm trong finally
+    }
+}
+~~~
+
+| API | Hành vi |
+|---|---|
+| {{acquire()}} | lấy 1 vé, chờ vô hạn nếu hết; bị interrupt thì ném {{InterruptedException}} |
+| {{acquireUninterruptibly()}} | chờ tới khi lấy được, không bị interrupt đánh thức |
+| {{tryAcquire()}} | lấy nếu còn vé, **không chờ**, trả {{true/false}} |
+| {{tryAcquire(200, TimeUnit.MILLISECONDS)}} | chờ tối đa 200 ms, hết giờ trả {{false}} — cách biến "chờ" thành "từ chối nhanh" |
+| {{release()}} | thêm 1 vé vào bình (**không cần** đã {{acquire}} trước đó), số vé có thể vượt {{n}} |
+| {{drainAcquire(n)}} | giật {{n}} vé đang có, trả về số giật được, không chờ |
+| {{new Semaphore(3, true)}} | công bằng: ai chờ trước được cấp trước; đắt hơn vì phải xếp hàng |
+
+Hai chi tiết hay bị hỏi:
+1. **Mặc định không công bằng (non-fair)**: thread vừa được đánh thức có thể giành vé trước người chờ lâu hơn, đổi lại throughput cao hơn. Chọn {{fair = true}} khi bạn thấy starvation trong metric, không chọn theo cảm giác.
+2. {{release()}} không "thuộc về" ai: gọi release mà không acquire là **tăng** số vé. Vì thế phần code cho phép release thừa (release trong {{catch}}, hoặc release mà không vào {{try}}) làm giới hạn biến mất một cách im lặng.
+
+Bẫy số một của Semaphore: vé bị **rò**. Nếu {{release()}} không nằm trong {{finally}} mà {{partnerClient.call}} ném exception, mỗi lần lỗi mất một vé vĩnh viễn; sau 3 lần lỗi thì {{acquire()}} chờ mãi và cả service đứng, dù CPU rảnh.
+
+### Token bucket: tốc độ trung bình, cho phép burst
+Hình dung một cái bucket (xô) chứa tối đa {{capacity}} viên bi (token). Một vòi nhỏ rót {{refillPerSecond}} viên mỗi giây. Mỗi request lấy 1 viên; không còn viên thì bị từ chối ngay.
+
+~~~text
+          +-----------+
+ refilling|  TOKENS   |  <--- moi giay them 100, tran 200 la dung
+   +100/s |           |
+          +-----------+
+                 |
+            tryAcquire(): con token -> lay 1, het -> tu choi
+~~~
+
+- {{refillPerSecond}} = **tốc độ trung bình** được phép về lâu dài.
+- {{capacity}} = **cỡ burst**: vì bucket đã đầy sau một thời gian yên tĩnh, bạn có thể dồn 200 request trong 1 giây nếu bucket đang đầy, rồi bị giới hạn lại còn 100/giây. Đây là tính năng (chấp nhận traffic gợn sóng), không phải bug — nhưng nó cũng có nghĩa là ngay sau một khoảng lặng, hệ thống đang chịu đỉnh gấp đôi hạn mức trung bình.
+
+Cách cài đặt đúng không cần thread rót bi định kỳ. Chỉ cần nhớ **lần rót cuối cùng** và số token hiện có, tính lúc dùng ("refill lười"):
+
+~~~java
+// elapsed là số nano kể từ lần kiểm tra trước
+double gained = elapsed / 1_000_000_000.0 * refillPerSecond;
+tokens = Math.min(capacity, tokens + gained);      // cắt trần ở capacity: không bao giờ dự trữ burst
+if (tokens >= 1.0) { tokens -= 1.0; return true; }
+return false;
+~~~
+
+Nếu mỗi giây lại "cộng 100 vào biến" bằng một thread định kỳ thì sai lệch tích lũy khi máy treo, và bạn thêm một thread phải quản lý. Refill lười chỉ là số học trên timestamps.
+
+So sánh nhanh: **leaky bucket** (xô rò đáy) không cho burst — mọi request ra đều đặn một dòng, hợp với việc phải ghi xuống hàng đợi; token bucket cho burst, hợp với API quota. **Guava {{RateLimiter}}** và **Resilience4j {{RateLimiter}}** là hai thư viện phổ biến cung cấp sẵn bản warm-up/queued; trong phỏng vấn vẫn bị yêu cầu tự viết để kiểm tra bạn hiểu burst.
+
+### Sliding window: đếm đúng trong "1 giây gần nhất"
+Kiểm tra "trong {{windowNanos}} **vừa rồi** đã cho phép bao nhiêu request chưa". Cách chính xác nhất: nhớ danh sách thời điểm các request **được chấp nhận**.
+
+~~~java
+Deque<Long> hits = new ArrayDeque<>();          // chỉ lưu request ĐƯỢC chấp nhận
+synchronized boolean allow() {
+    long now = clock.getAsLong();
+    while (!hits.isEmpty() && now - hits.peekFirst() >= window) hits.pollFirst();   // cái nào hết hạn nằm ở đầu
+    if (hits.size() >= max) return false;
+    hits.addLast(now);
+    return true;
+}
+~~~
+
+So với **fixed window counter** (một bộ đếm cho mỗi ô giây, reset đúng giờ), sliding window tránh được cú sốc biên:
+
+~~~text
+fixed window, max 3 request moi giay:
+  giay 0: 3 request luc 0,90s -> du 3; bo dem reset luc 1,00s
+  giay 1: 3 request luc 1,05s -> lai du 3
+  => trong khoang 0,90s -> 1,05s (0,15s) co 6 request = 40 req/s, trong khi limit la 3 req/s
+
+sliding window, cung max 3:
+  3 request luc 0,90s -> den 1,05s van dem trong cua so 1 giay => tu choi ca 3
+~~~
+
+Nhược điểm: bộ nhớ tỉ lệ với số request trong cửa sổ (10.000 req/giây trong cửa sổ 1 phút là 600.000 timestamp). Người ta khắc phục bằng **sliding window counter** (chia cửa sổ thành vài ô nhỏ, mỗi ô chỉ giữ một số đếm, chấp nhận sai số) hoặc dùng **token bucket** khi chỉ cần xấp xỉ.
+
+### Một JVM hay nhiều JVM
+Limiter trong tiến trình của bạn chỉ đếm request **của chính tiến trình đó**. Service chạy 4 instance, mỗi instance đặt 100 req/s thì đối tác nhận 400 req/s. Hai hướng xử lý:
+- **Chia hạn mức tĩnh**: mỗi instance {{limit / số instance}}; đơn giản nhưng sai khi autoscale hoặc một instance nhận nhiều traffic hơn (cần load balancer chia đều), và mỗi lần scale phải sửa cấu hình.
+- **Bộ đếm chung**: để state ở nơi mọi instance cùng thấy — Redis (kho dữ liệu trong RAM, nhiều server cùng đọc/ghi; lệnh {{INCR}} + {{EXPIRE}} hoặc Lua script chạy **nguyên tử** trên server Redis), hoặc một gateway tập trung. Đổi lại thêm một round-trip mạng cho mỗi quyết định, và Redis sập thì limiter "cho qua hết" hoặc "chặn hết" — phải chọn fallback rõ ràng.
+
+### Test sao cho không flaky
+Hai kỹ thuật mà bài tập dùng:
+1. **Tiêm đồng hồ**: nhận {{LongSupplier clockNanos}} thay vì gọi {{System.nanoTime()}}. Test tự quay đồng hồ 500 ms, 1 giây, 60 giây — nhanh, tái lập tuyệt đối, và kiểm tra được cả trường hợp đồng hồ đứng yên.
+2. **Test đa luồng không đoán thời gian**: {{CountDownLatch(1)}} làm cổng xuất phát để 16 thread cùng lao vào, mỗi thread gọi {{tryAcquire()}} **cho tới khi bị từ chối** trên một bucket {{capacity = 100000}} và đồng hồ đóng băng. Không refill nghĩa là tổng số lần cấp **phải đúng bằng** capacity — một con số chính xác, không phải "khoảng bao đó". Code thiếu {{synchronized}} sẽ cộng/trừ {{tokens}} (hay {{size}} của danh sách hit) mất cập nhật, nên cấp NHIỀU hơn capacity; {{join(timeout)}} để không bao giờ treo. Đây chính là cách race "lộ ra ổn định": đừng chờ hai thread tình cờ chồng lấn vài nano giây, mà bắt chúng đánh nhau cả trăm nghìn lần.
+
+### Lỗi production hay gặp
+- Quên {{release()}} khi lỗi: vé rò, tới khi hết vé thì mọi request chờ tới timeout hàng loạt.
+- Đặt limit theo **số instance bạn nghĩ là có**, không theo tài nguyên thật phía sau: sau một đợt autoscale, DB ăn gấp đôi số connection cho phép.
+- Fixed window counter: khách hàng kêu "các bạn cho tôi gấp đôi quota trong 2 giây", hoặc ngược lại traffic đều đặn vẫn bị chặn ở đầu mỗi ô.
+- Token bucket với {{capacity}} quá lớn so với khả năng thật của đối tác: burst đánh sập backend dù "trung bình thì đúng limit".
+- Chặn trong lúc xin permit mà không có timeout: {{acquire()}} vô hạn biến một dependency chậm thành toàn bộ hàng đợi request treo (nên dùng {{tryAcquire(timeout)}} rồi fail-fast, và đặt timeout **nhỏ hơn** timeout của client).
+- Retry mà không backoff và không tính tới {{Retry-After}}: tự gây ra retry storm.
+- Không có **circuit breaker**: limiter giữ tốc độ gửi đi, còn circuit breaker là "cắt cầu dao" khi phía sau liên tục lỗi, cho hệ thống thở (Resilience4j cung cấp cả hai).
+
+### Liên hệ phỏng vấn
+Câu hay gặp: "API của bạn gọi một đối tác chỉ nhận 100 req/s, service chạy 6 instance, thiết kế thế nào?", "Semaphore khác RateLimiter ở đâu?", "burst thì tính sao?". Trả lời ăn điểm: tách rõ concurrency và rate, nêu token bucket cùng ý nghĩa {{capacity}}/burst, chỉ ra vấn đề nhiều instance và hai chiến lược (chia tĩnh so với bộ đếm chung qua Redis/gateway), nói được fallback khi bộ đếm chung chết, và biết cách test deterministic bằng đồng hồ tiêm vào. Nếu đề bài là "bảo vệ DB", hãy nói thêm về bulkhead và connection pool — đó mới là chỗ thắt thật sự.`,
+  exercises: [
+    {
+      title: 'Token bucket thread-safe với đồng hồ tiêm vào',
+      prompt: `Viết {{TokenBucket}} — bộ giới hạn tốc độ kiểu "xô token" (token bucket: một cái xô chứa viên bi, mỗi request lấy một viên).
+
+Chữ ký constructor: {{TokenBucket(int capacity, int refillPerSecond, LongSupplier clockNanos)}}
+- {{capacity}}: số token tối đa bucket chứa, cũng là cỡ burst lớn nhất.
+- {{refillPerSecond}}: số token được thêm mỗi giây (tốc độ trung bình).
+- {{clockNanos}}: nguồn thời gian tính bằng nano giây. Khi chạy thật là {{System.nanoTime()}}, khi test là một đồng hồ giả do test quay tay. **Không** được gọi {{System.nanoTime()}} nội bộ.
+
+Method duy nhất: {{boolean tryAcquire()}} — xin 1 token, **không bao giờ chặn** và không bao giờ ném exception.
+- Bucket **khởi tạo ở trạng thái đầy** ({{capacity}} token).
+- Trước mỗi lần xin, nạp token theo thời gian đã trôi kể từ lần kiểm tra trước: thêm {{(nano trôi / 1 tỷ) * refillPerSecond}} token, nhưng không bao giờ vượt {{capacity}}.
+- Nếu còn ít nhất 1 nguyên token thì trừ 1 và trả {{true}}; nếu không còn thì trả {{false}}. Không được "ghi nợ" (token không bao giờ âm), không được cho phép vượt hạn mức chỉ vì thread khác đang chờ.
+- Phải **thread-safe**: nhiều thread cùng gọi thì tổng số lần trả {{true}} không được vượt số token thật sự tồn tại.
+- Không dùng {{Thread.sleep}}, không tạo thread nền để "rót" token (tính lười bằng công thức), không giữ một hàng đợi token thật.
+
+Gợi ý về thời gian: vì test sẽ đứng yên đồng hồ và cả quay đồng hồ 60 giây, mọi hành vi phải suy ra từ {{clockNanos}} mà thôi.`,
+      starter: `class TokenBucket {
+    TokenBucket(int capacity, int refillPerSecond, LongSupplier clockNanos) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean tryAcquire() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static final long SECOND = 1_000_000_000L;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static int acquire(TokenBucket b, int times) {
+        int ok = 0;
+        for (int i = 0; i < times; i++) if (b.tryAcquire()) ok++;
+        return ok;
+    }
+    static void joinOrFail(Thread t, String what) {
+        try { t.join(5000); } catch (InterruptedException e) { throw new AssertionError(e); }
+        if (t.isAlive()) throw new AssertionError(what + " vẫn chạy sau 5s (tryAcquire bị chặn?)");
+    }
+    public static void main(String[] args) {
+        check("fresh bucket is full: burst up to capacity, then reject (clock frozen)", () -> {
+            AtomicLong clock = new AtomicLong(0);
+            TokenBucket b = new TokenBucket(3, 1, clock::get);
+            eq(3, acquire(b, 3));
+            eq(0, acquire(b, 5));
+        });
+        check("1.1s of refill at 2 tokens/s grants exactly 2, not 1 and not 3", () -> {
+            AtomicLong clock = new AtomicLong(0);
+            TokenBucket b = new TokenBucket(3, 2, clock::get);
+            eq(3, acquire(b, 10));
+            clock.addAndGet(SECOND + SECOND / 10);
+            eq(2, acquire(b, 10));
+        });
+        check("fractional refill accumulates: 600ms at 3 tokens/s grants exactly 1", () -> {
+            AtomicLong clock = new AtomicLong(0);
+            TokenBucket b = new TokenBucket(5, 3, clock::get);
+            eq(5, acquire(b, 20));
+            clock.addAndGet(600 * (SECOND / 1000));
+            eq(1, acquire(b, 6));
+        });
+        check("long idle period does not exceed capacity", () -> {
+            AtomicLong clock = new AtomicLong(0);
+            TokenBucket b = new TokenBucket(4, 10, clock::get);
+            eq(4, acquire(b, 30));
+            clock.addAndGet(60 * SECOND);
+            eq(4, acquire(b, 30));
+        });
+        check("rejected requests create no debt: 1000 tokens/s is still capped at 2", () -> {
+            AtomicLong clock = new AtomicLong(0);
+            TokenBucket b = new TokenBucket(2, 1000, clock::get);
+            eq(2, acquire(b, 2));
+            eq(0, acquire(b, 50));
+            clock.addAndGet(SECOND / 2);              // dù lãi 500 token vẫn bị cắt trần ở capacity
+            eq(2, acquire(b, 20));
+            eq(0, acquire(b, 20));
+        });
+        check("the absolute origin of the clock does not matter", () -> {
+            AtomicLong clock = new AtomicLong(5_000 * SECOND);
+            TokenBucket b = new TokenBucket(6, 1, clock::get);
+            eq(6, acquire(b, 40));
+            eq(0, acquire(b, 3));
+        });
+        check("16 threads drain a 100000-token bucket on a frozen clock: grants exactly capacity", () -> {
+            AtomicLong now = new AtomicLong(0);
+            TokenBucket b = new TokenBucket(100_000, 1, now::get);   // đồng hồ đứng yên -> không refill -> tổng lần cấp PHẢI đúng bằng capacity
+            AtomicInteger granted = new AtomicInteger();
+            int threads = 16;
+            CountDownLatch gate = new CountDownLatch(1);         // cổng xuất phát: 16 thread cùng lao vào tryAcquire
+            List<Thread> ts = new ArrayList<>();
+            for (int t = 0; t < threads; t++) {
+                Thread th = new Thread(() -> {
+                    try { gate.await(); } catch (InterruptedException e) { return; }
+                    while (b.tryAcquire()) granted.incrementAndGet();
+                });
+                th.setDaemon(true);
+                ts.add(th);
+                th.start();
+            }
+            gate.countDown();
+            for (Thread th : ts) joinOrFail(th, "bucket-thread");
+            // thiếu synchronized -> mất cập nhật khi cộng/trừ tokens -> số lần cấp LỚN HƠN capacity
+            eq(100_000, granted.get());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class TokenBucket {
+    private final int capacity;
+    private final double tokensPerNano;      // refillPerSecond quy đổi ra "token mỗi nano giây"
+    private final LongSupplier clock;
+    private double tokens;                   // giữ phần lẻ: 0,7 token thì chưa đủ cho 1 request
+    private long lastRefillNanos;
+
+    TokenBucket(int capacity, int refillPerSecond, LongSupplier clockNanos) {
+        this.capacity = capacity;
+        this.tokensPerNano = refillPerSecond / 1_000_000_000.0;
+        this.clock = clockNanos;
+        this.lastRefillNanos = clockNanos.getAsLong();
+        this.tokens = capacity;              // bucket khởi tạo ở trạng thái đầy
+    }
+
+    synchronized boolean tryAcquire() {
+        long now = clock.getAsLong();
+        long elapsed = now - lastRefillNanos;
+        if (elapsed > 0) {                   // refill lười: chỉ tính khi có người hỏi
+            tokens = Math.min(capacity, tokens + elapsed * tokensPerNano);
+            lastRefillNanos = now;
+        }
+        if (tokens < 1.0) return false;      // không mượn token, không cho âm
+        tokens -= 1.0;
+        return true;
+    }
+}`,
+      hints: [
+        'Ba field trạng thái: {{tokens}} (kiểu {{double}} để giữ phần lẻ), {{lastRefillNanos}}, và {{clock}}. Không cần danh sách token.',
+        'Công thức nạp: {{tokens = Math.min(capacity, tokens + (now - lastRefillNanos) / 1_000_000_000.0 * refillPerSecond)}}; sau đó gán {{lastRefillNanos = now}}.',
+        'Bọc toàn bộ {{tryAcquire()}} trong {{synchronized}}: đọc-then-sửa {{tokens}} là một thao tác ghép (read-modify-write), hai thread cùng thấy {{tokens = 1.0}} thì cả hai cùng trừ và cùng được cấp.',
+        'Đồng hồ nano không có gốc cố định ({{System.nanoTime()}} trả về một số lớn bất kỳ), và test 6 quay clock tới mốc 5000 giây: hãy lấy mốc {{lastRefillNanos = clockNanos.getAsLong()}} ngay trong constructor và đặt {{tokens = capacity}}, đừng suy số token từ một mốc thời gian tuyệt đối.',
+      ],
+      explain: `Toàn bộ sự tinh vi nằm ở **refill lười**: không có thread nào rót token cả. Mỗi lần ai đó xin, ta tính "từ lần kiểm tra trước tới giờ trôi bao lâu, tương đương bao nhiêu token", cộng vào và cắt trần ở {{capacity}}. Kết quả giống hệt một bộ đếm chạy định kỳ nhưng không tích sai lệch khi JVM bị pause, và test điều khiển được 100 phần trăm thời gian bằng cách quay biến {{AtomicLong}}.
+
+{{double}} cho phần lẻ là điểm hay bị bỏ: với {{refillPerSecond = 3}}, sau 0,5 giây chỉ có 1,5 token. Dùng {{int}} và làm tròn xuống ở mỗi bước thì 1,5 thành 1, lần sau lại tính từ 0, và bạn **mất** nửa token mỗi nửa giây — hạn mức thực tế tụt còn 2/giây. Nếu thích {{long}}, hãy lưu "nano còn dư" và chỉ cấp khi tích đủ {{1_000_000_000 / refillPerSecond}}.
+
+{{synchronized}} là đủ, và là lựa chọn nên nói trong phỏng vấn: thao tác cần bảo vệ là chuỗi đọc-cộng-cắt trần-trừ, {{refillPerSecond}} vài trăm lần/giây thì lock không phải nút thắt. Muốn không lock thì CAS với một {{long}} đóng gói (số token và timestamp) — phức tạp hơn và dễ sai. Test cuối ép bạn chọn đúng: 16 thread cùng rút một bucket 100000 token tới khi cạn, đồng hồ đứng yên nên tổng số lần cấp **phải bằng đúng** {{capacity}}; code không nguyên tử cấp NHIỀU HƠN vì hai thread cùng thấy {{1.0}}, cùng trả {{true}} nhưng một lần trừ bị ghi đè.
+
+Lỗi hay gặp:
+- Quên cắt trần ở {{capacity}}: sau một đêm không traffic, sáng ra burst cực lớn, đúng lúc đối tác dễ sập nhất.
+- Quên cập nhật {{lastRefillNanos}}: hoặc token tăng phi mã, hoặc không bao giờ tăng.
+- Gọi {{System.nanoTime()}} ở một chỗ nào đó: test đồng hồ giả vẫn có thể qua, nhưng khi traffic thật đến, hành vi lệch và bạn không tài nào tái hiện bug.
+- Trả {{true}} rồi mới trừ token: khi exception chen giữa, token bay mất; hoặc trừ khi chưa đủ dẫn tới token âm.
+- Cho {{tryAcquire()}} "chờ 5 ms" bằng {{Thread.sleep}}: mất tính xác định của test và làm tốn thread, trong khi ý nghĩa của API này là **không bao giờ chặn**.`,
+    },
+    {
+      title: 'Sliding window log: chặn đúng "max request trong cửa sổ trượt"',
+      prompt: `Viết {{RateWindow}} — bộ giới hạn kiểu "trong {{windowNanos}} **vừa rồi** có tối đa {{maxRequests}} request được chấp nhận".
+
+Chữ ký: {{RateWindow(int maxRequests, long windowNanos, LongSupplier clockNanos)}} và method {{boolean allow()}}.
+- {{allow()}} không bao giờ chặn, không bao giờ ném exception; trả {{true}} nếu request được chấp nhận.
+- Một request **chỉ được tính vào cửa sổ nếu nó được chấp nhận**. Request bị từ chối không để lại dấu vết (không được "đếm cả những cái bị chặn").
+- Một request chấp nhận tại thời điểm {{t}} **không còn** được tính khi {{now - t >= windowNanos}} (đúng bằng {{windowNanos}} là đã hết hạn).
+- Nếu {{maxRequests < 1}} hoặc {{windowNanos <= 0}} thì ném {{IllegalArgumentException}} từ constructor.
+- Phải thread-safe; không {{Thread.sleep}}, không {{System.nanoTime()}} nội bộ, không thread nền.
+
+Phát biểu lại để bạn chắc yêu cầu: tại mọi thời điểm, số request được chấp nhận có thời điểm nằm trong khoảng {{(now - windowNanos, now]}} phải luôn nhỏ hơn hoặc bằng {{maxRequests}}. Đây chính là điều mà fixed window counter (reset bộ đếm mỗi ô thời gian) **không** đảm bảo.`,
+      starter: `class RateWindow {
+    RateWindow(int maxRequests, long windowNanos, LongSupplier clockNanos) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean allow() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static final long SECOND = 1_000_000_000L;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static int allow(RateWindow w, int times) {
+        int ok = 0;
+        for (int i = 0; i < times; i++) if (w.allow()) ok++;
+        return ok;
+    }
+    static void joinOrFail(Thread t, String what) {
+        try { t.join(5000); } catch (InterruptedException e) { throw new AssertionError(e); }
+        if (t.isAlive()) throw new AssertionError(what + " vẫn chạy sau 5s (allow() bị chặn?)");
+    }
+    public static void main(String[] args) {
+        check("rejects everything above the limit inside one window", () -> {
+            AtomicLong clock = new AtomicLong(0);
+            RateWindow w = new RateWindow(3, SECOND, clock::get);
+            eq(3, allow(w, 3));
+            eq(0, allow(w, 10));
+        });
+        check("a hit expires exactly when the window elapses", () -> {
+            AtomicLong clock = new AtomicLong(0);
+            RateWindow w = new RateWindow(2, SECOND, clock::get);
+            eq(2, allow(w, 5));
+            clock.set(SECOND - 1);
+            eq(0, allow(w, 4));                 // vẫn trong cửa sổ (t, t+1s]
+            clock.set(SECOND);
+            eq(2, allow(w, 5));                 // 2 hit lúc 0s vừa hết hạn
+        });
+        check("expired hits leave at their own time, not on a boundary", () -> {
+            AtomicLong clock = new AtomicLong(0);
+            RateWindow w = new RateWindow(2, SECOND, clock::get);
+            eq(1, allow(w, 1));                 // t = 0
+            clock.set(600 * (SECOND / 1000));   // t = 0,6s
+            eq(1, allow(w, 4));                 // thêm 1 cái nữa -> đầy 2
+            clock.set(SECOND + SECOND / 2);     // t = 1,5s: hit 0s hết hạn, hit 0,6s còn
+            eq(1, allow(w, 4));                 // cửa sổ lại đầy: 0,6s và 1,5s
+            clock.set(2 * SECOND);              // hit 0,6s hết hạn từ lúc 1,6s
+            eq(1, allow(w, 4));                 // chỉ còn hit 1,5s
+            clock.set(2 * SECOND + SECOND / 2); // hit 1,5s vừa hết hạn
+            eq(1, allow(w, 4));
+        });
+        check("sliding window kills the fixed-window boundary burst", () -> {
+            AtomicLong clock = new AtomicLong(0);
+            RateWindow w = new RateWindow(3, SECOND, clock::get);
+            clock.set(900 * (SECOND / 1000));           // 0,9s: cuối "ô" theo kiểu đếm cố định
+            eq(3, allow(w, 10));
+            clock.set(SECOND + 50 * (SECOND / 1000));   // 1,05s: sang "ô" mới, fixed counter sẽ cho thêm 3
+            eq(0, allow(w, 10));
+            clock.set(SECOND + 899 * (SECOND / 1000));  // 1,899s: 3 hit lúc 0,9s mới trôi qua 999ms
+            eq(0, allow(w, 10));
+            clock.set(SECOND + 900 * (SECOND / 1000));  // 1,900s: đủ 1 giây, 3 hit trọn vẹn khỏi cửa sổ
+            eq(3, allow(w, 10));
+        });
+        check("invalid configuration is rejected", () -> {
+            AtomicLong clock = new AtomicLong(0);
+            try { new RateWindow(0, SECOND, clock::get); throw new AssertionError("maxRequests = 0 phải lỗi"); }
+            catch (IllegalArgumentException expected) { }
+            try { new RateWindow(5, 0, clock::get); throw new AssertionError("windowNanos = 0 phải lỗi"); }
+            catch (IllegalArgumentException expected) { }
+        });
+        check("16 threads push 200000 requests through a frozen window: allows exactly maxRequests", () -> {
+            AtomicLong now = new AtomicLong(0);
+            RateWindow w = new RateWindow(200_000, SECOND, now::get);   // đồng hồ đứng yên -> không hit nào hết hạn -> cho qua đúng max
+            AtomicInteger ok = new AtomicInteger();
+            int threads = 16;
+            CountDownLatch gate = new CountDownLatch(1);             // 16 thread cùng gọi allow() một lúc
+            List<Thread> ts = new ArrayList<>();
+            for (int t = 0; t < threads; t++) {
+                Thread th = new Thread(() -> {
+                    try { gate.await(); } catch (InterruptedException e) { return; }
+                    while (w.allow()) ok.incrementAndGet();
+                });
+                th.setDaemon(true);
+                ts.add(th);
+                th.start();
+            }
+            gate.countDown();
+            for (Thread th : ts) joinOrFail(th, "window-thread");
+            // thiếu synchronized -> size() đọc thấy giá trị cũ nên vẫn cho qua -> số lần LỚN HƠN max (hoặc ArrayDeque hỏng)
+            eq(200_000, ok.get());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class RateWindow {
+    private final int max;
+    private final long window;
+    private final LongSupplier clock;
+    private final ArrayDeque<Long> hits = new ArrayDeque<>();   // chỉ lưu request ĐƯỢC chấp nhận
+
+    RateWindow(int maxRequests, long windowNanos, LongSupplier clockNanos) {
+        if (maxRequests < 1) throw new IllegalArgumentException("maxRequests must be >= 1");
+        if (windowNanos <= 0) throw new IllegalArgumentException("windowNanos must be > 0");
+        this.max = maxRequests;
+        this.window = windowNanos;
+        this.clock = clockNanos;
+    }
+
+    synchronized boolean allow() {
+        long now = clock.getAsLong();
+        while (!hits.isEmpty() && now - hits.peekFirst() >= window) {
+            hits.pollFirst();                    // hết hạn: bỏ ở đầu danh sách
+        }
+        if (hits.size() >= max) return false;     // cửa sổ đang đầy
+        hits.addLast(now);
+        return true;
+    }
+}`,
+      hints: [
+        'Giữ một {{ArrayDeque<Long>}} các timestamp theo thứ tự tăng dần. Vì {{now}} không giảm, cái hết hạn luôn nằm ở **đầu** danh sách: {{while (!q.isEmpty() && now - q.peekFirst() >= window) q.pollFirst();}}.',
+        'Chỉ {{addLast(now}} khi quyết định trả {{true}}. Đếm cả request bị từ chối là lỗi phổ biến nhất của bài này.',
+        'Cửa sổ là nửa mở {{(now - window, now]}}: điều kiện loại là {{now - t >= window}}, dùng {{>}} sẽ cho phép thừa một request ở đúng biên.',
+        'Cả khối "loại hết hạn + kiểm tra {{size()}} + thêm mới" phải nằm trong cùng một vùng {{synchronized}}, nếu không hai thread cùng thấy {{size() = 4}} và cùng thêm.',
+      ],
+      explain: `Danh sách timestamp luôn được thêm vào với {{now}} **không nhỏ dần** (đồng hồ đơn điệu), nên nó tự sắp thứ tự và phần tử hết hạn luôn ở đầu. Một vòng {{while}} ở đầu mỗi lần gọi là đủ — mỗi request được thêm một lần và bị loại một lần, chi phí amortized O(1) dù nhìn qua tưởng phải quét cả danh sách.
+
+Đây là **sliding window log**: chính xác tuyệt đối, đổi lại bộ nhớ bằng số request được chấp nhận trong một cửa sổ. Với limit 3 req/s thì vô nghĩa, nhưng với 10.000 req/s trong cửa sổ 60 giây là 600.000 con số {{Long}} (~20 MB với chi phí đóng gói) — lúc đó người ta chuyển sang **sliding window counter** (chia cửa sổ thành các ô nhỏ, mỗi ô chỉ giữ một số đếm, sai số vài phần trăm) hoặc dùng token bucket vì nó O(1) bộ nhớ.
+
+Vì sao không dùng fixed window counter? Code chỉ ~5 dòng: một bộ đếm và một mốc "ô hiện tại", reset khi sang ô mới. Nhưng nó cho phép {{2 * max}} request trong hai thời điểm ngay trước và ngay sau biên, như test thứ tư minh hoạ. Trớ trêu là chính khách hàng gọi API của bạn sẽ thấy giới hạn "không nhất quán" theo kiểu đó, còn bạn thì không có dấu vết trong log để giải thích.
+
+Lỗi hay gặp:
+- Đếm cả request bị từ chối: một đợt traffic cao làm cửa sổ "đầy ảo", bạn chặn dài hạn sau đó.
+- Sai điều kiện hết hạn (dùng {{now - t > window}} thay vì {{now - t >= window}}): tại đúng thời điểm {{t + window}} vẫn tính request cũ.
+- Quên {{synchronized}}: test đa luồng với đồng hồ đứng yên sẽ cho số lần chấp nhận lớn hơn {{max}}.
+- Lưu timestamp kiểu {{int}} hoặc để {{now - hits.peekFirst()}} trừ trên object: {{Long}} tự unbox, nhưng nếu danh sách rỗng mà gọi {{peekFirst()}} thì {{NullPointerException}} — luôn kiểm tra {{isEmpty()}} trước.
+- Dùng cấu trúc này cho **nhiều** key (mỗi API key một cửa sổ): cần map các cửa sổ và chiến lược gỡ key không dùng tới, nếu không thành rò bộ nhớ; đây chính là lúc cân nhắc Redis.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Service của bạn dùng {{Semaphore(20)}} để gọi một DB. Mỗi request chờ DB trung bình 2 giây, trước đây chỉ 20 ms. Throughput thay đổi thế nào?',
+      options: ['Không đổi vì số permit không đổi', 'Giảm từ ~1.000 req/s xuống ~10 req/s', 'Tăng vì thread chờ nhiều hơn', 'Không đổi, chỉ p99 tăng'],
+      answer: 1,
+      explain: `Định luật Little: throughput = số việc đồng thời / thời gian mỗi việc. Trước: 20 / 0,02 s = 1.000 req/s. Sau: 20 / 2 s = 10 req/s. Semaphore giữ nguyên **độ đồng thời**, còn **tốc độ** suy ra từ độ trễ của phía sau. Đây là lý do Semaphore không phải rate limiter, và cũng là lý do khi DB chậm lại, giới hạn 20 connection bảo vệ DB nhưng làm throughput của bạn rơi theo.`,
+    },
+    {
+      q: 'Token bucket {{capacity = 200}}, {{refillPerSecond = 100}}. Bucket vừa qua một đêm không traffic. Trong 1 giây đầu tiên của đợt traffic mới, nhiều nhất bao nhiêu request được chấp nhận?',
+      options: ['100, vì đó là hạn mức', '200, vì bucket đang đầy và capacity cho phép burst', '300, vì 200 có sẵn cộng thêm 100 trong giây đó', '1, vì mỗi giây chỉ rót 100 và 1 request cần 1 token'],
+      answer: 1,
+      explain: `Sau đêm yên tĩnh bucket bị cắt trần ở {{capacity}} = 200 token. Trong giây đầu, 200 request đầu lấy hết token, chỉ 1 request tới sau 200 cái đó mới chờ được rót thêm — về lý thuyết có thêm ~100 token được rót **trong** giây, nhưng vì 200 request đầu tiên đến tức thì nên số còn lại của giây hầu như không có request để cấp; con số có ý nghĩa là {{capacity}}, không phải {{refill}}. Điểm cần nói trong phỏng vấn: {{capacity}} chính là cỡ burst tối đa, và nếu đối tác chỉ chịu được 100 req/s **đỉnh** thì {{capacity}} phải để gần 100 chứ không phải 200.`,
+    },
+    {
+      q: 'Bạn chạy 4 instance phía sau load balancer, đối tác giới hạn 100 req/s cho toàn bộ. Cách nào **không** đảm bảo giới hạn?',
+      options: ['Mỗi instance đặt limit 25 req/s', 'Một limiter tập trung (Redis hoặc gateway) đếm chung cho cả 4 instance', 'Mỗi instance tự đặt limit 100 req/s', 'Gửi mọi request qua một hàng đợi chung rồi giải ngân theo tốc độ'],
+      answer: 2,
+      explain: `Limiter trong JVM chỉ đếm request của chính nó; 4 instance mỗi cái 100 req/s nghĩa là đối tác nhận tới 400 req/s. Chia tĩnh (25/instance) đơn giản nhưng vẫn sai khi autoscale hoặc khi load balancer chia không đều; limiter tập trung hoặc hàng đợi chung là cách đúng, với điều kiện xử lý tình huống nó không reachable (fallback: chặn hay cho qua).`,
+    },
+    {
+      q: '{{tryAcquire()}} của một limiter trả {{false}}. Cách xử lý nào hợp lý nhất trong một web request?',
+      options: ['Gọi lại {{tryAcquire()}} trong vòng lặp until nó trả true', '{{Thread.sleep(1000)}} rồi thử lại', 'Fail-fast: trả lời client ngay (429 hoặc hàng đợi có giới hạn), có tính {{Retry-After}} và backoff cho phía client', 'Ném {{OutOfMemoryError}} để container khởi động lại'],
+      answer: 2,
+      explain: `Vòng lặp/spin làm bạn tự gây DoS và giữ thread; sleep không xác định được bao lâu và cộng dồn thành p99 khủng khiếp. Cách đúng: từ chối sớm, trả tín hiệu rõ cho client (429 + Retry-After), client retry với exponential backoff và jitter. Trong batch thì dùng hàng đợi có giới hạn + worker lấy permit một cách kiểm soát.`,
+    },
+  ],
+  related: ['concurrency-011', 'concurrency-012', 'concurrency-032', 'concurrency-033'],
+  tags: ['rate limiter', 'token bucket', 'sliding window', 'Semaphore', 'bulkhead', 'backpressure'],
+},
 );

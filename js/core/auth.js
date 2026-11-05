@@ -35,6 +35,12 @@
       'auth.sync.errorPrefix': 'Lỗi đồng bộ: ',
       'auth.login.failed': 'Đăng nhập thất bại: ',
       'auth.login.checkConfig': 'Kiểm tra cấu hình Google provider và Redirect URLs trong Supabase.',
+      'auth.pw.short': 'Mật khẩu cần ít nhất 8 ký tự.',
+      'auth.pw.invalid': 'Email hoặc mật khẩu không đúng.',
+      'auth.pw.unconfirmed': 'Email chưa được xác nhận — mở thư xác nhận trong hộp thư (kể cả mục Spam) rồi đăng nhập lại.',
+      'auth.pw.exists': 'Email này đã có tài khoản. Hãy đăng nhập, hoặc dùng “Quên mật khẩu”.',
+      'auth.pw.weak': 'Mật khẩu quá yếu hoặc quá phổ biến. Hãy dùng ít nhất 8 ký tự, có chữ và số.',
+      'auth.pw.disabled': 'Đăng nhập bằng email chưa được bật trên Supabase.',
     },
     en: {
       'auth.notConfigured': 'Account feature is not configured on this server.',
@@ -57,6 +63,12 @@
       'auth.sync.errorPrefix': 'Sync error: ',
       'auth.login.failed': 'Login failed: ',
       'auth.login.checkConfig': 'Check Google provider and Redirect URLs in Supabase.',
+      'auth.pw.short': 'Password must be at least 8 characters.',
+      'auth.pw.invalid': 'Wrong email or password.',
+      'auth.pw.unconfirmed': 'Email not confirmed yet — open the confirmation email (check Spam too), then sign in again.',
+      'auth.pw.exists': 'This email already has an account. Sign in, or use “Forgot password”.',
+      'auth.pw.weak': 'Password is too weak or too common. Use at least 8 characters with letters and numbers.',
+      'auth.pw.disabled': 'Email sign-in is not enabled in Supabase.',
     },
   });
 
@@ -174,10 +186,25 @@
     if (!auth.user) throw new Error(App.t('auth.notSignedIn'));
   }
 
+  function checkEmail(email) {
+    if (!enabled) throw new Error(App.t('auth.notConfigured'));
+    const e = String(email || '').trim();
+    if (!/^[^s@]+@[^s@]+.[^s@]+$/.test(e)) throw new Error(App.t('auth.invalidEmail'));
+    return e;
+  }
+  function checkPassword(pw) {
+    if (String(pw || '').length < 8) throw new Error(App.t('auth.pw.short'));
+  }
+
   function friendly(error) {
     const msg = (error && error.message) || String(error);
     if (/rate limit|too many/i.test(msg)) return new Error(App.t('auth.rateLimit'));
     if (/fetch|network/i.test(msg)) return new Error(App.t('auth.networkError'));
+    if (/invalid login credentials/i.test(msg)) return new Error(App.t('auth.pw.invalid'));
+    if (/email not confirmed/i.test(msg)) return new Error(App.t('auth.pw.unconfirmed'));
+    if (/already registered|already been registered|user_already_exists/i.test(msg)) return new Error(App.t('auth.pw.exists'));
+    if (/password should|weak password|pwned/i.test(msg)) return new Error(App.t('auth.pw.weak'));
+    if (/signups? not allowed|email logins are disabled|provider is not enabled/i.test(msg)) return new Error(App.t('auth.pw.disabled'));
     return new Error(msg);
   }
 
@@ -211,6 +238,37 @@
       const { error } = await client.auth.signInWithOtp({ email: e, options: { emailRedirectTo: redirectTo() } });
       if (error) throw friendly(error);
     },
+    /** Email + password sign-up. Resolves { confirm: true } when Supabase requires email confirmation first. */
+    async signUpWithPassword(email, password) {
+      const e = checkEmail(email); checkPassword(password);
+      const { data, error } = await client.auth.signUp({ email: e, password: String(password), options: { emailRedirectTo: redirectTo() } });
+      if (error) throw friendly(error);
+      // Supabase hides "already registered" (anti-enumeration): an existing user comes back with no identities
+      if (data && data.user && Array.isArray(data.user.identities) && !data.user.identities.length) throw new Error(App.t('auth.pw.exists'));
+      return { confirm: !(data && data.session) };
+    },
+    async signInWithPassword(email, password) {
+      const e = checkEmail(email);
+      if (!password) throw new Error(App.t('auth.pw.short'));
+      const { error } = await client.auth.signInWithPassword({ email: e, password: String(password) });
+      if (error) throw friendly(error);
+    },
+    /** Emails a reset link; opening it signs the user in with auth.recovery = true (#/account shows the new-password form). */
+    async resetPassword(email) {
+      const e = checkEmail(email);
+      try { sessionStorage.setItem(RETURN_KEY, '#/account'); } catch (x) { /* ignore */ }
+      const { error } = await client.auth.resetPasswordForEmail(e, { redirectTo: location.origin + location.pathname });
+      if (error) throw friendly(error);
+    },
+    /** Set / change the password of the signed-in user (also used after a reset link). */
+    async updatePassword(password) {
+      need(); checkPassword(password);
+      const { error } = await client.auth.updateUser({ password: String(password) });
+      if (error) throw friendly(error);
+      auth.recovery = false; auth._emit();
+    },
+    /** true right after the user opened a password-reset link: ask for a new password. */
+    recovery: false,
     async signOut() {
       if (!enabled) throw new Error(App.t('auth.notConfigured'));
       if (auth.user) await sync.now().catch(() => {});   // last push before leaving
@@ -395,7 +453,10 @@
   }
 
   // supabase-js warns against awaiting its own calls inside this callback → defer
-  client.auth.onAuthStateChange((event, session) => { setTimeout(() => onSession(session), 0); });
+  client.auth.onAuthStateChange((event, session) => {
+    if (event === 'PASSWORD_RECOVERY') { auth.recovery = true; try { sessionStorage.setItem(RETURN_KEY, '#/account'); } catch (e) { /* ignore */ } }
+    setTimeout(() => { onSession(session); if (event === 'PASSWORD_RECOVERY') { auth._emit(); if (location.hash !== '#/account') App.navigate('#/account'); } }, 0);
+  });
 
   // OAuth / magic-link failures come back as ?error=…&error_description=… (or in the hash): show them
   const qs = new URLSearchParams(location.search + '&' + location.hash.replace(/^#\/?[^?&]*[?&]?/, ''));
