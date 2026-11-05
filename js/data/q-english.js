@@ -3531,4 +3531,370 @@ note Payments API..Ops: Cuoi ngay doi soat file vs ledger, phat hien lech
   tags: ['english', 'integration', 'banking', 'messaging', 'reliability'],
   lang: 'en',
 },
+{
+  id: 'english-098',
+  topic: 'english',
+  level: 'senior',
+  q: 'Walk me through how you would design a URL shortener in a system design interview. Speak it out loud: start with clarifying requirements, then give a rough capacity estimate, outline the high-level design, and discuss trade-offs.',
+  a: `**Tóm tắt:** Bài nói mẫu cho thấy cách **dẫn dắt phỏng vấn system design bằng tiếng Anh**: không nhảy thẳng vào vẽ hộp, mà (1) hỏi làm rõ yêu cầu, (2) ước lượng số liệu nói thành lời, (3) phác thiết kế tầng cao, (4) nêu trade-off rồi chọn. Người phỏng vấn đánh giá cách bạn tư duy có cấu trúc, không chỉ kiến thức.
+
+### Sample spoken answer (150-250 words)
+"Before I jump into the design, I'd like to clarify a few requirements. Are we focusing on shortening and redirecting URLs, or do we also need analytics like click counts? What is the expected scale - how many new links per day and how many redirects per second? And do short links expire?
+
+Assuming roughly one hundred million new URLs per month and a read-to-write ratio of about one hundred to one, that gives us around forty writes per second on average, but reads could peak at roughly four thousand requests per second. Each mapping is small, say about five hundred bytes, so storage for five years is on the order of a few terabytes - very manageable.
+
+At a high level, I'd put an API service behind a load balancer. A client posts a long URL; the service generates a short code, stores the mapping in a database, and returns it. A redirect request looks up the code and returns an HTTP 301 or 302.
+
+The main trade-off is the short-code strategy. A hash of the URL is simple, but collisions need handling. A counter encoded in base62 avoids collisions, but it can leak ordering and needs coordination across instances. I'd go with a pre-generated key service or a database sequence with base62 encoding because it is predictable and collision-free. I'd also add a cache in front of the database since reads dominate, accepting that cache entries may be slightly stale for analytics but redirects stay correct."
+
+### Giải thích từ gốc (từng bước nói)
+- **Clarify requirements (hỏi làm rõ)**: bước đầu tiên, cho thấy bạn không đoán mò. Hỏi: phạm vi (chỉ rút gọn hay có analytics?), quy mô (link/ngày, redirect/giây?), ràng buộc (hết hạn, custom alias?).
+- **Capacity estimate (ước lượng)**: nói "roughly" (xấp xỉ) để ước lượng nhanh. 100 triệu/tháng ~ 40/giây ghi; tỉ lệ đọc/ghi 100:1 -> ~4000 đọc/giây đỉnh. Lưu trữ: 500 byte x 100M x 12 x 5 năm ~ 3 TB.
+- **High-level design**: load balancer (phân tải) -> API service -> database (lưu ánh xạ code->URL) -> cache (Redis). Redirect dùng HTTP 301 (vĩnh viễn, trình duyệt cache) hoặc 302 (tạm, đếm click chính xác hơn).
+- **Trade-off mã ngắn**: hash đơn giản nhưng **collision** (va chạm - hai URL ra cùng mã) phải xử lý; counter + base62 (mã hoá số a-zA-Z0-9) không va chạm nhưng lộ thứ tự và cần phối hợp nhiều instance.
+
+### Cấu trúc trả lời (framework nói)
+1. "Before I jump in, let me clarify..." (mở)
+2. "Assuming X, that gives us roughly Y..." (số liệu)
+3. "At a high level, I'd..." (thiết kế)
+4. "The main trade-off is... I'd go with A because... accepting that..." (trade-off + chọn)
+
+### Useful phrases
+- **Before I jump into the design, I'd like to clarify...**: Trước khi vào thiết kế, tôi muốn làm rõ...
+- **Assuming roughly... that gives us around...**: Giả sử xấp xỉ... cho ta khoảng...
+- **on the order of a few terabytes**: cỡ vài terabyte (ước lượng bậc lớn)
+- **The main trade-off is... I'd go with X because...**: Trade-off chính là... Tôi chọn X vì...
+
+### Lỗi người Việt hay mắc
+- Nhảy thẳng vào "I will use Redis and MySQL" mà không hỏi yêu cầu - mất điểm communication.
+- Đọc số kiểu liệt kê chữ số: nói "one hundred million per month" (tự nhiên) thay vì "one zero zero million".
+- Thiếu mạo từ: "put API service behind load balancer" -> "put **an** API service behind **a** load balancer".
+- Quên nêu nhược điểm: chỉ nói "I choose hash" mà không nói "the downside is collisions".
+
+> Senior tip: Nói to con số và đơn vị ("forty writes per second") - nó chứng minh bạn nghĩ bằng back-of-the-envelope estimation (ước lượng nhanh). Luôn kết bằng "I'd start simple and evolve" nếu được hỏi về quy mô cực lớn; đừng over-engineer ngay từ đầu.`,
+  follow: [
+    'How would you handle a custom short alias that a user requests but is already taken?',
+    'If the system grows to ten times the traffic, what part of your design becomes the bottleneck first?',
+    'Why might you choose HTTP 302 over 301 for redirects, and what is the cost of that choice?',
+  ],
+  tags: ['english', 'system-design', 'interview', 'capacity-estimation', 'trade-off'],
+  lang: 'en',
+},
+{
+  id: 'english-099',
+  topic: 'english',
+  level: 'senior',
+  q: 'Explain why you chose eventual consistency for a part of your system. How would you justify that trade-off to an interviewer who pushes for strong consistency everywhere?',
+  a: `**Tóm tắt:** Bài nói mẫu dạy cách **biện hộ trade-off eventual consistency** (nhất quán cuối cùng - dữ liệu các bản sao sẽ giống nhau sau một khoảng trễ) so với strong consistency (nhất quán mạnh - mọi nơi thấy cùng dữ liệu ngay). Cốt lõi: gắn lựa chọn với yêu cầu nghiệp vụ, thừa nhận nhược điểm, và mô tả cơ chế giảm thiểu.
+
+### Sample spoken answer (150-250 words)
+"I'd go with eventual consistency for the product catalog and search index because the business can tolerate a short delay, and the benefits are worth it.
+
+By strong consistency I mean every read sees the latest write immediately. That usually requires coordination across nodes, like a distributed lock or a consensus protocol, which adds latency and reduces availability during partitions. Eventual consistency means replicas may return slightly stale data for a short window, but they converge to the same state once updates propagate.
+
+For a catalog, if a price change shows up a few seconds later in search, that is acceptable. The checkout service, however, reads the authoritative price from the primary database at purchase time, so money is never wrong. So the trade-off is: we accept temporary staleness in read-heavy, non-critical paths to gain lower latency and higher availability.
+
+To manage the downside, we set a clear expectation - updates may take up to five seconds to appear - and we use idempotent updates with versioning so out-of-order messages do not corrupt state. We also monitor replication lag and alert if it exceeds our threshold.
+
+If the interviewer insists on strong consistency everywhere, I'd explain that it increases write latency and makes the system less resilient during network issues, which hurts the user experience more than a few seconds of staleness in this specific case."
+
+### Giải thích từ gốc
+- **Strong consistency (nhất quán mạnh)**: sau khi ghi, mọi nơi đọc đều thấy giá trị mới ngay. Cần phối hợp (coordination) như distributed lock/consensus (Raft/Paxos) - đánh đổi: chậm hơn, kém sẵn sàng khi mạng lỗi (định lý CAP).
+- **Eventual consistency (nhất quán cuối cùng)**: bản sao (replica) có thể trả dữ liệu cũ một lúc ngắn, nhưng cuối cùng hội tụ. Ví dụ đời thường: đổi ảnh đại diện, bạn bè thấy sau vài giây.
+- **Khi nào chọn eventual**: đường đọc nhiều, không ảnh hưởng tiền (catalog, feed). **Khi nào KHÔNG**: số dư, trừ kho - dùng strong hoặc nguồn authoritative tại thời điểm quyết định.
+- **Giảm thiểu**: idempotent update, versioning/timestamp bỏ bản cũ đến trễ (out-of-order), theo dõi replication lag.
+
+### Useful phrases
+- **the business can tolerate a short delay**: nghiệp vụ chấp nhận được độ trễ ngắn
+- **money is never wrong**: tiền không bao giờ sai
+- **The trade-off is: we accept X to gain Y**: Trade-off là: chấp nhận X để đạt Y
+
+### Lỗi người Việt hay mắc
+- Nói "eventual consistency is better" chung chung - phải gắn với **use case cụ thể** và nêu chỗ không dùng được.
+- Bỏ quên đường tiền: không nói "checkout reads the authoritative source" sẽ bị phản biện.
+
+> Senior tip: Trả lời theo khung "it depends on the requirement, and here is the boundary" - vẽ ranh giới rõ đường nào eventual, đường nào strong. Câu "money is never wrong" ăn điểm vì tách được read path khỏi decision path.`,
+  follow: [
+    'What is replication lag and how would you detect when it becomes a problem?',
+    'Can you give an example where eventual consistency would be dangerous?',
+    'How does the CAP theorem relate to choosing between strong and eventual consistency?',
+  ],
+  tags: ['english', 'system-design', 'consistency', 'trade-off', 'cap'],
+  lang: 'en',
+},
+{
+  id: 'english-100',
+  topic: 'english',
+  level: 'senior',
+  q: 'An interviewer says "just add a cache" to fix a slow endpoint. How would you push back politely, explore the real problem, and explain the trade-offs of caching in English?',
+  a: `**Tóm tắt:** Bài nói mẫu dạy cách **phản biện lịch sự (push back)**. Cache (bộ nhớ đệm - lưu tạm kết quả để đọc nhanh hơn) không phải thuốc chữa mọi bệnh: cần tìm nguyên nhân gốc (root cause), rồi nếu dùng cache phải nói rõ trade-off: invalidation, stale data, TTL, cache stampede.
+
+### Sample spoken answer (150-250 words)
+"That's a reasonable idea, and caching can definitely help with read latency. But before adding a cache, I'd like to understand why the endpoint is slow.
+
+Is it slow because of an expensive database query, a missing index, too many network calls, or because we are recomputing the same result for many users? If the root cause is a bad query, adding a cache might hide the problem and make it harder to debug later. I'd first check metrics and traces to confirm the bottleneck.
+
+If we do add a cache, there are a few trade-offs to discuss. The hardest part is cache invalidation - deciding when to evict or refresh an entry after the underlying data changes. If we get it wrong, users may see stale data. We also need to choose a TTL, a time to live, which is a balance between freshness and hit rate. Another risk is a cache stampede: when a popular key expires, many requests can hit the database at the same time.
+
+So my suggestion would be: fix the obvious root cause first, then add a cache for the hot, read-heavy data with a clear invalidation strategy. I'd measure the improvement so we know it actually helped."
+
+### Giải thích từ gốc
+- **Push back politely**: công nhận ý kiến ("That's a reasonable idea") rồi hỏi làm rõ - không bác bỏ thẳng.
+- **Root cause**: cache che triệu chứng chứ không chữa bệnh (query tệ, thiếu index, N+1). Xem metrics/traces để tìm bottleneck (nút thắt).
+- **Cache invalidation**: dữ liệu gốc đổi -> entry cache phải xoá (evict)/làm mới; sai -> stale data (dữ liệu cũ).
+- **TTL (time to live)**: thời gian sống entry. TTL ngắn -> tươi nhưng hit rate thấp; dài -> nhanh nhưng dễ cũ.
+- **Cache stampede**: key hot hết hạn, nhiều request dồn vào DB. Giảm thiểu: lock per key, jitter TTL.
+
+### Useful phrases
+- **Adding a cache might hide the problem rather than fix it**: Thêm cache có thể che vấn đề thay vì sửa nó
+- **The hardest part is cache invalidation**: Phần khó nhất là vô hiệu hoá cache
+- **fix the root cause first, then cache the hot path**: sửa nguyên nhân gốc trước, rồi cache đường nóng
+
+### Lỗi người Việt hay mắc
+- Phản biện thô: "No, cache is not good" - mất điểm. Dùng đệm: "I see the benefit, but...".
+- Dùng "cancel the cache" thay vì "invalidate/evict/expire the cache entry".
+
+> Senior tip: Khung trả lời: (1) đồng ý phần đúng, (2) hỏi root cause bằng metrics, (3) nêu 2-3 trade-off (invalidation, TTL, stampede), (4) đo lường trước/sau. "I'd measure the improvement" cho thấy bạn ra quyết định bằng dữ liệu.`,
+  follow: [
+    'How would you choose a TTL value for a cache entry?',
+    'What strategies can prevent a cache stampede when a hot key expires?',
+    'When is caching the wrong solution even if reads are slow?',
+  ],
+  tags: ['english', 'system-design', 'caching', 'trade-off', 'pushback'],
+  lang: 'en',
+},
+{
+  id: 'english-101',
+  topic: 'english',
+  level: 'senior',
+  q: 'Explain a sequence diagram out loud to an interviewer: walk through the steps of a user login flow that involves a client, an API gateway, an auth service, and a database. Name the actors, the messages, and what happens on failure.',
+  a: `**Tóm tắt:** Bài nói mẫu dạy cách **đọc/giải thích sequence diagram (sơ đồ tuần tự - biểu đồ cho thấy các thành phần gửi thông điệp theo thứ tự thời gian)** bằng lời: gọi tên actor, dùng động từ rõ (sends, returns), nói theo dòng thời gian, và nêu nhánh lỗi.
+
+### Sample spoken answer (150-250 words)
+"I'll walk you through the login sequence step by step. We have four actors: the client, the API gateway, the auth service, and the user database.
+
+First, the client sends a login request with the username and password to the API gateway. The gateway forwards that request to the auth service.
+
+Next, the auth service queries the user database to fetch the stored password hash for that username. The database returns the record. The auth service then verifies the password against the hash.
+
+On the happy path, if the credentials are valid, the auth service generates a token, for example a JWT, and returns it to the gateway, which passes it back to the client. The client stores the token and includes it in future requests.
+
+On the failure path, if the user is not found or the password does not match, the auth service returns an unauthorized error. Importantly, we return the same generic message in both cases so we do not reveal whether the username exists.
+
+If the database is temporarily unavailable, the auth service returns a service-unavailable error, and the gateway may apply a short retry. I would also add a note for rate limiting at the gateway to slow down brute-force attempts."
+
+### Sơ đồ tuần tự (để tập nói theo)
+~~~seq
+title: User login flow
+actors: Client | API Gateway | Auth Service | User DB
+Client -> API Gateway: POST /login (username, password)
+API Gateway -> Auth Service: Forward login request
+Auth Service -> User DB: Query user by username
+User DB --> Auth Service: Return password hash
+Auth Service -> Auth Service: Verify password against hash
+Auth Service --> API Gateway: 200 OK + JWT token
+API Gateway --> Client: Return token
+note Auth Service..Client: Failure 401 generic; DB down 503
+~~~
+
+### Giải thích từ gốc
+- **Sequence diagram**: vẽ **actor** (thành phần tham gia) theo cột dọc, thời gian từ trên xuống; mũi tên ngang là **message**. Mũi tên liền = request, đứt nét = response.
+- **Cách nói**: (1) giới thiệu actors, (2) "X sends Y to Z", "Z returns...", (3) tách "on the happy path..." / "on the failure path...".
+- **Thuật ngữ**: API gateway (cổng vào, giới hạn tốc độ), auth service (xác thực), password hash (băm mật khẩu - lưu một chiều), JWT (token tự chứa thông tin, ký số).
+- **Bảo mật**: trả thông báo khác nhau cho "user not found" vs "wrong password" -> lộ username (user enumeration). Luôn trả "invalid credentials" chung.
+
+### Useful phrases
+- **I'll walk you through the sequence step by step**: Tôi sẽ đi qua trình tự từng bước
+- **On the happy path... / On the failure path...**: Ở nhánh thành công... / Ở nhánh lỗi...
+
+### Lỗi người Việt hay mắc
+- Mô tả diagram dùng hiện tại đơn ("the client sends..."), không dùng tương lai lặp lại.
+- Quên nêu actor trước; bỏ nhánh lỗi (chỉ kể happy path).
+
+> Senior tip: Chủ động thêm "note" bằng lời: rate limiting, timeout, idempotency - thứ phân biệt mid và senior. Dừng lại hỏi "would you like me to go deeper into any step?" để biến monologue thành hội thoại.`,
+  follow: [
+    'Where would you add rate limiting in this flow, and why at that point?',
+    'How would the sequence change if you used refresh tokens in addition to access tokens?',
+    'What would you log at each step without leaking sensitive information?',
+  ],
+  tags: ['english', 'system-design', 'sequence-diagram', 'auth', 'communication'],
+  lang: 'en',
+},
+{
+  id: 'english-102',
+  topic: 'english',
+  level: 'senior',
+  q: 'Describe how you would do a back-of-the-envelope capacity estimation for a chat application during an interview. Speak through the numbers clearly: users, messages per second, storage, and bandwidth.',
+  a: `**Tóm tắt:** Bài nói mẫu dạy cách **ước lượng dung lượng (capacity estimation / back-of-the-envelope - tính nhẩm nhanh)** và đọc số rõ ràng bằng tiếng Anh. Mục tiêu là bậc lớn (order of magnitude): giả định -> tính -> kết luận ảnh hưởng thiết kế.
+
+### Sample spoken answer (150-250 words)
+"Let me do a quick back-of-the-envelope estimate. I'll state my assumptions first so we can adjust them.
+
+Suppose we have ten million daily active users, and each user sends about twenty messages per day. That is two hundred million messages per day. Dividing by roughly eighty-six thousand seconds in a day gives around two thousand three hundred messages per second on average. Traffic is spiky, so I'd plan for a peak of about three times that, around seven thousand messages per second.
+
+For storage, assume an average message is about three hundred bytes including metadata. Two hundred million messages per day times three hundred bytes is about sixty gigabytes per day. Over five years, that is roughly one hundred terabytes, which tells me we need sharded storage, not a single database.
+
+For bandwidth, if seven thousand messages per second are delivered and each is about three hundred bytes, that is around two megabytes per second inbound, and potentially much higher outbound if messages fan out to group chats.
+
+These numbers suggest: a message queue to absorb spikes, horizontally scalable storage with sharding by conversation ID, and attention to the fan-out problem for large groups."
+
+### Giải thích từ gốc (từng bước tính)
+- **Back-of-the-envelope**: ước lượng nhanh. Cho thấy bạn quy đổi đơn vị và suy ra hệ quả kiến trúc.
+- **Công thức**: Users x hành động/ngày = tổng/ngày. Tổng/ngày / 86,400 giây ~ trung bình/giây. Nhân hệ số peak (x2-x5).
+- **Làm tròn**: 86,400 ~ 100,000 để nhẩm. Nói "on the order of one hundred terabytes" cho bậc lớn.
+- **Từ số ra thiết kế**: 7k msg/s đỉnh -> queue; ~100 TB/5 năm -> **sharding** (chia theo khoá conversation ID); fan-out nhóm lớn -> bandwidth outbound lớn.
+- **Thuật ngữ**: DAU (daily active users), metadata (dữ liệu kèm), sharding (phân mảnh), fan-out (một tin nhân ra nhiều người nhận).
+
+### Useful phrases (đọc số & ước lượng)
+- **Let me do a quick back-of-the-envelope estimate**: Để tôi ước lượng nhanh
+- **I'll state my assumptions first so we can adjust them**: Tôi nêu giả định trước để ta điều chỉnh
+- **Traffic is spiky, so I'd plan for a peak of about three times that**: Lưu lượng có đỉnh, tính peak gấp ~3
+- **on the order of one hundred terabytes**: cỡ bậc trăm terabyte
+
+### Lỗi người Việt hay mắc
+- Đọc số từng chữ số: "two zero zero million" -> sai; dùng "two hundred million". Thousand (nghìn), million (triệu), billion (tỷ).
+- Quên nói giả định. Luôn mở bằng "Assuming...".
+- Tính xong không nối về thiết kế - ước lượng phải dẫn tới quyết định (queue, shard).
+
+> Senior tip: Nói chậm khi đọc số, dùng "roughly/about/around/on the order of". Mẹo nhẩm: 1 ngày ~ 100k giây. Sẵn sàng điều chỉnh ("if it's fifty million users, we just double the numbers").`,
+  follow: [
+    'How would your storage estimate change if users can send images instead of just text?',
+    'What is the fan-out problem in group chats and how does it affect bandwidth?',
+    'If peak traffic is ten times the average, how would you absorb that spike?',
+  ],
+  tags: ['english', 'system-design', 'capacity-estimation', 'numbers', 'interview'],
+  lang: 'en',
+},
+{
+  id: 'english-103',
+  topic: 'english',
+  level: 'senior',
+  q: 'An interviewer asks: "Your design works today — what would you do differently if traffic grew ten times?" Answer in English by identifying bottlenecks, proposing an evolution plan, and explaining trade-offs.',
+  a: `**Tóm tắt:** Bài nói mẫu cho câu hỏi "10x traffic" - kiểm tra bạn thiết kế **tiến hoá (evolve)** chứ không đập đi xây lại. Cách trả lời: xác định bottleneck đầu tiên, nêu bước scale theo thứ tự, và nói rõ trade-off.
+
+### Sample spoken answer (150-250 words)
+"That's a great question. With ten times the traffic, I would not rewrite the system from scratch. I would find the first bottleneck and evolve the design step by step.
+
+The first bottleneck is usually the database, because reads and writes both grow while a single primary node has limited capacity. My first move would be to add a cache for the hottest read paths and to introduce read replicas to offload read traffic. That buys time with relatively low complexity.
+
+If traffic keeps growing, the next step is horizontal scaling of the stateless API layer behind a load balancer, so we can add instances instead of making one machine bigger. The trade-off is that we must keep session state out of the instances, for example in Redis or by using stateless tokens.
+
+At ten times scale, a single database shard may still struggle with writes. Then I would consider sharding the data by a natural key, such as user ID, to spread write load. The downside is that cross-shard queries and transactions become much harder, so I would only shard when the simpler options are exhausted.
+
+Throughout this, I would rely on metrics and load tests to confirm each bottleneck before making a change, because scaling the wrong component wastes effort."
+
+### Giải thích từ gốc
+- **Bottleneck (nút thắt)**: thành phần chậm nhất giới hạn toàn hệ thống. Luôn hỏi "what breaks first?".
+- **Thứ tự tiến hoá**: (1) cache + read replica, (2) scale ngang API stateless, (3) sharding DB. Đi từ đơn giản -> phức tạp.
+- **Vertical vs horizontal**: vertical (scale up) = máy to hơn - có trần; horizontal (scale out) = thêm nhiều máy - đòi hỏi stateless.
+- **Trade-off shard**: query join xuyên shard khó, transaction phân tán phức tạp. Chỉ shard khi thực sự cần.
+- **Stateless**: instance không giữ trạng thái phiên cục bộ -> scale ngang dễ.
+
+### Useful phrases
+- **I would not rewrite the system from scratch; I would evolve it step by step**: Không viết lại từ đầu; tiến hoá từng bước
+- **The first bottleneck is usually...**: Nút thắt đầu tiên thường là...
+- **I would rely on metrics and load tests to confirm each bottleneck**: Dựa vào số liệu và load test để xác nhận nút thắt
+
+### Lỗi người Việt hay mắc
+- Liệt kê công nghệ "Kafka, Kubernetes, Redis" mà không giải thích giải quyết bottleneck nào - nghe như buzzword.
+- Nhảy thẳng đến microservices/sharding mà bỏ qua cache, replica.
+- Quên nhắc "stateless" khi nói scale ngang API.
+
+> Senior tip: Neo vào "find the bottleneck first" và "measure before changing". "I would load test to reproduce the ten-times scenario and fix the measured bottleneck, not the assumed one" - tránh tối ưu mù.`,
+  follow: [
+    'How would you decide between adding read replicas and adding a cache first?',
+    'What makes cross-shard transactions difficult, and what patterns can replace them?',
+    'Which metrics would you watch to detect that the database is becoming the bottleneck?',
+  ],
+  tags: ['english', 'system-design', 'scalability', '10x', 'trade-off'],
+  lang: 'en',
+},
+{
+  id: 'english-104',
+  topic: 'english',
+  level: 'senior',
+  q: 'You are starting a system design interview. How do you open the conversation by clarifying functional and non-functional requirements in clear English before proposing any architecture?',
+  a: `**Tóm tắt:** Bài nói mẫu cho **phần mở đầu** phỏng vấn system design: làm rõ yêu cầu chức năng (functional - hệ thống làm gì) và phi chức năng (non-functional - nhanh/cỡ nào/độ tin cậy) trước khi vẽ kiến trúc. Mục tiêu: thu hẹp phạm vi, tránh thiết kế sai hướng.
+
+### Sample spoken answer (150-250 words)
+"Before proposing a design, I'd like to spend a minute clarifying the requirements so we solve the right problem.
+
+On the functional side, what are the core actions users must be able to do? For example, should we focus only on the main flow, or also include admin features, notifications, and reporting? Are there any important edge cases, like deletes, edits, or permissions?
+
+On the non-functional side, what scale should we design for - how many users, and what is the expected requests per second at peak? How latency-sensitive is the system: do users expect a response in under two hundred milliseconds, or is a few seconds acceptable? What availability target do we need, and is the data allowed to be briefly inconsistent, or must it be strongly consistent?
+
+I'd also ask about constraints: do we need to integrate with existing systems, are there compliance or data residency requirements, and is there a deadline or a team size that affects how complex the design can be?
+
+Once we agree on the top priorities - for instance, correctness for payments and low latency for reads - I'll summarize the scope and then move to a high-level design. Does that sound reasonable?"
+
+### Giải thích từ gốc
+- **Functional requirements (yêu cầu chức năng)**: mô tả **hành vi/tính năng** - người dùng làm được gì. Giúp khoanh phạm vi lõi.
+- **Non-functional requirements (yêu cầu phi chức năng)**: mô tả **chất lượng** - scale (user/RPS), latency (độ trễ), availability (độ sẵn sàng, ví dụ 99.9%), consistency (nhất quán). Quyết định kiến trúc.
+- **Constraints (ràng buộc)**: tích hợp hệ thống cũ, tuân thủ (compliance: GDPR, PCI), vùng lưu dữ liệu (data residency).
+- **Kỹ thuật mở đầu**: hỏi -> lắng nghe -> **tóm tắt phạm vi** -> xin xác nhận ("Does that sound reasonable?") rồi mới vẽ.
+
+### Useful phrases
+- **Before proposing a design, I'd like to clarify the requirements**: Trước khi đề xuất, tôi muốn làm rõ yêu cầu
+- **On the functional side... / On the non-functional side...**: Về phía chức năng... / phi chức năng...
+- **How latency-sensitive is the system?**: Hệ thống nhạy độ trễ đến mức nào?
+- **Let me summarize the scope before moving to the high-level design**: Để tôi tóm tắt phạm vi trước khi sang thiết kế tầng cao
+
+### Lỗi người Việt hay mắc
+- Bỏ qua clarify, vẽ ngay -> sai yêu cầu.
+- Nhầm: "fast" là non-functional, "user can upload photo" là functional.
+- Hỏi quá nhiều câu liền - đặt 2-3 câu một nhóm, rồi tóm tắt.
+
+> Senior tip: Ưu tiên hoá: "If we have to choose, is correctness or latency more important?" - buộc trade-off hiện ra sớm (payments -> correctness, feed -> latency). Kết bằng tóm tắt phạm vi - "hợp đồng" miệng cho thiết kế.`,
+  follow: [
+    'What is the difference between latency and throughput, and which would you clarify for a streaming system?',
+    'How do availability targets like 99.9% translate into allowed downtime?',
+    'If the interviewer gives vague requirements, how would you proceed without getting stuck?',
+  ],
+  tags: ['english', 'system-design', 'requirements', 'interview', 'communication'],
+  lang: 'en',
+},
+{
+  id: 'english-105',
+  topic: 'english',
+  level: 'senior',
+  q: 'During a system design interview, the interviewer challenges your choice and suggests a different approach. How do you respond: defend your trade-off, acknowledge valid points, and adapt your design without sounding defensive?',
+  a: `**Tóm tắt:** Bài nói mẫu cho tình huống **bị interviewer phản biện** - kiểm tra collaboration và tư duy trade-off. Chiến lược 4 bước: lắng nghe, tóm tắt quan điểm họ, bảo vệ lựa chọn bằng lý do gắn yêu cầu, thừa nhận điểm hợp lý, và điều chỉnh.
+
+### Sample spoken answer (150-250 words)
+"That's a fair point, and I can see why you would suggest that approach. Let me make sure I understand: you are proposing we use a message queue here instead of a synchronous call, mainly to decouple the services and absorb spikes. Is that right?
+
+My original choice was a synchronous call because the user needs an immediate confirmation, and the dependency is usually fast. The downside, as you pointed out, is tighter coupling and a risk of cascading failures if the downstream service slows down.
+
+Given that concern, I think we can combine both ideas. We can keep the request synchronous for the critical step that needs confirmation, but move the non-critical side effects, like sending notifications or updating analytics, to an asynchronous queue. That way we preserve the user experience while reducing coupling.
+
+I also agree that if latency on the dependency becomes unpredictable, we should add a timeout and a circuit breaker so one slow service does not take down the whole flow.
+
+So I would adapt the design in that direction. Does that address the risk you had in mind, or is there another failure mode you want me to consider?"
+
+### Giải thích từ gốc
+- **Cấu trúc 4 bước**: (1) **Acknowledge** - công nhận điểm hợp lý; (2) **Clarify** - tóm tắt lại ý họ; (3) **Defend with reasons** - bảo vệ lựa chọn gắn yêu cầu; (4) **Adapt** - điều chỉnh, kết hợp ý hay, hỏi lại.
+- **Thuật ngữ**: synchronous vs asynchronous (đồng bộ - chờ ngay / bất đồng bộ - gửi rồi làm tiếp), decouple (giảm phụ thuộc), cascading failure (lỗi dây chuyền), circuit breaker (cầu dao - ngắt gọi khi downstream lỗi), timeout.
+- **Tư duy "both/and"**: tách phần cần xác nhận ngay (sync) khỏi side effect (async).
+
+### Useful phrases
+- **That's a fair point, and I can see why you would suggest that**: Điểm hợp lý, tôi hiểu vì sao bạn đề xuất vậy
+- **Let me make sure I understand your suggestion...**: Để tôi chắc là tôi hiểu đúng gợi ý...
+- **My original choice was X because..., but the downside is...**: Lựa chọn ban đầu là X vì..., nhưng nhược điểm là...
+- **Given that concern, I think we can combine both ideas**: Với lo ngại đó, ta có thể kết hợp cả hai ý
+- **Does that address the risk you had in mind?**: Điều đó có giải quyết rủi ro bạn nghĩ tới không?
+
+### Lỗi người Việt hay mắc
+- Phòng thủ quá mức: "No, my design is correct" - mất điểm collaboration.
+- Đồng ý ngay lập tức mọi gợi ý mà không giữ lập luận - thiếu chính kiến. Cân bằng: acknowledge + defend + adapt.
+- Không tóm tắt lại ý interviewer -> trả lời lệch.
+
+> Senior tip: Đôi khi interviewer gợi ý cách kém hơn để xem bạn có giữ lập trường có lý do không. Hãy nói "I would stick with X in this case because..." nếu yêu cầu ủng hộ X - nêu rõ điều kiện nào sẽ đổi sang Y. Câu chốt: "it depends on the requirement, and here is the condition that would change my choice."`,
+  follow: [
+    'What would make you change your mind completely about your original design choice?',
+    'How do you stay collaborative when you strongly disagree with a suggestion?',
+    'Can you describe a time you adapted a design after a valid critique? What changed and why?',
+  ],
+  tags: ['english', 'system-design', 'trade-off', 'pushback', 'communication'],
+  lang: 'en',
+},
 );
