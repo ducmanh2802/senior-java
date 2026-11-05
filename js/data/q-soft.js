@@ -2628,4 +2628,569 @@ Khi đã chọn, đàm phán **một vòng** với nơi bạn chọn bằng offe
   ],
   tags: ['follow-up', 'rejection', 'feedback', 'offers'],
 },
+{
+  id: 'testing-025',
+  topic: 'testing',
+  level: 'mid',
+  q: 'Repository test của team bạn đang chạy trên H2 cho nhanh, còn production dùng Postgres. Khi nào H2 vẫn chấp nhận được, khi nào bắt buộc Testcontainers, và chi phí thật của Testcontainers trên CI là bao nhiêu?',
+  a: `**Tóm tắt:** H2 chỉ hợp khi repository **chỉ dùng JPQL chuẩn và CRUD đơn giản**. Vừa chạm tới SQL đặc thù của một DB cụ thể (jsonb, on conflict, lock, hàm, collation) là phải dùng Testcontainers. Chi phí thật không phải "mất 30 giây mỗi test" mà nằm ở **image pull và việc runner có Docker hay không**; nếu cả module dùng chung **một** container thì cả suite chỉ chậm thêm cỡ 10 giây.
+
+### Hai khái niệm, giải thích từ gốc
+- **H2**: database viết bằng Java, chạy ngay trong bộ nhớ của JVM (URL dạng {{jdbc:h2:mem:test}}), khởi động vài mili giây, không cần cài đặt gì. Nó cố "giống" Postgres qua {{MODE=PostgreSQL}} nhưng vẫn là code khác.
+- **Testcontainers**: thư viện Java **tự khởi động một container Docker thật** (Postgres 16, Redis 7, Kafka) từ trong test, cấp port động, rồi cho test kết nối vào. Vì engine là bản production nên hành vi giống production.
+- **Runner CI**: máy ảo hoặc container mà pipeline chạy trên đó (GitHub Actions runner, GitLab runner). Chỗ này quyết định bạn có Docker hay không.
+
+### Bảng quyết định
+| Bạn đang test cái gì | H2 đủ | Cần container |
+|---|---|---|
+| CRUD do Spring Data sinh, JPQL đơn giản, mapping entity | ok | – |
+| Query có {{ILIKE}}, {{jsonb}}, {{RETURNING}}, {{generate_series}} | – | bắt buộc |
+| {{ON CONFLICT DO UPDATE}} (upsert), partial index, {{GIN}} index | – | bắt buộc |
+| {{SELECT ... FOR UPDATE SKIP LOCKED}}, advisory lock, isolation level | – | bắt buộc |
+| Thuật toán sắp xếp theo collation tiếng Việt (ORDER BY có dấu) | – | bắt buộc |
+| Trigger, stored function, view phức tạp, {{citext}} | – | bắt buộc |
+| Kiểm constraint NOT NULL/unique sau khi flush | ok (chậm hoặc sai vài case) | tốt hơn |
+
+### Chi phí thật — 4 con số phải tự đo trên CI của bạn
+1. Pull image: {{postgres:16-alpine}} cỡ hơn 100 MB; runner có cache layer thì gần 0 giây, runner sạch có thể 15–40 giây.
+2. Khởi động container tới lúc Postgres nhận kết nối: cỡ 3–6 giây ({{pg_isready}} đạt).
+3. Ryuk (container dọn rác của Testcontainers): 1–2 giây, bật một lần cho cả suite.
+4. Chạy migration trên schema rỗng: tùy số script, thường 1–5 giây.
+Cộng lại: một module có 300 test repository **dùng chung một container** chậm hơn H2 cỡ 8–15 giây, không phải 300 lần.
+
+### Ba kỹ thuật để chi phí nằm ở mức đó
+~~~java
+@Testcontainers
+abstract class PgIT {
+    @Container
+    @ServiceConnection                       // Spring Boot 3.1+: tự nạp url/username/password vào app
+    static final PostgreSQLContainer<?> PG = // static + final => chỉ khởi động một lần cho cả lớp con
+        new PostgreSQLContainer<>("postgres:16-alpine");
+}
+
+class OrderRepositoryIT extends PgIT { /* 60 test, không khởi động thêm container nào */ }
+~~~
+- **Dùng chung qua lớp cha trừu tượng**: container là {{static}} nên JUnit tạo một lần cho cả hierarchy, mọi lớp con nối vào cùng DB.
+- **{{@Testcontainers(disabledWithoutDocker = true)}}**: máy dev chưa cài Docker thì test bị **bỏ qua kèm thông báo**, không đỏ vô nghĩa.
+- **Reuse ở local**: {{withReuse(true)}} + dòng {{testcontainers.reuse.enable=true}} trong file {{.testcontainers.properties}} ở thư mục home → container sống giữa các lần chạy. Ở CI **không bật**, vì mỗi job là môi trường sạch và reuse làm dữ liệu cũ rò rỉ.
+
+### Isolation: nhiều test cùng dùng một container thì sao không giẫm nhau?
+| Cách | Khi nào dùng | Hạn chế |
+| {{@Transactional}} rollback mặc định của {{@DataJpaTest}} | test đọc/ghi thông thường | không hoạt động khi code commit thật ({{REQUIRES_NEW}}, async) |
+| Mỗi lớp test một schema riêng ({{currentSchema}} trỏ schema tạo ở {{@BeforeAll}}) | chạy song song nhiều lớp | phải dọn schema sau test |
+| {{@Sql}} truncate sau test | test cần commit thật để kiểm hành vi DB | phải tuân thứ tự foreign key |
+| Container riêng cho từng lớp | test restart DB, replication, failover | chậm, ít khi cần |
+
+### Bẫy thường gặp
+- Quên {{@AutoConfigureTestDatabase(replace = Replace.NONE)}} ⇒ {{@DataJpaTest}} âm thầm thay container Postgres bằng H2, bạn tưởng đang test Postgres.
+- Dùng tag {{latest}} ⇒ image đổi liên tục, cache vô dụng, build không tái lập. Luôn pin version.
+- Khai báo container **không static** hoặc mỗi test class một container ⇒ CI nổ hàng trăm container, đầy disk.
+- Bỏ Ryuk để "cho nhanh" ⇒ container rác tích tụ, runner self-hosted chết vì hết ổ.
+- Bật parallel khi các lớp test ghi vào **cùng một schema** ⇒ red ngẫu nhiên, mất cả tuần debug.
+
+> Senior tip: khi trình bày quyết định này với lead hoặc manager, đừng nói "H2 không đáng tin". Hãy nói bằng số của chính team: "suite repository 300 test chạy 4 phút 20 với Postgres container dùng chung so với 1 phút 10 với H2; đổi lại 12 tháng qua chúng ta bắt được 4 lỗi SQL chỉ lộ trên Postgres, mỗi lần sửa production mất khoảng một ngày". Đó là lập luận của kỹ sư có kinh nghiệm.`,
+  follow: [
+    'Runner CI của bạn có Docker sẵn không, và nếu không thì bạn chạy test trên DB thật bằng cách nào?',
+    'Bạn tổ chức dữ liệu test thế nào khi 10 lớp test cùng dùng chung một Postgres container và chạy song song?',
+    'Bạn có dùng Testcontainers cho hạ tầng ngoài DB không (Redis, LocalStack, OpenSearch) và giữ tốc độ bằng cách nào?'
+  ],
+  tags: ['Testcontainers', 'H2', 'repository-test', 'CI', 'Docker']
+},
+{
+  id: 'testing-026',
+  topic: 'testing',
+  level: 'senior',
+  q: 'Giải thích cơ chế contract testing giữa hai service: pact file, provider state, verification và Pact Broker liên kết với nhau thế nào? Vì sao nó chặn được breaking change ngay trong CI, và nó không bắt được gì?',
+  a: `**Tóm tắt:** Contract test gồm **ba artefact**: file **pact** (consumer mô tả "tôi cần request này thì trả response kia"), **provider state** (dữ liệu cần chuẩn bị trước mỗi interaction) và **verification result** (provider báo "tôi đã đáp ứng pact đó"). **Pact Broker** là nơi chứa cả ba theo version commit. Consumer CI publish pact → provider CI kéo pact về, chạy test thật của chính mình với request giả lập → ghi kết quả. Chỉ cần provider trả lời khác pact, build của provider **đỏ trước khi deploy**, và gate {{can-i-deploy}} chặn cả hai phía.
+
+### Ba artefact và vai trò từng cái
+| Artefact | Ai tạo | Chứa gì |
+|---|---|---|
+| Pact file (JSON) | consumer, sinh ra sau khi test chạy | tên consumer + provider, danh sách interaction (method, path, header, body kèm **matcher**), metadata version |
+| Provider state | provider khai báo | "đơn OD-999 không tồn tại" — dữ liệu cần seed trước khi giả lập request |
+| Verification result | provider CI | pact version nào được provider version nào verify, pass hay fail |
+
+Broker chỉ là database có UI + API của ba thứ đó, cộng thêm ma trận "version nào tương thích version nào".
+
+### Phía consumer: mock được sinh từ chính pact
+Consumer **không** gọi provider thật. Test chạy với một **mock server** dựng theo pact: request khớp thì trả đúng response đã mô tả, không khớp thì test fail. Vì thế matcher rất quan trọng — khai báo "kiểu gì cũng được, miễn có mặt" thay vì hardcode giá trị:
+- {{like("123")}}: chấp nhận mọi chuỗi (phía provider sinh giá trị ngẫu nhiên khi verify).
+- {{term(pattern, example)}}: phải khớp regex, ví dụ mã đơn hàng {{OD-[0-9]+}}.
+- {{eachLike(item)}}: mảng có ít nhất một phần tử, kiểm shape của phần tử.
+Nếu bạn assert giá trị cụ thể trong pact, provider sẽ verify fail vì dữ liệu test của họ khác — đây là lỗi người mới hay mắc.
+
+### Phía provider: verify + provider state
+Provider CI với mỗi pact: khởi động app thật ({{SpringBootTest}}), đọc từng interaction, gọi endpoint **bằng HTTP thật** với request trong pact, so response với kỳ vọng (theo matcher). Trước mỗi interaction, framework gọi hàm bạn đánh dấu {{@ProviderState("đơn 999 không tồn tại")}} để chuẩn bị dữ liệu. Không có provider state thì test chỉ chạy được với DB rỗng và bạn sẽ bỏ sót nhánh lỗi.
+- Muốn chạy provider verification **mọi lúc kể cả khi không có consumer mới**, publish pact kèm webhook để broker báo về provider.
+- Với Spring Cloud Contract (hướng ngược lại: provider viết contract), framework **sinh sẵn** stub WireMock cho consumer và test phía provider, nên bạn không cần broker riêng — nhưng phải phát hành artifact stub lên Nexus/Maven.
+
+### Luồng CI đầy đủ
+~~~seq
+title: Consumer-driven contract test
+actors: Consumer CI | Pact Broker | Provider CI | Pipeline deploy
+Consumer CI -> Consumer CI: chạy test với mock dựng từ pact
+Consumer CI -> Pact Broker: publish pact theo commit
+note Pact Broker..Provider CI: mỗi commit có một pact version
+Provider CI -> Pact Broker: kéo pact của consumer đang chạy
+Provider CI -> Provider CI: verify bằng app thật + provider state
+Provider CI -> Pact Broker: ghi kết quả verify
+Pipeline deploy -> Pact Broker: hỏi can-i-deploy cho version này
+Pact Broker --> Pipeline deploy: OK hoặc BLOCK (provider chưa verify)
+~~~
+Ba chính sách làm mô hình này thật sự an toàn:
+1. **Pending pacts**: pact mới của consumer mà provider chưa từng verify → provider build **fail có chủ đích**, ép provider verify trước khi consumer được deploy.
+2. **Backwards compatibility check**: pact mới không được phá request/response mà consumer **đã chạy production** đang dùng.
+3. **can-i-deploy** đặt ở pipeline deploy của **cả hai bên**: consumer chỉ được lên khi provider đã verify; provider chỉ được lên khi còn đáp ứng pact của consumer production.
+
+### Bảng: contract test bắt được gì / không bắt được gì
+| Bắt được | Không bắt được |
+| Đổi tên field, đổi kiểu dữ liệu, bỏ field bắt buộc | Nghiệp vụ sai (tính tiền nhầm, trừ nhầm hàng) |
+| Endpoint đổi path/method, đổi mã status | Nội dung dữ liệu, thứ tự nhiều lời gọi |
+| Header/authorization mới bị thiếu | Timeout, retry, cấu hình resilience |
+| Response mảng rỗng/null ở field consumer giả định có | Hiệu năng, lock, ràng buộc DB |
+
+### Bẫy thường gặp
+- **Contract test thay cho integration test**: nó chứng minh "hình dạng API", không chứng minh "hai service làm việc cùng nhau đúng". Vẫn cần vài E2E mỏng.
+- **Chỉ mô tả happy path**: nhánh 4xx (not found, validation) mới là chỗ hay vỡ, vì consumer phải xử lý nó.
+- **Pact phình vô hạn**: mỗi test sinh một interaction → provider verify 500 case chậm. Gom các case quan trọng, dọn pact của version consumer đã ngừng chạy production.
+- **Không có quyền ghi (write) từ CI**: broker cần auth theo pipeline, nếu không ai cũng publish được pact rác.
+- **Provider verify trên DB rỗng** (không có provider state) ⇒ mọi case lỗi không được kiểm.
+
+> Senior tip: giá trị của contract test chỉ thuyết phục được team khi họ **thấy nó đỏ**. Hãy dành 30 phút demo trong tech-sharing: rename một field trong response của provider, chạy pipeline, cho xem build chặn ở bước verify và {{can-i-deploy}} từ chối deploy consumer. Một lần như vậy có sức nặng hơn mọi slide về microservices.`,
+  follow: [
+    'Bạn lưu pact và verification result ở đâu khi team có 12 service, và ai được quyền xoá version pact cũ?',
+    'Với Spring Cloud Contract, stub được publish thế nào và consumer lấy stub đó vào test ra sao?',
+    'Làm sao thêm một field mới vào response mà không phá consumer đang chạy production?'
+  ],
+  tags: ['contract-testing', 'Pact', 'can-i-deploy', 'provider-state', 'microservices']
+},
+{
+  id: 'testing-027',
+  topic: 'testing',
+  level: 'senior',
+  q: 'Code của bạn có {{@Async}} và {{@Scheduled}}. Bạn test chúng thế nào để không phải {{Thread.sleep}}, và {{@Transactional}} trên class test gây ra vấn đề gì khi tác vụ chạy ở thread khác?',
+  a: `**Tóm tắt:** Ba vấn đề kinh điển: (1) test assert **trước khi** tác vụ nền kịp chạy, (2) exception của {{@Async}} trả về {{void}} bị **nuốt** nên test xanh dù code chết, (3) {{@Transactional}} trên class test chỉ quản lý transaction **của thread test**, nên phần async commit thật và để lại dữ liệu. Cách xử lý: mặc định biến async thành **đồng bộ trong test** (executor chạy ngay trên thread gọi) cho test logic, và giữ **một** integration test chạy executor thật + Awaitility cho hành vi bất đồng bộ.
+
+### @Async thực chất hoạt động thế nào
+Spring bật {{@EnableAsync}} rồi **bọc bean bằng proxy**: khi bạn gọi method từ bean khác, proxy nộp công việc cho một {{TaskExecutor}} (mặc định là bean {{applicationTaskExecutor}}) và **return ngay**. Hệ quả phải biết khi test:
+- Gọi từ **chính class** (self-invocation) không đi qua proxy ⇒ chạy đồng bộ, test "xanh" mà production lại async.
+- Method trả {{void}}: exception chỉ đi tới {{AsyncUncaughtExceptionHandler}}, test không thấy gì.
+- Method trả {{CompletableFuture}}: exception nằm trong future, bạn phải join mới thấy.
+
+### Kỹ thuật 1 — trả CompletableFuture rồi chờ có timeout
+~~~java
+@Async
+public CompletableFuture<SettlementResult> settle(String orderId) { ... }
+
+SettlementResult r = service.settle("OD-1").get(5, TimeUnit.SECONDS); // fail nhanh, không treo CI
+assertThat(r.state()).isEqualTo(SETTLED);
+~~~
+Luôn có timeout. Một test async không timeout = một pipeline treo lúc 2 giờ sáng.
+
+### Kỹ thuật 2 — executor đồng bộ trong test (mặc định nên dùng)
+~~~java
+@SpringBootTest
+@Import(AsyncTestConfig.class)
+class SettlementServiceIT {
+    @TestConfiguration
+    static class AsyncTestConfig {
+        @Bean
+        TaskExecutor applicationTaskExecutor() { return new SyncTaskExecutor(); }  // chạy trên thread gọi
+    }
+}
+~~~
+{{SyncTaskExecutor}} là class có thật của Spring: nó chạy {{Runnable}} ngay tại chỗ gọi. Được ba thứ: test xác định, không cần chờ, và **{{@Transactional}} rollback hoạt động trở lại** vì tất cả cùng một thread. Mất mát: không phát hiện race thật — vì vậy mới cần kỹ thuật 4.
+
+### Kỹ thuật 3 — unit test: capture công việc, tự chạy
+~~~java
+@Test void notification_is_sent_after_capture() {
+    var captor = ArgumentCaptor.forClass(Runnable.class);
+    service.notifyAsync("OD-1");                       // chỉ nộp việc, chưa chạy
+    verify(executor).execute(captor.capture());
+    captor.getValue().run();                            // chạy trong thread test -> assert được
+    verify(mailer).send(argThat(m -> m.orderId().equals("OD-1")));
+}
+~~~
+
+### Kỹ thuật 4 — một IT thật sự bất đồng bộ
+Dùng executor thật (bỏ {{@Import}} ở trên), gửi việc, rồi chờ **tác động quan sát được**:
+~~~java
+await().atMost(Duration.ofSeconds(3)).pollInterval(Duration.ofMillis(50))
+       .untilAsserted(() -> assertThat(repo.findById(id).orElseThrow().getState())
+                             .isEqualTo(SETTLED));
+~~~
+Chờ theo điều kiện, không chờ theo thời gian. {{Thread.sleep(2000)}} vừa làm CI chậm, vừa fail khi máy chạy chậm, và pass giả khi máy nhanh.
+
+### @Scheduled — đừng chờ cron chạy
+| Cách | Làm gì | Khi nào dùng |
+| 1. Tách logic (khuyến nghị) | {{@Scheduled}} chỉ gọi {{syncNow()}}; test gọi thẳng {{syncNow()}} | mọi test nghiệp vụ |
+| 2. Không nạp {{@EnableScheduling}} trong test | để {{@EnableScheduling}} ở một class config riêng, test không {{@Import}} | khi scheduler tự chạy sẽ gây nhiễu |
+| 3. Tắt bằng cron {{-}} | Spring 5.3.5+ coi giá trị {{-}} là "task này tắt", đặt qua property | khi bạn muốn giữ nguyên config |
+| 4. Test biểu thức cron | {{CronExpression.parse("0 0/5 * * * *").next(now)}} rồi assert mốc thời gian | khi "chạy lúc nào" là yêu cầu nghiệp vụ |
+Điểm hay bị bỏ: nếu method có {{@SchedulerLock}} (ShedLock), lời gọi qua proxy vẫn cần một {{LockProvider}} trong context test — cung cấp bản dùng cho test hoặc bean giả, nếu không test fail vì "no lock provider".
+
+### Bẫy rollback + async (phần đắt giá nhất của câu này)
+| Tình huống | Hậu quả | Xử lý |
+| {{@Transactional}} trên test + code {{@Async}} commit ở thread khác | dữ liệu rò rỉ, test sau đỏ ngẫu nhiên | bỏ {{@Transactional}}, dọn bằng {{@Sql(executionPhase = AFTER_TEST_METHOD)}} |
+| Service dùng {{REQUIRES_NEW}} | transaction con commit độc lập, không bị rollback theo test | chủ đích kiểm tra ghi thật thì {{@Commit}} + tự dọn |
+| {{@SpringBootTest(webEnvironment = RANDOM_PORT)}} + gọi HTTP thật | request chạy ở thread của server, test không rollback được | tự dọn dữ liệu, hoặc dùng MockMvc |
+| Retry/backoff {{@Retryable}} chờ thật | test mất 30 giây vì backoff | đặt max delay ngắn trong profile test + injected clock |
+
+> Senior tip: đặt quy ước trong review checklist: "code async phải có đường để test chạy đồng bộ" — tức executor được inject qua constructor chứ không {{new Thread()}} trong method. Cùng lúc, yêu cầu **đúng một** IT chạy executor thật cho mỗi luồng nghiệp vụ quan trọng: nó là thứ duy nhất bảo vệ bạn khỏi lỗi "hai thread cùng ghi một bản ghi" mà executor giả không bao giờ thấy.`,
+  follow: [
+    'Bạn làm gì khi tác vụ async vừa ghi DB vừa gửi message, và test cần kiểm tra cả hai?',
+    'Ngoài SyncTaskExecutor, bạn có cách nào để test hành vi "sập giữa chừng rồi chạy lại" của job định kỳ?',
+    'Làm sao test timeout của tác vụ async mà không phải chờ thật?'
+  ],
+  tags: ['async', 'scheduler', 'Awaitility', 'SyncTaskExecutor', 'transaction']
+},
+{
+  id: 'testing-028',
+  topic: 'testing',
+  level: 'senior',
+  q: 'Một test của team bạn fail khoảng 1 lần/30 chạy mà không có thay đổi code. Bạn phân loại nguyên nhân flaky thế nào, và quy trình xử lý flaky ở team lớn (15 dev) nên ra sao để không mất niềm tin vào CI?',
+  a: `**Tóm tắt:** Flaky = **cùng một commit cho kết quả khác nhau**, luôn có một nguồn không xác định đứng sau: thời gian, thứ tự, state dùng chung, port/mạng, dữ liệu, hoặc hạ tầng CI. Về kỹ thuật, phải **tái hiện có chủ đích** bằng vòng lặp + đổi thứ tự + đổi timezone, chứ không "chạy lại xem sao". Về tổ chức: đo flake rate, cô lập kèm **owner và hạn chót**, cấm coi retry như giải pháp, và quá hạn thì viết lại ở tầng thấp hơn hoặc xoá.
+
+### Phân loại nguyên nhân — bảng tra nhanh
+| Nhóm | Dấu hiệu nhận biết | Cách tái hiện / kiểm chứng |
+|---|---|---|
+| Thời gian | fail lúc 0 giờ, cuối tháng, ngày 29/2, khi CI chạy chậm | assert trên {{elapsed < 100 ms}} là lỗi thiết kế; đổi {{-Duser.timezone=Asia/Ho_Chi_Minh}} và chạy lại |
+| Locale/múi giờ | "máy tôi đúng, CI sai"; {{String.format}}, {{toLowerCase}} | chạy với {{-Duser.language=tr}} (chữ I tiếng Thổ đổi thành chữ khác) và một locale khác |
+| Thứ tự & state | đỏ khi bật parallel, xanh khi chạy một class | {{-Dsurefire.runOrder=random}} chạy 5 lần; tìm {{static}}, cache, singleton |
+| Thứ tự tập hợp | so sánh {{List}} lấy từ {{Set}}/{{HashMap}} | sắp xếp trước khi assert, hoặc assert theo tập hợp có điều kiện |
+| Port & mạng | "address already in use", fail khi 2 job chồng nhau | bỏ port hardcode (WireMock dùng {{0}} để lấy port động), phân biệt {{localhost}} là {{127.0.0.1}} hay IPv6 {{::1}} |
+| Dữ liệu dùng chung | đỏ khi có test khác chạy trước, đỏ sau khi ai đó seed DB | tạo dữ liệu riêng theo id test, reset bằng {{@Sql}}, đừng dùng seed chung |
+| Dependency bên ngoài | gọi API sandbox thật, rate limit, DNS | giả lập bằng WireMock/contract stub; test không được phụ thuộc internet |
+| Hạ tầng CI | fail hàng loạt trên một runner, đỏ ở bước không liên quan | so sánh theo runner/region, xem log disk/CPU, image pull timeout |
+| Code thật chưa an toàn | race, deadlock, timeout quá sát | đây là **bug production đội lộn test** — phải sửa code, không sửa test |
+
+### Quy trình 6 bước khi có flake
+1. **Xác nhận là flake**: chạy lại đúng commit đó 20–50 lần, đếm số lần đỏ.
+~~~bash
+# vòng lặp tái hiện flaky, in ra số lần đỏ
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  mvn -q test -Dtest=OrderServiceIT || echo "red"
+done
+~~~
+2. **Cô lập ngay** (không chặn merge nhưng phải có ticket + tên người phụ trách): gắn {{@Tag("flaky")}}, surefire chạy ở job riêng.
+3. **Tìm nguồn không xác định** theo bảng trên; thứ tự ưu tiên rẻ trước: đổi thứ tự → đổi TZ/locale → chạy một class mình nó → tắt parallel.
+4. **Sửa tận gốc**: inject clock, thay sleep bằng Awaitility, tách state tĩnh, đặt seed, port động, dữ liệu riêng. Nếu nguyên nhân là race trong code thì sửa code.
+5. **Chốt**: chạy 50 lần xanh, ở 2 thứ tự và 2 timezone; thêm regression test chống tái phát.
+6. **Theo dõi**: flake rate của tuần = số lần đỏ không kèm thay đổi code / tổng số lần chạy.
+
+### Chính sách ở team 15 dev
+| Luật | Lý do |
+|---|---|
+| Retry **không** được coi là fix; nếu CI tự rerun thì phải **đếm và báo cáo** số rerun | retry biến đỏ thành xanh nhưng giữ nguyên rủi ro |
+| Flake được quarantine tối đa 5 ngày làm việc, quá hạn thì **viết lại ở tầng thấp hơn hoặc xoá** | test bị cách ly vĩnh viễn bảo vệ không gì cả |
+| Tác giả PR sửa flake lộ ra do code của PR; nền tảng (CI, Docker, runner) do platform team | rõ trách nhiệm, không đổ vấy |
+| Definition of Done: test mới phải chạy 20 lần xanh + 1 lần với thứ tự random | chặn flake ngay lúc sinh ra, rẻ hơn sửa về sau |
+| Ngân sách flake rate dưới 0,5%/tuần; vượt thì dừng một tính năng để dọn | con số buộc team xếp hạng ưu tiên |
+| Không KPI cá nhân theo số test | tránh sinh test rác để lấp số |
+
+### Ba cách "sửa" làm tình hình tệ hơn
+- **Thêm sleep lớn hơn**: flake chỉ chậm lại, và CI ăn thêm thời gian.
+- **Tăng timeout gấp 10**: che luôn cả bug thật, vì bug giờ mới có đủ thời gian để lộ ra ở production thay vì ở test.
+- **Bớt assert đi cho xanh**: test vẫn chạy code nhưng không còn phát hiện lỗi — coverage tăng, giá trị giảm.
+
+> Senior tip: con số quyết định tất cả là **flake rate**, và nó chỉ đáng tin khi bạn tính đúng: "số lần CI đỏ ở cùng một commit không đổi code chia cho tổng số lần chạy". Report con số đó cùng pipeline duration và change failure rate trong họp kỹ thuật hằng tháng. Khi dev bắt đầu bấm "rerun" theo phản xạ thì pipeline đã mất tác dụng — đó là lúc bạn cần nguồn lực để dọn, và flake rate là lập luận dễ hiểu nhất với quản lý.`,
+  follow: [
+    'Bạn dùng công cụ nào để theo dõi flake theo từng test id (test history) và ai đọc báo cáo đó hằng tuần?',
+    'Flaky test ở tầng E2E, bạn hạ nó xuống tầng nào và bằng cách gì?',
+    'Khi một flake thực chất là race condition trong code production, bạn xử lý thế nào với deadline?'
+  ],
+  tags: ['flaky-test', 'determinism', 'CI', 'process', 'leadership']
+},
+{
+  id: 'testing-029',
+  topic: 'testing',
+  level: 'mid',
+  q: 'Mutation testing với PIT hoạt động bên trong thế nào (mutant sinh ra từ đâu, score tính ra sao)? Cho một ví dụ cụ thể cho thấy line coverage 100% nhưng mutation score chỉ hơn một nửa, và bạn làm gì với kết quả đó?',
+  a: `**Tóm tắt:** PIT sửa **bytecode** của class đang test thành các bản "sai có chủ đích" gọi là **mutant** (đổi {{>=}} thành {{>}}, đổi dấu cộng thành trừ, xoá một lời gọi, trả giá trị khác), rồi chạy lại test. Mutant làm test **đỏ** = bị giết (killed), test vẫn **xanh** = sống sót (survived) và đó chính xác là chỗ test của bạn thiếu assert. Line coverage chỉ nói "dòng đó đã chạy", còn mutation score nói "dòng đó đã được **kiểm tra**". Vì PIT dùng dữ liệu coverage để chọn test liên quan cho từng mutant, chi phí thấp hơn nhiều so với tưởng tượng.
+
+### Năm bước PIT chạy
+1. Đọc bytecode của class trong {{targetClasses}}, sinh mutant theo **mutation operator**.
+2. Đọc dữ liệu coverage để biết test nào chạm class nào ⇒ mỗi mutant **chỉ chạy các test liên quan**, không chạy cả suite.
+3. Nạp mutant vào JVM tách biệt, chạy các test đã chọn.
+4. Test đỏ ⇒ killed. Test xanh ⇒ survived. Test treo ⇒ bị tính là killed (có timeout bảo vệ).
+5. In báo cáo HTML ({{target/pit-reports}}): danh sách mutant sống sót kèm dòng code — đây là "đơn đặt hàng test" cụ thể nhất bạn từng có.
+
+Operator hay gặp: đổi toán tử so sánh, đổi {{+}}/{{-}}/{{*}}, bỏ lời gọi method trả {{void}}, thay giá trị trả về bằng 0/1/null/{{true}}, phủ định điều kiện, đổi tăng/giảm.
+
+### Score tính thế nào
+{{mutation score = số mutant bị giết / tổng mutant được xét}}, trong đó mutant nằm ở code **không được coverage chạm tới** bị loại khỏi mẫu số (nhóm "no coverage"). Hệ quả quan trọng: một class không ai test không làm tụt mutation score — nó xuất hiện ở mục khác. Đừng nhân hai chỉ số này vào nhau, hãy đọc riêng.
+
+### Ví dụ: vì sao 100% line coverage đi với mutation score thấp
+Code cần bảo vệ (tính giảm giá theo hạng):
+~~~java
+BigDecimal payable(BigDecimal price, Tier tier) {
+    BigDecimal off = switch (tier) {
+        case GOLD   -> price.multiply(new BigDecimal("0.10"));
+        case SILVER -> price.multiply(new BigDecimal("0.05"));
+        default      -> BigDecimal.ZERO;
+    };
+    return price.subtract(off);
+}
+~~~
+Team chỉ có một test: {{GOLD}} với giá 1.000.000, kỳ vọng 900.000. Mọi dòng đều chạy ⇒ **line coverage 100%**. PIT sinh khoảng 12 mutant, kết quả minh hoạ:
+| Mutant | Kết quả | Test cần viết thêm |
+|---|---|---|
+| GOLD: 0.10 → 0.11 | killed | (đã có) |
+| SILVER: 0.05 → 0.06 | **survived** | test {{SILVER}} 1.000.000 → 950.000 |
+| default: trả {{ZERO}} → trả {{price}} | **survived** | test {{BRONZE}} không được giảm |
+| {{subtract}} → {{add}} | killed | (đã có) |
+| bỏ {{multiply}} (trả chính price) ở nhánh GOLD | **survived** | assert chặt giá trị trả về, không chỉ "không ném lỗi" |
+| so sánh enum đảo thứ tự nhánh | **survived** | test cả ba hạng trong cùng một bảng dữ liệu |
+Khoảng 7/12 bị giết ⇒ mutation score ~58% dù line coverage 100%. Bảng mutant sống sót chỉ thẳng: **thiếu hai nhánh còn lại và thiếu assert trên giá trị trả về**.
+
+### Chạy trong dự án thật
+~~~bash
+# Maven: goal mutationCoverage (cần thêm pitest-junit5-plugin bên cạnh để chạy JUnit 5)
+mvn -DtargetClasses=com.acme.order.domain.* org.pitest:pitest-maven:mutationCoverage
+~~~
+- Spring Boot 3.x + JUnit 5: thêm dependency {{pitest-junit5-plugin}}, vì PIT cần engine runner riêng để nạp test JUnit 5.
+- Cấu hình trong CI: {{targetClasses}} giới hạn ở **module domain**, {{mutationThreshold}} làm gate, {{withHistory}} để lần sau chỉ xét lại mutant của phần code đã đổi (đây là công tắc giảm thời gian mạnh nhất), và bật nhiều thread.
+- Nhịp chạy hợp lý: **nightly cho module lõi** hoặc **theo PR ở module đang ổn định**; không chạy toàn repo.
+
+### Khi nào mutation test không giúp gì
+- Code chủ yếu là wiring/config/DTO: không có logic để làm hỏng, score vô nghĩa.
+- Chưa có unit test: mutant nằm hết ở "no coverage", điểm không đổi.
+- Lỗi **thiếu tính năng** (không ai viết hàm đó), lỗi thứ tự bất đồng bộ, lỗi cấu hình runtime — mutant không sinh ra được những lỗi này.
+- Mutant **tương đương** (equivalent): sửa code nhưng hành vi không đổi, ví dụ {{x + 0}} hay tách {{if (a && b)}} thành hai {{if}} lồng nhau. Loại này **vẫn hiện là survived**, PIT không tự nhận ra — bạn phải đọc và loại khỏi danh sách việc cần làm. Vì thế 100% là bất khả thi, và đó không phải mục tiêu.
+
+### Bẫy
+- Đặt KPI mutation score toàn công ty ⇒ sinh test vô nghĩa để giết mutant (đúng căn bệnh của coverage).
+- Chạy trên module có test E2E nặng ⇒ mỗi mutant khởi động cả context, chậm kinh hoàng. Mutation test đi kèm **unit test nhanh**.
+- Đọc điểm tổng mà không mở báo cáo HTML: giá trị nằm ở danh sách mutant sống sót, không ở con số.
+
+> Senior tip: cách dùng PIT hiệu quả nhất là **theo diff**: chạy nightly trên module lõi, lấy mutant sống sót của code thay đổi trong tuần, biến mỗi mutant thành một issue nhỏ "thêm assert". Sau hai quý, team không còn viết test "cho có assert" nữa vì họ đã thấy máy chỉ ra chỗ họ hổng. Đó là lúc mutation score tự tăng, mà không cần ai ra lệnh.`,
+  follow: [
+    'Bạn ước lượng thời gian chạy PIT cho một module 20.000 dòng thế nào trước khi đề xuất với team?',
+    'Mutant sống sót nào bạn cho là đáng lo nhất: toán tử so sánh hay lời gọi bị bỏ, vì sao?',
+    'Có nên đặt mutation threshold làm gate chặn merge không, và ở mức nào là hợp lý cho code mới?'
+  ],
+  tags: ['PIT', 'mutation-testing', 'coverage', 'quality-gate']
+},
+{
+  id: 'testing-030',
+  topic: 'testing',
+  level: 'senior',
+  q: 'Bạn nhận một hệ thống legacy 5 năm tuổi, gần như không có test, tài liệu sai. Kế hoạch dựng lưới an toàn test của bạn ra sao: characterization test là gì, seam dùng thế nào, và bạn ưu tiên theo tiêu chí nào?',
+  a: `**Tóm tắt:** Không refactor "cho sạch" khi chưa có lưới an toàn. Trình tự đúng: (1) dựng **characterization test** — test **mô tả hành vi hiện tại** thay vì kiểm chứng hành vi "đúng", (2) dùng **seam** để phá phụ thuộc (DB, static, thời gian) với thay đổi nhỏ nhất, (3) ưu tiên theo **rủi ro = tần suất thay đổi × tác động**, không theo % coverage, (4) chỉ sửa code sau khi test đó xanh và được commit. Đây là cách tiếp cận Michael Feathers mô tả trong sách "Working Effectively with Legacy Code".
+
+### Characterization test — khác test thường ở chỗ nào
+| | Test thường | Characterization test |
+|---|---|---|
+| Kỳ vọng đến từ | spec/nghiệp vụ | **chính output hiện tại của code** |
+| Khi fail nghĩa là | code sai | hành vi đã đổi (có thể là cải tiến, có thể là regression) |
+| Dùng khi | viết mới | cần sửa code mà không ai biết "đúng" là gì |
+Cách viết: chọn một tập đầu vào đại diện (kể cả ca biên, ca xấu), chạy code **nguyên bản**, ghi lại output thành file chuẩn, rồi assert vào file đó. Từ lúc này, mọi thay đổi hành vi đều lộ ra.
+
+### Golden master / approval testing — hiện thực hoá ý tưởng trên
+Thay vì viết 200 dòng assert, test so output với một **file chuẩn** (golden master) nằm trong repo; khác thì fail và in diff. Có thể tự viết helper ba dòng, hoặc dùng thư viện ApprovalTests cho Java ({{Approvals.verify(...)}}). Điều kiện bắt buộc: **chuẩn hoá phần biến động** trước khi so (timestamp, id tự sinh, UUID, đường dẫn), nếu không test đỏ mỗi lần chạy.
+~~~java
+@Test void characterizes_invoice_render() {
+    var html = invoiceRenderer.render(fixture("INV-2023-11"));
+    var stable = html.replaceAll("INV-[0-9A-Z]{12}", "INV-XX")   // chuẩn hoá các giá trị biến động
+                     .replaceAll("20[0-9]{2}-[0-9]{2}-[0-9]{2}", "YYYY-MM-DD");
+    assertMatchesGoldenFile("golden/invoice-2023-11.txt", stable);   // khác file chuẩn thì in diff
+}
+~~~
+Được: phủ nhanh một vùng rộng (render hoá đơn, parse file, tính phí). Mất: khó đọc khi fail, và phải có người **duyệt** file chuẩn — im lặng cập nhật file chuẩn mỗi lần đỏ là tự phá lưới.
+
+### Seam — 4 cách phá phụ thuộc với ít thay đổi nhất
+| Loại seam | Cách làm | Ví dụ |
+|---|---|---|
+| Parameter seam | truyền giá trị vào thay vì lấy từ global | thêm tham số {{Clock}}/{{RateSource}} vào method |
+| Extract/interface seam | tách đoạn gọi DB/HTTP ra một interface nhỏ, inject impl | {{LegacyRateDao}} → interface {{RateSource}} |
+| Inheritance seam | class con override method gọi ra ngoài (khi method không final) | test dùng subclass trả tỷ giá cố định |
+| Link seam | nạp implementation khác ở chế độ test | bean giả trong {{@TestConfiguration}} |
+Với static và {{new}} nằm giữa method, **ưu tiên wrapper một lớp mỏng** (một class bọc {{LegacyUtil.now()}}) hơn là PowerMock/reflection: rẻ, dễ đọc, và không làm vỡ khi nâng JDK/Spring.
+
+### Test ở biên khi bên trong "bất khả xâm phạm"
+- **API boundary test**: gọi endpoint thật bằng {{TestRestTemplate}} với bộ request cố định, assert JSON đã chuẩn hoá. Đây là lưới an toàn cho người dùng thật, rẻ hơn nhiều so với việc cover từng method.
+- **Record & replay downstream**: bật chế độ ghi của WireMock để thu request/response từ service cũ, rồi cho test chạy lại trên bản ghi — có được "thế giới phụ thuộc" mà không cần môi trường thật.
+- **DB snapshot**: chạy test trên bản restore production đã ẩn danh; legacy thường phụ thuộc dữ liệu bẩn tích tụ nhiều năm.
+- **Bảng đối soát đầu/cuối**: với luồng tiền, một test so tổng trước và sau khi chạy batch đáng giá hơn 50 unit test.
+
+### Ưu tiên theo rủi ro — cách có số liệu
+{{Rủi ro = tần suất thay đổi × tác động}}.
+~~~bash
+# 20 file được sửa nhiều nhất trong 12 tháng (churn)
+git log --since=12.months --name-only --pretty=format: | sort | uniq -c | sort -rn | head -20
+~~~
+Ghép với: số incident/ticket theo module, lưu lượng request (APM), và doanh thu đi qua luồng. Bảng 2×2 cho ra 4 nhóm: **nhiều đổi + nhiều tiền** (characterization + seam ngay), nhiều đổi + ít tiền (test ở biên), ít đổi + nhiều tiền (chỉ smoke), ít đổi + ít tiền (mặc kệ — đừng đốt thời gian).
+
+### Lộ trình 90 ngày (nói được trong phỏng vấn)
+1. **Tuần 1–2**: làm cho hệ thống chạy được bằng **một lệnh** (seed DB, container, profile test) — không có bước này thì mọi test đều không ai chạy. Đo churn + incident, chụp ảnh hành vi hiện tại.
+2. **Tuần 3–6**: characterization cho 5 luồng rủi ro cao nhất; đặt luật "code mới phải có test, code cũ không bắt buộc".
+3. **Tuần 7–12**: đặt seam **ở đúng chỗ sắp sửa**, viết test hành vi mới, rồi refactor trong phạm vi đó. Bắt đầu từ đây mutation/contract test mới có chỗ đứng.
+Luật bất biến: **mỗi lần sửa legacy phải có test xanh trước và sau**, commit riêng test và commit riêng code, để khi nghi ngờ biết ngay do đâu.
+
+### Bẫy
+- Refactor lớn trước khi có test ("viết lại cho sạch") ⇒ bug chỉ lộ trên production, và không ai chứng minh được là do refactor.
+- Giao chỉ tiêu coverage 80% cho toàn bộ legacy ⇒ chi phí khổng lồ, giá trị gần 0 (test getter/setter).
+- Characterization assert cả response có timestamp/id ⇒ đỏ mọi lần, team bỏ luôn test.
+- Khi test đỏ thì **sửa test theo code mới** mà không ai review ⇒ lưới bị vô hiệu hoá âm thầm.
+
+> Senior tip: ở hệ thống legacy, thứ tạo niềm tin không phải số lượng test mà là **tốc độ dựng được một môi trường tái hiện được lỗi**. Hãy ưu tiên làm cho "clone repo → chạy 1 lệnh → có DB giống thật → chạy được test" trong ngày đầu tiên; mọi thứ sau đó nhanh gấp nhiều lần. Khi quản lý hỏi "bao lâu", hãy trả lời theo luồng: "characterization cho luồng tính phí mất 2 ngày, sau đó ta có thể sửa an toàn" chứ không trả lời theo phần trăm coverage.`,
+  follow: [
+    'Bạn thuyết phục quản lý dành bao nhiêu % capacity cho lưới an toàn, và đo hiệu quả bằng gì?',
+    'Characterization test phát hiện hành vi sai rõ ràng (bug đang sinh tiền) — bạn xử lý thế nào?',
+    'Với legacy chỉ có thể test ở biên API, làm sao biết refactor bên trong đã phá chỗ nào?'
+  ],
+  tags: ['legacy', 'characterization-test', 'seam', 'golden-master', 'risk-based']
+},
+{
+  id: 'testing-031',
+  topic: 'testing',
+  level: 'lead',
+  q: 'Bạn đưa test hiệu năng vào CI của team 15 dev như thế nào (chạy gì mỗi PR, chạy gì hàng đêm, chặn merge ở đâu)? Khi đọc p95/p99, những lỗi diễn giải nào hay gặp, và bạn tổ chức baseline + dashboard ra sao?',
+  a: `**Tóm tắt:** Không chạy "perf test 30 phút" mỗi PR. Chiến lược làm được ở team lớn là **ba tầng**: smoke perf vài phút mỗi PR với ngưỡng **tương đối** so với baseline, benchmark chuẩn khi merge vào main, và soak/capacity dài ngày trước release (không chặn merge). Về số liệu: p95/p99 chỉ có nghĩa khi **mẫu đủ lớn, môi trường bằng production về dữ liệu và tài nguyên, và dùng mô hình mở (arrival rate)**. Baseline là một file commit trong repo; báo cáo bằng % thay đổi so với baseline, không bằng con số tuyệt đối.
+
+### Ba tầng trong pipeline
+| Tầng | Khi chạy | Thời lượng | Ngưỡng | Chặn merge? |
+|---|---|---|---|---|
+| Smoke perf | mỗi PR | 2–5 phút, tải thấp | bắt lỗi thô: p95 > 1,2× baseline, error > 0,5% | có, nhưng nới tay |
+| Benchmark chuẩn | mỗi merge vào main | 10–20 phút | p95 > 1,1× baseline ⇒ cảnh báo; > 1,5× ⇒ mở incident | không (main đã merge) |
+| Soak / spike / capacity | hàng tuần, trước release | 2–8 giờ | rò rỉ bộ nhớ, giới hạn chịu tải, hành vi khi autoscale | không |
+Smoke PR chỉ để trả lời "có ai vừa thêm một query trong vòng lặp không", không phải để đo năng lực hệ thống. Nó chạy trên máy CI nhỏ hơn production nên **chỉ so được với chính nó**.
+
+### Baseline và dashboard
+- Mỗi service có {{perf/baseline.json}} commit trong repo: {{p50, p95, p99, rps, errorRate, dbCpu, gcPause}} của lần chạy chuẩn gần nhất, kèm commit và ngày.
+- Mỗi lần chạy ghi kết quả vào một kho (Grafana/InfluxDB, hoặc file JSON artifact + dashboard tĩnh). Đường trend theo thời gian quan trọng hơn từng con số.
+- **Reset baseline** khi thay đổi có chủ đích (thêm index, đổi JVM, đổi kích thước dữ liệu) và ghi lý do vào commit — nếu không, mỗi người hiểu một kiểu.
+- Quy tắc thống kê: bỏ 1–2 phút warm-up (JIT, cache lạnh), lấy **p95 của cả run**, không lấy giá trị đẹp nhất trong ba run.
+
+### Bốn lỗi diễn giải percentile (phần thể hiện độ sâu)
+1. **Trung bình các percentile**: p95 của 5 node rồi lấy trung bình **không phải** p95 toàn cục, và luôn thấp hơn thực tế. Phải gộp histogram (dạng HDR) rồi tính lại. Với Prometheus, {{histogram_quantile}} trên bucket đã sum; tuyệt đối không sum các quantile.
+2. **Mẫu quá nhỏ**: p99 từ 500 request chỉ dựa vào 5 phần tử cuối, dao động hoàn toàn là nhiễu. Muốn p99 ổn định cần hàng chục nghìn mẫu.
+3. **Coordinated omission**: nếu mỗi "user" chờ response xong mới gửi request kế tiếp, thì khi hệ thống chậm, chính thời gian chậm đó làm giảm số request gửi đi — số liệu trở nên **đẹp hơn thực tế**. Khắc phục: mô hình mở theo **tốc độ đến** (k6 {{ramping-arrival-rate}}, Gatling {{injectOpen}}/{{constantUsersPerSec}}).
+4. **So sánh hai run khác môi trường hoặc khác dữ liệu**: 500 dòng vs 10 triệu dòng không cùng một bài toán.
+
+### Ví dụ kịch bản Gatling (Java DSL)
+~~~java
+class OrderApiBenchmark extends Simulation {
+    HttpProtocolBuilder httpProtocol = http.baseUrl("http://api.internal");
+    ScenarioBuilder scn = scenario("order-read")
+        .exec(http("get order").get("/api/orders/1001").check(status().is(200)));
+    {
+        setUp(scn.injectOpen(constantUsersPerSec(50).during(Duration.ofSeconds(180))))
+            .protocols(httpProtocol)                    // mô hình mở theo tốc độ đến, không chèn pause thủ công
+            .maxUsers(200);                             // trần số user đồng thời trên máy chạy test
+    }
+}
+~~~
+(Java DSL của Gatling 3.x; đối chiếu lại docs đúng version bạn dùng. Gatling còn có **global assertion** trong {{setUp}} để fail run khi ngưỡng bị phá — tiện cho gate CI.) Trong CI, chạy qua container với **CPU limit bằng production**, app cùng cờ JVM, cùng bản dữ liệu.
+
+### Năm quy tắc về môi trường
+- Dữ liệu **cùng cỡ** production (kể cả phân bố: 10% khách hàng chiếm 60% đơn).
+- Cùng số instance và tắt autoscaling trong lúc đo, nếu không bạn đo chính thuật toán scale.
+- Cùng instance type / CPU limit / GC / version JVM.
+- Môi trường perf **riêng**, không dùng chung DB với môi trường QA (traffic QA làm nhiễu số liệu).
+- Bật profiling khi cần định vị (JFR của JDK, async-profiler) — perf test cho biết **có** chậm, flamegraph cho biết **chậm ở đâu**.
+
+### Tổ chức ở quy mô team
+| Việc | Ai |
+|---|---|
+| Kịch bản + baseline cho service của mình | team tính năng, như một phần của feature |
+| Môi trường, dữ liệu mẫu, job CI | platform/devex team |
+| Duyệt "perf budget" (p95 mục tiêu cho mỗi API) và SLO | lead + product |
+| Điều tra regression khi benchmark đỏ | tác giả commit nghi vấn + người review |
+Luật: mỗi service có **một bảng p95 mục tiêu** hiển thị ở dashboard; thêm API mới phải kê SLO trước khi merge, không phải sau khi cháy.
+
+### Bẫy
+- Chặn merge bằng **ngưỡng tuyệt đối** (p95 < 300 ms) ⇒ runner CI đổi cấu hình là cả team kẹt; phải chặn bằng **tương đối**.
+- Một người giỏi perf sở hữu toàn bộ test (bus factor) ⇒ không mở rộng được.
+- Đo trên môi trường nhỏ rồi **ngoại suy** ra production theo tỉ lệ máy — thường sai vì chỗ nghẽn (DB, connection pool) không scale tuyến tính.
+- Chỉ số đẹp nhờ cache chưa "nguội": luôn có pha warm-up rồi mới đo.
+- Báo cáo "p99 = 250 ms" mà không nói bao nhiêu request, dữ liệu bao nhiêu dòng, máy gì.
+
+> Senior tip: câu nói tạo uy tín trong lĩnh vực này là một câu có **ba con số và một cơ chế**: "thêm index (status, created_at) cho query danh sách đơn ⇒ p95 giảm từ 1,9 giây xuống 210 ms ở 800 RPS, DB CPU từ 78% xuống 23%". Và khi phải bảo vệ ngân sách cho tầng soak (đắt tiền nhất), hãy quy về chi phí lỗi: "mỗi lần nghẽn lúc mở bán làm mất khoảng X đơn trong 20 phút; một giờ môi trường perf mỗi tuần rẻ hơn rất nhiều".`,
+  follow: [
+    'Bạn quyết định ngưỡng nào là "đủ đỏ để chặn merge" khi CI runner dao động mạnh?',
+    'Làm sao phát hiện regression hiệu năng do một PR cụ thể khi benchmark chỉ chạy trên main?',
+    'Với hệ thống event-driven (Kafka), bạn đo latency end-to-end và độ trễ tiêu thụ thế nào?'
+  ],
+  tags: ['performance-testing', 'CI', 'percentile', 'Gatling', 'baseline']
+},
+{
+  id: 'testing-032',
+  topic: 'testing',
+  level: 'lead',
+  q: 'Bạn được giao một team 15 dev: pipeline 25 phút, bug production vẫn tăng, phần lớn test là E2E thủ công. Xây dựng test strategy và quality gate từ hiện trạng đó như thế nào, và bạn báo cáo với quản lý bằng con số gì?',
+  a: `**Tóm tắt:** Chiến lược test **không bắt đầu bằng "đề nghị coverage 80%"** mà bằng chẩn đoán số liệu của chính team: bug 6 tháng gần nhất đến từ tầng nào, pipeline tốn bao nhiêu, flake rate bao nhiêu, vùng code nào đổi nhiều nhất. Sau đó là ba văn bản ngắn (chuẩn viết test, phân tầng, gate) cộng một **chương trình thay đổi hành vi trong hai quý**, rollout theo vùng rủi ro, gate tăng dần. Báo cáo quản lý bằng chi phí lỗi production và DORA, không bằng số test.
+
+### Bước 0 — chẩn đoán (2 tuần, không đổi code)
+| Câu hỏi | Nguồn dữ liệu |
+|---|---|
+| Bug đến từ tầng nào? | 6 tháng incident/post-mortem, phân loại: logic / mapping HTTP / SQL / cấu hình / tích hợp |
+| Pipeline đang mất bao nhiêu? | CI: thời lượng p95 mỗi job, số job fail không do code |
+| Ai đang viết test, ở tầng nào? | git: tỉ lệ file test/module, ai là tác giả |
+| Code nào đổi nhiều + gây lỗi nhiều? | {{git log}} churn ghép với ticket theo module |
+| Test/manual QA đang chiếm bao nhiêu ngày mỗi release? | thời gian thực tế của nhóm test thủ công |
+Kết quả chẩn đoán quyết định **hình kim tự tháp của riêng team bạn**: nếu 60% bug đến từ mapping HTTP↔domain và SQL thì đầu tư vào slice test + integration, không phải viết thêm unit test cho domain.
+
+### Bước 1 — chuẩn trên một trang (ít nhưng được dùng)
+- **Definition of Done**: "mọi hành vi mới có test ở tầng hợp lý, nêu rõ tầng nào trong PR"; "mọi bug production có regression test tái hiện được **trước khi** sửa".
+- **Bảng phân tầng theo loại thay đổi**: rule nghiệp vụ thuần → unit; controller/validation/JSON → {{@WebMvcTest}}; query/constraint → {{@DataJpaTest}} + container; wiring, security, async → full context; nghiệp vụ xuyên service → E2E mỏng.
+- **Quy ước kỹ thuật**: đặt tên test mô tả hành vi, AAA, test data builder dùng chung, container base class dùng chung, cấm {{Thread.sleep}}, cấm sửa test cũ để cho pass.
+- Template repo + "toolbox" nội bộ để 15 người không ai tự chế.
+
+### Bước 2 — hạ tầng dùng chung (2 người làm, cả team hưởng)
+- CI chia tầng: lint → unit → integration → (nightly) contract/mutation → E2E smoke sau deploy, mỗi tầng có **ngân sách thời gian**; tổng mục tiêu dưới 10 phút cho PR.
+- Cache Docker image, parallel + sharding, bật test history để đo flake theo từng test id.
+- Môi trường test một lệnh: seed DB + container + profile, vì không có nó thì không ai chạy gì.
+
+### Bước 3 — rollout ba phase
+| Phase | Thời lượng | Nội dung | Điều kiện bước sau |
+|---|---|---|---|
+| 1. Stabilise | 4–6 tuần | dọn flake, pipeline < 10 phút, một gate duy nhất: build đỏ không merge | team không còn bấm "rerun" theo phản xạ |
+| 2. Seed | 6–8 tuần | 2 module lõi viết test ở tầng đúng, mỗi subgroup 1 "test champion", 2 workshop theo bug thật | có baseline mutation score + regression test cho bug production |
+| 3. Expand | quý tiếp | gate theo vùng, contract test giữa service, smoke perf trong CI, hạ E2E thủ công thành automation | bug production giảm, QA chuyển sang test khám phá |
+Không "all-in" toàn công ty cùng lúc: 15 người đổi thói quen cùng một lúc là kịch bản thất bại phổ biến nhất.
+
+### Bước 4 — quality gate tăng dần (nguyên tắc "sửa được trong một lần làm việc")
+| Gate | Bật khi nào | Ngưỡng khởi điểm |
+|---|---|---|
+| Compile + unit pass | luôn | – |
+| Không merge khi pipeline đỏ | phase 1 | branch protection |
+| Coverage **delta** cho file mới/sửa | phase 2 | 60% ở tầng unit+slice |
+| Regression test bắt buộc cho bug production | phase 2 | luật, không phải % |
+| Mutation score module lõi (nightly) | phase 3 | baseline rồi tăng dần |
+| Contract verify + {{can-i-deploy}} | khi có ≥ 2 service phụ nhau | chặn deploy |
+| Dependency + image + secret scan | luôn (rẻ) | lỗi high là chặn |
+Gate nào dev không biết cách sửa trong một buổi thì gate đó sẽ bị lách — dấu hiệu là các PR "tạm disable".
+
+### Bước 5 — nuôi hành vi (phần quyết định, và hay bị bỏ)
+- Review checklist có mục "test ở tầng nào"; reviewer chỉ ra tầng, không chỉ nói "thêm test đi".
+- Dành **10–15% capacity mỗi quý** cho test debt, ghi thành epic đo được (không phải "việc kiêm").
+- Cặp đôi sửa flake; flake do code thì tác giả code chịu, do hạ tầng thì platform team chịu.
+- Onboarding: tài liệu "viết test đầu tiên trong 30 phút" + một PR tốt nghiệp nhỏ.
+- **Không** KPI cá nhân theo số test hay coverage — nguồn gốc của test rác.
+
+### Số liệu báo cáo quản lý
+| Chỉ số | Cách đo | Dùng để nói gì |
+|---|---|---|
+| Change failure rate | tỉ lệ deploy gây sự cố (DORA) | chất lượng test liên quan trực tiếp đến tiền |
+| MTTR + số giờ hotfix/tháng | incident | quy chi phí lỗi thành giờ công |
+| Pipeline p95, flake rate | CI | tốc độ và niềm tin vào pipeline |
+| Số PR kẹt quá 1 ngày vì test | CI + review | chi phí ẩn của việc thiếu test |
+| Bug production/tháng phân theo tầng | incident | xác nhận đầu tư đúng chỗ |
+
+### Bẫy
+- Mua công cụ trước khi có chuẩn (Sonar, Pact Broker, k6) rồi bỏ hoang vì không ai sở hữu.
+- Áp một ngưỡng coverage toàn công ty ⇒ team viết test DTO cho đủ số.
+- Cắt E2E vì "chậm" mà không thay bằng test ở tầng dưới ⇒ mất luôn lớp bảo vệ cuối.
+- Chiến lược 40 trang không ai đọc; chuẩn dùng được là 1 trang + template trong repo.
+- Một người duy nhất hiểu toàn bộ hạ tầng test ⇒ không mở rộng và không duy trì được.
+
+> Senior tip: lập luận mạnh nhất với cấp trên không phải "code sạch" mà là **kinh tế của lỗi**: "change failure rate 18%, mỗi sự cố tốn khoảng 6 người-giờ ⇒ tầm X giờ công mỗi quý; đầu tư 1 kỹ sư trong một quý cho hạ tầng test và flake để kéo về 8%". Đồng thời chủ động nói giới hạn: "gate sẽ làm tốc độ merge giảm khoảng 2 tuần đầu, đổi lại pipeline đáng tin". Lead nói bằng đánh đổi và bằng số, không nói bằng nguyên tắc.`,
+  follow: [
+    'Team chống lại ("test là việc của QA") — bạn xử lý bằng quy trình hay bằng ví dụ cụ thể?',
+    'Bạn thuyết phục product cho 15% capacity làm test debt như thế nào khi roadmap đã kín?',
+    'Sau 2 quý, dấu hiệu nào cho bạn biết chiến lược này thất bại và cần đổi hướng?'
+  ],
+  tags: ['test-strategy', 'test-pyramid', 'quality-gate', 'leadership', 'DORA']
+},
 );
