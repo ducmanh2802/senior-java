@@ -1266,6 +1266,8 @@ window.DATA_INDEX = {
     {"id":"lesson-spring-005","track":"spring","order":5,"title":"Spring MVC request flow, validation và ProblemDetail","level":"senior","minutes":35},
     {"id":"lesson-spring-006","track":"spring","order":6,"title":"Migration runner kiểu Flyway: versioned, repeatable và checksum","level":"senior","minutes":50},
     {"id":"lesson-spring-007","track":"spring","order":7,"title":"Mapper JSON kiểu Jackson: reflection, annotation và chế độ strict chống mất field im lặng","level":"senior","minutes":50},
+    {"id":"lesson-spring-008","track":"spring","order":8,"title":"Auto-configuration và @Conditional: vì sao bean mặc định nhường bean của bạn","level":"senior","minutes":45},
+    {"id":"lesson-spring-009","track":"spring","order":9,"title":"Spring Events và @TransactionalEventListener: gửi email lúc nào mới đúng","level":"senior","minutes":45},
     {"id":"lesson-jpa-001","track":"jpa","order":1,"title":"Persistence context và dirty checking","level":"mid","minutes":25},
     {"id":"lesson-jpa-002","track":"jpa","order":2,"title":"N+1 query và tải association theo batch","level":"senior","minutes":25},
     {"id":"lesson-jpa-003","track":"jpa","order":3,"title":"Optimistic locking với @Version","level":"senior","minutes":25},
