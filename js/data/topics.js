@@ -26,6 +26,7 @@ window.TOPICS = [
   { id: 'claude',        name: 'Claude Developer (CCDV-F)',  icon: '🟠', group: 'Cloud & AI',   file: 'q-claude.js' },
   { id: 'devops',        name: 'Docker, K8s, Linux & Git',   icon: '🐳', group: 'Cloud & AI',   file: 'q-devops.js' },
   { id: 'testing',       name: 'Testing & Quality',          icon: '🧪', group: 'Soft skills',  file: 'q-soft.js' },
+  { id: 'autotest',      name: 'Automation Test (QA → SDET)', icon: '🤖', group: 'Soft skills',  file: 'q-autotest.js' },
   { id: 'behavioral',    name: 'Leadership & Behavioral',    icon: '🤝', group: 'Soft skills',  file: 'q-soft.js' },
   { id: 'english',       name: 'Phỏng vấn tiếng Anh',        icon: '🇬🇧', group: 'Soft skills',  file: 'q-english.js' },
 ];
