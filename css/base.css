@@ -311,3 +311,18 @@ a.card:hover { box-shadow: var(--shadow-lg); transform: translateY(-2px); border
 .input, .select, .textarea { transition: border-color .15s, box-shadow .15s; }
 details > summary { transition: color .15s; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; } a.card:hover, .stat:hover { transform: none; } }
+
+/* Sequence diagrams (js/core/diagram.js): ~~~seq in App.md and project business diagrams */
+.diagram { margin: 14px 0; }
+.diagram figcaption { font-weight: 600; margin-bottom: 6px; }
+.diagram-scroll { overflow-x: auto; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+.sq { display: block; max-width: none; font-family: var(--font); }
+.sq-actor { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+.sq-actor-t { fill: var(--text); font-size: 13px; font-weight: 700; }
+.sq-life { stroke: var(--border); stroke-width: 1.5; stroke-dasharray: 5 5; }
+.sq-line { stroke: var(--text); stroke-width: 1.5; fill: none; }
+.sq-reply { stroke: var(--muted); stroke-dasharray: 6 4; }
+.sq-head { fill: var(--text); }
+.sq-label { fill: var(--text); font-size: 12px; }
+.sq-note { fill: var(--surface-2); stroke: var(--warn); stroke-width: 1.2; }
+.sq-note-t { fill: var(--text); font-size: 12px; font-style: italic; }

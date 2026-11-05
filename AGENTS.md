@@ -121,6 +121,7 @@ Một đáp án: đúng 4 options không trùng, `answer` là số nguyên 0..3.
 | `> ghi chú` | hộp tip / lưu ý |
 | `\| a \| b \|` | bảng; dòng đầu là header, dòng `\|---\|` bị bỏ qua |
 | `~~~java` … `~~~` | code block (`java`, `sql`, `yaml`, `json`, `bash`, `text`) |
+| `~~~seq` … `~~~` | **sơ đồ sequence** vẽ thành SVG (js/core/diagram.js). Mỗi dòng: `title: …` (tuỳ chọn), `actors: A \| B \| C` (tuỳ chọn, phân cách bằng dấu gạch đứng), `A -> B: yêu cầu`, `B --> A: phản hồi`, `A -> A: tự xử lý`, `note A..C: ghi chú`. 2–6 actor, tên ngắn; text mỗi bước ≤ 60 ký tự. Validator báo lỗi nếu sai cú pháp. Dùng cho luồng nhiều bên (API ↔ DB ↔ Kafka, OAuth, chuyển tiền…) thay cho sơ đồ ASCII |
 
 Bẫy hay gặp:
 - **Không** được có ký tự backtick `` ` `` bên trong đáp án, vì sẽ làm vỡ template literal.

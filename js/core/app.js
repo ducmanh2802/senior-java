@@ -275,6 +275,7 @@
         const buf = []; i++;
         while (i < lines.length && !lines[i].startsWith('~~~')) buf.push(lines[i++]);
         i++;
+        if (lang === 'seq' && window.Diagram) { html += window.Diagram.seqBlock(buf.join('\n')); continue; }
         html += '<pre class="code" data-lang="' + esc(lang) + '"><code>' + highlight(buf.join('\n'), lang) + '</code></pre>';
         continue;
       }
