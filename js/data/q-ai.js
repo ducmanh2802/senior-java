@@ -1890,5 +1890,154 @@ String reply = chatClient.prompt()
     { type: 'doc', title: 'Spring AI: Tool Calling', url: 'https://docs.spring.io/spring-ai/reference/api/tools.html' },
     { type: 'doc', title: 'LangChain4j: Tools', url: 'https://docs.langchain4j.dev/tutorials/tools' }
   ]
-}
+},
+{
+  id: 'ai-030',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Ngân hàng triển khai chatbot CSKH dùng LLM + RAG trên tài liệu sản phẩm: kiến trúc tổng thể, khi nào chuyển cho nhân viên thật, và vì sao không được tự trả lời số dư/giao dịch nếu chưa xác thực?',
+  a: `**Tóm tắt:** chatbot này là lớp hỏi đáp tài liệu có kiểm soát: tài liệu sản phẩm được index theo phiên bản và quyền; câu trả lời phải có trích dẫn; mọi dữ liệu cá nhân/giao dịch chỉ được lấy qua tool đã xác thực danh tính; khi không chắc hoặc yêu cầu nhạy cảm thì handoff cho nhân viên, không bịa.
+
+### Bối cảnh ngân hàng
+- Khách hỏi: lãi suất tiết kiệm 12 tháng, phí chuyển tiền liên ngân hàng, điều kiện vay mua nhà.
+- Tài liệu nguồn: biểu phí, quy định sản phẩm, FAQ, điều khoản — thay đổi theo ngày hiệu lực và phân khúc khách.
+- Rủi ro lớn nhất: chatbot trả lời sai biểu phí hoặc tự ý tiết lộ/truy xuất dữ liệu tài khoản.
+
+### Kiến trúc
+1. Ingest: crawl CMS/biểu phí, parse PDF/HTML, chia chunk theo heading, gắn metadata (sản phẩm, phiên bản, ngày hiệu lực, phân khúc, ACL).
+2. Index: hybrid search (BM25 + vector) trong OpenSearch/pgvector; lưu bản gốc để trích dẫn.
+3. Query service: xác thực session, viết lại câu hỏi, retrieve top 20 rồi re-rank top 5, lọc theo phân khúc khách.
+4. LLM service: system prompt quy định chỉ dùng CONTEXT, trả JSON answer, citations, confidence, needHandoff; stream về UI.
+5. Tool layer: chỉ có tool tra cứu thông tin phi nhạy cảm và tool tra cứu tài khoản đã gated bằng session đã xác thực mạnh.
+6. Audit & feedback: log trace ID, prompt version, retrieval scores; nút câu trả lời sai.
+
+### Khi nào chuyển cho nhân viên
+- Khách yêu cầu giao dịch, khiếu nại, tranh chấp, hoặc thông tin ngoài tài liệu.
+- Confidence thấp, retrieval score thấp, hoặc câu trả lời có nhiều trích dẫn mâu thuẫn.
+- Khách nhắc từ khoá nhạy cảm (mất thẻ, lừa đảo, tử vong, thừa kế).
+- Sau N lượt không giải quyết được.
+- Handoff kèm tóm tắt hội thoại để nhân viên không hỏi lại từ đầu.
+
+### Vì sao không được tự trả lời số dư/giao dịch nếu chưa xác thực
+- Số dư là dữ liệu cá nhân cấp cao; trả lời dựa trên session yếu là rò rỉ.
+- Model không phải ranh giới bảo mật: prompt injection có thể dụ nó tra cứu tài khoản X.
+- Vì vậy: danh tính lấy từ phiên đã xác thực mạnh (OTP/biometric), truyền qua ToolContext, không phải tham số do model điền; tool chỉ trả dữ liệu của chính khách đang đăng nhập; mọi truy vấn đều audit.
+- Nếu chưa xác thực: chatbot chỉ hướng dẫn cách đăng nhập/xác thực, không tra cứu.
+
+### Bẫy production
+- Index lẫn tài liệu nội bộ và tài liệu công khai mà không phân quyền.
+- Trích dẫn sai phiên bản biểu phí vì không gắn ngày hiệu lực.
+- Handoff không kèm ngữ cảnh khiến khách phải kể lại.
+- Để model tự biết số dư từ prompt thay vì gọi tool được bảo vệ.
+
+> Senior tip: trong ngân hàng, chatbot nên được thiết kế như một nhân viên lễ tân thông minh: trả lời câu hỏi về sản phẩm rất tốt, nhưng mọi việc liên quan đến tiền và danh tính phải qua quầy có kiểm soát. Trích dẫn đúng và biết nói không tìm thấy quan trọng hơn câu trả lời hoa mỹ.`,
+  follow: [
+    'Vì sao không nên đặt số dư khách hàng vào prompt ngay cả khi đã xác thực?',
+    'Bạn xử lý tài liệu biểu phí có ngày hiệu lực khác nhau trong cùng index thế nào?',
+    'Handoff cho nhân viên cần truyền những thông tin gì để không mất ngữ cảnh?'
+  ],
+  tags: ['RAG', 'chatbot', 'banking', 'handoff', 'security', 'tool calling']
+},
+{
+  id: 'ai-031',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Trích xuất dữ liệu từ giấy tờ (eKYC, hồ sơ bồi thường bảo hiểm, hoá đơn): OCR + LLM structured output, kiểm tra lại bằng rule, human-in-the-loop nên thiết kế thế nào?',
+  a: `**Tóm tắt:** pipeline gồm OCR lấy văn bản/bảng, LLM trích xuất thành JSON theo schema, rule engine kiểm tra logic và miền giá trị, confidence threshold quyết định auto-approve hay đưa người duyệt. LLM không được là nguồn sự thật cuối; mọi trường quan trọng phải có bằng chứng và kiểm tra chéo.
+
+### Bối cảnh
+- eKYC: CCCD mặt trước/sau, ảnh selfie, giấy tờ cư trú.
+- Bảo hiểm: đơn yêu cầu bồi thường, hoá đơn bệnh viện, biên bản tai nạn.
+- Kế toán: hoá đơn VAT, phiếu thu/chi.
+- Mục tiêu: giảm nhập tay, tăng tốc, nhưng sai một trường (số tiền, số CCCD) có thể gây thiệt hại lớn.
+
+### Pipeline
+1. Tiền xử lý ảnh: xoay, khử nghiêng, tăng tương phản, cắt vùng. Chất lượng ảnh quyết định mọi thứ sau.
+2. OCR: dùng engine phù hợp. Lấy text + toạ độ (bbox) + độ tin cậy từng từ.
+3. Layout understanding: với bảng/biểu mẫu, cần nhận diện cột/hàng; OCR thuần thường mất cấu trúc.
+4. LLM structured extraction: gửi OCR text + schema JSON; yêu cầu trả về giá trị + trích dẫn (đoạn text gốc hoặc bbox).
+5. Rule validation: kiểm tra định dạng (regex số CCCD, ngày), miền giá trị, tổng tiền = sum dòng, ngày nằm trong khoảng hợp lệ.
+6. Confidence & routing: nếu mọi trường đạt ngưỡng và rule pass thì auto-approve; nếu không thì human review với UI highlight trường nghi ngờ.
+7. Feedback loop: correction của người duyệt được lưu để cải thiện prompt/template.
+
+### Vì sao LLM structured output
+- OCR text lộn xộn, LLM giỏi hiểu ngữ nghĩa và chuẩn hoá (ngày 12/05/2024 thành ISO).
+- Schema chặt (enum, regex, required) giúp validate bằng Jackson + Bean Validation.
+- Yêu cầu LLM trả về không tìm thấy thay vì bịa khi trường thiếu.
+
+### Kiểm tra lại bằng rule
+- Rule cứng cho cái chắc chắn: tổng tiền, MST 10/13 chữ số, ngày hợp lệ, số CCCD 12 chữ số.
+- Cross-field: ngày xuất hoá đơn <= ngày nhận; tổng = subtotal + VAT.
+- So sánh với dữ liệu hệ thống: mã khách hàng, số hợp đồng phải tồn tại.
+- Rule là lớp bảo vệ cuối cùng; đừng tin LLM dù confidence cao.
+
+### Human-in-the-loop
+- UI hiển thị ảnh gốc bên cạnh trường trích xuất, highlight bbox.
+- Người duyệt chỉ sửa trường sai, không nhập lại toàn bộ.
+- Đo thời gian xử lý mỗi case để biết automation có thật sự tiết kiệm không.
+- Case khó (ảnh mờ, biểu mẫu lạ) được đưa vào golden set để cải thiện.
+
+### Bẫy production
+- OCR sai một chữ số nhưng LLM sửa theo ngữ cảnh thành số khác -> sai âm thầm; cần confidence OCR + rule.
+- Ảnh chất lượng thấp từ điện thoại khách; cần hướng dẫn chụp và kiểm tra trước khi gửi.
+- Schema quá lớn -> model trả JSON hỏng; giữ nhỏ, chia nhiều bước.
+- Không lưu ảnh gốc/bbox -> không thể audit khi tranh chấp.
+- PII trong log OCR/LLM: che trước khi gửi nếu policy yêu cầu.
+
+> Senior tip: hãy đo straight-through rate (tỉ lệ case auto-approve) và error rate trên case auto-approve riêng. Một hệ trích xuất tốt không phải tự động nhiều nhất, mà là tự động nhiều mà sai rất ít — và luôn giữ đường lui cho người duyệt.`,
+  follow: [
+    'Bạn đặt confidence threshold như thế nào để cân bằng giữa tự động và rủi ro?',
+    'Khi OCR sai nhưng LLM đoán đúng, hệ thống có nên auto-approve không?',
+    'Làm sao audit một trường bị trích xuất sai sau 6 tháng?'
+  ],
+  tags: ['OCR', 'structured output', 'eKYC', 'insurance', 'human-in-the-loop', 'validation']
+},
+{
+  id: 'ai-032',
+  topic: 'ai',
+  level: 'mid',
+  q: 'AI hỗ trợ lập trình trong công ty lớn (Copilot/Claude Code): chính sách mã nguồn, review code AI viết, đo năng suất và rủi ro license/secret nên quản lý thế nào?',
+  a: `**Tóm tắt:** AI coding assistant là công cụ tăng tốc, không phải lập trình viên. Giá trị đến từ chính sách dữ liệu rõ ràng, review như code của người khác, test tự động và đo hiệu quả bằng chất lượng/lead time — không phải số dòng code. Rủi ro chính là rò rỉ secret/dữ liệu và code trông đúng nhưng sai.
+
+### Chính sách mã nguồn
+- Danh sách công cụ được phép và dữ liệu được phép gửi (chỉ code không chứa secret/dữ liệu khách).
+- Ưu tiên công cụ có chế độ không dùng dữ liệu để huấn luyện, hoặc self-host/on-prem.
+- Không dán secret, token, connection string, dữ liệu cá nhân, code của khách hàng vào công cụ cloud chưa được duyệt.
+- Quy định rõ: code sinh bởi AI vẫn thuộc sở hữu công ty và phải tuân thủ license dự án.
+- Đào tạo dev về prompt tốt: cung cấp context, ràng buộc phiên bản Java/Spring, yêu cầu giải thích.
+
+### Review code AI viết
+1. Coi như code của contributor chưa biết hệ thống: review từng dòng, không duyệt mù.
+2. Bắt buộc test: unit test cho logic, integration test cho DB/API; test do AI viết cũng phải review.
+3. Kiểm tra dependency mới: nguồn, license, độ phổ biến, lỗ hổng đã biết (slopsquatting).
+4. Chạy static analysis/SAST, dependency scan như mọi PR.
+5. Với thay đổi bảo mật/tiền/dữ liệu, cần người kinh nghiệm review kỹ hơn.
+6. Ghi rõ trong PR nếu code được tạo phần lớn bằng AI.
+7. Không merge code mà tác giả không giải thích được.
+
+### Đo năng suất
+- Đo lead time PR, tỉ lệ bug sau release, thời gian review — không chỉ số dòng code.
+- Theo dõi các tác vụ AI thực sự giúp: boilerplate, test skeleton, refactor nhỏ.
+- So sánh trước/sau trên cùng loại task; cẩn thận với Hawthorne effect.
+- Nếu AI làm tăng số PR nhưng tăng bug, đó là dấu hiệu review đang lỏng.
+
+### Rủi ro license/secret
+- License: model có thể tái tạo code từ training data có license copyleft; rủi ro pháp lý nếu paste trực tiếp. Mitigation: không yêu cầu viết lại thư viện X, review code nghi ngờ, dùng tool có indemnification nếu cần.
+- Secret: dev vô tình paste connection string/token vào prompt -> rò rỉ. Mitigation: pre-commit secret scan, chính sách rõ, công cụ lọc.
+- Dependency giả mạo: model gợi ý package không tồn tại hoặc bị chiếm đoạt; luôn kiểm tra registry và lock file.
+
+### Cách dùng hiệu quả
+- Chia việc nhỏ, yêu cầu rõ ràng, đưa file liên quan và convention.
+- Yêu cầu giải thích và liệt kê giả định.
+- Dùng AI để đọc code lạ, viết test skeleton, refactor nhỏ — không để tự thiết kế kiến trúc lớn.
+- Luôn chạy code và test; không tin code này đúng.
+
+> Senior tip: hãy đo chất lượng chứ không đo tốc độ. Một team dùng AI tốt là team có PR nhỏ hơn, test tốt hơn và ít bug production hơn — không phải team commit nhiều code hơn. Nếu số dòng code tăng mà chất lượng không tăng, AI đang tạo nợ kỹ thuật.`,
+  follow: [
+    'Vì sao không nên dùng số dòng code để đo hiệu quả AI assistant?',
+    'Làm sao phát hiện code do AI viết có rủi ro license?',
+    'Những tác vụ nào không nên giao cho AI coding assistant?'
+  ],
+  tags: ['AI coding', 'Copilot', 'policy', 'review', 'license', 'security']
+},
 );
