@@ -972,7 +972,6 @@ Dùng cho mọi ứng dụng nói chuyện với DB qua mạng. Cần theo dõi 
 ### Hay nhầm với
 **Thread pool** quản lý luồng chạy task, không phải kết nối DB. **DataSource** là interface cung cấp kết nối, pool là một implementation. **Connection pool exhaustion** là tình trạng tất cả kết nối bị giữ quá lâu, thường do query chậm hoặc rò rỉ kết nối.`,
     related: ['thread-pool', 'n-plus-one', 'pessimistic-locking'],
-    refs: [{ type: 'doc', title: 'HikariCP', url: 'https://github.com/brettwooldridge/HikariCP' }],
   },
   {
     id: 'immutable-object',
