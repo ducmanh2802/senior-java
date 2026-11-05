@@ -780,4 +780,608 @@ Hai dòng hoà ({{G 10}}, {{G 10}}) cho ra 10 rồi 20 vì bài này dùng ngữ
   related: ['sql-001', 'sql-005', 'sql-006'],
   tags: ['window function', 'row_number', 'rank', 'running total', 'frame'],
 },
+{
+  id: 'lesson-sql-004',
+  track: 'sql',
+  order: 4,
+  title: 'Window function từ gốc: ROW_NUMBER, RANK, DENSE_RANK, LAG và running total',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Giải thích PARTITION BY, ORDER BY trong OVER và phân biệt ROW_NUMBER, RANK, DENSE_RANK khi có giá trị bằng nhau (tie)',
+    'Mô phỏng running total (SUM OVER ORDER BY) và LAG bằng Java thuần, hiểu frame mặc định RANGE vs ROWS',
+    'Giải quyết bài toán thật: top-3 giao dịch lớn nhất mỗi khách và số dư lũy kế theo ngày, tự cài rank/runningTotal đúng ngữ nghĩa SQL',
+  ],
+  body: `### Window function là gì và vì sao cần
+Window function (hàm cửa sổ) là hàm tính giá trị **trên một tập dòng liên quan** nhưng vẫn **giữ nguyên từng dòng** (không gộp như GROUP BY). GROUP BY gom 1.000 giao dịch của 10 khách thành 10 dòng; window function giữ 1.000 dòng và thêm cột như "thứ hạng giao dịch này trong khách" hay "tổng lũy kế tới thời điểm này".
+
+~~~sql
+-- Top-3 giao dịch lớn nhất mỗi khách
+SELECT * FROM (
+  SELECT customer_id, tx_id, amount,
+         RANK() OVER (PARTITION BY customer_id ORDER BY amount DESC) AS rk
+  FROM transaction
+) t WHERE rk <= 3;
+
+-- Số dư lũy kế theo ngày (sao kê)
+SELECT customer_id, tx_date, amount,
+       SUM(amount) OVER (PARTITION BY customer_id ORDER BY tx_date, tx_id
+                         ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS balance
+FROM transaction;
+~~~
+
+Cú pháp {{OVER(...)}} có ba phần:
+- **PARTITION BY**: chia dữ liệu thành các nhóm độc lập (mỗi khách một cửa sổ). Giống GROUP BY về cách chia nhóm, nhưng không gộp dòng. Bỏ qua thì cả bảng là một nhóm.
+- **ORDER BY**: thứ tự dòng bên trong mỗi nhóm. Quyết định ai đứng trước, ai đứng sau khi xếp hạng hay cộng dồn.
+- **Frame** (khung): với hàm tổng hợp như SUM/AVG, frame nói "cộng những dòng nào so với dòng hiện tại". Hàm xếp hạng (ROW_NUMBER, RANK, DENSE_RANK) và LAG/LEAD bỏ qua frame.
+
+### ROW_NUMBER, RANK, DENSE_RANK: khác nhau khi tie (bằng nhau)
+Tie (hòa) là khi hai dòng có cùng giá trị ORDER BY. Ví dụ top giao dịch theo amount giảm dần trong một khách: 500, 500, 300.
+
+| amount | ROW_NUMBER | RANK | DENSE_RANK |
+|---|---|---|---|
+| 500 | 1 | 1 | 1 |
+| 500 | 2 | 1 | 1 |
+| 300 | 3 | 3 | 2 |
+
+- {{ROW_NUMBER()}}: luôn 1, 2, 3... không bao giờ trùng, dù tie. Dòng nào nhận 1 hay 2 khi tie là **không xác định** nếu ORDER BY không đủ phân biệt; thêm cột duy nhất ({{tx_id}}) để ổn định.
+- {{RANK()}}: dòng tie cùng hạng; hạng sau **nhảy** đúng bằng số dòng tie. Hai người đồng hạng 1 thì người tiếp theo là hạng 3 (bỏ hạng 2). Đây là cách xếp hạng thể thao.
+- {{DENSE_RANK()}}: dòng tie cùng hạng; hạng sau **không nhảy**, luôn tăng 1. Đồng hạng 1 thì người tiếp theo là hạng 2. Dùng cho "mức giá cao thứ hai" (lấy DENSE_RANK = 2).
+
+Bài toán "top-3 giao dịch lớn nhất mỗi khách": dùng {{RANK}} hay {{DENSE_RANK}} tùy yêu cầu. Nếu có 5 giao dịch cùng đứng top 1, {{WHERE rk <= 3}} với RANK sẽ trả cả 5 (vì tất cả đều rank 1 <= 3); đây thường là hành vi mong muốn ("ba mức cao nhất" nghĩa là mọi dòng thuộc ba mức đó).
+
+### Running total và frame mặc định (bẫy RANGE)
+Running total (tổng lũy kế) cộng dồn từ đầu nhóm tới dòng hiện tại, dùng cho sao kê số dư. Cú pháp an toàn:
+
+~~~sql
+SUM(amount) OVER (PARTITION BY customer_id ORDER BY tx_date, tx_id
+                  ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+~~~
+
+**Bẫy**: nếu có ORDER BY mà **không ghi frame**, chuẩn SQL mặc định dùng {{RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW}}. RANGE coi các dòng có **cùng giá trị ORDER BY** là "đồng hạng" (peer) và cộng tất cả chúng vào cùng lúc. Ví dụ hai giao dịch cùng ngày 100 và 200: với RANGE cả hai dòng đều nhận tổng 300; với ROWS thì dòng đầu nhận 100, dòng sau nhận 300 (cộng từng dòng). Sao kê cần ROWS và thêm tie-breaker ({{tx_id}}) để thứ tự xác định.
+
+Không có ORDER BY trong OVER thì frame là **toàn bộ partition**: {{SUM(amount) OVER (PARTITION BY customer_id)}} trả tổng của khách trên mọi dòng của khách đó.
+
+### LAG: nhìn về dòng trước
+{{LAG(expr, offset, default) OVER (PARTITION BY ... ORDER BY ...)}} trả giá trị {{expr}} của dòng đứng trước {{offset}} vị trí trong cùng partition (mặc định offset=1). Dòng đầu partition không có dòng trước thì trả {{default}} (mặc định NULL). Dùng để tính chênh lệch so với giao dịch trước: {{amount - LAG(amount) OVER (...)}}. {{LEAD}} là ngược lại, nhìn về dòng sau.
+
+~~~sql
+-- Chênh lệch so với giao dịch trước của cùng khách
+SELECT customer_id, tx_id, amount,
+       amount - LAG(amount, 1, 0) OVER (PARTITION BY customer_id ORDER BY tx_date, tx_id) AS delta
+FROM transaction;
+~~~
+
+### DB tính thế nào (để hiểu chi phí)
+PostgreSQL hiện node {{WindowAgg}} trong EXPLAIN, thường nằm trên một {{Sort}} theo (PARTITION BY, ORDER BY). Sau khi sắp, WindowAgg **duyệt một lần** giữ trạng thái nhỏ (số thứ tự, rank hiện tại, tổng, giá trị dòng trước) và reset khi sang partition mới. Chi phí chính là sort O(n log n); index {{(customer_id, tx_date, tx_id)}} có thể bỏ bước sort. Tự cài trong Java (bài tập) làm đúng như vậy: sort chỉ số rồi duyệt một lần.
+
+| Hàm | Tie (hòa) | Nhảy hạng | Dùng khi |
+|---|---|---|---|
+| ROW_NUMBER | không trùng, gán tùy ý | không | cần đúng N dòng, phân trang ổn định (thêm tie-breaker) |
+| RANK | cùng hạng | có (nhảy) | xếp hạng kiểu thể thao, "top-N mức" |
+| DENSE_RANK | cùng hạng | không | "mức cao thứ K", cấp bậc liên tục |
+
+> Pitfall thực tế: dùng {{ROW_NUMBER}} để lấy "top-3 mỗi nhóm" rồi gặp tie — bạn cắt ngẫu nhiên một người đồng hạng và bỏ người kia, gây tranh cãi dữ liệu. Nếu ý nghĩa là "ba mức cao nhất", dùng RANK/DENSE_RANK. Pitfall khác: quên reset trạng thái khi sang partition mới (tổng/rank của khách B dính khách A) — test có partition xen kẽ sẽ bắt lỗi này.
+
+> Senior tip: "Top-N mỗi nhóm" trước PG 15 buộc tính rank cho mọi dòng rồi lọc ngoài. PG 15+ nhận điều kiện {{rk <= N}} và dừng sớm từng nhóm ({{Run Condition}}). Với bảng rất lớn và ít nhóm, {{CROSS JOIN LATERAL (SELECT ... WHERE customer_id = c.id ORDER BY amount DESC LIMIT 3) t}} tận dụng index {{(customer_id, amount DESC)}} thường nhanh hơn. Đừng nhét {{LIMIT}} vào subquery định nghĩa ROW_NUMBER để "tối ưu" — đó là top-N toàn bảng, không phải mỗi nhóm.
+
+### Liên hệ phỏng vấn
+Câu hay gặp: "Phân biệt ROW_NUMBER, RANK, DENSE_RANK", "Tính số dư lũy kế / lấy giao dịch lớn thứ hai mỗi khách", "Frame mặc định của SUM OVER ORDER BY là gì". Trả lời tốt: nêu rõ hành vi khi tie (nhảy hay không), nhắc bẫy RANGE vs ROWS cho running total, thêm tie-breaker để ổn định, và nói DB tính bằng sort + duyệt một lần (WindowAgg). Nếu môi trường không có window function (MySQL 5.x cũ), có thể dùng biến người dùng hoặc self-join nhưng phải nói rõ đánh đổi về tính đúng và hiệu năng.`,
+  exercises: [
+    {
+      title: 'Tự cài RANK, DENSE_RANK và running total đúng ngữ nghĩa SQL',
+      prompt: `{{Row}} có sẵn: {{group}} (String, khóa partition) và {{amount}} (int, giá trị xếp hạng/cộng dồn). Viết lớp {{Window}} mô phỏng ngữ nghĩa SQL:
+
+~~~sql
+RANK()       OVER (PARTITION BY group ORDER BY amount DESC)
+DENSE_RANK() OVER (PARTITION BY group ORDER BY amount DESC)
+SUM(amount)  OVER (PARTITION BY group ORDER BY amount DESC
+                   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+~~~
+
+- {{rank(rows, dense)}}: {{dense=false}} trả RANK, {{dense=true}} trả DENSE_RANK. Trả {{List<Integer>}} thẳng hàng với đầu vào: phần tử {{i}} là hạng của {{rows.get(i)}}.
+- {{runningTotal(rows)}}: trả {{List<Long>}} thẳng hàng với đầu vào, cộng dồn theo thứ tự {{amount}} giảm dần trong mỗi nhóm (frame ROWS: cộng từng dòng một). Dùng {{long}}.
+- Trong một partition, sắp theo {{amount}} **giảm dần**. Tie (cùng group, cùng amount): các dòng tie nhận **cùng hạng**; khi duyệt để cộng dồn (ROWS), dòng đứng trước trong danh sách đầu vào được xử lý trước (sắp xếp ổn định).
+- RANK nhảy hạng: sau {{k}} dòng cùng hạng {{r}}, hạng tiếp theo là {{r + k}}. DENSE_RANK không nhảy: {{r + 1}}.
+- Đầu vào có thể lộn xộn, partition xen kẽ. **Không được sửa** danh sách đầu vào.`,
+      starter: `class Row {
+    final String group;
+    final int amount;
+    Row(String group, int amount) { this.group = group; this.amount = amount; }
+}
+
+class Window {
+    List<Integer> rank(List<Row> rows, boolean dense) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    List<Long> runningTotal(List<Row> rows) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static Row r(String g, int a) { return new Row(g, a); }
+
+    public static void main(String[] args) {
+        Window w = new Window();
+        check("RANK with tie skips next rank", () -> {
+            // desc by amount: 500,500,300 -> ranks 1,1,3
+            eq(List.of(1, 1, 3), w.rank(List.of(r("A", 500), r("A", 500), r("A", 300)), false));
+        });
+        check("DENSE_RANK with tie does not skip", () -> {
+            eq(List.of(1, 1, 2), w.rank(List.of(r("A", 500), r("A", 500), r("A", 300)), true));
+        });
+        check("rank per partition, interleaved input, aligned to input order", () -> {
+            // A sorted desc: 30(idx1)->1, 10(idx3)->2 ; B: 20(idx0)->1, 5(idx2)->2
+            eq(List.of(1, 1, 2, 2),
+               w.rank(List.of(r("B", 20), r("A", 30), r("B", 5), r("A", 10)), false));
+        });
+        check("RANK skip accumulates across multiple ties", () -> {
+            // 9,9,9,5,5,1 -> 1,1,1,4,4,6
+            eq(List.of(1, 1, 1, 4, 4, 6),
+               w.rank(List.of(r("G", 9), r("G", 9), r("G", 9), r("G", 5), r("G", 5), r("G", 1)), false));
+        });
+        check("DENSE_RANK never skips across ties", () -> {
+            eq(List.of(1, 1, 1, 2, 2, 3),
+               w.rank(List.of(r("G", 9), r("G", 9), r("G", 9), r("G", 5), r("G", 5), r("G", 1)), true));
+        });
+        check("running total desc per group resets and aligns with input", () -> {
+            // X desc: 15(idx1)->15, 5(idx2)->20 ; Y: 7(idx0)->7
+            eq(List.of(7L, 15L, 20L),
+               w.runningTotal(List.of(r("Y", 7), r("X", 15), r("X", 5))));
+        });
+        check("running total with ties adds row by row (ROWS) in input order", () -> {
+            // sort desc (stable): 30(idx2)->30, 10(idx0)->40, 10(idx1)->50; aligned to input [40,50,30]
+            eq(List.of(40L, 50L, 30L),
+               w.runningTotal(List.of(r("G", 10), r("G", 10), r("G", 30))));
+        });
+        check("input list is not modified", () -> {
+            List<Row> input = new ArrayList<>(List.of(r("B", 2), r("A", 1), r("B", 1)));
+            List<Row> before = new ArrayList<>(input);
+            w.rank(input, false);
+            w.runningTotal(input);
+            for (int i = 0; i < input.size(); i++) {
+                if (input.get(i) != before.get(i)) throw new AssertionError("input order changed at " + i);
+            }
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class Row {
+    final String group;
+    final int amount;
+    Row(String group, int amount) { this.group = group; this.amount = amount; }
+}
+
+class Window {
+    // Sap chi so theo (group asc, amount desc). List.sort on dinh (stable) -> tie giu thu tu dau vao.
+    private static List<Integer> order(List<Row> rows) {
+        List<Integer> idx = new ArrayList<>();
+        for (int i = 0; i < rows.size(); i++) idx.add(i);
+        idx.sort(Comparator.comparing((Integer i) -> rows.get(i).group)
+                           .thenComparing((Integer i) -> rows.get(i).amount, Comparator.reverseOrder()));
+        return idx;
+    }
+
+    List<Integer> rank(List<Row> rows, boolean dense) {
+        Integer[] out = new Integer[rows.size()];
+        String curGroup = null;
+        int prevAmount = 0;
+        int curRank = 0;   // rank cua dong vua xu ly
+        int seen = 0;      // so dong da thay trong partition (dung cho RANK nhay)
+        for (int i : order(rows)) {
+            Row r = rows.get(i);
+            if (!r.group.equals(curGroup)) {          // sang partition moi: reset
+                curGroup = r.group; curRank = 0; seen = 0; prevAmount = 0;
+            }
+            seen++;
+            if (curRank == 0 || r.amount != prevAmount) {
+                curRank = dense ? curRank + 1 : seen; // DENSE: +1; RANK: nhay toi vi tri seen
+                prevAmount = r.amount;
+            }
+            // tie (amount == prevAmount, curRank da dat): giu nguyen curRank
+            out[i] = curRank;
+        }
+        return Arrays.asList(out);
+    }
+
+    List<Long> runningTotal(List<Row> rows) {
+        Long[] out = new Long[rows.size()];
+        String curGroup = null;
+        long sum = 0;
+        for (int i : order(rows)) {
+            Row r = rows.get(i);
+            if (!r.group.equals(curGroup)) { curGroup = r.group; sum = 0; }
+            sum += r.amount;                          // ROWS: cong tung dong mot
+            out[i] = sum;
+        }
+        return Arrays.asList(out);
+    }
+}`,
+      hints: [
+        'Sắp xếp một danh sách **chỉ số** theo {{(group, amount giảm dần)}}; dùng {{Comparator.reverseOrder()}} cho amount. {{List.sort}} ổn định nên tie giữ thứ tự đầu vào.',
+        'RANK: khi gặp giá trị mới (hoặc đầu partition), đặt {{curRank = seen}} (số dòng đã thấy, tính cả dòng này) — đó là chỗ "nhảy". DENSE_RANK: đặt {{curRank = curRank + 1}}. Khi tie, giữ nguyên {{curRank}}.',
+        'Luôn reset (group, rank, seen, sum) khi {{group}} đổi. Ghi kết quả vào {{out[i]}} với {{i}} là chỉ số gốc để thẳng hàng đầu vào.',
+      ],
+      explain: `### Vì sao RANK dùng {{seen}} còn DENSE_RANK dùng {{+1}}
+{{seen}} đếm số dòng đã đi qua trong partition (1,2,3...). Khi một giá trị mới xuất hiện sau một cụm tie, hạng của nó theo RANK chính là vị trí {{seen}} — nên sau 3 dòng hạng 1, {{seen}} của dòng tiếp là 4, hạng nhảy thẳng tới 4. DENSE_RANK thì chỉ quan tâm "đây là mức giá trị khác thứ mấy", nên tăng 1 bất kể cụm tie trước lớn cỡ nào.
+
+### Lỗi hay gặp
+- **RANK không nhảy**: gán {{curRank = curRank + 1}} cho cả hai chế độ — ra kết quả DENSE_RANK dù gọi RANK. Test "skip accumulates" bắt lỗi này.
+- **Quên reset {{seen}}/sum khi sang partition**: rank/tổng của nhóm B dính nhóm A. Test interleaved bắt.
+- **Sửa {{rows}} trực tiếp**: hỏng với {{List.of}} và làm sai dữ liệu người gọi.
+- **Trả kết quả theo thứ tự đã sắp** thay vì theo chỉ số gốc: giá trị đúng nhưng gắn nhầm dòng.
+- **So sánh String group bằng {{==}}**: phải dùng {{equals}} (hoặc kiểm tra khác null an toàn). Ở đây group đến từ dữ liệu nên dùng {{equals}}.
+
+### LAG thì sao?
+Bài này tập trung vào rank/running total. LAG cùng mẫu: trong vòng duyệt đã sắp, giữ {{prevValue}} của dòng trước trong partition (reset khi đổi partition) và ghi {{prevValue}} (hoặc default nếu đầu partition) cho dòng hiện tại. Vì duyệt một lần sau sort nên mọi window function đều O(n log n) do sort + O(n) duyệt.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Trong một partition, amount giảm dần là 90, 90, 90, 70. {{RANK}} và {{DENSE_RANK}} của dòng 70 lần lượt là?',
+      options: ['2 và 2', '3 và 2', '4 và 2', '4 và 4'],
+      answer: 2,
+      explain: `**4 và 2 đúng**: ba dòng 90 cùng hạng 1. RANK nhảy qua 2, 3 nên dòng 70 là hạng 4. DENSE_RANK không nhảy nên dòng 70 là hạng 2. **2 và 2** sai vì RANK phải nhảy. **3 và 2** sai vì chỉ nhảy 1 bậc (nhầm với "bỏ qua 1 hạng"); RANK nhảy đúng bằng số dòng tie (3 dòng). **4 và 4** sai vì DENSE_RANK không bao giờ nhảy.`,
+    },
+    {
+      q: 'Tại sao {{SUM(amount) OVER (ORDER BY tx_date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)}} an toàn hơn khi không ghi frame, với sao kê có thể có nhiều giao dịch cùng ngày?',
+      options: ['ROWS chạy nhanh hơn RANGE', 'ROWS cộng từng dòng một nên hai giao dịch cùng tx_date không bị gộp thành một tổng như RANGE mặc định', 'RANGE không hỗ trợ SUM', 'ROWS tự động thêm tie-breaker theo id'],
+      answer: 1,
+      explain: `**Phương án 2 đúng**: mặc định (có ORDER BY, không ghi frame) là RANGE, coi các dòng cùng giá trị ORDER BY là peer và cộng hết chúng vào cùng lúc — hai giao dịch cùng ngày nhận cùng số dư lũy kế, sai cho sao kê. ROWS cộng từng dòng theo thứ tự vật lý trong cửa sổ. **Phương án 1** thường đúng về chi phí nhưng không phải lý do tính đúng. **Phương án 3** sai, RANGE dùng được với SUM. **Phương án 4** sai: ROWS không tự thêm cột; bạn phải tự thêm {{id}} vào ORDER BY để thứ tự tie xác định.`,
+    },
+    {
+      q: 'Lấy "3 giao dịch lớn nhất mỗi khách" và có thể có nhiều giao dịch đồng số tiền lớn nhất. Cách nào hợp nghĩa "ba mức cao nhất" và không cắt ngẫu nhiên?',
+      options: ['WHERE ROW_NUMBER() ... <= 3', 'WHERE RANK() ... <= 3 (hoặc DENSE_RANK() <= 3 tùy định nghĩa mức)', 'LIMIT 3 trong subquery định nghĩa window', 'GROUP BY customer_id HAVING COUNT(*) <= 3'],
+      answer: 1,
+      explain: `**Phương án 2 đúng**: RANK/DENSE_RANK gán cùng hạng cho các dòng tie nên {{rk <= 3}} giữ tất cả dòng thuộc ba mức cao nhất (có thể nhiều hơn 3 dòng), không cắt ngẫu nhiên. **Phương án 1** sai cho yêu cầu này: ROW_NUMBER gán số duy nhất nên cắt bừa một dòng tie. **Phương án 3** sai nghiêm trọng: LIMIT trong subquery window lấy top-3 **toàn bảng** rồi mới partition, không phải mỗi khách. **Phương án 4** hoàn toàn sai nghĩa (đếm số giao dịch, không xếp hạng theo amount).`,
+    },
+  ],
+  related: ['sql-001', 'sql-005', 'sql-006'],
+  tags: ['window function', 'row_number', 'rank', 'dense_rank', 'running total', 'lag', 'partition by'],
+},
+{
+  id: 'lesson-sql-005',
+  track: 'sql',
+  order: 5,
+  title: 'Thuật toán JOIN mà database dùng: nested loop, hash join, merge join và đọc EXPLAIN',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Mô tả cách nested loop, hash join, merge join hoạt động và khi nào optimizer (bộ tối ưu) chọn từng loại',
+    'Giải thích vì sao JOIN thiếu index trở thành nested loop chậm (n × m) và null key không khớp trong equi-join',
+    'Đọc EXPLAIN (PostgreSQL) ở mức nhận ra Hash Join / Nested Loop / Merge Join / Seq Scan và biết bước xử lý đầu tiên',
+  ],
+  body: `### JOIN trong SQL chỉ nói "muốn gì", DB tự chọn "làm thế nào"
+Khi bạn viết {{SELECT ... FROM orders o JOIN customer c ON o.customer_id = c.id}}, bạn mô tả kết quả mong muốn. **Optimizer** (bộ tối ưu truy vấn, thành phần của DB quyết định kế hoạch thực thi) ước lượng kích thước dữ liệu và chọn thuật toán join. Ba thuật toán chính: nested loop, hash join, merge join. Hiểu chúng giúp bạn đọc EXPLAIN và biết vì sao một câu JOIN bỗng chậm.
+
+Quy ước: bảng duyệt vòng ngoài là **outer/build/probe** tùy ngữ cảnh, bảng tra vòng trong là **inner**.
+
+### Nested loop join
+Đơn giản nhất: với mỗi dòng outer, tìm dòng khớp trong inner.
+
+~~~java
+// nested loop co ban (khong index tren inner)
+for (Row o : outer) {
+    for (Row i : inner) {            // duyet toan bo inner cho MOI dong outer
+        if (eq(o.key, i.key)) emit(o, i);
+    }
+}
+~~~
+
+- Không index trên inner: **n × m** phép so sánh (n dòng outer, m dòng inner). Hai bảng 10.000 dòng = 100 triệu so sánh.
+- Inner có index (B-tree) trên khóa join: vòng trong tra cây ~{{log2(m)}} bước, tổng **n × log m**. Outer 100 dòng, inner 10 triệu có index: ~2.400 bước.
+- DB chọn khi: outer rất nhỏ (sau lọc WHERE) và inner có index; hoặc join **không phải đẳng thức** ({{a.ts BETWEEN b.start AND b.end}}) — hash/merge không dùng được cho điều kiện phi {{=}}.
+
+### Hash join
+Chạy hai pha, chỉ dùng cho **equi-join** (so bằng {{=}}):
+1. **Build**: đọc bên **nhỏ hơn**, đưa mỗi dòng vào bảng băm (hash table, cấu trúc tra cứu theo khóa trung bình O(1)) theo khóa join.
+2. **Probe**: đọc bên lớn, băm khóa rồi tra bảng băm để tìm dòng khớp.
+
+Tổng ~**O(n + m)**: đọc mỗi bên một lần. Bộ nhớ cần cỡ bên build; PostgreSQL giới hạn bởi {{work_mem}}. Tràn bộ nhớ thì chia batch ghi tạm đĩa (chậm). DB chọn hash join khi hai bên đều lớn và join bằng {{=}}.
+
+### Merge join
+Nếu **cả hai bên đã sắp xếp** theo khóa join (nhờ index hoặc nhờ sort), dùng hai con trỏ đi song song như pha merge của merge sort: khóa bên nào nhỏ hơn thì tiến con trỏ bên đó. ~**O(n + m)** nếu đã có thứ tự, cộng O(n log n) nếu phải sort. Cần join bằng {{=}}. Ít phổ biến hơn hash join trên dữ liệu không có sẵn thứ tự, nhưng rất tốt khi index đã cho thứ tự.
+
+| Thuật toán | Xấp xỉ chi phí | Bộ nhớ | Điều kiện join | Khi optimizer chọn |
+|---|---|---|---|---|
+| Nested loop (no index) | n × m | rất ít | bất kỳ | inner rất nhỏ, hiếm khi tốt với bảng lớn |
+| Nested loop (index) | n × log m | ít | bất kỳ | outer nhỏ, inner lớn có index (OLTP điển hình) |
+| Hash join | n + m | bảng băm cỡ bên nhỏ | chỉ {{=}} | hai bên lớn, equi-join, đủ RAM |
+| Merge join | n+m (+ sort) | ít nếu đã sort | chỉ {{=}} | hai bên đã sắp theo khóa / sau sort |
+
+### Vì sao thiếu index làm JOIN chậm
+Câu chuyện hay gặp: {{orders JOIN customer ON orders.customer_id = customer.id}}. {{customer.id}} là khóa chính nên có index; nhưng nếu lọc {{orders}} ra 50.000 dòng và {{customer}} bị quét theo cách ngược (hoặc planner chọn nested loop với inner là Seq Scan trên bảng lớn) mà **thiếu index trên khóa join phía inner**, vòng trong thành duyệt toàn bảng lặp lại. 50.000 × (quét bảng) = hàng tỷ phép đọc. Thêm index trên cột join (hoặc để planner chọn hash join) đưa về n log m hoặc n+m.
+
+### Null key không khớp trong equi-join (ngữ nghĩa SQL)
+Trong SQL, {{NULL = NULL}} cho kết quả **UNKNOWN** (không phải TRUE), nên dòng có khóa join là NULL **không khớp** với dòng nào, kể cả dòng khác cũng NULL. Đây là hành vi bắt buộc của equi-join. Mô phỏng join bằng Java phải giữ đúng ngữ nghĩa này (bài tập kiểm tra).
+
+### Đọc EXPLAIN (PostgreSQL) ở mức nhận ra thuật toán
+{{EXPLAIN ANALYZE}} chạy thật câu lệnh và in kế hoạch. Bạn cần nhận ra:
+
+~~~text
+Hash Join  (actual time=1.2..45.6 rows=4820 loops=1)
+  Hash Cond: (o.customer_id = c.id)
+  ->  Seq Scan on orders o  (actual ... rows=50000 loops=1)
+  ->  Hash  (actual ... rows=12000 loops=1)
+        ->  Seq Scan on customer c  (actual ... rows=12000 loops=1)
+~~~
+
+~~~text
+Nested Loop  (actual time=0.1..8200.0 rows=4820 loops=1)
+  ->  Seq Scan on orders o  (actual ... rows=50000 loops=1)
+  ->  Seq Scan on customer c  (actual ... rows=1 loops=50000)
+        Filter: (c.id = o.customer_id)
+~~~
+
+Nhận biết:
+- {{Hash Join}} / {{Hash Cond}}: hash join. {{Seq Scan}} hai bên + node {{Hash}} là bình thường khi bảng vừa/lớn.
+- {{Nested Loop}} với inner là {{Seq Scan}} và {{loops}} lớn (50.000): inner bị quét lặp lại 50.000 lần — dấu hiệu kinh điển của thiếu index trên khóa join hoặc ước lượng sai.
+- {{Merge Join}} / {{Merge Cond}}: merge join, thường kèm {{Index Scan}} (đã có thứ tự) hoặc {{Sort}}.
+- {{Seq Scan}} (quét tuần tự toàn bảng) không xấu tuyệt đối; xấu khi lặp lại nhiều lần ({{loops}} lớn) hoặc trên bảng rất lớn mà chỉ cần ít dòng có index phù hợp.
+
+> Pitfall thực tế: tin planner tuyệt đối. Planner chọn theo **ước lượng**; thống kê cũ (chưa {{ANALYZE}} sau import lớn) khiến nó tưởng outer nhỏ nên chọn nested loop, thực tế outer lớn và query chết đứng. Bước đầu khi join chậm: {{EXPLAIN (ANALYZE, BUFFERS)}} rồi so {{rows}} ước lượng với {{actual rows}} — lệch > 10 lần là manh mối lớn. Sửa bằng {{ANALYZE}}, thêm index đúng, hoặc (cẩn thận) ép kế hoạch chỉ để chẩn đoán.
+
+> Senior tip: trên PostgreSQL, {{enable_nestloop = off}} (đặt tạm cho session) là cách chẩn đoán nhanh: nếu tắt nested loop mà query hết chậm, vấn đề là planner chọn sai nested loop (thường do ước lượng sai hoặc thiếu index) — đừng để cờ này bật lâu dài trong production. Hash join tốn {{work_mem}}; nếu EXPLAIN hiện {{Batches > 1}} trên node Hash thì bảng băm tràn đĩa, cân nhắc tăng {{work_mem}} cho session/query đó (không tăng global bừa bãi).
+
+### Liên hệ phỏng vấn
+Câu hay gặp: "DB join hai bảng thế nào?", "Query join chậm, bạn làm gì?", "Khác nhau hash join và nested loop". Trả lời tốt: nêu ba thuật toán + chi phí (n×m, n×log m, n+m) + điều kiện ({{=}} cho hash/merge), nói optimizer chọn theo ước lượng/kích thước/index, và đưa quy trình: EXPLAIN ANALYZE → nhận thuật toán/loops/rows lệch → kiểm tra index khóa join → ANALYZE thống kê. Nhắc null key không khớp là điểm cộng thể hiện hiểu ngữ nghĩa SQL.`,
+  exercises: [
+    {
+      title: 'Nested loop, hash join, merge join: kết quả giống nhau và đếm phép so sánh',
+      prompt: `{{Row}} có sẵn: {{key}} ({{Integer}}, có thể {{null}}) và {{val}} (String). Viết lớp {{Joins}} cài ba thuật toán equi-join trên {{key}} ({{left.key = right.key}}). Mỗi cặp kết quả là một mảng 2 phần tử String: {{left.val}} rồi {{right.val}} (trái trước, phải sau). Thứ tự các cặp trong kết quả không quan trọng.
+
+Quy tắc (giống SQL): **key {{null}} không khớp với bất kỳ dòng nào**, kể cả key {{null}} khác. Key trùng: 1 dòng trái khớp 2 dòng phải → 2 cặp.
+
+- {{nestedLoop(left, right)}}: duyệt mọi cặp. Mỗi lần kiểm tra một cặp {{(l, r)}} (kể cả khi key null khiến không thể khớp) tính là **1 phép so sánh**. Trả số so sánh qua {{getComparisons()}} (đặt lại 0 mỗi lần gọi).
+- {{hashJoin(left, right)}}: build bảng băm từ bên **nhỏ hơn** (size bằng nhau chọn {{left}}), probe bên còn lại. Mỗi lần tra/kiểm tra khớp cho một dòng probe tính **1 phép so sánh** (đếm số dòng probe được xét tra cứu; bỏ qua dòng probe có key null không tra). {{getComparisons()}} đặt lại 0 mỗi lần gọi.
+- {{mergeJoin(left, right)}}: giả sử đầu vào **chưa** sắp; hãy copy và sắp hai bên theo {{key}} tăng dần ({{null}} xếp cuối), rồi merge bằng hai con trỏ. Mỗi lần bạn so sánh hai khóa để quyết định tiến con trỏ (hoặc để phát hiện khớp) tính **1 phép so sánh**. Xử lý đúng key trùng (nhóm nhiều dòng cùng key ở cả hai bên). {{getComparisons()}} đặt lại 0 mỗi lần gọi.
+
+Ba hàm phải trả **cùng tập cặp** (bỏ qua thứ tự) trên cùng dữ liệu.`,
+      starter: `class Row {
+    final Integer key;   // co the null
+    final String val;
+    Row(Integer key, String val) { this.key = key; this.val = val; }
+}
+
+class Joins {
+    private long comparisons = 0;
+    long getComparisons() { return comparisons; }
+
+    List<String[]> nestedLoop(List<Row> left, List<Row> right) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    List<String[]> hashJoin(List<Row> left, List<Row> right) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    List<String[]> mergeJoin(List<Row> left, List<Row> right) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static List<String> norm(List<String[]> pairs) {
+        List<String> out = new ArrayList<>();
+        for (String[] p : pairs) out.add(p[0] + "|" + p[1]);
+        Collections.sort(out);
+        return out;
+    }
+    static Row r(Integer k, String v) { return new Row(k, v); }
+
+    public static void main(String[] args) {
+        Joins j = new Joins();
+        List<Row> L1 = List.of(r(1, "a"), r(2, "b"), r(3, "c"));
+        List<Row> R1 = List.of(r(2, "x"), r(3, "y"), r(4, "z"));
+
+        check("nested loop basic and count n*m", () -> {
+            eq(List.of("b|x", "c|y"), norm(j.nestedLoop(L1, R1)));
+            eq(9L, j.getComparisons());
+        });
+        check("hash join basic matches nested loop", () -> {
+            eq(norm(j.nestedLoop(L1, R1)), norm(j.hashJoin(L1, R1)));
+        });
+        check("merge join basic matches nested loop", () -> {
+            eq(norm(j.nestedLoop(L1, R1)), norm(j.mergeJoin(L1, R1)));
+        });
+        check("null key never matches (all three)", () -> {
+            List<Row> L = List.of(r(null, "n1"), r(1, "a"));
+            List<Row> R = List.of(r(null, "n2"), r(1, "b"));
+            List<String> expect = List.of("a|b");
+            eq(expect, norm(j.nestedLoop(L, R)));
+            eq(expect, norm(j.hashJoin(L, R)));
+            eq(expect, norm(j.mergeJoin(L, R)));
+        });
+        check("duplicate keys produce all pairs (all three)", () -> {
+            List<Row> L = List.of(r(1, "a1"), r(1, "a2"));
+            List<Row> R = List.of(r(1, "b1"), r(1, "b2"), r(2, "c"));
+            List<String> expect = List.of("a1|b1", "a1|b2", "a2|b1", "a2|b2");
+            eq(expect, norm(j.nestedLoop(L, R)));
+            eq(expect, norm(j.hashJoin(L, R)));
+            eq(expect, norm(j.mergeJoin(L, R)));
+        });
+        check("hash join builds from smaller side and probes larger (count)", () -> {
+            List<Row> small = List.of(r(1, "s"));
+            List<Row> big = new ArrayList<>();
+            for (int i = 0; i < 20; i++) big.add(r(i, "b" + i));
+            j.hashJoin(small, big); // build small(1), probe big(20)
+            eq(20L, j.getComparisons());
+            j.hashJoin(big, small); // build small(1), probe big(20) regardless of arg order
+            eq(20L, j.getComparisons());
+        });
+        check("nested loop far more comparisons than hash/merge on larger input", () -> {
+            List<Row> left = new ArrayList<>(), right = new ArrayList<>();
+            for (int i = 0; i < 30; i++) left.add(r(i, "L" + i));
+            for (int i = 0; i < 40; i++) right.add(r(i % 30, "R" + i));
+            List<String> nl = norm(j.nestedLoop(left, right)); eq(1200L, j.getComparisons());
+            List<String> hj = norm(j.hashJoin(left, right)); long hc = j.getComparisons();
+            List<String> mj = norm(j.mergeJoin(left, right)); long mc = j.getComparisons();
+            eq(nl, hj); eq(nl, mj);
+            if (!(hc < 1200L && mc < 1200L)) throw new AssertionError("expected hash/merge fewer comparisons than 1200, got hash=" + hc + " merge=" + mc);
+        });
+        check("unsorted input handled by merge join", () -> {
+            List<Row> L = List.of(r(3, "c"), r(1, "a"), r(2, "b"));
+            List<Row> R = List.of(r(2, "x"), r(4, "z"), r(1, "y"));
+            eq(List.of("a|y", "b|x"), norm(j.mergeJoin(L, R)));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class Row {
+    final Integer key;   // co the null
+    final String val;
+    Row(Integer key, String val) { this.key = key; this.val = val; }
+}
+
+class Joins {
+    private long comparisons = 0;
+    long getComparisons() { return comparisons; }
+
+    private static boolean keyEq(Integer a, Integer b) {
+        if (a == null || b == null) return false; // SQL: NULL khong khop NULL
+        return a.equals(b);
+    }
+
+    List<String[]> nestedLoop(List<Row> left, List<Row> right) {
+        comparisons = 0;
+        List<String[]> out = new ArrayList<>();
+        for (Row l : left) {
+            for (Row r : right) {
+                comparisons++;                 // moi cap duoc kiem tra
+                if (keyEq(l.key, r.key)) out.add(new String[]{l.val, r.val});
+            }
+        }
+        return out;
+    }
+
+    List<String[]> hashJoin(List<Row> left, List<Row> right) {
+        comparisons = 0;
+        boolean buildLeft = left.size() <= right.size();
+        List<Row> build = buildLeft ? left : right;
+        List<Row> probe = buildLeft ? right : left;
+        // build: bo qua key null (khong the khop), gom theo key
+        Map<Integer, List<Row>> table = new HashMap<>();
+        for (Row b : build) {
+            if (b.key == null) continue;
+            table.computeIfAbsent(b.key, k -> new ArrayList<>()).add(b);
+        }
+        List<String[]> out = new ArrayList<>();
+        for (Row p : probe) {
+            if (p.key == null) continue;       // null khong tra cuu
+            comparisons++;                     // mot lan tra/kiem tra cho dong probe
+            List<Row> matches = table.get(p.key);
+            if (matches == null) continue;
+            for (Row b : matches) {
+                Row l = buildLeft ? b : p;
+                Row r = buildLeft ? p : b;
+                out.add(new String[]{l.val, r.val});
+            }
+        }
+        return out;
+    }
+
+    List<String[]> mergeJoin(List<Row> left, List<Row> right) {
+        comparisons = 0;
+        Comparator<Row> cmp = (a, b) -> {
+            if (a.key == null && b.key == null) return 0;
+            if (a.key == null) return 1;       // null cuoi
+            if (b.key == null) return -1;
+            return Integer.compare(a.key, b.key);
+        };
+        List<Row> L = new ArrayList<>(left); L.sort(cmp);
+        List<Row> R = new ArrayList<>(right); R.sort(cmp);
+        // bo qua duoi null (null khong khop) bang cach gioi han pham vi khong-null
+        int lEnd = L.size(); while (lEnd > 0 && L.get(lEnd - 1).key == null) lEnd--;
+        int rEnd = R.size(); while (rEnd > 0 && R.get(rEnd - 1).key == null) rEnd--;
+        List<String[]> out = new ArrayList<>();
+        int i = 0, j = 0;
+        while (i < lEnd && j < rEnd) {
+            comparisons++;
+            int c = Integer.compare(L.get(i).key, R.get(j).key);
+            if (c < 0) { i++; }
+            else if (c > 0) { j++; }
+            else {
+                // khop: xuat tich Descartes cua nhom key bang nhau o ca hai ben
+                int key = L.get(i).key;
+                int jStart = j;
+                while (i < lEnd && L.get(i).key.equals(key)) {
+                    int jj = jStart;
+                    while (jj < rEnd && R.get(jj).key.equals(key)) {
+                        out.add(new String[]{L.get(i).val, R.get(jj).val});
+                        jj++;
+                    }
+                    i++;
+                }
+                j = jStart;
+                while (j < rEnd && R.get(j).key.equals(key)) j++;
+            }
+        }
+        return out;
+    }
+}`,
+      hints: [
+        'Null key: trong {{keyEq}} trả false nếu bên nào null. Hash join: đừng đưa key null vào bảng băm và đừng probe bằng key null. Merge join: xếp null xuống cuối rồi chỉ duyệt phần không-null.',
+        'Hash join build từ bên nhỏ: chọn {{build/probe}} theo size, nhớ cờ để ghép cặp vẫn theo thứ tự {{left.val, right.val}}. Dùng {{Map<Integer, List<Row>>}} vì key có thể trùng.',
+        'Merge join với key trùng: khi hai con trỏ gặp khóa bằng nhau, phải phát hết cặp (mọi dòng trái trong nhóm × mọi dòng phải trong nhóm), rồi nhảy cả hai con trỏ qua hết nhóm đó. So sánh khóa để quyết định tiến con trỏ mới tính là comparison.',
+      ],
+      explain: `### Vì sao ba thuật toán ra cùng kết quả
+Chúng cùng thực hiện equi-join {{left.key = right.key}} với cùng ngữ nghĩa (null không khớp, key trùng sinh nhiều cặp). Khác nhau chỉ là **cách tìm** cặp khớp: nested loop thử mọi cặp, hash join tra bảng băm, merge join tận dụng thứ tự. Đó là lý do optimizer coi chúng là các kế hoạch thay thế cho cùng một câu SQL.
+
+### Số phép so sánh phản ánh điều gì
+- Nested loop: luôn {{n*m}} (test 30×40 = 1200) — tệ nhất khi hai bên lớn, đúng như Seq Scan lồng nhau với {{loops}} lớn trong EXPLAIN.
+- Hash join: ~số dòng probe (sau khi bỏ null) vì mỗi dòng tra băm O(1) — tương ứng đọc mỗi bên một lần.
+- Merge join: số lần so sánh để tiến hai con trỏ trên dữ liệu đã sort ~tuyến tính theo n+m (cộng chi phí sort bạn không đếm ở đây). Khi dữ liệu đã có thứ tự sẵn (từ index), merge join rất rẻ.
+
+### Lỗi hay gặp
+- **Coi {{null == null}} là khớp**: sai ngữ nghĩa SQL; dùng {{equals}} sau khi loại null, hoặc kiểm tra null trả false.
+- **Hash join quên key trùng**: dùng {{Map<Integer, Row>}} ghi đè → mất cặp.
+- **Hash join đảo trái/phải** khi build từ bên right: cặp trả về bị ngược thứ tự.
+- **Merge join không gom nhóm key trùng**: chỉ ghép một cặp rồi tiến một con trỏ → mất các cặp còn lại trong nhóm.
+- **Đếm comparison sai quy ước**: không ảnh hưởng tính đúng kết quả nhưng làm bạn hiểu sai chi phí; bám theo mô tả (nested loop: mỗi cặp; hash: mỗi lần tra probe).
+
+### Liên hệ EXPLAIN
+Nested loop 1200 so sánh ở bài tập tương tự {{Nested Loop}} với {{loops}} lớn và inner scan lặp lại. Hash join "đọc mỗi bên một lần" tương tự node {{Hash Join}} ({{Hash}} build một lần, probe scan một lần). Merge join tương tự {{Merge Join}} trên {{Index Scan}} đã có thứ tự. Khi bạn thấy {{Nested Loop}} + {{Seq Scan}} + {{loops}} lớn, câu hỏi đầu tiên: "có index trên khóa join không, thống kê có đúng không?"`,
+    },
+  ],
+  check: [
+    {
+      q: 'Trong equi-join SQL {{A JOIN B ON A.k = B.k}}, hai dòng có {{A.k = NULL}} và {{B.k = NULL}} có khớp nhau không?',
+      options: ['Có, vì cả hai đều NULL', 'Không, vì {{NULL = NULL}} cho kết quả UNKNOWN nên không khớp trong join', 'Có, nếu dùng hash join', 'Chỉ khớp khi dùng {{IS NOT DISTINCT FROM}} ngầm'],
+      answer: 1,
+      explain: `**Phương án 2 đúng**: trong SQL ba giá trị (TRUE/FALSE/UNKNOWN), {{NULL = NULL}} là UNKNOWN; điều kiện join chỉ nhận TRUE, nên cặp NULL-NULL không được phát ra. **Phương án 1** sai vì nhầm logic hai giá trị. **Phương án 3** sai: thuật toán (hash/nested/merge) không đổi ngữ nghĩa SQL. **Phương án 4** sai: join thông thường dùng {{=}}, không tự dùng {{IS NOT DISTINCT FROM}} (toán tử coi hai NULL là bằng nhau, PostgreSQL hỗ trợ nhưng phải viết rõ).`,
+    },
+    {
+      q: 'EXPLAIN ANALYZE hiện {{Nested Loop}}; node inner là {{Seq Scan on customer}} với {{loops=50000}}. Dấu hiệu này thường nghĩa là gì và xử lý đầu tiên là gì?',
+      options: ['Hash join bị tắt; bật lại là hết chậm', 'Inner bị quét toàn bộ 50.000 lần, thường do thiếu index trên khóa join hoặc ước lượng sai; kiểm tra index và {{ANALYZE}}/so rows ước lượng với actual', 'Bảng customer quá nhỏ nên Seq Scan là tối ưu', 'Merge join sẽ tự thay thế ở lần chạy sau'],
+      answer: 1,
+      explain: `**Phương án 2 đúng**: {{Seq Scan}} + {{loops}} lớn = quét lặp lại toàn bảng (hành vi nested loop không index, chi phí n×m). Kiểm tra index trên cột join của inner, và so {{rows}} ước lượng vs {{actual rows}} vì thống kê sai khiến planner chọn nested loop nhầm. **Phương án 1** sai: tắt/bật không giải quyết nguyên nhân gốc (thiếu index/ước lượng sai). **Phương án 3** mâu thuẫn: nếu nhỏ thì {{loops=50000}} không xuất hiện như vậy cho một bảng nhỏ cố định; và Seq Scan lặp 50.000 lần vẫn đắt. **Phương án 4** sai: planner không "tự học" giữa các lần chạy theo kiểu đó; nó dựa vào thống kê.`,
+    },
+    {
+      q: 'Khi nào optimizer thường chọn hash join thay vì nested loop (có index)?',
+      options: ['Khi outer rất nhỏ sau lọc và inner có index tốt', 'Khi join không phải đẳng thức ({{<}}, {{BETWEEN}})', 'Khi hai bên đều lớn, equi-join ({{=}}), và bảng băm vừa bộ nhớ', 'Khi cả hai bên đã có sẵn thứ tự theo khóa join từ index'],
+      answer: 2,
+      explain: `**Phương án 3 đúng**: hai bên lớn thì n×log m (nested loop index) vẫn đắt nếu n lớn; hash join ~n+m với equi-join, đọc mỗi bên một lần, miễn bảng băm vừa RAM. **Phương án 1** là trường hợp nested loop có index thắng. **Phương án 2** loại hash/merge (chỉ hỗ trợ {{=}}), thường buộc nested loop. **Phương án 4** nghiêng về merge join (tận dụng thứ tự sẵn, không cần build hash table).`,
+    },
+  ],
+  related: ['sql-015', 'sql-017', 'sql-023', 'db-001'],
+  tags: ['join', 'nested loop', 'hash join', 'merge join', 'explain', 'optimizer'],
+}
 );
