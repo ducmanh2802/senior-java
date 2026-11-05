@@ -2424,4 +2424,435 @@ Lỗi hay gặp:
   related: ['concurrency-011', 'concurrency-012', 'concurrency-032', 'concurrency-033'],
   tags: ['rate limiter', 'token bucket', 'sliding window', 'Semaphore', 'bulkhead', 'backpressure'],
 },
+{
+  id: 'lesson-concurrency-008',
+  track: 'concurrency',
+  order: 8,
+  title: 'Producer–consumer với BlockingQueue: bounded queue, backpressure, poison pill và Kafka consumer lag',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Giải thích mô hình producer–consumer và vì sao một hàng đợi chặn (BlockingQueue) tách được tốc độ sản xuất khỏi tốc độ xử lý',
+    'Phân biệt put/take (chặn) với offer/poll (không chặn hoặc chặn có timeout) và chọn đúng khi queue đầy',
+    'Dừng một pipeline nhiều thread **sạch** bằng poison pill, không mất và không trùng phần tử',
+    'Nối ý tưởng backpressure trong JVM với consumer lag của Kafka để trả lời phỏng vấn system design',
+  ],
+  body: `### Ý tưởng: đặt một cái thùng giữa người làm và người ăn
+**Tóm tắt:** Producer–consumer là tách "bên tạo ra việc" khỏi "bên xử lý việc" bằng một hàng đợi chia sẻ. Khi hai bên chạy với tốc độ khác nhau, hàng đợi hấp thụ chênh lệch; khi hàng đợi **có giới hạn** (bounded), nó còn đẩy áp lực ngược về phía producer — đó chính là backpressure.
+
+Hãy hình dung một băng chuyền trong xưởng bánh. Một người nặn bánh (producer), một người đóng gói (consumer). Nếu đóng gói chậm hơn nặn, bạn không thể bắt người nặn đứng chờ từng cái bánh — bạn đặt một **chiếc khay** chứa được một số lượng hữu hạn cái giữa hai người. Người nặn cứ nặn và đặt lên khay; người đóng gói cứ lấy từ khay. Khay chính là hàng đợi. Nếu khay vô hạn, người nặn sẽ nặn mãi và khay tràn (hết chỗ, hết bộ nhớ). Nếu khay có giới hạn, khi khay đầy người nặn **buộc phải dừng tay** cho tới khi có chỗ trống — đó là backpressure: phía tiêu thụ chậm tự động làm phía sản xuất chậm lại, thay vì làm sập hệ thống.
+
+Trong Java, "cái khay" thread-safe đó là {{BlockingQueue}}. Nó an toàn cho nhiều producer và nhiều consumer cùng lúc, và các thao tác của nó biết **tự chờ**:
+- {{put(e)}}: thêm vào; queue đầy thì **block** (park thread) cho đến khi có chỗ.
+- {{take()}}: lấy ra; queue rỗng thì **block** cho đến khi có hàng.
+- {{offer(e)}} / {{poll()}}: không chặn, trả {{false}}/null ngay nếu không làm được.
+- {{offer(e, timeout, unit)}} / {{poll(timeout, unit)}}: chặn tối đa đúng khoảng thời gian cho trước rồi bỏ.
+
+### Vì sao bounded (có giới hạn) mới an toàn
+{{LinkedBlockingQueue}} tạo không truyền sức chứa có capacity = {{Integer.MAX_VALUE}}, nghĩa là gần như vô hạn. Nếu consumer chậm hơn producer một chút và bạn dùng queue vô hạn, bộ nhớ phình lên cho tới khi OOM — bài 3 (ThreadPoolExecutor) đã gặp đúng cái bẫy này với {{newFixedThreadPool}}. Queue **bounded** như {{new ArrayBlockingQueue<>(200)}} đổi vấn đề "chậm" thành "chậm một cách có kiểm soát": producer bị {{put}} chặn, chạy chậm lại đúng bằng tốc độ consumer, và bạn thấy áp lực ngay lập tức.
+
+| Hành vi khi queue đầy | API | Dùng khi |
+|---|---|---|
+| Chặn vô hạn tới khi có chỗ | {{put}} | producer nội bộ được phép chậm lại (batch, ingest) |
+| Chặn có trần thời gian rồi bỏ | {{offer(e, t, unit)}} | producer là web request, cần trả lời nhanh (429/503) |
+| Từ chối ngay | {{offer(e)}} trả {{false}} | có đường dự phòng (ghi DB, DLQ, drop metric) |
+| Chặn khi rỗng chờ hàng | {{take}} | consumer luôn muốn bận, không spin |
+| Chặn có trần rồi trả null | {{poll(t, unit)}} | consumer cần làm việc khác khi hết hàng |
+
+> Quy tắc thực tế: **luôn đặt capacity**. Capacity bao nhiêu = số việc bạn đồng ý "để treo" trong RAM. Quá nhỏ thì producer bị chặn liên tục (thông tụt), quá lớn thì mất tác dụng backpressure và ngốn heap.
+
+### Dừng pipeline một cách sạch: poison pill
+Challenge lớn nhất không phải chạy, mà **dừng**: làm sao consumer biết là "hết việc rồi, thoát đi" thay vì mãi {{take()}} chờ trong vô vọng (và thread không bao giờ kết thúc)? Cách phổ biến nhất là **poison pill**: đưa vào queue một phần tử đặc biệt mà consumer hiểu là "đây là lệnh nghỉ". Mỗi consumer khi {{take()}} thấy pill thì {{break}}, còn pill chỉ được một consumer ăn nên bạn phải thả **đúng một viên cho mỗi consumer**:
+
+~~~seq
+title: Pipeline dừng bằng poison pill
+actors: Main | Queue | C1 | C2
+Main -> Queue: put(xong het hang)
+Main -> Queue: put(POISON) cho C1
+Main -> Queue: put(POISON) cho C2
+Queue --> C1: take() = POISON
+C1 -> C1: break, thread ket thuc
+Queue --> C2: take() = POISON
+C2 -> C2: break, thread ket thuc
+~~~
+
+Vì sao {{ArrayBlockingQueue}} không cho nhét {{null}}? Vì {{null}} được dùng làm giá trị trả về của {{poll()}}/"không có gì", nên nó phải là một sentinel riêng, ví dụ một hằng số nằm ngoài khoảng dữ liệu thật. Nếu bạn cần chèn {{null}} hoặc một tín hiệu "hết hàng", hãy bọc dữ liệu trong một object có cờ {{isDone}}.
+
+Có ba cách dừng thay thế, đều đáng biết khi phỏng vấn:
+1. **Poison pill**: đơn giản, tự nhiên theo luồng dữ liệu, nhưng đếm pill phải khớp số consumer.
+2. **{{Thread.interrupt()}}**: {{take}}/{{put}} đang block sẽ ném {{InterruptedException}} → bạn thoát trong {{catch}}. Hợp khi cần dừng gấp.
+3. **Cờ {{volatile running}} + {{poll(timeout)}}**: consumer chạy vòng lặp khi cờ {{running}} còn đúng, mỗi lần gọi {{q.poll(100, MILLISECONDS)}} và thoát khi trả {{null}} quá hạn. Mềm dẻo nhưng có độ trễ tối đa bằng timeout.
+
+### Nối với Kafka: consumer lag và backpressure ngoài JVM
+BlockingQueue là producer–consumer **trong một tiến trình**. Kafka là phiên bản phân tán, bền (message ghi ra đĩa, đọc lại được): producer ghi vào **topic** (chia **partition**), consumer thuộc một **consumer group** cùng đọc. Hai khái niệm cần nhớ:
+- **Offset**: con trỏ "consumer này đã đọc tới đâu" trong partition. Commit offset chậm ⇒ khi restart đọc lại từ đó ⇒ *at-least-once* (có thể trùng, bạn phải idempotent).
+- **Consumer lag** = (offset mới nhất của partition) − (offset đã commit). Lag tăng nghĩa là consumer **ăn chậm hơn producer đổ vào** — đúng tình huống queue đầy.
+
+Điểm giống: cả hai mô hình đều đo "độ đầy" để phát hiện mất cân bằng tốc độ. Khác biệt quan trọng cho câu phỏng vấn: queue bounded trong JVM thì {{put}} **tự chặn producer** (backpressure tức thì), còn Kafka **không chặn** producer — broker vẫn nhận và ghi disk, lag phình ra. Backpressure của Kafka nằm ở phía consumer: bạn xử lý chậm lại, batch nhỏ đi, {{max.poll.records}} giảm, và nếu lag quá lớn thì thêm consumer instance (tối đa bằng số partition) hoặc tăng tốc xử lý. Producer phía Kafka chỉ "cảm nhận" áp lực qua buffer client {{buffer.memory}} đầy khi broker chậm.
+
+~~~seq
+title: Consumer lag phình khi xử lý chậm
+actors: Producer | Kafka topic | Consumer
+Producer -> Kafka topic: ghi lien tuc (offset tang)
+Kafka topic --> Consumer: poll batch (max.poll.records)
+Consumer -> Consumer: xu ly cham, offset commit cham
+note Consumer..Kafka topic: lag = latest - committed, taeng lie
+~~~
+
+> Senior pitfall: {{max.poll.interval.ms}}. Nếu một vòng xử lý lâu hơn ngưỡng này (default 5 phút), broker coi consumer đã chết, đá nó khỏi group và **rebalance** ⇒ partition bị chuyển sang consumer khác ⇒ cùng một message bị xử lý lại ở hai nơi. Đây là lý do phải xử lý theo batch nhỏ, đừng "ăn" một lô khổng lồ rồi mới commit.
+
+### Lỗi production hay gặp
+- Queue vô hạn → OOM khi consumer chậm (bẫy {{newFixedThreadPool}}).
+- Thả poison pill **thiếu** số consumer → có consumer kẹt {{take}} vĩnh viễn, pipeline không bao giờ shutdown.
+- {{take}} trong vòng lặp không {{try/catch InterruptedException}} → khi shutdown, interrupt bị nuốt, thread không thoát.
+- Xử lý message **trước khi** commit offset rồi crash → mất dữ liệu (chọn at-most-once một cách vô thức). Ngược lại commit trước khi xử lý → mất nếu lỗi giữa chừng.
+- Một consumer chết nhưng không có cách phát hiện → hàng đợi đầy âm thầm, latency tăng mà không ai biết.
+
+### Liên hệ phỏng vấn
+Khi được hỏi "thiết kế luồng ingest cho hệ X", câu trả lời senior là: (1) tách producer/consumer bằng hàng đợi **có giới hạn**, (2) nói rõ policy khi đầy (block/offer timeout/reject/DLQ), (3) dừng sạch bằng poison pill hoặc interrupt, (4) nối sang Kafka: partition, offset, at-least-once + idempotent, và dùng **consumer lag** làm metric scale-out thay vì chặn producer.`,
+  exercises: [
+    {
+      title: 'Pipeline 2 producer 3 consumer: dừng sạch bằng poison pill, không mất không trùng',
+      prompt: `Viết {{Pipeline.run(n, producers, consumers, capacity)}}:
+
+- Tạo một {{ArrayBlockingQueue}} có sức chứa {{capacity}} làm hàng đợi công việc (phần tử là số nguyên).
+- Chạy {{producers}} thread producer: hợp lại chúng **đưa đúng các số 1..n, mỗi số đúng một lần** vào queue bằng {{put}} (producer được phép chậm khi queue đầy). Một cách chia chắc chắn đúng: producer thứ {{p}} (đếm từ 0) đưa các số {{p+1, p+1+producers, p+1+2*producers, ...}} miễn không vượt {{n}}.
+- Chạy {{consumers}} thread consumer: mỗi consumer lặp lại {{take}} và gom phần tử vào một danh sách **thread-safe**, cho tới khi gặp **poison pill** thì dừng. Số nguyên {{-1}} là poison pill (dữ liệu thật luôn dương).
+- Sau khi MỌI producer đã {{put}} xong, đưa vào queue **đúng {{consumers}} viên poison pill** để mỗi consumer thoát một cách sạch.
+- Chờ mọi consumer kết thúc, trả về danh sách đã gom **đã sắp xếp tăng dần** (để kết quả không phụ thuộc thứ tự thread). Nếu pipeline kẹt (thiếu pill) thì future phải timeout sau 5 giây và test fail.
+
+Chữ ký: {{static List<Integer> run(int n, int producers, int consumers, int capacity) throws Exception}}. {{capacity >= 1}}. Khi {{n == 0}} không có số nào được đưa vào nhưng pipeline vẫn phải dừng sạch và trả về danh sách rỗng.`,
+      starter: `import java.util.concurrent.*;
+
+class Pipeline {
+    static List<Integer> run(int n, int producers, int consumers, int capacity) throws Exception {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object e, Object a) { if (!Objects.equals(e, a)) throw new AssertionError("expected " + e + " got " + a); }
+    static List<Integer> expected(int n) { List<Integer> l = new ArrayList<>(); for (int i = 1; i <= n; i++) l.add(i); return l; }
+    public static void main(String[] args) {
+        check("basic 2 producer 3 consumer cap 5", () -> {
+            try { eq(expected(20), Pipeline.run(20, 2, 3, 5)); } catch (Exception e) { throw new RuntimeException(e); }
+        });
+        check("capacity 1: backpressure nhưng vẫn đủ hàng", () -> {
+            try { eq(expected(100), Pipeline.run(100, 2, 3, 1)); } catch (Exception e) { throw new RuntimeException(e); }
+        });
+        check("1 producer 8 consumer: khong trung khong mat", () -> {
+            try { eq(expected(64), Pipeline.run(64, 1, 8, 4)); } catch (Exception e) { throw new RuntimeException(e); }
+        });
+        check("stress 1000 phan tu cap 8: dung mot lan moi so", () -> {
+            try { List<Integer> got = Pipeline.run(1000, 4, 4, 8); eq(1000, got.size()); eq(expected(1000), got); } catch (Exception e) { throw new RuntimeException(e); }
+        });
+        check("so it hang hon so producer: co producer nhan roi", () -> {
+            try { eq(expected(3), Pipeline.run(3, 5, 3, 2)); } catch (Exception e) { throw new RuntimeException(e); }
+        });
+        check("n = 0: dung sach, tra ve danh sach rong, khong hang", () -> {
+            try { eq(new ArrayList<Integer>(), Pipeline.run(0, 2, 3, 4)); } catch (Exception e) { throw new RuntimeException(e); }
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.concurrent.*;
+
+class Pipeline {
+    static final int POISON = -1;
+
+    static List<Integer> run(int n, int producers, int consumers, int capacity) throws Exception {
+        final BlockingQueue<Integer> q = new ArrayBlockingQueue<>(capacity);
+        final List<Integer> out = new CopyOnWriteArrayList<>();
+        ExecutorService pool = Executors.newFixedThreadPool(producers + consumers, r -> {
+            Thread t = new Thread(r); t.setDaemon(true); return t;
+        });
+        try {
+            List<Future<?>> prod = new ArrayList<>();
+            for (int p = 0; p < producers; p++) {
+                final int start = p + 1, step = producers;
+                prod.add(pool.submit(() -> {
+                    try { for (int v = start; v <= n; v += step) q.put(v); }   // put = block khi day (backpressure)
+                    catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                }));
+            }
+            List<Future<?>> cons = new ArrayList<>();
+            for (int c = 0; c < consumers; c++) {
+                cons.add(pool.submit(() -> {
+                    try {
+                        while (true) { int v = q.take(); if (v == POISON) break; out.add(v); }   // pill = nghi
+                    } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                }));
+            }
+            for (Future<?> f : prod) f.get(5, TimeUnit.SECONDS);          // moi producer dua xong hang
+            for (int c = 0; c < consumers; c++) q.put(POISON);            // dung 1 pill cho moi consumer
+            for (Future<?> f : cons) f.get(5, TimeUnit.SECONDS);          // moi consumer thoat sach
+            List<Integer> sorted = new ArrayList<>(out);
+            Collections.sort(sorted);
+            return sorted;
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+}`,
+      hints: [
+        'Dùng {{ArrayBlockingQueue<>(capacity)}} cho queue, {{CopyOnWriteArrayList}} hoặc {{ConcurrentLinkedQueue}} cho danh sách gom kết quả.',
+        'Chia producer: producer p đưa {{v = p+1; v <= n; v += producers}} — đảm bảo 1..n phủ đúng một lần.',
+        'Thứ tự dừng: chạy producer + consumer TRƯỚC, chờ producer xong, mới {{q.put(POISON)}} đúng {{consumers}} lần, rồi chờ consumer.',
+        'Dùng {{future.get(5, TimeUnit.SECONDS)}} để nếu thiếu pill thì timeout thành lỗi rõ ràng thay vì treo vô hạn.',
+        'Sắp xếp danh sách trước khi trả về, vì thứ tự consumer lấy phụ thuộc lịch điều phối thread.',
+      ],
+      explain: `Ba điểm làm lời giải đúng và **xác định** (kết quả không đổi dù thread đan xen thế nào):
+1. **Phủ 1..n đúng một lần**: mỗi số thuộc đúng một producer theo công thức {{p+1+k*producers}}, nên dù có bao nhiêu producer, không số nào bị đưa hai lần hay bỏ sót.
+2. **Poison pill đúng bằng số consumer**: {{-1}} được {{put}} sau khi mọi producer đã xong, nên pill nằm **phía sau** toàn bộ dữ liệu trong FIFO. Mỗi consumer {{break}} ngay khi thấy một viên, nên mỗi viên "nuốt" đúng một consumer — vừa đủ, không thiếu (kẹt {{take}}), không thừa (pill dư nằm lại queue nhưng không làm sai kết quả).
+3. **Chờ theo thứ tự**: {{get}} hết producer → thả pill → {{get}} hết consumer. Nếu đảo lại (thả pill trước khi producer xong) thì pill chen vào giữa dữ liệu, một consumer thoát sớm và các dữ liệu sau nó bị bỏ sót.
+
+Vì sao test vẫn pass ổn định: hàm trả về đã **sắp xếp**, nên so sánh với {{1..n}} tăng dần là bất biến độc lập lịch thread. Queue capacity 1 buộc {{put}} chặn gần như liên tục → kiểm chứng backpressure mà không đổi kết quả. {{n = 0}}: không có số nào, main vẫn thả {{consumers}} viên pill, mọi consumer thoát → danh sách rỗng.
+
+Lỗi hay gặp:
+- Đếm pill sai ({{consumers - 1}} hoặc {{1}}) → có consumer treo ở {{take}}, {{get(5s)}} timeout → FAIL.
+- {{null}} làm pill → {{ArrayBlockingQueue}} ném {{NullPointerException}} vì nó cấm {{null}}.
+- Gom kết quả vào {{ArrayList}} thường → data race, mất/trùng phần tử một cách khó tái hiện. Phải dùng cấu trúc thread-safe.
+- Quên {{setDaemon(true)}}: nếu một consumer còn sống vì bug, JVM không thoát được; daemon cho phép chạy tới {{RESULT}} rồi kết thúc.
+
+Bài mở rộng để tự kiểm: thay {{-1}} bằng một object {{Task}} có cờ {{done}}, hoặc dùng {{poll(50, MILLISECONDS)}} + cờ {{volatile running}} để so với poison pill.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Queue đã đầy và producer của bạn là một web request cần trả lời client trong 200 ms. Thao tác nào phù hợp nhất?',
+      options: ['{{put(e)}} để không bao giờ mất message', '{{take()}} để tự cân bằng tốc độ', '{{offer(e, 50, MILLISECONDS)}} rồi trả 503/429 nếu thất bại', '{{new LinkedBlockingQueue()}} không truyền capacity'],
+      answer: 2,
+      explain: `{{offer}} có timeout cho phép bạn **chủ động bỏ** thay vì kẹt vô hạn và làm request treo — đúng nhu cầu của web (có Retry-After, hoặc đẩy sang DLQ). {{put}} chặn là backpressure tốt cho batch nhưng tai hại cho request đồng bộ. {{take}} là phía tiêu thụ. Queue không capacity gần như vô hạn → ngốn heap tới OOM.`,
+    },
+    {
+      q: 'Bạn chạy pipeline 3 consumer và chỉ thả đúng 1 viên poison pill sau khi producer xong. Điều gì xảy ra?',
+      options: ['Cả 3 consumer đều dừng sạch', 'Hai consumer kẹt ở take() mãi mãi, pipeline không shutdown', 'Consumer thứ 2 và 3 tự lấy thêm pill từ đâu đó', 'Queue tự sinh pill khi rỗng'],
+      answer: 1,
+      explain: `Mỗi viên pill chỉ được **một** consumer {{take}} rồi {{break}}. Thả 1 viên cho 3 consumer ⇒ chỉ 1 thoát, 2 còn lại chờ ở {{take}} vô hạn, {{awaitTermination}}/{{get(timeout)}} sẽ fail. Phải thả **đúng số consumer** viên.`,
+    },
+    {
+      q: 'Trong Kafka, "consumer lag" tăng dần liên tục nói lên điều gì và cách xử lý đúng là gì?',
+      options: ['Producer gửi quá chậm; tăng tốc producer', 'Consumer ăn chậm hơn producer đổ vào; scale thêm consumer trong group hoặc tăng tốc xử lý', 'Broker đang chết; khởi động lại broker', 'Lag không có ý nghĩa vận hành'],
+      answer: 1,
+      explain: `Lag = offset mới nhất − offset đã commit; nó là "queue đầy" của hệ phân tán. Kafka **không** chặn producer (broker vẫn ghi disk), nên backpressure biểu hiện qua lag. Cách xử lý: thêm consumer instance (tối đa bằng số partition, thêm quá thì thừa), giảm batch/xử lý nhanh hơn. Lag cao còn cảnh báo risk {{max.poll.interval.ms}} → rebalance → xử lý trùng.`,
+    },
+  ],
+  related: ['concurrency-004', 'concurrency-015', 'concurrency-014'],
+  tags: ['producer-consumer', 'BlockingQueue', 'ArrayBlockingQueue', 'backpressure', 'poison pill', 'Kafka', 'consumer lag'],
+},
+{
+  id: 'lesson-concurrency-009',
+  track: 'concurrency',
+  order: 9,
+  title: 'ConcurrentHashMap và cache thread-safe: computeIfAbsent atomic, single-flight chống thundering herd',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Giải thích vì sao {{Hashtable}} và {{Collections.synchronizedMap}} vẫn không đủ cho pattern "kiểm tra rồi mới ghi" (check-then-act)',
+    'Dùng {{computeIfAbsent}} để nạp cache nguyên tử: mỗi key chỉ loader chạy một lần dù nhiều thread cùng miss',
+    'Xây một loading cache nhỏ với single-flight và {{invalidate}} đúng cách',
+    'Nêu được các giới hạn: loader không được gọi lại chính map, key/value không được null, và khi nào cần Redis thay vì cache trong JVM',
+  ],
+  body: `**Tóm tắt:** {{ConcurrentHashMap}} cho phép đọc song song và ghi không chặn toàn bộ, nhưng cái bạn thật sự cần trong cache là **{{computeIfAbsent}}**: nó bảo đảm với một key đang trống, hàm nạp (loader) chỉ chạy **một lần**, các thread khác chờ rồi dùng chung kết quả. Đó là nền của pattern "single-flight" chống hiện tượng mọi request cùng đổ xuống DB khi một key nóng hết hạn.
+
+### Vấn đề của HashMap thường và các "bản vá" cũ
+{{HashMap}} không thread-safe: hai thread cùng {{put}} có thể làm rách cấu trúc bên trong (bucket/array), mất dữ liệu, thậm chí vòng lặp vô hạn (trước Java 8). Người ta từng chữa bằng:
+- {{Hashtable}}: mỗi method là {{synchronized}} trên **cả bảng** ⇒ mọi thread chặn lẫn nhau, kể cả đọc ⇒ throughput cực thấp.
+- {{Collections.synchronizedMap}}: bọc {{HashMap}} bằng khoá mutex chung, cũng chặn tất cả. Và nó vẫn **không** làm được một phép tổ hợp.
+
+Điểm mấu chốt: cả hai vẫn để lộ race ở cấp **gói thao tác**. Nhìn đoạn code rất "hợp lý" này:
+
+~~~java
+// DIỆT DI NGAY CA TWO THREAD CUNG TAI MOT KEY
+V v = map.get(k);
+if (v == null) { v = loadFromDb(k); map.put(k, v); }   // check-then-act KHONG nguyen tu
+return v;
+~~~
+
+Hai thread cùng {{get}} thấy {{null}}, cùng gọi {{loadFromDb}} (2 query DB đắt tiền, có khi 500 query), cùng {{put}}. Đây là **thundering herd** (bầy ngựa vằn cùng nhảy): một key vừa expire bị cả đống request cùng nạp một lúc. Khoá toàn bảng của {{Hashtable}} cũng không giúp vì nó chỉ làm mỗi {{get}}/{{put}} nguyên tử riêng lẻ, không gộp được cả ba dòng.
+
+### ConcurrentHashMap: chặn theo bucket, không chặn cả bảng
+{{ConcurrentHashMap}} (Java 8+) giữ các {{Node}} trong mảng bucket; mỗi bucket có một {{synchronized}} trên node đầu — nên chỉ thread nào đụng **cùng bucket** mới chờ nhau, còn lại chạy song song. Đọc {{get}} hoàn toàn không khoá (đọc mảng tham chiếu {{volatile}}). {{size}}/{{mappingCount}} là giá trị gần đúng (đếm kiểu striped, giống {{LongAdder}}). Key và value **không được phép null** — vì không có cách phân biệt "không có key" với "giá trị là null" khi đọc không khoá.
+
+Vì sao bài deadlock/lock-ordering (bài 2) không nói tới cái này: ở đó ta khoá **tài khoản** theo thứ tự id; còn cache này cần bảo đảm một phép **tổ hợp** (đọc-missing-rồi-nạp-rồi-ghi) là nguyên tử theo từng key. Công cụ là {{computeIfAbsent}}.
+
+### computeIfAbsent = single-flight miễn phí
+~~~java
+// loader CHỈ chay mot lan cho mot key dang trong; cac thread khac cho va dung chung ket qua
+V value = map.computeIfAbsent(key, k -> loadFromDb(k));
+~~~
+Bên trong, khi một key đang trống, thread thắng sẽ khoá bucket và chạy hàm nạp; các thread khác chạm cùng bucket bị **chặn** cho đến khi hàm xong, rồi thấy key đã có nên không chạy nữa. Kết quả: mỗi key đúng **một** lần nạp, bất kể lịch đan xen — test loại này vì thế **xác định** (không flaky).
+
+> CẢNH BÁO kinh điển: {{computeIfAbsent}} **cấm** hàm nạp gọi lại chính map đó ({{map.remove}}, {{map.put}} cho cùng bucket). Java ném {{IllegalStateException}} hoặc gây **deadlock** (vì hàm nạp đang giữ khoá bucket mà lại sửa chính bucket đó). Nếu loader của bạn cần ghi cache phụ, dùng map riêng. loader cũng phải **nhanh**: nó giữ khoá bucket nên một loader chậm (HTTP/DB) làm mọi key cùng bucket đứng chờ — đây là lý do cache "block khi nạp" chỉ an toàn khi loader rẻ; loader đắt thì phải single-flight bằng {{Future}}/{{CompletableFuture}} (xem bài 4/6) hoặc chấp nhận một request dẫn đầu nạp, các request sau trả **giá trị cũ** cho tới khi có mới (stale-while-revalidate).
+
+### Building block cho cache và bài toán multi-instance
+Một loading cache tối thiểu = {{ConcurrentHashMap}} + {{computeIfAbsent}} + {{invalidate(key) = remove(key)}}. Nhưng cache JVM chỉ có tác dụng **trong một tiến trình**: 5 pod phía sau load balancer sẽ có 5 bản cache, 5 lần nạp, 5 lần lệch hạn — và không cách nào "xóa đồng bộ". Đó là lúc người ta cân nhắc **Redis** (cache tập trung, có TTL {{EXPIRE}}, {{DEL}} tác động mọi instance). Đánh đổi: thêm một network hop (~0,2–1 ms trong cùng vùng), thêm một điểm hỏng, thêm vấn đề cache-DB nhất quán. Chiến lược phổ biến: **cache-aside** (app tự đọc cache, miss thì đọc DB rồi ghi cache), chọn TTL để giới hạn dữ liệu cũ, và khi ghi DB thì {{DEL}} cache (hoặc dùng "write-through"). Đừng cache mọi thứ: chỉ mục gì **đọc nhiều, thay đổi chậm, tính đắt**.
+
+### Lỗi production hay gặp
+- Nạp trong {{get}} bằng tay (check-then-act) thay vì {{computeIfAbsent}} → thundering herd làm sập DB.
+- Cho {{null}} vào {{ConcurrentHashMap}} → {{NullPointerException}}; muốn "âm về null" thì phải bọc {{Optional}} hoặc sentinel.
+- Loader gọi lại cùng map trong {{computeIfAbsent}} → treo chết bucket.
+- Đếm {{size}} như số chính xác → nó là xấp xỉ; đừng dùng nó để "chốt" giới hạn bộ nhớ.
+- Không có giới hạn cỡ cache (unbounded map) → giữ mọi key mãi ⇒ leak bộ nhớ. Cache thật cần **eviction** (LRU/TinyLFU) và **TTL**; {{Caffeine}} là thư viện Java chuẩn cho việc này (production, còn trong phỏng vấn tay-toi bạn tự viết được bản tối thiểu).
+- Nghĩ cache JVM chia sẻ được giữa các instance → không; mỗi process một bản.
+
+### Liên hệ phỏng vấn
+Câu "một key cache nóng vừa expire, 500 request cùng miss và cùng bắn một query nặng — bạn xử lý sao?" có đáp án senior: (1) {{single-flight}} — trong một JVM dùng {{ConcurrentHashMap.computeIfAbsent}} (hoặc map of {{CompletableFuture}}) để **chỉ một** request dẫn đầu nạp, phần còn lại chờ dùng chung; (2) nhiều instance thì cần khóa/giới hạn ở tầng chia sẻ (Redis lock, hoặc "stale-while-revalidate" để chỉ một máy nạp); (3) nói rõ đánh đổi: giữ lock bucket nên loader phải nhanh, và cache-local không thay được cache-tập-trung khi cần xóa đồng bộ.`,
+  exercises: [
+    {
+      title: 'LoadingCache thread-safe: computeIfAbsent cho single-flight, có invalidate',
+      prompt: `Viết lớp {{LoadingCache<K, V>}} bọc {{ConcurrentHashMap}} để cache giá trị tính từ một {{loader}}:
+
+- Constructor: {{LoadingCache(Function<K, V> loader)}} — lưu loader, tạo một {{ConcurrentHashMap}} rỗng.
+- {{V get(K key)}}: trả giá trị của key. Nếu key **chưa có**, gọi loader **đúng một lần** (kể cả khi nhiều thread cùng {{get}} key đó đồng thời — single-flight) và lưu lại. Nếu đã có trong cache, **không** gọi loader. Đây là lúc {{computeIfAbsent}} phát huy.
+- {{void invalidate(K key)}}: gỡ key khỏi cache; lần {{get}} sau sẽ nạp lại.
+- {{int size()}}: số key đang cache.
+
+loader trả về giá trị không null và không gọi lại chính cache. Chữ ký: {{V get(K key)}}, {{void invalidate(K key)}}, {{int size()}}, constructor nhận {{java.util.function.Function<K, V>}}.
+
+Test đếm số lần loader được gọi bằng một {{AtomicInteger}} đặt trong loader bạn truyền vào; kết quả kỳ vọng là **số lần loader chạy = số key khác nhau thực sự được nạp**, độc lập với thứ tự thread.`,
+      starter: `import java.util.concurrent.*;
+import java.util.function.*;
+
+class LoadingCache<K, V> {
+    private final ConcurrentHashMap<K, V> map = new ConcurrentHashMap<>();
+    private final Function<K, V> loader;
+
+    LoadingCache(Function<K, V> loader) { this.loader = loader; }
+
+    V get(K key) { throw new UnsupportedOperationException("TODO"); }
+
+    void invalidate(K key) { throw new UnsupportedOperationException("TODO"); }
+
+    int size() { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object e, Object a) { if (!Objects.equals(e, a)) throw new AssertionError("expected " + e + " got " + a); }
+    public static void main(String[] args) {
+        check("loader chay mot lan moi key, lan sau lay cache", () -> {
+            AtomicInteger loads = new AtomicInteger();
+            LoadingCache<String, Integer> c = new LoadingCache<>(k -> { loads.incrementAndGet(); return k.length(); });
+            eq(3, c.get("abc")); eq(2, c.get("ab"));
+            eq(3, c.get("abc"));                 // lan 2: dung cache, gia tri van la 3, khong nap lai
+            eq(2, loads.get());                  // chi 2 key khac nhau duoc nap
+            eq(2, c.size());
+        });
+        check("thundering herd: 16 thread cung mot key, loader van 1 lan", () -> {
+            AtomicInteger loads = new AtomicInteger();
+            CountDownLatch start = new CountDownLatch(1);
+            LoadingCache<String, String> c = new LoadingCache<>(k -> { loads.incrementAndGet(); return "V-" + k; });
+            ExecutorService pool = Executors.newFixedThreadPool(16, r -> { Thread t = new Thread(r); t.setDaemon(true); return t; });
+            Set<String> results = ConcurrentHashMap.newKeySet();
+            List<Future<?>> fs = new ArrayList<>();
+            for (int i = 0; i < 16; i++) fs.add(pool.submit(() -> { start.await(); results.add(c.get("HOT")); return null; }));
+            start.countDown();
+            pool.shutdown();
+            try { if (!pool.awaitTermination(5, TimeUnit.SECONDS)) throw new AssertionError("timeout"); for (Future<?> f : fs) f.get(); }
+            catch (Exception e) { throw new RuntimeException(e); }
+            eq(1, loads.get());                  // single-flight: chi mot lan nap
+            eq(1, results.size()); eq("V-HOT", results.iterator().next()); eq(1, c.size());
+        });
+        check("nhieu key tren nhieu thread: loader = so key khac nhau", () -> {
+            AtomicInteger loads = new AtomicInteger();
+            int keys = 50;
+            LoadingCache<Integer, String> c = new LoadingCache<>(k -> { loads.incrementAndGet(); return "v" + k; });
+            ExecutorService pool = Executors.newFixedThreadPool(10, r -> { Thread t = new Thread(r); t.setDaemon(true); return t; });
+            List<Future<?>> fs = new ArrayList<>();
+            for (int t = 0; t < 10; t++) {
+                final int id = t;
+                fs.add(pool.submit(() -> { for (int k = id; k < keys; k += 10) eq("v" + k, c.get(k)); return null; }));
+            }
+            pool.shutdown();
+            try { if (!pool.awaitTermination(5, TimeUnit.SECONDS)) throw new AssertionError("timeout"); for (Future<?> f : fs) f.get(); }
+            catch (Exception e) { throw new RuntimeException(e); }
+            eq(keys, loads.get()); eq(keys, c.size());
+        });
+        check("invalidate buoc nap lai", () -> {
+            AtomicInteger loads = new AtomicInteger();
+            LoadingCache<String, Integer> c = new LoadingCache<>(k -> { loads.incrementAndGet(); return 7; });
+            c.get("x"); c.get("x");
+            eq(1, loads.get());
+            c.invalidate("x");
+            c.get("x");
+            eq(2, loads.get()); eq(1, c.size());
+        });
+        check("key khac nhau doc lap, key trung dung cache", () -> {
+            AtomicInteger loads = new AtomicInteger();
+            LoadingCache<String, String> c = new LoadingCache<>(k -> { loads.incrementAndGet(); return k.toUpperCase(); });
+            eq("AB", c.get("ab")); eq("CD", c.get("cd")); eq("AB", c.get("ab"));
+            eq(2, loads.get()); eq(2, c.size());
+            eq("ZZ", c.get("zz")); eq(3, loads.get()); eq(3, c.size());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.concurrent.*;
+import java.util.function.*;
+
+class LoadingCache<K, V> {
+    private final ConcurrentHashMap<K, V> map = new ConcurrentHashMap<>();
+    private final Function<K, V> loader;
+
+    LoadingCache(Function<K, V> loader) { this.loader = loader; }
+
+    V get(K key) { return map.computeIfAbsent(key, loader); }   // nap nguyen tu theo key = single-flight
+
+    void invalidate(K key) { map.remove(key); }
+
+    int size() { return map.size(); }
+}`,
+      hints: [
+        '{{get}} chỉ cần một dòng: {{return map.computeIfAbsent(key, loader);}} — đây chính là single-flight.',
+        'Đừng viết {{if (map.get(key) == null) map.put(key, loader.apply(key));}}: đó là check-then-act, hai thread cùng nap.',
+        '{{invalidate}} là {{map.remove(key)}}; sau khi remove thì {{get}} sẽ thấy trống và nap lại.',
+        '{{size}} là {{map.size()}}; test chỉ so khi đã tĩnh nên giá trị gần đúng của CHM không ảnh hưởng.',
+      ],
+      explain: `Toàn bộ tính đúng nằm ở **{{computeIfAbsent}}**: với một key đang trống, nó chạy loader rồi gắn kết quả vào map như một thao tác **nguyên tử theo bucket**. Những thread khác cố {{computeIfAbsent}} cùng key trong lúc loader đang chạy sẽ bị chặn ở bucket, và khi được chạy tiếp thì key đã có nên loader **không** chạy nữa. Vì vậy:
+- Test thundering herd: 16 thread cùng {{get("HOT")}} ⇒ {{loads}} = 1, mọi thread nhận cùng "V-HOT". Bất biến này giữ với mọi lịch đan xen ⇒ test **xác định**, không cần sleep.
+- Test nhiều key: mỗi key khác nhau đi qua loader đúng một lần, dù trải trên 10 thread.
+- Test {{invalidate}}: {{remove}} làm key trống lại ⇒ lần {{get}} sau loader chạy lần thứ hai.
+
+Lỗi hay gặp và vì sao test bắt được:
+- Bản "check-then-act" ({{get}} rồi {{put}}): vẫn đúng trên một thread, nhưng ở test thundering herd nhiều thread cùng thấy null và cùng nạp ⇒ {{loads}} > 1 ⇒ FAIL. Đây chính là bug mà người ta gặp thật khi một key nóng expire.
+- Dùng {{Hashtable}} hoặc {{synchronizedMap}}: mỗi phép riêng lẻ nguyên tử, nhưng **gói** "đọc-missing-rồi-nạp-rồi-ghi" vẫn không ⇒ vẫn hai lần nạp. Muốn gộp phải tự khoá ({{synchronized}} cả khối) → mất tính song song; {{computeIfAbsent}} cho ta cả hai.
+- Cho loader gọi lại chính map ⇒ {{IllegalStateException}}/treo bucket. Bài này loader sạch nên an toàn.
+- loader trả {{null}} ⇒ {{ConcurrentHashMap}} ném NPE và key không được cache (mỗi lần {{get}} lại nap). Production phải chặn null hoặc dùng sentinel.
+
+Nâng cấp để tự học: đổi {{Function<K,V>}} thành loader trả {{CompletableFuture<V>}} (map of futures) để single-flight mà **không** giữ khoá bucket suốt lúc gọi DB — đó là cách Caffeine/Spring Cache làm "refresh ahead".`,
+    },
+  ],
+  check: [
+    {
+      q: 'Vì sao {{Collections.synchronizedMap(new HashMap<>())}} vẫn không chống được thundering herd khi cache miss?',
+      options: ['Vì nó chậm', 'Vì nó khoá từng phép riêng lẻ, còn pattern "get-rồi-load-rồi-put" là check-then-act không nguyên tử', 'Vì nó không cho ghi', 'Vì nó không thread-safe'],
+      answer: 1,
+      explain: `Khoá mutex chỉ bảo vệ **từng** method. Hai thread vẫn có thể cùng qua {{get}} thấy null, cùng load, cùng put — vì giữa {{get}} và {{put}} không có khoá chung. {{computeIfAbsent}} gộp cả kiểm-tra-và-nạp thành một phép nguyên tử theo key nên loader chỉ chạy một lần.`,
+    },
+    {
+      q: 'Điều gì xảy ra nếu bên trong loader của {{ConcurrentHashMap.computeIfAbsent}} bạn gọi {{map.remove(khác)}} trên **cùng** map?',
+      options: ['Hoàn toàn bình thường', 'Có thể ném IllegalStateException hoặc gây deadlock, vì hàm nạp sửa đổi chính map đang bị khoá bucket', 'Nó tự rollback', 'Nó chỉ chạy trên single-thread pool'],
+      answer: 1,
+      explain: `{{computeIfAbsent}} giữ khoá bucket khi chạy hàm nạp. Gọi lại cùng map (đặc biệt đụng cùng bucket) là **recursive update** — Java 8+ phát hiện và ném lỗi, hoặc trong một số trường hợp gây treo. Loader phải **sạch**: chỉ tính giá trị, không sửa map chứa nó.`,
+    },
+    {
+      q: 'Bạn có 5 pod sau load balancer, mỗi pod một loading cache JVM. Khi một bản ghi sửa trong DB, để mọi pod thấy dữ liệu mới thì cách **đúng** nhất là?',
+      options: ['{{invalidate}} trên một pod là đủ', 'Gọi {{invalidate}} từng pod một cách thủ công và vĩnh viễn', 'Dùng cache tập trung (Redis) với TTL + xóa chung, hoặc cơ chế báo hiệu (pub/sub) tới các pod', 'Tăng capacity của {{ConcurrentHashMap}}'],
+      answer: 2,
+      explain: `Cache JVM là **theo tiến trình**: pod A xóa không làm pod B biết. Cần một tầng chia sẻ (Redis, có {{DEL}}/TTL) hoặc broadcast tín hiệu invalidate (Redis pub/sub, Kafka event) tới mọi instance. Capacity hay {{size}} không liên quan tới bài toán nhất quán giữa các pod.`,
+    },
+  ],
+  related: ['concurrency-030', 'concurrency-032', 'concurrency-020'],
+  tags: ['ConcurrentHashMap', 'computeIfAbsent', 'single-flight', 'cache', 'thundering herd', 'Redis'],
+},
 );
