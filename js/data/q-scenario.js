@@ -3654,7 +3654,6 @@ Trong Spring Boot, file cấu hình chỉ nên tham chiếu biến môi trườn
   refs: [
     { type: 'doc', title: 'GitHub Docs: Removing sensitive data from a repository', url: 'https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository' },
     { type: 'doc', title: 'GitHub Docs: About push protection', url: 'https://docs.github.com/en/code-security/secret-scanning/introduction/about-push-protection' },
-    { type: 'doc', title: 'git-filter-repo', url: 'https://github.com/newren/git-filter-repo' }
   ]
 },
 {
