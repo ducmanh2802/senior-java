@@ -1130,6 +1130,12 @@ window.DATA_INDEX = {
     {"id":"lesson-aws-002","track":"aws","order":2,"title":"S3 cho backend dev: consistency, multipart upload, presigned URL, storage class và mã hoá","level":"mid","minutes":40},
     {"id":"lesson-aws-003","track":"aws","order":3,"title":"SQS, SNS và EventBridge: visibility timeout, DLQ, FIFO và consumer idempotent","level":"senior","minutes":45},
     {"id":"lesson-aws-004","track":"aws","order":4,"title":"Chọn compute và scaling cho Java: Lambda, ECS Fargate, EKS, EC2, ALB, Auto Scaling và giới hạn kết nối DB","level":"senior","minutes":45},
+    {"id":"lesson-banking-001","track":"banking","order":1,"title":"Tiền trong code: không dùng double, BigDecimal, phí giao dịch và chia tiền theo largest-remainder","level":"senior","minutes":30},
+    {"id":"lesson-banking-002","track":"banking","order":2,"title":"Đối soát cuối ngày: vì sao hai bên lệch và cách xử lý dòng lệch","level":"senior","minutes":30},
+    {"id":"lesson-banking-003","track":"banking","order":3,"title":"Hạn mức và kiểm tra rủi ro cơ bản","level":"senior","minutes":30},
+    {"id":"lesson-banking-004","track":"banking","order":4,"title":"Khoản vay trả góp: dư nợ, lãi giảm dần, trả đều hằng tháng","level":"senior","minutes":30},
+    {"id":"lesson-banking-005","track":"banking","order":5,"title":"Sổ cái kế toán kép: bút toán Nợ/Có, giao dịch cân bằng, append-only và hoàn tiền bằng bút toán đảo","level":"senior","minutes":35},
+    {"id":"lesson-banking-006","track":"banking","order":6,"title":"Vòng đời chuyển khoản liên ngân hàng: PENDING/TIMEOUT/SUCCESS/FAILED, callback trùng và tra soát","level":"senior","minutes":35},
   ],
   sd: [
     {"id":"sd-001","title":"Chuyển tiền liên ngân hàng qua Napas"},
