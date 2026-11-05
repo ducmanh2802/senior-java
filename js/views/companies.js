@@ -10,6 +10,7 @@
       'companies.fintech': 'Fintech',
       'companies.bigtech': 'Big tech',
       'companies.product': 'Product',
+      'companies.service': 'Outsourcing / dịch vụ',
       'companies.conf.high': 'Cao',
       'companies.conf.medium': 'Trung bình',
       'companies.conf.low': 'Thấp',
@@ -47,6 +48,9 @@
       'companies.aiGrading': 'AI đang chấm…',
       'companies.tips': 'Mẹo chuẩn bị',
       'companies.sources': 'Nguồn',
+      'companies.pay': '💰 Mức lương / offer tham khảo',
+      'companies.payNote': 'Số liệu do người dùng tự chia sẻ trên diễn đàn, chưa kiểm chứng; chỉ dùng để ước lượng khoảng khi deal.',
+      'companies.payCols': 'Vị trí|Kinh nghiệm|Thu nhập|Năm|Ghi chú',
       'companies.dataMayChange': 'Dữ liệu tổng hợp từ nguồn công khai, có thể đã thay đổi.',
       'companies.englishRequired': 'Yêu cầu tiếng Anh',
       'companies.notFound': 'Không tìm thấy công ty',
@@ -60,6 +64,7 @@
       'companies.fintech': 'Fintech',
       'companies.bigtech': 'Big Tech',
       'companies.product': 'Product',
+      'companies.service': 'Outsourcing / services',
       'companies.conf.high': 'High',
       'companies.conf.medium': 'Medium',
       'companies.conf.low': 'Low',
@@ -97,6 +102,9 @@
       'companies.aiGrading': 'AI is grading…',
       'companies.tips': 'Preparation Tips',
       'companies.sources': 'Sources',
+      'companies.pay': '💰 Reported salary / offers',
+      'companies.payNote': 'Self-reported on forums, unverified; use only as a range when negotiating.',
+      'companies.payCols': 'Role|Experience|Pay|Year|Note',
       'companies.dataMayChange': 'Aggregated from public sources, may have changed.',
       'companies.englishRequired': 'English Required',
       'companies.notFound': 'Company Not Found',
@@ -111,8 +119,9 @@
     { id: 'fintech', label: App.t('companies.fintech') },
     { id: 'bigtech', label: App.t('companies.bigtech') },
     { id: 'product', label: App.t('companies.product') },
+    { id: 'service', label: App.t('companies.service') },
   ];
-  const TYPE_LABEL = { bank: App.t('companies.bank'), fintech: App.t('companies.fintech'), bigtech: App.t('companies.bigtech'), product: App.t('companies.product') };
+  const TYPE_LABEL = { bank: App.t('companies.bank'), fintech: App.t('companies.fintech'), bigtech: App.t('companies.bigtech'), product: App.t('companies.product'), service: App.t('companies.service') };
   const CONF_LABEL = { high: App.t('companies.conf.high'), medium: App.t('companies.conf.medium'), low: App.t('companies.conf.low') };
   const CONF_CLS = { high: 'ok', medium: 'warn', low: 'bad' };
 
@@ -401,6 +410,17 @@
     return '<section class="card co-section"><h2>' + App.t('companies.tips') + '</h2><ul class="co-tips">' + items + '</ul></section>';
   }
 
+  function payHtml(c) {
+    const pay = c.pay || [];
+    if (!pay.length) return '';
+    const head = App.t('companies.payCols').split('|').map(h => '<th>' + App.esc(h) + '</th>').join('');
+    const rows = pay.map(p => '<tr><td>' + App.esc(p.role || '') + '</td><td>' + App.esc(p.yoe || '') + '</td><td><b>' +
+      App.esc(p.amount || '') + '</b></td><td>' + App.esc(p.year || '') + '</td><td>' + App.esc(p.note || '') +
+      (p.url ? ' <a href="' + App.esc(p.url) + '" target="_blank" rel="noopener" aria-label="source">↗</a>' : '') + '</td></tr>').join('');
+    return '<section class="card co-section"><h2>' + App.t('companies.pay') + '</h2><div class="co-pay"><table><thead><tr>' + head +
+      '</tr></thead><tbody>' + rows + '</tbody></table></div><p class="small muted">' + App.t('companies.payNote') + '</p></section>';
+  }
+
   function sourcesHtml(c) {
     const src = c.sources || [];
     if (!src.length) return '';
@@ -413,7 +433,7 @@
 
   function renderBody(body, c, r) {
     if (!body) return;
-    body.innerHTML = processHtml(c) + focusHtml(c) + questionsHtml(c) + tipsHtml(c) + sourcesHtml(c);
+    body.innerHTML = processHtml(c) + focusHtml(c) + questionsHtml(c) + tipsHtml(c) + payHtml(c) + sourcesHtml(c);
   }
 
   /** Dừng mọi buổi ghi âm đang chạy khi rời trang. */

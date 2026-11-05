@@ -90,3 +90,8 @@
   .view-companies .co-head .btn.primary { width: 100%; }
   .view-companies .co-card-top .co-ring { width: 52px; height: 52px; }
 }
+
+.view-companies .co-pay { overflow-x: auto; }
+.view-companies .co-pay table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+.view-companies .co-pay th, .view-companies .co-pay td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+.view-companies .co-pay th { color: var(--muted); font-weight: 600; white-space: nowrap; }
