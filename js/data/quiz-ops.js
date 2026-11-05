@@ -1751,4 +1751,317 @@ Continuous Integration là phần trước đó: mọi người merge vào nhán
 
 > Senior tip: muốn tiến tới Continuous Deployment cần test tự động đáng tin, feature flag để tách "deploy" khỏi "bật tính năng", canary và rollback tự động. Thiếu những thứ đó thì giữ bước duyệt tay là lựa chọn hợp lý.`
 }
+,
+{
+  id: 'qz-devops-035', topic: 'devops',
+  q: 'Dockerfile sau đây có vấn đề gì?\n~~~dockerfile\nFROM node:20\nWORKDIR /app\nCOPY . .\nRUN npm install\nRUN npm run build\nCMD npm start\n~~~',
+  options: [
+    'Thứ tự COPY và RUN npm install khiến rebuild reinstall toàn bộ dependency mỗi khi code đổi',
+    'Thiếu EXPOSE nên container không expose port',
+    'FROM node:20 không có digest nên không reproducible',
+    'CMD dùng shell form nên không nhận signal SIGTERM đúng'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** COPY toàn bộ source trước npm install làm cache layer npm install bị invalidate mỗi khi bất kỳ file nào thay đổi.
+
+### Cách sửa đúng
+- COPY package.json và package-lock.json trước, RUN npm ci, rồi mới COPY source.
+
+### Vì sao các phương án còn lại sai
+- EXPOSE chỉ metadata.
+- FROM tag là best practice nhưng không phải vấn đề chính.
+- CMD shell form có vấn đề signal nhưng không phải trọng tâm câu hỏi.
+
+> Senior tip: multi-stage build + .dockerignore + layer ordering.`
+},
+{
+  id: 'qz-devops-036', topic: 'devops', multi: true,
+  q: 'Pod bị OOMKilled. Chọn 2 nguyên nhân phổ biến nhất (Chọn 2)',
+  options: [
+    'Memory limit đặt thấp hơn peak usage',
+    'Memory leak trong app',
+    'CPU throttling',
+    'Image pull error',
+    'Readiness probe fail'
+  ],
+  answer: [0,1],
+  explain: `**Tóm tắt:** OOMKilled xảy ra khi container vượt memory limit (cgroup OOM) hoặc node hết memory. Hai nguyên nhân phổ biến: limit quá thấp so với peak, và memory leak.
+
+### Vì sao các phương án còn lại sai
+- CPU throttling gây latency, không OOM.
+- Image pull error → ImagePullBackOff.
+- Readiness fail → Pod bị loại khỏi Service, không restart.
+
+> Senior tip: set request = typical, limit = peak + 20%; dùng VPA để gợi ý. Theo dõi RSS và heap qua metrics.`
+},
+{
+  id: 'qz-devops-037', topic: 'devops',
+  q: 'CrashLoopBackOff khác ImagePullBackOff ở điểm nào?',
+  options: [
+    'CrashLoopBackOff: container đã start rồi crash; ImagePullBackOff: không kéo được image',
+    'CrashLoopBackOff do readiness fail',
+    'ImagePullBackOff do liveness fail',
+    'Cả hai đều do OOM'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** CrashLoopBackOff = container khởi động thành công rồi exit/crash, kubelet restart có backoff. ImagePullBackOff = không kéo được image (sai tag, secret registry, network).
+
+### Vì sao các phương án còn lại sai
+- Readiness fail không restart container.
+- Liveness fail gây restart nhưng ImagePullBackOff không liên quan liveness.
+- OOM là một nguyên nhân của crash, không phải tất cả.
+
+> Senior tip: kubectl describe pod xem Events; kubectl logs --previous xem log container vừa crash.`
+},
+{
+  id: 'qz-devops-038', topic: 'devops',
+  q: 'PromQL: rate(http_requests_total[5m]) vs irate(http_requests_total[5m]) — khác nhau thế nào?',
+  options: [
+    'rate tính trung bình trên toàn cửa sổ; irate chỉ dùng 2 mẫu cuối → nhạy với spike',
+    'irate chính xác hơn mọi trường hợp',
+    'rate chỉ dùng cho counter, irate dùng cho gauge',
+    'Cả hai giống nhau'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** rate = (last-first)/window (trung bình). irate = (last-prev)/interval (istantaneous, nhạy spike). Dùng rate cho alert/SLO, irate cho debug spike.
+
+### Vì sao các phương án còn lại sai
+- irate không "chính xác hơn", nó nhạy nhiễu.
+- Cả hai chỉ dùng cho counter (có reset handling).
+- Chúng khác nhau rõ rệt.
+
+> Senior tip: alert dùng rate; dashboard có thể dùng irate nhưng cẩn thận noise.`
+},
+{
+  id: 'qz-devops-039', topic: 'devops',
+  q: 'histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le)) — ý nghĩa?',
+  options: [
+    'p99 latency trong 5 phút gần nhất',
+    'Tỷ lệ request lỗi',
+    'Số request mỗi giây',
+    'Max latency'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** histogram_quantile tính phân vị từ bucket. 0.99 = p99. Kết hợp rate → p99 latency gần đây.
+
+### Vì sao các phương án còn lại sai
+- Tỷ lệ lỗi cần counter errors/total.
+- RPS cần rate(requests_total).
+- Max latency không từ histogram (cần gauge hoặc max over time).
+
+> Senior tip: đảm bảo bucket boundaries phù hợp (vd .005,.01,.025,.05,.1,.25,.5,1,2.5,5,10).`
+},
+{
+  id: 'qz-devops-040', topic: 'devops',
+  q: 'GitHub Actions cache: actions/cache với key {{hashFiles("package-lock.json")}}. Khi lock file đổi, cache miss. Mục đích?',
+  options: [
+    'Đảm bảo cache dependency đúng phiên bản lock file',
+    'Tăng tốc build mọi trường hợp',
+    'Cache code source',
+    'Bắt buộc restore cache'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** key dựa trên lock file → cache hit chỉ khi dependency không đổi; khi đổi, rebuild và cache mới. Tránh dùng dependency cũ.
+
+### Vì sao các phương án còn lại sai
+- Không tăng tốc mọi trường hợp (miss khi đổi).
+- Không cache source code (chỉ node_modules).
+- restore-keys fallback có thể dùng cache cũ nhưng không bắt buộc.
+
+> Senior tip: dùng restore-keys để fallback partial, nhưng verify integrity.`
+},
+{
+  id: 'qz-devops-041', topic: 'devops',
+  q: 'Flyway migration khi rolling update: app v2 cần schema mới, app v1 đang chạy. Chiến lược an toàn?',
+  options: [
+    'Migration backward-compatible (add column nullable) trước, deploy app, rồi cleanup cột cũ sau',
+    'Chạy migration DROP COLUMN ngay khi deploy v2',
+    'Stop toàn bộ app rồi migrate',
+    'Migrate trong app startup'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Expand-contract: thêm cột nullable trước, deploy app mới đọc/ghi cột mới nhưng vẫn tương thích v1, sau đó drop cột cũ. Tránh downtime và lỗi v1.
+
+### Vì sao các phương án còn lại sai
+- DROP COLUMN ngay làm v1 crash (cột không tồn tại).
+- Stop all gây downtime.
+- Migrate trong startup race condition khi nhiều instance.
+
+> Senior tip: Flyway chạy như init container hoặc job riêng, version schema theo app.`
+},
+{
+  id: 'qz-devops-042', topic: 'devops',
+  q: 'Helm values: override bằng --set và -f values-prod.yaml. Thứ tự ưu tiên?',
+  options: [
+    '--set cao hơn -f; giá trị sau cùng ghi đè',
+    '-f luôn cao hơn --set',
+    'Values mặc định chart cao nhất',
+    'Không thể override'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Helm merge theo thứ tự: chart defaults → -f files (theo thứ tự) → --set. Giá trị sau cùng ghi đè. --set thường đặt sau cùng → cao nhất.
+
+### Vì sao các phương án còn lại sai
+- -f không luôn cao hơn --set.
+- Defaults thấp nhất.
+- Override được.
+
+> Senior tip: dùng values-prod.yaml + --set cho secret động; tránh --set nhiều cho config lớn.`
+},
+{
+  id: 'qz-devops-043', topic: 'devops',
+  q: 'Terraform state lock: error "Error acquiring the state lock". Nguyên nhân?',
+  options: [
+    'Một process Terraform khác đang chạy hoặc lock cũ chưa giải phóng',
+    'State file bị corrupt',
+    'Provider version mismatch',
+    'Backend chưa init'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** State lock (DynamoDB) ngăn apply đồng thời. Lock tồn tại khi process khác đang chạy hoặc crash để lại lock.
+
+### Cách xử lý
+- Chờ process khác xong.
+- Nếu crash: terraform force-unlock <LOCK_ID> (cẩn thận).
+
+### Vì sao các phương án còn lại sai
+- Corrupt state → checksum error, không lock.
+- Provider mismatch → plan error.
+- Backend chưa init → init error.
+
+> Senior tip: CI serialize terraform apply; dùng -lock-timeout.`
+},
+{
+  id: 'qz-devops-044', topic: 'devops',
+  q: 'Kubernetes liveness probe fail liên tục → ?',
+  options: [
+    'Container bị restart',
+    'Pod bị xóa',
+    'Service trả 503',
+    'Scheduler reschedule'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Liveness fail → kubelet kill & restart container (theo restartPolicy). Nếu fail nhiều → CrashLoopBackOff.
+
+### Vì sao các phương án còn lại sai
+- Pod không bị xóa (trừ eviction).
+- Service 503 do readiness, không liveness.
+- Scheduler không reschedule trừ khi node fail.
+
+> Senior tip: liveness nên check deadlock/hang, không check dependency ngoài (DB) để tránh restart storm.`
+},
+{
+  id: 'qz-devops-045', topic: 'devops',
+  q: 'Readiness probe fail → ?',
+  options: [
+    'Pod bị loại khỏi endpoints của Service (không nhận traffic), không restart',
+    'Container restart',
+    'Pod bị xóa',
+    'Node bị drain'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Readiness fail → Pod removed from Service endpoints, không restart. Dùng để gate traffic khi startup hoặc dependency down.
+
+### Vì sao các phương án còn lại sai
+- Restart là liveness.
+- Xóa pod là eviction/deletion.
+- Drain node là admin action.
+
+> Senior tip: readiness check dependency (DB) OK; liveness không.`
+},
+{
+  id: 'qz-devops-046', topic: 'devops',
+  q: 'Kubernetes Deployment strategy Recreate vs RollingUpdate?',
+  options: [
+    'Recreate: kill all old then create new (downtime); RollingUpdate: gradual replace',
+    'Recreate nhanh hơn luôn',
+    'RollingUpdate không hỗ trợ rollback',
+    'Recreate dùng cho stateless'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Recreate terminate all old Pods rồi tạo mới → downtime, dùng khi không thể chạy hai version song song. RollingUpdate thay dần → zero downtime.
+
+### Vì sao các phương án còn lại sai
+- Recreate không luôn nhanh hơn (có downtime).
+- RollingUpdate hỗ trợ rollback.
+- Recreate thường dùng cho stateful/RWO volume.
+
+> Senior tip: Recreate khi cần exclusive resource (volume RWO).`
+},
+{
+  id: 'qz-devops-047', topic: 'devops', multi: true,
+  q: 'Chọn 2 best practice cho container image (Chọn 2)',
+  options: [
+    'Dùng non-root user',
+    'Image nhỏ (distroless/alpine)',
+    'Chạy với --privileged',
+    'Lưu secret trong image',
+    'Tag latest trong production'
+  ],
+  answer: [0,1],
+  explain: `**Tóm tắt:** Non-root giảm blast radius; image nhỏ giảm attack surface và pull time.
+
+### Vì sao các phương án còn lại sai
+- --privileged nguy hiểm.
+- Secret trong image leak.
+- Tag latest không reproducible.
+
+> Senior tip: scan image (Trivy), sign (cosign), SBOM.`
+},
+{
+  id: 'qz-devops-048', topic: 'devops',
+  q: 'Prometheus scrape target down → up metric = 0. Alert rule thường dùng?',
+  options: [
+    'up == 0',
+    'rate(errors) > 0',
+    'histogram_quantile(...)',
+    'node_cpu_seconds_total'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Metric {{up}} = 1 nếu scrape thành công, 0 nếu target down. Alert {{up == 0}}.
+
+### Vì sao các phương án còn lại sai
+- errors rate đo lỗi app, không phải target down.
+- histogram quantile đo latency.
+- node_cpu không liên quan scrape.
+
+> Senior tip: alert theo up cho infra; theo error rate cho app.`
+},
+{
+  id: 'qz-devops-049', topic: 'devops',
+  q: 'Kubernetes HPA scale dựa trên metric nào mặc định?',
+  options: [
+    'CPU utilization (request-based)',
+    'Memory only',
+    'Custom metrics bắt buộc',
+    'Network throughput'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** HPA mặc định dùng CPU utilization so với request (target average). Có thể thêm memory và custom metrics.
+
+### Vì sao các phương án còn lại sai
+- Memory không phải mặc định (cần config).
+- Custom metrics optional.
+- Network không mặc định.
+
+> Senior tip: set resource requests đúng để HPA hoạt động; scale-down stabilization window tránh flapping.`
+},
+{
+  id: 'qz-devops-050', topic: 'devops',
+  q: 'Terraform plan cho thấy resource sẽ bị destroy và recreate. Nguyên nhân thường gặp?',
+  options: [
+    'Thay đổi thuộc tính immutable (force new resource)',
+    'Thay đổi tag',
+    'Thay đổi description',
+    'Thay đổi count'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Một số thuộc tính immutable (vd AMI id, subnet) khi đổi → Terraform destroy+create. Cần xem plan carefully, có thể dùng lifecycle ignore_changes.
+
+### Vì sao các phương án còn lại sai
+- Tag/description thường update in-place.
+- Count thay đổi có thể add/remove instance, không nhất thiết recreate all.
+
+> Senior tip: dùng moved blocks/state mv để tránh recreate khi refactor; review plan trong CI.`
+}
 );
