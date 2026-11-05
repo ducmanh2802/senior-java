@@ -7610,5 +7610,917 @@ WHERE s.period BETWEEN '2026-06' AND '2026-11' AND p.payment_freq IN ('Q','H')
     ]
   },
   tags: ['legacy', 'maintain', 'oracle', 'bigdecimal', 'rounding', 'characterization-test', 'cab', 'change-request', 'data-fix', 'batch', 'row-lock', 'insurance']
+},
+{
+  id: 'sdlc-009',
+  title: 'Đưa order-service từ 4 VM lên Kubernetes với GitOps',
+  level: 'mid',
+  domain: 'Thương mại điện tử — nền tảng đơn hàng',
+  context: `Bạn là **Java Developer (mid)** trong team Order của **ShopViet**, một sàn thương mại điện tử: khoảng **1,2 triệu đơn/tháng**, cao điểm ngày sale **gấp 5–6 lần** ngày thường.
+
+**order-service** hiện chạy trên **4 VM Ubuntu** (4 vCPU / 2 GB RAM mỗi máy), mỗi VM một tiến trình systemd chạy {{java -jar order-service.jar}}, phía trước là **Nginx** làm cân bằng tải kiểu {{ip_hash}}. Mỗi lần phát hành: SSH vào từng VM, chép file jar lên, {{systemctl restart order-service}} — mất khoảng **2 giờ**, làm sau 22:00, và trong lúc restart thì request đang bay bị rớt.
+
+**Điểm xuất phát của bạn:** bạn viết Java/Spring tốt nhưng **chưa từng vận hành Kubernetes**. Mọi thuật ngữ mới (pod, Deployment, Service, Ingress, ConfigMap, probe, requests/limits, HPA, PDB, Helm, Argo CD) đều được giải thích ở lần đầu xuất hiện trong từng giai đoạn — hãy đọc **chậm**, đọc artifact trước rồi mới mở đáp án.
+
+Bối cảnh tổ chức:
+- Hạ tầng AWS (region {{eu-central-1}}), **PostgreSQL 15** trên RDS riêng, Redis cho cache phiên dữ liệu mua hàng, Kafka cho luồng đơn hàng bất đồng bộ.
+- CI đã có **GitHub Actions** (build + test + push Docker image). Đề án chọn **EKS** (dịch vụ Kubernetes do AWS quản lý control plane) + **Argo CD** cho **GitOps** + **Helm** làm template cấu hình.
+- Nhân sự: 1 tech lead, 5 dev và **1 SRE part-time** — người duy nhất trong công ty từng làm Kubernetes. Không có đội platform riêng.
+- Ngân sách: chi phí hạ tầng cho đơn hàng tăng tối đa **20%** so với hiện tại.
+
+> Làm lần lượt 8 giai đoạn theo đúng thứ tự. Ở mỗi giai đoạn: đọc tình huống + artifact, tự viết câu trả lời cho phần "Việc của bạn", sau đó mới mở đáp án mẫu. Số liệu, tên file và **các giả định** của giai đoạn trước sẽ quay lại ở giai đoạn sau — và có giả định sai sẽ gây sự cố thật.`,
+  stages: [
+    {
+      key: 'requirement',
+      title: 'Nhận đề án: 2 giờ mỗi lần deploy, 40 phút mỗi lần thêm máy',
+      role: 'Lead giao bạn biến brief của CTO thành ticket nền tảng có tiêu chí đo được',
+      story: `CTO gửi một trang brief, tech lead chuyển cho bạn vì bạn là người hiểu order-service nhất team. Brief nói "chuyển sang Kubernetes", nhưng **không định nghĩa thành công là gì**, và không ai trong team ngoài SRE part-time từng chạy Kubernetes. Bạn có 3 ngày để trả lời: đề án này giải quyết nỗi đau nào, đo bằng con số nào, cái gì **không** làm trong dự án này.`,
+      artifacts: [
+        { name: 'BRIEF-ORD-410.txt', lang: 'text', content: `BRIEF-ORD-410  Container hoá & GitOps cho order-service
+Người đề xuất: CTO        Ngày: 2026-09-21        Dự kiến: 2 quý, 1 SRE part-time
+
+HIỆN TRẠNG
+  order-service chạy 4 VM Ubuntu 22.04 (systemd + JDK 21), Nginx ip_hash phía trước.
+  Phát hành thủ công: ssh + scp jar + systemctl restart từng máy, ~2 giờ, cửa sổ chết 8-12 phút.
+  Sale 9.9: phải nhân bản VM mới (copy AMI + sửa Nginx tay), 40 phút để có thêm 1 đơn vị xử lý.
+
+MONG MUỐN
+  - Chạy trên Kubernetes (EKS), image build bằng GitHub Actions, chứa trên ECR.
+  - Số bản mong muốn khai báo bằng YAML trong Git; Argo CD tự đồng bộ cluster theo Git (GitOps).
+  - Tự động scale theo tải (HPA), triển khai tăng dần, rollback = revert commit + push.
+
+RÀNG BUỘC
+  - Không đổi schema, không đổi hành vi nghiệp vụ trong dự án này.
+  - Chi phí hạ tầng cho đơn hàng tăng tối đa 20%.
+  - Không có đội platform: team Order tự vận hành sau go-live.
+
+TIÊU CHÍ THÀNH CÔNG: (CTO ghi tay) "deploy nhanh, không chết, scale tự động"
+` },
+        { name: 'release-9.9.log', lang: 'text', content: `2026-09-09 21:58  dev ssh vm-order-1 (đứng sau Nginx, ip_hash)
+2026-09-09 22:04  scp order-service-1.11.0.jar /opt/order/order-service.jar
+2026-09-09 22:07  systemctl restart order-service (vm-order-1)
+2026-09-09 22:08  ERROR nginx: upstream prematurely closed connection (1.412 request / 60 s)
+2026-09-09 22:08  INFO  OrderApplication : Started OrderApplication in 46.3 seconds
+2026-09-09 22:09  WARN  CacheStats: cache lạnh, tỉ lệ miss 2.3% -> p99 /cart/checkout 240 -> 1.210 ms
+2026-09-09 22:16  systemctl restart order-service (vm-order-2)
+2026-09-09 22:25  [NGHIÊM TRỌNG] CSKH báo khách "mất giỏ hàng": JSESSIONID nằm trong bộ nhớ JVM vừa restart
+2026-09-09 22:41  systemctl restart order-service (vm-order-3)
+2026-09-09 22:58  restart vm-order-4; Nginx chưa loại máy lỗi -> 5xx đợt 2
+2026-09-09 23:12  phát hiện 1.11.0 tính phí ship 0 cho đơn trên 5 kg
+2026-09-09 23:14  rollback thủ công 4 VM về 1.10.3
+2026-09-09 23:49  xong. Tổng 1 giờ 51 phút, thời gian chết cộng dồn ~9 phút, 1 lỗi nghiệp vụ ra production
+` }
+      ],
+      task: `1) Kubernetes thực ra làm giúp bạn những việc gì — giải thích cho một dev chưa từng dùng, bằng lời của bạn. 2) Viết lại brief thành **bảng mục tiêu đo được**: chỉ số hiện tại (baseline) và chỉ số đích. 3) Liệt kê 8–10 câu hỏi phải hỏi CTO/SRE/lead trước khi nhận việc. 4) Nêu **non-goals** (phạm vi loại trừ) và 3 rủi ro lớn nhất của chính đề án này.`,
+      answer: `**Tóm tắt:** Vấn đề thật không phải "chưa có Kubernetes" mà là **quy trình phát hành thủ công**: 2 giờ cho một lần deploy, cửa sổ chết 9 phút, rollback 35 phút làm bằng tay, scale 40 phút. Hãy viết đề án bằng **con số** (lead time, thời gian thêm một bản, MTTR, số lỗi ra production) rồi mới chọn công cụ — vì nếu sau 2 quý không chứng minh được các con số đó thì dự án coi như không có giá trị đo được.
+
+### 1. Kubernetes làm hộ bạn 3 việc (giải thích cho người mới)
+- **Container** = gói thực thi gồm JAR của bạn + JDK + thư viện hệ thống tối thiểu, đóng gói một lần và chạy giống hệt trên laptop, staging, production. **Image** là container chưa chạy, lưu trong **registry** (ở đây là ECR của AWS), ví dụ {{order-service:1.14.2}}.
+- **Node** = một máy chủ (VM) trong cụm, chạy container runtime (containerd) và agent **kubelet** nhận lệnh từ control plane. **Cluster** = tập hợp node + bộ điều khiển.
+- **Pod** = đơn vị nhỏ nhất Kubernetes tạo ra; thường 1 pod = 1 container Java của bạn, có IP riêng. Bạn khai báo "tôi muốn 6 pod order-service", Kubernetes tự quyết định đặt lên node nào.
+- Ba việc Kubernetes tự làm: (a) **đặt** pod lên node còn chỗ; (b) **giữ đúng số lượng** — pod chết thì tạo pod mới, node chết thì tái định cư pod sang node khác; (c) **tự khởi động lại** khi ứng dụng treo, dựa trên *health check* bạn khai báo. Nó **không** tự làm cho app bạn chạy được trong nhiều bản thể song song — đó là việc của code.
+
+### 2. Mục tiêu đo được
+| Nỗi đau (có bằng chứng trong release-9.9.log) | Chỉ số | Baseline | Đích sau 3 tháng |
+|---|---|---|---|
+| Deploy tay 4 VM | Lead time: merge → chạy trên prod | 1 giờ 51 phút | **< 15 phút** |
+| Restart cắt request | 5xx + request rớt trong cửa sổ deploy | ~9 phút | **0** (rollout tăng dần + readiness) |
+| Scale 40 phút bằng copy AMI | Thời gian thêm 1 đơn vị xử lý | 40 phút | **60–90 giây** |
+| Rollback thủ công | MTTR khi nghi lỗi | 35 phút | **< 3 phút** (git revert) |
+| Lỗi nghiệp vụ lọt production | Số lần rollback mỗi quý | 3 | **≤ 1**, và rollback không gây chết |
+| Không ai biết app ăn bao nhiêu | requests/limits đặt theo số đo | chưa có | đặt theo p95 thực đo + có NMT |
+
+Baseline phải được **đo** trong 2 tuần trước khi bắt đầu, không lấy số trong brief. Không có baseline thì không có lập luận ngân sách về sau.
+
+### 3. Câu hỏi phải hỏi trước khi nhận việc
+1. Ai vận hành ban đêm, ai on-call cho cluster? SRE part-time bao nhiêu % thời gian?
+2. EKS hay Kubernetes on-prem? Ai cấp cluster, ai nâng phiên bản (EKS chỉ hỗ trợ song song vài minor và bỏ bản cũ sau khoảng một năm, nên lịch nâng là việc bắt buộc phải có người sở hữu)?
+3. Database và Kafka có nằm trong phạm vi không? (Trả lời mong đợi: **không**, chỉ stateless service).
+4. **Yêu cầu nghiệp vụ nào đang bị chặn** bởi việc thiếu session dùng chung / file local? (rất quan trọng — xem giai đoạn analysis).
+5. Staging có sẵn cluster riêng không, hay dùng chung node group? Ngân sách staging bao nhiêu?
+6. Ai duyệt chi tăng 20%? Nếu cần 35% thì ai quyết?
+7. Công cụ giám sát: đã có Prometheus/Grafana chưa, hay chỉ có log trên máy?
+8. **Tiêu chí "xong"** cho order-service là gì: 100% traffic, hay song song VM + k8s trong bao lâu?
+9. Có ràng buộc tuân thủ nào về dữ liệu (vị trí region, lưu log bao lâu) áp cho container log?
+10. Nếu sau 2 quý hoá ra Kubernetes không giúp gì, ta chấp nhận phương án rẻ hơn (chỉ thêm 2 VM + blue/green trên Nginx) không?
+
+### 4. Non-goals — ghi thẳng vào ticket
+- **Không** chuyển PostgreSQL/Kafka/Redis (stateful: phần mềm cần dữ liệu sống lâu hơn pod, đưa lên Kubernetes là một dự án khác, khó hơn nhiều).
+- **Không** refactor nghiệp vụ, không đổi API, không đổi schema — tránh lẫn "lỗi do container" với "lỗi do code mới".
+- **Không** cam kết "microservice hoá", không viết lại bằng Quarkus/GraalVM.
+- **Không** chia nhỏ order-service.
+
+### 5. Ba rủi ro lớn nhất của đề án
+1. **Rủi ro con người**: 1 SRE part-time cho toàn bộ phần networking/Ingress/IAM/monitoring — nút cổ chai. Giảm bằng cách học trước qua một service không quan trọng (dịch vụ tỉ giá / banner) rồi mới tới order-service.
+2. **Rủi ro chạy song song**: trong 1–2 tháng có cả VM lẫn cluster, mọi thay đổi phải nhân bản 2 nơi, và lỗi có thể đến từ phía nào không rõ. Cần kế hoạch cut-over từng bước với số liệu (giai đoạn deploy).
+3. **Rủi ro "bê nguyên thói quen cũ"**: chạy 1 pod thật to thay vì nhiều pod nhỏ, hoặc giữ session trong bộ nhớ — Kubernetes không tự sửa những thứ đó; nó còn **phóng đại** hậu quả (nhiều bản thể, mỗi bản một bộ nhớ riêng).
+
+> Senior tip: khi bị hỏi "vì sao cần Kubernetes?", câu trả lời mạnh nhất không phải "vì hiện đại" mà là: "mỗi lần phát hành hiện có 9 phút chết và 2 giờ công, và ta mất 40 phút để thêm sức chứa giữa ngày sale; ta cần lead time dưới 15 phút, chết 0 phút, scale dưới 2 phút, rollback 3 phút bằng git revert — Kubernetes + GitOps là cách rẻ nhất để có 4 con số đó với đội của ta". Nếu người hỏi phản đối "Docker Compose / thêm VM có được không?", hãy trả lời thật: được, nếu chỉ cần rollout; Kubernetes thắng ở tự phục hồi + tự scale + tự đặt chỗ khi số dịch vụ tăng lên.`,
+      pitfalls: ['Nhận đề án mà không có baseline đo được', 'Không ghi non-goals nên dự án phình ra thành "làm luôn database"', 'Bỏ qua câu hỏi ai on-call cho cluster', 'Coi Kubernetes là thứ tự nó làm app chạy tốt']
+    },
+    {
+      key: 'analysis',
+      title: 'Đo cái thật: tài nguyên, kết nối DB, session sticky, file ghi đĩa',
+      role: 'Bạn cùng SRE lập kiểm kê phụ thuộc trước khi thiết kế',
+      story: `Trước khi vẽ kiến trúc, phải biết order-service **thực sự** cần gì. SRE kéo số 14 ngày từ Prometheus, bạn grep code tìm những thứ chỉ chạy được khi có "một máy duy nhất, không bao giờ restart". Kết quả đo được ghi trong các artifact. Đọc kỹ dòng **RSS** và dòng **DB connections** — chúng sẽ quyết định phần còn lại của dự án.`,
+      artifacts: [
+        { name: 'metrics-14d.txt', lang: 'text', content: `order-service — 2026-09-24 → 2026-10-08, 4 VM, Prometheus + Micrometer
+RPS           ngày thường : p50 320 | p95 540 | đỉnh 780
+              sale 9.9    : p50 1.480 | p95 2.260 | đỉnh 2.610
+p99 /cart/checkout        : 410 ms (ngày thường) | 1.210 ms (lúc cache lạnh sau restart)
+CPU / VM (4 vCPU)         : p95 62% ngày thường | 88% giờ cao điểm sale; steal/throttle xuất hiện ở 2 VM
+RSS tiến trình java       : 1,34 – 1,48 GB   (VM 2 GB → swap ~120 MB, không có cảnh báo nào)
+Heap used (G1, -Xmx768m)  : p95 590 MB | đỉnh 612 MB
+GC pause                  : p99 42 ms
+Tomcat busy threads       : p95 68 | đỉnh sale 176 (maxThreads=200, Xss mặc định 1 MB)
+Kết nối PostgreSQL         : tổng 74–86 trên max_connections=200; mỗi VM ~20 (Hikari maximumPoolSize=20)
+Kết nối Redis (Lettuce)    : 10 / VM
+Kafka                     : 2 topic được consume, tổng 8 partition, 4 VM × 2 consumer thread
+Thời gian JVM khởi động    : 46,3 s (Spring Boot 3.4, Java 21, fat jar)
+Disk /var/data/invoices    : 38 GB, +420 MB/ngày (hoá đơn PDF ghi đĩa cục bộ)
+` },
+        { name: 'nginx-order.conf', lang: 'text', content: `upstream order_backend {
+    ip_hash;                     # giữ: session JSESSIONID đang nằm trong bộ nhớ từng JVM
+    server 10.0.1.11:8080 max_fails=2 fail_timeout=10s;
+    server 10.0.1.12:8080 max_fails=2 fail_timeout=10s;
+    server 10.0.1.13:8080 max_fails=2 fail_timeout=10s;
+    server 10.0.1.14:8080 max_fails=2 fail_timeout=10s;
+    keepalive 64;
+}
+server {
+    listen 443 ssl;
+    client_max_body_size 8m;                       # file import đơn hàng
+    location / {
+        limit_req zone=api burst=200 nodelay;      # rate 800r/s theo IP khách
+        proxy_pass http://order_backend;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 30s;                    # report/xuất hàng loạt có request kéo dài
+        proxy_next_upstream error timeout http_502;
+    }
+}
+` },
+        { name: 'grep-singlebox.txt', lang: 'text', content: `$ grep -RIn "HttpSession\|Path.of(\|new File(\|@Scheduled\|createTempFile" src/main/java | head
+CartController.java:41        Cart c = (Cart) session.getAttribute("cart");            // JSESSIONID trong heap
+InvoicePdfService.java:88     Path p = Path.of("/var/data/invoices", no + ".pdf");      // ghi đĩa local
+VatReportJob.java:23          @Scheduled(cron = "0 15 1 * * *")                         // job ngày 01:15
+ExportController.java:66      File t = File.createTempFile("export", ".xlsx", new File("/var/data/tmp"));
+OrderSearchService.java:112   Path idx = Path.of("/var/data/lucene-index");             // index tìm kiếm cục bộ
+` }
+      ],
+      task: `Lập **bảng kiểm kê phụ thuộc & ràng buộc**: mỗi mục là gì, bằng chứng ở dòng nào, chuyện gì xảy ra khi chạy 6–16 pod song song, xếp loại (chặn / phải sửa trước / chỉ cần cấu hình), và việc cụ thể. riêng mục tài nguyên: hãy nói rõ con số nào dùng để đặt requests/limits và con số nào **không** dùng được.`,
+      answer: `**Tóm tắt:** có 4 thứ "chặn" — không sửa thì đưa lên Kubernetes là gây lỗi nghiệp vụ: (1) session mua hàng trong heap, (2) file ghi đĩa cục bộ, (3) job {{@Scheduled}} chạy trên mọi bản thể, (4) không có graceful shutdown / readiness. Về tài nguyên, con số để đặt limit là **RSS / container_memory_working_set_bytes** (toàn bộ bộ nhớ tiến trình), **không phải** heap used — heap 590 MB nhưng RSS tới 1,34–1,48 GB.
+
+### 1. Bảng kiểm kê
+| # | Phụ thuộc / ràng buộc | Bằng chứng | Chuyện gì xảy ra với nhiều pod | Loại | Việc cần làm |
+|---|---|---|---|---|---|
+| 1 | Giỏ hàng trong {{HttpSession}} | grep dòng 41; {{ip_hash}}; sự cố 22:25 | Mỗi pod có heap riêng; pod bị tái định cư = mất giỏ hàng | **CHẶN** | Chuyển sang **Spring Session Redis**, hoặc JWT stateless. Làm trước, độc lập với dự án k8s |
+| 2 | Hoá đơn PDF + index tìm kiếm trên đĩa {{/var/data}} | grep dòng 88, 112; 38 GB | Pod không có ổ bền vững; pod chết là mất file; pod khác không đọc được index | **CHẶN** | PDF → S3 (kho object của AWS). Index Lucene → dịch vụ tìm kiếm (OpenSearch) hoặc rebuild từ DB; không dùng {{emptyDir}} làm nơi lưu dữ liệu |
+| 3 | Job {{@Scheduled}} 01:15 | grep dòng 23 | 12 pod = 12 lần lập báo cáo VAT, ghi trùng | **CHẶN** | Tách job ra **Deployment riêng 1 bản thể** (hoặc CronJob) và khoá phân tán bằng ShedLock |
+| 4 | Restart cắt request | release log 22:08 | Rolling update mà không chờ "sẵn sàng" thì cũng cắt như cũ | **CHẶN** | {{server.shutdown=graceful}} + {{terminationGracePeriodSeconds}} + readiness probe + preStop sleep |
+| 5 | Rate limit & X-Real-IP ở Nginx | nginx-order.conf | Mất nếu không cấu hình lại ở Ingress; IP khách thành IP của load balancer | Phải sửa trước | ALB Ingress + {{client_max_body_size}}, rate limit ở API gateway/WAF; bật {{preserve_client_ip}} hoặc dùng header X-Forwarded-For đúng |
+| 6 | Request xuất báo cáo 30 s | {{proxy_read_timeout 30s}} | Ingress có timeout mặc định ngắn hơn; pod chết giữa request = mất việc | Phải sửa trước | Đẩy sang job bất đồng bộ (202 + hàng đợi), cấu hình idle timeout |
+| 7 | Cache Caffeine trong JVM (lạnh sau restart) | p99 1.210 ms lúc 22:09 | Pod mới luôn lạnh → mỗi lần scale là một đợt chậm | Chỉ cần cấu hình | startupProbe + warmup, hoặc cache nóng lên chủ động; cân nhắc Redis |
+| 8 | Kafka consumer 8 partition | metrics | 12–16 pod nhưng chỉ 8 partition → 4–8 pod ngồi không, tổng lag không giảm | Chỉ cần cấu hình | Tăng partition theo bội số số bản, hoặc đặt {{maxReplicas}} = số partition; rebalance khi scale sẽ gây khựng vài giây |
+| 9 | Kết nối PostgreSQL: mỗi VM ~20, {{max_connections=200}} | metrics | Pool là **mỗi pod**, nên 12 pod = 240 > 200 | **CHẶN (tiềm ẩn)** | Tính ngân sách kết nối: pool/pod = (max_connections − dự phòng) / số pod tối đa. Cân nhắc PgBouncer/RDS Proxy |
+| 10 | Log ghi file {{/var/log/order/app.log}} | tập quán VM | Container phải in ra stdout; log file trong pod biến mất khi pod chết | Chỉ cần cấu hình | Log ra stdout (JSON), cho CloudWatch/Fluent Bit gom; {{logging.pattern}} bỏ màu ANSI |
+
+### 2. Chọn con số tài nguyên — chỗ hay sai nhất
+- **CPU**: dùng p95 theo giờ của 2 tuần **cộng** đỉnh sale. p95 62%/4 vCPU ≈ 2,5 vCPU cho 4 VM ≈ 0,62 vCPU/VM ngày thường; giờ cao điểm sale 88% ≈ 0,88 vCPU/VM. Vì mỗi VM chứa **1** app, có thể quy trực tiếp sang "mỗi bản thể cần ~0,6–1,0 vCPU". Đặt **requests.cpu = 500m** (0,5 vCPU) và **limits.cpu = 2** là ước lượng ban đầu, sẽ chỉnh sau khi có số đo trên staging.
+- **Bộ nhớ**: heap {{used}} (590 MB) chỉ là **một phần** của RSS. RSS = heap + metaspace (class đã nạp) + stack của mọi thread + code cache + cấu trúc dữ liệu của GC + **direct buffer** (Native/off-heap: Netty, Lettuce Redis, Kafka client) + thư viện native. Con số đặt limit là RSS, tức **1,34–1,48 GB** ở đây, không phải 600 MB.
+- Vì sao trên VM chưa bao giờ "nổ": VM 2 GB **không có trần cứng** cho tiến trình, JVM vượt 1,5 GB thì OS chỉ swap 120 MB và không ai cảnh báo. Ở Kubernetes, {{limits.memory}} là **trần cứng**: chạm là kernel **giết ngay** bằng SIGKILL (không kịp log, không kịp dump). Đây chính là bẫy của giai đoạn bugfix.
+- **Không dùng** "requests.memory = Xmx" — Xmx chỉ là trần heap, không phải trần process.
+
+### 3. Việc phải làm trước khi thiết kế (đưa vào backlog, có thể chạy song song)
+1. Session → Spring Session Redis (ticket ORD-411). Kiểm thử: đăng nhập, thêm giỏ, restart bản thể, giỏ còn nguyên.
+2. PDF/index → S3 + dịch vụ tìm kiếm (ORD-412).
+3. Tách job khỏi service (ORD-413).
+4. {{server.shutdown=graceful}} + endpoint readiness (ORD-414) — **đơn giản, 1 ngày, nhưng là điều kiện sống còn**.
+5. Mở **NMT** (Native Memory Tracking, cơ chế của JVM đo bộ nhớ ngoài heap) trên 1 VM để có bảng phân bổ RSS: lệnh {{jcmd PID VM.native_memory summary}}. Đây là số liệu sẽ quyết định limit — nếu chưa có, phải ghi vào design docs như **giả định mở**.
+
+> Senior tip: bộ câu hỏi kiểm tra "app đã sẵn sàng cho nhiều bản thể chưa" rất rẻ và rất chính xác: *Nó có giữ trạng thái trong RAM không? Nó có ghi ra đĩa không? Nó có chạy định kỳ mà không khoá phân tán không? Nó có tắt dịu dàng không? Tổng số kết nối DB của N bản thể là bao nhiêu?* Năm câu này, nếu trả lời "không biết", nghĩa là dự án Kubernetes của bạn chưa bắt đầu được.`,
+      pitfalls: ['Lấy heap used làm số đặt memory limit', 'Bỏ qua session trong heap và file trên đĩa', 'Quên pool kết nối là theo từng pod nên nhân lên khi scale', 'Đưa job @Scheduled lên nhiều pod mà không tách riêng hoặc khoá phân tán']
+    },
+    {
+      key: 'design',
+      title: 'Thiết kế: bộ đối tượng Kubernetes chủ chốt và hai giả định chưa kiểm chứng',
+      role: 'Bạn viết design one-pager và bản YAML đầu tiên để review với SRE',
+      story: `SRE chỉ có nửa ngày. Bạn phải viết thiết kế **đủ để người khác phản đối được**: mỗi đối tượng Kubernetes là gì, dùng để làm gì, giá trị khởi đầu nào và **giả định nào chưa đo**. Vì chưa có NMT (mục 5 của giai đoạn analysis bị hoãn sang sau go-live), bạn lấy số heap để tính bộ nhớ. Vì các VM cũ mỗi máy chạy 1 app với pool 20 kết nối và tổng luôn dưới 100, bạn giữ nguyên cấu hình HikariCP trong cluster.`,
+      artifacts: [
+        { name: 'design-ORD-410.md', lang: 'text', content: `DESIGN ORD-410 — order-service trên EKS (k8s 1.31), GitOps bằng Argo CD
+Owner: dev Order   Reviewer: SRE (0,5 ngày)   Ngày: 2026-10-12
+
+1. Image     : GitHub Actions build -> push ECR -> tag theo semver (1.14.2) + digest. KHÔNG dùng latest.
+2. Compute   : Deployment, namespace orders, replicas min 6 / max 16 qua HPA v2 (CPU 70%).
+3. Memory    : requests 768Mi / limits 1Gi, JVM -Xmx768m.
+                căn cứ heap p95 = 590 MB (metrics-14d.txt). NMT chưa đo -> GIẢ ĐỊNH MỞ #1
+4. Kết nối DB : HikariCP maximumPoolSize = 20 (giữ nguyên như trên VM). GIẢ ĐỊNH MỞ #2
+                 Chưa nhân với số pod; cho rằng "sale cao nhất 4 VM cũ cũng chỉ 86 kết nối".
+5. Network   : ALB Ingress (class alb, target-type ip) -> Service ClusterIP -> pod:8080.
+               Service quản lý danh sách pod qua label selector, kèm port 8081 cho metrics.
+6. Config    : ConfigMap order-service-config (SPRING_PROFILES_ACTIVE, log level, endpoint)
+               Secret order-service-secrets (DB password, Redis password) — chưa chốt External Secrets.
+7. Sẵn sàng  : startupProbe 46 s khởi động; readiness = /actuator/health/readiness; liveness = /actuator/health/liveness.
+8. Tắt dịu    : preStop sleep 8 s, terminationGracePeriodSeconds 45, server.shutdown=graceful.
+9. Ổn định    : PodDisruptionBudget minAvailable 4; topologySpreadConstraints theo AZ; anti-affinity theo node.
+10. Rollout   : RollingUpdate maxUnavailable 0 maxSurge 1; GitOps: PR -> Argo CD sync (manual cho prod).
+OPEN        : (a) NMT chưa đo; (b) PgBouncer chưa khảo sát; (c) warmup cache sau scale tự động.
+` },
+        { name: 'manifest-draft.yaml', lang: 'yaml', content: `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-service
+  namespace: orders
+spec:
+  replicas: 6
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels: { app.kubernetes.io/name: order-service }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: order-service }
+    spec:
+      terminationGracePeriodSeconds: 45
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, fsGroup: 10001 }
+      containers:
+        - name: order-service
+          image: 123456789012.dkr.ecr.eu-central-1.amazonaws.com/order-service:1.14.2
+          ports:
+            - { name: http, containerPort: 8080 }
+            - { name: metrics, containerPort: 8081 }
+          envFrom:
+            - configMapRef: { name: order-service-config }
+            - secretRef: { name: order-service-secrets }
+          resources:
+            requests: { cpu: 500m, memory: 768Mi }
+            limits:   { cpu: "2",   memory: 1Gi }
+          lifecycle:
+            preStop:
+              exec: { command: ["/bin/sh", "-c", "sleep 8"] }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: order-service, namespace: orders }
+spec:
+  type: ClusterIP
+  selector: { app.kubernetes.io/name: order-service }
+  ports:
+    - { name: http, port: 80, targetPort: 8080 }
+    - { name: metrics, port: 8081, targetPort: 8081 }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: { name: order-service, namespace: orders }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: order-service }
+  minReplicas: 6
+  maxReplicas: 16
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: 70 } }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: order-service, namespace: orders }
+spec:
+  minAvailable: 4
+  selector: { matchLabels: { app.kubernetes.io/name: order-service } }
+` }
+      ],
+      task: `1) Giải thích **từng đối tượng** trong manifest (Deployment, Service, Ingress, ConfigMap/Secret, 3 loại probe, requests/limits, HPA, PDB, preStop) theo mẫu: *nó là gì → vì sao cần → hoạt động thế nào → nếu thiếu thì sao*. 2) Vẽ luồng một request {{POST /cart/checkout}} đi từ khách tới pod. 3) Kiểm tra hai GIẢ ĐỊNH MỞ: chúng đúng hay sai, và **cách kiểm chứng** cụ thể (lệnh/số liệu nào). 4) Liệt kê những gì design **chưa có** mà bạn biết là sẽ phải làm.`,
+      answer: `**Tóm tắt:** Thiết kế về cơ bản đủ hình hài, nhưng **cả hai giả định mở đều sai**, và sai theo cách chỉ lộ ra dưới tải sale: (1) {{limits.memory: 1Gi}} với {{-Xmx768m}} chỉ tính heap — RSS thật 1,34–1,48 GB theo chính metrics-14d.txt, nên pod sẽ bị **OOMKilled**; (2) pool 20 kết nối **mỗi pod** nhân với {{maxReplicas: 16}} = 320 > {{max_connections: 200}} của PostgreSQL. Cả hai đều có thể kiểm chứng bằng số có sẵn trước khi bấm nút.
+
+### 1. Từng đối tượng, theo mẫu "là gì → vì sao → hoạt động → thiếu thì sao"
+- **Deployment** — *là gì*: khai báo "muốn N bản thể của image X, cấu hình Y". *Vì sao*: pod đơn lẻ bị xoá là mất; Deployment là tầng giữ số lượng và rollout. *Hoạt động*: nó tạo **ReplicaSet** (bản bất biến của pod-template); khi bạn đổi template, nó tạo ReplicaSet mới và chuyển dần pod từ cũ sang mới. *Thiếu*: không tự phục hồi, không rollout tăng dần.
+- **Pod** — đơn vị scheduling: 1–2 container chung network namespace (chung IP), chung volume. Java app ở đây 1 pod = 1 container, mỗi pod một IP riêng trong cụm.
+- **Service (ClusterIP)** — *là gì*: một IP ổn định + tên DNS ({{order-service.orders.svc.cluster.local}}) đứng trước các pod hay thay đổi. *Vì sao*: pod chết/tạo mới thì IP đổi, nên khách hàng trong cụm không được tra thẳng IP pod. *Hoạt động*: kube-proxy/Service cập nhật danh sách endpoint theo **label selector**, cân bằng tải ở mức kết nối TCP. *Thiếu*: mỗi lần gọi phải đi tìm pod, không có tên ổn định.
+- **Ingress + ALB Ingress Controller** — *là gì*: quy tắc HTTP (đường dẫn, host) mà bộ điều khiển dịch thành **AWS ALB** thật. *Vì sao*: Service ClusterIP chỉ nội bộ; khách ngoài cần cổng vào có TLS. *Hoạt động*: ALB đăng ký target là IP pod ({{target-type: ip}}) qua listener 443; Ingress class {{alb}} điều khiển security group, health check. *Thiếu*: không có {{client_max_body_size}}, idle timeout, header X-Forwarded-* như Nginx cũ → import đơn 8 MB và báo cáo 30 s sẽ gãy.
+- **ConfigMap** — cấu hình không nhạy cảm đưa vào biến môi trường/file. **Secret** — cấu hình nhạy cảm, lưu mã hoá at-rest trong etcd, **hiển thị dạng plaintext trong manifest nếu bạn commit bừa** → vì vậy chuẩn là External Secrets/SOPS tham chiếu từ Secrets Manager, không để mật khẩu trong Git.
+- **Ba loại probe** (Kubernetes hỏi "app sống chưa / phục vụ được chưa / khởi động xong chưa"):
+  - *startupProbe*: chỉ dùng lúc boot. App bạn khởi động 46,3 s; nếu chỉ có liveness với {{failureThreshold: 3}} × {{periodSeconds: 10}} = 30 s thì **Kubernetes giết pod trước khi Spring kịp mở port** → CrashLoop. Bỏ qua startupProbe cho app boot chậm là lỗi kinh điển số 1.
+  - *readinessProbe*: "cho traffic vào chưa". Không sẵn sàng → pod bị **gỡ khỏi** danh sách endpoint của Service/ALB nhưng **không bị khởi động lại**. Nhờ đó rollout an toàn và lúc cache lạnh chưa nhận request.
+  - *livenessProbe*: "process còn sống không" → **khởi động lại container**. Chỉ nên kiểm tra điều mà tự restart sẽ sửa được (deadlock, treo loop). **Không** để liveness phụ thuộc DB/Redis: DB chậm vài giây → hàng loạt pod bị giết → mất khả năng phục vụ đúng lúc hệ thống đang yếu (restart storm). Spring Boot 3 cung cấp {{/actuator/health/readiness}} và {{/actuator/health/liveness}} tách sẵn, dùng chúng.
+- **requests/limits** — *requests*: "số chỗ cần để Kubernetes chọn node" (quy hoạch) và là hệ số chia khi HPA tính % tải. *limits.memory*: **trần cứng**, chạm là OOMKilled. *limits.cpu*: trần *soft* — vượt thì bị **throttle** (bị cắt bớt thời gian CPU) chứ không bị giết. Quy ước: đặt requests sát p95 thực tế, limits.memory đủ cho RSS đỉnh (xem mục 2), CPU limit có thể để trống hoặc rộng để tránh throttle vô ích.
+- **HPA (autoscaling/v2)** — *là gì*: bộ điều khiển tự chỉnh {{spec.replicas}} theo chỉ số. *Hoạt động*: nó đọc CPU trung bình của các pod (metrics-server hoặc Prometheus), so với **requests** ({{averageUtilization: 70}} nghĩa là giữ ~70% của 500m = 350m), mặc định đánh giá mỗi 15 giây, và scale-down có cửa sổ ổn định **300 giây** để không giật cục. *Lưu ý*: CPU chỉ là **chỉ số thay thế**; app I/O-bound nên cân nhắc metric tùy chỉnh (RPS/pod, độ sâu hàng đợi Kafka). *Thiếu*: sale tới là tay bạn thêm máy.
+- **PodDisruptionBudget** — *là gì*: "không được giảm xuống dưới 4 pod cùng lúc". *Vì sao*: {{kubectl drain}} để nâng node, hay tự động nâng cụm, sẽ đá pod đi; không có PDB thì đúng lúc cao điểm node bị rút và bạn mất một nửa sức chứa. PDB **không** chống crash, chỉ chống *tắt chủ đích hàng loạt*.
+- **Graceful shutdown** — 4 thứ phải khớp nhau: (a) Kubernetes gửi **SIGTERM** khi muốn chấm dứt pod; (b) chạy {{preStop}} **trước** khi gửi SIGTERM; (c) {{terminationGracePeriodSeconds}} (45) là trần — hết giờ thì SIGKILL; (d) Spring {{server.shutdown=graceful}} + {{spring.lifecycle.timeout-per-shutdown-phase: 20s}} để Tomcat ngừng nhận request mới và chạy nốt request đang xử lý. Vì sao cần {{preStop sleep 8}}: việc gỡ IP pod khỏi ALB là **bất đồng bộ** — pod đã nhận SIGTERM nhưng ALB còn vài giây gửi request tới; sleep cho ALB kịp rút traffic trước khi process bắt đầu tắt (xem review/test).
+- **Namespace {{orders}}** — vùng tách tài nguyên, chính sách IAM, quota và quyền truy cập.
+- **GitOps + Helm**: Helm chart = template YAML + file {{values}} theo môi trường; Argo CD so trạng thái trong cluster với thứ trong Git và **sync** khi có khác biệt. Nguyên tắc: Git là sự thật duy nhất; {{kubectl edit}} tay sẽ bị Argo ghi đè ở lần sync sau (khi bật auto-sync) — đó là điểm văn hoá quan trọng nhất của GitOps.
+
+### 2. Sơ đồ luồng một request
+~~~seq
+title: POST /cart/checkout từ khách tới pod
+actors: Khách | DNS/ALB | Service | Pod order-service | PostgreSQL | Redis
+Khách -> DNS/ALB: resolve api.shopviet.vn rồi POST /cart/checkout
+DNS/ALB --> Khách: trả về 201 Created
+DNS/ALB -> Service: ALB chọn endpoint theo health check của TG
+Service -> Pod order-service: forward vào containerPort 8080
+Pod order-service -> Redis: đọc giỏ hàng (Spring Session)
+Pod order-service -> PostgreSQL: INSERT orders và order_items
+PostgreSQL --> Pod order-service: COMMIT ok
+note DNS/ALB..Pod order-service: readiness fail thì IP bị gỡ khỏi ALB
+~~~
+
+### 3. Kiểm chứng hai giả định mở
+**Giả định #1 — 1Gi là đủ.** *Sai.* Cách kiểm chứng trong 1 giờ: trên VM đang chạy, {{jcmd PID VM.native_memory summary}} (mở JVM flag {{-XX:NativeMemoryTracking=summary}} khi khởi động), cộng RSS theo mục: heap committed + Class/metaspace + Thread (số thread × Xss) + Code + GC + Internal/Symbol + **direct buffer** qua {{java.nio.BufferPoolMXBean}}. Đối chiếu {{ps -o rss= -p PID}} hoặc trên k8s là chỉ số {{container_memory_working_set_bytes}}. Ngân sách đúng phải là: Xmx + ~450–700 MB overhead, giới hạn = làm tròn lên ≥ 1,75–2Gi, requests = p95 RSS thực đo.
+**Giả định #2 — pool 20/pod là đủ.** *Sai.* Phép nhân: {{maxReplicas 16 × 20 = 320}} kết nối, trong khi PostgreSQL {{max_connections=200}} trừ {{superuser_reserved_connections}} và kết nối của công cụ/batch → còn ~180 dùng được. Công thức an toàn: **maximumPoolSize/pod = floor((max_connections − dự phòng) / số pod tối đa)** = (200 − 20)/16 = 11 → đặt 8–10, và/hoặc đặt PgBouncer/RDS Proxy đứng giữa để gộp kết nối. Khi đặt pool nhỏ phải thêm {{connectionTimeout}} thấp và cảnh báo "kết nối hết" để không biến chậm thành treo.
+Cách kiểm chứng #2 trước go-live: chạy ở {{replicas: 12}} rồi {{SELECT count(*) FROM pg_stat_activity GROUP BY application_name;}} — số phải ≈ 12 × pool.
+
+### 4. Design còn thiếu (phải ghi thành danh sách việc)
+- Binary authorization (IAM roles for service accounts) cho pod truy cập S3/ECR; {{ServiceAccount}} riêng, {{automountServiceAccountToken: false}}.
+- Quota/LimitRange của namespace để một deploy sai không chiếm hết cụm.
+- NetworkPolicy (cho phép pod chỉ nói chuyện với DB/Redis/Kafka).
+- Node group riêng cho đơn hàng + {{tolerations}}/{{nodeSelector}}; chi phí node so với VM cũ.
+- Đường nâng cấp EKS minor, lịch cho 12 tháng.
+- Log/metrics/traces: Fluent Bit, Prometheus, OpenTelemetry; alert mới theo pod (restart, OOMKilled, CPU throttle).
+- Runbook: cách xem log pod, cách scale tay khẩn cấp, cách rollback, cách cấp cứu khi OOMKilled.
+- Kế hoạch warmup cache cho pod mới do HPA tạo ra.
+
+> Senior tip: trong design doc, mục giá trị nhất không phải sơ đồ kiến trúc mà là **danh sách giả định kèm cách kiểm chứng và ai ký**. Hai giả định ở đây đều sai theo cùng một kiểu: lấy số đo *một phần* (heap, pool của một máy) rồi giả định phần còn lại không đổi. Trong Kubernetes, mọi thứ **nhân theo số bản thể** — kết nối DB, file mở, thread, native memory, consumer group — nên câu hỏi phản xạ phải là "con số này nhân với 16 thì hệ thống kia có chịu nổi không".`,
+      pitfalls: ['Đặt memory limit bằng heap + chút headroom', 'Quên pool kết nối là per-pod nên nhân theo replicas', 'Không có startupProbe cho app boot 46 s', 'Để liveness probe đụng DB', 'Commit mật khẩu vào Git vì "Secret đã có sẵn từ deploy cũ"', 'Rollout maxUnavailable 0 nhưng không tính chỗ cho surge pod']
+    },
+    {
+      key: 'dev',
+      title: 'Viết Dockerfile và Helm chart — lần đầu với container',
+      role: 'Bạn build image, chart, pipeline; SRE chỉ còn 2 giờ cho phần ECR/IAM',
+      story: `Bạn chưa từng viết Dockerfile. Việc gồm 4 món: (1) **Dockerfile** build image Java 21; (2) **GitHub Actions** build + test + push; (3) **Helm chart** cho Deployment/Service/Ingress/HPA/PDB; (4) **values** riêng cho staging và production. Dưới đây là những gì bạn commit. Có hai chỗ bạn làm theo **quy ước của VM cũ** mà không nghĩ lại: ghi {{-Xmx768m}} cứng nhắc và giữ {{maximumPoolSize: 20}}.`,
+      artifacts: [
+        { name: 'Dockerfile', lang: 'text', content: `# --- stage 1: build (chỉ để tạo jar, không đi vào image cuối) ---
+FROM maven:3.9-eclipse-temurin-21 AS build
+WORKDIR /src
+COPY pom.xml .
+RUN mvn -q dependency:go-offline            # tải thư viện trước: layer này được cache khi pom không đổi
+COPY src ./src
+RUN mvn -q -DskipTests package && mv target/*.jar /app.jar
+
+# --- stage 2: chạy (image cuối, nhỏ nhất có thể) ---
+FROM gcr.io/distroless/java21-debian12:nonroot
+COPY --from=build /app.jar /app/app.jar
+ENV JAVA_TOOL_OPTIONS="-Xmx768m -XX:+UseG1GC -XX:NativeMemoryTracking=summary"
+EXPOSE 8080 8081
+USER nonroot:nonroot
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]
+` },
+        { name: 'values-production.yaml', lang: 'yaml', content: `image:
+  repository: 123456789012.dkr.ecr.eu-central-1.amazonaws.com/order-service
+  tag: "1.14.2"            # semver, không dùng "latest"
+replicaCount: 6
+autoscaling:
+  enabled: true
+  minReplicas: 6
+  maxReplicas: 16
+  targetCPUUtilizationPercentage: 70
+resources:
+  requests: { cpu: 500m, memory: 768Mi }
+  limits:   { cpu: "2",   memory: 1Gi }
+jvm:
+  maxHeap: 768m            # trùng với limits -> chỉ chừa 256Mi cho mọi thứ ngoài heap
+spring:
+  profilesActive: production
+datasource:
+  hikari:
+    maximumPoolSize: 20    # bê nguyên từ application.yml của VM
+    connectionTimeout: 30000
+actuator:
+  healthGroups: "readiness,liveness"
+ingress:
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/scheme: internet-facing
+terminationGracePeriodSeconds: 45
+preStopSleepSeconds: 8
+podDisruptionBudget:
+  minAvailable: 4
+` },
+        { name: 'ci-build-image.yaml', lang: 'yaml', content: `name: build-and-push
+on:
+  push:
+    branches: [main]
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "21", cache: maven }
+      - name: Test
+        run: mvn -B verify
+      - name: Trivy scan (block CRITICAL)
+        run: |
+          trivy image --exit-code 1 --severity CRITICAL --no-progress local/order-service:ci
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: \${{ secrets.ECR_ROLE_ARN }}
+          aws-region: eu-central-1
+      - uses: aws-actions/amazon-ecr-login@v2
+      - name: Build & push
+        run: |
+          TAG=$(mvn -q -Dexec.executable=echo -Dexec.args='\${project.version}')
+          docker build -t $ECR/order-service:$TAG .
+          docker push $ECR/order-service:$TAG
+      - name: Bump tag in GitOps repo (Argo CD sẽ sync)
+        run: |
+          git clone https://x-access-token:\${{ secrets.GITOPS_TOKEN }}@github.com/shopviet/orders-gitops
+          cd orders-gitops && sed -i 's/^  tag:.*/  tag: "$TAG"/' apps/order-service/values-production.yaml
+          git commit -am "deploy order-service $TAG" && git push
+` }
+      ],
+      task: `Review lại chính code bạn vừa viết và giải thích **từng dòng quan trọng**: vì sao 2 stage, vì sao distroless, distroless đánh đổi gì khi cần debug, {{JAVA_TOOL_OPTIONS}} khác {{JAVA_OPTS}} thế nào, vì sao {{-Xmx768m}} cứng nhắc là mầm lỗi tiềm tàng, {{USER nonroot}} ảnh hưởng gì tới việc ghi file, và GitOps ở pipeline trên hoạt động ra sao. Nêu 5 thay đổi bạn sẽ làm trước khi merge.`,
+      answer: `**Tóm tắt:** Dockerfile và chart này chạy được, nhưng có 4 thứ phải sửa trước khi merge: (1) đặt heap theo **tỉ lệ bộ nhớ container** ({{-XX:MaxRAMPercentage=60.0}}) thay vì {{-Xmx768m}} cứng nhắc, (2) bỏ {{-Xmx}} khỏi image để values/ConfigMap là nơi cấu hình duy nhất, (3) {{USER nonroot}} + {{readOnlyRootFilesystem}} nghĩa là app **không ghi được vào /var/data** — phải mount {{emptyDir}} cho /tmp và chuyển hoá đơn sang S3 như analysis đã kết luận, (4) commit GitOps bằng {{sed}} là mảnh vỡ pipeline dễ gây "AI nào đó ghi đè tag" — nên dùng action chuyên dụng và bắt buộc PR con người review cho production.
+
+### 1. Dockerfile, dòng nào ra dòng đó
+- **Multi-stage build**: stage 1 ({{maven:...}}) chứa cả JDK + Maven ~600 MB; stage 2 chỉ chứa JRE distroless ~250 MB. Image cuối **không** chứa source, Maven, cache {{~/.m2}} → nhỏ hơn, ít lỗ hổng hơn (bớt package để CVE scan phải lo), build nhanh hơn nhờ layer cache.
+- {{COPY pom.xml}} rồi {{dependency:go-offline}} rồi mới {{COPY src}}: thứ tự này để lớp thư viện **được tái dùng**; sửa 1 dòng Java chỉ build lại lớp cuối (vài giây thay vì vài phút).
+- {{gcr.io/distroless/java21-debian12:nonroot}}: image gần như tối giản của Google, chỉ có runtime + JRE, **không có shell, không có apt, không có curl, không có ps/top**. Đánh đổi: {{kubectl exec -it pod -- /bin/sh}} sẽ **thất bại**. Đây là điều phải biết trước: khi sự cố xảy ra bạn không " leo vào" container được, mà phải dựa vào metrics/log/heap dump, hoặc dùng **ephemeral debug container**: {{kubectl debug -it POD --image=busybox:1.36 --target=order-service -- sh}} — container phụ này chạy cạnh, chia sẻ namespace tiến trình nên thấy được PID và file của app.
+- {{ENTRYPOINT ["java","-jar","/app/app.jar"]}}: dạng **array** (exec form) nên java là PID 1 và **nhận trực tiếp SIGTERM** từ Kubernetes. Nếu viết dạng shell {{ENTRYPOINT java -jar ...}} thì shell là PID 1, SIGTERM đi vào shell, java **không bao giờ được báo hiệu** → graceful shutdown thành "bị đập" (SIGKILL sau 45 s), mất request đang bay. Đây là lỗi tinh vi nhất trong file này.
+- {{JAVA_TOOL_OPTIONS}} **được JVM đọc** (in ra log "Picked up JAVA_TOOL_OPTIONS"). {{JAVA_OPTS}} **không phải biến của java** — nó chỉ có tác dụng khi script/entrypoint tự chèn vào lệnh java. Nhiều người bê nguyên {{JAVA_OPTS}} từ systemd unit cũ sang, JVM im lặng bỏ qua, heap vẫn là mặc định → app chạy 25% của limit, GC điên cuồng. Biến đúng để tham số hoá từ values: {{JAVA_TOOL_OPTIONS}} hoặc tự định nghĩa {{JAVA_TOOL_OPTIONS_APPEND}}.
+- {{-Xmx768m}} cứng nhắc: JVM không "biết" limit bằng con số này nếu người ta đổi {{limits.memory}} ở values; ngược lại, nếu limit thành 2Gi mà Xmx vẫn 768m thì heap dưới dùng trong khi bạn có RAM. Cách an toàn: {{-XX:MaxRAMPercentage=60.0}} (JVM đọc cgroup, tự đặt Xmx = 60% limit; JDK 10+ mặc định tôn trọng container). Nhưng **phải cộng phần còn lại**: 1Gi × 60% = 614 MB heap, còn 419 MB cho metaspace + thread + direct + code + GC → **vẫn thiếu** theo RSS đã đo 1,34–1,48 GB. Đây chính là mồi cho giai đoạn bugfix.
+- {{-XX:NativeMemoryTracking=summary}}: bật sẵn với chi phí ~5% bộ nhớ, vì khi cần trả lời "RAM đi đâu" thì không kịp bật lại.
+- {{USER nonroot:nonroot}} + (nên thêm) {{runAsNonRoot: true}} ở pod: nếu image chạy root mà cluster chặn root thì pod ở trạng thái {{CreateContainerConfigError}}. Non-root cũng làm **mọi đường dẫn ghi được đều phải được cấp quyền** — app cũ ghi {{/var/data/invoices}} sẽ ném {{AccessDeniedException}} hoặc {{FileSystemException: Read-only file system}} ngay khi bật {{readOnlyRootFilesystem: true}}.
+
+### 2. Helm và GitOps
+- Chart = template YAML ({{deployment.yaml}} có {{ .Values.resources.limits.memory }}) + các file {{values-staging.yaml}}, {{values-production.yaml}}. {{helm template -f values-production.yaml}} render ra YAML thường để đọc; Argo CD cũng render như vậy để so với cluster.
+- Flow GitOps ở pipeline trên: push code → build → push image **1.14.2** → commit sang **repo cấu hình** đổi dòng {{tag:}} → Argo CD phát hiện lệch → (prod: bạn bấm Sync, hoặc auto-sync) → Kubernetes rollout. Nghĩa là "triển khai" = một commit; "rollback" = revert commit đó. Không ai SSH vào đâu cả.
+- Tách **repo cấu hình riêng** là chuẩn: quyền prod nằm ở repo đó, có PR review, có lịch sử "ai đổi gì lúc 22:31".
+
+Luồng phát hành sau khi có GitOps — một commit duy nhất đi qua 6 hệ thống:
+~~~seq
+title: Từ git push tới pod chạy trên EKS
+actors: Dev | GitHub Actions | ECR | GitOps repo | Argo CD | EKS
+Dev -> GitHub Actions: push commit 8f3c1ab lên main
+GitHub Actions -> GitHub Actions: mvn verify rồi trivy scan
+GitHub Actions -> ECR: push image order-service:1.14.2
+GitHub Actions -> GitOps repo: commit đổi dòng tag trong values
+Argo CD -> GitOps repo: phát hiện lệch giữa mong muốn và thực tế
+Argo CD -> EKS: sync, cập nhật Deployment template
+EKS -> EKS: tạo pod surge, readiness pass, xoá pod cũ
+note Argo CD..EKS: prod sync do người bấm, lịch sử ai-sync được ghi lại
+~~~
+
+### 3. Năm việc trước khi merge
+1. {{MaxRAMPercentage=60.0}} + limits **2Gi** (requests 1.5Gi theo RSS đo được), bỏ {{-Xmx}} khỏi image; đồng thời ghi rõ vào PR: "đây là ước lượng, cần NMT xác nhận".
+2. Thêm {{startupProbe}} (app boot 46 s), {{readinessProbe}}, {{livenessProbe}} theo health group; {{terminationGracePeriodSeconds}} ≥ preStop + timeout shutdown + request dài nhất.
+3. Mount một {{emptyDir}} tại {{/tmp}}, bật {{readOnlyRootFilesystem: true}}; chuyển hoá đơn sang S3 (ORD-412) — nếu chưa xong thì **dừng go-live**.
+4. {{maximumPoolSize}} tính theo công thức ngân sách kết nối, không bê từ VM.
+5. {{.containerimage}} pin bằng **digest** ({{sha256:...}}) hoặc tag không thể ghi đè; bật image verification của ECR/Kyverno. Thêm {{PodAntiAffinity}}/{{topologySpreadConstraints}} để 6 pod không rơi vào 1 node.
+
+> Senior tip: dấu hiệu một Dockerfile Java đạt chuẩn không phải "build được" mà là: exec form để java nhận SIGTERM, không có shell trong image cuối, tham số JVM tôn trọng cgroup, chạy non-root mà app vẫn ghi được đúng chỗ được mount, và **một lệnh debug cho sự cố** được liệt kê trong runbook (vì bạn biết mình không exec được vào distroless).`,
+      pitfalls: ['Entry form shell làm SIGTERM không tới JVM', 'Dùng JAVA_OPTS thay JAVA_TOOL_OPTIONS', 'Cứng nhắc -Xmx khi limit có thể đổi ở values', 'Quên distroless không có shell để exec', 'Bê pool/đường dẫn file của VM vào container', 'Commit GitOps tự động không có review cho prod']
+    },
+    {
+      key: 'review',
+      title: 'Review PR: 4 blocker, 3 nên sửa, 2 tranh luận',
+      role: 'SRE review PR chart + Dockerfile; bạn phân loại và chốt việc',
+      story: `SRE trả về 9 nhận xét sau 30 phút đọc. Có một nhận xét về bộ nhớ làm bạn chột dạ vì nó chạm đúng giả định ở design, nhưng deadline cut-over sát ngày sale 11.11 nên cả hai thống nhất "xác nhận bằng load test trên staging rồi chốt sau". PR vẫn được merge để kịp dựng staging.`,
+      artifacts: [
+        { name: 'pr-410-review.txt', lang: 'text', content: `PR #410  chart + Dockerfile cho order-service   reviewer: SRE (Mai)
+R1 [BLOCKER] livenessProbe đang trỏ /actuator/health (mặc định gộp DataSource + Redis + Kafka).
+   DB chậm 3 s là liveness fail -> kubelet restart hàng loạt đúng lúc hệ thống đang yếu.
+   Sửa: /actuator/health/liveness, và management.endpoint.health.group.liveness.include=
+        livenessState,caches? — không đưa dependency ngoài process vào.
+R2 [BLOCKER] Không có startupProbe. App boot 46 s, liveness period 10s x failureThreshold 3 = 30 s
+   -> pod sẽ bị giết trước khi Spring mở port. CrashLoop lặp lại ở môi trường node chậm.
+R3 [BLOCKER] preStop sleep 8 s có trong values nhưng template KHÔNG render ra field lifecycle
+   (thiếu {{- if .Values.preStopSleepSeconds }}). Tức là rollout vẫn cắt request.
+R4 [BLOCKER] values-staging dùng tag "latest". Argo CD diff sẽ luôn khác, sync không xác định,
+   rollback không có mốc.
+R5 [SHOULD] limits.memory 1Gi vs -Xmx768m: heap ăn hết 75% limit, chỉ còn 256Mi cho
+   metaspace + thread stack + direct buffer + code cache + GC. RSS của JVM này trên VM là ~1.4 GB
+   (xem metrics-14d.txt). Đề xuất: 2Gi + MaxRAMPercentage, hoặc đo NMT trước. -> chờ load test.
+R6 [SHOULD] requests.memory 768Mi nhưng HPA chỉ có metric CPU. App I/O-bound, CPU 40% mà vẫn nghẽn
+   connection pool -> HPA không scale. Cân nhắc custom metric (RPS/pod) hoặc KEDA theo Kafka lag.
+R7 [SHOULD] secret DB password nằm trong values-production.yaml (Git). Chuyển External Secrets.
+R8 [DEBATE] limits.cpu 2 với requests 500m: khi node đông pod, cpu limit thấp gây throttle
+   trong lúc GC đang chạy. Cân nhắc bỏ limits.cpu, chỉ giữ requests.
+R9 [SHOULD] maxSurge 1 + maxUnavailable 0: rollout cần thêm 1 pod 1Gi mỗi lần; lúc cluster đã đầy
+   thì pod mới ở Pending -> rollout treo 30 phút, không ai biết vì sao.
+` },
+        { name: 'helm-template-lifecycle.yaml', lang: 'yaml', content: `# deployment.yaml (trích) — bản được merge, SRE đánh dấu chỗ R3
+spec:
+  template:
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      containers:
+        - name: {{ .Chart.Name }}
+          {{- with .Values.resources }}
+          resources:
+            requests:
+              cpu: {{ .requests.cpu }}
+              memory: {{ .requests.memory }}
+            limits:
+              cpu: {{ .limits.cpu }}
+              memory: {{ .limits.memory }}
+          {{- end }}
+          {{- if .Values.lifecycle }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep {{ .Values.preStopSleepSeconds }}"]
+          {{- end }}
+` }
+      ],
+      task: `1) Phân loại 9 nhận xét: blocker / nên sửa trước go-live / kỹ thuật nợ; nói rõ **nếu bỏ qua thì hậu quả xảy ra khi nào và trông như gì trong metrics**. 2) Giải thích khác biệt readiness vs liveness cho người mới, kèm ví dụ cụ thể của R1. 3) vì sao {{preStop sleep}} lại cần dù đã có readiness probe và graceful shutdown? 4) R9: giải thích bài toán chỗ cho surge pod. 5) Bạn xử lý thế nào với R5 — nhận xét bị hoãn?`,
+      answer: `**Tóm tắt:** R1, R2, R3, R4 là blocker — nếu bỏ qua, triệu chứng chỉ lộ ra lúc rollout hoặc lúc hệ thống đã yếu. R5 là **nợ kỹ thuật nguy hiểm nhất** vì nó không nổ ở tải thường, và đúng loại lỗi mà load test thông thường không thấy (người ta nhìn heap, không nhìn working set). Cách xử lý đúng: **không hoãn R5**, mà chốt nó bằng một phép đo có điều kiện: chạy staging ở peak, xem {{container_memory_working_set_bytes}} so với limit; nếu chưa đo được thì tăng limit lên 2Gi + {{MaxRAMPercentage}} (rẻ và an toàn) rồi cut-over.
+
+### 1. readiness vs liveness vs startup — cho người mới
+| Probe | Trả lời câu hỏi | Kubernetes làm gì khi fail | Có nên phụ thuộc DB/Redis? |
+|---|---|---|---|
+| **startupProbe** | "app đã boot xong chưa?" | **tạm hoãn** hai probe kia cho tới khi đạt | Không |
+| **readinessProbe** | "đã phục vụ được chưa?" | gỡ IP pod khỏi Service/ALB, pod **vẫn sống**, tiếp tục được kiểm tra | Có thể, nếu bạn muốn ngừng nhận traffic khi dependency chết |
+| **livenessProbe** | "process có còn tự chạy được không?" | **khởi động lại container** | **Tuyệt đối không** |
+Ví dụ R1: {{/actuator/health}} mặc định gộp tất cả health indicator, trong đó có {{DataSourceHealthIndicator}} (chạy {{SELECT 1}}). PostgreSQL bị khựng 3 giây vì vacuum/backup — 3 lần đọc liên tiếp fail → liveness fail → kubelet gửi SIGKILL cho **toàn bộ 12 pod**. Spring mất 46 s để dậy, DB vẫn đang khựng nên lại fail, lại bị giết: đó là **CrashLoopBackOff tập thể**, đúng lúc sự cố DB. Không có gì được chữa khỏi; chỉ mất sức chứa.
+Liveness đúng nghĩa chỉ nên bắt những lỗi mà restart giải quyết được: JVM deadlock, thread pool bị tê liệt, process treo. Spring Boot 3 cho {{management.endpoint.health.probes.enabled=true}} để có hai endpoint tách sẵn; liveness group chỉ nên gồm {{livenessState}} (+{{diskSpace}} nếu muốn).
+
+### 2. Phân loại và hậu quả nếu bỏ
+| Nhận xét | Loại | Nếu bỏ qua, xảy ra khi nào / nhìn như gì |
+|---|---|---|
+| R1 liveness chạm DB | Blocker | Mỗi lần DB chậm: restart hàng loạt, {{restart count}} tăng đều trên mọi pod, p99 dựng đứng rồi sập |
+| R2 thiếu startupProbe | Blocker | Pod mới ở node chậm bị giết trước khi boot xong → {{CrashLoopBackOff}}, rollout không bao giờ Complete |
+| R3 preStop không render | Blocker | Mỗi rollout: bùng {{502}}/{{connection reset}} 3–10 s, đúng lúc traffic cao nhất; khách thấy "đặt hàng lỗi" |
+| R4 tag latest | Blocker | Argo luôn lệch, "rollback" không có mốc để revert, không biết prod đang chạy code nào |
+| R5 limit 1Gi | **Nợ nguy hiểm** | Không sao ở tải thường; **nổ khi sale** vì thread và direct buffer tăng — OOMKilled, exit 137 |
+| R6 HPA chỉ CPU | Nên sửa trước go-live | Sale tới, CPU 45% vì app chờ DB → không scale, p99 tăng, bạn tưởng "k8s scale kém" |
+| R7 secret trong Git | Blocker về bảo mật | Mật khẩu lộ vĩnh viễn trong lịch sử Git; phải xoay vòng + External Secrets |
+| R8 limits.cpu | Tranh luận | Throttle khi GC chạy; cân nhắc bỏ limit CPU, chỉ giữ requests |
+| R9 surge cần chỗ | Nên sửa | Lúc cluster đầy, pod surge ở {{Pending}} → rollout treo, {{kubectl get pods}} hiện 1 pod chưa chạy, không lỗi rõ |
+
+### 3. Vì sao cần preStop sleep dù đã có readiness + graceful
+Ba chuyện xảy ra **song song và bất đồng bộ** khi Kubernetes muốn chấm dứt pod:
+1. EndpointSlice/ALB target **rút IP pod** — do bộ điều khiển Ingress, mất 1–5 s (ALB còn có drain timeout).
+2. **preStop** chạy (sleep 8 s).
+3. Sau khi preStop xong, kubelet gửi **SIGTERM** → Spring ngừng nhận mới, chạy nốt request đang xử lý.
+Nếu không sleep, (2) và (3) gần như cùng lúc: app bắt đầu tắt trong khi ALB chưa kịp gỡ, nên request mới vẫn được gửi tới và rớt. Sleep **chỉ làm chậm SIGTERM**, nhường thời gian cho việc rút traffic ở (1) hoàn tất. Đó là lý do {{terminationGracePeriodSeconds}} phải = preStop + timeout graceful + buffer, chứ không phải 30 s mặc định.
+Ở EKS với ALB Ingress, còn một cách chắc hơn: **readinessGate** (pod chỉ Ready khi ALB xác nhận target healthy/drained), hoặc bật {{drain_timeout}}/{{deregistration_delay}} của target group.
+
+### 4. R9 — bài toán "chỗ" khi rollout
+maxUnavailable 0 + maxSurge 1 nghĩa là Kubernetes tạo **thêm** 1 pod trước khi xoá pod cũ. Mỗi pod yêu cầu requests 768Mi → cần node còn ≥ 768Mi. Cluster vừa khít (node group 3 máy, mỗi máy 4 GiB allocatable) thì pod surge ở {{Pending}} mãi với lý do rất chung chung: {{0/3 nodes are available: 3 Insufficient memory}} → rollout "treo" mà không có lỗi nào đỏ. Cách xử lý: requests đặt theo số thật (không phóng đại, nếu không bạn trả tiền cho chỗ không dùng), chừa sẵn chỗ cho 1 surge pod ở mỗi node group, dùng {{kubectl rollout status}} trong pipeline với timeout và **tự động revert** khi quá hạn, và đặt {{progressDeadlineSeconds}} để Deployment báo lỗi thay vì im lặng.
+
+### 5. R5 xử lý thế nào
+- Nói thẳng với SRE: "hoãn nhưng **chốt bằng số**": trước cut-over phải có một phép đo working set ở peak, vì đây là loại lỗi chỉ sale mới lộ. Điều kiện go-live thêm dòng: *"{{max_over_time(container_memory_working_set_bytes[5m])}} < 0,8 × limits.memory khi chạy 2.600 RPS"*.
+- Nếu chưa đo được, chọn phương án an toàn hơn mà **chi phí không đổi nhiều**: limit 2Gi + {{MaxRAMPercentage=60.0}} (memory request là thứ bạn trả tiền chỗ; limit không tính thêm tiền) — chỉ cần node group đủ chỗ.
+- Ghi vào design doc mục "giả định mở" với **ngày hết hạn**, đừng để nó thành dòng vô chủ. Đây chính là mắt xích khiến sự cố 11.11 sau này khó bào chữa: nó đã được nêu, đã được hiểu, và bị hoãn.
+
+> Senior tip: phân biệt blocker và "nợ nguy hiểm" bằng một câu hỏi: lỗi này lộ ra **ngay khi rollout** hay **chỉ dưới điều kiện đỉnh**? Loại thứ hai (R5, R6) chính là loại phá bạn vào ngày sale, vì staging thường chạy ở tải 30–50% và không ai đợi tới 22:00 để đo bộ nhớ. Review của bạn phải có mục "điều kiện để tin là an toàn khi chưa đo".`,
+      pitfalls: ['Để liveness probe phụ thuộc DB/Redis', 'Nghĩ readiness + graceful là đủ, bỏ preStop', 'Hoãn nhận xét về memory vì "load test xanh"', 'Merge chart có lifecycle nằm sau {{ if }} nhưng values không set', 'Rollout chờ surge pod mà không có timeout/revert', 'Không đặt progressDeadlineSeconds']
+    },
+    {
+      key: 'test',
+      title: 'Load test staging và thử diệt pod: báo cáo xanh, hai ô trống',
+      role: 'Bạn viết kịch bản test, chạy trên staging cluster 3 node, cùng tester',
+      story: `Staging mô phỏng production: cùng cỡ DB (bản snapshot 40 GB), 3 node 4 vCPU/16 GB, {{replicas: 6}}. Tester dùng **k6** với dataset 20.000 khách và kịch bản mua hàng thật (xem giỏ → thêm địa chỉ → checkout → thanh toán giả lập). Bạn cũng chạy **chaos**: xoá pod giữa tải. Sau 2 tuần, báo cáo kết luận "sẵn sàng cut-over". Có **hai phép đo bị bỏ qua** vì không có dashboard nào hiển thị chúng.`,
+      artifacts: [
+        { name: 'k6-staging-summary.txt', lang: 'text', content: `order-service @ staging, 2026-10-26 14:00 → 15:40, scenario: checkout-mix
+VU      : ramp 0→300 (ngày thường) rồi 0→900 (mô phỏng sale 2.600 RPS), hold 45 phút mỗi bậc
+http_reqs            : 7.412.000    http_req_failed   : 0,021%  (1.557 lỗi, tất cả lúc ramp-up)
+http_req_duration    : avg 118ms  p50 96ms  p95 244ms  p99 402ms
+  p99 lúc 900 VU     : 480 ms   (mục tiêu < 600 ms)  ✓
+checks               : cart_created 99,9% | order_persisted 99,9% | no_5xx 99,98%
+custom: queue_lag_ms : p95 210 ms (Kafka) ✓
+Pod tự restart trong 100 phút : 0        OOMKilled : 0
+CPU throttling (container_cpu_cfs_throttled_seconds_total tăng) : có, 6 pod, ~4% thời gian
+Kết luận của tester : PASS. Sẵn sàng cut-over.
+` },
+        { name: 'chaos-kill-pod.log', lang: 'text', content: `T+00s   k6 giữ 600 VU, p99 361 ms, RPS 1.940, 6 pod Ready
+T+00s   kubectl delete pod order-service-6f9c7-x2kl --wait=false
+T+01s   Deployment tạo pod thay thế (health: chưa ready)
+T+02s   ALB vẫn gửi request tới IP pod cũ trong ~3,4 s
+T+02s   k6 ghi nhận: http_req_failed 0,021% -> 0,34%  (p90 lỗi là 502 / connection reset)
+T+03s   1 request checkout đang chạy (3,1 s) chết giữa chừng -> đơn không ghi, khách thấy lỗi
+T+09s   pod mới Ready (startup + readiness), p99 quay lại 372 ms
+T+63s   HPA (CPU 71%) nâng 6 -> 7 replica ; stabilization window làm phản ứng trễ ~70 s
+Ghi chú : lỗi tập trung đúng 4 giây sau delete. Số pod giảm tức thời nên 5 pod còn ăn thêm 20% tải.
+` },
+        { name: 'test-plan-checklist.txt', lang: 'text', content: `[x] smoke: health, readiness, liveness tách group
+[x] functional parity: 42 case nghiệp vụ chạy trên cả VM lẫn cluster, so response +DB state
+[x] load: 780 RPS (ngày thường) / 2.610 RPS (đỉnh sale 9.9) / 3.400 RPS (1,3 x đỉnh)
+[x] soak 45 phút ở đỉnh
+[x] HPA: ép CPU tăng -> scale lên; ép giảm -> scale xuống (scale-down nhanh = nguy hiểm, xem behavior)
+[ ] capacity DB: COUNT pg_stat_activity khi replicas = 12   <- "staging hết node, chỉ scale tới 7"
+[ ] memory ở đỉnh theo working set container                <- "đã xanh, heap p95 590 MB"
+[ ] chaos: drain node, latency DB, Redis failover, Kafka rebalance
+[x] rollback drill: revert commit GitOps, đo thời gian
+` }
+      ],
+      task: `1) Đọc kỹ test-plan-checklist: **hai mục bỏ trống** tương ứng với hai giả định nào trong design? Hậu quả từng mục? 2) Giải thích cách bạn sẽ thiết kế lại gói test để hai mục đó không thể bị bỏ qua (nêu PromQL cụ thể và ngưỡng pass). 3) Từ chaos log: nguyên nhân 4 giây lỗi là gì, sửa bằng gì, và vì sao HPA phản ứng 70 s? 4) Kết luận "PASS, sẵn sàng cut-over" của tester có gì sai về logic?`,
+      answer: `**Tóm tắt:** hai ô trống chính là **hai giả định mở của design**: (a) ngân sách kết nối PostgreSQL khi {{replicas=12}} (giả định #2), (b) bộ nhớ thật của container ở đỉnh (giả định #1). Cả hai đều "xanh" trong báo cáo vì báo cáo chỉ nhìn **heap** và chỉ chạy ở cấu hình không đụng ngưỡng. Kết luận PASS của tester sai ở chỗ: nó **suy từ "không thấy lỗi" thành "không có lỗi"** trong khi phép đo quyết định chưa được thực hiện. 4 giây lỗi trong chaos là bài học thứ ba: chưa có {{preStop}} hiệu lực (R3) nên pod chết giữa request.
+
+### 1. Hai ô trống ↔ hai giả định
+| Ô trống | Giả định nó kiểm tra | Nếu bỏ, hậu quả |
+|---|---|---|
+| capacity DB khi 12 replica | "pool 20/pod là ổn" (#2) | 12×20=240, 16×20=320 > {{max_connections=200}}: PostgreSQL từ chối {{FATAL: sorry, too many clients already}}; các pod mới không mở được kết nối; pool wait → request chờ {{connectionTimeout}} 30 s → 504 hàng loạt |
+| memory theo working set ở đỉnh | "1Gi đủ vì heap 590 MB" (#1) | RSS gồm heap + metaspace + thread + direct buffer; khi sale, Tomcat busy 176–200 thread (≈+180 MB stack) và Netty/Kafka/Lettuce phình buffer → vượt 1Gi → **OOMKilled**, exit 137, restart, pod khác nhận thêm tải → **cascade** |
+Lý do staging "xanh": 900 VU chỉ tạo ~68–90 thread busy/pod (đúng p95 ngày thường), heap p95 590 MB — **đúng như đã đo**, và chưa ai hỏi "còn RAM nào nằm ngoài heap". Node group staging chỉ 3 máy nên pod không bao giờ vượt 7, vì vậy {{pg_stat_activity}} chưa chạm 200.
+
+### 2. Thiết kế lại gói test: đo cái sẽ giết bạn
+- **Kiến trúc test = kiến trúc thật**: {{replicas}} và {{maxReplicas}} như prod, DB snapshot cùng cỡ, và **cùng {{max_connections}}**. Nếu không có DB to thì phải kiểm bằng phép tính ngân sách kết nối và ghi rõ giới hạn của kết luận.
+- **Ép kịch bản sale, không chỉ RPS**: thêm bài "2.000 người mở giỏ + 400 checkout/giây + 60 report/xuất hàng loạt" để đẩy **thread** và **direct buffer**, không chỉ đẩy CPU.
+- **Điều kiện pass về bộ nhớ** (bắt buộc, có dashboard; PromQL viết nguyên văn để người khác chạy được):
+~~~text
+max_over_time(container_memory_working_set_bytes{pod=~"order-service.*", container="order-service"}[10m])
+  / on(pod) kube_pod_container_resource_limits{resource="memory"}        <  0,80   (bậc đỉnh, soak 45 phút)
+increase(kube_pod_container_status_restarts_total{reason="OOMKilled"}[15m])          ==  0
+~~~
+  và một lần lấy NMT trong soak: chạy {{jcmd 1 VM.native_memory summary}} qua debug container/sidecar rồi in bảng phân bổ — heap không phải mục duy nhất được xem.
+- **Điều kiện pass về DB**: {{SELECT count(*) FROM pg_stat_activity}} ≤ 0,7 × {{max_connections}} ở {{replicas: 16}}; {{pg_stat_activity}} không có {{idle in transaction}} tuổi > 60 s; Hikari {{hikaricp_connections_pending}} == 0 (Micrometer có sẵn metric này — chính là cái sẽ báo trước 504).
+- **Chaos có chủ đích** (không chỉ delete pod): {{kubectl drain node --ignore-daemonsets --delete-emptydir-data}} để kiểm PDB và warmup cache; thêm 200 ms latency DB bằng chaos-mesh hoặc iptables để **chứng minh liveness không bị sập** (bài kiểm tra cho R1); Kafka rebalance khi scale.
+- **Test HPA hai chiều**: scale-up dưới tải tăng bậc và scale-down khi tải giảm, xem có **dao động** (flapping, lên xuống liên tục) không.
+- Đưa hai ô trống thành **điều kiện go-live** (definition of done) chứ không phải checklist tự nguyện: nếu không đo thì không cut-over.
+
+### 3. Chaos log nói gì
+- 4 giây lỗi = **khoảng trống rút traffic**: pod bị xoá, kubelet dừng container ngay (preStop không có tác dụng vì R3 — field lifecycle không render), trong khi ALB cần 1–5 s để deregister. Khách nhận 502/{{connection reset}} ở đúng cửa sổ đó.
+- 1 checkout đang chạy (3,1 s) chết giữa chừng: với SIGTERM + {{server.shutdown=graceful}} + grace 45 s, request này **đã được chạy nốt**; ở đây pod nhận SIGTERM rồi tắt gần như ngay vì không chờ preStop và Tomcat không được cấu hình drain — kiểm lại {{spring.lifecycle.timeout-per-shutdown-phase}} có lớn hơn request dài nhất.
+- HPA mất ~70 s: chu kỳ đánh giá mặc định 15 s + {{behavior.scaleDown.stabilizationWindowSeconds}} mặc định **300 s** cho scale-down, scale-up mặc định cộng thêm cửa sổ 0 s nhưng vẫn cần vài cycle để CPU trung bình vượt 70%. Nói cho dễ hiểu: **HPA không phải là autoscale theo QPS tức thời**; nó phản ứng sau khi tải đã kịp làm metrics đổi. Với sale có nhịp tăng đột ngột (flash sale mở lúc 22:00), HPA luôn chậm một nhịp → phải kết hợp: đặt {{minReplicas}} theo dự báo (schedule trước 21:30) hoặc KEDA theo RPS/queue, và chỉnh {{behavior}} cho scale-up nhanh ({{stabilizationWindowSeconds: 0}}, {{policies}} cho phép +50%/15 s hoặc hơn).
+
+### 4. Lỗi logic của "PASS"
+Báo cáo chứng minh *"không phát hiện lỗi trong kịch bản đã chạy"*, trong khi **kịch bản đã chạy chưa chạm hai ngưỡng** mà chính design ghi là giả định. Cách nói đúng: *"PASS cho các điều kiện A, B, C; chưa chứng minh D (memory đỉnh) và E (capacity DB) vì thiếu môi trường"*. Và khi D, E chưa chứng minh, phải đưa **một trong hai** lựa chọn: đo bổ sung, hoặc thiết kế phòng vệ (limit 2Gi + pool 10 + maxReplicas 8 cho tới khi đo xong).
+
+> Senior tip: với migration, thứ cần test nhất không phải tính năng mà là **các ngưỡng tài nguyên và các trạng thái chuyển tiếp**: pod chết, node rút, DB chậm, pool hết kết nối, working set chạm trần. Ba câu phải trả lời được bằng số trước go-live: *nếu 16 pod cùng chạy thì DB có bao nhiêu kết nối; nếu sale tới thì mỗi pod ăn bao nhiêu RAM thật; nếu một pod biến mất tức thì thì khách có thấy lỗi không*.
+`,
+      pitfalls: ['Kết luận "không thấy lỗi" = "không có lỗi"', 'Đo heap thay vì working set', 'Load test ở replicas thấp hơn maxReplicas', 'Staging dùng DB nhỏ hơn nên không chạm max_connections', 'Tin HPA scale nhanh như QPS spike']
+    },
+    {
+      key: 'deploy',
+      title: 'Cut-over: dịch traffic từ VM sang cluster từng nấc, trong 6 ngày',
+      role: 'Bạn và SRE điều phối cut-over trước thềm sale 11.11',
+      story: `Sản phẩm đã sẵn sàng trên staging. Kế hoạch được duyệt: **hai đường vào cùng chạy song song** — giữ 4 VM, thêm cluster, và chia traffic ở tầng **AWS ALB** bằng **weighted target group** (mỗi target group có trọng số, ALB chia request theo tỉ lệ). Mục tiêu: 100% traffic vào Kubernetes trước 2026-11-08 để ngày sale 11.11 chạy hoàn toàn trên cluster. Vì "HPA phản ứng chậm" (bài học giai đoạn test), SRE quyết định hai việc: nâng {{minReplicas}} lên 10 cho ngày sale, và **bật auto-sync cho production** để PR cấu hình được áp ngay không cần người bấm.`,
+      artifacts: [
+        { name: 'migration-plan.txt', lang: 'text', content: `CUT-OVER order-service: VM -> EKS     (D-Day = 2026-11-11 sale 11.11)
+Cơ chế: ALB api.shopviet.vn có 2 target group
+  tg-legacy  : 4 instance VM (10.0.1.11-14:8080)
+  tg-k8s     : IP pod (target-type ip, do AWS Load Balancer Controller duy trì)
+Chia traffic bằng trọng số; health check cả hai TG trỏ /actuator/health/readiness.
+
+Bước  Thời điểm         tg-k8s  tg-legacy  Điều kiện qua cửa (gate)                    Người trực
+T0    11-02 10:00       5%      95%        không 5xx tăng quá 0,05%; p99 k8s <= 1,2 x VM  dev+SRE
+T1    11-03 10:30      20%      80%        lỗi nghiệp vụ 0; lag Kafka không đổi          dev+SRE
+T2    11-04 20:00      50%      50%        giờ cao điểm tối; memory working set an toàn  lead+dev+SRE
+T3    11-06 10:00      80%      20%        soak 24h không restart                       lead+SRE
+T4    11-08 09:00     100%       0%        VM giữ 72h để roll-back tức thì              lead+dev+SRE
+Rollback: hạ trọng số tg-k8s về mức cũ (30 giây có hiệu lực), không cần deploy lại.
+GHI CHÚ QUYẾT ĐỊNH D5: minReplicas 6 -> 10 cho ngày sale; auto-sync prod BẬT (02:11 SRE).
+` },
+        { name: 'shift-traffic.sh', lang: 'bash', content: `# chia lại traffic giữa hai target group của cùng một listener
+# ALB tự điều phối theo trọng số; thay đổi có hiệu lực gần như ngay, KHÔNG restart gì cả
+LB_ARN=arn:aws:elasticloadbalancing:eu-central-1:123456789012:loadbalancer/app/api-gw/50dc6c495c0c9188
+TG_K8S=arn:aws:elasticloadbalancing:eu-central-1:123456789012:targetgroup/tg-k8s/70aba48bd9c7fd0
+TG_OLD=arn:aws:elasticloadbalancing:eu-central-1:123456789012:targetgroup/tg-legacy/1f2e3d4c5b6a7980
+
+# T1: 20% sang cluster. --default-actions có danh sách lồng nhau nên khai báo bằng file JSON
+LISTENER=$(aws elbv2 describe-listeners --load-balancer-arn $LB_ARN --query "Listeners[0].ListenerArn" --output text)
+cat > action.json <<'EOF'
+{ "Type": "forward",
+  "TargetGroups": [
+    { "TargetGroupArn": "TG_K8S", "Weight": 20 },
+    { "TargetGroupArn": "TG_OLD", "Weight": 80 }
+  ] }
+EOF
+sed -i -e "s|TG_K8S|$TG_K8S|" -e "s|TG_OLD|$TG_OLD|" action.json
+aws elbv2 modify-listener --listener-arn $LISTENER --default-actions file://action.json
+
+# kiểm tra trọng số đã áp chưa
+aws elbv2 describe-listeners --load-balancer-arn $LB_ARN \\
+  --query "Listeners[].DefaultActions[].ForwardConfig.TargetGroups[].{tg:TargetGroupArn,w:Weight}"
+
+# gate: so sánh 5xx và p99 giữa hai target group trong 15 phút gần nhất
+# (ALB ghi metric HTTPCode_Target_5XX_Count / TargetResponseTime_p99 theo target group)
+` },
+        { name: 'argocd-sync.log', lang: 'text', content: `argocd app get orders/order-service -o wide
+SYNCPOLICY  automated  prune=true  selfHeal=true
+SYNC        Synced to HEAD (rev 4c71d90)   HEALTH  Healthy   2026-11-08T09:02:14Z
+
+OPERATION HISTORY (trích)
+  8f3c1ab  2026-11-08 08:58:02  Sync OK   Deployment/order-service   image 1.14.2 -> 1.14.3
+  4c71d90  2026-11-08 09:01:40  Sync OK   HorizontalPodAutoscaler     minReplicas 6 -> 10 (auto-sync, không ai bấm)
+  ---      2026-11-11 02:11:07  Sync OK   ConfigMap order-service-config  (SPRING_DATASOURCE_URL đổi, tự động)
+kubectl rollout status deploy/order-service -n orders --timeout=180s
+deployment "order-service" successfully rolled out (10 pod, maxUnavailable 0, surge 1)
+` }
+      ],
+      task: `1) Vì sao chọn **weighted target group** thay vì blue/green hay DNS? Trình bày các bước cut-over và **cửa kiểm tra** ở mỗi bước. 2) Liệt kê những thứ phải theo dõi trong 15 phút đầu sau mỗi nấc (chỉ số cụ thể + ngưỡng). 3) Rò hai quyết định trong câu chuyện: {{auto-sync}} cho prod và {{minReplicas: 10}} — bạn đồng ý không, vì sao? 4) Session của khách: trong lúc 50%/50% thì chuyện gì xảy ra với người đang mua hàng, và bạn xử lý thế nào? 5) Kế hoạch rollback và điều kiện dừng.`,
+      answer: `**Tóm tắt:** Cut-over bằng trọng số ALB là lựa chọn đúng ở đây: đổi **giây**, không cần deploy, rollback chỉ là hạ trọng số, và hai đường vào dùng **chung một database** nên dữ liệu không phân mảnh. Điều phải nói thẳng: {{auto-sync}} cho production là quyết định **tiện một lần và nguy hiểm lâu dài** (mọi PR cấu hình, kể cả sai, được áp không người bấm); còn {{minReplicas: 10}} nhân với pool 20 = **200 kết nối** = đúng trần của PostgreSQL — tức là cut-over này **tự tay nạp sẵn ngòi nổ** cho ngày sale. Session: khi {{ip_hash}} của Nginx cũ và cân bằng tải của ALB mới cùng tồn tại, người mua phải được **dính vào một bên** cho tới khi xong phiên — và điều đó chỉ ổn nếu session đã chuyển sang Redis (ORD-411).
+
+### 1. Vì sao weighted target group, không phải blue/green hay DNS
+| Cách | Cách hoạt động | Độ mịn | Rollback | Vấn đề ở đây |
+|---|---|---|---|---|
+| **Trọng số target group (chọn)** | ALB chia request giữa TG VM và TG pod theo tỉ lệ | từng 1% | hạ trọng số, ~30 s | phải bật {{target-type: ip}}, giữ cả 2 TG health check |
+| Blue/green hai ALB | DNS/CNAME trỏ ALB này hoặc ALB kia | 0% hoặc 100% (trừ khi có 2 ALB) | đổi CNAME | tốn thêm ALB, cắt thô, không có "5% xem thử" |
+| **DNS weighted (Route53 weighted record)** | chia theo TTL | thô, phụ thuộc TTL | TTL 60–300 s, client cũ vẫn bám | khách mobile cache DNS, không rút về nhanh |
+| Reverse proxy tự viết | Nginx upstream có trọng số | mịn | nhanh | thêm một tầng để tự vận hành, không ai trực |
+Chọn target group vì bạn **đã có ALB**, đã có AWS Load Balancer Controller, và cần nấc 5/20/50/80/100.
+
+### 2. Quy trình một nấc (lặp lại cho T0..T4)
+1. **Trước**: Argo CD Synced + Healthy; {{kubectl get pods -n orders -o wide}} đủ {{minReplicas}}, không pod nào {{Pending}}/{{Restart>0}}; {{kubectl top pods}} working set < 70% limit ở tải hiện tại; {{pg_stat_activity}} còn dư; runbook rollback mở sẵn ở terminal khác.
+2. **Dịch trọng số** (bash artifact) → ghi **timestamp + %** vào kênh trực ban.
+3. **15 phút cửa**: theo dõi cả hai TG riêng biệt (ALB phát metric **theo target group** — đây là lý do chọn ALB):
+   - {{HTTPCode_Target_5XX_Count}} của tg-k8s ≤ tg-legacy; {{TargetResponseTime}} p99(k8s) ≤ 1,2 × p99(VM).
+   - **Nghiệp vụ**: số đơn tạo mỗi phút (metrics {{orders_created_total}}) không giảm; lag Kafka {{consumer_lag}} không tăng.
+   - Hạ tầng: pod restart = 0, OOMKilled = 0, CPU throttling < 5%, {{hikaricp_connections_pending}} = 0, {{hikaricp_connections_active}}/pool < 0,8.
+   - Log: không có {{CannotGetJdbcConnectionException}}, {{ConnectionTimeoutException}}, {{Read-only file system}}.
+4. **Qua cửa** thì đi tiếp; **không qua** → hạ về mức cũ trong 30 s, rồi **mới** điều tra (không điều tra khi đang cháy).
+5. Ghi vào sổ: % / số liệu / quyết định / người quyết.
+
+### 3. Hai quyết định — phản biện
+**{{auto-sync}} + {{selfHeal}} cho prod: không đồng ý.** Nó biến mọi commit cấu hình thành deploy không người xem, và {{selfHeal}} sẽ **ghi đè** mọi cứu cháy khẩn cấp bằng {{kubectl}}/{{kubectl scale}}/env override (đúng cái bạn cần lúc 22:00). Cách chấp nhận được: auto-sync **kèm {{syncWindows}}** (chỉ sync 09:00–17:00 ngày làm việc, khoá trước/sau ngày sale), hoặc manual sync cho prod và auto-sync cho staging. Trong log có dòng "09:01:40 Sync OK HPA minReplicas 6 → 10 (auto-sync, không ai bấm)" — minh hoạ chính xác kiểu thay đổi năng lực hệ thống đi vào prod mà không ai ký.
+**{{minReplicas: 10}}: đúng về ý định, sai về hệ quả.** Ý định tốt (HPA phản ứng chậm nên mồi trước sức chứa). Nhưng nó **vô hiệu hoá chính phép kiểm tra** bị bỏ ở giai đoạn test: 10 pod × 20 kết nối = 200 = {{max_connections}} của PostgreSQL, tức hệ thống **tự khoá mình** ngay khi có thêm pod. Phải tính ngược: với {{max_connections=200}} và dự phòng 20, {{10 pod → pool/pod ≤ 18}}, {{16 pod → ≤ 11}}. Hoặc giảm pool xuống 8–10 và đặt {{maxReplicas}} = 12 cho tới khi có PgBouncer/RDS Proxy.
+
+### 4. Session trong lúc chia traffic
+Rủi ro: khách đang ở VM (session trong heap của JVM VM) bị ALB chuyển sang pod → pod **không biết giỏ hàng**, khách mất đơn và mất cả bước thanh toán đang làm. Đây là lý do ORD-411 (Spring Session Redis) là **điều kiện tiên quyết**, và vì sao không được cut-over khi nó chưa xong. Sau khi có Redis, các tình huống còn lại:
+- **Cookie/domain**: JSESSIONID phát từ VM có {{Secure}}, {{HttpOnly}}, {{SameSite=Lax}} và domain {{api.shopviet.vn}}; ALB phải truyền {{Cookie}} nguyên vẹn (mặc định có) và app phải tin {{X-Forwarded-Proto}} nếu không sẽ sinh cookie HTTP làm mất session ở lượt kế.
+- **Sticky ở ALB**: bật {{stickiness.enabled=true}} nếu còn service phụ thuộc session-cục-bộ; nếu session đã ở Redis thì **tắt** stickiness để có cân bằng tải thật.
+- **Giảm rủi ro khi đổi nấc**: tăng trọng số **trong giờ thấp điểm** (T2 chọn 20:00 là hơi muộn vì 20:30 vẫn cao điểm), và có cảnh báo riêng cho "checkout mất giỏ".
+- Đơn đã ghi DB thì an toàn vì DB chung — chỉ phần **trạng thái trong phiên** là rủi ro.
+
+### 5. Rollback và điều kiện dừng
+- **Rollback = hạ trọng số** tg-k8s (0%), không rollback image, không đụng DB: vì schema và dữ liệu là chung, code mới phải **tương thích ngược** với schema cũ (nguyên tắc: migration thêm cột/nullable, không đổi tên, không thu hẹp kiểu). Nếu ngày nào đó phải rollback **cả code** thì đó là {{git revert}} ở repo ứng dụng → Argo sync → rollout.
+- **Điều kiện dừng (cutoff)**: ≥ 0,5% 5xx kéo dài 5 phút; hoặc {{orders_created/phút}} giảm > 10% trong 10 phút; hoặc bất kỳ pod nào OOMKilled; hoặc {{pg_stat_activity}} > 0,9 × {{max_connections}}; hoặc CSKH báo ≥ 5 khách cùng triệu chứng.
+- **Giữ VM 72 giờ** sau 100%, Nginx còn chạy, nhưng **tắt path ghi {{/var/data/invoices}} ở VM** để tránh hai bản ghi dữ liệu ở hai nơi; hoá đơn của VM phải được copy/đã ở S3.
+- Sau T4: xoá VM theo lịch đã cam kết, **cập nhật runbook** (không còn "ssh vào vm-order-1"), báo cáo lại các con số baseline đã hứa ở giai đoạn requirement.
+
+> Senior tip: cut-over an toàn = **từng nấc nhỏ + cửa kiểm tra định lượng + quyền rút lại trong 30 giây**. thứ giết các migration không phải Kubernetes mà là hai thứ: trạng thái dùng riêng (session, file cục bộ) và ngân sách tài nguyên dùng chung (kết nối DB) — cả hai đều không lộ ra ở 5%, và đều lộ ra ở 100% + ngày sale.`,
+      pitfalls: ['Bật auto-sync/selfHeal cho prod rồi cứu cháy bằng kubectl', 'Mồi minReplicas cao mà không tính lại ngân sách kết nối', 'Cut-over khi session chưa ở Redis', 'Gate chỉ nhìn 5xx mà không nhìn số đơn tạo mỗi phút', 'Rollback bằng cách xoá cluster thay vì hạ trọng số', 'Quên tắt đường ghi đĩa của VM sau 100%']
+    },
+    {
+      key: 'bugfix',
+      title: '22:00 ngày 11.11: pod bị OOMKilled, PostgreSQL từ chối kết nối',
+      role: 'Bạn là người trực chính, lead + SRE hỗ trợ',
+      story: `2026-11-11 22:00, flash sale mở. RPS tăng từ 620 lên **2.480** trong 6 phút. {{minReplicas}} = 10; HPA nâng tiếp lên 16. Từ 22:07 khách bắt đầu thấy "không đặt được đơn"; {{kubectl get pods}} cho thấy một số pod restart, một số ở {{CrashLoopBackOff}}. Trong cuộc họp khẩn có hai luồng phân tích trái nhau: *"app bị rò rỉ bộ nhớ"* và *"DB hết kết nối, không phải lỗi mình"*. Bạn phải tìm **nguyên nhân gốc**, không phải triệu chứng đến trước.`,
+      artifacts: [
+        { name: 'kubectl-describe-pod.txt', lang: 'text', content: `$ kubectl describe pod order-service-7d9c8f5b6d-x4tqk -n orders
+Name:         order-service-7d9c8f5b6d-x4tqk
+Namespace:    orders
+Node:         ip-10-0-14-22.eu-central-1.compute.internal/10.0.14.22
+Start Time:   Wed, 11 Nov 2026 21:58:04 +0700
+Labels:       app.kubernetes.io/name=order-service  pod-template-hash=7d9c8f5b6d
+Status:       Running
+IP:           10.0.17.88
+Containers:
+  order-service:
+    Container ID:  containerd://9f2c1e7a55d0
+    Image:         123456789012.dkr.ecr.eu-central-1.amazonaws.com/order-service:1.14.3
+    State:          Waiting
+      Reason:       CrashLoopBackOff
+    Last State:     Terminated
+      Reason:       OOMKilled
+      Exit Code:    137       <-- 128 + 9 (SIGKILL): kernel giết, JVM không kịp ghi gì
+      Started:      Wed, 11 Nov 2026 21:58:09 +0700
+      Finished:     Wed, 11 Nov 2026 22:19:04 +0700
+    Ready:          False
+    Restart Count:  5
+    Limits:
+      cpu:     2
+      memory:  1Gi
+    Requests:
+      cpu:     500m
+      memory:  768Mi
+    Startup:     tcp-socket :8080  delay=0s timeout=1s period=5s #success=1 #failure=24
+    Readiness:   http-get https://:8081/actuator/health/readiness  period=10s #failure=3
+    Liveness:    http-get https://:8081/actuator/health/liveness    period=10s #failure=3
+    Environment:
+      SPRING_PROFILES_ACTIVE:  production
+      JAVA_TOOL_OPTIONS:       -Xmx768m -XX:+UseG1GC -XX:NativeMemoryTracking=summary
+      DB_PASSWORD:             <set to a secret>
+    Mounts: /tmp from tmp (rw), /var/run/secrets/... from kube-api-access (ro)
+Events:
+  Warning  OOMKilling  4m12s  kubelet  Container order-service exceeded its memory limit and was killed
+  Normal   Started      4m11s  kubelet  Container started
+  Warning  BackOff      98s    kubelet  Back-off restarting failed container order-service
+` },
+        { name: 'working-set-vs-heap.txt', lang: 'text', content: `Grafana (Prometheus), pod order-service-7d9c8f5b6d-x4tqk, 22:00 -> 22:20
+promql A: container_memory_working_set_bytes{pod="...", container="order-service"}
+promql B: jvm_memory_used_bytes{area="heap"}
+promql C: rate(container_cpu_cfs_throttled_seconds_total{pod="..."}[1m])
+          thời điểm     A (working set)   B (heap used)   thread busy   buffer trực tiếp
+22:00     812 MiB        512 MiB            62             96 MiB
+22:05     905 MiB        561 MiB           118            138 MiB
+22:11     1.003 MiB      604 MiB           171            196 MiB
+22:16     1.041 MiB      618 MiB           200 (max)      236 MiB
+22:19:04  BI GIET        (mất)              -              -
+limit 1Gi = 1024 MiB. Heap (đường B) không bao giờ vượt 768 MiB (Xmx), nhưng đường A vượt trần.
+C: throttling tăng từ 22:09 (CPU limit 2 core, node đông pod, GC đang cần CPU).
+` },
+        { name: 'nmt-after-fix.txt', lang: 'text', content: `# đo lại 22:55: pod đã nâng limit 2Gi, replicas đã hạ về 8, tải vẫn 2.100 RPS (80% sale), pool 8
+# điểm quan trọng: lúc limit còn 1Gi thì không bao giờ thấy con số thật, vì pod bị giết TRƯỚC khi
+# JVM kịp chiếm đủ bộ nhớ nó cần. Nới trần ra thì nhu cầu thật hiện về 1,45 GiB.
+$ jcmd 1 VM.native_memory summary
+Total: reserved=2.914MB, committed=1.346MB  (rút gọn các mục, đơn vị MiB)
+  Java Heap (committed=702)      <- G1, Xmx768 gần bão hoà, GC chạy gần liên tục
+  Class     (committed=196)      <- Metaspace: Spring Boot 3 + proxy CGLIB/ASM + lambda
+  Thread    (committed=168)      <- 168 thread x 1 MiB stack (Xss mặc định trên Linux x86-64)
+  Code      (committed= 82)      <- code cache JIT (profiled + non-profiled)
+  GC        (committed= 58)      <- remembered set / card table, tỉ lệ với size heap
+  Internal  (committed= 62)      <- DirectByteBuffer, Unsafe (Netty: Lettuce Redis, Kafka client)
+  Symbol    (committed= 34)      <- bảng symbol / string table
+  Arena+Other (committed= 12)
+  -------------------------------------------------  NMT committed ~ 1.314 MiB
+BufferPoolMXBean "direct": used = 214 MiB   (một phần đã nằm trong Internal, không cộng quy toàn)
+ps -o rss=  : 1.486.340 KiB  =  1,45 GiB   -> đây là mức tiến trình THỰC SỰ cần, lớn hơn limit cũ
+=> NGÂN SÁCH ĐÚNG: heap 700 + ngoài heap ~700  =>  limits tối thiểu 2Gi, requests 1.5Gi
+` },
+        { name: 'postgresql.log', lang: 'text', content: `2026-11-11 22:07:12 +07 LOG:  connection received: host=10.0.17.88 port=51234
+2026-11-11 22:07:12 +07 FATAL:  remaining connection slots are reserved for non-replication superuser connections
+        (đang có 197 kết nối; max_connections=200, superuser_reserved_connections=3)
+2026-11-11 22:07:13 +07 FATAL:  sorry, too many clients already   (một ứng dụng khác cùng khối)
+2026-11-11 22:11:40 +07 LOG:  execute <unnamed>: INSERT INTO orders ...  duration: 4.211 s   (nằm trong hàng đợi ghi)
+2026-11-11 22:12:02 +07 LOG:  checkpoint completing: wrote 41.293 buffers
+2026-11-11 22:19:31 +07 LOG:  connection received: host=10.0.18.14 port=51980
+2026-11-11 22:19:31 +07 FATAL:  remaining connection slots are reserved ...   (pod vừa khởi động lại, mở 20 kết nối)
+` }
+      ],
+      task: `1) Chỉ ra **chuỗi nhân quả** từ 22:00 tới 22:19: cái nào là nguyên nhân gốc, cái nào là triệu chứng, mắt xích nào đến từ **giả định #1**, mắt xích nào từ **giả định #2** và quyết định nào ở giai đoạn deploy đã nạp sẵn ngòi nổ. 2) Giải thích cho người mới vì sao "heap không vượt Xmx" mà pod vẫn bị giết — liệt kê mọi thành phần của RSS. 3) Thứ tự **5 việc bạn làm trong 15 phút đầu** (kèm lệnh cụ thể) và vì sao theo thứ tự đó. 4) Sửa tận gốc: ngắn hạn (tuần này) và dài hạn (quý sau), mỗi việc nêu trade-off. 5) Bạn sẽ thêm cảnh báo nào để chuyện này không lặp lại vô danh?`,
+      answer: `**Tóm tắt:** nguyên nhân gốc **không phải "app rò rỉ bộ nhớ"** mà là **ngân sách kết nối PostgreSQL bị vỡ trước**, kéo theo hai hậu quả dây chuyền. Chuỗi: 22:00 RPS x4 → HPA + mồi sẵn {{minReplicas: 10}} → 10 pod × pool 20 = 200 kết nối, tức chạm {{max_connections}} trong khi 3 slot cuối đã dành riêng cho superuser → từ 22:07 request phải **chờ lấy kết nối** (Hikari queue) → p99 dựng, request giữ **thread Tomcat** lâu hơn → busy threads 62 → 200 → mỗi thread ăn 1 MiB stack (+138 MiB) và mỗi kết nối/in-flight request ăn **direct buffer** của Netty/Lettuce/Kafka (+140 MiB) → working set 1.041 MiB vượt {{limits.memory: 1Gi}} → kernel **giết bằng SIGKILL** (exit 137) → mất pod giữa sale → các pod còn lại chịu thêm tải và **mở lại 20 kết nối khi boot** → DB càng nghẽn → CrashLoop. Hai giả định của design (#1 bộ nhớ, #2 kết nối) cùng nổ, **cái này nuôi cái kia**.
+
+### 1. Tách nguyên nhân gốc khỏi triệu chứng
+| Mốc | Hiện tượng | Vai trò |
+|---|---|---|
+| 22:00 | RPS 620 → 2.480 | kích hoạt (tải thật, hoàn toàn bình thường với business) |
+| 22:05 | HPA 10 → 16 pod | hệ quả của quyết định {{minReplicas: 10}} + pool 20/pod |
+| 22:07 | PostgreSQL từ chối kết nối | **nguyên nhân gốc #1** (giả định #2) |
+| 22:07+ | {{hikaricp_connections_pending}} tăng, p99 400 ms → 4 s | cầu nối: hết kết nối → chờ → nghẽn thread |
+| 22:11 | thread 171, direct 196, working set 1.003 MiB | **nguyên nhân gốc #2** (giả định #1: limit chỉ tính heap) |
+| 22:16 | busy threads = 200 (maxThreads), working set 1.041 | trần bộ nhớ bị chạm |
+| 22:19 | OOMKilled, exit 137, restart 5 | **triệu chứng**, và là ngòi cho vòng lặp |
+| 22:19+ | CrashLoopBackOff, 5 pod mất, load dồn sang pod còn | phóng đại (cascade) |
+Chứng cứ quyết định: heap (đường B) **không bao giờ vượt 768 MiB**, vậy mà đường A vượt trần → phần vượt nằm **ngoài heap**. Đây là điểm phân biệt "JVM rò rỉ" với "khai sai limit": nếu rò rỉ heap thì B phải leo tới Xmx rồi {{OutOfMemoryError}} **trong** JVM (có {{java.lang.OutOfMemoryError: Java heap space}} trong log), chứ không chết im lặng kiểu 137.
+
+### 2. Vì sao heap < Xmx mà vẫn chết: toàn bộ RSS của một JVM
+{{limits.memory}} áp cho **cả container** = mọi byte tiến trình java chiếm, không phải chỉ heap:
+1. **Java heap** — nơi object sống. Ở đây {{Xmx768m}}, dùng thật tới 702 MiB.
+2. **Metaspace (Class)** — định nghĩa class đã nạp: Spring Boot 3 + CGLIB/ASM proxy + hàng nghìn lambda ≈ **190–200 MiB**, và **không bị quản bởi Xmx**.
+3. **Thread stacks** — mỗi thread nền tảng một stack {{Xss}} (mặc định 1 MiB trên Linux x86-64): 60 thread = 60 MiB; **200 thread = 200 MiB**. Vì thế "số thread" là một **biến bộ nhớ**, không chỉ biến CPU. (Virtual threads JDK 21 không giữ 1 MiB mỗi thread, nhưng chúng vẫn cần carrier thread; trên JDK 21 khối {{synchronized}} khi blocking còn **pin** carrier — JEP 491 ở JDK 24 mới bỏ.)
+4. **Code cache** — JIT compile ≈ 80 MiB.
+5. **Cấu trúc GC** — remembered set/card table ≈ 55–60 MiB, tỉ lệ với heap.
+6. **Direct / off-heap buffer** — {{ByteBuffer.allocateDirect}} mà **Netty** dùng: Lettuce (Redis), Kafka client, gRPC. Cái này **không nằm trong Xmx**; muốn nó có trần riêng thì phải đặt {{-XX:MaxDirectMemorySize}} (nếu không nó có thể ăn tới gần bằng Xmx).
+7. **Internal/Symbol, glibc malloc arenas, agent** (APM/OTel javaagent thêm 50–150 MiB), thư viện native (Lucene mmap, compression).
+Cộng theo NMT artifact: 702 + 196 + 168 + 82 + 58 + 62 + 34 + 12 ≈ **1.314 MiB** + dấu vết malloc → RSS 1,45 GiB. Trần **1.024 MiB**. Lẽ ra phải biết trước: metrics-14d.txt đã ghi RSS 1,34–1,48 GB trên VM.
+Chú ý cách hai đường số khớp với nhau, vì đây là bẫy đọc dashboard: khi còn limit 1Gi, working set **bị cắt cụt** ở 1.041 MiB — pod bị giết đúng chỗ trần, nên đồ thị không bao giờ kịp vẽ nhu cầu thật. Nới trần ra thì nhu cầu hiện về 1,45 GiB. Nói cách khác, *"đồ thị bộ nhớ đang xanh"* không phải bằng chứng an toàn nếu trần đặt thấp hơn cái app cần.
+**Vì sao trên VM không chết:** VM 2 GB **không có trần cứng**; JVM vượt 1,5 GB thì Linux chỉ swap ~120 MB và chậm đi chút, không ai giết. Kubernetes thì **giết ngay khi chạm limit** (đúng là hành vi mong muốn của trần, nhưng trần đặt sai). Bài học khái niệm: trên VM, lỗi cấu hình bộ nhớ biểu hiện bằng **sự chậm**; trên Kubernetes, bằng **cái chết**.
+
+### 3. Mười lăm phút đầu — thứ tự và lệnh
+Nguyên tắc: **mở khoá DB trước, rồi mới nới bộ nhớ, rồi mới phục hồi sức chứa**. Làm ngược (khởi động lại 16 pod) sẽ **nhân đôi** số kết nối đang chờ.
+1. **(22:20) Giảm cầu về kết nối trước tiên**: {{kubectl scale deploy/order-service -n orders --replicas=8}} để tổng nhu cầu về {{8 × 20 = 160 < 197}} kết nối dùng được — DB thở lại ngay, không cần deploy lại. Song song, chuẩn bị giảm pool xuống 8 bằng env {{SPRING_DATASOURCE_HIKARI_MAXIMUMPOOLSIZE}}=8 trong ConfigMap; **không rollout vội** vì pod mới vừa boot sẽ mở thêm pool kết nối khi DB còn đang nghẽn — rollout chỉ làm sau khi DB đã hạ nhiệt và còn đủ chỗ.
+2. ** Shed load (xả tải) có chủ đích**: bật/ thắt rate limit ở ALB ({{limit_req}} tương đương) hoặc tắt tính năng nặng không thiết yếu (xuất báo cáo đồng bộ, tìm kiếm nâng cao) bằng feature flag — bán được 70% đơn còn hơn chết 100%.
+3. **Nới trần bộ nhớ cho pod đang sống**: patch {{resources.limits.memory: 2Gi}} / {{requests.memory: 1536Mi}}. Lưu ý requests tăng → pod có thể **Không vừa node** → phải {{kubectl scale}} node group / cluster autoscaler trước: {{kubectl get nodes -o wide}}, {{kubectl top nodes}}. Vì vậy thứ tự là thêm node → nới limit.
+4. **Xác nhận bằng số**: {{kubectl get events -n orders --field-selector reason=OOMKilling}} hết; {{kubectl top pods -n orders}} ≤ 75% limit; {{SELECT count(*) FROM pg_stat_activity;}} < 0,7 × 200; {{hikaricp_connections_pending}} về 0; {{orders_created_total}} rate hồi.
+5. **Giữ nguyên hiện trường để điều tra**: {{kubectl get pod X -o yaml > incident/x.yaml}}, {{kubectl logs X --previous --tail=2000 > incident/x.log}}, heap dump **trên pod còn sống**: {{kubectl debug}} hoặc sidecar chạy {{jmap -dump:live}} (distroless không có shell → đây là lúc runbook phải có lệnh debug container), {{jcmd 1 GC.heap_info}}, {{jcmd 1 VM.native_memory summary}}. Chụp {{kubectl describe}} **trước khi** xoá pod — mất {{Last State: OOMKilled}} là mất chứng cứ.
+Cấm: {{kubectl edit}} tay để "sửa tạm" khi auto-sync đang bật — Argo sẽ ghi đè sau 3 phút. Đây là lúc {{selfHeal}} phản chủ; phải {{argocd app set orders/order-service --sync-policy none}} trong thời gian cứu cháy (và ghi lại vào incident).
+
+### 4. Sửa tận gốc
+**Ngắn hạn (tuần này)**
+- Ngân sách kết nối thành **hằng số có chủ đích**: {{maxReplicas}} = 12, {{maximumPoolSize}} = 12 → 144, cộng dự phòng batch/công cụ < 180. Kèm {{connectionTimeout}} thấp (5 s) + fallback nhanh, để thiếu kết nối → lỗi rõ ràng thay vì treo.
+- Bộ nhớ: {{limits.memory}} **2Gi**, {{requests.memory}} 1.5Gi (theo NMT), JVM {{-XX:MaxRAMPercentage=60.0}} bỏ {{-Xmx}} cứng, {{-XX:MaxDirectMemorySize=512m}} để off-heap có trần riêng, {{-XX:+HeapDumpOnOutOfMemoryError}} + {{-XX:HeapDumpPath=/tmp}} (emptyDir có {{sizeLimit}}). Lưu ý: flag dump **chỉ** chạy khi JVM tự ném OutOfMemoryError; bị kernel OOMKill thì không kịp gì cả — nên chứng cứ phải lấy từ metric working set + NMT, không từ heap dump.
+- Tắt {{auto-sync}}/{{selfHeal}} cho prod hoặc thêm **sync window** khoá quanh ngày sale.
+- Alert cần thêm (PromQL rút gọn, đặt trong dashboard OOM): working set/limit > 0,8 trong 5 phút; bộ đếm container bị OOMKilled tăng; {{pg_stat_activity}} > 0,75 × max_connections; {{hikaricp_connections_pending}} > 0 suốt 2 phút.
+- Runbook mục "OOMKilled" + mục "DB hết kết nối" có lệnh chép sẵn (kể cả lệnh debug distroless).
+**Dài hạn (quý sau)**
+- **PgBouncer hoặc RDS Proxy** đứng giữa: app mở hàng nghìn kết nối logic, DB chỉ giữ vài trăm kết nối vật lý. Caveat phải kiểm: chế độ **transaction pooling** phá tính năng cấp phiên ({{SET}}, advisory lock, {{LISTEN/NOTIFY}}, prepared statements của JDBC — cần {{prepareThreshold=0}} hoặc dùng session pooling cho job), và nó **không tạo thêm sức chứa DB thật** nếu nút cổ chai là CPU/IO của PostgreSQL.
+- HPA bằng **chỉ số dẫn đầu** (RPS/pod, {{consumer_lag}}) qua KEDA/custom metrics + {{behavior}} hợp lý; schedule nâng {{minReplicas}} trước flash sale thay vì mồi cố định.
+- **Right-sizing qua bài kiểm tra giới hạn**: mỗi quý một lần "sale diễn tập" tới 1,3 × đỉnh, đo working set, thread, kết nối — coi số liệu NMT là một artifact được version.
+- Tách thread pool theo loại việc (checkout nhẹ, report nặng), hoặc chuyển report sang worker riêng để 200 thread không bị một loại request giữ hết.
+- Cân nhắc **bỏ CPU limit** hoặc đặt theo số thật: {{container_cpu_cfs_throttled_seconds_total}} tăng từ 22:09 chứng tỏ throttle làm GC chậm lại, tức góp phần vào vòng xoáy.
+
+### 5. Sơ đồ chuỗi nhân quả (để kể trong phỏng vấn và postmortem)
+~~~seq
+title: Sale 11.11 — từ 4 giây tới CrashLoop
+actors: Khách | ALB | Pod order-service | HikariCP | PostgreSQL | kubelet
+Khách -> ALB: 2.480 RPS lúc 22:00
+ALB -> Pod order-service: traffic chia đều 16 pod
+Pod order-service -> HikariCP: xin kết nối, pool 20 mỗi pod
+HikariCP -> PostgreSQL: tổng nhu cầu 320 > max_connections 200
+PostgreSQL --> HikariCP: FATAL too many clients (22:07)
+HikariCP --> Pod order-service: chờ 4-30 s, thread bị giữ lại
+note Pod order-service..kubelet: 200 thread + direct buffer vượt trần 1Gi
+kubelet -> Pod order-service: SIGKILL, OOMKilled exit 137 (22:19)
+Pod order-service -> PostgreSQL: pod boot lại, mở thêm 20 kết nối
+note ALB..PostgreSQL: mất pod, pod còn lại chịu thêm tải, lặp lại
+~~~
+
+> Senior tip: với Java trên Kubernetes, hãy thuộc ba con số và ba câu: (1) **Xmx** chỉ là trần của heap, không phải của process — ngân sách process ≈ heap + 0,5–1,5 GiB tuỳ số thread và off-heap; (2) **HikariCP maximumPoolSize là per-instance**, nên {{số pod × pool}} phải nhỏ hơn {{max_connections}} trừ dự phòng — đây là lỗi làm việc với pool mà PostgreSQL **tự giết bạn**; (3) lỗi bộ nhớ ở VM là lỗi **mềm** (swap, chậm), ở container là lỗi **cứng** (137). Khi thấy exit 137 mà log không có {{OutOfMemoryError}}, đừng đổ cho "app rò rỉ" — chạy {{jcmd VM.native_memory summary}} rồi cộng từng mục.`,
+      pitfalls: ['Đổ cho "app rò rỉ bộ nhớ" khi heap không vượt Xmx', 'Scale thêm pod khi DB đã hết kết nối (pod mới mở thêm pool)', 'Nới limit mà không kiểm node còn chỗ', 'Sửa cháy bằng kubectl edit khi auto-sync đang bật', 'Mất chứng cứ vì xoá pod trước khi describe/logs --previous', 'Đặt pool to "cho nhanh" mà không tính theo số pod']
+    }
+  ],
+  interview: {
+    story: `**Situation** — Team Order của ShopViet vận hành order-service (Spring Boot 3.4, Java 21) trên 4 VM, sau Nginx {{ip_hash}}. Mỗi lần phát hành mất **1 giờ 51 phút**, cộng dồn **~9 phút** request rớt, và ngày sale 9.9 phải copy AMI thêm máy trong **40 phút**; một lần rollback mất 35 phút và vẫn lọt lỗi phí ship ra production.
+
+**Task** — Tôi là dev được giao viết design doc và dựng chart, cùng 1 SRE part-time, mục tiêu: đưa service lên **EKS** với **GitOps (Argo CD + Helm)**, không đổi nghiệp vụ, chi phí tăng tối đa 20%, cut-over xong trước ngày sale 11.11.
+
+**Action** — (1) Đổi đề án thành **con số**: lead time < 15 phút, chết 0 phút, thêm một bản < 2 phút, rollback < 3 phút; đo baseline 2 tuần trước khi làm. (2) Lập **kiểm kê phụ thuộc** và phát hiện 4 thứ chặn: session trong heap, hoá đơn PDF ghi đĩa, job {{@Scheduled}} không khoá phân tán, không có graceful shutdown — tách thành 4 ticket làm trước. (3) Thiết kế 9 đối tượng (Deployment, Service, ALB Ingress, ConfigMap/Secret, 3 probe, requests/limits, HPA, PDB) và ghi rõ **2 giả định mở** kèm cách kiểm chứng: bộ nhớ (lấy heap 590 MB làm chuẩn) và ngân sách kết nối PostgreSQL (giữ pool 20/pod). (4) Dockerfile multi-stage distroless, non-root, exec form để java nhận SIGTERM. (5) Review bắt được 4 blocker — trong đó có nhận xét "1Gi chỉ đủ cho heap, còn ~1,4 GB RSS chưa được giải thích" nhưng bị **hoãn** để "xác nhận bằng load test". (6) Load test k6 ở 2.610 RPS xanh, nhưng hai ô **capacity DB** và **working set ở đỉnh** bị bỏ vì môi trường staging nhỏ hơn. (7) Cut-over bằng **weighted target group** 5→20→50→80→100% qua 6 ngày, mỗi nấc có cửa kiểm tra 5xx/p99/số đơn mỗi phút; rollback = hạ trọng số trong 30 giây.
+
+**Result** — Lead time **1 giờ 51 phút → 11 phút**, thời gian chết khi phát hành **9 phút → 0**, thêm một bản **40 phút → 90 giây**, MTTR rollback **35 phút → 2 phút** (git revert), hạ tầng tăng 14%. Nhưng ngày **11.11** vẫn có sự cố: RPS x4, {{minReplicas: 10}} + pool 20 làm vỡ {{max_connections: 200}} của PostgreSQL, request chờ kết nối đẩy Tomcat lên 200 thread và direct buffer lên 236 MiB, working set 1.041 MiB vượt limit 1Gi → **OOMKilled exit 137** dây chuyền; 12 phút suy giảm, ~2.100 lượt checkout lỗi, ước hụt ~480 đơn. Tôi là người trực chính: hạ {{replicas}} về 8 để mở khoá DB trước, nới limit lên 2Gi sau khi thêm node, rồi đo lại bằng NMT. Sau sự cố: pool 12/pod + {{maxReplicas}} 12, {{MaxRAMPercentage=60}}, {{MaxDirectMemorySize}} có trần, PgBouncer cho quý sau, tắt auto-sync prod trong cửa sổ sale, và 4 cảnh báo mới (working set/limit > 0,8, OOMKilled tăng, {{pg_stat_activity}} > 0,75 trần, {{hikaricp_connections_pending}} > 0).
+
+**Bài học tôi kể** — sai không nằm ở Kubernetes mà ở **hai giả định được ghi rõ, được hiểu, và bị hoãn**: heap không phải process, pool không phải toàn cục. Điều tôi làm khác lần sau: giả định nào chưa đo thì **mặc định chọn phương án an toàn** (limit 2Gi, pool 8), và biến phép đo thành **điều kiện go-live** thay vì checklist tự nguyện.`,
+    questions: [
+      { q: 'Vì sao công ty bạn chọn Kubernetes thay vì chỉ mua thêm VM hoặc dùng Docker Compose?', a: `Vì bốn con số tôi cần không lấy được bằng VM: lead time 1 giờ 51 phút, 9 phút chết mỗi lần phát hành, 40 phút để thêm sức chứa giữa ngày sale, 35 phút rollback. Kubernetes cho rollout tăng dần dựa trên readiness (chết về 0), tự đặt chỗ và tự thay pod hỏng, HPA thêm bản trong ~1 phút, và GitOps biến rollback thành một commit revert. Docker Compose hoặc thêm VM giải quyết được phần "image đóng gói" nhưng không có scheduling, tự phục hồi, autoscale và PDB; còn "mua thêm VM" chỉ mua sức chứa mà vẫn giữ nguyên quy trình thủ công. Tôi cũng nói thẳng cái giá: thêm một tầng để vận hành, đội phải học, và app phải sẵn sàng chạy nhiều bản thể — nếu app vẫn giữ session trong heap và ghi đĩa cục bộ thì Kubernetes chỉ làm hỏng nhanh hơn.` },
+      { q: 'readiness, liveness, startup khác nhau thế nào? Một probe đặt sai gây chuyện gì?', a: `startupProbe trả lời "boot xong chưa" và tạm hoãn hai probe kia — app của tôi khởi động 46 giây, nếu không có nó thì liveness (10 giây × 3 lần) giết pod trước khi Spring mở port, thành CrashLoopBackOff. readinessProbe trả lời "phục vụ được chưa": fail thì pod bị **gỡ khỏi** Service/ALB nhưng vẫn sống, nên lúc cache lạnh hoặc DB khựng thì nó ngừng nhận traffic. livenessProbe trả lời "process còn tự chạy được không": fail là **khởi động lại container**. Sai lầm tôi thấy trong review là để liveness trỏ /actuator/health gộp, tức phụ thuộc PostgreSQL và Redis: DB chậm 3 giây → 12 pod cùng bị giết → mất sức chứa đúng lúc hệ thống yếu. Quy tắc tôi áp dụng: liveness chỉ kiểm tra thứ mà restart sửa được (deadlock, treo), dependency đặt ở readiness.` },
+      { q: 'OOMKilled là gì? Vì sao heap không vượt Xmx mà pod vẫn bị giết?', a: `OOMKilled là khi kernel giết container vì vượt limits.memory, exit code 137 (SIGKILL), JVM không kịp ghi log hay dump — khác với OutOfMemoryError trong JVM. limits.memory áp cho **toàn bộ tiến trình**, còn Xmx chỉ là trần heap. RSS của JVM gồm heap, Metaspace (class đã nạp, Spring + CGLIB proxy của tôi ~196 MiB), stack của mọi thread (1 MiB mỗi thread nền tảng; 200 thread ≈ 200 MiB), code cache JIT (~82), cấu trúc GC (~58), và **direct buffer** off-heap của Netty mà Lettuce Redis và Kafka client dùng (~214). Tôi chẩn đoán bằng jcmd PID VM.native_memory summary rồi cộng từng mục: 1.314 MiB, rơi đúng vùng RSS 1,34–1,48 GB từng đo trên VM. Cách sửa: limits 2Gi với -XX:MaxRAMPercentage=60, đặt -XX:MaxDirectMemorySize có trần, và theo dõi container_memory_working_set_bytes so với limit thay vì heap.` },
+      { q: 'Ứng dụng Java có bao nhiêu kết nối database khi chạy trên Kubernetes, và bạn quản lý chuyện đó thế nào?', a: `Pool kết nối là **per-instance**, nên tổng kết nối = số pod × maximumPoolSize. Đây là chỗ tôi sai: pool 20 bê nguyên từ VM, minReplicas 10 cho ngày sale → 200 kết nối, đúng trần max_connections = 200 của PostgreSQL, lại còn phải trừ dự phòng cho superuser và công cụ. Hệ quả là FATAL "remaining connection slots are reserved", request chờ trong hàng đợi Hikari, thread bị giữ, rồi lan thành OOMKilled. Cách quản lý: chọn số pod tối đa trước, rồi tính maximumPoolSize = floor((max_connections − dự phòng) / maxReplicas), ở đây 12 pod thì pool 12; đặt connectionTimeout ngắn để thiếu kết nối thành lỗi rõ ràng thay vì treo; theo dõi hikaricp_connections_pending. Dài hạn dùng PgBouncer hoặc RDS Proxy để gộp kết nối vật lý, nhưng phải kiểm chế độ transaction pooling phá tính năng cấp phiên: SET, advisory lock, LISTEN/NOTIFY và prepared statements của JDBC.` },
+      { q: 'Chuyện gì xảy ra khi Kubernetes muốn chấm dứt một pod, và bạn làm gì để khách không thấy lỗi?', a: `Ba việc chạy song song và bất đồng bộ: bộ điều khiển Ingress gỡ IP pod khỏi ALB (mất 1–5 giây), preStop chạy, rồi kubelet gửi SIGTERM; hết terminationGracePeriodSeconds thì SIGKILL. Nếu app tắt ngay khi nhận SIGTERM thì request mới vẫn đang được ALB gửi tới sẽ rớt — đó chính là 4 giây lỗi tôi đo được khi kill pod trong chaos test, và một checkout 3,1 giây chết giữa chừng. Bốn thứ phải khớp: preStop sleep 8 giây để chờ rút traffic xong, SIGTERM tới java (nghĩa là entrypoint phải là exec form, không phải shell form), server.shutdown = graceful với timeout per shutdown phase lớn hơn request dài nhất, và tổng thời gian đó nhỏ hơn grace period. Với EKS tôi cân nhắc thêm readinessGate để pod chỉ Ready khi ALB xác nhận healthy.` },
+      { q: 'GitOps với Argo CD giúp gì, và mặt trái của auto-sync/selfHeal là gì?', a: `GitOps nghĩa là repo cấu hình là sự thật duy nhất: triển khai là một commit, rollback là một commit revert, và ai cũng xem được lịch sử "ai đổi gì lúc 22:31" mà không ai SSH vào máy. Argo CD so trạng thái cluster với Git rồi sync. Mặt trái tôi trả giá: khi bật auto-sync + selfHeal cho production, mọi PR cấu hình được áp mà không người bấm (HPA minReplicas đổi lên 10 ngay trước ngày sale là một commit như vậy), và selfHeal **ghi đè** các lệnh cứu cháy thủ công — tôi scale tay thì 3 phút sau Argo trả về cũ. Cách tôi đặt: auto-sync cho staging, manual sync hoặc syncWindows khoá quanh ngày sale cho prod, và khi incident thì tắt sync trước rồi mới sửa, kèm ghi chú vào postmortem.` },
+      { q: 'Nếu được làm lại, bạn thay gì — và bài học nào bạn sẽ áp cho dự án migration kế tiếp?', a: `Ba thứ. Một, biến hai ô trống trong checklist (working set ở đỉnh, pg_stat_activity ở maxReplicas) thành **điều kiện go-live** thay vì mục tự nguyện, vì báo cáo PASS của tôi suy từ "không thấy lỗi" thành "không có lỗi". Hai, với mọi giả định được ghi trong design doc, nếu chưa đo thì **mặc định chọn phương án an toàn** (limit 2Gi, pool 8) chứ không chọn phương án đẹp rồi hứa đo sau; chi phí của an toàn ở đây chỉ là 14% hạ tầng. Ba, kiểm tra "app đã sẵn sàng đa bản thể chưa" trước khi động tới hạ tầng: có giữ state trong RAM không, có ghi đĩa không, có job định kỳ không, có tắt dịu dàng không, và tổng kết nối khi nhân với N bản thể là bao nhiêu. Năm câu đó rẻ, và nếu trả lời "chưa biết" thì dự án migration chưa nên bắt đầu.` }
+    ]
+  },
+  tags: ['kubernetes', 'eks', 'helm', 'argocd', 'gitops', 'docker', 'probes', 'hpa', 'pdb', 'graceful-shutdown', 'oomkilled', 'native-memory', 'hikaricp', 'max-connections', 'alb', 'migration', 'sale-peak']
 }
 );
