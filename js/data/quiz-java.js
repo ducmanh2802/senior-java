@@ -2914,6 +2914,342 @@ Hậu quả dây chuyền: heap "phình" hơn lượng live data thật, **nhi�
 - **Linux chỉ address 32 GB**: tiến trình 64-bit address được hàng trăm TB; 32 GB chỉ là ngưỡng để **ép** tham chiếu còn 4 byte.
 
 > Senior tip: có hai "nén" độc lập hay bị nhầm: **compressed oops** phụ thuộc **kích thước heap**, còn **compressed class pointers** (tham chiếu tới {{Klass}}) phụ thuộc **Metaspace** (mặc định vùng 2 GB) và vẫn bật dù heap lớn. Vì vậy đừng trả lời phỏng vấn "tắt vì heap > 32 GB nên class pointer cũng tắt". Ngoài ra, đây là ví dụ điển hình của việc "tăng {{-Xmx}}" được coi là sửa lỗi mà không hiểu nguyên nhân: nếu live set thực tế 40 GB thì heap 48 GB chỉ mua thời gian, còn nếu live set 20 GB thì nên xem lại vì sao {{-Xmx31g}} báo OOM — thường do fragmentation, do humongous allocation, hoặc do off-heap chứ không phải do heap thiếu.`
+},
+{
+  id: 'qz-core-025', topic: 'core',
+  q: `Đoạn code sau in ra gì?
+~~~java
+String a = "java";
+String b = new String("java");
+String c = b.intern();
+System.out.println((a == b) + " " + (a == c) + " " + (a.equals(b)));
+~~~`,
+  options: [`true true true`, `false true true`, `false false true`, `true false true`],
+  answer: 1,
+  explain: `**Đáp án đúng: false true true.**
+
+### Vì sao đúng
+- {{a == b}}: {{new String("java")}} luôn tạo object mới trên heap → false.
+- {{b.intern()}} trả về bản trong String pool; bản đó chính là object của literal {{a}} → {{a == c}} true.
+- {{equals}} so sánh nội dung ký tự → true.
+
+### Vì sao các phương án còn lại sai
+- **true true true**: new String không trỏ vào pool.
+- **false false true**: intern trả về bản pool.
+- **true false true**: đảo ngược hai trường hợp.
+
+> Senior tip: {{intern()}} hữu ích khi đọc rất nhiều chuỗi từ file/network để giảm bộ nhớ và tăng tốc so sánh bằng {{==}}, nhưng gọi intern trên mọi chuỗi là tốn CPU và làm phình pool. Java 7+ pool nằm trên heap và bị GC, nên không còn leak như Java 6 (khi pool ở PermGen).`
+},
+{
+  id: 'qz-core-026', topic: 'core',
+  q: `Đoạn code sau in ra gì?
+~~~java
+String s = "a" + "b" + 1 + 2;
+System.out.println(s + " " + ("ab" + (1 + 2)));
+~~~`,
+  options: [`ab12 ab3`, `ab3 ab3`, `ab12 ab12`, `ab3 ab12`],
+  answer: 0,
+  explain: `**Đáp án đúng: ab12 ab3.**
+
+### Vì sao đúng
+- {{+}} với String là nối chuỗi; với số là cộng số. Phép tính từ trái sang phải: {{"a" + "b"}} = "ab", rồi {{+ 1}} = "ab1", rồi {{+ 2}} = "ab12".
+- Ở biểu thức thứ hai, {{(1 + 2)}} được tính trước = 3, nên kết quả "ab3".
+
+### Vì sao các phương án còn lại sai
+- **ab3 ab3**: bỏ qua thứ tự tính toán và ưu tiên ngoặc.
+- **ab12 ab12**: không tính ngoặc trước.
+- **ab3 ab12**: đảo ngược.
+
+> Senior tip: compiler gộp hằng số chuỗi lúc biên dịch (constant folding), nên {{"a" + "b" + "c"}} không tạo object trung gian. Với chuỗi build động trong vòng lặp, dùng {{StringBuilder}} hoặc {{String.join}}/{{Collectors.joining}}; từ Java 9 phép nối runtime dùng {{StringConcatFactory}} (invokedynamic) nên thường không cần tự tối ưu.`
+},
+{
+  id: 'qz-collections-025', topic: 'collections',
+  q: `HashMap resize khi nào và chi phí ra sao?`,
+  options: [
+    `Khi size > capacity * loadFactor (mặc định 0.75); tạo bảng mới gấp đôi, rehash toàn bộ entry, O(n)`,
+    `Khi số bucket đầy, thêm bucket mới vào cuối bảng`,
+    `Khi một bucket có nhiều hơn 8 phần tử, resize ngay`,
+    `Không bao giờ resize nếu dùng new HashMap<>(n)`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: resize khi size > capacity * loadFactor.**
+
+### Vì sao đúng
+Mặc định capacity 16, load factor 0.75, threshold 12. Khi thêm phần tử thứ 13, HashMap tạo bảng mới capacity 32 và **rehash** mọi entry (tính lại bucket theo capacity mới). Chi phí O(n) và có thể gây pause ngắn trong hot path.
+
+### Vì sao các phương án còn lại sai
+- **Thêm bucket cuối bảng**: HashMap là mảng cố định kích thước luỹ thừa 2, không linked list bucket.
+- **Treeify khi 8 phần tử**: treeify chuyển linked list thành cây đỏ-đen trong bucket, không resize bảng.
+- **new HashMap<>(n) không resize**: constructor nhận capacity, không phải số phần tử; vẫn có thể resize nếu size vượt threshold.
+
+> Senior tip: pre-size bằng {{HashMap.newHashMap(expectedSize)}} (Java 19+) để tránh resize. Treeify threshold 8 và untreeify 6; bucket chuyển cây khi chuỗi va chạm dài, giúp get từ O(n) về O(log n).`
+},
+{
+  id: 'qz-collections-026', topic: 'collections',
+  q: `ConcurrentHashMap.putIfAbsent khác gì so với computeIfAbsent về locking?`,
+  options: [
+    `putIfAbsent không gọi mapping function nên không giữ lock bin trong lúc tính; computeIfAbsent giữ lock bin suốt function`,
+    `Cả hai đều khoá toàn bộ map`,
+    `putIfAbsent luôn gọi function kể cả khi key có`,
+    `computeIfAbsent không nguyên tử`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: putIfAbsent không chạy function giữ lock.**
+
+### Vì sao đúng
+{{putIfAbsent(k, v)}} chỉ so sánh và gán giá trị đã có sẵn, không chạy function. {{computeIfAbsent(k, mappingFunction)}} phải giữ lock bin để đảm bảo function chạy **tối đa một lần** cho mỗi key, nên function phải ngắn và không I/O.
+
+### Vì sao các phương án còn lại sai
+- **Khoá toàn bộ map**: ConcurrentHashMap khoá ở mức bin.
+- **putIfAbsent luôn gọi function**: không có function trong putIfAbsent.
+- **computeIfAbsent không nguyên tử**: ngược lại, nó nguyên tử.
+
+> Senior tip: để cache giá trị tốn kém, dùng {{computeIfAbsent(k, x -> CompletableFuture.supplyAsync(...))}} hoặc Caffeine AsyncLoadingCache để không block bin.`
+},
+{
+  id: 'qz-modern-025', topic: 'modern',
+  q: `Record sau có những đặc điểm nào?`,
+  options: [
+    `Là final class, component là private final, có constructor canonical, equals/hashCode/toString tự sinh`,
+    `Có thể kế thừa class khác`,
+    `Component có thể gán lại`,
+    `Không có constructor`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: record là final, component final, tự sinh method.**
+
+### Vì sao đúng
+Record (Java 16) là **transparent carrier** cho dữ liệu bất biến: class final, component private final, có canonical constructor, và tự sinh equals/hashCode/toString/accessor. Có thể thêm compact constructor để validate/normalize.
+
+### Vì sao các phương án còn lại sai
+- **Kế thừa class khác**: record không extends class khác (chỉ implement interface).
+- **Component gán lại**: component là final.
+- **Không có constructor**: có canonical constructor (có thể viết compact).
+
+> Senior tip: record phù hợp DTO/value object. Nhưng chỉ bất biến nông (shallow): record chứa List mutable vẫn bị sửa từ ngoài nếu không copy trong constructor.`
+},
+{
+  id: 'qz-modern-026', topic: 'modern',
+  q: `Sealed interface Payment permits Card, Wallet. Khi nào switch exhaustive không cần default?`,
+  options: [
+    `Khi tất cả subtype đã được liệt kê và sealed hierarchy không thay đổi`,
+    `Khi có default luôn`,
+    `Khi interface không sealed`,
+    `Khi dùng enum`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: khi đã cover hết subtype của sealed type.**
+
+### Vì sao đúng
+Sealed (Java 17) giới hạn subtype. Compiler kiểm tra exhaustiveness tại compile-time; nếu đã cover hết permits thì không cần default. Thêm subtype sau sẽ làm switch cũ không biên dịch được (nếu không default), giúp phát hiện chỗ cần sửa.
+
+### Vì sao các phương án còn lại sai
+- **Có default**: default làm switch không còn exhaustive-checking khi thêm subtype.
+- **Interface không sealed**: compiler không biết tập subtype hữu hạn.
+- **Enum**: enum cũng exhaustive, nhưng câu hỏi về sealed interface.
+
+> Senior tip: sealed hierarchy public qua thư viện là cam kết API; thêm subtype là breaking change với consumer dùng switch exhaustive.`
+},
+{
+  id: 'qz-modern-027', topic: 'modern',
+  q: `Pattern matching cho instanceof (Java 16) cho phép gì?`,
+  options: [
+    `Gán biến pattern trong scope luồng điều khiển mà không cần cast thủ công`,
+    `Kiểm tra kiểu phần tử của generic`,
+    `Tự động unboxing`,
+    `Thay thế switch hoàn toàn`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: bind biến pattern theo luồng.**
+
+### Vì sao đúng
+{{if (o instanceof String s)}} thì {{s}} có thể dùng ngay trong scope mà compiler chứng minh pattern đã khớp, không cần cast. Flow scoping cho phép dùng sau guard clause.
+
+### Vì sao các phương án còn lại sai
+- **Kiểm tra kiểu phần tử generic**: erasure vẫn chặn.
+- **Tự động unboxing**: không liên quan.
+- **Thay thế switch**: pattern matching cho switch là Java 21.
+
+> Senior tip: viết {{return o instanceof Point p && x == p.x && y == p.y;}} trong equals rất gọn. Guarded pattern {{when}} chỉ dùng trong switch.`
+},
+{
+  id: 'qz-modern-028', topic: 'modern',
+  q: `Sequenced Collections (Java 21) thêm method nào vào List/Deque?`,
+  options: [
+    `getFirst/getLast/addFirst/addLast/removeFirst/removeLast/reversed`,
+    `sort/shuffle`,
+    `stream/parallelStream`,
+    `of/copyOf`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: getFirst/getLast/.../reversed.**
+
+### Vì sao đúng
+JEP 431 thêm các method thống nhất cho collection có thứ tự. {{reversed()}} là view đảo ngược, ghi xuyên xuống collection gốc nếu gốc sửa được.
+
+### Vì sao các phương án còn lại sai
+- **sort/shuffle**: đã có từ trước.
+- **stream/parallelStream**: đã có.
+- **of/copyOf**: factory bất biến, không mới.
+
+> Senior tip: trước Java 21 mỗi loại collection có cách khác nhau ({{get(size-1)}}, {{peekLast()}}). Khi nâng cấp, class tự viết implement List có method cùng tên khác kiểu trả về có thể không biên dịch.`
+},
+{
+  id: 'qz-concurrency-025', topic: 'concurrency',
+  q: `Virtual thread trong Java 21 phù hợp nhất cho workload nào?`,
+  options: [
+    `I/O-bound: nhiều task chờ network/DB/file`,
+    `CPU-bound: mã hoá, nén`,
+    `Task cần thread pool cố định`,
+    `Task cần stack lớn`,
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: I/O-bound.**
+
+### Vì sao đúng
+Virtual thread rất rẻ và unmount khi block I/O, nên throughput tăng khi có nhiều task chờ. CPU-bound vẫn bị giới hạn bởi số core; không pool virtual thread, dùng Semaphore/pool tài nguyên để giới hạn đồng thời.
+
+### Vì sao các phương án còn lại sai
+- **CPU-bound**: không thêm CPU.
+- **Pool cố định**: pool virtual thread không cần thiết.
+- **Stack lớn**: virtual thread stack trên heap, vẫn chịu giới hạn bộ nhớ.
+
+> Senior tip: virtual thread không tăng giới hạn DB connection pool; giới hạn đồng thời đặt ở Semaphore/HikariCP.`
+},
+{
+  id: 'qz-concurrency-026', topic: 'concurrency',
+  q: `CompletableFuture.exceptionally nhận exception như thế nào?`,
+  options: [
+    `Nhận CompletionException bọc exception gốc; thenApply bị bỏ qua`,
+    `Nhận trực tiếp IllegalStateException`,
+    `Chạy cùng thenApply`,
+    `Ném ngay tại join`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: nhận CompletionException.**
+
+### Vì sao đúng
+Stage phụ thuộc bị bỏ qua và truyền exception (bọc CompletionException). {{exceptionally}} chạy khi stage trước lỗi, có thể khôi phục giá trị. {{join()}} chỉ ném nếu không phục hồi.
+
+### Vì sao các phương án còn lại sai
+- **Nhận trực tiếp**: join/get mới bọc; exceptionally nhận CompletionException.
+- **Chạy cùng thenApply**: thenApply bị bỏ qua.
+- **Ném ngay tại join**: chỉ khi không có exceptionally/handle.
+
+> Senior tip: supplyAsync không truyền executor dùng commonPool; với I/O luôn truyền executor riêng và dùng orTimeout.`
+},
+{
+  id: 'qz-jvm-025', topic: 'jvm',
+  q: `Service latency p99 < 10ms, heap 32GB, Java 21. Lựa chọn GC hợp lý?`,
+  options: [
+    `Generational ZGC (-XX:+UseZGC -XX:+ZGenerational)`,
+    `Parallel GC`,
+    `G1 với MaxGCPauseMillis=1`,
+    `Serial GC`,
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Generational ZGC.**
+
+### Vì sao đúng
+ZGC pause thường dưới 1ms và không tăng theo heap size; generational (Java 21) tách young/old, giảm CPU so với ZGC cũ. Trade-off: tốn CPU hơn và cần heap dư.
+
+### Vì sao các phương án còn lại sai
+- **Parallel GC**: stop-the-world trên 32GB rất dài.
+- **G1 MaxGCPauseMillis=1**: mục tiêu mềm, vẫn vượt.
+- **Serial GC**: pause còn dài hơn.
+
+> Senior tip: xác nhận latency do GC bằng GC log/JFR trước khi đổi; nhiều khi thủ phạm là TTSP hoặc allocation.`
+},
+{
+  id: 'qz-jvm-026', topic: 'jvm',
+  q: `GC pause nhỏ nhưng ứng dụng khựng lâu. Nguyên nhân có thể là?`,
+  options: [
+    `Time-to-safepoint lớn (TTSP)`,
+    `GC log sai`,
+    `ZGC concurrent phase`,
+    `JIT deoptimize toàn bộ`,
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: TTSP lớn.**
+
+### Vì sao đúng
+GC stop-the-world cần mọi thread dừng tại safepoint. {{Reaching safepoint}} trong safepoint log cho thấy thời gian chờ thread cuối tới safepoint; GC chỉ chạy sau đó. Nguyên nhân: vòng lặp JIT không có poll, copy mảng lớn, swap/page fault.
+
+### Vì sao các phương án còn lại sai
+- **GC log sai**: GC log đo đúng phần GC.
+- **ZGC concurrent**: không làm treo thread ứng dụng.
+- **Deoptimize toàn bộ**: không phải nguyên nhân chính.
+
+> Senior tip: bật -Xlog:safepoint và so sánh Total với At safepoint; JFR có event SafepointBegin.`
+},
+{
+  id: 'qz-core-027', topic: 'core',
+  q: `Đoạn code sau in ra gì?
+~~~java
+List<Integer> a = new ArrayList<>(List.of(1,2,3));
+List<Integer> b = a.subList(1,3);
+b.set(0, 99);
+System.out.println(a);
+~~~`,
+  options: [`[1, 99, 3]`, `[1, 2, 3]`, `[99, 2, 3]`, `UnsupportedOperationException`],
+  answer: 0,
+  explain: `**Đáp án đúng: [1, 99, 3].**
+
+### Vì sao đúng
+subList là view, set ghi xuyên xuống list gốc. Index trong view tương ứng offset trong gốc, nên b.set(0) sửa a[1].
+
+### Vì sao các phương án còn lại sai
+- **[1,2,3]**: bỏ qua tính chất view.
+- **[99,2,3]**: nhầm index.
+- **UOE**: subList view hỗ trợ set.
+
+> Senior tip: lưu subList lâu dài giữ nguyên list gốc, gây memory leak; dùng List.copyOf.`
+},
+{
+  id: 'qz-modern-029', topic: 'modern',
+  q: `Text block (Java 15) sau cho kết quả gì?
+~~~java
+String s = """
+    line1
+    line2
+    """;
+System.out.println(s.lines().count());
+~~~`,
+  options: [`2`, `3`, `1`, `Lỗi biên dịch`],
+  answer: 0,
+  explain: `**Đáp án đúng: 2.**
+
+### Vì sao đúng
+Text block giữ newline; có hai dòng nội dung. Incidental whitespace bị loại bỏ theo common indent.
+
+### Vì sao các phương án còn lại sai
+- **3**: trailing newline? Text block kết thúc trước closing delimiter, không có newline thừa.
+- **1**: text block không gộp dòng.
+- **Lỗi biên dịch**: text block chuẩn từ Java 15.
+
+> Senior tip: text block rất hợp JSON/SQL trong test; dùng stripIndent/translateEscapes khi cần.`
+},
+{
+  id: 'qz-concurrency-027', topic: 'concurrency',
+  q: `Khi nào nên dùng ReentrantLock thay vì synchronized?`,
+  options: [
+    `Khi cần tryLock timeout, lock fairness, hoặc lock quanh I/O với virtual thread`,
+    `Luôn luôn vì nhanh hơn`,
+    `Khi cần lock trong constructor`,
+    `Khi cần lock trên primitive`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: khi cần tính năng mở rộng.**
+
+### Vì sao đúng
+ReentrantLock hỗ trợ tryLock(timeout), lockInterruptibly, fairness, và không pin virtual thread khi block. synchronized đơn giản và đủ cho lock ngắn.
+
+### Vì sao các phương án còn lại sai
+- **Luôn nhanh hơn**: synchronized được tối ưu tốt, often faster cho lock ngắn.
+- **Constructor**: không liên quan.
+- **Primitive**: lock phải trên object.
+
+> Senior tip: chọn synchronized mặc định; nâng lên ReentrantLock khi cần timeout/backpressure.`
 }
 );
 
