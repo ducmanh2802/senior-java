@@ -510,7 +510,7 @@ Dấu hiệu: latency tăng đều, log timeout lấy connection, metric active 
 ### Hay nhầm với
 Không phải database hết kết nối là do max_connections. Một pool 20 kết nối nhân 30 pod đã là 600, vượt xa giới hạn database. Cũng đừng nhầm với thread pool exhaustion: thread pool hết thì không có thread xử lý, còn connection pool hết thì thread vẫn có nhưng phải chờ.`,
     refs: [
-      { type: 'doc', title: 'HikariCP: About Pool Sizing', url: 'https://github.com/brettwooldridge/HikariCP' },
+      { type: 'doc', title: 'HikariCP: About Pool Sizing', url: 'https://github.com/brettwooldridge/HikariCP/wiki/About-Pool-Sizing' },
       { type: 'doc', title: 'PostgreSQL: Connections and Authentication', url: 'https://www.postgresql.org/docs/current/runtime-config-connection.html' },
     ],
     related: ['connection-pool', 'backpressure', 'timeout-budget'],
@@ -1034,15 +1034,15 @@ Vì sao p99 quan trọng: phân phối độ trễ thường lệch phải, có 
 
 ~~~text
 100 request (ms):
-  95 request: 20-80ms
-   4 request: 150-300ms
-   1 request: 2500ms
+  97 request: 20-80ms
+   2 request: 2500ms
+   1 request: 200ms
 
-average ~ 60ms (trông ổn)
+average ~ 100ms (trông ổn)
 p99 = 2500ms (người dùng thật thấy)
 ~~~
 
-Cẩn thận: không thể lấy trung bình p99 của nhiều instance để ra p99 toàn hệ. Phải gộp histogram hoặc tính trên dữ liệu thô. Cũng cần đủ mẫu: p99 trên 100 request chỉ là request chậm nhất.
+Cẩn thận: không thể lấy trung bình p99 của nhiều instance để ra p99 toàn hệ. Phải gộp histogram hoặc tính trên dữ liệu thô. Cần đủ mẫu: với 100 request, p99 mới chỉ là request chậm thứ hai — chưa đủ để kết luận về đuôi.
 
 ### Khi nào dùng
 Đặt SLO latency, đánh giá hiệu năng API, capacity planning, so sánh trước và sau tối ưu. Hệ lớn thường theo dõi p99 và p99.9. Với tác vụ nền, p50 có thể đủ.
