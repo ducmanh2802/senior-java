@@ -39,7 +39,7 @@ window.COMPANIES = [
       'Lồng ghép yếu tố tuân thủ, bảo mật và quản trị rủi ro vào câu trả lời; một số vị trí ngân hàng có thể hỏi chứng chỉ tiếng Anh, hãy xác nhận trong JD.'
     ],
     pay: [
-      { role: 'Senior Backend (Java)', yoe: '4–6 năm', amount: 'lương cao, không rõ số (không rõ gross/net)', year: '2025', note: 'chia sẻ voz, không có con số cụ thể', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-816#post-35934382' }
+      { role: 'Backend (NodeJS, không phải Java)', yoe: '2 năm', amount: '23tr gross/tháng (deal được nhưng không nhận)', year: '2025', note: 'quy trình 4 vòng (tech NestJS, DB, lead, TA); có offer khác cao hơn', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-816#post-35934382' }
     ],
     sources: [
       { title: 'voz.vn — [Review Phỏng Vấn] Các công ty CNTT, trang 78 (Techcombank Senior/Techlead Java, 2022)', url: 'https://voz.vn/t/review-phong-van-cac-cong-ty-cntt.206897/page-78' },
@@ -76,13 +76,17 @@ window.COMPANIES = [
       'Vì thiếu review công khai, hãy hỏi người quen nội bộ hoặc HR về format vòng kỹ thuật trước khi phỏng vấn.',
       'Chuẩn bị câu chuyện về làm việc với hệ thống legacy, vì ngân hàng nói chung thường vừa phát triển mới vừa bảo trì hệ thống cũ.'
     ],
+    pay: [
+      { role: 'Data Engineer (tham khảo, không phải backend Java)', yoe: '1 năm', amount: '20 (đơn vị trong bài ghi net)*15 ~ 300tr/năm (cách tính trong bài, không rõ gross/net chuẩn)', year: '2024', note: '14 ngày phép, 4 triệu tiền holiday, làm thứ 7 cách ngày tùy team', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1051#post-38215996' }
+    ],
     sources: [
       { title: 'Temenos — VPBank success story', url: 'https://www.temenos.com/success-story/vpbank/' },
       { title: 'VPBank Careers — Senior Backend Developer (Java/Spring Boot)', url: 'https://tuyendung.vpbank.com.vn/job/Senior-Backend-Developer-%28JavaSpringboot%29-TA171/10696-vi_VN/' },
       { title: 'VPBank IT Careers — Java Developer and microservices roles, 2025', url: 'https://hr.vpbank.com.vn/ta/Tuyendung_IT/index.html' },
       { title: 'ITviec — VPBank company page', url: 'https://itviec.com/companies/vpbank' },
-      { title: 'voz.vn — Thử thách tuyển dụng Talent IT của VPBank 2024', url: 'https://voz.vn/t/co-hinh-thu-thach-tuyen-dung-talent-it-cua-vp-bank-2024.984836/' },
-      { title: 'voz.vn — Mong nhận góp ý Nashtech vs VPBank (2020)', url: 'https://voz.vn/t/mong-nhan-gop-y-nashtech-vs-vp-bank.171662/' }
+      { title: 'voz.vn — Thử thách tuyển dụng Talent IT của VPBank 2024', url: 'https://voz.vn/t/review-phong-van-cac-cong-ty-cntt-boi-het-vao.34528/page-111' },
+      { title: 'voz.vn — Mong nhận góp ý Nashtech vs VPBank (2020)', url: 'https://voz.vn/t/mong-nhan-gop-y-nashtech-vs-vp-bank.171662/' },
+      { title: 'voz.vn — Chia sẻ lương Data Engineer VPBank (2024)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1051#post-38215996' }
     ],
     confidence: 'low'
   },
@@ -116,10 +120,16 @@ window.COMPANIES = [
       'Chuẩn bị bài toán chịu tải cao: queue/async, cache, rate limiting, scale ngang — đây là dạng câu tình huống được nhắc tới.',
       'Ôn cả Golang ở mức đọc hiểu nếu ứng tuyển các tin Java/Go.'
     ],
+    pay: [
+      { role: 'AI Engineer (tham khảo, không phải backend Java)', yoe: '2 năm', amount: '23tr gross/tháng', year: '2024', note: 'tháng 13, bonus 4–6 tháng tùy KPI (theo bài chia sẻ)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-932#post-36967197' },
+      { role: 'DevOps (rejected, tham khảo)', yoe: '1 năm', amount: '23tr gross/tháng', year: '2022', note: 'offer bị từ chối; package năm theo bài chia sẻ khoảng 341tr', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-972#post-37474613' }
+    ],
     sources: [
       { title: 'voz.vn — Xin quy trình phỏng vấn Dev tại MB Bank HN (2024)', url: 'https://voz.vn/t/xin-quy-trinh-phong-van-dev-tai-mb-bank-hn.986276/' },
       { title: 'voz.vn — Review môi trường làm việc MB Bank (trang 2–3, 2024–2025)', url: 'https://voz.vn/t/review-moi-truong-lam-viec-mb-bank.1026012/page-3' },
-      { title: 'ITviec — MB Bank company page', url: 'https://itviec.com/companies/mb-bank' }
+      { title: 'ITviec — MB Bank company page', url: 'https://itviec.com/companies/mb-bank' },
+      { title: 'voz.vn — Chia sẻ lương AI Engineer MB Bank (2024)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-932#post-36967197' },
+      { title: 'voz.vn — Chia sẻ offer DevOps MB Bank (2022, rejected)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-972#post-37474613' }
     ],
     confidence: 'medium'
   },
@@ -151,10 +161,16 @@ window.COMPANIES = [
       'Chuẩn bị phần giới thiệu và trao đổi bằng tiếng Anh cho vòng HR.',
       'Chuẩn bị tinh thần quy trình có thể chậm phản hồi — vài review 2024–2026 phàn nàn về việc báo kết quả muộn.'
     ],
+    pay: [
+      { role: 'Machine Learning Engineer (tham khảo, không phải backend Java)', yoe: '3 năm', amount: '38tr gross/tháng', year: '2021', note: 'offer bị từ chối; bài chia sẻ nhắc BHXH có mức đóng 30% lương gross và deal được lên 60% (cách hiểu theo bài gốc)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-918#post-36760412' },
+      { role: 'Backend/Engineer (tham khảo chung)', yoe: 'không rõ', amount: 'không có con số cụ thể (không rõ gross/net)', year: '2026', note: 'bình luận cho rằng thưởng khoảng tháng 13 + 14,15 ở mức cao; không phải offer cá nhân có số tiền', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1246#post-41392785' }
+    ],
     sources: [
       { title: 'note8.vn — Phỏng vấn MOMO Vietnam (review Backend Engineer 2023)', url: 'https://note8.vn/phong-van-dn/cong-ty-co-phan-vien-thong-momo-viet-nam-1392' },
       { title: 'voz.vn — Xin review phỏng vấn Software Engineer II Java MoMo (2026)', url: 'https://voz.vn/t/xin-review-phong-van-software-engineer-ii-java-momo.1258526/' },
-      { title: 'ITviec — M_Service (MoMo) company page', url: 'https://itviec.com/companies/m_service-momo' }
+      { title: 'ITviec — M_Service (MoMo) company page', url: 'https://itviec.com/companies/m_service-momo' },
+      { title: 'voz.vn — Chia sẻ offer Machine Learning Engineer MoMo (2021, rejected)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-918#post-36760412' },
+      { title: 'voz.vn — Bình luận thưởng MoMo (2026, tham khảo)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1246#post-41392785' }
     ],
     confidence: 'medium'
   },
@@ -184,9 +200,15 @@ window.COMPANIES = [
       'Ôn message queue (Kafka/RabbitMQ) và cache (Redis) vì JD nhấn mạnh.',
       'Thái độ tự tin, chủ động đưa giải pháp được người review cho là có tính điểm.'
     ],
+    pay: [
+      { role: 'Kỹ sư lập trình (Backend/Software Engineer)', yoe: '1,5 năm thực tập', amount: '15tr gross/tháng', year: '2023', note: 'thưởng tết 2 tháng, bảo hiểm BV, đóng thuế + BHXH theo lương cơ bản (theo bài chia sẻ)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1204#post-40732006' },
+      { role: 'Junior Backend Engineer (rejected)', yoe: '0,5 năm', amount: '17tr gross/tháng', year: '2025', note: 'offer bị từ chối; thưởng trung bình khoảng 2 tháng, có mã hoàn tiền/giảm giá (theo bài chia sẻ)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1214#post-40834428' }
+    ],
     sources: [
       { title: 'voz.vn — [Review Phỏng Vấn] Các công ty CNTT, trang 3 (VNPay Software Engineer Java, 2020)', url: 'https://voz.vn/t/review-phong-van-cac-cong-ty-cntt.206897/page-3' },
-      { title: 'ITviec — VNPAY company page', url: 'https://itviec.com/companies/vnpay' }
+      { title: 'ITviec — VNPAY company page', url: 'https://itviec.com/companies/vnpay' },
+      { title: 'voz.vn — Chia sẻ lương VNPay (2023)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1204#post-40732006' },
+      { title: 'voz.vn — Offer Junior Backend Engineer VNPay (2025, rejected)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1214#post-40834428' }
     ],
     confidence: 'low'
   },
@@ -222,11 +244,19 @@ window.COMPANIES = [
       'Nói rõ suy nghĩ khi code — người chia sẻ cho biết điều này được cộng điểm.',
       'Review ZaloPay 2023 (voz #48, sản phẩm trong hệ sinh thái VNG) có vòng behavior nhẹ nhàng về lý do đổi việc và định hướng; đây là tham chiếu gián tiếp, không thay cho quy trình team Zalo.'
     ],
+    pay: [
+      { role: 'Software Engineer (Zalo)', yoe: '3 năm', amount: '27tr gross/tháng', year: '2025', note: 'tháng 13 (theo bài chia sẻ)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-971#post-37466345' },
+      { role: 'Senior Data Scientist (Zalo, tham khảo role khác)', yoe: '3 năm', amount: '50tr gross/tháng (14 tháng/năm theo bài)', year: '2022', note: 'không phải backend Java; phản ánh mặt bằng lương kỹ thuật cao tại Zalo thời điểm đó', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-921#post-36805295' },
+      { role: 'Senior DevOps Engineer (VNG Solution/VSol, tham khảo)', yoe: '3,5 năm', amount: '~530tr gross/năm', year: '2025', note: 'VNG Solution thuộc hệ sinh thái VNG; BHXH 70%, có onsite KSA (theo bài chia sẻ)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1379#post-42637273' }
+    ],
     sources: [
       { title: 'Viblo — Từ cú trượt Caladan đến offer mid-level tại Zalo', url: 'https://viblo.asia/p/tu-cu-truot-caladan-den-offer-mid-level-tai-zalo-1QLxnya04Aw' },
       { title: 'voz.vn — [Review Phỏng Vấn] Các công ty CNTT, trang 7 (Zalo Senior SE, 2021)', url: 'https://voz.vn/t/review-phong-van-cac-cong-ty-cntt.206897/page-7' },
       { title: 'voz.vn — Review phỏng vấn ZaloPay/VNG, vòng behavior (10/2023, voz #48)', url: 'https://voz.vn/t/event-box-cntt-2023-chia-se-kinh-nghiem-phong-van.694369/page-34#post-34282956' },
-            { title: 'ITviec — VNG Corporation company page', url: 'https://itviec.com/companies/vng-corporation' }
+      { title: 'ITviec — VNG Corporation company page', url: 'https://itviec.com/companies/vng-corporation' },
+      { title: 'voz.vn — Offer Software Engineer Zalo (2025)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-971#post-37466345' },
+      { title: 'voz.vn — Offer Senior Data Scientist Zalo (2022, tham khảo)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-921#post-36805295' },
+      { title: 'voz.vn — Offer Senior DevOps Engineer VNG Solution/VSol (2025, tham khảo)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1379#post-42637273' }
     ],
     confidence: 'medium'
   },
@@ -260,6 +290,9 @@ window.COMPANIES = [
       'Ôn CS fundamentals (OS, network, DB) ngang với thuật toán.',
       'Sẵn sàng code bằng ngôn ngữ bạn mạnh nhất; nhiều team dùng Go nhưng phỏng vấn thường không bắt buộc ngôn ngữ.',
       'Tiếng Anh nghe nói ổn là đủ — người chia sẻ cho rằng kỹ thuật quan trọng hơn.'
+    ],
+    pay: [
+      { role: 'Backend/Software Engineer (chưa có offer công khai chi tiết)', yoe: 'không rõ', amount: 'không có số cụ thể trong digest voz (không rõ gross/net)', year: '2026', note: 'digest có bình luận trải nghiệm làm việc, không có bài chia sẻ mức lương có số tiền cho role cụ thể', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-122#post-42849257' }
     ],
     sources: [
       { title: 'voz.vn — [Review công ty] Shopee Singapore, trang 2 (bình luận về phỏng vấn Shopee VN, 2021)', url: 'https://voz.vn/t/review-cong-ty-shopee-singapore.384029/page-2' },
@@ -305,6 +338,9 @@ summary: 'Văn phòng kỹ sư tại TP.HCM thuộc Grab; backend chủ yếu vi
       'Backend chủ yếu là Go — thể hiện sẵn sàng học Go và nắm vững concurrency nói chung.',
       'Interviewer Grab rất công nghiệp: giới thiệu project/team/process đúng 3p, không bắt buộc introduce tên tuổi/chức vụ (review 2026).',
       'Review SDET 2026 (voz #100) ghi nhận vòng screening rất ngắn và tập trung: interviewer giới thiệu project/team/quy trình rồi chuyển sang test case và trao đổi tiếng Anh. Khi trả lời test case, nên hỏi phạm vi (chỉ username/password hay gồm SSO/SAML), phân nhóm rõ (happy/negative/edge) và nêu thêm hướng nghĩ nếu bị gợi ý, tránh tranh luận dài về cách phân loại.'
+    ],
+    pay: [
+      { role: 'Backend/Software Engineer (chưa có offer công khai chi tiết)', yoe: 'không rõ', amount: 'không có số cụ thể trong digest voz (không rõ gross/net)', year: '2026', note: 'digest có review quy trình SDET/SE (2026) nhưng không kèm số lương; hỏi recruiter/Glassdoor cho range', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-88#post-40705655' }
     ],
     sources: [
       { title: 'voz.vn — [Review Phỏng Vấn] Các công ty CNTT, trang 48 (Grab Backend middle, 4/2022)', url: 'https://voz.vn/t/review-phong-van-cac-cong-ty-cntt.206897/page-48' },
@@ -370,6 +406,11 @@ summary: 'Văn phòng kỹ sư tại TP.HCM thuộc Grab; backend chủ yếu vi
       'NAB có nhiều recruiter đăng tuyển ở nhiều nguồn: nếu hồ sơ bị bỏ lỡ, có thể ứng tuyển lại qua kênh/recruiter khác (kinh nghiệm ứng viên 2025, voz #73). Vào vòng culture fit có thể được lưu profile để duyệt team phù hợp; từ vòng technical trở về trước profile thường do HR giữ (voz #73).',
       'Với StarCamp, trường hợp bị on hold khác với bị từ chối và có thể được gọi lại; chuẩn bị tinh thần chờ phản hồi (review 2025, voz #81).'
     ],
+    pay: [
+      { role: 'Senior Software Engineer (SSE)', yoe: '5,5 năm', amount: '80tr gross/tháng', year: '2023', note: 'bài chia sẻ không nêu bonus chi tiết', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1216#post-40919407' },
+      { role: 'Middle Java Engineer', yoe: '3 năm', amount: '40tr gross/tháng', year: '2025', note: 'hybrid, BHXH 100% (theo bài chia sẻ)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1043#post-38166847' },
+      { role: 'Senior BA (tham khảo role khác)', yoe: '4,5 năm', amount: '52tr gross/tháng', year: '2025', note: 'tháng 13 + thưởng kinh doanh (theo bài), 27 ngày phép, BH cao; không phải dev', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1000#post-37901206' }
+    ],
     sources: [
       { title: 'voz.vn — [Review Phỏng Vấn] Các công ty CNTT, trang 41 (NAB Senior Java Developer, 3/2022)', url: 'https://voz.vn/t/review-phong-van-cac-cong-ty-cntt.206897/page-41' },
       { title: 'voz.vn — Xin review dev tại NAB (2022)', url: 'https://voz.vn/t/xin-review-dev-tai-nab.543106/' },
@@ -383,7 +424,10 @@ summary: 'Văn phòng kỹ sư tại TP.HCM thuộc Grab; backend chủ yếu vi
       { title: 'voz.vn — NICV Medior Engineer (9/2024)', url: 'https://voz.vn/t/event-box-cntt-2023-chia-se-kinh-nghiem-phong-van.694369/page-32#post-34051405' },
       { title: 'voz.vn — NAB StarCamp (7/2025)', url: 'https://voz.vn/t/event-box-cntt-2023-chia-se-kinh-nghiem-phong-van.694369/page-67#post-37818878' },
       { title: 'voz.vn — Kinh nghiệm apply NAB mid/sen (4/2025)', url: 'https://voz.vn/t/event-box-cntt-2023-chia-se-kinh-nghiem-phong-van.694369/page-59#post-36680021' },
-      { title: 'ITviec — NAB Innovation Centre Vietnam company page', url: 'https://itviec.com/companies/nab-innovation-centre-vietnam' }
+      { title: 'ITviec — NAB Innovation Centre Vietnam company page', url: 'https://itviec.com/companies/nab-innovation-centre-vietnam' },
+      { title: 'voz.vn — Offer SSE NAB (2023)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1216#post-40919407' },
+      { title: 'voz.vn — Offer Middle Java Engineer NAB (2025)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1043#post-38166847' },
+      { title: 'voz.vn — Offer Senior BA NAB (2025, tham khảo)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1000#post-37901206' }
     ],
     confidence: 'high'
   },
@@ -421,6 +465,9 @@ summary: 'Văn phòng kỹ sư tại TP.HCM thuộc Grab; backend chủ yếu vi
       'Luyện system design kinh điển và thói quen giải thích trade-off (vì sao chọn giải pháp A/B), kể cả khi input lớn hoặc dữ liệu chưa sắp xếp.',
       'Chuẩn bị behavioral bằng tiếng Anh và kể kỹ các dự án đã làm; nhiều review đánh giá interviewers thân thiện, sẵn sàng kéo dài trao đổi khi phù hợp (voz #67, #105).'
     ],
+    pay: [
+      { role: 'Software Engineer (chưa có offer công khai chi tiết)', yoe: 'không rõ', amount: 'không có số cụ thể trong digest voz (không rõ gross/net)', year: '2026', note: 'digest có review quy trình (2022–2026) nhưng không kèm số lương cụ thể', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-91#post-41118587' }
+    ],
     sources: [
       { title: 'voz.vn — [Review Phỏng Vấn] Các công ty CNTT, trang 48 (Axon Software Engineer, 2022)', url: 'https://voz.vn/t/review-phong-van-cac-cong-ty-cntt.206897/page-48' },
       { title: 'voz.vn — [Review Phỏng Vấn] Các công ty CNTT, trang 56 (Axon middle SE, 2022)', url: 'https://voz.vn/t/review-phong-van-cac-cong-ty-cntt.206897/page-56' },
@@ -455,6 +502,9 @@ summary: 'Văn phòng kỹ sư tại TP.HCM thuộc Grab; backend chủ yếu vi
       'Xem câu hỏi gợi ý là bài luyện theo lĩnh vực digital banking, không phải câu hỏi đã được ứng viên xác nhận.',
       'Chuẩn bị giải thích idempotency, ledger, audit trail, retry, reconciliation và bảo mật dữ liệu tài chính.',
       'Luyện trình bày ngắn gọn bằng tiếng Anh; hỏi recruiter trước về format coding và ngôn ngữ phỏng vấn.'
+    ],
+    pay: [
+      { role: 'Backend/Java (chưa có offer công khai chi tiết)', yoe: 'không rõ', amount: 'không có số cụ thể trong digest voz (không rõ gross/net)', year: '2026', note: 'digest có nhắc TymeX trong thảo luận chung nhưng không có bài chia sẻ mức lương có số tiền gắn rõ GoTyme/TymeX VN; xác nhận với recruiter', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1011#post-37957078' }
     ],
     sources: [
       { title: 'GoTymeX Vietnam — Recruitment Process and career information', url: 'https://vietnam.tyme.com/' }
@@ -496,12 +546,18 @@ summary: 'Văn phòng kỹ sư tại TP.HCM thuộc Grab; backend chủ yếu vi
       'EPAM phỏng vấn khá dễ để lụm lương: tập trung vào framework và ngôn ngữ, không cần leetcode hay system design quá căng thẳng (review 2022, 2026).',
       'HR rất nhiệt tình, phản hồi từng round khoảng 2 ngày, luôn cố deal lương sát expectation (review 2026).'
     ],
+    pay: [
+      { role: 'Mid Software Engineer', yoe: '~4 năm', amount: '46tr gross/tháng', year: '2026', note: 'tháng 13, có performance bonus (theo bài); full remote, bảo hiểm tư nhân cho vợ chồng con cái, BHXH full lương', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1204#post-40732006' },
+      { role: 'Associate Software Engineer (tham khảo đầu vào)', yoe: '0 năm', amount: '~14tr gross/tháng', year: '2022', note: 'lương tăng theo năm trong cùng công ty (theo bài chia sẻ); tháng 13 + performance (hên xui)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1104#post-38952425' }
+    ],
     sources: [
       { title: 'EPAM Careers — Senior Java Engineer, Vietnam vacancy and hiring process', url: 'https://careers.epam.com/en/vacancy/senior-java-engineer-blttpn84g6zmt6ll3c7_en' },
       { title: 'AmbitionBox — EPAM Software Engineer interview experiences, 2025', url: 'https://www.ambitionbox.com/interviews/epam-systems-interview-questions/software-engineer' },
       { title: 'Glassdoor — EPAM Senior Java Developer interview experience, 2025', url: 'https://www.glassdoor.ca/Interview/EPAM-Systems-Interview-RVW95534424.htm' },
       { title: 'voz.vn — Review EPAM Anywhere (2/2022)', url: 'https://voz.vn/t/event-box-cntt-2023-chia-se-kinh-nghiem-phong-van.694369/page-1#post-22638823' },
-      { title: 'voz.vn — Review EPAM Mid Software Engineer (1/2026)', url: 'https://voz.vn/t/event-box-cntt-2023-chia-se-kinh-nghiem-phong-van.694369/page-85#post-40443979' }
+      { title: 'voz.vn — Review EPAM Mid Software Engineer (1/2026)', url: 'https://voz.vn/t/event-box-cntt-2023-chia-se-kinh-nghiem-phong-van.694369/page-85#post-40443979' },
+      { title: 'voz.vn — Offer Mid Software Engineer EPAM (2026)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1204#post-40732006' },
+      { title: 'voz.vn — Lộ trình lương EPAM (2022–2024, tham khảo)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1104#post-38952425' }
     ],
     confidence: 'high'
   },
@@ -530,6 +586,9 @@ summary: 'Văn phòng kỹ sư tại TP.HCM thuộc Grab; backend chủ yếu vi
       'Principal Java/Kotlin banking là role đang được tuyển; xác nhận stack và phạm vi trách nhiệm trong JD cụ thể.',
       'Trang chính thức hứa phản hồi sau từng giai đoạn; hỏi rõ timeline và người phỏng vấn ở competency/final round.'
     ],
+    pay: [
+      { role: 'Backend/Java-Kotlin (không có số liệu offer công khai)', yoe: 'không rõ', amount: 'không có số cụ thể trong digest voz (không rõ gross/net)', year: '2026', note: 'chưa thấy bài chia sẻ mức lương cụ thể cho role Java tại VN trong phạm vi digest; hỏi recruiter khi apply', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1563' }
+    ],
     sources: [
       { title: 'Money Forward Vietnam Careers — current vacancies and recruitment process', url: 'https://careers.moneyforward.com.vn/' },
       { title: 'Viblo — Góc nhìn từ một techlead trải nghiệm phỏng vấn tại Money Forward, 2025', url: 'https://viblo.asia/p/goc-nhin-tu-mot-techlead-trai-nghiem-phong-van-tai-money-forward-gdJzvpNjJz5' },
@@ -550,6 +609,9 @@ summary: 'Văn phòng kỹ sư tại TP.HCM thuộc Grab; backend chủ yếu vi
     englishRequired: true,
     questions: ['Bạn thiết kế một luồng giao dịch banking dùng Kafka thế nào để tránh mất hoặc xử lý lặp message?', 'Bạn chọn Spring transaction boundary và chiến lược retry ra sao khi gọi service ngoài?'],
     tips: ['JD Java banking yêu cầu tiếng Anh; luyện giải thích kiến trúc, testing và production trade-off bằng tiếng Anh.', 'Điểm ITviec phản ánh review nơi làm việc, không phải review phỏng vấn.'],
+    pay: [
+      { role: 'Backend/Java (chưa có offer công khai chi tiết)', yoe: 'không rõ', amount: 'không có số cụ thể trong digest voz (không rõ gross/net)', year: '2026', note: 'không có bài chia sẻ mức lương có số tiền cho GFT Vietnam trong digest; JD banking Java/Spring có trên ITviec', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1563' }
+    ],
     sources: [
       { title: 'ITviec — GFT Technologies Vietnam reviews and rating', url: 'https://itviec.com/companies/gft-technologies-vietnam/review' },
       { title: 'ITviec — Senior Backend Engineer Java/Spring job description', url: 'https://itviec.com/it-jobs/senior-backend-engineer-java-spring-english-gft-technologies-vietnam-1523' }
@@ -592,9 +654,12 @@ summary: 'Văn phòng kỹ sư tại TP.HCM thuộc Grab; backend chủ yếu vi
       'Rating và recommend trên ITviec là đánh giá nơi làm việc, không đại diện cho ứng viên phỏng vấn.',
       'Chuẩn bị online assessment nghiêm túc (DSA, SQL, kiến thức theo CV) vì nhiều review xem đây là vòng sàng lọc quan trọng (voz #26, #103).',
       'Technical thường xác minh bạn thực sự hiểu những gì ghi trong CV: nói rõ vai trò, trade-off và giới hạn; đừng liệt kê công nghệ bạn không giải thích được (voz #37, #103).',
-
+      '',
       'Technical chỉ mang tính verification: tự tin, không lóng ngóng là được (review 2024).',
       'Benefits rất ngon, culture, WLB tuyệt vời, đang expanding (review 2025).'
+    ],
+    pay: [
+      { role: 'Backend/Software Engineer (chưa có offer công khai chi tiết)', yoe: 'không rõ', amount: 'không có số cụ thể trong digest voz (không rõ gross/net)', year: '2026', note: 'digest có review quy trình (2022–2025) nhưng không kèm mức lương có số tiền cho role backend Java tại VN', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-91#post-41113722' }
     ],
     sources: [
       { title: 'ITviec — NAVER VIETNAM reviews and rating', url: 'https://itviec.com/companies/naver-vietnam/review' },
@@ -620,6 +685,9 @@ summary: 'Văn phòng kỹ sư tại TP.HCM thuộc Grab; backend chủ yếu vi
     englishRequired: true,
     questions: ['Bạn bảo vệ dữ liệu thẻ và thông tin nhạy cảm trong backend service thế nào?', 'Thiết kế xử lý thanh toán chống duplicate khi gateway gửi lại callback ra sao?'],
     tips: ['Ôn Java/Spring và thiết kế giao dịch tài chính; các câu hỏi trên là bài luyện domain, không phải câu được xác nhận từ review.', 'Đánh giá ITviec phản ánh nhân viên, không đo trải nghiệm phỏng vấn.', 'Lưu ý: digest voz 2023–2026 có review mang tên Rakuten (2022, 2023) nhưng có thể thuộc pháp nhân/vị trí khác (ví dụ Rakuten Nhật, role iOS) — không suy ra đây là quy trình của Rakuten Fintech Vietnam; xác nhận với recruiter.'],
+    pay: [
+      { role: 'Backend/Java (chưa có offer công khai chi tiết)', yoe: 'không rõ', amount: 'không có số cụ thể trong digest voz (không rõ gross/net)', year: '2026', note: 'không có bài chia sẻ mức lương có số tiền gắn rõ Rakuten Fintech Vietnam trong digest; xác nhận với recruiter', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1563' }
+    ],
     sources: [
       { title: 'ITviec — Rakuten Fintech Vietnam rating and company profile', url: 'https://itviec.com/companies/rakuten-fintech-vietnam-co-ltd' },
       { title: 'ITviec — Rakuten Fintech Vietnam reviews', url: 'https://itviec.com/companies/rakuten-fintech-vietnam-co-ltd/review' },
@@ -724,6 +792,9 @@ summary: 'Văn phòng kỹ sư tại TP.HCM thuộc Grab; backend chủ yếu vi
       'Chuẩn bị kể dự án và tình huống làm việc rõ ràng bằng tiếng Anh; review 2024 cho thấy nhiều vòng là trao đổi với manager ở các khu vực.',
       'Hỏi recruiter trước: số vòng, có coding/system design hay không, manager/team nào tham gia, vì trải nghiệm voz 2024 cho thấy có biến thể.',
       'Chuẩn bị câu hỏi ngược về team, cách phối hợp đa khu vực, kỳ vọng 3–6 tháng đầu và tiêu chí đánh giá.'
+    ],
+    pay: [
+      { role: 'Software Engineer (chưa có offer công khai chi tiết)', yoe: 'không rõ', amount: 'không có số cụ thể trong digest voz (không rõ gross/net)', year: '2026', note: 'có bình luận hỏi về package SAP senior/lead nhưng digest không có bài chia sẻ số tiền cụ thể cho role dev tại VN', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1061#post-38303000' }
     ],
     sources: [
       { title: 'voz.vn — Chia sẻ phỏng vấn ShopBack/SAP (2024)', url: 'https://voz.vn/t/event-box-cntt-2023-chia-se-kinh-nghiem-phong-van.694369/page-35#post-34416208' },
@@ -958,8 +1029,12 @@ summary: 'Văn phòng kỹ sư tại TP.HCM thuộc Grab; backend chủ yếu vi
       'Ôn kiến trúc dữ liệu (lakehouse, medalion), Spark tối ưu, SQL và data skew nếu apply mảng dữ liệu.',
       'Chuẩn bị kể kỹ dự án trong CV vì vòng phỏng vấn hỏi sâu theo từng công nghệ đã ghi.'
     ],
+    pay: [
+      { role: 'Mid Java Dev (VT*/Viettel đỏ, rejected)', yoe: '3 năm', amount: '350tr net/năm (package theo bài chia sẻ)', year: '2025', note: 'offer bị từ chối; thưởng package năm 50tr trong gói, BHXH trên mức cơ bản, BHSK PVI', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1073#post-38451596' }
+    ],
     sources: [
-      { title: 'voz.vn — Review Viettel Trung tâm công nghệ Kỹ sư dữ liệu (8/2025)', url: 'https://voz.vn/t/event-box-cntt-2023-chia-se-kinh-nghiem-phong-van.694369/page-78#post-39234999' }
+      { title: 'voz.vn — Review Viettel Trung tâm công nghệ Kỹ sư dữ liệu (8/2025)', url: 'https://voz.vn/t/event-box-cntt-2023-chia-se-kinh-nghiem-phong-van.694369/page-78#post-39234999' },
+      { title: 'voz.vn — Offer Mid Java Dev Viettel đỏ (2025, rejected)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1073#post-38451596' }
     ],
     confidence: 'low'
   },
@@ -989,8 +1064,12 @@ summary: 'Văn phòng kỹ sư tại TP.HCM thuộc Grab; backend chủ yếu vi
       'Ôn Terraform, CI/CD, Azure/AWS infrastructure và mạng nếu apply vị trí tương tự.',
       'Luyện trả lời behavior bằng tiếng Anh vì vòng phỏng vấn chính được tiến hành bằng tiếng Anh.'
     ],
+    pay: [
+      { role: 'Fresher Dev (KMS HCM)', yoe: '0 năm', amount: '550 USD gross/tháng', year: '2022', note: 'tháng 13 + 14 (theo bài chia sẻ)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1202#post-40700269' }
+    ],
     sources: [
-      { title: 'voz.vn — Review KMS Healthcare Senior DevOps Engineer (6/2026)', url: 'https://voz.vn/t/event-box-cntt-2023-chia-se-kinh-nghiem-phong-van.694369/page-120#post-42622271' }
+      { title: 'voz.vn — Review KMS Healthcare Senior DevOps Engineer (6/2026)', url: 'https://voz.vn/t/event-box-cntt-2023-chia-se-kinh-nghiem-phong-van.694369/page-120#post-42622271' },
+      { title: 'voz.vn — Offer Fresher Dev KMS HCM (2022)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1202#post-40700269' }
     ],
     confidence: 'low'
   },
@@ -1077,6 +1156,94 @@ summary: 'Văn phòng kỹ sư tại TP.HCM thuộc Grab; backend chủ yếu vi
     ],
     sources: [
       { title: 'voz.vn — Review VMO Holdings (2024)', url: 'https://voz.vn/t/event-box-cntt-2023-chia-se-kinh-nghiem-phong-van.694369/page-35#post-34416208' }
+    ],
+    confidence: 'low'
+  },
+  {
+    id: 'nam-a-bank',
+    name: 'Nam A Bank (Ngân hàng số)',
+    type: 'bank',
+    icon: '🏦',
+    summary: 'Ngân hàng TMCP Nam Á đang đầu tư mạnh vào mảng công nghệ và ngân hàng số; các bài chia sẻ lương trên voz cho thấy mức offer cạnh tranh cho vị trí kỹ thuật backend/dev. Được nhắc nhiều trên voz là trả lương tốt cho backend (2024–2026). Chưa có review phỏng vấn chi tiết công khai, nên quy trình dưới đây chỉ là ghi nhận sơ bộ.',
+    stack: ['Java', 'Spring Boot', 'Microservices', 'SQL', 'Banking'],
+    process: [
+      { round: 'Chưa có review phỏng vấn chi tiết', detail: 'Digest voz 02/2025–11/2026 chưa có bài mô tả vòng phỏng vấn backend/Java cụ thể cho Nam A Bank; cần hỏi recruiter về format (test, technical, culture).' }
+    ],
+    focus: ['spring', 'microservices', 'db', 'security', 'scenario'],
+    algoWeight: 0.2,
+    englishRequired: false,
+    questions: [
+      'Chưa có câu hỏi phỏng vấn backend/Java cụ thể được chia sẻ công khai trong nguồn đã rà soát; nên ôn Java/Spring, transaction, bảo mật API và kịch bản banking.'
+    ],
+    tips: [
+      'Chuẩn bị kiến thức banking: idempotency giao dịch, audit log, nhất quán dữ liệu và bảo mật.',
+      'Hỏi recruiter rõ stack, team (core banking hay digital) và cấu trúc lương/thưởng vì mức offer trong các chia sẻ khá phân tán theo level.'
+    ],
+    pay: [
+      { role: 'Middle Dev', yoe: '4,5 năm', amount: '53tr gross/tháng', year: '2024', note: 'tháng 13 + performance (theo bài chia sẻ)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1276#post-41673270' },
+      { role: 'Principal Engineer', yoe: '6,5–7 năm', amount: '135tr gross/tháng', year: '2026', note: 'tháng 13 + performance bonus (theo bài chia sẻ)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1422#post-43054177' }
+    ],
+    sources: [
+      { title: 'voz.vn — Offer Middle Dev Nam Á (2024)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1276#post-41673270' },
+      { title: 'voz.vn — Offer Principal Engineer Nam Á Bank (2026)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1422#post-43054177' }
+    ],
+    confidence: 'low'
+  },
+  {
+    id: 'covergo',
+    name: 'CoverGo',
+    type: 'product',
+    icon: '🛡️',
+    summary: 'Công ty insurtech (công nghệ bảo hiểm) có hoạt động/đội ngũ kỹ thuật tại Việt Nam (theo chia sẻ ứng viên). Được nhắc nhiều trên voz là trả lương tốt cho backend (2025). Chưa có review phỏng vấn chi tiết công khai, nên quy trình dưới đây chỉ là ghi nhận sơ bộ.',
+    stack: ['Java', 'Backend', 'Microservices', 'Cloud'],
+    process: [
+      { round: 'Chưa có review phỏng vấn chi tiết', detail: 'Digest voz 02/2025–11/2026 chưa có bài mô tả vòng phỏng vấn chi tiết cho CoverGo; cần hỏi recruiter về coding, system design và vòng culture.' }
+    ],
+    focus: ['design', 'microservices', 'db', 'english', 'scenario'],
+    algoWeight: 0.35,
+    englishRequired: true,
+    questions: [
+      'Chưa có câu hỏi phỏng vấn cụ thể được chia sẻ công khai trong nguồn đã rà soát; với insurtech nên chuẩn bị system design, API, transaction và giao tiếp tiếng Anh.'
+    ],
+    tips: [
+      'Chuẩn bị câu chuyện dự án theo STAR và luyện system design bằng tiếng Anh.',
+      'Hỏi recruiter về stack thực tế, chính sách ESOP/vesting và hình thức làm việc (remote/hybrid).'
+    ],
+    pay: [
+      { role: 'Senior Software Engineer', yoe: 'không ghi rõ trong bài (chia sẻ offer 2025)', amount: '80tr gross/tháng', year: '2025', note: 'tháng 13, ESOP, thưởng performance (theo bài chia sẻ)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1372#post-42593282' },
+      { role: 'Senior Software Engineer (thành phần thưởng/ESOP, cùng nguồn)', yoe: 'không ghi rõ trong bài', amount: '80tr gross/tháng + ESOP/performance', year: '2025', note: 'cùng bài chia sẻ; ghi tách để nêu rõ ESOP và thưởng performance, không phải offer độc lập', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1372#post-42593282' }
+    ],
+    sources: [
+      { title: 'voz.vn — Offer Senior Software Engineer CoverGo (2025)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1372#post-42593282' }
+    ],
+    confidence: 'low'
+  },
+  {
+    id: 'gsm',
+    name: 'GSM (Xanh SM)',
+    type: 'product',
+    icon: '🚕',
+    summary: 'Công ty thuộc hệ sinh thái dịch vụ di chuyển/đặt xe (Xanh SM/GSM) có tuyển kỹ sư phần mềm. Được nhắc nhiều trên voz là trả lương tốt cho backend (2024). Chưa có review phỏng vấn chi tiết công khai ngoài chia sẻ ngắn, nên quy trình dưới đây chỉ là ghi nhận sơ bộ.',
+    stack: ['Java', 'Backend', 'Microservices', 'SQL'],
+    process: [
+      { round: 'Phỏng vấn kỹ thuật (ghi nhận sơ bộ)', detail: 'Một chia sẻ 2024 mô tả 1 vòng phỏng vấn vui vẻ, chủ yếu trò chuyện trao đổi; cần xác nhận với recruiter vì chỉ có 1 nguồn ngắn.' }
+    ],
+    focus: ['design', 'microservices', 'db', 'scenario'],
+    algoWeight: 0.25,
+    englishRequired: false,
+    questions: [
+      'Chưa có bộ câu hỏi kỹ thuật chi tiết được chia sẻ công khai; chuẩn bị system design dịch vụ đặt xe/thanh toán, API và xử lý sự cố production.'
+    ],
+    tips: [
+      'Xác nhận lịch làm việc (bài chia sẻ 2024 có nhắc đi làm thứ 7) và cơ cấu thưởng trước khi nhận offer.',
+      'Chuẩn bị câu chuyện về hệ thống chịu tải, realtime và trade-off kiến trúc.'
+    ],
+    pay: [
+      { role: 'Senior Software Engineer', yoe: '5,5 năm', amount: '95tr gross/tháng', year: '2024', note: 'tháng 13 + performance (không nhớ rõ theo bài chia sẻ); bài có nhắc đi làm thứ 7', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1050#post-38213942' },
+      { role: 'Senior Software Engineer (lưu ý điều kiện làm việc, cùng nguồn)', yoe: '5,5 năm', amount: '95tr gross/tháng', year: '2024', note: 'cùng bài chia sẻ; ghi tách để nêu rõ lịch làm việc thứ 7, không phải offer độc lập', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1050#post-38213942' }
+    ],
+    sources: [
+      { title: 'voz.vn — Offer Senior Software Engineer GSM (2024)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1050#post-38213942' }
     ],
     confidence: 'low'
   }

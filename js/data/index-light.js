@@ -1564,5 +1564,8 @@ window.DATA_INDEX = {
     {"id":"aspire","name":"Aspire","focus":["core","algorithm","english"]},
     {"id":"tma-vietnam","name":"TMA Solutions","focus":["core","english","behavioral"]},
     {"id":"vmo-holdings","name":"VMO Holdings","focus":["english","behavioral"]},
+    {"id":"nam-a-bank","name":"Nam A Bank (Ngân hàng số)","focus":["spring","microservices","db","security","scenario"]},
+    {"id":"covergo","name":"CoverGo","focus":["design","microservices","db","english","scenario"]},
+    {"id":"gsm","name":"GSM (Xanh SM)","focus":["design","microservices","db","scenario"]},
   ]
 };
