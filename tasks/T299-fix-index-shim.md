@@ -16,3 +16,4 @@ Integrator cho phép sửa đúng 2 file trong `Owns`.
 - `scripts/browser-shim.js`: bỏ stub `global.App`; shim nạp thật app.js → i18n.js → ai.js → auth.js. `A.md` = function.
 - `js/data/lesson-ai-001.js` hỏng cú pháp ngay trong HEAD (backtick trong template literal, dòng 40/54) và sai quy ước (bài track `ai` phải nằm trong `lessons-ai.js`) → KHÔNG gắn vào index.html; chuyển nguyên trạng (kèm bản dịch `.en.js`) sang `docs/drafts/` để T323 đưa vào `lessons-ai.js`. index.html không đổi so với HEAD.
 - `node scripts/validate.js`: chỉ còn lỗi `algo.js` do T284 đang viết dở (ngoài Owns).
+Reviewed-by: opencode (T299R)
