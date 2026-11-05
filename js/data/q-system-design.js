@@ -675,7 +675,6 @@ Tách ranking khỏi storage; cache kết quả ngắn hạn. Không chạy mode
   tags: ['news feed', 'fan-out', 'Redis sorted set', 'celebrity']
 ,
   refs: [
-    { type: 'doc', title: 'System Design Primer: Twitter timeline solution', url: 'https://github.com/donnemartin/system-design-primer/blob/master/solutions/system_design/twitter/README.md' },
     { type: 'doc', title: 'Redis sorted sets', url: 'https://redis.io/docs/latest/develop/data-types/sorted-sets/' },
   ]
 },
