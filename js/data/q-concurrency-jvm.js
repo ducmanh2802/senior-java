@@ -5136,7 +5136,6 @@ JoinBench.stringJoin    1000  avgt   10  7480.9 ±  255.7  ns/op
   ],
   tags: ['JMH', 'benchmark', 'JIT', 'dead code elimination', 'warm-up', 'performance'],
   refs: [
-    { type: 'doc', title: 'JMH (OpenJDK Code Tools)', url: 'https://github.com/openjdk/jmh' }
   ]
 },
 {
@@ -5478,7 +5477,6 @@ void quotaNeverExceeded() throws Exception {
   ],
   tags: ['testing', 'concurrency test', 'CountDownLatch', 'jcstress', 'Awaitility', 'race condition'],
   refs: [
-    { type: 'doc', title: 'jcstress (OpenJDK Code Tools)', url: 'https://github.com/openjdk/jcstress' },
     { type: 'doc', title: 'Awaitility', url: 'https://github.com/awaitility/awaitility' }
   ]
 },
