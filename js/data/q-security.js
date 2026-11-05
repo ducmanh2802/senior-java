@@ -1972,4 +1972,432 @@ Thêm một test "kiểm kê": quét mọi handler có {{@PathVariable}} tên ch
     { type: 'doc', title: 'Spring Security Testing: OAuth 2.0', url: 'https://docs.spring.io/spring-security/reference/servlet/test/mockmvc/oauth2.html' }
   ]
 },
+{
+  id: 'security-025',
+  topic: 'security',
+  level: 'senior',
+  q: 'Quản lý secret (DB password, API key) trong production: dùng Vault/AWS Secrets Manager thế nào, rotate secret DB không downtime, và tránh leak secret trong env/log?',
+  a: `**Tóm tắt:** Không lưu secret trong code hay git; đọc từ secret manager tại runtime, cache ngắn, rotate qua dual-credential (hai user DB song song) rồi revoke cũ sau khi app mới đã dùng credential mới.
+
+### Secret manager là gì
+Secret manager (HashiCorp Vault, AWS Secrets Manager, GCP Secret Manager) là kho lưu secret có audit, versioning, rotation tự động và access control theo IAM. App không hardcode secret mà gọi API lấy secret khi khởi động, hoặc mount secret vào file/volume.
+
+### Vì sao không dùng env var thuần
+Env var dễ bị leak: {{/proc/<pid>/environ}}, core dump, log crash, Docker inspect, CI artifact. Secret manager cho phép revoke/rotate và audit ai đã đọc.
+
+### Pattern đọc secret trong Spring Boot
+Dùng Spring Cloud Vault hoặc AWS Secrets Manager JDBC (aws-secretsmanager-jdbc). Ví dụ với AWS:
+~~~yaml
+spring:
+  datasource:
+    url: jdbc-secretsmanager:mysql://db:3306/app
+    username: prod/db-creds   # tên secret, không phải user thật
+    driver-class-name: com.amazonaws.secretsmanager.sql.AWSSecretsManagerMySQLDriver
+~~~
+Driver tự gọi Secrets Manager lấy username/password. App không thấy secret.
+
+### Rotate DB secret không downtime (dual credential)
+1. Tạo user DB mới ({{app_v2}}) với quyền giống {{app_v1}}, giữ cả hai active.
+2. Cập nhật secret manager trỏ sang {{app_v2}} (version mới).
+3. App instances đọc secret mới khi restart/refresh (hoặc dùng @RefreshScope + actuator refresh). Rolling restart từng pod.
+4. Sau khi tất cả pod dùng credential mới và connections cũ timeout, drop {{app_v1}}.
+5. Ghi audit: ai rotate, khi nào.
+
+### Tránh leak trong log
+- Không log object chứa password/token; mask trong toString().
+- Redact secret trong exception stack trace (Spring Boot {{server.error.include-stacktrace=never}} ở prod).
+- Không in env khi startup (Spring Boot banner/custom).
+- Dùng structured logging và filter field {{password}}, {{token}}, {{secret}}.
+- Pre-commit hook (gitleaks, trufflehog) chặn secret vào git; CI scan image.
+
+### Short-lived credentials (Vault dynamic secrets)
+Vault có thể cấp DB credential sống 1 giờ, tự revoke. App renew lease định kỳ. Giảm blast radius nếu leak.
+
+### Pitfall
+- Cache secret quá lâu → rotation không hiệu lực; cache TTL ≤ vài phút.
+- Rotation partial failure: một nửa pod còn credential cũ → keep cả hai user active cho đến khi verify.
+- Secret trong configmap Kubernetes (base64, không mã hoá) — dùng Sealed Secrets/External Secrets Operator.
+
+> Senior tip: tôi coi secret là "có hạn sử dụng", không phải "cài một lần". Mọi secret phải có owner, TTL và quy trình rotate đã test trong staging trước khi prod cần.`
+  ,
+  follow: [
+    'Vault dynamic secret vs static secret: khi nào chọn cái nào, trade-off latency?',
+    'Làm sao rotate JWT signing key không làm mất session đang active?',
+    'Phát hiện secret đã leak vào git: các bước xử lý khẩn cấp?'
+  ],
+  tags: ['Secrets Management', 'Vault', 'AWS Secrets Manager', 'Rotation', 'Dual Credential', 'gitleaks'],
+},
+{
+  id: 'security-026',
+  topic: 'security',
+  level: 'senior',
+  q: 'mTLS giữa các microservice và service mesh: cơ chế, cert rotation không downtime, và khi nào cần mTLS thay vì TLS một chiều?',
+  a: `**Tóm tắt:** mTLS xác thực cả client và server bằng certificate; service mesh (Istio/Linkerd) tự động cấp, rotate cert và enforce policy, không cần sửa code app.
+
+### TLS một chiều vs mTLS
+- TLS một chiều: client verify server (cert server). Server không biết client là ai → dùng token/API key để auth.
+- mTLS: cả hai bên trình cert và verify nhau. Identity = cert (SPIFFE ID), không cần token.
+
+### Vì sao cần mTLS trong microservices
+Trong cluster, service gọi service qua network nội bộ. Token có thể bị steal/replay; cert gắn với workload identity, khó steal hơn và tự động rotate.
+
+### Service mesh làm gì
+Service mesh (Istio, Linkerd) inject sidecar proxy (Envoy) vào mỗi pod. Proxy xử lý mTLS: cấp cert từ CA (istiod), handshake, rotate. App nói chuyện plaintext với sidecar localhost; sidecar mã hoá qua network. App không cần code TLS.
+
+### Cert rotation không downtime
+- Cert ngắn hạn (24h) + auto-renew trước hết hạn.
+- Istio dùng SDS (Secret Discovery Service): push cert mới vào proxy mà không restart pod.
+- Rotation overlap: cert mới active trước khi cert cũ hết hạn, connection đang dùng cert cũ vẫn sống đến khi đóng.
+- Graceful: proxy drain connection cũ.
+
+### SPIFFE/SPIRE
+Tiêu chuẩn workload identity: mỗi workload có SPIFFE ID (spiffe://cluster/namespace/sa). Mesh dùng SPIFFE để authorize: "service A được gọi B".
+
+### Authorization policy
+Sau khi authn bằng mTLS, enforce authz: {{AuthorizationPolicy}} chỉ cho phép service-a gọi service-b trên path /orders. Chặn lateral movement nếu một pod bị compromise.
+
+### Khi nào không cần mTLS
+- Monolith đơn giản, ít service.
+- Đã có zero-trust network + strong token (JWT với short TTL) + network policy.
+- Performance/complexity budget không cho phép mesh.
+
+### Pitfall
+- Cert expired → toàn bộ traffic fail; monitor cert expiry.
+- Debug khó: traffic mã hoá → dùng mesh tap/telemetry.
+- Trust domain sai → cross-cluster call fail.
+
+> Senior tip: mTLS giải quyết "ai đang gọi tôi" ở tầng network; vẫn cần authz ở tầng app cho business logic. Mesh là hạ tầng (infrastructure), không thay thế authorization ở tầng domain.`
+  ,
+  follow: [
+    'So sánh Istio vs Linkerd: khi nào chọn cái nào?',
+    'Làm sao debug request fail do mTLS giữa hai pod?',
+    'mTLS có bảo vệ chống replay attack không?'
+  ],
+  tags: ['mTLS', 'Service Mesh', 'Istio', 'Linkerd', 'SPIFFE', 'Cert Rotation', 'Zero Trust'],
+},
+{
+  id: 'security-027',
+  topic: 'security',
+  level: 'senior',
+  q: 'Rate limiting và chống brute-force login/OTP cho hệ thống ngân hàng: thiết kế, nơi đặt (gateway vs app), và các kỹ thuật hiệu quả?',
+  a: `**Tóm tắt:** Đặt rate limit tại gateway/API gateway cho traffic thô, và tại app cho logic nghiệp vụ (per account, per device); kết hợp lockout dần, CAPTCHA, device fingerprint, và OTP throttling theo số điện thoại.
+
+### Hai tầng
+- Gateway (Kong, AWS WAF, Cloudflare): limit theo IP/global, chặn volumetric attack, bot. Rẻ, nhanh, nhưng không biết user.
+- App: limit theo username/account/device, biết ngữ cảnh nghiệp vụ (sai mật khẩu 5 lần → lock).
+
+### Các key để limit
+- IP (dễ bị NAT/VPN).
+- Username/account (chống credential stuffing).
+- Device fingerprint / user-agent.
+- Số điện thoại (cho OTP).
+
+### Thuật toán
+- Token bucket / leaky bucket: cho phép burst nhỏ, trung bình ổn định.
+- Sliding window counter: chính xác hơn, tốn bộ nhớ.
+- Fixed window: đơn giản, dễ bị boundary burst.
+
+### Chống brute-force login
+- Lockout dần: 5 lần sai → khóa 15 phút; 10 lần → 1 giờ; không khóa vĩnh viễn (DoS bằng cách cố tình sai).
+- Progressive delay: mỗi lần sai tăng delay response (tarpit) thay vì lock.
+- CAPTCHA sau N lần sai.
+- Notify user khi có nhiều lần sai (email/SMS).
+- So sánh password hash với constant-time (MessageDigest.isEqual) để tránh timing attack.
+
+### OTP throttling (ngân hàng)
+- Giới hạn số OTP gửi mỗi SĐT: 3/giờ, 10/ngày.
+- OTP có TTL ngắn (3-5 phút), one-time, bind với transaction (amount, recipient).
+- Chống brute OTP: 3 lần sai → invalidate OTP, yêu cầu gửi mới; rate limit verify endpoint per IP+phone.
+- Không trả message phân biệt "OTP sai" vs "OTP hết hạn" (oracle).
+
+### Distributed rate limit
+Dùng Redis với Lua script atomic (INCR + EXPIRE) để đếm qua nhiều instance. Hoặc Redis Cell (token bucket module).
+
+### Pitfall
+- Rate limit theo IP sau NAT công ty → nhiều user chung IP bị block. Dùng composite key (IP+account).
+- Attacker rotate IP (botnet) → cần device fingerprint + behavioral signals.
+- Lockout vĩnh viễn bị attacker lợi dụng để DoS victim → dùng gradual lockout + unlock qua email.
+
+> Senior tip: ở ngân hàng, rate limit là control compensating, không phải control chính. Quan trọng hơn là MFA, transaction signing và monitoring anomaly. Tôi thiết kế rate limit để mua thời gian cho detection, không để "chặn tuyệt đối".`
+  ,
+  follow: [
+    'Làm sao implement rate limit phân tán chính xác với Redis cluster?',
+    'Credential stuffing vs password spraying: khác nhau và cách phát hiện?',
+    'OTP brute-force: tại sao 6 chữ số OTP chỉ an toàn khi có rate limit?'
+  ],
+  tags: ['Rate Limiting', 'Brute Force', 'OTP', 'Banking', 'Redis', 'Token Bucket', 'Account Lockout'],
+},
+{
+  id: 'security-028',
+  topic: 'security',
+  level: 'senior',
+  q: 'Supply chain security: SBOM, dependency scanning, ký image container, và xử lý CVE trong dependency transitive?',
+  a: `**Tóm tắt:** Tạo SBOM cho mỗi build, scan dependency (trực tiếp + transitive) bằng SCA tool, ký image bằng cosign, và verify chữ ký ở deploy; CVE transitive xử lý bằng override/upgrade parent hoặc exclude có kiểm soát.
+
+### Threat model supply chain
+Attacker không tấn công app trực tiếp mà tấn công qua dependency bị compromise (event-stream, xz utils), image base bị tiêm, build pipeline bị sửa. Mục tiêu: đảm bảo artifact deploy đúng là artifact build từ code đã review.
+
+### SBOM (Software Bill of Materials)
+Danh sách mọi component (lib, version, license) trong artifact. Chuẩn SPDX/CycloneDX. Sinh bằng Syft/Trivy. Lưu kèm release để trace khi có CVE mới.
+
+### Dependency scanning (SCA)
+- Trực tiếp: khai báo trong pom.xml.
+- Transitive: resolve toàn bộ dependency tree (mvn dependency:tree).
+- Tool: OWASP Dependency-Check, Snyk, Trivy, GitHub Dependabot.
+- Chạy trong CI: fail build nếu CVE severity >= High (có thể allowlist có thời hạn).
+
+### Xử lý CVE transitive
+1. Tìm đường dẫn: {{mvn dependency:tree -Dincludes=vulnerable-lib}}.
+2. Option A: upgrade parent dependency lên version mới fix CVE.
+3. Option B: override version trực tiếp trong dependencyManagement (force).
+4. Option C: exclude transitive dep và thêm version an toàn.
+5. Nếu không có fix: assess exploitability (CVE có ảnh hưởng code path không?), apply compensating control, document risk + deadline.
+
+### Ký image container
+- Build image → push registry → ký bằng cosign (Sigstore) với keyless (OIDC) hoặc key.
+- Admission controller (Kyverno/OPA Gatekeeper) ở Kubernetes verify chữ ký trước khi deploy: chỉ cho phép image có chữ ký hợp lệ từ CI identity.
+- Attestation: thêm SBOM attestation gắn với image.
+
+### Build reproducibility & SLSA
+- SLSA level: build provenance (ai build, từ commit nào, build script nào).
+- Hermetic build: không fetch dependency trong build, dùng cache đã verify.
+- Pin base image bằng digest (sha256) thay vì tag.
+
+### Pitfall
+- Scan chỉ direct deps → bỏ sót transitive (log4shell nằm ở transitive).
+- Allowlist CVE vĩnh viễn → debt bảo mật.
+- Ký image nhưng không verify ở deploy → chữ ký vô nghĩa.
+
+> Senior tip: supply chain là bài toán "trust but verify". Tôi không tin registry hay dependency; tôi verify tại deploy bằng admission policy và audit provenance. Nếu không verify ở runtime, mọi thứ trước đó chỉ là paperwork.`
+  ,
+  follow: [
+    'Log4Shell: tại sao CVE trong transitive dependency gây thảm họa và cách phòng?',
+    'Cosign keyless vs key-based signing: trade-off và rotation?',
+    'Làm sao xử lý khi một dependency bị yanked khỏi Maven Central?'
+  ],
+  tags: ['Supply Chain', 'SBOM', 'SCA', 'cosign', 'CVE', 'Transitive Dependency', 'SLSA', 'Admission Controller'],
+},
+{
+  id: 'security-029',
+  topic: 'security',
+  level: 'mid',
+  q: 'Lưu mật khẩu user: bcrypt/argon2, pepper, và migrate hash cũ (MD5/SHA1) sang hash mạnh mà không bắt user đổi mật khẩu?',
+  a: `**Tóm tắt:** Dùng Argon2id (hoặc bcrypt) với salt tự động; thêm pepper bí mật ở app; migrate hash cũ bằng cách re-hash khi user login thành công, transparent.
+
+### Vì sao không dùng MD5/SHA1/SHA256
+Các hash nhanh bị brute-force bằng GPU (hàng tỷ hash/giây). Password cần hash chậm + salt để chống rainbow table và brute force.
+
+### bcrypt vs Argon2
+- bcrypt: cost factor (work factor) tăng theo thời gian; mature, widely supported.
+- Argon2id: winner PHC; memory-hard, chống GPU/ASIC tốt hơn; OWASP khuyến nghị cho password mới.
+- Cả hai đều tự sinh salt và embed vào hash string.
+
+### Pepper
+Salt lưu cùng hash (public). Pepper là secret toàn cục (HMAC key) không lưu DB, thêm vào password trước khi hash: {{hash(password + pepper)}}. Nếu DB bị steal, attacker vẫn thiếu pepper. Lưu pepper trong secret manager, rotate khó (phải re-hash all) nên ít rotate.
+
+### Migrate hash cũ không bắt đổi mật khẩu
+Chiến lược lazy re-hash:
+1. DB lưu {{hash_algo, hash}} hoặc prefix trong hash string.
+2. Khi user login: verify bằng algo cũ (MD5/SHA1) với input password.
+3. Nếu đúng: hash password mới bằng Argon2id, update DB, set algo mới.
+4. Từ lần sau dùng Argon2id.
+Ưu điểm: user không biết, migrate dần theo traffic. Nhược: hash cũ tồn tại cho đến khi user login; user không active sẽ giữ hash cũ lâu. Có thể force reset cho account không login trong X tháng.
+
+### Double hashing (alternative)
+Lưu {{argon2(legacy_hash(password))}} ngay lập tức (batch migration) mà không cần password plaintext. Khi login: compute legacy_hash(input) rồi verify argon2. Sau đó re-hash sang argon2(input) để bỏ legacy. Phức tạp hơn nhưng migrate toàn bộ ngay.
+
+### Tham số Argon2id (OWASP)
+- memory: 19 MiB (hoặc 64 MiB nếu server cho phép)
+- iterations: 2
+- parallelism: 1
+- salt: 16 bytes random
+- output: 32 bytes
+
+### Pitfall
+- Work factor quá cao → login chậm, DoS chính mình.
+- So sánh hash bằng == → timing leak; dùng constant-time compare (framework đã làm).
+- Quên pepper rotation plan.
+
+> Senior tip: tôi đặt benchmark: login hash phải < 200ms trên prod hardware. Nếu Argon2 params làm login 800ms, user bỏ đi và attacker vẫn brute được offline? Không—offline attacker không bị rate limit, nên params cao hơn cũng đáng; nhưng cân bằng với UX.`
+  ,
+  follow: [
+    'Argon2id vs bcrypt: benchmark trên JVM, thư viện nào tốt (BouncyCastle, Spring Security)?',
+    'Pepper vs HMAC: khác nhau và khi nào dùng cái nào?',
+    'Làm sao detect password đã bị compromise (HaveIBeenPwned) khi login?'
+  ],
+  tags: ['Password Hashing', 'Argon2', 'bcrypt', 'Pepper', 'Migration', 'OWASP'],
+},
+{
+  id: 'security-030',
+  topic: 'security',
+  level: 'senior',
+  q: 'Audit log không thể sửa (tamper-evident) cho hệ thống tài chính: thiết kế storage, chaining hash, và tuân thủ forensic?',
+  a: `**Tóm tắt:** Ghi audit log append-only vào storage bất biến (WORM), mỗi bản ghi chứa hash của bản ghi trước (hash chain) để phát hiện sửa/xoá, và đồng bộ ra hệ thống độc lập.
+
+### Yêu cầu tài chính
+- Ai làm gì, khi nào, từ đâu, trên dữ liệu nào, kết quả gì.
+- Không ai (kể cả admin/DBA) sửa/xoá được.
+- Có thể chứng minh tính toàn vẹn cho auditor/forensic.
+
+### Storage bất biến (WORM)
+- AWS S3 Object Lock (Compliance mode): object không thể xoá/sửa trong retention period, kể cả root account.
+- Azure Immutable Blob, GCP bucket retention.
+- Database append-only table với revoke UPDATE/DELETE privilege; nhưng DBA vẫn có thể bypass → cần thêm hash chain + external copy.
+
+### Hash chain (blockchain-like)
+Mỗi audit record:
+~~~json
+{
+  "seq": 1042,
+  "ts": "2026-11-05T08:00:00Z",
+  "actor": "user:42",
+  "action": "transfer",
+  "resource": "account:99",
+  "prev_hash": "a1b2...",
+  "hash": "sha256(seq|ts|actor|action|resource|prev_hash)"
+}
+~~~
+Sửa một record → hash không khớp → phát hiện. Xoá record → gap seq → phát hiện. Verify bằng job định kỳ recompute toàn chain.
+
+### Merkle tree / external anchor
+- Gom hash của N record thành Merkle root, publish root ra hệ thống ngoài (blockchain public, RFC 3161 timestamp authority) để chứng minh thời điểm.
+- Giúp phát hiện rewrite toàn bộ chain (attacker compute lại hash sau khi sửa).
+
+### Separation of duties
+- App chỉ INSERT audit, không UPDATE/DELETE.
+- DB user cho audit table khác user cho business table.
+- Audit storage ở account/cloud khác, không cùng credential với app.
+
+### Nội dung audit (không lưu secret)
+- Không log password/token/PII đầy đủ; log hashed identifier hoặc masked.
+- Log thay đổi trước/sau (diff) cho field quan trọng (số dư, limit).
+
+### Forensic
+- Clock sync (NTP) để timestamp tin cậy.
+- Immutable log shipping (Fluent Bit → S3/Kafka) real-time; nếu app bị compromise, log đã ra ngoài.
+- Retention theo quy định (thường 5-7 năm tài chính).
+
+### Pitfall
+- Hash chain trong cùng DB → DBA có thể rewrite chain; cần external anchor.
+- Audit log quá lớn → sampling? Không—tài chính cần full. Dùng columnar storage (Parquet) + partition theo ngày.
+- Thiếu idempotency: retry request ghi audit trùng → dùng idempotency key.
+
+> Senior tip: audit log là "bằng chứng", không phải "log debug". Tôi thiết kế để một auditor độc lập có thể verify tính toàn vẹn mà không tin hệ thống của chúng tôi. Nếu auditor phải tin DBA, thì audit vô giá trị.`
+  ,
+  follow: [
+    'Hash chain vs Merkle tree: khi nào dùng cái nào?',
+    'Làm sao verify audit log integrity tự động và alert khi tamper?',
+    'GDPR "right to be forgotten" xung đột với audit log bất biến: xử lý thế nào?'
+  ],
+  tags: ['Audit Log', 'WORM', 'Hash Chain', 'Merkle Tree', 'Forensic', 'S3 Object Lock', 'Compliance'],
+},
+{
+  id: 'security-031',
+  topic: 'security',
+  level: 'lead',
+  q: 'Threat modeling (STRIDE) cho tính năng chuyển tiền mới: bạn sẽ làm thế nào từng bước, và output là gì?',
+  a: `**Tóm tắt:** Vẽ data flow diagram, áp dụng STRIDE cho từng component/flow, xếp hạng rủi ro (DREAD hoặc likelihood×impact), và chuyển thành control + test + monitoring; output là threat register + mitigation backlog.
+
+### STRIDE là gì
+STRIDE = Spoofing, Tampering, Repudiation, Information Disclosure, Denial of Service, Elevation of Privilege. Mỗi chữ cái là một lớp tấn công cần xem xét.
+
+### Bước 1: Scope & actors
+Tính năng chuyển tiền: user (mobile/web), API gateway, transfer service, account service, ledger DB, notification, fraud engine, bank partner (ACH/SWIFT). Vẽ trust boundaries: internet ↔ edge ↔ internal ↔ DB ↔ external partner.
+
+### Bước 2: Data Flow Diagram (DFD)
+Nodes: process, data store, external entity, data flow. Đánh số từng flow (F1: user→gateway, F2: gateway→transfer service, ...). Trust boundary là nơi cần control.
+
+### Bước 3: Áp STRIDE từng element
+Ví dụ flow F3 transfer service → ledger DB:
+- Spoofing: service giả mạo? → mTLS + service identity.
+- Tampering: sửa amount trong transit? → TLS + signed request + DB transaction.
+- Repudiation: user phủ nhận đã chuyển? → audit log + non-repudiation (OTP/biometric approval).
+- Info disclosure: log chứa số tài khoản? → masking.
+- DoS: flood transfer → rate limit + queue.
+- EoP: user A chuyển tiền từ account B? → ownership check (BOLA control).
+
+### Bước 4: Risk ranking
+Dùng likelihood × impact (hoặc DREAD). Ví dụ: "EoP chuyển tiền từ account người khác" = impact critical, likelihood medium → priority P1. "DoS notification" = low.
+
+### Bước 5: Mitigation → control
+Mỗi threat → control cụ thể (code, config, process) + owner + deadline. Ví dụ threat "replay OTP" → control "OTP one-time + TTL 3 phút + bind transaction id".
+
+### Bước 6: Verification
+- Unit/integration test cho control (ownership check test).
+- Penetration test / red team cho top threats.
+- Monitoring & alert cho anomaly (velocity, amount outlier).
+
+### Output artifacts
+- Threat register (spreadsheet): Threat ID, component, STRIDE category, description, likelihood, impact, risk, mitigation, owner, status.
+- Updated architecture doc với trust boundaries.
+- Security test cases.
+- Runbook cho incident liên quan.
+
+### Khi nào làm threat modeling
+Mỗi tính năng mới có dữ liệu nhạy cảm/tiền; thay đổi lớn; định kỳ (quarterly) cho hệ thống hiện có. Lead facilitate session với dev + QA + ops (1-2 giờ).
+
+### Pitfall
+- Threat model quá chung chung ("SQL injection") → không actionable. Phải cụ thể đến flow và control.
+- Làm một lần rồi quên → stale. Review khi architecture thay đổi.
+- Chỉ dev làm, không có security/ops → bỏ sót threat.
+
+> Senior tip: threat modeling giá trị nhất không phải danh sách threat mà là "shared understanding" giữa team về cái gì nguy hiểm. Tôi tổ chức session 90 phút với whiteboard, output là 10-15 threat concrete, không phải 100 threat chung chung.`
+  ,
+  follow: [
+    'STRIDE vs PASTA vs LINDDUN: khác nhau và khi nào dùng?',
+    'Làm sao integrate threat modeling vào sprint planning mà không chậm delivery?',
+    'Ví dụ threat model cho OAuth login flow: các threat chính?'
+  ],
+  tags: ['Threat Modeling', 'STRIDE', 'DFD', 'Risk Ranking', 'Security by Design', 'Lead'],
+},
+{
+  id: 'security-032',
+  topic: 'security',
+  level: 'mid',
+  q: 'OWASP API Security Top 10: phân biệt BOLA/BFLA/Broken Authentication và cách phòng trong Spring Boot?',
+  a: `**Tóm tắt:** BOLA = truy cập object không thuộc mình; BFLA = gọi chức năng không có quyền; Broken Authentication = giả mạo identity. Phòng bằng authorization theo object + role/permission checks + authn mạnh.
+
+### Ba khái niệm
+- BOLA (Broken Object Level Authorization, API1): user A đọc/sửa object của user B bằng cách đổi id. Ví dụ {{GET /orders/123}} của người khác.
+- BFLA (Broken Function Level Authorization, API5): user thường gọi endpoint admin ({{DELETE /users/5}} hoặc {{POST /admin/refund}}) vì thiếu kiểm tra role.
+- Broken Authentication (API2): token yếu, brute force, JWT sai cấu hình, session fixation.
+
+### Phòng BOLA trong Spring Boot
+- Repository method có owner: {{findByOwnerIdAndId(ownerId, id)}} thay vì {{findById}}.
+- Spring Security @PreAuthorize với SpEL: {{@PreAuthorize("#order.ownerId == authentication.principal.id")}}.
+- Object-level check trong service, không chỉ controller.
+- UUID khó đoán + ownership check (defense in depth).
+
+### Phòng BFLA
+- Phân quyền theo method/endpoint: {{@PreAuthorize("hasRole('ADMIN')")}} cho admin API.
+- Tách controller admin riêng, không reuse cùng path.
+- Deny by default: mọi endpoint cần auth; whitelist public.
+- Kiểm tra role ở service layer, không chỉ UI ẩn nút.
+
+### Phòng Broken Authentication
+- Dùng proven library (Spring Security, OAuth2/OIDC).
+- JWT: verify signature, issuer, audience, expiry; dùng RS256 không HS256 với secret yếu; rotate key.
+- MFA cho thao tác nhạy cảm.
+- Rate limit login/OTP (xem security-027).
+- Secure session: HttpOnly, Secure, SameSite cookie; regenerate session id sau login.
+
+### Test
+- Authorization test matrix: mỗi endpoint × mỗi role × owner/non-owner → expected 200/403/404.
+- DAST/automated: OWASP ZAP API scan.
+- Code review checklist: mọi {{findById}} từ user input phải có owner filter.
+
+### Pitfall
+- Chỉ kiểm tra role, không kiểm tra object → BOLA.
+- Chỉ kiểm tra object ở controller, service nội bộ gọi repository trực tiếp → bypass.
+- JWT {{alg: none}} hoặc HS256 với secret đoán được → auth bypass.
+
+> Senior tip: authorization là "hai chiều": function-level (bạn được làm hành động này không?) và object-level (object này thuộc bạn không?). Nhiều hệ thống làm tốt một chiều và quên chiều kia. Tôi bắt buộc test matrix cả hai trong CI.`
+  ,
+  follow: [
+    'Spring Security method security (@PreAuthorize, @PostAuthorize): khác nhau và khi dùng cái nào?',
+    'JWT RS256 vs HS256: khi nào dùng và rủi ro?',
+    'Làm sao test authorization tự động trong CI (OWASP ZAP, REST Assured)?'
+  ],
+  tags: ['OWASP API Security', 'BOLA', 'BFLA', 'Broken Authentication', 'Spring Security', 'JWT', 'Authorization'],
+},
 );
