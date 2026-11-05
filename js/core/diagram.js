@@ -58,30 +58,29 @@
     const n = d.actors.length, COL = 180, HEAD = 46, W = n * COL;
     const cx = i => COL / 2 + i * COL;
     let y = HEAD + 26, body = '', num = 0;
-    d.steps.forEach(s => {
+    d.steps.forEach((s, k) => {
+      const g = (label, inner) => '<g class="sq-step" data-i="' + k + '" data-label="' + escX(label) + '">' + inner + '</g>';
       if (s.note != null) {
         const over = (s.over && s.over.length ? s.over : [0]).map(Number);
         const a = Math.min(...over), b = Math.max(...over);
         const x1 = cx(a) - COL / 2 + 12, x2 = cx(b) + COL / 2 - 12;
         const lines = wrap(s.note, Math.max(18, Math.floor((x2 - x1) / 7)));
         const h = lines.length * 16 + 12;
-        body += '<rect class="sq-note" x="' + x1 + '" y="' + y + '" width="' + (x2 - x1) + '" height="' + h + '" rx="6"/>' +
-          lines.map((l, i) => '<text class="sq-note-t" x="' + (x1 + x2) / 2 + '" y="' + (y + 20 + i * 16) + '" text-anchor="middle">' + escX(l) + '</text>').join('');
+        body += g('📝 ' + s.note, '<rect class="sq-note" x="' + x1 + '" y="' + y + '" width="' + (x2 - x1) + '" height="' + h + '" rx="6"/>' +
+          lines.map((l, i) => '<text class="sq-note-t" x="' + (x1 + x2) / 2 + '" y="' + (y + 20 + i * 16) + '" text-anchor="middle">' + escX(l) + '</text>').join(''));
         y += h + 16; return;
       }
       num++;
       const f = Number(s.from), t = Number(s.to), x1 = cx(f), x2 = cx(t), label = num + '. ' + s.text;
       if (f === t) {
         const lines = wrap(label, 24);
-        body += lines.map((l, i) => '<text class="sq-label" x="' + (x1 + 8) + '" y="' + (y + i * 15) + '">' + escX(l) + '</text>').join('');
         const top = y + (lines.length - 1) * 15 + 6;
-        body += '<path class="sq-line" d="M' + x1 + ' ' + top + ' h34 v18 h-34" marker-end="url(#' + id + ')"/>';
+        body += g(d.actors[f] + ': ' + s.text, lines.map((l, i) => '<text class="sq-label" x="' + (x1 + 8) + '" y="' + (y + i * 15) + '">' + escX(l) + '</text>').join('') + '<path class="sq-line" d="M' + x1 + ' ' + top + ' h34 v18 h-34" marker-end="url(#' + id + ')"/>');
         y = top + 36; return;
       }
       const lines = wrap(label, Math.max(16, Math.floor(Math.abs(x2 - x1) / 7)));
-      body += lines.map((l, i) => '<text class="sq-label" x="' + (x1 + x2) / 2 + '" y="' + (y + i * 15) + '" text-anchor="middle">' + escX(l) + '</text>').join('');
       const ly = y + (lines.length - 1) * 15 + 8;
-      body += '<line class="sq-line' + (s.reply ? ' sq-reply' : '') + '" x1="' + x1 + '" y1="' + ly + '" x2="' + (x2 + (x2 > x1 ? -4 : 4)) + '" y2="' + ly + '" marker-end="url(#' + id + ')"/>';
+      body += g(d.actors[f] + ' → ' + d.actors[t] + ': ' + s.text, lines.map((l, i) => '<text class="sq-label" x="' + (x1 + x2) / 2 + '" y="' + (y + i * 15) + '" text-anchor="middle">' + escX(l) + '</text>').join('') + '<line class="sq-line' + (s.reply ? ' sq-reply' : '') + '" x1="' + x1 + '" y1="' + ly + '" x2="' + (x2 + (x2 > x1 ? -4 : 4)) + '" y2="' + ly + '" marker-end="url(#' + id + ')"/>');
       y = ly + 30;
     });
     const H = y + 6;
@@ -96,17 +95,41 @@
       heads + body + '</svg>';
   }
 
+  // <figure> with ◀ ▶ controls that walk through the steps (captionHtml must already be safe HTML)
+  function seqFigure(d, captionHtml) {
+    const cap = captionHtml != null ? captionHtml : (d.title ? escX(d.title) : '');
+    return '<figure class="diagram" data-at="-1">' + (cap ? '<figcaption>' + cap + '</figcaption>' : '') +
+      '<div class="diagram-ctl"><button type="button" class="btn sm" data-sq="prev" aria-label="Bước trước">◀</button>' +
+      '<button type="button" class="btn sm" data-sq="next" aria-label="Bước tiếp">▶ Đi từng bước</button>' +
+      '<button type="button" class="btn sm" data-sq="all">Xem hết</button><span class="diagram-now" aria-live="polite"></span></div>' +
+      '<div class="diagram-scroll">' + seqSvg(d) + '</div></figure>';
+  }
+  // one delegated listener for every diagram on the page (classic script, loaded once)
+  function onStepClick(e) {
+    const b = e.target.closest && e.target.closest('[data-sq]');
+    if (!b) return;
+    const fig = b.closest('.diagram'), steps = fig.querySelectorAll('.sq-step'), n = steps.length;
+    let at = Number(fig.dataset.at);
+    if (b.dataset.sq === 'next') at = at < 0 ? 0 : Math.min(at + 1, n - 1);
+    else if (b.dataset.sq === 'prev') at = at < 0 ? n - 1 : Math.max(at - 1, 0);
+    else at = -1;
+    fig.dataset.at = at;
+    steps.forEach((g, i) => { g.classList.toggle('sq-dim', at >= 0 && i > at); g.classList.toggle('sq-cur', i === at); });
+    fig.querySelector('[data-sq="next"]').textContent = at < 0 ? '▶ Đi từng bước' : '▶';
+    fig.querySelector('.diagram-now').textContent = at < 0 ? '' : 'Bước ' + (at + 1) + '/' + n + ': ' + steps[at].getAttribute('data-label');
+  }
+  if (typeof document !== 'undefined' && document.addEventListener) document.addEventListener('click', onStepClick);
+
   // figure HTML for a ~~~seq block; a bad block shows its error instead of breaking the page
   function seqBlock(text) {
     try {
-      const d = parseSeq(text);
-      return '<figure class="diagram">' + (d.title ? '<figcaption>' + escX(d.title) + '</figcaption>' : '') + '<div class="diagram-scroll">' + seqSvg(d) + '</div></figure>';
+      return seqFigure(parseSeq(text));
     } catch (e) {
       return '<pre class="code" data-lang="seq"><code>' + escX(text) + '\n\n⚠ ' + escX(e.message) + '</code></pre>';
     }
   }
 
-  const api = { parseSeq, seqSvg, seqBlock };
+  const api = { parseSeq, seqSvg, seqFigure, seqBlock };
   root.Diagram = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -326,3 +326,9 @@ details > summary { transition: color .15s; }
 .sq-label { fill: var(--text); font-size: 12px; }
 .sq-note { fill: var(--surface-2); stroke: var(--warn); stroke-width: 1.2; }
 .sq-note-t { fill: var(--text); font-size: 12px; font-style: italic; }
+.diagram-ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; }
+.diagram-now { font-size: 0.9rem; color: var(--text); }
+.sq-step { transition: opacity .2s; }
+.sq-step.sq-dim { opacity: .12; }
+.sq-step.sq-cur .sq-label, .sq-step.sq-cur .sq-note-t { font-weight: 700; fill: var(--accent); }
+.sq-step.sq-cur .sq-line { stroke: var(--accent); stroke-width: 2.5; }

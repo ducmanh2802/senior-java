@@ -126,7 +126,7 @@
   function business(b) {
     const journeys = (b.journeys || []).map(j => `<div class="pr-journey"><h3>${esc(j.title)}</h3>${j.persona ? `<p class="muted">${esc(j.persona)}</p>` : ''}
       <ol class="pr-steps">${j.steps.map(s => `<li class="pr-step"><div class="pr-phone"><span class="pr-step-icon" aria-hidden="true">${esc(s.icon || '📱')}</span><b>${esc(s.screen)}</b></div><div class="md">${App.md(s.text)}</div></li>`).join('')}</ol></div>`).join('');
-    const diagrams = (b.diagrams || []).map(d => `<figure class="pr-figure"><figcaption><b>${esc(d.title)}</b>${d.caption ? `<div class="md">${App.md(d.caption)}</div>` : ''}</figcaption><div class="pr-svg-wrap">${window.Diagram.seqSvg(d)}</div></figure>`).join('');
+    const diagrams = (b.diagrams || []).map(d => window.Diagram.seqFigure(d, '<b>' + esc(d.title) + '</b>' + (d.caption ? '<div class="md">' + App.md(d.caption) + '</div>' : ''))).join('');
     const glossary = (b.glossary || []).length ? `<h3>${App.t('projects.glossary')}</h3><dl class="pr-glossary">${b.glossary.map(g => `<div><dt>${esc(g.term)}</dt><dd class="md">${App.md(g.meaning)}</dd></div>`).join('')}</dl>` : '';
     return `<section class="card pr-business" id="pr-business"><h2>${App.t('projects.business')}</h2><div class="md">${App.md(b.intro)}</div>
       ${journeys ? `<h3>${App.t('projects.journeys')}</h3>${journeys}` : ''}

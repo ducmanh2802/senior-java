@@ -54,9 +54,6 @@
 .view-projects .pr-phone { display: flex; align-items: center; gap: 8px; padding: 8px 10px; margin-bottom: 8px; border-radius: 12px; border: 2px solid var(--border); background: var(--surface); }
 .view-projects .pr-step-icon { font-size: 1.4rem; line-height: 1; }
 .view-projects .pr-step .md { font-size: 0.92rem; }
-.view-projects .pr-figure { margin: 12px 0 20px; }
-.view-projects .pr-figure figcaption { margin-bottom: 8px; }
-.view-projects .pr-svg-wrap { overflow-x: auto; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
 .view-projects .pr-glossary { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap: 10px; margin: 0; }
 .view-projects .pr-glossary > div { padding: 10px 12px; border-radius: var(--radius-sm); background: var(--surface-2); }
 .view-projects .pr-glossary dt { font-weight: 700; color: var(--accent); }

@@ -19,6 +19,14 @@
       'learn.doneAll': 'Bạn đã hoàn thành tất cả bài học hiện có.',
       'learn.tocBack': '← Mục lục bài học',
       'learn.goalsTitle': 'Sau bài này bạn sẽ:',
+      'learn.ebTitle': '🗣️ Giải thích lại bằng lời của bạn',
+      'learn.ebDesc': 'Cách nhớ lâu nhất: đọc xong, tự giải thích lại như đang trả lời phỏng vấn (gõ hoặc nói). AI so với bài học và chỉ ra chỗ hiểu sai/thiếu. Mỗi lần chấm tốn 1 lượt AI.',
+      'learn.ebPh': 'Ví dụ: Bài này nói về… Cơ chế hoạt động là… Khi nào dùng… Lỗi hay gặp…',
+      'learn.ebGrade': 'AI chấm phần giải thích',
+      'learn.ebMic': 'Nói',
+      'learn.ebStop': 'Dừng',
+      'learn.ebEmpty': 'Hãy viết hoặc nói ít nhất vài câu trước khi chấm.',
+      'learn.ebWait': 'AI đang chấm…',
       'learn.exercisesTitle': 'Bài tập',
       'learn.passedBadge': '✅ Đã pass',
       'learn.runBtn': '▶ Chạy test',
@@ -63,6 +71,14 @@
       'learn.doneAll': '🎉 You completed all available lessons.',
       'learn.tocBack': '← Table of contents',
       'learn.goalsTitle': 'After this lesson you will:',
+      'learn.ebTitle': '🗣️ Explain it back in your own words',
+      'learn.ebDesc': 'The best way to remember: after reading, explain it back as if answering an interviewer (type or speak). AI compares it with the lesson and points out gaps. Each grading uses 1 AI credit.',
+      'learn.ebPh': 'E.g. This lesson is about… It works by… Use it when… Common mistakes…',
+      'learn.ebGrade': 'Grade my explanation',
+      'learn.ebMic': 'Speak',
+      'learn.ebStop': 'Stop',
+      'learn.ebEmpty': 'Write or say at least a few sentences first.',
+      'learn.ebWait': 'AI is grading…',
       'learn.exercisesTitle': 'Exercises',
       'learn.passedBadge': '✅ Passed',
       'learn.runBtn': '▶ Run tests',
@@ -143,6 +159,10 @@
   }
 
   // ---------- lesson ----------
+  const EB_KEY = id => 'sjp.learn.eb.' + id;   // per-viewer draft of the explain-back answer
+  function loadEb(id) { try { return localStorage.getItem(EB_KEY(id)) || ''; } catch (e) { return ''; } }
+  function saveEb(id, v) { try { localStorage.setItem(EB_KEY(id), v); } catch (e) { /* storage blocked */ } }
+
   function lesson(root, l) {
     const same = App.lessons().filter(x => x.track === l.track);
     const idx = same.indexOf(l), prev = same[idx - 1], next = same[idx + 1];
@@ -154,6 +174,10 @@
           ${isDone(l) ? '<span class="badge ok">' + App.t('learn.doneBadge') + '</span>' : ''}</div></div>
       <div class="card ln-goals"><b>${App.t('learn.goalsTitle')}</b><ul>${(l.goals || []).map(g => '<li>' + App.md(g).replace(/^<p>|<\/p>$/g, '') + '</li>').join('')}</ul></div>
       <article class="card md ln-body">${App.md(l.body)}</article>
+      <section class="card ln-eb"><h2 class="ln-h">${App.t('learn.ebTitle')}</h2><p class="muted">${App.t('learn.ebDesc')}</p>
+        <textarea class="textarea ln-eb-text" rows="6" aria-label="${App.t('learn.ebTitle')}" placeholder="${esc(App.t('learn.ebPh'))}">${esc(loadEb(l.id))}</textarea>
+        <div class="row ln-eb-actions"><button type="button" class="btn primary" data-act="eb-grade">${App.t('learn.ebGrade')}</button>${App.speech && App.speech.supported ? `<button type="button" class="btn mic-btn" data-act="eb-mic">🎤 ${App.t('learn.ebMic')}</button>` : ''}</div>
+        <div class="ln-eb-result"></div></section>
       <div class="ln-report"><a class="btn sm" target="_blank" rel="noopener noreferrer" href="${esc('https://github.com/ducmanh2802/senior-java/issues/new?title=' + encodeURIComponent('Sai nội dung: ' + l.id) + '&body=' + encodeURIComponent('ID: ' + l.id + '\nTrang: ' + location.href + '\n\nSai ở đâu / nên sửa thế nào:\n') + '&labels=content')}">🚩 Báo sai</a></div>
       <h2 class="ln-h">${App.t('learn.exercisesTitle')}</h2>
       ${(l.exercises || []).map((x, i) => exerciseCard(l, x, i)).join('')}
@@ -241,6 +265,34 @@
         finally { btn.disabled = false; }
       }
 
+      let mic = null;   // active speech handle for the explain-back box
+      function toggleMic(btn) {
+        const ta = root.querySelector('.ln-eb-text');
+        if (mic) { mic.stop(); mic = null; btn.classList.remove('recording'); btn.textContent = '🎤 ' + App.t('learn.ebMic'); saveEb(l.id, ta.value); return; }
+        const base = ta.value.trim();
+        try {
+          mic = App.speech.start({ lang: 'vi',
+            onText(final, interim) { ta.value = (base ? base + ' ' : '') + final + (interim ? ' ' + interim : ''); },
+            onError(msg) { root.querySelector('.ln-eb-result').innerHTML = '<div class="ai-error">' + esc(msg) + '</div>'; } });
+          btn.classList.add('recording'); btn.textContent = '⏹ ' + App.t('learn.ebStop');
+        } catch (e) { mic = null; root.querySelector('.ln-eb-result').innerHTML = App.ui.error(e); }
+      }
+      async function gradeEb(btn) {
+        const ta = root.querySelector('.ln-eb-text'), out = root.querySelector('.ln-eb-result'), answer = ta.value.trim();
+        if (btn.disabled) return;
+        if (answer.length < 40) { out.innerHTML = '<p class="muted">' + App.t('learn.ebEmpty') + '</p>'; return; }
+        btn.disabled = true;
+        out.innerHTML = '<span class="ai-loading">' + App.t('learn.ebWait') + '</span>';
+        try {
+          const r = await App.ai.grade({
+            question: 'Giải thích lại bài học "' + l.title + '". Mục tiêu: ' + (l.goals || []).join('; '),
+            reference: String(l.body).slice(0, 8000), answer, lang: 'vi', topic: l.track, level: l.level,
+          });
+          out.innerHTML = App.ui.feedback(r, 'vi');
+        } catch (e) { out.innerHTML = App.ui.error(e); }
+        finally { btn.disabled = false; }
+      }
+
       function onClick(e) {
         const opt = e.target.closest('.ln-opt');
         if (opt) {
@@ -251,6 +303,8 @@
         }
         const act = e.target.closest('[data-act]');
         if (!act) return;
+        if (act.dataset.act === 'eb-grade') { gradeEb(act); return; }
+        if (act.dataset.act === 'eb-mic') { toggleMic(act); return; }
         const c = card(act);
         switch (act.dataset.act) {
           case 'run': run(c); break;
@@ -282,6 +336,7 @@
         }
       }
       function onInput(e) {
+        if (e.target.matches('.ln-eb-text')) { saveEb(l.id, e.target.value); return; }
         if (e.target.matches('.ln-editor')) saveDraft(l.id, Number(card(e.target).dataset.ex), e.target.value);
       }
       function onKeydown(e) {
@@ -298,7 +353,7 @@
       root.addEventListener('click', onClick);
       root.addEventListener('input', onInput);
       root.addEventListener('keydown', onKeydown);
-      return () => { root.removeEventListener('click', onClick); root.removeEventListener('input', onInput); root.removeEventListener('keydown', onKeydown); };
+      return () => { if (mic) { try { mic.stop(); } catch (e) { /* already stopped */ } mic = null; } root.removeEventListener('click', onClick); root.removeEventListener('input', onInput); root.removeEventListener('keydown', onKeydown); };
     },
   });
 })();
