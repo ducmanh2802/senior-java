@@ -819,5 +819,892 @@ Ví dụ SMS: "Ngân hàng ABC bảo trì hệ thống từ 23 giờ đến 1 gi
     'Sau khi xong bảo trì, bạn xử lý hàng đợi trễ thế nào?'
   ],
   tags: ['bao tri', 'hang doi', 'store-and-forward', 'thong bao khach']
+},
+{
+  id: 'banking-013',
+  topic: 'banking',
+  level: 'mid',
+  q: 'Khi khách quẹt thẻ, vì sao tiền chỉ "bị giữ" chứ chưa chuyển ngay? Bốn bước authorization, capture, settlement và chargeback diễn ra thế nào?',
+  a: `**Tóm tắt:** Khi khách quẹt thẻ, ngân hàng chưa chuyển tiền thật, chỉ **đóng băng (hold)** một số tiền trên hạn mức hoặc tài khoản — đó là bước *authorization*. Tiền chỉ đi khi merchant (cửa hàng) gửi lệnh *capture* rồi *settlement* (chuyển tiền theo lô giữa các ngân hàng). Nếu khách khiếu nại, giao dịch có thể bị *chargeback* — ngân hàng phát hành đòi tiền ngược. Vì bốn bước này rời nhau và hai bước cuối chạy theo lô, khách thấy tiền "bị giữ" từ 1 đến 7 ngày.
+
+### Bốn bên trong một giao dịch thẻ
+| Bên | Vai trò | Ví dụ |
+|---|---|---|
+| Chủ thẻ | người dùng thẻ để trả tiền | khách mua hàng |
+| Merchant | nơi chấp nhận thanh toán | siêu thị, website, khách sạn |
+| Acquirer | ngân hàng của merchant, nhận tiền chuyển về cho merchant | Ngân hàng B |
+| Issuer | ngân hàng phát hành thẻ, quản lý tiền/hạn mức của chủ thẻ | Ngân hàng A |
+| Card network | mạng thẻ nối acquirer và issuer, đặt chuẩn thông điệp, phí và luật khiếu nại | Visa, Mastercard |
+
+### Bước 1 — authorization: xin phép và giữ tiền
+Máy POS hoặc website gửi câu hỏi "khách này có trả nổi 2.000.000 đồng không?" tới acquirer, acquirer chuyển qua network, network chuyển tới issuer. Issuer kiểm tra ba việc:
+1. Thẻ còn hiệu lực, không bị khóa, không nằm trong danh sách chặn.
+2. Hạn mức còn đủ: thẻ tín dụng hạn mức 20 triệu, đã dùng 15 triệu, còn khả dụng 5 triệu — thương vụ 6 triệu sẽ bị từ chối với mã "over limit".
+3. Điểm gian lận (fraud score) của thương vụ.
+Nếu đạt, issuer trừ khỏi **số dư khả dụng** và trả về mã approve kèm *auth code*. Tiền vẫn nằm ở issuer, chỉ bị "đánh dấu giữ". Khách mở app thấy dòng "giao dịch chờ xử lý" — đó là hold, chưa phải tiền đã mất.
+
+### Bước 2 — capture: merchant xác nhận lấy tiền thật
+Vài giờ hoặc vài ngày sau, merchant gửi lệnh capture cho một phần hoặc toàn bộ số tiền đã auth. Ví dụ khách sạn auth 3 triệu khi nhận phòng, khách chỉ ở một đêm hết 1.500.000 → merchant capture 1.500.000, 1.500.000 còn lại được giải phóng. Vì vậy hệ thống phải hỗ trợ *partial capture* và *multiple capture* trên cùng một auth, và **không bao giờ cho capture vượt số đã auth**.
+
+### Bước 3 — settlement: tiền thật sự chuyển
+Cuối ngày merchant gom các capture thành một file gửi acquirer (gọi là file settlement). Network tính số ròng (net) giữa các thành viên, issuer chuyển tiền thật cho acquirer, acquirer trả cho merchant sau khi trừ phí merchant (MDR). Tiền về tài khoản merchant thường ở T+1 hoặc T+2, với T là ngày gửi file settlement.
+
+### Bước 4 — chargeback: đòi tiền ngược
+Khách gọi issuer khiếu nại: không nhận được hàng, hàng không như mô tả, hoặc "tôi không quẹt thẻ lần này" (gian lận). Issuer khởi tạo chargeback, tiền bị thu ngược từ acquirer rồi từ merchant, kèm phí. Merchant có quyền *representment* — gửi bằng chứng (bill có chữ ký, ảnh giao hàng, log thiết bị) để phản biện. Hoàn tiền chủ động (refund) và chargeback là hai đường khác nhau: refund do merchant tự làm, không phạt; chargeback do ngân hàng ép, tính vào tỷ lệ chargeback của merchant và vượt ngưỡng thì mạng thẻ có thể chấm dứt hợp đồng.
+
+### Luồng đầy đủ
+~~~seq
+title: The quet - auth, capture, settlement
+actors: Chu the | Merchant | Acquirer | Network | Issuer
+Chu the -> Merchant: quet the 2.000.000 dong
+Merchant -> Acquirer: tao yeu cau authorization
+Acquirer -> Network: chuyen yeu cau toi issuer
+Network -> Issuer: kiem tra the va han muc
+Issuer -> Issuer: giu hold 2.000.000 tren han muc
+Issuer --> Network: approve cung auth code
+Network --> Acquirer: approve
+Acquirer --> Merchant: thanh cong, in bien lai
+note Merchant..Issuer: hom sau merchant gui file capture
+Merchant -> Acquirer: capture toan bo 2.000.000
+Acquirer -> Network: settlement cuoi ngay
+Network -> Issuer: yeu cau chuyen tien that
+Issuer --> Network: ghi no tai khoan khach
+Network --> Acquirer: tien ve, tru phi MDR
+Acquirer --> Merchant: thanh toan cho merchant T+1
+~~~
+
+### Thiết kế phía dev: máy trạng thái và bảng hold
+Trạng thái thường dùng: CREATED, AUTHORIZED, PARTIALLY_CAPTURED, CAPTURED, SETTLED, REFUNDED, CHARGEBACKED, AUTH_EXPIRED. Mỗi bước chuyển trạng thái phải ghi lại id của bước trước (auth id để capture, capture id để settlement) — nếu không, khi khiếu nại bạn không truy được "2 triệu này nằm ở đâu".
+
+~~~java
+record Hold(String paymentId, BigDecimal authorized, BigDecimal captured, Instant expiresAt) {}
+
+BigDecimal capturable(Hold h, BigDecimal requested, Instant now) {
+    if (h == null || h.expiresAt().isBefore(now)) return BigDecimal.ZERO;
+    BigDecimal remaining = h.authorized().subtract(h.captured());
+    return remaining.min(requested);      // capture khong bao lon hon so con duoc giu
+}
+~~~
+
+### Vì sao tiền "bị giữ" vài ngày — nguyên nhân thật
+- Auth có hạn: merchant quên capture thì hold tự hết sau vài ngày (khách sạn, xăng, cho thuê xe thường giữ lâu hơn vì số tiền cuối chưa biết).
+- Capture và settlement chạy theo lô cuối ngày, không chạy tức thời.
+- Giao dịch nước ngoài: số tiền hold là ước lượng theo tỷ giá tạm tính, số capture chính thức có thể lệch vài chục nghìn đồng, app phải hiển thị số "tạm giữ".
+
+### Lỗi hay gặp
+- Cho phép capture lớn hơn amount đã auth, hoặc không cộng dồn partial capture → khách bị trừ nhiều hơn số đồng ý.
+- Không lưu auth id → không capture được, hold treo đến hết hạn, merchant mất tiền.
+- Coi refund và chargeback là một trạng thái → không biết ai đang giữ tiền và ai phải trả phí.
+- Xử lý file settlement trùng lặp → trả tiền hai lần cho merchant; bắt buộc khóa chống trùng (idempotency key) theo id thương vụ trong file.
+
+> Senior tip: Khi phỏng vấn, hãy nói rõ "tiền của khách chỉ rời issuer ở bước settlement, mọi thứ trước đó chỉ là giữ chỗ trên sổ". Nói thêm hai điều ghi điểm: (1) hold phải có hạn và có job giải phóng, (2) tỷ lệ chargeback là chỉ số sống còn của merchant nên hệ thống phải giữ bằng chứng (proof of delivery, chữ ký, log thiết bị) ngay khi giao dịch xảy ra, không phải lúc có khiếu nại.
+
+> Cụm từ: Hold (lượng tiền bị giữ) là phần số dư khả dụng bị đánh dấu tạm thời không dùng được, chưa ghi nhận thành giao dịch chính thức. MDR (Merchant Discount Rate) là phí merchant phải trả cho mỗi thương vụ thẻ, bị trừ ngay ở bước settlement.
+
+  `,
+  follow: [
+    'Vì sao không cho phép capture vượt số tiền đã authorization, và capture nhiều phần thì cộng dồn thế nào?',
+    'Refund và chargeback khác nhau ở điểm nào trong sổ cái và trong luồng xử lý?',
+    'Hold hết hạn mà merchant không capture thì hệ thống phải làm gì để khách không khiếu nại?'
+  ],
+  tags: ['the', 'authorization', 'capture', 'settlement', 'chargeback']
+},
+{
+  id: 'banking-014',
+  topic: 'banking',
+  level: 'mid',
+  q: 'Thanh toán bằng mã QR (VietQR) diễn ra thế nào từ lúc khách quét mã đến khi tiền vào tài khoản người bán? QR tĩnh khác QR động ở đâu, và vì sao ảnh "chuyển khoản thành công" không phải bằng chứng?',
+  a: `**Tóm tắt:** Bản chất mã QR thanh toán chỉ là một "tờ giấy ghi sẵn thông tin chuyển khoản": ngân hàng thụ hưởng, số tài khoản, tên, số tiền, nội dung. App ngân hàng của khách quét, đọc các trường đó rồi khởi tạo một lệnh chuyển khoản nhanh 24/7. Lệnh đi qua hệ thống chuyển mạch (ở Việt Nam là NAPAS), tiền vào tài khoản người bán, người bán nhận báo có qua app hoặc webhook. QR không giữ tiền và không chứng minh đã thanh toán — chỉ sổ cái của ngân hàng chứng minh được điều đó.
+
+### QR tĩnh và QR động
+| | QR tĩnh | QR động |
+|---|---|---|
+| Nơi hiển thị | in ra, dán ở quầy | màn hình POS, trang checkout |
+| Số tiền | không có, khách tự nhập | có, sinh theo đơn hàng |
+| Mã đơn hàng | không gắn | gắn với một đơn cụ thể |
+| Hết hạn | không | thường vài phút |
+| Rủi ro chính | kẻ gian dán đè QR của mình lên QR cửa hàng | ít, nhưng phải xử lý hết hạn |
+| Dùng cho | quán ăn nhỏ, tạp hóa | cửa hàng có POS, thương mại điện tử |
+
+QR tĩnh tiện nhưng hở: khách nhập tay số tiền nên sai tiền, và vì QR không gắn với đơn hàng, người bán phải đoán "khoản nhận 87.000 đồng lúc 19:03 là của bàn nào". QR động sinh ra kèm nội dung chuyển khoản chứa mã đơn, giúp đối soát tự động.
+
+### Bên trong mã QR chứa gì
+Chuẩn phổ biến là EMVCo QR, các trường viết dạng TLV (Tag-Length-Value: mỗi trường gồm mã trường, độ dài, rồi giá trị, nối thành một chuỗi không dấu cách). Các trường thường gặp:
+- Trường 26 (merchant account information): **BIN** — dãy số đầu nhận diện ngân hàng thụ hưởng — và số tài khoản người bán.
+- Trường 52: MCC, mã loại hình cửa hàng (bán lẻ, siêu thị, khách sạn...).
+- Trường 53: mã tiền tệ theo ISO 4217, VND là 704. Trường 54: số tiền (chỉ có ở QR động).
+- Trường 59, 60, 61: tên, thành phố, mã bưu điện người bán. Trường 58: quốc gia (VN).
+- Trường 62: dữ liệu bổ sung, thường chứa mã đơn hàng — đây là mấu chốt để đối soát tự động.
+- Trường 63: CRC, 4 ký tự kiểm tra cuối chuỗi, giúp phát hiện QR bị cắt hoặc bị sửa.
+
+~~~text
+Vi du minh hoa cau truc TLV (khong phai payload that cua ngan hang nao):
+00 02 01            : phien ban
+01 02 12            : kieu QR (12 = thanh toan hang hoa, dich vu)
+26 26 0010 970436 0114 1028394056 : BIN ngan hang tho huong + so tai khoan
+52 04 5311          : MCC cua hang ban le
+53 03 704           : tien te VND
+54 06 250.00        : so tien
+59 15 CUA HANG A    : ten nguoi ban
+60 06 HA NOI        : thanh phan
+58 02 VN            : quoc gia
+62 17 01 13 A123456 : ma don hang (truong con ben trong)
+63 04 B7F2          : CRC
+~~~
+
+Số tiền trong QR chỉ là **đề nghị**; khách vẫn có thể đổi (với QR tĩnh) hoặc app vẫn phải hiện màn hình xác nhận. Vì vậy người bán không được lấy số tiền từ QR làm bằng chứng đã thu, mà phải lấy số tiền ghi trên sổ.
+
+### Luồng từ app khách tới tài khoản người bán
+~~~seq
+title: Khach quet VietQR thanh toan 250.000
+actors: Khach | App khach | NAPAS | Core nguoi ban | POS nguoi ban
+Khach -> App khach: mo app, quet QR
+App khach -> App khach: doc TLV, hien ten va so tien
+Khach -> App khach: xac nhan "Chuyen 250.000"
+App khach -> NAPAS: lenh chuyen khoan nhanh 24/7
+NAPAS -> Core nguoi ban: ghi co tai khoan nguoi ban
+Core nguoi ban --> NAPAS: da cap nhat so du
+NAPAS --> App khach: thanh cong, kem ma tham chieu
+App khach --> Khach: hien thi "Da chuyen"
+Core nguoi ban -> POS nguoi ban: webhook bao co
+POS nguoi ban -> POS nguoi ban: doi chieu, xac nhan don A123456
+~~~
+
+### Vì sao phải đối soát, không tin ảnh chụp
+Khách chụp màn hình "Giao dịch thành công" gửi cho người bán là chiêu lừa phổ biến: ảnh ghép rất dễ, còn tiền thì chưa chuyển. Luồng đúng cho hệ thống của người bán:
+1. Tạo đơn, trạng thái CHO_THANH_TOAN, sinh QR động gắn với mã đơn.
+2. Nhận webhook báo có **hoặc** chủ động gọi API tra soát theo mã tham chiếu.
+3. Kiểm tra: đúng số tiền, đúng tài khoản thụ hưởng, đúng mã đơn, chưa từng được dùng cho đơn khác.
+4. Chỉ khi đó chuyển đơn sang DA_THANH_TOAN và cho phép giao hàng.
+5. Nếu webhook không tới sau N phút: đừng hủy đơn ngay, hãy tra soát, vì giao dịch có thể đang pending.
+
+webhook luôn có thể được gửi trùng (phía ngân hàng retry), nên handler phải chống trùng: khóa theo mã tham chiếu, nhận lần hai thì trả về đúng kết quả cũ.
+
+### Thiết kế dữ liệu tối thiểu
+~~~sql
+CREATE TABLE merchant_order (
+  id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  order_code    VARCHAR(32)  NOT NULL UNIQUE,      -- ma don in trong noi dung chuyen khoan
+  amount        NUMERIC(20,0) NOT NULL,            -- VND, khong dung so thap phan
+  status        VARCHAR(20)  NOT NULL,             -- AWAITING | PAID | EXPIRED | CANCELLED
+  qr_expires_at TIMESTAMPTZ,
+  paid_ref      VARCHAR(64)  UNIQUE,               -- ma tham chieu NAPAS, chong xac nhan trung
+  paid_at       TIMESTAMPTZ
+);
+~~~
+
+### Lỗi hay gặp
+- Cho phép thanh toán khi chưa có xác nhận từ phía ngân hàng (chỉ tin thông báo của khách) → mất hàng, mất tiền.
+- Không gắn nội dung chuyển khoản với mã đơn → người bán phải nhìn số tiền rồi đoán đơn nào, đối soát thủ công, dễ ghi nhận nhầm.
+- Dùng số thập phân cho VND ở mọi nơi rồi làm tròn lệch khi đối soát.
+- QR động không có hạn → kẻ gian giữ lại QR của đơn đã thanh toán để dùng lại.
+- Coi webhook là tin cậy tuyệt đối mà không kiểm tra chữ ký/nguồn và không xử lý trùng.
+
+> Senior tip: Hãy nói trong phỏng vấn rằng QR chỉ là **kênh khởi tạo yêu cầu** (initiation), còn **kênh quyết định** là hệ thống chuyển mạch và sổ cái. Vì vậy thiết kế phải có ba thứ: mã đơn duy nhất trong nội dung chuyển khoản, trạng thái "đang chờ xác nhận" thay vì "thành công" ngay khi khách báo, và job tra soát chủ động phòng khi webhook thất lạc. Đây chính là bài học idempotency và đối soát áp dụng cho một luồng rất đời thường.
+
+> Cụm từ: BIN (Bank Identification Number) là 6 số đầu của một dãy số dùng để nhận diện ngân hàng, ở đây là ngân hàng thụ hưởng. Webhook là việc hệ thống A chủ động gọi API của B khi có sự kiện, thay vì B cứ hỏi A.
+
+  `,
+  follow: [
+    'Vì sao không được xác nhận đơn hàng chỉ dựa vào ảnh "chuyển khoản thành công" khách gửi?',
+    'QR động cần những dữ liệu nào để đối soát tự động, và xử lý khi QR hết hạn ra sao?',
+    'Webhook báo có bị gửi trùng hai lần, hệ thống người bán phải ứng xử thế nào?'
+  ],
+  tags: ['VietQR', 'QR tinh', 'QR dong', 'doi soat', 'webhook']
+},
+{
+  id: 'banking-015',
+  topic: 'banking',
+  level: 'mid',
+  q: 'Thiết kế tính năng thu tiền tự động định kỳ (hóa đơn điện, bảo hiểm): ủy quyền thu lưu đâu, lên lịch chạy thế nào, retry khi tài khoản thiếu tiền và thông báo khách ra sao?',
+  a: `**Tóm tắt:** Thu tự động (auto-debit) là việc khách ký một **ủy quyền thu** (mandate) cho phép một bên thu tiền định kỳ từ tài khoản. Hệ thống sinh lịch thu theo chu kỳ, tới ngày chạy job tạo giao dịch, trừ tiền; nếu thiếu tiền thì thử lại vài lần theo chiến lược đã cấu hình rồi đánh dấu quá hạn, và thông báo cho khách ở cả ba thời điểm: trước kỳ thu, khi thu thành công, khi thu thất bại. Toàn bộ phải đảm bảo mỗi kỳ chỉ bị thu một lần, kể cả khi job chạy lại.
+
+### Ba đối tượng dữ liệu phải có
+1. **Mandate (ủy quyền):** ai cho phép ai thu, bao nhiêu tiền mỗi lần, bắt đầu và kết thúc khi nào, kèm bằng chứng khách đồng ý (ngày giờ, IP, OTP ký). Mandate có trạng thái ACTIVE, SUSPENDED, REVOKED — khách có quyền rút ủy quyền bất cứ lúc nào, và job **phải kiểm tra trạng thái này ngay trước khi thu**, không chỉ kiểm tra lúc lập lịch.
+2. **Kỳ thu (schedule/run):** một dòng cho mỗi kỳ, ví dụ tháng 6/2026, với số tiền dự kiến và ngày đến hạn.
+3. **Lần thử (attempt):** mỗi lần bấm máy thu là một attempt, có mã tham chiếu giao dịch riêng.
+
+### Lên lịch: những bẫy tưởng nhỏ mà gây thiệt
+- **Ngày 31:** khách chọn thu ngày 31, nhưng tháng 2 không có ngày 31. Phải có quy tắc: làm tròn về ngày cuối tháng, hoặc nhảy sang tháng sau.
+- **Ngày nghỉ:** ngày đến hạn rơi vào thứ Bảy, Chủ nhật hoặc ngày lễ. Quy tắc phải chọn: thu sớm hơn (roll back), thu muộn hơn (roll forward) hoặc bỏ qua (skip) — mỗi nghiệp vụ chọn một kiểu, không được để code tự ứng xử.
+- **Múi giờ:** chạy job lúc 00:30 giờ Việt Nam, đừng lấy giờ máy chủ ở múi giờ khác.
+- **Nhiều instance:** nếu app chạy 3 pod và cả 3 đều có @Scheduled, cùng một kỳ sẽ bị thu 3 lần. Cần một trong ba: bảng khóa (ShedLock), chỉ một instance được elect làm leader, hoặc chia phiến (shard) theo mandate id.
+
+~~~java
+static LocalDate dueDate(int year, int month, int dayOfMonth, WeekendRule rule) {
+    int capped = Math.min(dayOfMonth, YearMonth.of(year, month).lengthOfMonth());
+    LocalDate due = LocalDate.of(year, month, capped);      // ngay 31 -> 28/29/30 thang 2
+    boolean weekend = due.getDayOfWeek() == DayOfWeek.SATURDAY || due.getDayOfWeek() == DayOfWeek.SUNDAY;
+    if (rule == WeekendRule.IGNORE || !weekend) return due;
+    return switch (rule) {
+        case NEXT_WORKING_DAY -> due.plusDays(due.getDayOfWeek() == DayOfWeek.SATURDAY ? 2 : 1);
+        case PREV_WORKING_DAY -> due.minusDays(due.getDayOfWeek() == DayOfWeek.SUNDAY ? 2 : 1);
+        default -> due;
+    };
+}
+~~~
+
+### Khóa chống thu trùng
+Mỗi kỳ phải có một **khóa tự nhiên duy nhất** là (mandate id + kỳ). Đặt unique constraint ở database, đừng chỉ kiểm tra bằng if trong code vì hai thread có thể cùng qua if đó.
+
+~~~sql
+CREATE TABLE debit_run (
+  mandate_id  BIGINT       NOT NULL REFERENCES debit_mandate(id),
+  period_key  VARCHAR(10)  NOT NULL,          -- '2026-06'
+  due_date    DATE         NOT NULL,
+  amount      NUMERIC(20,2) NOT NULL,
+  status      VARCHAR(16)  NOT NULL,          -- PENDING | SUCCESS | INSUFFICIENT | ABANDONED
+  attempts    SMALLINT     NOT NULL DEFAULT 0,
+  PRIMARY KEY (mandate_id, period_key)        -- mot ky chi duoc thu mot lan
+);
+~~~
+
+### Retry khi thiếu tiền
+Thiếu tiền là lỗi **có thể chờ**, không phải lỗi kỹ thuật, vì vậy đừng retry dồn dập:
+- Thử lần 1 đúng ngày đến hạn. Nếu "không đủ số dư", lần 2 sau 1 ngày, lần 3 sau 2 ngày nữa (tối đa 3 attempt trong kỳ, cấu hình được).
+- Mỗi attempt là một giao dịch mới với mã tham chiếu mới, nhưng **vẫn là cùng một kỳ** → khi một attempt thành công, các attempt còn lại phải bị hủy, không được thu lần hai.
+- Hết attempt: đánh dấu ABANDONED, ghi nợ quá hạn theo hợp đồng, báo bên thu, thông báo khách.
+- Nếu ngân hàng bảo trì hoặc lỗi mạng (lỗi kỹ thuật), retry nhanh với backoff và **không** tính vào số lần thử của nghiệp vụ.
+
+### Thông báo khách
+- Trước kỳ thu (T-2): "Kỳ thu tới: 450.000 đồng vào ngày 05/06 theo ủy quyền của anh/chị." Đây là thông báo quan trọng nhất để giảm khiếu nại.
+- Khi thu thành công: số tiền, mã giao dịch, tên bên thu.
+- Khi thu thất bại: lý do, hạn chót nạp tiền để thử lại, và cách hủy ủy quyền.
+- Luôn cho khách xem và rút ủy quyền trong app; nếu khách phải gọi tổng đài mới rút được, bạn đang giữ một nguồn khiếu nại.
+
+### Lỗi hay gặp
+- Chạy lại job sau sự cố mà không có khóa tự nhiên → khách bị thu hai lần cùng kỳ.
+- Kiểm tra mandate lúc lập lịch nhưng không kiểm tra lúc thu → thu cả ủy quyền đã bị rút.
+- Retry theo kiểu "cứ 5 phút thử lại cho tới khi được" → hàng nghìn giao dịch lặp và khách bị trừ tiền lúc nửa đêm.
+- Cứng ngày 31 trong code → tháng 2 không sinh kỳ nào, bên thu không thu được tiền cả tháng.
+- Chỉ báo cho khách sau khi đã trừ tiền → khách khiếu nại, hoàn tiền dây dưa.
+
+> Senior tip: Câu hỏi phân biệt senior ở đây là "job của bạn có chạy lại an toàn không" (re-runnable). Hãy trả lời theo trình tự: khóa tự nhiên (mandate, kỳ) ở database, kiểm tra trạng thái mandate ngay trước khi ghi sổ, tách retry nghiệp vụ khỏi retry kỹ thuật, và phát hành thông báo trước kỳ thu. Nói thêm một ý thực tế: số tiền thu có thể đổi (điện tiêu dùng theo tháng), nên phải có trần tiền trong mandate và từ chối thu vượt trần.
+
+> Cụm từ: Mandate (ủy quyền thu) là văn bản/đồng ý điện tử cho phép một tổ chức trừ tiền tài khoản khách định kỳ. Period key (khóa kỳ) là chuỗi nhận diện một kỳ thu, ví dụ '2026-06'.
+
+  `,
+  follow: [
+    'Job thu tự động chạy trên 3 instance, bạn chống thu trùng thế nào?',
+    'Retry vì thiếu tiền khác retry vì lỗi mạng ở chỗ nào trong thiết kế?',
+    'Khách rút ủy quyền giữa chừng, những kỳ nào còn được thu và bằng chứng nào phải lưu?'
+  ],
+  tags: ['auto-debit', 'mandate', 'scheduler', 'retry', 'idempotency']
+},
+{
+  id: 'banking-016',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Hệ thống phát hiện gian lận thời gian thực khi khách quẹt thẻ hoặc chuyển tiền: rule engine khác model ML ở đâu, ngân sách độ trễ bao nhiêu là hợp lý, và xử lý false positive thế nào để không làm mất khách?',
+  a: `**Tóm tắt:** Hệ thống chống gian lận theo thời gian thực (real-time) trả lời một câu hỏi trong vài trăm mili giây: "cho qua, buộc khách xác minh thêm, hay chặn?". Ba lớp quyết định thường chạy song song: **rule engine** (luật cứng, giải thích được), **model ML** (chấm điểm gian lận 0-1, bắt được mẫu tinh vi), và **danh sách** (whitelist/blacklist). Vì nó nằm trên đường đi của giao dịch nên chỉ được tiêu một phần nhỏ của ngân sách thời gian; nếu hết thời gian chờ (timeout) thì phải có chính sách rõ ràng là cho qua (fail open) hay chặn (fail closed). False positive — chặn nhầm giao dịch thật — là chi phí thật, phải có đường mở khóa ngay trong app.
+
+### Ba lớp quyết định
+| Lớp | Ví dụ | Ưu | Nhược |
+|---|---|---|---|
+| Rule cứng | "thẻ vừa giao dịch ở Hà Nội 10 phút trước, nay quẹt ở nước ngoài" (impossible travel) | giải thích được, bật/tắt tức thì, không cần dữ liệu lịch sử | dễ bỏ lọt kẻ gian né luật, bảo trì nhiều luật xung đột |
+| Model ML | điểm xác suất gian lận dựa trên velocity, hành vi, thiết bị, lịch sử merchant | bắt mẫu phức tạp, thích ứng | khó giải thích, cần dữ liệu gán nhãn, có độ trễ tính toán |
+| Danh sách | whitelist số điện thoại đã xác thực, blacklist merchant | nhanh, chắc chắn | dữ liệu phải cập nhật liên tục |
+Kết hợp: rule phủ những trường hợp chắc chắn, model chấm điểm phần còn lại, danh sách bảo vệ khách quen. Điểm cuối cùng so với ngưỡng → approve / challenge / block.
+
+### Độ trễ: bạn chỉ có vài trăm mili giây
+Hãy chia ngân sách thời gian cho một thương vụ thẻ, tổng khoảng 2000 ms để khách còn chấp nhận:
+- Gateway + bảo mật: 100 ms
+- Kiểm tra tài khoản/hạn mức ở core: 300-500 ms
+- **Quyết định gian lận: 150-300 ms**
+- Trả lời kênh + ghi log: 100 ms
+Vì vậy dịch vụ decision phải đọc dữ liệu đã chuẩn bị sẵn trong bộ nhớ (Redis, cache feature), không được tính toán nặng đồng bộ. Pattern phổ biến:
+1. Luồng giao dịch gọi đồng bộ dịch vụ decision với timeout ngắn (ví dụ 200 ms).
+2. Song song, sự kiện giao dịch được gửi vào hàng đợi (Kafka) để cập nhật feature cửa sổ trượt cho lần sau — việc nặng chạy **bất đồng bộ**, không chặn khách.
+3. Model lớn có thể chạy trên stream và ghi điểm ra cache; request chỉ đọc điểm đó.
+
+**Khi decision timeout:** phải chọn chính sách, không được mặc định. Fail open (cho qua) mất tiền nếu kẻ gian lợi dụng lúc hệ thống lỗi; fail closed (chặn) mất doanh thu và khách. Thực tế thường lai: dưới ngưỡng tiền nào đó thì fail open, giao dịch lớn hoặc nước ngoài thì fail closed hoặc yêu cầu xác minh.
+
+### False positive và false negative
+- **False positive (FP):** chặn giao dịch thật của khách. Chi phí: cuộc gọi tổng đài, mất doanh thu, khách chuyển sang ngân hàng khác.
+- **False negative (FN):** cho qua giao dịch gian lận. Chi phí: tiền bồi thường, phí điều tra.
+- Dữ liệu gian lận rất hiếm (thường dưới 1% giao dịch), nên chỉ cần chặn bừa 1% là chỉ số "recall" trông rất đẹp nhưng false positive thành thảm họa. Vì vậy phải bàn bằng **chi phí kỳ vọng**: số FP nhân với chi phí mất khách, cộng số FN nhân với mức thiệt hại trung bình một vụ, chứ không chỉ nhìn accuracy.
+- Giảm đau cho FP: thay vì block, dùng **step-up authentication** (bắt khách xác minh bằng OTP hoặc xác nhận push trong app). Khách thật xác nhận thì giao dịch được cho qua ngay; kẻ gian thì không nhận được OTP. Block chỉ dành cho trường hợp điểm quá cao.
+- Phải có kênh khiếu nại một chạm: khách bấm "Đây là tôi" trong app, hệ thống mở khóa và ghi nhãn "legit" để cải thiện model.
+
+### Feature và giải thích
+Feature hay dùng: số giao dịch trong 5/30/60 phút (velocity), tổng tiền trong ngày, khoảng cách địa lý so với giao dịch trước, thiết bị/IP có mới không, loại hình cửa hàng (MCC) và tỷ lệ từng bị khiếu nại, thời điểm (3 giờ sáng), số tiền lẻ bất thường. Khi model cho điểm cao, phải trích được **lý do** (feature nào đẩy điểm lên) để nhân viên điều tra và khách hiểu.
+
+~~~java
+interface Rule { String name(); int score(); boolean matches(TxContext ctx); }
+
+record Decision(boolean allow, boolean challenge, List<String> hits) {}
+
+Decision decide(List<Rule> rules, TxContext ctx, int challengeAt, int blockAt) {
+    List<String> hits = new ArrayList<>();
+    int score = 0;
+    for (Rule r : rules) {
+        if (r.matches(ctx)) { hits.add(r.name()); score += r.score(); }
+    }
+    if (score >= blockAt)     return new Decision(false, false, hits);   // chặn
+    if (score >= challengeAt) return new Decision(true, true, hits);     // buộc xác minh thêm
+    return new Decision(true, false, hits);
+}
+~~~
+
+### Vòng phản hồi và case management
+Giao dịch bị chặn/chờ đi vào hàng đợi để nhân viên xem (case management). Kết luận của nhân viên — "gian lận thật" hoặc "khách thật" — chính là nhãn huấn luyện cho lần retrain sau. Không có vòng này thì model chết dần sau vài tháng vì kẻ gian đổi chiêu.
+
+### Lỗi hay gặp
+- Tính lại toàn bộ feature trong lúc đang chờ quyết định → quá trễ, giao dịch timeout hàng loạt.
+- Đếm velocity bằng Redis mà quên TTL hoặc quên key theo cửa sổ thời gian → bộ nhớ phình và số liệu sai.
+- Hai giao dịch song song cùng tăng một bộ đếm theo kiểu đọc-cộng-ghi → mất cập nhật, sót gian lận; phải dùng lệnh nguyên tử (INCR) hoặc Lua.
+- Không ghi lại snapshot feature tại thời điểm quyết định → sau này không tái hiện được vì sao chặn khách, không giải trình được.
+- Đổi ngưỡng mà không thông báo, không có grey release → tỷ lệ chặn nhảy vọt một buổi sáng.
+
+> Senior tip: Trong phỏng vấn, hãy trả lời theo trình tự: (1) quyết định phải đồng bộ nhưng chỉ đọc dữ liệu đã chuẩn bị sẵn, phần nặng chạy bất đồng bộ; (2) luôn có chính sách khi dịch vụ chống gian lận lỗi, kèm ngưỡng tiền; (3) ưu tiên step-up challenge thay vì block để giảm FP; (4) ghi log nguyên nhân quyết định. Nói thêm: gian lận là trò đuổi bắt, giá trị của hệ thống nằm ở vòng phản hồi và khả năng tắt/mở luật trong vài phút, không phải ở model xịn nhất.
+
+> Cụm từ: Velocity là tốc độ giao dịch (bao nhiêu lần, bao nhiêu tiền trong một cửa sổ thời gian ngắn). Step-up authentication là buộc thêm một bước xác minh (OTP, xác nhận push) ngay trong giao dịch thay vì từ chối thẳng.
+
+  `,
+  follow: [
+    'Dịch vụ chống gian lận timeout 300 ms, bạn cho qua hay chặn? Quyết định dựa trên gì?',
+    'Làm sao giảm false positive mà không tăng false negative?',
+    'Model cho điểm 0.92, bạn giải thích thế nào với khách và với bộ phận tuân thủ?'
+  ],
+  tags: ['fraud', 'rule engine', 'ML', 'latency', 'false positive']
+},
+{
+  id: 'banking-017',
+  topic: 'banking',
+  level: 'senior',
+  q: 'OTP qua SMS yếu ở những điểm nào? Smart OTP (TOTP) và ký giao dịch (transaction signing) hoạt động ra sao, và device binding giúp ích gì cho xác thực giao dịch?',
+  a: `**Tóm tắt:** OTP (one-time password) là mật khẩu dùng một lần có hạn ngắn. SMS OTP yếu vì nó chỉ chứng minh "người giữ số điện thoại này", mà số điện thoại thì bị chiếm được (SIM swap), và mã gửi qua SMS **không gắn với nội dung giao dịch** — kẻ gian đổi số tiền sau khi khách nhận OTP thì hệ thống vẫn chấp nhận. Smart OTP chạy trong app theo thuật toán TOTP (không cần mạng), còn **transaction signing** thì tính mã trên chính số tiền và tài khoản thụ hưởng, nên đổi bất kỳ chữ nào cũng làm mã sai. Device binding giới hạn thiết bị được phép xác nhận.
+
+### Vì sao SMS OTP yếu — giải thích từng tấn công
+1. **SIM swap (chiếm SIM):** kẻ gian dùng giấy tờ giả hoặc mua chuộc, ra nhà mạng xin "cấp lại SIM" cho số nạn nhân. SIM thật bị vô hiệu, mọi OTP chảy về máy kẻ gian. Đây là tấn công phổ biến nhất và không liên quan gì tới bảo mật ngân hàng.
+2. **Chặn trên kênh tín hiệu di động:** hạ tầng báo hiệu của mạng di động (SS7) từng bị khai thác; tin nhắn có thể bị đọc ở tầng mạng.
+3. **Lừa người dùng (social engineering):** kẻ gọi điện giả tổng đài, bảo "anh đọc 6 số vừa nhận để em đối chiếu". OTP không biết ai đang đọc nó.
+4. **Không ràng buộc với giao dịch:** SMS chỉ ghi "Mã OTP của bạn là 123456 để xác thực". Mã đó dùng cho chuyển 5 triệu cũng được, cho chuyển 500 triệu cũng được → kẻ gian đã chiếm được phiên có thể sửa số tiền, khách vẫn gật đầu bấm gửi vì mã vẫn đúng.
+5. **Phụ thuộc sóng và nhà mạng:** khách ở nước ngoài hoặc bị lỗi tin nhắn thì không xác thực được, sinh khiếu nại.
+
+SMS OTP vẫn hữu ích như một lớp "có còn hơn không" và là kênh dự phòng, nhưng đừng coi nó là xác thực mạnh cho giao dịch lớn.
+
+### TOTP — Smart OTP hoạt động thế nào
+TOTP (RFC 6238) = HMAC-SHA1(secret, bộ đếm thời gian), lấy vài bit rồi rút gọn về 6 chữ số. App và server cùng giữ một **secret** (khóa bí mật, thường được chuyển sang app qua mã QR lúc kích hoạt) và cùng biết giờ hiện tại, nên hai bên độc lập tính ra cùng một mã cho cùng một cửa sổ 30 giây. Không cần internet, không cần nhà mạng.
+
+~~~java
+static String totp(byte[] secret, long epochSeconds) throws Exception {
+    long counter = epochSeconds / 30;                     // cua so 30 giay
+    byte[] data = new byte[8];
+    for (int i = 7; i >= 0; i--) { data[i] = (byte) counter; counter >>>= 8; }
+    Mac mac = Mac.getInstance("HmacSHA1");
+    mac.init(new SecretKeySpec(secret, "HmacSHA1"));
+    byte[] h = mac.doFinal(data);
+    int off = h[h.length - 1] & 0x0F;                     // dynamic truncation
+    int bin = ((h[off] & 0x7F) << 24) | ((h[off + 1] & 0xFF) << 16)
+            | ((h[off + 2] & 0xFF) << 8) | (h[off + 3] & 0xFF);
+    return String.format("%06d", bin % 1_000_000);
+}
+~~~
+
+Server thường kiểm cả cửa sổ trước và sau (±1) để chịu lệch đồng hồ, nhưng **không** được kiểm lan 5 cửa sổ: mỗi cửa sổ mở thêm là thêm thời gian kẻ gian dùng được mã bị đánh cắp.
+
+### Transaction signing: mã "nhốt" nội dung giao dịch
+Thay vì OTP rời tự do, thiết bị tính mã trên chuỗi ký gồm **số tiền + tài khoản thụ hưởng + id giao dịch**, server tính lại trên đúng nội dung nó sắp thực thi và so khớp. Kết quả:
+- Đổi số tiền sau khi khách đã ký → mã không khớp → từ chối.
+- Khách nhìn thấy chữ "Bạn đang chuyển 5.000.000 đồng tới 0987654321" ngay chỗ nhập mã, nên không bị lừa ký mù.
+Đây là cơ sở của **xác thực khách hàng mạnh (SCA)**: kết hợp "có cái gì" (thiết bị, key trong Keystore/Secure Enclave) + "biết cái gì" (PIN/sinh trắc học) + "đúng giao dịch này".
+
+### Device binding
+Kích hoạt lần đầu gắn tài khoản với một thiết bị: lưu định danh thiết bị và **public key** do thiết bị sinh ra (private key nằm trong Keystore Android / Secure Enclave iOS, không xuất được). Từ đó:
+- Push confirmation chỉ gửi về thiết bị đã liên kết.
+- Đổi điện thoại phải qua quy trình re-enroll, thường kèm OTP + giấy tờ hoặc xác minh từ xa, và thông báo cho thiết bị cũ.
+- Nếu thiết bị root/jailbreak, nên hạ mức tin cậy (chỉ cho xem số dư, không chuyển tiền).
+- Ghi fingerprint để phát hiện "một tài khoản, 4 thiết bị trong 10 phút".
+
+### Quy tắc triển khai mà dev hay quên
+- OTP/mã ký phải **dùng một lần**: lưu trạng thái đã dùng, kể cả khi còn hạn.
+- So sánh mã bằng phép so sánh thời gian không đổi (MessageDigest.isEqual), không dùng ==.
+- Giới hạn số lần thử (5 lần) và khóa tạm; mã 6 số chỉ có 1 triệu tổ hợp, nếu cho thử vô hạn thì bị dò hết trong vài giờ.
+- Không log OTP, không gửi OTP qua kênh khác để "tiện", không trả về OTP trong API response khi test.
+- Secret TOTP phải được mã hóa khi lưu (KMS), và phải cho khách reset khi mất điện thoại.
+
+### Lỗi hay gặp
+- Cho phép dùng lại OTP của một giao dịch cho giao dịch khác (không bind amount) → lỗ hổng kinh điển trong các vụ mất tiền.
+- Đặt hạn OTP 10 phút để "giảm khiếu nại" → cửa sổ cho kẻ gian quá rộng.
+- Bỏ qua bước kiểm tra mandate/trạng thái thiết bị khi khách đổi máy, vì "app báo được là được".
+- Gửi OTP ngay khi khách mới mở màn hình, trước khi biết giao dịch cụ thể → mất tác dụng ràng buộc.
+
+> Senior tip: Khi phỏng vấn, đừng chỉ nói "SMS OTP yếu vì dễ bị SIM swap". Hãy nói ba tầng: (1) OTP phải ràng buộc nội dung giao dịch (amount + beneficiary), (2) yếu tố "có gì" phải là key trong phần cứng thiết bị chứ không phải số điện thoại, (3) mọi quy trình phải có đường dự phòng cho khách mất điện thoại mà không mở cửa sau cho kẻ gian. Nói thêm một con số: mã 6 số + 5 lần thử + khóa 15 phút là cấu hình hợp lý; 1 triệu tổ hợp chia cho 5 lần thử thì xác suất đoán trúng 0.0005%.
+
+> Cụm từ: Secret (khóa bí mật) là chuỗi byte chỉ thiết bị và server biết, dùng để sinh TOTP. Keystore/Secure Enclave là vùng lưu trữ khóa chuyên dụng trên điện thoại, khóa không thể trích ra kể cả khi có root.
+
+  `,
+  follow: [
+    'SIM swap xảy ra thế nào và hệ thống ngân hàng giảm thiệt hại ra sao khi số điện thoại khách bị chiếm?',
+    'Vì sao OTP phải ràng buộc với số tiền và tài khoản thụ hưởng, và server kiểm tra điều đó lúc nào?',
+    'Khách mất điện thoại, quy trình reset Smart OTP phải thiết kế thế nào để không thành cửa sau?'
+  ],
+  tags: ['OTP', 'TOTP', 'transaction signing', 'device binding', 'SCA']
+},
+{
+  id: 'banking-018',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Tiền gửi có kỳ hạn: lãi được tính và ghi nhận thế nào, khi khách tất toán trước hạn thì xử lý ra sao, và tái tục tự động cần lưu ý những gì?',
+  a: `**Tóm tắt:** Khách gửi 100 triệu vào kỳ hạn 12 tháng với lãi suất 5.5%/năm. Lãi mỗi ngày = số dư × lãi suất năm × số ngày thực tế / cơ sở ngày (thường 365), và ngân hàng **trích trước lãi hằng ngày** vào sổ cái dù chưa trả cho khách. Tất toán trước hạn: khách thường chỉ nhận lãi theo lãi suất không kỳ hạn (rất thấp, ví dụ 0.2%/năm) cho số ngày thực gửi, phần chênh đã trả trước (nếu trả lãi đầu kỳ hoặc hằng tháng) phải thu hồi. Tái tục tự động nghĩa là tới ngày đáo hạn, hệ thống tự mở kỳ mới theo biểu lãi suất **của ngày đó** và phải báo khách trước.
+
+### Ba khái niệm phải rõ trước khi viết code
+- **Kỳ hạn (term):** khoảng thời gian tiền bị "khóa" theo hợp đồng, ví dụ 6 tháng, tính từ ngày nhận tiền đến ngày đáo hạn.
+- **Lãi suất danh nghĩa/năm:** con số 5.5%/năm không có nghĩa là 6 tháng nhận 2.75% một cách máy móc — phải quy về số ngày thực gửi.
+- **Cơ sở ngày (day count convention):** thỏa thuận "một năm tính bao nhiêu ngày". actual/365 nghĩa là lấy số ngày thật chia cho 365; actual/360 làm lãi cao hơn một chút vì mẫu số nhỏ hơn. Chọn một và dùng nhất quán, ghi vào hợp đồng.
+
+### Tính lãi bằng con số thật
+Gửi 100.000.000 đồng, lãi suất 5.5%/năm, kỳ hạn 90 ngày, cơ sở actual/365:
+- Lãi = 100.000.000 × 0.055 × 90 / 365 = **1.356.164** đồng (làm tròn về đồng theo chính sách).
+- Nếu dùng actual/360: 1.375.000 đồng — lệch 18.836 đồng chỉ vì đổi mẫu số.
+- Gửi cùng số đó 12 tháng với lãi trả cuối kỳ, lãi thực nhận khoảng 5.500.000 nếu không nhập lại tiền lãi; nếu lãi nhập gốc hằng quý thì khách nhận nhiều hơn một chút (lãi kép).
+
+~~~java
+static final BigDecimal DAYS_IN_YEAR = new BigDecimal("365");
+
+BigDecimal accruedInterest(BigDecimal principal, BigDecimal annualRate,
+                           long actualDays, int scale, RoundingMode mode) {
+    BigDecimal raw = principal.multiply(annualRate)
+                              .multiply(new BigDecimal(actualDays))
+                              .divide(DAYS_IN_YEAR, 10, RoundingMode.HALF_UP);  // tinh giu chinh xac
+    return raw.setScale(scale, mode);      // chi lam tron khi ghi nhan / tra tien
+}
+~~~
+
+Hai điểm dễ sai: dùng **double** (lệch phần tỉ đồng sau hàng triệu lần tính), và làm tròn ở **mỗi bước** thay vì giữ độ dài lớn rồi chỉ làm tròn khi ghi nhận.
+
+### Trích trước lãi hằng ngày (accrual) — vì sao phải làm
+Lãi trả cho khách là **khoản nợ** của ngân hàng, phát sinh theo ngày, không phải ngày đáo hạn mới có. Kế toán phải ghi nhận đều đặn để sổ cái đúng: mỗi kỳ EOD, tính lãi dự trích trong ngày và ghi bút toán "chi phí lãi phải trả / lãi dự trích phải trả". Khi trả lãi thật cho khách, phần đã dự trích được tất toán, chỉ ghi thêm phần chênh. Nếu bỏ qua bước này, báo cáo lãi/lỗ ngày của bạn sẽ nhảy vọt vào ngày đáo hạn và kiểm toán không chấp nhận.
+
+### Tất toán trước hạn — nghiệp vụ rồi mới tới code
+1. Khách yêu cầu rút trước hạn, ví dụ rút sau 47 ngày của kỳ 90 ngày.
+2. Tính lại lãi theo **lãi suất không kỳ hạn** cho 47 ngày thực gửi: 100.000.000 × 0.002 × 47/365 ≈ 25.753 đồng (so với 708.219 đồng nếu 47 ngày đó được hưởng 5.5%/năm — khách thấy rõ vì sao rút sớm thì lỗ).
+3. Nếu ngân hàng đã trả lãi trước (trả đầu kỳ hoặc hằng tháng), phải **thu hồi phần đã trả thừa**: trừ vào tiền gốc, hoặc ghi một bút toán điều chỉnh âm. Quên bước này là lỗ thật.
+4. Áp phí tất toán trước hạn nếu hợp đồng quy định (thường là % trên gốc hoặc trên lãi, theo thời điểm gửi) — phải là dữ liệu cấu hình có hiệu lực theo ngày, không hard-code.
+5. Ghi sổ: cộng gốc + lãi thực nhận vào tài khoản thanh toán của khách, đóng sổ tiết kiệm bằng trạng thái CLOSED, **giữ nguyên** các bản ghi cũ (append-only) để 10 năm sau còn trả lời được.
+
+Bảng so sánh cách trả lãi:
+| Cách | Ưu | Nhược cho khách | Tất toán trước hạn |
+|---|---|---|---|
+| Cuối kỳ | đơn giản, có lãi ngầm (nhập gốc khi đáo hạn) | không có tiền tiêu giữa kỳ | chỉ tính lại, không phải thu hồi |
+| Đầu kỳ (chiết khấu) | nhận ngay phần lãi | bị trừ trước, tất toán sớm lỗ nặng | phải thu hồi phần lãi chưa "tích lũy" đủ |
+| Hằng tháng | có dòng tiền đều | không nhập gốc nên lãi thấp hơn | phải thu hồi lãi đã trả của các tháng trước |
+
+### Tái tục tự động (auto-renewal)
+- Chọn kiểu: tái tục gốc (gốc sang kỳ mới, lãi trả về tài khoản thanh toán), tái tục gốc + lãi (lãi nhập gốc), hoặc không tái tục (chuyển tất cả về tài khoản thanh toán).
+- Lãi suất tái tục = biểu lãi **tại ngày đáo hạn**, không phải lãi suất cũ — nhưng phải báo trước cho khách (T-1 hoặc sớm hơn), vì nếu lãi thị trường giảm, khách có quyền quyết định khác.
+- Ngày đáo hạn rơi vào ngày nghỉ: quy tắc phải rõ (dồn sang ngày làm việc kế tiếp và có tính lãi thêm ngày đó hay không).
+- Job tái tục chạy trong EOD, phải idempotent theo (sổ tiết kiệm, kỳ mới) — chạy lại không được mở hai kỳ.
+
+### Lỗi hay gặp
+- Coi lãi suất là một con số toàn hệ thống, không có **phiên bản theo ngày**: khách gửi kỳ 2023 hưởng 7.5% bị áp lãi mới 4.2% → khiếu nại hàng loạt.
+- Lưu lãi suất kiểu double hoặc chia trước rồi nhân sau, làm sai vài chục nghìn đồng trên mỗi sổ — với 2 triệu sổ thành tiền thật.
+- Partial break (rút một phần): gốc mới phải về 0 nhưng lãi của phần rút bị tính cho cả kỳ.
+- Ngày đáo hạn tính bằng cách cộng tháng trên LocalDate mà quên trường hợp ngày 31.
+- Thu hồi lãi đã trả mà không ghi bút toán điều chỉnh, chỉ "trừ bớt" → sổ cái lệch, đối soát đỏ.
+
+> Senior tip: Trong phỏng vấn, câu này ăn điểm ở hai chỗ: (1) tách rõ ba thứ — lãi suất theo hợp đồng (bất biến, lưu theo ngày gửi), biểu lãi thị trường (thay đổi), và chính sách làm tròn/phí (cấu hình); (2) nói được nghiệp vụ dự trích lãi hằng ngày, vì đó là chỗ dev thuần kỹ thuật hay bỏ. Hãy chủ động nói "tôi sẽ lưu phiên bản lãi suất và khóa công thức tính theo ngày" — đó là điều ngân hàng thật sự làm sau các sự cố khiếu nại lãi.
+
+> Cụm từ: Day count convention (quy ước ngày) là thỏa thuận cách quy lãi suất năm về số ngày thực gửi, ví dụ actual/365. Accrual (trích trước) là ghi nhận chi phí lãi đã phát sinh nhưng chưa trả.
+
+  `,
+  follow: [
+    'Vì sao phải trích trước lãi hằng ngày thay vì chờ đáo hạn mới ghi nhận?',
+    'Khách tất toán trước hạn sau khi đã nhận lãi hằng tháng, bạn xử lý phần lãi đã trả thế nào?',
+    'Lãi suất thị trường thay đổi, làm sao đảm bảo sổ cũ vẫn tính đúng lãi đã cam kết?'
+  ],
+  tags: ['tien gui', 'lai suat', 'accrual', 'tat toan tru han', 'tai tuc']
+},
+{
+  id: 'banking-019',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Hệ thống có nhiều loại tiền tệ và tỷ giá: mỗi giao dịch phải lưu những gì, vì sao không được tính lại tỷ giá lúc truy vấn, và làm tròn khi quy đổi thế nào để tổng tiền vẫn khớp?',
+  a: `**Tóm tắt:** Ba quy tắc sống còn: (1) một số tiền luôn là **cặp (giá trị, loại tiền)**, không bao giờ tách rời; (2) giao dịch nào liên quan quy đổi phải **lưu snapshot tỷ giá** (tỷ giá, nguồn, mã báo giá, thời điểm) ngay lúc thực hiện, nếu tính lại lúc xem báo cáo thì số liệu sẽ đổi và không giải trình được; (3) làm tròn theo **số chữ thập phân của từng loại tiền** và chỉ làm tròn ở bước cuối, phần dư được phân bổ thành dòng điều chỉnh để tổng không "rơi" tiền.
+
+### Vì sao phải lưu tỷ giá theo giao dịch
+Tỷ giá thay đổi từng phút. Khách chuyển 100 USD lúc 10:00 với tỷ giá 25.400 VND/USD, ngân hàng thu của khách 2.540.000 VND. 16:00 tỷ giá là 25.650. Nếu hệ thống chỉ lưu "100 USD" rồi nhân tỷ giá hiện tại khi in sao kê:
+- Khách thấy số tiền khác số đã bị trừ → khiếu nại, và bạn sai.
+- Đối soát với sổ cái không khớp, vì sổ cái ghi 2.540.000.
+- Kiểm toán và cơ quan quản lý yêu cầu chứng minh "giá nào đã áp dụng cho giao dịch này", không chấp nhận số suy ra sau.
+Vì vậy bảng giao dịch ngoại hối phải có: amount_original, currency_original, amount_credited, currency_credited, fx_rate, fx_rate_source, quote_id, quoted_at, fee.
+
+| Trường | Ví dụ | Vai trò |
+|---|---|---|
+| amount_original + currency | 100.00, USD | số tiền khách nhìn thấy và đồng ý |
+| fx_rate | 25.400 | tỷ giá đã áp dụng |
+| fx_rate_source + quote_id | hội sở công bố, QR-20260605-00123 | tra được ai báo giá lúc nào |
+| amount_credited + currency | 2.540.000, VND | số tiền thực ghi sổ |
+| effective_at | 2026-06-05T10:00:03+07:00 | để tái hiện phiên bản bảng tỷ giá |
+
+### Bid, mid, ask và spread — đọc nghiệp vụ trước khi đọc code
+Ngân hàng luôn có hai giá: **bid** (ngân hàng mua vào) và **ask** (ngân hàng bán ra). Giá giữa của hai mức này gọi là **mid**, chỉ dùng để đưa tin và tính toán nội bộ, **không** dùng để thu tiền khách. Ví dụ 100 USD:
+- Khách bán 100 USD cho ngân hàng: nhận 100 × 25.100 (bid) = 2.510.000.
+- Khách mua 100 USD: trả 100 × 25.700 (ask) = 2.570.000.
+- Chênh 60.000 đồng gọi là spread, đó là doanh thu của ngân hàng.
+Dùng nhầm mid cho giao dịch thật là lỗi nghiệp vụ nghiêm trọng, thường lộ ra lúc đối soát cuối ngày với hội sở.
+
+### Số chữ thập phân khác nhau giữa các loại tiền
+Theo ISO 4217 mỗi tiền tệ có "số mũ" (exponent) riêng: VND và JPY là 0 (không có đơn vị nhỏ hơn để giao dịch), USD và EUR là 2, một số tiền vùng Vịnh như BHD, KWD là 3.
+- Không được cộng 12.5 JPY với 12.50 USD rồi coi là một con số.
+- Không được hard-code "2 chữ số thập phân" trong hàm tính phí.
+- Hàm quy đổi phải nhận scale từ **loại tiền đích**, không phải từ loại tiền nguồn.
+
+~~~java
+record Money(BigDecimal amount, String currency) {
+    private static final Map<String, Integer> EXPONENT = Map.of("VND", 0, "USD", 2, "JPY", 0, "BHD", 3);
+
+    Money plus(Money other) {
+        if (!currency.equals(other.currency))
+            throw new IllegalStateException("Cong hai loai tien khac nhau: " + currency + " va " + other.currency);
+        return new Money(amount.add(other.amount), currency);
+    }
+
+    Money convertedTo(String targetCode, BigDecimal rate) {   // lam tron theo so chu so thap phan cua tien dich
+        BigDecimal raw = amount.multiply(rate);
+        int scale = EXPONENT.get(targetCode);
+        return new Money(raw.setScale(scale, RoundingMode.HALF_EVEN), targetCode);
+    }
+}
+~~~
+
+### Làm tròn và bài toán "rơi 1 đồng"
+- HALF_UP (0.5 lên 1) là quy ước phổ biến với khách; HALF_EVEN (làm tròn về số chẵn) dùng khi phải cộng rất nhiều dòng, vì sai số hai chiều tự triệt tiêu thay vì luôn cộng dồn lên. Chọn một, ghi vào tài liệu, dùng nhất quán.
+- Chỉ làm tròn **một lần ở đầu ra**; làm tròn trung gian rồi cộng tiếp sẽ lệch vài đơn vị trên mỗi nghìn giao dịch.
+- Chia đều 100 USD cho 3 người: 33.33 + 33.33 + 33.33 = 99.99, thiếu 0.01. Phải phân bổ phần dư.
+
+~~~java
+static List<BigDecimal> splitEvenly(BigDecimal total, int parts, int scale) {   // so tien khong am
+    long minor = total.movePointRight(scale).longValueExact();   // ve don vi nho nhat: cent, dong
+    long each = Math.floorDiv(minor, parts);
+    long residual = minor - each * parts;                        // phan le khong chia het
+    List<BigDecimal> out = new ArrayList<>();
+    for (int i = 0; i < parts; i++)
+        out.add(BigDecimal.valueOf(each + (i < residual ? 1 : 0)).movePointLeft(scale));
+    return out;   // tong cac phan luyen luon bang total
+}
+~~~
+
+### Quy đổi nhiều bước và tỷ giá chéo
+VND → EUR thường đi qua USD (tỷ giá chéo). Hai rủi ro: làm tròn ở mỗi bước làm lệch kết quả, và vòng cung tỷ giá không nhất quán (USD/EUR × EUR/VND khác USD/VND). Thực tế, bảng tỷ giá hội sở công bố hằng ngày cho từng cặp; hệ thống nên **chọn cặp có sẵn** thay vì tự suy ra, và nếu buộc phải suy thì tính bằng BigDecimal độ dài lớn, chỉ làm tròn khi ra số tiền.
+
+### Đánh giá lại số dư ngoại tệ cuối ngày
+Ngân hàng giữ số dư ngoại tệ (ví dụ 10 triệu USD trong tài khoản tiền gửi). Cuối ngày, tỷ giá thay đổi nên giá trị quy ra VND đổi theo. Kế toán gọi là **revaluation**: ghi bút toán lãi/lỗ chưa thực hiện (unrealized) để bảng cân đối phản ánh giá trị hiện hành, và đảo bút toán đó vào đầu ngày hôm sau.
+
+~~~text
+Revaluation 2026-06-05, vi tri 10.000.000 USD
+Ty gia cuoi ngay: 25.400 -> 25.650 VND/USD
+Gia tri quy VND:   254.000.000.000 -> 256.500.000.000
+But toan: No "chenh lech ty gia chua thuc hien" 2.500.000.000
+          Co "tai san ngoai te danh gia lai"      2.500.000.000
+Ngay hom sau: dao nguoc but toan nay (reversal).
+~~~
+
+Báo cáo quản trị đa tiền tệ phải nói rõ **loại tiền báo cáo** và tỷ giá dùng (cuối ngày đầu kỳ, bình quân trong kỳ, hay cuối kỳ) — cùng một bộ số liệu, hai cách chọn khác nhau cho hai con số khác nhau, và người đọc phải biết mình đang nhìn cái nào.
+
+### Lỗi hay gặp
+- Lưu số tiền bằng double hoặc bằng long "số VND" rồi giả định mọi tiền tệ đều như vậy.
+- Cột amount mà không có cột currency bên cạnh — sau 6 tháng không ai dám cộng chúng.
+- Quy đổi hai lần (khách thấy số ở màn hình xác nhận khác số trong sao kê).
+- Tính tỷ giá lúc đọc (JOIN bảng tỷ giá hôm nay) thay vì lúc ghi — báo cáo tháng trước thay đổi mỗi ngày.
+- Làm tròn ở từng dòng chi tiết rồi cộng, tổng khác số làm tròn ở mức hóa đơn; phải có dòng điều chỉnh phần dư.
+
+> Senior tip: Câu trả lời ăn điểm là chủ động nêu ba thứ: "tiền là cặp giá trị-loại tiền", "mọi giao dịch lưu tỷ giá và nguồn tỷ giá tại thời điểm", và "làm tròn một lần, có dòng điều chỉnh phần dư để tổng luôn khớp". Nói thêm về nghiệp vụ: chênh lệch tỷ giá là một khoản mục P&L thật, có phòng giao dịch (treasury) quản lý hạn mức, nên code của bạn chỉ được quyền áp tỷ giá, không được tự sinh tỷ giá.
+
+> Cụm từ: Snapshot tỷ giá là bản ghi giá trị tỷ giá đã dùng tại thời điểm giao dịch, để sau này tái hiện đúng số tiền. Revaluation (đánh giá lại) là tính lại giá trị khoản mục ngoại tệ theo tỷ giá hiện hành cho báo cáo.
+
+  `,
+  follow: [
+    'Vì sao phải lưu tỷ giá và nguồn tỷ giá theo từng giao dịch thay vì tra bảng tỷ giá khi cần?',
+    'Chia một khoản tiền cho 3 phần, phần dư do làm tròn được xử lý thế nào để tổng vẫn khớp?',
+    'Báo cáo quản trị có nhiều loại tiền: bạn chọn loại tiền báo cáo và tỷ giá nào, và ghi chú ra sao?'
+  ],
+  tags: ['ngoai te', 'ty gia', 'lam tron', 'ISO 4217', 'revaluation']
+},
+{
+  id: 'banking-020',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Khi thay thế core banking, bạn migrate dữ liệu tài khoản và số dư thế nào: phân loại dữ liệu, chạy thử nhiều lần, đối soát số dư và xử lý sai lệch trước khi cắt (cutover)?',
+  a: `**Tóm tắt:** Migration core banking là chuyển khách hàng, tài khoản, số dư, sản phẩm, lãi suất, ủy quyền từ hệ thống cũ sang hệ thống mới, với một yêu cầu duy nhất nhưng tuyệt đối: **từng đồng số dư phải khớp**. Cách làm an toàn là chạy nhiều lần (dry run) trên dữ liệu thật, đối soát tự động ở ba tầng (tổng, nhóm, từng tài khoản), rồi cắt vào một cửa sổ cuối tuần với tiêu chí go/no-go định lượng và kế hoạch lùi. Công cụ đối soát phải viết **trước** công cụ migrate, vì nó là thứ quyết định bạn có được cắt hay không.
+
+### Phân loại dữ liệu cần chuyển — và quyết định không chuyển gì
+| Nhóm | Nội dung | Quyết định điển hình |
+|---|---|---|
+| Master data | khách hàng, giấy tờ, quan hệ nhóm khách, địa chỉ | chuyển đầy đủ, kèm dữ liệu KYC và ngày hết hạn |
+| Tài khoản & số dư | số hiệu, loại, trạng thái, số dư mở, ngày bắt đầu hiệu lực | chuyển đầy đủ, số dư phải khớp tuyệt đối |
+| Lịch sử giao dịch | hàng trăm triệu dòng | thường chỉ chuyển snapshot số dư + 12-24 tháng gần; phần cũ để trong kho lưu trữ (data warehouse) và tra qua API |
+| Điều khoản hợp đồng | lãi suất theo ngày, biểu phí, kỳ hạn, tái tục | chuyển kèm **phiên bản theo thời điểm**, không chỉ giá trị hiện tại |
+| Trạng thái đang treo | hold thẻ, giao dịch pending, lãi đã trích chưa trả, séc đã phát hành | dễ sót nhất, phải có danh mục riêng và đối soát riêng |
+| Ủy quyền, hạn mức, ràng buộc | mandate, lệnh thu/chi, phong tỏa theo thẩm quyền | bắt buộc chuyển, thiếu là vi phạm |
+
+Lịch sử đầy đủ hay không là trade-off chi phí: chuyển 300 triệu dòng mất thêm nhiều giờ và nhiều dung lượng, trong khi luật và nghiệp vụ thường chỉ yêu cầu "tra được khi khách hỏi". Hãy nói rõ ai quyết định (khối tuân thủ) chứ đừng mặc định.
+
+### Pipeline 4 bước và các lần chạy thử
+Extract → Transform → Load → Reconcile.
+- **Transform** là nơi sinh ra sai số: mã sản phẩm cũ A-101 map sang sản phẩm mới SAV_12; ngày lưu dạng DD/MM/YYYY phải về ISO; số âm bất thường phải được xử lý hoặc giải trình.
+- Chạy **dry run** nhiều lần trên bản copy dữ liệu thật (đã che PII nếu môi trường không đủ cấp bảo mật), mỗi lần đo cả **thông lượng**: ví dụ 2 triệu tài khoản, ghi 5.000 dòng/giây thì mất ~7 phút cho số dư, nhưng 300 triệu dòng lịch sử ở 20.000 dòng/giây là ~4 giờ — so với cửa sổ cắt 48 giờ thì còn chỗ, nhưng không được gấp đôi.
+- Mỗi lần chạy phải để lại báo cáo đối soát, và **số sai lệch phải giảm về 0** qua các lần chạy, không phải "à chỗ này bỏ qua được".
+
+### Đối soát số dư ở ba tầng
+1. **Tổng:** tổng số dư tài khoản khách hàng phải bằng số dư tài khoản đối ứng trên sổ cái (GL). Đây là kiểm tra nhanh nhất nhưng yếu nhất.
+2. **Nhóm:** theo chi nhánh, loại sản phẩm, loại tiền, phân khúc.
+3. **Từng tài khoản:** so old balance và new balance theo khóa, kỳ vọng **0 đồng sai lệch**.
+
+Bẫy kinh điển: chỉ so tổng. Thiếu 1 tỷ ở tài khoản A và thừa 1 tỷ ở tài khoản B thì tổng vẫn đẹp. Vì vậy tầng 3 là bắt buộc, không phải tùy chọn.
+
+~~~text
+So du cuoi lan chay thu #4  (toan bo 2.113.402 tai khoan)
+MATCH            2.113.398
+EXPLAINED             4   (3 tai khoan chet da doi soat tay, 1 lenh phí - da co bien ban)
+UNEXPLAINED           0   <-- dieu kien can de cut-over: bang 0
+Tong GL vs tong so du:  chenh 0
+So du am bat thuong:     0
+Tai khoan khong map duoc san pham: 0
+~~~
+
+~~~java
+record AccountDiff(String accountNo, BigDecimal oldBalance, BigDecimal newBalance) {
+    BigDecimal delta() { return newBalance.subtract(oldBalance); }
+}
+
+static String classify(AccountDiff d, Map<String, String> approvedExceptions) {
+    BigDecimal delta = d.delta();
+    if (delta.signum() == 0) return "MATCH";
+    String note = approvedExceptions.get(d.accountNo());
+    return note != null ? "EXPLAINED: " + note : "UNEXPLAINED";   // con UNEXPLAINED thi khong cat
+}
+~~~
+
+### Song song (parallel run) — các kiểu và rủi ro
+- **Replay offline (an toàn nhất):** lấy file giao dịch và kết quả EOD của core cũ, nạp vào core mới trong môi trường riêng, so output. Core mới chưa chạm dữ liệu thật, khách không thấy gì.
+- **Shadow write:** giao dịch thật được ghi vào cả core mới để kiểm tra, nhưng khách hàng vẫn phục vụ bởi core cũ. Rủi ro: hai chỗ cùng ghi, dễ lệch nếu logic chưa tương đương; phải tắt đường sinh số tham chiếu trùng.
+- **Parallel run thật:** hai core cùng xử lý trong vài chu kỳ EOD, đối soát hằng ngày. Đắt nhất, nhưng là cách duy nhất để lộ chênh lệch về ngày lễ, cách làm tròn lãi, phí.
+Rủi ro chung lớn nhất: **hai nguồn chân lý về số dư**. Nếu phải chọn, hãy chọn kiểu replay cho giai đoạn dài, chỉ chuyển sang shadow khi đã gần xong.
+
+### Cutover và điểm không thể quay đầu
+Runbook điển hình: đóng băng kênh (freeze, ngừng nhận giao dịch), chạy EOD cuối trên core cũ, migrate phần thay đổi (delta), đối soát, quyết định go/no-go theo tiêu chí đã định trước (số UNEXPLAINED = 0, 100% tài khoản khớp, các batch treo đã xử lý), bật core mới, chạy kiểm tra khói (mở app, xem số dư, chuyển khoản nội bộ, tra cứu một giao dịch cũ), rồi mở cửa cho khách.
+- **Điểm không thể quay đầu (point of no return)** là lúc core mới bắt đầu ghi giao dịch thật; sau đó lùi về core cũ nghĩa là phải chuyển ngược và đối soát lại toàn bộ.
+- Tiêu chí go/no-go phải là **số**, do một người có quyền quyết định, viết trước — nếu không, lúc 3 giờ sáng ai cũng tìm được lý do để "cứ chạy tiếp".
+
+### Dữ liệu bẩn và hàng đợi ngoại lệ
+Dữ liệu cũ luôn có: thiếu ngày sinh, trùng giấy tờ, tài khoản "ma" không chủ, số dư âm do nghiệp vụ cũ cho phép. Cách xử lý đúng là một **hàng đợi ngoại lệ**: mỗi bản ghi lỗi được ghi nhận, phân loại, chỉ định người sửa **trên hệ thống cũ** (nguồn của dữ liệu), rồi chạy lại. Không được "sửa" trong lúc migrate bằng cách điền bừa giá trị mặc định — bạn sẽ chuyển cả lỗi lẫn sự ngụy tạo.
+
+### Lỗi hay gặp
+- migrate một lần rồi tin là xong, không lập lại để kiểm tra tính tất định của công cụ.
+- So tổng mà không so từng tài khoản; hai sai lệch bù trừ nhau.
+- Quên trạng thái đang treo: hold thẻ, lãi đã trích, séc chưa đối soát → sau cắt, khách khiếu nại "mất" tiền thật.
+- Không lưu ánh xạ id cũ → id mới; 5 năm sau không tra soát được giao dịch thời core cũ.
+- Không đóng băng dữ liệu trong lúc migrate delta → mất giao dịch phát sinh trong cửa sổ.
+- Rollback chỉ nằm trên giấy, chưa từng diễn tập.
+
+> Senior tip: Hãy trình bày câu này như quản lý rủi ro chứ không phải như bài toán copy dữ liệu: "tôi viết tool đối soát trước, vì tỷ lệ khớp là định nghĩa duy nhất của xong". Nêu ba con số bạn sẽ theo dõi qua từng dry run: số tài khoản UNEXPLAINED (phải về 0), thời gian chạy toàn bộ so với cửa sổ cắt, và số bản ghi bị loại vào hàng đợi ngoại lệ (phải giảm). Nói thêm: sau cutover vẫn còn giai đoạn "hỗ trợ tăng cường" vài tuần, vì lỗi migration thường lộ dần khi khách chạm các nghiệp vụ hiếm.
+
+> Cụm từ: Dry run là chạy toàn bộ quy trình migrate trên bản dữ liệu thật nhưng không phục vụ khách, để đo thời gian và tìm sai lệch. EOD (end of day) là vòng batch cuối ngày, nơi số dư và sổ cái được khóa lại cho một ngày.
+
+  `,
+  follow: [
+    'Vì sao phải đối soát tới từng tài khoản thay vì chỉ so tổng số dư với sổ cái?',
+    'Shadow write và replay offline khác nhau ở rủi ro gì, bạn chọn cách nào cho giai đoạn nào?',
+    'Đêm cutover, còn 3 tài khoản UNEXPLAINED trị giá 50.000 đồng, bạn quyết định thế nào?'
+  ],
+  tags: ['migration', 'core banking', 'doi soat', 'parallel run', 'cutover']
+},
+{
+  id: 'banking-021',
+  topic: 'banking',
+  level: 'lead',
+  q: 'Chia hệ thống ví điện tử thành các service theo domain (account, ledger, payment, notification): ranh giới dữ liệu ở đâu, ai sở hữu số dư, và giữ nhất quán thế nào khi một bước trong luồng tiền thất bại?',
+  a: `**Tóm tắt:** Chia theo **năng lực nghiệp vụ**, không theo tầng kỹ thuật: account quản lý hồ sơ khách và trạng thái tài khoản, ledger là nơi **duy nhất** được ghi sổ và do đó sở hữu số dư, payment điều phối luồng tiền và tuyên bố giao dịch thành hay bại, notification chỉ thông báo và không được giữ trạng thái tiền. Trong một service dùng giao dịch database bình thường; giữa các service dùng **saga** (bước bù trừ khi thất bại) cộng **outbox** (ghi event cùng transaction rồi mới gửi) và consumer chống trùng. Không dùng giao dịch phân tán 2PC; thay vào đó chấp nhận nhất quán eventual cho phần thông báo và báo cáo, còn phần ghi sổ thì nhất quán mạnh.
+
+### Bảng ranh giới dữ liệu
+| Service | Sở hữu | API cung cấp | Event phát ra |
+|---|---|---|---|
+| account | hồ sơ khách, giấy tờ, trạng thái ACTIVE/FROZEN/CLOSED, mức KYC, giới hạn theo quy định | lấy hồ sơ, khóa/mở tài khoản | AccountFrozen, KycUpgraded |
+| ledger | tài khoản kế toán kép, bản ghi sổ append-only, số dư dẫn xuất, tỷ giá đã áp | ghi nợ/có theo lệnh kế toán, hỏi số dư | LedgerEntryPosted |
+| payment | đơn thanh toán, trạng thái vòng đời, tham chiếu đối tác, lệnh hoàn tiền | tạo thanh toán, tra soát | PaymentAuthorized, PaymentSettled, PaymentFailed |
+| notification | mẫu tin, kênh gửi (push, SMS, OTT), nhật ký đã gửi, sở thích khách | gửi, hẹn lại, hủy | MessageDelivered, MessageFailed |
+
+Quy tắc bất di bất dịch: **không service nào đọc bảng của service khác**. Muốn dữ liệu của nhau thì gọi API đồng bộ (khi phải trả lời ngay) hoặc nhận event và giữ bản sao để đọc (read model) cho màn hình của mình. Vi phạm quy tắc này là cách nhanh nhất để có "distributed monolith": sửa một bảng khiến bốn service cùng chết.
+
+### Vì sao ledger phải tách riêng
+- Số dư là dữ liệu nhạy cảm nhất: cần ghi theo giao dịch ACID, append-only, kiểm toán được. Nếu nằm chung với payment, mỗi lần thêm tính năng thanh toán mới (phí, giảm giá, trả góp) người ta sẽ sửa cả logic liên quan đến tiền.
+- Tách ledger cho phép nhiều kênh dùng chung một sổ: ví, chuyển khoản, hóa đơn, hoàn tiền — tất cả chỉ gửi một "lệnh kế toán" (tài khoản A nợ X, tài khoản B có X, kèm tham chiếu).
+- Ledger phải từ chối lệnh mất cân bằng (tổng nợ khác tổng có) và từ chối ghi trùng tham chiếu. Đó là chốt chặn cuối cùng trước sai tiền.
+
+### Nhất quán giữa các service: saga cộng outbox
+Luồng "nạp 500.000 đồng từ thẻ vào ví":
+1. payment tạo giao dịch, gọi issuer xin authorization (đồng bộ, vì phải trả lời khách ngay).
+2. Nếu được chuẩn chi, payment gửi lệnh kế toán cho ledger: nợ tài khoản trung gian của ngân hàng, có tài khoản ví của khách.
+3. Ledger ghi trong một transaction database và ghi event vào outbox **cùng transaction đó**.
+4. payment trả lời khách "nạp thành công".
+5. notification nhận event LedgerEntryPosted và gửi push. Nếu notification chết, tiền **không** bị rollback: event còn trong outbox, sẽ được gửi lại, khách nhận thông báo muộn vài chục giây.
+6. Nếu ledger từ chối (mất cân bằng, tài khoản bị đóng), payment chuyển FAILED; nếu issuer đã giữ tiền thì saga chạy bước bù trừ là hoàn authorization — compensation là hoàn tác về nghiệp vụ, không phải rollback database.
+
+~~~seq
+title: Nap tien tu the vao vi dien tu
+actors: Khach | Payment | Ledger | Outbox | Notification
+Khach -> Payment: nap 500.000 dong tu the
+Payment -> Payment: xin authorization tu issuer
+Payment -> Ledger: lenh ke toan no trung gian co vi khach
+Ledger -> Ledger: kiem tra can bang, ghi append-only
+Ledger -> Outbox: ghi event cung transaction voi so du
+Ledger --> Payment: da ghi so, ma bu toan LE-9931
+Payment --> Khach: nap thanh cong
+Outbox -> Notification: phat LedgerEntryPosted (duoc thu lai)
+Notification -> Khach: push "Vi cua ban cong 500.000"
+~~~
+
+**Vấn đề ghi đôi (dual write):** nếu code "cập nhật database rồi publish Kafka" ở hai dòng liền nhau, publish có thể thành công trong khi transaction bị rollback, hoặc ngược lại. Outbox giải quyết bằng cách ghi event thành một dòng trong cùng transaction với dữ liệu nghiệp vụ, rồi một worker đều đặn đẩy các dòng chưa gửi ra bus và đánh dấu đã gửi.
+
+~~~sql
+CREATE TABLE outbox_event (
+  id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  aggregate_id VARCHAR(64) NOT NULL,        -- ma thanh toan: giu thu tu theo tung dong tien
+  event_type   VARCHAR(64) NOT NULL,        -- LedgerEntryPosted
+  version      SMALLINT    NOT NULL,        -- schema version, de them truong moi ma khong gay loan
+  payload      JSONB       NOT NULL,
+  occurred_at  TIMESTAMPTZ NOT NULL,
+  sent_at      TIMESTAMPTZ                  -- NULL la chua gui
+);
+CREATE INDEX ix_outbox_unsent ON outbox_event (id) WHERE sent_at IS NULL;
+
+CREATE TABLE consumer_dedup (               -- phia nhan, chong xu ly trung
+  consumer   VARCHAR(40) NOT NULL,
+  event_id   BIGINT      NOT NULL,
+  handled_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (consumer, event_id)
+);
+~~~
+
+Consumer **bắt buộc idempotent** vì bus giao tối thiểu một lần (at-least-once): kiểm tra bảng dedup theo event id trước khi xử lý. Muốn giữ thứ tự thì partition theo khóa nghiệp vụ (walletId hoặc paymentId), đừng mong đợi thứ tự toàn cục.
+
+### Điều phối tập trung hay phối hợp phân tán
+| | Có người chỉ huy (orchestration) | Chỉ đẩy event (choreography) |
+|---|---|---|
+| Luồng có tiền, nhiều bước | rõ ràng, theo dõi được, hoàn tiền dễ | khó lần ra trạng thái trung gian |
+| Thêm bước mới | sửa chỗ chỉ huy | thêm service mới, ít sửa service cũ |
+| Giám sát | một chỗ thấy toàn cảnh | phải có tracing mới hiểu chuyện gì xảy ra |
+| Phù hợp | thanh toán, rút tiền, đối soát | thông báo, tích hợp, đồng bộ tìm kiếm |
+
+### Lỗi hay gặp
+- Hai service cùng giữ số dư (payment tự thêm cột balance "cho nhanh") → lệch nhau và không ai biết số nào đúng. Đây là lỗi số một của hệ thống ví.
+- Notification thất bại làm rollback giao dịch tiền: sai nguyên tắc, vì tiền đã được ghi sổ.
+- Chia sẻ một database giữa các service "cho tiện" — thực chất là một hệ thống monolith nhưng vẽ thành bốn ô.
+- Event không có version; đổi schema làm gãy consumer một cách âm thầm; hoặc nhét số thẻ/PII vào event khiến mọi subscriber thành nơi chứa dữ liệu nhạy cảm.
+- Publish event trước khi commit transaction: consumer đọc phải dữ liệu chưa tồn tại.
+- Không định nghĩa "thành công" nghĩa là gì: payment báo thành công trong khi ledger chưa ghi. Hãy chốt: thành công = ledger đã ghi sổ; các bước sau chỉ là phân phối thông tin.
+
+> Senior tip: Câu hỏi thật của nhà tuyển dụng không phải "vẽ được bao nhiêu ô", mà là hai câu: "ai sở hữu số dư" và "ai được quyền tuyên bố một giao dịch là thành công". Trả lời gọn: ledger sở hữu số dư, payment sở hữu trạng thái vòng đời, mọi nơi khác chỉ có bản sao để đọc và được phép chậm vài giây. Nói tiếp về đánh đổi: với ghi sổ thì chọn nhất quán, chấp nhận tạm giảm khả năng phục vụ; với thông tin thì chọn khả năng phục vụ, chấp nhận nhất quán tới sau — chính sự phân biệt đó là lý do saga và outbox tồn tại.
+
+> Cụm từ: Saga là chuỗi bước cục bộ, mỗi bước có bước bù trừ (compensation) để hoàn tác về nghiệp vụ khi một bước sau thất bại; nó không phải một transaction trải trên nhiều database. Outbox là bảng ghi event ngay trong transaction nghiệp vụ để việc phát tin không bị mất và không phát trước khi dữ liệu tồn tại.
+
+  `,
+  follow: [
+    'Vì sao không để service payment tự lưu cột số dư, dù chỉ để hiển thị nhanh?',
+    'Notification gửi thất bại sau khi ledger đã ghi sổ: hệ thống ứng xử thế nào và khách thấy gì?',
+    'Bạn chọn orchestration hay choreography cho luồng rút tiền về ngân hàng, vì sao?'
+  ],
+  tags: ['microservices', 'domain', 'ledger', 'saga', 'outbox']
+},
+{
+  id: 'banking-022',
+  topic: 'banking',
+  level: 'lead',
+  q: 'SLA, SLO, RTO và RPO của hệ thống thanh toán nghĩa là gì và liên hệ với nhau thế nào; thiết kế active-passive giữa hai data center phải chứng minh được những con số nào?',
+  a: `**Tóm tắt:** SLA là cam kết với khách (kèm điều khoản bồi thường), SLO là mục tiêu nội bộ, SLI là cách đo thật. RTO (Recovery Time Objective) là **bao lâu thì phải phục vụ lại được**, RPO (Recovery Point Objective) là **được phép mất bao nhiêu dữ liệu**, tính bằng thời gian. Với hệ thống thanh toán, RPO cho giao dịch đã báo thành công phải bằng 0 (không được mất tiền đã ghi sổ), còn RTO cho luồng chấp nhận giao dịch thường 5-15 phút. Active-passive giữa hai data center chỉ có giá trị khi bạn **đo và diễn tập** được hai con số đó, không phải khi vẽ sơ đồ đẹp.
+
+### Bốn khái niệm nối nhau bằng số
+- **SLI (chỉ số):** ví dụ tỷ lệ giao dịch thanh toán trả lời thành công trong dưới 2 giây, đo từ phía khách, không đo "server còn sống".
+- **SLO (mục tiêu nội bộ):** "99.95% số phút trong tháng đạt SLI".
+- **SLA (cam kết):** SLO cộng hậu quả tài chính/pháp lý khi vi phạm.
+- **Error budget (ngân sách gián đoạn):** phần thời gian còn được phép hỏng trong kỳ; hết ngân sách thì tạm dừng phát hành tính năng mới để trả nợ độ tin cậy.
+
+~~~java
+static BigDecimal allowedMinutesPerMonth(BigDecimal availabilityPercent) {
+    BigDecimal minutesInMonth = new BigDecimal("43200");                // 30 ngay
+    BigDecimal allowance = BigDecimal.ONE.subtract(availabilityPercent.movePointLeft(2));
+    return minutesInMonth.multiply(allowance).setScale(2, RoundingMode.HALF_UP);
+}
+// 99.9   -> 43.20 phut    99.95  -> 21.60 phut
+// 99.99  ->  4.32 phut    99.999 ->  0.43 phut (khoang 26 giay)
+~~~
+
+| Mục tiêu | Nghỉ phép mỗi tháng | Ý nghĩa thật với thanh toán |
+|---|---|---|
+| 99.9% | 43 phút | một sự cố buổi sáng là cạn ngân sách |
+| 99.95% | 21.6 phút | khớp với RTO 15 phút cộng dự phòng |
+| 99.99% | 4.3 phút | buộc failover tự động, không chờ người quyết |
+| 99.999% | 26 giây | gần như phải active-active, chi phí rất lớn |
+
+### RPO quyết định replication, RTO quyết định quy trình
+**RPO = 0** nghĩa là tại thời điểm data center A cháy, không có giao dịch nào đã báo thành công mà chưa nằm ở nơi khác. Cách duy nhất là **nhật ký ghi sổ (log của database / sổ cái) được nhân bản đồng bộ** sang B và chỉ trả lời khách sau khi B xác nhận. Cái giá phải nói rõ: mỗi lần ghi chờ đường truyền A tới B nên độ trễ tăng (vài ms đến vài chục ms tùy khoảng cách), và nếu kênh nối đứt thì A phải **tạm dừng ghi** vì không còn giữ được RPO — điểm mà nhiều đội bỏ quên rồi tưởng mình đang có RPO 0.
+**RPO vài giây** chấp nhận được với dữ liệu không trực tiếp là tiền (log, analytics, cache) vì dựng lại từ nguồn khác được.
+
+**RTO là tổng của một chuỗi bước**, không phải "khởi động lại nhanh":
+
+| Bước | Ngân sách thời gian |
+|---|---|
+| Phát hiện sự cố (monitoring + cảnh báo) | 1-2 phút |
+| Xác nhận và quyết định failover (phải có người được ủy quyền) | 2-3 phút |
+| Chuyển định tuyến vào (DNS hoặc VIP) sang DC B | 1-3 phút |
+| Nâng database standby lên primary, kiểm tra điểm cuối log | 2-5 phút |
+| Làm nóng application, cache, kết nối đối tác | 2-4 phút |
+| Kiểm tra khói rồi mở cửa cho khách | 2-3 phút |
+| **Tổng** | **10-20 phút** |
+
+Nếu hợp đồng ghi RTO 5 phút, nhìn bảng trên sẽ thấy phải tự động hóa bước quyết định hoặc cắt giảm chỗ khác — đó là lúc cam kết business và kiến trúc gặp nhau, và là lý do bạn nên mang bảng này vào phỏng vấn.
+
+### Active-passive giữa hai data center cần những mảnh nào
+- **Định tuyến:** load balancer/DNS có TTL ngắn (hoặc VIP anycast) để chuyển nhanh, kèm bước xác minh lưu lượng đã thật sự về B.
+- **Database:** standby nhận log liên tục; khi nâng cấp phải kiểm tra "giao dịch cuối cùng đã áp dụng chưa" trước khi nhận ghi.
+- **Trọng tài (quorum):** nếu chỉ có hai DC mà kênh giữa chúng đứt, cả hai đều nghĩ bên kia chết và cùng nhận ghi — split-brain, sinh ra hai phiên bản số dư của cùng một tài khoản. Cần một bên thứ ba chỉ bỏ phiếu (node nhỏ ở site thứ ba hoặc trên cloud) để quyết ai được ghi.
+- **Đồng nhất cấu hình:** schema, phần migration, tính năng phải như nhau. DC B chưa nâng cấp phiên bản thì failover thành thảm họa thứ hai.
+- **Runbook và diễn tập:** kiểm tra từng phần mỗi quý (failover một service), toàn phần mỗi năm, và **đo thời gian thật** của từng bước. RTO trên giấy mà chưa diễn tập thì chưa tồn tại.
+- **Failback:** đường về A thường bị bỏ quên; dữ liệu sinh ra ở B phải được đồng bộ ngược rồi mới cắt về.
+
+### Failover diễn ra thế nào
+~~~seq
+title: Failover tu DC A sang DC B
+actors: Khach | Dinh tuyen | DC A | Trong tai | DC B
+Khach -> Dinh tuyen: yeu cau thanh toan
+Dinh tuyen -> DC A: chuyen yeu cau
+DC A --> Dinh tuyen: khong phan hoi
+Trong tai -> DC A: kiem tra su song, that bai
+Trong tai -> DC B: quorum dong y, coi DC A da chet
+Dinh tuyen -> DC B: chuyen dinh tuyen ve DC B
+DC B -> DC B: nang DB standby len primary
+DC B -> DC B: kiem tra giao dich cuoi da ap dung
+DC B --> Dinh tuyen: san phuc vu
+Khach -> Dinh tuyen: yeu cau thanh toan tiep theo
+Dinh tuyen -> DC B: phuc vu, khach khong biet DC A chet
+~~~
+
+### Sau failover: giao dịch "đã gửi mà không thấy trả lời"
+Trong 10-20 phút gián đoạn có những giao dịch đã vào A nhưng phản hồi không tới khách. Khách (và kẻ gian) sẽ bấm lại. Xử lý đúng: lưu **khóa chống trùng do khách cấp** (idempotency key) ngay từ đầu, khi mở cửa lại cho phép tra soát theo khóa đó và trả về đúng kết quả cũ; giao dịch chưa chắc chắn thì giữ trạng thái "đang tra soát" và đối soát với đối tác. Không được "an toàn bằng cách coi như chưa từng có" — khách sẽ bấm lại và bị trừ tiền hai lần.
+
+### Phụ thuộc bên ngoài chặn trần SLA của bạn
+SLA 99.95% của bạn không thể độc lập nếu đường ra hệ thống chuyển mạch, nhà mạng SMS, hoặc nhà cung cấp định danh eKYC chỉ đạt 99.5%. Availability của chuỗi là tích các phần: 0.9995 × 0.9995 × 0.995 ≈ 0.994. Từ con số đó, bàn lại với nghiệp vụ: hoặc thêm kênh dự phòng cho phụ thuộc yếu, hoặc thu hẹp phạm vi cam kết trong hợp đồng.
+
+### Lỗi hay gặp
+- Đo "server sống" (ping được) thay vì "giao dịch thành công": hệ thống thật đang đỏ vì p95 tăng gấp ba mà dashboard vẫn xanh.
+- Tài liệu ghi RPO 0 nhưng replication đang cấu hình bất đồng bộ.
+- Tự hào "có backup hằng đêm" trong khi chưa từng kiểm chứng một lần restore.
+- DNS TTL 300-3600 giây khiến "failover 5 phút" thực tế mất 40 phút vì khách còn trỏ về DC cũ.
+- Không có ai được ủy quyền bấm nút failover, cả phòng kỹ thuật đứng nhìn qua Zoom.
+- Cache lạnh sau khi chuyển làm p95 tăng vọt: RTO về trải nghiệm khách dài hơn RTO về kỹ thuật.
+
+> Senior tip: Trả lời theo ba câu chốt: (1) RPO của dữ liệu đã báo thành công phải bằng 0, nên ghi sổ được nhân bản đồng bộ, và tôi chấp nhận đánh đổi độ trễ cùng việc tạm dừng ghi khi mất kênh; (2) RTO là tổng của một chuỗi bước có người chịu trách nhiệm, tôi chia ngân sách thời gian cho từng bước và diễn tập để đo con số thật; (3) SLA bị trần của phụ thuộc bên ngoài chặn lại, nên tôi tính theo chuỗi và bàn lại phạm vi cam kết. Câu chốt thứ tư ghi điểm: hệ thống thanh toán dự phòng tốt là hệ thống **replay được** — mất kết nối không mất tiền vì đã có tham chiếu duy nhất và chứng thư đối soát.
+
+> Cụm từ: Split-brain là tình trạng hai bản cùng nghĩ mình là bản chính và cùng nhận ghi, sinh ra hai lịch sử số dư khác nhau. Failback là bước đưa lưu lượng về data center ban đầu sau khi khắc phục, thường khó hơn failover vì phải đồng bộ dữ liệu phát sinh theo chiều ngược.
+
+  `,
+  follow: [
+    'Vì sao RPO bằng 0 cho giao dịch đã báo thành công buộc phải nhân bản đồng bộ, và cái giá là gì?',
+    'Kênh nối giữa hai data center đứt: hệ thống phải ứng xử thế nào để không có hai phiên bản số dư?',
+    'Sau failover, khách khiếu nại "đã bấm chuyển tiền hai lần", bạn dựa vào dữ liệu nào để trả lời?'
+  ],
+  tags: ['SLA', 'RTO', 'RPO', 'active-passive', 'disaster recovery']
 }
 );
