@@ -1149,6 +1149,8 @@ window.DATA_INDEX = {
     {"id":"lesson-db-003","track":"db","order":3,"title":"B-tree index và full scan: đếm phép so sánh, hiểu chọn lọc","level":"mid","minutes":25},
     {"id":"lesson-db-004","track":"db","order":4,"title":"Connection pool: giới hạn tài nguyên và timeout khi cạn pool","level":"senior","minutes":25},
     {"id":"lesson-db-005","track":"db","order":5,"title":"Offset pagination và keyset pagination: chi phí bỏ qua hàng","level":"mid","minutes":25},
+    {"id":"lesson-db-006","track":"db","order":6,"title":"Bên trong connection pool: borrow, timeout khi chờ và phát hiện leak","level":"senior","minutes":30},
+    {"id":"lesson-db-007","track":"db","order":7,"title":"Deadlock: hai giao dịch khoá ngược chiều và cách database phá vòng chờ","level":"senior","minutes":30},
     {"id":"lesson-jvm-001","track":"jvm","order":1,"title":"Heap và bốn loại reference: vì sao static Map giữ object mãi mãi","level":"senior","minutes":30},
     {"id":"lesson-jvm-002","track":"jvm","order":2,"title":"GC mark-and-sweep từ con số 0: reachability, tri-color và vì sao cần compact","level":"senior","minutes":35},
     {"id":"lesson-jvm-003","track":"jvm","order":3,"title":"Class loading và static init: thứ tự khởi tạo, holder idiom và bẫy classloader","level":"senior","minutes":30},
