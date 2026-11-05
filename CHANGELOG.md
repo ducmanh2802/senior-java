@@ -3,6 +3,33 @@
 ## 2026-11-05
 
 ### Nội dung
+- T116 (auto-committed after kilo review + verify)
+- T647 (auto-committed after kilo review + verify)
+- T669 (auto-committed after kilo review + verify)
+- T668 (auto-committed after kilo review + verify)
+- T667 (auto-committed after kilo review + verify)
+- T666 (auto-committed after kilo review + verify)
+- T665 (auto-committed after kilo review + verify)
+- T664 (auto-committed after kilo review + verify)
+- T663 (auto-committed after kilo review + verify)
+- T662 (auto-committed after kilo review + verify)
+- T661 (auto-committed after kilo review + verify)
+- T645 (auto-committed after kilo review + verify)
+- T660 (auto-committed after kilo review + verify)
+- T659 (auto-committed after kilo review + verify)
+- T648 (auto-committed after kilo review + verify)
+- T658 (auto-committed after kilo review + verify)
+- T657 (auto-committed after kilo review + verify)
+- T655 (auto-committed after kilo review + verify)
+- T654 (auto-committed after kilo review + verify)
+
+### Ứng dụng
+
+
+
+## 2026-11-05
+
+### Nội dung
 - T652 (auto-committed after kilo review + verify)
 - T651 (auto-committed after kilo review + verify)
 - T158 (auto-committed after kilo review + verify)
