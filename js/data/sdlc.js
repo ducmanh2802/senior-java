@@ -8522,5 +8522,1276 @@ note ALB..PostgreSQL: mất pod, pod còn lại chịu thêm tải, lặp lại
     ]
   },
   tags: ['kubernetes', 'eks', 'helm', 'argocd', 'gitops', 'docker', 'probes', 'hpa', 'pdb', 'graceful-shutdown', 'oomkilled', 'native-memory', 'hikaricp', 'max-connections', 'alb', 'migration', 'sale-peak']
+},
+{
+  id: 'sdlc-010',
+  title: 'Hoàn tiền một phần: chất lượng và automation xuyên suốt (SDET + Playwright for Java)',
+  level: 'senior',
+  domain: 'Thương mại điện tử',
+  context: `Bạn là **Senior Java Developer** trong squad After-Sales của một sàn thương mại điện tử (~3 triệu đơn/tháng, ~45.000 đơn giao thành công mỗi ngày). Squad **6 người**: 4 dev backend (Java 21, Spring Boot 3.3, PostgreSQL 16), 1 **SDET** và 1 PO. Sprint 2 tuần; môi trường DEV → SIT → UAT → PROD chạy trên Kubernetes (EKS), deploy bằng Argo CD; CI trên GitHub Actions.
+
+**SDET là gì:** Software Development Engineer in Test — người **viết code** để test hệ thống (JUnit, Playwright, Testcontainers, pipeline CI), không phải người chỉ bấm tay theo checklist. Ở squad này SDET là **Hương**, ra quyết định về kiến trúc suite ngang hàng với dev.
+
+Nghiệp vụ của tính năng: khách đã trả tiền, hàng đã giao, nhưng **một phần** đơn bị lỗi (thiếu 1 cái áo, ấm đun nước không lên điện). Khách không trả lại cả đơn mà xin **hoàn tiền một phần** (partial refund) cho đúng sản phẩm lỗi. Hiện hệ thống chỉ có **hoàn toàn bộ** (full refund) và mọi lệnh hoàn đều do nhân viên CSKH nhập tay số tiền. Vì không ai cộng dồn các lần hoàn, **hoàn nhiều lần có thể vượt quá số tiền khách đã trả**. Báo cáo tài chính 6 tháng gần nhất ghi nhận **37 đơn bị hoàn vượt tiền**, tổng thiệt hại ~41 triệu đồng.
+
+Hệ thống liên quan:
+- {{order-service}} (squad bạn sở hữu): bảng đơn hàng, line item (từng dòng sản phẩm trong đơn), bảng thanh toán.
+- {{refund-service}}: dịch vụ mới tách ra từ order-service, nhận lệnh hoàn tiền và gọi gateway.
+- {{payment-gateway}}: nhà cung cấp thanh toán, hoàn tiền **thật** về thẻ/ví khách. API HTTP, hoàn **bất đồng bộ**: chấp nhận lệnh (202) rồi 1–5 ngày làm việc sau mới gửi callback báo thành công/thất bại.
+- {{finance-core}}: kế toán, cuối ngày đối soát (so số liệu) giữa tiền sàn đã hoàn và tiền gateway báo về.
+
+> Cách làm việc của kịch bản này: đi ** tuần tự** 8 giai đoạn. Ở mỗi giai đoạn, đọc tình huống + artifact, **tự làm phần "Việc của bạn"** (viết ra giấy/file, càng cụ thể càng tốt), rồi mới mở đáp án mẫu hoặc nhờ AI chấm. Kịch bản xoáy vào **chất lượng và automation**: mỗi giai đoạn đều có câu hỏi "test nào chứng minh điều này?".`,
+  stages: [
+    {
+      key: 'requirement',
+      title: 'Nhận requirement: biến ticket mơ hồ thành tiêu chí nghiệm thu đo được',
+      role: 'PO đưa ticket; bạn và SDET cùng viết acceptance criteria',
+      story: `Thứ Hai refinement. PO (An) đọc nhanh ticket AS-611 rồi nói "làm trước 05/12 để kịp sale 12.12, các anh cứ làm rõ rồi em trả lời". Hương (SDET) ngồi cạnh bạn, gãi đầu: "Em không viết được test nào từ ticket này cả".
+
+Đó chính xác là vấn đề: một ticket chỉ mô tả **mong muốn** thì dev ước lượng theo cảm giác, QA không biết test gì, và PO chỉ phát hiện "không phải cái mình muốn" ở UAT — lúc đã tốn 2 tuần. Trong cuộc họp 40 phút, bạn giữ vai trò người **đẻ câu hỏi**; Hương giữ vai trò người đòi "nói gì thì phải **đo được**".`,
+      artifacts: [
+        { name: 'AS-611.txt', lang: 'text', content: `AS-611   [Story]   Hoàn tiền một phần cho đơn đã giao
+Priority: High          Reporter: PO After-Sales        Sprint: 2026-S24
+Labels: refund, self-service, finance-impact
+
+Mô tả:
+  Là khách hàng, tôi muốn tự yêu cầu hoàn tiền cho MỘT HOẶC VÀI sản phẩm trong
+  đơn đã giao mà không phải gọi tổng đài. CSKH chỉ duyệt những khoản lớn.
+  Nếu tôi hoàn nhiều lần thì tổng tiền hoàn không được vượt quá số tôi đã trả.
+
+Bối cảnh (PO nói miệng trong refinement, chưa ghi vào ticket):
+  - Muốn làm xong trước 05/12 để kịp đợt sale 12.12
+  - Hoàn về ví nội bộ thì tức thì, hoàn về thẻ thì phụ thuộc gateway
+  - "Nhớ chặn khách hoàn lố tiền giùm em"
+  - Khoản nhỏ thì tự động duyệt cho khách khỏi chờ
+
+Acceptance criteria:
+  (trống)
+
+Definition of Done của squad:
+  - Code + test unit/API/E2E cho mọi acceptance criteria
+  - Không còn comment [Blocker] unresolved
+  - Đã cập nhật CHANGELOG + tài liệu API` },
+        { name: 'refund-legacy-sample.txt', lang: 'text', content: `Trích báo cáo hoàn tiền 6 tháng (finance-core, export 2026-11-18)
+  đơn đã giao trong kỳ            : 13.410.000
+  số đơn có >= 1 lệnh hoàn        :    187.900  (1,40%)
+  tổng tiền đã hoàn               : 34,62 tỷ VND
+  lệnh hoàn do CSKH nhập tay      : 100% (hệ thống không có luồng tự động)
+  ĐƠN BỊ HOÀN VƯỢT SỐ KHÁCH ĐÃ TRẢ:        37   (tổng vượt 41.283.000 VND)
+    - 31 vụ: 2 lệnh hoàn cách nhau < 5 phút, cùng một nhân viên CSKH
+    -  4 vụ: 2 nhân viên khác nhau cùng xử lý một đơn trong ca giao ban
+    -  2 vụ: khách bấm nút "Hoàn" 2 lần vì màn hình không phản hồi
+  giá trị trung bình 1 lệnh hoàn  : 184.000 VND  (số CHẴN, đơn vị VND, không có xu)` }
+      ],
+      task: `1. Liệt kê **ít nhất 8 câu hỏi làm rõ** bạn sẽ hỏi PO (nghiệp vụ, biên tiền, đồng thời, trạng thái chờ gateway, phi chức năng). Với mỗi câu, nói vì sao nó quyết định thiết kế.
+2. Viết **acceptance criteria** dạng **Given/When/Then** cho ít nhất 8 tình huống; bắt buộc có 3 tình huống biên về tiền: hoàn **0đ**, hoàn **đúng bằng** số tiền còn lại, và **hai lần hoàn cộng dồn vượt tổng**.
+3. Hương đòi gì thêm ngoài AC chức năng? Nêu 3 yêu cầu về **khả năng kiểm thử** (testability).`,
+      answer: `**Tóm tắt:** ticket chỉ có "mong muốn", không có "khi nào tính là đúng". Senior + SDET biến nó thành các tiêu chí **đo được bằng máy**: có số, có trạng thái, có mã lỗi. Ba boundary về tiền (0đ / đúng bằng / cộng dồn vượt) phải được viết ra ngay ở refinement, vì chúng quyết định toàn bộ thiết kế guard tiền và sau này là nơi sinh ra bug thật.
+
+### Thuật ngữ dùng trong bài này (đọc trước 30 giây)
+- **Acceptance criteria (AC / tiêu chí nghiệm thu):** danh sách "làm xong nghĩa là gì", viết trước khi code, là hợp đồng giữa PO — dev — QA. Không có AC thì "xong" là ý kiến của từng người.
+- **Given/When/Then:** khuôn mẫu viết AC. **Given** = bối cảnh đã có từ trước (đã đặt bàn, đã có tiền trong đơn); **When** = hành động người dùng (bấm nút, gọi API); **Then** = điều **quan sát được** phải xảy ra (thông báo gì, mã lỗi gì, số tiền còn lại bao nhiêu, bản ghi nào được tạo). Ví dụ đời thường: "Given hóa đơn 830k, When khách xin hoàn 300k, Then hiện 'Vượt số còn lại' và **không** trừ thêm tiền". Then mà không quan sát được thì không test được.
+- **Boundary (giá trị biên):** các điểm sát ranh giới cho phép (0đ, đúng bằng, vượt 1đ). Lỗi lập trình đa số nằm ở ranh giới (dùng **hay hơn hoặc bằng** nhầm chỗ), không nằm giữa khoảng an toàn.
+- **Full refund / partial refund:** hoàn cả đơn / hoàn một phần (một vài dòng sản phẩm, có kèm phí vận chuyển hoặc không).
+- **Idempotency key:** một mã duy nhất client gửi kèm mỗi lệnh POST, để nếu khách bấm nút 2 lần (hoặc app retry vì mất mạng) server chỉ thực hiện **một** lần.
+
+### 8+ câu hỏi làm rõ (và vì sao nó quyết định thiết kế)
+| # | Câu hỏi | Ảnh hưởng kỹ thuật |
+|---|---|---|
+| 1 | Tổng hoàn tính trên **số khách thực trả** hay **giá trị đơn trước giảm giá**? | Quyết định cột so sánh: paid_amount − discount, hay subtotal |
+| 2 | "Còn lại bao nhiêu" tính ở **cấp đơn** hay **cấp line item**? Hoàn 1 cái áo thì line đó còn bao nhiêu? | Cần bảng {{refund_line}} + cột {{refunded_amount}} trên {{order_line}}; bug thật (giai đoạn Fix bug) nằm ở cả 2 cấp |
+| 3 | Lệnh đang **chờ gateway** (1–5 ngày) có được trừ vào hạn mức hoàn không? | Nếu không trừ, khách hoàn tiếp trong lúc chờ → vượt tiền. Đây là quyết định sinh ra mô hình "giữ chỗ" (reservation) |
+| 4 | Gateway báo **thất bại** thì số đã giữ chỗ có được trả lại không, trong bao lâu? | Luồng hoàn hạn mức + job đối soát |
+| 5 | Khách **bấm 2 lần / app retry** thì sao? CSKH ở 2 ca khác nhau cùng xử lý một đơn? | Idempotency key + kiểm soát đồng thời (AC5 bên dưới) |
+| 6 | Khoản nào **tự động duyệt**, khoản nào cần CSKH? Ngưỡng bao nhiêu? | State machine của {{refund.status}}, phân quyền, và độ khẩn của bug |
+| 7 | **Phí vận chuyển** có hoàn một phần được không? Voucher giảm phí xử lý sao? | Thuật toán phân bổ giảm giá (allocation) — nguồn lỗi làm tròn tiền |
+| 8 | Thời hạn yêu cầu hoàn (15 ngày? 30 ngày?) tính từ lúc giao **thành công** hay lúc khách bấm "đã nhận"? | Cần cột {{delivered_at}} đáng tin, và cách lấy "hôm nay" phải test được |
+| 9 | Tiền lưu bằng kiểu gì? Có **số thập phân** không? | Bắt buộc {{long}}/{{NUMERIC(18,0)}} theo đơn vị VND; cấm {{double}} |
+| 10 | Tải đỉnh ngày sale? SLA cho API tạo lệnh hoàn? | Chọn cách khoá và index, số pod |
+| 11 | Có cần lưu **audit** ai duyệt, lý do, để đối chiếu thanh tra? | Bảng {{refund_event}}, giữ bao lâu |
+| 12 | Khách có nhìn thấy "còn được hoàn tối đa X" trước khi gửi không? | Thêm API đọc summary để app hiện, và là điểm so sánh cho E2E test |
+
+### Acceptance criteria mẫu (Given/When/Then, đơn vị VND)
+Kịch bản dữ liệu dùng chung cho mọi AC (các giai đoạn sau đều bám vào số này): đơn **ORD-2026-45512**, khách **CUST-778120** đã trả **830.000**, gồm áo thun đen M ×2 (500.000 giảm 50.000 → **450.000**), ấm siêu tốc 1,7L ×1 (**350.000**), phí ship 60.000 giảm 30.000 → **30.000**.
+
+- **AC1 – Hoàn 1 sản phẩm:** Given ORD-2026-45512 chưa từng hoàn, When khách hoàn 1 áo thun với giá 225.000, Then tạo 1 lệnh {{RF-0001}} trạng thái {{PENDING_GATEWAY}}, số đã hoàn = 225.000, còn được hoàn = 605.000, line áo thun còn 225.000.
+- **AC2 – Hoàn 0đ:** Given đơn bất kỳ, When gửi lệnh hoàn số tiền **0**, Then từ chối với mã {{REFUND_AMOUNT_INVALID}}, **không** tạo bản ghi, **không** gọi gateway.
+- **AC3 – Số tiền âm hoặc làm tròn lệch:** When gửi −1.000 hoặc 225.500 (lẻ dưới đơn vị VND), Then {{REFUND_AMOUNT_INVALID}}.
+- **AC4 – Đúng bằng số còn lại (biên dưới của "vượt"):** Given đã hoàn 575.000 (còn 255.000), When hoàn đúng 255.000, Then thành công, số đã hoàn = 830.000 = số đã trả, đơn chuyển {{FULLY_REFUNDED}}, mọi lệnh sau bị {{REFUND_NO_REMAINING}}.
+- **AC5 – Vượt 1 đồng (biên trên):** Given còn 255.000, When hoàn 255.001, Then {{REFUND_EXCEEDS_REMAINING}}; dữ liệu không đổi.
+- **AC6 – Hai lệnh đồng thời, mỗi lệnh hợp lệ, cộng dồn vượt:** Given còn 255.000, When hai lệnh 200.000 đến **cùng lúc** (2 thiết bị / 2 nhân viên CSKH), Then **đúng 1** lệnh thành công, lệnh còn lại {{REFUND_EXCEEDS_REMAINING}}, tổng hoàn = 775.000, không có khoản nào gateway nhận thừa. *(AC quan trọng nhất — chính nó sẽ bị bug ở giai đoạn Fix bug.)*
+- **AC7 – Cộng dồn nhiều lần vượt line:** Given line áo thun đã hoàn 225.000/450.000, When hoàn tiếp 300.000 cho chính line đó, Then {{REFUND_EXCEEDS_LINE}}, dù đơn còn hạn mức.
+- **AC8 – Idempotent:** Given khách bấm nút 2 lần trong 2 giây với cùng {{Idempotency-Key}}, Then chỉ có **một** lệnh hoàn, response lần 2 trả đúng kết quả lần 1.
+- **AC9 – Hết thời hạn:** Given {{delivered_at}} cách đây 16 ngày, When yêu cầu hoàn, Then {{REFUND_WINDOW_CLOSED}}.
+- **AC10 – Giữ chỗ khi chờ gateway:** Given lệnh {{RF-x}} đang {{PENDING_GATEWAY}}, Then số tiền đó đã bị trừ khỏi "còn được hoàn" ngay lúc tạo lệnh; khi gateway báo FAILED thì hoàn lại hạn mức trong ≤ 5 phút.
+- **AC11 – Phân quyền:** Given khoản hoàn ≤ 300.000 và lý do thuộc danh mục lỗi hàng, Then tự động duyệt; > 300.000 phải CSKH duyệt, có lưu {{approved_by}} + {{approved_at}}.
+- **AC12 – Hiển thị:** Given đã hoàn 575.000, When khách mở màn hình đơn, Then thấy "Đã hoàn 575.000 · Còn được hoàn 255.000" khớp API summary.
+
+### Điều Hương (SDET) đòi thêm ngoài AC chức năng — testability
+1. **Mỗi AC phải có ≥ 1 test tự động, ghi tên test cạnh AC** (traceability matrix). AC6 mà chỉ "test bằng tay 2 máy bấm cùng lúc" thì coi như không có test.
+2. **"Hôm nay" và "ngẫu nhiên" phải inject được:** service nhận {{Clock}} và {{SecureRandom}} qua constructor, không gọi {{LocalDate.now()}} cứng bên trong, để test được AC9 (15 ngày + 1) mà không chờ 16 ngày.
+3. **Có API dựng dữ liệu test chỉ bằng một lệnh gọi:** {{POST /test-data/order}} tạo đơn đã giao với số tiền chỉ định. Không có cái này thì mỗi E2E test phải đi qua giỏ hàng + thanh toán (45 giây/test, và phụ thuộc vào team khác).
+4. **Mã lỗi là hợp đồng:** mọi từ chối có {{errorCode}} ổn định (không dùng HTTP 400 + message tiếng Việt để test, vì text đổi là test gãy).
+
+### Pitfall của chính giai đoạn này
+- "Biên tiền" không ai hỏi → 3 tháng sau tài chính phát hiện hoàn vượt 145.000đ/đơn.
+- AC viết kiểu "hệ thống phải chính xác về tiền" → không đo được → không test được.
+- PO trả lời "làm đơn giản trước, phần vượt tiền tính sau" → đúng cái rủi ro lớn nhất bị đẩy ra ngoài phạm vi.
+
+> Senior tip: trong refinement, hãy đọc to AC6 bằng **số cụ thể** ("còn 255 nghìn, hai lệnh 200 nghìn cùng lúc, mấy lệnh được duyệt?"). Câu hỏi có số khiến PO trả lời đúng ngay, còn câu "có xử lý đồng thời không" thì ai cũng gật đầu mà không hình dung gì. Và luôn ghi "số tiền mẫu" (830.000 / 450.000 / 255.000) vào ticket: mọi người — dev, QA, tài liệu — sẽ dùng đúng một bộ số, về sau đọc log CI mới đối chiếu được.`,
+      pitfalls: ['Chấp nhận ticket không có acceptance criteria rồi ước lượng', 'Không định nghĩa "lệnh đang chờ gateway" có trừ vào hạn mức hoàn hay không', 'AC viết chung chung ("phải chính xác về tiền") nên không test được', 'Quên biên cấp line item, chỉ nói biên cấp đơn', 'Cho phép số thập phân trong tiền (double) ngay từ yêu cầu']
+    },
+    {
+      key: 'analysis',
+      title: 'Phân tích: từ AC thành ma trận test case và kế hoạch chia việc',
+      role: 'Bạn cùng SDET lập ma trận test, ước lượng, chỉ ra rủi ro',
+      story: `PO đã trả lời bằng văn bản (artifact). Điều đáng chú ý: khoản ≤ 300.000đ **tự động duyệt** → tiền rời sàn ngay, nên AC6 (đồng thời) là rủi ro số 1. Hương mang bảng số liệu các vụ vượt tiền và hỏi bạn: "Mình sẽ chứng minh AC6 bằng gì — E2E hay API?". Bạn cần chốt ma trận test case, chia việc vừa sprint, và nêu rủi ro cho PO **trước khi** cam kết.`,
+      artifacts: [
+        { name: 'po-decisions.txt', lang: 'text', content: `AS-611  Decisions log (PO xác nhận 2026-11-23, ghi thẳng vào ticket)
+  D1  Phạm vi hoàn      : theo TỪNG line item và theo đơn; tổng mọi line ≤ số khách THỰC TRẢ
+  D2  Đơn vị tiền       : VND, số nguyên, không thập phân. Cấm double trong code và DB
+  D3  Số đã hoàn        : trừ ngay khi lệnh tạo (kể cả PENDING_GATEWAY)  -> "giữ chỗ"
+  D4  Gateway FAILED    : hoàn lại hạn mức, job đối soát chạy mỗi 5 phút
+  D5  Tự động duyệt     : <= 300.000 VND và lý do trong danh mục LOI_HANG / THIEU_HANG
+  D6  Cần CSKH duyệt    : > 300.000 VND; lý do KHAC; hoặc khách thuộc danh sách rủi ro
+  D7  Thời hạn yêu cầu  : 15 ngày kể từ delivered_at (giờ Asia/Ho_Chi_Minh)
+  D8  Phí vận chuyển    : chỉ hoàn khi line cuối cùng của đơn được hoàn (làm ở sprint sau)
+  D9  Idempotency       : client MUST gửi header Idempotency-Key; thiếu => 400
+  D10 App cũ (v3.x)     : server tự sinh key từ (orderId + userId + phut) — chấp nhận rủi ro,
+                          có ticket AS-640 để bắt buộc nâng cấp app trước 12.12
+  D11 Tải đỉnh mong đợi : ngày sale 12.12 ~ 60 lệnh hoàn/phút (hệ thống cũ 22/phút)` },
+        { name: 'ci-baseline.txt', lang: 'text', content: `Trạng thái pipeline hiện tại của order-service (GitHub Actions, chạy mỗi PR)
+  build + unit test (maven-surefire)      : 3 phút 20 s   |  214 test  |  coverage dòng 79%
+  integration test (maven-failsafe, -Pit) : 6 phút 55 s   |   41 test  |  Testcontainers PG 16
+  SonarQube quality gate                  : FAILED nếu coverage code mới < 80% hoặc có blocker
+  Playwright E2E (chỉ chạy khi merge main): 18 phút       |   26 test  |  1 lane DUY NHẤT, nối tiếp
+  Trivy scan + build image + deploy SIT   : 4 phút
+Ghi chú của Hương:
+  - E2E 18 phút và "đôi khi đỏ vì SIT chậm", chưa có chính sách xử lý test flaky
+  - chưa có job smoke sau deploy, chưa có job nào chạy lại test đồng thời nhiều lần
+  - API createRefund hiện chưa có metric nào về số lệnh bị từ chối theo mã lỗi` }
+      ],
+      task: `1. Viết **ma trận test case** (≥ 14 dòng) cho các AC ở trên: mỗi dòng ghi loại (biên / phân lớp tương đương / trạng thái / đồng thời / idempotency / phân quyền), dữ liệu cụ thể, **tầng test** (unit / API / E2E) và người viết.
+2. Giải thích **phân tích giá trị biên** và **phân lớp tương đương** cho một dev chưa từng học QA, kèm ví dụ với hạn mức còn lại 255.000đ. Vì sao không cần test 100.000đ, 130.000đ, 190.000đ?
+3. Với AC6 (hai lệnh đồng thời): bạn đặt test ở tầng nào, vì sao? Điều gì xảy ra nếu đặt nó ở E2E?
+4. Chia việc cho sprint (ai làm gì, thứ tự phụ thuộc), nêu **3 rủi ro** lớn nhất.`,
+      answer: `**Tóm tắt:** ma trận test là cầu nối giữa AC và code: một dòng một test, dữ liệu cụ thể, tầng test rõ ràng. Nguyên tắc chọn tầng: **logic tính tiền → unit; ràng buộc vượt tầng (idempotency, đồng thời, DB) → API; luồng người dùng thật → E2E, số lượng ít**. AC6 bắt buộc có test API chạy song song nhiều lần; nếu đẩy nó xuống E2E thì nó chậm, không xác định được và rất dễ bị "retry cho qua" — đúng cái họa xảy ra ở giai đoạn Fix bug.
+
+### Thuật ngữ mới
+- **Unit test (test đơn vị):** test **một** class/method, chạy trong vài mili giây, không đụng DB/mạng, thế giới bên ngoài được thay bằng đối tượng giả (mock/fake).
+- **API/integration test (IT):** test một luồng qua **API thật + DB thật** (PostgreSQL khởi động bằng Testcontainers), không có trình duyệt.
+- **E2E test (end-to-end):** mở trình duyệt thật, mô phỏng khách bấm nút, đi xuyên app → API → DB → gateway sandbox. Chậm (vài giây–1 phút/test) và dễ hỏng vì lý do không liên quan code.
+- **Test pyramid:** nên có **nhiều** unit, **vừa** IT, **rất ít** E2E. Lý do: unit chạy 0,003 s và chỉ báo đúng một chỗ hỏng; E2E chạy 20 s, hỏng vì CSS cũng đỏ. Tỉ lệ hợp lý cho tính năng này: khoảng 60% unit / 30% IT / 10% E2E.
+- **Phân lớp tương đương (equivalence partitioning):** chia tập đầu vào thành các nhóm mà "mọi phần tử trong nhóm xử lý như nhau", chỉ cần test **một** đại diện mỗi nhóm. Với "còn 255.000, xin hoàn X": nhóm A = X ≤ 0 (từ chối), nhóm B = 0 < X ≤ 255.000 (chấp nhận), nhóm C = X > 255.000 (từ chối). Test X = 130.000 chẳng cho thêm thông tin gì so với X = 100.000 → **lãng phí**.
+- **Biên (boundary):** giá trị sát ranh giới nhóm, tại đó code hay sai nhất: 0, 1, 255.000, 255.001, −1. Người mới hay viết **nhầm** điều kiện so sánh ({{<}} vs {{<=}}) và chỉ sai đúng tại biên.
+
+### Ma trận test case (rút gọn từ AC; giữ nguyên bộ số 830.000 / 450.000 / 255.000)
+| ID | AC | Loại | Dữ liệu & kỳ vọng | Tầng | Ai viết |
+|---|---|---|---|---|---|
+| TC-01 | AC2 | biên | amount = **0** → {{REFUND_AMOUNT_INVALID}}, 0 bản ghi | unit + API | dev |
+| TC-02 | AC3 | biên | amount = **−1.000** → {{REFUND_AMOUNT_INVALID}} | unit | dev |
+| TC-03 | AC3 | làm tròn | amount = **225.500** (lẻ < 1 VND) → từ chối | unit | dev |
+| TC-04 | AC1 | tương đương trong nhóm | 1 áo = **225.000** khi còn 830.000 → 201, còn 605.000 | API | dev |
+| TC-05 | AC4 | biên trên cho phép | còn **255.000**, hoàn **255.000** → thành công, {{FULLY_REFUNDED}} | unit + API | dev |
+| TC-06 | AC5 | biên vượt | còn **255.000**, hoàn **255.001** → {{REFUND_EXCEEDS_REMAINING}} | unit + API | dev |
+| TC-07 | AC7 | biên cấp line | line áo còn **225.000**, hoàn **300.000** → {{REFUND_EXCEEDS_LINE}} (đơn còn 255.000) | unit + API | dev |
+| TC-08 | AC8 | idempotency | POST 2 lần **cùng key** → cùng {{refundId}}, chỉ 1 lệnh, chỉ 1 lời gọi gateway | API | dev |
+| TC-09 | AC8 | thiếu key | không gửi header → **400** {{IDEMPOTENCY_KEY_REQUIRED}} | API | dev |
+| TC-10 | **AC6** | **đồng thời** | còn 255.000; **20 thread** mỗi thread 1 lệnh 200.000 → **đúng 1** thành công, 19 lần {{REFUND_EXCEEDS_REMAINING}}, SUM(rows) = 455.000 | **API** (không phải E2E) | dev + Hương |
+| TC-11 | AC6 | đồng thời 2 loại | 2 lệnh **khác key**, 2 line **khác nhau** cùng lúc (cộng dồn vượt đơn) → tổng ≤ 830.000 | API | dev |
+| TC-12 | AC10 | trạng thái | lệnh {{PENDING_GATEWAY}} đã trừ hạn mức; gateway callback FAILED → hoàn lại ≤ 5 phút | API | dev |
+| TC-13 | AC11 | phân quyền | 300.000 → tự duyệt; 300.001 → {{REQUESTED}}, CSKH mới chuyển {{APPROVED}} | API | dev |
+| TC-14 | AC9 | biên thời gian | {{delivered_at}} = 15 ngày 23:59 → OK; 16 ngày 00:01 → {{REFUND_WINDOW_CLOSED}} (dùng {{Clock}} giả lập) | unit | dev |
+| TC-15 | D7 | múi giờ | JVM chạy UTC, 09:00 giờ VN vẫn là ngày hôm trước | unit | dev |
+| TC-16 | AC12 | hiển thị | khách mở màn hình đơn, thấy "Đã hoàn 575.000 · Còn được hoàn 255.000" | E2E | Hương |
+| TC-17 | AC1 | luồng chính | app → chọn line → gửi → CSKH duyệt → thấy {{PENDING_GATEWAY}} | E2E | Hương |
+| TC-18 | AC5 | phản hồi lỗi | nhập 255.001 → app hiện đúng thông báo từ {{errorCode}}, **không** phải toast trắng | E2E | Hương |
+| TC-19 | AC6 | E2E bổ trợ | 2 cửa sổ trình duyệt **cùng session khác** gửi 2 lệnh 200.000 | E2E (chạy lại ≥ 20 lần) | Hương |
+
+Cộng dồn: unit ~ 30 test nhỏ (nhanh), IT ~ 12 (bao gồm TC-08..TC-13), E2E ~ 6. Đủ 19 dòng ma trận là **đích** của traceability matrix — mỗi ô AC phải có ít nhất một test, nếu không thì PO ký duyệt "chưa kiểm chứng".
+
+### Vì sao TC-10 đặt ở tầng API, không đặt ở E2E
+- Test đồng thời cần **ép** hai request trùng khoảnh khắc. Ở API bạn làm được: 2 thread chờ chung một {{CountDownLatch}}, rồi cùng thả → gần như chắc chắn va nhau. Ở E2E, hai cú click của trình duyệt cách nhau 300–900 ms (render, mạng), xác suất va nhau **thấp và không xác định** → hôm nào SIT nhanh thì qua, hôm nào chậm thì qua → **test xanh giả**.
+- E2E phải qua UI, qua authentication, qua dữ liệu mẫu → mỗi lần chạy 25 giây, nhân 20 lần lặp để bắt race = 8 phút cho một test.
+- Test đồng thời ở API chạy trên PostgreSQL **thật** (Testcontainers) → kết luận được về khoá và isolation; E2E trên SIT có 4 shard cùng đánh dữ liệu → nhiễu.
+- Kết luận nên chốt ngay ở phân tích: **AC6 có test API bắt buộc (TC-10) và được coi là test "critical" — cấm retry, cấm tắt.** E2E chỉ thêm luồng người dùng.
+
+### Chia việc (sprint 2 tuần)
+1. **Migration + schema {{refund}}/{{refund_line}}** (Flyway V12): 0,5 ngày — bạn. Chặn mọi việc khác.
+2. **Thuật toán tính tiền + guard ({{RefundPolicy}})**: 1 ngày — bạn; kèm TC-01..TC-07, TC-14, TC-15. Pure Java, không DB → unit test ngay.
+3. **API {{POST /refunds}} + idempotency + state machine**: 2 ngày — Trung (dev); TC-08, TC-09, TC-12, TC-13.
+4. **Guard đồng thời (khoá/cập nhật hạn mức)**: 1 ngày — Trung; **TC-10/TC-11 do Hương viết cùng** (ghép cặp, 0,5 ngày).
+5. **Gateway client + job đối soát 5 phút**: 1,5 ngày — dev khác.
+6. **E2E suite Playwright + dựng lại phần test data + CI song song**: 2 ngày — Hương (song song từ ngày 3).
+7. **UAT với CSKH + smoke test sau deploy**: 1 ngày — Hương + PO.
+Phụ thuộc: 1 → 3 → 4; 2 song song với 1; 6 cần API chạy được trên SIT.
+
+### 3 rủi ro lớn nhất
+| Rủi ro | Vì sao nguy hiểm | Giảm thiểu |
+|---|---|---|
+| **Đồng thời + tự động duyệt ≤ 300.000** | Tiền rời sàn **ngay**, không có người chặn; mỗi vụ vượt là mất tiền thật, rất khó đòi lại nếu đã về thẻ | TC-10 ở tầng API, chạy lặp 20 lần trong CI; UPDATE có điều kiện nguyên tử; ràng buộc CHECK trong DB là tuyến phòng thủ cuối |
+| **Số học tiền và phân bổ giảm giá** | 450.000 = 2 × 250.000 − 50.000; hoàn 1 áo thì chia giảm giá thế nào? 250.000 − 25.000 = 225.000. Sai chỗ làm tròn → khách khiếu nại, tài chính lệch | Đơn vị VND số nguyên; thuật toán phân bổ **có test** (phần lẻ gắn cho line cuối); đối soát {{refunded_amount}} với {{SUM(refund.amount)}} mỗi 5 phút |
+| **Gateway bất đồng bộ 1–5 ngày** | Trạng thái treo {{PENDING_GATEWAY}}; nếu "còn được hoàn" chỉ trừ khi thành công thì khách hoàn lố trong lúc chờ | Giữ chỗ từ lúc tạo lệnh (D3) + job đối soát hoàn lại khi FAILED + metric đếm lệnh treo quá 24h |
+
+### Pitfall ngay trong giai đoạn phân tích
+- Ước lượng "guard tiền dễ lắm, 2 giờ" → không ai dành thời gian cho test đồng thời (chính nó là phần khó nhất).
+- Ma trận test viết một lần rồi bỏ; 3 tuần sau code đã có 8 nhánh lỗi mới mà không có ô test nào.
+- Nghĩ "coverage 80% là an toàn": coverage đo **dòng đã chạy**, không đo **hành vi được kiểm chứng**; test đồng thời chạy đủ dòng nhưng một thread thì không lộ race.
+
+> Senior tip: hãy nói với PO bằng một câu có rủi ro tiền: "Phần CRUD và UI em cam kết trong sprint. Phần đảm bảo **không hoàn vượt tiền** cần thêm ~1,5 ngày cho test đồng thời và job đối soát; nếu bỏ thì đúng cái lỗi mà báo cáo tài chính đang ghi 37 vụ sẽ tiếp tục xảy ra, lần này với tốc độ tự động." Cam kết có điều kiện cụ thể luôn tốt hơn lời hứa chung.`,
+      pitfalls: ['Đẩy test đồng thời xuống E2E vì "cho khách thấy", không biết rằng nó sẽ trở thành test xanh giả', 'Chốt ma trận test một lần rồi không cập nhật khi code thêm nhánh lỗi', 'Ước lượng guard tiền "2 giờ" nên không ai được dành thời gian cho test race', 'Nghĩ coverage 80% tương đương đã kiểm chứng hành vi', 'Không chốt thuật toán phân bổ giảm giá trước khi code']
+    },
+    {
+      key: 'design',
+      title: 'Thiết kế: API hoàn tiền, bảng refund và cách giữ tiền không vượt',
+      role: 'Bạn viết design doc; tech lead và Hương (SDET) phản biện',
+      story: `Bạn viết bản thiết kế trong Google Doc, 6 trang, mở đầu bằng schema. Tech lead chỉ có 25 phút. Hương đọc bản thiết kế và hỏi ba câu mà bạn chưa nghĩ tới: "**refund_line** có cần không hay lưu hết vào một cột JSON?", "API tạo lệnh hoàn trả lời thế nào khi gateway còn chưa callback — khách thấy gì?", và "chỗ chặn vượt tiền, tôi gọi API 2 lần cách nhau 5 ms thì bản thiết kế này đảm bảo gì cho tôi?".
+
+Dữ liệu hiện có (artifact) là của {{order-service}}; {{payment}} chỉ có **một** dòng cho mỗi đơn, đã trả đủ 830.000. Gateway (artifact thứ hai) là API bất đồng bộ: bạn gửi lệnh, nó trả {{202 ACCEPTED}} ngay, 1–5 ngày sau mới callback báo kết quả.`,
+      artifacts: [
+        { name: 'schema-current.sql', lang: 'sql', content: `-- order-service, PostgreSQL 16, schema hiện hành (trích các bảng liên quan)
+CREATE TABLE orders (
+  id           BIGINT PRIMARY KEY,
+  order_no     VARCHAR(20)  NOT NULL UNIQUE,      -- ORD-2026-45512
+  customer_id  BIGINT       NOT NULL,
+  status       VARCHAR(16)  NOT NULL,             -- CREATED, PAID, DELIVERED, CANCELLED
+  delivered_at TIMESTAMPTZ,
+  created_at   TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+
+CREATE TABLE order_line (
+  id           BIGINT PRIMARY KEY,
+  order_id     BIGINT       NOT NULL REFERENCES orders(id),
+  sku          VARCHAR(24)  NOT NULL,             -- MKG-TSHIRT-BLK-M
+  label        VARCHAR(80)  NOT NULL,
+  qty          INT          NOT NULL CHECK (qty > 0),
+  unit_price   NUMERIC(18,0) NOT NULL,            -- VND, không thập phân
+  line_discount NUMERIC(18,0) NOT NULL DEFAULT 0, -- giảm giá phân bổ cho dòng này
+  ship_fee     NUMERIC(18,0) NOT NULL DEFAULT 0,  -- phí vận chuyển (dòng riêng, qty = 1)
+  paid_amount  NUMERIC(18,0) GENERATED ALWAYS AS (qty * unit_price - line_discount + ship_fee) STORED
+);
+-- paid_amount là cột sinh sẵn (generated stored): đọc nhanh, không bao giờ lệch với thành phần
+
+CREATE TABLE payment (
+  id           BIGINT PRIMARY KEY,
+  order_id     BIGINT       NOT NULL UNIQUE REFERENCES orders(id),
+  channel      VARCHAR(16)  NOT NULL,             -- VNPAY_QR, WALLET, CARD
+  paid_amount  NUMERIC(18,0) NOT NULL,            -- = SUM(order_line.paid_amount)
+  gateway_ref  VARCHAR(40)  NOT NULL,
+  paid_at      TIMESTAMPTZ  NOT NULL
+);` },
+        { name: 'gateway-refund-api.txt', lang: 'text', content: `PaymentGateway v3 — Refund API (tài liệu vendor)
+POST /v3/refunds   Authorization: Bearer <key>
+  body: { "original_ref": "VNP20261002-778120", "refund_ref": "RF-0001", "amount": 225000,
+          "currency": "VND" }
+  202 ACCEPTED : { "status": "ACCEPTED",      "gateway_ref": "GW-88aa", "eta_hours": 72 }
+  400 BAD_REQUEST : { "code": "AMOUNT_EXCEEDS_ORIGINAL", ... }   -- số vượt giao dịch gốc
+  409 CONFLICT    : { "code": "DUPLICATE_REFUND_REF", ... }      -- refund_ref đã gửi rồi
+  5xx / timeout   : KHÔNG rõ lệnh đã nhận chưa — phải tra cứu lại bằng GET /v3/refunds/{refund_ref}
+Callback (gateway gọi mình, POST /webhooks/gateway):
+  { "refund_ref": "RF-0001", "status": "SUCCESS" | "FAILED", "fail_code": "CARD_CLOSED" }
+  Callback có thể: gửi LẶP 3 lần, gửi LỘN XỘN thứ tự, hoặc KHÔNG gửi bao giờ.
+  -> bắt buộc xử lý theo refund_ref và idempotent ở phía mình.
+Lưu ý vendor: hoàn từng phần được, nhưng KHÔNG cho phép tổng refund_ref > amount của giao dịch gốc;
+  kiểm tra này chỉ chạy ở phía gateway với dữ liệu của chính nó, độ trễ cập nhật ~10 phút.` }
+      ],
+      task: `1. Thiết kế schema cho hoàn tiền: bảng nào, cột nào, **ràng buộc nào đặt ở DB** và vì sao. Giải thích vì sao cần cả bảng {{refund}} lẫn cột chạy dồn {{refunded_amount}}.
+2. Thiết kế API tạo lệnh hoàn: method + đường dẫn + header + thân + các mã lỗi. Thân trả lời thế nào khi gateway còn chưa callback?
+3. Vẽ luồng một lệnh hoàn tiền (App → refund-service → Postgres → Gateway → callback) bằng khối **~~~seq**. Đây là luồng ≥ 3 hệ thống nên phải dùng seq, không vẽ ASCII.
+4. Chốt cách chống race cho AC6 trong số các phương án: UPDATE có điều kiện, SELECT FOR UPDATE, {{@Version}}, Redis lock, SERIALIZABLE, {{synchronized}} trong app. Nêu vì sao loại 4 phương án còn lại.`,
+      answer: `**Tóm tắt:** mô hình gồm 4 bảng ({{refund}}, {{refund_line}} là **nhật ký** không thể sửa; {{payment.refunded_amount}} và {{order_line.refunded_amount}} là **số cộng dồn** để đọc nhanh và để khoá). Chặn vượt tiền bằng **một câu UPDATE có điều kiện** — đọc rồi mới ghi là sai dù có {{@Transactional}}. API trả kết quả **theo trạng thái**, không theo "tiền đã về": khách thấy "Đang xử lý, dự kiến 72 giờ".
+
+### 1. Schema
+~~~sql
+CREATE TABLE refund (
+  id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  refund_no       VARCHAR(20)   NOT NULL UNIQUE,            -- RF-0001
+  order_id        BIGINT        NOT NULL REFERENCES orders(id),
+  payment_id      BIGINT        NOT NULL REFERENCES payment(id),
+  idempotency_key VARCHAR(64)   NOT NULL,                   -- client gửi, chống bấm 2 lần
+  amount          NUMERIC(18,0) NOT NULL CHECK (amount > 0),-- VND nguyên, 0 đồng bị chặn ở đây
+  currency        VARCHAR(3)    NOT NULL DEFAULT 'VND',
+  reason          VARCHAR(24)   NOT NULL,                   -- LOI_HANG, THIEU_HANG, KHAC
+  status          VARCHAR(20)   NOT NULL,                   -- REQUESTED, PENDING_GATEWAY,
+                                                            -- APPROVED_WAIT_AGENT, SUCCESS, FAILED, REJECTED
+  requested_by    VARCHAR(16)   NOT NULL,                   -- CUSTOMER, AGENT
+  agent_id        BIGINT,
+  gateway_ref     VARCHAR(40),
+  created_at      TIMESTAMPTZ   NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ   NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX ux_refund_idem ON refund (payment_id, idempotency_key);
+
+CREATE TABLE refund_line (
+  refund_id      BIGINT        NOT NULL REFERENCES refund(id),
+  order_line_id  BIGINT        NOT NULL REFERENCES order_line(id),
+  qty            INT           NOT NULL CHECK (qty > 0),
+  amount         NUMERIC(18,0) NOT NULL CHECK (amount >= 0),
+  PRIMARY KEY (refund_id, order_line_id)                    -- một line chỉ xuất hiện 1 lần/lệnh
+);
+
+ALTER TABLE payment    ADD COLUMN refunded_amount NUMERIC(18,0) NOT NULL DEFAULT 0;
+ALTER TABLE order_line ADD COLUMN refunded_amount NUMERIC(18,0) NOT NULL DEFAULT 0;
+ALTER TABLE payment    ADD CONSTRAINT ck_pay_refunded
+    CHECK (refunded_amount >= 0 AND refunded_amount <= paid_amount);
+ALTER TABLE order_line ADD CONSTRAINT ck_line_refunded
+    CHECK (refunded_amount >= 0 AND refunded_amount <= paid_amount);
+~~~
+**Vì sao vừa có bảng {{refund}} vừa có cột {{refunded_amount}}?**
+- Bảng {{refund}}/{{refund_line}} là **lịch giao dịch**: mỗi lệnh một dòng, không sửa, xoá được dấu vết. Đây là **nguồn sự thật** để đối soát với {{finance-core}} và gateway.
+- Cột {{refunded_amount}} là **số cộng dồn** (denormalized — cố ý lưu dữ liệu trùng để đọc nhanh). Nếu mỗi lần hoàn phải {{SELECT SUM(amount) FROM refund WHERE payment_id = ...}} thì đọc cả bảng, chậm, và **không có dòng để khoá**.
+- Quan trọng nhất: số cộng dồn nằm trên **một dòng duy nhất** → có thể tăng nó bằng một câu UPDATE nguyên tử, tức là "đọc + kiểm tra + ghi" xảy ra trong **một** thao tác mà DB bảo đảm.
+
+**Ràng buộc nào đặt ở DB?**
+| Ràng buộc | Đặt ở | Vì sao |
+|---|---|---|
+| amount > 0, qty > 0, currency, refund_no unique | **DB** (CHECK / UNIQUE) | DB không biết app nào gọi; đây là lưới an toàn cuối |
+| idempotency (một key chỉ một lệnh) | **DB** (unique index) | hai request cùng lúc chỉ một INSERT thắng; code không tự an toàn được |
+| refunded_amount ≤ paid_amount (cấp đơn, cấp line) | **DB** (CHECK) + code trả mã lỗi đẹp | CHECK chặn ghi xấu; code vẫn cần kiểm tra để báo cho khách đúng thông điệp |
+| nghiệp vụ thay đổi phức tạp giữa nhiều bảng | **code** | DB trigger khó test, khó version, dễ thành "logic ẩn" |
+| tổng {{SUM(refund.amount)}} của các lệnh SUCCESS/PENDING ≤ paid_amount | **không có ràng buộc DB phù hợp** (xem bugfix) | CHECK chỉ nhìn được dòng của chính nó, không nhìn được các dòng khác |
+
+### 2. API
+~~~text
+POST /api/v1/orders/{orderId}/refunds
+Headers:  Authorization: Bearer <user>,  Idempotency-Key: 7c1f-44aa-9e20   (BẮT BUỘC, D9)
+Body: {
+  "reason": "LOI_HANG",
+  "items": [ { "orderLineId": 90217, "qty": 1, "amount": 225000 } ]
+}
+201 Created:
+{ "refundNo": "RF-0001", "status": "PENDING_GATEWAY", "amount": 225000,
+  "refundedTotal": 225000, "remainingAmount": 605000,
+  "etaLabel": "Tiền về ví trong khoảng 72 giờ", "createdAt": "2026-12-01T10:04:12+07:00" }
+~~~
+Quy ước trả lời khi gateway chưa callback: **trạng thái + số tiền đã giữ chỗ**, không hứa "đã về thẻ". {{remainingAmount}} lấy từ cột cộng dồn ngay sau UPDATE, vì vậy hai màn hình (app khách, màn hình CSKH) luôn đọc cùng một con số — và cùng con số đó là thứ E2E test sẽ assert.
+
+| HTTP | errorCode | Khi nào |
+|---|---|---|
+| 400 | {{IDEMPOTENCY_KEY_REQUIRED}} | thiếu header |
+| 400 | {{REFUND_AMOUNT_INVALID}} | amount ≤ 0, amount > qty × đơn giá line, số thập phân |
+| 409 | {{DUPLICATE_REQUEST}} | trùng idempotency key **và** thân khác lần trước (client gửi sai key) |
+| 422 | {{REFUND_EXCEEDS_LINE}} | vượt số còn lại của chính line đó |
+| 422 | {{REFUND_EXCEEDS_REMAINING}} | vượt số còn lại của đơn |
+| 409 | {{REFUND_IN_PROGRESS}} | line đang có lệnh {{PENDING_GATEWAY}} (chọn: chặn hoặc cho xếp hàng — quyết định ghi ở design) |
+| 422 | {{REFUND_WINDOW_CLOSED}} | quá 15 ngày kể từ {{delivered_at}} (giờ Asia/Ho_Chi_Minh) |
+| 200 | replay | trùng key **và** trùng thân → trả đúng response lần đầu, không tạo lệnh mới |
+| 503 | {{GATEWAY_UNAVAILABLE}} | circuit breaker mở, không ghi lệnh khi chắc chắn không gửi được |
+
+### 3. Luồng một lệnh hoàn
+~~~seq
+title: Partial refund — luồng được duyệt trong design
+actors: App | refund-service | Postgres | Gateway | Kafka
+App -> refund-service: POST /refunds + Idempotency-Key
+refund-service -> Postgres: BEGIN, INSERT refund (REQUESTED)
+note Postgres: unique index chặn lệnh trùng key
+refund-service -> Postgres: UPDATE payment SET refunded = refunded + amt WHERE ok
+Postgres --> refund-service: 1 row (chấp nhận) hoặc 0 row (vượt tiền)
+refund-service -> Postgres: UPDATE order_line refunded, INSERT outbox, COMMIT
+refund-service -> Kafka: publish refund.requested (từ outbox)
+refund-service --> App: 201 PENDING_GATEWAY + remainingAmount
+Gateway --> refund-service: (vài giờ sau) POST /webhooks SUCCESS
+refund-service -> Postgres: UPDATE refund SET status = SUCCESS (idempotent theo refund_no)
+note refund-service..Postgres: callback lặp 3 lần / sai thứ tự vẫn chỉ có 1 SUCCESS
+~~~
+- **INSERT trước rồi UPDATE** hay ngược lại? Thứ tự trong bản này: INSERT {{refund}} ({{REQUESTED}}) → UPDATE hai cột cộng dồn → COMMIT, tất cả trong **một transaction ngắn**. Nếu UPDATE điều kiện trả 0 dòng → **rollback**, lệnh hoàn không tồn tại, gateway không được gọi. Không có cửa "có lệnh nhưng không trừ tiền" hay "trừ tiền nhưng không có lệnh".
+- **Outbox**: ghi event vào bảng {{outbox}} trong cùng transaction, một relay đẩy sang Kafka. Vì nếu gọi Kafka ngay trong transaction, transaction rollback mà event đã bay đi → hệ thống khác nhận tin "đã hoàn" của một lệnh không tồn tại. (Kafka là message bus: một app ghi message, app khác đọc; dùng ở đây để {{finance-core}} và màn hình CSKH biết có lệnh mới mà không gọi HTTP lẫn nhau.)
+- **Callback không bao giờ tới** (vendor nói "có thể không gửi"): job đối soát mỗi 5 phút quét {{PENDING_GATEWAY}} quá 24 giờ, gọi API tra cứu của gateway theo mã lệnh hoàn để hỏi lại, hoặc hoàn lại hạn mức sau 72 giờ kèm cảnh báo cho CSKH.
+
+### 4. Vì sao chọn UPDATE có điều kiện
+| Phương án | Phán quyết |
+|---|---|
+| **UPDATE có điều kiện** (chọn) | Một round-trip; điều kiện được đánh giá **lúc ghi** dưới khoá dòng; không thể quên bước kiểm tra. {{0 row = từ chối}}. |
+| {{SELECT ... FOR UPDATE}} rồi kiểm tra trong Java | Đúng, nhưng 2 round-trip và **phải nhớ khoá cả hai bảng**; ai đó viết thêm một endpoint "hoàn bởi CSKH" quên khoá là vỡ. Dùng làm phương án dự phòng khi logic phức tạp. |
+| {{@Version}} (optimistic locking) | Phát hiện xung đột nhưng **không ngăn được** cả hai lệnh đi tiếp: loser bị từ chối ở COMMIT, còn tiền đã gửi gateway trong transaction đó. Cần retry + hoàn tiền — rất dễ sai. |
+| Redis lock (khoá phân tán) | Thêm một hệ thống, thêm kiểu hỏng mới (lock hết hạn giữa chừng, Redis failover mất lock), vẫn phải đối soát với DB. Không đáng ở 60 lệnh/phút. |
+| Isolation {{SERIALIZABLE}} | An toàn về logic nhưng PostgreSQL sẽ báo xung đột {{40001}} liên tục khi hai CSKH cùng xử lý một đơn; cần retry loop ở mọi nơi. |
+| {{synchronized}} / lock trong Java | **Chỉ có tác dụng trong một JVM**. PROD chạy 4 bản thể (4 pod) → hai request vào hai pod khác nhau không hề biết nhau. Đây là lỗi kinh điển khi migrate từ VM đơn lẻ sang Kubernetes (nhiều bản thể của cùng một app chạy song song). |
+
+**Câu trả lời cho Hương:** "Hai lệnh cách nhau 5 ms vào **cùng** một {{payment_id}} → PostgreSQL xếp hàng trên khoá của **một dòng**; mỗi transaction thấy giá trị đã cập nhật của transaction trước. Test của cô sẽ thấy một {{201}} và một {{422}}. Nếu cô thấy hai {{201}}, tức là code **không** đi qua câu UPDATE ở trên — và đó chính xác là cái bug sẽ xảy ra ba tuần sau."
+
+> Senior tip: khi viết design cho phần tiền, hãy tự hỏi "**nếu hai request đến cùng nano thì dòng nào trong tài liệu này nói ai thắng?**". Nếu trả lời "transaction sẽ lo", bạn chưa thiết kế gì cả. Và ghi rõ **đơn vị tiền**: {{NUMERIC(18,0)}} VND, không phải {{NUMERIC(10,2)}} (hỏng khi đơn vị > 99 triệu), càng không phải {{double}} ({{0.1 + 0.2 != 0.3}} trong binary floating point, xem db-031).`,
+      pitfalls: ['Để quyết định chống race thành "dev tự chọn" mà không gắn với test bắt buộc', 'Tin rằng {{@Transactional}} tự nó chống được đồng thời dù isolation mặc định là READ COMMITTED', 'Design chỉ nói cấp đơn, quên ràng buộc cấp line — khách lách qua chính chỗ đó', 'Gọi gateway trong cùng transaction ghi DB', 'Giả định "callback chắc chắn tới" dù vendor đã ghi rõ là có thể không gửi']
+    },
+    {
+      key: 'dev',
+      title: 'Phát triển: unit test cho thuật toán tiền và API test cho ràng buộc',
+      role: 'Bạn viết RefundPolicy + unit test; Trung viết service; Hương viết API test',
+      story: `Bạn nhận phần **thuần logic**: kiểm tra và tính số tiền hoàn theo line, theo đơn, theo thời hạn, theo ngưỡng tự duyệt. Phần dễ sai nhất về số học nằm đây, và nó **không cần DB** → unit test chạy trong 4 ms.
+
+Trung nhận {{RefundService}} (mở transaction, gọi DB, gọi gateway). Trong bản của Trung, phần chặn vượt tiền viết kiểu "đọc tổng, so sánh, rồi ghi" — **không** giống câu UPDATE trong design; bạn thấy lúc 17:30 ngày thứ Tư và định nói thì Hương kéo bạn đi họp test plan, và bạn ghi vào note của mình (note này sẽ còn quay lại).
+
+Hương dựng {{@SpringBootTest}} + Testcontainers và hỏi bạn một câu quan trọng: "Test của anh có chắc là **thấy đúng thứ app thấy** không?" — vì test của cô đang dùng {{MockMvc}} và {{@Transactional}}, hai thứ **không** giống môi trường thật (giải thích ở đáp án).
+`,
+      artifacts: [
+        { name: 'RefundPolicy.java', lang: 'java', content: `package com.mekongshop.refund.domain;
+
+/** Thuần logic: không DB, không HTTP, không đồng hồ hệ thống. Test được trong 4 ms. */
+public final class RefundPolicy {
+
+    private final Clock clock;                       // inject để test được biên 15 ngày
+    private final ZoneId zone = ZoneId.of("Asia/Ho_Chi_Minh");
+    private final long autoApproveLimitVnd;          // D5: 300_000
+
+    public RefundPolicy(Clock clock, long autoApproveLimitVnd) {
+        this.clock = clock;
+        this.autoApproveLimitVnd = autoApproveLimitVnd;
+    }
+
+    /** amount là VND số nguyên. Trả về lý do từ chối, hoặc Optional.empty() nếu hợp lệ. */
+    public Optional<RefundRejection> validate(RefundRequest req, OrderSnapshot order) {
+        long requested = req.amountVnd();
+        if (requested <= 0)
+            return Optional.of(RefundRejection.of("REFUND_AMOUNT_INVALID", requested));
+
+        long remainingOrder = order.paidAmount() - order.refundedAmount();
+        if (requested > remainingOrder)
+            return Optional.of(RefundRejection.of("REFUND_EXCEEDS_REMAINING", requested));
+
+        for (RefundLine line : req.lines()) {
+            long remainingLine = line.paidAmount() - line.refundedAmount();
+            if (line.amountVnd() > remainingLine)
+                return Optional.of(RefundRejection.of("REFUND_EXCEEDS_LINE", line.amountVnd()));
+            if (line.qty() > line.originalQty())
+                return Optional.of(RefundRejection.of("REFUND_QTY_INVALID", line.qty()));
+        }
+
+        if (order.deliveredAt() == null
+                || ChronoUnit.DAYS.between(order.deliveredAt().atZone(zone),
+                                           ZonedDateTime.now(clock.withZone(zone))) > 15)
+            return Optional.of(RefundRejection.of("REFUND_WINDOW_CLOSED", requested));
+
+        return Optional.empty();
+    }
+
+    /** D5/D6: <= 300k và lý do lỗi/thiếu hàng thì tự duyệt, còn lại chờ CSKH. */
+    public Decision decide(RefundRequest req) {
+        boolean auto = req.amountVnd() <= autoApproveLimitVnd
+                && req.reason() != Reason.OTHER;
+        return auto ? Decision.AUTO_APPROVE : Decision.WAIT_AGENT;
+    }
+}` },
+        { name: 'git-diff-refundservice.txt', lang: 'text', content: `+    @Transactional
++    public RefundResponse create(long orderId, RefundRequest req, String idemKey) {
++        Payment p = paymentRepo.findByOrderId(orderId).orElseThrow(OrderNotFound::new);
++        List<Refund> existing = refundRepo.findByPaymentIdAndStatusIn(p.getId(), ACTIVE_STATUSES);
++        long used = existing.stream().mapToLong(Refund::getAmount).sum();   // <--- đọc
++        if (used + req.amountVnd() > p.getPaidAmount())                      // <--- kiểm tra
++            throw new RefundExceedsRemainingException();
++        Refund r = refundRepo.save(toEntity(req, idemKey));                  // <--- ghi
++        p.setRefundedAmount(used + req.amountVnd());                         // <--- ghi đè
++        paymentRepo.save(p);
++        gatewayClient.refund(r);                                             // gọi trong transaction
++        return RefundResponse.of(r, p.getPaidAmount() - p.getRefundedAmount());
++    }
+` },
+        { name: 'ci-unit-7703.log', lang: 'text', content: `$ mvn -q test
+[INFO] Running com.mekongshop.refund.domain.RefundPolicyTest
+[INFO] Tests run: 96, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.42 s
+[INFO] Running com.mekongshop.refund.domain.MoneyAllocationTest
+[INFO] Tests run: 12, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.09 s
+[WARNING] RefundServiceTest.createRefund_withinLimit_ok   PASSED (uses @Transactional test, rolled back)
+[WARNING] RefundServiceTest.createRefund_overLimit_throws PASSED (stub repository, no DB)
+[INFO] Tests run: 214, Failures: 0, Errors: 0  | coverage line 84% / branch 61%
+[INFO] BUILD SUCCESS — PR #1187 "AS-611 partial refund, phần service"` }
+      ],
+      task: `1. Viết **unit test** cho {{RefundPolicy}} theo hướng **parameterized**: một bảng dữ liệu phủ TC-01..TC-07, TC-14, TC-15 (tên test + các dòng dữ liệu). Giải thích vì sao cách này rẻ hơn viết 12 method riêng.
+2. Viết **API test** (Testcontainers + HTTP thật) cho 4 trường: biên {{255.000}}/{{255.001}}, idempotency replay, {{REFUND_EXCEEDS_LINE}}, và "lệnh đang {{PENDING_GATEWAY}} đã trừ hạn mức".
+3. Hương phát hiện test của cô **không** phát hiện được bug trong {{git-diff-refundservice.txt}}, dù test chạy trên PostgreSQL thật. Giải thích **hai** lý do ({{MockMvc}} + {{@Transactional}}) và cách sửa cho đúng.
+4. Đối chiếu ma trận: AC nào **chưa** có test tự động ở cuối sprint? Ai phải bị nhắc?`,
+      answer: `**Tóm tắt:** thuật toán tiền thì test bằng unit (nhanh, phủ hết biên bằng một bảng dữ liệu); ràng buộc **vượt tầng** (idempotency, khoá, transaction) thì test bằng **HTTP thật + DB thật đã commit**. {{MockMvc}} và test có {{@Transactional}} tạo ra "test xanh" trên hành vi không tồn tại ngoài production — đó là cách bug race đi qua được giai đoạn dev.
+
+### 1. Unit test parameterized cho RefundPolicy
+Một test method + một bảng dữ liệu thay vì 12 method gần giống nhau: thêm một biên mới chỉ thêm một dòng, và toàn bộ biên của tính năng nằm trong **một chỗ** để review.
+~~~java
+@ParameterizedTest(name = "[{index}] remaining={1} → xin {2} → {3}")
+@CsvSource(delimiterString = "|", textBlock = """
+  AC4-đúng-còn-lại   | 830000 | 575000 | 255000 | 
+  AC5-vượt-1-đồng    | 830000 | 575000 | 255001 | REFUND_EXCEEDS_REMAINING
+  AC2-bằng-0          | 830000 |      0 |      0 | REFUND_AMOUNT_INVALID
+  AC2-âm              | 830000 |      0 |  -1000 | REFUND_AMOUNT_INVALID
+  AC4-chưa-hoàn-gì    | 830000 |      0 |  83000 | 
+  AC5-cả-đơn+1        | 830000 |      0 |  83001 | REFUND_EXCEEDS_REMAINING
+  TC-07-vượt-line     | 830000 | 225000 | 300000 | REFUND_EXCEEDS_LINE
+  AC3-đủ-đơn-vị       | 830000 |      0 |      1 | 
+  """)
+void boundaryOnRemainingAmount(String caseName, long paid, long refunded, long ask, String expected) {
+    var order = OrderSnapshot.builder().paidAmount(paid)
+            .refundedAmount(refunded)
+            .line(90217, 450_000, 225_000)          // áo thun: đã hoàn 225k
+            .deliveredDaysAgo(3)
+            .build();
+    var result = policy.validate(new RefundRequest(Reason.DEFECT, List.of(line(90217, ask))), order);
+    if (expected == null || expected.isBlank()) {
+        assertThat(result).isEmpty();                        // được chấp nhận
+    } else {
+        assertThat(result).get().extracting(RefundRejection::code).isEqualTo(expected);
+    }
+}
+~~~
+Và hai test đồng hồ (không thể test bằng cách chờ 16 ngày thật):
+~~~java
+@Test void window_closedAtDay16Minute0001() {
+    var fixed = Clock.fixed(Instant.parse("2026-12-01T17:00:01Z"),   // 00:00:01 ngày 02/12 giờ VN
+                            ZoneId.of("Asia/Ho_Chi_Minh"));
+    var order = orderDeliveredAt("2026-11-16T17:00:00Z");            // delivered 16/11 00:00 VN
+    assertThat(policyWith(fixed).validate(req(225_000), order))
+            .get().extracting(RefundRejection::code).isEqualTo("REFUND_WINDOW_CLOSED");
+}
+@Test void window_stillOpenAtDay15() { /* Clock.fixed 2026-12-01T16:59:59Z → empty */ }
+~~~
+Bẫy mà chính test này bắt được: app chạy trên pod **UTC**, nên "{{LocalDate.now()}} không tham số" sẽ tính hạn mức hoàn **sai một ngày** cho khách Việt (reset lúc 7h sáng VN). Test đồng hồ là test rẻ nhất mà lợi nhuận cao nhất.
+
+### 2. API test: HTTP thật, DB thật, dữ liệu đã commit
+~~~java
+@Testcontainers
+@SpringBootTest(webEnvironment = WebEnvironment.RANDOM_PORT)   // Tomcat thật, cổng thật
+class PartialRefundApiIT {
+
+    @Container @ServiceConnection                       // Spring Boot 3.1+ tự nối DB cho container
+    static PostgreSQLContainer<?> pg = new PostgreSQLContainer<>("postgres:16-alpine");
+
+    @Autowired TestRestTemplate rest;                    // gửi HTTP thật, không qua mock
+    @Autowired TestDataFactory orders;                   // helper dựng đơn đã giao (xem requirement)
+
+    private static final long PAID = 830_000L;
+
+    @Test void refund_exactlyRemaining_accepted_then_noMore() {
+        long orderId = orders.deliveredOrder(PAID).refunded(575_000).build();     // còn 255.000
+        var ok = postRefund(orderId, 255_000, "k1");
+        assertThat(ok.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(ok.getBody().remainingAmount()).isZero();
+        var again = postRefund(orderId, 1, "k2");
+        assertThat(again.getBody().errorCode()).isEqualTo("REFUND_EXCEEDS_REMAINING");
+    }
+
+    @Test void refund_oneVndOverRemaining_rejectedAndNothingWritten() {
+        long orderId = orders.deliveredOrder(PAID).refunded(575_000).build();
+        var bad = postRefund(orderId, 255_001, "k3");
+        assertThat(bad.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(bad.getBody().errorCode()).isEqualTo("REFUND_EXCEEDS_REMAINING");
+        assertThat(summary(orderId).refundedTotal()).isEqualTo(575_000);   // dữ liệu KHÔNG đổi
+        assertThat(gatewayCalls.forOrder(orderId)).isZero();               // không gọi gateway
+    }
+
+    @Test void sameIdempotencyKey_returnsFirstResponse_andOnlyOneGatewayCall() {
+        long orderId = orders.deliveredOrder(PAID).build();
+        var a = postRefund(orderId, 225_000, "same-key");
+        var b = postRefund(orderId, 225_000, "same-key");
+        assertThat(b.getBody().refundNo()).isEqualTo(a.getBody().refundNo());
+        assertThat(summary(orderId).refundedTotal()).isEqualTo(225_000);   // trừ MỘT lần
+        assertThat(gatewayCalls.forOrder(orderId)).isEqualTo(1);
+    }
+
+    @Test void pendingGatewayRefund_alreadyReservedTheMoney() {   // AC10: gateway chưa callback
+        long orderId = orders.deliveredOrder(PAID).stubGatewayNoCallback().build();
+        postRefund(orderId, 255_000, "k4");                       // PENDING_GATEWAY
+        assertThat(summary(orderId).remainingAmount()).isZero();  // đã trừ ngay lúc tạo lệnh
+        assertThat(postRefund(orderId, 1, "k5").getBody().errorCode())
+                .isEqualTo("REFUND_EXCEEDS_REMAINING");
+    }
+}
+~~~
+{{Testcontainers}} khởi động một **container PostgreSQL thật** cho mỗi lớp test, thế là SQL, CHECK constraint, unique index và **cách PostgreSQL khoá dòng** đều là thật. {{@ServiceConnection}} tự sinh cấu hình nối vào container đó (không phải viết tay {{spring.datasource.url}}). Gateway được thay bằng một **stub** chạy trong JVM (WireMock) để đếm số lời gọi — đây là lý do test assertion {{gatewayCalls...isZero()}} có ý nghĩa: nó chứng minh "từ chối ở bước kiểm tra, trước khi tiền đi".
+
+### 3. Vì sao test của Hương **xanh** dù code của Trung sai
+Code của Trung là mẫu **check-then-act**: {{đọc tổng → so sánh → ghi}}. Sai ở ba điểm, và hai điểm đầu làm test mất tác dụng:
+1. **{{MockMvc}} không đi qua HTTP thật.** Nó gọi thẳng {{DispatcherServlet}} trong cùng JVM. Không có cổng TCP, không có Tomcat, **không có thật nhiều request song song** — hai lệnh "cùng lúc" thực chất chạy lần lượt trên một thread. Race không thể xảy ra trong phòng thí nghiệm đó.
+2. **Test có {{@Transactional}}** (thói quen của {{@SpringBootTest}} cũ) → dữ liệu của test bị **rollback** cuối test. Mọi transaction khác không nhìn thấy nó, nên "đọc tổng" luôn thấy giá trị ban đầu. Test kiểu này **vô hiệu** với đồng thời, và cũng vô hiệu với ràng buộc cần thấy dữ liệu đã commit.
+3. {{p.setRefundedAmount(used + ...)}} rồi {{save(p)}} là **ghi đè giá trị tính từ bản đọc cũ** → ngay cả khi chạy tuần tự trong cùng một request, nó vẫn là nguồn mất dấu; chỉ có {{UPDATE ... SET refunded_amount = refunded_amount + x}} mới không thể mất.
+4. Trung còn **gọi gateway bên trong transaction** → giữ connection + khoá dòng suốt thời gian chờ HTTP. Ngày sale sẽ thiếu connection (y hệt sdlc-001).
+Sửa: {{TestRestTemplate}}/{{WebTestClient}} qua cổng thật, bỏ {{@Transactional}} ở test IT, dọn dữ liệu bằng truncate trong {{@BeforeEach}} hoặc dùng **một đơn riêng cho mỗi test** (mỗi test một {{orderId}}, không cần dọn).
+
+### 4. Traceability cuối sprint — cái gì chưa có test
+| AC | Test tự động | Trạng thái |
+|---|---|---|
+| AC1..AC5, AC7 | {{RefundPolicyTest}} (parameterized) | đủ, xanh |
+| AC8 idempotency | {{PartialRefundApiIT.sameIdempotencyKey...}} | đủ, xanh (nhưng chỉ an toàn nhờ unique index, code của Trung không dùng nó) |
+| AC10 giữ chỗ | {{PartialRefundApiIT.pendingGateway...}} | đủ |
+| **AC6 đồng thời** | **không có** | **lỗ hổng lớn nhất.** {{RefundServiceTest}} chỉ stub repository → không có race nào được thi hành |
+| AC11 phân quyền | {{RefundPolicyTest.decide_*}} | đủ |
+| AC12 hiển thị | chờ E2E (Hương, tuần sau) | chưa |
+| AC9/TC-15 thời hạn | 2 test Clock | đủ |
+Việc cần làm ngay: **chặn merge PR #1187** cho tới khi có một test đồng thời ở tầng API, và nhắc Trung bỏ lời gọi gateway khỏi transaction. "Coverage 84%" trong log CI **không** nói lên điều này: branch coverage 61%, và không có dòng nào đo "hai thread cùng chạy".
+> Senior tip: đừng tin một test "vượt tiền" chạy trong 20 ms và chỉ có một request. Test chặn race **phải** chủ đích tạo ra xung đột (nhiều thread, cùng {{payment_id}}, dữ liệu đã commit) và phải **xanh lặp lại** chứ không phải "xanh một lần". Nếu bạn không biết cách làm test race, nghĩa là bạn chưa biết tính năng của mình an toàn tới đâu.`,
+      pitfalls: ['Viết unit test bằng mock cho một ràng buộc do DB đảm bảo', 'Dùng {{MockMvc}} + {{@Transactional}} rồi tưởng đã "test tích hợp"', 'Bọc lời gọi HTTP của gateway trong {{@Transactional}}', 'Tự tính số cộng dồn ở Java rồi ghi một giá trị tuyệt đối', 'Để test đồng thời nằm ngoài sprint vì "chậm"']
+    },
+    {
+      key: 'review',
+      title: 'Code review: phát hiện test thiếu và "test xanh" giả',
+      role: 'Bạn review PR #1191 của Trung; CI vừa chạy xong với E2E bật retry',
+      story: `PR #1191 "AS-611 partial refund — service + gateway" có 640 dòng thêm mới, **tự report coverage 88%**, và CI **xanh**. Trung là dev giỏi, PR của anh ấy thường chỉ mất 20 phút để approve. Lần này bạn đọc chậm, vì đây là code **đứng giữa sàn và tiền thật**.
+
+Điều làm bạn khựng lại không phải một dòng code sai, mà là **sự vắng mặt**: trong 40 test mới của PR, bạn không thấy test nào tên giống "đồng thời". Và trong {{ci-e2e-8842.log}}, một dòng nhỏ: {{twoParallelRefunds_neverExceedPaidAmount}} có chữ {{FLAKY, retried 2/2 → PASSED}}.
+`,
+      artifacts: [
+        { name: 'PR-1191.diff', lang: 'text', content: `--- a/src/main/java/com/mekongshop/refund/service/RefundService.java
++++ b/src/main/java/com/mekongshop/refund/service/RefundService.java
+@@
++    @Transactional
++    public RefundResponse create(long orderId, RefundRequest req, String idemKey) {
++        Payment p = paymentRepo.findByOrderId(orderId).orElseThrow(OrderNotFound::new);
++
++        // (1) idempotency: đã có lệnh với key này chưa?
++        var dup = refundRepo.findByIdempotencyKey(idemKey);
++        if (dup.isPresent()) return RefundResponse.of(dup.get(), 0);          // replay
++
++        // (2) AC6: tổng các lệnh đang hoạt động + lần này <= số đã trả
++        long used = refundRepo.findActiveByPaymentId(p.getId()).stream()
++                              .mapToLong(Refund::getAmount).sum();             // READ
++        if (used + req.amountVnd() > p.getPaidAmount())                        // CHECK
++            throw new RefundExceedsRemainingException();
++
++        Refund r = refundRepo.save(toEntity(req, idemKey, used));              // ACT
++        p.setRefundedAmount(used + req.amountVnd());                           // GHI ĐÈ
++        p.setVersion(p.getVersion() + 1);                                      // tự tăng version
++        paymentRepo.save(p);
++
++        GatewayAck ack = gatewayClient.refund(r);                              // HTTP trong transaction
++        r.setStatus(ack.isAccepted() ? Status.PENDING_GATEWAY : Status.FAILED);
++        refundRepo.save(r);
++
++        return RefundResponse.of(r, p.getPaidAmount() - p.getRefundedAmount());
++    }
+@@
++    // RefundRepository
++    @Query("select r from Refund r where r.paymentId = :pid and r.status in :active")
++    List<Refund> findActiveByPaymentId(@Param("pid") long pid, @Param("active") List<Status> active);
++
++    // pom.xml
++    <plugin>
++      <artifactId>maven-surefire-plugin</artifactId>
++      <configuration>
++        <rerunFailingTestsCount>2</rerunFailingTestsCount>   <!-- "E2E hay đỏ vì SIT chậm" -->
++        <argLine>-Xmx512m</argLine>
++      </configuration>
++    </plugin>
+--- a/src/test/java/com/mekongshop/refund/e2e/PartialRefundE2ETest.java
++++ b/src/test/java/com/mekongshop/refund/e2e/PartialRefundE2ETest.java
+@@
++    @Test
++    void twoParallelRefunds_neverExceedPaidAmount() {
++        long orderId = testOrders.deliveredOrder(830_000).refunded(575_000).build();  // còn 255.000
++        // mở 2 browser context, mỗi bên nhập form hoàn 200.000 rồi bấm "Gửi yêu cầu"
++        var a = pageA.openRefund(orderId).amount(200_000).submit();
++        var b = pageB.openRefund(orderId).amount(200_000).submit();
++        assertThat(a.isSuccess() && b.isSuccess()).isFalse();
++        Thread.sleep(2_000);                                   // "chờ hệ thống xử lý xong"
++        var summary = rest.getForObject("/api/v1/orders/" + orderId + "/refunds/summary", Summary.class);
++        assertThat(summary.refundedTotal()).isLessThanOrEqualTo(830_000);   // <-- đọc COLUMN
++    }` },
+        { name: 'ci-e2e-8842.log', lang: 'text', content: `Run #8842  branch: main  workflow: CI  (trigger: push)
+  [1/6] build + unit test              PASSED   3m11s   tests 214  (surefire rerunFailingTestsCount=2)
+  [2/6] integration test (Testcontainers) PASSED 7m02s   tests 41   1 skipped
+        SKIPPED RefundConcurrencyIT  "tag @concurrency removed from suite: too slow for PR"
+  [3/6] SonarQube                      PASSED   quality gate OK — coverage new code 88,1%, 0 blocker
+  [4/6] Playwright E2E on SIT          PASSED (with retries)  19m44s   tests 22
+        twoParallelRefunds_neverExceedPaidAmount        attempt 1 FAILED (Assertion: 2 both accepted)
+        twoParallelRefunds_neverExceedPaidAmount        attempt 2 PASSED
+        agentApprovesRefund_above300k                   attempt 1 FAILED (element not found)
+        agentApprovesRefund_above300k                   attempt 2 PASSED
+        customerCannotRefundExpiredWindow               attempt 1 FAILED (toast timeout)
+        customerCannotRefundExpiredWindow               attempt 3 PASSED
+  [5/6] trivy scan                     PASSED   0 critical, 2 medium (deb, không ảnh hưởng runtime)
+  [6/6] build image + deploy SIT       PASSED
+  => GREEN — merge sẵn, deploy SIT sẵn
+
+Ghi chú cấu hình:
+  surefire.rerunFailingTestsCount = 2   (dev tự thêm tuần trước, "để CI khỏi đỏ")
+  JUnit tag @concurrency: đã bỏ khỏi suite PR, chỉ chạy ở nightly — nightly 3 lần gần nhất: PASSED
+  SIT có 1 bản thể refund-service (replicas=1) — PROD có 4` },
+        { name: 'coverage-branch.txt', lang: 'text', content: `Jacoco — RefundService.create()  (branch coverage của method này)
+  line 24  if (dup.isPresent())                  BRANCH: 1/2  (chưa có test đi vào nhánh replay qua HTTP)
+  line 28  if (used + amount > paid)             BRANCH: 2/2  (có test, chạy tuần tự)
+  line 33  gateway ack accepted / not            BRANCH: 1/2  (chưa test ack thất bại)
+  line 12  (không che phủ) 2 thread cùng lúc     KHÔNG ĐO ĐƯỢC bởi branch coverage
+  "Coverage 88%" = số DÒNG đã chạy, không phải số KỊCH BẢN đã được chứng minh.` }
+      ],
+      task: `1. Viết các **comment review** bạn sẽ để lại trên PR #1191, phân loại **Blocker / Major / Nit**, mỗi comment kèm "chuyện gì xảy ra trên production" và gợi ý sửa cụ thể. Phải có ít nhất **2 comment về test**.
+2. đối chiếu ma trận test ở giai đoạn Phân tích: **những test nào bị thiếu** ở thời điểm merge? Giải thích vì sao {{coverage 88%}} và {{BUILD SUCCESS}} không trả lời được câu hỏi đó.
+3. {{rerunFailingTestsCount=2}} và việc bỏ tag {{@concurrency}} khỏi suite PR: chấp nhận được không? Đề xuất chính sách cụ thể (ai được bật, ghi ở đâu, hết hạn thế nào).
+4. SIT 1 bản thể, PROD 4 bản thể — chuyện gì xảy ra với test đồng thời?`,
+      answer: `**Tóm tắt:** PR này có **3 blocker**: (1) check-then-act cho ràng buộc tiền — trái thiết kế đã duyệt; (2) test đồng thời không nằm ở nơi có thể phát hiện bug (E2E + SIT 1 bản thể + bị loại khỏi suite PR + bị retry che); (3) gọi gateway bên trong transaction. {{coverage 88%}} và {{BUILD SUCCESS}} **không** là bằng chứng: coverage đếm dòng đã chạy, còn ở đây thứ thiếu là **tình huống** (hai request cùng lúc), thứ mà branch coverage không đo nổi.
+
+### Comment review
+
+**[Blocker #1 — tiền] {{RefundService.java}} dòng 28–33: check-then-act, trái với design đã duyệt.**
+Bản design chốt **một câu UPDATE có điều kiện** ({{UPDATE payment SET refunded_amount = refunded_amount + :amt WHERE refunded_amount + :amt <= paid_amount}}, {{0 dòng = từ chối}}). Code hiện tại làm {{READ (SUM) → CHECK → WRITE}}, tức là khoảng trống giữa đọc và ghi **không được bảo vệ**. Kịch bản thật: đơn còn **255.000**; hai lệnh **200.000** cách nhau 12 ms (khách bấm trên 2 thiết bị, hoặc 2 CSKH cùng ca — đúng 31/37 vụ trong báo cáo tài chính). Cả hai cùng {{READ}} thấy 575.000, cả hai {{CHECK}} đều lọt (575.000 + 200.000 = 775.000 ≤ 830.000), cả hai {{WRITE}} → **gateway nhận 2 lệnh, tổng hoàn 975.000 cho đơn 830.000**.
+{{@Version}} tự tăng ở dòng 31 **không cứu được**: nó phát hiện xung đột khi **ghi {{payment}}**, nhưng lệnh hoàn và lời gọi gateway đã đi trước đó. Và hai transaction có thể tăng cùng một version từ cùng giá trị gốc → loser chỉ bị từ chối khi commit {{payment}}, còn {{refund}} + tiền thì đã gửi.
+Sửa: thay {{READ+CHECK+WRITE}} bằng UPDATE nguyên tử ở trên ({{@Modifying}}), đọc {{returned refunded_amount}} để tính {{remaining}}; phần kiểm tra cấp line làm tương tự trên {{order_line}}. Kiểm tra nghiệp vụ trong policy vẫn giữ, nhưng nó chỉ để **báo thông điệp đẹp**, không phải để chắn.
+
+**[Blocker #2 — test] Không có test đồng thời ở tầng API, và test E2E hiện có không thể kết luận gì.**
+Trong ma trận, TC-10/TC-11 là test **API**, nhiều thread, dữ liệu đã commit. Thực tế: {{RefundConcurrencyIT}} bị **gắn tag rồi loại khỏi suite PR** ("too slow for PR"), nightly chạy 3 lần gần nhất "PASSED" nhưng nightly chạy trên **SIT có 1 bản thể** (xem comment #4 bên dưới), và bản thân test E2E assert **sai nguồn dữ liệu** — {{summary.refundedTotal()}} đọc **cột** {{refunded_amount}}, mà trong race thì cột bị **lost update** nên luôn cho giá trị "đẹp" (775.000 ≤ 830.000 → test **xanh giả**). Phải assert trên **{{SUM(refund.amount)}} của các dòng** (nguồn sự thật) **và** so với cột; lệnh nào vượt là phải đỏ.
+Sửa: viết {{RefundConcurrencyIT.concurrentRefunds_neverExceedPaidAmount}} (code ở giai đoạn Fix bug), **20 thread + CountDownLatch**, chạy **trong suite PR**, chạy lặp 20 lần trong một test, và bắt buộc **đỏ** khi code còn check-then-act (chứng minh bằng ảnh chụp kết quả với commit cũ).
+
+**[Blocker #3 — money/robustness] {{gatewayClient.refund(r)}} bên trong {{@Transactional}}.**
+Giữ connection + khoá dòng {{payment}} suốt thời gian HTTP (p99 gateway 4 s, ngày sale có thể 30 s). 4 bản thể × pool 10 = hết connection → cả service treo, y hệt vụ k6 trong sdlc-001. Ngoài ra nếu gateway **đã nhận** lệnh mà transaction sau đó rollback (ví dụ {{refundRepo.save(r)}} lỗi), ta **mất dấu** một lệnh tiền thật.
+Sửa: transaction 1 ghi lệnh {{REQUESTED}} + ghi outbox và **commit**; worker/khởi động gọi gateway **ngoài transaction**; transaction 2 cập nhật trạng thái theo ack/callback. Idempotency phía gateway dùng {{refund_no}} làm {{refund_ref}} (vendor trả {{409 DUPLICATE_REFUND_REF}} là dấu hiệu ta đã gửi rồi → tra cứu, đừng gửi lại).
+
+**[Blocker #4 — idempotency race] {{findByIdempotencyKey → save}} cũng là check-then-act.**
+Hai request **cùng key** (khách bấm 2 lần vì app không phản hồi) cùng thấy "chưa có" → cùng INSERT. May là có {{UNIQUE INDEX ux_refund_idem}}, nên một bên sẽ nhận {{DataIntegrityViolationException}} — nhưng code hiện tại **không bắt** exception đó, thành ra khách nhận **HTTP 500** thay vì replay đúng. Và vì index là {{(payment_id, idempotency_key)}} còn query tìm theo **key toàn cục**, hai đơn dùng trùng key sẽ không bị chặn.
+Sửa: {{INSERT ... ON CONFLICT DO NOTHING}} → nếu 0 dòng thì **đọc lại** và trả response cũ (so khớp thân, lệch thân thì {{409 DUPLICATE_REQUEST}}). Đây là mẫu "idempotency-ledger" chuẩn: khoá nằm ở DB, không nằm ở if.
+
+**[Major] {{RefundResponse.of(dup.get(), 0)}} trả {{remaining = 0}} cho replay** → màn hình khách hiện "Còn được hoàn 0đ" sau khi bấm lại, dù số thực là 255.000. Phải tính lại {{remaining}} từ cột.
+**[Major] {{p.setRefundedAmount(used + ...)}}**: dù đã sửa blocker #1, đừng bao giờ **tính số cộng dồn ở Java rồi ghi một giá trị tuyệt đối** — luôn {{SET x = x + :amt}} để DB tự cộng. Ghi giá trị tuyệt đối là nguồn của lost update ở mọi nơi khác (job đối soát, màn hình CSKH sửa tay).
+**[Major] {{Thread.sleep(2_000)}} trong E2E**: sleep không "chờ hệ thống xong", nó chỉ **đoán**. Dùng {{expect(...).toHaveText(...)}} của Playwright (tự retry đến timeout) hoặc chờ {{page.waitForResponse("/refunds/summary")}}. Sleep cũng chính là một trong các nguyên nhân khiến test "đủ lâu thì qua".
+**[Major] {{p.setVersion(p.getVersion()+1)}}** tự tay tăng version: phá hoàn toàn cơ chế optimistic locking của JPA (nó cần version **đọc từ entity cũ**). Nếu vẫn muốn giữ {{@Version}} cho các chỗ khác, để JPA tự xử lý, đừng chạm.
+**[Nit] {{reason}} không được kiểm tra trong {{ACTIVE_STATUSES}}**: nếu {{REJECTED}} vẫn nằm trong danh sách "đang hoạt động" thì một lệnh bị từ chối vẫn chiếm hạn mức. Đề xuất test riêng TC-12 (callback FAILED phải hoàn lại hạn mức).
+**[Nit]** Câu log của controller sẽ in cả object request → lộ {{idemKey}} và số điện thoại khách — mask trước khi log.
+
+### 2. Test thiếu so với ma trận (ngay tại thời điểm merge)
+| Ma trận | Có trong PR? | Ghi chú |
+|---|---|---|
+| TC-10, TC-11 đồng thời (API) | **KHÔNG** | bị loại tag, nightly trên SIT 1 bản thể |
+| TC-12 gateway FAILED hoàn hạn mức | KHÔNG (chỉ test ack-not-accepted ở policy) | đúng cái nhánh {{BRANCH 1/2}} trong Jacoco |
+| TC-13 phân quyền 300.000 vs 300.001 ở tầng API | KHÔNG (unit có) | đơn vị tiền ở API liên quan JSON → cần test {{422}} |
+| Replay idempotency **qua HTTP** (line 24) | KHÔNG | Jacoco báo branch 1/2 |
+| Test E2E assert **nguồn sự thật** | SAI | assert cột, không assert tổng dòng |
+Vì sao {{coverage 88%}} + {{BUILD SUCCESS}} vô nghĩa ở đây:
+- Coverage là **thước đo độ che phủ code**, không phải **độ tin của hành vi**. Nó nói "dòng 28 từng được chạy", không nói "dòng 28 từng được chạy **bởi hai thread cùng lúc**".
+- Không có công cụ coverage nào đo "tình huống"; chỉ có **traceability matrix** (AC → tên test) mới đo được. Đây là lý do squad cần upkeep bảng đó như upkeep code.
+- {{BUILD SUCCESS}} với {{rerunFailingTestsCount=2}} nghĩa là: "có 3 test fail ở lần chạy đầu nhưng ta không quan tâm". **Xanh sau retry là một dạng đỏ bị che.**
+Việc bạn yêu cầu trước khi approve: (a) thêm UPDATE nguyên tử; (b) thêm {{RefundConcurrencyIT}} trong suite PR và **cho nó fail** với code cũ, pass với code mới; (c) bỏ {{rerunFailingTestsCount}} khỏi surefire cho các test mang tag {{@critical}}; (d) cập nhật tài liệu thiết kế nếu thay đổi quyết định.
+
+### 3. Retry: chính sách, không phải tuỳ hứng
+{{rerunFailingTestsCount}} bật **toàn cục** là **không chấp nhận được**. Nó không làm test hết flaky, nó làm **kết quả trung bình** trông đẹp hơn, và ăn mất tín hiệu mà team cần nhất: "có 2/20 lần hệ thống cho phép rút tiền vượt".
+Chính sách đề xuất (ghi vào {{docs/testing.md}} + enforced bằng CI, không chỉ bằng lời nhắc):
+- **Không retry mặc định.** Muốn retry: phải có **ticket FLAKY-xxx**, tên test, người phụ trách, **ngày hết hạn 14 ngày**, và test được gắn tag {{@flaky}} + chuyển vào **lane quarantine** (không tính vào {{BUILD}} nhưng hiện báo đỏ vàng trên dashboard).
+- Retry **tối đa 1 lần** cho lane thường, và retry **cấm tuyệt đối** với test có tag {{@critical}} (mọi test về tiền, về khoá, về idempotency).
+- **Flaky rate dashboard**: tỉ lệ "fail ở attempt 1 / pass ở attempt 2" trên 7 ngày; ngưỡng > 1% thì **khoá merge** các PR không liên quan cho tới khi xử lý xong.
+- Test đồng thời không được retry: nó **phải** fail khi code sai. Và **không được** chạy lại trong trạng thái đã bị thay đổi bởi attempt 1 (xem giai đoạn Fix bug).
+- Nguyên nhân flaky phải được phân loại: (a) **test sai** (sleep, locator, dữ liệu dùng chung) → sửa test; (b) **môi trường** (SIT chậm, DNS, pod restart) → sửa môi trường; (c) **code có bug thật, không xác định** → đây là **báo động sớm nhất** team có được, nghiêm trọng hơn cả bug production tìm ra sau.
+
+### 4. SIT 1 bản thể, PROD 4 bản thể
+Nếu test đồng thời chỉ chạy trên **SIT một bản thể**, hai request vào **cùng một JVM** → có xác suất va nhau rất nhỏ (vẫn có, vì Tomcat nhiều thread), nhưng nếu ai đó "chống race" bằng {{synchronized}}/{{ReentrantLock}} trong app thì **SIT luôn xanh, PROD luôn đỏ**: 4 pod là 4 khoá riêng biệt. Đây là loại bug **chỉ tồn tại khi scale out**, nên:
+- Test đồng thời phải chạy qua **nhiều bản thể** trên SIT/UAT (hoặc Testcontainers với 2 instance app thật + 1 PostgreSQL), và
+- Không được tin bất kỳ cơ chế an toàn nào chỉ dựa trên bộ nhớ JVM ({{ConcurrentHashMap}}, cache, lock) cho ràng buộc tiền.
+Đây cũng chính xác là bug ta sẽ gặp ở giai đoạn Fix bug: nó đã sống sót qua 4 lớp "bảo vệ" — design đúng, code sai, test tồn tại nhưng kiểm tra sai chỗ, CI xanh nhờ retry.
+
+> Senior tip: khi review code tiền, đừng hỏi "test có pass không". Hãy hỏi "**test nào sẽ đỏ nếu chỗ này sai**?" rồi tự tay làm nó sai một cái (đổi {{<=}} thành {{<}}, bỏ UPDATE điều kiện) và chạy. Ba phút phá-hoang-nhiên này đáng giá hơn cả trăm dòng coverage; và nếu test vẫn xanh, bạn vừa tìm ra một test giả.`,
+      pitfalls: ['Approve PR tiền vì "coverage 88% và CI xanh"', 'Bật {{rerunFailingTestsCount}} toàn cục mà không mở ticket cho test đỏ', 'Chấp nhận code khác thiết kế đã duyệt chỉ vì "JPA tiện hơn"', 'Xem {{@Version}} như liều thuốc cho mọi race', 'Test E2E assert đúng cái cột mà bug làm hỏng']
+    },
+    {
+      key: 'test',
+      title: 'Kiểm thử: suite Playwright for Java + API test, CI chạy song song',
+      role: 'Hương (SDET) dựng suite E2E + API; bạn cùng đọc báo cáo SIT/UAT',
+      story: `Hương mở khoá phase E2E. Cô ấy không test bằng tay theo checklist; cô ấy **viết code test** và coi suite đó là **một production code khác**: có kiến trúc, có refactoring, có code review, có chỉ số. Suite gồm ba tầng chạy trong cùng một pipeline:
+
+- {{RefundPolicyTest}} — unit, 96 test, 0,5 s.
+- {{PartialRefundApiIT}} + {{RefundConcurrencyIT}} — API/Testcontainers, 41 test, 7 phút.
+- {{PartialRefundE2ETest}} — Playwright for Java trên **Chromium thật** với site SIT, 22 test.
+
+Buổi UAT với CSKH cần 5 kịch bản tay; PO An muốn số liệu. Câu hỏi thật của ngày hôm đó: **suite này chứng minh được điều gì, và không chứng minh được điều gì?**`,
+      artifacts: [
+        { name: 'PartialRefundE2ETest.java', lang: 'java', content: `package com.mekongshop.refund.e2e;
+
+import com.microsoft.playwright.*;
+import com.microsoft.playwright.options.WaitUntilState;
+import org.junit.jupiter.api.*;
+import static com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat;   // auto-retry assertion
+
+/** E2E: luồng NGƯỜI DÙNG, ít mà chất. Không dùng E2E để test quy tắc tiền. */
+@Tag("e2e")
+class PartialRefundE2ETest {
+
+    static Playwright playwright;
+    static Browser browser;
+    BrowserContext ctx;                     // MỘT context / MỘT test = cookie + storage riêng
+    Page page;
+    RefundPage refundPage;
+
+    @BeforeAll static void setUpBrowser() {
+        playwright = Playwright.create();
+        browser = playwright.chromium().launch(new BrowserType.LaunchOptions().setHeadless(true));
+    }
+    @AfterAll static void tearDownBrowser() { browser.close(); playwright.close(); }
+
+    @BeforeEach void openAs(@TestTemporary AccountFactory accounts) {
+        ctx = browser.newContext(new Browser.NewContextOptions().setViewportSize(390, 844));  // mobile
+        ctx.setDefaultTimeout(10_000);
+        page = ctx.newPage();
+        refundPage = new RefundPage(page);
+        refundPage.loginAs(accounts.customerWithDeliveredOrder(830_000));   // test data TẠO bằng API
+    }
+
+    @Test @Tag("smoke")
+    void refundOneItem_showsCorrectRemaining() {
+        Summary before = refundPage.summary("ORD-2026-45512");              // 830.000 / còn 830.000
+        refundPage.open("ORD-2026-45512")
+                .selectLine("Áo thun cotton đen M", 1)
+                .assertMaxAllowedIs("225.000");                              // app hiện số từ API
+        refundPage.amount(225_000).submitExpectingSuccess();
+        assertThat(page.getByTestId("refunded-total")).containsText("Đã hoàn 225.000");
+        assertThat(page.getByTestId("remaining-total")).containsText("Còn được hoàn 605.000");
+        // và nguồn sự thật ở backend, không chỉ UI:
+        Assertions.assertEquals(225_000, api.refundLedgerSum("ORD-2026-45512"));
+    }
+
+    @Test @Tag("critical") @Tag("concurrency")
+    void twoParallelRefunds_neverExceedPaidAmount() {
+        long orderId = testOrders.deliveredOrder(830_000).refunded(575_000).build();  // còn 255.000
+        try (Page pa = ctx.newPage(); Page pb = browser.newContext().newPage()) {     // 2 phiên khác nhau
+            RefundPage a = new RefundPage(pa).loginSecondSession().open(orderId).amount(200_000);
+            RefundPage b = new RefundPage(pb).loginSecondSession().open(orderId).amount(200_000);
+            a.submit(); b.submit();                                                   // bấm gần đồng thời
+            api.waitForRefundProcessing(orderId, 15);                                 // không sleep: chờ điều kiện
+            long ledger = api.refundLedgerSum(orderId);                               // SUM(các dòng)
+            long column = api.refundedTotalColumn(orderId);                           // cột cộng dồn
+            Assertions.assertTrue(ledger <= 830_000, "ledger vượt số đã trả: " + ledger);
+            Assertions.assertEquals(column, ledger, "cột lệch nhật ký (lost update)");
+            Assertions.assertEquals(1, api.countAccepted(orderId), "phải có đúng 1 lệnh 200.000 được nhận");
+        }
+    }
+
+    @Test void agentApprovesRefund_above300k() {
+        refundPage.open("ORD-2026-45512").selectLine("Áo thun cotton đen M", 1).amount(300_000).submit();
+        assertThat(page.getByTestId("status-chip")).containsText("Chờ CSKH duyệt");
+        AgentConsolePage agent = new AgentConsolePage(ctx.newPage()).loginAsAgent();
+        agent.approveLatest(orderIdOf("RF-"));
+        assertThat(page.getByTestId("status-chip").locator("visible=true"))
+               .containsText("Đang xử lý · dự kiến 72 giờ");                            // AC10 + AC11
+    }
+}` },
+        { name: 'ci-e2e-parallel.log', lang: 'text', content: `Workflow: CI / job e2e  —  matrix: shard [1,2,3,4]  (JUnit --include-tags + surefire sharding)
+  shard 1 (smoke, 6 tests)          PASSED  4m12s
+  shard 2 (refund flow, 8 tests)    PASSED  6m03s
+  shard 3 (agent console, 5 tests)  FAILED  5m47s
+        agentApprovesRefund_above300k   FAILED  ToastLocatorTimeout: "status-chip" not visible sau 10s
+  shard 4 (window/edge, 3 tests)    PASSED  3m28s
+        customerCannotRefundExpiredWindow  FLAKY: attempt 1 FAILED (toast timeout) / attempt 2 PASSED
+
+Tổng sau khi bật rerunFailingTestsCount=2: PASSED 22/22 trong 8m51s (trước đó chạy nối tiếp: 19m44s)
+Dashboard flaky 7 ngày (Hương dựng, nguồn: surefire XML):
+  customerCannotRefundExpiredWindow      41% flaky  (nguyên nhân: chờ toast 3s, SIT render chậm)
+  agentApprovesRefund_above300k          22% flaky  (dữ liệu: đơn CSKH dùng chung, 2 test cùng sửa)
+  twoParallelRefunds_neverExceedPaidAmount  9% flaky → "PASS", chưa ai mở ticket
+Test data audit (Hương):
+  - 6/22 test dùng chung đơn "ORD-2026-45512" do con người tạo tay trên SIT từ tháng 9
+  - 3 test tự tạo đơn qua API nhưng KHÔNG xoá sau khi chạy → SIT tích lại 12.000 đơn test` },
+        { name: 'uat-notes.txt', lang: 'text', content: `UAT với CSKH (2 người) + PO, 45 phút, kịch bản chạy tay
+  1. Hoàn 1 áo thun 225.000 (đơn 830.000)  -> OK, 605.000 còn lại
+  2. Hoàn 255.000 (đúng phần còn lại)        -> OK, hiện "Đã hoàn toàn bộ"
+  3. Nhập 255.001                            -> bị chặn, thông báo hiểu được        OK
+  4. Nhập 0                                  -> bị chặn                              OK
+  5. CSKH duyệt khoản 500.000                -> OK, có lưu tên người duyệt
+  6. Hai nhân viên CSKH mở CÙNG một đơn trên 2 máy, cùng bấm hoàn 200.000
+     -> lần 1: cả hai đều "Thành công"     (PO: "ổn mà, tổng vẫn < 830k")
+     -> lần 2: một báo lỗi, một thành công  (PO hỏi: "sao lúc được lúc không?")
+  Ý kiến CSKH: "Em không biết lệnh của khách nào đã bị từ chối, màn hình không thấy lý do."
+  Kết luận UAT: PASSED with 2 observations, PO đồng ý cho release với điều kiện
+     (a) có màn hình lý do từ chối, (b) flaky rate < 1% trước 12.12` }
+      ],
+      task: `1. Trình bày **kiến trúc suite** Hương đã dựng: tầng nào test gì, test data tạo và dọn ra sao, vì sao có những thứ **cố ý không** đưa vào E2E. Kèm giải thích cho người mới: Playwright là gì, {{Locator}}, {{Page Object}}, auto-waiting, assertion tự retry, {{BrowserContext}} khác {{Page}}.
+2. Hương tổ chức **chạy song song** thế nào (4 shard)? Nêu 3 điều kiện để song song không tự phá nhau, và cách đảm bảo **mỗi test có dữ liệu riêng**.
+3. Phân tích **dashboard flaky** ở trên: mỗi test flaky một nguyên nhân khác nhau, chỉ ra nguyên nhân và cách sửa đúng. Điều gì sẽ xảy ra nếu team chỉ "bật retry 2 lần" cho cả suite?
+4. Đọc biên bản UAT mục 6: bạn kết luận gì, và làm gì **ngay hôm đó**?`,
+      answer: `**Tóm tắt:** suite chia ba tầng theo **loại câu hỏi** chứ không theo số lượng: unit cho quy tắc tính tiền, API cho ràng buộc **vượt tầng** (khoá, idempotency, DB constraint, đồng thời), E2E cho **luồng người dùng + hiển thị**. Song song hoá là tốt (19m44s → 8m51s) nhưng chỉ đúng khi **mỗi test một bộ dữ liệu riêng**. Ba test flaky ở dashboard có ba nguyên nhân khác nhau: chờ sai cách (toast), dữ liệu dùng chung (agent console), và **bug race thật** bị "PASS" che. Mục 6 của UAT là bằng chứng thứ hai rằng AC6 chưa được chặn — hôm đó phải dừng release, không phải bật retry.
+
+### 1. Kiến trúc suite
+**Playwright for Java là gì:** thư viện điều khiển **trình duyệt thật** (Chromium/WebKit/Firefox) từ code Java. Bạn mô tả "đi tới {{/orders}}, bấm nút có chữ Gửi yêu cầu, kỳ vọng thấy 'Đã hoàn 225.000'"; Playwright dựng browser, thao tác, chụp screenshot + video + trace khi fail. So với Selenium, Playwright có **web-first assertion tự retry** ({{assertThat(locator).containsText(...)}} chờ đến timeout thay vì fail ngay), **auto-wait** trước khi click (chờ phần tử visible/enabled/stable), {{BrowserContext}} nhẹ để tách phiên, và trace viewer xem lại từng bước — rất hợp cho CI và debug flaky.
+- **{{Locator}}** = "cách tìm phần tử" ({{getByTestId("remaining-total")}}, {{getByRole(BUTTON, name("Gửi yêu cầu"))}}). Ưu tiên {{data-testid}}/vai trò hơn CSS lớp: CSS đổi là test gãy, test gãy làm mọi người mất niềm tin vào suite.
+- **{{Page Object}}** (lớp {{RefundPage}}, {{AgentConsolePage}}) = một class encapsulate **một màn hình**: các method {{selectLine}}, {{amount}}, {{submit}} trả về chính Page Object đó (hoặc Page Object của màn hình kế tiếp) để viết được chuỗi {{open(...).selectLine(...).amount(...).submit()}}. Test đọc như **kịch bản nghiệp vụ**; khi UI đổi, sửa **một** chỗ. Đây là thứ giữ cho suite 22 test sống sót sau 6 tháng.
+- **{{BrowserContext}} vs {{Page}}**: context ~ "hồ sơ trình duyệt" (cookie, storage, cache) — **rẻ**, mở mỗi test một cái là cách chuẩn để các test không đăng nhập/dữ liệu lẫn nhau; {{Page}} là một tab bên trong context. Muốn **hai phiên người dùng độc lập** (AC6: 2 thiết bị) thì phải dùng **2 context**, không phải 2 page cùng context (2 page cùng context **chia sẻ cookie** → server thấy cùng một phiên → không phải đồng thời thật).
+- **{{auto-wait}}** thay cho {{Thread.sleep}}: sleep là **đoán thời gian**; Playwright tự chờ điều kiện. Nếu thấy mình viết sleep, nghĩa là bạn chưa tìm đúng điều kiện cần chờ ({{page.waitForResponse(...)}}, {{expect(...).toBeVisible()}}, hoặc chờ trạng thái qua API).
+- **Test data**: mọi test **tạo đơn qua API** {{TestDataFactory}} ({{POST /test-data/order}}) với số tiền cụ thể và **userId riêng**; **không dùng đơn có sẵn do người tạo tay**. Cleanup: đơn test mang prefix {{ORDTEST-}}, job đêm thứ Bảy xoá các đơn {{ORDTEST-}} > 7 ngày; UAT thì **không** được xoá (dữ liệu biểu diễn). Vì sao API mà không phải UI? Tạo đơn qua UI (thêm giỏ → địa chỉ → thanh toán sandbox) mất 45 giây và phụ thuộc 3 hệ thống khác; qua API mất 0,6 giây. E2E nên **đi qua UI ở phần được test**, còn phần **dựng bối cảnh** thì dùng API.
+- **Cố ý KHÔNG đưa vào E2E**: (a) quy tắc tiền/biên (unit + API, hàng trăm tổ hợp); (b) ràng buộc đồng thời (API, vì ở E2E timing hai cú click **không xác định**, phần lớn trường hợp không va nhau → xanh giả); (c) chữ ký callback của gateway (contract test riêng); (d) hiệu năng (k6/Gatling, không bao giờ bằng Playwright — trình duyệt là nguồn nhiễu lớn nhất).
+
+### 2. Chạy song song
+{{matrix: shard [1,2,3,4]}} + JUnit tag/{{surefire.shard}} chia theo **lớp test**, mỗi shard một container Chrome; 4 shard → 8m51s thay vì 19m44s.
+Ba điều kiện để song song không tự phá nhau:
+1. **Không dùng chung trạng thái.** Mỗi test một đơn, một {{BrowserContext}}, một {{customer_id}}. Sinh dữ liệu theo công thức {{seed + threadId}}, hoặc {{UUID}} trong {{refund_no}}. Nếu buộc dùng chung (một "{{baseline}}" dataset) thì chỉ **đọc**, không ghi.
+2. **Một test một hành vi.** Không "test 1 đăng nhập rồi để nguyên phiên cho test 2" (dependency chain): khi test 1 fail thì 6 test sau fail dây chuyền, và người ta mất 30 phút để nhận ra đó là **một** lỗi. JUnit: {{@BeforeEach}} dựng lại mọi thứ → 22 test độc lập, fail là fail cô lập.
+3. **Tài nguyên môi trường đủ.** SIT có **1 bản thể** refund-service + Chrome headless ×4 shard: CPU throttling làm timeout 10s thành 12s → flaky **tăng theo song song**. Phải nâng {{replicas=2}} khi chạy suite (và đây là điều cần ghi vào runbook, vì SIT 1 bản thể **cũng chính là lý do test race không bắt được bug**).
+Cách khác: {{-Dsurefire.parallel=classes}}, TestNG {{parallel="classes" thread-count="4"}}. **Không** bật {{parallel="methods"}} khi test dùng static state/{{@BeforeAll}} (browser dùng chung — vừa tiết kiệm vừa là điểm chia sẻ).
+
+### 3. Ba flaky, ba bệnh khác nhau
+| Test | Tỉ lệ | Nguyên nhân thật | Sửa đúng |
+|---|---|---|---|
+| {{customerCannotRefundExpiredWindow}} | 41% | chờ **toast** xuất hiện; SIT render chậm hơn timeout 10s; và app tự ẩn toast sau 3s → có lúc kịp, có lúc không | assertion {{expect(...).toBeVisible()}} với timeout theo P99 thật (25s), hoặc bỏ phụ thuộc toast: assert **{{errorCode}} qua API + {{status-chip}}** (trạng thái bền, không biến mất). Đừng chờ thứ tự nhiên **mất đi**. |
+| {{agentApprovesRefund_above300k}} | 22% | **dữ liệu dùng chung**: 2 CSKH test cùng lấy "lệnh mới nhất" của {{agentQueue}} → shard 3 và shard 4 cùng duyệt cùng một lệnh | thêm {{queueItem(refundNo)}} — duyệt **đúng lệnh do test mình tạo**; nếu phải tìm trong danh sách, locate theo {{refund_no}} (duy nhất), không theo "{{hàng đầu tiên}}" |
+| {{twoParallelRefunds_neverExceedPaidAmount}} | 9% nhưng **"PASS"** | **đây là bug race**, không phải flaky. 9% là **xác suất hai cú click rơi vào cùng cửa sổ** — phần còn lại nó xanh vì test **không tạo ra xung đột**, chứ không phải vì code đúng | không retry. Đẩy test xuống tầng API ({{RefundConcurrencyIT}}, 20 thread + latch, lặp 20 lần, dữ liệu commit) để **chắc chắn** va nhau; ở E2E giữ một test "2 phiên" nhưng gắn {{@critical}} và **cấm retry** |
+Nếu team chỉ bật {{rerunFailingTestsCount=2}} cho cả suite: **toàn bộ CI xanh trong 3 tuần**, và ba tín hiệu giá trị nhất (toast chậm, dữ liệu dùng chung, race) đều bị **xoá tín hiệu**. Đây chính xác là cách bug {{ORD-2026-45512}} (giai đoạn Fix bug) sống sót: nó được retry "chữa" tới 6 lần.
+
+### 4. Mục 6 của UAT: kết luận và hành động ngay hôm đó
+"Cả hai cùng thành công" ở lần 1 nghĩa là **AC6 fail trên chính môi trường UAT**, và PO vừa ký **PASSED with observations** vì "tổng vẫn < 830k" — chỗ nguy hiểm là: đúng, **cột** {{refunded_amount}} luôn < 830k (vì lost update), còn **tổng các dòng + tiền thật gửi gateway** thì không. "Lúc được lúc không" (lần 2) là dấu hiệu nhận biết race dễ nhất: **hành vi phụ thuộc thời điểm**, không phụ thuộc input.
+Bốn việc làm ngay hôm đó (trước khi ai đó kịp nói "chạy lại xem có tái hiện không"):
+1. Ghi incident nội bộ, tag {{blocking-release}}, và **revert quyết định release** của PO bằng dữ liệu: mở {{refund}} của đơn UAT → **2 dòng 200.000 cùng {{PENDING_GATEWAY}}**; mở log: hai request cách nhau 34 ms.
+2. Thêm **bộ đếm đối soát tự động** (job 5 phút) so {{SUM(refund.amount)}} với {{payment.refunded_amount}} và với {{paid_amount}}, lệch thì alert **ngay** — cái này đứng tên {{finance-core}} nên phải dựng trước release chứ không đợi kế toán phát hiện.
+3. Chặn tạm ở tầng app cho tới khi có fix: {{SELECT ... FOR UPDATE}} trên dòng {{payment}} (đúng dù chưa tối ưu), hoặc flag "{{auto-approve}}" tắt để mọi lệnh > 0 phải qua CSKH — chọn cách **giảm thiệt hại mà không cần deploy** nếu pipeline còn 3 ngày.
+4. Bắt buộc **{{RefundConcurrencyIT}} trong suite PR**, cấm retry, chạy trên SIT 2 bản thể, và re-run UAT mục 6 với dữ liệu y hệt. Không release khi mục 6 chưa xanh **lặp lại 20/20**.
+
+> Senior tip: với SDET, câu hỏi nghề nghiệp không phải "em có bao nhiêu test" mà "**test nào sẽ đỏ nếu anh phá chỗ này**". Hãy phá thật: sửa {{<=}} thành {{<}}, bỏ UPDATE điều kiện, tắt unique index, và chạy suite. Test nào vẫn xanh là test **trang trí** — bỏ nó đi hoặc viết lại, vì nó đang bán cho cả team một sự an toàn giả.`,
+      pitfalls: ['Dựng test đồng thời ở E2E (timing không xác định) rồi tin nó là bằng chứng', 'Chờ toast/element biến mất bằng {{Thread.sleep}} thay vì chờ điều kiện', 'Nhiều test dùng chung một đơn tạo tay trên SIT', 'Bật song song 4 shard mà không nâng số bản thể của SIT', 'Xử lý ba test flaky bằng một công tắc retry duy nhất']
+    },
+    {
+      key: 'deploy',
+      title: 'Deploy: feature flag, canary và smoke test tự động sau deploy',
+      role: 'Bạn viết kế hoạch release; Hương viết suite smoke chạy sau mỗi deploy',
+      story: `Sau buổi review, Trung sửa **một phần**: đưa lời gọi gateway ra ngoài transaction, bắt {{DataIntegrityViolationException}} cho idempotency, đổi thông điệp lỗi. Phần guard tiền anh ấy **giữ nguyên kiểu đọc–kiểm tra–ghi**, với lý do ghi trong PR: "{{@Transactional}} đã cô lập rồi, thêm UPDATE điều kiện vào thì repository khó đọc". Ticket follow-up **AS-655 "thêm RefundConcurrencyIT vào suite PR"** được PO đánh **Medium, sprint sau** — vì còn 4 ngày tới hạn chót 05/12. CI **xanh**, và {{rerunFailingTestsCount=2}} vẫn bật (Hương mở ticket FLAKY-14 nhưng chưa ai sửa).
+
+Hai việc phải làm song song:
+- **Kế hoạch release**: thứ tự migration / code / flag, canary, **tiêu chí rollback bằng số**, và chuyện app cũ (v3.x) không gửi {{Idempotency-Key}}.
+- **Smoke test tự động sau deploy**: {{9 test, chạy ≤ 90 giây}}, fail là **dừng canary và rollback**, không phải "báo lại sau". Đây là lưới chắn cuối giữa bản build và 45.000 đơn/ngày.
+
+Bạn có cảm giác lành lạnh: **chưa một lần nào** cả squad thấy cái luồng "hai lệnh cùng lúc" chạy thật trên môi trường có **nhiều bản thể**.`,
+      artifacts: [
+        { name: 'rollout-plan.txt', lang: 'text', content: `AS-611 partial refund — kế hoạch release (bản đệ trình SRE 03/12 16:00)
+Thời điểm: 04/12 07:00 (giờ thấp điểm), người chỉ huy: bạn, on-call: DevOps (Tuấn)
+Code freeze: 09/12. Release window production: Thứ Ba & Thứ Năm.
+
+Bước  T-1   Migration EXPAND (Flyway V12__refund.sql) — CHỈ thêm bảng + thêm cột nullable
+              ALTER TABLE payment    ADD COLUMN refunded_amount NUMERIC(18,0) NOT NULL DEFAULT 0;
+              ALTER TABLE order_line ADD COLUMN refunded_amount NUMERIC(18,0) NOT NULL DEFAULT 0;
+              (2 bảng lớn: payment 9,1M dòng, order_line 34M dòng → thêm cột NOT NULL DEFAULT
+               trên PG 16 không rewrite toàn bảng; CHƯA bật CHECK constraint, xem bước 4)
+        T0-a  Deploy image sha-4c90b1, flag refund.partial.enabled = OFF
+              → hành vi y hệt hôm qua; code cũ vẫn chạy với schema mới
+        T0-b  Bật flag cho 40 người trong công ty (whitelist theo customer_id)
+        T0-c  Shadow mode 24h: refund.partial.enforce = SHADOW
+              → tính {{remaining}} và log số lệch, KHÔNG chặn; so với kết quả đối soát thủ công
+        T0-d  1% khách thật → 10% → 50% → 100%, mỗi bước ≥ 30 phút
+        T0-e  Bật CHECK constraint (VALIDATE) sau khi đối soát sạch:
+              ALTER TABLE payment ADD CONSTRAINT ck_pay_refunded
+                  CHECK (refunded_amount BETWEEN 0 AND paid_amount) NOT VALID;
+              ALTER TABLE payment VALIDATE CONSTRAINT ck_pay_refunded;
+        T1    App cũ v3.x: server tự sinh key (D10) — ticket AS-640 bắt buộc nâng cấp ≤ 12.12
+
+Canary (Argo Rollouts, service refund-service, namespace after-sales):
+  steps: setWeight 5 → pause 20m → analysis → 25 → 20m → 50 → 20m → 100
+  analysis.templates: refund-canary.yaml  (metric Prometheus, interval 2m, count 10)
+
+Tiêu chí DỪNG / ROLLBACK (tự động, không cần ai quyết):
+  | chỉ số (canary so stable)                          | ngưỡng          |
+  | 5xx refund API                                     | > 0,5% hoặc >2x |
+  | p95 POST /refunds                                  | > 450 ms        |
+  | REFUND_EXCEEDS_REMAINING / phút                    | > 3x SIT        |
+  | drift: SUM(refund) <> payment.refunded_amount      | BẤT KỲ bao nhiêu|   <- metric mới thêm sau bug
+  | lệnh PENDING_GATEWAY tuổi > 30 phút                | > 200           |
+  | smoke suite sau deploy                             | BẤT KỲ FAIL     |
+Rollback: tắt flag (1 lệnh) → nếu vẫn bất thường: kubectl rollout undo / argo abort (image cũ
+  vẫn chạy được vì migration chỉ ADD). Migration CONTRACT (drop cột) để release sau, ≥ 2 tuần.` },
+        { name: 'post-deploy-smoke.yaml', lang: 'yaml', content: `# .github/workflows/refund-smoke.yml — chạy SAU mỗi deploy production, blocking cho canary step
+name: refund-post-deploy-smoke
+on:
+  workflow_dispatch: {}              # Argo CD hook gọi sau khi sync xong
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4               # 9 test mà quá 4 phút là chính nó đã là sự cố
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run smoke suite (Playwright + API, Chromium, synthetic traffic)
+        run: >
+          mvn -q verify -Psmoke
+          -Dtarget=prod
+          -Drefund.baseUrl=https://api.mekongshop.vn
+          -Dsurefire.rerunFailingTestsCount=0
+          -Dgroups="smoke"
+        env:
+          SMOKE_ACCOUNT: "cust-smoke-0001"          # tài khoản nội bộ, đã whitelist; key thật lấy từ secrets
+          GATEWAY_MODE: sandbox                               # KHÔNG rút tiền thật
+      - name: Promote canary
+        if: success()
+        run: ./scripts/argo-promote.sh refund-service after-sales
+      - name: Abort canary + page on-call
+        if: failure()
+        run: |
+          ./scripts/argo-abort.sh refund-service after-sales
+          ./scripts/flag.sh set refund.partial.enabled false
+          ./scripts/pagerduty.sh "refund smoke failed on prod"
+      - name: Upload trace (mở bằng npx playwright show-trace)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with: { name: smoke-trace, path: target/playwright-traces/*.zip }` },
+        { name: 'ci-deploy-0412.log', lang: 'text', content: `04/12 07:04  flyway: V12__refund.sql  applied  (migration 3,9 s — chỉ ADD)
+04/12 07:06  argocd: sync refund-service → sha-4c90b1, replicas 4/4 Ready
+04/12 07:06  workflow refund-post-deploy-smoke started
+        SMOKE-01 health + readiness + version label            PASSED   0,8 s
+        SMOKE-02 GET /orders/ORDTEST-.../refunds/summary = 830000/0  PASSED 1,1 s
+        SMOKE-03 POST refund 225000 → 201, remaining 605000    PASSED   2,4 s   (gateway sandbox)
+        SMOKE-04 POST refund 605001 → 422 REFUND_EXCEEDS_REMAINING  PASSED 0,7 s
+        SMOKE-05 replay cùng Idempotency-Key → cùng refundNo   PASSED   1,2 s
+        SMOKE-06 ledger SUM = cột refunded_amount (không drift) PASSED  0,9 s
+        SMOKE-07 callback SUCCESS từ sandbox → status SUCCESS  PASSED  3,1 s
+        SMOKE-08 CSKH duyệt 500000 → có agent_id + audit        PASSED  2,6 s
+        SMOKE-09 metric refund_created_total / drift gauge tồn tại trên /metrics  PASSED 0,4 s
+04/12 07:07  smoke: 9/9 PASSED (14,2 s) → canary setWeight 5 OK
+04/12 07:26  analysis run 1: 5xx canary 0,04% (stable 0,05%) | p95 canary 318 ms | drift 0
+04/12 08:12  flag 10% ... 09:40 flag 100%
+04/12 14:20  WARN  ReconcileJob : 2 đơn có drift (ORD-2026-44980, ORD-2026-45012), diff = 200000
+        → ticket OPS-311, phân loại "nghi do callback sandbox delayed, theo dõi", KHÔNG page
+        → canary đã xong từ 09:40, không có gì bị dừng` }
+      ],
+      task: `1. Vì sao migration phải chạy **trước** và **chỉ thêm** (expand), còn xoá/drop để release sau? Giải thích cho người chưa từng làm migration production: {{NOT NULL DEFAULT}} trên bảng 34 triệu dòng có khoá bảng không, và {{CHECK ... NOT VALID}} + {{VALIDATE}} khác gì thêm constraint thẳng.
+2. {{Shadow mode}} (enforce = SHADOW) cho ta gì mà unit test + canary không cho được? Nêu **hai** số sẽ so trong 24h shadow và ngưỡng chấp nhận.
+3. Thiết kế **smoke test production**: 9 test ở artifact đủ chưa, còn thiếu gì về phần **chặn race**? Làm sao chạy trên production mà **không rút tiền thật và không làm bẩn số liệu** (synthetic traffic)?
+4. Đọc {{ci-deploy-0412.log}}: smoke 9/9 xanh, canary mượt — nhưng có **một** dòng chứng minh hệ thống vẫn còn bug. Đó là dòng nào, vì sao nó nguy hiểm hơn một 5xx, và lẽ ra phải xử lý thế nào?`,
+      answer: `**Tóm tắt:** release này chia làm ba lớp độc lập để **mỗi lớp có thể tắt riêng**: schema (chỉ thêm), code (image mới chạy với flag tắt), hành vi (flag {{enforce}} = OFF → SHADOW → ON theo %). Smoke sau deploy phải **blocking** — tức là fail thì canary tự dừng — và bắt buộc có **một test race thật** (2 request đồng thời trên production, kỳ vọng 1 {{201}} + 1 {{422}}) vì đó là thứ duy nhất chứng minh **cả app + DB + 4 bản thể** cùng đúng. Dòng WARN drift 2 đơn lúc 14:20 là bug đang sống: nó **không** phải 5xx, nên không ai page — và 5 ngày sau nó thành vụ hoàn vượt 145.000đ.
+
+### 1. Migration: expand trước, contract sau
+- **Vì sao chạy trước:** code mới cần cột/bảng mới để tồn tại; code cũ không biết chúng. Nếu chạy migration **cùng lúc** deploy thì trong 60 giây mà 4 pod chưa cập nhật hết, pod mới ghi vào schema chưa có cột → 500 hàng loạt. Migration chạy trước, chạy xong, rồi mới rollout image → **không có khoảng hở**.
+- **Vì sao chỉ thêm:** để **rollback code** là một lệnh, không phải một dự án. Image cũ chạy được trên schema mới (cột mới là nullable hoặc có default) → khi sự cố lúc 9h sáng, bạn tắt flag là xong, không cần hỏi "dữ liệu trong bảng mới xử lý sao". Xoá cột/bảng (contract) chỉ làm ở release **sau**, khi chắc chắn không quay lại.
+- **{{NOT NULL DEFAULT}} trên bảng 34 triệu dòng:** trên PostgreSQL 11+, thêm cột {{NOT NULL DEFAULT <hằng số>}} là **metadata-only** — không rewrite toàn bảng, không giữ {{ACCESS EXCLUSIVE}} suốt 20 phút (hành vi cũ trước PG 11: rewrite + khoá bảng, nghĩa là **mọi query đơn hàng chờ** — đây là kiểu tai nạn "5 phút downtime biến thành 40 phút"). Vẫn có hai lưu ý nhỏ: (1) nó lấy {{ACCESS EXCLUSIVE}} rất ngắn để sửa catalog, nên đứng sau vài query dài là bị kẹt → chạy lúc thấp điểm và dùng {{LOCK_TIMEOUT}} ngắn; (2) nếu default là expression (**không** phải hằng số, ví dụ {{now()}}) thì vẫn rewrite.
+- **{{CHECK ... NOT VALID}} rồi {{VALIDATE CONSTRAINT}}:** thêm constraint {{NOT VALID}} chỉ giữ lock ngắn và **không quét** 9,1M dòng (nó chỉ áp dụng cho INSERT/UPDATE từ giờ); {{VALIDATE}} sau đó quét bảng với lock **yếu hơn** ({{SHARE UPDATE EXCLUSIVE}}), cho phép ghi song song. Thêm constraint **thẳng** = quét toàn bảng với {{ACCESS EXCLUSIVE}} → chặn mọi UPDATE trên {{payment}} cho tới khi xong, và nếu có 1 dòng vi phạm thì **toàn bộ câu lệnh fail** sau 15 phút chờ. Với bảng đang có traffic, trình tự đúng là: {{ADD ... NOT VALID}} → sửa dữ liệu lệch → {{VALIDATE}}.
+- Flyway/Liquibase: công cụ migration có **checksum và thứ tự**; một khi V12 đã chạy trên production, **sửa** file V12 là lỗi quy trình (phải thêm V13), vì checksum đổi → app không start. Đây là lý do giai đoạn dev cần chạy migration sạch trên DEV **và** STAG bằng dump một phần production.
+
+### 2. Shadow mode: cái mà unit test và canary không cho được
+- **Unit test** chứng minh logic đúng **trên dữ liệu tôi tưởng là thật**. **Canary** chứng minh **không cháy** (5xx, latency). Còn câu hỏi "**ràng buộc tiền có chặn đúng trên dữ liệu thật chưa?**" chỉ trả lời được bằng cách chạy thuật toán **đối chiếu với thế giới thực**: ở shadow, hệ thống tính {{remaining}} và **log** xem "nếu enforce thì lệnh này đã bị chặn", nhưng **không chặn**.
+- **Hai số so trong 24 giờ:**
+  1. **Số lệnh bị chặn giả định** ({{would_have_been_rejected}}) so với số lệnh CSKH **tự tay** từ chối trong kỳ — ngưỡng chấp nhận: lệch ≤ 10%. Lệch lớn = ràng buộc của code **không giống** ràng buộc trong đầu người (thường vì quên phí ship hoặc voucher).
+  2. **Drift** giữa {{SUM(refund.amount)}} các lệnh đang hoạt động và {{payment.refunded_amount}} — ngưỡng chấp nhận: **0**. Đây chính là phép đo bắt được lost update. Nếu enforce mà drift > 0 thì **dừng release**, dù mọi chỉ số khác đều đẹp.
+- Shadow còn cho số liệu để đặt ngưỡng canary **có cơ sở** (ví dụ {{REFUND_EXCEEDS_REMAINING}} bao nhiêu/phút là bình thường của khách thật), thay vì đoán từ SIT.
+
+### 3. Smoke test production
+9 test phủ được: đọc summary, happy path, biên vượt, idempotent replay, ledger không drift, callback, phân quyền, metric. Còn **thiếu 3 thứ**, trong đó một thứ là nguyên nhân bug vẫn sống:
+1. **SMOKE-RACE (bắt buộc):** tạo 1 đơn test {{830.000}}, đã hoàn {{575.000}} → gửi **2 lệnh 200.000 đồng thời** bằng 2 kết nối HTTP thật → kỳ vọng **đúng 1** {{201}}, 1 {{422}}, và {{SUM(rows) = 775.000}}. Hai lệnh gửi từ **2 pod khác nhau** (muốn chắc thì gắn header định tuyến, hoặc chạy 2 lần). Đây là test **duy nhất** kiểm tra khoá + 4 bản thể + DB cùng lúc trên production. Nó fail nghĩa là tiền đang rò rỉ → abort **ngay**.
+2. **SMOKE-10 (hồi quy luồng cũ):** full refund (luồng cũ của CSKH) vẫn chạy — vì migration đụng {{payment}}, phải chắc "cái cũ không hỏng" chứ không chỉ "cái mới chạy".
+3. **SMOKE-11 (tín hiệu quan sát):** đẩy 1 lệnh rồi kiểm tra **counter {{refund_created_total}} tăng đúng 1** và drift gauge **có tồn tại** trên {{/metrics}}. Vì nếu alert dựng sai, lần tới ta lại có 2 đơn drift mà "xanh".
+**Chạy trên production mà không rút tiền thật / không làm bẩn dữ liệu:**
+- **Tài khoản synthetic** riêng ({{customer_id}} nằm trong whitelist, tên {{SMOKE-…}}), **luôn** gắn header {{X-Synthetic: true}} và đơn mang prefix {{ORDTEST-}}.
+- **Gateway sandbox**: số tiền không rời sàn; callback từ sandbox được accept nhưng **không** trừ tiền thật. Ở SIT thì dùng stub.
+- **Loại trừ khỏi số liệu**: {{finance-core}} và dashboard đều filter {{is_synthetic = true}}; nếu quên, smoke chạy mỗi 15 phút sẽ "tạo" 96 lệnh hoàn/ngày và làm báo cáo của PO sai — đây là kiểu lỗi mà phòng kinh doanh phát hiện trước bạn.
+- **Tự dọn dẹp**: job đêm thứ Bảy xoá {{ORDTEST-}} > 7 ngày; số lượng synthetic được ghi vào log để kiểm đếm.
+- **Tần suất**: smoke blocking **sau mỗi deploy** (9 test, 14,2 s ở log), **cộng** synthetic canary chạy mỗi 15 phút ({{kube-prometheus "blackbox"}}/cronjob) để bắt lỗi xuất hiện **sau** deploy (ví dụ connection pool cạn dần).
+- **Quy tắc vàng**: smoke **không retry** ({{rerunFailingTestsCount=0}} ở workflow — đúng như artifact). Một smoke fail rồi pass là một **sự cố đang vào production**, không phải "flaky".
+
+### 4. Dòng nguy hiểm trong log
+04/12 **14:20 WARN ReconcileJob : 2 đơn có drift (ORD-2026-44980, ORD-2026-45012), diff = 200000** → ticket OPS-311, phân loại "nghi do callback sandbox delayed, theo dõi", **không page**.
+- **Vì sao nguy hiểm hơn 5xx**: 5xx là hệ thống **tự báo "tôi hỏng"** và nó **không mất tiền**. Drift {{SUM(rows) ≠ cột}} với diff **đúng bằng một lệnh 200.000** là chữ ký của **lost update**: hai transaction cùng đọc {{575.000}}, cùng ghi {{775.000}}, nên cột chỉ tăng **một lần** trong khi có **hai dòng lệnh** — và cả hai lệnh đã được gửi sang gateway. Không có 5xx, không có latency tăng, không có alert: khách không phàn nàn gì vì **tiền về cả hai lệnh**.
+- **Lẽ ra**: drift **phải là alert page** ( ngưỡng: bất kỳ bao nhiêu, vì đơn vị của nó là tiền). Người được page đọc {{refund}} của 2 đơn → thấy {{PENDING_GATEWAY}} × 2 cho cùng {{payment_id}} → dừng auto-approve bằng flag **ngay trong 5 phút** → sửa. Thay vào đó nó được xử lý như "cảnh báo mềm" và 5 ngày sau, nó là sự cố ở giai đoạn Fix bug (đơn **ORD-2026-45512**, khách đã nhận **975.000** cho đơn **830.000**).
+- Đây là bài học về **báo động có chủ**: mỗi metric dựng lên phải có (a) ngưỡng, (b) mức độ, (c) **người page**, (d) **hành động đầu tiên** ghi ngay trong runbook. Metric không có 4 thứ đó chỉ là âm thanh nền — và sau 2 tuần mọi người sẽ tắt nó vì "toàn báo lá cải".
+
+> Senior tip: khi đặt tên cột trong migration, tự hỏi "**nếu rollback giữa chừng thì dòng này còn đúng không**" và "**image cũ đọc schema này có khóc không**". Còn về smoke test: câu hỏi không phải "smoke có xanh không" mà "**smoke có đỏ được không**" — hãy cho nó fail một lần có kiểm soát (gửi lệnh vượt tiền trên tài khoản synthetic) ngay trước khi tin nó. Cái log trên có {{SMOKE-06 ledger = cột PASSED}} trong khi drift thật đang chạy: tức là smoke 06 đọc **cột** chứ không đọc **tổng các dòng** — smoke test cũng có thể là test trang trí.`,
+      pitfalls: ['Chạy migration xoá/sửa cột cùng lúc với deploy code', 'Bật {{CHECK}} trên bảng 9 triệu dòng mà không {{NOT VALID}} trước', 'Để smoke test tự retry cho "khỏi chặn canary"', 'Quên gắn cờ synthetic nên dữ liệu test làm ô nhiễm báo cáo tài chính', 'Metric drift có nhưng không có ngưỡng, không có người page']
+    },
+    {
+      key: 'bugfix',
+      title: 'Fix bug: retry 3 lần đã che một bug race — hai lệnh hoàn đồng thời vượt tổng tiền',
+      role: 'Bạn on-call; PO + kế toán đang ngồi cạnh; CI đang xanh',
+      story: `Thứ Sáu 09/12, 10:20. {{finance-core}} gửi báo cáo đối soát tuần: **63 đơn** có tổng tiền hoàn **vượt** số khách đã trả, chênh lệch tổng cộng **4,7 triệu đồng**. Chị Lan (kế toán) đưa một ví dụ cụ thể: đơn **ORD-2026-45512**, khách **CUST-778120** trả **830.000**, đã hoàn **975.000** (vượt **145.000**) qua **4 lệnh**, trong đó **2 lệnh 200.000 cách nhau 22 ms**. Tiền đã về **ví** khách (khách tự rút được), một phần về thẻ (không rút lại được dễ dàng).
+
+Điều làm cả squad lạnh sống lưng: **CI xanh**, {{twoParallelRefunds_neverExceedPaidAmount}} "PASSED" **14 ngày liên tiếp**, và nó được **retry trung bình 2,4 lần mỗi ngày**. Không ai mở ticket cho nó, vì nó không đỏ.
+
+PO (An) hỏi đúng một câu: "Sao test đã có mà không bắt được?". Tech lead chỉ đạo: bạn điều tra nguyên nhân gốc, còn Trung chặn dòng tiền.`,
+      artifacts: [
+        { name: 'overspend-report.csv', lang: 'text', content: `order_no,customer_id,paid_amount,sum_refund_rows,payment_refunded_amount,overspend_vnd,refunds
+ORD-2026-45512,CUST-778120,830000,975000,775000,145000,"RF-0001 225000 SUCCESS;RF-0002 350000 SUCCESS;RF-0003 200000 SUCCESS;RF-0004 200000 SUCCESS"
+ORD-2026-44980,CUST-661204,1420000,1520000,1320000,100000,"RF-0110 620000;RF-0111 200000;RF-0112 200000;RF-0113 500000"
+ORD-2026-45012,CUST-903311,690000,740000,690000,50000,"RF-0120 300000;RF-0121 240000;RF-0122 200000;RF-0123 200000"
+... 60 dòng nữa (finance-core, export 2026-12-09 10:02)
+  TỔNG 63 đơn            : overspend 4.712.000 VND
+  2 lệnh cách nhau <50ms : 58/63  (cùng khách 2 thiết bị: 34, 2 CSKH khác ca: 19, app retry: 5)
+  kênh nhận tiền         : WALLET 41 (rút được ngay), CARD 22 (không rút lại dễ)
+  đặc điểm chung         : payment_refunded_amount LUÔN <= paid_amount (CHECK không báo gì)
+                            sum_refund_rows > payment_refunded_amount ở 63/63 đơn` },
+        { name: 'refund-service-1014.log', lang: 'text', content: `# pod refund-service-6d8f9-x2k (PROD, replica 3/4) — ORD-2026-45512, payment_id 45512
+2026-12-08T15:41:22.096+07:00 INFO  [http-nio-8080-exec-31] RefundController : POST /orders/45512/refunds key=7c1f-44aa-9e20 amount=200000 line=90217
+2026-12-08T15:41:22.104+07:00 DEBUG [http-nio-8080-exec-31] RefundRepository : findActiveByPaymentId(45512) -> 3 rows, sum=575000
+2026-12-08T15:41:22.105+07:00 DEBUG [http-nio-8080-exec-31] RefundPolicy     : CHECK used=575000 ask=200000 paid=830000 -> ALLOW
+2026-12-08T15:41:22.112+07:00 INFO  [http-nio-8080-exec-7 ] RefundController : POST /orders/45512/refunds key=9ac2-11be-5d07 amount=200000 line=90217
+2026-12-08T15:41:22.118+07:00 DEBUG [http-nio-8080-exec-7 ] RefundRepository : findActiveByPaymentId(45512) -> 3 rows, sum=575000
+2026-12-08T15:41:22.119+07:00 DEBUG [http-nio-8080-exec-7 ] RefundPolicy     : CHECK used=575000 ask=200000 paid=830000 -> ALLOW
+2026-12-08T15:41:22.121+07:00 DEBUG [exec-31] RefundRepository : INSERT refund RF-0003 (200000)
+2026-12-08T15:41:22.126+07:00 DEBUG [exec-7 ] RefundRepository : INSERT refund RF-0004 (200000)
+2026-12-08T15:41:22.131+07:00 DEBUG [exec-31] PaymentRepository: UPDATE payment SET refunded_amount=775000 WHERE id=45512   (entity value, không phải x=x+200000)
+2026-12-08T15:41:22.140+07:00 DEBUG [exec-7 ] PaymentRepository: UPDATE payment SET refunded_amount=775000 WHERE id=45512   (GIỐNG HỆT — lost update)
+2026-12-08T15:41:22.151+07:00 INFO  [exec-31] RefundService    : status=SUCCESS RF-0003  (auto-approve, <=300000)
+2026-12-08T15:41:23.110+07:00 INFO  [exec-7 ] RefundService    : status=SUCCESS RF-0004  (auto-approve, <=300000)
+2026-12-08T15:41:23.118+07:00 INFO  [gateway-1] WalletLedger   : credited 200000 to CUST-778120 ref=RF-0004
+2026-12-08T15:41:23.121+07:00 INFO  [gateway-1] WalletLedger   : credited 200000 to CUST-778120 ref=RF-0003
+2026-12-08T15:41:23.130+07:00 DEBUG [exec-7 ] OrderLineRepository: UPDATE order_line SET refunded_amount=425000 WHERE id=90217  (cũng là entity value -> CẤP LINE CŨNG LOST UPDATE; tổng refund_line cho line này = 625000, paid = 450000)
+2026-12-08T15:45:04.002+07:00 INFO  [reconcile-1] ReconcileJob : drift order=45512 sum=975000 column=775000  (log WARN, metric refund_drift_total, KHÔNG alert)` },
+        { name: 'ci-e2e-attempts-0812.txt', lang: 'text', content: `# surefire XML của job e2e, 20 lần chạy gần nhất, test twoParallelRefunds_neverExceedPaidAmount
+# (rerunFailingTestsCount=2 đang bật ở surefire)
+run 01  attempt1 FAILED  "expected: <false> but was: <true>"   attempt2 PASSED   -> reported PASSED
+run 02  attempt1 PASSED                                       -> reported PASSED
+run 03  attempt1 FAILED  "ledger vượt số đã trả: 975000"      attempt2 PASSED   -> reported PASSED
+run 05  attempt1 FAILED  "phải có đúng 1 lệnh 200.000 được nhận: 2" attempt3? (max 2 retries) PASSED
+run 07  attempt1 PASSED
+...
+Thống kê 20 run: attempt1 pass 11/20 (55%), 9 run phải retry, 0 run đỏ cuối cùng.
+Ghi chú của Trung trong PR #1203: "E2E này flaky, retry là đủ, để sau sprint"
+Ghi chú QUAN TRỌNG về mặt cơ chế (Hương viết sau này trong postmortem):
+  1) Attempt 2 thường PASS vì attempt 1 đã ĐỂ LẠI 2 lệnh PENDING_GATEWAY; test tạo đơn mới
+     nhưng dùng LẠI cùng một tài khoản + cùng line đã bị "giữ chỗ", nên remaining thực tế < 200.000
+     → request thứ hai bị chặn vì HẾT TIỀN chứ không phải vì CODE ĐÚNG. Test xanh vì lý do sai.
+  2) Assertion đọc payment.refunded_amount (cột) — cột luôn <= paid_amount vì lost update,
+     nên kể cả khi race xảy ra, dòng assertThat(refundedTotal <= 830000) vẫn XANH.
+  3) Hai cú click cách nhau 300–900 ms (UI render), cửa sổ race chỉ ~15 ms → chỉ ~1/20 lần va.` }
+      ],
+      task: `1. **Nguyên nhân gốc** là gì? Dẫn chứng cụ thể từ {{refund-service-1014.log}} và {{overspend-report.csv}}, chỉ rõ **hai cấp** (đơn và line) và **hai loại** lỗi (race + lost update).
+2. Vì sao {{twoParallelRefunds_neverExceedPaidAmount}} "xanh" trong 14 ngày? Phân tích **cả ba** cơ chế che giấu trong {{ci-e2e-attempts-0812.txt}}, nói rõ cơ chế nào nguy hiểm nhất và vì sao.
+3. Việc làm **ngay trong 30 phút** để chặn dòng tiền (ưu tiên cách không cần deploy), và cách xử lý 4,7 triệu đã ra khỏi sàn (**41 vụ về ví, 22 vụ về thẻ**).
+4. **Sửa dài hạn**: SQL chặn race, vì sao {{CHECK (refunded_amount <= paid_amount)}} là **không đủ**, test tái hiện đồng thời (viết code), chính sách flaky, và các phòng ngừa còn lại.`,
+      answer: `**Tóm tắt:** gốc rễ là **check-then-act trên dữ liệu cộng dồn**, chạy ở mức **READ COMMITTED** — hai transaction cùng đọc {{575.000}}, cùng thấy "{{575.000 + 200.000 ≤ 830.000}}" và cả hai được đi tiếp. Lỗi thứ hai chồng lên: vì code ghi **giá trị tính sẵn ở Java** ({{refunded_amount = 775000}}) chứ không phải {{x = x + 200000}}, transaction thứ hai **ghi đè** (lost update) → cột dừng ở 775.000 trong khi **4 dòng lệnh = 975.000** đã được gửi gateway và đã vào ví khách. Vì cột luôn {{≤ paid_amount}}, nên {{CHECK}} của DB, {{ReconcileJob}} (log WARN nhưng không page), {{smoke SMOKE-06}} (assert cột) và **chính cái E2E test** đều xanh. Retry chỉ là lớp che cuối cùng; ba lớp che phía trước mới là vấn đề.
+
+### 1. Nguyên nhân gốc, có dẫn chứng
+**Interleaving (từ {{refund-service-1014.log}}):**
+| Thời điểm (ms) | exec-31 (RF-0003) | exec-7 (RF-0004) |
+|---|---|---|
+| .104 | {{READ}} sum = **575000** | |
+| .105 | {{CHECK}} 575000+200000 ≤ 830000 → ALLOW | |
+| .118 | | {{READ}} sum = **575000** (RF-0003 chưa commit → invisible ở READ COMMITTED) |
+| .119 | | {{CHECK}} → ALLOW |
+| .121 | INSERT RF-0003 | |
+| .126 | | INSERT RF-0004 |
+| .131 | UPDATE {{refunded_amount = 775000}} | |
+| .140 | | UPDATE {{refunded_amount = 775000}} ← **cùng một giá trị** |
+| 23.118 | | ví +200.000 (RF-0004) |
+| 23.121 | ví +200.000 (RF-0003) | |
+Kết luận: {{READ}} của exec-7 **xảy ra trước commit của exec-31**, nên ở mức {{READ COMMITTED}} nó không thấy dòng chưa commit → cả hai ALLOW. {{@Transactional}} **không** có nghĩa là "một mình tôi trong vùng này": isolation mặc định của PostgreSQL cho phép **đọc dữ liệu cũ** và chỉ khoá **khi ghi**.
+**Ba chi tiết từ artifact:**
+- {{sum_refund_rows > payment_refunded_amount ở 63/63 đơn}}: dấu hiệu đặc trưng của lost update (mỗi vụ thua đúng **một** lệnh 200.000).
+- {{payment_refunded_amount LUÔN <= paid_amount}}: vì vậy ràng buộc {{ck_pay_refunded}} **không bao giờ** fire — nó chỉ nhìn **cột**, còn tiền thật nằm ở **các dòng**.
+- {{INSERT order_line 90217 refunded_amount=625000 (line paid=450000)}}: **cấp line cũng vỡ**, và đây mới là chỗ khách "lách": mỗi lệnh 200.000 đều {{≤}} hạn mức line **tại thời điểm đọc**, nhưng cộng lại thành 625.000 cho một line chỉ 450.000 → thiệt hại ở cấp line ({{overspend-report.csv}} ghi 175.000 cho line áo thun của đơn 45512).
+- {{10:14:23.130 status=SUCCESS}}: auto-approve ({{≤ 300.000}}) + ví nội bộ → **tiền đi trong 2 giây**, không có cửa con người nào chặn.
+- {{10:15:04 drift log WARN, KHÔNG alert}}: hệ thống **đã biết** mình lệch từ 04/12 (2 đơn) và 09/12 (63 đơn) nhưng tín hiệu không có người nhận.
+
+### 2. Vì sao test "xanh" 14 ngày — ba lớp che
+- **Lớp 1 — retry {{rerunFailingTestsCount=2}}**: 9/20 run phải chạy lại, và báo cáo cuối cùng luôn là PASSED. Retry biến **tín hiệu xác suất** (bug race) thành **nhiễu bị lọc bỏ**. Đây là lớp **dễ thấy nhất** và cũng **ít tệ nhất**, vì nếu bỏ retry ta vẫn chưa có test đúng (xem lớp 2).
+- **Lớp 2 — assert sai nguồn dữ liệu**: {{assertThat(summary.refundedTotal()).isLessThanOrEqualTo(830_000)}} đọc **cột {{refunded_amount}}** — chính là thứ bị lost update làm cho "đẹp". Test **không thể** đỏ, dù race xảy ra 100%. Đây là lớp nguy hiểm nhất: nó tạo niềm tin **vĩnh viễn**, không phụ thuộc xác suất, và mọi người không còn lý do nhìn lại test. Bài học: **thứ đem ra assert phải là thứ bạn nghi ngờ**; khi điều tra mất tiền, hãy assert **{{SUM(các dòng)}}**, và thêm một assertion **đối chiếu hai nguồn** ({{column == sum}}) — drift chính là bug.
+- **Lớp 3 — xanh vì lý do sai**: attempt 2 đi vào **trạng thái đã bị đầu độc** bởi attempt 1 (cùng tài khoản, cùng line đã bị "giữ chỗ"), nên request thứ hai bị chặn vì **hết tiền** chứ không phải vì code khoá đúng. Test pass nhưng **không kiểm chứng gì**. Đây là lý do test đồng thời **phải dựng lại dữ liệu từ đầu** ({{@BeforeEach}} tạo đơn **mới hoàn toàn**, idempotency key **mới**) và **tự cleanup**.
+- **Cộng thêm**: 2 cú click cách nhau 300–900 ms trong khi cửa sổ race chỉ ~15 ms → xác suất va nhau ~5%. Muốn **chắc chắn** va thì phải dùng {{CountDownLatch}}, ở tầng API — đó chính là điều khiến TC-10 từ đầu đã bị xếp nhầm xuống E2E.
+
+### 3. Trong 30 phút
+1. **Dừng dòng tiền, không cần deploy** (việc đầu tiên, phút 0–3): tắt auto-approve bằng **feature flag** {{refund.partial.auto_approve=false}} → mọi lệnh phải CSKH duyệt, thủ tục quay lại như trước (chậm nhưng **không mất tiền**). Đây là lúc flag trả nợ: nếu tính năng bung 100% không có flag thì 30 phút đầu tiên sẽ là "sửa code + build + deploy".
+2. **Chốt phạm vi**: chạy đối soát tạm trên **toàn bộ** {{refund}}: {{SUM(rows)}} vs {{payment.refunded_amount}} vs gateway → danh sách 63 đơn (có sẵn từ {{finance-core}}), đóng băng quyền hoàn trên 63 đơn đó ({{refund_lock}} hoặc flag theo {{orderId}}).
+3. **Sửa tiền** — ba nhóm, phải tách bạch vì chi phí khác nhau:
+   - **41 vụ về ví**: **ghi nợ** vào {{wallet}} khách (số dư thành âm có kiểm soát) hoặc thu qua giao dịch mua tiếp theo; auto-approve bị tắt nên vẫn phải **thông báo + xin lỗi + hạn 30 ngày**. Với khách **rút hết rồi**: ghi {{receivable}}, kế toán xử lý như nợ khó đòi, PO quyết định ngưỡng xoá (ví dụ < 20.000 thì sàn chịu).
+   - **22 vụ về thẻ**: gọi gateway API **reversal** theo {{refund_ref}}; nếu giao dịch **đã settlement** thì không đảo được → sàn chịu, lưu {{finance-core}} làm chi phí, và **bắt buộc** có số này trong postmortem (không có số lỗ thì không có ưu tiên phòng ngừa).
+   - Mọi khoản hoàn lại/đòi lại phải là **lệnh có audit**, không phải sửa DB tay.
+4. **Deploy bản sửa** (pipeline 6 phút) — xem mục 4 — **kèm** {{RefundConcurrencyIT}} bắt buộc, bật lại auto-approve **sau** khi concurrency test xanh **20/20** và drift = 0 trong 2 giờ.
+5. **Biến "biết" thành "page"**: alert {{refund_drift_total > 0}} severity **critical**, runbook: "tắt auto-approve flag → mở 5 đơn lệch → page bạn". Cái này làm trong 20 phút và **ngăn lần thứ hai**, quan trọng ngang việc sửa code.
+
+### 4. Sửa dài hạn
+**a) Một câu UPDATE có điều kiện, cho cả hai cấp, trong cùng transaction ngắn:**
+~~~sql
+-- cấp đơn (payment): 0 dòng = từ chối, KHÔNG cần đọc trước
+UPDATE payment
+   SET refunded_amount = refunded_amount + :amt
+ WHERE id = :pid
+   AND refunded_amount + :amt <= paid_amount;
+
+-- cấp line (order_line): 0 dòng = REFUND_EXCEEDS_LINE
+UPDATE order_line
+   SET refunded_amount = refunded_amount + :lineAmt
+ WHERE id = :lineId
+   AND refunded_amount + :lineAmt <= paid_amount;
+~~~
+{{UPDATE}} lấy **row lock** trên dòng {{payment}}: exec-7 sẽ **chờ** exec-31 commit, rồi **đánh giá lại** {{WHERE}} trên giá trị mới {{775000}} → {{775000 + 200000 > 830000}} → **0 dòng** → ném {{RefundExceedsRemainingException}} → rollback (kể cả {{INSERT refund}}). **Hai** điểm mạnh hơn {{SELECT FOR UPDATE}}: không có cửa quên bước khoá, và **điều kiện được kiểm tra đúng lúc ghi**. Thứ tự trong transaction: UPDATE {{payment}} trước (dòng nóng nhất, thứ tự khoá cố định để tránh deadlock), rồi UPDATE {{order_line}}, rồi INSERT {{refund}}/{{refund_line}}, rồi outbox, rồi COMMIT.
+**b) Vì sao {{CHECK (refunded_amount <= paid_amount)}} là không đủ** — và cái gì thay thế:
+- CHECK chỉ nhìn **dòng chứa nó**. Trong lost update, cột bị **nhỏ hơn thực tế** nên luôn hợp lệ → constraint **im lặng**. Nó vẫn **nên có** (chống ghi số âm / ghi tay sai), nhưng đừng tưởng nó là tường.
+- Ràng buộc "tổng nhiều dòng ≤ một cột ở bảng khác" **không** biểu diễn được bằng CHECK. Ba lựa chọn thực dụng, theo thứ tự tôi chọn:
+  1. **Chỉ cho phép tăng qua {{UPDATE}} có điều kiện** (a) + **test** chứng minh nó + **codeowners** để mọi thay đổi vùng này phải có review của 2 người. Ràng buộc nằm trong **API của repository**, không phải trong DB.
+  2. **Bảng phụ trợ giữ số dồn** {{refund_ledger(payment_id PK, used_amount, paid_amount, CHECK (used_amount <= paid_amount))}} — mỗi lệnh hoàn INSERT một dòng với {{used_amount}} = số **sau khi cộng** (tính trong cùng transaction qua (a)). Khi đó "tổng ≤ đã trả" được diễn đạt **trong một dòng**, CHECK có răng thật, và lost update không thể lọt vì {{used_amount}} đến từ {{RETURNING refunded_amount}} của câu UPDATE.
+  3. **Deferred constraint / trigger**: chạy được nhưng **khó test, khó debug, không review được, dễ thành logic ẩn**; tôi không chọn cho hệ thống tiền nếu còn lựa chọn 1+2.
+  4. **Job đối soát 5 phút**: {{SUM(rows)}} vs {{payment.refunded_amount}} vs **{{gateway}}**; lệch → **page** + tự khoá đơn. Đây là "deep defense": nó không ngăn bug, nó **phát hiện trong 5 phút thay vì 5 ngày**.
+**c) Test tái hiện đồng thời — bắt buộc vào suite PR, không retry:**
+~~~java
+@Testcontainers
+@SpringBootTest(webEnvironment = WebEnvironment.RANDOM_PORT)   // Tomcat thật: 2 connection thật
+@Tag("critical")                                               // CI cấm retry cho tag này
+class RefundConcurrencyIT {
+
+    @Container @ServiceConnection
+    static PostgreSQLContainer<?> pg = new PostgreSQLContainer<>("postgres:16-alpine");
+
+    @Autowired TestRestTemplate rest;
+    @Autowired JdbcTemplate jdbc;
+    @Autowired TestDataFactory orders;
+
+    static final long PAID = 830_000L, ASK = 200_000L;
+
+    /** AC6: còn 255.000; gửi 20 lệnh 200.000 ĐỒNG THỜI → đúng 1 được nhận. */
+    @RepeatedTest(20)
+    void concurrentRefunds_neverExceedPaidAmount() throws Exception {
+        long orderId = orders.deliveredOrder(PAID).refunded(575_000).build();   // đơn MỚI, key MỚI
+        int n = 20;
+        var start = new CountDownLatch(1);      // "cùng nổ": các thread chờ chung 1 tín hiệu
+        var done  = new CountDownLatch(n);
+        var accepted = new AtomicInteger();
+        var pool = Executors.newFixedThreadPool(n);
+        for (int i = 0; i < n; i++) {
+            String key = "race-" + orderId + "-" + i;              // khác nhau → không phải replay
+            pool.submit(() -> {
+                try {
+                    start.await();
+                    var r = rest.postForEntity("/api/v1/orders/" + orderId + "/refunds",
+                            body(ASK, key), RefundResponse.class);
+                    if (r.getStatusCode() == HttpStatus.CREATED) accepted.incrementAndGet();
+                } catch (Exception ignored) {
+                } finally { done.countDown(); }
+            });
+        }
+        start.countDown();                                            // thả cả 20 cùng lúc
+        assertThat(done.await(30, TimeUnit.SECONDS)).isTrue();
+        pool.shutdownNow();
+
+        Long ledger = jdbc.queryForObject(
+            "select coalesce(sum(amount),0) from refund where order_id = ? and status in "
+          + "('REQUESTED','APPROVED','PENDING_GATEWAY','SUCCESS')", Long.class, orderId);
+        Long column = jdbc.queryForObject(
+            "select refunded_amount from payment where order_id = ?", Long.class, orderId);
+        long lineRefunded = jdbc.queryForObject(
+            "select refunded_amount from order_line where id = 90217", Long.class);
+
+        assertThat(accepted).hasValue(1);                     // đúng MỘT 201
+        assertThat(ledger).isLessThanOrEqualTo(PAID);          // tổng các dòng ≤ đã trả  (nguồn thật)
+        assertThat(column).isEqualTo(ledger);                  // không lost update (drift = 0)
+        assertThat(lineRefunded).isLessThanOrEqualTo(450_000); // cấp line cũng phải đúng
+    }
+}
+~~~
+Bốn chi tiết làm test này **có giá trị** (và là lý do nó khác với test cũ):
+- {{CountDownLatch}} tạo xung đột **chắc chắn**, không cầu may; {{@RepeatedTest(20)}} bắt cả những lịch trình hiếm; chạy trên PostgreSQL **thật** vì khoá dòng là thứ không mock được.
+- **HTTP thật + dữ liệu đã commit** ({{RANDOM_PORT}}, bỏ {{@Transactional}} ở test): nếu dùng {{MockMvc}} hoặc test có {{@Transactional}} thì transaction rollback, request khác không thấy gì → **test xanh giả**, đúng lỗi đã gặp ở giai đoạn dev.
+- Assert **cả ba** thứ: số {{201}}, {{SUM(các dòng)}}, và **{{column == ledger}}**. Assertion thứ ba chính là cái mà {{SMOKE-06}} và test cũ đã bỏ qua.
+- {{key = "race-" + orderId + "-" + i}}: mỗi thread một idempotency key **khác nhau** (nếu trùng key, ta test replay chứ không test race — hai thứ rất hay bị nhầm, và là cái bẫy mà attempt 2 của test cũ đã rơi vào).
+- **Phải chứng minh test đỏ với code cũ**: chạy nó với commit {{check-then-act}} ({{git stash}}/worktree), dán ảnh kết quả {{accepted = 14, ledger = 975000, column = 775000}} vào PR. Test chưa từng đỏ là test chưa từng được tin.
+**d) Idempotency và thứ tự ghi (đã merge kèm bản sửa):** {{INSERT ... ON CONFLICT (payment_id, idempotency_key) DO NOTHING}} + {{RETURNING}} — nếu 0 dòng thì đọc lại lệnh cũ và trả response cũ (so khớp thân, lệch thân → {{409 DUPLICATE_REQUEST}}). Bắt {{DataIntegrityViolationException}} để khách không nhận HTTP 500.
+**e) Chính sách flaky — xoá tận gốc cơ chế che:**
+- Bỏ {{rerunFailingTestsCount}} ở surefire toàn cục; **{{@critical}} và {{@smoke}}: 0 retry**, enforced bằng job CI (fail nếu có test {{@critical}} pass ở attempt {{> 1}}).
+- Mỗi test flaky phải có **ticket FLAKY-nn + người phụ trách + hạn 14 ngày**; hết hạn mà chưa sửa → test bị **vô hiệu hoá kèm cảnh báo công khai**, không âm thầm skip.
+- **Không được dùng trạng thái cũ làm dữ liệu test**: mỗi test đơn mới, key mới; {{@BeforeEach}} không "dọn" mà "tạo cái mới".
+- Không assert **giá trị suy diễn** (cột) khi đang điều tra **tổng thật** (dòng). Quy tắc: test tiền assert **{{>= 2}} nguồn** và **đối chiếu lẫn nhau**.
+- Dashboard flaky rate theo tuần, ngưỡng 1%, vượt là **khoá merge** — biến "test đỏ" thành chuyện **của team**, không của người viết test.
+**f) Phòng ngừa hệ thống (action item, có chủ + hạn):**
+| Việc | Chủ | Hạn | Bằng chứng xong |
+|---|---|---|---|
+| Alert {{refund_drift_total > 0}} critical + runbook | Tuấn (DevOps) | 11/12 | page test thành công |
+| Job đối soát 5 phút với **{{gateway}}** (không chỉ với cột) | Trung | 15/12 | báo cáo lệch = 0, 7 ngày |
+| {{SMOKE-RACE}} trên production (synthetic) | Hương | 12/12 | smoke đỏ khi cố tình phá |
+| CODEOWNERS vùng tiền + 2 review bắt buộc | Tech lead | 10/12 | PR không có owner thứ 2 bị chặn |
+| Test {{@critical}} không chạy trên môi trường **1 bản thể** | Hương | 18/12 | SIT replicas = 2, nightly 4 replicas |
+| SI-612: {{remaining}} tính **cả** cấp line khi hiển thị (khách thấy "còn 225.000" chứ không phải 255.000) | Bạn | 20/12 | UAT lại mục 6 |
+| Postmortem **không đổ lỗi**, có 5 Whys, có số lỗ (4,7 triệu; bao nhiêu sàn chịu) | PO + tech lead | 13/12 | action item có tên + hạn |
+**g) Năm Why (mẫu, để team không dừng ở "Trung viết sai"):**
+1. Vì sao khách nhận 975.000 cho đơn 830.000? → hai lệnh cùng được ALLOW.
+2. Vì sao cùng ALLOW? → {{READ}} trước {{CHECK}} ở {{READ COMMITTED}}, không có UPDATE điều kiện.
+3. Vì sao code không như design? → dev **tự đổi** vì "JPA tiện hơn", design doc không bị **ràng buộc** bởi test.
+4. Vì sao không ai thấy? → test race ở E2E, assert cột, và retry che.
+5. Vì sao team cho phép retry che? → **không có chính sách flaky**, CI chỉ có mục tiêu "xanh". → Action ở (e), không chỉ ở SQL.
+
+> Senior tip: bug race không phải "xui", nó là **tính chất** của hệ thống nhiều bản thể; điều duy nhất ngẫu nhiên là **lịch trình**. Vậy nên (1) đừng hy vọng phát hiện bằng cách chạy thêm vài lần E2E — hãy **chủ đích gây xung đột**; (2) khi hệ thống có **số cộng dồn** và **nhiều người ghi**, luôn {{SET x = x + :delta}} kèm điều kiện, không bao giờ {{SET x = :giaTriTinhSanXaJava}}; (3) với câu hỏi "vì sao test không bắt được", câu trả lời **hầu như không** là "thiếu test" mà là "test đang assert **đúng cái mà bug làm hỏng**". Trước khi merge, hãy phá code một chút và nhìn xem test nào đỏ. Nếu không con nào đỏ, bạn đang có ba lớp che như ở đây.`,
+      pitfalls: ['Kết luận "không có bug" vì test xanh một lần', 'Sửa bằng cách thêm {{sleep}} hoặc giảm số thread cho test qua', 'Tin {{CHECK (refunded_amount <= paid_amount)}} chặn được overspend', 'Chữa triệu chứng bằng retry thay vì dựng lại dữ liệu test', 'Để drift alert chạy im lặng không người nhận, rồi "theo dõi" thay vì page']
+    },
+  ],
+  interview: {
+    story: `### Kể lại theo STAR (khoảng 2 phút, có số)
+- **Situation:** sàn TMĐT ~3 triệu đơn/tháng, tính năng hoàn tiền một phần cho đơn đã giao. Hệ thống cũ chỉ có hoàn toàn bộ, mọi lệnh do CSKH nhập tay; báo cáo tài chính ghi **37 đơn bị hoàn vượt tiền trong 6 tháng (~41 triệu)**. Squad 6 người: 4 dev, 1 SDET, 1 PO; deadline 05/12 để kịp sale 12.12, sau đó code freeze.
+- **Task:** tôi chịu trách nhiệm phần **số học tiền và ràng buộc không được vượt** (đơn và line), đồng thời cùng SDET dựng tầng test cho ràng buộc đó. Yêu cầu của PO: khoản ≤ 300.000đ **tự động duyệt** để khách khỏi chờ — tức là tiền rời sàn trong 2 giây, không có cửa người chặn.
+- **Action:** (1) ở refinement, ép ticket thành **12 AC Given/When/Then** có số, trong đó AC6 là "hai lệnh 200.000 đồng thời khi còn 255.000 → đúng 1 thành công"; (2) cùng SDET lập **traceability matrix** 19 dòng và chốt: **ràng buộc đồng thời phải test ở tầng API**, không phải E2E; (3) thiết kế guard bằng **một câu UPDATE có điều kiện** ({{refunded_amount + :amt <= paid_amount}}), INSERT-first với **unique index** cho idempotency, outbox cho event; (4) trong code review, tôi chặn merge PR service vì **không có test đồng thời**, vì nó gọi gateway **trong transaction**, và vì dev tự bật {{rerunFailingTestsCount=2}} để CI xanh — yêu cầu chính sách flaky có ticket + ngày hết hạn; (5) khi production vẫn vượt tiền (63 đơn, 4,7 triệu), tôi điều tra từ **drift** {{SUM(rows) ≠ cột}} thay vì từ 5xx: gốc là check-then-act ở READ COMMITTED + lost update, và test cũ assert **chính cái cột bị hỏng** nên không bao giờ đỏ.
+- **Result:** bản sửa (UPDATE điều kiện 2 cấp + ledger + job đối soát với gateway) xanh **20/20** ở {{RefundConcurrencyIT}}; {{SMOKE-RACE}} chạy trên production mỗi 15 phút; drift alert **critical**; alert-to-mitigate giảm từ 5 ngày xuống **4 phút**; release 04/12 kịp sale. Số vụ hoàn vượt sau 3 tháng: **0**; flaky rate từ **41%** xuống **0,8%**. Phần tiền thua (4,7 triệu) được thu hồi ~60% qua ví, phần còn lại ghi nhận chi phí — con số đó là thứ khiến ban giám đốc duyệt luôn chính sách "cấm retry cho test tiền".
+- **Bài học:** (a) **retry không làm test hết flaky, nó làm mất tín hiệu**; (b) test tiền phải assert **ít nhất hai nguồn đối chiếu nhau**, nếu không nó chỉ chứng minh hệ thống tự nghĩ mình đúng; (c) ràng buộc "tổng nhiều dòng ≤ một cột" **không** nằm vừa trong DB CHECK — nếu không có {{UPDATE}} điều kiện + codeowners + đối soát thì không ai chắn được.`,
+    questions: [
+      { q: 'Vì sao "test đồng thời" đặt ở tầng API mà không phải E2E? Đặt ở E2E thì mất gì?', a: `Vì ở API tôi **chủ đích tạo xung đột**: 20 thread chờ chung một {{CountDownLatch}}, rồi cùng POST; dữ liệu qua PostgreSQL **thật** và **đã commit** ({{RANDOM_PORT}}, bỏ {{@Transactional}} trong test). Ở E2E, hai cú click cách nhau 300–900 ms vì UI render, còn cửa sổ race của tôi chỉ ~15 ms → tỉ lệ va nhau khoảng 5%, nghĩa là test **xanh phần lớn thời gian ngay cả khi code sai**. E2E còn chậm (25 s/lượt), chia sẻ trình duyệt/versi, phụ thuộc 3 hệ thống khác nên hay đỏ vì lý do không liên quan. Tôi vẫn giữ một test E2E "hai phiên" để chứng minh UX (khách thấy thông điệp gì), nhưng nó **không phải** bằng chứng về tính đúng của ràng buộc tiền. Bài học thêm: nếu môi trường chỉ có **1 bản thể** thì {{synchronized}} trong JVM cũng "test xanh" — phải chạy trên ≥ 2 bản thể hoặc ≥ 2 connection thật. ` },
+      { q: 'Retry test flaky: khi nào bạn chấp nhận, và quản lý thế nào để nó không che bug?', a: `Tôi **không bật retry toàn cục**, và **không retry cho test về tiền/khoá/idempotency**. Retry chỉ chấp nhận cho test đã được **xác định nguyên nhân là môi trường/test** (locator đổi, SIT chậm), kèm 4 thứ: ticket FLAKY-nn, người phụ trách, hạn **14 ngày**, và lane **quarantine** — tức là đỏ/vàng vẫn hiển thị trên dashboard, chỉ không chặn merge. CI có job fail nếu test mang tag {{@critical}} pass ở attempt > 1 (báo "xanh sau retry" thành đỏ). Vì sao gắt thế: ba cơ chế che trong vụ này là retry, assert sai nguồn, và dùng lại trạng thái cũ; retry chỉ là cơ chế **dễ thấy nhất** nhưng cũng là cơ chế làm team **mất tín hiệu sớm nhất**. Sau khi dựng chính sách, flaky rate từ 41% (test chờ toast) xuống 0,8% và 3 bug thật lộ ra trong 2 tuần. ` },
+      { q: 'Ràng buộc "tổng tiền hoàn ≤ số đã trả" — bạn đặt ở DB, ở code, hay cả hai?', a: `Cả hai nhưng **đúng vai trò**. Code (RefundPolicy) kiểm tra để trả **thông điệp đẹp** và đúng mã lỗi {{422}}; DB mới là nơi **không thể bị qua mặt**, vì nó là điểm hẹn duy nhất của 4 pod. Cụ thể: (1) {{unique index (payment_id, idempotency_key)}} chặn bấm hai lần — code không làm việc này an toàn được; (2) guard bằng **{{UPDATE payment SET refunded_amount = refunded_amount + :amt WHERE refunded_amount + :amt <= paid_amount}}**, một câu, một round-trip, điều kiện được đánh giá **lúc ghi** dưới row lock, {{0 dòng = từ chối}}; (3) {{CHECK (refunded_amount BETWEEN 0 AND paid_amount)}} vẫn có nhưng **không đủ** — nó chỉ nhìn dòng chứa nó, mà trong lost update cột bị **nhỏ hơn** thực tế nên luôn hợp lệ; (4) vì vậy tôi thêm bảng {{refund_ledger}} giữ số dồn **trong một dòng** để ràng buộc "tổng ≤ đã trả" diễn đạt được bằng CHECK có răng, và job đối soát {{SUM(rows)}} vs cột vs **gateway** mỗi 5 phút với alert critical. Không chọn Redis lock hay {{@Version}}: Redis thêm hệ thống và vẫn phải đối soát; optimistic lock chỉ phát hiện xung đột lúc commit, còn lệnh hoàn và tiền đã gửi rồi. ` },
+      { q: 'Giải thích lost update và vì sao {{@Transactional}} không đủ ở mức READ COMMITTED.', a: `{{READ COMMITTED}} (mặc định PostgreSQL) đảm bảo **mỗi câu SQL** thấy dữ liệu đã commit tại thời điểm **câu đó chạy**, nhưng **không** khoá các dòng mà transaction chỉ **đọc**. Nên: T1 đọc {{575.000}} → T2 đọc {{575.000}} (T1 chưa commit, vô hình với T2) → cả hai kiểm tra "{{575k + 200k ≤ 830k}}" đều lọt → cả hai ghi. Khi T2 ghi {{payment}}, nó chờ row lock của T1 rồi **ghi đè giá trị tính sẵn ở Java** ({{775.000}}) — T1 cũng ghi {{775.000}}, nên cột chỉ tăng **một lần** dù có **hai dòng lệnh**. Đó là lost update, và {{@Transactional}} hoàn toàn không phòng được: transaction chỉ đảm bảo **tính nguyên tử của tập ghi**, không đảm bảo "không ai khác đã đọc/ghi cùng dữ liệu trong lúc tôi làm". Ba cách sửa đúng nghĩa: {{SELECT ... FOR UPDATE}} (khoá lúc đọc), **{{UPDATE}} có điều kiện** (khoá + kiểm tra lúc ghi — tôi chọn), hoặc {{SERIALIZABLE}} với retry loop (đúng nhưng nhiều xung đột). Dấu hiệu nhận biết trên production: cột và tổng các dòng **lệch nhau**; vì thế tôi thêm assertion {{column == sum}} vào mọi test tiền. ` },
+      { q: 'Smoke test sau deploy trên production: bạn thiết kế gì để vừa đáng tin vừa không gây hại?', a: `9–12 test, **≤ 90 giây**, **blocking**: fail thì workflow tự {{argo abort}} + tắt feature flag + page on-call, và **{{rerunFailingTestsCount=0}}** (smoke pass sau retry = sự cố đang vào production). Nội dung: health/readiness, đọc {{summary}}, happy path 225.000, biên {{605.001 → 422}}, replay idempotency, **{{SMOKE-RACE}}** (2 lệnh 200.000 đồng thời khi còn 255.000 → đúng 1 {{201}}, {{SUM(rows) ≤ paid}}, {{column == sum}}), một test **hồi quy luồng cũ** (full refund của CSKH, vì migration đụng bảng {{payment}}), và một test **tín hiệu quan sát** (counter tăng đúng số request đã gửi, drift gauge tồn tại trên {{/metrics}}). Không gây hại: tài khoản **synthetic** riêng + header {{X-Synthetic: true}} + đơn prefix {{ORDTEST-}}, gateway ở **sandbox** nên tiền không rời sàn, mọi báo cáo/filter của {{finance-core}} loại {{is_synthetic}}, job cuối tuần dọn dữ liệu test. Chạy thêm mỗi 15 phút như synthetic monitoring để bắt lỗi xuất hiện **sau** deploy (pool cạn, pod leak). Và trước khi tin suite, tôi **cố tình làm nó đỏ một lần** có kiểm soát. ` },
+      { q: 'Nếu làm lại từ đầu, bạn thay đổi ba điều gì?', a: `Một: chuyển {{RefundConcurrencyIT}} từ "test nên có" thành **điều kiện chặn merge ở cấp pipeline** ngay từ sprint 1, kèm yêu cầu "test phải từng đỏ với code cũ" (PR phải dán kết quả đỏ) — ở đây nó bị hoãn vì "slow" và bị tag ra khỏi suite PR. Hai: dựng **drift detector và alert critical ngay ở giai đoạn kiểm thử**, không phải sau khi có sự cố; ngày 04/12 hệ thống đã log {{drift = 2 đơn}} và được phân loại "theo dõi", 5 ngày sau nó là 63 đơn và 4,7 triệu. Ba: ở UAT, mục "hai CSKH cùng hoàn một đơn" phải là **kịch bản bắt buộc có chữ ký**, vì khi đó cả hai cùng "Thành công" ngay trước mặt PO nhưng được ghi là "observation" — một checklist UAT với ô ký tên đã chặn được release sớm 5 ngày. Ngoài ba điều trên tôi vẫn giữ nguyên quyết định quan trọng nhất: **số tiền mẫu** (830.000 / 450.000 / 255.000 / 200.000) dùng chung từ ticket tới log CI, vì nó khiến mọi người — kể cả kế toán — nói cùng một ngôn ngữ khi sự cố xảy ra. ` }
+    ]
+  },
+  tags: ['partial-refund', 'quality', 'automation', 'sdet', 'playwright', 'junit5', 'testcontainers', 'acceptance-criteria', 'boundary', 'traceability', 'flaky-test', 'retry', 'ci-parallel', 'race-condition', 'lost-update', 'read-committed', 'atomic-update', 'idempotency', 'feature-flag', 'canary', 'smoke-test', 'synthetic-traffic', 'expand-contract', 'postmortem', 'ecommerce']
 }
 );
