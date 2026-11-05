@@ -1552,5 +1552,335 @@ val job = scope.launch(Dispatchers.Default) {
 - **Dispatchers.IO**: chỉ đổi pool thread chạy code, không đổi cơ chế huỷ.
 
 > Senior tip: trong vòng lặp nóng, gọi {{ensureActive()}} mỗi N vòng (ví dụ 10 nghìn) thay vì mỗi vòng để chi phí kiểm tra không đáng kể; và luôn ném lại CancellationException nếu buộc phải catch rộng.`
+},// ===================== banking =====================
+{
+  id: 'qz-banking-001',
+  topic: 'banking',
+  q: 'Người dùng bấm "Chuyển 1 triệu" trên app, service trừ tiền ở core banking rồi mới publish event Kafka, nhưng service bị crash giữa chừng. Hậu quả nào xảy ra và cách xử lý đúng là gì?',
+  options: [
+    'Không có hậu quả vì Kafka tự replay event sau khi service khởi động lại',
+    'Tiền đã bị trừ nhưng event không được publish, downstream không biết giao dịch; cần outbox pattern: ghi event vào cùng transaction DB rồi relay sang Kafka',
+    'Core banking tự rollback nếu service không gửi ACK trong 30 giây',
+    'Chỉ cần tăng timeout của Kafka producer lên 60 giây'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: transactional outbox pattern.**
+
+### Vì sao đúng
+Hai thao tác "trừ tiền trong DB" và "publish Kafka" là hai thao tác riêng biệt, không thể đảm bảo atomic together bằng cách đơn giản. Nếu service thực hiện xong DB commit (tiền đã trừ) rồi mới bắt đầu publish Kafka, mà crash trước khi publish xong → DB đã commit, Kafka chưa nhận → sự kiện mất. Downstream (ví dụ hệ thống ghi công nợ, hệ thống báo cáo) không biết giao dịch đã xảy ra, tiền đã bị trừ nhưng không được ghi nhận ở phía kia.
+
+**Outbox pattern** giải quyết bằng cách thay vì publish trực tiếp, service ghi cả giao dịch và một bản ghi "event cần gửi" vào **cùng một transaction DB** — bảng outbox. Vì cùng transaction, hoặc cả hai thành công hoặc cả hai rollback: nếu crash trước commit, tiền không bị trừ; nếu commit thành công, event đã có trong outbox. Sau đó một relay (job hoặc service) đọc bảng outbox, publish từng event lên Kafka, và xóa/đánh dấu đã gửi. Vì relay có thể crash và restart, các event phải **idempotent** (có key để Kafka producer set producer idempotent, consumer dedupe).
+
+### Vì sao các phương án khác sai
+- **Kafka replay**: replay chỉ gửi lại những event đã tồn tại trên topic; event này chưa từng được publish nên replay không giúp được gì.
+- **Core banking tự rollback sau 30s**: core banking là hệ thống ACID, nó không biết service khác có intention gì; core không thể tự rollback một giao dịch đã commit chỉ vì một service khác không gửi ACK.
+- **Tăng timeout producer lên 60s**: chỉ trễ thêm thời gian trước khi publish fail, không giải quyết vấn đề crash giữa chừng; nếu crash sau khi publish thành công thì vẫn mất, nếu crash trước thì vẫn mất event.
+
+### Cách thực hiện chi tiết
+1. Service mở transaction, UPDATE số dư + INSERT vào outbox (cột event_type, payload, status=PENDING) trong cùng transaction → commit.
+2. Relay poll outbox WHERE status=PENDING, publish Kafka, UPDATE status=SENT (trong transaction riêng của relay).
+3. Consumer Kafka dùng idempotency key để không xử lý trùng.
+
+> Senior tip: Outbox pattern là giải pháp chuẩn cho "transaction DB + messaging" atomic. Alternatives: Kafka transactional producer (kafka transactional id) nhưng chỉ works khi producer và broker là Kafka; 2PC (two-phase commit) heavier và dễ treo. Trong phỏng vấn, hãy vẽ bảng so sánh 3 cách: dual-write (lỗi), outbox (đúng), 2PC (phức tạp).`
+},
+{
+  id: 'qz-banking-002',
+  topic: 'banking',
+  multi: true,
+  q: 'Giao dịch hoàn tiền (refund) cần bút toán nào cho đúng? (Chọn 2)',
+  options: [
+    'Xóa giao dịch gốc trong bảng giao dịch',
+    'Tạo bút toán ngược (reversal entry) ghi nhận số tiền hoàn',
+    'Cập nhật trạng thái giao dịch gốc thành REFUNDED',
+    'Xóa log audit để tiết kiệm dung lượng'
+  ],
+  answer: [1, 2],
+  explain: `**Đáp án đúng: tạo bút toán ngược (reversal entry) + cập nhật trạng thái giao dịch gốc thành REFUNDED.**
+
+### Vì sao đúng
+Sổ cái kế toán (ledger) là **append-only**: một dòng đã được ghi là không được xóa hoặc sửa. Nếu khách hoàn tiền, bạn không thể xóa dòng ghi "A trừ 2 triệu" vì đó là lịch sử pháp lý và kiểm toán. Thay vào đó, bạn ghi một dòng mới — reversal entry — có số tiền ngược lại (A cộng 2 triệu), và đánh dấu giao dịch gốc là REFUNDED để truy vấn dễ. Như vậy, số dư A quay lại như ban đầu, lịch sử vẫn còn 2 dòng để kiểm tra.
+
+Ví dụ: A chuyển 2 triệu cho B (dòng 1: A -2tr, dòng 2: B +2tr). Sau đó hoàn tiền: dòng 3: A +2tr, dòng 4: B -2tr. Tổng dòng 3+4 = 0, số dư A và B quay lại như đầu, lịch sử còn 4 dòng.
+
+### Vì sao các phương án khác sai
+- **Xóa giao dịch gốc**: mất audit trail, không thể kiểm toán, vi phạm quy định tài chính.
+- **Xóa log audit**: tương tự, vi phạm tuân thủ và làm mất bằng chứng.
+
+> Senior tip: Trong phỏng vấn, hãy nói "append-only ledger" và vẽ 4 dòng trên giấy để chứng minh số dư quay lại. Đây là khác biệt giữa hệ thống tiền và hệ thống đơn hàng (đơn hàng có thể xóa, tiền không bao giờ).`
+},
+{
+  id: 'qz-banking-003',
+  topic: 'banking',
+  q: 'Cut-off và ngày làm việc trong ngân hàng có ý nghĩa gì cho xử lý batch?',
+  options: [
+    'Cut-off là thời điểm đóng cửa chi nhánh, không liên quan batch',
+    'Sau cut-off, giao dịch được tính vào ngày làm việc tiếp theo; batch EOD chỉ xử lý giao dịch của ngày làm việc hiện tại',
+    'Cut-off chỉ áp dụng cho thẻ tín dụng',
+    'Ngày làm việc là ngày dương lịch, không tính ngày lễ'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: cut-off quyết định ngày ghi số (value date) và batch EOD chỉ tổng kết ngày làm việc hiện tại.**
+
+### Vì sao đúng
+Cut-off time (giờ cắt) là mốc thời gian trong ngày: giao dịch được nhận trước cut-off sẽ được ghi vào **ngày làm việc hiện tại**, giao dịch sau cut-off sẽ được ghi vào **ngày làm việc tiếp theo** (value date = ngày làm việc kế tiếp). Batch EOD (End of Day) chạy sau khi cut-off, tổng kết và đóng sổ cái **chỉ cho các giao dịch thuộc ngày làm việc hiện tại** — nó không xử lý các giao dịch đã trượt qua cut-off vì những giao dịch đó chưa chính thức thuộc ngày hôm nay.
+
+Ví dụ: cut-off 15h30. Khách chuyển tiền lúc 15h29 → value date = hôm nay, EOD tổng kết. Khách chuyển tiền lúc 15h31 → value date = ngày làm việc mai, EOD hôm nay không thấy giao dịch này.
+
+### Vì sao các phương án khác sai
+- **Cut-off chỉ là thời điểm đóng cửa chi nhánh, không liên quan batch**: cut-off không phải là thời gian cửa hàng đóng cửa (cửa hàng có thể nhận đơn sau giờ) mà là mốc **technical** để phân loại giao dịch vào ngày giá trị nào; nó quyết định batch EOD xử lý những giao dịch nào.
+- **Cut-off chỉ áp dụng cho thẻ tín dụng**: cut-off áp dụng cho mọi loại giao dịch (chuyển tiền, nạp tiền, thanh toán hóa đơn, thẻ…) vì mỗi loại có thể có cut-off khác nhau.
+- **Ngày làm việc là ngày dương lịch, không tính ngày lễ**: ngày làm việc (business day) loại bỏ cuối tuần và ngày lễ quốc gia; ngày dương lịch (calendar day) luôn tính 365 ngày. Nếu nhầm, dev sẽ tính lãi sai và giao dịch bị trễ.
+
+> Senior tip: Dev phải có một BusinessDayService dùng chung cho toàn hệ thống, không được tính ngày một cách tùy tiện ở từng màn hình. Cut-off và ngày làm việc khác nhau giữa các sản phẩm (tiết kiệm, vay, thẻ) — hỏi rõ specification trước khi code.`
+},
+{
+  id: 'qz-banking-004',
+  topic: 'banking',
+  q: 'Callback từ ngân hàng đối tác gửi về hai lần với cùng mã giao dịch (idempotency key). Service nên xử lý thế nào?',
+  options: [
+    'Xử lý cả hai, vì hai lần có thể khác số tiền',
+    'Kiểm tra idempotency key đã tồn tại thì trả kết quả cũ, không xử lý lại',
+    'Từ chối lần thứ hai với HTTP 409',
+    'Ghi log và bỏ qua không trả response'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: kiểm tra idempotency key đã tồn tại → trả kết quả cũ, không xử lý lại.**
+
+### Vì sao đúng
+Callback từ đối tác (ví dụ NAPAS, switch) là một dạng "server-to-server webhook". Đối tác cần đảm bảo việc gửi callback là **idempotent**: nếu nó gửi đi nhiều lần (do timeout, retry, network duplicate), hệ thống của bạn chỉ xử lý **một lần** và không bị trừ/cộng tiền nhiều lần.
+
+Cách đúng: mỗi callback có một **idempotency key** (thường là mã giao dịch transaction ID hoặc một UUID do đối tác tạo). Khi nhận callback:
+1. Trích key ra.
+2. Kiểm tra trong DB (bảng processed_callbacks hoặc bảng giao dịch) xem key đã được xử lý chưa.
+3. Nếu đã xử lý → trả về 200 OK ngay, không làm gì thêm (trả kết quả đã lưu).
+4. Nếu chưa → xử lý (cập nhật số dư, trạng thái), lưu key + kết quả, trả 200 OK.
+
+Lưu ý: việc kiểm tra và lưu key phải trong **cùng một transaction** với việc cập nhật số dư, để tránh race condition (xem qz-banking-011).
+
+### Vì sao các phương án khác sai
+- **Xử lý cả hai, vì hai lần có thể khác số tiền**: callback cùng key luôn là cùng một giao dịch; số tiền không thay đổi giữa các retry. Xử lý cả hai → trừ/cộng tiền nhiều lần.
+- **Từ chối lần thứ hai với HTTP 409**: 409 Conflict báo "xung đột", đối tác sẽ retry (vì retry là hành vi chuẩn khi không nhận được 2xx), và sẽ bị từ chối liên tục → giao dịch treo.
+- **Ghi log và bỏ qua không trả response**: đối tác không biết có thành công hay không, nó sẽ retry indefinitely hoặc coi là failure, giao dịch không được cập nhật.
+
+> Senior tip: Dùng unique constraint trên idempotency key + INSERT ... ON CONFLICT DO NOTHING (PostgreSQL) để thực hiện atomic check-and-insert. TTL cho key (ví dụ 7 ngày) để table không vô hạn. Nếu đối tác không có key, yêu cầu họ thêm — đó là điều kiện bắt buộc cho tích hợp an toàn.`
+},
+{
+  id: 'qz-banking-005',
+  topic: 'banking',
+  multi: true,
+  q: 'Khi đối soát (reconciliation) giữa core banking và ngân hàng đối tác, những loại dòng lệch nào thường gặp? (Chọn 3)',
+  options: [
+    'Giao dịch có ở core nhưng chưa ở đối tác (timing)',
+    'Giao dịch có ở đối tác nhưng chưa ở core',
+    'Sai số tiền do làm tròn',
+    'Tên khách hàng viết hoa/thường khác nhau'
+  ],
+  answer: [0, 1, 2],
+explain: `**Đáp án đúng: timing cả hai chiều + sai số tiền do làm tròn. Tên khác nhau không phải nguồn lệch phổ biến.**
+
+### Vì sao đúng
+Đối chiếu (reconciliation) là việc so sánh sổ cái của hai bên (core banking vs đối tác NAPAS/switch) để tìm "dòng lệch" (unmatched transaction). Ba nguồn lệch thường gặp:
+
+1. **Timing (độ trễ)**: core đã ghi giao dịch và trừ tiền, nhưng đối tác chưa gửi file đối chiếu (hoặc ngược lại) do mạng lag, file chưa được tạo, hoặc batch chưa chạy. Đây là nguồn **phổ biến nhất**.
+2. **Sai số tiền do làm tròn**: khi đổi tiền tệ, áp dụng tỷ giá, hoặc trừ phí, số tiền trên core có thể là 1000.123 VND trong khi đối tác làm tròn về 1000.12 VND → lệch 0.01-0.03. Đây là nguồn **thường gặp** khi có tỷ giá và phí.
+3. **Tồn tại ở một bên**: core đã ghi nhưng đối tác không nhận được (hoặc đối tác đã ghi nhưng core chưa thấy) do timeout, lost message, hoặc một bên crash.
+
+### Vì sao phương án còn lại sai
+- **Tên khách hàng viết hoa/thường khác nhau**: đối chiếu trong banking là theo **số tiền và mã giao dịch** (transaction ID), không theo tên khách hàng. Tên có thể khác nhau do dữ liệu nhập liệu (VD: "Nguyen Van A" vs "Nguyễn Văn A") nhưng không làm ảnh hưởng đến việc đối chiếu số tiền — hai bên matching theo key và amount.
+
+> Senior tip: Reconciliation job chạy hàng ngày (hoặc theo từng batch), tự động phân loại unmatched vào queue để nhân viên xử lý. Dùng aging report để ưu tiên các dòng lệch lâu (ví dụ > 24h). Không bao giờ xóa dòng lệch — phải ghi reversal entry hoặc điều chỉnh theo quy trình maker-checker.`
+},
+{
+  id: 'qz-banking-006',
+  topic: 'banking',
+  q: 'Làm tròn tiền trong giao dịch ngân hàng nên dùng kiểu dữ liệu nào trong Java?',
+  options: [
+    'float hoặc double cho đơn giản',
+    'BigDecimal với scale cố định',
+    'long lưu số tiền theo đơn vị nhỏ nhất (xu)',
+    'String rồi parse khi cần'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: BigDecimal với scale cố định.**
+
+### Vì sao đúng
+Trong ngân hàng, tiền là số thập phân với hai chữ số thập phân (đồng, xu) và phải **chính xác tuyệt đối** — không được phép bị sai số như float/double. BigDecimal là lớp trong Java đại diện số thập phân với độ chính xác tuyệt đối: nó lưu cả significand (số nguyên) và scale (số chữ số thập phân), mọi phép cộng/trừ/nhân/chia đều chính xác nếu bạn chỉ dùng/phép chia có điều kiện.
+
+Ví dụ: {{new BigDecimal("0.1").add(new BigDecimal("0.2"))}} → {{0.3}} chính xác, trong khi {{0.1 + 0.2}} bằng {{0.30000000000000004}}. Với scale cố định (ví dụ {{scale = 2}}), mọi số tiền đều có đúng 2 chữ số thập phân, dễ so sánh, dễ format, dễ validate.
+
+### Vì sao các phương án khác sai
+- **float/double**: là số thập phân binary (IEEE 754), không thể biểu diễn chính xác 0.1. Sau nhiều phép toán, sai số tích lũy có thể gây lệch 1-2 đồng — không chấp nhận được trong sổ cái. Thêm nữa, so sánh bằng {{==}} với double là sai; phải dùng {{compareTo}}.
+- **long lưu theo đơn vị nhỏ nhất (xu)**: là một lựa chọn hiệu năng cao (nhanh, ít bộ nhớ) và dùng trong một số hệ thống hiện đại, nhưng nó **phụ thuộc vào đơn vị cụ thể** (xu, cent) và dễ bị nhầm lẫn khi đổi đơn vị; nó không phải là "kiểu dữ liệu tiền" mà là "kiểu dữ liệu số nguyên đã được quy ước". Trong phỏng vấn banking, BigDecimal là câu trả lời chuẩn; long minor units là một tối ưu có thể dùng sau khi đã đúng về mặt khái niệm.
+- **String rồi parse khi cần**: không thể tính toán trực tiếp, phải parse liên tục, dễ lỗi format, không có semantic của số tiền.
+
+> Senior tip: Dùng {{BigDecimal}} với {{setScale(2, RoundingMode.HALF_UP)}} khi format hiển thị; khi so sánh dùng {{compareTo}} không dùng {{equals}} (vì {{new BigDecimal("2.0").equals(new BigDecimal("2.00"))}} là false). Nếu hệ thống cần hiệu năng cao (VD: 10k giao dịch/giây), có thể dùng {{long}} minor units nhưng phải có layer convert/display dùng BigDecimal để format.`
+},
+{
+  id: 'qz-banking-007',
+  topic: 'banking',
+  q: 'Trong log ứng dụng, để tuân thủ bảo mật PCI-DSS, số thẻ PAN nên được xử lý thế nào?',
+  options: [
+    'Log đầy đủ PAN để debug dễ hơn',
+    'Che (mask) PAN, chỉ giữ 6 số đầu và 4 số cuối, không log CVV',
+    'Mã hóa PAN bằng Base64',
+    'Băm PAN bằng MD5'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: che (mask) PAN, chỉ giữ 6 số đầu và 4 số cuối, không log CVV.**
+
+### Vì sao đúng
+PCI DSS (Payment Card Industry Data Security Standard) là tiêu chuẩn bảo mật bắt buộc cho mọi hệ thống xử lý, lưu trữ hoặc truyền số thẻ thanh toán. Requirement 3 của PCI DSS quy định:
+
+- **Không được lưu PAN (Primary Account Number — số thẻ đầy đủ) ở dạng plain text** trong DB, log, backup, hay bộ nhớ.
+- **Chỉ được hiển thị PAN với tối đa 6 số đầu + 4 số cuối**, phần giữa che bằng * (ví dụ: 123456 **** **** 3456). Điều này giúp nhân viên có thể xác định thẻ mà không đọc được toàn bộ số.
+- **CVV (Card Verification Value — 3 số sau thẻ) TUYỆT ĐỐI không được lưu** bất kể ở dạng nào, dù đã mã hóa. Sau khi xác thực giao dịch, phải xóa CVV khỏi bộ nhớ ngay.
+
+Ví dụ: log đúng là "Giao dịch thẻ **** **** **** 3456 thành công", không được ghi "123456******3456" hay số thẻ đầy đủ.
+
+### Vì sao các phương án khác sai
+- **Log đầy đủ PAN để debug**: vi phạm PCI DSS Requirement 3.1, nếu log bị lộ thì tất cả thẻ bị đánh cắp.
+- **Mã hóa PAN bằng Base64**: Base64 không phải là mã hóa — nó chỉ là encoding để truyền dữ liệu binary dưới dạng text; ai có Base64 string có thể decode về số thẻ gốc. Dùng AES encryption hoặc tokenization thay vì Base64.
+- **Băm PAN bằng MD5**: MD5 là hàm băm (hash) một chiều, không thể giải mã được. Nhưng nó không phải là giải pháp PCI DSS vì (a) MD5 không an toàn (collision), (b) hash không cho phép khôi phục số thẻ khi cần (VD: hoàn tiền), (c) PCI DSS yêu cầu mã hóa hoặc token, không phải hash.
+
+> Senior tip: Dùng centralized masking service hoặc library (VD: PCI-compliant masking library) để che thẻ ở tất cả nơi: UI, email, SMS, log, API response. Nếu hệ thống phải tích hợp với payment gateway, ưu tiên tokenization (thay thẻ bằng token) thay vì lưu PAN.`
+},
+{
+  id: 'qz-banking-008',
+  topic: 'banking',
+  q: 'Maker-checker (4 mắt) trong nghiệp vụ ngân hàng yêu cầu điều gì?',
+  options: [
+    'Một người làm và tự duyệt',
+    'Người tạo giao dịch (maker) và người duyệt (checker) phải là hai người khác nhau',
+    'Checker chỉ cần xem log, không cần duyệt trước khi thực hiện',
+    'Áp dụng chỉ cho giao dịch lớn hơn 1 tỷ'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: người tạo giao dịch (maker) và người duyệt (checker) phải là hai người khác nhau.**
+
+### Vì sao đúng
+Maker-checker (4 mắt) là một trong những nguyên tắc kiểm soát nội bộ quan trọng nhất trong ngân hàng. Ý tưởng: **một thao tác ảnh hưởng đến tiền không bao giờ được một người làm trọn vẹn**.
+
+- **Maker** (người tạo): khởi tạo giao dịch (VD: "chuyển 500 triệu từ A sang B"), nhưng giao dịch ở trạng thái PENDING, chưa có hiệu lực.
+- **Checker** (người duyệt): là một nhân viên **khác**, có quyền phê duyệt. Checker kiểm tra lại thông tin (số tiền, tài khoản, lý do) và duyệt hoặc từ chối. Chỉ khi checker duyệt, tiền mới được chuyển.
+
+Nguyên lý: nếu một người làm cả hai, thì người đó có thể gian lận (nhập sai số tiền, chuyển tiền vào tài khoản cá nhân) và tự duyệt để che giấu. Nếu hai người khác nhau, thì để gian lận xảy ra thì cả hai đều phải đồng lõi — rủi ro thấp hơn nhiều.
+
+### Vì sao các phương án khác sai
+- **Một người làm và tự duyệt**: mất kiểm soát, dễ gian lận và lỗi đơn lẻ (nhập sai số tiền 500 triệu thành 5000 triệu).
+- **Checker chỉ cần xem log, không cần duyệt trước khi thực hiện**: không phải duyệt trước (pre-approval) — checker phải kiểm tra và phê duyệt **trước khi** giao dịch được thực hiện. Xem log là insufficient.
+- **Áp dụng chỉ cho giao dịch lớn hơn 1 tỷ**: nhiều ngân hàng áp dụng maker-checker cho **tất cả** giao dịch nhạy cảm (chuyển tiền, sửa hạn mức, mở tài khoản, hoàn tiền), không phân biệt số lượng. Có thể có ngưỡng số tiền nhưng không phải là "chỉ trên 1 tỷ".
+
+> Senior tip: Trong phỏng vấn, hãy nhấn mạnh "maker và checker không được là cùng một người" và hệ thống phải lưu maker_id + checker_id vào audit trail. Đừng nhầm maker-checker với "2PC" (two-phase commit) — maker-checker là quy trình nghiệp vụ, 2PC là cơ chế phân tán.`
+},
+{
+  id: 'qz-banking-009',
+  topic: 'banking',
+  q: 'Khi tiền bị trừ nhưng app báo lỗi (timeout), hệ thống nên làm gì để đảm bảo nhất quán?',
+  options: [
+    'Tự động hoàn tiền ngay lập tức',
+    'Trả về trạng thái PENDING và cho phép truy vấn trạng thái giao dịch bằng idempotency key',
+    'Yêu cầu khách bấm lại, hệ thống sẽ trừ lại',
+    'Xóa giao dịch trong DB'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: đặt trạng thái PENDING và cung cấp API truy vấn trạng thái giao dịch theo idempotency key.**
+
+### Vì sao đúng
+Khi timeout, có hai khả năng: (a) giao dịch đã thành công ở phía server nhưng response bị mất, hoặc (b) giao dịch chưa được xử lý xong. Dev **không thể biết** là (a) hay (b) — và điều quan trọng là **không được retry tự động** vì nếu là (a) thì retry sẽ trừ tiền hai lần.
+
+Cách đúng:
+1. Khi timeout, hệ thống đặt trạng thái giao dịch là **PENDING** (chưa biết thành công hay thất bại).
+2. Client hiển thị "Giao dịch đang được xử lý, vui lòng chờ" và không được bấm lại.
+3. Hệ thống cung cấp API **GET /transactions/{idempotency_key}/status** để client poll hoặc tra cứu.
+4. Khi backend đã xác định được kết quả (thành công hoặc thất bại), cập nhật trạng thái và thông báo cho client.
+
+### Vì sao các phương án khác sai
+- **Tự động hoàn tiền ngay lập tức**: nếu giao dịch đã thành công (tiền đã được trừ), hoàn tiền sẽ làm tiền bị trừ rồi hoàn lại → tiền không thay đổi, nhưng lịch sử bị rối và khách hoang mang. Nếu giao dịch chưa thành công, hoàn tiền là không cần thiết.
+- **Yêu cầu khách bấm lại, hệ thống sẽ trừ lại**: đây là retry — nếu giao dịch đã thành công, trừ lại sẽ trừ tiền hai lần.
+- **Xóa giao dịch trong DB**: mất audit trail, không thể đối chiếu sau này, vi phạm quy định tài chính.
+
+> Senior tip: API "get transaction status" là bắt buộc trong mọi payment flow. Thiết kế idempotency key từ đầu (client tạo UUID), lưu key + status + result trong cùng transaction. Nếu backend dùng Kafka/outbox, consumer sẽ cập nhật status khi event được xử lý.`
+},
+{
+  id: 'qz-banking-010',
+  topic: 'banking',
+  multi: true,
+  q: 'Để đảm bảo giao dịch chuyển tiền atomic giữa hai tài khoản, những biện pháp nào đúng? (Chọn 2)',
+  options: [
+    'Dùng một transaction DB covering cả hai UPDATE',
+    'Dùng distributed lock trên từng tài khoản',
+    'Gửi email xác nhận trước khi trừ tiền',
+    'Log giao dịch vào file text'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: transaction DB covering cả hai UPDATE + distributed lock trên từng tài khoản.**
+
+### Vì sao đúng
+**Transaction DB (ACID)**: nếu tài khoản A và B cùng nằm trong một cơ sở dữ liệu (ví dụ một PostgreSQL instance), một transaction có thể UPDATE cả hai tài khoản trong cùng một transaction. Nếu một UPDATE bị lỗi (VD: A không đủ tiền), transaction rollback → cả hai UPDATE đều không được ghi. Đây là cách đơn giản và đúng để đảm bảo atomic (hoặc tất cả hoặc không).
+
+**Distributed lock**: nếu hệ thống có nhiều instance (VD: 2 service pod chạy song song), hai request cùng nhắm đến tài khoản A có thể đến hai instance khác nhau. Transaction DB chỉ đảm bảo atomic **trong cùng một DB**, không đảm bảo atomic **giữa các instance**. Distributed lock (VD: Redis lock theo accountId) đảm bảo chỉ một instance thực hiện giao dịch trên tài khoản A tại một thời điểm, tránh race condition.
+
+### Vì sao các phương án khác sai
+- **Gửi email xác nhận trước khi trừ tiền**: email không liên quan đến atomicity DB. Nó là một hành động bất đồng bộ, có thể mất, và không thể dùng để rollback giao dịch.
+- **Log giao dịch vào file text**: file text không có transaction, không có rollback, và không có locking — không thể đảm bảo atomic.
+
+> Senior tip: Trong phỏng vấn, hãy phân biệt: cùng DB → transaction; nhiều DB/microservice → saga + compensating transaction (VD: A trừ tiền xong → gửi event → B cộng tiền; nếu B lỗi → hoàn tiền A). Distributed lock là giải pháp ngắn hạn, saga là giải pháp dài hạn cho microservices.`
+},
+{
+  id: 'qz-banking-011',
+  topic: 'banking',
+  q: 'Idempotency key được lưu trong DB có ràng buộc duy nhất (unique constraint). Khi hai request cùng key đến song song (không có race condition prevention), điều gì xảy ra và cách xử lý đúng là gì?',
+  options: [
+    'Lỗi unique constraint bị throw, request thứ hai bị từ chối với exception',
+    'Cả hai request đều kiểm tra key chưa tồn tại (đều thấy chưa), cả hai đều xử lý → trừ tiền hai lần (race condition)',
+    'Hai request được hàng đợi (queue) tự động xử lý lần lượt, không cần code phòng thủ',
+    'Database tự động lock và chỉ cho một request đi qua, request kia chờ'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: race condition — cả hai đều thấy key chưa tồn tại, cả hai đều xử lý.**
+
+### Vì sao đúng
+Unique constraint chỉ đảm bảo **khi đã insert xong** thì không thể insert dòng khác có cùng key. Nhưng nếu hai request cùng kiểm tra {{SELECT ... WHERE key = ?}} trước (đều thấy chưa tồn tại), rồi cùng {{INSERT}}, một request sẽ thành công, request kia sẽ throw duplicate key exception — nhưng **tiền đã bị trừ hai lần** vì cả hai đều đã thực hiện logic trừ tiền trước khi insert key. Đây là race condition kinh điển: check-then-act không atomic.
+
+### Vì sao các phương án khác sai
+- **Lỗi unique constraint throw, request thứ hai bị từ chối**: đúng là request thứ hai throw duplicate, nhưng nó đã **đã thực hiện việc trừ tiền** trước khi throw — tiền đã trừ hai lần, chỉ là client không nhận được response. Lỗi không được tự động hoàn tiền.
+- **Hàng đợi tự xử lý**: nếu không có external message queue, hai request đến cùng một instance vẫn có thể song song trên hai thread; DB không tự động queue các request theo thứ tự bạn mong muốn.
+- **Database tự động lock**: DB dùng row lock khi UPDATE/SELECT FOR UPDATE, nhưng {{SELECT WHERE key=?}} thường không lock dòng nếu không dùng FOR UPDATE — planner có thể chọn scan không lock.
+
+### Cách xử lý đúng
+1. Dùng {{SELECT ... FOR UPDATE}} hoặc một stored procedure với row lock để serialized check-and-insert.
+2. Hoặc dùng {{INSERT ... ON CONFLICT DO NOTHING}} (PostgreSQL) rồi kiểm tra số dòng affected: nếu 0 dòng insert (đã tồn tại), rollback hoặc trả kết quả cũ.
+3. Hoặc dùng distributed lock (Redis lock theo key) trước khi check-and-insert.
+
+> Senior tip: Idempotency key phải được insert trước (với unique constraint) trong cùng transaction với việc trừ tiền, hoặc dùng SELECT FOR UPDATE để lock row trước khi check. Không bao giờ check-then-act không atomic.`
+},
+{
+  id: 'qz-banking-012',
+  topic: 'banking',
+  q: 'Trong đối soát, dòng lệch do timing (có ở core, chưa ở đối tác) nên xử lý thế nào?',
+  options: [
+    'Báo lỗi ngay và rollback',
+    'Đưa vào hàng đợi unmatched, chờ đối tác gửi sau, tự động match khi xuất hiện',
+    'Xóa dòng trong core',
+    'Yêu cầu khách liên hệ ngân hàng'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: hàng đợi unmatched (unmatched queue).**
+
+### Vì sao đúng
+Dòng lệch do timing (giao dịch có ở core nhưng chưa có ở đối tác, hoặc ngược lại) là **thường gặp và tự động khắc phục được**. Khi core đã ghi giao dịch (trừ tiền xong) nhưng đối tác chưa gửi file đối chiếu (do file chưa được tạo, network delay, batch của đối tác chưa chạy), hệ thống đối chiếu sẽ thấy core có nhưng đối tác không có → một dòng "unmatched".
+
+Đừng báo lỗi ngay, đừng rollback (vì core đã commit và tiền đã trừ). Thay vào đó:
+1. Hệ thống tự động **đưa dòng vào unmatched queue** (hàng đợi) với thông tin: mã giao dịch, số tiền, thời gian, hướng (core-đã-ghi/đối tác-chưa-gửi).
+2. Job đối chiếu poll queue, chờ đối tác gửi file tiếp theo. Khi file mới xuất hiện, tự động **match** (ghép) dòng unmatched với dòng trong file đối tác.
+3. Nếu match thành công → cập nhật trạng thái matched, xóa khỏi queue.
+4. Nếu sau một khoảng SLA (VD: 24h, 48h) vẫn không match → **escalate** (thông báo nhân viên kiểm tra tay).
+
+### Vì sao các phương án khác sai
+- **Báo lỗi ngay và rollback**: core đã commit, không thể rollback được (ACID). Báo lỗi ngay làm giao dịch treo, khách không biết trạng thái.
+- **Xóa dòng trong core**: mất audit trail, không thể đối chiếu sau này, vi phạm quy định tài chính.
+- **Yêu cầu khách liên hệ ngân hàng**: khách không có thông tin kỹ thuật để báo; việc đối chiếu là việc của hệ thống, không phải của khách.
+
+> Senior tip: Reconciliation dashboard với aging report (phân loại unmatched theo độ tuổi: 0-2h, 2-24h, >24h) để ưu tiên xử lý các dòng cũ. Unmatched queue nên dùng message queue (Kafka/RabbitMQ) để scalable và không mất job nếu server restart.`
 }
 );
