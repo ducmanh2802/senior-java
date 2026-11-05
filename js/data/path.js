@@ -9,7 +9,7 @@ window.PATH = [
   {
     id: 'path-01', order: 1, phase: 'Nền tảng', title: 'Java core chắc tay', weeks: '1–2',
     goal: 'Hiểu exception, generics, String và immutability đủ để giải thích bằng lời, không chỉ dùng được.',
-    lessons: ['lesson-core-001', 'lesson-core-002', 'lesson-core-003', 'lesson-core-004', 'lesson-core-005'],
+    lessons: ['lesson-core-001', 'lesson-core-002', 'lesson-core-003', 'lesson-core-004', 'lesson-core-005', 'lesson-core-006', 'lesson-core-007'],
     questions: ['core-001', 'core-002', 'core-003', 'core-004', 'core-005', 'core-006', 'core-007', 'core-008'],
     quizTopics: ['core'], requires: [],
   },
@@ -30,7 +30,7 @@ window.PATH = [
   {
     id: 'path-04', order: 4, phase: 'Nền tảng', title: 'JVM & GC hiểu từ bên trong', weeks: '7–8',
     goal: 'Giải thích GC, heap, stack, classloader và tuning như một Senior khi production chậm.',
-    lessons: ['lesson-jvm-001', 'lesson-jvm-002', 'lesson-jvm-003'],
+    lessons: ['lesson-jvm-001', 'lesson-jvm-002', 'lesson-jvm-003', 'lesson-jvm-004', 'lesson-jvm-005'],
     questions: ['jvm-001', 'jvm-002', 'jvm-003', 'jvm-004', 'jvm-005', 'jvm-006'],
     quizTopics: ['jvm'], requires: ['path-03'],
   },
@@ -44,7 +44,7 @@ window.PATH = [
   {
     id: 'path-06', order: 6, phase: 'Vững vàng', title: 'Concurrency & Modern Java', weeks: '11–13',
     goal: 'Dùng ExecutorService, CompletableFuture, Virtual Threads và Stream đúng ngữ cảnh, tránh deadlock.',
-    lessons: ['lesson-concurrency-001', 'lesson-concurrency-002', 'lesson-concurrency-003', 'lesson-concurrency-004', 'lesson-concurrency-005',
+    lessons: ['lesson-concurrency-001', 'lesson-concurrency-002', 'lesson-concurrency-003', 'lesson-concurrency-004', 'lesson-concurrency-005', 'lesson-concurrency-006', 'lesson-concurrency-007',
               'lesson-modern-001', 'lesson-modern-002', 'lesson-modern-003', 'lesson-modern-004', 'lesson-modern-005'],
     questions: ['concurrency-001', 'concurrency-002', 'concurrency-003', 'concurrency-004', 'concurrency-005', 'modern-001', 'modern-002', 'modern-003'],
     quizTopics: ['concurrency', 'modern'], requires: ['path-05'],
@@ -70,7 +70,7 @@ window.PATH = [
   {
     id: 'path-09', order: 9, phase: 'Vững vàng', title: 'DevOps, Docker & CI/CD', weeks: '20–21',
     goal: 'Triển khai container, cấu hình pipeline và hiểu môi trường production từ góc nhìn Senior.',
-    lessons: ['lesson-devops-001', 'lesson-devops-002', 'lesson-devops-003', 'lesson-devops-004', 'lesson-devops-005',
+    lessons: ['lesson-devops-001', 'lesson-devops-002', 'lesson-devops-003', 'lesson-devops-004', 'lesson-devops-005', 'lesson-devops-006', 'lesson-devops-007', 'lesson-devops-008', 'lesson-devops-009',
       'lesson-aws-001', 'lesson-aws-002', 'lesson-aws-003', 'lesson-aws-004'],
     questions: ['devops-001', 'devops-002', 'devops-003', 'devops-004', 'devops-005', 'devops-006'],
     quizTopics: ['devops'], requires: ['path-08'],
