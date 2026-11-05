@@ -3126,4 +3126,409 @@ If I still do not understand after one repeat, I say so honestly: "I want to mak
   tags: ['interview-skills', 'communication', 'clarification', 'listening'],
   lang: 'en',
 },
+{
+  id: 'english-090',
+  topic: 'english',
+  level: 'senior',
+  q: 'Walk me through how a money transfer works in the system you built, from the moment the customer presses Pay until the money arrives. Explain it so a new engineer could follow.',
+  a: `**Tóm tắt:** Kể theo **dòng chảy của một giao dịch**, không liệt kê công nghệ: mỗi bước nêu rõ hệ thống nào nhận gì, ghi gì, có thể hỏng ở đâu và cơ chế nào đỡ. Interviewer đánh giá mức độ bạn hiểu hệ thống mình làm, không phải trí nhớ tên tool.
+
+### Sample answer
+Sure, let me follow one transfer end to end.
+
+It starts when the customer presses Pay in the mobile app. The app calls our payments API with the amount, the destination, and a header called Idempotency-Key. That key is generated once per user action, so if the app retries after a timeout, the server recognises the retry and returns the original result instead of moving the money twice.
+
+The API validates the request: limits, account status, and a quick balance check. Then it writes the transfer to our ledger, which is the accounting heart of the system. We use double-entry bookkeeping, so every movement is two postings: a debit on the customer account and a credit on the destination or on an internal suspense account. Both postings go into one database transaction, so the books can never be half-applied.
+
+At that point we reply Accepted, not Completed, because the external leg is asynchronous. The instruction is pushed to the core banking system over a queue, and the core sends a callback later with the final status. On success we notify the customer; on failure we post a reversal, a compensating entry that puts the balance back.
+
+If anything stays pending overnight, our daily reconciliation job compares our ledger with the core statement and flags mismatches for the operations team before the customer complains.
+
+### Dòng chảy cần nhớ (vẽ được sơ đồ này là nói được)
+~~~seq
+title: Mot lenh chuyen tien tu app den core
+actors: App | Payments API | Ledger | Core banking
+App -> Payments API: POST chuyen tien + Idempotency-Key
+Payments API -> Payments API: Key trung? Tra lai ket qua cu
+Payments API -> Ledger: Ghi buc no va buc co trong 1 transaction
+Ledger --> Payments API: transferId dang PENDING
+Payments API --> App: 202 Accepted
+Payments API -> Core banking: Gui lenh qua queue
+Core banking --> Payments API: Callback SUCCESS hoac FAILED
+Payments API -> Ledger: Ghi reversal neu that bai
+note App..Core banking: Lenh treo qua dem -> doi soat hang ngay phat hien
+~~~
+
+### Giải nghĩa thuật ngữ (đọc trước để không vấp)
+- **ledger (sổ cái)**: bảng ghi mọi biến động tiền; mỗi dòng là một posting, không sửa dòng cũ, chỉ thêm dòng mới — nhờ vậy có lịch sử kiểm toán.
+- **double-entry (kế toán kép)**: mỗi nghiệp vụ ghi đủ hai chiều nợ/có, tổng luôn bằng 0; thiếu một chiều là phát hiện ngay.
+- **idempotency key**: chuỗi duy nhất cho một lần bấm nút; server lưu key cùng kết quả, nhận lại request giống hệt thì trả kết quả cũ.
+- **suspense account (tài khoản treo)**: nơi giữ tiền khi chưa xác định được đích, để tiền không bốc hơi.
+- **reversal / compensating entry**: ghi bù chiều ngược khi bước sau thất bại.
+- **reconciliation (đối soát)**: job hàng ngày so ledger với bảng kê của core, lệch thì báo ops.
+
+### Useful phrases
+- **let me follow one transfer end to end**: để tôi lần theo một giao dịch từ đầu đến cuối
+- **the accounting heart of the system**: phần lõi kế toán của hệ thống
+- **the books can never be half-applied**: sổ không bao giờ bị ghi dang dở
+- **the external leg is asynchronous**: chặng bên ngoài chạy bất đồng bộ
+- **a compensating entry that puts the balance back**: bút toán bù trả lại số dư
+
+### Lỗi người Việt hay mắc
+- Nói "This is double-entry bookkeeping is a method..." — thừa **is** thứ hai; tách thành hai câu.
+- "The money will not lost" — sai thể bị động; đúng: "the money is never lost".
+- Danh từ đếm được mất mạo từ: "it is ledger" → "it is **a** ledger"; "we use queue" → "we use **a** queue".
+- Nói "OK, Completed" lẫn lộn trạng thái; tiếng Anh tự nhiên là "we reply Accepted, not Completed".
+
+> Senior tip: Câu trả lời có **mão trạng thái** (PENDING rồi SUCCESS/FAILED) chứng tỏ bạn từng làm hệ thống thật, vì người mới hay tưởng mọi API trả kết quả ngay. Kèm một con số nếu có: "reconciliation runs at 2 a.m. and typically clears under ten exceptions a day". Phát âm: **ledger** /ˈledʒə/ nhấn âm đầu, **reconciliation** /rɪˌkɒnsɪliˈeɪʃn/ nhấn âm bốn.`,
+  follow: [
+    'Why do you return Accepted instead of waiting for the core system callback?',
+    'What happens if the callback never arrives at all?',
+    'How would your answer change if the destination is another bank?',
+  ],
+  tags: ['english', 'banking', 'payments', 'walkthrough', 'system-design'],
+  lang: 'en',
+},
+{
+  id: 'english-091',
+  topic: 'english',
+  level: 'senior',
+  q: 'In that transfer flow, how do you guarantee the same payment is never executed twice, and that money is never lost if a step fails halfway? Explain your reasoning out loud.',
+  a: `**Tóm tắt:** Trả lời theo **ba lớp phòng thủ**: chống trùng ở cửa vào (idempotency key + unique constraint), ghi sổ nguyên tử trong database (transaction), và an toàn khi băng thông bất đồng bộ (outbox, retry có trần, reversal, đối soát). Nói rõ lớp nào bắt lỗi nào.
+
+### Sample answer
+I think about it as three lines of defence.
+
+The first one stops duplicates at the front door. Every request carries a unique key generated by the client. We store that key in a table with a unique database constraint, together with the result. When a retry arrives, the insert fails on the constraint, we read the stored result, and we return it — so the user pressing Pay twice still moves the money once.
+
+The second line is inside the database. The transfer record and both ledger postings are written in a single ACID transaction. It either commits fully or not at all, so the books can never be half-updated, even if the process crashes mid-request.
+
+The third line covers the gap between our service and the outside world, which is where things actually go wrong. We use a transactional outbox: the message for the core system is inserted in the same transaction as the ledger entries, and a separate publisher ships it afterwards. If the service dies before publishing, the message is still there and gets picked up. Retries use exponential backoff with a ceiling; after the last attempt the order goes to a dead-letter queue and stays pending, it does not disappear. And the net underneath everything is reconciliation: every night we match our ledger against the core statement, so anything still unmatched is found by us, not by a customer complaint.
+
+### Ba lớp phòng thủ, giải thích từ gốc
+- **unique constraint**: ràng buộc "không được trùng" ở cấp database — công cụ rẻ nhất và đáng tin nhất để chống ghi trùng, vì nó thắng cả race condition giữa hai request cùng lúc.
+- **ACID transaction**: nhóm thao tác chỉ có "xong hết" hoặc "hoàn nguyên"; không tồn tại trạng thái giữa.
+- **transactional outbox**: thay vì gọi thẳng hệ thống ngoài (đã gửi tin rồi transaction rollback → mất tiền ảo), bạn ghi bản tin chờ gửi vào bảng outbox **cùng transaction**, rồi một tiến trình nền lấy ra và gửi. Crash giữa đường cũng không mất lệnh.
+- **exponential backoff + ceiling**: thử lại giãn cách (1s, 2s, 4s...), có số lần tối đa để không bão hoà hệ thống đang lỗi.
+- **dead-letter queue (DLQ)**: hộp đựng lệnh thất bại sau cùng, có cảnh báo cho ops xử lý.
+- **reconciliation**: lưới chắn cuối cùng — chấp nhận mọi cơ chế đều có thể rò rỉ và đối chiếu số liệu hai bên hằng ngày.
+
+### Useful phrases
+- **three lines of defence**: ba tầng phòng thủ
+- **stops duplicates at the front door**: chặn trùng ngay từ cửa vào
+- **the insert fails on the constraint**: thao tác ghi thất bại vì ràng buộc
+- **it either commits fully or not at all**: hoặc xong hết hoặc hoàn nguyên
+- **anything still unmatched is found by us**: ta tự phát hiện trước khi khách phát hiện
+
+### Lỗi người Việt hay mắc
+- "We are ensuring that money is not lost" — thì tiếp diễn không tự nhiên ở đây; dùng "we ensure / we make sure".
+- "the insert will fail" khi kể thiết kế đã xây: kể kinh nghiệm dùng thì quá khứ ("the insert failed"), nói nguyên lý dùng hiện tại đơn ("the insert fails").
+- "money are lost" — **money** không đếm được, luôn "money is".
+- Overclaim: đừng nói "guarantee one hundred percent exactly-once"; nói "at-least-once delivery plus deduplication makes it effectively exactly-once" — đây là câu trả lời trưởng thành.
+
+> Senior tip: Điểm ăn tiền là câu "the order stays pending, it does not disappear" — nó cho thấy bạn thiết kế cho **tương trạng treo** (pending), trạng thái mà sách vở bỏ qua nhưng production đầy rẫy. Nếu từng trực on-call, thêm một số thật: "we typically see two to three outbox replays a week after core maintenance windows". Phát âm: **idempotency** /aɪˌdɛmpəˈtɛnsi/ nhấn âm bốn, **transactional** /trænˈzæktʃənəl/ nhấn âm hai.`,
+  follow: [
+    'What is the difference between at-least-once and exactly-once delivery, and which do you rely on?',
+    'What do you do with an item that has been in the dead-letter queue for two days?',
+    'Tell me about a real mismatch your reconciliation job found.',
+  ],
+  tags: ['english', 'banking', 'payments', 'idempotency', 'reliability'],
+  lang: 'en',
+},
+{
+  id: 'english-092',
+  topic: 'english',
+  level: 'mid',
+  q: 'Tell me about a time you joined a project with a large legacy codebase, for example core banking software with little documentation. How did you get productive?',
+  a: `**Tóm tắt:** Đây là câu hỏi về **cách tự học trong môi trường phức tạp**, không phải về code. Cấu trúc: tiếp cận từng bước (log, DB, luồng trước khi đọc code) → tạo thắng lợi nhỏ để lấy niềm tin → biến điều học được thành tài liệu cho người sau.
+
+### Sample answer
+When I joined the payments team, the service had roughly three hundred thousand lines of Java, a lot of it written over eight years, and the wiki was badly out of date. I gave myself a rule: understand one complete flow before I touch anything.
+
+Week one, I did not read code line by line. I created a test customer, ran one real transfer through the staging environment, and followed it through the logs and the database tables. That gave me the shape of the system — which service calls which, and where the ledger is written. Then, and only then, I read the classes behind that path.
+
+Week two and three, I picked small, low-risk tasks: adding logging where a step was silent, renaming misleading variables, and fixing two bugs one level deep. Each task forced me into a new corner of the codebase, and because the changes were small, the blast radius was small too.
+
+I also asked questions in a targeted way. Instead of saying "how does this work?", which is too big, I said "I traced the transfer up to the ledger posting — is the reversal handled here or by the batch job?" People answer specific questions happily, and I earned trust quickly.
+
+I documented as I learned: I drew the transfer sequence diagram and wrote a one-page onboarding note. When the next junior joined, she was productive in three days instead of three weeks, and I think that was the most useful thing I did in that period.
+
+### Vì sao mẫu này tốt
+- **understand one complete flow before touching anything**: nguyên tắc vàng với legacy — bám theo một luồng thật (test data + log + DB) thay vì đọc code ngẫu nhiên.
+- **blast radius (bán kính sát thương)**: mức độ ảnh hưởng khi thay đổi hỏng; nói từ này cho thấy tư duy sản xuất.
+- Câu hỏi cụ thể > câu hỏi rộng: chứng minh bạn đã tự truy vết ("I traced X up to Y"), người giàu kinh nghiệm mới hỏi kiểu đó.
+- Kết bằng **di sản cho người sau** (onboarding note) — đúng tiêu chí senior: làm hệ thống dễ hơn cho team.
+
+### Useful phrases
+- **a lot of it had accumulated over eight years**: phần lớn tích tụ qua tám năm
+- **the wiki was badly out of date**: tài liệu cũ kỹ nghiêm trọng
+- **I gave myself a rule**: tôi tự đặt nguyên tắc
+- **that gave me the shape of the system**: nhờ đó tôi nắm được hình dáng hệ thống
+- **one level deep**: một cấp (bug nhỏ nằm sát bề mặt)
+
+### Lỗi người Việt hay mắc
+- "I will create a test account and follow the log" — kể quá khứ phải là "I created... followed..."; lỗi thì quá khứ là lỗi phổ biến nhất trong câu STAR.
+- "Although the code was old, but I still learned fast" — không dùng "although" và "but" cùng lúc.
+- Nói xấu hệ thống cũ ("the code was terrible") — trung tính: "the service had grown over many years and the documentation lagged behind".
+- "I studied the whole source code in one week" — nghe không tin được; mô tả chiến lược từng bước đáng tin hơn sức mạnh thần đồng.
+
+> Senior tip: Kết bằng tác động có thể đo ("the next junior was productive in three days instead of three weeks") — đó là cách biến một câu chuyện học việc thành bằng chứng leadership. legacy không phải chủ đề để khoe nhanh, mà để khoe **phương pháp**. Phát âm: **legacy** /ˈlɛɡəsi/ nhấn âm đầu; **productive** /prəˈdʌktɪv/ nhấn âm hai.`,
+  follow: [
+    'What would you do differently if you joined another legacy system tomorrow?',
+    'How do you decide which parts of the legacy system are worth rewriting?',
+    'How did you earn trust with engineers who had owned that codebase for years?',
+  ],
+  tags: ['english', 'legacy', 'onboarding', 'star', 'banking'],
+  lang: 'en',
+},
+{
+  id: 'english-093',
+  topic: 'english',
+  level: 'senior',
+  q: 'You found a risk of duplicate payments under heavy load, and fixing it will delay the feature the business asked for. How do you explain this risk to a non-technical product owner in English and get a decision?',
+  a: `**Tóm tắt:** Dịch rủi ro kỹ thuật sang **ngôn ngữ kinh doanh**: điều gì hỏng, ảnh hưởng bao nhiêu tiền/khách hàng/uy tín, xác suất thế nào — rồi đưa **hai hoặc ba phương án kèm giá của từng phương án** và một khuyến nghị. Không hù, không giấu, không bắt chọn "sửa hay không" mà cho chọn "sửa kiểu nào".
+
+### Sample answer
+I would ask for ten minutes and keep it in business language.
+
+I would open with the problem, not the technology: "Under heavy load, the same payment could be processed twice. The customer would see money leave their account twice, and we would have to refund and apologise. For a bank, that is not just a bug, it is a trust event."
+
+Then the numbers, honestly labelled as estimates: "Based on our peak traffic, I would put the likelihood at maybe one or two cases per thousand transfers on a peak day. The fix itself is about a week of work."
+
+Then the options, because a product owner decides between options, not between yes and no. "Option one: we delay the feature by a week and close the risk now. Option two: we ship on time with a safety net — a nightly reconciliation job that catches double payments automatically and refunds them within a day, while we build the real fix next sprint. Option three: we do nothing, and I do not recommend that, because our peak season starts in six weeks and the volume doubles."
+
+My recommendation is option two: the business gets the date, and the customer gets a net. I would also say clearly: "If we ship without either the fix or the net, I want that decision written down, with the reasoning." That sentence is not politics — it protects the product owner too, because a written decision forces everyone to think seriously.
+
+And I would close by asking, "Which option feels right for you?" to keep it a conversation.
+
+### Khung trả lời (dùng được cho mọi rủi ro kỹ thuật)
+1. **Hậu quả bằng lời, không bằng thuật ngữ**: mô tả trải nghiệm khách hàng ("money leaves the account twice") thay vì "missing idempotency key".
+2. **Định lượng trung thực**: xác suất × tác động; nói rõ là ước lượng. Không có số thật thì nói dải ("one to two in a thousand"), đừng bịa con số chính xác tuyệt đối.
+3. **Options không phải ultimatum**: mỗi phương án có giá (thời gian, rủi ro còn lại). PO được trained để chọn giữa các option.
+4. **Khuyến nghị rõ ràng**: senior không chỉ liệt kê, bạn chọn và giải thích.
+5. **Ghi quyết định bằng văn bản**: nói nhẹ nhưng chắc — "written down, with the reasoning".
+
+### Useful phrases
+- **it is not just a bug, it is a trust event**: không chỉ là bug, đó là sự cố niềm tin
+- **honestly labelled as estimates**: nói rõ đây là ước lượng
+- **the cost of doing nothing is...**: cái giá của không làm gì là...
+- **a safety net that catches double payments**: lưới an toàn bắt giao dịch trùng
+- **I want that decision written down**: tôi muốn quyết định được ghi lại
+- **which option feels right for you**: phương án nào hợp với bạn
+
+### Lỗi người Việt hay mắc
+- "I think this system have a risk" — sai hoà hợp chủ-vị: "this system **has** a risk"; tốt hơn: "there is a risk of...".
+- Dùng jargon với PO: "the endpoint is not idempotent under concurrency" — thay bằng hậu quả thật.
+- "If we don't fix, will appear incident" — thiếu chủ ngữ và điều kiện; đúng: "if we do not fix it, we will have an incident".
+- Giọng đổ lỗi hoặc doạ nạt ("this is because the team rushed") — giữ trung tính, hướng quyết định.
+
+> Senior tip: Câu mạnh nhất trong mẫu là "that decision is written down, with the reasoning" — vừa là kỷ luật quản trị (đặc biệt ở ngân hàng, nơi có kiểm toán), vừa bảo vệ chính bạn; nhưng nói với giọng hợp tác, không như tối hậu thư. Phát âm: **risk** /rɪsk/ (không phải "rít"); **recommend** /ˌrɛkəˈmɛnd/ nhấn âm ba.`,
+  follow: [
+    'What if the product owner still chooses to ship without the fix or the net?',
+    'How do you keep technical debt from piling up again after this decision?',
+    'How would you present the same risk to your engineering manager instead?',
+  ],
+  tags: ['english', 'stakeholders', 'risk-communication', 'banking', 'soft-skills'],
+  lang: 'en',
+},
+{
+  id: 'english-094',
+  topic: 'english',
+  level: 'mid',
+  q: 'A junior developer on your team has just caused a duplicate-payment bug in staging. Explain idempotency to them in simple English, using a banking example, and show how you would coach them.',
+  a: `**Tóm tắt:** Khi giải thích cho người mới: **bắt đầu bằng đời thường, một ví dụ duy nhất xuyên suốt, không thuật ngữ trước khi khái niệm**. Giọng coaching: mô tả cơ chế rồi hỏi lại, không đọc bài một chiều.
+
+### Sample answer
+I would sit down with them and start away from the code.
+
+"Imagine you order coffee and the app charges your card. The internet drops for a second. The app does not know whether the payment went through, so it tries again. Now the bank has received the same order twice. Idempotent means the second attempt does not create a second charge — the result of trying twice is the same as trying once. The word literally means: the same power, the same effect.
+
+In our case, when the customer presses Pay, the app invents a unique number for that button press — we call it the idempotency key — and sends it with the request. Before we move any money, we look the key up in a table. Never seen: process the payment and save the result. Seen before: do not process anything; return the saved result. A unique constraint in the database is what makes that lookup race-proof, even if two copies of the same request arrive at exactly the same moment.
+
+Here is the part people miss: GET requests are already safe to repeat, because they do not change anything — that is idempotent by design. Creating a payment is not. So the key has to represent the user action, the button press. If your retry logic generates a fresh key each time, you have built a machine for making duplicate payments, because every retry looks like a brand-new order."
+
+Then I would ask them: "Given that, where in our code should the key be created — the app, the gateway, or the ledger service?" I would let them reason; that tells me whether they really got it.
+
+### Giải thích từ gốc
+- **Idempotency key**: chuỗi duy nhất (thường UUID) do **phía client** tạo cho mỗi *hành động người dùng*; server lưu key + kết quả trong thời gian sống hữu hạn (ví dụ 24 giờ).
+- Vì sao lookup thường là **database unique constraint**, không phải "check rồi insert": hai request trùng nhau có thể xen giữa check và insert (race); ràng buộc duy nhất chặn ở tầng storage — một trong hai insert thất bại.
+- **Idempotent by design**: GET/PUT/DELETE theo HTTP ngữ nghĩa là lặp lại an toàn; POST không — nên POST tạo tiền cần key.
+- **Key = đơn vị hành động**: sai lầm kinh điển là key sinh lại mỗi lần retry HTTP (nó phải cố định từ lần bấm đầu), hoặc key chỉ là hash của body (hai lần bấm thật sự giống hệt bị gộp làm một).
+- Mốc thời gian: key thường giữ theo ngày đối soát, vì "retry sau 1 tuần" là hành động mới, không phải cùng hành động.
+
+### Useful phrases
+- **the result of trying twice is the same as trying once**: kết quả thử hai lần như một
+- **invents a unique number for that button press**: tạo số duy nhất cho lần bấm
+- **never seen: process it; seen before: return the saved result**: chưa gặp thì xử lý, gặp rồi thì trả kết quả cũ
+- **race-proof**: an toàn trước race condition
+- **let me check whether you have got it**: để tôi kiểm tra bạn đã nắm chưa
+
+### Lỗi người Việt hay mắc
+- "Explain about idempotency" — **explain** không cần "about": "explain idempotency".
+- "It is very safe to repeat" — safe ≠ idempotent; nói "repeating it is harmless / has no extra effect".
+- Nói quá nhanh khi coaching; dùng ngắt nhịp: "The word literally means... — the same power, the same effect."
+- "Do not make this mistake again" — giọng mắng; coaching đúng là "where in our code should the key be created?" (hỏi lại để kiểm tra hiểu biết).
+
+> Senior tip: Trong phỏng vấn, cách bạn **giải thích cho junior** được chấm ngang nội dung: ví dụ đời thường + một câu hỏi ngược lại cho thấy you coach, không lecture. Nếu may, chủ động thừa nhận lỗi trong câu chuyện: "we shipped this exact bug once, and the dedup table is why it never reached production again" — biến khái niệm thành bài học có thật. Phát âm: **idempotent** /aɪˈdɛmpətənt/ nhấn âm hai; **button** /ˈbʌtn/.`,
+  follow: [
+    'Is a GET request idempotent by definition? Explain why or why not.',
+    'How would you make a refund endpoint idempotent?',
+    'What goes wrong if the client generates a new key for every HTTP retry?',
+  ],
+  tags: ['english', 'mentoring', 'idempotency', 'payments', 'communication'],
+  lang: 'en',
+},
+{
+  id: 'english-095',
+  topic: 'english',
+  level: 'senior',
+  q: 'Walk me through your release process for a risky change to a payments service. What makes a release safe, and what happens when a deploy goes wrong?',
+  a: `**Tóm tắt:** Trả lời theo trục **"giảm liều + giảm thời gian hỏng hóc"**: batch nhỏ, tách phát hành khỏi triển khai (feature flag), canary và số liệu làm quyết định, đường rollback thật sự, và một câu về quy trình đặc thù ngân hàng (change window, phê duyệt, kiểm tra sau phát hành).
+
+### Sample answer
+For anything risky on a payments service, I optimise for two things: small batches and a short blast radius.
+
+Before anything reaches production, the change passes automated tests, review, and staging with production-like data. Then we deploy with the new logic hidden behind a feature flag that starts at zero percent. Deploying and releasing are two separate moments — that is deliberate, because it means the risky part can be switched on gradually and switched off in seconds without a rollback of the code.
+
+The flag starts with internal test accounts, then one percent of real traffic. We watch three numbers for about an hour: error rate, latency, and the specific business metric — for a transfer flow, the accepted-versus-completed ratio. If any of them breaks its band, we turn the flag off, which is the fast path back. Because the flag is a kill switch, rollback is minutes, not a redeploy.
+
+We also care about the data side. Database changes are expand-and-contract: add the new column first, deploy code that works with both shapes, then remove the old one in a later release. That keeps every release rollback-safe even when rows changed.
+
+In a bank there are extra guardrails: releases go through a change window, the change request records what we deploy, the risk, and the exact rollback plan, and after the release we verify with real test transactions. On the rare bad night, the call is simple: stop, turn the flag off, stabilise, and only then investigate. Fixing under pressure while money moves is how small incidents become large ones.
+
+### Thuật ngữ cần nắm
+- **feature flag**: công tắc bật/tắt tính năng lúc chạy, tách *triển khai code* khỏi *mở tính năng*.
+- **canary release**: nhả một phần nhỏ traffic (1% → 5% → 50% → 100%) để lỗi lộ ra ở nhóm nhỏ.
+- **blast radius**: phạm vi khách hàng bị ảnh hưởng khi release hỏng — thiết kế sao cho nó nhỏ.
+- **expand-and-contract**: schema đổi theo hai pha (thêm cái mới cho chạy song song → cắt cái cũ) để code phiên bản cũ và mới cùng sống được, nghĩa là rollback không vỡ dữ liệu.
+- **change window / change request**: ngân hàng thường chỉ deploy ở khung giờ nhất định và phải ghi phiếu mô tả rủi ro + kế hoạch rollback (quy trình quản lý thay đổi theo chuẩn kiểm toán).
+- **kill switch**: tắt tính năng ngay lập tức khi có sự cố mà không cần deploy lại.
+
+### Useful phrases
+- **deploying and releasing are two separate moments**: triển khai và mở tính năng là hai thời điểm
+- **switched off in seconds without a rollback**: tắt trong vài giây mà không cần rollback code
+- **the accepted-versus-completed ratio**: tỉ lệ lệnh được nhận vs hoàn tất
+- **if any of them breaks its band, we turn the flag off**: nếu một chỉ số vượt ngưỡng thì tắt flag
+- **stop, stabilise, then investigate**: dừng, ổn định, rồi mới điều tra
+
+### Lỗi người Việt hay mắc
+- "We will deploy the code, then if have error we rollback" — mệnh đề if thiếu chủ ngữ: "if there is an error, we roll back".
+- Nhầm **deploy** (đưa code lên) và **release** (mở cho khách dùng) — tách hai từ này trong câu trả lời là tự thể hiện độ chín.
+- "Rollback is easy" quá trơn: interviewer muốn nghe **rollback khi dữ liệu đã đổi thì khó** — mẫu trên trả lời trước bằng expand-and-contract.
+- List toàn bộ pipeline giai đoạn một lượt (build, test, deploy...) thay vì chọn góc *an toàn* — lạc đề so với câu hỏi.
+
+> Senior tip: Câu chốt ăn điểm: "rollback is minutes, not a redeploy" — nói lên rằng bạn đo quy trình bằng **thời gian ổn định**, không phải số bước. Nếu interview là công ty có văn hoá quản lý thay đổi chặt (ngân hàng, telco), thêm một câu về change request sẽ ghi điểm đúng gu. Phát âm: **rollback** /ˈrəʊlbæk/ nhấn âm đầu; **stabilise** /ˈsteɪbəlaɪz/ (Anh) /ˈsteɪbəlaɪz/ (Mỹ ổn định).`,
+  follow: [
+    'How do you roll back a change that has already written new-shaped data to the database?',
+    'What does your post-deploy verification look like for a payments release?',
+    'How do you handle an emergency hotfix during a change freeze?',
+  ],
+  tags: ['english', 'release', 'devops', 'banking', 'incident'],
+  lang: 'en',
+},
+{
+  id: 'english-096',
+  topic: 'english',
+  level: 'mid',
+  q: 'Your release depends on an API from another team, and they have missed two commitments. How do you raise this to your product owner, and how do you talk to that team without damaging the relationship?',
+  a: `**Tóm tắt:** Hai mặt của một vấn đề: **với PO, báo rủi ro sớm kèm phương án giảm chặn (mock, contract, dates)**; **với team kia, đối thoại kỹ sư trước — giả định thiện chí, hỏi nguyên nhân, chốt lại bằng văn bản có ngày cụ thể**. Leo thang là xử lý rủi ro, không xử lý người.
+
+### Sample answer
+There are two conversations here, and I keep them separate.
+
+With the other team, I start engineer to engineer, assuming good intent. I would say: "We planned around the transfers API for the fifteenth, and that has moved twice now. I understand priorities change — is something on your side blocking it? What I need to unblock is just the interface: if you can give me the contract and a stub or mock server, my team can build and test against it while you finish the real implementation. Could we agree on a date I can plan around, and write it in the ticket?" The mock request matters a lot: it turns a hard dependency into a soft one, and it is easy for them to give.
+
+With my product owner, I raise the risk early and in business terms: "Our release is now blocked on another team's API. It has moved twice, so I would plan the date with a buffer of one week. Here is what we can do anyway: build against the mock and be ready two days after their API lands. I will update you every Friday, and I will tell you the day it gets worse, not the day it fails."
+
+If two more dates slip, I escalate — and escalation, for me, is simply making the risk visible: a short message in the shared channel, tagging both managers, stating facts, dates, and impact, no adjectives about anyone. "The API is late twice, our release is at risk, here is what we need" — nobody can take that the wrong way. What damages relationships is blaming language, not visibility.
+
+### Khung xử lý phụ thuộc liên team
+1. **Biến phụ thuộc cứng thành mềm**: xin **interface/contract + mock server** (server giả lập đúng API thật để bạn code và test trước) — bạn bớt chờ, họ bớt áp lực.
+2. **Chốt bằng văn bản**: ngày trên ticket, không chỉ trên chat — "in writing, in the ticket".
+3. **Leo thang vấn đề, không leo thang người**: escalate *risk + dates + impact*, bỏ tính từ chỉ người ("they are slow" → "the API has moved twice").
+4. **Cho PO đường lui**: báo rủi ro sớm + buffer + cadence cập nhật hàng tuần; PO ghét bị bất ngờ hơn trễ hẹn.
+5. **Giữ quan hệ lâu dài**: ngân hàng là tổ chức mà bạn sẽ gặp lại team kia ở dự án khác; thắng một cuộc cãi không đổi được một đối tác tin cậy.
+
+### Useful phrases
+- **assuming good intent**: giả định họ có thiện chí
+- **priorities change**: ưu tiên thay đổi
+- **what I need to unblock is just the interface**: thứ tôi cần để hết chặn chỉ là interface
+- **a date I can plan around**: mốc thời gian tôi có thể lên kế hoạch theo
+- **I will tell you the day it gets worse**: tôi sẽ báo ngay ngày tình hình xấu đi
+- **making the risk visible, not assigning blame**: làm rủi ro nhìn thấy được, không quy trách nhiệm
+
+### Lỗi người Việt hay mắc
+- "Team A is not responsible" — nghe như tấn công nhân cách; nói hành vi và số liệu: "the date has moved twice".
+- "I will complain to your boss" — sai sắc thái; escalation trong tiếng Anh công sở là "raise a risk" hoặc "escalate through the managers".
+- "Please do me the API soon" — lịch sự sai chỗ; đúng: "could you give me the contract by Friday?" (mốc + lời xin rõ).
+- Im lặng chịu chặn rồi báo PO sát ngày ("I did not want to bother you") — báo sớm là chuyên nghiệp, không phải phàn nàn.
+
+> Senior tip: Câu "I will tell you the day it gets worse, not the day it fails" là câu của người từng quản lý kỳ vọng thật; nó mua được sự tin tưởng lâu hơn mọi lời xin lỗi muộn. Và luôn xin mock trước khi xin date — xin mock dễ được đồng ý hơn và tự nó đã giảm một nửa rủi ro. Phát âm: **dependency** /dɪˈpɛndənsi/ nhấn âm hai; **escalate** /ˈɛskəleɪt/ nhấn âm đầu.`,
+  follow: [
+    'When exactly do you escalate to managers instead of solving it engineer to engineer?',
+    'How do you protect your own team timeline while the other team is late?',
+    'What would the written escalation message actually say?',
+  ],
+  tags: ['english', 'cross-team', 'stakeholders', 'communication', 'delivery'],
+  lang: 'en',
+},
+{
+  id: 'english-097',
+  topic: 'english',
+  level: 'senior',
+  q: 'Describe how your service exchanges data with the core banking system or an external partner. How do you handle timeouts, retries, duplicates, and missing messages?',
+  a: `**Tóm tắt:** Kể một **tích hợp thật** theo nguyên tắc: bên ngoài không đáng tin — mọi giả định đổ vỡ được. Bốn câu hỏi nhà nghề phải trả lời được: gọi quá lâu thì sao, thử lại có an toàn không, trùng lặp nhận diện kiểu gì, và tin nhắn im lặng thì phát hiện bằng cách nào.
+
+### Sample answer
+Our service moved settlement instructions to the core banking system through message queues rather than synchronous calls, because the core was available in defined windows and we could not afford to couple our uptime to theirs.
+
+Outbound, we wrote a file per batch in ISO twenty-oh-two format into a queue; the core pulled it when it was ready. Inbound, results came back as per-transaction callbacks, correlated by a transaction reference we carried end to end.
+
+Each of the four failure modes has a deliberate answer. Timeouts: we never wait forever — every call has a per-call budget, and if the partner misses it, the order simply stays pending; nothing is marked failed on a network blip, because "no answer" is not "no". Retries: with exponential backoff and a maximum number of attempts, and only on operations that are idempotent — the reference makes a re-send safe, the core deduplicates on it. Duplicates: deduplication on that reference, plus a unique database constraint — assume at-least-once delivery on both legs, because queues redeliver after consumer crashes. Missing messages: this is the sneaky one. A callback that never arrives looks identical to a slow one, so we poll the partner status API after a deadline, and nightly file-based reconciliation compares our ledger with the core statement and raises every unmatched item to the operations team.
+
+Everything that exhausts its retries lands in a dead-letter queue with alerting, so humans see it while the amount is still small.
+
+### Sơ đồ luồng (tập vẽ để tập nói)
+~~~seq
+title: Tich hop bat dong bo voi core banking
+actors: Payments API | Queue | Core banking | Ops
+Payments API -> Queue: Ghi lenh thanh toan (batch)
+Queue -> Core banking: Core tai lenh khi san
+Core banking --> Payments API: Callback tung lenh, khop reference
+Payments API -> Payments API: Khong thay callback -> goi status API
+Core banking -> Queue: Lenh loi dinh dang
+Queue -> Ops: DLQ co canh bao
+note Payments API..Ops: Cuoi ngay doi soat file vs ledger, phat hien lech
+~~~
+
+### Giải thích từ gốc
+- **core banking**: hệ thống sổ cái trung tâm của ngân hàng (lưu tài khoản, số dư, chạy batch đêm); thường cũ, chỉ nhận lệnh trong cửa sổ nhất định — lý do tích hợp phải bất đồng bộ.
+- **ISO 20022**: chuẩn định dạng tin nhắn thanh toán quốc tế (XML) dùng thay cho SWIFT cũ; không cần thuộc chi tiết, chỉ cần biết là "chuẩn file thanh toán".
+- **"no answer" is not "no"**: timeout không chứng minh giao dịch thất bại — nó có thể đã chạy xong; vì vậy không được đánh dấu failed, phải để pending và tra soát.
+- **correlation / transaction reference**: mã duy nhất mang theo cả hai chiều để khớp callback với lệnh gốc; chính nó là idempotency key cho phía core.
+- **at-least-once**: mặc định queue có thể giao trùng (redeliver sau crash) — chống trùng bằng dedup, đừng mong "exactly-once" từ hạ tầng.
+- **DLQ + alerting**: nơi chứa tin xử lý mãi không được; không có cảnh báo thì DLQ thành nghĩa trang lệnh.
+
+### Useful phrases
+- **we could not afford to couple our uptime to theirs**: không thể buộc thời gian hoạt động của ta vào họ
+- **every call has a per-call budget**: mỗi lời gọi có ngân sách thời gian riêng
+- **no answer is not a no**: không trả lời không có nghĩa là từ chối
+- **the sneaky one is the missing message**: kẻ lắt léo nhất là tin nhắn im lặng
+- **raises every unmatched item to operations**: đẩy mọi mục không khớp cho ops xử lý
+
+### Lỗi người Việt hay mắc
+- "If the system do not respond" — hoà hợp chủ-vị: "if it **does** not respond"; mệnh đề after "if" không dùng will.
+- "We wait the response for 30 minutes" — **wait for**; và timeout thực tế là giây, không phải phút — nêu con số để thể hiện từng tuning ("a five-second budget").
+- Nói "we use Kafka to be reliable" — tool không tạo reliability; nói cơ chế: dedup, retries, DLQ, reconciliation.
+- Quên mất mặt **con người**: luôn kết bằng "then operations handle it before the customer notices" — quy trình có người vận hành mới trọn vẹn.
+
+> Senior tip: Câu thể hiện đẳng cấp nhất là thừa nhận giả định vận hành: "we assume at-least-once everywhere and make duplicates harmless" — exactly-once là kỳ vọng của người chưa chạy production. Nếu có số, chèn một con số: "reconciliation typically finds two to three exceptions a day, and the oldest open one took us eleven months to close" — cho thấy bạn biết cả phần xấu của hệ thống mình làm. Phát âm: **queue** /kjuː/; **correlation** /ˌkɒrəˈleɪʃn/ nhấn âm ba.`,
+  follow: [
+    'Why should you only retry operations that are idempotent?',
+    'How would you detect that the core silently lost a message that was neither delayed nor failed?',
+    'What is a circuit breaker, and when can it make a bad situation worse?',
+  ],
+  tags: ['english', 'integration', 'banking', 'messaging', 'reliability'],
+  lang: 'en',
+},
 );
