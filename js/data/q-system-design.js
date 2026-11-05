@@ -70,7 +70,6 @@ Luôn trả lời được: "Nếu Redis chết thì sao?", "Nếu traffic tăng
   tags: ['system design', 'interview framework', 'estimation']
 ,
   refs: [
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' },
     { type: 'book', title: 'Google SRE Book', url: 'https://sre.google/sre-book/table-of-contents/' },
   ]
 },
@@ -180,8 +179,6 @@ Khi vượt 1 tỷ URL: shard theo {{hash(code)}} với consistent hashing, ho�
   tags: ['URL shortener', 'base62', 'cache', 'Kafka']
 ,
   refs: [
-    { type: 'doc', title: 'System Design Primer: Pastebin / URL shortener solution', url: 'https://github.com/donnemartin/system-design-primer/blob/master/solutions/system_design/pastebin/README.md' },
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' },
   ]
 },
 {
@@ -281,7 +278,6 @@ Ngoài 429, nên trả thêm thời gian chờ và hướng dẫn. Client tốt 
   level: 'lead',
   refs: [
     { type: 'doc', title: 'Redis: Scripting with Lua', url: 'https://redis.io/docs/latest/develop/interact/programmability/eval-intro/' },
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' },
   ],
   q: 'Thiết kế hệ thống flash sale: 100.000 request trong 1 giây cho 1.000 sản phẩm, mỗi người chỉ mua 1, tuyệt đối không oversell. Trình bày cả luồng và cách xử lý sự cố.',
   a: `**Tóm tắt:** Flash sale là bài toán **tranh chấp tài nguyên hữu hạn dưới tải cực lớn**. Nguyên tắc: chặn và quyết định càng sớm càng tốt, trừ kho bằng thao tác **nguyên tử có điều kiện**, tạo đơn bất đồng bộ, và luôn có tầng DB làm chốt chặn cuối cùng chống oversell.
@@ -1029,7 +1025,6 @@ Với hệ replicated N node: ghi thành công khi W node xác nhận, đọc t�
   level: 'lead',
   refs: [
     { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' },
-    { type: 'doc', title: 'System Design Primer', url: 'https://github.com/donnemartin/system-design-primer' },
   ],
   q: 'Hệ thống hiện có 1.000 người dùng, sếp muốn chuẩn bị cho 1 triệu. Bạn vạch lộ trình kiến trúc theo từng mốc, mỗi mốc gắn với tín hiệu nào cần scale?',
   a: `**Tóm tắt:** Scale không phải là làm kiến trúc của Google ngay từ đầu, mà là **giải quyết điểm nghẽn tiếp theo** ở mỗi mốc. 1k user cần một monolith gọn gàng và backup; 100k cần stateless + cache + replica; 1M cần shard, tách async, multi-region. Mỗi bước phải có **tín hiệu đo được** và chi phí vận hành tương xứng.
@@ -1246,7 +1241,6 @@ Job có thể chạy lại do retry, lease hết hạn, hoặc chạy tay. Mọi
 ,
   refs: [
     { type: 'doc', title: 'PostgreSQL SELECT: The Locking Clause (SKIP LOCKED)', url: 'https://www.postgresql.org/docs/current/sql-select.html' },
-    { type: 'doc', title: 'ShedLock', url: 'https://github.com/lukas-krecan/ShedLock' },
     { type: 'doc', title: 'Spring Batch Reference', url: 'https://docs.spring.io/spring-batch/reference/' },
   ]
 }
@@ -2318,7 +2312,6 @@ ID theo thời gian chỉ là "gần đúng": hai node sinh trong cùng ms có t
 ,
   refs: [
     { type: 'doc', title: 'RFC 9562: Universally Unique IDentifiers (UUIDv7)', url: 'https://www.rfc-editor.org/rfc/rfc9562' },
-    { type: 'doc', title: 'ULID Specification', url: 'https://github.com/ulid/spec' },
     { type: 'doc', title: 'PostgreSQL CREATE SEQUENCE', url: 'https://www.postgresql.org/docs/current/sql-createsequence.html' },
   ]
 },
