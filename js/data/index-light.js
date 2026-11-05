@@ -1254,6 +1254,8 @@ window.DATA_INDEX = {
     {"id":"lesson-devops-009","track":"devops","order":9,"title":"Prometheus metrics & SLO: counter, gauge, histogram và error budget","level":"senior","minutes":35},
     {"id":"lesson-devops-010","track":"devops","order":10,"title":"Thuật toán HPA: desired = ceil(current x metric / target), tolerance 0.1, min/max và stabilization window","level":"senior","minutes":40},
     {"id":"lesson-devops-011","track":"devops","order":11,"title":"Canary analysis tự động: so sánh baseline với canary theo error rate và p95, ngưỡng tương đối + tuyệt đối, PROMOTE/CONTINUE/ROLLBACK","level":"senior","minutes":40},
+    {"id":"lesson-devops-012","track":"devops","order":12,"title":"Structured logging và correlation id: log JSON một dòng, MDC xuyên thread pool, level theo môi trường, không log PII","level":"senior","minutes":40},
+    {"id":"lesson-devops-013","track":"devops","order":13,"title":"Phân tích access log khi sự cố mà chưa có dashboard: lỗi theo phút, top endpoint lỗi, p95 nearest-rank","level":"senior","minutes":40},
     {"id":"lesson-architecture-001","track":"architecture","order":1,"title":"Parking Lot: Strategy cho tính phí và Factory cho loại xe","level":"senior","minutes":30},
     {"id":"lesson-architecture-002","track":"architecture","order":2,"title":"Elevator: State pattern và chiến lược điều phối","level":"senior","minutes":30},
     {"id":"lesson-architecture-003","track":"architecture","order":3,"title":"Notification Service: Observer và nguyên tắc Open/Closed","level":"mid","minutes":25},

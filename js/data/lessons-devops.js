@@ -3219,5 +3219,1076 @@ Khi trả lời phỏng vấn, hãy nói bằng ba phạm trù lỗi: **false po
   related: ['devops-019', 'devops-042', 'devops-054'],
   tags: ['Canary', 'Argo Rollouts', 'Flagger', 'Error budget', 'Progressive delivery', 'Observability'],
 },
+{
+  id: 'lesson-devops-012',
+  track: 'devops',
+  order: 12,
+  title: 'Structured logging và correlation id: log JSON một dòng, MDC xuyên thread pool, level theo môi trường, không log PII',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Giải thích được vì sao log JSON một dòng dùng tốt hơn log chữ tự do khi chạy 30 Pod, và vì sao app chỉ ghi ra stdout',
+    'Nói được correlation id (traceId) sinh ra ở đâu, truyền xuyên service thế nào và giúp trả lời câu gì',
+    'Hiểu ThreadLocal đủ sâu để giải thích vì sao MDC vừa có thể MẤT tích vừa có thể NÓI DỐI khi task nhảy sang thread pool',
+    'Viết được bộ bọc copy context lúc submit và dọn trong finally, biết vì sao phải copy bản sao chứ không chia sẻ map',
+    'Chọn log level theo môi trường, đổi level giữa chừng lúc sự cố, và kể được 4 lớp che PII trong log',
+  ],
+  body: `### Log thật ra là gì, và vì sao log chữ tự do làm bạn mù lúc sự cố
+
+Một dòng log chỉ là chữ mà app in ra lúc chạy, để người vận hành đọc được chuyện gì đã xảy ra **sau** khi nó xảy ra. Kiểu quen tay nhất là nối chuỗi:
+
+~~~java
+log.info("Order " + orderId + " failed for user " + userId);
+// ra: 2026-05-04 10:15:32 INFO Order 8842 failed for user 5501
+~~~
+
+Ở một máy một process thì đủ dùng. Ở production với 30 Pod và 200 request mỗi giây, nó thành gánh nặng: để trả lời "bao nhiêu đơn thất bại trong 15 phút qua", bạn phải viết regex trên đống chữ vốn viết cho người đọc, và regex đó gãy ngay khi ai đó sửa một chữ trong câu. Log không cấu trúc thì **không có chỉ số**; không có chỉ số thì không có cảnh báo sớm, và người phát hiện sự cố là khách hàng chứ không phải team bạn.
+
+### Structured logging: mỗi dòng log là một JSON object một dòng
+
+**Structured logging** là quy tắc: mỗi dòng log là một object có tên field rõ ràng, in ra đúng một dòng. Định dạng phổ biến là NDJSON (Newline Delimited JSON: một JSON hoàn chỉnh trên một dòng, các dòng không ghép thành một mảng lớn, nên đọc được bằng {{grep}} và stream được từng dòng).
+
+~~~json
+{"timestamp":"2026-05-04T10:15:32.481Z","level":"ERROR","service":"order-service","traceId":"4bf92f3577b34da6a3ce929d0e0e4736","spanId":"00f067aa0ba902b7","orderId":"8842","errorCode":"PAYMENT_DECLINED","message":"payment declined"}
+~~~
+
+Được ba thứ:
+- Lọc và đếm theo field chính xác, ví dụ {{errorCode = "PAYMENT_DECLINED"}}, thay vì đoán vị trí chữ trong câu.
+- Thêm field mới mà không làm gãy field cũ; cả công ty dùng chung một schema nên một dashboard chạy cho 20 service.
+- **Stack trace nằm trong một field** của cùng object. Đây là chi tiết sống còn: agent gom log đọc theo dòng, nên stack trace 80 dòng sẽ bị cắt thành 80 bản ghi rời rạc và mất quan hệ với dòng ERROR đã sinh ra nó.
+
+Trong JVM: Logback + encoder JSON ({{logstash-logback-encoder}}), hoặc Spring Boot 3.4+ bật dựng sẵn bằng {{logging.structured.format.console=ecs}}. Bộ field tối thiểu nên thống nhất một lần cho toàn công ty: {{timestamp}} (ISO-8601, **UTC**), {{level}}, {{service}}, {{version}}, {{traceId}}, {{spanId}}, {{message}}.
+
+> Lưu ý: ECS (Elastic Common Schema) chỉ là bộ quy ước tên field. Giá trị của việc thống nhất tên nằm ở chỗ khác: truy vấn và dashboard viết một lần dùng được cho service của team khác, kể cả service của team chưa tồn tại.
+
+### Vì sao app chỉ ghi ra stdout, đừng tự ghi file trong container
+
+Nguyên tắc 12-factor: app ghi ra **stdout/stderr**, không tự quản lý file log. Ba lý do rất cụ thể khi chạy trên Kubernetes:
+- Pod là tạm bợ: Pod bị xóa thì file log nằm trong layer của nó biến mất theo. Mount một PVC (PersistentVolumeClaim: ô đĩa bền gắn vào Pod) không phải lời giải, vì PVC gắn với **một** Pod cố định trong khi Deployment thay Pod liên tục.
+- Disk của node là tài sản chung. App tự ghi và tự xoay file, đến lúc sự cố log phình 20 lần thì làm đầy disk, kubelet eviction quét cả node, cháy lan sang Pod của team khác.
+- Container runtime **đã** ghi stdout của container ra file JSON trên node, có rotation sẵn, và đó chính là thứ {{kubectl logs}} đọc. Một agent chạy theo **DaemonSet** (Fluent Bit, Vector, Grafana Alloy) đọc file đó, gắn thêm metadata (namespace, pod, label app) rồi đẩy về Loki hoặc OpenSearch.
+
+Nên "app ghi log ra file" trong container là lỗi thiết kế vận hành, không phải gu cá nhân.
+
+### correlation id / traceId: mã vận đơn của một lượt xử lý
+
+**Correlation id** — trong thế giới tracing gọi là **traceId** — là một định danh duy nhất được gắn vào **mọi** dòng log thuộc về một lần xử lý, kể cả lần xử lý đó đi qua 6 service. Hãy nghĩ tới mã vận đơn in trên mọi phiếu của một đơn hàng: bạn không cần biết đơn đi qua những kho nào, tra mã là ra toàn bộ hành trình.
+
+~~~seq
+title: Mot request mang theo cung traceId qua bon he thong
+actors: Client | Gateway | Order | Payment | Logs
+Client -> Gateway: POST /orders chua co header traceparent
+Gateway -> Gateway: sinh traceId roi dat vao MDC
+Gateway -> Order: traceparent: 00-traceId-spanId-01
+Order -> Payment: goi thanh toan, van dung traceId nay
+Order --> Gateway: 502 PAYMENT_DECLINED
+Payment --> Logs: moi dong log deu mang traceId
+note Logs..Logs: tra mot traceId ra ca hanh trinh
+~~~
+
+Chuẩn để truyền giữa các service là header **W3C traceparent**, dạng {{00-<32 hex traceId>-<16 hex spanId>-<flags>}}; flags {{01}} nghĩa là trace này được giữ lại (sampled). **traceId** không đổi suốt lượt xử lý, còn **spanId** định danh từng bước riêng, để biết dòng log này thuộc bước ở order-service hay bước ở payment-service. Spring Boot 3 dùng **Micrometer Tracing** (cầu nối sang OpenTelemetry hoặc Brave): nó tự sinh hoặc khôi phục traceId từ header, tự đặt vào MDC, và tự gắn header cho các client đã được instrument (RestClient, WebClient, Feign, KafkaTemplate).
+
+Điều phải nói được trong phỏng vấn: traceId được sinh ở **cửa ngõ** (gateway hoặc filter đầu tiên của service vào cuộc) rồi **được chuyền tay**, chứ không phải mỗi service tự sinh một cái. Mỗi service tự sinh thì mỗi service có một thế giới log riêng, và không ghép được gì.
+
+### MDC hoạt động thế nào: một cái Map gắn với thread
+
+**MDC (Mapped Diagnostic Context)** của SLF4J/Logback, nói cho đơn giản, là một {{Map<String,String>}} **gắn với thread đang chạy**. Encoder JSON in nguyên cái map đó vào mỗi dòng log, nên code nghiệp vụ không phải tự viết traceId:
+
+~~~java
+// Servlet filter: chạy trên thread đang xử lý request HTTP
+String incoming = request.getHeader("traceparent");
+MDC.put("traceId", incoming != null ? extractTraceId(incoming) : newTraceId());
+try {
+    chain.doFilter(request, response);   // mọi log ở tầng sâu bên trong đều tự có traceId
+} finally {
+    MDC.clear();                         // BẮT BUỘC: thread này sẽ phục vụ request khác
+}
+~~~
+
+Phải hiểu tới gốc cơ chế, vì đây là chỗ mọi thứ vỡ ra. MDC dựa trên **ThreadLocal**: một biến mà **mỗi thread có một bản riêng**, thread này không nhìn thấy bản của thread khác (JVM cất các giá trị vào một map nằm bên trong object Thread). Mô hình "một request một thread" của Tomcat khiến MDC trông như phép màu: request vào và ra trên đúng một thread nên cái map luôn đúng. Phép màu biến mất ngay khi công việc của bạn nhảy sang thread khác, tức là khi dùng {{@Async}}, {{ExecutorService.submit}}, {{CompletableFuture.supplyAsync}}, {{parallelStream}}, {{@Scheduled}}, listener Kafka/Rabbit (chạy trên thread của container factory), hoặc appender ghi log **bất đồng bộ** ({{AsyncAppender}} có pool thread riêng).
+
+### Vì sao MDC mất khi sang thread khác, và kiểu hỏng thứ hai còn nguy hiểm hơn
+
+Có **hai** kiểu hỏng, và interview tốt sẽ mong bạn kể cả hai:
+1. **Mất**: worker thread có map trống → log của request không có traceId → bạn chỉ có một đống ERROR không biết thuộc giao dịch nào.
+2. **Nhiễm**: thread trong pool **sống lâu hơn** request. Request A để lại {{traceId=X}}, task B chạy trên đúng thread đó và không set gì → log của B mang traceId của A. Nguy hiểm hơn mất rất nhiều, vì nó cho bạn một bức tranh hoàn chỉnh nhưng **sai**: hai giao dịch dính làm một, bạn mất 40 phút điều tra vì tin vào dữ liệu giả. Nguyên nhân gốc cũng là ThreadLocal: giá trị sống theo **thread**, không theo **request**, mà pool thì tái sử dụng thread.
+
+Sửa: **copy map sang thread khác và dọn sau khi chạy**. Với Spring {{TaskDecorator}}:
+
+~~~java
+executor.setTaskDecorator(runnable -> {
+    Map<String, String> captured = MDC.getCopyOfContextMap();       // bản SAO, không phải map gốc
+    return () -> {
+        Map<String, String> previous = MDC.getCopyOfContextMap();   // thread này có thể đang mang việc khác
+        if (captured != null) MDC.setContextMap(captured); else MDC.clear();
+        try {
+            runnable.run();
+        } finally {
+            if (previous != null) MDC.setContextMap(previous); else MDC.clear();
+        }
+    };
+});
+~~~
+
+Ba chi tiết phân biệt người từng viết code này với người chỉ đọc blog:
+- Dùng **bản sao**. {{getCopyOfContextMap}} đã trả về copy; nếu tự viết mà copy **reference** tới map gốc thì worker ghi đè làm đổi luôn context của thread gọi, và hai task chạy song song trên cùng một map là một race chưa có lời giải.
+- Chụp context **lúc submit**, không phải lúc chạy. Đọc MDC bên trong task tức là đọc context của thread chạy task: trống, hoặc của request trước.
+- **Khôi phục trong {{finally}}**, không phải {{clear}} vô điều kiện. {{clear}} sẽ xóa cả context của thread đang làm việc lồng (ví dụ thread pool của chính appender), còn không dọn gì thì bỏ lại traceId cho request kế tiếp.
+
+Bạn không cần tự viết khi đã có thư viện: Micrometer **context-propagation** cho {{ContextSnapshot.setThreadLocals()}} và {{autoContextPropagation(runnable)}}, OpenTelemetry có {{Context.current().wrap(runnable)}} (cái này cũng chỉ làm đúng ba việc: chụp, đặt, khôi phục). Bài tập dưới đây yêu cầu tự viết đúng một lần, vì câu hỏi "vì sao MDC mất trên thread pool" vẫn là câu hỏi phỏng vấn kinh điển: nó kiểm tra bạn có hiểu ThreadLocal hay chỉ biết gọi API.
+
+### Log level: chọn theo môi trường, đổi được giữa chừng không cần deploy
+
+Bảng dưới là khuôn mẫu sane (đi từ đắt tới rẻ theo lượng chữ sinh ra):
+
+| Level | Dùng khi nào | Ví dụ thật |
+|---|---|---|
+| ERROR | cần người can thiệp, có user bị ảnh hưởng | thanh toán thất bại, không kết nối được DB |
+| WARN | bất thường nhưng hệ thống tự xoay xở được | retry lần 3 thành công, fallback được kích hoạt |
+| INFO | mốc đời sống của một nghiệp vụ | nhận đơn 8842, đã trừ tồn kho, đã gửi mail |
+| DEBUG | chi tiết kỹ thuật để điều tra | payload sau khi map, quyết định của bộ lọc |
+| TRACE | từng bước trong vòng lặp | từng frame của một kết nối WebSocket |
+
+Khuôn mẫu theo môi trường: DEV chạy DEBUG cho package của chính bạn; UAT chạy INFO; PROD chạy INFO (WARN nếu service quá ồn). lúc có sự cố thì **bật DEBUG đúng một logger** rồi tắt, thay vì đổi level toàn cục và deploy lại:
+
+~~~bash
+curl -X POST http://pod:8080/actuator/loglevel/com.acme.payment -d '{"configuredLevel":"DEBUG"}' -H 'Content-Type: application/json'
+~~~
+
+> Lưu ý: DEBUG trong production không hề rẻ. Log là tiền và là rủi ro: volume tăng 10-50 lần làm đường ống trễ (bạn cần log nhưng nó về chậm 5 phút, đúng lúc đang điều tra), disk node đầy, alert noise, và mức rò rỉ dữ liệu nhạy cảm tăng đúng vào lúc hệ thống yếu nhất. Hãy đặt **TTL** cho DEBUG: tự hạ về INFO sau 30 phút, vì người ta luôn quên tắt sau khi quên tắt.
+
+Một lỗi code làm tăng volume mà không ai để ý: nối chuỗi thẳng vào message thì chuỗi được dựng **kể cả khi level đang tắt**, còn để giá trị ở tham số riêng (dạng marker) thì chuỗi chỉ được ghép khi level thật sự được bật.
+
+### Không log PII: một field cũng không được
+
+**PII** (Personally Identifiable Information: thông tin định danh cá nhân — tên, CCCD, số điện thoại, email, địa chỉ, số thẻ, hồ sơ KYC). Quy tắc cứng:
+- **Không bao giờ** ghi: mật khẩu, token/session id, CVV/CVC, toàn bộ số thẻ PAN (chỉ 4 số cuối, đã che), CCCD, ảnh OCR, toàn body của endpoint login/KYC.
+- Lý do không chỉ là GDPR/VNeID-era: log được sao lưu ra nhiều hệ thống (ELK, S3, Grafana Cloud, backup của nhà cung cấp), **ai cũng có quyền đọc để debug**, và được giữ 90 ngày. Bạn mất kiểm soát dữ liệu ngay khi nó vào log, nên không có cảnh "xin lỗi rồi xóa".
+- PCI DSS cấm lưu CVV sau khi xử lý, và PAN phải ẩn.
+
+Chỗ hay rò rỉ nhất là những thứ bạn **không trực tiếp** log:
+- Log nguyên đối tượng request: đưa cả DTO vào log cho tiện, mà DTO có field {{password}} hoặc {{cccd}} thì Lombok {{toString}} in sạch cả hai.
+- Message của exception mang input người dùng: {{IllegalArgumentException: invalid card 4111111111111111}}.
+- Debug của framework: bật {{logging.level.org.springframework.web}} lên TRACE là in nguyên request body.
+
+Phòng vệ nhiều lớp, vì chắc chắn sẽ có một dev mới vô tình làm rò rỉ:
+1. **Che từ nguồn**: DTO chỉ expose getter đã mask ({{getCardMasked()}} trả dạng {{****1111}}), không có getter thô trong log path.
+2. **Lớp encoder**: converter mặt nạ dùng chung trong công ty, theo danh sách key nhạy cảm (password, token, cccd, pan, cvv, email, phone).
+3. **Lớp pipeline**: processor obfuscate trong OTel Collector, chắn regex số thẻ **trước khi** ghi vào kho — lớp này còn cứu được cả những service chưa cập nhật.
+4. **Test**: một unit test log thử đối tượng có mọi field nhạy cảm rồi assert chuỗi ra **không** chứa giá trị thô. Đây là thứ duy nhất giữ quy tắc sống qua nhiều năm và nhiều đời dev.
+
+### Bẫy production hay gặp
+- **AsyncAppender làm mất hết context**: appender ghi trên thread riêng mà không truyền MDC, hoặc {{includeCallerData}} bật để lấy tên dòng code thì đắt kinh khủng (nó phải lấy stack trace của **mọi** log event).
+- **{{MDC.clear()}} đặt ngoài finally**: đúng một exception là bỏ lại context cho request sau, và bạn có bug chỉ tái hiện lúc 2h sáng.
+- **{{parallelStream}} và {{CompletableFuture}}**: tưởng là code đồng bộ trong một phương thức nên không sao, thật là công việc đang chạy trên ForkJoinPool chung.
+- **Log trong vòng lặp**: {{log.info}} cho từng dòng của một batch 100.000 bản ghi, lúc sự cố nó thành 100.000 dòng cho **mỗi** retry.
+- **Gán traceId rồi quên gỡ ở ranh giới**: worker Kafka phải đọc traceId từ message header và đặt vào MDC **đầu** mỗi lần poll, rồi xóa **cuối** lần poll; thiếu bước xóa là hai message bị dính vào một.
+- **Field tên chung nghĩa mỗi service một kiểu**: chỗ {{user}}, chỗ {{username}}, chỗ {{userId}} — làm query không viết nổi; giải pháp là schema dùng chung (ECS) + starter nội bộ.
+- **Không giới hạn độ dài message**: một stack trace 500KB vào kho log, chi phí index tăng phi mã. Cắt chuỗi và đặt giới hạn ở appender.
+
+### Liên hệ phỏng vấn
+Câu hay gặp: "Log của bạn thế nào trên production, và vì sao log của tôi mất traceId khi tôi dùng {{@Async}}?" — trả lời theo đúng mạch: app ghi JSON một dòng ra stdout, agent DaemonSet gom về Loki/OpenSearch, mọi dòng có {{timestamp}}/{{level}}/{{service}}/{{traceId}}/{{spanId}}; traceId sinh ở cửa ngõ và chuyền tay qua header {{traceparent}}; MDC là ThreadLocal map nên **không** tự theo sang thread của pool — phải chụp bản sao **lúc submit**, đặt vào thread chạy, và khôi phục trong {{finally}}; không làm vậy thì vừa mất traceId vừa bị **nhiễm** traceId của request trước, mà nhiễm còn tệ hơn mất vì dữ liệu trông rất đáng tin. Kế đến nói về chi phí: level theo môi trường, đổi level qua Actuator kèm TTL, dùng marker thay cho nối chuỗi, và PII bị chặn ở 4 lớp vì bạn không thể xóa dữ liệu sau khi nó đã vào log.
+
+> Senior tip: Thêm {{version}} vào mọi dòng log ngay từ ngày đầu. Khi rollout hỏng, câu hỏi đầu tiên luôn là "dòng lỗi này là bản nào", và nếu log không có {{version}} thì bạn phải suy ra qua timestamp cộng với lịch deploy — mất 20 phút cho thứ vốn là một field.`,
+  exercises: [
+    {
+      title: 'MdcExecutor: chụp context lúc submit, đặt vào thread chạy, khôi phục trong finally',
+      prompt: `{{LogContext}} đã được viết sẵn trong starter (nó là bản tối giản của MDC: một map gắn với thread hiện tại) — **đừng sửa nó**, chỉ để hiểu hành vi. Việc của bạn là cài đặt các method của {{MdcExecutor}} theo hợp đồng sau:
+
+- {{MdcExecutor(ExecutorService delegate)}}: ném {{IllegalArgumentException}} khi delegate là null.
+- {{static Runnable wrap(Runnable task)}}: ném {{IllegalArgumentException}} khi task null. Phải chụp {{LogContext.snapshot()}} **ngay lúc gọi wrap**, không phải lúc task chạy. Runnable trả về, khi chạy trên thread nào cũng vậy: (1) lưu context hiện tại của thread đó, (2) đặt context bằng snapshot vừa chụp, (3) chạy task, (4) trong {{finally}} khôi phục context đã lưu ở (1) bằng {{LogContext.restore(previous)}}.
+- {{static <T> Callable<T> wrapCallable(Callable<T> task)}}: cùng hợp đồng như trên, giữ nguyên giá trị trả về và để exception lan ra (Future sẽ bọc nó trong ExecutionException).
+- {{execute(Runnable)}}, {{submit(Runnable)}}, {{submit(Callable)}}, {{shutdown()}} chỉ ủy quyền cho delegate sau khi đi qua {{wrap}}/{{wrapCallable}}.
+
+Ba chỗ bài này chấm điểm bạn:
+- snapshot phải là **bản sao**. Nếu chia sẻ đúng một map object giữa thread gọi và thread chạy, thì task gọi {{put}} sẽ làm đổi luôn context của thread gọi, và hai task song song đè lên nhau.
+- chụp **lúc wrap/submit**. Đọc context bên trong thân task tức là đọc context của thread chạy task: trống hoặc chứa traceId của request trước.
+- khôi phục trong {{finally}}. Không dọn thì thread pool bỏ lại traceId, dòng log của request kế tiếp mang traceId sai; dọn bằng {{clear}} thay vì khôi phục thì xóa mất context của thread đang bị lồng.
+
+{{tests}} chạy mọi task qua {{Executors.newSingleThreadExecutor()}} rồi gọi {{future.get()}}, nên thứ tự tuyệt đối, không có sleep và không có race.`,
+      starter: `import java.util.*;
+import java.util.concurrent.*;
+
+/** Ban toi gian cua MDC: mot map gan voi thread dang chay. DA DUNG - khong can sua. */
+final class LogContext {
+    private static final ThreadLocal<Map<String, String>> CTX =
+            ThreadLocal.withInitial(() -> new HashMap<String, String>());
+
+    static void put(String key, String value) {
+        if (key == null) throw new IllegalArgumentException("key khong duoc null");
+        if (value == null) CTX.get().remove(key);
+        else CTX.get().put(key, value);
+    }
+
+    static String get(String key) {
+        return key == null ? null : CTX.get().get(key);
+    }
+
+    /** Ban sao map cua thread hien tai: sua no khong anh huong context. */
+    static Map<String, String> snapshot() {
+        return new HashMap<String, String>(CTX.get());
+    }
+
+    static boolean isEmpty() {
+        return CTX.get().isEmpty();
+    }
+
+    static void clear() {
+        CTX.get().clear();
+    }
+
+    /** Ghi de context hien tai bang values; values null = xoa het. */
+    static void restore(Map<String, String> values) {
+        CTX.get().clear();
+        if (values != null) CTX.get().putAll(values);
+    }
+}
+
+class MdcExecutor {
+    private final ExecutorService delegate;
+
+    MdcExecutor(ExecutorService delegate) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static Runnable wrap(Runnable task) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static <T> Callable<T> wrapCallable(Callable<T> task) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void execute(Runnable task) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    Future<?> submit(Runnable task) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    <T> Future<T> submit(Callable<T> task) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void shutdown() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `import java.util.*;
+import java.util.concurrent.*;
+
+public class Main {
+    static int passed = 0, total = 0;
+    interface Case { void run() throws Exception; }
+    static void check(String name, Case c) {
+        total++;
+        try { c.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " but got " + actual);
+    }
+    static MdcExecutor oneThreadPool() {
+        return new MdcExecutor(Executors.newSingleThreadExecutor());
+    }
+    /** Goi submit(Callable) qua bien duoc kieu hoa ro de Java khoi rang bua giua hai overload. */
+    static <T> T call(MdcExecutor ex, Callable<T> task) throws Exception {
+        return ex.submit(task).get();
+    }
+
+    public static void main(String[] args) {
+        check("worker thay duoc traceId cua caller", () -> {
+            LogContext.clear();
+            LogContext.put("traceId", "T-100");
+            MdcExecutor ex = oneThreadPool();
+            eq("T-100", call(ex, () -> LogContext.get("traceId")));
+            ex.shutdown();
+        });
+        check("worker duoc don sach sau khi task chay xong", () -> {
+            LogContext.clear();
+            LogContext.put("traceId", "T-200");
+            MdcExecutor ex = oneThreadPool();
+            call(ex, () -> LogContext.get("traceId"));
+            LogContext.clear();
+            eq(Boolean.TRUE, call(ex, () -> LogContext.isEmpty()));
+            ex.shutdown();
+        });
+        check("task ghi de context khong lam nhiem thread goi", () -> {
+            LogContext.clear();
+            LogContext.put("traceId", "A");
+            MdcExecutor ex = oneThreadPool();
+            String[] inWorker = new String[1];
+            call(ex, () -> { LogContext.put("traceId", "B"); inWorker[0] = LogContext.get("traceId"); return null; });
+            eq("B", inWorker[0]);
+            eq("A", LogContext.get("traceId"));
+            ex.shutdown();
+        });
+        check("wrap bat context luc goi wrap va khoi phoi ve cu", () -> {
+            LogContext.clear();
+            String[] seen = new String[1];
+            LogContext.put("traceId", "C1");
+            Runnable wrapped = MdcExecutor.wrap(() -> seen[0] = LogContext.get("traceId"));
+            LogContext.clear();
+            LogContext.put("traceId", "C2");
+            wrapped.run();
+            eq("C1", seen[0]);
+            eq("C2", LogContext.get("traceId"));
+            LogContext.clear();
+        });
+        check("hai request lien tiep khong de lai vet cho nhau", () -> {
+            LogContext.clear();
+            LogContext.put("traceId", "P1");
+            MdcExecutor ex = oneThreadPool();
+            eq("P1", call(ex, () -> LogContext.get("traceId")));
+            LogContext.put("traceId", "P2");
+            eq("P2", call(ex, () -> LogContext.get("traceId")));
+            LogContext.clear();
+            eq(Boolean.TRUE, call(ex, () -> LogContext.isEmpty()));
+            ex.shutdown();
+        });
+        check("task nem exception van duoc khoi phoi ve cu", () -> {
+            LogContext.clear();
+            MdcExecutor ex = oneThreadPool();
+            try {
+                call(ex, () -> { LogContext.put("traceId", "E1"); throw new IllegalStateException("boom"); });
+                throw new AssertionError("get() phai nem ExecutionException");
+            } catch (ExecutionException expected) {
+                if (expected.getCause() == null || !expected.getCause().getMessage().equals("boom"))
+                    throw new AssertionError("sai cause: " + expected.getCause());
+            }
+            eq(Boolean.TRUE, call(ex, () -> LogContext.isEmpty()));
+            ex.shutdown();
+        });
+        check("submit Runnable khong gia tri van truyen duoc context", () -> {
+            LogContext.clear();
+            LogContext.put("traceId", "R7");
+            MdcExecutor ex = oneThreadPool();
+            String[] seen = new String[1];
+            Runnable r = () -> seen[0] = LogContext.get("traceId");
+            Future<?> f = ex.submit(r);
+            f.get();
+            eq("R7", seen[0]);
+            LogContext.clear();
+            eq(Boolean.TRUE, call(ex, () -> LogContext.isEmpty()));
+            ex.shutdown();
+        });
+        check("dau vao null bi tu choi o constructor wrap va execute", () -> {
+            LogContext.clear();
+            try { new MdcExecutor(null); throw new AssertionError("delegate null phai bi tu choi"); }
+            catch (IllegalArgumentException expected) { }
+            try { MdcExecutor.wrap(null); throw new AssertionError("wrap null phai bi tu choi"); }
+            catch (IllegalArgumentException expected) { }
+            MdcExecutor ex = oneThreadPool();
+            try { ex.execute(null); throw new AssertionError("execute null phai bi tu choi"); }
+            catch (IllegalArgumentException expected) { }
+            try { ex.submit((Callable<String>) null); throw new AssertionError("submit null phai bi tu choi"); }
+            catch (IllegalArgumentException expected) { }
+            ex.shutdown();
+        });
+        check("caller co context rong van chay va giu gia tri tra ve", () -> {
+            LogContext.clear();
+            MdcExecutor ex = oneThreadPool();
+            eq("ok", call(ex, () -> "ok"));
+            eq(Boolean.TRUE, call(ex, () -> LogContext.isEmpty()));
+            ex.shutdown();
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.*;
+import java.util.concurrent.*;
+
+/** Ban toi gian cua MDC: mot map gan voi thread dang chay. */
+final class LogContext {
+    private static final ThreadLocal<Map<String, String>> CTX =
+            ThreadLocal.withInitial(() -> new HashMap<String, String>());
+
+    static void put(String key, String value) {
+        if (key == null) throw new IllegalArgumentException("key khong duoc null");
+        if (value == null) CTX.get().remove(key);
+        else CTX.get().put(key, value);
+    }
+
+    static String get(String key) {
+        return key == null ? null : CTX.get().get(key);
+    }
+
+    static Map<String, String> snapshot() {
+        return new HashMap<String, String>(CTX.get());
+    }
+
+    static boolean isEmpty() {
+        return CTX.get().isEmpty();
+    }
+
+    static void clear() {
+        CTX.get().clear();
+    }
+
+    static void restore(Map<String, String> values) {
+        CTX.get().clear();
+        if (values != null) CTX.get().putAll(values);
+    }
+}
+
+class MdcExecutor {
+    private final ExecutorService delegate;
+
+    MdcExecutor(ExecutorService delegate) {
+        if (delegate == null) throw new IllegalArgumentException("delegate khong duoc null");
+        this.delegate = delegate;
+    }
+
+    static Runnable wrap(Runnable task) {
+        if (task == null) throw new IllegalArgumentException("task khong duoc null");
+        final Map<String, String> captured = LogContext.snapshot();   // chup LUC WRAP, khong phai luc chay
+        return () -> {
+            Map<String, String> previous = LogContext.snapshot();     // thread nay co the dang mang viec khac
+            LogContext.restore(captured);
+            try {
+                task.run();
+            } finally {
+                LogContext.restore(previous);                         // tra thread ve trang thai cu, ke ca khi loi
+            }
+        };
+    }
+
+    static <T> Callable<T> wrapCallable(Callable<T> task) {
+        if (task == null) throw new IllegalArgumentException("task khong duoc null");
+        final Map<String, String> captured = LogContext.snapshot();
+        return () -> {
+            Map<String, String> previous = LogContext.snapshot();
+            LogContext.restore(captured);
+            try {
+                return task.call();
+            } finally {
+                LogContext.restore(previous);
+            }
+        };
+    }
+
+    void execute(Runnable task) {
+        delegate.execute(wrap(task));
+    }
+
+    Future<?> submit(Runnable task) {
+        return delegate.submit(wrap(task));
+    }
+
+    <T> Future<T> submit(Callable<T> task) {
+        return delegate.submit(wrapCallable(task));
+    }
+
+    void shutdown() {
+        delegate.shutdown();
+    }
+}`,
+      hints: [
+        'wrap(Runnable): dong {{LogContext.snapshot()}} dat NGOAI lambda, ngay trong than wrap, nhu vay no chay tren thread goi va duoc chup truoc khi task bi delay.',
+        'Trong lambda tra ve: lu truoc {{Map<String, String> previous = LogContext.snapshot()}}, roi {{LogContext.restore(captured)}}, chay task trong try, va {{LogContext.restore(previous)}} o finally.',
+        'submit(Callable) phai di qua wrapCallable chu khong qua wrap: wrap tra ve Runnable nen gia tri tra ve cua task bi mat.',
+        'Case "dau vao null": nem IllegalArgumentException truong hop null o constructor, wrap va wrapCallable, thi execute/submit tu dung vi chung goi wrap.',
+        'Neu case "task nem exception van duoc khoi phoi ve cu" FAIL, chac chan ban da dat {{restore}} ngoai {{finally}} hoac quen {{finally}}.',
+      ],
+      explain: `Bốn dòng chụp - đặt - chạy - khôi phục là toàn bộ nội dung của một {{TaskDecorator}}, của {{ContextSnapshot}} trong Micrometer context-propagation và của {{Context.current().wrap(runnable)}} trong OpenTelemetry. Viết một lần trong code thuần thì bạn hiểu tại sao các thư viện kia tồn tại, và hiểu tại sao nó **không** hoạt động khi bạn quên.
+
+Hai mốc thời gian là chỗ mọi người sai nhiều nhất:
+- {{LogContext.snapshot()}} đặt **bên ngoài** lambda thì nó chạy ngay lúc gọi {{wrap}}, tức trên thread gọi, nên lấy được context đúng. Đặt **bên trong** lambda thì nó chạy trên thread của pool, tại thời điểm đó context là trống hoặc là rác của request trước — đó chính xác là bug "log không có traceId" mà bạn gặp khi mới dùng {{@Async}}.
+- {{previous}} phải được lưu **trước** khi đè context, và khôi phục trong {{finally}}. Khôi phục (thay vì {{clear}}) mới đúng, vì thread có thể đang bị lồng: ví dụ appender bất đồng bộ chạy task con trên chính pool thread đang xử lý request. {{finally}} là chỗ duy nhất đảm bảo không sót traceId sau khi task ném exception; thiếu nó thì dòng log **của người dùng khác** mang traceId của giao dịch vừa chết.
+
+Lỗi hay gặp khi viết:
+- Truyền **con trỏ map** thay vì bản sao ({{LogContext.restore(LogContext.snapshot())}} kiểu này vô hại, nhưng chia sẻ map gốc thì thread gọi và thread chạy ghi đè lên nhau).
+- Quên {{wrapCallable}}, hoặc {{submit(Callable)}} gọi nhầm {{wrap(task)}}: biên dịch vẫn ngon nhưng {{Future.get()}} luôn trả null vì Runnable mất giá trị trả về.
+- Dùng {{Thread.currentThread().getId()}} để "đoán" thread: đừng, test ở đây chạy tuần tự nên hành vi phải đến từ context, không từ tên thread.
+- Dọn bằng {{LogContext.clear()}} thay vì {{restore(previous)}}: pass hết test của bài này nhưng là bug thật khi bạn lồng executor trong executor.
+
+Vào phỏng vấn, câu trả lời mạnh nhất không phải code mà là hai phạm trù hỏng: **mất context** (log thiếu traceId) và **nhiễm context** (log có traceId của request khác). Cái thứ hai đáng sợ hơn vì nó không tạo ra tín hiệu lỗi nào, nó tạo ra dữ liệu trông rất đáng tin và khiến bạn điều tra sai hướng tới khi hết ca trực.`,
+    },
+  ],
+  check: [
+    { q: 'Vì sao app trong container nên ghi log ra stdout thay vì tự ghi file?', options: ['Vì stdout nhanh hơn ghi file', 'Vì Pod tạm bợ, file trong Pod mất khi Pod bị xóa, còn disk node dùng chung và app sẽ tự làm đầy nó; runtime đã lưu stdout và có agent gom sẵn', 'Vì Kubernetes không cho mount disk', 'Vì stdout tự động có traceId'], answer: 1, explain: 'Chuỗi là: app chỉ in ra stdout, container runtime ghi vào file trên node có rotation sẵn, agent DaemonSet đọc tiếp và enrich metadata.' },
+    { q: 'Request A chạy trên pool thread và để lại traceId=X. Request B chạy trên đúng thread đó nhưng không đặt traceId. Log của B trông thế nào?', options: ['Không có traceId', 'Có traceId=X, tức là dữ liệu sai nhưng nhìn rất đáng tin', 'App ném lỗi vì MDC rỗng', 'Logback tự sinh traceId mới cho B'], answer: 1, explain: 'Đây là kiểu "nhiễm context": ThreadLocal sống theo thread chứ không theo request, mà pool thì tái sử dụng thread. Nó nguy hiểm hơn mất traceId vì bạn sẽ tin vào dữ liệu giả.' },
+    { q: 'Khi nào phải chụp context MDC khi chuyển task sang thread pool?', options: ['Lúc task bắt đầu chạy trong thread pool', 'Lúc submit/wrap, trên thread gọi', 'Lúc appender ghi log', 'Không cần chụp, chỉ cần set traceId = null'], answer: 1, explain: 'Đọc context bên trong task là đọc context của thread chạy task (trống hoặc của request trước), nên phải chụp ở thread gọi, ngay lúc wrap/submit.' },
+    { q: 'Vì sao bật DEBUG vĩnh viễn trong production là ý tồi?', options: ['Vì DEBUG in ra nhiều chữ hơn: tốn tiền pipeline, làm trễ log đúng lúc đang điều tra, đầy disk và nhân đôi nguy cơ rò rỉ PII', 'Vì DEBUG làm JVM chậm hơn và có thể gây OOM', 'Vì Spring không cho đổi level trong lúc chạy', 'Vì DEBUG bỏ mất stack trace'], answer: 0, explain: 'Log volume là chi phí thật và là rủi ro bảo mật thật. Muốn DEBUG thì bật đúng một logger qua Actuator kèm TTL để tự tắt.' },
+  ],
+  related: ['devops-012', 'devops-022'],
+  tags: ['Structured logging', 'MDC', 'correlation id', 'traceId', 'ThreadLocal', 'Log level', 'PII'],
+},
+{
+  id: 'lesson-devops-013',
+  track: 'devops',
+  order: 13,
+  title: 'Phân tích access log khi sự cố mà chưa có dashboard: lỗi theo phút, top endpoint lỗi, p95 nearest-rank',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Chạy được quy trình điều tra khi chưa có gì: khoanh thời gian, khoanh phạm vi, tìm thay đổi, giảm blast radius trước khi tìm nguyên nhân gốc',
+    'Viết pipeline grep/awk/sort/uniq để đếm lỗi theo phút, lấy top endpoint lỗi và tính p95 latency từ access log',
+    'Hiểu vì sao phải so **tỷ lệ lỗi** chứ không so số lỗi tuyệt đối, và vì sao p95 nearest-rank khác số trung bình',
+    'Nhận ra các bẫy làm sai số liệu: path mang id, lẫn 4xx với 5xx, retry làm méo mẫu, bucket quá to hoặc quá nhỏ, sort thiếu -n',
+    'Cài đặt {{AccessLogStats}}: parse dòng log định dạng cố định, thống kê theo phút, p95 theo endpoint, top endpoint lỗi',
+  ],
+  body: `### Khi sự cố nổ ra, dashboard có thể là thứ bạn không có
+
+Rất nhiều phỏng vấn senior/lead hỏi đúng kiểu: "Service của bạn lỗi hàng loạt lúc 2h sáng, **dashboard chưa kịp dựng** (team mới, service mới, hoặc đúng lúc Grafana đang bảo trì), bạn làm gì?" Người trả lời "mở Kibana" là người chưa bao giờ phải tự đi tìm số. Kỹ năng thật là: ngồi trước một file log và **tự sinh ra ba con số** mà dashboard sẽ sinh.
+
+Quy trình năm bước, theo đúng thứ tự này (đừng đảo bước 5 lên trước bước 4):
+1. **Khoanh thời gian**: lỗi bắt đầu từ phút nào? Không có mốc thời gian thì mọi giả thuyết đều vô vọng.
+2. **Khoanh phạm vi**: tất cả endpoint hay một endpoint? tất cả Pod hay một Pod? một region, một khách hàng lớn, hay mọi người?
+3. **Tìm dấu ấn thay đổi**: đối chiếu mốc ở bước 1 với lịch deploy, config change, feature flag bật, migration, thay đổi ở đối tác. Đa số sự cố là "vừa thay gì đó", nên bước này thường tự nó chỉ ra thủ phạm.
+4. **Giảm blast radius** trước khi hiểu nguyên nhân: rollback bản mới, tắt feature flag, tăng số bản (replica), thêm timeout/retry có trần, hoặc chặn endpoint gây quá tải. "Rollback rồi điều tra tiếp" luôn đúng về mặt quản trị rủi ro, vì nó mua thời gian mà không cần đoán trúng.
+5. **Nguyên nhân gốc + phòng ngừa**: sau khi user đã được bảo vệ, mới tới profiling, thread dump, EXPLAIN, đọc code. Kết thúc bằng thay đổi làm sự cố **không tái diễn** (test, cảnh báo theo SLO, guardrail trong code).
+
+### Ba con số phải rút ra được từ log
+
+Mọi điều tra ban đầu đều là ba câu, và ba câu đó đều là **phép đếm trên access log**:
+- **Lỗi theo thời gian**: tỷ lệ 5xx của từng phút → cho biết bắt đầu lúc nào, còn đang tăng hay đã dừng.
+- **Lỗi theo nơi chốn**: endpoint nào chiếm nhiều lỗi nhất, và nó có chiếm nhiều *traffic* nhất không.
+- **Chậm ở đâu**: p95 latency từng endpoint, so với ngày thường.
+
+Định dạng dòng log dùng trong bài này (và cũng là kiểu tự đặt phổ biến khi viết access log cho app):
+
+~~~text
+2026-05-04T10:15:32Z GET /api/orders 500 1240
+   timestamp UTC     method  path   status  latencyMs
+~~~
+
+Tức là: 5 trường cách nhau bởi khoảng trắng, thời gian ISO-8601 **có chữ Z chỉ UTC**, latency tính bằng **milli-giây**. Trong thực tế bạn sẽ gặp nginx combined log (nhiều trường hơn, quoted, latency ở cuối nếu được cấu hình thêm) và app log dạng JSON — vì vậy bước đầu tiên của mọi cuộc điều tra là {{head -3 access.log}}, đọc xem dòng log thật trông ra sao rồi mới tính.
+
+### Lỗi theo cửa sổ thời gian: đếm theo phút, không đếm cumulative
+
+~~~bash
+# access.log: "2026-05-04T10:15:32Z GET /api/orders 500 1240"
+awk '{ m=substr($1,1,16); t[m]++; if ($4>=500) e[m]++ }
+     END { for (k in t) print k, "total=" t[k], "err=" e[k]+0 }' access.log | sort
+~~~
+
+Đọc từng mảnh: trường {{1}} của awk là timestamp, trường {{4}} là status. {{substr(\$1,1,16)}} cắt 16 ký tự đầu của timestamp, tức là đủ tới phút, ví dụ dòng ở trên thành chuỗi {{2026-05-04T10:15}}. Hai mảng {{t[m]++}} và {{e[m]++}} đếm theo khóa là phút; {{for (k in t)}} duyệt toàn bộ các phút; {{e[k]+0}} để phút không có lỗi vẫn in ra số 0 thay vì rỗng; và {{sort}} ở cuối vì thứ tự của {{for (k in t)}} là ngẫu nhiên.
+
+Vì sao phải theo cửa sổ chứ không phải tổng cumulative: tổng cộng từ đầu file chỉ cho biết "có lỗi", không cho biết **khi nào**. Chuỗi 10 phút ở trên nói to hơn nhiều:
+
+| Phút | total | 5xx | error rate | p95 |
+|---|---|---|---|---|
+| 10:13 | 900 | 3 | 0.3% | 180 ms |
+| 10:14 | 880 | 5 | 0.6% | 190 ms |
+| 10:15 | 910 | 214 | 23.5% | 1240 ms |
+| 10:16 | 300 | 180 | 60% | 3000 ms |
+
+Ba bài đọc từ bảng: lỗi **bắt đầu tại 10:15** (hỏi ngay: 10:15 có deploy/change gì?); đến 10:16 tỷ lệ lỗi tăng mà **tổng request giảm** — đó là dấu hiệu hệ thống không còn phục vụ nổi (request timeout, client bỏ cuộc, queue bão hòa), nghiêm trọng hơn nhiều so với "lỗi tăng"; và p95 nhảy theo đúng hai phút đó, nghĩa là chậm và lỗi có cùng nguyên nhân.
+
+Chọn độ rộng bucket: quá nhỏ (1 giây) thì nhiều bucket chỉ có vài mẫu, biểu đồ đầy nhiễu; quá to (1 giờ) thì sự cố 10 phút bị loãng thành "một ngày hơi xấu". Quy tắc thực dụng: bucket sao cho mỗi ô có **vài trăm mẫu trở lên**, thường là 1 phút với service vừa, 5 phút với service nhỏ.
+
+> Lưu ý: {{uniq -c}} chỉ gộp các dòng **giống nhau nằm kề nhau**, nên luôn phải {{sort}} trước {{uniq}}. Quên {{sort}} là lỗi phổ biến nhất khi mới dùng bộ đôi này, và kết quả vẫn "trông có số" nên bạn không biết mình sai.
+
+### Một request sinh ra những dòng log nào
+
+~~~seq
+title: Duong di cua mot dong access log
+actors: Client | Gateway | Order | NodeLog | Agent
+Client -> Gateway: GET /api/orders
+Gateway -> Order: forward, kem traceparent
+Order --> Gateway: 500 sau 1240 ms
+Order -> NodeLog: in log JSON ra stdout
+NodeLog -> Agent: doc file log cua container
+Agent -> Agent: gan metadata roi day ve Loki
+note NodeLog..Agent: stdout cua container duoc luu thanh file tren node
+~~~
+
+Cái hay bị bỏ quên: **latency**. Nhiều cấu hình nginx/gateway mặc định không ghi thời gian xử lý, hoặc chỉ ghi thời gian tính từ lúc nhận request chứ không tính lúc hàng đã ghi ra client (streaming, large payload). Nếu log không có trường latency thì không có p95 nào cả, và đó là việc phải sửa **trước khi** có sự cố, không phải trong sự cố.
+
+### Top endpoint lỗi: lệnh ngắn, bẫy dài
+
+~~~bash
+awk '$4>=500 { print $2, $3 }' access.log | sort | uniq -c | sort -rn | head
+~~~
+
+{{\$2}} là method, {{\$3}} là path → in ra {{GET /api/orders}}; {{sort}} để các dòng giống nhau nằm kề; {{uniq -c}} đếm; {{sort -rn}} sắp theo cột đếm, **số**, giảm dần (thiếu {{-n}} thì {{sort}} so như chuỗi: "9" lớn hơn "100" — bug kinh điển); {{head}} lấy 10 dòng đầu.
+
+Bẫy cardinality: nếu path mang id thật ({{/orders/8842}}), mỗi đơn hàng là một "endpoint" và bảng top vô dụng. Phải gộp về template trước khi đếm:
+
+~~~bash
+awk '$4>=500 { p=$3; sub("/[0-9]+$", "/{id}", p); print $2, p }' access.log | sort | uniq -c | sort -rn | head
+~~~
+
+Bẫy diễn giải, quan trọng hơn bẫy lệnh: **endpoint chiếm 90% số lỗi có thể chỉ vì nó chiếm 90% traffic**. Câu hỏi đúng là "error **rate** của endpoint nào gấp đôi phần còn lại?", tức là lấy số lỗi **chia cho** số request của chính endpoint đó. Hai con số tuyệt đối không so được với nhau vì mẫu khác nhau.
+
+Và chỉ tính **5xx** là lỗi của mình, đừng gộp **4xx**: {{404}} là client gõ sai đường, {{401}} là hết hạn token, {{429}} là bạn đang tự vệ thành công, {{499}} (nginx) là client bỏ cuộc — tất cả không phải regression. Ngược lại, nếu 4xx tăng đột biến thì đó cũng là tin đáng đọc: hay là API contract vừa đổi, hoặc có ai đang quét.
+
+### p95 là gì, và vì sao trung bình nói dối
+
+**p95 (percentile 95)** của một tập latency = giá trị {{v}} sao cho **95% số request có latency nhỏ hơn hoặc bằng v**, và 5% còn lại chậm hơn. Cách tính **nearest-rank**: sắp tập mẫu tăng dần, lấy mẫu ở hạng {{ceil(0.95 x n)}}.
+
+~~~java
+static double p95(List<Long> latencies) {
+    if (latencies.isEmpty()) return 0.0;
+    List<Long> sorted = new ArrayList<Long>(latencies);
+    Collections.sort(sorted);
+    int n = sorted.size();
+    int rank = (95 * n + 99) / 100;            // bang ceil(95n/100), dung so nguyen
+    if (rank < 1) rank = 1;
+    if (rank > n) rank = n;
+    return sorted.get(rank - 1).doubleValue(); // nearest-rank: lay mot mau THAT, khong noi suy
+}
+~~~
+
+Vì sao tính bằng số nguyên chứ không viết {{Math.ceil(0.95 * n)}}: với số thực dấu phẩy động, {{0.95}} không biểu diễn đúng được, nên 0.95 nhân 20 cho ra 19.000000000000004, {{ceil}} đẩy thành 20 và p95 nhảy hẳn lên mẫu cuối cùng. Với 20 mẫu latency 10, 20, ..., 200 thì câu trả lời đúng là **190**, không phải 200.
+
+Vì sao không dùng trung bình: latency phân bố **lệch phải** (phần lớn nhanh, một ít rất chậm), nên trung bình bị kéo bởi đuôi.
+
+| n | Tập mẫu | Trung bình | p50 | p95 | p99 |
+|---|---|---|---|---|---|
+| 20 | 10..200 ms đều nhau | 105 ms | 100 ms | 190 ms | 200 ms |
+| 20 | 19 mẫu 20 ms + 1 mẫu 30.000 ms | 1.519 ms | 20 ms | 20 ms | 30.000 ms |
+
+Hàng thứ hai là chuyện thật: một request 30 giây làm "trung bình" tăng gấp 14 lần dù 95% user không bị gì, và làm bạn tưởng hệ thống chậm đi trong khi thật ra chỉ có **một** đường query xấu. p95/p99 kể đúng chuyện: p95 ổn định với nhiễu đơn lẻ, còn p99 nhạy với đuôi dài (nên p99 cần nhiều mẫu hơn để có nghĩa).
+
+Cũng đừng lấy p95 của **toàn service** làm chỉ số duy nhất: endpoint chiếm 5% traffic có thể hỏng hoàn toàn mà p95 gộp vẫn "đẹp". p95 phải tính **theo endpoint** (và theo version khi đang rollout — chủ đề của bài canary).
+
+### Khi đã có metric thì ngắn hơn, nhưng vẫn phải hiểu số
+
+Đa số sự cố không bắt đầu từ log mà từ metric, vì metric rẻ và có sẵn vài tuần lịch sử:
+
+~~~bash
+# PromQL: ti le 5xx theo endpoint trong 5 phut gan nhat
+sum by (uri) (rate(http_server_requests_seconds_count{status=~"5.."}[5m]))
+  / sum by (uri) (rate(http_server_requests_seconds_count[5m]))
+# p95 theo endpoint, dung histogram cua Micrometer
+histogram_quantile(0.95, sum by (le, uri) (rate(http_server_requests_seconds_bucket[5m])))
+~~~
+
+Log và metric bổ khuyết nhau theo hướng này: metric cho biết **cái gì** và **nhiều tới đâu** trên toàn hệ thống trong 5 giây; log cho biết **vì sao** cho một request cụ thể, nhưng đắt và chậm. Trong bài tập dưới đây, vì chưa có metric nên ta dựng cả hai từ log thô.
+
+### Bẫy production hay gặp
+- **Trộn timezone**: app ghi giờ local, gateway ghi UTC → bucket phút lệch nhau, và so với "cùng giờ hôm trước" là so giữa hai thế giới. Chuẩn hóa UTC ngay từ schema log.
+- **Một request gây nhiều dòng ERROR**: đếm số dòng ERROR rồi báo "300 lỗi" trong khi chỉ có 30 request hỏng, vì mỗi request in 10 dòng (retry, filter, wrapper exception). Đếm theo **request**, hoặc theo {{traceId}} khác nhau.
+- **Log bị rotate mất**: sự cố 2h sáng, điều tra 4h sáng, file đã bị {{logrotate}} cắt mất. {{ls -l}} cộng với {{zcat}} file đã nén là kỹ năng bắt buộc, và đó cũng là lý do phải gom log về một kho tập trung.
+- **Retry làm méo mẫu**: client retry 3 lần trên một lần lỗi → error rate và số request đều nhân ba. Muốn hiểu nghiệp vụ hỏng, phải đếm theo **request id**/traceId gốc, không theo dòng log.
+- **Thiếu log vì sampling hoặc vì ingest lag**: "dashboard im lặng" không có nghĩa là "không có lỗi". Luôn kiểm tra {{volume}} có giảm bất thường không trước khi kết luận hệ ổn.
+- **Bucket quá nhỏ cho traffic thấp**: 6 request, 2 lỗi = 33% error rate, nghe như thảm họa, thật ra là nhiễu. Con số phải đi kèm mẫu.
+- **Quên cột thời điểm**: hai sự cố chồng nhau (bản mới deploy 10:14, đối tác chậm từ 10:15) rất khó tách nếu log của bạn không đủ field để group theo {{version}}.
+- **Tối ưu trước khi đo**: không có p95 theo endpoint thì mọi "cải tiến hiệu năng" chỉ là cảm giác, và thường làm xấu chỗ khác.
+
+### Liên hệ phỏng vấn
+Với câu "hệ thống không có observability, bạn làm gì?", trả lời theo cấu trúc: (1) nói rõ thứ tự điều tra — khoanh thời gian, khoanh phạm vi, tìm thay đổi, **giảm blast radius** rồi mới tìm nguyên nhân gốc, vì rollback là hành động rẻ nhất khi chưa hiểu gì; (2) nói được ba phép đếm cụ thể trên access log (lỗi theo phút, top endpoint theo error **rate**, p95 theo endpoint) và rằng bạn viết được pipeline {{awk | sort | uniq -c | sort -rn}} mà không cần dashboard; (3) nói được cách đọc: lỗi bắt đầu phút nào, total giảm nghĩa là throughput sập chứ không chỉ lỗi tăng, p95 nhảy cùng lúc với lỗi thì hai triệu chứng một nguyên nhân; (4) chốt bằng việc **phòng ngừa**: thống nhất schema log JSON có {{version}} và {{latencyMs}}, bật metric, đổi alert sang error budget. Nêu được cả bước "giảm blast radius trước" là điểm phân biệt senior với mid.
+
+> Senior tip: Mỗi team nên có sẵn một {{scripts/incident.sh}} nhỏ chạy {{awk}} đúng định dạng log của mình, và **tập dùng nó trong game day mỗi quý**. Lúc 2h sáng với adrenaline, bạn không nghĩ ra cú pháp {{awk}} đâu; bạn chỉ nhớ là có cái script và nó in ra ba bảng gì.`,
+  exercises: [
+    {
+      title: 'AccessLogStats: parse dòng log, lỗi theo phút, p95 nearest-rank theo endpoint, top endpoint lỗi',
+      prompt: `Dòng log có **5 trường** cách nhau bởi khoảng trắng, dư khoảng trắng đầu/cuối và nhiều khoảng trắng giữa đều được chấp nhận:
+
+{{timestamp method path status latencyMs}}, ví dụ {{2026-05-04T10:15:32Z GET /api/orders 500 1240}}.
+
+{{LogLine}} và {{Bucket}} đã viết sẵn trong starter (**đừng sửa**): {{LogLine}} giữ {{minute}} (16 ký tự đầu của timestamp), {{method}}, {{path}}, {{status}}, {{latencyMs}}, có {{endpoint()}} trả dạng {{GET /api/orders}} và {{isError()}} là {{status >= 500}}; {{Bucket}} giữ {{total}}/{{errors}} và có {{errorRate()}}. Phần còn lại là của bạn trong {{AccessLogStats}}:
+
+- {{static LogLine parse(String line)}}: ném {{IllegalArgumentException}} khi {{line}} null, khi số trường khác 5, khi timestamp ngắn hơn 16 ký tự hoặc ký tự ở vị trí 10 (đếm từ 0) khác chữ {{T}}, khi {{status}} hoặc {{latencyMs}} không phải số nguyên. Trả về {{LogLine}} với {{minute}} là 16 ký tự đầu timestamp, {{method}} đã viết hoa. Các ràng buộc còn lại (status trong {{100..599}}, path bắt đầu bằng {{/}}, latency không âm) {{LogLine}} đã chặn giúp bạn.
+- {{static Map<String, Bucket> statsByMinute(List<String> lines)}}: ném {{IllegalArgumentException}} khi {{lines}} null. Bỏ qua phần tử null hoặc rỗng sau khi trim. Nhóm theo {{minute}}: {{total}} là số dòng trong phút, {{errors}} là số dòng có {{status >= 500}}. Trả về {{TreeMap}} để map tự sắp theo phút.
+- {{static double errorRate(List<String> lines, String minute)}}: ném {{IllegalArgumentException}} khi {{minute}} null. Trả tỷ lệ lỗi của phút đó, **0.0 khi phút đó không có dòng nào**. Hãy dùng lại {{statsByMinute}} và {{Bucket.errorRate}} thay vì viết vòng đếm thứ hai.
+- {{static double p95(List<String> lines, String endpoint)}}: ném {{IllegalArgumentException}} khi {{lines}} hoặc {{endpoint}} null. So {{endpoint}} với {{LogLine.endpoint()}}. Lấy latency của **mọi** request của endpoint đó (kể 2xx lẫn 4xx lẫn 5xx), không có mẫu nào thì trả 0.0. nearest-rank: sắp tăng dần rồi lấy mẫu ở hạng {{(95 * n + 99) / 100}} — phép chia số nguyên làm tròn xuống, đúng bằng {{ceil(95n/100)}} mà **không dùng số thực**. Lý do phải tránh số thực: {{Math.ceil(0.95 * 20)}} cho 20 chứ không phải 19, vì 0.95 không biểu diễn chính xác được.
+- {{static Map<String, Long> errorsByEndpoint(List<String> lines)}}: ném {{IllegalArgumentException}} khi {{lines}} null. Map endpoint → số dòng 5xx; **chỉ** gồm endpoint có ít nhất một lỗi.
+- {{static List<String> topErrorEndpoints(List<String> lines, int n)}}: ném {{IllegalArgumentException}} khi {{n < 0}}. Dựa trên {{errorsByEndpoint}}, sắp theo số lỗi **giảm dần**, bằng nhau thì theo tên endpoint **A-Z**, cắt {{n}} phần tử đầu. {{n}} lớn hơn số endpoint có lỗi thì trả hết; {{n = 0}} trả danh sách rỗng.
+
+Check-list tự kiểm trước khi chạy test: {{p95}} của 20 mẫu {{10, 20, ..., 200}} phải là **190**; một phút không có request nào phải trả **0.0** chứ không ném lỗi; endpoint chỉ có 4xx phải **vắng mặt** trong danh sách top.`,
+      starter: `import java.util.*;
+
+/** Mot dong log da parse. DA DUNG - khong can sua. */
+final class LogLine {
+    final String minute;     // "2026-05-04T10:15"
+    final String method;     // "GET"
+    final String path;       // "/api/orders"
+    final int status;        // 500
+    final long latencyMs;    // 1240
+
+    LogLine(String minute, String method, String path, int status, long latencyMs) {
+        if (minute == null || minute.length() != 16 || minute.charAt(10) != 'T')
+            throw new IllegalArgumentException("minute phai dang 2026-05-04T10:15");
+        if (method == null || method.isEmpty())
+            throw new IllegalArgumentException("thieu method");
+        if (path == null || path.isEmpty() || path.charAt(0) != '/')
+            throw new IllegalArgumentException("path phai bat dau bang dau /");
+        if (status < 100 || status > 599)
+            throw new IllegalArgumentException("status ngoai 100..599: " + status);
+        if (latencyMs < 0)
+            throw new IllegalArgumentException("latencyMs khong duoc am");
+        this.minute = minute;
+        this.method = method;
+        this.path = path;
+        this.status = status;
+        this.latencyMs = latencyMs;
+    }
+
+    String endpoint() { return method + " " + path; }
+
+    boolean isError() { return status >= 500; }
+}
+
+/** So lieu gộp của một phút: tong request va so request 5xx. */
+final class Bucket {
+    final long total;
+    final long errors;
+
+    Bucket(long total, long errors) {
+        if (total < 0 || errors < 0 || errors > total)
+            throw new IllegalArgumentException("bucket vo ly: total=" + total + " errors=" + errors);
+        this.total = total;
+        this.errors = errors;
+    }
+
+    double errorRate() {
+        return total == 0 ? 0.0 : (double) errors / (double) total;
+    }
+}
+
+class AccessLogStats {
+    static LogLine parse(String line) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static Map<String, Bucket> statsByMinute(List<String> lines) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static double errorRate(List<String> lines, String minute) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static double p95(List<String> lines, String endpoint) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static Map<String, Long> errorsByEndpoint(List<String> lines) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static List<String> topErrorEndpoints(List<String> lines, int n) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `import java.util.*;
+
+public class Main {
+    static int passed = 0, total = 0;
+    interface Case { void run() throws Exception; }
+    static void check(String name, Case c) {
+        total++;
+        try { c.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " but got " + actual);
+    }
+    static void eqd(double expected, double actual) {
+        if (Math.abs(expected - actual) > 1e-9) throw new AssertionError("expected " + expected + " but got " + actual);
+    }
+    static List<String> ls(String... xs) { return new ArrayList<String>(Arrays.asList(xs)); }
+    static String two(int i) { return i < 10 ? "0" + i : String.valueOf(i); }
+    /** 20 mau GET /api/orders voi latency 10, 20, ..., 200 (tat ca 200 OK). */
+    static List<String> ramp20() {
+        List<String> l = new ArrayList<String>();
+        for (int i = 1; i <= 20; i++) l.add("2026-05-04T10:15:" + two(i) + "Z GET /api/orders 200 " + (i * 10));
+        return l;
+    }
+    static List<String> errorsFor(String endpoint, int count, int status) {
+        List<String> l = new ArrayList<String>();
+        for (int i = 0; i < count; i++)
+            l.add("2026-05-04T10:20:" + two(i + 1) + "Z " + endpoint + " " + status + " 50");
+        return l;
+    }
+
+    public static void main(String[] args) {
+        check("parse tung dong thanh nam truong", () -> {
+            LogLine p = AccessLogStats.parse("2026-05-04T10:15:32Z GET /api/orders 500 1240");
+            eq("2026-05-04T10:15", p.minute);
+            eq("GET", p.method);
+            eq("/api/orders", p.path);
+            eq(Integer.valueOf(500), Integer.valueOf(p.status));
+            eq(Long.valueOf(1240L), Long.valueOf(p.latencyMs));
+            eq("GET /api/orders", p.endpoint());
+            eq(Boolean.TRUE, Boolean.valueOf(p.isError()));
+        });
+        check("parse chap nhan du thua khoang va hoa method", () -> {
+            LogLine p = AccessLogStats.parse("  2026-05-04T09:01:02Z   post   /api/pay   201   7  ");
+            eq("2026-05-04T09:01", p.minute);
+            eq("POST", p.method);
+            eq("POST /api/pay", p.endpoint());
+            eq(Boolean.FALSE, Boolean.valueOf(p.isError()));
+        });
+        check("parse tu choi dong sai dinh dang", () -> {
+            String[] bad = {
+                null,
+                "2026-05-04T10:15:32Z GET /api/orders 500",
+                "2026-05-04T10:15:32Z GET /api/orders 500 1240 99",
+                "2026-05-04 10:15:32 GET /api/orders 500 1240",
+                "2026-05-04T10:15:32Z GET /api/orders abc 1240",
+                "2026-05-04T10:15:32Z GET /api/orders 500 12x40",
+            };
+            for (int i = 0; i < bad.length; i++) {
+                try {
+                    AccessLogStats.parse(bad[i]);
+                    throw new AssertionError("dong thu " + i + " phai bi tu choi");
+                } catch (IllegalArgumentException expected) { }
+            }
+        });
+        check("thong ke theo phut dem dung total va errors", () -> {
+            List<String> l = ls(
+                "2026-05-04T10:15:01Z GET /a 200 10",
+                "2026-05-04T10:15:02Z GET /a 500 20",
+                "2026-05-04T10:15:03Z POST /b 404 30",
+                "2026-05-04T10:16:01Z GET /a 503 40");
+            Map<String, Bucket> m = AccessLogStats.statsByMinute(l);
+            eq(Integer.valueOf(2), Integer.valueOf(m.size()));
+            Bucket b15 = m.get("2026-05-04T10:15");
+            eq(Long.valueOf(3L), Long.valueOf(b15.total));
+            eq(Long.valueOf(1L), Long.valueOf(b15.errors));
+            Bucket b16 = m.get("2026-05-04T10:16");
+            eq(Long.valueOf(1L), Long.valueOf(b16.total));
+            eq(Long.valueOf(1L), Long.valueOf(b16.errors));
+        });
+        check("errorRate theo phut va phut khong du lieu tra zero", () -> {
+            List<String> l = ls(
+                "2026-05-04T10:15:01Z GET /a 500 10",
+                "2026-05-04T10:15:02Z GET /a 200 20",
+                "2026-05-04T10:15:03Z GET /a 200 30",
+                "2026-05-04T10:15:04Z GET /a 200 40",
+                "2026-05-04T10:15:05Z GET /a 200 50");
+            eqd(0.2, AccessLogStats.errorRate(l, "2026-05-04T10:15"));
+            eqd(0.0, AccessLogStats.errorRate(l, "2026-05-04T10:99"));
+            try { AccessLogStats.errorRate(l, null); throw new AssertionError("minute null phai bi tu choi"); }
+            catch (IllegalArgumentException expected) { }
+            try { AccessLogStats.statsByMinute(null); throw new AssertionError("lines null phai bi tu choi"); }
+            catch (IllegalArgumentException expected) { }
+        });
+        check("p95 nearest-rank 20 mau la 190 chu khong phai 200", () -> {
+            eqd(190.0, AccessLogStats.p95(ramp20(), "GET /api/orders"));
+        });
+        check("p95 mot mau va endpoint khong ton tai", () -> {
+            List<String> one = ls("2026-05-04T10:15:01Z GET /x 200 100");
+            eqd(100.0, AccessLogStats.p95(one, "GET /x"));
+            eqd(0.0, AccessLogStats.p95(one, "GET /khong-co"));
+            eqd(0.0, AccessLogStats.p95(ls("2026-05-04T10:15:01Z GET /x 200 100"), "POST /x"));
+            try { AccessLogStats.p95(null, "GET /x"); throw new AssertionError("lines null phai bi tu choi"); }
+            catch (IllegalArgumentException expected) { }
+            try { AccessLogStats.p95(one, null); throw new AssertionError("endpoint null phai bi tu choi"); }
+            catch (IllegalArgumentException expected) { }
+        });
+        check("p95 tinh ca request thanh cong lan request loi", () -> {
+            List<String> l = ls(
+                "2026-05-04T10:15:01Z POST /pay 200 100",
+                "2026-05-04T10:15:02Z POST /pay 500 900",
+                "2026-05-04T10:15:03Z POST /pay 200 300");
+            eqd(900.0, AccessLogStats.p95(l, "POST /pay"));
+        });
+        check("errorsByEndpoint chi tinh 5xx, bo 4xx", () -> {
+            List<String> l = ls(
+                "2026-05-04T10:20:01Z GET /orders 500 10",
+                "2026-05-04T10:20:02Z GET /orders 502 20",
+                "2026-05-04T10:20:03Z GET /orders 404 30",
+                "2026-05-04T10:20:04Z POST /search 429 40",
+                "2026-05-04T10:20:05Z POST /search 200 50");
+            Map<String, Long> m = AccessLogStats.errorsByEndpoint(l);
+            eq(Integer.valueOf(1), Integer.valueOf(m.size()));
+            eq(Long.valueOf(2L), m.get("GET /orders"));
+            eq(null, m.get("POST /search"));
+        });
+        check("top endpoint sap theo loi giam dan bang thi A-Z", () -> {
+            List<String> l = new ArrayList<String>();
+            l.addAll(errorsFor("POST /alpha", 5, 500));
+            l.addAll(errorsFor("GET /bravo", 5, 503));
+            l.addAll(errorsFor("POST /charlie", 2, 500));
+            l.addAll(errorsFor("GET /delta", 4, 404));
+            eq(ls("GET /bravo", "POST /alpha"), AccessLogStats.topErrorEndpoints(l, 2));
+            eq(ls("GET /bravo", "POST /alpha", "POST /charlie"), AccessLogStats.topErrorEndpoints(l, 10));
+            eq(new ArrayList<String>(), AccessLogStats.topErrorEndpoints(l, 0));
+            try { AccessLogStats.topErrorEndpoints(l, -1); throw new AssertionError("n am phai bi tu choi"); }
+            catch (IllegalArgumentException expected) { }
+        });
+        check("dong null va rong bi bo qua, khong tinh nham phut", () -> {
+            List<String> l = ls(
+                "2026-05-04T10:15:01Z GET /a 200 10",
+                null,
+                "   ",
+                "2026-05-04T10:15:02Z GET /a 500 20");
+            Map<String, Bucket> m = AccessLogStats.statsByMinute(l);
+            eq(Long.valueOf(2L), m.get("2026-05-04T10:15").total);
+            eq(Long.valueOf(1L), m.get("2026-05-04T10:15").errors);
+        });
+        check("kich co that phut bat dau loi lo ra ngay", () -> {
+            List<String> l = new ArrayList<String>();
+            for (int i = 1; i <= 10; i++) {
+                l.add("2026-05-04T10:14:" + two(i) + "Z GET /orders 200 " + (100 + i));
+                l.add("2026-05-04T10:15:" + two(i) + "Z GET /orders " + (i <= 6 ? "500" : "200") + " " + (900 + i * 50));
+            }
+            eqd(0.0, AccessLogStats.errorRate(l, "2026-05-04T10:14"));
+            eqd(0.6, AccessLogStats.errorRate(l, "2026-05-04T10:15"));
+            eqd(1350.0, AccessLogStats.p95(l, "GET /orders"));   // p95 roi vao nhom cham cua phut 10:15
+            eq(ls("GET /orders"), AccessLogStats.topErrorEndpoints(l, 3));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.*;
+
+final class LogLine {
+    final String minute;
+    final String method;
+    final String path;
+    final int status;
+    final long latencyMs;
+
+    LogLine(String minute, String method, String path, int status, long latencyMs) {
+        if (minute == null || minute.length() != 16 || minute.charAt(10) != 'T')
+            throw new IllegalArgumentException("minute phai dang 2026-05-04T10:15");
+        if (method == null || method.isEmpty())
+            throw new IllegalArgumentException("thieu method");
+        if (path == null || path.isEmpty() || path.charAt(0) != '/')
+            throw new IllegalArgumentException("path phai bat dau bang dau /");
+        if (status < 100 || status > 599)
+            throw new IllegalArgumentException("status ngoai 100..599: " + status);
+        if (latencyMs < 0)
+            throw new IllegalArgumentException("latencyMs khong duoc am");
+        this.minute = minute;
+        this.method = method;
+        this.path = path;
+        this.status = status;
+        this.latencyMs = latencyMs;
+    }
+
+    String endpoint() { return method + " " + path; }
+
+    boolean isError() { return status >= 500; }
+}
+
+final class Bucket {
+    final long total;
+    final long errors;
+
+    Bucket(long total, long errors) {
+        if (total < 0 || errors < 0 || errors > total)
+            throw new IllegalArgumentException("bucket vo ly: total=" + total + " errors=" + errors);
+        this.total = total;
+        this.errors = errors;
+    }
+
+    double errorRate() {
+        return total == 0 ? 0.0 : (double) errors / (double) total;
+    }
+}
+
+class AccessLogStats {
+    static LogLine parse(String line) {
+        if (line == null) throw new IllegalArgumentException("line khong duoc null");
+        String[] t = line.trim().split(" +");
+        if (t.length != 5)
+            throw new IllegalArgumentException("can 5 truong, duoc " + t.length + " trong: " + line);
+        String ts = t[0];
+        if (ts.length() < 16 || ts.charAt(10) != 'T')
+            throw new IllegalArgumentException("timestamp phai dang 2026-05-04T10:15:32Z: " + ts);
+        int status;
+        long latency;
+        try {
+            status = Integer.parseInt(t[3]);
+            latency = Long.parseLong(t[4]);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("status va latencyMs phai la so nguyen: " + line);
+        }
+        return new LogLine(ts.substring(0, 16), t[1].toUpperCase(Locale.ROOT), t[2], status, latency);
+    }
+
+    static Map<String, Bucket> statsByMinute(List<String> lines) {
+        if (lines == null) throw new IllegalArgumentException("lines khong duoc null");
+        Map<String, long[]> raw = new TreeMap<String, long[]>();
+        for (String l : lines) {
+            if (l == null || l.trim().isEmpty()) continue;
+            LogLine p = parse(l);
+            long[] c = raw.get(p.minute);
+            if (c == null) { c = new long[2]; raw.put(p.minute, c); }
+            c[0]++;
+            if (p.isError()) c[1]++;
+        }
+        Map<String, Bucket> out = new TreeMap<String, Bucket>();
+        for (Map.Entry<String, long[]> e : raw.entrySet())
+            out.put(e.getKey(), new Bucket(e.getValue()[0], e.getValue()[1]));
+        return out;
+    }
+
+    static double errorRate(List<String> lines, String minute) {
+        if (minute == null) throw new IllegalArgumentException("minute khong duoc null");
+        Bucket b = statsByMinute(lines).get(minute);
+        return b == null ? 0.0 : b.errorRate();
+    }
+
+    static double p95(List<String> lines, String endpoint) {
+        if (lines == null || endpoint == null) throw new IllegalArgumentException("thieu tham so");
+        List<Long> vals = new ArrayList<Long>();
+        for (String l : lines) {
+            if (l == null || l.trim().isEmpty()) continue;
+            LogLine p = parse(l);
+            if (endpoint.equals(p.endpoint())) vals.add(Long.valueOf(p.latencyMs));
+        }
+        if (vals.isEmpty()) return 0.0;
+        Collections.sort(vals);
+        int n = vals.size();
+        int rank = (95 * n + 99) / 100;        // ceil(95n/100) bang so nguyen, tranh sai so dau phay dong
+        if (rank < 1) rank = 1;
+        if (rank > n) rank = n;
+        return vals.get(rank - 1).doubleValue();
+    }
+
+    static Map<String, Long> errorsByEndpoint(List<String> lines) {
+        if (lines == null) throw new IllegalArgumentException("lines khong duoc null");
+        Map<String, Long> m = new HashMap<String, Long>();
+        for (String l : lines) {
+            if (l == null || l.trim().isEmpty()) continue;
+            LogLine p = parse(l);
+            if (!p.isError()) continue;
+            Long prev = m.get(p.endpoint());
+            m.put(p.endpoint(), prev == null ? Long.valueOf(1L) : Long.valueOf(prev.longValue() + 1L));
+        }
+        return m;
+    }
+
+    static List<String> topErrorEndpoints(List<String> lines, int n) {
+        if (n < 0) throw new IllegalArgumentException("n phai >= 0");
+        List<Map.Entry<String, Long>> ranked = new ArrayList<Map.Entry<String, Long>>(errorsByEndpoint(lines).entrySet());
+        Collections.sort(ranked, (a, b) -> {
+            int byCount = Long.compare(b.getValue().longValue(), a.getValue().longValue());
+            return byCount != 0 ? byCount : a.getKey().compareTo(b.getKey());
+        });
+        List<String> out = new ArrayList<String>();
+        for (int i = 0; i < ranked.size() && i < n; i++) out.add(ranked.get(i).getKey());
+        return out;
+    }
+}`,
+      hints: [
+        'parse: dung {{line.trim().split(" +")}} (day nay khong chua dau \, " +" la regex mot hay nhieu khoang trang), roi kiem {{t.length == 5}} va {{t[0].charAt(10)}}.',
+        'statsByMinute: dem bang {{Map<String, long[]}} voi {{long[2]}} = {total, errors}, dung {{TreeMap}} de phut duoc sap theo thu tu thoi gian.',
+        'errorRate: goi {{statsByMinute(lines).get(minute)}}; khac null tra {{b.errorRate()}}, bang null tra 0.0. Dung viet vong dem thu hai.',
+        'p95: loc {{endpoint.equals(p.endpoint())}}, {{Collections.sort}}, {{rank = (95 * n + 99) / 100}} roi tra {{vals.get(rank - 1)}}.',
+        'topErrorEndpoints: comparator phai tra {{Long.compare(b.getValue(), a.getValue())}} (dao) truoc, chi khi bang nhau moi {{a.getKey().compareTo(b.getKey())}}.',
+      ],
+      explain: `Bốn hàm thống kê chia sẻ đúng một khuôn: **lọc - nhóm - đếm - sắp**. Đây chính xác là những gì {{group by}} trong SQL và {{sum by (uri)}}, {{rate()}} trong PromQL làm; viết được nó bằng tay một lần thì bạn hiểu tại sao dashboard cần các label và tại sao cardinality của label lại đắt.
+
+Những chỗ dễ sai nhất trong bài này:
+- **{{split(" +")}} thay vì {{split(" ")}}**: dòng log có nhiều khoảng trắng kép thì {{split(" ")}} sinh thêm phần tử rỗng và {{t.length}} thành 7, mọi dòng bị báo là hỏng. Ngược lại {{split()}} không tham số lại bỏ qua khoảng trắng đầu dòng, còn {{trim()}} + {{split(" +")}} là bộ đôi dễ đọc nhất.
+- **{{minute}} lấy bằng {{substring(0, 16)}}**: đủ tới phút mà không cần parse ngày giờ, không cần {{LocalDateTime}}, và vì thế cũng **không** chuẩn hóa timezone giúp bạn. Nếu một service ghi giờ local thì số liệu của nó sẽ nằm sai bucket, và chỉ có schema log thống nhất UTC mới chặn được từ gốc. Đây là lý do phần {{parse}} không cố hiểu timestamp.
+- **{{rank}} phải là số nguyên**: công thức {{(95 * n + 99) / 100}} là dạng integer của {{ceil(95n/100)}} (vì {{ceil(a/b) = (a + b - 1) / b}} với phép chia làm tròn xuống). Viết {{Math.ceil(0.95 * n)}} sẽ có lúc trả mẫu cuối cùng thay vì mẫu đúng; lỗi kiểu này chỉ xuất hiện với một số giá trị {{n}} nhất định nên rất khó thấy bằng mắt, và case "20 mẫu cho 190" trong tests chặn đúng chỗ đó.
+- **{{p95}} tính trên mọi request của endpoint, không chỉ request lỗi**: p95 latency là chỉ số của *trải nghiệm*, mà trải nghiệm xấu bao gồm cả request thành công nhưng chậm. Nếu chỉ lấy mẫu 5xx thì bạn có p95 của riêng nhóm hỏng, tức là một con số không trả lời câu hỏi nào.
+- **{{errorRate}} của phút vắng mặt trả {{0.0}}, không ném lỗi**: dashboard/alert cần đường dữ liệu liền mạch. Nhưng đây là lúc cần nhớ bài học thống kê: phút không có mẫu **không giống** phút có 0% lỗi — phút 0 mẫu thì đừng kết luận gì cả.
+- **{{TreeMap}} để map tự sắp theo phút**: phút ở định dạng ISO-8601 nên thứ tự chuỗi trùng thứ tự thời gian; dùng {{HashMap}} thì in ra sẽ lộn xộn và bạn mất đúng cái mình cần là *diễn biến*.
+- **Ties trong top list**: không có {{tie-break}} thì thứ tự hai endpoint cùng 5 lỗi thay đổi theo hash order của map, test flaky và người đọc bảng cũng đoán nhầm. Sắp A-Z khi bằng nhau là cách rẻ nhất để bảng kết quả **xác định**.
+
+Kể lại trong phỏng vấn theo mạch thực dụng: đọc {{head -3}} để biết định dạng, đếm lỗi theo phút để tìm giờ bắt đầu, so **tỷ lệ** chứ không so số tuyệt đối vì mẫu khác nhau, nhóm theo endpoint đã chuẩn hóa (path không mang id) để tìm thủ phạm, p95 nearest-rank theo endpoint vì trung bình bị kéo bởi đuôi dài, đối chiếu giờ bắt đầu với lịch deploy, rồi **rollback/tắt flag trước** khi điều tra sâu. Cuối cùng: sự cố nào phải đọc log thô để tìm số là một sự cố về observability, nên việc phòng ngừa là thống nhất schema JSON có {{service}}, {{version}}, {{traceId}}, {{latencyMs}} và dựng metric + alert theo error budget.`,
+    },
+  ],
+  check: [
+    { q: 'Lỗi tăng đều từ 10:15. Việc nào nên làm TRƯỚC khi tìm nguyên nhân gốc?', options: ['Chạy profiler toàn service', 'Giảm blast radius: rollback bản mới hoặc tắt feature flag rồi mới điều tra', 'Viết postmortem', 'Tăng log level lên TRACE rồi chờ'], answer: 1, explain: 'Rollback là hành động rẻ và đảo ngược được, mua thời gian cho cả user lẫn bạn. Đào nguyên nhân khi user vẫn đang hỏng là làm ngược thứ tự ưu tiên.' },
+    { q: 'Endpoint A chiếm 900/1000 lỗi toàn hệ thống. Kết luận nào đúng?', options: ['A chắc chắn là thủ phạm', 'Chưa thể nói: phải chia cho số request của chính A để ra tỷ lệ lỗi, rồi so với endpoint khác', 'A chậm', 'Phải đếm thêm 4xx vào lỗi của A'], answer: 1, explain: 'Số lỗi tuyệt đối phụ thuộc vào traffic. Nếu A chiếm 90% traffic thì 90% số lỗi là đúng như kỳ vọng, không có gì bất thường.' },
+    { q: 'Vì sao dùng p95 thay vì trung bình khi nói về độ chậm?', options: ['Vì p95 tính nhanh hơn', 'Vì latency phân bố lệch phải: một request 30s làm trung bình nhảy vọt dù 95% user không bị ảnh hưởng; p95 lấy từ mẫu thật nên phản ánh đúng trải nghiệm', 'Vì trung bình luôn nhỏ hơn p95', 'Vì p95 không cần sắp xếp dữ liệu'], answer: 1, explain: 'Trung bình bị đuôi dài kéo. p95/p99 là percentile trên mẫu đã sắp xếp, bắt đúng bệnh đuôi (slow query, GC pause, retry).' },
+    { q: 'Pipeline {{awk ... | uniq -c | sort -rn}} cho kết quả đếm sai. Lỗi nằm ở đâu?', options: ['Thiếu {{sort}} ngay trước {{uniq -c}}: uniq chỉ gộp các dòng giống nhau nằm kề nhau', 'Thiếu {{head}}', 'Dùng {{awk}} thay vì {{grep}}', 'Bucket quá lớn'], answer: 0, explain: 'uniq làm việc trên dữ liệu đã sắp. Quên sort thì mỗi lần gặp khóa mới nó lại in một dòng đếm 1, và bảng top trở nên vô nghĩa mà không báo lỗi.' },
+  ],
+  related: ['devops-012', 'devops-056', 'devops-057'],
+  tags: ['Access log', 'Incident response', 'awk', 'p95', 'nearest-rank', 'Error rate', 'Latency'],
+},
 );
 
