@@ -3282,8 +3282,6 @@ SecurityFilterChain api(HttpSecurity http) throws Exception {
   ],
   tags: ['Spring Boot 3', 'migration', 'Jakarta EE', 'Hibernate 6', 'Spring Security 6', 'Micrometer Tracing'],
   refs: [
-    { type: 'doc', title: 'Spring Boot 3.0 Migration Guide', url: 'https://github.com/spring-projects/spring-boot/wiki/Spring-Boot-3.0-Migration-Guide' },
-    { type: 'doc', title: 'Upgrading to Spring Framework 6.x', url: 'https://github.com/spring-projects/spring-framework/wiki/Upgrading-to-Spring-Framework-6.x' }
   ]
 },
 {
