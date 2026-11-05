@@ -3244,5 +3244,626 @@ Với SLI độ trễ, Spring Boot tạo sẵn bucket ở ngưỡng SLO bằng {
       { type: 'doc', title: 'Postmortem Culture: Learning from Failure', url: 'https://sre.google/sre-book/postmortem-culture/' },
       { type: 'doc', title: 'Example Error Budget Policy', url: 'https://sre.google/workbook/error-budget-policy/' }
     ]
+  },
+  {
+    id: 'devops-039',
+    topic: 'devops',
+    level: 'mid',
+    q: 'Service Spring Boot chạy hoàn hảo khi chỉ có một instance, nhưng vừa scale lên 3 Pod trên Kubernetes thì người dùng đang dùng bị bật về màn hình đăng nhập, file báo cáo vừa upload biến mất, và job tính lãi đầu ngày chạy đúng ba lần. Giải thích từng hiện tượng và cách sửa.',
+    a: `**Tóm tắt:** Mỗi request có thể rơi vào một Pod khác nhau, mà RAM của Pod này thì Pod kia không nhìn thấy. App giữ state trong process (HTTP session, file trên đĩa local, job đếm lần chạy) sẽ hỏng ngay khi có replica thứ hai. Cách sửa là làm app **stateless**: session đưa ra Redis (Spring Session), file đưa lên object storage (S3), job phải có khoá phân tán (ShedLock), cache local phải có TTL và chiến lược invalidate rõ ràng. Sticky session chỉ là băng keo dán tạm.
+
+### Vì sao mất state — hình dung từ gốc
+Quầy giao dịch có 3 nhân viên giống hệt nhau, khách được xếp luân phiên. Nếu nhân viên A ghi thông tin vào cuốn sổ **cất trong túi áo mình**, khách quay lại gặp nhân viên B thì B không biết gì. Process Java cũng vậy: HTTP session, object cache, biến đếm đều nằm trong RAM của chính nó. Trên Kubernetes, mỗi Pod là một process độc lập (thường ở node khác nhau), Service chia request luân phiên giữa các Pod. Tệ hơn, Pod là tạm thời (ephemeral): rollout, restart, node chết là toàn bộ RAM bay theo, không để lại dấu vết.
+
+### Hiện tượng 1: bị bật về màn hình đăng nhập — HTTP session
+Tomcat tạo session trong memory và trả cookie {{JSESSIONID}}. Request sau đi vào Pod khác, Pod đó không có session với id đó nên tạo session mới → người dùng mất trạng thái đăng nhập.
+Sửa bằng **Spring Session**: thêm {{spring-session-data-redis}}, session được serialize vào Redis thay vì memory của Tomcat; mọi Pod đọc chung.
+
+~~~yaml
+# build.gradle / pom: spring-boot-starter-data-redis + spring-session-data-redis
+spring:
+  session:
+    timeout: 30m
+  data:
+    redis:
+      host: redis-sessions.payments.svc   # nên là Redis HA (Sentinel/Cluster)
+~~~
+
+Hướng khác: **JWT** — server không giữ session, chỉ ký token; nhưng logout thu hồi token ngay thì phải thêm denylist, và token phải ngắn hạn kèm refresh token. Lưu ý: session replication kiểu Tomcat cluster gần như không dùng được trên Kubernetes vì Pod phát hiện nhau động.
+
+### Hiện tượng 2: file upload "biến mất"
+File multipart được ghi vào đĩa tạm của Pod (/tmp); request tải về rơi Pod khác → 404; Pod bị restart → file mất hẳn. PVC kiểu RWO (ReadWriteOnce) chỉ bind được cho **một** Pod, không phải ổ đĩa chung cho cả Deployment.
+Sửa: stream thẳng lên S3/GCS ngay khi nhận, DB chỉ lưu key; file lớn cho client upload qua **presigned URL** để không đi qua app.
+
+### Hiện tượng 3: job chạy ba lần
+{{@Scheduled}} chạy trong **mọi** replica — cả 3 Pod đều thức lúc 1h và cùng tính lãi. Đây là bug tiền bạc, không phải sự khó chịu.
+
+~~~java
+@Scheduled(cron = "0 0 1 * * *")
+@SchedulerLock(name = "dailyInterest", lockAtMostFor = "30m", lockAtLeastFor = "59m")
+public void calculateInterest() {
+    // Pod lấy được lock (Redis/DB) mới chạy; hai Pod còn thấy lock đang giữ thì bỏ qua vòng này
+}
+~~~
+
+{{lockAtLeastFor}} 59m đảm bảo job dưới 1 phút vẫn không chạy hai lần trong cùng ngày. Hoặc tách hẳn batch sang Kubernetes CronJob chạy một Pod duy nhất.
+
+### Các hầm chông còn lại
+| State | Biểu hiện | Cách sửa |
+|---|---|---|
+| Cache Caffeine/ConcurrentHashMap | Pod A vừa ghi, Pod B trả số cũ | TTL ngắn, hoặc Redis + pub/sub invalidate |
+| WebSocket | Nhận tin nhắn chỉ ở một Pod | sticky (tạm) hoặc backplane Redis / chuyển sang SSE + Redis pub/sub |
+| Queue trong memory | Mất message khi Pod chết | Đưa sang Kafka/SQS |
+| Rate limiter in-memory | Limit thực tế = 3x con số khai | Redis ({{INCR}} + expire) hoặc bucket4j với cache phân tán |
+
+### Sticky session có phải giải pháp?
+ALB có stickiness, nhưng NGINX mở (community) không có directive sticky (chỉ NGINX Plus). Sticky làm Pod cũ nhận mãi khách cũ → lệch tải; rollout tạo Pod mới chưa có session nào vẫn bị "đục" vì session nằm ở Pod sắp chết; Pod chết thì vẫn mất session. Acceptable cho tình thế tạm, không phải thiết kế.
+
+### Checklist stateless cho service mới
+- Không session/credential trong memory kéo dài giữa các request.
+- Không ghi file vào đĩa container (trừ cache có TTL, rebuild được từ nguồn khác).
+- Job/leader election qua ShedLock hoặc CronJob riêng.
+- Mọi thứ cần "sống sót qua Pod" nằm ở Redis/S3/DB/queue.
+
+### Lỗi hay gặp
+- Session object chứa class custom rồi đổi package → Redis deserialize fail lặn sau upgrade.
+- Redis sập: toàn bộ user mất phiên — phải có Redis HA và chấp nhận đây là dependency mới của auth.
+- Bật Spring Session nhưng vẫn đọc request.getAttribute từ session Tomcat cũ ở code legacy.
+
+> Senior tip: tiêu chí nghiệm thu tôi hay áp: chạy k6 tạo tải có đăng nhập, trong lúc đó {{kubectl delete pod --force}} một replica giữa phiên — người dùng phải không nhận ra gì ngoài chậm hơn một nhịp. Test này bắt được 90% lỗi stateless trước khi lên prod.`,
+    follow: [
+      'Đã dùng Spring Session với Redis mà Redis chết: người dùng gặp gì và bạn thiết kế graceful thế nào?',
+      'JWT không cần session — vậy làm sao "đá" một user đăng xuất ngay khi token còn hạn 15 phút?',
+      'Cache Caffeine TTL 5 phút giữa 3 Pod: khi nào chấp nhận được, khi nào nguy hiểm cho số dư tài khoản?'
+    ],
+    tags: ['Stateless', 'Spring Session', 'Redis', 'ShedLock', 'Kubernetes']
+  },
+  {
+    id: 'devops-040',
+    topic: 'devops',
+    level: 'mid',
+    q: 'Service Java chạy trên EKS cần đọc/ghi S3 và gửi tin lên SQS. Hiện access key + secret key nằm trong ConfigMap, rotate thủ công mỗi quý và đoàn audit vừa ghi biên bản. Bạn thay bằng cơ chế nào để không còn key tĩnh, và AWS SDK lấy credential từ đâu?',
+    a: `**Tóm tắt:** Bỏ hẳn key tĩnh, chuyển sang **IAM role gắn với Pod**. Trên EKS có hai con đường: **IRSA** (ServiceAccount khai báo IAM role, Pod nhận OIDC token ngắn hạn) hoặc **EKS Pod Identity** (mới hơn, dùng agent, đỡ cấu hình OIDC theo từng cluster). AWS SDK không đọc env một cách mù quáng mà đi theo **default credentials chain**: gặp biến {{AWS_WEB_IDENTITY_TOKEN_FILE}} thì gọi {{AssumeRoleWithWebIdentity}}, lấy credential sống ~1 giờ và tự làm mới — không có gì để rotate.
+
+### Key tĩnh trong ConfigMap sai ở đâu
+- ConfigMap lưu **bằng văn bản thường** trong etcd (Secret chỉ base64, cũng không phải mã hoá nếu không bật encryption at rest); bất kỳ ai có quyền get trong namespace đọc được.
+- Key tồn tại vĩnh viễn: nhân sự nghỉ, laptop mất, repo public — key vẫn xài được.
+- Một key nhiều service dùng → CloudTrail không phân biệt được **ai** đã gọi {{s3:DeleteObject}}; audit không có câu trả lời.
+- Rotate là một dự án: phải đổi ConfigMap, restart từng dịch, cầu nguyện không sót chỗ nào cache giá trị cũ.
+- Có nguy cơ bị commit vào Git, và lịch sử Git thì không tẩy được.
+
+### Default credentials chain của AWS SDK v2
+{{S3Client.create()}} không cần truyền credential; SDK tự tìm theo thứ tự (gần đúng):
+1. Biến môi trường {{AWS_ACCESS_KEY_ID}} / {{AWS_SECRET_ACCESS_KEY}}.
+2. System properties của JVM.
+3. **Web identity token file** ({{AWS_WEB_IDENTITY_TOKEN_FILE}} + {{AWS_ROLE_ARN}}) — đây chính là cửa mà IRSA đi vào.
+4. {{~/.aws/credentials}} (profile).
+5. Container credentials (endpoint cục bộ) — cửa của EKS Pod Identity.
+6. Instance credentials qua IMDS.
+
+Bài học: code chỉ cần một dòng builder; chuyện credential là việc của hạ tầng, đừng nhúng logic vào app.
+
+### IMDS — danh tính của node, không phải của Pod
+IMDS là địa chỉ link-local {{169.254.169.254}}; Pod trên node đó gọi vào sẽ nhận **role của node** (node role thường rất rộng để pull ECR, ghi log...). Mọi service sẽ dùng chung một quyền — mất cô lập. Biện pháp: bật IMDSv2 và giới hạn hop limit = 1 để Pod không với tới IMDS, ép mỗi service dùng danh tính riêng.
+
+### IRSA hoạt động thế nào
+~~~text
+Cluster EKS có OIDC provider (một lần, theo cluster)
+Role "payment-s3-sqs" có:
+  - Trust policy: cho AssumeRoleWithWebIdentity VỚI điều kiện
+      system:serviceaccount:payments:payment-sa  (đúng namespace + SA)
+  - Permission policy: s3:GetObject/PutObject theo prefix arn:aws:s3:::bank/payments/*,
+                       sqs:SendMessage đúng queue arn
+SA payment-sa annotation arn:aws:iam::11111122221111:role/payment-s3-sqs
+=> webhook EKS gắn token projected vào Pod + 2 env:
+     AWS_ROLE_ARN, AWS_WEB_IDENTITY_TOKEN_FILE=/var/run/secrets/.../token
+=> SDK gọi STS đổi token lấy credential ~1h, tự làm mới trước hạn
+~~~
+
+Điểm mạnh: credential **ngắn hạn, theo service, tự rotate**; STS session bị trói chặt vào (namespace, ServiceAccount) nên Pod SA khác không đóng giả được.
+
+### EKS Pod Identity
+Amazon thêm EKS Pod Identity Agent (DaemonSet) trên node; bạn tạo **role association** qua API của EKS thay vì annotation + OIDC; SDK nhận credential qua endpoint cục bộ. Ưu: đỡ lập OIDC cho từng cluster, một role xài được ở nhiều cluster, không lo token. Nếu cluster bạn mới dựng hoặc nhiều cluster, tôi chọn Pod Identity; IRSA vẫn hoàn toàn đúng và phổ biến hơn.
+
+### Least privilege — quyền "vừa đủ"
+Mỗi service một role riêng, policy chỉ tới tài nguyên cụ thể (prefix bucket, queue ARN, key KMS cần decrypt). Cấm {{s3:*}}, {{iam:*}}. Hệ quả dễ chịu: khi audit hỏi "ai xoá file này", CloudTrail trả lời đúng role của đúng service.
+
+### Dev chạy local thì sao
+Dùng AWS SSO ({{aws sso login}}) với role dev, hoặc profile tạm hết hạn 1 giờ; test offline bằng LocalStack mock S3/SQS. **Không** có ngoại lệ "key prod để dev tiện".
+
+### Lỗi hay gặp
+- 403 AccessDenied dù role đã có policy: kiểm tra trust condition sai tên namespace/SA, hoặc SA chưa annotation.
+- Quên region làm gọi STS/SDK treo hoặc UnknownHostException — luôn đặt {{AWS_REGION}} (hoặc env cluster-defaults).
+- SDK v1 quá cũ: có phiên bản không tự làm mới web identity token → job batch chết sau 1 giờ đúng nửa đêm; nâng SDK v2.
+- Tự cache {{BasicSessionCredentials}} vào static variable — đừng đấu với SDK.
+
+### Trả lời phỏng vấn
+Chuỗi ý: key tĩnh có vấn đề gì → chain credential → IRSA/Pod Identity cơ chế → least privilege theo từng service → dev local bằng SSO. Kết bằng lợi ích audit: mỗi service một danh tính, mọi call truy vết được.
+
+> Senior tip: đề ra chính sách **zero static credential** và cài secret scanner (gitleaks/trufflehog) trong pipeline để key không quay lại qua ngỏ Git; sau khi chuyển hết sang IRSA, xoá key cũ trong IAM từng cái một (disable rồi theo dõi CloudTrail vài ngày trước khi delete) để phát hiện chỗ nào còn dùng lén.`,
+    follow: [
+      'Pod bị lỗi 403 sau khi đổi tên ServiceAccount: bạn debug từ những đối tượng nào?',
+      'Vì sao hop limit 1 của IMDSv2 chặn được Pod đọc credential của node?',
+      'Service cần chữ ký presigned URL hiệu lực 7 ngày — token 1 giờ của IRSA có cho phép không?'
+    ],
+    tags: ['AWS', 'EKS', 'IRSA', 'IAM', 'Secrets', 'Java SDK']
+  },
+  {
+    id: 'devops-041',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Team platform muốn bỏ kiểu Jenkins cầm kubectl apply từ ngoài cluster, chuyển sang GitOps với Argo CD. Là dev sở hữu service, điều gì thay đổi trong deploy hằng ngày, rollback, phát hiện sửa tay, và secrets?',
+    a: `**Tóm tắt:** GitOps = **toàn bộ trạng thái mong muốn của cluster nằm trong Git**, và một operator chạy *trong* cluster (Argo CD) liên tục so sánh thực tế với Git rồi kéo thực tế về khớp Git. CI không còn "deploy" nữa — CI chỉ commit bump version image. Rollback thành {{git revert}}, sửa tay bị phát hiện là **drift** và có thể bị self-heal đè lại, secrets không bao giờ vào Git (External Secrets lo phần đó).
+
+### Push-based vs pull-based (GitOps)
+| | Push: Jenkins chạy kubectl | Pull: Argo CD trong cluster |
+|---|---|---|
+| Credential cluster nằm ở | Jenkins (bên ngoài, dễ rò) | trong cluster, không lộ ra ngoài |
+| Hướng kết nối | Jenkins phải mở đường từ ngoài vào prod | cluster chủ động outbound tới Git |
+| Nguồn sự thật | DB của Jenkins + history job | Git repo — diff, review, audit free |
+| Rollback | job cũ replay, hoặc kubectl | {{git revert}} — vẫn là một lần deploy có review |
+| Dev muốn deploy | cần quyền Jenkins/prod | mở PR vào repo cấu hình là đủ |
+
+### Luồng deploy một service sau chuyển
+~~~text
+merge PR → CI build image (tag = git SHA) → push registry
+        → CI/Argo Image Updater commit tag mới vào apps repo (PR hoặc direct)
+        → Argo CD thấy commit (webhook/poll) → diff → Sync → Pod mới theo rolling update
+~~~
+Developer không còn gõ kubectl ở prod; "deploy" đơn giản là merge một commit cấu hình.
+
+### Drift, OutOfSync và selfHeal
+Argo liên tục chạy {{diff}} giữa live object và Git render:
+- {{OutOfSync}} = có khác biệt; UI cho xem diff từng field.
+- {{selfHeal: true}}: ai đó {{kubectl edit}}/apply tay → Argo đè lại về Git ngay → buộc mọi thay đổi phải đi qua PR. Đây là tính năng **quy trình** chứ không chỉ kỹ thuật.
+- Ngoại lệ bắt buộc phải có: HPA sửa {{/spec/replicas}} liên tục → nếu selfHeal sẽ đánh nhau; khai báo {{ignoreDifferences}} với jsonPointers {{/spec/replicas}} (hoặc bật HPA quản lý replicas, xoá field khỏi manifest).
+
+### Rollback kiểu GitOps
+- {{kubectl rollout undo}} tạo drift tức thì và selfHeal "rollback của rollback" — cấm dùng ở môi trường có GitOps.
+- Đúng: {{git revert}} commit bump image (platform team cho phép revert nhanh ở prod qua branch emergency có review 1 người), Argo sync lại. Toàn bộ lịch sử deploy = git log, auditor rất thích.
+- Độ trễ: poll mặc định 3 phút; webhook/Argo Notifications giảm còn tính bằng chục giây — prod cần tốc độ thì cấu hình phần này.
+
+### Sync waves & hooks — thứ tự trong một deploy
+Manifest áp cùng lúc thì Flyway Job chạy sau Pod app là sai. Dùng annotation số:
+
+~~~yaml
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"   # 0: Namespace/RBAC; 1: migration Job (hook PreSync); 2: Deployment
+    argocd.argoproj.io/sync-wave: "-1"
+    argocd.argoproj.io/hook: PreSync    # Job Flyway chạy trước, phải Complete mới đi tiếp
+~~~
+
+30 service thì quản bằng **app-of-apps** hoặc ApplicationSet (template từ repo layout), thêm service chỉ bằng một commit.
+
+### Secrets đi đâu trong mô hình GitOps
+Git không chứa secret; hai lựa chọn phổ biến: **External Secrets Operator** pull từ Vault/Secrets Manager về tạo Kubernetes Secret, hoặc sealed secrets mã hoá theo cluster. Với app Java nhớ: ESO cập nhật Secret nhưng app chỉ đọc lúc khởi động → rotate cần restart có kiểm soát (đây là chỗ nhiều team đau, xem thêm ConfigMap/Secret).
+
+### Điểm chết thường gặp
+- Commit secret thật vào apps repo vì "tạm thời" — scanner phải chặn ở CI.
+- CRD của operator chưa cài, app sync fail hàng loạt sau restore cluster — đưa CRD vào wave -1.
+- Repo cấu hình phình to (30 service × 4 môi trường) → render chậm; tách apps/infra và dùng ApplicationSet.
+- Văn hoá "thôi kubectl cho nhanh" sống sót sau selfHeal — phải kỷ luật: prod access chỉ còn break-glass có log.
+- Argo CD là single point of failure: mất Argo thì cluster vẫn chạy, nhưng bạn mất cách deploy an toàn — cần runbook.
+
+> Senior tip: trước khi chuyển, chạy drill "tường lửa": phá cluster staging, dựng lại từ trắng, chỉ dùng Git + registry — mục tiêu dưới 30 phút. Drill này đồng thời test GitOps, backup image, Terraform và tài liệu; team nào không làm được là GitOps còn hổng thật.`,
+    follow: [
+      'selfHeal với HPA quản lý replicas đánh nhau — bạn xử lý kiến trúc thế nào để không ping-pong?',
+      'So sánh rollback bằng git revert với kubectl rollout undo về audit và tốc độ ở prod.',
+      'Pipeline vẫn cần deploy "nóng" 2 phút trong sự cố P1 — thiết kế break-glass ra sao cho không mất kiểm soát?'
+    ],
+    tags: ['GitOps', 'Argo CD', 'CI/CD', 'drift', 'Rollback', 'External Secrets']
+  },
+  {
+    id: 'devops-042',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Team muốn canary tự động: 5% traffic → theo dõi lỗi 10 phút → 25% → 50% → 100%, hễ lỗi tăng là tự dừng. Argo Rollouts thực hiện việc đó thế nào, và service Java cần lưu ý gì về warm-up, database và sample quá nhỏ?',
+    a: `**Tóm tắt:** Argo Rollouts thay Deployment bằng CRD **Rollout**: nó điều phối hai ReplicaSet (stable + canary) theo một danh sách **steps** — setWeight, pause, chạy **AnalysisTemplate**. Template đó định kỳ query Prometheus (tỷ lệ 5xx, p99...); nếu vượt ngưỡng {{failureLimit}} nhiều lần, rollout bị **abort** và canary scale về 0. Traffic chia theo tỉ lệ Pod (không cần ingress đặc thù) hoặc qua NGINX ingress/mesh với {{canary-weight}}, {{canary-by-header}}.
+
+### Đọc nhanh Rollout mẫu
+~~~yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+spec:
+  replicas: 20
+  strategy:
+    canary:
+      canaryService: payment-canary
+      stableService: payment-stable
+      trafficRouting:
+        nginx:
+          stableIngress: payments-nginx
+      canaryAnalysis:
+        maxWeight: 50
+        steps:
+        - setWeight: 5
+        - pause: {}                      # dừng vô hạn: mắt người xem trước khi máy chạy tiếp
+        - setWeight: 25
+        - pause: { duration: 10m }
+        - analysis:
+            templates:
+            - templateName: error-rate
+      scaleDownDelaySecondsOnScaleUp: 60 # giữ pod cũ 60s để drain request đang chạy
+~~~
+{{setWeight: 5}} nghĩa là 5% traffic tới canary; với mode chia theo tỉ lệ Pod thì 20 replica → canary 1 Pod, xấp xỉ 5%.
+
+### AnalysisTemplate — "cái máy đo"
+~~~yaml
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: error-rate
+spec:
+  metrics:
+  - name: http-5xx-ratio
+    intervalSeconds: 60
+    failureLimit: 2                # fail 2 lần liên tiếp thì abort
+    successCondition: result[0] < 0.01   # 5xx < 1%
+    provider:
+      prometheus:
+        address: http://prometheus.observability:9090
+        query: |
+          sum(rate(http_server_requests_seconds_count{job="payment",status=~"5.."}[5m]))
+            / sum(rate(http_server_requests_seconds_count{job="payment"}[5m]))
+~~~
+Metric nên lấy từ {{Micrometer}} (http_server_requests) — cùng nguồn với dashboard SLO, đừng chế số mới.
+
+### Ba đường chia traffic
+| Cách | Điều kiện | Ghi chú |
+|---|---|---|
+| Tỉ lệ Pod (không trafficRouting) | không cần ingress hỗ trợ | coarse: 1 pod = 5% khi 20 pod; latency phụ thuộc pod nhận nhiều nhất |
+| NGINX ingress {{canary-weight}} | cần ingress-nginx | chính xác theo %; {{canary-by-header}} cho tester nội bộ đi 100% vào canary |
+| Service mesh (Istio/Linkerd) | VirtualService/TS | cho cả weight + header + mirror |
+
+### Ba thứ chỉ dân Java mới nhớ
+1. **JVM lạnh**: pod canary mới JIT chưa warm, p99 cao vài phút đầu — dễ làm analysis fail oan. Dùng {{warmupDurationSecs}}, và chỉ bắt đầu đo sau cửa sổ pause.
+2. **Database là state chia sẻ**: canary không cách ly được schema — migration không tương thích thì cả stable lẫn canary đau như nhau; expand-contract vẫn là điều kiện cần.
+3. **Sample nhỏ khi traffic thấp**: 10 RPS × 5% = 0.5 RPS thì p99 là nhiễu; cần điều kiện số request tối thiểu trong query, hoặc pause vô hạn ở 5% để người bấm promote.
+
+### Abort và promote thủ công
+Khi abort: canary scale về 0, rollout dừng ở trạng thái aborted, metrics còn trong UI để điều tra. Người vận hành {{kubectl argo rollouts promote}}/abort khi muốn đi tiếp — script cho phép chạy tiếp từng nấc khi đang incident.
+
+### Lỗi hay gặp
+- Readiness probe quá lạc quan → pod canary chưa warm đã nhận traffic, 5xx thật nhưng do hạ tầng, analysis abort oan rồi không ai sửa probe.
+- Canary-by-header: tester bắn hỏng → abort không đúng vì traffic test không được analysis đếm (đọc theo header, weight vẫn 0).
+- Chạy canary đồng thời với DB migration coalesce → không còn "old code path" để lui.
+- Pause vô hạn bị quên: rollout treo 3 ngày giữa 5%, hai ReplicaSet cùng tồn tại, dev tưởng đã xong.
+
+> Senior tip: với service thanh toán, bắt đầu phân tích bằng **tỷ lệ lỗi 5xx + tỷ lệ lỗi nghiệp vụ (gateway từ chối)** thay vì p99 — hai metric này ít nhiễu ở sample nhỏ. Giữ bước pause đầu tiên vô hạn để con người nhìn log canary 10 phút; chỉ tin máy sau khi bạn thấy analysis máy đã bắt đúng 2–3 vụ thật.`,
+    follow: [
+      'Traffic rất thấp (dưới 1 RPS): thiết kế analysis thế nào để canary không fail oan?',
+      'Mirror 10% traffic production sang canary (shadow traffic) hoạt động ra sao và rủi ro gì với API ghi?',
+      'Abort rồi thì Pod canary chết — làm sao giữ được heap dump/log để điều tra?'
+    ],
+    tags: ['Argo Rollouts', 'Canary', 'Progressive delivery', 'Prometheus', 'Traffic splitting']
+  },
+  {
+    id: 'devops-043',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Mỗi service Spring Boot chạy 10 replica với maximumPoolSize 20; PostgreSQL max_connections 200 thường quá tải, và mỗi lần rolling update tình hình tệ hẳn. Bạn giải bài toán connection pooling ở tầng app, tầng pool và tầng DB thế nào?',
+    a: `**Tóm tắt:** PostgreSQL connection không phải là socket nhẹ — mỗi connection là một **server process** tốn memory và CPU; throughput của DB không tăng theo số connection mở, mà tới mức nào đó còn giảm vì tranh chấp. 10 pod × 20 = 200 chỉ tính **một** service; chưa kể migration, cron, service khác, và cửa sổ rollout nhân đôi số pod. Chiến lược ba tầng: pool app **nhỏ và đúng công thức**, thêm **PgBouncer** multiplex ở giữa, đặt ngân sách connection DB có dự phòng; chống **connection storm** lúc Pod đồng loạt khởi động.
+
+### Vì sao mở nhiều connection không giúp gì
+Ngân hàng 2 quầy, 200 khách xếp hàng giao dịch: số nhân viên DB có thể phục vụ đồng thời ≈ số core CPU. Mỗi connection của Postgres là một process (fork) tốn vài MB, mỗi query có thể ngốn {{work_mem}} cho sort/hash; 200 connection chạy đồng thời là 200 lần như thế + tranh chấp lock + vacuum trễ. đường cong throughput: tăng tới ~2× số core thì đạt đỉnh, thêm nữa là đi xuống. HikariCP đưa công thức khởi điểm kinh điển: {{connections = core_count * 2 + effective_spindle_count}} — pool to chỉ cần khi query của bạn chờ I/O lâu.
+
+### Đặt ngân sách connection (số hoá)
+~~~text
+DB max_connections          = 200 (trừ superuser reserved ~10, monitoring ~5)
+Còn phân bổ được            ≈ 185
+payment-svc: 10 pod × pool 8  = 80
+order-svc:   10 pod × pool 6  = 60
+Flyway job + CronJob           = 6
+Buffer sự cố / rollout surge   = ~40  ← con số nhiều người quên
+~~~
+
+Và nhớ rollout tăng surge: maxSurge 25% nghĩa là tạm thời 12–13 pod — 13 × 8 = 104 cho riêng service đó.
+
+### Connection storm khi triển khai
+Mặc định Hikari mở {{minimumIdle}} = maximumPoolSize khi pool được khởi tạo → 10–13 pod cùng dậy trong 60 giây và mỗi pod lao tới DB xin 8 connection: DB vừa nhận connection mới (fork process, làm xác thực) vừa gồng query cũ → timeout dây chuyền, pod fail readiness, restart làm storm to hơn (death spiral).
+Giảm: {{minimumIdle}} nhỏ (mở theo nhu cầu), {{connectionTimeout}} 2–3 giây để fail nhanh + retry có backoff ở tầng service, {{initializationFailTimeout = -1}} để app dậy được khi DB tạm nghẽn rồi connect lại dần, và cho DB một lớp chắn (xem PgBouncer).
+
+~~~yaml
+spring:
+  datasource:
+    hikari:
+      maximum-pool-size: 8
+      minimum-idle: 2
+      connection-timeout: 3000
+      initialization-fail-timeout: -1
+      leak-detection-threshold: 60000   # log stacktrace nếu app giữ connection 60s không trả
+~~~
+
+### PgBouncer — multiplex ở tầng giữa
+Ý tưởng: app giữ hàng trăm connection **giả** phía PgBouncer; PgBouncer giữ ~50 connection **thật** tới DB, mượn cho từng transaction rồi trả — server process của DB được chia sẻ.
+| Chế độ | Cách hoạt | Hệ quả với Java |
+|---|---|---|
+| session | gán cứng 1 server connection cho 1 client | không save memory, hiếm dùng |
+| transaction (phổ biến) | cho mượn server connection theo **từng transaction** | tiết kiệm nhất, nhưng bỏ đi các thứ phụ thuộc "phiên" |
+| statement | multiplex theo từng statement | dễ vỡ, tránh |
+
+Cạm bẫy transaction-mode với JDBC/Postgres: prepared statements của driver (mặc định Postgres JDBC cache sau 5 lần execute) không hợp với PgBouncer bản cũ — PgBouncer 1.21+ đã hỗ trợ server prepared statements (cấu {{max_prepared_statements}}), còn bản cũ phải tắt cache phía driver ({{prepareThreshold=0}}); {{SET}} biến session (search_path, timezone) không còn "dính" cả phiên → set mặc định ở role/db bằng {{ALTER ROLE ... SET search_path}} thay vì mỗi kết nối; advisory lock, {{LISTEN/NOTIFY}}, temporal session state đều không chạy được. RDS Proxy của AWS là lựa chọn managed cùng ý tưởng.
+
+### Leak và long transaction — phía code
+- {{@Transactional}} bọc cả gọi HTTP sang đối tác 3 giây → giữ connection 3 giây thay vì 20 ms; p99 DB pool exhaustion đến sớm. Thu hẹp transaction quanh thao tác DB, gọi ngoài ở ngoài transaction.
+- Báo cáo chạy 200 giây: tách DataSource riêng, pool 2–3, user readonly, {{statement_timeout}} theo role — đừng cho report ăn pool giao dịch.
+
+### Trả lời phỏng vấn 30 giây
+"Đầu tiên em tính ngân sách connection thật (tổng pod × pool + surge), không scale pool theo cảm tính; pool app để nhỏ theo công thức core; nếu số client lớn thì đặt PgBouncer/RDS Proxy multiplex và kiểm tra prepared statements + session variables; storm lúc deploy xử lý bằng minimumIdle nhỏ, fail-fast + backoff; cuối cùng thêm cảnh báo cả hai phía hikari_pending và pg_stat_activity."
+
+> Senior tip: dashboard đúng phải có **cả hai phía**: {{hikaricp_connections_active/pending}} (Micrometer) đặt cạnh {{pg_stat_activity}} đếm theo application_name. 90% vụ "app treo khi cao điểm" là một transaction dài giữ connection + pool nhỏ — leak-detection-threshold chính là nút bằng chứng thay vì phỏng đoán.`,
+    follow: [
+      'PgBouncer transaction-mode + Spring Data JPA lazy loading ngoài transaction: vì sao vỡ và sửa ở đâu?',
+      'Vì sao giới hạn 50 connection có thể nhanh hơn 200? Giải thích qua đường cong throughput.',
+      'Rolling update làm DB chạm max_connections: bạn đổi chiến lược rollout hay pool trước?'
+    ],
+    tags: ['HikariCP', 'PostgreSQL', 'PgBouncer', 'Connection pool', 'Kubernetes', 'Rollout']
+  },
+  {
+    id: 'devops-044',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Pod Spring Boot của bạn mất 90–120 giây mới Ready. Vì sao điều đó nguy hiểm trên Kubernetes chứ không chỉ "chậm", bạn đo xem thời gian chết ở khâu nào, và những cách giảm thời gian khởi động (AppCDS, tối ưu context, CRaC, native image) đáng dùng khi nào?',
+    a: `**Tóm tắt:** Khởi động của một Pod = **pull image + JVM + Spring context + warm-up**. Trên Kubernetes, 90 giây này làm HPA phản ứng chậm sau khi quá tải đã xảy ra, rollout kéo dài khiến hai version cùng chạy song song lâu hơn (và rollback cũng chậm y vậy), và khi node chết thì "cách duy nhất để phục vụ lại" cũng phải chờ đúng 90 giây đó. Trước khi tối ưu phải **đo theo từng phase**; sau đó chọn biện pháp theo đường cong hiệu quả/công sức: AppCDS và bớt việc khi khởi động cho hiệu quả tốt nhất trên mỗi công sức bỏ ra, CRaC và native image chỉ đáng khi khởi động chậm là bài toán cốt lõi của bạn.
+
+### 90 giây đó đi đâu
+~~~text
+Pull image 210 MB      ~6s (node có cache) / 20–40s (node mới tinh)
+JVM khởi động          ~0,5–1s
+Spring context         ~60s: autoconfig + quét package, tạo beans,
+                       entity scan JPA, xác thực + migrate DB, mở pool,
+                       đăng ký Kafka listener, warm cache
+JIT warm-up            p99 cao thêm 30–60s **sau** khi đã Ready
+~~~
+
+### Vì sao chậm là vấn đề **vận hành**, không phải vấn đề lịch sự
+- **HPA**: tín hiệu tải tăng → HPA quyết định thêm Pod → Pod Ready sau 90s. Trong 90s đó request dồn vào các Pod cũ: p99 sụp đúng lúc đông khách nhất. Service khởi động chậm phải để minReplicas cao hơn mức cần — tốn tiền.
+- **Rollback chậm**: phiên bản mới có bug, bạn "quay về bản cũ" nhưng bản cũ cũng cần 90s/Pod để dựng lại.
+- **Cứu sự cố**: node mất, Deployment tự tạo Pod bù ở node khác — phải pull lại từ đầu.
+- **startupProbe** phải đặt failureThreshold × period đủ phủ cả thời gian khởi động + pull trên node mới, nếu không Pod bị kill oan khi chưa kịp xong → CrashLoopBackOff vì lý do... quá chậm.
+
+### Đo: biết bean nào ăn thời gian
+Boot 3 có sẵn endpoint dựng từ **BufferingApplicationStartup**:
+
+~~~java
+SpringApplication app = new SpringApplication(PaymentApp.class);
+app.setApplicationStartup(new BufferingApplicationStartup(4096)); // đệm sự kiện startup
+app.run(args);
+// GET /actuator/startup → timeline từng bước: bean tạo mất bao lâu, flyway, kafka listener...
+~~~
+
+Cộng với timestamp từ {{kubectl get events}} (Scheduled → Pulling → Created → Started → Ready) để tách phần pull khỏi phần app.
+
+### Giảm theo từng phase
+1. **Pull**: image nhỏ (layered jar + JRE/distroless), registry trong cùng VPC/region, một số team dùng DaemonSet pre-pull image đang chạy lên mọi node.
+2. **Class loading — AppCDS (App Class Data Sharing)**: JVM đọc và **verify** hàng chục nghìn class mỗi lần khởi động; CDS lưu kết quả verify vào một **archive** tạo sẵn trong CI, lúc chạy chỉ việc map vào:
+
+~~~bash
+# Một lần trong CI (hoặc local): chạy app đến lúc exit, ghi lại những class đã nạp + đóng archive
+java -XX:ArchiveClassesAtExit=app-cds.jsa -jar payment.jar
+# Mọi lần khởi động sau dùng archive — thường bớt 10–40% thời gian JVM
+java -XX:SharedArchiveFile=app-cds.jsa -jar payment.jar
+~~~
+
+Archive phụ thuộc đúng jar đó → regenerate mỗi build, copy vào image. Rủi ro gần bằng 0.
+3. **Bớt việc khi khởi động**: {{spring.autoconfigure.exclude}} những autoconfig không dùng; thu hẹp package quét component/entity (quét cả gốc repo là thói quen phổ biến); chuyển Flyway sang **Job riêng chạy trước deploy** (Pod app không chờ migration); cache warm / Kafka listener defer chạy **sau** readiness chứ không chặn readiness vô hạn. lazy-initialization=true chỉ nên cân nhắc khi chấp nhận: bean lỗi cấu hình không chết lúc boot mà chết lúc user chạm tới.
+4. **CRaC (Coordinated Restore at Checkpoint)**: khởi động một lần đầy đủ, "chụp" process đang nóng thành checkpoint, mỗi Pod mới chỉ **restore** ~1–3 giây. JDK 21 + Spring Boot 3.2 có hỗ trợ. Đánh đổi: thao tác reopen socket/connection sau restore (pool DB, Kafka) phải được xử lý đúng — độ chín theo từng thư viện, hạ tầng build phức tạp hơn.
+5. **Native image (GraalVM)**: AOT biên dịch sẵn, khởi động ~50–200 ms, RAM thấp; nhưng closed-world (reflection phải khai báo), mất peak throughput của JIT, công cụ debug/profiling hạn chế, nhiều thư viện Java cần cấu hình riêng. Hợp với function/CLI/sidecar cần scale cực nhanh; không hợp với app 600 beans dùng JAXB ở mọi ngóc ngách.
+
+| Biện pháp | Giảm được | Giá phải trả |
+|---|---|---|
+| AppCDS | 10–40% | không đáng kể |
+| Bớt autoconfig/scan, migration ra Job | tới vài chục % | công rà soát cấu hình |
+| CRaC | tới mức giây | phức tạp toolchain, hook restore |
+| Native image | tới mức 0,1s | reflection, throughput, ràng buộc thư viện |
+
+### Lỗi hay gặp
+- startupProbe period × failureThreshold nhỏ hơn thời gian worst-case (node mới + pull) — chỉ đủ cho node cũ.
+- Cắt startup nhưng bỏ mặc warm-up: Ready nhanh mà p99 vẫn teo 1 phút đầu → cần gradual traffic (warmupDurationSecs của Argo Rollouts) hoặc minReplicas đủ.
+- lazy init làm lỗi cấu hình xuất hiện lúc 20h thay vì lúc deploy — fail-fast là tính năng.
+
+> Senior tip: đặt SLO cho chính thời gian khởi động, ví dụ "Pod mới Ready dưới 45s p95, kể cả trên node vừa sạch image", và **đo nó trong mỗi lần rollout** chứ không phải lúc chạy bench trên laptop. Sau khi rút xuống ~20s, giảm minReplicas các service HPA-bound theo — tiền tiết kiệm từ startup nhanh thường lớn hơn tiền tiết kiệm từ image nhỏ.`,
+    follow: [
+      'Phân biệt vai trò startupProbe / livenessProbe / readinessProbe khi app khởi động 2 phút; công thức chọn failureThreshold × period?',
+      'Chuyển Flyway sang Job trước deploy: thứ tự an toàn với K8s và pipeline ra sao, rủi ro gì?',
+      'Vì sao native image có thể CHẬM hơn JVM ở throughput đỉnh với app long-running?'
+    ],
+    tags: ['Startup time', 'AppCDS', 'CRaC', 'Native image', 'Spring Boot', 'Kubernetes']
+  },
+  {
+    id: 'devops-045',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Phiên bản mới của service thanh toán đổi trường amount từ number thành string, xoá trường fee cũ và thắt chặt validation. Trong rolling update, Pod cũ và mới cùng chạy; mobile app hai phiên bản vẫn gọi vào. Bạn "tiến hoá" API này thế nào, và CI cần bảo đảm điều gì để không phá consumer?',
+    a: `**Tóm tắt:** API đã publish là **hợp đồng** — bạn không kiểm soát lúc consumer nâng cấp, nên thay đổi phá vỡ (breaking change) không được "deploy một phát ăn ngay" mà phải đi theo **expand-contract ở tầng API**: mở rộng tương thích trước, chuyển dần consumer, chỉ thu gọn khi mức dùng field cũ về gần 0; thay đổi lớn thì thêm version chạy song song kèm lịch sunset. CI phải chặn breaking change **trước khi merge** bằng **contract testing** (Pact hoặc Spring Cloud Contract): provider chỉ được deploy khi thoả contract của mọi consumer đã đăng ký.
+
+### Bảng "được phép / cấm" — thuộc lòng khi phỏng vấn
+| Thay đổi | Loại | Cách an toàn |
+|---|---|---|
+| Thêm field optional vào response | an toàn | consumer là **tolerant reader**: bỏ qua field lạ |
+| Thêm endpoint / thêm giá trị enum | gần an toàn | client parse enum chặt sẽ crash — hỏi trước |
+| Nới lỏng validation (nhận nhiều hơn) | an toàn | — |
+| Đổi tên field, đổi kiểu dữ liệu | **breaking** | thêm field mới song song, giữ field cũ có ngày hết hạn |
+| Xoá field / xoá endpoint | **breaking** | deprecation + giám sát usage rồi mới xoá |
+| Thắt validation, đổi status code, đổi định dạng ngày | **breaking âm thầm** | migrate từng consumer hoặc ra version mới |
+
+amount number→string và xoá fee: cả hai đều breaking → phải đi qua ba pha.
+
+### Ba pha cho chính case này
+1. **Expand**: trả về **cả** {{amount}} (number, giữ nguyên hành vi) và {{amountDecimal}} (string, đúng 2 chữ số thập phân, không sai số float); validation vẫn chấp nhận input cũ. Rolling update an toàn vì cả Pod cũ lẫn Pod mới đều tôn trọng contract cũ.
+2. **Migrate + đo**: công bố changelog, gắn header {{Deprecation}}/{{Sunset}}; tag {{X-Client-Version}} vào metric để xem bao nhiêu % traffic còn đọc field cũ, phân theo phiên bản app.
+3. **Contract**: khi usage field cũ dưới ngưỡng (và lịch sunset đã qua), xoá field trong một release "khai tử" riêng, thông báo trước một chu kỳ.
+
+### Versioning: chọn gì
+| Cách | Ví dụ | Nhận xét |
+|---|---|---|
+| URI | {{/v1/payments}} | tường minh, dễ route/canary, dễ cache |
+| Header | {{Api-Version: 2}} | sạch URL nhưng khó debug, khó cache |
+| Media type | {{Accept: application/vnd.bank.v2+json}} | đúng lý thuyết REST, ít team dùng |
+Quyết định thực dụng: **thay đổi cộng dồn không cần bump version**; chỉ bump khi breaking; v1 và v2 phục vụ song song từ cùng một codebase (hai route trỏ vào cùng handler qua adapter) để không bảo trì hai service.
+
+### Contract testing — CI chứng minh điều gì
+- **Pact (consumer-driven)**: mỗi consumer (mobile, đối tác) viết test mô tả phần response họ dùng → xuất **pact file** lên Pact Broker; CI của provider **replay mọi pact** của mọi consumer vào API thật. Gate **can-i-deploy**: "version này có phá app 3.2 chưa nâng cấp không?" — có thì chặn promote.
+- **Spring Cloud Contract**: ngược chiều — provider định nghĩa contract trong repo mình, sinh ra (a) verification test cho provider, (b) **stub WireMock** để consumer test độc lập. Hợp khi bạn sở hữu cả hai phía.
+- Consumer bên ngoài (đối tác): giữ **sandbox + stub** phản chiếu contract hiện hành, kèm changelog có ngày hiệu lực.
+
+### Tolerant reader — nửa còn lại
+Khi app của bạn **tiêu thụ** API người khác: cấu hình Jackson **không** fail vì field lạ ({{FAIL_ON_UNKNOWN_PROPERTIES = false}}), bỏ qua field mới thay vì crash; giá trị enum lạ coi là unknown và cảnh báo, không ném exception. Đây là chiếc khiên phòng mọi vụ đối tác đổi API lúc 3h sáng.
+
+### Lỗi hay gặp
+- "Chỉ frontend của tôi dùng thôi mà" — quên consumer thật: cron nội bộ, đối tác, webhook, app cũ chưa ép nâng cấp.
+- Breaking change đi nhờ một commit refactor trong release 40 commit → đến incident mới lộ. Contract verify ở CI bắt ngay commit chứa nó.
+- Siết validation "để chặn dữ liệu bẩn" làm client cũ (vẫn gửi null như trước) chết hàng loạt.
+- gRPC/protobuf: **không tái sử dụng số field** đã xoá — trên wire không còn tên để mà thương lượng.
+
+> Senior tip: biến "còn bao nhiêu % traffic dùng API cũ" thành một panel cố định; xoá endpoint mà không có số liệu này giống như rút cầu khi chưa biết còn người bên kia. Và giữ quy tắc sắt: mọi PR thay đổi schema phải kèm kết quả pact-verify — đỏ là không merge; discussion với product không thay thế được máy kiểm.`,
+    follow: [
+      'Đối tác EU gọi API của bạn, họ không nâng cấp theo lịch của bạn: thiết kế chính sách hỗ trợ phiên bản thế nào?',
+      'Contract test phát hiện breaking change nhưng product muốn ship gấp — quy trình escape hatch của bạn ra sao?',
+      'API vẫn trả 200 nhưng ý nghĩa field đổi (fee luôn bằng 0): công cụ nào bắt được kiểu breaking "âm thầm" này?'
+    ],
+    tags: ['API design', 'Contract testing', 'Pact', 'Versioning', 'Rolling update']
+  },
+  {
+    id: 'devops-046',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Platform đề xuất Istio cho 30 microservice để có mTLS tự động, retry và dashboard traffic; team Java nói đã dùng Resilience4j và tự cấu hình HTTP client. Service mesh thực chất làm gì, chạy ở đâu, giá phải trả ra sao — và bạn quyết định thế nào?',
+    a: `**Tóm tắt:** Service mesh là **tầng hạ tầng xử lý traffic đông–tây** (service gọi nhau): một proxy (Envoy) chạy cạnh mỗi Pod **chặn mọi request đi và đến**, nên nền tảng bật được encryption mTLS tự động + identity per-service, áp policy L7 (timeout, retry, traffic split, fault injection) và thu metric theo cặp src→dst **mà không đổi một dòng code**. Resilience4j làm việc tương tự nhưng **bên trong JVM** — biết nghiệp vụ, rẻ, không cần hạ tầng. Mesh thắng khi bài toán là của **nền tảng** (hợp nhất 30 service đa ngôn ngữ, compliance mã hoá lưu lượng, audit identity); thua khi bài toán chỉ là retry/fallback có logic nghiệp vụ.
+
+### Nó hoạt động thế nào (đủ để nói chuyện với dân platform)
+- **Sidecar**: init container cấu hình iptables trong Pod để mọi gói vào/ra đi qua Envoy; app chỉ việc gọi {{http://order-svc:8080}}, Envoy lo phần còn lại.
+- **mTLS**: mỗi workload có identity từ ServiceAccount (chuẩn SPIFFE), mesh tự ký/xoay chứng chỉ, mã hoá **từng chặng** trong cluster → thoả "encrypt in transit + biết chính xác dịch vụ nào gọi dịch vụ nào" mà không ai viết dòng code TLS nào.
+- **Policy dạng CRD**: VirtualService (route, retry, timeout, chia %), DestinationRule (outlier ejection, connection pool), AuthorizationPolicy (cho ai gọi ai) — khai báo trong Git, đồng bộ bằng GitOps, platform áp thống nhất.
+- **Telemetry**: RED metric + trace theo cặp src/dst và status code hoàn toàn tự động.
+
+### Mesh vs Resilience4j — không phải either/or
+| | Mesh (Istio/Envoy) | Thư viện trong app (Resilience4j) |
+|---|---|---|
+| Chỗ chạy | process riêng cạnh Pod | cùng JVM |
+| Cấu hình | CRD, platform giữ, đổi không cần build lại app | code/yml, dev giữ |
+| Biết gì | HTTP status, header, latency | **ngữ cảnh**: method nào idempotent, fallback trả giá trị cache, suy giảm chức năng thế nào |
+| Retry POST không idempotent | **nguy hiểm** — mesh không biết nghiệp vụ | dev kiểm soát |
+| Overhead | thêm một proxy mỗi hop | gần 0 |
+| Fallback theo nghiệp vụ | không làm được | làm được |
+Kết luận hay dùng: **mesh cho security + traffic shifting + telemetry, thư viện trong app cho fallback/timeout theo nghiệp vụ**; retry chỉ bật ở **một** phía.
+
+### Giá phải trả thật sự
+- Latency thêm mỗi hop (dưới 1 ms tới vài ms) và CPU/memory cho Envoy mỗi Pod — service thanh toán có ngân sách p99 eo hẹp phải **đo trước khi quyết**.
+- Độ phức tạp vận hành: thêm một control plane để upgrade, thêm một lớp để debug — **503 có thể sinh ra từ Envoy chứ không phải app**; on-call phải học đọc log proxy.
+- Connection chồng connection: pool HTTP/JDBC của app + pool upstream của Envoy → giới hạn thật nằm ở đâu phải tính lại.
+- Inject sidecar = mọi Pod phải restart; namespace chưa inject gọi sang namespace đã STRICT mTLS là chết request.
+
+### Ambient và lựa chọn khác
+Istio **ambient mode**: node-agent (ztunnel) lo mTLS/L4 cho mọi Pod, proxy L7 (waypoint) chỉ bật ở chỗ cần — giảm overhead sidecar nhưng còn mới; cân nhắc độ chín trước khi cam kết cho production thanh toán. Alternatives: Linkerd nhẹ hơn, tập trung mTLS + telemetry; hoặc **không mesh**: cert-manager + TLS ở ingress, Spring Cloud Gateway — vẫn ổn nếu 30 service đều Java và team platform nhỏ.
+
+### Đường vào an toàn (nếu quyết làm)
+1. Pilot 1–2 namespace không cốt lõi: bật mTLS ở chế độ **PERMISSIVE** (vẫn nhận clear text) → audit xem ai còn gọi thô → mới chuyển **STRICT**.
+2. Bật telemetry, so p99 trước/sau tại cùng mức tải; test fault injection trên staging.
+3. Làm một canary bằng VirtualService (90/10 theo header) — đây thường là tính năng "bán" mesh tốt nhất cho chính team dev.
+4. Viết runbook: "Pod không lên được vì sidecar thì xử lý thế nào".
+
+### Lỗi hay gặp
+- Bật STRICT mTLS một phát → CronJob không sidecar, hệ monitoring ngoài cluster, Pod đang di chuyển giữa hai node đồng loạt lỗi.
+- Mesh retry tự động trên API ghi → ghi nợ hai lần; hoặc dev thêm Resilience4j retry **chồng** mesh retry → bùng nổ 3×3 request khi đối tác chậm.
+- App bind port vượt mặt mesh (hostNetwork, gọi thẳng IP + port gốc) → tưởng đã mã hoá mà chưa.
+
+> Senior tip: đừng quyết mesh bằng câu hỏi "tool nào mạnh" mà bằng hai câu của auditor: **(1) ta có cần chứng minh mọi traffic giữa các service được mã hoá và có identity không? (2) ta có đủ người vận hành thêm một control plane không?** Ngân hàng 30 service thường trả lời "có" cho (1) — mesh là đường ngắn; startup 5 người thì "không" cho (2) — thư viện + TLS ở ingress là đúng.`,
+    follow: [
+      'VirtualService retry 2 lần + Resilience4j retry 2 lần cho cùng một call: hệ quả và cách đặt quy tắc "ai được retry"?',
+      'Chứng minh với auditor rằng service A gọi B có identity — mesh cho bạn gì mà JWT tự chế khó có được?',
+      'mTLS STRICT làm CronJob chết: phân tích nguyên nhân và thiết kế lại rollout an toàn.'
+    ],
+    tags: ['Service mesh', 'Istio', 'mTLS', 'Resilience4j', 'Envoy']
+  },
+  {
+    id: 'devops-047',
+    topic: 'devops',
+    level: 'lead',
+    q: 'Cluster production đang chậm phiên bản Kubernetes 3 bậc, EKS chỉ vá CVE cho 3 bản mới nhất; kỳ trước team "nhảy một phát" làm vỡ ingress và một nửa PDB không apply. Là tech lead, bạn biến việc upgrade thành một chương trình đều đặn hằng năm thay vì dự án 3 năm một lần như thế nào?',
+    a: `**Tóm tắt:** Version delay là **nợ**: mỗi bản Kubernetes gỡ thêm API deprecated, kéo theo ma trận addon (ingress, Argo CD, cert-manager, CSI) ngày càng khó thoả mãn, và CVE không còn được vá. Chương trình nâng cấp đúng là **release train**: một minor mỗi lần, lịch cố định; công cụ quét API deprecated trên **chính manifest trong Git** từ nhiều tháng trước; thứ tự bất biến control plane → addons → node group; diễn tập trên staging **sao chép prod**; và app teams nhận bulletin thay đổi sớm thay vì nhận hậu quả muộn.
+
+### Vì sao "chậm 3 bậc" đắt gấp nhiều lần "chậm 1 bậc"
+- EKS chỉ patch CVE cho 3 phiên bản gần nhất → chậm 3 bậc là chạy bản **hết hỗ trợ bảo mật**.
+- API bị **gỡ** theo mốc, YAML của bạn không tự đổi: PodDisruptionBudget {{policy/v1beta1}} và CronJob {{batch/v1beta1}} gỡ ở 1.25; HPA {{autoscaling/v2beta1}} gỡ ở 1.26; PodSecurityPolicy bị xoá hẳn ở 1.25 (thay bằng Pod Security Admission hoặc OPA/Gatekeeper). Manifest cũ lên 1.26+: {{kubectl apply}} fail, Argo CD báo OutOfSync, tệ nhất là PDB **âm thầm không tồn tại** → node drain giết quá số Pod cho phép.
+- Nhảy 3 bậc cùng lúc = gộp 3 lần breaking changes + 3 vòng upgrade addon → khi sự cố xảy ra không biết thủ phạm nào; mà control plane thì **không hạ cấp được**.
+
+### Bốn chân của chương trình
+1. **Nhịp cố định**: mục tiêu "luôn chậm bản mới nhất của EKS không quá 1–2 minor"; mỗi quý một upgrade window, đối xử như release có Go/No-Go và lịch freeze (tránh trước chiến dịch bán hàng, lễ Tết).
+2. **Tự động phát hiện**: chạy {{kubent}} (hoặc {{pluto}}) trên repo GitOps + helm charts mỗi tuần → bot mở PR liệt kê apiVersion sắp bị gỡ **từ nhiều tháng trước**; chuyển PDB sang {{policy/v1}} là một PR bình thường, không cần chờ tới ngày upgrade.
+3. **Thứ tự nâng cấp**: control plane từng minor một (EKS không cho nhảy cách bậc) → addons (CRD trước controller) → node group **nối tiếp**, drain có PDB bảo vệ. Ràng buộc version: kubelet **không được mới hơn** apiserver; được phép chậm vài minor nhưng mục tiêu là đuổi kịp ngay.
+4. **Diễn tập thật**: staging dựng bằng **đúng** repo GitOps/manifest của prod; chạy suite integration/e2e + một phiên "phá Pod xem PDB/HPA có sống". Staging không phải bản sao prod thì diễn tập chỉ kiểm tra trí tưởng tượng.
+
+### Phần team Java phải tự làm (platform không làm thay)
+- Quét manifest của service mình theo PR của kubent: apiVersion của PDB/HPA/CronJob, SecurityContext sau khi PSP mất.
+- Node image mới thường chuyển **cgroup v2**: JVM đời cũ đọc giới hạn cgroup v2 sai → xác minh JDK đã hỗ trợ (bản 17/21 đều ổn, JDK 8/11 phải đủ mới), test lại {{MaxRAMPercentage}} và số GC thread sau khi đổi node image.
+- Pin image theo tag bất biến/digest — nâng cấp khiến node kéo lại image, tag {{latest}} sẽ lộ đủ thứ.
+- Nâng client libraries tương tác cluster (K8s Java client, version helm chart của service).
+
+### Rollback và dây an toàn
+- Control plane không rollback được → chiến lược là **giảm blast radius**: node group "canary" chạy workload không cốt lõi nâng trước, giữ một pool version cũ vài ngày làm xuồng cứu sinh; GitOps repo cho phép revert manifest addon về commit cũ.
+- Trước window: snapshot PV (đặc biệt DB chạy trên cluster), etcd backup nếu self-managed — và **test restore thật**, backup chưa restore thử là backup chưa tồn tại.
+- Runbook các sự cố chữ ký riêng: ingress-nginx upgrade làm hỏng webhook cấu hình, CSI driver lệch version, CoreDNS.
+
+### Đo sức khoẻ chương trình
+KPI: số minor đang chậm, **thời gian trung bình vá một CVE của runtime**, tổng effort mỗi upgrade (phải giảm dần qua các chu kỳ), số incident trong 30 ngày sau mỗi upgrade. Upgrade là một product nội bộ — có backlog, có retrospective.
+
+> Senior tip: khác biệt giữa team "nâng cấp như địa ngục" và team "nâng cấp như routine" chỉ là hai dòng kỷ luật: (1) kubent chạy **định kỳ** chứ không chạy lúc hoảng, (2) không bao giờ nhảy nhiều hơn một minor kể cả khi "tiện thể". Sau 3 chu kỳ đúng lịch, chi phí một upgrade giảm còn bằng một buổi release bình thường — và bạn đủ tư thế trả lời audit về CVE trên runtime.`,
+    follow: [
+      'Sau khi nâng 1.25, PDB của 10 service âm thầm biến mất: phát hiện bằng gì, và lần node drain tới sẽ hậu quả ra sao?',
+      'Node group canary: tiêu chí chọn workload "hy sinh" và điều kiện nào thì cho kéo toàn bộ cluster?',
+      'Team bạn vẫn chạy bản hết support vì "bận": bạn trình bày risk với management thế nào để lấy lịch upgrade?'
+    ],
+    tags: ['Kubernetes upgrade', 'EKS', 'deprecation', 'PDB', 'runbook', 'tech lead']
+  },
+  {
+    id: 'devops-048',
+    topic: 'devops',
+    level: 'lead',
+    q: 'Chi phí hạ tầng cho 30 service tăng gấp ba sau một năm trong khi CPU sử dụng trung bình rất thấp; CFO muốn giảm 30% nhưng không đổi SLA của service thanh toán. Bạn dẫn dắt chương trình tối ưu chi phí bền vững thế nào: đo, right-size requests, VPA, spot, autoscaler và bắt các team chịu trách nhiệm con số?',
+    a: `**Tóm tắt:** Node được **tính kích thước theo Σ requests**, không phải bằng usage — nên khoản lãng phí lớn nhất là các Java service khai request gấp 2–3 lần dùng thật ("cho an toàn"). Chương trình bền vững: đo theo namespace (OpenCost) → right-size request theo **p95 usage + buffer** → tăng bin packing (Karpenter/cluster autoscaler) và cắt phần "ngủ cũng tốn tiền" (minReplicas, dev/test chạy đêm) → spot ở nơi an toàn → cắt log/metric/lưu trữ/network thừa → và **gắn hoá đơn về từng team** bằng quota + showback. Con số trình CFO không phải tổng chi phí tuyệt đối mà là **cost per 1.000 giao dịch**.
+
+### Vì sao request = tiền
+Scheduler đặt Pod theo **request**: bạn xin 4Gi là node dành 4Gi cho bạn kể cả khi RSS thực dùng 1Gi; instance vẫn chạy và vẫn tính tiền. Hai chỗ rò: (a) từng service overprovision, (b) cả cluster phình vì không ai gom Pod rỗng vào một node. **limit** thì ngược lại, không ảnh hưởng lịch Pod — chỉ ảnh hưởng lúc bị siết.
+
+### Bước 0: đo trước khi cắt
+- OpenCost/Kubecost: allocation = request, có điều chỉnh theo usage; cắt theo namespace/environment/service. Mức phổ biến: **dev + test chiếm 30–40%** hoá đơn; top 10 service overprovision có thể "nuôi" được 2 service khác.
+- Đường cơ sở: cost/1.000 giao dịch theo tháng. Không có baseline thì mọi con số "-x%" đều là kể chuyện.
+
+### Right-size cho Java — không cắt vào đau
+Lấy số liệu 2–4 tuần: {{container_memory_working_set_bytes}} (bộ nhớ thường trú thật của container: heap + metaspace + thread stack + direct buffer) và CPU usage kèm **CFS throttling** ({{container_cpu_cfs_throttled_periods_total}}):
+- **Memory request ≈ p95 usage × 1.2**: memory không nén được; hạ quá → node-pressure eviction hoặc OOMKilled đúng giờ cao điểm. Service thanh toán cân nhắc request = limit (QoS Guaranteed).
+- **CPU request có thể dưới usage** với burst (Burstable), nhưng service nhạy p99 thì giữ request = limit để không bị throttle — quyết định bằng metric throttling, không bằng cảm giác.
+- VPA để chế độ **recommend** làm báo cáo soát định kỳ; **không** bật auto-apply cho app JVM: limit đổi làm {{MaxRAMPercentage}} đổi theo mỗi lần Pod tạo lại (heap hành vi không ổn định), và VPA restart Pod xung đột với HPA/rollout.
+- Sau mỗi đợt đổi requests: theo dõi SLO + OOM/throttle **2 tuần** rồi mới đi đợt kế.
+
+### Cắt tầng "đang ngủ cũng tốn tiền"
+- **minReplicas**: 30 service × min 3 = sàn chi phí cố định khổng lồ. Hạ min ở service startup nhanh (bài tối ưu khởi động: ready 15s thì HPA đuổi kịp burst, không cần min 3).
+- **Karpenter/cluster autoscaler**: mua instance đúng kích thước, gom Pod cho chặt, **consolidate** node rỗng — khi drain node phải tôn trọng PodDisruptionBudget.
+- **dev/test**: cron scale-to-zero ngoài giờ làm việc, môi trường per-PR có TTL tự huỷ; dev không cần HA → chạy spot toàn bộ.
+- **Spot cho stateless**: pool đa instance type/đa AZ, PDB + HPA floor để mất 1/3 node vẫn còn đủ năng lực; **không** spot cho batch 40 phút chưa có checkpoint; không "cả rổ" Pod thanh toán trên spot cùng lúc.
+
+### Những hoá đơn ẩn
+Log retention 90d→14d (archive nếu bắt buộc), trace sampling 100%→10% cho service ồn, dashboard không ai mở; storage gp2→gp3 (rẻ hơn, đổi không downtime); EBS volume "orphan" sau migration; snapshot để lại cả năm; ECR không lifecycle policy; **NAT gateway** — traffic đi ra S3/khác AZ của Java app bị tính tiền cả hai chiều: dùng gateway endpoint cho S3, đặt Pod cùng AZ với DB/Redis, cho upload lớn đi presigned URL.
+
+### Làm team "sở hữu" con số — mấu chốt bền vững
+- ResourceQuota/LimitRange theo namespace = **ngân sách cứng**: team muốn thêm phải nói chuyện với quota, không phải với node.
+- Showback: dashboard cost per service cho từng team; đưa chi phí vào review kiến trúc — khi ai đó chọn "3 replica min cho chắc", hỏi luôn ngân sách đã duyệt chưa.
+- Nhịp đều: mỗi tháng right-size top-10-waste + báo cáo cost/1.000 transactions. Một cú "-30%" kiểu dự án rồi tan băng thường quay lại đỉnh cũ sau 2 quý, kèm một sự cố do cắt tay.
+
+### Lỗi hay gặp
+- Cắt request không nhìn throttling/eviction → incident thanh toán chiều thứ sáu; cost program mất uy tín vĩnh viễn.
+- VPA auto + HPA cùng quản lý một tài nguyên → hai vòng điều khiển đánh nhau.
+- Đếm "số Pod" thay vì "số reservation": 40 Pod Burstable request nhỏ thường rẻ hơn 8 Pod limit-khủng.
+- Cắt monitoring "để tiết kiệm": hoá đơn postmortem của một vụ không phát hiện sớm đắt hơn cả năm tiền Grafana.
+
+> Senior tip: hai đòn ROI cao nhất gần như mọi nơi: **giảm minReplicas + right-size request** (một service trung bình giấu 3–10Gi reservation chết) và **tắt dev/test ban đêm/cuối tuần**. Trình CFO bằng đường cost/1.000 transactions — nó chứng minh bạn giảm chi phí đơn vị, không chỉ hưởng lợi khi mùa này traffic thấp.`,
+    follow: [
+      'CPU request dưới mức usage trung bình: khi nào an toàn, khi nào giết p99 — bạn quyết bằng metric nào?',
+      'Mỗi namespace một team: thiết kế quota + quy trình "xin nâng quota" để không thành chuyện chính trị?',
+      'Service thanh toán cần 100% on-demand nhưng 30% chi phí là batch: bạn tách chi phí thế nào để không đánh đổi SLA?'
+    ],
+    tags: ['Cost optimization', 'FinOps', 'right-sizing', 'Karpenter', 'spot', 'ResourceQuota']
   }
 );
