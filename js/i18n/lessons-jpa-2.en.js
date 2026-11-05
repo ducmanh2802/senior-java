@@ -1,0 +1,304 @@
+/*
+ * English translation of js/data/lessons-jpa.js — task T691. Format: js/core/i18n.js (content overlay).
+ * ids: lesson-jpa-006 lesson-jpa-007
+ */
+App.i18n.content({
+  'lesson-jpa-006': {
+    title: 'Owning side, cascade and orphanRemoval in a bidirectional relationship',
+    goals: [
+      'Tell the owning side and the inverse side apart, and know which side decides the foreign key value at flush time',
+      'Write addLine and removeLine helpers that keep both sides of the relationship in step',
+      'Use cascade PERSIST, cascade REMOVE and orphanRemoval correctly; recognise REMOVE on a ManyToOne as a data-loss bug',
+      'State the real cost of orphanRemoval: Hibernate has to load the whole collection in order to compare it',
+    ],
+    body: `### Quick idea: a bidirectional relationship needs one side in charge
+Order and OrderLine point at each other with two fields:
+- the parent side: {{@OneToMany(mappedBy = "order") List<OrderLine> lines}} — the list of lines of the order;
+- the child side: {{@ManyToOne @JoinColumn(name = "order_id") Order order}} — the field pointing back to the order.
+
+{{mappedBy}} tells Hibernate: "this side is for reading only, the real value comes from the field named order in the other class". The side that carries {{@JoinColumn}} (OrderLine) is called the **owning side** — the owner of the relationship, because the foreign key column sits on its table. The {{mappedBy}} side is the **inverse side** (the secondary side, the reverse side).
+
+The reason lives in the database: a link has only ONE place to be stored, which is the column {{order_line.order_id}}. At flush time Hibernate reads the pointer on the **owning side** only, to decide what to write down; changing the collection on the inverse side produces no SQL statement by itself.
+
+### The classic trap: setting only the inverse side still leaves the FK null
+~~~java
+order.getLines().add(line);   // inverse side: changes only the collection in RAM -> NO UPDATE
+line.setOrder(order);         // owning side: this is what Hibernate looks at when it flushes
+~~~
+Hibernate does **not** call {{line.setOrder(order)}} on your behalf. Adding to the collection while forgetting the owning side still INSERTs the line row (thanks to cascade PERSIST) but {{order_id}} is null — an "orphan" line that no query of yours can reach. This bug slips past code review because a test with one small order still passes; it only shows up when something has to SELECT "the lines of order 42".
+
+A helper on the aggregate root is mandatory as soon as you map a bidirectional relationship:
+~~~java
+class Order {
+    @OneToMany(mappedBy = "order", cascade = CascadeType.ALL, orphanRemoval = true)
+    private final List<OrderLine> lines = new ArrayList<>();
+
+    public void addLine(OrderLine l) {
+        lines.add(l);
+        l.setOrder(this);       // always change BOTH sides in one call
+    }
+    public void removeLine(OrderLine l) {
+        lines.remove(l);
+        l.setOrder(null);       // so orphanRemoval can see that it "has no owner"
+    }
+}
+~~~
+
+> If you want the aggregate to stay immutable, do not hand out the original collection from the getter. Return {{List.copyOf(lines)}} or a wrapped collection such as {{Collections.unmodifiableList}}, and force every change through addLine/removeLine.
+
+### Cascade: which operations get "replicated" down to the children
+{{em.persist(order)}} writes only the orders table; if cascade is not switched on, Hibernate complains "entity not persistent" when it meets a line that is still in the new state. {{cascade = PERSIST}} tells it to persist the lines inside the collection too.
+
+~~~seq
+title: Saving an order with two line items
+actors: App | Hibernate | DB
+App -> Hibernate: persist order, addLine x2
+Hibernate -> Hibernate: cascade PERSIST to each line
+Hibernate -> DB: INSERT orders(id)=1
+Hibernate -> DB: INSERT order_line 10, sku A
+Hibernate -> DB: UPDATE order_line 10 set FK=1
+DB --> Hibernate: ok
+Hibernate --> App: commit done
+~~~
+
+The SQL order above is the default: INSERT the parent, INSERT the children, then write the FK taken from the owning side. Knowing this order is what lets you read a SQL log when you suspect a missing link.
+
+| Cascade | Meaning | When to use it |
+|---|---|---|
+| {{PERSIST}} | saving the parent saves the children | the {{@OneToMany}} of an aggregate, lines always travel with the order |
+| {{MERGE}} | merging the parent merges the children | used together with PERSIST when a DTO comes in from the web layer |
+| {{REMOVE}} | deleting the parent deletes the children | only when the child has no independent existence |
+| {{ALL}} | everything at once | avoid it, it is far too broad |
+
+**{{cascade = REMOVE}} on a {{@ManyToOne}} is the classic data-loss bug.** {{@ManyToOne Customer customer}} on Order simply means "this order belongs to that customer", but Customer is shared data: with cascade REMOVE, {{em.remove(order)}} deletes **the customer as well**, while that customer still has other orders. The rule: cascade REMOVE and orphanRemoval are reserved for "the parent owns the child" relationships (Order -> OrderLine). For a link pointing at shared data (Customer, Product, Catalog) you never cascade REMOVE.
+
+On a {{@ManyToMany}} (Student–Course), "unregister" only means removing **the row in the join table**, not deleting the Course; to get that, call {{student.getCourses().clear()}} on the owning side. {{orphanRemoval}} does not exist on {{@ManyToMany}}.
+
+### Where orphanRemoval differs from cascade REMOVE
+- {{orphanRemoval = true}} on a {{@OneToMany}}: when a line is **taken out of the collection** and nothing points at it any more, Hibernate DELETEs its row. This is how you "remove a line from an order", not how you "delete an order".
+- {{cascade = REMOVE}}: when you call {{em.remove(order)}}, every line is deleted along with it.
+
+The difference is **who starts it**: taking the element out of the collection (orphan) versus deleting the parent entity (cascade). In practice the two usually go together — REMOVE cleans up when an order is deleted, orphanRemoval cleans up when an order is edited.
+
+### Bugs you actually meet in production
+- **{{lines.clear()}} deletes no rows** when {{orphanRemoval}} is missing: Hibernate only drops the references in RAM, and the child rows stay in the database holding the old FK.
+- **Deleting many children at once is a form of N+1**: to work out which line became an orphan, Hibernate has to **load the whole collection** and compare it with the snapshot taken when it was loaded. Removing 100,000 lines this way means bringing 100,000 rows into RAM and comparing them one by one. If you want it fast, use a bulk {{DELETE FROM order_line WHERE order_id = 1}}, but that bypasses the persistence context (managed entities keep their old values) and you must delete the children **before** the parent when the FK demands it.
+- **{{equals}}/{{hashCode}} built on business fields**: when the collection is a {{Set}}, changing the sku of one line makes it "no longer that element", so {{remove}} returns false and the row is never deleted. The safe convention: compare by id, or use a {{List}} when the order really matters.
+- **{{cascade = ALL}} on a bidirectional relationship** can produce an endless merge loop when entity A and entity B cascade into each other.
+- **Forgetting the owning side when you move a child**: the child sits in the collection of the new parent while the FK still points at the old one, because you edited the inverse side.
+
+### Interview relevance
+The question you get asked: "Why is the foreign key still null after I added the line to the collection?" Answer: the {{mappedBy}} side is inverse, and Hibernate reads only the owning side at flush time, so you need a helper that sets both sides. Then keep going: cascade PERSIST is what saves the children, orphanRemoval deletes them when they leave the collection, cascade REMOVE cleans up when the parent is deleted. The big plus is explaining why REMOVE on {{@ManyToOne}} is dangerous and why orphanRemoval drags in the cost of loading the whole collection.`,
+    exercises: [
+      {
+        title: 'Flush produces SQL from the owning side and from cascade',
+        prompt: `Simulate how Hibernate produces SQL from the **owning side**. {{Order}} (with {{lines}}) and {{Line}} (with the field {{order}}, the owning side) are given. Implement {{Graph}}:
+- {{persist(order)}}: register the order with the session; calling it again is harmless.
+- {{addLine(order, line)}}: a two-way helper — add the line to {{order.lines}} (if it is not there yet) AND assign {{line.order = order}}.
+- {{removeLine(order, line)}}: take the line out of the collection and set {{line.order = null}} (simulating {{orphanRemoval = true}}).
+- {{remove(order)}}: mark the order as deleted (simulating {{cascade = REMOVE}} propagating down to the lines).
+- {{flush()}}: return the list of SQL statements in the exact order they are produced; after a flush the state counts as synchronised, so flushing again repeats no statement. The rules:
+1. an order that is managed and not deleted: if it was never INSERTed then {{INSERT INTO orders(id) VALUES(<id>)}}.
+2. following the order of {{order.lines}}: a line that was never INSERTed then {{INSERT INTO order_line(id,sku) VALUES(<id>,'<sku>')}} — the line is saved even when {{line.order}} does not point at the parent, because that is cascade PERSIST.
+3. the foreign key comes from the owning side: only when {{line.order == order}}, and only when this {{order_id}} value differs from the value last written for that line, then {{UPDATE order_line SET order_id=<oid> WHERE id=<lid>}}.
+4. a line that already has a row but was taken out of the collection ({{removeLine}}) then {{DELETE FROM order_line WHERE id=<lid>}}, exactly once.
+5. an order that was {{remove}}d: for each line still pointing at it that already has a row, {{DELETE FROM order_line WHERE id=<lid>}} (in collection order), then {{DELETE FROM orders WHERE id=<oid>}}; an entity that was never INSERTed produces no DELETE at all.`,
+        hints: [
+          'Keep the three things already written to the database: the set of order ids that were INSERTed, the set of line ids that were INSERTed, and the map lineId → the order_id that was written. Flush produces SQL only when one of them changes.',
+          'In addLine, do not forget to assign line.order = order; the test "inverse-only add writes no FK" checks exactly that.',
+          'The FK is considered only when line.order is the order currently being visited. A line that has changed parents is left for the new parent to emit its UPDATE.',
+          'Orphans (a line passed to removeLine that had been INSERTed) are best handled after the order loop, and remember to drop them from the INSERTed set so a later flush does not repeat the DELETE.',
+          'An order that is removed but was never INSERTed must not produce a DELETE: there is no row to delete.',
+        ],
+        explain: `Three separate mechanisms, and this exercise forces you to point at the one that produced each statement:
+- **Cascade PERSIST** decides the child INSERTs: every line inside the collection of a managed order gets saved, no matter where {{line.order}} points.
+- **The owning side** decides the FK value: the UPDATE of {{order_id}} is produced only when {{line.order}} is the order being visited. So a line whose owning side was "forgotten" ends up with a row and a null FK — precisely the trap in real life.
+- **orphanRemoval** is a DELETE when an element leaves the collection, whereas **cascade REMOVE** is a DELETE when the parent entity is deleted.
+
+Frequent mistakes:
+1. Comparing the FK by the collection instead of by {{line.order}}: when a line moves to another parent, the old {{p.lines}} still contains it, so you overwrite the FK back to the old parent. Hibernate always reads {{line.order}}.
+2. Forgetting to track "the value already written": every flush emits the same UPDATE again, as though Hibernate did no dirty checking on the association.
+3. Deleting the parent before the children: the database refuses, because the FK still references them.
+4. Producing a DELETE for an entity that was never INSERTed (an order created and cancelled immediately), when in reality there is no row to delete.
+
+In real Hibernate, cascade and orphanRemoval work on managed entities, so to delete a lot of children you still have to load the collection — which is exactly why bulk DML is faster but leaves stale entities behind in the persistence context and in the L2 region.`,
+      },
+    ],
+    check: [
+      {
+        q: 'You call {{order.getLines().add(line)}} without calling {{line.setOrder(order)}}, with {{cascade = PERSIST}}. After flush:',
+        options: [
+          'Hibernate sets the owning side for you',
+          'The line is INSERTed but the order_id column is still null',
+          'No SQL statement at all for the order_line table',
+          'Hibernate throws an error at persist time',
+        ],
+        explain: 'The collection is the inverse side, so adding to it alone is not enough for Hibernate to know the FK. Cascade PERSIST still saves the line (it sits inside the graph being cascaded), so the line becomes an orphan row with order_id null. Doing it right means setting both sides inside the helper. Without cascade the line is in the new state and persist(order) is what reports "entity not persistent" — that is a different case.',
+      },
+      {
+        q: 'What does {{@ManyToOne(cascade = CascadeType.REMOVE)}} on the field {{Order.customer}} cause when you call {{em.remove(order)}}?',
+        options: [
+          'It deletes only the row in the orders table',
+          'It deletes the Customer too, even though the customer still has other orders',
+          'It breaks the link and keeps the Customer',
+          'It throws an error because ManyToOne does not support cascade',
+        ],
+        explain: 'Customer is shared data. Letting REMOVE cascade onto it means that cancelling one order destroys a customer (and that customer\'s other orders become dangling references, or are blocked by the FK). This is the classic data-loss bug. ManyToOne still accepts cascade, so nothing complains at declaration time; there is no "break the link only" mode — Hibernate calls remove on the very entity the cascade points to.',
+      },
+      {
+        q: 'What is the difference between orphanRemoval and cascade REMOVE?',
+        options: [
+          'orphanRemoval fires when the child entity is taken out of the collection; REMOVE fires when the parent entity is removed',
+          'orphanRemoval is only for ManyToOne',
+          'They are the same thing with two names',
+          'REMOVE deletes through the collection while orphanRemoval deletes by primary key',
+        ],
+        explain: 'orphanRemoval triggers when the link is cut (the element leaves the collection, the owning side is set to null) — "a child with no owner dies". {{cascade = REMOVE}} triggers when you delete the parent. orphanRemoval cannot be declared on {{@ManyToMany}}, and it does not apply to ManyToOne in the sense of ownership in the reverse direction.',
+      },
+      {
+        q: 'Why can {{orphanRemoval}} be slow on a large table?',
+        options: [
+          'Because it runs one big DELETE inside the database',
+          'Because at every flush Hibernate has to load the WHOLE collection and compare it with the snapshot to find what was removed',
+          'Because it forces the second-level cache on',
+          'Because it requires @Version on the child entity',
+        ],
+        explain: 'Hibernate must know which elements disappeared, so it keeps a snapshot of the collection from load time and needs the live collection in RAM to compare against. Removing tens of thousands of rows this way brings the whole collection onto the heap. A bulk {{DELETE FROM order_line WHERE order_id = ?}} is faster but bypasses the persistence context and the cache, and you have to delete the children before the parent.',
+      },
+    ],
+  },
+  'lesson-jpa-007': {
+    title: 'Second-level cache and query cache',
+    goals: [
+      'Tell the three memory tiers apart: persistence context (L1), second-level cache (L2) and query cache',
+      'Explain why L2 stores state rather than objects, and what that means for identity across sessions',
+      'Say how a region is invalidated on writes, and why a bulk update or a second node makes the app serve stale data',
+      'Pick read-only or read-write according to the kind of data, and know when a service-layer cache is better than L2',
+    ],
+    body: `### Quick idea: the three memory tiers of Hibernate
+A product catalogue is read a thousand times a minute. Running a SELECT against the database every single time is waste, and the database is usually the most expensive resource in the system. There are three places to keep what has already been read:
+1. **Persistence context (L1)**: belongs to one session, that is one transaction. Always on, nothing to configure, and it dies when the transaction ends. This is what gives you the identity map and dirty checking (see the Persistence context and dirty checking lesson).
+2. **Second-level cache (L2)**: belongs to the {{EntityManagerFactory}} (Hibernate calls it the {{SessionFactory}}) and is shared by the **whole application**; it survives transactions and requests. You need a provider that supports Hibernate 6 ({{Ehcache 3}} through {{hibernate-jcache}}, {{Infinispan}} or Hazelcast), then declare which entities are cached.
+3. **Query cache**: caches query results, but in practice it only stores the **list of ids** for a given SQL statement plus its parameters, so every hit still has to fetch the entities from L2 or from the database.
+
+The minimum setup: add a cache provider dependency (for example {{hibernate-jcache}} for Hibernate 6), switch on {{hibernate.cache.use_second_level_cache=true}} (through {{spring.jpa.properties.}}), choose a region factory, then put {{@Cacheable}} on the entity and {{@Cache(usage = ...)}} to pick the strategy. The entry ceiling and the TTL are set in the provider configuration ({{ehcache.xml}} or equivalent). Add {{hibernate.cache.use_query_cache=true}} only when you genuinely need the query cache.
+
+### L2 stores "state", not objects
+This is the point most often answered wrong. An L2 region holds **dehydrated state**: the column values of the entity, not a reference to a live Java instance.
+
+~~~java
+@Entity
+@Cacheable
+@Cache(usage = CacheConcurrencyStrategy.READ_WRITE)
+class Category {
+    @Id Long id;
+    String name;
+    @Version Integer version;   // still keep @Version for optimistic locking; L2 does not replace it
+}
+~~~
+
+The consequence: two transactions reading the same id get back **two different instances** ({{a1 != a2}}). There is no "global identity map" — and if there were one, it would break the isolation between transactions. Inside one transaction L1 still wins: an entity already in the persistence context is returned as that instance and L2 is not read at all.
+
+> When someone asks "is L2 an object cache?", answer: it caches **state**, and each session builds its own object. That is also why you must not compare entities with {{==}} once L2 is involved.
+
+### What happens to the region when something is written
+Hibernate uses an **overwrite-or-invalidate** mechanism after the transaction commits: the new state is put into the region (write-through), and a deleted entity is taken out of the region. Two practical consequences:
+- {{@Modifying}} bulk updates, native SQL, hand-run data-fix scripts, or an UPDATE coming from another service **do not go through the entity**, so Hibernate cannot update the cached entity for each affected row; the regions tied to that table/query space are usually **evicted** (Hibernate 6 has an API for managing query spaces). The application may keep serving stale data until the region is refreshed or the entry expires, so after bulk DML consider {{clearAutomatically}} and an explicit evict.
+- Running several nodes (several Kubernetes pods) with a cache **local to the JVM**: each node keeps its own region. Node A writes, and node B still reads the old copy until there is **invalidation over the network** (Infinispan or Hazelcast support distributed / clustered regions) or the TTL expires.
+
+| Strategy | Meant for | Characteristics |
+|---|---|---|
+| {{read-only}} | catalogues, configuration, reference tables that are never edited | the cheapest, no locking; editing such a row is an error |
+| {{read-write}} | read a lot, write occasionally | holds a soft-lock during the write so readers never see a half-finished value |
+| {{nonstrict-read-write}} | acceptable to read stale data for a few seconds | simple, no locking, little contention |
+| {{transactional}} | a provider that has JTA ({{infinispan}}) | consistent per transaction, the most complicated configuration |
+
+### When it is worth switching on, and when it is not
+Worth it: tables that are read a great deal and written rarely, small and "closed" data (country, fee table, catalogue, configuration parameters), many requests touching the same id, and a system that is a single node or that has distributed invalidation.
+Not worth it: entities written frequently (every write is one invalidation plus a re-serialize), entities carrying a large collection, data that has to be consistent right away across nodes, or a low hit ratio. For fast-changing data, caching at the service layer with {{Caffeine}} or Redis — a clear TTL and an explicit evict — is usually easier to control than L2: you own the key, you can watch the hit/miss ratio, and identity never surprises you.
+
+### The price you pay
+- **RAM**: every entry is the state of an entity, plus a collection region for each cached {{@OneToMany}}. A region with no ceiling inflates the heap and causes full GCs.
+- **Serialize/copy cost**: a provider can store values on the heap (then it must copy them, so that nobody edits a cached object by accident) or off-heap (then it must serialize them) — no hit is free.
+- **Hard to diagnose**: it works on a single dev node, then production on several nodes shows "stale data". Always leave yourself a way out: set {{jakarta.persistence.cache.retrieveMode}} to {{BYPASS}} for one operation to force a database read, or call {{factory.getCache().evictAll()}} when you hotfix data.
+- **Lazy proxies leaking into the cache**: caching an entity that has a LAZY association means caching the proxy as well; reading it back in another session can fail or fire an unintended query. Caching a **DTO** is safer.
+
+### Why the query cache is rarely worth it
+It stores the list of ids keyed by the exact SQL string and its parameters, so changing one character in the SQL moves you to a different key. Worse: Hibernate tracks the table with an **update timestamp** — any INSERT/UPDATE/DELETE on that table (through Hibernate) invalidates **every** related entry. On a table with frequent writes you almost always miss, and all you add is the cost of looking up and writing the cache. If you want to cache a list: cache at the service layer, or use a DTO projection.
+
+### Interview relevance
+A question of this shape comes up often: "How is the second-level cache different from caching with Redis? When would you switch it on?" A way of answering that shows depth: separate the scopes (transaction versus application), say that L2 stores state so it does not preserve identity, explain invalidation on writes and the multi-node problem, then say you only enable it for read-heavy/write-light tables with {{read-only}} or {{read-write}}, and leave fast-changing data to a service-layer cache with a TTL. Bonus points: mention how to verify with {{hibernate.generate_statistics}} ({{cache hits, misses, puts}}) and how to get out of it when the data is stale ({{retrieveMode = BYPASS}}).`,
+    exercises: [
+      {
+        title: 'An L2 region shared across many sessions',
+        prompt: `Simulate a **second-level cache**: a region shared by many sessions that stores **state**, not objects. {{Account}} and {{DbSim}} are given ({{read(id)}} counts one database access). Implement {{HibernateLite}}:
+- {{HibernateLite(db, capacity)}}: the L2 region holds at most {{capacity}} entries (a positive number); when it is full, the **least recently used** element is pushed out (LRU).
+- {{openSession()}}: start a new session — the per-session identity map (L1) begins empty again, the L2 region stays as it is.
+- {{find(id)}}: if a session is open and L1 already has that id, return **that exact instance**, touching neither L2 nor the database. If L1 does not have it (or no session is open), look in L2: on a hit, count one hit and build a **new** instance from the cached state; on a miss, count one miss, call {{db.read(id)}} and put the state into the region. The instance is always recorded in the L1 of the open session.
+- {{save(id, name)}}: write {{name}} to the database and update the state in the region (write-through); do **not** touch the instance sitting in the current session.
+- {{bulkSetAllNames(name)}}: rename every row in the database and **clear the whole region** (Hibernate evicts the entire region when bulk DML runs).
+- {{hits()}}, {{misses()}}: how many L2 lookups happened, counted only when L1 missed; {{regionSize()}}: how many entries the region currently holds.`,
+        hints: [
+          'The region has to be a LinkedHashMap so it keeps the access order: when an entry is touched, remove it and put it back so that it becomes the most recent element.',
+          'find: check L1 first. Only when L1 misses do you look in the region, and only when the region misses do you call db.read (do not miscount hits and misses).',
+          'L2 stores a String (the state), not an Account: each time you take something out of the region you must build new Account(...), otherwise two sessions would share one instance.',
+          'save touches only the database and the region; the instance inside the open session has to keep its old value — that is how real L1 behaves.',
+          'bulkSetAllNames calls l2.clear() on the whole region; do not update the entries one by one.',
+        ],
+        explain: `This exercise teaches three things people mix up when they talk about L2:
+1. **L1 beats L2.** Calling find twice in the same session reaches the region only once; the second call returns the identical instance. That is why, after {{save}}, reading again inside the same transaction does not show you the new value.
+2. **L2 does not preserve identity.** The region stores state, so a new session creates a new instance ({{c != a}}). If you cached the object itself, two transactions would edit one shared instance and isolation would be broken — which is exactly why Hibernate does not do that.
+3. **A write makes the region stale.** Writes through the entity are write-through, but with bulk DML all you can do is clear the whole region ({{l2.clear()}}), and that is precisely how Hibernate treats {{@Modifying}}: it evicts the entire region of the table.
+
+Traps when implementing it:
+- Counting a hit/miss when L1 already hit → the numbers are wrong; the L1 block has to return early.
+- Getting the LRU order wrong: only move an entry to the recent end when it is **actually used**, otherwise you evict an entry that is still hot.
+- Calling {{put}} without removing first: a LinkedHashMap in insertion order does not move the entry, so an entry you thought was fresh is the very first one pushed out.
+
+In real work you never write this yourself; but it explains why "switching L2 on for a table that gets written" and "I read stale data afterwards" are two very real incidents, and why {{regionSize}} and the hit ratio need to be monitored.`,
+      },
+    ],
+    check: [
+      {
+        q: 'What does the Hibernate second-level cache hold inside a region?',
+        options: [
+          'A reference to the entity object a session is currently using',
+          'The state of the entity (the column values), so each session builds its own instance',
+          'The prepared SQL statement',
+          'The list of ids of every query that has run',
+        ],
+        explain: 'If the region kept the live object, several transactions would edit one shared instance and isolation would be lost. So Hibernate "dries out" the state to store it, and each session that reads it back creates a new instance. Prepared SQL belongs to the statement cache; lists of ids are the business of the query cache, not of an entity region.',
+      },
+      {
+        q: 'Two transactions, one after the other, both {{find}} an id that is present in L2. What is true?',
+        options: [
+          'The second transaction gets exactly the object the first transaction returned',
+          'Each transaction gets a different instance, because the identity map is scoped to one session',
+          'The second transaction has to go down to the database',
+          'Both transactions have to pass through the query cache',
+        ],
+        explain: 'Identity is a contract **within one** persistence context, not across the whole application — so each session has its own instance (all carrying the same values). An L2 hit means no trip to the database, and the query cache has nothing to do with find by id.',
+      },
+      {
+        q: 'You run {{@Modifying @Query("UPDATE Category c SET c.name = :n")}} while a Category entity is already in the persistence context and in L2. What happens?',
+        options: [
+          'Both the context and the region update themselves so everything matches',
+          'The context keeps the old value; the region is evicted for the whole table, so you must clear the context to read the new numbers',
+          'Hibernate ignores the statement because L2 exists',
+          'The region is untouched and the context is refreshed',
+        ],
+        explain: 'Bulk DML goes straight to the database and touches no managed entity, so the instance in the session keeps the old value (you need {{clear()}} or {{@Modifying(clearAutomatically = true)}}). As for the region, Hibernate invalidates it per table, so the next read goes down to the database. This is the source of the incident "we fixed it, but the API still returns stale data".',
+      },
+      {
+        q: 'Why is the query cache usually not worth switching on?',
+        options: [
+          'Because it only caches lists of ids and is invalidated whenever anything writes to that table',
+          'Because Hibernate does not support a query cache',
+          'Because it only works together with {{@Version}}',
+          'Because it requires Redis',
+        ],
+        explain: 'The query cache stores ids keyed by the SQL statement and its parameters, and the entities still have to come from L2 or the database; and every write through Hibernate to a table it touches invalidates the entries. On a table written to frequently the hit ratio is close to zero. Hibernate does support it ({{use_query_cache}}), it does not depend on {{@Version}}, and the cache provider does not have to be Redis.',
+      },
+    ],
+  },
+});
