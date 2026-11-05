@@ -4733,4 +4733,645 @@ public class UserCache {
   ],
   tags: ['code-review', 'cache', 'thread-safety', 'SimpleDateFormat', 'Caffeine']
 },
+{
+  id: 'scenario-093',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Tuần đầu bạn nhận một hệ thống monolith Java 8, Struts/Spring cũ, Oracle, không có test, người viết đã nghỉ. Bạn bắt đầu thế nào để không phá hỏng gì?',
+  a: `**Tóm tắt:** đừng sửa ngay — ưu tiên quan sát, dựng môi trường an toàn, vẽ bản đồ hệ thống, tìm người còn nhớ, ghi lại mọi thứ. Mục tiêu là hiểu đủ để thay đổi an toàn, chứ không hiểu toàn bộ ngay.
+
+### Làm rõ yêu cầu
+- Hệ thống dùng để làm gì (nghiệp vụ quan trọng), có SLA không?
+- Môi trường dev/test/staging/prod khác nhau thế nào, có quyền truy cập gì?
+- Ai còn có thể trả lời (PM cũ, BA, DBA, support)? Có tài liệu nào còn sót lại không?
+
+### Điều tra từng bước
+- **Bước 1: Bản đồ nhanh** — liệt kê module chính, entry point (web.xml/servlet, Spring config cũ), dependency, luồng nghiệp vụ quan trọng nhất.
+- **Bước 2: Dựng môi trường** — tìm {{README}}, {{build.xml}}/{{pom.xml}} cũ, script khởi động, config DB; dựng local/staging gần nhất có thể. Nếu không dựng được ngay, đọc code thay vì đoán.
+- **Bước 3: Quan sát thực tế** — xem log gần đây, slow query, cấu hình production-like, dữ liệu test (nếu có). Chú ý các batch/cron chạy đêm.
+- **Bước 4: Tìm "người sống sót"** — hỏi support/ops về incident gần đây, lỗi hay gặp, module nào "đừng động".
+- **Bước 5: Ghi chép** — tạo {{runbook.md}} ngắn: cách start/stop, config quan trọng, luồng chính, người liên hệ.
+
+### Ví dụ thực tế
+Giả sử bạn thấy một Struts Action xử lý "chuyển khoản". Thay vì sửa ngay, bạn trace: Action → Service → DAO → Procedure Oracle. Ghi lại thứ tự, transaction boundary, điều kiện rollback.
+
+### Pitfall
+- **Đọc từ đầu đến cuối** — không hiệu quả. Ưu tiên theo luồng nghiệp vụ bạn cần sửa sau này.
+- **Thay đổi config mù quáng** — một property cũ có thể ảnh hưởng cả batch.
+- **Tin tưởng comment cũ** — code đã thay đổi nhiều so với comment.
+
+> Senior tip: trong tuần đầu, thành quả quan trọng nhất không phải "fix bug" mà là "bản đồ đáng tin cậy". Một trang sơ đồ + danh sách "module nguy hiểm" sẽ cứu bạn rất nhiều lần sau này.`,
+  follow: [
+    'Làm sao xác định module nào quan trọng nhất để ưu tiên đọc trước?',
+    'Khi không có ai trả lời và không có test, bạn giảm rủi ro khi thay đổi thế nào?'
+  ],
+  tags: ['legacy', 'monolith', 'maintenance', 'onboarding']
+},
+{
+  id: 'scenario-094',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Nhận ticket production support: khách báo sai số dư/giao dịch. Theo quy trình ITIL bạn xử lý thế nào (incident → problem → change), chú trọng SLA P1-P4?',
+  a: `**Tóm tắt:** phân loại mức độ (P1-P4) theo ảnh hưởng/khẩn cấp, xác nhận và hạn chế ảnh hưởng trước (containment), điều tra an toàn (không sửa production trực tiếp), tìm root cause, chuyển thành Problem nếu lặp lại, đề xuất Change có phê duyệt đúng quy trình.
+
+### Làm rõ yêu cầu
+- Mức ưu tiên: P1 (toàn hệ thống/ngân hàng quan trọng) cần phản hồi trong vài phút, P4 có thể xử lý theo lịch.
+- Có quyền truy cập log/DB read-only production không? Ai được phép sửa?
+- Có hotline/on-call và quy trình escalation?
+
+### Quy trình từng bước
+- **Incident** — ghi nhận: ticket ID, thời gian báo, người báo, triệu chứng, số giao dịch bị ảnh hưởng. Xác định P1-P4 theo SLA.
+- **Containment (giảm thiểu)** — ưu tiên ngăn lan rộng: tạm vô hiệu hóa tính năng liên quan, hướng dẫn fallback, thông báo đúng người (on-call, DBA, security).
+- **Investigation (an toàn)** — chỉ đọc: log (app/log server), trace, DB read-only, APM. Không chạy UPDATE/DELETE trên production khi chưa có phê duyệt.
+- **Root cause & workaround** — tìm nguyên nhân gần đúng (thời gian, user, ref_no). Cung cấp workaround tạm thời nếu có, ghi rõ thời gian áp dụng.
+- **Problem** — nếu sự cố lặp lại nhiều lần hoặc ảnh hưởng lớn, mở Problem ticket, gom evidence, đề xuất giải pháp dài hạn.
+- **Change** — đề xuất Change Request (mô tả, impact, rollback plan, test plan), trình CAB (Change Advisory Board) nếu cần, chỉ thực hiện trong change window đã được duyệt.
+
+### Ví dụ SLA
+| Mức | Ảnh hưởng | Phản hồi | Mục tiêu khôi phục |
+|---|---|---|---|
+| P1 | Toàn bộ giao dịch quan trọng ngưng | Ngay (trong phút) | Rất nhanh, theo SLA đã cam kết |
+| P2 | Nhiều user ảnh hưởng | Nhanh | Ưu tiên cao |
+| P3 | Ít user/không quan trọng | Theo giờ làm việc | Theo lịch |
+| P4 | Yêu cầu nhỏ | Theo lịch | Theo lịch |
+
+### Pitfall
+- **Sửa ngay mà không ghi** — phải ghi đầy đủ log điều tra (ai, khi nào, câu query).
+- **Bỏ qua Problem** — fix thủ công mãi mà không khắc phục gốc sẽ tái diễn.
+- **Thay đổi ngoài change window** — hầu hết công ty lớn cấm, trừ trường hợp P1 khẩn cấp có quy trình riêng.
+
+> Senior tip: câu trả lời phỏng vấn mạnh là "tôi ưu tiên containment trước, điều tra read-only, ghi mọi bằng chứng, và chỉ sửa qua Change được duyệt (hoặc theo quy trình khẩn cấp)".`,
+  follow: [
+    'Sự khác biệt giữa Incident và Problem trong ITIL?',
+    'Khi nào được phép hotfix khẩn cấp ngoài change window?'
+  ],
+  tags: ['ITIL', 'incident', 'problem', 'change', 'SLA']
+},
+{
+  id: 'scenario-095',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Phải sửa bug gấp (hotfix) trong code không có test. Bạn làm thế nào để an toàn nhất?',
+  a: `**Tóm tắt:** viết characterization test (test mô tả hành vi hiện tại, không sửa code), hiểu hành vi đúng vs hành vi thực tế, thay đổi nhỏ nhất có thể, thêm rollback plan, test cẩn thận, sau đó thêm regression test.
+
+### Làm rõ yêu cầu
+- Bug ảnh hưởng gì (tài chính/khách hàng), mức độ khẩn cấp?
+- Có thể reproduce local/staging không?
+- Có người review nhanh được không?
+
+### Quy trình từng bước
+- **Bước 1: Reproduce** — tái hiện bug bằng dữ liệu giống nhất có thể. Ghi lại input, output sai, expected.
+- **Bước 2: Characterization test** — viết test để "khóa" hành vi hiện tại (ngay cả khi sai, nhưng bạn cần hiểu ranh giới). Mục đích là phát hiện nếu bạn vô tình thay đổi thứ khác.
+- **Bước 3: Tìm nguyên nhân** — trace code, xem điều kiện, transaction, side effect. Thường là điều kiện thiếu, null, sai format.
+- **Bước 4: Thay đổi nhỏ nhất** — sửa đúng chỗ gây bug, tránh refactor "tiện tay". Thêm if/guard cẩn thận.
+- **Bước 5: Verify** — chạy characterization test + test liên quan, test thủ công kịch bản bug.
+- **Bước 6: Rollback plan** — chuẩn bị script/revert hoặc feature flag để tắt ngay nếu có vấn đề.
+- **Bước 7: Thêm regression test** — sau khi fix, viết test đúng cho case bị bug để ngăn tái diễn.
+
+### Ví dụ đơn giản
+Trước khi sửa: viết test gọi method với case gây bug, chạy thấy pass/fail theo hành vi hiện tại. Sau khi sửa, test mới phải pass và characterization test vẫn pass cho các case khác.
+
+### Pitfall
+- **Sửa lớn trong lúc nóng** — càng sửa nhiều càng khó rollback.
+- **Không có rollback plan** — phải nghĩ "nếu xấu nhất xảy ra tôi làm gì trong 5 phút?"
+- **Chỉ test case bug** — dễ bỏ qua side effect.
+
+> Senior tip: quy tắc của tôi là "test trước, sửa nhỏ, rollback sẵn". Trong hotfix, an toàn quan trọng hơn hoàn hảo.`,
+  follow: [
+    'Characterization test khác unit test thông thường thế nào?',
+    'Làm sao đảm bảo rollback plan thực tế dùng được?'
+  ],
+  tags: ['hotfix', 'legacy', 'testing', 'rollback']
+},
+{
+  id: 'scenario-096',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Quy trình release ở công ty lớn: Change Request, CAB phê duyệt, release window ban đêm, freeze period cuối năm. Bạn chuẩn bị thế nào?',
+  a: `**Tóm tắt:** chuẩn bị Change Request đầy đủ (mô tả, impact, test, rollback), trình CAB đúng thời gian, tuân thủ window/freeze, thông báo liên quan, thực hiện theo checklist, verify sau release, đóng change.
+
+### Làm rõ yêu cầu
+- Release window là khi nào, ai có quyền deploy?
+- Freeze period (thường cuối năm/ngày quan trọng) có quy định gì?
+- Cần UAT ký duyệt chưa?
+
+### Checklist chuẩn bị
+- **Change Request (CR)** — tóm tắt thay đổi, lý do, ảnh hưởng (user/module), rủi ro, mitigation.
+- **Test plan** — unit/integration/regression đã chạy, UAT do nghiệp vụ ký (nếu cần).
+- **Rollback plan** — cách revert nhanh, ai có quyền, thời gian ước tính.
+- **Deployment plan** — thứ tự deploy, config cần đổi, script, người phụ trách.
+- **Communication** — thông báo support/ops/BA trước release.
+
+### Quy trình
+- **Trước** — mở CR, đính kèm tài liệu, đăng ký CAB (nếu bắt buộc). Nếu trong freeze period, thường phải có lý do đặc biệt và phê duyệt cấp cao.
+- **Trong window** — chỉ deploy theo CR đã duyệt. Ghi log từng bước. Có người giám sát.
+- **Sau** — smoke test quan trọng, kiểm tra log/error, xác nhận với business/support. Cập nhật CR trạng thái.
+
+### Lưu ý
+- **CAB** — không phải để "xin phép code" mà để xem impact liên hệ (nhiều hệ thống phụ thuộc).
+- **Release window ban đêm** — thường để giảm ảnh hưởng người dùng, cần backup sẵn.
+- **Freeze period** — cấm release không khẩn cấp. Hotfix khẩn cấp vẫn có quy trình riêng.
+
+> Senior tip: CR tốt là CR mà người không đọc code cũng hiểu "sẽ ảnh hưởng gì và làm sao quay lại". Nếu rollback plan mơ hồ, CAB rất dễ yêu cầu bổ sung.`,
+  follow: [
+    'Sự khác biệt giữa change normal/standard/emergency?',
+    'Làm sao thuyết phục khi cần release trong freeze period?'
+  ],
+  tags: ['release', 'CAB', 'change-management', 'freeze', 'ITIL']
+},
+{
+  id: 'scenario-097',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Batch job/cron đêm (EOD, đối soát, báo cáo) chạy chậm dần theo năm. Bạn điều tra và tối ưu mà không làm hỏng dữ liệu?',
+  a: `**Tóm tắt:** không tối ưu "vội" — đo baseline, tìm nút thắt (SQL, I/O, lock), tối ưu an toàn (index, partition, cursor), chạy song song có kiểm soát, luôn backup/verify số liệu đối soát.
+
+### Làm rõ yêu cầu
+- Job xử lý gì, phụ thuộc gì, có deadline phải hoàn thành trước giờ mở cửa?
+- Dữ liệu tăng thế nào, có phân vùng không?
+- Có thể test trên bản sao dữ liệu không?
+
+### Điều tra
+- **Thời gian** — đo từng step, log thời gian bắt đầu/kết thúc mỗi giai đoạn.
+- **SQL** — {{EXPLAIN (ANALYZE)}} các query chính, index có dùng không, statistic cũ?
+- **Tài nguyên** — CPU/IO/wait, lock/block, temp tablespace.
+- **Dữ liệu** — số lượng bản ghi qua các năm, dead rows, fragmentation.
+
+### Giải pháp an toàn
+- **Index phù hợp** — thêm index cho điều kiện filter/join của batch (không cần cho UI).
+- **Xử lý theo batch nhỏ** — thay vì 1 transaction lớn, commit theo chunk (vd 1000-10000) để giảm lock.
+- **Cursor/streaming** — tránh load toàn bộ vào List.
+- **Phân vùng** — xử lý theo partition tháng/năm.
+- **Parallel có kiểm soát** — chia theo range ID, giới hạn thread.
+- **Đối soát** — so sánh tổng trước/sau (số bản ghi, tổng tiền) bắt buộc.
+
+### Pitfall
+- **Sửa trực tiếp production data logic** — phải test trên copy.
+- **1 transaction khổng lồ** — dễ rollback mất thời gian, giữ lock lâu.
+- **Không đối soát** — tối ưu xong nhưng dữ liệu sai là thảm họa.
+
+> Senior tip: tối ưu batch an toàn nhất là "đo → giả thuyết → thử nhỏ → đo lại". Luôn có số liệu đối soát trước khi và sau khi chạy.`,
+  follow: [
+    'Khi nào nên dùng parallel vs sequential cho batch?',
+    'Làm sao đảm bảo tính toàn vẹn dữ liệu sau tối ưu?'
+  ],
+  tags: ['batch', 'EOD', 'performance', 'partition', 'reconciliation']
+},
+{
+  id: 'scenario-098',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Nâng cấp thư viện có CVE (Log4Shell-style) trên hàng chục service cũ. Bạn tổ chức thế nào?',
+  a: `**Tóm tắt:** inventory toàn bộ, đánh giá mức độ ảnh hưởng/khả năng khai thác, ưu tiên cao nhất, nâng cấp có kiểm thử hồi quy, phối hợp đồng bộ, có rollback plan.
+
+### Làm rõ yêu cầu
+- CVE severity (Critical/High), CVSS, có exploit công khai không?
+- Ảnh hưởng runtime hay chỉ compile?
+- Có thể patch nhanh hay phải nâng version lớn?
+
+### Quy trình
+- **Inventory** — liệt kê tất cả service, pom.xml/build, dependency tree ({{mvn dependency:tree}}, {{gradle dependencies}}). Tìm cả transitive dependency.
+- **Assessment** — xác định service nào dùng thư viện bị ảnh hưởng, có code path dễ bị khai thác không, môi trường public hay internal.
+- **Prioritization** — Critical + public/exposed trước, internal sau.
+- **Remediation** — ưu tiên nâng version fix, hoặc exclude + thêm version an toàn, hoặc áp dụng mitigations (WAF/config) tạm thời nếu không nâng ngay được.
+- **Testing** — build, unit test, smoke test, regression quan trọng.
+- **Deployment** — phối hợp theo change window, triển khai dần (canary) nếu có thể.
+- **Verification** — scan lại (dependency check), xác nhận không còn vulnerable version.
+
+### Pitfall
+- **Chỉ fix một nơi** — dễ bỏ transitive dependency.
+- **Nâng version lớn gây breaking** — cần đọc changelog, test kỹ.
+- **Chỉ scan không fix** — phải có timeline rõ ràng.
+- **Quên container image** — base image cũng có thể chứa thư viện cũ.
+
+> Senior tip: với CVE Critical, "patch nhanh an toàn" quan trọng hơn "patch hoàn hảo". Nếu không thể nâng ngay, áp dụng mitigation tạm thời và có kế hoạch nâng đầy đủ.`,
+  follow: [
+    'Làm sao tìm transitive dependency bị ảnh hưởng?',
+    'Khi nâng version gây conflict, bạn xử lý thế nào?'
+  ],
+  tags: ['CVE', 'security', 'dependency', 'upgrade', 'Log4Shell']
+},
+{
+  id: 'scenario-099',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Thuyết phục quản lý trả nợ kỹ thuật (tech debt): đo lường, đề xuất từng bước thay vì viết lại toàn bộ. Bạn làm thế nào?',
+  a: `**Tóm tắt:** đừng nói "viết lại", hãy nói "giảm rủi ro + tiết kiệm chi phí". Đo lường tác động, chọn điểm đau nhất, đề xuất strangler fig, chứng minh bằng con số nhỏ trước khi mở rộng.
+
+### Làm rõ yêu cầu
+- Tech debt nào gây thiệt hại nhất (bug, chậm, khó thay đổi)?
+- Có thời gian/refactor budget không?
+- Làm sao đo ROI?
+
+### Cách thuyết phục
+- **Đo lường** — thời gian fix bug, thời gian thêm feature, số incident liên quan module cũ, chi phí oncall.
+- **Chọn "pain point"** — chỉ 1 module gây nhiều đau nhất, không liệt kê 100 thứ.
+- **Đề xuất incremental** — Strangler Fig: bao quanh module cũ bằng facade, dần thay thế từng phần, giữ hoạt động bình thường.
+- **Chứng minh nhỏ** — làm POC 1-2 tuần, đo thời gian trước/sau (vd thêm feature nhanh hơn bao nhiêu).
+- **Tính toán** — "Mỗi tháng tốn X giờ fix, nếu giảm 50% tiết kiệm Y triệu/năm".
+
+### Strangler Fig ngắn gọn
+1. Xác định boundary rõ ràng (API/interface)
+2. Tạo module mới bên cạnh
+3. Route traffic dần sang module mới (feature flag)
+4. Tắt dần module cũ
+
+### Pitfall
+- **"Viết lại sạch hơn"** — thiếu thuyết phục.
+- **Big bang rewrite** — rủi ro rất cao, gần như luôn trễ và tốn hơn.
+- **Không đo** — khó chứng minh giá trị.
+
+> Senior tip: quản lý hiểu "rủi ro kinh doanh" tốt hơn "clean code". Hãy nói "giảm thời gian outage", "giảm chi phí oncall", "ra tính năng nhanh hơn" thay vì "vi phạm SOLID".`,
+  follow: [
+    'Strangler Fig khác Big Bang rewrite thế nào?',
+    'Làm sao đo ROI của refactor một cách khách quan?'
+  ],
+  tags: ['tech-debt', 'strangler-fig', 'refactor', 'ROI']
+},
+{
+  id: 'scenario-100',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Làm việc với nhiều team/vendor (core banking hãng ngoài, DBA team, hạ tầng): ai chịu trách nhiệm gì, viết yêu cầu sao cho được xử lý?',
+  a: `**Tóm tắt:** rõ ràng RACI (Responsible/Accountable/Consulted/Informed), viết yêu cầu ngắn gọn có context/impact, cung cấp evidence, follow-up đúng kênh, tôn trọng quyền của team khác.
+
+### Làm rõ yêu cầu
+- Mỗi bên có scope gì, SLA phản hồi?
+- Kênh liên lạc chính (ticket system)?
+- Ai phê duyệt?
+
+### Cách viết yêu cầu hiệu quả
+- **Context** — tại sao cần (incident/feature), ảnh hưởng gì?
+- **Mô tả cụ thể** — hành động cần làm, không "giúp em xem".
+- **Evidence** — log, screenshot, trace ID, SQL plan.
+- **Impact/Urgency** — P1/P2 nếu khẩn cấp.
+- **Acceptance criteria** — khi nào coi là xong?
+- **Env** — prod/staging, thời gian cần?
+
+### Ví dụ tốt
+"DBA team giúp em tạo index CONCURRENTLY trên bảng TRANSACTIONS (prod) theo script đính kèm. Ảnh hưởng: API list chậm từ 5s xuống mục tiêu <500ms. Cần review/approve trong khung release window 22:00-02:00."
+
+### Pitfall
+- **Yêu cầu mơ hồ** — "fix performance" không đủ.
+- **Gửi nhiều kênh cùng lúc** — gây nhầm lẫn.
+- **Không follow RACI** — hỏi sai người.
+- **Bỏ qua quy trình** — mỗi team có quy trình riêng.
+
+> Senior tip: viết yêu cầu như viết ticket cho chính mình nếu đổi vai trò. Cung cấp đủ thông tin để họ không phải hỏi lại 3 lần.`,
+  follow: [
+    'Khi nào nên escalate thay vì chờ?',
+    'Làm sao xử lý khi vendor từ chối với lý do "out of scope"?'
+  ],
+  tags: ['cross-team', 'vendor', 'RACI', 'communication']
+},
+{
+  id: 'scenario-101',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Cần tài liệu hoá và chuyển giao hệ thống để không trở thành "người duy nhất biết". Bạn làm gì?',
+  a: `**Tóm tắt:** tập trung vào thứ thực tế dùng được (runbook, architecture diagram đơn giản, ADR, danh sách liên hệ), không viết tài liệu 100 trang. Ưu tiên theo "nếu tôi vắng 1 tuần, người khác làm được gì?".
+
+### Làm rõ yêu cầu
+- Ai sẽ tiếp nhận? Level kinh nghiệm?
+- Thời gian chuyển giao?
+- Những thứ quan trọng nhất?
+
+### Tài liệu cần làm
+- **Runbook** — cách start/stop, health check, common issues + fix, rollback, escalation.
+- **System overview** — sơ đồ đơn giản (components, DB, external), luồng chính.
+- **Architecture Decision Record (ADR)** — quyết định quan trọng + lý do + trade-off.
+- **Config & secrets** — nơi config, cách lấy, ai có quyền.
+- **Batch/cron** — lịch chạy, phụ thuộc, cách debug.
+- **Contacts** — người liên hệ theo module.
+- **Known gotchas** — "đừng động chỗ này", workaround cũ.
+
+### Quy trình
+- **Shadow** — để người kế nhiệm quan sát xử lý ticket thực tế cùng bạn.
+- **Pair** — cùng làm 2-3 lần.
+- **Handover review** — đi qua runbook, thử scenario giả định.
+- **Document as you go** — ghi ngay khi xử lý, đừng chờ cuối.
+
+### Pitfall
+- **Viết quá chi tiết** — nhanh lỗi thời.
+- **Chỉ mô tả code** — nên mô tả "cách vận hành".
+- **Không cập nhật** — tài liệu cũ còn nguy hiểm hơn không có.
+
+> Senior tip: mục tiêu là "bus factor > 1". Nếu chỉ có 1 người hiểu hệ thống, đó là rủi ro tổ chức chứ không phải "kiến thức riêng".`,
+  follow: [
+    'Sự khác biệt giữa runbook và design doc?',
+    'Làm sao đảm bảo tài liệu được dùng thật?'
+  ],
+  tags: ['documentation', 'knowledge-transfer', 'runbook', 'ADR', 'bus-factor']
+},
+{
+  id: 'scenario-102',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Phỏng vấn: "Hãy kể kinh nghiệm maintain hệ thống cũ" sao cho thể hiện năng lực Senior mà không nói xấu người khác?',
+  a: `**Tóm tắt:** dùng STAR (Situation/Task/Action/Result) với số liệu cụ thể, tập trung vào cách bạn giảm rủi ro, giúp team vận hành tốt hơn, chứ không chỉ "fix bug". Tránh chê code cũ, nhấn mạnh học hỏi và cải tiến an toàn.
+
+### Cấu trúc STAR
+- **S (Situation)** — ngắn gọn: hệ thống cũ, ngữ cảnh
+- **T (Task)** — nhiệm vụ của bạn
+- **A (Action)** — hành động cụ thể (quan sát, characterization test, thay đổi nhỏ, rollback plan...)
+- **R (Result)** — kết quả đo được (thời gian giảm, incident giảm, knowledge chia sẻ...)
+
+### Ví dụ câu trả lời
+*"Khi join team, có hệ thống batch EOD chạy chậm dần, mỗi ngày mất thêm 15-20 phút (S). Nhiệm vụ là đảm bảo hoàn thành trước giờ mở cửa (T). Tôi đo baseline, thêm index phù hợp, xử lý theo batch chunk thay vì transaction lớn, và thêm đối soát số liệu (A). Kết quả: thời gian chạy giảm từ 2h15 xuống 35 phút, không có sai lệch dữ liệu, và tôi viết runbook để người khác có thể vận hành (R)."*
+
+### Lời khuyên
+- **Dùng số liệu** — thời gian, số ticket, % giảm, số người được train.
+- **Tập trung hành động** — "tôi đã làm gì", không "hệ thống tệ thế nào".
+- **Thể hiện mindset** — an toàn, đo lường, chia sẻ kiến thức.
+- **Tránh tiêu cực** — nói "cơ hội cải tiến" thay vì "code xấu".
+- **Kết nối với Senior** — giảm rủi ro, bảo vệ production, giúp team.
+
+### Pitfall
+- **Chỉ nói "fix bug"** — quá hời hợt.
+- **Nói xấu cũ** — tạo ấn tượng tiêu cực.
+- **Không có kết quả** — thiếu impact.
+
+> Senior tip: nhà tuyển dụng muốn biết "bạn xử lý hệ thống cũ thế nào để cả team yên tâm". Hãy kể câu chuyện về việc giảm rủi ro và giúp người khác, đó là dấu hiệu rõ của Senior.`,
+  follow: [
+    'Làm sao chuyển "sửa bug" thành câu chuyện có impact?',
+    'Nên nhấn mạnh gì nhất khi kể kinh nghiệm maintain?'
+  ],
+  tags: ['interview', 'STAR', 'maintenance', 'experience']
+},
+{
+  id: 'scenario-103',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Tuần đầu tiên vào dự án mới: làm thế nào để nhanh chóng hiểu luồng nghiệp vụ thay vì chỉ đọc code?',
+  a: `**Tóm tắt:** đừng đọc toàn bộ codebase ngay. Hãy đi theo một nghiệp vụ thực tế từ đầu đến cuối (end-to-end), kết hợp với tài liệu, người am hiểu và dữ liệu thật để xây bản đồ luồng trong đầu. Mục tiêu tuần đầu là hiểu được "vì sao" hơn là "toàn bộ how".
+
+### Bối cảnh thực tế
+Khi vào dự án ngân hàng về chuyển tiền, nhiều dev mới cố đọc hết service layer và bị ngợp. Cách hiệu quả hơn là chọn 1 luồng ví dụ: "chuyển tiền nội bộ" từ màn hình app mobile → API → validation → tài khoản nguồn → tài khoản đích → ghi sổ cái → thông báo. Từ đó hiểu cả nghiệp vụ lẫn kỹ thuật.
+
+### Lộ trình 5 ngày
+1. **Ngày 1 - Định hướng**: Đọc README, sơ đồ kiến trúc cao cấp, glossary nghiệp vụ (từ điển thuật ngữ). Tìm hiểu team, ai là BA/PO/nghiệp vụ chính.
+2. **Ngày 2 - Quan sát người dùng**: Ngồi cùng BA/nghiệp vụ chạy thực tế trên môi trường UAT/staging với vai trò người dùng. Ghi lại từng màn hình, từng nút bấm, các tình huống lỗi.
+3. **Ngày 3 - Trace end-to-end**: Chọn 1 request cụ thể (vd giao dịch chuyển tiền thành công). Lần theo log với {{traceId}} hoặc {{correlationId}} từ API Gateway → service → database → message broker. Vẽ sequence diagram đơn giản.
+4. **Ngày 4 - Hiểu quy tắc nghiệp vụ**: Đọc bảng {{status}} và lịch sử trạng thái (audit/history table). Hỏi tại sao có các trạng thái như PENDING/APPROVED/REJECTED/CANCELLED. Tìm các rule validation, hạn mức, cut-off giờ.
+5. **Ngày 5 - Tổng hợp**: Vẽ bản đồ nghiệp vụ (luồng chính + ngoại lệ), ghi glossary cá nhân, liệt kê câu hỏi còn chưa rõ để trao đổi.
+
+### Ví dụ trace thực tế
+~~~text
+[User] App → POST /transfers {from, to, amount}
+  → API Gateway (authN/Z) 
+    → TransferService.validate() (hạn mức, số dư)
+      → AccountService.checkBalance() (DB: accounts)
+        → LedgerService.postEntries() (DB: ledger_entries + balance update)
+          → NotificationService.publish(TransferCompleted)
+            → SMS/Push
+DB audit: transfer_id, status, actor, timestamp
+~~~
+
+### Lỗi hay gặp
+- **Đọc code trước khi hiểu nghiệp vụ**: Dễ đi sai hướng, không biết tại sao phải code như vậy.
+- **Hỏi quá chung chung**: "Hệ thống này làm gì?" khó trả lời. Thay vào đó "Tại sao giao dịch bị từ chối với mã lỗi này?" hiệu quả hơn nhiều.
+- **Chỉ nhìn happy path**: Luồng ngoại lệ (không đủ số dư, vượt hạn mức, giờ cut-off) thường quan trọng nhất cho bảo trì.
+
+### Cách trả lời phỏng vấn (English)
+*"I focus on tracing one real business flow end-to-end first - from UI to DB. I shadow the BA, read the audit/history tables to understand state transitions, and map exceptions. That way I learn the business rules and the system together, not in isolation."*
+
+> Senior tip: Nguyên tắc vàng là "follow the data". Đừng theo call stack vô tội vạ - hãy theo 1 giao dịch thật trong DB (tìm 1 transfer_id) rồi lần ngược lại xem nó đi qua những service nào. Cách này nhanh gấp 3-5 lần so với đọc toàn bộ service.`,
+  follow: [
+    'Làm sao phân biệt luồng chính và luồng ngoại lệ khi trace?',
+    'Khi nào nên hỏi BA, khi nào nên tự trace qua log/code?'
+  ],
+  tags: ['onboarding', 'business-flow', 'trace', 'domain-knowledge']
+},
+{
+  id: 'scenario-104',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Làm thế nào để đọc schema database để nhanh hiểu nghiệp vụ khi vào dự án mới?',
+  a: `**Tóm tắt:** schema database thường chứa "ngôn ngữ" nghiệp vụ ẩn giấu bên trong. Thay vì đọc toàn bộ bảng, hãy tập trung vào bảng cốt lõi, quan hệ, trạng thái và bảng lịch sử để tái hiện quy trình kinh doanh mà không cần hỏi mọi thứ.
+
+### Bối cảnh thực tế
+Trong dự án bảo hiểm, bảng {{policies}} có cột {{status}} với giá trị PENDING/ACTIVE/LAPSED/CANCELLED/EXPIRED. Bảng {{policy_status_history}} cho thấy chính xác chuỗi chuyển trạng thái. Chỉ từ đó đã hiểu được quy trình phê duyệt hợp đồng mà không cần đọc 100 trang spec.
+
+### Phương pháp đọc schema
+1. **Tìm "entity" cốt lõi**: Tìm bảng có nhiều FK trỏ tới, hoặc bảng tên ngắn có ý nghĩa nghiệp vụ (orders, accounts, policies, claims). Thường là aggregate root.
+2. **Đọc cột status**: Xem tất cả giá trị có thể có (enum/check constraint), sau đó xem bảng history/audit tương ứng. Đây là state machine ẩn.
+3. **Tìm bảng lịch sử**: {{*_history}}, {{audit_*}}, {{*_logs}} cho thấy ai làm gì, khi nào, trạng thái thay đổi thế nào.
+4. **Phân tích quan hệ**: FK cho biết business relationship (1:N, N:N). vd {{orders}} - {{order_items}} cho thấy giỏ hàng/đơn hàng.
+5. **Đọc dữ liệu thật (chỉ đọc)**: Query vài row mẫu trên UAT/staging để thấy giá trị thực tế, format dữ liệu, có dữ liệu test không.
+
+### Ví dụ trace qua DB (chuyển tiền ngân hàng)
+~~~text
+accounts (id, account_no, balance, status)
+  └─ transfers (id, from_account_id, to_account_id, amount, status, ref_no)
+       ├─ transfer_status_history (transfer_id, old_status, new_status, changed_at, changed_by)
+       └─ ledger_entries (transfer_id, account_id, dc, amount, entry_group_id)
+
+State machine: PENDING → PROCESSING → COMPLETED / FAILED / REVERSED
+Rule: chỉ PENDING mới được cập nhật, COMPLETED là immutable
+~~~
+
+### Câu hỏi đặt ra khi đọc
+- **Tại sao có cột này?** (vd {{effective_date}} vs {{created_at}})
+- **Khi nào thay đổi?** (tìm trigger/log/history)
+- **Có rule nào ngầm?** (CHECK constraint, unique, soft delete {{deleted_at}})
+- **Dữ liệu có ý nghĩa gì?** (mã, enum mapping)
+
+### Lỗi hay gặp
+- **Chỉ đọc DDL**: DDL không cho biết quy trình thực tế. Luôn xem dữ liệu mẫu.
+- **Bỏ qua history table**: Thường quan trọng hơn bảng chính để hiểu "cách vận hành".
+- **Giả định relationship**: Phải verify bằng data (vd có orphan record không?) trước khi kết luận.
+
+> Senior tip: Một kỹ thuật hiệu quả là "reverse engineer từ transaction". Tìm 1 giao dịch thành công gần nhất trong bảng transaction chính, truy vết tất cả bảng có liên quan qua FK/ref_no, vẽ mối quan hệ. Sau 2-3 giao dịch như vậy bạn sẽ hiểu 80% domain model.`,
+  follow: [
+    'Làm sao phân biệt bảng nghiệp vụ (master/transaction) và bảng cấu hình?',
+    'Tại sao bảng audit/history lại quan trọng hơn nhiều so với tưởng tượng?'
+  ],
+  tags: ['database', 'schema', 'domain-model', 'state-machine']
+},
+{
+  id: 'scenario-105',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Event Storming và cách dùng để hiểu domain nhanh khi vào team mới?',
+  a: `**Tóm tắt:** Event Storming (do Alberto Brandolini đề xuất) là kỹ thuật workshop để cùng BA/PO/Dev khám phá domain bằng các "domain event" (sự kiện quan trọng đã xảy ra). Khi vào team mới, bạn có thể tổ chức mini Event Storming 1-2 tiếng để nhanh chóng xây glossary chung và hiểu quy trình.
+
+### Tại sao dùng Event Storming?
+Thay vì đọc spec dài dòng, cả team cùng dán sticky note lên bảng: ai cũng nói theo ngôn ngữ nghiệp vụ. Kết quả là bản đồ domain mà cả kỹ thuật lẫn nghiệp vụ đều hiểu.
+
+### Các khái niệm cơ bản
+- **Domain Event** (màu cam): Sự kiện đã xảy ra trong quá khứ, vd {{PolicyIssued}}, {{ClaimSubmitted}}, {{PaymentAuthorized}}. Viết dạng động từ quá khứ.
+- **Command** (màu xanh): Hành động người dùng/hệ thống muốn làm, vd {{SubmitClaim}}, {{ApprovePolicy}}.
+- **Actor** (màu vàng): Ai thực hiện command, vd Customer, Underwriter, Admin.
+- **Aggregate** (màu vàng nhạt): Nhóm entity xử lý command, vd Policy, Claim.
+- **Policy/Rule** (màu tím): Quy tắc nghiệp vụ kích hoạt event, vd "Nếu hạn mức > X thì cần phê duyệt".
+- **External System** (màu hồng): Hệ thống bên ngoài, vd Core Banking, SMS Gateway.
+
+### Quy trình mini Event Storming (1-2 giờ)
+1. **Chuẩn bị**: Sticky note nhiều màu, bút, bảng trắng/online board. Mời BA, PO, người am hiểu nghiệp vụ.
+2. **Brain dump events**: Mỗi người viết domain event quan trọng theo trình tự thời gian. Dán lên bảng không tranh luận ngay.
+3. **Sắp xếp timeline**: Sắp xếp theo thứ tự xảy ra thực tế (happy path trước, rồi ngoại lệ).
+4. **Thêm commands/actors**: Với mỗi event, hỏi "Ai gây ra? Bằng command gì?" Thêm actors và commands.
+5. **Tìm hotspots**: Các chỗ mơ hồ, tranh cãi, ngoại lệ phức tạp - đó là thứ cần đào sâu nhất.
+6. **Kết quả**: Timeline domain events, glossary, danh sách câu hỏi cần làm rõ.
+
+### Ví dụ áp dụng (bồi thường bảo hiểm)
+~~~text
+[Actor: Customer] Command: ReportClaim 
+  → Policy (aggregate) check: policy active?
+    → Domain Event: ClaimSubmitted
+      → Policy: Underwriter review
+        → Command: AssessDamage
+          → Domain Event: ClaimAssessed (approved/rejected)
+            → External: PaymentSystem
+              → Domain Event: ClaimPaid
+~~~
+
+### Lỗi hay gặp
+- **Viết event dạng tương lai**: Sai. Phải là "đã xảy ra" (Issued chứ không phải Issue).
+- **Chỉ có dev tham gia**: Thiếu người nghiệp vụ thì kết quả vô dụng.
+- **Tranh luận quá sớm**: Giai đoạn 1 chỉ brainstorm, sắp xếp sau.
+- **Quá chi tiết kỹ thuật**: Tập trung nghiệp vụ, đừng nói về REST/queue ngay.
+
+> Senior tip: Bạn không cần tổ chức Event Storming đầy đủ. Chỉ cần mượn 30 phút của BA/PO, vẽ timeline trên giấy/board với 5-10 event quan trọng nhất của luồng bạn đang tìm hiểu. Thường nhanh hơn đọc cả tài liệu thiết kế.`,
+  follow: [
+    'Sự khác biệt giữa Event Storming và Sequence Diagram?',
+    'Khi nào nên dùng Event Storming thay vì đọc code để hiểu domain?'
+  ],
+  tags: ['event-storming', 'domain-driven-design', 'workshop', 'business-analysis']
+},
+{
+  id: 'scenario-106',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Làm thế nào để đặt câu hỏi hiệu quả với BA/PO/nghiệp vụ khi chưa hiểu domain?',
+  a: `**Tóm tắt:** Sai lầm lớn nhất là hỏi "Hệ thống này làm gì?". Thay vào đó hãy hỏi theo tình huống cụ thể, dựa trên dữ liệu thật hoặc trace bạn đã làm. Mục tiêu là lấy rule nghiệp vụ, không lấy mô tả chung chung.
+
+### Nguyên tắc đặt câu hỏi
+- **Cụ thể hơn chung chung**: Dùng số liệu, ref_no, trạng thái bạn thấy.
+- **Hỏi về "tại sao" và "ngoại lệ"**: Nhiều thứ quan trọng nằm ở exception case.
+- **Đề xuất trước, hỏi để xác nhận**: Hiệu quả hơn hỏi trống.
+- **Ghi lại ngay**: Cập nhật glossary, runbook cá nhân.
+
+### Các dạng câu hỏi hiệu quả
+| Tình huống | Câu hỏi sai | Câu hỏi đúng |
+|---|---|---|
+| Đang trace | "Chuyển tiền hoạt động thế nào?" | "Tại sao transfer #TRF123 này đang ở trạng thái PENDING từ 2 tiếng trước?" |
+| Thấy rule | "Có quy tắc gì không?" | "Tại sao giao dịch > 100 triệu VND cần duyệt bổ sung?" |
+| Ngoại lệ | "Khi nào bị reject?" | "Trong trường hợp nào hệ thống từ chối chuyển tiền ngay dù số dư đủ?" |
+| Cut-off | "Có giờ giới hạn không?" | "Nếu khách chuyển tiền lúc 23:58 có được xử lý ngày hôm đó không?" |
+| Trách nhiệm | "Ai phê duyệt?" | "Ai có quyền hủy giao dịch đã PENDING sau khi đã gửi đi?" |
+
+### Chiến lược theo thời gian
+- **Tuần 1**: Tập trung "happy path + trạng thái chính". Hỏi BA/nghiệp vụ ngồi cùng.
+- **Tuần 2**: Hỏi về ngoại lệ từ ticket production gần đây (incident/ticket). Thường tiết lộ rule quan trọng.
+- **Sau đó**: Hỏi khi thực sự cần cho task đang làm, tránh hỏi lan man.
+
+### Ví dụ conversation thực tế
+**Bạn:** "Tôi thấy trong bảng transfers có trạng thái AWAITING_APPROVAL. Khi nào nó xuất hiện?"
+**BA:** "Khi số tiền > hạn mức theo loại khách hàng. VD khách thường có hạn mức 50tr/ngày, vượt thì cần Approver phê duyệt."
+**Bạn:** "Vậy ai là Approver? Có thời gian SLA phê duyệt không?"
+**BA:** "Thường là Team Leader, SLA 30 phút trong giờ hành chính..."
+
+### Lỗi hay gặp
+- **Hỏi đồng thời quá nhiều**: Chọn 1-2 câu hỏi quan trọng nhất mỗi lần.
+- **Không chuẩn bị context**: Luôn show log/DB row/screenshot trước khi hỏi.
+- **Quên ghi chú**: Sau cuộc trò chuyện cập nhật ngay vào doc cá nhân/team.
+
+> Senior tip: Quy tắc "show, don't ask". Thay vì hỏi "luồng thế nào?", hãy vẽ sơ đồ bạn đã trace được và hỏi "Sơ đồ này có đúng với thực tế không? Có gì thiếu sót không?". Cách này tiết kiệm thời gian cho cả hai bên rất nhiều.`,
+  follow: [
+    'Làm sao hỏi về rule phức tạp mà không làm phiền BA quá nhiều?',
+    'Khi BA trả lời mơ hồ, làm thế nào để làm rõ?'
+  ],
+  tags: ['communication', 'business-analysis', 'questions', 'stakeholder-management']
+},
+{
+  id: 'scenario-107',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Trong phỏng vấn: "Bạn sẽ làm thế nào để nhanh chóng hiểu domain mới?" - trả lời thế nào để gây ấn tượng Senior?',
+  a: `**Tóm tắt:** Trả lời bằng cấu trúc rõ ràng: phương pháp (trace end-to-end), công cụ (log/DB/schema), hợp tác (BA/ops), và kết quả mong muốn. Quan trọng nhất là đưa ví dụ cụ thể có số liệu, đồng thời thể hiện tư duy "học để vận hành được" chứ không chỉ "học để code".
+
+### Cấu trúc trả lời hiệu quả
+1. **Mở đầu ngắn**: Nêu quan điểm - hiểu nghiệp vụ quan trọng không kém hiểu kỹ thuật
+2. **Phương pháp từng bước**: Trình bày quy trình thực tế
+3. **Ví dụ minh họa**: Chọn 1 tình huống cụ thể
+4. **Kết quả**: Nêu lợi ích (giảm lỗi, giao tiếp tốt hơn với BA)
+5. **Kết luận**: Tóm lại ngắn gọn
+
+### Ví dụ câu trả lời chi tiết
+*"Trước hết, tôi không đọc hết codebase. Tôi chọn 1 luồng nghiệp vụ quan trọng nhất - ví dụ chuyển tiền - và lần theo nó từ UI đến DB để vẽ bản đồ. Tôi ngồi shadow BA chạy thực tế trên UAT, đọc bảng history để hiểu state machine. Đồng thời tôi trace log với traceId để xem từng bước. Từ đó tôi xây glossary riêng và liệt kê câu hỏi về ngoại lệ. Mục tiêu là sau tuần đầu, tôi có thể tự giải thích luồng đó cho người khác mà không nhìn code. Cách này giúp tôi hiểu cả 'vì sao' lẫn 'như thế nào', và tránh sửa sai do không hiểu nghiệp vụ."*
+
+### Điểm gây ấn tượng
+- **Thực tế**: Nói về trace, log, DB chứ không chỉ "đọc tài liệu"
+- **Hợp tác**: Nhấn mạnh làm việc với BA/PO/nghiệp vụ
+- **Tư duy Senior**: Quan tâm đến ngoại lệ, vận hành, bảo trì
+- **Có ví dụ**: Nếu có kinh nghiệm thật thì kể ngắn gọn
+- **English ngắn ở cuối**: Thể hiện khả năng giao tiếp quốc tế
+
+### English version ngắn
+*"I start by tracing one real transaction end-to-end - from UI to database. I shadow business users, read audit tables to understand state transitions, and ask targeted questions about edge cases. My goal is to build a mental map of the business rules first, so I can make safe changes later."*
+
+### Lỗi hay gặp khi phỏng vấn
+- **Chỉ nói "đọc tài liệu"**: Quá thụ động, không đủ với Senior
+- **Chỉ nói "đọc code"**: Cho thấy tư duy kỹ thuật thuần túy
+- **Không nhấn mạnh ngoại lệ**: Thiếu chiều sâu
+- **Trả lời quá dài**: Giữ 1-2 phút là đủ
+
+> Senior tip: Nhà tuyển dụng muốn nghe "bạn có biết cách học nhanh domain mới mà không phụ thuộc vào người hướng dẫn mãi mãi không?". Câu trả lời trên chứng minh bạn chủ động, có phương pháp và quan tâm đến vận hành thực tế.`,
+  follow: [
+    'Làm sao điều chỉnh câu trả lời theo từng công ty (ngân hàng vs sản phẩm)?',
+    'Nên thêm gì nếu chưa có kinh nghiệm vào dự án mới nhiều lần?'
+  ],
+  tags: ['interview', 'domain-knowledge', 'onboarding', 'communication']
+},
+{
+  id: 'scenario-108',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Khi join dự án mới, bạn cần hiểu nhanh "business rules" ẩn giấu - cách phát hiện chúng như thế nào?',
+  a: `**Tóm tắt:** Business rules thường không nằm trong tài liệu mà ẩn trong validation, state machine, calculation, cut-off time, hạn mức. Để tìm chúng nhanh, bạn phải kết hợp trace code, đọc constraint DB, xem log lỗi thật và hỏi đúng người.
+
+### Nguồn tìm business rule ẩn
+1. **Validation trong code**: Nếu/else, annotation {{@Valid}}, custom validator. Đọc các service.validate() method.
+2. **Database constraint**: CHECK, UNIQUE, trigger - thường enforce rule quan trọng.
+3. **State machine**: Chuyển trạng thái cho thấy quy trình phê duyệt, điều kiện được phép.
+4. **Lỗi thực tế**: Xem log production/staging với error code - mỗi error thường tương ứng 1 rule.
+5. **Calculation logic**: Tính phí, lãi, tỷ giá thường chứa rule phức tạp.
+
+### Phương pháp phát hiện
+- **Trace validation**: Chọn 1 request bị reject (tìm log có ERROR/VALIDATION_FAILED). Lần ngược code xem kiểm tra gì.
+- **Đọc constraint**: {{SELECT * FROM information_schema.check_constraints}} hoặc xem DDL file.
+- **Phân tích history**: Xem {{*_history}} table với nhiều record để thấy pattern.
+- **Hỏi về edge case**: "Khi nào giao dịch bị từ chối dù đủ điều kiện cơ bản?"
+
+### Ví dụ thực tế (hạn mức chuyển tiền)
+~~~text
+Tìm thấy trong TransferService:
+if (amount > dailyLimit && !customer.isVip) throw LimitExceeded
+if (isAfterCutoff && !isSameDayAllowed) throw CutoffExceeded
+if (toAccount.isFrozen) throw AccountFrozen
+
+Rules:
+- Hạn mức theo hạng khách hàng
+- Cut-off 17:00 giờ hành chính
+- Tài khoản đích bị phong tỏa không cho nhận
+~~~
+
+### Ghi chép business rules
+Tạo glossary riêng với format: {{Rule ID}} | {{Mô tả}} | {{Điều kiện}} | {{Hành động}} | {{Nguồn}}. VD:
+- BR-001: Chuyển tiền > 100tr cần duyệt (Nguồn: TransferService.java:45)
+- BR-002: Sau 17:00 không xử lý ngay (Nguồn: config + code)
+
+### Lỗi hay gặp
+- **Tin hoàn toàn vào spec**: Thường spec đã cũ, code mới nhất là nguồn đúng hơn.
+- **Chỉ đọc happy path**: Validation nằm rải rác, dễ bỏ sót.
+- **Không ghi lại**: Sau 1 tháng quên mất rule đã tìm được.
+
+> Senior tip: Rule vàng là "code là specification đang chạy". Nếu spec và code khác nhau, hãy tin code (sau khi xác nhận với BA). Và đừng quên ghi nguồn (file:line) để dễ tra sau này.`,
+  follow: [
+    'Làm sao phân biệt business rule cốt lõi vs validation kỹ thuật?',
+    'Khi phát hiện rule mâu thuẫn giữa spec và code, xử lý thế nào?'
+  ],
+  tags: ['business-rules', 'validation', 'domain-discovery', 'onboarding']
+},
 );
