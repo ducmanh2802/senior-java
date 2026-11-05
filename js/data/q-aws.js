@@ -2617,4 +2617,477 @@ DB:   Oracle on-prem ══ DMS full load ══ CDC liên tục ═════
     { type: 'doc', title: 'What is AWS Database Migration Service?', url: 'https://docs.aws.amazon.com/dms/latest/userguide/Welcome.html' }
   ]
 }
-);
+,
+{
+  id: 'aws-031',
+  topic: 'aws',
+  level: 'mid',
+  q: 'Route 53 ho tro cac ban ghi A, AAAA, CNAME, Alias va MX/TXT. Vi sao khong dat CNAME o apex (root domain), va TTL anh huong the nao khi cutover?',
+  a: `**Tom tat:** CNAME khong the dat o apex vi RFC cam ban ghi khac cung ten; Route 53 giai bang Alias tro toi AWS resource. TTL thap truoc cutover de client nhanh chuyen, TTL cao sau de giam query va chi phi.
+
+### Ban ghi co ban
+- **A**: ten -> IPv4. **AAAA**: ten -> IPv6.
+- **CNAME**: ten -> ten khac. Chi duoc dung khi ten do khong co ban ghi khac (khong MX, TXT, NS, SOA).
+- **Alias** (Route 53 rieng): giong A/AAAA nhung tro toi AWS resource (ALB, CloudFront, S3 website, API Gateway). Mien phi query, tu theo IP resource, ho tro apex.
+
+### Vi sao khong CNAME o apex
+Apex domain (example.com) bat buoc co NS va SOA. RFC 1034 cam CNAME cung ton tai voi ban ghi khac cung ten. Neu dat CNAME o apex se xung dot voi NS/SOA -> resolver tra SERVFAIL. Vi vay dung Alias (hoac A tinh) o apex; subdomain (www) moi dung CNAME.
+
+### TTL va cutover
+TTL = thoi gian resolver cache ban ghi. Khi chuyen he thong:
+1. Truoc cutover 24-48h: ha TTL xuong 60-300s de client nhanh nhan IP moi.
+2. Cutover: doi ban ghi.
+3. Sau on dinh: nang TTL len 3600-86400s de giam query DNS, chi phi Route 53 va tai resolver.
+Nho TTL cu co the da cache o client/ISP -> thuc te cho toi da TTL cu. Alias TTL do AWS quan ly (thuong 60s) nen cutover nhanh hon.
+
+### MX/TXT
+- **MX**: mail server + priority. Nhieu MX voi priority khac nhau cho failover.
+- **TXT**: SPF, DKIM, DMARC, domain verification.
+
+### Pitfall
+- Ha TTL nhung client/ISP ignore TTL nho (mot so cache toi thieu 300s).
+- Quen ha TTL cho ban ghi phu thuoc (CNAME chain).
+- Dung Alias tro S3 website: bucket name phai trung domain.
+
+> Senior tip: truoc moi cutover DNS, ghi lai TTL hien tai va thoi diem ha; dung dig +trace kiem tra propagation. Voi ngan hang, DNS la diem rollback nhanh nhat.`,
+  follow: [
+    'Khac biet giua weighted, latency, failover routing policy cua Route 53?',
+    'Health check cua Route 53 hoat dong the nao va khi nao failover?',
+    'Khi migrate domain tu on-prem DNS sang Route 53, thu tu lam the nao de khong downtime?'
+  ],
+  tags: ['DNS', 'Route53', 'Alias', 'TTL', 'cutover']
+},
+{
+  id: 'aws-032',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Request qua ALB tra ve HTTP 400 trong khi backend van song va traffic lon. Nguyen nhan nao, va phan biet ALB tu tra loi voi target tra loi bang metric va access log?',
+  a: `**Tom tat:** HTTP 400 qua ALB co the do request/header sai, Host header khong khop, request qua lon, HTTP desync mitigation chan, hoac target tu tra 400. Phan biet qua HTTPCode_ELB_4XX_Count vs HTTPCode_Target_4XX_Count va access log.
+
+### ALB tu tra 400 (ELB-side)
+- Header khong hop le: ky tu control, xuong dong trong header (HTTP request smuggling), Host header sai/thieu.
+- HTTP desync mitigation: ALB chan request co ambiguity (Content-Length + Transfer-Encoding ca hai).
+- Request line/body qua lon: header > 16KB (tong), URI > 16KB.
+- TLS/HTTP version khong ho tro, method khong hop le.
+
+### Target tu tra 400
+- Spring validation, JSON parse loi, CSRF token sai, content-type khong dung.
+
+### Phan biet bang metric
+- **HTTPCode_ELB_4XX_Count**: ALB tu sinh 4xx (request khong toi target).
+- **HTTPCode_Target_4XX_Count**: target tra 4xx.
+Neu ELB 4xx tang dot bien con target 4xx khong doi -> loi o edge/client; neu target 4xx tang -> loi app/validation.
+
+### Dieu tra tung buoc
+1. CloudWatch: xem ty le hai metric, thoi diem bat dau.
+2. ALB access log: truong elb_status_code vs target_status_code. Neu target_status_code = "-" -> ALB khong forward (ELB-side).
+3. Loc theo client IP, User-Agent, URI; xem header size.
+4. Reproduce voi curl toi gian; them header dan de tim header gay loi.
+5. Kiem tra WAF logs (neu attach) vi WAF co the tra 403.
+6. Kiem tra application log cho 400 tuong ung (request id).
+
+### Pitfall
+- Header lon do JWT/cookie tich luy -> client gui > 16KB -> ALB 400. Giam cookie.
+- ALB access log co do tre ~5 phut; dung real-time metric truoc.
+- HTTP/2 tu client: ALB ho tro nhung backend HTTP/1.1; mot so header bi loai.
+
+> Senior tip: luon bat ALB access log vao S3 va CloudWatch metric alarm cho HTTPCode_ELB_4XX_Count. Khi incident, so sanh hai metric trong 30s de biet loi o edge hay app.`,
+  follow: [
+    'ALB tra 502/503/504 khac nhau the nao va nguyen nhan?',
+    'Cach cau hinh connection draining va deregistration delay?',
+    'Khi nao dung NLB thay ALB (TCP/UDP, static IP, PrivateLink)?'
+  ],
+  tags: ['ALB', 'HTTP400', 'desync', 'CloudWatch', 'access-log', 'troubleshooting']
+},
+{
+  id: 'aws-033',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Chuyen du lieu giua cac region: S3 Cross-Region Replication, chi phi data transfer, va cac lua chon cho DB (cross-region read replica, Aurora Global Database, DMS).',
+  a: `**Tom tat:** S3 CRR replicate object moi sang region khac (can versioning, IAM role); object cu dung Batch Replication; RTC cho SLA. DB: cross-region read replica (lag giay-phut), Aurora Global Database (lag < 1s, RPO thap), DMS cho migrate/dong bo lien tuc.
+
+### S3 Cross-Region Replication (CRR)
+- Bat versioning ca source va destination bucket.
+- Tao IAM role cho S3 replicate.
+- Chi replicate object **moi** sau khi bat; object cu dung **S3 Batch Replication**.
+- Ho tro filter prefix/tag, encryption (SSE-S3/SSE-KMS), delete marker replication (tuy chon).
+- **Replication Time Control (RTC)**: SLA 99.99% object replicate trong 15 phut, co metric.
+
+### Chi phi
+- Data transfer out tu source region: ~0.02 USD/GB (tuy region).
+- Request charges o destination.
+- Storage o destination.
+- RTC them phi.
+Tinh truoc: 10TB/thang x 0.02 = 200 USD + storage.
+
+### DB giua region
+- **Cross-region read replica (RDS)**: async replication, lag thuong giay den phut; co the promote thanh primary (RPO = lag, RTO phut). Phu hop DR warm standby.
+- **Aurora Global Database**: primary region + secondary region, lag thuong < 1s, RPO thap; failover region ~1 phut (managed). Chi phi storage nhan ban.
+- **DMS**: full load + CDC de dong bo lien tuc giua DB khac engine/on-prem va AWS; dung khi migrate hoac keeping in sync. Khong phai HA solution.
+
+### Khi nao chon cai nao
+- Can DR voi RPO < 1s va RTO < 1 phut -> Aurora Global.
+- DB engine co dinh (Oracle/SQL Server) -> cross-region read replica hoac Multi-AZ DB cluster + snapshot copy.
+- Migrate tu on-prem -> DMS full load + CDC.
+- Object luu tru -> S3 CRR + RTC.
+
+### Pitfall
+- CRR khong replicate object da ton tai truoc khi bat (can Batch).
+- KMS key phai grant cho role replicate o ca hai region.
+- Aurora Global secondary khong nhan write; app phai redirect sau failover.
+- DMS CDC lag tang khi transaction lon; monitor CloudWatch.
+
+> Senior tip: voi ngan hang, dinh nghia RPO/RTO truoc roi moi chon cong nghe. Aurora Global cho RPO < 1s, nhung chi phi va complexity cao; nhieu he thong chi can RDS cross-region replica + snapshot copy la du va re hon nhieu.`,
+  follow: [
+    'S3 CRR voi delete marker va versioning: rui ro xoa nham lan sang region khac?',
+    'Aurora Global Database failover tu dong vs thu cong khac nhau the nao?',
+    'Cach do replication lag va alert cho DB cross-region?'
+  ],
+  tags: ['S3', 'CRR', 'Aurora-Global', 'DMS', 'cross-region', 'DR', 'replication']
+},
+{
+  id: 'aws-034',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Ket noi private tu on-premise len AWS: Site-to-Site VPN vs Direct Connect (private/transit VIF, DX + VPN backup). So sanh thoi gian trien khai, bang thong, do tre, chi phi.',
+  a: `**Tom tat:** Site-to-Site VPN nhanh trien khai (phut-gio), re, nhung qua Internet, do tre bien dong, bang thong gioi han. Direct Connect on dinh, do tre thap, bang thong lon, nhung trien khai tuan-thang va chi phi cao. Thuong DX lam chinh, VPN backup.
+
+### Site-to-Site VPN
+- IPsec tunnel qua Internet giua CGW (customer gateway) va VGW/TGW.
+- Trien khai: vai phut den vai gio (neu co thiet bi).
+- Bang thong: moi tunnel toi da ~1.25 Gbps; co the nhieu tunnel.
+- Do tre: bien dong, phu thuoc Internet.
+- Chi phi: theo gio (~0.05 USD/h/tunnel) + data transfer.
+- Uu: nhanh, re, khong can hop dong telco.
+- Nhuoc: jitter, packet loss, khong SLA.
+
+### Direct Connect (DX)
+- Ket noi vat ly dedicated tu on-prem/datacenter den AWS DX location.
+- **Private VIF**: truy cap VPC private (qua VGW/TGW).
+- **Transit VIF**: truy cap nhieu VPC qua TGW.
+- **Public VIF**: truy cap public service (S3, DynamoDB) qua DX.
+- Trien khai: 2-8 tuan (dat circuit, cross-connect, LOA).
+- Bang thong: 1/10/100 Gbps (hoac hosted connection 50Mbps-10Gbps).
+- Do tre: on dinh, thap, co SLA.
+- Chi phi: port fee theo gio + data transfer out (re hon Internet) + circuit telco.
+
+### DX + VPN backup
+- DX lam duong chinh; VPN qua Internet lam backup.
+- Dung BGP: advertise route qua ca hai; khi DX down, route tu chuyen sang VPN (failover vai giay-phut).
+- Hoac dung DX with MACsec cho encryption o layer 2.
+
+### Khi nao chon
+- Can nhanh, tam thoi, dev/test -> VPN.
+- Production banking, latency-sensitive, throughput lon -> DX + VPN backup.
+- Nhieu VPC -> Transit VIF + TGW.
+
+### Pitfall
+- VPN tunnel MTU: IPsec overhead -> dat MTU 1400-1436 de tranh fragmentation.
+- DX khong ma hoa mac dinh; banking thuong yeu cau MACsec/IPsec tren DX.
+- Hosted connection phu thuoc partner; port capacity chia se.
+
+> Senior tip: banking thuong yeu cau dual DX o hai location khac nhau + VPN backup de dat HA. Luon test failover that (rut cap) truoc go-live, vi BGP convergence co the mat 30-90s va app phai chiu duoc.`,
+  follow: [
+    'BGP route advertisement va AS path prepending dung de uu tien DX the nao?',
+    'Khi DX down, VPN backup co du bang thong khong? Plan capacity ra sao?',
+    'Direct Connect Gateway dung de ket noi nhieu region the nao?'
+  ],
+  tags: ['VPN', 'DirectConnect', 'BGP', 'hybrid', 'networking', 'banking']
+},
+{
+  id: 'aws-035',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Ket noi nhieu VPC: VPC peering (khong transitive) vs Transit Gateway (route table, phan vung) vs PrivateLink. CIDR trung nhau thi xu ly the nao?',
+  a: `**Tom tat:** Peering don gian, re, nhung khong transitive va phai manage route tung cap. TGW tap trung, ho tro transitive routing va phan vung bang route table. PrivateLink expose service cu the khong can peering full network. CIDR trung -> dung PrivateLink, NAT, hoac re-IP.
+
+### VPC Peering
+- Ket noi 1-1 giua hai VPC (cung hoac khac account/region).
+- **Khong transitive**: A peering B, B peering C khong co nghia A den C.
+- Moi VPC them route tro CIDR cua VPC kia qua peering connection.
+- Security Group co the reference peer SG (cung region).
+- Chi phi: data transfer cross-AZ/region; peering connection mien phi.
+- Phu hop: it VPC, ket noi don gian.
+
+### Transit Gateway (TGW)
+- Hub trung tam: nhieu VPC attach vao TGW; routing qua TGW route table.
+- **Transitive**: VPC A den VPC C qua TGW.
+- **Phan vung**: nhieu route table, associate/disassociate attachment; vi du prod va non-prod tach biet.
+- Ho tro VPN, DX attach.
+- Chi phi: theo attachment/gio + data processing USD/GB.
+- Phu hop: nhieu VPC, multi-account, hybrid.
+
+### PrivateLink (VPC Endpoint Service)
+- Expose mot service (NLB) tu provider VPC cho consumer VPC qua endpoint ENI.
+- Consumer chi thay IP private cua endpoint; khong can peering full CIDR.
+- Ho tro cross-account, cross-region (qua TGW/peering).
+- Phu hop: share service cu the (API, DB) ma khong mo toan mang.
+
+### CIDR trung nhau
+- Peering/TGW **khong** ho tro CIDR overlap -> route ambiguous.
+- Giai phap:
+  1. **Re-IP**: doi CIDR mot VPC (ton cong nhung sach).
+  2. **PrivateLink**: expose service qua endpoint, khong can route CIDR.
+  3. **NAT/Proxy**: proxy traffic qua host co IP rieng.
+  4. **TGW + NAT**: NAT gateway o TGW? (AWS khong NAT giua VPC; dung appliance).
+- Banking thuong plan CIDR centrally (IPAM) de tranh overlap ngay tu dau.
+
+### Pitfall
+- Peering route phai them ca hai chieu; quen mot chieu -> timeout im lang.
+- TGW default route table associate tat ca attachment -> rui ro lateral movement; nen tach route table.
+- PrivateLink chi TCP; UDP khong ho tro (tru mot so service).
+
+> Senior tip: voi landing zone ngan hang, dung TGW lam backbone voi route table theo environment (prod/nonprod/shared), va PrivateLink cho service dung chung (auth, logging). Luon dung IPAM de cap CIDR tu dau — re-IP sau nay la ac mong.`,
+  follow: [
+    'TGW route table: cach implement segmentation prod vs non-prod?',
+    'PrivateLink vs peering: khi nao chon cai nao cho database sharing?',
+    'VPC Lattice la gi va khac TGW/PrivateLink the nao?'
+  ],
+  tags: ['VPC-peering', 'Transit-Gateway', 'PrivateLink', 'CIDR', 'segmentation', 'networking']
+},
+{
+  id: 'aws-036',
+  topic: 'aws',
+  level: 'mid',
+  q: 'Nhieu EC2/ECS can share chung storage: EFS, FSx, S3. Khi nao dung cai nao?',
+  a: `**Tom tat:** EFS cho file system POSIX chia se NFS giua nhieu EC2/ECS trong region (multi-AZ). FSx cho workload chuyen biet (Windows SMB, Lustre HPC, NetApp). S3 la object storage, khong phai file system POSIX—dung khi app ho tro S3 API.
+
+### EFS (Elastic File System)
+- NFSv4, POSIX-compliant, tu scale capacity.
+- Mount target theo tung AZ (moi AZ co ENI); EC2/ECS mount qua NFS.
+- Throughput mode: Bursting (mac dinh, theo size) hoac Provisioned (dat truoc).
+- Performance mode: General Purpose vs Max I/O.
+- ECS: mount EFS volume vao container (task definition volume).
+- Multi-AZ by default; du lieu replicate trong region.
+- Use case: shared config, upload file, CMS, home directory.
+
+### FSx
+- **FSx for Windows File Server**: SMB, Active Directory, ACL Windows. Dung cho app Windows/.NET legacy.
+- **FSx for Lustre**: HPC, ML training, throughput cuc cao, tich hop S3 (lazy load).
+- **FSx for NetApp ONTAP**: enterprise NAS, snapshot, replication.
+- **FSx for OpenZFS**: Linux workload can ZFS feature.
+
+### S3
+- Object storage, khong phai file system POSIX. Khong mount nhu NFS (co the qua Mountpoint for S3 nhung read-heavy, khong POSIX day du).
+- Dung khi app doc/ghi qua SDK (upload, backup, data lake, static asset).
+- Re nhat cho luu tru lon; durability 11 nines.
+
+### Bang chon nhanh
+| Nhu cau | Chon |
+|---|---|
+| Nhieu Linux container/EC2 share file POSIX | EFS |
+| App Windows can SMB/AD | FSx Windows |
+| HPC/ML training throughput lon | FSx Lustre |
+| Upload/backup/data lake, app dung SDK | S3 |
+| Database file (Oracle) | EBS (khong share) hoac FSx |
+
+### Pitfall
+- EFS throughput theo size: volume nho ma IO cao -> provisioned throughput.
+- Mount target phai cung AZ voi EC2 de tranh cross-AZ latency/chi phi.
+- S3 khong co rename/append POSIX; app phai thiet ke theo object.
+- EFS backup qua AWS Backup (khong tu dong).
+
+> Senior tip: banking thuong dung S3 cho document/scan, EFS cho shared config va file tam giua service, FSx cho legacy Windows. Dung co gang mount S3 nhu file system cho DB hay app can POSIX—se gap loi concurrency va performance.`,
+  follow: [
+    'EFS throughput mode Bursting vs Provisioned khac nhau the nao?',
+    'Cach mount EFS vao ECS task va IAM permission?',
+    'Khi nao dung EBS multi-attach thay vi EFS?'
+  ],
+  tags: ['EFS', 'FSx', 'S3', 'storage', 'NFS', 'ECS']
+},
+{
+  id: 'aws-037',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Dung moi truong cho mot app dap ung HA va co backup: tu VPC, subnet da AZ, ALB, ASG/ECS/EKS, RDS Multi-AZ, AWS Backup, secrets, logging. Liet ke thu tu trien khai va vi sao.',
+  a: `**Tom tat:** Thu tu: account/landing zone -> network (VPC, subnet, NAT, SG) -> IAM/secret -> compute platform -> data (RDS Multi-AZ) -> load balancer -> CI/CD -> observability/backup -> DR test. Vi ha tang nen phai co truoc khi app chay.
+
+### Thu tu trien khai
+1. **Account & guardrail**: landing zone, SCP, log archive.
+2. **Network**: VPC, public/private subnet da AZ, IGW, NAT Gateway, route table, SG co ban. Vi moi tai nguyen can mang.
+3. **IAM & secrets**: role cho ECS task, secret trong Secrets Manager/SSM Parameter Store, KMS key. Vi app can credential truoc khi chay.
+4. **Compute platform**: ECS cluster/EKS hoac ASG + launch template, AMI, user-data.
+5. **Data layer**: RDS Multi-AZ (hoac Aurora), subnet group, parameter group, backup retention. Vi app phu thuoc DB; tao truoc de connection string san.
+6. **Load balancer**: ALB, target group, listener, health check, certificate ACM. Vi traffic vao qua ALB.
+7. **CI/CD**: pipeline build image, push ECR, deploy.
+8. **Observability**: CloudWatch log group, metric, alarm, X-Ray/OTel, VPC Flow Logs.
+9. **Backup & DR**: AWS Backup plan (RDS, EFS, EBS), cross-region copy, restore test.
+10. **Security review**: WAF, GuardDuty, Config rules, penetration test.
+
+### Vi sao thu tu nay
+- Network va IAM la nen; khong co chung khong tao duoc tai nguyen khac.
+- Data truoc compute de app start khong fail do thieu DB.
+- Observability va backup sau cung vi can biet tai nguyen nao ton tai.
+- DR test cuoi cung vi can toan bo stack.
+
+### HA chi tiet
+- Subnet it nhat 2 AZ (khuyen nghi 3).
+- ALB trai qua nhieu AZ; target dang ky o nhieu AZ.
+- RDS Multi-AZ: standby synchronous, failover 1-2 phut.
+- ASG min instance >= 2 o cac AZ khac nhau.
+- Stateless app de scale horizontal.
+
+### Pitfall
+- Tao RDS truoc khi co subnet group -> phai recreate.
+- Quen backup retention va PITR -> khong restore duoc.
+- Secret rotation chua cau hinh -> secret cu het han gay outage.
+- Health check qua strict -> instance bi terminate lien tuc.
+
+> Senior tip: viet toan bo ha tang bang IaC (Terraform/CDK) va deploy qua pipeline; manual console chi cho PoC. Banking yeu cau moi thay doi co approval va audit trail—console change la rui ro audit.`,
+  follow: [
+    'RDS Multi-AZ vs Read Replica: khac nhau the nao?',
+    'Cach thiet ke health check cho ALB de tranh false positive?',
+    'AWS Backup: retention, vault lock, cross-region copy hoat dong the nao?'
+  ],
+  tags: ['HA', 'architecture', 'VPC', 'RDS', 'ALB', 'backup', 'IaC', 'banking']
+},
+{
+  id: 'aws-038',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Security Group stateful vs NACL stateless trong su co thuc te: ephemeral port bi NACL chan chieu ve, cach debug bang VPC Flow Logs va Reachability Analyzer.',
+  a: `**Tom tat:** SG tu dong cho phep traffic tra ve (stateful); NACL phai mo ca chieu di va ve (stateless). Loi pho bien: NACL cho phep inbound nhung chan outbound ephemeral port -> connection timeout. Debug bang Flow Logs (REJECT) va Reachability Analyzer.
+
+### Case: ephemeral port bi chan chieu ve
+Client (port 54321) -> Server (port 443). Reply tu server port 443 -> client port 54321 (ephemeral).
+- SG: tu dong cho phep reply (stateful) -> khong can rule.
+- NACL: phai co rule outbound cho port 443 (server->client) va inbound cho ephemeral range 1024-65535. Neu NACL server-side deny outbound 1024-65535 -> reply bi chan -> connection hang/timeout.
+Trieu chung: TCP handshake SYN den server OK, nhung client khong nhan SYN-ACK -> timeout; hoac connection established roi stall.
+
+### Debug bang VPC Flow Logs
+- Bat Flow Logs cho subnet/ENI.
+- Tim record: srcaddr dstaddr srcport dstport protocol action.
+- Neu thay REJECT voi dstport la ephemeral -> NACL chan.
+- Neu ACCEPT nhung app khong nhan -> SG hoac app issue.
+- Flow Logs co do tre ~5-10 phut.
+
+### Reachability Analyzer
+- Cong cu managed: kiem tra reachability giua hai ENI/resource theo SG/NACL/route table.
+- Tao path: source ENI -> destination ENI; tra ve reachable/unreachable + hop nao chan (SG/NACL/route).
+- Khong gui traffic that -> an toan cho production.
+- Ho tro ENI, IGW, NAT GW, TGW, VPN, peering.
+
+### Cac nguyen nhan khac
+- Route table thieu route ve client CIDR.
+- SG cua client khong allow outbound.
+- NACL inbound rule deny IP client.
+
+### Pitfall
+- NACL rule number: rule nho hon duoc uu tien; default deny o *.
+- Flow Logs khong capture packet payload; chi metadata.
+- Reachability Analyzer chi kiem tra control plane config, khong capture runtime (packet loss).
+
+> Senior tip: banking network team thuong giu NACL mac dinh allow-all va chi dung SG cho security, vi NACL stateless de gay su co kho debug. Neu phai dung NACL (compliance), luon mo ephemeral range 1024-65535 ca hai chieu va document ro.`,
+  follow: [
+    'Khi nao can dung NACL thay vi chi SG?',
+    'VPC Flow Logs format va cach query bang Athena?',
+    'Reachability Analyzer khac Network Access Analyzer the nao?'
+  ],
+  tags: ['Security-Group', 'NACL', 'Flow-Logs', 'Reachability-Analyzer', 'troubleshooting', 'networking']
+},
+{
+  id: 'aws-039',
+  topic: 'aws',
+  level: 'lead',
+  q: '(lead) Landing zone cho ngan hang chuyen len cloud: Control Tower, account vending, SCP guardrail, log archive/audit account, network account tap trung.',
+  a: `**Tom tat:** Landing zone = nen tang multi-account: Control Tower tu dong dung OU, guardrail SCP, account vending cho team, log archive/audit account tap trung, network account chua TGW/DX/VPN. Muc tieu: isolation, audit, compliance banking.
+
+### Control Tower
+- Tu dong dung landing zone theo best practice AWS: OU (Security, Sandbox, Workloads), account (Log archive, Audit).
+- **Account Factory**: vending account moi qua Service Catalog, tu apply guardrail va baseline.
+- **Guardrails**: preventive (SCP) va detective (Config rules + SNS).
+- Dashboard compliance.
+
+### OU structure goi y (banking)
+- **Security OU**: Log archive, Audit account.
+- **Infrastructure OU**: Network account, Shared services.
+- **Workloads OU**: Prod, Non-prod (per domain).
+- **Sandbox OU**: dev ca nhan (guardrail chat).
+
+### SCP guardrail (Service Control Policy)
+- Ap o OU/account, gioi han max permission (khong grant, chi deny).
+- Vi du: deny region ngoai approved (chi ap-southeast-1), deny disable CloudTrail, deny leave organization, deny create access key cho root.
+- SCP khong anh huong service-linked role.
+
+### Log archive / audit account
+- **Log archive**: nhan CloudTrail, VPC Flow Logs, Config tu moi account qua organization trail; bucket immutable (Object Lock), retention 7 nam.
+- **Audit**: Security Hub, GuardDuty findings, cross-account read-only role cho auditor.
+- Tach khoi workload account de tamper-proof.
+
+### Network account tap trung
+- Chua TGW, DX, VPN, DNS resolver, firewall (Network Firewall).
+- Workload VPC attach TGW; traffic giua VPC va on-prem di qua network account.
+- Centralized egress: NAT Gateway va proxy o network account -> kiem soat outbound.
+- IPAM cap CIDR centrally.
+
+### Pitfall
+- SCP deny qua rong -> break service (vi du deny region nhung service can global endpoint).
+- Account vending khong tu dong apply SCP neu OU sai.
+- Log archive bucket phai Object Lock compliance mode de audit.
+- Networking centralized tang latency neu khong dat TGW attachment dung AZ.
+
+> Senior tip: banking regulator yeu cau segregation of duties va audit trail. Landing zone voi log archive immutable va SCP guardrail la minimum viable compliance. Hay bat dau voi Control Tower (it custom) roi moi build custom (AFT) khi can scale.`,
+  follow: [
+    'AWS Organizations vs Control Tower: khi nao dung cai nao?',
+    'Account Factory for Terraform (AFT) la gi va khac Account Factory?',
+    'Cach implement cross-account role cho CI/CD deploy?'
+  ],
+  tags: ['landing-zone', 'Control-Tower', 'SCP', 'multi-account', 'compliance', 'banking', 'lead']
+},
+{
+  id: 'aws-040',
+  topic: 'aws',
+  level: 'lead',
+  q: '(lead) Migrate database tu on-prem len AWS voi downtime toi thieu: DMS full load + CDC, SCT khi doi engine, kiem tra du lieu, ke hoach cutover va rollback.',
+  a: `**Tom tat:** Dung DMS full load + CDC de dong bo lien tuc; SCT neu doi engine; validate du lieu bang DMS validation va checksum; cutover = dung ghi -> cho CDC lag 0 -> verify -> doi connection string -> smoke test; rollback = giu DB on-prem sync nguoc (CDC reverse) trong cua so 72h.
+
+### DMS full load + CDC
+- **Full load**: copy toan bo du lieu ban dau (bulk).
+- **CDC (Change Data Capture)**: sau full load, DMS doc transaction log (binlog/WAL/redo) va apply thay doi lien tuc -> target luon dong bo.
+- Replication instance dat o AWS (hoac on-prem neu firewall). Endpoint source/target.
+- Monitor: CDCLatencySource/Target, FullLoadThroughput.
+
+### SCT (Schema Conversion Tool)
+- Dung khi doi engine (Oracle -> Aurora PostgreSQL, SQL Server -> RDS).
+- Convert schema, stored procedure, function; bao cao assessment (action items).
+- Mot so object phai sua thu cong (packages, custom types).
+- Neu cung engine (Oracle -> RDS Oracle) thi khong can SCT.
+
+### Kiem tra du lieu
+- DMS data validation: so sanh row count va checksum giua source/target.
+- Tu viet query checksum (hash aggregate) cho bang quan trong.
+- Test application tren target (read-only) truoc cutover.
+- Performance test tren target.
+
+### Ke hoach cutover
+1. T-7 ngay: freeze schema change; dien tap cutover tren staging.
+2. T-1 ngay: ha TTL DNS/connection string; thong bao user.
+3. Cutover window:
+   a. Dung ghi app (maintenance page) hoac redirect read-only.
+   b. Cho CDC lag ve 0 (monitor).
+   c. Validate checksum cuoi.
+   d. Doi connection string/DNS sang target.
+   e. Smoke test (login, transaction mau).
+   f. Mo traffic.
+4. Giu CDC reverse (target->source) trong 72h de rollback.
+
+### Rollback
+- Neu phat hien loi trong 72h: doi connection string ve source (van sync tu target qua CDC reverse).
+- Dieu kien rollback: data corruption, performance khong dat, loi nghiep vu.
+- Sau 72h on dinh: tat replication, decommission source (sau backup).
+
+### Pitfall
+- DMS CDC lag tang khi co long transaction/bulk update -> plan maintenance window du lon.
+- LOB columns lon lam full load cham; dung LOB mode phu hop.
+- Timezone/collation khac nhau giua source/target gay mismatch.
+- Forgot to migrate sequences/identity -> duplicate key sau cutover.
+
+> Senior tip: downtime toi thieu khong phai "khong downtime" — banking thuong chap nhan 30-60 phut maintenance window vao dem. Quan trong la co rollback ro rang va da dien tap. Hay do thoi gian tung buoc trong lan dien tap dau; lan dau luon lau gap 2-3 lan du kien.`,
+  follow: [
+    'Khi nao nen dung native replication thay vi DMS?',
+    'Cach xu ly sequence/identity khi migrate Oracle sang PostgreSQL?',
+    'Blue/green deployment cho database tren AWS hoat dong the nao?'
+  ],
+  tags: ['DMS', 'SCT', 'migration', 'CDC', 'cutover', 'rollback', 'database', 'lead']
+}
+)
