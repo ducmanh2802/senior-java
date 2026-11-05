@@ -4930,5 +4930,1574 @@ groups:
       'Làm sao bạn thuyết phục engineering manager đầu tư 4 tuần cho alert audit + SLO setup khi team đang có deadline feature? Bạn dùng số liệu gì?'
     ],
     tags: ['on-call', 'alert fatigue', 'SLO-based alerting', 'error budget', 'burn rate', 'rota']
-  }
+  },
+  {
+    id: 'devops-057',
+    topic: 'devops',
+    level: 'mid',
+    q: 'Service Java trên server Linux bỗng ăn 100% CPU một core lúc cao điểm. Bạn dùng top -H để tìm thread nóng, chuyển thread id sang hex để đối chiếu với jstack như thế nào, và đọc stack trace ra nguyên nhân ra sao?',
+    a: `**Tóm tắt:** CPU 100% ở Java thường là một thread đang chạy vòng lặp tính toán (code, regex, serialize) hoặc GC liên tục. Quy trình: dùng {{top -H -p <PID>}} để thấy thread nào (TID) đang ăn CPU, đổi TID từ thập phân sang hex, tìm dòng {{nid=0x...}} tương ứng trong thread dump ({{jstack}} hoặc {{jcmd PID Thread.print}}) để biết thread đó đang đứng ở dòng code nào. Bắt buộc lấy bằng chứng (thread dump, {{jstat}}) trước khi restart, vì restart xoá sạch dấu vết.
+
+### Hiểu nhanh
+Hãy tưởng tượng một nhà máy (JVM process) có nhiều công nhân (thread). Một công nhân làm việc điên cuồng không nghỉ khiến máy đếm điện (CPU meter) nhảy 100%. Bạn không thể nhìn bằng mắt thường trong nhà máy đang chạy; bạn dùng camera giám sát theo từng công nhân ({{top -H}}) để biết ai đang làm, rồi tra bảng chấm công (thread dump) để biết người đó đang thực hiện công đoạn nào. Chuyển TID sang hex giống như đổi mã nhân viên từ hệ thập phân sang mã in trên bảng chấm công.
+
+### Thuật ngữ (giải thích từ gốc)
+- **PID (Process ID)**: số định danh một tiến trình (process) trên Linux. Mỗi lần chạy {{java -jar app.jar}} là một process mới có PID riêng.
+- **TID (Thread ID)**: số định danh một luồng (thread) bên trong process. JVM tạo nhiều thread (main, GC, worker, HTTP handler). Trên Linux, thread cũng là "lightweight process" nên có TID riêng.
+- **Thread dump**: ảnh chụp trạng thái tất cả thread của JVM tại một thời điểm: tên thread, trạng thái (RUNNABLE, BLOCKED, WAITING), và stack trace (chuỗi hàm đang gọi). Lấy bằng {{jstack <PID>}} hoặc {{jcmd <PID> Thread.print}}.
+- **nid**: "native id" trong thread dump, là TID của thread hệ điều hành viết dưới dạng hex (cơ số 16). Đây là cầu nối giữa Linux và JVM.
+- **Hex (thập lục phân)**: hệ đếm cơ số 16 dùng 0-9 và a-f. Ví dụ 12399 (thập phân) = 0x306f (hex).
+
+### Quy trình từng bước (có ví dụ số liệu)
+~~~bash
+# Bước 1: Xác nhận process Java nào ăn CPU
+top -c
+# Giả sử thấy: PID 12345, COMMAND java, %CPU 198 (gần 200% = ăn 2 core)
+
+# Bước 2: Xem thread nào trong process đó ăn CPU
+top -H -p 12345
+# -H: hiện thread (mặc định top chỉ hiện process)
+# -p: chỉ xem PID 12345
+# Nhấn P để sắp xếp theo %CPU. Ví dụ thấy:
+#   PID   USER  %CPU  COMMAND
+#   12399 app   99.3  java      <-- thread nóng (TID=12399)
+#   12401 app   98.7  java      <-- thread nóng thứ 2
+
+# Bước 3: Chuyển TID thập phân sang hex
+printf '%x\\n' 12399
+# Kết quả: 306f
+printf '%x\\n' 12401
+# Kết quả: 3071
+
+# Bước 4: Lấy thread dump và tìm nid tương ứng
+jstack 12345 > /tmp/dump1.txt
+# Hoặc: jcmd 12345 Thread.print > /tmp/dump1.txt
+grep -n 'nid=0x306f' /tmp/dump1.txt
+# Tìm thấy dòng kiểu:
+# "http-nio-8080-exec-7" #42 daemon prio=5 os_prio=0 tid=0x... nid=0x306f runnable
+# Sau đó đọc 15-30 dòng tiếp theo để thấy stack trace
+grep -A 25 'nid=0x306f' /tmp/dump1.txt
+~~~
+
+### Đọc stack trace: ví dụ minh hoạ
+~~~text
+"http-nio-8080-exec-7" #42 daemon prio=5 nid=0x306f runnable
+   java.lang.Thread.State: RUNNABLE
+        at java.util.regex.Pattern$GroupHead.match(Pattern.java:...)
+        at java.util.regex.Pattern$Branch.match(Pattern.java:...)
+        at com.myapp.util.Validator.isValidEmail(Validator.java:87)
+        at com.myapp.service.UserService.register(UserService.java:42)
+~~~
+Stack đọc từ trên xuống: frame trên cùng là nơi thread đang chạy. Ở đây thread bị kẹt trong regex engine ({{Pattern.match}}) — dấu hiệu của "catastrophic backtracking" (regex chạy lặp lại mũ khi gặp input xấu). Dòng code nghiệp vụ là {{Validator.java:87}}.
+
+### Phân biệt nguyên nhân theo stack
+| Thấy trong stack | Nghi ngờ | Hướng xử lý |
+|---|---|---|
+| Vòng lặp trong code nghiệp vụ ({{while}}, {{for}}) | Logic sai, điều kiện thoát không đạt | Đọc code, kiểm tra input |
+| {{java.util.regex.Pattern}} | Regex backtracking với input dài/xấu | Đơn giản hoá regex, giới hạn độ dài input, dùng possessive quantifier |
+| {{G1 Young Generation}}, {{GC Thread}}, {{VMThread}} | GC đang chạy liên tục do heap gần đầy | {{jstat -gcutil <PID> 1000}}, xem heap/GC log |
+| {{ObjectMapper.writeValue}}, {{Gson.toJson}} trên object lớn | Serialize object đồ thị phức tạp | Giới hạn response, dùng DTO, streaming |
+| {{MessageDigest}}, {{BCrypt}}, {{Cipher}} | Mã hoá/hash nặng (có thể bình thường nếu tải cao) | Kiểm tra throughput, cân nhắc offload |
+
+### Lưu ý về phiên bản JDK
+- **JDK 8-17**: {{nid}} trong thread dump thường in hex ({{nid=0x306f}}). Bạn phải đổi TID sang hex.
+- **JDK 21+ (HotSpot)**: một số bản in {{nid}} dạng thập phân trong thread dump; khi đó có thể khớp trực tiếp với TID từ {{top -H}}. Cách chắc nhất: chạy {{jstack <PID> \| head -30}} xem định dạng {{nid}} rồi quyết định có cần chuyển hex hay không.
+- Luôn lấy **3 thread dump cách nhau 5-10 giây**: nếu cùng một thread ở cùng stack qua 3 dump, đó là thread "kẹt"; nếu stack thay đổi liên tục, thread đang chạy nặng nhưng vẫn tiến triển.
+
+### Lỗi hay gặp (pitfall thực tế)
+1. **Restart ngay khi thấy CPU cao**: mất toàn bộ bằng chứng. Trên production, sự cố tương tự có thể lặp lại; không có dump thì lần sau vẫn mò. Cách tránh: luôn thu {{jstack}} (3 lần), {{jstat -gcutil}}, và lưu trước khi restart.
+2. **Chỉ nhìn %CPU của process, không nhìn thread**: process 200% nhưng chia đều cho 20 thread (mỗi thread 10%) là tải bình thường; một thread 100% là bất thường. Cách tránh: luôn dùng {{top -H -p <PID>}}.
+3. **Đổi nhầm chiều hex/thập phân**: {{printf '%x'}} chuyển thập phân → hex; {{printf '%d' 0x306f}} chuyển ngược. Nhiều người tra nhầm nên không tìm thấy {{nid}}.
+4. **Bỏ qua thread GC**: nếu thread nóng là {{GC task thread}} hoặc {{G1 Conc#0}}, nguyên nhân gốc là bộ nhớ (heap gần đầy, allocation rate cao), không phải code nghiệp vụ. Tối ưu code lúc này vô ích; cần xem {{-Xmx}}, {{jstat}}, heap dump.
+
+### Trả lời phỏng vấn
+Khi service Java ăn 100% CPU, em dùng {{top -H -p <PID>}} để tìm thread cụ thể đang tiêu thụ CPU (TID). Sau đó chuyển TID sang hex bằng {{printf '%x'}} vì thread dump của HotSpot ghi native id ở dạng {{nid=0x...}}. Em lấy ít nhất 3 thread dump cách nhau 5 giây bằng {{jstack}} hoặc {{jcmd}}, rồi grep {{nid}} để thấy stack trace. Từ stack, em phân biệt: nếu là code nghiệp vụ hoặc regex thì sửa logic; nếu là thread GC thì vấn đề nằm ở bộ nhớ, em chuyển sang phân tích {{jstat -gcutil}} và GC log. Em luôn thu bằng chứng trước khi restart vì restart làm mất trạng thái.
+
+> Senior tip: Trên Kubernetes, bạn thường không có {{jstack}} cài sẵn trong image distroless. Hãy dùng {{jcmd}} (đi kèm JRE), hoặc {{kubectl debug}} với ephemeral container có JDK, hoặc expose endpoint thread dump qua Spring Boot Actuator ({{/actuator/threaddump}}) có bảo vệ auth. Chuẩn bị sẵn cách lấy dump trước khi sự cố xảy ra.`,
+    follow: [
+      'Nếu thread dump cho thấy thread nóng là GC thread, bạn chuyển sang điều tra gì tiếp theo?',
+      'Tại sao cần lấy 3 thread dump cách nhau vài giây thay vì chỉ 1 dump?',
+      'Làm sao phát hiện "catastrophic backtracking" của regex trên production mà không cần đọc code?'
+    ],
+    tags: ['Linux', 'CPU', 'top -H', 'jstack', 'thread dump', 'nid', 'troubleshooting']
+  },
+  {
+    id: 'devops-058',
+    topic: 'devops',
+    level: 'mid',
+    q: 'Lệnh uptime báo load average là 12.00, 8.50, 4.20 trên máy 4 core. Điều đó có nghĩa là gì? Load average khác gì với %CPU, và khi nào load cao nhưng CPU lại thấp?',
+    a: `**Tóm tắt:** Load average là số lượng trung bình các process đang **chạy** (RUNNABLE) hoặc **chờ tài nguyên không bị ngắt** (thường là chờ I/O đĩa, trạng thái D trên Linux) trong 1, 5, 15 phút. Trên Linux, load average **bao gồm cả process chờ I/O**, nên load cao không đồng nghĩa CPU bận. Quy tắc thô: load trung bình bền vững > số core nghĩa là có hàng đợi. Ba con số cho biết xu hướng: đang tăng (12 > 8.5 > 4.2) hay giảm. Luôn kết hợp {{vmstat}}, {{top}} (%wa, %us), {{iostat}} để biết hàng đợi là do CPU hay do I/O.
+
+### Hiểu nhanh
+Hãy nghĩ load average như số người đang xếp hàng tại quầy thu ngân (core CPU). "Đang chạy" là người đang được tính tiền; "đang chờ I/O" (trạng thái D) là người đứng trước quầy nhưng thu ngân đang chờ máy quẹt thẻ phản hồi — họ chiếm chỗ trong hàng dù thu ngân không bận tính toán. Trên Linux, cả hai loại đều được đếm vào hàng. Vì vậy hàng dài (load cao) có thể do quá nhiều khách (CPU-bound) hoặc do máy quẹt thẻ chậm (I/O-bound).
+
+### Thuật ngữ
+- **RUNNABLE (R)**: process đang chạy trên CPU hoặc đang chờ trong hàng đợi CPU để được chạy.
+- **Uninterruptible sleep (D)**: process đang chờ một thao tác I/O (thường là đĩa, đôi khi NFS) hoàn tất và **không thể bị ngắt** bởi signal (kể cả {{kill -9}} không giết được ngay). Trên Linux, D-state được tính vào load average.
+- **I/O wait (%wa)**: phần trăm thời gian CPU ở trạng thái nhàn rỗi nhưng đang chờ I/O hoàn thành. CPU "rảnh" nhưng công việc bị kẹt ở đĩa/mạng.
+- **Core**: đơn vị thực thi của CPU. Máy 4 core có thể chạy đồng thời 4 thread CPU-bound mà không xếp hàng.
+
+### Đọc ba con số load average
+~~~bash
+uptime
+#  02:15:03 up 10 days,  3:42,  2 users,  load average: 12.00, 8.50, 4.20
+#                                                         1m     5m    15m
+~~~
+- **1 phút = 12.00**: trung bình 12 process trong hàng đợi/chạy trong 1 phút gần nhất.
+- **5 phút = 8.50, 15 phút = 4.20**: xu hướng **đang tăng** (12 > 8.5 > 4.2) → vấn đề đang diễn ra, cần chú ý ngay.
+- Nếu xu hướng ngược (4, 8, 12): vấn đề đang dịu đi.
+- So với số core: {{nproc}} trả về 4 → load 12 trên 4 core nghĩa là trung bình ~3 process đang chờ cho mỗi core. Đây là dấu hiệu quá tải rõ nếu kéo dài.
+
+**Ngưỡng tham khảo (thô, tuỳ workload):**
+| Load / Core | Diễn giải |
+|---|---|
+| < 0.7 | Thoải mái |
+| 0.7 – 1.0 | Cần theo dõi |
+| > 1.0 kéo dài | Có hàng đợi, latency tăng |
+| > số core * 2 | Quá tải nghiêm trọng (với workload CPU-bound) |
+
+### Load cao nhưng CPU thấp: khi nào xảy ra?
+~~~bash
+# Kiểm tra nhanh
+top
+# Quan sát dòng %Cpu(s): us thấp (ví dụ 5%), nhưng wa cao (ví dụ 70%)
+vmstat 1 5
+# Cột r: số process chờ CPU (RUNNABLE)
+# Cột b: số process blocked chờ I/O (D-state)  <-- load cao do đây
+# Cột wa: % CPU chờ I/O
+~~~
+| Tình huống | Load | %us (CPU user) | %wa (I/O wait) | Cột b (vmstat) | Nguyên nhân điển hình |
+|---|---|---|---|---|---|
+| CPU-bound | Cao | Cao | Thấp | 0 | Vòng lặp, tính toán, GC |
+| I/O-bound | Cao | Thấp | Cao | Cao | Đĩa chậm, query DB chậm ghi đĩa, NFS treo, log ghi ồ ạt |
+| Lock contention (ít gặp) | Có thể cao | Thấp | Thấp | Thấp | Nhiều thread RUNNABLE nhưng tranh lock (ít làm tăng load như I/O) |
+
+### Ví dụ điều tra I/O-bound
+~~~bash
+iostat -x 1 3
+# Xem %util (gần 100% = đĩa bão hoà), await (ms chờ trung bình), r/s w/s
+# %util cao + await cao + load cao + %wa cao = đĩa là nút thắt
+
+# Tìm process nào đang gây I/O nhiều
+pidstat -d 1 5
+# Cột kB_rd/s, kB_wr/s theo PID
+
+# Với Java: kiểm tra GC log, ghi heap dump, ghi log quá nhiều?
+lsof -p <PID> | wc -l   # nhiều file mở?
+~~~
+
+### Pitfall hay gặp
+1. **Thấy load > core liền đòi thêm CPU**: nếu nguyên nhân là I/O (đĩa EBS chậm, NFS lag, DB trên cùng máy), thêm CPU không giúp; cần nâng IOPS, chuyển storage, hoặc giảm I/O. Cách tránh: luôn nhìn {{%wa}} và {{iostat}} trước.
+2. **So sánh load giữa máy khác số core**: load 8 trên 4 core (gấp đôi) tệ hơn load 8 trên 32 core (nhàn). Cách tránh: luôn chia load cho {{nproc}}.
+3. **Nhầm load average của Linux với các hệ Unix khác**: một số hệ Unix (BSD truyền thống) không tính I/O wait vào load. Tài liệu đọc trên mạng có thể gây nhầm; trên Linux, D-state được tính.
+4. **Bỏ qua xu hướng 1/5/15 phút**: một spike 1 phút có thể là deploy hoặc batch job ngắn; load 15 phút cao mới cho thấy vấn đề bền vững.
+
+### Trả lời phỏng vấn
+Load average trên Linux là số process trung bình đang chạy hoặc chờ I/O không ngắt được (D-state) trong 1, 5, 15 phút. Điểm quan trọng là Linux tính cả I/O wait vào load, nên load cao không có nghĩa CPU bận. Ví dụ load 12 trên máy 4 core: nếu {{vmstat}} cho thấy cột {{b}} cao và {{%wa}} cao trong {{top}}, vấn đề là I/O (đĩa, storage mạng), em sẽ dùng {{iostat -x}} và {{pidstat -d}} để tìm nguồn; nếu {{%us}} cao và cột {{r}} cao, mới là CPU-bound. Em luôn đọc ba con số theo xu hướng và chia cho số core để đánh giá mức độ.
+
+> Senior tip: Trên cloud (AWS EC2 với EBS gp2/gp3), "load cao, CPU thấp" rất hay gặp khi burst credit của EBS cạn hoặc IOPS cấu hình thấp hơn nhu cầu. Hãy kiểm tra {{iostat -x}} (await, %util) và CloudWatch metric {{VolumeQueueLength}}, {{BurstBalance}} cùng lúc. Với Java, GC log ghi đồng bộ hoặc log framework flush liên tục cũng có thể tạo I/O wait bất ngờ.`,
+    follow: [
+      'Làm sao phân biệt load cao do I/O đĩa với load cao do NFS mount bị treo?',
+      'Process ở trạng thái D (uninterruptible sleep) có kill được bằng kill -9 không? Tại sao?',
+      'Trên container Kubernetes, load average bạn thấy trong container phản ánh điều gì?'
+    ],
+    tags: ['Linux', 'load average', 'CPU', 'I/O wait', 'vmstat', 'iostat', 'troubleshooting']
+  },
+  {
+    id: 'devops-059',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Server Linux báo "No space left on device" khi ghi log. {{df -h}} thấy phân vùng / đầy 100%, nhưng {{du -sh /}} cộng lại chỉ khoảng 60%. Bạn giải thích hiện tượng này thế nào, dùng {{lsof +L1}} để tìm file đã xoá nhưng vẫn bị giữ ra sao, và xử lý an toàn thế nào?',
+    a: `**Tóm tắt:** {{df}} đo dung lượng ở mức filesystem (block đã cấp phát), còn {{du}} đi bộ qua cây thư mục và cộng kích thước file đang có tên. Khi một process vẫn giữ file descriptor mở vào file đã bị {{rm}} (xoá tên khỏi thư mục) nhưng chưa {{close()}}, filesystem chưa giải phóng block vì "link count" thực tế vẫn > 0 ở mức kernel — nên {{df}} vẫn thấy đầy, {{du}} không thấy file đó. Công cụ {{lsof +L1}} liệt kê file có link count < 1 nhưng vẫn mở. Xử lý an toàn: truncate file qua {{/proc/<PID>/fd/<FD>}} hoặc yêu cầu app xoay log/restart có kiểm soát; không {{kill -9}} bừa bãi. Ngoài ra, "No space left" cũng có thể do **hết inode** ({{df -i}}).
+
+### Hiểu nhanh
+Hãy tưởng tượng file như một cuốn sổ trong thư viện. {{rm}} chỉ gỡ nhãn tên cuốn sổ khỏi kệ (xoá entry trong thư mục). Nhưng nếu có người (process) đang cầm cuốn sổ mở đọc, thủ thư (filesystem/kernel) chưa thể vứt cuốn sổ đi vì người đó vẫn cần nó — trang giấy (block đĩa) vẫn bị chiếm. {{du}} chỉ đếm sách trên kệ; {{df}} đếm tổng giấy đã dùng trong kho. {{lsof +L1}} giúp tìm ai đang cầm cuốn sổ "vô danh" (không còn nhãn trên kệ).
+
+### Thuật ngữ
+- **Block**: đơn vị cấp phát dung lượng trên filesystem (thường 4KB). {{df}} đếm block đã cấp phát.
+- **Inode**: cấu trúc metadata của file (quyền, owner, timestamp, con trỏ tới block dữ liệu). Mỗi file cần 1 inode. Hết inode → không tạo được file mới dù còn dung lượng.
+- **File descriptor (fd)**: số nguyên process dùng để tham chiếu file đang mở. Kernel giữ bảng fd cho mỗi process.
+- **Hard link / link count**: số tên (directory entry) trỏ tới cùng inode. {{rm}} giảm link count; block chỉ được giải phóng khi link count = 0 **và** không còn fd nào mở.
+- **Truncate**: cắt nội dung file về kích thước nhỏ hơn (thường 0) mà không xoá file/đóng fd.
+
+### Điều tra bước 1: xác nhận thiếu dung lượng hay thiếu inode
+~~~bash
+df -h
+# Filesystem      Size  Used Avail Use% Mounted on
+# /dev/nvme0n1p1   50G   50G     0 100% /
+
+df -i
+# Filesystem      Inodes  IUsed   IFree IUse% Mounted on
+# /dev/nvme0n1p1 3276800 3276800      0  100% /   <-- hết inode (triệu file nhỏ)
+~~~
+Nếu {{IUse%}} 100% nhưng dung lượng còn: nguyên nhân là quá nhiều file nhỏ (session file, cache, thư mục {{/tmp}}). Cần tìm thư mục có nhiều file: {{for d in /*; do echo "$d $(find "$d" -xdev | wc -l)"; done 2>/dev/null | sort -k2 -rn | head}}.
+
+### Điều tra bước 2: df vs du lệch — file đã xoá còn giữ mở
+~~~bash
+# du thường cần chạy ở thư mục mount point, bỏ qua filesystem khác
+du -shx / 2>/dev/null
+# 30G  /
+
+# Tìm file đã "unlinked" (link count 0) nhưng vẫn mở
+lsof +L1
+# hoặc giới hạn theo filesystem: lsof +L1 /dev/nvme0n1p1
+# Ví dụ output:
+# COMMAND   PID USER   FD   TYPE DEVICE SIZE/OFF NLINK  NODE NAME
+# java    12345 app    3w   REG  259,1 21474836480    0 123456 /var/log/app/app.log (deleted)
+#                                     ^^^^^^^^^^^        ^ NLINK=0: đã xoá
+#                                     ~20GB vẫn bị giữ
+~~~
+- Cột **NLINK** = 0 (hoặc hiển thị {{(deleted)}}): file không còn tên trong thư mục.
+- Cột **SIZE/OFF**: dung lượng thực tế vẫn chiếm block.
+- Cột **FD** (ví dụ {{3w}}): file descriptor số 3, mở để ghi.
+
+Bạn cũng có thể kiểm tra từ phía process:
+~~~bash
+ls -l /proc/12345/fd/3
+# lrwx------ 1 app app 64 ... /proc/12345/fd/3 -> /var/log/app/app.log (deleted)
+~~~
+
+### Xử lý an toàn (không làm mất dữ liệu quan trọng tuỳ trường hợp)
+| Cách | Lệnh | Khi nào dùng | Rủi ro |
+|---|---|---|---|
+| Truncate qua /proc fd | {{: > /proc/12345/fd/3}} hoặc {{truncate -s 0 /proc/12345/fd/3}} | Cần giải phóng ngay, chấp nhận mất nội dung log đang mở | Mất log chưa flush/ship; app vẫn ghi tiếp từ offset hiện tại — có thể tạo "lỗ hổng" null byte tuỳ cách app ghi |
+| Gửi tín hiệu xoay log | {{kill -USR1 12345}} (nếu app hỗ trợ) hoặc dùng {{logrotate -f}} | App có cơ chế reopen log | Cần app hỗ trợ; kiểm tra config |
+| Restart service có kiểm soát | {{systemctl restart app}} (theo quy trình) | Sau khi đã thu bằng chứng, chấp nhận downtime ngắn | Mất trạng thái in-memory; làm theo runbook |
+| Copy ra chỗ khác rồi truncate | {{cp /proc/12345/fd/3 /tmp/app.log.rescued && : > /proc/12345/fd/3}} | Cần giữ log để điều tra | Tốn I/O tạm thời |
+
+**Lưu ý:** {{rm /var/log/app/app.log}} khi file đang bị giữ **không giải phóng dung lượng** — đó chính là nguyên nhân. Sau khi truncate, {{df -h}} sẽ phản ánh dung lượng trống.
+
+### Phòng ngừa
+- Dùng **logrotate** (Linux) hoặc cấu hình rolling trong logging framework (Logback {{SizeAndTimeBasedRollingPolicy}}, Log4j2 {{RollingFileAppender}}) để xoay và nén/xoá log cũ.
+- Tránh pattern "xoá file log rồi app tự tạo lại" mà không có cơ chế reopen fd — app vẫn ghi vào fd cũ (đã unlinked).
+- Giám sát {{node_filesystem_avail_bytes}} (node_exporter/Prometheus) và {{node_filesystem_files_free}} (inode), cảnh báo ở 80%.
+- Với container/Kubernetes: log nên ghi ra stdout để runtime thu thập; giới hạn kích thước log container (Docker {{max-size}}, containerd config).
+
+### Lỗi hay gặp
+1. **Chỉ chạy {{rm}} file lớn rồi tưởng đã xong**: nếu process còn mở, {{df}} không đổi. Cách tránh: sau {{rm}}, kiểm tra {{lsof +L1}}; ưu tiên truncate hoặc restart có kiểm soát.
+2. **{{kill -9}} process Java ngay lập tức**: giải phóng fd nhưng mất cơ hội thu thread dump/heap dump, và có thể gây hỏng dữ liệu đang ghi. Cách tránh: thu bằng chứng, thử truncate/xoay log trước; restart theo quy trình.
+3. **Bỏ qua inode**: {{df -h}} còn trống nhưng vẫn "No space left" — nhiều người bối rối. Cách tránh: luôn kiểm tra {{df -i}} cùng lúc.
+4. **Chạy {{du}} trên mount khác**: {{du -sh /}} có thể đi vào {{/proc}}, {{/sys}}, mount mạng và cho kết quả sai/chậm. Cách tránh: dùng {{du -shx /}} ({{-x}}: không vượt filesystem boundary).
+
+### Trả lời phỏng vấn
+Khi {{df}} báo đầy nhưng {{du}} cộng lại nhỏ hơn, em nghi file đã bị xoá tên nhưng process vẫn giữ file descriptor mở. {{df}} tính block đã cấp phát ở mức filesystem; {{du}} chỉ tính file còn đường dẫn. Em dùng {{lsof +L1}} để tìm các entry có {{NLINK=0}} và cột {{SIZE/OFF}} lớn — thường là log file Java bị {{rm}} nhưng app chưa reopen. Cách xử lý an toàn là truncate qua {{/proc/<PID>/fd/<FD>}} hoặc trigger log rotation/restart có kiểm soát; em tránh {{kill -9}} khi chưa thu bằng chứng. Em cũng kiểm tra {{df -i}} vì hết inode gây cùng thông báo lỗi. Về lâu dài, em dùng log rotation, giám sát disk/inode, và trong container thì đẩy log ra stdout.
+
+> Senior tip: "Log file 20GB bị xoá nhưng đĩa không trống" là sự cố kinh điển lúc 2 giờ sáng. Hãy thêm alert khi {{lsof +L1}} (hoặc metric tương đương) phát hiện file deleted lớn, và chuẩn hoá logging: trên K8s ghi stdout; trên VM dùng logrotate + signal reopen. Đừng bao giờ dùng {{rm}} trên file log đang được ghi như cách "dọn đĩa nhanh".`,
+    follow: [
+      'Tại sao truncate qua /proc/<PID>/fd có thể gây "lỗ" null byte trong file log nếu app ghi bằng append offset?',
+      'Làm sao cấu hình Logback để tự xoay log theo dung lượng và thời gian, tránh phải xoá tay?',
+      'Hết inode thường xảy ra trong tình huống nào, và cách phát hiện sớm?'
+    ],
+    tags: ['Linux', 'disk full', 'df', 'du', 'lsof', 'deleted file', 'inode', 'logrotate']
+  },
+  {
+    id: 'devops-060',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Server chạy service Java có hàng nghìn kết nối TCP ở trạng thái TIME_WAIT và CLOSE_WAIT tăng dần. Bạn dùng {{ss}} để chẩn đoán thế nào, phân biệt nguyên nhân TIME_WAIT vs CLOSE_WAIT, và xử lý trong code Java ra sao?',
+    a: `**Tóm tắt:** TIME_WAIT và CLOSE_WAIT là hai trạng thái TCP khác bản chất: **TIME_WAIT** xảy ra ở phía **chủ động đóng** kết nối sau khi trao đổi FIN hoàn tất, giữ ~60 giây (trên Linux) để tránh gói trễ gây nhầm lẫn — nhiều TIME_WAIT thường do app mở/đóng kết nối liên tục tới cùng đích (không reuse). **CLOSE_WAIT** xảy ra ở phía **bị động** khi đã nhận FIN từ peer nhưng **ứng dụng chưa gọi close()** — CLOSE_WAIT tăng dần gần như luôn là bug rò rỉ socket trong code. Dùng {{ss -tan}} để đếm theo trạng thái và theo đích; sửa gốc ở code: connection pool + đóng response đúng cách.
+
+### Hiểu nhanh
+Kết nối TCP giống một cuộc gọi điện thoại hai chiều. Khi kết thúc: bên cúp máy trước (chủ động đóng) phải đợi một lúc (TIME_WAIT) để chắc bên kia đã nghe thấy tiếng "tút" cuối và không có tín hiệu cũ lạc vào cuộc gọi mới. Bên cúp sau (bị động) nghe thấy bên kia cúp, nhưng nếu ứng dụng (người cầm máy) quên đặt ống nghe xuống, đường dây vẫn bị giữ ở trạng thái "chờ bạn đặt máy" — đó là CLOSE_WAIT. TIME_WAIT nhiều thường do bạn gọi quá nhiều cuộc gọi ngắn; CLOSE_WAIT nhiều do code quên đặt máy.
+
+### Thuật ngữ
+- **Socket**: điểm cuối của kết nối mạng, gắn với (IP, port, giao thức). Trong Java, {{Socket}}, kết nối HTTP bên dưới {{HttpClient}} đều dùng socket.
+- **FIN**: gói TCP báo "tôi hết dữ liệu để gửi, muốn đóng chiều gửi". Đóng kết nối TCP cần trao đổi FIN/ACK hai chiều.
+- **Ephemeral port (cổng tạm)**: cổng nguồn do OS cấp tự động khi client mở kết nối ra ngoài (dải {{ip_local_port_range}}, thường 32768-60999). Hết cổng tạm → không mở được kết nối mới tới đích đó.
+- **Keep-alive (HTTP)**: tái sử dụng một kết nối TCP cho nhiều request HTTP, tránh bắt tay TCP/TLS lặp lại.
+
+### Chẩn đoán bằng ss
+~~~bash
+# Tổng quan socket theo trạng thái
+ss -s
+
+# Đếm TIME_WAIT và CLOSE_WAIT
+ss -tan state time-wait | wc -l
+ss -tan state close-wait | wc -l
+
+# Xem đích nào có nhiều TIME_WAIT (client mở/đóng liên tục tới đâu?)
+ss -tan state time-wait | awk '{print $5}' | sort | uniq -c | sort -rn | head
+
+# Xem CLOSE_WAIT gắn với process nào
+ss -tanp state close-wait
+# -p: hiện process (cần quyền root hoặc cùng user)
+# Ví dụ: users:(("java",pid=12345,fd=187))
+
+# Kiểm tra fd của process đó có phải socket không
+lsof -nP -p 12345 | grep -c TCP
+~~~
+
+### TIME_WAIT: nguyên nhân và xử lý
+**Triệu chứng điển hình:** hàng chục nghìn TIME_WAIT tới cùng {{IP:443}} của đối tác; kèm lỗi {{java.net.BindException: Cannot assign requested address}} (EADDRNOTAVAIL) khi burst.
+
+**Nguyên nhân gốc trong code Java:**
+~~~java
+// SAI: tạo HttpClient mới mỗi request -> không reuse kết nối TCP/TLS
+// Mỗi lần xong, kết nối đóng -> TIME_WAIT ở phía client (nếu client đóng trước)
+public String call(String url) throws Exception {
+    HttpClient c = HttpClient.newHttpClient();
+    return c.send(HttpRequest.newBuilder(URI.create(url)).build(),
+                  HttpResponse.BodyHandlers.ofString()).body();
+}
+
+// ĐÚNG: dùng chung một client (thread-safe), có pool/keep-alive
+private static final HttpClient CLIENT = HttpClient.newBuilder()
+        .connectTimeout(Duration.ofSeconds(2))
+        .build();
+~~~
+Với Spring: khai báo **một bean** {{RestClient}}/{{WebClient}} có cấu hình {{ConnectionProvider}} (Reactor Netty) hoặc {{PoolingHttpClientConnectionManager}} (Apache). Đừng {{new RestTemplate()}} trong mỗi method.
+
+**Xử lý tầng hệ thống (chỉ nới biên, không sửa gốc):** mở rộng {{net.ipv4.ip_local_port_range}}; bật {{net.ipv4.tcp_tw_reuse=1}} (Linux) cho kết nối đi ra — chỉ dùng khi hiểu rõ (cần TCP timestamps). Không tắt TIME_WAIT.
+
+### CLOSE_WAIT: nguyên nhân và xử lý
+**Triệu chứng:** {{ss}} cho thấy CLOSE_WAIT tăng dần theo thời gian, không giảm; sau vài giờ chạm giới hạn fd hoặc hành vi kỳ lạ.
+
+**Nguyên nhân gốc:** peer đã gửi FIN (đóng phía nó), kernel của bạn đã ACK và chuyển socket sang CLOSE_WAIT, nhưng **ứng dụng Java không đọc hết/không đóng** response/stream → fd/socket bị giữ mãi.
+
+~~~java
+// SAI (Apache HttpClient 4.x/5.x kiểu cũ): không consume/close entity -> connection không trả về pool
+CloseableHttpResponse resp = httpClient.execute(request);
+String body = EntityUtils.toString(resp.getEntity()); // nếu ném exception trước khi close...
+// resp.close() không được gọi -> socket có thể kẹt
+
+// ĐÚNG: try-with-resources
+try (CloseableHttpResponse resp = httpClient.execute(request)) {
+    String body = EntityUtils.toString(resp.getEntity());
+    return body;
+}
+
+// Với java.net.http.HttpResponse: body đã được BodyHandler đọc xong thường OK,
+// nhưng nếu dùng InputStream BodyHandler thì phải close stream.
+~~~
+Với JDBC: luôn đóng {{ResultSet}}, {{Statement}}, {{Connection}} (try-with-resources) hoặc dùng pool (HikariCP) quản lý. Connection rò rỉ có thể biểu hiện khác, nhưng cùng họ "quên close resource".
+
+### Bảng so sánh nhanh
+| | TIME_WAIT | CLOSE_WAIT |
+|---|---|---|
+| Phía nào | Chủ động đóng kết nối | Bị động (nhận FIN từ peer) |
+| Thời gian | ~60s (Linux, cố định) | Vô hạn cho tới khi app gọi close() |
+| Tăng dần mãi? | Không (tự hết sau timeout), nhưng có thể luôn cao nếu tạo mới liên tục | Có — dấu hiệu bug rò rỉ |
+| Nguyên nhân thường gặp | Mở/đóng kết nối liên tục, không pool/keep-alive | Không đóng response/socket/stream |
+| Hướng sửa chính | Reuse connection, pool | Sửa code: try-with-resources, đóng entity |
+| Rủi ro | Hết ephemeral port (EADDRNOTAVAIL) | Hết file descriptor (EMFILE) |
+
+### Lỗi hay gặp
+1. **Nhầm CLOSE_WAIT là lỗi mạng/peer**: CLOSE_WAIT nghĩa là peer đã đóng đúng phần của nó; lỗi nằm ở app bạn chưa đóng. Cách tránh: tìm {{ss -tanp state close-wait}} xem PID/fd, rồi soi code path dùng fd đó.
+2. **Cố "xoá" TIME_WAIT bằng sysctl liều lĩnh**: {{tcp_tw_recycle}} đã bị xoá khỏi kernel mới và gây hỏng NAT; chỉnh bừa gây lỗi khó debug. Cách tránh: sửa code để reuse kết nối.
+3. **Chỉ nhìn tổng số kết nối, không nhìn theo đích/trạng thái**: 5000 TIME_WAIT phân tán khác 5000 TIME_WAIT tới một đích (gây hết cổng tạm tới đích đó). Cách tránh: {{ss}} + {{awk/sort/uniq}} theo cột đích.
+
+### Trả lời phỏng vấn
+Em phân biệt TIME_WAIT và CLOSE_WAIT bằng {{ss -tan}}. TIME_WAIT nằm ở phía chủ động đóng, tồn tại ~60 giây để bảo vệ gói trễ; nhiều TIME_WAIT tới cùng một đích thường do code tạo kết nối mới cho mỗi request thay vì dùng connection pool và keep-alive — rủi ro là hết ephemeral port. CLOSE_WAIT nằm ở phía bị động sau khi nhận FIN, nhưng app chưa {{close()}}; CLOSE_WAIT tăng dần gần như chắc chắn là bug rò rỉ socket, ví dụ HTTP response entity không được consume/đóng trong Java. Em dùng {{ss -tanp state close-wait}} để gắn với PID/fd, rồi kiểm tra code dùng try-with-resources. Sửa gốc ở code; chỉnh sysctl chỉ là biện pháp tạm.
+
+> Senior tip: Thêm metric {{process_files_open_files}} và dashboard socket theo trạng thái (node_exporter hoặc Micrometer + OS metrics). CLOSE_WAIT tăng tuyến tính theo giờ là "bom hẹn giờ" — phát hiện ở 30% giới hạn fd còn kịp sửa trong giờ hành chính. Với service gọi nhiều đối tác, bắt buộc chuẩn hoá HTTP client thành bean dùng chung có pool và timeout rõ ràng.`,
+    follow: [
+      'Vì sao TIME_WAIT tồn tại trong TCP và điều gì xảy ra nếu loại bỏ nó hoàn toàn?',
+      'Trong Spring Boot dùng RestTemplate/WebClient, bạn cấu hình connection pool và timeout thế nào để tránh rò rỉ kết nối?',
+      'Làm sao phân biệt CLOSE_WAIT do app bạn với CLOSE_WAIT do thư viện/driver (ví dụ JDBC driver, HTTP client)?'
+    ],
+    tags: ['Linux', 'TCP', 'TIME_WAIT', 'CLOSE_WAIT', 'ss', 'socket leak', 'troubleshooting']
+  },
+  {
+    id: 'devops-061',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Service Java gọi {{api.partner.com}} đôi khi bị treo vài giây ở bước phân giải DNS, hoặc sau khi đối tác đổi IP (failover) app vẫn gọi vào IP cũ hàng chục phút. JVM cache DNS như thế nào, cấu hình {{networkaddress.cache.ttl}} ở đâu, và bạn chẩn đoán DNS chậm trên Linux/container ra sao?',
+    a: `**Tóm tắt:** JVM (class {{InetAddress}}) có lớp cache DNS riêng bên trên resolver của hệ điều hành. Mặc định lịch sử: khi có Security Manager, kết quả thành công cache **vĩnh viễn** (tránh DNS spoofing); khi không có Security Manager (phổ biến từ Java 17+ vì Security Manager bị deprecate), kết quả thành công cache **30 giây**, lookup thất bại cache **10 giây**. Cấu hình qua {{networkaddress.cache.ttl}} và {{networkaddress.cache.negative.ttl}} trong file {{<java.home>/conf/security/java.security}} hoặc đặt lúc khởi động bằng {{java.security.Security.setProperty}}. DNS chậm thì chẩn đoán ở tầng OS/container ({{/etc/resolv.conf}}, {{nsswitch.conf}}, {{getent}}, {{dig}}, độ trễ tới resolver) trước, rồi mới nghi tầng JVM.
+
+### Hiểu nhanh
+DNS giống tra danh bạ để đổi tên ({{api.partner.com}}) thành số điện thoại (IP). JVM giữ một cuốn sổ tay nhỏ (cache) để đỡ phải tra danh bạ liên tục — tra nhanh hơn nhưng nếu số đổi (failover), sổ tay cũ gây gọi nhầm. Danh bạ thật nằm ở hệ điều hành ({{/etc/resolv.conf}} trỏ tới DNS server). Nếu tra danh bạ thật bị chậm, JVM cũng chậm dù sổ tay có hoạt động.
+
+### Thuật ngữ
+- **DNS (Domain Name System)**: hệ thống phân giải tên miền thành địa chỉ IP.
+- **TTL (Time To Live)**: thời gian một bản ghi DNS được phép cache. Có TTL của bản ghi DNS (từ authoritative server) và TTL của cache trong JVM/OS — hai thứ khác nhau.
+- **Resolver**: thành phần thực hiện truy vấn DNS (thường là thư viện glibc/musl + cấu hình {{/etc/resolv.conf}}).
+- **{{InetAddress}}**: class Java chuẩn để biểu diễn địa chỉ IP và thực hiện phân giải tên ({{InetAddress.getByName}}, {{getAllByName}}).
+
+### JVM cache DNS: cơ chế và mặc định
+~~~text
+Code Java gọi InetAddress.getByName("api.partner.com")
+  -> Kiểm tra cache JVM (InetAddress cache)
+     -> Cache hit & chưa hết TTL: trả IP ngay (không hỏi OS)
+     -> Cache miss/hết TTL: gọi resolver của OS
+        -> OS kiểm tra /etc/hosts, nscd (nếu có), rồi hỏi DNS server trong /etc/resolv.conf
+        -> Trả kết quả, JVM lưu vào cache theo TTL
+~~~
+
+**Giá trị mặc định (cần nhớ khi phỏng vấn):**
+| Thuộc tính | Có Security Manager | Không có Security Manager (phổ biến hiện nay) |
+|---|---|---|
+| {{networkaddress.cache.ttl}} (thành công) | -1 (cache vĩnh viễn) | 30 (giây) |
+| {{networkaddress.cache.negative.ttl}} (thất bại) | 10 | 10 |
+
+Giá trị: {{-1}} = cache mãi; {{0}} = không cache; {{N}} = cache N giây. (Xác nhận trên JDK bạn dùng vì hành vi/tài liệu có thể khác theo bản phân phối; Security Manager bị deprecate từ Java 17.)
+
+### Cấu hình TTL
+~~~text
+# File: $JAVA_HOME/conf/security/java.security
+# (tìm dòng networkaddress.cache.ttl)
+networkaddress.cache.ttl=30
+networkaddress.cache.negative.ttl=10
+~~~
+Hoặc đặt trong code lúc khởi động (phải chạy sớm, trước lookup đầu tiên, và cân nhắc chính sách bảo mật):
+~~~java
+import java.security.Security;
+
+// Cache 30 giây — cân bằng giữa giảm lookup và phản ứng failover
+Security.setProperty("networkaddress.cache.ttl", "30");
+Security.setProperty("networkaddress.cache.negative.ttl", "5");
+~~~
+Hoặc truyền property khi chạy (một số JDK hỗ trợ property khác nhau; cách chắc là {{java.security}}). Kiểm tra tài liệu JDK cụ thể.
+
+**Cân nhắc khi chọn TTL:**
+- TTL quá lớn (hoặc -1): sau failover/đổi IP (RDS endpoint đổi IP, ELB, đối tác DR), app gọi IP cũ → lỗi kéo dài cho tới khi restart hoặc hết cache.
+- TTL = 0: mỗi lần gọi đều resolve → tăng độ trễ, tăng tải DNS; nhưng phản ứng nhanh với thay đổi.
+- Thực tế: 30-60 giây là điểm cân bằng phổ biến; với dịch vụ failover quan trọng, 10-30 giây. Kết hợp **connection pool** để giảm số lần resolve (kết nối giữ mở không cần resolve lại).
+
+### Chẩn đoán DNS chậm trên Linux/container
+~~~bash
+# 1) Cấu hình resolver trong container/pod
+cat /etc/resolv.conf
+# nameserver, search, ndots, options timeout/attempts
+
+cat /etc/nsswitch.conf | grep hosts
+# Ví dụ: hosts: files dns  (tra /etc/hosts trước, rồi DNS)
+
+# 2) Đo thời gian resolve (bỏ qua cache JVM — chạy từ shell)
+time getent hosts api.partner.com
+# getent dùng NSS của hệ thống (giống nhiều app native)
+
+dig api.partner.com
+# Xem "Query time" (ms), SERVER nào trả lời, ANSWER SECTION
+
+# 3) Kiểm tra /etc/hosts có entry cũ không
+grep partner /etc/hosts
+
+# 4) Kiểm tra connectivity/độ trễ tới DNS server
+# (từ resolv.conf lấy IP nameserver, ví dụ 10.96.0.10)
+# dùng nc hoặc dig đo lặp lại
+
+# 5) Nếu nghi cache OS (nscd/systemd-resolved)
+# systemd-resolve --statistics (tuỳ distro)
+~~~
+
+**Trong Kubernetes:** {{/etc/resolv.conf}} thường trỏ tới CoreDNS (ClusterIP). {{ndots:5}} và search domain có thể làm một tên miền ngoài bị thử nhiều lần với suffix nội bộ → nhiều query NXDOMAIN, tăng độ trễ (xem cũng {{devops-035}}). Triệu chứng: {{dig}} tên FQDN có dấu chấm cuối {{api.partner.com.}} nhanh, nhưng gọi không có dấu chấm chậm.
+
+### Phân biệt "DNS chậm" với "kết nối chậm"
+| Triệu chứng | Nghi DNS | Nghi TCP/TLS/connect |
+|---|---|---|
+| Lần đầu gọi domain chậm, lần sau (cùng process, trong TTL) nhanh | Cache JVM/OS miss rồi hit | Ít liên quan |
+| {{dig}} chậm | Resolver/DNS server/search path | Không |
+| {{dig}} nhanh nhưng app chậm | Cache JVM TTL=0, hoặc resolve mỗi lần do code | Hoặc TLS handshake, pool cạn |
+| Sau failover vẫn gọi IP cũ | Cache JVM/OS TTL quá dài | Không |
+
+### Lỗi hay gặp
+1. **Đặt {{networkaddress.cache.ttl=-1}} (cache vĩnh viễn)**: phổ biến khi copy cấu hình cũ "cho an toàn". Hậu quả: failover DNS không có tác dụng cho tới khi restart toàn bộ JVM. Cách tránh: đặt TTL hữu hạn (30s) trừ khi bạn có cơ chế khác.
+2. **Chỉ sửa DNS record nhưng quên TTL ở nhiều lớp**: DNS authoritative TTL, resolver cache, OS cache, JVM cache, connection pool giữ kết nối tới IP cũ. Cách tránh: khi lên kế hoạch failover, hạ TTL trước (giờ/ngày tuỳ), hiểu toàn bộ chuỗi cache.
+3. **Đổ lỗi cho "Java chậm" mà không đo tầng OS**: {{dig/getent}} mất 3 giây thì JVM cũng vậy. Cách tránh: chẩn đoán từ dưới lên (network → resolver → OS NSS → JVM).
+4. **Nhầm {{tcp_fin_timeout}}/sysctl khác với DNS**: các tham số TCP không sửa DNS. Cách tránh: khoanh vùng đúng tầng.
+
+### Trả lời phỏng vấn
+JVM cache DNS trong {{InetAddress}}. Mặc định hiện đại (không có Security Manager) thường cache lookup thành công khoảng 30 giây và lookup lỗi 10 giây; có thể cấu hình {{networkaddress.cache.ttl}} và {{networkaddress.cache.negative.ttl}} trong {{java.security}} hoặc set sớm bằng {{Security.setProperty}}. TTL quá dài gây app gọi IP cũ sau failover; TTL 0 gây quá nhiều lookup. Khi DNS chậm, em chẩn đoán từ OS: {{/etc/resolv.conf}}, {{nsswitch.conf}}, đo bằng {{getent}} và {{dig}} để tách resolver chậm khỏi app chậm. Trên Kubernetes em chú ý {{ndots}}/search domain làm tăng số query. Em cũng dùng connection pool để giảm tần suất resolve.
+
+> Senior tip: Trước một đợt failover có kế hoạch (đổi endpoint DB, DR site), hãy lập checklist: hạ DNS TTL ở authoritative trước; xác nhận JVM {{networkaddress.cache.ttl}} đủ thấp; kiểm tra connection pool có validate/evict kết nối chết; và có runbook restart rolling nếu cần. "DNS đã đổi mà app vẫn lỗi" gần như luôn là chuyện cache ở một tầng nào đó.`,
+    follow: [
+      'Sự khác nhau giữa TTL của bản ghi DNS (authoritative) và {{networkaddress.cache.ttl}} của JVM là gì?',
+      'Trong Kubernetes, {{ndots:5}} ảnh hưởng thế nào đến độ trễ phân giải tên miền ngoài cluster?',
+      'Bạn xử lý thế nào để service Java phản ứng nhanh khi RDS failover đổi endpoint IP?'
+    ],
+    tags: ['Linux', 'DNS', 'JVM', 'InetAddress', 'networkaddress.cache.ttl', 'troubleshooting']
+  },
+  {
+    id: 'devops-062',
+    topic: 'devops',
+    level: 'mid',
+    q: 'Process Java bỗng biến mất. Có lúc log có {{java.lang.OutOfMemoryError}}, có lúc log im lặng và container báo exit code 137. Khác nhau giữa OOM killer của Linux (kernel) và OutOfMemoryError của JVM là gì, bạn dùng {{dmesg}}/journalctl để xác nhận ra sao, và cách phòng tránh mỗi loại?',
+    a: `**Tóm tắt:** **OutOfMemoryError (OOME)** là lỗi do **JVM** ném ra khi không cấp phát được bộ nhớ trong các vùng JVM quản lý (heap, metaspace, v.v.) — process thường vẫn sống (tuỳ cấu hình), log có stack trace OOME, và bạn có thể có heap dump nếu bật {{-XX:+HeapDumpOnOutOfMemoryError}}. **OOM killer** là cơ chế của **Linux kernel**: khi hệ thống (hoặc cgroup/container) cạn RAM, kernel chọn process để giết ngay (SIGKILL) — log ứng dụng thường **không kịp ghi gì**, exit code thường là 137 (128+9), và bằng chứng nằm ở {{dmesg}} hoặc {{journalctl -k}}. Hai thứ khác tầng, khác triệu chứng, khác cách sửa.
+
+### Hiểu nhanh
+Hãy coi JVM như một công ty thuê văn phòng (container có giới hạn RAM). **OOME** giống kế toán nội bộ (JVM) báo "phòng heap hết chỗ, không đặt thêm bàn được" — công ty vẫn đứng vững, kế toán viết biên bản (stack trace). **OOM killer** giống ban quản lý toà nhà (kernel) thấy cả toà/căn hộ vượt điện nước cho phép, cắt điện đột ngột (SIGKILL) — không ai kịp viết biên bản, chỉ có sổ bảo vệ toà nhà ({{dmesg}}) ghi lại.
+
+### Thuật ngữ
+- **Heap**: vùng nhớ JVM cấp phát object Java. Giới hạn bởi {{-Xmx}}.
+- **Metaspace**: vùng nhớ (native, từ Java 8+) chứa metadata class. Có thể bị tràn nếu load class quá nhiều.
+- **SIGKILL (signal 9)**: tín hiệu buộc process chết ngay, process không bắt/chặn và không chạy shutdown hook. Exit code = 128 + 9 = **137**.
+- **cgroup (control group)**: cơ chế Linux giới hạn tài nguyên (RAM, CPU) cho nhóm process. Container dùng cgroup; vượt memory limit của cgroup → kernel OOM kill process trong cgroup.
+- **oom_score / oom_score_adj**: giá trị kernel dùng để chọn "nạn nhân" khi OOM ở mức hệ thống. Điểm cao hơn dễ bị giết hơn.
+
+### Bảng so sánh
+| | OutOfMemoryError (JVM) | OOM killer (Linux kernel) |
+|---|---|---|
+| Ai quyết định | JVM | Kernel (hệ thống hoặc cgroup) |
+| Nguyên nhân điển hình | Heap đầy, metaspace đầy, không tạo được thread native | Process/cgroup vượt RAM vật lý/limit; node hết RAM |
+| Log ứng dụng | Có {{java.lang.OutOfMemoryError: ...}} và stack trace | Thường **không có** gì (bị SIGKILL) |
+| Exit code (container/process) | Tuỳ: app có thể còn chạy, hoặc thoát với code do app quyết định; nếu dùng {{-XX:+ExitOnOutOfMemoryError}} JVM thoát (thường code 3) / {{CrashOnOutOfMemoryError}} | Thường **137** (SIGKILL) |
+| Heap dump | Có nếu bật {{-XX:+HeapDumpOnOutOfMemoryError}} | Không (JVM không được chạy) |
+| Bằng chứng | Log app, heap dump ({{.hprof}}), {{jstat}} | {{dmesg -T}}, {{journalctl -k}}, {{/var/log/kern.log}} (tuỳ distro), event K8s |
+| Cách sửa | Tăng/điều chỉnh {{-Xmx}}, sửa leak, giảm allocation, xem metaspace/thread | Tăng memory limit/request hợp lý, giảm RSS (heap + metaspace + thread stack + direct buffer + native), sửa leak native |
+
+### Xác nhận OOM killer
+~~~bash
+# Xem log kernel (cần quyền; trên container có thể phải xem ở node)
+dmesg -T | grep -i -E 'killed process|out of memory|oom-kill'
+# Ví dụ dòng:
+# [Tue Nov 05 10:22:11 2026] Out of memory: Killed process 12345 (java)
+#   total-vm:..., anon-rss:..., file-rss:..., shmem-rss:...
+
+# Với systemd/journald
+journalctl -k --since "1 hour ago" | grep -i -E 'killed process|oom'
+
+# Trên Kubernetes: mô tả pod
+kubectl describe pod <pod>
+# Tìm: Last State: Terminated, Reason: OOMKilled, Exit Code: 137
+# Hoặc Events có cảnh báo
+~~~
+Nếu chạy trong container, {{dmesg}} trong container có thể không thấy gì tuỳ cấu hình bảo mật; kiểm tra trên **node** hoặc dùng {{kubectl describe}}/monitoring.
+
+### Xác nhận OutOfMemoryError của JVM
+~~~bash
+# Tìm trong log ứng dụng
+grep -n "OutOfMemoryError" /var/log/app/app.log
+
+# Các dạng OOME phổ biến:
+# Java heap space          -> heap đầy (leak hoặc heap nhỏ)
+# Metaspace                -> quá nhiều class/loader (thường leak ClassLoader)
+# unable to create new native thread -> hết RAM/native cho thread stack hoặc chạm giới hạn OS
+# Direct buffer memory     -> ByteBuffer direct (Netty, NIO) tích luỹ
+# GC overhead limit exceeded (một số GC/cấu hình cũ) -> GC chạy mãi không thu hồi được
+~~~
+
+### Phòng tránh
+**Với OOME (JVM):**
+~~~bash
+# Bật heap dump khi OOME (nhớ đảm bảo có chỗ ghi file dump)
+-XX:+HeapDumpOnOutOfMemoryError
+-XX:HeapDumpPath=/var/log/app/heapdump.hprof
+# Cho JVM thoát để orchestrator restart sạch (tuỳ chiến lược)
+-XX:+ExitOnOutOfMemoryError
+# Giới hạn heap hợp lý, không đặt -Xmx sát memory limit container
+~~~
+
+**Với OOM killer (container):**
+- Tổng RSS thực tế = heap + metaspace + code cache + thread stacks + direct buffers + native + GC overhead. Đừng đặt {{-Xmx}} = 100% memory limit container. Quy tắc thô: heap 60-75% limit, chừa phần còn lại cho non-heap.
+- Dùng {{-XX:MaxRAMPercentage=75.0}} (JDK 10+) để JVM tính heap theo limit container/cgroup.
+- Đặt Kubernetes {{resources.requests.memory}} và {{limits.memory}} thực tế; theo dõi {{container_memory_working_set_bytes}}.
+- Kiểm tra số thread ({{-Xss}}, thread pool) — mỗi thread tốn stack (mặc định thường ~1MB, tuỳ JVM/OS).
+
+### Lỗi hay gặp
+1. **Thấy exit 137 liền tăng {{-Xmx}}**: nếu bị OOM killer do cgroup, tăng heap có thể làm RSS vượt limit nhanh hơn → bị giết sớm hơn. Cách tránh: xác nhận {{dmesg}}/K8s OOMKilled; tăng **memory limit** container hoặc giảm non-heap/heap hợp lý.
+2. **Không bật heap dump vì "tốn đĩa"**: khi OOME thật sự xảy ra bạn không có dữ liệu phân tích leak. Cách tránh: bật dump, cấu hình đường dẫn có dung lượng, có cơ chế dọn file cũ.
+3. **Nhầm OOME {{unable to create new native thread}} là heap**: tăng {{-Xmx}} có thể làm tệ hơn vì bớt RAM native cho thread. Cách tránh: đọc kỹ thông điệp OOME; kiểm tra số thread, {{-Xss}}, {{ulimit -u}}.
+4. **Chỉ nhìn log app khi process biến mất**: OOM killer không để lại log app. Cách tránh: luôn kiểm tra kernel log/K8s events.
+
+### Trả lời phỏng vấn
+Em phân biệt hai trường hợp. OutOfMemoryError là JVM ném ra khi heap/metaspace/direct memory/... không đủ — log app có stack trace, có thể có heap dump nếu bật {{HeapDumpOnOutOfMemoryError}}. OOM killer là kernel Linux giết process (thường SIGKILL, exit 137) khi hệ thống hoặc cgroup cạn RAM — log app thường im lặng, bằng chứng nằm ở {{dmesg -T}} hoặc {{journalctl -k}} và trên Kubernetes là {{OOMKilled}}. Cách sửa khác nhau: OOME thì phân tích heap dump, chỉnh {{-Xmx}} hoặc sửa leak; OOM killer thì đảm bảo memory limit đủ cho tổng RSS (heap + non-heap + thread + direct buffer), dùng {{MaxRAMPercentage}} thay vì hardcode {{-Xmx}} quá sát limit.
+
+> Senior tip: Quy tắc vận hành: mọi service Java production nên có {{-XX:+HeapDumpOnOutOfMemoryError}}, {{-XX:+ExitOnOutOfMemoryError}} (hoặc cơ chế tương đương) để fail-fast và để orchestrator restart; đồng thời dashboard phải tách bạch "OOMKilled (kernel)" và "OOME (JVM)" vì runbook khác nhau. Đừng chẩn đoán OOM chỉ bằng "app chết".`,
+    follow: [
+      'Làm sao chọn {{-Xmx}} và {{MaxRAMPercentage}} khi chạy Java trong container có memory limit 2Gi?',
+      'OOM killer chọn process nào để giết khi cả node cạn RAM? {{oom_score_adj}} ảnh hưởng thế nào?',
+      'OOME "Metaspace" thường do nguyên nhân gì trong ứng dụng Spring Boot, và cách phát hiện?'
+    ],
+    tags: ['Linux', 'OOM killer', 'OutOfMemoryError', 'dmesg', 'JVM', 'Kubernetes', 'troubleshooting']
+  },
+  {
+    id: 'devops-063',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Service Java chạy vài ngày thì ném {{java.io.IOException: Too many open files}} hoặc {{SocketException: Too many open files}}. Bạn kiểm tra giới hạn {{ulimit -n}} (soft/hard), giới hạn trong systemd/container, và dùng {{lsof}}/{{/proc/<PID>/fd}} để tìm rò rỉ file descriptor trong Java thế nào?',
+    a: `**Tóm tắt:** Mỗi file, socket, pipe, epoll fd... process mở đều tiêu tốn một **file descriptor (fd)**. Linux giới hạn số fd mỗi process bằng {{RLIMIT_NOFILE}} (soft limit và hard limit, xem {{ulimit -n}} / {{ulimit -Hn}}). Khi chạm giới hạn, mở file/socket mới thất bại với "Too many open files" (EMFILE). Nguyên nhân thường gặp trong Java: stream/socket/channel không đóng (thiếu try-with-resources), {{Files.list/lines/walk}} trả về Stream giữ fd, connection pool lệch cấu hình, hoặc WatchService. Chẩn đoán: xem giới hạn thực của process trong {{/proc/<PID>/limits}}, đếm fd hiện tại, dùng {{lsof -p}} để biết fd là loại gì và trỏ tới đâu; sửa code đóng tài nguyên và đặt giới hạn hợp lý ở tầng systemd/container.
+
+### Hiểu nhanh
+File descriptor giống "số vé" để vào phòng tài nguyên: mỗi file đang mở, mỗi kết nối mạng, mỗi pipe đều cần một vé. Kernel cấp cho mỗi process một số vé tối đa (giới hạn). Nếu code "mượn vé" (mở file/socket) nhưng quên "trả vé" (close), số vé đang giữ tăng dần — chạy vài ngày là hết, và lần mở tiếp theo bị từ chối: "Too many open files". Dù thông báo nói "files", thực ra socket mạng cũng tính.
+
+### Thuật ngữ
+- **File descriptor (fd)**: số nguyên không âm (0,1,2...): 0=stdin, 1=stdout, 2=stderr; từ 3 trở đi là file/socket/pipe... do process mở.
+- **Soft limit / Hard limit**: soft là ngưỡng kernel áp dụng ngay; process (có quyền phù hợp) có thể tăng soft lên tới hard; chỉ root (hoặc quyền {{CAP_SYS_RESOURCE}}) mới tăng hard. {{ulimit -n}} thường hiện soft; {{ulimit -Hn}} hiện hard.
+- **{{RLIMIT_NOFILE}}**: tên giới hạn tài nguyên cho số fd mở.
+- **try-with-resources**: cú pháp Java cho phép khai báo tài nguyên trong câu lệnh {{try(...)}}; trình biên dịch tự chèn lệnh {{close()}} khi ra khỏi block, kể cả khi có exception. Ví dụ: {{try (var in = Files.newInputStream(path))}} rồi dùng {{in}} bên trong block.
+
+### Kiểm tra giới hạn và mức sử dụng
+~~~bash
+# Giới hạn trong shell hiện tại (có thể KHÁC process đang chạy)
+ulimit -n      # soft
+ulimit -Hn     # hard
+
+# Giới hạn THỰC của process Java (quan trọng)
+PID=12345
+cat /proc/$PID/limits | grep "Max open files"
+# Max open files   1024   4096   files  (ví dụ: soft 1024, hard 4096)
+
+# Số fd đang mở
+ls /proc/$PID/fd | wc -l
+# hoặc
+lsof -nP -p $PID | wc -l
+
+# Xem fd là loại gì (file thường, socket TCP/UDP, pipe, anon_inode...)
+lsof -nP -p $PID | awk '{print $5}' | sort | uniq -c | sort -rn | head
+# Ví dụ: 800 IPv4 (socket), 50 REG (file), 30 FIFO...
+~~~
+
+Nếu {{ls /proc/$PID/fd | wc -l}} tăng đều theo thời gian (đồ thị đi lên), đó là rò rỉ.
+
+### Giới hạn ở nhiều tầng (Linux/service/container)
+| Tầng | Cấu hình | Ghi chú |
+|---|---|---|
+| Kernel toàn hệ thống | {{fs.file-max}}, {{fs.nr_open}} ({{/proc/sys/fs/...}}) | Trần hệ thống; hiếm khi là nguyên nhân trực tiếp của một process |
+| PAM/login shell | {{/etc/security/limits.conf}}, {{limits.d}} | Áp dụng cho session đăng nhập; **service systemd thường không đọc** file này |
+| systemd service | {{LimitNOFILE=65536}} trong {{[Service]}} | Cách đúng cho daemon chạy bằng systemd; reload daemon và restart service |
+| Docker/containerd | {{--ulimit nofile=65536:65536}}, hoặc config runtime | Image/container cần đặt rõ; mặc định có thể thấp |
+| Kubernetes | Thường kế thừa từ node/container runtime; một số môi trường dùng {{securityContext}}/annotations tuỳ runtime | Kiểm tra thực tế trong pod: {{cat /proc/1/limits}} |
+
+**Bẫy:** bạn SSH vào server thấy {{ulimit -n}} = 65535, nhưng service Java do systemd chạy vẫn thấy 1024 trong {{/proc/$PID/limits}} vì systemd unit không set {{LimitNOFILE}}.
+
+### Tìm rò rỉ fd trong Java: pattern thường gặp
+~~~bash
+# Socket rò rỉ: nhiều dòng TCP tới cùng đích hoặc CLOSE_WAIT
+lsof -nP -p $PID | grep TCP | head
+ss -tanp | grep "pid=$PID"
+
+# File rò rỉ: nhiều REG trỏ tới file log/tạm/thư mục
+lsof -nP -p $PID | grep REG | awk '{print $9}' | sort | uniq -c | sort -rn | head
+
+# "anon_inode:[eventpoll]" nhiều bất thường: có thể do tạo selector/epoll lặp (hiếm)
+# Pipe nhiều: tạo ProcessBuilder/process không đóng stream
+~~~
+
+**Code Java hay gây rò:**
+~~~java
+// SAI: Files.lines trả về Stream giữ fd mở cho tới khi close
+long n = Files.lines(Path.of("/data/big.txt")).count();
+
+// ĐÚNG
+try (Stream<String> lines = Files.lines(Path.of("/data/big.txt"))) {
+    long n = lines.count();
+}
+
+// SAI: Files.list / Files.walk cũng phải close
+Files.list(dir).forEach(...);
+
+// ĐÚNG
+try (Stream<Path> paths = Files.list(dir)) {
+    paths.forEach(...);
+}
+
+// SAI: HttpURLConnection / InputStream không đóng
+InputStream in = url.openStream();
+byte[] b = in.readAllBytes();
+
+// ĐÚNG
+try (InputStream in = url.openStream()) {
+    byte[] b = in.readAllBytes();
+}
+
+// ZipFile / JarFile giữ fd tới file nén — phải close
+try (ZipFile z = new ZipFile("app.jar")) { ... }
+~~~
+Ngoài ra: {{DirectoryStream}} (NIO) phải close; {{WatchService}} nếu tạo mới liên tục; kết nối HTTP/DB không qua pool hoặc pool cấu hình sai (leak detection của HikariCP hữu ích).
+
+### Công cụ hỗ trợ
+- HikariCP: bật {{leakDetectionThreshold}} để log cảnh báo connection mượn quá lâu.
+- {{lsof}} lặp lại theo thời gian hoặc giám sát {{process_files_open_files}} / {{process_files_max_files}} (Prometheus JMX exporter / Micrometer).
+- Heap dump đôi khi giúp gián tiếp (tìm object giữ {{Socket}}, {{FileInputStream}}), nhưng công cụ trực tiếp hơn là {{lsof}} và review code path.
+
+### Lỗi hay gặp
+1. **Chỉ tăng {{ulimit}}/{{LimitNOFILE}} mà không sửa leak**: hết fd muộn hơn, nhưng vẫn hết; đồng thời che giấu bug. Cách tránh: tăng giới hạn là biện pháp an toàn tạm thời, nhưng phải tìm và sửa leak.
+2. **Sửa {{/etc/security/limits.conf}} cho systemd service**: không có tác dụng. Cách tránh: đặt {{LimitNOFILE}} trong unit file systemd.
+3. **Nhầm "Too many open files" chỉ là file trên đĩa**: phần lớn trường hợp trên service mạng là **socket**. Cách tránh: dùng {{lsof}} phân loại theo TYPE.
+4. **Đóng resource ở nhánh happy-path nhưng quên khi exception**: rò rỉ chỉ xuất hiện khi có lỗi. Cách tránh: luôn dùng try-with-resources cho {{Closeable}}/{{AutoCloseable}}.
+
+### Trả lời phỏng vấn
+"Too many open files" nghĩa là process chạm {{RLIMIT_NOFILE}}. Em kiểm tra giới hạn thực của process qua {{/proc/<PID>/limits}} (không chỉ {{ulimit}} trong shell) vì systemd/container có thể đặt khác. Em đo số fd bằng {{ls /proc/<PID>/fd | wc -l}} và phân loại bằng {{lsof -p}} để biết là socket hay file thường. Trong Java, nguyên nhân hay gặp là quên đóng resource: {{Files.lines/list/walk}} trả Stream giữ fd, {{InputStream}}/{{Socket}}/{{ZipFile}} không close, hoặc HTTP/DB connection không trả về pool — fix bằng try-with-resources và cấu hình pool đúng. Em tăng {{LimitNOFILE}} (systemd) hoặc ulimit container như biện pháp an toàn, nhưng luôn xử lý leak gốc và thêm giám sát {{open_files}} theo thời gian.
+
+> Senior tip: Hãy đặt alert khi {{process_open_fds / process_max_fds > 0.7}} (hoặc tương đương). Rò fd thường tăng chậm (vài fd/phút) và chỉ nổ sau ngày — nếu bạn chỉ nhìn khi đã 100%, bạn luôn xử lý sự cố lúc nửa đêm. Với Java NIO/Netty, cũng kiểm tra direct buffer và số channel, nhưng "Too many open files" là tín hiệu fd-level rõ ràng nhất.`,
+    follow: [
+      'Tại sao {{Files.lines()}} bắt buộc phải dùng trong try-with-resources trong khi nhiều developer bỏ sót?',
+      'Khác nhau giữa đặt {{ulimit}} trong shell, {{limits.conf}}, và {{LimitNOFILE}} của systemd?',
+      'Làm sao dùng HikariCP leak detection và metric fd để phát hiện connection leak trước khi chạm giới hạn?'
+    ],
+    tags: ['Linux', 'ulimit', 'file descriptor', 'Too many open files', 'lsof', 'Java', 'troubleshooting']
+  },
+  {
+    id: 'devops-064',
+    topic: 'devops',
+    level: 'lead',
+    q: 'Bạn xây dựng runbook xử lý sự cố production cho team on-call của một dịch vụ Java (ngân hàng/thanh toán). Runbook cần gồm những bước nào (detect/triage/mitigate/resolve/postmortem), nguyên tắc thu thập bằng chứng trước khi restart, và cách tổ chức escalation/communication để giảm thời gian ảnh hưởng?',
+    a: `**Tóm tắt:** Runbook sự cố là tài liệu hành động theo bước để người trực (kể cả không phải tác giả hệ thống) có thể **giảm ảnh hưởng nhanh, an toàn, có phối hợp**. Khung chuẩn: **Detect → Triage → Mitigate → Communicate (song song) → Resolve → Postmortem**. Với Java, nguyên tắc vàng là **thu thập bằng chứng trước khi restart** (thread dump, heap dump/histogram, GC log, {{dmesg}}, metric snapshot) vì restart xoá trạng thái trong RAM. Ở cấp lead, bạn thiết kế runbook để giảm MTTR (mean time to recovery), giảm bus factor, và xây văn hoá blameless: mục tiêu là sửa hệ thống, không tìm người đổ lỗi.
+
+### Hiểu nhanh
+Runbook giống "sổ tay xử lý cháy" đặt cạnh bình chữa cháy: khi có khói, người trực không cần nhớ hết kiến trúc — họ mở đúng trang, làm theo checklist, gọi đúng người, và ghi lại đã làm gì. Trong thanh toán/ngân hàng, xử lý sự cố còn gắn với cam kết SLA, thông báo khách hàng/đối tác, và đôi khi yêu cầu tuân thủ (audit trail). Restart service giống "tắt cầu dao" — có thể dập lửa nhanh nhưng cũng làm mất dấu vết; vì vậy phải chụp ảnh hiện trường (bằng chứng) trước.
+
+### Thuật ngữ
+- **Incident (sự cố)**: tình huống làm giảm chất lượng dịch vụ hoặc gián đoạn (lỗi tăng, latency tăng, mất chức năng).
+- **On-call**: lịch trực để phản ứng sự cố ngoài giờ hành chính.
+- **MTTD / MTTR**: Mean Time To Detect / To Recover — thời gian trung bình phát hiện / khôi phục.
+- **Mitigation (giảm thiểu)**: hành động giảm ảnh hưởng cho khách hàng nhanh (rollback, scale, chuyển traffic), chưa nhất thiết sửa nguyên nhân gốc.
+- **Root cause (nguyên nhân gốc)**: nguyên nhân sâu khiến sự cố xảy ra; tìm sau khi hệ thống ổn.
+- **Blameless postmortem**: họp rút kinh nghiệm không quy lỗi cá nhân, tập trung vào cơ chế/hệ thống/guardrail.
+
+### Cấu trúc runbook (mẫu khung)
+~~~text
+1. Detect (Phát hiện)
+   - Nguồn: alert (Prometheus/Alertmanager, CloudWatch, APM), báo từ CS/đối tác
+   - Điều kiện vào incident: error rate > X% trong Y phút, p99 > Z ms, payment success < ...
+   - Mở kênh incident (Slack/Teams/bridge call), đặt Incident Commander (IC) nếu mức độ cao
+
+2. Triage (Phân loại)
+   - Mức độ (SEV): SEV1 ảnh hưởng giao dịch tiền/khách hàng diện rộng; SEV2 suy giảm một phần; SEV3 thấp
+   - Phạm vi: bao nhiêu % traffic, region nào, chức năng nào (login/thanh toán/tra cứu)
+   - Giả thuyết nhanh: deploy gần đây? phụ thuộc DB/đối tác/mạng? thay đổi hạ tầng?
+
+3. Mitigate (Giảm thiểu) — ưu tiên khôi phục dịch vụ
+   - Rollback phiên bản gần nhất (nếu tương quan với deploy)
+   - Tắt feature flag gây lỗi; giảm traffic (rate limit), chuyển sang chế độ degraded
+   - Scale/restart có kiểm soát (sau khi thu bằng chứng); failover DB/region theo playbook
+   - Với thanh toán: xác định giao dịch treo/đang xử lý, tránh double-charge; phối hợp nghiệp vụ
+
+4. Communicate (Song song)
+   - Cập nhật định kỳ (ví dụ mỗi 15 phút cho SEV1): trạng thái, ảnh hưởng, hành động tiếp theo, ETA nếu có
+   - Stakeholder: CS, quản lý, đối tác, (nếu cần) tuân thủ/pháp chế — theo mẫu thông báo đã duyệt
+   - Ghi timeline: mốc thời gian + hành động + người thực hiện
+
+5. Resolve (Khắc phục)
+   - Xác nhận metric hồi phục (error rate, latency, success rate) ổn định
+   - Theo dõi sau sự cố (hypercare) 30-60 phút
+   - Đóng incident khi đạt điều kiện
+
+6. Postmortem (Rút kinh nghiệm) — trong 24-72 giờ làm việc
+   - Timeline khách quan, impact (số giao dịch/khách hàng, thời gian)
+   - Root cause (kỹ thuật + quy trình), contributing factors
+   - Action items có owner, deadline, mức ưu tiên (test, alert, circuit breaker, runbook cập nhật)
+   - Blameless: không nêu tên để quy lỗi; nêu "hệ thống cho phép điều gì xảy ra"
+~~~
+
+### Nguyên tắc thu thập bằng chứng TRƯỚC khi restart (Java)
+Restart/xoá pod/kill process làm mất: stack thread, heap, trạng thái socket, buffer trong RAM. Hãy chuẩn bị "gói thu thập" (script) và chạy nhanh:
+
+~~~bash
+TS=$(date +%Y%m%d_%H%M%S)
+OUT=/tmp/incident_$TS; mkdir -p $OUT
+PID=<PID_JAVA>
+
+# 1) Bối cảnh hệ thống
+date > $OUT/time.txt
+uptime; free -m; df -h; df -i > $OUT/sys.txt
+top -H -b -n1 -p $PID > $OUT/top_threads.txt
+
+# 2) Thread dump: 3 lần cách 5-10 giây
+for i in 1 2 3; do jcmd $PID Thread.print > $OUT/threaddump_$i.txt; sleep 7; done
+# Hoặc jstack $PID
+
+# 3) Bộ nhớ/GC
+jcmd $PID GC.heap_info > $OUT/heap_info.txt 2>&1 || true
+jcmd $PID GC.class_histogram > $OUT/class_histogram.txt 2>&1 || true
+# Heap dump chỉ khi nghi leak và còn dung lượng/cho phép (file lớn, có thể gây pause)
+# jcmd $PID GC.heap_dump $OUT/heap.hprof
+
+# 4) Mạng/socket
+ss -s > $OUT/ss_summary.txt
+ss -tanp > $OUT/ss_all.txt 2>&1 || true
+lsof -nP -p $PID > $OUT/lsof.txt 2>&1 || true
+
+# 5) Kernel/OOM
+dmesg -T | tail -200 > $OUT/dmesg_tail.txt 2>&1 || true
+
+# 6) Log app (kéo đoạn gần sự cố)
+# tail -n 5000 /var/log/app/app.log > $OUT/app_tail.log
+
+# Nén và lưu theo quy định (chú ý dữ liệu nhạy cảm/PII)
+tar czf $OUT.tgz $OUT
+~~~
+
+**Trong Kubernetes:** dùng {{kubectl exec}} (nếu container có {{jcmd}}), ephemeral debug container, hoặc endpoint Actuator ({{/actuator/threaddump}}, {{/actuator/heapdump}}) được bảo vệ chặt. Cân nhắc: {{heapdump}} có thể chứa dữ liệu nhạy cảm — tuân thủ chính sách bảo mật.
+
+**Khi nào restart trước?** Nếu ảnh hưởng SEV1 đang lan rộng và bạn đã chụp tối thiểu (thread dump + metric + {{dmesg}}) hoặc không thể truy cập process, ưu tiên giảm thiểu. Runbook phải ghi rõ "tối thiểu cần gì trước khi restart".
+
+### Escalation & communication
+- **Ma trận escalation**: SEV1 gọi IC + lead kỹ thuật + chủ sở hữu dịch vụ phụ thuộc trong X phút; có số liên lạc dự phòng.
+- **Một đầu mối điều phối (IC)**: tránh nhiều người ra lệnh chồng chéo.
+- **Mẫu thông báo**: viết sẵn cho khách hàng nội bộ/đối tác, nêu "ảnh hưởng gì, từ khi nào, đang làm gì, cập nhật tiếp lúc nào" — không suy đoán nguyên nhân khi chưa chắc.
+- **Ngân hàng/thanh toán**: ghi nhận giao dịch nghi vấn, phối hợp reconciliation; tuân thủ quy trình báo cáo sự cố theo quy định nội bộ/cơ quan quản lý nếu đạt ngưỡng.
+
+### Lỗi hay gặp
+1. **Không có runbook, chỉ có "anh A biết"**: anh A nghỉ phép thì MTTR tăng vọt. Cách tránh: tài liệu hoá, diễn tập (game day), cập nhật sau mỗi postmortem.
+2. **Restart reflex (phản xạ restart)**: dập triệu chứng nhưng lặp lại, không có dữ liệu root cause. Cách tránh: checklist "thu bằng chứng tối thiểu" trước restart; tự động hoá thu thập.
+3. **Postmortem biến thành buổi quy lỗi**: mọi người giấu thông tin lần sau. Cách tránh: blameless, tập trung vào guardrail (alert, test, circuit breaker, limit, review).
+4. **Action items mơ hồ, không owner/deadline**: "cải thiện monitoring" không bao giờ xong. Cách tránh: mỗi action có người chịu trách nhiệm, hạn, và tiêu chí hoàn thành.
+
+### Trả lời phỏng vấn (góc lead)
+Em xây runbook theo vòng đời Detect, Triage, Mitigate, Communicate, Resolve, Postmortem. Phần quan trọng nhất với Java là checklist thu bằng chứng trước khi restart: 3 thread dump cách nhau, thông tin heap/GC, số fd/socket, và {{dmesg}} để phân biệt OOM killer với OOME — vì restart xoá trạng thái RAM. Em phân mức SEV rõ, có Incident Commander, mẫu cập nhật stakeholder định kỳ, và ma trận escalation để đúng người tham gia trong vài phút. Sau sự cố là blameless postmortem với action items có owner và deadline. Mục tiêu của em là giảm MTTR và lặp lại sự cố, không phải tìm ai sai. Trong bối cảnh thanh toán, em thêm bước kiểm soát ảnh hưởng giao dịch và phối hợp nghiệp vụ/tuân thủ.
+
+> Senior tip: Runbook chỉ sống nếu được dùng. Hãy (1) gắn link runbook vào alert, (2) chạy game day/diễn tập định kỳ trên môi trường an toàn, (3) cập nhật runbook ngay trong action item của postmortem. Một runbook 80% đúng nhưng ai cũng tìm thấy còn giá trị hơn tài liệu hoàn hảo nằm trong wiki không ai đọc.`,
+    follow: [
+      'Bạn phân định SEV1/SEV2 cho dịch vụ thanh toán dựa trên tiêu chí nào (SLO, % giao dịch, doanh thu, tuân thủ)?',
+      'Khi nghi ngờ deploy gây lỗi, bạn chọn rollback hay roll-forward? Điều kiện ra quyết định là gì?',
+      'Làm sao cân bằng giữa "thu thập heap dump" (có thể gây pause/lộ dữ liệu) và yêu cầu bảo mật/tuân thủ?'
+    ],
+    tags: ['on-call', 'incident response', 'runbook', 'SRE', 'postmortem', 'leadership', 'troubleshooting']
+  },
+{
+  id: 'devops-065',
+  topic: 'devops',
+  level: 'mid',
+  q: 'Giải thích user, group, quyền rwx/octal, sudo/sudoers, setuid, umask; cấp quyền tối thiểu cho user deploy thế nào?',
+  a: `**Tóm tắt:** Linux quản lý truy cập bằng user/group và 3 nhóm quyền r/w/x cho owner/group/other; cấp quyền tối thiểu cho deploy user = user riêng, group riêng, sudo chỉ các lệnh cụ thể, umask 027, không setuid bừa.
+
+### Khái niệm cơ bản
+- **User**: mỗi tài khoản có UID; /etc/passwd lưu UID, home, shell.
+- **Group**: tập user; /etc/group. Một user có primary group + supplementary groups.
+- **Quyền rwx**: read (đọc nội dung/list dir), write (sửa/tạo/xoá), execute (chạy file/vào dir).
+- **Octal**: r=4, w=2, x=1; ví dụ 755 = rwxr-xr-x, 640 = rw-r-----.
+- **sudo**: chạy lệnh với quyền root theo chính sách /etc/sudoers (sửa bằng visudo).
+- **sudoers**: định nghĩa ai được chạy lệnh nào trên host nào với tư cách ai.
+- **setuid**: bit đặc biệt (4xxx) khiến file chạy với UID owner (ví dụ passwd). Rủi ro bảo mật lớn.
+- **umask**: mặt nạ quyền mặc định khi tạo file (022 → file 644, dir 755; 027 → file 640, dir 750).
+
+### Cấp quyền tối thiểu cho deploy user
+1. Tạo user deploy riêng: useradd -m -s /bin/bash deploy.
+2. Tạo group app và thêm deploy: usermod -aG app deploy.
+3. Thư mục app thuộc group app, mode 2750 (setgid để file mới kế thừa group): chown -R root:app /opt/app && chmod 2750 /opt/app.
+4. sudoers chỉ cho lệnh cần thiết: deploy ALL=(root) NOPASSWD: /bin/systemctl restart myapp, /bin/journalctl -u myapp. Sửa bằng visudo; không cho sudo su hay sudo bash.
+5. umask 027 trong ~/.bashrc của deploy.
+6. Private key deploy mode 600.
+
+### Pitfall
+- chmod -R 777 là anti-pattern.
+- sudo NOPASSWD cho apt/yum = root thực sự.
+- setuid trên script shell bị kernel bỏ qua.
+
+> Senior tip: Nguyên tắc least privilege: deploy user không cần root shell, chỉ cần restart service và đọc log. Audit sudoers định kỳ (sudo -l -U deploy).`,
+  follow: [
+    'Khác nhau giữa chmod và chown? Khi nào dùng ACL (setfacl)?',
+    'setgid bit trên thư mục có tác dụng gì với file mới tạo?',
+    'Làm sao audit quyền truy cập của deploy user trên production?'
+  ],
+  tags: ['linux', 'permissions', 'sudo', 'umask', 'security']
+},
+{
+  id: 'devops-066',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Viết bash script deploy xử lý lỗi: set -euo pipefail, trap ERR/EXIT, exit code, retry có giới hạn, log, idempotent.',
+  a: `**Tóm tắt:** Script deploy đáng tin cậy = set -euo pipefail để fail-fast, trap để dọn dẹp/log, retry có giới hạn cho thao tác mạng, log có timestamp, và các bước idempotent (chạy lại không hại).
+
+### set -euo pipefail
+- set -e: thoát ngay khi lệnh fail.
+- set -u: lỗi nếu dùng biến chưa khai báo.
+- set -o pipefail: pipeline fail nếu bất kỳ lệnh nào fail (không chỉ lệnh cuối).
+
+### trap
+- trap cleanup EXIT: chạy cleanup khi script kết thúc (thành công hay lỗi).
+- trap 'echo "fail at line LINENO" >&2' ERR: log dòng lỗi.
+
+### Retry có giới hạn
+retry() { local n=0 max=5 delay=2; until "$@"; do n=$((n+1)); [ $n -ge $max ] && return 1; sleep $delay; delay=$((delay*2)); done; }
+Dùng cho curl health check, pull image, scp.
+
+### Log
+- exec > >(tee -a /var/log/deploy.log) 2>&1 hoặc function log() { echo "[$(date -Is)] $*"; }.
+- Thêm correlation id (deploy id) để truy vết.
+
+### Idempotent
+- Kiểm tra trước khi làm: nếu file/service đã đúng trạng thái thì skip.
+- Dùng checksum/version để quyết định có deploy không.
+- Atomic: deploy vào thư mục mới rồi symlink switch, rollback = đổi symlink.
+
+### Pitfall
+- set -e không bắt lỗi trong if/while condition; cần kiểm tra rõ.
+- trap ERR không chạy nếu exit do signal; thêm trap cho INT/TERM.
+- Retry vô hạn gây hang; luôn có max.
+
+> Senior tip: Script deploy production nên có --dry-run, lock file (flock) để tránh 2 deploy chạy cùng lúc, và exit code rõ ràng (0 ok, 1 lỗi chung, 2 lock, 3 health fail) để CI/CD phân loại.`,
+  follow: [
+    'Khác nhau giữa trap EXIT và trap ERR?',
+    'Làm sao đảm bảo chỉ một instance deploy chạy cùng lúc (flock)?',
+    'Khi nào nên dùng Ansible thay vì bash script?'
+  ],
+  tags: ['bash', 'deploy', 'error-handling', 'idempotency']
+},
+{
+  id: 'devops-067',
+  topic: 'devops',
+  level: 'senior',
+  q: 'So sánh Deployment, ReplicaSet, StatefulSet, DaemonSet: cơ chế bên trong và ví dụ dùng cho app Spring, Kafka/DB, log agent.',
+  a: `**Tóm tắt:** Deployment quản lý ReplicaSet để rollout app stateless; ReplicaSet giữ số pod; StatefulSet cho workload stateful với identity/PVC ổn định và rollout có thứ tự; DaemonSet chạy 1 pod trên mỗi node.
+
+### Cơ chế bên trong
+- **ReplicaSet**: controller so sánh số pod thực tế với replicas, tạo/xoá pod theo selector. Có ownerReferences trỏ tới Deployment.
+- **Deployment**: quản lý ReplicaSet, thực hiện rolling update, rollback bằng revision history.
+- **StatefulSet**: pod có tên ổn định (web-0, web-1), PVC riêng theo ordinal, rollout có thứ tự, phù hợp DB/Kafka/ZooKeeper.
+- **DaemonSet**: đảm bảo 1 pod trên mỗi node, dùng cho log/metrics agent, CNI, storage.
+
+### Ví dụ
+- App Spring Boot stateless → Deployment + HPA.
+- Kafka broker → StatefulSet + PVC.
+- Fluent Bit/log agent → DaemonSet.
+
+### Pitfall
+- Dùng Deployment cho DB sẽ mất identity/PVC mapping.
+- StatefulSet scale down không tự xoá PVC; cần dọn thủ công.
+
+> Senior tip: Chọn workload type theo state + identity: stateless → Deployment; stateful + identity → StatefulSet; node-level agent → DaemonSet.`,
+  follow: [
+    'Rolling update của Deployment hoạt động thế nào (maxSurge, maxUnavailable)?',
+    'Khi nào dùng Job/CronJob thay vì Deployment?',
+    'StatefulSet headless service dùng để làm gì?'
+  ],
+  tags: ['kubernetes', 'workload', 'deployment', 'statefulset', 'daemonset']
+},
+{
+  id: 'devops-068',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Các loại Service (ClusterIP, NodePort, LoadBalancer, ExternalName, headless) và đưa request từ ngoài vào cluster (Ingress, Gateway API, AWS LB Controller), khi nào dùng cái nào?',
+  a: `**Tóm tắt:** Service cung cấp endpoint ổn định cho pod; ClusterIP nội bộ, NodePort mở port node, LoadBalancer tạo LB cloud, ExternalName alias DNS, headless cho discovery trực tiếp. Từ ngoài vào dùng Ingress/Gateway API + AWS LB Controller.
+
+### Các loại Service
+- **ClusterIP**: IP nội bộ cluster, default. Dùng giao tiếp service-to-service.
+- **NodePort**: mở port 30000-32767 trên mọi node; truy cập qua node IP:port.
+- **LoadBalancer**: provision LB cloud (AWS NLB/ALB) trỏ vào service.
+- **ExternalName**: CNAME tới DNS ngoài (không proxy).
+- **Headless (clusterIP: None)**: trả DNS A records của pod; dùng StatefulSet discovery, gRPC.
+
+### Đưa request từ ngoài vào
+- **Ingress**: L7 routing (host/path) qua Ingress controller (nginx, ALB).
+- **Gateway API**: chuẩn mới, hỗ trợ HTTPRoute/GRPCRoute, role separation.
+- **AWS Load Balancer Controller**: tạo ALB/NLB từ Ingress/Gateway/Service.
+
+### Khi nào dùng
+- API public → Ingress/ALB + ClusterIP service.
+- TCP/UDP hoặc gRPC streaming → NLB hoặc Gateway.
+- Service mesh/internal → ClusterIP + mesh.
+
+### Pitfall
+- NodePort range và firewall.
+- LoadBalancer mỗi service = nhiều LB → chi phí; gom qua Ingress.
+
+> Senior tip: Ưu tiên Gateway API cho dự án mới; Ingress vẫn phổ biến. Dùng ExternalName để migrate dần dependency ngoài.`,
+  follow: [
+    'Khác nhau giữa Ingress và Service LoadBalancer về cost và tính năng?',
+    'Gateway API giải quyết hạn chế gì của Ingress?',
+    'Khi nào dùng headless service với StatefulSet?'
+  ],
+  tags: ['kubernetes', 'service', 'ingress', 'gateway-api', 'aws']
+},
+{
+  id: 'devops-069',
+  topic: 'devops',
+  level: 'mid',
+  q: 'Hệ thống monitoring gồm những thành phần nào (metrics, logs, traces, alerting, dashboard, on-call) và luồng dữ liệu đi qua từng thành phần?',
+  a: `**Tóm tắt:** Monitoring = metrics (số liệu) + logs (sự kiện) + traces (đường đi request) + alerting (cảnh báo) + dashboard (trực quan) + on-call (phản ứng). Luồng: app → agent/collector → storage → query → dashboard/alert → on-call.
+
+### Thành phần
+- **Metrics**: số liệu time-series (CPU, RPS, latency p99). Prometheus/Grafana/CloudWatch.
+- **Logs**: dòng sự kiện có timestamp, level, context. Fluent Bit → Loki/Elasticsearch/CloudWatch Logs.
+- **Traces**: distributed tracing (OpenTelemetry) theo traceId/spanId.
+- **Alerting**: rule trên metrics/logs → Alertmanager/PagerDuty.
+- **Dashboard**: Grafana panels.
+- **On-call**: rotation, escalation, runbook.
+
+### Luồng dữ liệu
+App emit metrics (Prometheus scrape / push OTLP) → Prometheus remote_write → storage (Thanos/Mimir) → Grafana query → dashboard.
+Logs: app stdout → container runtime → Fluent Bit DaemonSet → parse/label → Loki → Grafana.
+Traces: SDK → OTel Collector → Tempo/Jaeger → Grafana.
+
+### Pitfall
+- Chỉ có metrics không đủ để root cause; cần logs+traces.
+- Alert fatigue: quá nhiều alert → bỏ qua.
+
+> Senior tip: Chuẩn hoá OpenTelemetry để vendor-neutral; correlation id (traceId) xuyên suốt log/metrics/traces.`,
+  follow: [
+    'RED method và USE method là gì?',
+    'Khi nào dùng push vs pull cho metrics?',
+    'Làm sao giảm chi phí log retention?'
+  ],
+  tags: ['monitoring', 'observability', 'metrics', 'logs', 'traces']
+},
+{
+  id: 'devops-070',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Cơ chế thu thập logs và metrics: pull (Prometheus scrape) vs push, agent DaemonSet (Fluent Bit), parse/label, retention và chi phí, cardinality.',
+  a: `**Tóm tắt:** Prometheus pull scrape endpoint /metrics; push qua Pushgateway/OTLP cho job ngắn. Fluent Bit DaemonSet tail log file, parse, gắn label, gửi Loki. Cardinality (số combination label) quyết định chi phí và performance.
+
+### Pull vs push
+- **Pull**: Prometheus scrape target theo interval; target phải expose endpoint. Dễ phát hiện target down (scrape fail).
+- **Push**: app push (Pushgateway cho batch job, OTLP cho OTel). Cần cho job ngắn sống.
+
+### Fluent Bit DaemonSet
+- Chạy trên mỗi node, tail /var/log/containers/*.log.
+- Parse (JSON/regex), filter, enrich (k8s metadata), output tới Loki/Elasticsearch.
+- Buffer và retry khi backend down.
+
+### Retention và chi phí
+- Logs: hot 7-14 ngày, cold (S3) 90+ ngày; sampling debug logs.
+- Metrics: high-res 15d, downsample 90d+.
+- Cardinality: số distinct label combinations. Label cao cardinality (user_id, request_id) → blow-up storage/query.
+
+### Pitfall
+- Gắn request_id vào metric label → cardinality explosion.
+- Không set retention → chi phí tăng.
+
+> Senior tip: Quy tắc: metric label chỉ cho dimension có bounded values (status code, endpoint normalized). High-cardinality data đưa vào logs/traces, không metrics.`,
+  follow: [
+    'Làm sao detect cardinality explosion (Prometheus TSDB head)?',
+    'Fluent Bit vs Fluentd: khi nào chọn cái nào?',
+    'Log sampling ảnh hưởng điều tra sự cố thế nào?'
+  ],
+  tags: ['logging', 'metrics', 'prometheus', 'fluent-bit', 'cardinality']
+},
+{
+  id: 'devops-071',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Scale app dựa trên yếu tố gì: CPU, RAM (vì sao scale theo RAM với JVM thường sai), RPS, queue lag, custom metrics; HPA/KEDA/Cluster Autoscaler/Karpenter.',
+  a: `**Tóm tắt:** Scale nên dựa trên bottleneck thực tế: CPU cho compute, RPS/latency cho web, queue lag cho worker. Scale theo RAM với JVM thường sai vì heap cố định và GC; dùng custom metrics (RPS, lag) với HPA/KEDA, node scale bằng Cluster Autoscaler/Karpenter.
+
+### Vì sao scale theo RAM với JVM sai
+- JVM heap size cố định (-Xmx), RAM used ≈ heap + metaspace + off-heap; không tăng theo load ngay.
+- GC dọn heap → used RAM dao động; scale theo RAM gây scale không cần thiết hoặc chậm.
+
+### Yếu tố scale
+- CPU utilization (HPA target 70%).
+- RPS / latency p99 (custom metrics từ Prometheus).
+- Queue lag (Kafka/RabbitMQ) cho worker.
+- In-flight requests.
+
+### Công cụ
+- **HPA**: scale pod theo metrics (CPU/mem/custom/external).
+- **KEDA**: event-driven autoscaling (queue lag, cron) scale to zero.
+- **Cluster Autoscaler**: thêm node khi pod pending.
+- **Karpenter**: provision node nhanh theo pod requirement, spot-friendly.
+
+### Pitfall
+- HPA cần requests/limits đúng; nếu requests quá thấp → scale sai.
+- Scale out nhưng DB connection pool cạn → bottleneck dời.
+
+> Senior tip: Đo bottleneck end-to-end (LB → app → DB) trước khi chọn metric scale; thường là DB connection hoặc CPU, không phải RAM.`,
+  follow: [
+    'Karpenter khác Cluster Autoscaler ở điểm nào?'
+  ],
+  tags: ['autoscaling', 'hpa', 'keda', 'karpenter', 'jvm']
+},
+{
+  id: 'devops-072',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Luồng pipeline CI/CD và downstream: pipeline phức tạp gọi sang repo khác (GitLab multi-project/parent-child, Jenkins upstream-downstream, GitHub Actions repository_dispatch/workflow_call), truyền artifact/version, xử lý khi downstream fail.',
+  a: `**Tóm tắt:** Pipeline phức tạp orchestrate nhiều repo: GitLab parent-child/multi-project, Jenkins upstream-downstream, GitHub Actions reusable workflow/repository_dispatch. Truyền version/artifact qua registry và API; downstream fail → retry/rollback/alert.
+
+### Các cơ chế
+- **GitLab**: parent-child pipeline (trigger:include), multi-project pipeline (trigger:project), truyền variables qua variables.
+- **Jenkins**: build job → upstream/downstream, dùng artifact copy plugin hoặc Nexus/registry.
+- **GitHub Actions**: workflow_call (reusable workflow), repository_dispatch (event từ repo khác), workflow_run.
+
+### Truyền artifact/version
+- Build image → push registry với tag version (git SHA + semver).
+- Downstream pull image theo tag; không copy artifact trực tiếp.
+- Truyền metadata qua API/variable (version, commit SHA).
+
+### Xử lý downstream fail
+- Retry với backoff; nếu fail → rollback deploy trước đó.
+- Thông báo Slack/PagerDuty; block merge.
+- Idempotent deploy: chạy lại an toàn.
+
+### Pitfall
+- Coupling chặt giữa repos → thay đổi một repo phá pipeline khác.
+- Secret sprawl: mỗi repo giữ secret riêng.
+
+> Senior tip: Dùng container registry làm contract giữa repos; version là image tag; pipeline downstream chỉ cần tag, không cần source.`,
+  follow: [
+    'Khi nào dùng reusable workflow vs repository_dispatch?',
+    'Làm sao đảm bảo version consistency giữa nhiều repos?',
+    'Rollback khi downstream deploy fail thế nào?'
+  ],
+  tags: ['cicd', 'pipeline', 'gitlab', 'jenkins', 'github-actions']
+},
+{
+  id: 'devops-073',
+  topic: 'devops',
+  level: 'mid',
+  q: 'Ansible vs Terraform: provisioning vs configuration management, inventory, playbook, idempotency, khi nào dùng cả hai?',
+  a: `**Tóm tắt:** Terraform provision hạ tầng (IaC, state) declarative; Ansible configure phần mềm/idempotent (agentless, SSH). Dùng Terraform tạo VM/K8s cluster, Ansible cài package/config app. Kết hợp: Terraform output inventory → Ansible run.
+
+### Khái niệm
+- **Provisioning**: tạo tài nguyên (VM, network, DB) → Terraform.
+- **Configuration management**: cài đặt/cấu hình phần mềm trên host → Ansible.
+- **Inventory**: danh sách host/group cho Ansible (static hoặc dynamic từ Terraform output).
+- **Playbook**: YAML mô tả task theo thứ tự, module idempotent.
+- **Idempotency**: chạy lại không thay đổi nếu đã đúng trạng thái.
+
+### Khi nào dùng cả hai
+- Terraform tạo EC2 + security group + RDS → output IP → Ansible playbook cài Java, deploy app, config systemd.
+- Terraform cho infra lifecycle; Ansible cho app config và patching.
+
+### Pitfall
+- Ansible không quản lý state hạ tầng → không biết drift; Terraform state cần remote backend + locking.
+- SSH key management và become (sudo) cần cẩn thận.
+
+> Senior tip: Tách infra (Terraform) và config (Ansible); dùng dynamic inventory để không hardcode IP; kiểm tra idempotency bằng chạy playbook 2 lần.`,
+  follow: [
+    'Terraform state locking hoạt động thế nào (DynamoDB)?',
+    'Ansible idempotency dựa trên module, không phải task viết tay — giải thích.',
+    'Khi nào dùng Ansible thay vì cloud-init/user-data?'
+  ],
+  tags: ['ansible', 'terraform', 'iac', 'configuration-management']
+},
+{
+  id: 'devops-074',
+  topic: 'devops',
+  level: 'lead',
+  q: '(lead) Load test một app trước go-live từ góc DevOps: môi trường, công cụ, chỉ số, tìm bottleneck ở tầng hạ tầng (LB, DB connection, node).',
+  a: `**Tóm tắt:** Load test trước go-live: môi trường giống production (scale nhỏ hơn nhưng topology giống), công cụ k6/JMeter/Gatling, chỉ số latency p95/p99, error rate, throughput, resource; tìm bottleneck ở LB connection, DB pool, node CPU/mem, GC.
+
+### Môi trường
+- Staging mirror production: cùng instance type, DB size tỷ lệ, network.
+- Dữ liệu test realistic (seed DB).
+- Warm-up JVM/GC trước đo.
+
+### Công cụ
+- k6, JMeter, Gatling, wrk; phân phối load từ nhiều region.
+- Chaos: inject latency to dependency.
+
+### Chỉ số
+- Throughput (RPS), latency p50/p95/p99, error rate.
+- Resource: CPU/mem/node, DB connections/queries, GC pause, thread pool.
+- Saturation: queue depth, connection pool usage.
+
+### Tìm bottleneck hạ tầng
+- LB: connection limit, TLS handshake cost, target health.
+- DB: connection pool exhausted, slow query, lock contention.
+- Node: CPU throttling, memory pressure, disk I/O, network bandwidth.
+- App: thread pool, GC, connection leak.
+
+### Pitfall
+- Test từ 1 máy → network bottleneck giả.
+- Không warm-up → cold start méo số liệu.
+- Chỉ đo average latency → che p99.
+
+> Senior tip: Định nghĩa SLO trước (p99 < X ms, error < 0.1%) và dừng test khi đạt; lưu baseline để so sánh sau deploy; chạy soak test (nhiều giờ) để phát hiện memory leak.`,
+  follow: [
+    'Khác nhau giữa load test, stress test, soak test, spike test?',
+    'Làm sao load test an toàn trên production (canary load)?',
+    'Khi p99 cao nhưng CPU thấp, bạn điều tra theo thứ tự nào?'
+  ],
+  tags: ['load-testing', 'performance', 'sre', 'capacity-planning', 'leadership']
+},
+{
+  id: 'devops-075',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Ở một ngân hàng đang chuyển lên cloud (AWS), "DevOps" thường được chia thành nhiều vai: SA (Solution Architect), DevOps/Platform, Infra/System, SRE, Cloud Security. Mỗi vai làm gì, phỏng vấn thường hỏi gì, và một dev Java 4 năm nên nhắm vai nào nếu muốn chuyển hướng?',
+  a: `**Tóm tắt:** Trong ngân hàng, "làm DevOps" không phải một vai duy nhất: **SA (Solution Architect - kiến trúc sư giải pháp)** thiết kế bức tranh tổng thể, **DevOps/Platform** xây đường ống CI/CD và nền tảng chạy ứng dụng (K8s, registry), **Infra/System** vận hành máy chủ/mạng/hệ điều hành, **SRE (Site Reliability Engineering - kỹ sư độ tin cậy)** giữ hệ thống sống ổn định bằng SLO/quan sát/sự cố, **Cloud Security** kiểm soát bảo mật trên cloud (IAM, mạng, tuân thủ). Dev Java muốn chuyển hướng thường đi tự nhiên nhất sang **DevOps/Platform** hoặc **SRE** vì tận dụng được hiểu biết về ứng dụng, build, và cách hệ thống hỏng.
+
+### Hiểu nhanh
+Hãy hình dung một ngân hàng như một tòa nhà giao dịch lớn. **SA** là kiến trúc sư vẽ bản thiết kế cả tòa nhà (phòng nào nối phòng nào, luồng khách đi ra sao). **Infra/System** là đội xây và bảo trì móng, điện, nước, thang máy (máy chủ, mạng, OS). **DevOps/Platform** là đội lắp "đường ống" để mọi phòng nhận được đồ đúng giờ (CI/CD, nền tảng K8s, registry). **SRE** là đội trực ca đảm bảo tòa nhà không sập giờ cao điểm, có camera và chuông báo cháy (giám sát, SLO, ứng cứu sự cố). **Cloud Security** là đội an ninh kiểm soát thẻ ra vào, camera, két sắt (IAM, mạng, mã hóa, tuân thủ). Mỗi vai nhìn cùng một hệ thống nhưng ở một "lớp" khác nhau.
+
+### Thuật ngữ (giải thích lần đầu)
+- **SA - Solution Architect (kiến trúc sư giải pháp)**: người thiết kế cách các thành phần (app, DB, queue, cloud service) ghép lại để giải quyết một bài toán nghiệp vụ, cân bằng chi phí/độ tin cậy/bảo mật/tuân thủ.
+- **Platform (nền tảng)**: bộ công cụ và hạ tầng dùng chung mà các team phát triển "đứng lên" để build và chạy app (ví dụ: cụm Kubernetes, registry lưu image, pipeline CI/CD mẫu) — thay vì mỗi team tự dựng mọi thứ.
+- **SRE - Site Reliability Engineering (kỹ sư độ tin cậy)**: vai trò bắt nguồn từ Google, dùng cách tiếp cận kỹ thuật phần mềm để vận hành: đặt mục tiêu độ tin cậy (SLO), đo lường, tự động hóa, và xử lý sự cố có hệ thống.
+- **SLO - Service Level Objective (mục tiêu mức dịch vụ)**: con số cam kết, ví dụ "99.9% request thành công mỗi tháng" hoặc "p99 latency < 300ms". SLO giúp quyết định có được deploy tính năng mới hay phải ưu tiên độ ổn định.
+- **IAM - Identity and Access Management (quản lý danh tính và quyền truy cập)**: hệ thống kiểm soát "ai được làm gì" trên cloud (user, role, policy).
+- **Tuân thủ (compliance)**: đáp ứng các quy định bắt buộc (ở ngân hàng VN thường liên quan yêu cầu của NHNN, kiểm toán, quy định lưu trữ/ bảo mật dữ liệu).
+
+### So sánh các vai
+| Vai | Làm gì hằng ngày | Công cụ/kiến thức hay gặp | Phỏng vấn thường hỏi | Góc nhìn chính |
+|---|---|---|---|---|
+| SA (Solution Architect) | Thiết kế kiến trúc cho một bài toán (ví dụ: mở thẻ online), chọn dịch vụ AWS, vẽ luồng tích hợp, review thiết kế | AWS (VPC, EKS, RDS, SQS...), sơ đồ kiến trúc, trade-off, bảo mật, chi phí, DR | "Thiết kế hệ thống chuyển tiền/X triệu user", "Chọn RDS hay tự cài DB?", "Multi-AZ/DR ra sao?" | Toàn cảnh, trade-off |
+| DevOps / Platform | Xây và vận hành CI/CD, cụm K8s, Helm chart chuẩn, registry, template project; hỗ trợ team app onboard | GitLab CI/GitHub Actions, Docker, Kubernetes, Helm, Argo CD, Terraform (mức dùng), Harbor | "Thiết kế pipeline CI/CD", "Pod CrashLoopBackOff xử lý thế nào?", "Helm/Terraform dùng ra sao?" | Đường ống, nền tảng |
+| Infra / System | Quản lý VM, mạng, DNS, load balancer, hệ điều hành Linux, storage, backup/restore | Linux, networking (TCP/IP, routing, firewall), VMware/on-prem, một phần cloud (EC2, VPC) | "Debug sự cố mạng/DNS", "Linux: process, disk, permission", "Backup/restore thế nào?" | Hạ tầng, hệ điều hành |
+| SRE | Định nghĩa SLO/SLI, dashboard/alert, on-call, xử lý sự cố (incident), postmortem, tự động hóa vận hành, capacity | Prometheus/Grafana, logging, tracing, runbook, toil automation, đôi khi K8s | "Thiết kế alert theo SLO", "Xử lý incident production", "Latency tăng đột ngột điều tra thế nào?" | Độ tin cậy, đo lường |
+| Cloud Security | Thiết kế IAM least privilege, network segmentation, mã hóa, quét lỗ hổng, giám sát bảo mật, đáp ứng tuân thủ | IAM, KMS, Security Groups/NACL/WAF, GuardDuty/CloudTrail, chính sách tuân thủ | "Thiết kế IAM an toàn", "Cách cô lập workload", "Xử lý secret/credential", "Audit và tuân thủ" | Rủi ro, tuân thủ |
+
+### Dev Java 4 năm nên nhắm vai nào?
+- **DevOps/Platform (phù hợp tự nhiên nhất)**: bạn đã quen build (Maven/Gradle), dependency, cách app Spring Boot chạy, log, cấu hình, healthcheck. Bước tiếp là học đóng gói (Docker), deploy (K8s), và tự động hóa (pipeline). Bạn nói được "vì sao app cần graceful shutdown/probe" vì bạn hiểu app.
+- **SRE (phù hợp nếu thích điều tra sự cố)**: tận dụng hiểu biết về JVM, thread, DB connection, latency để tìm gốc rễ khi hệ thống chậm/lỗi. Cần bổ sung tư duy đo lường (SLO, metric) và quy trình incident.
+- **SA**: thường cần kinh nghiệm rộng hơn (nhiều hệ thống, tích hợp, bảo mật, chi phí) và kinh nghiệm giao tiếp với business; có thể là đích đến sau vài năm làm Platform/SRE.
+- **Infra/System hoặc Cloud Security**: chuyển được nhưng khoảng cách kiến thức lớn hơn (mạng chuyên sâu, Linux hệ thống, hoặc bảo mật/tuân thủ). Hợp nếu bạn thật sự thích mảng đó.
+
+~~~text
+Góc nhìn (từ gần app → gần hạ tầng/bảo mật):
+
+  [Dev Java] --hiểu app--> [DevOps/Platform] --độ tin cậy--> [SRE]
+       \\                         |                              |
+        \\                        v                              v
+         '------------------> [SA] (toàn cảnh)            [On-call/Incident]
+                                  |
+                 [Infra/System] --+-- [Cloud Security]
+                    (máy/mạng/OS)      (quyền/tuân thủ)
+~~~
+
+### Ví dụ đời thực (ngân hàng)
+Một team ra mắt tính năng chuyển tiền nhanh: **SA** quyết định dùng EKS + RDS Multi-AZ, tách service, luồng gọi qua API Gateway. **Platform** cung cấp Helm chart chuẩn, pipeline build-scan-deploy, namespace và quota. **Infra** đảm bảo kết nối mạng tới core banking on-prem ổn định. **SRE** đặt SLO p99 < 500ms, dựng dashboard/alert, viết runbook và trực canary. **Cloud Security** review IAM role của Pod (IRSA), policy S3/KMS, và checklist tuân thủ trước go-live. Một sự cố latency thường cần Platform + SRE + (đôi khi) Infra cùng nhìn.
+
+### Pitfall (lỗi hay gặp)
+- **Nhầm tên vai**: "DevOps" trong JD ngân hàng đôi khi thực chất là Infra vận hành thủ công, hoặc ngược lại là Platform thuần. Cách tránh: hỏi JD nói rõ làm CI/CD/K8s hay quản VM/mạng, có trực on-call không, tỉ lệ "xây" vs "vận hành".
+- **Học công cụ rời rạc mà thiếu nền tảng**: biết gõ lệnh kubectl nhưng không hiểu Pod/network/DNS → kẹt ở câu debug. Cách tránh: học theo lớp (Linux + mạng → container → K8s → CI/CD → quan sát).
+- **Dev chuyển vai nhưng bỏ quên lợi thế**: không khai thác việc hiểu app (thread pool, GC, DB pool) — đây là điểm mạnh khi phỏng vấn Platform/SRE.
+
+### Câu trả lời phỏng vấn nên nói thế nào
+"Em hiểu ở ngân hàng DevOps thường tách vai: SA thiết kế kiến trúc tổng thể và trade-off, Platform/DevOps xây CI/CD và nền tảng K8s, Infra lo máy chủ/mạng/Linux, SRE lo SLO, giám sát và xử lý sự cố, còn Cloud Security lo IAM, cô lập mạng và tuân thủ. Với nền tảng dev Java 4 năm, em nhắm vai Platform hoặc SRE vì em hiểu cách ứng dụng build/chạy/hỏng (probe, graceful shutdown, connection pool, JVM), và em đang bổ sung Linux, container/K8s, pipeline và observability để đóng được phần hạ tầng quanh ứng dụng."
+
+> Senior tip: Khi phỏng vấn bất kỳ vai "DevOps" nào ở ngân hàng, hãy hỏi ba điều: (1) bạn sẽ **xây nền tảng** hay **vận hành hệ thống có sẵn**, (2) có **on-call** và quy trình incident không, (3) ranh giới với Security/Infra ở đâu. Câu trả lời cho thấy vai thật sự, và giúp bạn không nhận nhầm một việc thuần vận hành khi mục tiêu là Platform/SRE.`,
+  follow: ['Sự khác nhau giữa SRE và DevOps truyền thống là gì? (gợi ý: SLO, error budget, toil)', 'Một Platform Engineer cần hiểu gì về ứng dụng Java để hỗ trợ team dev tốt (probe, resource, JVM)?', 'Khi SA thiết kế hệ thống lên AWS cho ngân hàng, những ràng buộc tuân thủ/bảo mật nào thường ảnh hưởng quyết kiến trúc?'],
+  tags: ['devops-roles', 'SA', 'SRE', 'platform', 'cloud-security', 'career'],
+  refs: [
+    { type: 'doc', title: 'Site Reliability Engineering (Google SRE book)', url: 'https://sre.google/sre-book/table-of-contents/' },
+    { type: 'doc', title: 'AWS Well-Architected Framework', url: 'https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html' }
+  ]
+},
+{
+  id: 'devops-076',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Case thực tế: deploy bản mới lên K8s, Pod rơi vào CrashLoopBackOff nhưng chỉ ở 1/3 node (2 node chạy bình thường, 1 node Pod cứ restart). Bạn điều tra từng bước thế nào (describe, events, logs --previous), và "node khác nhau ở đâu" là manh mối gì?',
+  a: `**Tóm tắt:** CrashLoopBackOff chỉ trên 1/3 node gần như luôn có nguyên nhân **gắn với node đó**, không chỉ với image/cấu hình chung. Quy trình: (1) xác định Pod nào trên node nào ({{kubectl get pod -o wide}}), (2) {{describe}} để đọc Events/Last State/Exit Code, (3) {{logs --previous}} lấy stack trace lần chết trước, (4) so sánh node lỗi với node khỏe (label/taint, dung lượng đĩa/inode, phiên bản runtime, kernel, thời gian, DNS, mount/hostPath, network tới dependency). Khác biệt thường gặp: node **DiskPressure/PIDPressure**, image cache cũ/khác kiến trúc hiếm, hostPath/permission khác, clock lệch, hoặc node không kết nối được DB/registry nội bộ.
+
+### Bối cảnh thật
+Ngân hàng deploy bản {{payment-api:1.24.0}} (rolling update) lên cụm 3 node worker. 2 node: Pod {{1/1 Running}}. Node {{worker-3}}: Pod vào {{CrashLoopBackOff}}, {{RESTARTS}} tăng. Vì Deployment phân bổ Pod, chỉ replica rơi vào {{worker-3}} mới lỗi → triệu chứng "1/3 node". Ảnh hưởng: capacity giảm 1/3, nếu tiếp tục rollout có thể làm xấu thêm.
+
+### Thuật ngữ (giải thích lần đầu)
+- **CrashLoopBackOff**: container khởi động rồi thoát (chết), kubelet khởi động lại nhưng **chờ lùi dần** (back-off: 10s, 20s, 40s… tối đa 5 phút) giữa các lần. "Loop" = lặp; "back-off" = lùi lại/chờ lâu hơn.
+- **Node (nút)**: một máy (VM hoặc vật lý) trong cụm Kubernetes nơi Pod thực sự chạy. Mỗi node có kubelet, container runtime, đĩa, mạng, thời gian hệ thống riêng.
+- **kubelet**: "người quản gia" trên mỗi node, nhận lệnh từ control plane để chạy/giám sát container.
+- **Taint (vết bẩn)**: nhãn trên node để "xua" Pod không phù hợp; **toleration** là "giấy phép" Pod mang theo để được xếp lên node có taint.
+- **hostPath**: gắn một thư mục của chính node vào container — tiện nhưng làm Pod phụ thuộc vào trạng thái node (mỗi node có nội dung/permission khác nhau).
+- **DiskPressure / inode**: node sắp hết dung lượng đĩa (DiskPressure) hoặc hết số lượng mục file (inode) — cả hai đều làm tạo/ghi file của container thất bại.
+
+### Điều tra từng bước
+
+~~~text
+B1. Định vị Pod trên node nào?
+    kubectl get pod -n pay -l app=payment-api -o wide
+    -> thấy pod-A (worker-1, Running), pod-B (worker-2, Running), pod-C (worker-3, CrashLoopBackOff)
+
+B2. Đọc "bệnh án" Pod lỗi
+    kubectl describe pod pod-C -n pay
+    -> xem: Node, Events (cuối), Last State/Reason/Exit Code, Conditions, Volume mounts
+
+B3. Đọc log lần chết TRƯỚC (rất quan trọng)
+    kubectl logs pod-C -n pay --previous --tail=200
+    -> stack trace/lỗi của container vừa thoát (log hiện tại thường gần rỗng vì container mới vừa lên)
+
+B4. So sánh node lỗi vs node khỏe
+    kubectl describe node worker-3 | grep -A5 Conditions
+    kubectl get node --show-labels
+    -> DiskPressure? MemoryPressure? taint? kernel/runtime version? zone?
+
+B5. Khoanh vùng: lỗi do APP hay do NODE?
+    - Cordon worker-3, xóa pod-C -> scheduler tạo pod mới trên worker-1/2: nếu CHẠY OK => lỗi gắn node-3
+    - Scale lên, ép 1 Pod test lên worker-3 (nodeSelector) để tái hiện
+~~~
+
+### Lệnh và bằng chứng cần nhìn
+~~~bash
+# B1: pod nào, node nào, restart mấy lần
+kubectl get pod -n pay -o wide
+
+# B2: sự kiện + trạng thái lần chết
+kubectl describe pod pod-C -n pay
+# đọc: Last State: Terminated, Reason/Exit Code; Events: Back-off restarting...
+
+# B3: log của lần chạy vừa chết (không có --previous sẽ thấy log rỗng)
+kubectl logs pod-C -n pay --previous --tail=200
+
+# B4: tình trạng node
+kubectl describe node worker-3   # Conditions, Allocatable, Taints, Images
+kubectl get events -n pay --sort-by=.lastTimestamp | tail -30
+~~~
+
+**Đọc exit code (manh mối nhanh):** {{1}} = app tự thoát (exception, thiếu config). {{137}} = 128+9 (SIGKILL), thường OOMKilled — kiểm tra Reason. {{139}} = 128+11 (SIGSEGV) — crash native (thư viện JNI, lỗi hiếm). {{0}} nhưng vẫn restart = process thoát sạch nhưng liveness/probe hoặc entrypoint sai.
+
+### "Node khác nhau ở đâu" — các nguyên nhân hay gặp
+| Khác biệt trên node lỗi | Triệu chứng / bằng chứng | Cách xác minh |
+|---|---|---|
+| **DiskPressure / hết inode** | Pod crash khi ghi log/temp; Event evicted hoặc tạo file thất bại; {{kubectl describe node}} có {{DiskPressure=True}} | {{describe node}} (Conditions), trên node: {{df -h}}, {{df -i}} |
+| **Image khác/thiếu trên node** | Nếu dùng tag {{latest}} hoặc {{imagePullPolicy: IfNotPresent}}, node-3 có thể giữ image cũ hỏng cache; hoặc pull fail gián đoạn (nhưng thường ra ImagePullBackOff, không phải CrashLoopBackOff) | {{describe node}} phần Images; so digest image |
+| **hostPath / quyền file khác** | App đọc/ghi {{hostPath}} (config, cert, socket) mà node-3 thiếu file hoặc sai permission | {{describe pod}} xem Volume; kiểm tra đường dẫn trên node (qua ops/SSM) |
+| **Mạng từ node-3 tới dependency** | App khởi động kết nối DB/Redis/Kafka/core on-prem; chỉ subnet/route/firewall của node-3 bị chặn → timeout → app fail fast thoát | {{logs --previous}} thấy timeout kết nối; test {{nc/telnet}} từ node-3; so security group/subnet |
+| **Đồng hồ lệch (clock skew)** | Gọi TLS/JWT/OAuth thất bại vì cert/token "chưa hiệu lực/đã hết hạn" theo giờ node-3; app thoát lúc init | Log lỗi xác thực/thời gian; {{chronyc tracking}} hoặc {{timedatectl}} trên node |
+| **Tài nguyên/node pressure cục bộ** | Node MemoryPressure hoặc cgroup khác; ít gặp nếu request/limit chuẩn, nhưng custom runtime/kernel khác có thể ảnh hưởng | {{describe node}} Conditions, {{kubectl top node}} |
+| **Taint/label dẫn tới cấu hình khác** | Hiếm: nếu Pod có toleration đặc biệt hoặc DaemonSet/sidecar chỉ chạy trên node-3 gây xung đột | {{kubectl get node --show-labels}}, {{describe node}} taints |
+
+~~~seq
+title: Luồng điều tra CrashLoopBackOff chỉ trên 1/3 node
+actors: DevOps | API K8s | Node-3 (lỗi)
+DevOps -> API K8s: kubectl get pod -o wide
+API K8s --> DevOps: pod-C trên Node-3, CrashLoopBackOff
+DevOps -> API K8s: kubectl describe pod pod-C
+API K8s --> DevOps: Exit Code, Events, Last State
+DevOps -> Node-3 (lỗi): kubectl logs --previous pod-C
+Node-3 (lỗi) --> DevOps: stack trace lần chết
+DevOps -> API K8s: kubectl describe node Node-3
+API K8s --> DevOps: Conditions, Taints, Allocatable
+DevOps -> DevOps: so sánh Node-3 vs Node-1/2, khoanh vùng
+~~~
+
+### Pitfall (lỗi hay gặp)
+- **Chỉ nhìn image/cấu hình chung**: "2 node chạy được thì không thể lỗi config". Sai — config có thể đúng nhưng node-3 thiếu file hostPath, hết đĩa, hoặc không tới được DB.
+- **Quên {{--previous}}**: thấy log gần rỗng, kết luận "không có lỗi". Lỗi nằm ở container đã chết.
+- **Xóa Pod cho "tự khỏi"**: scheduler có thể lại xếp Pod mới lên chính node-3 → lỗi lặp lại. Hãy {{cordon}} node-3 trước khi thay Pod để cô lập.
+- **Nhầm với Pending**: nếu Pod {{Pending}} chỉ trên node-3 thì là vấn đề lập lịch (taint/toleration/resource); {{CrashLoopBackOff}} là container đã chạy rồi mới chết.
+
+### Trả lời phỏng vấn (từng bước, ngắn gọn khi nói)
+"Vì chỉ 1/3 node lỗi, em nghi nguyên nhân gắn với node. Em {{get pod -o wide}} để xác định Pod trên node nào, {{describe pod}} đọc Events, Last State và Exit Code, rồi {{logs --previous}} lấy stack trace lần chết trước. Sau đó em so sánh node lỗi với node khỏe: {{describe node}} xem DiskPressure/taint/allocatable, kiểm tra khác biệt về mạng tới DB/Redis, hostPath/permission, clock, image digest. Để xác nhận, em cordon node lỗi và để Pod chạy lại trên node khác: nếu hết lỗi thì khoanh vùng hạ tầng/node; nếu vẫn lỗi thì quay lại phân tích app/config. Em không xóa Pod mù mờ vì scheduler có thể đặt lại đúng node hỏng."
+
+> Senior tip: Trong ngân hàng, lỗi "chỉ 1 node" hay gặp sau thay đổi hạ tầng im lặng: node mới gia nhập cụm thiếu route tới DB nội bộ, cert CA nội bộ chưa cài, hoặc đồng hồ chưa sync NTP. Hãy giữ baseline node (cùng AMI/image, cùng cấu hình cloud-init) và dùng {{kubectl describe node}} + kiểm tra điều kiện {{Ready/DiskPressure}} trong runbook; cordon node nghi ngờ ngay để chặn ảnh hưởng lan rộng trước khi đào sâu.`,
+  follow: ['Làm sao cô lập nhanh: phân biệt lỗi do image/config (mọi node) với lỗi do node (chỉ 1 node)?', 'Nếu {{logs --previous}} trống và Exit Code 137, bạn kết luận gì và kiểm tra tiếp ở đâu?', 'Tại sao dùng tag image bất biến (digest/commit SHA) giúp tránh sự cố "node giữ image cũ"?'],
+  tags: ['Kubernetes', 'CrashLoopBackOff', 'troubleshooting', 'node', 'incident'],
+  refs: [
+    { type: 'doc', title: 'Kubernetes: Debug Pods', url: 'https://kubernetes.io/docs/tasks/debug/debug-application/debug-pods/' }
+  ]
+},
+{
+  id: 'devops-077',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Case thực tế: ngân hàng dùng blue-green deploy nhưng hai môi trường (blue/green) dùng chung một database. Bạn xử lý migration schema tương thích ngược (expand/contract) thế nào, chuyển traffic ra sao, và rollback khi có lỗi?',
+  a: `**Tóm tắt:** Blue-green (hai môi trường song song, chuyển traffic một lần) chỉ "dễ rollback app" khi **schema DB tương thích ngược (backward compatible)** — vì DB dùng chung, bản cũ và bản mới phải cùng chạy được trên cùng schema trong lúc chuyển. Giải pháp là **expand/contract**: (1) *expand* thêm cột/bảng mới theo kiểu an toàn, giữ cột cũ, code mới ghi cả hai/đọc linh hoạt; (2) deploy green và chuyển traffic; (3) khi ổn định, *contract* mới bỏ cột/cấu trúc cũ. Rollback app thì chuyển traffic về blue — chỉ an toàn nếu bước expand chưa phá tương thích. Migration phá hủy (đổi tên/xóa cột, đổi kiểu không tương thích) phải tách ra sau.
+
+### Bối cảnh thật
+Ngân hàng chạy {{order-service}}: **blue** = bản 1.8 (đang phục vụ), **green** = bản 1.9 (mới). Cả hai trỏ vào **một cụm Oracle/RDS dùng chung** (DB tách đôi rất đắt và khó đồng bộ giao dịch ngân hàng). Bản 1.9 cần đổi {{phone}} (một cột) thành {{mobile_phone}} và thêm kiểm tra mới. Nếu migrate "đổi tên cột" rồi mới deploy: trong khoảnh khắc blue vẫn đọc {{phone}} → lỗi. Nếu deploy green trước khi có cột mới → lỗi. Đây là xung đột blue-green + shared DB.
+
+### Thuật ngữ (giải thích lần đầu)
+- **Blue-green deploy**: duy trì hai môi trường giống nhau (blue = đang live, green = bản mới). Deploy xong green, kiểm tra, rồi **chuyển 100% traffic** sang green. Rollback = chuyển traffic về blue. (Giống có hai sân khấu, khán giả ngồi bên này, chuẩn bị xong thì chuyển khán giả sang bên kia.)
+- **Shared database (DB dùng chung)**: cả blue và green cùng đọc/ghi một DB. Ưu: dữ liệu nhất quán, không cần đồng bộ. Nhược: schema trở thành "điểm nghẽn tương thích" giữa hai phiên bản app.
+- **Backward compatible - tương thích ngược (schema)**: schema mới vẫn cho **code phiên bản cũ** chạy đúng (cũ đọc/ghi được). **Forward compatible - tương thích xuôi**: code cũ ghi dữ liệu mà code mới hiểu được.
+- **Expand/contract (mở rộng/thu hẹp)**: kỹ thuật migration nhiều bước: *expand* thêm thứ mới mà không phá cái cũ; chạy song song; *contract* bỏ cái cũ khi không còn ai dùng.
+- **Cutover (chuyển lưu lượng)**: thời điểm đổi router/load balancer/DNS để traffic đi sang môi trường mới.
+
+### Cơ chế expand/contract (ví dụ đổi {{phone}} → {{mobile_phone}})
+~~~text
+Trạng thái DB dùng chung:  [ BLUE v1.8 ] <--đọc/ghi--> ( DB ) <--đọc/ghi--> [ GREEN v1.9 ]
+
+BƯỚC 1 - EXPAND (migration an toàn, chạy TRƯỚC khi deploy green)
+  DB:  THÊM cột mobile_phone (nullable), GIỮ cột phone
+       (không xóa, không đổi tên, không NOT NULL ngay)
+  App v1.9 (code): ghi CẢ phone và mobile_phone; đọc mobile_phone ưu tiên, fallback phone
+  -> v1.8 (blue) vẫn chạy bình thường vì cột phone còn nguyên.
+
+BƯỚC 2 - DEPLOY GREEN + CHUYỂN TRAFFIC
+  Deploy v1.9 lên green, smoke test nội bộ (chưa nhận traffic thật).
+  Chuyển traffic: blue -> green (qua LB/DNS/Ingress weight/service selector).
+  Theo dõi metric (error rate, latency, nghiệp vụ). Blue vẫn chạy nóng để rollback.
+
+BƯỚC 3 - ỔN ĐỊNH + BACKFILL (tùy chọn)
+  Chạy job nền copy dữ liệu phone -> mobile_phone cho bản ghi cũ (backfill), theo lô, có throttle.
+
+BƯỚC 4 - CONTRACT (chỉ khi CHẮC CHẮN không rollback về v1.8)
+  Bỏ code đọc/ghi phone (deploy v1.10 hoặc dọn dẹp), rồi migration: đặt NOT NULL/default nếu cần,
+  cuối cùng mới DROP cột phone. Bước này KHÔNG tương thích ngược với v1.8.
+~~~
+
+~~~seq
+title: Blue-green với shared DB (expand/contract)
+actors: User | LB | Blue v1.8 | Green v1.9 | DB (shared)
+User -> LB: request
+LB -> Blue v1.8: traffic 100% (ban đầu)
+Blue v1.8 -> DB (shared): đọc/ghi cột phone
+note Blue v1.8..Green v1.9: EXPAND: thêm mobile_phone, giữ phone
+LB -> Green v1.9: smoke test nội bộ
+LB -> Green v1.9: chuyển 100% traffic
+Green v1.9 -> DB (shared): ghi cả phone + mobile_phone
+Green v1.9 --> User: OK
+note LB..Blue v1.8: Lỗi? rollback = chuyển traffic về Blue
+~~~
+
+### Quy tắc migration an toàn (tương thích ngược)
+| Thay đổi | An toàn với blue-green + shared DB? | Cách làm |
+|---|---|---|
+| Thêm cột nullable / có default | Có (expand) | Thêm trước deploy; code mới dùng, code cũ bỏ qua |
+| Thêm bảng/index mới | Có | Thêm trước; lưu ý lock khi tạo index trên bảng lớn ({{ONLINE}} nếu DB hỗ trợ) |
+| Đổi tên / xóa cột | **Không** (phá v1.8) | Expand (thêm cột mới, ghi kép) → contract sau khi bỏ hẳn v1.8 |
+| Đổi kiểu dữ liệu không tương thích | **Không** | Thêm cột kiểu mới, backfill, chuyển code, rồi bỏ cột cũ |
+| Thêm NOT NULL không default | **Không** ngay | Thêm nullable → backfill → mới đặt NOT NULL |
+
+### Chuyển traffic và rollback
+- **Chuyển traffic**: đổi đích ở Load Balancer / Ingress / Service selector / DNS (ưu tiên cơ chế chuyển nhanh, kiểm soát được; DNS phụ thuộc TTL nên chậm hơn). Kiểm tra green bằng smoke test + healthcheck trước khi nhận traffic thật.
+- **Tiêu chí go/no-go**: error rate, p99 latency, lỗi nghiệp vụ, checksum giao dịch mẫu — quan sát một cửa sổ (ví dụ 15-30 phút) trước khi "chốt".
+- **Rollback app**: chuyển traffic về blue. **Chỉ an toàn nếu** schema đang ở trạng thái tương thích ngược (đã expand, chưa contract). Vì thế: tuyệt đối không chạy bước contract trong cùng cửa sổ deploy; contract là thay đổi riêng, sau vài ngày/tuần ổn định.
+- **Rollback DB**: migration expand (thêm cột nullable) thường không cần rollback; nếu bắt buộc phải hoàn tác, dùng migration ngược có kiểm soát — nhưng với dữ liệu đã ghi ở cột mới, cần kế hoạch hợp nhất.
+
+### Pitfall (lỗi hay gặp)
+- **Chạy migration phá hủy rồi mới chuyển traffic**: blue chết ngay khi vẫn còn nhận request, hoặc green lỗi nửa chừng → outage. Cách tránh: tách expand (trước) và contract (sau, riêng).
+- **Nghĩ "blue-green rollback dễ" mà quên shared DB**: rollback app được, nhưng dữ liệu green đã ghi theo schema mới — nếu contract đã chạy hoặc code cũ không hiểu dữ liệu mới, rollback thất bại. Cách tránh: contract chỉ sau khi hết cửa sổ rollback.
+- **Tạo index trên bảng lớn gây lock**: migration "nhỏ" nhưng chặn ghi, làm nghẽn cả blue lẫn green. Cách tránh: dùng tùy chọn tạo index online/concurrent nếu DB hỗ trợ, chạy ngoài giờ cao điểm, đo trên dữ liệu thật.
+- **Backfill toàn bộ một lúc**: khóa bảng/IO cao. Cách tránh: backfill theo lô (batch), giới hạn tốc độ, chạy idempotent (chạy lại không hỏng).
+
+### Trả lời phỏng vấn
+"Với blue-green dùng chung DB, em tách migration theo expand/contract: bước expand thêm cấu trúc mới tương thích ngược (ví dụ thêm cột nullable, giữ cột cũ), code bản mới ghi kép/đọc linh hoạt, nên bản cũ vẫn chạy được. Em deploy green, smoke test, rồi chuyển traffic qua load balancer và theo dõi error/latency/nghiệp vụ; blue giữ nóng để rollback bằng cách chuyển traffic về. Chỉ khi ổn định và hết nhu cầu rollback em mới chạy contract để bỏ cấu trúc cũ — vì contract phá tương thích ngược. Điểm mấu chốt: blue-green rollback app chỉ an toàn khi schema chưa bị contract."
+
+> Senior tip: Ở ngân hàng, hãy gắn mỗi bước expand/contract với một thay đổi có mã và cửa sổ phê duyệt riêng, và **cấm contract trong cùng đợt deploy**. Hai thứ hay bị quên nhất: (1) job backfill phải idempotent và giới hạn tốc độ để không làm nghẽn DB dùng chung, (2) tiêu chí "hết cửa sổ rollback" (ví dụ sau 3-5 ngày không sự cố) phải được chốt bằng văn bản trước khi ai đó chạy DROP cột.`,
+  follow: ['Nếu buộc phải đổi kiểu cột không tương thích trên bảng hàng trăm triệu dòng, bạn lên kế hoạch từng bước thế nào để không downtime?', 'So sánh blue-green và canary khi DB dùng chung: cái nào giảm rủi ro schema tốt hơn?', 'Làm sao đảm bảo code bản mới ghi "kép" (dual-write) không tạo dữ liệu mâu thuẫn giữa cột cũ và cột mới?'],
+  tags: ['blue-green', 'schema-migration', 'expand-contract', 'rollback', 'database']
+},
+{
+  id: 'devops-078',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Case thực tế: sau khi migrate ứng dụng từ on-prem (trung tâm dữ liệu tại chỗ) lên AWS, người dùng phản ánh latency (độ trễ) tăng gấp 3. Bạn liệt kê các nguyên nhân thường gặp (gọi chéo về on-prem qua VPN, DNS, NAT Gateway, cross-AZ, connection pool) và quy trình tìm ra nguyên nhân gốc?',
+  a: `**Tóm tắt:** Latency tăng gấp 3 sau migrate thường đến từ **đường đi của request dài ra hoặc thêm chặng mạng mới**, không phải vì "AWS chậm". Nguyên nhân hay gặp: app trên AWS vẫn gọi chéo dịch vụ/DB còn ở on-prem qua **VPN/Direct Connect** (thêm hàng chục ms mỗi hop), **DNS** resolve chậm hoặc trỏ nhầm về on-prem, đi qua **NAT Gateway** thừa, **cross-AZ** (traffic đi chéo zone) cộng dồn, và **connection pool** bị cấu hình sai cho độ trễ mới (pool nhỏ + latency cao = chờ connection). Cách tìm: đo phân rã latency theo từng chặng (tracing/metric), so sánh đường đi trước-sau migrate, và kiểm tra từng giả thuyết bằng số liệu.
+
+### Bối cảnh thật
+{{loan-service}} (Spring Boot) chuyển từ VM on-prem lên EKS (AWS). Trước migrate: p95 = 120ms. Sau migrate: p95 = 360ms (gấp 3). Chức năng không đổi, code không đổi — vậy vấn đề gần như chắc nằm ở **hạ tầng/mạng/cấu hình kết nối** phát sinh từ vị trí mới.
+
+### Thuật ngữ (giải thích lần đầu)
+- **On-prem / on-premise (tại chỗ)**: hệ thống chạy trên máy chủ trong trung tâm dữ liệu của công ty (không phải cloud).
+- **Latency (độ trễ)**: thời gian từ lúc gửi request đến lúc nhận phản hồi. {{p95}} = 95% request nhanh hơn mức này (bỏ qua 5% chậm bất thường) — dùng p95/p99 thay vì trung bình vì trung bình che mất request chậm.
+- **VPN (Virtual Private Network) / Site-to-Site VPN**: đường hầm mã hóa nối mạng on-prem với VPC trên AWS qua Internet công cộng — tiện nhưng thêm độ trễ và băng thông giới hạn. **Direct Connect (DX)** là đường dây riêng, ổn định hơn.
+- **AZ - Availability Zone (vùng sẵn sàng)**: một (hoặc nhóm) trung tâm dữ liệu riêng biệt trong một AWS Region. Cross-AZ = traffic đi giữa hai AZ khác nhau (có phí và thêm độ trễ nhỏ mỗi chiều, thường < 1-2ms nhưng cộng dồn nếu "chatty").
+- **NAT Gateway**: dịch vụ cho phép tài nguyên trong subnet riêng (private) đi ra Internet/AWS API — nhưng là một chặng thêm; gọi giữa các dịch vụ trong VPC mà lại đi vòng qua NAT là lỗi thiết kế.
+- **DNS (Domain Name System)**: phân giải tên (ví dụ {{db.internal}}) ra địa chỉ IP. Resolve chậm, cache sai, hoặc tên trỏ về IP on-prem thay vì endpoint AWS đều gây thêm độ trễ.
+- **Connection pool (bể kết nối)**: tập kết nối DB/HTTP giữ sẵn để tái dùng (tạo kết nối mới rất tốn thời gian, nhất là có TLS). Pool quá nhỏ + mỗi request chờ kết nối lâu = latency tăng.
+
+### Các nguyên nhân thường gặp
+| Nguyên nhân | Vì sao latency tăng | Dấu hiệu / cách kiểm tra |
+|---|---|---|
+| **Gọi chéo về on-prem qua VPN** | App/DB/dependency còn ở on-prem; mỗi request qua VPN thêm 20-80ms+ (tùy khoảng cách), gọi N lần (chatty) thì nhân lên | Distributed tracing thấy span gọi {{corebank/db}} tốn phần lớn thời gian; IP đích là dải on-prem; {{ping/traceroute/mtr}} từ Pod tới endpoint on-prem |
+| **DNS chậm hoặc trỏ sai** | Resolver cấu hình chưa tối ưu; tên nội bộ vẫn trỏ IP on-prem (đi đường vòng); TTL/cache gây resolve lặp | Metric thời gian resolve (nếu có), {{dig/nslookup}} từ Pod; so IP trả về với endpoint AWS mong muốn; kiểm tra CoreDNS log/metrics |
+| **Đi vòng qua NAT Gateway** | Gọi dịch vụ nội bộ (S3, DB, service khác) qua NAT thay vì VPC Endpoint/private path → thêm hop + có thể nghẽn băng thông NAT | VPC Flow Logs / topology; kiểm tra route table subnet; gọi S3/DynamoDB mà không có VPC Endpoint |
+| **Cross-AZ** | App ở AZ-a gọi DB/service ở AZ-b; một request gọi nhiều lần → cộng dồn | Tracing/metric theo đích; kiểm tra AZ của Pod (node label) và của RDS/endpoint; bật topology-aware routing nếu phù hợp |
+| **Connection pool sai cho latency mới** | Trước đây on-prem ↔ DB 1ms, pool 5 đủ; giờ qua VPN 30ms, pool 5 gây xếp hàng chờ connection → latency tăng vọt dù DB nhanh | Metric pool (active/idle/pending, thời gian chờ lấy connection - HikariCP {{hikaricp.connections.acquire}}); thread dump thấy chờ pool |
+| **TLS handshake / kết nối mới liên tục** | Không tái dùng kết nối (HTTP keep-alive tắt, pool tắt) → mỗi request trả giá handshake (đắt hơn khi RTT lớn) | Số kết nối mới cao, metric handshake; kiểm tra cấu hình HTTP client/keep-alive |
+| **MTU/fragment hoặc băng thông VPN bão hòa** | Gói bị phân mảnh hoặc đường VPN nghẽn giờ cao điểm | {{mtr}} thấy loss/MTU issue; metric băng thông VPN/DX, CloudWatch |
+
+### Quy trình tìm nguyên nhân (từng bước)
+~~~text
+1. XÁC NHẬN & PHẠM VI
+   - Latency tăng ở đâu? (toàn bộ API hay chỉ API gọi dependency X?)
+   - So p50/p95/p99 trước-sau migrate, cùng khung giờ/tải.
+
+2. PHÂN RÃ LATENCY THEO CHẶNG (quan trọng nhất)
+   - Dùng distributed tracing (ví dụ OpenTelemetry/X-Ray/Jaeger): xem span nào chiếm thời gian.
+   - Nếu chưa có tracing: log thời gian từng bước (gọi DB, gọi service ngoài), metric client.
+
+3. KHOANH VÙNG ĐƯỜNG MẠNG
+   - Span chậm trỏ tới đích nào? Đích đó ở AWS hay on-prem?
+   - Từ Pod: dig tên, kiểm tra IP; traceroute/mtr tới đích; so route/VPC Flow Logs.
+
+4. KIỂM TRA GIẢ THUYẾT CỤ THỂ
+   - Cross-AZ: so AZ nguồn/đích. NAT: kiểm tra route table, thử VPC Endpoint.
+   - Connection pool: xem metric pending/acquire time (HikariCP), thử tăng pool/tune timeout có đo lại.
+
+5. XÁC NHẬN & KHẮC PHỤC
+   - Đổi một yếu tố, đo lại (trước-sau), tránh đổi nhiều thứ cùng lúc.
+~~~
+
+~~~seq
+title: Đường đi request trước và sau migrate (ví dụ)
+actors: User | Loan (AWS) | NAT/VPN | CoreDB (on-prem)
+User -> Loan (AWS): request
+Loan (AWS) -> NAT/VPN: gọi CoreDB (tên trỏ on-prem)
+NAT/VPN -> CoreDB (on-prem): qua VPN + hop thêm
+CoreDB (on-prem) --> NAT/VPN: phản hồi
+NAT/VPN --> Loan (AWS): +20-80ms mỗi lượt
+Loan (AWS) --> User: p95 gấp 3 (nếu gọi nhiều lần)
+note Loan (AWS),CoreDB (on-prem): chatty + VPN = latency nhân lên
+~~~
+
+### Pitfall (lỗi hay gặp)
+- **Kết luận "cloud chậm" mà không đo phân rã**: thay đổi instance type tốn tiền nhưng không chạm nguyên nhân (thực ra là gọi về on-prem). Cách tránh: luôn phân rã latency theo chặng trước khi "scale".
+- **Bỏ qua connection pool**: sau migrate RTT tăng, pool cũ (nhỏ) gây xếp hàng — nhìn CPU/DB đều thấp nhưng latency cao. Cách tránh: kiểm tra metric acquire/pending của HikariCP.
+- **Chỉ {{ping}} một lần**: ping ICMP có thể bị chặn hoặc không phản ánh TCP/TLS thực tế. Cách tránh: đo bằng {{curl}} thời gian kết nối, hoặc tracing thực.
+- **Sửa DNS/NAT mà quên cache**: CoreDNS/app cache vẫn giữ IP cũ. Cách tránh: kiểm tra TTL, khởi động/flush có kiểm soát và đo lại.
+
+### Trả lời phỏng vấn
+"Latency tăng gấp 3 sau migrate, em giả định nguyên nhân ở đường mạng/cấu hình kết nối vì code không đổi. Em dùng tracing hoặc log phân rã để tìm span chậm: hay gặp nhất là app trên AWS vẫn gọi chéo DB/service còn on-prem qua VPN nên mỗi hop thêm hàng chục ms và nhân lên nếu chatty; ngoài ra DNS trỏ nhầm về on-prem, đi vòng qua NAT Gateway, cross-AZ cộng dồn, hoặc connection pool quá nhỏ so với RTT mới gây chờ connection (nhìn HikariCP acquire/pending). Em kiểm tra từng giả thuyết bằng số liệu (dig, traceroute, route table/VPC Endpoint, AZ nguồn-đích, metric pool), đổi một yếu tố rồi đo lại p95/p99."
+
+> Senior tip: Hãy đo **baseline latency theo từng dependency** *trước* khi migrate (p95 mỗi chặng) để sau migrate so sánh được ngay. Ở ngân hàng, giai đoạn chuyển tiếp thường "hybrid" (một phần on-prem) — mục tiêu kiến trúc là giảm số lần gọi chéo qua VPN: gom call, thêm cache, hoặc di chuyển dependency cùng wave. Đừng tăng connection pool mù quáng: pool quá lớn gây nghẽn phía DB; dùng metric pending/acquire để tune.`,
+  follow: ['Connection pool (HikariCP) nên tính kích thước thế nào khi RTT tới DB tăng sau migrate? (gợi ý: pool size vs latency)', 'Khi nào dùng VPC Endpoint thay vì NAT Gateway, và nó cải thiện latency/bảo mật thế nào?', 'Làm sao giảm tác động giai đoạn hybrid khi một phần dependency bắt buộc còn ở on-prem?'],
+  tags: ['migration', 'latency', 'AWS', 'networking', 'connection-pool', 'troubleshooting'],
+  refs: [
+    { type: 'doc', title: 'AWS Site-to-Site VPN', url: 'https://docs.aws.amazon.com/vpn/latest/s2svpn/VPC_VPN.html' },
+    { type: 'doc', title: 'NAT gateways', url: 'https://docs.aws.amazon.com/vpc/latest/userguide/vpc-nat-gateway.html' }
+  ]
+},
+{
+  id: 'devops-079',
+  topic: 'devops',
+  level: 'lead',
+  q: '(lead) Bạn được giao lập kế hoạch migrate 40 ứng dụng on-prem lên cloud (AWS) theo đợt. Bạn dùng khung 7R thế nào, lập wave planning và dependency mapping ra sao, tổ chức cutover cuối tuần, và đặt tiêu chí go/no-go? (Liên kết aws-030, không lặp lại.)',
+  a: `**Tóm tắt:** Migrate 40 app không phải "dời 40 lần" mà là một **chương trình theo sóng (wave)** dựa trên phụ thuộc và rủi ro. Dùng **7R** để quyết định chiến lược cho từng app (rehost/replatform/refactor/repurchase/retire/retain/relocate), **dependency mapping** để gom app có liên hệ vào cùng wave và xác định thứ tự, rồi với mỗi wave có **runbook cutover cuối tuần** và **tiêu chí go/no-go/rollback** rõ. Nền tảng (landing zone, kết nối, quan sát, bảo mật) phải sẵn sàng trước wave 1. (Chi tiết kỹ thuật di chuyển DB bằng DMS/CDC và cutover DB xem **aws-030**; ở đây tập trung vào lập kế hoạch chương trình 40 app.)
+
+### Bối cảnh thật
+Ngân hàng có 40 app on-prem (VM, vài mainframe-adjacent, DB Oracle/SQL Server), muốn lên AWS trong 12-18 tháng để giảm rủi ro hạ tầng cũ và tăng tốc ra tính năng. Ràng buộc: một số app kết nối core banking, cửa sổ thay đổi hạn chế (cuối tuần), yêu cầu tuân thủ/kiểm toán, đội vận hành chưa quen cloud. Không thể "big bang" (dời hết một lần) vì rủi ro và phụ thuộc chồng chéo.
+
+### Thuật ngữ (giải thích lần đầu)
+- **7R**: bảy chiến lược migrate — **Retire** (bỏ app không còn giá trị), **Retain** (giữ lại on-prem tạm thời), **Rehost** (chuyển nguyên như cũ, "lift-and-shift"), **Relocate** (chuyển cả cụm hạ tầng), **Repurchase** (thay bằng SaaS), **Replatform** (đổi nền tảng, ít sửa code, ví dụ VM → container/ECS), **Refactor** (viết lại/đổi kiến trúc để cloud-native).
+- **Wave (sóng/đợt)**: một nhóm app được migrate cùng một khoảng thời gian/cửa sổ, có mục tiêu và runbook riêng. Wave sau học từ wave trước.
+- **Dependency mapping (lập bản đồ phụ thuộc)**: liệt kê app nào gọi app nào, dùng DB/queue/DNS/hệ thống nào, ai là upstream/downstream — để tránh dời một app mà "dây" của nó vẫn ở on-prem.
+- **Cutover (chuyển lưu lượng)**: thời điểm chuyển người dùng/th traffic sang môi trường mới.
+- **Go/no-go**: cuộc họp/quyết định tại các mốc kiểm tra để quyết định **tiếp tục (go)** hay **dừng/hoãn (no-go)** dựa trên tiêu chí định lượng đã chốt trước.
+- **Runbook**: tài liệu từng bước cho một thao tác (ở đây là cutover/rollback), ghi rõ ai làm, làm gì, mất bao lâu, dấu hiệu lỗi, cách quay lui.
+
+### Bước 1 — Khảo sát và gắn 7R cho từng app
+Với 40 app, lập bảng danh mục (portfolio): tên, chủ sở hữu nghiệp vụ, công nghệ, tích hợp, dữ liệu nhạy cảm, tần suất thay đổi, chi phí/vấn đề hiện tại, và **7R đề xuất** + lý do. Tránh refactor hàng loạt (đắt, chậm) trừ khi có lợi ích rõ.
+
+| 7R | Khi chọn (ví dụ) | Ghi chú 40-app |
+|---|---|---|
+| Retire | Ít người dùng, trùng chức năng | Dời 0 dòng code, giảm số app phải migrate — làm sớm |
+| Retain | Phụ thuộc core/mainframe chưa chuyển, hoặc sắp thay thế | Có kế hoạch/điều kiện để revisit, không "bỏ quên" |
+| Repurchase | Có SaaS đáp ứng (HR, CRM nội bộ) | Cần đánh giá tích hợp/dữ liệu/tuân thủ |
+| Rehost | Ổn định, cần chuyển nhanh, ít giá trị khi sửa | Nhanh nhưng không tận dụng cloud; thường là bước tạm |
+| Replatform | Spring Boot/Java đã có thể đóng gói; muốn bỏ quản lý OS/patch | Thường "ngọt" nhất cho app Java (VM → container/EKS/ECS) |
+| Refactor | Cần scale/độ tin cậy lớn, sẵn sàng đầu tư | Chỉ 1-2 app trọng yếu, không làm đồng loạt |
+
+### Bước 2 — Dependency mapping và xếp wave
+- **Thu thập phụ thuộc**: phỏng vấn team, đọc sơ đồ tích hợp, xem cấu hình (endpoint, DNS, connection string), log/flow mạng. Vẽ đồ thị: app → app/DB/queue/DNS/hệ thống on-prem.
+- **Nguyên tắc xếp wave**:
+  - Wave 0 (nền tảng): landing zone, mạng (VPN/Direct Connect), IAM/bảo mật, CI/CD, observability, registry — chưa có nền tảng thì wave app sẽ hỗn loạn.
+  - Wave 1: **ít phụ thuộc, rủi ro thấp**, có thể replatform nhanh — dùng để "luyện" quy trình, runbook, đội ngũ.
+  - Wave giữa: gom app **cùng cụm phụ thuộc** vào cùng wave (tránh một app lên cloud còn gọi 5 app on-prem qua đường chậm). Xử lý phụ thuộc vòng bằng cách tách giao diện hoặc dùng strangler/adapter tạm.
+  - Wave cuối: app **phụ thuộc core banking/on-prem nặng** hoặc rủi ro cao — lúc này đội đã có kinh nghiệm, và có thể đã có giải pháp kết nối ổn định.
+- **Quản lý hybrid tạm thời**: trong lúc chuyển tiếp, chấp nhận một phần gọi chéo on-prem ↔ cloud, nhưng **đo latency** và đặt mục tiêu giảm dần (liên hệ aws-030 về đường đi/độ trễ; devops-078 về nguyên nhân latency khi hybrid).
+
+~~~text
+Wave 0  Nền tảng: landing zone, DX/VPN, IAM, CI/CD, giám sát
+   |
+Wave 1  3-5 app độc lập, rủi ro thấp  (replatform)  -> luyện runbook
+   |
+Wave 2  cụm app A,B,C (phụ thuộc nhau) + DB của cụm  -> migrate cùng wave
+   |
+Wave 3  ... từng cụm theo dependency map ...
+   |
+Wave N  app gắn core on-prem / rủi ro cao  (sau khi kết nối + đội đã vững)
+Mỗi wave: chuẩn bị -> rehearsals (diễn tập) -> cutover cuối tuần -> hypercare -> lessons learned
+~~~
+
+### Bước 3 — Cutover cuối tuần (mỗi wave)
+Cutover cuối tuần vì lưu lượng thấp và có cửa sổ bảo trì; ngân hàng thường có quy trình phê duyệt thay đổi (change). **Runbook** (viết từ lần diễn tập, không viết lý thuyết) gồm:
+- **T-1/T-2 tuần**: diễn tập (rehearsal) trên môi trường giống prod; khóa phiên bản, đóng băng thay đổi không liên quan.
+- **Trước cửa sổ**: xác nhận backup/restore, thông báo stakeholder, kiểm tra đường mạng/cert/DNS, chuẩn bị lệnh rollback.
+- **Trong cửa sổ (ví dụ T0 22:00 → 04:00)**: từng bước có giờ, người chịu trách nhiệm, kênh liên lạc (bridge). Triển khai theo thứ tự phụ thuộc; smoke test nghiệp vụ sau mỗi cụm.
+- **Sau cutover**: giám sát tăng cường (hypercare 3-5 ngày), giữ đường rollback theo thời hạn đã chốt. (Kỹ thuật cutover/rollback DB dùng DMS/CDC: xem aws-030.)
+
+### Bước 4 — Tiêu chí go/no-go
+Chốt **trước** ngày cutover, đo được, và gắn người có quyền quyết định. Ví dụ:
+| Mốc | Go nếu | No-go nếu |
+|---|---|---|
+| Go/No-go diễn tập (T-1 tuần) | Diễn tập đạt, thời gian nằm trong cửa sổ, checklist hoàn tất | Bước quan trọng thất bại, chưa có cách xử lý |
+| Go/No-go trước cửa sổ (ngày T) | Team sẵn sàng, backup OK, không sự cố P1 đang mở, phê duyệt change | Thiếu người then chốt, sự cố đang diễn ra, dependency chưa sẵn sàng |
+| Go/No-go trong cửa sổ (sau smoke test) | Error rate/latency trong ngưỡng, giao dịch mẫu đúng, checksum khớp (nếu có) | Lỗi nghiệp vụ nghiêm trọng, dữ liệu lệch, không xác định nguyên nhân nhanh |
+| Quyết định rollback | Tiêu chí rollback đã xảy ra (chốt trước) | Cố "vá" vượt quá thời gian cửa sổ mà chưa rõ nguyên nhân |
+
+### Pitfall (lỗi hay gặp)
+- **Big bang 40 app**: một lỗi kéo sập nhiều luồng, không ai biết nguyên nhân ở đâu. Cách tránh: chia wave, wave 1 nhỏ để học.
+- **Xếp wave theo phòng ban thay vì theo phụ thuộc**: dời app A mà B (còn on-prem) phụ thuộc A → gọi chéo xa, latency/lỗi. Cách tránh: dependency mapping là đầu vào bắt buộc của wave planning.
+- **Refactor mọi thứ**: đội kiệt sức, trễ chương trình. Cách tránh: 7R theo giá trị/rủi ro, đa số Java app hợp replatform.
+- **Không có nền tảng (Wave 0)**: mỗi wave tự chế bảo mật/mạng/CI → nợ và lỗ hổng. Cách tránh: landing zone + guardrail trước wave 1.
+- **Go/no-go cảm tính**: tranh luận trong đêm cutover. Cách tránh: tiêu chí định lượng + người quyết định chốt từ trước.
+- **Bỏ qua con người/quy trình**: đội vận hành chưa quen cloud/on-call mới. Cách tránh: đào tạo, runbook, hypercare, và cập nhật quy trình incident.
+
+### Trả lời phỏng vấn (lead)
+"Với 40 app em tiếp cận như một chương trình theo wave, không big bang. Em lập danh mục và gắn 7R cho từng app: retire/repurchase để giảm số lượng, đa số Java replatform, chỉ refactor khi có lý do rõ. Song song em làm dependency mapping (tích hợp, DB, DNS, luồng on-prem) để gom cụm phụ thuộc vào cùng wave; Wave 0 dựng landing zone/kết nối/IAM/observability, Wave 1 chọn app ít phụ thuộc rủi ro thấp để luyện quy trình. Mỗi wave có rehearsal, runbook cutover cuối tuần với vai trò/giờ rõ, và hypercare. Go/no-go và rollback là tiêu chí định lượng chốt trước (sau diễn tập, trước cửa sổ, sau smoke test). Phần kỹ thuật di chuyển/cutover DB em dùng DMS full load + CDC, tiêu chí lag về 0 và checksum — chi tiết như aws-030."
+
+> Senior tip: Hai thứ quyết định chương trình 40 app: (1) **dependency mapping thật** (đừng tin chỉ sơ đồ lý thuyết — xác minh bằng log/flow mạng) và (2) **runbook lấy từ diễn tập** chứ không từ tài liệu. Hãy đo tỉ lệ "gọi chéo on-prem" sau mỗi wave và coi đó là chỉ số sức khỏe kiến trúc hybrid; mục tiêu là giảm dần. Giữ nhật ký quyết định 7R (vì sao app X replatform chứ không refactor) để kiểm toán và để wave sau không tranh luận lại từ đầu.`,
+  follow: ['Làm sao phát hiện phụ thuộc ẩn giữa các app mà tài liệu không ghi? (gợi ý: flow log, tracing, DNS/query log)', 'Khi một cụm app có phụ thuộc vòng (A gọi B, B gọi A), bạn xếp wave và cutover thế nào?', 'Những chỉ số nào bạn báo cáo lãnh đạo sau mỗi wave để chứng minh chương trình đang an toàn và đúng tiến độ?'],
+  tags: ['migration', '7R', 'wave-planning', 'dependency-mapping', 'cutover', 'go-no-go', 'leadership'],
+  refs: [
+    { type: 'doc', title: 'AWS Cloud Adoption Framework', url: 'https://aws.amazon.com/cloud-adoption-framework/' },
+    { type: 'doc', title: '7 Rs migration strategies', url: 'https://docs.aws.amazon.com/prescriptive-guidance/latest/strategy-migration/welcome.html' }
+  ]
+}
 );
