@@ -2377,6 +2377,117 @@ Repository dùng {{@Query}} trả về projection (không phải entity, không 
     'Đề xuất sửa: streaming (projection, fetch size, ghi file tạm, RequestBody.fromFile hoặc multipart) và tách workload (Kubernetes CronJob/worker riêng, concurrencyPolicy Forbid hoặc ShedLock); giải thích vì sao tăng heap, đổi region size hay đổi GC chỉ là giảm triệu chứng.'
   ],
   tags: ['g1', 'gc-log', 'humongous', 'full-gc', 'scheduled', 'workload-isolation', 'kubernetes', 'export', 'latency']
+},
+{
+  id: 'lab-incident-017',
+  category: 'incident',
+  title: 'Rolling update làm rơi request 502: thiếu preStop và readiness probe chưa đúng',
+  level: 'senior',
+  scenario: `**Bối cảnh:** Sàn **ShopVN** triển khai **checkout-service** (xử lý thanh toán) trên **Kubernetes** — nền tảng tự động triển khai, mở rộng và quản lý các **container** (môi trường đóng gói ứng dụng cùng mọi thứ cần để chạy) trên nhiều máy. Các container chạy trong **pod** (đơn vị nhỏ nhất của Kubernetes, thường là một container). **Deployment** quản lý số bản sao của pod và cách cập nhật: khi có phiên bản mới, Kubernetes dùng **rolling update** — tạo pod mới, đợi pod mới sẵn sàng, rồi tắt từng pod cũ, để dịch vụ không ngừng.
+
+**Triệu chứng:** Ngày **23/10/2026 lúc 15:00**, ShopVN triển khai phiên bản mới của checkout-service. Trong quá trình rolling update, khách hàng nhận hàng loạt lỗi **502 Bad Gateway** trong khoảng 2-3 phút. 502 là mã HTTP có nghĩa "máy trung gian (gateway, ví dụ ingress/nginx) không nhận được phản hồi hợp lệ từ server phía sau" — ở đây là pod checkout đã bị tắt hoặc chưa sẵn sàng chấp nhận kết nối. Tổng cộng khoảng **1.840 request** bị lỗi 502. Pod cũ đang trạng thái **Terminating** (đang tắt) vẫn nhận request; pod mới nhận traffic khi chưa sẵn sàng.
+
+**Dữ liệu thu thập:** bản cấu hình Deployment của checkout-service (xem artifact deployment.yaml).`,
+  artifacts: [ { name: 'deployment.yaml', lang: 'yaml', content: `apiVersion: apps/v1
+kind: Deployment
+metadata: { name: checkout-service }
+spec:
+  replicas: 3
+  template:
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+      - name: checkout-service
+        readinessProbe:
+          httpGet: { path: /actuator/health, port: 8080 }
+          initialDelaySeconds: 5` } ],
+  questions: [ 'Tại sao trong rolling update, khách hàng vẫn nhận 502 từ pod cũ đang tắt và từ pod mới chưa sẵn sàng?', 'Thiết kế lại readiness probe, startup probe, preStop và graceful shutdown để không rơi request khi triển khai.' ],
+  hints: [ 'Readiness probe quyết định pod được đưa vào danh sách nhận traffic (Endpoints) hay không. Probe sớm quá hoặc kiểm tra sai endpoint khiến pod được đánh sẵn sàng trước khi Tomcat đã lắng nghe cổng 8080.', 'Khi xóa pod, Kubernetes gửi tín hiệu SIGTERM (yêu cầu tắt nhẹ nhàng), chờ terminationGracePeriodSeconds, rồi mới gửi SIGKILL (é bắt buộc tắt ngay). Nếu không có preStop (lệnh chạy trước khi tắt, ví dụ sleep để chờ request đang xử lý xong), ingress có thể đổ request vào pod ngay khi nó bắt đầu tắt.' ],
+  answer: `**Tóm tắt:** Lỗi 502 trong lần triển khai do hai nguyên nhân cùng xảy ra: (1) readiness probe quá sớm (initialDelaySeconds 5) và kiểm tra {{/actuator/health}} chỉ báo ngữ cảnh đã nạp, chưa chắc Tomcat đã lắng nghe cổng 8080, nên pod mới được đưa vào nhận traffic trước khi thật sự sẵn sàng; (2) pod cũ bị tắt mà không có preStop, grace period ngắn 30 giây, nên ingress vẫn chuyển request vào pod đang Terminating và cắt giữa chừng request đang xử lý. Kết quả: khách hàng nhận hàng loạt 502 Bad Gateway trong 2-3 phút, khoảng 1.840 request.
+
+### Khái niệm cần biết trước
+- **Pod:** đơn vị nhỏ nhất của Kubernetes, chứa một hoặc nhiều container dùng chung địa chỉ IP và lưu trữ.
+- **Container:** môi trường đóng gói ứng dụng kèm thư viện và cấu hình, chạy độc lập khỏi hệ điều hành máy chủ.
+- **Deployment:** quản lý các bản sao (replica) của pod và triển khai phiên bản mới theo kiểu luân phiên (rolling update) thay vì tắt hết dịch vụ cùng lúc.
+- **Ingress:** thành phần như "cổng cửa" nhận request từ internet và định tuyến đến pod phù hợp (ở đây là nginx ingress, đóng vai trò gateway).
+- **Readiness probe:** kiểm tra định kỳ xem pod đã sẵn sàng phục vụ traffic chưa. Nếu probe thành công, kubelet đánh pod Ready và endpoint controller đưa pod vào Endpoints — ingress mới bắt đầu gửi request vào pod.
+- **PreStop:** hook chạy trong container trước khi Kubernetes gửi tín hiệu tắt, dùng để chờ các request đang xử lý kết thúc.
+- **SIGTERM / SIGKILL:** tín hiệu Linux yêu cầu chương trình tắt nhẹ nhàng (SIGTERM) và tín hiệu buộc tắt ngay lập tức, không cho kịp xử lý (SIGKILL).
+- **Graceful shutdown:** tắt nhẹ nhàng — ngừng nhận kết nối mới nhưng xử lý xong các kết nối đang diễn ra trước khi dừng hoàn toàn (Spring Boot cấu hình bằng {{server.shutdown=graceful}}).
+- **TerminationGracePeriodSeconds:** thời gian tối đa Kubernetes chờ pod tự tắt sau SIGTERM trước khi bắn SIGKILL.
+
+### Nguyên nhân gốc
+
+**1. Readiness probe passes quá sớm và kiểm tra chưa đủ.** initialDelaySeconds 5 nghĩa là Kubernetes bắt đầu kiểm tra sau 5 giây, có thể chưa đủ thời gian Spring Boot nạp xong ngữ cảnh và Tomcat mở cổng 8080. Đơn chỉ kiểm tra {{/actuator/health}}: endpoint này trả UP khi ngữ cảnh ứng dụng nạp xong, nhưng chưa chắc chắn Tomcat đã sẵn sàng chấp nhận kết nối. Khi đợt kiểm tra đầu tiên thành công, kubelet đánh pod là Ready, endpoint controller của Kubernetes cập nhật Endpoints, và ingress bắt đầu đổ request vào pod ngay lập tức — trong lúc Tomcat vừa khởi động hoặc chưa lắng nghe → request rơi, trả 502.
+
+**2. Thiếu preStop khi tắt pod cũ.** Kubernetes xóa pod theo thứ tự: gắn thời gian xóa, pod vào trạng thái Terminating, endpoint controller từng bước cập nhật tin trên các node (có độ trễ vài giây), rồi gửi SIGTERM vào container. Nếu container không có preStop, nó không được chờ đợi request đang xử lý xong; kết hợp với server.shutdown chưa bật graceful, request bị cắt giữa chừng, khách hàng thấy 502.
+
+**3. Grace period quá ngắn.** terminationGracePeriodSeconds = 30 giây, trong khi một request thanh toán có thể chạy 10-30 giây. Hết 30 giây, Kubernetes bắn SIGKILL, cắt mọi request còn sống.
+
+### Cách sửa
+
+- **Readiness probe:** đổi path sang {{/actuator/health/readiness}} (endpoint readiness của Spring Boot Actuator 3.x — chỉ trả READY sau khi sự kiện ApplicationReady đã được xử lý, nghĩa là ứng dụng thật sự sẵn sàng phục vụ traffic), đặt {{initialDelaySeconds: 15}}, {{periodSeconds: 5}}, {{failureThreshold: 3}}. Cần đảm bảo {{management.endpoints.web.exposure.include}} chứa {{health}} và {{management.endpoint.health.probes.enabled: true}} (mặc định là true).
+- **Startup probe:** thêm {{startupProbe}} đường dẫn {{/actuator/health}}, {{failureThreshold: 30}} (mỗi 10 giây một đợt, tối đa 300 giây) để Kubernetes không hỏi readiness/liveness trong khi ứng dụng còn khởi động.
+- **PreStop hook:** thêm {{lifecycle.preStop}} chạy lệnh {{sleep 10}} (hoặc gọi endpoint tắt nội bộ) trước khi nhận SIGTERM, cho ingress và endpoint controller kịp cập nhật, và request đang xử lý kịp kết thúc.
+- **Grace period:** tăng {{terminationGracePeriodSeconds}} lên 60 giây (hoặc nhiều hơn, dựa trên p99 thời gian xử lý request kinh doanh).
+- **Spring Boot:** bật {{server.shutdown=graceful}} trong {{application.yml}}, để Tomcat ngừng nhận kết nối mới nhưng xử lý xong kết nối hiện tại trước khi dừng.
+
+Xác minh sau khi sửa: triển khai lại, theo dõi pod mới không vào Endpoints trước khi {{/actuator/health/readiness}} trả 200, và trong rolling update không có request 502 nào ({{kubectl get pods --watch}}, ingress access log).
+
+> Senior tip: Mỗi lần triển khai rơi 502, chín mươi phần trăm là vấn đề probe và vòng đời pod (lifecycle). preStop ngủ 5-10 giây là biện pháp rẻ nhất và hiệu quả nhất. Luôn đặt readiness probe ở endpoint phản ánh "sẵn sàng phục vụ traffic", không chỉ "ứng dụng đã khởi động", và hãy theo dõi p99 thời gian xử lý request để đặt grace period đủ dài, không chọn số ngẫu nhiên như 30 giây.`,
+  rubric: [ 'Nhận ra readiness probe sớm quá và kiểm tra {{/actuator/health}} chưa phản ánh Tomcat sẵn sàng lắng nghe, làm pod mới nhận traffic sớm.', 'Giải thích thứ tự tắt pod của Kubernetes: Terminating → endpoint controller cập nhật Endpoints → SIGTERM → chờ terminationGracePeriodSeconds → SIGKILL, và vai trò preStop.', 'Đề xuất sửa đúng: readiness {{/actuator/health/readiness}}, startupProbe, preStop sleep, grace period 60s, {{server.shutdown=graceful}}.' ],
+  tags: ['kubernetes', 'rolling-update', 'readiness-probe', 'prestop', '502']
+},
+{
+  id: 'lab-incident-018',
+  category: 'incident',
+  title: 'HPA mở rộng liên tục nhưng p99 tăng: CPU limit 500m làm JVM bị CFS throttle',
+  level: 'senior',
+  scenario: `**Bối cảnh:** ShopVN chạy **search-service** trên Kubernetes. Mỗi pod được cấp **CPU request** là 250m (0.25 CPU — lượng CPU Kubernetes đảm bảo pod luôn nhận được) và **CPU limit** là 500m (0.5 CPU — giới hạn cứng, pod không được vượt quá mức này). **HPA (Horizontal Pod Autoscaler)** là thành phần tự động thay đổi số lượng pod theo một chỉ số; ở đây mục tiêu là CPU sử dụng 70% (tính theo mức sử dụng so với request).
+
+**Triệu chứng:** Ngày **24/10/2026**, từ 10:00, traffic tăng. HPA mở rộng liên tục từ 2 pod lên 10 pod trong 15 phút, nhưng độ trễ p99 (thời gian chậm nhất trong 10% request chậm nhất) tăng từ 120 ms lên 1.8 s. Mỗi pod dùng CPU thực tế chỉ khoảng 300m, dưới limit 500m, nhưng tỷ lệ thời gian bị hạn chế (throttled periods) rất cao.
+
+**Dữ liệu thu thập:** lệnh kubectl top pod và thông số HPA (xem artifact kubectl-top.txt).`,
+  artifacts: [ { name: 'kubectl-top.txt', lang: 'text', content: `NAME                            CPU(cores)   MEMORY(bytes)
+search-6f4a2-abc12              320m         612Mi
+search-6f4a2-def34              310m         598Mi
+# HPA
+NAME           REFERENCE                 TARGETS   MINPODS   MAXPODS   REPLICAS   AGE
+search-service Deployment/search-service  180%/70%  2         10        10         15m
+# cfs throttling ratio ~0.9, gc pause 40ms mỗi 1.3s, p99 1.8s` } ],
+  questions: [ 'Vì sao HPA mở rộng liên tục từ 2 lên 10 pod nhưng p99 lại tăng thay vì giảm?', 'Giải thích CFS quota, CFS throttling và tác động của chúng lên JVM (Java 17) chạy trong container.' ],
+  hints: [ 'HPA tính mức sử dụng CPU so với request (250m): 320m / 250m = 128%, vượt ngưỡng 70%, nên điều khiển mở rộng liên tục.', 'Limit 500m có nghĩa là CFS quota 50 ms trên mỗi chu kỳ 100 ms. Khi JVM bùng nổ (GC, biên dịch JIT), vượt 50 ms trong chu kỳ thì bị throttled (dựng lại) cho đến hết chu kỳ. p99 tăng vì các lần bùng này.' ],
+  answer: `**Tóm tắt:** HPA mở rộng vì nó tính {{usage / request}} (320m / 250m = 128% > 70%), chứ không so với limit. Mặt cao, limit 500m làm kernel áp dụng CFS quota 50 ms mỗi 100 ms; JVM bùng nổ (gom rác, biên dịch JIT) vượt mức này trong một chu kỳ thì bị throttled — treo lại cho đến hết chu kỳ. JDK 17 nhận container chỉ có 0.5 CPU nên {{availableProcessors()}} = 1, luồng GC và JIT chỉ còn 1, làm GC pause lâu (40 ms mỗi 1.3 s) và p99 tăng từ 120 ms lên 1.8 s. Thêm pod không khắc phục vì mỗi pod vẫn bị throttle và xử lý chậm hơn.
+
+### Khái niệm cần biết trước
+- **Pod / container:** pod là đơn vị nhỏ nhất của Kubernetes; container là môi trường chạy ứng dụng bị giới hạn tài nguyên bởi kernel Linux.
+- **CPU request:** lượng CPU Kubernetes đặt cam kết dành cho pod, dùng để lập lịch và tính toán mức sử dụng cho HPA.
+- **CPU limit:** giới hạn cứng trên CPU pod có thể dùng; vượt quá thì kernel hạn chế.
+- **HPA (Horizontal Pod Autoscaler):** tự động tăng hoặc giảm số pod khi chỉ số theo dõi vượt ngưỡng đã đặt.
+- **CFS (Completely Fair Scheduler):** bộ lập lịch công bằng hoàn toàn của Linux, chia thời gian CPU cho các quá trình. Với container, kernel dùng **CFS quota** (thời gian tối đa được dùng CPU trong một chu kỳ) và **CFS period** (độ dài chu kỳ, mặc định 100 ms).
+- **CFS throttling:** trạng thái container đã dùng hết quota trong chu kỳ, kernel "dựng" nó cho đến khi chu kỳ mới bắt đầu. Thường xuyên bị throttled làm ứng dụng bị giật, độ trễ tăng.
+- **JVM container-aware:** từ JDK 10+/17, JVM tự nhận giới hạn container để tự cấu hình heap và số luồng (thread GC, JIT) thay vì nhìn toàn bộ nút chủ.
+- **availableProcessors():** phương thức Java trả về số CPU mà JVM thấy được; với limit 500m trên nút nhiều nhân, JDK 17 thường trả về 1.
+- **KEDA:** Kubernetes-based Event Driven Autoscaling, mở rộng pod theo chỉ số tùy chỉnh (RPS, độ trễ, số message Kafka…) thay vì chỉ CPU.
+
+### Nguyên nhân gốc
+
+**1. HPA chạy theo request, không theo limit, nên luôn cho mở rộng.** HPA tính {{usage / request}} = 320m / 250m = 128%, vượt ngưỡng 70%, nên liên tục yêu cầu thêm pod (2 → 10 trong 15 phút). Số pod nhiều hơn chia nhẹ traffic, nhưng mỗi pod vẫn bị cùng giới hạn CPU.
+
+**2. Limit 500m gây CFS throttling.** Limit 500m = 0.5 CPU → CFS quota 50 ms, period 100 ms. Trong 100 ms, JVM chỉ được dùng CPU tối đa 50 ms. Khi JVM bùng mở (ví dụ luồng GC chạy hoặc JIT biên dịch mã mới), dùng trên 50 ms trong chu kỳ thì kernel treo JVM cho đến hết chu kỳ. Tỷ lệ bị throttled khoảng 0.9 (90%) cho thấy pod hầu hết thời gian đang bị hạn chế, dù kubectl top chỉ báo 320m (trung bình dưới limit).
+
+**3. JVM bị hạ cấp xuống 1 CPU.** JDK 17 container-aware tính availableProcessors() từ CPU limit: 0.5 làm tròn lên là 1. Thread GC và JIT chỉ được 1 luồng → gom rác lâu hơn (GC pause 40 ms mỗi 1.3 s), mã chạy chậm hơn sau khi biên dịch, p99 độ trệ từ 120 ms lên 1.8 s. Thêm pod không giúp latency vì mỗi pod vẫn xử lý chậm bằng nhau; tổng throughput tăng nhưng trải nghiệm khách hàng tệ hơn.
+
+### Cách sửa
+
+- **CPU resource:** đặt {{requests.cpu: 300m}} (gần mức dùng thực) và {{limits.cpu: 1000m}} hoặc bỏ limit CPU nếu namespace cho phép. Tốt nhất đặt request = limit để pod được lớp QoS **Guaranteed** (kernel không throttled nếu limit đủ cao và không bị cướp CPU).
+- **HPA theo chỉ số thích hợp:** thay CPU utilization, mở rộng theo RPS (request mỗi giây) hoặc độ trễ p95/p99 qua **KEDA** hoặc Prometheus Adapter, ngưỡng đáp ứng trải nghiệm thực tế.
+- **JVM:** bật {{-XX:+UseContainerSupport}} (mặc định từ JDK 17) và đặt {{-XX:MaxRAMPercentage=75.0}} để heap phù hợp với cỡ container; xem xét {{-XX:ActiveProcessorCount}} để chỉ rõ số luồng GC/JIT thay vì để JVM đoán 1 luồng.
+- **Giám sát và cảnh báo:** theo dõi {{container_cpu_cfs_throttled_periods_total}} và {{container_cpu_cfs_throttled_seconds_total}}; cảnh báo khi tỷ lệ throttled tăng hoặc p99 vượt ngưỡng khi pod đang mở rộng.
+
+> Senior tip: Nếu thấy HPA mở rộng liên tục mà độ trễ không giảm, hãy kiểm tra {{container_cpu_cfs_throttled_periods_total}} ngay — chín mươi phần trăm trường hợp là CPU limit quá thấp so với nhịp burst của JVM. Một quy tắc thực tiễn: cho Java trong container đặt request và limit bằng nhau (Guaranteed QoS), và không bao giờ để CPU limit nhỏ hơn mức mà JVM cần để gom rác trong khoảng thời gian chấp nhận được.`,
+  rubric: [ 'Giải thích HPA tính dùng/request (320m/250m = 128% > 70%) nên mở rộng liên tục, không phải vì thực sự cần nhiều pod hơn.', 'Giải thích CFS quota 50 ms / period 100 ms từ limit 500m và việc JVM bị throttled khi bùng nổ, dù trung bình dùng chỉ 320m.', 'Giải thích availableProcessors() = 1 làm GC/JIT chỉ 1 luồng, GC pause lâu, p99 tăng, và thêm pod không giải quyết latency.', 'Đề xuất sửa: request/limit CPU hợp lý (hoặc Guaranteed QoS), HPA theo RPS/độ trễ qua KEDA, cài đặt JVM container-aware, cảnh báo chỉ số throttled.' ],
+  tags: ['kubernetes', 'hpa', 'cpu-throttling', 'cfs', 'jvm']
 }
 );
 // APPEND_END
