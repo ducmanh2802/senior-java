@@ -548,5 +548,467 @@ Nêu: SEQUENCE có id trước INSERT nên batch được, IDENTITY cần kết 
 
 Lỗi hay gặp: tăng roundTrips ở mọi lần gọi, hoặc khởi tạo remaining = size trong constructor mà không đếm round-trip đầu tiên. Ngoài đời, nếu process dừng khi khối còn dư thì các id đó bị bỏ (gap); điều này không làm khoá chính sai, chỉ làm dãy id không liên tục.`,
  }],check:[{q:'Vì sao SEQUENCE hỗ trợ batch insert tốt hơn IDENTITY?',options:['SEQUENCE không cần id','SEQUENCE đảm bảo id liên tục, không có gap','SEQUENCE không cần bất kỳ round-trip nào','Có id trước khi INSERT, nên Hibernate có thể hoãn và gom INSERT'],answer:3,explain:`Biết id trước cho phép đưa entity vào persistence context mà chưa INSERT, rồi gửi theo batch lúc flush. Entity vẫn cần id. SEQUENCE vẫn có round-trip xin khối (giảm nhờ allocationSize) và vẫn có gap khi process dừng hoặc rollback.`},{q:'{{hibernate.jdbc.batch_size=50}} có nghĩa là gì?',options:['Gom tối đa 50 lệnh JDBC cùng dạng SQL liên tiếp vào một lần gửi','Mọi entity được ghi bằng đúng một câu SQL','Tạo 50 sequence','Cho phép 50 transaction đồng thời'],answer:0,explain:`Batch gom các lệnh JDBC cùng câu SQL (vì vậy cần order_inserts khi xen kẽ nhiều bảng) để giảm round-trip; vẫn là nhiều lệnh, trừ khi driver rewrite thành INSERT nhiều dòng. Nó không liên quan đến số sequence hay số transaction đồng thời.`},{q:'Entity dùng {{GenerationType.IDENTITY}}, đã cấu hình batch_size=50, gọi saveAll 1.000 entity. Điều gì xảy ra?',options:['10 batch INSERT, mỗi batch 100 dòng','20 batch INSERT, mỗi batch 50 dòng','Khoảng 1.000 INSERT gửi riêng lẻ, vì Hibernate tắt batch insert với IDENTITY','Lỗi khởi động vì IDENTITY không tương thích batch_size'],answer:2,explain:`Hibernate cần id ngay khi persist nên phải chạy từng INSERT để lấy generated key; batch insert bị tắt một cách âm thầm, không có lỗi khởi động. Muốn 20 batch × 50 dòng thì phải chuyển sang SEQUENCE. Con số 100 dòng/batch không khớp cấu hình nào.`}],tags:['batch insert','IDENTITY','SEQUENCE']
+},
+{
+ id:'lesson-jpa-006',track:'jpa',order:6,title:'Owning side, cascade và orphanRemoval trong quan hệ hai chiều',level:'senior',minutes:30,
+ goals:['Phân biệt owning side và inverse side, biết phía nào quyết định giá trị khóa ngoại lúc flush','Viết helper addLine và removeLine giữ cho hai phía của quan hệ luôn khớp nhau','Dùng đúng cascade PERSIST, cascade REMOVE và orphanRemoval; nhận ra REMOVE trên quan hệ ManyToOne là lỗi mất dữ liệu','Nêu được chi phí thật của orphanRemoval: Hibernate phải tải cả collection lên để so sánh'],
+ body:`### Hiểu nhanh: quan hệ hai chiều cần một phía làm chủ
+Order và OrderLine trỏ lẫn nhau bằng hai field:
+- phía cha: {{@OneToMany(mappedBy = "order") List<OrderLine> lines}} — danh sách dòng của đơn;
+- phía con: {{@ManyToOne @JoinColumn(name = "order_id") Order order}} — field trỏ về đơn.
+
+{{mappedBy}} nói với Hibernate: "phía này chỉ để đọc, giá trị thật lấy từ field tên order ở class kia". Phía có {{@JoinColumn}} (OrderLine) gọi là **owning side** — chủ sở hữu quan hệ, vì cột khóa ngoại nằm trên bảng của nó. Phía {{mappedBy}} là **inverse side** (phía phụ, phía ngược).
+
+Lý do nằm ở database: liên kết chỉ có MỘT chỗ để cất, là cột {{order_line.order_id}}. Khi flush, Hibernate chỉ đọc con trỏ trên **owning side** để quyết định ghi gì xuống; thay đổi ở collection phía inverse tự nó không sinh ra câu SQL nào.
+
+### Bẫy kinh điển: chỉ set phía inverse thì FK vẫn null
+~~~java
+order.getLines().add(line);   // inverse side: chỉ đổi collection trong RAM -> KHONG có UPDATE
+line.setOrder(order);         // owning side: đây mới là nơi Hibernate nhìn vào lúc flush
+~~~
+Hibernate **không** tự gọi {{line.setOrder(order)}} hộ bạn. Thêm vào collection mà quên set owning side thì row của line vẫn được INSERT (nhờ cascade PERSIST) nhưng {{order_id}} mang null — đơn hàng "mồ côi" không truy vấn được. Lỗi này qua mặt code review vì test với một đơn nhỏ vẫn chạy, chỉ lộ ra khi cần SELECT "lines của đơn 42".
+
+Helper đặt trên aggregate root là bắt buộc khi map quan hệ hai chiều:
+~~~java
+class Order {
+    @OneToMany(mappedBy = "order", cascade = CascadeType.ALL, orphanRemoval = true)
+    private final List<OrderLine> lines = new ArrayList<>();
+
+    public void addLine(OrderLine l) {
+        lines.add(l);
+        l.setOrder(this);       // luôn đổi CẢ HAI phía trong một lần gọi
+    }
+    public void removeLine(OrderLine l) {
+        lines.remove(l);
+        l.setOrder(null);       // để orphanRemoval nhìn thấy "không còn chủ"
+    }
+}
+~~~
+
+> Nếu muốn giữ bất biến của aggregate, đừng trả collection gốc từ getter. Trả {{List.copyOf(lines)}} hoặc collection wrap {{Collections.unmodifiableList}}, và bắt mọi thay đổi đi qua addLine/removeLine.
+
+### Cascade: thao tác nào được "nhân bản" xuống con
+{{em.persist(order)}} chỉ ghi bảng orders; nếu chưa bật cascade, Hibernate báo "entity not persistent" khi gặp line ở state new. {{cascade = PERSIST}} bảo nó persist luôn các line trong collection.
+
+~~~seq
+title: Luu don hang co hai chi tiet
+actors: App | Hibernate | DB
+App -> Hibernate: persist order, addLine x2
+Hibernate -> Hibernate: cascade PERSIST cac line
+Hibernate -> DB: INSERT orders(id)=1
+Hibernate -> DB: INSERT order_line 10, sku A
+Hibernate -> DB: UPDATE order_line 10 set FK=1
+DB --> Hibernate: ok
+Hibernate --> App: commit xong
+~~~
+
+Thứ tự SQL ở trên là mặc định: INSERT cha, INSERT con, rồi ghi FK lấy từ owning side. Hiểu thứ tự này giúp bạn đọc log SQL khi nghi vấn thiếu liên kết.
+
+| Cascade | Ý nghĩa | Khi nào dùng |
+|---|---|---|
+| {{PERSIST}} | lưu cha thì lưu con | {{@OneToMany}} của aggregate, dòng luôn đi cùng đơn |
+| {{MERGE}} | merge cha thì merge con | dùng kèm PERSIST khi nhận DTO từ tầng web |
+| {{REMOVE}} | xóa cha thì xóa con | chỉ khi con không tồn tại độc lập |
+| {{ALL}} | gộp mọi loại | nên tránh, quá rộng |
+
+**{{cascade = REMOVE}} trên {{@ManyToOne}} là bug mất dữ liệu kinh điển.** {{@ManyToOne Customer customer}} trên Order chỉ có nghĩa "đơn thuộc về khách", nhưng Customer là dữ liệu dùng chung: thêm cascade REMOVE thì {{em.remove(order)}} xóa **luôn cả khách hàng**, trong khi khách còn bao đơn khác. Quy tắc: cascade REMOVE và orphanRemoval chỉ dành cho quan hệ "cha sở hữu con" (Order → OrderLine). Liên kết trỏ tới dữ liệu dùng chung (Customer, Product, Catalog) thì không bao giờ cascade REMOVE.
+
+Với {{@ManyToMany}} (Student–Course), "hủy đăng ký" chỉ là gỡ **dòng trong bảng join**, không xóa Course; muốn vậy gọi {{student.getCourses().clear()}} trên owning side. {{orphanRemoval}} không tồn tại trên {{@ManyToMany}}.
+
+### orphanRemoval khác cascade REMOVE ở chỗ nào
+- {{orphanRemoval = true}} trên {{@OneToMany}}: khi một line bị **gỡ khỏi collection** và không còn ai trỏ tới, Hibernate DELETE row của nó. Đây là cách "xóa dòng khỏi đơn", không phải cách "xóa đơn".
+- {{cascade = REMOVE}}: khi bạn gọi {{em.remove(order)}}, toàn bộ line bị xóa theo.
+
+Khác nhau ở **người khởi xướng**: gỡ khỏi collection (orphan) hay xóa entity cha (cascade). Trên thực tế hai cái thường đi cùng nhau: REMOVE để dọn khi xóa đơn, orphanRemoval để dọn khi sửa đơn.
+
+### Lỗi production hay gặp
+- **{{lines.clear()}} không xóa row** nếu thiếu {{orphanRemoval}}: Hibernate chỉ bỏ tham chiếu trong RAM, row con vẫn nằm lại database với FK cũ.
+- **Xóa con hàng loạt là một dạng N+1**: để biết dòng nào thành orphan, Hibernate phải **tải cả collection** lên và so với snapshot lưu lúc load. Gỡ 100.000 dòng theo cách này là đưa 100.000 row về RAM rồi so từng cái. Muốn nhanh thì dùng bulk {{DELETE FROM order_line WHERE order_id = 1}}, nhưng nó bỏ qua persistence context (entity managed giữ giá trị cũ) và phải xóa con **trước** khi xóa cha nếu FK bắt buộc.
+- **{{equals}}/{{hashCode}} dựa trên field nghiệp vụ**: collection là {{Set}}, đổi sku của một dòng khiến nó "không còn là phần tử đó", {{remove}} trả false và dòng không bị xóa. Chuẩn an toàn: so theo id, hoặc dùng {{List}} nếu thứ tự có nghĩa.
+- **{{cascade = ALL}} với quan hệ hai chiều** có thể gây vòng lặp merge vô hạn khi entity A và B cùng cascade sang nhau.
+- **Quên set owning side khi di chuyển con**: con nằm trong collection của cha mới nhưng FK vẫn chỉ cha cũ, vì bạn sửa phía inverse.
+
+### Liên hệ phỏng vấn
+Câu hay hỏi: "Vì sao thêm vào collection mà khóa ngoại vẫn null?" Trả lời: phía {{mappedBy}} là inverse, Hibernate chỉ đọc owning side lúc flush, nên phải có helper set cả hai phía. Nói tiếp: cascade PERSIST để lưu con, orphanRemoval để xóa khi gỡ khỏi collection, cascade REMOVE để dọn khi xóa cha; điểm cộng lớn là nêu được vì sao REMOVE trên {{@ManyToOne}} nguy hiểm và vì sao orphanRemoval kéo theo chi phí tải cả collection.`,
+ exercises:[{title:'Flush sinh SQL theo owning side và cascade',prompt:`Mô phỏng việc Hibernate sinh SQL từ **owning side**. Cho sẵn {{Order}} (có {{lines}}) và {{Line}} (có field {{order}}, phía owning). Cài {{Graph}}:
+- {{persist(order)}}: đăng ký order vào session; gọi lặp lại không sao.
+- {{addLine(order, line)}}: helper hai chiều — thêm line vào {{order.lines}} (nếu chưa có) VÀ gán {{line.order = order}}.
+- {{removeLine(order, line)}}: gỡ line khỏi collection và đặt {{line.order = null}} (mô phỏng {{orphanRemoval = true}}).
+- {{remove(order)}}: đánh dấu order bị xóa (mô phỏng {{cascade = REMOVE}} truyền xuống lines).
+- {{flush()}}: trả về danh sách câu SQL theo đúng thứ tự sinh ra; sau flush trạng thái coi như đã đồng bộ nên flush lại không lặp câu nào. Quy tắc:
+1. order đang managed và chưa bị xóa: nếu chưa từng INSERT thì {{INSERT INTO orders(id) VALUES(<id>)}}.
+2. theo thứ tự {{order.lines}}: line chưa từng INSERT thì {{INSERT INTO order_line(id,sku) VALUES(<id>,'<sku>')}} — line được lưu kể cả khi {{line.order}} không trỏ về cha, vì đó là cascade PERSIST.
+3. khóa ngoại lấy từ owning side: chỉ khi {{line.order == order}} và giá trị {{order_id}} này khác với lần ghi gần nhất của line thì {{UPDATE order_line SET order_id=<oid> WHERE id=<lid>}}.
+4. line đã có row mà bị gỡ khỏi collection ({{removeLine}}) thì {{DELETE FROM order_line WHERE id=<lid>}}, đúng một lần.
+5. order bị {{remove}}: với từng line còn trỏ về nó và đã có row thì {{DELETE FROM order_line WHERE id=<lid>}} (theo thứ tự collection), sau đó {{DELETE FROM orders WHERE id=<oid>}}; entity chưa từng INSERT thì không sinh câu DELETE nào.`,
+ starter:`class Order { long id; List<Line> lines = new ArrayList<>(); Order(long i) { id = i; } }
+class Line { long id; String sku; Order order; Line(long i, String s) { id = i; sku = s; } }
+class Graph {
+    void persist(Order o) { throw new UnsupportedOperationException("TODO"); }
+    void addLine(Order o, Line l) { throw new UnsupportedOperationException("TODO"); }
+    void removeLine(Order o, Line l) { throw new UnsupportedOperationException("TODO"); }
+    void remove(Order o) { throw new UnsupportedOperationException("TODO"); }
+    List<String> flush() { throw new UnsupportedOperationException("TODO"); }
+}`,
+ tests:`public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    public static void main(String[] args) {
+        Order o1 = new Order(1);
+        Graph g1 = new Graph();
+        g1.persist(o1);
+        Line l1 = new Line(10, "A");
+        g1.addLine(o1, l1);
+        String[] want1 = {
+            "INSERT INTO orders(id) VALUES(1)",
+            "INSERT INTO order_line(id,sku) VALUES(10,'A')",
+            "UPDATE order_line SET order_id=1 WHERE id=10",
+        };
+        List<String> s1 = g1.flush();
+        check("owning side writes the FK", Arrays.equals(want1, s1.toArray()), "sql = " + s1);
+        check("helper keeps both sides", l1.order == o1 && o1.lines.contains(l1), "thieu mot trong hai phia cua lien ket");
+        List<String> s2 = g1.flush();
+        check("flush twice is clean", s2.isEmpty(), "sql = " + s2);
+
+        Order o2 = new Order(2);
+        Graph g2 = new Graph();
+        g2.persist(o2);
+        Line l2 = new Line(20, "B");
+        o2.lines.add(l2);
+        String[] want3 = {
+            "INSERT INTO orders(id) VALUES(2)",
+            "INSERT INTO order_line(id,sku) VALUES(20,'B')",
+        };
+        List<String> s3 = g2.flush();
+        check("inverse-only add writes no FK", Arrays.equals(want3, s3.toArray()), "sql = " + s3);
+
+        Order p = new Order(3);
+        Order q = new Order(4);
+        Graph g3 = new Graph();
+        g3.persist(p);
+        Line l3 = new Line(30, "C");
+        g3.addLine(p, l3);
+        g3.flush();
+        g3.persist(q);
+        g3.addLine(q, l3);
+        String[] want4 = {
+            "INSERT INTO orders(id) VALUES(4)",
+            "UPDATE order_line SET order_id=4 WHERE id=30",
+        };
+        List<String> s4 = g3.flush();
+        check("FK follows the owning side", Arrays.equals(want4, s4.toArray()), "sql = " + s4);
+
+        Order r = new Order(5);
+        Graph g4 = new Graph();
+        g4.persist(r);
+        Line l4 = new Line(50, "D");
+        g4.addLine(r, l4);
+        g4.flush();
+        g4.removeLine(r, l4);
+        String[] want5 = {"DELETE FROM order_line WHERE id=50"};
+        List<String> s5 = g4.flush();
+        check("orphanRemoval deletes the child", Arrays.equals(want5, s5.toArray()), "sql = " + s5);
+        List<String> s6 = g4.flush();
+        check("orphan deleted only once", s6.isEmpty(), "sql = " + s6);
+
+        Order e = new Order(6);
+        Graph g5 = new Graph();
+        g5.persist(e);
+        g5.addLine(e, new Line(60, "F"));
+        g5.addLine(e, new Line(61, "G"));
+        g5.flush();
+        g5.remove(e);
+        String[] want7 = {
+            "DELETE FROM order_line WHERE id=60",
+            "DELETE FROM order_line WHERE id=61",
+            "DELETE FROM orders WHERE id=6",
+        };
+        List<String> s7 = g5.flush();
+        check("cascade REMOVE deletes children then parent", Arrays.equals(want7, s7.toArray()), "sql = " + s7);
+
+        Order n = new Order(7);
+        Graph g6 = new Graph();
+        g6.persist(n);
+        g6.remove(n);
+        List<String> s8 = g6.flush();
+        check("never-inserted entity writes nothing", s8.isEmpty(), "sql = " + s8);
+
+        Order k = new Order(8);
+        Graph g7 = new Graph();
+        g7.persist(k);
+        g7.flush();
+        g7.addLine(k, new Line(80, "H"));
+        String[] want9 = {
+            "INSERT INTO order_line(id,sku) VALUES(80,'H')",
+            "UPDATE order_line SET order_id=8 WHERE id=80",
+        };
+        List<String> s9 = g7.flush();
+        check("cascade persist inserts only the new child", Arrays.equals(want9, s9.toArray()), "sql = " + s9);
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+ reference:`class Order { long id; List<Line> lines = new ArrayList<>(); Order(long i) { id = i; } }
+class Line { long id; String sku; Order order; Line(long i, String s) { id = i; sku = s; } }
+class Graph {
+    Map<Long, Order> managed = new LinkedHashMap<>();   // thu tu persist = thu tu flush
+    Set<Long> insOrder = new HashSet<>();
+    Set<Long> insLine = new HashSet<>();
+    Set<Long> orphans = new LinkedHashSet<>();
+    Set<Long> removed = new HashSet<>();
+    Map<Long, Long> fk = new HashMap<>();               // line id -> order_id da ghi xuong DB
+
+    void persist(Order o) { managed.putIfAbsent(o.id, o); }
+    void addLine(Order o, Line l) {
+        if (!o.lines.contains(l)) o.lines.add(l);
+        l.order = o;                                    // OWNING side: FK doc tu day
+    }
+    void removeLine(Order o, Line l) { o.lines.remove(l); l.order = null; orphans.add(l.id); }
+    void remove(Order o) { removed.add(o.id); }
+
+    List<String> flush() {
+        List<String> out = new ArrayList<>();
+        for (Order o : new ArrayList<>(managed.values())) {
+            if (removed.contains(o.id)) {               // cascade REMOVE
+                for (Line l : new ArrayList<>(o.lines)) {
+                    if (l.order != o) continue;         // con da doi cha thi khong bi xoa theo
+                    if (insLine.remove(l.id)) { out.add("DELETE FROM order_line WHERE id=" + l.id); fk.remove(l.id); }
+                    orphans.remove(l.id);
+                }
+                if (insOrder.remove(o.id)) out.add("DELETE FROM orders WHERE id=" + o.id);
+                managed.remove(o.id);
+                continue;
+            }
+            if (insOrder.add(o.id)) out.add("INSERT INTO orders(id) VALUES(" + o.id + ")");
+            for (Line l : o.lines) {                    // cascade PERSIST: luu con du FK the nao
+                if (insLine.add(l.id)) out.add("INSERT INTO order_line(id,sku) VALUES(" + l.id + ",'" + l.sku + "')");
+                if (l.order == o && !Objects.equals(fk.put(l.id, o.id), o.id))
+                    out.add("UPDATE order_line SET order_id=" + o.id + " WHERE id=" + l.id);
+            }
+        }
+        for (Long id : new ArrayList<>(orphans)) {      // orphanRemoval
+            if (insLine.remove(id)) { out.add("DELETE FROM order_line WHERE id=" + id); fk.remove(id); }
+            orphans.remove(id);
+        }
+        return out;
+    }
+}`,
+ hints:['Giữ ba thứ đã ghi xuống database: tập id order đã INSERT, tập id line đã INSERT, và map lineId → order_id đã ghi. Flush chỉ sinh SQL khi chúng thay đổi.','Trong addLine, đừng quên gán line.order = order; test "inverse-only add writes no FK" chính là kiểm tra việc AI đó.','FK chỉ được xét khi line.order == order đang được duyệt. Dòng đã đổi cha thì để cha mới sinh UPDATE.','Orphan (line bị removeLine, đã từng INSERT) nên xử lý sau vòng duyệt order, và nhớ xóa nó khỏi tập đã-INSERT để flush sau không lặp lại DELETE.','Order bị remove mà chưa từng INSERT thì đừng sinh DELETE: không có row nào để xóa.'],
+ explain:`Ba cơ chế tách bạch, và bài tập này buộc bạn chỉ ra chỗ nào tạo ra SQL:
+- **Cascade PERSIST** quyết định việc INSERT con: mọi line nằm trong collection của order managed đều được lưu, bất kể {{line.order}} trỏ đi đâu.
+- **Owning side** quyết định giá trị FK: UPDATE {{order_id}} chỉ sinh ra khi {{line.order}} chính là order đang duyệt. Vì vậy dòng bị "quên" set owning side có row nhưng FK null — đúng cái bẫy ngoài đời.
+- **orphanRemoval** là DELETE khi phần tử bị gỡ khỏi collection, còn **cascade REMOVE** là DELETE khi entity cha bị xóa.
+
+Lỗi hay gặp:
+1. So sánh FK theo collection thay theo {{line.order}}: khi một dòng chuyển cha, {{p.lines}} cũ vẫn chứa nó nên bạn ghi đè FK về cha cũ. Hibernate thì luôn lấy {{line.order}}.
+2. Quên theo dõi "giá trị đã ghi": mỗi lần flush lại sinh UPDATE lặp lại, giống Hibernate không dirty-check association.
+3. Xóa cha trước xóa con: DB từ chối vì FK tham chiếu.
+4. Sinh DELETE cho entity chưa từng INSERT (đơn mới tạo rồi hủy ngay), trong khi thực tế chẳng có row nào để xóa.
+
+Trong Hibernate thật, cascade và orphanRemoval hoạt động trên entity managed, nên muốn xóa hàng loạt bạn vẫn phải tải collection lên — đó là lý do bulk DML nhanh hơn nhưng dễ để lại entity cũ trong persistence context và region L2.`,
+ }],check:[{q:'Bạn gọi {{order.getLines().add(line)}} mà không gọi {{line.setOrder(order)}}, với {{cascade = PERSIST}}. Sau flush:',options:['Hibernate tự set owning side giúp bạn','Line được INSERT nhưng cột order_id vẫn null','Không có câu SQL nào cho bảng order_line','Hibernate ném lỗi lúc persist'],answer:1,explain:`Collection là phía inverse nên chỉ thêm vào đó không đủ để Hibernate biết FK. Cascade PERSIST vẫn lưu line (nó nằm trong graph được cascade), vì vậy line thành row mồ côi với order_id null. Muốn đúng phải set cả hai phía trong helper. Nếu không có cascade thì line ở state new và persist(order) mới báo lỗi "entity not persistent" — đó là trường hợp khác.`},{q:'{{@ManyToOne(cascade = CascadeType.REMOVE)}} trên field {{Order.customer}} gây ra điều gì khi {{em.remove(order)}}?',options:['Chỉ xóa dòng trong bảng orders','Xóa luôn cả Customer, dù khách còn đơn hàng khác','Bỏ liên kết và giữ Customer','Ném lỗi vì ManyToOne không hỗ trợ cascade'],answer:1,explain:`Customer là dữ liệu dùng chung. REMOVE cascades xuống nó nghĩa là mỗi lần hủy một đơn là mất một khách hàng (và các đơn khác của khách đó thành tham chiếu treo, hoặc bị chặn bởi FK). Đây là lỗi kinh điển gây mất dữ liệu. ManyToOne vẫn nhận cascade nên không có lỗi khai báo; không tồn tại chế độ "chỉ bỏ liên kết" — Hibernate gọi remove trên chính entity mà cascade trỏ tới.`},{q:'orphanRemoval và cascade REMOVE khác nhau ở điểm nào?',options:['orphanRemoval chạy khi entity con bị gỡ khỏi collection; REMOVE chạy khi entity cha bị remove','orphanRemoval chỉ dùng cho ManyToOne','Hai cái là một, chỉ khác tên','REMOVE xóa theo collection còn orphanRemoval xóa theo primary key'],answer:0,explain:`orphanRemoval kích hoạt khi liên kết bị cắt (gỡ khỏi collection, owning side đặt null) — tức "con không còn chủ thì chết". {{cascade = REMOVE}} kích hoạt khi bạn xóa cha. orphanRemoval không khai báo được trên {{@ManyToMany}}, và không áp dụng cho ManyToOne theo nghĩa sở hữu ở chiều ngược lại.`},{q:'Vì sao {{orphanRemoval}} có thể chậm trên bảng lớn?',options:['Vì nó chạy một câu DELETE lớn trong database','Vì mỗi lần flush Hibernate phải tải CẢ collection lên và so với snapshot để tìm phần tử bị gỡ','Vì nó bắt buộc bật second-level cache','Vì nó cần @Version trên entity con'],answer:1,explain:`Hibernate phải biết phần tử nào biến mất, nên nó giữ snapshot của collection từ lúc load và cần collection thật trong RAM để so. Xóa hàng chục nghìn dòng theo cách này là đưa cả collection về heap. Bulk {{DELETE FROM order_line WHERE order_id = ?}} nhanh hơn nhưng bỏ qua persistence context và cache, và phải xóa con trước khi xóa cha.`}],tags:['owning side','mappedBy','cascade','orphanRemoval']
+},
+{
+ id:'lesson-jpa-007',track:'jpa',order:7,title:'Second-level cache và query cache',level:'senior',minutes:30,
+ goals:['Phân biệt ba tầng nhớ: persistence context (L1), second-level cache (L2) và query cache','Giải thích vì sao L2 lưu state chứ không lưu object, và hệ quả với identity qua nhiều session','Nói được region bị vô hiệu thế nào khi ghi và vì sao bulk update hoặc node thứ hai làm app phục vụ dữ liệu cũ','Chọn read-only hay read-write theo loại dữ liệu và biết khi nào cache tầng service tốt hơn L2'],
+ body:`### Hiểu nhanh: ba tầng nhớ của Hibernate
+Một danh mục sản phẩm được đọc cả nghìn lần mỗi phút. Lần nào cũng SELECT xuống database là lãng phí, mà database thường là tài nguyên đắt nhất trong hệ thống. Có ba chỗ để cất kết quả đã đọc:
+1. **Persistence context (L1)**: thuộc về một session, tức một transaction. Luôn bật, không cấu hình được, chết khi transaction kết thúc. Đây là thứ tạo ra identity map và dirty checking (bài Persistence context và dirty checking).
+2. **Second-level cache (L2)**: thuộc về {{EntityManagerFactory}} (Hibernate gọi là {{SessionFactory}}), dùng chung cho **toàn ứng dụng**, sống xuyên transaction, xuyên request. Phải bật provider hỗ trợ Hibernate 6 ({{Ehcache 3}} qua {{hibernate-jcache}}, {{Infinispan}} hoặc Hazelcast) rồi khai báo entity nào được cache.
+3. **Query cache**: cache kết quả truy vấn, nhưng thực chất chỉ lưu **danh sách id** của câu SQL + tham số, nên mỗi lần hit vẫn phải lấy entity từ L2 hoặc database.
+
+Cài đặt tối thiểu: thêm dependency provider cache (ví dụ {{hibernate-jcache}} cho Hibernate 6), bật {{hibernate.cache.use_second_level_cache=true}} (qua {{spring.jpa.properties.}}), chọn region factory, rồi khai báo {{@Cacheable}} trên entity và {{@Cache(usage = ...)}} để chọn chiến lược. Trần số entry và TTL đặt trong cấu hình provider ({{ehcache.xml}} hoặc tương đương). Thêm {{hibernate.cache.use_query_cache=true}} chỉ khi thật sự cần query cache.
+
+### L2 lưu "state", không lưu object
+Điểm này hay bị trả lời sai nhất. Region L2 chứa **dehydrated state**: giá trị các cột của entity, không phải tham chiếu tới instance Java đang dùng.
+
+~~~java
+@Entity
+@Cacheable
+@Cache(usage = CacheConcurrencyStrategy.READ_WRITE)
+class Category {
+    @Id Long id;
+    String name;
+    @Version Integer version;   // nên có sẵn @Version cho optimistic locking; L2 không thay nó
+}
+~~~
+
+Hệ quả: hai transaction đọc cùng một id nhận về **hai instance khác nhau** ({{a1 != a2}}). Không có "identity map toàn cục" — mà nếu có thì đã phá mất khả năng cô lập giữa các transaction. Trong một transaction, L1 vẫn thắng: entity đã nằm trong persistence context thì Hibernate trả lại instance đó và không đọc L2.
+
+> Ai hỏi "L2 có phải cache object không": trả lời **cache trạng thái**, mỗi session tự dựng object. Vì thế đừng so sánh entity bằng {{==}} khi có L2.
+
+### Ghi xuống thì region ra sao
+Hibernate dùng cơ chế **ghi đè hoặc làm cũ** sau khi transaction thành công: state mới được đưa vào region (write-through), entity bị xóa thì bị gỡ khỏi region. Hai hệ quả thực tế:
+- {{@Modifying}} bulk update, native SQL, script sửa dữ liệu chạy tay, hay lệnh UPDATE từ một service khác **không đi qua entity**, nên Hibernate không tự cập nhật entity cache cho từng dòng bị ảnh hưởng; region liên quan tới bảng/query space đó thường bị **evict** (Hibernate 6 có API quản lý query spaces). Ứng dụng có thể tiếp tục phục vụ dữ liệu cũ cho tới khi region được làm mới hoặc entry hết hạn, nên sau bulk DML hãy xem xét {{clearAutomatically}} và evict rõ ràng.
+- Chạy nhiều node (nhiều pod Kubernetes) với cache **local trong JVM**: mỗi node giữ một region riêng. Node A ghi, node B vẫn đọc bản cũ tới khi có cơ chế **invalidation qua mạng** (Infinispan hoặc Hazelcast hỗ trợ region phân tán/cụm) hoặc TTL hết hạn.
+
+| Chiến lược | Dành cho | Đặc điểm |
+|---|---|---|
+| {{read-only}} | danh mục, cấu hình, bảng tham chiếu không bao giờ sửa | rẻ nhất, không lock; sửa là có lỗi |
+| {{read-write}} | đọc nhiều, sửa thỉnh thoảng | giữ soft-lock lúc ghi để reader không đọc phải giá trị đang dở |
+| {{nonstrict-read-write}} | chấp nhận đọc stale trong vài giây | đơn giản, không lock, ít va chạm |
+| {{transactional}} | provider có JTA ({{infinispan}}) | nhất quán theo transaction, cấu hình phức tạp nhất |
+
+### Khi nào đáng bật, khi nào không
+Đáng: bảng đọc rất nhiều mà sửa hiếm, dữ liệu nhỏ và "đóng" (country, fee table, danh mục, thông số cấu hình), nhiều request chạm cùng một id, và hệ thống chỉ một node hoặc có invalidation phân tán.
+Không đáng: entity sửa thường xuyên (mỗi lần ghi là một lần vô hiệu hóa và serialize lại), entity mang collection lớn, dữ liệu phải nhất quán ngay giữ nhiều node, hoặc tỉ lệ hit thấp. Với dữ liệu hay đổi, cache ở tầng service bằng {{Caffeine}}/Redis với TTL rõ ràng và evict tường minh thường dễ kiểm soát hơn L2: bạn kiểm soát được key, thấy được tỉ lệ hit/miss và không bị bất ngờ về identity.
+
+### Cái giá phải trả
+- **RAM**: mỗi entry là state của entity, cộng thêm collection region cho từng {{@OneToMany}} được cache. Region không đặt trần sẽ làm heap phình và gây full GC.
+- **Chi phí serialize/copy**: provider có thể lưu trên heap (phải copy để tránh ai đó sửa nhầm) hoặc off-heap (phải serialize) — không có "hit" nào miễn phí.
+- **Khó chẩn đoán**: dev một node thì đúng, production nhiều node thì "dữ liệu cũ". Luôn có đường thoát: đặt {{jakarta.persistence.cache.retrieveMode}} thành {{BYPASS}} cho một thao tác để ép đọc DB, hoặc {{factory.getCache().evictAll()}} khi hotfix dữ liệu.
+- **Proxy lazy lọt vào cache**: cache entity có association LAZY nghĩa là cache cả proxy; đọc lại ở session khác có thể lỗi hoặc kích hoạt query ngoài ý muốn. Cache **DTO** an toàn hơn.
+
+### Vì sao query cache hiếm khi có giá trị
+Nó lưu danh sách id theo đúng câu SQL và bộ tham số, nên đổi một ký tự trong câu SQL là sang key khác. Tệ hơn: Hibernate theo dõi bảng bằng **update timestamp** — bất kỳ INSERT/UPDATE/DELETE nào vào bảng đó (qua Hibernate) làm **mọi** entry liên quan mất hiệu lực. Bảng ghi thường xuyên thì gần như luôn miss, chỉ thêm chi phí tra và ghi cache. Muốn cache danh sách: cache ở tầng service, hoặc dùng DTO projection.
+
+### Liên hệ phỏng vấn
+Câu hỏi kiểu này hay gặp: "Second-level cache khác gì caching bằng Redis? Bao giờ bạn bật nó?" Cách trả lời có chiều sâu: phân biệt phạm vi (transaction vs ứng dụng), nêu L2 lưu state nên không giữ identity, giải thích invalidation khi ghi và vấn đề nhiều node, rồi cho biết mình chỉ bật cho bảng đọc nhiều ghi ít với {{read-only}} hoặc {{read-write}}; dữ liệu hay đổi thì để cache ở tầng service kèm TTL. Điểm cộng: nói cách xác minh bằng {{hibernate.generate_statistics}} ({{cache hits, misses, puts}}) và cách thoát khi dữ liệu cũ ({{retrieveMode = BYPASS}}).`,
+ exercises:[{title:'Region L2 dung chung qua nhieu session',prompt:`Mô phỏng **second-level cache**: region dùng chung nhiều session và lưu **state**, không lưu object. Cho sẵn {{Account}} và {{DbSim}} ({{read(id)}} đếm một lần truy vấn database). Cài {{HibernateLite}}:
+- {{HibernateLite(db, capacity)}}: region L2 chứa tối đa {{capacity}} entry (dương); khi đầy, phần tử **dùng lâu nhất** bị đẩy ra (LRU).
+- {{openSession()}}: bắt đầu session mới — identity map cấp session (L1) làm lại từ đầu, region L2 giữ nguyên.
+- {{find(id)}}: nếu session đang mở và L1 đã có id thì trả **đúng instance** đó, không đụng L2 và database. Nếu L1 chưa có (hoặc chưa mở session) thì tra L2: hit thì đếm một hit và dựng instance **mới** từ state đã cache; miss thì đếm một miss, gọi {{db.read(id)}} rồi đưa state vào region. Instance luôn được ghi vào L1 của session đang mở.
+- {{save(id, name)}}: ghi {{name}} vào database và cập nhật state trong region (write-through); **không** sửa instance đang nằm trong session hiện tại.
+- {{bulkSetAllNames(name)}}: đổi tên mọi dòng trong database và **xóa sạch region** (Hibernate evict toàn bộ region khi chạy bulk DML).
+- {{hits()}}, {{misses()}}: số lần tra L2, chỉ tính khi L1 miss; {{regionSize()}}: số entry đang có trong region.`,
+ starter:`class Account { long id; String name; Account(long i, String n) { id = i; name = n; } }
+class DbSim {
+    Map<Long, String> rows = new HashMap<>();
+    int queries = 0;
+    void put(long id, String name) { rows.put(id, name); }
+    String read(long id) { queries++; return rows.get(id); }
+    void renameAll(String name) { for (long k : new ArrayList<>(rows.keySet())) rows.put(k, name); }
+}
+class HibernateLite {
+    HibernateLite(DbSim d, int capacity) { throw new UnsupportedOperationException("TODO"); }
+    void openSession() { throw new UnsupportedOperationException("TODO"); }
+    Account find(long id) { throw new UnsupportedOperationException("TODO"); }
+    void save(long id, String name) { throw new UnsupportedOperationException("TODO"); }
+    void bulkSetAllNames(String name) { throw new UnsupportedOperationException("TODO"); }
+    int hits() { throw new UnsupportedOperationException("TODO"); }
+    int misses() { throw new UnsupportedOperationException("TODO"); }
+    int regionSize() { throw new UnsupportedOperationException("TODO"); }
+}`,
+ tests:`public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    static DbSim seed() {
+        DbSim d = new DbSim();
+        d.put(1, "A"); d.put(2, "B"); d.put(3, "C");
+        return d;
+    }
+    public static void main(String[] args) {
+        DbSim db = seed();
+        HibernateLite h = new HibernateLite(db, 5);
+        h.openSession();
+        Account a = h.find(1);
+        Account b = h.find(1);
+        check("L1 hit returns the same instance", a == b, "identity map khong hoat dong");
+        check("L1 hit costs no query", db.queries == 1 && "A".equals(a.name), "queries = " + db.queries);
+        check("first read is a miss", h.hits() == 0 && h.misses() == 1, "hits = " + h.hits() + ", misses = " + h.misses());
+
+        h.openSession();
+        Account c = h.find(1);
+        check("L2 hit needs no new query", db.queries == 1 && "A".equals(c.name), "queries = " + db.queries + ", name = " + c.name);
+        check("L2 does not keep identity across sessions", c != a, "L2 luu state nen session moi co instance rieng");
+        check("hit counted once", h.hits() == 1 && h.misses() == 1, "hits = " + h.hits() + ", misses = " + h.misses());
+
+        h.save(1, "B2");
+        Account d2 = h.find(1);
+        check("save leaves the open session alone", d2 == c && "A".equals(d2.name), "name = " + d2.name);
+        h.openSession();
+        Account e = h.find(1);
+        check("save writes through to the region", "B2".equals(e.name) && db.queries == 1, "name = " + e.name + ", queries = " + db.queries);
+        check("write-through causes no extra miss", h.misses() == 1, "misses = " + h.misses());
+
+        h.bulkSetAllNames("Z");
+        h.openSession();
+        Account f = h.find(2);
+        check("bulk update evicts the whole region", "Z".equals(f.name) && db.queries == 2, "name = " + f.name + ", queries = " + db.queries);
+        check("region read after eviction is a miss", h.misses() == 2, "misses = " + h.misses());
+
+        DbSim db2 = seed();
+        HibernateLite g = new HibernateLite(db2, 2);
+        g.openSession(); g.find(1);
+        g.openSession(); g.find(2);
+        g.openSession(); g.find(1);
+        g.openSession(); g.find(3);
+        int before = db2.queries;
+        g.openSession();
+        Account t2 = g.find(2);
+        check("LRU evicts the least recently used entry", db2.queries == before + 1 && "B".equals(t2.name), "queries " + before + " -> " + db2.queries);
+        check("region never exceeds capacity", g.regionSize() == 2, "regionSize = " + g.regionSize());
+
+        DbSim db3 = seed();
+        HibernateLite k = new HibernateLite(db3, 5);
+        Account x1 = k.find(1);
+        Account x2 = k.find(1);
+        check("no open session: L2 answers but builds a new instance", x1 != x2 && db3.queries == 1 && k.hits() == 1, "x1 == x2 la " + (x1 == x2) + ", queries = " + db3.queries + ", hits = " + k.hits());
+        k.openSession();
+        Account x3 = k.find(1);
+        Account x4 = k.find(1);
+        check("an open session puts L1 on top of L2", x3 == x4 && db3.queries == 1 && k.misses() == 1, "queries = " + db3.queries + ", misses = " + k.misses());
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+ reference:`class Account { long id; String name; Account(long i, String n) { id = i; name = n; } }
+class DbSim {
+    Map<Long, String> rows = new HashMap<>();
+    int queries = 0;
+    void put(long id, String name) { rows.put(id, name); }
+    String read(long id) { queries++; return rows.get(id); }
+    void renameAll(String name) { for (long k : new ArrayList<>(rows.keySet())) rows.put(k, name); }
+}
+class HibernateLite {
+    DbSim db; int cap;
+    LinkedHashMap<Long, String> l2 = new LinkedHashMap<>();  // region: id -> STATE, khong phai object
+    LinkedHashMap<Long, Account> l1;                         // identity map cua session dang mo, null = chua mo
+    int hits, misses;
+
+    HibernateLite(DbSim d, int capacity) { db = d; cap = capacity; }
+    void openSession() { l1 = new LinkedHashMap<>(); }
+
+    Account find(long id) {
+        if (l1 != null) { Account a = l1.get(id); if (a != null) return a; }   // L1 thang: khong cham L2 lan database
+        Account fresh = new Account(id, state(id));                            // session moi = instance moi
+        if (l1 != null) l1.put(id, fresh);
+        return fresh;
+    }
+    private String state(long id) {
+        if (l2.containsKey(id)) { hits++; String s = l2.remove(id); l2.put(id, s); return s; }  // duoc cham thi o lai gan hon
+        misses++;
+        String s = db.read(id);
+        l2.put(id, s);
+        while (l2.size() > cap) l2.remove(l2.keySet().iterator().next());       // day thi: doi phan tu lau dung nhat ra
+        return s;
+    }
+    void save(long id, String name) { db.rows.put(id, name); l2.remove(id); l2.put(id, name); }  // write-through, bo qua L1
+    void bulkSetAllNames(String name) { db.renameAll(name); l2.clear(); }       // bulk DML: xoa sach region
+    int hits() { return hits; }
+    int misses() { return misses; }
+    int regionSize() { return l2.size(); }
+}`,
+ hints:['Region phải là LinkedHashMap để giữ thứ tự dùng: khi truy cập một entry, remove rồi put lại để nó trở thành phần tử mới nhất.','find: kiểm tra L1 trước. Chỉ khi L1 miss mới tra region, và chỉ khi region miss mới gọi db.read (đừng đếm nhầm hit/miss).','L2 lưu String (state), không lưu Account: mỗi lần lấy từ region phải new Account(...), nếu không hai session sẽ dùng chung một instance.','save chỉ đụng database và region; instance trong session đang mở phải giữ nguyên giá trị cũ — đó là hành vi thật của L1.','bulkSetAllNames thì l2.clear() toàn bộ region; đừng cập nhật từng entry.'],
+ explain:`Bài tập này dạy ba điều mà người ta hay nhầm khi nói về L2:
+1. **L1 thắng L2.** find hai lần trong cùng session chỉ xuống region một lần; lần thứ hai là instance y hệt. Đó là lý do {{save}} không làm thay đổi mà bạn đọc lại trong cùng transaction nhìn thấy giá trị mới.
+2. **L2 không giữ identity.** Region lưu state, nên session mới tạo instance mới ({{c != a}}). Nếu bạn cache thẳng object, hai transaction sẽ sửa chung một instance và phá vỡ cô lập — cũng là lý do Hibernate không làm vậy.
+3. **Ghi thì region phải cũ đi.** Write-through khi ghi qua entity, nhưng bulk DML thì chỉ có nước xóa cả region ({{l2.clear()}}), và đó chính xác là cách Hibernate đối xử với {{@Modifying}}: evict toàn bộ region của bảng.
+
+Bẫy khi cài:
+- Đếm hit/miss khi L1 đã hit → số liệu sai, phải để block L1 trả về sớm.
+- LRU sai thứ tự: chỉ cho entry vào cuối khi nó **được dùng**, nếu không bạn đẩy nhầm entry đang nóng.
+- Dùng {{put}} mà không remove trước: LinkedHashMap theo insertion-order sẽ không đổi vị trí, entry tưởng còn mới hóa ra bị đẩy ra đầu tiên.
+
+Ngoài đời bạn không tự viết cái này; nhưng nó giải thích vì sao "bật L2 cho bảng hay ghi" và "đọc lại thấy dữ liệu cũ" là hai sự cố rất thật, và vì sao {{regionSize}}/hit ratio cần được giám sát.`,
+ }],check:[{q:'Second-level cache của Hibernate chứa gì trong region?',options:['Tham chiếu tới object entity đang được session dùng','State của entity (giá trị các cột), nên mỗi session dựng instance riêng','Câu SQL đã chuẩn bị sẵn','Danh sách id của từng câu query đã chạy'],answer:1,explain:`Nếu region giữ object đang dùng, nhiều transaction sẽ sửa chung một instance và hỏng tính cô lập. Vì vậy Hibernate "sấy khô" state để cất, và mỗi session đọc ra lại tạo instance mới. Câu SQL chuẩn bị thuộc về statement cache; danh sách id là việc của query cache, không phải entity region.`},{q:'Hai transaction nối tiếp nhau cùng {{find}} một id đang có trong L2. Điều gì đúng?',options:['Transaction thứ hai nhận đúng object mà transaction thứ nhất đã trả','Mỗi transaction nhận một instance khác nhau, vì identity map chỉ phạm vi một session','Transaction thứ hai phải xuống database','Cả hai transaction phải qua query cache'],answer:1,explain:`Identity là hợp đồng **trong một** persistence context, không phải toàn ứng dụng — nên mỗi session có instance riêng (đều mang cùng giá trị). L2 hit thì không xuống database, và query cache không liên quan tới find theo id.`},{q:'Bạn chạy {{@Modifying @Query("UPDATE Category c SET c.name = :n")}} trong lúc một entity Category đã nằm trong persistence context và trong L2. Chuyện gì xảy ra?',options:['Cả context và region đều tự cập nhật cho khớp','Context giữ giá trị cũ; region bị evict toàn bộ theo bảng, nên phải clear context nếu muốn đọc số mới','Hibernate bỏ qua câu lệnh vì có L2','Region giữ nguyên, context được làm mới'],answer:1,explain:`Bulk DML chạy thẳng xuống database, không đụng entity managed nào, nên instance trong session vẫn giữ giá trị cũ (phải {{clear()}} hoặc {{@Modifying(clearAutomatically = true)}}). Region thì Hibernate vô hiệu theo bảng, nên lần đọc kế tiếp sẽ xuống DB. Đây là nguồn sự cố "sửa xong API vẫn trả dữ liệu cũ".`},{q:'Vì sao query cache thường không đáng bật?',options:['Vì nó chỉ cache danh sách id và bị vô hiệu hóa mỗi khi có ghi vào bảng đó','Vì Hibernate không hỗ trợ query cache','Vì nó chỉ làm việc với {{@Version}}','Vì nó bắt buộc phải dùng Redis'],answer:0,explain:`Query cache lưu id theo câu SQL và tham số, entity vẫn phải lấy từ L2 hoặc DB; và mọi thao tác ghi qua Hibernate vào bảng liên quan làm entry mất hiệu lực. Bảng ghi thường xuyên thì tỉ lệ hit gần bằng 0. Hibernate có hỗ trợ ({{use_query_cache}}), nó không phụ thuộc {{@Version}} và provider cache không nhất thiết là Redis.`}],tags:['second-level cache','query cache','cache invalidation','Hibernate']
 }
 );
