@@ -793,5 +793,597 @@ Khác biệt với production: {{computeIfAbsent}} giữ lock bin trong suốt t
   ],
   related: ['api-015', 'api-011', 'api-002'],
   tags: ['idempotency', 'payment', 'concurrency', 'REST', 'retry'],
+},
+
+{
+  id: 'lesson-api-004',
+  track: 'api',
+  order: 4,
+  title: 'Idempotency-Key: chống trừ tiền 2 lần khi client retry POST',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Giải thích được vì sao POST không idempotent gây trừ tiền/đặt hàng 2 lần khi mạng lỗi và client retry',
+    'Thiết kế được luồng Idempotency-Key: lưu key + hash request + trạng thái + response; xử lý key trùng, body khác (422), và request đang xử lý (409)',
+    'Viết được IdempotencyStore trong Java thuần, an toàn với 2 thread cùng key (chỉ chạy nghiệp vụ 1 lần)',
+  ],
+  body: `### Cái gì: POST không tự an toàn khi retry
+**Tóm tắt:** {{Idempotency-Key}} là một chuỗi do client sinh (thường UUID) gửi kèm header mỗi request tạo tài nguyên/thanh toán. Server dùng key đó để nhận ra "request này đã xử lý rồi" và trả lại đúng response cũ thay vì chạy nghiệp vụ lần hai.
+
+**Thuật ngữ lần đầu gặp:**
+- **Idempotent (bất biến theo lần lặp)**: gọi 1 lần hay 10 lần với cùng đầu vào thì kết quả cuối trên server giống nhau. Ví dụ đời thường: bấm nút tầng 5 trong thang máy nhiều lần vẫn chỉ tới tầng 5.
+- **Retry (thử lại)**: client tự gửi lại request khi nghi ngờ lỗi (timeout, mất mạng). Mobile app, API gateway, SDK đều hay retry.
+- **Race condition (đua nhau)**: 2 thread/request cùng chạy và cùng đọc/ghi một trạng thái, dẫn đến kết quả sai (ở đây: chạy nghiệp vụ 2 lần).
+- **TTL (Time To Live)**: thời gian sống của một bản ghi; hết TTL thì xoá để bảng không phình vô hạn.
+
+HTTP định nghĩa {{GET}}, {{PUT}}, {{DELETE}} là idempotent, còn {{POST}} (tạo mới/thanh toán) thì **không**. Vì vậy {{POST /payments}} retry có thể tạo 2 giao dịch.
+
+### Vì sao cần: câu chuyện trừ tiền 2 lần
+Giả sử người dùng bấm "Thanh toán 500.000đ":
+1. Client gửi {{POST /payments}} kèm {{Idempotency-Key: 7f3a-...}}.
+2. Server trừ tiền, ghi DB, nhưng response bị mất trên đường về (mạng chập chờn).
+3. Client thấy timeout, SDK tự retry cùng request, **cùng key**.
+4. Nếu server không nhớ key: trừ tiền lần 2. Khách mất 1.000.000đ.
+
+Idempotency-Key biến retry thành "hãy cho tôi kết quả của lần đầu".
+
+### Hoạt động thế nào: luồng nhiều bên
+~~~seq
+title: POST thanh toán với Idempotency-Key (retry an toàn)
+actors: Client | Payment API | Idempotency Store | Core Banking
+Client -> Payment API: POST /payments, Idempotency-Key=K1, body={500k}
+Payment API -> Idempotency Store: lookup(K1, hash(body))
+Idempotency Store --> Payment API: MISS (chưa có)
+Payment API -> Idempotency Store: claim(K1, IN_PROGRESS)
+Payment API -> Core Banking: debit(500k)
+Core Banking --> Payment API: OK, txn=TX99
+Payment API -> Idempotency Store: save(K1, hash, 201, response)
+Payment API --> Client: 201 Created (bị mất do mạng)
+Client -> Payment API: RETRY POST, cùng K1, cùng body
+Payment API -> Idempotency Store: lookup(K1, hash(body))
+Idempotency Store --> Payment API: HIT (201, response cũ)
+Payment API --> Client: 201 Created (response cũ, KHÔNG trừ tiền lại)
+~~~
+
+Các tình huống server phải xử lý:
+
+| Tình huống | Cách xử lý | HTTP gợi ý |
+|---|---|---|
+| Key mới | Claim {{IN_PROGRESS}}, chạy nghiệp vụ, lưu response | 201/200 như bình thường |
+| Key trùng, **cùng** hash body, đã có response | Trả lại response cũ, **không** chạy nghiệp vụ | Trả lại đúng status/body cũ |
+| Key trùng, **khác** hash body | Từ chối (client dùng lại key cho request khác là bug) | 422 Unprocessable Entity |
+| Key trùng, đang {{IN_PROGRESS}} | Request đầu chưa xong; tránh chạy song song | 409 Conflict (+ Retry-After) |
+
+**Vì sao phải lưu hash của body?** Nếu client vô tình dùng lại cùng key cho một đơn hàng khác (body khác), trả response cũ sẽ sai nghiệp vụ (trả kết quả đơn A cho đơn B). So hash giúp phát hiện lỗi này.
+
+**Vì sao cần "claim" IN_PROGRESS?** Hai retry đến gần như cùng lúc: cả hai cùng thấy MISS rồi cùng gọi Core Banking → trừ tiền 2 lần. Claim phải là thao tác **atomic** (nguyên tử: chỉ một bên thắng).
+
+### Ví dụ cụ thể (Java thuần, mô phỏng cơ chế)
+~~~java
+import java.util.*; import java.util.concurrent.*; import java.util.function.*;
+
+class Response { final int status; final String body;
+    Response(int status, String body){ this.status=status; this.body=body; } }
+
+class IdempotencyStore {
+    enum State { IN_PROGRESS, DONE }
+    static final class Entry {
+        final State state; final String hash; final Response resp;
+        Entry(State s, String h, Response r){ state=s; hash=h; resp=r; }
+    }
+    // ConcurrentHashMap: ghi/đọc an toàn giữa nhiều thread
+    private final ConcurrentHashMap<String, Entry> map = new ConcurrentHashMap<>();
+
+    Response execute(String key, String requestHash, Supplier<Response> work) {
+        // putIfAbsent là atomic: chỉ thread đầu tiên đặt IN_PROGRESS
+        Entry first = map.putIfAbsent(key, new Entry(State.IN_PROGRESS, requestHash, null));
+        if (first == null) {
+            try {
+                Response r = work.get();                 // chỉ thread thắng mới chạy
+                map.put(key, new Entry(State.DONE, requestHash, r));
+                return r;
+            } catch (RuntimeException e) {
+                map.remove(key);                         // lỗi: cho phép retry thật sự
+                throw e;
+            }
+        }
+        // đã có entry từ trước
+        if (!Objects.equals(first.hash, requestHash)) {
+            return new Response(422, "key reused with different body");
+        }
+        if (first.state == State.IN_PROGRESS) {
+            return new Response(409, "request in progress");
+        }
+        return first.resp;                               // HIT: trả response cũ
+    }
+}
+~~~
+
+### Lỗi hay gặp
+- **Chỉ lưu key, không lưu hash body**: dùng lại key cho request khác → trả nhầm response. Luôn so hash.
+- **Không atomic khi claim**: check-then-act ({{if (!map.containsKey(k)) map.put(...)}}) không an toàn đa luồng. Dùng {{putIfAbsent}}/ràng buộc unique ở DB ({{INSERT ... ON CONFLICT}}).
+- **TTL quá ngắn**: ngắn hơn cửa sổ retry của client → retry muộn bị coi là request mới, trừ tiền 2 lần. TTL thường 24 giờ; webhook retry dài thì dài hơn.
+- **Không lưu response, chỉ lưu "đã xử lý"**: retry thành công phía server nhưng client không nhận lại được body (mã giao dịch) để hiển thị/đối soát.
+- **Áp dụng cho GET**: GET vốn idempotent, không cần key; thêm key gây phức tạp vô ích.
+
+### Liên hệ phỏng vấn
+Câu hay hỏi: "Làm sao chống double charge khi retry?" Trả lời theo khung: (1) client sinh {{Idempotency-Key}} per thao tác, (2) server lưu (key, hash body, trạng thái, response) với unique constraint, (3) claim IN_PROGRESS atomic để tránh race, (4) hit thì trả response cũ, body khác thì 422, đang xử lý thì 409, (5) TTL ≥ cửa sổ retry. Nhấn mạnh: **atomic claim** là điểm quyết định; chỉ "check rồi insert" sẽ hỏng dưới concurrency. Nêu ví dụ thanh toán/đặt hàng để chứng minh bạn từng gặp bài toán thật.
+
+> **Senior tip:** Trong production, key sống ở DB (Postgres unique index) hoặc Redis, không chỉ in-memory; response lưu đủ để tái lập chính xác. Với luồng "chạy lâu" (phê duyệt, chuyển tiền xuyên ngân hàng), tách {{IN_PROGRESS}} có timeout/heartbeat để tránh kẹt vĩnh viễn khi process chết giữa chừng.`,
+  exercises: [
+    {
+      title: 'IdempotencyStore: execute chỉ chạy nghiệp vụ 1 lần kể cả khi 2 thread cùng key',
+      prompt: `Viết {{class IdempotencyStore}} với method:
+{{Response execute(String key, String requestHash, Supplier<Response> work)}}
+
+Quy tắc:
+- Key **mới**: chạy {{work.get()}} đúng 1 lần, lưu (key, requestHash, response), trả response.
+- Key **trùng, cùng** {{requestHash}}, đã có response: trả lại response cũ, **không** chạy {{work}}.
+- Key **trùng, khác** {{requestHash}}: trả {{new Response(422, "key reused with different body")}}.
+- Key **trùng**, request đầu **đang xử lý** (chưa có response): trả {{new Response(409, "request in progress")}}.
+
+Class {{Response}} đã cho: {{final int status; final String body;}} và constructor {{Response(int status, String body)}}.
+Yêu cầu an toàn đa luồng: nếu 2 thread gọi {{execute}} **cùng lúc** với cùng key mới, {{work}} chỉ được chạy **đúng 1 lần**.`,
+      starter: `class Response {
+    final int status;
+    final String body;
+    Response(int status, String body) { this.status = status; this.body = body; }
+}
+
+class IdempotencyStore {
+    // TODO: lưu trạng thái theo key, an toàn đa luồng
+
+    Response execute(String key, String requestHash, java.util.function.Supplier<Response> work) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `import java.util.concurrent.*; import java.util.concurrent.atomic.*; import java.util.function.*;
+public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    static boolean eq(Response r, int st, String body) {
+        return r != null && r.status == st && body.equals(r.body);
+    }
+    public static void main(String[] args) throws Exception {
+        // 1. key mới chạy work và trả response
+        IdempotencyStore s1 = new IdempotencyStore();
+        AtomicInteger calls = new AtomicInteger(0);
+        Response r1 = s1.execute("k1", "hA", () -> { calls.incrementAndGet(); return new Response(201, "ok"); });
+        check("new key runs work", eq(r1, 201, "ok") && calls.get() == 1, "status/body/calls=" + (r1==null?"null":r1.status+","+r1.body) + "/" + calls.get());
+
+        // 2. retry cùng key + cùng hash trả response cũ, không chạy work
+        Response r2 = s1.execute("k1", "hA", () -> { calls.incrementAndGet(); return new Response(201, "again"); });
+        check("same key+hash returns cached", eq(r2, 201, "ok") && calls.get() == 1, "calls=" + calls.get() + " body=" + (r2==null?"null":r2.body));
+
+        // 3. cùng key nhưng hash khác -> 422
+        Response r3 = s1.execute("k1", "hB", () -> { calls.incrementAndGet(); return new Response(201, "x"); });
+        check("same key different hash -> 422", eq(r3, 422, "key reused with different body") && calls.get() == 1, "got " + (r3==null?"null":r3.status+","+r3.body));
+
+        // 4. key khác chạy độc lập
+        Response r4 = s1.execute("k2", "hA", () -> { calls.incrementAndGet(); return new Response(200, "two"); });
+        check("different key independent", eq(r4, 200, "two") && calls.get() == 2, "calls=" + calls.get());
+
+        // 5. request đang xử lý -> 409
+        IdempotencyStore s2 = new IdempotencyStore();
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        Thread t = new Thread(() -> s2.execute("slow", "hs", () -> {
+            started.countDown();
+            try { release.await(2, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            return new Response(201, "done");
+        }));
+        t.start();
+        started.await(2, TimeUnit.SECONDS);
+        Response r5 = s2.execute("slow", "hs", () -> new Response(201, "nope"));
+        release.countDown();
+        t.join(2000);
+        check("in progress -> 409", eq(r5, 409, "request in progress"), "got " + (r5==null?"null":r5.status+","+r5.body));
+
+        // 6. 2 thread cùng key mới: work chỉ chạy 1 lần
+        IdempotencyStore s3 = new IdempotencyStore();
+        AtomicInteger workCalls = new AtomicInteger(0);
+        CountDownLatch go = new CountDownLatch(1);
+        CountDownLatch both = new CountDownLatch(2);
+        Callable<Response> task = () -> {
+            go.await(2, TimeUnit.SECONDS);
+            Response r = s3.execute("race", "hr", () -> { workCalls.incrementAndGet(); return new Response(201, "race-ok"); });
+            both.countDown();
+            return r;
+        };
+        ExecutorService ex = Executors.newFixedThreadPool(2);
+        Future<Response> f1 = ex.submit(task); Future<Response> f2 = ex.submit(task);
+        go.countDown();
+        both.await(3, TimeUnit.SECONDS);
+        Response a = f1.get(2, TimeUnit.SECONDS); Response b = f2.get(2, TimeUnit.SECONDS);
+        ex.shutdownNow();
+        boolean bothOk = (eq(a, 201, "race-ok") || eq(a, 409, "request in progress"))
+                      && (eq(b, 201, "race-ok") || eq(b, 409, "request in progress"));
+        check("2 threads same key: work once", workCalls.get() == 1 && bothOk, "workCalls=" + workCalls.get() + " a=" + (a==null?"n":a.status) + " b=" + (b==null?"n":b.status));
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class Response {
+    final int status;
+    final String body;
+    Response(int status, String body) { this.status = status; this.body = body; }
+}
+
+class IdempotencyStore {
+    enum State { IN_PROGRESS, DONE }
+    static final class Entry {
+        final State state; final String hash; final Response resp;
+        Entry(State s, String h, Response r) { state = s; hash = h; resp = r; }
+    }
+    private final java.util.concurrent.ConcurrentHashMap<String, Entry> map = new java.util.concurrent.ConcurrentHashMap<>();
+
+    Response execute(String key, String requestHash, java.util.function.Supplier<Response> work) {
+        Entry first = map.putIfAbsent(key, new Entry(State.IN_PROGRESS, requestHash, null));
+        if (first == null) {
+            try {
+                Response r = work.get();
+                map.put(key, new Entry(State.DONE, requestHash, r));
+                return r;
+            } catch (RuntimeException e) {
+                map.remove(key);
+                throw e;
+            }
+        }
+        if (!java.util.Objects.equals(first.hash, requestHash)) {
+            return new Response(422, "key reused with different body");
+        }
+        if (first.state == State.IN_PROGRESS) {
+            return new Response(409, "request in progress");
+        }
+        return first.resp;
+    }
+}`,
+      hints: [
+        'Dùng {{ConcurrentHashMap}} và {{putIfAbsent}} để claim key một cách atomic: chỉ thread nhận về {{null}} (mình là người đặt đầu tiên) mới được chạy {{work}}.',
+        'Lưu một Entry gồm {{state}} (IN_PROGRESS/DONE), {{hash}}, và {{resp}}. Với entry đã có: so hash trước, rồi xét state.',
+      ],
+      explain: `Điểm mấu chốt là **atomic claim**: {{putIfAbsent}} vừa kiểm tra vừa đặt trong một bước, nên dù 2 thread cùng vào, chỉ 1 thread nhận {{null}} và chạy {{work.get()}}. Thread kia thấy entry {{IN_PROGRESS}} và trả 409 (hoặc, nếu chạy sau khi DONE, trả response cũ).
+
+Nếu dùng {{if (!map.containsKey(k)) map.put(k, ...)}} (check-then-act tách rời), cả hai thread có thể cùng vượt qua {{if}} rồi cùng chạy nghiệp vụ: đây chính là race condition gây trừ tiền 2 lần.
+
+Khi {{work}} ném lỗi, ta {{remove(key)}} để lần retry sau có thể thử lại thật sự (nếu giữ IN_PROGRESS mãi, mọi retry sẽ bị 409 vĩnh viễn). Trong production, phần "claim" thường là câu {{INSERT}} với unique key ở DB để atomic ngay cả khi chạy nhiều instance server.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Client gửi lại POST thanh toán với CÙNG Idempotency-Key nhưng body KHÁC (số tiền khác). Server nên làm gì?',
+      options: [
+        'Chạy nghiệp vụ với body mới vì đó là ý định mới nhất',
+        'Trả response cũ của lần đầu',
+        'Từ chối với lỗi 422 vì key bị dùng lại cho request khác',
+        'Xoá key cũ rồi xử lý như request mới',
+      ],
+      answer: 2,
+      explain: `Đáp án đúng là 422. Cùng key nhưng hash body khác cho thấy client dùng lại key sai (bug phía client) hoặc cố gửi request khác; trả response cũ sẽ trả kết quả của giao dịch A cho giao dịch B (sai nghiệp vụ), còn chạy body mới sẽ phá cam kết idempotency của key. So hash body và từ chối rõ ràng là an toàn nhất.`,
+    },
+    {
+      q: 'Vì sao bước "claim" key IN_PROGRESS phải là thao tác atomic (như putIfAbsent hoặc unique constraint ở DB)?',
+      options: [
+        'Để tiết kiệm bộ nhớ',
+        'Để hai request retry đến cùng lúc không cùng chạy nghiệp vụ, tránh trừ tiền 2 lần',
+        'Để response trả về nhanh hơn',
+        'Vì HTTP bắt buộc mọi header phải xử lý atomic',
+      ],
+      answer: 1,
+      explain: `Nếu check và ghi tách rời, hai thread/request có thể cùng thấy "chưa có key" rồi cùng chạy nghiệp vụ: race condition gây double charge. Thao tác atomic đảm bảo chỉ một bên thắng quyền chạy; bên còn lại nhận biết request đang xử lý (409) hoặc đã xong (trả response cũ).`,
+    },
+    {
+      q: 'Retry cùng key đến khi request đầu tiên VẪN đang xử lý (chưa có response). Phản hồi phù hợp nhất là gì?',
+      options: [
+        '200 OK với body rỗng',
+        '409 Conflict (đang xử lý), kèm gợi ý thử lại sau',
+        '500 Internal Server Error',
+        'Chạy một bản sao nghiệp vụ thứ hai cho chắc',
+      ],
+      answer: 1,
+      explain: `409 báo request trùng đang được xử lý; client nên chờ rồi hỏi lại (hoặc server hỗ trợ long-poll). Chạy bản sao thứ hai phá idempotency (trừ tiền 2 lần). 200 rỗng nói dối rằng đã xong. 500 ám chỉ lỗi server trong khi thực ra chỉ là đang bận xử lý.`,
+    },
+    {
+      q: 'TTL (thời gian sống) của bản ghi idempotency nên chọn thế nào?',
+      options: [
+        'Càng ngắn càng tốt, ví dụ 30 giây, để tiết kiệm bộ nhớ',
+        'Dài hơn cửa sổ retry của client (thường ≥ 24 giờ); quá ngắn thì retry muộn bị coi là request mới',
+        'Không bao giờ hết hạn để an toàn tuyệt đối',
+        'Bằng đúng thời gian xử lý trung bình của request',
+      ],
+      answer: 1,
+      explain: `Key phải sống ít nhất bằng khoảng thời gian client còn có thể retry; nếu ngắn hơn, retry muộn sẽ tạo giao dịch mới. 24 giờ là mức phổ biến. Không hết hạn thì bảng phình vô hạn. 30 giây hoặc bằng thời gian xử lý đều quá ngắn so với retry thực tế (client có thể retry sau phút, giờ khi mạng hồi phục).`,
+    },
+  ],
+  related: ['api-015', 'api-011', 'api-002'],
+  tags: ['idempotency', 'payment', 'concurrency', 'REST', 'retry'],
+},
+
+{
+  id: 'lesson-api-005',
+  track: 'api',
+  order: 5,
+  title: 'Phân trang API: cursor (keyset) vs offset/limit',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Giải thích được vì sao OFFSET lớn chậm và vì sao offset gây trùng/sót bản ghi khi dữ liệu bị chèn/xoá giữa các trang',
+    'Hiểu cơ chế cursor (keyset pagination): mã hoá vị trí (createdAt, id), truy vấn "sau mốc này", sort ổn định',
+    'Cài được CursorPager trong Java thuần trả items + nextCursor (Base64 của "createdAt|id") không trùng không sót khi có chèn thêm',
+  ],
+  body: `### Cái gì: phân trang là gì
+**Tóm tắt:** Phân trang (pagination) chia một danh sách lớn thành nhiều trang nhỏ để API không trả hàng triệu bản ghi một lúc. Hai cách phổ biến: **offset/limit** ("bỏ qua N bản ghi đầu") và **cursor/keyset** ("lấy các bản ghi sau mốc X").
+
+**Thuật ngữ lần đầu gặp:**
+- **Offset**: số bản ghi cần bỏ qua tính từ đầu. Ví dụ đời thường: đọc sách từ trang 101 nghĩa là bỏ qua 100 trang đầu.
+- **Cursor (con trỏ vị trí)**: một mốc đánh dấu "tôi đang ở đây". Ví dụ đời thường: cái kẹp sách đánh dấu trang bạn đọc dở, dù ai có rút thêm trang ở trước thì kẹp vẫn chỉ đúng chỗ bạn dở.
+- **Keyset pagination**: dùng giá trị của (các) cột đã sắp xếp làm cursor, thay vì đếm vị trí. "Keyset" = tập khoá định vị.
+- **Ổn định (stable sort)**: thứ tự sắp xếp không đổi khi có phần tử bằng nhau; thường đạt bằng cách thêm một cột duy nhất (như {{id}}) làm tiêu chí phụ.
+- **Base64**: cách mã hoá dữ liệu nhị phân/chuỗi thành chuỗi ký tự an toàn để đặt trong URL; không phải mã hoá bí mật.
+
+### Vì sao cần: offset chậm và sai khi dữ liệu thay đổi
+**Offset chậm ở trang sâu:** {{SELECT * FROM orders ORDER BY created_at DESC LIMIT 20 OFFSET 100000}} buộc DB vẫn phải duyệt và bỏ qua 100.000 dòng đầu rồi mới lấy 20 dòng. Trang càng sâu càng chậm (O(offset + limit)).
+
+**Offset trùng/sót khi có chèn/xoá:** Bạn đang xem trang 1 (bản ghi A, B). Trước khi bạn sang trang 2 (OFFSET 2), có bản ghi mới X được chèn lên đầu. Danh sách giờ là X, A, B. Trang 2 với OFFSET 2 sẽ trả B lần nữa (trùng), còn nếu có bản ghi bị xoá bạn có thể bị sót. Đây là lỗi rất hay gặp ở feed/thông báo realtime.
+
+| | Offset/limit | Cursor/keyset |
+|---|---|---|
+| Cú pháp | {{?page=5001}} hoặc {{?offset=100000&limit=20}} | {{?cursor=abc&limit=20}} |
+| Trang sâu | Chậm (quét bỏ offset dòng) | Nhanh đều (đi thẳng tới mốc nhờ index) |
+| Chèn/xoá giữa chừng | Dễ trùng/sót | Không trùng, không sót (bám theo mốc) |
+| Nhảy tới trang N tuỳ ý | Được | Không trực tiếp (chỉ đi tiếp/lùi) |
+| Triển khai | Đơn giản | Cần sort ổn định + mã hoá cursor |
+
+### Hoạt động thế nào: cursor mã hoá (createdAt, id)
+Chọn cột sắp xếp có thứ tự ổn định, ví dụ {{(createdAt DESC, id DESC)}} (id làm tiêu chí phụ để phá vỡ trường hợp cùng thời gian). Trang đầu:
+- Query: lấy 20 bản ghi mới nhất (không cần WHERE theo cursor).
+- {{nextCursor}} = Base64 của "{{createdAt}}|{{id}}" của **bản ghi cuối** trang.
+
+Trang sau, client gửi lại {{cursor}}:
+- Giải mã ra {{(t, i)}}.
+- Query: {{WHERE (createdAt < t) OR (createdAt = t AND id < i) ORDER BY createdAt DESC, id DESC LIMIT 20}}.
+- DB dùng index trên {{(createdAt, id)}} để nhảy thẳng tới mốc, không quét bỏ.
+
+Vì ta bám theo giá trị mốc chứ không đếm vị trí, một bản ghi mới chèn "phía trên" (mới hơn mốc) không làm đổi tập bản ghi "sau mốc". Không trùng, không sót.
+
+### Ví dụ cụ thể (Java thuần, mô phỏng)
+~~~java
+import java.util.*;
+
+class Item {
+    final long createdAt; final long id; final String name;
+    Item(long createdAt, long id, String name){ this.createdAt=createdAt; this.id=id; this.name=name; }
+}
+
+class PageResult { final List<Item> items; final String nextCursor;
+    PageResult(List<Item> items, String nextCursor){ this.items=items; this.nextCursor=nextCursor; } }
+
+class CursorPager {
+    static PageResult page(List<Item> sortedData, String cursor, int size) {
+        long ct = Long.MAX_VALUE, ci = Long.MAX_VALUE;          // trang đầu: không chặn
+        if (cursor != null && !cursor.isEmpty()) {
+            String dec = new String(Base64.getUrlDecoder().decode(cursor));
+            String[] p = dec.split("[|]");                     // "createdAt|id"
+            ct = Long.parseLong(p[0]); ci = Long.parseLong(p[1]);
+        }
+        List<Item> out = new ArrayList<>();
+        for (Item it : sortedData) {                              // sortedData: DESC (createdAt,id)
+            boolean after = (it.createdAt < ct) || (it.createdAt == ct && it.id < ci);
+            if (after) { out.add(it); if (out.size() == size) break; }
+        }
+        String next = null;
+        if (out.size() == size) {
+            Item last = out.get(out.size() - 1);
+            next = Base64.getUrlEncoder().withoutPadding()
+                    .encodeToString((last.createdAt + "|" + last.id).getBytes());
+        }
+        return new PageResult(out, next);
+    }
+}
+~~~
+
+**Minh hoạ không trùng/sót:** trang 1 trả [A, B], cursor trỏ sau B. Có bản ghi X mới chèn lên đầu danh sách. Trang 2 hỏi "sau B" → vẫn trả [C, D], không lặp A/B và không sót C/D, dù X chen ngang.
+
+### Lỗi hay gặp
+- **Sort không ổn định**: chỉ {{ORDER BY createdAt}} mà nhiều bản ghi cùng {{createdAt}} → thứ tự giữa chúng không xác định, cursor có thể bỏ sót/lặp. Luôn thêm cột duy nhất ({{id}}) làm tie-breaker.
+- **Cursor lộ thông tin nội bộ nhạy cảm**: cursor chỉ là vị trí, nhưng đừng nhét dữ liệu bí mật; có thể ký (HMAC) nếu sợ client sửa cursor để dò dữ liệu.
+- **Dùng offset cho feed vô hạn**: feed thêm liên tục + người dùng cuộn sâu → vừa chậm vừa trùng. Feed/notification gần như luôn nên dùng cursor.
+- **Quên index (createdAt, id)**: không có index thì truy vấn cursor vẫn quét bảng, mất lợi thế tốc độ.
+
+### Liên hệ phỏng vấn
+Câu hay hỏi: "Thiết kế API phân trang cho feed 10 triệu bản ghi?" Trả lời: (1) dùng cursor (keyset) trên {{(createdAt, id)}} để tránh quét offset và tránh trùng/sót khi có bài mới; (2) cursor là Base64 (tuỳ chọn ký HMAC) của mốc cuối trang; (3) index kép {{(createdAt DESC, id DESC)}}; (4) so sánh offset chỉ phù hợp màn hình admin cần nhảy trang và dữ liệu ít biến động. Nêu được ví dụ "chèn bản ghi mới giữa hai lần tải trang" là cộng điểm thực tế.
+
+> **Senior tip:** Trả {{nextCursor: null}} (hoặc bỏ field) ở trang cuối để client biết dừng, tránh vòng lặp vô hạn. Với dữ liệu cho phép "nhảy trang" (bảng quản trị), có thể dùng offset nhưng vẫn nên đặt trần offset tối đa; với API public/volume lớn, cursor gần như luôn là lựa chọn đúng.`,
+  exercises: [
+    {
+      title: 'CursorPager.page: phân trang cursor không trùng không sót',
+      prompt: `Viết {{class CursorPager}} với method:
+{{static PageResult page(List<Item> sortedData, String cursor, int size)}}
+
+- {{Item}} có {{final long createdAt; final long id; final String name;}} và constructor {{Item(long createdAt, long id, String name)}}.
+- {{PageResult}} có {{final List<Item> items; final String nextCursor;}} và constructor {{PageResult(List<Item> items, String nextCursor)}}.
+- {{sortedData}} đã sắp xếp **giảm dần** theo {{(createdAt, id)}} (mới nhất trước). Danh sách này có thể được thêm phần tử mới ở đầu giữa các lần gọi {{page}} (mô phỏng dữ liệu mới chèn vào).
+- {{cursor == null}} hoặc rỗng: trả trang đầu tiên (tối đa {{size}} phần tử đầu danh sách).
+- Ngược lại: giải mã cursor (Base64 của chuỗi {{"createdAt|id"}}) và trả tối đa {{size}} phần tử **đứng sau** mốc đó theo đúng thứ tự giảm dần.
+- {{nextCursor}} là Base64 của {{"createdAt|id"}} của **phần tử cuối** trong {{items}} trả về; nếu không còn phần tử phía sau thì {{nextCursor = null}}.
+- Yêu cầu: khi có phần tử mới chèn vào đầu {{sortedData}} giữa trang 1 và trang 2, việc dùng {{nextCursor}} của trang 1 vẫn cho kết quả **không trùng, không sót** so với tập phần tử cũ.`,
+      starter: `import java.util.*;
+
+class Item {
+    final long createdAt;
+    final long id;
+    final String name;
+    Item(long createdAt, long id, String name) { this.createdAt = createdAt; this.id = id; this.name = name; }
+}
+
+class PageResult {
+    final List<Item> items;
+    final String nextCursor;
+    PageResult(List<Item> items, String nextCursor) { this.items = items; this.nextCursor = nextCursor; }
+}
+
+class CursorPager {
+    static PageResult page(List<Item> sortedData, String cursor, int size) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `import java.util.*;
+public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    static String ids(List<Item> items) {
+        StringBuilder b = new StringBuilder();
+        for (Item it : items) { if (b.length() > 0) b.append(','); b.append(it.id); }
+        return b.toString();
+    }
+    static List<Item> base() {
+        List<Item> a = new ArrayList<>();
+        a.add(new Item(100, 5, "E")); a.add(new Item(90, 4, "D"));
+        a.add(new Item(80, 3, "C")); a.add(new Item(70, 2, "B")); a.add(new Item(60, 1, "A"));
+        return a; // DESC by (createdAt,id)
+    }
+    public static void main(String[] args) {
+        // 1. trang đầu
+        PageResult p1 = CursorPager.page(base(), null, 2);
+        check("first page items", "5,4".equals(ids(p1.items)), "ids=" + ids(p1.items));
+        check("first page has next", p1.nextCursor != null && !p1.nextCursor.isEmpty(), "next=" + p1.nextCursor);
+
+        // 2. trang hai dùng cursor trang một
+        PageResult p2 = CursorPager.page(base(), p1.nextCursor, 2);
+        check("second page items", "3,2".equals(ids(p2.items)), "ids=" + ids(p2.items));
+
+        // 3. trang cuối nextCursor null
+        PageResult p3 = CursorPager.page(base(), p2.nextCursor, 2);
+        check("last page items", "1".equals(ids(p3.items)), "ids=" + ids(p3.items));
+        check("last page next null", p3.nextCursor == null, "next=" + p3.nextCursor);
+
+        // 4. chèn bản ghi mới ở đầu giữa trang 1 và trang 2: không trùng, không sót
+        List<Item> changed = base();
+        changed.add(0, new Item(110, 6, "F")); // phần tử mới nhất, chen đầu
+        PageResult p2b = CursorPager.page(changed, p1.nextCursor, 2); // dùng cursor cũ (trỏ sau id=4)
+        check("insert at head: no dup/gap", "3,2".equals(ids(p2b.items)), "ids=" + ids(p2b.items));
+
+        // 5. size >= tổng số phần tử: trả hết, next null
+        PageResult all = CursorPager.page(base(), null, 10);
+        check("all items one page", "5,4,3,2,1".equals(ids(all.items)) && all.nextCursor == null, "ids=" + ids(all.items) + " next=" + all.nextCursor);
+
+        // 6. tie-breaker theo id khi createdAt bằng nhau
+        List<Item> tie = new ArrayList<>();
+        tie.add(new Item(100, 9, "X")); tie.add(new Item(100, 8, "Y")); tie.add(new Item(100, 7, "Z"));
+        PageResult t1 = CursorPager.page(tie, null, 1);
+        PageResult t2 = CursorPager.page(tie, t1.nextCursor, 2);
+        check("stable with tie-breaker", "9".equals(ids(t1.items)) && "8,7".equals(ids(t2.items)), "t1=" + ids(t1.items) + " t2=" + ids(t2.items));
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.*;
+
+class Item {
+    final long createdAt;
+    final long id;
+    final String name;
+    Item(long createdAt, long id, String name) { this.createdAt = createdAt; this.id = id; this.name = name; }
+}
+
+class PageResult {
+    final List<Item> items;
+    final String nextCursor;
+    PageResult(List<Item> items, String nextCursor) { this.items = items; this.nextCursor = nextCursor; }
+}
+
+class CursorPager {
+    static PageResult page(List<Item> sortedData, String cursor, int size) {
+        long ct = Long.MAX_VALUE, ci = Long.MAX_VALUE;
+        if (cursor != null && !cursor.isEmpty()) {
+            String dec = new String(Base64.getUrlDecoder().decode(cursor));
+            String[] p = dec.split("[|]");
+            ct = Long.parseLong(p[0]);
+            ci = Long.parseLong(p[1]);
+        }
+        List<Item> out = new ArrayList<>();
+        for (Item it : sortedData) {
+            boolean after = (it.createdAt < ct) || (it.createdAt == ct && it.id < ci);
+            if (after) {
+                out.add(it);
+                if (out.size() == size) break;
+            }
+        }
+        String next = null;
+        if (out.size() == size) {
+            Item last = out.get(out.size() - 1);
+            next = Base64.getUrlEncoder().withoutPadding().encodeToString((last.createdAt + "|" + last.id).getBytes());
+        }
+        return new PageResult(out, next);
+    }
+}`,
+      hints: [
+        'Giải mã cursor: {{new String(Base64.getUrlDecoder().decode(cursor))}} cho chuỗi {{"createdAt|id"}}, rồi {{split("\\\\|")}} (trong Java string cần escape dấu | cho regex, và trong template literal cần thêm một lớp \\).',
+        'Phần tử "đứng sau" mốc (ct, ci) theo thứ tự giảm dần (createdAt, id) khi {{createdAt < ct || (createdAt == ct && id < ci)}}. Trang đầu thì coi mốc là vô cực để lấy từ đầu.',
+        'Chỉ đặt {{nextCursor}} khi trang đầy ({{items.size() == size}}); trang cuối trả {{null}}.',
+      ],
+      explain: `Cursor là "cái kẹp sách": ta so sánh giá trị (createdAt, id) thay vì đếm vị trí. Khi có phần tử mới chèn vào đầu danh sách, các phần tử cũ vẫn giữ nguyên giá trị (createdAt, id), nên điều kiện "sau mốc" vẫn chọn đúng tập phần tử kế tiếp: không trùng, không sót.
+
+Hai điểm dễ sai: (1) quên tie-breaker {{id}} khi {{createdAt}} bằng nhau khiến phần tử cùng mốc bị lặp/bỏ sót; (2) luôn trả {{nextCursor}} kể cả trang cuối làm client lặp vô hạn. Kiểm tra {{out.size() == size}} là cách đơn giản (chấp nhận một lần gọi thừa ở biên); cách chặt hơn là lấy thêm 1 phần tử để biết còn hay không.
+
+Ở API thật, thay vì duyệt list trong bộ nhớ, ta đưa điều kiện "sau mốc" vào câu SQL với index {{(createdAt DESC, id DESC)}} để DB nhảy thẳng tới mốc.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Vì sao {{SELECT ... LIMIT 20 OFFSET 100000}} thường chậm hơn nhiều so với truy vấn dùng cursor ở trang tương đương?',
+      options: [
+        'Vì LIMIT không hoạt động khi có OFFSET',
+        'Vì DB vẫn phải duyệt/bỏ qua 100000 dòng trước khi lấy 20 dòng, trong khi cursor dùng mốc + index để đi thẳng tới vị trí',
+        'Vì cursor không cần ORDER BY',
+        'Vì OFFSET bắt buộc trả về toàn bộ bảng',
+      ],
+      answer: 1,
+      explain: `Offset không "nhảy cóc": DB phải thực hiện công việc tạo ra 100000 dòng đầu rồi loại bỏ. Cursor/keyset đặt điều kiện {{WHERE (createdAt, id) < (t, i)}} khớp index, nên chỉ đọc vùng cần thiết. Trang càng sâu, offset càng chậm tuyến tính; cursor gần như đều.`,
+    },
+    {
+      q: 'Người dùng đang xem trang 1 (offset) của feed. Trước khi họ tải trang 2, một bài viết mới được đăng lên đầu feed. Hệ quả thường gặp là gì?',
+      options: [
+        'Trang 2 trả đúng như cũ, không ảnh hưởng',
+        'Trang 2 có thể lặp lại một mục đã thấy ở trang 1 và/hoặc bỏ sót một mục (do các phần tử bị đẩy dịch)',
+        'Server tự động chuyển sang cursor',
+        'Trang 1 bị xoá khỏi DB',
+      ],
+      answer: 1,
+      explain: `Offset đếm theo vị trí: chèn 1 phần tử lên đầu làm mọi phần tử cũ dịch xuống 1 bậc. Trang 2 (bỏ qua N) giờ bỏ qua cả phần tử mới, nên phần tử cuối trang 1 cũ rơi vào trang 2 (trùng) và chuỗi bị lệch. Cursor bám theo giá trị mốc nên không bị hiệu ứng này.`,
+    },
+    {
+      q: 'Khi thiết kế cursor cho danh sách sắp xếp theo {{createdAt DESC}}, vì sao nên thêm {{id}} làm tiêu chí phụ (ORDER BY createdAt DESC, id DESC)?',
+      options: [
+        'Để truy vấn trông phức tạp hơn',
+        'Để sort ổn định khi nhiều bản ghi cùng createdAt, tránh bỏ sót/lặp phần tử có cùng mốc thời gian',
+        'Vì Base64 chỉ mã hoá được số nguyên',
+        'Vì index không hoạt động trên cột thời gian',
+      ],
+      answer: 1,
+      explain: `Nếu chỉ sort theo {{createdAt}} và nhiều bản ghi cùng giá trị, thứ tự tương đối giữa chúng không xác định giữa các truy vấn; cursor đặt tại một mốc thời gian đó có thể bỏ sót hoặc lặp các bản ghi "đồng hạng". Thêm {{id}} (duy nhất) làm tie-breaker tạo thứ tự toàn phần, ổn định, và cursor {{(createdAt, id)}} định vị chính xác.`,
+    },
+    {
+      q: 'Khi nào offset/limit vẫn là lựa chọn chấp nhận được so với cursor?',
+      options: [
+        'Khi làm feed mạng xã hội vô hạn cho hàng triệu người dùng',
+        'Khi cần "nhảy tới trang 50" trong màn hình quản trị, tập dữ liệu nhỏ/ít biến động và trang sâu hiếm',
+        'Khi dữ liệu thay đổi liên tục từng giây',
+        'Offset luôn tốt hơn cursor trong mọi trường hợp',
+      ],
+      answer: 1,
+      explain: `Offset cho phép nhảy trang tuỳ ý và triển khai đơn giản, phù hợp màn hình admin nội bộ với dữ liệu tương đối ổn định, ít bản ghi, không cuộn sâu vô hạn. Với feed realtime, API public volume lớn, hoặc dữ liệu biến động, cursor tránh được cả vấn đề hiệu năng trang sâu lẫn trùng/sót khi chèn/xoá.`,
+    },
+  ],
+  related: ['api-001', 'api-014', 'api-015'],
+  tags: ['pagination', 'cursor', 'keyset', 'offset', 'REST', 'performance'],
 }
 );
