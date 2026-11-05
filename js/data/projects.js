@@ -55,6 +55,16 @@ Dự án này giúp bạn xây đủ các lớp bảo vệ đó, và đó chính
             { icon: '↩️', screen: 'Giao dịch hoàn', text: 'Hệ thống tạo transfer **REVERSAL** mới với bút toán đảo chiều; giao dịch cũ **giữ nguyên**. Bấm hoàn lần 2 sẽ bị từ chối.' },
             { icon: '📜', screen: 'Lịch sử của Lan', text: 'Lan thấy 2 dòng: "-120.000đ Thanh toán vé" và "+120.000đ Hoàn tiền vé". Số dư trở lại 250.000đ.' },
           ] },
+        { title: 'Lan nạp 500.000đ từ ngân hàng và rút 200.000đ về ngân hàng', persona: 'Lan, 26 tuổi, nhân viên văn phòng; đã có ví VND số dư 250.000đ và đã liên kết tài khoản ngân hàng của mình.',
+          steps: [
+            { icon: '🏦', screen: 'Màn hình Nạp tiền', text: 'Lúc 12:30 Lan chọn "Nạp từ tài khoản ngân hàng", nhập **500.000đ** và chọn tài khoản ngân hàng đã liên kết. Tài khoản ngân hàng là nơi tiền thật của Lan ở ngân hàng đối tác.' },
+            { icon: '🔐', screen: 'Trang xác thực ngân hàng', text: 'App mở trang của cổng ngân hàng (hệ thống nối app ví với ngân hàng). Lan đăng nhập app ngân hàng và nhập mã OTP gửi đến điện thoại để xác nhận nạp 500.000đ.' },
+            { icon: '⏳', screen: 'Giao dịch đang chờ', text: 'API ví ghi giao dịch nạp với trạng thái **PENDING** ("chờ xác nhận"). Số dư ví Lan **chưa tăng** cho đến khi ngân hàng gửi thông báo lại, vì mạng có thể gián đoạn và tiền chưa chắc đã đến.' },
+            { icon: '📡', screen: 'Callback từ ngân hàng', text: 'Ngân hàng gửi **callback** (thông báo HTTP qua webhook) về API ví: "đã trừ 500.000đ từ tài khoản Lan". Callback kèm **chữ ký** để API ví biết thông báo thật từ ngân hàng, không bị kẻ gian giả mạo.' },
+            { icon: '✅', screen: 'Tiền vào ví', text: 'API ví kiểm tra chữ ký hợp lệ, ghi 2 bút toán (Nợ tài khoản đảm bảo của ví tại ngân hàng, Có ví Lan) và chuyển trạng thái thành **COMPLETED**. Số dư ví Lan từ 250.000đ lên **750.000đ**. Nếu ngân hàng gọi callback lại cùng mã giao dịch, API ví nhận ra và **không cộng tiền thêm** (idempotent).' },
+            { icon: '🏧', screen: 'Màn hình Rút tiền', text: 'Hai tuần sau, lúc 09:00, Lan cần tiền mặt nên rút **200.000đ** từ ví về tài khoản ngân hàng. App ghi giao dịch PENDING, gửi yêu cầu qua cổng ngân hàng; tiền có thể đến tài khoản Lan sau 1–2 ngày làm việc.' },
+            { icon: '⚠️', screen: 'Giao dịch treo PENDING', text: 'Nếu ngân hàng không callback trong khoảng chờ (ví dụ 24–48 giờ), giao dịch rút tiền vẫn PENDING: ví Lan đã trừ 200.000đ nhưng tiền chưa chắc đã về tài khoản ngân hàng. Vận hành kiểm tra thủ công, hệ thống **không tự hoàn ngay** để tránh Lan nhận tiền hai lần.' },
+          ] },
       ],
       diagrams: [
         { title: 'Luồng chuyển tiền có idempotency và outbox',
@@ -80,6 +90,19 @@ Dự án này giúp bạn xây đủ các lớp bảo vệ đó, và đó chính
             { from: 2, to: 1, text: 'Danh sách ví lệch', reply: true },
             { from: 1, to: 3, text: 'Lệch dù 1 đồng: gửi alert kèm wallet id' },
           ] },
+        { title: 'Nạp tiền qua cổng ngân hàng với callback và chữ ký',
+          caption: 'Mũi tên liền là yêu cầu, mũi tên đứt là phản hồi. Callback từ ngân hàng có chữ ký; cùng mã giao dịch gọi lại nhiều lần thì không cộng tiền hai lần (idempotent).',
+          actors: ['App của Lan', 'Cổng ngân hàng', 'API ví', 'PostgreSQL', 'Ngân hàng'],
+          steps: [
+            { from: 0, to: 2, text: 'POST /topups 500.000đ + Idempotency-Key' },
+            { from: 2, to: 1, text: 'Gửi yêu cầu nạp qua cổng' },
+            { from: 1, to: 4, text: 'Trang OTP, Lan xác nhận' },
+            { from: 4, to: 1, text: 'Xác nhận trừ tiền', reply: true },
+            { from: 1, to: 2, text: 'Callback webhook + chữ ký' },
+            { from: 2, to: 3, text: 'Ký hợp lệ: ghi PENDING + entry (1 TX)', reply: true },
+            { note: 'Callback trùng cùng key: trả kết quả đã lưu, không cộng lại', over: [1, 2] },
+            { from: 2, to: 0, text: '200 OK, số dư ví = 750.000đ', reply: true },
+          ] },
       ],
       glossary: [
         { term: 'Ví (wallet)', meaning: 'Tài khoản tiền điện tử của người dùng do công ty ví giữ hộ; tiền thật nằm trong tài khoản đảm bảo của công ty ở ngân hàng.' },
@@ -90,26 +113,38 @@ Dự án này giúp bạn xây đủ các lớp bảo vệ đó, và đó chính
         { term: 'Hoàn tiền (reversal)', meaning: 'Giao dịch mới đảo chiều giao dịch cũ. Không bao giờ xoá giao dịch đã hoàn tất.' },
         { term: 'Đối soát (reconciliation)', meaning: 'So 2 nguồn số liệu (balance và ledger, hoặc hệ thống và ngân hàng) để phát hiện lệch.' },
         { term: 'Outbox', meaning: 'Bảng lưu event trong cùng transaction với dữ liệu nghiệp vụ, rồi mới gửi sang Kafka, để không mất hoặc gửi event "ma".' },
+        { term: 'Tài khoản đảm bảo', meaning: 'Tài khoản tại ngân hàng mà công ty ví dùng để giữ tiền thật của mọi khách hàng. Khi Lan nạp 500.000đ, tiền đi vào tài khoản này trước; số dư ví chỉ là ghi chép của công ty ví và phải bằng tổng tiền trong tài khoản đảm bảo trừ tiền khách đã rút.' },
+        { term: 'PENDING', meaning: 'Trạng thái "chờ xác nhận" của giao dịch. Khi Lan nạp tiền, ví ghi PENDING từ khi gửi yêu cầu đến khi ngân hàng callback xác nhận; số dư ví chỉ tăng khi giao dịch chuyển sang COMPLETED, tránh ghi sai khi mạng bị gián đoạn.' },
+        { term: 'Callback (webhook)', meaning: 'Thông báo HTTP từ hệ thống bên ngoài (ví dụ ngân hàng) gửi về API ví để báo kết quả giao dịch. Kèm chữ ký để API ví xác thực thông báo thật, không bị giả mạo.' },
+        { term: 'KYC / hạn mức ví', meaning: 'KYC (Know Your Customer) là quy trình xác minh danh tính khách hàng (CMND/CCCD, ảnh khuôn mặt) trước khi mở ví. Hạn mức ví là số tiền tối đa được nạp hoặc giữ trong ví theo quy định (ví dụ ví chưa xác thực thường bị giới hạn thấp hơn).' },
       ],
     },
-    pitch: `Xây dựng ví có nạp, chuyển và hoàn tiền với sổ cái bất biến, để interviewer thấy bạn hiểu tính đúng đắn của tiền trước khi tối ưu throughput. Điểm nhấn là mỗi giao dịch cân bằng Nợ/Có và có thể truy vết từ API tới event.`,
+    pitch: `Dự án mô phỏng ví điện tử kết nối với tài khoản ngân hàng: khách hàng như Lan nạp 500.000đ từ ngân hàng vào ví, chuyển tiền cho bạn bè và rút 200.000đ về ngân hàng khi cần tiền mặt. Nhân viên vận hành và ngân hàng đối tác có quy trình xử lý giao dịch PENDING chờ xác nhận, kiểm tra chữ ký callback từ cổng ngân hàng và đối soát số dư ví mỗi đêm. Bạn sẽ thể hiện được hiểu biết về nghiệp vụ ngân hàng thực tế: tiền chưa vào ví cho đến khi ngân hàng xác nhận, sao phải idempotent khi callback lặp, và làm sao phát hiện sai 1 đồng qua đối soát. Đây là câu chuyện để nói với interviewer ngân hàng, chứng minh bạn hiểu "tiền" không chỉ là con số trong cột balance.`,
     requirements: `### User story
-1. **Tạo ví:** là người dùng đã đăng nhập, tôi tạo ví VND của mình.
-  Chấp nhận: mỗi user tối đa 1 ví mỗi currency; ví mới có balance = 0; tạo lần 2 trả 409.
-2. **Nạp tiền (mô phỏng):** tôi nạp 500.000 VND vào ví.
-  Chấp nhận: sinh 1 transfer + 2 ledger entry (Nợ tài khoản hệ thống "cash-in", Có ví của tôi); balance tăng đúng 500.000.
-3. **Chuyển tiền:** tôi chuyển 100.000 VND cho ví khác kèm header {{Idempotency-Key}}.
-  Chấp nhận: thiếu tiền trả 422 và không ghi gì; đủ tiền thì tổng Nợ = tổng Có; retry cùng key trả lại đúng response cũ.
-4. **Retry an toàn:** app mobile timeout và gửi lại.
-  Chấp nhận: cùng key + cùng payload trả 200 với transfer cũ; cùng key + payload khác trả 422 {{IDEMPOTENCY_MISMATCH}}.
-5. **Hoàn tiền:** admin hoàn một transfer đã COMPLETED.
-  Chấp nhận: tạo transfer mới loại REVERSAL với entry đảo chiều; không sửa/xoá entry cũ; chỉ hoàn được 1 lần.
-6. **Lịch sử:** tôi xem 20 giao dịch gần nhất, phân trang bằng cursor.
-  Chấp nhận: chỉ thấy ví của mình (xem ví người khác trả 404, không phải 403, để không lộ ví tồn tại).
-7. **Thông báo:** người nhận được thông báo "bạn vừa nhận tiền".
-  Chấp nhận: event phát qua outbox; consumer chạy lại 2 lần vẫn chỉ 1 thông báo.
-8. **Đối soát:** job hằng đêm so balance với tổng ledger.
-  Chấp nhận: lệch 1 đồng cũng phải sinh alert kèm wallet id.
+1. **Tạo ví:** Lần đầu Lan đăng nhập app ví vào 08:00 thứ Hai, bấm "Tạo ví VND".
+   Ví dụ: ví mới được tạo với số dư **0đ**. Gọi tạo lại cùng ngày cho cùng người → trả **409** "đã có ví VND"; Minh tạo ví riêng không ảnh hưởng ví Lan.
+   Chấp nhận: mỗi user tối đa 1 ví mỗi currency; ví mới có balance = 0; tạo lần 2 trả 409.
+2. **Nạp tiền (mô phỏng):** Lúc 12:30 Lan liên kết tài khoản ngân hàng và nạp **500.000đ** vào ví.
+   Ví dụ: hệ thống sinh 1 transfer + 2 bút toán (Nợ tài khoản hệ thống "cash-in", Có ví Lan); số dư ví Lan tăng đúng 500.000đ.
+   Chấp nhận: sinh 1 transfer + 2 ledger entry (Nợ tài khoản hệ thống "cash-in", Có ví của tôi); balance tăng đúng 500.000.
+3. **Chuyển tiền:** Lúc 13:00 Lan chuyển **100.000đ** cho ví của Minh, kèm header {{Idempotency-Key}}.
+   Ví dụ: nếu ví Lan chỉ còn 50.000đ → trả **422** và không ghi gì; đủ tiền thì tổng Nợ = tổng Có (100.000đ mỗi bên); gửi lại cùng key → trả lại đúng response cũ.
+   Chấp nhận: thiếu tiền trả 422 và không ghi gì; đủ tiền thì tổng Nợ = tổng Có; retry cùng key trả lại đúng response cũ.
+4. **Retry an toàn:** Lúc 13:05 app của Lan bị mất mạng 10 giây sau khi bấm chuyển 100.000đ cho Minh, app tự gửi lại yêu cầu cùng key.
+   Ví dụ: cùng key + cùng payload → trả **200** với transfer cũ; cùng key + payload khác (ví dụ amount 200.000đ) → trả **422** {{IDEMPOTENCY_MISMATCH}}.
+   Chấp nhận: cùng key + cùng payload trả 200 với transfer cũ; cùng key + payload khác trả 422 {{IDEMPOTENCY_MISMATCH}}.
+5. **Hoàn tiền:** Lúc 14:00 rạp phim huỷ suất chiếu, admin hoàn giao dịch **120.000đ** đã COMPLETED cho Lan.
+   Ví dụ: hệ thống tạo transfer mới loại REVERSAL với entry đảo chiều; entry cũ giữ nguyên; bấm hoàn lần 2 sẽ bị từ chối.
+   Chấp nhận: tạo transfer mới loại REVERSAL với entry đảo chiều; không sửa/xoá entry cũ; chỉ hoàn được 1 lần.
+6. **Lịch sử:** Lúc 20:00 Lan xem 20 giao dịch gần nhất của ví, phân trang bằng cursor.
+   Ví dụ: Lan chỉ thấy giao dịch của ví mình; xem ví của Minh trả **404**, không phải 403, để không lộ ví của người khác tồn tại.
+   Chấp nhận: chỉ thấy ví của mình (xem ví người khác trả 404, không phải 403, để không lộ ví tồn tại).
+7. **Thông báo:** Sau khi Lan chuyển 100.000đ cho Minh, Minh nhận thông báo "Bạn vừa nhận 100.000đ từ Lan".
+   Ví dụ: event phát qua outbox; consumer chạy lại 2 lần vẫn chỉ tạo **1** thông báo, không trùng.
+   Chấp nhận: event phát qua outbox; consumer chạy lại 2 lần vẫn chỉ 1 thông báo.
+8. **Đối soát:** Job hằng đêm (02:00) so sánh balance ví với tổng ledger.
+   Ví dụ: nếu balance của Lan ghi 750.000đ nhưng tổng bút toán là 749.999đ (lệch 1 đồng) → job sinh alert kèm ví id của Lan để người điều tra.
+   Chấp nhận: lệch 1 đồng cũng phải sinh alert kèm wallet id.
 
 ### Phi chức năng
 - Throughput mục tiêu: 100 transfer/giây ổn định trên laptop 8 core (app 1 instance, PostgreSQL 16 trong Docker).
@@ -1964,7 +1999,70 @@ Thêm biên an toàn: worker chỉ hết hạn sau expires_at + 30 giây để t
   {
     id: 'proj-notifications', title: 'Thông báo đa kênh qua event', level: 'senior', weeks: 6,
     skills: ['Spring Boot', 'Kafka', 'PostgreSQL', 'Outbox', 'Docker', 'Observability', 'Testing'],
-    pitch: `Tạo nền tảng gửi email/SMS/push giả lập từ domain event, làm rõ delivery semantics, retry và trạng thái cuối. Đây là cách tốt để kể về vận hành bất đồng bộ giữa nhiều team: không gửi trùng, không gửi cho người đã opt-out, không để provider chậm kéo sập API.`,
+    business: { intro: `**Tóm tắt:** Hệ thống thông báo đa kênh là bộ điều phối tin nhắn của ngân hàng: khi có sự kiện (biến động số dư, OTP, cảnh báo bảo mật, khuyến mãi), hệ thống quyết định gửi qua kênh nào, nội dung gì, lúc nào, và đảm bảo mỗi tin gửi đúng một lần, đúng người, đúng thời điểm.
+
+### Ngoài đời, người dùng ngân hàng nhận thông báo thế nào?
+Hãy nghĩ tới app ngân hàng bạn đang dùng trên điện thoại:
+- Biến động số dư: Lan vừa chuyển 200.000đ trả tiền điện, trong vài giây điện thoại rung lên push "Số dư TK ***1234 giảm 200.000đ, còn 1.250.000đ" + SMS dự phòng nếu push fail.
+- OTP giao dịch: Minh chuyển 5.000.000đ sang ngân hàng khác, app bắt nhập OTP 6 số gửi qua SMS; OTP hết hạn sau 60 giây, gửi lại tối đa 3 lần/15 phút để chống spam.
+- Cảnh báo bảo mật: Tài khoản của Hà bị đăng nhập từ thiết bị lạ ở IP khác tỉnh → push + SMS cảnh báo "Nếu không phải bạn, đổi mật khẩu ngay".
+- Khuyến mãi: Ngân hàng gửi tin "Giảm phí chuyển tiền tháng này" qua email/push; khách có thể tắt trong cài đặt, OTP và cảnh báo bảo mật không được tắt.
+
+### Vì sao OTP phải nhanh và ưu tiên hơn khuyến mãi?
+- OTP là chìa khoá của giao dịch: nếu chậm 30 giây, khách chờ, timeout giao dịch, khách phàn nàn. Mục tiêu p95 < 5 giây từ lúc event commit tới SENT.
+- Khuyến mãi chậm vài phút không ai phàn nàn và có thể gửi theo đợt.
+- Ưu tiên tài nguyên: worker SMS có rate limit 50 tin/giây; OTP đi trước, khuyến mãi chờ.
+- Chi phí SMS: mỗi SMS tốn tiền nhà mạng; OTP bắt buộc SMS vì push có thể fail khi không có mạng data.
+
+### Ai liên quan
+- Khách hàng: nhận tin, đặt preference opt-out theo kênh và loại tin.
+- Ngân hàng đối tác / NAPAS: event biến động số dư phát sinh từ core banking.
+- Kế toán / tài chính: đối soát chi phí SMS theo tháng.
+- Vận hành (NOC/support): tra trạng thái tin theo notification id khi khách phàn nàn "không nhận được OTP".
+- Bảo mật: audit ai replay, lúc nào; không log nội dung tin, số điện thoại, email đầy đủ.
+
+### Một ví dụ bằng số
+Trong 1 phút cao điểm 09:00–09:01, ngân hàng xử lý:
+
+| Loại tin | Kênh | Số lượng | Độ ưu tiên |
+|---|---|---|---|
+| OTP giao dịch | SMS | 120 | Cao nhất |
+| Biến động số dư | Push + SMS dự phòng | 3.000 | Cao |
+| Cảnh báo đăng nhập lạ | Push + SMS | 15 | Cao |
+| Khuyến mãi | Push/Email | 50.000 | Thấp |
+
+### Những gì có thể sai ngoài đời
+- Khách phàn nàn "không nhận được OTP": vận hành tra theo notification id → thấy SMS status DEAD → replay sau khi provider hồi phục.
+- Gửi trùng: consumer Kafka restart → cùng event xử lý 2 lần → nếu không có khoá idempotency, khách nhận 2 OTP.
+- Gửi cho người đã opt-out: khách tắt email khuyến mãi nhưng vẫn nhận → vi phạm preference.
+- Provider chậm kéo sập API: nếu gửi đồng bộ, 500 event/giây làm API treo → phải bất đồng bộ qua Kafka + outbox.
+- Log lộ dữ liệu: in số điện thoại/email đầy đủ → chỉ che còn 3 ký tự cuối.
+
+> Senior tip: khi kể dự án, hãy mở đầu bằng tình huống người dùng thật ("khách không nhận được OTP trong giờ cao điểm") rồi mới nói giải pháp kỹ thuật.`,
+      journeys: [{ title: 'Lan chuyển tiền và nhận thông báo biến động số dư', persona: 'Lan, 26 tuổi, nhân viên văn phòng.', steps: [
+        { icon: '💸', screen: 'App ngân hàng', text: 'Lan chuyển 200.000đ tiền điện.' },
+        { icon: '📝', screen: 'Outbox', text: 'Core banking ghi giao dịch và event {{AccountDebited}}.' },
+        { icon: '📡', screen: 'Kafka', text: 'Outbox relay publish vào topic {{notification.requested}}.' },
+        { icon: '📲', screen: 'Điện thoại của Lan', text: 'Trong < 5 giây Lan nhận push biến động số dư.' },
+      ] }],
+      diagrams: [{ title: 'Luồng thông báo từ domain event tới kênh', actors: ['Core Banking', 'PostgreSQL', 'Kafka', 'Router', 'Worker', 'Provider'], steps: [
+        { from: 0, to: 1, text: 'Ghi giao dịch + outbox (1 TX)' },
+        { from: 2, to: 3, text: 'Consumer nhận event' },
+        { from: 3, to: 1, text: 'INSERT notification + delivery' },
+        { from: 4, to: 5, text: 'Gửi qua provider adapter' },
+      ] }],
+      glossary: [
+        { term: 'Biến động số dư', meaning: 'Mỗi lần tiền vào/ra tài khoản, core banking phát event; hệ thống thông báo gửi tin cho khách.' },
+        { term: 'OTP', meaning: 'Mã dùng một lần để xác thực giao dịch, thường 6 số, hết hạn sau 60 giây.' },
+        { term: 'Opt-out', meaning: 'Khách tắt một loại tin trên một kênh; tin MARKETING bị SKIPPED, tin TRANSACTIONAL vẫn gửi.' },
+        { term: 'Idempotency key', meaning: 'Mã duy nhất (notification_id, channel); server dùng để không gửi trùng.' },
+        { term: 'Outbox', meaning: 'Bảng lưu event trong cùng transaction với dữ liệu nghiệp vụ, rồi mới gửi sang Kafka.' },
+        { term: 'DLT', meaning: 'Topic chứa tin không gửi được sau retry; admin có thể replay.' },
+        { term: 'Rate limit', meaning: 'Giới hạn số tin/giây theo provider; worker chờ chứ không bỏ tin.' },
+        { term: 'Replay', meaning: 'Gửi lại tin DEAD sau khi provider hồi phục; chỉ role NOTIF_ADMIN, có audit.' },
+      ],
+    },
+    pitch: `Tạo nền tảng gửi email/SMS/push giả lập từ domain event, làm rõ delivery semantics, retry và trạng thái cuối. Đây là cách tốt để kể về vận hành bất đồng bộ giữa nhiều team: không gửi trùng, không gửi cho người đã opt-out, không để provider chậm kéo sập API. Khách hàng nhận được OTP nhanh, biến động số dư tức thì, và có thể tắt khuyến mãi mà vẫn nhận cảnh báo bảo mật.`,
     requirements: `### User story
 1. **Gửi từ domain event:** khi đơn hàng thanh toán xong, order service phát event {{OrderPaid}} qua outbox; notification service gửi email + push cho người mua.
   Chấp nhận: provider khoẻ thì p95 từ lúc event commit tới SENT < 5 giây; mỗi kênh có đúng 1 bản ghi delivery.
@@ -2541,7 +2639,119 @@ class DeliveryMetrics {
   {
     id: 'proj-reconciliation', title: 'Đối soát giao dịch cuối ngày', level: 'lead', weeks: 8,
     skills: ['Spring Batch', 'Java', 'PostgreSQL', 'S3', 'AWS', 'Observability', 'Testcontainers'],
-    pitch: `Xử lý file giao dịch lớn có checkpoint, restart và báo cáo sai lệch. Dự án thể hiện năng lực batch và thiết kế vận hành thực tế, đặc biệt khi dữ liệu phải có thể giải thích, chạy lại cho cùng kết quả và chịu được 10 triệu dòng mỗi đêm.`,
+    business: {
+      intro: `**Tóm tắt:** Đối soát cuối ngày là công việc kiểm tra xem **số tiền mà hệ thống của mình ghi** có khớp **số tiền mà đối tác (cổng thanh toán, NAPAS, ngân hàng) báo** hay không. Mỗi đêm hai bên trao đổi một file CSV chứa hàng triệu giao dịch; job tự động so từng dòng và báo ra những dòng lệch để con người xử lý.
+
+### Ngoài đời, người dùng làm gì với đối soát?
+Hãy nghĩ tới một công ty ví điện tử (ví dụ ví MoMo/ZaloPay...) hoặc ngân hàng nhỏ:
+- **Khách hàng Lan** mua cà phê 45.000đ bằng ví lúc 14:30. Ví ghi giao dịch thành công, số dư Lan giảm 45.000đ.
+- **Cổng thanh toán** (đơn vị trung gian kết nối ví với ngân hàng) cũng ghi một giao dịch tương ứng.
+- **Đêm khuya**, cổng thanh toán gửi file CSV liệt kê tất cả giao dịch trong ngày cho công ty ví. Công ty ví chạy job đối soát để kiểm tra hai bên có khớp không.
+- Nếu khớp 99,99% → yên tâm đi ngủ. Nếu có dòng lệch → vận hành phải điều tra sáng hôm sau.
+
+### Vì sao hai bên lại lệch?
+Ngoài đời rất hay lệch, vì:
+1. **Giao dịch treo (pending):** Lan bấm thanh toán lúc 23:59:55, ví ghi PENDING, nhưng cổng thanh toán xử lý sang ngày hôm sau → file của hôm nay không có dòng này.
+2. **Timeout:** mạng chập chờn, ví gửi yêu cầu nhưng không nhận được phản hồi; ví đánh dấu thất bại nhưng cổng thanh toán lại đã trừ tiền Lan → lệch.
+3. **Cut-off 23:00:** một số đối tác "chốt sổ" lúc 23:00, giao dịch sau đó thuộc ngày hôm sau ở phía họ nhưng thuộc ngày hôm nay ở phía ví.
+4. **Phí:** cổng thanh toán trừ phí dịch vụ; ví có thể chưa tính phí vào số tiền ghi → số tiền hai bên khác nhau.
+5. **Hoàn tiền:** Lan được hoàn 100.000đ; cổng thanh toán có thể báo hoàn ở ngày khác → lệch thời điểm.
+
+### File đối soát trông thế nào?
+Một file CSV gồm các cột như sau (ví dụ 5 dòng):
+
+| line | partner_ref | amount | currency | status | txn_time |
+|---|---|---|---|---|---|
+| 1 | TXN-20270115-0001 | 45000.00 | VND | COMPLETED | 2027-01-15T14:30:00+07:00 |
+| 2 | TXN-20270115-0002 | 120000.00 | VND | COMPLETED | 2027-01-15T15:02:11+07:00 |
+| 3 | TXN-20270115-0003 | 89000.00 | VND | FAILED | 2027-01-15T16:45:00+07:00 |
+| 4 | TXN-20270115-0003 | 89000.00 | VND | COMPLETED | 2027-01-15T16:45:00+07:00 |
+| 5 | TRAILER | 5 | 474000.00 | | |
+
+Dòng cuối (TRAILER) là "dòng tổng": tổng số dòng và tổng tiền, để phát hiện file bị cắt cụt. Dòng 3-4 cùng mã giao dịch → **DUPLICATE**.
+
+### Kế toán/vận hành xử lý dòng lệch ra sao?
+Job tự động phân loại:
+- **MATCHED:** hai bên khớp → không cần làm gì.
+- **AMOUNT_MISMATCH:** lệch tiền (VND không cho phép lệch, USD cho phép 0,01) → điều tra phí/tỷ giá.
+- **STATUS_MISMATCH:** đối tác SUCCESS nhưng nội bộ FAILED/PENDING → kiểm tra timeout.
+- **MISSING_INTERNAL:** chỉ có ở file đối tác → có thể giao dịch bị mất ở hệ thống mình.
+- **MISSING_PARTNER:** chỉ có ở hệ thống mình → có thể giao dịch treo, chờ file ngày sau.
+- **DUPLICATE:** file có 2 dòng cùng mã → báo đối tác sửa file.
+
+Vận hành (ops) mở bảng kết quả, đánh dấu từng dòng lệch là **RESOLVED** kèm ghi chú. **Không được sửa số tiền** trong kết quả, chỉ ghi chú; audit ghi ai sửa, lúc nào, lý do.
+
+### Khách hàng thấy gì khi "tiền bị trừ mà giao dịch báo lỗi"?
+Lan mua cà phê 45.000đ, app báo lỗi, nhưng ngân hàng đã trừ tiền. Lan hoảng hốt gọi tổng đài. Thực ra tiền của Lan **vẫn an toàn**: giao dịch ở trạng thái PENDING, số dư ví chưa trừ; nếu sau vài phút ngân hàng xác nhận đã trừ tiền thì hệ thống chuyển sang COMPLETED và Lan thấy tiền trừ. Nếu ngân hàng báo thất bại thì giao dịch chuyển FAILED và Lan không mất tiền. Đây chính là lý do hệ thống **không tự hoàn ngay** khi chưa chắc chắn, để tránh Lan nhận tiền hai lần. Đối soát cuối ngày sẽ phát hiện nếu có trường hợp "treo" lâu.
+
+> Senior tip: khi kể dự án, hãy bắt đầu bằng tình huống người dùng thật ("khách bị trừ tiền nhưng app báo lỗi") rồi mới nói cơ chế batch. Interviewer ngân hàng đánh giá rất cao người hiểu **vì sao** cần idempotency, trạng thái PENDING và đối soát.`,
+      journeys: [
+        { title: 'Cổng thanh toán gửi file, job đối soát chạy đêm', persona: 'Lan là khách hàng mua cà phê 45.000đ lúc 14:30; Minh là kỹ sư vận hành (ops) kiểm tra kết quả sáng hôm sau.',
+          steps: [
+            { icon: '💳', screen: 'App ví của Lan', text: 'Lúc 14:30 Lan thanh toán 45.000đ mua cà phê. Ví ghi giao dịch COMPLETED, số dư Lan giảm 45.000đ.' },
+            { icon: '🏦', screen: 'Cổng thanh toán', text: 'Cổng thanh toán cũng ghi một giao dịch tương ứng với mã TXN-20270115-0001.' },
+            { icon: '📤', screen: '23:00 cut-off', text: 'Đến 23:00, cổng thanh toán "chốt sổ" và chuẩn bị file CSV cho ngày 15/01/2027.' },
+            { icon: '🌙', screen: '06:00 sáng hôm sau', text: 'Scheduler tự chạy job. Job tải file từ S3, kiểm SHA-256 và trailer; nếu file gửi lại y hệt thì bỏ qua, không nạp trùng.' },
+            { icon: '🔍', screen: 'Matching', text: 'Job ghép từng dòng file với giao dịch nội bộ theo mã TXN. Dòng khớp → MATCHED. Dòng lệch → phân loại AMOUNT_MISMATCH / STATUS_MISMATCH / MISSING_... / DUPLICATE.' },
+            { icon: '📊', screen: 'Báo cáo', text: 'Ops nhận file CSV chênh lệch và bảng tổng hợp trên S3. Minh mở xem, thấy 112 dòng AMOUNT_MISMATCH và điều tra.' },
+            { icon: '✅', screen: 'Xử lý', text: 'Minh đánh dấu từng dòng lệch là RESOLVED kèm ghi chú. Số tiền trong kết quả không được sửa. Audit ghi ai sửa, lúc nào, lý do.' },
+          ] },
+        { title: 'Lan bị trừ tiền nhưng app báo lỗi', persona: 'Lan, khách hàng; tổng đài viên Mai hỗ trợ.',
+          steps: [
+            { icon: '☕', screen: 'Thanh toán cà phê', text: 'Lan thanh toán 45.000đ, mạng chập chờn, app báo "giao dịch thất bại".' },
+            { icon: '😰', screen: 'Gọi tổng đài', text: 'Lan thấy ngân hàng đã trừ 45.000đ, hoảng hốt gọi tổng đài.' },
+            { icon: '🔍', screen: 'Kiểm tra', text: 'Mai tra cứu: giao dịch ở trạng thái PENDING, số dư ví chưa trừ. Tiền của Lan an toàn.' },
+            { icon: '📡', screen: 'Callback đến', text: 'Vài phút sau ngân hàng gửi callback xác nhận đã trừ tiền. Hệ thống chuyển sang COMPLETED, số dư ví Lan giảm 45.000đ.' },
+            { icon: '✅', screen: 'Thông báo', text: 'Mai báo Lan: "Giao dịch đã thành công, tiền đã trừ đúng một lần." Lan yên tâm.' },
+          ] },
+      ],
+      diagrams: [
+        { title: 'Luồng đối soát cuối ngày',
+          caption: 'Mũi tên liền là yêu cầu, mũi tên đứt là phản hồi. Job chạy theo lịch, đọc streaming nên heap không phụ thuộc kích thước file.',
+          actors: ['Scheduler', 'ReconService', 'S3 (MinIO)', 'Spring Batch', 'PostgreSQL', 'Ops'],
+          steps: [
+            { from: 0, to: 1, text: '06:00 trigger job' },
+            { from: 1, to: 2, text: 'GET file CSV (stream + SHA-256)' },
+            { from: 2, to: 1, text: 'stream file', reply: true },
+            { from: 1, to: 4, text: 'INSERT recon_file (unique partner+sha256)' },
+            { from: 4, to: 1, text: 'fileId', reply: true },
+            { from: 1, to: 3, text: 'launch(fileId, version=1)' },
+            { from: 3, to: 4, text: 'load: chunk 5.000 dòng → stg_partner_txn' },
+            { from: 3, to: 4, text: 'match: FULL OUTER JOIN → recon_result' },
+            { from: 3, to: 2, text: 'report: CSV → S3' },
+            { from: 1, to: 5, text: 'Báo cáo + alert nếu lệch' },
+          ] },
+        { title: 'Xử lý giao dịch treo PENDING',
+          caption: 'Giao dịch treo không được tự hoàn ngay; đối soát cuối ngày phát hiện nếu treo lâu.',
+          actors: ['App Lan', 'Wallet API', 'Cổng TT', 'PostgreSQL'],
+          steps: [
+            { from: 0, to: 1, text: 'POST /payments 45.000đ' },
+            { from: 1, to: 2, text: 'Gửi yêu cầu qua cổng' },
+            { from: 2, to: 1, text: 'Timeout / không phản hồi', reply: true },
+            { from: 1, to: 3, text: 'Ghi PENDING (chưa trừ số dư)' },
+            { from: 1, to: 0, text: 'Báo lỗi cho app', reply: true },
+            { note: 'Vài phút sau cổng gửi callback: đã trừ tiền → chuyển COMPLETED', over: [1, 2] },
+            { from: 1, to: 3, text: 'Nếu không callback trong 24-48h: giữ PENDING, ops điều tra' },
+          ] },
+      ],
+      glossary: [
+        { term: 'Đối soát (reconciliation)', meaning: 'So sánh số liệu giữa hai hệ thống (ví dụ ví nội bộ và cổng thanh toán) để phát hiện dòng lệch.' },
+        { term: 'Cổng thanh toán', meaning: 'Đơn vị trung gian kết nối ví/ngân hàng với các ngân hàng và mạng thẻ; xử lý giao dịch thật.' },
+        { term: 'NAPAS', meaning: 'Công ty cổ phần Thanh toán Quốc gia Việt Nam, vận hành mạng chuyển tiền liên ngân hàng; nhiều đối tác gửi file đối soát qua NAPAS.' },
+        { term: 'Cut-off', meaning: 'Thời điểm "chốt sổ" của một ngày làm việc (ví dụ 23:00). Giao dịch sau cut-off thuộc ngày hôm sau ở phía đối tác.' },
+        { term: 'PENDING', meaning: 'Trạng thái "chờ xác nhận": giao dịch đã gửi yêu cầu nhưng chưa nhận được kết quả cuối cùng; số dư chưa thay đổi.' },
+        { term: 'TRAILER', meaning: 'Dòng cuối file CSV chứa tổng số dòng và tổng tiền, dùng để phát hiện file bị cắt cụt.' },
+        { term: 'SHA-256', meaning: 'Hàm băm dùng để kiểm tra file có bị thay đổi khi truyền đi; nếu checksum trùng thì file y hệt, job bỏ qua.' },
+        { term: 'MATCHED', meaning: 'Dòng khớp hoàn toàn giữa file đối tác và hệ thống nội bộ.' },
+        { term: 'AMOUNT_MISMATCH', meaning: 'Hai bên có cùng mã giao dịch nhưng số tiền khác nhau.' },
+        { term: 'STATUS_MISMATCH', meaning: 'Đối tác báo SUCCESS nhưng nội bộ ghi FAILED/PENDING (hoặc ngược lại).' },
+        { term: 'MISSING_INTERNAL', meaning: 'Chỉ có ở file đối tác, không tìm thấy trong hệ thống nội bộ.' },
+        { term: 'MISSING_PARTNER', meaning: 'Chỉ có ở hệ thống nội bộ, không có trong file đối tác (thường là giao dịch treo).' },
+        { term: 'DUPLICATE', meaning: 'File đối tác có 2 dòng cùng mã giao dịch.' },
+        { term: 'RESOLVED', meaning: 'Vận hành đã điều tra và ghi chú xử lý xong một dòng lệch; không sửa số tiền.' },
+      ],
+    },
+    pitch: `Đối soát cuối ngày giúp ngân hàng/ví phát hiện và xử lý mọi dòng lệch giữa hệ thống nội bộ và đối tác (cổng thanh toán, NAPAS). Người dùng được bảo vệ khi "tiền bị trừ nhưng app báo lỗi" nhờ trạng thái PENDING và đối soát; vận hành có báo cáo rõ ràng để điều tra. Dự án thể hiện năng lực xử lý file lớn, batch restart và vận hành thực tế, chịu được 10 triệu dòng mỗi đêm.`,
     requirements: `### User story
 1. **Nhận file:** mỗi sáng đối tác đẩy {{settlement_20270115.csv}} lên S3; job tự chạy lúc 06:00.
   Chấp nhận: tính SHA-256 khi tải về; file cùng checksum đã xử lý thì bỏ qua, không nạp trùng; dòng trailer (tổng số dòng, tổng tiền) phải khớp nội dung, sai thì cả file FAILED.
@@ -3127,24 +3337,156 @@ Tôi dùng cả hai: lớp 2 là lưới an toàn.
   {
     id: 'proj-bff', title: 'API gateway và BFF cho mobile banking', level: 'lead', weeks: 10,
     skills: ['Spring Boot', 'Microservices', 'OAuth2', 'Redis', 'AWS', 'Kubernetes', 'Observability', 'Contract Testing'],
-    pitch: `Thiết kế lớp BFF gom dữ liệu cho màn hình mobile mà vẫn giữ ranh giới giữa gateway, domain service và identity. Trọng tâm là timeout, bảo mật token, tương thích contract và xử lý lỗi từng phần: một service chậm không được kéo cả màn hình Home chậm theo.`,
-    requirements: `### User story
-1. **Home trong 1 lần gọi:** là người dùng app, tôi mở màn hình Home và thấy tài khoản, thẻ (đã che số), 10 giao dịch gần nhất, khuyến mãi.
-  Chấp nhận: app gọi đúng 1 request {{GET /bff/mobile/v1/home}}; p95 tại gateway < 300 ms khi downstream khoẻ (trước đây app gọi 5 API tuần tự).
-2. **Lỗi từng phần:** service khuyến mãi hoặc thẻ chết.
-  Chấp nhận: vẫn trả 200, field đó là null và có trong mảng {{degraded}}; nếu service tài khoản chết thì trả 503, không trả trang thiếu số dư.
-3. **Đăng nhập OIDC:** app đăng nhập bằng Authorization Code + PKCE qua Keycloak.
-  Chấp nhận: token sai issuer/audience hoặc hết hạn trả 401; thiếu scope {{accounts:read}} trả 403; user A không xem được tài khoản của B (404).
-4. **Phân trang giao dịch:** tôi cuộn danh sách giao dịch.
-  Chấp nhận: cursor mờ (opaque), limit mặc định 20, tối đa 50; giao dịch mới phát sinh không làm trùng hay sót dòng.
-5. **Versioning:** app bản cũ vẫn chạy khi ra v2 (đổi cấu trúc field).
-  Chấp nhận: v1 được hỗ trợ ít nhất 6 tháng sau khi v2 ra, response v1 có header {{Sunset}}; endpoint config báo app có cần cập nhật bắt buộc không.
-6. **Rate limit:** một user gọi quá 20 req/giây.
-  Chấp nhận: gateway trả 429; user khác không bị ảnh hưởng.
-7. **Cache đúng chỗ:** danh sách khuyến mãi, danh sách ngân hàng cache 5 phút.
-  Chấp nhận: số dư và giao dịch không bao giờ lấy từ cache chung.
-8. **Truy vết:** support có request id từ app.
-  Chấp nhận: tìm được trace qua gateway, BFF và 4 downstream; dashboard p95 theo từng downstream.
+                    business: {
+      intro: `**Tóm tắt:** App mobile banking tổng hợp hiển thị trên một màn hình Home số dư, thẻ, giao dịch gần nhất và ưu đãi, gom dữ liệu từ nhiều hệ thống trong ngân hàng (core banking, thẻ, khoản vay, khuyến mãi). Thay vì app gọi riêng từng hệ thống, BFF (Backend For Frontend – dịch vụ phía sau dành cho một ứng dụng phía trước) gọi song song rồi gộp thành một phản hồi, giúp màn hình tải nhanh hơn trên 4G và vẫn hiển thị phần quan trọng ngay khi hệ thống khuyến mãi bị lỗi. BFF cũng xử lý đăng nhập, mã OTP/smart OTP, chuyển tiền liên ngân hàng 24/7 qua NAPAS và duy trì khả năng dùng cho bản app cũ.
+
+### Ngoài đời, người dùng làm gì với app ngân hàng?
+
+Hãy nghĩ tới việc bạn dùng app ngân hàng trên điện thoại hàng ngày:
+
+- **Xem số dư buổi sáng:** Chi, 32 tuổi, nhân viên văn phòng, mở app lúc 07:30 trước khi đi làm. Màn hình Home hiển thị số dư tài khoản thanh toán 15.250.000đ, thẻ Visa ****1234, 10 giao dịch gần nhất và ưu đãi hoàn tiền 5% mua sắm cuối tuần.
+
+- **Chuyển tiền liên ngân hàng:** Lúc 12:45 Chi chuyển 2.000.000đ cho bạn bè tại ngân hàng khác qua NAPAS (hệ thống chuyển tiền liên ngân hàng hoạt động 24/7, kể cả cuối tuần và ngày lễ) để trả tiền trọ. App yêu cầu mã OTP (mã 6 số ngẫu nhiên gửi qua SMS) hoặc smart OTP (xác thực trong app bằng vân tay hay mã PIN) trước khi chuyển.
+
+- **Mua hàng online:** Chi đặt vé xem phim 120.000đ trên ứng dụng rạp phim, thanh toán bằng thẻ. Ngân hàng trừ ngay số tiền và gửi thông báo push về điện thoại.
+
+- **Xem lịch sử giao dịch:** Cuối tháng Chi cuộn xem 50 giao dịch gần nhất để đối soát với lương và tiền chi, đảm bảo không có giao dịch lạ hay bị trừ nhầm.
+
+### Vì sao app cần BFF thay vì gọi thẳng từng hệ thống?
+
+Trong ngân hàng, số dư nằm ở core banking (hệ thống lõi lưu tất cả tiền của khách hàng), số thẻ ở card system, khoản vay ở loan system, ưu đãi ở promotion/CRM. Nếu app gọi thẳng 5 hệ thống này:
+
+- Màn hình Home phải chờ cuộc gọi chậm nhất trong 5 cuộc gọi (ví dụ 5 × 300 ms = 1,5 giây trên 4G).
+- Mỗi cuộc gọi là một lần truy cập mạng di động, tốn pin và gói dữ liệu của người dùng.
+- Bản app cũ có thể mong đợi trường balance là một số, nhưng bản mới đổi thành object {value, currency}; nếu không có lớp đệm, app cũ sẽ hỏng.
+
+BFF là một dịch vụ trung gian chỉ dành cho app mobile. Nó gọi song song 5 hệ thống, gộp kết quả, chuyển xuống app dưới dạng một phản hồi GET /bff/mobile/v1/home. Nếu hệ thống khuyến mãi bị lỗi, BFF vẫn trả 200, gán promotions = null và ghi "promotions" vào danh sách degraded để app biết phần nào bị thiếu, thay vì để cả màn hình trắng.
+
+### Điều gì xảy ra khi core banking bảo trì ban đêm?
+
+Mỗi tối từ 00:00 đến 04:00, core banking tắt để sao lưu và cập nhật dữ liệu. Trong khoảng này:
+
+- App không thể xem số dư hay chuyển tiền tới/core banking. BFF nhận lỗi 503 từ core banking và thông báo rõ ràng cho người dùng: "Hệ thống đang bảo trì, vui lòng quay lại sau".
+- Chuyển tiền qua NAPAS vẫn có thể gửi yêu cầu, nhưng thanh toán chốt sẽ đợi core banking mở lại.
+- BFF giữ chức năng xem thẻ (card system thường độc lập) và ưu đãi để app không hoàn toàn bị khóa.
+
+### Một ví dụ bằng số (màn hình Home của Chi)
+
+| Thông tin | Số liệu | Nguồn hệ thống | Mức độ ưu tiên |
+|---|---|---|---|
+| Số dư tài khoản thanh toán | 15.250.000đ | Core banking | Bắt buộc, thiếu thì trả 503 |
+| Thẻ Visa | **** 1234, hết hạn 12/28 | Card system | Tùy chọn, lỗi thì hiện null |
+| Khoản vay còn lại | 45.000.000đ | Loan system | Có thể không có |
+| 10 giao dịch gần nhất | Từ 15/10 đến 24/10 | Transaction history | Có thể chậm hơn |
+| Ưu đãi hiện có | 3 ưu đãi | Promotion/CRM | Không thiết yếu |
+
+Trước khi có BFF: app gọi 5 API riêng biệt, p95 khoảng 1,5 giây. Sau khi có BFF: app gọi 1 API, các cuộc gọi chạy song song, p95 khoảng 300 ms.
+
+### Những gì có thể sai ngoài đời
+
+- **Mạng di động chập chờn:** App bấm nút chuyển tiền, không nhận phản hồi sau 10 giây, tự gửi lại cùng yêu cầu → nếu không có khóa trùng lặp (idempotency), bạn bè nhận 2 lần 2.000.000đ.
+- **Hai giao dịch cùng lúc:** Chi còn 3.000.000đ, đồng thời chuyển 2.000.000đ cho bạn và 2.000.000đ cho em gái → nếu không kiểm tra số dư đúng cách, số dư có thể thành âm.
+- **Core banking bảo trì:** Lúc 02:00 sáng, Chi muốn chuyển tiền gấp, hệ thống core banking đang tắt, app phải thông báo bảo trì thay để cho giao dịch thất bại lặng lẽ.
+- **Hết hạn token:** Token đăng nhập chỉ dùng được 24 giờ, sau đó app cần làm mới token mà không bắt người dùng nhập lại mật khẩu.
+
+> Senior tip: khi kể dự án phỏng vấn, hãy bắt đầu bằng tình huống người dùng thật ("Khách bấm chuyển tiền 2 lần vì mạng 4G yếu") rồi mới nói giải pháp kỹ thuật. Interviewer ngân hàng đánh giá cao người hiểu tại sao nghiệp vụ cần idempotency, xử lý lỗi từng phần và phiên bản app cũ.`,
+      journeys: [
+        { title: 'Chi mở màn hình Home vào 07:30', persona: 'Chi, 32 tuổi, nhân viên văn phòng, dùng app ngân hàng hằng ngày.',
+          steps: [
+            { icon: '📱', screen: 'Màn hình Đăng nhập', text: 'Chi mở app, nhập mã PIN hoặc vân tay. App gửi JWT (mã xác thực ký số) đến Gateway.' },
+            { icon: '🚪', screen: 'Gateway', text: 'Gateway xác thực JWT và định tuyến request đến BFF mobile.' },
+            { icon: '⚡', screen: 'BFF', text: 'BFF gọi song song core banking, card system, transaction và promotion.' },
+            { icon: '🧩', screen: 'Gộp dữ liệu', text: 'BFF gộp kết quả, xử lý lỗi từng phần (khuyến mãi lỗi → null + degraded).' },
+            { icon: '✅', screen: 'Màn hình Home', text: 'Hiển thị số dư 15.250.000đ, thẻ Visa ****1234, 10 giao dịch gần nhất, ưu đãi.' },
+            { icon: '⏱️', screen: 'Một request', text: 'Thay vì gọi 5 API, app chỉ gọi một lần GET /bff/mobile/v1/home.' },
+          ] },
+        { title: 'Chi chuyển 2.000.000đ qua NAPAS', persona: 'Chi chuyển tiền cho bạn bè tại ngân hàng khác vào 12:45.',
+          steps: [
+            { icon: '💸', screen: 'Màn hình Chuyển tiền', text: 'Chi nhập số tài khoản, tên ngân hàng nhận và số tiền 2.000.000đ.' },
+            { icon: '🔍', screen: 'Xác nhận người nhận', text: 'Hệ thống hiển thị tên người nhận để Chi kiểm tra không chuyển nhầm.' },
+            { icon: '🔐', screen: 'Xác thực', text: 'Chi nhập mã OTP gửi qua SMS hoặc dùng smart OTP bằng vân tay/PIN.' },
+            { icon: '🏦', screen: 'Gửi qua NAPAS', text: 'BFF gửi yêu cầu chuyển tiền liên ngân hàng 24/7 qua NAPAS.' },
+            { icon: '⏳', screen: 'Chờ kết quả', text: 'NAPAS chuyển tiền, core banking cập nhật số dư của cả hai ngân hàng.' },
+            { icon: '✅', screen: 'Hoàn tất', text: 'App hiển thị biên lai: mã giao dịch, thời gian, số dư mới 13.250.000đ.' },
+          ] },
+        { title: 'Hệ thống khuyến mãi lỗi khi Chi mở Home', persona: 'Chi mở app vào 08:00, hệ thống khuyến mãi không phản hồi.',
+          steps: [
+            { icon: '📱', screen: 'Một request', text: 'Chi mở Home, app gọi một lần GET /bff/mobile/v1/home.' },
+            { icon: '⏰', screen: 'Hệ thống phụ chậm', text: 'Hệ thống khuyến mãi không phản hồi trong 300 ms.' },
+            { icon: '🛡️', screen: 'Ưu tiên quan trọng', text: 'BFF vẫn hiển thị số dư và thẻ, gán promotions = null, đánh dấu degraded.' },
+            { icon: '✅', screen: 'Vẫn dùng được', text: 'Chi xem số dư và chuyển tiền bình thường, chỉ phần ưu đãi bị thiếu tạm thời.' },
+          ] },
+      ],
+      diagrams: [
+        { title: 'Man hinh Home qua BFF (goi song song)', caption: 'Mot request thay vi nam', actors: ['App', 'Gateway', 'BFF', 'Core banking', 'Card', 'Promotion'], steps: [
+          { from: 0, to: 1, text: 'Goi 1 request Home' },
+          { from: 1, to: 2, text: 'Xac thuc JWT, route' },
+          { from: 2, to: 3, text: 'Lay so du' },
+          { from: 2, to: 4, text: 'Lay the' },
+          { from: 2, to: 5, text: 'Lay khuyen mai' },
+          { from: 3, to: 2, text: 'OK', reply: true },
+          { from: 4, to: 2, text: 'OK', reply: true },
+          { from: 5, to: 2, text: 'Loi, tra null', reply: true },
+          { note: 'Cac goi chay song song', over: [2, 5] },
+          { from: 2, to: 1, text: 'Gop va tra ve' },
+          { from: 1, to: 0, text: 'Tra ve 200', reply: true },
+        ] },
+        { title: 'Chuyen tien qua NAPAS', caption: 'Lien ngan hang 24/7', actors: ['App', 'BFF', 'Core', 'NAPAS'], steps: [
+          { from: 0, to: 1, text: 'Yeu cau chuyen tien' },
+          { from: 1, to: 2, text: 'Kiem tra so du' },
+          { from: 2, to: 1, text: 'OK', reply: true },
+          { from: 1, to: 3, text: 'Gui qua NAPAS' },
+          { from: 0, to: 3, text: 'Nhap OTP' },
+          { from: 3, to: 1, text: 'OK', reply: true },
+          { from: 1, to: 2, text: 'Cap nhat so du' },
+          { from: 2, to: 1, text: 'OK', reply: true },
+          { from: 1, to: 0, text: 'Thanh cong', reply: true },
+        ] },
+        { title: 'Core banking bao tri ban dem', caption: 'Xu ly bao tri', actors: ['App', 'Gateway', 'BFF', 'Core', 'Card'], steps: [
+          { from: 0, to: 1, text: 'Goi Home' },
+          { from: 1, to: 2, text: 'Route' },
+          { from: 2, to: 3, text: 'Goi core' },
+          { from: 3, to: 2, text: 'Bao tri', reply: true },
+          { from: 2, to: 4, text: 'Lay the' },
+          { from: 4, to: 2, text: 'OK', reply: true },
+          { note: 'Loi account => 503', over: [2, 3] },
+          { from: 2, to: 1, text: '503' },
+          { from: 1, to: 0, text: 'Thong bao', reply: true },
+        ] },
+      ],
+      glossary: [
+        { term: 'BFF (Backend For Frontend)', meaning: 'Dich vu trung gian chi danh cho mot ung dung phia tren (o day app mobile): gom du lieu tu nhieu he thong ngan hang ve mot phan hoi thay lai app phai goi nhieu API.' },
+        { term: 'API Gateway', meaning: 'Cung vao duy nhat cua he thong: kiem tra bao mat, gioi han so lan goi va dinh tuyen request den dich vu phu hop.' },
+        { term: 'Core banking', meaning: 'He thong lop cua ngan hang luu tat ca so du, giao dich va thong tin tai khoan khach hang.' },
+        { term: 'NAPAS', meaning: 'He thong thanh toan lien ngan hang tai Viet Nam, cho phep chuyen tien giua cac ngan hang khac nhau 24/7, ke ca cuoi tuan.' },
+        { term: 'JWT', meaning: 'Ma thong bao ky so duoc dung de xac thuc nguoi dung sau khi dang nhap, khong can gui mat khau moi lan goi API.' },
+        { term: 'OTP / smart OTP', meaning: 'Ma mot lan dung gui qua SMS (OTP) hoac xac thuc trong app bang van tay/PIN (smart OTP) de bao mat giao dich.' },
+        { term: 'Xu ly loi tung phan', meaning: 'Mot he thong phu bi loi khong lam hong ca man hinh: BFF hien thi phan con lai va danh dau phan bi thieu (degraded).' },
+        { term: 'Idempotency', meaning: 'Gui lai cung yeu cau nhieu lan chi xu ly mot lan, tranh tru tien hai lan khi mang gian doan va app tu gui lai.' },
+        { term: 'Phien ban API', meaning: 'Giu API cu (/v1) hoat dong cung API moi (/v2) de ban app cu khong bi loi khi nguoi dung chua cap nhat.' },
+        { term: 'Rate limit', meaning: 'Gioi han so lan goi API cua mot nguoi trong mot khoang thoi gian, nan chanh hanh dung lam dung hoac tan cong.' },
+        { term: 'Degraded', meaning: 'Che do hoat dung giam trong: mot so tinh nang tam thoi khong co nhung app van chay duoc phan quan trong.' },
+        { term: 'Trace ID', meaning: 'Ma rieng gan ke moi request de nhan vien ho tro truy vet request di qua gateway, BFF va cac he thong phia sau.' },
+      ],
+    },
+    pitch: `Chi, 32 tuổi, mở app ngân hàng buổi sáng chỉ muốn xem số dư, thẻ, giao dịch gần nhất và ưu đãi trong một màn hình. Thay vì app gọi 5 hệ thống riêng biệt gây chậm, BFF gom dữ liệu từ core banking, card system, transaction và promotion thành một request GET /bff/mobile/v1/home, giúp Home tải nhanh trên 4G và vẫn hiển thị phần quan trọng khi hệ thống khuyến mãi bị lỗi. BFF cũng xử lý đăng nhập, mã OTP/smart OTP, chuyển tiền liên ngân hàng 24/7 qua NAPAS và giữ API cũ hoạt động cho bản app cũ. Đây là dự án để bạn kể với interviewer ngân hàng, chứng minh bạn hiểu nghiệp vụ ngân hàng thực tế và cách thiết kế BFF bảo đảm tốc độ, bảo mật và độ tin cậy.`,
+        requirements: `### User story
+1. **Home trong 1 lần gọi:** Lúc 07:30, Chi mở màn hình Home và muốn thấy tài khoản thanh toán (số dư 15.250.000đ), thẻ Visa ****1234, 10 giao dịch gần nhất, ưu đãi hôm nay.
+   Chấp nhận: app gọi đúng 1 request {{GET /bff/mobile/v1/home}}; p95 tại gateway < 300 ms khi các hệ thống phía sau khỏe. BFF gọi dữ liệu song song thay vì tuần tự.
+2. **Lỗi từng phần:** Hệ thống khuyến mãi tạm thời lỗi lúc Chi mở app vào 08:00.
+   Chấp nhận: vẫn trả HTTP 200, promotions = null, field "promotions" nằm trong mảng {{degraded}}; số dư, thẻ, giao dịch vẫn hiển thị đầy đủ. Nếu core banking chết thì trả 503 với thông báo rõ ràng, không trả trang thiếu số dư.
+3. **Đăng nhập OIDC:** Chi đăng nhập app bằng Authorization Code + PKCE qua Keycloak.
+   Chấp nhận: token sai issuer/audience hoặc hết hạn trả 401; thiếu scope {{accounts:read}} trả 403; user A không xem được tài khoản của B (trả 404, không lộ sự tồn tại).
+4. **Phân trang giao dịch:** Chi cuộn xem lịch sử giao dịch cũ hơn vào 20:00.
+   Chấp nhận: dùng cursor mờ (opaque), limit mặc định 20, tối đa 50; giao dịch mới phát sinh không làm trùng hay sót dòng.
+5. **Tương thích phiên bản app cũ:** Bản app cũ vẫn dùng được khi backend ra v2 thay đổi cấu trúc trường balance.
+   Chấp nhận: v1 được hỗ trợ ít nhất 6 tháng sau khi v2 ra, response v1 có header {{Sunset}}; endpoint config cho biết app có cần cập nhật bắt buộc không.
+6. **Rate limit:** Một user gọi quá 20 req/giây.
+   Chấp nhận: gateway trả 429; user khác không bị ảnh hưởng.
+7. **Cache đúng chỗ:** Danh sách khuyến mãi/ngân hàng có thể cache ngắn hạn.
+   Chấp nhận: số dư và giao dịch không bao giờ lấy từ cache chung.
+8. **Truy vết:** Nhân viên hỗ trợ cần trace một request lỗi của khách hàng vào 14:30.
+   Chấp nhận: tìm được trace qua gateway, BFF và downstream nhờ request id/trace id.
 
 ### Phi chức năng
 - 300 RPS trên laptop (gateway, BFF, 4 service giả lập); p95 end-to-end < 300 ms, p99 < 800 ms; deadline tổng 800 ms.
@@ -3152,9 +3494,9 @@ Tôi dùng cả hai: lớp 2 là lưới an toàn.
 - Dependency optional lỗi: 0 lỗi 5xx; contract test chạy trong CI chặn thay đổi phá vỡ.
 
 ### Ngoài phạm vi
-- Không kết nối core banking thật (4 service là WireMock/Spring Boot giả lập), không tự viết IdP (dùng Keycloak).
-- Không làm luồng chuyển tiền (BFF chỉ đọc), không GraphQL, không web app.`,
-    architecture: `~~~text
+- Không kết nối core banking thật, không tự viết IdP (dùng Keycloak).
+- Không làm luồng chuyển tiền trong task này (chỉ mô tả nghiệp vụ), không GraphQL, không web app.`,
+architecture: `~~~text
 Mobile --HTTPS--> Spring Cloud Gateway (xác thực JWT, rate limit Redis, route, request id)
                     -> BFF mobile (Spring Boot 3, Java 21 virtual threads)
                          -> account-service      (bắt buộc, timeout 300 ms)
