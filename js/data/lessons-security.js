@@ -1939,5 +1939,975 @@ Lỗi hay gặp: kiểm tenant **sau** khi đã trả true cho OWNER (OWNER côn
   related: ['security-008', 'security-024', 'security-020'],
   tags: ['authorization', 'RBAC', 'IDOR', 'BOLA', 'deny by default'],
 },
+{
+  id: 'lesson-security-006',
+  track: 'security',
+  order: 6,
+  title: 'OAuth2 Authorization Code + PKCE: vì sao app không giữ được client_secret và code_verifier bịt lỗ hổng thế nào',
+  level: 'senior',
+  minutes: 45,
+  goals: [
+    'Phân biệt confidential client và public client; giải thích được vì sao SPA và app mobile không thể giữ {{client_secret}}',
+    'Sinh đúng {{code_verifier}} (43–128 ký tự) và {{code_challenge}} = BASE64URL(SHA-256(verifier)) không padding, chỉ bằng JDK thuần',
+    'Viết phía authorization server: code chỉ dùng một lần, có hạn dùng, verifier sai thì bị từ chối và bị vô hiệu luôn',
+    'Giải thích {{state}} chống gì, vì sao nó không thay được PKCE, và PKCE không chữa được những rủi ro nào',
+  ],
+  body: `### Bốn vai trong OAuth2 (định nghĩa từ đầu, vì mọi thứ sau phụ thuộc vào nó)
+- **Resource Owner**: chính là người dùng — chủ nhân của dữ liệu.
+- **Client**: ứng dụng muốn đọc dữ liệu **nhân danh** người dùng. Đó có thể là SPA viết bằng React/Vue chạy trong trình duyệt, app iOS/Android, hoặc một backend chạy job đêm.
+- **Authorization Server (AS)**: nơi người ta thực sự đăng nhập và bấm "Đồng ý cho app". Ví dụ: Google, Keycloak, Spring Authorization Server, Auth0. AS phát **authorization code** (một tờ vé ngắn hạn) rồi đổi tờ vé đó lấy **access token**.
+- **Resource Server (RS)**: API chứa dữ liệu — thường là chính Spring Boot app của bạn. RS không biết mật khẩu ai, chỉ kiểm tra access token gửi trong header **Authorization** rồi trả lời "token này có scope đọc được đơn hàng không".
+
+Ví dụ đời thường: app "Tính calorie" muốn đọc thực đơn trong Google Calendar của bạn. Đưa mật khẩu Google cho app giống đưa chìa khoá nhà cho người lạ: họ giữ vĩnh viễn, mở được mọi phòng (mail, Drive, ảnh), và bạn không thu hồi riêng cái app đó được. OAuth giải quyết bằng cách để **Google tự tay** phát cho app một tấm vé chỉ mở được cửa calendar và hết hạn sau một giờ.
+
+| Loại client | Chạy ở đâu | Giữ được secret? | Ví dụ |
+|---|---|---|---|
+| **Confidential client** | Server **của bạn** (backend, batch job) | Có — secret nằm trong môi trường do bạn kiểm soát | Spring Boot làm BFF, service-to-service |
+| **Public client** | Máy **của người dùng** | **Không bao giờ** | SPA trong trình duyệt, app mobile, CLI, smart TV |
+
+### Vì sao SPA và mobile không thể giữ client_secret
+Với SPA, toàn bộ JavaScript đã được tải về máy người dùng để chạy. Nghĩa là chỉ cần F12 → tab Sources (hoặc Ctrl+U xem source) là đọc được mọi chuỗi trong bundle — kể cả chuỗi bạn gọi là "secret" và đã xoá khỏi repo từ đời nào. Với app mobile còn tệ hơn: file APK/IPA lấy được từ store, giải nén bằng công cụ phổ biến, chạy {{strings}} là thấy. Mã hoá obfuscate chỉ làm khó đọc, không làm khó **trích xuất**: thuật toán chạy trên máy kẻ tấn công thì kẻ tấn công đọc được thuật toán.
+
+Vậy nên {{client_secret}} của public client không phải secret, và chuẩn OAuth hiện hành (RFC 9700, OAuth 2.1) **bỏ luôn** việc dùng secret ở đây; {{client_id}} chỉ là định danh công khai, giống tên miền, không chứng minh được thân phận người gọi. Hệ quả: khi app quay lại đổi code lấy token, AS không có cách nào biết "đây có phải đúng cái app đã bắt đầu luồng không". Đó chính là chỗ PKCE lấp vào.
+
+### Từng bước của Authorization Code flow có PKCE
+~~~seq
+title: Authorization Code + PKCE cho SPA
+actors: App | AS | RS
+App -> App: tao code_verifier ngau nhien
+App -> AS: /authorize?code_challenge&state
+AS --> App: man hinh dang nhap va dong y
+AS --> App: redirect ?code&state
+App -> AS: /token (code + code_verifier)
+App -> App: kiem tra state khop
+AS -> AS: SHA256(verifier) == challenge?
+AS --> App: access token + refresh token
+App -> RS: GET /api/orders (Bearer token)
+RS --> App: du lieu don hang
+note App..RS: code chi dung duoc 1 lan, TTL vai chuc giay
+~~~
+
+**Bước 1.** App sinh {{code_verifier}} ngẫu nhiên, giữ trong bộ nhớ phiên làm việc ({{sessionStorage}}), rồi chuyển hướng trình duyệt tới AS:
+
+~~~text
+GET https://auth.example.com/authorize
+  ?response_type=code
+  &client_id=spa-calorie
+  &redirect_uri=https://app.example.com/callback
+  &scope=openid%20profile
+  &state=7f3Aq0Kz9Xk2mQpR
+  &code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM
+  &code_challenge_method=S256
+~~~
+
+**Bước 2.** Người dùng đăng nhập **trên màn hình của AS**. App không bao giờ nhìn thấy mật khẩu — đó là toàn bộ ý nghĩa của "uỷ quyền thay vì trao khoá".
+**Bước 3.** AS redirect về {{redirect_uri}} kèm {{?code=...&state=...}}. Chú ý: code đi qua **trình duyệt**, tức là qua địa chỉ, qua lịch sử, qua log.
+**Bước 4.** App POST tới {{/token}} với {{code}}, {{code_verifier}}, {{client_id}} (không secret):
+
+~~~text
+POST /oauth2/token HTTP/1.1
+Host: auth.example.com
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=authorization_code
+&code=SlaxwqT3vN9dLk2Yh
+&redirect_uri=https://app.example.com/callback
+&client_id=spa-calorie
+&code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk
+~~~
+
+**Bước 5.** AS kiểm tra {{SHA-256(code_verifier)}} có đúng bằng {{code_challenge}} đã lưu ở Bước 1 không, rồi mới phát access token (+ refresh token).
+**Bước 6.** App gọi RS với header **Authorization: Bearer**. RS không cần hỏi AS mỗi câu nếu token là JWT tự chứa (kiểm tra chữ ký + {{exp}} + {{aud}}); khi cần thu hồi tức thời thì dùng token opaque + introspection.
+
+### Code bị đánh cắp bằng cách nào — bài học khiến PKCE ra đời
+Kẻ tấn công chỉ cần nhìn thấy {{code}} là đổi được token, nếu không có PKCE:
+- **Mobile, custom URL scheme**: app đăng ký {{myapp://oauth/callback}}. Hệ điều hành mở **app nào đăng ký scheme đó**, không quan tâm ai sở hữu. Một app độc hại cài cùng scheme nhận được code nguyên văn.
+- **SPA**: code xuất hiện trên thanh địa chỉ → lọt vào lịch sử trình duyệt, vào header **Referer** nếu trang callback lập tức tải tài nguyên bên thứ ba, vào log của reverse proxy/CDN, vào extension đọc DOM, và vào cả screenshot khi ai đó "cho tôi xin cái link".
+- Người dùng copy đường link "để gửi cho bộ phận hỗ trợ", hoặc trình duyệt tự điền lại URL cũ có chứa code.
+
+Đây gọi là **authorization code interception attack**. Cũng vì kiểu rò này mà **Implicit flow** bị khai tử: nó trả thẳng access token qua phần sau dấu # của URL — token hiện nguyên trên thanh địa chỉ, nằm trong lịch sử, mọi script trên trang đọc được, và còn không có refresh token nên cứ 5 phút lại phải chạy lại luồng login.
+
+### PKCE: một mật khẩu chỉ người tạo ra nó biết, và không đi qua kênh rò rỉ
+Nguyên lý trong một câu: **bước lộ thì gửi hash, bước kín thì gửi nguyên bản**.
+- {{code_verifier}} là chuỗi ngẫu nhiên 43–128 ký tự lấy từ bảng ký tự *unreserved* {{A-Za-z0-9-._~}} (tập ký tự an toàn trong URI, không cần escape). Thực tế người ta lấy đúng 32 byte ngẫu nhiên từ {{SecureRandom}} rồi mã base64url không padding → ra 43 ký tự, đủ chuẩn.
+- {{code_challenge}} = BASE64URL(**không padding**) của SHA-256 tính trên byte ASCII của verifier.
+- Challenge đi trong request {{/authorize}} (kênh rò rỉ): attacker thấy challenge cũng vô ích, vì SHA-256 một chiều — không suy ngược verifier được.
+- Verifier đi trong **POST body** của {{/token}} qua TLS: không vào URL, không vào history, không vào log proxy, không vào Referer. Attacker có code trong tay vẫn thiếu mảnh cuối.
+
+Test vector chính thức trong Phụ lục B của RFC 7636 — hãy tự tính lại một lần để tin:
+
+| | Giá trị |
+|---|---|
+| {{code_verifier}} | dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk |
+| {{code_challenge}} | E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM |
+
+{{code_challenge_method=plain}} nghĩa là gửi verifier thô ngay ở {{/authorize}}: kẻ đứng giữa (hoặc log proxy) đọc verifier từ bước 1, PKCE vô dụng. Chuẩn mới chỉ cho {{S256}}; AS phải **từ chối** mọi request dùng {{plain}} hoặc thiếu {{code_challenge_method}}.
+
+Điều PKCE chứng minh được chỉ là: "kẻ đang đổi code là kẻ đã bắt đầu phiên này". Nó **không** xác thực thân phận client, không chứng minh app là app thật.
+
+### state: một lớp chống CSRF riêng, đừng nhầm với PKCE
+Attacker tự login bằng **tài khoản của hắn**, lấy một code hợp lệ, rồi nhét URL callback chứa code đó vào trình duyệt nạn nhân (một link chat, một trang ảnh). Nạn nhân click → phiên của nạn nhân gắn với tài khoản của attacker → mọi thứ nạn nhân gõ (đơn hàng, ảnh, ghi chú) rơi vào tài khoản attacker, và attacker đọc được chúng. Đây là **login CSRF**, và PKCE không chống được vì code hoàn toàn hợp lệ, verifier cũng đúng.
+Cách chống: app sinh {{state}} ngẫu nhiên, gắn với phiên làm việc hiện tại của chính trình duyệt đó, gửi lên AS, nhận về ở callback và so khớp với giá trị đã lưu. AS nên giữ state như một tham số opaque, không diễn giải nó.
+({{nonce}} là người anh em cùng ý tưởng nhưng dùng cho {{id_token}} của OIDC, chống replay token.)
+
+### PKCE không chữa được gì — và cái gì chữa
+| Rủi ro | Biện pháp đúng |
+|---|---|
+| Code bị chặn trên đường về | PKCE (S256) + code TTL ngắn, dùng một lần |
+| Code hợp lệ của người khác bị nhét vào trình duyệt của bạn | {{state}} |
+| Token bị đọc bằng XSS (token nằm trong {{localStorage}}) | Mẫu **BFF**: backend giữ token, SPA chỉ nhận cookie {{HttpOnly}} {{SameSite}} |
+| Token lọt ra ngoài rồi bị dùng lại | Refresh token **rotation** (dùng một lần, phát hiện tái sử dụng thì thu hồi cả chuỗi) + sender-constraining (DPoP, mTLS) |
+| App giả mạo đứng tên {{client_id}} | App Attest / Play Integrity, và AS bắt buộc PKCE |
+| id_token bị replay | {{nonce}} + kiểm tra {{aud}}, {{iss}}, {{exp}} |
+
+### Viết bằng Java thuần
+Chỉ cần ba class JDK: {{SecureRandom}}, {{MessageDigest}}, {{java.util.Base64}}:
+
+~~~java
+byte[] raw = new byte[32];                                  // 256 bit entropy
+new SecureRandom().nextBytes(raw);                          // KHONG dung Math.random: seed doan duoc
+String verifier = Base64.getUrlEncoder().withoutPadding().encodeToString(raw);   // 43 ky tu, A-Za-z0-9-_
+
+MessageDigest md = MessageDigest.getInstance("SHA-256");
+String challenge = Base64.getUrlEncoder().withoutPadding()  // withoutPadding loai bo dau "="
+    .encodeToString(md.digest(verifier.getBytes(StandardCharsets.US_ASCII)));    // verifier la ASCII
+~~~
+
+Trong Spring, hai mảnh config hay bị hỏi:
+- AS bắt buộc PKCE: {{ClientSettings.builder().requireProofKey(true).build()}} (Spring Authorization Server), hoặc đặt PKCE method {{S256}} cho client trong Keycloak.
+- Spring Security **đóng vai client**: {{OAuth2AuthorizationRequestCustomizers.withPkce()}} gắn vào {{DefaultOAuth2AuthorizationRequestResolver}} để tự sinh verifier và gửi S256.
+
+### Bẫy production
+- {{redirect_uri}} kiểm bằng {{startsWith}} hay {{matches}}: attacker đăng ký {{https://app.example.com.callback.evil.tld}} và nhận code. Phải so **chính xác từng ký tự** với danh sách đã đăng ký.
+- AS chỉ kiểm tra xem request có {{code_challenge}}, không đối chiếu verifier khi đổi code ("cho xong request") — PKCE biến thành trang trí.
+- Dùng lại một verifier cho nhiều lần đăng nhập, hoặc ghi verifier vào log/URL: mất tác dụng ngay.
+- Trả code qua GET tới {{/token}}, hoặc đặt verifier trong query string: verifier vào access log.
+- Code TTL hàng phút tới hàng giờ, và đổi được nhiều lần: phải một lần dùng, TTL 15–60 giây, và gắn chặt với {{client_id}} + {{redirect_uri}} đã dùng ở bước authorize.
+- Khi verifier **sai**, RFC khuyên vô hiệu mọi code đang chờ của client đó (chứng tỏ có kẻ đang đoán), chứ không cho thử tiếp.
+- SPA để access token + refresh token trong JS storage: một XSS là mất tất cả; cân nhắc BFF thay vì cố "che" secret.
+
+### Liên hệ phỏng vấn
+Câu hỏi điển hình: "SPA đăng nhập Google thế nào mà không cần client_secret?", "PKCE chống attack cụ thể nào?", "state khác nonce ở chỗ nào?", "PKCE có thay được refresh token rotation không?". Trả lời được bốn câu đó với đúng tên cuộc tấn công (code interception, login CSRF) và đúng dải ký tự của verifier là đã hơn phần lớn ứng viên. Làm bài tập dưới đây để sở hữu luôn phần cơ chế: tự sinh verifier, tự tính challenge khớp test vector của RFC, và tự viết phía server từ chối code dùng rồi / hết hạn / verifier sai.`,
+  exercises: [
+    {
+      title: 'Viết Pkce và AuthServerSim: sinh verifier, tính challenge, đổi code lấy token an toàn',
+      prompt: `Hai class cần hoàn thiện ({{Exchange}} đã viết sẵn, chỉ dùng).
+
+**{{Pkce}}**
+- {{newVerifier(random)}}: lấy {{VERIFIER_BYTES}} (32) byte từ {{SecureRandom}} đã truyền vào, trả về base64url **không padding** của chúng → đúng 43 ký tự, thuộc bảng unreserved.
+- {{challenge(verifier)}}: SHA-256 tính trên byte **US-ASCII** của verifier, trả base64url không padding của digest. {{NoSuchAlgorithmException}} bọc thành {{IllegalStateException}}.
+
+**{{AuthServerSim}}** — phía authorization server, đồng hồ **truyền vào** để test tất định:
+- {{issueCode(codeChallenge, issuedAtEpochSec)}}: sinh {{code}} từ 16 byte ngẫu nhiên base64url (không padding), lưu {{code -> (challenge, issuedAt, used=false)}} trong map, trả về {{code}}.
+- {{exchange(code, codeVerifier, nowEpochSec)}} trả về {{Exchange}}, kiểm tra theo **đúng thứ tự** sau:
+1. {{code}} null hoặc không có trong map → {{Exchange.failed("unknown_code")}}.
+2. code đã từng được dùng → {{failed("redeemed")}}.
+3. {{nowEpochSec - issuedAt >= CODE_TTL_SECONDS}} → {{failed("expired")}} (giây cuối cùng trước hạn vẫn **phải** thành công).
+4. verifier hỏng bất kỳ kiểu nào → {{failed("invalid_grant")}} **và đánh dấu code đã dùng** (kẻ đang đoán verifier không được thử lần hai). Hỏng gồm: {{null}}, độ dài ngoài 43..128, có ký tự ngoài bảng {{A-Za-z0-9-._~}}, hoặc SHA-256(verifier) không khớp challenge đã lưu. So khớp phải dùng {{MessageDigest.isEqual}} trên byte, không dùng {{equals}}.
+5. Mọi thứ ổn → đánh dấu {{used = true}}, trả {{Exchange.granted("at-" + code)}}.
+
+Chỉ JDK 17, không thư viện ngoài, không dùng thời gian thực.`,
+      starter: `import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.Map;
+
+final class Pkce {
+    static final int VERIFIER_BYTES = 32;
+
+    static String newVerifier(SecureRandom random) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static String challenge(String verifier) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+
+final class Exchange {
+    final boolean ok;
+    final String accessToken;
+    final String error;
+
+    private Exchange(boolean ok, String accessToken, String error) {
+        this.ok = ok;
+        this.accessToken = accessToken;
+        this.error = error;
+    }
+
+    static Exchange granted(String accessToken) { return new Exchange(true, accessToken, null); }
+
+    static Exchange failed(String error) { return new Exchange(false, null, error); }
+}
+
+final class AuthServerSim {
+    static final int CODE_TTL_SECONDS = 600;
+    static final String UNRESERVED =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+
+    private static final class Pending {
+        final String challenge;
+        final long issuedAt;
+        boolean used;
+
+        Pending(String challenge, long issuedAt) {
+            this.challenge = challenge;
+            this.issuedAt = issuedAt;
+        }
+    }
+
+    private final Map<String, Pending> codes = new HashMap<>();
+    private final SecureRandom random;
+
+    AuthServerSim(SecureRandom random) {
+        this.random = random;
+    }
+
+    String issueCode(String codeChallenge, long issuedAtEpochSec) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    Exchange exchange(String code, String codeVerifier, long nowEpochSec) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    private static boolean wellFormed(String verifier) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
+import java.util.Base64;
+
+public class Main {
+    interface Case { void run() throws Exception; }
+    static int passed = 0, total = 0;
+    static void check(String name, Case c) {
+        total++;
+        try { c.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static final String VERIFIER_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+    static final String URLSAFE_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    static boolean onlyIn(String s, String alphabet) {
+        if (s.isEmpty()) return false;
+        for (int i = 0; i < s.length(); i++) if (alphabet.indexOf(s.charAt(i)) < 0) return false;
+        return true;
+    }
+    static String sha256url(String verifier) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            return Base64.getUrlEncoder().withoutPadding().encodeToString(md.digest(verifier.getBytes(StandardCharsets.US_ASCII)));
+        } catch (Exception e) { throw new IllegalStateException(e); }
+    }
+    public static void main(String[] args) {
+        check("newVerifier is 43 url-safe chars and varies", () -> {
+            String v1 = Pkce.newVerifier(new SecureRandom());
+            String v2 = Pkce.newVerifier(new SecureRandom());
+            eq(43, v1.length());
+            if (!onlyIn(v1, VERIFIER_CHARS)) throw new AssertionError("ky tu ngoai bang unreserved: " + v1);
+            if (v1.equals(v2)) throw new AssertionError("hai verifier trung nhau");
+        });
+        check("challenge equals the RFC 7636 appendix B vector", () ->
+            eq("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", Pkce.challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk")));
+        check("challenge is base64url without padding and deterministic", () -> {
+            String v = Pkce.newVerifier(new SecureRandom());
+            String c1 = Pkce.challenge(v);
+            eq(43, c1.length());
+            if (c1.indexOf('=') >= 0) throw new AssertionError("challenge con padding: " + c1);
+            eq(c1, Pkce.challenge(v));
+            eq(c1, sha256url(v));
+            if (c1.equals(Pkce.challenge(v + "x"))) throw new AssertionError("verifier khac ma challenge giong nhau");
+        });
+        check("issueCode returns distinct unguessable codes", () -> {
+            AuthServerSim s = new AuthServerSim(new SecureRandom());
+            String challenge = Pkce.challenge(Pkce.newVerifier(new SecureRandom()));
+            String a = s.issueCode(challenge, 1000);
+            String b = s.issueCode(challenge, 1000);
+            if (a.length() < 22) throw new AssertionError("code qua ngan de doan: " + a.length());
+            if (!onlyIn(a, URLSAFE_CHARS)) throw new AssertionError("code khong phai base64url: " + a);
+            if (a.equals(b)) throw new AssertionError("hai code trung nhau");
+            if (a.equals(challenge)) throw new AssertionError("code trong nhu challenge");
+        });
+        check("happy path redeems once with the matching verifier", () -> {
+            SecureRandom rnd = new SecureRandom();
+            AuthServerSim s = new AuthServerSim(rnd);
+            String verifier = Pkce.newVerifier(rnd);
+            String code = s.issueCode(Pkce.challenge(verifier), 1000);
+            Exchange r = s.exchange(code, verifier, 1001);
+            if (!r.ok) throw new AssertionError("dung verifier ma bi tu choi: " + r.error);
+            eq("at-" + code, r.accessToken);
+            eq(null, r.error);
+        });
+        check("code is single use", () -> {
+            SecureRandom rnd = new SecureRandom();
+            AuthServerSim s = new AuthServerSim(rnd);
+            String verifier = Pkce.newVerifier(rnd);
+            String code = s.issueCode(Pkce.challenge(verifier), 1000);
+            if (!s.exchange(code, verifier, 1000).ok) throw new AssertionError("lan dau bi tu choi");
+            Exchange again = s.exchange(code, verifier, 1001);
+            if (again.ok) throw new AssertionError("code dung lan hai ma thanh cong");
+            eq("redeemed", again.error);
+        });
+        check("wrong verifier is rejected and burns the code", () -> {
+            SecureRandom rnd = new SecureRandom();
+            AuthServerSim s = new AuthServerSim(rnd);
+            String verifier = Pkce.newVerifier(rnd);
+            String code = s.issueCode(Pkce.challenge(verifier), 1000);
+            Exchange bad = s.exchange(code, Pkce.newVerifier(rnd), 1001);
+            if (bad.ok) throw new AssertionError("verifier sai ma duoc cap token");
+            eq("invalid_grant", bad.error);
+            if (s.exchange(code, verifier, 1002).ok) throw new AssertionError("verifier sai ma code van dung duoc sau do");
+        });
+        check("expired code rejected, last second before TTL still works", () -> {
+            SecureRandom rnd = new SecureRandom();
+            AuthServerSim s = new AuthServerSim(rnd);
+            String verifier = Pkce.newVerifier(rnd);
+            String code = s.issueCode(Pkce.challenge(verifier), 1000);
+            Exchange late = s.exchange(code, verifier, 1000 + AuthServerSim.CODE_TTL_SECONDS);
+            if (late.ok) throw new AssertionError("code het han ma thanh cong");
+            eq("expired", late.error);
+            String code2 = s.issueCode(Pkce.challenge(verifier), 2000);
+            if (!s.exchange(code2, verifier, 2000 + AuthServerSim.CODE_TTL_SECONDS - 1).ok) throw new AssertionError("giay cuoi cua TTL phai con dung duoc");
+        });
+        check("unknown or null code is rejected without touching storage", () -> {
+            SecureRandom rnd = new SecureRandom();
+            AuthServerSim s = new AuthServerSim(rnd);
+            String verifier = Pkce.newVerifier(rnd);
+            String code = s.issueCode(Pkce.challenge(verifier), 1000);
+            eq("unknown_code", s.exchange("khong-ton-tai", verifier, 1001).error);
+            eq("unknown_code", s.exchange(null, verifier, 1001).error);
+            if (!s.exchange(code, verifier, 1002).ok) throw new AssertionError("exchange that fail lam code that bi an");
+        });
+        check("verifier must be well formed even if its hash matches", () -> {
+            SecureRandom rnd = new SecureRandom();
+            AuthServerSim s = new AuthServerSim(rnd);
+            String tooShort = "abc123";
+            Exchange shortR = s.exchange(s.issueCode(Pkce.challenge(tooShort), 1000), tooShort, 1001);
+            if (shortR.ok) throw new AssertionError("verifier 6 ky tu ma van duoc cap token");
+            eq("invalid_grant", shortR.error);
+            String junk = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ";
+            Exchange r = s.exchange(s.issueCode(Pkce.challenge(junk), 1000), junk, 1001);
+            if (r.ok) throw new AssertionError("verifier co dau cach bi chap nhan");
+            eq("invalid_grant", r.error);
+            eq("invalid_grant", s.exchange(s.issueCode(Pkce.challenge(tooShort), 1000), null, 1001).error);
+            String longOk = "a".repeat(128);
+            if (!s.exchange(s.issueCode(Pkce.challenge(longOk), 1000), longOk, 1001).ok) throw new AssertionError("verifier 128 ky tu hop le bi tu choi");
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.Map;
+
+final class Pkce {
+    static final int VERIFIER_BYTES = 32;
+
+    static String newVerifier(SecureRandom random) {
+        byte[] raw = new byte[VERIFIER_BYTES];
+        random.nextBytes(raw);                                  // entropy that, khong phai Math.random
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(raw);   // 43 ky tu
+    }
+
+    static String challenge(String verifier) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            return Base64.getUrlEncoder().withoutPadding()      // base64url + bo padding = dung RFC 7636
+                .encodeToString(md.digest(verifier.getBytes(StandardCharsets.US_ASCII)));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 phai co trong moi JVM", e);
+        }
+    }
+}
+
+final class Exchange {
+    final boolean ok;
+    final String accessToken;
+    final String error;
+
+    private Exchange(boolean ok, String accessToken, String error) {
+        this.ok = ok;
+        this.accessToken = accessToken;
+        this.error = error;
+    }
+
+    static Exchange granted(String accessToken) { return new Exchange(true, accessToken, null); }
+
+    static Exchange failed(String error) { return new Exchange(false, null, error); }
+}
+
+final class AuthServerSim {
+    static final int CODE_TTL_SECONDS = 600;
+    static final String UNRESERVED =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+
+    private static final class Pending {
+        final String challenge;
+        final long issuedAt;
+        boolean used;
+
+        Pending(String challenge, long issuedAt) {
+            this.challenge = challenge;
+            this.issuedAt = issuedAt;
+        }
+    }
+
+    private final Map<String, Pending> codes = new HashMap<>();
+    private final SecureRandom random;
+
+    AuthServerSim(SecureRandom random) {
+        this.random = random;
+    }
+
+    String issueCode(String codeChallenge, long issuedAtEpochSec) {
+        byte[] raw = new byte[16];                              // >= 128 bit de code khong doan duoc
+        random.nextBytes(raw);
+        String code = Base64.getUrlEncoder().withoutPadding().encodeToString(raw);
+        codes.put(code, new Pending(codeChallenge, issuedAtEpochSec));
+        return code;                                            // real server also binds client_id + redirect_uri
+    }
+
+    Exchange exchange(String code, String codeVerifier, long nowEpochSec) {
+        Pending p = code == null ? null : codes.get(code);
+        if (p == null) return Exchange.failed("unknown_code");
+        if (p.used) return Exchange.failed("redeemed");
+        if (nowEpochSec - p.issuedAt >= CODE_TTL_SECONDS) return Exchange.failed("expired");
+
+        boolean valid = wellFormed(codeVerifier)
+            && codeVerifier.length() >= 43 && codeVerifier.length() <= 128;
+        if (valid) {
+            byte[] expected = p.challenge == null ? new byte[0] : p.challenge.getBytes(StandardCharsets.US_ASCII);
+            byte[] actual = Pkce.challenge(codeVerifier).getBytes(StandardCharsets.US_ASCII);
+            valid = MessageDigest.isEqual(expected, actual);     // constant-time, nhu so sanh hash mat khau
+        }
+        if (!valid) {
+            p.used = true;                                       // ke dang doan verifier: vo hieu hoa code ngay
+            return Exchange.failed("invalid_grant");
+        }
+        p.used = true;                                           // code chi mot lan
+        return Exchange.granted("at-" + code);
+    }
+
+    private static boolean wellFormed(String verifier) {
+        if (verifier == null) return false;
+        int n = verifier.length();
+        if (n < 43 || n > 128) return false;                     // RFC 7636: 43..128 ky tu
+        for (int i = 0; i < n; i++) {
+            if (AuthServerSim.UNRESERVED.indexOf(verifier.charAt(i)) < 0) return false;
+        }
+        return true;
+    }
+}`,
+      hints: [
+        'Base64url **không padding** là {{Base64.getUrlEncoder().withoutPadding()}}; {{Base64.getEncoder()}} chuẩn sẽ thêm dấu = và dùng ký tự + / nên sai chuẩn PKCE.',
+        '32 byte base64url ra đúng 43 ký tự (10 nhóm 3 byte = 40 ký tự, nhóm 2 byte dư cuối = 3 ký tự) — đó là lý do dải verifier bắt đầu từ 43.',
+        'Trong {{exchange}}, đừng "sửa lỗi" bằng cách so chuỗi bằng {{equals}}; convert cả challenge đã lưu và challenge tính lại sang byte rồi dùng {{MessageDigest.isEqual}}.',
+        'Đánh dấu {{used = true}} ở **cả nhánh verifier sai**: RFC 9700 khuyên vô hiệu code khi bằng chứng PKCE không khớp, vì đó là dấu hiệu đang bị đoán.',
+      ],
+      explain: `Ba chỗ dễ sai nhất khi viết tay.
+
+**Một là base64 thường thay vì base64url.** Digest SHA-256 có 32 byte; mã hoá base64 chuẩn sinh ra các ký tự {{+}} và {{/}} và có thể thêm {{=}}. Cả ba đều là ký tự phải escape khi đi trong query string, nên thực tế client hay bị hỏng ở đây. Chuẩn RFC 7636 qui định base64url **không padding**; vì thế challenge luôn dài đúng 43 ký tự (SHA-256 32 byte không bao giờ cần padding hơn 1 ký tự và url-safe alphabet không có {{+}} {{/}}). Test vector trong RFC chính là "gương" để soi implementation của bạn.
+
+**Hai là chỉ kiểm challenge mà quên kiểm verifier.** Nếu server chỉ so {{SHA-256(verifier)}} với challenge, một verifier 6 ký tự vẫn lọt, làm giảm entropy của cả cơ chế. Dải 43–128 và bảng ký tự unreserved là **một phần của chuẩn**, server phải kiểm — đó là lý do bài có case "verifier quá ngắn nhưng hash khớp vẫn phải bị từ chối".
+
+**Ba là thứ tự kiểm tra và hậu quả của nó.** Nếu bạn kiểm hết hạn sau khi kiểm verifier, attacker dò verifier được trên code đã chết. Nếu bạn không đánh dấu code đã dùng khi verifier sai, cùng một code bị thử nghiệm hàng nghìn lần. Ngược lại, nếu bạn xoá hẳn entry khi thất bại, client chính chủ quay lại lần thứ hai sẽ nhận "unknown_code" thay vì "redeemed" và bạn mất luôn tín hiệu để cảnh báo. Bài này giữ entry + đánh dấu dùng, nên cả hai bên đều có thông tin đủ để xử lý.
+
+Còn một điều nên nói rõ khi phỏng vấn: server thật **không phân biệt lý do từ chối với client** (RFC 6749 chỉ có {{invalid_grant}}); ta tách "unknown_code"/"expired"/"redeemed" trong bài để test và để ghi log nội bộ, nhưng response trả về cho app nên gộp lại để không cho attacker biết code có tồn tại hay không.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Vì sao SPA và app mobile dùng PKCE thay vì {{client_secret}}?',
+      options: [
+        'Vì PKCE mạnh hơn secret: verifier 43 ký tự dài hơn secret trung bình',
+        'Vì code của SPA/mobile chạy trên máy người dùng, secret trích xuất được nên không còn là secret; PKCE thay thế bằng cách chứng minh client đã bắt đầu phiên, không cần bí mật chung',
+        'Vì AS không nhận {{client_secret}} cho bất kỳ client nào',
+        'Vì PKCE mã hoá access token nên secret trở nên thừa',
+      ],
+      answer: 1,
+      explain: `Điểm mấu chốt là **nơi code chạy**: JS trong trình duyệt và APK/IPA đều trích xuất được chuỗi bên trong, nên secret không thể giữ bí mật. PKCE không "mạnh hơn" secret mà giải một bài toán khác: không cần bí mật chung vẫn buộc kẻ đổi code phải là kẻ đã tạo verifier. AS vẫn nhận secret với confidential client (backend), và PKCE không liên quan gì tới việc mã hoá token.`,
+    },
+    {
+      q: 'Trong flow có PKCE, {{code_challenge}} và {{code_verifier}} được dùng ở bước nào?',
+      options: [
+        'Cả hai gửi ở {{/authorize}}, verifier bị bỏ qua',
+        'Verifier gửi ở {{/authorize}}, challenge gửi ở {{/token}}',
+        'Challenge (hash của verifier) gửi ở {{/authorize}}, verifier gốc gửi trong POST body ở {{/token}}; AS so SHA-256(verifier) với challenge đã lưu',
+        'Verifier gửi kèm access token trong header mỗi lần gọi API',
+      ],
+      answer: 2,
+      explain: `Nguyên tắc là "bước lộ thì gửi hash, bước kín thì gửi nguyên bản": {{/authorize}} đi qua trình duyệt nên chỉ gửi challenge (một chiều, không suy ngược được), còn verifier đi trong body của POST {{/token}} qua TLS. Nếu đổi chỗ (gửi verifier thô ở bước 1) thì đó là {{plain}}, bị attacker chặn mất; verifier không hề đi cùng access token khi gọi API.`,
+    },
+    {
+      q: 'Attacker lấy một code **hợp lệ** do chính hắn đăng nhập bằng tài khoản của hắn, rồi đẩy victim mở URL callback chứa code đó. Đây là gì và chống bằng gì?',
+      options: [
+        'Authorization code interception; chống bằng PKCE với S256',
+        'Login CSRF; chống bằng {{state}} ngẫu nhiên lưu ở phía app và so khớp khi callback về',
+        'Replay của {{id_token}}; chống bằng cách tăng TTL access token',
+        'Không phải tấn công, vì code thuộc về tài khoản của attacker',
+      ],
+      answer: 1,
+      explain: `Code hợp lệ, verifier đúng (chính attacker tạo) nên PKCE hoàn toàn bất lực — đây là login CSRF: nạn nhân bị đăng nhập nhầm vào tài khoản của attacker và ghi dữ liệu vào đó. {{state}} binds request và browser session của nạn nhân lại nên app phát hiện code không phải của mình. {{nonce}} là cơ chế cho {{id_token}}, và tăng TTL thì chỉ làm tệ hơn; hậu quả là thật: dữ liệu nạn nhân rơi vào tài khoản attacker kiểm soát.`,
+    },
+  ],
+  related: ['security-004', 'security-006', 'security-023'],
+  tags: ['OAuth2', 'PKCE', 'code_verifier', 'state', 'SPA', 'mobile'],
+},
+{
+  id: 'lesson-security-007',
+  track: 'security',
+  order: 7,
+  title: 'Mã hoá trường dữ liệu nhạy cảm bằng AES-GCM: IV không được lặp, version khoá để xoay vòng, blind index để tìm kiếm',
+  level: 'senior',
+  minutes: 50,
+  goals: [
+    'Phân biệt khi nào phải {{hash}}, khi nào phải {{mã hoá}} hai chiều, và vì sao AES-{{ECB}} bị cấm còn {{AES/GCM/NoPadding}} là lựa chọn đúng',
+    'Sinh {{IV}} 12 byte ngẫu nhiên cho **mỗi** lần encrypt, hiểu vì sao lặp IV với cùng khoá là thảm hoạ',
+    'Thiết kế định dạng lưu {{v<version>:base64(iv + ciphertext + tag)}} và xoay vòng khoá mà vẫn đọc được dữ liệu cũ',
+    'Viết {{blindIndex}} bằng {{HmacSHA256}} để tìm kiếm equality trên cột đã mã hoá, và biết trước nó rò rỉ gì',
+  ],
+  body: `### Ba thứ hay lẫn lộn: encoding, hash, mã hoá
+| Công cụ | Đọc lại được không | Cần khoá không | Dùng cho |
+|---|---|---|---|
+| Encoding (Base64, hex, URL-encode) | Có, ai cũng đọc được | Không | Đổi **định dạng** byte, không bảo mật gì |
+| Hash (SHA-256, bcrypt) | **Không** | Không (salt không bí mật) | Mật khẩu, kiểm toàn vẹn, so trùng |
+| Mã hoá (AES-GCM) | Có, khi có khoá | **Có** | Dữ liệu nghiệp vụ phải **dùng lại**: số CCCD, số tài khoản |
+
+Bài trước đã giải quyết mật khẩu: mật khẩu **không bao giờ cần đọc lại**, nên hash là đúng. Nhưng số CCCD thì khác: in ra hợp đồng, đối chiếu với dữ liệu của cơ quan dân cư, hiển thị 4 số cuối cho khách — nghĩa là ứng dụng **phải giải mã được**. Đây là lúc dùng mã hoá đối xứng. Và đây cũng là lúc phát sinh toàn bộ vấn đề của bài này: khoá quản lý thế nào, xoay khoá ra sao, và tìm kiếm trên dữ liệu đã mã hoá thế nào.
+
+Một lưu ý pháp lý cho bối cảnh Việt Nam: CCCD, số tài khoản, số thẻ là dữ liệu cá nhân theo Nghị định 13/2023/NĐ-CP, và nhóm "dữ liệu cá nhân nhạy cảm" phải được mã hoá khi lưu chuyển và lưu trữ. Nói cách khác, cột {{cccd}} để plaintext trong DB không phải chuyện "nếu thấy thì sửa", mà là vi phạm.
+
+### AES và "chế độ" (mode) — vì sao ECB bị cấm
+{{AES}} là mã hoá **khối**: nó mã hoá từng blok 16 byte một với khoá 128/192/256 bit. Dữ liệu thật dài hơn 16 byte, nên cần một **chế độ** (mode) quyết định cách nối nhiều blok lại. Đây là chỗ mà {{Cipher.getInstance("AES/.../...")}} hỏi bạn.
+
+{{ECB}} (Electronic CodeBook) là chế độ ngây thơ nhất: mỗi blok mã hoá độc lập. Hệ quả: **cùng một blok plaintext luôn cho cùng một blok ciphertext**, dù ở dòng nào, lúc nào. CCCD chỉ khác nhau vài chữ số cuối, vậy là phần đầu bản mã của hàng triệu người **giống hệt nhau**; attacker nhìn bảng là biết ai trùng 8 số đầu, gom được nhóm, đoán được quy tắc sinh số. Hình ảnh kinh điển: mã hoá ảnh con cá voi Tux bằng ECB vẫn thấy rõ hình con cá voi, vì các vùng cùng màu cho ra cùng một bản mã.
+
+{{CBC}} (Cipher Block Chaining) khắc phục bằng cách XOR blok trước vào blok sau, nhưng cần padding và dính một họ lỗi rất nổi tiếng tên là **padding oracle**: nếu server trả về lỗi khác nhau khi "padding sai" và "MAC sai", attacker lặp lại hàng triệu request để giải mã từng byte mà không cần khoá — đây là lớp lỗi đã bị khai thác thực tế nhiều lần, từ cookie mã hoá của các nền tảng web cho tới BitLocker và SSH (CipherSuck, 2024). Bài học chung: **đừng tự ghép các mảnh bảo mật rời rạc**; dùng chế độ xác thực sẵn.
+
+### GCM: một chế độ, hai tính năng
+{{GCM}} (Galois/Counter Mode) = phần **mã hoá** chạy ở chế độ CTR + phần **xác thực** GHASH.
+- CTR: từ IV (còn gọi là nonce) và một bộ đếm, AES sinh ra một **dòng keystream**, rồi XOR keystream với plaintext. Vì vậy ciphertext **dài đúng bằng** plaintext — đó là lý do tham số thứ ba trong {{Cipher.getInstance("AES/GCM/NoPadding")}} là {{NoPadding}} (không cần nhét thêm byte cho đủ blok).
+- GHASH: tính một **tag** 16 byte phủ lên IV, ciphertext và (tuỳ chọn) phần dữ liệu thêm gọi là AAD. Khi decrypt, phần mềm tính lại tag và so; khác là ném {{AEADBadTagException}}.
+
+Cặp mã hoá + xác thực như vậy gọi là **authenticated encryption** (AEAD). Nó chặn một tấn công rất thực tế: attacker không đọc được plaintext nhưng có toàn quyền sửa cột trong DB. Với {{ECB}} hoặc {{CBC}} không MAC, đổi vài byte là đổi được cả con số, tên người nhận. Với GCM, chỉ cần một bit bị sửa, {{decrypt}} fail ngay.
+
+### IV 12 byte: vì sao lặp là chết
+Với {{GCM}}, điều cấm kỵ tuyệt đối là **dùng lại IV dưới cùng một khoá**. Lý do, từng bước:
+1. Cùng khoá + cùng IV → cùng một keystream (vì keystream chỉ sinh từ khoá và IV).
+2. {{C1 = P1 xor K}} và {{C2 = P2 xor K}} → {{C1 xor C2 = P1 xor P2}}. Keystream bị triệt tiêu, attacker thu được **hiệu của hai plaintext**. Biết một trong hai số là suy ra số kia; và với các bản ghi có định dạng cố định (CCCD 12 chữ số) thì dò được cả hai.
+3. Tệ hơn với GCM: lặp IV còn cho phép khôi phục khoá {{H}} của GHASH, tức là attacker **giả mạo được tag hợp lệ** mà không cần biết AES key.
+
+Vì {{GCM}} hay dùng IV ngẫu nhiên, phải tính khả năng **va chạm** (birthday): chuẩn NIST SP 800-38D khuyến cáo không quá {{2^32}} bản mã sinh ra từ một khoá IV ngẫu nhiên. Con số này là lý do thật sự khiến bạn **phải** có xoay vòng khoá, chứ không phải vì "cho an toàn". Dùng IV 8 byte hoặc tự viết bộ đếm là tự chuốc rủi ro; 12 byte là độ dài chuẩn mà GCM xử lý nhanh nhất.
+
+### Định dạng bản ghi và AAD
+Định dạng được dùng phổ biến (và là định dạng bài tập này yêu cầu):
+
+~~~text
+lo luu = "v" + phienBanKhoa + ":" + base64( IV(12 byte) + ciphertext + tag(16 byte) )
+vi du  = v2:Sjao9xkQ0m1QY3p0Y2V...
+~~~
+
+| Mảnh | Ai đọc được | Ghi chú |
+|---|---|---|
+| {{v2}} | Không cần khoá | Cho biết phải lấy khoá nào để giải mã; phải có trong keyring |
+| {{IV}} 12 byte | Không cần khoá | Đi kèm bản mã, **không** bí mật, nhưng **không** được lặp |
+| ciphertext | Chỉ người có khoá | Dài đúng bằng plaintext |
+| tag 16 byte | Không cần khoá (chỉ để kiểm) | Bằng chứng bản mã chưa bị sửa |
+
+{{tag}} đã nằm sẵn ở cuối mảng trả về của {{doFinal}}, bạn không phải tính riêng. Kích thước phần thêm: 12 + 16 = 28 byte, rồi base64 nhân ~1.37 lần. CCCD 12 ký tự → 40 byte → 56 ký tự base64 → cột {{varchar(96)}} là thừa chỗ cho cả tiền tố.
+
+**AAD** (Additional Authenticated Data): những byte được đưa vào phép tính tag nhưng **không bị mã hoá** — thường là tên cột, tenant id, user id của dòng. Tác dụng: chặn tấn công **cắt–dán bản mã** giữa các dòng (lấy ciphertext CCCD của người A ghi vào dòng của người B: không đọc được gì, nhưng nếu không có AAD thì B bỗng mang CCCD của A). AAD cũng làm ciphertext của cùng một giá trị ở hai cột khác nhau trở nên khác nhau.
+
+### Xoay vòng khoá bằng version
+Không có khoá nào sống mãi: ai đó có quyền đọc đã nghỉ việc, dung lượng dữ liệu mã hoá bằng một key đã vượt giới hạn an toàn, hoặc nghi ngờ lộ key (kể cả lộ qua log). Xoay khoá nghĩa là: **thêm khoá mới, tăng "phiên bản hiện hành", không bao giờ sửa nội dung một khoá cũ**.
+
+Chiến lược thực tế nhất ({{rotate}} trong bài tập):
+- {{decrypt}}: đọc version từ tiền tố → lấy khoá tương ứng. Khoá cũ vẫn phải còn trong keyring, nếu không dữ liệu cũ **mất vĩnh viễn**.
+- {{encrypt}}: luôn ghi bằng khoá hiện hành → dữ liệu tự "di cư" dần mỗi khi có một bản ghi được cập nhật.
+- **Re-wrap khi đọc**: nếu giải mã thành công một blob version cũ, tiện thể ghi lại bằng version mới (idempotent, không có gì để ghi nếu đã là version hiện hành). Cách này rải đều chi phí, không cần một job khổng lồ khoá bảng cả đêm.
+- **Batch job**: chạy offline khi cần "xoay gấp" vì lộ key, theo lô nhỏ và có đo lường tiến độ.
+- Sau khi không còn bản ghi nào dùng khoá cũ → **huỷ** khoá. Xoá key chính là xoá dữ liệu ({{crypto-shredding}}, một cách tuân thủ yêu cầu "quên tôi đi"), và đó cũng là lý do bạn không được backup key ở nơi backup DB.
+
+Trong production, đừng giữ key trong {{application.yml}} commit lên git. Mẫu chuẩn là **envelope encryption**: KMS (AWS KMS, GCP KMS) hoặc HashiCorp Vault giữ khoá **KEK**, app chỉ nhận về khoá **DEK** đã wrap và giải mã DEK trong bộ nhớ; app có thể đọc DEK hiện hành và các DEK cũ nhưng không tự ý lấy được KEK. Khi DB bị dump mà không kèm keyring, dữ liệu chỉ là rác.
+
+### Blind index: tìm kiếm trên cột đã mã hoá
+Mã hoá xong thì {{WHERE cccd = '0791234567890'}} hết tác dụng: giá trị trong DB là blob base64, và vì {{IV}} ngẫu nhiên nên mã hoá cùng số CCCD hai lần cho hai kết quả khác nhau → không so được.
+
+Giải pháp là **blind index**: một cột phụ chứa {{HMAC-SHA256(khoá_index, giá_trị_đã_chuẩn_hoá)}} — deterministic, nên {{SELECT * FROM customers WHERE cccd_index = ?}} chạy được và dùng index B-tree bình thường. Ứng dụng tính HMAC của số vừa nhập rồi hỏi; DB không bao giờ thấy plaintext.
+
+Vì sao HMAC có khoá mà không phải SHA-256 trần? CCCD chỉ gồm 12 chữ số, không gian giá trị đâu đó cỡ {{10^12}} (thực tế còn hẹp hơn vì có quy tắc sinh số) — một GPU băm hàng trăm triệu SHA-256 mỗi giây nên bảng tra dựng được trong vài giờ. Khoá HMAC làm bảng tra vô dụng và cho mỗi môi trường một chỉ mục khác nhau.
+
+Ba điều phải trả giá, nên nói rõ khi thiết kế:
+- **Chuẩn hoá** giá trị trước khi tạo index và trước khi truy vấn (bỏ khoảng trắng, bỏ số 0 đầu, cùng UTF-8 normalization) — hai bên lệch nhau một ký tự là tìm không thấy.
+- Index **tiết lộ tính trùng**: hai dòng có cùng giá trị thì cùng {{blind_index}}. Với CCCD (vốn duy nhất) thì không sao; với cột ít giá trị (giới tính, loại giấy tờ) thì bạn vừa tự vẽ biểu đồ phân bố cho attacker.
+- Không có {{LIKE}}, không có range search. Nếu nghiệp vụ thật sự cần "tìm 4 số cuối", hãy thiết kế cột riêng {{cccd_last4}} (vẫn nên kèm {{tenant_id}}) thay vì cố làm điều không thể.
+
+### Java thuần: đủ dùng trong 8 dòng
+~~~java
+Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+byte[] iv = new byte[12];
+new SecureRandom().nextBytes(iv);                       // IV moi cho MOI lan
+c.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(128, iv));
+byte[] body = c.doFinal(plaintext.getBytes(StandardCharsets.UTF_8));   // ciphertext || tag
+
+// khi decrypt: tag duoc kiem tra ben trong doFinal
+Cipher d = Cipher.getInstance("AES/GCM/NoPadding");
+d.init(Cipher.DECRYPT_MODE, oldKey, new GCMParameterSpec(128, ivFromStorage));
+byte[] plain = d.doFinal(ctFromStorage, 12, ctFromStorage.length - 12);   // nem AEADBadTagException neu bi sua
+~~~
+
+### Cái giá phải trả
+- AES chạy bằng {{AES-NI}} của CPU đạt cỡ vài GB/s, nên **hiệu suất không phải lý do** để sợ mã hoá; chi phí thật nằm ở chỗ mất khả năng truy vấn.
+- Mất {{ORDER BY}}, {{GROUP BY}}, {{LIKE}}, aggregate trên cột đã mã hoá; báo cáo phải tính ở tầng ứng dụng hoặc từ một cột dẫn xuất.
+- Khoá là **single point of failure**: KMS sập, key bị xoá, region mất — dữ liệu không đọc được. Phải có keyring nhiều bản, chạy thử quy trình restore thật định kỳ.
+- Plaintext dễ rò qua kênh khác: log request, exception message, APM, audit log, API trả về DTO, clipboard của nhân viên vận hành. Mã hoá cột mà log ra {{cccd}} thì coi như không mã hoá.
+- Migration: về sau thêm cột hoặc đổi định dạng phải có script và số liệu kiểm kê (bao nhiêu dòng mỗi version).
+
+### Bẫy production
+- IV cố định, IV = 0, hoặc dùng bộ đếm khởi động từ 0 mỗi lần app khởi động lại → lặp IV.
+- "Mã hoá" bằng {{Base64}} rồi gọi là encrypted; hoặc tự chế {{AES-CBC}} + {{MD5}} kiểm toàn vẹn.
+- Dùng **cùng một khoá** cho {{AES}} và cho {{HMAC}} index, hoặc dùng một khoá cho mọi cột và mọi môi trường → mất tính độc lập; hãy tách khoá, hoặc dẫn xuất từ một master key với nhãn riêng cho từng mục đích.
+- Sửa {{AEADBadTagException}} thành {{IllegalArgumentException}}: caller không còn phân biệt được "dữ liệu hỏng format" và "dữ liệu bị can thiệp", và bạn mất luôn tín hiệu cảnh báo sớm.
+- Đặt khoá vào biến môi trường rồi in biến môi trường ra log lúc khởi động để "debug".
+- Quên rằng dữ liệu đã mã hoá vẫn phải **validate trước khi dùng** ({{decrypt}} xong vẫn kiểm định dạng CCCD), và vẫn phải chống SQL injection như mọi cột khác.
+- Xoay khoá bằng cách ghi đè khoá cũ trong keyring: đúng ra phải thêm phiên bản mới; ghi đè làm mọi blob cũ không thể đọc được.
+
+### Liên hệ phỏng vấn
+Bộ câu hỏi hay gặp: "Bạn lưu số CCCD thế nào?", "IV và nonce khác gì salt?", "Vì sao không dùng ECB?", "Xoay khoá mà vẫn đọc được dữ liệu cũ thì làm kiểu gì?", "Mã hoá rồi thì tìm kiếm ra sao?", "AAD để làm gì?". Mỗi câu đã có câu trả lời ở trên; khi trả lời, hãy nói theo thứ tự **mối đe dọa → cơ chế → chi phí đánh đổi** (ví dụ: "ECB lộ mẫu hình nên dùng GCM; GCM cấm lặp IV nên mỗi lần encrypt một IV 12 byte ngẫu nhiên và xoay khoá trước khi chạm ngưỡng 2^32 bản mã; vì không query được nên thêm cột blind index HMAC"). Làm bài tập để cầm chắc phần cơ chế: viết {{encrypt}}, {{decrypt}}, {{rotate}}, {{blindIndex}} và thấy tận tay {{AEADBadTagException}} nổ ra khi ai đó sửa một byte.`,
+  exercises: [
+    {
+      title: 'Viết FieldCipher: AES-GCM với IV ngẫu nhiên, version khoá, rotate và blind index',
+      prompt: `Hoàn thiện class {{FieldCipher}}. Hai hằng {{IV_BYTES = 12}} và {{TAG_BITS = 128}} đã khai báo, **đừng đổi**.
+
+- {{FieldCipher(keysByVersion, currentVersion, random)}}: lưu **bản copy** của map ({{new HashMap<>(...)}} để dữ liệu bên ngoài sửa không làm mất khả năng giải mã); {{currentVersion}} phải có key trong map, không thì ném {{IllegalArgumentException}}.
+- {{encrypt(plaintext)}}: sinh {{IV_BYTES}} byte mới bằng {{SecureRandom}} đã truyền vào, mã {{AES/GCM/NoPadding}} với khoá hiện hành và {{GCMParameterSpec(TAG_BITS, iv)}}, trả về
+  {{"v" + currentVersion + ":" + Base64.getEncoder().encodeToString(iv || ciphertext || tag)}}
+  ({{doFinal}} đã trả ciphertext nối tiếp tag, chỉ cần ghép {{iv}} vào đầu). Không ném checked exception nào khác {{GeneralSecurityException}}.
+- {{decrypt(stored)}}: tách version và phần base64, **lấy khoá theo version đọc từ chuỗi** (có thể là khoá cũ), giải mã và trả plaintext UTF-8. Quy ước lỗi: hỏng format (chuỗi {{null}}, thiếu tiền tố {{v}}, không có {{:}}, version không có trong map, base64 sai, hoặc độ dài decoded nhỏ hơn {{IV_BYTES + TAG_BITS / 8}}) → {{IllegalArgumentException}}; tag không hợp lệ → **để nguyên {{AEADBadTagException}} ném lên**, không được bọc thành loại khác (caller phải phân biệt được "hỏng format" và "bị can thiệp").
+- {{rotate(stored)}}: nếu {{stored}} đã mang version hiện hành thì **trả lại đúng chuỗi đó** (idempotent, không ghi lại vô ích); ngược lại giải mã bằng khoá cũ và trả bản mã mới theo version hiện hành.
+- {{blindIndex(plaintext, hmacKey)}} (static): HMAC-SHA256 trên byte UTF-8 của {{plaintext}}, trả hex **chữ thường** 64 ký tự ({{HexFormat.of().formatHex(...)}}). Đây là giá trị ghi vào cột {{cccd_index}} để query equality. Không ném checked exception.
+
+Chỉ JDK 17. Không dùng {{ThreadLocal}} hay thời gian thực; {{Cipher}} tạo mới mỗi lần gọi (nó không thread-safe).`,
+      starter: `import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.security.SecureRandom;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.Map;
+import javax.crypto.Cipher;
+import javax.crypto.Mac;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
+
+final class FieldCipher {
+    static final int IV_BYTES = 12;
+    static final int TAG_BITS = 128;
+
+    private final Map<Integer, SecretKey> keys;
+    private final int currentVersion;
+    private final SecureRandom random;
+
+    FieldCipher(Map<Integer, SecretKey> keysByVersion, int currentVersion, SecureRandom random) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    String encrypt(String plaintext) throws GeneralSecurityException {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    String decrypt(String stored) throws GeneralSecurityException {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    String rotate(String stored) throws GeneralSecurityException {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static String blindIndex(String plaintext, SecretKey hmacKey) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    private static int colonIndex(String stored) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.Map;
+import javax.crypto.AEADBadTagException;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.SecretKeySpec;
+
+public class Main {
+    interface Case { void run() throws Exception; }
+    static int passed = 0, total = 0;
+    static void check(String name, Case c) {
+        total++;
+        try { c.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void expect(Class<? extends Throwable> kind, Case c) {
+        try { c.run(); }
+        catch (Throwable t) {
+            if (!kind.isInstance(t)) throw new AssertionError("mong " + kind.getSimpleName() + " nhung nhan " + t);
+            return;
+        }
+        throw new AssertionError("mong " + kind.getSimpleName() + " nhung khong ném loi");
+    }
+    static SecretKey aes(int fill) {
+        byte[] b = new byte[32];                                  // AES-256
+        Arrays.fill(b, (byte) fill);
+        return new SecretKeySpec(b, "AES");
+    }
+    static Map<Integer, SecretKey> keys() {
+        Map<Integer, SecretKey> m = new HashMap<>();
+        m.put(1, aes(1));
+        m.put(2, aes(2));
+        return m;
+    }
+    static FieldCipher cipher(int current) { return new FieldCipher(keys(), current, new SecureRandom()); }
+    static String prefix(String stored) { return stored.substring(0, stored.indexOf(':')); }
+    static byte[] payload(String stored) { return Base64.getDecoder().decode(stored.substring(stored.indexOf(':') + 1)); }
+    static String flipped(String stored, int offset) {
+        byte[] b = payload(stored);
+        b[offset] = (byte) (b[offset] ^ 1);
+        return prefix(stored) + ":" + Base64.getEncoder().encodeToString(b);
+    }
+    static final String CCCD = "0791234567890";
+    static SecretKey indexKey() { return new SecretKeySpec("0123456789abcdef".getBytes(StandardCharsets.US_ASCII), "HmacSHA256"); }
+    public static void main(String[] args) {
+        FieldCipher c = cipher(2);
+        check("encrypt stores vCURRENT and base64 of iv plus ciphertext plus tag", () -> {
+            String stored = c.encrypt(CCCD);
+            eq("v2", prefix(stored));
+            int n = CCCD.getBytes(StandardCharsets.UTF_8).length;
+            eq(FieldCipher.IV_BYTES + n + FieldCipher.TAG_BITS / 8, payload(stored).length);
+            if (stored.indexOf('.') >= 0) throw new AssertionError("base64 chuan khong co dau cham");
+        });
+        check("round trip keeps the empty string and Vietnamese text", () -> {
+            eq("", c.decrypt(c.encrypt("")));
+            String vn = "Số CCCD 0791234567890 - Nguyễn Thị Bé, TP.HCM";
+            eq(vn, c.decrypt(c.encrypt(vn)));
+        });
+        check("same value twice gives different blobs, both decryptable", () -> {
+            String a = c.encrypt(CCCD);
+            String b = c.encrypt(CCCD);
+            if (a.equals(b)) throw new AssertionError("IV bi dung lai: hai blob giong het nhau");
+            eq(CCCD, c.decrypt(a));
+            eq(CCCD, c.decrypt(b));
+        });
+        check("flipping a ciphertext byte raises AEADBadTagException", () -> {
+            String stored = c.encrypt(CCCD);
+            expect(AEADBadTagException.class, () -> c.decrypt(flipped(stored, FieldCipher.IV_BYTES + 2)));
+        });
+        check("flipping an IV byte also raises AEADBadTagException", () -> {
+            String stored = c.encrypt(CCCD);
+            expect(AEADBadTagException.class, () -> c.decrypt(flipped(stored, 3)));
+            expect(AEADBadTagException.class, () -> c.decrypt(flipped(stored, FieldCipher.IV_BYTES - 1)));
+        });
+        check("decrypt reads a blob written with the older key version", () -> {
+            String v1 = cipher(1).encrypt(CCCD);
+            eq("v1", prefix(v1));
+            eq(CCCD, cipher(2).decrypt(v1));
+        });
+        check("rotate moves v1 to current and is idempotent", () -> {
+            String v1 = cipher(1).encrypt(CCCD);
+            String v2 = cipher(2).rotate(v1);
+            eq("v2", prefix(v2));
+            eq(CCCD, cipher(2).decrypt(v2));
+            eq(v2, cipher(2).rotate(v2));
+            if (v2.equals(v1)) throw new AssertionError("rotate khong doi duoc version");
+        });
+        check("malformed storage and unknown key version are IllegalArgumentException", () -> {
+            expect(IllegalArgumentException.class, () -> cipher(2).decrypt("v9:" + Base64.getEncoder().encodeToString(new byte[40])));
+            expect(IllegalArgumentException.class, () -> cipher(2).decrypt("khong phai ban ma"));
+            expect(IllegalArgumentException.class, () -> cipher(2).decrypt("v2:" + Base64.getEncoder().encodeToString(new byte[20])));
+            expect(IllegalArgumentException.class, () -> cipher(2).decrypt("abc:" + Base64.getEncoder().encodeToString(new byte[40])));
+            expect(IllegalArgumentException.class, () -> cipher(2).decrypt(null));
+        });
+        check("constructor rejects a current version with no key", () -> {
+            expect(IllegalArgumentException.class, () -> new FieldCipher(keys(), 7, new SecureRandom()));
+        });
+        check("blindIndex is HMAC-SHA256 lowercase hex", () -> {
+            String idx = FieldCipher.blindIndex("987654321012345", indexKey());
+            eq("4f04392005b677d67c17009aacb3093d36eeb8341aeba727b67f34ad784c6384", idx);
+            eq(64, idx.length());
+            if (!idx.matches("[0-9a-f]{64}")) throw new AssertionError("blindIndex khong phai hex thuong: " + idx);
+        });
+        check("blindIndex is deterministic and depends on value and key", () -> {
+            eq(FieldCipher.blindIndex(CCCD, indexKey()), FieldCipher.blindIndex(CCCD, indexKey()));
+            if (FieldCipher.blindIndex(CCCD, indexKey()).equals(FieldCipher.blindIndex("0791234567891", indexKey())))
+                throw new AssertionError("hai gia tri khac nhau cung index");
+            SecretKey other = new SecretKeySpec("fedcba9876543210".getBytes(StandardCharsets.US_ASCII), "HmacSHA256");
+            if (FieldCipher.blindIndex(CCCD, indexKey()).equals(FieldCipher.blindIndex(CCCD, other)))
+                throw new AssertionError("doi khoa ma index khong doi");
+            if (FieldCipher.blindIndex(CCCD, indexKey()).equals(CCCD)) throw new AssertionError("blindIndex lo gia tri");
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.security.SecureRandom;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.HexFormat;
+import java.util.Map;
+import javax.crypto.Cipher;
+import javax.crypto.Mac;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
+
+final class FieldCipher {
+    static final int IV_BYTES = 12;
+    static final int TAG_BITS = 128;
+
+    private final Map<Integer, SecretKey> keys;
+    private final int currentVersion;
+    private final SecureRandom random;
+
+    FieldCipher(Map<Integer, SecretKey> keysByVersion, int currentVersion, SecureRandom random) {
+        this.keys = new HashMap<>(keysByVersion);            // copy: map ben ngoai bi doi thi van giai ma duoc
+        this.random = random;
+        if (!keys.containsKey(currentVersion)) {
+            throw new IllegalArgumentException("khong co key cho phien ban hien hanh: v" + currentVersion);
+        }
+        this.currentVersion = currentVersion;
+    }
+
+    String encrypt(String plaintext) throws GeneralSecurityException {
+        byte[] iv = new byte[IV_BYTES];
+        random.nextBytes(iv);                               // IV MOI 100% moi lan — GCM cam lap IV
+        Cipher c = Cipher.getInstance("AES/GCM/NoPadding");  // GCM = CTR + GHASH, khong can padding
+        c.init(Cipher.ENCRYPT_MODE, keys.get(currentVersion), new GCMParameterSpec(TAG_BITS, iv));
+        byte[] body = c.doFinal(plaintext.getBytes(StandardCharsets.UTF_8));   // ciphertext || tag
+        byte[] all = ByteBuffer.allocate(iv.length + body.length).put(iv).put(body).array();
+        return "v" + currentVersion + ":" + Base64.getEncoder().encodeToString(all);
+    }
+
+    String decrypt(String stored) throws GeneralSecurityException {
+        int cut = colonIndex(stored);
+        int version = Integer.parseInt(stored.substring(1, cut));
+        SecretKey key = keys.get(version);                   // co the la khoa cua phien ban cu
+        if (key == null) throw new IllegalArgumentException("khong co key cho phien ban: v" + version);
+        byte[] all = Base64.getDecoder().decode(stored.substring(cut + 1));
+        if (all.length < IV_BYTES + TAG_BITS / 8) throw new IllegalArgumentException("ban ma qua ngan");
+        Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+        c.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(TAG_BITS, all, 0, IV_BYTES));
+        // doFinal KIEM TAG va nem AEADBadTagException neu ban ma bi sua — de nguyen, khong boc
+        byte[] plain = c.doFinal(all, IV_BYTES, all.length - IV_BYTES);
+        return new String(plain, StandardCharsets.UTF_8);
+    }
+
+    String rotate(String stored) throws GeneralSecurityException {
+        int cut = colonIndex(stored);
+        if (Integer.parseInt(stored.substring(1, cut)) == currentVersion) return stored;   // idempotent
+        return encrypt(decrypt(stored));                     // doc bang khoa cu, ghi bang khoa moi
+    }
+
+    static String blindIndex(String plaintext, SecretKey hmacKey) {
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(hmacKey);                               // khoa rieng, kh dung lai khoa AES
+            return HexFormat.of().formatHex(mac.doFinal(plaintext.getBytes(StandardCharsets.UTF_8)));
+        } catch (GeneralSecurityException e) {
+            throw new IllegalStateException("HmacSHA256 phai co trong moi JVM", e);
+        }
+    }
+
+    private static int colonIndex(String stored) {
+        if (stored == null || stored.charAt(0) != 'v') throw new IllegalArgumentException("sai dinh dang ban ma");
+        int cut = stored.indexOf(':');
+        if (cut <= 1) throw new IllegalArgumentException("sai dinh dang ban ma");
+        return cut;
+    }
+}`,
+      hints: [
+        'Ghép mảng bằng {{ByteBuffer.allocate(iv.length + body.length).put(iv).put(body).array()}}; khi tách ra thì {{Arrays.copyOfRange}} cho IV và {{doFinal(all, IV_BYTES, all.length - IV_BYTES)}} cho phần còn lại.',
+        '{{GCMParameterSpec(TAG_BITS, all, 0, IV_BYTES)}} là overload đọc IV ngay trong mảng đã lưu — khỏi cần copy.',
+        'Đừng bọc toàn bộ {{decrypt}} trong một {{catch}} bắt {{GeneralSecurityException}} rồi ném lại {{IllegalArgumentException}}: {{AEADBadTagException}} là lớp con của {{GeneralSecurityException}} nên nó sẽ bị nuốt mất.',
+        '{{Integer.parseInt}} ném {{NumberFormatException}} (là con của {{IllegalArgumentException}}) và {{Base64.getDecoder().decode}} ném {{IllegalArgumentException}} — hai thứ đó đã đáp ứng đúng yêu cầu "hỏng format thì IllegalArgumentException".',
+        'Với {{stored.charAt(0)}} khi {{stored}} rỗng: kiểm {{null}} và {{isEmpty}} trước khi đọc {{charAt}} để không ném {{IndexOutOfBoundsException}}.',
+      ],
+      explain: `Bốn chỗ quyết định bài này, và cũng là bốn thứ interviewer hay moi.
+
+**Một là không bọc {{AEADBadTagException}}.** Nó là lớp con của {{GeneralSecurityException}}, nên một {{catch (GeneralSecurityException e)}} "cho sạch" sẽ nuốt nó và biến "có người đang sửa dữ liệu" thành "chuỗi lỗi format". Hai tình huống đó cần hai hành động rất khác: format sai là dữ liệu bẩn, tag sai là **toàn vẹn bị vi phạm** — phải ghi audit log và cảnh báo. Đây là lý do {{decrypt}} khai báo {{throws GeneralSecurityException}} rồi để exception đi lên tự nhiên.
+
+**Hai là giới hạn độ dài tối thiểu.** {{GCM}} cần đủ chỗ cho IV 12 byte và tag 16 byte. Một blob 20 byte hợp lệ về base64 nhưng vô nghĩa về mật mã: nếu bạn không chặn mà đẩy thẳng vào {{doFinal}}, bạn nhận được {{InvalidAlgorithmParameterException}} hoặc kết quả khó đoán. Chặn bằng {{IllegalArgumentException}} ở tầng phân tích định dạng là đúng nơi, đúng loại lỗi.
+
+**Ba là rotate phải idempotent.** Nếu {{rotate}} luôn giải mã rồi mã hoá lại, mỗi lần chạy là mỗi lần sinh IV mới → blob đổi liên tục, batch job ghi đè chính mình, binary diff của backup phình to, và bạn không bao giờ hội tụ. Kiểm version trước, đã là hiện hành thì trả nguyên văn — đó cũng là cách để job rotate chạy đi chạy lại nhiều lần mà không cần trạng thái.
+
+**Bốn là khoá HMAC phải khác khoá AES.** Cùng một khoá dùng cho hai mục đích (mã hoá và chỉ mục) nghĩa là một chỗ lộ làm sập cả hai, và ở một số thuật toán còn mở đường tấn công kiểu "dùng chính oracle HMAC để dò bản mã". Tách khoá, hoặc dẫn xuất từ master key bằng HKDF với nhãn riêng cho từng mục đích.
+
+Ngoài bài tập, hai điều nên nhớ vì chúng là câu hỏi "tại sao" hay bị chặn nhất: (1) {{blindIndex}} deterministic là **một sự rò rỉ có chủ đích** — nó cho biết "hai dòng có cùng giá trị", nên chỉ chấp nhận cho dữ liệu gần như duy nhất như CCCD, không dùng cho cột ít giá trị; (2) {{AAD}} không che dữ liệu mà **buộc** dữ liệu phụ thuộc (tenant id, tên cột) vào phép kiểm tag, chặn việc cắt–dán bản mã giữa các dòng. Thêm {{c.updateAAD}} trước {{doFinal}} và cho nó vào đúng chuỗi đó khi decrypt, nếu không tag sẽ không khớp.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Vì sao {{ECB}} bị cấm và {{GCM}} được chọn cho cột dữ liệu nhạy cảm?',
+      options: [
+        'ECB chậm hơn GCM nên chỉ dùng khi cần tốc độ',
+        'ECB mã hoá từng blok độc lập nên cùng plaintext cho cùng ciphertext, lộ mẫu hình; GCM vừa mã hoá vừa gắn tag xác thực nên phát hiện bản mã bị sửa',
+        'ECB chỉ làm việc với khoá 128 bit, GCM hỗ trợ 256 bit',
+        'ECB không giải mã được ngược lại, nên phải dùng GCM',
+      ],
+      answer: 1,
+      explain: `Vấn đề của {{ECB}} là **tính tất định theo blok**: hai dòng có 16 byte đầu giống nhau sẽ có 16 byte bản mã đầu giống nhau, đủ để gom nhóm và suy ra cấu trúc dữ liệu. {{GCM}} khắc phục bằng CTR (keystream khác nhau mỗi IV) và cộng thêm tag để kiểm toàn vẹn — tức là **authenticated encryption**. ECB và GCM đều chạy được với khoá 256 bit và cả hai đều giải mã được ngược lại; tốc độ không phải lý do.`,
+    },
+    {
+      q: 'Hai lần {{encrypt}} cùng một số CCCD với cùng một khoá cho ra hai blob khác nhau. Điều gì xảy ra nếu hai lần đó **trùng IV**?',
+      options: [
+        'Không sao, vì ciphertext đã khác nhau do tag',
+        'Cùng khoá và cùng IV sinh cùng keystream, nên C1 xor C2 bằng P1 xor P2: attacker bỏ được keystream và thu được hiệu hai plaintext, với GCM còn có thể khôi phục khoá GHASH để giả mạo tag',
+        'Chỉ làm tăng dung lượng lưu trữ, không ảnh hưởng bảo mật',
+        '{{decrypt}} sẽ fail, nên hệ thống tự phát hiện ra vấn đề',
+      ],
+      answer: 1,
+      explain: `Đây là lỗi **nhận biết được (detectable) nhưng không phục hồi được (irrecoverable)**: {{decrypt}} vẫn trả ra plaintext đúng, nên log không báo gì, trong khi độ bí mật đã mất. Hai bản mã cùng IV → cùng keystream, XOR với nhau triệt tiêu keystream. Vì GCM hay dùng IV ngẫu nhiên nên chuẩn NIST đặt trần {{2^32}} bản mã cho một khoá, và đó chính là lý do phải xoay vòng khoá.`,
+    },
+    {
+      q: 'Bạn cần {{WHERE cccd = ?}} trên cột đã mã hoá AES-GCM. Làm thế nào?',
+      options: [
+        'Mã hoá giá trị cần tìm bằng cùng hàm encrypt rồi so sánh, vì cùng đầu vào cho cùng bản mã',
+        'Lưu thêm cột blind index là HMAC-SHA256 của giá trị đã chuẩn hoá với một khoá riêng, query bằng {{WHERE cccd_index = ?}}',
+        'Chuyển cột sang AES-ECB để bản mã deterministic',
+        'Không thể, phải giải mã toàn bộ bảng trong bộ nhớ',
+      ],
+      answer: 1,
+      explain: `{{encrypt}} với GCM **không deterministic** (IV ngẫu nhiên), nên cách thứ nhất sai ngay từ giả định. {{blindIndex}} tạo giá trị deterministic mà vẫn không lộ nội dung; giải mã cả bảng thì sập về bộ nhớ và vi phạm cả nguyên tắc least privilege. ECB deterministic thật, nhưng đổi lại là lộ mẫu hình toàn bộ dữ liệu — một lỗ hổng, không phải một giải pháp.`,
+    },
+    {
+      q: 'Xoay vòng khoá đúng cách là gì?',
+      options: [
+        'Sửa lại nội dung khoá cũ trong keyring thành khoá mới, dữ liệu cũ tự đọc được',
+        'Thêm khoá mới với version cao hơn, decrypt chọn khoá theo version lưu trong blob, encrypt luôn ghi bằng khoá hiện hành, và huỷ khoá cũ sau khi không còn bản ghi nào dùng tới',
+        'Giữ một khoá duy nhất và đổi IV mỗi ngày',
+        'Mã hoá lại toàn bộ bảng trong một transaction lớn vào giờ thấp điểm',
+      ],
+      answer: 1,
+      explain: `Ghi đè khoá cũ làm **mất khả năng đọc** mọi blob cũ — thảm hoạ thường gặp nhất. Version trong blob cho biết phải dùng khoá nào, nên keyring giữ nhiều khoá cùng lúc và tự "di cư" dữ liệu khi có lượt đọc/ghi. Đổi IV không liên quan tới khoá. Quét lại toàn bộ bảng trong một transaction thì khoá bảng hàng giờ và không xử lý được dòng hỏng giữa đường; chiến lược thật là kết hợp re-wrap khi đọc và batch job nhỏ theo lô.`,
+    },
+  ],
+  related: ['security-009', 'security-019', 'security-025'],
+  tags: ['AES-GCM', 'IV', 'field encryption', 'key rotation', 'blind index', 'AAD'],
+},
 );
 

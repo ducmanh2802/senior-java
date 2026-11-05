@@ -1164,6 +1164,8 @@ window.DATA_INDEX = {
     {"id":"lesson-security-003","track":"security","order":3,"title":"Rate limiter bằng token bucket: burst, refill và đồng hồ truyền vào","level":"lead","minutes":30},
     {"id":"lesson-security-004","track":"security","order":4,"title":"Session phía server: cookie sid, CSRF token, session fixation và phiên anonymous","level":"senior","minutes":55},
     {"id":"lesson-security-005","track":"security","order":5,"title":"Phân quyền RBAC theo domain và theo đối tượng: deny-by-default, tách quyền grant, chống IDOR","level":"senior","minutes":45},
+    {"id":"lesson-security-006","track":"security","order":6,"title":"OAuth2 Authorization Code + PKCE: vì sao app không giữ được client_secret và code_verifier bịt lỗ hổng thế nào","level":"senior","minutes":45},
+    {"id":"lesson-security-007","track":"security","order":7,"title":"Mã hoá trường dữ liệu nhạy cảm bằng AES-GCM: IV không được lặp, version khoá để xoay vòng, blind index để tìm kiếm","level":"senior","minutes":50},
     {"id":"lesson-testing-001","track":"testing","order":1,"title":"Test double: fake, stub và mock — chọn cái nào thay vì mock mọi thứ","level":"mid","minutes":25},
     {"id":"lesson-testing-002","track":"testing","order":2,"title":"Clock injection: test code phụ thuộc thời gian mà không ngủ và không flaky","level":"senior","minutes":20},
     {"id":"lesson-testing-003","track":"testing","order":3,"title":"Property-based testing mini: sinh input bằng seed cố định để tìm bug merge/sort","level":"senior","minutes":30},
