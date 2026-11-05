@@ -2814,4 +2814,316 @@ Với công ty outsourcing, thêm: "How long is the current client contract, and
   tags: ['questions-to-ask', 'layoff', 'due-diligence', 'closing'],
   lang: 'en',
 },
+{
+  id: 'english-080',
+  topic: 'english',
+  level: 'senior',
+  q: 'Walk me through a production incident you led on a Java service running on Kubernetes. How did you communicate during it?',
+  a: `**Tóm tắt:** Kể theo timeline: phát hiện → đánh giá ảnh hưởng → hành động khẩn cấp → liên lạc → RCA → phòng ngừa. Nêu vai trò của bạn rõ ràng, các con số, và cách bạn giữ mọi người bình tĩnh. Interviewer đánh giá **leadership under pressure**, không phải kiến thức kỹ thuật đơn thuần.
+
+### Sample answer
+At 2:14 a.m. our alerting fired: the payment orchestration service on EKS had a 40 percent error rate on the checkout endpoint. I was the on-call senior and I became incident commander within the first three minutes.
+
+My first action was not to debug but to declare severity and open the incident channel. I posted: "SEV-1, checkout errors, I am IC, joining now." Then I assigned roles: one engineer investigated, one handled customer support, I owned communication. I posted updates every five minutes even when there was nothing new, because silence makes people panic.
+
+We found that a new deployment had increased memory per pod, causing OOM kills and a restart loop. At 2:27 I made the call to roll back rather than scale out, because rollback was four minutes and scaling meant guessing the right size under load. Rollback completed at 2:31 and errors dropped to zero.
+
+Afterwards I wrote the postmortem the same day: timeline, root cause, five whys, and three action items with owners and dates. I also pushed for a canary deployment with automatic rollback on error-rate thresholds, which we shipped two weeks later. We have not had a deployment-related SEV-1 since.
+
+### Useful phrases
+- **I became incident commander**: tôi trở thành người chỉ huy sự cố
+- **I assigned roles**: tôi phân công vai trò
+- **silence makes people panic**: im lặng khiến mọi người hoảng
+- **I made the call to roll back**: tôi quyết định rollback
+- **with owners and dates**: kèm người chịu trách nhiệm và thời hạn
+
+> Senior tip: Đừng kể incident như một câu chuyện kỹ thuật khô khan — interviewer muốn thấy bạn **điều phối con người**. Tránh nói "we fixed it" suốt câu; dùng "I" cho quyết định của bạn. Tiếng Anh: **commander** /kəˈmɑːndər/, và **postmortem** /poʊstˈmɔːrtəm/ nhấn âm thứ hai.`,
+  follow: [
+    'What would you have done if the rollback had not fixed the problem?',
+    'How do you decide the severity level of an incident?',
+    'How do you run a blameless postmortem without it feeling like a formality?',
+  ],
+  tags: ['incident', 'leadership', 'kubernetes', 'communication'],
+  lang: 'en',
+},
+{
+  id: 'english-081',
+  topic: 'english',
+  level: 'mid',
+  q: 'How would you explain garbage collection in the JVM to a junior developer who has never seen a GC log?',
+  a: `**Tóm tắt:** Dùng ẩn dụ đời thường (dọn phòng), rồi đi từ khái niệm → cơ chế → ví dụ → lỗi hay gặp. Giữ tiếng Anh đơn giản, tránh jargon không giải thích. Mục tiêu là người nghe hiểu **vì sao** có pause và **khi nào** nên lo.
+
+### Sample answer
+I would start with an analogy: imagine your desk is the heap, and the objects you use are papers on it. Garbage collection is the moment you stop working, throw away the papers you no longer need, and tidy the rest. The reason we need it is that Java does not ask you to free memory by hand; the JVM reclaims it automatically when no reference points to an object anymore.
+
+Then I would explain the generations. New objects go into the young generation, specifically Eden. Most objects die quickly, so the JVM cleans Eden often and cheaply; survivors move to Survivor spaces and eventually to the old generation. Old generation collection is rarer but more expensive, which is why a long pause usually comes from there.
+
+I would show one simple GC log line and decode it: "GC pause 45 ms, 200 MB to 80 MB" means it freed 120 MB in 45 milliseconds. Then the practical advice: if you see frequent long pauses, look for memory leaks, oversized caches, or objects that live too long. Do not tune GC flags before you measure.
+
+### Useful phrases
+- **throw away the papers you no longer need**: vứt những tờ giấy không còn dùng
+- **reclaimed automatically**: được thu hồi tự động
+- **most objects die quickly**: hầu hết object chết rất nhanh
+- **a long pause usually comes from there**: pause dài thường đến từ đó
+- **do not tune before you measure**: đừng chỉnh trước khi đo
+
+> Senior tip: Khi giải thích kỹ thuật cho junior, **độ chính xác phải cao hơn** vì họ sẽ nhớ nguyên văn. Đừng nói "GC xóa object không dùng" mà phải nói "GC xóa object không còn reference". Tiếng Anh: **heap** /hiːp/, **pause** /pɔːz/, và **reclaim** /rɪˈkleɪm/ nhấn âm hai.`,
+  follow: [
+    'What is the difference between minor and major GC?',
+    'How would you explain G1GC to someone who only knows Serial GC?',
+    'What metric would you show a junior to prove GC is healthy?',
+  ],
+  tags: ['jvm', 'gc', 'teaching', 'communication'],
+  lang: 'en',
+},
+{
+  id: 'english-082',
+  topic: 'english',
+  level: 'senior',
+  q: 'How would you explain a technical trade-off to a non-technical product manager so they can make a decision?',
+  a: `**Tóm tắt:** Không dùng thuật ngữ; dùng **lựa chọn + chi phí + rủi ro + khuyến nghị**. Nói bằng tiền, thời gian, rủi ro cho người dùng. Luôn kết thúc bằng một khuyến nghị rõ ràng, không phải "it depends".
+
+### Sample answer
+I would avoid architecture words entirely. Instead I structure it as three options with a price tag and a risk.
+
+Take the example of adding search to an order tool. Option one: use Postgres full-text search. It is free, ships in two weeks, and works well up to about two million orders. Option two: Elasticsearch. It gives better ranking and scales further, but costs a new system to operate, roughly one engineer-week per month, and ships in six weeks. Option three: a managed search service. Fastest to ship, but we pay per query and lose control of data residency.
+
+Then I translate to business impact: "Option one means we can launch with the partner next month but may need to migrate later. Option two means a better experience but a six-week delay and a new on-call rotation. Option three is the lowest risk to our timeline but the highest monthly cost."
+
+I end with a recommendation and a condition: "I recommend option one now, with a trigger: if search traffic exceeds ten thousand queries a day or latency crosses two seconds, we revisit." That gives the PM a decision and a clear rule for revisiting it.
+
+### Useful phrases
+- **with a price tag and a risk**: kèm giá tiền và rủi ro
+- **we lose control of data residency**: chúng ta mất quyền kiểm soát nơi lưu dữ liệu
+- **the lowest risk to our timeline**: rủi ro thấp nhất cho tiến độ
+- **a trigger to revisit**: điều kiện để xem xét lại
+- **I end with a recommendation**: tôi kết thúc bằng khuyến nghị
+
+> Senior tip: PM không cần biết GIN index hay inverted index; họ cần biết **tiền, thời gian, rủi ro**. Đừng nói "it depends" rồi dừng — đó là cách né trách nhiệm. Luôn đưa một khuyến nghị kèm điều kiện rõ ràng. Tiếng Anh: **residency** /rɪˈzɪdənsi/, và **trade-off** đọc /ˈtreɪd ɒf/ (danh từ) hoặc /ˈtreɪd ɒf/ (động từ).`,
+  follow: [
+    'What if the PM insists on the most expensive option?',
+    'How do you handle a trade-off where the cost is hard to quantify?',
+    'How do you document a decision once it is made?',
+  ],
+  tags: ['communication', 'trade-off', 'stakeholder', 'product'],
+  lang: 'en',
+},
+{
+  id: 'english-083',
+  topic: 'english',
+  level: 'senior',
+  q: 'Tell me about a time you pushed back on a deadline. How did you say it, and what was the outcome?',
+  a: `**Tóm tắt:** Push back không phải "từ chối" mà là **đưa dữ liệu + phương án thay thế**. Cấu trúc: tình huống → lý do deadline không khả thi → bạn đề xuất gì → kết quả. Giọng điệu hợp tác, không phòng thủ.
+
+### Sample answer
+Two months ago our team was asked to deliver a merchant onboarding flow in four weeks instead of the six we had planned. I did not say "that is impossible" in the meeting. I took one day to break the work down and came back with numbers: the full scope needed about twenty-two engineer-days and we had roughly fourteen available, including testing.
+
+I went to the product owner with three options. Option one: ship the core flow in four weeks without the reporting dashboard. Option two: keep the full scope and move the launch by two weeks. Option three: ship one additional document type now and the other two three weeks later. I also showed the risk of each, including that option one would leave merchants unable to reconcile their own reports.
+
+We chose option three. I wrote the decision into the release notes so nobody was surprised, and I added a weekly checkpoint so we could catch slippage early. We shipped on time and nobody worked a weekend. The PO later told me she appreciated that I brought options instead of just a problem.
+
+### Useful phrases
+- **I did not say "that is impossible"**: tôi không nói "điều đó không thể"
+- **I came back with numbers**: tôi quay lại với con số
+- **I brought options instead of just a problem**: tôi mang phương án thay vì chỉ vấn đề
+- **nobody was surprised**: không ai bị bất ngờ
+- **a weekly checkpoint**: một điểm kiểm tra hằng tuần
+
+> Senior tip: Đừng nói "I pushed back" mà không nêu **cách bạn nói** — interviewer muốn thấy kỹ năng mềm. Tránh "no" trần trụi; luôn kèm "yes, if..." hoặc "yes, but...". Tiếng Anh: **push back** là động từ phrasal, nhấn âm "push" và "back" đều nhẹ; **scope** /skoʊp/ không phải "s-cốp".`,
+  follow: [
+    'What if the product owner refused to cut scope?',
+    'How do you communicate a slipping deadline without losing trust?',
+    'Have you ever said no to a deadline and regretted it?',
+  ],
+  tags: ['behavioral', 'deadline', 'communication', 'negotiation'],
+  lang: 'en',
+},
+{
+  id: 'english-084',
+  topic: 'english',
+  level: 'senior',
+  q: 'Describe your CI/CD pipeline and one thing you would improve in it.',
+  a: `**Tóm tắt:** Mô tả pipeline theo các **stage** (build → test → security → deploy → verify), nêu công cụ thật, thời gian chạy, và **một cải tiến cụ thể** có lý do và chi phí. Tránh liệt kê công nghệ không giải thích.
+
+### Sample answer
+Our pipeline runs on GitHub Actions. On every pull request we run unit tests, a SonarQube scan, and a Docker build. On merge to main, we build the image, push it to ECR, and deploy to staging automatically. Production deploy is manual but one-click, after a smoke test suite passes. Total time from merge to production is about twelve minutes.
+
+The thing I would improve is test feedback speed. Right now the full suite takes eight minutes, and developers context-switch while waiting. I would split tests into a fast tier that runs on every commit, under two minutes, and a slow tier that runs nightly. I would also add flaky-test detection: if a test fails once and passes on retry, quarantine it and alert the owner instead of silently passing.
+
+The second improvement is rollback. Today rollback is manual and takes about five minutes. I would add automated rollback on a spike in error rate or latency after deploy, using Argo Rollouts with a canary step at ten percent of traffic for five minutes.
+
+### Useful phrases
+- **on every pull request**: trên mỗi pull request
+- **one-click deploy**: deploy một nút bấm
+- **context-switch while waiting**: chuyển ngữ cảnh trong lúc chờ
+- **quarantine it**: cách ly nó
+- **automated rollback on a spike**: rollback tự động khi có đột biến
+
+> Senior tip: Đừng chỉ liệt kê tool ("we use Jenkins, Docker, Kubernetes"); interviewer hỏi "what would you improve" để xem bạn có **góc nhìn hệ thống** không. Mỗi cải tiến nên kèm **lý do đo được** (thời gian, rủi ro) và **chi phí**. Tiếng Anh: **pipeline** /ˈpaɪplaɪn/, và **quarantine** /ˈkwɒrəntiːn/ nhấn âm đầu.`,
+  follow: [
+    'How do you handle secrets in your CI/CD pipeline?',
+    'What is your strategy for database migrations in CI/CD?',
+    'How would you reduce flaky tests in a large suite?',
+  ],
+  tags: ['ci-cd', 'devops', 'pipeline', 'quality'],
+  lang: 'en',
+},
+{
+  id: 'english-085',
+  topic: 'english',
+  level: 'senior',
+  q: 'How do you review a pull request? What do you look for, and how do you give feedback?',
+  a: `**Tóm tắt:** Review theo **thứ tự ưu tiên**: correctness → design → readability → style. Nêu cụ thể bạn kiểm tra gì (edge case, transaction, concurrency, SQL, security) và **cách viết comment** (hỏi, gợi ý, phân biệt blocking vs non-blocking). Kết thúc bằng ví dụ comment tốt và xấu.
+
+### Sample answer
+I read the PR description first to understand the intent, then I look at the diff in this order: correctness, design, readability, style. Style is automated by the linter, so I rarely comment on it.
+
+For correctness I check edge cases: null inputs, empty collections, boundary values, and what happens under concurrency. For a database change I check the migration is reversible and that there is no N+1 query introduced. For a new endpoint I check authentication, authorisation, input validation, and error responses.
+
+I write comments as questions or suggestions, not commands, and I label them. "Blocking: this can lose money if retried" versus "Nit: rename this variable." I also praise good code explicitly, because review should not only be criticism.
+
+If I disagree with the approach, I ask for a short call rather than a long thread. Written arguments escalate quickly; a five-minute conversation usually resolves them.
+
+### Useful phrases
+- **I read the description first**: tôi đọc mô tả trước
+- **I label them**: tôi gắn nhãn cho chúng
+- **this can lose money if retried**: điều này có thể mất tiền nếu retry
+- **I praise good code explicitly**: tôi khen code tốt một cách rõ ràng
+- **a long thread**: một chuỗi bình luận dài
+
+> Senior tip: Đừng review theo thứ tự diff từ trên xuống; đọc **intent trước** sẽ giúp bạn không mất thời gian vào chi tiết không liên quan. Phân biệt rõ **blocking** và **non-blocking** để tác giả biết phải sửa gì. Tiếng Anh: **authorisation** (UK) vs **authorization** (US) — chọn một và nhất quán; **nit** /nɪt/ là viết tắt của nitpick.`,
+  follow: [
+    'How do you handle a PR that is too large to review well?',
+    'What do you do when you disagree with a reviewer?',
+    'How do you review code written by someone more senior than you?',
+  ],
+  tags: ['code-review', 'quality', 'teamwork', 'communication'],
+  lang: 'en',
+},
+{
+  id: 'english-086',
+  topic: 'english',
+  level: 'mid',
+  q: 'You were laid off recently. How do you explain that in an interview without sounding defensive?',
+  a: `**Tóm tắt:** Nói **ngắn, trung tính, hướng tới tương lai**. Nêu lý do tổ chức (restructuring, budget cut), tránh kể chi tiết tiêu cực, và chuyển nhanh sang những gì bạn đang làm và muốn làm tiếp. Không bịa và không than vãn.
+
+### Sample answer
+My previous company went through a restructuring in the engineering organisation. The payments team I was on was affected, and about twenty percent of the engineering staff were let go, including me. It was a business decision driven by budget, not by performance, and I left on good terms with my manager.
+
+Since then I have used the time deliberately: I finished a course on distributed systems, contributed to an open-source reconciliation library, and started interviewing. I am also clear about what I want next, which is a senior backend role where I can own a service end to end, ideally in a domain with real reliability challenges.
+
+I am not looking for just any job; I am looking for a team where I can stay for a few years. That is why I am particularly interested in your company.
+
+### Useful phrases
+- **went through a restructuring**: trải qua tái cơ cấu
+- **driven by budget, not by performance**: do ngân sách, không phải hiệu suất
+- **I left on good terms**: tôi rời đi trong tình trạng tốt
+- **I am clear about what I want next**: tôi rõ ràng về điều mình muốn tiếp theo
+- **I am not looking for just any job**: tôi không tìm bất kỳ công việc nào
+
+> Senior tip: Đừng kể chi tiết tiêu cực về công ty cũ — interviewer sẽ nghi bạn là vấn đề. Cũng đừng nói "I was laid off" rồi im lặng; luôn kèm **hành động bạn đang làm** để thể hiện chủ động. Tiếng Anh: **layoff** /ˈleɪɒf/ nhấn âm đầu, và **restructuring** /riːˈstrʌktʃərɪŋ/ nhấn âm hai.`,
+  follow: [
+    'What did you learn from the experience of being laid off?',
+    'How long have you been looking, and what have you done in the meantime?',
+    'What would make you leave your next company voluntarily?',
+  ],
+  tags: ['layoff', 'career', 'motivation', 'communication'],
+  lang: 'en',
+},
+{
+  id: 'english-087',
+  topic: 'english',
+  level: 'senior',
+  q: 'How do you ask for a raise or promotion in English? Walk me through how you would prepare and what you would say.',
+  a: `**Tóm tắt:** Chuẩn bị **bằng chứng có số**, chọn timing (sau thành tựu lớn, không phải lúc công ty khó khăn), và dùng giọng **hợp tác**: nêu đóng góp → nêu mong muốn → hỏi feedback → thoả thuận mốc thời gian. Tránh ultimatum.
+
+### Sample answer
+I would prepare a one-page document with three sections: what I delivered in the last six months with numbers, what I plan to deliver in the next six, and the gap between my current compensation and the market range for my role.
+
+The conversation itself I would keep collaborative. I would open with: "I would like to talk about my role and compensation. Over the last two quarters I led the migration that cut deployment time by forty percent and mentored two engineers to on-call readiness. I am looking for a move to senior-two and a compensation adjustment to around X. What would need to be true for that to happen?"
+
+Then I listen. If the answer is "not now", I ask what the path looks like and by when, and I write it down. I do not threaten to leave. An ultimatum usually backfires because even if they pay, trust is damaged.
+
+### Useful phrases
+- **I would like to talk about my role and compensation**: tôi muốn nói về vai trò và lương của mình
+- **what would need to be true**: điều kiện gì cần đạt được
+- **I write it down**: tôi ghi lại
+- **an ultimatum usually backfires**: tối hậu thư thường phản tác dụng
+- **trust is damaged**: niềm tin bị tổn hại
+
+> Senior tip: Đừng dùng "I deserve a raise" — nghe như đòi quyền. Dùng **"I am looking for"** và **"what would need to be true"** để biến yêu cầu thành cuộc đối thoại. Timing quan trọng: hỏi sau một thành tựu lớn, không phải trong quý khó khăn. Tiếng Anh: **compensation** /ˌkɒmpenˈseɪʃn/ nhấn âm ba, và **adjustment** /əˈdʒʌstmənt/ nhấn âm hai.`,
+  follow: [
+    'What if your manager says the budget is frozen?',
+    'How do you research the market range for your role?',
+    'Would you accept a promotion without a pay increase?',
+  ],
+  tags: ['salary', 'promotion', 'negotiation', 'career'],
+  lang: 'en',
+},
+{
+  id: 'english-088',
+  topic: 'english',
+  level: 'senior',
+  q: 'Give me your closing pitch: how would you wrap up an interview and leave a strong final impression?',
+  a: `**Tóm tắt:** Kết thúc bằng **tóm tắt ngắn những gì bạn mang lại + điều bạn muốn học + câu hỏi cuối**. Giữ dưới 60 giây, tự tin nhưng không khoe. Tránh lặp lại toàn bộ buổi phỏng vấn.
+
+### Sample answer
+I would close with three sentences. First, a summary of fit: "From what we discussed, I think I can contribute quickly on the orchestration and reliability side, because that is exactly the work I have been doing for the last three years."
+
+Second, what I want to learn: "I am also excited about the multi-region work you mentioned, because that is the problem I want to grow into next."
+
+Third, a closing question: "Is there anything about my background that makes you hesitate, so I can address it now?" That question shows confidence and gives you a chance to fix a concern on the spot.
+
+Then I thank them, ask about next steps and timeline, and follow up with a short thank-you email the same day referencing one specific thing we discussed.
+
+### Useful phrases
+- **I can contribute quickly on**: tôi có thể đóng góp nhanh ở
+- **that is the problem I want to grow into**: đó là vấn đề tôi muốn phát triển vào
+- **makes you hesitate**: khiến bạn do dự
+- **address it now**: giải quyết ngay bây giờ
+- **follow up with a short email**: gửi email ngắn theo sau
+
+> Senior tip: Đừng kết thúc bằng "I think I did well" — nghe tự đánh giá. Cũng đừng khoe quá dài; 60 giây là đủ. Câu "Is there anything that makes you hesitate?" là mạnh vì nó **mời phản đối** và cho bạn cơ hội sửa. Tiếng Anh: **hesitate** /ˈhezɪteɪt/ nhấn âm đầu, và **fit** /fɪt/ trong ngữ cảnh này nghĩa là sự phù hợp.`,
+  follow: [
+    'What would you do if the interviewer says they have a concern about your experience?',
+    'Is it appropriate to ask about next steps at the end?',
+    'How do you write a good thank-you email after an interview?',
+  ],
+  tags: ['interview-skills', 'closing', 'communication', 'career'],
+  lang: 'en',
+},
+{
+  id: 'english-089',
+  topic: 'english',
+  level: 'mid',
+  q: 'You did not understand or did not hear the interviewer\'s question. How do you ask them to repeat or clarify politely in English?',
+  a: `**Tóm tắt:** Dùng câu mẫu lịch sự, ngắn gọn, và **nêu lý do** (audio, wording) thay vì chỉ nói "what?". Sau khi nghe lại, xác nhận lại bằng lời của bạn để chứng minh bạn đã hiểu. Tránh xin nhắc lại quá nhiều lần.
+
+### Sample answer
+I would never say "What?" or "Sorry, I don't understand" on repeat. Instead I use one of these, depending on the situation.
+
+If I did not hear: "I am sorry, I did not catch that last part. Could you say it again?" Or "The connection dropped for a second. Could you repeat the question?"
+
+If I heard but did not understand: "Just to make sure I follow, are you asking about X or Y?" Or "Could you clarify what you mean by 'scale' in this context?"
+
+After they repeat, I confirm in my own words: "So you are asking whether I would use a cache here. Is that right?" That shows I am engaged and prevents me from answering the wrong question.
+
+If I still do not understand after one repeat, I say so honestly: "I want to make sure I answer the right thing. Let me rephrase what I heard, and you can correct me." That is better than guessing and talking for two minutes about the wrong topic.
+
+### Useful phrases
+- **I did not catch that**: tôi không nghe rõ chỗ đó
+- **could you say it again**: anh/chị có thể nói lại được không
+- **just to make sure I follow**: để chắc là tôi theo kịp
+- **are you asking about X or Y**: anh/chị đang hỏi về X hay Y
+- **let me rephrase what I heard**: để tôi nhắc lại những gì tôi nghe
+
+> Senior tip: Người Việt hay nói "Can you repeat again?" — sai vì "repeat" đã bao hàm "again"; đúng là "Could you repeat that?" hoặc "Could you say that again?". Cũng tránh "I don't understand" lặp lại nhiều lần; dùng "Could you clarify...?" nghe chuyên nghiệp hơn. Tiếng Anh: **clarify** /ˈklærɪfaɪ/ nhấn âm đầu, và **rephrase** /riːˈfreɪz/ nhấn âm hai.`,
+  follow: [
+    'What do you do if the interviewer gives a hint you still do not understand?',
+    'How many times is it acceptable to ask for repetition in one interview?',
+    'How do you handle a question you genuinely cannot answer?',
+  ],
+  tags: ['interview-skills', 'communication', 'clarification', 'listening'],
+  lang: 'en',
+},
 );
