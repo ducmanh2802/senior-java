@@ -3,6 +3,60 @@
 ## 2026-11-05
 
 ### Nội dung
+- T652 (auto-committed after kilo review + verify)
+- T651 (auto-committed after kilo review + verify)
+- T158 (auto-committed after kilo review + verify)
+- T113 (auto-committed after kilo review + verify)
+- T315 (auto-committed after kilo review + verify)
+- T139 (auto-committed after kilo review + verify)
+- T638 (auto-committed after kilo review + verify)
+- T640 (auto-committed after kilo review + verify)
+- T635 (auto-committed after kilo review + verify)
+- T133 (auto-committed after kilo review + verify)
+- T118 (auto-committed after kilo review + verify)
+- T637 (auto-committed after kilo review + verify)
+- T633 (auto-committed after kilo review + verify)
+- T138 (auto-committed after kilo review + verify)
+- T636 (auto-committed after kilo review + verify)
+- T630 (auto-committed after kilo review + verify)
+- T116 (auto-committed after kilo review + verify)
+- T611 (auto-committed after kilo review + verify)
+- T578 (auto-committed after kilo review + verify)
+- T56 (auto-committed after kilo review + verify)
+- T354 (auto-committed after kilo review + verify)
+- T624 (auto-committed after kilo review + verify)
+- T118 (auto-committed after kilo review + verify)
+- T618 (auto-committed after kilo review + verify)
+- T128 (auto-committed after kilo review + verify)
+- T294 (auto-committed after kilo review + verify)
+- T134 (auto-committed after kilo review + verify)
+- T621 (auto-committed after kilo review + verify)
+- T618 (auto-committed after kilo review + verify)
+- T616 (auto-committed after kilo review + verify)
+- T591 (auto-committed after kilo review + verify)
+- T579 (auto-committed after kilo review + verify)
+- T298 (auto-committed after kilo review + verify)
+- T126 (auto-committed after kilo review + verify)
+- T110 (auto-committed after kilo review + verify)
+- T131 lessons-jvm-004/005 (fixes path.js refs blocking autopilot verify)
+- T353 (auto-committed after kilo review + verify)
+- T601 (auto-committed after kilo review + verify)
+- T586 (auto-committed after kilo review + verify)
+- T127 (auto-committed after kilo review + verify)
+- T611 (auto-committed after kilo review + verify)
+- T597 (auto-committed after kilo review + verify)
+- T111 (auto-committed after kilo review + verify)
+
+### Ứng dụng
+- Register autotest topic: manifest entries + empty q/quiz/lessons files
+- Step-through diagrams (◀ ▶) + explain-back AI grading on lessons
+- Path: add new jvm/devops/core/concurrency lessons to stages
+- Diagrams: ~~~seq sequence diagrams in App.md (js/core/diagram.js), shared with project business section; validator checks syntax
+
+
+## 2026-11-05
+
+### Nội dung
 - T610 (auto-committed after kilo review + verify)
 - T362 (auto-committed after kilo review + verify)
 - T596 (auto-committed after kilo review + verify)
