@@ -204,6 +204,18 @@ Giá trị của annotation phải là hằng compile-time nên không nối bi�
 - **Payload (claims)**: {{sub}} (subject/userId), {{exp}} (expiry Unix timestamp), {{iat}} (issued at), {{iss}} (issuer), {{aud}} (audience), {{jti}} (JWT ID), custom claims ({{roles}}, {{permissions}}, {{token_version}}).
 - **Signature**: {{base64url(header) + "." + base64url(payload)}} ký bằng private key (RS256) hoặc secret (HS256).
 
+Sơ đồ dưới đây minh họa resource server xác thực JWT với JWKS:
+
+~~~seq
+title: Xac thuc JWT tai resource server
+actors: Client | Resource Server | Auth Server
+Client -> Resource Server: GET /api (Bearer JWT)
+Resource Server -> Auth Server: lay cong khai tu JWKS
+Auth Server --> Resource Server: JWKS (cong khai)
+Resource Server --> Client: 200 OK hoac 401 loi
+note Client..Auth Server: verify chu ky + exp + iss + aud
+~~~
+
 ### HS256 vs RS256 — chọn cái nào?
 | Tiêu chí | HS256 (HMAC-SHA256) | RS256 (RSA-SHA256) |
 |---|---|---|
@@ -284,6 +296,21 @@ public TokenPair refresh(RefreshRequest req) {
 | Resource Owner Password | Legacy migration only — đã bị loại trong OAuth 2.1, RFC 9700: MUST NOT | Có | Có | Có | Không |
 
 > OAuth 2.1 / RFC 9700 khuyến nghị PKCE cho **mọi** client dùng Authorization Code, kể cả confidential client (web backend), không chỉ SPA/mobile.
+
+Sơ đồ dưới đây minh họa luồng Authorization Code + PKCE cho SPA:
+
+~~~seq
+title: OAuth2 Authorization Code + PKCE
+actors: SPA | Auth Server | DB
+SPA -> Auth Server: /authorize?code_challenge&state
+Auth Server --> SPA: dang nhap/phan cong
+Auth Server --> SPA: redirect ?code&state
+SPA -> Auth Server: /token (code + verifier)
+Auth Server -> DB: kiem tra code
+DB --> Auth Server: ket qua
+Auth Server --> SPA: access + refresh token
+note SPA..DB: PKCE chặn trộm authorization code
+~~~
 
 ### Authorization Code + PKCE (RFC 7636) — SPA & Mobile
 1. App sinh {{code_verifier}} (random 43-128 chars) → {{code_challenge = BASE64URL(SHA256(code_verifier))}}.
@@ -435,6 +462,18 @@ $argon2id$v=19$m=65536,t=3,p=4$c2FsdA$hash
 - Victim login {{bank.com}} → có cookie {{JSESSIONID}}.
 - Attacker trang {{evil.com}} nhúng {{<form action="https://bank.com/transfer" method="POST">}} → victim click → browser gửi kèm {{JSESSIONID}} → chuyển tiền thành công.
 - Yếu tố then chốt: **browser tự gửi cookie** với request cross-origin.
+
+Sơ đồ dưới đây minh họa tấn công CSRF:
+
+~~~seq
+title: Tan cong CSRF
+actors: Victim | Evil Site | Bank
+Victim -> Evil Site: xem trang web ech
+Evil Site --> Victim: form POST /transfer (an)
+Victim -> Bank: POST /transfer (cookie di kem)
+Bank --> Victim: chuyen tien thanh cong
+note Victim..Bank: trinh duyet tu dong gui cookie session
+~~~
 
 ### SameSite Cookie — phòng thủ dòng đầu (Chrome/Edge 80+ coi cookie không khai báo SameSite là Lax; Firefox/Safari chưa bật mặc định này — nên luôn set tường minh)
 | Giá trị | Hành vi | CSRF protection |
@@ -795,6 +834,19 @@ public String hybridEncrypt(String plain, PublicKey rsaPublic) throws GeneralSec
 - Server verify client cert chain với truststore.
 - Dùng cho: **service-to-service** (zero-trust), **API partner ngân hàng**, **device authentication**.
 
+Sơ đồ dưới đây minh họa handshake mTLS (mutual TLS):
+
+~~~seq
+title: Handshake mTLS
+actors: Client | Server
+Client -> Server: ClientHello + key_share
+Server --> Client: ServerHello + cert + CertificateVerify
+Client -> Server: client cert + CertificateVerify
+Client --> Server: Finished (ung ma du lieu)
+Server --> Client: Finished (ung ma du lieu)
+note Client..Server: server yeu cau client cert
+~~~
+
 ### Keystore vs Truststore trong Java
 | | **Keystore** ({{-Djavax.net.ssl.keyStore}}) | **Truststore** ({{-Djavax.net.ssl.trustStore}}) |
 |---|---|---|
@@ -875,6 +927,19 @@ public boolean verify(String payload, String timestamp, String nonce, String sig
 }
 ~~~
 
+Sơ đồ dưới đây minh họa ky request bang HMAC giua ngan hang va doi tac:
+
+~~~seq
+title: Ky request bang HMAC
+actors: Bank | Partner | Redis
+Bank -> Partner: yeu cau, timestamp, nonce, signature
+Partner -> Redis: kiem tra nonce
+Redis --> Partner: nonce chua su dung
+Partner -> Partner: verify HMAC + timestamp
+Partner --> Bank: 200 OK hoac 401
+note Bank..Partner: check thoi gian + nonce TTL
+~~~
+
 ### Chữ ký số (Asymmetric) — Non-repudiation, Partner/Banking
 - Sender: private key (RSA-PSS/ECDSA-P256) sign payload + timestamp + nonce.
 - Receiver: public key (X.509 cert) verify.
@@ -942,6 +1007,18 @@ public boolean verify(String payload, String timestamp, String nonce, String sig
 - Vector: API fetch URL từ user input (webhook, avatar URL, document import, PDF generator).
 - Target: {{http://169.254.169.254}} (AWS metadata), {{http://localhost:8080}}, {{http://127.0.0.1}}, private IP ranges, internal services.
 - Impact: credential theft (IAM role), internal service enumeration, RCE via internal admin panel.
+
+Sơ đồ dưới đây minh họa tan cong SSRF lay credential tu metadata cloud:
+
+~~~seq
+title: SSRF lay credential tu metadata
+actors: Attacker | App | Metadata
+Attacker -> App: fetch URL tu nguoi dung
+App -> Metadata: lay IAM credential
+Metadata --> App: tra ve IAM role credential
+App --> Attacker: tra ve du lieu (kem credential)
+note Attacker..Metadata: chuan bi whitelist host
+~~~
 
 ~~~java
 // ❌ NGUY HIỂM
@@ -1486,6 +1563,19 @@ spring:
 3. **Alternating users** ({{app_user}} và {{app_user_clone}}): mỗi lần xoay chỉ đổi mật khẩu của user **đang không dùng** rồi chuyển AWSCURRENT sang user đó. User cũ vẫn đăng nhập được tới lần xoay kế tiếp → app có cả một chu kỳ để refresh. Đây là lựa chọn an toàn cho DB production.
 4. Consumer luôn đọc {{AWSCURRENT}}; {{AWSPREVIOUS}} chỉ là nhãn để rollback, không có nghĩa mật khẩu cũ còn dùng được (với single user thì đã chết).
 
+Sơ đồ dưới đây minh họa rotation secret qua AWS Secrets Manager:
+
+~~~seq
+title: Rotation secret AWS Secrets Manager
+actors: App | Secrets Manager | Lambda | DB
+App -> Secrets Manager: lay secret (AWSCURRENT)
+App -> DB: ket noi voi mat khau hien tai
+Lambda -> Secrets Manager: tao mat khau moi
+Lambda -> DB: doi mat khau user
+Lambda -> Secrets Manager: chuyen AWSCURRENT sang moi
+note App..DB: connection pool phai doc lai secret
+~~~
+
 ### Bẫy lớn nhất: connection pool giữ credential cũ
 - HikariCP tạo connection với mật khẩu tại thời điểm tạo; connection sống lâu sẽ tiếp tục dùng session đã mở. Khi DB đổi mật khẩu, connection **mới** sẽ fail nếu app chưa đọc secret mới.
 - Giải pháp: đọc lại secret theo lịch ngắn (vài phút) và đặt {{maxLifetime}} thấp hơn nhiều so với chu kỳ rủi ro (rotation 30 ngày, maxLifetime 20–30 phút là đủ dư). {{validationTimeout}} (mặc định 5 giây, kiểm tra lúc borrow connection) cứ để khoảng mặc định, đừng kéo dài.
@@ -1728,6 +1818,23 @@ JWT + denylist      : t1 - t0 = độ trễ lan truyền denylist (vài ms nếu
 Hãy hỏi nghiệp vụ một con số cụ thể. Ví dụ ngân hàng thường yêu cầu: "khách báo mất điện thoại, khoá xong thì **trong 5 giây** không giao dịch được nữa". Một trang đọc tin tức có thể chấp nhận 1 giờ.
 
 ### 2. Ba kiến trúc và chi phí
+
+Sơ đồ dưới đây minh họa dang nhap bang session cookie (web):
+
+~~~seq
+title: Dang nhap session cookie (web)
+actors: User | Trinh duyet | Web | Redis
+User -> Trinh duyet: nhap tai khoan/mat khau
+Trinh duyet -> Web: POST /login
+Web -> Redis: luu session (Session ID)
+Redis --> Web: OK
+Web --> Trinh duyet: cookie SESSION (HttpOnly, Secure)
+Trinh duyet -> Web: yeu cau + cookie SESSION
+Web -> Redis: kiem tra session
+Redis --> Web: session hop le
+Web --> Trinh duyet: du lieu
+~~~
+
 **(a) Session lưu trạng thái** (Spring Session + Redis): trình duyệt giữ cookie {{SESSION}} (HttpOnly, Secure, SameSite), mỗi request service đọc session từ Redis.
 - Thu hồi: xoá key trong Redis, hiệu lực ngay.
 - Chi phí: 1 lần đọc Redis mỗi request (thường dưới 1 ms cùng AZ). 5.000 req/s là 5.000 ops/s, một node Redis chịu thoải mái. Rủi ro thật là **Redis thành điểm phụ thuộc**: Redis chết thì mọi người bị đăng xuất hoặc không đăng nhập được, nên cần replica/failover và không để eviction xoá session (đặt {{maxmemory-policy noeviction}} cho cluster session).
