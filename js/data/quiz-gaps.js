@@ -1882,5 +1882,235 @@ Dòng lệch do timing (giao dịch có ở core nhưng chưa có ở đối tá
 - **Yêu cầu khách liên hệ ngân hàng**: khách không có thông tin kỹ thuật để báo; việc đối chiếu là việc của hệ thống, không phải của khách.
 
 > Senior tip: Reconciliation dashboard với aging report (phân loại unmatched theo độ tuổi: 0-2h, 2-24h, >24h) để ưu tiên xử lý các dòng cũ. Unmatched queue nên dùng message queue (Kafka/RabbitMQ) để scalable và không mất job nếu server restart.`
+},
+{
+  id: 'qz-behavioral-015',
+  topic: 'behavioral',
+  q: 'Lead kỹ thuật muốn áp dụng mẫu thiết kế phức tạp (ví dụ event sourcing) cho tính năng nội bộ nhỏ, nhưng bạn lo rủi ro vận hành quá cao so với nhu cầu. Cách phản hồi tốt nhất là gì?',
+  options: [
+    'Đồng ý ngay để không làm lead khó xử, sau đó tự triển khai cách đơn giản hơn mà không nói với ai.',
+    'Phản đối trực tiếp tại họp và nói mẫu thiết kế này quá phức tạp, không nên dùng cho tính năng nhỏ.',
+    'Ghi nhận quan điểm của lead, rồi nêu lo ngại cụ thể (tính năng nhỏ, team chưa có kinh nghiệm event sourcing, vận hành phức tạp hơn). Đề xuất làm spike 2 ngày để so sánh với cách hiện tại, và để lead quyết định cuối cùng.',
+    'Bỏ qua và làm theo cách của mình, vì bạn là senior hơn lead về kinh nghiệm.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: phương án 2.**
+
+### Vì sao đúng
+Phản hồi này làm theo ba bước bất đồng lịch sự: ghi nhận quan điểm của lead, nêu lo ngại cụ thể về vấn đề kỹ thuật (không phán xét người), và đề xuất cách xác minh bằng số liệu (spike 2 ngày) trước khi để lead quyết định cuối cùng. Điều này thể hiện tư duy kỹ thuật, tôn trọng và ownership — đúng tầm Senior.
+
+### Vì sao các phương án khác sai
+- **Phương án 0**: đồng ý mặt ngoài thì làm khác phía sau làm mất niềm tin, và lead không có cơ hội sửa định hướng sai.
+- **Phương án 1**: phán xét mẫu thiết kế là quá phức tạp và tấn công người đưa ra ý tưởng thay vì bàn vấn đề, gây đối đầu không cần thiết.
+- **Phương án 3**: thử thống trị bằng vị trí senior, bỏ qua quy trình ra quyết định của team. Làm hỏng quan hệ làm việc.
+
+> Senior tip: khi bất đồng với người cấp trên, hãy dùng khung "Tôi hiểu quan điểm của bạn, sau đó nêu lo ngại, rồi đề xuất cách thử X". Luôn bàn ý tưởng, không bàn người.`
+},
+{
+  id: 'qz-behavioral-016',
+  topic: 'behavioral',
+  q: 'Quản lý yêu cầu hoàn thành tính năng mới trong 3 tuần, nhưng bạn ước lượng cần ít nhất 6 tuần vì hệ thống bên thứ ba chưa có tài liệu tích hợp. Cách xử lý tốt nhất là gì?',
+  options: [
+    'Nhận việc và làm thêm giờ cả tuần để cố gắng kịp 3 tuần, không báo gì trước khi đến hạn.',
+    'Từ chối trực tiếp: "3 tuần là không thể, tôi cần 6 tuần", và không làm gì cho đến khi quản lý đồng ý.',
+    'Báo sớm cho quản lý ước lượng 6 tuần kèm nguyên nhân, đưa ra 2 lựa chọn: lùi deadline, hoặc cắt phạm vi (tích hợp đơn giản trước, nâng cấp sau). Quản lý chọn lùi 1 tuần và cắt phạm vi, tính năng lên đúng hạn mới.',
+    'Làm theo 3 tuần và hy vọng hệ thống bên thứ ba sẽ có tài liệu kịp thời.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: phương án 2.**
+
+### Vì sao đúng
+Câu trả lời này thể hiện cách xử lý trưởng thành khi deadline không thực tế: thừa nhận ước lượng của chính mình có thể sai, nêu nguyên nhân khách quan nhưng không đổ lỗi, báo sớm (không đợi đến ngày cuối), và đưa ra lựa chọn có trade-off để người ra quyết định chọn. Có kết quả cụ thể và thay đổi quy trình để không lặp lại.
+
+### Vì sao các phương án khác sai
+- **Phương án 0**: nhận việc và làm thêm giờ không bền vững, chất lượng dễ giảm, và che giấu vấn đề capacity với quản lý.
+- **Phương án 1**: từ chối trực tiếp không đưa ra giải pháp hay trade-off, khiến quản lý không có dữ liệu để quyết định.
+- **Phương án 3**: hy vọng là không phải chiến thuật. Nếu hệ thống bên thứ ba không có tài liệu kịp, tính năng sẽ trễ hoặc lỗi.
+
+> Senior tip: câu then chốt là "tôi báo sớm kèm phương án". Tin xấu đến sớm thì vẫn còn lựa chọn, tin xấu đến muộn chỉ còn hậu quả.`
+},
+{
+  id: 'qz-behavioral-017',
+  topic: 'behavioral',
+  q: 'Bạn vô tình áp dụng thay đổi cấu hình cache sai gây quá tải cơ sở dữ liệu và gián đoạn dịch vụ khoảng 15 phút trong giờ cao điểm. Cách trả lời tốt nhất khi interviewer hỏi về sự cố này là gì?',
+  options: [
+    'Lỗi do hệ thống cache cũ không ổn định, không phải lỗi của bạn, nên không cần kiểm tra lại.',
+    'Bạn nhận lỗi: đã thay đổi TTL cache không kiểm tra trên môi trường staging, gây quá tải DB. Khôi phục cấu hình ngay, cùng on-call giám sát DB, rồi viết postmortem và thêm bước review cấu hình trước khi áp dụng production.',
+    'Báo cho manager là sự cố do hạ tầng, và nghỉ hẹn trước khi vấn đề được xử lý xong.',
+    'Bạn luôn kiểm tra kỹ trước khi deploy nên sự cố này không thể do bạn gây ra.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 1.**
+
+### Vì sao đúng
+Câu trả lời này thể hiện ownership rõ ràng ("tôi nhận lỗi"), chi tiết kỹ thuật chính xác (thay đổi TTL cache không kiểm tra trên staging), xử lý incident bài bản (khôi phục, giám sát, giao tiếp), và phòng ngừa hệ thống (postmortem, bước review cấu hình). Đây là dấu hiệu của kỹ sư Senior chịu trách nhiệm.
+
+### Vì sao các phương án khác sai
+- **Phương án 0**: phủ nhận trách nhiệm và đổ lỗi cho hệ thống. Câu hỏi yêu cầu sự cố do bạn gây ra, trả lời bằng cách phủ nhận là tín hiệu xấu.
+- **Phương án 2**: bỏ cuộc trước khi xử lý xong, không chuyên nghiệp và làm đồng nghiệp phải gánh thêm.
+- **Phương án 3**: giả định và thiếu thực tế. Mọi kỹ sư làm production đủ lâu đều từng gây sự cố; khẳng định ngược lại khiến interviewer nghi ngờ sự trung thực.
+
+> Senior tip: kể sự cố theo khung postmortem: tác động → phát hiện → giảm thiểu → nguyên nhân gốc → hành động phòng ngừa. Blameless có nghĩa là không quy tội cá nhân, không có nghĩa là không ai sở hữu vấn đề.`
+},
+{
+  id: 'qz-behavioral-018',
+  topic: 'behavioral',
+  q: 'Một đồng nghiệp trong team liên tục không hoàn thành phần việc được giao, ảnh hưởng đến tiến độ của toàn bộ sprint. Cách xử lý tốt nhất là gì?',
+  options: [
+    'Nhận hết công việc của họ và tự làm để sprint không bị trễ, không nói gì với ai.',
+    'Hẹn hò 1-1 để hiểu nguyên nhân (ví dụ quá tải, chưa hiểu yêu cầu, vấn đề cá nhân), cung cấp hỗ trợ hoặc chia nhỏ công việc, đặt mong đợi rõ ràng; nếu vẫn không cải thiện thì trình bày minh bạch với lead.',
+    'Báo ngay với lead rằng đồng nghiệp này không làm việc và đề xuất chuyển họ ra khỏi team.',
+    'Bỏ qua, vì công việc của bạn đã xong đúng hạn và không phải vấn đề của bạn.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 1.**
+
+### Vì sao đúng
+Cách xử lý này ưu tiên hiểu trước khi hành động: hẹn 1-1 để tìm nguyên nhân thực sự (quá tải, chưa hiểu yêu cầu, hay vấn đề cá nhân), sau đó cung cấp hỗ trợ phù hợp, chia nhỏ công việc và đặt mong đợi rõ ràng. Nếu vẫn không cải thiện, trình bày minh bạch với lead. Điều này thể hiện sự đồng cảm, năng lực quản lý và sở hữu kết quả của team.
+
+### Vì sao các phương án khác sai
+- **Phương án 0**: hero mode. Sprint đúng hạn ngắn hạn nhưng đồng nghiệp không tiến bộ, và bạn trở thành nút thắt cổ chai. Che giấu vấn đề capacity.
+- **Phương án 2**: bỏ qua mọi nỗ lực hỗ trợ, gán nhãn "không làm việc" khi chưa tìm nguyên nhân. Thể hiện thiếu sự đồng cảm và tinh thần team.
+- **Phương án 3**: bỏ qua ảnh hưởng đến kết quả chung. Với vị trí Senior, interviewer muốn thấy bạn chịu trách nhiệm cho kết quả của team, không chỉ phần việc cá nhân.
+
+> Senior tip: khi nói về người khác trong câu trả lời, giữ tôn trọng (không nêu tên, không chê bai) và nhấn mạnh kết quả của họ, không phải công lao của bạn.`
+},
+{
+  id: 'qz-behavioral-019',
+  topic: 'behavioral',
+  q: 'Manager giao nhiệm vụ "tối ưu hóa hệ thống báo cáo" mà không chỉ ra mục tiêu cụ thể, chỉ số nào cần cải thiện hay deadline. Cách phản hồi tốt nhất là gì?',
+  options: [
+    'Bắt đầu viết code tối hoá ngay theo ý mình để thể hiện chủ động, không cần hỏi thêm.',
+    'Nói rằng nhiệm vụ quá mơ hồ, bạn không thể làm vì không có yêu cầu rõ ràng.',
+    'Hỏi các câu làm rõ: mục tiêu là giảm thời gian tạo báo cáo hay giảm tải DB? Hiện tại mất bao lâu, mục tiêu là bao lâu? Ai là người sử dụng báo cáo? Sau đó viết một bản tóm tắt phạm vi và xác nhận với manager trước khi bắt đầu.',
+    'Giao lại cho một thành viên khác vì họ dường nào sẽ biết yêu cầu hơn.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: phương án 2.**
+
+### Vì sao đúng
+Khi được giao việc mơ hồ, cách xử lý đúng là làm rõ trước khi hành động: hỏi các câu cụ thể về mục tiêu, chỉ số, người dùng và deadline. Sau đó tóm tắt phạm vi và xác nhận với manager. Điều này tránh việc xây dựng sai hướng, lãng phí thời gian, và thể hiện tư duy phân tích của Senior.
+
+### Vì sao các phương án khác sai
+- **Phương án 0**: xây dựng theo ý mình mà không làm rõ có thể làm sai hướng, lãng phí công sức, và phải làm lại từ đầu.
+- **Phương án 1**: từ chối không đưa ra giải pháp, gây ấn tượng thiếu chủ động và không biết giải quyết sự mơ hồ.
+- **Phương án 3**: giao lại cho người khác không giải quyết được vấn đề mơ hồ, chỉ đẩy gánh nặng cho đồng nghiệp khác.
+
+> Senior tip: việc mơ hồ là cơ hội để thể hiện năng lực phân tích. Hãy viết một bản tóm tắt phạm vi ngắn (mục tiêu, chỉ số, phạm vi, phi phạm vi, deadline) và gửi manager xác nhận trước khi bắt đầu code.`
+},
+{
+  id: 'qz-english-023',
+  topic: 'english',
+  multi: true,
+  q: 'A teammate asks you to take on an urgent task, but you are already at full capacity. Which 2 responses are polite and professional? (Choose 2)',
+  options: [
+    "I'd like to help, but I'm at full capacity this sprint. Can we discuss priority with our lead, or can this wait until next week?",
+    'No, I am too busy. Ask someone else.',
+    "I can take it, but something else will have to slip. Which of my current tasks should I deprioritize?",
+    'Sure, I will do it even if I have to work all weekend.'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: phương án 0 và 2.**
+
+### Vì sao đúng
+Cả hai đều từ chối yêu cầu một cách lịch sự và chuyên nghiệp, đồng thời đưa ra giải pháp thay thế. Phương án 0 nhấn mạnh hiện tại đang full capacity và đề xuất thảo luận ưu tiên với lead hoặc hoãn sang tuần sau. Phương án 2 chấp nhận nhận việc nhưng minh bạch về trade-off (nhiều việc khác sẽ bị hoãn) và hỏi xem nhiệm vụ nào nên được ưu tiên giảm bớt.
+
+### Vì sao các phương án khác sai
+- **Phương án 1**: "No, I am too busy. Ask someone else." đúng ngữ pháp nhưng quá thẳng thắn, thiếu lịch sự và không đưa ra giải pháp thay thế. Trong môi trường làm việc quốc tế, cách nói này gây ấn tượng xấu.
+- **Phương án 3**: đồng ý làm dù phải làm thêm giờ cuối tuần không bền vững, dễ dẫn đến burnout và chất lượng giảm. Nó cũng che giấu vấn đề capacity với quản lý.
+
+> Senior tip: khi từ chối yêu cầu, hãy dùng cấu trúc "Tôi muốn giúp, nhưng…" + nêu lý do cụ thể + đề xuất thay thế hoặc hỏi ưu tiên. Tránh từ chối trần tuýt và tránh đồng ý mọi thứ đến mức làm quá tải bản thân.`
+},
+{
+  id: 'qz-english-024',
+  topic: 'english',
+  q: 'You realize you will not finish a task by the agreed deadline. Which message is best to send to your manager?',
+  options: [
+    'I will not finish on time.',
+    "I'm flagging a risk: the third-party API integration is taking longer than expected. I expect to finish by Thursday instead of Wednesday. I can either deliver a simpler version by Wednesday or the full version by Thursday — which do you prefer?",
+    'Sorry, I am late. The other team did not give me the documentation.',
+    'I think the deadline was unrealistic from the start.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 1.**
+
+### Vì sao đúng
+Câu trả lời này báo sớm (flagging a risk), nêu nguyên nhân cụ thể (tích hợp API bên thứ ba mất thời gian hơn dự kiến), đưa ra ngày dự kiến mới (Thứ Năm thay vì Thứ Tư), và đưa ra 2 lựa chọn có trade-off (phiên bản đơn giản vào thứ Tư hoặc phiên bản đầy đủ vào thứ Năm) để quản lý quyết định. Đây là cách communicate chuyên nghiệp của một Senior.
+
+### Vì sao các phương án khác sai
+- **Phương án 0**: "I will not finish on time." chỉ báo tin xấu mà không đưa ra nguyên nhân, ngày mới, hay giải pháp. Không đủ thông tin để quản lý quyết định.
+- **Phương án 2**: đổ lỗi cho team khác ("The other team did not give me the documentation") và không đưa ra ngày hoàn thành mới hay giải pháp.
+- **Phương án 3**: phán xét deadline không thực tế ngay từ đầu nhưng không đưa ra giải pháp hoặc kế hoạch tiếp theo. Nghe như tìm lý do thay vì xử lý vấn đề.
+
+> Senior tip: khi báo trễ tiến độ, hãy báo sớm, nêu nguyên nhân khách quan (không đổ lỗi), đưa ra ngày mới và ít nhất một lựa chọn có trade-off để quản lý có thể quyết định nhanh.`
+},
+{
+  id: 'qz-english-025',
+  topic: 'english',
+  q: 'You did not hear the interviewer clearly because of a bad connection. Which response is most natural and polite?',
+  options: [
+    'What? Say that again.',
+    'I did not understand. Your English is unclear.',
+    "Sorry, I think the connection cut out. Could you repeat the last part, please?",
+    'I will answer anyway, even though I did not hear the question.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: phương án 2.**
+
+### Vì sao đúng
+"Sorry, I think the connection cut out. Could you repeat the last part, please?" nhận lỗi về kết nối (không đổ lỗi cho người nói), dùng cụm lịch sự "Could you repeat… please?", và cụ thể hóa phần cần lặp lại ("the last part"). Đây là cách tự nhiên và chuyên năng trong phỏng vấn từ xa.
+
+### Vì sao các phương án khác sai
+- **Phương án 0**: "What? Say that again." quá thô lỗ, thiếu lịch sự, và không nhận lỗi về kết nối.
+- **Phương án 1**: "I did not understand. Your English is unclear." đổ lỗi cho người nói (nói tiếng Anh của họ không rõ), gây bất cảm và không chuyên nghiệp.
+- **Phương án 3**: trả lời dù không nghe rõ câu hỏi dễ dẫn đến trả lời sai vấn đề, làm interviewer đánh giá bạn không lắng nghe hoặc không thèm làm rõ.
+
+> Senior tip: nếu không nghe rõ do kết nối, hãy nhận lỗi về kết nối thay vì đổ lỗi cho người khác, rồi yêu cầu lặp lại phần cụ thể. Việc hỏi lại để làm rõ là điểm cộng chứ không phải điểm trừ.`
+},
+{
+  id: 'qz-english-026',
+  topic: 'english',
+  multi: true,
+  q: 'You need to summarize a production incident to a non-technical stakeholder. Which 2 elements should you include? (Choose 2)',
+  options: [
+    'The exact SQL query that failed and the stack trace.',
+    'What happened, how long it lasted, and how it affected users (in plain language).',
+    'What we are doing to fix it and how we will prevent it from happening again.',
+    'The names of the engineers who caused the incident.'
+  ],
+  answer: [1, 2],
+  explain: `**Đáp án đúng: phương án 1 và 2.**
+
+### Vì sao đúng
+Khi tóm tắt sự cố cho stakeholder không kỹ thuật, nên tập trung vào: (1) gì đã xảy ra, kéo dài bao lâu, và tác động đến người dùng như thế nào (bằng ngôn ngữ thường ngày, không thuật ngữ kỹ thuật sâu), và (2) nhóm đang làm gì để khắc phục và cách phòng ngừa lần sau. Điều này giúp stakeholder hiểu rõ tình hình và tin tưởng vào team.
+
+### Vì sao các phương án khác sai
+- **Phương án 0**: câu truy vấn SQL và stack trace là chi tiết kỹ thuật quá sâu, stakeholder không kỹ thuật không hiểu và không cần biết.
+- **Phương án 3**: nêu tên kỹ sư gây ra sự cố vi phạm nguyên tắc blameless (không quy tội cá nhân) và không hữu ích cho việc khắc phục sự cố.
+
+> Senior tip: stakeholder quan tâm đến tác động kinh doanh (người dùng bị ảnh hưởng như thế nào, thời gian gián đoạn bao lâu) và hành động khắc phục, không quan tâm đến chi tiết kỹ thuật. Hãy dùng ngôn ngữ đơn giản, tránh thuật ngữ kỹ thuật không cần thiết.`
+},
+{
+  id: 'qz-english-027',
+  topic: 'english',
+  q: 'Interviewer asks "What is your greatest weakness?". Which answer is honest and professional?',
+  options: [
+    'I do not have any weaknesses.',
+    'I work too hard and care too much about my code.',
+    "I used to hesitate to speak up in meetings when I disagreed with a senior colleague. I have been working on this by preparing my points in advance and using phrases like 'I see your point, and I have a concern…'. Last month I raised a risk about the database change that saved us from downtime.",
+    'I am not good at English, so I cannot communicate well.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: phương án 2.**
+
+### Vì sao đúng
+Câu trả lời này trung thực về một điểm yếu thực sự (ngần ngại nói lên khi bất đồng với senior), nhưng cũng nêu rõ hành động đang cải thiện (chuẩn bị ý kiến trước, dùng cụm từ lịch sự như "I see your point, and I have a concern…") và kết quả cụ thể (tháng ngoái đã nêu rủi ro về thay đổi cơ sở dữ liệu giúp tránh gián đoạn dịch vụ). Đây là cách trả lời phỏng vấn chuyên nghiệp.
+
+### Vì sao các phương án khác sai
+- **Phương án 0**: "I do not have any weaknesses." không trung thực và thiếu tự nhận thức. Mọi người đều có điểm yếu.
+- **Phương án 1**: "I work too hard and care too much about my code." là điểm yếu giả (humble-brag), interviewer đã nghe hàng trăm lần và coi là tránh vấn đề.
+- **Phương án 3**: "I am not good at English, so I cannot communicate well." là một điểm yếu cốt lõi đối với vị trí yêu cầu giao tiếp, và không nêu hành động cải thiện. Có thể khiến interviewer lo ngại về khả năng làm việc của bạn.
+
+> Senior tip: khi trả lời về điểm yếu, hãy chọn một điểm yếu thực sự nhưng không phải kỹ năng cốt lõi của vị trí, rồi nêu hành động đang cải thiện và kết quả đã đạt được. Tránh điểm yếu giả và tránh điểm yếu ảnh hưởng trực tiếp đến công việc chính.`
 }
 );
