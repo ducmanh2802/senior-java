@@ -1581,4 +1581,68 @@ Trong code production, hãy bắt {{Exception}} và {{AssertionError}} thay vì 
   related: ['testing-009', 'testing-010', 'testing-006'],
   tags: ['test harness', 'verifyAll', 'NOT RUN', 'skip', 'quality gate', 'CI'],
 },
+{
+  id: 'lesson-testing-005',
+  track: 'testing',
+  order: 5,
+  title: 'Characterization test (golden master)',
+  level: 'senior',
+  minutes: 20,
+  goals: ['Hiểu characterization test', 'Viết golden master', 'Biết pitfall'],
+  body: `**Tóm tắt:** Characterization test chụp hành vi thực tế của code cũ, kể cả bug, để có lưới an toàn trước khi refactor. Golden master là bản chụp output để so sánh và phát hiện thay đổi hành vi. Đây là kỹ thuật quan trọng khi maintain hệ thống legacy và thường được hỏi trong phỏng vấn senior.
+
+### Vì sao cần chụp hành vi
+Code legacy thường không có test. Khi phải sửa, bạn không biết sửa sẽ phá gì. Characterization test cho phép refactor mà không làm đổi hành vi quan sát được. Nó không kiểm tra spec đúng hay sai, chỉ ghi lại "hệ thống đang làm gì". Điều này giúp bạn tự tin thay đổi implementation bên trong.
+
+### Cách làm từng bước
+1. Chạy bản legacy trên nhiều input đại diện, bao gồm edge case và dữ liệu sản xuất thật.
+2. Lưu output (golden master) vào file hoặc snapshot trong test resources.
+3. Viết bản mới với cùng interface và logic rõ ràng hơn.
+4. So sánh output giữa bản mới và golden master cho mọi input.
+
+### Ví dụ minh hoạ
+~~~java
+// golden master test
+@Test
+void goldenMaster() {
+    String input = "abc,123";
+    String legacyOutput = LegacyParser.parse(input);
+    String newOutput = NewParser.parse(input);
+    assertEquals(legacyOutput, newOutput);
+}
+~~~
+Trong thực tế, bạn có thể lưu output vào file và dùng thư viện snapshot.
+
+### Pitfall
+Golden master cũng chụp cả bug, nên phải theo dõi và sửa dần. Khi phát hiện bug, cập nhật golden master có chủ đích và ghi lý do. Không nên để golden master phình to quá lớn; chọn input đại diện. Nếu output có timestamp hoặc random, cần chuẩn hoá trước khi so sánh. Tránh so sánh object có thứ tự không ổn định.
+
+### Khi nào dùng / không dùng
+Dùng khi refactor code legacy không có test. Không dùng khi đang viết tính năng mới từ đầu; khi đó nên viết spec test.
+
+### So sánh với spec test
+Spec test kiểm tra hành vi mong đợi theo yêu cầu. Characterization test kiểm tra hành vi hiện tại. Khi refactor, bạn muốn giữ hành vi hiện tại; khi sửa bug, bạn chủ đích thay đổi golden master.
+
+### Lỗi hay gặp
+- So sánh output không chuẩn hoá dẫn đến test không ổn định (flaky test).
+- Golden master quá lớn khiến test chậm.
+- Không ghi lý do khi cập nhật golden master.
+
+### Tóm tắt cho phỏng vấn
+Characterization test giúp bạn refactor legacy an toàn bằng cách chụp và so sánh hành vi thực tế, kể cả bug, rồi theo dõi thay đổi có chủ đích.
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi về characterization test khi maintain legacy, đặc biệt trong câu hỏi "bạn refactor hệ thống cũ thế nào mà không phá production". Hãy trả lời: chụp hành vi, refactor nhỏ, chạy golden master, theo dõi bug.
+
+> Senior tip: Golden master là lưới an toàn, không phải spec. Luôn rà soát output để phát hiện bug tiềm ẩn.`,
+  exercises: [{ title: 'Refactor premium', prompt: `Viết phương thức {{refactored}} sao cho cùng hành vi với {{legacy}}. Bạn phải giữ nguyên logic, chỉ tái cấu trúc để dễ đọc hơn.`, starter: `class Premium { static int legacy(int a){return a;} static int refactored(int a){throw new UnsupportedOperationException("TODO");} }`, tests: `public class Main { static int passed=0,total=0; static void check(String n,Runnable r){total++;try{r.run();passed++;System.out.println("PASS "+n);}catch(Throwable t){System.out.println("FAIL "+n+": "+t);}} static void eq(Object e,Object a){if(!Objects.equals(e,a))throw new AssertionError("expected "+e+" got "+a);} public static void main(String[] a){check("x1",()->eq(Premium.legacy(5),Premium.refactored(5)));
+        check("x2",()->eq(Premium.legacy(0),Premium.refactored(0)));
+        check("x3",()->eq(Premium.legacy(100),Premium.refactored(100)));
+        System.out.println("RESULT "+passed+"/"+total);} }`, reference: `class Premium { static int legacy(int a){return a;} static int refactored(int a){return a;} }`, hints: ['Hãy sao chép đúng logic hiện tại', 'Chỉ đổi cách viết, không đổi hành vi'], explain: `**Tóm tắt:** Mục tiêu là giữ nguyên hành vi quan sát được.
+
+### Giải thích
+Phương thức {{legacy}} trả về chính giá trị truyền vào. Để pass characterization test, {{refactored}} phải trả về cùng kết quả. Đây là ví dụ đơn giản để hiểu ý tưởng: bạn không thay đổi "cái hệ thống đang làm", chỉ thay đổi cấu trúc code bên trong.` }],
+  check: [{ q: 'Characterization test kiểm tra điều gì?', options: ['Theo đúng đặc tả yêu cầu', 'Hành vi thực tế đang có', 'Hiệu năng', 'Bảo mật'], answer: 1, explain: 'Characterization test ghi lại hành vi hiện tại của code, kể cả bug, để làm lưới an toàn khi refactor.' }, { q: 'Golden master dùng để làm gì?', options: ['Tạo dữ liệu ngẫu nhiên', 'Chụp output để so sánh sau refactor', 'Mock đối tượng', 'Sinh test tự động'], answer: 1, explain: 'Golden master là bản chụp output quan sát được, dùng để so sánh giữa phiên bản cũ và mới.' }],
+  related: [],
+  tags: ['characterization'],
+},
 );

@@ -1114,6 +1114,7 @@ window.DATA_INDEX = {
     {"id":"lesson-testing-002","track":"testing","order":2,"title":"Clock injection: test code phụ thuộc thời gian mà không ngủ và không flaky","level":"senior","minutes":20},
     {"id":"lesson-testing-003","track":"testing","order":3,"title":"Property-based testing mini: sinh input bằng seed cố định để tìm bug merge/sort","level":"senior","minutes":30},
     {"id":"lesson-testing-004","track":"testing","order":4,"title":"Harness tự viết: verifyAll, barrier abort và trạng thái NOT RUN","level":"senior","minutes":45},
+    {"id":"lesson-testing-005","track":"testing","order":5,"title":"Characterization test (golden master)","level":"senior","minutes":20},
     {"id":"lesson-api-001","track":"api","order":1,"title":"HTTP từ bên trong: method an toàn, status code và header","level":"mid","minutes":25},
     {"id":"lesson-api-002","track":"api","order":2,"title":"Thiết kế REST resource, validation và lỗi chuẩn Problem Details","level":"mid","minutes":30},
     {"id":"lesson-api-003","track":"api","order":3,"title":"Idempotency key cho POST: chống trừ tiền hai lần","level":"senior","minutes":35},
