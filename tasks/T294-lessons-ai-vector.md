@@ -9,3 +9,4 @@ Owns: `js/data/lessons-ai.js`
 
 ## Notes
  Giữ nguyên.
+Reviewed-by: kilo (T294R)
