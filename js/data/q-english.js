@@ -3897,4 +3897,1272 @@ So I would adapt the design in that direction. Does that address the risk you ha
   tags: ['english', 'system-design', 'trade-off', 'pushback', 'communication'],
   lang: 'en',
 },
+{
+  id: 'english-106',
+  topic: 'english',
+  level: 'mid',
+  q: 'Explain a production bug to a non-technical Product Owner. The bug caused some users to be charged twice. How do you communicate clearly without blaming anyone?',
+  a: `**Tóm tắt:** Mẫu câu trả lời cho tình huống **giải thích bug cho PO/PM không rành kỹ thuật**. Mục tiêu: nói rõ chuyện gì xảy ra (tác động với người dùng), đang làm gì để giảm thiểu, khi nào xong, và bước tiếp theo — **không dùng thuật ngữ khó, không đổ lỗi**. Dùng phép so sánh đời thường cho khái niệm kỹ thuật (ví dụ: "gửi xác nhận hai lần" thay vì "retry storm").
+
+### Sample spoken answer (ready to say)
+"Thanks for making time. I want to give you a clear update about an issue we found this morning. Some customers were charged twice for the same order — about 120 orders between 9:10 and 9:40. I am really sorry for the impact on those customers.
+
+Here is what happened in simple terms: when a customer paid, our system sends a payment request and waits for a confirmation. In some cases the confirmation came back slowly, so the system thought the payment did not go through and sent the request again. That second request created an extra charge.
+
+Right now we have stopped the problem from happening to new orders, and we are identifying every affected customer. Our plan is to refund the duplicate charges automatically and send an apology message with the refund timeline. I expect the full refund list to be ready by 3 p.m. today, and I can confirm once the refunds are completed.
+
+I will also follow up with a short summary of what we will change so this does not happen again. If you need, I can help you prepare the message to customers or support."
+
+### Giải thích từ gốc (cho người mới)
+- **Non-technical communication** (giao tiếp với người không kỹ thuật): mục tiêu là giúp họ ra quyết định (thông báo khách, ưu tiên công việc), không phải dạy họ code. Nói theo thứ tự: **impact (ảnh hưởng) → cause (nguyên nhân đơn giản) → mitigation (đang xử lý) → timeline (khi nào xong) → next step (bước tiếp)**.
+- **Thuật ngữ cần "dịch"**:
+  - {{idempotency}} (tính idempotent): gửi cùng một yêu cầu nhiều lần nhưng chỉ có một kết quả — như bấm nút thang máy nhiều lần vẫn chỉ gọi một chuyến.
+  - {{retry}} (thử lại): hệ thống tự gửi lại khi nghĩ lần trước thất bại.
+  - {{race condition / timeout}} (hết thời gian chờ): đừng nêu tên; hãy nói "xác nhận đến chậm nên hệ thống tưởng chưa thành công".
+- **Blameless** (không đổ lỗi): nói "the system sent..." thay vì "the developer forgot..." — PO cần giải pháp, không cần thủ phạm trong cuộc họp này.
+
+### Useful phrases
+- **I want to give you a clear update**: Tôi muốn cập nhật rõ ràng
+- **Here is what happened in simple terms**: Chuyện xảy ra như sau, nói đơn giản
+- **The impact was... / About X users were affected**: Ảnh hưởng là... / Khoảng X người dùng bị ảnh hưởng
+- **We have stopped the problem from happening to new orders**: Chúng tôi đã ngăn vấn đề xảy ra với đơn mới
+- **I expect ... by 3 p.m., and I will confirm once it is done**: Tôi dự kiến ... trước 3 giờ chiều và sẽ xác nhận khi xong
+- **I will follow up with a short summary**: Tôi sẽ gửi tóm tắt ngắn sau đó
+
+### Từ vựng
+- **duplicate charge**: thu phí trùng
+- **refund**: hoàn tiền
+- **affected customers**: khách hàng bị ảnh hưởng
+- **mitigation**: biện pháp giảm thiểu
+- **root cause**: nguyên nhân gốc (dùng sau, khi đã điều tra)
+- **timeline**: mốc thời gian
+
+### Lỗi người Việt hay mắc
+- Đổ lỗi: "The payment team made a mistake" — gây phòng thủ. Nói "we found an issue in the payment flow".
+- Quá kỹ thuật: dùng {{transaction}}, {{idempotency key}}, {{distributed lock}} ngay từ đầu — PO không ra quyết định được. Giải thích khái niệm bằng ví dụ đời thường nếu cần.
+- Không có timeline: chỉ nói "we are fixing it" — PO không biết khi nào thông báo khách. Luôn kèm mốc giờ hoặc "I will update you by...".
+- Nói "It's not my fault" hoặc xin lỗi quá chung chung; xin lỗi vì **impact** lên khách hàng, rồi tập trung vào hành động.
+
+> Senior tip: Khi nói với PO, hãy chuẩn bị 3 lớp thông tin: 30 giây (impact + đang xử lý), 2 phút (nguyên nhân đơn giản + timeline), và bản kỹ thuật riêng cho engineer. Nếu PO hỏi "tại sao lại xảy ra?", trả lời ngắn gọn rồi đề nghị: "I can share a technical summary after we finish the refunds." Ưu tiên **customer trust** và **clear decisions** trước khi đi sâu kỹ thuật.`,
+  follow: [
+    'The PO asks "Can we be sure it will not happen again today?" How do you answer honestly without over-promising?',
+    'How would you explain the difference between a fix now and a long-term prevention to a non-technical stakeholder?',
+    'What information do you include in a customer-facing apology message after a duplicate charge bug?',
+  ],
+  tags: ['communication', 'bug', 'stakeholder', 'quality', 'blameless'],
+  lang: 'en',
+},
+{
+  id: 'english-107',
+  topic: 'english',
+  level: 'senior',
+  q: 'Present a test strategy for a new Java backend feature to your team and product stakeholders. How do you explain what will be tested, what will not, and why?',
+  a: `**Tóm tắt:** Mẫu câu trình bày **test strategy** (chiến lược kiểm thử: kế hoạch chọn loại test nào, test ở đâu, chấp nhận rủi ro gì). Nói theo 4 phần: **rủi ro chính → kim tự tháp test → phạm vi/không phạm vi → tín hiệu release**. Với người không kỹ thuật, dịch "unit/integration/e2e" thành "kiểm tra từng phần / kiểm tra các phần nối với nhau / kiểm tra như người dùng thật".
+
+### Sample spoken answer
+"I would like to walk you through the test strategy for the new refund feature. The goal is to release with confidence without slowing the team down.
+
+First, the main risks: charging or refunding the wrong amount, refunding twice, and breaking the existing payment flow. So our tests focus on correctness and safety.
+
+Second, how we test. We will write unit tests for the refund calculation and business rules — that means we check each small piece of logic in isolation, for example tax rounding and partial refunds. We will add integration tests for the database and the payment provider adapter — that checks the parts working together with real components. We will keep a small number of end-to-end tests for the full user journey, because they are slower and more fragile.
+
+Third, what is in scope and out of scope. In scope: happy path, duplicate refund requests, invalid amounts, permission checks, and failure from the payment provider. Out of scope for this release: performance testing at very high traffic and rare edge cases in old currencies; we will track those as follow-up tasks because the risk is lower.
+
+Finally, our release signal: all automated tests pass, the critical scenarios are reviewed, and we run a manual check on staging with production-like data. If any critical test fails, we do not release. I can share a short checklist after this meeting."
+
+### Giải thích từ gốc
+- **Test strategy** (chiến lược kiểm thử): không phải liệt kê mọi test case, mà là quyết định **đầu tư effort ở đâu** để giảm rủi ro lớn nhất. Giống chọn mua bảo hiểm: bảo vệ thứ gây thiệt hại lớn trước.
+- **Test pyramid** (kim tự tháp kiểm thử): nhiều {{unit test}} (nhanh, rẻ, kiểm tra hàm/class riêng lẻ), ít hơn {{integration test}} (kiểm tra nhiều thành phần nối nhau: DB, message queue, API ngoài), rất ít {{end-to-end (E2E) test}} (chạy như người dùng thật qua toàn bộ hệ thống — chậm, dễ gãy khi UI/hạ tầng đổi).
+- **In scope / out of scope** (trong/ngoài phạm vi): nói rõ để stakeholder không kỳ vọng "đã test hết mọi thứ". Out of scope phải có lý do rủi ro hoặc kế hoạch theo dõi.
+- **Release signal** (tín hiệu phát hành): điều kiện rõ ràng để quyết định "đủ an toàn để release".
+
+### Useful phrases
+- **I would like to walk you through the test strategy**: Tôi xin trình bày chiến lược kiểm thử
+- **The main risks are... so our tests focus on...**: Rủi ro chính là... nên test tập trung vào...
+- **We check each small piece of logic in isolation**: Chúng tôi kiểm tra từng phần logic nhỏ riêng lẻ
+- **In scope / out of scope for this release**: Trong / ngoài phạm vi của đợt release này
+- **Our release signal is...**: Tín hiệu để release là...
+- **If any critical test fails, we do not release**: Nếu test quan trọng nào fail, chúng tôi không release
+
+### Từ vựng
+- **coverage**: mức bao phủ (đừng dùng như mục tiêu duy nhất)
+- **happy path**: luồng thành công bình thường
+- **edge case**: trường hợp biên, hiếm gặp
+- **staging**: môi trường gần giống production để kiểm tra trước
+- **regression**: lỗi quay lại ở chức năng từng chạy đúng
+- **fragile test**: test dễ gãy dù chức năng không đổi
+
+### Lỗi người Việt hay mắc
+- Chỉ nói "we will write unit tests" mà không nói **rủi ro** — stakeholder không hiểu tại sao đủ/không đủ.
+- Dùng jargon liên tục: "JUnit, Mockito, Testcontainers, contract test" với PO — hãy dịch mục đích ("test with a real database" thay vì chỉ nêu tên tool).
+- Hứa "100% coverage" — dễ hiểu sai; coverage cao không có nghĩa hết bug. Nói "we cover the critical risks and core flows".
+- Không nêu out of scope — sau release có bug ở phần hiếm, người khác tưởng "đã test".
+
+> Senior tip: Khi trình bày test strategy, luôn nối **test type ↔ risk ↔ cost**. Ví dụ: "We keep E2E tests small because they are slow; we catch most logic bugs earlier with unit tests." Với stakeholder, kết thúc bằng câu ra quyết định: "Given these risks and this plan, are you comfortable releasing if the checklist passes?"`,
+  follow: [
+    'A stakeholder asks why we do not write end-to-end tests for every scenario. How do you explain the trade-off?',
+    'How do you decide the minimum test set required before a risky database migration release?',
+    'What would you change in the strategy if the team has very little time before the deadline?',
+  ],
+  tags: ['testing', 'test-strategy', 'communication', 'quality'],
+  lang: 'en',
+},
+{
+  id: 'english-108',
+  topic: 'english',
+  level: 'mid',
+  q: 'Write or read out a clear bug report in a standup or ticket discussion. What information must be included so another engineer can reproduce and fix it quickly?',
+  a: `**Tóm tắt:** Mẫu **bug report** (báo cáo lỗi) tốt giúp người khác **tái hiện (reproduce)** và sửa nhanh. Cấu trúc bắt buộc: **title rõ → environment → steps to reproduce → expected vs actual → evidence (log/screenshot/request id) → impact/severity**. Thiếu bước tái hiện là nguyên nhân số 1 khiến bug bị "cannot reproduce".
+
+### Sample spoken answer (reading a bug report)
+"I want to report a bug in the refund API. Title: duplicate refund created when the client retries after timeout.
+
+Environment: staging, service version 1.14.2, tested today around 10:20 UTC with the test merchant account.
+
+Steps to reproduce: first, create a completed payment for 100 dollars. Second, send a refund request for 50 dollars. Third, simulate a timeout on the client side and send the same refund request again within 5 seconds.
+
+Expected result: the system should create only one refund, or return the existing refund result.
+
+Actual result: two refund records are created, and the customer balance is reduced by 100 dollars.
+
+Evidence: I attached the two request IDs, the API responses, and a log screenshot showing both requests were processed. I can also share the correlation ID.
+
+Impact: high, because it can cause incorrect refunds in production. I suggest we block the release until we confirm the fix."
+
+### Giải thích từ gốc
+- **Reproduce** (tái hiện): làm lại đúng các bước để lỗi xuất hiện. Nếu không tái hiện được, engineer phải đoán — tốn thời gian và dễ sửa nhầm.
+- **Expected vs actual** (kỳ vọng vs thực tế): "expected" là hệ thống **đúng ra** phải làm gì (theo requirement), "actual" là **thực sự** làm gì. Cặp này giúp người đọc thấy ngay chỗ sai.
+- **Evidence** (bằng chứng): log, screenshot, {{correlation ID / request ID}} (mã định danh để truy vết một request qua nhiều service), stack trace. Bằng chứng giảm tranh luận "ở máy tôi chạy bình thường".
+- **Severity/impact** (mức nghiêm trọng/ảnh hưởng): ảnh hưởng bao nhiêu người dùng, có mất tiền/mất dữ liệu không, có workaround không — giúp ưu tiên sửa.
+
+### Bug report template (short)
+~~~text
+Title: <what is broken> when <condition>
+Environment: <env, version, time, account>
+Steps to reproduce: 1) ... 2) ... 3) ...
+Expected: ...
+Actual: ...
+Evidence: <logs, request IDs, screenshots>
+Impact: <users, money/data risk, workaround>
+~~~
+
+### Useful phrases
+- **Steps to reproduce are as follows**: Các bước tái hiện như sau
+- **The expected result is... but the actual result is...**: Kết quả kỳ vọng là... nhưng thực tế là...
+- **I attached the request ID and logs as evidence**: Tôi đính kèm request ID và log làm bằng chứng
+- **The impact is high because...**: Mức ảnh hưởng cao vì...
+- **I suggest we block the release until...**: Tôi đề nghị chặn release cho đến khi...
+- **I cannot reproduce it consistently yet**: Tôi chưa tái hiện được ổn định
+
+### Từ vựng
+- **workaround**: cách tạm thời né lỗi
+- **intermittent**: lỗi xảy ra lúc có lúc không
+- **regression**: tính năng cũ bị hỏng lại
+- **cannot reproduce**: không tái hiện được
+- **stack trace**: chuỗi lỗi chương trình in ra khi crash
+
+### Lỗi người Việt hay mắc
+- Viết "It does not work" / "Payment is broken" — không có steps, expected/actual. Người sửa phải hỏi lại nhiều vòng.
+- Bỏ environment/version: bug chỉ xảy ra ở staging hoặc version mới — thiếu thông tin này gây "cannot reproduce".
+- Nhầm expected với ý muốn cá nhân; expected nên dựa vào requirement/ticket.
+- Không kèm request ID/correlation ID khi hệ thống có log — engineer phải mò log thủ công.
+- Dùng "you" đổ lỗi: "You broke the refund" — viết trung tính: "The refund flow returns 500 when...".
+
+> Senior tip: Một bug report tốt tiết kiệm hàng giờ của cả team. Nếu bug là **intermittent** (lúc có lúc không), hãy ghi rõ tần suất ("3 out of 10 attempts"), thời điểm, dữ liệu dùng, và mọi dấu hiệu (CPU cao, timeout, request đồng thời). Với bug tiền/dữ liệu, luôn ghi impact và đề xuất có nên **stop the release / rollback** hay không — đó là tư duy senior.`,
+  follow: [
+    'How do you report an intermittent bug that you cannot reproduce reliably?',
+    'What is the difference between severity and priority in a bug ticket, and how would you explain it to a PM?',
+    'What extra evidence would you collect for a bug that only happens in production?',
+  ],
+  tags: ['bug-report', 'communication', 'quality', 'debugging'],
+  lang: 'en',
+},
+{
+  id: 'english-109',
+  topic: 'english',
+  level: 'mid',
+  q: 'Talk about a flaky test in the daily standup. How do you explain the problem, the risk, and what you will do next without sounding like you are making excuses?',
+  a: `**Tóm tắt:** **Flaky test** (test "chập chờn": lúc pass lúc fail dù code không đổi) là vấn đề chất lượng pipeline, không phải chuyện nhỏ để "chạy lại cho pass". Trong standup, nói ngắn theo: **triệu chứng → rủi ro → hành động cụ thể + thời gian**. Tránh chạy lại im lặng (che vấn đề) và tránh kể lể kỹ thuật dài.
+
+### Sample spoken answer (standup)
+"Yesterday I worked on the refund feature tests. I want to flag one issue: the integration test for payment timeout is flaky. It failed twice on the CI pipeline but passed when I reran it locally.
+
+The risk is that flaky tests reduce trust in our test suite. If people get used to rerunning until it passes, we might miss a real failure.
+
+Today I will investigate the root cause. My first guess is that the test depends on timing or shared test data, but I need to confirm. I will timebox the investigation to two hours. If I cannot find the cause quickly, I will temporarily quarantine the test, create a ticket with the evidence, and keep the release gate on the stable tests. I will update the team before the end of the day."
+
+### Giải thích từ gốc
+- **Flaky test** (test chập chờn): kết quả không ổn định — nguyên nhân thường gặp: phụ thuộc thời gian thực ({{sleep}}, timeout), thứ tự chạy test, dữ liệu dùng chung, mạng/hạ tầng, race condition trong test. Ví dụ đời thường: cái cân lúc hiện 70kg lúc 71kg — bạn không biết mình tăng cân hay cân hỏng.
+- **CI pipeline** (đường ống tự động chạy build/test khi có code mới): flaky test làm pipeline đỏ giả, khiến team chờ hoặc bấm rerun.
+- **Quarantine** (cách ly test): tách test flaky ra khỏi bộ test chặn release, nhưng **phải** có ticket và owner để sửa — không phải xóa bỏ vĩnh viễn.
+- **Timebox** (giới hạn thời gian): quyết định trước "tôi sẽ tìm trong 2 giờ" để tránh sa đà.
+
+### Useful phrases
+- **I want to flag one issue**: Tôi muốn nêu một vấn đề
+- **The test is flaky — it failed on CI but passed when I reran it**: Test bị flaky — fail trên CI nhưng rerun lại pass
+- **The risk is that it reduces trust in our test suite**: Rủi ro là làm giảm niềm tin vào bộ test
+- **I will timebox the investigation to two hours**: Tôi giới hạn việc điều tra trong hai giờ
+- **If I cannot find the cause, I will quarantine the test and create a ticket**: Nếu chưa tìm ra nguyên nhân, tôi sẽ cách ly test và tạo ticket
+- **I will update the team before the end of the day**: Tôi sẽ cập nhật team trước cuối ngày
+
+### Từ vựng
+- **rerun**: chạy lại
+- **root cause**: nguyên nhân gốc
+- **shared state / test data**: trạng thái/dữ liệu dùng chung giữa các test
+- **timing dependency**: phụ thuộc thời gian
+- **release gate**: điều kiện chặn/cho phép release
+
+### Lỗi người Việt hay mắc
+- Nói như xin lỗi cá nhân: "Sorry, my test is bad" — standup cần **problem + plan**, không cần tự trách dài. Nhưng cũng đừng đổ lỗi tool: "CI is unstable".
+- "I just reran it and it passed" như là giải pháp — rerun che triệu chứng, làm team quen với pipeline đỏ.
+- Giải thích quá sâu kỹ thuật trong standup (thread dump, Mockito detail) — standup chỉ 1–2 phút/người; đề nghị: "I can share details after standup".
+- Không có next step/time: "I will look into it" — mơ hồ. Nói rõ **hôm nay làm gì, khi nào cập nhật**.
+
+> Senior tip: Hãy phân biệt **flaky test** với **real failure**. Trước khi quarantine, kiểm tra nhanh: cùng commit có fail ở test khác không, có thay đổi hạ tầng không, chạy lại có cùng lỗi không. Quy tắc team: "never ignore a red pipeline". Nếu phải quarantine, ticket phải có owner, evidence (link CI run), và điều kiện để đưa test trở lại.`,
+  follow: [
+    'A teammate says "just rerun the pipeline so we can release". How do you respond?',
+    'What are common causes of flaky integration tests in a Java/Spring project?',
+    'When is it acceptable to quarantine a flaky test, and what must you record in the ticket?',
+  ],
+  tags: ['flaky-test', 'standup', 'ci', 'communication', 'quality'],
+  lang: 'en',
+},
+{
+  id: 'english-110',
+  topic: 'english',
+  level: 'senior',
+  q: 'Explain to stakeholders why a release is delayed because of quality issues. How do you stay honest, calm, and constructive?',
+  a: `**Tóm tắt:** Khi **delay release vì chất lượng**, stakeholder cần biết: **vấn đề gì, rủi ro nếu release, phương án, mốc mới, và bạn cần họ quyết định gì**. Tránh giấu vấn đề, tránh đổ lỗi, tránh hứa mốc mới khi chưa đánh giá. Cấu trúc: tình trạng → rủi ro nghiệp vụ → lựa chọn → đề xuất + timeline.
+
+### Sample spoken answer
+"I need to share an update about tomorrow's release. We found a quality issue during final testing: under certain retry conditions, the system can create duplicate records. It does not affect every user, but the risk is serious because it involves customer data.
+
+If we release as planned, we could create incorrect records that are expensive to fix and could affect customer trust. Because of that, I do not recommend releasing tomorrow.
+
+We have three options. Option one: delay the release by two days, fix the issue, and rerun the critical tests — this is the safest option. Option two: release without the new retry feature and keep the rest of the changes, if the product agrees to reduce scope. Option three: release on time with a manual workaround, but I do not recommend this because the workaround is easy to miss.
+
+My recommendation is option one. I can confirm the new release date by 4 p.m. today after the team finishes the impact check. I understand this affects the plan, and I will keep you updated with clear progress."
+
+### Giải thích từ gốc
+- **Quality issue** (vấn đề chất lượng): lỗi hoặc rủi ro khiến phần mềm không đáng tin ở tình huống quan trọng (mất tiền, mất dữ liệu, sai kết quả, bảo mật). Không phải "code chưa đẹp".
+- **Nói theo rủi ro nghiệp vụ** (business risk): stakeholder không quyết định dựa trên "null pointer exception"; họ quyết định dựa trên "khách có thể bị ghi trùng dữ liệu". Hãy "dịch" lỗi kỹ thuật thành hậu quả.
+- **Options** (phương án): đưa 2–3 lựa chọn có trade-off (delay / giảm scope / workaround) giúp stakeholder tham gia quyết định thay vì chỉ nhận tin xấu.
+- **Under-promise, over-deliver**: chỉ hứa mốc mới khi đã kiểm tra impact; nếu chưa chắc, nói "I will confirm the new date by...".
+
+### Useful phrases
+- **I need to share an update about the release**: Tôi cần cập nhật về đợt release
+- **We found a quality issue during final testing**: Chúng tôi phát hiện vấn đề chất lượng trong kiểm tra cuối
+- **If we release as planned, the risk is...**: Nếu release đúng kế hoạch, rủi ro là...
+- **I do not recommend releasing tomorrow**: Tôi không khuyến nghị release ngày mai
+- **We have three options**: Chúng tôi có ba phương án
+- **I can confirm the new release date by...**: Tôi có thể xác nhận ngày release mới trước...
+- **I understand this affects the plan, and I will keep you updated**: Tôi hiểu việc này ảnh hưởng kế hoạch và sẽ cập nhật liên tục
+
+### Từ vựng
+- **delay / postpone**: hoãn
+- **scope**: phạm vi tính năng
+- **workaround**: giải pháp tạm
+- **rollback**: quay lại phiên bản cũ
+- **impact check**: kiểm tra mức ảnh hưởng
+- **critical test**: test quan trọng, chặn release nếu fail
+
+### Lỗi người Việt hay mắc
+- Báo muộn hoặc giấu: hy vọng "sửa kịp trong đêm" rồi sáng mới nói — stakeholder mất cơ hội xử lý.
+- Đổ lỗi: "QA found bugs too late" / "The requirement was unclear" — trong thông báo delay, tập trung vào **decision now**.
+- Chỉ nói vấn đề, không có phương án: biến cuộc họp thành than phiền. Luôn có recommendation.
+- Hứa mốc mới lạc quan: "We can fix it tomorrow" khi chưa điều tra — mất trust lần hai.
+- Nói tiếng Anh quá vòng: dùng "actually, basically, maybe" nhiều làm thông điệp yếu. Nói trực tiếp, bình tĩnh.
+
+> Senior tip: Delay vì chất lượng là quyết định dũng cảm nếu bạn đưa ra **evidence + risk + options**. Hãy phân biệt rõ: lỗi blocker (chặn release) và lỗi có thể chấp nhận tạm. Sau sự việc, đề xuất cải thiện quy trình (test sớm hơn, staging giống production, release checklist) — nhưng đừng biến buổi thông báo delay thành buổi retrospective.`,
+  follow: [
+    'The stakeholder insists on releasing on time because of a marketing campaign. How do you respond?',
+    'How do you explain the cost of releasing a known bug versus delaying two days?',
+    'What would you prepare before this meeting so you can answer tough questions confidently?',
+  ],
+  tags: ['release', 'quality', 'stakeholder', 'communication'],
+  lang: 'en',
+},
+{
+  id: 'english-111',
+  topic: 'english',
+  level: 'senior',
+  q: 'In a pull request review, you see missing tests for an important code path. How do you give feedback that is clear, respectful, and focused on quality?',
+  a: `**Tóm tắt:** Review PR thiếu test cần **cụ thể, không công kích cá nhân, gắn với rủi ro**. Công thức: khen phần tốt (nếu có) → chỉ rõ **code path** nào chưa có test → giải thích rủi ro → đề xuất test case cụ thể → hỏi lại ("what do you think?"). Mục tiêu là nâng chất lượng code, không phải "thắng" tranh luận.
+
+### Sample spoken/written answer
+"Thanks for working on this change — the refactor makes the payment flow easier to read.
+
+I have one concern about test coverage. The new branch for retry after timeout does not seem to have an automated test. That path is important because it can affect duplicate payments if the retry logic changes later.
+
+Could we add tests for these cases? For example: 1) the provider times out and the request is retried once, 2) the same request is sent again with the same idempotency key, and 3) the provider returns an error after timeout. I think the first two are critical before merging.
+
+If adding all of them is too much for this PR, could we at least cover case 1 and 2, and create a follow-up ticket for case 3? What do you think?"
+
+### Giải thích từ gốc
+- **Pull request (PR) review** (đánh giá yêu cầu gộp code): người khác đọc thay đổi trước khi merge vào nhánh chính. Mục tiêu: bắt bug, chia sẻ kiến thức, giữ chuẩn chất lượng.
+- **Code path** (nhánh đường đi của code): một kịch bản chạy qua các dòng code nhất định — ví dụ path "timeout rồi retry" khác path "thành công ngay". Thiếu test ở path quan trọng nghĩa là thay đổi sau này có thể làm hỏng path đó mà không ai biết ({{regression}} — lỗi quay lại).
+- **Actionable feedback** (góp ý có thể hành động): nói rõ "thêm test case nào" tốt hơn nói "please add more tests".
+- **Tone** (giọng điệu): dùng "could we...", "I suggest...", "what do you think?" thay vì "you must..." / "this is wrong". Nhưng với rủi ro cao (tiền, bảo mật), vẫn phải rõ: "I think this is a blocker before merging".
+
+### Useful phrases
+- **Thanks for working on this change**: Cảm ơn bạn đã làm thay đổi này
+- **I have one concern about test coverage**: Tôi có một lo ngại về mức kiểm thử
+- **This code path is important because...**: Nhánh code này quan trọng vì...
+- **Could we add tests for these cases?**: Chúng ta có thể thêm test cho các trường hợp này không?
+- **I think the first two are critical before merging**: Tôi nghĩ hai case đầu là bắt buộc trước khi merge
+- **What do you think? / Does that make sense?**: Bạn nghĩ sao? / Điều đó có hợp lý không?
+
+### Từ vựng
+- **merge**: gộp code
+- **blocker**: vấn đề phải sửa trước khi tiếp tục
+- **nit / nitpick**: góp ý nhỏ, không chặn merge
+- **regression**: lỗi quay lại
+- **coverage**: mức bao phủ test
+- **follow-up ticket**: ticket làm tiếp sau
+
+### Lỗi người Việt hay mắc
+- Góp ý mơ hồ: "Please add tests" — người nhận không biết thêm test nào. Hãy liệt kê 2–3 case cụ thể.
+- Công kích cá nhân: "You always forget tests" / "This is careless" — gây phòng thủ. Nói về **code/change**, không nói về **person**.
+- Im lặng rồi complain sau: thấy thiếu test nhưng ngại nói, đến khi production lỗi mới trách. Review là lúc nói.
+- Quá cứng nhắc với mọi thứ: biến nit thành blocker — team mệt. Phân biệt rõ blocker (rủi ro cao) và suggestion.
+- Đồng ý merge vì "đang gấp": với path liên quan tiền/dữ liệu, hãy nói rõ rủi ro và đề xuất giảm scope PR.
+
+> Senior tip: Dùng chuẩn "kind, specific, and firm on risk". Với code path quan trọng (payment, permission, data migration), thiếu test có thể là **merge blocker** — nói thẳng nhưng tôn trọng. Nếu tác giả giải thích hợp lý (ví dụ đã có test ở tầng khác), hãy kiểm tra bằng chứng thay vì giữ ý kiến vì cái tôi. Mục tiêu cuối: code an toàn khi chạy production, và team học được điều gì đáng test.`,
+  follow: [
+    'The author replies "we do not have time to add tests in this sprint". How do you handle it?',
+    'How do you decide whether missing tests should block a merge or can be a follow-up?',
+    'How would you give the same feedback in a written PR comment versus in a live call?',
+  ],
+  tags: ['code-review', 'pr', 'testing', 'communication', 'quality'],
+  lang: 'en',
+},
+{
+  id: 'english-112',
+  topic: 'english',
+  level: 'senior',
+  q: 'Communicate during a production incident and in the postmortem meeting. How do you update stakeholders during the incident and speak constructively afterward?',
+  a: `**Tóm tắt:** Hai ngữ cảnh khác nhau: **trong incident** (sự cố đang xảy ra) cần cập nhật ngắn, đều đặn, theo facts / theo sự thật đã biết — impact, hành động, thời điểm cập nhật tiếp. **Trong postmortem** (họp sau sự cố để học) cần giọng **blameless** (không đổ lỗi cá nhân), timeline, root cause, và action item có owner. Không trộn hai giọng: incident không phải lúc phân tích sâu, postmortem không phải lúc kể công.
+
+### Sample spoken answer (during incident)
+"Incident update at 14:10. The checkout API is returning errors for about 20 percent of requests, starting at 13:55. Payments team is investigating. We have rolled back the last configuration change, but the error rate is still high. Next steps: check database connections and recent traffic. I will post the next update in 10 minutes or sooner if we find the cause."
+
+### Sample spoken answer (postmortem)
+"Thanks everyone for joining the postmortem. The purpose is to understand what happened and prevent it from happening again — this is blameless.
+
+Timeline: at 13:55 alerts fired for checkout errors. At 14:05 we rolled back the config change, but errors continued. At 14:18 we found the database connection pool was exhausted because a new query held connections longer under peak traffic. At 14:25 we increased the pool limit as a temporary mitigation, and by 14:35 the error rate returned to normal.
+
+Impact: about 20 percent of checkout requests failed for 40 minutes.
+
+Root cause: the new query was missing an index, and our staging test did not use production-like data volume.
+
+Action items: add the missing index and verify the query plan; add a staging test with larger data; set an alert for connection pool saturation; review connection timeout settings. Each item needs an owner and a due date. What did we miss in this timeline?"
+
+### Giải thích từ gốc
+- **Production incident** (sự cố production): hệ thống thật đang lỗi, ảnh hưởng người dùng thật. Lúc này ưu tiên: giảm thiểu tác động, giao tiếp rõ. "Đời thường": như báo cháy — cần thông tin thoát hiểm và tình trạng, chưa phải lúc tranh luận ai quên tắt bếp.
+- **Postmortem** (hậu kiểm): họp sau khi sự cố ổn, mục tiêu học và phòng ngừa. **Blameless** nghĩa là tập trung vào hệ thống/quy trình (test thiếu, alert thiếu, thay đổi rủi ro) thay vì phạt cá nhân — vì nếu mọi người sợ bị đổ lỗi, họ sẽ giấu thông tin quan trọng.
+- **Mitigation vs fix** (giảm thiểu vs sửa gốc): mitigation là hành động nhanh để giảm đau (rollback, tăng pool, bật feature flag tắt tính năng). Fix/root cause là sửa nguyên nhân để không lặp lại.
+
+### Useful phrases
+- **Incident update at [time]**: Cập nhật sự cố lúc [giờ]
+- **The impact is... starting at...**: Ảnh hưởng là... bắt đầu từ...
+- **Next steps are... I will post the next update in 10 minutes**: Bước tiếp là... Tôi sẽ cập nhật sau 10 phút
+- **The purpose of this postmortem is to learn, not to blame**: Mục tiêu postmortem là học, không đổ lỗi
+- **Temporary mitigation / root cause / action item**: Giảm thiểu tạm / nguyên nhân gốc / hành động tiếp theo
+- **Each action item needs an owner and a due date**: Mỗi hành động cần người chịu trách nhiệm và hạn
+
+### Từ vựng
+- **impact**: mức ảnh hưởng
+- **timeline**: dòng thời gian
+- **mitigation**: giảm thiểu
+- **root cause**: nguyên nhân gốc
+- **action item**: đầu việc cần làm
+- **owner / due date**: người phụ trách / hạn chót
+- **connection pool exhausted**: hết kết nối trong pool (pool = nhóm kết nối DB tái sử dụng; exhausted = dùng hết)
+
+### Lỗi người Việt hay mắc
+- Trong incident nói lan man/đoán bừa: "maybe database, maybe network" không có evidence — gây hoảng. Nói điều đã biết, điều đang kiểm tra, khi nào cập nhật tiếp.
+- Im lặng quá lâu: stakeholder tự suy đoán. Kể cả chưa có nguyên nhân, vẫn cập nhật theo nhịp.
+- Trong postmortem đổ lỗi: "Developer X deployed a bad query" — người khác sẽ giấu lỗi sau này. Nói "a query was deployed without an index check".
+- Action item mơ hồ: "improve testing" — không ai làm. Cần owner, due date, kết quả đo được.
+- Trộn cảm xúc phòng thủ: "I already warned the team" — để sau, hoặc đưa vào timeline như fact nếu liên quan.
+
+> Senior tip: Trong incident, hãy dùng một kênh cập nhật chính (incident channel/doc) và một người điều phối giao tiếp nếu có thể — tránh nhiều người nói khác nhau. Trong postmortem, câu hỏi mạnh nhất là "what made this possible?" thay vì "who did this?". Hệ thống tốt giả định con người sẽ sai và đặt **guardrails** (alert, test, review, rollback dễ) để sai sót không thành thảm họa.`,
+  follow: [
+    'During an incident, a stakeholder asks for a root cause immediately. How do you respond?',
+    'How do you keep a postmortem blameless when someone clearly made a risky change?',
+    'What makes an action item effective, and what makes it easy to ignore?',
+  ],
+  tags: ['incident', 'postmortem', 'communication', 'quality', 'blameless'],
+  lang: 'en',
+},
+{
+  id: 'english-113',
+  topic: 'english',
+  level: 'senior',
+  q: 'Persuade your team or manager to invest in test automation. How do you make a practical business case, not just a technical argument?',
+  a: `**Tóm tắt:** Thuyết phục đầu tư **test automation** (tự động hóa kiểm thử: dùng code/tool chạy test tự động thay vì bấm tay lặp lại) cần nói bằng **chi phí hiện tại + rủi ro + lợi ích đo được + kế hoạch nhỏ**. Tránh khẩu hiệu "automation is good". Đề xuất bắt đầu nhỏ (pilot) để giảm lo ngại thời gian.
+
+### Sample spoken answer
+"I would like to propose a small investment in test automation for the payment and refund flows.
+
+Right now, before each release we spend about one and a half days on manual regression checks. Even with that effort, we still miss issues because some cases are hard to repeat by hand, such as retries, timeouts, and duplicate requests. Last quarter we had two production bugs in these flows, and each one took several hours to investigate and fix.
+
+My proposal is not to automate everything. I suggest we start with a pilot: automate the top 10 critical scenarios in payment and refund over the next two sprints. These tests would run automatically on every pull request, so we get feedback in minutes instead of waiting for manual testing.
+
+The expected benefit is faster and safer releases: less repeated manual work, earlier bug detection, and lower risk in high-impact flows. The cost is some upfront time from the team, so I propose we allocate a fixed amount, for example 20 percent of sprint capacity for two sprints.
+
+We can measure success by three things: time spent on manual regression for those flows, number of bugs found before release, and CI feedback time. If the pilot works, we can expand it. If not, we stop and review what we learned. Could we agree on the pilot scope this week?"
+
+### Giải thích từ gốc
+- **Test automation** (tự động hóa kiểm thử): viết kịch bản để máy chạy kiểm tra lặp lại. Ví dụ đời thường: thay vì mỗi lần xuất hàng bạn tự kiểm tra 50 mục bằng tay, bạn có máy quét kiểm tra các mục quan trọng mỗi lần — tốn công làm máy lúc đầu, nhưng tiết kiệm về sau.
+- **Manual regression** (kiểm tra hồi quy thủ công): sau khi thêm/sửa code, người tester bấm lại các chức năng cũ để chắc chưa hỏng. Lặp lại nhiều, tốn thời gian, dễ bỏ sót.
+- **Business case** (lập luận theo giá trị kinh doanh): không chỉ nói "JUnit tốt"; nói "mất bao nhiêu giờ/người, rủi ro lỗi production ảnh hưởng khách/tiền, automation giảm phần nào".
+- **Pilot** (thí điểm nhỏ): làm phạm vi hẹp trước để chứng minh giá trị, tránh đề xuất lớn gây sợ tốn thời gian.
+
+### Useful phrases
+- **I would like to propose a small investment in...**: Tôi muốn đề xuất một khoản đầu tư nhỏ vào...
+- **Right now we spend about... on manual regression checks**: Hiện chúng tôi tốn khoảng... cho kiểm tra hồi quy thủ công
+- **My proposal is not to automate everything**: Đề xuất của tôi không phải tự động hóa tất cả
+- **I suggest we start with a pilot**: Tôi đề nghị bắt đầu bằng một thí điểm
+- **We can measure success by...**: Chúng ta có thể đo thành công bằng...
+- **The cost is some upfront time, so I propose we allocate...**: Chi phí là thời gian đầu tư ban đầu, nên tôi đề xuất phân bổ...
+
+### Từ vựng
+- **automation**: tự động hóa
+- **upfront cost**: chi phí ban đầu
+- **return on investment (ROI)**: lợi ích so với chi phí đầu tư
+- **regression**: hồi quy (lỗi quay lại)
+- **pilot**: thí điểm
+- **sprint capacity**: năng lực làm việc của sprint
+- **CI feedback time**: thời gian nhận phản hồi từ CI
+
+### Lỗi người Việt hay mắc
+- Chỉ nói kỹ thuật: "We should use Selenium/Cypress/JUnit 5" — manager cần lý do kinh doanh và phạm vi. Công cụ là chi tiết sau.
+- Đề xuất quá lớn: "automate all tests this quarter" — nghe không thực tế. Pilot 10 case quan trọng thuyết phục hơn.
+- Không nói chi phí: automation cần thời gian đầu tư và bảo trì. Nếu bạn giấu, người nghe sẽ nghi ngờ. Nói rõ trade-off.
+- Hứa hão: "no more bugs" — automation giảm rủi ro, không xóa hết bug.
+- Dùng "you should" nhiều lần — nghe ra lệnh. Dùng "I suggest / could we / my proposal".
+
+> Senior tip: Chọn pilot ở nơi **rủi ro cao + lặp lại nhiều + ổn định tương đối** (ví dụ payment/refund happy path + duplicate/idempotency cases). Tránh tự động hóa UI quá sớm nếu UI thay đổi liên tục — chi phí bảo trì sẽ giết niềm tin. Khi báo cáo kết quả pilot, dùng số liệu cụ thể (phút CI, giờ manual test giảm, bug chặn được) — đó là ngôn ngữ stakeholder hiểu.`,
+  follow: [
+    'Your manager says "we do not have time for automation because we need features". How do you respond?',
+    'Which test cases would you automate first, and which would you keep manual?',
+    'How do you measure whether the automation pilot is successful after two sprints?',
+  ],
+  tags: ['automation', 'testing', 'communication', 'business-case', 'quality'],
+  lang: 'en',
+},
+
+{
+  id: 'english-114',
+  topic: 'english',
+  level: 'senior',
+  q: 'Tell me about your expected salary. How would you present a range in English without boxing yourself in?',
+  a: `**Tóm tắt (30 giây, nói miệng):** Đừng đưa một con số duy nhất ngay từ đầu. Hãy đưa một **khoảng (range)** dựa trên nghiên cứu thị trường, neo theo **total compensation** (tổng thu nhập: lương cơ bản + thưởng + cổ phần/phúc lợi), nói rõ bạn linh hoạt và cần hiểu **toàn bộ cấu trúc offer** (lời mời làm việc) trước khi chốt. Mục tiêu: giữ cuộc thương lượng mở, không tự hạ giá cũng không tự chốt quá cao.
+
+### Giải thích từ gốc (cho người mới)
+- **Expected salary** (mức lương mong muốn): câu hỏi này không phải để "bắt" bạn nói sai, mà để xem kỳ vọng của bạn có khớp ngân sách vị trí và bạn có chuẩn bị không.
+- **Range / khoảng lương**: ví dụ "X to Y per month/year". Điểm thấp của khoảng nên là mức bạn **thực sự chấp nhận được** (walk-away number — dưới mức này bạn sẽ từ chối), không phải mức "mơ ước". Khoảng quá rộng (ví dụ gấp đôi) trông như chưa nghiên cứu.
+- **Total compensation** (tổng thu nhập): không chỉ **base salary** (lương cơ bản). Có thể gồm **bonus** (thưởng — có thể theo hiệu suất hoặc theo công ty), **equity/ESOP** (cổ phần/quyền mua cổ phần), phụ cấp, bảo hiểm, ngày nghỉ, ngân sách học tập. Hai offer cùng base có thể khác nhau rất nhiều về tổng thu nhập.
+- **Gross vs net** (lương gộp vs lương thực nhận): **gross** là tổng trước khấu trừ; **net** là tiền bạn nhận sau các khoản bắt buộc (ở Việt Nam thường gồm bảo hiểm và thuế thu nhập cá nhân tùy mức). Khi nghe con số, luôn hỏi rõ gross hay net để so sánh công bằng.
+- **Boxing yourself in** (tự "đóng hộp" mình): nói một số quá thấp → khó tăng; nói quá cao → có thể kết thúc sớm. Range giúp bạn có không gian trao đổi.
+
+### Cấu trúc trả lời (4 bước)
+1. **Neo vào nghiên cứu và phạm vi công việc**: "Based on market data for this role and the scope we discussed..."
+2. **Đưa range + đơn vị + loại tiền**: nói rõ tháng/năm, VND/USD, gross/net nếu biết.
+3. **Nhấn mạnh total compensation và tính linh hoạt**: "I am flexible depending on the full package..."
+4. **Hỏi lại để hiểu offer** (khi phù hợp): "Could you share the compensation structure for this role?"
+
+### Mẫu trả lời (có thể nói)
+"Thanks for asking. Based on my research for senior Java backend roles with similar scope and the responsibilities we discussed, I am targeting a total compensation range of X to Y per year, gross. I am flexible depending on the full package, including base salary, bonus, and any equity or benefits. Could you also share the compensation structure and whether the bonus is guaranteed or performance-based?"
+
+### Nếu recruiter ép hỏi lương hiện tại
+Ở một số nơi câu hỏi này nhạy cảm. Bạn có thể trả lời lịch sự nhưng xoay về giá trị vị trí: "My current compensation is in the range of Z, but I am evaluating this role based on scope, responsibilities, and growth. For this position, I am targeting X to Y." (Chỉ chia sẻ nếu bạn cảm thấy thoải mái và phù hợp bối cảnh.)
+
+### Useful phrases
+- **"I am targeting a range of..."**: Tôi đang hướng tới khoảng...
+- **"depending on the full compensation package"**: tùy theo toàn bộ gói thu nhập
+- **"Could you clarify if that figure is gross or net?"**: Bạn có thể làm rõ con số đó là gross hay net không?
+- **"Is the bonus guaranteed or performance-based?"**: Thưởng cố định hay theo hiệu suất?
+- **"I would like to understand the full picture before deciding"**: Tôi muốn hiểu toàn bộ bức tranh trước khi quyết định
+
+### Từ vựng
+- **base salary**: lương cơ bản
+- **bonus**: thưởng
+- **equity / ESOP**: cổ phần / quyền mua cổ phần nhân viên
+- **benefits**: phúc lợi
+- **walk-away number**: mức thấp nhất bạn chấp nhận
+- **gross / net**: lương gộp / lương thực nhận
+
+### Lỗi người Việt hay mắc
+- Nói một con số ngay vì sợ im lặng — hãy bình tĩnh, có thể hỏi lại phạm vi ngân sách: "What is the budgeted range for this role?"
+- Nhầm gross/net khi so sánh offer trong nước và offer quốc tế/remote.
+- Chỉ nhìn base, bỏ qua bonus/equity, lịch review lương, on-call (trực ca), overtime (làm thêm).
+- Dùng câu quá cứng: "I want X or I will not join" — dễ gây phản cảm; thay bằng giọng hợp tác nhưng rõ ràng.
+
+> Senior tip: Trước buổi nói chuyện về lương, hãy tự chuẩn bị 3 con số: (1) mức chấp nhận tối thiểu, (2) mức mục tiêu, (3) mức "rất tốt". Khi thương lượng, hỏi "What is the full compensation structure?" trước khi tối ưu từng khoản — tối ưu base thôi đôi khi làm bạn bỏ lỡ bonus, equity hoặc phúc lợi có giá trị lớn.`,
+  follow: [
+    'What if the recruiter insists on your current salary?',
+    'How do you handle an offer below your range?',
+    'When is it appropriate to ask about bonus and ESOP?',
+  ],
+  tags: ['hr', 'salary', 'negotiation', 'english'],
+  lang: 'en',
+},
+{
+  id: 'english-115',
+  topic: 'english',
+  level: 'senior',
+  q: 'How do you negotiate an offer when you already have another offer in hand?',
+  a: `**Tóm tắt (30 giây, nói miệng):** Nếu có offer khác, hãy **minh bạch nhưng không gây áp lực**: nói bạn thực sự quan tâm vai trò này, cho biết bạn có mốc quyết định ở nơi khác, và hỏi họ có thể cải thiện **một hoặc hai khoản cụ thể** (base/bonus/equity/điểm khác) không. Tuyệt đối không bịa offer, không dùng offer khác như lời đe dọa.
+
+### Giải thích từ gốc (cho người mới)
+- **Negotiate an offer** (thương lượng offer): trao đổi có cơ sở về điều kiện làm việc/lương thưởng sau khi công ty đã muốn tuyển bạn. Đây là bước bình thường, không phải "vô lễ", miễn là bạn lịch sự và có lý do.
+- **Competing offer** (offer cạnh tranh): lời mời từ công ty khác. Nó tạo **leverage** (điểm tựa thương lượng) vì bạn có lựa chọn thật — nhưng leverage chỉ có giá trị khi bạn sẵn sàng hành động đúng mốc thời gian.
+- **Decision timeline / deadline** (mốc quyết định): ngày bạn cần trả lời offer. Hãy nêu rõ để recruiter (người tuyển dụng) biết họ còn bao lâu; kéo dài mơ hồ khiến họ khó hỗ trợ.
+- **Renege** (nuốt lời sau khi đã nhận offer bằng miệng/văn bản): rất ảnh hưởng uy tín. Vì vậy chỉ thương lượng khi bạn **chưa chốt**; khi đã chấp nhận, việc quay lại đòi thêm là rủi ro.
+
+### Kịch bản nói (mẫu)
+"I am very excited about this role because of the team, the technical challenges, and the growth opportunity we discussed. I want to be transparent: I have another offer with a decision date of [date]. If you are able to improve [one specific component, for example base salary or sign-on bonus] to [X or a reasonable range], I would be ready to accept. Could we discuss what is possible?"
+
+### Nguyên tắc quan trọng
+- **Chỉ xin cải thiện 1–2 khoản**, không đòi "tất cả" — dễ thương lượng và trông thực tế.
+- **Không chia sẻ chi tiết offer của đối thủ** nếu đó là thông tin nhạy cảm; bạn có thể nói mức tổng quan nếu cần, nhưng không bắt buộc.
+- **Đừng coi offer khác là vũ khí**: "If you do not match, I walk" nghe như đe dọa. Hãy dùng giọng hợp tác: "I would love to join if we can align on..."
+- **Tôn trọng deadline**: nếu họ cần thêm thời gian, hỏi lịch cụ thể; nếu bạn cần thêm thời gian với bên kia, xin gia hạn lịch sự.
+
+### Những khoản có thể thương lượng (không chỉ lương)
+- **Base salary** (lương cơ bản)
+- **Sign-on bonus** (thưởng gia nhập một lần) — đôi khi công ty dễ duyệt hơn tăng base
+- **Annual bonus target** (mục tiêu thưởng năm)
+- **Equity/ESOP** (cổ phần/quyền mua cổ phần)
+- **Start date** (ngày bắt đầu), **remote/hybrid** (làm từ xa/kết hợp), ngân sách học tập, cấp bậc/title (cẩn trọng, phải hợp lý)
+
+### Useful phrases
+- "I want to be transparent..." — Tôi muốn minh bạch...
+- "I have a decision deadline on..." — Tôi có hạn quyết định vào...
+- "Would it be possible to revisit the offer on [component]?" — Có thể xem lại offer ở khoản [x] không?
+- "If we can align on this, I am ready to accept." — Nếu thống nhất được điểm này, tôi sẵn sàng nhận offer.
+
+### Từ vựng
+- **recruiter / hiring manager**: người tuyển dụng / quản lý tuyển dụng
+- **counter-offer**: đề nghị đáp trả (từ công ty bạn đang xin, hoặc công ty hiện tại giữ bạn)
+- **sign-on bonus**: thưởng gia nhập
+- **leverage**: điểm tựa thương lượng
+
+### Lỗi người Việt hay mắc
+- Bịa offer để "ép giá" — rủi ro lớn về uy tín và đôi khi bị kiểm tra gián tiếp.
+- Nói quá chung: "Can you pay more?" — hãy chỉ rõ khoản và mức hợp lý.
+- Nhận offer bằng miệng rồi tiếp tục đòi thêm — dễ bị xem là thiếu cam kết.
+- Chỉ so sánh con số base mà quên tổng thu nhập và điều kiện làm việc.
+
+> Senior tip: Đòn bẩy mạnh nhất không phải "tôi có offer khác", mà là **sự quan tâm thật sự + mốc thời gian rõ ràng**. Recruiter ưu tiên ứng viên có khả năng nói "yes"; hãy giữ giọng điệu chuyên nghiệp, cụ thể, và luôn sẵn sàng chốt nếu họ đáp ứng điều bạn nêu.`,
+  follow: [
+    'How do you decide between two offers with different comp mixes?',
+    'What if the company refuses to negotiate?',
+    'How do you ask for a sign-on bonus instead of base increase?',
+  ],
+  tags: ['hr', 'offer', 'negotiation', 'english'],
+  lang: 'en',
+},
+{
+  id: 'english-116',
+  topic: 'english',
+  level: 'mid',
+  q: 'How do you ask about bonus, ESOP, and review cycle in a professional way?',
+  a: `**Tóm tắt (30 giây, nói miệng):** Hỏi về thưởng, **ESOP/cổ phần** và chu kỳ review lương là bình thường — nhưng nên hỏi **đúng thời điểm** (thường sau khi có tín hiệu tuyển/ở giai đoạn offer) và hỏi theo kiểu **làm rõ cấu trúc**. Hãy ghi chú và xin bản tóm tắt bằng văn bản để so sánh offer công bằng.
+
+### Giải thích từ gốc (cho người mới)
+- **Bonus** (thưởng): khoản tiền thêm ngoài lương cơ bản. Có thể là **guaranteed** (cam kết/cố định theo chính sách, nếu có) hoặc **performance-based/discretionary** (phụ thuộc hiệu suất cá nhân/công ty; không phải lúc nào cũng được trả như kỳ vọng). Vì vậy câu hỏi quan trọng là: "thưởng tính thế nào và khi nào trả?"
+- **ESOP** (Employee Stock Ownership Plan) hoặc **equity** (cổ phần/quyền sở hữu): quyền lợi liên quan cổ phần công ty. Các khái niệm hay gặp:
+  - **Vesting schedule** (lịch "mở khóa"): bạn nhận dần quyền lợi theo thời gian (ví dụ mở khóa đều hàng tháng/năm) thay vì nhận hết ngay.
+  - **Cliff** (giai đoạn chờ ban đầu): khoảng thời gian đầu (thường thấy 1 năm ở một số chính sách) trước khi phần đầu tiên được mở khóa — nếu nghỉ trước cliff, bạn có thể không nhận được phần đó.
+  - **Grant** (đợt cấp): số lượng/giá trị được cấp; giá trị thực tế có thể thay đổi theo giá cổ phần.
+- **Performance review cycle** (chu kỳ đánh giá hiệu suất): lịch công ty đánh giá kết quả làm việc (quý/nửa năm/năm) và thường liên quan điều chỉnh lương/thăng cấp. Biết chu kỳ giúp bạn hiểu khi nào thu nhập có thể thay đổi.
+- **Why timing matters** (vì sao thời điểm quan trọng): hỏi quá sớm (vòng đầu) đôi khi tạo ấn tượng chỉ quan tâm tiền; hỏi khi đã có **mutual interest** (hai bên đều nghiêm túc) thể hiện bạn làm việc cẩn thận (**due diligence**).
+
+### Câu hỏi mẫu (lịch sự, chuyên nghiệp)
+- "Could you walk me through the compensation structure for this role?"
+- "How is the annual bonus calculated — what is the target, and is it guaranteed or performance-based?"
+- "If there is equity or an ESOP, what is the vesting schedule and is there a cliff?"
+- "How often do performance reviews happen, and when are salary adjustments typically considered?"
+- "Could I receive the full compensation details in writing?"
+
+### Ví dụ ngắn trong hội thoại
+"I am excited about the role. Before making a decision, could I clarify a few details about the compensation package — specifically the bonus structure, any equity or ESOP terms, and the performance review cycle?"
+
+### Những điều cần tránh hiểu sai
+- Giả định bonus "chắc chắn có" nếu chưa được nói rõ.
+- So sánh offer chỉ bằng base salary.
+- Nhầm **grant value** (giá trị lúc cấp, có thể là ước tính) với tiền chắc chắn nhận được.
+- Quên hỏi về điều kiện làm việc ảnh hưởng thu nhập/thời gian: on-call, overtime, hỗ trợ làm việc từ xa.
+
+### Useful phrases
+- "Could you clarify..." — Bạn có thể làm rõ...
+- "What does the total compensation package include?" — Gói tổng thu nhập gồm những gì?
+- "When is the bonus typically paid out?" — Thưởng thường được trả khi nào?
+- "Could you share the details in writing?" — Bạn có thể gửi chi tiết bằng văn bản không?
+
+### Từ vựng
+- **compensation package**: gói thu nhập/phúc lợi
+- **vesting / cliff / grant**: mở khóa / giai đoạn chờ / đợt cấp
+- **payout timing**: thời điểm chi trả
+- **salary adjustment**: điều chỉnh lương
+- **due diligence**: rà soát cẩn thận trước quyết định
+
+### Lỗi người Việt hay mắc
+- Hỏi dồn nhiều câu tiền nong ngay phút đầu phỏng vấn — hãy chọn thời điểm phù hợp.
+- Ngại hỏi vì sợ "mất lịch sự" — hỏi rõ ràng, tôn trọng là chuyên nghiệp.
+- Chỉ nghe miệng, không xin tài liệu — dễ quên hoặc hiểu khác.
+- Dùng từ chưa chắc (ví dụ gọi mọi thứ là "cổ phiếu") — nếu không rõ, hãy hỏi đúng thuật ngữ công ty dùng.
+
+> Senior tip: Hãy xin **bản tóm tắt compensation bằng văn bản** (email/offer letter). Lời nói miệng dễ mờ theo thời gian; văn bản giúp bạn so sánh offer, lên kế hoạch thuế/tài chính, và làm cơ sở trao đổi nếu có điểm chưa khớp.`,
+  follow: [
+    'How do you evaluate a startup equity offer?',
+    'What questions do you ask about performance reviews?',
+    'How do you compare cash-heavy vs equity-heavy offers?',
+  ],
+  tags: ['hr', 'compensation', 'esop', 'english'],
+  lang: 'en',
+},
+{
+  id: 'english-117',
+  topic: 'english',
+  level: 'senior',
+  q: 'Why are you leaving your current job? How do you answer without sounding negative?',
+  a: `**Tóm tắt (30 giây, nói miệng):** Trả lời ngắn gọn, trung thực và hướng về tương lai: ghi nhận điều đã học/đóng góp ở công ty hiện tại, nói bạn đang tìm **cơ hội phù hợp hơn** (phạm vi, quy mô, công nghệ, định hướng) — rồi nối với vị trí bạn ứng tuyển. Tránh chê sếp, chê công ty, hoặc kể lể xung đột.
+
+### Giải thích từ gốc (cho người mới)
+- **"Why are you leaving?"**: nhà tuyển dụng muốn hiểu động lực của bạn và đánh giá rủi ro (bạn có dễ nghỉ nhanh không, có hay đổ lỗi không). Họ không cần "drama" (kịch tính).
+- **Pull factors vs push factors**:
+  - **Pull factors** (yếu tố "kéo" bạn tới): muốn học hệ thống lớn hơn, muốn ownership (chịu trách nhiệm đầu-cuối) rõ hơn, muốn làm sâu Java/backend, muốn môi trường phù hợp.
+  - **Push factors** (yếu tố "đẩy" bạn đi): lương thấp, sếp khó, quy trình tệ. Có thể là thật, nhưng nếu nói trực diện dễ tạo **red flag** (dấu hiệu cảnh báo). Cách an toàn: chuyển push thành nhu cầu phát triển, không công kích cá nhân/tổ chức.
+- **Forward-looking** (hướng về phía trước): câu trả lời nên kết thúc ở "vì sao role này phù hợp", không kết thúc ở "công ty cũ tệ thế nào".
+
+### Cấu trúc 3 phần (30–60 giây)
+1. **Ghi nhận**: "I have learned a lot..." / "I appreciate the opportunities..."
+2. **Lý do chuyển hướng (trung tính)**: "At this point, I am looking for..." (scope/scale/growth/impact)
+3. **Nối với công ty mới**: "That is why this role stood out to me..."
+
+### Mẫu trả lời
+"I have learned a lot in my current role and had the chance to work on [project/responsibility]. Over time, I realized I want to take on broader ownership in backend system design and work on challenges at a larger scale. When I learned about this position, the scope and the technical problems your team is solving felt like a strong match for the direction I want to grow in."
+
+### Nếu thực sự có vấn đề ở công ty cũ (cách nói an toàn)
+- Không nói: "My manager was terrible" / "The company is messy."
+- Có thể nói: "I am looking for an environment where I can collaborate closely on engineering practices and long-term product quality." (vẫn trung tính, tập trung vào điều bạn tìm kiếm)
+- Nếu bị **laid off** (cắt giảm nhân sự): nói thật, ngắn gọn, không đổ lỗi: "My role was affected by a company restructuring. I am now focused on finding a role where I can contribute to [X]."
+
+### Useful phrases
+- "I am grateful for what I learned there." — Tôi trân trọng những gì đã học được.
+- "I am looking for more ownership / larger scale / new challenges." — Tôi tìm kiếm quyền sở hữu rộng hơn / quy mô lớn hơn / thử thách mới.
+- "This role aligns with my long-term goals." — Vị trí này phù hợp mục tiêu dài hạn của tôi.
+
+### Từ vựng
+- **ownership**: trách nhiệm đầu-cuối
+- **scope**: phạm vi công việc
+- **restructuring / layoff**: tái cơ cấu / cắt giảm nhân sự
+- **red flag**: dấu hiệu cảnh báo với nhà tuyển dụng
+
+### Lỗi người Việt hay mắc
+- Nói quá thật theo kiểu cảm xúc: "sếp không thương", "đồng nghiệp toxic" — dù đúng, nhà tuyển dụng lo bạn sẽ nói xấu công ty họ sau này.
+- Nói chỉ vì tiền: tiền là một phần, nhưng nếu chỉ nói tiền sẽ thiếu chiều sâu; hãy kết hợp định hướng nghề nghiệp.
+- Trả lời quá dài, vòng vo — 30–60 giây là đủ.
+- Nhảy việc nhiều lần nhưng không có câu chuyện mạch lạc — hãy chuẩn bị narrative (chuỗi lý do hợp lý).
+
+> Senior tip: Người phỏng vấn đánh giá cao **tự nhận thức (self-awareness)** và **ownership**. Ứng viên senior kể câu chuyện chủ động về hướng phát triển của mình; ứng viên tạo cảm giác rủi ro thường chỉ đổ lỗi cho hoàn cảnh. Hãy luyện câu trả lời đến mức bạn nói bình tĩnh, không phòng thủ.`,
+  follow: [
+    'How do you explain leaving after a short tenure?',
+    'What if you were laid off?',
+    'How do you answer "why this company"?',
+  ],
+  tags: ['hr', 'career', 'interview', 'english'],
+  lang: 'en',
+},
+{
+  id: 'english-118',
+  topic: 'english',
+  level: 'mid',
+  q: 'What is your notice period, and how do you handle handover when switching jobs?',
+  a: `**Tóm tắt (30 giây, nói miệng):** Nêu rõ **notice period** (thời gian báo trước theo hợp đồng/quy định) của bạn, sau đó trình bày kế hoạch **handover** (bàn giao) cụ thể: tài liệu, chuyển giao kiến thức, người nhận trách nhiệm, và các việc còn dang dở. Điều này giúp công ty mới yên tâm về ngày bắt đầu và thể hiện bạn làm việc có trách nhiệm.
+
+### Giải thích từ gốc (cho người mới)
+- **Notice period** (thời gian báo trước): khoảng thời gian từ lúc bạn thông báo nghỉ đến ngày làm việc cuối cùng. Thời gian này tùy hợp đồng, quy định công ty, vị trí, và pháp luật/địa phương áp dụng — vì vậy hãy trả lời theo **thực tế của bạn** ("My notice period is X..." / "According to my contract..."). Nếu có thể linh hoạt (thỏa thuận), bạn có thể nói rõ mức linh hoạt, nhưng **không hứa** điều bạn không chắc làm được.
+- **Handover** (bàn giao): chuyển công việc, kiến thức và quyền truy cập cho người/nhóm tiếp quản để hệ thống và dự án không bị gián đoạn. Với dev, handover không chỉ là "gửi file", mà là giúp người sau **vận hành và tiếp tục phát triển**.
+- **Knowledge transfer (KT)** (chuyển giao kiến thức): buổi chia sẻ/giải thích về hệ thống, luồng nghiệp vụ, quyết định kỹ thuật, các "bẫy" đã biết.
+
+### Kế hoạch handover cụ thể (ví dụ)
+1. **Tài liệu**: cập nhật README/runbook (sổ tay vận hành), sơ đồ kiến trúc nếu có, cách deploy, cách debug sự cố thường gặp.
+2. **Danh sách việc còn mở**: pending tasks (việc chưa xong), owner (người phụ trách mới), mức ưu tiên, deadline.
+3. **Chuyển giao truy cập**: theo quy trình công ty — bàn giao quyền sở hữu tài liệu/hệ thống cho người được ủy quyền (không tự ý chia sẻ trái phép).
+4. **KT sessions**: 1–2 buổi ngắn đi qua service chính, dashboard/alert, quy trình on-call nếu liên quan.
+5. **Ổn định trước ngày cuối**: tránh nhận thay đổi quá lớn sát ngày nghỉ; ưu tiên hoàn tất hoặc bàn giao rõ phần đang làm.
+
+### Mẫu trả lời
+"My contractual notice period is [X weeks/months]. During that time, I plan to support a smooth handover: I will document my current responsibilities, prepare a list of pending tasks with recommended owners, and run knowledge-transfer sessions for the key systems I work on. I will also follow the company's process for transferring access and ownership. If needed, we can discuss a start date that works well for both sides."
+
+### Useful phrases
+- "My notice period is..." — Thời gian báo trước của tôi là...
+- "I will ensure a smooth handover." — Tôi sẽ đảm bảo bàn giao suôn sẻ.
+- "I can prepare documentation and knowledge-transfer sessions." — Tôi có thể chuẩn bị tài liệu và buổi chuyển giao kiến thức.
+- "We can confirm a start date that works for both sides." — Chúng ta có thể xác nhận ngày bắt đầu phù hợp cho cả hai bên.
+
+### Từ vựng
+- **notice period**: thời gian báo trước
+- **handover**: bàn giao
+- **runbook**: sổ tay vận hành
+- **pending tasks**: việc còn dang dở
+- **transition owner**: người nhận trách nhiệm tiếp quản
+
+### Lỗi người Việt hay mắc
+- Hứa bắt đầu ngay dù hợp đồng yêu cầu notice period — gây rủi ro pháp lý/cam kết.
+- Nghĩ handover chỉ là "nói miệng" — không có tài liệu, người sau rất khó tiếp quản.
+- "Burning bridges" (đốt cầu): nghỉ gấp, thái độ tiêu cực — ngành nhỏ, người ta có thể gặp lại nhau.
+- Quên hỏi ngày bắt đầu mong muốn của công ty mới để phối hợp thực tế.
+
+> Senior tip: Ứng viên senior được đánh giá không chỉ ở lúc "vào", mà còn ở cách "ra" có trách nhiệm. Một kế hoạch handover rõ ràng cho hiring manager thấy bạn bảo vệ **delivery continuity** (tính liên tục bàn giao) — đây là dấu hiệu trưởng thành nghề nghiệp.`,
+  follow: [
+    'Can you start earlier than your notice period?',
+    'How do you prioritize during your last month?',
+    'What do you do if your current employer counters?',
+  ],
+  tags: ['hr', 'notice', 'handover', 'english'],
+  lang: 'en',
+},
+{
+  id: 'english-119',
+  topic: 'english',
+  level: 'senior',
+  q: 'How do you explain a gap in your CV during an interview?',
+  a: `**Tóm tắt (30 giây, nói miệng):** Thừa nhận khoảng trống (**gap**) trong CV ngắn gọn, trung thực; nói bạn đã làm gì trong thời gian đó (chăm sóc gia đình, sức khỏe, học/upskill, dự án cá nhân — tùy thực tế); sau đó **xoay về hiện tại**: bạn đã sẵn sàng và kỹ năng/liên quan thế nào đến vị trí. Không nói dối, không xin lỗi quá nhiều.
+
+### Giải thích từ gốc (cho người mới)
+- **CV gap** (khoảng trống trong CV): giai đoạn bạn không có công việc toàn thời gian được ghi nhận rõ trên CV. Gap rất phổ biến (chăm sóc gia đình, sức khỏe, nghỉ ngơi, học, chuyển hướng nghề, thị trường khó). Nhà tuyển dụng hỏi để hiểu bối cảnh và mức sẵn sàng hiện tại.
+- **Upskill / reskill** (nâng cấp / học kỹ năng mới): ví dụ học thêm cloud, system design, cải thiện tiếng Anh, làm project cá nhân. Nếu bạn có bằng chứng (khóa học hoàn thành, project, đóng góp), hãy nêu ngắn gọn.
+- **Narrative** (câu chuyện mạch lạc): cách bạn kể giúp người nghe hiểu gap là một giai đoạn có lý do, không phải dấu hiệu bạn "mất năng lực". Narrative tốt = thật + ngắn + hướng tới giá trị bạn mang lại.
+
+### Cấu trúc trả lời an toàn
+1. **Nêu gap và thời gian** (ngắn): "I had a [X-month] gap in [period]."
+2. **Lý do phù hợp để chia sẻ** (ở mức bạn thoải mái): gia đình, sức khỏe, học tập... Bạn không phải kể chi tiết riêng tư.
+3. **Bạn đã làm gì** (nếu có): học, dự án, freelance nhỏ — chỉ nói sự thật.
+4. **Sẵn sàng hiện tại + liên hệ role**: "Now I am ready to return full-time and contribute to..."
+
+### Mẫu trả lời
+"I had a six-month gap last year to take care of a family matter. During that time, I also kept my skills up to date by studying system design and working on a small Java backend project to practice APIs and databases. Now I am fully ready to return to full-time work, and I am excited about this role because it matches my backend experience and the areas I want to grow in."
+
+### Nếu gap liên quan sức khỏe (chia sẻ tối thiểu)
+Bạn có quyền giữ riêng tư. Có thể nói: "I took some time off for a personal health matter that has been resolved. I am now fully ready to work." (Không cần chi tiết y tế.)
+
+### Useful phrases
+- "I took time off to..." — Tôi đã tạm nghỉ để...
+- "During that period, I..." — Trong giai đoạn đó, tôi...
+- "I am now ready to contribute." — Hiện tôi đã sẵn sàng đóng góp.
+- "That experience helped me..." (nếu phù hợp) — Trải nghiệm đó giúp tôi...
+
+### Từ vựng
+- **career break / gap**: khoảng nghỉ / khoảng trống CV
+- **upskill**: nâng cấp kỹ năng
+- **personal matter**: việc cá nhân
+- **full-time**: toàn thời gian
+
+### Lỗi người Việt hay mắc
+- Nói dối ngày tháng/kinh nghiệm — dễ bị phát hiện khi kiểm tra tham chiếu.
+- Xin lỗi lặp lại: "Sorry, sorry..." — gap không phải tội lỗi; hãy tự tin, bình tĩnh.
+- Giải thích quá dài, lan man vào chi tiết riêng tư.
+- Nói "I did nothing" dù thực ra có học/làm gì đó — hãy ghi nhận nỗ lực thực tế (không phóng đại).
+
+> Senior tip: Hãy **chủ động kể câu chuyện của bạn** thay vì để nhà tuyển dụng tự suy đoán. Một lời giải thích ngắn, rõ, tự tin giúp xóa định kiến về gap và đưa cuộc nói chuyện về năng lực, kinh nghiệm, và sự sẵn sàng đóng góp.`,
+  follow: [
+    'How long a gap is acceptable?',
+    'Should you include gap activities on your CV?',
+    'How do you address multiple short stints?',
+  ],
+  tags: ['hr', 'cv', 'career', 'english'],
+  lang: 'en',
+},
+{
+  id: 'english-120',
+  topic: 'english',
+  level: 'mid',
+  q: 'What questions should you ask the interviewer at the end of an interview?',
+  a: `**Tóm tắt (30 giây, nói miệng):** Cuối phỏng vấn, hãy hỏi 2–3 câu **có chuẩn bị** để hiểu công việc thật, cách team vận hành, và bước tiếp theo. Câu hỏi tốt cho thấy bạn nghiêm túc, có tư duy senior, và đang đánh giá mức phù hợp hai chiều. Tránh hỏi những thứ đã ghi rõ trên website/career page (trừ khi bạn muốn xác nhận chi tiết).
+
+### Giải thích từ gốc (cho người mới)
+- **"Do you have any questions for us?"**: đây là phần để bạn thu thập thông tin quan trọng (sẽ làm gì, ai làm cùng, áp lực ra sao, tiêu chí thành công) và thể hiện sự quan tâm. Không hỏi gì đôi khi bị hiểu là thiếu hứng thú.
+- **Two-way evaluation** (đánh giá hai chiều): phỏng vấn không chỉ để công ty chọn bạn; bạn cũng cần dữ liệu để quyết định có nhận offer không.
+- **Tailor your questions** (tùy biến câu hỏi): chọn câu phù hợp người đang nói chuyện. Với **hiring manager** (quản lý tuyển), hỏi về mục tiêu/ưu tiên/đánh giá. Với **engineer** (đồng nghiệp kỹ thuật), hỏi về stack, quy trình, tech debt (nợ kỹ thuật — phần code/hệ thống cần cải thiện sau), on-call. Với **HR/recruiter**, hỏi quy trình, timeline, chính sách chung.
+
+### Nhóm câu hỏi tốt (chọn 2–3)
+1. **Thành công và kỳ vọng**: "What does success look like in the first 30, 60, and 90 days?"
+2. **Thách thức thật**: "What is the biggest technical or product challenge the team is facing right now?"
+3. **Cách team làm việc**: "How does the team balance feature delivery with reliability and tech debt?"
+4. **Công nghệ và quy trình** (nếu chưa rõ): "What does your development and release process look like?"
+5. **Bước tiếp theo**: "What are the next steps in the interview process, and when can I expect to hear back?"
+
+### Ví dụ cách hỏi tự nhiên
+"Thank you, that was very helpful. I have two quick questions. First, what would success look like for this role in the first three months? And second, what are the next steps and the expected timeline?"
+
+### Những câu nên cẩn trọng/thời điểm
+- **Lương/thưởng chi tiết**: thường phù hợp hơn ở giai đoạn HR/offer hoặc khi họ mở chủ đề. Vòng kỹ thuật đầu tiên có thể chưa phải lúc tối ưu (tùy bối cảnh).
+- **On-call/overtime** (trực ca/làm thêm): là câu hỏi hợp lý — hỏi lịch sự, cụ thể: "Is there an on-call rotation for this team, and how often does it happen?"
+- Tránh câu tiêu cực hoặc gây phòng thủ: "Why is this position open? Did someone quit?" → có thể hỏi nhẹ hơn: "What led to this opening, and is it a new role or a backfill?"
+
+### Useful phrases
+- "Could you tell me more about..." — Bạn có thể cho tôi biết thêm về...
+- "How does the team handle..." — Team xử lý ... như thế nào?
+- "What are the next steps?" — Các bước tiếp theo là gì?
+- "When should I expect an update?" — Khi nào tôi có thể nhận được cập nhật?
+
+### Từ vựng
+- **success metrics**: tiêu chí đo thành công
+- **tech debt**: nợ kỹ thuật
+- **on-call rotation**: lịch trực ca luân phiên
+- **backfill / new headcount**: tuyển thay người / tuyển vị trí mới
+
+### Lỗi người Việt hay mắc
+- Không chuẩn bị câu hỏi, cuối buổi im lặng hoặc hỏi "No, I am fine".
+- Hỏi câu quá chung: "What does your company do?" — nghe như chưa tìm hiểu.
+- Hỏi quá nhiều câu một lúc, không để người kia trả lời hết.
+- Hỏi bằng giọng chất vấn thay vì tò mò hợp tác.
+
+> Senior tip: Chuẩn bị 3–5 câu hỏi trước buổi phỏng vấn, nhưng chỉ hỏi 2–3 câu **phù hợp nhất với cuộc trò chuyện vừa diễn ra**. Khi interviewer trả lời, hãy lắng nghe và đặt một câu follow-up ngắn — điều này tạo cảm giác đối thoại thật và cho bạn thông tin sâu hơn câu hỏi "đọc thuộc".`,
+  follow: [
+    'What questions impress a hiring manager?',
+    'How do you ask about on-call and overtime?',
+    'What should you avoid asking HR?',
+  ],
+  tags: ['hr', 'interview', 'communication', 'english'],
+  lang: 'en',
+},
+{
+  id: 'english-121',
+  topic: 'english',
+  level: 'mid',
+  q: 'How do you decline a job offer politely while keeping the door open?',
+  a: `**Tóm tắt (30 giây, nói miệng):** Từ chối offer một cách **nhanh, rõ ràng, lịch sự**: cảm ơn họ, nói bạn đã quyết định chọn hướng khác (không cần giải thích dài), nêu lý do ngắn gọn nếu phù hợp (fit, mục tiêu, offer khác), và bày tỏ mong muốn giữ liên lạc. Ngành nghề nhỏ — cách bạn từ chối cũng là một phần thương hiệu cá nhân.
+
+### Giải thích từ gốc (cho người mới)
+- **Decline an offer** (từ chối lời mời làm việc): bạn có quyền chọn cơ hội phù hợp nhất. Điều quan trọng là cách truyền đạt: tôn trọng thời gian của họ và giữ quan hệ tốt.
+- **Keep the door open** (giữ cửa mở): không "đốt cầu" (burn bridges). Trong tương lai bạn có thể ứng tuyển lại, hợp tác, hoặc gặp lại họ trong cộng đồng ngành.
+- **Fit** (mức phù hợp): phù hợp về vai trò, công nghệ, quy mô team, định hướng sản phẩm, địa điểm/cách làm việc, v.v. Đây là lý do an toàn và chuyên nghiệp để nêu.
+- **Ghosting** (biến mất, không phản hồi): rất thiếu chuyên nghiệp. Nếu bạn cần thời gian suy nghĩ, hãy xin gia hạn lịch sự thay vì im lặng.
+
+### Cấu trúc email/lời nói ngắn
+1. **Cảm ơn**: cảm ơn offer và thời gian của team.
+2. **Quyết định rõ**: "After careful consideration, I have decided not to move forward with this offer."
+3. **Lý do ngắn (tùy chọn)**: "I have decided to pursue another opportunity that aligns more closely with my current goals."
+4. **Giữ quan hệ**: chúc team thành công, mong giữ liên lạc.
+
+### Mẫu trả lời
+"Thank you very much for offering me the [role name] position and for the time you and the team spent with me throughout the process. After careful consideration, I have decided to pursue another opportunity that is a closer fit for my current goals. I really appreciated learning about your team and the work you are doing, and I hope we can stay in touch. Wishing you and the team continued success."
+
+### Những lưu ý quan trọng
+- **Trả lời sớm** khi bạn đã chắc — họ có thể cần chuyển offer cho ứng viên khác.
+- **Không thương lượng thêm sau khi đã từ chối rõ ràng**, trừ khi bạn thực sự thay đổi quyết định và có lý do rất chính đáng (hiếm và cần xử lý cẩn trọng).
+- **Không đưa feedback tiêu cực** trừ khi họ chủ động hỏi và bạn có thể nói xây dựng, ngắn gọn.
+- Nếu bạn đã **accepted** (chấp nhận) rồi muốn rút lại: đây là tình huống nhạy cảm, có thể ảnh hưởng uy tín; hãy thông báo ngay, thành thật, xin lỗi vì sự bất tiện, và hiểu rằng mối quan hệ có thể bị ảnh hưởng.
+
+### Useful phrases
+- "Thank you for the offer and for your time." — Cảm ơn vì offer và thời gian của bạn.
+- "After careful consideration, I have decided to..." — Sau khi cân nhắc kỹ, tôi đã quyết định...
+- "It was not an easy decision." (nếu đúng) — Đây không phải quyết định dễ dàng.
+- "I hope we can stay in touch." — Tôi hy vọng chúng ta giữ liên lạc.
+- "I wish you and the team all the best." — Chúc bạn và team mọi điều tốt đẹp.
+
+### Từ vựng
+- **decline / turn down**: từ chối
+- **pursue another opportunity**: theo đuổi cơ hội khác
+- **keep in touch**: giữ liên lạc
+- **burn bridges**: làm hỏng quan hệ (đốt cầu)
+- **ghosting**: im lặng, không phản hồi
+
+### Lỗi người Việt hay mắc
+- Im lặng vì ngại — recruiter phải chờ đợi; hãy gửi một tin nhắn/email ngắn.
+- Giải thích quá dài về lương, sếp tương lai, hoặc so sánh tiêu cực giữa công ty — dễ tạo ấn tượng xấu.
+- Đùa cợt hoặc dùng giọng quá suồng sã trong email từ chối offer chính thức.
+- Hứa hẹn mơ hồ "maybe later" khi bạn thực sự không có ý định.
+
+> Senior tip: Một lời từ chối lịch sự có thể mang lại cơ hội trong tương lai — recruiter và hiring manager nhớ những ứng viên giao tiếp rõ ràng, tôn trọng. Hãy giữ tin nhắn ngắn (5–8 câu), gửi đúng kênh (email/như quy trình), và phản hồi trong thời gian hợp lý sau khi quyết định.`,
+  follow: [
+    'Should you explain your reason in detail?',
+    'How do you decline after accepting?',
+    'How do you keep the relationship warm?',
+  ],
+  tags: ['hr', 'offer', 'communication', 'english'],
+  lang: 'en',
+},
+{
+  id: 'english-122',
+  topic: 'english',
+  level: 'mid',
+  q: 'Introduce your automation framework in about 90 seconds. What does it test, how is it structured, and what makes it reliable?',
+  a: `**Tóm tắt:** Khi trả lời, hãy nói theo cấu trúc rõ: bối cảnh sản phẩm → mục tiêu test → tech stack → kiến trúc framework → cách chạy trong CI/CD → kết quả đo được. Tránh liệt kê công cụ suông; interviewer muốn nghe bạn **thiết kế và vận hành** framework, không chỉ dùng tool.
+
+### Cái gì — "Automation framework" là gì?
+**Automation framework** (khung tự động hóa kiểm thử) là một bộ quy tắc, thư viện và cấu trúc mã nguồn giúp viết test tự động một cách nhất quán. Thay vì mỗi người viết script theo kiểu riêng, framework quy định: đặt file ở đâu, gọi API/UI thế nào, quản lý test data ra sao, báo cáo kết quả như thế nào.
+
+Ví dụ đời thường: framework giống "bộ khuôn làm bánh" — ai cũng dùng cùng khuôn nên bánh ra đều, dễ kiểm tra chất lượng.
+
+### Vì sao interviewer hỏi câu này?
+- Kiểm tra bạn có hiểu **kiến trúc** hay chỉ copy script.
+- Đánh giá khả năng giải thích rõ ràng bằng tiếng Anh (rất quan trọng cho SDET làm việc với team quốc tế).
+- Xem bạn có tư duy về maintainability (dễ bảo trì), reliability (ổn định), và CI integration.
+
+### Câu trả lời mẫu (nói được ngay, ~90 giây)
+"In my current project, I work on an automation framework for a Java-based e-commerce platform. The goal is to catch regressions early and reduce manual regression time.
+
+For UI testing, we use Playwright with TypeScript because it has reliable auto-waiting and good parallel execution. For API testing, we use REST Assured in Java, since our backend is Java and it fits naturally with our tech stack.
+
+The framework follows a layered structure. We have a test layer with readable test scenarios, a page-object or service layer that wraps UI actions and API calls, and a utility layer for configuration, test data, and reporting. We keep selectors and endpoints in one place so changes are easy to maintain.
+
+We run smoke tests on every pull request and the full regression suite nightly in GitHub Actions. Test results are published to Allure reports, and failures create alerts in our team channel.
+
+This setup helped us cut regression time from about two days of manual work to under two hours, and it gave developers faster feedback before merging."
+
+### Từ vựng hữu ích
+- **regression testing**: kiểm thử hồi quy — chạy lại test để đảm bảo tính năng cũ không bị hỏng sau khi sửa/thêm code.
+- **smoke test**: bộ test nhanh, kiểm tra các luồng chính còn sống không (như "bật máy xem có khói không").
+- **page object / service layer**: lớp trung gian đóng gói thao tác UI/API để test dễ đọc và dễ sửa.
+- **CI/CD pipeline**: quy trình tự động build, test, deploy khi có thay đổi code.
+- **flaky test**: test lúc pass lúc fail không do bug thật — rất gây mất niềm tin.
+
+### Lỗi hay gặp
+- Nói quá nhiều tên tool nhưng không nói **tại sao chọn** và **kết quả đạt được**.
+- Quên nhắc CI/CD: framework chỉ chạy trên máy cá nhân thì giá trị thấp.
+- Dùng câu chung chung như "it is very good" — hãy thêm số liệu (thời gian chạy, tỉ lệ flaky, coverage mục tiêu).
+- Nói "I" cho mọi thứ trong dự án nhóm; nếu là đóng góp chung, dùng "we" và nêu rõ phần bạn phụ trách.
+
+> Senior tip: Hãy chuẩn bị 1 ví dụ cụ thể bạn tự cải thiện (ví dụ giảm flaky tests, thêm parallel run, tách test data). Câu chuyện "I noticed X, changed Y, measured Z" luôn thuyết phục hơn danh sách công cụ.`,
+  follow: [
+    'How do you decide what to automate first and what to keep manual?',
+    'How do you keep your framework maintainable when the product changes quickly?',
+    'What metrics do you track to know the automation is actually valuable?',
+  ],
+  tags: [
+    'automation',
+    'framework',
+    'sdet',
+    'interview',
+    'english',
+  ],
+  lang: 'en',
+},
+{
+  id: 'english-123',
+  topic: 'english',
+  level: 'senior',
+  q: 'Why would you choose Playwright over Selenium for a new UI automation project? When might Selenium still be the right choice?',
+  a: `**Tóm tắt:** Playwright thường phù hợp cho dự án mới vì **auto-waiting** (tự chờ phần tử sẵn sàng), kiến trúc hiện đại, parallel tốt, và debug tiện (trace/video). Selenium vẫn hợp lý khi cần hỗ trợ trình duyệt/legacy đặc thù, đội ngũ đã có đầu tư lớn vào Selenium Grid/hạ tầng, hoặc tổ chức có ràng buộc công cụ. Câu trả lời mạnh là so sánh theo **ngữ cảnh**, không tuyên bố tool này "thắng tuyệt đối".
+
+### Cái gì — Playwright và Selenium khác nhau ở đâu?
+- **Selenium** (ra đời lâu, rất phổ biến) điều khiển trình duyệt qua giao thức WebDriver. Mỗi hành động thường là một request riêng; việc chờ phần tử ổn định hay xử lý timing đôi khi phải tự viết wait.
+- **Playwright** (Microsoft, hiện đại hơn) giao tiếp với trình duyệt qua kết nối điều khiển mạnh hơn, có cơ chế **auto-wait** tích hợp: trước khi click/fill, nó chờ element hiển thị, ổn định, nhận sự kiện — giảm nhiều lỗi do timing.
+
+Ví dụ đời thường: Selenium giống lái xe số sàn — bạn kiểm soát nhiều bước nhưng dễ sai nếu quên côn/ga đúng lúc. Playwright giống hỗ trợ tự căn số ở nhiều tình huống — vẫn cần lái tốt, nhưng đỡ lỗi vặt.
+
+### Câu trả lời mẫu (90 giây)
+"For a new UI automation project, I would usually choose Playwright.
+
+The main reason is reliability. Playwright has built-in auto-waiting, so actions wait for elements to be visible and actionable. That reduces a common source of flaky tests caused by timing issues. It also supports modern web features well, handles multiple tabs and contexts easily, and gives strong debugging tools like traces, screenshots, and videos.
+
+From a team perspective, setup is straightforward, and parallel execution is easier to scale in CI. That helps us get faster feedback on pull requests.
+
+That said, I would still consider Selenium in some cases. For example, if the organization already has a mature Selenium Grid, shared libraries, and reporting built around it, migrating everything may not be worth the cost immediately. Selenium can also be relevant when there are specific browser or legacy environment constraints.
+
+So my decision is based on project context: for greenfield work, Playwright is often the better default; for existing ecosystems, I evaluate migration cost versus long-term benefits."
+
+### Bảng so sánh nhanh (nói miệng được)
+| Tiêu chí | Playwright | Selenium |
+|---|---|---|
+| Auto-wait | Tích hợp tốt, giảm wait thủ công | Thường cần explicit/fluent wait cẩn thận |
+| Debug | Trace viewer, video, screenshot tiện | Phụ thuộc tool/logging bổ sung |
+| Hệ sinh thái | Mới hơn, phát triển nhanh | Rất lớn, tài liệu và cộng đồng lâu năm |
+| Legacy/enterprise | Tốt cho web hiện đại | Đôi khi phù hợp hạ tầng/constraint sẵn có |
+| Chi phí chuyển đổi | Cao nếu đang dùng Selenium sâu | Thấp nếu đã đầu tư nhiều |
+
+### Từ vựng hữu ích
+- **auto-waiting**: cơ chế tự chờ điều kiện trước khi thao tác.
+- **greenfield project**: dự án làm mới từ đầu, ít ràng buộc code/hạ tầng cũ.
+- **migration cost**: chi phí chuyển đổi (thời gian, rủi ro, đào tạo, sửa pipeline).
+- **cross-browser testing**: kiểm thử trên nhiều trình duyệt/kênh.
+
+### Lỗi hay gặp
+- Chê Selenium quá mạnh ("Selenium is bad") — thiếu chuyên nghiệp, interviewer có thể đang dùng Selenium.
+- Chỉ nói "Playwright is faster" mà không nói nhanh ở đâu (setup, feedback loop, debug).
+- Bỏ qua yếu tố đội ngũ: công cụ "tốt hơn" nhưng team không vận hành được thì vẫn thất bại.
+- Không nhắc trade-off: câu trả lời senior luôn có điều kiện ("it depends").
+
+> Senior tip: Nếu được hỏi sâu, hãy nói về **risk of migration**: chạy song song 2 framework một thời gian, chọn pilot suite nhỏ, đo flaky rate và thời gian chạy trước khi mở rộng. Cách tiếp cận theo dữ liệu tạo niềm tin hơn khẩu hiệu.`,
+  follow: [
+    'How would you migrate an existing Selenium suite to Playwright safely?',
+    'What kinds of tests are still better done at API or unit level instead of UI?',
+    'How do you compare flakiness and execution time before and after choosing a tool?',
+  ],
+  tags: [
+    'playwright',
+    'selenium',
+    'ui-automation',
+    'tradeoff',
+    'english',
+  ],
+  lang: 'en',
+},
+{
+  id: 'english-124',
+  topic: 'english',
+  level: 'senior',
+  q: 'How do you handle flaky tests in an automation suite? Give a concrete approach you have used.',
+  a: `**Tóm tắt:** **Flaky test** (test không ổn định, lúc pass lúc fail dù code không đổi) làm team mất niềm tin vào automation. Cách xử lý chuyên nghiệp: **đo lường** (quarantine + theo dõi tỉ lệ flaky), **phân loại nguyên nhân** (timing, data, môi trường, thứ tự chạy, dependency ngoài), **sửa gốc rễ** (không chỉ rerun), và đặt **quy tắc** để flaky không lan ra. Rerun có thể là tín hiệu tạm thời, không phải giải pháp.
+
+### Cái gì — Flaky test là gì và vì sao nguy hiểm?
+Flaky test là test cho kết quả khác nhau giữa các lần chạy trong cùng điều kiện kỳ vọng. Ví dụ đời thường: công tắc đèn lúc bật sáng lúc không — bạn không biết do bóng hỏng, dây lỏng hay điện yếu; nếu bỏ qua, bạn sẽ không còn tin công tắc.
+
+Nguy hiểm vì:
+- Team bắt đầu bỏ qua failure ("chắc flaky thôi") → bug thật lọt production.
+- Pipeline chậm do rerun, merge bị chặn.
+- Chi phí bảo trì tăng, automation mất giá trị.
+
+### Câu trả lời mẫu (90 giây)
+"I treat flaky tests as a reliability problem, not just an annoyance.
+
+First, I make them visible. We track flaky rate per test and quarantine repeatedly unstable tests so they do not block every pull request. But quarantine is temporary — each quarantined test gets an owner and a deadline.
+
+Second, I classify the root cause. Common causes are timing issues, shared test data, environment instability, order dependency, or external services. I reproduce the failure using logs, traces, screenshots, and sometimes by running the test repeatedly in CI.
+
+Third, I fix the root cause. For example, in one project a checkout UI test failed randomly because it clicked before a network call finished. Instead of adding a fixed sleep, we waited for the specific API response and a stable UI state. For another case, tests conflicted because they reused the same user account; we switched to isolated test data created per test run.
+
+Finally, we added rules: no arbitrary sleeps, control external dependencies with mocks or stable test environments, and review flaky trends weekly. Over time, our flaky rate dropped and the team trusted the pipeline again."
+
+### Cơ chế xử lý từng bước
+1. **Detect**: gắn tag/flaky history, chạy lặp (repeat) để xác nhận.
+2. **Quarantine**: tách khỏi gate chính nhưng vẫn chạy để theo dõi.
+3. **Diagnose**: đọc trace/log, kiểm tra timing, data, network, parallel.
+4. **Fix**: sửa wait đúng điều kiện, cô lập data, ổn định môi trường, mock dependency.
+5. **Prevent**: code review checklist, giới hạn sleep cố định, báo cáo xu hướng.
+
+### Bảng nguyên nhân → hướng sửa
+| Nguyên nhân | Dấu hiệu | Hướng xử lý |
+|---|---|---|
+| Timing/race | Fail ngẫu nhiên, pass khi chạy chậm | Chờ điều kiện cụ thể, auto-wait, không {{Thread.sleep}} |
+| Shared test data | Fail khi chạy parallel/suite lớn | Tạo data riêng per test, dọn sau test |
+| Môi trường | Fail theo node/thời điểm | Ổn định image/env, kiểm tra health trước suite |
+| Thứ tự phụ thuộc | Pass lẻ, fail khi đổi order | Mỗi test độc lập, setup/teardown rõ |
+| Dependency ngoài | Fail do payment/email/third-party | Mock/stub, contract test, sandbox ổn định |
+
+### Lỗi hay gặp
+- Cứ rerun đến khi pass: che mất bug thật và tốn tài nguyên CI.
+- Thêm {{sleep}} dài: test chậm hơn nhưng vẫn có thể flaky.
+- Quarantine vĩnh viễn: "nghĩa địa test" — không ai sửa.
+- Không có owner: ai cũng biết flaky, không ai chịu trách nhiệm.
+
+> Senior tip: Hãy nói về **service level cho test suite** (ví dụ flaky rate < 2%, thời gian PR suite < 15 phút). Khi có mục tiêu đo được, quyết định quarantine/fix/mức ưu tiên trở nên rõ ràng và dễ thuyết phục manager.`,
+  follow: [
+    'When would you delete a flaky test instead of fixing it?',
+    'How do you prevent flaky tests in code review?',
+    'What is the difference between retrying a test and making it reliable?',
+  ],
+  tags: [
+    'flaky-test',
+    'reliability',
+    'ci',
+    'sdet',
+    'english',
+  ],
+  lang: 'en',
+},
+{
+  id: 'english-125',
+  topic: 'english',
+  level: 'senior',
+  q: 'Tell me about a bug you caught with automation that saved a release. What happened, and what did you learn?',
+  a: `**Tóm tắt:** Đây là câu behavioral + technical. Hãy dùng cấu trúc **STAR** (Situation, Task, Action, Result): bối cảnh release → rủi ro → bạn phát hiện bằng test nào → cách phối hợp fix/verify → kết quả cụ thể (tránh incident, tiết kiệm thời gian/tiền, bảo vệ khách hàng). Nhấn mạnh cả **giá trị business** và **bài học cải thiện quy trình**.
+
+### Cái gì — Interviewer muốn nghe gì?
+Họ không chỉ muốn biết "có bug". Họ muốn đánh giá:
+- Bạn có viết test đúng chỗ rủi ro cao không?
+- Bạn có điều tra và giao tiếp rõ với developer/product không?
+- Bạn có biến một lần cứu release thành cải tiến dài hạn không?
+
+### Câu trả lời mẫu (90 giây, STAR)
+"Situation: In my previous team, we were preparing a release for an e-commerce checkout flow. The change looked small — it updated how discount codes were applied.
+
+Task: As part of our release process, I was responsible for running and reviewing the automated regression suite for payment and promotion scenarios.
+
+Action: During the CI run, an end-to-end API and UI test failed in a specific case: when a user applied a percentage discount and then changed the shipping method, the final total was recalculated incorrectly. I reproduced the issue locally, checked the logs, and narrowed it down to the order of recalculation. I reported it with clear steps, test evidence, expected versus actual totals, and the affected scenario. I also worked with the developer to add a focused test case around discount plus shipping changes.
+
+Result: We fixed the bug before release, so customers were not charged the wrong amount. After that, we expanded our promotion regression matrix and added contract checks for pricing calculations. The main lesson for me was that high-risk business rules need targeted automation, not just happy-path coverage."
+
+### Vì sao câu chuyện này thuyết phục?
+- Có **ngữ cảnh business** (checkout, charged wrong amount).
+- Có **bằng chứng kỹ thuật** (CI, e2e/API+UI, expected vs actual, logs).
+- Có **hành động phối hợp** (không ném bug qua tường).
+- Có **kết quả + bài học** (cải thiện test matrix/contract checks).
+
+### Ví dụ chi tiết bạn có thể đưa vào nếu bị hỏi sâu
+- Test data: mã giảm 10%, phí ship thay đổi từ standard sang express.
+- Expected: tổng = (subtotal - discount) + shipping mới.
+- Actual trước fix: discount bị áp dụng sai thứ tự hoặc bị giữ giá trị cũ.
+- Cách verify: chạy lại test case mới + regression suite + kiểm tra biên (0%, 100% discount nếu business cho phép, nhiều mã, thay đổi địa chỉ).
+
+### Từ vựng hữu ích
+- **caught a bug before release**: phát hiện lỗi trước khi phát hành.
+- **expected vs actual result**: kết quả mong đợi so với thực tế.
+- **reproduction steps**: các bước tái hiện lỗi.
+- **regression matrix**: ma trận các trường hợp hồi quy cần kiểm tra.
+- **happy path**: luồng thành công lý tưởng; cần thêm edge cases.
+
+### Lỗi hay gặp
+- Kể quá kỹ thuật nhưng không nói **impact** (ảnh hưởng khách hàng/doanh thu).
+- Nói "automation found it" như phép màu, nhưng không nói bạn thiết kế test đó ra sao.
+- Đổ lỗi developer: nên giữ giọng trung lập, tập trung vào sản phẩm và quy trình.
+- Quên "lesson learned": interviewer muốn thấy bạn học và cải tiến.
+
+> Senior tip: Chuẩn bị 2–3 câu chuyện bug theo mức độ khác nhau (UI, API, data). Chọn câu phù hợp với vai trò bạn ứng tuyển. Với SDET, hãy luôn có phần "how we prevented it from happening again" — đó là điểm khác biệt giữa tester và quality engineer.`,
+  follow: [
+    'How did you decide the severity of that bug?',
+    'What would you do if the team wanted to release anyway?',
+    'How do you choose which business flows deserve end-to-end automation?',
+  ],
+  tags: [
+    'behavioral',
+    'bug',
+    'release',
+    'automation',
+    'english',
+  ],
+  lang: 'en',
+},
+{
+  id: 'english-126',
+  topic: 'english',
+  level: 'senior',
+  q: 'How do you work with developers to improve testability? Give a practical example.',
+  a: `**Tóm tắt:** **Testability** (khả năng kiểm thử) là mức độ dễ viết test ổn định, nhanh, có ý nghĩa cho hệ thống. SDET làm việc hiệu quả với developer bằng cách đề xuất thay đổi **nhỏ, cụ thể, có lợi cho cả hai bên**: selector ổn định, API/hook quan sát trạng thái, log/ID truy vết, tách logic nghiệp vụ khỏi UI, dữ liệu test dễ dựng. Tránh yêu cầu kiểu "làm cho em test được" chung chung — hãy nói bằng ngôn ngữ rủi ro và chi phí.
+
+### Cái gì — Testability nghĩa là gì?
+Một tính năng có testability tốt khi:
+- Có cách xác định phần tử/trạng thái rõ ràng (không phụ thuộc CSS mong manh).
+- Có thể dựng dữ liệu và điều kiện cần thiết mà không phải thao tác thủ công phức tạp.
+- Lỗi có thông tin đủ để chẩn đoán (log, correlation ID).
+- Logic quan trọng có thể test ở mức unit/API, không bắt buộc qua UI.
+
+Ví dụ đời thường: kiểm tra máy móc dễ hơn khi có đèn báo trạng thái và cổng đo; nếu mọi thứ bị hàn kín, muốn biết hỏng ở đâu rất khó.
+
+### Câu trả lời mẫu (90 giây)
+"I see testability as a shared responsibility, so I try to collaborate with developers early, not after the feature is finished.
+
+In practice, I bring specific problems and propose small changes. For example, in one project our UI tests were flaky because selectors depended on dynamic CSS classes. I discussed it with the frontend developer and we agreed to add stable {{data-testid}} attributes for key actions like login, submit order, and apply coupon. That made selectors clearer and reduced maintenance when styles changed.
+
+Another example was an order-processing feature where the UI only showed a spinner for a long time. It was hard to know whether the backend was still processing or already failed. I suggested exposing a clear status through the API and adding a correlation ID in logs. That helped both automation and production debugging.
+
+I try to keep the conversation practical: I explain the risk, show how the change reduces flaky tests or debugging time, and keep the request small. When developers see that testability also helps them troubleshoot issues faster, collaboration becomes much easier."
+
+### Cách làm việc hiệu quả (từng bước)
+1. **Tham gia sớm**: review acceptance criteria/design, hỏi "làm sao biết feature đúng/sai?"
+2. **Đưa bằng chứng**: chỉ ra test nào flaky/chậm vì thiếu hook quan sát.
+3. **Đề xuất nhỏ**: 1–2 thay đổi có giá trị cao ({{data-testid}}, API status, seed data).
+4. **Thỏa thuận chuẩn**: coding guideline cho selector, logging, error codes.
+5. **Đo kết quả**: giảm thời gian fix test, giảm flaky, debug nhanh hơn.
+
+### Bảng gợi ý testability
+| Vấn đề | Ảnh hưởng | Đề xuất với dev |
+|---|---|---|
+| Selector đổi theo CSS | UI test vỡ khi refactor style | Thêm {{data-testid}} cho phần tử quan trọng |
+| Không quan sát trạng thái async | Phải sleep/guess | Endpoint/state rõ, loading/success/error |
+| Lỗi thiếu trace ID | Khó nối log UI ↔ backend | Correlation ID xuyên service |
+| Dựng data khó | Test chậm, phụ thuộc manual | Test API/seed data/factory ổn định |
+| Logic nằm hết ở UI | Phải test end-to-end mọi thứ | Tách business logic để có unit/API tests |
+
+### Lỗi hay gặp
+- Phàn nàn "dev không hỗ trợ test" mà không đưa ví dụ và lợi ích cụ thể.
+- Yêu cầu thay đổi lớn giữa sprint muộn: dễ bị từ chối.
+- Chỉ tập trung UI: testability còn nằm ở API contract, logging, data setup.
+- Không ghi nhận lợi ích cho dev (debug prod, tái hiện bug nhanh hơn).
+
+> Senior tip: Hãy dùng cụm "shift-left collaboration" (hợp tác sớm từ đầu vòng phát triển) nhưng giải thích đơn giản. Một gợi ý testability được chấp nhận trước khi code xong thường rẻ hơn gấp nhiều lần so với vá flaky tests sau release.`,
+  follow: [
+    'How do you convince a developer who says test IDs pollute production code?',
+    'What testability improvements help the most for API testing?',
+    'How do you balance asking for test hooks with keeping the product code clean?',
+  ],
+  tags: [
+    'testability',
+    'collaboration',
+    'sdet',
+    'developer',
+    'english',
+  ],
+  lang: 'en',
+},
+{
+  id: 'english-127',
+  topic: 'english',
+  level: 'senior',
+  q: 'A new feature is about to be developed. How would you explain your test strategy to the team?',
+  a: `**Tóm tắt:** **Test strategy** (chiến lược kiểm thử) là kế hoạch ở mức tổng thể: kiểm thử cái gì, ở mức nào, bằng cách nào, rủi ro nào ưu tiên, ai chịu trách nhiệm, và khi nào đủ tin cậy để release. Trả lời theo khung rõ: hiểu feature → xác định rủi ro → chọn mức test (unit/integration/API/UI/E2E) → dữ liệu/môi trường → automation trong CI → tiêu chí vào/ra.
+
+### Cái gì — Test strategy khác test plan/test case?
+- **Test strategy**: định hướng tổng thể, thường ổn định theo sản phẩm/team.
+- **Test plan**: kế hoạch cụ thể cho một feature/release (phạm vi, lịch, nguồn lực).
+- **Test case**: bước kiểm tra chi tiết cho một kịch bản.
+
+Ví dụ đời thường: đi du lịch — strategy là chọn phương tiện an toàn, ngân sách, ưu tiên; plan là lịch ngày nào đi đâu; test case là từng việc cần làm sáng ngày 1.
+
+### Câu trả lời mẫu (90 giây)
+"For a new feature, I start by understanding the user flow, acceptance criteria, and the main risks. I ask: what could break business value, data correctness, security, or user experience?
+
+Then I define the test scope by layers. I encourage unit tests for business logic, integration or API tests for service behavior and contracts, and a small number of UI end-to-end tests for critical user journeys. The goal is fast feedback and good coverage without making the suite slow and flaky.
+
+I also plan test data and environments early. We need clear preconditions, realistic edge cases, and stable dependencies. If the feature depends on external services, we may use mocks or sandbox environments where appropriate.
+
+For automation, I include high-value scenarios in CI: smoke tests on pull requests and broader regression tests on scheduled runs. I align with developers and the product owner on entry and exit criteria — for example, critical defects fixed, key tests passing, and known risks documented.
+
+Finally, I keep the strategy practical: it should help the team make a confident release decision, not produce paperwork."
+
+### Khung trả lời từng bước (dùng khi nói)
+1. **Clarify**: mục tiêu feature, acceptance criteria, luồng chính/ngoại lệ.
+2. **Risk assessment**: rủi ro cao (tiền, quyền truy cập, dữ liệu, tích hợp).
+3. **Test levels**:
+   - Unit: logic nhỏ, nhanh.
+   - Integration/API: DB, service, contract, lỗi nghiệp vụ.
+   - UI/E2E: 1–3 luồng quan trọng end-to-end.
+4. **Non-functional (nếu liên quan)**: performance, security basics, accessibility.
+5. **Data & environment**: dữ liệu biên, user roles, sandbox/mock.
+6. **Automation & CI**: cái gì chạy ở PR, cái gì chạy nightly/release.
+7. **Exit criteria**: pass test quan trọng, defect nghiêm trọng được xử lý, rủi ro còn lại được chấp nhận có chủ đích.
+
+### Bảng ưu tiên theo rủi ro
+| Khu vực | Rủi ro | Mức test ưu tiên |
+|---|---|---|
+| Business rule (giá, giảm giá, quyền) | Sai dữ liệu/tiền | Unit + API + vài E2E |
+| Tích hợp service ngoài | Timeout, sai contract | Integration/API contract, mock/sandbox |
+| UI workflow chính | Người dùng không hoàn tất | E2E chọn lọc |
+| Validation/input | Lỗi dữ liệu, bảo mật | Unit/API với edge cases |
+
+### Từ vựng hữu ích
+- **acceptance criteria**: điều kiện nghiệm thu feature.
+- **test pyramid**: ý tưởng nhiều test nhanh ở tầng thấp, ít E2E chậm ở tầng cao.
+- **entry/exit criteria**: điều kiện bắt đầu/kết thúc giai đoạn test.
+- **risk-based testing**: ưu tiên test theo mức rủi ro/ảnh hưởng.
+
+### Lỗi hay gặp
+- Nói "test everything": không thực tế, gây tốn thời gian.
+- Chỉ nói UI E2E: suite chậm, flaky, feedback muộn.
+- Bỏ qua test data và dependency ngoài: kế hoạch đẹp nhưng không chạy được.
+- Không nêu tiêu chí release: team không biết "đủ chất lượng" nghĩa là gì.
+
+> Senior tip: Khi trình bày strategy, hãy nói rõ **trade-off**: bạn chọn ít E2E hơn nhưng phủ tốt nghiệp vụ bằng API/unit để feedback nhanh. Một SDET mạnh không chỉ tìm bug — họ giúp team ra quyết định release có căn cứ.`,
+  follow: [
+    'How do you decide which scenarios must be automated before release?',
+    'What would you do if there is not enough time to test everything?',
+    'How do you include performance or security checks in a lightweight way?',
+  ],
+  tags: [
+    'test-strategy',
+    'planning',
+    'sdet',
+    'risk',
+    'english',
+  ],
+  lang: 'en',
+},
 );
