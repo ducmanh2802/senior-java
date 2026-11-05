@@ -6147,7 +6147,6 @@ Advisory lock không có TTL: job treo bên trong (connection còn sống) giữ
   tags: ['advisory lock', 'PostgreSQL', 'scheduling', 'ShedLock', 'SKIP LOCKED'],
   refs: [
     { type: 'doc', title: 'PostgreSQL: Advisory Locks', url: 'https://www.postgresql.org/docs/current/explicit-locking.html#ADVISORY-LOCKS' },
-    { type: 'doc', title: 'ShedLock on GitHub', url: 'https://github.com/lukas-krecan/ShedLock' }
   ]
 },
 {
