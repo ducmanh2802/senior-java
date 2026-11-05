@@ -1499,7 +1499,6 @@ Index HNSW cho kiểu {{vector}} tối đa 2.000 chiều; model 3.072 chiều ph
   ],
   tags: ['pgvector', 'RAG', 'HNSW', 'embedding', 'reindex', 'PostgreSQL'],
   refs: [
-    { type: 'doc', title: 'pgvector README', url: 'https://github.com/pgvector/pgvector' },
     { type: 'doc', title: 'Spring AI: PGvector', url: 'https://docs.spring.io/spring-ai/reference/api/vectordbs/pgvector.html' }
   ]
 },
