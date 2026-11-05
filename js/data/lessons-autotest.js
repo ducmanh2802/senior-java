@@ -5824,4 +5824,1396 @@ Lỗi phổ biến khi làm bài: (1) lưu {{requiredHeaders}} trực tiếp tha
   related: ['autotest-025', 'autotest-023', 'autotest-009'],
   tags: ['service virtualization', 'WireMock', 'stub', 'verify', 'Playwright route', 'Testcontainers', 'test data builder', 'contract test'],
 },
+{
+  id: 'lesson-autotest-013',
+  track: 'autotest',
+  order: 13,
+  title: 'Mock mạng trong UI test với page.route: chặn request, trả JSON giả, tiêm lỗi 500/timeout, replay HAR',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Giải thích được một trang web phát ra những loại request HTTP nào và vì sao UI test bị phụ thuộc vào chúng',
+    'Viết page.route với glob pattern để fulfill JSON giả, abort khi mất mạng, continue khi gọi thật',
+    'Tiêm được ba tình huống hỏng (500, lỗi mạng, chậm tới timeout) mà không cần backend hợp tác',
+    'Biết replay HAR để test UI khi backend chưa xong, và nêu được rủi ro của nó',
+    'Phân biệt rành mạch khi nào mock là hợp lý và khi nào bắt buộc gọi backend thật',
+  ],
+  body: `**Tóm tắt:** Khi mở một trang web, trình duyệt không "hiển thị trang" — nó **gửi hàng chục request HTTP** (lấy HTML, rồi JS/CSS/ảnh, rồi AJAX gọi API lấy dữ liệu). **Mock mạng trong UI test** = chặn một request ngay tại lớp trình duyệt và tự trả nội dung ta chọn, không cho nó tới server. Playwright làm việc đó bằng {{page.route(pattern, handler)}}: {{pattern}} là **glob** chỉ URL cần chặn, {{handler}} là code của bạn quyết định số phận request — {{fulfill}} (ta trả JSON giả), {{abort}} (giả mất mạng), {{continue}} (cứ gọi thật), {{fallback}} (chuyển cho route đăng ký trước). Giá trị lớn nhất: buộc UI vẽ **trạng thái hiếm hoặc trạng thái hỏng** (đơn bị hoàn tiền, API trả 500, mạng chập chờn) thứ mà dựng bằng dữ liệu thật thì rất lâu hoặc bất khả thi. Cái giá: UI test chỉ còn chứng minh "UI vẽ đúng theo dữ liệu ta đưa", **không** chứng minh server sinh ra dữ liệu đó.
+
+### Trang web tạo ra request gì, và vì sao nó là điểm yếu của test
+**HTTP request** = một tin nhắn "GET /api/orders?status=new" mà trình duyệt gửi tới server; **response** = tin nhắn hồi âm gồm **status code** (200 = thành công, 4xx = lỗi phía người dùng, 5xx = lỗi phía server) và **body** (thường là **JSON**: định dạng text ghi dữ liệu có cấu trúc theo cặp "tên": giá trị, ví dụ đơn hàng có id "O-1" và total 199000).
+
+Trên một trang SPA (single page app — React/Vue/Angular), luồng thường thấy:
+
+~~~text
+Trinh duyet          Server API
+    |  GET / (HTML)     |
+    | ----------------> |   <html><div id=root></div><script src=app.js>
+    |  GET /app.js      |
+    | ----------------> |
+    |  GET /api/session |   < 200 {user, role}   (AJAX/fetch: JS goi API sau khi trang da mo)
+    |  GET /api/orders?status=new
+    | ----------------> |   < 200 [ {...}, {...} ]
+    |  GET /logo.png    |
+    ~~~~~~~~~~~~~~~~~~~~~
+    UI ve cai ta nhan duoc tu /api/orders, khong phai cai "la that"
+~~~
+
+UI test truyền thống là con tin của chuỗi đó ở ba điểm: (1) **data** — muốn thấy "đơn đã hoàn tiền" phải có một đơn đã hoàn tiền, tức là phải đi qua cả luồng nghiệp vụ; (2) **hỏng** — không ai biết cách "bắt" server trả 500 vào lúc 2 giờ sáng CI chạy; (3) **tốc độ** — mỗi request thật thêm độ trễ mạng và thêm cơ hội flaky (lúc pass lúc fail). Mock mạng cắt ba gông đó bằng cách đặt một **trọng tài** ngay trong trình duyệt: request đi qua tay bạn trước khi quyết định.
+
+### page.route: hình dạng code
+Trong Playwright for Java, handler nhận **hai** tham số: {{route}} (điều khiển số phận request) và {{request}} (thông tin request bị chặn).
+
+~~~java
+// Chan API danh sach don: moi lan trang goi **/api/orders* thi nhan JSON TA chon
+page.route("**/api/orders*", (route, request) -> route.fulfill(
+        new Route.FulfillOptions()
+                .setStatus(200)
+                .setContentType("application/json")
+                .setBody("[{\\"id\\":\\"O-1\\",\\"status\\":\\"REFUNDED\\",\\"total\\":199000}]")));
+
+page.navigate("https://shop.test/orders");
+// UI ve dong "Da hoan tien" ma khong can server nao ca
+~~~
+
+Bốn số phận của một request:
+
+| Lệnh trong handler | Chuyện xảy ra | Dùng khi |
+|---|---|---|
+| {{route.fulfill(options)}} | Playwright tự tạo response (status, header, body). Server thật **không hề biết** có request | dựng dữ liệu, dựng mã lỗi |
+| {{route.abort()}} hoặc {{abort(AbortOptions().setErrorCode("timedout"))}} | request chết yểu như đứt mạng / DNS lỗi / timeout → JS của trang nhảy vào {{catch}} | test cảnh báo mất kết nối, nút Retry |
+| {{route.continue_()}} | cho qua như thường: gửi tới server thật ({{continue}} là từ khóa Java nên API mang tên {{continue_}}) | cho phép phần còn lại của trang chạy thật |
+| {{route.fallback()}} | bỏ qua handler này, để handler **đăng ký trước** quyết định | "ghi đè" cục bộ một URL, giữ rule chung |
+
+### Glob: cách Playwright viết "URL nào"
+{{page.route}} dùng **glob**, không dùng regex. Ba ký tự đặc biệt và một quy tắc ưu tiên:
+
+~~~text
+**            bat ky gi, KE CA dau chay /        **/api/**        -> moi thu duoi /api/
+*             bat ky gi, KHONG di qua dau chay    /api/*/items     -> chi mot doan trung gian
+?             DUNG mot ky tu, khong phai dau chay  /v?/list         -> /v1/list ok, /v12/list roi
+ky tu khac    so nguyen van (dau . cung la ky tu thuong)
+~~~
+
+*Quy tắc ưu tiên:* nếu nhiều route cùng khớp một URL, **route đăng ký sau thắng**. Đây là nguồn nhầm lẫn số một: bạn thêm {{page.route("**/api/orders", ...)}} ở dòng 50 mà không biết ở dòng 120 có một route chung {{**/api/**}} — kết quả là handler chạy theo cái bạn *không nhìn thấy*. Vì vậy: đăng ký route **trước** {{page.navigate}} (request đã bay đi thì không chặn kịp), đặt route chung trước, route riêng sau, và gọi {{page.unroute(glob)}} khi dọn dẹp. {{context.route}} áp dụng cho mọi page trong context — tiện cho "chặn toàn bộ analytics cho cả suite", nhưng khó lần hơn.
+
+### Tiêm lỗi — phần khiến mock đáng giá nhất
+~~~java
+// 1) Server loi: UI phai hien "Khong tai duoc danh sach" + nut Thu lai
+page.route("**/api/orders*", (route, request) -> route.fulfill(
+        new Route.FulfillOptions().setStatus(500).setContentType("application/json")
+                .setBody("{\\"code\\":\\"ORDER_SERVICE_DOWN\\"}")));
+
+// 2) Mat ket noi: request chet nhu that, JS cua trang buoc vao nhanh catch
+page.route("**/api/**", (route, request) -> route.abort());
+
+// 3) Cham den muc timeout: abort voi ma loi timedout mo phong network timeout
+page.route("**/api/checkout", (route, request) ->
+        route.abort(new Route.AbortOptions().setErrorCode("timedout")));
+
+// 4) Cho đi thật, nhưng xin xem request để debug
+page.route("**/api/**", (route, request) -> {
+    System.out.println(request.method() + " " + request.url());
+    route.continue_();
+});
+~~~
+
+Viết {{Thread.sleep(3000)}} trong handler để "làm chậm" cũng mô phỏng được, nhưng nó **chiếm thread dispatch** và cộng thẳng 3 giây vào test; muốn test logic timeout thì {{abort("timedout")}} rẻ và đúng nghĩa hơn. Muốn test cả nhánh "request đi được nửa đường thì đứt", mock không làm được — đó là việc của tầng integration.
+
+### Replay HAR: cho UI chạy bằng "băng ghi hình" của một phiên thật
+**HAR** (HTTP Archive) là file JSON ghi lại **toàn bộ phiên bấm thật**: mỗi request kèm URL, header, status, body response. Playwright có thể thu ({{setRecordHarPath}} khi tạo context) và phát lại ({{page.routeFromHAR(Paths.get("qa/recorded.har"))}}): trang gọi URL nào thì trả đúng nội dung đã ghi, không cần server.
+
+~~~java
+// Thu: context se ghi lai moi lan len mang vao file HAR
+Browser.NewContextOptions rec = new Browser.NewContextOptions()
+        .setRecordHarPath(Paths.get("qa/har/checkout-session.har"));
+// Phat: moi lan test mo trang, request duoc tra tu file HAR
+page.routeFromHAR(Paths.get("qa/har/checkout-session.har"));
+~~~
+
+Dùng khi: backend chưa xong nhưng đã có bản recording từ môi trường dev, hoặc cần tái hiện một phiên production có lỗi. Rủi ro: HAR là **bản chụp của quá khứ** — schema API đổi là UI vẽ dữ liệu cũ mà test vẫn xanh; HAR cũng hay chứa token/PII, phải scrub trước khi commit.
+
+### Khi nào mock, khi nào phải gọi backend thật
+| Mục tiêu của test | Chọn | Vì sao |
+|---|---|---|
+| "UI có vẽ đúng trạng thái REFUNDED không", "có hiện toast khi API 500 không" | **mock** | trạng thái hiếm/hỏng, cần xác định và rẻ |
+| "Đặt hàng xong thì đơn có vào DB, có cộng trừ tồn kho không" | **backend thật** (API test/integration) | mock tự trả dữ liệu do ta viết → test không thể thấy server sai |
+| Kiểm tra **hợp đồng** giữa FE và BE (tên field, kiểu data) | **thật + schema check** | mock khớp **đoán** của QA; đoán sai thì CI xanh, production đỏ |
+| Luồng có tiền thật / OTP / cổng thanh toán | stub bên thứ ba, phần còn lại thật | không được gọi thật, nhưng vẫn phải test tích hợp của mình |
+| Smoke trước release | **thật, không mock gì** | vai trò của smoke là chứng minh hệ thống thật sống |
+
+Câu thần chú: *mock trả lời "code của tôi xử lý ra sao khi nhận đáp án X"; test thật trả lời "X có thực sự trả đáp án đó không"*. Đừng bao giờ để một UI test mock **toàn bộ** API rồi assert "đơn hàng đã tạo thành công" — bạn vừa test chính JSON mình viết.
+
+### Luong mot lan mock trong test
+
+~~~seq
+title: Test UI dung page.route
+actors: Test | Browser | Handler | Backend
+Test -> Browser: page route voi glob va handler
+Test -> Browser: page navigate toi /orders
+Browser -> Handler: GET **/api/orders*
+Handler --> Browser: fulfill JSON gia status 200
+Handler -> Backend: continue_ neu cho di that
+Backend --> Browser: 200 du lieu that
+Browser --> Test: UI ve theo du lieu ta da chon
+note Handler..Backend: mock quyet truoc khi server biet co request
+~~~
+
+### Bốn lỗi hay gặp
+- **Mock cả hệ thống rồi test "end-to-end".** Tên test nói E2E, code nói "không ai gọi ai". Giữ mock cho nhánh hiếm, còn luồng sống còn thì gọi thật (hoặc chạy ở tầng API).
+- **Đăng ký route sau khi navigate.** Request đầu tiên của trang đã bay; UI render dữ liệu thật, test fail khó hiểu. Route luôn trước navigation.
+- **Glob quá rộng**: {{**/*}} chặn cả ảnh, font, script → trang vỡ, lỗi hiển thị thành lỗi test. Chỉ chặn đúng URL API cần.
+- **Body mock lệch schema thật.** Viết JSON bằng tay dễ sai tên field, thiếu field; một thời gian sau FE đổi contract, mock vẫn cũ, test xanh giả tạo. Sinh mock từ OpenAPI/JSON Schema, hoặc từ một file HAR đã scrub.
+- **Quên mock chỉ áp dụng cho page hiện tại**: tạo page mới trong cùng test thì route cũ không còn; route gắn ở {{context}} mới áp cho mọi page.
+
+### Liên hệ phỏng vấn
+- "Test UI của bạn không phụ thuộc backend bằng cách nào?" → {{page.route}} cho dữ liệu hiển thị + nhánh lỗi, kết hợp storage state để khỏi login; nói rõ phần nào vẫn phải thật.
+- "Làm sao test cảnh báo mất kết nối?" → {{route.abort("timedout")}} hoặc {{abort()}}, không dùng {{Thread.sleep}}.
+- "Backend chưa xong, QA làm gì?" → dựng mock theo OpenAPI ({{route.fulfill}}) hoặc replay HAR, song song với việc viết API test; nói thêm rủi ro drift.
+- "Mock có đánh lừa CI không?" → có, và đó là lý do cần một smoke test không mock nào cả ở mỗi pipeline.
+
+> Senior tip: chuẩn hoá bằng một helper dạng {{mockApi(page, "**/api/orders", 200, json)}} thay vì rải {{page.route}} khắp test, và **commit file JSON mock cùng chỗ với OpenAPI spec** để khi contract đổi là mock đổi theo. Mẹo đáng giá nhất: mỗi suite UI nên có **một test cố tình mock 500 và một test mock timeout** — vì nhánh lỗi là chỗ dev hay quên, và nếu suite của bạn không bao giờ đi qua nó, nó sẽ mục dần.`,
+  exercises: [
+    {
+      title: 'RouteTable: khớp URL theo glob (**/* và ?), route đăng ký sau thắng, không khớp thì continue, đếm số lần khớp',
+      prompt: `Viết {{RouteTable}} — đúng phần lõi của {{page.route}}: bảng route, khớp URL theo glob, chọn route đăng ký muộn nhất, và bộ đếm để debug. Không mở socket, không gọi mạng, không đọc thời gian thực.
+
+**Ngữ nghĩa glob** (giống Playwright, không có escape):
+- {{"**"}}: bất kỳ chuỗi ký tự nào, **được phép** chứa dấu gạch chéo {{"/"}}, kể cả chuỗi rỗng. Hai hoặc nhiều dấu sao liền nhau tính là một {{"**"}}.
+- {{"*"}}: bất kỳ chuỗi ký tự nào, **không được** chứa {{"/"}}, kể cả chuỗi rỗng.
+- {{"?"}}: đúng **một** ký tự, ký tự đó không phải {{"/"}}.
+- Mọi ký tự khác (kể cả {{.}} và {{:}}) so khớp **nguyên văn**.
+
+**API phải có:**
+- {{void route(String glob, String action)}}: thêm một route vào **cuối** bảng. {{action}} chỉ là nhãn chuỗi (vd {{"abort:failed"}}), không cần diễn giải.
+- {{void unroute(String glob)}}: xoá **mọi** route có glob đúng bằng {{glob}} (so {{equals}}).
+- {{String dispatch(String url)}}: trả {{action}} của route **khớp và được đăng ký muộn nhất**. Không route nào khớp, hoặc {{url}} là {{null}}: trả chuỗi {{"continue"}}.
+- {{int hits(String glob)}}: số lần {{dispatch}} trả action của một route có glob đúng bằng {{glob}}. Đếm **theo glob**, nên hai route trùng glob gộp chung một bộ đếm. Con số **không** mất đi khi {{unroute}}.
+- {{int unmatched()}}: số lần {{dispatch}} không có route nào khớp (kể cả lần {{url == null}}).
+
+Ví dụ hành vi:
+
+~~~text
+route("**/api/*",     "fulfill:generic")
+route("**/api/orders", "abort:failed")        ; dang ky SAU nen THANG
+
+dispatch("https://x.test/api/orders")          -> abort:failed
+dispatch("https://x.test/api/cart")            -> fulfill:generic
+dispatch("https://x.test/app/main")            -> continue      (unmatched = 1)
+hits("**/api/orders")                           -> 1
+hits("**/api/*")                                -> 1
+unroute("**/api/orders")
+dispatch("https://x.test/api/orders")          -> fulfill:generic (ro ve route cu)
+hits("**/api/orders")                           -> 1 (so cu khong bi reset)
+~~~
+
+Gợi ý triển khai: biểu diễn mỗi route bằng một record nhỏ (glob + action); {{dispatch}} duyệt bảng **từ đầu đến cuối** và giữ lại phần tử khớp cuối cùng. Phần khó thật sự là hàm khớp glob — thuật toán "con trỏ quay lui" kinh điển chỉ đúng khi {{*}} nuốt được mọi ký tự; ở đây {{*}} bị chặn bởi {{/}}, nên nó cho kết quả **sai**. Hãy duyệt bảng trạng thái {{can[i][j]}} = "i token đầu khớp với j ký tự đầu", hoặc tương đương bộ nhớ {{boolean[]}} hai hàng.`,
+      starter: `final class RouteTable {
+    void route(String glob, String action) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void unroute(String glob) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    String dispatch(String url) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int hits(String glob) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int unmatched() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    public static void main(String[] args) {
+        RouteTable list = new RouteTable();
+        list.route("**/api/orders*", "fulfill:orders-list");
+        String a1 = list.dispatch("https://shop.test/api/orders?status=new");
+        check("**/api/orders* khop URL co query", "fulfill:orders-list".equals(a1), "got " + a1);
+        check("hits tang dung theo glob", list.hits("**/api/orders*") == 1, "hits=" + list.hits("**/api/orders*"));
+        check("glob chua tung khop co hits bang 0", list.hits("**/api/cart") == 0, "hits=" + list.hits("**/api/cart"));
+
+        RouteTable prec = new RouteTable();
+        prec.route("**/api/*", "fulfill:generic");
+        prec.route("**/api/orders", "abort:failed");
+        String a2 = prec.dispatch("https://x.test/api/orders");
+        check("route dang ky sau thang", "abort:failed".equals(a2), "got " + a2);
+        String a3 = prec.dispatch("https://x.test/api/cart");
+        check("khong khop ro roi thi roi xuong route truoc do", "fulfill:generic".equals(a3), "got " + a3);
+        String a4 = prec.dispatch("https://x.test/app/main");
+        check("khong route nao khop thi continue", "continue".equals(a4), "got " + a4);
+        check("unmatched dem duoc 1", prec.unmatched() == 1, "unmatched=" + prec.unmatched());
+        String a5 = prec.dispatch(null);
+        check("url null coi nhu khong khop va dem unmatched", "continue".equals(a5) && prec.unmatched() == 2, "unmatched=" + prec.unmatched());
+        check("unmatched khong tang cho lan khop", prec.unmatched() == 2, "unmatched=" + prec.unmatched());
+
+        RouteTable seg = new RouteTable();
+        seg.route("https://shop.test/*/orders", "fulfill:one-segment");
+        String b1 = seg.dispatch("https://shop.test/tenant1/orders");
+        check("dau sao don khop mot doan duong dan", "fulfill:one-segment".equals(b1), "got " + b1);
+        String b2 = seg.dispatch("https://shop.test/a/b/orders");
+        check("dau sao don khong duoc vuot dau chay", "continue".equals(b2), "got " + b2);
+        String b3 = seg.dispatch("https://shop.test//orders");
+        check("dau sao rong van khop nen hai dau chay lien ke di duoc", "fulfill:one-segment".equals(b3), "got " + b3);
+
+        RouteTable deep = new RouteTable();
+        deep.route("**/img/**", "fulfill:under-img");
+        deep.route("**/img/*.png", "fulfill:flat-png");
+        String c1 = deep.dispatch("https://cdn.test/img/x.png");
+        check("duong dan phang thi **/img/*.png thang", "fulfill:flat-png".equals(c1), "got " + c1);
+        String c2 = deep.dispatch("https://cdn.test/img/a/b/x.png");
+        check("duong dan sau roi ve **", "fulfill:under-img".equals(c2), "got " + c2);
+
+        RouteTable one = new RouteTable();
+        one.route("**/orders*", "fulfill:tail");
+        String d1 = one.dispatch("https://x.test/orders");
+        check("dau sao khop duoi rong", "fulfill:tail".equals(d1), "got " + d1);
+
+        RouteTable qm = new RouteTable();
+        qm.route("**/v?/list", "fulfill:versioned");
+        String e1 = qm.dispatch("https://api.test/v1/list");
+        check("? khop dung mot ky tu", "fulfill:versioned".equals(e1), "got " + e1);
+        String e2 = qm.dispatch("https://api.test/v12/list");
+        check("? khong khop hai ky tu", "continue".equals(e2), "got " + e2);
+        String e3 = qm.dispatch("https://api.test/v//list");
+        check("? khong khop dau chay", "continue".equals(e3), "got " + e3);
+
+        RouteTable dot = new RouteTable();
+        dot.route("**/a.b", "fulfill:dot");
+        String f1 = dot.dispatch("https://x.test/a.b");
+        check("dau cham la ky tu thuong", "fulfill:dot".equals(f1), "got " + f1);
+        String f2 = dot.dispatch("https://x.test/aXb");
+        check("dau cham khong phai wildcard", "continue".equals(f2), "got " + f2);
+
+        RouteTable cnt = new RouteTable();
+        cnt.route("**/api/orders", "abort:failed");
+        cnt.route("**/assets/**", "fulfill:assets");
+        cnt.dispatch("https://x.test/api/orders");
+        cnt.dispatch("https://x.test/api/orders");
+        cnt.dispatch("https://x.test/assets/app.js");
+        check("hits cong dun theo tung glob", cnt.hits("**/api/orders") == 2 && cnt.hits("**/assets/**") == 1,
+            "orders=" + cnt.hits("**/api/orders") + " assets=" + cnt.hits("**/assets/**"));
+        cnt.unroute("**/api/orders");
+        String g1 = cnt.dispatch("https://x.test/api/orders");
+        check("sau unroute thi roi ve continue", "continue".equals(g1), "got " + g1);
+        check("unroute khong reset so lan khop cua qua", cnt.hits("**/api/orders") == 2, "hits=" + cnt.hits("**/api/orders"));
+        check("unroute khong cham vao glob khac", cnt.hits("**/assets/**") == 1, "assets=" + cnt.hits("**/assets/**"));
+        check("unmatched tang sau unroute", cnt.unmatched() == 1, "unmatched=" + cnt.unmatched());
+
+        RouteTable dup = new RouteTable();
+        dup.route("**/x", "first");
+        dup.route("**/x", "second");
+        String h1 = dup.dispatch("https://y.test/x");
+        check("hai route trung glob thi cai sau thang, hits tinh chung", "second".equals(h1) && dup.hits("**/x") == 1,
+            "got " + h1 + " hits=" + dup.hits("**/x"));
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `final class RouteTable {
+    private static final class Entry {
+        final String glob;
+        final String action;
+
+        Entry(String glob, String action) {
+            this.glob = glob;
+            this.action = action;
+        }
+    }
+
+    private final List<Entry> entries = new ArrayList<>();
+    private final Map<String, Integer> counters = new LinkedHashMap<>();
+    private int missCount = 0;
+
+    void route(String glob, String action) {
+        entries.add(new Entry(glob, action));
+    }
+
+    void unroute(String glob) {
+        entries.removeIf(e -> e.glob.equals(glob));
+    }
+
+    String dispatch(String url) {
+        Entry winner = null;
+        if (url != null) {
+            for (Entry e : entries) {
+                if (globMatch(e.glob, url)) winner = e;
+            }
+        }
+        if (winner == null) {
+            missCount++;
+            return "continue";
+        }
+        counters.merge(winner.glob, 1, Integer::sum);
+        return winner.action;
+    }
+
+    int hits(String glob) {
+        return counters.getOrDefault(glob, 0);
+    }
+
+    int unmatched() {
+        return missCount;
+    }
+
+    private static boolean globMatch(String pattern, String url) {
+        String[] tokens = tokenize(pattern);
+        int n = url.length();
+        boolean[] prev = new boolean[n + 1];
+        prev[0] = true;
+        for (String tk : tokens) {
+            boolean star = tk.equals("*") || tk.equals("**");
+            boolean crossesSlash = tk.equals("**");
+            boolean[] cur = new boolean[n + 1];
+            cur[0] = star && prev[0];
+            for (int j = 1; j <= n; j++) {
+                char c = url.charAt(j - 1);
+                if (star) {
+                    cur[j] = prev[j] || (cur[j - 1] && (crossesSlash || c != '/'));
+                } else {
+                    cur[j] = prev[j - 1] && (tk.equals("?") ? c != '/' : tk.charAt(0) == c);
+                }
+            }
+            prev = cur;
+        }
+        return prev[n];
+    }
+
+    private static String[] tokenize(String pattern) {
+        List<String> out = new ArrayList<>();
+        int i = 0;
+        while (i < pattern.length()) {
+            char c = pattern.charAt(i);
+            if (c == '*') {
+                int j = i;
+                while (j < pattern.length() && pattern.charAt(j) == '*') j++;
+                out.add(j - i >= 2 ? "**" : "*");
+                i = j;
+            } else {
+                out.add(String.valueOf(c));
+                i++;
+            }
+        }
+        return out.toArray(new String[0]);
+    }
+}`,
+      hints: [
+        'Biểu diễn mỗi route bằng một lớp {{private static final class Entry}} giữ hai field final (glob, action), đựng trong {{ArrayList<Entry>}} theo thứ tự đăng ký. {{dispatch}} duyệt xuôi và ghi {{winner = e}} mỗi lần thấy một route khớp — sau vòng lặp, {{winner}} chính là route đăng ký muộn nhất.',
+        'Đếm theo glob thì dùng {{Map<String, Integer>}} với {{counters.merge(glob, 1, Integer::sum)}}; {{hits}} là {{counters.getOrDefault(glob, 0)}}. Đừng đếm theo action: hai route trùng glob phải dùng chung một bộ đếm.',
+        'Khớp glob bằng bảng trạng thái. Gọi {{can[i][j]}} nghĩa là "{{i}} token đầu của pattern khớp với {{j}} ký tự đầu của url". Khởi tạo {{can[0][0] = true}}. Token thường hoặc {{?}}: {{can[i][j] = can[i-1][j-1] && kyTuKhop}}. Token {{**}}: {{can[i][j] = can[i-1][j] || can[i][j-1]}} (hoặc nó nối không ở đây, hoặc nó ăn thêm một ký tự bất kỳ). Token {{*}}: {{can[i][j] = can[i-1][j] || (can[i][j-1] && kyTuKhacDauChay)}}.',
+        'Không cần ma trận đầy đủ: mỗi hàng chỉ phụ thuộc hàng liền trước, nên giữ hai mảng {{boolean[] prev}} và {{boolean[] cur}} là đủ. Nhớ đặt {{cur[0] = prev[0]}} khi token là dấu sao (dấu sao khớp chuỗi rỗng), ngược lại {{cur[0] = false}}.',
+        'Khi tokenize, gom chuỗi dấu sao liền nhau thành một token {{**}} duy nhất — nếu không, {{***}} sẽ sinh ra các token trung gian không ai xử lý và kết quả phụ thuộc cách bạn tình cờ cắt chuỗi.',
+        'Tự kiểm tra matcher bằng hai ca dễ: {{globMatch("*/orders", "a/b/orders")}} phải trả về {{false}} (dấu sao đơn không được qua dấu gạch chéo), còn {{globMatch("**/*/orders", "https://h.test/a/b/orders")}} phải trả về {{true}} ({{**}} ăn {{https://h.test/a}}, dấu sao đơn ăn {{b}}). Nếu thuật toán của bạn trả {{true}} cho ca thứ nhất, nhiều khả năng bạn đang dùng con trỏ quay lui kinh điển — xem phần giải thích.',
+      ],
+      explain: `**Vì sao không dùng thuật toán quay lui kinh điển?** Bài toán wildcard quen thuộc ({{*}} nuốt mọi ký tự) giải được bằng hai con trỏ cộng **một** điểm quay lui, vì kéo dài dấu sao luôn luôn khả thi. Ở đây {{*}} bị chặn bởi {{/}}, nên giả định đó vỡ: với pattern {{*/orders}} và url {{a/b/orders}}, con trỏ quay lui kéo {{*}} ăn {{a/b}} rồi thấy {{/orders}} khớp và trả {{true}}, trong khi đáp án đúng là {{false}} ({{*}} không được đi qua {{/}}). Chiều ngược lại cũng sai: pattern {{**/*/orders}} với {{https://h.test/a/b/orders}} là khớp, nhưng nếu bộ nhớ chỉ giữ dấu sao **cuối cùng** thì khi kẹt ở {{/}} nó chịu thua và trả {{false}}. Muốn quay lui đúng bạn phải nhớ mọi dấu sao và mọi cách chia — tức là đang viết lại quy hoạch động một cách vụng về. Bảng trạng thái {{O(t x n)}} (t là số token, n là độ dài url) ngắn, dễ kiểm chứng và không có trường hợp ẩn. Bài học để nói trong phỏng vấn: **tham lam chỉ đúng khi tập lựa chọn không bị ràng buộc thêm**; vừa có điều kiện "không qua dấu gạch chéo" là phải chuyển sang quy hoạch động.
+
+**Vì sao "route sau thắng" là thứ đáng học.** Playwright chọn handler **đăng ký muộn nhất** trong số các handler khớp; {{route.fallback()}} tồn tại để chủ động nhường cho handler đăng ký trước. Bài tập cố tình chỉ có quy tắc "duyệt xuôi, giữ phần tử khớp cuối" — nếu bạn triển khai "duyệt ngược, trả ngay khi khớp" thì mọi test về độ ưu tiên sẽ đỏ. Trên dự án thật, đúng cơ chế này làm QA mất vài giờ: một route chung {{**/api/**}} đăng ký ở {{@BeforeEach}} **nuốt** route riêng đăng ký ở dòng 40 nếu dòng 40 chạy trước; muốn route riêng thắng thì nó phải được đăng ký **sau**.
+
+**Ba chi tiết nhỏ hay bị bỏ sót.**
+1. {{*}} khớp **cả chuỗi rỗng**, nên {{**/orders*}} vẫn khớp url kết thúc đúng bằng {{orders}}. Nhiều người viết matcher bắt buộc {{*}} phải ăn ít nhất một ký tự.
+2. Đếm theo **glob** chứ không theo action: hai route cùng glob (rất hay xảy ra khi hai helper cùng đăng ký một rule) dùng chung một bộ đếm, và bộ đếm là **lịch sử** — {{unroute}} xoá rule nhưng không xoá bằng chứng rule đó từng khớp.
+3. {{url == null}} phải được coi là "không khớp" và **vẫn đếm unmatched**: trong Playwright, handler nhận request luôn có URL, nhưng một helper của bạn có thể truyền {{null}} do bug, và unmatched() tăng là tín hiệu sớm.
+
+**Dùng bài này để debug test thật.** Khi một UI test lạ lạ, thứ bạn cần biết không chỉ là "mock nào chạy" mà là "URL này có khớp rule nào không, khớp bao nhiêu lần". Thêm đúng hai bộ đếm {{hits}} và {{unmatched}} vào wrapper {{page.route}} của framework, bạn sẽ thấy ngay: {{unmatched}} tăng nghĩa là trang đã đổi đường dẫn API (FE refactor, thêm /v2/), còn {{hits}} của rule chung tăng nghĩa là rule riêng của bạn chưa bao giờ được chạy — cả hai là hai lớp lỗi hoàn toàn khác nhau.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Hai route cùng khớp một URL: {{page.route("**/api/**", A)}} đăng ký trước, {{page.route("**/api/orders", B)}} đăng ký sau. Khi trang gọi /api/orders, handler nào chạy?',
+      options: [
+        'A, vì rule chung luôn được ưu tiên để bắt mọi request',
+        'B, vì route đăng ký sau thắng; muốn nhường cho A thì B gọi route.fallback()',
+        'Cả hai chạy tuần tự A rồi B',
+        'Playwright ném lỗi vì hai route trùng nhau',
+      ],
+      answer: 1,
+      explain: 'Playwright giữ một danh sách route và chọn handler **đăng ký muộn nhất** mà khớp. {{route.fallback()}} là cách chủ động bỏ qua handler hiện tại để handler trước quyết định. Đây là lý do nên đăng ký route chung trước, route riêng sau.',
+    },
+    {
+      q: 'Glob {{"/api/*/items"}} khớp URL nào sau đây?',
+      options: [
+        '{{/api/42/items}} và {{/api/42/x/items}}',
+        'chỉ {{/api/42/items}}, vì {{*}} không đi qua dấu {{/}}',
+        'chỉ {{/api/*/items}} theo nghĩa đen',
+        'không khớp cái nào, phải viết {{**}}',
+      ],
+      answer: 1,
+      explain: '{{*}} nuốt mọi ký tự **trừ** {{/}}, còn {{**}} mới nuốt được {{/}}. Muốn phủ nhiều cấp thì viết {{/api/**/items}}. Dấu {{.}} và {{:}} là ký tự thường, không phải wildcard.',
+    },
+    {
+      q: 'Mục tiêu test là "đặt hàng xong đơn được lưu và trừ tồn kho". Chiến lược nào đúng?',
+      options: [
+        'Mock {{POST /api/orders}} trả 200 để test chạy nhanh và ổn định',
+        'Gọi backend thật (hoặc API test ở tầng integration), UI test chỉ mock phần hiển thị không liên quan',
+        'Mock toàn bộ API rồi assert danh sách đơn có bản ghi mới',
+        'Chụp màn hình và so ảnh',
+      ],
+      answer: 1,
+      explain: 'Mock tự trả chính dữ liệu bạn viết, nên nó không thể phát hiện server không ghi DB hay không trừ tồn kho — test sẽ xanh dù backend chết. Mock hợp lý cho **trạng thái hiển thị hiếm** và **nhánh lỗi**, không hợp lý cho **tính đúng đắn phía server**.',
+    },
+    {
+      q: 'Replay HAR ({{page.routeFromHAR}}) có rủi ro gì nghiêm trọng nhất?',
+      options: [
+        'HAR chạy chậm hơn gọi API thật',
+        'HAR là bản chụp quá khứ: schema API đổi thì UI vẫn nhận dữ liệu cũ và test tiếp tục xanh; file còn dễ chứa token/PII',
+        'HAR không chứa được response body',
+        'HAR chỉ dùng được với Selenium',
+      ],
+      answer: 1,
+      explain: 'Đúng là HAR ghi cả request và response, dùng được offline; vấn đề là tính **nguồn** của nó. Phải scrub secret trước khi commit, và cập nhật/regenerate HAR khi contract đổi — hoặc giới hạn HAR cho test khám phá, không dùng làm smoke.',
+    },
+  ],
+  related: ['autotest-023', 'autotest-025', 'autotest-008'],
+  tags: ['page.route', 'network mock', 'glob', 'fulfill', 'abort', 'timeout', 'HAR replay', 'Playwright', 'UI test'],
+},
+{
+  id: 'lesson-autotest-014',
+  track: 'autotest',
+  order: 14,
+  title: 'Visual regression: so ảnh chụp màn hình với baseline, pixel diff, ngưỡng, vùng mask và nguồn flaky',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Giải thích được ảnh nằm trong máy tính thế nào (pixel, RGB, số nguyên packed) và vì sao phải so từng kênh',
+    'Phân biệt ngưỡng theo pixel (maxDiffPixels), theo tỉ lệ (maxDiffPixelRatio) và theo cường độ màu (tolerance)',
+    'Viết được vùng mask cho dữ liệu động mà không che mất lỗi thật',
+    'Kể được ít nhất năm nguyên nhân làm visual test flaky và cách khắc phục tương ứng',
+    'Thiết kế quy trình baseline: ai duyệt, lưu ở đâu, cập nhật khi nào',
+  ],
+  body: `**Tóm tắt:** **Visual regression testing** (kiểm tra hồi quy hình ảnh) trả lời một câu hỏi mà assertion thông thường không với tới: "trang **trông có bị đổi không**". Cách làm: chụp màn hình một trạng thái đã biết, lưu bản được duyệt làm **baseline** (ảnh chuẩn), những lần sau chụp lại và **so từng pixel** với baseline; khác quá ngưỡng thì FAIL kèm một ảnh diff chỉ chỗ đổi. Nó bắt được lỗi CSS làm nút chồng lên nhau, icon mất, font tụt về font hệ thống, bảng bị tràn — những thứ mà {{isVisible()}} và {{toHaveText()}} hoàn toàn im lặng. Cái giá: **flaky**. Khác biệt nhỏ về font, anti-aliasing, dữ liệu động đều sinh ra pixel khác, nên toàn bộ nghệ thuật của visual test nằm ở **ngưỡng**, **vùng mask** và **sự ổn định của môi trường dựng ảnh**.
+
+### Ví dụ đời thường
+Bạn in tờ rơi chương trình khuyến mãi. Bản in tuần này so với tuần trước: nếu cả tiêu đề bị lệch 3 mm thì mắt bạn thấy ngay, nhưng nếu **một chữ** trong chân trang đổi font thì phải soi rất lâu. Máy làm ngược lại: nó đếm được "5.312 pixel khác, tập trung ở góc dưới trái" trong 20 mili giây, nhưng nó **không biết** chữ nhỏ hơn là cố ý hay là lỗi. Vì thế quy trình luôn có một con người bấm "approve" cho thay đổi hợp lệ, và con người đó phải nhìn ảnh diff, không nhìn thông báo PASS.
+
+### Ảnh nằm trong máy tính như thế nào
+**Pixel** = một điểm ảnh, ô vuông nhỏ nhất màn hình hiển thị được. Mỗi pixel lưu ba **kênh màu** (channel): đỏ, lục, lam, mỗi kênh một số nguyên 0–255. Kiểu gói gọn hay dùng trong code: một số nguyên 24 bit, thường viết hex {{0xRRGGBB}} — kênh đỏ nằm ở 8 bit cao nhất (bit 16–23), lục ở bit 8–15, lam ở bit 0–7. Ví dụ {{0xFF0000}} là đỏ thuần, {{0xFFFFFF}} trắng, {{0x000000}} đen.
+
+~~~java
+int px = 0xFF8800;                      // da cam: R=255, G=136, B=0
+int r = (px >> 16) & 0xFF;              // dich 16 bit roi lay 8 bit thap
+int g = (px >> 8) & 0xFF;
+int b = px & 0xFF;
+// So sanh hai anh: lech theo tung kenh, khong so nguyen 24 bit
+int dr = Math.abs(ra - rb);             // R = 255 vs 250 -> dr = 5
+int maxLech = Math.max(dr, Math.max(dg, db));
+boolean khacNhau = maxLech > tolerance; // tolerance = cuong do chap nhan duoc
+~~~
+
+**Tolerance** (ngưỡng cường độ, theo từng kênh) khác với **số pixel được phép khác**. Hai khái niệm này hay bị lẫn, và cả hai công cụ lớn đều có:
+| Loại ngưỡng | Ý nghĩa | Dùng khi |
+|---|---|---|
+| {{tolerance}} / {{colorThreshold}} (0–255 mỗi kênh) | một pixel được coi là **giống nhau** dù màu lệch nhẹ | anti-aliasing, nén JPEG/PNG, subpixel |
+| {{maxDiffPixels}} (số pixel) | cho phép một **số lượng** pixel khác hẳn | ảnh có vài điểm nhiễu |
+| {{maxDiffPixelRatio}} (0–1) | cho phép **tỉ lệ** pixel khác, ví dụ 0.01 = 1% | suite chạy nhiều màn hình kích thước khác nhau |
+
+Playwright Java (các bản gần đây) có assertion {{Assertions.assertThat(page).hasScreenshot("checkout-cart", options)}} với {{setThreshold}}, {{setMaxDiffPixelRatio}}, {{setMaxDiffPixels}}, {{setMask}}, {{setClip}}, {{setOmitAnimations(true)}}; {{page.screenshot(new Page.ScreenshotOptions().setPath(...).setFullPage(true))}} thì bản nào cũng có. Nếu bạn ở bản cũ hoặc muốn tự kiểm soát, chạy công cụ CLI ({{reg-cli}}, {{BackstopJS}}) hoặc **tự viết bộ so như bài tập** — viết xong một lần là hiểu mãi mãi.
+
+### Vì sao font và anti-aliasing sinh ra kết quả lúc xanh lúc đỏ
+**Anti-aliasing** (khử răng cưa): để cạnh chữ/xiên trông mượt, trình duyệt tô các pixel biên bằng màu **trung gian** giữa màu chữ và nền, dựa trên vị trí **phân số** của nét chữ so với lưới pixel. Chỉ cần vị trí đó dịch 0,2 pixel, hàng chục pixel biên đổi màu — dù mắt người thấy y hệt. Những thứ dịch vị trí đó:
+- **Font khác file hoặc khác hệ thống dựng ký tự**: CI dùng Docker {{node:20}} không cài font của máy dev → browser rơi về **fallback font**, mọi chữ đổi hình dạng. Đây là nguồn flaky số một.
+- **Font hinting / subpixel rendering** khác nhau giữa Windows, Linux, macOS; khác giữa {{antialiased}} và {{subpixel-antialiased}} trong CSS.
+- **Kích cỡ thiết bị (device scale factor)**: ảnh chụp ở DPR 1 và DPR 2 khác nhau toàn bộ số pixel.
+- **Nội dung đổi độ dài**: con số {{1.234}} đổi thành {{9.876}} làm ô rộng thêm một ký tự, cả dòng dịch → diff lan ra vùng không liên quan.
+- **Animation, transition, cursor nhấp nháy trong ô input, carousel tự chạy, lazy-load ảnh chưa xong** — chụp lúc 300 ms khác lúc 900 ms.
+- **Thanh cuộn**: nội dung cao hơn viewport thì có/không có scrollbar, dịch toàn bộ layout 15 pixel.
+- **Đồng hồ / phiên ngẫu nhiên / quảng cáo thật** trong trang.
+
+Cách xử lý, theo thứ tự hiệu quả: (1) chạy **cùng một Docker image** cho cả lúc tạo baseline và lúc so; (2) cài font cố định trong image ({{fc-list}} để kiểm tra); (3) tắt animation ({{prefers-reduced-motion}} hoặc {{setOmitAnimations(true)}}); (4) khóa dữ liệu: cùng một seed, mock API (bài trước) để con số không đổi; (5) {{page.waitForLoadState('networkidle')}} và chờ web font xong ({{document.fonts.ready}}) trước khi chụp; (6) mask vùng còn lại vẫn động; (7) đặt tolerance hợp lý thay vì 0.
+
+### Vùng mask: che dữ liệu động, đừng che lỗi
+**Mask** (còn gọi là ignore region) là một hình chữ nhật {{x, y, w, h}} tính theo tọa độ pixel mà bộ so **bỏ hoàn toàn** — không đếm vào số pixel khác, cũng không đếm vào tổng số pixel được so.
+
+~~~text
++--------------------------------------+
+| San pham            Gia      [X]     |   <- mask avatar + ten user dang nhap
+|--------------------------------------|
+| O-1    Ao Thom      199.000   12/11  |   <- mask cot "ngay dat" (dong voi mock)
+| O-2    Mu  <- mask gia label do PROMOTION sinh ra
+~~~
+
+Hai kỹ thuật định nghĩa vùng mask, và chúng đánh đổi khác nhau:
+- **Tọa độ cứng** ({{setClip}} / mask theo pixel): đơn giản, vỡ ngay khi layout dịch 10 pixel.
+- **Mask theo phần tử** ({{locator("...")}}, như Playwright nhận {{Locator}} trong {{setMask}}): bám theo phần tử nên sống sót khi layout đổi, nhưng cần phần tử có {{data-testid}}.
+
+Nguyên tắc: mask **càng hẹp càng tốt**. Mask cả một khối bảng vì "có một cột đổi" thường che luôn lỗi mất cột. Nếu vùng động quá lớn, vấn đề nằm ở **dữ liệu**, không phải ở visual test — đi mock nó ({{page.route}}) thay vì mask nó.
+
+### Quy trình baseline: phần "vận hành" quyết định thành bại
+~~~seq
+title: Mot vong do visual regression
+actors: Test | Browser | Engine | Baseline
+Test -> Browser: mo trang voi du lieu da mock
+Test -> Browser: cho network idle va font xong
+Browser --> Engine: anh PNG cua man hinh
+Engine -> Baseline: doc anh chuan duoc duyet lan cuoi
+Baseline --> Engine: PNG baseline cung Docker image
+Engine --> Test: so pixel khac vuot nguong thi FAIL
+Engine -> Baseline: ghi anh diff va anh moi cho nguoi xem
+note Engine..Baseline: nguoi approve thi baseline bi de thay
+~~~
+
+Ba quyết định phải viết thành văn bản trong team: **ai được cập nhật baseline** (không phải mọi QA, vì người update có thể "tắt đèn" cho CI xanh); **baseline lưu ở đâu** (git + Git LFS, hoặc object storage theo version giao diện — lưu trong D:\\tmp thì mất khi runner chết); và **diff được xem ở đâu** (một job CI đăng ảnh actual/baseline/diff lên báo cáo, nếu không thì không ai đọc FAIL). Khi một FAIL hợp lệ bị approve, hãy gắn nó với **mã commit/PR** gây ra thay đổi — về sau đây là cách trả lời câu "change này làm giao diện đổi từ bao giờ".
+
+### Khi nào visual test đáng, khi nào không
+| Tình huống | Kết luận |
+|---|---|
+| Trang marketing, design system, email template, biểu đồ | **rất đáng**: lỗi hình ảnh là lỗi sản phẩm |
+| Màn hình có quá nhiều dữ liệu động, không mock được | không đáng: mask nhiều hơn so |
+| Luồng nghiệp vụ lõi (thanh toán, đặt hàng) | để assertion DOM; visual chỉ chụp thêm như bằng chứng |
+| Team nhỏ, CI không có image dựng chuẩn | chưa vội: baseline tạo trên máy dev sẽ đỏ khi chạy CI |
+| Refactor CSS lớn có chủ đích | chạy **một lần** để chứng minh "không đổi gì ngoài ý muốn", rồi thôi |
+
+### Bốn lỗi hay gặp
+- **Tolerance = 0** để "an toàn tuyệt đối". Kết quả: suite đỏ vì font, người ta tắt suite. Ngưỡng 0 chỉ dùng được khi baseline và actual cùng sinh ra từ một Docker image đóng băng.
+- **Tạo baseline trên máy dev, so trên CI** — hai hệ thống dựng font khác nhau, bạn vừa mua một bộ phát hiện... hệ điều hành.
+- **So ảnh nguyên kích thước khi vị trí cuộn khác nhau**: ảnh chụp với {{setFullPage(true)}} khác hẳn ảnh chỉ chụp viewport; phải chọn một chế độ cố định cho cả baseline lẫn lần so.
+- **Approve diff mà không nhìn ảnh**, chỉ để CI xanh. Mỗi lần approve là một lần bạn đồng ý "giao diện này đúng" — hãy coi diff như review code.
+- **Mask theo tọa độ rồi refactor layout**: vùng mask cũ che vào vùng khác, lỗi lọt qua trong im lặng. Ưu tiên mask theo phần tử.
+
+### Liên hệ phỏng vấn
+- "Visual regression hoạt động thế nào?" → baseline + pixel diff + ngưỡng + con người duyệt; nói được anti-aliasing là lý do cần ngưỡng.
+- "Test của bạn hay fail vì font, xử lý sao?" → đóng băng môi trường (Docker image chung cho baseline và run), cài font, tắt animation, khóa dữ liệu bằng mock, mask hẹp, đặt tolerance có căn cứ (đo trên 20 lần chạy ổn định rồi mới chọn).
+- "Ngưỡng bao nhiêu là hợp lý?" → không có số thần thánh: với màn hình tĩnh, {{maxDiffPixels}} nhỏ; với danh sách có dữ liệu, {{maxDiffPixelRatio}} vài phần trăm; phải dựa vào phân bố diff của các lần chạy **sạch**.
+- "Chi phí bảo trì?" → mỗi thay đổi giao diện là một lần duyệt baseline; đó là chi phí thật, và là lý do visual test sống tốt nhất ở design system / trang có tính ổn định cao.
+
+> Senior tip: bật visual test **cùng với** một assert ngữ nghĩa trên cùng trạng thái (ví dụ "bảng có 3 dòng, tổng tiền 199.000"). Visual trả lời "trông có đổi không", DOM trả lời "dữ liệu có đúng không"; có cả hai thì khi FAIL bạn biết ngay nên tìm dev CSS hay dev API. Mẹo thứ hai: lưu **ảnh diff** (nơi khác được tô đỏ) làm artifact, không chỉ con số — người duyệt mất 3 giây để hiểu lỗi thay vì mở hai ảnh PNG ra soi.`,
+  exercises: [
+    {
+      title: 'PixelDiff: so hai ảnh theo từng kênh màu, ngưỡng cường độ + ngưỡng tỉ lệ, vùng mask và bbox vùng thay đổi',
+      prompt: `Viết {{PixelDiff}} — bộ so ảnh của visual regression, làm việc trên mảng hai chiều số nguyên gói màu {{0xRRGGBB}}. Không đọc file, không dùng thư viện ảnh, không gọi mạng, không đọc thời gian thực.
+
+**Cách coi một ảnh**: {{int[][] a}} có {{a.length}} hàng và {{a[0].length}} cột (ảnh chữ nhật), mỗi phần tử là một pixel theo kiểu {{0xRRGGBB}} (mọi bit trên bit 23 bị bỏ qua). Kênh đỏ nằm ở 8 bit cao nhất của 24 bit (bit 16–23), lục ở bit 8–15, lam ở bit 0–7.
+
+**Quy ước của bài** (đúng như vậy, đừng tự đổi):
+- **Hai ảnh kích thước khác nhau** được so trên lưới {{rows = max(a.rows, b.rows)}}, {{cols = max(a.cols, b.cols)}}. Pixel nằm ngoài ảnh tương ứng được coi là **nền đen** {{0x000000}}. (Trong thực tế công cụ fail ngay khi lệch kích thước; ở đây ta quy ước nền đen cho đơn giản và để bộ so vẫn trả về con số.)
+- Một pixel được coi là **khác** nếu {{max(|dr|, |dg|, |db|) > channelTolerance}}. So **từng kênh riêng**, không so nguyên 24 bit, và **không** lấy tổng.
+- {{masks}} là mảng các {{int[]}} gồm 4 số {{x, y, w, h}} tính theo pixel: {{x}} là **cột**, {{y}} là **hàng**. Pixel nào nằm trong **bất kỳ** mask nào thì bị bỏ qua hoàn toàn: không so, không đếm vào {{compared}}.
+- {{x}} hoặc {{y}} âm, hoặc {{w}}/{{h}} tràn ra ngoài ảnh: phần tràn bị cắt, tức mask được kẹp (clamp) cho vừa lưới. {{w}} hoặc {{h}} âm hoặc {{0}} = mask rỗng. Mask là {{null}} = không có vùng nào.
+
+**1) Lớp {{PixelDiff.Report}}** (đây là kiểu trả về, hãy viết đầy đủ vì người chấm cần nó): constructor {{Report(int compared, int changed, double ratio, boolean pass)}}, bốn getter {{compared()}}, {{changed()}}, {{ratio()}}, {{pass()}}, và {{toString()}} in ra dạng {{compared=4 changed=1 ratio=0.25 pass=false}}.
+
+**2) {{static Report compare(int[][] a, int[][] b, int channelTolerance, double maxDiffRatio, int[][] masks)}}**:
+- {{compared}} = số pixel được đưa ra so (tức là **không** nằm trong mask) trên lưới chung.
+- {{changed}} = số pixel trong số đó khác theo quy tắc kênh ở trên.
+- {{ratio}} = {{changed / compared}} theo số thực; nếu {{compared == 0}} thì {{ratio = 0.0}}.
+- {{pass}} = {{true}} khi {{ratio <= maxDiffRatio}}, với dung sai làm tròn {{1e-9}}.
+
+**3) {{static int[] diffBounds(int[][] a, int[][] b, int channelTolerance, int[][] masks)}}**: hình chữ nhật nhỏ nhất **bao toàn bộ các pixel khác (đã bỏ qua vùng mask)**, trả về mảng 4 số nguyên theo thứ tự {{x}}, {{y}}, {{w}}, {{h}} ({{x}} = cột nhỏ nhất, {{y}} = hàng nhỏ nhất). Không có pixel nào khác thì trả {{4 số nguyên đều bằng 0}}.
+
+Ví dụ:
+
+~~~text
+a = 2x2 toan bo 0xFFFFFF (trang)
+b = nhu a nhung b[1][0] = 0xFF0000 (do)
+
+compare(a, b, 0, 0.0, null)                      -> compared=4 changed=1 ratio=0.25 pass=false
+compare(a, b, 0, 0.25, null)                     -> pass=true  (ty le dung bang nguong)
+compare(a, b, 0, 0.0, new int[][]{{0,1,1,1}})    -> compared=3 changed=0 pass=true (pixel do da bi mask)
+diffBounds(a, b, 0, null)                        -> {0, 1, 1, 1}
+diffBounds(a, a, 0, null)                        -> {0, 0, 0, 0}
+~~~
+
+Bẫy: nếu bạn so nguyên giá trị {{0xRRGGBB}} bằng {{!=}} thì {{channelTolerance}} trở thành vô nghĩa, và mọi thay đổi nhỏ nhất của anti-aliasing thành FAIL. Nếu bạn đếm mask vào {{compared}} thì {{ratio}} của ảnh có vùng động luôn lớn hơn thực tế và test đỏ oan.`,
+      starter: `final class PixelDiff {
+    static final class Report {
+        private final int compared;
+        private final int changed;
+        private final double ratio;
+        private final boolean pass;
+
+        Report(int compared, int changed, double ratio, boolean pass) {
+            this.compared = compared;
+            this.changed = changed;
+            this.ratio = ratio;
+            this.pass = pass;
+        }
+
+        int compared() {
+            return compared;
+        }
+
+        int changed() {
+            return changed;
+        }
+
+        double ratio() {
+            return ratio;
+        }
+
+        boolean pass() {
+            return pass;
+        }
+
+        public String toString() {
+            return "compared=" + compared + " changed=" + changed + " ratio=" + ratio + " pass=" + pass;
+        }
+    }
+
+    static Report compare(int[][] a, int[][] b, int channelTolerance, double maxDiffRatio, int[][] masks) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static int[] diffBounds(int[][] a, int[][] b, int channelTolerance, int[][] masks) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    static int[][] grid(int rows, int cols, int rgb) {
+        int[][] g = new int[rows][cols];
+        for (int r = 0; r < rows; r++) {
+            for (int c = 0; c < cols; c++) g[r][c] = rgb;
+        }
+        return g;
+    }
+    static int[][] paint(int[][] g, int row, int col, int rgb) {
+        g[row][col] = rgb;
+        return g;
+    }
+    public static void main(String[] args) {
+        int[][] white = grid(2, 2, 0xFFFFFF);
+        PixelDiff.Report same = PixelDiff.compare(white, grid(2, 2, 0xFFFFFF), 0, 0.0, null);
+        check("hai anh giong het: 0 khac, duoc so 4", same.changed() == 0 && same.compared() == 4 && same.pass(), "" + same);
+        check("ratio bang 0 khi khong co gi khac", Math.abs(same.ratio()) < 1e-9, "" + same);
+
+        int[][] one = paint(grid(2, 2, 0xFFFFFF), 1, 0, 0xFF0000);
+        PixelDiff.Report d1 = PixelDiff.compare(white, one, 0, 0.0, null);
+        check("mot pixel doi mau bi dem", d1.changed() == 1 && d1.compared() == 4, "" + d1);
+        check("ratio 1 tren 4 la 0.25", Math.abs(d1.ratio() - 0.25) < 1e-9, "" + d1);
+        check("vuot nguong 0.0 thi FAIL", !d1.pass(), "" + d1);
+        PixelDiff.Report d2 = PixelDiff.compare(white, one, 0, 0.25, null);
+        check("ratio dung bang nguong thi PASS", d2.pass(), "" + d2);
+
+        int[][] softBlue = paint(grid(1, 1, 0x000000), 0, 0, 0x000005);
+        PixelDiff.Report tol10 = PixelDiff.compare(grid(1, 1, 0x000000), softBlue, 10, 0.0, null);
+        check("nguong kenh 10 coi lech 5 la giong", tol10.changed() == 0 && tol10.pass(), "" + tol10);
+        PixelDiff.Report tol3 = PixelDiff.compare(grid(1, 1, 0x000000), softBlue, 3, 0.0, null);
+        check("nguong kenh 3 thi lech 5 la khac", tol3.changed() == 1, "" + tol3);
+
+        int[][] red10 = paint(grid(1, 1, 0x000000), 0, 0, 0x0A0000);
+        PixelDiff.Report c9 = PixelDiff.compare(grid(1, 1, 0x000000), red10, 9, 0.0, null);
+        check("so tung kenh: do lech 10 vuot nguong 9", c9.changed() == 1, "" + c9);
+        PixelDiff.Report c10 = PixelDiff.compare(grid(1, 1, 0x000000), red10, 10, 0.0, null);
+        check("lech dung bang nguong thi chua phai khac", c10.changed() == 0, "" + c10);
+        int[][] mix = paint(grid(1, 1, 0x000A00), 0, 0, 0x00000A);
+        PixelDiff.Report mixRep = PixelDiff.compare(grid(1, 1, 0x000000), mix, 9, 0.0, null);
+        check("khong lay tong kenh: moi lech 10 o kenh lam la khac", mixRep.changed() == 1, "" + mixRep);
+
+        PixelDiff.Report m1 = PixelDiff.compare(white, one, 0, 0.0, new int[][] {{0, 1, 1, 1}});
+        check("mask che het pixel khac", m1.changed() == 0 && m1.compared() == 3 && m1.pass(), "" + m1);
+        PixelDiff.Report m2 = PixelDiff.compare(white, one, 0, 0.0, new int[][] {{-3, -3, 5, 5}});
+        check("mask tran bien bi cat, che toan anh", m2.compared() == 0 && Math.abs(m2.ratio()) < 1e-9 && m2.pass(), "" + m2);
+        PixelDiff.Report m3 = PixelDiff.compare(white, one, 0, 0.0, new int[][] {{0, 1, 1, 1}, {0, 1, 1, 1}});
+        check("hai mask trung nhau khong tinh hai lan", m3.compared() == 3 && m3.changed() == 0, "" + m3);
+        PixelDiff.Report m4 = PixelDiff.compare(white, one, 0, 0.0, new int[][] {{0, 0, 1, 1}, {0, 0, 1, 1}});
+        check("mask o goi khac van con pixel khac", m4.changed() == 1 && m4.compared() == 3, "" + m4);
+        PixelDiff.Report m5 = PixelDiff.compare(white, one, 0, 0.0, new int[][] {{0, 1, 0, 4}});
+        check("mask rong hoac am kich thuoc la mask rong", m5.changed() == 1 && m5.compared() == 4, "" + m5);
+
+        int[][] big = grid(4, 4, 0xFFFFFF);
+        int[][] bigDiff = paint(paint(grid(4, 4, 0xFFFFFF), 0, 0, 0x000000), 3, 3, 0x000000);
+        PixelDiff.Report r01 = PixelDiff.compare(big, bigDiff, 0, 0.1, null);
+        check("2/16 = 0.125 vuot nguong 0.1", r01.changed() == 2 && !r01.pass(), "" + r01);
+        PixelDiff.Report r015 = PixelDiff.compare(big, bigDiff, 0, 0.15, null);
+        check("0.125 duoi nguong 0.15 thi PASS", r015.pass(), "" + r015);
+        PixelDiff.Report r0125 = PixelDiff.compare(big, bigDiff, 0, 0.125, null);
+        check("nguong bang chinh xac ty le thi PASS", r0125.pass(), "" + r0125);
+
+        check("diffBounds bam sat hai goc thay doi", Arrays.equals(PixelDiff.diffBounds(big, bigDiff, 0, null), new int[] {0, 0, 4, 4}),
+            Arrays.toString(PixelDiff.diffBounds(big, bigDiff, 0, null)));
+        check("diffBounds cua mot pixel o hang 1 cot 0", Arrays.equals(PixelDiff.diffBounds(white, one, 0, null), new int[] {0, 1, 1, 1}),
+            Arrays.toString(PixelDiff.diffBounds(white, one, 0, null)));
+        check("khong khac gi thi bbox rong", Arrays.equals(PixelDiff.diffBounds(white, white, 0, null), new int[] {0, 0, 0, 0}),
+            Arrays.toString(PixelDiff.diffBounds(white, white, 0, null)));
+        check("bbox bo qua pixel bi mask", Arrays.equals(PixelDiff.diffBounds(white, one, 0, new int[][] {{0, 1, 1, 1}}), new int[] {0, 0, 0, 0}),
+            Arrays.toString(PixelDiff.diffBounds(white, one, 0, new int[][] {{0, 1, 1, 1}})));
+        int[][] faint = paint(grid(2, 2, 0xFFFFFF), 1, 0, 0xFFFFF8);
+        check("lech duoi nguong kenh thi bbox rong", Arrays.equals(PixelDiff.diffBounds(white, faint, 10, null), new int[] {0, 0, 0, 0}),
+            Arrays.toString(PixelDiff.diffBounds(white, faint, 10, null)));
+        check("cung lech do voi nguong 0 thi co bbox", Arrays.equals(PixelDiff.diffBounds(white, faint, 0, null), new int[] {0, 1, 1, 1}),
+            Arrays.toString(PixelDiff.diffBounds(white, faint, 0, null)));
+
+        PixelDiff.Report sz = PixelDiff.compare(grid(2, 2, 0xFFFFFF), grid(3, 3, 0xFFFFFF), 0, 0.0, null);
+        check("anh lech kich thuoc: pixel thieu tinh la nen den", sz.compared() == 9 && sz.changed() == 5 && !sz.pass(), "" + sz);
+        check("bbox hai anh lech kich thuoc bao luong lien",
+            Arrays.equals(PixelDiff.diffBounds(grid(2, 2, 0xFFFFFF), grid(3, 3, 0xFFFFFF), 0, null), new int[] {0, 0, 3, 3}),
+            Arrays.toString(PixelDiff.diffBounds(grid(2, 2, 0xFFFFFF), grid(3, 3, 0xFFFFFF), 0, null)));
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `final class PixelDiff {
+    static final class Report {
+        private final int compared;
+        private final int changed;
+        private final double ratio;
+        private final boolean pass;
+
+        Report(int compared, int changed, double ratio, boolean pass) {
+            this.compared = compared;
+            this.changed = changed;
+            this.ratio = ratio;
+            this.pass = pass;
+        }
+
+        int compared() {
+            return compared;
+        }
+
+        int changed() {
+            return changed;
+        }
+
+        double ratio() {
+            return ratio;
+        }
+
+        boolean pass() {
+            return pass;
+        }
+
+        public String toString() {
+            return "compared=" + compared + " changed=" + changed + " ratio=" + ratio + " pass=" + pass;
+        }
+    }
+
+    static Report compare(int[][] a, int[][] b, int channelTolerance, double maxDiffRatio, int[][] masks) {
+        int rows = rows(a, b);
+        int cols = cols(a, b);
+        boolean[][] masked = maskGrid(rows, cols, masks);
+        int compared = 0;
+        int changed = 0;
+        for (int r = 0; r < rows; r++) {
+            for (int c = 0; c < cols; c++) {
+                if (masked[r][c]) continue;
+                compared++;
+                if (different(a, b, r, c, channelTolerance)) changed++;
+            }
+        }
+        double ratio = compared == 0 ? 0.0 : (double) changed / compared;
+        return new Report(compared, changed, ratio, ratio <= maxDiffRatio + 1e-9);
+    }
+
+    static int[] diffBounds(int[][] a, int[][] b, int channelTolerance, int[][] masks) {
+        int rows = rows(a, b);
+        int cols = cols(a, b);
+        boolean[][] masked = maskGrid(rows, cols, masks);
+        int x1 = Integer.MAX_VALUE;
+        int y1 = Integer.MAX_VALUE;
+        int x2 = -1;
+        int y2 = -1;
+        for (int r = 0; r < rows; r++) {
+            for (int c = 0; c < cols; c++) {
+                if (masked[r][c] || !different(a, b, r, c, channelTolerance)) continue;
+                if (c < x1) x1 = c;
+                if (r < y1) y1 = r;
+                if (c > x2) x2 = c;
+                if (r > y2) y2 = r;
+            }
+        }
+        if (x2 < 0) return new int[] {0, 0, 0, 0};
+        return new int[] {x1, y1, x2 - x1 + 1, y2 - y1 + 1};
+    }
+
+    private static int rows(int[][] a, int[][] b) {
+        return Math.max(height(a), height(b));
+    }
+
+    private static int cols(int[][] a, int[][] b) {
+        return Math.max(width(a), width(b));
+    }
+
+    private static int height(int[][] img) {
+        return img == null ? 0 : img.length;
+    }
+
+    private static int width(int[][] img) {
+        return (img == null || img.length == 0 || img[0] == null) ? 0 : img[0].length;
+    }
+
+    private static int pixelAt(int[][] img, int r, int c) {
+        if (r < 0 || r >= height(img) || c < 0 || c >= width(img)) return 0;
+        return img[r][c] & 0xFFFFFF;
+    }
+
+    private static boolean different(int[][] a, int[][] b, int r, int c, int tol) {
+        int p = pixelAt(a, r, c);
+        int q = pixelAt(b, r, c);
+        int dr = Math.abs(((p >> 16) & 0xFF) - ((q >> 16) & 0xFF));
+        int dg = Math.abs(((p >> 8) & 0xFF) - ((q >> 8) & 0xFF));
+        int db = Math.abs((p & 0xFF) - (q & 0xFF));
+        return Math.max(dr, Math.max(dg, db)) > tol;
+    }
+
+    private static boolean[][] maskGrid(int rows, int cols, int[][] masks) {
+        boolean[][] grid = new boolean[rows][cols];
+        if (masks == null) return grid;
+        for (int[] m : masks) {
+            if (m == null || m.length < 4) continue;
+            int x = Math.max(0, m[0]);
+            int y = Math.max(0, m[1]);
+            int x2 = Math.min(cols, x + Math.max(0, m[2]));
+            int y2 = Math.min(rows, y + Math.max(0, m[3]));
+            for (int r = y; r < y2; r++) {
+                for (int c = x; c < x2; c++) grid[r][c] = true;
+            }
+        }
+        return grid;
+    }
+}`,
+      hints: [
+        'Đổi mask thành một lưới {{boolean[][]}} {{rows x cols}} rồi chỉ việc hỏi {{masked[r][c]}}. Cách này tự nhiên xử lý được mask trùng nhau (gán {{true}} hai lần vẫn là một pixel bị che) và mask tràn biên ({{Math.max(0, x)}} / {{Math.min(cols, x + w)}}).',
+        'Tách hàm {{pixelAt(img, r, c)}} trả {{0}} khi {{r}} hoặc {{c}} ra ngoài ảnh. Nhờ nó, "hai ảnh khác kích thước" không cần một nhánh riêng nào: lưới chung {{max(rows)}} và phần thiếu tự thành nền đen.',
+        'Tách hàm {{different(a, b, r, c, tol)}} dùng {{Math.abs(((p >> 16) & 0xFF) - ((q >> 16) & 0xFF))}} cho kênh đỏ, tương tự cho lục và lam, rồi lấy {{Math.max}} của ba kết quả và so **lớn hơn** ({{>}}) với ngưỡng. So {{>=}} là sai ngay ca "lech dung bang nguong".',
+        '{{compare}} và {{diffBounds}} dùng chung gần như mọi thứ — hãy để cả hai gọi cùng một vòng lặp trừ khi bạn muốn lặp lại lỗi. Trong {{diffBounds}}, theo dõi {{x1 = min(cot)}} và {{y1 = min(hang)}}, {{x2 = max(cot)}}, {{y2 = max(hang)}}; nhớ {{x}} là **cột** còn {{y}} là **hàng** trong đề.',
+        'Lệnh trả về mảng 4 số 0 khi {{x2 < 0}} đặt **sau** vòng lặp: giá trị khởi tạo {{Integer.MAX_VALUE}} mà lọt ra ngoài thì người đọc không thể phân biệt với kết quả thật.',
+        'Kiểm {{ratio}} bằng {{changed / compared}} với một operand là {{double}} — chia hai số nguyên sẽ cắt phần thập phân và mọi ngưỡng tỉ lệ trở thành vô nghĩa.',
+      ],
+      explain: `**Ba con số, ba câu hỏi khác nhau.** {{channelTolerance}} trả lời "hai màu này có được coi là **một** không" (chống anti-aliasing), {{changed/compared}} trả lời "**bao nhiêu phần** trang đổi", {{pass}} trả lời "có vượt mức chấp nhận không". Điểm chết người là thứ tự: nếu bạn so nguyên giá trị 24 bit bằng {{!=}} thì tolerance biến mất và một pixel lệch 1/255 thành "khác"; nếu bạn đếm cả pixel trong mask vào {{compared}} thì {{ratio}} giảm giả tạo và màn hình càng nhiều vùng động càng dễ "PASS may mắn". Cả hai đều tạo CI xanh không có nghĩa.
+
+**Vì sao "nền đen" cho ảnh lệch kích thước vẫn nguy hiểm.** Quy ước của bài khiến {{2x2}} ảnh trắng so với {{3x3}} ảnh trắng ra {{changed = 5}} — bộ so tự phát hiện lệch kích thước. Nhưng nếu hai ảnh đều **đen** mà kích thước khác nhau, {{changed}} sẽ bằng {{0}} và test **PASS** dù layout đã vỡ. Đúng như vậy, và đó chính xác là lý do mọi công cụ thật (Playwright, BackstopJS, reg-cli) so **kích thước trước**, lệch là fail ngay không cần tính pixel. Khi phỏng vấn, nói được điều này chứng tỏ bạn hiểu giới hạn của thuật toán chứ không chỉ nhớ công thức.
+
+**{{tolerance}} không phải chỗ để "cho qua".** Con số hợp lý đến từ **đo đạc**: chạy cùng một build, cùng một dữ liệu 20 lần, lấy phân bố số pixel khác giữa các lần chụp với nhau — đó là nhiễu nền của môi trường. Ngưỡng nên nằm **trên** nhiễu nền một chút. Đặt 0 trên môi trường có font không đóng băng nghĩa là bạn đã mua một bộ phát hiện... lúc trình duyệt cảm hứng.
+
+**bbox ({{diffBounds}}) là thứ làm FAIL thành thông tin.** Con số {{changed = 312}} không giúp ai; "{{diff nằm ở vùng (x=180, y=42, 320x48)}}" nói ngay: đó là cái header. Công cụ thật vẽ ảnh diff theo đúng ý này — tô đỏ vùng thay đổi, và QA chỉ cần liếc là biết nên gọi dev CSS hay hỏi vì sao ảnh logo đổi. {{diffBounds}} của bạn bỏ qua pixel trong mask, vì nếu không, một vùng động bị mask sẽ kéo bbox phình ra và che mất vị trí lỗi thật.
+
+**Chi tiết {{1e-9}}.** {{0.1 + 0.2 != 0.3}} trong số thực dấu phẩy động; so {{ratio <= maxDiffRatio}} trần tục có thể fail ở đúng ngưỡng bạn tính toán kỹ. Cộng một epsilon nhỏ là cách chuẩn hoá "nhỏ hơn hoặc bằng" khi số đến từ phép chia.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Vì sao visual regression cần một ngưỡng (tolerance) thay vì so ảnh bằng đúng từng pixel?',
+      options: [
+        'Vì ảnh PNG không lưu đủ màu',
+        'Vì anti-aliasing và font hinting làm các pixel biên của chữ đổi màu rất nhỏ giữa các lần dựng, dù mắt người thấy giống nhau',
+        'Vì so pixel rất chậm nên phải giảm số pixel cần so',
+        'Vì Playwright không cho phép so nguyên ảnh',
+      ],
+      answer: 1,
+      explain: 'Chữ được vẽ bằng màu trung gian tại biên nét, phụ thuộc vị trí phân số của nét so với lưới pixel; chỉ cần lệch 0,2 pixel là hàng chục pixel biên đổi. Ngưỡng theo **cường độ từng kênh** cho những lệch đó đi qua, còn lệch thật (đổi màu, thiếu phần tử) vẫn bị bắt.',
+    },
+    {
+      q: '{{maxDiffPixels = 500}} và {{maxDiffPixelRatio = 0.01}} khác nhau ở điểm nào khi suite chụp cả màn hình nhỏ lẫn màn hình lớn?',
+      options: [
+        'Không khác, chỉ là hai tên gọi',
+        'Ngưỡng tuyệt đối soi như nhau cho mọi màn hình; ngưỡng tỉ lệ cho phép màn hình lớn khác nhiều pixel hơn',
+        'Ngưỡng tỉ lệ luôn nghiêm khắc hơn ngưỡng tuyệt đối',
+        'Ngưỡng tuyệt đối chỉ dùng được khi có vùng mask',
+      ],
+      answer: 1,
+      explain: '500 pixel trên một modal nhỏ là rất nhiều, trên một trang full-page là rất ít. Tỉ lệ (0.5%, 1%) tự co theo kích thước, nên phù hợp suite có nhiều màn hình khác nhau; ngưỡng tuyệt đối lại hợp khi bạn muốn "không được đổi quá N điểm" ở một thành phần cố định.',
+    },
+    {
+      q: 'Một cột bảng hiển thị ngày giờ hiện tại luôn làm test đỏ. Cách xử lý **tốt nhất** trong số này?',
+      options: [
+        'Mask cả bảng để khỏi thấy gì',
+        'Khóa dữ liệu bằng mock API hoặc fixed clock cho cột đó, chỉ mask nốt phần thật sự không khóa được',
+        'Bật {{maxDiffPixelRatio = 0.2}} cho qua',
+        'Xóa visual test của màn hình đó',
+      ],
+      answer: 1,
+      explain: 'Vấn đề nằm ở **dữ liệu**, không ở bộ so. Mask cả bảng thì mất luôn khả năng phát hiện lỗi cột (thiếu cột, lệch padding). Nâng ngưỡng lên 20% thì gần như mọi lỗi layout đều được tha. Khóa nguồn dữ liệu rồi mới mask nốt thứ còn lại.',
+    },
+    {
+      q: 'Baseline được tạo trên Windows của QA, khi chạy CI trên Linux container thì đỏ hàng loạt dù code không đổi. Nguyên nhân hợp lý nhất?',
+      options: [
+        'CI chậm nên ảnh chưa tải xong',
+        'Hai môi trường dựng ký tự khác nhau: font khác (hoặc font thiếu → fallback), hinting/subpixel rendering khác, bề rộng scrollbar khác',
+        'PNG không nên lưu trong git',
+        'Visual regression không dùng được với Docker',
+      ],
+      answer: 1,
+      explain: 'Đây là lỗi kinh điển của visual test. Khắc phục: sinh baseline **bằng đúng image dùng để chạy test** (lưu artifact, không lưu trên máy cá nhân), cài font cố định trong image, khóa device scale factor và chế độ chụp (viewport hay full-page).',
+    },
+  ],
+  related: ['autotest-020', 'autotest-013', 'autotest-018'],
+  tags: ['visual regression', 'pixel diff', 'baseline', 'threshold', 'maxDiffPixelRatio', 'mask', 'anti-aliasing', 'flaky', 'screenshot'],
+},
+{
+  id: 'lesson-autotest-015',
+  track: 'autotest',
+  order: 15,
+  title: 'Kiểm tra JSON Schema trong API test: type, required, enum, minimum, items và contract drift',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Giải thích JSON Schema là gì và đọc được một schema có type, properties, required, items, enum, minimum',
+    'Viết assert kiểm tra response API theo schema trong REST Assured và hiểu đường dẫn lỗi kiểu $.items[1].price',
+    'Phân biệt thay đổi breaking và non-breaking trong hợp đồng JSON giữa FE và BE',
+    'Biết khi nào schema validation là đủ và khi nào cần contract testing thật (Pact, OpenAPI)',
+    'Chọn được độ chặt của schema để test không trở thành gánh nặng bảo trì',
+  ],
+  body: `**Tóm tắt:** API hiện đại trao đổi **JSON** — text có cấu trúc gồm object ({{"key": value}}), mảng ({{[1, 2]}}), chuỗi, số, boolean, null. **JSON Schema** là một tài liệu JSON **mô tả một tài liệu JSON khác**: nó nói "object này bắt buộc có field {{id}} kiểu chuỗi, {{total}} là số không âm, {{status}} chỉ được nhận ba giá trị {{new}}/{{paid}}/{{cancelled}}". Đem schema soi response của API trong test tức là bạn có một **hợp đồng kiểm tra được**: FE và BE không còn phải đoán hình dạng dữ liệu của nhau. **Contract drift** (lệch hợp đồng) là tên của tai nạn mà nó chặn: BE đổi {{total}} từ số thành chuỗi "199.000" cho dễ hiển thị, test schema đỏ ngay ở PR, thay vì crash trên điện thoại người dùng lúc 20h.
+
+### Ví dụ đời thường
+Phiếu giao hàng có hai phần: **nội dung** (tên khách, mã đơn, số tiền) và **ô bắt buộc** (chữ ký, tích chọn "hàng nguyên vẹn"). Người giao cứ điền tự do thì vẫn là phiếu, nhưng công ty không xử lý được. JSON Schema giống cái **form in sẵn**: ô nào bắt buộc, ô nào chỉ được ghi số, ô nào chỉ được tích một trong ba mục. Validator là người soát phiếu và nói được "dòng 2, cột số tiền, sai rồi" — chứ không nói "phiếu này không ổn".
+
+### Một schema trông như thế nào
+~~~json
+{
+  "type": "object",
+  "required": ["id", "total", "status"],
+  "properties": {
+    "id":     { "type": "string" },
+    "total":  { "type": "number", "minimum": 0 },
+    "qty":    { "type": "integer", "minimum": 1 },
+    "status": { "type": "string", "enum": ["new", "paid", "cancelled"] },
+    "note":   { "type": ["string", "null"] },
+    "tags":   { "type": "array", "items": { "type": "string" } },
+    "items":  { "type": "array", "items": {
+        "type": "object",
+        "required": ["sku", "price"],
+        "properties": { "sku": { "type": "string" }, "price": { "type": "number", "minimum": 0 } }
+    } }
+  }
+}
+~~~
+
+Sáu từ khóa phủ gần hết nhu cầu, và năm trong số đó là thứ bạn sẽ tự cài đặt ở bài tập:
+
+| Từ khóa | Nói điều gì | Tình huống vi phạm điển hình |
+|---|---|---|
+| {{type}} | kiểu của node: {{object}}, {{array}}, {{string}}, {{number}}, {{integer}}, {{boolean}}, {{null}} | {{total}} thành chuỗi "199000" |
+| {{required}} | mảng tên field **phải có mặt** trong object | BE quên trả {{status}} sau khi refactor mapper |
+| {{properties}} | schema riêng cho từng field, đệ quy xuống | field mới xuất hiện với kiểu không ai kiểm |
+| {{items}} | một schema áp cho **mọi** phần tử của mảng | một dòng trong danh sách thiếu {{price}} |
+| {{enum}} | tập giá trị được phép | BE thêm {{refunded}}, FE không có nhánh xử lý |
+| {{minimum}} | ngưỡng dưới cho số (tương tự: {{maximum}}, {{minLength}}, {{pattern}}) | {{qty = 0}} lọt vào luồng thanh toán |
+
+{{integer}} là **tập con** của {{number}}: {{2}} hợp lệ với cả hai, {{2.5}} chỉ hợp lệ với {{number}}. Chi tiết này làm đỏ test nhiều hơn bạn tưởng, vì bản thân JSON không phân biệt số nguyên và số thực — trình parse mới quyết định.
+
+### Vì sao lỗi phải có **đường dẫn**
+Một response danh sách 50 phần tử, lỗi nằm ở một dòng. "Response không khớp schema" vô dụng; "{{$.items[1].price: type number}}" chỉ đúng chỗ phải sửa, và đó là ký hiệu **JSONPath**: {{$}} là node gốc, {{.name}} là field của object, {{[i]}} là phần tử thứ i của mảng (0-based). Khi tự viết validator, việc đầu tiên là truyền đường dẫn xuống: gọi {{check(schema, value, path)}}, path khởi tạo {{$}}, xuống field thì {{path + "." + name}}, xuống mảng thì {{path + "[" + i + "]"}}.
+
+### Trong API test thật: REST Assured
+~~~java
+// Can them dependency io.rest-assured:json-schema-validator
+ given()
+    .header("Authorization", "Bearer " + token)
+ .when()
+    .get("/api/orders/{id}", orderId)
+ .then()
+    .statusCode(200)
+    .body(matchesJsonSchemaInClasspath("schemas/order.schema.json"))   // soi toan bo body theo schema
+    .body("$.items.size()", greaterThan(0));                            // schema khong tu noi chuyen danh sach rong
+~~~
+
+{{matchesJsonSchemaInClasspath}} đọc file schema từ **classpath** (nơi đặt resource cùng module test), nên schema là một file **.json bình thường**: review được bằng PR, dùng lại cho nhiều test, và báo lỗi kèm đường dẫn từng node. Muốn siết thêm, nhớ rằng schema **không** nói danh sách có được rỗng hay không — đó là hai loại assertion khác nhau, và bug "trang trắng vì mảng rỗng" nằm đúng chỗ giao nhau này.
+
+### Contract drift: thay đổi nào là breaking
+| BE làm gì | Breaking? | Cách bắt |
+|---|---|---|
+| Thêm field mới, không bắt buộc | không | FE cũ vẫn chạy |
+| Đổi tên field, đổi kiểu, bỏ field | **có** | schema + test render phía FE |
+| Đưa thêm field vào {{required}} | **có**, với client cũ | validate response mẫu của từng client |
+| Thêm giá trị mới vào enum | **có thể**: FE chưa biết thì hiển thị trống | {{enum}} + một ca kiểm thử "giá trị lạ" |
+| Cho phép {{null}} nhiều hơn ({{note}} thành null) | **có**, nếu FE cộng/trừ trực tiếp | {{type: ["string","null"]}} + assert null-safe |
+| Đổi đơn vị tiền (đồng → cent) | **có**, mà schema không bắt được | cần assert nghiệp vụ, không chỉ schema |
+
+Bài học: schema bắt được **hình dạng**, không bắt được **ý nghĩa**. Đổi {{total}} từ "đồng" sang "cent" vẫn là {{number}} — CI xanh, khách bị tính tiền gấp 100 lần.
+
+### Schema validation khác gì contract testing
+~~~seq
+title: Ba cach giu hop dong JSON giua FE va BE
+actors: Schema | API test | Pact | CI
+Schema -> CI: file schema nam trong repo, doi qua PR
+API test -> CI: goi endpoint that roi soi shape
+Pact -> CI: client khai bao ky vong, server chung minh khop
+CI --> Schema: in duong dan loi kieu items[1].price
+note Pact..API test: schema kiem tra response that, Pact kiem tra ca case client thiet ke
+~~~
+
+- **Schema validation trong test** (bài này): bạn giữ file schema và soi response thật. Rẻ, thêm được ngay, nhưng schema do **QA viết** — nếu QA viết theo trí nhớ, bạn chỉ đang tự kiểm tra trí nhớ của mình.
+- **OpenAPI + validator**: schema sinh ra từ **mô tả API thật** (Swagger/OpenAPI của BE), không ai phải nhớ gì; chặn được cả request sai trước khi vào server (Prism, {{openapi-validator}}).
+- **Pact (consumer-driven contract testing)**: chính phía **dùng** dữ liệu khai báo nó cần gì, phía **cung cấp** phải chứng minh thỏa mãn trong CI của nó. Nặng hơn, hợp với microservices nhiều team, bắt được cả trường hợp không response nào thật đi qua.
+- **Fuzzing từ schema** (Schemathesis): sinh hàng nghìn payload từ OpenAPI để tìm lỗi server. Hợp với API public.
+
+### Bốn lỗi hay gặp
+- **Sinh schema từ đúng một response mẫu.** Công cụ tự động biến mọi field đang có thành {{required}}, mọi chuỗi thành {{enum}} của chính nó → test đỏ khi có {{note}} = null, và cả team học cách bỏ qua test.
+- **Chỉ soi response 200.** Error envelope ({{code}}, {{message}}, {{traceId}}) cũng là hợp đồng; FE đọc {{error.message}} mà BE đổi thành {{detail}} thì UI hiện một khoảng trắng.
+- **{{required}} cho mọi field.** Field "không bao giờ null **hôm nay**" thành quả bom khi BE thêm chế độ khách vãng lai. Chỉ required field mà thiếu là UI vỡ.
+- **Quên mảng rỗng và phân trang.** {{items}} đúng schema nhưng danh sách 0 phần tử vẫn PASS, trong khi bug thật là "trang trống không có lời nhắn".
+- **Không version schema.** Test API v2 chạy bằng schema v1: đỏ ba ngày rồi mới phát hiện FE đã đổi field từ tuần trước.
+
+### Liên hệ phỏng vấn
+- "Bạn đảm bảo FE và BE nói cùng một JSON thế nào?" → schema đặt trong repo, validate trong API test; nếu org có OpenAPI thì validate từ OpenAPI; nhiều team thì nói thêm Pact và đánh đổi chi phí của nó.
+- "Schema thay được test nghiệp vụ không?" → không; nêu ví dụ đổi đơn vị tiền hoặc {{status}} mới mà UI chưa xử lý.
+- "Test schema chạy ở đâu, bao nhiêu?" → API test mỗi commit cho endpoint lõi (đơn hàng, thanh toán, danh mục), không phải mọi endpoint; mỗi màn hình chính vài schema trọng yếu.
+- "Kể một bug schema bắt được." → chuẩn bị câu có đường dẫn: "{{$.data.orders[3].total}} đổi từ number thành string sau refactor serialization, bắt được ở PR; nếu lọt thì app iOS crash vì ép kiểu".
+
+> Senior tip: viết **hai mức** schema. Mức chặt ({{required}} + {{type}} + {{enum}}) áp lên một **request cố định với dữ liệu fixture**, để nó hoạt động như unit test của hợp đồng; mức lỏng (chỉ {{type}} của vài field UI thật sự đọc) áp lên regression suite chạy với dữ liệu môi trường thật. Chỉ có mức lỏng thì bạn không phát hiện field mới; chỉ có mức chặt trên dữ liệu thật thì bạn sống chung với đỏ. Và luôn commit file schema **cùng PR** đổi API: đọc diff của một file .json là cách nhanh nhất để thấy ai đó sắp phá hợp đồng.`,
+  exercises: [
+    {
+      title: 'SchemaValidator: tự viết bộ kiểm JSON Schema (type, required, properties, items, enum, minimum) trên Map/List, lỗi kèm đường dẫn JSONPath',
+      prompt: `Viết {{SchemaValidator}} — bộ kiểm schema cho JSON đã được parse sang cấu trúc Java. Không đọc file, không gọi mạng, không dùng thư viện JSON, không đọc thời gian thực.
+
+**Cách biểu diễn JSON bằng kiểu Java**: object = {{Map<String, Object>}}, mảng = {{List}}, chuỗi = {{String}}, số nguyên = {{Integer}} hoặc {{Long}}, số thực = {{Double}} hoặc {{Float}}, boolean = {{Boolean}}, thiếu/null = {{null}}.
+
+**Chữ ký**: {{static List<String> validate(Map<String, Object> schema, Object value)}} — trả về **danh sách chuỗi lỗi**, rỗng khi dữ liệu hợp lệ.
+
+**Schema cũng là một {{Map}}** với các từ khóa sau; từ khóa nào **có mặt** mới được kiểm, từ khóa lạ bỏ qua:
+- {{"type"}} — một chuỗi, so theo bảng:
+  - {{object}} hợp lệ với {{Map}}; {{array}} với {{List}}; {{string}} với {{String}}; {{boolean}} với {{Boolean}}; {{null}} chỉ hợp lệ với giá trị {{null}}.
+  - {{integer}} hợp lệ với {{Integer}} hoặc {{Long}} ({{Boolean}} **không** phải số).
+  - {{number}} hợp lệ với {{Integer}}, {{Long}}, {{Double}}, {{Float}}.
+  - mọi giá trị {{type}} khác (vd {{"date-time"}}): bỏ qua, không báo lỗi.
+- {{"required"}} — một {{List}} tên field; thiếu **key** trong object thì lỗi. Key có mặt nhưng giá trị {{null}} **vẫn tính là có mặt** (null là việc của {{type}}).
+- {{"properties"}} — một {{Map}} tên field → schema của field đó. Chỉ kiểm field **có mặt trong dữ liệu**; field thừa trong dữ liệu được bỏ qua (object để mở).
+- {{"items"}} — một {{Map}}, áp dụng cho **mọi** phần tử của mảng.
+- {{"enum"}} — một {{List}} giá trị được phép, so bằng {{equals}}; **không được ném lỗi** khi giá trị mang vào là {{null}}.
+- {{"minimum"}} — một {{Number}}, chỉ áp dụng khi bản thân giá trị cũng là {{Number}} (so như số thực). Giá trị **bằng** {{minimum}} là hợp lệ.
+
+**Định dạng chuỗi lỗi** — phải đúng từng ký tự vì người chấm so chuỗi:
+- Sai kiểu: {{duongDan + ": type " + tenKieuTrongSchema}}, ví dụ {{$.total: type number}} và ở gốc thì {{$: type string}}.
+- Thiếu field bắt buộc: {{$.id: required}}.
+- Giá trị ngoài enum: {{$.status: enum}}.
+- Nhỏ hơn minimum: {{$.total: minimum 20}} — số {{20}} là {{String.valueOf(giaTriMinimum)}} trong schema, không làm tròn, không đổi kiểu.
+
+**Đường dẫn (JSONPath)**: gốc là {{$}}; field của object nối bằng {{.}} + tên ({{$.total}}); phần tử mảng nối bằng {{[i]}} ({{$.tags[1]}}, và lồng nhau thì {{$.items[1].price}}).
+
+**Ba quy tắc cốt lõi**: (1) node **sai kiểu** theo {{type}} thì báo đúng **một** lỗi rồi **dừng** — không kiểm {{enum}}/{{minimum}}, không đi xuống {{properties}}/{{items}} của nó; (2) {{schema}} là {{null}} hoặc rỗng coi như không ràng buộc; (3) danh sách trả về phải **sắp xếp tăng dần theo chuỗi lỗi** ({{Collections.sort}}) để kết quả không phụ thuộc thứ tự duyệt map.
+
+Ví dụ:
+
+~~~text
+schema = { type: object, required: [id, total],
+           properties: { id: {type: string},
+                         total: {type: number, minimum: 20},
+                         status: {type: string, enum: [new, paid]},
+                         items: {type: array, items: {type: object, required: [price],
+                                                      properties: {price: {type: number}}}} } }
+
+data = { total: "25", status: "refunded", items: [ {price: 10}, {price: "3"} ] }
+
+ket qua, sau khi sap xep: [
+  "$.items[1].price: type number",
+  "$.status: enum",
+  "$.total: type number"
+]
+~~~
+
+Chú ý {{total: "25"}}: nó là **chuỗi**, không phải số, nên chỉ có lỗi {{type number}} mà **không** có lỗi {{minimum}} — quy tắc (1) bắt bạn dừng lại. Đây đúng là tình huống BE đổi {{total}} thành chuỗi có định dạng để hiển thị: field vẫn tồn tại, nên assert "response có field {{total}}" vẫn xanh; chỉ schema bắt được.`,
+      starter: `final class SchemaValidator {
+    static List<String> validate(Map<String, Object> schema, Object value) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    static Map<String, Object> m(Object... kv) {
+        Map<String, Object> out = new LinkedHashMap<String, Object>();
+        for (int i = 0; i + 1 < kv.length; i += 2) out.put(String.valueOf(kv[i]), kv[i + 1]);
+        return out;
+    }
+    static List<Object> l(Object... items) {
+        return new ArrayList<Object>(Arrays.asList(items));
+    }
+    static Map<String, Object> orderSchema() {
+        return m("type", "object",
+            "required", l("id", "total"),
+            "properties", m(
+                "id", m("type", "string"),
+                "total", m("type", "number", "minimum", 20),
+                "qty", m("type", "integer"),
+                "status", m("type", "string", "enum", l("new", "paid", "cancelled")),
+                "note", m("type", "string"),
+                "shipping", m("type", "object", "required", l("carrier"),
+                    "properties", m("carrier", m("type", "string"))),
+                "tags", m("type", "array", "items", m("type", "string")),
+                "items", m("type", "array", "items", m("type", "object",
+                    "required", l("price"),
+                    "properties", m("price", m("type", "number"), "sku", m("type", "string"))))));
+    }
+    static Map<String, Object> good() {
+        return m("id", "O-1", "total", 25, "qty", 2, "status", "paid", "note", "goi ky",
+            "shipping", m("carrier", "GHN"), "tags", l("vip", "hot"),
+            "items", l(m("price", 10.5, "sku", "A"), m("price", 14.5, "sku", "B")));
+    }
+    public static void main(String[] args) {
+        Map<String, Object> sc = orderSchema();
+        List<String> e0 = SchemaValidator.validate(sc, good());
+        check("du lieu hop le thi khong co loi", e0.isEmpty(), "" + e0);
+
+        Map<String, Object> extra = good();
+        extra.put("coupon", "XMAS");
+        List<String> eX = SchemaValidator.validate(sc, extra);
+        check("field la trong du lieu duoc bo qua", eX.isEmpty(), "" + eX);
+
+        Map<String, Object> d1 = good();
+        d1.put("total", "25");
+        List<String> e1 = SchemaValidator.validate(sc, d1);
+        check("sai kieu thi chi bao type, khong bao minimum", e1.equals(l("$.total: type number")), "" + e1);
+
+        Map<String, Object> d2 = good();
+        d2.remove("id");
+        List<String> e2 = SchemaValidator.validate(sc, d2);
+        check("thieu field bat buoc", e2.equals(l("$.id: required")), "" + e2);
+
+        Map<String, Object> d3 = good();
+        d3.put("id", null);
+        List<String> e3 = SchemaValidator.validate(sc, d3);
+        check("key co mat ma null: khong phai loi required", e3.equals(l("$.id: type string")), "" + e3);
+
+        Map<String, Object> d4 = good();
+        d4.put("status", "refunded");
+        List<String> e4 = SchemaValidator.validate(sc, d4);
+        check("gia tri ngoai enum", e4.equals(l("$.status: enum")), "" + e4);
+
+        Map<String, Object> d4b = good();
+        d4b.put("status", "cancelled");
+        List<String> e4b = SchemaValidator.validate(sc, d4b);
+        check("gia tri trong enum thi hop le", e4b.isEmpty(), "" + e4b);
+
+        Map<String, Object> d5 = good();
+        d5.put("total", 12);
+        List<String> e5 = SchemaValidator.validate(sc, d5);
+        check("nh nho hon minimum", e5.equals(l("$.total: minimum 20")), "" + e5);
+
+        Map<String, Object> d5b = good();
+        d5b.put("total", 20);
+        List<String> e5b = SchemaValidator.validate(sc, d5b);
+        check("bang dung minimum thi hop le", e5b.isEmpty(), "" + e5b);
+
+        Map<String, Object> d6 = good();
+        d6.put("qty", 2.5);
+        List<String> e6 = SchemaValidator.validate(sc, d6);
+        check("integer khong chap so thuc", e6.equals(l("$.qty: type integer")), "" + e6);
+
+        Map<String, Object> d6b = good();
+        d6b.put("qty", Boolean.TRUE);
+        List<String> e6b = SchemaValidator.validate(sc, d6b);
+        check("boolean khong phai la number", e6b.equals(l("$.qty: type integer")), "" + e6b);
+
+        Map<String, Object> d7 = good();
+        d7.put("tags", l("vip", 7));
+        List<String> e7 = SchemaValidator.validate(sc, d7);
+        check("phan tu mang co chi so trong duong dan", e7.equals(l("$.tags[1]: type string")), "" + e7);
+
+        Map<String, Object> d7b = good();
+        d7b.put("tags", l());
+        List<String> e7b = SchemaValidator.validate(sc, d7b);
+        check("mang rong thi khong co loi", e7b.isEmpty(), "" + e7b);
+
+        Map<String, Object> d7c = good();
+        d7c.put("tags", m("a", "b"));
+        List<String> e7c = SchemaValidator.validate(sc, d7c);
+        check("khai array ma du lieu la object", e7c.equals(l("$.tags: type array")), "" + e7c);
+
+        Map<String, Object> d8 = good();
+        d8.put("items", l(m("price", 10), m("price", "3")));
+        List<String> e8 = SchemaValidator.validate(sc, d8);
+        check("duong dan long qua hai cap", e8.equals(l("$.items[1].price: type number")), "" + e8);
+
+        Map<String, Object> d8b = good();
+        d8b.put("items", l(m("sku", "A"), m("price", 3)));
+        List<String> e8b = SchemaValidator.validate(sc, d8b);
+        check("required ben trong phan tu mang", e8b.equals(l("$.items[0].price: required")), "" + e8b);
+
+        Map<String, Object> d8c = good();
+        d8c.put("items", l(m("price", 3), m("price", 4)));
+        List<String> e8c = SchemaValidator.validate(sc, d8c);
+        check("thieu sku khong phai loi vi sku khong required", e8c.isEmpty(), "" + e8c);
+
+        Map<String, Object> d9 = good();
+        d9.put("shipping", "GHN");
+        List<String> e9 = SchemaValidator.validate(sc, d9);
+        check("sai kieu o node object: dung tai day, khong xuong required", e9.equals(l("$.shipping: type object")), "" + e9);
+
+        Map<String, Object> d10 = good();
+        d10.remove("total");
+        d10.put("qty", 1.5);
+        d10.put("status", "shipped");
+        d10.put("note", 9);
+        List<String> e10 = SchemaValidator.validate(sc, d10);
+        List<String> sortedCopy = new ArrayList<String>(e10);
+        Collections.sort(sortedCopy);
+        check("bon loi cung luc", e10.size() == 4, "" + e10);
+        check("danh sach loi duoc sap xep va du noi dung",
+            e10.equals(sortedCopy) && e10.containsAll(l("$.note: type string", "$.qty: type integer",
+                "$.status: enum", "$.total: required")), "" + e10);
+
+        List<String> e11 = SchemaValidator.validate(m("type", "null"), null);
+        check("null hop le voi type null", e11.isEmpty(), "" + e11);
+        List<String> e11b = SchemaValidator.validate(m("type", "null"), "x");
+        check("khai null ma lai co gia tri", e11b.equals(l("$: type null")), "" + e11b);
+
+        List<String> e12 = SchemaValidator.validate(null, m("id", "O-1"));
+        check("schema null thi khong rang buoc", e12.isEmpty(), "" + e12);
+        List<String> e13 = SchemaValidator.validate(m(), "bat ky");
+        check("schema rong thi khong rang buoc", e13.isEmpty(), "" + e13);
+        List<String> e14 = SchemaValidator.validate(m("type", "date-time"), 5);
+        check("type ngoai bang dinh nghia thi bo qua", e14.isEmpty(), "" + e14);
+        List<String> e15 = SchemaValidator.validate(m("type", "string"), 5);
+        check("goc la scalar thi duong dan la dau dollar", e15.equals(l("$: type string")), "" + e15);
+        List<String> e16 = SchemaValidator.validate(m("type", "array", "items", m("type", "string")), l("a", "b", 3));
+        check("chi so mang 0-based trong duong dan", e16.equals(l("$[2]: type string")), "" + e16);
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `final class SchemaValidator {
+    static List<String> validate(Map<String, Object> schema, Object value) {
+        List<String> errors = new ArrayList<String>();
+        check(schema, value, "$", errors);
+        Collections.sort(errors);
+        return errors;
+    }
+
+    private static void check(Map<?, ?> schema, Object value, String path, List<String> out) {
+        if (schema == null || schema.isEmpty()) return;
+        Object type = schema.get("type");
+        if (type != null && !typeMatches(String.valueOf(type), value)) {
+            out.add(path + ": type " + type);
+            return;
+        }
+        Object allowed = schema.get("enum");
+        if (allowed instanceof List && !hasValue((List<?>) allowed, value)) {
+            out.add(path + ": enum");
+        }
+        Object minimum = schema.get("minimum");
+        if (minimum instanceof Number && value instanceof Number
+                && ((Number) value).doubleValue() < ((Number) minimum).doubleValue()) {
+            out.add(path + ": minimum " + minimum);
+        }
+        if (value instanceof Map) {
+            Map<?, ?> obj = (Map<?, ?>) value;
+            Object required = schema.get("required");
+            if (required instanceof List) {
+                for (Object key : (List<?>) required) {
+                    if (!obj.containsKey(key)) out.add(path + "." + key + ": required");
+                }
+            }
+            Object properties = schema.get("properties");
+            if (properties instanceof Map) {
+                for (Map.Entry<?, ?> e : ((Map<?, ?>) properties).entrySet()) {
+                    String name = String.valueOf(e.getKey());
+                    if (!obj.containsKey(name)) continue;
+                    Object sub = e.getValue();
+                    if (sub instanceof Map) check((Map<?, ?>) sub, obj.get(name), path + "." + name, out);
+                }
+            }
+        }
+        if (value instanceof List) {
+            Object items = schema.get("items");
+            if (items instanceof Map) {
+                List<?> arr = (List<?>) value;
+                for (int i = 0; i < arr.size(); i++) check((Map<?, ?>) items, arr.get(i), path + "[" + i + "]", out);
+            }
+        }
+    }
+
+    private static boolean typeMatches(String type, Object v) {
+        if (type.equals("object")) return v instanceof Map;
+        if (type.equals("array")) return v instanceof List;
+        if (type.equals("string")) return v instanceof String;
+        if (type.equals("boolean")) return v instanceof Boolean;
+        if (type.equals("null")) return v == null;
+        if (type.equals("integer")) return v instanceof Integer || v instanceof Long;
+        if (type.equals("number")) {
+            return v instanceof Integer || v instanceof Long || v instanceof Double || v instanceof Float;
+        }
+        return true;
+    }
+
+    private static boolean hasValue(List<?> list, Object v) {
+        for (Object o : list) {
+            if (v == null ? o == null : v.equals(o)) return true;
+        }
+        return false;
+    }
+}`,
+      hints: [
+        'Đi đệ quy theo khuôn {{check(schema, value, path, out)}}: path khởi đầu là {{"$"}}; xuống field thì {{path + "." + name}}, xuống phần tử mảng thì {{path + "[" + i + "]"}}. Truyền path xuống ngay từ đầu thì chỗ báo lỗi chỉ cần nối chuỗi, không phải dựng lại đường dẫn.',
+        'Nhánh kiểm tra kiểu ở **đầu hàm** chính là hiện thực của quy tắc "sai kiểu thì dừng": thêm lỗi rồi gọi {{return}} ngay. Quên {{return}} là lỗi phổ biến nhất: node là chuỗi mà bạn vẫn đi xuống {{properties}} rồi báo thêm vài lỗi vô nghĩa.',
+        'Viết riêng {{typeMatches(String type, Object v)}} trả {{boolean}}, mỗi {{type}} một dòng {{if}}. {{integer}} không chấp nhận {{Double}}; {{number}} chấp nhận bốn lớp số nhưng không chấp nhận {{Boolean}}; {{type}} lạ thì {{return true}}.',
+        '{{required}}: kiểm {{obj.containsKey(key)}}, **đừng** kiểm {{obj.get(key) != null}} — key có mặt với giá trị {{null}} không phải lỗi thiếu field. Ngược lại, phần kiểm {{enum}} phải tự viết vòng lặp: {{List.of("a").contains(null)}} ném NullPointerException.',
+        '{{minimum}}: so bằng {{((Number) value).doubleValue()}}, nhờ vậy {{Integer}} so được với {{Double}} mà không cần biết lớp nào, và chỉ áp dụng khi **cả hai** đều là {{Number}} — nếu không, chuỗi "25" sẽ bị so như 25 và che mất lỗi kiểu.',
+        'Trong {{validate}}, gọi {{Collections.sort(errors)}} trước khi trả. Test so danh sách bằng {{equals}}, nên thứ tự phải do bạn quyết, không phải do cách {{LinkedHashMap}} hay {{Map.of}} của người dùng duyệt.',
+        'Nhận schema trong hàm đệ quy bằng kiểu {{Map<?, ?>}} để khỏi cast về {{Map<String, Object>}} (tránh warning unchecked); đọc tên field bằng {{String.valueOf(e.getKey())}} khi duyệt {{properties}}.',
+      ],
+      explain: `**Cấu trúc ba tầng của một validator.** (1) Kiểm {{type}} — trượt thì báo một lỗi rồi **dừng**, vì mọi kiểm tra phía dưới đều vô nghĩa: một chuỗi không thể "thiếu field {{id}}". (2) Kiểm ràng buộc **trên chính node**: {{enum}}, {{minimum}}. (3) Đi xuống cấu trúc: {{required}} + {{properties}} cho object, {{items}} cho mảng. Đây đúng là hình dạng của JSON Schema thật; các phần còn lại của chuẩn ({{allOf}}, {{oneOf}}, {{$ref}}, {{format}}) chỉ là thêm nhánh ở tầng 2 và một bước dereference ở tầng 3.
+
+**{{integer}} là tập con của {{number}}**, và đó là chỗ JSON đánh lừa người viết test. Trong tài liệu JSON, {{2}}, {{2.0}} và {{2e0}} là cùng một số; chính trình parse quyết định nó thành {{Integer}} hay {{Double}} trong Java. Vì vậy API trả {{total: 25.0}} sau một lần refactor serializer có thể làm schema {{integer}} của bạn đỏ — không phải BE sai, mà do **hợp đồng chưa nói rõ kiểu số**. Thực hành tốt: dùng {{number}} cho tiền, kèm quy ước đơn vị được test bằng assert nghiệp vụ.
+
+**{{contains(null)}} trên list bất biến ném NullPointerException.** {{List.of("new", "paid").contains(null)}} là NPE, nên {{enum}} không thể kiểm bằng {{allowed.contains(value)}} khi dữ liệu có thể null. Vòng lặp tự viết với {{v == null ? o == null : v.equals(o)}} mới an toàn — và đó cũng là cách validator thật làm.
+
+**Vì sao phải sắp xếp danh sách lỗi.** Đề bài bắt trả về danh sách **đã sắp xếp** vì thứ tự duyệt một {{Map}} không được đảm bảo nếu người dùng truyền {{Map.of(...)}} (thứ tự hash có thể đổi theo version). Validator thật thường giữ thứ tự tài liệu và không sắp xếp — nhưng chúng vẫn đảm bảo đầu ra **xác định** (deterministic), vì nếu không, bạn đã mua sẵn một ca flaky. Nguyên tắc chung cho test: đầu ra không được phụ thuộc vào thứ tự duyệt cấu trúc không có thứ tự.
+
+**Ba hướng mở rộng khi cần dùng thật.**
+1. {{maximum}}, {{minLength}}, {{maxLength}}, {{pattern}}: chỉ thêm nhánh ở tầng 2; với {{pattern}} nên compile một lần rồi {{matcher.reset(url)}} thay vì gọi {{String.matches}} trong vòng lặp.
+2. Cho phép nhiều kiểu, kiểu hiện đại của nullable: {{type}} là một {{List}} ({{["string","null"]}}); sửa {{typeMatches}} nhận {{List}} và chấp nhận nếu **một** thành phần khớp.
+3. {{$ref}}/{{definitions}}: thêm một bảng tham chiếu truyền xuống đệ quy và dereference trước khi kiểm {{type}}. Đây là thứ làm validator tự viết phình nhanh nhất, và là lý do dự án thật nên dùng {{networknt/json-schema-validator}} — còn tự viết là để **hiểu cơ chế**, tức là để trả lời phỏng vấn.
+
+**Liên hệ với bug thật.** BE đổi {{total}} thành chuỗi có định dạng "1.234" cho đẹp. Field vẫn còn → assert "có field {{total}}" xanh. Web dùng {{Number(total)}} nên vẫn chạy → smoke xanh. iOS ép kiểu {{Int}} → crash. {{$.total: type number}} đỏ ngay ở PR, kèm đường dẫn đủ để người sửa biết phải đụng vào chỗ nào.`,
+    },
+  ],
+  check: [
+    {
+      q: 'BE đổi {{total}} từ số thành chuỗi "199.000". Assertion nào sau đây **vẫn xanh**, tức là không phát hiện ra lỗi?',
+      options: [
+        'So response với JSON Schema khai báo {{total}} là {{number}}',
+        'Assert field {{total}} tồn tại trong response',
+        'Assert kiểu của {{total}} trước khi đưa sang client iOS',
+        'So response với schema do OpenAPI sinh ra',
+      ],
+      answer: 1,
+      explain: 'Kiểm "có field" không nói gì về **kiểu** của field. Đó chính xác là loại lệch hợp đồng gây tai nạn: dữ liệu vẫn ở đó nhưng không dùng được. Chỉ assert về kiểu (schema hoặc {{isNumber}}) mới bắt được.',
+    },
+    {
+      q: 'Vì sao nên cân nhắc trước khi ghi {{integer}} cho các field tiền tệ?',
+      options: [
+        'Vì {{integer}} kiểm tra chậm hơn {{number}}',
+        'Vì JSON không phân biệt {{2}} và {{2.0}}; trình parse chọn {{Integer}} hay {{Double}} tùy cài đặt, nên {{integer}} có thể đỏ dù dữ liệu đúng',
+        'Vì {{integer}} không hỗ trợ {{minimum}}',
+        'Vì tiền luôn phải là chuỗi có định dạng',
+      ],
+      answer: 1,
+      explain: 'Số trong JSON là một khái niệm duy nhất; Jackson/Gson quyết định lớp Java. Cùng một API có thể trả {{25}} hôm nay và {{25.0}} sau khi refactor. Với tiền, hợp đồng tốt là {{number}} cộng quy ước đơn vị — mà đơn vị thì schema không bắt được, phải có assert nghiệp vụ.',
+    },
+    {
+      q: 'Trong {{required}} của schema, bạn nên kê những field nào?',
+      options: [
+        'Tất cả field đang có trong response, để phát hiện mọi thay đổi',
+        'Chỉ những field mà UI thật sự đọc và sẽ vỡ nếu thiếu',
+        'Không nên dùng {{required}}, chỉ dùng {{type}}',
+        'Chỉ field là khóa chính',
+      ],
+      answer: 1,
+      explain: '{{required}} cho mọi field biến schema thành ảnh chụp hiện trạng: BE để {{note}} null hoặc ẩn với khách vãng lai là test đỏ, và cả team học cách phớt lờ test. Hợp đồng chỉ nên ghi điều thật sự phải đúng.',
+    },
+    {
+      q: 'Điểm yếu lớn nhất của "schema do QA tự viết trong file test" so với Pact hoặc OpenAPI là gì?',
+      options: [
+        'Chạy chậm hơn các cách khác',
+        'Schema là bản **đoán** của QA về API; nếu không lấy từ mô tả thật hoặc từ phía client, CI vẫn xanh khi FE và BE lệch nhau',
+        'Không kiểm tra được {{enum}}',
+        'Không dùng được cùng REST Assured',
+      ],
+      answer: 1,
+      explain: 'Đó là lý do contract testing tồn tại: hợp đồng phải do phía **dùng** dữ liệu khai báo (Pact) hoặc phía **cung cấp** publish (OpenAPI). Schema tự viết vẫn có giá trị, nhưng hãy coi nó là bài kiểm tra hình dạng, không phải nguồn của hợp đồng.',
+    },
+  ],
+  related: ['autotest-008', 'autotest-021', 'autotest-023'],
+  tags: ['JSON Schema', 'type', 'required', 'enum', 'minimum', 'items', 'contract drift', 'REST Assured', 'API test', 'Pact'],
+},
 );

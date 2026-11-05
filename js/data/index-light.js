@@ -1315,6 +1315,9 @@ window.DATA_INDEX = {
     {"id":"lesson-autotest-010","track":"autotest","order":10,"title":"Chạy song song và phân mảnh (sharding) trong CI: JUnit 5 parallel, image Playwright cho Docker, chia shard theo thời lượng","level":"senior","minutes":45},
     {"id":"lesson-autotest-011","track":"autotest","order":11,"title":"Flaky test: phát hiện từ lịch sử chạy, cách ly đúng cách, và sửa tận gốc","level":"senior","minutes":45},
     {"id":"lesson-autotest-012","track":"autotest","order":12,"title":"Service virtualization: WireMock, Playwright route, Testcontainers và test data builder","level":"senior","minutes":45},
+    {"id":"lesson-autotest-013","track":"autotest","order":13,"title":"Mock mạng trong UI test với page.route: chặn request, trả JSON giả, tiêm lỗi 500/timeout, replay HAR","level":"senior","minutes":40},
+    {"id":"lesson-autotest-014","track":"autotest","order":14,"title":"Visual regression: so ảnh chụp màn hình với baseline, pixel diff, ngưỡng, vùng mask và nguồn flaky","level":"senior","minutes":40},
+    {"id":"lesson-autotest-015","track":"autotest","order":15,"title":"Kiểm tra JSON Schema trong API test: type, required, enum, minimum, items và contract drift","level":"senior","minutes":35},
   ],
   sd: [
     {"id":"sd-001","title":"Chuyển tiền liên ngân hàng qua Napas"},
