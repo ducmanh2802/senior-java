@@ -1,5 +1,62 @@
 # Changelog
 
+## 2026-11-06
+
+### Nội dung
+- T715 (auto-committed after kilo review + verify)
+- T705 (auto-committed after kilo review + verify)
+- T704 (auto-committed after kilo review + verify)
+- T703 (auto-committed after kilo review + verify)
+- T702 (auto-committed after kilo review + verify)
+- T701 (auto-committed after kilo review + verify)
+- T700 (auto-committed after kilo review + verify)
+- T699 (auto-committed after kilo review + verify)
+- T698 (auto-committed after kilo review + verify)
+- T697 (auto-committed after kilo review + verify)
+- T696 (auto-committed after kilo review + verify)
+- T695 (auto-committed after kilo review + verify)
+- T694 (auto-committed after kilo review + verify)
+- T693 (auto-committed after kilo review + verify)
+- T692 (auto-committed after kilo review + verify)
+- T690 (auto-committed after kilo review + verify)
+- T645 (auto-committed after kilo review + verify)
+- T642 (auto-committed after kilo review + verify)
+- T596 (auto-committed after kilo review + verify)
+- T595 (auto-committed after kilo review + verify)
+- T579 (auto-committed after kilo review + verify)
+- T339 (auto-committed after kilo review + verify)
+- T148 (auto-committed after kilo review + verify)
+- T139 (auto-committed after kilo review + verify)
+- T127 (auto-committed after kilo review + verify)
+- T691 (auto-committed after kilo review + verify)
+- T689 (auto-committed after kilo review + verify)
+- T688 (auto-committed after kilo review + verify)
+- T687 (auto-committed after kilo review + verify)
+- T686 (auto-committed after kilo review + verify)
+- T685 (auto-committed after kilo review + verify)
+- T684 (auto-committed after kilo review + verify)
+- T683 (auto-committed after kilo review + verify)
+- T682 (auto-committed after kilo review + verify)
+- T681 (auto-committed after kilo review + verify)
+- T680 (auto-committed after kilo review + verify)
+- T679 (auto-committed after kilo review + verify)
+- T678 (auto-committed after kilo review + verify)
+- T677 (auto-committed after kilo review + verify)
+- T676 (auto-committed after kilo review + verify)
+- T675 (auto-committed after kilo review + verify)
+- T672 (auto-committed after kilo review + verify)
+- T648 (auto-committed after kilo review + verify)
+- T647 (auto-committed after kilo review + verify)
+- T645 (auto-committed after kilo review + verify)
+- T642 (auto-committed after kilo review + verify)
+- T578 (auto-committed after kilo review + verify)
+- T354 (auto-committed after kilo review + verify)
+- T329 (auto-committed after kilo review + verify)
+
+### Ứng dụng
+
+
+
 ## 2026-11-05
 
 ### Nội dung
