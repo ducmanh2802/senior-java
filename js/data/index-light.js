@@ -993,6 +993,11 @@ window.DATA_INDEX = {
     ["autotest-028","autotest","lead"],
     ["autotest-029","autotest","lead"],
     ["autotest-030","autotest","lead"],
+    ["autotest-031","autotest","senior"],
+    ["autotest-032","autotest","senior"],
+    ["autotest-033","autotest","senior"],
+    ["autotest-034","autotest","senior"],
+    ["autotest-035","autotest","lead"],
   ],
   algos: [
     {"id":"algo-001","title":"Two Sum","difficulty":"easy","pattern":"Hash Map"},

@@ -1735,4 +1735,573 @@ Nêu cách bạn thiết lập phỏng vấn (câu hỏi, bài tập, tiêu chí
   ]
 },
 
+{
+  id: 'autotest-031',
+  topic: 'autotest',
+  level: 'senior',
+  q: 'Playwright for Java chạy bên trong như thế nào: từ code test Java đến trình duyệt thực sự đi qua những lớp nào (Playwright client, driver Node.js, Chromium/Firefox/WebKit)? BrowserContext là gì, vì sao cô lập tốt, và vì sao Playwright thường nhanh và ít flaky hơn Selenium WebDriver?',
+  a: `**Tóm tắt:** **Playwright for Java** không nói chuyện trực tiếp với trình duyệt bằng HTTP như Selenium WebDriver. Code Java gọi **Playwright client** (thư viện {{com.microsoft.playwright}}) → client khởi chạy và giao tiếp với một **driver Node.js** (process đi kèm Playwright) → driver dùng **giao thức gốc của từng engine trình duyệt** (Chrome DevTools Protocol cho Chromium, giao thức riêng cho Firefox/WebKit) để điều khiển **Chromium/Firefox/WebKit** thật. **Browser** là tiến trình trình duyệt; **BrowserContext** là một "hồ sơ duyệt" cô lập (cookie, localStorage, cache, session) bên trong cùng Browser. Playwright thường nhanh/ít flaky vì chờ theo **actionability** (tự đợi phần tử sẵn sàng tương tác) và giữ kênh điều khiển gọn, nhưng flaky nghiệp vụ (dữ liệu, race API) vẫn có thể xảy ra.
+
+### Vì sao cần hiểu kiến trúc bên trong
+Khi test chậm, treo, hoặc "lúc pass lúc fail" (**flaky**: kết quả không ổn định dù code không đổi), bạn phải biết lỗi nằm ở lớp nào: code test, client, driver, trình duyệt, hay ứng dụng. Hiểu đường đi của lệnh cũng giúp giải thích vì sao Playwright và Selenium (xem {{autotest-002}}, {{autotest-003}}) hành xử khác nhau.
+
+### Các lớp tham gia (từ trên xuống)
+~~~text
+[Test Java (JUnit 5)]
+        |
+        v  (gọi API: page.click, locator.fill, assertThat...)
+[Playwright client - com.microsoft.playwright]
+        |
+        v  (pipe / WebSocket nội bộ tới process Node)
+[Playwright driver (Node.js, đi kèm gói Playwright)]
+        |
+        v  (giao thức gốc browser: CDP cho Chromium, ...)
+[Browser engine: Chromium | Firefox | WebKit]
+        |
+        v
+[Trang web thật: DOM, JS, network, render]
+~~~
+
+~~~seq
+title: Luồng một hành động Playwright (click)
+actors: Test Java | Playwright Client | Driver Node | Browser
+Test Java -> Playwright Client: page.getByTestId("login").click()
+Playwright Client -> Driver Node: gửi lệnh click + selector
+Driver Node -> Browser: kiểm tra actionability rồi click native
+Browser --> Driver Node: sự kiện hoàn tất / lỗi
+Driver Node --> Playwright Client: kết quả
+Playwright Client --> Test Java: tiếp tục hoặc ném exception
+~~~
+
+- **Playwright client (Java)**: lớp bạn dùng trong code ({{Playwright}}, {{Browser}}, {{BrowserContext}}, {{Page}}, {{Locator}}). Nó tuần tự hoá lệnh và nhận kết quả.
+- **Driver Node.js**: một tiến trình Node chạy nền do Playwright quản lý. Node.js ở đây là **runtime JavaScript** (môi trường chạy JS ngoài trình duyệt) – bạn không cần viết JS, nhưng máy chạy test cần môi trường tương thích mà gói Playwright cung cấp.
+- **Giao thức gốc**: thay vì chuẩn HTTP chung như W3C WebDriver, driver nói "ngôn ngữ" tối ưu của engine. Với Chromium thường là **CDP** (Chrome DevTools Protocol – giao thức DevTools dùng để inspect/điều khiển). Cách này cho phép quan sát/điều khiển chi tiết (network, trace) hiệu quả.
+- **Browser engine**: Chromium (nền tảng Chrome/Edge), Firefox, WebKit (nền tảng Safari). Playwright tải bản browser tương thích khi cài (hoặc dùng browser hệ thống tuỳ cấu hình).
+
+### Browser, BrowserContext, Page – phân biệt rõ
+| Khái niệm | Là gì (ví dụ đời thường) | Dữ liệu | Chi phí tạo |
+|---|---|---|---|
+| {{Browser}} | Ứng dụng trình duyệt đang chạy (mở Chrome) | Chia sẻ process engine | Tương đối nặng, nên dùng chung cho cả suite khi được |
+| {{BrowserContext}} | Một "cửa sổ riêng tư" cô lập (cookie/storage tách biệt) | Cookie, localStorage, session, permission riêng | Nhẹ hơn Browser, tạo mới mỗi test rất hợp lý |
+| {{Page}} | Một tab trong context | DOM của tab đó | Nhẹ |
+
+~~~java
+import com.microsoft.playwright.*;
+
+public class Demo {
+  public static void main(String[] args) {
+    try (Playwright pw = Playwright.create()) {
+      // Browser dùng chung (ví dụ @BeforeAll) - nặng, tạo 1 lần
+      Browser browser = pw.chromium().launch(new BrowserType.LaunchOptions().setHeadless(true));
+      // Context cô lập mỗi test - cookie/storage sạch
+      BrowserContext context = browser.newContext();
+      Page page = context.newPage();
+      page.navigate("https://example.test/login");
+      // ... thao tác và assert ...
+      context.close(); // dọn context
+      browser.close();
+    }
+  }
+}
+~~~
+
+### Vì sao BrowserContext giúp ít flaky hơn
+- **Cô lập trạng thái**: test A đăng nhập không để cookie/login rơi sang test B. Nhiều lỗi flaky đến từ "test phụ thuộc thứ tự" vì dùng chung profile.
+- **Song song an toàn hơn**: mỗi worker có context riêng, giảm tranh chấp.
+- So với Selenium: WebDriver thường gắn với một session trình duyệt; muốn cô lập sạch phải tạo session mới (tốn) hoặc tự xóa cookie/storage (dễ sót).
+
+### Vì sao thường nhanh và ít flaky hơn Selenium (và giới hạn)
+- **Auto-wait/actionability**: trước khi click/fill, Playwright chờ phần tử hiện, ổn định, nhận sự kiện (xem {{autotest-032}}) → giảm lỗi "chưa kịp render". Selenium truyền thống cần explicit wait thủ công ({{autotest-005}}).
+- **Kênh điều khiển gọn**: giao thức gốc + driver quản lý tập trung giúp thao tác nhất quán.
+- **Vẫn có thể flaky**: API backend chậm, dữ liệu test thay đổi, animation/layout shift, đồng hồ/múi giờ. Playwright **không** tự sửa test sai nghiệp vụ.
+
+### Lỗi hay gặp
+- Tạo {{Browser}} mới cho mỗi test → suite chậm; nên dùng chung Browser, tạo {{BrowserContext}}/ {{Page}} mỗi test.
+- Quên {{close()}} context/page/browser → rò rỉ process, CI treo.
+- Nghĩ "Playwright không cần chờ gì" → bỏ qua {{waitForResponse}}/{{waitForURL}} khi nghiệp vụ phụ thuộc mạng (xem {{autotest-032}}).
+- Chạy headless trên CI khác headful local (font, viewport) → khác biệt nhỏ; hãy cố định viewport và dùng trace khi fail ({{autotest-035}}).
+
+### Trả lời phỏng vấn thế nào
+Nói rõ chuỗi: "Java test → Playwright client → driver Node → giao thức gốc (CDP/engine) → Chromium/Firefox/WebKit". Phân biệt {{Browser/BrowserContext/Page}} và nêu chiến lược: dùng chung Browser, **mỗi test một Context** để cô lập. So sánh ngắn với Selenium (HTTP W3C + driver binary, {{autotest-002}}) và nhấn mạnh auto-wait giúp giảm flaky timing, nhưng dữ liệu/điều kiện nghiệp vụ vẫn phải kiểm soát.
+
+> Senior tip: Đừng tối ưu bằng cách dùng chung một {{BrowserContext}} cho cả suite để "tiết kiệm thời gian" – bạn sẽ mua lại thời gian đó gấp nhiều lần để săn bug do rò rỉ trạng thái giữa các test. Cô lập (context sạch) + trace khi fail là nền tảng ổn định trên CI.`,
+  follow: [
+    'Khi nào bạn chọn dùng chung Browser nhưng tạo mới BrowserContext, và khi nào cần nhiều Browser?',
+    'Playwright dùng CDP cho Chromium – điều đó có nghĩa gì với Firefox/WebKit và cross-browser testing?',
+    'Một test Playwright vẫn flaky dù có auto-wait: bạn khoanh vùng theo lớp kiến trúc nào?'
+  ],
+  refs: [
+    { type: 'doc', title: 'Playwright for Java - Introduction', url: 'https://playwright.dev/java/docs/intro' },
+    { type: 'doc', title: 'BrowserContexts (Playwright Java)', url: 'https://playwright.dev/java/docs/browser-contexts' },
+    { type: 'doc', title: 'Browsers (Playwright Java)', url: 'https://playwright.dev/java/docs/browsers' }
+  ]
+},
+
+{
+  id: 'autotest-032',
+  topic: 'autotest',
+  level: 'senior',
+  q: 'Playwright auto-wait, actionability checks và web-first assertions ({{assertThat(locator)}} tự retry) hoạt động thế nào? Timeout cấu hình ra sao, vì sao gần như không cần explicit wait, và khi nào vẫn cần {{waitForResponse}}/{{waitForURL}}?',
+  a: `**Tóm tắt:** Playwright **auto-wait** (tự chờ) trước khi thao tác: {{click()}}, {{fill()}}, {{check()}}… chỉ thực hiện khi phần tử đạt **actionability** (có thể tương tác: gắn DOM, hiện, ổn định, nhận sự kiện, enabled…). **Web-first assertions** như {{assertThat(locator).hasText(...)/isVisible()}} thuộc {{PlaywrightAssertions}} **tự thử lại (retry)** đến khi điều kiện đúng hoặc hết timeout, thay vì đọc giá trị một lần rồi so sánh. Timeout có thể đặt toàn cục ({{setDefaultTimeout}}), cho assertion ({{setDefaultAssertionTimeout}}), hoặc từng thao tác. Nhờ vậy **gần như không cần explicit wait** kiểu "tìm rồi sleep/đợi tay" như Selenium ({{autotest-005}}), nhưng vẫn cần {{waitForResponse}}/{{waitForURL}}/{{waitForCondition}} khi bạn phải đồng bộ với **sự kiện nghiệp vụ/mạng** mà actionability không đại diện.
+
+### Auto-wait là gì (giải thích từ gốc)
+Trang web tải và render **bất đồng bộ** (async – việc xảy ra không theo thứ tự ngay lập tức): JS thêm nút sau 500ms, animation làm nút di chuyển, API trả dữ liệu rồi mới hiện bảng. Nếu tool bấm ngay lúc nút chưa sẵn sàng → fail. **Auto-wait** nghĩa là công cụ tự đợi đến khi thao tác an toàn, trong giới hạn thời gian (**timeout** – quá hạn thì báo lỗi).
+
+### Actionability checks (kiểm tra "tương tác được")
+Trước các hành động như {{click}}, Playwright kiểm tra (tuỳ action) các điều kiểu: phần tử **attached** (còn trong DOM), **visible** (hiện), **stable** (không đang chuyển động/animation gây lệch điểm click), **receives events** (không bị lớp khác che), **enabled** (không bị disabled), và với {{fill}} thì **editable**. Bạn không phải tự gọi chuỗi wait; hành động gộp kiểm tra + thực thi.
+
+~~~java
+import com.microsoft.playwright.*;
+import static com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat;
+
+Page page = context.newPage();
+page.navigate("https://shop.test");
+// Không cần Thread.sleep: click tự chờ nút actionable
+page.getByTestId("add-to-cart").click();
+// fill tự chờ input editable
+page.getByLabel("Email").fill("a@b.test");
+~~~
+
+### Web-first assertions vs assert thường
+- **Assert thường** (kiểu JUnit {{assertEquals(text, "Xin chào")}}): bạn lấy text **một lần**; nếu UI cập nhật 200ms sau, test fail dù đúng – phải tự chờ.
+- **Web-first assertion** ({{assertThat(locator)...}}): Playwright **lặp đọc/trial** cho đến khi khớp hoặc timeout. Nó "bám" theo DOM đang đổi.
+
+~~~java
+// Web-first: tự retry đến khi text đúng (mặc định ~5s cho assertion)
+assertThat(page.getByTestId("status")).hasText("Đã thanh toán");
+assertThat(page.getByRole(AriaRole.HEADING,
+    new Page.GetByRoleOptions().setName("Giỏ hàng"))).isVisible();
+
+// Cấu hình timeout assertion riêng (ms)
+assertThat(page.getByTestId("slow-banner"))
+    .isVisible(new LocatorAssertions.IsVisibleOptions().setTimeout(15000));
+~~~
+
+### Timeout: các mức cấu hình
+| Mức | Cách đặt (ý tưởng) | Áp dụng |
+|---|---|---|
+| Mặc định hành động/điều hướng | {{page.setDefaultTimeout(ms)}} hoặc {{context.setDefaultTimeout(ms)}} | click/fill/waitForSelector… |
+| Mặc định assertion | {{PlaywrightAssertions.setDefaultAssertionTimeout(ms)}} | {{assertThat(...)}} |
+| Từng lời gọi | tuỳ chọn {{.setTimeout(...)}} trên action/assert/waitFor | Ca đặc biệt chậm |
+
+~~~java
+// Ví dụ: tăng timeout cho trang staging chậm
+page.setDefaultTimeout(30_000);
+PlaywrightAssertions.setDefaultAssertionTimeout(10_000);
+~~~
+
+### Vì sao gần như không cần explicit wait (so với Selenium)
+Selenium thường: {{findElement}} + {{WebDriverWait.until(clickable/visible)}} + đôi khi {{Thread.sleep}} (xấu) để né race ({{autotest-005}}). Playwright gộp chờ vào **action** và **assertion**. Bạn vẫn viết ý định ("bấm nút này", "thấy chữ này"), không viết "chờ 3 giây".
+
+### Khi nào VẪN cần {{waitForResponse}}/{{waitForURL}}/chờ nghiệp vụ
+Actionability chỉ biết phần tử "bấm được"; nó **không** biết nghiệp vụ của bạn xong chưa.
+- **{{page.waitForResponse(...)}}**: chờ một HTTP response khớp (URL/matcher) – dùng khi UI đổi sau khi API lưu đơn hàng trả 200.
+- **{{page.waitForURL(...)}}**: chờ điều hướng sang URL/pattern (sau login redirect).
+- **{{waitForCondition}}** / chờ locator trạng thái: điều kiện tuỳ chỉnh.
+
+~~~java
+// Chờ API tạo đơn hoàn tất rồi mới assert trang kết quả
+Response resp = page.waitForResponse(
+    r -> r.url().contains("/api/orders") && r.request().method().equals("POST"),
+    () -> page.getByTestId("submit-order").click()); // chạy action trong lambda
+if (resp.status() != 201) throw new AssertionError("Tạo đơn thất bại: " + resp.status());
+page.waitForURL("**/orders/*/success");
+assertThat(page.getByTestId("order-id")).isVisible();
+~~~
+
+### Lỗi hay gặp
+- Dùng {{Thread.sleep}} "cho chắc" → test chậm và vẫn flaky; hãy dùng assertion/waitFor có điều kiện.
+- Đặt timeout quá lớn toàn cục → test fail thật nhưng chờ rất lâu mới báo.
+- Assert bằng {{page.locator(...).textContent()}} (đọc 1 lần) thay vì {{assertThat(...).hasText(...)}} → tự mất lợi ích retry.
+- Quên rằng {{toBeVisible}} khác "có trong DOM": phần tử có thể tồn tại nhưng ẩn.
+
+### Trả lời phỏng vấn thế nào
+Giải thích 3 ý: (1) action chờ **actionability**, (2) {{assertThat}} **retry** (web-first), (3) timeout cấu hình nhiều mức. Nêu rõ "gần như không cần explicit wait" nhưng **vẫn cần** chờ response/URL cho điều kiện nghiệp vụ – và cho ví dụ {{waitForResponse}} bọc quanh click submit (so sánh với Selenium {{autotest-005}}).
+
+> Senior tip: Khi viết test, hãy hỏi: "Tôi đang chờ **UI tương tác được** hay chờ **nghiệp vụ hoàn tất**?" Cái đầu để Playwright auto-wait lo; cái sau phải chờ đúng tín hiệu (response, URL, trạng thái dữ liệu) – đừng trộn hai thứ bằng một cái sleep.`,
+  follow: [
+    'Sự khác nhau giữa {{assertThat(locator).isVisible()}} và kiểm tra {{locator.isVisible()}} trả boolean là gì?',
+    'Làm sao chọn matcher {{waitForResponse}} để không khớp nhầm request (polling, analytics)?',
+    'Khi một action bị timeout, bạn dùng trace/screenshot thế nào để biết phần tử đang ở trạng thái nào?'
+  ],
+  refs: [
+    { type: 'doc', title: 'Auto-waiting (Playwright Java)', url: 'https://playwright.dev/java/docs/actionability' },
+    { type: 'doc', title: 'Assertions (Playwright Java)', url: 'https://playwright.dev/java/docs/test-assertions' },
+    { type: 'doc', title: 'Page.waitForResponse (Playwright Java API)', url: 'https://playwright.dev/java/docs/api/class-page#page-wait-for-response' }
+  ]
+}
+,
+
+{
+  id: 'autotest-033',
+  topic: 'autotest',
+  level: 'senior',
+  q: 'Tổ chức test Playwright for Java với JUnit 5 như thế nào: dùng chung Browser, tạo mới BrowserContext/Page mỗi test (extension/fixture), viết Page Object với Locator, và dùng {{storageState}} để tái sử dụng trạng thái đăng nhập?',
+  a: `**Tóm tắt:** Cấu trúc gọn: **{{Playwright}} + {{Browser}}** dùng chung (khởi tạo nặng, tạo một lần cho suite), còn **{{BrowserContext}} + {{Page}}** tạo mới **mỗi test** để cô lập ({{autotest-031}}). Với JUnit 5, đóng gói vòng đời này bằng **{{@BeforeAll/@AfterAll}}** (hoặc {{Extension}}) và **{{@BeforeEach/@AfterEach}}**; có thể dùng extension cộng đồng (ví dụ {{microsoft/playwright-junit}}) như "fixture" có sẵn. **Page Object** (POM, {{autotest-006}}) giữ {{Locator}} và hành động, test chỉ gọi nghiệp vụ và assert bằng web-first assertions. **{{storageState}}** lưu cookie/localStorage sau khi đăng nhập một lần và nạp vào context mới → bỏ qua bước login lặp lại, nhanh và bớt flaky.
+
+### Mục tiêu tổ chức
+- Test **độc lập**, chạy song song được (một ca fail không do "vết" ca khác).
+- Chi phí hợp lý: không mở browser mới mỗi test, nhưng vẫn cô lập trạng thái.
+- Code dễ bảo trì: UI đổi thì sửa Page Object, không sửa hàng chục test.
+
+### Vòng đời đề xuất (JUnit 5)
+~~~java
+import com.microsoft.playwright.*;
+import org.junit.jupiter.api.*;
+import static com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat;
+
+@TestInstance(TestInstance.Lifecycle.PER_CLASS) // cho phép @BeforeAll không static
+class CheckoutTests {
+  Playwright pw;
+  Browser browser;
+
+  @BeforeAll
+  void launch() {
+    pw = Playwright.create();
+    browser = pw.chromium().launch(new BrowserType.LaunchOptions().setHeadless(true));
+  }
+
+  BrowserContext context;
+  Page page;
+
+  @BeforeEach
+  void createContext(TestInfo info) {
+    // Mỗi test một context sạch; có thể set viewport/locale chung
+    context = browser.newContext(new Browser.NewContextOptions()
+        .setViewportSize(1280, 720));
+    page = context.newPage();
+  }
+
+  @AfterEach
+  void closeContext() {
+    if (context != null) context.close(); // xóa cookie/storage của test
+  }
+
+  @AfterAll
+  void closeAll() {
+    if (browser != null) browser.close();
+    if (pw != null) pw.close();
+  }
+
+  @Test
+  void addItem_showsInCart() {
+    page.navigate("https://shop.test");
+    page.getByTestId("add-sku-1").click();
+    assertThat(page.getByTestId("cart-count")).hasText("1");
+  }
+}
+~~~
+- **Fixture** (khái niệm chung): phần "chuẩn bị/dọn dẹp" dùng lại cho test. Ở đây {{createContext/closeContext}} là fixture mỗi test.
+
+### Page Object với {{Locator}}
+{{Locator}} là đối tượng đại diện cách tìm phần tử (lazy, tự auto-wait khi dùng) – phù hợp làm field của Page Object. Tránh nhét {{assert}} vào Page Object; trả dữ liệu hoặc trả Page Object tiếp theo, để test quyết định kiểm tra.
+
+~~~java
+class LoginPage {
+  private final Page page;
+  private final Locator user;
+  private final Locator pass;
+  private final Locator submit;
+
+  LoginPage(Page page) {
+    this.page = page;
+    this.user = page.getByTestId("username");
+    this.pass = page.getByTestId("password");
+    this.submit = page.getByRole(AriaRole.BUTTON,
+        new Page.GetByRoleOptions().setName("Đăng nhập"));
+  }
+
+  HomePage loginAs(String u, String p) {
+    user.fill(u);
+    pass.fill(p);
+    submit.click();
+    page.waitForURL("**/home"); // chờ điều hướng nghiệp vụ
+    return new HomePage(page);
+  }
+}
+
+// Test: gọi hành động, assert ở test
+@Test
+void login_ok() {
+  page.navigate("https://shop.test/login");
+  HomePage home = new LoginPage(page).loginAs("alice", "secret");
+  assertThat(home.welcomeBanner()).containsText("alice");
+}
+~~~
+
+### {{storageState}}: tái dùng đăng nhập
+Đăng nhập UI mỗi test vừa chậm vừa hay flaky (CAPTCHA, rate limit, phụ thuộc IdP). **{{storageState}}** là "ảnh chụp" trạng thái xác thực (cookie + localStorage origin) lưu ra file JSON, sau đó nạp vào context mới.
+
+~~~java
+// BƯỚC 1: chạy một lần (setup) để tạo file trạng thái đăng nhập
+void saveAuthState() {
+  BrowserContext ctx = browser.newContext();
+  Page p = ctx.newPage();
+  p.navigate("https://shop.test/login");
+  p.getByTestId("username").fill("alice");
+  p.getByTestId("password").fill("secret");
+  p.getByTestId("login-submit").click();
+  p.waitForURL("**/home");
+  // Lưu cookie/localStorage đã đăng nhập
+  ctx.storageState(new BrowserContext.StorageStateOptions()
+      .setPath(java.nio.file.Paths.get("auth.json")));
+  ctx.close();
+}
+
+// BƯỚC 2: mỗi test nạp state -> đã đăng nhập sẵn
+@BeforeEach
+void createAuthedContext() {
+  context = browser.newContext(new Browser.NewContextOptions()
+      .setStorageStatePath(java.nio.file.Paths.get("auth.json")));
+  page = context.newPage();
+}
+~~~
+
+~~~seq
+title: Tái dùng đăng nhập bằng storageState
+actors: Setup | Auth File | Test Context | App
+Setup -> App: login UI một lần
+App --> Setup: session cookie
+Setup -> Auth File: lưu storageState (auth.json)
+Test Context -> Auth File: nạp state khi newContext
+Test Context -> App: vào thẳng trang cần auth
+~~~
+
+### Lỗi hay gặp
+- Dùng chung {{Page}}/Context giữa test → test ảnh hưởng nhau (rò rỉ login, giỏ hàng).
+- {{storageState}} hết hạn (token timeout) → test fail hàng loạt; tạo lại state trong bước setup CI hoặc rút ngắn tuổi state.
+- Nhét logic chờ/assert phức tạp vào Page Object → khó đọc; giữ Page Object là "bản đồ + hành động".
+- Locator theo CSS giòn thay vì {{getByTestId/getByRole}} ổn định ({{autotest-004}} vẫn áp dụng).
+
+### Trả lời phỏng vấn thế nào
+Nêu rõ vòng đời: {{Browser}} chung, **Context/Page mỗi test** (JUnit 5 {{@BeforeEach/@AfterEach}} hoặc extension). Trình bày POM dùng {{Locator}} (liên hệ {{autotest-006}}) và lợi ích bảo trì. Giải thích {{storageState}} như "đăng nhập một lần, nạp phiên" để tăng tốc và giảm flaky – kèm lưu ý token hết hạn.
+
+> Senior tip: Hãy coi "đăng nhập" là **precondition** (điều kiện tiên quyết) của test nghiệp vụ, không phải thứ phải kiểm tra lại ở mọi ca. Dùng {{storageState}} (hoặc seed phiên qua API) cho phần lớn test; chỉ giữ một ít test E2E đi qua đúng luồng login UI để vẫn phủ hành vi xác thực.`,
+  follow: [
+    'Khi nào nên seed phiên đăng nhập bằng API thay vì lưu {{storageState}} từ UI?',
+    'Bạn cấu trúc BaseTest/Extension thế nào để thêm trace và screenshot khi test fail (liên hệ {{autotest-035}})?',
+    'Page Object nên chia theo trang hay theo component (header, modal) trong app SPA?'
+  ],
+  refs: [
+    { type: 'doc', title: 'Authentication (Playwright Java)', url: 'https://playwright.dev/java/docs/auth' },
+    { type: 'doc', title: 'JUnit integration (Playwright Java)', url: 'https://playwright.dev/java/docs/test-runners' },
+    { type: 'doc', title: 'Page object models (Playwright)', url: 'https://playwright.dev/java/docs/pom' }
+  ]
+},
+
+{
+  id: 'autotest-034',
+  topic: 'autotest',
+  level: 'senior',
+  q: 'Trong Playwright for Java, bạn xử lý iframe ({{frameLocator}}), popup/tab mới ({{waitForPopup}}), download ({{waitForDownload}}), upload ({{setInputFiles}}), dialog, và network interception ({{page.route}}) để mock backend như thế nào?',
+  a: `**Tóm tắt:** Web thật có nhiều tình huống "khó hơn click nút trên một trang": nội dung nhúng trong **iframe** (trang trong trang), mở **popup/tab mới**, tải **file xuống/lên**, hộp thoại native (**dialog** {{alert/confirm/prompt}}), và phụ thuộc **API chậm/lỗi**. Playwright for Java có API chuyên biệt: {{frameLocator()}} để thao tác trong iframe (tự chờ), {{page.waitForPopup()}} để bắt tab/cửa sổ mới, {{page.waitForDownload()}} + {{download.saveAs()}}, {{locator.setInputFiles()}} cho upload, {{page.onDialog()}} để xử lý dialog, và **{{page.route()}}** để chặn/sửa/mock request mạng. Dùng đúng công cụ giúp test ổn định và (khi mock hợp lý) giảm phụ thuộc môi trường.
+
+### 1) iframe: dùng {{frameLocator}}
+**iframe** (inline frame) là một tài liệu HTML nhúng trong trang cha – DOM bên trong tách biệt, {{page.locator}} thường không nhìn xuyên. {{frameLocator}} trỏ vào frame rồi tìm phần tử bên trong, vẫn hưởng auto-wait.
+
+~~~java
+// Trang cha có <iframe id="pay-frame" ...> chứa nút xác nhận
+FrameLocator pay = page.frameLocator("#pay-frame");
+pay.getByTestId("confirm-pay").click();
+assertThat(pay.getByText("Thành công")).isVisible();
+~~~
+Pitfall: selector trỏ nhầm frame (nhiều iframe lồng nhau) → phải đi từng lớp {{frameLocator}}.
+
+### 2) Popup / tab mới: {{waitForPopup}}
+Click có thể mở cửa sổ/tab mới ({{window.open}} hoặc {{target=_blank}}). Bắt đối tượng {{Page}} mới bằng cách chờ popup **đồng thời** với hành động mở.
+
+~~~java
+Page popup = page.waitForPopup(() -> {
+  page.getByRole(AriaRole.LINK,
+      new Page.GetByRoleOptions().setName("Mở biên lai")).click();
+});
+popup.waitForLoadState();
+assertThat(popup).hasURL(java.util.regex.Pattern.compile(".*receipt.*"));
+popup.close();
+~~~
+
+~~~seq
+title: Bắt popup khi click link
+actors: Test | Page chính | Popup Page | Browser
+Test -> Page chính: click "Mở biên lai"
+Page chính -> Browser: window.open / tab mới
+Browser --> Popup Page: tạo Page mới
+Test -> Popup Page: waitForPopup nhận Page, assert URL
+~~~
+
+### 3) Download: {{waitForDownload}}
+Bắt sự kiện tải file do hành động kích hoạt; lưu ra đường dẫn để kiểm tra (tên, tồn tại). Trên CI cần quyền ghi thư mục.
+
+~~~java
+Download download = page.waitForDownload(() -> page.getByTestId("export-csv").click());
+String suggested = download.suggestedFilename();
+download.saveAs(java.nio.file.Paths.get("build/test-downloads/" + suggested));
+// Có thể assert file tồn tại / kích thước > 0
+~~~
+
+### 4) Upload: {{setInputFiles}}
+Với {{<input type="file">}}, set đường dẫn file (hoặc payload). Không cần mở hộp thoại OS – Playwright thao tác trực tiếp input.
+
+~~~java
+page.getByTestId("avatar-upload").setInputFiles(
+    java.nio.file.Paths.get("src/test/resources/avatar.png"));
+assertThat(page.getByTestId("upload-ok")).isVisible();
+~~~
+
+### 5) Dialog: {{page.onDialog}}
+**Dialog** native ({{alert}}, {{confirm}}, {{prompt}}) chặn trang nếu không xử lý. Đăng ký handler **trước** hành động gây dialog.
+
+~~~java
+page.onceDialog(dialog -> {
+  // dialog.type(), dialog.message() để assert nếu cần
+  dialog.accept("Lý do huỷ"); // hoặc dialog.dismiss()
+});
+page.getByTestId("delete-btn").click();
+~~~
+
+### 6) Network interception / mock backend: {{page.route}}
+{{page.route(urlPattern, handler)}} chặn request khớp để: trả response giả (mock), sửa header/body, hoặc {{route.abort()}}. Hữu ích khi backend chưa sẵn sàng, muốn test lỗi 500, hoặc cô lập UI. **Cẩn trọng**: mock quá nhiều → test không còn là E2E thật.
+
+~~~java
+// Mock API danh sách sản phẩm trả về JSON cố định
+page.route("**/api/products", route -> {
+  String body = "[{\"id\":1,\"name\":\"SKU-1\"}]";
+  route.fulfill(new Route.FulfillOptions()
+      .setStatus(200)
+      .setContentType("application/json")
+      .setBody(body));
+});
+page.navigate("https://shop.test/products");
+assertThat(page.getByText("SKU-1")).isVisible();
+~~~
+
+| Tình huống | API chính | Ghi nhớ |
+|---|---|---|
+| iframe | {{frameLocator}} | DOM tách biệt; có thể lồng |
+| tab/popup mới | {{waitForPopup}} | Chờ đồng thời với click mở |
+| download | {{waitForDownload}} | Lưu file, kiểm tra tồn tại |
+| upload | {{setInputFiles}} | Gán thẳng input file |
+| alert/confirm/prompt | {{onDialog}}/{{onceDialog}} | Đăng ký trước khi trigger |
+| mock/chặn mạng | {{page.route}} | Chỉ mock khi có chủ đích |
+
+### Lỗi hay gặp
+- Tìm phần tử trong iframe bằng {{page.locator}} → không thấy; phải {{frameLocator}}.
+- Gọi {{waitForPopup}} sau khi click xong → có thể lỡ event; luôn bọc action trong lambda của {{waitForPopup}}.
+- {{route}} pattern quá rộng ({{**/*}}) → chặn luôn CSS/JS/font, trang vỡ.
+- Quên {{removeRoute}}/dùng {{onceDialog}} không đúng ngữ cảnh → ảnh hưởng test sau nếu dùng chung context (tránh bằng context mỗi test).
+
+### Trả lời phỏng vấn thế nào
+Đi qua từng ca với API tương ứng và một lưu ý thực tế (iframe tách DOM, popup phải chờ kèm action, route đừng mock tràn). Nhấn mạnh: mock backend bằng {{route}} là **công cụ có chủ đích** (test UI cô lập/ca lỗi), còn luồng E2E quan trọng vẫn nên chạy chống môi trường tích hợp có kiểm soát.
+
+> Senior tip: Với các ca "bất thường" (iframe, popup, download), hãy viết helper nhỏ có log/trace rõ ràng. Những ca này hay vỡ khác nhau giữa local và CI (quyền file, headless, chặn popup) – đừng đợi đến lúc pipeline đỏ mới tìm cách tái hiện.`,
+  follow: [
+    'Khi nào bạn mock bằng {{page.route}} và khi nào dùng WireMock/service giả ở tầng hạ tầng (liên hệ {{autotest-014}})?',
+    'Làm sao xử lý upload nhiều file hoặc input file ẩn (không hiện nút browse)?',
+    'Nếu popup bị chặn bởi chính sách trình duyệt trong môi trường test, bạn xử lý thế nào?'
+  ],
+  refs: [
+    { type: 'doc', title: 'Frames (Playwright Java)', url: 'https://playwright.dev/java/docs/frames' },
+    { type: 'doc', title: 'Pages (popup) (Playwright Java)', url: 'https://playwright.dev/java/docs/pages' },
+    { type: 'doc', title: 'Downloads and uploads (Playwright Java)', url: 'https://playwright.dev/java/docs/downloads' },
+    { type: 'doc', title: 'Network (route/mock) (Playwright Java)', url: 'https://playwright.dev/java/docs/network' }
+  ]
+},
+
+{
+  id: 'autotest-035',
+  topic: 'autotest',
+  level: 'lead',
+  q: '(Lead) Debug test Playwright fail trên CI: dùng Trace Viewer ({{tracing.start/stop}}, {{show-trace}}), video, screenshot, codegen ra sao? Bạn thiết kế chiến lược artifact và quy trình triage flaky cho team như thế nào?',
+  a: `**Tóm tắt:** Test fail trên **CI** (Continuous Integration – hệ thống chạy test tự động mỗi lần đẩy code) khó hơn local vì không có màn hình người ngồi xem. Playwright cung cấp **artifact** (tài liệu/vết để điều tra): **trace** (bản ghi tương tác, DOM snapshot, network, console) xem bằng **Trace Viewer** ({{tracing.start/stop}}, mở bằng {{npx playwright show-trace}} hoặc công cụ tương đương), **video**, **screenshot**. **codegen** giúp sinh locator/hành động mẫu để tái hiện hoặc viết lại bước mong manh. Ở mức lead: chuẩn hoá **khi nào thu artifact** (luôn trên failure, có thể sampling), **lưu ở đâu/bao lâu**, **quy ước đặt tên gắn build+test**, và **quy trình triage flaky** (phân loại, owner, sửa gốc, theo dõi tỉ lệ) để team không "rerun cho xanh".
+
+### Vì sao CI fail khó debug
+- Môi trường khác local: headless, CPU chậm, mạng khác, locale/timezone, dữ liệu test.
+- Không có ai nhìn thấy lúc fail; log text thường thiếu ngữ cảnh UI/mạng.
+- **Flaky** ({{autotest-003}}, {{autotest-015}}): cùng commit, chạy lại có thể pass → nếu chỉ bấm rerun, gốc rễ còn đó.
+
+### Trace: "máy quay" cho test
+**Trace** ghi lại dòng thời gian: hành động, ảnh chụp DOM, request/response, console. Bật theo context:
+
+~~~java
+BrowserContext context = browser.newContext();
+context.tracing().start(new Tracing.StartOptions()
+    .setScreenshots(true)   // ảnh trong trace
+    .setSnapshots(true)     // DOM snapshot
+    .setSources(true));     // đính kèm source (hữu ích khi debug)
+
+try {
+  // ... chạy test ...
+} finally {
+  // Chỉ lưu khi fail để tiết kiệm dung lượng (quyết định theo team)
+  context.tracing().stop(new Tracing.StopOptions()
+      .setPath(java.nio.file.Paths.get("build/traces/" + testName + ".zip")));
+  context.close();
+}
+~~~
+
+Mở trace (máy có Playwright tool): dùng CLI {{npx playwright show-trace path/to/trace.zip}} (Node toolchain của Playwright) hoặc tích hợp viewer trong CI report. Trace Viewer cho xem từng bước: locator nào, trang trông ra sao lúc đó, request nào chậm/lỗi.
+
+### Video và screenshot
+- **Video**: cấu hình {{recordVideo}} khi tạo context (ví dụ đặt thư mục {{dir}}) để quay cả phiên; hữu ích xem hành vi tổng thể nhưng nặng.
+- **Screenshot**: chụp lúc fail ({{page.screenshot(...)}} trong {{@AfterEach}} khi test thất bại) – nhẹ, nhanh xem.
+- Chiến lược thực dụng: **trace on failure** (giàu thông tin nhất) + screenshot on failure; video bật khi cần tái hiện ca hiếm hoặc trên nightly.
+
+### Codegen
+**Codegen** ({{npx playwright codegen <url>}}) mở browser có ghi thao tác và gợi ý locator/code. Dùng để: khám phá selector ổn định, tái hiện nhanh luồng báo lỗi, hoặc so sánh locator gợi ý với POM hiện tại. Không copy nguyên codegen vào suite mà không rà soát (locator có thể chưa bền, thiếu assert nghiệp vụ).
+
+~~~bash
+# Gợi ý lệnh (chạy thủ công khi cần điều tra), không dùng trong test code
+# npx playwright codegen https://staging.example.test
+~~~
+
+### Chiến lược artifact cho team
+| Quyết định | Gợi ý |
+|---|---|
+| Khi thu | Trace/screenshot **khi fail**; có thể trace "on-first-retry" nếu framework hỗ trợ retry có kiểm soát |
+| Đặt tên | {{<build>-<suite>-<class>-<method>-<attempt>.zip/png}} để truy vết |
+| Lưu trữ | Artifact của hệ CI (GitHub Actions artifacts, Jenkins stash…) + retention (7–30 ngày tuỳ chi phí) |
+| Bảo mật | Trace có thể chứa cookie/token/PII; **lọc/không ghi** dữ liệu nhạy, hạn chế quyền xem |
+| Liên kết | Đính link artifact vào ticket/Allure report ({{autotest-011}}) |
+
+### Quy trình triage flaky (lead)
+~~~seq
+title: Quy trình triage test flaky
+actors: CI | Dev/SDET | Tracker | Owner
+CI -> Dev/SDET: fail + đính kèm trace/screenshot
+Dev/SDET -> Tracker: phân loại (flaky môi trường|timing|dữ liệu|bug thật)
+Tracker -> Owner: gán owner + mức ưu tiên
+Owner -> CI: sửa gốc rễ (chờ điều kiện, cô lập data, mock)
+CI --> Tracker: theo dõi tỉ lệ pass/flake theo thời gian
+~~~
+
+1. **Phát hiện**: fail kèm artifact; đánh dấu "flaky nghi ngờ" nếu rerun pass (nhưng vẫn mở ticket).
+2. **Phân loại**: timing/auto-wait sai ({{autotest-032}}), rò rỉ state (thiếu context cô lập, {{autotest-033}}), dữ liệu chia sẻ, phụ thuộc dịch vụ ngoài, hoặc **bug sản phẩm thật**.
+3. **Sửa gốc rễ**: chờ đúng tín hiệu ({{waitForResponse/URL}}), cô lập dữ liệu, ổn định locator, mock có chủ đích ({{autotest-034}}), sửa app nếu là bug.
+4. **Ngưỡng**: đặt SLO (ví dụ suite chính < 1% flaky) và **không** chấp nhận "quarantine vô hạn" không owner.
+
+### Lỗi hay gặp
+- Bật trace+video cho mọi test mọi lần → tốn lưu trữ, CI chậm.
+- Rerun tự động đến khi xanh mà không ghi nhận → che nợ chất lượng.
+- Trace chứa token/secret → rò rỉ; dùng context sạch, tránh đăng nhập bằng tài khoản thật nhạy cảm, rà soát chính sách artifact.
+- Chỉ nhìn screenshot cuối cùng mà bỏ trace timeline → bỏ lỡ request lỗi nguyên nhân.
+
+### Trả lời phỏng vấn thế nào
+Trình bày công cụ: trace ({{start/stop}}, Trace Viewer) là mạnh nhất, screenshot/video bổ trợ, codegen hỗ trợ tái hiện. Sau đó nói như lead: **chiến lược artifact** (on-failure, đặt tên, retention, bảo mật) và **quy trình triage** (phân loại → owner → sửa gốc → đo tỉ lệ), nhấn mạnh không dùng rerun thay cho sửa flaky.
+
+> Senior tip: Một pipeline đáng tin cậy coi flaky là **sự cố chất lượng** có owner và thời hạn, không phải "đặc tính của UI test". Artifact tốt (trace) biến tranh luận "máy em chạy được" thành bằng chứng có thể xem lại từng bước.`,
+  follow: [
+    'Bạn bật tracing ở mức nào (BrowserContext vs global) khi chạy song song nhiều test?',
+    'Khi trace lộ token/session trong request header, bạn giảm thiểu rủi ro thế nào?',
+    'Làm sao phân biệt flaky do test với bug sản phẩm khi chỉ có artifact trên CI?'
+  ],
+  refs: [
+    { type: 'doc', title: 'Trace viewer (Playwright Java)', url: 'https://playwright.dev/java/docs/trace-viewer-intro' },
+    { type: 'doc', title: 'Videos (Playwright Java)', url: 'https://playwright.dev/java/docs/videos' },
+    { type: 'doc', title: 'Test generator / codegen (Playwright Java)', url: 'https://playwright.dev/java/docs/codegen-intro' },
+    { type: 'article', title: 'Eradicating Non-Determinism in Tests (Martin Fowler)', url: 'https://martinfowler.com/articles/nonDeterminism.html' }
+  ]
+}
+
+
+
 );
