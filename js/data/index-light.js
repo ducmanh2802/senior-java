@@ -1094,6 +1094,8 @@ window.DATA_INDEX = {
     {"id":"lesson-devops-005","track":"devops","order":5,"title":"Vòng lặp ingestion: rate limit bằng token bucket và xoay vòng credential trước khi hết hạn","level":"senior","minutes":45},
     {"id":"lesson-devops-006","track":"devops","order":6,"title":"Graceful shutdown end-to-end: ngân sách thời gian từ SIGTERM tới SIGKILL, drain thread pool và rolling update không rớt request","level":"senior","minutes":45},
     {"id":"lesson-devops-007","track":"devops","order":7,"title":"Chống retry storm: circuit breaker CLOSED/OPEN/HALF_OPEN, retry budget và các kiểu jitter","level":"senior","minutes":50},
+    {"id":"lesson-devops-008","track":"devops","order":8,"title":"Rolling update trên Kubernetes: maxSurge, maxUnavailable và probes quyết định traffic","level":"senior","minutes":35},
+    {"id":"lesson-devops-009","track":"devops","order":9,"title":"Prometheus metrics & SLO: counter, gauge, histogram và error budget","level":"senior","minutes":35},
     {"id":"lesson-architecture-001","track":"architecture","order":1,"title":"Parking Lot: Strategy cho tính phí và Factory cho loại xe","level":"senior","minutes":30},
     {"id":"lesson-architecture-002","track":"architecture","order":2,"title":"Elevator: State pattern và chiến lược điều phối","level":"senior","minutes":30},
     {"id":"lesson-architecture-003","track":"architecture","order":3,"title":"Notification Service: Observer và nguyên tắc Open/Closed","level":"mid","minutes":25},
