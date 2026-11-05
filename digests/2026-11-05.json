@@ -1,0 +1,67 @@
+{
+  "date": "2026-11-05",
+  "intro": "Hôm nay nổi bật là Project Detroit (nhúng V8/CPython vào Java qua FFM) và ECS bổ sung metric 20 giây giúp auto scaling phản ứng nhanh hơn. Ngoài ra có hai tin dữ liệu trên AWS và một bản This Week in Spring.",
+  "editor": "claude",
+  "items": [
+    {
+      "title_vi": "Project Detroit: nhúng cả runtime JavaScript/Python vào Java bằng FFM API",
+      "title": "Project Detroit: From Foreign Libraries to Foreign Language Runtimes",
+      "url": "https://inside.java/2026/11/04/devoxxbelgium-project-detroit/",
+      "source": "Inside Java",
+      "category": "tech",
+      "summary": "Maurizio Cimadamore trình bày Project Detroit tại Devoxx Belgium 2026. Thay vì tự viết lại engine bằng Java như Nashorn (bỏ từ Java 15 vì chi phí bảo trì), Detroit dùng Foreign Function & Memory API để nhúng trực tiếp runtime native như V8 (JavaScript) và CPython. Buổi nói chuyện đề cập việc phối hợp hai bộ GC và tránh virtual thread pinning.",
+      "why": "FFM đã chuyển từ gọi thư viện native sang nhúng cả runtime ngôn ngữ khác; hiểu ranh giới này giúp bạn đánh giá khi cần chạy script người dùng hoặc thư viện Python trong service Java mà không cần process riêng.",
+      "interview_q": "Bạn cần chạy script JavaScript do khách hàng cấu hình trong service Java. So sánh nhúng runtime native qua FFM, chạy sidecar process và tự implement bằng Java: khi nào chọn cái nào, rủi ro về GC và thread là gì?",
+      "related": ["concurrency-007"],
+      "tags": ["ffm", "jdk", "project-detroit"]
+    },
+    {
+      "title_vi": "ECS thêm metric CPU/memory 20 giây, auto scaling phản ứng nhanh hơn rõ rệt",
+      "title": "Deep dive: Auto scaling response times on Amazon ECS",
+      "url": "https://aws.amazon.com/blogs/containers/deep-dive-auto-scaling-response-times-on-amazon-ecs/",
+      "source": "AWS Containers Blog",
+      "category": "cloud",
+      "summary": "ECS có thể xuất metric CPU/memory độ phân giải 20 giây (mặc định 60 giây) cho target tracking. Benchmark của AWS: thời gian kích hoạt scale-out giảm từ 363 xuống 86 giây. Với workload Java tăng đột biến lặp lại, thời gian vi phạm SLA giảm khoảng 49% trên Fargate và 53% trên Managed Instances. Metric 20 giây tính phí như CloudWatch high-resolution metric nên chỉ bật khi độ trễ scale ảnh hưởng thật.",
+      "why": "Service Java khởi động chậm (JIT warm-up, load Spring context) nên mỗi chục giây chậm scale-out đều làm tăng tail latency; bài cho thấy số liệu thực và đánh đổi chi phí để quyết định có bật hay không.",
+      "interview_q": "Service Spring Boot trên ECS bị quá tải mỗi khi traffic tăng đột ngột dù đã có target tracking 60% CPU. Bạn phân tích độ trễ từ lúc tải tăng tới lúc task mới nhận request ở những khâu nào và giảm từng khâu ra sao?",
+      "related": ["aws-010", "devops-006"],
+      "tags": ["ecs", "autoscaling", "cloudwatch"]
+    },
+    {
+      "title_vi": "S3 Tables: migrate bảng Hive sang Apache Iceberg do AWS quản lý",
+      "title": "Amazon S3 Tables now offer managed migration of Apache Hive tables to Apache Iceberg",
+      "url": "https://aws.amazon.com/blogs/aws/amazon-s3-tables-now-offer-managed-migration-of-apache-hive-tables-to-apache-iceberg/",
+      "source": "AWS News Blog",
+      "category": "cloud",
+      "summary": "S3 Tables cho phép chuyển bảng Hive trên S3 sang Iceberg bằng API (start-table-migration) theo luồng Start, Sync, Complete, trong lúc workload production vẫn chạy. Bảng đích chỉ đọc cho đến khi hoàn tất. Giới hạn lúc ra mắt: chỉ bảng Hive đăng ký trong AWS Glue, định dạng Parquet, cùng account và cùng Region. Ghi vào bảng nguồn tạm dừng vài phút lúc cutover.",
+      "why": "Backend Java thường là bên ghi dữ liệu vào data lake; biết cách migrate không downtime và giới hạn cutover giúp bạn lên kế hoạch cho producer và job đọc dữ liệu.",
+      "interview_q": "Bạn cần chuyển một bảng dữ liệu lớn đang được nhiều service ghi sang định dạng lưu trữ mới mà không downtime. Bạn thiết kế quy trình sync, cutover và rollback thế nào?",
+      "related": [],
+      "tags": ["s3-tables", "iceberg", "data-lake"]
+    },
+    {
+      "title_vi": "Dashboard CloudWatch theo dõi RDS toàn tổ chức: deletion protection, Multi-AZ, backup",
+      "title": "Build an organization-wide Amazon RDS posture dashboard with Kiro",
+      "url": "https://aws.amazon.com/blogs/database/build-an-organization-wide-amazon-rds-posture-dashboard-with-kiro/",
+      "source": "AWS Database Blog",
+      "category": "cloud",
+      "summary": "Bài mô tả cách gom sự kiện từ Security Hub, Trusted Advisor, CloudTrail, Config và Health ở nhiều account về một event bus trung tâm, rồi dùng CloudWatch Logs, metric filter, alarm và dashboard để thấy database nào thiếu deletion protection, Multi-AZ hay backup, và ai vừa tắt bảo vệ. Giải pháp không cần Lambda hay database tự quản; có mẫu CloudFormation và Terraform.",
+      "why": "Database là thứ dev Java phải chịu trách nhiệm khi sự cố; một cờ cấu hình bị tắt trong change window có thể dẫn tới mất dữ liệu, nên cần phát hiện bằng giám sát chứ không dựa vào trí nhớ.",
+      "interview_q": "Bạn quản lý hàng trăm account AWS với nhiều RDS. Làm sao đảm bảo mọi database production luôn bật deletion protection, Multi-AZ và backup, và được cảnh báo khi ai đó tắt chúng?",
+      "related": ["aws-009"],
+      "tags": ["rds", "security-hub", "observability"]
+    },
+    {
+      "title_vi": "This Week in Spring (3/11/2026): hướng dẫn lên Spring Boot 4, chạy Cloud Foundry cục bộ",
+      "title": "This Week in Spring - November 3rd, 2026",
+      "url": "https://spring.io/blog/2026/11/03/this-week-in-spring-november-3rd-2026",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Bản tin tuần này dẫn tới bài hướng dẫn migrate từng bước lên Spring Boot 4, nhắc Spring Boot 3.5 đã hết hỗ trợ và Spring Boot 4.2 đang ở giai đoạn release candidate. Có hướng dẫn chạy Cloud Foundry cục bộ bằng kind rồi cf push một app Spring Boot, cùng vài recipe Spring AI về MCP apps và RAG.",
+      "why": "Nếu hệ thống còn ở Boot 3.5 thì đã hết hỗ trợ; đây là lúc lập kế hoạch nâng cấp lên Boot 4 thay vì chờ đến khi cần vá bảo mật.",
+      "interview_q": "Công ty bạn có 40 service Spring Boot 3.5 đã hết hỗ trợ. Bạn lập kế hoạch nâng cấp lên Boot 4 thế nào: thứ tự service, kiểm thử hồi quy, quản lý dependency và rollback?",
+      "related": [],
+      "tags": ["spring-boot", "upgrade"]
+    }
+  ]
+}
