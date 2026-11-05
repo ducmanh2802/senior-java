@@ -1026,4 +1026,697 @@ Trong JVM thật, nếu {{<clinit>}} ném exception, class bị đánh dấu l�
   related: ['jvm-014', 'jvm-015', 'jvm-020'],
   tags: ['class loading', 'static init', 'singleton', 'holder idiom', 'classloader'],
 },
+{
+  id: 'lesson-jvm-004',
+  track: 'jvm',
+  order: 4,
+  title: 'Memory leak trong Java: vì sao GC không cứu được và cách lần ra thủ phạm bằng heap dump',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Giải thích được vì sao Java có GC mà vẫn leak: object còn **reachable** từ GC root nhưng chương trình không bao giờ dùng lại',
+    'Nhận diện 5 mẫu leak hay gặp: cache không giới hạn, listener không gỡ, {{ThreadLocal}} trong thread pool, inner class giữ {{this}} ngầm, key đổi {{hashCode}}',
+    'Đọc được đáy heap sau GC, so sánh class histogram, lấy heap dump và tìm thủ phạm bằng dominator tree, retained size, path to GC roots',
+    'Viết được cache LRU có giới hạn và registry listener trả về handle gỡ đăng ký',
+  ],
+  body: `### Leak trong Java nghĩa là gì
+Trong C, leak là vùng nhớ đã {{malloc}} mà không ai {{free}}: không còn con trỏ nào trỏ tới, nhưng bộ nhớ vẫn bị chiếm. Java không có loại leak này, vì GC tự thu hồi mọi object **không còn đường đi từ GC root** (biến local của thread đang chạy, static field, JNI reference, monitor đang bị giữ...). Leak trong Java là kiểu ngược lại: object **vẫn còn đường đi** từ một GC root nên GC buộc phải giữ, nhưng chương trình **không bao giờ dùng lại** nó nữa.
+
+GC không đọc được ý định của bạn. Nó chỉ trả lời câu hỏi "còn ai trỏ tới object này không?". Nếu một {{HashMap}} static còn trỏ tới 2 triệu order đã xử lý xong từ tuần trước, câu trả lời là "có", và 2 triệu order đó sống mãi, kéo theo mọi thứ chúng trỏ tới:
+
+~~~text
+GC root: static field OrderCache.MAP
+   └── HashMap                 shallow 48 B, retained 1.6 GB
+         └── Node[] table      4 194 304 slot
+               ├── Node → Order#1 → List<OrderLine> → Product ...
+               ├── Node → Order#2 → ...
+               └── ... 2 triệu Node, không ai đọc lại
+~~~
+
+### Triệu chứng: đáy của heap đi lên
+Heap đang dùng của một service bình thường có hình răng cưa: tăng khi cấp phát, rơi xuống sau mỗi lần GC. Thứ cần nhìn là **mức heap ngay sau GC** (đáy răng cưa, còn gọi là live set), không phải đỉnh:
+
+- Service khoẻ: đáy dao động quanh một mức, ví dụ khoảng 600 MB sau mỗi lần GC, suốt nhiều ngày.
+- Service leak: đáy tăng đều 600 MB → 900 MB → 1.3 GB theo ngày; GC chạy dày hơn, CPU dành cho GC tăng, p99 tăng; cuối cùng là {{java.lang.OutOfMemoryError: Java heap space}}. Với Parallel GC bạn có thể gặp {{GC overhead limit exceeded}} trước: JVM bỏ cuộc khi hơn 98% thời gian dành cho GC mà thu hồi được dưới 2% heap.
+
+Trong GC log của G1 ({{-Xlog:gc}}), dòng {{Pause Young (Normal) (G1 Evacuation Pause) 1450M->1210M(2048M)}} cho biết heap trước và sau GC. Vẽ con số sau dấu mũi tên theo thời gian là thấy ngay. Lưu ý: một **cache lớn hợp lệ** cũng làm đáy cao, nhưng đáy sẽ **đi ngang** khi cache đầy; leak thì không bao giờ đi ngang.
+
+### Năm mẫu leak gặp nhiều nhất trên production
+**1. Cache tự chế không giới hạn.** Một {{Map}} dùng làm cache nhưng chỉ có {{put}}, không có giới hạn kích thước hay thời gian sống. Mỗi key mới (user id, câu query, URL có tham số) thêm một entry. Key có cardinality cao, ví dụ URL chứa {{?ts=1730700000}}, là thảm hoạ: mỗi request là một key mới. Cách chữa: cache có **maxSize** và **TTL** (Caffeine, hoặc {{LinkedHashMap}} với {{removeEldestEntry}} như bài tập 1).
+
+**2. Listener/callback đăng ký mà không gỡ.** Subject sống lâu (event bus singleton) giữ danh sách listener bằng strong reference. Mỗi request tạo một handler rồi {{subscribe}}, nhưng không ai {{unsubscribe}}. Handler giữ request context, context giữ body 200 KB; 1 triệu request là 200 GB tiềm năng. Quy tắc: **ai đăng ký thì người đó gỡ**, và API đăng ký nên trả về một handle có {{close()}} để dùng được với try-with-resources (bài tập 2).
+
+**3. {{ThreadLocal}} trong thread pool.** Mỗi {{Thread}} có một {{ThreadLocalMap}}; key của entry là weak reference tới object {{ThreadLocal}}, còn **value là strong reference**. Thread của Tomcat hay {{ExecutorService}} sống suốt đời ứng dụng, nên value sống theo nếu bạn quên {{remove()}}. Con số thật: mỗi thread giữ một buffer 2 MB, 200 thread Tomcat là 400 MB không bao giờ giải phóng. Tệ hơn cả leak: request sau chạy trên cùng thread có thể đọc nhầm dữ liệu của user trước.
+
+~~~java
+CONTEXT.set(userCtx);
+try {
+    handle(request);
+} finally {
+    CONTEXT.remove();   // bắt buộc với thread pool, kể cả khi handle ném exception
+}
+~~~
+
+**4. Inner class (không static) và lambda giữ {{this}} ngầm.** Một inner class không static luôn có field ẩn trỏ tới object bao ngoài. Nếu bạn đưa một instance anonymous class vào nơi sống lâu, ví dụ truyền nó cho {{scheduler.scheduleAtFixedRate}} hoặc đăng ký làm callback toàn cục, thì cả object bao ngoài (có thể là một service đang giữ hàng trăm MB dữ liệu) không được thu hồi. Lambda chỉ bắt {{this}} khi thân lambda dùng field hoặc method instance. Thói quen tốt: nested class mặc định khai báo {{static}}, trừ khi thực sự cần object bao ngoài.
+
+**5. Key có {{hashCode}} thay đổi.** Bạn {{put}} một object mutable làm key vào {{HashMap}}/{{HashSet}}, sau đó sửa field tham gia {{hashCode}}. Entry vẫn nằm ở bucket cũ, còn {{remove(key)}} tìm ở bucket mới nên không thấy: entry kẹt vĩnh viễn. Key phải **immutable** ({{record}}, {{String}}, {{Long}}).
+
+Ngoài ra còn ClassLoader leak khi hot redeploy (static field hoặc thread của bản deploy cũ giữ classloader, kéo theo toàn bộ class đã nạp) và leak tài nguyên ngoài heap (stream, connection không đóng). Hai loại này có cơ chế riêng nhưng cách lần ra giống nhau.
+
+### WeakReference có phải cách chữa?
+Weak/Soft reference chỉ hợp với vài trường hợp: canonical map ({{WeakHashMap}} gắn metadata vào object do người khác quản lý vòng đời), hoặc weak listener khi bạn **không kiểm soát** được bên đăng ký. Nhưng chúng đổi bug "giữ quá lâu" thành bug "biến mất bất ngờ": listener bọc weak bị GC thu hồi ngay khi không ai khác giữ lambda, và sự kiện ngừng tới mà không có lỗi nào. Soft reference thì giữ tới khi heap gần đầy, khiến GC chạy nặng đúng lúc tải cao. Cách chữa chuẩn vẫn là **vòng đời rõ ràng**: giới hạn kích thước, TTL, gỡ đăng ký đối xứng, {{try/finally}}.
+
+### Quy trình tìm leak trên môi trường thật
+1. **Xác nhận là leak**: nhìn đáy heap sau GC trong vài giờ tới vài ngày (GC log, hoặc metric {{jvm_memory_used_bytes}} của Micrometer với tag {{area=heap}}). Đáy đi lên đều là tín hiệu mạnh.
+2. **So sánh class histogram** ở hai thời điểm cách nhau 30 phút: {{jcmd <pid> GC.class_histogram}}. Lệnh này mặc định chỉ đếm object còn sống nên sẽ kích hoạt một full GC (vài trăm ms tới vài giây). Class nào có số instance tăng tuyến tính ({{HashMap$Node}}, {{byte[]}}, class nghiệp vụ như {{OrderDto}}) là nghi phạm.
+3. **Lấy heap dump**: {{jcmd <pid> GC.heap_dump /dumps/app.hprof}}. Dump là stop-the-world và file lớn gần bằng heap đang dùng (heap dùng 3 GB thì file khoảng 3 GB), nên lấy trên một pod đã rút khỏi load balancer và ghi vào volume đủ chỗ. Luôn bật sẵn {{-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/dumps}} để có bằng chứng ngay lúc pod chết.
+4. **Phân tích bằng Eclipse MAT** (hoặc VisualVM, IntelliJ profiler):
+   - **Leak Suspects report**: MAT tự chỉ ra object giữ phần lớn heap.
+   - **Dominator tree**: X dominate Y nếu **mọi** đường đi từ GC root tới Y đều phải qua X. Khi X bị thu hồi thì mọi thứ X dominate cũng được thu hồi.
+   - **Shallow size** là kích thước của chính object (một {{HashMap}} chỉ khoảng 48 byte); **retained size** là tổng bộ nhớ được giải phóng nếu object đó biến mất (chính cái {{HashMap}} đó có thể retain 1.6 GB). Luôn sắp xếp theo retained size.
+   - **Path to GC Roots** (chọn loại trừ weak/soft reference): cho biết chính xác chuỗi field nào giữ object sống, ví dụ {{OrderCache.MAP → table → [12345] → value}}. Đó là dòng code cần sửa.
+5. **Leak chậm, khó tái hiện**: dùng JFR với event {{jdk.OldObjectSample}} và dump bằng {{jcmd <pid> JFR.dump filename=leak.jfr path-to-gc-roots=true}}. JFR lấy mẫu các object sống lâu kèm stack trace nơi cấp phát và đường tới GC root, rẻ hơn nhiều so với heap dump nên chạy được ngay trên production.
+
+> Heap dump của production chứa dữ liệu người dùng (token, email, số điện thoại). Coi file {{.hprof}} như dữ liệu nhạy cảm: mã hoá, giới hạn người đọc, xoá sau khi phân tích xong.
+
+### Liên hệ phỏng vấn
+Câu hỏi hay gặp: "Java có GC thì sao vẫn leak?", "Kể một memory leak bạn đã xử lý", "Shallow size khác retained size thế nào?". Một câu trả lời tốt đi theo cấu trúc: **triệu chứng** (đáy heap sau GC tăng, GC dày, OOM) → **bằng chứng** (histogram so sánh, heap dump, dominator tree, path to GC roots) → **nguyên nhân gốc** (ví dụ listener không gỡ) → **sửa và phòng ngừa** (cache có giới hạn, API đăng ký trả handle, alert trên heap sau GC). Hai bài tập dưới đây là hai cách sửa phổ biến nhất: cache LRU có giới hạn và event bus có hàm gỡ đăng ký.`,
+  exercises: [
+    {
+      title: 'Cache LRU có giới hạn bằng LinkedHashMap',
+      prompt: `Một service dùng {{HashMap}} làm cache và heap tăng mãi. Hãy viết {{BoundedCache<K, V>}} giữ **tối đa** {{maxSize}} entry, đuổi entry **ít được dùng gần đây nhất** (LRU) khi vượt giới hạn.
+
+Yêu cầu:
+- Constructor: {{maxSize < 1}} thì ném {{IllegalArgumentException}}.
+- {{put(key, value)}}: thêm hoặc cập nhật. Nếu sau khi thêm số entry vượt {{maxSize}} thì xoá entry cũ nhất và tăng bộ đếm {{evictions}}. Cập nhật key đã có không đuổi ai.
+- {{get(key)}}: trả value hoặc null; nếu có thì entry đó trở thành **mới dùng nhất**.
+- {{size()}}, {{evictions()}}.
+- {{keysEldestFirst()}}: danh sách key theo thứ tự từ cũ nhất (sắp bị đuổi) tới mới dùng nhất. Không được làm thay đổi thứ tự.
+
+Gợi ý cơ chế: {{new LinkedHashMap<>(16, 0.75f, true)}} (tham số thứ ba {{accessOrder = true}}) và override {{removeEldestEntry}}.`,
+      starter: `class BoundedCache<K, V> {
+    private final int maxSize;
+    private final LinkedHashMap<K, V> map;
+    private long evictions;
+
+    BoundedCache(int maxSize) {
+        // TODO: kiểm tra maxSize, tạo LinkedHashMap accessOrder = true và override removeEldestEntry
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    V get(K key) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void put(K key, V value) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int size() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    long evictions() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    List<K> keysEldestFirst() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    public static void main(String[] args) {
+        check("vượt maxSize thì đuổi entry cũ nhất", () -> {
+            BoundedCache<String, Integer> c = new BoundedCache<>(3);
+            c.put("a", 1); c.put("b", 2); c.put("c", 3); c.put("d", 4);
+            eq(3, c.size());
+            eq(1L, c.evictions());
+            eq(List.of("b", "c", "d"), c.keysEldestFirst());
+            eq(null, c.get("a"));
+        });
+        check("get làm mới thứ tự: LRU chứ không phải FIFO", () -> {
+            BoundedCache<String, Integer> c = new BoundedCache<>(3);
+            c.put("a", 1); c.put("b", 2); c.put("c", 3);
+            eq(1, c.get("a"));
+            c.put("d", 4);
+            eq(List.of("c", "a", "d"), c.keysEldestFirst());
+            eq(null, c.get("b"));
+        });
+        check("put key đã có: cập nhật value, không đuổi ai", () -> {
+            BoundedCache<String, Integer> c = new BoundedCache<>(2);
+            c.put("a", 1); c.put("b", 2); c.put("a", 10);
+            eq(2, c.size());
+            eq(0L, c.evictions());
+            eq(List.of("b", "a"), c.keysEldestFirst());
+            eq(10, c.get("a"));
+        });
+        check("10 000 key khác nhau chỉ giữ 100 entry", () -> {
+            BoundedCache<Integer, String> c = new BoundedCache<>(100);
+            for (int i = 0; i < 10_000; i++) c.put(i, "v" + i);
+            eq(100, c.size());
+            eq(9_900L, c.evictions());
+            eq(9_900, c.keysEldestFirst().get(0));
+            eq("v9999", c.get(9_999));
+        });
+        check("keysEldestFirst không làm đổi thứ tự", () -> {
+            BoundedCache<String, Integer> c = new BoundedCache<>(2);
+            c.put("x", 1); c.put("y", 2);
+            c.keysEldestFirst(); c.keysEldestFirst();
+            c.put("z", 3);
+            eq(List.of("y", "z"), c.keysEldestFirst());
+        });
+        check("maxSize < 1 ném IllegalArgumentException", () -> {
+            try {
+                new BoundedCache<String, String>(0);
+                throw new AssertionError("không ném exception");
+            } catch (IllegalArgumentException expected) { }
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class BoundedCache<K, V> {
+    private final int maxSize;
+    private final LinkedHashMap<K, V> map;
+    private long evictions;
+
+    BoundedCache(int maxSize) {
+        if (maxSize < 1) throw new IllegalArgumentException("maxSize must be >= 1: " + maxSize);
+        this.maxSize = maxSize;
+        final int cap = maxSize;
+        // accessOrder = true: get/put đưa entry về cuối, entry đầu là ít dùng gần đây nhất
+        this.map = new LinkedHashMap<>(16, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<K, V> eldest) {
+                boolean evict = size() > cap;   // gọi sau mỗi lần put thêm entry mới
+                if (evict) evictions++;
+                return evict;
+            }
+        };
+    }
+
+    V get(K key) {
+        return map.get(key);
+    }
+
+    void put(K key, V value) {
+        map.put(key, value);
+    }
+
+    int size() {
+        return map.size();
+    }
+
+    long evictions() {
+        return evictions;
+    }
+
+    List<K> keysEldestFirst() {
+        return new ArrayList<>(map.keySet());   // duyệt keySet không tính là access
+    }
+}`,
+      hints: [
+        'Constructor ba tham số {{LinkedHashMap(initialCapacity, loadFactor, accessOrder)}} với {{accessOrder = true}} giữ thứ tự theo lần truy cập gần nhất: entry đầu danh sách là entry ít dùng gần đây nhất.',
+        '{{removeEldestEntry(eldest)}} được {{put}} gọi sau khi thêm entry; trả về true thì map tự xoá entry đầu. So sánh {{size() > maxSize}} và tăng {{evictions}} ngay trong đó.',
+        'Dùng anonymous subclass {{new LinkedHashMap<>(16, 0.75f, true) ...}}; copy {{maxSize}} vào một biến local final để dùng trong anonymous class. {{keysEldestFirst}} trả {{new ArrayList<>(map.keySet())}}.',
+      ],
+      explain: `{{LinkedHashMap}} là {{HashMap}} có thêm một danh sách liên kết đôi chạy qua mọi entry. Với {{accessOrder = true}}, mỗi {{get}} hoặc {{put}} vào key đã có sẽ chuyển entry đó về **cuối** danh sách, nên **đầu** danh sách luôn là entry lâu nhất chưa được dùng. Sau mỗi lần thêm entry mới, {{put}} gọi hook {{removeEldestEntry(eldest)}}; trả về true thì map xoá entry đầu. Tất cả đều O(1), không cần tự quản lý danh sách.
+
+Lỗi hay gặp:
+- Dùng constructor mặc định ({{accessOrder = false}}): map giữ thứ tự **chèn**, thành cache FIFO. Test "get làm mới thứ tự" và "put key đã có" sẽ fail vì entry vừa đọc vẫn bị đuổi.
+- Đếm eviction ngoài {{removeEldestEntry}} bằng cách so size trước/sau {{put}}: dễ sai khi put key đã có.
+- Duyệt bằng {{map.get}} trong {{keysEldestFirst}}: mỗi {{get}} đổi thứ tự, kết quả sai và còn làm hỏng thứ tự LRU.
+- {{LinkedHashMap}} **không thread-safe**; ở chế độ access order, ngay cả {{get}} cũng là thao tác ghi (sửa danh sách liên kết). Dùng chung giữa nhiều thread phải bọc {{synchronized}} hoặc dùng Caffeine.
+
+Trên production, bạn nên dùng Caffeine ({{maximumSize}}, {{expireAfterWrite}}, thống kê hit rate) thay vì tự viết. Nhưng hiểu cơ chế này giúp bạn giải thích vì sao một cache **có giới hạn** chặn được leak: đáy heap sẽ đi ngang ở mức khoảng maxSize × kích thước entry.`,
+    },
+    {
+      title: 'Event bus có handle gỡ đăng ký',
+      prompt: `Leak do listener không gỡ rất phổ biến. Hãy viết {{EventBus}} mà **mỗi lần đăng ký trả về một {{Registration}}**; gọi {{close()}} trên handle đó sẽ gỡ đúng lần đăng ký ấy.
+
+Yêu cầu:
+- {{subscribe(listener)}}: listener null thì ném {{NullPointerException}}. Trả về {{Registration}}.
+- {{Registration.close()}}: gỡ **đúng** lần đăng ký đã tạo ra nó. Gọi nhiều lần vẫn an toàn và không gỡ nhầm lần đăng ký khác, kể cả khi cùng một listener được đăng ký hai lần.
+- {{publish(event)}}: gọi mọi listener theo thứ tự đăng ký, trả về số listener đã được gọi.
+- Listener được phép tự {{close()}} chính mình (hoặc đăng ký thêm) **trong lúc** {{publish}} đang chạy, mà không gây {{ConcurrentModificationException}} và không làm listener khác bị bỏ qua.
+- {{listenerCount()}}: số lần đăng ký còn hiệu lực.
+
+{{Registration}} kế thừa {{AutoCloseable}} nhưng {{close()}} không ném checked exception, nên dùng được trong try-with-resources.`,
+      starter: `interface Registration extends AutoCloseable {
+    @Override
+    void close();   // không ném checked exception; gọi nhiều lần vẫn an toàn
+}
+
+class EventBus {
+    Registration subscribe(Consumer<String> listener) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int publish(String event) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int listenerCount() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    public static void main(String[] args) {
+        check("publish gửi tới mọi listener theo thứ tự", () -> {
+            EventBus bus = new EventBus();
+            List<String> log = new ArrayList<>();
+            bus.subscribe(e -> log.add("A:" + e));
+            bus.subscribe(e -> log.add("B:" + e));
+            eq(2, bus.publish("order-1"));
+            eq(List.of("A:order-1", "B:order-1"), log);
+        });
+        check("close gỡ đăng ký: listener không nhận event nữa", () -> {
+            EventBus bus = new EventBus();
+            List<String> got = new ArrayList<>();
+            Registration r = bus.subscribe(got::add);
+            eq(1, bus.listenerCount());
+            r.close();
+            eq(0, bus.listenerCount());
+            eq(0, bus.publish("x"));
+            eq(List.of(), got);
+        });
+        check("close hai lần không gỡ nhầm đăng ký khác của cùng listener", () -> {
+            EventBus bus = new EventBus();
+            List<String> got = new ArrayList<>();
+            Consumer<String> same = got::add;
+            Registration r1 = bus.subscribe(same);
+            Registration r2 = bus.subscribe(same);
+            eq(2, bus.listenerCount());
+            r1.close();
+            r1.close();
+            eq(1, bus.listenerCount());
+            eq(1, bus.publish("y"));
+            eq(List.of("y"), got);
+            r2.close();
+            eq(0, bus.listenerCount());
+        });
+        check("try-with-resources tự gỡ đăng ký", () -> {
+            EventBus bus = new EventBus();
+            try (Registration r = bus.subscribe(e -> { })) {
+                eq(1, bus.listenerCount());
+            }
+            eq(0, bus.listenerCount());
+        });
+        check("listener tự gỡ mình trong lúc publish vẫn an toàn", () -> {
+            EventBus bus = new EventBus();
+            List<String> log = new ArrayList<>();
+            Registration[] self = new Registration[1];
+            self[0] = bus.subscribe(e -> { log.add("once:" + e); self[0].close(); });
+            bus.subscribe(e -> log.add("always:" + e));
+            eq(2, bus.publish("a"));
+            eq(1, bus.publish("b"));
+            eq(List.of("once:a", "always:a", "always:b"), log);
+        });
+        check("1000 handler ngắn hạn đăng ký rồi gỡ: không sót lại", () -> {
+            EventBus bus = new EventBus();
+            Registration keep = bus.subscribe(e -> { });
+            for (int i = 0; i < 1000; i++) {
+                try (Registration r = bus.subscribe(e -> { })) {
+                    eq(2, bus.publish("req-" + i));
+                }
+            }
+            eq(1, bus.listenerCount());
+            keep.close();
+            eq(0, bus.listenerCount());
+        });
+        check("subscribe(null) ném NullPointerException", () -> {
+            try {
+                new EventBus().subscribe(null);
+                throw new AssertionError("không ném exception");
+            } catch (NullPointerException expected) { }
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `interface Registration extends AutoCloseable {
+    @Override
+    void close();   // không ném checked exception; gọi nhiều lần vẫn an toàn
+}
+
+class EventBus {
+    // Mỗi lần đăng ký là một object riêng: equals theo identity, nên remove gỡ đúng lần đăng ký đó
+    private static final class Subscription {
+        final Consumer<String> listener;
+        Subscription(Consumer<String> listener) { this.listener = listener; }
+    }
+
+    // Copy-on-write: publish duyệt trên snapshot, listener được sửa danh sách trong lúc duyệt
+    private final List<Subscription> subs = new CopyOnWriteArrayList<>();
+
+    Registration subscribe(Consumer<String> listener) {
+        Objects.requireNonNull(listener, "listener");
+        Subscription sub = new Subscription(listener);
+        subs.add(sub);
+        return () -> subs.remove(sub);   // lần close thứ hai: remove trả false, không ảnh hưởng ai
+    }
+
+    int publish(String event) {
+        int delivered = 0;
+        for (Subscription s : subs) {
+            s.listener.accept(event);
+            delivered++;
+        }
+        return delivered;
+    }
+
+    int listenerCount() {
+        return subs.size();
+    }
+}`,
+      hints: [
+        'Đừng lưu thẳng {{Consumer}} vào list rồi {{remove(listener)}}: cùng một listener đăng ký hai lần thì close hai lần sẽ gỡ cả hai. Bọc mỗi lần đăng ký trong một object riêng.',
+        '{{Registration}} là functional interface (chỉ có {{close()}}), nên có thể trả về lambda {{() -> subs.remove(sub)}}. {{remove}} một object không còn trong list chỉ trả false, tự nhiên idempotent.',
+        'Dùng {{CopyOnWriteArrayList}}: iterator duyệt trên snapshot, nên listener tự gỡ mình trong lúc publish không gây {{ConcurrentModificationException}} và không làm listener sau bị bỏ qua.',
+      ],
+      explain: `Ba quyết định thiết kế làm nên một event bus không leak:
+
+1. **Trả về handle thay vì bắt người gọi giữ listener để gỡ.** API kiểu {{unsubscribe(listener)}} buộc người gọi giữ đúng instance lambda đã đăng ký; viết {{bus.unsubscribe(e -> log(e))}} tạo lambda mới nên không gỡ được gì, và leak bắt đầu từ đó. Handle {{Registration}} kế thừa {{AutoCloseable}} cho phép try-with-resources, hoặc gắn vào vòng đời bean (ví dụ gọi {{close()}} trong {{@PreDestroy}}).
+2. **Mỗi lần đăng ký là một object riêng.** {{Subscription}} không override {{equals}}, nên {{remove(sub)}} so sánh identity và chỉ gỡ đúng phần tử đó. Close lần hai thì {{remove}} không tìm thấy và trả false: idempotent mà không cần cờ.
+3. **{{CopyOnWriteArrayList}}.** Mỗi lần ghi tạo mảng mới; iterator duyệt mảng cũ. Với {{ArrayList}}, listener tự gỡ mình khi đang duyệt sẽ hoặc ném {{ConcurrentModificationException}}, hoặc (khi phần tử bị xoá làm size bằng cursor) **âm thầm bỏ qua** listener kế tiếp. Test "tự gỡ trong lúc publish" bắt đúng lỗi thứ hai. Đánh đổi: mỗi lần subscribe/close là O(n) copy, phù hợp khi đọc (publish) nhiều hơn ghi rất nhiều, đúng với listener registry. Nó cũng an toàn khi nhiều thread publish cùng lúc.
+
+Đây chính là pattern của Spring {{ApplicationEventMulticaster}}, Micrometer, Reactor ({{Disposable}}): đăng ký trả về thứ có thể huỷ. Khi review code, thấy {{addListener}} mà không thấy {{removeListener}} tương ứng trong cùng vòng đời là dấu hiệu leak.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Trong MAT, một {{HashMap}} có shallow size 48 B nhưng retained size 1.6 GB. Điều này có nghĩa là gì?',
+      options: [
+        'MAT tính sai vì HashMap không thể lớn như vậy',
+        'Nếu HashMap đó không còn reachable, khoảng 1.6 GB object chỉ được giữ qua nó sẽ được giải phóng',
+        'HashMap chiếm 1.6 GB vì mảng table của nó quá lớn',
+        'Đó là bộ nhớ native, không thuộc heap',
+      ],
+      answer: 1,
+      explain: `Shallow size là kích thước của chính object HashMap (vài field). Retained size là tổng các object mà HashMap **dominate**: mọi đường từ GC root tới chúng đều đi qua HashMap, nên khi nó biến mất chúng cũng được thu hồi. MAT không tính sai; mảng {{table}} chỉ là một phần nhỏ của con số đó (phần lớn là key/value); và đây là object trên heap, không phải bộ nhớ native.`,
+    },
+    {
+      q: 'Vì sao {{ThreadLocal}} gây leak trong thread pool dù key của {{ThreadLocalMap}} là weak reference?',
+      options: [
+        'Vì ThreadLocal lưu dữ liệu trong static field của class ThreadLocal',
+        'Vì GC không quét ThreadLocalMap',
+        'Vì weak reference chỉ bị clear khi full GC',
+        'Vì value là strong reference và thread của pool sống suốt đời ứng dụng nếu không gọi remove()',
+      ],
+      answer: 3,
+      explain: `Map nằm trong chính object {{Thread}}; key weak nhưng **value strong**. Thread của pool không bao giờ chết, nên value sống mãi nếu không {{remove()}} (stale entry chỉ được dọn dần khi map được thao tác tiếp, không đảm bảo). Dữ liệu không nằm trong static field của {{ThreadLocal}}; GC vẫn quét map như mọi object; weak reference bị clear ở bất kỳ lần GC nào thu gom vùng chứa referent, không chỉ full GC.`,
+    },
+    {
+      q: 'Dấu hiệu nào trên biểu đồ heap cho thấy rõ nhất là có memory leak?',
+      options: [
+        'Mức heap ngay sau mỗi lần GC tăng đều qua nhiều giờ và không đi ngang',
+        'Đỉnh heap chạm 90% trước mỗi lần GC',
+        'Heap có hình răng cưa',
+        'Minor GC chạy vài lần mỗi giây',
+      ],
+      answer: 0,
+      explain: `Mức sau GC chính là live set; nếu nó tăng mãi thì có object còn reachable mà không được thả. Đỉnh 90% trước GC là bình thường: GC chạy khi vùng đầy. Răng cưa là hình dạng của mọi ứng dụng khoẻ. Minor GC dày chỉ cho biết allocation rate cao, chưa phải leak.`,
+    },
+  ],
+  related: ['jvm-005', 'jvm-013', 'jvm-004', 'jvm-032'],
+  tags: ['memory leak', 'heap dump', 'MAT', 'dominator tree', 'LRU', 'listener', 'ThreadLocal'],
+},
+{
+  id: 'lesson-jvm-005',
+  track: 'jvm',
+  order: 5,
+  title: 'Bộ nhớ JVM trong container: vì sao pod bị OOMKilled khi heap mới dùng 60%',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Kể được những vùng cộng lại thành bộ nhớ thật của tiến trình Java: heap, metaspace, thread stack, direct buffer, code cache, cấu trúc GC, malloc',
+    'Giải thích JVM đọc memory limit của cgroup thế nào và {{-XX:MaxRAMPercentage}} tính heap ra sao',
+    'Dùng Native Memory Tracking ({{-XX:NativeMemoryTracking=summary}}, {{jcmd <pid> VM.native_memory summary}}) để biết bộ nhớ ngoài heap đi đâu',
+    'Lập ngân sách bộ nhớ cho một Pod và tính heap tối đa an toàn',
+  ],
+  body: `### Hai kiểu "hết bộ nhớ" khác nhau hoàn toàn
+| | OutOfMemoryError | OOMKilled |
+|---|---|---|
+| Ai phát hiện | JVM: không cấp phát được trong heap, metaspace hoặc direct memory | Kernel Linux: bộ nhớ của cgroup vượt limit của container |
+| Biểu hiện | Exception trong log, có thể có heap dump | Tiến trình nhận {{SIGKILL}}, exit code 137, {{kubectl describe pod}} ghi {{Reason: OOMKilled}} |
+| Log Java | Có stack trace | Không có gì: không shutdown hook, không heap dump |
+| Nguyên nhân hay gặp | Heap quá nhỏ hoặc leak | Tổng bộ nhớ (heap + phần ngoài heap) vượt limit |
+
+Điểm mấu chốt: **kernel không biết {{-Xmx}} là gì**. Nó chỉ đếm số trang bộ nhớ thật mà các tiến trình trong cgroup đang chiếm (chủ yếu là RSS, Resident Set Size). Heap chỉ là một phần của RSS. Một pod limit 2 GiB với {{-Xmx1800m}} có thể chết dù heap mới dùng 60%, vì phần ngoài heap đã ăn hết chỗ còn lại.
+
+### Bộ nhớ của một tiến trình Java gồm những gì
+| Vùng | Cấu hình | Mặc định / con số điển hình |
+|---|---|---|
+| **Heap** | {{-Xmx}} hoặc {{-XX:MaxRAMPercentage}} | 25% memory limit nếu không đặt gì |
+| **Metaspace** | {{-XX:MaxMetaspaceSize}} | Không giới hạn; app Spring Boot cỡ vừa dùng khoảng 100–250 MB |
+| **Thread stack** | {{-Xss}} | 1 MB mỗi thread trên Linux x64; 300 thread là tới 300 MB |
+| **Direct buffer** | {{-XX:MaxDirectMemorySize}} | Không đặt thì bằng heap tối đa; Netty, NIO, Kafka client dùng nhiều |
+| **Code cache** | {{-XX:ReservedCodeCacheSize}} | 240 MB khi bật tiered compilation (thực dùng thường 50–100 MB) |
+| **Cấu trúc GC** | Tuỳ collector | G1: remembered set, card table, mark bitmap; vài % tới hơn 10% heap |
+| **Malloc, thư viện native** | {{MALLOC_ARENA_MAX}} | glibc tạo nhiều arena (mỗi arena tới 64 MB địa chỉ) khi nhiều thread cấp phát; JNI, zlib, SSL |
+
+Phải phân biệt **reserved** và **committed**. JVM **reserve** những dải địa chỉ ảo lớn (ví dụ 1 GB cho compressed class space, 240 MB cho code cache) nhưng chỉ **commit** phần đang dùng, và kernel chỉ cấp RAM thật khi trang được chạm vào lần đầu. Vì vậy con số reserved khổng lồ không làm pod chết; con số committed (và trang thật sự được chạm) mới đáng lo. Thread stack cũng vậy: 1 MB là reserve, phần lớn thread chỉ chạm vài chục tới vài trăm KB, nhưng thread đệ quy sâu hoặc framework có stack dày sẽ chạm nhiều hơn.
+
+### JVM nhìn thấy container thế nào
+Từ JDK 10 (và 8u191), {{-XX:+UseContainerSupport}} bật mặc định: JVM đọc memory limit và CPU quota từ cgroup thay vì RAM và số core của cả node. Hỗ trợ cgroup v2 có từ JDK 15 (backport sang 11.0.16 và 8u372); JDK 17 và 21 đọc được cả v1 và v2. Kiểm tra nhanh trong container:
+
+~~~bash
+java -XX:+PrintFlagsFinal -version | grep -E "MaxHeapSize|MaxRAMPercentage"
+java -Xlog:os+container=info -version   # in ra memory limit, CPU quota JVM đọc được
+~~~
+
+Khi không đặt {{-Xmx}}, heap tối đa bằng {{MaxRAMPercentage}} nhân memory limit, mặc định **25%**. Pod limit 2 GiB thì heap chỉ 512 MB và 75% còn lại bỏ phí; đây là lý do nhiều team thấy GC chạy liên tục dù pod "còn nhiều RAM". Ngược lại, {{-Xmx2g}} cho pod limit 2 GiB gần như chắc chắn bị OOMKilled khi tải lên, vì phần ngoài heap không còn chỗ.
+
+Ba flag dễ nhầm:
+- {{-XX:MaxRAMPercentage=70}}: phần trăm limit dùng làm heap tối đa. Đây là flag bạn cần.
+- {{-XX:InitialRAMPercentage}}: heap ban đầu (tương đương {{-Xms}} theo phần trăm). Đặt bằng max nếu muốn tránh heap co giãn lúc chạy.
+- {{-XX:MinRAMPercentage}}: **không** phải heap tối thiểu. Nó là phần trăm dùng khi bộ nhớ rất nhỏ (khoảng dưới 250 MB). Nhiều người đặt flag này tưởng là min heap.
+
+Nếu có cả {{-Xmx}} lẫn {{MaxRAMPercentage}} thì {{-Xmx}} thắng. Nên chọn một kiểu và thống nhất; dùng phần trăm tiện hơn vì đổi limit của pod không phải sửa flag.
+
+### Native Memory Tracking: phần ngoài heap đi đâu
+NMT phải bật lúc khởi động (không bật được khi đang chạy). Chế độ {{summary}} tốn ít, {{detail}} tốn nhiều hơn; tài liệu Oracle nêu overhead khoảng 5–10% hiệu năng, nên thường bật trên một pod để điều tra:
+
+~~~bash
+java -XX:NativeMemoryTracking=summary -XX:MaxRAMPercentage=70 -jar app.jar
+jcmd 1 VM.native_memory summary          # ảnh chụp hiện tại (PID 1 trong container)
+jcmd 1 VM.native_memory baseline         # chụp mốc
+jcmd 1 VM.native_memory summary.diff     # vài giờ sau: vùng nào tăng so với mốc?
+~~~
+
+Output có dạng từng nhóm với reserved và committed, ví dụ {{Java Heap (reserved=1433600KB, committed=1433600KB)}}, {{Class (reserved=1105920KB, committed=81920KB)}}, rồi {{Thread}}, {{Code}}, {{GC}}, {{Internal}}, {{Other}}... Đọc cột **committed** và hướng tăng:
+- {{Thread}} tăng đều: thread leak (pool không giới hạn, mỗi request tạo thread mới). Số thread hiện ngay trong mục này.
+- {{Class}} tăng đều: sinh class động không dừng (proxy, script engine, Groovy).
+- {{Other}} tăng: thường là direct buffer, vì trên JDK 17 bộ nhớ cấp qua {{Unsafe.allocateMemory}} được tính vào nhóm này.
+
+NMT **chỉ** theo dõi bộ nhớ do JVM cấp phát. Malloc của thư viện native bên thứ ba (JNI, một số driver) không xuất hiện. Nếu RSS (đo bằng {{ps -o rss}} hoặc metric {{container_memory_working_set_bytes}}) lớn hơn tổng committed của NMT nhiều trăm MB, hãy nghi glibc arena hoặc thư viện native, thử {{MALLOC_ARENA_MAX=2}} hoặc đổi allocator (jemalloc). Lưu ý {{jcmd}} cần image có JDK (không chỉ JRE) và chạy cùng user với tiến trình Java.
+
+### Lập ngân sách bộ nhớ cho Pod
+Ví dụ: service Spring Boot, pod limit **2048 MB**, 200 thread (Tomcat + các pool), stack 1 MB, direct buffer 128 MB, metaspace 192 MB, code cache 240 MB:
+
+~~~text
+headroom 10%    = ceil(2048 * 10%)     = 205 MB   (cấu trúc GC, malloc, sai số)
+thread stack    = 200 * 1024 KB        = 200 MB
+direct buffer                          = 128 MB
+metaspace                              = 192 MB
+code cache                             = 240 MB
+------------------------------------------------------
+heap tối đa     = 2048 - 205 - 760     = 1083 MB  (khoảng 52.8% limit)
+~~~
+
+Ví dụ này cố ý tính stack và code cache theo mức reserve (trường hợp xấu nhất). Thực tế nhiều team đặt {{MaxRAMPercentage}} 65–75% sau khi đo bằng NMT trên tải thật; con số đúng là con số **bạn đã đo**, không phải con số chép từ blog. Nguyên tắc đi kèm:
+
+- Đặt {{requests.memory}} bằng {{limits.memory}} để pod có QoS Guaranteed về bộ nhớ, ít bị evict khi node thiếu RAM.
+- Giới hạn tường minh những vùng mặc định không có trần: {{-XX:MaxMetaspaceSize}}, {{-XX:MaxDirectMemorySize}}, kích thước các thread pool. Khi vượt, bạn nhận một {{OutOfMemoryError}} có ghi tên vùng (rõ ràng, có log) thay vì một cú {{SIGKILL}} không lời giải thích.
+- Bật {{-XX:+ExitOnOutOfMemoryError}} để pod restart sạch khi OOM thay vì chạy tiếp trong trạng thái hỏng, kèm {{-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/dumps}} trên một volume.
+- Theo dõi cả heap (Micrometer) **và** working set của container; cảnh báo khi working set vượt khoảng 90% limit.
+
+> Senior tip: khi pod bị OOMKilled mà heap chỉ 60%, đừng phản xạ tăng {{-Xmx}}: đó là hướng làm tệ hơn. Bật NMT trên một pod, so {{summary.diff}} sau vài giờ, xác định vùng nào phình (thường là thread, direct buffer hoặc malloc arena), rồi mới quyết định giảm heap, đặt trần cho vùng đó hay tăng limit.
+
+### Liên hệ phỏng vấn
+Câu kinh điển: "Pod Java bị OOMKilled nhưng heap chỉ dùng 60%, bạn điều tra thế nào?". Trả lời tốt đi theo thứ tự: phân biệt OOMKilled (kernel, exit 137) với {{OutOfMemoryError}} (JVM) → liệt kê các vùng ngoài heap → bật NMT, so baseline với diff, đối chiếu với RSS → đưa ra ngân sách cụ thể (heap khoảng 60–75% limit, đặt trần cho metaspace, direct memory, số thread) kèm cảnh báo. Bài tập dưới đây bắt bạn viết đúng phép tính ngân sách đó để có số liệu khi trả lời.`,
+  exercises: [
+    {
+      title: 'Tính heap tối đa an toàn cho Pod',
+      prompt: `Viết {{MemoryBudget}} với hai hàm static:
+
+**{{plan(podLimitMb, threads, stackKb, directMb, metaspaceMb, codeCacheMb)}}** trả về heap tối đa (MB) an toàn:
+- Kiểm tra tham số: {{podLimitMb > 0}}, {{stackKb > 0}}, các tham số còn lại {{>= 0}}; sai thì ném {{IllegalArgumentException}}.
+- {{headroom}} = 10% limit, **làm tròn lên** (pod 1001 MB → 101 MB).
+- {{stackMb}} = {{threads × stackKb / 1024}}, **làm tròn lên** (3 thread × 512 KB = 1.5 MB → 2 MB). Tính bằng {{long}} để không tràn số.
+- {{heap = podLimitMb - headroom - stackMb - directMb - metaspaceMb - codeCacheMb}}.
+- Nếu {{heap < MIN_HEAP_MB}} (64) thì ném {{IllegalStateException}}: pod không đủ bộ nhớ cho cấu hình này.
+
+**{{percentage(podLimitMb, heapMb)}}** trả về giá trị nên đặt cho {{-XX:MaxRAMPercentage}}: {{heapMb / podLimitMb × 100}}, **làm tròn xuống** 1 chữ số thập phân (1083 / 2048 = 52.88% → 52.8). Yêu cầu {{podLimitMb > 0}} và {{0 < heapMb <= podLimitMb}}, sai thì ném {{IllegalArgumentException}}.
+
+Ví dụ trong bài: {{plan(2048, 200, 1024, 128, 192, 240)}} = 1083.`,
+      starter: `class MemoryBudget {
+    static final int MIN_HEAP_MB = 64;
+
+    static int plan(int podLimitMb, int threads, int stackKb, int directMb, int metaspaceMb, int codeCacheMb) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static double percentage(int podLimitMb, int heapMb) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void expect(Class<? extends Throwable> type, Runnable r) {
+        try {
+            r.run();
+        } catch (Throwable t) {
+            if (type.isInstance(t)) return;
+            throw new AssertionError("expected " + type.getSimpleName() + " got " + t);
+        }
+        throw new AssertionError("expected " + type.getSimpleName() + " but nothing was thrown");
+    }
+    public static void main(String[] args) {
+        check("ví dụ trong bài: pod 2048 MB cho heap 1083 MB", () -> {
+            eq(1083, MemoryBudget.plan(2048, 200, 1024, 128, 192, 240));
+        });
+        check("thread stack làm tròn lên theo MB", () -> {
+            eq(776, MemoryBudget.plan(1000, 3, 512, 10, 64, 48));
+        });
+        check("headroom 10% làm tròn lên", () -> {
+            eq(900, MemoryBudget.plan(1000, 0, 1024, 0, 0, 0));
+            eq(900, MemoryBudget.plan(1001, 0, 1024, 0, 0, 0));
+            eq(909, MemoryBudget.plan(1010, 0, 1024, 0, 0, 0));
+        });
+        check("biên MIN_HEAP_MB: 64 được, 63 báo lỗi", () -> {
+            eq(64, MemoryBudget.plan(1000, 0, 1024, 0, 836, 0));
+            expect(IllegalStateException.class, () -> MemoryBudget.plan(1000, 0, 1024, 0, 837, 0));
+        });
+        check("phần ngoài heap vượt limit thì báo lỗi", () -> {
+            expect(IllegalStateException.class, () -> MemoryBudget.plan(512, 300, 1024, 64, 128, 48));
+        });
+        check("tham số không hợp lệ ném IllegalArgumentException", () -> {
+            expect(IllegalArgumentException.class, () -> MemoryBudget.plan(0, 10, 1024, 0, 0, 0));
+            expect(IllegalArgumentException.class, () -> MemoryBudget.plan(1024, 10, 0, 0, 0, 0));
+            expect(IllegalArgumentException.class, () -> MemoryBudget.plan(1024, -1, 1024, 0, 0, 0));
+            expect(IllegalArgumentException.class, () -> MemoryBudget.plan(1024, 10, 1024, -1, 0, 0));
+        });
+        check("threads × stackKb lớn không tràn int", () -> {
+            eq(600_000, MemoryBudget.plan(4_000_000, 3_000_000, 1024, 0, 0, 0));
+        });
+        check("percentage làm tròn xuống 1 chữ số thập phân", () -> {
+            eq(52.8, MemoryBudget.percentage(2048, 1083));
+            eq(77.6, MemoryBudget.percentage(1000, 776));
+            eq(66.6, MemoryBudget.percentage(3, 2));
+            eq(100.0, MemoryBudget.percentage(512, 512));
+            expect(IllegalArgumentException.class, () -> MemoryBudget.percentage(1024, 2048));
+            expect(IllegalArgumentException.class, () -> MemoryBudget.percentage(1024, 0));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class MemoryBudget {
+    static final int MIN_HEAP_MB = 64;
+
+    static int plan(int podLimitMb, int threads, int stackKb, int directMb, int metaspaceMb, int codeCacheMb) {
+        if (podLimitMb <= 0 || stackKb <= 0 || threads < 0 || directMb < 0 || metaspaceMb < 0 || codeCacheMb < 0) {
+            throw new IllegalArgumentException("invalid budget input");
+        }
+        long headroom = ceilDiv(podLimitMb, 10);                 // >= 10% limit
+        long stackMb = ceilDiv((long) threads * stackKb, 1024);  // long: tránh tràn int
+        long heap = podLimitMb - headroom - stackMb - directMb - metaspaceMb - codeCacheMb;
+        if (heap < MIN_HEAP_MB) {
+            throw new IllegalStateException("pod " + podLimitMb + " MB không đủ: heap còn " + heap + " MB");
+        }
+        return (int) heap;
+    }
+
+    static double percentage(int podLimitMb, int heapMb) {
+        if (podLimitMb <= 0 || heapMb <= 0 || heapMb > podLimitMb) {
+            throw new IllegalArgumentException("invalid heap/limit");
+        }
+        long permille = (long) heapMb * 1000 / podLimitMb;   // số nguyên: làm tròn xuống
+        return permille / 10.0;
+    }
+
+    private static long ceilDiv(long a, long b) {
+        return (a + b - 1) / b;   // a >= 0, b > 0
+    }
+}`,
+      hints: [
+        'Làm tròn lên phép chia số nguyên không âm: {{(a + b - 1) / b}}. Headroom là {{ceilDiv(podLimitMb, 10)}}, stack là {{ceilDiv((long) threads * stackKb, 1024)}}.',
+        'Ép kiểu {{(long)}} **trước** khi nhân: {{(long) threads * stackKb}}. Viết {{(long) (threads * stackKb)}} là đã tràn int rồi mới ép.',
+        'Với percentage, tránh {{Math.floor}} trên số thực có sai số: tính phần nghìn bằng số nguyên {{(long) heapMb * 1000 / podLimitMb}} rồi chia {{10.0}}.',
+      ],
+      explain: `Phép tính phản ánh đúng cách lập ngân sách trong bài: heap là **phần còn lại** sau khi trừ mọi vùng ngoài heap và một khoảng headroom, chứ không phải một phần trăm chọn đại.
+
+Vì sao làm tròn lên ở headroom và stack: đây là ngân sách an toàn, sai số phải nghiêng về phía **ít heap hơn**. Làm tròn xuống 1.5 MB stack thành 1 MB nghĩa là hứa với kernel nhiều hơn mức có.
+
+Vì sao dùng {{long}}: {{threads * stackKb}} với int tràn khi tích vượt khoảng 2.1 tỷ; kết quả âm làm heap tính ra lớn hơn limit, đúng loại bug khiến pod bị OOMKilled. Test "không tràn int" dùng số phi thực tế nhưng bắt đúng lỗi này.
+
+Vì sao percentage tính bằng số nguyên: {{Math.floor(x * 10) / 10}} trên double đôi khi lệch một bậc do biểu diễn nhị phân (ví dụ 0.1 + 0.2). Tính phần nghìn bằng phép chia số nguyên cho kết quả xác định.
+
+Lỗi hay gặp: quên kiểm tra {{heap < MIN_HEAP_MB}} (trả về heap âm hoặc 5 MB); trả về {{IllegalArgumentException}} cho trường hợp thiếu bộ nhớ (input hợp lệ, chỉ là cấu hình không khả thi, nên {{IllegalStateException}} đúng nghĩa hơn); dùng 10% làm tròn xuống.
+
+Áp dụng thật: chạy service với NMT dưới tải, lấy số committed của {{Thread}}, {{Class}}, {{Code}}, {{Other}} làm input, rồi đặt {{-XX:MaxRAMPercentage}} bằng kết quả {{percentage}}. Khi đổi limit pod, chỉ cần tính lại.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Pod có memory limit 2 GiB, chạy JDK 17 không có flag heap nào. Heap tối đa mặc định là bao nhiêu?',
+      options: [
+        'Bằng RAM của node',
+        '2 GiB',
+        '512 MiB (25% limit)',
+        '1 GiB (50% limit)',
+      ],
+      answer: 2,
+      explain: `Container support bật mặc định nên JVM đọc limit 2 GiB từ cgroup, và {{MaxRAMPercentage}} mặc định là 25%, ra 512 MiB. JVM không dùng RAM của node (đó là hành vi của Java 8 cũ trước 8u191). Nó cũng không lấy cả limit (sẽ bị OOMKilled), và 50% là mặc định của {{MinRAMPercentage}}, chỉ áp dụng khi bộ nhớ rất nhỏ.`,
+    },
+    {
+      q: 'Pod Java liên tục bị OOMKilled (exit 137) trong khi metric heap chỉ khoảng 60%. Bước điều tra hợp lý đầu tiên là gì?',
+      options: [
+        'Tăng {{-Xmx}} để heap có thêm chỗ',
+        'Bật Native Memory Tracking, so baseline với summary.diff và đối chiếu với RSS của container',
+        'Lấy heap dump và mở bằng MAT',
+        'Chuyển từ G1 sang ZGC',
+      ],
+      answer: 1,
+      explain: `Heap chưa đầy nên thủ phạm nằm ngoài heap; NMT cho biết từng vùng native (thread, class, code, GC, other) tăng bao nhiêu, và so với RSS để phát hiện malloc ngoài JVM. Tăng {{-Xmx}} càng lấy bớt chỗ của phần ngoài heap, làm tệ hơn. Heap dump chỉ thấy heap. Đổi GC không xử lý vùng đang phình, và ZGC còn có overhead bộ nhớ riêng.`,
+    },
+    {
+      q: 'Phát biểu nào về NMT là **đúng**?',
+      options: [
+        'NMT có thể bật bằng jcmd khi JVM đang chạy',
+        'NMT theo dõi cả malloc của mọi thư viện JNI bên thứ ba',
+        'Con số reserved trong NMT chính là RAM thật đang bị chiếm',
+        'NMT phải bật lúc khởi động bằng {{-XX:NativeMemoryTracking}}; nó chỉ thấy bộ nhớ do JVM cấp phát',
+      ],
+      answer: 3,
+      explain: `NMT là flag khởi động; {{jcmd VM.native_memory}} chỉ đọc kết quả (và có thể tắt NMT), không bật được khi đang chạy. NMT chỉ ghi nhận bộ nhớ đi qua allocator của JVM nên không thấy malloc trực tiếp của thư viện native. Reserved là dải địa chỉ ảo; RAM thật gần với committed (và các trang đã chạm), nên reserved 1 GB của class space không có nghĩa là tốn 1 GB.`,
+    },
+  ],
+  related: ['jvm-003', 'jvm-014', 'jvm-015', 'jvm-028'],
+  tags: ['container', 'Kubernetes', 'OOMKilled', 'MaxRAMPercentage', 'NMT', 'native memory', 'metaspace'],
+},
 );

@@ -12,3 +12,4 @@ Mỗi bài: body ≥ 2500 ký tự kết bằng `### Liên hệ phỏng vấn`, 
 - Mỗi bài có body ≥ 2500 ký tự, kết thúc `### Liên hệ phỏng vấn`, có exercises (starter + reference + tests + explain + hints), có 4 câu `check`.
 - `node scripts/validate.js` → OK (không có lỗi từ `lessons-jvm.js`).
 Reviewed-by: opencode (T131R)
+Verify-failed: 2026-11-04 19:53:21
