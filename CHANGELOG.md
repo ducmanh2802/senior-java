@@ -1,5 +1,51 @@
 # Changelog
 
+## 2026-11-07
+
+### Nội dung
+- T861 (auto-committed after kilo review + verify)
+- T859 (auto-committed after kilo review + verify)
+- T597 (auto-committed after kilo review + verify)
+- T355 (auto-committed after kilo review + verify)
+- T841 (auto-committed after kilo review + verify)
+- T857 (auto-committed after kilo review + verify)
+- T836 (auto-committed after kilo review + verify)
+- T833 (auto-committed after kilo review + verify)
+- T339 (auto-committed after kilo review + verify)
+- T579 (auto-committed after kilo review + verify)
+- T364 (auto-committed after kilo review + verify)
+- T117 (auto-committed after kilo review + verify)
+- T827 (auto-committed after kilo review + verify)
+- T809 (auto-committed after kilo review + verify)
+- T826 (auto-committed after kilo review + verify)
+- T808 (auto-committed after kilo review + verify)
+- T798 (auto-committed after kilo review + verify)
+- T807 (auto-committed after kilo review + verify)
+- T806 (auto-committed after kilo review + verify)
+- T805 (auto-committed after kilo review + verify)
+- T804 (auto-committed after kilo review + verify)
+- T803 (auto-committed after kilo review + verify)
+- T802 (auto-committed after kilo review + verify)
+- T797 (auto-committed after kilo review + verify)
+- T796 (auto-committed after kilo review + verify)
+- T795 (auto-committed after kilo review + verify)
+- T794 (auto-committed after kilo review + verify)
+- T793 (auto-committed after kilo review + verify)
+- T792 (auto-committed after kilo review + verify)
+- T791 (auto-committed after kilo review + verify)
+- T123 (auto-committed after kilo review + verify)
+- T801 (auto-committed after kilo review + verify)
+- T800 (auto-committed after kilo review + verify)
+- T799 (auto-committed after kilo review + verify)
+- T790 (auto-committed after kilo review + verify)
+- T120 (auto-committed after kilo review + verify)
+- T817 (auto-committed after kilo review + verify)
+- T816 (auto-committed after kilo review + verify)
+
+### Ứng dụng
+- Jobs: daily job digest (job_digest, /api/digest?kind=jobs, jobs/*.json publish), #/jobs route + synced store.jobs; restore mountain backdrop
+
+
 ## 2026-11-06
 
 ### Nội dung
