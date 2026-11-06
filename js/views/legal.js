@@ -45,7 +45,7 @@
     '<li>Không đăng nhập: toàn bộ tiến độ học nằm trong <code>localStorage</code> của trình duyệt bạn, không gửi đi đâu cả.</li>' +
     '<li>Đăng nhập: dữ liệu nằm trong database Supabase; mỗi tài khoản chỉ đọc/ghi được dữ liệu của chính mình.</li>' +
     '<li>AI chấm điểm: câu trả lời và code được gửi tới server của app rồi tới API của Anthropic (Claude) để chấm.</li>' +
-    '<li>Chạy code: code Java được gửi tới Judge0 để biên dịch và chạy.</li>' +
+    '<li>Chạy code: code Java được gửi tới Wandbox (wandbox.org, dịch vụ chạy code công khai) để biên dịch và chạy.</li>' +
     '<li>Không bán dữ liệu, không quảng cáo, không cookie theo dõi của bên thứ ba.</li>' +
     '</ul>' +
 
@@ -69,7 +69,7 @@
     '<h2>AI chấm điểm và chạy code</h2>' +
     '<p>Khi bạn bấm <b>AI chấm</b> / <b>AI review</b>, app gửi lên server <code>/api/grade</code> trên Vercel chứa: câu hỏi, đáp án mẫu của app, câu trả lời hoặc code của bạn (tối đa vài nghìn ký tự), các lượt đào sâu trước đó (nếu có) và một số số liệu giọng nói (thời lượng, số từ, tốc độ, từ đệm — nếu dùng micro). Server sau đó gọi API của <b>Anthropic (Claude)</b> để chấm. Theo chính sách API của Anthropic, dữ liệu gửi qua API <b>không được dùng để huấn luyện mô hình</b> (mặc định): xem chi tiết tại ' +
     '<a href="https://www.anthropic.com/legal/privacy" target="_blank" rel="noopener noreferrer">anthropic.com/legal/privacy</a>.</p>' +
-    '<p>Khi bạn bấm <b>Chạy code</b>, mã nguồn Java (ghép với test harness có sẵn của bài) được gửi tới <b>Judge0 CE</b> qua server của app để biên dịch và chạy, giới hạn 5 giây CPU / 256 MB; stdout, stderr và lỗi biên dịch được trả về để hiển thị.</p>' +
+    '<p>Khi bạn bấm <b>Chạy code</b>, mã nguồn Java (ghép với test harness có sẵn của bài) được gửi tới <b>Wandbox</b> (wandbox.org, dịch vụ biên dịch công khai của bên thứ ba; app gửi với tuỳ chọn không tạo link chia sẻ) qua server của app để biên dịch và chạy bằng OpenJDK 21, giới hạn thời gian và bộ nhớ theo Wandbox; stdout, stderr và lỗi biên dịch được trả về để hiển thị.</p>' +
     '<p>Khi bạn dùng <b>Phỏng vấn AI</b>, mỗi lượt app gửi tới <code>/api/interview</code>: cấu hình buổi phỏng vấn (ngôn ngữ, level, thời lượng, chủ đề hoặc công ty), toàn bộ transcript hội thoại đến thời điểm đó và tối đa 12 câu hỏi gợi ý lấy từ ngân hàng câu hỏi; server gọi Claude để sinh lượt hỏi tiếp theo và bản đánh giá cuối buổi. Transcript chỉ được lưu trong trình duyệt của bạn (và lịch sử phỏng vấn thử nếu bạn đăng nhập), server không lưu lại.</p>' +
     '<blockquote>Để dùng AI, bạn cần <b>đăng nhập</b>: trình duyệt gửi kèm token phiên đăng nhập, server kiểm tra token với Supabase và trừ 1 lượt trong <b>hạn mức mỗi ngày</b> của tài khoản (một buổi Phỏng vấn AI chỉ tính 1 lượt). Chủ site có thêm một <b>mật mã quản trị</b> (biến môi trường APP_PASSCODE) để dùng không giới hạn. Server cũng giới hạn tần suất gọi theo IP.</blockquote>' +
 
@@ -130,7 +130,7 @@
       '<li><b>Lộ trình</b> 26 tuần kèm nhật ký học từng ngày.</li>' +
       '<li><b>Ngân hàng câu hỏi</b>: ' + nQ + ' câu tự luận cho ' + nT + ' chủ đề, đáp án mẫu chi tiết và lặp lại theo spaced repetition.</li>' +
       '<li><b>Flashcard</b> và <b>trắc nghiệm</b> (' + nQz + ' câu) để tự kiểm tra nhanh.</li>' +
-      '<li><b>Thuật toán</b>: ' + nA + ' bài kèm gợi ý từng bước, editor Java chạy được trên Judge0, và AI review.</li>' +
+      '<li><b>Thuật toán</b>: ' + nA + ' bài kèm gợi ý từng bước, editor Java chạy được trên Wandbox, và AI review.</li>' +
       '<li><b>Phỏng vấn thử</b>: preset các vòng, bấm giờ, ghi chú, luyện nói với nhận dạng giọng nói và AI chấm.</li>' +
       '<li><b>Phỏng vấn AI</b>: hội thoại liên tục bằng giọng nói với interviewer AI, hỏi đào sâu theo câu trả lời của bạn, chấm và nhận xét cuối buổi.</li>' +
       '<li><b>Công ty</b>: thông tin tổng hợp từ nguồn công khai về định hướng phỏng vấn từng ngân hàng / fintech / big tech.</li>' +
