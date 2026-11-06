@@ -1816,6 +1816,547 @@ Sau hotfix, finalize() vẫn được gọi nhưng chỉ kiểm tra {{isOpen()}}
     'Kế hoạch: ngắn hạn restart + try-with-resources; sửa gốc AutoCloseable, bỏ finalize, Cleaner chỉ làm việc nhanh; chính sách JDK 21 (JEP 421 deprecated, --finalization=disabled, JFR jdk.FinalizerStatistics, không dùng GC để quản lý tài nguyên).'
   ],
   tags: ['finalizer', 'finalization', 'class-histogram', 'g1', 'resource-leak', 'jep-421']
+},
+{
+  id: 'lab-gc-009',
+  category: 'gc',
+  title: 'Gọi API đối tác trả ảnh chứng từ: humongous allocation làm G1 Full GC liên tục',
+  level: 'senior',
+  scenario: `**Bối cảnh (background):** Ngân hàng số **TrustPay** có service **claim-service** (Spring Boot 3.2, JDK 17.0.10) xử lý khiếu nại giao dịch. Khi khách mở khiếu nại, hệ thống gọi API của đối tác cổng thanh toán để tải ảnh chứng từ (hóa đơn, biên lai) về, sau đó chuyển tiếp cho frontend hiển thị. Pod chạy trên Kubernetes: 2 vCPU, memory limit 4Gi. JVM khởi động với {{-Xms2g -Xmx2g -XX:+UseG1GC -XX:G1HeapRegionSize=2m -Xlog:gc*,gc+heap=debug:file=/logs/gc.log:time,uptime,level,tags}}.
+
+**Thuật ngữ giải thích:**
+- **Humongous object (đối tượng khổng lồ):** Trong G1 GC (Garbage First Garbage Collector — bộ thu gom rác mặc định của JDK 17), heap được chia thành các ô nhỏ gọi là *region* (vùng), mỗi vùng có kích thước cố định (ở đây là 2 MB). Nếu một object (đối tượng) có kích thước ≥ 50% kích thước region (≥ 1 MB với region 2 MB), G1 coi nó là "humongous" và cấp phát trực tiếp vào Old Generation (vùng chứa object sống lâu) trên các region liên tiếp, không đi qua Eden (vùng cấp phát mới). Điều này giống như đặt một chiếc tủ lớn thẳng vào kho thay vì để ở bàn làm việc trước.
+- **Full GC:** Thu gom rác toàn bộ heap, dừng toàn bộ ứng dụng (Stop-The-World). Với G1, Full GC thường xảy ra khi heap quá đầy hoặc phân mảnh nặng, và nó rất chậm.
+- **jmap -histo:** Lệnh của JDK in ra histogram (bảng thống kê) các class đang chiếm bao nhiêu instance và bao nhiêu byte trên heap. Có thể chạy {{jmap -histo:live <pid>}} để chỉ đếm object còn sống (nhưng sẽ gây Full GC).
+- **Heap (vùng nhớ heap):** Nơi JVM lưu trữ các object được tạo bằng {{new}}. Khi heap đầy, GC phải chạy để giải phóng object không còn dùng.
+
+**Triệu chứng:** Lúc **10:15 ngày 22/10/2026**, đội vận hành nhận cảnh báo p99 latency của endpoint {{GET /api/claims/<claimId>/evidence}} tăng từ 800 ms lên **12–18 giây**. Prometheus ghi nhận **7 lần Full GC (Pause Full)** trong 8 phút, mỗi lần 1.9–2.4 giây. CPU pod dao động 0.8–1.6/2 core. Không có {{OutOfMemoryError}}, pod không bị OOMKilled. Sau 10:24, khi đợt khiếu nại cao điểm giảm, hệ thống tự ổn định. Dev đề xuất tăng heap lên 4 GB và tăng G1HeapRegionSize lên 8 MB.
+
+**Dữ liệu thu thập:** GC log trích đoạn trong lúc sự cố, heap histogram lấy bằng {{jmap -histo}} ngay sau một lần Full GC, cấu hình JVM, và mã nguồn method tải ảnh.`,
+  artifacts: [
+    {
+      name: 'gc-claim-service.log',
+      lang: 'text',
+      content: `[2026-10-22T09:00:00.015+0700][0.015s][info][gc,init] Version: 17.0.10+7 (release)
+[2026-10-22T09:00:00.015+0700][0.015s][info][gc,init] CPUs: 2 total, 2 available
+[2026-10-22T09:00:00.015+0700][0.015s][info][gc,init] Memory: 4096M
+[2026-10-22T09:00:00.015+0700][0.015s][info][gc,init] Heap Region Size: 2M
+[2026-10-22T09:00:00.015+0700][0.015s][info][gc,init] Heap Min Capacity: 2G
+[2026-10-22T09:00:00.015+0700][0.015s][info][gc,init] Heap Initial Capacity: 2G
+[2026-10-22T09:00:00.015+0700][0.015s][info][gc,init] Heap Max Capacity: 2G
+[2026-10-22T09:00:00.015+0700][0.015s][info][gc,init] Parallel Workers: 2
+[2026-10-22T09:00:00.015+0700][0.015s][info][gc,init] Concurrent Workers: 1
+... (young GC bình thường, mỗi 20–40 giây, heap sau GC ~180–260 MB) ...
+[2026-10-22T10:14:55.102+0700][4495.102s][info][gc] GC(412) Pause Young (Normal) (G1 Evacuation Pause) 1420M->198M(2048M) 12.441ms
+[2026-10-22T10:15:12.330+0700][4512.330s][info][gc] GC(413) Pause Young (Normal) (G1 Evacuation Pause) 1462M->312M(2048M) 18.220ms
+[2026-10-22T10:15:28.881+0700][4528.881s][info][gc,start] GC(414) Pause Young (Concurrent Start) (G1 Humongous Allocation)
+[2026-10-22T10:15:28.881+0700][4528.881s][info][gc,task] GC(414) Using 2 workers of 2 for evacuation
+[2026-10-22T10:15:28.934+0700][4528.934s][info][gc,heap] GC(414) Eden regions: 320->0(298)
+[2026-10-22T10:15:28.934+0700][4528.934s][info][gc,heap] GC(414) Survivor regions: 18->22(42)
+[2026-10-22T10:15:28.934+0700][4528.934s][info][gc,heap] GC(414) Old regions: 82->98
+[2026-10-22T10:15:28.934+0700][4528.934s][info][gc,heap] GC(414) Humongous regions: 186->186
+[2026-10-22T10:15:28.934+0700][4528.934s][info][gc,metaspace] GC(414) Metaspace: 94210K(95232K)->94210K(95232K)
+[2026-10-22T10:15:28.934+0700][4528.934s][info][gc] GC(414) Pause Young (Concurrent Start) (G1 Humongous Allocation) 1212M->612M(2048M) 53.114ms
+[2026-10-22T10:15:28.934+0700][4528.934s][info][gc] GC(415) Concurrent Mark Cycle
+[2026-10-22T10:15:30.102+0700][4530.102s][info][gc] GC(416) Pause Young (Normal) (G1 Humongous Allocation) 1580M->1248M(2048M) 71.340ms
+[2026-10-22T10:15:30.102+0700][4530.102s][info][gc,heap] GC(416) Humongous regions: 186->412
+[2026-10-22T10:15:31.440+0700][4531.440s][info][gc] GC(415) Pause Remark 1688M->1672M(2048M) 14.221ms
+[2026-10-22T10:15:31.662+0700][4531.662s][info][gc] GC(415) Concurrent Mark Cycle 2728.004ms
+[2026-10-22T10:15:32.018+0700][4532.018s][info][gc] GC(417) Pause Young (Normal) (G1 Humongous Allocation) 1732M->1524M(2048M) 88.602ms
+[2026-10-22T10:15:32.018+0700][4532.018s][info][gc,heap] GC(417) Humongous regions: 412->538
+[2026-10-22T10:15:33.210+0700][4533.210s][info][gc] GC(418) Pause Young (Normal) (G1 Evacuation Pause) 1884M->1782M(2048M) 102.771ms
+[2026-10-22T10:15:33.210+0700][4533.210s][info][gc] GC(418) To-space exhausted
+[2026-10-22T10:15:33.210+0700][4533.210s][info][gc,heap] GC(418) Eden regions: 48->0(2)
+[2026-10-22T10:15:33.210+0700][4533.210s][info][gc,heap] GC(418) Humongous regions: 538->612
+[2026-10-22T10:15:33.211+0700][4533.211s][info][gc,start] GC(419) Pause Full (G1 Compaction Pause)
+[2026-10-22T10:15:33.211+0700][4533.211s][info][gc,phases] GC(419) Phase 1: Mark live objects 388.440ms
+[2026-10-22T10:15:33.211+0700][4533.211s][info][gc,phases] GC(419) Phase 2: Prepare for compaction 92.118ms
+[2026-10-22T10:15:33.211+0700][4533.211s][info][gc,phases] GC(419) Phase 3: Adjust pointers 174.002ms
+[2026-10-22T10:15:33.211+0700][4533.211s][info][gc,phases] GC(419) Phase 4: Compact heap 1442.881ms
+[2026-10-22T10:15:35.309+0700][4535.309s][info][gc,heap] GC(419) Eden regions: 0->0(64)
+[2026-10-22T10:15:35.309+0700][4535.309s][info][gc,heap] GC(419) Old regions: 411->96
+[2026-10-22T10:15:35.309+0700][4535.309s][info][gc,heap] GC(419) Humongous regions: 612->612
+[2026-10-22T10:15:35.309+0700][4535.309s][info][gc] GC(419) Pause Full (G1 Compaction Pause) 1782M->1412M(2048M) 2098.114ms
+[2026-10-22T10:15:36.882+0700][4536.882s][info][gc] GC(420) Pause Young (Normal) (G1 Humongous Allocation) 1820M->1698M(2048M) 96.550ms
+[2026-10-22T10:15:38.104+0700][4538.104s][info][gc] GC(421) To-space exhausted
+[2026-10-22T10:15:38.104+0700][4538.104s][info][gc] GC(421) Pause Young (Normal) (G1 Evacuation Pause) 2012M->2006M(2048M) 288.441ms
+[2026-10-22T10:15:40.502+0700][4540.502s][info][gc] GC(422) Pause Full (G1 Compaction Pause) 2006M->1488M(2048M) 2391.220ms
+[2026-10-22T10:15:40.502+0700][4540.502s][info][gc,heap] GC(422) Humongous regions: 640->640
+... (mẫu lặp lại: Humongous Allocation -> To-space exhausted -> Pause Full ~2s; Humongous regions dao động 580–650 và không về 0 sau Full GC) ...
+[2026-10-22T10:22:48.771+0700][4968.771s][info][gc] GC(438) Pause Young (Normal) (G1 Evacuation Pause) 1704M->1510M(2048M) 84.110ms
+[2026-10-22T10:22:48.771+0700][4968.771s][info][gc,heap] GC(438) Humongous regions: 590->590
+[2026-10-22T10:23:41.220+0700][5021.220s][info][gc] GC(441) Pause Young (Normal) (G1 Evacuation Pause) 1612M->224M(2048M) 19.884ms
+[2026-10-22T10:23:41.220+0700][5021.220s][info][gc,heap] GC(441) Humongous regions: 590->8
+[2026-10-22T10:24:15.003+0700][5055.003s][info][gc] GC(442) Pause Young (Normal) (G1 Evacuation Pause) 1388M->192M(2048M) 11.602ms`
+    },
+    {
+      name: 'jmap-histo-after-fullgc.txt',
+      lang: 'text',
+      content: `$ kubectl exec claim-service-6c8d9f-x4k2p -- jmap -histo 1 | head -25
+ num     #instances         #bytes  class name (module)
+-------------------------------------------------------
+   1:          1823      982114304  [B (java.base@17.0.10)
+   2:           612      256901120  [B (java.base@17.0.10)
+   3:         88421       21221040  java.lang.String (java.base@17.0.10)
+   4:         42108       13474560  java.util.HashMap$Node (java.base@17.0.10)
+   5:         19882        9543360  [Ljava.lang.Object; (java.base@17.0.10)
+   6:         31004        4960640  java.util.concurrent.ConcurrentHashMap$Node (java.base@17.0.10)
+   7:         12011        3843520  java.util.LinkedHashMap$Entry (java.base@17.0.10)
+   8:          8841        2829120  com.fasterxml.jackson.databind.node.TextNode
+   9:          7210        2307200  java.util.ArrayList (java.base@17.0.10)
+  10:          6102        1952640  org.apache.catalina.connector.RequestFacade
+...
+Total        412883     1318842112
+
+# Ghi chú vận hành: lệnh trên không dùng -histo:live nên không ép Full GC.
+# Lấy ngay sau GC(419). Dòng 1 và 2 đều là [B (mảng byte) nhưng kích thước
+# trung bình rất khác: dòng 1 ~538 KB/instance (nhiều mảng nhỏ), dòng 2 ~420 MB
+# tổng cho 612 instance ~0.4 MB? Không, tính lại: 256901120 / 612 ~ 419,773 bytes ~ 410 KB.
+# Thực tế dòng 2 là các mảng byte lớn (ảnh) trung bình ~410 KB; dòng 1 gộp các mảng byte khác.`
+    },
+    {
+      name: 'jvm-flags.txt',
+      lang: 'text',
+      content: `$ kubectl exec claim-service-6c8d9f-x4k2p -- jcmd 1 VM.flags
+1:
+-XX:CICompilerCount=2 -XX:ConcGCThreads=1 -XX:G1ConcRefinementThreads=2
+-XX:G1HeapRegionSize=2097152 -XX:GCDrainStackTargetSize=64
+-XX:InitialHeapSize=2147483648 -XX:MarkStackSize=4194304
+-XX:MaxHeapSize=2147483648 -XX:MaxNewSize=1287651328
+-XX:MinHeapDeltaBytes=2097152 -XX:MinHeapSize=2147483648
+-XX:NonNMethodCodeHeapSize=5826188 -XX:NonProfiledCodeHeapSize=122916026
+-XX:ParallelGCThreads=2 -XX:ProfiledCodeHeapSize=122916026
+-XX:ReservedCodeCacheSize=251658240 -XX:+SegmentedCodeCache
+-XX:SoftMaxHeapSize=2147483648 -XX:+UseCompressedClassPointers
+-XX:+UseCompressedOops -XX:+UseG1GC -XX:+UseStringDeduplication`
+    },
+    {
+      name: 'EvidenceController.java',
+      lang: 'text',
+      content: `package vn.trustpay.claim.controller;
+
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/api/claims")
+public class EvidenceController {
+
+    // HttpClient dùng chung, đúng cách
+    private final HttpClient httpClient = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(5))
+            .build();
+
+    @GetMapping("/{claimId}/evidence")
+    public ResponseEntity<byte[]> getEvidence(@PathVariable String claimId,
+                                              @RequestParam String partnerUrl) throws Exception {
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(partnerUrl))
+                .timeout(Duration.ofSeconds(30))
+                .header("X-Claim-Id", claimId)
+                .GET()
+                .build();
+
+        // ofByteArray(): đọc TOÀN BỘ response body vào một mảng byte[] trong heap
+        HttpResponse<byte[]> response = httpClient.send(request,
+                HttpResponse.BodyHandlers.ofByteArray());
+
+        byte[] imageBytes = response.body();   // có thể 2–8 MB tuỳ ảnh chứng từ
+        return ResponseEntity.ok()
+                .contentType(MediaType.IMAGE_JPEG)
+                .contentLength(imageBytes.length)
+                .body(imageBytes);
+    }
+}`
+    }
+  ],
+  questions: [
+    'Vì sao G1 báo "G1 Humongous Allocation", rồi "To-space exhausted", rồi "Pause Full"? Dùng GC log và cấu hình G1HeapRegionSize=2M để giải thích cơ chế và trích dòng bằng chứng.',
+    'Dữ liệu nào chứng minh đây KHÔNG phải memory leak? Vì sao tăng heap lên 4 GB hoặc tăng G1HeapRegionSize là chữa cháy, không phải lời giải gốc?',
+    'Bạn sẽ sửa code và vận hành thế nào để xử lý ảnh lớn mà không gây humongous allocation? Nêu cách ngắn hạn và dài hạn.'
+  ],
+  hints: [
+    'G1HeapRegionSize=2M nghĩa là object ≥ 1 MB là humongous. Ảnh 2–8 MB sẽ chiếm bao nhiêu region liên tiếp? Nhìn Humongous regions tăng từ 186 lên 612 rồi 640 trong log.',
+    'So sánh Humongous regions sau Pause Full (GC 419: 612->612, GC 422: 640->640) với sau GC 441 (590->8). Khi nào humongous được giải phóng? Điều đó nói gì về leak?',
+    'HttpResponse.BodyHandlers.ofByteArray() đọc toàn bộ body vào heap. Có BodyHandler nào stream dữ liệu ra OutputStream/luồng thay vì giữ hết trong byte[] không? Hoặc có thể dùng presigned URL/redirect để client tải trực tiếp?'
+  ],
+  answer: `**Tóm tắt:** Mỗi request tải ảnh chứng từ dùng {{HttpResponse.BodyHandlers.ofByteArray()}}, đọc toàn bộ ảnh (2–8 MB) vào một mảng {{byte[]}} trên heap. Với {{G1HeapRegionSize=2M}}, mọi mảng ≥ 1 MB là **humongous object** và chiếm các region liên tiếp trong Old Gen. Khi nhiều request đồng thời (giờ cao điểm khiếu nại), hàng trăm region humongous bị giữ cùng lúc, heap 2 GB không còn chỗ trống để G1 evacuate (di chuyển object sống) → {{To-space exhausted}} → {{Pause Full (G1 Compaction Pause)}} dài ~2 giây, lặp lại liên tục. Khi tải giảm, humongous được giải phóng ngay ở một young GC thường ({{590->8}}), chứng minh **không phải leak**. Lời giải gốc là **không giữ toàn bộ ảnh trong heap**: stream response về client hoặc dùng URL tải trực tiếp.
+
+### Cơ chế: Humongous allocation trong G1 (đi từng bước)
+
+**1. G1 chia heap thành region (vùng):** GC log cho thấy {{Heap Region Size: 2M, Heap Max Capacity: 2G}} → heap có 1024 region, mỗi region 2 MB. Đây là các "ô" G1 dùng để quản lý bộ nhớ.
+
+**2. Ngưỡng humongous:** G1 coi object ≥ 50% kích thước region là humongous. Với region 2 MB, ngưỡng là **1 MB**. Mảng {{byte[]}} chứa ảnh 2 MB, 4 MB, 8 MB đều vượt ngưỡng.
+
+**3. Cấp phát humongous khác cấp phát thường:**
+- Object thường: cấp phát vào Eden region (vùng mới). Khi Eden đầy, G1 chạy young GC, di chuyển object còn sống sang Survivor/Old. Đây là cơ chế bình thường, nhanh.
+- Object humongous: G1 **bỏ qua Eden**, tìm các region **liên tiếp, trống** trong Old Gen để đặt object vào. Ảnh 4 MB cần 2 region liên tiếp; ảnh 8 MB cần 4 region. (G1 có thể dùng "starts humongous" + "continues humongous" regions.)
+- Mỗi lần cấp phát humongous, G1 thường kích hoạt kiểm tra ngưỡng IHOP (Initiating Heap Occupancy Percent) → có thể bắt đầu concurrent mark cycle. Đó là lý do ta thấy {{Pause Young (Concurrent Start) (G1 Humongous Allocation)}}.
+
+**4. Tại sao humongous gây Full GC?**
+- Humongous region chỉ được giải phóng (reclaim) khi **toàn bộ** humongous object bên trong không còn được tham chiếu. Trên JDK 17, G1 có cơ chế *eager reclaim* cho humongous object "chết" kiểu mảng primitive (như {{byte[]}}) — có thể thu hồi ngay trong young GC. Nhưng nếu humongous object **vẫn còn sống** (đang được request giữ tham chiếu), không GC nào thu hồi được.
+- Khi nhiều humongous region còn sống chiếm phần lớn heap, G1 không còn region trống để evacuate object từ Eden/Survivor trong young GC → xảy ra {{To-space exhausted}}. Lúc này G1 buộc phải chạy {{Pause Full (G1 Compaction Pause)}}: dừng toàn bộ ứng dụng, quét toàn heap, nén (compact) các region. Full GC trên heap 2 GB mất ~2 giây — trong thời gian đó ứng dụng không xử lý request nào.
+- Full GC trên G1 (JDK 17) **không di chuyển humongous object** hiệu quả trong mọi trường hợp và gặp khó khăn khi phân mảnh nặng. Vì vậy sau Full GC, {{Humongous regions}} có thể vẫn giữ nguyên nếu object còn sống.
+
+### Dẫn chứng từ artifact
+
+| Thời điểm / GC | Dòng log trích | Ý nghĩa |
+|---|---|---|
+| GC(414) | {{Pause Young (Concurrent Start) (G1 Humongous Allocation) 1212M->612M(2048M) 53.114ms}}, {{Humongous regions: 186->186}} | Bắt đầu có humongous allocation. 186 region × 2 MB = 372 MB humongous. Concurrent mark cycle khởi động. |
+| GC(416) | {{G1 Humongous Allocation}}, {{Humongous regions: 186->412}} | Humongous tăng mạnh (+226 region = +452 MB) khi nhiều request tải ảnh đồng thời. |
+| GC(417) | {{Humongous regions: 412->538}} | Tiếp tục tăng. Heap sau GC 1524M — gần đầy. |
+| GC(418) | {{To-space exhausted}}, {{Eden regions: 48->0(2)}}, {{Humongous regions: 538->612}} | G1 không còn region trống để copy object sống từ Eden. Eden bị thu về 0. Dấu hiệu heap bị "kẹt" bởi humongous. |
+| GC(419) | {{Pause Full (G1 Compaction Pause) 1782M->1412M(2048M) 2098.114ms}}, {{Old regions: 411->96}}, {{Humongous regions: 612->612}} | Full GC dừng app 2.1 giây. Old region giảm (compact thành công phần thường) nhưng **humongous vẫn 612** — các {{byte[]}} ảnh vẫn đang được request HTTP giữ tham chiếu, chưa chết. |
+| GC(422) | {{Pause Full ... 2391.220ms}}, {{Humongous regions: 640->640}} | Full GC thứ hai, humongous còn tăng (640 region = 1280 MB, chiếm 62.5% heap 2 GB). Chu trình lặp lại. |
+| GC(441) | {{Pause Young (Normal) ... 1612M->224M(2048M) 19.884ms}}, {{Humongous regions: 590->8}} | **Bằng chứng không leak:** khi tải giảm, các request hoàn thành và giải phóng tham chiếu đến {{byte[]}}. Một young GC thường đã eager-reclaim humongous từ 590 xuống 8, heap về 224 MB. Nếu leak, humongous/heap sau GC phải tăng dần theo thời gian và không giảm được. |
+| jmap-histo | Dòng 2: {{612 instances, 256,901,120 bytes}} cho {{[B}} — trung bình ~410 KB/instance | Phù hợp với ảnh chứng từ cỡ vài trăm KB đến vài MB. Nhiều instance {{[B}} humongous đang sống cùng lúc. |
+| JVM flags | {{G1HeapRegionSize=2097152 (2M), MaxHeapSize=2147483648 (2G)}} | Ngưỡng humongous = 1 MB. Heap 2 GB với region 2 MB = 1024 region tổng. |
+| Code | {{HttpResponse.BodyHandlers.ofByteArray()}} và {{ResponseEntity<byte[]>}} | Đọc **toàn bộ** response body vào một {{byte[]}} duy nhất trên heap, rồi giữ thêm trong response entity cho đến khi ghi xong ra HTTP response. Với ảnh 4 MB, ít nhất 4 MB humongous sống suốt vòng đời request. |
+
+### Tại sao đề xuất "tăng heap / tăng G1HeapRegionSize" không phải lời giải gốc
+
+- **Tăng heap lên 4 GB:** Chỉ đẩy thời điểm xảy ra Full GC ra xa hơn. Nếu số request đồng thời tăng (ví dụ đợt khiếu nại lớn) hoặc ảnh lớn hơn (8–12 MB), humongous vẫn sẽ lấp đầy heap. Full GC trên heap 4 GB còn chậm hơn 2 GB. Pod limit 4Gi cũng không đủ cho heap 4 GB cộng native memory/metaspace.
+- **Tăng G1HeapRegionSize lên 8 MB hoặc 16 MB:** Ngưỡng humongous thành 4 MB hoặc 8 MB, nên ảnh 2–3 MB không còn là humongous. Đây là *workaround* có thể giảm tần suất sự cố cho ảnh nhỏ, nhưng ảnh 5–8 MB vẫn humongous. Hơn nữa, region lớn hơn làm young GC kém linh hoạt (ít region hơn để chia Eden/Survivor). Phải restart JVM để đổi flag này, và không giải quyết nguyên nhân gốc: **ứng dụng giữ dữ liệu lớn trong heap vô ích**.
+- **Nguyên nhân gốc:** Service chỉ cần chuyển ảnh từ đối tác sang client — không cần parse, không cần biến đổi. Giữ toàn bộ ảnh trong heap là lãng phí và tạo rủi ro GC.
+
+### Cách sửa
+
+**Ngắn hạn (triển khai nhanh, giảm rủi ro):**
+1. **Giới hạn đồng thời (bulkhead):** Dùng {{Semaphore}} hoặc Resilience4j Bulkhead giới hạn số request tải evidence đồng thời (ví dụ tối đa 3–4 request/pod). Trả HTTP 429 (Too Many Requests) hoặc 503 khi vượt, kèm {{Retry-After}}. Điều này giới hạn số {{byte[]}} humongous sống cùng lúc.
+2. **Giới hạn kích thước response:** Kiểm tra {{Content-Length}} header trước khi đọc; từ chối hoặc dùng cách xử lý khác nếu vượt ngưỡng (ví dụ > 5 MB).
+3. **Tăng G1HeapRegionSize** (ví dụ 4M hoặc 8M) như biện pháp tạm thời nếu ảnh đa số < 4 MB — cần đo lại và restart có kế hoạch.
+
+**Dài hạn (sửa thiết kế, loại bỏ humongous):**
+
+1. **Streaming thay vì buffer toàn bộ (nếu phải proxy qua service):** Dùng {{BodyHandlers.ofInputStream()}} hoặc {{ofPublisher()}} và stream trực tiếp ra {{HttpServletResponse.getOutputStream()}} với buffer nhỏ (ví dụ 8–32 KB). Cách này tránh tạo {{byte[]}} lớn trên heap.
+~~~java
+@GetMapping("/{claimId}/evidence")
+public void streamEvidence(@PathVariable String claimId,
+                           @RequestParam String partnerUrl,
+                           HttpServletResponse servletResponse) throws Exception {
+    HttpRequest request = HttpRequest.newBuilder()
+            .uri(URI.create(partnerUrl))
+            .timeout(Duration.ofSeconds(30))
+            .GET()
+            .build();
+    // ofInputStream(): không đọc hết vào heap; trả về InputStream để đọc từng phần
+    HttpResponse<java.io.InputStream> resp = httpClient.send(request,
+            HttpResponse.BodyHandlers.ofInputStream());
+    servletResponse.setStatus(resp.statusCode());
+    servletResponse.setContentType(MediaType.IMAGE_JPEG_VALUE);
+    try (var in = resp.body(); var out = servletResponse.getOutputStream()) {
+        in.transferTo(out);   // copy theo buffer nhỏ, heap phẳng
+    }
+}
+~~~
+Lưu ý: khi đã ghi status 200 và bắt đầu stream body, nếu lỗi giữa chừng bạn không thể đổi sang HTTP 500 "sạch". Cần cân nhắc theo yêu cầu nghiệp vụ (so với cách ghi file tạm rồi trả {{FileSystemResource}} để có {{Content-Length}} và xử lý lỗi tốt hơn).
+
+2. **Tốt hơn: không proxy dữ liệu nhị phân qua claim-service.** Lấy URL tải (presigned URL từ object storage của đối tác, hoặc URL có token ngắn hạn) và trả về cho frontend để trình duyệt/app tải trực tiếp. Claim-service chỉ xử lý metadata và ủy quyền — heap và băng thông của service không còn phụ thuộc kích thước ảnh.
+
+3. **Quan sát và phòng ngừa:**
+- Alert khi có {{Pause Full (G1 Compaction Pause)}}: tăng {{jvm_gc_pause_seconds_count}} với label {{cause}} chứa "G1 Compaction" hoặc {{action="end of major GC"}}.
+- Alert khi {{G1 Humongous Allocation}} xuất hiện dày đặc (đếm theo cause trong GC log/metric exporter).
+- Theo dõi {{jvm_gc_live_data_size_bytes}} và tỷ lệ humongous regions nếu có metric (hoặc parse GC log).
+- Bật JFR liên tục ({{-XX:StartFlightRecording=disk=true,maxage=2h,settings=profile}}) để khi sự cố có dữ liệu {{jdk.ObjectAllocationSample}} / {{jdk.G1HeapSummary}}.
+- Code review: cấm {{BodyHandlers.ofByteArray()}} và {{ResponseEntity<byte[]>}} cho dữ liệu kích thước không giới hạn; yêu cầu streaming hoặc externalized download.
+
+> Senior tip: Humongous allocation là "kẻ giết G1 thầm lặng" vì ứng dụng có thể chạy ngon trong tuần đầu, rồi sập khi traffic tăng hoặc payload lớn hơn một chút. Quy tắc thực dụng: **mọi byte[]/mảng lớn tạo ra từ dữ liệu bên ngoài (upload, HTTP response, file đọc) đều phải có giới hạn kích thước hoặc phải stream**. Khi debug GC log, hãy tìm chuỗi: {{G1 Humongous Allocation}} → {{To-space exhausted}} → {{Pause Full}} và kiểm tra {{Humongous regions}} trước/sau Full GC — nếu humongous không giảm sau Full GC nhưng giảm mạnh ở young GC sau đó, đó là humongous còn sống do request giữ, không phải leak và không phải bug G1.`,
+  rubric: [
+    'Giải thích đúng cơ chế humongous trong G1: region 2M → ngưỡng 1M, object ≥ ngưỡng cấp phát trực tiếp vào Old Gen trên region liên tiếp, không qua Eden; humongous allocation có thể trigger Concurrent Start.',
+    'Dẫn chứng chuỗi sự cố từ GC log: G1 Humongous Allocation, Humongous regions tăng (186→412→538→612→640), To-space exhausted, Pause Full ~2s nhưng Humongous regions không giảm (612->612, 640->640).',
+    'Chứng minh không leak: GC(441) Humongous regions 590->8 và heap 1612M->224M trong young GC thường khi tải giảm; phân biệt humongous còn sống vs leak tăng dần theo thời gian.',
+    'Chỉ đúng nguyên nhân code: HttpResponse.BodyHandlers.ofByteArray() + ResponseEntity<byte[]> giữ toàn bộ ảnh trong heap; mỗi request tạo humongous byte[].',
+    'Đề xuất sửa có chiều sâu: streaming (ofInputStream/transferTo) hoặc presigned URL/redirect để client tải trực tiếp; bulkhead giới hạn đồng thời; cảnh báo về G1HeapRegionSize/tăng heap chỉ là workaround; có alert Full GC và humongous.'
+  ],
+  tags: ['g1', 'humongous-allocation', 'full-gc', 'gc-log', 'jmap-histo', 'streaming', 'jdk17']
+},
+{
+  id: 'lab-gc-010',
+  category: 'gc',
+  title: 'Redeploy tính năng scripting: Metaspace OOM do classloader leak từ ScriptEngine',
+  level: 'senior',
+  scenario: `**Bối cảnh (background):** Nền tảng **InsureCore** (Spring Boot 3.2, JDK 17.0.10) cho phép đội nghiệp vụ cấu hình công thức tính phí bảo hiểm bằng script. Service **premium-engine** tải script từ database, biên dịch và thực thi để tính phí. Mỗi lần đội nghiệp vụ bấm "Áp dụng công thức mới" trên trang quản trị, service reload toàn bộ công thức đang active. Pod chạy 2 vCPU, memory limit 3Gi. JVM: {{-Xmx1536m -XX:MaxMetaspaceSize=192m -XX:MetaspaceSize=96m -XX:+UseG1GC -Xlog:gc*,gc+metaspace=info:file=/logs/gc.log:time,uptime,level,tags}}.
+
+**Thuật ngữ giải thích:**
+- **Metaspace:** Vùng nhớ native (ngoài heap) mà JVM dùng để lưu *metadata của class* — thông tin mô tả class như tên method, field, bytecode đã được nạp. (Trước Java 8 vùng này gọi là PermGen và nằm trong heap; từ Java 8 trở đi là Metaspace, dùng native memory.) Metaspace có thể tăng trưởng; {{-XX:MaxMetaspaceSize}} giới hạn tối đa để tránh ăn hết RAM máy.
+- **Classloader (bộ nạp class):** Thành phần của JVM chịu trách nhiệm đọc bytecode (.class) và tạo đối tượng {{Class}} trong Metaspace. Mỗi classloader có "thế hệ" class riêng. Khi **không còn bất kỳ object nào** tham chiếu đến classloader và các class do nó nạp, GC mới có thể thu hồi (unload) toàn bộ classloader đó và giải phóng Metaspace tương ứng. Nếu vẫn còn một tham chiếu sót lại, classloader bị "kẹt" → Metaspace leak.
+- **ScriptEngine (Nashorn/GraalJS/JDK scripting):** API cho phép chạy script động (JavaScript, v.v.) trong JVM. Nhiều implementation biên dịch script thành bytecode Java và nạp bằng classloader riêng. Tạo ScriptEngine/classloader mới liên tục mà không giải phóng đúng cách có thể gây Metaspace leak.
+- **{{OutOfMemoryError: Metaspace}}:** Lỗi xảy ra khi Metaspace cần tăng nhưng đã chạm {{MaxMetaspaceSize}} và GC không thể unload classloader nào thêm. Heap có thể vẫn còn trống.
+- **{{jcmd VM.metaspace}} / {{VM.classloader_stats}}:** Công cụ chẩn đoán của JDK (đi kèm {{jcmd <pid>}}) cho biết Metaspace dùng bao nhiêu, có bao nhiêu classloader, class nào được nạp.
+
+**Triệu chứng:** Service deploy lúc **08:00 ngày 23/10/2026**. Đội nghiệp vụ reload công thức khoảng **mỗi 10–15 phút** trong giờ làm việc để thử nghiệm (peak ~6 reload/giờ). Lúc **15:42**, pod bắt đầu trả HTTP 500 hàng loạt. Log có {{java.lang.OutOfMemoryError: Metaspace}}. Restart pod thì chạy lại, nhưng khoảng 7–8 giờ sau lại tái diễn. Heap theo dashboard chỉ ~520 MB / 1536 MB khi lỗi xảy ra. Dev A cho rằng "heap đủ lớn, chắc do MaxMetaspaceSize quá nhỏ" và đề xuất tăng lên 512 MB. Dev B chạy {{jmap -histo}} nhưng không thấy class ứng dụng nào tăng bất thường trên heap.
+
+**Dữ liệu thu thập:** Log lỗi và GC log quanh thời điểm OOM, {{jcmd VM.metaspace}} và {{jcmd VM.classloader_stats}} lấy lúc 15:10 (trước khi OOM ~30 phút), metric {{jvm_classes_loaded_classes}} theo thời gian, và mã nguồn {{PremiumFormulaService}}.`,
+  artifacts: [
+    {
+      name: 'gc-metaspace.log',
+      lang: 'text',
+      content: `[2026-10-23T08:00:01.020+0700][0.020s][info][gc,init] Heap Max Capacity: 1536M
+[2026-10-23T08:00:01.020+0700][0.020s][info][gc,metaspace] CDS archive(s) mapped at: [0x0000000800000000-0x0000000800c00000-0x0000000800c00000), size 12582912
+[2026-10-23T08:05:12.441+0700][311.441s][info][gc] GC(18) Pause Young (Normal) (G1 Evacuation Pause) 612M->148M(1536M) 9.210ms
+[2026-10-23T08:05:12.441+0700][311.441s][info][gc,metaspace] GC(18) Metaspace: 78420K(79360K)->78420K(79360K) NonClass: 68210K(68608K)->68210K(68608K) Class: 10210K(10752K)->10210K(10752K)
+... (Metaspace tăng dần sau mỗi đợt reload công thức) ...
+[2026-10-23T11:02:33.102+0700][10952.102s][info][gc] GC(142) Pause Young (Normal) (G1 Evacuation Pause) 702M->188M(1536M) 11.004ms
+[2026-10-23T11:02:33.102+0700][10952.102s][info][gc,metaspace] GC(142) Metaspace: 112844K(114176K)->112844K(114176K) NonClass: 98220K(98816K)->98220K(98816K) Class: 14624K(15360K)->14624K(15360K)
+[2026-10-23T13:18:09.550+0700][19088.550s][info][gc] GC(286) Pause Young (Normal) (G1 Evacuation Pause) 688M->201M(1536M) 10.882ms
+[2026-10-23T13:18:09.550+0700][19088.550s][info][gc,metaspace] GC(286) Metaspace: 149210K(150528K)->149210K(150528K) NonClass: 129880K(130560K)->129880K(130560K) Class: 19330K(19968K)->19330K(19968K)
+[2026-10-23T15:10:44.210+0700][25843.210s][info][gc] GC(398) Pause Young (Normal) (G1 Evacuation Pause) 710M->214M(1536M) 12.110ms
+[2026-10-23T15:10:44.210+0700][25843.210s][info][gc,metaspace] GC(398) Metaspace: 178602K(180224K)->178602K(180224K) NonClass: 155410K(156160K)->155410K(156160K) Class: 23192K(24064K)->23192K(24064K)
+[2026-10-23T15:41:55.003+0700][27714.003s][info][gc,start] GC(421) Pause Young (Concurrent Start) (Metadata GC Threshold)
+[2026-10-23T15:41:55.003+0700][27714.003s][info][gc,metaspace] GC(421) Metaspace: 196024K(196608K)->196024K(196608K) NonClass: 170612K(170752K)->170612K(170752K) Class: 25412K(25856K)->25412K(25856K)
+[2026-10-23T15:41:55.003+0700][27714.003s][info][gc] GC(421) Pause Young (Concurrent Start) (Metadata GC Threshold) 588M->402M(1536M) 16.440ms
+[2026-10-23T15:41:55.004+0700][27714.004s][info][gc] GC(422) Concurrent Mark Cycle
+[2026-10-23T15:41:55.882+0700][27714.882s][info][gc] GC(422) Pause Remark 430M->428M(1536M) 28.110ms
+[2026-10-23T15:41:55.882+0700][27714.882s][info][gc,metaspace] GC(422) Metaspace: 196024K(196608K)->196024K(196608K)
+[2026-10-23T15:41:55.980+0700][27714.980s][info][gc] GC(422) Concurrent Mark Cycle 976.221ms
+[2026-10-23T15:41:56.410+0700][27715.410s][info][gc] GC(423) Pause Full (Metadata GC Threshold) 466M->398M(1536M) 1188.602ms
+[2026-10-23T15:41:56.410+0700][27715.410s][info][gc,metaspace] GC(423) Metaspace: 196410K(196608K)->196410K(196608K) NonClass: 170980K(170752K)->170980K(170752K) Class: 25430K(25856K)->25430K(25856K)
+[2026-10-23T15:41:57.990+0700][27716.990s][info][gc] GC(424) Pause Full (Metadata GC Clear Soft References) 398M->396M(1536M) 1241.330ms
+[2026-10-23T15:41:57.990+0700][27716.990s][info][gc,metaspace] GC(424) Metaspace: 196410K(196608K)->196410K(196608K) NonClass: 170980K(170752K)->170980K(170752K) Class: 25430K(25856K)->25430K(25856K)
+[2026-10-23T15:42:01.102+0700][27720.102s][info][gc] GC(425) Pause Full (Last Ditch Collection) 396M->396M(1536M) 1310.441ms
+[2026-10-23T15:42:01.102+0700][27720.102s][info][gc,metaspace] GC(425) Metaspace: 196582K(196608K)->196582K(196608K)`
+    },
+    {
+      name: 'app-oom.log',
+      lang: 'text',
+      content: `{"@timestamp":"2026-10-23T15:41:58.221+07:00","level":"INFO","logger":"vn.insurecore.premium.PremiumFormulaService","thread":"admin-http-7","message":"Reloading premium formulas, active=42"}
+{"@timestamp":"2026-10-23T15:42:01.104+07:00","level":"ERROR","logger":"o.a.c.c.C.[.[.[/].[dispatcherServlet]","thread":"admin-http-7","message":"Handler dispatch failed: java.lang.OutOfMemoryError: Metaspace","stack_trace":"java.lang.OutOfMemoryError: Metaspace
+\tat java.base/java.lang.ClassLoader.defineClass1(Native Method)
+\tat java.base/java.lang.ClassLoader.defineClass(ClassLoader.java:1017)
+\tat java.base/java.security.SecureClassLoader.defineClass(SecureClassLoader.java:150)
+\tat jdk.scripting.nashorn/jdk.nashorn.internal.runtime.ScriptLoader.installClass(ScriptLoader.java:105)
+\tat jdk.scripting.nashorn/jdk.nashorn.internal.codegen.CompilationPhase$InstallPhase.transform(CompilationPhase.java:508)
+\tat jdk.scripting.nashorn/jdk.nashorn.internal.codegen.CompilationPhase.apply(CompilationPhase.java:624)
+\tat jdk.scripting.nashorn/jdk.nashorn.internal.codegen.Compiler.compile(Compiler.java:655)
+\tat jdk.scripting.nashorn/jdk.nashorn.internal.runtime.Context.compile(Context.java:1339)
+\tat jdk.scripting.nashorn/jdk.nashorn.internal.runtime.Context.compileScript(Context.java:1306)
+\tat jdk.scripting.nashorn/jdk.nashorn.api.scripting.NashornScriptEngine.compileImpl(NashornScriptEngine.java:557)
+\tat jdk.scripting.nashorn/jdk.nashorn.api.scripting.NashornScriptEngine.compileImpl(NashornScriptEngine.java:544)
+\tat jdk.scripting.nashorn/jdk.nashorn.api.scripting.NashornScriptEngine.evalImpl(NashornScriptEngine.java:412)
+\tat jdk.scripting.nashorn/jdk.nashorn.api.scripting.NashornScriptEngine.eval(NashornScriptEngine.java:150)
+\tat javax.script.AbstractScriptEngine.eval(AbstractScriptEngine.java:264)
+\tat vn.insurecore.premium.PremiumFormulaService.reloadFormulas(PremiumFormulaService.java:57)
+\tat vn.insurecore.premium.AdminController.reload(AdminController.java:34)
+\t..."}
+{"@timestamp":"2026-10-23T15:42:01.220+07:00","level":"ERROR","logger":"vn.insurecore.premium.PremiumFormulaService","thread":"http-nio-8080-exec-12","message":"premium calculation failed for policy=P-881022","stack_trace":"java.lang.OutOfMemoryError: Metaspace"}`
+    },
+    {
+      name: 'jcmd-vm-metaspace-1510.txt',
+      lang: 'text',
+      content: `$ kubectl exec premium-engine-5f7b8c-n2m9q -- jcmd 1 VM.metaspace
+1:
+Total Usage - 321 loaders, 14822 classes (1024 shared):
+  Non-Class: 3018 chunks,     155.41 MB capacity,   151.77 MB ( 98%) used,     3.12 MB (  2%) free,    13.18 KB ( <1%) waste,   512.00 KB ( <1%) overhead, deallocated: 4122 blocks with 1.21 MB
+      Class:  2014 chunks,      22.64 MB capacity,    22.64 MB (>99%) used,     8.00 KB ( <1%) free,     2.11 KB ( <1%) waste,   248.00 KB (  1%) overhead, deallocated: 1884 blocks with 0.54 MB
+       Both:  5032 chunks,     178.05 MB capacity,   174.42 MB ( 98%) used,     3.13 MB (  2%) free,    15.29 KB ( <1%) waste,   760.00 KB ( <1%) overhead, deallocated: 6006 blocks with 1.75 MB
+
+Virtual space:
+  Non-class space:      192.00 MB reserved,     156.00 MB (>81%) committed,  3 nodes.
+      Class space:        1.00 GB reserved,      24.00 MB (  2%) committed,  1 nodes.
+             Both:        1.19 GB reserved,     180.00 MB ( 15%) committed.
+
+MaxMetaspaceSize: 192.00 MB
+CompressedClassSpaceSize: 1.00 GB
+Initial GC threshold: 96.00 MB
+Current GC threshold: 196.00 MB
+CDS: on
+MetaspaceReclaimPolicy: balanced`
+    },
+    {
+      name: 'jcmd-classloader-stats-1510.txt',
+      lang: 'text',
+      content: `$ kubectl exec premium-engine-5f7b8c-n2m9q -- jcmd 1 VM.classloader_stats | head -12
+1:
+ClassLoader                                                     Parent                      CLD*               Classes   ChunkSz   BlockSz  Type
+0x0000000800204000                                              0x0000000800010a60          0x00007f1a8c1b2a10       1      5120      4608  jdk.nashorn.api.scripting.NashornScriptEngine$3
+0x0000000800204320                                              0x0000000800010a60          0x00007f1a8c1b2c80       1      5120      4608  jdk.nashorn.api.scripting.NashornScriptEngine$3
+0x0000000800204640                                              0x0000000800010a60          0x00007f1a8c1b2ef0       1      5120      4608  jdk.nashorn.api.scripting.NashornScriptEngine$3
+0x0000000800204960                                              0x0000000800010a60          0x00007f1a8c1b3160       1      5120      4608  jdk.nashorn.api.scripting.NashornScriptEngine$3
+0x0000000800204c80                                              0x0000000800010a60          0x00007f1a8c1b33d0       1      5120      4608  jdk.nashorn.api.scripting.NashornScriptEngine$3
+... (nhiều dòng tương tự, mỗi dòng 1 class, loader jdk.nashorn.api.scripting.NashornScriptEngine$3)
+$ kubectl exec premium-engine-5f7b8c-n2m9q -- jcmd 1 VM.classloader_stats | grep NashornScriptEngine | wc -l
+284
+$ kubectl exec premium-engine-5f7b8c-n2m9q -- jcmd 1 VM.classloader_stats | grep NashornScriptEngine | awk '{sum+=$6} END {print sum " bytes (ChunkSz total)"}'
+116736000 bytes (ChunkSz total)`
+    },
+    {
+      name: 'metrics-and-flags.txt',
+      lang: 'text',
+      content: `# Prometheus, pod premium-engine-5f7b8c-n2m9q
+time    jvm_classes_loaded_classes  jvm_classes_unloaded_classes_total  metaspace_used_mb  heap_used_mb  formula_reload_events
+08:10                         18420                                   0              76.5           312                    1
+09:10                         20110                                   0              89.2           338                    5
+10:10                         22840                                   0             101.8           355                   11
+11:10                         25660                                   0             114.6           361                   17
+12:10                         28410                                   0             127.1           349                   23
+13:10                         31180                                   0             139.9           372                   29
+14:10                         33950                                   0             152.4           388                   35
+15:10                         36720                                   0             165.0           401                   41
+15:42                         39210                                   0             191.9           520                    -  (OOM)
+
+# JVM flags (deploy)
+-Xmx1536m -XX:MaxMetaspaceSize=192m -XX:MetaspaceSize=96m -XX:+UseG1GC
+# JDK
+java version "17.0.10" 2024-01-16 LTS
+# Nashorn note: Nashorn engine script engine được bundle/available theo runtime image của service (base image nội bộ).`
+    },
+    {
+      name: 'PremiumFormulaService.java',
+      lang: 'text',
+      content: `package vn.insurecore.premium;
+
+import javax.script.*;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import org.springframework.stereotype.Service;
+
+@Service
+public class PremiumFormulaService {
+
+    private final FormulaRepository repo;
+    // Cache compiled script theo formulaId
+    private final Map<String, CompiledScript> compiled = new ConcurrentHashMap<>();
+
+    public PremiumFormulaService(FormulaRepository repo) {
+        this.repo = repo;
+    }
+
+    // Gọi khi admin bấm "Áp dụng công thức mới" (mỗi 10–15 phút trong giờ thử nghiệm)
+    public synchronized void reloadFormulas() throws ScriptException {
+        compiled.clear();
+        // Tạo ScriptEngine MỚI mỗi lần reload
+        ScriptEngine engine = new ScriptEngineManager().getEngineByName("nashorn");
+        if (engine == null) {
+            throw new IllegalStateException("Nashorn ScriptEngine not available");
+        }
+        for (Formula f : repo.findAllActive()) {
+            Compilable c = (Compilable) engine;
+            CompiledScript cs = c.compile(f.getScriptBody());
+            compiled.put(f.getId(), cs);
+        }
+        // engine ra khỏi scope ở đây — nhưng class do engine tạo/nạp đã được unload chưa?
+    }
+
+    public double calculate(String formulaId, Bindings vars) throws ScriptException {
+        CompiledScript cs = compiled.get(formulaId);
+        if (cs == null) throw new IllegalArgumentException("Unknown formula: " + formulaId);
+        return ((Number) cs.eval(vars)).doubleValue();
+    }
+}`
+    }
+  ],
+  questions: [
+    'Vì sao ứng dụng ném {{OutOfMemoryError: Metaspace}} trong khi heap chỉ ~520 MB? Giải thích Metaspace là gì, khác heap thế nào, và trích bằng chứng từ GC log/jcmd/metric.',
+    'Nguyên nhân gốc khiến Metaspace tăng mãi và class không được unload là gì? Dẫn chứng classloader nào bị leak, bao nhiêu loader, và cơ chế GC unload classloader.',
+    'Bạn sửa ngắn hạn và dài hạn thế nào (code + cấu hình + kiến trúc scripting)? Tại sao chỉ tăng {{MaxMetaspaceSize}} là sai? Cần alert/giám sát gì?'
+  ],
+  hints: [
+    'Nhìn GC log: {{Metadata GC Threshold}}, {{Metaspace ... không giảm}} sau Pause Full/Last Ditch Collection, và {{MaxMetaspaceSize 192M}}. So sánh với heap sau GC (~396M) — vùng nhớ nào hết?',
+    'Classloader chỉ được GC thu hồi khi không còn tham chiếu nào đến nó, các class nó nạp, và các instance của class đó. {{VM.classloader_stats}} có 284 loader {{NashornScriptEngine$3}}, mỗi cái 1 class. {{reloadFormulas()}} tạo {{ScriptEngine}} mới mỗi lần và {{compiled}} giữ {{CompiledScript}} — {{CompiledScript}} có giữ tham chiếu ngược tới engine/classloader không?',
+    'Tính tương quan: {{formula_reload_events}} tăng 1→41, {{jvm_classes_loaded_classes}} tăng ~18420→36720 (~18300 class), unloaded luôn 0. Có khớp với ~284 loader × số class/script sinh ra không? Nashorn trên JDK 17 đã ở trạng thái nào (deprecated/removed)?'
+  ],
+  answer: `**Tóm tắt:** {{OutOfMemoryError: Metaspace}} xảy ra vì service tạo {{ScriptEngine}} (Nashorn) **mới** mỗi lần reload công thức (~6 lần/giờ) nhưng {{CompiledScript}} được cache trong {{compiled}} giữ tham chiếu ngược tới cấu trúc của engine/classloader đã dùng để biên dịch. Kết quả: mỗi đợt reload sinh thêm classloader/script class mới, classloader cũ **không bao giờ đủ điều kiện** để GC unload → Metaspace tăng đều ({{unloaded_classes_total}} luôn 0) cho tới khi chạm {{MaxMetaspaceSize=192m}}. Heap vẫn còn trống (~520 MB) vì đây là lỗi vùng nhớ native Metaspace, không phải heap. Sửa gốc là quản lý vòng đời engine/compiled script đúng (tái sử dụng engine có kiểm soát, hoặc thay Nashorn bằng cơ chế scripting hiện đại), và loại bỏ tham chiếu giữ classloader.
+
+### 1) Metaspace là gì, vì sao khác heap
+
+- **Heap:** chứa *đối tượng* (instance) tạo bởi {{new}} (ví dụ {{String}}, {{HashMap}}, {{byte[]}}). GC heap (G1) thu gom object không còn tham chiếu.
+- **Metaspace:** chứa *metadata của class* (cấu trúc class, method bytecode, constant pool, annotation metadata...). Đây là native memory. Mỗi lần JVM nạp một class (qua classloader), metadata được cấp phát vào Metaspace.
+- **Giải phóng Metaspace:** chỉ xảy ra khi **toàn bộ classloader** nạp các class đó không còn reachable (không còn tham chiếu từ GC root, không còn instance sống của class do nó nạp, không còn class object được giữ). Lúc đó GC mới *unload* classloader và trả Metaspace. Nếu còn một tham chiếu sót, Metaspace không giảm — giống "rò rỉ" nhưng ở vùng metadata.
+- **MaxMetaspaceSize:** trần cứng. Khi đạt trần và GC không unload được gì, JVM ném {{OutOfMemoryError: Metaspace}}. Đây là cơ chế bảo vệ để process không ăn hết RAM của máy/container.
+
+### 2) Dẫn chứng từ artifact
+
+**GC log cho thấy Metaspace đầy, heap không đầy:**
+- GC(398) lúc 15:10: {{Metaspace: 178602K(180224K)...}} — đã dùng ~174 MB / committed ~176 MB, rất sát trần; heap sau GC chỉ {{214M(1536M)}}.
+- GC(421) cause {{Metadata GC Threshold}}: JVM cố GC vì áp lực metadata.
+- GC(423) {{Pause Full (Metadata GC Threshold)}} 1188 ms, GC(424) {{Metadata GC Clear Soft References}} 1241 ms, GC(425) {{Last Ditch Collection}} 1310 ms — ba lần Full GC liên tiếp nhưng {{Metaspace}} **không giảm** ({{196410K...->196410K}}, rồi {{196582K}}). Heap sau Full GC chỉ ~396M. Đây là dấu hiệu kinh điển: GC đã cố hết sức (kể cả clear soft refs) nhưng **không có classloader nào unload được**.
+- Log lỗi: {{OutOfMemoryError: Metaspace}} tại {{ClassLoader.defineClass1 (Native Method)}} → {{ScriptLoader.installClass}} → {{nashorn...Compiler.compile}} → {{PremiumFormulaService.reloadFormulas:57}}. Stack trace chỉ thẳng vào việc **nạp/định nghĩa class mới** khi compile script Nashorn.
+
+**jcmd VM.metaspace lúc 15:10 (trước OOM):**
+- {{Total Usage - 321 loaders, 14822 classes}}; {{174.42 MB (98%) used}}; {{MaxMetaspaceSize: 192.00 MB}}. Chỉ còn ~18 MB trước trần.
+- {{Non-Class}} chiếm phần lớn (151.77 MB) — phù hợp với bytecode/metadata của các class script được sinh ra.
+
+**jcmd VM.classloader_stats:**
+- Có **284 loader** kiểu {{jdk.nashorn.api.scripting.NashornScriptEngine$3}}, mỗi loader chỉ nạp {{1 class}}, tổng {{ChunkSz ~116,736,000 bytes}}. Rất nhiều classloader nhỏ, mỗi cái giữ một phần Metaspace — mẫu hình điển hình của leak do tạo loader/script class lặp lại.
+
+**Metric tương quan:**
+- {{jvm_classes_loaded_classes}} tăng 18420 → 36720 (+18300) trong khi {{jvm_classes_unloaded_classes_total}} luôn **0**. {{formula_reload_events}} tăng tới 41. Mỗi lần reload compile 42 công thức active (log {{active=42}}) và tạo engine/compiled artifacts mới → sinh thêm nhiều class; không unload đồng nghĩa classloader cũ bị giữ sống.
+- Heap ổn định/vừa phải (~312–520 MB), không tăng kiểu leak heap. Vì vậy {{jmap -histo}} (nhìn heap object) không thấy "class ứng dụng tăng bất thường" — nguyên nhân nằm ở Metaspace/classloader, không phải instance trên heap.
+
+### 3) Nguyên nhân gốc (cơ chế)
+
+Trong {{reloadFormulas()}}:
+~~~java
+compiled.clear();
+ScriptEngine engine = new ScriptEngineManager().getEngineByName("nashorn"); // engine MỚI mỗi lần
+for (Formula f : repo.findAllActive()) {
+    Compilable c = (Compilable) engine;
+    CompiledScript cs = c.compile(f.getScriptBody()); // Nashorn compile -> sinh class bytecode, nạp qua loader
+    compiled.put(f.getId(), cs); // cache giữ CompiledScript
+}
+~~~
+
+- Nashorn khi compile script thường sinh các class Java (bytecode) để thực thi nhanh. Các class này được nạp bởi classloader gắn với engine/context.
+- {{compiled}} là {{ConcurrentHashMap}} field của {{@Service}} singleton → sống suốt vòng đời ứng dụng (GC root qua Spring context). {{compiled.clear()}} chỉ bỏ entry khỏi map; nhưng **các {{CompiledScript}}/object liên quan** có thể vẫn bị giữ bởi tham chiếu khác, hoặc quan trọng hơn: chuỗi tham chiếu từ {{CompiledScript}} → (engine/context nội bộ) → class/script loader → {{Class}} khiến loader cũ không thể bị unload. Ngoài ra, tạo engine mới mỗi lần nhưng không đóng/giải phóng theo cơ chế Nashorn (Nashorn có {{NashornScriptEngineFactory}} và cách quản lý context riêng; việc giữ {{CompiledScript}} gắn với runtime cũ là bẫy phổ biến).
+- GC unload classloader chỉ khi **mọi đường tham chiếu** tới loader/class/instance đều biến mất. Chỉ cần một reference sót (cache static, map singleton, callback, thread local) là loader bị "neo" lại → Metaspace leak. Đây là lý do leak classloader khó thấy khi chỉ nhìn heap histogram instance thông thường.
+
+> Bối cảnh kỹ thuật (để trả lời phỏng vấn đúng): Nashorn JavaScript engine từng đi kèm JDK 8–14, bị **deprecated từ JDK 11 (JEP 335)** và **bị loại bỏ khỏi JDK từ JDK 15 (JEP 372)**. Trên JDK 17, Nashorn không còn là engine mặc định của JDK; nếu service vẫn dùng {{engine name "nashorn"}} thì thường là do dependency/runtime image riêng mang Nashorn standalone. Điều này càng làm tăng rủi ro bảo trì và cần kế hoạch thay thế (ví dụ GraalJS). Khi nêu trong phỏng vấn, nên nêu đúng trạng thái theo JDK đang dùng, không bịa API.
+
+### 4) Cách sửa
+
+**Ngắn hạn (giảm rủi ro, mua thời gian):**
+1. **Restart/rollout có kiểm soát** trước khi chạm trần (đã biết tốc độ tăng từ metric). Đây chỉ là biện pháp vận hành.
+2. **Giảm tần suất reload** và chặn reload song song không cần thiết; log/audit mỗi lần reload.
+3. **Tăng {{MaxMetaspaceSize}}** (ví dụ 256m/320m) *chỉ nếu* container còn đủ native memory headroom — và chỉ là **bơm phao**, vì leak vẫn tiếp tục (sẽ OOM muộn hơn). Không được coi là fix. Cần tính tổng: heap (1536m) + metaspace (tối đa mới) + code cache + thread stacks + native khác < memory limit container (3Gi).
+
+**Dài hạn (sửa gốc):**
+
+1. **Quản lý vòng đời engine/compiled script đúng cách:**
+- Không tạo {{ScriptEngine}} mới bừa bãi mỗi lần reload nếu không cần. Nếu phải reload, đảm bảo **không giữ tham chiếu** tới {{CompiledScript}}/engine cũ (clear cache *và* đảm bảo không có nơi khác giữ). Với Nashorn, cần hiểu rõ lifecycle ({{NashornScriptEngine}} có thể cần được dùng theo pattern phù hợp; trong nhiều trường hợp nên dùng lại engine/factory có kiểm soát hoặc cô lập theo classloader và *thả* toàn bộ graph khi thay thế).
+- Một hướng an toàn hơn: mỗi "thế hệ công thức" chạy trong một **ClassLoader cô lập** do bạn quản lý; khi reload, dựng generation mới, chuyển traffic sang generation mới (atomic swap), rồi *drop mọi reference* tới generation cũ để GC có thể unload. Đây là pattern giống plugin/reload an toàn (cần kiểm tra kỹ không còn thread local, cache static, logger giữ class).
+
+~~~java
+// Ý tưởng: swap nguyên tử thế hệ công thức, không giữ reference cũ
+private final AtomicReference<FormulaBundle> bundle = new AtomicReference<>();
+
+public synchronized void reloadFormulas() {
+    FormulaBundle next = FormulaBundle.compileAll(repo.findAllActive()); // tạo thế hệ mới
+    FormulaBundle prev = bundle.getAndSet(next); // swap nguyên tử
+    // prev ra khỏi scope; KHÔNG lưu prev vào field/static/cache nào khác
+    // để classloader/compiled artifacts của prev đủ điều kiện GC unload
+}
+
+public double calculate(String formulaId, Bindings vars) {
+    return bundle.get().calculate(formulaId, vars);
+}
+~~~
+(Đây là khung ý tưởng; implementation thực tế phải đảm bảo {{FormulaBundle}}/engine/classloader không bị tham chiếu bởi registry static của scripting engine.)
+
+2. **Cân nhắc thay Nashorn:** vì Nashorn không còn trong JDK 17, hãy đánh giá chuyển sang **GraalJS** (GraalVM JavaScript, có chế độ chạy trên HotSpot tùy phiên bản/cấu hình — cần kiểm tra tương thích của dự án) hoặc các lựa chọn an toàn hơn (rule engine như Drools, MVEL, hoặc biểu thức hạn chế thay vì script tự do) nếu nghiệp vụ cho phép. Script engine "full power" cũng là rủi ro bảo mật (sandboxing khó).
+
+3. **Giới hạn và xác thực script:** giới hạn thời gian chạy, bộ nhớ/CPU (nếu engine hỗ trợ), và không cho phép script tùy ý truy cập class nội bộ nguy hiểm.
+
+### 5) Phòng ngừa và alert
+
+- **Metric/alert:** theo dõi {{jvm_classes_loaded_classes}} và {{jvm_classes_unloaded_classes_total}} — nếu loaded tăng đều còn unloaded ~0 trong thời gian dài, cảnh báo leak classloader. Theo dõi metric {{jvm_memory_used_bytes}} (area nonheap, id Metaspace) / committed vs {{MaxMetaspaceSize}}; alert khi dùng > 75–80% hoặc có xu hướng tăng liên tục.
+- **Log/GC:** bật {{-Xlog:class+load=info,class+unload=info}} (cẩn thận volume log) hoặc dùng JFR event {{jdk.ClassLoad}}, {{jdk.ClassUnload}} khi điều tra. Alert khi xuất hiện {{Metadata GC Threshold}} lặp lại hoặc Full GC do Metadata.
+- **Kiểm thử:** test soak: thực hiện reload công thức hàng trăm/lần nghìn lần trong môi trường staging, quan sát {{classes unloaded}} > 0 và Metaspace ổn định sau warmup. Có thể chạy với {{-XX:MaxMetaspaceSize}} thấp hơn để phát hiện leak sớm.
+- **Quy trình vận hành:** mọi tính năng "reload/plugin/script động" phải có thiết kế unload rõ ràng và review rò rỉ tham chiếu (static collection, thread local, JDBC driver, logger context).
+
+> Senior tip: Khi thấy {{OutOfMemoryError: Metaspace}} nhưng heap còn trống, đừng vội tăng {{MaxMetaspaceSize}} — đó thường chỉ làm sự cố đến muộn hơn. Hãy hỏi: "có thứ gì đang **nạp class liên tục** không?" (script engine, dynamic proxy/CGLIB, Groovy/JSP compile, redeploy, serialization framework). Ba lệnh cứu cánh: {{jcmd <pid> VM.metaspace}} (Metaspace còn bao nhiêu, ngưỡng GC), {{jcmd <pid> VM.classloader_stats}} (loader nào nhiều bất thường), và metric {{classes loaded vs unloaded}}. Nếu {{unloaded}} gần như bằng 0 trong khi {{loaded}} tăng theo một hành động nghiệp vụ (reload, request đặc biệt), bạn gần như chắc chắn có classloader leak. Fix thật sự là **cắt đứt mọi tham chiếu** để classloader trở thành rác, chứ không phải cho Metaspace to hơn.`,
+  rubric: [
+    'Phân biệt đúng Heap vs Metaspace/native memory: OOM Metaspace xảy ra khi metadata class chạm MaxMetaspaceSize (192m) và GC không unload được; heap sau GC vẫn thấp (~396–520M). Trích GC log (Metadata GC Threshold, Full GC Metadata không giảm Metaspace) và/hoặc jcmd/metric.',
+    'Chỉ ra cơ chế classloader leak: tạo ScriptEngine/compile lặp lại sinh class+loader mới; CompiledScript/cache hoặc tham chiếu ngược giữ classloader sống; classloader chỉ unload khi không còn reference. Dẫn chứng VM.classloader_stats (284 NashornScriptEngine$3 loader) và classes loaded tăng, unloaded=0.',
+    'Tương quan số liệu: reload events ~41, active 42 công thức/lần, loaded +~18300, unloaded 0, Metaspace tiến dần tới trần — giải thích vì sao tăng MaxMetaspaceSize chỉ trì hoãn.',
+    'Đề xuất sửa có chiều sâu: quản lý lifecycle (không leak reference, swap thế hệ công thức/an toàn unload) hoặc thay thế Nashorn (deprecated JDK 11, removed JDK 15 — nêu đúng bối cảnh JDK 17) bằng giải pháp phù hợp; kiểm soát an toàn script; test soak reload nhiều lần.',
+    'Nêu giám sát/phòng ngừa: alert classes unloaded không tăng khi loaded tăng, Metaspace usage/threshold, Metadata GC Threshold/Full GC metadata, JFR/ClassLoad-Unload khi điều tra; quy trình review cho reload/plugin/script động.'
+  ],
+  tags: ['metaspace', 'classloader-leak', 'oom', 'nashorn', 'scriptengine', 'gc-log', 'jcmd', 'jdk17']
 }
 );
-// APPEND_END
