@@ -1706,5 +1706,644 @@ SLA 99.95% của bạn không thể độc lập nếu đường ra hệ thống
     'Sau failover, khách khiếu nại "đã bấm chuyển tiền hai lần", bạn dựa vào dữ liệu nào để trả lời?'
   ],
   tags: ['SLA', 'RTO', 'RPO', 'active-passive', 'disaster recovery']
+},
+{
+  id: 'banking-023',
+  topic: 'banking',
+  level: 'mid',
+  q: 'Vì sao hệ thống ngân hàng không nên UPDATE trực tiếp cột số dư (balance) trong bảng tài khoản khi có giao dịch, mà nên dùng sổ cái ghi từng bút toán (double-entry)? Hãy giải thích bằng một ví dụ race condition (hai giao dịch chạy đồng thời tranh nhau cập nhật cùng một tài khoản).',
+  a: `**Tóm tắt:** UPDATE trực tiếp số dư (ví dụ {{UPDATE accounts SET balance = balance - 100 WHERE id = ?}}) làm mất lịch sử, khó kiểm toán, và dễ sai khi hai giao dịch chạy đồng thời đọc cùng một số dư cũ. Sổ cái double-entry (ghi sổ kép: mỗi bút toán ghi ít nhất 2 dòng, một bên Nợ/Debit và một bên Có/Credit, tổng luôn bằng 0) lưu mọi biến động thành dòng bất biến (append-only), từ đó tính lại số dư bất cứ lúc nào và phát hiện lệch.
+
+### "UPDATE số dư trực tiếp" nghĩa là gì
+Cách làm đơn giản nhất khi chuyển tiền: đọc số dư tài khoản A, trừ đi 100.000, ghi lại. Trong SQL trông như:
+~~~sql
+-- Cách NAIVE: đọc rồi ghi (dễ sai)
+SELECT balance FROM accounts WHERE id = 'A';  -- đọc được 500.000
+UPDATE accounts SET balance = 400000 WHERE id = 'A';  -- ghi đè
+~~~
+Hoặc gọn hơn một câu: {{UPDATE accounts SET balance = balance - 100000 WHERE id = 'A'}}. Cách này nhanh nhưng có 3 vấn đề lớn.
+
+### Vấn đề 1 — Mất lịch sử, không kiểm toán được
+Sau khi UPDATE, giá trị cũ (500.000) biến mất. Nếu khách hỏi "sáng nay tài khoản tôi còn bao nhiêu, ai trừ tiền?", bạn không có dòng ghi nào để trả lời. Ngân hàng chịu sự giám sát của cơ quan quản lý: mọi biến động tiền phải truy vết được ai làm, lúc nào, vì sao. Ghi đè số dư vi phạm nguyên tắc này.
+
+### Vấn đề 2 — Race condition (tranh chấp đồng thời)
+**Race condition** (điều kiện tranh chấp): kết quả sai vì hai luồng xử lý cùng đọc/ghi một dữ liệu và thứ tự chạy xen kẽ nhau. Ví dụ đời thường: hai người cùng nhìn ví còn 500.000, mỗi người rút 400.000, cả hai nghĩ "đủ tiền" — tổng rút 800.000 dù ví chỉ có 500.000.
+
+Ví dụ cụ thể trên tài khoản A đang có 500.000 VND, hai giao dịch chạy gần như cùng lúc:
+~~~text
+Thời điểm   Giao dịch T1 (rút 400.000)        Giao dịch T2 (rút 300.000)
+t1          Đọc balance = 500.000
+t2                                            Đọc balance = 500.000  (vẫn 500k!)
+t3          Kiểm tra: 500k >= 400k -> OK
+t4                                            Kiểm tra: 500k >= 300k -> OK
+t5          UPDATE balance = 500k - 400k = 100k
+t6                                            UPDATE balance = 500k - 300k = 200k
+Kết quả: balance = 200.000, nhưng thực tế đã rút 700.000 từ 500.000 -> ÂM 200.000 bị che mất
+~~~
+Câu {{UPDATE ... SET balance = balance - x}} dạng nguyên tử (atomic, thực hiện trọn một bước ở mức DB) giảm rủi ro ở t5/t6, nhưng nếu code tách thành "đọc -> kiểm tra -> ghi" như trên thì vẫn sai. Và dù dùng câu nguyên tử, bạn vẫn không biết giao dịch nào chạy trước, không có lịch sử.
+
+### Vấn đề 3 — Khó đối soát và sửa sai
+Nếu một batch tính lãi chạy sai và UPDATE nhầm 1 triệu tài khoản, bạn không có cách "đảo ngược" chính xác từng bút trừ khi chỉ biết số dư cuối. Với sổ cái, bạn thêm bút toán điều chỉnh (adjustment entry) và mọi thứ còn nguyên vẹn.
+
+### Double-entry giải quyết thế nào
+Mỗi giao dịch chuyển 100.000 từ A sang B tạo 2 dòng sổ cái trong cùng một **DB transaction** (giao dịch cơ sở dữ liệu: nhóm lệnh hoặc cùng thành công hoặc cùng thất bại):
+~~~sql
+-- Sổ cái: chỉ INSERT, không UPDATE/DELETE dòng cũ
+INSERT INTO ledger_entries(tx_id, account_id, direction, amount, created_at)
+VALUES ('TX1', 'A', 'DEBIT',  100000, now());  -- A giảm
+INSERT INTO ledger_entries(tx_id, account_id, direction, amount, created_at)
+VALUES ('TX1', 'B', 'CREDIT', 100000, now());  -- B tăng
+~~~
+- **DEBIT** (Nợ) / **CREDIT** (Có): hai phía của bút toán kép. Với tài khoản tiền gửi khách hàng, ghi Nợ ở tài khoản A nghĩa là giảm tiền A, ghi Có ở B nghĩa là tăng tiền B. Tổng mọi bút trong một tx luôn cân (Debit = Credit).
+- Số dư = tổng CREDIT - tổng DEBIT của tài khoản (hoặc lưu một bảng "snapshot" số dư được tính từ sổ cái, cập nhật có kiểm soát).
+- Kiểm tra đồng thời: dùng **SELECT ... FOR UPDATE** (khóa dòng tài khoản khi đọc để tính/kiểm tra số dư) hoặc cơ chế **optimistic locking** (khóa lạc quan: thêm cột {{version}}, UPDATE chỉ thành công nếu version khớp) để chống race condition.
+
+~~~seq
+title: Double-entry chuyen tien trong 1 DB transaction
+actors: App | PaymentService | LedgerDB
+App -> PaymentService: chuyen 100000 tu A sang B
+PaymentService -> LedgerDB: BEGIN
+PaymentService -> LedgerDB: khoa tai khoan A, tinh so du tu so cai
+PaymentService -> LedgerDB: INSERT DEBIT A 100000
+PaymentService -> LedgerDB: INSERT CREDIT B 100000
+PaymentService -> LedgerDB: kiem tra tong = 0
+PaymentService -> LedgerDB: COMMIT
+PaymentService --> App: thanh cong, co tx_id de truy vet
+~~~
+
+### Lỗi hay gặp
+- Vẫn UPDATE balance trực tiếp "cho nhanh" rồi mới INSERT ledger -> hai nguồn dữ liệu lệch nhau khi lỗi giữa chừng.
+- INSERT 2 dòng ledger nhưng quên bọc trong một DB transaction -> mất một dòng, sổ cái không cân.
+- Tính số dư bằng cách cộng dồn toàn bộ ledger mỗi lần đọc trên bảng lớn -> chậm; cần snapshot/bảng cân đối được cập nhật đồng bộ trong cùng transaction.
+- Dùng kiểu {{double/float}} cho {{amount}} -> sai số làm tròn; luôn dùng {{BigDecimal}} hoặc số nguyên đơn vị nhỏ nhất (xem banking-027).
+
+> Senior tip: Trong phỏng vấn, hãy nói rõ: "Số dư là một *kết quả dẫn xuất* (derived) từ sổ cái, không phải nguồn sự thật gốc". Nguồn sự thật là các bút toán bất biến. Khi bị hỏi cách chống race condition, nêu 2 lựa chọn: khóa bi quan {{SELECT FOR UPDATE}} trên hàng tài khoản (đơn giản, an toàn, có thể nghẽn khi hot account) hoặc optimistic locking + retry (ít khóa hơn, phải xử lý xung đột). Đừng quên nhắc: mọi thay đổi tiền phải nằm trong một DB transaction và có {{tx_id}} duy nhất để idempotent.
+  `,
+  follow: [
+    'Khóa bi quan (SELECT FOR UPDATE) và khóa lạc quan (version/optimistic locking) khác nhau thế nào, khi nào chọn cái nào cho tài khoản "nóng"?',
+    'Nếu chỉ được dùng bảng ledger append-only, bạn tính và cache số dư hiện tại ra sao mà vẫn đảm bảo đúng?',
+    'Một bút toán điều chỉnh (adjustment/reversal) được ghi thế nào để không phá tính bất biến của sổ cái?'
+  ],
+  tags: ['double-entry', 'ledger', 'race condition', 'balance', 'transaction']
+},
+{
+  id: 'banking-024',
+  topic: 'banking',
+  level: 'mid',
+  q: 'Đối soát (reconciliation) cuối ngày với Napas hoặc đối tác thanh toán diễn ra như thế nào? Các loại lệch (break) thường gặp là gì và quy trình xử lý ra sao?',
+  a: `**Tóm tắt:** Đối soát (reconciliation) là so khớp từng giao dịch giữa sổ của mình và file/báo cáo của đối tác (Napas, ngân hàng khác, ví điện tử) để đảm bảo tiền hai bên ghi nhận khớp nhau. Thường chạy cuối ngày (EOD) hoặc theo lô: tải file đối tác -> chuẩn hóa -> khớp theo khóa (mã giao dịch, số tiền, thời gian) -> phân loại lệch (break) -> tra soát và điều chỉnh. Mục tiêu: không đồng nào bị "treo" không rõ chủ.
+
+### Đối soát là gì, vì sao phải làm
+**Reconciliation** (đối soát): quá trình so sánh hai bộ ghi chép độc lập về cùng một sự kiện để tìm điểm khác biệt. Ví dụ đời thường: cuối ca thu ngân đếm tiền mặt trong két và so với số trên máy tính — nếu lệch phải tìm ra giao dịch nào sai. Trong ngân hàng, "két" của bạn là sổ cái/core, "máy tính đối tác" là file Napas gửi.
+
+Vì sao không thể tin 100% vào phản hồi realtime? Vì timeout/mất mạng: bạn gửi lệnh chuyển, đối tác có thể đã trừ/cộng tiền nhưng phản hồi bị rớt (xem banking-002/025). Đối soát cuối ngày là lưới an toàn bắt những giao dịch "trạng thái mơ hồ".
+
+### Quy trình đối soát điển hình
+~~~seq
+title: Doi soat EOD voi Napas/doi tac
+actors: CoreBank | ReconJob | DoiTacFile | OpsTeam
+CoreBank -> ReconJob: danh sach giao dich ngay T (noi bo)
+DoiTacFile -> ReconJob: file doi tac ngay T (CSV/XML/ISO)
+ReconJob -> ReconJob: chuan hoa dinh dang, map truong
+ReconJob -> ReconJob: khop theo khoa (ref_id, amount, date)
+ReconJob -> ReconJob: phan loai: MATCH / BREAK
+ReconJob -> OpsTeam: bao cao break + chi tiet lech
+OpsTeam -> CoreBank: tra soat, gui inquiry, dieu chinh/dao
+~~~
+
+### Khóa khớp (matching key)
+Thường khớp theo nhiều tầng, từ chặt đến lỏng:
+1. **Mã tham chiếu duy nhất** (reference/trace number, ví dụ {{RRN}} - Retrieval Reference Number, hoặc {{STAN}} - Systems Trace Audit Number trong giao dịch thẻ): khớp 1-1 là lý tưởng.
+2. **Số tiền + tài khoản + ngày**: dùng khi mã tham chiếu lệch định dạng giữa hai bên.
+3. **Số tiền + khoảng thời gian**: khớp mờ (fuzzy), cần người duyệt.
+
+### Các loại lệch (break) thường gặp
+~~~text
+Loại break              Mô tả                                      Hướng xử lý
+----------------------  -----------------------------------------  -----------------------------
+Có ở mình, không ở DT   Mình ghi nhận nhưng đối tác không có       Tra soát: mình ghi nhầm? hay DT chưa post?
+Có ở DT, không ở mình   Đối tác có, mình không có                  Tra soát: timeout mất phản hồi? bổ sung bút toán
+Khớp mã, lệch tiền      Cùng giao dịch nhưng amount khác           Kiểm tra phí, làm tròn, tỷ giá; điều chỉnh
+Khớp mã, lệch trạng thái Mình PENDING, DT SUCCESS (hoặc ngược lại) Chạy inquiry/confirm, cập nhật trạng thái
+Trùng lặp (duplicate)   Cùng ref xuất hiện 2 lần một bên           Kiểm tra retry/idempotency, đảo bút thừa
+~~~
+**DT** = đối tác. **Inquiry** (truy vấn): gửi câu hỏi tới đối tác "giao dịch mã X trạng thái thật là gì?".
+
+### Ví dụ số liệu đơn giản
+~~~text
+Sổ mình (Core):  TX001  A->B  1.000.000  SUCCESS
+                 TX002  C->D    500.000  PENDING  (timeout khi gọi Napas)
+                 TX003  A->E    200.000  SUCCESS
+File Napas:      TX001  A->B  1.000.000  SUCCESS
+                 TX002  C->D    500.000  SUCCESS  (Napas đã xử lý!)
+                 TX004  F->G    300.000  SUCCESS  (mình không có)
+Kết quả: TX001 MATCH; TX002 lệch trạng thái -> inquiry/confirm rồi cập nhật; TX004 có ở DT, không ở mình -> tra soát khẩn
+~~~
+
+### Lỗi hay gặp
+- Chỉ so tổng tiền cuối ngày mà không so từng giao dịch -> tổng có thể khớp ngẫu nhiên dù từng bút lệch.
+- Khóa khớp dùng mỗi số tiền -> nhiều giao dịch cùng số tiền bị khớp sai.
+- Không chuẩn hóa múi giờ/định dạng ngày (mình lưu UTC, đối tác gửi giờ địa phương) -> lệch ngày, báo "không tìm thấy".
+- Xử lý break bằng tay hoàn toàn, không có công cụ/queue theo dõi trạng thái tra soát -> sót giao dịch treo nhiều ngày.
+- Điều chỉnh sổ cái không qua maker-checker (xem banking-026) -> rủi ro gian lận.
+
+> Senior tip: Thiết kế đối soát như một pipeline có trạng thái: {{IMPORTED -> MATCHED -> BREAK_OPEN -> INVESTIGATING -> RESOLVED}}. Mỗi break phải có chủ sở hữu, hạn xử lý (SLA), và nhật ký hành động. Trong phỏng vấn, nhấn mạnh: đối soát không chỉ là "báo cáo" mà là cơ chế phát hiện mất tiền; và mọi điều chỉnh sau đối soát phải tạo bút toán mới trên sổ cái (append-only), tuyệt đối không sửa dòng cũ.
+  `,
+  follow: [
+    'Làm sao thiết kế khóa tham chiếu (reference id) ngay từ lúc tạo giao dịch để việc khớp với Napas/đối tác luôn 1-1?',
+    'Nếu file đối tác đến trễ 2 ngày hoặc bị gửi trùng, job đối soát cần xử lý thế nào để idempotent?',
+    'Khi nào bạn tự động điều chỉnh trạng thái (auto-resolve) và khi nào bắt buộc người duyệt?'
+  ],
+  tags: ['reconciliation', 'Napas', 'EOD', 'break', 'settlement']
+},
+{
+  id: 'banking-025',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Khi chuyển tiền liên ngân hàng qua Napas/đối tác bị timeout (không nhận được phản hồi), bạn thiết kế trạng thái giao dịch và quy trình tra soát/hoàn tiền như thế nào để không mất tiền và không trùng tiền?',
+  a: `**Tóm tắt:** Timeout nghĩa là *không biết* kết quả, không phải thất bại. Giao dịch phải chuyển sang trạng thái trung gian (ví dụ {{PENDING}} / {{UNKNOWN}}), tuyệt đối không tự động retry trừ tiền và không tự động hoàn tiền ngay. Quy trình đúng: giữ trạng thái chờ -> tra soát chủ động (inquiry) với đối tác bằng mã tham chiếu duy nhất -> cập nhật theo kết quả ({{SUCCESS}} / {{FAILED}}) -> chỉ hoàn/đảo bút khi có xác nhận thất bại. Toàn bộ phải idempotent.
+
+### Timeout là gì và vì sao nguy hiểm
+**Timeout** (hết thời gian chờ): bạn gửi yêu cầu HTTP/message sang Napas, sau N giây không nhận phản hồi. Ba khả năng thật sự có thể đã xảy ra:
+1. Napas chưa nhận được yêu cầu -> tiền chưa trừ bên kia.
+2. Napas đã xử lý thành công (tiền đã sang ngân hàng nhận) nhưng phản hồi bị rớt trên đường về.
+3. Napas đang xử lý dở (rất hiếm, nhưng hệ thống phải tính tới).
+
+Nếu bạn coi timeout = thất bại và cho khách gửi lại (hoặc tự retry tạo giao dịch mới), trường hợp (2) sẽ khiến người nhận được tiền 2 lần hoặc người gửi bị trừ 2 lần. Đây là lỗi nghiêm trọng nhất trong thanh toán.
+
+### Máy trạng thái (state machine) giao dịch
+~~~text
+[INIT] --gui yeu cau--> [SENT]
+[SENT] --nhan SUCCESS--> [SUCCESS] (ket thuc)
+[SENT] --nhan FAILED--> [FAILED]  (ket thuc, xem xet hoan tien neu da hold)
+[SENT] --timeout/loi mang--> [PENDING_UNKNOWN]
+[PENDING_UNKNOWN] --inquiry: SUCCESS--> [SUCCESS]
+[PENDING_UNKNOWN] --inquiry: FAILED--> [FAILED]
+[PENDING_UNKNOWN] --inquiry: van UNKNOWN & qua han--> [REVERSAL_PENDING] --xac nhan dao--> [REVERSED]
+~~~
+**PENDING/UNKNOWN**: trạng thái "đang treo, chưa kết luận". Tiền bên gửi có thể đang bị **hold** (tạm giữ) — chưa trừ hẳn khỏi số dư khả dụng cho giao dịch khác, nhưng cũng chưa trả lại.
+
+~~~seq
+title: Chuyen khoan lien NH bi timeout va tra soat
+actors: AppKhach | PaymentSvc | Napas | DoiTacNH
+AppKhach -> PaymentSvc: chuyen 5.000.000 cho B
+PaymentSvc -> PaymentSvc: tao tx_id duy nhat, hold tien A, trang thai SENT
+PaymentSvc -> Napas: gui lenh chuyen (tx_id)
+Napas -> DoiTacNH: ghi co cho B
+DoiTacNH --> Napas: thanh cong
+Napas --> PaymentSvc: timeout mat phan hoi
+PaymentSvc -> PaymentSvc: chuyen trang thai PENDING_UNKNOWN
+PaymentSvc --> AppKhach: "Dang xu ly, vui long cho" (khong bao loi)
+PaymentSvc -> Napas: inquiry(tx_id) - tra soat
+Napas --> PaymentSvc: ket qua SUCCESS
+PaymentSvc -> PaymentSvc: cap nhat SUCCESS, chot tru tien A
+PaymentSvc --> AppKhach: thong bao thanh cong
+~~~
+
+### Nguyên tắc xử lý
+- **Không retry mù**: nếu phải gửi lại ở tầng kỹ thuật, phải dùng cùng {{tx_id}} và đối tác phải hỗ trợ idempotent (nhận lại cùng mã -> trả kết quả cũ, không xử lý hai lần).
+- **Idempotency key** (khóa chống trùng): mã duy nhất gắn với *ý định* chuyển tiền của khách. Sinh ở phía bạn, gửi kèm sang Napas; lưu unique trong DB để chặn tạo giao dịch trùng khi khách bấm lại.
+- **Inquiry/tra soát**: API hoặc quy trình hỏi đối tác trạng thái cuối của {{tx_id}}. Có lịch retry inquiry (ví dụ sau 30s, 2p, 10p...) và giới hạn thời gian chờ trước khi leo thang thủ công.
+- **Hoàn tiền (reversal/refund)**: chỉ thực hiện khi có xác nhận {{FAILED}} từ đối tác hoặc sau quy trình tra soát chính thức kết luận không thành công. Hoàn bằng bút toán đảo trên sổ cái, ghi rõ tham chiếu giao dịch gốc.
+
+~~~java
+// Ví dụ ý tưởng: chặn trùng bằng unique constraint + kiểm tra trạng thái
+@Transactional
+public TransferResult createTransfer(String idempotencyKey, TransferCmd cmd) {
+    // unique index trên idempotency_key đảm bảo 2 request đồng thời chỉ 1 cái insert được
+    var existing = repo.findByIdempotencyKey(idempotencyKey);
+    if (existing.isPresent()) return TransferResult.from(existing.get()); // trả kết quả cũ
+
+    var tx = Transfer.pending(idempotencyKey, cmd); // trạng thái ban đầu
+    repo.save(tx);           // lưu trước khi gọi ngoài
+    try {
+        var resp = napasClient.send(tx.getId(), cmd); // có timeout cấu hình
+        tx.applyResponse(resp); // SUCCESS hoặc FAILED
+    } catch (TimeoutException e) {
+        tx.markPendingUnknown(); // KHÔNG coi là FAILED
+    }
+    repo.save(tx);
+    return TransferResult.from(tx);
 }
+~~~
+
+### Lỗi hay gặp
+- Bắt {{Exception}} chung rồi set {{FAILED}} -> timeout bị xử lý như thất bại, gây đảo tiền sai.
+- Cho phép khách bấm "Thử lại" tạo giao dịch mới thay vì tra cứu giao dịch cũ theo idempotency key.
+- Không lưu request/response và {{tx_id}} đối tác trả về -> không tra soát được.
+- Tự ý hoàn tiền sau N phút timeout mà chưa inquiry -> có thể hoàn nhầm khi đối tác đã xử lý thành công.
+- {{PENDING_UNKNOWN}} treo vô hạn không có job quét/leo thang -> tiền khách bị giữ mãi.
+
+> Senior tip: Hãy phân biệt rõ 3 khái niệm khi trả lời: *timeout* (không biết kết quả), *retry kỹ thuật* (gửi lại cùng idempotency key, an toàn nếu đối tác idempotent) và *retry nghiệp vụ* (tạo yêu cầu chuyển tiền mới — chỉ làm khi chắc chắn giao dịch cũ thất bại). Nhấn mạnh "tiền thật an toàn hơn trải nghiệm nhanh": thà báo khách chờ tra soát còn hơn hoàn/ghi trùng sai.
+  `,
+  follow: [
+    'Idempotency được đảm bảo ở những tầng nào (client, API của bạn, Napas/đối tác, DB) và mỗi tầng làm gì?',
+    'Bạn thiết kế job tra soát định kỳ cho các giao dịch PENDING_UNKNOWN như thế nào (tần suất, backoff, giới hạn, leo thang thủ công)?',
+    'Khi đối tác xác nhận FAILED nhưng bạn đã trừ tiền/hold, luồng đảo bút (reversal) cần đảm bảo những gì?'
+  ],
+  tags: ['timeout', 'pending', 'tra soát', 'interbank', 'idempotency']
+},
+{
+  id: 'banking-026',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Maker-checker (người tạo - người duyệt) và audit trail (nhật ký kiểm toán) được triển khai trong hệ thống ngân hàng như thế nào? Hãy mô tả mô hình dữ liệu, luồng duyệt và các nguyên tắc phân tách nhiệm vụ để ngăn gian lận.',
+  a: `**Tóm tắt:** Maker-checker (4 mắt/dual control) yêu cầu một người tạo yêu cầu (maker) và một người khác phê duyệt (checker) trước khi hành động có hiệu lực — không ai được tự duyệt việc mình tạo. Audit trail là nhật ký bất biến ghi lại *ai làm gì, lúc nào, giá trị trước/sau, từ đâu*, phục vụ truy vết và tuân thủ. Triển khai cần: mô hình trạng thái yêu cầu, kiểm tra phân tách nhiệm vụ trong code, và log append-only không thể sửa/xóa.
+
+### Vì sao cần maker-checker
+Trong ngân hàng, một thao tác (sửa hạn mức, tạo tài khoản đặc biệt, phê duyệt hoàn tiền, thay đổi lãi suất) có thể gây thiệt hại lớn. **Segregation of duties** (phân tách nhiệm vụ): chia việc nhạy cảm cho nhiều người để một cá nhân không thể gian lận một mình. Ví dụ đời thường: người giữ chìa két và người biết mã két là hai người khác nhau. Maker-checker là hiện thực kỹ thuật của nguyên tắc này.
+
+### Mô hình dữ liệu & luồng trạng thái
+~~~text
+ApprovalRequest:
+  id, action_type (REFUND/CHANGE_LIMIT/...), payload_json (nội dung đề xuất)
+  status: DRAFT -> PENDING_APPROVAL -> APPROVED -> APPLIED  (hoặc REJECTED / CANCELLED)
+  maker_id, maker_at
+  checker_id, checker_at, checker_comment
+  applied_at, applied_by (thường là hệ thống/job sau khi APPROVED)
+~~~
+Nguyên tắc cốt lõi: **payload đề xuất** được lưu đóng băng; khi áp dụng, hệ thống dùng đúng payload đã duyệt, không dùng dữ liệu maker sửa lại sau.
+
+~~~seq
+title: Luong maker-checker duyet hoan tien
+actors: Maker | HeThong | Checker | CoreLedger
+Maker -> HeThong: tao yeu cau REFUND tx=TX9, so tien 1.000.000
+HeThong -> HeThong: luu request status=PENDING_APPROVAL, maker_id=U1
+Checker -> HeThong: xem chi tiet yeu cau
+HeThong -> HeThong: kiem tra checker_id != maker_id
+Checker -> HeThong: APPROVE (comment)
+HeThong -> HeThong: status=APPROVED, checker_id=U2
+HeThong -> CoreLedger: ap dung bút toán hoan theo payload da duyet
+CoreLedger --> HeThong: tx hoan thanh cong, status=APPLIED
+~~~
+
+### Kiểm tra phân tách nhiệm vụ (SoD) trong code
+~~~java
+public void approve(long requestId, User checker, String comment) {
+    var req = repo.findPending(requestId).orElseThrow();
+    if (req.getMakerId().equals(checker.getId())) {
+        throw new BusinessException("Maker khong duoc tu duyet yeu cau cua minh");
+    }
+    if (!checker.hasRole("APPROVER") || !checker.canApprove(req.getActionType(), req.getAmount())) {
+        throw new AccessDeniedException("Khong du quyen duyet");
+    }
+    req.approve(checker.getId(), comment, Instant.now()); // ghi checker + thời điểm
+    audit.log("APPROVE", checker, req.getId(), req.snapshot());
+    repo.save(req);
+}
+~~~
+Lưu ý thực tế: cần xử lý trường hợp maker sửa yêu cầu sau khi gửi -> sửa phải đưa trạng thái về {{PENDING_APPROVAL}} và (tùy chính sách) có thể yêu cầu duyệt lại; đồng thời checker không được duyệt bản đã thay đổi so với lúc mình xem.
+
+### Audit trail (nhật ký kiểm toán)
+**Audit trail**: bản ghi bất biến cho mỗi hành động nhạy cảm. Trường tối thiểu:
+~~~text
+audit_id, occurred_at, actor_id, actor_role, action,
+resource_type, resource_id, before_json, after_json,
+ip_address, user_agent, request_id/correlation_id, result (OK/DENY)
+~~~
+- **Bất biến**: chỉ append, không UPDATE/DELETE; quyền DB tách riêng; thường đẩy sang kho log riêng (WORM storage — Write Once Read Many: ghi một lần đọc nhiều, không cho sửa).
+- **Correlation/request id**: mã gắn xuyên suốt một luồng để lần theo toàn bộ bước.
+- **Trước/sau (before/after)**: biết chính xác trường nào đổi từ giá trị nào sang giá trị nào.
+
+### Phân quyền và ngưỡng duyệt
+- **RBAC** (Role-Based Access Control, phân quyền theo vai trò): vai trò MAKER, CHECKER, ADMIN tách biệt; admin hệ thống không đồng thời có quyền nghiệp vụ duyệt tiền.
+- **Ngưỡng**: hoàn tiền < 5 triệu cần 1 checker, >= 5 triệu cần 2 checker (dual approval) hoặc cấp cao hơn.
+- **Loại trừ xung đột**: cùng team/quan hệ trực tiếp có thể bị cấm duyệt chéo (tùy chính sách).
+
+### Lỗi hay gặp
+- Chỉ ẩn nút "Duyệt" trên UI nhưng API không kiểm tra {{maker_id != checker_id}} -> gọi API trực tiếp là vượt qua.
+- Cho phép ADMIN có mọi quyền kể cả tự tạo tự duyệt -> phá vỡ SoD.
+- Audit log ghi thiếu {{before/after}} hoặc ghi được đè/sửa -> mất giá trị pháp lý.
+- Áp dụng thay đổi bằng cách đọc lại dữ liệu hiện tại thay vì payload đã duyệt -> maker sửa dữ liệu sau duyệt, checker duyệt một đằng áp dụng một nẻo.
+- Không log cả hành động bị từ chối (DENY) -> bỏ sót dấu hiệu dò quyền/gian lận.
+
+> Senior tip: Nêu ba lớp bảo vệ khi phỏng vấn: (1) *nghiệp vụ* — state machine + SoD (maker != checker, đúng vai trò/ngưỡng), (2) *dữ liệu* — payload bất biến, áp dụng đúng bản đã duyệt, audit append-only, (3) *hạ tầng* — tách quyền DB/log, giám sát bất thường. Maker-checker không chỉ là "thêm nút duyệt", nó là ràng buộc toàn vẹn phải được cưỡng bức ở tầng service/API, không tin UI.
+  `,
+  follow: [
+    'Nếu maker chỉnh sửa yêu cầu sau khi checker đã mở màn hình duyệt, hệ thống nên xử lý thế nào để checker không duyệt nhầm nội dung cũ?',
+    'Thiết kế audit trail thế nào để đảm bảo tính bất biến (không ai sửa/xóa được), kể cả DBA?',
+    'Khi nào cần nhiều hơn 2 cấp duyệt (multi-level approval) và ngưỡng phân cấp thường dựa trên tiêu chí nào?'
+  ],
+  tags: ['maker-checker', 'audit trail', 'SoD', 'approval', 'compliance']
+},
+{
+  id: 'banking-027',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Trong hệ thống ngân hàng Việt Nam, bạn xử lý làm tròn tiền tệ với BigDecimal như thế nào? Hãy nói rõ RoundingMode, đặc thù VND không có phần thập phân, và bài toán chia phí phát sinh phần lẻ (tiền "lẻ đồng").',
+  a: `**Tóm tắt:** Tiền phải dùng {{BigDecimal}} (hoặc số nguyên đơn vị nhỏ nhất), không dùng {{double/float}} vì nhị phân không biểu diễn chính xác thập phân ({{0.1 + 0.2 != 0.3}}). Chọn {{RoundingMode}} (quy tắc làm tròn) theo nghiệp vụ và phải nhất quán. VND (đồng Việt Nam) không có phần thập phân — mọi số tiền VND là số nguyên đồng. Khi chia phí/lãi cho nhiều bên, phép chia tạo phần dư ("lẻ đồng") phải được phân bổ có chủ đích để tổng các phần sau chia đúng bằng số tiền gốc.
+
+### Vì sao không dùng double/float
+{{double}} lưu theo chuẩn nhị phân (IEEE 754) nên nhiều số thập phân chỉ là xấp xỉ. Sai số nhỏ nhưng cộng dồn qua hàng triệu giao dịch thành chênh lệch tiền thật.
+~~~java
+System.out.println(0.1 + 0.2); // 0.30000000000000004
+// Tiền: dùng BigDecimal, KHỞI TẠO TỪ STRING (không phải từ double)
+BigDecimal a = new BigDecimal("0.1");
+BigDecimal b = new BigDecimal("0.2");
+System.out.println(a.add(b));   // 0.3 (chính xác)
+// Sai: new BigDecimal(0.1) mang theo sai số của double
+~~~
+
+### RoundingMode — quy tắc làm tròn
+**RoundingMode** (chế độ làm tròn): khi kết quả có nhiều chữ số hơn mức cho phép, làm tròn theo quy tắc nào.
+~~~text
+Mode           Ví dụ (làm tròn về 0 chữ số thập phân)   Ghi chú
+-------------  ---------------------------------------  ------------------------------
+HALF_UP        2.5 -> 3,  2.4 -> 2,  -2.5 -> -3         "Làm tròn toán học" thường gặp
+HALF_EVEN      2.5 -> 2,  3.5 -> 4                      Banker's rounding, giảm thiên lệch cộng dồn
+DOWN           2.9 -> 2, -2.9 -> -2                     Cắt về 0 (trunc)
+FLOOR          2.9 -> 2, -2.9 -> -3                     Luôn về phía âm vô cùng
+CEILING        2.1 -> 3, -2.9 -> -2                     Luôn về phía dương vô cùng
+UNNECESSARY    ném lỗi nếu có phần phải làm tròn         Dùng để khẳng định "phải chia hết"
+~~~
+Chọn mode nào là quyết định nghiệp vụ: tính lãi tiết kiệm làm tròn có lợi/không lợi cho ai, quy định ra sao — phải thống nhất và ghi vào đặc tả. Phép {{divide}} trên {{BigDecimal}} *bắt buộc* chỉ định scale + roundingMode nếu có thể không chia hết, nếu không sẽ ném {{ArithmeticException}}.
+
+~~~java
+BigDecimal fee = new BigDecimal("10000");
+BigDecimal three = new BigDecimal("3");
+// 10000 / 3: phải chỉ định cách làm tròn
+BigDecimal each = fee.divide(three, 0, RoundingMode.DOWN); // 3333 (VND, 0 chữ số thập phân)
+~~~
+
+### Đặc thù VND: không có phần thập phân
+VND (đồng) không dùng xu/hào trong giao dịch điện tử thông thường — số tiền hợp lệ là số nguyên. Vì vậy:
+- Lưu VND ở {{scale = 0}} hoặc dùng {{long}} đơn vị đồng.
+- Làm tròn về 0 chữ số thập phân. Nhiều ngân hàng/merchant còn làm tròn đến bậc 100đ/1.000đ tùy nghiệp vụ (phải theo quy định).
+- Khác với USD (2 chữ số thập phân, đơn vị cent) hay JPY (0). Nếu hệ thống đa tiền tệ, {{scale}} phụ thuộc loại tiền.
+~~~java
+// VND: scale 0
+BigDecimal vnd = new BigDecimal("123456.78").setScale(0, RoundingMode.HALF_UP); // 123457
+// Hoặc làm tròn bậc 1000đ
+BigDecimal step = new BigDecimal("1000");
+BigDecimal rounded = vnd.divide(step, 0, RoundingMode.HALF_UP).multiply(step); // 123000
+~~~
+
+### Bài toán chia phí/lãi phát sinh phần lẻ (remainder allocation)
+Chia 10.000 VND phí cho 3 người: {{10000/3 = 3333}} dư {{1}} đồng. Nếu mỗi người trả 3333, tổng thu 9999 — mất 1 đồng (hoặc ngược lại thu thừa). Trong kế toán, 1 đồng cũng phải cân.
+
+Cách xử lý: phân bổ phần dư có quy tắc, minh bạch, lặp lại được (deterministic):
+~~~java
+static List<BigDecimal> splitVnd(BigDecimal total, int parts) {
+    BigDecimal[] div = total.divideAndRemainder(BigDecimal.valueOf(parts)); // [thương, dư]
+    BigDecimal base = div[0].setScale(0, RoundingMode.DOWN); // mỗi phần cơ bản
+    int remainder = div[1].intValueExact(); // số đồng dư (0 <= remainder < parts)
+    List<BigDecimal> result = new ArrayList<>(parts);
+    for (int i = 0; i < parts; i++) {
+        // cộng 1 đồng vào các phần đầu tiên cho đến khi hết dư (quy tắc cố định)
+        result.add(i < remainder ? base.add(BigDecimal.ONE) : base);
+    }
+    return result; // [3334, 3333, 3333], tổng = 10000
+}
+~~~
+Quy tắc phân bổ (phần đầu nhận dư, hay phần lớn nhất nhận dư, hay theo thứ tự ID ổn định) phải được đặc tả và test — không được để "mỗi lần chạy một kiểu".
+
+### Lỗi hay gặp
+- Dùng {{double}} cho tiền hoặc {{new BigDecimal(0.1)}} (truyền double) -> nhiễm sai số.
+- Gọi {{divide}} không truyền {{RoundingMode}} -> {{ArithmeticException}} khi chia không hết, lỗi production.
+- So sánh {{BigDecimal}} bằng {{equals()}}: {{new BigDecimal("2.0").equals(new BigDecimal("2"))}} là {{false}} (khác scale) -> dùng {{compareTo() == 0}}.
+- Làm tròn VND còn 2 chữ số thập phân hoặc quên đặc thù scale theo loại tiền.
+- Chia phí bỏ quên phần dư -> sổ cái lệch, đối soát không khớp (break).
+- Mỗi module tự chọn {{RoundingMode}} khác nhau -> cùng nghiệp vụ ra hai kết quả.
+
+> Senior tip: Đặt ra quy ước toàn hệ thống ngay từ đầu: (1) kiểu tiền duy nhất ({{BigDecimal}} hoặc {{long}} minor unit) và cách khởi tạo (luôn từ {{String}}), (2) {{scale}} và {{RoundingMode}} cho từng loại nghiệp vụ (lãi, phí, thuế, hiển thị), (3) hàm chia/phân bổ phần dư dùng chung có unit test. Trong code review, coi mọi {{double}} chạm vào tiền là lỗi blocker.
+  `,
+  follow: [
+    'Sự khác nhau giữa equals() và compareTo() trên BigDecimal là gì, và vì sao so sánh tiền phải dùng compareTo()?',
+    'Khi nào dùng HALF_EVEN (banker\'s rounding) thay vì HALF_UP, và nó giải quyết vấn đề gì khi cộng dồn?',
+    'Nếu hệ thống đa tiền tệ (VND scale 0, USD scale 2), bạn thiết kế lớp/value object Money như thế nào để tránh trộn scale?'
+  ],
+  tags: ['BigDecimal', 'RoundingMode', 'VND', 'currency', 'allocation']
+},
+{
+  id: 'banking-028',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Batch EOD (End Of Day - xử lý cuối ngày) và cut-off time trong ngân hàng là gì? Bạn thiết kế batch EOD như thế nào để chạy đúng thứ tự, an toàn khi chạy lại (idempotent), và không làm hỏng dữ liệu nếu bị gián đoạn giữa chừng?',
+  a: `**Tóm tắt:** **Cut-off time** là mốc giờ "chốt sổ" — giao dịch sau mốc này được hạch toán vào ngày nghiệp vụ hôm sau. **EOD (End Of Day)** là chuỗi batch job chạy sau cut-off để tổng hợp, tính lãi/phí, đối soát, chốt số dư, chuyển ngày nghiệp vụ. Thiết kế an toàn cần: phụ thuộc thứ tự rõ ràng, từng bước idempotent (chạy lại cho kết quả như chạy một lần), checkpoint để restart từ bước lỗi, và cô lập dữ liệu theo ngày nghiệp vụ.
+
+### Cut-off time và ngày nghiệp vụ
+**Cut-off time** (giờ chốt): mốc thời gian cố định. Ví dụ cut-off 23:00 — giao dịch 22:59 thuộc ngày nghiệp vụ T, giao dịch 23:01 thuộc T+1 (dù cùng ngày dương lịch). **Ngày nghiệp vụ** (business date) là "ngày sổ sách" của ngân hàng, khác với ngày giờ hệ thống. Nhiều kênh có cut-off khác nhau (chuyển khoản nội bộ, Napas, thẻ quốc tế) — đặc tả phải rõ từng loại.
+
+Tại sao cần chốt? Tính lãi, báo cáo, đối soát phải tính trên một tập giao dịch *đóng* (không đổi). Nếu vừa tính vừa có giao dịch mới chen vào, số liệu không nhất quán.
+
+### EOD thường gồm những bước nào
+~~~text
+1. Pre-check   : xác nhận các batch/luồng online đã dừng nhận giao dịch ngày T, hàng đợi đã xả
+2. Posting     : hạch toán nốt giao dịch treo hợp lệ của ngày T
+3. Interest/Fee: tính lãi, phí theo số dư/ngày nghiệp vụ T
+4. Reconcile   : đối soát với Napas/đối tác (xem banking-024)
+5. GL/Balance  : tổng hợp sổ cái, chốt số dư cuối ngày (closing balance)
+6. Reporting   : sinh báo cáo quản trị/tuân thủ
+7. Date switch : mở ngày nghiệp vụ T+1, cập nhật cut-off
+~~~
+Các bước có **phụ thuộc** (dependency): (5) cần (3) xong; (7) chỉ chạy khi (1)-(6) thành công. Đây là một **DAG** (Directed Acyclic Graph — đồ thị có hướng không vòng) các job.
+
+### Thiết kế an toàn: idempotent + checkpoint
+**Idempotent** (lũy đẳng): thực hiện nhiều lần cho cùng kết quả như một lần. Batch EOD *chắc chắn* sẽ có lúc cần chạy lại (lỗi mạng, DB chết, job timeout giữa chừng) — nếu chạy lại mà tính lãi lần 2, khách được cộng lãi kép, thảm họa.
+
+Kỹ thuật:
+- **Đánh dấu theo ngày nghiệp vụ**: mỗi bút tính lãi/phí gắn {{business_date=T}} và khóa nghiệp vụ (account+type+T). Trước khi ghi, kiểm tra đã tồn tại chưa ({{INSERT ... ON CONFLICT DO NOTHING}} hoặc kiểm tra unique key) -> chạy lại không tạo bút trùng.
+- **Checkpoint/bước trạng thái**: lưu {{eod_run(date=T, step=INTEREST, status=DONE)}}. Khi restart, đọc bước DONE cuối cùng và chạy tiếp bước sau, không chạy lại từ đầu những bước đã hoàn tất (trừ khi bước tự idempotent).
+- **Phạm vi dữ liệu rõ**: job chỉ xử lý giao dịch có {{business_date = T}}. Dùng snapshot/cờ chốt để tập dữ liệu không đổi trong suốt lần chạy.
+- **Chạy trong đơn vị an toàn**: xử lý theo lô (chunk) tài khoản; mỗi chunk một transaction hoặc có cơ chế bù trừ; ghi log tiến độ để biết chunk nào đã xong.
+
+~~~java
+// Ý tưởng: bước tính lãi idempotent theo (account, businessDate)
+public void accrueInterest(LocalDate bizDate, String accountId) {
+    String key = accountId + "|INTEREST|" + bizDate; // khóa nghiệp vụ duy nhất
+    if (ledgerRepo.existsByBusinessKey(key)) return;  // đã chạy -> bỏ qua (idempotent)
+    BigDecimal interest = calcInterest(accountId, bizDate);
+    ledgerRepo.appendEntry(key, accountId, "CREDIT", interest, bizDate); // append-only
+}
+~~~
+
+### Cut-off và giao dịch "nằm giữa"
+- Giao dịch nhận lúc 23:00:01 (sau cut-off) -> gắn {{business_date = T+1}}, không đưa vào EOD của T.
+- Giao dịch đang chờ phản hồi Napas lúc cut-off -> thường vẫn thuộc ngày gửi (T) nhưng trạng thái {{PENDING}}; EOD phải có bước xử lý/đánh dấu các giao dịch treo để đối soát hôm sau (liên hệ banking-025).
+
+### Lỗi hay gặp
+- Batch không idempotent: chạy lại tính lãi/phí lần 2 -> trùng bút toán, sai số dư.
+- Không có checkpoint: lỗi ở bước 5/7 phải chạy lại từ đầu, vừa lâu vừa rủi ro nếu bước đầu không idempotent.
+- Dùng giờ hệ thống thay vì ngày nghiệp vụ -> lệch khi chạy qua nửa đêm hoặc khi job bị hoãn.
+- Nhiều node cùng chạy EOD cho cùng ngày -> tranh chấp, trùng dữ liệu; cần cơ chế **distributed lock** (khóa phân tán: chỉ một node giữ khóa được chạy) theo {{business_date}}.
+- Chuyển ngày nghiệp vụ (bước 7) trước khi các bước trước xác nhận xong -> ngày mới mở trong khi số liệu ngày cũ chưa chốt.
+
+> Senior tip: Hãy nói về EOD theo tư duy "thiết kế cho sự cố": *giả định job sẽ chết giữa chừng và sẽ bị chạy lại*. Khi đó idempotency + checkpoint + khóa nghiệp vụ theo ngày là bắt buộc, không phải tối ưu. Nêu thêm: tách **cut-off logic** (gắn ngày nghiệp vụ) khỏi EOD batch — cut-off là quyết định tại thời điểm nhận giao dịch, EOD chỉ xử lý tập đã chốt. Hai thứ trộn lẫn là nguồn gốc lỗi ngày hạch toán.
+  `,
+  follow: [
+    'Distributed lock cho job EOD theo business_date nên dùng công cụ/cơ chế nào và xử lý thế nào khi node giữ khóa bị chết (lock bị kẹt)?',
+    'Bạn giám sát (monitoring/alert) EOD ra sao: những chỉ số hoặc điều kiện nào báo "EOD hôm nay có vấn đề"?',
+    'Nếu một bước EOD chạy xong một nửa (đã ghi một phần bút toán) rồi lỗi, idempotency đảm bảo chạy lại không trùng như thế nào ở mức chi tiết?'
+  ],
+  tags: ['EOD', 'cut-off', 'batch', 'idempotency', 'business date']
+},
+{
+  id: 'banking-029',
+  topic: 'banking',
+  level: 'lead',
+  q: 'ISO 20022 là gì và khi tích hợp ngân hàng/đối tác, bạn chuẩn hóa thông điệp (message) như thế nào? Hãy nêu các nhóm thông điệp thường gặp (pain/pacs/camt), thách thức ánh xạ dữ liệu từ hệ thống cũ, và chiến lược chuyển đổi.',
+  a: `**Tóm tắt:** **ISO 20022** là chuẩn quốc tế về định dạng thông điệp tài chính dựa trên XML (và có bản JSON/ASN.1), dùng mô hình dữ liệu chung và từ điển nghiệp vụ thống nhất, thay thế dần các chuẩn cũ/cục bộ (như MT trong SWIFT, nhiều định dạng nội địa riêng). Tích hợp thực tế là bài toán *ánh xạ và chuẩn hóa*: chuyển dữ liệu hệ thống lõi (core) sang cấu trúc ISO 20022 ({{pain/pacs/camt}}) và ngược lại, xử lý khác biệt ngữ nghĩa, độ dài trường, mã tham chiếu. Chiến lược an toàn: lớp chuyển đổi (adapter/canonical model), chạy song song, kiểm chứng bằng đối soát.
+
+### ISO 20022 là gì (giải thích cho người mới)
+**ISO 20022**: bộ tiêu chuẩn mô tả cách trao đổi dữ liệu điện tử trong tài chính. Thay vì mỗi bên tự nghĩ ra định dạng, chuẩn định nghĩa: (1) *từ điển dữ liệu* (tên, ý nghĩa, kiểu của từng thành phần như số tiền, tài khoản, tên người trả) và (2) *thông điệp* (message) cho từng nghiệp vụ, biểu diễn bằng XML Schema (XSD). Ví dụ đời thường: thay vì mỗi công ty gửi hóa đơn một kiểu, mọi người thống nhất một mẫu chung để máy đọc được.
+
+So với chuẩn cũ (như SWIFT MT, dạng text dòng cố định): ISO 20022 giàu ngữ nghĩa hơn, có cấu trúc rõ, mang được nhiều thông tin (mã mục đích, thông tin người thụ hưởng chi tiết) — hỗ trợ tốt hơn chống rửa tiền (AML) và tự động hóa.
+
+### Các nhóm thông điệp thường gặp
+Tên thông điệp dạng {{xxxx.nnn.nnn}} (4 chữ cái + phiên bản):
+~~~text
+Nhóm   Tên đầy đủ (ý nghĩa)         Ví dụ hay gặp                        Dùng khi
+-----  ---------------------------  -----------------------------------  -----------------------------
+pain   Payments Initiation          pain.001 (Customer Credit Transfer   Khởi tạo lệnh chuyển tiền từ KH/doanh nghiệp
+                                    Initiation)
+pacs   Payments Clearing&Settlement pacs.008 (FI to FI Customer Credit   Chuyển tiền giữa các tổ chức tài chính
+                                    Transfer), pacs.002 (Status Report)  (clearing/settlement), báo trạng thái
+camt   Cash Management             camt.053 (Bank to Customer           Sao kê, báo cáo số dư, thông báo biến động
+                                    Statement), camt.054 (Debit/Credit
+                                    Notification)
+~~~
+- **Clearing** (bù trừ): tính toán ròng các nghĩa vụ giữa các bên. **Settlement** (quyết toán): chuyển tiền thật để tất toán.
+- Napas và các hệ thống thanh toán hiện đại dần chuyển sang ISO 20022 (đặc biệt chuyển khoản nhanh), nên tích hợp mới thường chạm nhóm {{pacs/pain/camt}}.
+
+### Bài toán chuẩn hóa/ánh xạ (mapping)
+Hệ thống lõi (core) lưu tài khoản, tên, số dư theo mô hình riêng; đối tác yêu cầu ISO 20022. Bạn cần lớp **mapping/adapter**:
+~~~text
+Core model  --(map)-->  Canonical/ISO 20022 model  --(serialize)-->  XML gửi đối tác
+Core model  <--(map)--  Canonical/ISO 20022 model  <--(parse)-----   XML nhận về
+~~~
+**Canonical model** (mô hình chuẩn nội bộ): biểu diễn trung gian theo ngữ nghĩa nghiệp vụ của bạn; giúp không phải map N hệ thống x N hệ thống trực tiếp.
+
+Thách thức thực tế:
+- **Ngữ nghĩa khác nhau**: mã trạng thái nội bộ {{SUCCESS/FAIL}} phải map sang mã trạng thái ISO 20022 (ví dụ trong {{pacs.002}}: {{ACCP}}, {{ACSC}}, {{RJCT}} kèm reason code) — sai mapping là báo sai kết quả tiền.
+- **Độ dài/định dạng trường**: tên người thụ hưởng core cho 200 ký tự, message chỉ nhận 140; ký tự có dấu/đặc biệt; địa chỉ cấu trúc vs chuỗi tự do.
+- **Mã tham chiếu**: ISO 20022 có nhiều loại id ({{MsgId}}, {{InstrId}}, {{EndToEndId}}, {{TxId}}, {{UETR}}). Phải chọn/giữ ổn định cái dùng để đối soát và tra soát (liên hệ banking-024/025).
+- **Tiền tệ và số tiền**: số thập phân, loại tiền (VND scale 0 — banking-027) phải đúng quy định message.
+- **Bắt buộc/tuỳ chọn**: trường đối tác bắt buộc nhưng core không có -> phải có quy tắc điền mặc định hoặc từ chối giao dịch từ đầu.
+
+~~~seq
+title: Luong tich hop gui pacs.008 qua lop chuan hoa
+actors: CoreBank | Adapter | DoiTac
+CoreBank -> Adapter: lenh chuyen tien (model noi bo)
+Adapter -> Adapter: validate + map sang cau truc ISO 20022
+Adapter -> Adapter: gan EndToEndId/TxId de truy vet
+Adapter -> DoiTac: gui pacs.008 XML
+DoiTac --> Adapter: pacs.002 status (ACSC/RJCT)
+Adapter -> Adapter: map status + reason code ve model noi bo
+Adapter --> CoreBank: cap nhat trang thai giao dich
+~~~
+
+### Chiến lược chuyển đổi (migration) an toàn
+- **Adapter/anti-corruption layer**: cô lập chuẩn ISO 20022 ở một lớp, không để cấu trúc XML rò rỉ khắp core.
+- **Chạy song song (parallel run)**: gửi/nhận cả kênh cũ và mới (nếu có), so khớp kết quả trước khi cắt hẳn.
+- **Contract & validation**: validate XML theo XSD + rule nghiệp vụ; test với bộ case của đối tác (certification/sandbox).
+- **Phiên bản (variant)**: ISO 20022 có nhiều phiên bản và "profile" nội địa — khóa đúng version/profile đối tác yêu cầu, quản lý như một contract có version.
+- **Quan sát & đối soát**: log message id, lưu bản tin (đã che dữ liệu nhạy cảm), đối soát hằng ngày để phát hiện map sai.
+
+### Lỗi hay gặp
+- Map trường "gần giống" mà khác ngữ nghĩa (ngày tạo vs ngày giá trị, trạng thái accepted vs settled) -> nghiệp vụ sai.
+- Sinh {{EndToEndId}} mới mỗi lần retry -> mất khả năng đối soát/tra soát; mã truy vết phải ổn định theo giao dịch gốc.
+- Không xử lý reason code khi {{RJCT}} (bị từ chối) -> chỉ biết "lỗi" mà không biết lý do (sai tài khoản, vượt hạn mức...).
+- Hard-code mapping rải rác -> khó thay đổi khi đối tác nâng phiên bản.
+
+> Senior tip: Ở góc lead, nhấn mạnh đây là bài toán *quản lý biên* (boundary) và *ngữ nghĩa dữ liệu*, không chỉ là "parse XML". Ba điểm ăn điểm: (1) canonical model + adapter để cô lập thay đổi, (2) mã tham chiếu end-to-end ổn định để idempotency/đối soát/tra soát, (3) parallel run + đối soát trước khi cutover. Luôn hỏi đối tác: họ dùng profile/phiên bản nào, trường nào bắt buộc, reason code set nào — đừng suy đoán.
+  `,
+  follow: [
+    'EndToEndId, TxId, MsgId trong ISO 20022 khác nhau thế nào và bạn chọn mã nào làm khóa đối soát/tra soát với đối tác?',
+    'Làm sao thiết kế lớp adapter để thêm một đối tác/kênh thanh toán mới mà không sửa core nghiệp vụ?',
+    'Khi chạy song song kênh cũ và ISO 20022, bạn phát hiện hai kênh ra kết quả khác nhau cho cùng giao dịch — quy trình xử lý thế nào?'
+  ],
+  tags: ['ISO 20022', 'pain.001', 'pacs.008', 'camt.053', 'mapping', 'integration']
+},
+{
+  id: 'banking-030',
+  topic: 'banking',
+  level: 'lead',
+  q: 'Thiết kế hạn mức giao dịch theo ngày (daily limit) cho ngân hàng số như thế nào để chịu được truy cập đồng thời (concurrent), không cho vượt hạn mức kể cả khi nhiều giao dịch cùng lúc, và vẫn đảm bảo hiệu năng?',
+  a: `**Tóm tắt:** Hạn mức theo ngày (daily limit) yêu cầu: tổng giao dịch của khách trong một ngày nghiệp vụ không vượt ngưỡng (ví dụ 500 triệu/ngày). Thách thức là **concurrency**: nhiều yêu cầu đồng thời đọc cùng "đã dùng bao nhiêu" và cùng thấy "còn đủ", dẫn đến vượt hạn. Giải pháp: cập nhật hạn mức bằng thao tác *nguyên tử* (atomic) gắn với quyết định chấp nhận (check-and-reserve trong một bước), dùng DB atomic update/khóa phù hợp hoặc bộ đếm tập trung (Redis atomic), cộng với idempotency để retry không trừ hạn mức hai lần.
+
+### Bài toán và vì sao "đọc rồi ghi" bị lỗi
+Giả sử hạn mức 10.000.000 VND/ngày, đã dùng 9.000.000, còn 1.000.000. Hai giao dịch 800.000 chạy đồng thời:
+~~~text
+T1: đọc đã dùng = 9.000.000 -> còn 1.000.000 >= 800.000 -> CHẤP NHẬN
+T2: đọc đã dùng = 9.000.000 -> còn 1.000.000 >= 800.000 -> CHẤP NHẬN  (cùng lúc!)
+Kết quả: tổng dùng 10.600.000 > 10.000.000 -> VƯỢT HẠN MỨC
+~~~
+Đây là race condition kinh điển (giống banking-023). Với traffic cao (mở sale, lương về), xác suất xảy ra lớn.
+
+### Mô hình dữ liệu cơ bản
+~~~text
+daily_limit_usage:
+  customer_id, business_date, limit_type (TRANSFER/EWALLET/TOTAL)
+  limit_amount   (hạn mức, có thể snapshot theo ngày vì hạn mức có thể đổi)
+  used_amount    (đã dùng)
+  reserved_amount (đang giữ chỗ cho giao dịch PENDING)  -- tùy thiết kế
+  updated_at, version
+Ràng buộc nghiệp vụ: used_amount + reserved_amount + amount_moi <= limit_amount
+~~~
+Lưu theo {{(customer_id, business_date, limit_type)}} với unique constraint. {{business_date}} lấy theo quy tắc cut-off (banking-028), không lấy ngày giờ server mù quáng.
+
+### Cách 1 — Atomic update trong DB (phổ biến, nhất quán mạnh)
+Thực hiện kiểm tra và trừ trong *một câu lệnh* để DB đảm bảo nguyên tử:
+~~~sql
+-- Chỉ cập nhật nếu còn đủ hạn mức (check-and-set nguyên tử)
+UPDATE daily_limit_usage
+SET used_amount = used_amount + :amount, updated_at = now(), version = version + 1
+WHERE customer_id = :cid AND business_date = :bdate AND limit_type = :type
+  AND (used_amount + reserved_amount + :amount) <= limit_amount;
+
+-- Kiểm tra số dòng bị ảnh hưởng: 1 = thành công (đã giữ chỗ), 0 = vượt hạn mức -> từ chối
+~~~
+~~~java
+int rows = jdbc.update(ATOMIC_RESERVE_SQL, amount, cid, bdate, type, amount);
+if (rows == 0) throw new LimitExceededException("Vuot han muc ngay");
+~~~
+Ưu điểm: nhất quán (consistent) với DB giao dịch; không cần hạ tầng thêm. Lưu ý: đặt index đúng; nếu một khách cực "nóng" có thể thành điểm nghẽn (lock/contend trên một dòng) — chấp nhận được vì hạn mức là theo từng khách.
+
+### Cách 2 — Khóa bi quan trên dòng hạn mức
+{{SELECT ... FOR UPDATE}} dòng {{daily_limit_usage}} của khách, tính toán, rồi UPDATE trong cùng DB transaction. An toàn, dễ hiểu, nhưng giảm song song cho cùng một khách (các giao dịch của khách đó xếp hàng). Phù hợp traffic vừa phải.
+
+### Cách 3 — Bộ đếm nguyên tử tập trung (Redis) cho traffic rất cao
+Dùng Redis {{INCRBY}}/Lua script để check-and-increment nguyên tử, phản hồi cực nhanh; định kỳ/đồng bộ về DB để đối soát và bền vững.
+~~~text
+Lua (chạy nguyên tử trên Redis):
+  current = GET key(cid,bdate,type) hoặc 0
+  if current + amount <= limit then current = current + amount; SET key current; return OK
+  else return EXCEEDED
+~~~
+Rủi ro: Redis là bộ nhớ; cần chiến lược bền vững (persistence), xử lý mất dữ liệu (fail-open hay fail-close — ngân hàng thường chọn *fail-close*: không chắc còn hạn mức thì từ chối, an toàn hơn vượt hạn), và cơ chế đối soát DB. Phức tạp hơn, chỉ dùng khi đo được DB không đáp ứng.
+
+### Idempotency và vòng đời giữ chỗ
+- Mỗi yêu cầu giao dịch có {{idempotency_key}}. Nếu client retry cùng key, phải trả kết quả cũ và **không trừ hạn mức lần 2**. Cách làm: lưu mapping {{idempotency_key -> tx_id, amount_reserved}}; kiểm tra trước khi reserve.
+- Giao dịch {{PENDING}}: đã reserve hạn mức. {{SUCCESS}} -> chuyển reserved thành used (hoặc xác nhận). {{FAILED/REVERSED}} -> trả lại (giảm reserved/used). Nếu {{PENDING}} treo quá lâu (timeout tra soát, banking-025), cần job giải phóng có kiểm soát.
+- Reset theo ngày: khi sang {{business_date}} mới, bản ghi ngày mới {{used=0}} (tạo lười khi giao dịch đầu tiên đến, dùng {{INSERT ... ON CONFLICT DO NOTHING}}).
+
+~~~seq
+title: Reserve han muc ngay (atomic, chong vuot)
+actors: App | LimitService | DB | PaymentSvc
+App -> LimitService: chuyen 800000 (idempo_key=K1)
+LimitService -> DB: kiem tra idempo_key K1 da xu ly?
+DB --> LimitService: chua
+LimitService -> DB: UPDATE ... SET used=used+800000 WHERE used+800000<=limit
+DB --> LimitService: 1 row (OK) hoac 0 row (vuot)
+LimitService -> PaymentSvc: OK -> tiep tuc chuyen tien
+LimitService --> App: thanh cong hoac tu choi "vuot han muc ngay"
+~~~
+
+### Lỗi hay gặp
+- Check-then-act tách rời (đọc {{used}} ở app, so sánh, rồi UPDATE cộng thêm) -> race condition vượt hạn.
+- Retry không idempotent -> mỗi lần retry trừ thêm hạn mức, khách bị khóa oan.
+- Dùng ngày dương lịch thay vì {{business_date}}/cut-off -> lệch với sổ sách, sai ngay thời điểm giao cắt ngày.
+- Reserve khi gửi nhưng quên trả lại khi {{FAILED/TIMEOUT}} xác nhận thất bại -> hạn mức bị "kẹt".
+- Chọn Redis nhưng không có đối soát về DB và không định nghĩa hành vi khi Redis lỗi -> mất tiền hoặc chặn oan không kiểm soát.
+
+> Senior tip: Với bài toán này, câu trả lời lead cần cân bằng *đúng nghiệp vụ* và *khả năng mở rộng*: bắt đầu từ atomic update trong DB (đúng, đơn giản, đủ cho đa số trường hợp vì tranh chấp theo từng khách), chỉ đưa Redis/Lua khi có số liệu chứng minh nút thắt. Nhấn mạnh 3 bất biến: (1) quyết định chấp nhận và trừ hạn mức phải nguyên tử, (2) mọi bước có idempotency key, (3) mọi trạng thái trung gian (PENDING/reserved) đều có đường ra (commit hoặc release). Hỏi ngược interviewer: hạn mức tính theo ngày nghiệp vụ hay ngày lịch, có loại hạn mức nào cộng dồn (tổng + theo kênh) không — vì nó quyết định mô hình dữ liệu.
+  `,
+  follow: [
+    'Nếu một khách có nhiều loại hạn mức cộng dồn (tổng ngày + hạn mức theo kênh + hạn mức theo thụ hưởng mới), bạn đảm bảo cập nhật tất cả nguyên tử thế nào?',
+    'Khi giao dịch bị timeout (PENDING_UNKNOWN), bạn giữ reserved hạn mức bao lâu và cơ chế nào giải phóng an toàn mà không mở khe vượt hạn?',
+    'So sánh trade-off giữa atomic DB update và Redis Lua cho bài toán này: ngưỡng nào thì chuyển giải pháp và bạn kiểm chứng ra sao?'
+  ],
+  tags: ['daily limit', 'concurrency', 'atomic', 'idempotency', 'Redis']
+}
+
 );
