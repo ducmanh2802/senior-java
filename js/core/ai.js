@@ -396,7 +396,9 @@ const ui = {
       const cases = parsed && parsed.cases.length ? '<ul class="run-cases">' + parsed.cases.map(c =>
         '<li class="' + (c.ok ? 'ok' : 'bad') + '">' + (c.ok ? '✔' : '✘') + ' ' + esc(c.name) + (c.detail ? ' — <span class="muted">' + esc(c.detail) + '</span>' : '') + '</li>').join('') + '</ul>' : '';
       const err = run.stderr ? '<pre class="code"><code>' + esc(run.stderr.slice(0, 3000)) + '</code></pre>' : '';
-      const meta = run.time ? ' <span class="muted small">' + App.t('ai.runResult.time', { time: run.time, mem: Math.round((run.memory || 0) / 1024) }) + '</span>' : '';
+      const meta = !run.time ? '' : ' <span class="muted small">' + (run.memory
+        ? App.t('ai.runResult.time', { time: run.time, mem: Math.round(run.memory / 1024) })
+        : esc(run.time) + 's') + '</span>';
       return '<div class="run-box">' + head + meta + cases + err + '</div>';
     },
     /** Friendly message for an AiError, with a settings hint when relevant. */

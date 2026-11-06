@@ -1,5 +1,6 @@
 /*
- * POST /api/run — compile & run a Java program on Wandbox (https://wandbox.org, free, no API key).
+ * POST /api/run — compile & run a Java program: on our own runner (runner/, RUNNER_URL + RUNNER_TOKEN) when set,
+ * otherwise / as fallback on Wandbox (https://wandbox.org, free, no API key).
  * Body: { source: string }  — a complete single-file program whose entry point is `public class Main`.
  * Response: { configured, status, stdout, stderr, compile_output, time, memory }  (same shape as the old Judge0 backend)
  *
@@ -12,6 +13,7 @@
 
 const { send, guard, charge, str } = require('./_lib');
 
+const RUNNER_URL = (process.env.RUNNER_URL || '').replace(/\/$/, '');
 const BASE = (process.env.WANDBOX_URL || 'https://wandbox.org').replace(/\/$/, '');
 let compiler = process.env.WANDBOX_COMPILER || 'openjdk-jdk-21+35';
 
@@ -40,6 +42,20 @@ module.exports = async function handler(req, res) {
   if (!/public\s+(final\s+)?class\s+Main\b/.test(source)) return send(res, 400, { error: 'Thiếu public class Main' });
   if (!(await charge(res, ctx.user, 'run'))) return;
 
+  // 1) Own runner (runner/server.js on a free VM) when configured: fast and private. Any failure → Wandbox.
+  if (RUNNER_URL && process.env.RUNNER_TOKEN) {
+    try {
+      const r = await fetch(RUNNER_URL + '/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + process.env.RUNNER_TOKEN },
+        body: JSON.stringify({ source }),
+        signal: AbortSignal.timeout(30000),
+      });
+      if (r.ok) return send(res, 200, { configured: true, ...(await r.json()) });
+    } catch (e) { /* runner down → fall through to Wandbox */ }
+  }
+
+  // 2) Wandbox (free, shared, slow).
   const code = source.replace(/\bpublic\s+((?:final\s+)?)class\s+Main\b/, '$1class Main');
   const busyMsg = 'Máy chạy code (Wandbox, miễn phí) đang quá tải, bấm chạy lại sau vài giây hoặc dùng "AI review code"';
   // Wandbox is a free shared service: it sometimes answers 504 or fails to start its sandbox

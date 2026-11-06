@@ -12,6 +12,7 @@
  *   CLAUDE_MODEL       optional, default claude-opus-5-5
  *   WANDBOX_URL        optional, default https://wandbox.org — /api/run compiles & runs Java there (free, no key)
  *   WANDBOX_COMPILER   optional, default openjdk-jdk-21+35 (falls back to the newest OpenJDK Wandbox lists)
+ *   RUNNER_URL, RUNNER_TOKEN  optional — own Java runner (runner/README.md); /api/run uses it first, Wandbox as fallback
  */
 'use strict';
 
