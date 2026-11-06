@@ -1630,5 +1630,354 @@ Token bucket tách bạch hai tham số: **tốc độ nạp** (trung bình dài
 - **Giới hạn connection đồng thời**: kiểm soát concurrency, không phải tốc độ; request nhanh có thể vượt xa 10/giây, request chậm thì bị chặn oan.
 
 > Senior tip: trong hệ thống nhiều instance, rate limit cục bộ ở từng pod sẽ nhân giới hạn lên theo số pod; cần store chung (Redis) hoặc chia giới hạn theo số instance. Khi Redis lỗi, quyết định trước là fail-open (cho qua) hay fail-closed (chặn) tuỳ mức độ quan trọng của API.`
+},
+{
+  id: 'qz-spring-021',
+  topic: 'spring',
+  q: 'Bạn gọi method {{@Transactional}} của cùng bean qua {{this}} (self-invocation). Method có rollbackFor? Kết quả transaction?',
+  options: [
+    'Transaction vẫn mở và rollback nếu exception',
+    'Không có proxy nên không có transaction, exception propagate bình thường',
+    'Spring tự động tạo proxy cho self-call',
+    'Compile lỗi'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: self-invocation không qua proxy, nên không có transaction.**
+
+### Vì sao đúng
+Spring AOP proxy bọc bean; chỉ lời gọi từ bên ngoài qua proxy mới kích hoạt advice. Gọi {{this.method()}} là gọi trực tiếp object gốc, proxy bị bỏ qua, nên @Transactional không có tác dụng. Exception propagate bình thường mà không rollback.
+
+### Vì sao khác sai
+- **Vẫn mở transaction**: chỉ đúng nếu gọi qua proxy (bean khác).
+- **Tự tạo proxy**: Spring không tự tạo cho self-call.
+- **Compile lỗi**: không có lỗi compile.
+
+> Senior tip: tránh self-invocation; tách logic vào bean khác hoặc dùng ApplicationEventPublisher.`
+},
+{
+  id: 'qz-spring-022',
+  topic: 'spring',
+  multi: true,
+  q: 'Spring bean scope nào là mặc định và nào tạo instance mới mỗi request? (Chọn 2)',
+  options: [
+    'singleton mặc định',
+    'prototype tạo mới mỗi lần getBean',
+    'request scope tạo mới mỗi HTTP request',
+    'session scope tạo mới mỗi session',
+    'application scope tạo mới mỗi ServletContext'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: singleton mặc định; request scope tạo mới mỗi HTTP request.**
+
+### Vì sao đúng
+- Singleton là scope mặc định, một instance cho toàn context.
+- Request scope tạo mới instance mỗi HTTP request (trong web context).
+
+### Vì sao khác sai
+- Prototype tạo mới mỗi lần getBean (đúng nhưng không phải HTTP request).
+- Session/application không phải mặc định cho câu hỏi này.
+
+> Senior tip: dùng request scope cẩn thận với proxy; inject scoped bean vào singleton cần proxy.`
+},
+{
+  id: 'qz-spring-023',
+  topic: 'spring',
+  q: 'Spring Boot auto-configuration bật khi nào?',
+  options: [
+    'Luôn bật khi có dependency',
+    'Khi classpath có class và không có bean do user định nghĩa (@ConditionalOnMissingBean)',
+    'Chỉ khi profile prod active',
+    'Khi property spring.boot.enable-autoconfig=true'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: khi classpath có class và không có bean do user định nghĩa.**
+
+### Vì sao đúng
+Auto-config dùng @ConditionalOnClass và @ConditionalOnMissingBean để chỉ bật khi dependency có và user chưa tự định nghĩa bean.
+
+### Vì sao khác sai
+- Không luôn bật; có điều kiện.
+- Không phụ thuộc profile mặc định.
+- Property không phải điều kiện chính.
+
+> Senior tip: dùng --debug để xem condition evaluation report.`
+},
+{
+  id: 'qz-spring-024',
+  topic: 'spring',
+  multi: true,
+  q: 'TransactionalEventListener phase nào chạy sau commit thành công? (Chọn 2)',
+  options: [
+    'AFTER_COMMIT',
+    'AFTER_ROLLBACK',
+    'AFTER_COMPLETION',
+    'BEFORE_COMMIT',
+    'IMMEDIATE'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: AFTER_COMMIT và AFTER_COMPLETION.**
+
+### Vì sao đúng
+- AFTER_COMMIT chạy sau commit thành công.
+- AFTER_COMPLETION chạy sau khi transaction kết thúc (commit hoặc rollback).
+
+### Vì sao khác sai
+- AFTER_ROLLBACK chỉ sau rollback.
+- BEFORE_COMMIT chưa có.
+- IMMEDIATE không phải phase.
+
+> Senior tip: AFTER_COMMIT vẫn có khe hở pod chết; dùng outbox cho event bắt buộc.`
+},
+{
+  id: 'qz-jpa-021',
+  topic: 'jpa',
+  q: 'Batch insert với IDENTITY strategy có vấn đề gì?',
+  options: [
+    'Không có vấn đề',
+    'Hibernate phải INSERT ngay để lấy id, phá batching',
+    'Sequence phải allocationSize=1',
+    'Không compile'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Hibernate phải INSERT ngay để lấy id, phá batching.**
+
+### Vì sao đúng
+IDENTITY bắt buộc INSERT ngay để lấy id, nên JDBC batching không thể gom insert.
+
+### Vì sao khác sai
+- Có vấn đề rõ ràng.
+- Sequence allocationSize không liên quan IDENTITY.
+- Compile được.
+
+> Senior tip: dùng SEQUENCE với pooled optimizer cho batch insert lớn.`
+},
+{
+  id: 'qz-jpa-022',
+  topic: 'jpa',
+  multi: true,
+  q: 'Bulk update qua @Modifying có tác dụng gì? (Chọn 2)',
+  options: [
+    'Bỏ qua persistence context',
+    'Cập nhật nhiều dòng bằng một câu UPDATE',
+    'Tự động flush trước',
+    'Tự động clear sau',
+    'Tự động rollback nếu lỗi'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: bỏ qua persistence context và cập nhật nhiều dòng bằng một câu UPDATE.**
+
+### Vì sao đúng
+@Modifying thực thi bulk update trực tiếp trên DB, bỏ qua persistence context; cập nhật nhiều dòng trong một câu.
+
+### Vì sao khác sai
+- Không tự flush/clear/rollback mặc định (clearAutomatically optional).
+
+> Senior tip: sau bulk update, clear persistence context để tránh stale entity.`
+},
+{
+  id: 'qz-jpa-023',
+  topic: 'jpa',
+  q: 'DTO projection trong Spring Data JPA là gì?',
+  options: [
+    'Entity đầy đủ',
+    'Interface hoặc class chỉ chứa subset cột, query chỉ SELECT các cột đó',
+    'Native query bắt buộc',
+    'Cache L2'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: interface hoặc class chỉ chứa subset cột.**
+
+### Vì sao đúng
+Projection định nghĩa tập con cột; Spring Data sinh query chỉ SELECT các cột đó, không có managed entity.
+
+### Vì sao khác sai
+- Không phải entity đầy đủ.
+- Không bắt buộc native.
+- Không liên quan cache.
+
+> Senior tip: dùng projection cho màn hình đọc để giảm I/O và heap.`
+},
+{
+  id: 'qz-jpa-024',
+  topic: 'jpa',
+  multi: true,
+  q: 'Optimistic lock với @Version hoạt động thế nào? (Chọn 2)',
+  options: [
+    'Kiểm tra version khi UPDATE',
+    'Ném OptimisticLockException nếu version mismatch',
+    'Khoá dòng DB',
+    'Tự retry',
+    'Dùng cho read-heavy'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: kiểm tra version khi UPDATE và ném OptimisticLockException nếu mismatch.**
+
+### Vì sao đúng
+@Version thêm cột version; UPDATE có WHERE version = ?; nếu không có dòng nào cập nhật thì ném OptimisticLockException.
+
+### Vì sao khác sai
+- Không khoá dòng DB (pessimistic mới khoá).
+- Không tự retry.
+
+> Senior tip: retry ở tầng service, không trong transaction.`
+},
+{
+  id: 'qz-db-021',
+  topic: 'db',
+  q: 'MVCC trong PostgreSQL nghĩa là gì?',
+  options: [
+    'Mỗi UPDATE tạo phiên bản mới, readers không block writers',
+    'Khoá bảng khi write',
+    'Không có snapshot',
+    'Chỉ dùng cho SELECT'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: mỗi UPDATE tạo phiên bản mới, readers không block writers.**
+
+### Vì sao đúng
+MVCC giữ nhiều phiên bản; reader thấy snapshot, writer tạo phiên bản mới, không chặn nhau.
+
+### Vì sao khác sai
+- Không khoá bảng.
+- Có snapshot.
+- Áp dụng mọi operation.
+
+> Senior tip: autovacuum dọn dead tuple; transaction treo chặn cleanup.`
+},
+{
+  id: 'qz-db-022',
+  topic: 'db',
+  multi: true,
+  q: 'Isolation level nào ngăn lost update? (Chọn 2)',
+  options: [
+    'READ COMMITTED với SELECT FOR UPDATE',
+    'REPEATABLE READ (PostgreSQL)',
+    'READ UNCOMMITTED',
+    'SERIALIZABLE',
+    'READ COMMITTED plain'
+  ],
+  answer: [1, 3],
+  explain: `**Đáp án đúng: REPEATABLE READ (PostgreSQL) và SERIALIZABLE.**
+
+### Vì sao đúng
+PostgreSQL RR chặn update đồng thời trên cùng dòng; SERIALIZABLE phát hiện xung đột.
+
+### Vì sao khác sai
+- READ COMMITTED plain có thể lost update.
+- READ UNCOMMITTED không an toàn.
+
+> Senior tip: dùng UPDATE atomic hoặc lock để tránh lost update.`
+},
+{
+  id: 'qz-db-023',
+  topic: 'db',
+  q: 'Index nào giúp query WHERE lower(email)=? nhanh?',
+  options: [
+    'Index thường trên email',
+    'Expression index trên lower(email)',
+    'Hash index',
+    'Partial index'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: expression index trên lower(email).**
+
+### Vì sao đúng
+Expression index stores computed value; query must match expression exactly.
+
+### Vì sao khác sai
+- Index thường không chứa lower().
+- Hash/partial không giải quyết hàm.
+
+> Senior tip: chuẩn hoá dữ liệu khi ghi để tránh hàm trong WHERE.`
+},
+{
+  id: 'qz-db-024',
+  topic: 'db',
+  multi: true,
+  q: 'Deadlock xảy ra khi nào? (Chọn 2)',
+  options: [
+    'Hai transaction cùng chờ lock của nhau',
+    'Lock theo thứ tự khác nhau',
+    'Isolation READ COMMITTED',
+    'Index thiếu',
+    'Transaction quá ngắn'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: hai transaction cùng chờ lock của nhau; lock theo thứ tự khác nhau.**
+
+### Vì sao đúng
+Deadlock là cycle wait; lock ordering khác nhau gây cycle.
+
+### Vì sao khác sai
+- Isolation không trực tiếp gây deadlock.
+- Transaction ngắn giảm rủi ro.
+
+> Senior tip: luôn lock theo cùng thứ tự (id tăng dần).`
+},
+{
+  id: 'qz-api-023',
+  topic: 'api',
+  q: 'Idempotency key dùng để làm gì?',
+  options: [
+    'Mã hoá payload',
+    'Đảm bảo retry cùng request không tạo duplicate',
+    'Xác thực user',
+    'Rate limit'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: đảm bảo retry cùng request không tạo duplicate.**
+
+### Vì sao đúng
+Idempotency key định danh request; server trả response đã cache cho key trùng.
+
+### Vì sao khác sai
+- Không mã hoá/xác thực/rate limit.
+
+> Senior tip: lưu key với TTL và response để replay.`
+},
+{
+  id: 'qz-api-024',
+  topic: 'api',
+  multi: true,
+  q: 'Response 429 nên kèm gì? (Chọn 2)',
+  options: [
+    'Retry-After',
+    'RateLimit headers',
+    'Set-Cookie',
+    'Location',
+    'ETag'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: Retry-After và RateLimit headers.**
+
+### Vì sao đúng
+429 nghĩa là quá nhiều request; Retry-After cho biết khi nào retry; RateLimit headers hiển thị quota.
+
+### Vì sao khác sai
+- Cookie/Location/ETag không liên quan.
+
+> Senior tip: client backoff + jitter để tránh spike.`
+},
+{
+  id: 'qz-api-025',
+  topic: 'api',
+  q: 'API versioning an toàn nhất thường dùng gì?',
+  options: [
+    'URL path /v1/',
+    'Query param version',
+    'Header Accept version',
+    'Không version'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: URL path /v1/.**
+
+### Vì sao đúng
+URL path versioning rõ ràng, dễ cache, dễ route; phổ biến nhất.
+
+### Vì sao khác sai
+- Query/header cũng dùng nhưng kém rõ ràng/cache.
+- Không version gây breaking.
+
+> Senior tip: dùng expand/contract khi deprecate.`
 }
 );
