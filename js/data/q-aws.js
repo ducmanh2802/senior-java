@@ -3089,5 +3089,346 @@ Trieu chung: TCP handshake SYN den server OK, nhung client khong nhan SYN-ACK ->
     'Blue/green deployment cho database tren AWS hoat dong the nao?'
   ],
   tags: ['DMS', 'SCT', 'migration', 'CDC', 'cutover', 'rollback', 'database', 'lead']
+},
+{
+  id: 'aws-041',
+  topic: 'aws',
+  level: 'senior',
+  q: 'EKS và ECS (Fargate) khác nhau bản chất ở đâu? Khi nào chọn EKS, khi nào ECS Fargate là đủ?',
+  a: `**Tóm tắt:** ECS Fargate là container service managed của AWS, đơn giản, phù hợp đa số service; EKS là Kubernetes managed, mạnh khi công ty đã có platform K8s hoặc cần hệ sinh thái K8s (CRD, operator, service mesh). Cái giá của EKS là độ phức tạp và chi phí con người.
+
+### Hiểu nhanh
+Hãy tưởng tượng bạn cần vận chuyển hàng. **ECS Fargate** giống dịch vụ giao hàng trọn gói: bạn đóng thùng (Docker image), điền địa chỉ, còn lại AWS lo xe, tài xế, bảo dưỡng. **EKS** giống bạn thuê nguyên một đội vận tải theo chuẩn quốc tế (Kubernetes): rất mạnh khi có nhiều kho, nhiều tuyến, nhiều đội phối hợp, nhưng phải có người quản lý đội, bảo trì xe, xử lý sự cố. Nếu công ty chỉ có vài service và không có người trực platform, EKS là "đội vận tải" quá lớn so với nhu cầu.
+
+### Thuật ngữ
+- **Control plane**: "bộ não" của Kubernetes (API server, scheduler, etcd); trên EKS do AWS vận hành, tính phí theo giờ.
+- **Data plane**: các node thực sự chạy pod (EC2 của bạn hoặc Fargate).
+- **Pod**: đơn vị nhỏ nhất chạy container trong Kubernetes; một pod có thể chứa nhiều container.
+- **Deployment / ReplicaSet**: Kubernetes object khai báo số bản sao pod và cách cập nhật chúng.
+- **Service / Ingress**: Kubernetes object expose pod ra mạng; Ingress thường trỏ tới ALB hoặc NGINX.
+- **HPA (Horizontal Pod Autoscaler)**: tự tăng/giảm số pod theo CPU hoặc metric tuỳ chỉnh.
+- **CRD (Custom Resource Definition)**: cách mở rộng Kubernetes bằng loại tài nguyên mới.
+- **Operator**: controller tự động hoá vận hành một phần mềm cụ thể (ví dụ Kafka, Postgres) trên K8s.
+- **Service mesh**: lớp quản lý traffic giữa service (Istio, Linkerd) chạy trên K8s.
+
+### So sánh bản chất
+| Tiêu chí | ECS Fargate | EKS |
+|---|---|---|
+| API quản lý | AWS API (task definition, service) | Kubernetes API (Deployment, Service, Ingress) |
+| Đơn vị chạy | Task (1 hoặc nhiều container) | Pod |
+| Auto-scale | Application Auto Scaling theo CPU/memory/request | HPA theo metric, Cluster Autoscaler/Karpenter cho node |
+| Networking | awsvpc: mỗi task có ENI riêng | CNI (VPC CNI): pod có IP trong VPC |
+| Quyền IAM cho pod | Task role (đơn giản) | IRSA hoặc EKS Pod Identity (phức tạp hơn) |
+| Chi phí con người | Thấp | Cao (cần người trực cluster) |
+| Hệ sinh thái | Hạn chế trong AWS | Rất lớn (Helm, CRD, operator, mesh) |
+
+### Khi chọn ECS Fargate
+- Đội nhỏ (5–20 người), không có người trực platform.
+- Service chủ yếu là HTTP API Spring Boot chạy 24/7.
+- Muốn deploy đơn giản, ít moving part.
+- Không cần CRD, operator, service mesh.
+
+### Khi chọn EKS
+- Công ty đã có platform Kubernetes và nhiều team dùng chung.
+- Cần hệ sinh thái K8s: operator cho Kafka/Postgres, service mesh, policy-as-code (OPA/Gatekeeper).
+- Nhiều service, cần chuẩn hoá deploy và observability across team.
+- Có người trực cluster (SRE/platform engineer).
+
+### Lỗi hay gặp
+- **Chọn EKS vì "công ty lớn đều dùng".** Triệu chứng: đội 5 người dành nửa thời gian nâng cấp cluster, sửa add-on, ingress. Cách tránh: chỉ chọn EKS khi có người trực platform và nhu cầu thật.
+- **Dùng EKS nhưng không chuẩn hoá deploy.** Triệu chứng: mỗi service một kiểu YAML, cấu hình lệch nhau, khó nâng cấp. Cách tránh: Helm/Kustomize với template chung và policy-as-code.
+- **Nhầm task role và node role trên EKS.** Triệu chứng: pod chạy được nhưng code gọi AWS bị AccessDenied. Cách tránh: dùng IRSA/Pod Identity, không để pod thừa hưởng quyền của node.
+
+### Trả lời miệng 1 phút
+"ECS Fargate là container service managed của AWS: tôi đóng image, khai báo task definition, AWS lo phần chạy, không có node để vá. EKS là Kubernetes managed, mạnh khi công ty đã có platform K8s, nhiều team, cần CRD/operator/service mesh. Cái giá của EKS là độ phức tạp và chi phí con người. Với đội Java 5–20 người và service HTTP bình thường, mặc định của tôi là ECS Fargate; chỉ nhảy lên EKS khi có người trực cluster và nhu cầu thật."
+
+> Senior tip: chi phí ẩn của Kubernetes là con người, không phải hoá đơn AWS. Nếu không có người trực cluster, EKS sẽ ngốn thời gian của cả đội phát triển.`,
+  follow: [
+    'Karpenter khác gì Cluster Autoscaler trên EKS?',
+    'IRSA và EKS Pod Identity khác nhau thế nào?',
+    'Bạn sẽ migrate từ ECS sang EKS mà không downtime ra sao?'
+  ],
+  tags: ['EKS', 'ECS', 'Fargate', 'Kubernetes']
+},
+{
+  id: 'aws-042',
+  topic: 'aws',
+  level: 'senior',
+  q: 'IRSA và EKS Pod Identity: cách gắn IAM role cho pod mà không dùng access key, cơ chế và khác biệt ra sao?',
+  a: `**Tóm tắt:** IRSA dùng OIDC provider để pod assume role qua token ServiceAccount; EKS Pod Identity dùng agent trên node. Cả hai đều cấp credential tạm cho SDK, không cần access key trong code.
+
+### Hiểu nhanh
+**IRSA** giống bạn có thẻ căn cước do trường cấp (Kubernetes ServiceAccount token) và AWS tin thẻ đó như giấy tờ tuỳ thân, nên cấp thẻ khách (credential tạm). **EKS Pod Identity** giống AWS đặt một lễ tân ngay tại toà nhà (agent trên node): pod chỉ cần nói "tôi là service X", lễ tân kiểm tra và phát thẻ. Cả hai đều tránh hard-code access key.
+
+### Thuật ngữ
+- **ServiceAccount**: danh tính của pod trong Kubernetes.
+- **OIDC provider**: cấu hình IAM tin token do cluster EKS ký.
+- **Web identity token**: JWT ngắn hạn gắn với ServiceAccount, mount vào pod.
+- **STS AssumeRoleWithWebIdentity**: API STS cấp credential tạm từ JWT.
+- **EKS Pod Identity agent**: DaemonSet chạy trên node, cung cấp credential cho pod.
+- **Credential provider chain**: AWS SDK tự tìm credential theo thứ tự.
+
+### Cơ chế IRSA
+1. Tạo IAM role với trust policy tin OIDC provider của cluster và ServiceAccount cụ thể.
+2. Tạo ServiceAccount có annotation {{eks.amazonaws.com/role-arn}}.
+3. Pod dùng ServiceAccount đó nhận projected volume chứa JWT.
+4. SDK đọc env {{AWS_ROLE_ARN}} và {{AWS_WEB_IDENTITY_TOKEN_FILE}}, gọi {{AssumeRoleWithWebIdentity}}.
+5. STS trả credential tạm; SDK tự refresh trước khi hết hạn.
+
+### Cơ chế EKS Pod Identity
+1. Cài EKS Pod Identity agent (add-on) trên cluster.
+2. Tạo association giữa ServiceAccount và IAM role qua API EKS.
+3. Agent trên node cung cấp endpoint credential cho pod (giống ECS).
+4. SDK đi theo container credential provider, gọi agent, nhận credential tạm.
+
+### So sánh
+| Tiêu chí | IRSA | EKS Pod Identity |
+|---|---|---|
+| Cần OIDC provider | Có | Không |
+| Trust policy theo cluster | Phải include OIDC URL | Đơn giản hơn, theo account/cluster |
+| Cross-account | Phức tạp | Dễ hơn |
+| Setup | Annotation ServiceAccount | Association qua EKS API |
+| Khuyến nghị mới | Legacy | Preferred cho cluster mới |
+
+### Lỗi hay gặp
+- **Annotation sai ServiceAccount.** Triệu chứng: pod không assume được role, SDK fallback sang node role. Cách tránh: kiểm tra ServiceAccount name/namespace khớp association.
+- **Trust policy quá rộng.** Triệu chứng: bất kỳ ServiceAccount nào assume được role. Cách tránh: giới hạn {{sub}} condition tới ServiceAccount cụ thể.
+- **Quên cài agent cho Pod Identity.** Triệu chứng: SDK không tìm được credential endpoint. Cách tránh: cài add-on trước khi dùng.
+
+### Trả lời miệng 1 phút
+"IRSA dùng OIDC provider để pod assume role qua JWT của ServiceAccount; EKS Pod Identity dùng agent trên node và association qua EKS API. Cả hai cấp credential tạm cho SDK, không cần access key. IRSA là cách cũ, cần OIDC provider và trust policy theo cluster; Pod Identity đơn giản hơn và là khuyến nghị cho cluster mới. Tôi chọn Pod Identity cho cluster mới, IRSA cho cluster cũ đã setup OIDC."
+
+> Senior tip: đừng để pod thừa hưởng quyền của node. Luôn gắn role riêng cho từng workload qua IRSA hoặc Pod Identity, và review trust policy như review code.`,
+  follow: [
+    'Vì sao pod không nên dùng node role?',
+    'Trust policy của IRSA cần condition gì để an toàn?',
+    'Pod Identity có hỗ trợ cross-account không?'
+  ],
+  tags: ['IRSA', 'EKS Pod Identity', 'IAM', 'EKS']
+},
+{
+  id: 'aws-043',
+  topic: 'aws',
+  level: 'senior',
+  q: 'IAM policy evaluation: khi gặp AccessDenied, debug thế nào? Explicit deny, SCP, permission boundary tương tác ra sao?',
+  a: `**Tóm tắt:** IAM đánh giá theo thứ tự: explicit Deny thắng tất cả; sau đó cần Allow khớp và không bị SCP/permission boundary chặn; còn lại implicit deny. Debug bằng IAM Policy Simulator, CloudTrail event, và kiểm tra trust policy, SCP, boundary.
+
+### Hiểu nhanh
+Hãy tưởng tượng vào một toà nhà cao cấp. **Explicit deny** giống danh sách đen ở cổng: dù có thẻ VIP, nếu tên bạn trong danh sách đen thì không vào được. **SCP (Service Control Policy)** giống quy định của tập đoàn: dù phòng ban cho phép, nếu tập đoàn cấm thì không được. **Permission boundary** giống giới hạn trần của phòng ban: phòng ban không thể cấp quyền vượt trần dù muốn. Khi bị từ chối, cần kiểm tra từng lớp: danh sách đen → quy định tập đoàn → trần phòng ban → thẻ cá nhân.
+
+### Thuật ngữ
+- **Identity policy**: policy gắn vào user/role.
+- **Resource policy**: policy gắn vào resource (S3 bucket policy, SQS queue policy).
+- **SCP**: policy ở cấp Organization/OU/account, giới hạn quyền tối đa.
+- **Permission boundary**: policy giới hạn quyền tối đa mà một principal có thể được cấp.
+- **Explicit deny**: statement Effect=Deny khớp request.
+- **Implicit deny**: không có Allow khớp.
+- **IAM Policy Simulator**: công cụ test policy mà không gọi thật.
+- **CloudTrail**: log mọi API call.
+
+### Cơ chế đánh giá
+1. Có explicit Deny nào khớp (identity, resource, SCP, boundary)? → TỪ CHỐI.
+2. Có Allow nào khớp trong identity policy hoặc resource policy? Nếu không → implicit deny.
+3. Allow đó có bị SCP chặn không? Nếu SCP không Allow → TỪ CHỐI.
+4. Allow đó có bị permission boundary chặn không? Nếu boundary không Allow → TỪ CHỐI.
+5. Nếu qua hết → CHO PHÉP.
+
+Lưu ý: SCP và boundary chỉ **giới hạn** (filter), không cấp quyền. Quyền thực sự phải đến từ identity/resource policy.
+
+### Debug AccessDenied từng bước
+1. Đọc CloudTrail event: {{errorCode}}, {{errorMessage}}, {{userIdentity}}, {{requestParameters}}.
+2. Xác định principal thực sự (role assumed, không phải user gốc).
+3. Kiểm tra identity policy của role: có Allow action+resource khớp không?
+4. Kiểm tra resource policy (nếu có): S3 bucket policy có Deny cross-account không?
+5. Kiểm tra SCP ở account/OU: có Deny action không?
+6. Kiểm tra permission boundary của role: có Allow action không?
+7. Kiểm tra condition: VPC endpoint, MFA, source IP, tag...
+8. Dùng IAM Policy Simulator để test policy combination.
+
+### Lỗi hay gặp
+- **Quên SCP chặn.** Triệu chứng: identity policy Allow nhưng vẫn AccessDenied; CloudTrail không nói rõ. Cách tránh: kiểm tra SCP ở account và OU; dùng Policy Simulator với SCP.
+- **Permission boundary thiếu action.** Triệu chứng: admin cấp quyền mới nhưng boundary không có nên không hiệu lực. Cách tránh: boundary phải bao gồm tất cả action principal cần.
+- **Condition sai.** Triệu chứng: policy đúng action/resource nhưng condition {{aws:SourceVpce}} không khớp vì request đi qua NAT. Cách tránh: kiểm tra condition bằng CloudTrail {{requestParameters}} và {{sourceIPAddress}}.
+- **Nhầm principal.** Triệu chứng: debug role A nhưng request thực sự từ role B (assumed). Cách tránh: đọc {{userIdentity.arn}} trong CloudTrail.
+
+### Trả lời miệng 1 phút
+"IAM đánh giá theo thứ tự: explicit Deny thắng tất cả; sau đó cần Allow khớp và không bị SCP hay permission boundary chặn; còn lại implicit deny. SCP và boundary chỉ giới hạn, không cấp quyền. Khi gặp AccessDenied, tôi đọc CloudTrail để lấy principal và action thực sự, rồi kiểm tra identity policy, resource policy, SCP, boundary và condition theo thứ tự. Tôi dùng IAM Policy Simulator để test combination và luôn nhớ rằng principal thực sự có thể là role assumed, không phải user gốc."
+
+> Senior tip: 80% AccessDenied là do condition (VPC endpoint, source IP) hoặc SCP, không phải policy identity. Luôn đọc CloudTrail trước khi sửa policy.`,
+  follow: [
+    'SCP khác permission boundary ở điểm nào?',
+    'Làm sao test policy mà không gọi thật?',
+    'Resource policy và identity policy cùng áp dụng thế nào?'
+  ],
+  tags: ['IAM', 'SCP', 'permission boundary', 'AccessDenied']
+},
+{
+  id: 'aws-044',
+  topic: 'aws',
+  level: 'senior',
+  q: 'NAT Gateway và chi phí data transfer: vì sao NAT đắt, làm sao giảm bằng VPC endpoint và kiến trúc?',
+  a: `**Tóm tắt:** NAT Gateway tính phí theo giờ và theo GB xử lý; traffic lớn qua NAT (ECR image, log, S3) làm hoá đơn tăng vọt. VPC endpoint (gateway cho S3/DynamoDB, interface cho SQS/KMS/ECR/CloudWatch) giúp traffic AWS không qua NAT. Kiến trúc: endpoint cho dịch vụ AWS, NAT chỉ cho traffic Internet thật.
+
+### Hiểu nhanh
+NAT Gateway giống trạm thu phí trên cao tốc: mỗi GB đi qua đều bị tính tiền, dù bạn chỉ đi từ nhà mình sang nhà hàng xóm trong cùng thành phố. Nếu bạn liên tục chở container image và log qua trạm thu phí, hoá đơn sẽ khổng lồ. **VPC endpoint** giống đường nội bộ dẫn thẳng tới "siêu thị AWS" mà không qua trạm thu phí. Vì vậy nguyên tắc là: traffic tới dịch vụ AWS phải đi đường nội bộ, NAT chỉ dành cho traffic ra Internet thật (gọi API bên thứ ba).
+
+### Thuật ngữ
+- **NAT Gateway**: managed NAT, tính phí theo giờ + GB xử lý, HA trong một AZ.
+- **Data transfer cost**: phí truyền dữ liệu giữa AZ, region, Internet.
+- **Gateway endpoint**: endpoint miễn phí cho S3 và DynamoDB, gắn vào route table.
+- **Interface endpoint (PrivateLink)**: endpoint tạo ENI trong subnet, tính phí theo giờ + GB.
+- **Private DNS**: endpoint tự resolve tên miền chuẩn của dịch vụ AWS.
+- **Cross-AZ data transfer**: phí khi traffic đi giữa các AZ.
+- **VPC Flow Logs**: log traffic trong VPC để phân tích.
+
+### Cơ chế chi phí
+1. NAT Gateway: ~0,045 USD/giờ (~32 USD/tháng) + ~0,045 USD/GB xử lý.
+2. Interface endpoint: ~0,01 USD/giờ/AZ + ~0,01 USD/GB.
+3. Gateway endpoint (S3, DynamoDB): miễn phí (chỉ tính storage/request của dịch vụ).
+4. Cross-AZ: ~0,01 USD/GB mỗi chiều.
+
+Ví dụ: app kéo 50 GB Docker image/tháng qua NAT → 50 × 0,045 = 2,25 USD/tháng chỉ cho image; cộng log, S3, SQS... có thể lên hàng trăm USD.
+
+### Kiến trúc giảm chi phí
+1. **Gateway endpoint cho S3 và DynamoDB** — luôn bật, miễn phí.
+2. **Interface endpoint cho ECR (api + dkr)** — để kéo image không qua NAT; nhớ gateway endpoint S3 vì layer image nằm trên S3.
+3. **Interface endpoint cho CloudWatch Logs, Secrets Manager, KMS, SQS, SNS** — traffic management không ra Internet.
+4. **NAT chỉ cho traffic Internet thật**: gọi API bên thứ ba, tải package từ Internet.
+5. **Mỗi AZ một NAT** để tránh cross-AZ data charge và single point of failure.
+6. **Bật private DNS** cho interface endpoint để SDK dùng tên miền chuẩn.
+
+### Lỗi hay gặp
+- **Kéo image và đẩy log qua NAT.** Triệu chứng: NAT cost tăng vọt mỗi lần deploy. Cách tránh: endpoint cho ECR (api + dkr + gateway S3) và CloudWatch Logs.
+- **Một NAT dùng chung nhiều AZ.** Triệu chứng: phí cross-AZ + single point of failure. Cách tránh: mỗi AZ một NAT.
+- **Quên gateway endpoint S3 khi dùng ECR endpoint.** Triệu chứng: layer image vẫn đi qua NAT. Cách tránh: luôn có gateway endpoint S3.
+- **Không bật private DNS.** Triệu chứng: SDK vẫn resolve tên miền ra Internet. Cách tránh: bật private DNS cho interface endpoint.
+
+### Trả lời miệng 1 phút
+"NAT Gateway tính phí theo giờ và GB xử lý, nên traffic lớn qua NAT (image, log, S3) làm hoá đơn tăng vọt. Tôi giảm bằng VPC endpoint: gateway endpoint miễn phí cho S3 và DynamoDB, interface endpoint cho ECR, CloudWatch Logs, Secrets Manager, KMS, SQS. NAT chỉ dành cho traffic Internet thật. Kiến trúc: mỗi AZ một NAT cho HA, endpoint cho mọi dịch vụ AWS, bật private DNS. Tôi bật VPC Flow Logs để phát hiện traffic bất thường đi qua NAT."
+
+> Senior tip: vẽ route table trước khi vẽ diagram. Phần lớn sự cố 'chi phí NAT cao' là do thiếu endpoint. Bật VPC Flow Logs gửi về S3/CloudWatch để phân tích traffic theo destination.`,
+  follow: [
+    'Vì sao gateway endpoint cho S3 miễn phí nhưng interface endpoint cho ECR mất phí?',
+    'Làm sao phát hiện traffic đang đi qua NAT không cần thiết?',
+    'Cross-AZ data transfer ảnh hưởng chi phí thế nào?'
+  ],
+  tags: ['NAT Gateway', 'VPC endpoint', 'data transfer', 'cost']
+},
+{
+  id: 'aws-045',
+  topic: 'aws',
+  level: 'lead',
+  q: '(Lead) Tối ưu chi phí AWS cho hệ thống Java: Savings Plans, Graviton, Spot cho worker, right-sizing — chiến lược và thứ tự ưu tiên ra sao?',
+  a: `**Tóm tắt:** Tối ưu chi phí AWS theo thứ tự: right-sizing (đo và cắt thừa) → Graviton (ARM, rẻ hơn và nhanh hơn cho Java) → Savings Plans/Reserved Instances cho baseline → Spot cho worker/batch → architecture (serverless, caching, endpoint). Mỗi bước cần đo trước khi làm.
+
+### Hiểu nhanh
+Tối ưu chi phí giống giảm cân: đừng mua thuốc giảm cân (Savings Plans) khi chưa biết đang ăn thừa ở đâu (right-sizing). Đầu tiên là **đo và cắt thừa** (right-sizing): nhiều hệ đang chạy instance lớn hơn cần thiết. Sau đó **đổi sang Graviton** (chip ARM của AWS) thường rẻ hơn 20% và nhanh hơn cho Java. Tiếp theo **commit baseline** bằng Savings Plans để được giảm giá. Cuối cùng **Spot** cho workload chịu được gián đoạn (worker, batch). Architecture (caching, serverless) là bước cuối cùng.
+
+### Thuật ngữ
+- **Right-sizing**: điều chỉnh size instance/container theo nhu cầu thực tế.
+- **Graviton**: chip ARM do AWS thiết kế (Graviton2/3/4), giá rẻ hơn và hiệu năng/Watt tốt hơn x86 cho nhiều workload.
+- **Savings Plans**: cam kết chi tiêu theo giờ (1 hoặc 3 năm) để được giảm giá, linh hoạt hơn Reserved Instances.
+- **Reserved Instances (RI)**: cam kết instance cụ thể để được giảm giá.
+- **Spot Instances**: dùng capacity thừa của AWS với giá giảm sâu, có thể bị thu hồi với cảnh báo 2 phút.
+- **Compute Savings Plans**: áp dụng cho EC2, Fargate, Lambda bất kể instance family/region.
+- **EC2 Instance Savings Plans**: áp dụng cho instance family cụ thể trong region, giảm giá sâu hơn.
+- **Cost Explorer / Compute Optimizer**: công cụ AWS phân tích chi phí và gợi ý right-sizing.
+
+### Thứ tự ưu tiên
+1. **Right-sizing** (tuần 1-2): dùng Compute Optimizer và CloudWatch để tìm instance/container thừa. Giảm CPU/memory xuống mức thực tế + buffer 20-30%. Đây là bước rẻ nhất và an toàn nhất.
+2. **Graviton** (tuần 2-4): migrate Java workload sang Graviton (m5 → m7g, c6i → c7g). Java chạy tốt trên ARM từ JDK 17; Spring Boot, Hibernate không cần thay đổi. Thường giảm 20% chi phí và tăng throughput.
+3. **Savings Plans** (tháng 1): commit baseline (phần workload ổn định 24/7) bằng Compute Savings Plans 1 năm. Giảm ~30-40% so với on-demand. Không commit phần biến động.
+4. **Spot** (tháng 2): dùng Spot cho worker, batch, CI runner, dev/staging. Cần handle interruption (checkpoint, graceful shutdown). Có thể giảm 60-90%.
+5. **Architecture** (liên tục): caching (ElastiCache), serverless cho workload thất thường, VPC endpoint giảm NAT, S3 lifecycle.
+
+### Java trên Graviton
+- JDK 17+ hỗ trợ ARM64 tốt; JVM tự nhận diện architecture.
+- Docker image cần build multi-arch (linux/arm64) hoặc dùng image có sẵn.
+- Một số native library (JNI) cần rebuild cho ARM.
+- Benchmark trước khi migrate production; thường Graviton cho throughput cao hơn với cùng giá.
+
+### Spot cho Java worker
+- Worker xử lý job từ SQS/Kafka: nếu bị thu hồi, message quay lại queue (visibility timeout) → worker khác xử lý. An toàn nếu idempotent.
+- Cần graceful shutdown: nhận SIGTERM, dừng nhận job mới, hoàn thành job hiện tại trong 2 phút.
+- Dùng Spot Fleet / Auto Scaling Group với mixed instances và on-demand fallback.
+- Không dùng Spot cho API serving (latency nhạy cảm) hoặc stateful workload.
+
+### Lỗi hay gặp
+- **Mua Savings Plans trước khi right-size.** Triệu chứng: commit chi tiêu cho instance thừa, lãng phí. Cách tránh: right-size trước, commit sau.
+- **Migrate Graviton mà không test native library.** Triệu chứng: app crash vì JNI library chỉ có x86. Cách tránh: kiểm tra dependency, build multi-arch, test staging.
+- **Dùng Spot cho API serving.** Triệu chứng: request bị drop khi Spot bị thu hồi. Cách tránh: Spot chỉ cho worker/batch/dev.
+- **Không handle Spot interruption.** Triệu chứng: job mất giữa chừng, dữ liệu không nhất quán. Cách tránh: checkpoint + graceful shutdown + idempotent processing.
+
+### Trả lời miệng 1 phút
+"Tối ưu chi phí tôi làm theo thứ tự: right-sizing trước (đo và cắt thừa), sau đó Graviton (ARM, thường rẻ hơn 20% và nhanh hơn cho Java), rồi Savings Plans cho baseline ổn định, Spot cho worker và batch, cuối cùng architecture như caching và serverless. Quan trọng là đo trước khi làm: dùng Compute Optimizer và CloudWatch. Java chạy tốt trên Graviton từ JDK 17, chỉ cần build multi-arch image. Spot chỉ cho workload chịu được gián đoạn và phải handle interruption gracefully."
+
+> Senior tip: đừng mua Savings Plans khi chưa right-size. Nhiều hệ đang chạy instance lớn gấp đôi cần thiết; cắt trước có thể giảm 30-50% mà không cần commit gì.`,
+  follow: [
+    'Compute Savings Plans khác EC2 Instance Savings Plans thế nào?',
+    'Làm sao handle Spot interruption trong Java worker?',
+    'Graviton có nhược điểm gì so với x86 cho Java?'
+  ],
+  tags: ['cost optimization', 'Savings Plans', 'Graviton', 'Spot', 'right-sizing', 'lead']
+},
+{
+  id: 'aws-046',
+  topic: 'aws',
+  level: 'lead',
+  q: '(Lead) Secrets và rotation: Secrets Manager vs Parameter Store, Spring Boot đọc secret thế nào và rotate không downtime ra sao?',
+  a: `**Tóm tắt:** Secrets Manager có rotation tự động và audit tốt nhưng đắt; Parameter Store rẻ hơn, phù hợp config không nhạy cảm. Spring Boot đọc qua AWS SDK hoặc Spring Cloud AWS. Rotation không downtime cần app hỗ trợ reload secret (refresh scope) và dual-credential window.
+
+### Hiểu nhanh
+**Secrets Manager** giống tủ sắt có người quản lý: tự đổi mật khẩu định kỳ, ghi log ai mở tủ, nhưng thuê tủ đắt. **Parameter Store** giống ngăn kéo văn phòng: rẻ, có khoá, nhưng tự bạn phải đổi mật khẩu và không có log chi tiết. Với secret quan trọng (DB password, API key), dùng Secrets Manager để có rotation tự động. Với config (feature flag, URL), dùng Parameter Store Standard (miễn phí) hoặc Advanced.
+
+### Thuật ngữ
+- **Secret**: giá trị nhạy cảm (password, token, key).
+- **Parameter**: giá trị config (có thể encrypted).
+- **Rotation**: tự động đổi secret theo lịch.
+- **Lambda rotation function**: hàm Lambda do Secrets Manager gọi để đổi secret.
+- **Dual credential**: giữ cả secret cũ và mới trong thời gian chuyển đổi.
+- **Spring Cloud AWS**: thư viện tích hợp AWS vào Spring Boot.
+- **@RefreshScope**: Spring annotation cho phép bean reload khi config thay đổi.
+- **Secrets Manager caching client**: client cache secret để giảm API call và chi phí.
+
+### So sánh
+| Tiêu chí | Secrets Manager | Parameter Store |
+|---|---|---|
+| Giá | ~0,40 USD/secret/tháng + API call | Standard miễn phí; Advanced ~0,05 USD/parameter/tháng |
+| Rotation tự động | Có (Lambda) | Không (phải tự viết) |
+| Audit (CloudTrail) | Chi tiết | Cơ bản |
+| Kích thước | Tối đa 64 KB | Standard 4 KB, Advanced 8 KB |
+| Cross-account | Dễ (resource policy) | Hạn chế |
+| Phù hợp | Secret quan trọng cần rotation | Config, feature flag, secret ít thay đổi |
+
+### Spring Boot đọc secret
+Cách 1: AWS SDK trực tiếp trong @PostConstruct hoặc @ConfigurationProperties, dùng Secrets Manager caching client để cache và tự refresh.
+
+Cách 2: Spring Cloud AWS: thêm dependency, cấu hình {{spring.config.import=aws-secretsmanager:/secret/name}}, Spring tự inject vào Environment.
+
+Cách 3: Mount secret vào env var qua ECS/Lambda (ít linh hoạt, không reload runtime).
+
+### Rotation không downtime
+1. Secret có hai version: AWSCURRENT và AWSPREVIOUS.
+2. Rotation function tạo secret mới, cập nhật DB (đổi password), rồi promote version mới.
+3. App phải hỗ trợ reload: dùng @RefreshScope + polling hoặc event, hoặc restart rolling.
+4. Trong thời gian chuyển đổi, cả credential cũ và mới đều hợp lệ (dual credential) nhờ DB hỗ trợ multiple password hoặc grace period.
+5. Secrets Manager caching client tự refresh khi detect version mới.
+
+### Lỗi hay gặp
+- **App cache secret mãi không reload.** Triệu chứng: sau rotation, app vẫn dùng secret cũ, connection fail. Cách avoid: dùng caching client với TTL, hoặc @RefreshScope + actuator refresh endpoint.
+- **Rotation function không idempotent.** Triệu chứng: rotation chạy hai lần gây lỗi hoặc secret lệch. Cách avoid: thiết kế idempotent, kiểm tra version trước khi đổi.
+- **Dùng Parameter Store cho secret cần rotation.** Triệu chứng: phải tự viết rotation, dễ lỗi. Cách avoid: secret quan trọng dùng Secrets Manager.
+- **Secret trong env var của task definition.** Triệu chứng: secret nằm trong CloudFormation/IaC, bị lộ. Cách avoid: dùng secret reference (ECS secret injection từ Secrets Manager/Parameter Store), không put plaintext.
+
+### Trả lời miệng 1 phút
+"Secrets Manager có rotation tự động và audit tốt nhưng đắt; Parameter Store rẻ hơn, phù hợp config. Spring Boot đọc qua AWS SDK caching client hoặc Spring Cloud AWS. Rotation không downtime cần app hỗ trợ reload secret (@RefreshScope hoặc caching client với TTL) và dual-credential window trong thời gian chuyển đổi. Secret quan trọng (DB password) dùng Secrets Manager; config/feature flag dùng Parameter Store Standard."
+
+> Senior tip: đừng lưu secret trong env var plaintext của task definition. Dùng secret reference để ECS/Lambda tự inject từ Secrets Manager/Parameter Store, và secret không xuất hiện trong IaC hay console.`,
+  follow: [
+    'Secrets Manager rotation Lambda hoạt động thế nào các bước?',
+    'Làm sao app Java reload secret mà không restart?',
+    'Khi nào dùng Parameter Store Advanced thay vì Secrets Manager?'
+  ],
+  tags: ['Secrets Manager', 'Parameter Store', 'rotation', 'Spring Boot', 'lead']
 }
 )
