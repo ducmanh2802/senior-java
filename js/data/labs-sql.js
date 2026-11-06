@@ -1489,5 +1489,279 @@ idx_invoice_due_date (đã sắp xếp) ──> đọc 4.177 dòng, lọc ──
     'Nêu cách tái hiện đúng (PREPARE + plan_cache_mode) và monitoring theo tenant/auto_explain',
   ],
   tags: ['postgresql', 'prepared-statement', 'generic-plan', 'data-skew', 'multi-tenant', 'pgjdbc'],
+},
+{
+  id: 'lab-sql-011',
+  category: 'sql',
+  title: 'Deploy thêm cột NOT NULL làm toàn bộ API treo: AccessExclusiveLock và hàng chờ lock',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Sàn thương mại điện tử FlashSale chạy {{order-service}} (Spring Boot 3.3, Hibernate 6.4, HikariCP 40 connection, PostgreSQL 15.6 trên RDS, 8 vCPU / 64 GB). Bảng {{orders}} có **18,4 triệu** dòng, là bảng nóng nhất hệ thống: mọi API đọc/ghi đơn hàng đều đi qua nó, khoảng 1.200 giao dịch/giây vào giờ cao điểm.
+
+**Triệu chứng (15/03/2026, 14:02).** Deploy bản v2.14.0 chứa migration Flyway {{V47__add_payment_method_to_orders.sql}}. Trong vòng 90 giây, **toàn bộ** endpoint trả 504, CPU RDS vẫn 12% (không phải CPU), connection pool cạn sạch, log ứng dụng tràn {{HikariPool-1 - Connection is not available, request timed out after 30000ms}}. DBA kill migration thì hệ thống hồi phục trong 30 giây. Migration chạy lại lúc 02:00 cùng câu SQL mất **4 phút** và thành công. Không ai đổi code giữa hai lần.
+
+**Việc bạn có.** Log Flyway, snapshot pg_stat_activity và pg_locks lúc 14:02:30, và cấu hình migration. Hãy tìm nguyên nhân gốc và cách chạy migration an toàn.`,
+  artifacts: [
+    {
+      name: 'flyway-migration.log',
+      lang: 'text',
+      content: `2026-03-15 14:00:00.012 INFO  [main] o.f.core.internal.command.DbMigrate : Migrating schema "public" to version "47 - add payment method to orders"
+2026-03-15 14:00:00.015 INFO  [main] o.f.core.internal.sqlscript.DefaultSqlScriptExecutor : Executing SQL: ALTER TABLE orders ADD COLUMN payment_method varchar(16) NOT NULL DEFAULT 'COD'
+2026-03-15 14:00:00.016 INFO  [main] o.f.core.internal.sqlscript.DefaultSqlScriptExecutor : Executing SQL: CREATE INDEX CONCURRENTLY idx_orders_payment_method ON orders (payment_method)
+2026-03-15 14:00:00.018 INFO  [main] o.f.core.internal.sqlscript.DefaultSqlScriptExecutor : Executing SQL: ALTER TABLE orders ALTER COLUMN payment_method DROP DEFAULT
+2026-03-15 14:00:02.003 WARN  [main] o.f.core.internal.command.DbMigrate : Migration of schema "public" to version "47" failed! Please restore backups...
+2026-03-15 14:00:02.004 ERROR [main] o.f.core.internal.command.DbMigrate : Unable to obtain exclusive lock on table "orders"`,
+    },
+    {
+      name: 'pg-stat-activity-140230.txt',
+      lang: 'text',
+      content: `-- 2026-03-15 14:02:30 +07, RDS flashsale-primary
+flashsale=# SELECT pid, state, wait_event_type, wait_event, left(query, 80) AS query
+            FROM pg_stat_activity WHERE datname='flashsale' ORDER BY backend_start;
+   pid   |        state        | wait_event_type | wait_event  |                                query
+---------+---------------------+-----------------+-------------+------------------------------------------------------------------
+  41120 | active              | Lock            | relation    | ALTER TABLE orders ADD COLUMN payment_method varchar(16) NOT NULL DEFAULT 'COD'
+  41121 | idle in transaction | Client          | ClientRead  | BEGIN; SELECT ... FROM orders WHERE id = $1 FOR UPDATE
+  41122 | active              | Lock            | relation    | SELECT count(*) FROM orders WHERE status = $1
+  41123 | active              | Lock            | relation    | UPDATE orders SET status = $1 WHERE id = $2
+  41124 | active              | Lock            | relation    | INSERT INTO orders (...) VALUES (...)
+  41125 | active              | Lock            | relation    | SELECT id, amount FROM orders WHERE customer_id = $1
+   ... (tổng 387 backend đang chờ lock trên cùng một relation)
+-- Tổng: 1 migration + 1 transaction giữ lock + 385 query ứng dụng đang chờ AccessExclusiveLock`,
+    },
+    {
+      name: 'pg-locks-140230.txt',
+      lang: 'text',
+      content: `-- 2026-03-15 14:02:30 +07
+flashsale=# SELECT l.locktype, l.mode, l.granted, count(*) AS n, a.state
+            FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+            WHERE l.relation = 'orders'::regclass GROUP BY l.locktype, l.mode, l.granted, a.state;
+  locktype |           mode           | granted |  n  |        state
+-----------+--------------------------+---------+-----+---------------------
+  relation  | AccessShareLock          | t       | 385 | active (chờ)
+  relation  | RowExclusiveLock         | t       |   1 | idle in transaction
+  relation  | AccessExclusiveLock      | f       |   1 | active (migration)
+-- Migration xin AccessExclusiveLock nhưng bị chặn bởi RowExclusiveLock của transaction 41121.
+-- 385 query ứng dụng xin AccessShareLock phải xếp hàng sau AccessExclusiveLock trong hàng đợi FIFO.`,
+    },
+  ],
+  questions: [
+    'Vì sao migration xin AccessExclusiveLock mà bị chặn, và vì sao 385 query ứng dụng vốn chỉ cần AccessShareLock cũng bị treo dù lock đó đang được cấp?',
+    'Vì sao cùng câu SQL lúc 02:00 lại thành công trong 4 phút, còn lúc 14:00 treo toàn hệ thống?',
+    'Bạn sẽ chạy migration này thế nào để không chặn hệ thống, và thêm guardrail gì để không tái diễn?',
+  ],
+  hints: [
+    'PostgreSQL hàng đợi lock là FIFO: một AccessExclusiveLock đang chờ sẽ chặn mọi lock mới cùng relation, kể cả lock yếu hơn.',
+    'ALTER TABLE ... ADD COLUMN ... NOT NULL DEFAULT trong PostgreSQL 11+ không rewrite bảng (chỉ ghi metadata), nên bản thân nó nhanh; vấn đề là xin lock.',
+    'Transaction 41121 đang idle in transaction giữ RowExclusiveLock: đó là thủ phạm giữ lock.',
+  ],
+  answer: `**Tóm tắt:** Migration {{ALTER TABLE orders ADD COLUMN ... NOT NULL DEFAULT}} cần **AccessExclusiveLock** trên bảng {{orders}}. Một transaction ứng dụng (41121) đang {{idle in transaction}} giữ **RowExclusiveLock** → migration phải chờ. PostgreSQL xếp hàng lock theo **FIFO**: mọi query ứng dụng xin AccessShareLock sau migration đều bị xếp hàng sau AccessExclusiveLock đang chờ, nên dù lock yếu hơn cũng bị chặn → toàn bộ hệ thống treo. Sửa ngay bằng lock_timeout ngắn và retry; dài hạn: chia migration nhỏ, chạy ngoài giờ cao điểm, theo dõi idle in transaction và statement_timeout.
+
+### Kiến thức nền: lock trên bảng
+PostgreSQL có nhiều mức lock trên relation (bảng):
+- **AccessShareLock**: SELECT (yếu nhất).
+- **RowExclusiveLock**: INSERT/UPDATE/DELETE.
+- **AccessExclusiveLock**: ALTER TABLE, DROP TABLE, VACUUM FULL (mạnh nhất, không tương thích với bất kỳ lock nào khác).
+
+Hai lock tương thích nếu cùng được cấp; AccessExclusiveLock **không tương thích** với bất kỳ lock nào → cần bảng trống lock.
+
+### Nguyên nhân gốc, từng bước
+1. 14:00:00 migration bắt đầu, xin AccessExclusiveLock trên {{orders}}.
+2. Transaction 41121 ({{BEGIN; SELECT ... FOR UPDATE}}) đang giữ RowExclusiveLock và ở trạng thái {{idle in transaction}} (ứng dụng không commit/rollback, ví dụ connection leak hoặc chờ input người dùng).
+3. Migration phải chờ RowExclusiveLock được giải phóng → AccessExclusiveLock ở trạng thái {{granted = f}}.
+4. Hàng đợi lock của PostgreSQL là **FIFO**: các query ứng dụng đến sau migration xin AccessShareLock phải đứng sau AccessExclusiveLock đang chờ, dù AccessShareLock tương thích với RowExclusiveLock.
+5. Vì vậy **385 query ứng dụng** bị chặn, connection pool cạn, toàn bộ API treo. CPU thấp vì không có gì chạy.
+
+### Dẫn chứng
+- pg_locks: AccessExclusiveLock {{granted = f}} của migration; RowExclusiveLock {{granted = t}} của transaction 41121; 385 AccessShareLock {{granted = t}} nhưng state active chờ (đang chờ trong hàng đợi).
+- pg_stat_activity: 41121 {{idle in transaction}}, ClientRead.
+- Flyway: "Unable to obtain exclusive lock on table orders".
+
+### Vì sao 02:00 thành công
+Ngoài giờ cao điểm, không có transaction giữ lock, migration xin AccessExclusiveLock và được cấp ngay. PostgreSQL 11+ làm {{ADD COLUMN ... NOT NULL DEFAULT}} chỉ ghi metadata (không rewrite bảng), nên mất vài giây. Vấn đề không phải câu SQL mà là **thời điểm** và **lock đang bị giữ**.
+
+### Cách sửa
+**Ngắn hạn:**
+- Đặt {{lock_timeout}} cho role migration (ví dụ 5 s): migration fail nhanh thay vì chờ vô hạn; retry sau khi giải phóng lock.
+- Tìm và kết thúc transaction giữ lock: {{SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE state = 'idle in transaction' AND ...}}; hoặc fix code để commit/rollback kịp thời.
+- Chạy migration ngoài giờ cao điểm; deploy không kèm migration nặng trong giờ cao điểm.
+
+**Dài hạn:**
+- Chia migration: thêm cột nullable trước (metadata, nhanh), backfill theo lô, rồi đặt NOT NULL + default sau. Tránh {{ALTER TABLE ... ADD COLUMN ... NOT NULL DEFAULT}} trên bảng lớn trong giờ cao điểm dù nó không rewrite.
+- Dùng {{CREATE INDEX CONCURRENTLY}} (đã có trong migration) và không bọc trong transaction (Flyway mặc định chạy mỗi migration trong transaction → CONCURRENTLY sẽ lỗi; cần {{spring.flyway...}} hoặc tách migration).
+- Thêm {{statement_timeout}} và {{lock_timeout}} cho role ứng dụng; theo dõi {{pg_stat_activity}} state {{idle in transaction}} và connection leak.
+- Theo dõi số lock chờ: alert khi {{pg_locks}} có AccessExclusiveLock granted=f.
+
+### Lỗi hay gặp
+- Nghĩ migration chậm vì rewrite bảng: PostgreSQL 11+ ADD COLUMN DEFAULT không rewrite.
+- Kill migration rồi chạy lại ngay trong giờ cao điểm: lại treo.
+- Bọc CREATE INDEX CONCURRENTLY trong transaction: lỗi "CREATE INDEX CONCURRENTLY cannot run inside a transaction block".
+
+### Trả lời miệng 1 phút
+"Migration ALTER TABLE cần AccessExclusiveLock. Một transaction ứng dụng idle in transaction giữ RowExclusiveLock nên migration chờ. Hàng đợi lock FIFO làm mọi query AccessShareLock đến sau cũng bị chặn dù lock yếu hơn, nên toàn bộ hệ thống treo. Ngoài giờ cao điểm không có transaction giữ lock nên migration nhanh. Tôi sẽ đặt lock_timeout ngắn, chia migration (thêm cột nullable → backfill → NOT NULL), chạy CONCURRENTLY ngoài transaction, và theo dõi idle in transaction."
+
+> Senior tip: Trên PostgreSQL, **một AccessExclusiveLock đang chờ là "cổ chai" chặn mọi thứ**, kể cả SELECT. Vì vậy migration DDL trên bảng nóng phải luôn có {{lock_timeout}} và chạy ở thời điểm bảng ít lock nhất. Và {{idle in transaction}} là kẻ thù số một: một connection leak có thể làm cả hệ thống đứng.`,
+  rubric: [
+    'Nhận ra migration cần AccessExclusiveLock bị chặn bởi RowExclusiveLock của transaction idle in transaction',
+    'Giải thích cơ chế hàng đợi lock FIFO khiến query AccessShareLock cũng bị chặn',
+    'Giải thích vì sao ngoài giờ cao điểm thành công (không có lock giữ) và vì sao ADD COLUMN DEFAULT không rewrite bảng (PG 11+)',
+    'Đề xuất sửa: lock_timeout, chia migration, CREATE INDEX CONCURRENTLY ngoài transaction, theo dõi idle in transaction',
+  ],
+  tags: ['postgresql', 'lock', 'migration', 'flyway', 'access-exclusive-lock', 'idle-in-transaction'],
+},
+{
+  id: 'lab-sql-012',
+  category: 'sql',
+  title: 'Báo cáo theo tháng của một phòng ban lớn chậm 100 lần: generic plan và thống kê cũ',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Hệ thống HRIS của công ty FinBank chạy {{payroll-report}} (Spring Boot 3.3, Spring Data JPA, pgjdbc, PostgreSQL 15.6). Bảng {{salary_payment}} có **24 triệu** dòng, phân bố theo phòng ban rất lệch: phòng ban "Bán lẻ" (department_id = 3) chiếm **62%** (14,9 triệu dòng), 80 phòng ban còn lại mỗi phòng dưới 2% (trung bình 115 nghìn dòng).
+
+Màn hình "Báo cáo lương theo tháng" gọi câu SQL tham số hoá:
+~~~sql
+SELECT department_id, sum(amount) FROM salary_payment
+WHERE department_id = $1 AND pay_month = $2
+GROUP BY department_id;
+~~~
+
+**Triệu chứng.** Sau mỗi restart pod, mọi phòng ban đều nhanh (dưới 200 ms). Khoảng 5 phút sau, **chỉ phòng ban Bán lẻ** chậm 12–18 giây, còn các phòng ban khác vẫn dưới 200 ms. DBA copy câu SQL vào psql với department_id = 3: **180 ms**, không tái hiện. Restart pod thì đỡ 5 phút rồi lặp.
+
+**Việc bạn có.** Log auto_explain, kết quả thử nghiệm psql, thống kê bảng và metric theo thời gian.`,
+  artifacts: [
+    {
+      name: 'auto-explain-report.log',
+      lang: 'text',
+      content: `2026-03-20 09:14:02.118 +07 [66210] payroll@finbank LOG:  duration: 14821.309 ms  plan:
+  Query Text: select d1_0.department_id,sum(d1_0.amount) from salary_payment d1_0 where d1_0.department_id=$1 and d1_0.pay_month=$2 group by d1_0.department_id
+  Query Parameters: $1 = '3', $2 = '2026-03'
+  HashAggregate  (cost=412.80..412.81 rows=1 width=40) (actual time=14820.99..14821.00 rows=1 loops=1)
+    Group Key: department_id
+    ->  Seq Scan on salary_payment  (cost=0.00..412.80 rows=9600 width=12) (actual time=0.002..14102.44 rows=14882312 loops=1)
+          Filter: ((department_id = $1) AND ((pay_month)::text = $2))
+          Rows Removed by Filter: 9117688
+          Buffers: shared hit=184220 read=312440
+2026-03-20 09:14:02.401 +07 [66212] payroll@finbank LOG:  duration: 178.221 ms  plan:
+  Query Text: (cùng câu trên)
+  Query Parameters: $1 = '42', $2 = '2026-03'
+  Index Scan using idx_salary_dept_month on salary_payment  (cost=0.43..8.45 rows=1 width=12) (actual time=0.018..178.20 rows=112440 loops=1)`,
+    },
+    {
+      name: 'dba-psql-test.txt',
+      lang: 'text',
+      content: `-- psql 15.6, 2026-03-20 09:30 +07
+-- (1) Literal: planner thấy giá trị 3 ngay lúc lập plan
+finbank=> EXPLAIN (ANALYZE, BUFFERS)
+SELECT department_id, sum(amount) FROM salary_payment
+WHERE department_id = 3 AND pay_month = '2026-03' GROUP BY department_id;
+  HashAggregate  (cost=184220.50..184220.51 rows=1 width=40) (actual time=178.42..178.43 rows=1 loops=1)
+    ->  Index Scan using idx_salary_dept_month on salary_payment  (cost=0.43..184220.50 rows=14882312 width=12) (actual time=0.019..142.11 rows=14882312 loops=1)
+  Planning Time: 0.312 ms
+  Execution Time: 178.91 ms
+-- (2) Mô phỏng prepared statement, ép generic plan
+finbank=> PREPARE q(int, text) AS SELECT department_id, sum(amount) FROM salary_payment
+          WHERE department_id = $1 AND pay_month = $2 GROUP BY department_id;
+finbank=> SET plan_cache_mode = force_generic_plan;
+finbank=> EXPLAIN EXECUTE q(3, '2026-03');
+  HashAggregate  (cost=412.80..412.81 rows=1 width=40)
+    ->  Seq Scan on salary_payment  (cost=0.00..412.80 rows=9600 width=12)
+          Filter: ((department_id = $1) AND ((pay_month)::text = $2))
+finbank=> SET plan_cache_mode = force_custom_plan;
+finbank=> EXPLAIN EXECUTE q(3, '2026-03');
+  HashAggregate  (cost=184220.50..184220.51 rows=1 width=40)
+    ->  Index Scan using idx_salary_dept_month ... rows=14882312`,
+    },
+    {
+      name: 'stats-and-metrics.txt',
+      lang: 'text',
+      content: `-- pg_stats (ANALYZE gần nhất 2026-03-20 03:00)
+  reltuples = 24000000
+  department_id: n_distinct = 81 ; most_common_vals = {3, 7, 12, ...} ; most_common_freqs = {0.6201, 0.0184, 0.0172, ...}
+  pay_month: n_distinct = 24 ; most_common_vals = {2026-03, 2026-02, ...}
+  Indexes:
+    "salary_payment_pkey" PRIMARY KEY, btree (id)
+    "idx_salary_dept_month" btree (department_id, pay_month)
+  -- pgjdbc / Hikari
+  prepareThreshold = 5 ; Hikari maximumPoolSize = 20, 6 pod => 120 connection
+  -- Prometheus: p99 theo department
+  time   | event            | p99 dept=3 | p99 dept khác
+  09:05  | rolling restart  | 0.18 s     | 0.12 s
+  09:07  |                  | 0.19 s     | 0.12 s
+  09:10  |                  | 8.2 s      | 0.13 s
+  09:14  |                  | 14.8 s     | 0.13 s`,
+    },
+  ],
+  questions: [
+    'Vì sao production chậm 14,8 giây còn psql chỉ 179 ms với cùng department_id = 3? Giải thích custom plan / generic plan.',
+    'Vì sao generic plan được chọn dù nó Seq Scan toàn bảng, và vì sao lỗi chỉ xuất hiện vài phút sau restart?',
+    'Đề xuất cách sửa ngắn hạn và dài hạn; so sánh ít nhất 3 phương án.',
+  ],
+  hints: [
+    'So plan production (Seq Scan, department_id = $1) với psql literal (Index Scan theo idx_salary_dept_month): plan khác vì tham số chưa được thay vào.',
+    'Generic plan ước lượng trung bình: 24.000.000 / 81 ≈ 296.000 dòng mỗi phòng ban, trong khi phòng ban 3 có 14,9 triệu.',
+    'PostgreSQL chuyển sang generic plan sau 5 lần EXECUTE trên mỗi connection khi chi phí generic không đắt hơn trung bình custom plan.',
+  ],
+  answer: `**Tóm tắt:** Production chạy câu dưới dạng prepared statement; sau vài lần thực thi trên mỗi connection, PostgreSQL chuyển sang **generic plan** (một plan dùng chung cho mọi giá trị {{$1}}), được tối ưu cho phòng ban "trung bình" ~296 nghìn dòng: Seq Scan toàn bảng. Với phòng ban Bán lẻ (14,9 triệu dòng), plan này đọc 496 nghìn page, mất 14,8 giây. psql dùng literal nên luôn có **custom plan** thấy giá trị 3 và chọn index {{idx_salary_dept_month}}, 179 ms. Sửa gốc bằng partial index hoặc index đúng thứ tự để một plan duy nhất tốt cho mọi phòng ban; ngắn hạn có thể đặt {{plan_cache_mode = force_custom_plan}} cho role ứng dụng.
+
+### Kiến thức nền: prepared statement và hai loại plan
+Mỗi câu SQL phải qua parse → rewrite → **plan** → execute. Lập plan tốn thời gian, nên prepared statement cho phép lập plan một lần, chạy nhiều lần.
+
+PostgreSQL có hai loại plan:
+| | Custom plan | Generic plan |
+|---|---|---|
+| Khi nào | mỗi lần EXECUTE, **biết** giá trị tham số | một lần, **không biết** giá trị |
+| Ước lượng | dùng MCV: phòng ban 3 → 62% bảng | dùng trung bình: 1 / n_distinct |
+| Chi phí lập plan | mỗi lần | được cache, gần như 0 |
+| Rủi ro | tốn CPU planner | sai nặng khi dữ liệu lệch (skew) |
+
+Thuật toán mặc định ({{plan_cache_mode = auto}}): **5 lần EXECUTE đầu** luôn dùng custom plan. Từ lần thứ 6, PostgreSQL lập generic plan và so chi phí ước lượng của nó với chi phí trung bình của 5 custom plan. Nếu generic không đắt hơn đáng kể, nó dùng generic mãi mãi cho prepared statement đó trên connection đó.
+
+pgjdbc mặc định {{prepareThreshold=5}}: 4 lần đầu một PreparedStatement chạy dưới dạng unnamed statement (luôn được lập plan lại như custom), từ lần thứ 5 mới tạo server-side named prepared statement.
+
+### Nguyên nhân gốc, từng bước
+1. Sau restart, 120 connection mới, mọi câu đều custom plan → phòng ban 3 dùng index {{idx_salary_dept_month}}: đọc đúng các dòng của phòng ban + tháng, nhanh.
+2. Đa số lần gọi là phòng ban nhỏ. Custom plan của phòng ban nhỏ: index scan vài nghìn dòng, chi phí thấp.
+3. Sau ~10 lần trên một connection, PostgreSQL thử generic plan: {{department_id = $1}} được ước lượng **24.000.000 / 81 ≈ 296.000** dòng (khớp rows=9600 sau khi nhân selectivity pay_month). Chi phí 412, gần với trung bình custom plan của phòng ban nhỏ → PostgreSQL chọn generic.
+4. Request tiếp theo của phòng ban Bán lẻ rơi vào connection đó: generic plan Seq Scan toàn bảng, đọc 14,9 triệu dòng, lọc pay_month, mất 14,8 giây.
+5. Vì mỗi connection tự chuyển sang generic theo nhịp riêng, sau ~5 phút hầu hết 120 connection đã "lật", nên phòng ban Bán lẻ chậm gần như mọi request. Restart xoá plan cache → nhanh lại, rồi lặp.
+
+### Dẫn chứng
+- auto_explain: **"Filter: ((department_id = $1) AND ...)"** → tham số chưa được thay vào lúc lập plan → generic plan. Ước lượng **rows=9600** so với thực tế **rows=14882312** (lệch ~1500 lần).
+- **"Buffers: shared hit=184220 read=312440"**, **"duration: 14821.309 ms"**.
+- psql (1): literal 3 → **Index Scan using idx_salary_dept_month**, **178.91 ms**. psql (2): {{force_generic_plan}} tái hiện **chính xác** plan production (cost 412.80, Seq Scan), còn {{force_custom_plan}} cho lại plan nhanh.
+- Thống kê: phòng ban 3 có freq **0.6201** trong MCV, n_distinct **81**; 24.000.000 / 81 = 296.296.
+- Metric: 09:05 restart, p99 phòng ban 3 là 0,18 s; 09:10 nhảy lên 8,2 s; phòng ban khác không đổi.
+
+### Cách sửa
+| Phương án | Ưu điểm | Nhược điểm |
+|---|---|---|
+| Index {{(department_id, pay_month)}} (đã có) + partial index {{WHERE department_id = 3}} | Plan tốt cho phòng ban lớn | Index riêng cho tenant lớn, phải quản lý |
+| {{ALTER ROLE payroll SET plan_cache_mode = force_custom_plan}} | Không cần deploy, hiệu lực connection mới | Mọi câu đều tốn planning mỗi lần, CPU tăng |
+| pgjdbc {{prepareThreshold=0}} | Không bao giờ named statement | Mất lợi ích prepared cho mọi câu |
+| Tách dữ liệu phòng ban lớn (partition theo department) | Cô lập noisy neighbor | Lớn, thay đổi kiến trúc |
+
+**Ngắn hạn (hôm nay):** đặt {{plan_cache_mode = force_custom_plan}} cho role ứng dụng rồi rotate connection (Hikari softEvict hoặc rolling restart) để áp dụng. Đồng thời thêm {{CREATE INDEX CONCURRENTLY idx_salary_large_dept_month ON salary_payment (pay_month) WHERE department_id = 3;}} để phòng ban lớn có index riêng nhỏ.
+
+**Dài hạn:** quy tắc thiết kế index cho dữ liệu lệch: **cột đầu tiên là cột filter bằng, sau đó là cột range/sort**; với phòng ban lớn, cân nhắc partial index. Theo dõi p99 theo department (không chỉ trung bình toàn hệ thống). Test hiệu năng với dữ liệu lệch.
+
+### Phòng ngừa
+- auto_explain với {{log_parameter_max_length}} (PostgreSQL 16+) để thấy tham số; dấu hiệu generic plan là {{$1}} trong Index Cond.
+- Khi tái hiện trong psql, **luôn thử thêm PREPARE + force_generic_plan**, không chỉ literal.
+- Dashboard p99 theo department: trung bình toàn hệ thống che mất phòng ban 3 chậm 14,8 giây.
+
+### Lỗi hay gặp
+- "psql nhanh mà app chậm → do network/app": thật ra plan khác nhau.
+- Restart để chữa: chỉ reset plan cache, lỗi quay lại sau vài phút.
+- Nghĩ Hibernate tự "inline" tham số: Hibernate luôn bind qua PreparedStatement.
+
+### Trả lời miệng 1 phút
+"Production dùng prepared statement. Sau khoảng 10 lần trên mỗi connection, PostgreSQL chuyển sang generic plan vì chi phí ước lượng tương đương custom plan của phòng ban nhỏ. Generic plan không biết department_id nên đoán 296 nghìn dòng, Seq Scan toàn bảng. Với phòng ban Bán lẻ có 14,9 triệu dòng, plan đó đọc 496 nghìn page, 14,8 giây. psql dùng literal nên có custom plan đi theo index và nhanh. Tôi xác nhận bằng PREPARE với force_generic_plan. Sửa gốc bằng partial index cho phòng ban lớn; tạm thời force_custom_plan cho role ứng dụng."
+
+> Senior tip: Trong hệ thống có dữ liệu lệch, **"trung bình" không đại diện cho nhóm lớn nhất**, mà nhóm lớn nhất lại thường là nhóm quan trọng nhất (khách hàng lớn, phòng ban lớn). Tôi luôn kiểm tra {{most_common_freqs}} của cột filter; nếu có giá trị > 5% bảng thì mọi query theo cột đó phải được thiết kế sao cho plan **không phụ thuộc** vào việc biết giá trị tham số.`,
+  rubric: [
+    'Nhận ra plan production là generic plan (department_id = $1) còn psql với literal là custom plan; giải thích cơ chế 5 custom plan rồi so chi phí, và pgjdbc prepareThreshold=5',
+    'Tính được ước lượng 24.000.000/81 ≈ 296.000 dòng so với thực tế 14.882.312 của phòng ban 3 (skew 62%), dẫn chứng Seq Scan, buffers, 14,8 s',
+    'Giải thích vì sao chỉ phòng ban lớn bị và vì sao lỗi quay lại vài phút sau restart (plan cache theo connection)',
+    'Đề xuất sửa gốc bằng partial index hoặc index phù hợp, kèm phương án tạm force_custom_plan và đánh giá trade-off',
+    'Nêu cách tái hiện đúng (PREPARE + plan_cache_mode) và monitoring theo department',
+  ],
+  tags: ['postgresql', 'prepared-statement', 'generic-plan', 'data-skew', 'pgjdbc'],
 }
 );
