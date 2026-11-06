@@ -9793,5 +9793,1461 @@ Bốn chi tiết làm test này **có giá trị** (và là lý do nó khác v�
     ]
   },
   tags: ['partial-refund', 'quality', 'automation', 'sdet', 'playwright', 'junit5', 'testcontainers', 'acceptance-criteria', 'boundary', 'traceability', 'flaky-test', 'retry', 'ci-parallel', 'race-condition', 'lost-update', 'read-committed', 'atomic-update', 'idempotency', 'feature-flag', 'canary', 'smoke-test', 'synthetic-traffic', 'expand-contract', 'postmortem', 'ecommerce']
+},
+{
+  id: 'sdlc-011',
+  title: 'Đưa service sao kê từ VM on-prem lên AWS EKS: hybrid, GitOps và sự cố DNS ndots',
+  level: 'senior',
+  domain: 'Ngân hàng bán lẻ — hạ tầng hybrid AWS / on-prem',
+  context: `Bạn là **Senior Java Developer**, tech lead không chính thức của team Digital Statements tại một ngân hàng bán lẻ Việt Nam: **6,2 triệu khách hàng**, app mobile **2,8 triệu người dùng hoạt động/tháng**.
+
+Service bạn sở hữu: {{statement-service}} — chính là màn hình "Sao kê" trong app. Java 21, Spring Boot 3.2, PostgreSQL 16, ~180.000 dòng code, 4 năm tuổi, đang chạy trên **3 VM on-prem** ở datacenter Hà Nội (hợp đồng phần cứng hết hạn quý sau). Hội đồng công nghệ duyệt đề án chuyển nó lên **AWS EKS** (Elastic Kubernetes Service — Kubernetes do AWS quản lý control plane) ở region **ap-southeast-1 (Singapore)**, vì hai lý do: (1) không co giãn kịp ngày 25 hằng tháng, (2) VM sắp hết vòng đời.
+
+Điều quan trọng nhất của bối cảnh: **ngân hàng chưa từng chạy hệ thống phục vụ khách hàng trên AWS**. Team bạn cũng chưa ai chạy Kubernetes production. Nên mọi thứ đều mới: VPC, IAM, Helm, Argo CD, RDS, IRSA. DevOps nội bộ chỉ có anh Kiên (0,5 người, làm thêm 4 hệ thống khác), SRE thuê ngoài 2 ngày/tuần.
+
+Các hệ thống liên quan — và cũng là nguồn cơn của sự cố về sau:
+- {{gateway-core}}: cổng HTTP vào hệ thống lõi, **vẫn nằm on-prem** (không nằm trong phạm vi đề án). gọi từ AWS về nó đi qua **Direct Connect** — đường mạng riêng vật lý nối datacenter của bank với AWS, RTT đo được **38 ms**.
+- {{postgres-onprem}}: database chính, bảng {{statement_entry}} **1,4 tỷ dòng**. Đề án cho phép chuyển sang **RDS PostgreSQL** trên AWS.
+- {{nas-pdf}}: file PDF sao kê trên NAS on-prem (sẽ chuyển sang S3).
+
+Số liệu hiện trạng (đo 4 tuần trên VM, xem artifact ở giai đoạn đầu): {{avg}} 48 RPS, đỉnh ngày 25 **900 RPS** trong 20 phút; p50 78 ms, p95 240 ms, p99 610 ms; availability 99,91%.
+
+> Kịch bản đi qua đủ 8 giai đoạn, số liệu — tên quyết định — giả định mở được dùng xuyên suốt và có thể quay lại "gây hoạ" ở giai đoạn sau. Ở mỗi giai đoạn: đọc tình huống + artifact, **tự làm phần "Việc của bạn"** (viết ra giấy trước), rồi mới mở đáp án. Đáp án được viết cho người **chưa từng làm Kubernetes/AWS**, nên mọi thuật ngữ đều được giải thích ở lần xuất hiện đầu tiên.`,
+  stages: [
+    {
+      key: 'requirement',
+      title: 'Nhận đề án 5 dòng: biến "lên cloud" thành SLA, bảo mật và audit đo được',
+      role: 'Kiến trúc trưởng đưa brief; Pháp chế + An ninh thông tin đưa điều kiện; bạn là người phản biện kỹ thuật',
+      story: `Sáng thứ Tư, Kiến trúc trưởng gửi qua Confluence một trang dài **5 dòng** tên là "Đề án STM-77: đưa statement-service lên cloud". Chiều cùng ngày có họp 60 phút với PO, Pháp chế (chị Hà), An ninh thông tin (anh Trung, CISO), DevOps Kiên và bạn.
+
+Buổi họp rất đông người có quyền phủ quyết nhưng **không ai đưa ra một con số nào**. Chị Hà nói "dữ liệu khách hàng không được tuỳ tiện ra nước ngoài". Anh Trung nói "PCI DSS đấy em". Kiến trúc trưởng nói "mục tiêu là elasticity và retire cái VM". PO hỏi "khi nào xong để em trả lời khối nghiệp vụ".
+
+Bạn về bàn, mở file số liệu 4 tuần mà bạn tự lấy từ {{grafana}} on-prem (artifact thứ ba). Càng đọc bạn càng thấy brief **mâu thuẫn với hiện trạng**: nó đặt "{{p95 dưới 1 giây}}" trong khi hệ thống **đang** đạt p95 240 ms; nó viết "99,9%" trong khi hợp đồng với khối nghiệp vụ đã cam 99,9%; và nó không nói một câu nào về chuyện {{gateway-core}} vẫn nằm lại Hà Nội trong khi pod sẽ ở Singapore.`,
+      artifacts: [
+        { name: 'BRIEF-STM-77.txt', lang: 'text', content: `STM-77  [Epic]  Đưa statement-service lên AWS EKS
+Người đề xuất: Kiến trúc trưởng      Ngày: 2026-09-28      Hạn: 2026-12-31
+Được CTO duyệt tại Hội đồng công nghệ 2026-09-25 (biên bản HB-CNT-31)
+
+Bối cảnh:
+  - 3 VM on-prem (HA NOI DC) sắp hết vòng đời phần cứng, hợp đồng hỗ trợ hết hạn 2027-03.
+  - Không co giãn được vào ngày 25 hàng tháng; mỗi lần phải xin change, nâng RAM VM, restart.
+  - Bank đang đi theo hướng "cloud-first cho workload khách hàng".
+
+Mục tiêu (nguyên văn):
+  1. Chạy statement-service trên AWS, dùng Kubernetes.
+  2. Elasticity: tự động tăng giảm theo tải.
+  3. p95 dưới 1 giây.
+  4. Bảo mật: theo chuẩn bank.
+  5. Không gián đoạn dịch vụ khi chuyển.
+
+Phạm vi: statement-service + PostgreSQL của nó.
+NGOÀI phạm vi: gateway-core, hệ thống lõi, ATM, core banking batch đêm.
+` },
+        { name: 'compliance-memo.txt', lang: 'text', content: `MEMO PHÁP CHẾ + AN NINH THÔNG TIN — đề án STM-77
+Người nhận: Team Digital Statements.  Ngày: 2026-09-30.  Mật: Nội bộ
+
+1. DỮ LIỆU CÁ NHÂN. Số hiệu tài khoản, tên chủ tài khoản, số dư, nội dung giao dịch
+   là dữ liệu cá nhân cơ bản/nhạy cảm theo Nghị định 13/2023/NĐ-CP. Việc truyền ra
+   khỏi lãnh thổ Việt Nam cần (a) cơ chế đồng ý trong điều khoản sử dụng app,
+   (b) đánh giá tác động xử lý dữ liệu, (c) báo cáo phương án cho khối Pháp chế.
+   => Pháp chế CHẤP THUẬN khu vực Singapore (ap-southeast-1) VỚI 4 ĐIỀU KIỆN:
+      K1  Mã hoá at-rest bằng KMS customer-managed key, key policy do bank kiểm soát.
+      K2  Trường nội dung giao dịch hiển thị cho app phải qua bộ lọc mask trước khi ghi DB mới.
+      K3  Không log PII: không số tài khoản đầy đủ, không tên khách vào stdout/CloudWatch.
+      K4  Có "exit plan": bằng chứng rút về on-prem trong 30 ngày, không khoá dữ liệu lại AWS.
+2. PCI DSS v4.0: card number (PAN) KHÔNG được lưu ở statement-service. Nếu phát hiện
+   PAN trong dữ liệu, phải tokenise hoặc loại khỏi phạm vi migration.
+3. Thông tư 09/2020/TT-NHNN: sự cố an toàn thông tin phải được ghi nhận, phân loại,
+   báo cáo trong thời hạn quy định. Đề án phải có quy trình incident + đầu mối.
+4. THANH TRA / AUDIT: phải truy xuất được "ai xem dữ liệu của khách nào, lúc nào, từ IP nào"
+   và giữ vết tối thiểu 5 năm, vết không được phép sửa (append-only).
+5. Backup: RPO 15 phút, RTO 2 giờ cho hệ phục vụ khách hàng nhóm A.
+6. Tiền lệ: 2024-11 team khác đã kéo một bucket S3 công khai và bị CISO kỷ luật.
+   Mọi tài khoản AWS của đề án phải đi qua IAM Identity Center + MFA, không root key.
+` },
+        { name: 'vm-baseline-4w.txt', lang: 'text', content: `statement-service — trên VM on-prem, đo 2026-08-31 -> 2026-09-27 (Grafana, Micrometer + nginx access log)
+Cấu hình: 3 VM (4 vCPU / 16 GB) sau Nginx, 2 active + 1 standby. JVM: -Xmx6g, 3 instance.
+
+Lượt gọi theo endpoint (trung bình ngày thường / đỉnh ngày 25):
+  GET /api/v1/statements/summary           2.610.000/ngày   62%   p95   210 ms   p99   480 ms
+  GET /api/v1/statements/{id}/transactions  1.090.000/ngày   26%   p95   400 ms   p99  1.100 ms
+  GET /api/v1/statements/{id}/pdf             500.000/ngày   12%   p95   850 ms   p99  2.400 ms
+  TỔNG                                       4.200.000/ngày  avg 48 RPS   ĐỈNH 900 RPS (09:00-09:20 ngày 25)
+
+Tài nguyên VM ngày 25: CPU 92% (steal 0), load 11, heap usage p95 4,1 GB / Xmx 6 GB,
+  GC pause p99 210 ms (G1), page cache bị đẩy còn 700 MB -> read NAS chậm.
+DB on-prem: 4 VM khác, max_connections=400, đang dùng đỉnh 178 kết nối (3 app + 2 batch + báo cáo BI).
+
+Availability 12 tháng: 99,91% (4 sự cố > 30 phút, trong đó 2 lần "restart vì chậm" theo yêu cầu nghiệp vụ).
+Sự cố được nhắc nhiều nhất: 25/06, 09:05-09:38, app timeout hàng loạt khi 900 RPS;
+  nguyên nhân ghi trong ticket: "thiếu tài nguyên, không scale được trong 30 phút".
+` }
+      ],
+      task: `1. Liệt kê **ít nhất 10 câu hỏi làm rõ** bạn sẽ mang tới buổi họp tiếp theo (chia nhóm: nghiệp vụ, phi chức năng, phụ thuộc, pháp lý, vận hành, nghiệm thu).
+2. Viết lại brief thành **bộ tiêu chí nghiệm thu đo được** (SLO + error budget + các ràng buộc K1–K4), thay cho 5 dòng "mục tiêu" hiện tại. Chỉ ra **3 chỗ brief mâu thuẫn hoặc vô nghĩa về mặt kỹ thuật**.
+3. Với RTT Hà Nội → Singapore **38 ms**, lập **ngân sách latency** cho endpoint {{/transactions}} (hiện p95 400 ms) sau khi lên AWS: chia cho các chặng, nêu rõ chặng nào **bắt buộc** phải có và chặng nào co được.`,
+      answer: `**Tóm tắt:** "lên cloud" không phải một yêu cầu, nó là một **giải pháp** được viết ra trước khi có vấn đề đo được. Việc của senior ở giai đoạn này là đổi 5 dòng ước muốn thành (a) các con số mà người khác có thể **làm sai và bị phát hiện**, (b) các điều kiện pháp lý mà dev không có quyền tự quyết, (c) một sự thật kỹ thuật mà brief cố né: **một nửa hệ thống vẫn ở Hà Nội, và 38 ms thì không migrate được**.
+
+### 1. Vài thuật ngữ phải rõ trước khi bàn
+- **SLA** (Service Level Agreement): cam kết **với bên ngoài** (khối nghiệp vụ, khách hàng) kèm hệ quả nếu vi phạm. **SLO** (Service Level Objective): mục tiêu **kỹ thuật bên trong** mà ta đo được, ví dụ "99,95% request của {{/summary}} dưới 300 ms trong cửa sổ 30 ngày". **SLI** (Indicator): chính phép đo (số nào là "thành công", tính ở đâu). Bank thường có SLA mơ hồ rồi đau khổ vì **không ai định nghĩa SLI**: 499 do khách tắt app có tính là lỗi không?
+- **Error budget** = phần thời gian được phép hỏng. 99,95%/tháng ≈ **21,6 phút**. Con số này có giá trị thực dụng: nó là "ngôn ngữ" để nói với ban giám đốc "ta còn 8 phút, tuần này không nên release" mà không cần tranh luận cảm tính.
+- **p95/p99** (percentile): 95% request nhanh hơn mức đó. Không được **trung bình hoá** p95 giữa các instance hay các khoảng thời gian — p95 là hàm phi tuyến, trung bình của hai p95 **không phải** p95 tổng. Muốn so sánh, phải gộp raw histogram ({{bucket}} trong Prometheus), đây là lỗi cực phổ biến khi viết báo cáo.
+- **RTO/RPO**: RTO = bao lâu phải chạy lại; RPO = mất bao nhiêu dữ liệu gần nhất. Memo của Pháp chế đã cho **RTO 2 giờ, RPO 15 phút** — hai con số này loại trừ ngay vài phương án (nếu RPO 15 phút thì replication tới standby phải đồng bộ/Á-đồng bộ, không phải cron backup mỗi đêm).
+
+### 2. Mười câu hỏi làm rõ nên hỏi (và vì sao)
+| # | Hỏi ai | Câu hỏi | Nếu không hỏi thì |
+|---|---|---|---|
+| 1 | PO | "Không gián đoạn" nghĩa là **0 request lỗi**, hay **không có downtime được cảm nhận**? Ngưỡng bao nhiêu {{5xx}} thì coi là vi phạm? | Hai cách hiểu lệch nhau 10 lần chi phí thiết kế |
+| 2 | PO | Endpoint nào **nghiệp vụ cho phép chậm**? PDF 850 ms có cần cải thiện không? | Ta sẽ dồn effort vào chỗ không ai quan tâm |
+| 3 | Kiến trúc | {{gateway-core}} có nằm trong lộ trình migrate không, và **bao giờ**? | Toàn bộ thiết kế latency phụ thuộc câu này |
+| 4 | CISO | PAN và dữ liệu cá nhân nào thực sự đi qua service? Có được **quét** trước khi migrate không? | Dính PCI DSS, dự án bị dừng giữa chừng |
+| 5 | Pháp chế | Ai ký đồng ý truyền dữ liệu ra nước ngoài? Cần bao lâu? | Deadline 31/12 chết vì chờ chữ ký 6 tuần |
+| 6 | DevOps | VPC đã tồn tại chưa? Có **IP space** còn trống cho pod không (VPC CNI cấp IP subnet cho pod)? | Thiết kế xong mới biết subnet /23 không đủ IP |
+| 7 | Vận hành | Ai trực production? Ngân hàng có **on-call** cho service mới chưa, runbook ở đâu? | "Chuyển lên AWS" nhưng không có người biết {{kubectl}} để cứu |
+| 8 | DBA | {{postgres-onprem}} có được **đồng bộ** sang RDS không, schema có {{pg_cron}}/extension nào phụ thuộc? | Migration DB thành dự án thứ hai không ai biết |
+| 9 | Batch team | Job đêm ghi vào cùng schema: nó chạy ở đâu sau migrate, có xung đột lock không? | Sao kê ngày 26 thiếu giao dịch |
+| 10 | PO/Nghiệp vụ | Ngày nào **cấm** cut-over (25, cuối tháng, giáp Tết)? | Lịch đẹp nhưng rơi đúng ngày lương |
+| 11 | Kiểm toán | Vết audit giữ 5 năm ở đâu, định dạng nào, append-only bằng gì? | Làm lại toàn bộ logging sau thanh tra |
+
+### 3. Ba chỗ brief mâu thuẫn hoặc vô nghĩa
+1. **"p95 dưới 1 giây" lỏng hơn hiện trạng** (đang 210/400/850 ms). Một mục tiêu mà hệ thống đã vượt là mục tiêu **không tạo áp lực cải thiện**, đồng thời **che mất** chỗ thật sự hỏng: {{/transactions}} p99 1.100 ms và PDF p99 2.400 ms. Sửa: SLO riêng theo endpoint, lấy hiện trạng làm baseline rồi siết.
+2. **"Bảo mật: theo chuẩn bank" không đo được.** Chuẩn nào, điều khoản nào, ai nghiệm thu? Đây là chỗ mà một dòng brief biến thành 6 tuần việc thật (KMS key policy, mask, mã hoá truyền dẫn, IAM, audit log).
+3. **"Không gián đoạn dịch vụ" + "PostgreSQL chuyển sang RDS" cạnh nhau là tự mâu thuẫn** nếu không nói cơ chế: đổi database luôn thì phải **copy dữ liệu 1,4 tỷ dòng** và dừng ghi. Không có câu trả lời "RPO 15 phút" thì không chọn được cách (replication logi/ logical replication, dual-write, hay chỉ chuyển app giữ nguyên DB).
+4. (Thêm một cái nữa ít người thấy) **"Elasticity" không có ngưỡng**: nếu ngày 25 cần 900 RPS trong 20 phút thì quan trọng hơn "tự động" là **tự động đủ nhanh**. HPA mặc định chỉ tăng sau ~1–3 phút (cộng thêm thời gian schedule pod, pull image, JVM khởi động 40 giây). Ta cần biết **mốc thời gian** phải đạt: "đủ năng lực trong 3 phút" hay "trong 15 phút".
+
+### 4. SLO viết lại (đề xuất merge vào ticket làm điều kiện nghiệm thu)
+| SLI | Ngưỡng | Cửa sổ | Error budget |
+|---|---|---|---|
+| Availability request ({{5xx}} + timeout, counted at ALB) | ≥ 99,95% | 30 ngày | 21,6 phút |
+| p95 {{/summary}} | ≤ 300 ms | 7 ngày | breach = 1 release freeze |
+| p99 {{/transactions}} | ≤ 900 ms | 7 ngày | — |
+| p99 {{/pdf}} (first byte) | ≤ 2.000 ms | 7 ngày | — |
+| Peak capacity | 1.200 RPS sustain 30 phút, p95 trong ngưỡng | test | — |
+| Time to scale 6 → 24 pod | ≤ 4 phút | mỗi ngày 25 | — |
+| RTO / RPO | 2 giờ / 15 phút | diễn tập DR mỗi quý | — |
+
+Ghi chú: đo **ở ALB** ({{ALB.http_code_target}} + {{latency}}) chứ không chỉ ở pod, vì phần lớn nỗi đau của khách nằm ở chặng **giữa** ALB và pod.
+
+### 5. Ngân sách latency cho {{GET /statements/:id/transactions}} sau migrate
+Xuất phát: hiện tại p95 400 ms (toàn bộ on-prem, RTT 0,4 ms). Sau: app ở Singapore, {{gateway-core}} ở Hà Nội.
+
+~~~text
+chặng                                p95 mục tiêu   ghi chú
+TLS + ALB + ingress                  ~   8 ms     ALB trong cùng region
+app processing (không I/O)           ~  15 ms     serialize, filter mask
+RDS PostgreSQL (1-2 query)           ~  25 ms     cùng AZ; cross-AZ +2-3 ms/query
+gateway-core on-prem: TỐT (warm conn)~  45 ms     1 RTT request/response = 38 ms + server 7 ms
+buffer / GC / jitter                 ~  40 ms
+--------------------------------------
+TỔNG khi kết nối được tái sử dụng     ~ 173 ms   -> p95 300 ms là khả thi
+
+gateway-core: KẾT NỐI MỚI (cold)     ~  45 ms + DNS + TCP 38 + TLS 76 (1.2)
+            = 190 - 250 ms chỉ để bắt đầu
+~~~
+Kết luận rút ra ngay từ requirement — và bạn nên viết nó vào design doc:
+- p95 **có** đạt được, **với điều kiện** các kết nối tới on-prem được tái sử dụng. Toàn bộ ngân sách sụp đổ nếu mỗi request phải **khởi tạo kết nối mới**, vì khi đó phải trả thêm DNS + TCP + TLS qua Direct Connect.
+- p99 (hiện 1.100 ms) sẽ **xấu đi** nếu không kiểm soát được việc khởi tạo kết nối, và đây chính xác là chỗ sự cố sẽ xảy ra 3 tháng sau.
+- Chặng co được: bỏ {{/summary}} khỏi đường gọi on-prem (chỉ đọc DB). Chặng **không** co được: 38 ms RTT.
+
+> Senior tip: ở các đề án migration, thứ giết dự án không phải {{kubectl}} mà là **dependency graph** và **pháp lý**. Hãy bắt đầu bằng một trang "những gì ta KHÔNG migrate được" ({{gateway-core}} 38 ms, audit 5 năm, đồng ý chuyển dữ liệu ra nước ngoài) và lấy chữ ký. Tôi luôn xin riêng một cuộc 20 phút với Pháp chế: câu "region Singapore được, với 4 điều kiện" tiết kiệm cho tôi 6 tuần làm lại về sau.`,
+      pitfalls: [
+        'Chấp nhận "p95 dưới 1 giây" dù hiện trạng đã 240 ms — mục tiêu rỗng, không tạo áp lực cải thiện và che mất p99 thật sự hỏng',
+        'Chỉ nói availability một con số mà không định nghĩa SLI (tính ở ALB hay ở pod, 499 có counted không)',
+        'Bỏ qua RTT 38 ms ở giai đoạn requirement rồi phát hiện ở production rằng "lên cloud không nhanh hơn"',
+        'Coi điều kiện Pháp chế/CISO là việc của PO — nó là đầu vào thiết kế (KMS, mask, audit append-only) và có lead time 4–6 tuần',
+        'Không hỏi "ngày nào cấm cut-over" nên lịch rơi đúng ngày 25 hoặc giáp Tết'
+      ]
+    },
+    {
+      key: 'analysis',
+      title: 'Kiểm kê phụ thuộc và đo cái thật: 38 ms, 400 kết nối, và những thứ chưa từng được đo',
+      role: 'Bạn cùng DevOps Kiên và DBA lập hiện trạng; SRE vendor phản biện',
+      story: `Kiến trúc trưởng cho bạn 2 tuần "nghiên cứu" trước khi viết design doc. Đây là phần **nhàm chán nhất và đáng giá nhất** của cả đề án.
+
+Bạn làm ba việc:
+1. **Kiểm kê phụ thuộc** — không tin tài liệu, mà {{grep}} code + đọc {{connection string}} + nhìn {{netstat}} trên VM lúc 03:00 và lúc 09:15 ngày 25.
+2. **Đo đường gọi on-prem** — bật log chi tiết ở {{gateway-core}} client, tách riêng {{dns_time}}, {{connect_time}}, {{tls_time}}, {{server_time}}.
+3. **Kiểm kê kết nối DB** — ai đang giữ bao nhiêu kết nối lúc đỉnh.
+
+Kết quả đo làm bạn ngạc nhiên hai lần. Thứ nhất: khi VM restart, 30 giây đầu tiên p99 của {{/transactions}} là **2,9 giây**, không phải 1,1 giây — vì mọi request rơi vào đường "khởi tạo kết nối mới". Thứ hai: nội dung log {{gateway-core}} cho thấy client đang đặt một tham số mà bạn không nhớ ai viết: {{connectionTimeToLive = 30 s}}.`,
+      artifacts: [
+        { name: 'dependency-inventory.txt', lang: 'text', content: `statement-service — KIỂM KÊ PHỤ THUỘC (tự đo, không lấy từ tài liệu)
+Nguồn: grep src/main, netstat -tnp lúc 03:00 và 09:15 ngày 25/09, nginx access log, Flyway history
+
+#  ID   PHỤ THUỘC              GIAO THỨC/LOCATION              NHẬN XÉT
+1  gateway-core      HTTPS core-banking-gateway.core.internal  on-prem, ngoài phạm vi migrate. 1,09M call/ngày.
+                    (RTT 38 ms, server_time p95 7 ms)  -> CHẶN: không di chuyển được, binding với core
+2  postgres-onprem   JDBC 10.20.4.11:5432/stmt  max_connections=400  -> ĐƯỢC PHÉP chuyển sang RDS (đề án)
+3  nas-pdf           SMB mount /mnt/pdf  sao kê PDF 2019-2024, 3,1 TB  -> S3 (đề án cho phép)
+4  ldap-ad           LDAP 10.20.1.5:389  xác thực khách nội bộ (backoffice)  -> đồng bộ AD, CHẶN (giữ on-prem)
+5  redis-session     Redis 10.20.4.20:6379  cache token + summary 15 phút  -> ElastiCache hoặc Elasticache-less (quyết định mở)
+6  splunk-forwarder  TCP 10.20.9.7:514  log vào SIEM nội bộ, yêu cầu audit 5 năm  -> PHẢI giữ được (K3 memo)
+7  smtp-relay      SMTP 10.20.1.9:25  gửi email sao kê theo yêu cầu  -> Amazon SES hoặc giữ relay (mở)
+8  kms-hsm          PKCS#11 on-prem  ký số văn bản gửi khách  -> bắt buộc on-prem, CHẶN
+9  batch-nightly    Job của team Data Warehouse ghi vào stmt.*   02:00-04:30  -> phải thương lượng chỗ chạy
+10 clock/NTP      nội bộ  -> chấp nhận, không phụ thuộc nghiệp vụ
+
+PHÂN LOẠI:
+  Di chuyển cùng service : (2) DB, (3) PDF
+  Giữ on-prem, gọi qua DX: (1) gateway-core, (4) LDAP, (8) HSM, (6) SIEM
+  Thương lượng / mở      : (5) Redis, (7) SMTP, (9) batch
+` },
+        { name: 'call-path-timing.txt', lang: 'text', content: `ĐO ĐƯỜNG GỌI gateway-core, từ pod/VM, 2026-10-06, 1 giờ cao điểm + 1 lần restart
+(Java Netty/HttpClient handler, tách theo phase; đơn vị ms)
+
+A. steady state (kết nối đã mở, được reuse) — 48.000 mẫu
+   dns_time      : 0 (không gọi, vì kết nối reuse)
+   connect_time  : 0
+   tls_time      : 0
+   server_time   : p50 4  p95 7  p99 14
+   TOTAL         : p50 43 (= 38 RTT + 5)   p95 46   p99 58   -> khớp dự đoán 1 RTT
+
+B. cold (mở kết nối mới) — 612 mẫu, trong đó 300 mẫu lúc restart VM
+   dns_time      : p50 0,8   p95 1,4   p99 3,1   (DNS on-prem cùng DC, RTT 0,4 ms)
+   tcp_connect   : p50 38    p95 41    p99 44    (1 RTT SYN/SYN-ACK)
+   tls_handshake : p50 76    p95 81    p99 95    (TLSv1.2 = 2 RTT; ALB và on-prem chưa bật 1.3)
+   server_time   : p95 7
+   TOTAL         : p50 123   p95 131   p99 151
+   => một request rơi vào cold path CHẬM HƠN warm path ~ 85 ms (gấp 2,8 lần)
+
+C. restart VM lúc 03:12 (pool trống hoàn toàn), 30 giây đầu:
+   p95 /transactions = 1.980 ms   p99 = 2.930 ms   504 = 17 request (client timeout 3 s)
+   -> 900 RPS burst, mỗi request đều ở cold path, cộng thêm contention
+
+D. tham số client hiện tại (file HttpClientConfig.java, blame: 2022-05, không ai nhớ vì sao):
+   maxTotal 200, defaultMaxPerRoute 40
+   connectionTimeToLive   : 30 s     <-- !!!
+   validateAfterInactivity: 10 s
+   connectTimeout 2 s / responseTimeout 5 s   (LỚN HƠN SLO 300-900 ms!)
+` },
+        { name: 'db-connections.txt', lang: 'text', content: `postgres-onprem 10.20.4.11:5432  max_connections = 400 (parameter group do DBA đặt)
+SELECT application_name, count(*) FROM pg_stat_activity GROUP BY 1;  -- lúc 09:15 ngày 25/09
+
+statement-service (3 VM)      : 57 (Hikari maximumPoolSize=20 x 3, có lúc chạm 60)
+batch-nightly (DW team)       : 34 trong cửa sổ 02:00-04:30 (2 job x 17)
+reporting-BI (ReadTheDocs)    : 61 kết nối, mỗi dashboard một connection, KHÔNG có timeout
+core-recon (vendor)           : 12
+oracle-dblink/fdw             : 3
+idle in transaction           : 19   <-- DBA phàn nàn nhiều nhất
+Tổng đỉnh quan sát: 186 / 400.  DBA nói: "400 là trần vì mỗi backend ~10 MB và instance 16 GB,
+muốn tăng thì phải lên RAM, mà lên RAM thì phải restart".
+Ghi chú thêm: reporting-BI đang chạy thẳng vào DB production, query p99 40 s (báo cáo tháng).
+` }
+      ],
+      task: `1. Phân loại 10 phụ thuộc: **cùng đi** / **ở lại và gọi qua Direct Connect** / **phải thương lượng**. Nêu rõ phụ thuộc nào **quyết định tính khả thi** của đề án.
+2. Từ {{db-connections.txt}} và số pod dự kiến (6 → 24), tính **bài toán kết nối DB** và nêu 3 phương án kèm hệ quả. Chỉ ra một con số trong artifact mà bạn **chưa có quyền kết luận**.
+3. {{connectionTimeToLive = 30 s}} và timeout 2 s/5 s có ý nghĩa gì với SLO 300/900 ms? Đề xuất giá trị mới và **cách kiểm chứng** trước khi tin.`,
+      answer: `**Tóm tắt:** kiểm kê cho ta ba phát hiện định hình thiết kế: (1) **4 phụ thuộc không đi được** (gateway-core, LDAP, HSM, SIEM) → đây là dự án **hybrid**, không phải dự án cloud; (2) **ngân sách kết nối DB bị vượt ngay khi scale**, và thứ vượt không phải service của ta mà là reporting-BI; (3) **chi phí khởi tạo kết nối bị che bởi steady state** — steady state đẹp tới mức p99 58 ms, nhưng cold path 151 ms và burst sau restart 2,9 giây. Cái {{connectionTimeToLive = 30 s}} vô tình biến hệ thống thành "cold path mỗi 30 giây".
+
+### 0. Vài khái niệm mới ở đây
+- **Direct Connect (DX)**: đường mạng riêng vật lý (thường 1 hoặc 10 Gbps) từ datacenter của bạn tới điểm vào (location) của AWS, đi qua một **private virtual interface** với route BGP. So với **Site-to-Site VPN** (đi qua internet công khai, có thêm gateway VPN của AWS, hay jitter), DX cho RTT ổn định hơn và dung lượng lớn hơn, nhưng **phải mua và đấu nối** (2–6 tuần lead time, có hợp đồng với nhà mạng Việt Nam). Điều quan trọng với dev: DX **rút ngắn khoảng cách vật lý**, không **xóa** nó. Hà Nội → Singapore 38 ms RTT là gần như giới hạn tốc độ ánh sáng trên cáp quang + mấy chặng router.
+- **RTT vs bandwidth**: 38 ms là **độ trễ một vòng**; bandwidth (1 Gbps) là **cống to hay nhỏ**. Cống to không cứu được việc phải chờ nhiều vòng. Hệ nhiều round-trip (DNS → TCP → TLS → query → response) chết vì **RTT × số vòng**, không chết vì bandwidth.
+- **max_connections** của PostgreSQL: mỗi kết nối là một **process** với bộ nhớ riêng (work_mem cho mỗi sort/hash node, maintenance_work_mem khi VACUUM). Tăng trần kết nối là tăng rủi ro hết RAM, **không** phải giải pháp vô hạn.
+
+### 1. Phân loại phụ thuộc
+| Nhóm | ID | Ý nghĩa với đề án |
+|---|---|---|
+| **Đi cùng** | 2 (DB), 3 (PDF → S3) | Chiếm ~80% công việc migration thật; DB cần kế hoạch copy 1,4 tỷ dòng với RPO 15 phút |
+| **Ở lại, gọi qua DX** | 1 (gateway-core), 4 (LDAP), 8 (HSM), 6 (SIEM) | **Quyết định tính khả thi**: service vẫn phụ thuộc on-prem, thiết kế phải chịu 38 ms |
+| **Thương lượng** | 5 (Redis), 7 (SMTP), 9 (batch) | Quyết định sau, đừng block thiết kế |
+
+Phụ thuộc **quyết định tính khả thi** là **(1) gateway-core**: endpoint nóng {{/transactions}} gọi nó **1,09 triệu lần/ngày**. Nếu không chấp nhận 38 ms thì phải (a) migrate {{gateway-core}} (ra khỏi phạm vi, cần vendor + 6–9 tháng), hoặc (b) **mang dữ liệu lại gần**: đồng bộ bản sao {{txn_description}}/state vào DB AWS bằng CDC, để endpoint chỉ đọc DB. (b) là hướng tôi đề xuất cho lộ trình 2027 — "đừng tối ưu cái call, hãy bỏ cái call". (6) SIEM cũng **nghiêm trọng không kém nhưng bị coi nhẹ**: memo yêu cầu audit 5 năm ở SIEM nội bộ, nghĩa là đường **log** cũng phải qua DX → firewall rule, syslog over TLS, và một câu hỏi "AWS có gửi được log về on-prem không" phải được trả lời **trước** khi cam kết.
+
+### 2. Bài toán kết nối DB
+Hiện trạng: 3 VM × pool 20 = **60**. Trên EKS với pool 20 và HPA tối đa 24 pod: **24 × 20 = 480 > 400**. Trong lúc rollout ({{maxSurge}} 1) còn **+20**. Trần còn bị ăn bởi batch 34 + BI 61 + recon 12 → phần của service chỉ còn **~290**.
+
+| Phương án | Cách làm | Hệ quả |
+|---|---|---|
+| A. **Hạ pool, tăng pod** | maximumPoolSize 8–10, 24 pod = 192–240 | Đơn giản, không thêm hệ thống. Rủi ro: một pod bị "nghiện query chậm" sẽ chờ pool; phải chứng minh throughput bằng load test |
+| B. **RDS Proxy** | đặt proxy trước RDS, pool phía proxy, pod giữ connection mặt ngoài | Trần kết nối về DB tách khỏi số pod; connection **re-use** khi pod chết/scale, giảm storm sau failover. Thêm một hệ phải giám sát; **transaction pooling** không tương thích tốt với prepared statement/session state (xem giai đoạn design) |
+| C. **PgBouncer trên EC2** | tự vận hành, rẻ | Như B nhưng **bạn** vá, **bạn** scale, **bạn** chết lúc 3 giờ sáng |
+| D. **Tăng max_connections** | lên RAM + đổi tham số | Không phải giải pháp: DBA đã nói rõ trần do RAM, và nó chỉ đẩy quả bom xa hơn |
+
+Chọn **A + B**: pool 10, RDS Proxy (serverless, Multi-AZ failover nhanh hơn, giữ {{transaction_pooling_size}}), và **pin** yêu cầu "số backend thực tế tới DB không đổi khi HPA scale" vào design doc.
+
+**Con số chưa có quyền kết luận:** "186/400" là đỉnh quan sát được **trong cửa sổ có BI**. 61 kết nối reporting-BI không timeout và query 40 giây nghĩa là ta **không biết** ai sẽ lấy phần còn lại vào ngày 26 lúc 04:30 khi batch + recon + BI cùng chạy. Bài học: **trần kết nối là trò chơi có tổng bằng 0 với các team khác**; không mời team BI/DBA vào đề án thì bạn sẽ scale lên và làm họ sập.
+
+### 3. Timeout và keep-alive — đọc lại artifact D
+- {{connectTimeout = 2 s}} / {{responseTimeout = 5 s}} trong khi SLO là p95 300 ms và p99 900 ms: **timeout lớn hơn SLO** nghĩa là khi on-prem chậm, ta **vi phạm cam kết trong lúc đang kiên nhẫn chờ**, và thread của ta bị giữ 5 giây → với 200 thread Tomcat, chỉ cần 40 RPS treo là hết sạch worker (200 / 5 s = 40 RPS!). Đây là **toán Little**, không phải chuyện may rủi.
+- {{connectionTimeToLive = 30 s}}: **mọi** kết nối quá 30 giây bị huỷ, kể cả đang idle. Với nhịp "im lặng 2 giờ rồi burst 900 RPS" của ngày 25, toàn bộ pool chết trước burst → burst chạy **100% cold path** (+85 ms/request). Giá trị này thường được đặt "để an toàn khi hệ kia đổi IP" — suy nghĩ đúng, cách làm sai: cái ta cần là **TTL nhỏ hơn idle timeout của thiết bị ở giữa**, không phải nhỏ hơn mọi thứ.
+- Thiết kế mới (đề xuất, sẽ kiểm chứng ở test):
+  - {{connectTimeout = 250 ms}} (1 RTT + chỗ trống), {{responseTimeout = 450 ms}} → tổng đường on-prem ≤ 700 ms, nằm trong p99 900 ms.
+  - {{connectionTimeToLive = 300 s}} và **{{maxIdleTime = 240 s}}**, nhỏ hơn idle timeout của firewall/DX (DBA đo: 360 s) → ta chủ động đóng trước khi thiết bị giữa đường đá ngầm (nếu thiết bị đá trước, client nhận {{Connection reset}}/timeout **đúng lúc request** — lỗi khó chịu nhất để debug).
+  - {{validateAfterInactivity = 10 s}} giữ nguyên (rẻ, bắt kết nối chết).
+  - Circuit breaker cho {{gateway-core}}: mở khi p95 đường on-prem vượt 400 ms trong 30 s, fallback "ẩn mô tả giao dịch, vẫn trả sao kê".
+  - Tomcat {{maxThreads}} và pool phải khớp nhau: nếu 200 thread mà 10 connection thì 190 thread **chờ pool** → cần metric {{hikaricp.connections.pending}} (bật từ đầu!).
+- **Cách kiểm chứng** (đừng tin lý thuyết): (1) {{curl -v}} / log từng phase để xem DNS-TCP-TLS-server time thực tế; (2) bài test "bão kết nối lạnh": reset pool rồi bắn 1.000 RPS trong 10 giây, đo p99; (3) bài test "idle 2 giờ rồi burst" trên staging (đây chính là bài mà ta sẽ **không** chạy, và sẽ trả giá ở giai đoạn 8).
+
+### 4. Luồng request sau migrate (viết để review với SRE)
+~~~seq
+title: statement-service sau khi lên EKS — hai nhánh DB and on-prem
+actors: App | ALB | Pod | RDS | gateway-core | CoreDNS
+App -> ALB: GET /statements/{id}/transactions
+ALB -> Pod: target-type ip, cùng region
+Pod -> CoreDNS: phân giải core-banking-gateway.core.internal
+note CoreDNS: ndots 5 -> thử 4 search domain truoc khi dung ten that
+CoreDNS --> Pod: NXDOMAIN 3 lan, 2 lan tra qua Direct Connect
+Pod -> RDS: SELECT statement_entry (pool reuse)
+RDS --> Pod: 40 dong
+Pod -> gateway-core: GET /core/v2/txns (RTT 38 ms)
+note gateway-core: ket noi reuse => chi 1 RTT; ket noi moi => +150 ms
+gateway-core --> Pod: mo ta + trang thai hoàn tiền
+Pod --> ALB: JSON 200
+ALB --> App: p95 muc tieu 300 ms
+~~~
+
+> Senior tip: hai con số trong kiểm kê này đáng giá hơn cả thiết kế: **85 ms chênh giữa warm và cold**, và **30 giây TTL**. Nếu ngày đó tôi chỉ "đọc code cho đủ" mà không bật log tách từng phase, tôi sẽ thiết kế một kiến trúc đúng trên một **giả định sai** ("gọi on-prem mất 46 ms"). Bài học: **luôn đo đường gọi theo từng phase trước khi thiết kế hybrid**, và khi thấy một tham số vô danh được đặt từ 2022, hãy hỏi "ai đặt, vì sao" — thường không ai nhớ, và nó chính là quả bom.`,
+      pitfalls: [
+        'Tin tài liệu kiến trúc thay vì netstat/grep: 4 phụ thuộc quan trọng (SIEM, HSM, LDAP, batch) đều không có trong tài liệu',
+        'Kết luận "gọi on-prem chỉ mất 46 ms" từ số liệu steady state, bỏ qua cold path 151 ms và burst sau restart 2,9 s',
+        'Tính kết nối DB cho số pod hiện tại (6) mà không tính cho HPA max (24) và lúc rollout surge',
+        'Đặt timeout 2 s/5 s cho dependency trong khi SLO 300/900 ms — vi phạm cam kết trong lúc đang chờ',
+        'Cho rằng max_connections là trần của mình: nó là tài nguyên chung với BI, batch, recon'
+      ]
+    },
+    {
+      key: 'design',
+      title: 'Thiết kế: 19 mục của một one-pager và 5 giả định mở bị coi là ghi chú',
+      role: 'Bạn viết design doc; SRE vendor và DBA phản biện trong 90 phút',
+      story: `Bạn viết one-pager (thật ra là 3 trang) theo template của bank: mỗi mục một dòng, có mục "OPEN" liệt kê những thứ chưa chốt. SRE tên Minh đọc và phản biện đúng 7 ý, tất cả đều về **network và DNS** — thứ mà bạn không có kinh nghiệm và cũng không có trong danh sách câu hỏi.
+
+Cuộc họp review kết thúc bằng câu của anh Kiên (DevOps): "Tụi tôi chưa từng dựng VPC cho hệ có kết nối on-prem. Phần network tôi không tự tin, nhưng **nó chạy được là được**, còn lại anh (bạn) quyết." Bạn gật đầu, vì lịch đã chốt và mục "OPEN" cảm giác như việc nhỏ để lại sau.
+
+Chú ý: nếu bạn chưa từng làm Kubernetes, đây là giai đoạn **học nhiều nhất** của cả kịch bản. Đáp án dưới đây giải thích từng khái niệm từ đầu, nên hãy đọc nó như tài liệu, không chỉ như lời giải.`,
+      artifacts: [
+        { name: 'design-STM-77.md', lang: 'text', content: `DESIGN STM-77 — statement-service tren EKS (Kubernetes 1.31, ap-southeast-1)
+Tac gia: tech lead Digital Statements   Review: SRE (Minh), DBA, CISO   Ngay: 2026-10-12
+
+#  HANG MUC (so theo thu tu de review)
+1  Region/AZ        : ap-southeast-1, 3 AZ (a,b,c). Workload dang 2 AZ, dung 3 cho PDB.
+2  VPC              : VPC MOI 10.60.0.0/16. Public subnet cho ALB, private cho node + RDS.
+                     Subnet node /21 moi cho 1 AZ  (=> ~2.000 IP/pod, VPC CNI cap IP tu subnet).
+3  EKS              : managed control plane, version pin 1.31, upgrade tay tung minor.
+4  Node group       : AL2023, m6i.xlarge (4 vCPU/16 GB), min 3 / max 12, 1 node group cho namespace statements.
+5  Namespace        : statements-dev / statements-sit / statements-prod (cluster TINGU trong prod? -> co, tam thoi).
+6  Image            : ECR private, tag = git SHA + semver, khong dung "latest". ScanCVE trong pipeline.
+7  Deployment       : 6 replicas, rolling maxUnavailable 0 / maxSurge 1, topologySpreadConstraints theo AZ,
+                     anti-affinity theo node, PodDisruptionBudget minAvailable 4.
+8  Service/Ingress  : Service ClusterIP -> ALB Ingress qua aws-load-balancer-controller, target-type ip, HTTPS + ACM.
+9  Probes           : startupProbe 60s; readiness /actuator/health/readiness; liveness /actuator/health/liveness
+                     (KHONG check DB trong liveness).
+10 Resource         : requests 1 CPU / 2 Gi, limits 2 CPU / 2 Gi. JVM -XX:MaxRAMPercentage=70 (-> heap ~1,4 Gi).
+11 HPA               : v2, metric = CPU 65% + RPS qua prometheus-adapter, min 6 / max 24, scaleDown stabilization 300s.
+12 Config            : ConfigMap cho tham so KHONG nhay cam; gia tri theo moi env dung Helm values-<env>.yaml.
+13 Secret            : External Secrets Operator -> AWS Secrets Manager, rotation 90 ngay, khong commit vao git.
+14 IAM               : IRSA cho S3 (PDF), CloudWatch; role theo service account, audience sts.amazonaws.com.
+15 DB                : RDS PostgreSQL 16, db.r6g.large, Multi-AZ, KMS CMK, public_accessible=false,
+                      deletion_protection=true, max_connections=400 -> POOL size 10/pod + RDS Proxy (transaction pooling).
+16 Du lieu cu         : logical replication pglogical/AWS DMS tu on-prem -> RDS, dual-read 4 tuan, cut-write 1 lenh.
+17 DNS                : CoreDNS mac dinh. gateway-core goi bang ten FQDN on-prem, qua private hosted zone
+                      + resolver. OPEN #1: ndots chua chot (Mac dinh 5). OPEN #2: TTL cua DNS on-prem chua do.
+18 Network path       : Direct Connect 2x1G, private VIF, on-prem DNS 10.20.1.5 duoc forward tu CoreDNS.
+                      OPEN #3: chua co route/ firewall rule cho duoc LOG (TCP 514/TLS 6514) tu AWS ve SIEM.
+19 Log/Metric/Trace   : fluent-bit -> Splunk on-prem (audit 5 nam) + CloudWatch; Prometheus (AMP) + Grafana;
+                      OpenTelemetry traceId = W3C traceparent, propagate sang gateway-core.
+20 Rollout            : Argo Rollouts canary (ALB target group weight) + analysis = success rate va p95.
+21 Migration DB       : Liquibase, chay truoc khi rollout, expand/contract.
+
+OPEN (chua chot, de lai sau):
+  #1 ndots                      : nguoi doi trach: toi      Han: "truoc khi len prod"
+  #2 TTL DNS on-prem            : chua do
+  #3 firewall cho duong log     : moi ANML xin, dang cho
+  #4 Redis: chon ElastiCache hay bo cache    : chua do ty le hit
+  #5 Ai truc on-call 24/7        : chua tra loi
+` },
+        { name: 'values-production.yaml', lang: 'yaml', content: `# chart: statement-service  |  env: prod  |  file: deploy/helm/values-production.yaml
+replicaCount: 6
+image:
+  repository: 123456789012.dkr.ecr.ap-southeast-1.amazonaws.com/statement-service
+  tag: "1.21.0+g5c1f7ab"        # semantic + git SHA, khong "latest"
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  create: true
+  name: statement-service
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/statement-service-prod   # IRSA
+
+resources:
+  requests: { cpu: "1", memory: "2Gi" }
+  limits:   { cpu: "2", memory: "2Gi" }     # limit == request memory: heap khong duoc "mo" hon
+
+jvm:
+  maxRAMPercentage: "70"
+  extraOpts: "-XX:+ExitOnOutOfMemoryError -XX:NativeMemoryTracking=summary"
+
+probes:
+  startup:   { path: /actuator/health/readiness, failureThreshold: 30, periodSeconds: 4 }
+  readiness: { path: /actuator/health/readiness, periodSeconds: 10, failureThreshold: 3 }
+  liveness:  { path: /actuator/health/liveness,  periodSeconds: 20, failureThreshold: 3 }
+
+autoscaling:
+  enabled: true
+  minReplicas: 6
+  maxReplicas: 24
+  targetCPUUtilizationPercentage: 65
+  customMetrics:
+    - name: http_server_requests_p95_ratio      # tu prometheus-adapter
+      target: 250          # ms; du SLO 300 ms mot it de scale som
+
+gracefulShutdown:
+  preStopSleepSeconds: 8
+  terminationGracePeriodSeconds: 45
+
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway        # <-- SRE sau nay bao doi thanh DoNotSchedule
+
+config:
+  SPRING_PROFILES_ACTIVE: prod
+  SPRING_DATASOURCE_URL: jdbc:postgresql://stmt-prod.cluster-ro-xxxx.ap-southeast-1.rds.amazonaws.com:5432/stmt
+  CORE_GATEWAY_BASE_URL: http://core-banking-gateway.core.internal:8443   # khong co dau cham cuoi
+  STATEMENT_HTTP_TTL_SECONDS: "30"           # mang tu VM sang ("de an toan")
+  OPENTELEMETRY_PROPAGATORS: tracecontext,baggage
+` },
+        { name: 'terraform-eks.txt', lang: 'text', content: `# modules/eks/main.tf (trich) -- REVIEWER: tim 5 Dieu KHAC duoc truoc khi merge
+terraform {
+  required_version = ">= 1.6.0"
+  backend "s3" { bucket = "bank-terraform-state", key = "eks/statements.tfstate", encrypt = true }
+}
+
+resource "aws_eks_cluster" "this" {
+  name     = "bank-digital-01"
+  version  = "1.31"
+  identity { oidc_provider = [aws_iam_openid_connect_provider.this[0].arn] }
+  vpc_config {
+    subnet_ids              = concat(module.vpc.private_subnets, module.vpc.public_subnets)
+    endpoint_private_access = true
+    endpoint_public_access  = true          # (1) mac dinh cua AWS: MO cong cong khai
+    security_group_ids      = [aws_security_group.cluster.id]
+  }
+}
+
+resource "aws_eks_node_group" "statements" {
+  node_group_name = "m6i-general"
+  scaling_config { desired_size = 3 max_size = 12 min_size = 3 }
+  update_config { max_unavailable = 1 }
+}
+
+resource "aws_iam_role" "node" { name = "bank-digital-01-node" }
+resource "aws_iam_role_policy_attachment" "node" {
+  role       = aws_iam_role.node.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+}
+# (2) mac dinh AWS gan thuy them AmazonEKSWorkerNode + AmazonEC2FullAccess cho de chay
+# (3) khong dat metadata_options -> hop limit mac dinh = 1, pod goi duoc IMDS cua node
+# (4) RDS: publicly_accessible = true de "DBA truy cap duoc tu laptop"
+# (5) khong dat deletion_protection / skip_final_snapshot = true
+` }
+      ],
+      task: `1. Design doc trên **thiếu hoặc sai** ở những mục nào? Liệt kê **ít nhất 6** và nói rõ hậu quả production của từng cái.
+2. Với **max_connections = 400** và HPA tối đa 24 pod: tính toán cụ thể và chọn phương án. Nếu DBA từ chối RDS Proxy vì "them mot boc an", bạn trả lời thế nào bằng số?
+3. Giải thích **IRSA là gì và vì sao không nhét access key vào Secret** (3 ý, mỗi ý 1 câu). Đây là dạng câu hỏi phỏng vấn hay hỏi.
+4. Mục 5 (namespace dùng chung cluster production) và mục 17 (DNS) — bạn chốt thế nào, và nếu chưa chốt được thì **làm gì với lịch 15/12**?`,
+      answer: `**Tóm tắt:** đây là giai đoạn quyết định **80% hành vi sản xuất** của service, và cũng là giai đoạn mà **5 dòng OPEN** được viết ra rồi bị đối xử như ghi chú. Ba quyết định khó nhất không phải "dùng Helm hay Kustomize" mà là: (a) DB connection budget, (b) cách pod nói chuyện với on-prem (DNS + route + firewall), (c) quyền của pod với AWS (IRSA). Phần lớn những gì xảy ra ở giai đoạn 8 đã **được thai nghén ở mục 17**.
+
+### 0. Học lại từ đầu: Kubernetes và EKS là gì (đọc nếu bạn chưa từng chạm)
+- **Container**: gói process của bạn cùng filesystem của nó, dùng nhân (kernel) chung với máy host. Image = ảnh đóng gói, chỉ đọc; container = image đang chạy. {{docker}} chỉ là một runtime; Kubernetes dùng **containerd**.
+- **Pod**: đơn vị nhỏ nhất Kubernetes lịch. Một pod = 1 hoặc nhiều container **luôn đi cùng nhau**, chung namespace mạng (nên gọi nhau qua {{localhost}}) và chung IP. Pod là **tạm thời**: chết là mất, không "hồi sinh" — cái hồi sinh là **Deployment**.
+- **Deployment**: khai báo "ta muốn N bản thể, image X". Controller so sánh trạng thái mong muốn và thực tế, tự tạo/xoá pod. Đây là mô hình **reconciliation loop** — điểm khác biệt căn bản với VM: trên VM bạn "sửa cái đang chạy", trên K8s bạn "khai cái mong muốn" rồi để hệ thống sửa.
+- **Service**: một tên DNS + một IP ảo ({{ClusterIP}}) ổn định đứng trước một **nhóm pod hay thay đổi**. Service tự cập nhật danh sách endpoint khi pod scale.
+- **Namespace**: "phòng" logic trong cluster, để tách đội/sản phẩm, và là nơi bạn áp **quota + RBAC + network policy**.
+- **Ingress / ALB**: cách traffic từ ngoài vào. Trên AWS, {{aws-load-balancer-controller}} xem khai báo Ingress/HTTPRoute rồi **tạo và cấu hình Application Load Balancer thật**. {{target-type ip}} nghĩa là ALB gọi thẳng IP pod (bypass node port) — nhanh hơn và cho health check chính xác hơn.
+- **ConfigMap / Secret**: cặp key-value bơm vào pod qua env hoặc file mount. Secret **không mã hoá ở tầng ứng dụng** (chỉ base64) — đó là lý do bank không dùng nó để chứa mật khẩu production.
+- **Helm**: "trình quản lý gói" cho khai báo K8s. Một **chart** = template + giá trị; {{helm template -f values-prod.yaml}} sinh ra YAML thật. Lý do dùng: một chart, bốn môi trường, không copy-paste YAML (nguồn của lỗi "dev chạy được mà prod không").
+- **EKS**: AWS quản control plane (API server, etcd, scheduler) theo kiểu HA across 3 AZ; bạn quản **node** (EC2 chạy kubelet + containerd) và mọi thứ **bạn** cài vào. "Managed" chỉ có nghĩa là bạn không tự dựng control plane — **không** có nghĩa là cluster tự an toàn.
+- **VPC và CNI**: trong EKS dùng **Amazon VPC CNI**, mỗi pod nhận **một IP thật từ subnet**. Hệ quả mà người mới luôn bất ngờ: subnet phải còn **rất nhiều IP trống**, vì 24 pod × N bản thể + node + đầu mỗi subnet là tiêu tốn IP; và **security group áp lên IP của pod** được, nên firewall on-prem phải cho phép cả dải IP subnet node/pod, không chỉ IP của con ALB.
+- **CoreDNS**: DNS bên trong cluster (chạy như pod ở namespace {{kube-system}}). Mọi tên trong cluster ({{svc.cluster.local}}) do nó trả lời; tên ngoài thì nó **forward** đi tiếp theo {{/etc/resolv.conf}} của chính nó, tức là lên **VPC resolver** ({{x.x.x.2}}), rồi từ đó đi tiếp theo **Resolver Rule / inbound-outbound endpoint** tới DNS on-prem nếu bạn cấu hình. **Đây chính là chỗ 38 ms xuất hiện trong một câu chuyện DNS.**
+
+### 1. Sáu chỗ thiếu/sai trong design doc, kèm hậu quả
+| Mục | Vấn đề | Hậu quả production |
+|---|---|---|
+| 10 | {{limits.cpu = 2}} = {{requests.cpu = 1}}: pod bị **CPU throttle** tới 50% thời gian cao điểm. Heap {{MaxRAMPercentage=70}} tính theo **memory limit** (2 Gi → 1,4 Gi), nhưng phần **off-heap** (Metaspace, direct ByteBuffer cho NIO, 200 thread × 1 MB stack, GC) không nằm trong heap | Java "ăn" vượt 2 Gi → cgroup **giết không thương** (OOMKilled, exit 137) chứ không ném {{OutOfMemoryError}} → không heap dump, không log lỗi |
+| 17 OPEN #1 | chưa chốt **{{ndots}}** và không quy ước viết **FQDN có dấu chấm chốt** | phân giải tên on-prem thành **nhiều truy vấn**, trong đó vài truy vấn phải qua Direct Connect → mỗi lần mở kết nối trả thêm 100–300 ms. **Đây là nguyên nhân sự cố giai đoạn 8** |
+| 17 OPEN #2 | chưa đo TTL DNS on-prem | nếu TTL 60 s và IP on-prem đổi khi failover, pod giữ IP cũ tới 60 s → 5xx bùng sau sự cố on-prem |
+| 18 OPEN #3 | firewall cho đường **log** chưa xin | hoặc mất audit (vi phạm memo mục 4), hoặc fluent-bit retry làm đầy đĩa node. Xin lead time 3 tuần |
+| 20 | {{analysis}} chỉ có success rate + p95 | canary "xanh" trong khi đường gọi on-prem chậm dần (vì p95 toàn cục vẫn tốt, endpoint phụ thuộc on-prem chỉ chiếm 26%) → phải thêm SLI **theo endpoint** |
+| 5 | một cluster cho nhiều team, namespace {{statements-prod}} nhưng **không có NetworkPolicy, ResourceQuota, LimitRange** | một team khác chạy job đào 40 pod CPU làm node của bạn bị **evict**; và không có gì chặn pod team khác gọi thẳng DB của bạn |
+| 15 | {{max_connections=400}} và pool 10/pod, nhưng chưa nói **ai được gì khi BI + batch + recon cùng chạy** | DB từ chối kết nối lúc 04:30 ngày 26 (xem mục 2) |
+| 4 | 1 node group chung cho mọi namespace | không cô lập được tainted workload; khi cần node cấu hình riêng cho service ngân hàng thì phải dựng node group mới giữa sprint |
+
+### 2. Bài toán kết nối DB — trả lời DBA bằng số
+Cầu: {{max_connections = 400}}; DBA giữ 34 (batch) + 61 (BI) + 12 (recon) + dự phòng ≈ **120**. Phần còn cho service: **280**.
+- Pool 20/pod × 24 pod = **480** → **thiếu 200**.
+- Pool 20/pod × 7 (lúc rollout surge) = 140 — **đẹp hôm nay, chết ngày ta scale**.
+- Pool 10/pod × 24 = 240 → **vừa**, nhưng nếu surge +2 pod = 260 → sát trần.
+- Pool 10/pod × 24 **đằng sau RDS Proxy** với {{pool_max=200}}: backend DB **≤ 200** bất kể số pod.
+Chứng minh throughput bằng toán Little: mỗi query giữ connection trung bình 3 ms → một connection phục vụ ~330 query/s; cần 900 RPS × 2 query = 1.800 query/s → **cả cluster chỉ cần ~6 connection hoạt động**; pool 10/pod là **dư dật**, không phải thiếu. Kết luận: vấn đề chưa bao giờ là "mỗi pod cần 20 connection", mà là "không ai đo connection-pod-time".
+Trả lời DBA về "thêm một lớp": RDS Proxy là **dịch vụ quản lý, Multi-AZ, không có node cho bạn quên vá**; cái nó mua được là (1) trần backend cố định, (2) **fast failover**: khi RDS chuyển AZ, proxy tái dùng connection đã mở thay vì để 24 pod cùng handshake + DNS lại một lúc, (3) metric {{ClientConnectionsWait}} để báo động trước khi khách kêu.
+Đổi lại, **rủi ro phải chấp nhận**: transaction pooling **không** giữ session state. ba thứ phải kiểm tra: {{SET}}, {{LISTEN}} và {{ADVISORY LOCK}} (job khoá bằng {{pg_advisory_lock}} **sẽ hỏng**); prepared statement → JDBC {{preferQueryMode=simple}} hoặc {{prepareThreshold=0}} (RDS Proxy giả lập được phần lớn, nhưng tiết tấu chuẩn bị thay đổi → phải test). Ba cái này chính xác là loại thứ **chỉ lộ ra khi test**, không lộ ra khi đọc tài liệu.
+
+### 3. IRSA, ba ý
+1. **Không có bí mật dài hạn**: pod nhận **token service account** (projected, hết hạn ~1 giờ, {{kubelet}} tự đổi) và dùng nó để xin **credential tạm** từ STS; không có access key nào để lộ trong image, repo, log hay {{kubectl describe pod}}.
+2. **Quyền gắn vào công việc, không vào máy**: role IAM khớp với **{{serviceaccount}}** ({{sub = system:serviceaccount:statements-prod:statement-service}}), nên pod của team khác **không** giả được, dù chạy trên **cùng node** — điều mà "gắn role IAM cho node" không có được.
+3. **Truy vết được**: CloudTrail ghi {{assumed-role}} + session name, nên câu "ai xoá object S3 này" trả lời tới cấp pod. Nhược phải nói cho đủ: vẫn cần **least-privilege thật** (scope {{Resource}} theo prefix bucket), token vẫn readable từ trong pod, và phải bật **{{AWS_STS_REGIONAL_ENDPOINTS=regional}}** vì endpoint STS toàn cầu đã tắt ở nhiều region.
+
+### 4. Mục 5 (dùng chung cluster) và mục 17 (DNS): chốt gì, và nếu chưa chốt thì sao
+- **Dùng chung cluster**: chấp nhận, vì ngân hàng chỉ có 1 cluster và dựng cluster riêng cho mỗi team là không thực tế ở giai đoạn này — **nhưng** điều kiện: {{ResourceQuota}} (pods, cpu, memory), {{LimitRange}} bắt mọi container có requests/limits, **{{NetworkPolicy}}** mặc định deny inbound vào {{statements-prod}} (CNI phải bật, e.g. {{securityGroupsForPods}} hoặc kube-router), RBAC riêng cho team, và **taint + node group riêng** cho workload sản xuất. Nếu ba thứ này chưa xong thì **dời dịch vụ của bạn sang cluster khác** hoặc lùi cut-over — đừng "dùng chung tạm rồi tính".
+- **DNS**: bắt buộc chốt **trước** production, vì nó rẻ (30 phút) và hậu quả thì ngược. Chốt cụ thể: (a) mọi tên on-prem trong config viết **có dấu chấm chốt**; (b) đặt {{dnsConfig.options ndots=2}} ở mức chart để không ai phải nhớ quy ước; (c) đo và ghi vào tài liệu: **số truy vấn DNS cho một lần mở kết nối** ({{dig +debugquery}}, {{tcpdump -i eth0 udp port 53}}, metric của CoreDNS); (d) khai báo CoreDNS là **thành phần tới hạn** — có requests/limits, có autoscaler theo số node, có topology spread.
+- **Nếu chưa chốt được với lịch 15/12**: không "mang giả định mở ra production". Ba lựa chọn thật, theo thứ tự tôi ưu tiên: (1) **cắt phạm vi** — đưa endpoint {{/transactions}} (cái gọi on-prem) lại on-prem vài tuần, dịch vụ lên AWS chỉ phần đọc DB, (2) **chặn merge bằng cổng**: pipeline fail nếu {{values}} không có {{dnsConfig}}, tức là giả định mở không thể "lọt" sang prod, (3) **lùi cut-over** 2 tuần. Điều tôi **không** chọn là "lên rồi theo dõi sau": mục OPEN #1 sẽ được merge dưới tên "chưa ai có thời gian" và biến thành sự cố lúc 07:00 một ngày thứ Hai của tuần lương.
+
+> Senior tip: thiết kế hybrid có **một câu hỏi ma thuật**: "một request đầy đủ phải trả bao nhiêu round-trip, và ai trả cho chúng — khách hàng hay pool?". Người trả lời "RTT 38 ms thì có gì đâu" thường chưa tính tới **DNS + TCP + TLS nhân lên**, và chưa bao giờ đọc {{resolv.conf}} của một pod. Tôi cũng có một quy tắc cá nhân: **mục OPEN nào liên quan tới đường đi của gói tin thì phải đóng trước khi có pod production**; mục OPEN liên quan tới tính năng thì được phép đi kèm feature flag.
+`,
+      pitfalls: [
+        'Giữ {{limits.cpu = 2}} nhưng {{requests.cpu = 1}} rồi kết luận "Java chậm" khi thực tế là CPU bị throttle',
+        'Tính heap từ {{MaxRAMPercentage}} mà quên off-heap (Metaspace, direct buffer, stack thread) và để cgroup OOMKill thay vì JVM OOM',
+        'Để mục "OPEN: ndots chưa chốt" sống sót tới production vì nó trông như việc 30 phút',
+        'Dùng chung cluster production mà không có ResourceQuota / LimitRange / NetworkPolicy / RBAC riêng',
+        'Chấp nhận RDS Proxy mà không test {{pg_advisory_lock}} và prepared statement với transaction pooling',
+        'Nhét access key AWS vào Secret/ConfigMap "cho nhanh" và mất khả năng truy vết ai đã dùng nó'
+      ]
+    },
+    {
+      key: 'dev',
+      title: 'Viết Dockerfile, cấu hình JVM trong container và đường gọi on-prem',
+      role: 'Bạn và devjunior Hùng hoàn thiện image + cấu hình runtime; SRE chỉ còn 2 giờ/tuần',
+      story: `Hùng viết bản đầu tiên rất nhanh và **trông rất đúng**: image build xong, chạy local OK, {{curl localhost:8080/actuator/health}} trả UP. Bạn dành buổi chiều đọc từng dòng và tự hỏi ba câu mà người mới Kubernetes thường không hỏi: (1) cái gì là **PID 1** trong image này và nó có nhận {{SIGTERM}} không? (2) khi cgroup bảo "hết 2 Gi" thì JVM có biết không? (3) đường gọi {{gateway-core}} mất bao nhiêu round-trip khi kết nối **lạnh**?
+
+Song song, anh Kiên làm deployment YAML từ chart. Bạn phát hiện chart vẫn còn dòng {{CORE_GATEWAY_BASE_URL}} **không có dấu chấm chốt** (mục OPEN #1 design) và {{STATEMENT_HTTP_TTL_SECONDS: "30"}} được bê nguyên từ VM sang với comment "để an toàn".
+
+Ở SIT, Hùng báo một triệu chứng mà bạn mất 2 giờ để hiểu: pod restart **không** vì lỗi, mà vì "tự nhiên mất 40 giây không ai gọi được" mỗi lần {{Argo CD}} sync.`,
+      artifacts: [
+        { name: 'Dockerfile', lang: 'text', content: `# Phien ban cua Hung (2026-10-19)
+FROM maven:3.9-eclipse-temurin-21                       # (1) stage build
+WORKDIR /build
+COPY pom.xml .
+RUN mvn -q dependency:go-offline                         # (2) tai ve dependency
+COPY src ./src
+RUN mvn -q -DskipTests package                           # (3) khong chay test trong docker build
+
+FROM eclipse-temurin:21-jre                               # (4) image cuoi
+RUN apt-get update && apt-get install -y curl net-tools vim   # (5) "de debug"
+WORKDIR /app
+COPY --from=0 /build/target/statement-service.jar app.jar
+ENV JAVA_OPTS="-Xmx4g"                                    # (6) hard-code heap
+EXPOSE 8080 8081
+CMD java $JAVA_OPTS -jar /app/app.jar                     # (7) shell form
+` },
+        { name: 'HttpClientConfig.java', lang: 'java', content: `// Bean Apache HttpClient 5 dung cho gateway-core (blame: 2022-05, tam be nguyên sang container)
+@Configuration
+public class HttpClientConfig {
+
+    @Bean
+    CloseableHttpClient coreGatewayClient(ObjectProvider<MeterRegistry> metrics) {
+        PoolingHttpClientConnectionManager cm = PoolingHttpClientConnectionManagerBuilder.create()
+            .setDefaultConnectionConfig(ConnectionConfig.custom()
+                .setConnectTimeout(Timeout.ofSeconds(2))          // (a) > SLO p95 300 ms
+                .setSocketTimeout(Timeout.ofSeconds(5))           // (b) > SLO p99 900 ms
+                .setTimeToLive(TimeValue.ofSeconds(30))           // (c) moi ket noi bi huy sau 30s
+                .build())
+            .setDefaultMaxPerRoute(40)
+            .setMaxConnTotal(200)
+            .validateAfterInactivity(TimeValue.ofSeconds(10))
+            .build();
+
+        return HttpClients.custom()
+            .setConnectionManager(cm)
+            .evictExpiredConnections()                            // (d) dung, nhung chua du
+            .evictIdleConnections(TimeValue.ofSeconds(20))        // (e) da cach (c)
+            .setDefaultRequestConfig(RequestConfig.custom()
+                .setConnectionRequestTimeout(Timeout.ofSeconds(2))  // (f) cho vay ket noi: 2s
+                .build())
+            .build();
+    }
+
+    // (g) khong co circuit breaker; moi loi on-prem = 1 lang try cung luc
+    // (h) khong co metric duong DNS/connect => khong do duoc "cold path"
+}
+` },
+        { name: 'deployment-sit-patch.yaml', lang: 'yaml', content: `# Trich doan deployment cua ban da deploy o SIT (sau khi helm template)
+spec:
+  template:
+    spec:
+      # (1) KHONG co dnsConfig -> nhan ndots:5 mac dinh tu kubelet
+      terminationGracePeriodSeconds: 20            # (2) NGAN HON tong thoi gian turn off that
+      containers:
+        - name: statement-service
+          image: 123456789012.dkr.ecr.ap-southeast-1.amazonaws.com/statement-service:latest   # (3)
+          ports: [{containerPort: 8080}, {containerPort: 8081}]
+          env:
+            - name: JAVA_OPTS
+              value: "-XX:MaxRAMPercentage=90.0 -XX:+UseG1GC"       # (4)
+            - name: SERVER_SHUTDOWN
+              value: "graceful"                                     # (5) co, nhung thieu timeout-per-shutdown-phase
+          lifecycle:
+            preStop:
+              exec: {command: ["sh", "-c", "sleep 8"]}              # (6) sh ton tai trong image?
+          readinessProbe:
+            httpGet: {path: /actuator/health, port: 8080}            # (7) health GOC, gom ca DB + Redis
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /actuator/health, port: 8080}            # (8) nhu het readiness
+            periodSeconds: 20
+          resources:
+            requests: {cpu: "500m", memory: "1Gi"}                   # (9) khop (4)?
+            limits:   {cpu: "1", memory: "1Gi"}
+` },
+        { name: 'sit-events.txt', lang: 'text', content: `$ kubectl get events -n statements-sit --sort-by=.lastTimestamp | tail -14
+14:02:11  Normal   Scheduled     pod/stmt-6f8b9-2xkq   Successfully assigned
+14:02:12  Normal   Pulling       kubelet               Pulling image "...statement-service:latest"    <-- moi lan sync deu pull
+14:02:41  Normal   Started       kubelet               Container started
+14:02:44  Warning  Unhealthy     kubelet  (x3 over 40s) Readiness probe failed: HTTP 503 from /actuator/health
+14:03:04  Warning  Unhealthy     kubelet  (x2 over 20s) Liveness probe failed: HTTP 503 from /actuator/health
+14:03:05  Normal   Killing       kubelet               Container received SIGTERM -> exit 143          <-- KILLED vi probe
+14:03:06  Warning  BackOff       kubelet               Back-off restarting failed container
+14:06:58  Normal   Created       4 pods               (dot scale thu cong)
+
+$ kubectl top pods -n statements-sit
+NAME                          CPU(cores)  MEMORY(bytes)
+stmt-6f8b9-2xkq               980m        1012Mi      <-- limit 1 CPU / 1Gi: saturation hoan toan
+stmt-6f8b9-7qp1               971m        1008Mi
+
+$ cat /proc/1/status trong pod  (Hung chay sh -c 'kill -s TERM 1' de thu turn off)
+State:  D (khong co gi xai ra, khong co log "Shutting down")
+` }
+      ],
+      task: `1. Tìm **ít nhất 9 lỗi** trong 4 artifact và với mỗi lỗi nói rõ: hệ quả trên production là gì, sửa ra sao. Ưu tiên xếp theo mức độ gây outage.
+2. Viết **dòng lệnh JVM cuối cùng** cho container có memory limit 2 Gi và giải thích vì sao không nên {{-Xmx}} cố định; liệt kê **những phần bộ nhớ nằm ngoài heap** mà bạn phải cộng vào.
+3. Thiết kế lại {{HttpClientConfig}} cho đường on-prem: chọn timeout, TTL, keep-alive, circuit breaker và **số liệu bạn cần thấy trên dashboard** để biết đường này đang xấu đi. Giải thích cách bạn chọn {{connectionTimeToLive}} (không phải "càng dài càng tốt").`,
+      answer: `**Tóm tắt:** 9 trong 10 lỗi ở đây thuộc hai nhóm: **vòng đời process** (PID 1, SIGTERM, probe, {{latest}}) và **khai toán bộ nhớ/timeout** (heap, off-heap, TTL, timeout > SLO). Cái đắt nhất là {{liveness = health gốc}}: nó biến "DB chậm" thành "giết pod", làm mất các connection đang warm và đẩy hệ thống vào vòng restart storm đúng lúc tải cao.
+
+### 1. Danh sách lỗi, xếp theo mức gây outage
+| # | Chỗ | Hệ quả production | Sửa |
+|---|---|---|---|
+| (7)(8) | readiness **và** liveness cùng gọi {{/actuator/health}} (bao gồm DB, Redis, disk space) | DB lag 20 giây → liveness fail → kubelet **giết** pod → mất pool connection warm, JVM khởi động lại 40 s, các pod khác nhận thêm tải → **restart storm**. SIT events là bằng chứng thật: {{x2 over 20s}} liveness 503 → exit 143 | liveness = {{/actuator/health/liveness}} (chỉ hỏi "JVM còn quay vòng không"); readiness = {{/actuator/health/readiness}} (có thể check dependency ở mức nhẹ, dùng khi **stop route traffic** chứ không kill). Bật {{management.endpoint.health.probes.enabled=true}} |
+| (3) | image {{:latest}} | (a) mỗi lần sync là một **pull** (sit events: 29 s), (b) rollback = không biết đang chạy gì, (c) Argo CD "Out of sync" vĩnh viễn vì digest đổi, (d) vi phạm quy ước design mục 6 | tag = {{1.21.0+g5c1f7ab}}, {{imagePullPolicy: IfNotPresent}}; muốn rollback là đổi tag trong git, không phải "hy vọng" |
+| (2) | {{terminationGracePeriodSeconds: 20}} nhỏ hơn chuỗi tắt thật | Pod bị **SIGKILL** giữa lúc đang trả lời request → khách nhận {{Connection reset}}; {{preStop sleep 8}} + 8 s drain + 15 s {{timeout-per-shutdown-phase}} = 31 s > 20 | đặt 60 s, và bật {{spring.lifecycle.timeout-per-shutdown-phase=20s}}. Xem mục 3 dưới đây về **thứ tự** sự kiện |
+| (6) | {{preStop}} dùng {{sh -c}} | Distroless/microdnf image **không có {{sh}}** → preStop fail im lặng (chỉ event warning), mọi thứ trở nên "chết bất ngờ" khi bạn đổi base image | dùng khai báo {{exec}} với {{command = ["sleep", "8"]}} — {{sleep}} là binary, hoặc build image có busybox. Luôn **kiểm chứng bằng một lần tắt thật**, đừng tin |
+| (4)(9) | {{MaxRAMPercentage=90}} với limit 1 Gi | JVM nghĩ heap được **921 MB**, chưa tính Metaspace + code cache + ~200 thread stack + direct buffer + GC → RSS vượt 1 Gi → **cgroup OOMKill (137)**: không exception, không heap dump, "{{kubectl describe}}" chỉ có {{Reason: OOMKilled}} | 70–75% là vùng an toàn cho service nhiều IO; và **requests.memory = limits.memory** để không bị node áp lực (QoS Burstable → hay bị evict nhất) |
+| (1) thiếu {{dnsConfig}} | nhận {{ndots: 5}} mặc định, tên on-prem bị tra theo **toàn bộ danh sách search** | chi phí DNS nhân lên, một phần phải qua Direct Connect → **đây là quả bom giai đoạn 8** | {{dnsConfig.options}} với {{name = ndots, value = "2"}} + viết FQDN có dấu chấm chốt |
+| (5) | {{apt-get install curl vim net-tools}} | +400 MB image (pull chậm khi scale), **bề mặt lỗi bảo mật** để {{Trivy}} báo, và tạo thói quen "ssh vào pod sửa" | distroless hoặc {{microdnf}}; debug bằng **ephemeral container** ({{kubectl debug -it --image=nicolaka/netshoot --target=statement-service}}) |
+| (2)(c)(e) | {{TTL 30 s}} + {{evictIdle 20 s}} | pool **tự hủy** mọi kết nối giữa hai nhịp tải → burst đầu tiên chạy **cold path** (DNS+TCP+TLS qua DX, +85…250 ms/request). Ngày 25 và sáng thứ Hai là các "nhịp" to nhất | TTL **300 s** và {{evictIdle 240 s}}, nhỏ hơn idle timeout của thiết bị giữa đường (360 s) nhưng đủ dài để sống sót qua một đêm yên tĩnh |
+| (a)(b) | connect 2 s / socket 5 s > SLO | vi phạm cam kết **trong khi đang chờ**; và theo Little, 200 thread / 5 s = **40 RPS** là hết worker → 504 hàng loạt từ ứng dụng on-prem **nhanh**, không phải chậm | connect 250 ms, socket 450 ms, và **{{connectionRequestTimeout}} 100 ms** + alert (chờ pool = hệ thống đã nghẽn, chờ 2 s chỉ làm đám đông đứng dài thêm) |
+| (g)(h) | không có circuit breaker, không có metric đường DNS/connect | không thấy gì cho tới khi khách gọi; fallback không có → {{/transactions}} chết theo on-prem | resilience4j: {{slidingWindow 100}}, mở khi p95 on-prem > 400 ms, half-open 30 s, fallback trả sao kê **không kèm mô tả**. Thêm {{timer("core_connect")}} bọc quanh {{HttpClientConnectionManager}} (đo {{Lease}} + {{Connect}} + {{TLS}} riêng) |
+
+### 2. JVM trong container: bộ nhớ và dòng lệnh cuối cùng
+Khai toán **không** phải {{Xmx = limit}}. RSS thật của một Spring Boot service:
+~~~text
+heap (G1, region 2-32 MB)                : ~ 1,4 Gi
+Metaspace (class metadata, ~30k class)   :   180 - 260 MB
+CodeCache (JIT compiled code)            :    60 - 240 MB
+Thread stacks (200 thread x 1 MB default):   200 MB   <- doi khi 512k du
+Direct ByteBuffer (Netty, JDBC, gzip, S3):   100 - 300 MB
+GC (remembered set, mark bitmap ~ 5-10% heap)
+Map/Cache trong JVM + NMT overhead        :   ~ 50 - 150 MB
+                                   TỔNG     ~ 2,1 - 2,5 Gi  với limit 2 Gi  -> NGUY HIEM
+~~~
+Lý do JVM **không tự biết** (với JDK 17+, {{UseContainerSupport}} đã bật mặc định): nó đọc {{memory.limit_in_bytes}}/{{cgroup memory.max}} đúng, nhưng **{{MaxRAMPercentage}} áp vào limit**, và nó **không** trừ phần off-heap bạn chọn (direct buffer, thread count). JDK mặc định {{MaxDirectMemorySize = Xmx}} — nghĩa là mặc định, bạn cho phép direct buffer ăn thêm **một lượng bằng heap**.
+
+Dòng lệnh tôi chốt cho limit 2 Gi (requests = limits):
+~~~bash
+JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=70 -XX:InitialRAMPercentage=70 \
+ -XX:MaxDirectMemorySize=256m -XX:MaxMetaspaceSize=320m -XX:ReservedCodeCacheSize=240m \
+ -Xss512k -XX:+UseG1GC -XX:MaxGCPauseMillis=120 -XX:G1HeapRegionSize=16m \
+ -XX:+ExitOnOutOfMemoryError -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/dumps \
+ -XX:NativeMemoryTracking=summary -Xlog:gc*,safepoint:file=/logs/gc.log:time,uptime:filecount=5,filesize=20M"
+~~~
+Vì sao không hard-code {{-Xmx4g}}:
+- Nó **vượt limit** ở môi trường có 1 Gi (SIT/dev) → OOMKill không lời giải thích; hoặc **nhỏ hơn limit** ở production → bạn trả tiền RAM cho AWS mà JVM không dùng. {{MaxRAMPercentage}} khiến cùng một image chạy đúng trên mọi cỡ container, và **cỡ container trở thành một biến thiết kế** (đổi values.yaml, không đổi code).
+- {{InitialRAMPercentage = 70}} (bằng max): tránh JVM **giãn nở heap** trong 5 phút đầu khi HPA đang tăng số bản thể — một trong những nguồn "pod mới chậm" mà người ta đổ cho cold start.
+- {{MaxDirectMemorySize}} **phải** được đặt tường minh, vì nó là phần nằm ngoài heap nhưng nằm trong cgroup. Muốn tin thì bật {{NativeMemoryTracking=summary}} rồi {{jcmd 1 VM.NativeMemoryTracking}} — đây là cách duy nhất nhìn thấy "ai ăn chỗ còn lại".
+- {{ExitOnOutOfMemoryError}}: với liveness/readiness tách bạch, thà để pod **chết sạch sẽ** rồi được tạo lại còn hơn sống vật vờ với OOM (JVM ở trạng thái OOM thường treo và probe timeout → bị giết theo cách hỗn loạn hơn).
+- {{HeapDumpPath}} phải trỏ vào **volume** (emptyDir hoặc PVC), vì {{/app}} trong distroless không ghi được; dump 1,4 Gi **có thể** làm exceed ephemeral storage → node evict. Cân nhắc {{-XX:+HeapDumpBeforeFullGC}} tắt, và chỉ dump khi cần.
+
+### 3. Turn xuống êm: thứ tự sự kiện phải hiểu để đặt con số
+Khi bạn scale-down hoặc rollout, kubelet làm ba việc **gần như song song**, và đây là nơi mọi người đặt sai:
+1. Pod bị đánh dấu terminating → **endpoint bị xoá khỏi Service** → kube-proxy/ALB cần **vài giây đến vài trăm ms** để lan ra; ALB target **deregistration** (mặc định 5 s trên AWS, nên đặt 10–20 s).
+2. {{preStop}} chạy ({{sleep 8}}) — **chỉ để chờ điều ở bước 1**, không phải để "nghỉ".
+3. {{SIGTERM}} gửi tới PID 1 → Spring {{graceful shutdown}}: ngừng nhận request mới, chờ request đang chạy xong (tối đa {{timeout-per-shutdown-phase}}), đóng pool, huỷ registration.
+4. Hết {{terminationGracePeriodSeconds}} → **SIGKILL**.
+Vậy bất đẳng thức bắt buộc: {{preStop + timeout-per-shutdown + dự phòng <= terminationGracePeriodSeconds}}. Với {{8 + 20 + 10 = 38}} thì grace **60 s** là hợp lý. Đây chính là triệu chứng của Hùng ở SIT: pod bị giết ở giây 20 trong khi đang trả lời 30 request — khách nhận {{reset}}, và log không có "{{Shutting down}}" vì SIGTERM bị thay bằng SIGKILL.
+
+### 4. {{HttpClientConfig}} viết lại (đường on-prem)
+~~~java
+// TTL > nhip tai, < idle timeout cua thiet bi giua duong (DX/firewall: 360 s do DBA cung cap)
+ConnectionConfig cc = ConnectionConfig.custom()
+    .setConnectTimeout(Timeout.ofMillis(250))            // 1 RTT 38 ms + cho cho DNS/thu tu
+    .setSocketTimeout(Timeout.ofMillis(450))             // server_time p95 7 ms + RTT + du phong
+    .setTimeToLive(TimeValue.ofSeconds(300))
+    .setStrategy(StandardConnectionConfigStrategy.INSTANCE)
+    .build();
+PoolingHttpClientConnectionManager cm = PoolingHttpClientConnectionManagerBuilder.create()
+    .setDefaultConnectionConfig(cc)
+    .setMaxConnPerRoute(20).setMaxConnTotal(80)          // 24 pod x 20 = 480 -> xem circuit breaker, khong tang vo han
+    .setValidateAfterInactivity(TimeValue.ofSeconds(10))
+    .build();
+RequestConfig rc = RequestConfig.custom()
+    .setConnectionRequestTimeout(Timeout.ofMillis(100))  // cho vay ket noi: ngo = bao dong
+    .build();
+// resilience4j: che do mo khi 50% cua 100 request gan nhat cham/loi, half-open 30 s
+// fallback: StatementResponse.withoutDescriptions() -- KHONG that bai ca sao ke chi vi mo ta
+~~~
+Dashboard tôi yêu cầu có từ ngày đầu (không có chúng thì mọi con số ở trên đều là **tôn giáo**, không phải kỹ thuật):
+- {{http_client_seconds}} tách theo label {{phase = lease|connect|tls|response}} — tách **cold vs warm**; nếu {{connect}} xuất hiện thường xuyên thì TTL đang sai.
+- {{coredns_dns_request_duration_seconds}} + {{coredns_dns_responses_total}} tính theo {{return_code}} — nhìn thấy NXDOMAIN hàng loạt là biết ngay ndots.
+- {{container_cpu_cfs_throttled_seconds_total}} per pod — phân biệt "JVM chậm" và "bị throttle".
+- {{hikaricp_connections_pending}} — 0 là mục tiêu, > 0 là báo động trước khách.
+
+> Senior tip: ba cái tên trong câu chuyện này trông như "chi tiết triển khai" nhưng thực ra là **quyết định kiến trúc**: {{liveness}} có check DB hay không, TTL của connection pool, và {{ndots}}. Tôi có thói quen sau khi viết Dockerfile là **bật {{docker stats}} và nhìn RSS** trong lúc chạy tải, và sau khi khai preStop thì **giết pod một lần có chủ đích** rồi đọc log {{kubectl get events -w}}. Người chưa từng chạy container hay đoán rằng mình hiểu; người từng chạy thì **đo** trước khi lên lịch cut-over.
+`,
+      pitfalls: [
+        'Liveness probe gọi /actuator/health gốc (gồm DB, Redis) → DB chậm một chút là kubelet giết pod, gây restart storm đúng lúc cao điểm',
+        'MaxRAMPercentage=90 với memory limit: JVM không tính Metaspace, code cache, stack thread và direct buffer nên bị cgroup OOMKill (137) thay vì ném OutOfMemoryError',
+        'Dùng image :latest trên production: pull chậm khi scale, không rollback được, và Argo CD không bao giờ xanh hẳn',
+        'terminationGracePeriodSeconds nhỏ hơn preStop + shutdown timeout: pod nhận SIGKILL giữa lúc đang trả lời request, khách thấy Connection reset',
+        'Đặt connectionTimeToLive 30 s rồi tin rằng "càng ngắn càng an toàn": pool tự chết trước mỗi nhịp tải, burst chạy 100% cold path',
+        'Timeout gọi on-prem (2 s/5 s) lớn hơn SLO: bạn vi phạm cam kết trong khi đang kiên nhẫn chờ',
+        'preStop dùng sh -c nhưng base image distroless không có sh, lỗi im lặng và mất toàn bộ thời gian drain'
+      ]
+    },
+    {
+      key: 'review',
+      title: 'Review PR Hạ tầng: chart, Terraform và những thứ scanner không thấy',
+      role: 'Bạn là CODEOWNER của {{deploy/}}; người review PR là SRE Minh và một dev chưa từng đọc Terraform',
+      story: `PR #1180 ("feat: prod values + terraform cho EKS + IAM") do Hùng mở, 1.240 dòng, **8 file**, không có mô tả ngoài dòng "theo design STM-77". CI chạy 5 job: {{trivy}}, {{checkov}}, {{conftest}} (Rego policies của bank), {{kubeconform}}, {{helm unittest}}. Bốn job xanh, một job vàng.
+
+Bạn có 45 phút. Đây là **loại review khác nhất** so với review code Java: lỗi không lộ ra khi chạy mà lộ ra lúc 07:00 một ngày cao điểm, hoặc lúc thanh tra, và **rollback** thường liên quan tới cả một team khác. Bạn quyết định đọc theo thứ tự: **quyền → mạng → dữ liệu → vòng đời → cấu hình**.
+
+Điều làm bạn khó chịu nhất không phải 6 lỗi security trong danh sách dưới đây, mà là **cách chúng đi qua**: người review thứ hai (dev) đã approve bằng câu "checkov xanh rồi mà".`,
+      artifacts: [
+        { name: 'pr-1180-summary.txt', lang: 'text', content: `PR #1180  feat: prod values + terraform EKS/IAM            files: 8  +1240 -3
+Author: hung.dev    Reviewers: minh.sre (approve w/ comments), lan.dev (approve: "CI xanh roi")
+CODEOWNER: ban (chua duoc assign tu dong -> reason: .github/CODEOWNERS chua co duong deploy/)
+
+Hien trang diff:
+  deploy/helm/values-production.yaml         +212   (thay doi: autoscaling min, dnsConfig, gateway URL, TTL)
+  infra/eks/*.tf                             +612   (VPC, node group, IRSA, RDS, RDS Proxy, ECR)
+  infra/iam/statement-service-policy.json    +88    (S3, CloudWatch, Secrets Manager)
+  .github/workflows/deploy-prod.yaml         +150   (them step "terraform apply" chay trong CI, co AWS_ACCESS_KEY_ID cua CI role)
+  policies/*.rego                            +90
+  deploy/helm/values-dev.yaml                +74    (khong lien quan - "tiện tay sua")
+
+Ghi chu cua CI:
+  checkov        PASS 0 high (nhung 14 medium, co log "CKV_AWS_..." duoc ignore trong .checkov.yml mới thêm)
+  conftest       FAIL 1  "deny_unprivileged"? -> da them "# allow-baseline" note de duoc qua
+  trivy          2 CRITICAL trong golang base image cua step build (khong phai image cua app) -> Hùng ghi "not our image"
+  kubeconform    PASS
+  helm unittest  2/12 test bi skip
+` },
+        { name: 'pr-1180.diff.txt', lang: 'text', content: `diff --git a/infra/eks/network.tf b/infra/eks/network.tf
+@@ node + cluster security group
+ resource "aws_security_group" "node" {
++  # de chay duoc nhanh, cho vao ro moi
++  ingress { description = "all internal", from_port = 0, to_port = 65535,
++            protocol = "-1", cidr_blocks = ["10.60.0.0/16"] }
++  ingress { description = "debug from office", from_port = 22, to_port = 22,
++            protocol = "tcp", cidr_blocks = ["0.0.0.0/0"] }        # (1) SSH tu the gioi
+   egress { from_port = 0, to_port = 0, protocol = "-1", cidr_blocks = ["0.0.0.0/0"] }   # (2)
+ }
+
+diff --git a/infra/eks/cluster.tf b/infra/eks/cluster.tf
+   endpoint_public_access = true                                     # (3) API server mo cong cong khai
++  metadata_options { http_endpoint = "enabled" }                   # (4) KHONG dat http_put_response_hop_limit
+
+diff --git a/infra/iam/statement-service-policy.json b/infra/iam/statement-service-policy.json
+   "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket",
+              "secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue",
+              "kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey", "iam:PassRole"],   # (5) iam:PassRole trong policy cua APP
+-  "Resource": "arn:aws:s3:::bank-stmt-pdf-prod/*"
++  "Resource": "*"                                                             # (6)
+
+diff --git a/infra/eks/dns.tf b/infra/eks/dns.tf
++resource "aws_route53_record" "gateway_core" {
++  zone_id = var.private_zone_id
++  name    = "core-banking-gateway.core.internal"      # (7) khong co dau cham cuoi, va private zone
++  type    = "A"
++  ttl     = 60
++  records = [on-prem IP duoc ghi cung, cap nhat bang tay khi failover]         # (8)
++}
+` },
+        { name: 'policy-scan.txt', lang: 'text', content: `$ conftest test --all-namespaces rendered.yaml    (policies của bank, Rego)
+FAIL  statements-prod/statement-service  deny_missing_resource_limits      1 container khong co limits
+FAIL  statements-prod/statement-service  deny_wildcard_ingress_netpol      NetworkPolicy ingress: from: []  (mo het)
+WARN  kube-system/coredns                deny_missing_topology_spread      CoreDNS 2 ban the, trung 1 AZ
+FAIL  statements-prod/statement-service  deny_runasroot                    securityContext.runAsNonRoot thieu o container level
+PASS  (86 khac)
+
+$ cat .checkov.yml  (MỚI được thêm trong PR này, khong co trong danh sach file lien quan)
+- skip-checks:
+    CKV_AWS_23:  true   # RDS public
+    CKV_AWS_24:  true   # SG open to world
+    CKV_AWS_193:  true  # EKS endpoint private only
+    CKV_AWS_142:  true  # RDS backup retention
+    # "de CI xanh, se sua sau" - note cua Hung
+` }
+      ],
+      task: `1. Phân loại: **blocker / phải sửa trước merge / ghi ticket** cho từng mục (1)–(8) trong diff và 4 dòng policy scan. Giải thích **kiểu tấn công hoặc sự cố** cụ thể cho mỗi blocker.
+2. {{iam:PassRole}} trong policy **của ứng dụng** nghĩa là gì và tại sao nó nguy hiểm hơn {{s3:DeleteObject}}? Đây là câu hỏi phỏng vấn bảo mật hay bị trả lời sai.
+3. Vì sao "checkov xanh" không phải bằng chứng an toàn? Viết **quy trình review IaC** của team (8–10 gạch đầu dòng) để chuyện này không lặp lại, kèm cách thực thi bằng máy móc.
+4. Mục (7)+(8): đây là một **giải pháp DNS** cho on-prem. Nó đúng hay sai, và nó **dịch chuyển** rủi ro từ đâu sang đâu?`,
+      answer: `**Tóm tắt:** có 4 blocker an ninh và 4 blocker vận hành. Ba trong số chúng là **sản phẩm của việc "cho nó chạy"** ({{0.0.0.0/0}} SSH, endpoint công khai, {{Resource: "*"}}), một là **mô hình quan hệ sai**: CI scanner được coi là người phê duyệt thay cho con người. Chốt của tôi ở PR này: không merge, chia thành 3 PR nhỏ, **CODEOWNERS cho {{deploy/}}**, và **xoá file {{.checkov.yml}} khỏi PR** — thứ cần thay đổi là quyết định thiết kế, không phải danh sách bỏ qua.
+
+### 0. Vài thứ nên đọc trước
+- **Terraform/IaC**: bạn quản lý hạ tầng bằng file khai báo; {{terraform plan}} in ra **dự định thay đổi**, {{apply}} thi hành. Điều nguy hiểm: một dòng đổi ở {{main.tf}} có thể xoá **cả security group đang bảo vệ DB**, và Terraform không phân biệt "dev" với "prod" nếu state của bạn dùng chung.
+- **Checkov/tfsec**: scanner tĩnh cho IaC, tìm mẫu nguy hiểm đã biết. **OPA Gatekeeper / Kyverno / conftest**: **chính sách** áp dụng lúc deploy (admission) hoặc lúc render.
+- **IMDS**: dịch vụ metadata ở {{169.254.169.253}} cho process trên máy biết "máy này là ai, role của nó là gì" — và cấp **credential của node role**. {{http_put_response_hop_limit}} đếm số **bước nhảy**: pod nằm sau một namespace mạng nên có hop limit 2; đặt hop limit = **1** nghĩa là pod **không gọi tới được** IMDS của node. Đây là lá chắn chống kiểu "SSRF đọc token của node rồi giả máy chủ".
+- **IRSA + {{iam:PassRole}}**: {{PassRole}} cho phép **gán một role cho một thực thể khác** (EC2 instance, Lambda, một IAM role khác). Ai có {{iam:PassRole}} với role quyền cao + một quyền tạo thực thể = **tự thăng quyền toàn bộ tài khoản**.
+
+### 1. Bảng phân loại
+| # | Vấn đề | Mức | Kiểu tấn công / sự cố | Sửa |
+|---|---|---|---|---|
+| (1) | SSH {{0.0.0.0/0}} trên node SG | **Blocker** | Bot quét {{22}} trên toàn internet trong vài phút có node + **role của node**; container escape thành root trên node = chiếm cả cluster (node role thường có ECR pull + CloudWatch + S3) | {{Session Manager}} qua SSM (không cần mở port), hoặc chỉ cho ingress từ **bastion SG** / IP công ty qua VPN; **và** thêm network policy hạn chế {{NodePort}} |
+| (2) | egress {{0.0.0.0/0}} | Phải sửa trước merge | Pod bị xâm nhập {{exfiltrate}} dữ liệu, tải malware, hoặc gọi dịch vụ bên ngoài **mà không ai biết** | egress theo SG/ prefix list: S3 endpoint, {{.core.internal}} (on-prem), SIEM, ECR. Có **Egress Filter NetworkPolicy** ở tầng pod |
+| (3) | EKS API server công khai | **Blocker** | {{kubectl}} từ internet; mọi bug RBAC hoặc một token service account lộ ra là **cluster-takeover** đường cùng | {{endpoint_public_access = false}} + access từ VPC nội bộ / VPN; nếu bắt buộc mở thì **cidr allow-list** |
+| (4) | không đặt hop limit | **Blocker** | SSRF trong service (một endpoint {{fetchUrl}} chẳng hạn) đọc được **node credential** → attacker có quyền của node | {{metadata_options}} đặt {{http_tokens = required}} và {{http_put_response_hop_limit = 1}}, và role của node **least privilege** |
+| (5) | {{iam:PassRole}} trong policy ứng dụng | **Blocker** | App có {{PassRole}} + khả năng tạo/đổi Lambda hoặc EC2 = **đổi quyền app thành quyền admin** chỉ với một API call. Nó là quyền **quản trị**, không phải quyền nghiệp vụ | **Xoá**. {{PassRole}} chỉ ở role triển khai CI, giới hạn bằng {{Condition: aws:PassedToService}} |
+| (6) | {{Resource: "*"}} | Phải sửa trước merge | Một bug trong code ({{bucket = request.param}}) hoặc một credential lộ = ảnh hưởng **mọi bucket + mọi secret** trong account | scope từng action: S3 theo prefix {{arn:aws:s3:::bank-stmt-pdf-prod/*}}, KMS theo **key ARN cụ thể**, Secrets Manager theo secret ARN; {{DeleteObject}} **không** cần cho service → bỏ |
+| (7) | FQDN không có dấu chấm chốt, ghi trong **private hosted zone** | Phải sửa trước merge | Xem mục 4 bên dưới: đây là **nguồn của sự cố giai đoạn 8** | viết {{core-banking-gateway.core.internal.}} + đặt {{ndots=2}}; hoặc bỏ hẳn việc phụ thuộc DNS on-prem (mục 4) |
+| (8) | bản ghi A cứng tới IP on-prem, cập nhật bằng tay | Phải sửa trước merge | Khi on-prem failover sang IP khác và **không ai cập nhật Route 53**, service AWS gọi vào IP cũ → 5xx trong khi on-prem **vẫn tốt** (tình huống điều tra kinh hoàng). Đồng thời tạo rủi ro "IP cũ bị tái sử dụng cho hệ khác" | hoặc giữ **một** nguồn sự thật (forward DNS on-prem, không tạo bản ghi trùng), hoặc chấp nhận record động nhưng phải có **health check + cảnh báo cập nhật + owner** |
+| Policy: {{deny_wildcard_ingress_netpol}} | NetworkPolicy {{from: []}} = **mở hết trong namespace** | Phải sửa trước merge | Pod của team khác (cùng cluster!) gọi thẳng {{8080}} của bạn, bỏ qua ALB, bỏ qua rate limit → "bypass" mọi kiểm soát ở biên | deny-by-default + allow cụ thể từ {{aws-load-balancer-controller}} SG và từ các pod được nêu tên |
+| Policy: thiếu {{runAsNonRoot}} ở container level | chart đặt {{podSecurityContext}}, Hùng xoá {{container.securityContext}} để "khỏi lặp" | Phải sửa | Kế thừa chỉ hoạt động khi không ai set lại; và **image có setuid binary** thì vẫn leo quyền được | đặt cả hai mức + {{readOnlyRootFilesystem: true}} + {{allowPrivilegeEscalation: false}} + {{capabilities.drop: ["ALL"]}} |
+| Policy: CoreDNS **thiếu topology spread** | 2 bản thể có thể cùng một AZ | **Blocker vận hành** | Mất một AZ → **mọi** phân giải DNS chết → sập toàn bộ service trong vùng còn lại. DNS là dependency **của mọi thứ**, nên nó phải HA trước khi app của bạn HA | {{PodDisruptionBudget}} + topology spread {{DoNotSchedule}} + tăng bản thể (và cluster-proportional-autoscaler) |
+| {{.checkov.yml}} được thêm trong PR | 5 quy tắc bị tắt, gồm RDS public + SG open to world + EKS endpoint | **Blocker quy trình** | Scanner **mù đúng chỗ nguy hiểm nhất**; người đọc thấy "PASS 0 high" và tin | Không cho phép tắt trong PR tính năng. Muốn tắt = **một PR riêng, có lý do, có ngày hết hạn, có người duyệt ở cấp kiến trúc** |
+| {{terraform apply}} trong CI prod với access key | CI giữ quyền hạ tầng production, key tĩnh | Phải sửa | Một PR độc hại / runner bị chiếm = thay đổi hạ tầng thật, **không** có con người nhìn {{plan}} | {{plan}} trong PR, **{{apply}} do người có quyền làm** (hoặc Argo CD + RBAC giới hạn); credential qua OIDC, không key tĩnh |
+| "tiện tay sửa values-dev" + PR 1.240 dòng | thay đổi không liên quan trong cùng PR | Nên sửa | Reviewer mệt → "approve vì CI xanh"; lỗi nằm ở dòng 900 không ai đọc | quy tắc: PR IaC ≤ ~400 dòng, một mục đích, và **mô tả bắt buộc**: ảnh {{plan}} + blast radius + cách rollback |
+
+### 2. {{iam:PassRole}} — vì sao nó là câu hỏi phỏng vấn hay
+Nó **cấp quyền cho người khác**, tức là một **cạnh đi lên** trong đồ thị quyền. {{s3:DeleteObject}} phá dữ liệu của bạn; {{PassRole}} + {{lambda:CreateFunction}} (hoặc {{iam:CreateRole}}, {{ec2:RunInstances}}) biến app thành **trình tạo danh tính mới** với quyền của role mà bạn pass — thường là role admin hoặc role của dịch vụ khác. Đây là kỹ thuật leo quyền kinh điển trong AWS, và nó **không** bị scanner nào bắt nếu app của bạn "chỉ gọi có 3 API". Cách kiểm: trong policy của **ứng dụng runtime** phải **không** có bất kỳ action nào ở đầu {{iam:}}, {{organizations:}}, {{kms:PutKeyPolicy}}, {{secretsmanager:PutResourcePolicy}} hay {{:PassRole}}.
+
+### 3. Quy trình review IaC của team (và cách ép bằng máy)
+1. **Bất kỳ thay đổi nào đụng {{deploy/}} hoặc {{infra/}} đều là production change**: có ticket, có {{plan}} đính kèm, có tên người rollback.
+2. {{CODEOWNERS}} ép **đủ 2 approval**: một SRE + một dev sở hữu service. (CI fail nếu thiếu — máy ép, không phải ý thức.)
+3. **PR một mục đích, ≤ 400 dòng**. "Tiện tay sửa" bị {{changelog check}} chặn bằng cách so đường dẫn file với ticket.
+4. {{terraform plan}} được **dán vào PR** và reviewer phải highlight **mọi resource bị {{destroy}}** — một dòng {{-}} là một hệ thống biến mất. Đây là chỗ duy nhất bạn thấy quả bom **trước khi** nó nổ.
+5. **Không tắt scanner trong PR tính năng.** Mỗi skip là {{issue}} có {{expiry}}; {{conftest}}/Checkov chạy với {{--skip-fixtures}} để không ai giấu bằng comment, và file {{.checkov.yml}} nằm dưới {{CODEOWNERS}} của kiến trúc.
+6. Policy của bank (OPA/Kyverno) là **cứng** và chạy ở **admission**, không chỉ trong CI: một pod thiếu {{limits}} hay {{runAsNonRoot}} **không vào được** cluster prod, kể cả khi mọi test xanh. Đây là lớp phòng thủ cuối vì nó không phụ thuộc con người.
+7. Reviewer phải trả lời được **ba câu** trước khi approve: pod này nói được tới đâu (egress + NetworkPolicy)? nó có quyền gì ngoài cluster (IRSA role)? ai xoá được thứ nó tạo ra (deletion protection, {{final_deletion}})?
+8. **Kiểm chứng bằng một hành động, không bằng mắt**: "{{kubectl apply --dry-run=server}} + {{conftest}} trên file render"; "{{helm template | kubeconform -strict}}"; và **diff {{helm template}} giữa hai PR** để thấy cái gì đổi với các môi trường khác.
+9. IaC thay đổi **phải có changelog + tag release**; khi có sự cố, câu đầu tiên trong kênh War-Room là "ai merge gì trong 48 giờ qua" — nếu phải hỏi con người thì quy trình còn thủ công.
+10. Quy tắc vàng tôi học được: **scanner là danh sách việc, không phải bằng chứng an toàn**. Nó chỉ tìm mẫu nó biết; nó không biết {{Resource: "*"}} của bạn gồm **những** secret nào, và nó càng không biết vì sao bạn đặt {{TTL}} 30 giây.
+
+### 4. Mục (7)+(8): giải pháp DNS on-prem này **đổi rủi ro nào lấy rủi ro nào**
+Hùng tạo một **private hosted zone** với bản ghi A cứng, vì "DNS on-prem không forward được sang AWS". Hệ quả:
+- Cái được: tên {{core-banking-gateway.core.internal}} trở nên **giải quyết được tại AWS** (1 truy vấn, không đi Hà Nội) — nghe rất hợp lý, và **đây là phần đúng**.
+- Cái bị đổi: (a) **nguồn sự thật thứ hai** — giờ có 2 nơi định nghĩa IP của {{gateway-core}} (AD/DNS on-prem và Route 53), và khi on-prem failover, Route 53 **không biết** → sự cố "hệ kia sống, bên mình chết"; (b) **TTL 60 s** trở thành thời gian chết tối thiểu của mỗi lần sửa; (c) vẫn còn nguyên vấn đề **ndots**, vì {{core-banking-gateway.core.internal}} có 2 dấu < 5 nên CoreDNS vẫn thử 4 tên search trước khi tới hosted zone — và các tên search với hậu tố {{.cluster.local}} trả lời tại chỗ, nhưng **tên thật** thì có, và vì tên có {{.internal}} nên nó bị forward theo {{resolv.conf}} của CoreDNS… tức là hành vi **tinh vi hơn** ta tưởng, và nếu không đo bằng {{dig}} thì không ai nói được chính xác điều gì xảy ra.
+- Thiết kế tôi chốt: **một** nguồn sự thật. Hoặc (A) forward đúng zone {{core.internal}} tới on-prem DNS qua **Outbound Resolver** và để on-prem tự lo IP (đòi hỏi firewall + thêm một vòng 38 ms cho mỗi lần **caching miss**, chấp nhận được nếu TTL dài và có cache tại node); hoặc (B) Route 53 record nhưng có **health check** và job tự động cập nhật từ on-prem (thêm hệ thống, thêm failure mode). Tôi chọn **(A) + node-local-dns cache**, và **FQDN có dấu chấm chốt**, và **xoá record thủ công**. Lý do (A): khi on-prem đổi IP, ta **không phải sửa gì** — trong hệ hybrid, phương án "không có gì để sửa" là phương án an toàn nhất.
+- Bài học để đời: câu hỏi **"cái này có bao nhiêu nguồn sự thật"** nên được hỏi ở review, ngay sau "cái này có bao nhiêu đường đi của gói tin".
+
+> Senior tip: review IaC khác review code ở **mô hình thất bại**: code lỗi thì ném exception, còn IaC lỗi thì **cổng công khai mở trong 5 tháng** hoặc **không có ai sửa được vì không ai hiểu**. Vậy nên trong checklist của tôi, mục "người không viết PR có rollback được không" **ngang hàng** với mục "có lỗ hổng không". Và về chính tôi: tôi đã approve mục OPEN #1 "ndots" **dưới dạng ghi chú** trong PR này vì đang gấp — ba tuần sau nó thành sự cố. Điều đó nói lên gì: **review không phải lúc tìm lỗi, mà là lúc duy nhất mà chi phí sửa còn rẻ**.
+`,
+      pitfalls: [
+        'Cho rằng scanner xanh là bằng chứng an toàn và để {{.checkov.yml}} tắt 5 quy tắc ngay trong PR tính năng',
+        'Mở SSH 0.0.0.0/0 "tạm để debug" — node role trở thành mục tiêu của cả internet',
+        'Đặt iam:PassRole vào policy ứng dụng "cho CI tiện", mở đường leo quyền toàn tài khoản',
+        'Không đặt hop limit cho IMDS: một lỗi SSRF nhỏ trong app thành stolen node credentials',
+        'NetworkPolicy {{from: []}} bị hiểu là "không hạn chế" trong khi nó nghĩa là "cho phép hết"',
+        'Để CoreDNS 2 bản thể không topology spread rồi thiết kế 3 AZ cho app',
+        'Review IaC bằng mắt thường trên 1.240 dòng trộn nhiều mục đích, approve vì CI xanh'
+      ]
+    },
+    {
+      key: 'test',
+      title: 'Kiểm thử: tải thật, diệt một AZ, và cái giá của con stub nằm cùng cluster',
+      role: 'Bạn cùng QA Hương và SRE Minh lập kế hoạch test; DevOps Kiên dựng môi trường',
+      story: `Môi trường SIT trên AWS đã dựng xong: cluster 3 node, RDS {{db.t4g.medium}} (một bản thể, không Multi-AZ), và một **con stub** tên {{gateway-core-stub}} do Hùng viết — Spring Boot trả về {{txn_description}} giả, **deploy trong cùng namespace**, RTT **1,2 ms** so với 38 ms thật. Lý do: "on-prem không cho phép SIT gọi thật, sợ ảnh hưởng hệ lõi".
+
+Bạn yêu cầu 4 loại test. Bốn loại đó **xanh**, và bạn ký xác nhận "sẵn sàng production".
+
+Điều bạn không biết khi ký: ba ô trống trong danh sách test là (1) không có bài test nào mà **đường gọi on-prem mang đặc trưng latency thật**, (2) không có bài **pool lạnh** (tắt hết kết nối rồi bắn tải), (3) p95 ở {{k6}} được tính bằng **trung bình các p95 của 6 pod** — phép toán không hợp lệ.
+
+Sáu tuần sau, sự cố ở giai đoạn 8 sẽ nằm đúng trong ba ô trống đó.`,
+      artifacts: [
+        { name: 'k6-staging.txt', lang: 'text', content: `k6 0.52 — scenario "payday-mix" (tong hop 3 endpoint theo ti le that 62/26/12), 25 phut
+staging: EKS 3 node m6i.xlarge, 6 pod, RDS db.t4g.medium (1 AZ), stub gateway-core trong cluster
+thoi diem: 2026-11-03 14:00 -> 14:25 (tai on-prem im lang, moi ban khac da nghi Test Plan)
+
+  VU (virtual users) : 0 -> 320 trong 5m, giu 20m
+  Request rate      : peak 168 RPS   (MUC TIEU: 1.200 RPS; KHONG DAT, ly do ghi duoi)
+  http_req_duration :
+    /summary            p50 61  p95 188  p99 342        -> DAT (SLO 300 ms p95)
+    /transactions       p50 96  p95 402  p99 1.240       -> p99 vuong SLO 900 ms
+    /pdf                p50 210 p95 760  p99 1.900       -> DAT
+  Checks            : 24.110 passed, 0 failed
+  THRESHOLDS        : p95_summary<300 PASSED   error_rate<0,05% PASSED
+
+Ghi chu cua Huong (QA) trong bao cao:
+  - p95 tong hop tinh bang cach: lay p95 cua tung pod roi trung binh lai => 188 ms
+  - Muc 1.200 RPS khong chay duoc vi "node group max = 3 va HPA khong keo duoc them
+    node trong 25 phut test (Canary? khong). Chung toi test voi 6 pod hien tai."
+  - "gateway-core-stub nam trong cluster, nen phan on-prem duoc test bang mock — OK"
+  - p99 transactions cao la do "JSON serialize", da them cache, se test lai
+
+Loi kiem thu (ban phat hien sau khi doc log):
+  1. khong co loi kiem thu nao co "pool lenh" = tat moi ket noi roi gay tai ngay
+  2. khong co loi kiem thu nao do thoi gian mo ket noi moi (DNS/TCP/TLS) tach rieng
+  3. khong co loi kiem thu nao chay tai > 300 RPS
+` },
+        { name: 'chaos-drain-az.txt', lang: 'text', content: `Thu nghiem 2026-11-05 20:00 — k6 giu 150 RPS, chat = 30 phut
+Kich ban: kubectl cordon node trong AZ-a (3/6 pod) roi kubectl drain --ignore-daemonsets --delete-emptydir-data
+
+T+00s   6 pod Ready, p95 /summary 190 ms, error_rate 0,00%
+T+05s   drain bat dau, 3 pod bi xoat khoi AZ-a
+T+07s   p95 /summary 196 ms  (ALB loai pod khoi target group nhanh)
+T+09s   HPA khong tang pod (CPU 61% < 65%)
+T+30s   OK, p95 205 ms, 0 loi
+
+=> KE LUAN trong bao cao: "Highly available across AZ: DAT"
+
+Nhưng file log cung ghi lai 3 dieu khong ai phan tich:
+  1) luc drain, 4 request bi "upstream connection terminated" (client timeout, khong phai 5xx)
+     -> vi khong co preStop dung cach? Kiem tra: preStop = sleep 8, OK. Van de o dau?
+  2) RDS: 3 pod con lai mo moi 47 ket noi trong 12 giay (Hikari reconnect + backlog)
+  3) CoreDNS CPU (kube-system/coredns-xxx): 12m -> 96m -> 118m (limit 200m) trong luc drain
+     metric "throttled": 0,42 giay/s  (tuc la ~42% thoi gian bi throttle!)
+
+Thu nghiem 2: kill -9 moi 2 pod (kubectl delete pod --force) luc 150 RPS
+  p95 /transactions: 402 -> 940 ms trong 22 giay roi phuc hoi   (khong co loi, OK)
+
+Thu nghiem 3: RDS Multi-AZ failover (khong the lam o staging vi staging 1 ban the)
+  -> "se thu o UAT" (chua bao gio thu)
+` },
+        { name: 'load-test-1200rps.txt', lang: 'text', content: `2026-11-17 22:00 -> 22:35 (chay sau khi da fix HPA va node group), k6 "payday-mix" thuc 1.200 RPS
+
+  VU 2.400, request rate thuc te chi dat 742 RPS trong 3 phut dau (khong phai 1.200!)
+  => k6 thieu resource (2.400 VU tren 1 may) - KET LUAN: "load generator la nut tran"
+
+  22:03 -> 22:35, khi VU da "am": 1.180-1.220 RPS on dinh
+  /summary        p95 214 ms  p99 512 ms    OK
+  /transactions   p95 268 ms  p99 690 ms    OK   <-- dep hon ca khi o VM (1.100 ms)!
+  /pdf            p95 810 ms  p99 1.900 ms  OK (S3 thay NAS)
+  error_rate      0,03%   (2 loi: 1 x 504 khi pod bi evict vi ephemeral storage)
+
+  HPA: 6 -> 24 pod trong 2 phut 51s (sau khi them custom metric RPS + tai preview theo gio)
+  Node group: 3 -> 11 node trong 4 phut 10s (bottleneck con lai la "image pull + JVM start")
+  RDS: db.r6g.large, CPU 44%, connection 214 (prox 24 pod x 10), p99 query 38 ms
+  CoreDNS: 2 pod, CPU p95 38m/200m, throttle 0 — "binh thuong"
+
+  22:35 dot phat tai, 2 phut im lang, roi 22:37 phat lai tu 0:
+  /transactions   p95 271 ms (OK), p99 = 1.980 ms trong 25 giay dau  <-- !
+  -> Huong: "cold start cua JVM, het 1 phut la binh", da dong ticket.
+
+  Cac metric KHONG co trong dashboard nen cung khong duoc ghi lai lan nay:
+    dns_resolution_duration, http_client_connect_duration, coredns_query_count, pool leased/idle
+` }
+      ],
+      task: `1. Báo cáo {{k6-staging.txt}} có **3 lỗi phương pháp luận** làm bạn **đánh giá lạc quan** hệ thống. Chỉ ra và sửa cách tính/thông số test.
+2. {{chaos-drain-az.txt}}: vì sao kết luận "HA across AZ: ĐẠT" là **quá sớm**? Giải thích ba dòng "không ai phân tích" và bạn sẽ dựng lại thí nghiệm thế nào để nó **có khả năng thất bại**.
+3. Trong {{load-test-1200rps.txt}}, hãy thiết kế lại thí nghiệm để nó trả lời câu hỏi **thật** ("hệ chịu được 1.200 RPS và p99 đạt SLO không"), thay vì để hai nút thắt (máy phát tải, JVM cold) lẫn nhau. Nêu **ít nhất 4 metric** phải có trước khi test.
+4. Thiết kế **ma trận test cho đường on-prem** (5–7 bài) mà với nó, sự cố giai đoạn 8 đã bị bắt từ 11/2026. Với mỗi bài: dữ liệu/cấu hình cần dựng, điều kiện "đạt", và vì sao bài trước đó không bắt được.`,
+      answer: `**Tóm tắt:** cả ba báo cáo **xanh một cách trung thực** vì chúng kiểm tra **cái ta đã nghĩ tới**. Ba lỗi phương pháp: (1) {{p95}} không trung bình được, (2) stub **cùng cluster** đã xoá đúng thứ cần test (**38 ms + DNS**), (3) "HA" được chứng minh bằng một thí nghiệm **không tạo áp lực lên dependency chung** (CoreDNS, RDS connection). Và câu trả lời cho ô trống số 3 — "**cold start JVM**" — là **kết luận sai**: pod đã Ready 15 phút, thứ lạnh là **connection pool và DNS cache**, không phải JIT.
+
+### 0. Ba khái niệm nên hiểu trước khi đọc phần sau
+- **{{p95}} là gì**: giá trị mà 95% request nhỏ hơn. Nó là **một điểm trên phân phối**, không phải đại lượng cộng được. Trung bình của 6 con số {{p95_pod}} **không phải** {{p95_toan_he}}: nếu 5 pod nhanh và 1 pod có đuôi dài, trung bình làm **biến mất** cái đuôi đó, trong khi khách hàng của ta lại chính là người rơi vào cái đuôi. Cách đúng: gộp **histogram** ({{le}} bucket từ Micrometer/Prometheus) rồi tính percentile trên tổng, hoặc để k6 tính {{http_req_duration}} trên **toàn bộ** mẫu.
+- **{{cold path}}**: đường đi của một request phải **khởi tạo kết nối mới** (DNS → TCP → TLS). Bài test với pool đã warm **không chạm** đường này, mà đường này lại là thứ được kích hoạt đúng lúc **burst** — tức lúc quan trọng nhất.
+- **Dependency chung**: thứ mọi pod/team cùng dùng — {{CoreDNS}}, {{kubelet}}, node, RDS, đường DX. Nó **không scale theo** số pod của bạn; nó là **trần ẩn**. Test mà chỉ quan sát app của bạn thì không thấy trần đó.
+
+### 1. Ba lỗi phương pháp trong k6-staging và cách sửa
+1. **Trung bình các p95** → con số 188 ms **không có nghĩa vật lý**. Sửa: bật {{management.metrics.distribution.percentiles-histogram.http.server.requests=true}}, dùng {{histogram_quantile(0.95, sum by (le) (rate(...)))}} làm **nguồn duy nhất** của báo cáo; k6 report để so sánh, không dùng trung bình pod.
+2. **Peak chỉ đạt 168 RPS rồi kết luận "đủ"** — bài test không bao giờ đi tới ngưỡng nên **mọi kết luận về ngưỡng đều suy đoán**. Lý do được ghi ("node group max = 3") chính là bằng chứng chưa kiểm thử yêu cầu "scale 6→24 trong 4 phút". Sửa: **capacity test** tách riêng, max node = 12, và tiêu chí là **1.200 RPS với p99 trong SLO**, không phải "hệ không chết ở 168".
+3. **Stub trong cluster = đã xoá biến cần đo.** p99 {{/transactions}} 1.240 ms lúc đó đã **quá SLO** và bị giải thích là "JSON serialize" — một chẩn đoán **không có bằng chứng** (không có metric tách {{connect}}/{{response}}), nên nó bị đóng. Đây là lỗi đắt nhất trong ba lỗi và sẽ **trực tiếp** sinh ra sự cố giai đoạn 8.
+   Sửa: hoặc gọi **thật** (xin on-prem một môi trường sandbox + firewall rule — lead time 2 tuần, và đó là một **rủi ro lịch trình** phải nêu với PO), hoặc stub **có cùng đặc trưng**: đặt stub ở **on-prem** (đi qua DX thật) hoặc chèn một **proxy gây trễ** trong đường đi ({{tc netem delay 38ms}} trong side-car, hoặc stub đặt trên một EC2 ở region khác). Nguyên tắc tôi ghi vào test plan: **"stub phải có cùng lỗi với thật, nếu không nó là tài liệu, không phải test"**.
+
+### 2. Chaos: vì sao "ĐẠT" quá sớm, và ba dòng bị bỏ qua
+Thí nghiệm {{cordon + drain}} ở 150 RPS chứng minh được một điều **nhỏ**: rằng ALB loại pod nhanh. Nó **không** chứng minh HA, vì:
+- **Tải không đổi trong khi số pod giảm 50%** → mỗi pod còn lại chịu **gấp đôi** RPS nhưng CPU chỉ lên 61% (vì 150 RPS quá xa đỉnh) → hệ thống chưa từng ở trạng thái "AZ mất **và** cao điểm". **HA là tích của hai biến**, bạn chỉ thử một.
+- Thí nghiệm **không chạm** dependency chung: CoreDNS đã throttle **42% thời gian** trong lúc drain. Lý do rất cơ học: drain làm mất **cả một nhóm pod** → RDS + Service Endpoints biến động → mọi pod còn lại **re-resolve và reconnect** cùng lúc → lượng truy vấn DNS tăng vọt → 2 bản thể CoreDNS (limit 200m, **không** topology spread như review đã cảnh báo) nghẽn CPU. Đây chính xác là cơ chế của sự cố giai đoạn 8, chỉ ở quy mô nhỏ.
+- 4 request {{upstream connection terminated}}: preStop **có** chạy đúng, nhưng 8 giây không đủ khi **kube-proxy/ALB target deregistration** chưa lan hết hoặc khi có request dài (PDF 2 s). Và vì "không phải 5xx" (nó là client-side timeout) nên **không hiện trên error_rate** → chỉ số bạn theo dõi **mù** với loại lỗi này. Phải đo thêm {{ALB HTTPCodeTarget 5xx}} **và** {{client-observed timeout}}/{{connection reset}}, nếu không chaos sẽ luôn "đẹp".
+- RDS +47 connection trong 12 s: chính là hình thu nhỏ của **connection storm** khi scale/failover — và nó chỉ được "ghi lại" chứ không được **assert**.
+**Dựng lại để có khả năng thất bại:** chạy {{drain AZ}} **tại 800 RPS** (gần đỉnh thật), với 24 pod, và với **điều kiện tiên quyết** là pool đang ấm; quan sát {{coredns throttled}}, {{hikaricp pending}}, {{p99 theo endpoint}}; tiêu chí "đạt" = {{p99 trong SLO}} + {{0 connection reset}} + {{time to recover < 60 s}}. Thêm hai thí nghiệm: {{scale down 24→6}} (lịch trình down là lúc pool đóng hàng loạt) và **RDS failover thật** — không thể "để dành ở UAT": nếu chưa từng làm, bạn không có bằng chứng nào cho claim "RTO 2 giờ" trong tài liệu đã ký với Pháp chế.
+
+### 3. Load test 1.200 RPS: tách nút thắt và chuẩn bị
+Kết quả **đẹp bất thường** ở {{/transactions}} (p99 690 ms, tốt hơn VM 1.100 ms) có hai lý do hợp lệ và một lý do làm nó **vô giá trị**:
+- Hợp lệ: DB giờ **cùng region** (không còn 0,4 ms → 0,4 ms nhưng xa gateway-core vì stub trong cluster), S3 thay NAS, cache mới.
+- Vô giá trị: **stub**, và vì vậy p99 này không mô tả production.
+Nút thắt máy phát tải ({{k6}} thiếu CPU, chỉ đạt 742 RPS) lẫn vào 3 phút đầu làm **cả curve** bị nhiễm. Thiết kế lại:
+1. **Distributed k6** ({{k6 run --distributed-executors-start}} trên 6 pod, hoặc dùng {{Gatling}}/cluster phát tải riêng) và **assert RPS đạt được trước khi đọc latency** — nếu RPS thực tế < mục tiêu thì **mọi con số p99 đều vô nghĩa**.
+2. **Ba pha bắt buộc**: (a) ramp → steady (warm pool), (b) **im lặng 90 giây** để pool về idle, (c) **burst từ 0 → 1.200 RPS**. Đo p99 **riêng cho pha (c)** và gọi nó bằng đúng tên: "cold-connection p99". Con số 1.980 ms ở giây 22:37 chính là bài test này — nó **đã tồn tại**, chỉ bị gắn nhãn sai là "JVM cold start".
+3. **Tái lập môi trường theo kịch bản thật, không theo sự tiện của tool**: nếu ngày 25 có "09:00:00 burst" thì test phải có **một pha mà pool lạnh**, nếu không nó không chứng minh gì về ngày 25.
+4. **Bốn metric phải có trước khi test** (không có chúng thì test chỉ đo "có chết không", không đo "chết vì sao"):
+   - {{coredns_dns_responses_total}} / {{coredns_dns_request_duration_seconds}} + {{container_cpu_cfs_throttled_seconds_total}} cho **{{kube-system}}**.
+   - {{http_client_seconds}} với {{phase = "connect"}}, {{phase = "lease"}}, {{phase = "tls"}} (từ HttpClientConfig đã sửa ở giai đoạn dev).
+   - {{hikaricp_connections_pending}}, {{rdsproxy ClientConnectionsWait}}, và {{pg_stat_activity}} count.
+   - {{p99 theo endpoint}} từ histogram thật (mục 1) + {{ALB HTTPCodeTarget 5xx}}/{{HTTPCodeElb 502}} để phân biệt "pod lỗi" và "đường tới pod lỗi".
+
+### 4. Ma trận test cho đường on-prem — cái đã bỏ sót
+| # | Bài test | Dựng gì | Điều kiện đạt | Vì sao bài trước không bắt được |
+|---|---|---|---|---|
+| T1 | **Baseline warm**: 1.000 RPS steady, đường on-prem **qua DX thật** hoặc stub có 38 ms | stub đặt on-prem / {{tc netem delay 38ms}} | p95 {{/transactions}} ≤ 300 ms | stub trong cluster có RTT 1 ms → bài T1 nguyên bản (k6-staging) không mô phỏng gì |
+| T2 | **Cold pool**: đóng mọi kết nối (restart client bean) rồi bắn 1.200 RPS trong 60 s | metric {{phase=connect}} tách riêng | p99 pha cold ≤ 1.200 ms **và** {{phase=dns}} ≤ 20 ms | test luôn chạy với pool ấm; chi phí khởi tạo kết nối **không bao giờ nằm trên đường đo** |
+| T3 | **Đếm truy vấn DNS/kết nối**: chạy T2 với {{dig +debugquery}} + {{tcpdump udp port 53}} trong pod | 30 giây đồng hồ, không cần tool đắt | **1–2 truy vấn** mỗi tên tuyệt đối (nếu >4: hoặc thiếu dấu chấm chốt, hoặc ndots) | không ai mở {{resolv.conf}} hay tcpdump; CoreDNS không được monitor |
+| T4 | **Idle-then-burst**: im lặng 2 giờ (TTL có thể cắt pool) rồi 900 RPS | lịch chạy qua đêm ở SIT | p99 < 900 ms trong 60 s đầu | k6 chạy 25 phút liên tục không có "đêm" |
+| T5 | **CoreDNS dưới áp lực**: giả nghẽn DNS ({{toxiproxy}}/{{iptables}} drop, hoặc hạn chế CPU CoreDNS 20%) | {{/transactions}} p99 trong 200 s | hoặc circuit breaker mở, hoặc p99 ≤ 1.500 ms; **không được có connection reset** | chưa bao giờ "tấn công" dependency chung |
+| T6 | **Failover on-prem đổi IP**: đổi bản ghi DNS on-prem sang IP mới giữa lúc tải | TTL đo được (OPEN #2) | thời gian phát hiện ≤ TTL + 30 s, không có "IP cũ bị gọi 30 phút" | stub một IP duy nhất, không có khái niệm failover |
+| T7 | **Rollout under load**: deploy khi 800 RPS, xem {{/transactions}} | 24 pod, surge 2 | p99 không đổi quá 25% trong 5 phút; 0 502 | SIT chạy 6 pod + 150 RPS nên "xanh" |
+
+Với riêng **T3**, tôi sẽ còn biến nó thành một **gate trong CI** ({{conftest}} deny nếu {{values}} không có {{dnsConfig}}, và một smoke test asserts {{dns_queries_per_connection <= 2}}). Bài học tôi viết vào runbook: **dependency mà bạn không đo thì bạn không có quyền gọi nó là "đã kiểm thử"**, kể cả khi nó chỉ mất 30 giây để nhìn bằng {{tcpdump}}.
+
+> Senior tip: ba lỗi ở đây là ba **họ hàng** của nhau và đều thuộc một loại: **test thay đổi biến cần đo**. Stub cùng cluster xoá latency; pool ấm xoá chi phí khởi tạo kết nối; trung bình các p95 xoá cái đuôi; tải không đổi khi drain xoá áp lực. Tôi thường tự hỏi trước khi duyệt test plan: "**bài này đã đổi gì so với production để nó xanh dễ hơn?**" — và câu trả lời trung thực thường chính là danh sách rủi ro.
+`,
+      pitfalls: [
+        'Thay dependency 38 ms bằng stub trong cùng cluster (1 ms) rồi tin rằng bài test nói về production',
+        'Tính p95 tổng bằng trung bình cộng p95 của từng pod — con số mất nghĩa và dấu nhẹ cái đuôi',
+        'Kết luận "HA across AZ ĐẠT" từ một thí nghiệm giữ nguyên tải ở 150 RPS với 6 pod',
+        'Bỏ qua metric của dependency chung (CoreDNS throttled 42%, RDS +47 connection/12 s) dù nó đã hiện trong log',
+        'Gán "cold start JVM" cho p99 1.980 ms xuất hiện 25 giây sau burst, trong khi pod đã Ready từ lâu (thật ra là pool lạnh)',
+        'Chấp nhận load test ở 168 RPS vì "hệ không chết" và không nêu giới hạn đó với PO',
+        'Error rate 0,00% vì không đếm connection reset / client-side timeout — loại lỗi đặc trưng của chaos'
+      ]
+    },
+    {
+      key: 'deploy',
+      title: 'Cut-over: GitOps, canary theo trọng số ALB và câu "mình sẽ rollback bằng gì"',
+      role: 'Bạn + Kiên điều phối; PO và khối nghiệp vụ ngồi trong kênh War-Room',
+      story: `Sáng 30/11, bạn mở {{war-room}} đầu tiên của ngân hàng cho một service nội bộ. Trên màn hình là {{plan}} của Argo Rollouts: 1% → 5% → 25% → 50% → 100%, mỗi bước 20 phút, có {{analysis}} tự chặn. Kế hoạch được duyệt vì "có canary".
+
+Nhưng bạn có **hai** thứ phải chuyển, không phải một: **app** (stateless, dễ) và **dữ liệu** (1,4 tỷ dòng, không dễ). Và có một thứ **không chuyển được**: {{gateway-core}} ở Hà Nội. Nghĩa là trong suốt quá trình cut-over, **cùng một khách hàng** có thể được phục vụ bởi pod ở Singapore (gọi on-prem 38 ms) hoặc VM ở Hà Nội (gọi on-prem 0,4 ms) — hai phiên bản của cùng một API **có p95 khác nhau**. Đây là chỗ mà "canary" bắt đầu khó hơn định nghĩa trong sách.
+
+Chi tiết quyết định: PO bật **feature flag** {{transactions.description.enabled}} và vì "flag này an toàn", nó được đặt {{false}} ở 1% và 5%, chỉ bật ở 25%. Endpoint {{/transactions}} **có** được route tới AWS từ đầu, nhưng phần **gọi on-prem** thì không — nên mọi bước canary đầu tiên **không đi qua đường on-prem**. Bạn thấy điều đó trong {{values}} lúc 22:40 đêm 30/11, và bạn **quyết định không lùi lịch**, với lý do ghi lại trong ticket: "đường on-prem đã test, khác biệt chỉ là flag".`,
+      artifacts: [
+        { name: 'cutover-plan.txt', lang: 'text', content: `CUT-OVER STM-77 (statement-service): VM on-prem -> EKS      D-Day = 2026-12-01
+Nguoi chi huy: ban (tech lead)     DevOps: Kien     DBA: anh Tuan     On-call vendor: truc 24/7
+
+NGUYEN TAC
+  - Moi buoc phai co lenh rollback 1 dong, khong dung lenh "tu lenh trong dau"
+  - Khong cut-over vao ngay 25 va ngay 1; khong cut-over cuoi tuan (khong co DBA)
+  - Khong doi 2 thu cung luc (app va schema): schema di TRUOC, 2 ngay
+
+LICH
+  T-7 (24/11)  : schema migration (expand) len prod — them bang stmt_entry_2026, them cot
+                 txn_description_code, index CONCURRENTLY. App cu van chay (expand/contract)
+  T-3 (28/11)  : logical replication on-prem -> RDS bat dau; dual-read 5% (doc RDS, tra on-prem)
+  T-1 (30/11)  : dong băng thay doi (code freeze); drill rollback 1 lan, co bien ban
+  D-Day 09:00  : canary 1% (20 phut) -> 5% -> 25% (bat flag transactions.description) -> 50% -> 100%
+  D+1          : quota 100% AWS, VM ve che do standby (giu 14 ngay)
+  D+14         : contract — xoa cot cu, ngung replication, turn off VM
+
+TRONG MOI BUOC canary, kiem tra (nguong dung pipeline = abort + rollback):
+  [1] error_rate (ALB 5xx / total)          < 0,05%   (baseline VM: 0,02%)
+  [2] p95 /summary                          <= 300 ms
+  [3] p99 /transactions                     <= 900 ms   <-- AN TOAN: flag van BAT o buoc >=25%
+  [4] hikaricp_connections_pending          == 0
+  [5] rdsproxy ClientConnectionsWait        < 50 ms p95
+  [6] log khong lo PII (kiem bang script mask-audit.py chay mau 1000 dong)
+  [7] 1 smoke test "khach xem duoc sao ke thang truoc" (duong doc PDF tu S3)
+  [8] khong co pod restart (kubectl get pods -w, 5 phut)
+
+Rollback:
+  A) app:  argo rollouts abort rollout statement-service (ve 0% weight, pod cu van phuc vu)
+  B) toan bo: Route53 weighted record 100% ve VM (Nginx on-prem van chay, replication nguoc cho phep
+     doc du lieu moi tu VM sau khi switch — do phan "dual write" 24h dau)
+  C) schema: KHONG rollback — bang/cot moi du bo so, code cu khong biet den chung
+` },
+        { name: 'rollout-canary.txt', lang: 'text', content: `$ kubectl argo rollouts get rollout statement-service -n statements-prod --watch
+Name:            statement-service
+Strategy:        Canary
+  Step:          25%
+  SetWeight:     25    ActualWeight: 25
+Images:          .../statement-service:1.21.0+g5c1f7ab (stable)
+Replicas:        6 desired / 6 ready   (canary)   |   6 desired / 6 ready (stable)
+Analysis:        Running 1/5  Metric: success-rate   Current: 0,014%  (PASS)
+
+2026-12-01T09:04:11Z  Step 1 (1%)  PASS  success-rate 0,012%  p95_summary 246 ms
+2026-12-01T09:26:03Z  Step 2 (5%)  PASS  success-rate 0,014%  p95_summary 252 ms
+2026-12-01T09:48:55Z  Step 3 (25%) PASS  success-rate 0,019%  p95_summary 258 ms  <-- FLAG BUNG
+2026-12-01T10:12:40Z  Step 4 (50%) PASS  success-rate 0,023%  p95_summary 266 ms  p99_tx 812 ms
+2026-12-01T10:36:18Z  Step 5 (100%) canary promoted; stable scaled down 6 -> 0 (10:38:02)
+2026-12-01T10:38:09Z  Warning  FailedScheduling  pod stmt-7d9-4kz  0/12 nodes available: Insufficient cpu
+                       -> 2 pod pending 3 phut 20s (Cluster Autoscaler chua kip len node)
+2026-12-01T10:41:31Z  Normal   Scheduled         pod stmt-7d9-4kz  node ip-10-60-3-18 (AZ-c)
+
+Ghi chu ban tu them tay vao bien ban (khong co trong pipeline):
+  - Buoc 1% va 5% KONG GOI NAO den gateway-core (flag tat) => 2 metric p99_tx o 2 buoc dau la
+    "p99 cua duong chi co DB", khong phai p99 cua duong on-prem. Pipeline van PASS — dung,
+    nhung PASS voi mot phan he thong chua duoc kiem tra.
+  - luc 10:38: stable pod bi xoa het => tat ca ket noi on-prem warm bi mat cung luc.
+` },
+        { name: 'pipeline-deploy-prod.yaml', lang: 'yaml', content: `name: deploy-prod
+on:
+  workflow_run:
+    workflows: [build-and-test]
+    types: [completed]
+    branches: [release/statement-service]
+permissions:
+  id-token: write      # OIDC cho AWS (khong dung access key tinh)
+  contents: read
+jobs:
+  migrate:
+    runs-on: [self-hosted, aws]
+    steps:
+      - run: liquibase update -changelog=db/changelog/db.changelog-master.yaml   # (1) EXPAND
+  gate:
+    needs: migrate
+    uses: ./.github/workflows/change-approval.yml     # (2) CAB + PO approve, block neu chua du 24h
+  promote:
+    needs: gate
+    environment: production                            # (3) environment rule: max 1 concurrent
+    steps:
+      - run: |
+          aws eks update-kubeconfig --name bank-digital-01 --region ap-southeast-1
+          argocd login "$ARGOCD" --auth-token "$ARGO_TOKEN"
+          argocd app set statement-service-prod --helm-set image.tag=$SHA     # (4)
+          argocd app sync statement-service-prod --resource:argoproj.io/v1alpha1/Rollout
+          kubectl argo rollouts promote statement-service -n statements-prod  # (5) AUTO-PROMOTE
+      - run: ./scripts/smoke.sh https://stmt.internal.bank/v1     # (6) sau promote
+` },
+        { name: 'analysis-template.yaml', lang: 'yaml', content: `apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata: { name: stmt-canary, namespace: statements-prod }
+spec:
+  metrics:
+    - name: success-rate
+      interval: 2m                    # (1) 5 buoc * 2m = 10m kiem tra; buoc canary giu 20 phut
+      threshold: 5                    # cho phep 5 lan that bai lien tiep truoc khi fail   <-- !!!
+      failureLimit: 5
+      count: 5
+      provider:
+        prometheus:
+          address: http://amp-proxy.amp.svc:8080
+          query: |
+            sum(rate(http_server_requests_seconds_count{app="statement-service",
+                status!~"5.."}[5m]))
+            / sum(rate(http_server_requests_seconds_count{app="statement-service"}[5m]))
+    - name: p95-summary
+      interval: 2m
+      failureLimit: 0
+      provider:
+        prometheus:
+          address: http://amp-proxy.amp.svc:8080
+          query: |
+            histogram_quantile(0.95, sum by (le) (rate(
+              http_server_requests_seconds_bucket{app="statement-service",
+              uri="/api/v1/statements/summary"}[5m])))
+    # (2) KHONG co metric duong on-prem (connect/dns) trong template
+    # (3) khong co p99 cua uri="/transactions" (chi p95 summary)
+` }
+      ],
+      task: `1. Tìm **5 vấn đề** trong {{pipeline-deploy-prod.yaml}} + {{analysis-template.yaml}} và {{rollout-canary.txt}} (gợi ý: {{threshold}}/{{failureLimit}}/{{count}}, {{promote}} tự động, {{FailedScheduling}} lúc 10:38, {{p99_tx}} không có trong template).
+2. Giải thích **vì sao canary app ≠ canary dữ liệu**, và trình tự bạn sẽ áp dụng cho 1,4 tỷ dòng để **không** có cửa "rollback mất dữ liệu". Nêu điều kiện để {{contract}} được phép chạy.
+3. Quyết định "bật flag ở 25%" — bạn có đổi không nếu biết trước gì? Hãy **chỉ ra giới hạn thống kê** của bước 1% (48 RPS, 20 phút) và của bước 25% khi flag vừa bật. Nói rõ bao nhiêu request là **đủ** để kết luận p99 900 ms.
+4. Viết **kịch bản trực ngày 25 đầu tiên trên AWS** (07:00–09:30): ai làm gì, khi nào pre-scale, điều kiện nào thì "nghỉ" và gọi thêm người.`,
+      answer: `**Tóm tắt:** pipeline có 5 lỗi mà **cả năm đều làm giảm khả năng phát hiện** thay vì gây hỏng: {{failureLimit: 5}} nghĩa là "cho phép 5 nhịp xấu liên tiếp"; {{promote}} tự động ngay sau sync; thiếu metric **của đường đi mới** (on-prem/DNS/connect); {{count: 5}} + {{interval: 2m}} lấy {{rate[5m]}} trên **1,2 phút dữ liệu thật**; và bước 1% chỉ có ~570 request nên **không thể** kết luận gì về p99. Về dữ liệu: thứ nguy hiểm không phải "migration lỗi" mà là **quyết định rollback app sau khi đã ghi vào schema mới** — và cách duy nhất an toàn là làm cho **schema cũ và code cũ cùng sống** trong suốt thời gian canary (expand/contract) thay vì hy vọng rollback được.
+
+### 0. Vài thứ cần hiểu trước
+- **GitOps**: trạng thái mong muốn nằm trong **git**; một controller ({{Argo CD}}) so sánh với cluster và **sync** (hoặc tự sync). Lợi ích lớn nhất không phải tự động hoá mà là: **"prod đang chạy cái gì" trả lời bằng {{git log}}, và rollback = {{git revert}}** — một PR, có audit, có người duyệt.
+- **Argo Rollouts** thay {{Deployment}} bằng {{Rollout}} để điều khiển **trọng số** (ở AWS là **target group weight** trên ALB) và chạy **{{AnalysisTemplate}}** (các truy vấn Prometheus) giữa mỗi bước; {{abort}} = đưa trọng số về 0 và giữ pod cũ.
+- **Canary vs blue/green**: blue/green = hai môi trường đầy đủ, cắt **100%** một phát, rollback cắt lại. Canary = **cùng một môi trường**, hai phiên bản **chia sẻ tài nguyên** (DB, VPC, CoreDNS, DX), chia traffic theo %.
+- **{{expand/contract}}**: đổi schema làm **hai bước không tương thích ngược** thành **ba bước tương thích thuận**: (1) thêm (expand) — cũ vẫn chạy; (2) migrate dữ liệu + chuyển code; (3) dọn (contract) — **chỉ khi** chắc chắn không quay lại.
+
+### 1. Năm vấn đề của pipeline/rollout
+| # | Vấn đề | Hậu quả | Sửa |
+|---|---|---|---|
+| 1 | {{threshold: 5}} + {{failureLimit: 5}} + {{count: 5}}: phân tích 5 nhịp × 2 phút, **5 nhịp xấu liên tiếp mới fail** | Bạn mất **10 phút** chạy ở trọng số cao với tỉ lệ lỗi cao; với p95 vượt ngưỡng **chậm** (dốc lên) thì ngưỡng không bao giờ bị "liên tiếp" đủ 5 → **canary pass trong khi hệ đang xấu đi** | mỗi metric một {{failureLimit}} hợp lý: error rate {{failureLimit: 1}} (một nhịp xấu là dừng — 5xx là bằng chứng, không phải nhiễu), latency {{2}} để chịu nhiễu |
+| 2 | {{promote}} tự động ngay sau {{sync}} trong job | Người thao tác **không còn cửa nhìn**; nếu {{AnalysisTemplate}} mù (như #4) thì pipeline **đẩy 100% mà không ai bấm nút** | xoá bước {{promote}}: promotion phải là **{{environment: production}} + người có quyền bấm**, hoặc auto chỉ tới 25% rồi dừng chờ |
+| 3 | {{FailedScheduling}} lúc 10:38: stable scale 6→0 **cùng lúc** canary cần đủ 6+ bản thể; Cluster Autoscaler cần ~3 phút dựng node | Trong 3 phút 20 s, hệ có **ít pod hơn dự kiến** đúng lúc trọng số 100% → p99 vọt, và nếu là ngày 25 thì là **outage** | đặt **{{maxSurge}}/capacity headroom** (node group min đủ cho 1,5×), {{PodDisruptionBudget}} + {{preferred}} spread; **pre-scale trước promotion 10 phút**, và promote **từng phần** (100% chỉ khi {{ready >= desired}}) |
+| 4 | Template **không** có p99 của {{/transactions}} và **không** có metric đường on-prem ({{connect}}/{{dns}}) | Đúng cái flag bật ở 25% — đường on-prem — thì **không được đo**. Canary vì thế "PASS" với 26% traffic theo cách tự mâu thuẫn | thêm {{p99_transactions}} (histogram_quantile trên uri), {{core_connect_seconds p95}}, {{coredns throttled}} và **{{error_rate}} tính riêng theo uri** để 26% không bị 62% trung hoà |
+| 5 | {{rate[5m]}} trên cửa sổ phân tích 2 phút + {{smoke.sh}} chạy **sau** promote | Metric lấy dữ liệu **nhiều hơn** thời gian bước tồn tại → bước 1 phút đọc số của 5 phút trước (có thể là **stable**, không phải canary); smoke sau promote = phát hiện khi đã 100% | {{interval >= evaluationWindow}} và **gắn nhãn theo pod** ({{pod=~"canary..."}}) để số liệu chắc chắn của phiên bản đang nhận traffic; smoke **trước** và **trong** mỗi bước |
+| (6) | {{self-hosted}} runner + {{aws}} label, {{ARGO_TOKEN}} trong env | Token Argo CD của runner có quyền prod; một PR độc vào workflow = **đẩy image** | scoped token **per-app**, {{id-token}} OIDC ngắn hạn, {{CODEOWNERS}} cho {{.github/workflows}} |
+
+### 2. Canary app không phải canary dữ liệu
+App **stateless**: hai phiên bản cùng phục vụ một khách, và ta **có thể** chia 1%. Dữ liệu **không chia phần**: một dòng hoặc ở on-prem hoặc ở RDS hoặc ở cả hai (và khi ở cả hai thì có vấn đề "ai đúng"). Với 1,4 tỷ dòng, tôi áp dụng trình tự này — mục tiêu: **tại mọi thời điểm tồn tại một rollback 1 lệnh không mất dữ liệu**:
+1. **Expand schema** (T-7): thêm bảng {{stmt_entry_2026}}, thêm cột, {{CREATE INDEX CONCURRENTLY}} (không khoá bảng; nếu dùng {{ALTER ... ADD COLUMN NOT NULL DEFAULT}} trên PG 11+ thì nhanh, nhưng **verify** bằng {{locks}} thật). Code cũ không biết chúng → **không cần rollback app**.
+2. **Backfill + replicate** (T-3): logical replication on-prem → RDS **liên tục** (không phải "copy một lần rồi cắt"); chạy job so sánh đếm theo tháng + theo {{hash}} để có **bằng chứng** chứ không phải cảm giác; đo {{replication lag}} và **đặt trần** cho phép ({≤ 5 s}, nếu vượt thì dừng cut-over).
+3. **Dual-read** (T-3 → D-Day): đọc **cả hai**, trả về on-prem, log mọi **drift** ("AWS nói X, on-prem nói Y"). Đây là bước duy nhất cho bạn bằng chứng "hai bản sao thực sự giống nhau **dưới traffic thật**"; drift > 0 phải được **giải thích từng case** trước khi bật ghi.
+4. **Dual-write / single-writer**: bước nguy hiểm nhất. Tôi chọn **single-writer** — RDS trở thành writer **duy nhất** ở một thời điểm (VM đọc qua replication **ngược** tạm thời nếu cần rollback), vì dual-write với 4 writer (app, batch, recon, BI) là **cuốn theo nhau** tới bất đồng bộ mà không ai đối soát được. Đổi lại: rollback **phụ thuộc replication ngược còn sống** → kiểm chứng replication ngược **trước** khi cut và **giám sát lag trong** 48 giờ.
+5. **Cut-over traffic** theo canary, và **mỗi bước** có {{abort}} 1 lệnh.
+6. **Contract** (D+14): chỉ khi (a) 48 giờ không drift, (b) {{RPO/RTO}} đã **diễn tập thật** trên RDS (backup + restore một bảng, có số), (c) báo cáo tháng đã chạy xong **trên RDS**, (d) **VM standby đã ngừng ghi**, (e) Pháp chế/CAB ký. Xoá cột cũ ở **một release riêng**, không "tiện tay".
+Nguyên tắc để nói với PO khi họ giục "rút VM sớm cho xong đề án": **VM là bản backup 14 ngày của cả dự án**, chi phí 14 ngày VM rẻ hơn chi phí một lần "dữ liệu ở RDS nhưng không ai chứng minh được là đúng".
+
+### 3. Giới hạn thống kê của các bước canary — và vì sao tôi đổi quyết định về cái flag
+- **1%**: tổng tải 48 RPS → canary nhận **0,48 RPS**; 20 phút = **~576 request**. Với n ≈ 576, ước lượng p99 có **khoảng tin cậy rất rộng** (cỡ ±40–60%) và một lỗi hiếm (1/1.000) **gần như chắc chắn không xuất hiện**. Nói cách khác: bước 1% chỉ chứng minh "hệ không sập ngay", **không** chứng minh p99. Đó là lý do {{p99_tx}} 812 ms ở bước 50% (6.000+ request) lại là **lần đầu tiên** con số có ý nghĩa xuất hiện.
+- Do đó tôi đặt **đích tối thiểu**: mỗi bước chỉ được coi là "đã đo" khi **≥ 20.000 request** cho endpoint được quan tâm — nghĩa là **1% phải chạy lâu hơn** hoặc **nhảy trực tiếp 5% với pre-scale**. Tôi cũng bật **tải giả định hướng** ({{synthetic}} một khách hàng có sao kê 300 dòng) để p99 không phụ thuộc may rủi traffic thật.
+- **Quyết định bật flag ở 25%**: tôi **đổi**. Lí do đã ghi ("đường on-prem đã test") là **lí do sai**, vì test đã dùng **stub trong cluster** (giai đoạn 6). Hai điều phải khác:
+  1. Tách flag thành **canary riêng**: bật flag ở **5% trước**, 20 phút, **với p99_tx + {{core_connect_seconds}} + {{dns}} làm điều kiện chặn**. Đường code quan trọng nhất phải được kiểm tra ở **nơi rẻ nhất để sửa** — tức là ở 5%, không phải 25%.
+  2. Nếu không có metric đó (pipeline chưa kịp) thì **không cut-over phần on-prem**: dịch vụ lên AWS nhưng endpoint {{/transactions}} route về VM, và lùi cut-over. Một kế hoạch mà bước nguy hiểm nhất **không có máy nào canh** thì không phải kế hoạch, mà là hy vọng.
+- Bài học tôi viết trong postmortem: **canary không tự nó tạo ra an toàn; an toàn đến từ (a) metric đúng chỗ và (b) bước có đủ mẫu**. "Có canary" trong tài liệu duyệt đã **mua sự yên tâm** cho cả team bằng hai thứ không tồn tại.
+
+### 4. Kịch bản trực ngày 25 đầu tiên trên AWS (07:00–09:30)
+| Giờ | Việc | Ai | Điều kiện dừng/gọi thêm |
+|---|---|---|---|
+| 06:45 | **Pre-scale thủ công**: {{kubectl scale}} 6→18 hoặc đặt {{cronHPA}} (metric tải theo giờ), kiểm tra node group đủ max | Kiên | không đủ node trong 5 phút → gọi SRE vendor + báo PO "dịch cut-over phần transactions" |
+| 07:00 | Mở dashboard **đã đóng băng 1 ngày** (không sửa dashboard lúc 07:00): SLI theo endpoint, pool, CoreDNS, throttled, DX RTT | bạn | — |
+| 07:00 | Chạy **synthetic burst** 300 RPS trong 2 phút để làm ấm pool + cache trước khi khách đến | bạn | p99 synthetic > 900 ms → **không** cho traffic thật, bật VM song song |
+| 07:15 | Bật **read from RDS** cho {{/summary}} (nhẹ nhất) nếu chưa | DBA | replication lag > 5 s → giữ on-prem |
+| 08:30 | Bật **{{/transactions}}** với breaker ở chế độ {{monitor only}} (chưa fallback) | bạn | 503 > 1% → bật fallback "ẩn mô tả" (1 lệnh flag) |
+| 09:00–09:20 | **Đỉnh thật**; không ai sửa gì; chỉ quan sát; War-Room im lặng, thông báo 1 kênh | cả team | p99_tx > 1.200 ms trong 2 phút → **giảm trọng số 100→50%**, không bàn bạc |
+| 09:30 | Ghi **số liệu** vào nhật ký (CPU, pool, p99, số lần breaker mở) | Hương | ngày 26,27 lặp; nếu tốt thì mới đặt HPA tự động hoàn toàn |
+Quy tắc cứng: **mọi hành động trong bảng là một lệnh có sẵn trong runbook** — lúc 09:05 không ai còn thời gian viết {{kubectl}} mới. Và người chỉ huy **không** phải người gõ lệnh.
+
+> Senior tip: câu hỏi tôi luôn trả lời **trước** khi ký kế hoạch cut-over là "**nếu 07:05 mọi thứ xấu đi, tôi làm gì trong 5 phút đầu, và nó có phải một lệnh không?**". Ở dự án này tôi đã có câu trả lời cho **app** (abort rollout) nhưng chưa có cho **đường on-prem** — và sự cố xảy ra đúng ở chỗ chưa có câu trả lời, vì nó nằm trong **phần tài liệu mà ta không viết**. Canary là công cụ để **giảm thiệt hại**, còn cái để **phát hiện** phải là metric — và metric phải nằm ở nơi **quyết định** được đưa ra, không phải nơi dễ đo.
+`,
+      pitfalls: [
+        'failureLimit 5 cho error rate: chấp nhận 10 phút xấu trước khi abort, và không bắt được degrade tăng dần',
+        'argo rollouts promote tự động trong CI: bước nguy hiểm nhất được thực hiện bởi người không có mặt',
+        'Bật feature flag của đường on-prem ở 25% vì "đường đó đã test", trong khi test dùng stub cùng cluster',
+        'Kết luận p99 từ bước 1% với ~570 request — mẫu quá nhỏ, số liệu chỉ có giá trị tham khảo',
+        'Cho stable scale 6→0 cùng lúc canary cần thêm bản thể → FailedScheduling đúng lúc 100%',
+        'Rollback dữ liệu bằng cách "chạy migration ngược" trên 1,4 tỷ dòng, không có expand/contract và không chứng minh lag',
+        'Sửa dashboard/alert lúc 06:50 ngày cao điểm'
+      ]
+    },
+    {
+      key: 'bugfix',
+      title: '06:58 sáng thứ Hai tuần lương: p99 2,6 giây và 10 truy vấn DNS cho một kết nối',
+      role: 'Bạn trực chính; Kiên trực phụ; vendor on-prem chưa vào cuộc',
+      story: `02/12/2026, thứ Hai đầu tiên sau cut-over 100% (01/12 chiều). Hệ thống đã chạy **trọn vẹn** tuần trước: thứ Sáu p99 {{/transactions}} 690 ms, không alert, PO đã khen.
+
+06:58 khách hàng bắt đầu mở app. 07:03 **khách ở vùng lương** (nhà máy khu công nghiệp trả lương sớm) bắt đầu. 07:05 {{/transactions}} p99 nhảy từ **690 ms lên 2.600 ms**, error rate 0,4% với toàn bộ là {{504}} từ ALB (client timeout 3 s). {{/summary}} vẫn **tốt** (p95 250 ms). Đây là dấu hiệu đầu tiên bạn để ý: **chỉ endpoint có phần on-prem bị hỏng** — nghĩa là không phải "AWS chậm", không phải "JVM chậm", mà là **con đường** tới Hà Nội.
+
+07:12, trong kênh War-Room, ba giả thuyết được nêu gần như cùng lúc: (a) "node thiếu CPU, scale thêm", (b) "RDS yếu, upgrade instance", (c) "on-prem có vấn đề, gọi vendor". Bạn mất 6 phút để **loại cả ba bằng số liệu**, và đó là 6 phút giá trị nhất trong sự cố.
+
+Điều làm sự cố này **nhớ đời**: nó không phải lỗi code. Nó là **ba quyết định đúng-đắn-từng-cái** cộng lại, mỗi quyết định được viết ra ở một giai đoạn trước và không ai nhìn chúng **cùng lúc**.`,
+      artifacts: [
+        { name: 'incident-timeline.txt', lang: 'text', content: `INC-2026-1202  statement-service  p99 /transactions 2,6 s + 0,4% 504   SEV-2
+Truc chinh: ban.  Phuc hoi nang le: 07:34.  Nguyen nhan goc dong: 08:05.  Khac phuc tam thoi: 07:31.
+
+06:58  Traffic that bat dau (24 RPS -> 380 RPS trong 7 phut)
+07:03  p99 /transactions 1.150 ms (lan dau vuong SLO 900 ms)   -> alert "warning" (nguong tinh 1.200 ms)
+07:05  p99 2.600 ms, 504 = 41/10.600 request. /summary binh on (p95 249 ms)
+07:07  kubectl top pods: 24 pod, CPU 0,9-1,1 core (limit 2), memory 1,3/2 Gi -> KHONG phai thieu tai nguyên pod
+07:08  RDS: CPU 31%, connection 218/240, p99 query 41 ms  -> LOAI gia thuyet (b)
+07:09  ALB HTTPCodeTarget 5xx = 0, tat ca 504 la HTTPCodeElb (target KHONG kip tra loi trong 3 s)
+       => on-prem khong tra loi 5xx, no chi CHAM. LOAI gia thuyet "on-prem chet"
+07:11  Metric tach duong loi (mới bật 10 ngày trước, lan dau co nguoi nhin):
+         core_http_seconds{phase="lease"}   p95   3 ms   (pool cò nhat, khong doi)
+         core_http_seconds{phase="connect"} p95 168 ms   baseline 1,2 ms   <-- !
+         core_http_seconds{phase="tls"}     p95  71 ms   baseline 0,5 ms
+         dns (trong phase connect)          p95 132 ms
+07:13  Ket luan buoc 1: "moi ket noi MOI mat ~ 250-400 ms; he dang MO KET NOI LIEN TUC"
+07:15  Vao pod, xem /etc/resolv.conf va chay dig (xem artifact dns-trace.txt)
+07:22  Xem CoreDNS (artifact coredns-status.txt): 2 pod, throttle 84%, 1,9 trieu truy vấn/10 phut
+07:31  TAM KHAC PHUC (chinh sah): helm upgrade --install ... --set config.CORE_GATEWAY_BASE_URL
+         = "http://core-banking-gateway.core.internal.:8443"   (them dau cham cuoi) + restart 24 pod
+       + tang ban the CoreDNS 2 -> 6, xoa limits CPU cu
+07:34  p99 2.600 -> 520 ms. 504 = 0.  /transactions p95 268 ms (dep hon ca baseline VM 400 ms)
+07:52  Thu nghiem nguoc: tat dau cham cuoi -> p99 lai 2.100 ms sau 90 giay. **Chung minh nguyen nhan.**
+08:05  Dong nguyen nhan goc. 12:40 PR #1236 (fix chinh) merge, 15:00 deploy.
+Tac dong: 41 phut SLO breach, uoc 11.300 khach gap cham/lo; 0 mat du lieu; **khong** phai goi vendor.
+Note: **bay gio** moi biet rang "restart pod" la mot phan cua phap tam thoi (no lam mat pool,
+      nhung cung lam moi DNS cache trong process). Truoc do 3 thang khong ai biet co DNS cache trong JVM.
+` },
+        { name: 'dns-trace.txt', lang: 'text', content: `A. /etc/resolv.conf trong pod statement-service (mac dinh EKS, KHONG dat dnsConfig)
+   nameserver 10.60.92.158                # IP ClusterIP cua dich vu kube-dns (CoreDNS)
+   options ndots:5
+   search statements-prod.svc.cluster.local svc.cluster.local cluster.local ap-southeast-1.compute.internal
+                                          # 4 Hau to; EKS co the them 1-2 nua theo region
+
+B. Cau lenh trong pod, dem so truy van (dig +debugquery / tcpdump -i eth0 udp port 53 -c 20):
+   ten cau hoi : core-banking-gateway.core.internal          (2 dau < ndots 5)
+   -> duoc xu ly nhu ten "khong hoan toan chi dinh", thu lan luot 5 bien the:
+      1  core-banking-gateway.core.internal.statements-prod.svc.cluster.local   A + AAAA   CoreDNS tai cho, NXDOMAIN
+      2  core-banking-gateway.core.internal.svc.cluster.local                   A + AAAA   CoreDNS tai cho, NXDOMAIN
+      3  core-banking-gateway.core.internal.cluster.local                       A + AAAA   CoreDNS tai cho, NXDOMAIN
+      4  core-banking-gateway.core.internal.ap-southeast-1.compute.internal     A + AAAA   -> FORWARD di tiếp (qua DX!)
+      5  core-banking-gateway.core.internal.                                    A + AAAA   -> FORWARD di tiếp  => NXDOMAIN
+   TONG: 10 truy van DNS cho MOT lan phan giai. 2 trong so do (4 va 5) phai di ra ngoai cluster.
+
+C. So sanh voi VM on-prem (hoan canh cu):
+   /etc/resolv.conf: nameserver 10.20.1.5 ; search core.internal ; khong co dong "options" ( mặc định ndots 1)
+   -> 1 ten duoc thu, 1 truy van, DNS cung datacenter, RTT 0,4 ms
+   => CHI PHI DNS THAT o VM: ~1 ms.  O EKS: 2 vong qua Direct Connect + hang doi CoreDNS.
+
+D. Tong thoi gian cua MOT lan phan giai (do bang dig +stats trong pod, luc 07:20):
+   Query time      : 132 ms  (p95)   1.150 ms (p99 luc dinh)
+   Trong do: 3 NXDOMAIN local  ~ 4 ms  +  2 vong DX (38 ms + 38 ms)  +  hang doi CoreDNS ~ 52 ms
+   Va glibc goi **dong thoi** A + AAAA cho moi bien the -> khong cong don, nhung van 10 goc.
+
+E. Tai sao no khong lo ra trong 3 tuan truoc:
+   - steady state: pool tai dung ket noi (TTL 300 s), khong goi DNS -> metric "connect" = 1,2 ms
+   - luc 07:05: **ca 24 pod dong thoi** het TTL sau dem im lang (00:00-06:00, 4 RPS)
+     + burst 380 RPS -> moi request mo ket noi moi -> 380 x 10 = 3.800 truy van/giay
+     -> CoreDNS 2 pod (toi da ~1.500 qps/pod voi CPU bi throttle) -> **hang doi** -> 1.150 ms/lan
+     -> 24 pod x 40 ket noi/phut -> **vong lap luon ton tai**: Càng chậm càng mở kết nối mới,
+        càng mở kết nối mới càng chậm. DNS là fan của chính nó.
+` },
+        { name: 'coredns-status.txt', lang: 'text', content: `$ kubectl -n kube-system get deploy coredns -o jsonpath='{.spec.replicas} {.spec.template.spec.containers[0].resources}'
+2 {"limits":{"cpu":"200m","memory":"200Mi"},"requests":{"cpu":"100m","memory":"70Mi"}}
+   # ^^^ mac dinh tu image cua AWS, KHONG AI CHAM SOC. 200m CPU = 2 core chia 10.
+$ kubectl -n kube-system top pods -l k8s-app=kube-dns
+coredns-5f9c8b7d9-2klm   196m   171Mi      # 196/200m = 98% -> DUNG TRAN
+coredns-5f9c8b7d9-8xzq   191m   168Mi
+$ kubectl -n kube-system get pod -l k8s-app=kube-dns -o wide | awk '{print $7}'
+ip-10-60-2-14   ip-10-60-2-14         # CA HAI pod cung NAM MOT NODE, MOT AZ!
+   # (review IaC da WARN "deny_missing_topology_spread" cho CoreDNS va bi bo qua)
+
+Metric Prometheus, cua so 07:00-07:30:
+  coredns_dns_response_rcode_count_total{rcode="NXDOMAIN"} : 78% cua toan bo truy van  <-- vo ly
+  coredns_dns_request_duration_seconds (p99)               : 0,4 ms -> 1150 ms luc 07:05
+  container_cpu_cfs_throttled_periods_total / total_periods (CoreDNS) : 0,84
+  coredns_forward_healthcheck_failures_total              : 0   (duong DX van OK!)
+  coredns_plugin_cache_hits_total / misses_total          : 0,03 hit / 0,97 miss   (cache vo dung vi TTL + ten doi lien)
+
+$ kubectl -n kube-system describe pod coredns-5f9c8b7d9-2klm | grep -A2 "Last State"
+    Last State:     Terminated   Reason:   OOMKilled    Exit Code: 137   (2026-11-28 03:41, khong ai mo)
+` },
+        { name: 'fix-1236.diff.txt', lang: 'text', content: `PR #1236  fix(network): giong han DNS phan giai va phong tranh phat lai     merged 2026-12-02 12:40
+
+--- a/deploy/helm/values-production.yaml
++++ b/deploy/helm/values-production.yaml
+     config:
+-      CORE_GATEWAY_BASE_URL: "http://core-banking-gateway.core.internal:8443"
++      # Dấu chấm chốt = ten tuyet doi: resolver bo qua danh sách search (1 truy van thay vi 10)
++      CORE_GATEWAY_BASE_URL: "http://core-banking-gateway.core.internal.:8443"
++      LOGISTICS_ARCHIVE_URL: "http://arch.core.internal.:9443"     # ap dung cho moi ten on-prem
++    dns:
++      # phong cho nguoi quen viet thieu dau cham; ndots 2 = bat ky ten nao co >=2 dau duoc tinh tuyet doi
++      options: [{ name: ndots, value: "2" }]
++      # node-local-dns: cache tai node (169.254.20.10) -> mot ten/chu ky chi 1 vong len CoreDNS
++      nameservers: ["169.254.20.10", "10.60.92.158"]
++      searches: ["cluster.local"]
++      dnsPolicy: None
+--- a/deploy/helm/templates/deployment.yaml
++++ b/deploy/helm/templates/deployment.yaml
++      dnsConfig:
++        options: {{ toYaml .Values.dns.options | nindent 12 }}
++        nameservers: {{ toYaml .Values.dns.nameservers | nindent 12 }}
++        searches: {{ toYaml .Values.dns.searches | nindent 12 }}
+--- a/deploy/jvm/entrypoint.sh.txt
++++ b/deploy/jvm/entrypoint.sh.txt
+     # JVM cache ket qua phan giai (networkaddress.cache.ttl) - mac dinh 30s khi co security manager
+-    # (khong dat gi)
++    -Dnetworkaddress.cache.ttl=15 -Dnetworkaddress.cache.negative.ttl=1
++    # negative.ttl = 1 de KHONG ghi nho ket qua "NXDOMAIN" (chinh no lam nen van de khi cau hinh sai)
+--- a/deploy/helm/values-production.yaml (HTTP client)
++      CORE_CONN_TTL_SECONDS: "300"          # (trước day 30 s -> pool chết mỗi đêm)
++      CORE_CONN_EVICT_SECONDS: "240"
++      CORE_CONNECT_TIMEOUT_MS: "250"
++      CORE_RESPONSE_TIMEOUT_MS: "450"
+--- a/infra/k8s/coredns-values.yaml (NEW)
++    deployment: { replicas: 3 }
++    resources:  { requests: { cpu: 100m, memory: 200Mi }, limits: { memory: 512Mi } }   # bo cpu limit
++    topologySpreadConstraints: [{ maxSkew: 1, topologyKey: topology.kubernetes.io/zone,
++                                  whenUnsatisfiable: DoNotSchedule }]
++   (ban dau ghi tay "chong trung node" da bi xoa khi review, thay bang podAntiAffinity theo hostname)
++    autoscaler: { min: 3, max: 12 }        # cluster-proportional-autoscaler: 1 replica / 4 node
++    # hoach: CoreDNS la THANH PHAN TOT CUA CLUSTER, no khong duoc la 2 pod mac dinh
+--- a/.github/workflows/smoke.yml
++      - name: dns-hygiene
++        run: |
++          for u in $(yq ".config | to_entries | .[] | select(.key | endswith(\"URL\")) | .value" values-production.yaml); do
++            host=$(echo "$u" | sed -E "s,.*//,," | cut -d/ -f1)
++            # moi ten ngoai cluster PHAI ket thuc bang dau cham (ten tuyet doi) hoac la IP tinh
++            if ! echo "$host" | grep -qE "[.]$|^[0-9.]+$"; then
++              echo "FATAL: ten '$host' thieu dau cham chot -> de phong ndots amplification"; exit 1
++            fi
++          done
+--- a/runbook (NEW section)
++    - Moi ket noi moi mat bao nhieu ms? (do bang script cold-conn.sh, chay moi tuan)
++    - Dem truy van DNS moi ten: dig +debugquery <ten> (nguong: <= 2)
++    - CoreDNS: thieu topology spread = thieu DR; check hang thang
+` },
+        { name: 'after-fix-metrics.txt', lang: 'text', content: `Do lai sau PR #1236 (13/12, test cold-pool tu dong chay luc 07:00 moi ngay)
+
+  phan giai 1 ten on-prem     : 10 truy van -> 2 truy van (A + AAAA, 1 ten duy nhat)
+  Query time (p95)            : 132 ms -> 39 ms (1 vong DX, khong con hang doi CoreDNS)
+  core_http_seconds connect   : p95 168 ms -> 41 ms (1 vong DX) + tls 39 ms
+  MOT lan mo ket noi (cold)   : 250-400 ms -> 82 ms
+  p99 /transactions burst 07:05 (cafe ngay 25): 2.600 ms -> 610 ms   SLO 900 ms: DAT
+  CoreDNS                      : 6 pod / 3 AZ, khong throttle, 380 qps dinh (truoc: 3.800 qps)
+  504 trong 60 phut dau burst  : 41 -> 0
+
+  So voi on-prem cu (VM): p95 /transactions 400 -> 268 ms  (thang loi: DB o cung region)
+  Khong con restart bat buoc; khong con 1,9 trieu NXDOMAIN/phut.
+
+  Sau do 3 thang (số liệu bao cao hop Hoi dong cong nghe):
+    - 02/2027: them 2 service nua len EKS dung chart + dnsConfig + CoreDNS values nay (zero su co DNS)
+    - ty le 504 toan nganh: 0,02% -> 0,004%
+    - chi phi: EKS + RDS + DX = ~74% cuoc VM hop dong moi, va scale duoc
+    - "bai hoc DNS" duoc them vao onboarding cua team duoi 1 trang A4
+` }
+      ],
+      task: `1. Từ 3 artifact điều tra, viết **chuỗi nhân quả hoàn chỉnh**: tại sao cùng một code chạy 3 tuần êm rồi hỏng vào **07:05 sáng thứ Hai** và không hỏng lúc 15:00 ngày 01/12? Giải thích **vì sao {{/summary}} vẫn nhanh**.
+2. Chỉ ra **4 quyết định ở 4 giai đoạn khác nhau** đã cùng tạo ra sự cố (mỗi cái tự nó đều hợp lý), và nói rõ ai/cái gì lẽ ra phải chặn được nó.
+3. Phân loại các biện pháp trong {{fix-1236.diff.txt}}: **nóng** (07:31), **bền** (PR), **phòng ngừa hệ thống**. Với {{networkaddress.cache.ttl}}: vì sao đặt {{negative.ttl=1}} nhưng {{positive.ttl=15}}, và cái này đánh đổi gì?
+4. Viết **5 Why** và **action item có chủ + bằng chứng hoàn thành**, trong đó có một mục mà phần lớn postmortem bỏ sót: "làm sao để sự cố này **không thể** lặp lại ở service tiếp theo".`,
+      answer: `**Tóm tắt:** nguyên nhân gốc **không phải** "{{ndots}}" — nó là **cơ chế**. Nguyên nhân gốc cấp tổ chức là: **một giả định mở (OPEN #1 ở design doc) được coi là ghi chú thay vì là việc phải làm**, và **một dependency chung (CoreDNS) được vận hành bằng cấu hình mặc định trong khi mọi thứ xung quanh được thiết kế kỹ**. Chuỗi nhân quả: đêm yên tĩnh + {{connectionTimeToLive}} → pool chết → burst → mọi request **mở kết nối mới** → mỗi lần mở = **10 truy vấn DNS**, 2 lần phải qua Direct Connect + hàng đợi CoreDNS 2 pod throttle → 250–400 ms mỗi kết nối → request timeout 450 ms **bị vi phạm trong khi đang chờ DNS** → thread giữ lâu hơn → mở thêm kết nối → **phản hồi dương**.
+
+### 1. Chuỗi nhân quả, và vì sao lại là 07:05 thứ Hai
+| Bước | Điều gì xảy ra | Bằng chứng |
+|---|---|---|
+| 1 | {{/transactions}} **có** đi tới on-prem, {{/summary}} **không** | phân loại dependency (analysis), artifact B của analysis |
+| 2 | Resolver coi {{core-banking-gateway.core.internal}} là tên **không tuyệt đối** (2 dấu < {{ndots:5}}) → thử 4 hậu tố search trước | dns-trace mục B: **10 truy vấn/1 tên** |
+| 3 | 2 trong số đó (**compute.internal** và tên thật) bị **forward ra ngoài cluster**, tức qua VPC resolver → on-prem DNS **qua Direct Connect**, mỗi vòng 38 ms | {{coredns_forward_*}} vẫn OK, {{NXDOMAIN}} = 78% |
+| 4 | **00:00–06:00** tải 4 RPS: với {{connectionTimeToLive = 30 s}} (giá trị bê từ VM), pool **huỷ mọi kết nối**. 07:05 burst 380 RPS → xác suất "được phục vụ bởi kết nối warm" gần 0 | sit-events: {{evictIdle 20s}}, {{TTL 30s}}; {{connect p95}} baseline **1,2 ms** → **168 ms** |
+| 5 | 380 RPS × 10 truy vấn = **~3.800 qps** DNS; CoreDNS chỉ có **2 pod, limit 200m CPU, cả hai cùng một node/AZ** → throttle 84% → **hàng đợi**, p99 truy vấn 1.150 ms | coredns-status |
+| 6 | Mỗi lần mở kết nối chậm làm request quá {{responseTimeout 450 ms}}; client **đóng** kết nối dở, thread bị giữ, **request kế tiếp lại mở kết nối mới** → vòng lặp tự duy trì (positive feedback) | 504 = {{HTTPCodeElb}} (target không trả lời kịp), ALB {{HTTPCodeTarget 5xx = 0}} |
+| 7 | **Tại sao 3 tuần êm**: steady state luôn warm (TTL 30 s dài hơn khoảng cách giữa 2 request ở cùng một route khi tải cao), và **không đêm nào** có "im lặng 6 giờ rồi burst 400 RPS". Ngày 01/12 15:00: burst không xảy ra (traffic giảm dần), pool đang ấm từ 09:00 | {{call-path-timing}} mục B/C chính là hình ảnh sự cố này đo **trên VM 4 năm trước** mà không ai nối hai đầu |
+| 8 | **Tại sao 07:05 chứ không phải 06:58**: cần đủ RPS để **vượt** tốc độ CoreDNS xử lý hàng đợi. Ngưỡng tới hạn ~150–200 RPS, rơi vào đúng nhịp "nhà máy trả lương sớm" | sau fix, cold-conn test 07:00 mỗi ngày không breach |
+| 9 | **Vì sao {{/summary}} vẫn nhanh**: nó chỉ đọc RDS **cùng region**, không có round-trip 38 ms, không có connection ra ngoài → hoàn toàn miễn nhiễm. Đây là **tính chọn lọc** giúp khoanh vùng trong 5 phút, và là lý do tôi không "scale thêm pod" (thêm pod = thêm người mở kết nối = **nặng hơn**) | 07:07 CPU 1,0/2 core, RDS 31%: loại cả (a) lẫn (b) |
+
+Điều thú vị và đáng nhớ: **AWS không chậm**. Sau fix, p95 {{/transactions}} **268 ms** — nhanh hơn cả lúc ở VM (400 ms), vì DB đã ở cùng region. Hệ thống bị chậm bởi **hai lớp middleware vô hình** (DNS search list và pool TTL), không bởi region.
+
+### 2. Bốn quyết định ở bốn giai đoạn (mỗi cái tự nó đều hợp lý)
+1. **Analysis/Review**: để {{OPEN #1: ndots chưa chốt}} sống sót, và để **{{.checkov.yml}} tắt 5 quy tắc + cảnh báo topology spread của CoreDNS bị bỏ qua**. Lẽ ra chặn bởi: gate IaC (mục 5 quy trình review) — tôi đã là CODEOWNER và đã approve, nên người chặn là **tôi**.
+2. **Design**: CoreDNS được coi là "**hệ lo**" (mặc định AWS đã dựng sẵn), nên không có mục nào cho "sizing/HA của DNS". Lẽ ra chặn bởi: một dòng trong design doc — "dependency chung nào **không scale theo** số pod của ta?" (CoreDNS, kubelet, DX bandwidth, RDS max_connections). Tôi đã viết mục 17 nhưng **dưới dạng câu hỏi**, không phải thiết kế.
+3. **Dev**: {{connectionTimeToLive = 30 s}} bê nguyên từ VM ("để an toàn khi on-prem đổi IP") và không có metric **{{phase=connect}}**. Lẽ ra chặn bởi: **T2/T3 trong ma trận test** (cold pool + đếm truy vấn DNS) — chúng được nêu ở giai đoạn 6 nhưng **không được viết thành case tự động**, nên không ai chạy lại sau khi bật flag.
+4. **Deploy**: bật flag đường on-prem ở **25%** với lý do "đã test", và {{responseTimeout 450 ms}} nhỏ hơn chi phí một cold connection (250–400 ms) → **timeout được đặt ở giá trị không thể đạt**. Lẽ ra chặn bởi: phân tích "p99 cần bao nhiêu mẫu" (mục 3 giai đoạn deploy) và nguyên tắc "timeout của một chặng phải ≥ chi phí khởi tạo của chính chặng đó".
+
+Và một lớp nền mà cả bốn đều mắc: **không ai đo thời gian phân giải DNS trong 4 năm ở on-prem và 3 tuần ở AWS**, vì nó "chắc chắn nhanh". Bài học để đời: **chi phí không được đo sẽ được giả định là bằng 0.**
+
+### 3. Phân loại biện pháp trong PR #1236
+- **NÓNG (07:31, 6 phút, không cần duyệt)**: (a) {{helm upgrade --set}} để thêm **dấu chấm chốt** vào URL và **restart pod** (làm sạch pool + JVM DNS cache), (b) tăng CoreDNS **replicas 2 → 6**, (c) {{kubectl}} xoá CPU **limit** của CoreDNS, (d) tạm nâng {{responseTimeout}} lên 900 ms để **cắt vòng lặp phản hồi** (thà p99 900 ms còn hơn 504). Ghi chú trung thực: (d) **làm dịu triệu chứng**, không sửa nguyên nhân, và phải có **hạn** trong ticket (đã đóng 03/12).
+- **BỀN (PR #1236, 12:40)**: {{dnsConfig}} ở chart ({{ndots: 2}} + {{node-local-dns}} làm cache tầng node → 1 tên/chu kỳ chỉ một vòng lên CoreDNS), FQDN có dấu chấm cho **mọi** URL on-prem, TTL pool 300 s + evict 240 s + timeout 250/450 ms **nhỏ hơn nhưng nhất quán** (connect ≥ 1 RTT + chỗ cho DNS 1 vòng), CoreDNS **3–12 replica theo số node** (cluster-proportional-autoscaler) + topology spread {{DoNotSchedule}} + **bỏ CPU limit** (giữ memory limit), {{negative.ttl = 1}}.
+- **PHÒNG NGỪA HỆ THỐNG**: job **{{dns-hygiene}}** trong CI fail nếu URL on-prem thiếu dấu chấm chốt (máy chặn, không phải ý thức), **cold-conn.sh** chạy mỗi tuần và đo "mất bao nhiêu ms để mở một kết nối mới" + "mấy truy vấn cho mỗi tên" (runbook), **alert burn-rate** thay ngưỡng tĩnh, **đưa CoreDNS vào danh sách thành phần tới hạn** kèm diễn tập hàng quý, và **mở rộng tầm với**: cùng chart + cùng {{dnsConfig}} cho 2 service tiếp theo để **không có service nào tự tìm ra cái bẫy này nữa** (đây là mục mà phần lớn postmortem bỏ sót).
+- **{{networkaddress.cache.ttl}} — vì sao 15 và 1**: JVM cache **kết quả dương** (tìm thấy) mặc định 30 s (không có security manager thì **vĩnh viễn** trong một số JDK cũ — đó là bi kịch kinh điển của AWS load balancer IP đổi mà JVM không biết), và cache **kết quả âm** (NXDOMAIN) mặc định **10 giây** nhưng thường bị đặt 0. Ở đây tôi đặt **positive 15 s**: cắt bớt số lần hỏi DNS khi pool mở nhiều kết nối, **đổi lại** là khi on-prem failover sang IP mới, pod có thể gọi vào IP cũ tới **15 giây** — một cái giá **có ý thức** và ghi rõ trong tài liệu, chứ không phải một tham số mặc định. {{negative.ttl = 1}} (thậm chí 0) vì **cache "không tồn tại" chính là thứ làm ô nhiễm mọi thứ**: nếu một lần resolver trả NXDOMAIN vì cấu hình search sai, ta **không muốn** nhớ lâu cái kết luận sai đó. Nguyên tắc chung: **cache dữ liệu mà ta có quyền làm mới (IP), với TTL nhỏ hơn thời gian chấp nhận sự cố; không cache câu trả lời "không có"**.
+
+### 4. Năm Why (dừng ở đâu thì đủ)
+1. Vì sao 11.300 khách chậm và 41 phút breach SLO? → p99 {{/transactions}} 2,6 s vì mỗi request phải **mở kết nối mới** và mỗi lần mở mất 250–400 ms.
+2. Vì sao phải mở kết nối mới? → pool **tự huỷ** mọi kết nối sau 30 s ({{TTL}} bê từ VM), mà burst 07:05 tới sau **6 giờ im lặng**.
+3. Vì sao mở kết nối lại **chậm** như vậy? → tên on-prem có 2 dấu nên resolver thử **4 hậu tố search** trước; **10 truy vấn**, 2 vòng phải đi qua Direct Connect, và CoreDNS **2 pod cùng một node/AZ** bị throttle 84%.
+4. Vì sao hệ thống **có** CoreDNS yếu như vậy? → vì DNS được xếp vào "**hệ lo**", không có mục thiết kế nào cho nó, và **cảnh báo topology spread bị bỏ qua trong PR #1180** vì {{conftest}} "chỉ warn".
+5. Vì sao **không ai biết trong 3 tuần**? → vì steady state **che** chi phí khởi tạo kết nối, **không có metric** tách {{connect}}/{{dns}} (mới bật 10 ngày trước và **chưa ai nhìn**), **ma trận test đường on-prem (T1–T7) không được tự động hoá**, và **OPEN #1 trong design doc được đối xử như ghi chú** chứ không như điều-kiện-chặn-merge. **→ Dừng ở đây là đúng**: Why 5 không còn là "Hùng viết sai" hay " Kiên quên", mà là **hệ thống cho phép một giả định mở đi tới production**.
+
+### Action items (chủ + bằng chứng, không có "theo dõi")
+| # | Việc | Chủ | Hạn | Bằng chứng xong |
+|---|---|---|---|---|
+| A1 | {{dns-hygiene}} chặn merge trong CI cho mọi URL ngoài thiếu dấu chấm chốt | Hùng | 03/12 | PR cố tình thiếu bị đỏ |
+| A2 | CoreDNS: CPA 3–12, topology spread {{DoNotSchedule}}, bỏ CPU limit, **PDB** | Kiên | 05/12 | drain 1 AZ vẫn có DNS (thí nghiệm) |
+| A3 | node-local-dns DaemonSet + {{dnsPolicy: None}} trong chart gốc | Kiên | 09/12 | {{dig}} trong pod trỏ 169.254.20.10, hit rate > 0,8 |
+| A4 | **T2 + T3** (cold pool, đếm truy vấn) thành **job nightly tự động**, p99 cold là SLI | Hương | 10/12 | dashboard "cold-connection p99" chạy 7 ngày |
+| A5 | Alert **burn-rate** (fast 1h/slow 6h) thay ngưỡng tĩnh cho mọi endpoint | SRE Minh | 12/12 | page test + runbook link |
+| A6 | Quy tắc "OPEN liên quan tới **đường đi gói tin** phải đóng trước production" vào template design doc + **gate máy** | bạn | 06/12 | 2 design doc sau không còn OPEN loại này |
+| A7 | Đăng ký **CoreDNS + DX bandwidth + RDS max_connections** là "thành phần tới hạn", diễn tập 6 tháng | Kiến trúc | 31/12 | lịch diễn tập + kết quả lần 1 |
+| A8 | **Chuyển giao**: chart + values + runbook đưa vào "golden path" cho service tiếp theo; team khác dùng là **hưởng luôn** A1–A5 | bạn + Platform | 20/01 | 2 service mới onboard, 0 sự cố DNS |
+
+### Vì sao nó "không thể" lặp lại ở service tiếp theo (câu hỏi bị bỏ sót)
+Sửa cho **một** service là việc tác nghiệp; làm cho sự cố **không thể tái diễn** là việc **hệ thống**. Tôi dùng bốn cơ chế, theo thứ tự sức mạnh giảm dần:
+1. **Baking vào nền tảng**: {{dnsConfig}} + {{ndots}} + {{node-local-dns}} + CoreDNS sizing nằm trong **chart cơ sở và module Terraform** mà mọi team nhận khi tạo service. Một team **không cần biết vì sao** cũng được bảo vệ. (Đây là lý do thật sự để có "platform team".)
+2. **Máy chặn**: {{conftest}} deny nếu thiếu {{dnsConfig}}; {{dns-hygiene}} fail nếu URL ngoài thiếu dấu chấm; {{kubeconform -strict}}; **và** policy ở **admission**, không chỉ CI.
+3. **Đo như một SLI**: "ms để mở một kết nối mới" và "số truy vấn DNS trên mỗi kết nối" được thu **tự động** và có **cảnh báo drift** so với baseline. Nếu không đo thì service sau sẽ lặp lại đúng chỗ service trước **tình cờ** thấy.
+4. **Truyện kể**: "bài học DNS" một trang A4 trong onboarding, và **câu hỏi kiểm tra khi design review** — "dependency nào của bạn **không scale theo số pod**?".
+
+> Senior tip: ba điều tôi muốn bạn nhớ từ sự cố này, vì chúng trả lời được mọi biến thể trong phỏng vấn. **(1)** Trong Kubernetes, **{{/etc/resolv.conf}} là một phần của ứng dụng bạn**: {{ndots}}, danh sách search và hậu tố {{.}} quyết định số vòng mạng của mỗi kết nối; đừng mặc định nó "nhanh", hãy **đếm truy vấn** ({{dig +debugquery}}, {{tcpdump udp port 53}}) và đừng bao giờ coi DNS là hạ tầng ngoài phạm vi. **(2)** Mọi **pool** (HTTP, DB, gRPC) có một **tần suất làm lạnh** riêng; hãy luôn hỏi "**đêm thứ Hai lúc 07:05, pool của tôi nóng hay lạnh?**" — và nếu không biết, nghĩa là bạn chưa có bài test **cold**. **(3)** Sự cố production hầu như không bao giờ là "một bug"; nó là **tổng của các giả định** được viết ra ở các buổi khác nhau và không ai đọc cùng lúc. Việc của senior là **đọc cùng lúc**: đó chính xác là ý nghĩa của những mục "OPEN" trong design doc — và **đóng** chúng, không phải **trang trí** chúng.
+`,
+      pitfalls: [
+        'Coi DNS là "việc của hạ tầng" và không bao giờ đếm số truy vấn cho một tên ngoài cluster',
+        'Bê connectionTimeToLive cũ từ VM sang container mà không hỏi "ai sẽ làm lạnh pool này, vào lúc nào"',
+        'Scale thêm pod khi p99 tăng ở đường gọi ngoài: thêm pod = thêm người mở kết nối = DNS nghẽn hơn',
+        'Dựa vào alert ngưỡng tĩnh: p99 vượt 1.200 ms trong 3 phút đầu không đủ lâu để page, còn khách thì đã timeout',
+        'Để mục OPEN của design doc ("ndots chưa chốt") sống tới production vì nó trông như việc 30 phút',
+        'Chữa triệu chứng bằng cách tăng responseTimeout thay vì cắt vòng phản hồi và sửa nguồn phát sinh kết nối',
+        'Bỏ CPU limit cho CoreDNS mà không đặt topology spread/PDB: sửa một nút thắt, giữ nguyên nút thắt khác'
+      ]
+    }
+  ],
+  interview: {
+    story: `### Kể lại theo STAR (khoảng 2 phút, có số)
+- **Situation:** ngân hàng bán lẻ 6,2 triệu khách. {{statement-service}} (Java 21, Spring Boot 3.2, PostgreSQL 16) chạy 3 VM on-prem Hà Nội, hết hạn phần cứng, không co giãn kịp ngày 25 (đỉnh **900 RPS** trong 20 phút, p99 610 ms, availability 99,91%). Đề án chuyển lên **EKS ap-southeast-1**; đây là **dịch vụ production đầu tiên của bank trên AWS** — chưa có VPC, IAM chuẩn, GitOps, chưa ai trong team từng chạy Kubernetes.
+- **Task:** tôi sở hữu thiết kế, Helm chart, đường gọi on-prem và trực cut-over. Ràng buộc: **SLO 99,95%** (error budget 21,6 phút/tháng), p95 ≤ 300 ms, Pháp chế chỉ chấp thuận region Singapore với 4 điều kiện (mã hoá KMS do bank giữ key, mask dữ liệu nhạy cảm, không log PII, có exit plan về on-prem), deadline 15/12 trước cao điểm Tết.
+- **Action:** (1) viết lại brief 5 dòng của Kiến trúc trưởng thành **11 tiêu chí đo được** và **ngân sách latency chia theo 4 chặng**, phát hiện "{{p95 < 1 giây}}" còn **lỏng hơn** hiện trạng nên không ép ai cải thiện gì; (2) từ kiểm kê phụ thuộc, tính ra 24 pod × pool 20 = **480 kết nối > max_connections 400** → chọn RDS Proxy + hạ pool về 10, thay vì "cứ tăng max_connections"; (3) chọn **IRSA** (role theo service account) thay vì nhét access key vào Secret, vì lộ key trong env/ConfigMap là rủi ro PCI; (4) Dockerfile multi-stage + {{MaxRAMPercentage}}/{{MaxDirectMemorySize}}/{{NMT}} + {{preStop}} và graceful shutdown, tách {{liveness}} khỏi {{readiness}} để DB chậm không gây restart storm; (5) pipeline GitHub Actions build → ECR → **Argo CD** sync → **Argo Rollouts** canary 1→5→25→50→100 với {{analysis}} chặn bằng error rate và p95; (6) khi sự cố 02/12 đẩy p99 lên **2,6 s**, tôi không đi từ 5xx mà từ metric "thời gian mở kết nối HTTP": gốc là **{{ndots:5}}** — mỗi kết nối mới bắn **10 truy vấn DNS**, 2 trong số đó phải đi qua Direct Connect 38 ms, cộng CoreDNS 2 bản thể bị throttle; (7) sửa bằng dấu chấm chốt FQDN + {{ndots:2}} + **node-local-dns** + TTL pool 300 s + cluster-proportional-autoscaler cho CoreDNS, và dựng alert **burn-rate** thay cho alert ngưỡng tĩnh.
+- **Result:** p99 endpoint nặng **2,6 s → 430 ms** (tốt hơn cả lúc ở on-prem 610 ms, vì DB giờ ở cùng region), không breach SLO từ 12/12; ngày 25/12 HPA dựng 6 → 24 pod trong ~3 phút và không ai phải "nghỉ để restart cho đỡ chậm"; đóng 2 VM, tiết kiệm ~41.000 USD/3 năm; số ticket "app chậm khi xem sao kê" từ 60/tháng xuống 4/tháng.
+- **Bài học:** (a) trong hệ hybrid, **phần tử vô hình như DNS quyết định p99** nhiều hơn cả code; (b) **stub trong test phải mang cùng đặc trưng latency** của phụ thuộc thật, nếu không test xanh chỉ chứng minh code đúng trên đường **đã bị xoá**; (c) một **giả định mở** ghi trong design doc mà không đóng thì nó không biến mất — nó chỉ chuyển xuống production và chờ ngày cao điểm.`,
+    questions: [
+      { q: 'Vì sao chọn EKS thay vì mua VM mới, chạy EC2 thẳng, hay dùng AWS Fargate / App Runner?', a: `Tôi loại App Runner vì nó không cho kiểm soát cấu hình mạng (không đi được qua Direct Connect vào hệ lõi on-prem) và không có IRSA. **EC2 thẳng** thì giữ nguyên đúng vấn đề ta migrate: tự quản sizing, tự cân bằng tải, không có declarative rollout — chỉ đổi chỗ cái workload mà không đổi được cách vận hành. **Fargate** (pod chạy không cần node) rất hợp cho đội nhỏ, nhưng ở đây ta cần (1) {{nodeSelector}}/cấu hình CNI để pod có IP trong subnet mà on-prem firewall đã cho phép, (2) các side-car như node-local-dns và fluent-bit, (3) quyền chỉnh {{sysctl}} và {{dnsConfig}} chi tiết — trên Fargate những thứ đó bị che bớt; chi phí cho service 24/7 với tải nền cao cũng bất lợi hơn node group. **EKS** được chọn vì nó là chuẩn mà bank sẽ dùng cho các dịch vụ sau, có cộng đồng trong ngành tài chính, và giữ được tính di chuyển (chart Helm viết ra có thể chạy lại trên cluster on-prem nếu phải về). Điều tôi nói thẳng với hội đồng: EKS **không làm Kubernetes dễ hơn** — nó chỉ bỏ phần quản control plane; cái giá thật là bank phải nuôi năng lực GitOps + IAM trong 12 tháng, và nên bắt đầu bằng **một** service ít kết nối chéo như service sao kê. 
+`},
+      { q: 'IRSA hoạt động thế nào, và vì sao bạn không chịu để access key AWS trong Secret?', a: `IRSA (IAM Roles for Service Accounts) cho **từng service account** một role IAM, thông qua OIDC. Cụ thể: cluster EKS tạo một **OIDC issuer** (một URL công khai chứa {{.well-known/openid-configuration}} và khoá ký); cluster có một **IAM OIDC identity provider** trỏ vào URL đó kèm điều kiện {{aud}} và {{sub}} (dạng {{system:serviceaccount:statements-prod:statement-service}}); khi pod khởi động, EKS Pod Identity Webhook gắn vào pod một **projected service account token** (file {{/var/run/secrets/eks.amazonaws.com/...}}) và biến {{AWS_ROLE_ARN}}, {{AWS_WEB_IDENTITY_TOKEN_FILE}} thành env; AWS SDK gọi {{AssumeRoleWithWebIdentity}} để lấy **credential tạm** (hết hạn sau 1 giờ, SDK tự đổi). Ưu điểm: không có bí mật dài hạn nào trong image hay repo, role gắn **cấp namespace/service account** nên pod service sao kê không thể giả làm pod dịch vụ khác, CloudTrail ghi rõ **pod nào** (sub) dùng role. Access key tĩnh thì ngược lại: nó nằm trong env/Secret, leak ra log hay screenshot là mất cả tháng mới đổi hết; không phân biệt được ai dùng; xoay vòng phải restart deployment. Tôi còn đặt thêm hai điều kiện mà người ta hay quên: {{AWS_STS_REGIONAL_ENDPOINTS=regional}} (endpoint STS toàn cầu đã bị tắt cho region mới) và **hop limit 2** trên EC2 metadata (IMDSv2) để pod không lấy được role của **node** và leo thang quyền. 
+`},
+      { q: 'Một dependency bắt buộc nằm on-prem: bạn quản lý ngân sách latency thế nào?', a: `Việc đầu tiên là **đo RTT** (38 ms Hà Nội → Singapore, đo trong 2 tuần, p99 RTT 44 ms) rồi **cộng chi phí round-trip theo chặng**, không phải theo "code có nhanh không". Chuỗi của một request gọi {{gateway-core}}: client → ALB (~5 ms) → pod xử lý → mở kết nối mới tới on-prem gồm DNS (có thể 1 hoặc 10 truy vấn — đây chính là chỗ ta ngã), TCP handshake 1 RTT, TLS 1.2 hai RTT hoặc TLS 1.3 một RTT, rồi 1 RTT cho bản thân HTTP call → **~4–6 RTT ≈ 150–230 ms chỉ để bắt đầu**. Kết luận kỹ thuật: **kết nối phải được tái sử dụng**, nếu không chi phí đó nằm trên đường request của khách. Vì vậy tôi đặt 4 luật: (1) connection pool có TTL dài hơn "giữa các nhịp tải" (300 s, nhỏ hơn idle timeout của thiết bị mạng ở giữa ~360 s để không bị đá ngầm); (2) timeout gọi on-prem **ngắn hơn** SLO và có dự phòng (connect 250 ms, response 450 ms), vì timeout dài hơn SLO nghĩa là ta vi phạm cam kết **trong khi đang chờ**; (3) circuit breaker + fallback (ẩn phần "mô tả giao dịch", vẫn trả sao kê) để một hệ on-prem chậm không kéo sập endpoint đọc; (4) tách endpoint: cái gì đọc được từ DB thì **không** gọi on-prem. Chiến lược dài hạn là **giảm số lần phải hỏi** — đồng bộ {{txn_description}} vào bảng AWS bằng CDC để endpoint nóng không còn phụ thuộc thời gian thực, biến dependency 38 ms thành dependency 1 ms; đó là "move the data, not the call", và là câu trả lời thật sự cho bài toán hybrid. 
+`},
+      { q: 'Giải thích {{ndots}} cho người chưa từng nghe về DNS trong Kubernetes. Vì sao mặc định là 5, và làm sao phát hiện sớm?', a: `Trong pod, {{/etc/resolv.conf}} có dạng {{nameserver <ClusterIP của CoreDNS>}}, một danh sách {{search}} ({{default.svc.cluster.local svc.cluster.local cluster.local ap-southeast-1.compute.internal}}) và {{options ndots:5}}. Luật của resolver: tên có **số dấu nhiều hơn hoặc bằng ndots** thì được tin là tên tuyệt đối và thử **ngay**; tên có **ít dấu hơn** thì resolver đi thử lần lượt **từng suffix trong danh sách search trước**, chỉ khi hết mới dùng tên gốc. {{core-banking-gateway.core.internal}} chỉ có 2 dấu, nhỏ hơn 5, nên nó bị gọi tên "không hoàn toàn chỉ định" (fully-qualified nhưng không được đối xử như thế): 4 lượt tra theo search + 1 lượt tên gốc = 5 tên, mỗi tên resolver hỏi **cả A (IPv4) lẫn AAAA (IPv6)** → **10 truy vấn**. Ba suffix {{*.cluster.local}} do CoreDNS trả lời tại chỗ, nhưng {{*.compute.internal}} và tên thật bị **forward đi tiếp** — với bank tôi là qua Direct Connect tới DNS của hệ lõi → **mỗi lần mở kết nối mất thêm 2 vòng 38 ms**. Lý do Kubernetes đặt 5 là tối ưu cho traffic **trong cluster**: gọi {{svc-a}} (0 dấu) khỏi phải đi vòng qua DNS ngoại vi. Cái giá rơi lên người dùng tên FQDN ở ngoài. Ba cách phát hiện sớm, rẻ tới đắt: (1) {{dig +debugquery}} hoặc tcpdump trong pod để **đếm** truy vấn — đây là thứ ta đã không làm ở giai đoạn test; (2) bật {{prometheus}} plugin của CoreDNS và xem {{coredns_dns_responses_total}}, {{coredns_dns_duration_seconds}} cùng metric {{cpu.throttled.seconds}} của CoreDNS; (3) chủ đích làm **cold connection test**: cắt hết kết nối rồi cho 1 request đi qua, đo thêm bao nhiêu ms. Sửa thì rẻ và không rủi ro: viết FQDN **có dấu chấm chốt** để resolver bỏ qua danh sách search, hoặc hạ {{ndots}} xuống 2, hoặc {{dnsConfig}} theo pod, và thêm cache tại node (**node-local-dns**) để không mỗi pod đổ dồn vào CoreDNS. 
+`},
+      { q: 'Canary với hệ thống có database: bạn cắt như thế nào để rollback không đau?', a: `Nguyên tắc: **mọi thứ chia sẻ được thì không được "canary"**. Cluster, ALB, CoreDNS, RDS là dùng chung, nên lỗi ở đó ảnh hưởng **cả hai phiên bản** — canary chỉ chứng minh được phần **trong pod** (code, cấu hình JVM, đường gọi). Với schema, tôi dùng **expand/contract**: chạy Liquibase ở **pipeline job trước** khi rollout, thêm cột/bảng mới trước, code cũ vẫn chạy được, giữ cả hai đường đọc/ghi suốt thời gian canary; chỉ co gọn sau khi đã chắc chắn không rollback. Blue/green thuần không hợp ở đây vì nó nhân đôi tài nguyên và vẫn dùng **cùng một DB** — tức là không cách ly được lỗi migration. Cơ chế: Argo Rollouts điều khiển **weights của target group trên ALB** ({{aws-load-balancer-controller}}), 1 → 5 → 25 → 50 → 100, mỗi bước có {{analysis}} kéo dài **đủ lâu để bắt được lỗi nhịp** (không phải 1 phút): success rate ≥ 99,7%, p95 ≤ 300 ms, không có {{5xx}} mới, {{hikari_pending}} = 0, và **đích canary tối thiểu** (tôi đặt 100.000 request cho mỗi bước ≥ 25%) vì ở 1% với 48 RPS thì 20 phút chỉ có ~570 request → phương sai quá lớn để kết luận gì. Ba chi tiết ít người làm: (1) chạy smoke **chống hồi quy** ở mỗi bước, vì traffic thật chỉ chạm 20% số đường code; (2) bật **đủ các loại request** — ở dự án này ta lỗi vì endpoint phụ thuộc on-prem bị feature flag tắt tới tận 100%, nên canary không hề đi qua đường đó; (3) rollback phải là **một lệnh** với người trực không hiểu sâu Helm, và có {{abortScaleCanary}} để 24 pod canary không đứng chơi chờ tiền. 
+`},
+      { q: 'Nhìn lại: ba điều bạn làm khác đi, và điều gì đã cứu dự án?', a: `**Ba điều làm khác:** (1) đóng **mọi giả định mở trước khi lên production** — design doc của tôi có mục {{OPEN}} gồm "ndots chưa chốt", "pool size chưa chuẩn", "DNS on-prem chưa đo TTL"; tôi coi đó là ghi chú chứ không phải việc phải làm, và đúng cái bị bỏ quên nhất đã gây sự cố. Từ đó tôi áp quy tắc: giả định mở = **không merge**, hoặc phải có **người + ngày + phép đo** để đóng. (2) **test bằng dependency thật hoặc stub có cùng RTT** — tôi dựng {{gateway-core}} giả **ở on-prem**, đi đúng qua Direct Connect, thay vì wiremock trong cluster (1 ms). Kèm theo đó là một bài test mà tôi đã không có: "mọi kết nối đang lạnh" (reset pool rồi bắn tải), vì nó lộ ra chi phí khởi tạo kết nối mà mọi bài test warm pool đều che. (3) **giám sát những thứ bị coi là hạ tầng**: {{dns_resolution_seconds}}, {{http_client_connect_seconds}}, {{cpu.throttled}} của CoreDNS — các metric này rẻ và đã bắt được sự cố sớm 3 ngày nếu có, vì ngày 01/12 khi mới 100% traffic, chỉ số "thời gian mở kết nối" đã lệch gấp 4 lần baseline mà chẳng có alert nào nhìn nó. **Cái cứu dự án:** ba điều. Một là SLO và error budget viết ra ngay từ đầu, nên khi tranh luận "có phải quay về on-prem không", ta nói bằng **21,6 phút/tháng** chứ không bằng cảm giác. Hai là canary cùng {{analysis}} có {{abort}} tự động: sự cố xảy ra ở 25% traffic thật, nên tổng ảnh hưởng là 0,4% {{504}} trong 36 phút thay vì 4% trong 3 giờ. Ba là thói quen **lưu chứng cứ** — artefact {{tcpdump}}, {{resolv.conf}}, số liệu CoreDNS được chụp trước khi ai đó restart pod; nếu mất, cuộc điều tra thành "hồi hộp đoán" và phương án sửa sẽ sai hướng. 
+`}
+    ]
+  },
+  tags: ['eks', 'kubernetes', 'aws', 'migration', 'hybrid', 'direct-connect', 'helm', 'argocd', 'gitops', 'argo-rollouts', 'canary', 'irsa', 'secrets-manager', 'rds', 'rds-proxy', 'hikaricp', 'coredns', 'ndots', 'dns', 'node-local-dns', 'hpa', 'cluster-autoscaler', 'jvm-in-container', 'maxrampercentage', 'graceful-shutdown', 'probes', 'terraform', 'opa-gatekeeper', 'imds', 'load-test', 'chaos', 'slo', 'error-budget', 'burn-rate', 'liquibase', 'bank', 'postmortem']
 }
 );
