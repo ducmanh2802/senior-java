@@ -1645,4 +1645,723 @@ Phương thức {{legacy}} trả về chính giá trị truyền vào. Để pas
   related: [],
   tags: ['characterization'],
 },
+{
+  id: 'lesson-testing-006',
+  track: 'testing',
+  order: 6,
+  title: 'Shrinking: tự viết bộ thu gọn phản ví dụ để PBT báo lỗi ai cũng debug được',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Giải thích được shrinking là gì và vì sao counterexample thô gần như vô dụng khi debug',
+    'Tự viết được vòng lặp shrink kiểu "bỏ một phần tử, vẫn sai thì giữ" và biết khi nào nó dừng',
+    'Biết đọc báo cáo jqwik/PBT thật và biến phản ví dụ tối giản thành regression test',
+    'Nắm các bẫy: predicate không thuần, shrink làm mất tính chất, tối giản quá mức, seed không cố định',
+  ],
+  body: `**Tóm tắt:** Property-based test sinh ngẫu nhiên hàng trăm input để **tìm ra một ví dụ làm sai tính chất** (gọi là counterexample, tạm dịch: phản ví dụ). **Shrinking** là bước tự động thu nhỏ phản ví dụ đó — bỏ bớt phần tử, giảm giá trị — miễn tính chất **vẫn sai** — để bạn nhận được case nhỏ nhất có thể mà vẫn tái hiện bug. Không có shrinking, PBT cho bạn một mảng 200 phần tử random và bắt bạn tự đi tìm chỗ hỏng; có shrinking, nó đưa bạn đúng {{[3, 4, 5]}} — đủ để nhìn bằng mắt.
+
+### Nhắc lại ba mảnh của một harness PBT
+Bài trước (lesson-testing-003) đã dựng hai mảnh đầu; bài này thêm mảnh thứ ba.
+
+| Mảnh | Nhiệm vụ | Ở đâu |
+|---|---|---|
+| Generator | Sinh một mẫu dữ liệu hợp lệ từ {{Random}} có seed | {{gen.apply(r)}} |
+| Property (predicate) | Phát biểu điều **phải đúng** với mọi input hợp lệ; sai (hoặc ném lỗi) tức là tìm thấy bug | {{property.test(xs)}} |
+| Shrinker | Từ một mẫu sai, sinh các **biến thể nhỏ hơn** và giữ lại biến thể nào vẫn sai | {{shrink(xs, property)}} |
+
+Một cách nói đời thường: generator là người bốc thuốc thử, property là máy dò kim loại, còn shrinker là người lọc bỏ cát để viên kim loại nhỏ xíu hiện ra.
+
+### Vì sao phản ví dụ thô gần như vô dụng
+Giả sử property của bạn là "mảng trả về từ {{merge}} phải được sắp xếp". Harness chạy 300 trial, thất bại ở trial 137 với hai mảng 19 và 22 phần tử. Bạn in ra, nhìn 41 con số, và… không kết luận được gì. Bug thật của merge có thể chỉ là "quên chép phần đuôi khi {{a}} rỗng", nhưng nó đang bị che bởi 40 phần tử nhiễu.
+
+Bây giờ chạy 300 ví dụ nhỏ dần, vẫn sai: còn {{a = []}}, {{b = [7, 2]}}. Nhìn hai dòng đó, hầu hết dev lập tức đoán ra nguyên nhân. Đây chính là giá trị của shrinking: **nó biến một báo cáo thống kê thành một gợi ý nguyên nhân**.
+
+### Thuật toán shrink đơn giản nhất: bỏ một phần tử
+Với danh sách, "nhỏ hơn" có nghĩa rất tự nhiên: **ít phần tử hơn**. Thuật toán tham lam (greedy — chọn bước tốt trước mắt, không quay lui):
+
+~~~java
+static List<Integer> shrink(List<Integer> bad, Predicate<List<Integer>> property) {
+    List<Integer> cur = new ArrayList<>(bad);
+    boolean changed = true;
+    while (changed) {
+        changed = false;
+        for (int i = 0; i < cur.size(); i++) {
+            List<Integer> cand = new ArrayList<>(cur);
+            cand.remove(i);                       // biến thể nhỏ hơn: bỏ 1 phần tử
+            if (violates(cand, property)) {       // vẫn sai?
+                cur = cand;                       // chấp nhận, quay lại đầu danh sách
+                changed = true;
+                break;
+            }
+        }
+    }
+    return cur;
+}
+
+static boolean violates(List<Integer> xs, Predicate<List<Integer>> property) {
+    try { return !property.test(xs); }            // property trả false = vi phạm
+    catch (Throwable t) { return true; }          // property NÉM LỖI cũng là vi phạm
+}
+~~~
+
+Ba chi tiết đáng chú ý:
+- **Phải copy trước khi bỏ** ({{new ArrayList<>(cur)}}): không được sửa danh sách input, vì harness còn cần bản gốc để in ra nếu bạn tắt shrinking.
+- **{{break}} để quay lại đầu vòng ngoài**: sau khi bỏ một phần tử, chỉ số các phần tử sau bị dịch; bắt đầu lại từ đầu giúp thuật toán không bỏ sót.
+- **Lỗi ném ra được coi là thất bại**: bug thật thường biểu hiện bằng {{NullPointerException}} hoặc {{IndexOutOfBoundsException}} chứ không phải {{false}}. Nếu bạn để exception thoát ra khỏi shrinker, harness mất luôn cơ hội thu gọn.
+
+### Đi tay một vòng để thấy nó hoạt động
+Property: "tổng danh sách phải nhỏ hơn 10" ({{xs -> sum(xs) < 10}}). Generator trả {{[1, 2, 3, 4, 5]}} → tổng 15 → vi phạm.
+
+~~~text
+[1, 2, 3, 4, 5]  tong 15  vi phạm          (bắt đầu)
+   bo idx 0 -> [2, 3, 4, 5]  tong 14  van vi pham  -> chap nhan, quay lai dau
+   bo idx 0 -> [3, 4, 5]     tong 12  van vi pham  -> chap nhan, quay lai dau
+   bo idx 0 -> [4, 5]       tong 9   -> DAT property (9 < 10) : khong duoc bo
+   bo idx 1 -> [3, 5]       tong 8   -> DAT property          : khong duoc bo
+   bo idx 2 -> [3, 4]       tong 7   -> DAT property          : khong duoc bo
+-> khong bo duoc phan tu nao nua => dung. Phan vi du toi gian: [3, 4, 5]
+~~~
+
+Chú ý kết quả **không phải** bộ ba có tổng lớn nhất — thuật toán tham lam chỉ hứa "không bỏ thêm được phần tử nào", không hứa "nhỏ nhất có thể trên mọi hướng". Muốn chắc chắn tối ưu toàn cục, bạn phải thử thêm hướng khác (giảm giá trị từng phần tử, hoán vị) hoặc quay lui. Trong thực tế, tham lam một hướng đã đủ biến case 200 phần tử thành 3 phần tử, và đó là lý do jqwik cũng chạy greedy với giới hạn số bước.
+
+### Shrinking cho các kiểu dữ liệu khác
+| Kiểu | Hướng "nhỏ hơn" | Ghi chú |
+|---|---|---|
+| {{Integer}} | tiến về 0, rồi thử 0, 1, {{MIN_VALUE}} | luôn shrink số về 0 trước vì 0 là biên dễ hiểu nhất |
+| {{String}} | bỏ ký tự, rồi hạ về chuỗi rỗng; giữ nguyên tính hợp lệ | với chuỗi parse được, ép về độ dài ngắn nhất vẫn parse lỗi |
+| {{List}} | bỏ phần tử, rồi shrink từng phần tử bên trong | hai chiều: độ dài và giá trị |
+| {{Map}} | bỏ entry | giữ key nào gây lỗi |
+| Object/record | shrink từng field theo thứ tự field | chỉ được làm hỏng một field một lần |
+| Giá trị hợp lệ ({{enum}}, key ngoại lai) | **không** shrink tự do | dễ sinh input ngoài miền hợp lệ, property sai vì lý do sai |
+
+Quy tắc vàng: **mọi biến thể đưa ra thử phải còn hợp lệ theo giả định của property**. Nếu property của bạn là "với mọi đơn hàng có {{items}} không rỗng", shrinker không được trả về danh sách rỗng — nếu không, nó sẽ "thu nhỏ" tới một input mà property chưa bao giờ cam kết, và báo cáo thành công giả.
+
+### Bẫy hay gặp
+- **Shrink lại bằng generator**: shrinker phải biến đổi **chính counterexample**, không được bốc mẫu ngẫu nhiên mới. Nếu dùng generator, bạn không còn thu nhỏ ví dụ nữa mà đang tìm một ví dụ khác, và kết quả mất tính tái hiện.
+- **Property không thuần**: property đọc {{Random}} tĩnh, đọc {{LocalDateTime.now()}}, hoặc đọc trạng thái chia sẻ. Khi đó lời gọi {{violates(cand)}} cho cùng một danh sách có thể trả lời khác nhau giữa hai lần gọi — shrinker có thể dừng ở một danh sách mà thực tế đã pass, tức là báo cáo **sai sự thật**.
+- **Vòng lặp không dừng**: nếu hàm "nhỏ hơn" của bạn có lúc trả về biến thể **dài hơn** hoặc bằng đúng bản gốc và vẫn vi phạm, {{changed}} luôn true. Luôn đảm bảo mỗi bước chấp nhận làm giảm một thước đo hữu hạn (kích thước, tổng độ lớn).
+- **Tối giản quá mức**: bug là "tràn số khi {{sum}} vượt {{Integer.MAX_VALUE}}"; nếu shrink cả độ dài lẫn giá trị về 0, phản ví dụ còn {{[1, 2]}} và mất hẳn tính chất gây lỗi. Shrinking phải tôn trọng **bất biến của miền input** (đúng kiểu, đúng ràng buộc).
+- **Không cố định seed**: cùng một bug, hai lần chạy cho hai phản ví dụ khác nhau làm cả team mất niềm tin. Seed cố định + thuật toán shrink xác định = báo cáo xác định.
+- **Chỉ nhìn phản ví dụ, không lưu nó**: sau khi sửa bug, nếu không thêm chính case tối giản đó vào bộ example test, lần refactor sau bug quay lại và PBT (vốn không chạy ở mọi pipeline) sẽ không bắt được.
+
+### PBT thật (jqwik) báo cáo ra sao
+Một output jqwik thất bại thường có hai dòng: dòng "falsified sample" (mẫu gốc làm sai) và dòng "shrunken sample" (đã tối giản), kèm seed để chạy lại đúng phiên đó. Đọc báo cáo theo thứ tự: **shrunken sample để hiểu bug, falsified sample + seed để tái hiện và để kiểm tra xem generator có phủ đủ miền hay không** — nếu hàng trăm trial đều chỉ sinh mảng tăng dần thì property "đã sắp xếp" của bạn đang được kiểm tra trên dữ liệu quá dễ.
+
+> Senior tip: coi shrinking là **bộ lọc debug**, không phải máy chứng minh. Sau khi PBT báo {{[3, 4, 5]}}, việc của bạn là viết lại ba dòng đó thành một example test có tên mô tả bug ("merge that drops tail when left side is empty") rồi mới sửa code. Quy trình gọn: chạy PBT bằng seed cố định → lấy phản ví dụ tối giản → thêm example test đỏ → sửa → chạy PBT với 5 seed khác nhau để chắc bạn không chỉ vá đúng một điểm. Chi phí: đặt số trial sao cho một run chưa tới ~1 giây (vài trăm trial), còn shrinking đặt trần số bước (ví dụ 500) để một con bug nghiêm trọng không làm CI treo.
+
+### Liên hệ phỏng vấn
+Câu hỏi phổ biến: "Property-based testing có gì hay, bạn đã dùng chưa, dùng cho cái gì?" — câu trả lời mạnh nhất thường là "dùng cho hàm thuần và tầng serialize/parse, và tôi hiểu shrinking vì chính nó mới làm báo cáo debug được". Ứng viên senior còn phải nói được: seed để tái hiện, generator phải phủ biên, property phải phát biểu hợp đồng chứ không phát biểu cài đặt, và phản ví dụ phải được đóng băng thành regression test. Bài tập dưới đây bắt bạn tự viết {{forAll}} và {{shrink}} để sau này đọc báo cáo của jqwik bạn biết chính xác ba dòng kia nghĩa là gì.`,
+  exercises: [
+    {
+      title: 'Viết Prop.forAll và Prop.shrink: trả về phản ví dụ đã được thu gọn',
+      prompt: `Bạn dựng một harness property-based mini cho danh sách số nguyên. Viết hai method trong class {{Prop}} ({{Function}} lấy {{Random}} và trả về {{List<Integer>}}, {{Predicate}} là property):
+
+**1. {{forAll(seed, trials, gen, property)}}**
+- {{trials <= 0}} → ném {{IllegalArgumentException}}.
+- Ở trial thứ {{i}} (đánh số từ 0), sinh một mẫu bằng {{gen.apply(new Random(seed + i))}} — mỗi trial một instance {{Random}} riêng để tái hiện được.
+- Mẫu **vi phạm** property nếu {{property.test(mau)}} trả {{false}} **hoặc** ném ra bất kỳ lỗi nào.
+- Dừng ngay ở mẫu vi phạm đầu tiên và trả về {{Optional.of}} bản **đã shrink** của mẫu đó (tức kết quả của {{shrink}}). Không có mẫu nào vi phạm → {{Optional.empty()}}.
+- {{gen}} chỉ được gọi tối đa {{trials}} lần và phải dừng ngay sau khi tìm thấy phản ví dụ.
+
+**2. {{shrink(counterexample, property)}}**
+- Thuật toán tham lam: lặp cho tới khi không bỏ thêm được phần tử nào. Mỗi lượt, duyệt chỉ số {{i}} từ 0; thử danh sách **bỏ đúng một phần tử** ở vị trí {{i}} (giữ nguyên thứ tự các phần tử còn lại); nếu bản bỏ đó **vẫn vi phạm** property thì chấp nhận nó làm ứng viên mới và **quay lại duyệt từ đầu**; nếu bỏ hết mọi phần tử đều làm property đúng thì dừng và trả về danh sách hiện tại.
+- Không bao giờ sửa danh sách input: luôn tạo bản copy trước khi bỏ phần tử.
+- Kết quả trả về là {{List<Integer>}} (không bọc {{Optional}}) và phải **còn vi phạm** property, trừ khi input rỗng.
+
+Gợi ý debug: property "{{tổng nhỏ hơn 10}}" áp vào {{[1, 2, 3, 4, 5]}} phải thu về {{[3, 4, 5]}}.`,
+      starter: `class Prop {
+    static Optional<List<Integer>> forAll(long seed, int trials, Function<Random, List<Integer>> gen, Predicate<List<Integer>> property) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static List<Integer> shrink(List<Integer> counterexample, Predicate<List<Integer>> property) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> out = new ArrayList<>();
+        for (int x : v) out.add(x);
+        return out;
+    }
+    static int sum(List<Integer> xs) {
+        int s = 0;
+        for (int x : xs) s += x;
+        return s;
+    }
+    static List<Integer> randomList(Random r) {
+        int n = r.nextInt(13);                          // 0..12 phan tu
+        List<Integer> out = new ArrayList<>();
+        for (int i = 0; i < n; i++) out.add(r.nextInt(41) - 20);   // -20..20
+        return out;
+    }
+    static boolean hasEven(List<Integer> xs) {
+        for (int x : xs) if (x % 2 == 0) return true;
+        return false;
+    }
+    static boolean violates(List<Integer> xs, Predicate<List<Integer>> property) {
+        try { return !property.test(xs); }
+        catch (Throwable t) { return true; }
+    }
+    public static void main(String[] args) {
+        check("property that always holds yields empty and runs exactly trials times", () -> {
+            int[] calls = { 0 };
+            Optional<List<Integer>> got = Prop.forAll(7L, 25, r -> { calls[0]++; return ints(1, 2, 3); }, xs -> true);
+            eq(Optional.empty(), got);
+            eq(25, calls[0]);
+        });
+        check("shrink trims [1..5] to the minimal list whose sum still breaks 10", () -> {
+            eq(ints(3, 4, 5), Prop.shrink(ints(1, 2, 3, 4, 5), xs -> sum(xs) < 10));
+        });
+        check("shrink never grows the list and keeps relative order", () -> {
+            eq(ints(2, 1), Prop.shrink(ints(5, 4, 3, 2, 1), xs -> sum(xs) < 3));
+        });
+        check("forAll stops at the FIRST failing sample and returns it shrunk", () -> {
+            int[] calls = { 0 };
+            Optional<List<Integer>> got = Prop.forAll(1L, 20,
+                r -> { calls[0]++; return calls[0] >= 4 ? ints(7) : ints(1, 2, 3); },
+                xs -> !xs.contains(7));
+            eq(Optional.of(ints(7)), got);
+            eq(4, calls[0]);
+        });
+        check("seeded generator finds a counterexample and shrinking reduces it to one element", () -> {
+            Optional<List<Integer>> got = Prop.forAll(42L, 200, Main::randomList, xs -> !hasEven(xs));
+            if (got.isEmpty()) throw new AssertionError("seed 42 voi 200 trial phai sinh duoc so chan");
+            eq(1, got.get().size());
+            int v = got.get().get(0);
+            if (v % 2 != 0) throw new AssertionError("phan tu con lai van phai lam property sai: " + v);
+        });
+        check("a predicate that throws counts as a violation and the shrunk case still throws", () -> {
+            Optional<List<Integer>> got = Prop.forAll(3L, 5, r -> ints(1, 2, 3), xs -> {
+                if (xs.size() == 3) throw new IllegalStateException("bug gia lap");
+                return true;
+            });
+            eq(Optional.of(ints(1, 2, 3)), got);
+        });
+        check("trial i uses new Random(seed + i)", () -> {
+            List<Integer> got = new ArrayList<>();
+            Prop.forAll(100L, 4, r -> { got.add(r.nextInt()); return ints(1); }, xs -> true);
+            List<Integer> want = new ArrayList<>();
+            for (int i = 0; i < 4; i++) want.add(new Random(100L + i).nextInt());
+            eq(want, got);
+        });
+        check("shrunk counterexample still violates the property for many seeds", () -> {
+            for (long seed = 1L; seed <= 12L; seed++) {
+                Optional<List<Integer>> got = Prop.forAll(seed, 60, Main::randomList, xs -> sum(xs) < -100);
+                if (got.isPresent() && !violates(got.get(), xs -> sum(xs) < -100))
+                    throw new AssertionError("shrink tra ve case DA dung: seed " + seed + " " + got.get());
+            }
+        });
+        check("forAll rejects non-positive trials", () -> {
+            try { Prop.forAll(1L, 0, r -> ints(), xs -> true); throw new AssertionError("phai nem IllegalArgumentException"); }
+            catch (IllegalArgumentException expected) { /* ok */ }
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class Prop {
+    static Optional<List<Integer>> forAll(long seed, int trials, Function<Random, List<Integer>> gen, Predicate<List<Integer>> property) {
+        if (trials <= 0) throw new IllegalArgumentException("trials must be positive");
+        for (int trial = 0; trial < trials; trial++) {
+            List<Integer> sample = gen.apply(new Random(seed + trial));
+            if (!violates(sample, property)) continue;          // mẫu đúng: thử trial kế tiếp
+            return Optional.of(shrink(sample, property));       // mẫu sai đầu tiên: thu gọn rồi báo
+        }
+        return Optional.empty();
+    }
+
+    static List<Integer> shrink(List<Integer> counterexample, Predicate<List<Integer>> property) {
+        List<Integer> cur = new ArrayList<>(counterexample);
+        boolean changed = true;
+        while (changed) {
+            changed = false;
+            for (int i = 0; i < cur.size(); i++) {
+                List<Integer> cand = new ArrayList<>(cur);
+                cand.remove(i);
+                if (violates(cand, property)) {                 // vẫn sai -> giữ bản ngắn hơn
+                    cur = cand;
+                    changed = true;
+                    break;                                      // quay lại đầu danh sách
+                }
+            }
+        }
+        return cur;
+    }
+
+    static boolean violates(List<Integer> xs, Predicate<List<Integer>> property) {
+        try { return !property.test(xs); }
+        catch (Throwable t) { return true; }                    // exception cung la vi pham
+    }
+}`,
+      hints: [
+        'forAll: vòng {{for (int trial = 0; trial < trials; trial++)}}, sinh mẫu bằng {{gen.apply(new Random(seed + trial))}}; nếu mẫu vi phạm thì {{return Optional.of(shrink(mau, property));}} ngay — đừng chạy tiếp.',
+        'Viết helper {{violates(xs, property)}} bọc {{try/catch}}: {{property.test}} ném lỗi cũng tính là vi phạm, vì bug thật thường lộ ra bằng exception chứ không phải false.',
+        'shrink: copy sang {{new ArrayList<>(cur)}} rồi {{cand.remove(i)}} ({{remove(int)}} theo chỉ số), kiểm tra {{violates(cand, property)}}; chấp nhận thì gán {{cur = cand}} và {{break}} để bắt đầu lại lượt duyệt.',
+        'Điều kiện dừng là {{changed == false}}, tức không bỏ được phần tử nào nữa mà vẫn sai. Vì mỗi bước chấp nhận làm kích thước giảm 1, vòng lặp luôn dừng.',
+      ],
+      explain: `**Ý nghĩa hai method.** {{forAll}} là bộ bốc mẫu: mỗi trial một {{Random}} tạo từ {{seed + trial}}, nên cả phiên chạy tái hiện được bằng đúng một con số. Nó dừng ở mẫu sai đầu tiên vì mục tiêu của PBT là **tìm một bug**, không phải đếm bug — báo càng sớm càng rẻ. {{shrink}} là bộ lọc: nó chỉ được phép dùng lại chính property đã phát hiện lỗi, nhờ vậy "case tôi báo cho bạn vẫn làm test đỏ" luôn đúng.
+
+**Vì sao phải bọc {{try/catch}}.** Nếu {{property.test}} ném {{NullPointerException}} mà bạn để nó thoát ra, harness sập ngay tại đó và bạn mất counterexample — trong khi exception đó chính là bug. PBT thật (jqwik, Hypothesis) cũng coi exception là falsified rồi mới shrink.
+
+**Vì sao copy trước khi bỏ.** {{List.of(1, 2, 3)}}, {{Arrays.asList}} và {{Collections.unmodifiableList}} đều ném {{UnsupportedOperationException}} khi gọi {{remove}}, và việc sửa input làm mất bản gốc cần in ra trong báo cáo.
+
+**Vì sao kết quả {{[3, 4, 5]}} mà không phải tổ hợp "to nhất"**. Thuật toán bỏ phần tử từ trái sang và chấp nhận ngay khi được, nên nó bị kéo về phía đuôi danh sách. Đây là tính chất của mọi bộ shrink tham lam: **kết quả xác định nhưng không đảm bảo tối ưu toàn cục**. Đó cũng là lý do thư viện thật cho phép nhiều hướng shrink (bỏ phần tử, giảm giá trị, đổi kích thước cửa sổ) rồi chọn cái nhỏ nhất theo một thước đo.
+
+**Bốn lỗi người viết hay mắc**:
+- Shrinking bằng cách gọi lại {{gen}}: bạn đang tìm mẫu khác, không thu nhỏ mẫu cũ, và mất khả năng tái hiện.
+- Dùng property phụ thuộc {{Random}} hoặc thời gian: cùng một danh sách mà lúc sai lúc đúng, shrinker dừng ở một case thực ra đã pass — báo cáo sai sự thật.
+- Quên kiểm tra "ứng viên có còn hợp lệ không": với property chỉ định nghĩa trên input không rỗng, bỏ phần tử cuối cùng tạo input ngoài miền và vô hiệu hoá toàn bộ kết luận.
+- Sửa bug mà không đóng băng phản ví dụ: hãy thêm {{[3, 4, 5]}} thành một example test có tên mô tả bug, vì PBT thường chỉ chạy ở một pipeline nhất định.
+
+**Sau bài này**, đọc lại báo cáo PBT thật bạn sẽ nhận ra ba phần: falsified sample (mẫu gốc), shrunken sample (kết quả của đúng thuật toán bạn vừa viết), và seed (chìa khoá chạy lại).`,
+    },
+  ],
+  check: [
+    {
+      q: 'Shrinking trong property-based testing là gì?',
+      options: [
+        'Giảm số trial để chạy CI nhanh hơn',
+        'Tự động tìm biến thể nhỏ hơn của phản ví dụ, miễn tính chất vẫn bị vi phạm',
+        'Chạy lại test với một seed khác cho tới khi xanh',
+        'Xoá bớt assertion để test đỡ nhạy cảm với refactor',
+      ],
+      answer: 1,
+      explain: `Shrinking bắt đầu từ một mẫu đã làm property sai, rồi thử các biến thể "nhỏ hơn" (ít phần tử hơn, giá trị nhỏ hơn) và giữ lại biến thể nào vẫn sai. Nó không liên quan tới số trial, không đổi seed (đổi seed là tìm mẫu khác), và càng không phải bỏ assertion.`,
+    },
+    {
+      q: 'Property của bạn phát biểu "với mọi đơn hàng có items không rỗng, tổng tiền bằng tổng từng dòng". Shrinker nào dưới đây là đúng?',
+      options: [
+        'Bỏ hết phần tử để đưa về danh sách rỗng cho gọn',
+        'Bỏ từng phần tử một, nhưng chỉ giữ lại biến thể khi kết quả vẫn là danh sách khác rỗng và vẫn vi phạm property',
+        'Sinh một mẫu mới ngẫu nhiên cho tới khi gặp mẫu một phần tử',
+        'Giảm giá trị mọi dòng về 0, kể cả khi làm tổng tiền thành 0',
+      ],
+      answer: 1,
+      explain: `Mọi ứng viên đưa ra thử phải còn nằm trong miền mà property cam kết — ở đây là {{items}} khác rỗng. Bỏ sạch phần tử tạo input ngoài miền, nên "vẫn sai" chỉ là giả. Sinh mẫu mới là việc của generator, không phải shrinking. Giảm giá trị về 0 có thể phá luôn tính chất gây lỗi (bug chỉ lộ khi tổng vượt ngưỡng).`,
+    },
+    {
+      q: 'Vì sao {{property.test}} ném exception phải được coi là "vi phạm" thay vì để exception thoát ra khỏi harness?',
+      options: [
+        'Vì Java không cho phép {{Predicate}} ném exception',
+        'Vì bug thật thường lộ ra bằng exception; nếu để nó thoát, harness sập trước khi kịp thu gọn và bạn mất phản ví dụ',
+        'Vì exception luôn là lỗi của generator, không phải của code được test',
+        'Vì shrinker cần exception để biết nên dừng lại',
+      ],
+      answer: 1,
+      explain: `{{NullPointerException}}, {{IndexOutOfBoundsException}} chính là tín hiệu bug phổ biến nhất. Harness phải biến nó thành "mẫu này vi phạm", rồi shrink để tìm mẫu nhỏ nhất vẫn ném lỗi. Java cho phép lambda ném {{RuntimeException}}; {{Predicate}} không khai báo checked exception nên bạn phải tự bọc {{try/catch}}.`,
+    },
+    {
+      q: 'Sau khi PBT tìm ra phản ví dụ tối giản và bạn sửa xong bug, việc nên làm tiếp theo là gì?',
+      options: [
+        'Xoá property vì nó đã hoàn thành nhiệm vụ',
+        'Thêm chính phản ví dụ đó vào bộ example test như một regression test có tên mô tả bug',
+        'Tăng số trial lên 100.000 để chắc chắn bug không quay lại',
+        'Tắt shrinking để báo cáo ngắn hơn',
+      ],
+      answer: 1,
+      explain: `PBT thường không chạy ở mọi pipeline và mỗi lần chạy chỉ xét một tập mẫu ngẫu nhiên theo seed. Example test cố định mới là thứ bảo đảm bug không quay lại. Tăng trial lên 100.000 làm CI chậm mà không chắc bắt lại đúng case đó; tắt shrinking thì báo cáo lại trở về dạng khó debug.`,
+    },
+  ],
+  related: ['testing-015', 'testing-009'],
+  tags: ['property-based testing', 'shrinking', 'counterexample', 'seed', 'jqwik', 'test harness'],
+},
+{
+  id: 'lesson-testing-007',
+  track: 'testing',
+  order: 7,
+  title: 'Mutation testing tự viết: biết suite của bạn thật sự bắt được bao nhiêu lỗi',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Giải thích được vì sao line coverage 100% vẫn có thể là một suite yếu, và mutation score đo cái gì',
+    'Hiểu mutant, toán tử sinh mutant (PIT), mutant tương đương và vì sao không bao giờ đạt 100%',
+    'Tự viết được bộ tính mutation score từ một bảng test case và một danh sách mutant',
+    'Biết cách dùng kết quả mutant còn sống để chọn đúng điểm biên cần thêm test, thay vì thêm test ngẫu nhiên',
+  ],
+  body: `**Tóm tắt:** Coverage trả lời câu hỏi "**dòng code này đã chạy chưa**". Mutation testing trả lời câu hỏi khó hơn nhiều: "**nếu chỗ này có lỗi nhỏ, test của bạn có phát hiện ra không**". Cách làm: người ta tự động tạo ra các bản copy của code với đúng một chỗ bị phá (gọi là **mutant** — "đột biến"), chạy nguyên suite test trên từng bản, và đếm tỉ lệ bản bị test bắt quả tang. Tỉ lệ đó là **mutation score**. Suite chỉ xanh vì code chạy qua một dòng mà không hề asserts điều gì ở dòng đó thì điểm này sẽ tố cáo ngay.
+
+### Ba khái niệm cần nắm trước
+| Thuật ngữ | Nghĩa | Ví dụ |
+|---|---|---|
+| Mutant | Bản code bị thay **đúng một** chi tiết nhỏ | {{kg <= 5}} đổi thành {{kg <= 6}} |
+| Killed | Có ít nhất một test cho kết quả khác kỳ vọng trên bản mutant (test đỏ) | test {{kg = 6}} mong đợi 23 nhưng mutant trả 20 → đỏ |
+| Survived | Chạy hết suite mà mutant vẫn "không bị bắt" → suite của bạn mù ở chỗ đó | mutant chỉ khác nhau ở {{kg > 47}}, suite không có case nào |
+| Equivalent mutant | Mutant thay đổi cú pháp nhưng **hành vi giống hệt** bản gốc, nên không test nào diệt được | {{kg <= 5}} viết lại thành {{kg < 6}} (với số nguyên thì như nhau) |
+
+### Vì sao coverage là thước đo dễ bị "ăn gian"
+Một test đi qua hết các nhánh của {{fee(kg)}} nhưng chỉ assert một trường hợp duy nhất vẫn đạt line coverage rất cao: mọi dòng đều đã chạy. Coverage không phân biệt "dòng này chạy và được kiểm tra" với "dòng này chạy và kết quả bị vứt đi". Đây chính là khoảng trống mà mutation testing lấp: nó **đánh giá test bằng cách tấn công code**, chứ không đánh giá code bằng cách đếm test.
+
+### PIT phá code như thế nào
+PIT (và các công cụ tương đương) đọc bytecode của class, rồi áp một danh sách **toán tử đột biến** (mutation operators). Mỗi lần áp lên một vị trí, nó sinh ra một mutant, chạy suite, ghi lại killed hay survived. Các toán tử hay gặp nhất:
+
+| Nhóm toán tử | Thay đổi | Bắt được loại lỗi gì |
+|---|---|---|
+| ConditionalsBoundary | {{<=}} → {{<}}, {{>=}} → {{>}} | off-by-one ở điều kiện, rất hay gặp |
+| NegateConditionals | phủ định điều kiện, đổi liên từ {{&&}} thành quan hệ hoặc | quên nhánh, điều kiện viết sai |
+| Math | {{+}} → {{-}}, {{*}} → {{/}} | sai công thức tính tiền, tính phí |
+| ReturnVals | trả {{0}}, {{1}}, {{null}}, trả giá trị ngược | quên trả kết quả, trả sai biến |
+| Increments | {{i++}} → {{i--}}, đổi bước nhảy | sai vòng lặp, sai chỉ số |
+| VoidMethodCall | xoá một lời gọi không trả giá trị | quên lưu, quên publish, quên gửi mail |
+| RemoveConditional / WrapReturnValue | bỏ hẳn một chốt kiểm tra | validation bị lược bỏ |
+
+Điểm mạnh nhất của nhóm ConditionalsBoundary là đúng vào loại bug rẻ nhất mà đắt nhất về hậu quả: **sai một đơn vị ở biên**. Con người viết test hay bỏ qua biên vì biên trông "hiển nhiên đúng".
+
+### Đi tay một lần với hàm phí vận chuyển
+Đặc tả (đơn vị: nghìn đồng), dùng làm ví dụ suốt bài:
+
+~~~java
+static int fee(int kg) {
+    if (kg <= 0) return -1;                              // input không hợp lệ
+    int base;
+    if (kg <= 5) base = 20;                              // kiện nhẹ: phí cố định
+    else if (kg <= 20) base = 20 + 3 * (kg - 5);         // từ kg thứ 6: 3/kg
+    else base = 65 + 5 * (kg - 20);                      // từ kg thứ 21: 5/kg
+    return base > 200 ? 200 : base;                      // áp trần 200
+}
+~~~
+
+Bốn mutant và cách diệt chúng:
+
+| Mutant | Thay đổi | Input nào diệt được | Kết quả đúng | Kết quả mutant |
+|---|---|---|---|---|
+| negative_guard | {{kg <= 0}} → {{kg < 0}} | {{kg = 0}} | -1 | 20 |
+| cheap_rate | {{3 * (kg - 5)}} → {{2 * (kg - 5)}} | {{kg = 6}} | 23 | 22 |
+| heavy_slope | {{5 * (kg - 20)}} → {{5 * (kg - 21)}} | {{kg = 21}} | 70 | 65 |
+| cap_removed | bỏ dòng áp trần | {{kg = 48}} | 200 | 205 |
+
+Nhận xét quan trọng: **bốn case diệt được cả bốn mutant**, và mỗi case nằm sát một biên của đặc tả (0, 6, 21, 48). Thêm 40 case ở giữa các khoảng cũng không diệt thêm được mutant nào. Đây là lý do mutation score cải thiện bằng **tư duy biên**, không bằng số lượng test.
+
+Một mutant thứ năm, ví dụ viết {{kg <= 5}} thành {{kg < 6}}: với số nguyên, hai điều kiện cho kết quả giống nhau với **mọi** input, nên không tồn tại test nào diệt được nó. Đó là **equivalent mutant**, và nó là lý do người ta không đặt gate "mutation score = 100%": một phần mutant về nguyên tắc là không diệt được, và cố đuổi theo 100% thường chỉ sinh ra test vô nghĩa.
+
+### Tính score: công thức và cách đọc
+~~~java
+static double score(int[][] cases, Map<String, IntUnaryOperator> mutants) {
+    if (mutants.isEmpty()) return 0.0;
+    int killed = 0;
+    for (IntUnaryOperator m : mutants.values()) {
+        boolean caught = false;
+        for (int[] c : cases) {
+            if (m.applyAsInt(c[0]) != c[1]) { caught = true; break; }   // khác kỳ vọng = bị diệt
+        }
+        if (caught) killed++;
+    }
+    return (double) killed / mutants.size();
+}
+~~~
+
+Cách diễn giải con số, theo kinh nghiệm thực tế:
+- **Dưới ~50%**: suite của bạn chủ yếu chạy code chứ không kiểm tra code. Coverage cao tới đâu cũng vô nghĩa.
+- **50–75%**: luồng chính được kiểm tra, các biên và đường lỗi thì không. Đây là vùng của đa số team chưa từng nhìn mutation score.
+- **75–90%**: khá tốt; phần còn sống thường nằm ở code phòng thủ ít quan trọng hoặc mutant tương đương.
+- **Trên ~90% cho một module lõi** (tính tiền, tính phí, parse, quyền): đáng để giữ và đặt gate. Với module CRUD dày đặc getter/setter, điểm thấp hơn là bình thường.
+
+Trong CI, người ta đặt gate **per-module** và **on new code** (chỉ đo mutant thuộc dòng thay đổi, kiểu "mutation score của diff"), vì chạy toàn bộ repo trên mỗi PR thì rất chậm: mỗi mutant là một lần chạy lại toàn bộ suite của các test liên quan. PIT có tính năng chọn test theo class để cắt giảm.
+
+### Bẫy hay gặp
+- **Chạy mutation trên toàn repo mỗi PR**: hàng chục nghìn mutant nhân với thời gian chạy suite → không khả thi. Hãy chọn module lõi, chạy theo diff, hoặc chạy đêm.
+- **Nhầm mutant còn sống với bug thật**: mutant còn sống nói "test không phân biệt được hai hành vi", không nói "code đang sai". Việc cần làm là thêm test, không phải sửa code.
+- **Đổi kỳ vọng của test cho khớp mutant**: nếu bạn viết sai kỳ vọng, bạn có thể "diệt" mutant bằng cách cho test đỏ trên code đúng. Muốn an toàn, mutant phải được đánh giá bằng suite có kỳ vọng lấy từ **đặc tả**, không phải từ output của code.
+- **Ép 100%**: dẫn tới test cho getter, test cho branch không thể xảy ra, và tranh luận nội bộ về mutant tương đương.
+- **Bỏ qua mutant xoá lời gọi (VoidMethodCall)**: đây thường là bug nguy hiểm nhất — quên publish event, quên ghi audit log — và cũng là thứ dễ bị assert-less test bỏ qua.
+- **Không đo lại khi refactor**: mutant sinh từ bytecode, refactor làm đổi vị trí và số lượng mutant; hãy chạy theo module và theo dõi **xu hướng** điểm hơn là con số tuyệt đối.
+
+> Senior tip: coi mutation score là công cụ **chẩn đoán thiết kế test**, không phải chỉ số KPI để thi đua. Ba chỗ tôi luôn soi mutant còn sống: điều kiện biên ({{<=}}/{{>=}}), giá trị trả về mặc định, và lời gọi bị xoá. Nếu mutant survive ở đúng chỗ bạn vừa có incident production, đó là bằng chứng cụ thể nhất để thuyết phục team thêm test và đặt gate — nó thuyết phục hơn nhiều so với "coverage của mình mới 60%". Và đừng bao giờ báo cáo mutation score mà không kèm số mutant còn sống thuộc nhóm tương đương, vì con số trần 100% là lời hứa giả.
+
+### Liên hệ phỏng vấn
+Câu kinh điển: "Bao nhiêu coverage là đủ? Vì sao coverage cao vẫn còn bug?" — ứng viên tốt sẽ nói ngay: coverage đo **code có chạy**, không đo **kết quả có được kiểm tra**, rồi đưa ví dụ mutant off-by-one mà suite vẫn xanh, và nhắc mutation testing như câu trả lời. Câu thứ hai: "Bạn đưa mutation testing vào team thế nào?" — trả lời: bắt đầu ở module tính tiền/phí, chạy theo diff trên PR hoặc chạy đêm, đặt threshold vừa phải (70–80%), xử lý mutant còn sống bằng cách thêm test biên, và chấp nhận một tỉ lệ mutant tương đương. Bài tập dưới đây cho bạn tự viết bộ tính score để sau này bạn đọc báo cáo PIT mà không cần ai giải thích.`,
+  exercises: [
+    {
+      title: 'Viết bộ tính mutation score và tự soạn bộ test diệt hết mutant',
+      prompt: `Đặc tả hàm phí vận chuyển {{int fee(int kg)}} (nghìn đồng), số nguyên {{kg}}:
+- {{kg <= 0}}: đầu vào không hợp lệ → trả {{-1}}.
+- {{1 <= kg <= 5}}: phí cố định {{20}}.
+- {{6 <= kg <= 20}}: {{20 + 3 * (kg - 5)}}.
+- {{kg >= 21}}: {{65 + 5 * (kg - 20)}}.
+- Sau khi tính, nếu kết quả **lớn hơn** 200 thì trả {{200}} (áp trần; kết quả đúng 200 không bị đổi).
+
+Ví dụ: {{fee(0) = -1}}, {{fee(1) = 20}}, {{fee(5) = 20}}, {{fee(6) = 23}}, {{fee(10) = 35}}, {{fee(20) = 65}}, {{fee(21) = 70}}, {{fee(47) = 200}}, {{fee(48) = 200}}, {{fee(100) = 200}}.
+
+Viết ba method trong class {{Mutation}}. Một mutant ở đây là một hàm {{IntUnaryOperator}} (int → int) cài đặt một **phiên bản sai** của {{fee}}; bảng mutant được test truyền vào, bạn không cần biết tên hay cách cài đặt của chúng.
+
+**1. {{score(cases, mutants)}}** — {{cases}} là mảng các {{int[]}} dạng {{input, expected}}, với {{expected}} là giá trị **đúng theo đặc tả**. Một mutant **bị diệt** nếu tồn tại ít nhất một case mà {{mutant.applyAsInt(input) != expected}}. Trả về {{(double) killed / mutants.size()}}; nếu {{mutants}} rỗng trả về {{0.0}}.
+
+**2. {{survivors(cases, mutants)}}** — trả về **khoá (tên)** của những mutant **không** bị diệt, sắp xếp tăng dần theo bảng chữ cái (dùng {{Collections.sort}}). Bảng rỗng → danh sách rỗng.
+
+**3. {{killerCases()}}** — tự bạn soạn bộ case cho đặc tả trên; mỗi phần tử là một mảng {{int[]}} hai số, số đầu là {{kg}}, số sau là giá trị đúng của {{fee(kg)}}. Yêu cầu:
+- từ 4 đến 12 case, các giá trị {{kg}} **đôi một khác nhau**;
+- mọi {{expected}} phải **đúng đặc tả** (test sẽ kiểm từng case bằng một cài đặt chuẩn);
+- bộ case phải diệt được **mọi mutant mà test đưa ra, trừ duy nhất một mutant tương đương** (mutant chỉ đổi cách viết, hành vi giống hệt bản gốc). Gợi ý: mutant sinh ra bằng các toán tử quen thuộc của PIT — nới/thu hẹp biên {{<=}}, đổi hệ số của {{kg}}, bỏ chốt kiểm tra {{kg <= 0}}, bỏ phép áp trần, đổi khoảng trừ trong công thức. Hãy nghĩ tới **các điểm biên của từng khoảng** thay vì thêm case ngẫu nhiên.
+
+Bạn có thể thêm helper private tuỳ ý. Không in ra stdout; test đọc trực tiếp giá trị trả về.`,
+      starter: `class Mutation {
+    static int[][] killerCases() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static double score(int[][] cases, Map<String, IntUnaryOperator> mutants) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static List<String> survivors(int[][] cases, Map<String, IntUnaryOperator> mutants) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void near(double got, double want) {
+        if (Math.abs(got - want) > 1e-9) throw new AssertionError("expected " + want + " got " + got);
+    }
+    // Cài đặt CHUẨN theo đặc tả — oracle để kiểm kỳ vọng của người học
+    static int fee(int kg) {
+        if (kg <= 0) return -1;
+        int base;
+        if (kg <= 5) base = 20;
+        else if (kg <= 20) base = 20 + 3 * (kg - 5);
+        else base = 65 + 5 * (kg - 20);
+        return base > 200 ? 200 : base;
+    }
+    // --- 6 mutant diệt được + 1 mutant tương đương (không thể diệt) ---
+    static int negativeGuard(int kg) {
+        if (kg < 0) return -1;
+        int base;
+        if (kg <= 5) base = 20;
+        else if (kg <= 20) base = 20 + 3 * (kg - 5);
+        else base = 65 + 5 * (kg - 20);
+        return base > 200 ? 200 : base;
+    }
+    static int tier1Upper(int kg) {
+        if (kg <= 0) return -1;
+        int base;
+        if (kg <= 6) base = 20;
+        else if (kg <= 20) base = 20 + 3 * (kg - 5);
+        else base = 65 + 5 * (kg - 20);
+        return base > 200 ? 200 : base;
+    }
+    static int tier2Upper(int kg) {
+        if (kg <= 0) return -1;
+        int base;
+        if (kg <= 5) base = 20;
+        else if (kg <= 21) base = 20 + 3 * (kg - 5);
+        else base = 65 + 5 * (kg - 20);
+        return base > 200 ? 200 : base;
+    }
+    static int cheapRate(int kg) {
+        if (kg <= 0) return -1;
+        int base;
+        if (kg <= 5) base = 20;
+        else if (kg <= 20) base = 20 + 2 * (kg - 5);
+        else base = 65 + 5 * (kg - 20);
+        return base > 200 ? 200 : base;
+    }
+    static int heavySlope(int kg) {
+        if (kg <= 0) return -1;
+        int base;
+        if (kg <= 5) base = 20;
+        else if (kg <= 20) base = 20 + 3 * (kg - 5);
+        else base = 65 + 5 * (kg - 21);
+        return base > 200 ? 200 : base;
+    }
+    static int capRemoved(int kg) {
+        if (kg <= 0) return -1;
+        int base;
+        if (kg <= 5) base = 20;
+        else if (kg <= 20) base = 20 + 3 * (kg - 5);
+        else base = 65 + 5 * (kg - 20);
+        return base;
+    }
+    static int equivalentRewrite(int kg) {
+        if (kg <= 0) return -1;
+        int base;
+        if (kg < 6) base = 20;
+        else if (kg <= 20) base = 20 + 3 * (kg - 5);
+        else base = 65 + 5 * (kg - 20);
+        return base > 200 ? 200 : base;
+    }
+    static Map<String, IntUnaryOperator> all() {
+        Map<String, IntUnaryOperator> m = new HashMap<>();
+        m.put("cap_removed", Main::capRemoved);
+        m.put("cheap_rate", Main::cheapRate);
+        m.put("heavy_slope", Main::heavySlope);
+        m.put("negative_guard", Main::negativeGuard);
+        m.put("tier1_upper", Main::tier1Upper);
+        m.put("tier2_upper", Main::tier2Upper);
+        m.put("equivalent_rewrite", Main::equivalentRewrite);
+        return m;
+    }
+    public static void main(String[] args) {
+        check("killer cases follow the specification and are 4..12 distinct inputs", () -> {
+            int[][] cases = Mutation.killerCases();
+            if (cases.length < 4) throw new AssertionError("can toi thieu 4 case, hien co " + cases.length);
+            if (cases.length > 12) throw new AssertionError("toi da 12 case, hien co " + cases.length);
+            Set<Integer> inputs = new HashSet<>();
+            for (int[] c : cases) {
+                if (c.length != 2) throw new AssertionError("moi case phai la {kg, expected}");
+                if (!inputs.add(c[0])) throw new AssertionError("trung input kg=" + c[0]);
+                eq(c[1], fee(c[0]));
+            }
+        });
+        check("killer cases kill every mutant except the equivalent one", () -> {
+            eq(List.of("equivalent_rewrite"), Mutation.survivors(Mutation.killerCases(), all()));
+            near(6.0 / 7.0, Mutation.score(Mutation.killerCases(), all()));
+        });
+        check("score is the fraction of mutants killed by at least one case", () -> {
+            near(1.0 / 7.0, Mutation.score(new int[][] { { 10, 35 } }, all()));
+            near(0.0, Mutation.score(new int[][] { { 1, 20 }, { 10, 35 }, { 100, 200 } },
+                Map.of("equivalent_rewrite", Main::equivalentRewrite)));
+            near(1.0, Mutation.score(new int[][] { { 10, 35 } }, Map.of("cheap_rate", Main::cheapRate)));
+        });
+        check("a mutant that only differs beyond the cap is killed only by an input beyond the cap", () -> {
+            Map<String, IntUnaryOperator> m = new HashMap<>();
+            m.put("cap_removed", Main::capRemoved);
+            m.put("cheap_rate", Main::cheapRate);
+            int[][] cases = { { 5, 20 }, { 48, 200 } };
+            eq(List.of("cheap_rate"), Mutation.survivors(cases, m));
+            eq(0.5, Mutation.score(cases, m));
+        });
+        check("survivors are sorted alphabetically by mutant name", () -> {
+            List<String> surv = Mutation.survivors(new int[][] { { 1, 20 }, { 21, 70 } }, all());
+            eq(List.of("cap_removed", "cheap_rate", "equivalent_rewrite", "negative_guard", "tier1_upper"), surv);
+        });
+        check("empty mutant table yields zero score and no survivors", () -> {
+            eq(0.0, Mutation.score(new int[][] { { 1, 20 } }, new HashMap<>()));
+            eq(List.of(), Mutation.survivors(new int[][] { { 1, 20 } }, new HashMap<>()));
+        });
+        check("an equivalent mutant survives every possible suite", () -> {
+            Map<String, IntUnaryOperator> m = Map.of("equivalent_rewrite", Main::equivalentRewrite);
+            int[][] many = new int[60][];
+            for (int i = 0; i < 60; i++) many[i] = new int[] { i, fee(i) };
+            near(0.0, Mutation.score(many, m));
+            eq(List.of("equivalent_rewrite"), Mutation.survivors(many, m));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class Mutation {
+    static int[][] killerCases() {
+        // 0 diệt negative_guard, 6 diệt tier1_upper + cheap_rate,
+        // 21 diệt tier2_upper + heavy_slope, 48 diệt cap_removed, 1 phủ khoảng nhẹ.
+        return new int[][] { { 0, -1 }, { 1, 20 }, { 6, 23 }, { 21, 70 }, { 48, 200 } };
+    }
+
+    static double score(int[][] cases, Map<String, IntUnaryOperator> mutants) {
+        if (mutants.isEmpty()) return 0.0;
+        int killed = 0;
+        for (IntUnaryOperator m : mutants.values()) if (isKilled(m, cases)) killed++;
+        return (double) killed / mutants.size();
+    }
+
+    static List<String> survivors(int[][] cases, Map<String, IntUnaryOperator> mutants) {
+        List<String> out = new ArrayList<>();
+        for (Map.Entry<String, IntUnaryOperator> e : mutants.entrySet()) {
+            if (!isKilled(e.getValue(), cases)) out.add(e.getKey());
+        }
+        Collections.sort(out);
+        return out;
+    }
+
+    static boolean isKilled(IntUnaryOperator mutant, int[][] cases) {
+        for (int[] c : cases) if (mutant.applyAsInt(c[0]) != c[1]) return true;   // khác kỳ vọng = bug lộ ra
+        return false;
+    }
+}`,
+      hints: [
+        'Liệt kê mọi **điểm biên** của đặc tả rồi lấy một input ngay tại biên và một input ngay sau biên: 0/1 (chốt hợp lệ), 5/6 (hết khoảng phí cố định), 20/21 (đổi hệ số), 47/48 (ngưỡng áp trần). Bộ 5 case {{0}}, {{1}}, {{6}}, {{21}}, {{48}} là đủ diệt hết mutant diệt được.',
+        'score: đếm mutant có **ít nhất một** case mà {{mutant.applyAsInt(c[0]) != c[1]}}, chia cho {{mutants.size()}}; nhớ xử lý bảng rỗng để không chia 0.',
+        'survivors: viết helper {{isKilled(mutant, cases)}} dùng chung cho cả hai method, rồi thêm key của những mutant chưa bị diệt và {{Collections.sort(out)}} để thứ tự không phụ thuộc {{HashMap}}.',
+        'Đừng thêm 12 case ở giữa các khoảng: chúng không diệt thêm mutant nào và làm bài sai yêu cầu "tối thiểu mà phủ biên".',
+      ],
+      explain: `**Bộ case và mutant nào bị case nào diệt.**
+
+~~~text
+kg = 0   -> -1   diet negative_guard  (mutant cho 20 o kg = 0)
+kg = 1   -> 20   phu khoang pham co dinh (khong diet them mutant nao, de phong mutant kieu "base = 21")
+kg = 6   -> 23   diet tier1_upper (mutant tra 20) VA cheap_rate (mutant tra 22)
+kg = 21  -> 70   diet tier2_upper (mutant tra 68) VA heavy_slope (mutant tra 65)
+kg = 48  -> 200  diet cap_removed   (mutant tra 205)
+=> 6/7 mutant bi diet. con equivalent_rewrite khong the bi diet.
+~~~
+
+Một case diệt được nhiều mutant, và ngược lại nhiều case cùng diệt một mutant: điều quan trọng là **có mặt ở đúng vùng hành vi đổi**, không phải số lượng.
+
+**Vì sao mutant tương đương không thể diệt.** {{kg <= 5}} và {{kg < 6}} cho cùng kết quả với mọi số nguyên, nên với mọi input, output của mutant bằng output của bản gốc, nên không kỳ vọng đúng nào có thể khác nó. Đây là giới hạn **lý thuyết** của mutation testing (bài toán dừng — halting problem — khiến không công cụ nào tự chứng minh hai chương trình tương đương), vì vậy điểm 100% là bất khả thi về bản chất, không phải do bạn viết test kém. PIT đánh dấu một số mutant kiểu này bằng cách chạy thêm test và so hành vi, nhưng phần lớn vẫn phải để con người kết luận.
+
+**Cách tính điểm và lý do dùng {{double}}.** killed/total là tỉ lệ, nên phải cast một phía về double: {{(double) killed / mutants.size()}}. Quên cast là lỗi kinh điển khiến score luôn bằng 0. Bảng mutant rỗng phải quy ước là 0.0 để không ném {{ArithmeticException}}/NaN.
+
+**Vì sao {{survivors}} phải sort.** {{HashMap}} không đảm bảo thứ tự; nếu trả về theo thứ tự bảng, test của bạn sẽ đỏ/xanh phụ thuộc hash — chính xác là loại flaky mà bài học về test determinism đã cảnh báo. Trong công cụ thật, danh sách mutant còn sống luôn được sắp xếp và nhóm theo class để người đọc so sánh được giữa hai lần chạy.
+
+**Sai lầm thường gặp khi làm bài này**:
+- Chọn {{kg = 30}} thay vì {{kg = 21}}: {{heavy_slope}} sai ở mọi {{kg >= 21}} nên 30 vẫn diệt được, nhưng {{tier2_upper}} thì không — nó chỉ khác đúng tại {{kg = 21}}. Bài học: mutant boundary **chỉ sống ở một điểm**.
+- Quên {{kg = 0}}: toàn bộ nhóm "chốt kiểm tra đầu vào" sống sót, và đây là nhóm liên quan tới validation — thứ hay lọt production nhất.
+- Quên vượt ngưỡng áp trần: mutant bỏ {{Math.min}}/bỏ phép so sánh trần chỉ lộ ra khi có input lớn.
+- Viết test bằng cách in output của code rồi copy làm kỳ vọng (characterization theo kiểu mù): như vậy mutant nào cũng "bị diệt" trên giấy vì kỳ vọng luôn đúng theo code, và điểm của bạn thành vô nghĩa. Kỳ vọng phải lấy từ **đặc tả**.
+
+**Áp dụng vào dự án thật.** PIT hoạt động trên bytecode nên không thể tự viết trong một bài Java thuần như trên; bài này giữ nguyên **mô hình tính điểm** của PIT, còn phần sinh mutant thì ta đưa sẵn dưới dạng hàm. Khi đọc báo cáo PIT, bạn chỉ cần làm đúng ba việc như vừa làm: xác định mutant còn sống thuộc nhóm toán tử nào, tìm điểm biên mà nó khác bản gốc, thêm case có kỳ vọng lấy từ đặc tả.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Mutation score của một suite được tính như thế nào?',
+      options: [
+        'Số dòng code được chạy chia cho tổng số dòng',
+        'Số mutant bị test phát hiện chia cho tổng số mutant được sinh ra',
+        'Số test pass chia cho tổng số test',
+        'Số lỗi production chia cho số lần deploy',
+      ],
+      answer: 1,
+      explain: `Mỗi mutant là một bản code bị phá đúng một chi tiết; mutant "bị diệt" khi có ít nhất một test cho kết quả khác kỳ vọng trên bản đó. Score là tỉ lệ mutant bị diệt. Dòng được chạy là line coverage; test pass là tỉ lệ pass; lỗi production không liên quan tới cách tính này.`,
+    },
+    {
+      q: 'Suite của bạn đạt line coverage 100% nhưng mutation score 45%. Kết luận đúng nhất?',
+      options: [
+        'Code quá phức tạp, cần tách nhỏ class',
+        'Nhiều dòng đã chạy nhưng kết quả không được kiểm tra; test thiếu assert ở các điểm biên và giá trị trả về',
+        'Cần viết thêm test chạy lại đúng các đường đã phủ',
+        'Công cụ PIT sinh ra mutant sai nên điểm thấp',
+      ],
+      answer: 1,
+      explain: `Coverage chỉ nói code đã được thực thi. 55% mutant còn sống nghĩa là phá nửa số chi tiết nhỏ trong code mà không test nào đỏ — dấu hiệu điển hình của test đi qua code mà không assert kết quả. Tách class hay thêm test trùng đường đều không giải quyết; mutant được sinh theo danh sách toán tử cố định, không phải nguyên nhân.`,
+    },
+    {
+      q: 'Một mutant không bao giờ bị diệt, dù bạn thêm bao nhiêu test đúng đặc tả. Đó là gì?',
+      options: [
+        'Mutant tương đương: hành vi giống hệt bản gốc nên không kỳ vọng nào phân biệt được',
+        'Mutant ở dòng chưa được phủ sóng',
+        'Một bug thật trong code gốc',
+        'Test đang chạy sai chế độ strict stubs',
+      ],
+      answer: 0,
+      explain: `Ví dụ {{kg <= 5}} viết lại thành {{kg < 6}}: với số nguyên, hai điều kiện luôn cho cùng kết quả. Đây là giới hạn lý thuyết của mutation testing, nên không ai đặt gate 100%. Dòng chưa phủ sóng thì có thể bị diệt bằng một test phủ nó; mutant không liên quan tới bug gốc hay strict stubs.`,
+    },
+    {
+      q: 'Vì sao không nên chạy toàn bộ repo bằng mutation testing trên mỗi PR?',
+      options: [
+        'Vì PIT không hỗ trợ Spring Boot',
+        'Vì mỗi mutant cần chạy lại các test liên quan, tổng chi phí có thể lên hàng giờ; nên đo theo module lõi và theo diff',
+        'Vì mutation score luôn giảm khi code tăng',
+        'Vì mutant sinh ra từ bytecode sẽ làm hỏng build',
+      ],
+      answer: 1,
+      explain: `Chi phí bằng số mutant nhân với thời gian chạy suite, nên thực tế là chọn module trọng yếu, chỉ đo phần code thay đổi, hoặc chạy hàng đêm. PIT chạy được trên project Spring Boot; score không tự giảm theo quy mô; mutant được tạo trong bộ nhớ của quá trình phân tích và không ảnh hưởng build thật.`,
+    },
+  ],
+  related: ['testing-006', 'testing-029'],
+  tags: ['mutation testing', 'PIT', 'mutation score', 'equivalent mutant', 'boundary', 'coverage'],
+},
 );
