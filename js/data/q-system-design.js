@@ -4975,4 +4975,61 @@ Arch -> Team: ghi ADR, dat moc review
     { type: 'article', title: 'Thoughtworks: Spikes', url: 'https://www.thoughtworks.com/en-us/insights/blog/just-enough-technical-design-spikes' }
   ]
 }
+,
+{
+  id: 'design-030',
+  topic: 'design',
+  level: 'senior',
+  q: 'Thiết kế notification service đa kênh.',
+  a: `**Tóm tắt:** at-least-once + dedup theo (dedupKey,channel), hàng đợi theo kênh, ưu tiên, retry+jitter, circuit breaker.
+
+> Senior tip: OTP ưu tiên.` ,
+  follow: ['OTP ưu tiên thế nào?','Tại sao cần jitter?'],
+  tags: ['notification','queue','dedup']
+},
+{
+  id: 'design-031',
+  topic: 'design',
+  level: 'senior',
+  q: 'Thiết kế leaderboard realtime.',
+  a: `**Tóm tắt:** Redis ZSET, ZINCRBY atomic, ZREVRANGE/ZREVRANK, DB source of truth.`,
+  follow: ['Tie-breaker?', 'Khôi phục?'],
+  tags: ['leaderboard','redis']
+},
+{
+  id: 'design-032',
+  topic: 'design',
+  level: 'senior',
+  q: 'Thiết kế chat 1-1 và nhóm realtime.',
+  a: `**Tóm tắt:** WebSocket, lưu trước broadcast, fan-out hybrid, presence, push khi offline.`,
+  follow: ['Fan-out?', 'Reconnect?'],
+  tags: ['chat','websocket']
+},
+{
+  id: 'design-033',
+  topic: 'design',
+  level: 'senior',
+  q: 'Thiết kế news feed với celebrity.',
+  a: `**Tóm tắt:** Hybrid fan-out, cursor-based pagination.`,
+  follow: ['Tại sao hybrid?', 'Cursor khác OFFSET?'],
+  tags: ['news-feed','fan-out']
+},
+{
+  id: 'design-034',
+  topic: 'design',
+  level: 'senior',
+  q: 'Thiết kế lưu file có deduplication.',
+  a: `**Tóm tắt:** Content-addressable, chunking, reference counting.`,
+  follow: ['Tại sao chunking?', 'Reference counting?'],
+  tags: ['dedup','chunking']
+},
+{
+  id: 'design-035',
+  topic: 'design',
+  level: 'lead',
+  q: 'Thiết kế đặt vé chống overbook.',
+  a: `**Tóm tắt:** Hold TTL + SELECT FOR UPDATE, expiry worker, confirm atomic.`,
+  follow: ['Pessimistic vs optimistic?', 'Hold hết hạn?'],
+  tags: ['ticketing','overbook']
+}
 );
