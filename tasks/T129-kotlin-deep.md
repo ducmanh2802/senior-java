@@ -13,3 +13,4 @@ Owns: `js/data/q-kotlin.js`
 - Nội dung: Jackson + null-safety/validation ở biên; `suspend` trong Spring MVC/WebFlux (transaction, SecurityContext, MDC, cancellation); structured concurrency + `Dispatchers.IO`/bulkhead; JPA entity `equals`/`hashCode`/`toString` + `Persistable`; sealed error → `ProblemDetail`, serialization và tiến hoá contract; lạm dụng extension/DSL/operator; Flow vs Reactor (backpressure, context, interop); migration nhiều module (kapt/KSP, `javaParameters`, plugin Spring/JPA, biên API Java).
 - Code Kotlin dùng fence `~~~kotlin`; validator và `App.md()` chấp nhận, hiển thị `data-lang="kotlin"`.
 - Kiểm tra: `node --check js/data/q-kotlin.js` OK; `node scripts/validate.js` → `OK — không có lỗi.` (không có cảnh báo cho `q-kotlin.js`). Không sửa file nào khác.Reviewed-by: opencode (T129R)
+Reviewed-by: kilo (T129R)
