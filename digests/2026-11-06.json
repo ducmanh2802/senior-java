@@ -1,0 +1,79 @@
+{
+  "date": "2026-11-06",
+  "intro": "Hôm nay có DynamoDB bulk put từ S3, kiến trúc lưu trữ Git mới của GitHub cho hàng nghìn agent ghi đồng thời, và hai bài về chuỗi cung ứng container/package. Kèm một ca dùng LLM trên Bedrock vào threat modeling và podcast Ask the Architects từ Devoxx.",
+  "editor": "claude",
+  "items": [
+    {
+      "title_vi": "DynamoDB ra mắt bulk put items: nạp dữ liệu từ S3 vào bảng có sẵn",
+      "title": "Introducing bulk put items for Amazon DynamoDB: Load data from Amazon S3 into existing tables at scale",
+      "url": "https://aws.amazon.com/blogs/database/introducing-bulk-put-items-for-amazon-dynamodb-load-data-from-amazon-s3-into-existing-tables-at-scale/",
+      "source": "AWS Database Blog",
+      "category": "cloud",
+      "summary": "Bulk put items là tính năng managed chạy job bất đồng bộ trên capacity riêng, nạp file DynamoDB JSON hoặc Ion (có thể nén gzip/zstd) từ S3 vào bảng đã tồn tại mà không ảnh hưởng read/write của ứng dụng. Mỗi record có thể kèm ConditionExpression (ví dụ chỉ insert nếu chưa có). Có hai tier Standard và Accelerated; bài ước tính 100 triệu item 1 KB dưới 1 giờ ở tier Accelerated. Item nạp vào vẫn cập nhật GSI/LSI và xuất hiện trong DynamoDB Streams.",
+      "why": "Backfill, migration hay làm mới dữ liệu trước đây thường phải tự viết worker gọi BatchWriteItem và tự xử lý throttle/retry. Giờ dev Java có thể thay bằng một job managed, idempotent nhờ condition và client token.",
+      "interview_q": "Bạn cần backfill một attribute mới cho 500 triệu item trong bảng DynamoDB đang chạy production. Bạn thiết kế thế nào để không làm throttle traffic thật và để chạy lại an toàn khi lỗi giữa chừng?",
+      "related": ["aws-001"],
+      "tags": ["dynamodb", "aws", "migration"]
+    },
+    {
+      "title_vi": "Bên trong kiến trúc lưu trữ Git mới của GitHub cho hàng nghìn agent",
+      "title": "Inside GitHub's new Git storage architecture",
+      "url": "https://github.blog/engineering/architecture-optimization/inside-githubs-new-git-storage-architecture/",
+      "source": "GitHub Engineering",
+      "category": "company",
+      "summary": "GitHub tách compute khỏi storage: các virtual replica dùng đĩa local chỉ như cache, compaction node chạy nền, còn trạng thái reference nằm trong Ref-CAS, một replicated log dùng compare-and-swap theo từng ref; dữ liệu object vẫn ở Azure Blob Storage. Lý do là agent tạo burst ghi lớn vào cùng một repo. Trong test nội bộ, hệ thống chịu 5.000 agent đồng thời và 7.200 push/giây lên một repo. Hiện ở private preview.",
+      "why": "Đây là bài học thiết kế hệ thống thực tế: giảm tranh chấp bằng khoá chi tiết (per-ref), tách maintenance khỏi đường phục vụ request, và chọn object storage cho dữ liệu write-once. Các nguyên tắc này áp dụng được cho service Java có hot key.",
+      "interview_q": "Nhiều writer cùng cập nhật một tài nguyên nóng. So sánh optimistic locking (compare-and-swap) với khoá phân tán và nêu khi nào chọn cái nào?",
+      "related": ["concurrency-001"],
+      "tags": ["architecture", "concurrency", "storage"]
+    },
+    {
+      "title_vi": "TUI mở rộng threat modeling cho 100+ team bằng Amazon Bedrock",
+      "title": "How TUI scales threat modeling for 100+ teams with Amazon Bedrock",
+      "url": "https://aws.amazon.com/blogs/architecture/how-tui-scales-threat-modeling-for-100-teams-with-amazon-bedrock/",
+      "source": "AWS Architecture Blog",
+      "category": "cloud",
+      "summary": "Đội security 4 người của TUI dùng AWS Threat Designer, Bedrock và agent LangGraph chạy trên AgentCore để tự động hoá threat modeling. Họ báo cáo giảm tới 70% thời gian mỗi lần đánh giá. Chi tiết kỹ thuật đáng chú ý: nhồi cả 192 tiêu chuẩn (338 KB) vào prompt thất bại, nên để model chọn 16 tiêu chuẩn liên quan, giảm context còn 21 KB; thêm bước gap analysis và validation node kiểm tra đủ 6 nhóm STRIDE.",
+      "why": "Cho thấy cách làm LLM đáng tin cậy ở quy mô doanh nghiệp: chọn lọc context thay vì nhồi, có validation gate. Hữu ích khi bạn tích hợp LLM vào backend Java.",
+      "interview_q": "Khi tích hợp LLM vào service backend với bộ tài liệu chuẩn lớn hơn context window, bạn chọn giữa RAG và chọn lọc theo metadata thế nào, và kiểm chứng đầu ra ra sao?",
+      "related": ["ai-001"],
+      "tags": ["llm", "bedrock", "security"]
+    },
+    {
+      "title_vi": "Score cải thiện bảo mật container nhờ Docker Scout và Hardened Images",
+      "title": "CNCF Score project improved its security posture by joining the Docker-Sponsored Open Source Program",
+      "url": "https://www.docker.com/blog/cncf-score-project-improved-its-security-posture-by-joining-the-docker-sponsored-open-source-program/",
+      "source": "Docker Blog",
+      "category": "devops",
+      "summary": "Dự án CNCF Sandbox Score dùng Docker Scout trên mỗi pull request để so sánh image với nhánh main (CVE, package, policy), chuyển base image sang Docker Hardened Images và dùng Docker GitHub Builder tạo SLSA provenance và SBOM có ký bằng OIDC. Nhờ OIDC, họ bỏ được signing key và token Docker Hub sống lâu. Với image Node, việc chuyển sang DHI gỡ 22 package (gồm shell và package manager) và 2 CVE.",
+      "why": "Pipeline build image Java (Spring Boot) cũng nên quét CVE theo từng PR, dùng base image tối giản và ký provenance bằng OIDC thay cho secret tĩnh.",
+      "interview_q": "Bạn sẽ củng cố pipeline CI/CD build image cho service Spring Boot thế nào để giảm rủi ro supply chain (base image, SBOM, ký, quản lý secret)?",
+      "related": ["devops-001"],
+      "tags": ["docker", "supply-chain", "ci-cd"]
+    },
+    {
+      "title_vi": "Docker và ActiveState mở rộng nội dung đáng tin cậy sang package",
+      "title": "Docker and ActiveState Extending Secure Defaults to the Packages Developers Install",
+      "url": "https://www.docker.com/blog/docker-activestate-trusted-content/",
+      "source": "Docker Blog",
+      "category": "devops",
+      "summary": "Docker kết hợp Hardened Images với ActiveState Curated Catalog, một kho package riêng có chính sách, build từ source trong môi trường SLSA Level 3 kèm SBOM đầy đủ. ActiveState nêu SLA vá lỗ hổng nghiêm trọng trong 5 ngày làm việc và mức high trong 10 ngày. Có thể trỏ Artifactory hoặc Nexus có sẵn vào catalog làm upstream. Bài nhắc đến pip, npm và Maven; không liệt kê đầy đủ hệ sinh thái được hỗ trợ.",
+      "why": "Dependency Maven là bề mặt tấn công lớn của dự án Java. Mô hình repository nội bộ chỉ chứa package đã duyệt là xu hướng cần biết khi nói về supply chain security.",
+      "interview_q": "Làm sao bạn kiểm soát dependency Maven kéo từ bên ngoài trong dự án lớn (repository manager, pin phiên bản, quét CVE, SBOM)?",
+      "related": ["security-001"],
+      "tags": ["supply-chain", "maven", "sbom"]
+    },
+    {
+      "title_vi": "Ask the Architects tại Devoxx: virtual thread scheduler, heap sizing tự động",
+      "title": "Episode 74 \"Ask the Architects at Devoxx\" [AtA]",
+      "url": "https://inside.java/2026/11/05/podcast-074/",
+      "source": "Inside Java",
+      "category": "tech",
+      "summary": "Podcast ghi lại phần hỏi đáp với các kiến trúc sư Java tại Devoxx Belgium 2026 về định hướng OpenJDK. Chủ đề liệt kê gồm custom virtual thread scheduler, deprecation và removal, Javadoc và AI, String deep dive, primitive specialization, better modules, memory layout introspection, string templates và automatic heap sizing. Trang không nêu số JEP cụ thể.",
+      "why": "Cho biết hướng đi của nền tảng Java (virtual thread, heap tự điều chỉnh) để bạn trả lời có cập nhật khi phỏng vấn senior.",
+      "interview_q": "Virtual thread khác platform thread ở điểm nào về scheduling, và khi nào bạn vẫn chọn thread pool truyền thống?",
+      "related": ["concurrency-001"],
+      "tags": ["java", "virtual-threads", "openjdk"]
+    }
+  ]
+}
