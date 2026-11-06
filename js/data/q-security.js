@@ -2398,5 +2398,804 @@ Mỗi tính năng mới có dữ liệu nhạy cảm/tiền; thay đổi lớn; 
     'Làm sao test authorization tự động trong CI (OWASP ZAP, REST Assured)?'
   ],
   tags: ['OWASP API Security', 'BOLA', 'BFLA', 'Broken Authentication', 'Spring Security', 'JWT', 'Authorization'],
+},{
+  id: 'security-033',
+  topic: 'security',
+  level: 'senior',
+  q: 'Giải thích cơ chế bên trong Spring Security: request đi qua những thành phần nào từ khi vào Servlet container đến khi tới controller? DelegatingFilterProxy, FilterChainProxy, SecurityFilterChain và thứ tự filter hoạt động thế nào? Làm sao cấu hình nhiều SecurityFilterChain theo path?',
+  a: `**Tóm tắt:** Spring Security hoạt động như một chuỗi **Servlet Filter** (bộ lọc chạy trước controller). Luồng chính: Servlet container gọi {{DelegatingFilterProxy}} (đăng ký với container) → nó tìm bean {{FilterChainProxy}} trong Spring context → {{FilterChainProxy}} chọn đúng {{SecurityFilterChain}} theo path → chạy lần lượt các security filter (xác thực, phân quyền, CSRF...). Nhiều chain cho phép áp dụng rule khác nhau cho {{/api/**}} (stateless JWT) và {{/admin/**}} (form login + session).
+
+### 1. Thuật ngữ nền (giải thích từ đầu)
+- **Servlet Filter**: một "trạm kiểm soát" của Java web chuẩn (Servlet API). Mỗi request HTTP đi vào server phải đi qua các filter **trước khi** chạm controller, và response đi ra cũng đi qua chúng. Filter có thể cho qua, chặn, hoặc sửa request/response. Ví dụ đời thường: như cổng an ninh ở toà nhà — ai vào cũng phải qua kiểm tra vé trước khi lên văn phòng.
+- **Spring bean**: object do Spring container tạo và quản lý. Vấn đề: Servlet container (Tomcat) khởi động filter **trước** khi Spring context sẵn sàng, nên filter thuần không thể dùng bean Spring. {{DelegatingFilterProxy}} giải quyết khoảng cách này.
+- **SecurityContext**: nơi Spring Security lưu thông tin "ai đang đăng nhập" ({{Authentication}}) cho request hiện tại, thường gắn vào {{ThreadLocal}}.
+
+### 2. Luồng đi từng bước
+~~~text
+HTTP Request
+  │
+  ▼
+[1] Servlet Container (Tomcat) - Filter chain của container
+  │  (theo thứ tự đăng ký trong web.xml / FilterRegistrationBean)
+  ▼
+[2] DelegatingFilterProxy (tên bean mặc định: "springSecurityFilterChain")
+  │  - là Servlet Filter thật sự, container biết nó
+  │  - mỗi request: tra cứu Spring ApplicationContext
+  │  - tìm bean tên "springSecurityFilterChain"
+  │  - ủy quyền (delegate) xử lý cho bean đó
+  ▼
+[3] FilterChainProxy (bean Spring, implements Filter)
+  │  - giữ danh sách các SecurityFilterChain
+  │  - duyệt theo THỨ TỰ: chọn chain ĐẦU TIÊN có RequestMatcher khớp
+  │  - chỉ 1 chain được chạy cho 1 request
+  ▼
+[4] SecurityFilterChain được chọn (ví dụ: chain cho /api/**)
+  │  - chứa danh sách security filter đã sắp xếp
+  │  - chạy lần lượt: filter1 → filter2 → ... → filterN
+  ▼
+[5] Filter còn lại của container → DispatcherServlet → Controller
+~~~
+
+~~~java
+// Spring Boot tự đăng ký DelegatingFilterProxy qua SecurityFilterAutoConfiguration.
+// Bạn không cần viết tay, nhưng hiểu nó giúp debug "tại sao filter không chạy?".
+// DelegatingFilterProxy (khái niệm rút gọn):
+public class DelegatingFilterProxy extends GenericFilterBean {
+    private volatile Filter delegate; // sẽ trỏ tới FilterChainProxy
+
+    @Override
+    public void doFilter(ServletRequest req, ServletResponse res, FilterChain chain)
+            throws IOException, ServletException {
+        // Lần đầu: lấy bean "springSecurityFilterChain" từ Spring context
+        Filter target = getDelegate(); // lazy init, thread-safe
+        // Ủy quyền toàn bộ cho FilterChainProxy
+        target.doFilter(req, res, chain);
+    }
+}
+~~~
+
+### 3. Thứ tự filter bên trong một SecurityFilterChain (vì sao thứ tự quan trọng)
+Spring Security sắp filter theo một thứ tự cố định ({{SecurityFilters}} enum định nghĩa vị trí). Nếu đặt sai thứ tự, ví dụ kiểm tra quyền **trước** khi xác thực danh tính, thì {{Authentication}} chưa có và request luôn bị từ chối.
+
+| Thứ tự (tiêu biểu) | Filter | Vai trò |
+|---|---|---|
+| ~100 | {{DisableEncodeUrlFilter}} | Ngăn session id rò rỉ vào URL |
+| ~400 | {{CsrfFilter}} | Kiểm tra CSRF token (form session) |
+| ~1500 | {{BearerTokenAuthenticationFilter}} | Đọc {{Authorization: Bearer}} → xác thực JWT/Opaque token |
+| ~1600 | {{UsernamePasswordAuthenticationFilter}} | Xử lý POST login form |
+| ~2000 | {{ExceptionTranslationFilter}} | Bắt {{AuthenticationException/AccessDeniedException}} → trả 401/403 |
+| ~2100 | {{AuthorizationFilter}} | Kiểm tra quyền truy cập endpoint ({{authorizeHttpRequests}}) |
+
+- **Xác thực (authentication)** phải chạy trước **phân quyền (authorization)**: phải biết "bạn là ai" rồi mới xét "bạn được làm gì".
+- {{ExceptionTranslationFilter}} đứng trước {{AuthorizationFilter}} trong chain để nó có thể **bắt** exception mà {{AuthorizationFilter}} ném ra và chuyển thành response 401/403 phù hợp (thay vì lỗi 500).
+- Dùng {{http.addFilterBefore/After(myFilter, TargetFilter.class)}} để chèn filter tuỳ chỉnh vào đúng vị trí. Sai vị trí là bug bảo mật phổ biến.
+
+### 4. Nhiều SecurityFilterChain theo path
+Trường hợp thực tế: {{/api/**}} là REST stateless dùng JWT; {{/admin/**}} dùng form login + session + CSRF. Chúng cần cấu hình bảo mật khác nhau. {{FilterChainProxy}} chọn chain đầu tiên khớp, nên chain **cụ thể hơn phải khai báo trước** (dùng {{@Order}}).
+
+~~~java
+@Configuration
+@EnableWebSecurity
+public class SecurityConfig {
+
+    // Chain 1: API stateless - ưu tiên cao hơn (chạy trước)
+    @Bean @Order(1)
+    public SecurityFilterChain apiChain(HttpSecurity http) throws Exception {
+        http
+            .securityMatcher("/api/**")              // chỉ áp dụng cho /api/**
+            .csrf(csrf -> csrf.disable())            // API stateless thường dùng token, không dùng CSRF cookie
+            .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+            .authorizeHttpRequests(auth -> auth
+                .requestMatchers("/api/public/**").permitAll()
+                .anyRequest().authenticated())
+            .oauth2ResourceServer(oauth2 -> oauth2.jwt(Customizer.withDefaults()));
+        return http.build();
+    }
+
+    // Chain 2: Web admin - mặc định cho phần còn lại
+    @Bean @Order(2)
+    public SecurityFilterChain webChain(HttpSecurity http) throws Exception {
+        http
+            .authorizeHttpRequests(auth -> auth
+                .requestMatchers("/admin/**").hasRole("ADMIN")
+                .anyRequest().permitAll())
+            .formLogin(Customizer.withDefaults());   // bật session + CSRF mặc định
+        return http.build();
+    }
+}
+~~~
+
+### 5. Trên production
+- **Triệu chứng "filter không chạy"**: thường do quên {{securityMatcher}} hoặc khai báo chain sai thứ tự — chain tổng quát (match {{/**}}) đứng trước sẽ "nuốt" mọi request, chain phía sau không bao giờ được chọn. Bật debug: {{logging.level.org.springframework.security=DEBUG}} hoặc {{TRACE}} để thấy {{FilterChainProxy}} chọn chain nào và filter nào thực thi.
+- **Triệu chứng 401/403 bất ngờ**: kiểm tra {{ExceptionTranslationFilter}} — nếu authentication entry point chưa cấu hình đúng cho API (trả trang login HTML thay vì JSON 401), client sẽ nhận response khó xử lý.
+- **Đo lường**: bật Spring Security debug log **chỉ ở môi trường dev/staging** (log rất ồn, có thể lộ thông tin). Trên production dùng Micrometer metrics và access log tại gateway; đừng để {{TRACE}} security ở prod.
+- **Cấu hình hay nhầm**: {{csrf.disable()}} chỉ nên dùng cho API stateless dùng Bearer token; nếu tắt CSRF trên app dùng cookie session, bạn mở lỗ hổng CSRF (xem security-006).
+
+| Tình huống | Chain phù hợp | Lưu ý |
+|---|---|---|
+| REST API cho mobile/SPA, dùng JWT | {{STATELESS}}, tắt CSRF, {{oauth2ResourceServer}} | Không tạo {{HttpSession}} |
+| Web admin server-rendered | {{formLogin}}, bật CSRF, session | CSRF token bắt buộc cho POST/PUT/DELETE |
+| Endpoint public (health, docs) | {{permitAll()}}, chain riêng {{@Order}} cao nhất | Đặt {{securityMatcher}} hẹp để tránh mở rộng ngoài ý muốn |
+
+> Senior tip: Khi debug Spring Security, đừng đoán — đọc log của {{FilterChainProxy}}. Nó in ra chuỗi filter thực tế cho request (vd. "Securing GET /api/orders" kèm danh sách 12 filter). Nếu endpoint bạn nghĩ đã mở mà vẫn 401, 90% là do chain/matcher không khớp hoặc {{AuthorizationFilter}} chặn; 10% còn lại là {{CsrfFilter}} im lặng từ chối (thiếu token). Luôn viết integration test với {{@SpringBootTest}} + {{MockMvc}} cho từng rule phân quyền: test "đúng quyền thì 200, sai quyền thì 403, chưa login thì 401" — đây là lưới an toàn khi refactor config.`,
+  follow: [
+    'ExceptionTranslationFilter xử lý AuthenticationException và AccessDeniedException khác nhau thế nào? Khi nào trả 401, khi nào trả 403?',
+    'Nếu bạn đặt một custom filter kiểm tra chữ ký request, bạn sẽ chèn nó vào trước hay sau BearerTokenAuthenticationFilter? Vì sao?',
+    'SecurityContextHolder dùng ThreadLocal mặc định — điều này gây vấn đề gì với @Async hoặc virtual thread, và Spring giải quyết ra sao?'
+  ],
+  refs: [
+    { type: 'doc', title: 'Spring Security - Architecture (Servlet)', url: 'https://docs.spring.io/spring-security/reference/servlet/architecture.html' },
+    { type: 'doc', title: 'Spring Security - Multiple HttpSecurity Instances', url: 'https://docs.spring.io/spring-security/reference/servlet/configuration/java.html#jc-httpsecurity' }
+  ],
+  tags: ['Spring Security', 'FilterChainProxy', 'DelegatingFilterProxy', 'SecurityFilterChain', 'internals'],
 },
+{
+  id: 'security-034',
+  topic: 'security',
+  level: 'senior',
+  q: 'JWT hoạt động thế nào ở mức cơ chế? So sánh RS256 và HS256 (ai giữ khoá, khi nào dùng). Giải thích tấn công alg=none và algorithm confusion. kid và JWKS rotation dùng ra sao? Làm sao thu hồi JWT khi bản chất nó stateless?',
+  a: `**Tóm tắt:** JWT (JSON Web Token) là một chuỗi tự chứa thông tin (claims) được **ký số** để bên nhận kiểm tra tính toàn vẹn mà không cần hỏi server phát hành — giống con dấu trên giấy: ai cũng đọc được nội dung, nhưng chỉ người có dấu thật mới đóng được. **HS256** dùng 1 khoá bí mật chung (nhanh, đơn giản) còn **RS256** dùng cặp khoá công khai/riêng (service chỉ cần public key để verify). Hai lỗ hổng kinh điển là **alg=none** (chấp nhận token không ký) và **algorithm confusion** (ép server dùng public key như khoá HMAC). Thu hồi JWT stateless không "xoá" được token cũ, nên dùng **access token TTL ngắn + refresh token xoay vòng lưu DB + phát hiện tái sử dụng**.
+
+### 1. Cấu trúc JWT và chữ ký hoạt động thế nào
+JWT gồm 3 phần, nối bằng dấu chấm: {{header.payload.signature}}, mỗi phần mã hoá Base64URL (đọc được, **không phải** mã hoá bí mật).
+
+~~~text
+eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImtleS0yMDI2In0   <- header (JSON)
+.
+eyJzdWIiOiJ1c2VyLTkxIiwiZXhwIjoxNzYyNDYwMDAwLCJzY29wZSI6Im9yZGVyOnJlYWQifQ  <- payload (claims)
+.
+<signature bytes base64url>   <- chữ ký
+
+Header giải mã:  {"alg":"RS256","typ":"JWT","kid":"key-2026"}
+Payload giải mã: {"sub":"user-91","exp":1762460000,"scope":"order:read"}
+~~~
+- **Chữ ký** = hàm(header + "." + payload, key). Bên verify tính lại chữ ký bằng key và so sánh: khớp nghĩa là nội dung **không bị sửa** sau khi ký, và (với RS256) chỉ ai giữ private key mới ký được.
+- **exp** (expiration, giây Unix), **iat** (issued at), **iss** (issuer), **aud** (audience) là claim chuẩn — thư viện phải kiểm tra, không tự bỏ qua.
+- Payload **ai cũng đọc được** (chỉ Base64). Đừng đặt mật khẩu, số thẻ, secret vào JWT. Cần giấu nội dung thì dùng JWE (mã hoá), hiếm hơn và phức tạp hơn.
+
+### 2. RS256 vs HS256 — khác nhau ở chỗ giữ khoá
+| Tiêu chí | HS256 (HMAC + SHA-256) | RS256 (RSA + SHA-256) |
+|---|---|---|
+| Loại khoá | **Đối xứng**: 1 khoá bí mật chung | **Bất đối xứng**: cặp private key (ký) + public key (verify) |
+| Ai ký | Bên giữ secret | Chỉ issuer giữ private key |
+| Ai verify | Phải có **cùng secret** → ai verify cũng có khả năng ký giả | Chỉ cần public key (công khai) → verify được nhưng không ký giả được |
+| Rò rỉ khoá | 1 service bị lộ secret → attacker ký được token cho toàn hệ thống | Lộ public key không sao; chỉ lộ private key mới nguy hiểm |
+| Hiệu năng | Nhanh hơn (HMAC rẻ) | Chậm hơn (RSA verify tốn hơn, vẫn chấp nhận được) |
+| Khi dùng | Monolith hoặc 1 issuer verify chính nó, môi trường tin cậy nội bộ | Nhiều microservice verify token, bên thứ ba (IdP như Keycloak/Auth0) phát hành |
+
+~~~java
+// Ví dụ verify JWT với thư viện jjwt (Java). LUÔN chỉ định thuật toán kỳ vọng,
+// KHÔNG tin trường "alg" trong header do client gửi.
+import io.jsonwebtoken.Jwts;
+import java.security.interfaces.RSAPublicKey;
+
+public Claims verify(String token, RSAPublicKey publicKey) {
+    return Jwts.parser()
+        .verifyWith(publicKey)          // chỉ chấp nhận khoá/thuật toán tương ứng
+        .requireIssuer("https://auth.mybank.vn")
+        .requireAudience("payment-api")
+        .build()
+        .parseSignedClaims(token)       // sẽ từ chối nếu chữ ký sai hoặc exp hết hạn
+        .getPayload();
+}
+~~~
+
+### 3. Hai tấn công kinh điển nhắm vào trường {{alg}}
+- **alg=none**: attacker sửa header thành {{"alg":"none"}}, bỏ phần signature. Thư viện cũ/lỏng lẻo thấy "không cần ký" thì chấp nhận token → attacker tự bịa payload (vd. {{"sub":"admin"}}). **Phòng**: dùng thư viện hiện đại, gọi API parse **có verify** ({{parseSignedClaims}} chứ không phải {{parse}}), và cấu hình từ chối {{none}}. JJWT ≥ 0.12 và Nimbus JOSE hiện đại mặc định an toàn hơn, nhưng đừng dựa vào mặc định — hãy test.
+- **Algorithm confusion (nhầm HS256/RS256)**: server kỳ vọng RS256 và giữ public key (thường công khai). Attacker lấy public key đó, sửa header thành {{HS256}}, rồi **ký token bằng HMAC dùng chính public key làm secret**. Nếu server dùng thuật toán lấy từ header và truyền "key" vào hàm verify chung, nó sẽ verify HMAC bằng public key → khớp! **Phòng**: **không bao giờ** lấy {{alg}} từ token để chọn cách verify; fix cứng thuật toán mong đợi ở server ({{verifyWith}} cho RSA, {{verifyWith(secretKey)}} cho HMAC, không trộn).
+
+~~~text
+Algorithm confusion (tóm tắt):
+  Server: verify(token, key=PUBLIC_KEY)  nhưng lại tin alg trong header
+  Attacker: header.alg = HS256, signature = HMAC(PUBLIC_KEY, header.payload)
+  Kết quả: HMAC verify bằng PUBLIC_KEY -> ĐÚNG -> token giả được chấp nhận
+~~~
+
+### 4. kid và JWKS rotation (xoay vòng khoá không downtime)
+- **kid** (Key ID): header chứa {{"kid":"key-2026-05"}} để bên verify biết dùng public key nào, vì issuer có thể có nhiều key cùng lúc (key cũ chưa hết hạn + key mới).
+- **JWKS** (JSON Web Key Set): endpoint công khai của issuer (vd. {{https://auth.mybank.vn/.well-known/jwks.json}}) trả về danh sách public key. Resource server tải JWKS, cache lại, và chọn key theo {{kid}}.
+- **Rotation an toàn**: (1) issuer sinh cặp key mới (kid mới), bắt đầu ký token mới bằng key mới; (2) JWKS **vẫn công bố cả key cũ lẫn mới** cho đến khi mọi token ký bằng key cũ đã hết hạn; (3) sau đó mới gỡ key cũ khỏi JWKS. Nếu gỡ key cũ quá sớm, token còn hạn sẽ bị từ chối (lỗi 401 hàng loạt).
+- **Trên code**: dùng {{NimbusJwtDecoder.withJwkSetUri(jwksUrl).build()}} (Spring Security) — nó tự fetch/cache JWKS và xử lý {{kid}}. Đừng tự parse JWT thủ công.
+
+### 5. Thu hồi JWT (stateless nhưng vẫn cần thu hồi)
+JWT tự chứa claim nên service verify **offline** — đây là ưu điểm (không gọi DB mỗi request) và cũng là nhược điểm (không có chỗ "xoá" token đang sống). Xem security-023 về cửa sổ thu hồi. Cách thực tế:
+- **Access token TTL ngắn** (5–15 phút): giảm cửa sổ rủi ro tự nhiên. Token bị lộ chỉ dùng được trong ít phút.
+- **Refresh token xoay vòng, lưu DB**: refresh token sống lâu hơn (ngày/tuần) nhưng **stateful** (lưu hash trong DB kèm {{family_id}}, {{user_id}}, {{revoked}}). Mỗi lần dùng refresh để lấy access token mới: cấp refresh token mới, đánh dấu cái cũ đã dùng. **Reuse detection**: nếu refresh token cũ bị dùng lại → có người đang replay token bị đánh cắp → thu hồi **cả family** (buộc đăng nhập lại). (Cơ chế chi tiết ở security-003.)
+- **Thu hồi tức thì (khi bắt buộc)**: giữ denylist/allowlist theo {{jti}} (JWT ID) trong Redis với TTL = thời gian còn lại của token. Mỗi request tra Redis — đánh đổi: mất tính "hoàn toàn stateless" nhưng cửa sổ thu hồi còn vài trăm ms. Chỉ dùng cho hành động nhạy cảm (khoá tài khoản, báo mất thiết bị).
+- **Không nhét trạng thái phình to vào JWT**: JWT lớn làm tăng header mỗi request; và claim thay đổi (đổi role) không phản ánh cho tới khi token hết hạn.
+
+### 6. Trên production
+- **Triệu chứng 401 đồng loạt sau rotation**: JWKS cache chưa kịp refresh hoặc key cũ bị gỡ sớm. Cấu hình TTL cache JWKS (vd. 5 phút) và luôn công bố chồng key cũ/mới. Theo dõi metric tỉ lệ verify fail theo {{kid}}.
+- **Log an toàn**: log {{iss}}, {{sub}}, {{kid}}, {{exp}} khi debug; **không bao giờ** log nguyên chuỗi JWT (nó là bearer credential — ai có chuỗi là dùng được).
+- **Cấu hình sai nguy hiểm**: tắt kiểm tra {{exp}}/{{aud}}/{{iss}} "cho đỡ lỗi" → chấp nhận token hết hạn hoặc token phát hành cho hệ thống khác. Luôn bật đủ kiểm tra claim.
+
+> Senior tip: Kiểm tra nhanh hệ thống của bạn có dính algorithm confusion không: lấy một token RS256 hợp lệ, tự ký lại payload bằng HS256 dùng public key của issuer, gửi lên. Nếu server chấp nhận, bạn có lỗ hổng nghiêm trọng. Viết test tự động cho trường hợp {{alg=none}}, {{alg=HS256}} trên endpoint mong đợi RS256, token hết {{exp}}, sai {{aud}} — đây là regression test bảo mật rẻ và hiệu quả.`,
+  follow: [
+    'Tại sao access token nên sống ngắn còn refresh token sống dài? Nếu làm ngược lại thì rủi ro là gì?',
+    'JWKS endpoint bị chậm hoặc trả 5xx thì resource server nên xử lý thế nào để không sập dây chuyền nhưng vẫn an toàn?',
+    'JWE (JSON Web Encryption) khác JWS (JWT ký) ở điểm nào, và khi nào bạn thực sự cần JWE thay vì chỉ ký?'
+  ],
+  refs: [
+    { type: 'doc', title: 'RFC 7519 - JSON Web Token (JWT)', url: 'https://www.rfc-editor.org/rfc/rfc7519' },
+    { type: 'doc', title: 'RFC 7517 - JSON Web Key (JWK) / JWKS', url: 'https://www.rfc-editor.org/rfc/rfc7517' },
+  ],
+  tags: ['JWT', 'RS256', 'HS256', 'JWKS', 'kid', 'alg=none', 'algorithm confusion', 'token revocation'],
+},{
+  id: 'security-035',
+  topic: 'security',
+  level: 'lead',
+  q: 'Giải thích OAuth2 Authorization Code + PKCE từng bước: dữ liệu nào đi qua đâu, {{state}} và {{code_verifier}} chống được tấn công gì? Vì sao implicit flow bị bỏ? Khi service A cần gọi service B thay mặt user, token exchange (RFC 8693) giải quyết ra sao?',
+  a: `**Tóm tắt:** **Authorization Code + PKCE** là luồng OAuth2 chuẩn cho web/mobile: app chuyển user sang trang đăng nhập của Authorization Server (AS), AS trả về một **code** dùng một lần, app đổi code lấy token ở kênh back-channel (server-to-server). **PKCE** ({{code_verifier}}/{{code_challenge}}) chứng minh "đứa đổi code chính là đứa xin code", chống đánh cắp code trên mobile/SPA. **Implicit flow** bị bỏ vì trả token thẳng lên front-channel (URL/fragment) dễ rò rỉ và không có cách xác minh client. **Token exchange** (RFC 8693) cho phép service đổi token của user lấy token phạm vi hẹp hơn để gọi service khác, tránh truyền nguyên token gốc qua nhiều tầng.
+
+### 1. OAuth2 giải quyết vấn đề gì (bối cảnh đời thường)
+Bạn muốn app đặt xe xem danh bạ Google mà **không đưa mật khẩu Google** cho app. OAuth2 cho phép bạn đăng nhập trực tiếp với Google (AS), Google cấp cho app một "vé" (access token) chỉ đủ quyền đọc danh bạ. App không bao giờ thấy mật khẩu.
+- **Resource Owner**: người dùng (bạn). **Client**: app đặt xe. **Authorization Server (AS)**: Google Accounts. **Resource Server**: Google Contacts API.
+- **Access token**: vé vào API (thường là JWT, sống ngắn). **Scope**: quyền trên vé (vd. {{contacts.read}}).
+
+### 2. Authorization Code + PKCE từng bước
+~~~seq
+title: Authorization Code + PKCE
+actors: User | App | AS | API
+App -> App: sinh code_verifier (ngẫu nhiên) + code_challenge = SHA256(verifier)
+User -> App: bấm "Đăng nhập"
+App -> AS: redirect /authorize?response_type=code, client_id, redirect_uri, scope, state, code_challenge(S256)
+User -> AS: nhập mật khẩu + đồng ý scope
+AS -> App: redirect về redirect_uri?code=abc&state=xyz (front-channel)
+App -> App: kiểm tra state khớp giá trị đã lưu
+App -> AS: POST /token (code=abc, code_verifier, redirect_uri) (back-channel)
+AS -> AS: kiểm tra SHA256(code_verifier) == code_challenge đã lưu
+AS --> App: access_token + (refresh_token) + id_token
+App -> API: GET /contacts (Authorization: Bearer access_token)
+~~~
+
+- **Front-channel** (qua trình duyệt/redirect URL): dữ liệu có thể rò rỉ (history, referrer, app khác đăng ký scheme trên mobile). Vì vậy front-channel **chỉ** mang {{code}} — thứ vô dụng nếu thiếu {{code_verifier}}.
+- **Back-channel** (POST thẳng từ app/server tới AS): kênh HTTPS trực tiếp, an toàn hơn, dùng để đổi code lấy token.
+- **{{state}}**: chuỗi ngẫu nhiên app sinh ra, lưu tạm, gửi lên AS và AS trả lại nguyên vẹn. App kiểm tra {{state}} khớp → chống **CSRF login** (attacker lừa trình duyệt nạn nhân hoàn tất flow bằng code của attacker). Thiếu {{state}} = lỗ hổng.
+- **PKCE ({{code_verifier}} / {{code_challenge}})**: {{code_verifier}} là chuỗi ngẫu nhiên bí mật app giữ lại; {{code_challenge = BASE64URL(SHA256(verifier))}} gửi lúc xin code. Lúc đổi code, app gửi kèm {{verifier}}; AS tự băm và so với challenge. Kẻ đánh cắp được {{code}} trên front-channel **không có verifier** nên đổi token thất bại. PKCE ban đầu cho mobile (public client), nay **bắt buộc cả cho SPA** (OAuth 2.1 / best current practice).
+- **redirect_uri**: AS chỉ redirect về URI đã đăng ký trước (exact match). Chặn open redirect dẫn code đi nơi khác.
+
+### 3. Vì sao implicit flow bị bỏ
+Implicit flow ({{response_type=token}}) trả **access token thẳng trên URL fragment** ở front-channel, bỏ bước đổi code.
+- Token xuất hiện trong browser history, log proxy, referrer; app khác có thể đọc (đặc biệt mobile custom scheme).
+- **Không có cách client chứng minh danh tính** khi nhận token: ai chặn được redirect đều lấy được token.
+- Không hỗ trợ refresh token an toàn cho public client.
+- Chuẩn hiện hành (OAuth 2.0 Security BCP, OAuth 2.1) **không dùng implicit**. Thay bằng Authorization Code + PKCE.
+
+### 4. Token exchange giữa service (RFC 8693) — gọi thay mặt user
+Bài toán: user gọi Service A (có access token của user), Service A cần gọi Service B. Nếu A chuyển **nguyên token gốc** cho B, token đó có thể có scope quá rộng — vi phạm **least privilege** (chỉ cấp quyền tối thiểu), và nếu B bị xâm nhập, token bị lạm dụng sang hệ thống khác.
+**Token exchange**: A gửi token gốc (subject token) cho AS và xin token mới dành riêng cho B, chỉ với scope B cần.
+
+~~~text
+Service A -> AS: POST /token
+  grant_type=urn:ietf:params:oauth:grant-type:token-exchange
+  subject_token=<access_token_cua_user>
+  subject_token_type=urn:ietf:params:oauth:token-type:access_token
+  audience=service-b
+  scope=orders:read
+
+AS kiểm tra: token gốc còn hạn? A được phép exchange? scope xin <= scope gốc?
+AS -> Service A: access_token_moi (aud=service-b, scope=orders:read, hết hạn sớm)
+
+Service A -> Service B: Authorization: Bearer <access_token_moi>
+~~~
+- Token mới **phạm vi hẹp, audience cụ thể, sống ngắn**. B bị compromise cũng không dùng token đó gọi C.
+- Khác với **client credentials** (service gọi service bằng danh tính chính nó, không có user). Token exchange giữ được danh tính user ({{sub}}) xuyên chuỗi gọi — cần cho audit "user nào ra lệnh".
+
+### 5. Trên production
+- **"redirect_uri_mismatch"**: URI gửi lên không khớp **từng ký tự** với URI đã đăng ký (khác scheme, port, thừa dấu /). Đăng ký exact match, không wildcard.
+- **Lưu state/PKCE verifier trên SPA**: dùng {{sessionStorage}} hoặc bộ nhớ; kiểm tra và xoá ngay sau khi dùng (one-time).
+- **Refresh token trên SPA**: cân nhắc Backend-for-Frontend (BFF) giữ token phía server và cấp session cookie cho SPA, hoặc dùng refresh token rotation + phát hiện reuse.
+- **Token exchange** cần AS hỗ trợ (Keycloak hỗ trợ; cấu hình policy chặt). Log {{sub}}, {{aud}}, {{scope}} của token phát hành để truy vết.
+- **Không tự viết flow OAuth2**: dùng thư viện chuẩn (Spring Security OAuth2 Client, AppAuth). Lỗi nhỏ ở {{state}}/PKCE/redirect là lỗ hổng thật.
+
+| Luồng / cơ chế | Dùng khi | Điểm chính |
+|---|---|---|
+| Authorization Code + PKCE | Web, SPA, mobile (đa số app có user) | Code + PKCE, có {{state}}, thay thế implicit |
+| Client Credentials | Service-to-service, không có user | Machine identity |
+| Device Code | Thiết bị không có trình duyệt/keyboard (TV) | User xác nhận trên thiết bị khác |
+| Token Exchange (RFC 8693) | Gọi service thay mặt user, thu hẹp scope | Giữ {{sub}}, đổi {{aud}}/{{scope}} |
+
+> Senior tip: Checklist review OAuth2: (1) có {{state}} ngẫu nhiên và verify, (2) có PKCE (S256), (3) {{redirect_uri}} exact match, (4) access token sống ngắn, (5) không dùng implicit. Nếu thấy token trong URL fragment, đó là mùi của implicit flow cũ. Và nhớ: OAuth2 là **ủy quyền** (authorization), còn xác thực danh tính user là **OpenID Connect** (OIDC) thêm {{id_token}} — đừng dùng access token như bằng chứng đăng nhập nếu không verify đúng audience/issuer.`,
+  follow: [
+    'Phân biệt OAuth2 và OpenID Connect: {{access_token}} và {{id_token}} khác nhau thế nào, và sai lầm thường gặp khi dùng access token để xác định danh tính user là gì?',
+    'Nếu attacker đánh cắp được authorization code nhưng không có {{code_verifier}}, kịch bản tấn công thất bại ở bước nào? Còn nếu AS không bắt buộc PKCE thì sao?',
+    'Token exchange giúp gì cho audit log trong chuỗi gọi A → B → C so với việc truyền nguyên token gốc của user?'
+  ],
+  refs: [
+    { type: 'doc', title: 'RFC 7636 - Proof Key for Code Exchange (PKCE)', url: 'https://www.rfc-editor.org/rfc/rfc7636' },
+    { type: 'doc', title: 'RFC 8693 - OAuth 2.0 Token Exchange', url: 'https://www.rfc-editor.org/rfc/rfc8693' },
+    { type: 'doc', title: 'OAuth 2.0 Security Best Current Practice', url: 'https://datatracker.ietf.org/doc/html/draft-ietf-oauth-security-topics' }
+  ],
+  tags: ['OAuth2', 'OIDC', 'PKCE', 'authorization code', 'implicit flow', 'token exchange', 'RFC 8693'],
+},{
+  id: 'security-036',
+  topic: 'security',
+  level: 'senior',
+  q: 'Lưu mật khẩu an toàn: bcrypt và Argon2id hoạt động bên trong thế nào (cấu trúc hash, cost factor, tham số memory/time/parallelism)? Pepper khác salt ở điểm nào? DelegatingPasswordEncoder trong Spring Security dùng prefix ra sao và giúp nâng cấp hash dần (rehash on login) thế nào?',
+  a: `**Tóm tắt:** Mật khẩu **không bao giờ** được mã hoá để giải ngược lại, mà phải **băm bằng hàm chậm chuyên dụng** (password hashing). **bcrypt** dùng thuật toán Blowfish với **cost factor** (làm chậm theo lũy thừa 2) và tự nhúng salt vào chuỗi hash; **Argon2id** (khuyến nghị hiện nay) còn tiêu tốn **bộ nhớ** (memory-hard) nên GPU/ASIC khó bẻ hơn. **Salt** là giá trị ngẫu nhiên gắn mỗi mật khẩu (chống rainbow table), lưu công khai cùng hash; **pepper** là bí mật dùng chung, lưu tách khỏi DB (ví dụ trong KMS). **DelegatingPasswordEncoder** gắn prefix (như prefix dạng {{bcrypt}} trong giá trị lưu) vào hash để nhận diện thuật toán và hỗ trợ **nâng cấp dần**: khi user đăng nhập thành công bằng hash cũ, hệ thống băm lại bằng thuật toán mới rồi cập nhật.
+
+### 1. Thuật ngữ nền
+- **Hash (hàm băm)**: hàm một chiều biến đầu vào thành chuỗi cố định; không suy ngược ra đầu vào. SHA-256 là hash **nhanh** — máy tính thử hàng tỷ mật khẩu/giây → không phù hợp lưu mật khẩu.
+- **Brute-force / dictionary attack**: attacker có DB hash (bị rò rỉ) thì thử lần lượt mật khẩu phổ biến, băm lại và so khớp. Hash càng chậm, tấn công càng tốn kém.
+- **Rainbow table**: bảng tra trước "mật khẩu → hash" cho hash nhanh không salt. Salt ngẫu nhiên làm bảng này vô dụng.
+- **GPU/ASIC**: phần cứng chuyên tính song song hàng loạt. Hash chỉ tốn CPU (bcrypt) vẫn bị GPU tăng tốc; hash tốn nhiều RAM (Argon2) bắt GPU phải có RAM lớn → đắt hơn nhiều.
+
+### 2. bcrypt bên trong
+bcrypt (dựa trên Blowfish) nhận mật khẩu + salt + cost, chạy lặp để làm chậm.
+- **Cost factor** (work factor), thường ghi là số vòng: bcrypt thực hiện {{2^cost}} vòng (key schedule của Blowfish). Cost 12 → 4096 vòng; cost 13 → 8192 vòng (gấp đôi thời gian). Mỗi lần tăng cost thêm 1, thời gian x2.
+- **Salt 128-bit** sinh ngẫu nhiên cho **mỗi** mật khẩu. Kết quả lưu thành một chuỗi tự chứa đủ thông tin để verify.
+
+~~~text
+Cấu trúc chuỗi bcrypt (60 ký tự):
+$2b$12$R9h/cIPz0gi.URNNX3kh2OePQS7f/4p3aQJm1c6x2ZyHk9YwS3m1a
+ │  │  │                        │
+ │  │  └─ salt (22 ký tự Base64, 128-bit)  └─ hash (31 ký tự)
+ │  └─ cost = 12  (2^12 vòng)
+ └─ phiên bản (2b là chuẩn hiện đại)
+
+Verify: lấy cost + salt từ chuỗi đã lưu → băm lại mật khẩu user nhập với cùng cost+salt → so sánh constant-time.
+~~~
+
+~~~java
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+
+PasswordEncoder encoder = new BCryptPasswordEncoder(12); // cost 12
+String stored = encoder.encode(rawPassword);   // sinh salt ngẫu nhiên + băm
+// Lưu 'stored' vào DB (cột VARCHAR(60) trở lên)
+
+boolean ok = encoder.matches(rawPassword, stored); // verify: tự tách cost+salt
+~~~
+
+- **Giới hạn bcrypt**: mật khẩu đầu vào bị cắt hiệu dụng ở 72 byte (không phải 72 ký tự Unicode) — mật khẩu rất dài bị mất phần đuôi. Một số hệ thống hash trước bằng SHA-256 rồi mới đưa vào bcrypt để tránh giới hạn này (cần làm cẩn thận, dùng thư viện chuẩn).
+
+### 3. Argon2id bên trong (khuyến nghị OWASP hiện nay)
+Argon2 thắng cuộc thi Password Hashing Competition (2015), có 3 biến thể: Argon2d (chống GPU, dễ bị side-channel), Argon2i (chống side-channel), **Argon2id** (lai, mặc định nên dùng).
+- **Ba tham số** điều khiển độ tốn:
+  - {{memory}} (m): RAM dùng (KiB). Ví dụ 65536 = 64 MiB. Đây là điểm mạnh chống GPU/ASIC.
+  - {{iterations/time}} (t): số lần đi qua bộ nhớ.
+  - {{parallelism}} (p): số luồng/lanes. Tăng p không giảm an toàn nếu m đủ lớn, nhưng phải phù hợp CPU server.
+- Chuỗi hash cũng tự chứa tham số + salt: {{$argon2id$v=19$m=65536,t=3,p=1$<salt>$<hash>}}.
+
+~~~java
+import org.springframework.security.crypto.argon2.Argon2PasswordEncoder;
+
+// (saltLength, hashLength, parallelism, memoryKiB, iterations)
+PasswordEncoder encoder = new Argon2PasswordEncoder(16, 32, 1, 65536, 3);
+String stored = encoder.encode(rawPassword);
+~~~
+
+| Tiêu chí | bcrypt | Argon2id |
+|---|---|---|
+| Chống GPU/ASIC | Trung bình (chỉ tốn CPU theo cost) | Mạnh (memory-hard, tốn RAM lớn) |
+| Tham số | cost factor (1 số) | memory, time, parallelism (linh hoạt) |
+| Giới hạn đầu vào | 72 byte hiệu dụng | Không giới hạn thực tế |
+| Hỗ trợ sẵn | Rất rộng (mọi ngôn ngữ/thư viện) | Rộng, cần thư viện native (BouncyCastle/JNA) |
+| Khuyến nghị | Chấp nhận được nếu cost đủ cao | **Ưu tiên** (OWASP Password Storage Cheat Sheet) |
+
+### 4. Salt vs Pepper
+- **Salt**: ngẫu nhiên, **khác nhau cho mỗi mật khẩu**, lưu **cùng** hash trong DB (không bí mật). Mục đích: hai user cùng mật khẩu "123456" cho ra hash khác nhau; vô hiệu rainbow table. bcrypt/Argon2 tự sinh salt — đừng tự chế.
+- **Pepper**: giá trị **bí mật dùng chung**, lưu **tách khỏi DB** (biến môi trường nạp từ KMS/Vault, HSM). Mục đích: nếu attacker chỉ rò rỉ được DB (SQL injection, backup bị lộ) nhưng không có pepper, hash vẫn khó bẻ hơn. Pepper **không thay thế** hash chậm hay salt.
+- Cách dùng pepper an toàn: {{hash(pepper + password)}} hoặc HMAC trước khi đưa vào bcrypt/Argon2; xoay pepper cần cơ chế bọc (encrypt hash bằng key trong KMS) hoặc chấp nhận rehash dần.
+
+### 5. DelegatingPasswordEncoder và nâng cấp hash dần
+Hệ thống sống nhiều năm: hôm qua dùng bcrypt cost 10, hôm nay muốn Argon2id. Không thể băm lại hàng triệu mật khẩu vì **không biết mật khẩu gốc**. Giải pháp: lưu kèm prefix thuật toán, và **rehash khi user đăng nhập** (lúc đó bạn có mật khẩu thô trong tay).
+- Định dạng lưu: dạng {{bcrypt}} theo sau là chuỗi {{\$2b\$12\$...}} hoặc dạng {{argon2id}} theo sau là chuỗi {{\$argon2id\$v=19\$...}}. {{DelegatingPasswordEncoder}} đọc prefix để chọn encoder verify.
+
+~~~java
+@Bean
+public PasswordEncoder passwordEncoder() {
+    String idForEncode = "argon2id"; // hash MỚI sẽ dùng Argon2id
+    Map<String, PasswordEncoder> encoders = Map.of(
+        "argon2id", new Argon2PasswordEncoder(16, 32, 1, 65536, 3),
+        "bcrypt", new BCryptPasswordEncoder(12)
+    );
+    return new DelegatingPasswordEncoder(idForEncode, encoders);
+}
+
+// Nâng cấp dần khi login thành công:
+public void login(String username, String rawPassword) {
+    User u = userRepo.findByUsername(username);
+    if (!passwordEncoder.matches(rawPassword, u.getPasswordHash())) throw new BadCredentials();
+    // matches() trả true -> kiểm tra có cần nâng cấp (hash cũ, cost thấp)?
+    if (passwordEncoder.upgradeEncoding(u.getPasswordHash())) {
+        u.setPasswordHash(passwordEncoder.encode(rawPassword)); // rehash bằng argon2id
+        userRepo.save(u);
+    }
+}
+~~~
+
+### 6. Trên production
+- **Chọn tham số**: mục tiêu verify mất khoảng **250–500 ms** trên server thật (đủ chậm với attacker, đủ nhanh cho user). Đo trên phần cứng production, không đo laptop dev. Khi CPU mạnh lên theo năm, tăng cost/iterations.
+- **Triệu chứng login chậm / CPU spike**: cost quá cao hoặc Argon2 memory quá lớn gây tranh chấp RAM khi nhiều login đồng thời. Giới hạn song song (rate limit endpoint login), cân bằng tham số (vd. giảm parallelism, tăng memory vừa phải).
+- **Migration**: đặt {{idForEncode}} là thuật toán mới; giữ encoder cũ trong map để verify hash cũ. Theo dõi tỉ lệ user còn hash cũ (đếm prefix) — user lâu không login sẽ mãi ở hash cũ; có thể buộc đổi mật khẩu sau một mốc.
+- **Cột DB**: dùng {{VARCHAR(255)}} (chuỗi Argon2 dài hơn bcrypt 60 ký tự). Đừng cắt chuỗi hash.
+- **Không tự chế**: không "SHA-256(password + salt)" tự viết — thiếu tính chậm và dễ sai (so sánh không constant-time → timing attack). Dùng {{PasswordEncoder}} của Spring Security.
+
+> Senior tip: Đừng chọn tham số theo cảm tính. Viết một benchmark nhỏ chạy trên container production-like: thử Argon2id (m=64MiB,t=3,p=1) và tăng dần đến khi {{matches()}} mất ~300 ms, rồi chốt. Lưu tham số đó trong cấu hình và đặt lịch **6–12 tháng** rà soát lại (phần cứng đổi, threat model đổi). Và luôn bật rate limit + khoá tạm thời sau N lần sai ở endpoint login — hash chậm bảo vệ DB bị lộ, còn rate limit bảo vệ endpoint đang chạy.`,
+  follow: [
+    'Tại sao hai user đặt cùng mật khẩu lại có chuỗi hash khác nhau trong DB khi dùng bcrypt? Điều gì xảy ra nếu bạn dùng chung một salt cố định?',
+    'Pepper bị lộ (attacker có cả DB lẫn pepper) thì bạn xử lý thế nào, và tại sao thiết kế "encrypt hash bằng key trong KMS" giúp xoay pepper dễ hơn?',
+    'So sánh constant-time compare với so sánh chuỗi thông thường khi verify hash/token: timing attack khai thác khác biệt gì?'
+  ],
+  refs: [
+    { type: 'doc', title: 'OWASP - Password Storage Cheat Sheet', url: 'https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html' },
+    { type: 'doc', title: 'Spring Security - Password Storage', url: 'https://docs.spring.io/spring-security/reference/features/authentication/password-storage.html' }
+  ],
+  tags: ['bcrypt', 'Argon2id', 'password hashing', 'salt', 'pepper', 'DelegatingPasswordEncoder', 'cost factor'],
+},{
+  id: 'security-037',
+  topic: 'security',
+  level: 'senior',
+  q: 'SSRF (Server-Side Request Forgery) là gì và nguy hiểm thế nào trong backend Java? Hãy giải thích cơ chế tấn công từng bước (kể cả truy cập metadata cloud), các dạng bypass thường gặp, và cách phòng trong Java (allowlist, chặn IP private, kiểm tra redirect/DNS).',
+  a: `**Tóm tắt:** **SSRF** (Server-Side Request Forgery — giả mạo yêu cầu từ phía server) xảy ra khi attacker điều khiển được URL mà **server** của bạn đi gọi ra ngoài. Vì request xuất phát từ server (nằm trong mạng nội bộ, có quyền truy cập dịch vụ nội bộ), attacker có thể đọc dữ liệu nội bộ hoặc metadata cloud (vd. AWS {{169.254.169.254}}) để lấy credential. Phòng SSRF không chỉ là "chặn localhost": phải **allowlist đích đến** (host/scheme/port), resolve DNS rồi **chặn IP private/link-local/loopback** ở cả bước kết nối, tắt/bị kiểm soát redirect, và giới hạn giao thức.
+
+### 1. Cơ chế tấn công từng bước
+- **Bối cảnh**: API có tính năng "lấy ảnh từ URL" hoặc "gọi webhook URL" do user cung cấp.
+- **Bình thường**: user gửi {{url=https://cdn.example.com/a.png}} → server fetch ảnh → trả về.
+- **SSRF**: attacker gửi {{url=http://169.254.169.254/latest/meta-data/iam/security-credentials/}} (địa chỉ metadata của AWS, chỉ truy cập được từ trong máy/cloud instance). Server chạy **bên trong** hạ tầng cloud gọi địa chỉ đó → nhận về access key tạm thời → attacker lấy được credential.
+
+~~~text
+[Attacker] --(1) POST /fetch?url=http://169.254.169.254/..--> [App Server của bạn]
+                                                                  |
+                                                        (2) Server tự gọi URL
+                                                                  v
+                                                         [Metadata service nội bộ]
+                                                                  |
+                                                        (3) Trả IAM credentials
+                                                                  v
+[Attacker] <--(4) App trả/tiết lộ dữ liệu---------------- [App Server của bạn]
+~~~
+
+- **Vì sao nguy hiểm**: server thường nằm trong VPC/mạng nội bộ, truy cập được DB nội bộ, Redis, admin panel ({{http://10.0.0.5:8080/admin}}), Kubernetes API, hoặc cloud metadata. Firewall chặn truy cập từ Internet nhưng **không chặn** request do chính server phát ra.
+- **Hậu quả thực tế**: đánh cắp cloud credential (leo thang toàn bộ hạ tầng), đọc dữ liệu nội bộ, quét cổng dịch vụ nội bộ, trong một số trường hợp kết hợp thành RCE.
+
+### 2. Các dạng bypass thường gặp (đừng dùng blocklist đơn giản)
+- **Biến thể localhost**: {{127.0.0.1}}, {{127.0.0.2}}, {{0.0.0.0}}, {{[::1]}}, {{localhost}}, hoặc tên miền trỏ về 127.0.0.1.
+- **Obfuscate IP**: dạng số nguyên ({{2130706433}} = 127.0.0.1), dạng octal/hex, IPv6-mapped IPv4 ({{::ffff:127.0.0.1}}).
+- **DNS rebinding**: tên miền attacker kiểm soát lúc resolve lần 1 trả IP public (qua check), lần 2 (lúc kết nối) trả {{127.0.0.1}}. Đây là lý do phải kiểm tra IP **tại thời điểm kết nối**.
+- **Redirect**: URL ban đầu là {{https://good.com}} (qua allowlist) nhưng trả 302 redirect tới {{http://169.254.169.254}}. Nếu HTTP client tự follow redirect, bypass allowlist.
+- **Giao thức khác**: {{file:///etc/passwd}}, {{gopher://}}, {{dict://}} — một số thư viện hỗ trợ, mở thêm bề mặt tấn công.
+
+### 3. Cách phòng trong Java (defense in depth)
+Nguyên tắc: **allowlist đích đến** (chỉ cho phép cái cần thiết), không cố liệt kê hết cái cấm.
+
+~~~java
+import java.net.*;
+import java.net.http.*;
+import java.time.Duration;
+import java.util.Set;
+
+public final class SafeFetcher {
+    // CHỈ cho phép host nghiệp vụ cần gọi (ví dụ webhook đối tác đã đăng ký)
+    private static final Set<String> ALLOWED_HOSTS = Set.of("api.partner-a.com", "hooks.partner-b.com");
+
+    public String fetch(String rawUrl) throws Exception {
+        URI uri = URI.create(rawUrl);
+
+        // 1) Chỉ cho phép https (chặn file://, gopher://, http nội bộ tuỳ chính sách)
+        if (!"https".equalsIgnoreCase(uri.getScheme())) throw new SecurityException("scheme blocked");
+
+        String host = uri.getHost();
+        if (host == null || !ALLOWED_HOSTS.contains(host.toLowerCase())) {
+            throw new SecurityException("host not allowed"); // allowlist
+        }
+
+        // 2) Resolve DNS và chặn IP private/loopback/link-local (chống DNS rebinding đơn giản)
+        for (InetAddress addr : InetAddress.getAllByName(host)) {
+            if (isBlocked(addr)) throw new SecurityException("resolved to blocked IP: " + addr);
+        }
+
+        // 3) KHÔNG tự follow redirect mù; hoặc dùng client kiểm tra lại từng hop
+        HttpClient client = HttpClient.newBuilder()
+                .followRedirects(HttpClient.Redirect.NEVER) // tự xử lý redirect + kiểm tra lại allowlist
+                .connectTimeout(Duration.ofSeconds(3))
+                .build();
+        HttpResponse<String> res = client.send(
+                HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(5)).GET().build(),
+                HttpResponse.BodyHandlers.ofString());
+        if (res.statusCode() >= 300 && res.statusCode() < 400) {
+            throw new SecurityException("redirect blocked"); // hoặc kiểm tra Location qua cùng bộ lọc
+        }
+        return res.body();
+    }
+
+    private static boolean isBlocked(InetAddress a) {
+        return a.isAnyLocalAddress()      // 0.0.0.0 / ::
+            || a.isLoopbackAddress()      // 127.0.0.0/8, ::1
+            || a.isLinkLocalAddress()     // 169.254.0.0/16 (metadata!), fe80::/10
+            || a.isSiteLocalAddress()     // 10/8, 172.16/12, 192.168/16, fc00::/7
+            || a.isMulticastAddress();
+    }
+}
+~~~
+
+- **Lưu ý DNS rebinding**: kiểm tra {{InetAddress.getAllByName}} rồi mới connect vẫn có cửa sổ nhỏ (TOCTOU) vì client có thể resolve lại. Giảm thiểu bằng cách cấu hình HTTP client dùng địa chỉ IP đã resolve, hoặc dùng thư viện/proxy egress chuyên chống SSRF. Với hệ thống nhạy cảm, route mọi request ra ngoài qua **egress proxy** có allowlist tập trung.
+- **Cloud**: trên AWS, dùng **IMDSv2** (bắt buộc PUT lấy session token + header hop-limit) để metadata khó bị SSRF khai thác hơn; trên GKE/GCP có metadata header tương tự. Đây là lớp bổ sung, không thay allowlist.
+
+### 4. Trên production
+- **Triệu chứng**: log có request tới {{169.254.169.254}}, {{127.0.0.1}}, hoặc dải {{10.x/172.16.x/192.168.x}} từ tính năng fetch URL; alert bất thường khi app gọi metadata service.
+- **Kiến trúc**: tách mạng (network policy) — pod/app gọi URL ngoài chỉ được ra Internet qua egress gateway, **không** route được tới metadata IP hay subnet nội bộ. Đây là "bức tường thứ hai" khi code lọt.
+- **Giới hạn thêm**: timeout ngắn, giới hạn kích thước response, không trả raw response nội bộ về client (attacker dùng bạn làm proxy mù/half-blind SSRF).
+- **Monitoring**: metric/alert cho outbound request tới IP private/link-local; audit danh sách host được phép.
+
+> Senior tip: Blocklist IP (chặn 127.0.0.1, 169.254.169.254) gần như chắc chắn bị bypass bằng encoding/DNS. Hãy đảo tư duy: **chỉ cho phép (allowlist) đúng host + scheme nghiệp vụ cần**, resolve và kiểm tra IP đã chặn dải private/link-local, và tắt follow redirect tự động. Ở mức hạ tầng, bắt buộc IMDSv2 (AWS) và chặn route tới metadata bằng network policy. SSRF là lỗi "một dòng fetch URL" nhưng hậu quả có thể là mất toàn bộ cloud account — review mọi chỗ nhận URL từ user.`,
+  follow: [
+    'DNS rebinding vượt qua kiểm tra "resolve rồi chặn IP private" kiểu đơn giản như thế nào, và egress proxy/HTTP client cấu hình ra sao để giảm TOCTOU?',
+    'IMDSv2 của AWS giảm rủi ro SSRF bằng cơ chế nào, và nó có thay thế được allowlist trong code không?',
+    'Phân biệt SSRF thường, blind SSRF và semi-blind SSRF: attacker xác nhận khai thác thành công ra sao khi response không trả về?'
+  ],
+  refs: [
+    { type: 'doc', title: 'OWASP - Server Side Request Forgery Prevention Cheat Sheet', url: 'https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html' },
+    { type: 'doc', title: 'PortSwigger Web Security - SSRF', url: 'https://portswigger.net/web-security/ssrf' }
+  ],
+  tags: ['SSRF', 'allowlist', 'metadata service', 'DNS rebinding', 'egress', 'network security'],
+},{
+  id: 'security-038',
+  topic: 'security',
+  level: 'lead',
+  q: 'Giải thích TLS/mTLS giữa các microservice ở mức cơ chế: bắt tay (handshake) TLS 1.2/1.3 diễn ra từng bước thế nào, certificate chain được xác thực ra sao, và làm sao xoay vòng (rotate) chứng chỉ không gây downtime? Trong Java/Spring Boot, các cấu hình {{keyStore/trustStore}} và lỗi thường gặp là gì?',
+  a: `**Tóm tắt:** **TLS** (Transport Layer Security — bảo mật tầng vận chuyển) mã hoá kênh truyền và xác thực server; **mTLS** (mutual TLS) bắt **cả client lẫn server** trình chứng chỉ, nên service nào cũng phải chứng minh danh tính — phù hợp giao tiếp nội bộ zero-trust. Handshake trao đổi phiên bản/cipher, xác thực **certificate chain** (chuỗi chứng chỉ) về một CA tin cậy, rồi sinh khoá phiên để mã hoá dữ liệu. **Rotation không downtime** đòi hỏi: cấp cert mới trước khi cert cũ hết hạn, nạp song song (overlap), và reload động (hot reload) thay vì restart đột ngột. Trong Java, {{keyStore}} giữ chứng chỉ/khoá riêng của chính service, {{trustStore}} giữ CA/service mà nó tin.
+
+### 1. Thuật ngữ nền
+- **Chứng chỉ số (certificate)**: "thẻ căn cước" số của một bên, chứa public key + tên (CN/SAN) + thời hạn, được **CA** (Certificate Authority — tổ chức cấp chứng chỉ) ký. Ai tin CA đó thì tin chứng chỉ CA ký.
+- **Private key**: khoá bí mật tương ứng public key trong cert; chỉ chủ sở hữu giữ. Dùng để chứng minh "tôi đúng là người trong cert" và để tham gia sinh khoá phiên.
+- **Certificate chain**: cert của service thường do **intermediate CA** ký, intermediate do **root CA** ký. Chuỗi: {{leaf cert (service) → intermediate CA → root CA}}. Trình duyệt/service tin **root CA**; nó xác minh chữ ký ngược lên chuỗi tới root.
+- **Cipher suite**: bộ thuật toán thoả thuận cho phiên (trao đổi khoá, mã hoá, MAC). TLS 1.3 rút gọn và chỉ dùng cipher an toàn hiện đại.
+
+### 2. TLS handshake từng bước (rút gọn, tập trung điểm quan trọng)
+TLS 1.3 (ưu tiên) gọn hơn TLS 1.2; ý tưởng chung: thoả thuận tham số, xác thực cert, sinh khoá phiên.
+
+~~~text
+TLS 1.3 (1-RTT, rút gọn) — server-only TLS:
+Client                                           Server
+  |--- ClientHello --------------------------------->|
+  |    (phiên bản, cipher suites, key_share DH, SNI) |
+  |                                                  |
+  |<-- ServerHello, {EncryptedExtensions} -----------|
+  |<-- {Certificate}  (gửi cert chain) --------------|
+  |<-- {CertificateVerify} (ký bằng private key) ----|  (chứng minh sở hữu private key)
+  |<-- {Finished} -----------------------------------|
+  |                                                  |  cả hai tính ra cùng session keys (ECDHE)
+  |--- {Finished} ---------------------------------->|
+  |<========= dữ liệu ứng dụng mã hoá ===============>|
+
+mTLS khác ở chỗ: Server gửi thêm "CertificateRequest" (yêu cầu client trình cert),
+Client trả thêm {Certificate} + {CertificateVerify} → server cũng xác thực chain của client.
+~~~
+
+- **Xác thực certificate chain (diễn ra hai phía với mTLS)**: (1) kiểm tra chữ ký từng mắt xích: leaf ký bởi intermediate, intermediate ký bởi root; (2) root (hoặc intermediate được tin) phải có trong {{trustStore}}; (3) cert còn hạn ({{notBefore/notAfter}}); (4) tên khớp (SAN/CN khớp hostname hoặc SPIFFE ID, tuỳ cấu hình); (5) kiểm tra thu hồi nếu bật (CRL/OCSP) — thực tế nội bộ thường dựa vào cert **ngắn hạn** thay vì OCSP phức tạp.
+- **Vì sao ECDHE (forward secrecy)**: khoá phiên sinh tạm cho mỗi kết nối; lộ private key dài hạn sau này cũng **không** giải mã được traffic đã ghi lại trước đó.
+
+### 3. Xoay vòng chứng chỉ không downtime
+Cert có thời hạn (nội bộ thường 24h–90 ngày; public CA tối đa 398 ngày). Hết hạn mà chưa thay → handshake thất bại, service ngừng gọi nhau.
+
+~~~text
+Chiến lược overlap (không downtime):
+t0: cert A đang dùng (hết hạn t2)
+t1: cấp cert B mới (hết hạn t3), B đã được client tin (cùng CA chain)
+    - Server nạp B: giữ A phục vụ kết nối cũ, dùng B cho kết nối mới (hoặc thay thế)
+    - Các bên còn accept A cho tới t2
+t2: A hết hạn, mọi kết nối mới dùng B. A bị bỏ.
+Yêu cầu: (t2 - t1) đủ lớn để TẤT CẢ client kịp nhận trust/cert mới (phút → giờ).
+~~~
+
+- **Cấp phát tự động**: service mesh (Istio citadel/istiod, Linkerd identity) cấp cert ngắn hạn (vd. 24h) gắn SPIFFE ID, tự gia hạn trước hết hạn và đẩy vào sidecar qua SDS (Secret Discovery Service) — **hot reload**, không restart pod. Dùng cert-manager (Kubernetes) để cấp/renew {{Secret}} TLS.
+- **Hot reload ngoài mesh (Java)**: reload {{keyStore/trustStore}} từ file khi cert đổi (dùng {{SSLContext}} tự xây + file watcher, hoặc thư viện như Netflix {{ssl-context-kickstart}}; Spring Boot 3.1+ có SSL bundle với reload trong một số kịch bản). Tránh restart toàn bộ JVM cho mỗi lần rotate.
+- **Nguyên tắc**: cert ngắn hạn + tự động hoá > cert dài hạn gia hạn tay (quên gia hạn là sự cố phổ biến).
+
+### 4. Java/Spring Boot: keyStore và trustStore
+- **keyStore** ({{javax.net.ssl.keyStore}}): chứa **chứng chỉ + private key của chính service** (định danh mình). Dùng để trình cert khi làm server TLS, hoặc khi làm client trong mTLS.
+- **trustStore** ({{javax.net.ssl.trustStore}}): chứa **CA/cert mà service tin**. Dùng để xác thực cert của bên kia. Java mặc định dùng {{<java-home>/lib/security/cacerts}} (trust store hệ thống).
+- Định dạng: PKCS12 ({{.p12/.pfx}}, chuẩn hiện đại) hoặc JKS (cũ của Java). Từ Java 9+, PKCS12 là mặc định.
+
+~~~yaml
+# Spring Boot (ví dụ bật TLS cho server và cấu hình client mTLS)
+server:
+  ssl:
+    enabled: true
+    key-store: classpath:service.p12
+    key-store-type: PKCS12
+    key-store-password: \${KEYSTORE_PASS}        # lấy từ secret manager, KHÔNG hardcode
+    key-alias: service
+
+# Client gọi service khác với mTLS (dùng RestClient/WebClient cấu hình SSL bundle - Spring Boot 3.1+)
+spring:
+  ssl:
+    bundle:
+      jks:
+        payment-client:
+          keystore:
+            location: classpath:client.p12
+            password: \${CLIENT_KEYSTORE_PASS}
+          truststore:
+            location: classpath:trust.p12
+            password: \${TRUST_PASS}
+~~~
+
+### 5. Trên production
+- **Lỗi thường gặp**:
+  - {{PKIX path building failed: unable to find valid certification path}}: bên kia dùng cert do CA không có trong trustStore (quên import intermediate/root), hoặc chain gửi thiếu intermediate. Kiểm tra chain đầy đủ.
+  - {{No subject alternative names present}} / hostname verify fail: cert không có SAN khớp hostname/IP bạn gọi. Java mặc định verify hostname; đừng tắt verify hostname để "cho chạy".
+  - {{CertificateExpiredException}}: quên rotate. Alert trước khi hết hạn (vd. 7 ngày, 1 ngày).
+  - {{Received fatal alert: bad_certificate}} (mTLS): server không tin cert client — client gửi sai cert hoặc trustStore phía server thiếu CA của client.
+- **Quan sát**: metric thời gian còn lại của cert ({{x509_cert_not_after}}), alert expiry; log lỗi handshake (bật {{javax.net.debug=ssl,handshake}} **chỉ tạm thời khi debug**, vì log rất nhạy/ồn).
+- **Zero-trust nội bộ**: ưu tiên mTLS (qua mesh) cho mọi service-to-service; tắt TLS 1.0/1.1, chỉ cho TLS 1.2+ (ưu tiên 1.3). Quản lý cert tự động, không cấp cert dài hạn thủ công.
+
+> Senior tip: 80% sự cố TLS trong microservice là "hết hạn cert" hoặc "thiếu intermediate trong chain". Hãy tự động hoá toàn bộ vòng đời cert (cấp, phân phối, reload, cảnh báo hết hạn) — mesh hoặc cert-manager + hot reload. Và đừng bao giờ "fix nhanh" bằng cách tắt hostname verification hay trust-all {{TrustManager}}: đó là tắt TLS trên thực tế, biến kênh mã hoá thành kênh bị MITM thoải mái. Khi gặp {{PKIX path building failed}}, soi chain ({{openssl s_client -showcerts}}) thay vì thêm bừa cert vào trustStore.`,
+  follow: [
+    'mTLS xác thực "service nào đang gọi" (authentication); làm sao bạn gắn thêm phân quyền "service A được phép gọi hành động nào của B" (authorization) phía trên mTLS?',
+    'Vì sao TLS 1.3 loại bỏ RSA key exchange tĩnh và bắt buộc (EC)DHE, và forward secrecy mang lại lợi ích gì khi private key bị lộ sau này?',
+    'Nếu phải rotate root CA (thay đổi cả anchor tin cậy), bạn làm thế nào để không gián đoạn các service đang chạy?'
+  ],
+  refs: [
+    { type: 'doc', title: 'RFC 8446 - The Transport Layer Security (TLS) Protocol Version 1.3', url: 'https://www.rfc-editor.org/rfc/rfc8446' },
+    { type: 'doc', title: 'Spring Boot - SSL', url: 'https://docs.spring.io/spring-boot/reference/features/ssl.html' }
+  ],
+  tags: ['TLS', 'mTLS', 'handshake', 'certificate chain', 'keyStore', 'trustStore', 'cert rotation'],
+},{
+  id: 'security-039',
+  topic: 'security',
+  level: 'senior',
+  q: 'XXE (XML External Entity) là gì, cơ chế khai thác từng bước ra sao (đọc file nội bộ, SSRF qua XML)? Trong Java, làm sao cấu hình an toàn cho {{DocumentBuilderFactory}}/{{SAXParserFactory}}/{{XMLInputFactory}} và các thư viện phổ biến để chặn XXE?',
+  a: `**Tóm tắt:** **XXE** (XML External Entity — thực thể ngoài của XML) là lỗ hổng xảy ra khi trình phân tích XML (XML parser) được phép xử lý **entity/DOCTYPE do attacker nhúng vào**. Attacker chèn khai báo {{<!ENTITY ... SYSTEM "file:///...">}} để parser tự đọc file nội bộ (vd. {{/etc/passwd}}, file cấu hình có secret) hoặc gửi request ra ngoài (SSRF), rồi chèn nội dung vào chỗ ứng dụng phản hồi. Phòng XXE trong Java: **tắt DTD và external entities** trên mọi parser ({{DocumentBuilderFactory}}, {{SAXParserFactory}}, {{XMLInputFactory}}/StAX, {{TransformerFactory}}, {{SchemaFactory}}) — cấu hình mặc định của từng thư viện/phên bản khác nhau, nên phải đặt rõ ràng.
+
+### 1. XML entity là gì (nền tảng)
+- **Entity** trong XML là một "biến" thay thế văn bản, khai báo trong **DOCTYPE/DTD**. Entity nội bộ: {{<!ENTITY hi "hello">}}. **External entity**: nội dung lấy từ bên ngoài qua URI — {{<!ENTITY xxe SYSTEM "file:///etc/passwd">}}.
+- Khi parser gặp {{&xxe;}} trong tài liệu, nếu cho phép external entity, nó sẽ **fetch** URI đó và thay nội dung vào. Đây là hành vi nguy hiểm khi XML đến từ người dùng.
+- Ví dụ đời thường: giống việc bạn cho phép người gửi thư ghi "hãy dán nội dung file két sắt của bạn vào đây" và hệ thống tự động làm theo.
+
+### 2. Cơ chế khai thác từng bước (đọc file nội bộ)
+~~~text
+(1) Attacker gửi XML độc:
+    <?xml version="1.0"?>
+    <!DOCTYPE foo [
+      <!ENTITY xxe SYSTEM "file:///etc/hostname">
+    ]>
+    <order><note>&xxe;</note></order>
+
+(2) Server parse XML bằng parser chưa tắt external entity:
+    - Parser đọc DOCTYPE, đăng ký entity "xxe" trỏ tới file:///etc/hostname
+    - Khi gặp &xxe; trong <note>, parser MỞ file nội bộ và thay nội dung vào
+
+(3) Ứng dụng lấy giá trị <note> ("ip-10-0-1-23") và trả về/ghi log
+    -> Attacker đọc được file nội bộ server
+
+Biến thể: SYSTEM "http://169.254.169.254/..." -> SSRF tới metadata cloud.
+Biến thể blind XXE: dữ liệu bị exfiltrate qua DNS/HTTP ra server attacker điều khiển.
+~~~
+
+### 3. Phòng XXE trong Java — tắt DTD và external entities
+Nguyên tắc: nếu ứng dụng **không cần** DTD/external entity (đa số API hiện đại dùng XML chỉ để dữ liệu), hãy **tắt hoàn toàn**. Phải cấu hình trên **đúng loại parser** bạn dùng, vì mỗi API có cờ riêng. Luôn đặt {{disallow-doctype-decl}} (chặn DOCTYPE) khi có thể — cách mạnh nhất.
+
+~~~java
+import javax.xml.XMLConstants;
+import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.parsers.SAXParserFactory;
+import javax.xml.stream.XMLInputFactory;
+import javax.xml.transform.TransformerFactory;
+
+// 1) DOM (DocumentBuilderFactory)
+DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
+dbf.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true); // mạnh nhất: cấm DOCTYPE
+dbf.setFeature("http://xml.org/sax/features/external-general-entities", false);
+dbf.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+dbf.setXIncludeAware(false);
+dbf.setExpandEntityReferences(false);
+
+// 2) SAX
+SAXParserFactory spf = SAXParserFactory.newInstance();
+spf.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+spf.setFeature("http://xml.org/sax/features/external-general-entities", false);
+spf.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+
+// 3) StAX (XMLInputFactory) - dùng bởi nhiều lib (JAXB impl, SOAP stack)
+XMLInputFactory xif = XMLInputFactory.newFactory();
+xif.setProperty(XMLInputFactory.SUPPORT_DTD, false);              // tắt DTD
+xif.setProperty(XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, false);
+
+// 4) XSLT / Schema
+TransformerFactory tf = TransformerFactory.newInstance();
+tf.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
+tf.setAttribute(XMLConstants.ACCESS_EXTERNAL_STYLESHEET, "");
+~~~
+
+- **Lưu ý theo phiên bản/thư viện**: hành vi mặc định thay đổi giữa JDK và parser implementation (Xerces). Một bản vá có thể đổi default; đừng dựa vào "mặc định đã an toàn" — hãy **set cờ rõ ràng**. Kiểm tra bằng test chèn payload XXE: parser an toàn phải ném lỗi (DOCTYPE bị cấm) hoặc trả chuỗi rỗng/không resolve entity.
+- **JAXB / SOAP (JAX-WS) / Spring XML**: các tầng cao thường tự tạo parser bên dưới. Kiểm tra xem chúng cho phép truyền {{XMLInputFactory/SAXParserFactory}} đã harden chưa; với JAXB unmarshalling từ nguồn không tin, nạp qua {{SAXSource}} dùng {{XMLReader}} đã tắt feature.
+- **Nếu thực sự cần DTD** (hiếm, ví dụ validate theo schema cũ): không thể tắt DOCTYPE hoàn toàn — khi đó phải chặn external entity/DTD fetch ({{ACCESS_EXTERNAL_DTD}} rỗng) và dùng entity resolver kiểm soát chặt. Phức tạp, tránh nếu được.
+
+### 4. Trên production
+- **Triệu chứng**: log parser ném lỗi DOCTYPE (tốt, đang chặn), hoặc outbound request lạ từ tiến trình Java tới host nội bộ/metadata khi xử lý XML (dấu hiệu XXE/SSRF). WAF có thể bắt payload {{<!DOCTYPE}}/{{<!ENTITY}}.
+- **Bề mặt tấn công**: bất kỳ endpoint nhận XML/HTML/XHTML, upload file (SVG, DOCX/XLSX là zip chứa XML — OOXML cũng bị XXE nếu parser bên trong không harden), SOAP, SAML, feed RSS/Atom.
+- **Phòng thủ theo lớp**: harden parser (bắt buộc) + chặn outbound network từ service xử lý XML tới mạng nội bộ/metadata (network policy) + validate schema chặt (chỉ chấp nhận cấu trúc mong đợi) + ưu tiên JSON thay XML khi có lựa chọn.
+- **Test**: thêm payload XXE vào security test/DAST (OWASP ZAP có check XXE). Unit test: parse chuỗi có {{<!ENTITY}} phải bị từ chối.
+
+> Senior tip: XXE là lỗi "quên một dòng cấu hình parser" nhưng lộ file/secret nội bộ. Quy tắc nhóm: **không bao giờ** {{DocumentBuilderFactory.newInstance()}} (hay parser nào) mà không harden ngay sau đó — bọc thành factory tiện ích dùng chung ({{SafeXml.newDocumentBuilderFactory()}}) và cấm gọi trực tiếp qua review/lint. Và nhớ quét cả đường xử lý file Office/SVG: chúng là XML ngụy trang, parser thư viện đọc chúng (Apache POI, SVG lib) cũng cần được cấu hình an toàn.`,
+  follow: [
+    'Tại sao file DOCX/XLSX/SVG cũng có thể dính XXE dù người dùng nghĩ đang upload "tài liệu/ảnh"? Bạn kiểm soát parser của thư viện bên thứ ba xử lý chúng thế nào?',
+    'Phân biệt XXE classic (dữ liệu hiện trong response) với blind XXE: khi nào attacker vẫn exfiltrate được dữ liệu, và biện pháp mạng nào giảm thiểu?',
+    'Ngoài XXE, DTD còn dẫn tới tấn công "Billion Laughs" (entity expansion gây DoS) ra sao, và cờ nào chặn được?'
+  ],
+  refs: [
+    { type: 'doc', title: 'OWASP - XML External Entity Prevention Cheat Sheet (Java)', url: 'https://cheatsheetseries.owasp.org/cheatsheets/XML_External_Entity_Prevention_Cheat_Sheet.html#java' },
+  ],
+  tags: ['XXE', 'XML', 'DocumentBuilderFactory', 'SAXParserFactory', 'XMLInputFactory', 'external entity'],
+},{
+  id: 'security-040',
+  topic: 'security',
+  level: 'lead',
+  q: 'Java deserialization không an toàn là gì, cơ chế khai thác gadget chain hoạt động thế nào (tại sao chỉ cần object stream bị điều khiển cũng có thể dẫn tới thực thi lệnh)? {{ObjectInputFilter}} (JEP 290) giảm rủi ro ra sao, và chiến lược phòng thủ dài hạn cho hệ thống dùng Java là gì?',
+  a: `**Tóm tắt:** **Java deserialization** là cơ chế biến chuỗi byte (object stream) trở lại thành object Java ({{ObjectInputStream.readObject}}). Lỗ hổng xảy ra khi ứng dụng **deserialize dữ liệu không tin cậy**: attacker chế chuỗi byte sao cho trong quá trình khôi phục object, các phương thức "ma thuật" ({{readObject/readResolve}}) của những class có sẵn trên classpath bị gọi nối tiếp nhau thành **gadget chain**, cuối cùng đạt hành vi nguy hiểm (thực thi lệnh, ghi file, gọi JNDI). **{{ObjectInputFilter}} (JEP 290, Java 9+)** cho phép allowlist class được deserialize để chặn chain, nhưng là lớp giảm thiểu — phòng thủ bền vững là **không deserialize dữ liệu không tin cậy** và dùng định dạng dữ liệu an toàn (JSON/Protobuf).
+
+### 1. Cơ chế deserialization và vì sao nguy hiểm
+- **Serialization**: {{ObjectOutputStream}} ghi trạng thái object thành byte stream. **Deserialization**: {{ObjectInputStream.readObject()}} đọc byte stream và **tái tạo object**, tự động gọi các hook như {{readObject}}, {{readResolve}}, đôi khi {{finalize}} của class tương ứng.
+- **Điểm nguy hiểm**: byte stream chỉ định **loại class** nào sẽ được khôi phục. {{readObject()}} sẽ instantiate/khôi phục bất kỳ class nào có trên classpath mà stream yêu cầu — **trước cả khi** ứng dụng kịp kiểm tra object nhận được có đúng kiểu mong đợi hay không.
+- Ví dụ đời thường: bạn nhờ bưu điện giao một "gói hàng" và hệ thống tự động mở gói, lắp ráp theo hướng dẫn bên trong; kẻ gửi nhét hướng dẫn "lắp xong thì mở két lấy tiền đưa ra cửa" — hệ thống thực hiện hướng dẫn trước khi bạn kịp kiểm tra người gửi.
+
+~~~text
+Luồng tấn công (khái niệm):
+(1) Attacker tìm trên classpath của nạn nhân các class có readObject/readResolve
+    thực hiện hành vi nhạy cảm khi nhận dữ liệu điều khiển (gadget). Ví dụ lịch sử:
+    chuỗi transform trên commons-collections, lookup JNDI, v.v.
+(2) Attacker xâu chuỗi (chain) các gadget: output của gadget A trở thành input
+    kích hoạt gadget B ... -> gadget cuối gọi Runtime.exec(...) / JNDI lookup.
+(3) Attacker serialize gadget chain thành byte stream, gửi vào endpoint nhận
+    ObjectInputStream (RMI, JMX, cookie/session serialize, JMS ObjectMessage, ...).
+(4) Server gọi readObject() -> chain tự thực thi -> RCE / tải class từ xa / ...
+    Toàn bộ xảy ra BÊN TRONG readObject(), trước khi app kiểm tra kiểu kết quả.
+~~~
+
+- **Vì sao "filter kiểu sau khi đọc" là quá muộn**: {{Object obj = ois.readObject(); if (obj instanceof MyDto) ...}} — gadget chain đã chạy xong ở dòng {{readObject()}}, dòng {{if}} vô nghĩa với tấn công.
+
+### 2. {{ObjectInputFilter}} (JEP 290) — allowlist class được deserialize
+Từ Java 9, JEP 290 thêm cơ chế **lọc trong lúc** deserialize: filter được gọi cho **mỗi** class/array được khôi phục; nó quyết định {{ALLOWED / REJECTED / UNDECIDED}}. Mục tiêu: chỉ cho phép các class bạn mong đợi.
+
+~~~java
+import java.io.*;
+
+public Object safeRead(byte[] data) throws Exception {
+    try (ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(data))) {
+        // Allowlist: chỉ cho phép class trong gói DTO của mình + kiểu cơ bản/java.base cần thiết
+        ObjectInputFilter filter = ObjectInputFilter.Config.createFilter(
+            "com.mybank.dto.*;java.base/*;!*"  // cho phép dto + java.base, TỪ CHỐI tất cả còn lại (!*)
+        );
+        ois.setObjectInputFilter(filter); // đặt TRƯỚC khi readObject
+        return ois.readObject();
+    }
+}
+
+// Hoặc đặt filter toàn cục cho JVM (phòng các đường deserialize bạn không kiểm soát trực tiếp):
+// -Djava.io.serialFilter=com.mybank.dto.*;java.base/*;!*
+// hoặc ObjectInputFilter.Config.setSerialFilter(...)
+~~~
+
+- **Pattern filter**: {{module/package.Class}}, {{*}} wildcard, {{!}} reject, giới hạn {{maxdepth}}, {{maxrefs}}, {{maxbytes}}, {{maxarray}} (chặn cả tấn công DoS làm cạn bộ nhớ bằng stream khổng lồ/sâu).
+- **Giới hạn của filter**: (1) bạn phải biết và liệt kê đúng class hợp lệ — miss class nghiệp vụ sẽ gây lỗi; (2) nếu allowlist quá rộng (cho cả một thư viện lớn), gadget trong đó vẫn lọt; (3) nó **không** biến deserialization thành an toàn tuyệt đối, chỉ thu hẹp bề mặt. Vì vậy đây là **defense in depth**, không phải lá chắn duy nhất.
+- **JVM-wide filter** ({{jdk.serialFilter}}): hữu ích để đặt mặc định từ chối khi không thể sửa hết code, nhưng có thể làm hỏng tính năng thật sự dùng serialization (RMI nội bộ, một số framework cũ) — cần kiểm thử kỹ.
+
+### 3. Chiến lược phòng thủ dài hạn
+- **Tốt nhất: không deserialize dữ liệu không tin cậy.** Đây là khuyến nghị số 1 của OWASP. Nếu dữ liệu đến từ mạng/user, đừng dùng Java native serialization.
+- **Dùng định dạng dữ liệu an toàn, có schema**: JSON (Jackson/Gson) bind vào **class DTO tường minh** ({{objectMapper.readValue(json, OrderDto.class)}}) — Jackson không instantiate class tùy ý theo payload (trừ khi bật tính năng nguy hiểm như {{enableDefaultTyping}}; **đừng bật**). Protobuf/Avro cũng ràng buộc schema.
+- **Tắt/từ chối đường vào nguy hiểm**: không nhận {{ObjectMessage}} (JMS) từ nguồn không tin; kiểm tra cấu hình RMI/JMX (trước Java 9 và một số cấu hình vẫn lộ endpoint deserialize); không lưu session/state bằng Java serialization qua cookie không ký.
+- **Giảm gadget**: cập nhật thư viện (xoá/bump commons-collections cũ, v.v.), giảm classpath không cần thiết. Không phụ thuộc hoàn toàn vào việc "không có gadget" — gadget mới liên tục được tìm ra.
+- **Giám sát**: sản phẩm RASP/WAF có thể phát hiện byte stream serialization (bắt đầu bằng {{0xAC 0xED}}) đi vào HTTP; alert khi xuất hiện.
+
+### 4. Trên production
+- **Triệu chứng bị khai thác**: tiến trình Java sinh tiến trình con lạ ({{curl}}, {{sh}}), outbound connection bất thường, tạo file lạ — dấu hiệu RCE sau gadget chain. Khó phát hiện nếu blind; cần EDR/giám sát hành vi tiến trình.
+- **Kiểm kê bề mặt**: tìm mọi chỗ {{new ObjectInputStream(…)/readObject/readUnshared}}, endpoint RMI/JMX mở, thư viện dùng serialization ngầm (một số cache/session store, middleware cũ). Đánh dấu nguồn dữ liệu: chỉ deserialize dữ liệu do chính hệ thống bạn tạo và được bảo vệ toàn vẹn (ký/MAC), **không** deserialize dữ liệu từ client.
+- **Khi buộc phải giữ serialization nội bộ**: ký/HMAC byte stream trước khi gửi, verify trước khi {{readObject}}, kết hợp {{ObjectInputFilter}} allowlist chặt + giới hạn {{maxbytes/maxdepth/maxrefs}}.
+
+> Senior tip: {{ObjectInputFilter}} là mạng lưới an toàn, không phải giấy phép dùng {{readObject}} trên input không tin. Câu hỏi đúng trong design review: "dữ liệu này có đến từ nơi ta không kiểm soát hoàn toàn không?" — nếu có, chuyển sang JSON/Protobuf với DTO cụ thể. Và tuyệt đối không bật {{ObjectMapper.enableDefaultTyping()}} / {{@JsonTypeInfo}} dạng {{Id.CLASS}} trên input không tin: đó là tái tạo lỗ hổng deserialization polymorphic trên Jackson, cơ chế gadget tương tự, hậu quả tương tự (RCE).`,
+  follow: [
+    'Tại sao {{instanceof}} kiểm tra sau {{readObject()}} không chặn được gadget chain, và điều đó nói gì về thời điểm filter của JEP 290 can thiệp?',
+    'Polymorphic deserialization trong Jackson ({{enableDefaultTyping}} / {{@JsonTypeInfo(use=Id.CLASS)}}) nguy hiểm thế nào, và cấu hình an toàn thay thế là gì?',
+    'Bạn rà soát một hệ thống kế thừa để tìm bề mặt Java deserialization: ngoài {{ObjectInputStream}} trực tiếp, còn những giao thức/thư viện nào thường deserialize ngầm?'
+  ],
+  refs: [
+    { type: 'doc', title: 'OWASP - Deserialization Cheat Sheet', url: 'https://cheatsheetseries.owasp.org/cheatsheets/Deserialization_Cheat_Sheet.html' },
+    { type: 'doc', title: 'JEP 290 - Filter Incoming Serialization Data', url: 'https://openjdk.org/jeps/290' },
+    { type: 'doc', title: 'Secure Coding Guidelines for Java SE - Serialization and Deserialization', url: 'https://www.oracle.com/java/technologies/javase/seccodeguide.html#8' }
+  ],
+  tags: ['deserialization', 'gadget chain', 'ObjectInputFilter', 'JEP 290', 'RCE', 'Jackson'],
+},
+
 );
