@@ -1763,5 +1763,184 @@ pgjdbc mặc định {{prepareThreshold=5}}: 4 lần đầu một PreparedStatem
     'Nêu cách tái hiện đúng (PREPARE + plan_cache_mode) và monitoring theo department',
   ],
   tags: ['postgresql', 'prepared-statement', 'generic-plan', 'data-skew', 'pgjdbc'],
-}
+},
+{
+  id: 'lab-sql-013',
+  category: 'sql',
+  title: 'Bảng phình to, query chậm dần vì transaction mở lâu chặn vacuum',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Service {{order-service}} (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6 trên RDS, 8 vCPU / 32 GB RAM) lưu đơn hàng trong bảng {{orders}}. Sau 18 tháng bảng có **12.400.000 dòng** (~3,2 GB heap, 1,1 GB index). Từ đầu tuần, p95 của các câu SELECT theo {{order_id}} tăng từ 4 ms lên **90 ms**, CPU RDS leo từ 20% lên 65%, dung lượng đĩa tăng 400 MB/ngày dù không có traffic mới. DBA nghi ngờ "thiếu index" và bắt đầu tạo index mới, nhưng p95 vẫn không giảm.
+
+**Triệu chứng.** EXPLAIN cho thấy cùng plan, cùng index, nhưng số page đọc tăng gấp đôi. {{pg_stat_user_tables}} báo {{n_dead_tup}} tăng liên tục. Có một phiên {{idle in transaction}} đã mở từ 6 giờ trước.
+
+**Việc bạn có.** Ba artifact dưới đây lấy từ production. Hãy chỉ ra vì sao autovacuum không dọn được dead tuple, vì sao điều đó làm bảng phình to và query chậm, và đề xuất cách xử lý.`,
+  artifacts: [
+    {
+      name: 'pg-stat-user-tables.txt',
+      lang: 'text',
+      content: `-- 2026-04-10 14:22 +07, RDS order-primary (PostgreSQL 15.6)
+      -- pg_stat_user_tables cho bảng orders
+      schemaname | relname | n_live_tup | n_dead_tup | last_vacuum | last_autovacuum | vacuum_count | autovacuum_count
+      public     | orders  | 12400000   | 3870000    | 2026-04-03 02:10:00+07 | 2026-04-03 02:10:00+07 | 14 | 187
+      -- n_dead_tup / n_live_tup = 31%, dead tuple nhiều hơn cả dữ liệu sống
+      -- pg_relation_size('orders') = 3.2 GB heap, pg_total_relation_size = 4.3 GB
+      -- Ước tính bloat: dead tuple ~ 1.0 GB`,
+    },
+    {
+      name: 'pg-stat-activity.txt',
+      lang: 'text',
+      content: `-- 2026-04-10 14:23 +07
+      -- pg_stat_activity: phiên đang mở lâu nhất
+      pid  | usename | state                | xact_start            | query_start           | wait_event_type | wait_event | query
+      18421 | app     | idle in transaction  | 2026-04-10 08:14:00+07 | 2026-04-10 08:14:00+07 | Client         | ClientRead | BEGIN; SELECT * FROM orders WHERE ...; -- chưa COMMIT
+      -- xid age của phiên này: 42.100.000 (tuổi của xid giữ bởi phiên, không phải now() - xact_start)
+      -- max_connections = 200, active = 47, idle in transaction = 3`,
+    },
+    {
+      name: 'xid-age-warning.txt',
+      lang: 'text',
+      content: `-- 2026-04-10 14:24 +07
+      -- Cảnh báo từ monitoring (Datadog)
+      WARNING: database "order" must be vacuumed within 1000000 transactions
+      -- pg_stat_database: xact_commit = 1.24e9, xact_rollback = 3.1e6
+      -- autovacuum: launcher = on, max_workers = 3, naptime = 1min
+      -- log_autovacuum_min_duration = 0 (đang log mọi vacuum)
+      -- log: "automatic vacuum of table \\"public.orders\\" skipped because of lock conflict"
+      -- log: "automatic analyze of table \\"public.orders\\" skipped"`,
+    },
+  ],
+  questions: [
+    'Vì sao autovacuum không dọn được dead tuple dù đang bật và chạy liên tục? Dẫn chứng bằng artifact.',
+    'Vì sao bảng phình to làm query chậm dù plan không đổi?',
+    'Bạn xử lý thế nào trong ngày và thiết kế dài hạn để không tái diễn?',
+  ],
+  hints: [
+    'Tìm phiên "idle in transaction" trong pg_stat_activity: nó giữ xmin, chặn vacuum vì dead tuple vẫn cần cho snapshot của phiên đó.',
+    'n_dead_tup tăng + vacuum skipped vì lock conflict = autovacuum bị chặn.',
+    'Xid age tăng → nguy cơ wraparound; cần vacuum freeze.',
+  ],
+  answer: `**Tóm tắt:** Một phiên {{idle in transaction}} giữ snapshot cũ, vì vậy autovacuum không thể xoá dead tuple (chúng vẫn còn cần cho snapshot đó). Dead tuple tích luỹ làm bảng phình to → nhiều page hơn → query đọc nhiều page hơn → chậm dần. Xid age tăng cũng báo nguy cơ transaction ID wraparound.
+
+### Nguyên nhân gốc
+1. Phiên app opened transaction lúc 08:14 nhưng chưa COMMIT (state {{idle in transaction}}). Nó giữ {{xmin}} snapshot, nên mọi dead tuple sinh ra sau đó vẫn "cần" cho phiên này.
+2. Autovacuum chạy nhưng bị skip vì lock conflict (log xác nhận). Dead tuple tích luỹ: n_dead_tup = 3.870.000 (31% so với live).
+3. Bảng phình to: heap tăng từ ~2.2 GB lên 3.2 GB. Query đọc nhiều page hơn → p95 tăng dù plan không đổi.
+
+### Dẫn chứng
+- Artifact 1: n_dead_tup = 3.870.000, n_live_tup = 12.400.000, last_autovacuum = 03/04 (7 ngày trước).
+- Artifact 2: pid 18421 state idle in transaction, xact_start 08:14, xid age 42.1M.
+- Artifact 3: vacuum skipped because of lock conflict; cảnh báo xid age.
+
+### Cách sửa ngắn hạn
+- Terminate phiên idle in transaction ({{pg_terminate_backend(18421)}}) sau khi xác nhận không còn cần.
+- Chạy VACUUM (FULL nếu cần) ngoài giờ cao điểm để thu hồi space.
+- Bật {{idle_in_transaction_session_timeout}} (ví dụ 5 phút) để tự kill phiên treo.
+
+### Cách sửa dài hạn
+- Sửa code: không mở transaction qua HTTP call; dùng {{@Transactional}} ngắn, hoặc tách transaction.
+- Bật monitoring: alert khi n_dead_tup / n_live_tup > 20%, khi idle in transaction > 5 phút, khi xid age > 1 tỷ.
+- Tune autovacuum: giảm autovacuum_vacuum_scale_factor cho bảng lớn, tăng autovacuum_max_workers.
+
+> Senior tip: dead tuple không phải rác ngay lập tức — chúng cần cho snapshot của các phiên đang chạy. Vì vậy một transaction "quên COMMIT" là kẻ thù số 1 của vacuum. Luôn đặt idle_in_transaction_session_timeout và theo dõi pg_stat_activity.state = 'idle in transaction'.`,
+  rubric: [
+    'Chỉ đúng nguyên nhân gốc: phiên idle in transaction giữ snapshot, chặn autovacuum xoá dead tuple',
+    'Dẫn chứng đúng: n_dead_tup 3.87M, vacuum skipped lock conflict, pid idle in transaction, xid age',
+    'Giải thích đúng vì sao bloat làm query chậm (nhiều page hơn, cùng plan)',
+    'Đề xuất sửa đúng: terminate phiên, VACUUM, idle_in_transaction_session_timeout, tune autovacuum',
+    'Có monitoring/phòng ngừa: alert n_dead_tup ratio, idle in transaction, xid age',
+  ],
+  tags: ['postgresql', 'vacuum', 'bloat', 'idle-in-transaction', 'autovacuum'],
+},
+{
+  id: 'lab-sql-014',
+  category: 'sql',
+  title: 'N+1 lộ ra trong pg_stat_statements: SELECT theo id chạy 2 triệu lần/giờ',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Service {{product-catalog}} (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6) phục vụ API GET /api/v1/products/{id} và danh sách GET /api/v1/categories/{id}/products. pg_stat_statements cho thấy một câu {{SELECT ... FROM category WHERE id = $1}} chạy **2.100.000 lần/giờ** dù traffic thực chỉ ~30.000 request/giờ. CPU RDS 70%, p95 180 ms.
+
+**Việc bạn có.** Ba artifact: top pg_stat_statements, log Hibernate, code entity. Hãy tìm nguyên nhân N+1 và đề xuất cách sửa.`,
+  artifacts: [
+    {
+      name: 'pg-stat-statements-top.txt',
+      lang: 'text',
+      content: `-- 2026-04-11 09:00 +07, RDS catalog-primary (PostgreSQL 15.6)
+      queryid        | calls     | total_ms    | mean_ms | rows
+      -9876543210    | 2100000   | 420000.0    | 0.200   | 2100000
+      -- digest: select c1_0.id,c1_0.name from category c1_0 where c1_0.id=$1
+      -- calls / hour = 2.1M, nhưng request thực ~30k/giờ → ratio 70x
+      -- shared_blks_hit = 8400000, shared_blks_read = 0 (toàn cache)`,
+    },
+    {
+      name: 'hibernate-sql.log',
+      lang: 'text',
+      content: `2026-04-11 08:45:12.100 DEBUG [http-nio-8080-exec-7] o.h.SQL: select c1_0.id,c1_0.name from category c1_0 where c1_0.id=?
+      2026-04-11 08:45:12.105 DEBUG [http-nio-8080-exec-7] o.h.SQL: select p1_0.id,p1_0.name,p1_0.price,p1_0.category_id from product p1_0 where p1_0.category_id=?
+      2026-04-11 08:45:12.110 DEBUG [http-nio-8080-exec-7] o.h.SQL: select p1_0.id,p1_0.name,p1_0.price,p1_0.category_id from product p1_0 where p1_0.id=?
+      2026-04-11 08:45:12.112 DEBUG [http-nio-8080-exec-7] o.h.SQL: select p1_0.id,p1_0.name,p1_0.price,p1_0.category_id from product p1_0 where p1_0.id=?
+      ... (48 dòng nữa, mỗi product một câu SELECT by id)
+      2026-04-11 08:45:12.180 INFO  [http-nio-8080-exec-7] c.v.c.CategoryController: GET /api/v1/categories/42/products -> 200 in 82 ms (50 products)`,
+    },
+    {
+      name: 'ProductEntity.java',
+      lang: 'text',
+      content: `// src/main/java/com/v/catalog/Product.java
+      @Entity
+      public class Product {
+        @Id private Long id;
+        @ManyToOne(fetch = FetchType.LAZY) private Category category;
+        private String name;
+        private BigDecimal price;
+      }
+      // src/main/java/com/v/catalog/CategoryService.java
+      public List<ProductDto> listByCategory(Long categoryId) {
+        List<Product> products = productRepo.findByCategoryId(categoryId);
+        return products.stream().map(p -> new ProductDto(
+            p.getId(), p.getName(), p.getPrice(),
+            p.getCategory().getName()   // <-- lazy load trong stream
+        )).toList();
+      }`,
+    },
+  ],
+  questions: [
+    'Vì sao một câu SELECT theo id chạy 2 triệu lần/giờ dù traffic chỉ 30k request/giờ? Dẫn chứng.',
+    'Vì sao tăng connection pool không giúp và CPU vẫn cao?',
+    'Bạn sửa code theo những cách nào và thêm guardrail để phát hiện N+1?',
+  ],
+  hints: [
+    'Đếm số câu SELECT by id trong log cho một request danh sách 50 sản phẩm.',
+    'Lazy loading trong stream map: mỗi p.getCategory() kích hoạt một câu SELECT by id.',
+    'Giải pháp: fetch join, @EntityGraph, @BatchSize, hoặc DTO projection.',
+  ],
+  answer: `**Tóm tắt:** Đây là N+1 do lazy loading: danh sách 50 sản phẩm được lấy bằng 1 câu, rồi với mỗi sản phẩm lại gọi {{p.getCategory().getName()}} trong stream map, kích hoạt 50 câu SELECT category by id. 30.000 request/giờ × 50 = 1.5M câu thêm, khớp với 2.1M calls/giờ. Không câu nào chậm (0.2 ms) nhưng tổng thời gian DB tăng và CPU cao.
+
+### Nguyên nhân gốc
+Entity {{Product}} có {{@ManyToOne(fetch = FetchType.LAZY) private Category category}}. Service map sang DTO và truy cập {{p.getCategory().getName()}} bên trong stream → Hibernate lazy-load Category cho từng product. OSIV giữ session mở nên lazy load chạy được trong controller.
+
+### Dẫn chứng
+- Artifact 1: calls = 2.100.000/giờ, digest SELECT category WHERE id=$1, mean 0.2 ms, toàn cache.
+- Artifact 2: log cho thấy sau câu list product, có 50 câu SELECT category WHERE id=? (mỗi product một câu), tổng 51 câu cho một request trả 50 sản phẩm.
+- Artifact 3: code CategoryService.listByCategory gọi p.getCategory().getName() trong stream map.
+
+### Cách sửa
+1. Fetch join: {{SELECT p FROM Product p JOIN FETCH p.category WHERE p.category.id = :id}}.
+2. @EntityGraph(attributePaths = "category") trên repository method.
+3. @BatchSize(size = 50) trên quan hệ để gom thành 1 câu IN (...) thay vì 50 câu.
+4. DTO projection: query thẳng vào record/DTO, không nạp entity.
+
+### Phòng ngừa
+- Bật hibernate.generate_statistics và theo dõi statements per request.
+- Dùng spring.jpa.open-in-view=false để phát hiện lazy load ngoài transaction (sẽ ném LazyInitializationException).
+- Code review: không truy cập lazy association trong stream/map ngoài transaction.
+
+> Senior tip: N+1 khó thấy vì mỗi câu rất nhanh; chỉ pg_stat_statements mới lộ ra tổng calls. Quy tắc: luôn kiểm tra số câu SQL cho một request bằng cách bật show_sql hoặc dùng datasource-proxy, và tắt OSIV ở production.`,
+  rubric: [
+    'Chỉ đúng nguyên nhân gốc: lazy loading trong stream map gây N+1',
+    'Dẫn chứng đúng: calls 2.1M/giờ, log 50 câu SELECT by id, code p.getCategory().getName()',
+    'Đề xuất sửa đúng: fetch join, @EntityGraph, @BatchSize, DTO projection',
+    'Biết tác động của OSIV và cách tắt để phát hiện',
+    'Có monitoring/guardrail: statistics, datasource-proxy, code review',
+  ],
+  tags: ['postgresql', 'n-plus-one', 'hibernate', 'lazy-loading', 'pg-stat-statements'],
+},
 );
+
