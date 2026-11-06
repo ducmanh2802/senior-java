@@ -3,6 +3,25 @@
 ## 2026-11-06
 
 ### Nội dung
+- T154 (auto-committed after kilo review + verify)
+- T152 (auto-committed after kilo review + verify)
+- T824 (auto-committed after kilo review + verify)
+- T597 (auto-committed after kilo review + verify)
+- T822 (auto-committed after kilo review + verify)
+- T301 (auto-committed after kilo review + verify)
+- T138 (auto-committed after kilo review + verify)
+- T820 (auto-committed after kilo review + verify)
+- T819 (auto-committed after kilo review + verify)
+- T110 (auto-committed after kilo review + verify)
+- T788 (auto-committed after kilo review + verify)
+
+### Ứng dụng
+- Code runner: switch /api/run from Judge0 (paid) to Wandbox (free, OpenJDK 21)
+
+
+## 2026-11-06
+
+### Nội dung
 - T591 (auto-committed after kilo review + verify)
 - T778 (auto-committed after kilo review + verify)
 - T56 (auto-committed after kilo review + verify)
