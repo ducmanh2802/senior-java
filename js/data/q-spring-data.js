@@ -6992,4 +6992,1567 @@ GDPR "right to be forgotten", du lieu lon, compliance -> hard delete + archive.
   tags: ['jpa', 'jOOQ', 'JdbcTemplate', 'architecture', 'lead', 'CQRS'],
 },
 
-);
+{
+  id: 'spring-039',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Mô tả chi tiết vòng đời bean từ BeanDefinition đến bean sẵn sàng: BeanFactoryPostProcessor, instantiate, populate, Aware, BeanPostProcessor before/after (proxy AOP tạo ở đây), init, SmartInitializingSingleton.',
+  a: `**Tóm tắt:** Spring không "tạo bean" trong một bước mà đi qua một pipeline có thứ tự cố định: đọc BeanDefinition → BeanFactoryPostProcessor chỉnh sửa definition → instantiate (constructor) → populate properties (DI) → Aware callbacks → BeanPostProcessor.before → init (@PostConstruct/afterPropertiesSet/init-method) → BeanPostProcessor.after (AOP proxy bọc ở đây) → đăng ký singleton → SmartInitializingSingleton sau khi context refresh xong. Proxy AOP chỉ được tạo ở bước after, vì phải đợi bean đã đủ dependency.
+
+### Pipeline từng bước
+1. **BeanDefinition** – metadata: class name, scope, constructor args, property values, init/destroy method, lazy flag. Đây là "bản vẽ", chưa có object.
+2. **BeanFactoryPostProcessor (BFPP)** – chạy trước khi tạo bất kỳ bean nào (trừ BFPP/BeanPostProcessor). Có thể sửa BeanDefinition (ví dụ PropertySourcesPlaceholderConfigurer thay \${...}), thêm definition. BFPP phải là static @Bean để tránh early init.
+3. **Instantiate** – constructor được gọi (Objenesis có thể bỏ qua constructor cho proxy). Factory method @Bean cũng ở đây.
+4. **Populate** – inject dependency theo constructor/setter/field. AutowiredAnnotationBeanPostProcessor xử lý @Autowired.
+5. **Aware** – nếu bean implement BeanNameAware, BeanFactoryAware, ApplicationContextAware → gọi callback. Đây là cách bean "biết" về container.
+6. **BeanPostProcessor.beforeInitialization** – ví dụ ApplicationContextAwareProcessor, CommonAnnotationBeanPostProcessor (@PostConstruct sẽ được gọi trong init phase bởi InitDestroyAnnotationBeanPostProcessor, nhưng BPP before có thể chuẩn bị).
+7. **Init** – @PostConstruct → InitializingBean.afterPropertiesSet → custom init-method.
+8. **BeanPostProcessor.afterInitialization** – AbstractAutoProxyCreator tạo proxy AOP tại đây (CGLIB/JDK). Bean trả về cho container là proxy, không phải target.
+9. **Singleton registration** – put vào singletonObjects (ConcurrentHashMap). Từ giờ getBean trả proxy.
+10. **SmartInitializingSingleton.afterSingletonsInstantiated** – chạy sau khi tất cả singleton non-lazy đã tạo xong; dùng để warm-up, preload cache, đăng ký listener.
+
+### Vì sao proxy ở after, không before
+Proxy cần bao quanh object đã hoàn chỉnh (đủ dependency, đã init). Nếu proxy tạo trước init, các init callback chạy trên target nhưng proxy chưa wrap → lời gọi từ bên ngoài không qua interceptor. Spring chọn after để đảm bảo mọi hook init đã xong trên target trước khi "đóng gói".
+
+### Early reference & circular dependency
+Khi có cycle qua field/setter, Spring expose "early reference" (có thể là proxy nếu bean cần AOP) trước khi init xong, để bean khác inject. Đây là lý do cycle chỉ giải quyết được với field/setter, không với constructor. Boot 2.6+ cấm mặc định vì early reference + proxy dễ vỡ (ví dụ @Async proxy không hỗ trợ early reference → "raw version").
+
+### Pitfall production
+- BFPP/BeanPostProcessor bean phải static @Bean, nếu không Spring phải init sớm config class → log "not eligible for getting processed by all BeanPostProcessors" và BPP có thể bị bỏ qua.
+- @PostConstruct chạy trong lúc context đang refresh: DB chưa sẵn sàng, transaction chưa có → không làm I/O nặng; dùng ApplicationReadyEvent hoặc CommandLineRunner cho warm-up.
+- Bean prototype không đi qua SmartInitializingSingleton và không gọi destroy callback.
+- getBean trong @PostConstruct của bean A có thể trigger tạo bean B sớm → thứ tự không như mong đợi.
+
+> Senior tip: khi debug "bean không được tạo / proxy không chạy", hãy in beanDefinitionNames và kiểm tra xem class có bị final, method private, hay lời gọi self-invocation không. Hiểu pipeline này là nền tảng để debug mọi "ma thuật" Spring.`,
+  follow: [
+    'Sự khác biệt giữa BeanFactoryPostProcessor và BeanPostProcessor về thời điểm và phạm vi tác động?',
+    'Tại sao proxy AOP phải được tạo ở afterInitialization chứ không phải before?'
+  ],
+  tags: ['bean lifecycle', 'BeanDefinition', 'BeanPostProcessor', 'SmartInitializingSingleton', 'internals']
+},
+{
+  id: 'spring-040',
+  topic: 'spring',
+  level: 'lead',
+  q: 'Auto-configuration trong Spring Boot: file AutoConfiguration.imports, @Conditional*, thứ tự, và cách đọc condition evaluation report (--debug) để biết vì sao bean không được tạo.',
+  a: `**Tóm tắt:** Auto-configuration là "cấu hình có điều kiện": Boot đọc danh sách class trong META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports, rồi chỉ đăng ký bean nếu các @Conditional* thỏa mãn. Debug bằng --debug (condition evaluation report) hoặc /actuator/conditions. Công thức vàng: @ConditionalOnMissingBean để nhường user, @ConditionalOnClass để không yêu cầu thư viện không có.
+
+### File đăng ký
+Mỗi dòng một tên class đầy đủ:
+~~~text
+META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports
+com.acme.config.FlywayAutoConfiguration
+~~~
+Lưu ý phiên bản: Boot 3.x dùng file .imports; trước Boot 2.7 dùng key EnableAutoConfiguration trong META-INF/spring.factories.
+
+### Các điều kiện thường dùng
+| Annotation | Ý nghĩa |
+|---|---|
+| @ConditionalOnMissingBean | Chỉ đăng ký nếu chưa có bean cùng type do user define |
+| @ConditionalOnClass | Chỉ đăng ký nếu class có trong classpath |
+| @ConditionalOnProperty | Bật/tắt theo property, matchIfMissing = true |
+| @ConditionalOnBean | Chỉ đăng ký nếu đã có bean khác (phụ thuộc thứ tự) |
+| @ConditionalOnWebApplication | Chỉ áp dụng cho ứng dụng web |
+
+### Ví dụ
+~~~java
+@AutoConfiguration
+@ConditionalOnClass(Flyway.class)
+@EnableConfigurationProperties(FlywayProperties.class)
+public class FlywayAutoConfiguration {
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(name = "spring.flyway.enabled", matchIfMissing = true)
+    Flyway flyway(DataSource dataSource) {
+        return Flyway.configure().dataSource(dataSource).load();
+    }
+}
+~~~
+
+### Thứ tự
+Dùng @AutoConfigureBefore / @AutoConfigureAfter để ép thứ tự, @AutoConfigureOrder để sắp xếp theo số. Nếu không khai báo, Boot sắp theo tên class (alphabet) – nó không tự suy ra thứ tự từ dependency giữa các bean. Thiếu @AutoConfigureAfter → auto-config của bạn có thể chạy trước khi bean của thư viện khác sẵn sàng.
+
+### Debug
+1. Chạy app với --debug: log startup in "Condition evaluation report" liệt kê từng auto-config và điều kiện đã khớp hay không (matched/unmatched, lý do cụ thể).
+2. Actuator: management.endpoints.web.exposure.include=health,info,conditions rồi xem /actuator/conditions – JSON cho biết chính xác điều kiện nào fail.
+3. /actuator/env xem property đã resolve thành gì.
+
+### Pitfall production
+- @Bean trong auto-config mà không có @ConditionalOnMissingBean → đè lên cấu hình user, khó debug.
+- @ConditionalOnClass(X.class) ở class-level an toàn (Spring đọc annotation bằng ASM, không nạp class). Nhưng đặt trên method @Bean với class literal thì có thể ném ClassNotFoundException/NoClassDefFoundError khi X vắng mặt. Cách an toàn: tách nested @Configuration riêng có điều kiện ở class-level, hoặc dùng name = "com.x.X" dạng String.
+- Thiếu @AutoConfigureAfter/@AutoConfigureOrder → thứ tự sai.
+
+> Senior tip: hãy nghĩ auto-config là API công khai: mọi bean phải có @ConditionalOnMissingBean, tôn trọng property có mặc định hợp lý, và có test kiểm tra "user tự định nghĩa bean thì auto-config nhường đường". Đó là 3 test tối thiểu của auto-config đạt chuẩn.`,
+  follow: [
+    'Sự khác biệt giữa @ConditionalOnMissingBean và @ConditionalOnMissingClass là gì?',
+    'Làm sao biết auto-config nào đã được nạp mà không cần bật --debug?'
+  ],
+  tags: ['auto-configuration', 'Conditional', 'actuator', 'debug', 'internals']
+},
+{
+  id: 'spring-041',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Transaction propagation thực tế: REQUIRES_NEW giữ 2 connection cùng lúc → cạn pool; rollback-only khi exception bị nuốt (UnexpectedRollbackException).',
+  a: `**Tóm tắt:** Propagation quy định cách transaction lồng trong transaction khác cư xử. REQUIRES_NEW treo (suspend) transaction ngoài và tạo transaction hoàn toàn mới với connection khác → giữ cùng lúc 2 connection. Khi exception bị bắt và nuốt bên trong, transaction ngoài vẫn bị đánh dấu rollback-only → commit sẽ ném UnexpectedRollbackException.
+
+### Bảng so sánh
+| Propagation | Đã có tx cha | Hành vi |
+|---|---|---|
+| REQUIRED | Có | Join vào tx cha |
+| REQUIRES_NEW | Có | Suspend tx cha, tạo tx mới (commit độc lập) |
+| NESTED | Có | Tạo savepoint trong tx hiện tại |
+| SUPPORTS | Có | Join nếu có, không tạo nếu không |
+| NOT_SUPPORTED | Có | Tạm dừng tx cha, chạy không transaction |
+| MANDATORY | Bắt buộc có | Không có tx thì báo lỗi |
+| NEVER | Bắt buộc không có | Có tx thì báo lỗi |
+
+### REQUIRES_NEW giữ 2 connection
+Ghi log audit phải tồn tại dù transaction nghiệp vụ rollback:
+~~~java
+@Service
+public class AuditService {
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void writeLog(String message) { /* commit riêng */ }
+}
+~~~
+Tx cha giữ connection #1, REQUIRES_NEW lấy connection #2. Với HikariCP pool nhỏ, đủ số thread đồng thời là pool cạn → lỗi "Connection is not available". Tx mới không thấy dữ liệu chưa commit của tx ngoài, và nếu nó cập nhật dòng mà tx ngoài đang khoá thì sẽ tự chờ chính mình (treo tới lock timeout).
+
+### Rollback-only / UnexpectedRollbackException
+Khi method A (REQUIRED) gọi method B (REQUIRED) và B ném RuntimeException, Spring đánh dấu tx cha rollback-only. Nếu code bắt exception ở A và không rethrow, A tiếp tục chạy và cố commit → Spring ném UnexpectedRollbackException vì tx đã bị đánh dấu rollback-only. Đây là lỗi kinh điển khi "nuốt exception".
+
+Cách xử lý: nếu muốn nuốt exception, phải tách transaction (REQUIRES_NEW) cho phần có thể fail, hoặc rõ ràng rollback/commit. Không nuốt exception trong cùng transaction.
+
+### Pitfall production
+- REQUIRES_NEW tạo tính không nhất quán: transaction con commit trước, transaction ngoài rollback sau ⇒ dữ liệu đã ghi vẫn còn. Chỉ dùng khi nghiệp vụ chấp nhận (log, notification).
+- NESTED chỉ hoạt động khi nền tảng hỗ trợ savepoint (PostgreSQL, MySQL InnoDB có; một số DB không). Trên JPA hỗ trợ còn hạn chế.
+- Propagation chỉ có tác dụng khi lời gọi qua proxy – self-invocation phá propagation.
+- REQUIRES_NEW cần kiểm tra kích thước connection pool và đặt timeout cho phần chờ connection.
+
+> Senior tip: trước khi thêm REQUIRES_NEW, hãy hỏi "transaction con có thật sự cần sống sót khi transaction cha rollback không?". Nếu không, dùng REQUIRED. Khi đã dùng REQUIRES_NEW, luôn kiểm tra pool size và đặt connection timeout.`,
+  follow: [
+    'Transaction con dùng REQUIRES_NEW commit thành công nhưng transaction cha rollback – dữ liệu sẽ ra sao?',
+    'Tại sao NESTED không hoạt động trên mọi database?'
+  ],
+  tags: ['Transactional', 'propagation', 'REQUIRES_NEW', 'UnexpectedRollbackException', 'connection pool']
+},
+{
+  id: 'spring-042',
+  topic: 'spring',
+  level: 'senior',
+  q: '@Async/@Scheduled: executor mặc định ở Boot 3, mất context (MDC, SecurityContext, transaction) và cách truyền (TaskDecorator).',
+  a: `**Tóm tắt:** @Async chạy method ở thread khác do TaskExecutor quản lý, dựa trên proxy nên chịu hạn chế AOP. Ba cái bẫy lớn: exception bị nuốt; transaction không truyền sang thread mới; ThreadLocal không truyền (MDC, SecurityContext). Dùng TaskDecorator để copy context. @Scheduled mặc định dùng ThreadPoolTaskScheduler pool size = 1.
+
+### Executor mặc định Boot 3
+- Nếu có đúng một bean TaskExecutor, Spring dùng bean đó cho @Async.
+- Spring Boot tự động cấu hình bean applicationTaskExecutor (core size 8, queue rất lớn, prefix task-).
+- Nếu không có bean nào, Spring rơi về SimpleAsyncTaskExecutor: mỗi task một thread mới, không giới hạn → chạy tải cao sinh hàng nghìn thread và làm chết máy. Luôn khai báo executor tường minh.
+
+### Cấu hình executor
+~~~java
+@Configuration
+@EnableAsync
+public class AsyncConfig implements AsyncConfigurer {
+    @Bean("reportExecutor")
+    ThreadPoolTaskExecutor reportExecutor() {
+        var ex = new ThreadPoolTaskExecutor();
+        ex.setCorePoolSize(4);
+        ex.setMaxPoolSize(8);
+        ex.setQueueCapacity(500);
+        ex.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+        ex.setThreadNamePrefix("report-");
+        ex.initialize();
+        return ex;
+    }
+    @Override public Executor getAsyncExecutor() { return reportExecutor(); }
+}
+~~~
+
+### Bẫy 1 – exception bị nuốt
+Method void: exception đi vào AsyncUncaughtExceptionHandler (mặc định chỉ log), caller không biết. Method trả Future/CompletableFuture: exception nằm trong Future, không ai đọc là mất. Muốn xử lý lỗi: trả CompletableFuture<Void> và dùng whenComplete/exceptionally, và cài AsyncUncaughtExceptionHandler riêng (alert/metrics) cho method void.
+
+### Bẫy 2 – transaction
+Transaction gắn với thread (qua TransactionSynchronizationManager), nên thread mới không có transaction. Đừng mong @Transactional ở method gọi được kế thừa. Hãy đặt @Transactional ngay trên chính method async (chạy trong thread mới) để có transaction riêng.
+
+### Bẫy 3 – ThreadLocal
+MDC (trace id) và SecurityContext không tự truyền sang thread mới. Dùng TaskDecorator để copy context:
+~~~java
+ex.setTaskDecorator(runnable -> {
+    var ctx = MDC.getCopyOfContextMap();
+    return () -> { MDC.setContextMap(ctx); try { runnable.run(); } finally { MDC.clear(); } };
+});
+~~~
+
+### @Scheduled
+- Cần @EnableScheduling; 3 kiểu trigger: fixedRate (định kỳ tính từ lúc bắt đầu), fixedDelay (chờ thêm X sau khi xong), cron.
+- Timezone mặc định theo máy chạy app; luôn chỉ định zone = "Asia/Ho_Chi_Minh" cho job theo lịch nghiệp vụ.
+- Chạy trùng trên nhiều instance: dùng ShedLock (@SchedulerLock) hoặc tách scheduler instance duy nhất.
+- Task dài làm nghẽn scheduler: pool size = 1 mặc định → task 2 phút chặn task kế tiếp. Cấu hình pool lớn hơn hoặc đẩy xuống executor async.
+- Exception: Spring bọc task bằng error handler mặc định "log rồi bỏ qua" → lần chạy sau vẫn diễn ra; phải tự bắt exception, đếm metric lỗi và alert.
+
+### Pitfall production
+- Queue không giới hạn + producer nhanh hơn consumer → memory tăng tới OOM; luôn đặt queue capacity và rejection policy.
+- @Async trên method private hoặc lời gọi nội bộ this.x() → chạy đồng bộ, không báo lỗi.
+- Job phải idempotent: at-least-once + idempotent để chịu được retry, deploy, clock lệch.
+- Spring Boot 3.2+ có thể dùng virtual thread executor với spring.threads.virtual.enabled=true – phù hợp I/O nhiều.
+
+> Senior tip: định nghĩa rõ trong team: @Async chỉ dùng cho tác vụ không quan trọng (gửi email, ghi log, cập nhật thống kê). Với tác vụ nghiệp vụ cần đảm bảo không mất, đẩy vào message broker và có retry/dead-letter. Nhớ thêm metrics đếm số task async đang chờ và số task lỗi.`,
+  follow: [
+    'Làm sao truyền SecurityContext hoặc trace id sang thread async một cách an toàn?',
+    'Khi nào nên dùng message broker thay vì @Async?'
+  ],
+  tags: ['Async', 'Scheduled', 'executor', 'TaskDecorator', 'MDC', 'ThreadPoolTaskExecutor']
+},
+{
+  id: 'spring-043',
+  topic: 'spring',
+  level: 'lead',
+  q: 'Khởi động nhanh Spring Boot: lazy init, CDS (Boot 3.3+), AOT + GraalVM native image, CRaC — trade-off.',
+  a: `**Tóm tắt:** Spring Boot 3 cung cấp nhiều cách giảm thời gian khởi động: lazy initialization (tạo bean khi cần), CDS (Class Data Sharing – chia sẻ metadata class đã xử lý), AOT + GraalVM native image (biên dịch ahead-of-time thành binary), và CRaC (checkpoint/restore JVM). Mỗi cách đánh đổi giữa thời gian start, throughput, memory và khả năng debug.
+
+### Lazy init
+spring.main.lazy-initialization=true: bean chỉ được tạo khi lần đầu được yêu cầu. Giảm thời gian start và memory ban đầu, nhưng lỗi cấu hình (missing bean, sai property) chỉ lộ ra lúc runtime thay vì lúc start, và request đầu tiên sẽ chậm. Phù hợp cho dev/local; production thường muốn fail-fast.
+
+### CDS (Boot 3.3+)
+CDS cho phép JVM lưu class metadata đã parse/verify vào archive (.jsa), dùng lại giữa các lần start → giảm thời gian class loading. Boot 3.3 hỗ trợ tạo CDS archive tự động (spring.context.checkpoint). Giới hạn: phải chạy cùng JDK version, cùng classpath; không hỗ trợ mọi agent; lợi ích vừa phải (thường 20-40% start nhanh hơn) nhưng không thay đổi throughput.
+
+### AOT + GraalVM native image
+AOT xử lý Spring tại build time: bean definition, proxy, reflection metadata được sinh sẵn. GraalVM native image biên dịch thành binary native → start cực nhanh (ms), memory footprint thấp, nhưng build lâu (phút), binary lớn, và reflection/dynamic proxy phải khai báo rõ (reachability metadata). Spring Boot 3 hỗ trợ native image qua spring-boot-maven-plugin (native profile). Pitfall: code dùng reflection không khai báo sẽ fail runtime; test coverage phải cao vì lỗi chỉ lộ khi chạy native.
+
+### CRaC (Coordinated Restore at Checkpoint)
+CRaC cho phép JVM checkpoint toàn bộ trạng thái (heap + threads) vào file, rồi restore cực nhanh. Spring Boot 3.2+ hỗ trợ checkpoint (spring.context.checkpoint=onRefresh hoặc always). Khác với native image: vẫn chạy trên JVM nên throughput và tương thích tốt hơn, nhưng checkpoint file lớn, restore phải cùng môi trường, và resource (socket, file handle) phải đóng/mở lại qua Resource interface của CRaC.
+
+### Bảng trade-off
+| Phương pháp | Start | Throughput | Build time | Tương thích |
+|---|---|---|---|---|
+| Lazy init | nhanh hơn | không đổi | không đổi | cao |
+| CDS | nhanh hơn vừa | không đổi | build archive | trung bình |
+| Native image | rất nhanh | thường thấp hơn | rất lâu | thấp (cần metadata) |
+| CRaC | rất nhanh | như JVM | checkpoint runtime | trung bình (resource handling) |
+
+### Pitfall production
+- Native image: thiếu reflection metadata → ClassNotFoundException/NoSuchMethodError lúc runtime; dùng tracing agent để sinh metadata.
+- CRaC: socket/file handle không tự restore; phải implement Resource và đóng/mở lại; database connection pool phải recreate.
+- Lazy init che lỗi config; native image che lỗi reflection.
+- Đo start time thực tế (time to first request) chứ không chỉ "JVM started".
+
+> Senior tip: đừng chọn native image chỉ vì "start nhanh". Nếu workload là serverless/short-lived (Lambda, scale-to-zero), native image/CRaC đáng giá. Nếu là long-running service, JVM tuning (G1/ZGC, heap sizing) thường cho throughput tốt hơn với chi phí thấp hơn. Luôn đo trên workload thật trước khi quyết định.`,
+  follow: [
+    'Khi nào nên chọn CRaC thay vì GraalVM native image?',
+    'Native image ảnh hưởng thế nào đến reflection và dynamic proxy trong Spring?'
+  ],
+  tags: ['startup', 'lazy init', 'CDS', 'GraalVM', 'native image', 'CRaC', 'AOT']
+},
+{
+  id: 'spring-044',
+  topic: 'spring',
+  level: 'lead',
+  q: 'Spring MVC trên virtual threads (spring.threads.virtual.enabled) vs WebFlux: khi nào còn cần reactive?',
+  a: `**Tóm tắt:** Spring MVC là blocking (thread-per-request); WebFlux là reactive non-blocking (event loop + backpressure). Với hệ thống dùng JDBC/JPA (blocking), WebFlux không giúp gì, và lựa chọn hiện đại là MVC + virtual threads (Java 21). WebFlux vẫn cần khi cần backpressure, streaming/SSE/WebSocket, hoặc toàn bộ I/O non-blocking.
+
+### So sánh
+| Tiêu chí | Spring MVC | Spring WebFlux |
+|---|---|---|
+| Mô hình thread | Thread-per-request (blocking) | Event loop + non-blocking |
+| Ngưỡng đồng thời | Bị giới hạn bởi số thread | Rất cao, nhưng chỉ khi I/O thực sự non-blocking |
+| DB driver | JDBC/JPA (blocking) | R2DBC (non-blocking) |
+| Blocking code | Bình thường | Chặn event loop → rất nguy hiểm |
+| Backpressure | Không có (dựa vào số thread) | Có, giới hạn tốc độ producer |
+| Streaming/SSE/WebSocket | Có (không tối ưu) | Rất tốt |
+
+### Vì sao WebFlux "không nhanh hơn" khi dùng JPA
+WebFlux chỉ hay khi toàn bộ chuỗi I/O không chặn: R2DBC, WebClient, Kafka reactive, SSE. Nếu bạn vẫn dùng JPA/Hibernate trong handler, các lệnh query blocking sẽ giữ event loop → mất đúng lợi thế của WebFlux, thêm độ phức tạp. Kết hợp "WebFlux + JPA" là dấu hiệu thiết kế sai.
+
+### Virtual threads thay đổi bức tranh
+Java 21 (JEP 444) cho phép tạo hàng triệu thread nhẹ. Spring Boot 3.2+ hỗ trợ:
+~~~yaml
+spring:
+  threads:
+    virtual:
+      enabled: true
+~~~
+Khi đó Tomcat xử lý mỗi request bằng một virtual thread: code blocking vẫn viết như MVC thông thường, nhưng không còn giới hạn "số thread = số request đồng thời". Đây là lựa chọn mặc định rất hợp lý cho hệ thống CRUD dùng JPA.
+
+### Pitfall production
+- Thread pinning: trên Java 21, virtual thread có thể pin carrier khi blocking trong một số vùng synchronized hoặc native method. Tránh giữ monitor qua thao tác I/O blocking dài. JEP 491 (Java 24) loại bỏ pinning do monitor trong các trường hợp này.
+- ThreadLocal trong virtual thread vẫn hoạt động nhưng bộ nhớ phụ thuộc số thread đang sống → tránh giữ dữ liệu lớn trong ThreadLocal.
+- Với virtual thread, connection pool phải nhỏ lại (pool là tài nguyên hữu hạn của DB), không phải lớn lên.
+- Kiểm thử: MVC dùng MockMvc, WebFlux dùng WebTestClient – test sai loại là nguồn lỗi phổ biến.
+
+### Khi nào còn cần WebFlux
+- Cần backpressure (producer nhanh hơn consumer).
+- Streaming/SSE/WebSocket với nhiều kết nối đồng thời.
+- Toàn bộ I/O non-blocking (R2DBC, WebClient, reactive Kafka).
+- Gateway/proxy với throughput cực cao và latency thấp.
+
+> Senior tip: đừng chọn WebFlux chỉ vì nghe "reactive là xu hướng". Nếu hệ thống bị nghẽn vì thread bị chặn I/O (DB, HTTP client), chuyển sang virtual thread là thay đổi nhỏ, hiệu quả cao. Chuyển sang WebFlux là viết lại toàn bộ tầng I/O – chi phí lớn, chỉ đáng làm khi thực sự cần backpressure và streaming.`,
+  follow: [
+    'Tại sao dùng WebFlux cùng JPA là một anti-pattern?',
+    'Virtual thread ảnh hưởng thế nào đến việc sizing connection pool?'
+  ],
+  tags: ['Spring MVC', 'WebFlux', 'reactive', 'virtual threads', 'backpressure']
+},
+{
+  id: 'spring-045',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Spring context refresh phases: prepareRefresh, obtainFreshBeanFactory, invokeBeanFactoryPostProcessors, registerBeanPostProcessors, finishBeanFactoryInitialization, finishRefresh và SmartInitializingSingleton.',
+  a: `**Tóm tắt:** ApplicationContext.refresh() đi qua 12 bước theo thứ tự cố định (AbstractApplicationContext.refresh). Hiểu các phase giúp debug "bean không được tạo", "BPP bị bỏ qua", và biết khi nào SmartInitializingSingleton / ApplicationReadyEvent chạy. Các phase quan trọng: prepareRefresh → obtainFreshBeanFactory → prepareBeanFactory → postProcessBeanFactory → invokeBeanFactoryPostProcessors → registerBeanPostProcessors → initMessageSource → initApplicationEventMulticaster → onRefresh → registerListeners → finishBeanFactoryInitialization → finishRefresh.
+
+### Các phase chính
+1. **prepareRefresh** – đánh dấu started, validate environment, init property sources.
+2. **obtainFreshBeanFactory** – tạo bean factory mới (DefaultListableBeanFactory), load bean definitions từ XML/JavaConfig.
+3. **prepareBeanFactory** – đăng ký các bean đặc biệt (environment, systemProperties, systemEnvironment), thêm BeanPostProcessor (ApplicationContextAwareProcessor), ignore dependency interface.
+4. **postProcessBeanFactory** – hook cho subclass (ví dụ WebApplicationContext thêm ServletContext).
+5. **invokeBeanFactoryPostProcessors** – chạy BFPP (ConfigurationClassPostProcessor parse @Configuration/@ComponentScan/@Import; PropertySourcesPlaceholderConfigurer resolve \${...}). Đây là lúc @Configuration classes được xử lý.
+6. **registerBeanPostProcessors** – tìm và đăng ký tất cả BeanPostProcessor bean vào bean factory (sắp xếp theo PriorityOrdered/Ordered). Sau bước này BPP mới hoạt động cho các bean tạo sau.
+7. **initMessageSource** – i18n.
+8. **initApplicationEventMulticaster** – event bus.
+9. **onRefresh** – hook subclass (web: tạo theme resolver, v.v.).
+10. **registerListeners** – đăng ký ApplicationListener bean.
+11. **finishBeanFactoryInitialization** – pre-instantiate tất cả singleton non-lazy (gọi getBean cho từng definition). Đây là lúc @PostConstruct, BPP, AOP proxy chạy. SmartInitializingSingleton.afterSingletonsInstantiated chạy ở cuối bước này.
+12. **finishRefresh** – publish ContextRefreshedEvent, start SmartLifecycle (phase thấp trước), log startup info.
+
+### Vì sao thứ tự này quan trọng
+- BFPP (phase 5) phải chạy trước BPP registration (phase 6) và trước instantiate (phase 11), vì BFPP có thể thêm/sửa bean definitions (ví dụ @ComponentScan thêm definition). Nếu BPP được đăng ký trước BFPP, BPP có thể bị bỏ qua cho các bean do BFPP thêm.
+- BeanPostProcessor bean phải được instantiate sớm (trong phase 6) để xử lý các bean sau. Đó là lý do @Bean trả về BeanPostProcessor phải static.
+- SmartInitializingSingleton chạy sau khi tất cả singleton đã tạo xong → an toàn để làm warm-up phụ thuộc vào nhiều bean.
+
+### Pitfall production
+- Lỗi "BeanPostProcessor ... not eligible" xuất hiện khi BPP bean được tạo quá muộn (sau khi nó cần xử lý bean khác) → thường do @Bean non-static.
+- ContextRefreshedEvent có thể fire nhiều lần (parent/child context) → listener phải idempotent.
+- finishRefresh start SmartLifecycle theo phase tăng dần khi start, và phase giảm dần khi stop → thứ tự shutdown ngược với startup.
+- ApplicationReadyEvent fire sau finishRefresh (và sau CommandLineRunner) → đây là thời điểm an toàn để warm-up và health check.
+
+> Senior tip: khi app start chậm, hãy bật spring.jmx.enabled và đo thời gian từng phase, hoặc dùng startup endpoint (/actuator/startup) để xem timeline bean. Phase 11 (pre-instantiate) thường là chỗ tốn thời gian nhất – lazy init có thể giúp nhưng đánh đổi fail-fast.`,
+  follow: [
+    'Tại sao BeanPostProcessor bean phải là static @Bean?',
+    'Sự khác biệt giữa ContextRefreshedEvent và ApplicationReadyEvent là gì?'
+  ],
+  tags: ['context refresh', 'ApplicationContext', 'SmartLifecycle', 'ApplicationReadyEvent', 'internals']
+},
+{
+  id: 'spring-046',
+  topic: 'spring',
+  level: 'lead',
+  q: 'Spring Boot test slices (@WebMvcTest, @DataJpaTest, @JsonTest...): cơ chế, @MockBean/@SpyBean, và bẫy khi dùng chung với @SpringBootTest.',
+  a: `**Tóm tắt:** Test slices là các annotation tự động cấu hình chỉ một "lát cắt" của app (web layer, JPA layer, JSON layer...) thay vì toàn bộ context, giúp test nhanh và cô lập. @MockBean/@SpyBean thay thế bean thật bằng mock/spy trong context. Bẫy phổ biến: dùng @MockBean trong @SpringBootTest làm context cache bị invalidate, và mixing slice với full context.
+
+### Các slice phổ biến
+| Annotation | Lát cắt |
+|---|---|
+| @WebMvcTest | Spring MVC + controller, mock service layer |
+| @WebFluxTest | WebFlux controller |
+| @DataJpaTest | JPA + repository + embedded DB (auto rollback) |
+| @DataJdbcTest | Spring Data JDBC |
+| @JsonTest | Jackson/Gson serialization |
+| @RestClientTest | RestTemplate/WebClient client |
+| @AutoConfigureMockMvc | Thêm MockMvc vào @SpringBootTest |
+
+### Cơ chế
+Slice annotation dùng @ImportAutoConfiguration để chỉ nạp auto-config liên quan đến lát cắt, và @TypeExcludeFilters để loại bỏ các @Component khác. Kết quả: context nhỏ, start nhanh, và chỉ test đúng layer.
+
+### @MockBean / @SpyBean
+- @MockBean: thay bean thật bằng Mockito mock trong context; mọi bean phụ thuộc vào nó sẽ nhận mock.
+- @SpyBean: spy (gọi thật trừ khi stub).
+- Phải khai báo ở class level hoặc field; mock được reset giữa các test method (Mockito.reset) nhưng bean definition vẫn là mock.
+- @MockBean làm context cache key thay đổi → nếu nhiều test class dùng @MockBean khác nhau, Spring phải tạo context mới → chậm. Dùng @MockBean ở base class chung hoặc @TestConfiguration để giảm.
+
+### Bẫy khi dùng chung với @SpringBootTest
+1. @SpringBootTest load toàn bộ context; thêm @MockBean sẽ invalidate cache giữa các test class → test suite chậm.
+2. Slice test không có @Service/@Repository bean thật → nếu controller gọi service mà không mock, test fail. Phải @MockBean service.
+3. @DataJpaTest mặc định dùng embedded DB và rollback mỗi test; nếu dùng @Transactional trên test method, rollback theo test. Với @SpringBootTest + @AutoConfigureTestDatabase, cần cấu hình rõ.
+4. Test slice không scan @ComponentScan của app → bean custom ở package khác không có; dùng @Import để thêm.
+5. @MockBean trên interface vs class: phải khớp với bean definition thực tế (proxy type).
+
+### Pitfall production
+- Quá nhiều @MockBean làm test "pass" nhưng không kiểm tra integration thật → cần @SpringBootTest cho smoke test.
+- Mock repository trong @WebMvcTest rồi test logic nghiệp vụ → test sai layer.
+- Context cache: đặt @DirtiesContext cẩn thận; lạm dụng làm suite chậm.
+- Flaky test do shared state (static, singleton) giữa các test method.
+
+> Senior tip: chiến lược test hợp lý: slice test cho logic từng layer (nhanh, nhiều), @SpringBootTest cho 1-2 smoke test integration, và Testcontainers cho DB thật. Đừng mock repository rồi gọi là "test integration" – đó chỉ là unit test với Spring context.`,
+  follow: [
+    'Khi nào nên dùng @MockBean thay vì mock thủ công trong unit test thuần?',
+    'Làm sao tránh context cache bị invalidate khi dùng @MockBean ở nhiều test class?'
+  ],
+  tags: ['testing', 'test slices', 'MockBean', 'WebMvcTest', 'DataJpaTest']
+}
+,
+{
+  id: 'jpa-038',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Dirty checking (cơ chế tự phát hiện thay đổi) trong Hibernate hoạt động bên trong như thế nào: snapshot được lưu ở đâu, so sánh diễn ra lúc nào, chi phí với persistence context lớn ra sao? Bytecode enhancement và read-only hint giúp gì?',
+  a: `**Tóm tắt:** Dirty checking (kiểm tra "bẩn" - tự phát hiện entity nào đã bị sửa) hoạt động dựa trên **snapshot** (ảnh chụp trạng thái lúc load): khi Hibernate nạp một entity vào persistence context (ngữ cảnh bền vững - vùng nhớ tạm của một phiên làm việc với DB, giống "sổ nháp" theo dõi mọi object đang quản lý), nó lưu một bản sao mảng giá trị các trường. Lúc flush (đồng bộ thay đổi xuống DB), Hibernate duyệt từng entity managed (đang được quản lý), so sánh giá trị hiện tại với snapshot từng trường; nếu khác thì sinh câu {{UPDATE}}. Persistence context càng lớn thì duyệt và so sánh càng tốn CPU/bộ nhớ. **Bytecode enhancement** (cải tiến bytecode - Hibernate sửa mã đã biên dịch của entity để gắn cơ chế theo dõi) cho phép dirty tracking (theo dõi thay đổi) trực tiếp, giảm so sánh; **read-only hint** báo Hibernate bỏ snapshot/không dirty-check cho truy vấn chỉ đọc.
+
+### Bước 1: "Cái gì" - snapshot và identity map
+- **Entity** (thực thể): object Java ánh xạ một dòng trong bảng DB (ví dụ {{Order}} ↔ bảng {{orders}}).
+- **Persistence context** (bộ nhớ đệm cấp 1 - L1 cache): cấu trúc dạng map, khóa là {{EntityKey}} (loại entity + id), giá trị là **EntityEntry** chứa: tham chiếu entity, trạng thái (managed/deleted/...), và **loadedState** - mảng snapshot các giá trị thuộc tính lúc nạp.
+- Ví dụ đời thường: giống nhân viên kho chụp ảnh món hàng lúc nhận (snapshot); lúc trả hàng họ so ảnh với hiện trạng để biết món nào bị đổi.
+
+### Bước 2: "Vì sao cần" - Hibernate chọn dirty checking
+- Nếu không có cơ chế này, lập trình viên phải tự gọi {{update()}} và chỉ rõ cột nào đổi - dễ quên, dễ sai.
+- Trade-off (đánh đổi) người thiết kế chọn: Hibernate chấp nhận **chi phí so sánh lúc flush** để đổi lấy **trải nghiệm lập trình tự nhiên** (sửa field Java rồi commit là xong). Ngược lại, các ORM khác (như jOOQ) thiên về SQL tường minh, ít "ma thuật" hơn nhưng nhiều code hơn.
+
+### Bước 3: Hoạt động từng bước
+1. **Load**: {{em.find(Order.class, 42L)}} hoặc query trả entity → Hibernate đọc dòng DB, tạo object {{Order}}, điền giá trị, lưu {{EntityEntry}} với {{loadedState = [42, "NEW", 100000, ...]}} vào persistence context.
+2. **Sửa trong bộ nhớ**: {{order.setStatus("PAID")}} → chỉ đổi field Java, **chưa có SQL**.
+3. **Flush** (xảy ra trước commit, hoặc trước query cần dữ liệu nhất quán, hoặc khi gọi {{flush()}}): Hibernate duyệt mọi EntityEntry managed → với mỗi entity, lấy {{currentState}} (đọc lại các field qua getter/field access) và so sánh với {{loadedState}} từng phần tử → nếu khác, đánh dấu dirty và tạo {{EntityUpdateAction}} trong **ActionQueue** (hàng đợi hành động).
+4. **Thực thi SQL**: ActionQueue chạy, sinh {{UPDATE orders SET status=? WHERE id=? AND version=?}} (nếu có {{@Version}}).
+
+~~~java
+@Transactional
+public void pay(Long id) {
+    Order o = em.find(Order.class, id); // (1) load: snapshot lưu [id, "NEW", 100k]
+    o.setStatus("PAID");                // (2) chỉ đổi field Java
+    // (3) trước commit: Hibernate so snapshot vs current -> sinh UPDATE status
+}
+~~~
+
+### Bước 4: Chi phí khi persistence context lớn
+- Độ phức tạp xấp xỉ **O(N * F)** mỗi lần flush: N = số entity managed, F = số field so sánh. Ví dụ xử lý 50.000 entity, mỗi entity 20 field → 1.000.000 phép so sánh/flush; nếu flush ngầm nhiều lần (do auto-flush trước query) chi phí nhân lên.
+- Bộ nhớ: mỗi entity giữ thêm mảng snapshot (bản sao giá trị). 50.000 entity * (object + snapshot + entry overhead) có thể lên hàng trăm MB → nguy cơ {{OutOfMemoryError}}.
+- Cách giảm: xử lý theo lô nhỏ (ví dụ 500), gọi {{em.flush(); em.clear();}} sau mỗi lô; dùng **StatelessSession** (phiên không trạng thái - không giữ snapshot, không dirty check) cho batch/import.
+
+### Bước 5: Bytecode enhancement (dirty tracking)
+- **Bytecode enhancement**: cơ chế Hibernate (plugin Maven/Gradle {{hibernate-enhancement-maven-plugin}}) chèn mã vào class entity lúc build để entity tự "báo" field nào đổi (thay vì Hibernate phải quét hết).
+- Lợi ích: bỏ qua so sánh field không đổi; kết hợp {{enableLazyInitialization}} có thể cải thiện lazy loading thuộc tính.
+- Đánh đổi: thêm bước build, mã sinh ra khó debug hơn, cần cấu hình nhất quán giữa môi trường.
+
+### Bước 6: Read-only hint
+~~~java
+// JPA hint: Hibernate KHÔNG giữ snapshot, KHÔNG dirty-check
+List<Order> rows = em.createQuery("select o from Order o", Order.class)
+    .setHint("org.hibernate.readOnly", true)
+    .getResultList();
+
+// Spring Data: tương đương
+@QueryHints(@QueryHint(name = "org.hibernate.readOnly", value = "true"))
+List<Order> findReport();
+~~~
+- Lưu ý: {{@Transactional(readOnly = true)}} đặt {{FlushMode.MANUAL}} (tắt auto-flush) và gợi ý JDBC; còn hint {{org.hibernate.readOnly}} tác động trực tiếp lên việc giữ snapshot của entity. Hai thứ bổ sung nhau, không hoàn toàn giống nhau.
+
+### Trên production
+- **Triệu chứng:** CPU spike trên app server khi xử lý batch; GC nhiều; thời gian flush tăng tuyến tính theo kích thước job; heap dump thấy hàng chục nghìn {{EntityEntry}} và mảng {{loadedState}}.
+- **Cách đo:** bật {{hibernate.generate_statistics=true}} (chỉ dev/staging hoặc sampling) và xem {{EntityInsertCount/UpdateCount/EntityLoadCount}}, {{FlushCount}}; dùng profiler (Java Flight Recorder - JFR) tìm thời gian trong {{DefaultFlushEntityEventListener}}; log SQL để phát hiện UPDATE không mong muốn.
+- **Cấu hình/tuning có thật:** {{spring.jpa.properties.hibernate.jdbc.batch_size}} (gom INSERT/UPDATE), {{hibernate.order_updates=true}}, xử lý theo chunk + {{clear()}}, dùng read-only hint cho truy vấn báo cáo, cân nhắc bytecode enhancement với {{enableDirtyTracking=true}}.
+
+| Chiến lược | Snapshot | Dirty check | Phù hợp |
+|---|---|---|---|
+| Mặc định (managed) | Có | Quét tất cả field khi flush | CRUD thông thường |
+| Read-only hint | Không/không dùng để so sánh | Bỏ qua | Báo cáo, truy vấn chỉ đọc |
+| {{StatelessSession}} | Không | Không | Batch/import lớn |
+| Bytecode enhancement (dirty tracking) | Tùy cấu hình | Chỉ field bị đánh dấu đổi | Entity nhiều field, cần tối ưu |
+
+> Senior tip: Nếu một job đọc 100k dòng để xuất báo cáo mà không sửa gì, đừng dùng Session thường - hãy đặt read-only hint hoặc dùng projection/StatelessSession; tôi từng thấy job xuất CSV giảm 40% thời gian chỉ nhờ bỏ snapshot không cần thiết. Luôn đo bằng statistics/JFR trước khi tối ưu.`,
+  follow: [
+    'Khi nào {{@Transactional(readOnly = true)}} đủ và khi nào cần thêm hint {{org.hibernate.readOnly}}?',
+    'Nếu bạn gọi {{em.detach(entity)}} hoặc {{em.clear()}} giữa chừng, dirty checking với entity đó thay đổi thế nào?',
+    'Bytecode enhancement có rủi ro gì khi deploy nhiều môi trường (dev/staging/prod) với cấu hình build khác nhau?'
+  ],
+  tags: ['dirty checking', 'persistence context', 'snapshot', 'bytecode enhancement', 'readOnly', 'internals'],
+  refs: [
+    { type: 'doc', title: 'Hibernate ORM User Guide: Bytecode Enhancement', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#BytecodeEnhancement' },
+    { type: 'doc', title: 'Hibernate ORM User Guide: Fetching (read-only)', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#fetching-strategies-dynamic-fetching' }
+  ]
+}
+
+,
+{
+  id: 'jpa-039',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Flush (đồng bộ persistence context xuống DB) và ActionQueue (hàng đợi hành động) trong Hibernate hoạt động thế nào? FlushMode AUTO nghĩa là gì, và vì sao thứ tự insert → update → delete trong ActionQueue có thể gây lỗi unique constraint khi bạn xoá rồi thêm lại cùng key trong một transaction?',
+  a: `**Tóm tắt:** Flush (đồng bộ) là lúc Hibernate chuyển các thay đổi trong persistence context (vùng nhớ quản lý entity) thành câu SQL theo **ActionQueue** (hàng đợi hành động nội bộ). Với {{FlushMode.AUTO}} (mặc định), Hibernate tự flush trước commit và trước một số query cần kết quả nhất quán. ActionQueue thực thi theo thứ tự cố định: **insert → update → (collection) → delete** (theo nhóm hành động); nếu trong cùng transaction bạn xóa một dòng rồi tạo dòng mới có **cùng unique key** (khóa duy nhất, ví dụ email unique), INSERT có thể chạy trước DELETE → DB báo vi phạm unique constraint dù về logic bạn "đã xóa trước".
+
+### Bước 1: Thuật ngữ nền tảng
+- **Persistence context**: "sổ nháp" của {{EntityManager}}/Session - theo dõi entity thêm/sửa/xóa.
+- **Flush**: "chốt sổ nháp xuống DB" - sinh SQL (INSERT/UPDATE/DELETE) nhưng chưa chắc commit (commit mới xác nhận transaction).
+- **ActionQueue**: hàng đợi bên trong Hibernate gom {{EntityInsertAction}}, {{EntityUpdateAction}}, {{EntityDeleteAction}}, collection actions rồi thực thi theo thứ tự định sẵn để giảm lỗi phụ thuộc (ví dụ insert cha trước con).
+- **Unique constraint**: ràng buộc DB đảm bảo cột/nhóm cột không trùng, ví dụ {{UNIQUE(email)}}.
+
+### Bước 2: Vì sao Hibernate dùng thứ tự cố định (trade-off)
+- Nếu thực thi SQL theo đúng thứ tự bạn gọi {{persist/remove}} trong Java, logic dễ hiểu hơn nhưng Hibernate khó tối ưu (batch, gom câu lệnh) và dễ vướng lỗi FK. Nếu dùng hàng đợi với thứ tự "an toàn mặc định" (ưu tiên insert để có id/FK, delete sau), tối ưu tốt hơn nhưng tạo ca góc "xóa rồi thêm lại cùng unique key".
+- Ví dụ đời thường: giống thủ thư cập nhật sổ theo loại việc (nhập sách mới trước, hủy sách sau); nếu bạn "hủy mã A rồi nhập lại mã A", làm theo loại việc sẽ gây trùng mã tạm thời.
+
+### Bước 3: FlushMode hoạt động thế nào
+| FlushMode | Khi flush | Ghi chú |
+|---|---|---|
+| {{AUTO}} (mặc định) | Trước commit; và trước query JPQL/Criteria/Native nếu Hibernate xác định query có thể đọc bảng bị ảnh hưởng | Cân bằng đúng dữ liệu và hiệu năng |
+| {{COMMIT}} | Chỉ trước commit | Query có thể thấy dữ liệu cũ trong cùng persistence context |
+| {{MANUAL}} (Hibernate, tương đương NEVER JPA) | Chỉ khi gọi {{flush()}} | Dùng cho read-only/batch; giảm dirty checking khi kết hợp đúng |
+
+~~~java
+@Transactional
+public void swapEmail(Long userId, String email) {
+    User u = em.find(User.class, userId); // managed
+    em.remove(u);                         // ghi nhận delete action
+    em.flush(); // ép DELETE chạy xuống DB trong transaction
+    User n = new User(email);
+    em.persist(n);                        // INSERT sau -> an toàn với unique
+}
+~~~
+
+### Bước 4: Từng bước gây lỗi unique constraint
+Giả sử {{users}} có {{UNIQUE(email)}} và đang có {{id=10, email='a@x.com'}}:
+1. {{remove()}} user id=10 → ghi nhận delete action (chưa SQL).
+2. {{persist()}} user mới với {{email='a@x.com'}} → ghi nhận insert action.
+3. Flush (không có flush giữa chừng): ActionQueue thực thi nhóm **INSERT trước** → DB kiểm tra unique: email vẫn tồn tại (DELETE chưa chạy) → **vi phạm unique constraint**.
+
+~~~text
+-- Thứ tự SQL thực tế (minh họa):
+INSERT INTO users(id,email) VALUES (11,'a@x.com'); -- FAIL: duplicate key (email)
+DELETE FROM users WHERE id=10;                    -- chưa kịp chạy
+~~~
+
+### Bước 5: Cách xử lý đúng
+- **Flush tường minh giữa delete và insert:** {{em.remove(u); em.flush(); em.persist(n);}} - phù hợp khi thực sự phải thay thế.
+- **Update thay vì delete+insert:** nếu chỉ đổi dữ liệu, {{u.setEmail(newEmail)}} giữ id và tránh vấn đề thứ tự.
+- **Thiết kế tránh hoán đổi natural key** trong cùng unit of work (đơn vị công việc).
+- Tránh dùng {{hibernate.flush_before_completion}} như "cứu cánh" mà không hiểu thứ tự action.
+
+### Trên production
+- **Triệu chứng:** {{ConstraintViolationException}} / SQLState {{23505}} (PostgreSQL) chỉ ở luồng "đổi key", khó tái hiện nếu test không flush giống production hoặc dùng DB khác.
+- **Cách đo:** bật {{org.hibernate.SQL}} (DEBUG) để xem thứ tự câu lệnh; viết integration test với DB thật (Testcontainers) vì H2 đôi khi khác hành vi constraint/timing.
+- **Cấu hình:** {{hibernate.order_inserts=true}}/{{hibernate.order_updates=true}} giúp gom batch nhưng **không đổi** thứ tự insert/update/delete giữa các loại hành động; PostgreSQL {{DEFERRABLE INITIALLY DEFERRED}} có thể dời kiểm tra unique đến cuối transaction (trade-off: phát hiện lỗi muộn, phức tạp hơn).
+
+| Ca sử dụng | Rủi ro | Hướng xử lý |
+|---|---|---|
+| Tạo entity mới | Thấp | {{persist}} |
+| Sửa field (không đổi unique key) | Thấp | Dirty checking |
+| Xóa rồi thêm lại cùng unique key | **Cao** | {{flush()}} giữa hai bước hoặc update |
+| Thay thế bản ghi có FK phức tạp | Cao | Thiết kế migration logic, cân nhắc soft delete |
+
+> Senior tip: Khi review code JPA, tôi tìm pattern {{remove()}} rồi {{persist()}} cùng business key - đó là mìn hẹn giờ với unique constraint. Nếu id nghiệp vụ không đổi, hãy update; nếu phải thay thế, flush sau delete và viết test tích hợp trên đúng loại DB production.`,
+  follow: [
+    'Sự khác nhau giữa {{flush()}} và {{commit()}} là gì, và flush fail nhưng chưa commit thì transaction ở trạng thái nào?',
+    'Constraint {{DEFERRABLE}} của PostgreSQL giúp gì trong ca này và đánh đổi là gì?',
+    'Tại sao {{hibernate.order_inserts=true}} không giải quyết được lỗi unique khi delete+insert cùng key?'
+  ],
+  tags: ['flush', 'FlushMode', 'ActionQueue', 'unique constraint', 'internals'],
+  refs: [
+    { type: 'doc', title: 'Hibernate ORM User Guide: Flushing', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#flushing' }
+  ]
+}
+,
+{
+  id: 'jpa-041',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Dirty checking (kiểm tra "bẩn" - thay đổi) trong Hibernate hoạt động bên trong thế nào: snapshot (ảnh chụp) lúc load được lưu ở đâu, so sánh lúc flush diễn ra theo thứ tự nào, và chi phí thế nào khi persistence context (ngữ cảnh bền vững - bộ nhớ quản lý entity trong 1 session) rất lớn? Bytecode enhancement (tăng cường bytecode) và read-only hint (gợi ý chỉ đọc) giúp gì?',
+  a: `**Tóm tắt:** Khi Hibernate load một entity (thực thể - object ánh xạ bảng DB) vào trạng thái **managed/persistent**, nó lưu một mảng **snapshot** (bản sao giá trị các trường tại thời điểm load) trong cấu trúc nội bộ của persistence context. Lúc **flush** (đẩy thay đổi xuống DB), Hibernate duyệt từng entity managed, so sánh giá trị hiện tại với snapshot để tìm trường "dirty" (đã đổi) rồi sinh {{UPDATE}}. Chi phí là O(số entity * số trường/cơ chế so sánh) mỗi lần flush; persistence context lớn (hàng nghìn entity) khiến flush chậm và tốn RAM. **Bytecode enhancement** (plugin chỉnh bytecode lúc build) gắn cơ chế dirty-tracking vào chính entity để Hibernate biết ngay entity nào bẩn; **read-only hint** ({{setHint(QueryHints.HINT_READONLY, true)}} hoặc {{@Transactional(readOnly=true)}} với Hibernate) giúp bỏ snapshot/skip dirty check cho truy vấn chỉ đọc.
+
+### Bước 1: Thuật ngữ (giải thích từ gốc)
+- **Persistence context**: ví dụ đời thường như một "bàn làm việc" tạm — mọi giấy tờ (entity) bạn lấy ra đều nằm trên bàn; Hibernate nhớ cả trạng thái gốc để cuối buổi biết bạn đã sửa tờ nào.
+- **Snapshot (loaded state)**: bản chụp giá trị từng cột/thuộc tính ngay sau khi entity được nạp. Hibernate giữ nó song song với object Java bạn đang cầm.
+- **Dirty checking**: so sánh "giá trị hiện tại" với "snapshot" để quyết định có cần {{UPDATE}} không.
+- **Flush**: thời điểm Hibernate đồng bộ thay đổi managed xuống DB (trước commit, trước một số query, hoặc khi gọi {{flush()}}).
+
+### Bước 2: Cơ chế bên trong từng bước
+1. **Load**: {{em.find(Order.class, 1L)}} hoặc query trả entity → Hibernate hydrate (đổ dữ liệu) vào object, đăng ký entity vào identity map (đảm bảo 1 id = 1 instance trong context), và lưu **loaded state** (snapshot) theo từng property.
+2. **Bạn sửa object**: {{order.setStatus("PAID")}} — Hibernate **không** biết ngay (mặc định không intercept setter trừ khi dùng enhancement).
+3. **Flush trigger**: commit transaction, {{em.flush()}}, hoặc auto-flush trước JPQL/HQL có thể chạm bảng liên quan.
+4. **Dirty check**: Hibernate duyệt các entity trong persistence context, với mỗi entity so sánh từng field hiện tại với snapshot (dùng {{equals}}/kiểu so sánh phù hợp; collection cần cẩn thận). Entity nào khác → sinh SQL {{UPDATE}} (chỉ các cột đổi nếu dùng {{@DynamicUpdate}}, nhưng dynamic có chi phí riêng).
+5. **Execute**: SQL được gửi theo thứ tự ActionQueue (xem câu về flush/ActionQueue).
+
+~~~java
+// Ví dụ: 10.000 Order managed trong 1 transaction
+List<Order> orders = em.createQuery("select o from Order o", Order.class)
+    .setMaxResults(10000).getResultList(); // snapshot 10.000 bản ghi được giữ
+orders.get(0).setStatus("PAID");           // chỉ 1 bản đổi
+em.flush(); // mặc định vẫn phải xét dirty trên các entity managed
+~~~
+
+### Bước 3: Vì sao thiết kế như vậy (trade-off)
+Hibernate chọn **snapshot comparison** vì đơn giản, đúng với mọi kiểu field, không cần can thiệp bytecode. Đánh đổi: tốn RAM (snapshot ~ nhân đôi dữ liệu quản lý) và CPU khi context lớn. Đây là trade-off "tiện lợi lập trình (POJO tự nhiên) vs chi phí runtime".
+
+### Bytecode enhancement (dirty tracking)
+- **Cái gì**: plugin (Maven {{hibernate-enhance-maven-plugin}} / Gradle) chỉnh class lúc build để entity tự báo khi field thay đổi (dirty tracking) và hỗ trợ lazy attribute nâng cao.
+- **Hoạt động**: entity gắn cờ/metadata "dirty"; lúc flush Hibernate chỉ xét entity đã bẩn thay vì quét hết.
+- **Khi dùng**: context lớn, nhiều entity load nhưng ít entity sửa. **Lưu ý**: build phức tạp hơn; cần cấu hình đúng {{enableDirtyTracking}}; kiểm tra tương thích tool (IDE, test).
+
+~~~xml
+<!-- Maven (ví dụ ý tưởng, kiểm tra version Hibernate 6.x bạn dùng) -->
+<plugin>
+  <groupId>org.hibernate.orm.tooling</groupId>
+  <artifactId>hibernate-enhance-maven-plugin</artifactId>
+  <executions><execution><configuration>
+    <enableDirtyTracking>true</enableDirtyTracking>
+  </configuration></execution></executions>
+</plugin>
+~~~
+
+### Read-only hint
+- {{query.setHint("org.hibernate.readOnly", true)}} hoặc dùng {{jakarta.persistence.QueryHints}} tương ứng: Hibernate có thể **không giữ snapshot** / không dirty-check entity trả về → tiết kiệm RAM/CPU cho báo cáo.
+- {{@Transactional(readOnly=true)}} (Spring) thường đặt {{FlushMode.MANUAL}} với Hibernate: ngăn flush tự động; kết hợp tốt cho truy vấn.
+
+| Cách | Tác dụng chính | Khi dùng |
+|---|---|---|
+| Mặc định (managed) | Có snapshot, dirty check | Cần sửa và lưu |
+| Read-only hint / readOnly tx | Bỏ/giảm snapshot & flush | Báo cáo, đọc nhiều |
+| Bytecode dirty tracking | Chỉ check entity bẩn | Nhiều entity, ít sửa |
+| {{StatelessSession}} / DTO projection | Không L1 context | Batch/đọc lớn |
+
+### Trên production
+- **Triệu chứng thật**: API "lấy danh sách để hiển thị" nhưng RAM tăng theo traffic; thời gian commit tăng; thread giữ transaction lâu; GC căng.
+- **Cách đo**: bật {{hibernate.generate_statistics}} (dev/staging) xem {{EntityLoadCount}}, {{FlushCount}}; đo thời gian flush; profiler heap xem {{EntityEntry}}/snapshot; log SQL đếm {{UPDATE}} ngoài ý muốn.
+- **Tuning/cấu hình có thật**: {{spring.jpa.properties.hibernate.generate_statistics=true}} (chỉ chẩn đoán), dùng read-only cho query đọc, chia nhỏ transaction, {{em.clear()}} theo chunk khi batch, cân nhắc bytecode enhancement {{enableDirtyTracking=true}} với Hibernate ORM tooling plugin đúng phiên bản.
+
+> Senior tip: Persistence context là "đơn vị công việc" (unit of work), không phải cache dữ liệu lớn. Nếu bạn load hàng chục nghìn entity chỉ để đọc/hiển thị, hãy dùng **DTO projection** ({{select new ...}}) hoặc read-only + giới hạn kích thước; đó là cách cắt chi phí snapshot triệt để hơn mọi mẹo nhỏ.`,
+  follow: [
+    'Khi nào {{@DynamicUpdate}} giúp ích và khi nào nó lại làm chậm hơn so với dirty checking mặc định?',
+    'Bytecode enhancement có rủi ro gì khi deploy (classloader, test, tương thích Lombok/proxy) và bạn kiểm soát thế nào?',
+    'Tại sao read-only hint không phải lúc nào cũng thay thế được việc dùng DTO projection cho API danh sách?'
+  ],
+  tags: ['dirty checking', 'snapshot', 'loaded state', 'persistence context', 'bytecode enhancement', 'read-only', 'Hibernate internals'],
+  refs: [
+    { type: 'doc', title: 'Hibernate ORM User Guide: Bytecode Enhancement', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#BytecodeEnhancement' },
+    { type: 'doc', title: 'Hibernate ORM User Guide: Flushing', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#flushing' }
+  ]
+}
+,
+{
+  id: 'jpa-042',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'FlushMode (chế độ flush) AUTO hoạt động thế nào, đặc biệt là auto-flush trước khi chạy JPQL/HQL? Persistence context có thể gây "thấy dữ liệu mình vừa sửa trong bộ nhớ" ra sao, và vì sao đôi khi bạn gặp flush ngoài ý muốn làm chậm request?',
+  a: `**Tóm tắt:** {{FlushMode.AUTO}} (mặc định của Hibernate/JPA trong nhiều cấu hình) cho phép Hibernate **tự flush** trước commit và **trước khi thực thi JPQL/HQL** nếu thay đổi trong persistence context có thể ảnh hưởng kết quả truy vấn (thường xét theo bảng/không gian entity liên quan). Điều này giúp query nhìn thấy thay đổi chưa commit trong cùng unit of work, nhưng có thể gây flush tốn kém hoặc lỗi ràng buộc sớm. {{FlushMode.COMMIT}} (hoặc {{MANUAL}} trong Hibernate API cũ) chỉ flush lúc commit/flush thủ công — nhanh hơn cho luồng đọc nhưng dễ trả kết quả "cũ" so với thay đổi trong bộ nhớ.
+
+### Bước 1: Thuật ngữ
+- **FlushMode**: chính sách "khi nào đồng bộ context xuống DB".
+- **Auto-flush**: Hibernate tự quyết định flush để đảm bảo tính nhất quán đọc-trong-transaction giữa bộ nhớ managed và câu query JPQL.
+- **JPQL (Java Persistence Query Language)**: ngôn ngữ query trên entity; Hibernate phải dịch ra SQL và chạy trên DB — DB không biết object bạn vừa sửa trong RAM nếu chưa flush.
+
+### Bước 2: Chuyện gì xảy ra theo thứ tự
+1. Trong transaction bạn load {{Order}} (managed) và đổi {{status = "PAID"}} (chưa flush).
+2. Bạn chạy {{select o from Order o where o.status = 'PAID'}} (JPQL).
+3. Với {{FlushMode.AUTO}}, Hibernate kiểm tra: thay đổi pending có thể ảnh hưởng {{Order}} không? → **flush** các thay đổi liên quan trước khi gửi SQL.
+4. SQL chạy trên DB và thấy dữ liệu đã được {{UPDATE}} (trong cùng transaction DB).
+5. Nếu dùng {{COMMIT}} mode, bước 3 có thể bị bỏ qua → query DB có thể **không** thấy {{PAID}} bạn vừa set trong RAM (tùy trạng thái DB/context).
+
+~~~java
+Order o = em.find(Order.class, 1L);
+o.setStatus("PAID"); // dirty trong context
+// AUTO: có thể flush Order trước JPQL dưới đây
+Long c = em.createQuery(
+    "select count(o) from Order o where o.status = :s", Long.class)
+  .setParameter("s", "PAID").getSingleResult();
+~~~
+
+### Bước 3: Vì sao thiết kế vậy (trade-off)
+Hibernate ưu tiên **tính đúng** cho unit of work: lập trình viên kỳ vọng query phản ánh thay đổi họ vừa làm. Đánh đổi: flush có thể chạy nhiều lần, tốn dirty check + SQL + lock DB sớm. Ở luồng đọc-nhiều, flush ngoài ý muốn là nguồn độ trễ khó thấy.
+
+### FlushMode và cách kiểm soát
+| Chế độ | Khi flush (khái quát) | Ưu | Nhược |
+|---|---|---|---|
+| {{AUTO}} | Commit + trước query khi cần | Nhất quán trong UoW | Có thể flush tốn kém |
+| {{COMMIT}} | Chủ yếu lúc commit | Ít flush bất ngờ | Query có thể bỏ lỡ thay đổi RAM |
+| {{MANUAL}} (Hibernate) | Chỉ khi gọi {{flush()}} | Kiểm soát tối đa | Dễ quên, dễ sai |
+
+- Có thể đặt per query: {{query.setHint("jakarta.persistence.flushMode", FlushModeType.COMMIT)}} (kiểm tra constant/provider bạn dùng).
+- Với {{@Transactional(readOnly=true)}}, Spring/Hibernate thường hướng tới {{MANUAL}} semantics — phù hợp đọc.
+
+### Tương tác với native SQL
+Native SQL không đi qua mô hình entity của JPQL theo cùng cách; Hibernate có cơ chế synchronization (vùng bảng) nhưng bạn vẫn cần hiểu: nếu bạn sửa entity rồi chạy native query chạm cùng bảng, hãy đảm bảo flush phù hợp.
+
+### Trên production
+- **Triệu chứng**: request đơn giản có thêm {{UPDATE}} lạ trước {{SELECT}}; p95 tăng khi có query JPQL trong luồng sửa nhiều entity; deadlock/constraint lỗi xuất hiện "sớm" tại thời điểm query.
+- **Cách đo**: bật log SQL ({{org.hibernate.SQL}}) và statistics; quan sát thứ tự statement; so sánh với/không có flush hint.
+- **Tuning**: tách luồng đọc thuần (read-only, DTO), giảm số entity managed trước query, dùng {{COMMIT}} hint cho query báo cáo trong transaction phù hợp, chunk batch + {{clear()}}.
+
+> Senior tip: Đừng coi auto-flush là "ma thuật miễn phí". Trong code review, mỗi JPQL chạy giữa chừng một transaction có nhiều entity dirty là một điểm cần hỏi: "flush này có cần thiết không, có ảnh hưởng index/lock không?"`,
+  follow: [
+    'Làm sao chứng minh auto-flush đã xảy ra (log, statistics, breakpoint) và query nào kích hoạt nó?',
+    'FlushMode.COMMIT có an toàn khi bạn vừa {{persist()}} entity mới rồi JPQL tìm lại chính entity đó không?',
+    'Khác biệt thực tế giữa flush tự động và {{entityManager.flush()}} thủ công về xử lý lỗi ràng buộc DB?'
+  ],
+  tags: ['FlushMode', 'AUTO', 'auto-flush', 'JPQL', 'persistence context', 'Hibernate internals']
+}
+,
+{
+  id: 'jpa-043',
+  topic: 'jpa',
+  level: 'lead',
+  q: 'Ở quy mô lớn, bạn thiết kế chiến lược fetch (nạp dữ liệu quan hệ) thế nào: khi nào dùng EntityGraph ({{jakarta.persistence.fetchgraph}} vs {{loadgraph}}), khi nào chấp nhận tách query/batch, và vì sao {{hibernate.query.fail_on_pagination_over_collection_fetch}} là "công tắc an toàn"? Làm sao xử lý 2 collection dạng bag mà không che giấu lỗi dữ liệu?',
+  a: `**Tóm tắt:** Fetch strategy (chiến lược nạp) tốt là **đúng dữ liệu + kiểm soát số query + kiểm soát bộ nhớ**, không có một nút "fetch all". {{EntityGraph}} cho phép khai báo thuộc tính cần nạp theo từng use case: **fetchgraph** chỉ nạp những gì graph chỉ định (các attribute khác thường trở về LAZY theo spec semantics, nhưng cần kiểm chứng với provider/version), **loadgraph** nạp những gì chỉ định và vẫn tôn trọng fetch type còn lại theo mặc định — thực tế Hibernate có chi tiết tinh tế nên phải test. Với collection join + phân trang, {{hibernate.query.fail_on_pagination_over_collection_fetch}} buộc Hibernate ném lỗi thay vì âm thầm phân trang trong bộ nhớ (gây OOM/latency). Hai bag cùng fetch join gây {{MultipleBagFetchException}}; đổi sang {{Set}} chỉ an toàn khi bạn thiết kế {{equals/hashCode}} đúng cho entity và chấp nhận ngữ nghĩa không trùng/thứ tự.
+
+### Bước 1: Thuật ngữ
+- **EntityGraph**: bản đồ thuộc tính cần "kéo theo" khi load entity gốc — tránh N+1 mà không hard-code fetch join khắp JPQL.
+- **fetchgraph / loadgraph**: hai hint chuẩn JPA ({{jakarta.persistence.fetchgraph}} / {{loadgraph}}) truyền graph vào query.
+- **Pagination over collection fetch**: phân trang ({{setFirstResult/setMaxResults}}) trên query fetch join collection — SQL trả nhiều dòng/cha do join, DB phân trang theo dòng, không theo "số cha" như bạn nghĩ.
+- **Bag**: collection kiểu {{List}} không có {{@OrderColumn}} và không ràng buộc unique — Hibernate khó khử trùng dòng join khi có 2 bag.
+
+### Bước 2: Ví dụ cụ thể và hành vi
+~~~java
+@EntityGraph(attributePaths = {"items", "items.product"})
+@Query("select o from Order o where o.customerId = :cid")
+Page<Order> findPage(@Param("cid") Long cid, Pageable p);
+// Nguy hiểm: join collection + paging -> có thể HHH000104 / in-memory paging
+~~~
+
+Bật chặn sớm (tùy môi trường cấu hình):
+~~~text
+spring.jpa.properties.hibernate.query.fail_on_pagination_over_collection_fetch=true
+~~~
+Khi bật, Hibernate ném exception thay vì kéo cả tập kết quả về RAM để phân trang — **đúng** vì buộc bạn sửa thiết kế (2-step: lấy id trang rồi fetch join theo id; hoặc DTO).
+
+### fetchgraph vs loadgraph (thực hành)
+| Hint | Ý đồ | Lưu ý |
+|---|---|---|
+| {{fetchgraph}} | Chỉ load theo graph | Các attribute không trong graph: spec hướng LAZY; kiểm tra hành vi thực tế với Hibernate 6.x |
+| {{loadgraph}} | Load graph + giữ mặc định EAGER còn lại | Dễ "kéo thêm" hơn dự kiến |
+
+Luôn viết test integration đo số query ({{datasource-proxy}}, {{generate_statistics}}) vì hành vi chi tiết có thể khác giữa provider/version.
+
+### Xử lý 2 bag
+1. **Tách query**: load cha + load từng collection bằng {{IN}} batch hoặc 2 query trong cùng persistence context — Hibernate gộp qua identity map.
+2. **Đổi 1 bag thành {{Set}}**: chỉ khi phần tử có {{equals/hashCode}} ổn định theo **business key bất biến** (không dùng id sinh sau persist một cách bừa bãi, không dùng field mutable). Sai {{equals/hashCode}} → mất phần tử, duplicate logic, lỗi khó tái hiện.
+3. **DTO/projection**: bỏ hẳn đồ thị entity khi trả API danh sách.
+
+~~~java
+// 2-step paging an toàn
+List<Long> ids = em.createQuery(
+  "select o.id from Order o where o.status=:s order by o.id", Long.class)
+  .setParameter("s","NEW").setFirstResult(0).setMaxResults(50).getResultList();
+List<Order> rows = em.createQuery(
+  "select distinct o from Order o left join fetch o.items where o.id in :ids", Order.class)
+  .setParameter("ids", ids).getResultList();
+~~~
+
+### Trên production
+- **Triệu chứng**: OutOfMemoryError khi endpoint phân trang; latency tăng tuyến tính theo offset; Hibernate log {{HHH000104}}; dữ liệu collection sai/thiếu sau khi đổi {{List}}→{{Set}}.
+- **Cách đo**: đếm {{PrepareStatementCount}}; log số dòng JDBC trả về; heap dump; so sánh kế hoạch query DB.
+- **Cấu hình/tuning**: {{hibernate.query.fail_on_pagination_over_collection_fetch=true}} (fail-fast), {{hibernate.default_batch_fetch_size}} (ví dụ 50) làm lưới an toàn, giới hạn độ sâu EntityGraph, API list trả DTO.
+
+> Senior tip: Ở cấp lead, tôi yêu cầu mọi PR có fetch join collection + {{Pageable}} phải có bằng chứng: hoặc dùng 2-step, hoặc DTO, hoặc tắt paging — và có test đo số query. "Chạy được trên 10 dòng staging" không phải là tiêu chuẩn.`,
+  follow: [
+    'Tại sao {{distinct}} trong JPQL không giải quyết được phân trang trên collection fetch ở mức SQL/DB?',
+    'Thiết kế {{equals/hashCode}} cho entity dùng trong {{Set}} quan hệ cần tuân thủ quy tắc nào để tránh mất phần tử?',
+    'Khi nào bạn chọn batch fetching toàn cục ({{default_batch_fetch_size}}) thay vì EntityGraph theo từng endpoint?'
+  ],
+  tags: ['EntityGraph', 'fetchgraph', 'loadgraph', 'pagination', 'MultipleBagFetchException', 'fetch strategy', 'Hibernate internals'],
+  refs: [
+    { type: 'doc', title: 'Hibernate ORM User Guide: Fetching', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#fetching' }
+  ]
+}
+,
+{
+  id: 'jpa-044',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Open Session in View (OSIV - mở Session trong suốt View) là gì ở mức cơ chế, vì sao Spring Boot bật mặc định, nó giữ connection DB (kết nối cơ sở dữ liệu) như thế nào, và bạn tắt {{spring.jpa.open-in-view}} an toàn theo từng bước ra sao?',
+  a: `**Tóm tắt:** OSIV (thường qua {{OpenEntityManagerInViewInterceptor/Filter}}) giữ {{EntityManager}}/Hibernate {{Session}} mở từ đầu request HTTP đến sau khi view/JSON render xong. Lợi ích là tránh {{LazyInitializationException}} khi template/serializer chạm thuộc tính LAZY (nạp trễ). Hậu quả: **kéo dài thời gian giữ connection** (hoặc ít nhất giữ tài nguyên persistence) vượt ra ngoài transaction nghiệp vụ, che giấu N+1, làm khó kiểm soát boundary transaction, và có thể gây cạn pool dưới tải. Tắt an toàn: chuyển fetch cần thiết vào service (transaction), dùng DTO/projection, EntityGraph/batch fetch có chủ đích, bật cảnh báo sớm, test toàn API.
+
+### Bước 1: Thuật ngữ
+- **EntityManager/Session**: ngữ cảnh JPA/Hibernate quản lý entity managed và (với Hibernate) thường gắn với JDBC connection khi cần thực thi SQL.
+- **Transaction (giao dịch)**: phạm vi {{@Transactional}} — nơi DB đảm bảo ACID; OSIV **không** đồng nghĩa transaction mở suốt request (transaction thường đóng ở service), nhưng Session vẫn mở.
+- **Lazy loading (LAZY)**: chỉ load quan hệ khi truy cập; cần Session mở để chạy query bổ sung.
+
+### Bước 2: Luồng theo thứ tự (request điển hình)
+1. Request vào web layer → interceptor/filter OSIV **bind** EntityManager vào thread.
+2. Controller gọi service {{@Transactional}}: mở transaction, lấy connection khi cần, chạy nghiệp vụ, **commit/rollback → đóng transaction** (connection thường trả pool tùy cơ chế), nhưng EntityManager vẫn gắn thread (Session vẫn mở).
+3. Controller trả entity hoặc view render: serializer/template truy cập {{order.getItems()}} (LAZY) → Hibernate kích hoạt lazy load → **cần thực thi SQL** → có thể phải lấy connection (ngoài transaction cũ) → chạy query.
+4. Sau khi response hoàn tất → OSIV **close** EntityManager.
+
+~~~text
+[HTTP request]----open EM------------------------------------close EM---->
+   [@Transactional tx1]  commit
+                 (LAZY touch here?) -> SQL chạy sau tx1 -> giữ/tạo connection muộn
+~~~
+
+### Bước 3: Vì sao Boot bật mặc định (trade-off)
+Spring Boot ưu tiên "ứng dụng chạy được nhanh" với template/controller đơn giản: tránh lỗi LAZY bất ngờ cho người mới. Đánh đổi: che thiết kế kém (entity rò rỉ ra web), và chi phí tài nguyên không rõ ràng. Đó là lý do nhiều hệ thống production **tắt**.
+
+### Hậu quả giữ connection/tài nguyên
+- **Cạn connection pool** (HikariCP): nếu mỗi request chạm LAZY muộn, thời gian "mượn connection" rải rác và khó dự đoán; dưới tải cao pool cạn → timeout.
+- **N+1 ẩn**: vòng lặp serialize list entity kích hoạt hàng trăm query.
+- **Boundary mờ**: query chạy ngoài {{@Transactional}} → khó lý luận isolation/locking.
+- **Hiệu năng đo sai**: thời gian service nhanh nhưng tổng thời gian DB kéo dài ở tầng render.
+
+### Cách tắt an toàn (từng bước)
+1. **Đặt cấu hình**: {{spring.jpa.open-in-view=false}} (Boot 2+/3.x đều dùng property này).
+2. **Sửa API**: trả **DTO** (Data Transfer Object - object chỉ mang dữ liệu cần thiết), không trả entity JPA trực tiếp.
+3. **Fetch đúng chỗ**: trong service {{@Transactional(readOnly=true)}} dùng {{join fetch}} có kiểm soát, {{@EntityGraph}}, hoặc query projection; với collection lớn dùng batch/subselect/2-step.
+4. **Bật quan sát**: log SQL, {{datasource-proxy}}/p6spy đếm query; bật thống kê Hibernate ở staging.
+5. **Test**: chạy integration test serialize response; tìm {{LazyInitializationException}} và sửa gốc (thiếu fetch) thay vì bật lại OSIV.
+6. **Triển khai dần**: feature flag hoặc theo module nếu codebase lớn.
+
+~~~yaml
+spring:
+  jpa:
+    open-in-view: false
+~~~
+
+### Trên production
+- **Triệu chứng**: Hikari báo timeout lấy connection dù CPU DB thấp; log query xuất hiện sau dòng "service done"; APM thấy DB time phân tán ở controller/view.
+- **Cách đo**: metric {{hikaricp.connections.active/pending}}, thời gian giữ connection, số query/request; so sánh trước/sau tắt OSIV.
+- **Cấu hình/cờ**: {{spring.jpa.open-in-view=false}}; tune pool ({{maximum-pool-size}}, {{max-lifetime}}) theo thực đo; cân nhắc {{hibernate.enable_lazy_load_no_trans}} **không khuyến nghị** vì che lỗi và mở session ngầm.
+
+| Phương án | Ưu | Nhược |
+|---|---|---|
+| OSIV bật | Ít lỗi LAZY ban đầu | Giữ tài nguyên, che N+1 |
+| OSIV tắt + DTO/fetch có chủ đích | Rõ boundary, dễ tối ưu | Cần sửa code |
+| {{enable_lazy_load_no_trans}} | Tránh exception | Hành vi khó đoán, chống pattern |
+
+> Senior tip: Tôi coi OSIV là "nợ kỹ thuật có phí lãi". Ở service mới, tắt ngay từ ngày 1; ở hệ cũ, đo số query/request và pool trước, rồi tắt theo từng vertical slice (một nhóm API) có DTO đầy đủ.`,
+  follow: [
+    'Vì sao {{LazyInitializationException}} thường chỉ xuất hiện sau khi tắt OSIV, và bạn phân biệt thiếu fetch vs bug serialize thế nào?',
+    'Transaction có còn mở khi OSIV đang giữ Session không? Giải thích khác nhau giữa session boundary và transaction boundary.',
+    'DTO projection giúp gì ngoài việc tránh LAZY, và khi nào nó làm code repository phình ra?'
+  ],
+  tags: ['OSIV', 'Open Session in View', 'spring.jpa.open-in-view', 'LazyInitializationException', 'connection pool', 'Hibernate internals'],
+  refs: [
+    { type: 'doc', title: 'Spring Boot Reference: spring.jpa.open-in-view', url: 'https://docs.spring.io/spring-boot/reference/data/sql.html#data.sql.jpa-and-spring-data.open-entity-manager-in-view' },
+    { type: 'doc', title: 'Hibernate ORM User Guide: Fetching (lazy)', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#fetching' }
+  ]
+}
+,
+{
+  id: 'jpa-045',
+  topic: 'jpa',
+  level: 'lead',
+  q: 'Second-level cache (L2 - bộ nhớ đệm cấp 2, chia sẻ giữa các SessionFactory/session) và query cache (cache kết quả truy vấn) của Hibernate hoạt động thế nào, vì sao trong cluster (nhiều instance ứng dụng) chúng có thể hại nhiều hơn lợi, và bạn thiết kế invalidation (làm mất hiệu lực cache) ra sao?',
+  a: `**Tóm tắt:** L2 cache lưu **trạng thái entity theo id** (hoặc dữ liệu disassembled) để tránh đọc DB lặp lại; query cache lưu **danh sách id/khóa kết quả** của một query (thường phải đi kèm L2 entity regions để hữu ích). Khi có nhiều node, dữ liệu bị sửa ở node A thì cache node B **stale** (cũ) nếu không đồng bộ; query cache còn nhạy với mọi thay đổi bảng liên quan → invalidation ồn, hit rate thấp. Thực tế nhiều hệ thống ưu tiên cache tầng ứng dụng (Redis/Caffeine) với khóa nghiệp vụ rõ ràng, TTL/invalid event, và chỉ dùng L2 cho dữ liệu tham chiếu đọc cực nhiều, gần như bất biến.
+
+### Bước 1: Thuật ngữ
+- **L1 cache**: persistence context — tự động, per session/transaction.
+- **L2 cache**: gắn {{SessionFactory}}, có thể dùng provider (Ehcache, Infinispan, v.v.) — chia sẻ giữa session trên cùng JVM; cluster cần replication/distributed.
+- **Query cache**: cache mapping (query + params + region) → kết quả; Hibernate phải invalidate vùng khi entity thuộc không gian bảng thay đổi — chi phí cao.
+- **Stale read**: đọc giá trị cũ dù DB đã đổi.
+
+### Bước 2: Cơ chế từng bước (đơn giản hóa)
+1. {{em.find(Entity, id)}}: kiểm tra L1 → kiểm tra L2 region của entity → nếu miss đọc DB → đưa vào L2/L1.
+2. Update entity qua Hibernate trong transaction: khi commit/flush phù hợp, Hibernate **update/invalidate** entry L2 tương ứng (tùy chiến lược concurrency).
+3. Query cache: lần đầu chạy query cacheable → lưu kết quả (thường id list) vào query region; lần sau trả id và hydrate entity từ L2/L1/DB.
+4. **Bulk JPQL {{update/delete}}** ({{@Modifying}}) đi thẳng DB: Hibernate thường **invalidate region** liên quan (có thể thô) — nhưng dữ liệu thay đổi ngoài Hibernate (script SQL, service khác) thì **không** tự biết.
+
+~~~java
+@Entity
+@Cacheable
+@org.hibernate.annotations.Cache(usage = CacheConcurrencyStrategy.READ_WRITE)
+public class Country { @Id Long id; String code; }
+~~~
+
+~~~yaml
+spring:
+  jpa:
+    properties:
+      hibernate:
+        cache:
+          use_second_level_cache: true
+          use_query_cache: false   # cân nhắc kỹ
+          region:
+            factory_class: jcache
+~~~
+(Cấu hình chính xác phụ thuộc provider; kiểm tra tài liệu Hibernate 6 + Spring Boot version bạn dùng.)
+
+### Bước 3: Vì sao cluster thường hại nhiều hơn lợi
+- **Coherence (tính nhất quán)**: node B giữ bản cũ; cần replication đồng bộ (chậm) hoặc async (stale window) hoặc invalidation message.
+- **Invalidation storm**: bảng hay ghi → query cache/regions bị xóa liên tục → hit rate thấp, overhead cao hơn cả không cache.
+- **Hiệu ứng "cache cho dữ liệu sai nhịp"**: entity có quan hệ LAZY, dữ liệu nhạy thời gian (giá, tồn kho, hạn mức) → stale gây lỗi nghiệp vụ nghiêm trọng.
+- **Độ phức tạp vận hành**: debug "sao local đúng mà prod sai" rất khó.
+
+| Dữ liệu | L2/query cache? | Gợi ý |
+|---|---|---|
+| Danh mục quốc gia, cấu hình hiếm đổi | Có thể (READ_ONLY/NONSTRICT nếu phù hợp) | TTL dài, invalidate khi deploy/config đổi |
+| Giỏ hàng, số dư, đơn đang xử lý | Thường **không** | Source of truth = DB, cache có chủ đích nếu cần |
+| Báo cáo query nặng lặp lại | Query cache thường **không** | Cache kết quả DTO ở tầng app + key rõ |
+
+### Invalidation trong cluster — hướng thực tế
+1. **Hạn chế phạm vi**: chỉ cache entity reference data; tắt query cache toàn cục trừ khi đo được lợi.
+2. **Chiến lược concurrency**: {{READ_ONLY}} cho dữ liệu bất biến; {{READ_WRITE}}/NONSTRICT có đánh đổi lock/stale — chọn theo provider.
+3. **Kênh invalidation**: nếu dùng distributed cache (Infinispan, Redis-backed) dùng pub/sub invalidate; sau bulk update chạy {{evict}}/{{evictAll}} region hoặc version hóa key.
+4. **Luồng ghi ngoài Hibernate**: mọi đường ghi (batch job, SQL thủ công) phải phát sự kiện invalidation hoặc chấp nhận TTL ngắn.
+5. **Đo lường**: hit/miss, latency p95, tỷ lệ stale incident; tắt cache khi hit rate thấp.
+
+### Trên production
+- **Triệu chứng**: user thấy dữ liệu cũ sau khi admin sửa; node A/B trả kết quả khác; spike DB khi cache bùng nổ bị xóa; memory cache phình.
+- **Cách đo**: metric của cache provider (hits, misses, evictions), Hibernate statistics {{SecondLevelCacheHitCount}}, log region.
+- **Cấu hình/cờ (tên thật, kiểm tra version)**: {{hibernate.cache.use_second_level_cache}}, {{hibernate.cache.use_query_cache}}, {{hibernate.cache.region.factory_class}} ({{jcache}}), {{jakarta.persistence.sharedCache.mode}}; annotation {{@Cache}}, {{@Cacheable}} (JPA).
+
+> Senior tip: Ở phỏng vấn lead, câu trả lời mạnh là: "Tôi mặc định tắt query cache, chỉ cân nhắc L2 cho reference data có owner rõ và đường invalidation rõ; nghiệp vụ tiền/tồn kho dùng DB + optimistic locking + cache ứng dụng có TTL ngắn nếu cần."`,
+  follow: [
+    'Tại sao query cache phụ thuộc L2 entity cache và khi nào nó trở nên vô dụng?',
+    'Bulk update JPQL ảnh hưởng L2 cache thế nào và bạn xử lý sau job batch ra sao?',
+    'So sánh L2 Hibernate cache với Spring {{@Cacheable}} + Redis cho bài toán danh mục dùng chung nhiều service?'
+  ],
+  tags: ['second-level cache', 'query cache', 'invalidation', 'cluster', 'Hibernate internals', 'stale read'],
+  refs: [
+    { type: 'doc', title: 'Hibernate ORM User Guide: Caching', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#caching' }
+  ]
+}
+,
+{
+  id: 'jpa-046',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Hibernate 6 xử lý query thế nào qua SQM (Semantic Query Model - mô hình ngữ nghĩa truy vấn) và query plan cache (cache kế hoạch truy vấn)? {{hibernate.query.in_clause_parameter_padding}} giải quyết vấn đề gì, và bạn cần lưu ý gì khi bật?',
+  a: `**Tóm tắt:** Từ Hibernate 6, HQL/Criteria được phân tích thành **SQM** (cây ngữ nghĩa gắn với model entity), sau đó chuyển thành **SQL AST** và SQL cuối cùng; kế hoạch biên dịch (plan) có thể được **cache** để tránh parse/translate lặp lại. Vấn đề thực tế: câu {{IN (:ids)}} với số lượng tham số thay đổi tạo ra **nhiều SQL text khác nhau** → nhiều plan/statement cache entry (ở Hibernate và/hoặc DB) → tốn bộ nhớ, giảm hiệu quả. {{hibernate.query.in_clause_parameter_padding}} (mặc định có thể bật tùy version/config) **đệm** số tham số {{IN}} lên các kích thước "bậc" (power-of-two hoặc mức padding) để tái dùng SQL/plan.
+
+### Bước 1: Thuật ngữ
+- **SQM (Semantic Query Model)**: biểu diễn truy vấn ở mức "ý nghĩa" (entity, attribute, join) thay vì chuỗi SQL thô — giúp Hibernate 6 hiểu và tối ưu tốt hơn.
+- **Query plan cache**: cache kế hoạch thực thi/biên dịch query trong Hibernate (khác với cache kết quả). Nếu cùng hình dạng query, Hibernate có thể bỏ qua bước dựng plan nặng.
+- **Parameter padding**: thêm tham số "đệm" (thường lặp giá trị hoặc giá trị trung tính theo cách Hibernate xử lý) để số dấu {{?}} ổn định theo bậc.
+- **Prepared statement cache (DB/driver)**: DB cũng cache plan theo SQL text; SQL text thay đổi liên tục → cache miss.
+
+### Bước 2: Ví dụ {{IN}} nổ plan
+~~~java
+// ids có 3 phần tử: IN (?, ?, ?)
+// ids có 4 phần tử: IN (?, ?, ?, ?)
+// ids có 100 phần tử: IN (...100 ?...)
+repo.findAllByIdIn(ids);
+~~~
+Mỗi kích thước sinh SQL text khác → Hibernate có thể tạo plan khác; DB có thể parse/plan lại. Với API nhận danh sách id linh hoạt, số biến thể rất lớn.
+
+Bật padding (Spring Boot {{application.yml}}, kiểm tra tên property đúng phiên bản Hibernate 6.x):
+~~~yaml
+spring:
+  jpa:
+    properties:
+      hibernate:
+        query:
+          in_clause_parameter_padding: true
+~~~
+Khi bật, Hibernate có thể mở rộng danh sách tham số tới bậc đệm (ví dụ 3 → 4, 5 → 8…) để tái dùng cùng SQL shape. (Cơ chế đệm cụ thể thuộc implementation Hibernate; cần kiểm chứng bằng log SQL.)
+
+### Bước 3: Vì sao thiết kế SQM/plan cache
+- **Đúng ngữ nghĩa**: SQM gắn với metamodel, hỗ trợ tính năng mới và kiểm tra tốt hơn.
+- **Hiệu năng**: cache plan giảm CPU parse cho query lặp lại. Trade-off: plan cache cũng tốn RAM; query shape quá đa dạng làm cache kém hiệu quả.
+
+### Rủi ro và lưu ý khi bật padding
+- **Kích thước {{IN}} rất lớn**: padding không giải quyết giới hạn DB (Oracle giới hạn số phần tử {{IN}} trong một số ngữ cảnh; SQL Server có giới hạn tham số) — vẫn phải chunk (ví dụ 500-1000 id/lần).
+- **Kế hoạch DB**: cùng SQL shape nhưng phân bố giá trị khác vẫn có thể cần plan khác; padding giúp cache, không đảm bảo plan tối ưu tuyệt đối.
+- **Tương thích**: kiểm tra log SQL thực tế sau khi bật; một số truy vấn đặc biệt cần xác nhận không đổi nghĩa.
+- **Bảo mật**: vẫn dùng parameter binding (Hibernate làm sẵn), không nối chuỗi id.
+
+| Vấn đề | Triệu chứng | Hướng xử lý |
+|---|---|---|
+| {{IN}} biến thiên mạnh | RAM plan cache tăng, parse CPU cao | Bật {{in_clause_parameter_padding}}, chunk id |
+| Query string khác nhau | L2 statement cache miss | Chuẩn hóa query, tránh nối JPQL động bừa bãi |
+| Plan cache quá lớn | GC/metaspace áp lực | Tune kích thước cache (property Hibernate, kiểm tra tài liệu), rà query shape |
+
+### Trên production
+- **Triệu chứng**: throughput giảm khi traffic có nhiều biến thể filter {{IN}}; DB thấy nhiều hard parse/plan; heap/metaspace tăng.
+- **Cách đo**: Hibernate statistics (query plan cache metrics nếu exposed), log {{org.hibernate.orm.query}}, DB view ({{pg_stat_statements}} đếm số queryid/plan), APM.
+- **Cấu hình có thật (kiểm tra version)**: {{hibernate.query.in_clause_parameter_padding=true}}; các cấu hình query plan cache của Hibernate 6 (tên property có thể nằm dưới {{hibernate.query.*}} — tra tài liệu ORM 6.x bạn deploy); giới hạn batch size {{IN}} ở tầng repository.
+
+> Senior tip: Khi API nhận mảng id từ client, tôi luôn có "max ids per query" (ví dụ 500) + chunk + padding. Đó là bộ ba: bảo vệ DB, bảo vệ plan cache, và giữ latency ổn định.`,
+  follow: [
+    'Làm sao xác minh padding đang hoạt động (log SQL, số lượng {{?}}) và có thay đổi kết quả truy vấn không?',
+    'Khác biệt giữa query plan cache của Hibernate và prepared statement/plan cache của PostgreSQL/driver là gì?',
+    'Khi nào bạn nên dùng bảng tạm/temp table hoặc {{unnest(array)}} thay vì {{IN}} rất lớn?'
+  ],
+  tags: ['Hibernate 6', 'SQM', 'query plan cache', 'in_clause_parameter_padding', 'IN clause', 'performance'],
+  refs: [
+    { type: 'doc', title: 'Hibernate ORM User Guide: Query Plan Cache', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#caching-query-plan' },
+    { type: 'doc', title: 'Hibernate ORM User Guide: IN predicate padding', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#settings-query' }
+  ]
+}
+,
+{
+  id: 'jpa-047',
+  topic: 'jpa',
+  level: 'lead',
+  q: 'Batch insert (ghi hàng loạt) trong Hibernate 6: vì sao id {{IDENTITY}} (DB tự tăng) phá batching, cách dùng {{SEQUENCE}} + pooled/pooled-lo optimizer (bộ tối ưu cấp id theo "bể") hoạt động thế nào, và bạn kiểm chứng/tuning trên production ra sao khi có quan hệ cha-con và ràng buộc?',
+  a: `**Tóm tắt:** JDBC batching chỉ hiệu quả khi Hibernate gửi được **nhiều statement cùng loại liên tiếp**. Với {{GenerationType.IDENTITY}}, DB sinh id **sau INSERT** nên Hibernate phải {{insert}} từng row để lấy generated key → **không gom batch** theo cách mong muốn. Với {{SEQUENCE}}, Hibernate lấy id **trước** (gọi sequence), có thể gán id vào entity và gom nhiều {{INSERT}}; **pooled optimizer** ({{@SequenceGenerator}} với {{allocationSize > 1}}, Hibernate dùng pooled strategy phù hợp) xin DB một "bể" giá trị (increment step) và cấp phát trong bộ nhớ, giảm round-trip gọi sequence. Trên production cần đo round-trip, thứ tự insert ({{order_inserts}}), cascade cha-con, và thống nhất {{allocationSize}} với {{INCREMENT BY}} của sequence.
+
+### Bước 1: Thuật ngữ
+- **JDBC batch**: gom nhiều {{addBatch()}} rồi {{executeBatch()}} — giảm số lần đi-về (round-trip) giữa app và DB.
+- **IDENTITY**: cột {{AUTO_INCREMENT}}/{{IDENTITY}} — id do DB quyết định lúc ghi.
+- **SEQUENCE**: object DB sinh số tăng; Hibernate có thể gọi {{nextval}}.
+- **Pooled optimizer**: thuật toán cấp id: DB tăng sequence theo bước {{allocationSize}}; Hibernate coi như "mua sỉ" một khoảng, cấp dần trong JVM → ít {{select nextval}}.
+
+### Bước 2: Luồng bên trong
+**IDENTITY (vấn đề):**
+1. {{persist(child)}} → Hibernate cần id để đưa vào context/cascade/FK → buộc {{INSERT}} ngay.
+2. DB trả generated key → entity có id.
+3. Lặp row 2 → lại {{INSERT}} ngay → không còn "nhiều insert chờ gom".
+
+**SEQUENCE + pooled:**
+1. {{allocationSize=50}} và sequence DB {{INCREMENT BY 50}}.
+2. Hibernate gọi {{nextval}} (hoặc cơ chế tương đương) để lấy biên bể, tính được dải id cấp phát cục bộ.
+3. {{persist}} 1000 entity: Hibernate gán id từ bể (thỉnh thoảng xin bể mới) → có thể gom {{INSERT}} theo {{hibernate.jdbc.batch_size}}.
+
+~~~java
+@Id
+@GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "order_seq")
+@SequenceGenerator(name = "order_seq", sequenceName = "order_id_seq",
+  allocationSize = 50) // phải khớp INCREMENT BY của sequence DB
+private Long id;
+~~~
+
+~~~yaml
+spring:
+  jpa:
+    properties:
+      hibernate:
+        jdbc:
+          batch_size: 50
+          batch_versioned_data: true
+        order_inserts: true
+        order_updates: true
+~~~
+
+### Bước 3: Vì sao thiết kế vậy (trade-off)
+IDENTITY đơn giản cho DB nhưng khóa chặt thứ tự "phải insert mới biết id". SEQUENCE tách việc cấp id khỏi insert, đổi lại phải quản lý sequence và đồng bộ {{allocationSize}}. Pooled giảm contention/round-trip nhưng có "lỗ hổng" id nếu JVM crash (bể đã xin nhưng chưa dùng hết) — chấp nhận được cho surrogate key.
+
+### Quan hệ cha-con và bẫy batch
+- **Thứ tự**: insert cha trước con; {{order_inserts=true}} giúp Hibernate nhóm theo entity type — nhưng đồ thị phức tạp vẫn cần kiểm tra.
+- **{{@Version}}**: update versioned cần {{hibernate.jdbc.batch_versioned_data=true}} để batch update hiệu quả hơn.
+- **{{IDENTITY}} trên MySQL**: nếu bắt buộc IDENTITY, chấp nhận không batch hoặc chuyển chiến lược (TABLE generator có chi phí lock; thường kém hơn SEQUENCE trên Postgres) — quyết định theo DB.
+- **{{merge()}}** trong batch lớn: có thể gây {{select}} thêm; ưu tiên {{persist()}} cho đối tượng mới.
+
+| Mục | IDENTITY | SEQUENCE + pooled |
+|---|---|---|
+| Batch insert | Bị hạn chế nặng | Tốt nếu cấu hình đúng |
+| Round-trip cấp id | Gắn với insert | Ít hơn nhờ bể |
+| Id gap | Ít do gap kiểu bể | Có thể gap khi crash/restart |
+| Portability | Mọi DB hỗ trợ identity | Cần sequence (Postgres/Oracle tốt) |
+
+### Trên production
+- **Triệu chứng**: import 100k dòng chậm, p95 DB time cao, mỗi row một insert; hoặc duplicate key/sequence lỗi khi migration.
+- **Cách đo**: {{datasource-proxy}} đếm statement và batch size thực; {{generate_statistics}}; so sánh thời gian với/không batch.
+- **Tuning/cấu hình có thật**: {{hibernate.jdbc.batch_size}}, {{hibernate.order_inserts}}, {{hibernate.order_updates}}, {{hibernate.jdbc.batch_versioned_data}}; {{allocationSize}} khớp DDL {{CREATE SEQUENCE ... INCREMENT BY 50}}; chunk {{persist/flush/clear}} mỗi 50-200 row; dùng {{reWriteBatchedInserts}} (PostgreSQL JDBC driver) khi phù hợp — kiểm tra driver.
+
+> Senior tip: Khi ai đó nói "Hibernate chậm", tôi hỏi ngay: "Id strategy là gì, batch_size bao nhiêu, và bạn có đo executeBatch thực sự gom được mấy câu không?" Ba câu trả lời đó thường tìm ra gốc vấn đề.`,
+  follow: [
+    'Làm sao kiểm tra sequence DB {{INCREMENT BY}} có khớp {{allocationSize}} không, và hậu quả nếu lệch là gì?',
+    'Pooled-lo/pooled khác nhau thế nào và khi nào Hibernate chọn? (nêu theo hành vi tổng quát và khuyên kiểm tra tài liệu version)',
+    'Với batch insert có quan hệ {{@OneToMany(cascade=PERSIST)}}, bạn kiểm soát thứ tự SQL và tránh N+1/select ngầm thế nào?'
+  ],
+  tags: ['batch insert', 'IDENTITY', 'SEQUENCE', 'pooled optimizer', 'hibernate.jdbc.batch_size', 'Hibernate 6'],
+  refs: [
+    { type: 'doc', title: 'Hibernate ORM User Guide: Batch processing', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#batch' },
+    { type: 'doc', title: 'Hibernate ORM User Guide: Identifiers', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#identifiers-generators' }
+  ]
+}
+,
+{
+  id: 'jpa-048',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'ActionQueue (hàng đợi hành động) của Hibernate flush theo thứ tự insert→update→delete: ngoài case {{remove()}}+{{persist()}} cùng unique key, những biến thể "góc sâu" nào gây vi phạm unique/FK (thay thế phần tử {{orphanRemoval}} collection, đổi natural key, soft delete với partial unique index, constraint {{DEFERRABLE}} trên PostgreSQL), và bạn xử lý đúng cách thế nào?',
+  a: `**Tóm tắt:** Hibernate gom thay đổi managed rồi flush theo **ActionQueue** (nhóm insert, update, collection, delete… theo quy tắc nội bộ nhằm an toàn FK và tối ưu). Thứ tự thực thi **không** bám theo thứ tự bạn gọi method Java; một hệ quả nổi tiếng là **INSERT có thể chạy trước DELETE**, nên "xóa rồi thêm lại" cùng **unique constraint** (ràng buộc duy nhất - DB cấm trùng giá trị) có thể fail trong cùng transaction. Góc sâu: (1) {{orphanRemoval}} collection thay phần tử cùng business key, (2) đổi **natural key** (khóa nghiệp vụ như mã/email) khi còn tham chiếu, (3) soft delete ({{@SQLDelete}}/cờ {{deleted_at}}) biến "DELETE SQL" thành UPDATE nhưng unique thường vẫn áp cho cả dòng đã xóa mềm nếu index thiết kế sai, (4) PostgreSQL {{DEFERRABLE INITIALLY DEFERRED}} dời kiểm tra unique đến cuối transaction (giúp case hiếm) nhưng đổi thời điểm lỗi và tăng độ phức tạp. Xử lý chuẩn: {{flush()}} tường minh đúng điểm, ưu tiên UPDATE/merge theo id ổn định, thiết kế partial unique index cho soft delete, và viết integration test trên DB thật.
+
+### Bước 1: Thuật ngữ (từ gốc)
+- **ActionQueue**: giống "hàng việc" nội bộ — Hibernate xếp "thêm/sửa/xóa" thành nhóm để gửi DB hiệu quả. Ví dụ đời thường: bưu cục gom thư gửi đi theo chuyến, không phải đưa từng lá ngay khi bạn viết.
+- **Unique constraint**: luật "không được trùng" (email, số chứng từ). DB kiểm tra khi INSERT/UPDATE chạy (hoặc khi commit nếu DEFERRABLE).
+- **Natural key vs surrogate key**: natural key có nghĩa nghiệp vụ ({{invoice_no}}); surrogate key là id kỹ thuật ({{BIGINT}}). Trộn lẫn chiến lược "replace theo natural key" với quản lý entity theo id dễ gây lỗi ActionQueue.
+- **orphanRemoval**: xóa phần tử khỏi collection cha → Hibernate coi con là "mồ côi" và xóa row con khi flush.
+
+### Bước 2: Cơ chế ActionQueue (ý chính) và vì sao có insert→delete
+Hibernate ưu tiên **INSERT** để đảm bảo entity mới có hàng trong DB trước khi các bước khác cần tham chiếu (giảm lỗi FK trong nhiều đồ thị). **DELETE** thường chạy muộn. Điều này tối ưu cho case phổ biến nhưng phá case tái sử dụng unique key.
+~~~text
+Unit of Work: remove(old: email=a) ; persist(new: email=a)
+Code order:   [remove, persist]
+Flush order:  (có thể) [INSERT new(a)] -> FAIL unique -> [DELETE old] chưa chạy
+~~~
+
+### Bước 3: Biến thể góc sâu
+
+**(A) orphanRemoval collection — thay thế phần tử cùng mã nghiệp vụ**
+~~~java
+@Entity class Contract {
+  @OneToMany(mappedBy="contract", orphanRemoval=true, cascade=CascadeType.ALL)
+  private Set<ContractLine> lines = new HashSet<>();
+}
+// replace: lines.clear(); lines.add(newLine có lineNo trùng)
+~~~
+{{clear()}} tạo orphan removes, {{add()}} tạo inserts. Cùng {{UNIQUE(contract_id, line_no)}}, flush có thể insert line mới trước khi xóa line cũ → duplicate key. Xử lý: cập nhật entity line hiện có theo id/lineNo thay vì replace; hoặc {{flush()}} sau clear; hoặc merge theo khóa nghiệp vụ.
+
+**(B) Đổi natural key "bằng replace"**
+Tạo entity mới cùng natural key thay vì {{setNaturalKey()}} trên entity đang managed làm rối identity và ActionQueue. Nếu natural key **phải** đổi, ưu tiên UPDATE trên cùng row (kiểm tra unique target chưa bị dùng).
+
+**(C) Soft delete + unique index**
+{{@SQLDelete(sql="update users set deleted_at=now() where id=?")}} (Hibernate annotation — kiểm tra module/version) khiến {{remove()}} phát UPDATE, không DELETE. Nhưng {{UNIQUE(email)}} toàn bảng vẫn chặn tạo lại email dù bản cũ "đã xóa mềm". Hướng đúng (DB-specific): PostgreSQL partial unique index:
+~~~sql
+CREATE UNIQUE INDEX uq_users_email_active
+  ON users(email) WHERE deleted_at IS NULL;
+~~~
+Như vậy email trùng chỉ bị cấm khi cả hai đều "active".
+
+**(D) PostgreSQL {{DEFERRABLE INITIALLY DEFERRED}}**
+~~~sql
+ALTER TABLE users
+  ADD CONSTRAINT uq_users_email UNIQUE (email) DEFERRABLE INITIALLY DEFERRED;
+~~~
+Kiểm tra unique bị dời đến **cuối transaction** (hoặc lúc {{SET CONSTRAINTS}}). Có thể cho phép pattern insert-trước/delete-sau trong cùng transaction nếu kết quả cuối cùng hợp lệ. Trade-off: lỗi phát hiện muộn, khó biết câu nào gây lỗi; không phải DB nào cũng hỗ trợ như nhau (MySQL khác); cần migration cẩn thận.
+
+| Biến thể | Cơ chế gây lỗi | Hướng xử lý |
+|---|---|---|
+| {{remove}}+{{persist}} cùng unique | INSERT trước DELETE | {{flush()}} giữa, hoặc UPDATE |
+| {{orphanRemoval}} replace | orphan delete vs insert | update phần tử, {{flush()}} sau clear |
+| Soft delete + unique thường | unique vẫn chặn row đã xóa mềm | partial unique index ({{WHERE deleted_at IS NULL}}) |
+| Muốn dời check | DB check sớm | DEFERRABLE (chỉ khi chấp nhận trade-off) |
+
+### Trên production
+- **Triệu chứng**: {{ConstraintViolationException}} (SQLState {{23505}} Postgres, {{1062}} MySQL) ngẫu nhiên theo timing; chỉ xảy ra ở luồng "đổi mã/đổi email"; test H2 pass nhưng Postgres fail.
+- **Cách đo**: log {{org.hibernate.SQL}} xem thứ tự DML; integration test với Testcontainers (Postgres thật) tái hiện clear+add hoặc remove+persist; kiểm tra DDL index/constraint.
+- **Tuning/cấu hình**: {{hibernate.order_inserts/order_updates}} **không** giải quyết insert-vs-delete unique; dùng {{em.flush()}} có chủ đích; với soft delete dùng partial index (Postgres) — kiểm tra tương thích DB.
+
+> Senior tip: Khi code review thấy "xóa phần tử cũ rồi thêm phần tử mới có cùng mã nghiệp vụ", tôi coi là bug tiềm ẩn cho đến khi có (1) {{flush()}} tách pha, (2) chiến lược update-in-place, hoặc (3) bằng chứng constraint/index thiết kế đúng cho soft delete. Đừng tin thứ tự method Java.`,
+  follow: [
+    'Làm sao viết test Testcontainers tái hiện chắc chắn lỗi ActionQueue+unique thay vì flaky (ép flush/transaction boundary)?',
+    'Partial unique index cho soft delete tương tác thế nào với {{@Where}}/{{@SQLRestriction}} (Hibernate 6) và với query native?',
+    'DEFERRABLE constraint ảnh hưởng debugging và retry transaction thế nào (lỗi ném ở commit)?'
+  ],
+  tags: ['ActionQueue', 'flush', 'unique constraint', 'orphanRemoval', 'soft delete', 'DEFERRABLE', 'Hibernate internals'],
+  refs: [
+    { type: 'doc', title: 'Hibernate ORM User Guide: Flushing', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#flushing' },
+    { type: 'doc', title: 'PostgreSQL: Constraints (DEFERRABLE)', url: 'https://www.postgresql.org/docs/current/sql-createtable.html' }
+  ]
+}
+
+,
+{
+  id: 'jpa-040',
+  topic: 'jpa',
+  level: 'senior',
+  q: "Khi fetch quan hệ trong JPA/Hibernate, {{MultipleBagFetchException}} là gì, vì sao xảy ra, và bạn so sánh số query giữa {{@BatchSize}}/{{hibernate.default_batch_fetch_size}}, fetch {{SUBSELECT}}, và {{EntityGraph}} như thế nào?",
+  a: `**Tóm tắt:** **Bag** trong Hibernate là collection không có chỉ số và không ràng buộc duy nhất phần tử (thường là {{List}} không {{@OrderColumn}}). Khi fetch join **hai bag** cùng lúc, SQL tạo tích Descartes (Cartesian product - mỗi tổ hợp dòng con nhân lên) và Hibernate không thể khử trùng chính xác cho cả hai {{List}} → ném {{MultipleBagFetchException}}. Để tránh N+1 (1 query cha + N query con), ba hướng chính: {{@BatchSize}}/batch_fetch_size (gom id vào {{IN}}, ≈ 1 + ceil(N/batch) query), {{SUBSELECT}} (1 query con dùng subselect id cha), {{EntityGraph}}/fetch join (thường 1 query nhưng cẩn thận row explosion và phân trang).
+
+### Bước 1: Thuật ngữ (giải thích từ gốc)
+- **N+1 problem** (vấn đề N+1): lấy 100 {{Order}} (1 query) rồi chạm {{order.getItems()}} từng order → thêm 100 query. Ví dụ đời thường: đi chợ 1 lần lấy danh sách 100 món, rồi quay lại 100 lần lấy từng món.
+- **Fetch join** (JPQL {{join fetch o.items}}): ép Hibernate lấy dữ liệu quan hệ trong cùng câu SQL.
+- **EntityGraph** (đồ thị thực thể): bản khai báo "lần query này hãy load thêm thuộc tính nào" - Hibernate sinh fetch plan tương ứng.
+- **Bag vs Set**: {{Set}} (tập hợp) loại trùng theo {{equals/hashCode}}; {{List}} dạng bag cho phép trùng và khó tách dòng khi có hai bag nhân chéo.
+
+### Bước 2: Vì sao {{MultipleBagFetchException}} xảy ra
+~~~java
+@Entity class Order {
+  @OneToMany(mappedBy="order") List<OrderItem> items;   // bag 1
+  @OneToMany(mappedBy="order") List<Payment> payments;  // bag 2
+}
+// JPQL: select o from Order o join fetch o.items join fetch o.payments
+// -> Hibernate ném: MultipleBagFetchException
+~~~
+1. 1 order có 3 items và 2 payments → {{LEFT JOIN}} tạo 3 * 2 = **6 dòng**.
+2. Hibernate phải gộp 6 dòng về 1 {{Order}} với 3 items và 2 payments.
+3. Với **hai bag** song song, Hibernate không phân biệt được "dòng trùng do tích Descartes" với "phần tử trùng hợp lệ" → từ chối để bảo toàn tính đúng.
+4. **Cách xử lý:** đổi một (hoặc cả hai) sang {{Set}} nếu nghiệp vụ cho phép ({{equals/hashCode}} đúng); hoặc tách 2 query trong cùng persistence context (Hibernate ghép nhờ L1 cache); hoặc {{@BatchSize}}/SUBSELECT.
+
+### Bước 3: So sánh số query (ví dụ cụ thể)
+Giả sử load **100 Order**; {{@BatchSize(size=25)}} hoặc {{hibernate.default_batch_fetch_size=25}}:
+- **N+1:** 1 + 100 = **101 query**.
+- **{{@BatchSize(size=25)}}:** 1 + ceil(100/25)=4 = **5 query**.
+- **{{SUBSELECT}}:** 1 + 1 query con {{where order_id in (select o.id from orders ... subquery gốc)}} = **2 query**. Rủi ro: subquery gốc nặng.
+- **JOIN FETCH 1 collection:** thường **1 query**. Join collection + phân trang có thể gây {{HHH000104}} (phân trang trong bộ nhớ).
+
+| Chiến lược | Số query (100 cha) | Phân trang DB an toàn? | Row explosion | Ghi chú |
+|---|---|---|---|---|
+| N+1 | 101 | Có (query cha) | Không | Tránh |
+| {{@BatchSize}}=25 | 5 | Có | Không | Lưới an toàn |
+| SUBSELECT | 2 | Thường ổn | Không | Subquery nặng |
+| JOIN FETCH 1 collection | 1 | **Rủi ro** | Có | Không kèm paging |
+| EntityGraph | 1 hoặc theo plan | Tùy | Có nếu join | Linh hoạt |
+
+### Trên production
+- **Triệu chứng:** endpoint chậm tăng theo số bản ghi; log đầy {{select ... where id=?}}; {{HHH000104}}.
+- **Cách đo:** {{spring.jpa.properties.hibernate.generate_statistics=true}} xem {{PrepareStatementCount}}; datasource-proxy/p6spy.
+- **Cấu hình:** {{spring.jpa.properties.hibernate.default_batch_fetch_size: 50}} (khởi đầu 16-100, cần đo); danh sách phân trang dùng DTO/projection hoặc 2 bước (lấy id trang → fetch join theo id).
+
+> Senior tip: Với API danh sách phân trang, tôi dùng DTO/projection hoặc 2 bước, tránh {{join fetch}} collection trực tiếp với paging. Bật {{default_batch_fetch_size}} là lưới an toàn, nhưng vẫn phải đo.`,
+  follow: ["Tại sao đổi {{List}} sang {{Set}} có thể sửa {{MultipleBagFetchException}} nhưng lại tạo rủi ro nghiệp vụ (equals/hashCode, thứ tự)?", "Bạn xử lý thế nào khi cần load Order + Items có phân trang đúng ở DB (không phân trang trong bộ nhớ)?", "Sự khác nhau giữa {{FetchType.EAGER}} cố định và EntityGraph theo truy vấn về bảo trì lâu dài?"],
+  tags: ["MultipleBagFetchException", "bag", "BatchSize", "default_batch_fetch_size", "subselect", "EntityGraph", "N+1"],
+  refs: [{"type": "doc", "title": "Hibernate ORM User Guide: Fetching", "url": "https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#fetching"}]
+},
+{
+  id: 'db-040',
+  topic: 'db',
+  level: 'senior',
+  q: 'Chỉ mục B-tree hoạt động bên trong thế nào: trang (page), fan-out, chiều cao cây, quét chỉ mục (index-only scan) và visibility map của PostgreSQL? Tại sao khóa chính UUID v4 ngẫu nhiên làm chỉ mục phình to và chậm hơn so với UUID v7 hay khóa tăng dần?',
+  a: `**Tóm tắt:** Chỉ mục B-tree (hiện đại thường là biến thể B+tree) là cây cân bằng, mỗi nút của cây là một trang dữ liệu (page) – 8KB ở PostgreSQL, 16KB ở InnoDB/MySQL. Mỗi trang chứa vài trăm khóa nên cây chỉ cao 3–4 tầng cho hàng trăm triệu dòng, và tìm một dòng chỉ tốn vài lần đọc trang thay vì quét bảng. Nút lá được nối thành danh sách nên truy vấn khoảng (BETWEEN) và sắp xếp cũng tận dụng được chỉ mục. Composite index tuân theo quy tắc "cột trái nhất trước" (leftmost prefix): index (a, b, c) giúp khi lọc theo a, hoặc a và b, nhưng thường không giúp khi chỉ lọc theo b. Covering index chứa đủ cột mà câu hỏi cần nên cơ sở dữ liệu trả kết quả chỉ từ chỉ mục, không đọc bảng (index-only scan). PostgreSQL dùng visibility map (bản đồ đánh dấu trang heap mà mọi dòng đều hiển thị) để biết một trang chỉ mục có thể trả lời mà không nhìn vào bảng heap. UUID v4 ngẫu nhiên ghi vào các trang khắp nơi → tách trang (page split), chỉ mục phình lớn, hiệu quả bộ nhớ đệm kém; UUID v7 có thứ tự theo thời gian và khóa BIGINT tăng dần ghi liền kề ở mép phải → nhỏ gọn, ghi nhanh.
+
+### Trang, fan-out, chiều cao cây
+- **Trang (page)**: đơn vị đọc/ghi đĩa nhỏ nhất của cơ sở dữ liệu; một nút của cây B-tree là một trang. PostgreSQL dùng 8KB, InnoDB dùng 16KB.
+- **Fan-out**: số lượng nhánh con của một nút. Trang 8–16KB chứa vài trăm khóa, nên mỗi nút có vài trăm nhánh.
+- **Chiều cao**: nhờ fan-out lớn, 3 tầng đã chứa khoảng 500 × 500 × 500 ≈ 125 triệu khóa, 4 tầng chứa hàng chục tỷ khóa. Nút gốc gần như luôn nằm trong bộ nhớ đệm (buffer cache/buffer pool), nên tìm kiếm bắt đầu ngay trong RAM.
+- **B+tree**: dữ liệu/con trỏ chỉ nằm ở nút lá, các nút lá nối liền nhau theo thứ tự khóa → quét khoảng và ORDER BY không quay lại gốc.
+
+Ví dụ số liệu: bảng 100 triệu dòng, quét toàn bộ bảng (seq scan) đọc khoảng 1–2 triệu trang; tìm qua chỉ mục chỉ đọc 4–5 trang (gốc → nhánh → lá, rồi duyệt lá liền kề nếu là truy vấn khoảng).
+
+### PostgreSQL: heap, TID và chỉ mục phụ
+PostgreSQL lưu bảng dưới dạng heap (đống dữ liệu không bắt buộc sắp xếp). Chỉ mục lưu khóa cộng TID (số trang và vị trí dòng trong trang) để tìm lại dòng. Do đó chỉ mục phụ thường mất hai lần đọc: một lần vào chỉ mục, một lần vào heap lấy hàng. InnoDB khác: bảng chính là chỉ mục nhóm (clustered index) theo khóa chính, lá chứa toàn bộ dòng; chỉ mục phụ lưu khóa cộng giá trị khóa chính, nên đọc qua chỉ mục phụ cũng phải tra thêm một lần vào clustered index.
+
+### Index-only scan và visibility map
+Index-only scan xảy ra khi câu chọn chỉ các cột có trong chỉ mục, nên cơ sở dữ liệu không cần bước đọc heap. Ở PostgreSQL, điều này còn phụ thuộc visibility map: mỗi trang dữ liệu có một bit đánh dấu "tất cả dòng trên trang này đều nhìn thấy được đối với mọi giao dịch". Bit này được VACUUM cập nhật. Nếu bit chưa được cập nhật (giao dịch dài chặn vacuum, hoặc trang vừa được cập nhật nhiều lần), index-only scan vẫn phải vào heap kiểm tra tính nhìn thấy → cột Heap Fetches trong EXPLAIN (ANALYZE) sẽ cao thay vì bằng 0.
+
+### UUID v4 so với UUID v7 và khóa tăng dần
+| Loại khóa | Thứ tự ghi | Trang bị ảnh hưởng | Kích thước chỉ mục | Phù hợp |
+|---|---|---|---|---|
+| BIGINT sequence / identity | Tăng dần | Mép phải (liền kề) | Nhỏ gọn | Khóa chính phổ thông |
+| UUID v7 | Theo thời gian | Nhóm theo thời gian | Nhỏ gọn | Hệ thống phân tán, cần thứ tự |
+| UUID v4 | Ngẫu nhiên | Khắp cây | Phình to (page split) | Tránh làm khóa chính |
+
+Ví dụ: chèn 10 triệu dòng UUID v4 vào khóa chính InnoDB. Mỗi dòng mới rơi vào một trang ngẫu nhiên; trang đầy thì InnoDB tách đôi, để lại khoảng nửa trang trống → chỉ mục có thể lớn gấp 2 lần so với khóa tăng dần, buffer pool đỡ chứa ít trang hơn, truy vấn đọc nhiều trang hơn. Khuyên dùng UUID v7 (tiêu chuẩn RFC 9562, có thông tin thời gian để sắp xếp) hoặc khóa BIGINT tăng dần; số chứng từ liên tục vẫn nên sinh riêng, không dùng khóa chính làm số chứng từ.
+
+### Trên production
+- Triệu chứng chỉ mục phình: chèn chậm dần, buffer pool hit rate tụt, chỉ mục lớn hơn bảng dữ liệu đáng kể.
+- Cách đo: pg_stat_user_indexes (cột idx_scan = 0 trong thời gian dài → chỉ mục không dùng, hãy xóa), bộ mở rộng pgstattuple xem bloat, EXPLAIN xem Heap Fetches cao trên index-only scan.
+- Khắc phục: đổi khóa chính sang UUID v7 hoặc khóa tăng dần (cần migration dữ liệu), hoặc đặt fillfactor thấp hơn (ví dụ 80) để để chỗ trong trang cho ghi ngẫu nhiên (chỉ PostgreSQL). REINDEX CONCURRENTLY để thu gom chỉ mục bị phình mà không khóa bảng đọc/ghi.
+
+> Senior tip: khi nhận khiếu nại "insert chậm dần nhưng schema không đổi", hãy đo kích thước chỉ mục và tỉ lệ fill của trang trước khi đổ lỗi cho cứng cáp hay mã ứng dụng. Một chỉ mục không dùng đến (idx_scan = 0 trong thời gian dài) vừa ocupa đĩa vừa làm chậm mọi câu ghi – hãy xóa nó.`,
+  follow: [
+    'Tại sao chỉ mục trên cột có ít giá trị khác nhau (cardinality thấp) thường không được dùng?',
+    'Visibility map bị cũ thì index-only scan bị ảnh hưởng như thế nào, và VACUUM vai trò gì?',
+    'UUID v7 khác UUID v1 ở điểm nào, và tại sao UUID v7 phù hợp làm khóa chính hơn UUID v4?'
+  ],
+  tags: ['B-tree', 'index-only scan', 'visibility map', 'UUID', 'page split', 'fan-out'],
+  refs: [
+    { type: 'doc', title: 'PostgreSQL: Indexes', url: 'https://www.postgresql.org/docs/current/indexes.html' },
+    { type: 'doc', title: 'MySQL: InnoDB Index Types', url: 'https://dev.mysql.com/doc/refman/8.0/en/innodb-index-types.html' },
+    { type: 'doc', title: 'RFC 9562: UUID Version 7', url: 'https://www.rfc-editor.org/rfc/rfc9562.html' }
+  ]
+},
+{
+  id: 'db-041',
+  topic: 'db',
+  level: 'lead',
+  q: 'Commit trong cơ sở dữ liệu được bền vững thế nào: WAL, fsync và checkpoint? Tham số synchronous_commit và full_page_writes nghĩa gì, và vì sao nhiều giao dịch ghi lại làm checkpoint spikes (biến cố ghi ổ đĩa)?',
+  a: `**Tóm tắt:** Khi ứng dụng lệnh COMMIT, cơ sở dữ liệu không trả "thành công" trước khi nhật ký thay đổi (WAL – Write-Ahead Log, hay redo log ở MySQL) đã được ghi xuống ổ cứng qua fsync; trang dữ liệu thực sự được ghi chậm sau bởi quy trình nền. Đây là lý do commit bền vững: mất điện sau khi nhận thông báo thành công, dữ liệu đã an toàn trong WAL và có thể replay lại khi khởi động. synchronous_commit quyết định commit chờ đến đâu: on (chờ fsync trên primary, an toàn nhất, chậm nhất), remote_write (chờ replica nhận WAL), remote_apply (chờ replica áp dụng xong, chậm nhất nhưng đọc replica ngay sau commit không lạc), off (không chờ, nhanh nhất nhưng có thể mất giao dịch vừa commit khi mất điện). full_page_writes ghi toàn bộ ảnh chụp trang vào WAL lần đầu trang bị sửa sau mỗi checkpoint, để phòng trang bị "rách" (torn page) khi hệ thống ngừng đột ngột giữa lúc ghi trang 8KB. Checkpoint spikes là hiện tượng nhiều trang đã sửa cùng lúc bị đẩy xuống đĩa trong khoảng thời gian ngắn → ổ đĩa bị ép, latency truy vấn nhảy cao.
+
+### WAL và fsync, từng bước
+1. Ứ dụng gửi COMMIT.
+2. Cơ sở dữ liệu viết bản ghi WAL chứa mọi thay đổi của giao dịch.
+3. Gọi fsync để buộc hệ điều hành ghi WAL từ bộ nhớ đệm xuống ổ cứng và đợi xác nhận.
+4. Chỉ sau đó mới trả kết quả thành công cho ứng dụng. Vì sao: nếu mất điện vào thời điểm này, WAL vẫn an toàn trên đĩa.
+5. Trang dữ liệu được ghi vào file dữ liệu sau đó bởi background writer và checkpoint, không phải ngay khi commit.
+
+### synchronous_commit: 4 mức
+| Giá trị | Chờ đợi | Mất dữ liệu khi hỏng | Độ trễ commit |
+|---|---|---|---|
+| on (mặc định PostgreSQL) | fsync WAL trên primary | Giao dịch chưa fsync | Trung bình |
+| remote_write | Replica đã nhận WAL | Cả primary và replica hỏng | Cao hơn |
+| remote_apply | Replica đã áp dụng WAL | Cả primary và replica hỏng | Cao nhất |
+| off | Không chờ | Giao dịch vừa commit chưa fsync | Nhất thấp |
+
+MySQL InnoDB tương đương: innodb_flush_log_at_trx_commit = 1 (fsync mỗi commit, an toàn), 2 (ghi vào bộ nhớ đệm hệ điều hành, fsync mỗi giây), 0 (không chờ, nhanh nhất, có thể mất 1 giây dữ liệu khi mất điện).
+
+### full_page_writes và trang bị rách
+Khi ghi một trang 8KB, hệ thống có thể ghi nửa mới nửa cũ nếu mất điện giữa chừng (trang rách – torn page), làm hỏng chỉ mục. PostgreSQL giảm rủi ro bằng cách, lần đầu một trang được sửa sau mỗi checkpoint, ghi toàn bộ ảnh chụp trang vào WAL (full_page_writes = on). Chi phí: WAL lớn hơn nhiều khi ghi nhiều. Có thể tắt nếu hệ thống file đảm bảo ghi nguyên trang (ví dụ ZFS), nhưng đối với hệ thống thường dùng nên để bật và không tắt mà không thử nghiệm kỹ.
+
+### Checkpoint và tại sao spike
+Checkpoint là quá trình đẩy trang đã sửa từ bộ nhớ đệm xuống file dữ liệu, rồi ghi vị trí bắt đầu replay WAL (điểm checkpoint) để crash recovery sau này chỉ cần replay WAL từ điểm đó. Điều khiển bởi checkpoint_timeout (mặc định 5 phút, checkpoint định kỳ), max_wal_size (mặc định 1GB, WAL quá lớn buộc checkpoint sớm), checkpoint_completion_target (mặc định 0.5, trải checkpoint qua 50% khoảng thời gian để phân tán ghi). Khi hệ thống ghi nhiều: trang đã sửa lũy lên nhanh → checkpoint phải giải phóng lượng lớn trong ít thời gian → ổ đĩa bị ép, các truy vấn đọc/ghi bị chờ → latency nhảy (checkpoint spike). WAL cũng tăng cho đến khi checkpoint xong; nếu có replication slot bị treo, WAL không được xóa → thư mục pg_wal đầy (liên quan câu về WAL/slot CDC).
+
+### Trên production
+- Theo dõi: pg_stat_bgwriter (checkpoints_timed là định kỳ, checkpoints_req là do WAL đầy – nhiều checkpoints_req là dấu hiệu ghi quá nhiều), kích thước pg_wal, buffers_checkpoint (số trang ghi trong mỗi checkpoint).
+- Nếu thấy spike: chia nhỏ batch ghi, tránh cập nhật cùng hàng lớn đồng thời, xem xét tăng max_wal_size (dùng nhiều dung lượng WAL để ít checkpoint hơn) và checkpoint_completion_target cao hơn (ví dụ 0.9) để trải đều ghi.
+- Không bao giờ tắt fsync (PostgreSQL fsync = off) trên production: commit sẽ được báo thành công trước khi dữ liệu xuống đĩa, mất điện có thể làm hỏng dữ liệu, không chỉ mất giao dịch gần nhất.
+
+> Senior tip: commit bền vững có giá tiền (mỗi commit chờ ổ cứng ghi, thường vài đến mười miligiây). Hãy nhóm nhiều thao tác vào một giao dịch thay vì commit từng dòng, và đặt synchronous_commit = off chỉ cho chức năng chịu được mất vài giao dịch gần nhất (ví dụ nhấp chuột theo dõi, log vprès) – không bao giờ dùng cho dữ liệu tiền tệ.`,
+  follow: [
+    'Tại sao commit chưa fsync lại có thể mất dữ liệu khi mất điện, và fsync = off nguy hiểm hơn thế nào?',
+    'full_page_writes làm WAL tăng bao nhiêu, và khi nào có thể tắt một cách an toàn?',
+    'checkpoints_req cao liên tục nói lên điều gì, và bạn xử lý ra sao?'
+  ],
+  tags: ['WAL', 'fsync', 'checkpoint', 'synchronous_commit', 'full_page_writes', 'PostgreSQL', 'MySQL'],
+  refs: [
+    { type: 'doc', title: 'PostgreSQL: Write-Ahead Logging (WAL)', url: 'https://www.postgresql.org/docs/current/wal-intro.html' },
+    { type: 'doc', title: 'PostgreSQL: Runtime Config WAL', url: 'https://www.postgresql.org/docs/current/runtime-config-wal.html' },
+    { type: 'doc', title: 'MySQL: InnoDB Redo Log', url: 'https://dev.mysql.com/doc/refman/8.0/en/innodb-redo-log.html' }
+  ]
+},
+{
+  id: 'db-042',
+  topic: 'db',
+  level: 'senior',
+  q: 'Trong MySQL InnoDB, tại sao chỉ mục phụ luôn dẫn trở lại chỉ mục nhóm, và gap lock / next-key lock ở mức REPEATABLE READ lại gây deadlock khi nhiều yêu cầu chèn dữ liệu cùng lúc? Đọc SHOW ENGINE INNODB STATUS thế nào để tìm nguyên nhân, và sửa thế nào?',
+  a: `**Tóm tắt:** InnoDB lưu bảng dưới dạng chỉ mục nhóm (clustered index): nút lá của chỉ mục theo khóa chính chứa toàn bộ dữ liệu dòng, nên tìm theo khóa chính chỉ cần đi qua một cây. Chỉ mục phụ lưu các khóa của nó kèm giá trị khóa chính, nên đọc qua chỉ mục phụ mất hai bước: tìm trong chỉ mục phụ để có khóa chính, rồi tra clustered index để lấy toàn bộ dòng. Ở mức REPEATABLE READ (mặc định MySQL), InnoDB dùng khoá khoảng (gap lock) để chặn các dòng mới chèn vào khoảng đã đọc, và khoá next-key lock (khoá khoảng cộng bản ghi) để chặn cả bản ghi hiện tại. Khi hai giao dịch chèn cùng giá trị khóa duy nhất, mỗi bên lấy khoá chèn vào cùng khoảng rồi chờ nhau đọc bản ghi chưa commit của bên kia → deadlock. MySQL chọn một giao dịch làm bị thương (victim), rollback và trả lỗi 1213 (SQLSTATE 40001); ứng dụng phải bắt lỗi và thử lại bằng giao dịch mới.
+
+### Chỉ mục nhóm và chỉ mục phụ
+- Chỉ mục nhóm: theo khóa chính (nếu không khai báo, InnoDB tạo khóa ẩn 6 byte). Lá chứa toàn bộ cột của dòng. Ứng dụng đọc theo khóa chính = một lần đi từ gốc xuống lá.
+- Chỉ mục phụ: ví dụ chỉ mục trên cột customer_id. Lá chứa customer_id cộng giá trị id (khóa chính). Đọc đơn hàng của khách qua chỉ mục này: lần 1 tìm customer_id trong chỉ mục phụ lấy id; lần 2 tra clustered index theo id để lấy toàn bộ dòng. Vì vậy khóa chính nên gọn (BIGINT tăng dần), tránh UUID dài (khóa chính dài làm mọi chỉ mục phụ to thêm) – xem chi tiết câu về chỉ mục B-tree.
+- Số liệu: truy vấn qua chỉ mục phụ thường tốn khoảng hai lần đọc trang so với truy vấn trực tiếp theo khóa chính.
+
+### Khoá gap và next-key lock
+InnoDB khoá hàng trên các bản ghi đã đọc/sửa, giữ tới khi commit. Ở REPEATABLE READ, để chặn "phantom" (dòng mới chèn vào khoảng đã đọc), InnoDB thêm:
+- Khoá khoảng (gap lock): khoá khoảng trống giữa hai giá trị khóa trong chỉ mục, chặn chèn dòng mới vào khoảng đó.
+- Khoá next-key lock: khoảng cộng bản ghi đầu tiên sau khoảng.
+- Khoá chèn mục đích (insert intention lock): loại khoá đặc biệt khi chèn, không xung đột với nhau trong cùng khoảng, nhưng khi kiểm tra trùng khóa duy nhất mỗi giao dịch phải lấy khoá trên bản ghi đang được chèn của bên kia.
+
+Deadlock ví dụ (hai yêu cầu đặt mã đơn hàng giống nhau):
+~~~
+T1: INSERT INTO orders (code, ...) VALUES ('ORD-100', ...)
+    -- 1. lấy insert intention lock trên khoảng chứa 'ORD-100'
+T2: INSERT INTO orders (code, ...) VALUES ('ORD-100', ...)
+    -- 2. lấy insert intention lock trên cùng khoảng (không xung đột)
+T1: -- 3. duyệt chỉ mục duy nhất, thấy 'ORD-100' của T2 chưa commit -> chờ T2 (X lock trên bản ghi)
+T2: -- 4. duyệt chỉ mục, thấy 'ORD-100' của T1 chưa commit -> chờ T1   => VÒNG CHỜ
+MySQL: phát hiện vòng, rollback T2 (victim), trả lỗi 1213, T1 chạy tiếp
+~~~
+
+### Đọc SHOW ENGINE INNODB STATUS
+Chạy SHOW ENGINE INNODB STATUS; và xem mục LATEST DETECTED DEADLOCK. Trong đó:
+- TRANSACTION ... ACTIVE ... sec hai bên, với mysql tables in use 1, 2 lock struct(s).
+- Mỗi bên liệt kê LOCK WAIT (đang chờ khoá nào) và LOCK (đã giữ khoá nào), kèm câu SQL đang chạy.
+- WE ROLL BACK TRANSACTION (2) cho biết transaction nào là victim.
+Dựa vào hai câu SQL và hai chỉ mục liên quan, bạn biết deadlock do khoá thứ tự gì (ví dụ hai INSERT cùng mã duy nhất) và sửa ở chỗ đúng.
+
+### Cách sửa
+1. Bắt lỗi và thử lại: deadlock là hiện tượng bình thường trong hệ thống tranh chấp. Bắt mã 1213 / SQLSTATE 40001 (Spring dịch thành PessimisticLockingFailureException hoặc CannotAcquireLockException), thử lại toàn bộ giao dịch mới với backoff + jitter, số lần tối đa 3–5.
+2. Tránh chèn trùng khóa duy nhất: sinh mã duy nhất từ sequence/bộ đếm tập trung thay vì ngẫu nhiên, hoặc kiểm tra tồn tại trước khi chèn (luôn giữ thử lại vì có cuộc đua).
+3. Giao dịch ngắn: không gọi API khác hay xử lý nặng bên trong giao dịch.
+4. Nhiều dòng: sắp xếp theo khóa trước khi chèn batch để thứ tự khoá ổn định.
+
+### Trên production
+- Triệu chứng: lỗi 1213 bursts khi nhiều người cùng đặt hàng hoặc đăng ký mã duy nhất.
+- Cách theo dõi: SHOW ENGINE INNODB STATUS khi cần chi tiết; information_schema.innodb_trx xem giao dịch mở lâu.
+- Không khắc phục bằng cách tắt gap lock (đặt isolation READ COMMITTED) một cách loang láng: sẽ mất tính nhất quán phantom; chỉ đổi khi nghiệp vụ chấp nhận và đã hiểu hậu quả.
+
+> Senior tip: deadlock không phải lỗi của cơ sở dữ liệu, mà là tín hiệu hai giao dịch đang tranh chấp tài nguyên theo thứ tự không ổn định. Mục tiêu không phải "không bao giờ deadlock" (không thể với ghi song song), mà là giảm tần suất và đảm bảo ứng dụng biết bắt lỗi và thử lại đúng cách.`,
+  follow: [
+    'Tại sao chỉ mục phụ của InnoDB luôn chứa giá trị khóa chính, và điều đó ảnh hưởng thế nào đến việc chọn khóa chính?',
+    'Khi nào gap lock gây deadlock mà insert intention lock không genug để phòng được?',
+    'Làm sao phân biệt deadlock (1213) và lock wait timeout (1205) trong log MySQL?'
+  ],
+  tags: ['InnoDB', 'clustered index', 'gap lock', 'next-key lock', 'deadlock', 'REPEATABLE READ'],
+  refs: [
+    { type: 'doc', title: 'MySQL: InnoDB Index Types', url: 'https://dev.mysql.com/doc/refman/8.0/en/innodb-index-types.html' },
+    { type: 'doc', title: 'MySQL: InnoDB Locking', url: 'https://dev.mysql.com/doc/refman/8.0/en/innodb-locking.html' },
+    { type: 'doc', title: 'MySQL: InnoDB Deadlocks', url: 'https://dev.mysql.com/doc/refman/8.0/en/innodb-deadlocks.html' }
+  ]
+},
+{
+  id: 'db-043',
+  topic: 'db',
+  level: 'lead',
+  q: 'Sizing pool kết nối HikariCP nên dựa trên công thức nào, và tại sao pool lớn hơn lại chậm hơn? maxLifetime nên quan hệ như thế nào với timeout của cơ sở dữ liệu và cân bằng tải?',
+  a: `**Tóm tắt:** Kích thước pool nên dựa trên công việc thực tế, không phải số luồng của ứng dụng. Theo quy tắc Little's Law, số kết nối bận trung bình = số yêu cầu mỗi giây × thời gian giữ trung bình mỗi kết nối (giây). Ví dụ 400 yêu cầu/giây × 0,02 giây ≈ 8 kết nối bận cùng lúc; pool 15 trên mỗi instance là đủ cho đỉnh tải, pool 100 chỉ thêm tranh chấp trên cơ sở dữ liệu. Công thức tham khảo của HikariCP: pool ≈ (số lõi CPU của cơ sở dữ liệu × 2) + ổ đĩa hiệu dụng, bắt đầu 10–20 trên mỗi instance, và tổng pool của tất cả instance (tính cả lúc mở rộng tự động) phải nhỏ hơn max_connections của cơ sở dữ liệu (để lại khoảng 20% cho quản trị, replication, công cụ). Pool lớn hơn lại chậm hơn vì lý do hàng chờ: khi sử dụng gần 100%, thời gian chờ tăng vọt (hệ M/M/c); đồng thời quá nhiều truy vấn đồng thời làm chuyển đổi ngữ cảnh tăng, khóa trên cơ sở dữ liệu tranh chấp, và bộ nhớ đệm trang (buffer pool) bị xáo trộn vì từng truy vấn xóa trang của truy vấn khác. maxLifetime phải ngắn hơn thời gian ngắt kết nối im lặng của tường lửa/cơ sở dữ liệu (ví dụ 30 phút so với 60 phút) để Hikari tự thay mới kết nối trước khi bị cắt im lặng; nếu không, ứng dụng gặp lỗi "connection reset" ngẫu nhiên sau giờ thấp điểm.
+
+### Công thức tham khảo
+1. Xem max_connections của cơ sở dữ liệu và số instance: maximum-pool-size × số instance (tính cả pod tối đa khi mở rộng tự động) phải nhỏ hơn max_connections.
+2. Tính theo lõi CPU của cơ sở dữ liệu: pool tham khảo ≈ (số lõi × 2) + số ổ đĩa hiệu dụng.
+3. Bắt đầu với 10–20, rồi đo: thời gian chờ lấy kết nối, tỉ lệ timeout, throughput của cơ sở dữ liệu.
+Ví dụ số liệu: 400 request/giây, mỗi request giữ kết nối 20ms → cần trung bình 8 kết nối bận (400 × 0,02).
+
+### Tại sao pool lớn lại chậm
+- Hàng chờ: sử dụng gần 100% thì thời gian chờ tăng phi tuyến, không tuyến tính.
+- Chuyển đổi ngữ cảnh: cơ sở dữ liệu xử lý mỗi kết nối bằng một luồng/quá trình (PostgreSQL một quá trình mỗi kết nối), quá nhiều liên tục chuyển ngữ tốn CPU.
+- Tranh chấp khóa và buffer pool: nhiều truy vấn cùng chạy xóa trang của nhau trong buffer pool, mức lỗi đọc từ đĩa tăng.
+- Bộ nhớ: mỗi kết nối PostgreSQL chiếm vài megabyte RAM ngay cả khi không làm gì.
+
+### Các timeout quan trọng
+| Tham số | Ý nghĩa | Gợi ý |
+|---|---|---|
+| connection-timeout | Chờ tối đa bao lâu để có kết nối từ pool | Ngắn, 2–5 giây, fail nhanh |
+| max-lifetime | Thời gian tối đa kết nối tồn tại trước khi bị đóng thay mới | Ngắn hơn giới hạn tường lửa/DB, ví dụ 30 phút so với 60 phút |
+| idle-timeout | Thời gian kết nối rỗi mới được đóng (tối thiểu 10 giây) | 10 phút |
+| leak-detection-threshold | Giữ kết nối quá lâu thì ghi stack trace nơi mượn | Bật, ví dụ 60 giây |
+
+maxLifetime ngẫu nhiên hóa một chút (Hikari tự làm) để tránh hàng chục instance cùng thay mới kết nối cùng một lúc (thundering herd). maxLifetime cũng phải ngắn hơn wait_timeout của MySQL (mặc định 28.800 giây) và idle_in_transaction_session_timeout nếu dùng PostgreSQL, để không giữ kết nối chết.
+
+### Đo trên production
+Theo dõi chỉ số HikariCP: hikaricp.connections.pending (số luồng đang chờ lấy kết nối), connections.usage (tỷ lệ sử dụng), connections.acquire (thời gian chờ). Nếu pending > 0 thường xuyên, không nên tăng pool ngay – hãy tìm giao dịch giữ kết nối lâu (Open Session In View, gọi API khác bên trong @Transactional), vì tăng pool chỉ đưa tắc nghẽn từ ứng dụng xuống cơ sở dữ liệu.
+
+### Trên production
+- Với luồng ảo (Java 21+): số luồng có thể rất lớn nhưng kết nối cơ sở dữ liệu vẫn hữu hạn → đặt pool nhỏ (thường 5–10), theo dõi pending; nhiều instance chia sẻ một cơ sở dữ liệu hãy cân nhắc PgBouncer hoặc RDS Proxy thay vì salas pool mỗi instance.
+- spring.jpa.open-in-view = true (mặc định) giữ kết nối suốt khi render JSON → pool cạn dù truy vấn nhanh. Hãy đặt false và load đủ dữ liệu trong dịch vụ.
+
+> Senior tip: chỉ số quan trọng nhất của pool kết nối là thời gian chờ và số luồng đang chờ, không phải số kết nối hiện có. Pool lớn không làm cơ sở dữ liệu nhanh hơn; nó chỉ chia nhỏ thời gian CPU của cơ sở dữ liệu cho nhiều yêu cầu hơn. Khi thấy chờ kết nối, việc đầu tiên là tìm truy vấn giữ giao dịch lâu.`,
+  follow: [
+    'Theo quy tắc Little, 200 request/giây và giữ kết nối 50ms cần bao nhiêu kết nối trung bình?',
+    'Tại sao maxLifetime phải ngắn hơn wait_timeout của DB và idle timeout của cân bằng tải?',
+    'Virtual threads có nên dẫn đến pool kết nối lớn hơn không?'
+  ],
+  tags: ['HikariCP', 'connection pool', 'sizing', 'Quy tac Little', 'maxLifetime', 'leak detection'],
+  refs: [
+    { type: 'doc', title: 'HikariCP: About Pool Sizing', url: 'https://github.com/brettwooldridge/HikariCP/wiki/About-Pool-Sizing' },
+    { type: 'doc', title: 'PostgreSQL: max_connections', url: 'https://www.postgresql.org/docs/current/runtime-config-connection.html#GUC-MAX-CONNECTIONS' },
+    { type: 'doc', title: 'MySQL: max_connections', url: 'https://dev.mysql.com/doc/refman/8.0/en/server-system-variables.html#sysvar_max_connections' }
+  ]
+},
+{
+  id: 'db-044',
+  topic: 'db',
+  level: 'senior',
+  q: 'Replication lag là gì, và sao sau khi ghi xong ứng dụng đọc replica lại không thấy dữ liệu vừa ghi? Bạn đo lag thế nào, và đảm bảo "đọc lại chính dữ liệu mình vừa ghi" (read-your-writes) trong Spring thế nào?',
+  a: `**Tóm tắt:** Replication lag là khoảng thời gian giữa khi giao dịch commit trên primary (node ghi) và khi dữ liệu đó được ghi vào replica (node chỉ đọc). Nhờ nó, người dùng vừa chuyển tiền xong làm mới màn hình mà không thấy giao dịch – bản ghi chưa kịp được dẫn truyền từ primary sang replica. Dẫn truyền vật lý (streaming replication, mặc định PostgreSQL/MySQL) hoạt động bất đồng bộ: primary viết WAL/redo log, rồi đưa các bản ghi WAL qua mạng cho replica replay. Vì vậy commit trên primary trả thành công ngay, không cần chờ replica; lag có thể là vài miligiây đến vài phút tùy tải và tốc độ ổ đĩa replica. Đảm bảo đọc lại chính dữ liệu mình vừa ghi (read-your-writes) bằng ba cách: đọc từ primary ngay sau khi ghi của chính người dùng đó, route dính session (sticky routing) trong một thời gian nhẹ sau khi ghi, hoặc chờ replica phát sinh đến vị trí WAL (LSN) đã ghi trước khi cho đọc replica. Dữ liệu tài chính (số dư, trạng thái đơn) nên luôn đọc primary.
+
+### Dẫn truyền từng bước
+1. Ứ dụng commit trên primary.
+2. Primary viết thay đổi vào WAL và fsync, rồi trả thành công cho ứng dụng.
+3. WAL sender trên primary gửi bản ghi WAL qua mạng cho WAL receiver trên replica.
+4. Replica viết WAL nhận được vào ổ cứng của mình (flush), sau đó replay vào dữ liệu (trang dữ liệu được cập nhật).
+5. Khoảng thời gian giữa bước 2 và bước 4 là replication lag.
+
+### Đo lag thế nào
+PostgreSQL: xem cột write_lsn, flush_lsn, replay_lsn trong view pg_stat_replication, so với pg_current_wal_lsn() trên primary (vị trí WAL hiện tại). Khoảng cách byte (hoặc pg_last_wal_replay_lsn() trên replica so với LSN đã ghi) cho biết lag. MySQL: chạy SHOW REPLICA STATUS; trên replica, xem Seconds_Behind_Master (giây chậm so với primary) và so sánh Read_Master_Log_Pos với Exec_Master_Log_Pos.
+
+### Ba cách đảm bảo read-your-writes
+1. Đọc primary sau khi ghi: đối với dữ liệu của chính người dùng (hồ sơ, số dư), luôn đọc primary trong vài giây sau khi ghi. Đơn giản và an toàn nhất.
+2. Sticky routing: sau khi người dùng ghi, gán session của người đó đến primary trong khoảng thời gian (ví dụ 30 giây–5 phút), các request đọc của session này đi primary, hiện tại mới về replica.
+3. Cổng LSN: sau commit trên primary, ứng dụng lưu LSN vừa ghi (pg_current_wal_lsn()). Các đọc sau đó chỉ được route sang replica khi pg_last_wal_replay_lsn() trên replica lớn hơn hoặc bằng LSN đã lưu; nếu chưa, đọc primary. Triển khai trong Spring qua AbstractRoutingDataSource: chọn primary cho @Transactional ghi và các đọc kèm theo, replica cho @Transactional(readOnly = true) khi cổng LSN mở.
+
+### Khi dùng dẫn truyền đồng bộ
+synchronous_standby_names + synchronous_commit = remote_apply làm commit chờ replica áp dụng xong, do đó đọc replica ngay sau commit không bị lạc. Code giá: latency commit tăng (chờ vòng qua mạng), và nếu không có replica đồng bộ sẵn sàng, commit có thể bị chặn.
+
+### Trên production
+- Triệu chứng lag: khiếu nại "vừa cập nhật không thấy", bản ghi mới trên primary chưa có trên replica khi báo cáo chạy replica.
+- Nguyên nhân lag: replica chậm replay (CPU/ổ đĩa yếu hơn), mạng, giao dịch lớn giữ WAL, truy vấn dài trên replica bị hủy do tranh chấp recovery (canceling statement due to conflict with recovery), replication slot bị treo giữ WAL không được xóa (thư mục pg_wal tăng, liên quan câu về WAL/slot CDC).
+- Cách khắc phục: nâng cấp replica, chia nhỏ giao dịch lớn, bật hot_standby_feedback = on nếu chấp nhận replica trễ hơn để bảo vệ truy vấn dài, theo dõi pg_replication_slots và xóa slot không dùng.
+
+> Senior tip: đừng để mọi đọc đều đi replica theo kiểu "mất dữ liệu vài giây cũng được" mà không hỏi stakeholder. Dữ liệu tài chính và thao tác ngay sau khi ghi của chính người dùng phải đọc primary; phần phân tích, báo cáo, dashboard nội bộ thì đọc replica kèm thông báo "dữ liệu có thể trễ vài phút". Trong Spring, hãy biểu định rõ nguồn dữ liệu bằng AbstractRoutingDataSource thay vì để mỗi dịch vụ tự đoán.`,
+  follow: [
+    'Tại sao commit trên primary trả thành công ngay dù replica chưa có dữ liệu, và điều đó có vấn đề gì?',
+    'pg_last_wal_replay_lsn() và pg_current_wal_lsn() dùng để làm gì khi đo lag?',
+    'Khi nào nên chọn dẫn truyền đồng bộ (synchronous_commit = remote_apply) thay vì bất đồng bộ?'
+  ],
+  tags: ['replication lag', 'read-your-writes', 'streaming replication', 'LSN', 'pg_stat_replication', 'AbstractRoutingDataSource'],
+  refs: [
+    { type: 'doc', title: 'PostgreSQL: Streaming Replication', url: 'https://www.postgresql.org/docs/current/warm-standby.html#STREAMING-REPLICATION' },
+    { type: 'doc', title: 'PostgreSQL: pg_stat_replication', url: 'https://www.postgresql.org/docs/current/monitoring-stats.html#PG-STAT-REPLICATION-VIEW' },
+    { type: 'doc', title: 'MySQL: Replication', url: 'https://dev.mysql.com/doc/refman/8.0/en/replication.html' }
+  ]
+},
+{
+  id: 'db-045',
+  topic: 'db',
+  level: 'lead',
+  q: 'Phân vùng theo thời gian (range partitioning) giúp gì và khi nào lại không giúp? Hãy nói về partition pruning, xóa dữ liệu cũ, và những ràng buộc trên khóa chính/chỉ mục duy nhất.',
+  a: `**Tóm tắt:** Phân vùng chia một bảng lớn thành nhiều phân vùng nhỏ, mỗi phân vùng chứa một phạm vi dữ liệu (ví dụ bảng đơn hàng 800 triệu dòng, mỗi tháng một phân vùng theo created_at). Khi câu truy vấn có điều kiện trên cột phân vùng, trình lập kế hoạch thực hiện partition pruning (cắt phân vùng): loại bỏ các phân vùng chắc chắn không chứa dữ liệu khớp, chỉ quét các phân vùng liên quan. Lợi ích lớn nhất là xóa dữ liệu cũ bằng DROP hoặc DETACH phân vùng (milli giây, không ghi WAL hàng triệu dòng, không làm bloat bảng) thay vì DELETE hàng triệu dòng. Mỗi phân vùng nhỏ hơn nên chỉ mục vừa vào bộ nhớ đệm, vacuum sớm xong. Phân vùng không giúp khi truy vấn không có cột phân vùng (phải quét tất cả phân vùng, thường kém hơn bảng thông thường), khi quá nhiều phân vụ nhỏ (thời gian lên kế hoạch và bộ nhớ tăng), hoặc khi phân vùng mặc định (DEFAULT) trở thành bệ chứa mọi thứ. Ràng buộc quan trọng: khóa chính và chỉ mục duy nhất phải chứa cột phân vùng, nên khóa chính thành (id, created_at), và mọi truy cập theo id độc lập cần biết thời gian hoặc quét tất cả phân vùng.
+
+### Phân vùng và partition pruning
+Ví dụ bảng đơn hàng phân vùng theo tháng:
+~~~
+orders_2026_01  orders_2026_02  ...  orders_2026_06
+(created_at 01/2026) (02/2026) ... (06/2026)
+~~~
+Câu SELECT * FROM orders WHERE created_at >= '2026-05-01' AND created_at < '2026-06-01' chỉ quét phân vùng tháng 5 và tháng 6 (PostgreSQL còn có runtime pruning khi tham số được biết khi chạy). Câu không có điều kiện thời gian, ví dụ WHERE customer_id = ?, phải quét tất cả phân vùng.
+
+### Khi phân vùng giúp
+- Xóa dữ liệu cũ: DETACH PARTITION rồi DROP TABLE mất vài mili giây cho hàng trăm triệu dòng, không sinh WAL hàng triệu dòng và không làm replica trễ; tương đương DELETE có thể mất vài giờ, sinh WAL khổng lồ và để lại bloat.
+- Chỉ mục vừa bộ nhớ: chỉ mục mỗi phân vùng nhỏ, nhiều khả năng nằm trong buffer pool → truy vấn nhanh hơn.
+- Vacuum và bảo trì nhỏ gọn: từng phân vùng một, không khóa toàn bảng lâu.
+- Partition-wise join/aggregate (PostgreSQL 11+): join hai bảng phân vùng theo cùng khóa có thể thực hiện từng cặp phân vùng.
+
+### Khi phân vùng không giúp (và có thể hại)
+| Tình huống | Tại sao |
+|---|---|
+| Truy vấn không có cột phân vùng | Quét tất cả phân vụ, có thêm chi phí mở từng phân vụ |
+| Quá nhiều phân vụ nhỏ (vài nghìn) | Thời gian lên kế hoạch tăng, bộ nhớ dùng nhiều, plan kém |
+| Phân vùng DEFAULT nhận dư | Các giá trị không khớp nào cũng rơi vào DEFAULT, bảng này lớn không kiểm soát |
+| Truy cập theo khóa chính không kèm thời gian | Khóa chính phải chứa cột phân vùng → truy cập theo id đơn lẻ quét nhiều phân vụ |
+| Join phân vùng với bảng không phân vùng | Tối ưu hóa kém, có thể không dùng partition-wise |
+
+### Điều vận hành
+- Tạo phân vùng sẵn cho tháng tới bằng công việc định kỳ, đừng đợi dữ liệu mới tạo phân vùng ngay lúc ghi (tránh chờ khóa schema).
+- Theo dõi số dòng trong phân vùng DEFAULT; nếu lớn, nghĩa là thiết kế cột phân vùng sai hoặc có giá trị ngoài dự kiến.
+- Trước khi DROP, hãy DETACH và giữ bảng tách ra một thời gian để rollback nếu cần.
+- MySQL 8 phân vùng gốc (native partitioning): mỗi phân vùng là một file tablespace riêng, khóa duy nhất/khóa chính cũng phải chứa cột phân vùng, và bảng phân vùng không hỗ trợ khóa ngoại (foreign key).
+
+### Trên production
+- Triệu chứng phân vùng sai: truy vấn theo customer_id trên bảng 800 triệu dòng chậm hơn sau khi phân vùng (vì quét 72 phân vụ).
+- Cách kiểm chứng: EXPLAIN (ANALYZE, BUFFERS) xem plan có node Append với ít phân vụ (đúng) hay quét toàn bộ (sai).
+- Khi nào không nên phân vùng: bảng dưới vài chục triệu dòng, truy vấn chủ yếu theo khóa ngẫu nhiên, hoặc đội chưa sẵn sàng vận hành thêm phân vụ.
+
+> Senior tip: phân vùng là công cụ vận hành (xóa dữ liệu cũ, chia chỉ mục) nhiều hơn là công cụ làm truy vấn nhanh. Hãy chỉ phân vùng khi bảng lớn đến mức DELETE Monthly làm replica trễ hay vacuum không kịp, và khi phần lớn truy vấn nóng đều lọc theo cột thời gian. Nếu không chắc, hãy bắt đầu bằng chỉ mục tốt và lưu trữ bảng lịch sử sang bảng phân vùng riêng sau.`,
+  follow: [
+    'Tại sao khóa chính của bảng phân vùng phải chứa cột phân vùng, và hậu quả của điều đó là gì?',
+    'Partition pruning chạy ở thời điểm lập kế hoạch hay khi chạy truy vấn, và khác nhau thế nào?',
+    'Phân vùng DEFAULT là gì, và tại sao nó có thể trở thành bẫy hiệu năng?'
+  ],
+  tags: ['partitioning', 'range partitioning', 'partition pruning', 'DETACH PARTITION', 'DEFAULT partition', 'PostgreSQL', 'MySQL'],
+  refs: [
+    { type: 'doc', title: 'PostgreSQL: Partitioning', url: 'https://www.postgresql.org/docs/current/ddl-partitioning.html' },
+    { type: 'doc', title: 'PostgreSQL: ALTER TABLE', url: 'https://www.postgresql.org/docs/current/sql-altertable.html' },
+    { type: 'doc', title: 'MySQL: Partitioning', url: 'https://dev.mysql.com/doc/refman/8.0/en/partitioning.html' }
+  ]
+},
+{
+  id: 'db-046',
+  topic: 'db',
+  level: 'senior',
+  q: 'Index-only scan là gì, và sao đôi khi EXPLAIN vẫn cho thấy đọc heap (Heap Fetches cao)? Visibility map và VACUUM liên quan thế nào, và index bloat được xử lý ra sao?',
+  a: `**Tóm tắt:** Index-only scan trả kết quả trực tiếp từ chỉ mục, không đọc bảng dữ liệu (heap). Để xảy ra, hai điều kiện: (1) mọi cột câu lệnh cần đều nằm trong chỉ mục (covering index; PostgreSQL 11+ dùng INCLUDE, InnoDB secondary index đã chứa khóa chính), và (2) ở PostgreSQL, tất cả dòng trên trang heap đều được đánh dấu "hết hạn nhìn thấy cho mọi giao dịch" trong visibility map (VM). VM được VACUUM cập nhật; giao dịch dài chặn VACUUM → VM cũ → index-only scan vẫn phải vào heap kiểm tra (cột Heap Fetches trong EXPLAIN ANALYZE cao thay vì bằng 0). Index bloat: phiên bản dòng cũ chưa dọn dở làm chỉ mục lớn hơn cần thiết, quét chậm và tốn RAM. Khắc phục: autovacuum đúng mức, VACUUM FULL (dùng khoá bảng, cần downtime), pg_repack (trực tuyến), REINDEX CONCURRENTLY (chỉ mục), và fillfactor để để chỗ trong trang cho cập nhật (HOT update không sửa chỉ mục).
+
+### Index-only scan là gì
+Thay vì chỉ mục → heap → trả dòng, cơ sở dữ liệu chỉ đọc chỉ mục và trả ngay. Ví dụ chỉ mục (customer_id, created_at) INCLUDE (amount) cho câu SELECT customer_id, created_at, amount FROM orders WHERE customer_id = ? trả lời hoàn toàn từ chỉ mục. Ở MySQL/InnoDB, chỉ mục phụ đã chứa giá trị khóa chính, nên nếu câu chọn chỉ các cột trong chỉ mục phụ cộng khóa chính, cũng có thể index-only scan.
+
+### Visibility map (PostgreSQL)
+Mỗi trang heap có một bit trong visibility map đánh dấu "mọi dòng trên trang này đều nhìn thấy được cho mọi giao dịch hiện tại và sau này". Bit này được đặt bởi VACUUM khi xác định các bản dùng trên trang đã cũ đủ (không có giao dịch nào chạy lâu hơn cần xem chúng).
+- Nếu VM mới: index-only scan bỏ qua heap, Heap Fetches = 0.
+- Nếu VM cũ (trang vừa được cập nhật, hoặc giao dịch dài chặn VACUUM dọn trang): index-only scan vẫn phải đọc heap xem từng dòng có nhìn thấy được không → Heap Fetches cao.
+Ví dụ số liệu: bảng 50 triệu dòng, index-only scan lý tưởng đọc 2.000 trang chỉ mục; nếu VM cũ, hệ thống đọc thêm 2.000 trang heap → latency gấp đôi.
+
+### Index bloat và VACUUM
+PostgreSQL không ghi đè dòng cũ khi cập nhật: nó chèn bản mới và đánh dấu bản cũ "chết" (dead tuple). Các bản chết trong chỉ mục vẫn được quét cho đến khi VACUUM dọn. Index bloat xảy ra khi:
+- Giao dịch dài giữ snapshot cũ → VACUUM không dọn được bản chết liên quan.
+- Cập nhật các cột có trong chỉ mục → tạo chỉ mục mới, chỉ mục cũ phải chờ dọn.
+- pg_stat_user_tables cột n_dead_tup cho biết số bản chết chờ dọn.
+
+### Xử lý trên production
+- VACUUM (không khoá đọc/ghi): dọn bản chết, có thể tái sử dụng không gian trong file nhưng không thu nhỏ file.
+- VACUUM FULL: viết lại toàn bảng, thu nhỏ file, nhưng cần khoá exclusif (không đọc/ghi trong khoảng đó) → thường chạy giờ thấp điểm.
+- pg_repack: viết lại bảng và chỉ mục trực tuyến, không khoá lâu, cần thêm không gian đĩa bằng kích thước bảng.
+- REINDEX CONCURRENTLY: xây lại chỉ mục bị bloat mà không khóa đọc/ghi chỉ mục (chỉ PostgreSQL), cần nhiều CPU/I/O trong thời gian xây.
+- fillfactor: đặt thấp hơn 100 (ví dụ 80) trên bảng có cập nhật thường xuyên để để chỗ trong trang; cập nhật không đổi cột chỉ mục thì dùng HOT (Heap-Only Tuple), không phải cập nhật chỉ mục → ít bloat hơn.
+
+### Trên production
+- Triệu chứng bloat: bảng 50GB nhưng dữ liệu thực 30GB; chỉ mục quét chậm; Heap Fetches cao trên index-only scan.
+- Cách đo: pg_stat_user_tables (n_dead_tup, last_vacuum, last_autovacuum), bộ mở rộng pgstattuple xem bloat chính xác.
+- Phòng ngừa: điều chỉnh autovacuum_vacuum_scale_factor (giảm xuống 0,02–0,05 cho bảng cập nhật nhiều) và autovacuum_vacuum_insert_scale_factor cho bảng chỉ chèn không cập nhật.
+
+> Senior tip: index-only scan nhanh chứ không phải miễn phí tĩnh – nó phụ thuộc VACUUM chạy kịp. Khi thấy "index-only scan vẫn đọc heap nhiều", hãy kiểm tra transaction dài (pg_stat_activity, xact_start) chặn vacuum trước khi đổ lỗi cho chỉ mục.`,
+  follow: [
+    'Tại sao index-only scan có thể vẫn đọc heap mặc dù chỉ mục chứa đủ cột cần thiết?',
+    'VACUUM FULL và pg_repack khác nhau ở điểm nào, và khi nào dùng cái nào?',
+    'HOT (Heap-Only Tuple) là gì và giúp giảm index bloat như thế nào?'
+  ],
+  tags: ['index-only scan', 'visibility map', 'VACUUM', 'index bloat', 'REINDEX CONCURRENTLY', 'fillfactor', 'PostgreSQL'],
+  refs: [
+    { type: 'doc', title: 'PostgreSQL: Indexes', url: 'https://www.postgresql.org/docs/current/indexes.html' },
+    { type: 'doc', title: 'PostgreSQL: Routine Vacuuming', url: 'https://www.postgresql.org/docs/current/routine-vacuuming.html' }
+  ]
+},
+{
+  id: 'db-047',
+  topic: 'db',
+  level: 'senior',
+  q: 'Transaction ID wraparound là gì, và sao PostgreSQL có thể ép cơ sở dữ liệu về chế độ chỉ đọc nếu không vacuum kịp? MySQL có vấn đề tương tự không, và phòng ngừa như thế nào?',
+  a: `**Tóm tắt:** PostgreSQL dùng mã giao dịch (XID) 32-bit (khoảng 2 tỷ giá trị) để đánh dấu phiên bản mỗi dòng (cột ẩn xmin, xmax). Trước khi XID vòng quay về đầu, mọi phiên bản dòng cũ phải được "đóng băng" (freeze) bằng XID đặc biệt, nếu không cơ sở dữ liệu sẽ không biết phiên bản nào cũ, phiên bản nào mới, và để bảo vệ dữ liệu nó ép toàn bộ cơ sở dữ liệu về chế độ chỉ đọc cho đến khi vacuum xong – sự cố nghiêm trọng. VACUUM và autovacuum freeze là cơ chế phòng ngừa, nhưng giao dịch dài giữ XID cũ làm tiến độ freeze bị kẹt. MySQL không có vấn đề XID vòng quay; thay vào đó, các bản cũ được lưu trong undo log và dọn bởi luồng purge, nên giao dịch dài làm lịch sử purge (History list length) tăng và có thể khống chế ghi (innodb_max_purge_lag). Phòng ngừa chung: giữ giao dịch ngắn, đặt thời gian ngắt kết nối im lặng, theo dõi oldest_xid (PostgreSQL) và History list length (MySQL).
+
+### XID và tại sao 2 tỷ là ngưỡng hiểm
+Mỗi phiên bản dòng trong PostgreSQL lưu xmin (giao dịch tạo ra) và xmax (giao dịch xóa/thay thế). XID là số 32-bit, khoảng 2 tỷ giao dịch. Khi hệ thống chạy đủ 2 tỷ giao dịch, XID quay lại giá trị ban đầu. Nếu chưa freeze, hệ thống không phân biệt được phiên bản cũ và mới → dữ liệu có thể bị hiểu nhầm. Do đó PostgreSQL bắt buộc freeze (đặt xmin/xmax thành XID đặc biệt "frozen") cho các phiên bản cũ đủ lâu trước khi wraparound xảy ra.
+
+### Vacuum freeze và sự cố chỉ đọc
+VACUUM quét bảng, freeze các phiên bản cũ, và cập nhật datfrozenxid của cơ sở dữ liệu (XID cũ nhất chưa freeze). Các ngưỡng quan trọng:
+- autovacuum_freeze_max_age (mặc định 200 triệu giao dịch): bắt đầu autovacuum freeze tập trung.
+- Khi oldest_xid tới hơn 1,5 tỷ giao dịch (và đặc biệt là gần 2 tỷ): PostgreSQL ép cơ sở dữ liệu chỉ đọc cho đến khi freeze xong – không ghi nào được, ứng dụng viết sẽ lỗi.
+- Giao dịch dài (ví dụ @Transactional mở hàng giờ, công cụ SQL để mở ở chế độ manual commit) giữ xmin cũ → VACUUM không freeze được bản cần → oldest_xid dừng lại, tiến gần ngưỡng wraparound.
+
+### MySQL đường khác: purge lag
+MySQL InnoDB không dùng XID 32-bit cho phiên bản dòng theo cách đó, nên không có wraparound ép chỉ đọc. Thay vào đó:
+- Bản cũ lưu trong undo log; luồng purge dọn undo log khi không còn giao dịch nào cần.
+- Giao dịch dài → purge không kịp → History list length trong SHOW ENGINE INNODB STATUS tăng (số bản undo chờ dọn).
+- Nếu quá cao, InnoDB khống chế các câu ghi (innodb_max_purge_lag, mặc định 0 = không khống chế), và các truy vấn đọc phải lần qua nhiều phiên bản undo → chậm dần.
+
+### Phòng ngừa và theo dõi
+PostgreSQL:
+- Giữ giao dịch ngắn, tránh @Transactional bao các lời gọi HTTP chậm.
+- Đặt idle_in_transaction_session_timeout (ví dụ 60 giây) để ngắt session quên commit.
+- Theo dõi SELECT datname, oldest_xid FROM pg_database; và pg_stat_activity tìm giao dịch chạy lâu.
+- Vacuum thường xuyên cho bảng cập nhật nhiều; có thể giảm autovacuum_vacuum_scale_factor xuống 0,02–0,05.
+
+MySQL:
+- Giữ giao dịch ngắn; information_schema.innodb_trx xem giao dịch mở lâu.
+- Theo dõi SHOW ENGINE INNODB STATUS mục History list length; nếu cao liên tục, xem xét innodb_max_purge_lag và tối ưu hóa truy vấn dài.
+
+### Trên production
+- Triệu chứng PostgreSQL: lỗi "database is not accepting commands to avoid wraparound data loss", ứng dụng viết bị từ chối.
+- Cách cứu: chạy VACUUM (hoặc VACUUM FREEZE) trên các bảng bị kẹt; sau sự cố, sửa giao dịch dài là nguyên nhân gốc.
+- Triệu chứng MySQL: History list length tăng lên hàng nghìn, throughput ghi giảm, truy vấn đọc chậm dần.
+
+> Senior tip: wraparound không xảy ra do dữ liệu quá lớn, mà do "giao dịch chạy quá lâu". Một công cụ SQL được mở trong code và quên đóng có thể làm oldest_xid dừng lại hàng nghìn transaction và dẫn toàn bộ hệ thống đến nguy cơ chỉ đọc. Quy tắc vàng: mọi transaction trong code ứng dụng phải ngắn, và có cảnh báo tự động khi transaction mở quá 60 giây.`,
+  follow: [
+    'Tại sao PostgreSQL buộc phải freeze các phiên bản dòng cũ trước khi XID vòng quay?',
+    'Giao dịch dài (@Transactional mở hàng giờ) ảnh hưởng thế nào đến oldest_xid và vacuum?',
+    'MySQL không có wraparound, nhưng giao dịch dài vẫn gây vấn đề gì ở InnoDB?'
+  ],
+  tags: ['XID wraparound', 'freeze', 'VACUUM', 'oldest_xid', 'purge lag', 'History list length', 'PostgreSQL', 'MySQL'],
+  refs: [
+    { type: 'doc', title: 'PostgreSQL: Routine Vacuuming', url: 'https://www.postgresql.org/docs/current/routine-vacuuming.html' },
+    { type: 'doc', title: 'PostgreSQL: pg_database View', url: 'https://www.postgresql.org/docs/current/monitoring-stats.html#PG-DATABASE-VIEW' },
+    { type: 'doc', title: 'MySQL: SHOW ENGINE', url: 'https://dev.mysql.com/doc/refman/8.0/en/show-engine.html' }
+  ]
+});
