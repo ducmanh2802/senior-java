@@ -1288,6 +1288,8 @@ window.DATA_INDEX = {
     {"id":"lesson-modern-003","track":"modern","order":3,"title":"Record, sealed interface và pattern matching (Java 21)","level":"lead","minutes":30},
     {"id":"lesson-modern-004","track":"modern","order":4,"title":"Lambda, functional interface, method reference và compose","level":"mid","minutes":25},
     {"id":"lesson-modern-005","track":"modern","order":5,"title":"java.time: Instant, LocalDate, ZonedDateTime, múi giờ và cut-off ngân hàng","level":"senior","minutes":30},
+    {"id":"lesson-modern-006","track":"modern","order":6,"title":"Collectors nâng cao: downstream, giữ thứ tự bằng LinkedHashMap/TreeMap, toMap merge và teeing","level":"senior","minutes":35},
+    {"id":"lesson-modern-007","track":"modern","order":7,"title":"Fan-out gọi nhiều service song song: CompletableFuture, timeout, fallback và virtual threads","level":"senior","minutes":40},
     {"id":"lesson-concurrency-001","track":"concurrency","order":1,"title":"Java Memory Model: visibility, volatile và happens-before","level":"mid","minutes":30},
     {"id":"lesson-concurrency-002","track":"concurrency","order":2,"title":"synchronized, ReentrantLock và Atomic: chọn đúng công cụ, tránh deadlock","level":"senior","minutes":35},
     {"id":"lesson-concurrency-003","track":"concurrency","order":3,"title":"ExecutorService và ThreadPoolExecutor: thứ tự core → queue → max → reject, sizing và shutdown","level":"senior","minutes":35},
