@@ -1106,4 +1106,693 @@ AWS thật còn tính trên metric tổng hợp theo chu kỳ, có instance warm
   related: ['aws-001', 'aws-002', 'aws-010', 'aws-017', 'aws-019', 'aws-025'],
   tags: ['Lambda', 'SnapStart', 'ECS Fargate', 'EKS', 'ALB', 'Auto Scaling', 'RDS Proxy'],
 },
+{
+  id: 'lesson-aws-005',
+  track: 'aws',
+  order: 5,
+  title: 'VPC cho dev Java: CIDR, subnet, route table, security group vs NACL và VPC endpoint',
+  level: 'mid',
+  minutes: 50,
+  goals: [
+    'Đọc được một dải CIDR và tính được dải IP tương ứng, hiểu vì sao subnet gắn với một AZ',
+    'Vẽ lại đường đi của một request từ internet vào app trong private subnet rồi xuống RDS',
+    'Phân biệt security group (stateful, chỉ có rule allow) và NACL (stateless, allow/deny xét theo số thứ tự)',
+    'Giải thích vì sao NACL outbound thiếu dải ephemeral port tạo ra ca "app nhận request nhưng không có log"',
+    'Biết khi nào dùng gateway endpoint cho S3/DynamoDB thay vì đi qua NAT và lợi ích được những gì',
+  ],
+  body: `### VPC là gì: khu đất bạn tự vẽ đường và hàng rào
+**VPC (Virtual Private Cloud)** là một mạng riêng của bạn trong **một region**: bạn tự chọn dải IP, chia thành các **subnet**, đặt bảng đường đi (**route table**) và các "cổng" ra vào. Chưa có VPC thì mỗi tài nguyên phải tự bảo vệ mình; có VPC thì bạn kiểm soát *ai nói chuyện với ai ở tầng mạng*, trước khi ứng dụng chạy một dòng code.
+
+**CIDR** là cách viết một dải IP gọn. {{10.0.0.0/16}} đọc là "10.0.0.0, 16 bit đầu cố định" → từ {{10.0.0.0}} đến {{10.0.255.255}}, tức 65.536 địa chỉ. Cắt nó thành subnet: {{10.0.1.0/24}} = 256 địa chỉ {{10.0.1.0 – 10.0.1.255}}. Càng nhiều bit sau dấu / thì dải càng nhỏ (/24 = 256, /20 = 4.096, /8 = 16,7 triệu). AWS giữ lại 5 địa chỉ mỗi /24 (địa chỉ network, router, hai địa chỉ dự phòng, broadcast) nên thực tế bạn dùng được 251 IP.
+
+Một **subnet nằm trong đúng một Availability Zone (AZ)**. Vì vậy trong thiết kế AWS, "subnet" không chỉ là chuyện IP mà còn là **đơn vị chịu lỗi**: hai subnet ở hai AZ thì sập một AZ không làm sập cả hệ thống.
+
+~~~text
+                              Internet
+                                 |
+                              [IGW]        internet gateway: cổng vào/ra công khai
+             public subnet 1a (10.0.1.0/24)      public subnet 1b (10.0.2.0/24)
+                    [ALB]                              [NAT gateway]
+                        |                                     |
+        private subnet 1a (10.0.10.0/24)   private subnet 1b (10.0.11.0/24)
+             [ECS task 1]   [ECS task 2]          [RDS replica]
+                        |
+                  [RDS primary]        subnet group của RDS cũng là subnet private
+~~~
+
+- **Public subnet** = có route {{0.0.0.0/0}} trỏ tới **IGW** và tài nguyên trong đó có **public IP**. Chỉ nên đặt thứ "phải nghe từ ngoài": ALB, bastion.
+- **Private subnet** = route {{0.0.0.0/0}} trỏ tới **NAT gateway** (NAT nằm ở public subnet). App *đi ra* được (gọi API đối tác, tải package, gọi dịch vụ AWS công khai) nhưng không ai *đi vào* được. Đây là chỗ đặt app Java.
+- **Route table** chọn bước tiếp theo theo **longest prefix match**: bảng có {{10.0.0.0/16 → local}}, {{0.0.0.0/0 → nat-abc}}, {{pl-6f1a → prefix list S3}}. Gói gửi tới {{10.0.4.9}} khớp /16 (dài hơn /0) nên đi {{local}}, không ra internet. Muốn "nhốt" một subnet không cho ra ngoài thì cắt riêng một route table cho nó, bỏ route mặc định.
+
+> App không có IP public **vẫn** gọi ra internet được, nhờ NAT gateway làm **SNAT** (thay nguồn bằng IP công khai của chính nó) và giữ bảng kết nối để đưa phản hồi về đúng task. Đổi lại: NAT tính tiền theo GB xử lý và có trần băng thông, nên traffic lớn (S3, video) đi qua NAT là đốt tiền.
+
+### Đường đi thật của một request
+~~~seq
+title: Client goi vao app trong private subnet
+actors: Client | ALB | App | RDS
+Client -> ALB: HTTPS 443 (vao public subnet qua IGW)
+ALB -> App: forward 8080 (SG app mo 8080 tu SG ALB)
+App -> RDS: SQL 5432 (SG db mo 5432 tu SG app)
+RDS --> App: result set
+App --> ALB: HTTP 200
+ALB --> Client: HTTP 200
+note App: app khong co IP public, ra ngoai phai qua NAT hoac endpoint
+~~~
+
+Chú ý cách tham chiếu khi viết rule SG: **SG cho phép theo SG khác**, không nhất thiết theo CIDR. Đặt ingress của RDS = "5432 từ security group của app" nghĩa là khi app scale thêm instance, bạn không phải sửa rule nào; ghi CIDR thì mỗi lần đổi dải subnet là một lần sửa.
+
+### Hai lớp hàng rào: security group và NACL
+~~~text
+  Internet -> [NACL của subnet] -> [SG của ENI] -> app
+                 (lớp 4, theo subnet)      (lớp 4, theo tài nguyên)
+~~~
+
+Thứ tự thật là **NACL trước, SG sau**: gói tin phải qua "hàng rào subnet" rồi mới tới cổng của tài nguyên. Hệ quả thực tế khi debug: một request bị NACL chặn thì **không bao giờ tới app**, nên log ứng dụng im lặng; còn SG chặn thì app cũng không thấy gì, nhưng Flow Logs của ENI cho thấy gói bị từ chối ở tầng đó. Vì cả hai lớp đều phải cho qua, khi kiểm tra cấu hình bạn cứ xét lớp nào trước cũng ra cùng kết luận "được phép hay không" — chỉ khác nhau ở **nguyên nhân** cần nêu.
+
+| | Security group | NACL (network ACL) |
+|---|---|---|
+| Gắn vào | ENI / instance / task | **subnet** (mọi tài nguyên trong subnet) |
+| Loại rule | **chỉ có ALLOW** | ALLOW **và** DENY |
+| Đánh giá | hợp (union) của mọi allow rule, không có thứ tự | theo **số thứ tự** rule, rule đầu khớp thắng (100 trước 200) |
+| Trạng thái | **stateful**: cho vào thì phản hồi tự được về | **stateless**: phải mở cả chiều đi ra |
+| Mặc định | không có rule = cấm mọi chiều | không có rule khớp = cấm |
+| Dùng khi | kiểm soát theo thành phần, theo team | hàng rào thô của subnet, chặn một dải IP đang bị nghi tấn công, deny một IP cụ thể giữa đống allow |
+
+**Bẫy kinh điển của NACL**: request từ khách hàng đến port 443, nhưng packet **phản hồi** đi từ app về *ephemeral port* của khách (cổng tạm do hệ điều hành cấp; IANA khuyến nghị 49152–65535, còn AWS NACL thường phải mở 1024–65535 để an toàn với mọi client). Nếu NACL outbound chỉ mở port 443 thì phản hồi bị chặn. Triệu chứng ngoài đời rất khó đoán: client treo chờ, ALB hoặc app **không có log gì** (vì request vào được, chỉ có đường về bị chặn), health check flapping, và mọi thứ "tự hết" khi bạn thêm rule 1024–65535.
+
+Vì SG stateful nên chuyện này không xảy ra ở tầng SG. Quy tắc thực dụng: để SG làm việc kiểm soát chi tiết, đặt NACL mặc định cho phép toàn bộ trong VPC và chỉ dùng nó cho vài rule deny rõ ràng (chặn một dải IP tấn công, chặn mọi thứ ngoại region).
+
+### VPC endpoint: ra dịch vụ AWS mà không đi qua internet
+**Gateway endpoint** (miễn phí, chỉ cho **S3** và **DynamoDB**): thêm một route trong route table trỏ prefix list của dịch vụ tới một gateway nội bộ VPC. Traffic ở lại trong mạng AWS, không qua IGW/NAT, có thể gắn **endpoint policy** giới hạn bucket nào được chạm tới từ subnet đó.
+
+**Interface endpoint** (dùng **PrivateLink**, tính tiền theo giờ + GB): một ENI private IP trong subnet của bạn, là "cửa" tới dịch vụ ({{sts}}, {{secretsmanager}}, {{kms}}, {{ecr.api}}, {{logs}}, {{sns}}, {{sqs}}…). App gọi thẳng tên nội bộ, không cần NAT, không cần public IP.
+
+| Nhu cầu | Cách đi | Vì sao |
+|---|---|---|
+| App private subnet đọc/ghi S3 (upload ảnh, export report) | **Gateway endpoint** | không tốn tiền NAT, không phụ thuộc internet, chặn được bucket ngoài danh sách bằng endpoint policy |
+| App cần Secrets Manager / KMS / STS | Interface endpoint | các dịch vụ này không có gateway endpoint |
+| Gọi API đối tác ngoài internet | NAT gateway (hoặc egress qua firewall/proxy) | bắt buộc có đường ra công khai; Route 53 Resolver chỉ phân giải DNS, không thay NAT |
+| Docker pull từ ECR trong private subnet | Interface endpoint {{ecr.api}} + {{ecr.dkr}} và gateway endpoint S3 | ECR image layer nằm trên S3; thiếu một trong ba là pull fail |
+
+> Kiểm tra nhanh bằng DNS: từ trong subnet private, chạy {{nslookup s3.ap-southeast-1.amazonaws.com}}. Nếu trả về IP dạng {{52.x/54.x}} (public) thì bạn đang đi ra ngoài; nếu trả về IP nội bộ {{10.x}} thì interface endpoint đã hoạt động. Với gateway endpoint, DNS vẫn trả IP public nhưng **route table** kéo traffic về phía gateway endpoint.
+
+### Ba lỗi mạng hay gặp khi đưa app Java lên AWS
+1. **RDS trong private subnet nhưng app connect timeout**: app và DB ở hai subnet khác nhau, SG của DB chỉ cho một CIDR cũ, hoặc subnet group của DB đặt ở AZ khác AZ của app → cross-AZ vẫn chạy nhưng trả thêm phí data transfer mỗi chiều.
+2. **Thiếu IP trong subnet khi scale**: /24 chỉ còn 251 IP dùng được; ECS task, ENI, RDS endpoint, NAT, endpoint interface đều ăn IP. Scale 200 task trên subnet /24 là fail âm thầm, phải tính CIDR theo **số ENI tối đa** dự kiến.
+3. **Public subnet "có nghĩa là mở"**: subnet public + SG mở {{0.0.0.0/0}} port 8080 là để nguyên app ra internet. App luôn phải ở private subnet; chỉ tài nguyên nghe từ ngoài (ALB) ở public, và ALB đặt trước app.
+
+### Liên hệ phỏng vấn
+Câu hỏi thường gặp: "Thiết kế VPC cho hệ microservices của bạn thế nào?" (aws-003), "App không ra được internet, bạn debug gì?", "SG khác NACL ở chỗ nào, cho ví dụ NACL gây lỗi?" (aws-038), "Vì sao không đặt database ở public subnet?", "S3 từ private subnet đi đường nào, tốn gì?". Câu trả lời tốt luôn nêu **đường đi của gói tin** (client → IGW → ALB → NAT/endpoint → DB) và **tên lớp** đang chặn (SG hay NACL hay route), kèm cách xác nhận bằng **VPC Flow Logs** (log cho phép/từ chối từng gói, ghi ra CloudWatch Logs/S3) và **Reachability Analyzer** (đi ngược đường, chỉ ra đúng resource chặn).
+
+> Senior tip: Khi một lỗi "network" chỉ xảy ra với vài request, đừng đoán: bật VPC Flow Logs cho ENI của app, lọc theo port và xem chiều {{REJECT}}. Flow Logs cho thấy packet **có tới** nhưng phản hồi **không về** — đó chính là chữ ký của NACL stateless, khác hẳn với SG thiếu rule (mọi request cùng pattern fail ngay). Và hãy đặt gateway endpoint cho S3 trước khi than NAT tốn tiền: hai thứ giải quyết cùng một vấn đề, một thứ miễn phí.`,
+  exercises: [
+    {
+      title: 'Tự cài bộ đánh giá packet: CIDR, thứ tự rule NACL, SG stateful và bẫy ephemeral port',
+      prompt: `Mô phỏng việc đánh giá một kết nối TCP đi vào một subnet. Không phải thuật toán đầy đủ của AWS, nhưng giữ đúng ba tính chất làm nên hầu hết lỗi ngoài đời: **SG chỉ có rule allow và stateful**, **NACL xét rule theo số thứ tự**, **NACL stateless nên chiều về phải có rule**.
+
+Đã có sẵn: record {{Rule}}, constructor và helper {{matches(rule, ip, port)}}. Bạn cài 4 hàm:
+
+1. {{cidrContains(cidr, ip)}}: {{cidr}} dạng {{10.0.1.0/24}}. Đổi cả hai phía về số nguyên rồi so bit: {{(a >> (32 - bits)) == (b >> (32 - bits))}}. Với {{/0}} thì mọi IP đều nằm trong dải.
+2. {{firstMatch(rules, ip, port)}}: xét rule theo **{{number}} tăng dần** (số nhỏ hơn được xét trước, giống AWS); rule khớp đầu tiên quyết định: allow → {{"ALLOW"}}, deny → {{"DENY"}}, không rule nào khớp → {{"NONE"}}.
+3. {{checkRequest(clientIp, clientPort, servicePort)}} cho chiều **đi vào** subnet:
+  ▸ SG inbound: nếu **không** có rule allow nào khớp {{(clientIp, servicePort)}} → {{"DENY_SG"}}. SG không có khái niệm deny, nên rule có {{allow = false}} phải bị bỏ qua hoàn toàn.
+  ▸ rồi NACL inbound: nếu {{firstMatch(naclIn, clientIp, servicePort)}} khác {{"ALLOW"}} → {{"DENY_NACL_IN"}}.
+  ▸ qua cả hai → {{"ALLOW"}}.
+4. {{checkResponse(clientIp, clientPort)}} cho chiều **đi ra** (subnet về client): SG **stateful** nên phản hồi của kết nối đã cho phép luôn được về, **không xét rule nào**; chỉ còn NACL outbound: {{firstMatch(naclOut, clientIp, clientPort)}} khác {{"ALLOW"}} → {{"DENY_NACL_OUT"}}, ngược lại {{"ALLOW"}}.
+
+{{servicePort}} là port dịch vụ (443, 8080); {{clientPort}} là **ephemeral port** phía khách (1024–65535).
+
+(AWS thật xét NACL **trước** SG. Ở đây xét SG trước rồi NACL: kết luận "được phép / bị chặn" không đổi vì cả hai lớp đều phải cho qua, chỉ khác nhau nhãn **nguyên nhân** mà bạn trả về.)`,
+      starter: `record Rule(int number, boolean allow, String cidr, int portLo, int portHi) {}
+
+class VpcFilter {
+    private final List<Rule> sgIn;      // security group inbound: chi co rule ALLOW
+    private final List<Rule> naclIn;    // NACL inbound: ALLOW + DENY, xet theo so th thu tu
+    private final List<Rule> naclOut;   // NACL outbound: cung phai mo chieu ve cho khach
+
+    VpcFilter(List<Rule> sgIn, List<Rule> naclIn, List<Rule> naclOut) {
+        this.sgIn = sgIn;
+        this.naclIn = naclIn;
+        this.naclOut = naclOut;
+    }
+
+    static long ipToLong(String ip) {
+        long v = 0;
+        for (String part : ip.split("[.]")) v = v * 256 + Long.parseLong(part);
+        return v;
+    }
+
+    static boolean matches(Rule r, String ip, int port) {
+        return cidrContains(r.cidr(), ip) && port >= r.portLo() && port <= r.portHi();
+    }
+
+    static boolean cidrContains(String cidr, String ip) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static String firstMatch(List<Rule> rules, String ip, int port) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    String checkRequest(String clientIp, int clientPort, int servicePort) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    String checkResponse(String clientIp, int clientPort) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void eq(String name, Object expected, Supplier<Object> actual) {
+        total++;
+        try {
+            Object got = actual.get();
+            if (Objects.equals(expected, got)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": mong doi " + expected + ", nhan " + got);
+        } catch (RuntimeException e) {
+            System.out.println("FAIL " + name + ": nem " + e);
+        }
+    }
+    static Rule r(int n, boolean allow, String cidr, int lo, int hi) { return new Rule(n, allow, cidr, lo, hi); }
+    public static void main(String[] args) {
+        eq("/24 contains a host inside it", true, () -> VpcFilter.cidrContains("10.0.1.0/24", "10.0.1.77"));
+        eq("/24 rejects the next block", false, () -> VpcFilter.cidrContains("10.0.1.0/24", "10.0.2.77"));
+        eq("/16 boundary", false, () -> VpcFilter.cidrContains("10.0.0.0/16", "10.1.0.1"));
+        eq("/16 inside", true, () -> VpcFilter.cidrContains("10.0.0.0/16", "10.0.255.254"));
+        eq("/8 inside", true, () -> VpcFilter.cidrContains("10.0.0.0/8", "10.255.0.1"));
+        eq("/8 rejects neighbour", false, () -> VpcFilter.cidrContains("10.0.0.0/8", "9.255.255.255"));
+        eq("/0 matches everything", true, () -> VpcFilter.cidrContains("0.0.0.0/0", "203.0.113.9"));
+        eq("/32 is one exact host", true, () -> VpcFilter.cidrContains("203.0.113.7/32", "203.0.113.7"));
+        eq("/28 block is 16 addresses", true, () -> VpcFilter.cidrContains("192.168.1.0/28", "192.168.1.15"));
+        eq("/28 just past the block", false, () -> VpcFilter.cidrContains("192.168.1.0/28", "192.168.1.16"));
+
+        List<Rule> ordered = List.of(r(200, true, "0.0.0.0/0", 443, 443), r(100, false, "203.0.113.0/24", 0, 65535));
+        eq("rule number decides, not list order", "DENY", () -> VpcFilter.firstMatch(ordered, "203.0.113.5", 443));
+        eq("another source reaches the allow at 200", "ALLOW", () -> VpcFilter.firstMatch(ordered, "8.8.8.8", 443));
+        eq("nothing matches = NONE", "NONE", () -> VpcFilter.firstMatch(ordered, "8.8.8.8", 22));
+
+        VpcFilter https = new VpcFilter(
+                List.of(r(1, true, "0.0.0.0/0", 443, 443)),
+                List.of(r(100, true, "0.0.0.0/0", 443, 443)),
+                List.of(r(100, true, "0.0.0.0/0", 1024, 65535)));
+        eq("SG and NACL both pass", "ALLOW", () -> https.checkRequest("8.8.8.8", 51000, 443));
+        eq("stateful path lets the reply out", "ALLOW", () -> https.checkResponse("8.8.8.8", 51000));
+        eq("SG blocks a port it never opened", "DENY_SG", () -> https.checkRequest("8.8.8.8", 51000, 80));
+
+        VpcFilter forgotEphemeral = new VpcFilter(
+                List.of(r(1, true, "0.0.0.0/0", 443, 443)),
+                List.of(r(100, true, "0.0.0.0/0", 443, 443)),
+                List.of(r(100, true, "0.0.0.0/0", 443, 443)));
+        eq("reply to client ephemeral port blocked by stateless NACL", "DENY_NACL_OUT",
+                () -> forgotEphemeral.checkResponse("8.8.8.8", 51000));
+
+        VpcFilter naclDeny = new VpcFilter(
+                List.of(r(1, true, "0.0.0.0/0", 443, 443)),
+                List.of(r(99, false, "203.0.113.0/24", 0, 65535), r(100, true, "0.0.0.0/0", 443, 443)),
+                List.of(r(100, true, "0.0.0.0/0", 1024, 65535)));
+        eq("NACL deny overrides SG allow", "DENY_NACL_IN", () -> naclDeny.checkRequest("203.0.113.9", 51000, 443));
+        eq("but a clean source still gets in", "ALLOW", () -> naclDeny.checkRequest("8.8.8.8", 51000, 443));
+
+        VpcFilter sgHasNoDeny = new VpcFilter(
+                List.of(r(1, false, "203.0.113.0/24", 443, 443), r(2, true, "0.0.0.0/0", 443, 443)),
+                List.of(r(100, true, "0.0.0.0/0", 443, 443)),
+                List.of(r(100, true, "0.0.0.0/0", 1024, 65535)));
+        eq("a deny-looking SG rule is simply ignored", "ALLOW", () -> sgHasNoDeny.checkRequest("203.0.113.9", 51000, 443));
+
+        VpcFilter emptyOut = new VpcFilter(
+                List.of(r(1, true, "0.0.0.0/0", 443, 443)),
+                List.of(r(100, true, "0.0.0.0/0", 443, 443)),
+                List.of());
+        eq("empty NACL outbound = implicit deny", "DENY_NACL_OUT", () -> emptyOut.checkResponse("1.1.1.1", 5000));
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `record Rule(int number, boolean allow, String cidr, int portLo, int portHi) {}
+
+class VpcFilter {
+    private final List<Rule> sgIn;
+    private final List<Rule> naclIn;
+    private final List<Rule> naclOut;
+
+    VpcFilter(List<Rule> sgIn, List<Rule> naclIn, List<Rule> naclOut) {
+        this.sgIn = sgIn;
+        this.naclIn = naclIn;
+        this.naclOut = naclOut;
+    }
+
+    static long ipToLong(String ip) {
+        long v = 0;
+        for (String part : ip.split("[.]")) v = v * 256 + Long.parseLong(part);
+        return v;
+    }
+
+    static boolean matches(Rule r, String ip, int port) {
+        return cidrContains(r.cidr(), ip) && port >= r.portLo() && port <= r.portHi();
+    }
+
+    static boolean cidrContains(String cidr, String ip) {
+        int slash = cidr.indexOf('/');
+        int bits = Integer.parseInt(cidr.substring(slash + 1));
+        long base = ipToLong(cidr.substring(0, slash));
+        if (bits == 0) return true;                  // /0: moi IP deu thuoc cung mot dai
+        int shift = 32 - bits;
+        return (base >>> shift) == (ipToLong(ip) >>> shift);  // dich khong dau, an toan voi bit cao
+    }
+
+    static String firstMatch(List<Rule> rules, String ip, int port) {
+        return rules.stream()
+                .sorted(Comparator.comparingInt(Rule::number))   // so nho hon duoc xet truoc
+                .filter(r -> matches(r, ip, port))
+                .map(r -> r.allow() ? "ALLOW" : "DENY")
+                .findFirst()
+                .orElse("NONE");                     // khong rule nao khop = cam mac dinh
+    }
+
+    String checkRequest(String clientIp, int clientPort, int servicePort) {
+        boolean sgOk = sgIn.stream().anyMatch(r -> r.allow() && matches(r, clientIp, servicePort));
+        if (!sgOk) return "DENY_SG";
+        return "ALLOW".equals(firstMatch(naclIn, clientIp, servicePort)) ? "ALLOW" : "DENY_NACL_IN";
+    }
+
+    String checkResponse(String clientIp, int clientPort) {
+        // SG stateful: phan hoi cua ket noi da duoc cho phep luon duoc ve, khong xet rule.
+        return "ALLOW".equals(firstMatch(naclOut, clientIp, clientPort)) ? "ALLOW" : "DENY_NACL_OUT";
+    }
+}`,
+      hints: [
+        'Doi IP sang so theo cach co ban nhat: {{v = v * 256 + octet}} cho 4 octet. Vi du {{10.0.1.77}} = 10*16777216 + 0*65536 + 1*256 + 77.',
+        'Trong Java, ca {{int}} va {{long}} deu dung so bit dich chuyen co gioi han ({{int}} lay 5 bit thap, {{long}} lay 6 bit thap), nen {{long >> 32}} la dich 32 bit hop le. Voi {{/0}} thi {{shift = 32}} va ca 32 bit deu bi dich ra ngoai (ket qua phu thuoc cach ban xu ly day du); cach an toan: neu {{bits == 0}} tra ve {{true}}, nguoc lai dung {{(base >>> shift) == (ip >>> shift)}} voi {{long}} khong dau.',
+        'SG khong co rule deny: loc {{r.allow()}} truoc khi {{anyMatch}}, dung dung la {{anyMatch(matches)}}.',
+        'Thu tu cua checkRequest la SG truoc roi moi den NACL inbound; checkResponse khong nhac gi den SG.',
+      ],
+      explain: `### Ba thu ban vua cai la ba thu gay loi nhai ngoai production
+- **{{cidrContains}}** là lý do "subnet này còn IP không" và "rule có bắt traffic kia không" luôn phải được tính bằng bit, không bằng mắt. {{10.0.1.0/24}} không chứa {{10.0.2.x}}, và {{10.0.0.0/16}} không chứa {{10.1.0.1}} — hai nhầm lẫn phổ biến khi đặt CIDR cho VPC mới rồi lớn lên không còn chỗ.
+- **{{firstMatch}} theo {{number}}** giải thích vì sao một rule "DENY 0.0.0.0/0" đặt ở số 100 **thắng** mọi rule ALLOW ở số 200. Trong AWS, số nhỏ hơn được xét trước và rule đầu khớp quyết định tất cả; đó là chỗ nhiều team "mở port mà vẫn không vào được".
+- **{{checkResponse}} bỏ qua SG, chỉ xét NACL** chính là khác biệt stateful/stateless. SG nhớ "kết nối này tôi đã cho vào", nên phản hồi tự do. NACL không nhớ gì, nó xét từng gói độc lập → packet về client phải khớp một rule outbound, mà port của client là **ephemeral** (1024–65535), không phải 443.
+
+### Lỗi hay gặp
+- Dùng {{List.of(...)}} rồi assume thứ tự là thứ tự đánh giá: AWS đánh giá theo {{number}}, phải {{sorted}}.
+- Cho rule deny của SG có tác dụng: SG chỉ có allow; muốn deny thì phải dùng NACL hoặc endpoint policy / WAF.
+- Xét SG trong {{checkResponse}}: SG stateful nên chiều về của một kết nối đã cho phép không cần rule outbound; thêm rule outbound 443 "cho chắc" không giải quyết được gì và làm bạn lầm tưởng mình hiểu NACL.
+- Quên {{NONE}} nghĩa là "cấm": NACL không khớp rule nào **không** có nghĩa là cho qua.
+
+Ngoài đời còn thiếu: route table và longest prefix match (packet có thể bị chặn vì **không có đường đi**, không phải vì firewall), VPC peering không transitive, và việc Flow Logs chỉ ghi chiều mà ENI thực sự nhìn thấy.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Một ECS task trong private subnet gọi {{https://api.partner.com}} và kết nối timeout sau ~30 giây. Route table của subnet chỉ có {{10.0.0.0/16 → local}} và {{pl-123 → gateway endpoint S3}}. Nguyên nhân và cách sửa hợp lý nhất?',
+      options: ['SG của task thiếu rule outbound 443, thêm rule là xong', 'Không có đường ra internet: route 0.0.0.0/0 thiếu và NAT gateway (hoặc một egress path) chưa được tạo; thêm route trỏ NAT', 'API đối tác chặn IP AWS, phải mở whitelist', 'NACL inbound chặn port 443, thêm rule inbound'],
+      answer: 1,
+      explain: `Private subnet muốn ra internet cần {{0.0.0.0/0 → NAT gateway}}. Ở đây route đó không tồn tại nên gói tin không có bước tiếp theo. SG mặc định cho toàn bộ outbound nên không phải thiếu rule outbound; NACL inbound liên quan chiều **vào**, không giải thích được timeout của một request chủ động đi ra. Whitelist IP đối tác là việc cần làm sau khi đã chứng minh có đường ra.`,
+    },
+    {
+      q: 'Security group inbound mở 443 từ 0.0.0.0/0, NACL inbound mở 443 từ 0.0.0.0/0, NACL outbound chỉ mở 443. Khách hàng gọi HTTPS thì treo, ALB access log không có dòng nào. Chuyện gì đang xảy ra?',
+      options: ['ALB đang scale nên request bị chậm', 'Request vào được nhưng packet phản hồi về ephemeral port (1024–65535) của khách bị NACL outbound chặn, vì NACL stateless; phải thêm rule cho dải ephemeral', 'Vì SG đã stateful nên ắt hẳn là lỗi ứng dụng', 'Cần bật gateway endpoint cho S3'],
+      answer: 1,
+      explain: `NACL xét từng gói độc lập. Chiều vào khớp rule 443, nhưng chiều về có đích là port tạm của client, không khớp rule 443 → bị cấm. Request đã vào nên client chờ, còn log ở tầng cao hơn không có gì để ghi — dấu hiệu điển hình. SG stateful chỉ giúp ở tầng của nó, không "vá" được NACL.`,
+    },
+    {
+      q: 'App trong private subnet đọc/ghi một bucket S3 với lượng dữ liệu lớn. Cách nào vừa rẻ vừa bớt phụ thuộc internet?',
+      options: ['Gắn public IP cho từng task để đi thẳng', 'Thêm gateway endpoint S3 cho VPC và route tới nó từ route table của private subnet', 'Tăng size NAT gateway', 'Chuyển app sang public subnet'],
+      answer: 1,
+      explain: `Gateway endpoint cho S3 (và DynamoDB) miễn phí, giữ traffic trong mạng AWS, không qua NAT/IGW và có thể gắn endpoint policy giới hạn bucket. Gắn public IP và chuyển sang public subnet làm surface tấn công lớn hơn; NAT gateway tính tiền theo GB nên càng nhiều dữ liệu càng tốn, không có "size" để tăng.`,
+    },
+    {
+      q: 'Network ACL có rule số 300 ALLOW 443 từ 0.0.0.0/0 và rule số 100 DENY 100.20.30.0/24 toàn bộ port. Khách 100.20.30.5 gọi port 443 thì kết quả là?',
+      options: ['Được, vì rule ALLOW rộng hơn', 'Bị chặn, vì NACL xét theo số thứ tự và rule đầu tiên khớp (số 100 DENY) thắng', 'Bị chặn chỉ khi security group cũng có rule deny', 'Không xác định được, NACL đánh giá ngẫu nhiên'],
+      answer: 1,
+      explain: `NACL khớp rule theo thứ tự số tăng dần; rule đầu khớp quyết định, ở đây là DENY ở số 100. SG không có rule deny nên phương án "SG cũng có deny" không tồn tại; và thứ tự đánh giá là xác định, không ngẫu nhiên. Muốn cho khách này qua thì phải đổi số hoặc thu hẹp dải của rule deny.`,
+    },
+  ],
+  related: ['aws-003', 'aws-038', 'aws-035', 'aws-037', 'aws-024'],
+  tags: ['VPC', 'CIDR', 'subnet', 'route table', 'security group', 'NACL', 'NAT gateway', 'VPC endpoint', 'PrivateLink', 'VPC Flow Logs'],
+},
+{
+  id: 'lesson-aws-006',
+  track: 'aws',
+  order: 6,
+  title: 'DynamoDB cho dev Java: partition key, sort key, query vs scan, conditional write và khoá lạc quan',
+  level: 'senior',
+  minutes: 50,
+  goals: [
+    'Giải thích partition key quyết định vật lý dữ liệu nằm ở đâu và vì sao chọn sai khoá là cả bảng chậm',
+    'Phân biệt GetItem, Query, Scan về chi phí và về thứ tự kết quả trả về',
+    'Tính được sơ bộ số RCU/WCU của một thao tác và chọn on-demand hay provisioned',
+    'Viết conditional write để tránh ghi đè và để làm khoá lạc quan (optimistic locking)',
+    'Biết GSI, TTL, Streams giải quyết việc gì và khi nào KHÔNG nên dùng DynamoDB',
+  ],
+  body: `### DynamoDB giải bài toán nào
+DynamoDB là database **key-value dạng document, serverless**: bạn không chọn instance, không sharding, không patch; AWS tự nhân bản dữ liệu qua ít nhất 3 AZ và giữ độ trễ đọc/ghi cỡ **vài mili giây kể cả khi tải tăng 10 lần**. Cái giá phải trả: **không có SQL, không có join, không có ràng buộc ngoại khoá**, và mọi hiệu năng đều phụ thuộc vào việc bạn thiết kế **khoá** như thế nào. Đây là điểm dev Java thường sốc: ở RDS bạn viết query trước rồi chỉ mục sau; ở DynamoDB bạn phải liệt kê **access pattern** (ai hỏi gì, hỏi thế nào) **trước**, rồi mới đặt tên bảng.
+
+Dữ liệu là **item** (một JSON nhỏ, tối đa **400 KB**) trong một **bảng**. Mỗi bảng định nghĩa bởi **primary key**:
+- chỉ **partition key** ({{pk}}), ví dụ bảng {{users}} với {{pk = email}}, hoặc
+- **{{pk}} + sort key ({{sk}})**, ví dụ {{pk = "customer#C42"}}, {{sk = "order#1730000000000"}}.
+
+~~~text
+  DynamoDB về mặt vật lý:  nhiều "partition" (bình chứa), mỗi bình chứa nhiều item
+
+     hash(pk) -->  [ partition P1 ]  [ P2 ]  [ P3 ] ... [ Pn ]
+                        |
+        items co cung pk nam CUNG MOT binh, sap theo sk:
+          customer#C42 | order#1730000000001
+          customer#C42 | order#1730000000002     <- cung partition = doc duoc bang 1 Query
+          customer#C42 | profile
+~~~
+
+### Partition key: chọn sai là không vá được
+{{pk}} được hash để chọn partition. Hệ quả:
+- **Một thao tác GetItem/Query luôn nằm trong đúng một partition.** Đó là lý do nó nhanh và chi phí dự đoán được.
+- **Toàn bộ item có cùng {{pk}} bị giới hạn bởi sức chứa của một partition** (AWS khuyến nghị giữ dưới ~10 GB cho một giá trị khoá).
+- **Hot partition**: nếu một giá trị {{pk}} chiếm phần lớn traffic thì bình đó tràn, còn cả bảng đứng nhìn. Ví dụ thật hay gặp: {{pk = "tenant-acme"}}, hoặc {{pk = status}} (chỉ 4 giá trị!), hoặc {{pk = "2026-11"}} khi một tháng gom mọi đơn.
+
+Cách chọn: {{pk}} phải có **cardinality cao** và traffic **phân tán đều** theo đúng đơn vị truy vấn. Cần thống kê theo tháng thì thêm prefix thời gian vào {{sk}} ({{pk = "customer#C42"}}, {{sk = "order#2026-11#000173"}}), đừng biến tháng thành {{pk}}.
+
+Thứ tự {{sk}} là **thứ tự byte (từ điển)**, không phải thứ tự số: {{order#2}} nằm **sau** {{order#10}}. Muốn sort đúng nghĩa, zero-pad ({{order#0010}}) hoặc dùng epoch milliseconds (13 chữ số luôn so sánh được bằng chuỗi).
+
+### GetItem, Query, Scan: ba mức tiền khác nhau
+| Thao tác | Đọc gì | Chi phí | Dùng khi |
+|---|---|---|---|
+| {{GetItem}} | đúng một item theo {{pk}}(+{{sk}}) | rẻ nhất, 1 đơn vị đọc cho item nhỏ | mở chi tiết đơn hàng, profile |
+| {{BatchGetItem}} | tới 100 item (trần 16 MB) | mỗi item vẫn tính riêng | "trang chủ cần 40 đơn gần nhất" mà không dùng Query được |
+| {{Query}} | mọi item của **một** {{pk}}, lọc thêm theo {{sk}} ({{begins_with}}, {{between}}), trả về **theo thứ tự {{sk}}** | tỉ lệ với số item trong partition | danh sách đơn của một khách, timeline |
+| {{Scan}} | **quét cả bảng** rồi mới lọc bằng {{FilterExpression}} | đắt nhất, trả tiền cho cả dữ liệu bị bỏ | debug, export bảng nhỏ, job một lần |
+
+> {{FilterExpression}} áp dụng **sau khi** đã đọc dữ liệu: bạn vẫn trả tiền cho phần đã đọc. Người mới hay viết "query với filter" rồi tưởng nó rẻ như chỉ mục SQL — ở DynamoDB muốn lọc nhanh trên một thuộc tính khác thì phải đưa thuộc tính đó vào **khoá** hoặc **GSI**.
+
+### Capacity: tiền được tính bằng đơn vị, không bằng GB
+- **1 RCU** (read capacity unit) = **1 lần đọc strongly consistent** / giây cho item tối đa **4 KB**, hoặc **2 lần đọc eventually consistent** / giây cho item 4 KB. Nghĩa là đọc strongly consistent **đắt gấp đôi** ở cùng lượng dữ liệu. Item 5 KB tính 2 đơn vị 4 KB (làm tròn lên **theo từng item**).
+- **1 WCU** = **1 lần ghi** / giây cho item tối đa **1 KB** — chú ý cỡ granularity khác hẳn khi đọc (1 KB so với 4 KB), item 2 KB ghi tốn 2 WCU.
+- **On-demand**: trả tiền theo số request thật, phù hợp tải khó đoán hoặc mới thử nghiệm; đắt hơn mỗi đơn vị nhưng không cần ước lượng. **Provisioned**: đặt RCU/WCU + **auto scaling** cho chúng; rẻ hơn nhiều khi tải đều, nhưng phải ước lượng và có trần, vượt trần là gặp {{ProvisionedThroughputExceededException}}.
+- Query trả về **một trang** (mặc định 1 MB hoặc {{Limit}}); còn dữ liệu thì kèm {{LastEvaluatedKey}} → bạn phải dùng nó làm {{ExclusiveStartKey}} cho lần sau. Dev Java hay quên bước này và tưởng "mất dữ liệu".
+
+### Ghi có điều kiện và khoá lạc quan
+{{PutItem}} thông thường là **upsert**: ghi đè toàn bộ item, kể cả khi người khác vừa sửa. Muốn an toàn, dùng **conditional write** — điều kiện được đánh giá **phía server, nguyên tử trong một item**:
+- {{attribute_not_exists(pk)}} → "chỉ tạo nếu chưa tồn tại" (chống tạo trùng, chống ghi đè đơn đã có).
+- {{attribute_exists(pk)}} → "chỉ cập nhật nếu đang tồn tại".
+- so sánh: {{version = :v}}, {{stock > :qty}}.
+
+Mẫu **khoá lạc quan (optimistic locking)**: mỗi item mang một {{version}}; đọc → sửa → ghi kèm điều kiện {{version}} không đổi, và ghi {{version + 1}}. Ai thua sẽ nhận {{ConditionalCheckFailedException}} và quyết định đọc lại/bỏ/merge. Không có khoá đang giữ, không có ai chết vì giữ lock — đúng tinh thần của một hệ phân tán.
+
+~~~seq
+title: Hai worker cung tru ton kho version 7
+actors: Worker A | Worker B | DynamoDB
+Worker A -> DynamoDB: GetItem sku-1 (version 7)
+Worker B -> DynamoDB: GetItem sku-1 (version 7)
+Worker A -> DynamoDB: PutItem version 8, dieu kien version = 7
+DynamoDB --> Worker A: OK, da tru 1
+Worker B -> DynamoDB: PutItem version 8, dieu kien version = 7
+DynamoDB --> Worker B: ConditionalCheckFailedException
+note Worker B: doc lai (version 8) roi moi try lan 2
+~~~
+
+Cần nhiều item/nhiều bảng cùng lúc thì dùng **TransactWriteItems** (tối đa 100 operation, hoặc check condition / put / update / delete): bảo đảm atomicity theo nghĩa all-or-nothing nhưng **tốn gấp đôi** và chậm hơn; đừng biến mọi nghiệp vụ thành transaction khi một conditional write trên một item là đủ.
+
+### Java SDK v2 (Enhanced Client)
+~~~java
+@DynamoDbBean
+public class Order {
+    private String pk;   // "customer#C42"          -> partition key
+    private String sk;   // "order#1730000000000"   -> sort key (epoch ms: so sanh duoc bang chuoi)
+    private long totalCents;
+    private String status;
+    @DynamoDbPartitionKey public String getPk() { return pk; }
+    @DynamoDbSortKey      public String getSk() { return sk; }
+    // getter/setter cho totalCents, status
+}
+
+DynamoDbTable<Order> table = DynamoDbEnhancedClient.builder()
+        .dynamoDbClient(ddb)                 // client tạo 1 lần, không truyền credentials: SDK tự lấy role
+        .build()
+        .table("orders", TableSchema.fromBean(Order.class));
+
+// 1 Query cho "mọi đơn của khách C42 trong tháng 11", trả về theo thứ tự sk
+PageIterable<Order> page = table.query(QueryEnhancedRequest.builder()
+        .queryConditional(QueryConditional.sortBeginsWith(KeyPair.of("customer#C42", "order#1730")))
+        .build());
+
+// "Chỉ tạo nếu chưa tồn tại" -> chong ghi de don da thanh toán
+table.putItem(PutItemEnhancedRequest.builder(Order.class)
+        .item(ready)
+        .conditionExpression(ConditionExpression.builder()
+                .values("attribute_not_exists(pk)").build())
+        .build());
+~~~
+
+### GSI, sparse index, TTL, Streams
+- **GSI (Global Secondary Index)**: một "khoá phụ" có {{pk}}/{{sk}} riêng, tạo và sửa được sau khi bảng đã chạy. Nó **nhận bản sao** những item có các attribute cần index → viết tốn thêm WCU của index. Query theo thuộc tính mà bảng chính không index được thì bắt buộc phải có GSI.
+- **Sparse GSI**: một GSI chỉ chứa item **có** các attribute khoá của nó. Đây là cách tạo "chỉ mục cho một tập con" — ví dụ GSI {{(gsi_status, gsi_dueAt)}} chỉ ghi khi item là task đến hạn; muốn "huỷ chỉ mục" chỉ cần xoá attribute. Rất nhiều thiết kế single-table sống nhờ trick này.
+- **LSI (Local Secondary Index)**: dùng {{pk}} của bảng chính, thay {{sk}} — **phải khai báo lúc tạo bảng**, không đổi sau này.
+- **TTL**: chọn một attribute chứa epoch giây, DynamoDB tự xoá item hết hạn (không phải giao dịch, độ trễ vài phút tới vài giờ) → hợp cho session, mã OTP, bản ghi tạm; **không** dùng làm nghiệp vụ "đúng giờ".
+- **Streams**: ghi lại mọi thay đổi item (kênh NEW_IMAGE/OLD_IMAGE) → thường gắn **Lambda** để đồng bộ sang OpenSearch, đổ sang S3, hoặc chạy side effect (gửi email khi đơn chuyển {{PAID}}). Muốn replay thì cấu hình {{LatestStreamViewType}} và giữ 24 giờ.
+
+### Khi nào KHÔNG nên dùng DynamoDB
+| Nhu cầu | DynamoDB | Nên dùng |
+|---|---|---|
+| Báo cáo ad-hoc, "cho tôi số đơn theo khu vực tháng này" | Tệ: phải scan hoặc thiết kế index trước | RDS/Aurora + SQL, hoặc Redshift/Athena |
+| Quan hệ nhiều bảng, ràng buộc toàn vẹn, join sâu | Không có | RDS/Aurora |
+| Giao dịch ACID nhiều bảng, complex | TransactWrite có giới hạn | Aurora (hoặc tách nghiệp vụ + saga) |
+| Đọc theo một trong 20 thuộc tính khác nhau | Phải 20 GSI, mỗi GSI ăn WCU | RDS + chỉ mục, hoặc thiết kế lại single-table |
+| OLTP truy vấn theo khoá, tải cao khó đoán, cần độ trễ ổn định | **Rất hợp** | — |
+
+### Liên hệ phỏng vấn
+Câu hay gặp: "Partition key/sort key ảnh hưởng gì?" (aws-006), "RDS, Aurora, DynamoDB chọn cái nào?" (aws-005), "Vì sao không dùng Scan?", "Hai worker cùng trừ tồn kho thì làm sao không bán vượt?", "Khi nào nên đặt ElastiCache/Redis chắn trước DynamoDB?" (aws-011). Cấu trúc trả lời ghi điểm: **(1)** liệt kê access pattern, **(2)** đề xuất {{pk}}/{{sk}} và giải thích sự phân tán traffic, **(3)** chỉ ra chỗ cần GSI/sparse GSI, **(4)** nêu cách chống ghi đè bằng conditional write, **(5)** nói rõ chi phí (RCU/WCU hoặc on-demand) và điểm giới hạn.
+
+> Senior tip: Hãy nói to quy tắc "một partition = một đơn vị khả năng phục vụ" khi trả lời. Người phỏng vấn Senior/Lead không chấm việc bạn biết API, mà chấm việc bạn tránh được hot partition: ví dụ {{pk = "customer#C42"}} cho 50 triệu đơn vẫn ổn nếu khách lớn nhất có 20.000 đơn, nhưng {{pk = "order-by-day"}} sẽ nổ vào ngày sale. Và luôn hỏi "bảng này có cần transactions không?" — vì TransactWriteItems tốn gấp đôi, nếu câu trả lời "thực ra chỉ cần một item" thì conditional write rẻ hơn hẳn.`,
+  exercises: [
+    {
+      title: 'Cài DynamoDB mô phỏng: thứ tự sort key, conditional write và tính capacity',
+      prompt: `Mô phỏng một bảng DynamoDB trong bộ nhớ (đơn giản hoá: mỗi item là {{Map<String,String>}}, attribute {{"v"}} là version dùng cho khoá lạc quan).
+
+Đã có sẵn: record {{PKey}}, record {{Item}} ({{get(name)}} trả attribute), {{put(pk, sk, attrs)}} (lưu bản sao attrs và stamp {{"v" = "1"}}), {{get(pk, sk)}} (trả {{null}} khi không có). Bạn cài 3 hàm:
+
+1. {{query(pk, skPrefix)}}: trả về mọi item có cùng {{pk}} và {{sk}} bắt đầu bằng {{skPrefix}} ({{skPrefix}} rỗng = lấy cả partition), **sắp xếp tăng dần theo {{sk}} theo thứ tự từ điển** — đúng như DynamoDB làm. Mỗi phần tử là một {{Item}}.
+2. {{conditionalPut(pk, sk, expectedVersion, attrs)}}:
+  ▸ version hiện tại của item = giá trị {{"v"}}, coi là **0** nếu item chưa tồn tại;
+  ▸ nếu version hiện tại khác {{expectedVersion}} → trả {{false}} và **không ghi gì cả**;
+  ▸ nếu bằng → lưu {{attrs}} kèm {{"v"}} = {{expectedVersion + 1}}, trả {{true}}.
+  ({{expectedVersion = 0}} chính là {{attribute_not_exists}}: chỉ tạo khi chưa có.)
+3. {{capacityUnits(sizes, read, stronglyConsistent)}}: {{sizes}} là kích thước (byte) của từng item trong một batch đọc/ghi, trả về **số RCU hoặc WCU cần cho 1 request/giây** đó:
+  ▸ ghi ({{read = false}}): tổng {{ceil(size / 1024)}} **theo từng item** (granularity của ghi là 1 KB);
+  ▸ đọc ({{read = true}}): gọi {{u = tổng ceil(size / 4096)}} theo từng item (granularity của đọc là 4 KB); nếu {{stronglyConsistent}} trả {{u}}, ngược lại trả {{(u + 1) / 2}} vì một RCU chịu được hai lần đọc 4 KB eventually consistent.
+  Hai điều cần giữ đúng: làm tròn **từng item rồi mới cộng** ({{100, 4000}} tốn 2 đơn vị chứ không phải 1), và đọc strongly consistent luôn bằng **hai lần** đọc eventually consistent.
+
+(Đơn giản hoá so với AWS: BatchWriteItem thật cộng kích thước cả batch theo khối 25 KB, transaction tốn gấp đôi, và số RCU thật còn phụ thuộc số request mỗi giây chứ không phải mỗi batch. Ở đây mỗi batch được tính như một request.)`,
+      starter: `record PKey(String pk, String sk) {}
+
+record Item(PKey key, Map<String,String> attrs) {
+    String get(String name) { return attrs.get(name); }
+}
+
+class FakeDynamo {
+    private final Map<PKey, Map<String,String>> data = new LinkedHashMap<>();
+
+    void put(String pk, String sk, Map<String,String> attrs) {
+        Map<String,String> copy = new TreeMap<>(attrs);   // ban sao, khong giu reference cua caller
+        copy.put("v", "1");
+        data.put(new PKey(pk, sk), copy);
+    }
+
+    Item get(String pk, String sk) {
+        Map<String,String> a = data.get(new PKey(pk, sk));
+        return a == null ? null : new Item(new PKey(pk, sk), a);
+    }
+
+    List<Item> query(String pk, String skPrefix) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean conditionalPut(String pk, String sk, long expectedVersion, Map<String,String> attrs) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static long capacityUnits(List<Long> sizes, boolean read, boolean stronglyConsistent) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void eq(String name, Object expected, Supplier<Object> actual) {
+        total++;
+        try {
+            Object got = actual.get();
+            if (Objects.equals(expected, got)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": mong doi " + expected + ", nhan " + got);
+        } catch (RuntimeException e) {
+            System.out.println("FAIL " + name + ": nem " + e);
+        }
+    }
+    static String dump(List<Item> items) {
+        return items.stream().map(i -> i.key().sk() + "=" + i.get("total")).collect(Collectors.joining(","));
+    }
+    public static void main(String[] args) {
+        FakeDynamo db = new FakeDynamo();
+        db.put("acct-1", "order#0002", Map.of("total", "20"));
+        db.put("acct-1", "order#0010", Map.of("total", "100"));
+        db.put("acct-1", "order#0001", Map.of("total", "15"));
+        db.put("acct-1", "profile", Map.of("total", "-"));
+        db.put("acct-2", "order#0001", Map.of("total", "7"));
+
+        eq("get on missing key is null", null, () -> db.get("acct-9", "order#1"));
+        eq("get returns attributes", "20", () -> db.get("acct-1", "order#0002").get("total"));
+        eq("put stamps version 1", "1", () -> db.get("acct-1", "order#0002").get("v"));
+        eq("empty prefix reads whole partition, sorted by sk",
+                "order#0001=15,order#0002=20,order#0010=100,profile=-", () -> dump(db.query("acct-1", "")));
+        eq("begins_with filters like a sk condition",
+                "order#0001=15,order#0002=20", () -> dump(db.query("acct-1", "order#000")));
+        eq("query never crosses the partition", "order#0001=7", () -> dump(db.query("acct-2", "order#")));
+        eq("unknown partition is empty", "", () -> dump(db.query("acct-3", "")));
+
+        FakeDynamo pad = new FakeDynamo();
+        pad.put("x", "item#2", Map.of("total", "b"));
+        pad.put("x", "item#10", Map.of("total", "a"));
+        eq("sort key order is lexicographic, not numeric (zero-pad!)",
+                "item#10=a,item#2=b", () -> dump(pad.query("x", "")));
+
+        eq("create-condition fails on existing item", false,
+                () -> db.conditionalPut("acct-1", "order#0002", 0, Map.of("total", "999")));
+        eq("rejected write changed nothing", "20", () -> db.get("acct-1", "order#0002").get("total"));
+        eq("conditional write with right version succeeds", true,
+                () -> db.conditionalPut("acct-1", "order#0002", 1, Map.of("total", "21")));
+        eq("version bumped to 2", "2", () -> db.get("acct-1", "order#0002").get("v"));
+        eq("stale version loses the race", false,
+                () -> db.conditionalPut("acct-1", "order#0002", 1, Map.of("total", "22")));
+        eq("winner value still there", "21", () -> db.get("acct-1", "order#0002").get("total"));
+        eq("create path when expected version 0", true,
+                () -> db.conditionalPut("acct-1", "order#0003", 0, Map.of("total", "5")));
+        eq("created item has version 1", "1", () -> db.get("acct-1", "order#0003").get("v"));
+        eq("second create is rejected", false,
+                () -> db.conditionalPut("acct-1", "order#0003", 0, Map.of("total", "6")));
+        eq("conditional write can create in another partition", true,
+                () -> db.conditionalPut("acct-5", "order#0001", 0, Map.of("total", "3")));
+        eq("item written conditionally is queryable", "order#0001=3", () -> dump(db.query("acct-5", "order#")));
+
+        eq("write of a tiny item is one WCU", 1L, () -> FakeDynamo.capacityUnits(List.of(1L), false, false));
+        eq("write granularity is 1 KB: 1024 bytes is one WCU", 1L, () -> FakeDynamo.capacityUnits(List.of(1024L), false, false));
+        eq("write rounds up per item: 1025 bytes is two WCU", 2L, () -> FakeDynamo.capacityUnits(List.of(1025L), false, false));
+        eq("write of 100 + 2000 bytes = 1 + 2 WCU", 3L,
+                () -> FakeDynamo.capacityUnits(List.of(100L, 2000L), false, false));
+        eq("strongly consistent read of 5 KB needs 2 RCU", 2L, () -> FakeDynamo.capacityUnits(List.of(5000L), true, true));
+        eq("read rounds up per item, not per sum", 2L,
+                () -> FakeDynamo.capacityUnits(List.of(100L, 4000L), true, true));
+        eq("eventually consistent read is half the RCU", 1L, () -> FakeDynamo.capacityUnits(List.of(4097L), true, false));
+        eq("four small items strongly consistent = 4 RCU", 4L,
+                () -> FakeDynamo.capacityUnits(List.of(100L, 100L, 100L, 100L), true, true));
+        eq("the same four items eventually consistent = 2 RCU", 2L,
+                () -> FakeDynamo.capacityUnits(List.of(100L, 100L, 100L, 100L), true, false));
+        eq("one small eventually consistent read still costs 1 RCU", 1L,
+                () -> FakeDynamo.capacityUnits(List.of(100L), true, false));
+        eq("a 30 KB item is 8 read units", 8L, () -> FakeDynamo.capacityUnits(List.of(30000L), true, true));
+        eq("strong flag does not change a write", 2L,
+                () -> FakeDynamo.capacityUnits(List.of(100L, 1000L), false, true));
+        eq("empty batch is free", 0L, () -> FakeDynamo.capacityUnits(List.of(), true, true));
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `record PKey(String pk, String sk) {}
+
+record Item(PKey key, Map<String,String> attrs) {
+    String get(String name) { return attrs.get(name); }
+}
+
+class FakeDynamo {
+    private final Map<PKey, Map<String,String>> data = new LinkedHashMap<>();
+
+    void put(String pk, String sk, Map<String,String> attrs) {
+        Map<String,String> copy = new TreeMap<>(attrs);
+        copy.put("v", "1");
+        data.put(new PKey(pk, sk), copy);
+    }
+
+    Item get(String pk, String sk) {
+        Map<String,String> a = data.get(new PKey(pk, sk));
+        return a == null ? null : new Item(new PKey(pk, sk), a);
+    }
+
+    List<Item> query(String pk, String skPrefix) {
+        Map<String, Item> bySk = new TreeMap<>();       // TreeMap = thu tu tu dien tang dan theo sk
+        for (Map.Entry<PKey, Map<String,String>> e : data.entrySet()) {
+            PKey k = e.getKey();
+            if (k.pk().equals(pk) && k.sk().startsWith(skPrefix)) {
+                bySk.put(k.sk(), new Item(k, e.getValue()));
+            }
+        }
+        return new ArrayList<>(bySk.values());
+    }
+
+    boolean conditionalPut(String pk, String sk, long expectedVersion, Map<String,String> attrs) {
+        PKey key = new PKey(pk, sk);
+        Map<String,String> cur = data.get(key);
+        long current = (cur == null) ? 0L : Long.parseLong(cur.getOrDefault("v", "1"));
+        if (current != expectedVersion) return false;   // thua cuoc: khong ghi gi ca
+        Map<String,String> copy = new TreeMap<>(attrs);
+        copy.put("v", String.valueOf(expectedVersion + 1));
+        data.put(key, copy);
+        return true;
+    }
+
+    static long capacityUnits(List<Long> sizes, boolean read, boolean stronglyConsistent) {
+        long units = 0;
+        if (read) {
+            for (long s : sizes) units += (s + 4095) / 4096;       // bo 4 KB, lam tron LEN tung item
+            return stronglyConsistent ? units : (units + 1) / 2;   // EC doc = mot nua so RCU
+        }
+        for (long s : sizes) units += (s + 1023) / 1024;           // ghi tinh theo bo 1 KB
+        return units;
+    }
+}`,
+      hints: [
+        'Muon lay theo thu tu {{sk}} tang dan ma khong can thu cong sap xep: gom vao {{TreeMap<String, Item>}} voi key la {{sk}}, roi lay {{values()}} (bo vao {{ArrayList}} de co List).',
+        'Di qua tung phan tu cua {{data.entrySet()}} va kiem tra {{k.pk().equals(pk)}} cung {{k.sk().startsWith(skPrefix)}}. Voi {{skPrefix}} rong, {{startsWith("")}} luon dung nen pham vi la ca partition.',
+        'Version hien tai: item khong ton tai la 0; neu co thi {{Long.parseLong}} tu attribute {{"v"}}. So sanh **truoc khi** ghi, va khi reject thi khong duoc cham vao {{data}}.',
+        'Lam tron len boi so ma khong can so thuc: {{(s + 4095) / 4096}} cho block doc 4 KB, {{(s + 1023) / 1024}} cho block ghi 1 KB; {{Math.ceil}} tren so nguyen se ra 0 mai mai.',
+        'Doc eventually consistent = **mot nua** RCU: {{(units + 1) / 2}} (lam tron len de khong duoc tieu 0 cho mot batch khong rong).',
+      ],
+      explain: `### Cai ban vua viet chinh la ba dieu quyet dinh hieu nang va hoa don
+- **{{query}} chi doc MỘT partition** và trả kết quả đã sắp theo {{sk}}. Đó là toàn bộ lý do DynamoDB nhanh: nó biết chính xác bình chứa nào cần mở. {{Scan}} thì phải mở mọi bình — hãy tưởng tượng nó như {{SELECT *}} rồi lọc ở client, chi phí tỉ lệ với **kích thước bảng**, không phải số dòng thoả điều kiện.
+- **Thứ tự từ điển của {{sk}}**: bài test "item#10" trước "item#2" không phải chuyện vui. Ngoài đời nó là lỗi "trang 2 lặp lại đơn của trang 1" hoặc "không bao giờ lấy được đơn thứ 100", và cách sửa là **zero-pad hoặc epoch ms** ngay từ thiết kế khoá.
+- **{{conditionalPut}} chạy phía server, nguyên tử trên một item**: hai worker cùng đọc version 7 thì chỉ một PutItem điều kiện thành công. Đây là cách làm idempotent/optimistic lock mà không cần bảng lock, không cần {{SELECT FOR UPDATE}}, và cũng là cách viết consumer an toàn cho queue at-least-once (aws-008): điều kiện {{attribute_not_exists(eventId)}} chính là unique constraint của bảng {{processed_events}}.
+
+### Lỗi hay gặp
+- Quên bước kiểm tra version và ghi luôn: mất cập nhật của người khác (lost update), đúng cái bug mà conditional write sinh ra để chặn.
+- Đọc version bằng {{Integer.parseInt}} trên attribute không tồn tại → {{NullPointerException}}/{{NumberFormatException}}; phải có giá trị mặc định.
+- Cộng tổng size rồi làm tròn một lần: {{List.of(100, 4000)}} ra 1 đơn vị thay vì 2, và dùng {{ceil(size / 4096)}} bằng số nguyên thì luôn ra 0 vì phép chia nguyên đã cắt trước khi làm tròn.
+- Tưởng ghi cũng tính theo 4 KB: ghi có granularity **1 KB**, nên một item 2 KB tốn 2 WCU — ước lượng thấp WCU nghĩa là {{ProvisionedThroughputExceededException}} đúng lúc tải đỉnh, tức lúc khách đang đặt hàng.
+- Quên rằng đọc eventually consistent chỉ mất **một nửa** RCU: bật strongly consistent cho mọi read là trả gấp đôi hoá đơn cho một tính chất bạn thường không cần (UI hiển thị danh sách thì EC đủ; chỉ kiểm tra "tôi vừa ghi thành công chưa" mới cần strong).
+
+Mặt khác của bài tập: DynamoDB **không** có transaction ở đây, không có pagination ({{LastEvaluatedKey}}), không có GSI, không có dung lượng thật theo thời gian. Nhưng nếu bạn giải thích được vì sao query cần {{pk}}, vì sao {{sk}} là thứ tự chuỗi và vì sao ghi phải có điều kiện, bạn đã trả lời được 90% câu phỏng vấn về DynamoDB.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Bảng {{orders}} có {{pk = customer_id}}, {{sk = order_id}}. Câu nào ĐÚNG về "{{cho tôi 20 đơn gần nhất của khách C42}}"?',
+      options: ['Dùng Scan với FilterExpression status = SHIPPED rồi lấy 20 kết quả đầu', 'Dùng Query với {{pk = C42}} và điều kiện sk, lấy trang đầu tiên (kèm LastEvaluatedKey nếu còn)', 'Dùng GetItem với pk = C42', 'Phải tạo GSI trên customer_id vì đó không phải sort key'],
+      answer: 1,
+      explain: `{{pk = customer_id}} nghĩa là mọi đơn của C42 nằm trong một partition và đã được sắp theo {{sk}} → một Query là xong. Scan trả tiền cho cả bảng; GetItem cần đủ cả khoá để lấy đúng MỘT item; customer_id đã là partition key nên không cần GSI. Muốn "gần nhất" thì sk phải là epoch ms hoặc zero-pad (Query có {{ScanIndexForward = false}} để đọc ngược).`,
+    },
+    {
+      q: 'Hai service cùng đọc item {{sku-1}} ({{stock = 5}}) rồi mỗi bên ghi {{stock = 4}} bằng {{PutItem}} thường. Chuyện gì xảy ra và sửa thế nào?',
+      options: ['DynamoDB phát hiện xung đột và tự retry cho bên thứ hai', 'Một bên ghi đè bên kia (lost update): cần conditional write theo {{version}}, bên thua nhận ConditionalCheckFailed rồi đọc lại; nếu cần nhiều item thì dùng TransactWriteItems', 'Giao dịch tự động bị từ chối vì thiếu lock', 'Không sao, vì PutItem là atomic theo từng attribute'],
+      answer: 1,
+      explain: `{{PutItem}} là upsert toàn item và ai ghi sau thắng, nên tồn kho giảm sai. DynamoDB không có "lock" để phát hiện và cũng không tự retry nghiệp vụ: bạn phải đưa điều kiện {{version = :v}} (hoặc {{stock > :qty}}) để server từ chối bản cũ, và chỉ dùng TransactWriteItems khi nghiệp vụ chạm nhiều item/nhiều bảng (tốn gấp đôi). PutItem thay thế cả item, không merge attribute.`,
+    },
+    {
+      q: 'Bạn muốn lọc "các đơn PENDING quá hạn" mà {{pk = customer_id}}. Cách nào hợp lý nhất?',
+      options: ['Query theo pk rồi lọc status ở Java', 'Scan toàn bảng mỗi 5 phút với FilterExpression', 'Thêm GSI mà chỉ item PENDING được ghi các attribute khoá của nó (sparse GSI), ví dụ {{(gsi_pk = "PENDING", gsi_sk = dueAt)}}, rồi Query GSI đó', 'Đổi pk thành status để gom mọi PENDING vào một partition'],
+      answer: 2,
+      explain: `Sparse GSI cho đúng hình dạng truy vấn: item chỉ xuất hiện khi có attribute index, nên "pending theo dueAt" trở thành một Query rẻ và có thứ tự. Lọc ở Java vẫn phải đọc cả partition; Scan trả tiền theo cả bảng và càng ngày càng tệ; đổi {{pk = status}} tạo hot partition khổng lồ (mọi PENDING trong một bình) — exactly sai lầm cần tránh.`,
+    },
+    {
+      q: 'Bảng provisioned của bạn đọc 1.000 item mỗi giây, mỗi item khoảng 5 KB, với read strongly consistent. Sơ bộ cần bao nhiêu RCU?',
+      options: ['1.000 RCU', '2.000 RCU', '4.000 RCU', '5.000 RCU'],
+      answer: 1,
+      explain: `Làm tròn **theo từng item**: 5 KB → 2 khối 4 KB. Strongly consistent tính 1 RCU cho mỗi khối đọc mỗi giây, nên 2 đơn vị/item × 1.000 item/giây = **2.000 RCU**. Nếu chuyển sang eventually consistent chỉ còn 1.000 RCU, vì một RCU chịu được hai lần đọc 4 KB EC. Sai phổ biến: 5.000 (nhân theo KB thay vì theo khối 4 KB), 4.000 (nhân đôi trên đầu con số vốn đã là strongly consistent), 1.000 (quên làm tròn từng item).`,
+    },
+  ],
+  related: ['aws-005', 'aws-006', 'aws-011'],
+  tags: ['DynamoDB', 'partition key', 'sort key', 'Query vs Scan', 'RCU/WCU', 'conditional write', 'optimistic locking', 'GSI', 'sparse GSI', 'TTL', 'Streams'],
+},
 );

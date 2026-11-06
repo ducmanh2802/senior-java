@@ -1379,6 +1379,8 @@ window.DATA_INDEX = {
     {"id":"lesson-aws-002","track":"aws","order":2,"title":"S3 cho backend dev: consistency, multipart upload, presigned URL, storage class và mã hoá","level":"mid","minutes":40},
     {"id":"lesson-aws-003","track":"aws","order":3,"title":"SQS, SNS và EventBridge: visibility timeout, DLQ, FIFO và consumer idempotent","level":"senior","minutes":45},
     {"id":"lesson-aws-004","track":"aws","order":4,"title":"Chọn compute và scaling cho Java: Lambda, ECS Fargate, EKS, EC2, ALB, Auto Scaling và giới hạn kết nối DB","level":"senior","minutes":45},
+    {"id":"lesson-aws-005","track":"aws","order":5,"title":"VPC cho dev Java: CIDR, subnet, route table, security group vs NACL và VPC endpoint","level":"mid","minutes":50},
+    {"id":"lesson-aws-006","track":"aws","order":6,"title":"DynamoDB cho dev Java: partition key, sort key, query vs scan, conditional write và khoá lạc quan","level":"senior","minutes":50},
     {"id":"lesson-banking-001","track":"banking","order":1,"title":"Tiền trong code: không dùng double, BigDecimal, phí giao dịch và chia tiền theo largest-remainder","level":"senior","minutes":30},
     {"id":"lesson-banking-002","track":"banking","order":2,"title":"Đối soát cuối ngày: vì sao hai bên lệch và cách xử lý dòng lệch","level":"senior","minutes":30},
     {"id":"lesson-banking-003","track":"banking","order":3,"title":"Hạn mức và kiểm tra rủi ro cơ bản","level":"senior","minutes":30},
