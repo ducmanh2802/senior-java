@@ -828,5 +828,512 @@ class TransferLocks {
     {q:'Yếu tố nào thường làm deadlock tăng lên chứ không giảm?',options:['Sắp xếp id cần khoá theo thứ tự tăng dần','Rút ngắn transaction','UPDATE với điều kiện không dùng index nên quét và khoá nhiều hàng','Giới hạn số lần retry'],answer:2,explain:'Không có index thì phạm vi hàng bị đụng rộng hơn, số cặp khoá xung đột tăng theo cấp số nhân.'}
   ],
   tags:['deadlock','locking','wait-for-graph','PostgreSQL','retry']
+},
+{
+  id:'lesson-db-008',track:'db',order:8,title:'MVCC: snapshot nào nhìn thấy dòng nào',level:'senior',minutes:30,
+  goals:['Đọc được một hàng qua cặp xmin/xmax','Suy ra phiên bản nào nhìn thấy được với một snapshot cho trước','Phân biệt snapshot lấy theo câu lệnh và theo transaction','Giải thích vì sao UPDATE tạo phiên bản mới và VACUUM dọn cái gì'],
+  body:`**Tóm tắt:** MVCC (Multi-Version Concurrency Control — điều khiển đồng thời bằng nhiều phiên bản) giữ cùng lúc vài phiên bản của một hàng, và mỗi transaction nhận một **snapshot** (ảnh chụp) quyết định nó được thấy phiên bản nào. Người đọc không phải chờ người ghi, đổi lại mỗi UPDATE để lại một "tuple chết" trong bảng và VACUUM chỉ dọn được nó khi không còn snapshot nào cần tới.
+
+### Một "hàng" thật ra là một chuỗi phiên bản
+Bảng trong PostgreSQL được chia thành các **page** 8 KB. Mỗi lần INSERT hoặc UPDATE, database không sửa tại chỗ mà **ghi thêm một tuple** (một phiên bản của hàng) vào page còn chỗ. Hàng id=42 vì thế có thể có ba tuple cùng mang id=42 trong cùng một page. Đọc một hàng thực chất là: chọn trong chuỗi tuple đó tuple mà transaction mình **được phép thấy**.
+
+Có ba trường phái xử lý khi hai transaction cùng chạm một hàng:
+
+| Trường phái | Chuyện xảy ra | Giá phải trả |
+|---|---|---|
+| Khoá hàng, reader phải chờ writer (SQL Server mặc định, PostgreSQL khi UPDATE/SELECT FOR UPDATE) | luôn có đúng một bản trên đĩa | reader bị chặn, reader chậm kéo theo mọi người khác chờ |
+| Ghi đè tại chỗ, giữ bản cũ trong **undo log** (Oracle, MySQL InnoDB) | reader dựng lại bản cũ từ undo khi cần | undo chain dài, mỗi record mang con trỏ tới bản trước |
+| Lưu nhiều phiên bản ngay trong bảng (PostgreSQL) | reader chỉ việc chọn tuple theo snapshot | bảng phình vì tuple chết, cần VACUUM liên tục |
+
+### xmin và xmax: hai con dấu trên mỗi tuple
+Header của mỗi tuple chứa hai id transaction quan trọng nhất (kèm một con trỏ vật lý tới phiên bản kế tiếp):
+
+- **xmin**: transaction đã **sinh ra** phiên bản này (do INSERT hoặc do UPDATE tạo bản mới).
+- **xmax**: transaction đã **xoá hoặc thay thế** phiên bản này; bằng 0 khi chưa ai đụng vào.
+- **Transaction id (xid)** là số nguyên 32 bit tăng dần, được cấp cho transaction đầu tiên có thao tác ghi (transaction chỉ đọc không cần xid riêng — nó chỉ mang snapshot). Nên "xid lớn hơn" đơn giản nghĩa là "bắt đầu ghi muộn hơn".
+
+~~~text
+ id | balance | xmin | xmax
+ 42 |   10    | 100  | 201     <- ban cu: T201 da thay the no
+ 42 |   12    | 201  |  0      <- ban dang mo (chua bi thay the)
+~~~
+
+Cả hai dòng đều còn nguyên trong page. Chỉ snapshot mới quyết định bạn đọc dòng nào.
+
+### Snapshot gồm ba con số
+PostgreSQL dựng snapshot ở đầu mỗi câu lệnh ({{READ COMMITTED}}) hoặc ở đầu transaction ({{REPEATABLE READ}} / {{SERIALIZABLE}}), gồm:
+
+- **xmin**: xid cũ nhất mà snapshot còn phải để ý — mọi xid nhỏ hơn đã kết thúc từ lâu.
+- **xmax**: xid sẽ được cấp tiếp theo — mọi xid từ xmax trở lên diễn ra **sau** snapshot.
+- **xip**: danh sách các xid **đang chạy** đúng lúc lấy snapshot (in-progress list).
+
+~~~sql
+SELECT txid_current_snapshot();          -- vi du tra ve: 101:105:[103,104]
+--                                              xmin  xmax  xip
+-- Tu PG 13 co kieu pg_snapshot voi cac ham
+-- pg_snapshot_xmin / pg_snapshot_xmax / pg_snapshot_xip
+-- va pg_visible_in_snapshot(xid, snapshot) de tham chieu mot xid.
+~~~
+
+Suy luận "transaction X đã kết thúc và đã commit **theo snapshot S**":
+
+| Vị trí của X | Kết luận với S |
+|---|---|
+| X là transaction của chính S | luôn coi là đã commit — thay đổi của mình thì mình phải thấy, kể cả chưa commit |
+| X nhỏ hơn xmin của S | đã kết thúc trước snapshot; commit thì thấy, abort (rollback) thì không |
+| xmin tới xmax, X nằm trong xip | đang chạy lúc chụp ảnh → chưa commit → **không thấy** |
+| xmin tới xmax, X không nằm trong xip | đã kết thúc trước snapshot → commit thì thấy |
+| X từ xmax trở lên | diễn ra sau snapshot → **không thấy** (dù sau đó X đã commit) |
+
+Gộp lại thành quy tắc nhìn thấy — và cũng là hàm {{visible(row, snapshot)}} trong bài tập:
+
+> Một tuple nhìn thấy được **khi và chỉ khi**: xmin được coi là đã commit theo snapshot, **và** xmax KHÔNG được coi là đã commit theo snapshot (xmax = 0 luôn thoả vế sau).
+
+Vế đầu trả lời "phiên bản này đã tồn tại chưa", vế sau trả lời "đã bị thay thế chưa". Một transaction abort thì mọi phiên bản nó sinh ra vĩnh viễn vô hình với tất cả mọi người.
+
+### Cùng một lịch, hai kết quả
+~~~seq
+title: Hai transaction trên cùng hàng id 42
+actors: T1 | PostgreSQL | T2
+T1 -> PostgreSQL: BEGIN roi SELECT so du lan dau
+PostgreSQL --> T1: 10 (tuple co xmin 100)
+T2 -> PostgreSQL: UPDATE so du thanh 12
+PostgreSQL -> PostgreSQL: tuple cu nhan xmax 201, them tuple moi xmin 201
+T2 -> PostgreSQL: COMMIT
+note PostgreSQL: tuple cu van nam trong page, chua ai xin xoa
+T1 -> PostgreSQL: SELECT so du lan thu hai
+PostgreSQL --> T1: READ COMMITTED thay 12 vi lay snapshot moi
+note T1: REPEATABLE READ van thay 10 vi giu snapshot cu
+~~~
+
+Đây chính là khác biệt được đóng gói trong một chữ: **điểm chụp ảnh**. {{READ COMMITTED}} chụp lại mỗi câu SQL, nên hai câu SELECT trong cùng transaction có thể ra hai giá trị (non-repeatable read hợp lệ). {{REPEATABLE READ}} chụp một lần, nên toàn bộ transaction làm việc trên cùng một trạng thái logic của database — nhưng khi nó muốn sửa một hàng mà người khác đã sửa và commit sau điểm chụp, PostgreSQL **không ghi đè** mà báo {{could not serialize access due to concurrent update}} (SQLSTATE {{40001}}), và ứng dụng phải retry cả transaction.
+
+### Vì sao UPDATE tạo phiên bản mới thay vì ghi đè
+- **Reader không bao giờ chờ writer, writer không chờ reader.** Đó là toàn bộ lợi ích: một báo cáo đọc 10 giây không làm tê liệt API đặt hàng, và ngược lại. Chỉ writer-vs-writer **cùng một tuple** là phải chờ nhau (kèm theo hoặc lỗi 40001, hoặc đọc lại bản mới, tuỳ mức isolation).
+- **Giá phải trả là dung lượng và index.** Một UPDATE không phải HOT (Heap-Only Tuple — cập nhật chỉ chạm cột không có index và page còn chỗ trống) phải ghi thêm entry vào **mọi index** của bảng. HOT thì index đứng nguyên. Đó là lý do sửa một cột được index hoá làm bảng phình nhanh hơn nhiều so với sửa cột thường.
+- **Index không phân biệt sống/chết.** Entry trong index trỏ tới cả tuple sống lẫn tuple chết, nên khi lấy hàng database phải kiểm tra visibility từng dòng. Các bit "all-visible" trong **visibility map** cho phép bỏ qua kiểm tra đó và là điều kiện cần của index-only scan.
+
+### Tuple chết và VACUUM
+Tuple mà không snapshot nào còn có thể cần gọi là **dead tuple**. VACUUM làm ba việc:
+
+1. Dọn dead tuple, đánh dấu khoảng trống trong page để tái sử dụng (chỉ trả dung lượng về hệ điều hành với các page trống ở **cuối** bảng).
+2. Đóng băng (**freeze**) xid của các hàng quá cũ. xid chỉ có 32 bit và quay vòng; nếu dữ liệu vẫn mang xid mà database hiện tại hiểu là "lớn hơn", nó sẽ bị coi là tương lai và **vô hình** — mất dữ liệu trên lý thuyết. Vì vậy PostgreSQL cưỡng bức vacuum ở {{autovacuum_freeze_max_age}} (mặc định 200 triệu xid) và có thể từ chối nhận ghi khi {{age(datfrozenxid)}} tiến gần 2 tỷ.
+3. Cập nhật thống kê và visibility map.
+
+Điều kiện 1 có một hệ quả sống còn: **VACUUM không được phép xoá tuple mà một snapshot đang mở còn cần.** Nên chỉ cần một transaction mở lâu là cả bảng bắt đầu phình:
+
+~~~sql
+-- Ai dang giu "xmin horizon" (ngan cach thu nhat khi bang phinh bat thuong)?
+SELECT pid, state, now() - xact_start AS mo_du_ra, left(query, 60) AS cau_lenh
+FROM pg_stat_activity
+WHERE xact_start IS NOT NULL
+ORDER BY xact_start;
+-- Ke ca: replication slot chua duoc tieu thu, transaction PREPARE bo quen.
+~~~
+
+**Autovacuum** chạy khi số thay đổi ước lượng vượt ngưỡng: {{autovacuum_vacuum_threshold}} (50) cộng {{autovacuum_vacuum_scale_factor}} (0.2) nhân số hàng — tức bảng 10 triệu hàng cần khoảng 2 triệu lần sửa để tự dọn, đó là lý do bảng rất lớn nên hạ scale factor về 0.01 hoặc đặt lịch vacuum thủ công theo bảng nóng.
+
+~~~sql
+SELECT relname, n_live_tup, n_dead_tup, last_autovacuum, last_vacuum
+FROM pg_stat_user_tables
+ORDER BY n_dead_tup DESC
+LIMIT 10;
+
+VACUUM (VERBOSE, ANALYZE) account;   -- doc "removed N dead row versions"
+~~~
+
+### Java: mô hình hoá quyết định nhìn thấy
+~~~java
+// Tuple: (value, xmin, xmax). Snapshot: (own, cac xid da commit tai thoi diem chup anh).
+boolean visible(int xmin, int xmax, int own, Set<Integer> committed) {
+    boolean born = xmin == own || committed.contains(xmin);        // da ton tai voi minh
+    boolean gone = xmax != 0 && (xmax == own || committed.contains(xmax)); // da bi thay the
+    return born && !gone;
+}
+~~~
+
+Bài tập dưới đây dùng đúng hai biến {{born}} và {{gone}}; toàn bộ hành vi "snapshot nào nhìn thấy dòng nào" của PostgreSQL gói lại trong bốn dòng đó.
+
+### Lỗi hay gặp
+- **idle in transaction**: connection mượn từ pool, mở transaction, rồi không commit/rollback (thường vì code return sớm hoặc app crash nhưng session vẫn sống). Đặt {{idle_in_transaction_session_timeout}} để DB tự cắt.
+- **Job batch một transaction khổng lồ**: 5 triệu dòng trong một BEGIN/COMMIT — vừa giữ snapshot vừa sinh 5 triệu tuple chết cùng lúc.
+- Nghĩ rằng "UPDATE trả 0 dòng nghĩa là hàng không tồn tại" ở {{REPEATABLE READ}}; ở mức này xung đột ghi biểu hiện bằng exception 40001, còn 0 dòng thường là predicate version không khớp (xem bài optimistic locking).
+- **VACUUM FULL** trên bảng lớn: nó dựng lại bảng và **giữ khoá độc quyền** — đừng chạy trong giờ cao điểm; {{pg_repack}} làm việc đó online.
+- Index phình: VACUUM thường không thu nhỏ index, chỉ REINDEX hoặc {{pg_repack}} mới làm được; từ PostgreSQL 14 VACUUM có thể dọn entry trùng trong B-tree nhưng không co cây lại.
+
+### Liên hệ phỏng vấn
+Hãy trả lời theo chuỗi nhân quả: mỗi hàng là một chuỗi tuple mang xmin/xmax; snapshot gồm xmin/xmax/xip nên suy được xid nào đã commit, nào đang chạy, nào thuộc tương lai; một tuple visible khi xmin đã commit theo snapshot và xmax thì chưa; {{READ COMMITTED}} chụp ảnh theo câu lệnh nên thấy commit mới, {{REPEATABLE READ}} chụp theo transaction nên ổn định nhưng phải retry 40001; UPDATE ghi phiên bản mới để reader không chờ writer; hệ quả là dead tuple, và VACUUM chỉ dọn được khi không còn snapshot cũ — vì vậy một transaction mở lâu làm bảng phình. Sau đó nêu cách bạn chẩn đoán: {{pg_stat_activity}} tìm transaction già nhất, {{pg_stat_user_tables}} xem {{n_dead_tup}} và {{last_autovacuum}}.
+
+> Senior tip: khi được hỏi "bảng của tôi phình gấp 5 lần dữ liệu thật", câu trả lời trưởng thành không phải "chạy VACUUM FULL" mà là "tìm xem ai đang giữ xmin horizon" — 90% trường hợp là một job, một {{idle in transaction}}, hoặc một replication slot đã ngừng tiêu thụ.
+
+`,
+  exercises:[{
+    title:'MvccTable: phiên bản nào nhìn thấy được với snapshot này?',
+    prompt:`Mô phỏng một hàng của PostgreSQL theo quy tắc xmin/xmax. Cài {{MvccTable}} (và hai lớp tĩnh {{MvccTable.Version}}, {{MvccTable.Snapshot}}).
+
+- {{insert(xid, value)}}: thêm phiên bản mới với {{xmin = xid}}, {{xmax = 0}}.
+- {{update(xid, value)}}: **thay thế** — đặt {{xmax = xid}} lên mọi phiên bản đang mở ({{xmax = 0}}), rồi thêm phiên bản mới {{xmin = xid}}, {{xmax = 0}}. Không xoá phiên bản cũ nào khỏi bảng.
+- {{delete(xid)}}: đặt {{xmax = xid}} lên mọi phiên bản đang mở, không thêm phiên bản mới. Không có phiên bản nào đang mở thì không làm gì.
+- {{versions()}}: mọi phiên bản theo đúng thứ tự đã thêm (phiên bản cũ vẫn còn).
+- {{visible(v, s)}} (static): {{true}} khi và chỉ khi xmin của v "đã commit theo s" VÀ xmax của v không "đã commit theo s". Với một xid bất kỳ, "đã commit theo s" nghĩa là xid khác 0 và ({{xid == s.own}} hoặc {{s.committed}} chứa xid). {{s.own}} là transaction đang đọc: thay đổi của chính nó luôn được nó thấy dù chưa commit.
+- {{visibleTo(s)}}: các phiên bản visible, giữ thứ tự của {{versions()}}.
+- {{read(s)}}: value của phiên bản visible **cuối cùng** trong thứ tự thêm (bản mới nhất mà snapshot thấy), hoặc {{-1}} nếu snapshot không thấy phiên bản nào.
+
+Không dùng thread, không đồng hồ thật. Mọi kết quả phải xác định.`,
+    starter:`import java.util.*;
+
+class MvccTable {
+    static final class Version {
+        final int xmin, xmax, value;   // xmax = 0 khi chưa bị xoá hoặc thay thế
+        Version(int xmin, int xmax, int value) {
+            this.xmin = xmin; this.xmax = xmax; this.value = value;
+        }
+        public String toString() { return "v(xmin=" + xmin + ",xmax=" + xmax + ",val=" + value + ")"; }
+    }
+
+    static final class Snapshot {
+        final int own;                 // xid của transaction đang đọc
+        final Set<Integer> committed;  // các xid đã commit tại thời điểm chụp ảnh
+        Snapshot(int own, Set<Integer> committed) {
+            this.own = own;
+            this.committed = new HashSet<>(committed);
+        }
+    }
+
+    void insert(int xid, int value) { throw new UnsupportedOperationException("TODO"); }
+
+    void update(int xid, int value) { throw new UnsupportedOperationException("TODO"); }
+
+    void delete(int xid) { throw new UnsupportedOperationException("TODO"); }
+
+    List<Version> versions() { throw new UnsupportedOperationException("TODO"); }
+
+    static boolean visible(Version v, Snapshot s) { throw new UnsupportedOperationException("TODO"); }
+
+    List<Version> visibleTo(Snapshot s) { throw new UnsupportedOperationException("TODO"); }
+
+    int read(Snapshot s) { throw new UnsupportedOperationException("TODO"); }
+}`,
+    tests:`public class Main {
+ static int p=0,t=0;
+ static void c(String n,Runnable r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+ static void eq(Object a,Object b){if(!Objects.equals(a,b))throw new AssertionError(a+" != "+b);}
+ static void ok(boolean b){if(!b)throw new AssertionError("expected true");}
+ public static void main(String[]z){
+  c("own uncommitted insert is visible to itself",()->{MvccTable x=new MvccTable();x.insert(10,5);eq(5,x.read(new MvccTable.Snapshot(10,Set.of())));eq(1,x.visibleTo(new MvccTable.Snapshot(10,Set.of())).size());});
+  c("another tx uncommitted insert is invisible",()->{MvccTable x=new MvccTable();x.insert(10,5);eq(-1,x.read(new MvccTable.Snapshot(20,Set.of())));eq(0,x.visibleTo(new MvccTable.Snapshot(20,Set.of())).size());});
+  c("once the writer committed the value appears",()->{MvccTable x=new MvccTable();x.insert(10,5);eq(5,x.read(new MvccTable.Snapshot(20,Set.of(10))));});
+  c("update keeps the old version in the table",()->{MvccTable x=new MvccTable();x.insert(10,5);x.update(20,7);eq(2,x.versions().size());ok(x.versions().get(0).xmax==20);ok(x.versions().get(0).value==5);});
+  c("old snapshot still reads the old value",()->{MvccTable x=new MvccTable();x.insert(10,5);x.update(20,7);eq(5,x.read(new MvccTable.Snapshot(30,Set.of(10))));eq(1,x.visibleTo(new MvccTable.Snapshot(30,Set.of(10))).size());});
+  c("newer snapshot reads the new value",()->{MvccTable x=new MvccTable();x.insert(10,5);x.update(20,7);eq(7,x.read(new MvccTable.Snapshot(30,Set.of(10,20))));eq(1,x.visibleTo(new MvccTable.Snapshot(30,Set.of(10,20))).size());});
+  c("the updater sees its own new version only",()->{MvccTable x=new MvccTable();x.insert(10,5);x.update(20,7);eq(7,x.read(new MvccTable.Snapshot(20,Set.of(10))));});
+  c("delete bites only after the deleting tx commits",()->{MvccTable x=new MvccTable();x.insert(10,5);x.delete(30);eq(5,x.read(new MvccTable.Snapshot(40,Set.of(10))));eq(-1,x.read(new MvccTable.Snapshot(40,Set.of(10,30))));eq(0,x.visibleTo(new MvccTable.Snapshot(40,Set.of(10,30))).size());});
+  c("repeatable read stable while read committed refreshes",()->{MvccTable x=new MvccTable();x.insert(10,100);x.update(20,200);x.update(30,300);eq(100,x.read(new MvccTable.Snapshot(50,Set.of(10))));eq(200,x.read(new MvccTable.Snapshot(50,Set.of(10,20))));eq(300,x.read(new MvccTable.Snapshot(50,Set.of(10,20,30))));});
+  c("a tx replacing its own row sees just the newest",()->{MvccTable x=new MvccTable();x.insert(10,5);x.update(10,7);eq(7,x.read(new MvccTable.Snapshot(10,Set.of())));eq(1,x.visibleTo(new MvccTable.Snapshot(10,Set.of())).size());});
+  c("never more than one visible version",()->{MvccTable x=new MvccTable();x.insert(10,5);x.update(20,7);x.update(30,9);atMostOne(x,Set.of());atMostOne(x,Set.of(10));atMostOne(x,Set.of(10,20));atMostOne(x,Set.of(10,20,30));atMostOne(x,Set.of(20));});
+  System.out.println("RESULT "+p+"/"+t);
+ }
+ static void atMostOne(MvccTable x,Set<Integer> committed){ok(x.visibleTo(new MvccTable.Snapshot(50,committed)).size()<=1);}
+}`,
+    reference:`import java.util.*;
+
+class MvccTable {
+    static final class Version {
+        final int xmin, xmax, value;
+        Version(int xmin, int xmax, int value) {
+            this.xmin = xmin; this.xmax = xmax; this.value = value;
+        }
+        public String toString() { return "v(xmin=" + xmin + ",xmax=" + xmax + ",val=" + value + ")"; }
+    }
+
+    static final class Snapshot {
+        final int own;
+        final Set<Integer> committed;
+        Snapshot(int own, Set<Integer> committed) {
+            this.own = own;
+            this.committed = new HashSet<>(committed);
+        }
+    }
+
+    private final List<Version> rows = new ArrayList<>();
+
+    void insert(int xid, int value) {
+        rows.add(new Version(xid, 0, value));
+    }
+
+    void update(int xid, int value) {
+        closeOpen(xid);                       // khong xoa ban cu, chi dong dau cua no lai
+        rows.add(new Version(xid, 0, value)); // ban moi la mot tuple khac, cung id
+    }
+
+    void delete(int xid) {
+        closeOpen(xid);
+    }
+
+    private void closeOpen(int xid) {
+        List<Version> grown = new ArrayList<>();
+        for (Version v : rows) {
+            grown.add(v.xmax == 0 ? new Version(v.xmin, xid, v.value) : v);
+        }
+        rows.clear();
+        rows.addAll(grown);
+    }
+
+    List<Version> versions() {
+        return new ArrayList<>(rows);
+    }
+
+    static boolean visible(Version v, Snapshot s) {
+        return committedFor(v.xmin, s) && !committedFor(v.xmax, s);
+    }
+
+    private static boolean committedFor(int xid, Snapshot s) {
+        if (xid == 0) return false;                    // chưa transaction nào đụng tới
+        return xid == s.own || s.committed.contains(xid);
+    }
+
+    List<Version> visibleTo(Snapshot s) {
+        List<Version> out = new ArrayList<>();
+        for (Version v : rows) if (visible(v, s)) out.add(v);
+        return out;
+    }
+
+    int read(Snapshot s) {
+        int found = -1;
+        for (Version v : rows) if (visible(v, s)) found = v.value; // bản mới nhất còn nhìn thấy
+        return found;
+    }
+}`,
+    hints:['Version bất biến, nên "đóng" một phiên bản nghĩa là thay nó bằng Version mới có cùng xmin và value nhưng xmax = xid.','Viết một hàm phụ giúp: xid khác 0 và (xid bằng s.own hoặc s.committed chứa xid) thì được coi là đã commit theo snapshot.','Một phiên bản visible khi nó đã sinh ra (vế xmin) và chưa bị thay thế (vế xmax).','read duyệt theo thứ tự đã thêm và lấy value của phiên bản visible cuối cùng; không có thì trả -1.'],
+    explain:`Hai biến quyết định tất cả: phiên bản đó **đã sinh ra** chưa (xmin đã commit theo snapshot, hoặc chính là transaction của mình) và nó **đã bị thay thế** chưa (xmax đã commit theo snapshot). Vì bản cũ không bị xoá, cùng một bảng cho ra nhiều bộ dữ liệu khác nhau tuỳ snapshot — đó là nội dung chữ isolation trong câu phỏng vấn. {{READ COMMITTED}} đổi snapshot sau mỗi câu lệnh nên thấy xmax mới commit; {{REPEATABLE READ}} giữ snapshot cũ nên thấy lại giá trị cũ, và chính sự bất lực đó khiến PostgreSQL phải báo 40001 khi transaction cố ghi đè lên bản nó không nhìn thấy. Trong bài mô phỏng, {{update}} đóng **mọi** phiên bản đang mở cho đơn giản; PostgreSQL thật chặn transaction thứ hai ghi cùng một hàng cho tới khi thứ nhất kết thúc, nên gần như không bao giờ có hai phiên bản cùng mở. Model cũng coi "abort" là chưa commit: phiên bản của transaction rollback vĩnh viễn vô hình, và VACUUM sẽ dọn nó.`
+  }],
+  check:[
+    {q:'Điều kiện nào là quy tắc nhìn thấy của một tuple dưới MVCC snapshot?',options:['xmin đã commit theo snapshot, bất kể xmax','xmax bằng 0','xmin nhỏ hơn xmax của snapshot','xmin được coi là đã commit theo snapshot và xmax thì không'],answer:3,explain:'Cả hai vế đều cần: bản phải đã tồn tại với người đọc, và chưa bị thay thế theo snapshot đó.'},
+    {q:'Vì sao UPDATE ghi một phiên bản mới thay vì sửa tại chỗ?',options:['Vì page 8 KB không cho phép ghi đè','Vì index không hỗ trợ cập nhật','Vì như vậy reader không phải chờ writer và snapshot cũ vẫn đọc được giá trị cũ','Vì VACUUM cần bản gốc để phục hồi sau crash'],answer:2,explain:' Đó là toàn bộ mục đích của MVCC: đọc không bị chặn bởi ghi, và ảnh chụp cũ còn nguyên nghĩa.'},
+    {q:'Bảng phình, n_dead_tup tăng đều dù autovacuum vẫn chạy. Kiểm tra gì đầu tiên?',options:['Tăng fillfactor của index','Xóa rồi dựng lại toàn bộ index','Tìm transaction mở lâu nhất, session idle in transaction và replication slot chưa tiêu thụ trong pg_stat_activity','Tăng shared_buffers'],answer:2,explain:'VACUUM không xoá tuple mà một snapshot đang mở còn cần; một snapshot già cũng chặn luôn freeze và thu hồi WAL.'},
+    {q:'Ở REPEATABLE READ, UPDATE một hàng mà transaction khác đã sửa và commit sau snapshot của bạn thì:',options:['PostgreSQL ghi đè và trả về 1 dòng','PostgreSQL báo lỗi could not serialize access due to concurrent update (SQLSTATE 40001)','transaction tự hạ xuống READ COMMITTED','lỗi bị che vì MVCC chặn mọi xung đột ghi'],answer:1,explain:'Snapshot cũ không cho phép ghi đè bản mới; PostgreSQL hủy transaction và ứng dụng phải retry toàn bộ.'}
+  ],
+  related:['db-002','db-034'],
+  tags:['MVCC','snapshot','xmin','xmax','VACUUM','PostgreSQL']
+},
+{
+  id:'lesson-db-009',track:'db',order:9,title:'WAL, commit và crash recovery: vì sao mất điện không mất dữ liệu đã commit',level:'senior',minutes:30,
+  goals:['Giải thích vì sao database không ghi trang dữ liệu ngay khi commit','Nêu đúng hai quy tắc của write-ahead log','Suy ra kết quả của từng thời điểm crash quanh commit record','Giải thích checkpoint, full page write và vì sao pg_wal có thể đầy đĩa','Viết bộ phát lại log (redo) bằng Java thuần'],
+  body:`**Tóm tắt:** **WAL** (Write-Ahead Log — log ghi trước) là một file chỉ ghi thêm ở cuối, chứa mô tả từng thay đổi kèm record BEGIN/COMMIT/ABORT. Quy tắc cốt lõi: bản mô tả thay đổi phải **bền trên đĩa trước khi** transaction được báo là đã commit, còn trang dữ liệu thật có thể được ghi sau, khi rảnh. Mất điện vì thế chỉ làm mất những gì chưa commit; những gì đã commit được phục hồi bằng cách **phát lại (redo)** log.
+
+### Vấn đề: một transaction chạm nhiều trang nằm rải rác
+Giả sử một nghiệp vụ sửa 40 hàng thuộc ba bảng. Dữ liệu được tổ chức thành **page** 8 KB, 40 hàng đó rơi vào hơn chục page nằm ở các vị trí khác nhau của vài file. Nếu database bắt các page ấy phải nằm trên đĩa trước khi trả "commit", mỗi commit cần hàng chục lần seek cộng vài chục lần **fsync** (lệnh yêu cầu hệ điều hành dồn toàn bộ nội dung đang đệm ra thiết bị, và chỉ trả lời khi thiết bị xác nhận đã nhận xong). Trên đĩa thường, một fsync tốn vài ms tới hơn chục ms: commit 50–100 ms, cả hệ thống chỉ vài chục giao dịch mỗi giây. Tệ hơn, cùng hàng đó bị sửa 100 lần trong ngày nghĩa là ghi đi ghi lại cả page 8 KB cho vài byte thay đổi.
+
+### Vài từ cần thống nhất trước
+| Từ | Nghĩa, nói cho dễ hình dung |
+|---|---|
+| **page** (đôi khi gọi block) | mẩu 8 KB, đơn vị nhỏ nhất database đọc/ghi với hệ điều hành. Giống một trang vở: bạn không sửa một chữ, bạn sao cả trang vào RAM, sửa, rồi ghi trả. |
+| **shared buffers / buffer cache** | vùng RAM của server database chứa các page đang làm việc. Page vừa sửa gọi là **dirty** (bẩn) vì nội dung trong RAM khác với nội dung trên đĩa. |
+| **fsync** | lệnh yêu cầu hệ điều hành "dồn hết những gì đang đệm ra thiết bị thật, rồi mới trả lời". Đây là ranh giới giữa "còn nằm trong RAM" và "đã bền". |
+| **log record** | một bản ghi mô tả thay đổi, dạng "page số 77 của file này, từ byte 120, giờ là chuỗi byte kia". |
+| **redo (phát lại)** | đọc log từ đầu tới điểm đã biết và áp lại các thay đổi lên trang, để dựng lại trạng thái mà RAM chưa kịp ghi. |
+| **checkpoint** | thời điểm database chủ động ghi hết trang dirty xuống đĩa và ghi một record đánh dấu; từ đó log cũ không còn cần để khôi phục. |
+| **transaction abort / rollback** | giao dịch kết thúc mà không commit; thay đổi của nó bị vứt. |
+
+### Hai quy tắc của write-ahead log
+
+1. Trước khi báo commit cho client, mọi record log mô tả thay đổi của transaction đó đã được fsync xuống đĩa.
+2. Một page chỉ được ghi vào file dữ liệu sau khi các record mô tả thay đổi của nó đã bền.
+
+Nhờ hai quy tắc này, thao tác ghi trở thành **append tuần tự** vào một file log (rẻ với mọi loại đĩa, rất rẻ với SSD), còn trang dữ liệu được ghi muộn và ghi gộp: một page bị sửa 50 lần chỉ phải ghi xuống đĩa một lần.
+
+Trong PostgreSQL, log sống ở thư mục **pg_wal**, gồm các file segment 16 MB. Mỗi record có **LSN** (Log Sequence Number) — về bản chất là vị trí byte tính từ đầu dòng log — dùng làm "đồng hồ" để biết record nào trước record nào, và để máy replica báo "tôi đã nhận tới đâu".
+
+### Commit thật ra là chuyện gì
+~~~seq
+title: Duong di cua mot UPDATE, tu luc chay den khi duoc coi la ben
+actors: App | Backend | WAL | File du lieu
+App -> Backend: UPDATE account SET balance = 12 WHERE id = 42
+Backend -> Backend: sua tuple trong shared buffers, page tro nen dirty
+Backend -> WAL: ghi record thay doi, nhan LSN 100
+App -> Backend: COMMIT
+Backend -> WAL: ghi record COMMIT roi fsync ca log
+WAL --> App: OK, giao dich cua ban da ben
+note File du lieu: page chua hang 42 van la trang cu, chua bi ghi
+Backend -> File du lieu: checkpoint sau nay moi ghi page do
+~~~
+
+Record COMMIT mà fsync đã hoàn thành chính là **điểm không thể đảo ngược**. Mọi thứ khác — ghi trang, dọn tuple chết, cập nhật thống kê — xảy ra sau đó và đổ vỡ cũng không mất dữ liệu đã commit. Vì transaction chỉ phải chờ đúng một fsync, PostgreSQL gom nhiều transaction đang chờ vào cùng một lần fsync (**group commit**); đó là lý do throughput commit tăng mạnh khi tải vừa phải.
+
+### Crash ở từng thời điểm thì sao
+| Thời điểm sập | Kết quả khi mở lại |
+|---|---|
+| Trước khi record COMMIT được fsync | transaction biến mất hoàn toàn; client chưa từng nhận OK nên không ai bị lừa |
+| Sau fsync của COMMIT, trước khi trang dữ liệu được ghi | recovery phát lại log và ghi thay đổi vào trang — dữ liệu về đúng trạng thái |
+| Trang bị ghi dở (**torn page**: page 8 KB của database lớn hơn sector của đĩa, nên có thể ghi một nửa rồi chết) | ảnh toàn trang (**full page write**) được ghi vào WAL ở lần sửa đầu tiên sau checkpoint, dùng để khôi phục nguyên page |
+| Chết khi đang ghi chính record WAL | record dở bị loại vì độ dài/LSN/checksum không khớp; nếu COMMIT chưa fsync thì coi như chưa xảy ra |
+
+Chú ý điều hay: **không cần undo cho transaction chết**. Thay đổi của nó tồn tại trong RAM và bay theo tiến trình; nếu một phần của nó đã bị "ăn cắp" ghi xuống page (database được phép ghi page dirty của transaction chưa commit), thì khi khôi phục, bản ghi lại từ WAL sẽ đè lên và xóa dấu vết. Atomicity và durability cùng được giải quyết bởi một cơ chế.
+
+### Checkpoint: thu hồi log và giới hạn thời gian khôi phục
+Nếu lúc nào cũng phải phát lại toàn bộ log từ thuở khai thiên lập địa thì khôi phục sẽ mất hàng giờ. **Checkpoint** giải quyết việc đó: database ghi toàn bộ trang dirty xuống file dữ liệu, fsync, rồi viết một record CHECKPOINT. Từ điểm đó, log cũ không còn cần cho khôi phục, và các segment pg_wal trước nó được tái sử dụng. Hai tham số mặc định: {{checkpoint_timeout}} = 5 phút, {{max_wal_size}} = 1 GB — cái nào chạm trước thì checkpoint chạy. Chi phí của nó là một cơn bão I/O, nên PostgreSQL dàn đều việc ghi trong {{checkpoint_completion_target}} = 0.9.
+
+| Cấu hình | Hậu quả |
+|---|---|
+| Checkpoint quá dày (max_wal_size nhỏ) | write amplification, I/O spike liên tục, disk mòn nhanh |
+| Checkpoint quá thưa | khôi phục lâu, pg_wal chiếm nhiều đĩa, replication chậm hơn |
+| {{wal_level = logical}} | log mang thêm thông tin cho CDC (Debezium), lượng WAL tăng rõ rệt |
+
+### Vì sao pg_wal đầy đĩa
+Log chỉ được tái sử dụng khi không còn ai cần nó. Ba kẻ giữ log phổ biến: **replication slot** chưa được tiêu thụ (standby chết nhưng slot còn nguyên), {{archive_command}} thất bại liên tục, và một transaction dài khiến điểm cần giữ (xmin horizon) lùi lại — chủ đề của bài học trước. Đây là sự cố rất thật: thư mục pg_wal 400 GB trong khi dữ liệu không tăng, thủ phạm thường là một slot cô đơn chứ không phải workload.
+
+### Java: commit là một record, không phải dữ liệu đã ghi
+~~~java
+long lsn = 0;
+Map<String, String> buffers = new HashMap<>();          // shared buffers: RAM, bay theo tien trinh
+log.append(new Rec(++lsn, "t1", "SET", "a", "1"));      // chua co gi xuong file du lieu
+buffers.put("a", "1");
+log.append(new Rec(++lsn, "t1", "COMMIT", null, null));
+fsync(log);                                             // DIEM KHONG THE DAO NGUOC
+// checkpoint sau nay moi day page 8 KB chua "a" xuong file du lieu
+~~~
+
+Bài tập dưới đây chính là phần "mở lại máy": cho một list các record, hãy tính xem state cuối cùng là gì.
+
+### Độ bền mua bằng gì
+{{synchronous_commit = on}} (mặc định): chờ fsync, mất khoảng 1 fsync mỗi commit nhưng không mất giao dịch đã báo OK khi sập máy. {{off}}: OS tự dồn ghi, nhanh hơn hàng chục lần, nhưng nếu **máy sập** (mất điện, kernel panic) thì vài transaction đã báo OK có thể mất — vẫn nhất quán, chỉ là mất cái mà database đã hứa. {{remote_write}} / {{remote_apply}}: chờ một replica, dùng khi không chấp nhận mất dữ liệu kể cả khi cả máy chủ chết. Câu trả lời trưởng thành: chọn theo chi phí của một bản ghi bị mất, và với nghiệp vụ tiền thì không tắt {{synchronous_commit}}.
+
+### Lỗi hay gặp
+- Nghĩ rằng commit xong là dữ liệu "đã nằm trong file bảng"; muốn kiểm chứng thì tắt process giữa chừng rồi mở lại — sẽ thấy WAL đã làm việc.
+- Tắt {{synchronous_commit}} cho job chạy nhanh, rồi không nói với ai, đến khi mất dữ liệu mới nhớ.
+- Không bật {{archive_command}} / backup từ WAL: chỉ khôi phục được tới bản backup cũ nhất, mất cả ngày dữ liệu.
+- Quên rằng replication slot giữ WAL: connector CDC ngừng chạy cuối tuần, thứ Hai đĩa đầy.
+- Benchmark trên máy dev với SSD doanh nghiệp có cache tự bảo vệ khi mất điện → số fsync rất đẹp; đĩa cloud hoặc đĩa quay thường chậm gấp nhiều lần, và con số production phải đo lại từ đầu.
+
+### Liên hệ phỏng vấn
+Kể theo nhân quả, không thuộc lòng tên viết tắt: (1) ghi trang ngay thì tốn quá nhiều random I/O và fsync, (2) WAL ghi tuần tự mô tả thay đổi, và hai quy tắc ghi trước, (3) commit là record COMMIT cộng fsync, còn page vẫn ở RAM, (4) crash thì phát lại redo từ checkpoint gần nhất, transaction chưa commit mất theo RAM nên không cần undo, (5) full page write chống torn page, (6) checkpoint cân bằng giữa thời gian khôi phục và write amplification, (7) {{synchronous_commit}} và {{max_wal_size}}/pg_wal là hai câu tuning hay bị hỏi. Kết bằng cách kiểm chứng: số record commit mỗi giây và thời gian fsync, số lượng WAL sinh ra mỗi giờ, độ tuổi slot lớn nhất trong {{pg_replication_slots}}.
+
+> Senior tip: với ứng dụng Java, "đã commit" không có nghĩa là "đã gửi message". Muốn nghiệp vụ và database cùng bền, ghi một bảng outbox **trong cùng transaction** rồi để một relay đọc và gửi sau commit, kèm khóa idempotency — vì sau fsync vẫn còn cửa sổ nhỏ trước khi client nhận OK, và Kafka không bảo đảm gửi đúng một lần.
+
+`,
+  exercises:[{
+    title:'WalLog: ghi log, commit, checkpoint và phát lại sau crash',
+    prompt:`Mô phỏng phần quyết định độ bền của database: một log toàn record có LSN tăng dần, và bộ phát lại (redo) tính ra state mà database sẽ có sau khi mở lại. Cài {{WalLog}} với lớp tĩnh {{WalLog.Rec}} ({{lsn}}, {{txn}}, {{op}}, {{key}}, {{value}}).
+
+- {{set(txn, key, value)}}, {{del(txn, key)}}, {{commit(txn)}}, {{abort(txn)}}: mỗi lệnh thêm **đúng một** record với {{op}} lần lượt là {{"SET"}}, {{"DEL"}}, {{"COMMIT"}}, {{"ABORT"}}; LSN là số nguyên tăng dần bắt đầu từ 1 theo thứ tự thêm; record SET giữ key và value, DEL giữ key (value null), COMMIT/ABORT giữ txn và có key/value null.
+- {{checkpoint()}}: thêm record {{"CHECKPOINT"}} và trả về LSN của nó. Hình dung checkpoint chỉ được lấy khi không còn transaction nào đang mở (quiesced).
+- {{records()}}: toàn bộ record theo thứ tự đã thêm.
+- {{recover(log, fromLsn, base)}} (static): phát lại redo và trả về state mới.
+  - Bắt đầu từ bản sao của {{base}} (state đã nằm trên file dữ liệu tại checkpoint; {{base}} **không được thay đổi**).
+  - Bỏ qua mọi record có {{lsn <= fromLsn}} — chúng đã bền trước checkpoint, phát lại là vô nghĩa và có thể làm hỏng state của checkpoint.
+  - Các record SET/DEL của một transaction được **tạm giữ** theo txn, theo đúng thứ tự log; chỉ khi gặp COMMIT của txn đó mới áp vào state (SET ghi, DEL xoá).
+  - ABORT thì vứt toàn bộ phần tạm giữ của txn; kết thúc log mà chưa gặp COMMIT thì cũng vứt — đó chính là giao dịch "chết cùng RAM".
+  - Trả về một {{Map}} ({{LinkedHashMap}} là đủ).
+
+Không dùng thread, không sleep, không I/O thật. Cùng input luôn cho cùng output.`,
+    starter:`import java.util.*;
+
+class WalLog {
+    static final class Rec {
+        final long lsn;
+        final String txn, op, key, value;
+        Rec(long lsn, String txn, String op, String key, String value) {
+            this.lsn = lsn; this.txn = txn; this.op = op; this.key = key; this.value = value;
+        }
+        public String toString() { return lsn + " " + op + " " + txn + " " + key + "=" + value; }
+    }
+
+    void set(String txn, String key, String value) { throw new UnsupportedOperationException("TODO"); }
+
+    void del(String txn, String key) { throw new UnsupportedOperationException("TODO"); }
+
+    void commit(String txn) { throw new UnsupportedOperationException("TODO"); }
+
+    void abort(String txn) { throw new UnsupportedOperationException("TODO"); }
+
+    long checkpoint() { throw new UnsupportedOperationException("TODO"); }
+
+    List<Rec> records() { throw new UnsupportedOperationException("TODO"); }
+
+    static Map<String, String> recover(List<Rec> log, long fromLsn, Map<String, String> base) { throw new UnsupportedOperationException("TODO"); }
+}`,
+    tests:`public class Main {
+ static int p=0,t=0;
+ static void c(String n,Runnable r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+ static void eq(Object a,Object b){if(!Objects.equals(a,b))throw new AssertionError(a+" != "+b);}
+ static void ok(boolean b){if(!b)throw new AssertionError("expected true");}
+ public static void main(String[]z){
+  c("committed write is redone",()->{WalLog w=new WalLog();w.set("t1","a","1");w.commit("t1");eq(Map.of("a","1"),WalLog.recover(w.records(),0L,Map.of()));});
+  c("write without commit is lost with the process",()->{WalLog w=new WalLog();w.set("t1","a","1");eq(Map.of(),WalLog.recover(w.records(),0L,Map.of()));});
+  c("abort discards every write of the transaction",()->{WalLog w=new WalLog();w.set("t1","a","1");w.set("t1","b","2");w.abort("t1");eq(Map.of(),WalLog.recover(w.records(),0L,Map.of()));});
+  c("delete becomes durable only at commit",()->{WalLog w=new WalLog();w.set("t1","a","1");w.commit("t1");w.del("t2","a");w.commit("t2");eq(Map.of(),WalLog.recover(w.records(),0L,Map.of()));});
+  c("uncommitted delete leaves the old value",()->{WalLog w=new WalLog();w.set("t1","a","1");w.commit("t1");w.del("t2","a");eq(Map.of("a","1"),WalLog.recover(w.records(),0L,Map.of()));});
+  c("last committed value wins",()->{WalLog w=new WalLog();w.set("t1","a","1");w.commit("t1");w.set("t2","a","2");w.commit("t2");eq(Map.of("a","2"),WalLog.recover(w.records(),0L,Map.of()));});
+  c("only the committed transaction survives",()->{WalLog w=new WalLog();w.set("t1","a","1");w.set("t2","a","2");w.commit("t1");eq(Map.of("a","1"),WalLog.recover(w.records(),0L,Map.of()));});
+  c("set then delete inside one transaction",()->{WalLog w=new WalLog();w.set("t1","a","1");w.del("t1","a");w.commit("t1");eq(Map.of(),WalLog.recover(w.records(),0L,Map.of()));});
+  c("lsn starts at one and checkpoint returns its lsn",()->{WalLog w=new WalLog();w.set("t1","a","1");w.commit("t1");long cp=w.checkpoint();eq(3L,cp);eq(1L,w.records().get(0).lsn);eq("SET",w.records().get(0).op);eq("CHECKPOINT",w.records().get(2).op);});
+  c("recovery ignores records before the checkpoint",()->{WalLog w=new WalLog();w.set("t1","a","1");w.commit("t1");long cp=w.checkpoint();eq(Map.of("a","9"),WalLog.recover(w.records(),cp,Map.of("a","9")));});
+  c("full replay reaches the same state",()->{WalLog w=new WalLog();w.set("t1","a","1");w.commit("t1");w.checkpoint();w.set("t2","b","2");w.commit("t2");List<WalLog.Rec> log=w.records();long cp=log.get(2).lsn;eq(WalLog.recover(log,0L,Map.of()),WalLog.recover(log,cp,Map.of("a","1")));eq(Map.of("a","1","b","2"),WalLog.recover(log,cp,Map.of("a","1")));});
+  c("base map is never mutated",()->{WalLog w=new WalLog();w.set("t1","a","1");w.commit("t1");Map<String,String> base=new LinkedHashMap<String,String>(Map.of("z","1"));WalLog.recover(w.records(),0L,base);eq(Map.of("z","1"),base);});
+  System.out.println("RESULT "+p+"/"+t);
+ }
+}`,
+    reference:`import java.util.*;
+
+class WalLog {
+    static final class Rec {
+        final long lsn;
+        final String txn, op, key, value;
+        Rec(long lsn, String txn, String op, String key, String value) {
+            this.lsn = lsn; this.txn = txn; this.op = op; this.key = key; this.value = value;
+        }
+        public String toString() { return lsn + " " + op + " " + txn + " " + key + "=" + value; }
+    }
+
+    private final List<Rec> log = new ArrayList<>();
+
+    private long append(String txn, String op, String key, String value) {
+        log.add(new Rec(log.size() + 1L, txn, op, key, value)); // LSN la so thu tu record
+        return log.size();
+    }
+
+    void set(String txn, String key, String value) { append(txn, "SET", key, value); }
+
+    void del(String txn, String key) { append(txn, "DEL", key, null); }
+
+    void commit(String txn) { append(txn, "COMMIT", null, null); }
+
+    void abort(String txn) { append(txn, "ABORT", null, null); }
+
+    long checkpoint() { return append(null, "CHECKPOINT", null, null); }
+
+    List<Rec> records() { return new ArrayList<>(log); }
+
+    static Map<String, String> recover(List<Rec> log, long fromLsn, Map<String, String> base) {
+        Map<String, String> state = new LinkedHashMap<>(base);            // du lieu da nam tren file
+        Map<String, List<Rec>> pending = new LinkedHashMap<>();           // chua commit: tam giu trong RAM
+        for (Rec r : log) {
+            if (r.lsn <= fromLsn) continue;                                // da ben tu truoc checkpoint
+            if (r.op.equals("COMMIT")) {
+                for (Rec w : pending.getOrDefault(r.txn, List.of())) {     // REDO: ap lai theo thu tu log
+                    if (w.op.equals("SET")) state.put(w.key, w.value);
+                    else state.remove(w.key);
+                }
+                pending.remove(r.txn);
+            } else if (r.op.equals("ABORT")) {
+                pending.remove(r.txn);
+            } else if (r.op.equals("SET") || r.op.equals("DEL")) {
+                pending.computeIfAbsent(r.txn, k -> new ArrayList<>()).add(r);
+            }
+        }
+        return state;                                                      // phan chua commit: chet cung RAM
+    }
+}`,
+    hints:['Mỗi lệnh ghi nghiệp vụ chỉ cần thêm một Record với lsn = log.size() + 1; checkpoint trả về chính lsn vừa cấp.','recover: dùng một Map<String, List<Rec>> để tạm giữ thao tác chưa commit theo txn, chỉ áp vào state khi gặp COMMIT.','Điều kiện bỏ qua record là r.lsn <= fromLsn, kiểm tra TRƯỚC mọi việc khác.','Sao chép base bằng new LinkedHashMap<>(base) để không sửa đổi object của caller.'],
+    explain:`Ba tính chất của redo recovery hiện ra rõ trong bài tập: **chỉ COMMIT làm thay đổi thành bền** (nguyên văn định nghĩa durability), **thứ tự trong log là thứ tự quyết định kết quả** (hai SET cùng key thì cái được áp cuối là cái cuối trước COMMIT), và **checkpoint cho phép bỏ phần đầu** vì nó đã được phản ánh trong {{base}}. Điều mô hình đơn giản hoá: PostgreSQL không lưu "giá trị logic mới" mà lưu thay đổi vật lý trên page, và một transaction chưa commit vẫn có thể bị đẩy trang dirty xuống đĩa; không sao cả, vì redo từ WAL sẽ ghi đè lại dấu vết của nó, và full page write xử lý trường hợp ghi dở. Trong production, ba chỗ hay gặp nhất của cùng một ý này: {{pg_wal}} đầy vì slot không được tiêu thụ, thời gian mở database tỷ lệ với lượng WAL phải phát lại sau checkpoint, và {{synchronous_commit = off}} chỉ tiết kiệm fsync chứ không thay đổi thứ tự log.`
+  }],
+  check:[
+    {q:'Quy tắc cốt lõi của write-ahead log là gì?',options:['Toàn bộ trang dữ liệu phải được ghi xuống đĩa trước khi trả lời client','Mỗi record mô tả thay đổi phải bền trong log trước khi transaction được báo là commit','Mọi replica phải xác nhận trước khi commit','Shared buffers phải được flush sau mỗi câu lệnh'],answer:1,explain:'Ghi log tuần tự rồi mới fsync là mấu chốt: trang dữ liệu có thể ghi muộn vì đã có cách dựng lại từ log.'},
+    {q:'Vì sao commit chỉ cần khoảng một lần fsync dù transaction sửa hàng trăm hàng?',options:['Vì database nén các page lại thành một file','Vì page nằm cạnh nhau trên đĩa','Vì log chỉ lưu con trỏ tới các page, không lưu nội dung','Vì các thay đổi được ghi liên tiếp vào một log append-only và fsync một lần, còn trang dữ liệu ghi sau'],answer:3,explain:'Append tuần tự rẻ; database còn gộp nhiều transaction chờ fsync vào cùng một lần (group commit).'},
+    {q:'Crash xảy ra sau khi record COMMIT đã fsync nhưng trước khi trang dữ liệu được ghi. Khi mở lại:',options:['Transaction mất vì dữ liệu chưa vào file bảng','Recovery phát lại WAL từ checkpoint gần nhất và áp thay đổi vào trang','Bắt buộc restore từ backup cũ','Trang dữ liệu hỏng vĩnh viễn'],answer:1,explain:'Đây đúng là trường hợp WAL tồn tại để giải quyết: log đã bền thì dữ liệu dựng lại được.'},
+    {q:'Tác dụng của một checkpoint là gì?',options:['Đảm bảo toàn bộ thay đổi nằm trong WAL và cho phép tái sử dụng log trước nó, đồng thời giới hạn thời gian khôi phục','Xóa sạch các transaction chưa commit','Nén pg_wal thành một file duy nhất','Tắt cơ chế ghi ảnh toàn trang'],answer:0,explain:'Sau checkpoint, các trang dirty đã nằm trên file dữ liệu nên log cũ không cần phát lại nữa; vì thế pg_wal có thể quay vòng.'}
+  ],
+  related:['db-035','db-006'],
+  tags:['WAL','durability','checkpoint','recovery','PostgreSQL']
 }
 );
