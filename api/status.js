@@ -13,7 +13,7 @@ module.exports = async function handler(req, res) {
   send(res, 200, {
     ok: true,
     ai: providerStatus().length > 0,
-    run: !!(process.env.JUDGE0_KEY || process.env.JUDGE0_URL),
+    run: true,                      // /api/run uses Wandbox (free, no key)
     accounts: supabaseConfigured(),
     model: MODEL,
     providers: providerStatus(),   // [{ id, model, cooling }] — no keys
