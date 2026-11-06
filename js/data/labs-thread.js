@@ -2678,4 +2678,548 @@ Virtual thread chờ I/O sẽ nhường carrier (miễn không bị pin — xem 
   ],
   tags: ['forkjoinpool', 'commonpool', 'parallelstream', 'completablefuture', 'starvation', 'blocking-io', 'jstack']
 },
+{
+  id: 'lab-thread-011',
+  category: 'thread',
+  title: 'Log đồng bộ chặn toàn bộ request khi ổ đĩa chậm và đầy',
+  level: 'senior',
+  scenario: `**Bối cảnh:** **PayVN Ledger** (Spring Boot 3.4, Java 21, Logback 1.5, Tomcat 200 thread, pod 2 vCPU trên Kubernetes) ghi sổ cái giao dịch. Log ứng dụng ghi qua cấu hình mặc định của Spring Boot vào file {{/var/log/app/ledger.log}} bằng {{RollingFileAppender}} (appender = "bộ ghi" của framework logging, nhận sự kiện log và ghi ra đích như file/console). Thư mục {{/var/log/app}} mount từ một **PersistentVolume** (ổ đĩa gắn vào pod) dùng backend block storage.
+  \n**Triệu chứng:** Lúc **09:14 ngày 06/11/2026**, đội vận hành nhận alert "disk utilization 100%" trên volume log. Từ 09:14:30, **mọi API** của Ledger (kể cả {{GET /actuator/health}}) bắt đầu treo: p99 từ 60ms vọt lên hơn 20 giây, Ingress trả 504 hàng loạt. CPU pod chỉ **6%**, heap ổn định, HikariCP {{active=2/20 idle=18 pending=0}} (DB gần như rảnh). Sau khi dọn bớt file log cũ lúc 09:27, p99 tự giảm về bình thường trong 1 phút mà **không cần restart**.
+  \n**Dữ liệu thu thập:** {{jcmd 1 Thread.print -l}} lúc 09:19:10, {{df -h}} và {{iostat -x 1 3}} trên node lúc đĩa đầy, cấu hình {{logback-spring.xml}}, và log của chính pod (trích từ stdout sidecar vì file appender đang nghẽn).`,
+  artifacts: [
+    {
+      name: 'jstack-ledger-09-19.txt',
+      lang: 'text',
+      content: `2026-11-06 09:19:10
+Full thread dump OpenJDK 64-Bit Server VM (21.0.4+7-LTS-151 mixed mode, sharing):
+
+"AsyncAppender-Worker-ASYNC_FILE" #0 [0] daemon prio=5 os_prio=0 cpu=0.00ms elapsed=0.00s tid=0x0000000000000000 nid=0
+   (không tồn tại - cấu hình không dùng AsyncAppender)
+
+"http-nio-8080-exec-41" #179 [5021] daemon prio=5 os_prio=0 cpu=1840.22ms elapsed=42110.55s tid=0x00007f3a7021a000 nid=5021 waiting for monitor entry  [0x00007f39e61fc000]
+   java.lang.Thread.State: BLOCKED (on object monitor)
+        at ch.qos.logback.core.OutputStreamAppender.subAppend(OutputStreamAppender.java:238)
+        - waiting to lock <0x0000000712c04a10> (a ch.qos.logback.core.rolling.RollingFileAppender)
+        at ch.qos.logback.core.rolling.RollingFileAppender.subAppend(RollingFileAppender.java:235)
+        at ch.qos.logback.core.OutputStreamAppender.append(OutputStreamAppender.java:102)
+        at ch.qos.logback.core.UnsynchronizedAppenderBase.doAppend(UnsynchronizedAppenderBase.java:85)
+        at ch.qos.logback.core.spi.AppenderAttachableImpl.appendLoopOnAppenders(AppenderAttachableImpl.java:51)
+        at ch.qos.logback.classic.Logger.appendLoopOnAppenders(Logger.java:272)
+        at ch.qos.logback.classic.Logger.callAppenders(Logger.java:259)
+        at ch.qos.logback.classic.Logger.buildLoggingEventAndAppend(Logger.java:426)
+        at ch.qos.logback.classic.Logger.filterAndLog_0_Or3Plus(Logger.java:386)
+        at ch.qos.logback.classic.Logger.info(Logger.java:587)
+        at vn.pay.ledger.LedgerController.postEntry(LedgerController.java:44)
+        at jdk.internal.reflect.DirectMethodHandleAccessor.invoke(java.base@21.0.4/DirectMethodHandleAccessor.java:103)
+        at org.springframework.web.servlet.DispatcherServlet.doDispatch(DispatcherServlet.java:1089)
+
+   Locked ownable synchronizers:
+        - <0x0000000713aa1e40> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+
+"http-nio-8080-exec-97" #235 [5133] daemon prio=5 os_prio=0 cpu=1776.90ms elapsed=42110.41s tid=0x00007f3a703a4000 nid=5133 waiting for monitor entry  [0x00007f39e2afb000]
+   java.lang.Thread.State: BLOCKED (on object monitor)
+        at ch.qos.logback.core.OutputStreamAppender.subAppend(OutputStreamAppender.java:238)
+        - waiting to lock <0x0000000712c04a10> (a ch.qos.logback.core.rolling.RollingFileAppender)
+        at ch.qos.logback.core.rolling.RollingFileAppender.subAppend(RollingFileAppender.java:235)
+        at ch.qos.logback.core.OutputStreamAppender.append(OutputStreamAppender.java:102)
+        at ch.qos.logback.core.UnsynchronizedAppenderBase.doAppend(UnsynchronizedAppenderBase.java:85)
+        at ch.qos.logback.core.spi.AppenderAttachableImpl.appendLoopOnAppenders(AppenderAttachableImpl.java:51)
+        at ch.qos.logback.classic.Logger.appendLoopOnAppenders(Logger.java:272)
+        at ch.qos.logback.classic.Logger.callAppenders(Logger.java:259)
+        at ch.qos.logback.classic.Logger.buildLoggingEventAndAppend(Logger.java:426)
+        at ch.qos.logback.classic.Logger.filterAndLog_0_Or3Plus(Logger.java:386)
+        at ch.qos.logback.classic.Logger.info(Logger.java:587)
+        at vn.pay.ledger.LedgerController.getEntry(LedgerController.java:61)
+        at jdk.internal.reflect.DirectMethodHandleAccessor.invoke(java.base@21.0.4/DirectMethodHandleAccessor.java:103)
+        at org.springframework.web.servlet.DispatcherServlet.doDispatch(DispatcherServlet.java:1089)
+
+   Locked ownable synchronizers:
+        - <0x0000000713aa6b18> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+
+"http-nio-8080-exec-12" #150 [4988] daemon prio=5 os_prio=0 cpu=2214.08ms elapsed=42111.02s tid=0x00007f3a70128000 nid=4988 runnable  [0x00007f39e79fe000]
+   java.lang.Thread.State: RUNNABLE
+        at java.io.FileOutputStream.writeBytes(java.base@21.0.4/Native Method)
+        at java.io.FileOutputStream.write(java.base@21.0.4/FileOutputStream.java:367)
+        at java.io.BufferedOutputStream.implFlushBuffer(java.base@21.0.4/BufferedOutputStream.java:178)
+        at java.io.BufferedOutputStream.flushBuffer(java.base@21.0.4/BufferedOutputStream.java:163)
+        at java.io.BufferedOutputStream.implWrite(java.base@21.0.4/BufferedOutputStream.java:217)
+        at java.io.BufferedOutputStream.write(java.base@21.0.4/BufferedOutputStream.java:200)
+        at ch.qos.logback.core.encoder.LayoutWrappingEncoder.doEncode(LayoutWrappingEncoder.java:136)
+        at ch.qos.logback.core.OutputStreamAppender.writeOut(OutputStreamAppender.java:194)
+        at ch.qos.logback.core.OutputStreamAppender.subAppend(OutputStreamAppender.java:238)
+        - locked <0x0000000712c04a10> (a ch.qos.logback.core.rolling.RollingFileAppender)
+        at ch.qos.logback.core.rolling.RollingFileAppender.subAppend(RollingFileAppender.java:235)
+        at ch.qos.logback.core.OutputStreamAppender.append(OutputStreamAppender.java:102)
+        at ch.qos.logback.core.UnsynchronizedAppenderBase.doAppend(UnsynchronizedAppenderBase.java:85)
+        at ch.qos.logback.core.spi.AppenderAttachableImpl.appendLoopOnAppenders(AppenderAttachableImpl.java:51)
+        at ch.qos.logback.classic.Logger.appendLoopOnAppenders(Logger.java:272)
+        at ch.qos.logback.classic.Logger.callAppenders(Logger.java:259)
+        at ch.qos.logback.classic.Logger.buildLoggingEventAndAppend(Logger.java:426)
+        at ch.qos.logback.classic.Logger.filterAndLog_0_Or3Plus(Logger.java:386)
+        at ch.qos.logback.classic.Logger.info(Logger.java:587)
+        at vn.pay.ledger.LedgerService.append(LedgerService.java:88)
+        at vn.pay.ledger.LedgerController.postEntry(LedgerController.java:52)
+        at jdk.internal.reflect.DirectMethodHandleAccessor.invoke(java.base@21.0.4/DirectMethodHandleAccessor.java:103)
+        at org.springframework.web.servlet.DispatcherServlet.doDispatch(DispatcherServlet.java:1089)
+
+   Locked ownable synchronizers:
+        - <0x0000000713a9c220> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+
+# Ghi chú on-call (đếm trên toàn bộ dump, 200 thread Tomcat):
+#   grep -c '"http-nio-8080-exec-' jstack-ledger-09-19.txt           -> 200
+#   grep -c 'waiting to lock <0x0000000712c04a10>' jstack-ledger-09-19.txt -> 193
+#   grep -c 'locked <0x0000000712c04a10>' jstack-ledger-09-19.txt     -> 1   (exec-12)
+#   6 thread exec còn lại: idle chờ request mới trong TaskQueue.take
+#   exec-12 giữ lock này qua 3 dump liên tiếp (09:19:10, 09:19:20, 09:19:30), luôn ở FileOutputStream.writeBytes`
+    },
+    {
+      name: 'disk-io-and-config.txt',
+      lang: 'text',
+      content: `$ df -h /var/log/app
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vdb         10G   10G     0 100% /var/log/app
+
+$ du -sh /var/log/app/*
+2.1G    /var/log/app/ledger.2026-11-04.0.log
+2.0G    /var/log/app/ledger.2026-11-05.0.log
+2.0G    /var/log/app/ledger.2026-11-05.1.log
+3.9G    /var/log/app/ledger.log
+
+$ iostat -x 1 3
+Linux 6.5.0 (ledger-7d9f-x2k4m)  11/06/2026  _x86_64_
+Device  r/s  w/s  rkB/s   wkB/s  await  svctm  %util
+vdb     0.0  2.0   0.0    12.0  980.5  500.0 100.00
+vdb     0.0  1.0   0.0     4.0 1120.0 1000.0 100.00
+vdb     0.0  2.0   0.0     8.0  940.0  500.0 100.00
+
+# Ghi chú: await ~1 giây, wkB/s rất thấp, %util 100% — volume hết chỗ, ghi gần như thất bại/chờ.
+
+# logback-spring.xml (cấu hình đang dùng)
+<configuration>
+  <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+    <file>/var/log/app/ledger.log</file>
+    <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+      <fileNamePattern>/var/log/app/ledger.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+      <maxFileSize>200MB</maxFileSize>
+      <maxHistory>14</maxHistory>
+    </rollingPolicy>
+    <encoder>
+      <pattern>%d{ISO8601} %-5level [%thread] %logger{36} - %msg%n</pattern>
+    </encoder>
+    <!-- immediateFlush mặc định true -->
+  </appender>
+  <root level="INFO">
+    <appender-ref ref="FILE"/>
+  </root>
+  <!-- Lưu ý: KHÔNG có AsyncAppender bao bọc FILE -->
+</configuration>`
+    }
+  ],
+  questions: [
+    'Vì sao ổ đĩa đầy/chậm lại làm TREO gần như toàn bộ API, dù CPU và DB đều rảnh? Dẫn chứng bằng thread dump (tên thread, lock id, số lượng).',
+    'Giải thích cơ chế ghi log đồng bộ trong Logback: tại sao chỉ 1 thread giữ lock và 193 thread bị BLOCKED? Phân biệt "chờ I/O" (RUNNABLE/native) với "bị chặn bởi monitor" (BLOCKED).',
+    'Đề xuất cách sửa ngắn hạn và dài hạn: dùng AsyncAppender thế nào (queueSize, discardingThreshold, neverBlock), xử lý đĩa đầy, và đánh đổi giữa "không làm chậm app" và "không mất log".'
+  ],
+  hints: [
+    'Tìm monitor {{<0x0000000712c04a10>}} trong dump: thread nào có dòng {{- locked ...}} (đang giữ) và đang làm gì (stack có {{FileOutputStream.writeBytes}})? Những thread còn lại {{- waiting to lock ...}} đang ở trạng thái gì?',
+    'Appender file của Logback dùng {{synchronized}} quanh thao tác ghi ({{subAppend}}) để bảo vệ stream. Khi ghi đĩa đồng bộ ({{immediateFlush=true}} mặc định), thread gọi {{log.info(...)}} phải tự ghi xuống đĩa xong mới thoát khỏi lock. Đĩa 100% + {{await ~1s}} => lock bị giữ rất lâu.',
+    'Nhìn cấu hình: không có {{AsyncAppender}}. So sánh với lab ghi log khác: {{AsyncAppender}} tách "đưa log vào hàng đợi" (nhanh) khỏi "ghi đĩa" (chậm) bằng 1 worker riêng, nhưng phải cấu hình {{neverBlock=true}} và {{discardingThreshold}} để worker nghẽn không kéo sập app.'
+  ],
+  answer: `**Tóm tắt:** Log được cấu hình **ghi đồng bộ** ({{RollingFileAppender}} trực tiếp, không có {{AsyncAppender}}). Logback bảo vệ luồng ghi file bằng một monitor: tại mỗi thời điểm chỉ 1 thread được ghi. Thread {{http-nio-8080-exec-12}} đang giữ monitor {{<0x0000000712c04a10>}} của {{RollingFileAppender}} và bị kẹt trong {{FileOutputStream.writeBytes}} vì ổ đĩa {{/var/log/app}} đầy 100% ({{await ~1s}}, {{%util 100%}}). Trong lúc nó giữ lock, **193** thread Tomcat khác (gần như toàn bộ 200 thread phục vụ request) bị {{BLOCKED}} khi cố gọi {{log.info(...)}}. CPU/DB rảnh nhưng không còn thread rảnh để xử lý request, nên mọi API (kể cả health) treo. Dọn đĩa xong, lần ghi đang kẹt hoàn thành, lock được nhả, app tự hồi phục.
+
+### Thuật ngữ nền (giải thích từ gốc)
+
+- **Log / logging:** ứng dụng ghi lại sự kiện (ai gọi API nào, lỗi gì) để sau này điều tra. Ví dụ đời thường: sổ trực ca.
+- **Appender (Logback):** thành phần nhận một dòng log và ghi ra nơi đích. {{RollingFileAppender}} ghi ra file và tự "xoay" file (tạo file mới) khi quá lớn/quá ngày.
+- **Ghi đồng bộ (synchronous):** thread gọi {{log.info(...)}} phải **tự mình** ghi xong dòng đó xuống đĩa rồi mới chạy tiếp. Giống bạn phải tự đi nộp đơn, đứng chờ cán bộ đóng dấu xong mới về.
+- **Monitor / {{synchronized}}:** "ổ khóa" của Java gắn với một object. Chỉ một thread giữ khóa tại một thời điểm; thread khác muốn vào vùng {{synchronized}} sẽ chuyển sang trạng thái {{BLOCKED}} (bị chặn), nằm chờ ngoài cửa, **không tốn CPU** nhưng cũng **không làm việc gì**.
+- **{{AsyncAppender}}:** bộ đệm trung gian. Thread nghiệp vụ chỉ bỏ sự kiện log vào một **hàng đợi** trong bộ nhớ (rất nhanh) rồi đi tiếp; một thread worker riêng lấy từ hàng đợi ra và ghi đĩa. Ghi đĩa chậm chỉ làm worker nghẽn, không trực tiếp chặn thread nghiệp vụ — *nếu cấu hình đúng*.
+- **I/O chờ (blocking I/O):** gọi hệ điều hành ghi/đọc mà dữ liệu chưa sẵn sàng (đĩa đầy/chậm) thì thread bị treo ở lời gọi native cho tới khi xong.
+
+### Cơ chế: vì sao 1 thread nghẽn kéo sập 193 thread
+
+Luồng ghi của {{RollingFileAppender}} (đơn giản hóa):
+~~~java
+// Logback OutputStreamAppender (minh họa cơ chế)
+protected void subAppend(E event) {
+    synchronized (this) {                 // (1) chỉ 1 thread vào được: lấy monitor của appender
+        byte[] bytes = encoder.encode(event);
+        writeBytes(bytes);                // (2) ghi ra OutputStream -> FileOutputStream
+        if (immediateFlush) stream.flush();// (3) ép xuống đĩa NGAY (mặc định true)
+    }                                     // (4) nhả monitor
+}
+~~~
+
+Khi đĩa đầy/chậm:
+1. {{exec-12}} vào vùng {{synchronized}}, lấy {{- locked <0x0000000712c04a10>}} (monitor của chính {{RollingFileAppender}}), gọi {{FileOutputStream.writeBytes}} (native). Kernel không ghi được (volume 100%, {{await ~1s}}) nên lời gọi native **kẹt**. Thread ở trạng thái {{RUNNABLE}} (đang chạy native) nhưng thực chất đứng chờ I/O — quan trọng: nó **vẫn đang giữ lock**.
+2. Các thread khác ({{exec-41}}, {{exec-97}}, ...) gọi {{log.info}} → chạy tới {{subAppend}} → gặp {{synchronized (this)}} trên **cùng object {{0x0000000712c04a10}}** → không vào được → chuyển {{BLOCKED (on object monitor)}}, {{- waiting to lock <0x0000000712c04a10>}}.
+3. Tomcat có 200 thread phục vụ request; 193 thread {{BLOCKED}} + 1 thread kẹt giữ lock + 6 thread idle = **gần như không còn thread nào xử lý request mới**. Request đến phải xếp hàng trong accept queue rồi timeout 504. {{/actuator/health}} cũng cần thread Tomcat và chính nó cũng ghi log → cũng bị ảnh hưởng.
+
+Đây là kiểu sự cố "tài nguyên dùng chung trở thành điểm nghẽn đơn": mọi request đều đi qua logging, logging lại bị serialize bởi một lock + một đĩa.
+
+### Dẫn chứng (khớp số liệu)
+
+- Monitor duy nhất: {{<0x0000000712c04a10> (a ch.qos.logback.core.rolling.RollingFileAppender)}}. {{exec-12}} giữ ({{- locked}}) tại {{OutputStreamAppender.subAppend:238}}, đang {{RUNNABLE}} ở {{FileOutputStream.writeBytes}} (native) — đúng lúc ghi đĩa. {{exec-41}} ({{info}} tại {{LedgerController.postEntry:44}}) và {{exec-97}} ({{info}} tại {{LedgerController.getEntry:61}}) cùng {{BLOCKED}} {{- waiting to lock <0x0000000712c04a10>}} tại {{subAppend:238}}.
+- Thống kê dump: 193 thread chờ lock, 1 giữ lock, 6 idle → khớp 200 thread Tomcat. Giữ lock qua 3 dump liên tiếp (09:19:10/20/30) → không phải thoáng qua.
+- Đĩa: {{/dev/vdb}} 10G dùng 100%, {{Avail 0}}. {{iostat}} {{await ~940-1120ms}}, {{%util 100%}}, {{wkB/s}} chỉ 4-12KB → ghi gần như tắc nghẽn vì hết chỗ.
+- Sức khỏe giả: CPU 6%, HikariCP {{active=2/20 pending=0}} → DB/CPU không phải nguyên nhân. Hồi phục sau khi dọn đĩa **không restart** → xác nhận không phải deadlock vĩnh viễn, mà là lock bị giữ quá lâu bởi I/O.
+- Cấu hình: không có {{AsyncAppender}}, {{immediateFlush}} mặc định true → đường đi hoàn toàn đồng bộ.
+
+### Cách sửa
+
+**Ngắn hạn (khôi phục ngay):**
+1. Dọn file log cũ/cấp thêm dung lượng cho {{/var/log/app}} (đã làm lúc 09:27, app tự hồi phục).
+2. Kiểm tra {{maxHistory/totalSizeCap}} của {{RollingFileAppender}} để tự xóa log cũ; đặt alert disk usage (ví dụ > 80%).
+3. Nếu phải giữ file appender tạm thời, cân nhắc {{immediateFlush=false}} để giảm số lần flush (đánh đổi: crash JVM có thể mất vài dòng cuối trong buffer).
+
+**Dài hạn (thiết kế đúng):** tách "sinh log" khỏi "ghi đĩa" bằng {{AsyncAppender}}, và cấu hình để worker nghẽn **không chặn app**:
+
+~~~xml
+<appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+  <file>/var/log/app/ledger.log</file>
+  <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+    <fileNamePattern>/var/log/app/ledger.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+    <maxFileSize>200MB</maxFileSize>
+    <maxHistory>14</maxHistory>
+    <totalSizeCap>3GB</totalSizeCap> <!-- chặn phình đĩa -->
+  </rollingPolicy>
+  <encoder><pattern>%d{ISO8601} %-5level [%thread] %logger - %msg%n</pattern></encoder>
+</appender>
+
+<appender name="ASYNC" class="ch.qos.logback.classic.AsyncAppender">
+  <queueSize>8192</queueSize>          <!-- hàng đợi trong RAM, tăng để chịu burst -->
+  <discardingThreshold>0</discardingThreshold> <!-- 0 = không tự bỏ INFO/WARN khi gần đầy -->
+  <neverBlock>true</neverBlock>        <!-- QUAN TRỌNG: hàng đợi đầy thì BỎ log, KHÔNG chặn thread -->
+  <appender-ref ref="FILE"/>
+</appender>
+
+<root level="INFO"><appender-ref ref="ASYNC"/></root>
+~~~
+
+> Lưu ý: trong cấu hình thật chỉ đặt **một** lần {{<neverBlock>true</neverBlock>}} (sau khi xóa dòng trùng nếu có). {{neverBlock=true}} nghĩa là khi hàng đợi đầy, {{AsyncAppender}} dùng {{offer()}} (không chờ) thay vì {{put()}} → thread nghiệp vụ đi tiếp, **chấp nhận mất log** trong giai đoạn nghẽn. Đây là đánh đổi có chủ đích.
+
+**Đánh đổi (nói rõ khi thiết kế):**
+| Lựa chọn | Khi đĩa chậm/đầy | Đánh đổi |
+|---|---|---|
+| Đồng bộ (hiện tại) | App treo, không mất log | Sập dịch vụ vì logging — tệ nhất |
+| Async + {{neverBlock=false}} | Thread nghiệp vụ vẫn chặn khi queue đầy | Bảo toàn log nhưng vẫn có thể treo app |
+| Async + {{neverBlock=true}}, {{discardingThreshold=0}} | Bỏ log mới nhất khi đầy, app sống | Mất dấu vết đúng lúc sự cố — cần metric giám sát |
+| Async + {{neverBlock=true}} + {{discardingThreshold>0}} | Bỏ bớt TRACE/DEBUG/INFO khi gần đầy, giữ ERROR | Cân bằng, nhưng có thể mất INFO chẩn đoán |
+
+Thực tế hay dùng: {{neverBlock=true}} (ưu tiên app sống), {{discardingThreshold=0}} (đừng âm thầm bỏ mức thấp nếu bạn cần), bật giám sát số event bị drop (Logback không tự expose; có thể wrap hoặc dùng Log4j2 có cơ chế tương tự {{DefaultAsyncQueueFullPolicy}}), và **ghi log ra stdout** để nền tảng (Fluent Bit / sidecar) ship đi — tách hẳn I/O đĩa cục bộ khỏi app.
+
+### Bẫy hay gặp
+
+- Tưởng "mình dùng Logback là an toàn" nhưng quên bọc {{AsyncAppender}}: mặc định Spring Boot ghi console; cấu hình file tùy chỉnh rất dễ bỏ qua async.
+- Chỉ tăng {{queueSize}}: hết RAM trước khi hết vấn đề, và burst kéo dài vẫn đầy.
+- Đặt {{neverBlock=true}} rồi không giám sát drop → mất đúng dòng log của sự cố.
+- Nhìn dump thấy {{BLOCKED}} liền nghĩ "deadlock": deadlock cần **chu trình chờ** (A giữ lock X chờ Y, B giữ Y chờ X). Ở đây 193 thread đều chờ **cùng 1 lock** do 1 thread giữ — đó là **contention do I/O chậm**, không phải deadlock (sẽ hết khi I/O xong/đĩa trống).
+- Chạy {{jstack}} mà chỉ thấy Tomcat thread, quên đếm "ai giữ lock": luôn tìm dòng {{- locked <...>}} tương ứng với {{- waiting to lock <...>}}.
+
+> Senior tip: Coi logging là một **dependency** có thể hỏng, giống DB hay HTTP upstream. Nguyên tắc vận hành: (1) đường đi ghi log của request thread phải O(1) trong bộ nhớ (đưa vào queue) và không bao giờ chặn vô hạn, (2) luôn đặt {{totalSizeCap}} + alert disk, (3) {{neverBlock=true}} cho appender async và giám sát tỷ lệ drop, (4) ưu tiên log ra stdout + shipper. Trong phỏng vấn, nếu nêu được cả "AsyncAppender + neverBlock" lẫn đánh đổi mất log và cách giám sát drop, bạn đang trả lời ở mức senior.`,
+  rubric: [
+    'Xác định đúng thủ phạm: {{http-nio-8080-exec-12}} RUNNABLE tại {{FileOutputStream.writeBytes}} nhưng đang GIỮ monitor {{<0x0000000712c04a10>}} (RollingFileAppender) trong lúc đĩa {{/dev/vdb}} đầy 100% ({{df}} Avail 0, {{iostat}} await ~1s %util 100%). 193 thread Tomcat {{BLOCKED (on object monitor)}} {{waiting to lock <0x0000000712c04a10>}} tại {{OutputStreamAppender.subAppend:238}} khi gọi {{log.info}} từ controller/service.',
+    'Giải thích đúng cơ chế: appender ghi đồng bộ dùng {{synchronized}} quanh {{subAppend}} + {{immediateFlush=true}} mặc định, nên thread log phải tự ghi đĩa; lock bị giữ xuyên suốt I/O chậm. Phân biệt thread giữ lock (RUNNABLE/native, vẫn giữ monitor) với thread chờ (BLOCKED). Nêu rõ đây là contention do I/O, không phải deadlock (không có chu trình chờ).',
+    'Đề xuất AsyncAppender đúng cấu hình: {{queueSize}}, {{discardingThreshold}}, {{neverBlock=true}} (để worker/đĩa nghẽn không chặn app), kèm đánh đổi mất log; xử lý đĩa ({{totalSizeCap}}, {{maxHistory}}, alert, cân nhắc stdout+shipper). Có bước ngắn hạn (dọn đĩa/app tự hồi phục).'
+  ],
+  tags: ['logging', 'logback', 'synchronized', 'disk-full', 'asyncappender', 'contention', 'jstack']
+},
+{
+  id: 'lab-thread-012',
+  category: 'thread',
+  title: 'Thread pool chết đứng vì task cha chờ task con trên cùng một pool cố định 8 thread',
+  level: 'senior',
+  scenario: `**Bối cảnh:** **PayVN Reconcile** (Java 21, Spring Boot 3.4) tổng hợp báo cáo đối soát cuối ngày. Mỗi báo cáo chia thành nhiều "mảnh" (partition) tính độc lập. Code dùng một {{ExecutorService}} cố định **8 thread** ({{Executors.newFixedThreadPool(8)}}) với hàng đợi {{LinkedBlockingQueue}} **không giới hạn** (đặc trưng của {{newFixedThreadPool}}). Với mỗi mảnh, một **task cha** được {{submit}} vào pool; bên trong task cha lại {{submit}} vài **task con** (tính từng phần) vào **cùng pool đó** rồi gọi {{future.get()}} để chờ kết quả.
+
+**Thuật ngữ nền (đọc nhanh):** {{ExecutorService}} là "bể thread" — bạn nộp task ({{Runnable}}/{{Callable}}), bể dùng thread rảnh để chạy. {{submit()}} trả về một {{Future}} — tấm vé hẹn; {{future.get()}} **chặn** (block) thread hiện tại cho tới khi task tương ứng chạy xong và trả kết quả. Pool "cố định 8 thread" nghĩa là chỉ có đúng 8 công nhân, cùng lúc tối đa 8 task đang chạy; task dư xếp hàng trong hàng đợi.
+
+**Triệu chứng:** Lúc **02:10 ngày 06/11/2026** (job đối soát chạy), throughput báo cáo rơi về 0 sau ~5 giây: **không báo cáo nào hoàn thành thêm**, job treo vô hạn. CPU pod **~1%** (gần như không làm gì), heap ổn định, DB {{active=3/30 pending=0}}, không exception, không OOM. Hàng đợi của pool phình to (metric đếm task chờ tăng liên tục) nhưng không task nào hoàn thành. Restart pod thì chạy lại được một đoạn rồi kẹt lại khi dữ liệu đủ lớn.
+
+**Dữ liệu thu thập:** {{jcmd 1 Thread.print}} lúc 02:13:40, metric của pool (đo qua wrapper), và đoạn code {{ReconcileService}}.`,
+  artifacts: [
+    {
+      name: 'jstack-reconcile-02-13.txt',
+      lang: 'text',
+      content: `2026-11-06 02:13:40
+Full thread dump OpenJDK 64-Bit Server VM (21.0.4+7-LTS-151 mixed mode, sharing):
+
+"reconcile-pool-1" #41 [4112] prio=5 os_prio=0 cpu=312.44ms elapsed=205.10s tid=0x00007f58ac11a000 nid=4112 waiting on condition  [0x00007f5865bfd000]
+   java.lang.Thread.State: WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+        - parking to wait for  <0x0000000714a10028> (a java.util.concurrent.FutureTask)
+        at java.util.concurrent.locks.LockSupport.park(java.base@21.0.4/LockSupport.java:221)
+        at java.util.concurrent.FutureTask.awaitDone(java.base@21.0.4/FutureTask.java:500)
+        at java.util.concurrent.FutureTask.get(java.base@21.0.4/FutureTask.java:190)
+        at vn.pay.reconcile.ReconcileService.aggregatePartition(ReconcileService.java:72)
+        at vn.pay.reconcile.ReconcileService.lambda$run$0(ReconcileService.java:48)
+        at vn.pay.reconcile.ReconcileService$$Lambda/0x00007f5888142a00.call(Unknown Source)
+        at java.util.concurrent.FutureTask.run(java.base@21.0.4/FutureTask.java:317)
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(java.base@21.0.4/ThreadPoolExecutor.java:1144)
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(java.base@21.0.4/ThreadPoolExecutor.java:642)
+        at java.lang.Thread.run(java.base@21.0.4/Thread.java:1583)
+
+   Locked ownable synchronizers:
+        - <0x00000007149f0018> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+
+"reconcile-pool-2" #42 [4113] prio=5 os_prio=0 cpu=298.10ms elapsed=205.10s tid=0x00007f58ac11c000 nid=4113 waiting on condition  [0x00007f5865afc000]
+   java.lang.Thread.State: WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+        - parking to wait for  <0x0000000714a10090> (a java.util.concurrent.FutureTask)
+        at java.util.concurrent.locks.LockSupport.park(java.base@21.0.4/LockSupport.java:221)
+        at java.util.concurrent.FutureTask.awaitDone(java.base@21.0.4/FutureTask.java:500)
+        at java.util.concurrent.FutureTask.get(java.base@21.0.4/FutureTask.java:190)
+        at vn.pay.reconcile.ReconcileService.aggregatePartition(ReconcileService.java:72)
+        at vn.pay.reconcile.ReconcileService.lambda$run$0(ReconcileService.java:48)
+        at vn.pay.reconcile.ReconcileService$$Lambda/0x00007f5888142a00.call(Unknown Source)
+        at java.util.concurrent.FutureTask.run(java.base@21.0.4/FutureTask.java:317)
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(java.base@21.0.4/ThreadPoolExecutor.java:1144)
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(java.base@21.0.4/ThreadPoolExecutor.java:642)
+        at java.lang.Thread.run(java.base@21.0.4/Thread.java:1583)
+
+   Locked ownable synchronizers:
+        - <0x00000007149f00c0> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+
+"reconcile-pool-3" #43 [4114] prio=5 os_prio=0 cpu=305.77ms elapsed=205.10s tid=0x00007f58ac11e000 nid=4114 waiting on condition  [0x00007f58659fb000]
+   java.lang.Thread.State: WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+        - parking to wait for  <0x0000000714a100f8> (a java.util.concurrent.FutureTask)
+        at java.util.concurrent.FutureTask.awaitDone(java.base@21.0.4/FutureTask.java:500)
+        at java.util.concurrent.FutureTask.get(java.base@21.0.4/FutureTask.java:190)
+        at vn.pay.reconcile.ReconcileService.aggregatePartition(ReconcileService.java:72)
+        at vn.pay.reconcile.ReconcileService.lambda$run$0(ReconcileService.java:48)
+        at java.util.concurrent.FutureTask.run(java.base@21.0.4/FutureTask.java:317)
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(java.base@21.0.4/ThreadPoolExecutor.java:1144)
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(java.base@21.0.4/ThreadPoolExecutor.java:642)
+        at java.lang.Thread.run(java.base@21.0.4/Thread.java:1583)
+
+   Locked ownable synchronizers:
+        - <0x00000007149f0168> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+
+"reconcile-pool-4" #44 [4115] prio=5 os_prio=0 cpu=301.02ms elapsed=205.10s tid=0x00007f58ac120000 nid=4115 waiting on condition  [0x00007f58658fa000]
+   java.lang.Thread.State: WAITING (parking)
+        - parking to wait for  <0x0000000714a10160> (a java.util.concurrent.FutureTask)
+        at java.util.concurrent.FutureTask.get(java.base@21.0.4/FutureTask.java:190)
+        at vn.pay.reconcile.ReconcileService.aggregatePartition(ReconcileService.java:72)
+        at vn.pay.reconcile.ReconcileService.lambda$run$0(ReconcileService.java:48)
+        at java.util.concurrent.FutureTask.run(java.base@21.0.4/FutureTask.java:317)
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(java.base@21.0.4/ThreadPoolExecutor.java:1144)
+        at java.lang.Thread.run(java.base@21.0.4/Thread.java:1583)
+
+   Locked ownable synchronizers:
+        - <0x00000007149f0210> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+
+"reconcile-pool-5" #45 [4116] prio=5 os_prio=0 cpu=296.55ms elapsed=205.10s tid=0x00007f58ac122000 nid=4116 waiting on condition  [0x00007f58657f9000]
+   java.lang.Thread.State: WAITING (parking)
+        - parking to wait for  <0x0000000714a101c8> (a java.util.concurrent.FutureTask)
+        at java.util.concurrent.FutureTask.get(java.base@21.0.4/FutureTask.java:190)
+        at vn.pay.reconcile.ReconcileService.aggregatePartition(ReconcileService.java:72)
+        at vn.pay.reconcile.ReconcileService.lambda$run$0(ReconcileService.java:48)
+        at java.util.concurrent.FutureTask.run(java.base@21.0.4/FutureTask.java:317)
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(java.base@21.0.4/ThreadPoolExecutor.java:1144)
+        at java.lang.Thread.run(java.base@21.0.4/Thread.java:1583)
+
+   Locked ownable synchronizers:
+        - <0x00000007149f02b8> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+
+"reconcile-pool-6" #46 [4117] prio=5 os_prio=0 cpu=309.41ms elapsed=205.10s tid=0x00007f58ac124000 nid=4117 waiting on condition  [0x00007f58656f8000]
+   java.lang.Thread.State: WAITING (parking)
+        - parking to wait for  <0x0000000714a10230> (a java.util.concurrent.FutureTask)
+        at java.util.concurrent.FutureTask.get(java.base@21.0.4/FutureTask.java:190)
+        at vn.pay.reconcile.ReconcileService.aggregatePartition(ReconcileService.java:72)
+        at vn.pay.reconcile.ReconcileService.lambda$run$0(ReconcileService.java:48)
+        at java.util.concurrent.FutureTask.run(java.base@21.0.4/FutureTask.java:317)
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(java.base@21.0.4/ThreadPoolExecutor.java:1144)
+        at java.lang.Thread.run(java.base@21.0.4/Thread.java:1583)
+
+   Locked ownable synchronizers:
+        - <0x00000007149f0360> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+
+"reconcile-pool-7" #47 [4118] prio=5 os_prio=0 cpu=294.88ms elapsed=205.10s tid=0x00007f58ac126000 nid=4118 waiting on condition  [0x00007f58655f7000]
+   java.lang.Thread.State: WAITING (parking)
+        - parking to wait for  <0x0000000714a10298> (a java.util.concurrent.FutureTask)
+        at java.util.concurrent.FutureTask.get(java.base@21.0.4/FutureTask.java:190)
+        at vn.pay.reconcile.ReconcileService.aggregatePartition(ReconcileService.java:72)
+        at vn.pay.reconcile.ReconcileService.lambda$run$0(ReconcileService.java:48)
+        at java.util.concurrent.FutureTask.run(java.base@21.0.4/FutureTask.java:317)
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(java.base@21.0.4/ThreadPoolExecutor.java:1144)
+        at java.lang.Thread.run(java.base@21.0.4/Thread.java:1583)
+
+   Locked ownable synchronizers:
+        - <0x00000007149f0408> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+
+"reconcile-pool-8" #48 [4119] prio=5 os_prio=0 cpu=300.20ms elapsed=205.10s tid=0x00007f58ac128000 nid=4119 waiting on condition  [0x00007f58654f6000]
+   java.lang.Thread.State: WAITING (parking)
+        - parking to wait for  <0x0000000714a10300> (a java.util.concurrent.FutureTask)
+        at java.util.concurrent.FutureTask.get(java.base@21.0.4/FutureTask.java:190)
+        at vn.pay.reconcile.ReconcileService.aggregatePartition(ReconcileService.java:72)
+        at vn.pay.reconcile.ReconcileService.lambda$run$0(ReconcileService.java:48)
+        at java.util.concurrent.FutureTask.run(java.base@21.0.4/FutureTask.java:317)
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(java.base@21.0.4/ThreadPoolExecutor.java:1144)
+        at java.lang.Thread.run(java.base@21.0.4/Thread.java:1583)
+
+   Locked ownable synchronizers:
+        - <0x00000007149f04b0> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+
+"main" #1 [4097] prio=5 os_prio=0 cpu=1880.11ms elapsed=212.40s tid=0x00007f58ac028000 nid=4097 waiting on condition  [0x00007f58b33fe000]
+   java.lang.Thread.State: WAITING (parking)
+        - parking to wait for  <0x0000000714a0f010> (a java.util.concurrent.FutureTask)
+        at java.util.concurrent.FutureTask.get(java.base@21.0.4/FutureTask.java:190)
+        at vn.pay.reconcile.ReconcileJob.runNightly(ReconcileJob.java:33)
+
+# Ghi chú: KHÔNG có dòng "Found one Java-level deadlock".
+# reconcile-pool-1..8 là TẤT CẢ 8 thread của pool (pool core=max=8). Không thread nào đang
+# chạy task con (computeChunk); mọi thread đều kẹt ở get() chờ task con.`
+    },
+    {
+      name: 'pool-metrics-and-code.txt',
+      lang: 'text',
+      content: `# Metric wrapper quanh pool (đo tại 02:13:40)
+reconcile.pool.size            = 8
+reconcile.pool.activeCount     = 8        (cả 8 đang "bận")
+reconcile.pool.queue.size      = 137      (task chờ trong LinkedBlockingQueue)
+reconcile.pool.completedTask   = 0        (không task nào hoàn thành kể từ khi kẹt)
+reconcile.pool.largestPoolSize = 8
+# completedTask đứng yên; queue.size chỉ tăng (task cha/con mới được submit thêm trước khi kẹt lan)
+
+# ReconcileService.java (trích, số dòng khớp dump)
+public class ReconcileService {
+    private final ExecutorService pool = Executors.newFixedThreadPool(8); // LinkedBlockingQueue unbounded
+
+    public Report run(List<Partition> partitions) {
+        List<Future<PartitionReport>> parents = new ArrayList<>();
+        for (Partition p : partitions) {
+            // (dòng 48) submit TASK CHA vào pool
+            parents.add(pool.submit(() -> aggregatePartition(p)));
+        }
+        return merge(parents); // chờ từng future cha
+    }
+
+    PartitionReport aggregatePartition(Partition p) throws Exception {     // dòng 66
+        List<Future<ChunkSum>> children = new ArrayList<>();
+        for (Chunk c : p.chunks()) {
+            // submit TASK CON vào CÙNG pool
+            children.add(pool.submit(() -> computeChunk(c)));
+        }
+        long total = 0;
+        for (Future<ChunkSum> f : children) {
+            total += f.get().value();                                      // dòng 72: CHẶN chờ task con
+        }
+        return new PartitionReport(p.id(), total);
+    }
+
+    ChunkSum computeChunk(Chunk c) {
+        // tính toán + vài truy vấn đọc DB (nhanh)
+        return repo.sum(c);
+    }
+}`
+    }
+  ],
+  questions: [
+    'Giải thích vì sao cả 8 thread đều {{WAITING}} ở {{FutureTask.get}} và không thread nào chạy {{computeChunk}}. Tại sao hàng đợi có 137 task mà vẫn không tiến triển? Đây có phải deadlock theo nghĩa JVM báo "Found one Java-level deadlock" không?',
+    'Mô tả điều kiện cần để lỗi này xảy ra (liên hệ kích thước pool, số task cha, việc task cha submit task con rồi {{get()}} trên cùng pool). Vì sao đôi khi chạy được một đoạn rồi mới kẹt?',
+    'Đề xuất cách sửa an toàn: tách pool, dùng {{invokeAll}}, hoặc bỏ lồng nhau; nêu cách dùng {{get(timeout)}}/giới hạn hàng đợi để giảm blast radius. So sánh với {{ForkJoinPool}} + {{ManagedBlocker}} (gợi ý).'
+  ],
+  hints: [
+    'Đếm thread {{reconcile-pool-*}}: đúng 8, trùng {{pool.size=8}} và đều dừng tại {{aggregatePartition(ReconcileService.java:72)}} → {{FutureTask.get}}. "Active" = 8, "completed" đứng yên. Vậy 8 "công nhân" đang làm gì? Họ có đang chạy {{computeChunk}} không, hay đang **ngồi chờ** kết quả của {{computeChunk}}?',
+    'Task con ({{computeChunk}}) được {{submit}} vào **cùng pool** (cùng hàng đợi). Hàng đợi có 137 phần tử nhưng **không còn thread rảnh** để lấy task ra chạy, vì cả 8 thread đang bị {{get()}} chặn. Task con nằm trong hàng đợi → không ai chạy → {{get()}} không bao giờ trả về. Đây là **thread starvation deadlock** (kẹt do đói thread), khác deadlock monitor vòng tròn nên JVM **không** in "Found one Java-level deadlock".',
+    'Điều kiện: số task cha đồng thời chiếm hết thread pool (= pool size) và mỗi cha chặn chờ con cũng cần thread của chính pool đó. Lúc đầu ít partition thì một số cha xong trước khi pool bão hòa; khi đủ nhiều partition đồng thời, 8 slot đều bị cha giữ → kẹt vĩnh viễn.'
+  ],
+  answer: `**Tóm tắt:** Đây là **thread starvation deadlock** (kẹt do đói thread / pool-induced deadlock): task **cha** ({{aggregatePartition}}, submit tại dòng 48) chiếm trọn 8 thread của pool và mỗi thread gọi {{FutureTask.get()}} (dòng 72) để chờ task **con** ({{computeChunk}}) — nhưng task con cũng được {{submit}} vào **chính pool 8 thread đó**. Khi cả 8 thread đều đang là task cha và đều đang {{get()}} chặn, **không còn thread nào rảnh** để lấy task con ra khỏi hàng đợi ({{queue.size=137}}). Task con không bao giờ chạy → {{get()}} không bao giờ trả về → 8 thread chờ mãi, {{completedTask}} đứng yên, CPU ~1%. JVM không báo "Found one Java-level deadlock" vì không có **chu trình giữ monitor/lock** kiểu cổ điển; đây là bế tắc tài nguyên (thread) do phụ thuộc ngược.
+
+### Hình dung cơ chế (ví dụ đời thường)
+
+Tưởng tượng một bếp có đúng **8 đầu bếp** (8 thread) và một hàng phiếu order (hàng đợi). Mỗi "món tổ hợp" (task cha) do 1 đầu bếp phụ trách: đầu bếp đó viết thêm 3 phiếu "món phụ" (task con) bỏ vào **cùng hàng phiếu**, rồi **đứng yên chờ** 3 món phụ xong mới ráp món tổ hợp ({{get()}}). Nếu lúc nào đó cả 8 đầu bếp đều đang làm món tổ hợp và đều đứng chờ món phụ, thì **không ai rảnh** để nấu món phụ — dù hàng phiếu món phụ đang đầy. Mọi người chờ nhau mãi. Không có ai cướp dao của ai (không có monitor deadlock), chỉ là hết người.
+
+~~~seq
+title: Pool 8 thread - cha chờ con trên cùng pool (kẹt)
+actors: Cha1..Cha8(thread) | Queue | ConTasks
+Cha1..Cha8(thread) -> Queue: submit computeChunk (task con)
+Cha1..Cha8(thread) -> Cha1..Cha8(thread): FutureTask.get() BLOCK/WAITING chờ con xong
+note Queue: 137 task con nằm chờ, KHÔNG có thread rảnh lấy ra
+Queue -> Cha1..Cha8(thread): (không xảy ra) vì 0 thread rảnh
+~~~
+
+### Phân tích dump (đối chiếu số liệu)
+
+- **8 thread, cả 8 cùng trạng thái:** {{reconcile-pool-1}}..{{reconcile-pool-8}} (đúng pool core=max=8, {{pool.size=8}}, {{activeCount=8}}) đều {{java.lang.Thread.State: WAITING (parking)}} tại {{FutureTask.get}} (dòng 190) ← {{aggregatePartition(ReconcileService.java:72)}} ← lambda {{run$0}} (dòng 48) ← {{FutureTask.run}} ← {{ThreadPoolExecutor.runWorker}}. Nghĩa là mỗi thread **đang thực thi một task cha** và đang {{get()}} chờ task con.
+- **Đang chờ cái gì:** mỗi thread {{- parking to wait for <0x...> (a java.util.concurrent.FutureTask)}} — các địa chỉ FutureTask khác nhau ({{0x...0028, 0090, 00f8, 0160, 01c8, 0230, 0298, 0300}}) là các vé của từng task con. Không thread nào đang chạy {{computeChunk}}.
+- **Hàng đợi đầy task mà không chạy:** {{queue.size=137}}, {{completedTask=0}} (đứng yên). Task con đã được submit (nằm trong {{LinkedBlockingQueue}}) nhưng {{ThreadPoolExecutor}} chỉ lấy task từ hàng đợi khi có worker vào vòng {{runWorker/getTask}} — mà cả 8 worker đang kẹt bên trong {{FutureTask.get}}, chưa quay lại vòng lấy task. Vì vậy hàng đợi có thể lớn vô hạn, tiến độ vẫn 0.
+- **Không phải deadlock monitor:** dump ghi rõ "KHÔNG có dòng Found one Java-level deadlock". JVM chỉ phát hiện deadlock khi có chu trình chờ **monitor/ownable synchronizer** ({{synchronized}}, {{ReentrantLock}}). {{FutureTask.get()}} dùng {{LockSupport.park}} chờ kết quả task — không tạo chu trình monitor mà JVM nhận diện. Các {{Locked ownable synchronizers}} ({{ReentrantLock$NonfairSync}}) là lock nội bộ worker của {{ThreadPoolExecutor}}, không phải chu trình.
+- **Sức khỏe giả:** CPU ~1% (thread {{parked}} không tốn CPU), DB rảnh, heap ổn, không exception — dễ bị chẩn đoán nhầm là "job chậm" hay "DB treo" nếu không nhìn jstack.
+
+### Điều kiện xảy ra (vì sao chạy được đoạn rồi mới kẹt)
+
+- **Điều kiện đủ:** (1) task cha chạy **trên** pool P và (2) bên trong cha {{submit}} task con vào **cùng** pool P rồi (3) {{get()/join()}} chờ con **không timeout**, trong khi (4) số task cha đồng thời đang chiếm giữ thread >= kích thước pool. Khi (4) đúng, mọi thread của P đều là cha đang chờ → không ai chạy con → kẹt vĩnh viễn.
+- **Vì sao hồi phục rồi kẹt lại:** lúc đầu số partition nhỏ, một vài task cha chiếm < 8 thread hoặc xen kẽ hoàn thành (con có cơ hội chạy xen giữa lúc cha chưa {{get}} ngay lập tức), nên tiến triển. Khi batch lớn hơn (nhiều partition nộp gần nhau), 8 task cha kịp chiếm đủ 8 thread trước khi con hoàn thành → rơi vào trạng thái bão hòa không thoát. {{newFixedThreadPool}} dùng {{LinkedBlockingQueue}} **không giới hạn**, nên hàng đợi phình mãi (nguy cơ OOM) thay vì từ chối task.
+- **Restart chỉ "chữa cháy":** trạng thái kẹt nằm trong cấu trúc phụ thuộc task tại thời điểm đó; dữ liệu lặp lại sẽ tái hiện.
+
+### Cách sửa
+
+**Nguyên tắc:** một task đang chạy trên pool P **không được** chặn chờ một task khác mà chính nó nộp vào **cùng** pool P có giới hạn. (Ngắt vòng phụ thuộc tài nguyên.)
+
+**1) Tách pool (đơn giản, rõ ràng nhất):**
+~~~java
+// pool cha (điều phối) và pool con (tính toán) TÁCH BIỆT, đều có giới hạn
+private final ExecutorService parentPool = Executors.newFixedThreadPool(4);
+private final ExecutorService childPool  = Executors.newFixedThreadPool(8);
+
+PartitionReport aggregatePartition(Partition p) throws Exception {
+    List<Future<ChunkSum>> children = new ArrayList<>();
+    for (Chunk c : p.chunks()) {
+        children.add(childPool.submit(() -> computeChunk(c))); // con vào childPool
+    }
+    long total = 0;
+    for (Future<ChunkSum> f : children) {
+        total += f.get(30, TimeUnit.SECONDS).value(); // có timeout (xem dưới)
+    }
+    return new PartitionReport(p.id(), total);
+}
+~~~
+Cha giữ thread của {{parentPool}} và chờ; con chạy trên {{childPool}} độc lập → con luôn có thread để chạy. Cần đặt tên thread, giới hạn hàng đợi, và chính sách từ chối ({{RejectedExecutionHandler}}) cho cả hai.
+
+**2) Bỏ lồng nhau — để task cha tự tính con tuần tự, chỉ song song hóa ở một mức:**
+~~~java
+// Chỉ song song theo partition (1 mức). Bên trong partition tính tuần tự.
+PartitionReport aggregatePartition(Partition p) {
+    long total = 0;
+    for (Chunk c : p.chunks()) total += computeChunk(c).value(); // không submit, không get
+    return new PartitionReport(p.id(), total);
+}
+~~~
+Mất song song mức chunk nhưng loại hẳn nguy cơ kẹt; thường đủ nhanh nếu chunk đã là đơn vị chia hợp lý. Đo trước khi phức tạp hóa.
+
+**3) Dùng {{invokeAll}} / hoàn thành rồi mới tổng hợp (fork-join một pha):** submit toàn bộ task con cùng lúc, thu {{Future}} rồi {{get}} — nhưng **thực hiện từ một thread KHÔNG thuộc pool chạy con** (ví dụ thread gọi {{run}}), hoặc dùng {{invokeAll}} để chạy và chờ theo ngữ nghĩa của {{ExecutorService}}. Tránh pattern "thread của pool A submit vào A rồi tự chờ".
+
+**4) {{ForkJoinPool}} + {{ManagedBlocker}} (nâng cao):** {{ForkJoinPool}} có cơ chế bù thread khi task báo sẽ block ({{ForkJoinPool.managedBlock}}), nên {{ForkJoinTask.join()}}/một số API có thể tránh đói trong cùng {{ForkJoinPool}}. Nhưng code phải dùng đúng {{ForkJoinTask}}/{{ManagedBlocker}}; {{Future.get()}} trên {{ExecutorService}} thường **không** được bù. Chỉ dùng khi team hiểu rõ.
+
+**Giảm blast radius (nên làm thêm dù chọn cách nào):**
+- **{{get(timeout, unit)}} thay vì {{get()}}:** kẹt/lỗi sẽ ném {{TimeoutException}} thay vì treo vĩnh viễn; bắt exception, hủy task ({{future.cancel(true)}}) và log + metric. Lưu ý {{cancel(true)}} chỉ interrupt — {{computeChunk}} phải tôn trọng interrupt.
+- **Giới hạn hàng đợi:** thay {{newFixedThreadPool}} (unbounded) bằng {{new ThreadPoolExecutor(n,n,0,SECONDS,new ArrayBlockingQueue<>(M), handler)}} với {{RejectedExecutionHandler}} (fail fast / {{CallerRunsPolicy}} có kiểm soát). Hàng đợi vô hạn che giấu nghẽn và gây OOM.
+- **Giám sát:** cảnh báo khi {{activeCount == poolSize}} kéo dài và {{completedTaskCount}} không tăng, hoặc {{queueSize}} vượt ngưỡng; export tên pool rõ ràng.
+
+### So sánh nhanh
+
+| Cách | Tránh kẹt? | Độ phức tạp | Ghi chú |
+|---|---|---|---|
+| Tách pool cha/con | Có | Thấp-vừa | Rõ, phải tune 2 pool |
+| Bỏ lồng (1 mức song song) | Có | Thấp | Đơn giản, có thể chậm hơn |
+| ForkJoinPool + ManagedBlocker | Có (đúng cách) | Cao | Dễ dùng sai, cần hiểu sâu |
+| Giữ nguyên + chỉ thêm timeout | Không hết (vẫn đói), chỉ hết treo vô hạn | Thấp | Cứu blast radius, không phải fix gốc |
+
+### Bẫy hay gặp
+
+- Nghĩ "8 thread là nhiều" — kẹt phụ thuộc **cấu trúc phụ thuộc** (cha chờ con cùng pool), không phụ thuộc con số tuyệt đối; pool 100 thread cũng kẹt nếu 100 cha đều chờ con trên pool đó.
+- Tăng {{nThreads}}: chỉ hoãn lúc kẹt (cần nhiều partition hơn để bão hòa), không sửa nguyên nhân.
+- Dùng {{supplyAsync}}/{{CompletableFuture}} mặc định: cũng rơi vào {{ForkJoinPool.commonPool()}} dùng chung — cùng họ vấn đề.
+- Nhầm với deadlock monitor: đi tìm "lock held" sẽ không thấy chu trình; phải nhìn {{FutureTask.get}} + "ai chạy task được {{get}} chờ".
+- Bỏ quên {{get()}} không timeout trên đường chạy production: một lần kẹt = treo mãi.
+
+> Senior tip: Mọi chỗ {{submit}} task A rồi trong A lại {{submit}}+{{get/join}} task B, hãy tự hỏi: "B có chạy trên **cùng** bể bị giới hạn với A không?". Nếu có, đó là bùng mìn. Quy tắc review: (1) không chặn chờ task con trên cùng {{ExecutorService}} bị giới hạn; (2) song song hóa **một mức** trừ khi có lý do đo đạc; (3) mọi {{Future.get}} trên luồng production phải có timeout; (4) pool phải có hàng đợi giới hạn + metric (active, queue, completed) + alert "completed đứng yên mà active==max". Vẽ sơ đồ phụ thuộc cha→con theo pool trước khi code thường rẻ hơn nhiều so với debug jstack lúc 2 giờ sáng.`,
+  rubric: [
+    'Chỉ ra cả 8 thread {{reconcile-pool-1..8}} đều {{WAITING}} tại {{FutureTask.get}} ({{aggregatePartition ReconcileService.java:72}} ← {{lambda run$0:48}}) chờ các {{FutureTask}} con; {{activeCount=8 == pool.size}}, {{completedTask=0}}, {{queue.size=137}} có task con nhưng không thread rảnh chạy {{computeChunk}}. Kết luận đúng: thread starvation / pool-induced deadlock, KHÔNG phải deadlock monitor vòng tròn nên JVM không in "Found one Java-level deadlock".',
+    'Giải thích điều kiện: task cha chạy trên pool P submit task con vào cùng P rồi {{get()}} chặn; khi số cha đồng thời >= kích thước pool thì mọi thread P bị chiếm giữ chờ con → con không ai chạy. Nêu vì sao chạy được đoạn rồi kẹt (chưa bão hòa → bão hòa) và hàng đợi {{LinkedBlockingQueue}} unbounded phình/không cứu được.',
+    'Đề xuất sửa gốc: tách pool cha/con hoặc bỏ lồng (song song 1 mức) hoặc cơ chế fork-join phù hợp ({{invokeAll}} từ thread ngoài, gợi ý {{ForkJoinPool+ManagedBlocker}}); kèm giảm blast radius: {{get(timeout)}}, giới hạn hàng đợi + {{RejectedExecutionHandler}}, metric/alert (completed đứng yên, active==max).'
+  ],
+  tags: ['thread-pool', 'futuretask', 'starvation-deadlock', 'executorservice', 'fixedthreadpool', 'jstack']
+}
 );
