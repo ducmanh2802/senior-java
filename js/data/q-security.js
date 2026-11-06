@@ -1966,7 +1966,6 @@ Thêm một test "kiểm kê": quét mọi handler có {{@PathVariable}} tên ch
   ],
   tags: ['BOLA', 'IDOR', 'OWASP API Security', 'Enumeration', 'UUID', 'Hashids', 'Authorization Testing'],
   refs: [
-    { type: 'doc', title: 'OWASP API1:2023 Broken Object Level Authorization', url: 'https://owasp.org/API-Security/editions/2023/en/0xa1-broken-object-level-authorization/' },
     { type: 'doc', title: 'OWASP Insecure Direct Object Reference Prevention Cheat Sheet', url: 'https://cheatsheetseries.owasp.org/cheatsheets/Insecure_Direct_Object_Reference_Prevention_Cheat_Sheet.html' },
     { type: 'doc', title: 'OWASP Authorization Testing Automation Cheat Sheet', url: 'https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Testing_Automation_Cheat_Sheet.html' },
     { type: 'doc', title: 'Spring Security Testing: OAuth 2.0', url: 'https://docs.spring.io/spring-security/reference/servlet/test/mockmvc/oauth2.html' }
