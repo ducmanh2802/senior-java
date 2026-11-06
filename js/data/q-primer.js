@@ -1388,5 +1388,629 @@ Cấu hình ({{application-dev.yml}}, {{application-prod.yml}}) và **secret** (
 > Senior tip: theo dõi **lead time** và **change failure rate** (hai chỉ số DORA) — chúng cho biết pipeline của bạn thực sự hiệu quả đến đâu. Pipeline nhanh (< 10 phút) và ổn định là nền tảng để cả team release nhiều lần mỗi ngày thay vì "release cuối tuần đầy rủi ro".`,
   follow: ['Continuous delivery và continuous deployment khác nhau thế nào?', 'Artifact nên được promote qua các môi trường ra sao để đảm bảo "đã test cái gì thì deploy cái đó"?', 'Đặt database migration ở stage nào của pipeline để không downtime?'],
   tags: ['CI/CD', 'pipeline', 'artifact', 'môi trường', 'nhập môn']
+},
+{
+  id: 'primer-018',
+  topic: 'primer',
+  level: 'mid',
+  q: 'Process, thread và core CPU khác nhau thế nào? Trong một ứng dụng Java backend, chúng liên quan đến nhau ra sao?',
+  a: `**Tóm tắt:**
+- **Process** (tiến trình) là một chương trình đang chạy, có không gian bộ nhớ riêng. **Thread** (luồng) là "công việc con" chạy bên trong một process, các thread cùng process dùng chung bộ nhớ. **Core CPU** là đơn vị phần cứng thực sự thực thi lệnh; số core quyết định có thể chạy song song thật bao nhiêu việc tại cùng một thời điểm.
+- Một JVM Spring Boot thường là 1 process, bên trong tạo hàng chục đến hàng trăm thread (thread pool xử lý HTTP, thread GC, thread scheduler). Core CPU là tài nguyên máy vật lý/máy ảo mà các thread đó tranh nhau.
+
+### Bối cảnh thật: vì sao dev 4 năm vẫn cần hiểu rõ
+Khi production chậm, người ta hay nói "tăng thread", "tăng instance", "CPU 100%". Nếu không phân biệt process, thread và core, bạn rất dễ chọn sai hướng: thêm thread khi CPU đã bão hòa (không giúp, còn tệ hơn), hoặc nhầm "2 core" với "chạy được vô hạn song song".
+
+### Từng khái niệm, từ gốc
+
+#### 1) Process là gì
+**Process** (tiến trình): hệ điều hành cấp cho chương trình đang chạy một "ngôi nhà" riêng gồm: không gian bộ nhớ ảo (virtual memory), bảng file đang mở, biến môi trường, và ít nhất 1 thread.
+- Cách ly: process A không đọc/ghi trực tiếp bộ nhớ process B. Muốn trao đổi dữ liệu phải qua cơ chế giao tiếp giữa tiến trình (IPC: socket, file, pipe, message queue).
+- Ví dụ đời thường: mỗi process như một **căn hộ riêng** trong chung cư. Mỗi căn có đồ đạc riêng; muốn đưa đồ sang căn khác phải đi qua hành lang/cửa (IPC), không thể với tay lấy trực tiếp.
+- Trong backend: bạn chạy {{java -jar app.jar}} → hệ điều hành tạo 1 process JVM. Chạy 3 instance trên 3 máy → 3 process (thường mỗi instance 1 process).
+
+#### 2) Thread là gì
+**Thread** (luồng): đơn vị thực thi nhỏ hơn trong process. Nhiều thread trong cùng process:
+- **Dùng chung**: heap (bộ nhớ đối tượng), code, file mở, biến static.
+- **Riêng mỗi thread**: stack (ngăn xếp lời gọi hàm), con trỏ lệnh (đang chạy tới dòng nào), thanh ghi CPU.
+- Ví dụ đời thường: trong cùng một căn hộ (process), có nhiều **người làm việc** (thread). Họ dùng chung bếp/tủ lạnh (heap) nhưng mỗi người có cuốn sổ tay riêng (stack). Dùng chung tiện nhưng dễ tranh nhau cái bếp → cần "luật" (synchronization/lock).
+- Trong Spring Boot (mặc định Tomcat): mỗi HTTP request được xử lý bởi 1 thread lấy từ thread pool (ví dụ tối đa 200 thread). 200 request đồng thời → tối đa 200 thread cùng sống trong 1 JVM process.
+
+#### 3) Core CPU là gì
+**CPU core** (lõi CPU): mạch phần cứng thực sự chạy lệnh máy. 1 core tại một khoảnh khắc chỉ chạy 1 luồng lệnh (bỏ qua hyper-threading để đơn giản).
+- **Song song thật (parallelism)**: 4 core có thể chạy 4 thread cùng lúc.
+- **Đồng thời giả (concurrency)**: 100 thread trên 4 core → hệ điều hành liên tục chuyển core qua lại giữa các thread (context switch, đổi ngữ cảnh). Mỗi thread chạy một lát rồi nhường. Người dùng cảm giác "cùng lúc", thực ra là xen kẽ rất nhanh.
+- Ví dụ đời thường: 4 core như **4 đầu bếp**. 100 đơn hàng (thread) thì 4 đầu bếp luân phiên nấu từng món, không phải 100 đầu bếp.
+
+### Sơ đồ quan hệ (ASCII)
+~~~text
+Máy chủ có 4 CPU core: [C1] [C2] [C3] [C4]
+
+Process JVM (PID 1234) — bộ nhớ riêng
+  Heap (chung): [Object A] [Object B] [Connection Pool]
+  Thread T1 (HTTP)  stack riêng  ---- có thể đang chạy trên C1
+  Thread T2 (HTTP)  stack riêng  ---- có thể đang chạy trên C2
+  Thread T3 (GC)    stack riêng  ---- đang chờ lượt (C1,C2 bận)
+  Thread T4 (HTTP)  stack riêng  ---- đang chờ lượt
+  ... (tổng 150 thread)
+
+Process Postgres (PID 5678) — bộ nhớ riêng, không chạm heap JVM
+~~~
+
+### Ví dụ cụ thể với số liệu
+Giả sử service Order nhận 300 request/giây, mỗi request chờ DB trung bình 50ms và tính toán 5ms:
+- 1 request chiếm thread ~55ms → 1 thread phục vụ ~18 req/giây.
+- Cần ~17 thread "đang bận" để chịu 300 req/s. Tomcat pool 200 thread là dư cho trường hợp này.
+- Máy 4 core: lúc thread chờ DB (I/O wait), core rảnh có thể chạy thread khác → nhiều thread hơn core vẫn có lợi với workload I/O nhiều.
+- Nếu workload tính toán nặng (CPU-bound), ví dụ mã hóa/resize ảnh 55ms CPU thuần: 4 core chỉ xử lý thật ~72 req/s. Tăng thread lên 200 không giúp, chỉ tăng context switch; giải pháp là tăng core/instance hoặc tối ưu thuật toán.
+
+### Bảng so sánh nhanh
+| Tiêu chí | Process | Thread | Core CPU |
+|---|---|---|---|
+| Là gì | Chương trình đang chạy | Luồng trong process | Phần cứng thực thi |
+| Bộ nhớ | Riêng biệt | Chung heap, stack riêng | Không phải bộ nhớ |
+| Tạo/hủy | Nặng (tốn tài nguyên) | Nhẹ hơn process | Cố định theo phần cứng |
+| Lỗi ảnh hưởng | Thường chỉ chết process đó | 1 thread crash có thể kéo JVM (tùy lỗi) | Hỏng core ảnh hưởng toàn máy |
+| Giao tiếp | IPC (socket, queue) | Gọi chung biến/đối tượng (cần lock) | N/A |
+
+### Lỗi hay gặp trong backend Java
+- **Tăng {{server.tomcat.threads.max}} mù quáng** khi CPU đã 90%: thêm thread → thêm context switch → chậm hơn. Phải đo: bottleneck là CPU hay I/O/DB?
+- **Nghĩ "8 thread = chạy trên 8 core"**: chỉ đúng nếu máy có ≥8 core và thread đang chạy CPU-bound. Container Kubernetes đôi khi bị giới hạn CPU (ví dụ 500m = nửa core) → thực tế ít song song hơn tưởng.
+- **Chia sẻ biến giữa thread không đồng bộ**: vì dùng chung heap, 2 thread cùng sửa 1 {{HashMap}} thường → dữ liệu hỏng, {{ConcurrentModificationException}}, hoặc treo vô hạn (câu chuyện kinh điển của {{HashMap}} trong môi trường đa luồng).
+- **Nhầm process isolation với thread safety**: tách microservice (nhiều process) giúp cô lập lỗi/bộ nhớ, nhưng không tự giải quyết race condition bên trong mỗi service.
+
+### Trả lời phỏng vấn thế nào
+Nên trả lời theo 3 lớp: (1) định nghĩa ngắn gọn từng khái niệm, (2) nêu quan hệ: 1 JVM là 1 process chứa nhiều thread, core là tài nguyên phần cứng thực thi, (3) đưa ví dụ backend thực tế (Tomcat thread pool, I/O-bound vs CPU-bound) và một trade-off (nhiều thread tốt cho I/O chờ, nhưng context switch và tranh lock có chi phí).
+
+> Senior tip: khi điều tra "CPU cao" trên production, luôn nhìn thêm **load average** và **thread dump** ({{jstack}}). CPU 100% do 4 thread tính toán nặng (bình thường nếu đủ core) rất khác với CPU 100% do 500 thread tranh lock/context switch. Con số thread và trạng thái thread (RUNNABLE, BLOCKED, WAITING) mới cho bạn nguyên nhân gốc.`,
+  follow: ['Khi nào nên tăng số thread, khi nào nên tăng số instance (process)?', 'Context switch là gì và vì sao quá nhiều thread lại làm chậm hệ thống?'],
+  tags: ['process', 'thread', 'CPU core', 'concurrency', 'OS', 'nhập môn']
+},
+{
+  id: 'primer-019',
+  topic: 'primer',
+  level: 'mid',
+  q: 'Stack và heap khác nhau thế nào ở mức hệ điều hành và JVM? Một biến/một object trong Java nằm ở đâu, và vì sao hiểu điều này giúp bạn debug lỗi?',
+  a: `**Tóm tắt:**
+- **Stack** (ngăn xếp) là vùng bộ nhớ cấp cho **mỗi thread**, dùng để lưu lời gọi hàm (stack frame), biến cục bộ kiểu nguyên thủy (primitive) và tham chiếu (reference). Cấp phát/giải phóng rất nhanh, tự động theo vào/ra hàm.
+- **Heap** (vùng nhớ đống) là vùng bộ nhớ **chung cho cả process/JVM**, dùng để lưu object ({{new ...}}). Quản lý bởi bộ dọn rác (Garbage Collector, GC) trong Java.
+- Hiểu stack/heap giúp giải thích {{StackOverflowError}} (đệ quy sâu, stack đầy), {{OutOfMemoryError: Java heap space}} (object quá nhiều/giữ lâu), và vì sao truyền object vào hàm "nhìn như thay đổi được".
+
+### Bối cảnh thật
+Dev hay nghe "stack overflow", "heap dump", "memory leak" nhưng đôi khi lẫn lộn hai vùng nhớ. Hậu quả: debug sai hướng (tăng heap trong khi lỗi do đệ quy stack), hoặc không hiểu vì sao sửa field của object trong hàm thì bên ngoài cũng đổi.
+
+### Thuật ngữ (giải thích lần đầu)
+- **Primitive** (kiểu nguyên thủy): kiểu dữ liệu cơ bản của Java như {{int}}, {{long}}, {{boolean}}, {{double}} — lưu giá trị trực tiếp, không phải object.
+- **Reference** (tham chiếu): biến "trỏ" tới object trên heap; bản thân reference chỉ là một địa chỉ/tham chiếu nhỏ, không phải toàn bộ object.
+- **Stack frame** (khung ngăn xếp): gói thông tin của một lần gọi hàm (tham số, biến cục bộ, địa chỉ trả về). Mỗi lần gọi hàm → đẩy 1 frame vào stack; hàm trả về → bỏ frame.
+- **GC (Garbage Collector)**: cơ chế tự tìm object trên heap không còn ai tham chiếu tới và thu hồi bộ nhớ.
+
+### Cơ chế từng bước
+
+#### Stack hoạt động thế nào
+~~~java
+int calc(int a) {          // frame calc: lưu a, biến cục bộ
+  int b = a * 2;           // b (primitive) nằm trong frame calc
+  return b;
+}
+void main() {
+  int x = 10;              // frame main: x nằm đây
+  int y = calc(x);         // gọi calc -> đẩy frame calc lên stack
+}                          // calc xong -> bỏ frame calc; main xong -> bỏ frame main
+~~~
+- Vào hàm: stack "cao lên" (push frame). Ra hàm: frame biến mất ngay, không cần GC.
+- Mỗi thread có stack riêng (kích thước thường cấu hình bằng {{-Xss}}, ví dụ 512KB-1MB). Đệ quy quá sâu → hết chỗ → {{StackOverflowError}}.
+
+#### Heap hoạt động thế nào
+~~~java
+void main() {
+  User u = new User("An"); // (1) new User(...) tạo object trên HEAP
+                            // (2) biến u là reference, nằm trên STACK (frame main)
+  u.age = 20;               // đi theo reference u tới object trên heap, sửa field
+}
+~~~
+- {{new}} luôn tạo object trên heap. Biến {{u}} trên stack chỉ giữ "địa chỉ" trỏ tới object đó.
+- Khi không còn reference nào trỏ tới object (và không thể truy cập được nữa), GC **có thể** thu hồi nó (không phải thu hồi ngay lập tức).
+
+### Sơ đồ trực quan (ASCII)
+~~~text
+Thread Stack (riêng)                 Heap (chung JVM)
++---------------------+             +---------------------------+
+| frame: calc         |             | User@0x1A { name:"An",   |
+|   a = 10 (int)      |             |             age:20 }      |
+|   b = 20 (int)      |             |                           |
++---------------------+             | int[]@0x2B [1,2,3]        |
+| frame: main         |      +----->|                           |
+|   x = 10 (int)      |      |      | String@0x3C "An"          |
+|   u = ref 0x1A -----+------+      +---------------------------+
+|   arr = ref 0x2B ---+----------------------^
++---------------------+
+Primitive/references: trên stack. Object/array: trên heap.
+~~~
+
+### Ví dụ "truyền tham số" dễ nhầm
+~~~java
+void rename(User u) { u.name = "Binh"; }   // đổi field object trên heap -> bên ngoài thấy đổi
+void reassign(User u) { u = new User("Chi"); } // đổi reference cục bộ u -> bên ngoài KHÔNG đổi
+~~~
+Java luôn truyền **giá trị của biến**: với object, giá trị được truyền là bản sao của reference (cùng trỏ tới một object heap). Vì vậy sửa field thì thấy, còn gán {{u}} sang object mới thì chỉ đổi bản sao reference trong frame {{reassign}}.
+
+### Bảng so sánh
+| Tiêu chí | Stack | Heap |
+|---|---|---|
+| Phạm vi | Mỗi thread một stack | Chung toàn JVM/process |
+| Chứa gì (Java) | Stack frame, primitive cục bộ, reference | Object, array, instance field |
+| Quản lý | Tự động khi vào/ra hàm | GC dọn object không còn dùng |
+| Tốc độ cấp phát | Rất nhanh | Chậm hơn, có thể gây GC pause |
+| Lỗi điển hình | {{StackOverflowError}} | {{OutOfMemoryError: Java heap space}} |
+| Kích thước | Nhỏ (mặc định ~1MB/thread) | Lớn, cấu hình {{-Xmx}} |
+
+### Lỗi hay gặp trên production
+- **{{StackOverflowError}}**: thường do đệ quy không có điểm dừng hoặc cây quá sâu. Fix: thêm điều kiện dừng, hoặc đổi sang vòng lặp/dùng cấu trúc dữ liệu rõ ràng (Deque) thay đệ quy.
+- **{{OutOfMemoryError: Java heap space}}**: object tích lũy không được GC (memory leak logic: cache không giới hạn, giữ reference trong static {{List}}, listener không gỡ). Debug bằng heap dump ({{jmap}}) và phân tích object chiếm nhiều.
+- **Tăng {{-Xmx}} là cách chữa cháy, không phải nguyên nhân gốc**: nếu leak, heap lớn hơn chỉ giúp sống lâu hơn rồi vẫn OOM.
+- **Tạo quá nhiều thread**: mỗi thread cần stack riêng → 2000 thread * 1MB stack ≈ 2GB chỉ riêng stack (ngoài heap). Có thể gây {{OutOfMemoryError: unable to create native thread}}.
+
+### Trả lời phỏng vấn thế nào
+Nói rõ: stack cho lời gọi hàm/biến cục bộ mỗi thread, heap cho object dùng chung do GC quản lý. Vẽ nhanh sơ đồ "reference trên stack trỏ object trên heap". Kèm 2 lỗi kinh điển (StackOverflowError vs OOM heap) và cách phân biệt hướng debug. Nhấn mạnh Java truyền giá trị reference (giải thích được ví dụ rename/reassign).
+
+> Senior tip: khi nghi ngờ rò rỉ bộ nhớ, đừng đoán. Lấy **heap dump** lúc bộ nhớ cao ({{jmap -dump:live,format=b,file=heap.hprof <pid>}}) và mở bằng Eclipse MAT: nhìn "Dominator Tree" để thấy object nào giữ nhiều bộ nhớ nhất và ai đang giữ reference tới nó. Đó là cách tìm leak có căn cứ, thay vì "thử tăng Xmx".`,
+  follow: ['StackOverflowError và OutOfMemoryError khác nhau về nguyên nhân và cách xử lý thế nào?', 'Vì sao String trong Java là immutable và điều đó liên quan gì đến heap?'],
+  tags: ['stack', 'heap', 'memory', 'JVM', 'GC', 'nhập môn']
+},
+{
+  id: 'primer-020',
+  topic: 'primer',
+  level: 'mid',
+  q: 'TCP bắt tay 3 bước (3-way handshake) là gì? Vì sao backend cần connection pool thay vì mỗi request mở một kết nối mới?',
+  a: `**Tóm tắt:**
+- **TCP** (Transmission Control Protocol, giao thức điều khiển truyền vận) là giao thức truyền dữ liệu tin cậy trên mạng: trước khi gửi dữ liệu, hai bên phải "bắt tay 3 bước" để thiết lập kết nối, và khi xong phải đóng kết nối.
+- **3-way handshake**: Client gửi {{SYN}} (xin kết nối) → Server trả {{SYN-ACK}} (đồng ý, xin kết nối ngược) → Client trả {{ACK}} (xác nhận). Sau đó mới gửi dữ liệu.
+- Mỗi lần thiết lập + đóng kết nối tốn thời gian (nhiều round-trip mạng) và tài nguyên (socket, bộ nhớ kernel, cổng). **Connection pool** (bể kết nối) giữ sẵn một số kết nối mở để tái dùng cho nhiều request, giúp giảm độ trễ và tránh quá tải.
+
+### Bối cảnh thật
+Một API Spring Boot gọi database cho mỗi request. Nếu mỗi lần gọi DB đều mở kết nối TCP mới tới Postgres rồi đóng, bạn trả thêm hàng chục mili-giây cho handshake/TLS và tạo/huỷ tài nguyên liên tục. Lúc traffic cao, DB có thể từ chối vì quá nhiều kết nối. Đây là lý do HikariCP (connection pool mặc định của Spring Boot) gần như luôn có mặt.
+
+### Thuật ngữ
+- **Socket** (ổ cắm mạng): đầu mút kết nối, gắn với cặp (địa chỉ IP, cổng). Ứng dụng đọc/ghi dữ liệu qua socket.
+- **Round-trip time (RTT)**: thời gian một gói tin đi từ client tới server rồi phản hồi về. Trong cùng data center có thể < 1ms; khác vùng có thể 50-200ms.
+- **SYN, ACK**: cờ (flag) trong gói TCP. SYN = synchronize (xin đồng bộ/khởi tạo), ACK = acknowledge (xác nhận).
+
+### TCP 3-way handshake từng bước
+~~~seq
+title: TCP 3-way handshake
+actors: Client | Server
+Client -> Server: 1) SYN, seq=x (xin mở kết nối)
+Server --> Client: 2) SYN-ACK, seq=y, ack=x+1 (đồng ý)
+Client -> Server: 3) ACK, ack=y+1 (xác nhận, kết nối sẵn sàng)
+Client -> Server: 4) Gửi dữ liệu (HTTP request, query DB...)
+Server --> Client: 5) Trả dữ liệu
+note Client..Server: Đóng kết nối tốn thêm bước (FIN/ACK)
+~~~
+
+- Bước 1-3 xảy ra **trước khi** byte dữ liệu ứng dụng đầu tiên được gửi. Tốn ít nhất 1 RTT (client chờ bước 2) trước khi bước 3 kèm dữ liệu trong một số tối ưu, nhưng về bản chất vẫn có chi phí thiết lập.
+- Nếu có TLS (HTTPS/kết nối DB mã hóa), sau handshake TCP còn thêm TLS handshake → thêm 1-2 RTT nữa.
+
+### Vì sao connection pool cần thiết
+~~~text
+Không có pool (mỗi request mở kết nối DB mới):
+  Request 1: [TCP handshake][TLS?][Auth DB][Query][Đóng]  ~ 15-50ms overhead + query
+  Request 2: [TCP handshake][TLS?][Auth DB][Query][Đóng]  ~ 15-50ms overhead + query
+  100 req/s * 30ms overhead = 3 giây CPU/mạng lãng phí mỗi giây (không thể!), cộng áp lực tạo socket
+
+Có pool (HikariCP giữ sẵn 10 kết nối mở):
+  Khởi động: mở 10 kết nối 1 lần
+  Request 1: [mượn kết nối từ pool][Query][trả kết nối]     ~ query (+ <1ms mượn/trả)
+  Request 2: [mượn kết nối từ pool][Query][trả kết nối]     ~ tái dùng, không handshake
+~~~
+
+Lợi ích cụ thể:
+1. **Giảm độ trễ**: bỏ chi phí handshake/auth cho mỗi request.
+2. **Giới hạn số kết nối**: DB (Postgres, MySQL) chịu tốt một số kết nối hữu hạn (tùy cấu hình, thường chục đến vài trăm). Pool đặt {{maximumPoolSize}} để không bắn hàng nghìn kết nối làm DB sập.
+3. **Tái dùng tài nguyên**: giảm tạo/huỷ socket, giảm áp lực GC/bộ nhớ.
+
+### Ví dụ cấu hình HikariCP (Spring Boot)
+~~~yaml
+spring:
+  datasource:
+    url: jdbc:postgresql://db:5432/orders
+    hikari:
+      maximum-pool-size: 10       # tối đa 10 kết nối đồng thời tới DB
+      minimum-idle: 5             # giữ ít nhất 5 kết nối rảnh sẵn sàng
+      connection-timeout: 30000   # chờ tối đa 30s để mượn kết nối, quá thì lỗi
+      max-lifetime: 1800000       # tái tạo kết nối sau 30 phút (tránh kết nối "cũ" bị giữa đường cắt)
+~~~
+- {{maximum-pool-size}} không phải "càng lớn càng tốt". DB xử lý query song song cũng bị giới hạn bởi CPU/IO/disk; pool quá lớn → DB quá tải, context switch tăng. Công thức tham khảo hay được nhắc: pool nhỏ, gắn với số core DB (cần đo thực tế).
+
+### Bảng trade-off
+| Cách | Ưu | Nhược | Khi dùng |
+|---|---|---|---|
+| Mở kết nối mới mỗi request | Đơn giản, không giữ trạng thái | Chậm, tốn tài nguyên, dễ quá tải DB | Hầu như không dùng cho backend traffic thật |
+| Connection pool | Nhanh, kiểm soát tải DB | Cần cấu hình; có thể "hết kết nối" nếu giữ lâu | Mặc định cho DB, HTTP client (Apache HttpClient, OkHttp pool) |
+| Giữ 1 kết nối cố định | Ít overhead | Không chịu song song, lỗi 1 kết nối là chết | Chỉ tool đơn luồng, batch đơn giản |
+
+### Lỗi hay gặp
+- **Không trả kết nối về pool**: mượn connection rồi quên {{close()}} (hoặc không dùng try-with-resources). Pool cạn → request mới chờ hết {{connection-timeout}} → lỗi dây chuyền. Triệu chứng: log {{"Connection is not available, request timed out"}}.
+- **Giữ connection trong lúc gọi API ngoài chậm**: mượn connection, gọi HTTP sang service khác mất 5s, mới query DB rồi trả. Connection bị "ôm" vô ích → pool cạn. Quy tắc: giữ connection DB càng ngắn càng tốt.
+- **{{maximum-pool-size}} quá lớn**: ví dụ 200 kết nối * 10 instance app = 2000 kết nối tới 1 DB → DB nghẽn. Phải tính tổng từ tất cả instance.
+- **Nhầm TCP handshake với HTTP**: HTTP là giao thức ứng dụng chạy *trên* TCP (HTTP/1.1, HTTP/2). HTTPS còn thêm TLS. Connection pool có thể áp dụng ở tầng TCP/HTTP (keep-alive/pool) và tầng DB (JDBC pool).
+
+### Trả lời phỏng vấn thế nào
+Trình bày 3-way handshake (SYN, SYN-ACK, ACK) và nhấn mạnh chi phí round-trip + tài nguyên. Sau đó giải thích connection pool tái dùng kết nối, giảm độ trễ, giới hạn tải DB. Đưa ví dụ HikariCP và một lỗi thực tế (không trả kết nối / pool quá lớn). Nếu interviewer hỏi sâu, nối sang TLS handshake và HTTP keep-alive.
+
+> Senior tip: khi API bỗng chậm đột ngột, kiểm tra metric **connection pool wait time** và **active vs max connections** (HikariCP/Micrometer expose sẵn). Pool wait tăng trước khi DB CPU tăng là dấu hiệu app đang "xếp hàng chờ kết nối" — nguyên nhân thường là query chậm giữ connection lâu hoặc pool size không phù hợp, chứ không phải "DB yếu" ngay lập tức.`,
+  follow: ['Connection pool bị cạn (pool exhaustion) thường do nguyên nhân nào, bạn điều tra thế nào?', 'HTTP keep-alive liên quan gì đến việc tái dùng kết nối TCP?'],
+  tags: ['TCP', 'handshake', 'connection pool', 'HikariCP', 'network', 'nhập môn']
+},
+{
+  id: 'primer-021',
+  topic: 'primer',
+  level: 'mid',
+  q: 'DNS phân giải tên miền thành địa chỉ IP như thế nào? Khi một ứng dụng Spring Boot gọi https://api.partner.com, chuyện gì xảy ra phía sau?',
+  a: `**Tóm tắt:**
+- **DNS** (Domain Name System, hệ thống tên miền) giống "danh bạ" của Internet: đổi tên dễ nhớ ({{api.partner.com}}) thành **địa chỉ IP** (ví dụ {{203.0.113.10}}) để máy tính biết gửi gói tin tới đâu.
+- Phân giải DNS thường đi qua nhiều bước: bộ nhớ đệm (cache) trên máy/ứng dụng → resolver của hệ điều hành/nhà mạng → nếu chưa biết thì hỏi lần lượt từ **root server** → server quản lý đuôi miền (TLD, ví dụ {{.com}}) → **authoritative DNS server** (server có thẩm quyền) của {{partner.com}}.
+- Kết quả được cache theo **TTL** (thời gian sống). Hiểu DNS giúp debug lỗi "gọi được lúc này lúc khác", độ trễ kết nối đầu tiên, và sự cố khi đổi IP server.
+
+### Bối cảnh thật
+Backend Java thường gọi API đối tác, DB theo hostname, hoặc service nội bộ qua DNS Kubernetes. Khi "đổi server sang IP mới mà app vẫn gọi IP cũ", hoặc "thỉnh thoảng timeout vài giây lúc gọi lần đầu", nguyên nhân hay nằm ở DNS cache/TTL chứ không phải code Java.
+
+### Thuật ngữ (giải thích lần đầu)
+- **Tên miền (domain)**: chuỗi dễ nhớ, ví dụ {{api.partner.com}}.
+- **Địa chỉ IP**: địa chỉ số của máy trên mạng (IPv4 như {{203.0.113.10}}, hoặc IPv6). Gói tin mạng đi theo IP.
+- **Resolver**: thành phần đi "hỏi hộ" DNS và trả kết quả (thường do hệ điều hành hoặc DNS nhà mạng/công ty cung cấp).
+- **Authoritative DNS server**: server giữ bản ghi chính thức cho một tên miền (nguồn trả lời đúng cuối cùng).
+- **TTL (Time To Live)**: thời gian (giây) một kết quả DNS được phép lưu trong cache trước khi phải hỏi lại.
+- **Bản ghi (record)**: {{A}} ánh xạ tên → IPv4, {{AAAA}} → IPv6, {{CNAME}} → bí danh trỏ sang tên khác.
+
+### Quá trình phân giải từng bước
+~~~seq
+title: Phân giải DNS cho api.partner.com
+actors: App | OS/Resolver | Root | TLD(.com) | Auth(partner.com)
+App -> OS/Resolver: 1) api.partner.com là IP nào?
+OS/Resolver --> App: 2) Có trong cache? Trả luôn
+OS/Resolver -> Root: 3) Hỏi root: ai quản lý .com?
+Root --> OS/Resolver: 4) Địa chỉ server TLD .com
+OS/Resolver -> TLD(.com): 5) Hỏi .com: ai quản lý partner.com?
+TLD(.com) --> OS/Resolver: 6) Địa chỉ authoritative của partner.com
+OS/Resolver -> Auth(partner.com): 7) api.partner.com là IP nào?
+Auth(partner.com) --> OS/Resolver: 8) A = 203.0.113.10, TTL 300s
+OS/Resolver --> App: 9) Trả IP, lưu cache theo TTL
+~~~
+
+Trong thực tế, resolver thường có cache nên hiếm khi phải đi đủ các bước 3-8 cho mỗi lần gọi. Bước 1 của app cũng có thể đi qua cache của JVM/thư viện HTTP.
+
+### Ví dụ cụ thể
+- Bạn đổi server {{api.partner.com}} từ IP {{203.0.113.10}} sang {{203.0.113.20}}, TTL cũ là 300 giây (5 phút).
+- Trong tối đa 5 phút sau khi đổi, một số client vẫn nhận IP cũ từ cache → gọi vào server cũ. Vì vậy khi chuyển đổi hạ tầng, người ta thường **hạ TTL từ trước** (ví dụ xuống 60s) để giảm thời gian "lan truyền".
+- Một request Java lần đầu trong tiến trình có thể chậm thêm 20-100ms do DNS lookup (tùy mạng/có cache hay không). Các request sau nhanh hơn nếu còn trong cache.
+
+### DNS và ứng dụng Java
+~~~text
+Spring Boot gọi: RestClient.get().uri("https://api.partner.com/v1/pay").retrieve()
+  1) Cần IP của api.partner.com -> tra DNS (JVM/OS resolver)
+  2) Có IP -> mở TCP tới IP:443 -> TLS handshake -> gửi HTTP request
+~~~
+- JVM có cơ chế cache DNS (cấu hình qua {{networkaddress.cache.ttl}} trong security properties của JDK; hành vi mặc định khác nhau theo phiên bản/cấu hình bảo mật). Cache quá lâu → app không thấy IP mới; tắt cache hoàn toàn → tốn lookup liên tục.
+- Trong Kubernetes, tên service ({{orders.default.svc.cluster.local}}) được DNS nội bộ phân giải. Pod scale/đổi IP thì DNS cập nhật; client phải tôn trọng TTL và không "ghim" IP cứng.
+
+### Bảng nhanh các bản ghi hay gặp
+| Record | Ý nghĩa | Ví dụ dùng trong backend |
+|---|---|---|
+| A / AAAA | Tên → địa chỉ IPv4 / IPv6 | Trỏ {{api.example.com}} tới IP server |
+| CNAME | Tên → tên khác (bí danh) | {{www}} trỏ tới {{lb.cloudprovider.net}} |
+| TXT | Chuỗi văn bản | Xác minh domain, cấu hình SPF/DKIM email |
+
+### Lỗi hay gặp
+- **Hard-code IP** trong cấu hình thay vì dùng hostname: khi server đổi IP/scale → phải sửa cấu hình và redeploy. Hostname + DNS linh hoạt hơn.
+- **Nhầm DNS với "mất mạng"**: lỗi {{UnknownHostException}} thường là không phân giải được tên (DNS lỗi, tên sai, mạng chặn DNS) — khác với {{ConnectException}} (tới được IP nhưng không kết nối được cổng).
+- **TTL quá dài khi chuẩn bị migration**: quên hạ TTL trước → một phần traffic còn dính IP cũ lâu.
+- **Cache nhiều tầng** (thư viện HTTP, JVM, OS, resolver) khiến "đã đổi DNS mà app vẫn đi IP cũ" khó hiểu. Khi debug, kiểm tra từ chính môi trường app chạy ({{nslookup}}, {{dig}}, hoặc log).
+
+### Trả lời phỏng vấn thế nào
+Giải thích DNS là ánh xạ tên miền → IP. Nêu luồng hỏi qua cache → resolver → root/TLD → authoritative (ngắn gọn, có sơ đồ). Nêu vai trò TTL/cache và một ví dụ thực tế backend (đổi IP, {{UnknownHostException}}, DNS trong Kubernetes). Nhấn mạnh: app Java phụ thuộc DNS nên cấu hình hostname, TTL và quan sát lỗi phân giải rất quan trọng khi vận hành.
+
+> Senior tip: khi gặp lỗi kết nối "ngẫu nhiên" tới một đối tác, hãy log cả **hostname và IP đã phân giải** (nếu thư viện cho phép) cùng thời gian DNS lookup. Rất nhiều sự cố "app lỗi" thực ra là DNS trả IP sai/cũ, một node trong cụm DNS trả lời khác node khác, hoặc TTL/cache gây hành vi không đồng đều giữa các instance.`,
+  follow: ['UnknownHostException và ConnectException khác nhau thế nào, bạn khoanh vùng ra sao?', 'Vì sao khi chuyển server sang IP mới người ta hay hạ TTL DNS từ trước?'],
+  tags: ['DNS', 'network', 'TTL', 'hostname', 'nhập môn']
+},
+{
+  id: 'primer-022',
+  topic: 'primer',
+  level: 'mid',
+  q: 'HTTPS dùng TLS để bảo mật kết nối như thế nào? Hãy giải thích đơn giản quá trình TLS handshake (trao đổi khóa, chứng chỉ) giữa client và server.',
+  a: `**Tóm tắt:**
+- **HTTPS** là HTTP chạy trên **TLS** (Transport Layer Security, giao thức bảo mật tầng truyền vận). TLS giúp: (1) **mã hóa** dữ liệu để bên nghe lén không đọc được, (2) **xác thực** server qua **chứng chỉ số** để tránh giả mạo, (3) **toàn vẹn** để phát hiện dữ liệu bị sửa trên đường truyền.
+- **TLS handshake** (bắt tay TLS) diễn ra sau khi TCP nối xong: client và server thống nhất phiên bản/mã hóa, server gửi chứng chỉ (chứa public key), client kiểm tra chứng chỉ, hai bên tạo ra **khóa phiên** (session key) dùng chung để mã hóa dữ liệu về sau. Bắt tay tốn thêm thời gian (round-trip) nên ảnh hưởng độ trễ kết nối đầu.
+
+### Bối cảnh thật
+Backend Java hầu như luôn gọi/nhận HTTPS: API đối tác, API nội bộ qua ingress, webhook. Lỗi thường gặp: {{SSLHandshakeException}}, chứng chỉ hết hạn, không tin cậy CA, hostname không khớp. Nếu không hiểu handshake, bạn sẽ "tắt verify SSL" cho xong — rất nguy hiểm.
+
+### Thuật ngữ (giải thích lần đầu)
+- **Mã hóa (encryption)**: biến dữ liệu thành dạng "xáo trộn"; chỉ ai có khóa phù hợp mới giải mã đọc được.
+- **Mã hóa bất đối xứng (asymmetric)**: có cặp **public key** (công khai) và **private key** (bí mật). Dùng cho việc trao đổi/thiết lập khóa an toàn. Chậm hơn mã hóa đối xứng.
+- **Mã hóa đối xứng (symmetric)**: hai bên dùng **cùng một khóa bí mật** để mã hóa/giải mã. Nhanh, dùng để mã hóa dữ liệu thực tế sau handshake.
+- **Chứng chỉ số (certificate)**: "thẻ căn cước" của server, do **CA** (Certificate Authority, tổ chức cấp chứng chỉ tin cậy) ký xác nhận: gắn tên miền với public key của server.
+- **CA/Trust store**: danh sách CA mà client tin. Trên JVM là file truststore (mặc định {{cacerts}}). Chứng chỉ không do CA tin cậy cấp → client từ chối.
+
+### TLS handshake đơn giản (TLS 1.2 rút gọn / ý tưởng chung)
+~~~seq
+title: TLS handshake (đơn giản)
+actors: Client (app/browser) | Server (api.partner.com)
+Client -> Server: 1) ClientHello: phiên bản TLS, danh sách cipher hỗ trợ
+Server --> Client: 2) ServerHello: cipher đã chọn
+Server --> Client: 3) Certificate: chứng chỉ (public key, tên miền, CA ký)
+Server --> Client: 4) ServerHelloDone
+Client -> Client: 5) Kiểm tra chứng chỉ: CA tin? còn hạn? khớp domain?
+Client -> Server: 6) Trao đổi bí mật để tạo khóa phiên (session key)
+note Client..Server: 7) Cả hai tính ra cùng session key (đối xứng)
+Client -> Server: 8) Finished (mã hóa bằng session key)
+Server --> Client: 9) Finished (mã hóa bằng session key)
+Client -> Server: 10) HTTP request/response được mã hóa bằng session key
+~~~
+
+(Ghi chú: TLS 1.3 gọn hơn, giảm round-trip và bỏ các cipher cũ yếu; nhưng ý tưởng cốt lõi vẫn là: xác thực chứng chỉ + thống nhất khóa phiên + mã hóa đối xứng cho dữ liệu.)
+
+### Ví dụ đời thường
+- Bạn gửi thư mật: (1) hỏi đối tác lấy **ổ khóa công khai** của họ và xác minh đúng là họ (kiểm tra chứng chỉ), (2) bạn tạo một **chìa khóa hộp** (khóa phiên) và gửi kèm theo cách chỉ họ mở được, (3) từ đó hai bên dùng cùng chìa khóa hộp để trao đổi nhanh. Người đưa thư thấy phong bì nhưng không mở được (mã hóa).
+
+### Ví dụ cụ thể với số liệu
+- Gọi {{GET https://api.partner.com}} lần đầu:
+  - TCP handshake: ~1 RTT.
+  - TLS handshake: thêm ~1-2 RTT (tùy TLS 1.2/1.3, có resume hay không).
+  - RTT nội vùng 1ms → thêm vài ms; RTT xuyên quốc gia 100ms → thêm 100-200ms trước khi nhận byte HTTP đầu tiên.
+- Vì vậy HTTP client dùng **connection pool/keep-alive** với HTTPS cũng giúp: tái dùng kết nối đã handshake xong, tránh trả chi phí TLS lặp lại.
+
+### Bảng: HTTPS bảo vệ khỏi gì / không bảo vệ khỏi gì
+| HTTPS/TLS giúp | HTTPS/TLS không tự giải quyết |
+|---|---|
+| Người nghe lén trên mạng không đọc được nội dung | Server của bạn có lỗ hổng ứng dụng (SQL injection, auth sai) |
+| Xác thực bạn đang nói chuyện với đúng domain (nếu verify chứng chỉ) | Dữ liệu đã giải mã bị lộ trong log, DB, hoặc do app bug |
+| Phát hiện nội dung bị sửa trên đường truyền | Quyền truy cập: ai được gọi API (cần token/auth) |
+
+### Lỗi hay gặp
+- **{{SSLHandshakeException: PKIX path building failed}}**: JVM không tin chứng chỉ (CA không có trong truststore, hoặc chứng chỉ tự ký/self-signed). Fix đúng: import CA/chứng chỉ phù hợp vào truststore hoặc dùng chứng chỉ do CA tin cậy cấp. **Không** tắt verify toàn cục.
+- **Chứng chỉ hết hạn**: server quên gia hạn → mọi client từ chối. Cần giám sát ngày hết hạn.
+- **Hostname không khớp**: chứng chỉ cấp cho {{api.partner.com}} nhưng bạn gọi bằng IP hoặc tên khác.
+- **Nhầm TLS termination**: nhiều hệ thống để load balancer/ingress xử lý TLS, traffic phía sau là HTTP nội bộ. Phải hiểu ranh giới mã hóa ở đâu, đừng lộ HTTP ra internet.
+
+### Trả lời phỏng vấn thế nào
+Nêu 3 mục tiêu: mã hóa, xác thực, toàn vẹn. Mô tả handshake ở mức ý tưởng: client nhận chứng chỉ → verify (CA, hạn, domain) → hai bên tạo khóa phiên đối xứng → mã hóa dữ liệu. Giải thích vì sao handshake tốn RTT và liên hệ connection reuse. Kèm 1-2 lỗi thực tế (chứng chỉ hết hạn, PKIX) và cách xử lý đúng (không tắt verify).
+
+> Senior tip: luôn giám sát **ngày hết hạn chứng chỉ** và tự động gia hạn (Let's Encrypt/ACM). Sự cố "HTTPS bỗng chết toàn hệ thống" vì quên gia hạn là loại outage rất phổ biến và hoàn toàn tránh được. Khi debug {{SSLHandshakeException}}, bật log {{-Djavax.net.debug=ssl,handshake}} tạm thời ở môi trường an toàn để xem chính xác bước nào fail (nhưng cẩn thận dữ liệu nhạy cảm trong log).`,
+  follow: ['TLS bảo vệ bạn khỏi những rủi ro nào, và không bảo vệ khỏi rủi ro nào?', 'Khi gặp lỗi PKIX path building failed trong Java, bạn xử lý thế nào cho đúng?'],
+  tags: ['HTTPS', 'TLS', 'SSL', 'certificate', 'security', 'nhập môn']
+},
+{
+  id: 'primer-023',
+  topic: 'primer',
+  level: 'mid',
+  q: 'Index trong database là gì, và B-tree index hoạt động như thế nào? Hãy giải thích trực quan vì sao index giúp query nhanh hơn và khi nào index không có tác dụng.',
+  a: `**Tóm tắt:**
+- **Index** (chỉ mục) trong database là cấu trúc dữ liệu phụ được tạo trên một hoặc nhiều cột để giúp DB tìm dòng nhanh hơn, giống mục lục ở cuối sách: thay vì đọc cả cuốn, bạn tra mục lục để nhảy tới đúng trang.
+- **B-tree** (cây cân bằng, balanced tree) là kiểu index phổ biến nhất (mặc định trong Postgres/MySQL). Nó tổ chức khóa theo thứ tự trong một cây nhiều nhánh có độ cao thấp, nên tìm một giá trị thường chỉ cần đọc rất ít "nút" (block trên đĩa) thay vì quét toàn bộ bảng.
+- Đánh đổi: index giúp {{SELECT}} nhanh hơn nhưng làm {{INSERT/UPDATE/DELETE}} chậm hơn và tốn thêm dung lượng, vì DB phải cập nhật cả index.
+
+### Bối cảnh thật
+Dev backend hay gặp: "bảng users 10 triệu dòng, query {{WHERE email = ?}} mất 3 giây", thêm index xong còn 5ms. Nhưng cũng có lúc "đã có index mà query vẫn chậm". Hiểu B-tree trực quan giúp bạn biết khi nào index giúp, khi nào không, và cách đặt index đúng.
+
+### Thuật ngữ (giải thích lần đầu)
+- **Full table scan** (quét toàn bảng): DB đọc từng dòng của bảng để kiểm tra điều kiện. Bảng lớn → rất chậm, tốn I/O đĩa.
+- **B-tree / B+tree**: cấu trúc cây cân bằng. Ở đây nói "B-tree" theo cách gọi chung; nhiều DB (InnoDB, Postgres) dùng biến thể B+tree (dữ liệu/lá tổ chức tối ưu cho range scan). Ý tưởng tìm kiếm theo cây cân bằng là giống nhau.
+- **Nút (node/page)**: một "khối" dữ liệu của cây, thường tương ứng một page trên đĩa (ví dụ 8KB hoặc 16KB).
+- **Độ chọn lọc (selectivity)**: cột có nhiều giá trị khác nhau → chọn lọc cao (index hữu ích). Cột chỉ có vài giá trị (ví dụ {{status}} chỉ ACTIVE/INACTIVE trên bảng mà 95% ACTIVE) → index ít lợi.
+
+### Hình dung trực quan: không index vs có B-tree index
+~~~text
+Bảng orders (10.000.000 dòng), tìm WHERE order_code = 'ORD-773812'
+
+CÁCH 1 — Không index (full table scan):
+  Đọc dòng 1? không. Dòng 2? không. ... Dòng 7.738.120? ĐÚNG.
+  Có thể phải đọc hàng triệu dòng (rất nhiều page đĩa).
+
+CÁCH 2 — B-tree index trên order_code (minh họa đơn giản):
+                    [M]
+                   /   \\
+            [D,H]         [R,W]
+           /  |  \\       /  |  \\
+       [A-C][E-G][I-L] [N-Q][S-V][X-Z]  (các nút lá trỏ tới dòng thật)
+
+  Tìm 'ORD-773812' (bắt đầu 'O'):
+    1) Gốc [M]: 'O' > 'M' -> đi nhánh phải
+    2) Nút [R,W]: 'O' nằm đoạn N-Q -> đi nhánh giữa
+    3) Nút lá [N-Q]: tìm thấy 'ORD-773812' -> lấy địa chỉ dòng
+  Chỉ đọc ~3 nút thay vì hàng triệu dòng.
+~~~
+
+Điểm mấu chốt: B-tree được **cân bằng** (mọi nhánh lá có độ sâu gần nhau) và mỗi nút chứa nhiều khóa, nên cây "thấp mà bè". Bảng hàng triệu dòng vẫn thường chỉ cần đi qua 3-4 mức nút.
+
+### Ví dụ SQL cụ thể
+~~~sql
+-- Tạo index trên cột hay lọc
+CREATE INDEX idx_orders_code ON orders(order_code);
+
+-- Query hưởng lợi: DB tra index -> tìm nhanh
+SELECT * FROM orders WHERE order_code = 'ORD-773812';
+
+-- Composite index (nhiều cột): hữu ích khi lọc/sắp theo (customer_id, created_at)
+CREATE INDEX idx_orders_cust_created ON orders(customer_id, created_at);
+SELECT * FROM orders WHERE customer_id = 42 ORDER BY created_at DESC LIMIT 20;
+~~~
+
+### Khi index KHÔNG có tác dụng (hoặc ít tác dụng)
+| Tình huống | Vì sao | Ví dụ |
+|---|---|---|
+| Hàm bọc cột trong WHERE | DB khó dùng index trên giá trị gốc | {{WHERE YEAR(created_at)=2026}} → cân nhắc range: {{created_at >= '2026-01-01'}} |
+| {{LIKE '%abc'}} (ký tự đại diện ở đầu) | B-tree sắp theo thứ tự từ trái; không biết bắt đầu bằng gì | Tìm chuỗi chứa giữa → cân nhắc full-text search |
+| Cột chọn lọc thấp | Lọc ra quá nhiều dòng, đọc index rồi đọc bảng còn tốn hơn | {{WHERE is_active = true}} khi 95% là true |
+| Bảng rất nhỏ | Quét hết bảng còn rẻ hơn đi index | Bảng cấu hình vài chục dòng |
+| Chỉ lấy vài cột nhưng index không cover | DB vẫn phải nhảy về bảng (lookup) | Xem "covering index" nếu query quan trọng |
+
+### Đánh đổi: index không miễn phí
+- **Tốn dung lượng**: thêm cấu trúc B-tree trên đĩa.
+- **Làm chậm ghi**: mỗi {{INSERT/UPDATE/DELETE}} phải cập nhật bảng **và** mọi index liên quan. Bảng ghi nhiều, index quá nhiều → ghi chậm rõ.
+- **Cần bảo trì quan sát**: index không dùng thì chỉ gây tốn. DB có thống kê/EXPLAIN để kiểm tra.
+
+### Lỗi hay gặp trên production
+- **"Thêm index vào mọi cột WHERE"**: ghi chậm, tốn bộ nhớ/dung lượng. Chỉ index cột thực sự dùng trong truy vấn quan trọng, dựa trên query thật và {{EXPLAIN}}.
+- **Quên index khóa ngoại (foreign key)** hay cột hay join/filter: dẫn đến full scan trên bảng lớn.
+- **Composite index sai thứ tự**: index {{(a,b)}} giúp query lọc {{a}} hoặc {{(a,b)}}, nhưng thường không giúp tốt nếu chỉ lọc {{b}}. Thứ tự cột phải theo cách query dùng.
+- **Tin "có index là chắc nhanh"** mà không chạy {{EXPLAIN}}: optimizer có thể chọn không dùng index.
+
+### Trả lời phỏng vấn thế nào
+Bắt đầu bằng mục lục sách (trực quan), rồi mô tả B-tree: cây cân bằng, đi từ gốc xuống lá qua vài bước so sánh, tránh full scan. Nêu đánh đổi (đọc nhanh, ghi chậm, tốn chỗ). Kèm 2-3 trường hợp index không tác dụng (hàm bọc cột, {{LIKE '%...'}}, chọn lọc thấp) và nhắc {{EXPLAIN}} để kiểm chứng.
+
+> Senior tip: trước khi thêm index trên production, luôn chạy {{EXPLAIN (ANALYZE, BUFFERS)}} với dữ liệu/query thật để xem kế hoạch thực thi, số dòng ước lượng vs thực tế, và I/O. Một index "đúng lý thuyết" vẫn có thể bị bỏ qua nếu thống kê cũ hoặc điều kiện trả về quá nhiều dòng. Sau khi thêm, đo lại và theo dõi ảnh hưởng tới ghi.`,
+  follow: ['Composite index (a, b) khác index (b, a) thế nào về các query nó hỗ trợ?', 'Khi nào bạn chọn không tạo index dù cột xuất hiện trong WHERE?'],
+  tags: ['index', 'B-tree', 'database', 'SQL', 'performance', 'nhập môn']
+},
+{
+  id: 'primer-024',
+  topic: 'primer',
+  level: 'mid',
+  q: 'Encoding là gì? UTF-8, byte và ký tự (char) khác nhau thế nào, và vì sao backend Java cần hiểu điều này khi xử lý chuỗi, API, database?',
+  a: `**Tóm tắt:**
+- **Ký tự (character)** là khái niệm con người đọc (ví dụ {{A}}, {{ă}}, một chữ Hán, emoji). **Byte** là đơn vị dữ liệu 8 bit mà máy tính lưu/truyền. **Encoding** (bảng mã hóa) là quy tắc ánh xạ giữa ký tự và chuỗi byte.
+- **UTF-8** là encoding phổ biến nhất hiện nay: dùng **1-4 byte** cho một ký tự (ASCII như {{A}} tốn 1 byte, tiếng Việt có dấu/emoji thường tốn nhiều byte hơn). UTF-8 tương thích ASCII và là mặc định thực tế của web, JSON, API hiện đại.
+- Nhầm lẫn byte vs ký tự gây lỗi: cắt chuỗi hỏng, độ dài sai, lỗi hiển thị "mojibake" (ký tự lạ), so sánh/lưu trữ sai trong DB, hoặc lỗi khi truyền dữ liệu giữa hệ thống.
+
+### Bối cảnh thật
+Backend Java nhận JSON từ client, lưu DB, ghi log, gọi API khác. Mọi bước đều chuyển qua lại giữa **chuỗi ký tự** và **byte** (mạng/file/DB đều truyền byte). Nếu một bên dùng UTF-8, bên khác hiểu nhầm encoding khác, bạn sẽ thấy tên khách hàng "Nguyễn" thành chuỗi ký tự rác, hoặc emoji làm lỗi độ dài/cắt chuỗi.
+
+### Thuật ngữ (giải thích lần đầu)
+- **ASCII**: bảng mã cũ, 128 ký tự tiếng Anh cơ bản/ký hiệu, mỗi ký tự 1 byte (thực dùng 7 bit). Không biểu diễn được tiếng Việt có dấu.
+- **Unicode**: chuẩn gán một "mã số" (code point, ví dụ {{U+1EBF}} cho {{ế}}) cho hầu hết ký tự/ngôn ngữ. Unicode **không phải** encoding; nó chỉ đặt mã số.
+- **UTF-8/UTF-16**: các cách **mã hóa** code point Unicode thành byte. UTF-8 biến độ dài (1-4 byte). UTF-16 thường 2 hoặc 4 byte.
+- **Mojibake**: hiện tượng chữ bị "vỡ" thành ký tự lạ do giải mã sai encoding (ví dụ byte UTF-8 bị đọc như Latin-1).
+
+### Trực quan: cùng một chữ, byte khác nhau
+~~~text
+Ký tự:    N   g   u   y   ễ   n
+Unicode:  U+004E U+0067 U+0075 U+0079 U+1EC5 U+006E
+
+UTF-8 bytes (hex):
+  'N' 'g' 'u' 'y'  -> 4E 67 75 79         (mỗi ký tự ASCII = 1 byte)
+  'ễ'              -> E1 BB 85            (tiếng Việt có dấu = 3 byte trong UTF-8)
+  'n'              -> 6E
+Tổng chuỗi "Nguyễn" = 6 ký tự, nhưng 8 byte khi mã hóa UTF-8.
+~~~
+Ví dụ khác: emoji thường 4 byte trong UTF-8. Vì vậy **số ký tự != số byte**.
+
+### Ví dụ Java cụ thể
+~~~java
+String s = "Nguyễn";
+System.out.println(s.length()); // 6 (số đơn vị char UTF-16 trong Java; với BMP thường trùng "số ký tự" trực quan)
+
+byte[] utf8 = s.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+System.out.println(utf8.length); // 8 (số byte UTF-8)
+
+String bad = new String(utf8, java.nio.charset.StandardCharsets.ISO_8859_1); // đọc sai encoding
+// bad sẽ bị mojibake: byte UTF-8 bị hiểu nhầm theo ISO-8859-1
+~~~
+- Luôn chỉ rõ charset khi chuyển {{String <-> byte[]}} ({{getBytes(UTF_8)}}, {{new String(bytes, UTF_8)}}). Tránh dùng mặc định của nền tảng, vì máy khác có thể mặc định khác.
+- HTTP/JSON hiện đại gần như luôn UTF-8; header {{Content-Type: application/json; charset=utf-8}} là tín hiệu rõ ràng.
+
+### Byte vs char: nơi hay gây lỗi
+| Tình huống | Dễ nhầm | Hậu quả |
+|---|---|---|
+| Giới hạn độ dài DB/API | "Tối đa 255 ký tự" nhưng cột/kiểm tra tính byte | Tiếng Việt/emoji vượt giới hạn byte, lỗi cắt/lưu |
+| Cắt chuỗi theo byte | Cắt giữa chùm byte của 1 ký tự UTF-8 | Ký tự cuối bị hỏng (replacement char) |
+| Kích thước message/HTTP | Đếm {{length()}} của String | Payload thực tế lớn hơn (byte) |
+| Hash/so sánh chữ ký | Hai bên encode khác charset | Cùng chuỗi nhưng byte khác → chữ ký không khớp |
+
+### Lỗi hay gặp trên production
+- **Không thống nhất encoding**: DB cột/tablespace một kiểu, app gửi UTF-8, log file kiểu khác → mojibake hoặc lỗi ghi dữ liệu. Quy ước an toàn: thống nhất **UTF-8** toàn hệ thống khi có thể.
+- **Dùng encoding mặc định**: {{new String(bytes)}} hoặc {{getBytes()}} không truyền charset → hành vi phụ thuộc máy chạy (dev Windows khác server Linux).
+- **Cắt chuỗi theo substring chỉ nhìn length** cho bài toán giới hạn byte (ví dụ header, SMS, DB byte limit): cần tính theo byte của encoding đích.
+- **Validate "ký tự cho phép" sai** vì nhầm byte/char hoặc bỏ qua ký tự Unicode mở rộng.
+
+### Trả lời phỏng vấn thế nào
+Giải thích char là ký tự con người, byte là đơn vị lưu/truyền, encoding là ánh xạ. Nêu UTF-8 biến độ dài (1-4 byte), tương thích ASCII, phổ biến cho web/API. Đưa ví dụ "Nguyễn" 6 ký tự nhưng 8 byte UTF-8. Nêu 1-2 lỗi thực tế (mojibake do sai charset, giới hạn byte vs ký tự, luôn chỉ rõ {{StandardCharsets.UTF_8}} trong Java) và nguyên tắc: thống nhất UTF-8 end-to-end.
+
+> Senior tip: khi thiết kế DB và API, hãy ghi rõ giới hạn là **ký tự** hay **byte** (ví dụ Postgres {{varchar(255)}} là 255 ký tự, còn một số hệ thống/driver/cột tính byte). Với dữ liệu đa ngôn ngữ + emoji, luôn dùng UTF-8 (Postgres: {{UTF8}}, MySQL: {{utf8mb4}} — tránh {{utf8}} "3-byte" cũ của MySQL vì không đủ cho emoji 4 byte). Sự cố encoding rất khó sửa ngược dữ liệu đã hỏng, nên phải đúng từ đầu.`,
+  follow: ['Vì sao "Nguyễn" có thể dài 6 ký tự nhưng chiếm 8 byte trong UTF-8?', 'Trong Java, khi nào bạn phải chỉ rõ Charset thay vì dùng mặc định?'],
+  tags: ['UTF-8', 'encoding', 'Unicode', 'byte', 'char', 'nhập môn']
+},
+{
+  id: 'primer-025',
+  topic: 'primer',
+  level: 'mid',
+  q: 'Độ phức tạp thời gian Big-O là gì? Giải thích O(1), O(n), O(log n), O(n log n), O(n^2) qua ví dụ thực tế trong backend (tìm trong list, tra index, sắp xếp, vòng lặp lồng).',
+  a: `**Tóm tắt:**
+- **Big-O** mô tả **cách thời gian (hoặc bộ nhớ) tăng lên khi kích thước dữ liệu đầu vào (n) tăng**, ở mức xấp xỉ bậc lớn. Nó không đo mili-giây chính xác, mà cho biết thuật toán "co giãn" thế nào: n gấp 10 thì thời gian tăng gấp mấy?
+- Thứ tự hay gặp (tốt → xấu khi n lớn): {{O(1)}} (hằng số) < {{O(log n)}} < {{O(n)}} < {{O(n log n)}} < {{O(n^2)}}. Với n nhỏ (vài chục phần tử) khác biệt có thể không đáng kể; với n lớn (hàng triệu) khác biệt rất lớn.
+- Trong backend, Big-O giúp bạn dự đoán: tìm trong {{List}} 1 triệu phần tử, duyệt batch, tra index B-tree, sắp xếp, hay vòng lặp lồng nhau sẽ đắt ra sao khi dữ liệu tăng.
+
+### Bối cảnh thật
+API chậm khi bảng/user/list tăng từ 1.000 lên 1.000.000. Code "chạy được" ở môi trường dev dữ liệu ít nhưng sập ở production. Big-O là công cụ tư duy để phát hiện sớm những đoạn code có nguy cơ "nổ" theo dữ liệu, trước khi đo profiling.
+
+### Thuật ngữ (giải thích lần đầu)
+- **n**: kích thước đầu vào (số phần tử trong list, số dòng, số request trong batch...).
+- **Hằng số/bậc thấp bị bỏ qua**: {{O(2n + 5)}} vẫn gọi là {{O(n)}} vì khi n rất lớn, bậc n chi phối.
+- **Worst case / average case**: đôi khi nói trường hợp xấu nhất (ví dụ tìm không thấy phải duyệt hết) hoặc trung bình. Phỏng vấn thường nêu rõ hoặc mặc định worst/average tùy cấu trúc.
+
+### Các mức Big-O qua ví dụ backend thực tế
+
+#### 1) O(1) — thời gian gần như không đổi theo n
+- Ví dụ: lấy phần tử {{ArrayList}} theo index {{list.get(5)}}; tra {{HashMap}} theo key (trung bình) {{map.get(userId)}}; đọc một field.
+- Backend: kiểm tra cache hit trong {{HashMap}} 1 phần tử hay 1 triệu phần tử — số bước tra cứu trung bình không tăng tuyến tính theo n.
+- Lưu ý: "O(1)" không có nghĩa "0 giây", mà là không tăng theo n.
+
+#### 2) O(log n) — tăng rất chậm (chia đôi mỗi bước)
+- Ví dụ: **tìm nhị phân** (binary search) trên mảng đã sắp; tra **B-tree index** (đi từ gốc xuống lá).
+- Số liệu trực quan: n = 1.000.000 → {{log2(n)}} ~ 20 bước. n tăng gấp 1000 lần, bước chỉ tăng thêm ~10.
+- Backend: {{WHERE id = ?}} có index B-tree trên bảng 10 triệu dòng thường chỉ cần vài lần đọc nút (I/O), thay vì quét 10 triệu dòng.
+
+#### 3) O(n) — tăng tuyến tính theo n
+- Ví dụ: duyệt hết {{List}} để tìm phần tử không có index/key; tính tổng; lọc bằng vòng lặp một lần.
+- Backend: quét 1.000 đơn hàng mất ~X ms thì 1.000.000 đơn (cùng thao tác) có xu hướng ~1000X ms (bỏ qua hằng số/hạ tầng). Batch job xử lý từng dòng một lần là O(n).
+~~~java
+// O(n): duyệt mỗi phần tử đúng 1 lần
+long sum = 0;
+for (Order o : orders) { sum += o.getAmount(); }
+~~~
+
+#### 4) O(n log n) — thường gặp ở sắp xếp hiệu quả
+- Ví dụ: {{Collections.sort}} / {{Arrays.sort}} (các thuật toán như TimSort/dual-pivot quicksort) có độ phức tạp trung bình {{O(n log n)}}.
+- Backend: sắp xếp 1.000.000 bản ghi trong bộ nhớ theo {{n log n}} vẫn khả thi; nếu tự viết sắp xếp kiểu {{O(n^2)}} sẽ chậm hơn rất nhiều khi n lớn.
+- DB: {{ORDER BY}} trên tập lớn không có index phù hợp có chi phí đáng kể (DB dùng thuật toán sắp xếp/plan phù hợp).
+
+#### 5) O(n^2) — vòng lặp lồng nhau trên cùng tập, nổ nhanh
+- Ví dụ: so sánh mọi cặp phần tử (double loop).
+~~~java
+// O(n^2): với n=10.000 -> ~100.000.000 lần lặp
+for (Order a : orders) {
+  for (Order b : orders) {
+    if (a.getUserId().equals(b.getUserId())) { /* ... */ }
+  }
+}
+~~~
+- Backend: ghép dữ liệu 2 list bằng 2 vòng {{for}} lồng thay vì dùng {{HashMap}} (đưa về ~O(n)) là lỗi hiệu năng kinh điển. n=100 thì ~10.000 phép so sánh; n=100.000 thì ~10.000.000.000 — không chạy nổi.
+
+### Bảng cảm nhận tăng trưởng (xấp xỉ số bước)
+| n | O(1) | O(log n) | O(n) | O(n log n) | O(n^2) |
+|---:|---:|---:|---:|---:|---:|
+| 1.000 | 1 | ~10 | 1.000 | ~10.000 | 1.000.000 |
+| 1.000.000 | 1 | ~20 | 1.000.000 | ~20.000.000 | 1.000.000.000.000 |
+
+(Con số minh họa bậc tăng trưởng, không phải mili-giây.)
+
+### Big-O trong backend: nhìn ở đâu
+- **Code Java**: vòng lặp, vòng lặp lồng, {{contains}} trên {{List}} (O(n) mỗi lần) đặt trong vòng lặp (thành O(n^2)), dùng {{HashSet/HashMap}} để giảm tra cứu.
+- **Database**: full table scan ~ duyệt O(n) theo số dòng đọc; index B-tree ~ O(log n) bước trên cây (cộng chi phí I/O). {{EXPLAIN}} cho thấy DB đang làm gì.
+- **Mạng/IO**: đôi khi n là số request; gọi API tuần tự n lần vs gom/batch/parallel là khác biệt lớn ngoài Big-O CPU thuần.
+
+### Lỗi hay gặp
+- **Chỉ nhìn Big-O, bỏ qua hằng số và I/O**: thuật toán O(n) truy cập mạng/đĩa ngẫu nhiên có thể chậm hơn O(n log n) trong RAM. Big-O là hướng dẫn, vẫn cần đo (profiling, metric).
+- **Dùng {{list.contains}} trong vòng lặp**: {{ArrayList.contains}} là O(n) → toàn bộ O(n^2). Đổi sang {{HashSet}} nếu cần tra cứu nhiều.
+- **Tối ưu sớm vi mô** nhưng bỏ qua O(n^2) rõ ràng trên dữ liệu có thể lớn (import, đồng bộ, báo cáo).
+- **Hiểu nhầm n**: n là "số đơn hàng mỗi user" hay "tổng số đơn hàng hệ thống"? Xác định n đúng mới đánh giá đúng.
+
+### Trả lời phỏng vấn thế nào
+Định nghĩa Big-O là tốc độ tăng theo n. Nêu nhanh 5 mức với 1 ví dụ backend mỗi mức ({{HashMap}}/index là O(1)/O(log n), duyệt list O(n), sort O(n log n), vòng lặp lồng O(n^2)). Đưa một ví dụ số liệu (n=1.000.000 thì O(n^2) không khả thi) và một lỗi thực tế ({{contains}} trong vòng lặp). Nhấn mạnh: Big-O giúp chọn hướng đúng, nhưng quyết định cuối cùng cần đo trên dữ liệu thật.
+
+> Senior tip: khi review code xử lý collection/batch, hãy tự hỏi "n tối đa ở production là bao nhiêu?" Nếu n có thể lên hàng chục nghìn, bất kỳ đoạn O(n^2) nào cũng là ứng viên gây sự cố khi dữ liệu tăng. Ưu tiên sửa bằng cấu trúc dữ liệu đúng ({{Map/Set}}), hoặc đẩy việc lọc/join về database có index — nơi có thuật toán và tối ưu phù hợp cho tập lớn.`,
+  follow: ['Vì sao {{ArrayList.contains}} trong một vòng lặp có thể gây O(n^2)? Bạn sửa thế nào?', 'Khi nào tra cứu bằng index B-tree được xem là gần O(log n) và giới hạn thực tế của nó là gì?'],
+  tags: ['Big-O', 'complexity', 'algorithm', 'performance', 'backend', 'nhập môn']
 }
 );
