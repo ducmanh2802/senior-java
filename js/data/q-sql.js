@@ -2860,4 +2860,420 @@ Vì sao phải khoá dòng product: hai transaction cùng kiểm tra "không ch�
   ],
   tags: ['temporal', 'valid_from', 'tstzrange', 'exclusion constraint', 'SCD Type 2', 'as-of query']
 }
+,
+{
+  id: 'sql-031',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Planner PostgreSQL chọn index hay sequential scan dựa vào thống kê thế nào? Selectivity, n_distinct, histogram và extended statistics (CREATE STATISTICS) giải thích ra sao, và khi nào planner chọn sai?',
+  a: `**Tóm tắt:** Planner ước lượng số dòng trả về (cardinality) bằng thống kê cột: **n_distinct** (số giá trị khác nhau), **histogram** (phân bố giá trị), **correlation** (độ sắp xếp so với heap). Nếu ước lượng << tổng số dòng, chọn index scan; nếu ~ toàn bảng, chọn seq scan. Khi các cột có **tương quan** (city + zip), planner mặc định nhân selectivity từng cột → ước lượng sai → phải dùng {{CREATE STATISTICS}}.
+
+### Thống kê PostgreSQL lưu ở đâu
+Sau {{ANALYZE}}, mỗi cột có một hàng trong {{pg_statistic}}:
+- {{stanullfrac}}: tỷ lệ NULL.
+- {{stadistinct}}: n_distinct (âm nếu tỷ lệ so với tổng dòng).
+- {{stakind1..5}}: loại thống kê: histogram, MCV (most common values), correlation...
+- {{stavalues1}}: danh sách giá trị phổ biến + tần suất.
+- {{stahistbounds}}: biên histogram.
+
+### Selectivity là gì
+Selectivity = tỷ lệ dòng thoả điều kiện. Ví dụ {{WHERE status='PAID'}}: nếu 'PAID' xuất hiện 30% số dòng → selectivity 0.3. Planner nhân selectivity với tổng số dòng để ra rows ước lượng. Nếu rows << tổng → index scan có lợi; nếu rows ~ tổng → seq scan rẻ hơn vì tránh random I/O.
+
+### Histogram và MCV
+- **MCV**: lưu top-N giá trị phổ biến kèm tần suất. Nếu giá trị trong WHERE nằm trong MCV → dùng tần suất chính xác.
+- **Histogram**: chia các giá trị còn lại thành bucket đều về số dòng. Dùng cho range scan ({{created_at > '2025-01-01'}}): nội suy vị trí trong bucket.
+- **Correlation**: hệ số Pearson giữa thứ tự giá trị cột và thứ tự vật lý trên đĩa (-1..1). Correlation cao → index scan rẻ (đọc theo thứ tự đĩa); thấp → random I/O nhiều.
+
+### Vấn đề tương quan giữa cột
+Planner giả định các điều kiện độc lập: {{P(city='HCM' AND zip LIKE '7%')}} = P(city) × P(zip). Nhưng thực tế zip phụ thuộc city → nhân làm underestimate → chọn index scan sai, hoặc overestimate → seq scan sai.
+
+### CREATE STATISTICS
+{{CREATE STATISTICS s (dependencies, ndistinct, mcv) ON city, zip FROM orders;}} rồi {{ANALYZE orders;}}. Planner dùng thống kê đa cột: dependencies biết zip phụ thuộc city; mcv biết tổ hợp phổ biến.
+
+### Khi planner chọn sai
+- Bảng vừa bulk load nhưng chưa ANALYZE → thống kê cũ.
+- Cột có phân bố lệch (skew): giá trị truy vấn có thể không có trong MCV, và histogram không đủ bucket để ước lượng chính xác.
+- Tham số truy vấn là placeholder (prepared statement) → planner dùng giá trị trung bình.
+- Work_mem quá nhỏ → planner tránh hash join.
+
+### Trên production
+- Triệu chứng: query chậm bất ngờ sau khi insert nhiều dữ liệu; EXPLAIN thấy rows ước lượng << rows thực tế.
+- Đo: {{EXPLAIN (ANALYZE, BUFFERS)}}; so sánh rows estimated vs actual.
+- Fix: {{ANALYZE table;}} sau bulk load; tăng {{default_statistics_target}}; tạo extended statistics; dùng {{SET plan_cache_mode = force_custom_plan}} cho prepared statement.
+
+> Senior tip: Thống kê là "bản đồ" của planner. Query chậm không phải lúc nào cũng do thiếu index — đôi khi chỉ cần ANALYZE lại. Luôn đọc rows estimated vs actual trước khi thêm index.`,
+  follow: [
+    'Tại sao planner đôi khi chọn seq scan dù có index phù hợp, và bạn ép planner dùng index như thế nào (SET enable_seqscan)?',
+    'Correlation của cột ảnh hưởng thế nào đến chi phí index scan, và REINDEX/CLUSTER làm gì?',
+    'Extended statistics supports dependencies, ndistinct, mcv — mỗi loại dùng khi nào?'
+  ],
+  tags: ['planner', 'statistics', 'selectivity', 'histogram', 'n_distinct', 'CREATE STATISTICS', 'correlation']
+},
+{
+  id: 'sql-032',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Ba thuật toán join: nested loop, hash join, merge join. Planner chọn cái nào khi nào, work_mem ảnh hưởng thế nào, và hash spill ra đĩa trông ra sao?',
+  a: `**Tóm tắt:** **Nested loop** tốt khi một bên nhỏ và có index trên bên kia. **Hash join** tốt cho equi-join lớn, cần work_mem đủ để build hash table trong RAM; nếu thiếu thì spill ra đĩa (batches). **Merge join** cần cả hai bên đã sort (hoặc index order) và tốt cho range join. Planner dựa vào cardinality và cost model.
+
+### Nested loop join
+- Vòng lặp: với mỗi dòng outer, tìm dòng inner khớp (index lookup hoặc seq scan).
+- Chi phí: O(N × M) nếu scan; O(N × log M) nếu có index.
+- Chọn khi: outer nhỏ, inner có index, hoặc join không equi ({{a.id < b.id}}).
+- Lợi: streaming, không cần work_mem lớn; bất lợi: chậm nếu cả hai lớn.
+
+### Hash join
+- Build phase: đọc bên nhỏ hơn, build hash table trong work_mem.
+- Probe phase: đọc bên lớn, probe hash table.
+- Chọn khi: equi-join ({{a.id = b.id}}), cả hai lớn, không có index.
+- work_mem: nếu hash table > work_mem → chia thành nhiều **batch** (partition), spill ra đĩa (temp files). Số batch = 2^k. EXPLAIN hiện "Batches: 4" hoặc "Disk Usage".
+- Tuning: tăng work_mem cho session ({{SET work_mem = '256MB'}}) nếu RAM đủ; nhưng work_mem là per-operation, không phải per-connection.
+
+### Merge join
+- Cần cả hai input đã sort theo join key.
+- Nếu đã có index theo key → sort miễn phí; nếu chưa → sort (external sort, có thể spill).
+- Chọn khi: input đã sort, hoặc range join ({{a.x BETWEEN b.lo AND b.hi}}), hoặc planner muốn tránh hash memory.
+- Ưu: output đã sort theo join key → hữu ích cho ORDER BY tiếp theo.
+
+### Bảng so sánh
+| Tiêu chí | Nested loop | Hash join | Merge join |
+|---|---|---|---|
+| Equi-join | ok | tốt nhất | tốt |
+| Range join | tốt | không | tốt |
+| Cần index | thường có | không | không (cần sort) |
+| Memory | thấp | cao (work_mem) | trung bình |
+| Streaming | có | không (build xong mới probe) | có |
+
+### Hash spill ra đĩa trông ra sao
+EXPLAIN ANALYZE: {{Hash Join ... (actual time=... rows=...) (Batches: 8  Memory Usage: 4096kB  Disk Usage: 123456kB)}}. Khi thấy Disk Usage → tăng work_mem hoặc giảm dữ liệu (filter sớm).
+
+### Trên production
+- Triệu chứng: query join lớn chậm, temp files đầy disk.
+- Đo: {{EXPLAIN (ANALYZE, BUFFERS)}}, xem {{Temp Read/Write}} trong BUFFERS.
+- Fix: tăng work_mem cho transaction; thêm index để planner chọn nested loop/merge; partition bảng; rewrite query filter sớm.
+
+> Senior tip: Hash join spill ra đĩa là "kẻ giết hiệu năng thầm lặng". Một dòng {{Disk Usage: 2GB}} trong EXPLAIN thường là nguyên nhân query chậm 10x. Luôn đọc hết EXPLAIN, không chỉ thời gian.`,
+  follow: [
+    'work_mem là per-operation hay per-connection, và đặt bao nhiêu là an toàn?',
+    'Khi nào planner chọn nested loop dù cả hai bảng lớn?',
+    'Parallel hash join trong PostgreSQL hoạt động thế nào?'
+  ],
+  tags: ['join', 'nested loop', 'hash join', 'merge join', 'work_mem', 'spill', 'planner']
+},
+{
+  id: 'sql-033',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Đọc EXPLAIN (ANALYZE, BUFFERS) như senior: rows ước lượng vs thực tế, loops, shared hit/read, và cách phát hiện bottleneck.',
+  a: `**Tóm tắt:** EXPLAIN ANALYZE chạy thật query và báo thời gian + rows thực tế. So sánh **rows estimated** (planner đoán) vs **actual rows** (thực tế): lệch lớn → thống kê sai. **loops**: số lần node chạy (nested loop inner chạy N lần). **shared hit/read**: cache hit vs đọc đĩa. Bottleneck thường là node có actual time lớn nhất hoặc seq scan trên bảng lớn.
+
+### Các biến thể EXPLAIN
+- {{EXPLAIN}}: chỉ plan, không chạy.
+- {{EXPLAIN ANALYZE}}: chạy thật, báo actual time + rows.
+- {{EXPLAIN (ANALYZE, BUFFERS)}}: thêm cache/disk I/O.
+- {{EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)}}: dễ parse bằng tool.
+
+### Đọc output từng node
+Mỗi node có dạng: {{Seq Scan on orders (cost=0.00..1234.56 rows=100 width=32) (actual time=0.012..12.345 rows=98 loops=1)}}.
+- **cost**: startup..total (đơn vị cost arbitrary, không phải ms).
+- **rows**: ước lượng planner.
+- **actual time**: ms thực tế (startup..total).
+- **rows (actual)**: số dòng thực tế.
+- **loops**: số lần node thực thi. Nếu loops=1000 và time=0.5ms → tổng 500ms.
+
+### So sánh estimated vs actual rows
+- Lệch < 2x: bình thường.
+- Lệch 10x+: thống kê sai → ANALYZE hoặc extended statistics.
+- Lệch 1000x+: thường do correlation, placeholder, hoặc function trong WHERE.
+
+### shared hit / read
+- **shared hit**: block đã có trong shared_buffers (RAM) → rẻ.
+- **shared read**: phải đọc từ OS/disk → đắt.
+- Tỷ lệ hit cao (>99%) là tốt. Nếu read nhiều → tăng shared_buffers hoặc index.
+- **temp read/write**: spill ra đĩa (sort/hash). Cần tăng work_mem.
+
+### Cách tìm bottleneck
+1. Đọc từ dưới lên: node con chạy trước.
+2. Node có **actual time** lớn nhất và loops lớn → bottleneck.
+3. Seq Scan trên bảng lớn với filter → thiếu index hoặc selectivity cao (planner đúng khi chọn seq scan).
+4. Nested Loop với inner seq scan và loops lớn → thiếu index inner.
+5. Sort với "external merge" → spill, tăng work_mem.
+
+### Ví dụ output
+~~~text
+Nested Loop  (cost=... rows=10) (actual time=0.1..45.2 rows=10 loops=1)
+  -> Seq Scan on users (cost=... rows=1000) (actual time=0.01..0.5 rows=1000 loops=1)
+  -> Index Scan on orders (cost=... rows=1) (actual time=0.02..0.04 rows=1 loops=1000)
+        Index Cond: (user_id = users.id)
+Planning Time: 0.2 ms
+Execution Time: 45.5 ms
+~~~
+Inner index scan loops=1000 → 1000 lookup, mỗi 0.04ms → 40ms. Nếu thêm index composite có thể giảm.
+
+### Trên production
+- Triệu chứng: query chậm nhưng không rõ nguyên nhân.
+- Đo: {{EXPLAIN (ANALYZE, BUFFERS)}}; lưu plan vào file; so sánh với baseline.
+- Fix: theo bottleneck; không đoán. Dùng {{auto_explain}} để log plan của query chậm tự động: {{shared_preload_libraries = 'auto_explain'}} + {{auto_explain.log_min_duration = '1s'}}.
+
+> Senior tip: EXPLAIN là "X-quang" của query. Senior không đoán — senior đọc plan. Luôn bật auto_explain trên production để bắt plan của query chậm mà không cần tái hiện.`,
+  follow: [
+    'loops nhân với time như thế nào, và vì sao node có time nhỏ nhưng tổng lớn?',
+    'Seq Scan không phải lúc nào cũng xấu — khi nào planner chọn đúng?',
+    'auto_explain và pg_stat_statements dùng để giám sát query thế nào?'
+  ],
+  tags: ['EXPLAIN', 'ANALYZE', 'BUFFERS', 'loops', 'shared hit', 'shared read', 'bottleneck']
+},
+{
+  id: 'sql-034',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Keyset pagination vs OFFSET: vì sao OFFSET chậm khi trang sâu, và window function (ROW_NUMBER, RANK) chạy thế nào (sort + frame)?',
+  a: `**Tóm tắt:** {{OFFSET N}} buộc DB đọc và bỏ N dòng → O(N) mỗi trang, trang sâu thì chậm. **Keyset pagination** dùng điều kiện {{WHERE (created_at, id) > (last_ts, last_id)}} với index → O(log N) mỗi trang. **Window function** chạy qua sort + frame: sort theo PARTITION/ORDER BY, rồi tính aggregate trên "khung" (frame) của mỗi dòng.
+
+### Vấn đề của OFFSET
+{{SELECT * FROM orders ORDER BY created_at DESC LIMIT 20 OFFSET 100000;}}
+DB phải sort toàn bảng, skip 100000 dòng, trả 20. Chi phí tỷ lệ với offset → trang 5000 chậm hơn trang 1 rất nhiều. Ngoài ra dữ liệu thay đổi giữa các trang → trùng/lạc dòng.
+
+### Keyset pagination (seek method)
+Lưu giá trị của dòng cuối trang trước: {{last_created_at, last_id}}.
+Trang sau: {{SELECT * FROM orders WHERE (created_at, id) < (last_ts, last_id) ORDER BY created_at DESC, id DESC LIMIT 20;}}
+- Dùng row constructor comparison → index trên (created_at, id) → seek O(log N).
+- Ổn định khi dữ liệu thay đổi (không trùng/lạc).
+- Nhược: không nhảy tới trang arbitrary; cần sort key unique (thêm id tie-breaker).
+
+### Window function: cơ chế
+{{SELECT user_id, amount, ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at) AS rn FROM orders;}}
+1. **Partition**: chia dòng thành nhóm theo user_id (hash hoặc sort).
+2. **Sort**: trong mỗi partition sort theo created_at.
+3. **Frame**: với mỗi dòng, tính hàm trên "khung" dòng liên quan. Mặc định frame = RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW (tất cả dòng từ đầu partition đến dòng hiện tại).
+4. Tính ROW_NUMBER/RANK/SUM...
+
+### Frame types
+- {{ROWS BETWEEN 3 PRECEDING AND 3 FOLLOWING}}: 7 dòng vật lý.
+- {{RANGE BETWEEN ...}}: theo giá trị ORDER BY (có thể nhiều dòng cùng giá trị).
+- {{GROUPS}}: nhóm peer.
+
+### Chi phí
+Window function cần sort → có thể spill ra đĩa nếu dữ liệu lớn. Nếu đã có index theo (PARTITION, ORDER BY) → sort miễn phí. EXPLAIN hiện "WindowAgg" node với "Sort Method: external merge Disk".
+
+### Ví dụ top-N mỗi nhóm
+~~~sql
+SELECT * FROM (
+  SELECT o.*, ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY amount DESC) AS rn
+  FROM orders o
+) t WHERE rn <= 3;
+~~~
+Lấy 3 đơn lớn nhất mỗi user. Không có window function phải self-join phức tạp.
+
+### Trên production
+- Triệu chứng: API list chậm khi user scroll sâu; timeout ở trang > 100.
+- Đo: EXPLAIN với OFFSET lớn; so sánh execution time trang 1 vs trang 100.
+- Fix: chuyển keyset pagination; thêm index composite (created_at, id); cache tổng số nếu UI cần "trang X/Y" (chấp nhận approximate).
+
+> Senior tip: OFFSET là "anti-pattern" cho pagination production. Keyset pagination là chuẩn cho feed vô hạn (Twitter, Instagram). Nếu UI bắt buộc số trang, cache count và chấp nhận sai số nhỏ.`,
+  follow: [
+    'RANK vs DENSE_RANK vs ROW_NUMBER khác nhau thế nào khi có giá trị bằng nhau?',
+    'Frame mặc định RANGE vs ROWS khác nhau khi ORDER BY có duplicate?',
+    'Làm sao paginate khi sort theo cột không unique mà không có id?'
+  ],
+  tags: ['pagination', 'keyset', 'offset', 'window function', 'ROW_NUMBER', 'frame', 'sort']
+},
+{
+  id: 'sql-035',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Index composite: thứ tự cột, leftmost prefix, index cho ORDER BY + LIMIT, partial index, covering index (INCLUDE). Thiết kế index thế nào cho hiệu quả?',
+  a: `**Tóm tắt:** Index B-tree composite sắp xếp theo thứ tự cột từ trái sang phải → chỉ dùng được **leftmost prefix**. Cột equality trước, range sau. Index có thể phục vụ **ORDER BY + LIMIT** nếu thứ tự khớp. **Partial index** chỉ index subset (WHERE active=true) → nhỏ và nhanh. **Covering index (INCLUDE)** thêm cột payload để index-only scan, tránh heap fetch.
+
+### B-tree composite và leftmost prefix
+Index trên (a, b, c) sort theo a rồi b rồi c. Query:
+- {{WHERE a=1}} → dùng index (prefix a).
+- {{WHERE a=1 AND b=2}} → dùng index.
+- {{WHERE b=2}} → KHÔNG dùng index (không có prefix a). Phải tạo index riêng trên b.
+- {{WHERE a=1 AND c=3}} → dùng prefix a, filter c sau.
+
+### Thứ tự cột: equality trước, range sau
+- Cột equality ({{=}}) đặt trước.
+- Cột range ({{>, <, BETWEEN}}) đặt sau, vì sau range không dùng được prefix tiếp.
+- Ví dụ filter {{WHERE status='PAID' AND created_at > '2025-01-01'}} → index (status, created_at). Đảo thành (created_at, status) → chỉ dùng created_at range, filter status sau → kém hơn.
+
+### Index cho ORDER BY + LIMIT
+{{SELECT * FROM orders WHERE user_id=5 ORDER BY created_at DESC LIMIT 20;}}
+Index (user_id, created_at DESC) → planner đi index theo thứ tự, lấy 20 dòng đầu → không sort, không đọc hết. Nếu index (user_id, created_at ASC) → phải scan ngược (vẫn ok) hoặc sort.
+
+### Partial index
+{{CREATE INDEX idx_orders_pending ON orders(created_at) WHERE status='PENDING';}}
+- Chỉ index dòng pending → index nhỏ (nếu pending ít).
+- Query phải có cùng điều kiện {{WHERE status='PENDING' ...}} thì planner mới dùng.
+- Dùng cho: soft delete ({{WHERE deleted_at IS NULL}}), trạng thái hot (pending, active).
+
+### Covering index (INCLUDE)
+{{CREATE INDEX idx_orders_user ON orders(user_id) INCLUDE (total, status);}}
+- INCLUDE thêm cột vào leaf page nhưng không tham gia sort/search.
+- Cho phép **index-only scan**: trả total, status từ index mà không fetch heap → nhanh nếu visibility map cho phép.
+- PostgreSQL 11+; MySQL có "covering index" tự nhiên (secondary index chứa PK).
+
+### Index-only scan điều kiện
+Cần visibility map đánh dấu page "all visible" → sau VACUUM. Nếu không, phải fetch heap để check visibility → mất lợi ích.
+
+### Trên production
+- Triệu chứng: query có index nhưng vẫn chậm; EXPLAIN hiện "Index Scan" với "Heap Fetches" lớn.
+- Đo: {{EXPLAIN (ANALYZE, BUFFERS)}}; xem "Index Only Scan" vs "Index Scan".
+- Fix: VACUUM ANALYZE; INCLUDE cột payload; partial index cho subset hot; tránh index thừa (mỗi index làm chậm write).
+
+> Senior tip: Mỗi index là "thuế" trên mọi write. Senior không thêm index theo cảm tính — senior đọc query plan, đo, rồi thêm đúng index. Index thừa còn tệ hơn thiếu index vì làm chậm insert/update và phình storage.`,
+  follow: [
+    'Index-only scan yêu cầu visibility map thế nào, và VACUUM làm gì?',
+    'Khi nào nên dùng BRIN index thay vì B-tree?',
+    'Index trên expression (CREATE INDEX ON t (lower(email))) dùng khi nào?'
+  ],
+  tags: ['index', 'composite', 'leftmost prefix', 'partial index', 'covering index', 'INCLUDE', 'ORDER BY']
+},
+{
+  id: 'sql-036',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Hàm trên cột, implicit cast, OR làm mất index; LIKE với wildcard đầu chuỗi và pg_trgm. Vì sao query tưởng có index mà vẫn seq scan?',
+  a: `**Tóm tắt:** Index trên cột {{email}} không dùng được khi query {{WHERE lower(email)=...}} (hàm trên cột) hay {{WHERE email::text = ...}} (cast). {{OR}} giữa các cột khác nhau có thể làm planner bỏ index. {{LIKE '%abc'}} (wildcard đầu) không dùng B-tree → cần **pg_trgm** + GIN index. Fix: expression index, rewrite OR thành UNION, trgm index.
+
+### Hàm trên cột phá index
+Index trên {{email}} lưu giá trị gốc. Query {{WHERE lower(email) = 'a@b.com'}} → planner không thể dùng index vì index không lưu lower(email). Phải tính lower() cho mọi dòng → seq scan.
+Fix: expression index {{CREATE INDEX ON users (lower(email));}} và query phải khớp chính xác expression.
+
+### Implicit cast
+Cột {{phone VARCHAR}}, query {{WHERE phone = 12345}} (số). DB cast cột sang số: {{WHERE phone::integer = 12345}} → hàm trên cột → mất index. Hoặc cast literal: {{WHERE phone = '12345'}} → dùng index. Luôn so sánh cùng kiểu.
+
+### OR làm mất index
+{{WHERE status='PAID' OR created_at > '2025-01-01'}}: nếu hai điều kiện dùng index khác nhau, planner có thể chọn seq scan vì bitmap OR tốn kém, hoặc không merge được. 
+Fix: rewrite thành {{UNION}} của hai query có index riêng, hoặc dùng {{(status='PAID') OR (created_at > ...)}} với bitmap OR (planner tự chọn nếu có index cả hai).
+
+### LIKE với wildcard đầu chuỗi
+{{WHERE name LIKE '%abc'}}: B-tree sort theo prefix, không thể seek suffix → seq scan. {{LIKE 'abc%'}} → dùng index (prefix).
+Fix pg_trgm:
+1. {{CREATE EXTENSION pg_trgm;}}
+2. {{CREATE INDEX ON products USING gin (name gin_trgm_ops);}}
+3. Query {{WHERE name LIKE '%abc%'}} hoặc {{WHERE name ILIKE '%abc%'}} → GIN trgm index.
+Trade-off: index lớn, write chậm; phù hợp search text vừa phải. Search lớn → Elasticsearch/OpenSearch.
+
+### Collation và case-insensitive
+{{ILIKE}} và {{COLLATE "und-x-icu"}}. Index phải cùng collation. {{CREATE INDEX ON t (name COLLATE "en-US-x-icu");}}
+
+### Trên production
+- Triệu chứng: query có index nhưng EXPLAIN hiện Seq Scan; hoặc query LIKE '%...%' chậm.
+- Đo: EXPLAIN; kiểm tra kiểu dữ liệu cột vs literal; kiểm tra function trong WHERE.
+- Fix: expression index; cast literal đúng kiểu; pg_trgm GIN; hoặc chuyển search sang ES.
+
+> Senior tip: "Có index" không đồng nghĩa "dùng index". Index chỉ dùng được khi query khớp cấu trúc index. Một dấu {{%}} ở đầu chuỗi hay một hàm {{lower()}} là đủ để vô hiệu hoá index. Luôn đọc EXPLAIN, đừng tin vào sự tồn tại của index.`,
+  follow: [
+    'Expression index và partial index kết hợp thế nào cho case-insensitive unique email?',
+    'pg_trgm có thể dùng cho similarity search (similarity()) ra sao?',
+    'Bitmap scan và bitmap heap scan khác index scan thường thế nào?'
+  ],
+  tags: ['index', 'function on column', 'implicit cast', 'OR', 'LIKE', 'pg_trgm', 'GIN', 'expression index']
+},
+{
+  id: 'sql-037',
+  topic: 'sql',
+  level: 'lead',
+  q: 'Thiết kế schema cho hệ thống nhiều tenant (multi-tenant): row-level security, partition theo tenant, connection pooling và isolation. Trade-off và pitfall production.',
+  a: `**Tóm tắt:** Ba mô hình: (1) **shared table + tenant_id** (rẻ, rủi ro leak), (2) **schema per tenant** (isolation tốt, migration nặng), (3) **database per tenant** (isolation tối đa, chi phí cao). Production thường dùng shared table + **RLS** (Row-Level Security) + index tenant_id, kết hợp partition theo tenant cho bảng lớn. Pool connection phải aware tenant.
+
+### Mô hình 1: shared table + tenant_id
+- Mọi bảng có cột {{tenant_id}}.
+- Ưu: rẻ, migration đơn giản, backup đơn giản.
+- Nhược: rủi ro leak dữ liệu nếu quên filter; noisy neighbor (tenant lớn ảnh hưởng tenant nhỏ).
+- Bắt buộc: RLS + index (tenant_id, ...) + test leak.
+
+### Row-Level Security (PostgreSQL)
+{{ALTER TABLE orders ENABLE ROW LEVEL SECURITY;}}
+{{CREATE POLICY tenant_isolation ON orders USING (tenant_id = current_setting('app.tenant_id')::uuid);}}
+App set {{SET LOCAL app.tenant_id = '...'}} mỗi request trong transaction. DB tự filter → kể cả query quên WHERE tenant_id vẫn an toàn.
+- Lưu ý: RLS bypass cho superuser/owner → app user phải không phải owner.
+- Performance: RLS thêm predicate → planner xử lý như filter bình thường; cần index tenant_id.
+
+### Mô hình 2: schema per tenant
+- Mỗi tenant một schema ({{tenant_abc.orders}}).
+- Ưu: isolation logic, backup per tenant dễ, có thể custom schema.
+- Nhược: migration phải chạy N lần; connection pool phải set search_path; metadata lớn.
+
+### Mô hình 3: database per tenant
+- Isolation tối đa, compliance (GDPR), noisy neighbor không ảnh hưởng.
+- Nhược: chi phí lớn, migration phức tạp, cross-tenant query khó.
+
+### Partition theo tenant
+Với bảng rất lớn: partition by tenant_id (LIST) hoặc by hash. Lợi: partition pruning khi query một tenant; VACUUM/drop partition nhanh. Nhược: partition management overhead.
+
+### Connection pooling
+- PgBouncer transaction mode: {{SET LOCAL}} hoạt động vì cùng transaction. Session-level state (search_path) có thể bị reset → dùng transaction mode cẩn thận.
+- Tenant-aware pool: mỗi tenant có pool riêng (cost cao) hoặc pool chung + set tenant per transaction.
+
+### Noisy neighbor
+- Tenant lớn quét bảng → lock contention, cache eviction.
+- Fix: rate limit per tenant; partition; resource quota; read replica per tenant lớn.
+
+### Trên production
+- Triệu chứng: data leak giữa tenant (security incident); query chậm khi một tenant lớn.
+- Đo: audit log truy vấn; pg_stat_activity; latency per tenant.
+- Fix: RLS bắt buộc; test integration kiểm tra leak; monitoring per tenant.
+
+> Senior tip: Multi-tenant là bài toán "security + performance" cùng lúc. RLS là phòng tuyến cuối cùng — dù code quên filter, DB vẫn chặn. Nhưng đừng quên test RLS với user không phải owner, vì owner bypass RLS là bẫy kinh điển.`,
+  follow: [
+    'RLS với FORCE ROW LEVEL SECURITY khác ENABLE thế nào?',
+    'Làm sao test leak dữ liệu giữa tenant trong CI?',
+    'Khi nào nên chuyển từ shared table sang database per tenant?'
+  ],
+  tags: ['multi-tenant', 'RLS', 'partition', 'connection pool', 'isolation', 'noisy neighbor']
+},
+{
+  id: 'sql-038',
+  topic: 'sql',
+  level: 'lead',
+  q: 'Thiết kế transaction và concurrency cho hệ thống tài chính: isolation level, phantom read, deadlock detection, optimistic vs pessimistic locking, và idempotency.',
+  a: `**Tóm tắt:** Hệ thống tài chính cần **SERIALIZABLE** hoặc **REPEATABLE READ** + locking rõ ràng. **Pessimistic locking** ({{SELECT ... FOR UPDATE}}) cho số dư tài khoản. **Optimistic locking** (version column) cho dữ liệu ít tranh chấp. **Deadlock** do thứ tự lock khác nhau → chuẩn hoá thứ tự lock. **Idempotency key** để retry an toàn.
+
+### Isolation levels
+- **READ COMMITTED** (default PG): mỗi statement thấy commit mới nhất. Phantom read có thể xảy ra giữa hai statement.
+- **REPEATABLE READ**: snapshot tại transaction start. Phantom read không xảy ra trong PG (dùng MVCC), nhưng serialization anomaly có thể.
+- **SERIALIZABLE**: thực thi như chạy tuần tự (serial). An toàn nhất nhưng chậm và có thể fail với serialization error → phải retry.
+
+### MVCC trong PostgreSQL
+Mỗi transaction thấy snapshot dữ liệu tại thời điểm bắt đầu (hoặc statement). Update tạo version mới; old version giữ cho transaction cũ. VACUUM dọn version cũ. → Reader không block writer, writer không block reader.
+
+### Phantom read
+Transaction A đọc {{SELECT count(*) WHERE status='PENDING'}} = 5. Transaction B insert dòng mới pending và commit. A đọc lại → 6. Với REPEATABLE READ trong PG, A vẫn thấy 5 (snapshot). Với READ COMMITTED, A thấy 6.
+
+### Pessimistic locking
+{{SELECT balance FROM accounts WHERE id=1 FOR UPDATE;}} → lock dòng. Transaction khác muốn lock cùng dòng phải chờ. Dùng cho: chuyển tiền, trừ tồn kho.
+- {{FOR UPDATE SKIP LOCKED}}: bỏ qua dòng đã lock → hữu ích cho queue worker.
+- {{FOR UPDATE NOWAIT}}: fail ngay nếu lock bị giữ.
+
+### Optimistic locking
+Thêm cột {{version int}}. Update: {{UPDATE accounts SET balance=..., version=version+1 WHERE id=1 AND version=5;}}. Nếu 0 rows affected → conflict → retry. Dùng cho dữ liệu ít tranh chấp (profile, config).
+
+### Deadlock
+Hai transaction lock tài nguyên theo thứ tự ngược nhau:
+- T1: lock A rồi B.
+- T2: lock B rồi A.
+→ deadlock. PostgreSQL phát hiện deadlock cycle (thường trong vòng 1s nhờ deadlock_timeout) và abort một transaction (victim).
+Fix: chuẩn hoá thứ tự lock (luôn lock theo id tăng dần); retry transaction bị abort; giữ transaction ngắn.
+
+### Idempotency
+API thanh toán có thể retry (network timeout). Dùng **idempotency key** (UUID từ client) lưu trong bảng {{payments(idempotency_key, ...)}} với UNIQUE constraint. Retry cùng key → trả kết quả cũ, không thực hiện lại.
+
+### Outbox pattern
+Để publish event sau commit DB mà không mất: ghi event vào bảng {{outbox}} trong cùng transaction; worker riêng đọc outbox và publish. Đảm bảo at-least-once.
+
+### Trên production
+- Triệu chứng: deadlock error; lost update; duplicate charge.
+- Đo: {{pg_stat_database}} deadlocks; log ERROR; tracing transaction duration.
+- Fix: chuẩn hoá thứ tự lock; retry serialization failure; idempotency key; outbox.
+
+> Senior tip: Trong tài chính, "đúng" quan trọng hơn "nhanh". Dùng SERIALIZABLE + retry cho logic phức tạp; pessimistic lock cho số dư; và idempotency key cho mọi API có side-effect. Deadlock không phải bug — là thiết kế sai thứ tự lock; chuẩn hoá thứ tự lock là cure.`,
+  follow: [
+    'SERIALIZABLE trong PostgreSQL dùng SSI (Serializable Snapshot Isolation) thế nào?',
+    'FOR UPDATE và FOR SHARE khác nhau thế nào?',
+    'Làm sao xử lý retry serialization failure trong Spring @Transactional?'
+  ],
+  tags: ['transaction', 'isolation', 'MVCC', 'deadlock', 'pessimistic locking', 'optimistic locking', 'idempotency', 'outbox']
+}
 );
