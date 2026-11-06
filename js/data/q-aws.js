@@ -3431,4 +3431,329 @@ Cách 3: Mount secret vào env var qua ECS/Lambda (ít linh hoạt, không reloa
   ],
   tags: ['Secrets Manager', 'Parameter Store', 'rotation', 'Spring Boot', 'lead']
 }
+,
+{
+  id: 'aws-047',
+  topic: 'aws',
+  level: 'senior',
+  q: 'VPC: route table, NAT Gateway, VPC Endpoint (Gateway vs Interface) — vì sao chi phí NAT tăng vọt khi EC2 gọi S3?',
+  a: `**Tóm tắt:** NAT Gateway tính tiền theo GB data processed; gọi S3 qua NAT = trả tiền NAT + S3. Dùng S3 Gateway Endpoint (miễn phí, thêm route vào route table) để traffic đi nội bộ AWS, không qua NAT và không mất tiền NAT.
+
+### Cái gì là route table
+Route table là "bảng chỉ đường" của subnet: mỗi dòng {destination CIDR -> target}. Ví dụ 10.0.0.0/16 -> local (trong VPC), 0.0.0.0/0 -> nat-xxx (ra internet). Subnet liên kết với 1 route table.
+
+### NAT Gateway
+NAT Gateway đặt ở public subnet, có Elastic IP, cho phép private subnet ra internet (outbound only). Tính tiền: ~$0.045/giờ + $0.045/GB processed. Quan trọng: "processed" = mọi byte đi qua NAT, kể cả S3.
+
+### VPC Endpoint
+- Gateway Endpoint: chỉ cho S3 và DynamoDB. Miễn phí, thêm route trong route table (pl-xxx -> vpce). Traffic không qua NAT/internet.
+- Interface Endpoint (PrivateLink): cho hầu hết service AWS, tạo ENI trong subnet, có phí/giờ + $/GB. Dùng khi cần private access hoặc service không có Gateway Endpoint.
+
+### Vì sao chi phí NAT tăng vọt với S3
+EC2 private subnet download 1 TB từ S3: traffic đi NAT -> $45 NAT + S3 transfer. Nếu dùng Gateway Endpoint: $0 NAT (S3 transfer trong cùng region miễn phí). Nhiều team quên endpoint -> bill NAT khổng lồ.
+
+### Trên production
+- Triệu chứng: bill NAT Gateway cao bất thường, CloudWatch NatGatewayBytesProcessed lớn.
+- Cách đo: Cost Explorer filter NAT Gateway; metric NatGatewayBytesProcessed.
+- Tuning: tạo S3 Gateway Endpoint cho mọi VPC có EC2 gọi S3; bật S3 bucket policy yêu cầu VPC endpoint; dùng Interface Endpoint cho ECR/Secrets Manager nếu private.
+- Pitfall: Gateway Endpoint không hỗ trợ cross-region; Interface Endpoint cần SG cho ENI; endpoint policy mặc định allow all -> siết lại.
+
+### So sánh
+| | NAT Gateway | S3 Gateway Endpoint | Interface Endpoint |
+|---|---|---|---|
+| Phí | $/giờ + $/GB | miễn phí | $/giờ + $/GB |
+| Service | mọi internet | S3, DynamoDB | hầu hết AWS |
+| Bảo mật | ra internet | chỉ AWS backbone | private |
+
+> Senior tip: luôn tạo S3 Gateway Endpoint đầu tiên khi dựng VPC; kiểm tra bill NAT hàng tháng — nếu NatGatewayBytesProcessed > 1 TB/tháng và đa số là S3, bạn đang đốt tiền.`,
+  follow: [
+    'Gateway Endpoint và Interface Endpoint khác nhau thế nào, khi nào chọn cái nào?',
+    'Làm sao bắt buộc traffic S3 phải đi qua VPC endpoint (bucket policy)?',
+    'VPC Flow Logs giúp debug routing thế nào?'
+  ],
+  tags: ['VPC', 'NAT', 'Endpoint', 'S3', 'senior']
+},
+{
+  id: 'aws-048',
+  topic: 'aws',
+  level: 'senior',
+  q: 'ALB vs NLB: layer 7 vs layer 4, giữ IP client, idle timeout gây 502/504 với keep-alive của app Java',
+  a: `**Tóm tắt:** ALB hiểu HTTP (routing theo path/host, WebSocket), NLB ở layer 4 giữ IP client và latency thấp. Idle timeout của ALB (mặc định 60s) cắt connection keep-alive của Tomcat/Netty -> 502/504 nếu app giữ connection lâu hơn. Fix: tune idle timeout ALB > app keep-alive timeout, hoặc tắt keep-alive.
+
+### Layer
+- ALB (Application LB): layer 7, HTTP/HTTPS/gRPC/WebSocket. Routing theo host, path, header, query. Terminate TLS. Có WAF integration.
+- NLB (Network LB): layer 4, TCP/UDP/TLS. Giữ IP client (preserve client IP), latency ~ microseconds, static IP/EIP per AZ. Không hiểu HTTP.
+
+### Giữ IP client
+- ALB: app thấy IP của ALB; IP client nằm trong X-Forwarded-For header. Cần cấu hình Tomcat RemoteIpValve hoặc Spring server.forward-headers-strategy=framework.
+- NLB: app thấy IP client thật (nếu target type instance/ip). Tốt cho protocol không HTTP hoặc cần IP thật.
+
+### Idle timeout và 502/504
+ALB có idle timeout (default 60s). Nếu connection giữa ALB và target idle > timeout, ALB đóng connection. Nếu app (Tomcat keep-alive timeout 20s? Actually Tomcat default keepAliveTimeout 20s; nếu app set lớn) hoặc client gửi request trên connection đã bị ALB đóng -> 502 Bad Gateway hoặc 504 Gateway Timeout.
+
+Triệu chứng: 502/504 rải rác, thường với long-polling, SSE, hoặc batch upload. Log ALB: target_connection_error_count, http_5xx_count.
+
+### Fix
+- Set ALB idle timeout > app keep-alive timeout + buffer (ví dụ app 30s, ALB 60s) HOẶC app keep-alive timeout > ALB? Quy tắc: timeout của hop ngắn hơn phải < hop dài hơn. ALB-target: ALB idle timeout nên > target keep-alive timeout. Client-ALB: client timeout < ALB idle timeout.
+- Với SSE/long-poll: tăng idle timeout ALB lên 300-3600s (max 4000s) hoặc dùng NLB.
+- Tắt keep-alive ở app nếu traffic ngắn: server.tomcat.keep-alive-timeout=1.
+
+### Trên production
+- Metric: ALB TargetResponseTime, HTTPCode_Target_5XX_Count, TargetConnectionErrorCount.
+- ALB access log: tìm 502/504 và elapsed time.
+- Pitfall: health check path trả 200 nhanh; deregistration delay (default 300s) chờ connection drain khi deploy.
+
+> Senior tip: vẽ timeline: client idle timeout < ALB idle timeout < target keep-alive timeout là sai; đúng là target keep-alive timeout < ALB idle timeout < client timeout. Sai thứ tự -> 502 ngẫu nhiên khó debug.`,
+  follow: [
+    'Khi nào chọn NLB thay vì ALB cho service Java?',
+    'Cách cấu hình Spring Boot nhận IP client thật qua ALB?',
+    'Deregistration delay ảnh hưởng deploy thế nào?'
+  ],
+  tags: ['ALB', 'NLB', 'keep-alive', '502', 'senior']
+},
+{
+  id: 'aws-049',
+  topic: 'aws',
+  level: 'senior',
+  q: 'RDS Multi-AZ failover thực tế: DNS, thời gian, read replica lag, RDS Proxy với Lambda',
+  a: `**Tóm tắt:** Multi-AZ là synchronous replication standby ở AZ khác; failover đổi DNS endpoint (TTL thấp) trong 1-2 phút, connection đang mở bị drop -> app phải retry. Read replica là async -> lag. RDS Proxy gom connection, hợp Lambda (nhiều concurrent connection).
+
+### Multi-AZ cơ chế
+- Primary ở AZ A, standby synchronous ở AZ B. Standby không serve read (chỉ standby). Failover tự động khi primary fail (hardware, AZ outage, patch).
+- Failover: promote standby, đổi DNS CNAME endpoint sang instance mới. TTL ~5s. Thời gian thực tế 60-120s (phát hiện + promote + DNS propagate). Connection đang mở bị reset -> SQLException.
+
+### App Java phải làm gì
+- Dùng connection pool (HikariCP) với validation query và retry. Set connectionTimeout, maxLifetime < failover time? Thực tế: catch SQLException, retry với backoff. Spring @Retryable.
+- Multi-AZ không tăng read capacity (standby không đọc). Muốn scale read -> Read Replica.
+
+### Read Replica lag
+- Async replication: replica có thể lag vài ms đến vài giây (hoặc phút khi load cao). Đọc ngay sau write -> stale data. Dùng cho report/analytics, không cho read-after-write critical.
+- Cross-region replica cho DR; lag cao hơn.
+
+### RDS Proxy với Lambda
+- Lambda mỗi invocation mở connection -> thousands concurrent connections overwhelm RDS. RDS Proxy là connection pooler giữa Lambda và RDS, reuse connection, giảm connection churn, hỗ trợ IAM auth và failover nhanh hơn (proxy giữ connection).
+- Pinning: transaction hoặc session state (SET, temp table, advisory lock) làm proxy không thể reuse connection -> mất lợi ích. Tránh session-level state.
+
+### Trên production
+- Metric: DatabaseConnections, ReplicaLag, Failover events (RDS events).
+- Test failover định kỳ (reboot with failover) trong maintenance window.
+- Pitfall: app cache DNS dài -> sau failover vẫn trỏ instance cũ; set JVM DNS TTL thấp (networkaddress.cache.ttl=5) hoặc dùng proxy.
+
+> Senior tip: Multi-AZ cho HA, Read Replica cho scale read — đừng nhầm. Với Lambda luôn dùng RDS Proxy, và kiểm tra pinning metric; pinning cao = đang dùng session state và proxy vô dụng.`,
+  follow: [
+    'Làm sao test failover RDS mà không downtime người dùng?',
+    'Khi nào dùng Aurora thay vì RDS PostgreSQL?',
+    'Read replica lag đo thế nào và ngưỡng nào cần alert?'
+  ],
+  tags: ['RDS', 'Multi-AZ', 'Read Replica', 'RDS Proxy', 'Lambda', 'senior']
+},
+{
+  id: 'aws-050',
+  topic: 'aws',
+  level: 'senior',
+  q: 'SQS: visibility timeout, at-least-once, FIFO + message group, DLQ và redrive',
+  a: `**Tóm tắt:** SQS at-least-once: message có thể deliver nhiều lần. Visibility timeout ẩn message sau khi nhận; nếu xử lý xong không delete -> nhận lại. FIFO + MessageGroupId đảm bảo thứ tự trong group. DLQ bắt message fail nhiều lần, redrive để replay.
+
+### Visibility timeout
+Khi consumer receive message, SQS ẩn message trong visibility timeout (default 30s). Consumer phải xử lý và delete message trước hết timeout. Nếu crash -> message hiện lại -> consumer khác xử lý. Nếu xử lý > timeout -> duplicate processing. Set timeout >= xử lý worst-case, hoặc extend (ChangeMessageVisibility) khi xử lý lâu.
+
+### At-least-once
+Standard queue: có thể duplicate (network retry, timeout). Consumer phải idempotent: dùng message ID / business key để dedup. FIFO queue: exactly-once processing (dedup trong 5 phút qua MessageDeduplicationId) nhưng vẫn at-least-once delivery; dedup ID chống duplicate.
+
+### FIFO + Message Group
+FIFO đảm bảo thứ tự theo MessageGroupId. Nhiều consumer có thể xử lý song song các group khác nhau, nhưng trong cùng group thì tuần tự. Throughput FIFO: 300 msg/s (hoặc 3000 với batching) per queue; partition theo group.
+
+### DLQ và redrive
+- DLQ: queue nhận message sau N lần fail (maxReceiveCount). Giúp không block queue chính.
+- Redrive: sau khi fix bug, chuyển message từ DLQ về main queue (redrive) hoặc xử lý thủ công.
+- Redrive allow policy: DLQ phải cho phép source queue redrive.
+
+### Trên production
+- Metric: ApproximateNumberOfMessagesVisible, NumberOfMessagesSent/Received, DLQ depth.
+- Alert DLQ depth > 0.
+- Pitfall: visibility timeout quá ngắn -> duplicate storm; quá dài -> delay retry.
+- Xử lý poison message: log payload + message ID, không retry vô hạn; dùng DLQ.
+
+### So sánh Standard vs FIFO
+| | Standard | FIFO |
+|---|---|---|
+| Thứ tự | best-effort | strict per group |
+| Throughput | gần như vô hạn | 300-3000/s |
+| Dedup | không | 5 phút |
+| Dùng khi | throughput cao, không cần thứ tự | cần thứ tự / exactly-once |
+
+> Senior tip: thiết kế consumer idempotent ngay từ đầu (business key + DB unique constraint) — đó là cách duy nhất sống sót với at-least-once. Visibility timeout = processing time * 2 + buffer.`,
+  follow: [
+    'Làm sao implement idempotent consumer với SQS?',
+    'Khi nào dùng SNS fan-out + SQS thay vì Kafka?',
+    'Redrive policy và cách replay DLQ an toàn?'
+  ],
+  tags: ['SQS', 'visibility timeout', 'FIFO', 'DLQ', 'senior']
+},
+{
+  id: 'aws-051',
+  topic: 'aws',
+  level: 'senior',
+  q: 'DynamoDB: partition key, hot partition, adaptive capacity, GSI eventual consistency, single-table design',
+  a: `**Tóm tắt:** DynamoDB phân tán theo partition key hash; hot partition xảy ra khi một key nhận traffic lớn vượt capacity của partition. Adaptive capacity tự điều chỉnh nhưng không cứu hot key đơn lẻ. GSI là async -> eventual consistency. Single-table design dùng composite key + overload.
+
+### Partition key và partition
+- Table partition theo hash(partition key). Mỗi partition có throughput limit (~3000 RCU / 1000 WCU) và storage 10GB.
+- Nếu partition key là userId và một user hot (celebrity) -> hot partition -> throttling dù total capacity còn dư.
+
+### Adaptive capacity
+DynamoDB tự chuyển unused capacity từ partition lạnh sang partition nóng. Nhưng nếu một partition key đơn lẻ vượt hard limit của partition, adaptive không đủ -> phải redesign key (sharding, thêm suffix random).
+
+### Hot partition fix
+- Chọn high-cardinality key (userId + timestamp bucket).
+- Write sharding: thêm random suffix (0-9) vào PK cho write-heavy, đọc phải query tất cả shard.
+- Dùng on-demand capacity hoặc provisioned với auto-scaling.
+
+### GSI eventual consistency
+- GSI replicate async từ base table. Write vào base -> GSI update sau vài ms. Read GSI ngay sau write -> có thể chưa thấy. Không dùng GSI cho read-after-write critical; dùng base table query hoặc strongly consistent read (chỉ base table).
+- GSI có throughput riêng; hot GSI cũng throttling.
+
+### Single-table design
+- Một table chứa nhiều entity type, dùng PK/SK composite. Ví dụ PK=USER#123, SK=PROFILE; PK=USER#123, SK=ORDER#456. Query bằng begins_with.
+- Overload GSI: GSI1PK/GSI1SK cho access pattern khác. Giảm số table, transaction ACID trong cùng table.
+
+### Trên production
+- Metric: ConsumedRead/WriteCapacityUnits, ThrottledRequests, UserErrors.
+- CloudWatch Contributor Insights tìm hot partition.
+- Pitfall: scan toàn table -> cost lớn; luôn query với key.
+
+> Senior tip: DynamoDB reward good key design và punish bad; trước khi code, liệt kê access patterns rồi thiết kế PK/SK. Hot partition là lỗi thiết kế, không phải lỗi capacity.`,
+  follow: [
+    'Khi nào dùng DynamoDB thay vì RDS?',
+    'Làm sao debug hot partition với CloudWatch?',
+    'Single-table design trade-off vs multi-table?'
+  ],
+  tags: ['DynamoDB', 'partition key', 'hot partition', 'GSI', 'senior']
+},
+{
+  id: 'aws-052',
+  topic: 'aws',
+  level: 'lead',
+  q: 'IAM policy evaluation logic: explicit deny, SCP, permission boundary, role cho workload',
+  a: `**Tóm tắt:** AWS đánh giá request theo: explicit deny thắng mọi thứ; SCP giới hạn tối đa tổ chức; permission boundary giới hạn tối đa role/user; identity policy + resource policy phải allow. Tất cả phải allow, một deny là deny.
+
+### Thứ tự đánh giá
+1. SCP (Service Control Policy) ở Organization: nếu deny -> deny. SCP không grant, chỉ giới hạn.
+2. Permission boundary (nếu có): giới hạn tối đa permission của user/role. Phải allow trong boundary.
+3. Identity-based policy (attached to user/role) hoặc resource-based policy: phải allow.
+4. Explicit deny ở bất kỳ đâu -> deny ngay.
+
+Implicit deny: không có allow nào -> deny.
+
+### SCP
+Áp dụng ở OU/account level. Ví dụ deny region ngoài ap-southeast-1, deny xóa CloudTrail. Dùng để guardrail toàn org.
+
+### Permission boundary
+Dùng cho delegated admin: dev có thể tạo role nhưng bị boundary giới hạn (không được tạo admin role). Boundary là policy attached to user/role như max permission.
+
+### Resource-based policy
+S3 bucket policy, SQS queue policy, KMS key policy. Có thể grant cross-account. Kết hợp identity policy: cả hai phải allow (trừ resource policy với principal cùng account có thể override? Thực tế: nếu same account, identity allow đủ; cross-account cần cả hai).
+
+### Role cho workload
+- EC2 instance profile, ECS task role, Lambda execution role, EKS IRSA/Pod Identity.
+- Principle of least privilege: chỉ permission cần thiết, dùng condition (aws:SourceVpc, aws:PrincipalTag).
+- Session policy khi assume role: further restrict.
+
+### Trên production
+- Dùng IAM Access Analyzer để tìm unused permission và external access.
+- CloudTrail log mọi API call; alert AssumeRole bất thường.
+- Pitfall: wildcard * trong Action/Resource -> over-permission. Dùng policy simulator để test.
+
+> Senior tip: thiết kế IAM như code: version control policy, review PR, dùng permission boundary cho self-service. Explicit deny cho các action nguy hiểm (iam:*, s3:DeleteBucket) ở SCP level.`,
+  follow: [
+    'Permission boundary và SCP khác nhau thế nào?',
+    'Làm sao audit permission unused trong AWS?',
+    'Condition key nào hay dùng để restrict theo VPC/tag?'
+  ],
+  tags: ['IAM', 'SCP', 'permission boundary', 'policy', 'lead']
+},
+{
+  id: 'aws-053',
+  topic: 'aws',
+  level: 'lead',
+  q: 'IRSA / EKS Pod Identity: role cho pod, vì sao không dùng node instance profile',
+  a: `**Tóm tắt:** IRSA dùng OIDC federation: pod có service account annotated với IAM role ARN; kubelet inject token (JWT) vào pod, AWS STS AssumeRoleWithWebIdentity đổi token thành AWS credentials. Pod Identity là cơ chế mới đơn giản hơn (agent trên node). Không dùng node instance profile vì mọi pod chia sẻ cùng permission -> vi phạm least privilege.
+
+### Vấn đề node instance profile
+Mọi pod trên node dùng cùng instance profile của node -> nếu một pod bị compromise, attacker có toàn bộ permission của node (S3, DynamoDB...). Không thể phân biệt pod.
+
+### IRSA (IAM Roles for Service Accounts)
+- EKS cluster có OIDC provider (IAM identity provider).
+- Tạo IAM role với trust policy: Principal = OIDC provider, condition StringEquals sub = system:serviceaccount:ns:sa.
+- Annotate K8s ServiceAccount với eks.amazonaws.com/role-arn.
+- Pod dùng SA đó: webhook inject env AWS_ROLE_ARN và AWS_WEB_IDENTITY_TOKEN_FILE (JWT mounted).
+- AWS SDK tự gọi STS AssumeRoleWithWebIdentity -> temporary credentials. Rotate tự động.
+
+### EKS Pod Identity
+- Cơ chế mới (2023): agent (eks-pod-identity-agent DaemonSet) trên node intercept AWS SDK calls, assume role dựa trên mapping Pod Identity Association (namespace+SA -> role). Không cần OIDC, không cần annotate SA. Đơn giản hơn, hỗ trợ session tags, revoke nhanh.
+
+### So sánh
+| | IRSA | Pod Identity |
+|---|---|---|
+| Setup | OIDC provider + trust policy condition | association API |
+| Annotate SA | cần | không cần |
+| Revocation | xóa SA/role | xóa association |
+| Khuyến nghị mới | legacy | preferred cho cluster mới |
+
+### Trên production
+- Principle: một role per service (payment-service, order-service), không shared.
+- Trust policy condition phải chặt (namespace + SA name), tránh wildcard.
+- CloudTrail log AssumeRoleWithWebIdentity với source IP pod.
+- Pitfall: pod không có SA annotated -> dùng node role (fallback) -> lỗ hổng. Enforce bằng admission policy (OPA/Kyverno) yêu cầu SA có role.
+
+> Senior tip: IRSA/Pod Identity là "zero-trust cho pod": credential sống trong pod memory, tự rotate, không mount secret. Kết hợp với network policy và read-only root filesystem để harden.`,
+  follow: [
+    'IRSA trust policy condition StringEquals vs StringLike khác nhau thế nào?',
+    'Làm sao migrate từ IRSA sang Pod Identity?',
+    'Pod không có permission AWS thì debug thế nào?'
+  ],
+  tags: ['EKS', 'IRSA', 'Pod Identity', 'IAM', 'lead']
+},
+{
+  id: 'aws-054',
+  topic: 'aws',
+  level: 'lead',
+  q: 'RDS Proxy với Lambda và Aurora storage 6 bản sao: failover và connection pooling',
+  a: `**Tóm tắt:** Aurora storage là distributed volume 6 bản sao trên 3 AZ, tự repair; failover chỉ promote reader (10-30s) vì data đã shared. RDS Proxy trước Lambda gom connection, tránh connection storm và rút ngắn failover perceived. Kết hợp: Aurora + Proxy cho serverless workload.
+
+### Aurora storage
+- Volume distributed, 6 copies trên 3 AZ (2 per AZ). Self-healing: nếu một copy hỏng, tự rebuild từ các copy khác. Không mất data khi mất 2 copies.
+- Storage auto-grow đến 128 TB, không cần provision.
+- Write quorum 4/6, read quorum 3/6 -> durability cao.
+
+### Failover Aurora
+- Primary fail -> promote một Aurora Replica làm primary. Vì storage shared, không cần copy data -> failover 10-30s (vs RDS 60-120s). Endpoint cluster (writer/reader) tự update.
+- Có reader endpoint load-balance read traffic.
+
+### RDS Proxy + Lambda
+- Lambda concurrency cao -> mỗi invocation mở DB connection -> RDS connection limit (max_connections theo instance size) bị exhaust -> timeout. Proxy là pooler: Lambda kết nối proxy (nhanh, nhiều), proxy giữ ít connection đến DB.
+- Proxy hỗ trợ auth IAM (no password in code) và failover nhanh: proxy detect primary fail và route sang primary mới, app không cần reconnect.
+- Pinning: transaction, session variables, advisory locks, temp tables làm proxy pin connection -> giảm reuse. Tránh SET SESSION; dùng transaction-level.
+
+### Trên production
+- Metric: DatabaseConnections, Proxy client connections, pinning count (DatabaseConnections? Actually CloudWatch metric DatabaseConnections cho proxy).
+- Alert: pinning > 5% connections -> review code.
+- Pitfall: long transaction giữ connection -> pool exhaustion; set timeout.
+
+### So sánh RDS vs Aurora
+| | RDS | Aurora |
+|---|---|---|
+| Storage | EBS, single AZ (Multi-AZ standby) | distributed 6 copies |
+| Failover | 60-120s | 10-30s |
+| Read scale | read replica (async lag) | Aurora Replica (lag < 10ms) |
+| Cost | rẻ hơn | đắt hơn |
+
+> Senior tip: với Lambda + DB, luôn dùng RDS Proxy + Aurora; pinning metric là KPI quan trọng — pinning cao có nghĩa proxy đang bị vô hiệu hóa.`,
+  follow: [
+    'Aurora Replica lag khác RDS read replica thế nào?',
+    'Làm sao giảm pinning trong RDS Proxy?',
+    'Khi nào Aurora Serverless v2 phù hợp?'
+  ],
+  tags: ['Aurora', 'RDS Proxy', 'Lambda', 'failover', 'lead']
+}
 )
