@@ -5505,5 +5505,817 @@ Map<String, User> byEmail = users.stream()
 > Senior tip: đặt "JDK 21 LTS baseline" trong RFC; review hàng quý; freeze version mới cho stability.`,
   follow: ['Làm sao đo regression sau upgrade?'],
   tags: ['lead', 'upgrade', 'policy', 'LTS']
+},
+{
+  id: 'core-036',
+  topic: 'core',
+  level: 'senior',
+  q: 'Escape analysis và scalar replacement hoạt động thế nào trong JIT? Khi nào một object không bao giờ được cấp phát trên heap, và làm sao kiểm chứng trên JDK 17/21?',
+  a: `**Tóm tắt:** khi biên dịch JIT (C2), JVM xét xem reference của một object có "thoát" ra ngoài method hay không. Nếu không thoát, nó **bỏ luôn lệnh cấp phát** và thay các field bằng giá trị nằm trong register/stack frame — đó là scalar replacement. HotSpot không "đặt object xuống stack" như lời đồn: nó xoá object khỏi chương trình. Vì vậy một vòng lặp toàn {{new}} vẫn có thể chạy với gần 0 byte allocation.
+
+> Thuật ngữ: **JIT** (Just-In-Time compiler) là trình biên dịch chạy lúc chương trình đang chạy, biến bytecode "nóng" thành mã máy nhanh; **C2** là JIT tối ưu mạnh của HotSpot. **TLAB** (Thread-Local Allocation Buffer) là vùng heap riêng cho mỗi thread, giống "ngăn kéo riêng" để cấp phát nhanh mà không tranh chấp.
+
+### Chuyện gì xảy ra, theo thứ tự
+- {{new Point(3, 4)}} biên dịch thành {{new}}, {{dup}}, {{invokespecial <init>}}. Ở interpreter (chế độ chạy từng lệnh bytecode) và code C1 (JIT biên dịch nhanh, tối ưu vừa), object được cấp phát thật trên heap trong TLAB, chi phí chỉ là dịch một con trỏ.
+- Khi method đủ nóng, C2 compile và chạy escape analysis trên đồ thị IR (biểu diễn trung gian của compiler): mỗi node cấp phát được phân loại theo mức thoát rồi mới quyết định giữ hay bỏ. **Inlining** (nhúng code method được gọi vào chỗ gọi) phải xảy ra trước, vì nếu chưa inline thì C2 không biết method đích có làm reference "thoát" hay không.
+
+| Mức thoát | Nghĩa | Ví dụ | C2 làm gì |
+|---|---|---|---|
+| Không escape | reference chỉ sống trong method | tạo point rồi tính khoảng cách | xoá cấp phát, tách field thành scalar |
+| Thoát qua tham số | truyền sang method chưa được inline | {{helper(new Config())}} | nếu inline được helper thì vẫn xoá |
+| Thoát toàn cục | ra heap, static field, return, store vào field của object khác | {{cache.put(k, new Value())}} | cấp phát bình thường |
+
+### Scalar replacement trông ra sao
+~~~java
+static int distSq(int dx, int dy) {
+    Point p = new Point(dx, dy);   // Point: hai field int
+    return p.x * p.x + p.y * p.y;
+}
+~~~
+~~~text
+Mã máy sau C2, về ý tưởng:
+    imul  eax, eax      ; p.x * p.x  (dx đã nằm trong register)
+    imul  edx, edx      ; p.y * p.y
+    add   eax, edx      ; không có lệnh cấp phát, không object header, không có gì cho GC dọn
+~~~
+Nếu object escape thì phải thêm: cấp phát (header 12-16 byte + field), và mỗi lần đọc {{p.x}} là một lần load qua reference — một dependency chain mà CPU không prefetch được.
+
+### Vì sao JDK chọn cách này
+- Cấp phát trên heap vốn rẻ, nên mục tiêu chính của escape analysis **không phải tiết kiệm chỗ ghi** mà là loại bỏ load/store để giá trị nằm trong register (thanh ghi CPU, nơi tính toán nhanh nhất), và giảm số object GC phải dọn.
+- Cái giá: phân tích chỉ chạy **sau khi inline**, và khi suy ra sai thì phải "materialize" (tái tạo) object trở lại. HotSpot chọn cách bảo thủ: không chắc thì cấp phát.
+- Đây là tối ưu, không phải cam kết. JLS (Java Language Specification — đặc tả ngôn ngữ Java) không hứa gì về việc object có nằm trên heap hay không.
+
+### Escape analysis thất bại khi nào (quan trọng hơn lúc nó thành công)
+1. Method đích không được inline: quá lớn, hết ngân sách inline, hoặc gọi qua interface mà JVM thấy nhiều loại object (không **monomorphic** — tức không chỉ có một kiểu runtime duy nhất tại điểm gọi; ví dụ biến kiểu {{List}} đôi khi là {{ArrayList}}, đôi khi {{LinkedList}}).
+2. Store vào field của object khác: {{holder.p = new Point(...)}} — holder sống lâu hơn method.
+3. Đưa vào collection hoặc mảng, return ra ngoài, gán vào static field, truyền sang thread khác.
+4. Quan sát danh tính object: {{getClass()}}, {{hashCode}}/identityHashCode mặc định, so sánh {{==}} giữa hai object local — JVM phải tạo object thật để trả lời đúng.
+5. {{obj}} bị dùng trong các nhánh vòng lặp với hình dạng khác nhau tới mức C2 bỏ cuộc.
+6. {{synchronized (obj)}}: **lock elision** (bỏ lệnh khoá khi object không thoát) từng được kỳ vọng nhưng HotSpot/C2 không áp dụng rộng rãi như một tối ưu đáng tin; đừng viết code dựa vào giả định lock sẽ bị loại bỏ. Biased locking (khoá thiên vị một thread) thì đã bị tắt mặc định từ JDK 15 và loại bỏ hẳn ở các bản sau.
+
+### Cách kiểm chứng, không đoán
+~~~bash
+java -XX:+PrintFlagsFinal -version | grep -i escape    # DoEscapeAnalysis = true (mặc định)
+java -XX:-DoEscapeAnalysis -jar bench.jar              # tắt đi rồi so sánh hai lần chạy
+~~~
+- Đáng tin nhất: JMH (Java Microbenchmark Harness — bộ công cụ benchmark chính thức của OpenJDK, giúp đo đúng khi JIT can thiệp) kèm gc profiler ({{java -jar benchmarks.jar -prof gc}}), nhìn cột byte mỗi operation. Vòng lặp chỉ tạo object local mà ra ~0 byte/op nghĩa là cấp phát đã bị xoá.
+- Cách thứ hai đơn giản hơn: chạy benchmark hai lần, một lần thêm {{-XX:-DoEscapeAnalysis}}. Thời gian và số allocation nhảy lên chứng tỏ trước đó object không nằm trên heap.
+- Chạy bằng interpreter hoặc {{-Xint}} luôn cấp phát — đừng kết luận từ một lần chạy chưa warmup (giai đoạn JVM "làm nóng" để JIT biên dịch code nóng).
+
+### Trên production
+- Triệu chứng hay gặp: CPU cao, {{jcmd <pid> GC.heap_info}} cho thấy heap dao động mạnh nhưng retained size (dung lượng object còn được tham chiếu, GC không thu hồi được) không đổi — rất nhiều object "chết ngay". JFR (Java Flight Recorder — công cụ ghi sự kiện hiệu năng tích hợp trong JDK) có event mẫu {{jdk.ObjectAllocationSample}} (JDK 16+) và {{jdk.ObjectAllocationInNewTLAB}} để biết loại object nào được tạo nhiều nhất.
+- Hệ quả thiết kế: chia logic thành method nhỏ, giữ value object (record 2-3 field) local trong vòng lặp thường đủ để JIT dọn giúp bạn; ngược lại, một object đi vào map/list thì chi phí là thật.
+- Pitfall: đừng hy sinh tính dễ đọc chỉ để tránh {{new}}, và cũng đừng tin kết luận "Java cấp phát miễn phí" — nó đúng với object không escape, sai với object escape qua field hoặc collection.
+
+> Senior tip: câu trả lời ghi điểm là "object **không bị đưa xuống stack**; JIT **bỏ việc cấp phát** khi reference không thoát khỏi method, và chỉ làm vậy sau khi inline". Muốn kiểm chứng thì tắt {{-XX:-DoEscapeAnalysis}} và so sánh, hoặc đo byte/op bằng JMH — đừng trả lời bằng cảm giác.`,
+  follow: [
+    'Vì sao escape analysis phụ thuộc inlining, và một interface call polymorphic làm nó hỏng ra sao?',
+    'Lock elision khác gì biased locking, và hiện trạng của từng cái ở JDK 17/21?',
+    'Trong hot loop, nên đổi record/small object sang primitive hay tin vào JIT? Bạn đo thế nào để quyết định?'
+  ],
+  tags: ['escape analysis', 'scalar replacement', 'JIT', 'C2', 'allocation', 'JMH'],
+  refs: [
+    { type: 'article', title: 'HotSpot Escape Analysis (OpenJDK Wiki)', url: 'https://wiki.openjdk.org/display/HotSpot/EscapeAnalysis' }
+  ]
+},
+{
+  id: 'core-037',
+  topic: 'core',
+  level: 'lead',
+  q: 'Lambda được tạo thế nào ở mức bytecode (invokedynamic + LambdaMetafactory)? So với anonymous class, MethodHandle và reflection thì chi phí ra sao?',
+  a: `**Tóm tắt:** javac **không** sinh một file class riêng cho mỗi lambda. Nó chuyển thân lambda thành một method tổng hợp trong chính class ({{lambda$main$0}}) và để lại một lệnh {{invokedynamic}} (lệnh bytecode để "gắn" cách gọi tại runtime qua bootstrap) có bootstrap là {{LambdaMetafactory.metafactory}}. Lần chạy đầu của lệnh đó sinh một lớp ẩn implement functional interface; các lần sau chỉ đi qua một MethodHandle (tay cầm tham chiếu tới method, nhẹ hơn reflection) đã cố định, nên JIT inline được thân lambda như lời gọi trực tiếp. Đó là lý do lambda rẻ hơn anonymous class và rẻ hơn nhiều so với {{Method.invoke}} (gọi method qua reflection).
+
+### Nhìn vào bytecode
+~~~text
+javap -p -c -v LambdaDemo.class
+ 0: invokedynamic #7, 0     // InvokeDynamic #0: apply
+                             // descriptor: (String) -> Function
+
+BootstrapMethods:
+  0: LambdaMetafactory.metafactory(
+       MethodHandles.lookup(),
+       "apply",                                    // invokedName
+       (String)Function,                          // invokedType
+       (Object)Object,                            // samMethodType: sau type erasure
+       MethodHandle LambdaDemo::lambda$main$0,    // implMethod: nơi logic thật nằm
+       (String)String)                            // instantiatedMethodType: sau suy generic
+~~~
+- {{samMethodType}}: chữ ký erased (sau **type erasure** — Java xoá thông tin generic khỏi bytecode lúc biên dịch) của method trừu tượng trong interface, ví dụ {{Function.apply(Object)}} trả {{Object}}.
+- {{implMethod}}: MethodHandle trỏ tới method thật — hoặc method tổng hợp {{lambda$0}}, hoặc chính method được tham chiếu trong {{String::length}}.
+- {{instantiatedMethodType}}: chữ ký sau khi suy ra generic, nhờ đó lớp sinh ra có method trả {{String}} (bridge method — method cầu nối compiler chèn để giữ tính đa hình sau erasure) dù interface erased là {{Object}}.
+
+### Lambda tồn tại qua 5 bước
+1. javac tạo một private method chứa thân lambda ngay trong class gọi.
+2. Tại vị trí biểu thức lambda, javac phát {{invokedynamic}}; descriptor nhận các biến capture làm tham số.
+3. Lần chạy đầu, JVM gọi bootstrap: {{LambdaMetafactory}} dựng lớp implement interface, field là biến capture, method {{apply}} gọi {{implMethod}}. Từ JDK 15 (JEP 371 - Hidden Classes) lớp này là **hidden class** (lớp ẩn: không đăng ký tên trong ClassLoader, không tạo được bằng reflection tên thường, và có thể bị unload nên không phình **Metaspace** — vùng nhớ native giữ metadata class).
+4. Bootstrap trả một {{CallSite}} (đối tượng giữ target method để invokedynamic gọi) có target là MethodHandle dạng "factory"; site đã init nên lần sau **không** chạy bootstrap nữa.
+5. Vì target đó là hằng số, C2 coi lời gọi như direct call và inline được thân lambda.
+
+### Capture và this
+| Dạng | Tham số của invokedynamic | Hệ quả |
+|---|---|---|
+| {{s -> s.length()}} | không có | không field; site trả instance dùng lại, JIT có thể constant-fold (tính sẵn vì giá trị không đổi) |
+| {{s -> s.length() + off}} | {{off}} | mỗi lần evaluate tạo object mang {{off}} (vòng lặp 1 triệu lần là 1 triệu object, nếu không escape thì escape analysis có thể xoá) |
+| {{s -> prefix + s}} (dùng field instance) | {{this}} là tham số đầu | giữ reference tới enclosing instance — giống inner class, là nguồn memory leak thật (enclosing object bị giữ sống dù không còn dùng) |
+| {{String::length}} | không có method tổng hợp | {{implMethod}} trỏ thẳng method thật, dễ inline nhất |
+| anonymous class | một file class trên đĩa | luôn có class riêng, dispatch qua interface, profile theo class khó hơn |
+
+### So sánh chi phí khi gọi cùng một logic
+| Cách | Việc xảy ra mỗi lời gọi |
+|---|---|
+| Lời gọi trực tiếp | một lệnh invoke đã devirtualize (JIT xác định đúng implementation nên bỏ bước tra bảng ảo), inline thoải mái |
+| Lambda / method reference (site đã init) | một lời gọi tới MethodHandle hằng số; sau inline thì như trên |
+| {{MethodHandle.invoke}} | nếu chữ ký không khớp chính xác thì thêm bước type adaptation (chuyển đổi kiểu tham số/trả về); vẫn inline được khi handle nằm trong {{static final}} |
+| {{Method.invoke}} | kiểm tra truy cập, đóng gói tham số vào {{Object[]}}, boxing (bọc primitive thành object, ví dụ {{int}} → {{Integer}}) — đắt nhất ở hot path (từ JDK 18 core reflection chạy trên MethodHandle nên khoảng cách hẹp lại) |
+| Anonymous class | cấp phát object + interface dispatch (tra method qua bảng ảo/interface) |
+
+### Trên production
+- Stack trace: dòng {{com.example.Foo$Lambda$14/0x...lambda$apply$0(Foo.java:57)}} cho biết lambda của class nào, dòng nào. Không có file .class trên đĩa; muốn đọc code thì mở {{Foo.class}} bằng javap/IDE và xem method {{lambda$...}}.
+- Lambda **không** serialize được nếu functional interface không kế thừa {{Serializable}}; kể cả khi serialize được thì dạng thức phụ thuộc triển khai nội bộ — đừng đưa lambda vào protocol hay file cấu hình.
+- Lambda không có danh tính: {{a.equals(b)}}/{{a == b}} giữa hai lambda "giống nhau" là vô nghĩa, đừng dùng lambda làm key trong map.
+- Đây là kỹ thuật các thư viện mapping dùng để thay {{Method.invoke}} ở hot path: compile getter/setter thành {{Function}} một lần bằng {{LambdaMetafactory}} rồi tái dùng nghìn lần.
+- Flame graph (biểu đồ cột phẳng hoá từ sampling profiler, cho thấy hàm nào tốn nhiều CPU nhất) có nhiều frame {{java.lang.invoke.LambdaForm$}} nghĩa là đường đi qua MethodHandle chưa được fold thành direct call — thường do handle không phải hằng số.
+
+> Senior tip: hai ý phân biệt senior thật với người chỉ biết viết lambda: (1) lambda **không sinh class cho mỗi lần chạy**, class chỉ được dựng một lần cho mỗi call site, và (2) method reference không phải "cú pháp đường tắt" — nó là {{implMethod}} trỏ thẳng tới method thật nên hay được inline tốt hơn lambda có method tổng hợp.`,
+  follow: [
+    'Vì sao method reference thường inline tốt hơn lambda tương đương, và khi nào khác biệt bằng 0?',
+    'Hidden class (JEP 371) giải quyết vấn đề cụ thể nào của lớp lambda sinh lúc runtime?',
+    'Bạn viết benchmark so sánh Method.invoke, MethodHandle và LambdaMetafactory bằng JMH thế nào để kết luận đáng tin?'
+  ],
+  tags: ['lambda', 'invokedynamic', 'LambdaMetafactory', 'MethodHandle', 'reflection', 'hidden class'],
+  refs: [
+    { type: 'doc', title: 'JEP 371: Hidden Classes', url: 'https://openjdk.org/jeps/371' },
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
+  ]
+},
+{
+  id: 'core-038',
+  topic: 'core',
+  level: 'lead',
+  q: 'Cơ chế khởi tạo class của JVM (static initializer) hoạt động thế nào, và vì sao hai class có static block gọi lẫn nhau có thể deadlock? Cách phát hiện và phá vòng?',
+  a: `**Tóm tắt:** mỗi class được khởi tạo **đúng một lần, bởi một thread**, dưới một cái khoá riêng của class (initialization lock). Static block (khối {{static}} chạy khi class được nạp) và static field initializer (giá trị khởi tạo của field static) được compiler gom thành method {{<clinit>}}. Cái khoá đó vừa là thứ khiến singleton kiểu Holder thread-safe mà **không cần synchronized**, vừa là thứ gây deadlock (hai thread chờ nhau mãi) ngay lúc khởi động khi hai class khởi tạo vòng nhau từ hai thread.
+
+> Thuật ngữ: **ClassLoader** là thành phần JVM nạp bytecode (.class) thành object {{Class}}. **constant pool** là bảng hằng trong file .class (chuỗi, số, tham chiếu method/field). **happens-before** (JMM — Java Memory Model) là quan hệ đảm bảo một thread thấy được kết quả ghi của thread khác khi có đồng bộ đúng cách.
+
+### Ba giai đoạn sống của một class
+1. **Loading**: class loader tìm bytecode, tạo object {{Class}}.
+2. **Linking** (verification + preparation): preparation gán **giá trị mặc định** (0, null, false) cho static field; riêng hằng compile-time đã có giá trị trong constant pool nên đọc chúng không kích hoạt khởi tạo.
+3. **Initialization**: chạy {{<clinit>}} — lúc static block và static field initializer chạy theo thứ tự xuất hiện trong file nguồn.
+
+| Hành động | Có chạy {{<clinit>}}? |
+|---|---|
+| {{new X()}}, gọi static method của X, đọc/ghi static field không phải hằng | Có |
+| Đọc {{static final int MAX = 5}} (hằng compile-time) | Không — giá trị đã được inline vào class gọi |
+| {{Class.forName("X")}} và {{Class.forName("X", false, loader)}} | Có / Không (tham số initialize) |
+| Khởi tạo class con | Có, cha trước, đệ quy |
+| Lấy {{X.class}}, so sánh tên class | Không |
+| Tạo mảng {{new X[3]}} | Không (mảng không khởi tạo phần tử) |
+
+### Thuật toán khởi tạo (JLS 12.4.2, rút gọn)
+1. Thread synchronize trên object {{Class}} của class cần init — HotSpot giữ một mutex per class.
+2. Class đã Initialized? Thoát ngay. Đây là đường nhanh khiến static block không chạy lại ở lần {{new}} sau.
+3. Class **đang** được khởi tạo bởi chính thread này? Cho qua (re-entrant) — nguồn của các bẫy giá trị default.
+4. Class đang được thread khác khởi tạo? Chờ trên khoá đó.
+5. Không ai khởi tạo: đánh dấu "đang init bởi thread này", khởi tạo class cha đệ quy, chạy {{<clinit>}}, đặt Initialized, release khoá.
+- Quà kèm theo: mọi thread đọc static field sau khi class Initialized đều **thấy** giá trị do {{<clinit>}} ghi mà không cần {{volatile}}, vì JLS định nghĩa happens-before ở đây. Holder idiom an toàn là nhờ điều này.
+
+### Deadlock hai thread
+~~~java
+class Alpha { static { Beta.prep(); } static int size = 1; static void prep() { } }
+class Beta  { static { Alpha.prep(); } static int size = 1; static void prep() { } }
+// T1 chạm Alpha.size trước; T2 chạm Beta.size trước
+~~~
+T1 cầm khoá init của Alpha rồi gọi {{Beta.prep}} → cần init Beta → chặn trên khoá mà T2 đang giữ. T2 cầm khoá Beta rồi gọi {{Alpha.prep}} → chặn trên khoá Alpha. Chu trình khoá **không nằm trong code của bạn** ở dạng một {{synchronized}} nào, nên không có object lock để grep.
+
+~~~text
+jstack excerpt (câu chữ thay đổi theo bản JDK):
+"pool-1-thread-1" BLOCKED
+   - waiting for the initialization of class Beta ... held by "pool-1-thread-2"
+"pool-1-thread-2" BLOCKED
+   - waiting for the initialization of class Alpha ... held by "pool-1-thread-1"
+~~~
+
+### Bẫy thường gặp
+- {{static final int X = compute();}} **không** là hằng compile-time nên vẫn trigger {{<clinit>}}; chỉ literal như {{= 5}} mới được inline.
+- {{<clinit>}} ném lỗi: lần đầu thấy {{ExceptionInInitializerError}} (có cause), mọi lần sau thấy {{NoClassDefFoundError: Could not initialize class com.x.Foo}} **không còn cause**, và class ở trạng thái Failed cho tới khi ClassLoader đó chết — không "tự khỏi".
+- Static block tạo thread mới mà thread đó chạm lại class của mình: gần như chắc chắn deadlock, vì thread mới chờ init xong còn init thì chờ thread mới.
+- Enum constant được tạo ngay trong {{<clinit>}} của class enum, nên một enum có static block gọi sang class khác là mầm chu trình.
+
+### Trên production
+- Triệu chứng: app khởi động rồi treo, hoặc request đầu tiên đứng 20-30 giây (do {{<clinit>}} gọi DNS/DB/read file) trong khi các request sau nhanh bất thường.
+- Điều tra: {{jstack <pid>}} (công cụ JDK in stack trace tất cả thread) hoặc {{jcmd <pid> Thread.print}} xem thread nào đang "waiting for the initialization of class"; {{-Xlog:class+load=info}} cho biết thứ tự và nguồn nạp class. Khi log chỉ còn {{NoClassDefFoundError}}, tìm {{ExceptionInInitializerError}} **đầu tiên** sau thời điểm deploy.
+- Phá vòng: tách hằng/static chung sang class thứ ba để đồ thị thành DAG (đồ thị có hướng không chu trình); dùng Holder idiom cho lazy singleton; chuyển init nặng (driver, config, kết nối) sang {{@PostConstruct}}/{{InitializingBean}} (hook vòng đời Spring, chạy sau khi bean được tạo) hoặc supplier do ứng dụng kiểm soát; framework thì {{Class.forName(name, false, loader)}} để **không** init, rồi chủ động init theo thứ tự mong muốn.
+- Phòng: một nguyên tắc review đủ — "static block không gọi sang class khác và không làm I/O". Compiler gom cả field initializer vào {{<clinit>}}, nên soi {{<clinit>}} là soi được cả hai.
+
+> Senior tip: nếu chỉ trả lời được "static block chạy một lần" thì bạn ở mức mid. Câu hỏi này phân biệt senior ở ba điểm: khoá init là per-class và re-entrant theo thread, nó tạo happens-before cho static field, và khi {{<clinit>}} hỏng thì mọi lần sau chỉ còn {{NoClassDefFoundError}} không cause — chi tiết quyết định cách bạn đọc log sự cố khởi động.`,
+  follow: [
+    'Vì sao Holder idiom thread-safe mà không cần {{synchronized}}? Liên hệ happens-before của class init.',
+    'Sau khi {{ExceptionInInitializerError}}, vì sao {{NoClassDefFoundError}} mất cause và khắc phục thế nào nếu không restart?',
+    'Nhiều ClassLoader cùng nạp một tên class thì bài toán init/locking phức tạp ra sao?'
+  ],
+  tags: ['class initialization', 'clinit', 'static block', 'deadlock', 'class loader', 'NoClassDefFoundError'],
+  refs: [
+    { type: 'doc', title: 'Java Language Specification', url: 'https://docs.oracle.com/javase/specs/' }
+  ]
+},
+{
+  id: 'collections-031',
+  topic: 'collections',
+  level: 'senior',
+  q: 'Resize của {{HashMap}} bên trong chạy thế nào? Vì sao capacity luôn là luỹ thừa của 2, vì sao Java 8 không tính lại hash khi chuyển bảng, và lo/hi split hoạt động ra sao?',
+  a: `**Tóm tắt:** khi {{size}} vượt {{threshold = capacity × loadFactor}}, HashMap tạo mảng mới **gấp đôi** rồi chia mỗi bucket cũ thành hai danh sách: **lo** (bit mới của hash = 0) giữ nguyên chỉ số cũ, **hi** (bit mới = 1) sang chỉ số cũ + capacity cũ. Không cần gọi lại {{hashCode}}, vì index mới chỉ khác index cũ ở đúng một bit vừa được thêm vào mặt nạ.
+
+> Thuật ngữ: **bucket** là một ô trong mảng {{table}} của HashMap, chứa chuỗi (list) hoặc cây các entry có cùng chỉ số. **hash collision** (va chạm băm) là khi hai key khác nhau cho ra cùng index bucket. **load factor** (hệ số tải, mặc định 0.75) là tỉ lệ {{size/capacity}} tối đa trước khi resize. **compressed oops** là chế độ JVM nén con trỏ object còn 4 byte (thay vì 8) trên heap nhỏ hơn ~32 GB.
+
+### Vì sao capacity luôn là luỹ thừa của 2
+- Index bucket = {{(n - 1) & hash}}. Khi {{n = 2^k}} thì {{n - 1}} là mặt nạ gồm k bit 1 thấp nhất, nên phép AND cho kết quả như phép modulo nhưng chỉ mất một lệnh CPU.
+- Nếu {{n}} không phải luỹ thừa 2 thì nhiều bit cao của hash bị bỏ hẳn và collision tăng vọt. Cái giá phải trả: bảng không thể "vừa khít" — capacity nhảy 16, 32, 64…, và {{new HashMap<>(100)}} thật ra lấy bảng 128 vì {{tableSizeFor}} làm tròn lên.
+- Hash spreading ({{h ^ (h >>> 16)}}) tồn tại để các bit cao cũng kịp ảnh hưởng khi bảng còn nhỏ — đây là lý do một hash tự chế chỉ dùng vài byte đầu của chuỗi rất dễ gây va chạm.
+
+### Resize chạy từng bước
+~~~java
+// Ý tưởng trong Node[] resize() của Java 8+
+for (int j = 0; j < oldCap; ++j) {
+    Node<K,V> e = oldTab[j];
+    if (e == null) continue;
+    oldTab[j] = null;
+    if (e.next == null) {
+        newTab[e.hash & (newCap - 1)] = e;      // bucket một node: chỉ đổi chỗ
+    } else if (e instanceof TreeNode) {
+        // split: tách cây thành lo/hi; bên nào còn <= 6 node thì untreeify thành list
+    } else {
+        Node<K,V> loHead = null, loTail = null, hiHead = null, hiTail = null;
+        for (Node<K,V> x = e; x != null; x = x.next) {
+            if ((x.hash & oldCap) == 0) appendLo(x);   // bit mới 0 -> vẫn ở j
+            else                         appendHi(x);  // bit mới 1 -> tới j + oldCap
+        }
+        newTab[j] = loHead;
+        newTab[j + oldCap] = hiHead;
+    }
+}
+~~~
+- Điều kiện {{x.hash & oldCap}}: khi bảng tăng từ {{n}} lên {{2n}}, mặt nạ thêm đúng bit thứ {{log2(n)}}. Node có bit đó bằng 0 thì index không đổi, bằng 1 thì index dịch đúng {{oldCap}} ô. Đây là toàn bộ lý do **không cần tính lại hash**.
+- Hai danh sách được append nên thứ tự tương đối trong từng danh sách được giữ — khác hẳn Java 7 (chèn đầu nên đảo ngược danh sách).
+- Chi phí: một phép AND và vài lần gán con trỏ cho mỗi node, tổng O(size + capacity).
+
+~~~text
+capacity 8 -> 16, nhìn bucket index 3 (oldCap = 8, bit mới là bit 3)
+oldTab[3]:  A(h=...00011) -> B(h=...00111) -> C(h=...10011) -> D(h=...10111)
+newTab[3]:  A -> B            (bit mới = 0, thứ tự cũ)
+newTab[11]: C -> D            (11 = 3 + 8)
+~~~
+
+### Java 7 và bài học resize
+| | Java 7 | Java 8+ |
+|---|---|---|
+| Cách đặt node mới | tính lại index rồi chèn đầu danh sách (đảo thứ tự) | lo/hi split, append, không tính lại hash |
+| Lỗi nổi tiếng | hai thread resize đồng thời tạo vòng lặp trong danh sách, {{get()}} chạy mãi và CPU 100% | hết vòng lặp, nhưng vẫn mất node vì {{put}} không atomic |
+| Bucket dài | list thuần, O(n) khi collision | resize nếu capacity < 64, treeify nếu đã >= 64 |
+
+### Load factor 0.75 đứng ở đâu trong phép tính
+- {{threshold = capacity * 0.75}}. Muốn chứa N phần tử mà không resize, capacity phải là luỹ thừa 2 nhỏ nhất sao cho {{capacity * 0.75 >= N}}.
+- Ví dụ 100.000 phần tử: 131072 × 0.75 = 98304 < 100000, nên bảng thật là 262144 slot ≈ 1 MB mảng reference (4 byte/slot với compressed oops). Với 8 triệu phần tử, capacity 2^23 slot ≈ 32 MB **chỉ riêng mảng bảng**.
+- Công thức capacity khởi tạo hay dùng: {{new HashMap<>((int)(N / 0.75f) + 1)}}; viết {{new HashMap<>(N)}} thì vẫn còn resize vì N chưa chia cho load factor.
+- Javadoc của HashMap nói 0.75 là thoả hiệp time/space cho đa số trường hợp: giảm xuống 0.5 thì chuỗi ngắn hơn nhưng tốn bộ nhớ và cache hơn, chỉ đáng cân nhắc khi profiling chỉ vào {{HashMap.getNode}}.
+
+### Trên production
+- Triệu chứng: một thread chiếm CPU cao, flame graph có {{java.util.HashMap.resize}}, kèm spike cấp phát mảng lớn. Với G1, mảng table lớn hơn nửa region là **humongous allocation** (cấp phát "khổng lồ" — object quá lớn phải đặt riêng, GC xử lý kém hơn) — thấy rõ qua {{jcmd <pid> GC.heap_info}} và log {{-Xlog:gc*}}.
+- Warm-up (giai đoạn khởi động): service nạp vài trăm nghìn entry lúc khởi động sẽ resize ~18 lần liên tiếp nếu không đặt capacity; đặt đúng thường giảm rõ thời gian boot và số young GC (GC vùng nhớ trẻ, dọn object sống ngắn).
+- Pitfall: resize **không** atomic; một thread resize trong khi thread khác ghi là mất dữ liệu và {{size}} lệch — Java 8 hết bug vòng lặp chứ không hết bug đồng bộ.
+- Pitfall: nếu phân bố hash xấu thì resize không cứu được; dựng histogram bucket trên mẫu key trước khi đổ tiền vào capacity.
+
+> Senior tip: câu hỏi này interviewer muốn nghe ba thứ: mặt nạ bit giải thích vì sao chỉ số dịch đúng oldCap, thứ tự được giữ nên không cần rehash, và bài học Java 7 để chứng minh bạn hiểu vì sao {{HashMap}} vẫn không thread-safe dù thuật toán đã an toàn hơn.`,
+  follow: [
+    'Điều kiện đúng để lo/hi split hoạt động mà không cần gọi lại hashCode là gì?',
+    'Untreeify diễn ra khi nào trong resize, và vì sao không diễn ra khi remove thông thường?',
+    'Bạn đặt initial capacity cho map 5 triệu entry thế nào và ảnh hưởng tới GC ra sao?'
+  ],
+  tags: ['HashMap', 'resize', 'power of two', 'load factor', 'treeify', 'JMH'],
+  refs: [
+    { type: 'doc', title: 'HashMap (Java SE 21 API Specification)', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/HashMap.html' }
+  ]
+},
+{
+  id: 'collections-032',
+  topic: 'collections',
+  level: 'senior',
+  q: 'Spliterator làm gì, và vì sao parallelStream trên LinkedList hoặc trên stream dựng từ Iterator lại không nhanh hơn (thậm chí chậm hơn)?',
+  a: `**Tóm tắt:** {{Spliterator}} (split + iterator) là API chia đôi nguồn dữ liệu để ForkJoinPool (pool thread chia-nhỏ-việc kiểu work-stealing) làm song song. Mỗi nguồn mô tả đặc điểm bằng characteristics ({{SIZED}}, {{SUBSIZED}}, {{ORDERED}}, {{CONCURRENT}}, {{DISTINCT}}, {{NONNULL}}) và quyết định có chia được không trong {{trySplit()}}. {{ArrayList}} chia O(1) theo index; {{LinkedList}} mỗi lần chia phải đi bộ tới phần tử giữa qua các con trỏ rải rác (pointer chase — nhảy theo con trỏ, hay gây cache miss); nguồn từ {{Iterator}} thì {{trySplit}} trả null và "parallel" của bạn chạy đúng một task.
+
+### Stream song song chạy thế nào
+1. {{stream.parallel()}} lấy {{spliterator()}} của nguồn.
+2. Task gọi {{trySplit()}} để nhận một nửa công việc rồi giao cho task khác (work stealing trong {{ForkJoinPool.commonPool()}}); nửa còn lại tiếp tục chia tới khi mảnh đủ nhỏ.
+3. Mỗi task tự {{tryAdvance}} trên mảnh của mình, rồi kết quả gộp bằng {{combine}}; với {{forEach}} thì không có gộp và cũng không có đảm bảo thứ tự.
+- Tốc độ do đó phụ thuộc **ba** thứ: chi phí chia, chi phí gộp, và công việc thật trên mỗi phần tử. Nói "parallel = nhanh hơn n lần" là bỏ qua hai cái đầu.
+
+### Chi phí chia của các nguồn quen
+| Nguồn | trySplit làm gì | Chi phí chia | Characteristics tiêu biểu |
+|---|---|---|---|
+| {{ArrayList}}, mảng | cắt khoảng index [gốc, giữa) | O(1) mỗi mảnh | SIZED, SUBSIZED, ORDERED |
+| {{HashMap}}, {{HashSet}} | quét node tới giữa bảng | O(số node đã quét) mỗi mảnh | SIZED |
+| {{LinkedList}} | gọi {{node(index)}} để tìm node giữa | O(k) mỗi lần chia, lặp theo số tầng chia | SIZED, ORDERED |
+| {{spliteratorUnknownSize(iterator, 0)}} | trả null: không chia được | không chia | không SIZED |
+| {{Stream.iterate}}/{{generate}} không {{limit}} | không có kích thước để chia | vô nghĩa, có thể ném IllegalStateException | không SIZED |
+| {{ConcurrentHashMap}} | chia theo dải bucket | rẻ, an toàn khi có thread khác ghi | CONCURRENT |
+
+### Vì sao parallel trên LinkedList thường chậm hơn
+- Chia đôi danh sách cần node ở giữa, và {{node(i)}} đi bộ từ đầu hoặc cuối tuỳ bên gần hơn → mỗi lần chia tốn cỡ k/2 bước pointer chase.
+- Với p mảnh, tổng chi phí chia cỡ O(n log p) lần đi qua con trỏ, trong khi một vòng {{for}} tuần tự chỉ duyệt list **một lần** O(n) và prefetch được.
+- Nói cách khác: mỗi lần "chia" trên {{LinkedList}} là một chuyến đi bộ qua heap. Parallel chỉ có lãi khi công việc trên mỗi phần tử đủ lớn so với chi phí chia, ví dụ 1 ms gọi API cho mỗi phần tử.
+- Nguồn dựng từ {{Iterator}} (JDBC stream, {{Scanner}}) không bao giờ nhanh khi bật parallel vì {{trySplit}} trả null: bạn chỉ trả thêm chi phí quản lý task.
+
+### Tự viết Spliterator đúng
+~~~java
+final class RangeSpliterator implements Spliterator.OfLong {
+    private long from, to;                       // nửa đóng [from, to)
+    RangeSpliterator(long from, long to) { this.from = from; this.to = to; }
+
+    @Override public Spliterator.OfLong trySplit() {
+        if (to - from < 1024) return null;       // dừng chia khi mảnh đã đủ nhỏ
+        long mid = (from + to) >>> 1;
+        long lo = from; from = mid;              // mình giữ nửa SAU
+        return new RangeSpliterator(lo, mid);    // trả nửa ĐẦU
+    }
+    @Override public boolean tryAdvance(LongConsumer a) {
+        if (from >= to) return false;
+        a.accept(from++);
+        return true;
+    }
+    @Override public long estimateSize() { return to - from; }
+    @Override public int characteristics() { return SIZED | SUBSIZED | ORDERED | DISTINCT | NONNULL; }
+}
+~~~
+- Hợp đồng hay bị làm sai nhất: {{trySplit}} phải trả **nửa đầu** — đúng phần mà spliterator gốc sẽ gặp tiếp theo — và giữ lại phần sau. Làm ngược thì thứ tự của stream ordered bị sai.
+- Khai {{SIZED}}/{{SUBSIZED}} là lời hứa "estimateSize chính xác". Hứa sai thì thuật toán chia dừng sai chỗ: chia quá ít thì không song song, chia quá sâu thì hàng nghìn task rỗng việc.
+- {{CONCURRENT}} chỉ được khai khi nguồn thật sự chịu được ghi đồng thời, vì stream dùng nó để quyết định có copy nguồn hay không.
+
+### Trên production
+- {{ForkJoinPool.commonPool()}} là pool của **cả JVM**: một {{parallelStream}} dài chạy trên request thread chiếm worker của {{CompletableFuture.supplyAsync}} mặc định. Xem mức bận bằng {{commonPool().getActiveThreadCount()}}, đổi mức song song bằng {{-Djava.util.concurrent.ForkJoinPool.common.parallelism}}.
+- Trong container, số CPU khả dụng lấy theo limit; limit 1 CPU thì "parallel" chỉ thêm overhead và làm p99 của request khác xấu đi.
+- Kiểm chứng nhanh: đổi {{.parallel()}} thành {{.sequential()}} rồi đo lại cùng dữ liệu — nếu nhanh hơn thì vấn đề nằm ở chia/gộp, không phải thiếu CPU.
+- Pitfall: tích luỹ vào {{ArrayList}}/{{HashMap}} chia sẻ từ nhiều mảnh; phải dùng {{collect}} với supplier và combiner đúng.
+
+> Senior tip: trước khi bật parallel, trả lời ba câu: nguồn có chia được không ({{trySplit}} của nó làm gì), mỗi phần tử đáng bao nhiêu việc, và bước gộp có tốn không. Với dữ liệu đã nằm trong bộ nhớ, {{ArrayList}} + vòng for tuần tự thường còn nhanh hơn parallel trên {{LinkedList}}; cần song song quy mô lớn thì tách executor riêng thay vì chiếm common pool.`,
+  follow: [
+    'Khai SIZED nhưng estimateSize không chính xác thì thuật toán chia hỏng thế nào?',
+    'Vì sao stream dựng từ Iterator/JDBC không bao giờ nhanh khi bật parallel?',
+    'Bạn thiết kế spliterator cho một nguồn chia đắt (snapshot vào skip list, range theo thời gian) ra sao?'
+  ],
+  tags: ['Spliterator', 'parallel stream', 'ForkJoinPool', 'LinkedList', 'trySplit'],
+  refs: [
+    { type: 'doc', title: 'Spliterator (Java SE 21 API Specification)', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Spliterator.html' }
+  ]
+},
+{
+  id: 'collections-033',
+  topic: 'collections',
+  level: 'senior',
+  q: 'Bên trong một bucket đã treeify của HashMap là gì? Vì sao treeify chỉ đảm bảo O(log n) khi key Comparable, và làm sao phát hiện map của bạn đang bị hash collision trên production?',
+  a: `**Tóm tắt:** treeify biến bucket dạng danh sách thành cây đỏ-đen (red-black tree — cây nhị phân tự cân bằng, đảm bảo tìm/ chèn/xoá O(log n)) {{TreeNode}}, nhưng cây sắp theo **hash trước, key sau**. Vì vậy đảm bảo O(log n) chỉ chắc chắn khi key implements {{Comparable}} (interface so sánh thứ tự, {{compareTo}}); nếu hash bằng nhau mà key không Comparable, JVM dùng {{tieBreakOrder}} (dựa trên identityHashCode — mã định danh object, không phụ thuộc {{hashCode()}} override) để chèn, và khi tra nó có thể phải tìm ở cả hai nhánh — worst case vẫn là O(n). Treeify là lưới an toàn, không phải vắc-xin chống HashDoS (tấn công từ chối dịch vụ bằng cách gửi nhiều key gây va chạm băm).
+
+### Cấu trúc thật của một bin
+- {{HashMap.Node}}: hash, key, value, next (4 field, cỡ 32 byte với compressed oops).
+- {{HashMap.TreeNode}} kế thừa {{LinkedHashMap.Entry}} (vốn đã là {{Node}}), thêm {{parent}}, {{left}}, {{right}}, {{prev}}, {{next}}, cờ {{red}} → cỡ 48-56 byte mỗi phần tử, tức bin dạng cây tốn gần gấp đôi bin dạng list.
+- Con trỏ {{prev}}/{{next}} vẫn nối tất cả node trong bin thành danh sách, nên thứ tự duyệt không đổi và việc untreeify rất rẻ.
+
+Thứ tự so sánh khi chèn và khi tra:
+~~~text
+1) hash khác nhau      : hash nhỏ hơn -> nhánh trái, lớn hơn -> nhánh phải
+2) hash bằng, key Comparable   : compareTo quyết định hướng đi
+3) hash bằng, không Comparable : tieBreakOrder(a, b) so theo System.identityHashCode
+   -> bước 3 chỉ quyết định vị trí CHÈN, không trả lời "đã tìm thấy"
+   -> khi tra, JVM phải thử thêm nhánh kia: có thể suy thành quét gần hết bin
+~~~
+
+### Ba ngưỡng và lý do của chúng
+| Ngưỡng | Giá trị | Ý nghĩa | Khi nào không có hiệu lực |
+|---|---|---|---|
+| TREEIFY_THRESHOLD | 8 | list đủ dài thì cân nhắc chuyển sang cây | khi capacity < 64 |
+| MIN_TREEIFY_CAPACITY | 64 | dưới ngưỡng này thì resize rẻ hơn và phân tán tốt hơn treeify | luôn nhường khi bảng còn nhỏ |
+| UNTREEIFY_THRESHOLD | 6 | khi resize tách bin mà một bên còn <= 6 node thì trả về list | bin vẫn dài hơn 6 |
+- Số 8 đến từ xác suất: với hash lý tưởng, số node trong mỗi bucket xấp xỉ phân bố Poisson, xác suất một bucket có từ 8 node là cỡ **6 × 10⁻⁸** (con số được ghi ngay trong comment mã nguồn HashMap). Nghĩa là với dữ liệu bình thường bạn **không bao giờ** thấy tree bin; treeify tồn tại để chịu đựng hash xấu.
+- Hai ngưỡng khác nhau (8 và 6) để tránh việc thêm/xoá quanh một ngưỡng khiến JVM chuyển list qua tree liên tục (thrashing). Untreeify chỉ diễn ra **trong resize**, nên {{remove}} bình thường không trả bin về list.
+
+### Khi nào cây không cứu bạn
+1. Key có {{hashCode}} trả về hằng số (kẻ tấn công chọn chuỗi sao cho hash như nhau — với {{String.hashCode}} chỉ vài ký tự là dựng được chuỗi va chạm tuỳ ý). Khi chèn key mới, {{tieBreakOrder}} vẫn giúp cây tìm vị trí theo O(log n); nhưng khi tra ({{get}}/{{containsKey}}) key không Comparable và hash bằng nhau, JVM không thể dùng {{compareTo}} để xác định hướng đi duy nhất nên có thể phải dò thêm nhánh — cost có thể xấu đi đáng kể. Javadoc HashMap nói rõ đảm bảo O(log n) cần key Comparable.
+2. Memory: nếu mọi bucket đều thành cây, heap của map gần gấp đôi so với list bin cho cùng số phần tử.
+3. Java **không** randomize {{String.hashCode}} theo từng JVM (khác cơ chế chống HashDoS trong PHP/Perl), nên tấn công qua String key là rủi ro thật, không phải lý thuyết.
+4. {{ConcurrentHashMap}} cũng treeify với ngưỡng tương tự, nhưng nó khoá trên node đầu bin: cây không giảm contention trên một hot key, và không biến {{computeIfAbsent}} đắt thành rẻ.
+
+### Trên production: phát hiện và đo
+- Không có metric chuẩn cho "độ dài bucket". Cách thực dụng: lấy mẫu key và dựng histogram bằng chính công thức của HashMap.
+~~~java
+int cap  = Integer.highestOneBit(Math.max(16, (int)(expected / 0.75f)) << 1);  // capacity luỹ thừa 2
+int mask = cap - 1;
+Map<Integer, Integer> byBucket = new HashMap<>();
+for (String k : sampleKeys) {
+    int h = k.hashCode();
+    byBucket.merge((h ^ (h >>> 16)) & mask, 1, Integer::sum);   // đúng phép hash + mặt nạ của HashMap
+}
+int longest = byBucket.values().stream().mapToInt(Integer::intValue).max().orElse(0);
+// so longest với sampleKeys.length / cap: lệch nhiều nghĩa là phân bố xấu, dễ treeify
+~~~
+- Dấu hiệu trên máy chủ: CPU cao mà GC không tăng, p99 lớn dần theo kích thước map dù "get là O(1)", flame graph chỉ vào {{HashMap.getNode}}, {{HashMap.TreeNode.findTreeNode}} và {{String.equals}}.
+- Heap dump (Eclipse MAT, VisualVM): histogram class mà có nhiều {{java.util.HashMap$TreeNode}} là bằng chứng bin đã thành cây — mà treeify với dữ liệu thật thì gần như chắc chắn {{hashCode}} của bạn phân bố kém.
+- Giảm thiểu theo thứ tự đáng tin: dùng key là id nội bộ ({{Long}}, {{UUID}}) thay vì chuỗi do user chọn; giới hạn số entry kèm eviction ({{LinkedHashMap}} với {{removeEldestEntry}}, hoặc cache chuyên dụng); sửa {{hashCode}} cho composite key (dùng record hoặc {{Objects.hash}} đúng cách); nếu bắt buộc dùng chuỗi từ input, băm lại một lần (ví dụ SHA-256 rồi lấy 8 byte) để phân bố đều và cắt khả năng chọn chuỗi chủ đích.
+
+> Senior tip: câu hỏi này ăn điểm ở hai chi tiết ít người biết: **cây chỉ nhanh khi key Comparable**, và **treeify tốn gần gấp đôi bộ nhớ**. Vì thế đừng trả lời "Java 8 hết HashDoS"; hãy trả lời "Java 8 biến O(n) thành O(log n) với điều kiện, còn gốc của vấn đề là để input người dùng quyết định key của map không giới hạn".`,
+  follow: [
+    'Vì sao UNTREEIFY chỉ xảy ra trong resize mà không trong remove, và hệ quả gì với map hay xoá phần tử?',
+    'TreeNode mang theo các con trỏ danh sách prev/next để làm gì?',
+    'Bạn thiết kế key composite cho map 10 triệu entry để vừa nhanh vừa không treeify?'
+  ],
+  tags: ['HashMap', 'TreeNode', 'treeify', 'hash collision', 'HashDoS', 'Comparable'],
+  refs: [
+    { type: 'doc', title: 'HashMap (Java SE 21 API Specification)', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/HashMap.html' }
+  ]
+},
+{
+  id: 'collections-034',
+  topic: 'collections',
+  level: 'senior',
+  q: 'modCount và expectedModCount hoạt động thế nào bên trong iterator? Vì sao fail-fast có thể im lặng trong đa luồng, và thao tác nào thực sự không gây ConcurrentModificationException?',
+  a: `**Tóm tắt:** {{modCount}} là một {{int}} **không volatile**, tăng khi có thay đổi cấu trúc; mỗi iterator giữ {{expectedModCount}} và so sánh ở từng bước. Hai điều ít người nói rõ: (1) phát hiện CME là best-effort nên trong môi trường đa luồng nó có thể **im lặng không ném** và bạn nhận kết quả sai thay vì lỗi; (2) không phải mọi sửa đổi đều là "thay đổi cấu trúc" — {{setValue}} hay {{put}} lên key đã có **không** tăng modCount nên không gây CME.
+
+### Cơ chế ở mức field
+~~~java
+// ArrayList (rút gọn)
+protected transient int modCount = 0;              // transient, KHÔNG volatile
+public E set(int i, E e) { elementData[i] = e; }   // không đụng modCount
+public boolean add(E e)  { modCount++; ... }
+public E remove(int i)   { modCount++; ... }
+
+// ArrayList.Itr
+int cursor, lastRet = -1, expectedModCount = modCount;
+public E next() {
+    if (modCount != expectedModCount) throw new ConcurrentModificationException();
+    ...
+}
+public void remove() {
+    ...
+    ArrayList.this.remove(lastRet);
+    expectedModCount = modCount;                    // mấu chốt: iterator tự cập nhật bên mình
+}
+~~~
+- Vì {{modCount}} được đọc và ghi từ nhiều thread mà không có đồng bộ, theo JMM đây là **data race**: một thread có thể mãi đọc giá trị cũ. Nên fail-fast vừa thừa (báo CME cho lỗi một luồng) vừa thiếu (không báo gì khi race thật). Javadoc của các collection chỉ hứa một câu: phát hiện fail-fast là "best effort".
+- {{expectedModCount = modCount}} trong {{it.remove()}} là lý do "sửa qua iterator thì hợp lệ": iterator biết mình vừa làm gì.
+- {{subList}} là view: sửa list gốc làm modCount của cả hai tăng, nên iterator của subList cũng fail.
+
+### Thao tác nào không gây CME
+| Thao tác trong lúc đang duyệt | Tăng modCount? | Kết quả |
+|---|---|---|
+| {{it.remove()}}, {{it.set()}} trên ListIterator | có nhưng iterator đồng bộ lại | hợp lệ |
+| {{list.add(e)}}, {{list.remove(i)}}, {{list.clear()}} | có | CME ở bước next kế tiếp |
+| {{map.put(existingKey, newValue)}} | không | không CME |
+| {{map.put(newKey, v)}}, {{map.remove(k)}} | có | CME |
+| {{e.setValue(v)}} trong {{entrySet()}}, {{map.replaceAll}}, {{map.computeIfPresent}} | không | hợp lệ |
+| Vòng for theo index + {{list.remove(i)}} | có nhưng không ai kiểm tra | **không ném**, mà âm thầm bỏ sót phần tử |
+- Dòng cuối là bẫy đáng sợ nhất: bug dạng này không để lại tín hiệu nào ngoài dữ liệu thiếu. Nó xảy ra vì index dịch sau khi xoá, còn CME chỉ được kiểm tra trong iterator.
+
+### removeIf và forEach bên trong chạy thế nào
+- {{ArrayList.removeIf}} không tạo iterator. Nó quét mảng, ghi các phần tử giữ vào vị trí mới, rồi xoá đuôi và tăng {{modCount}} **một lần**; vì vậy toàn bộ được coi là một thay đổi cấu trúc và không có CME. Muốn biết chi phí thật, nhớ rằng nó vẫn là một phép compaction kiểu arraycopy O(n).
+- {{HashMap.forEach}}, {{replaceAll}}, {{computeIfPresent}} dùng cùng ý tưởng fail-fast nhưng kiểm tra bằng một hàm nội bộ ({{modCount != expectedModCount}} thì ném) — cũng chỉ best-effort.
+- Nếu phải sửa trong lúc duyệt có kiểm soát: gom key cần sửa vào list tạm rồi sửa sau, hoặc dùng {{ConcurrentHashMap}} (iterator weakly consistent, không ném CME), hoặc copy snapshot rồi duyệt. Đừng bắt và nuốt CME.
+
+### Trên production
+- Triệu chứng 1: CME trong unit test một luồng — gần như luôn là for-each + remove, hoặc một getter được gọi lúc log/tuần tự hoá object mà bên trong nó tự nạp cache vào map (đọc kỹ stack trace để biết **ai** sửa, vì CME chỉ báo chỗ phát hiện).
+- Triệu chứng 2, nguy hiểm hơn: **không** có CME nhưng kết quả sai trong app đa luồng dùng {{ArrayList}}/{{HashMap}}: mất node, {{size}} lệch, {{null}} xuất hiện trong mảng, thậm chí vòng lặp không bao giờ kết thúc. Đây chính là lúc fail-fast im lặng vì race.
+- Kỹ thuật debug rẻ: wrap collection bằng một class ghi lại stack trace mỗi lần sửa cấu trúc (chỉ bật trong môi trường test), vì debugger chỉ cho bạn giá trị {{modCount}}, không cho biết ai vừa tăng nó.
+- Guideline cho team: (1) không sửa collection đang duyệt, dùng {{removeIf}}/{{compute}}; (2) collection chia sẻ giữa thread phải là concurrent hoặc bất biến ({{List.copyOf}}, {{Set.of}}); (3) khi trả collection ra ngoài thì trả bản copy/unmodifiable; (4) không catch CME để retry — nó là tín hiệu logic sai.
+- {{transient}} trên {{modCount}} cũng giải thích một hiện tượng nhỏ: map vừa deserialize có {{modCount}} = 0, nên debugger thấy 0 không có nghĩa là chưa ai sửa.
+
+> Senior tip: CME không phải "lỗi đa luồng", nó là "có người sửa cấu trúc ngoài iterator". Cái đáng sợ thật là trường hợp ngược lại: race mà fail-fast không phát hiện, vì {{modCount}} không volatile và không có happens-before. Nên câu trả lời lead là: fail-fast chỉ là công cụ debug, còn tính đúng đắn đến từ {{synchronized}}, concurrent collection hoặc bất biến.`,
+  follow: [
+    'Vì sao modCount không volatile làm fail-fast không đáng tin trong đa luồng, và JMM nói gì về race này?',
+    'removeIf khác vòng lặp + it.remove() ở số lần tăng modCount và chi phí arraycopy như thế nào?',
+    'Khi nào bạn chấp nhận iterator weakly consistent của ConcurrentHashMap, khi nào bắt buộc phải snapshot?'
+  ],
+  tags: ['modCount', 'fail-fast', 'ConcurrentModificationException', 'iterator', 'removeIf', 'data race']
+},
+{
+  id: 'collections-035',
+  topic: 'collections',
+  level: 'lead',
+  q: 'Người ta nói ArrayList nhanh hơn LinkedList vì cache locality. Bạn ĐO điều đó thế nào bằng JMH, đọc kết quả ra sao, và những bẫy nào làm microbenchmark kết luận sai?',
+  a: `**Tóm tắt:** Big-O chỉ đếm **số thao tác**, không đếm chi phí của mỗi thao tác. Duyệt {{ArrayList}} đi trên một mảng reference liên tục (một cache line 64 byte chứa 8-16 reference, prefetch được); duyệt {{LinkedList}} là chuỗi pointer chase qua các node rải trên heap, mỗi bước có thể một cache miss. Kết luận phải đến từ phép đo tử tế: JMH với đủ warmup, {{@Fork}}, Blackhole/kết quả được dùng, và {{-prof gc}} — vì đa số microbenchmark sai ở chỗ JIT xoá code hoặc so hai thao tác khác nhau.
+
+### Ba lớp chi phí của một phép tính
+- Số thao tác: điều Big-O mô tả.
+- Chi phí mỗi thao tác: load từ L1 cỡ 1 ns, load từ RAM cỡ 80-100 ns — chênh ~100 lần.
+- Bộ nhớ: cache line bị chiếm, object header, áp lực lên GC.
+
+~~~text
+ArrayList 10 phần tử (compressed oops):
+  elementData: [ r0 r1 r2 r3 r4 r5 r6 r7 r8 r9 ]   40 byte, nằm trong 1 cache line
+  -> duyệt tuần tự, CPU prefetch được; các object Integer vẫn nằm rải rác
+
+LinkedList 10 phần tử:
+  node0 [prev|item|next]  node1 [prev|item|next]  ...   mỗi node ~32 byte
+  -> được cấp phát theo thời gian nên vị trí trên heap gần như ngẫu nhiên
+  -> mỗi bước duyệt là một lần đọc con trỏ không dự đoán được
+~~~
+
+### Benchmark tối thiểu
+~~~java
+@BenchmarkMode(Mode.AverageTime)
+@OutputTimeUnit(TimeUnit.MICROSECONDS)
+@State(Scope.Benchmark)
+@Warmup(iterations = 5, time = 1)
+@Measurement(iterations = 5, time = 1)
+@Fork(2)
+public class ListBench {
+    @Param({"1000", "100000"}) int n;
+    List<Integer> arr, link;
+
+    @Setup(Level.Trial) public void init() {
+        arr = new ArrayList<>(); link = new LinkedList<>();
+        for (int i = 0; i < n; i++) { arr.add(i); link.add(i); }
+    }
+
+    @Benchmark public long sumArrayList()   { long s = 0; for (int x : arr)  s += x; return s; }
+    @Benchmark public long sumLinkedList()  { long s = 0; for (int x : link) s += x; return s; }
+    // Lưu ý: benchmark chèn/xoá giữa mà tự làm hỏng kích thước list cần @Setup(Level.Invocation) để khôi phục;
+    // ví dụ dưới chỉ minh hoạ ý tưởng. Với phép đo thật, dùng @Setup(Level.Invocation) copy list mới mỗi lần.
+    @Benchmark public long addMiddleArray(Blackhole bh) { ArrayList<Integer> a = new ArrayList<>(arr); a.add(n / 2, 7); return a.size(); }
+    @Benchmark public long addMiddleLink(Blackhole bh)  { LinkedList<Integer> l = new LinkedList<>(link); l.add(n / 2, 7); return l.size(); }
+}
+~~~
+- Chạy: tạo project từ archetype {{jmh-archetypes}}, rồi {{java -jar target/benchmarks.jar ListBench -p n=100000 -prof gc}}. {{-prof gc}} thêm cột byte cấp phát mỗi operation và số lần GC — cách chứng minh khác biệt đến từ **bộ nhớ/cache** chứ không phải số lệnh.
+- Đọc kết quả: {{Score}} phải kèm {{Error}} và {{Cnt}}; hai điểm số chỉ đáng so khi khoảng tin cậy không chồng nhau.
+
+### Số điển hình (minh hoạ — hãy tự đo trên máy và dữ liệu của bạn)
+| Phép với n = 100.000 Integer | ArrayList | LinkedList |
+|---|---|---|
+| Duyệt lấy tổng | ~15-30 µs | ~120-250 µs |
+| {{get(i)}} ngẫu nhiên | cỡ nano giây (phép tính index) | cỡ micro giây (đi bộ tới i) |
+| Chèn vào giữa | memmove mảng reference, vài µs, không cấp phát object | tìm node O(n) + đổi 3 con trỏ + 1 object mới |
+| Bộ nhớ riêng cho cấu trúc | 4 byte mỗi slot reference | ~32 byte mỗi node, cộng dấu vết cấp phát |
+- Điều ngược đời: {{add(index, e)}} của **cả hai** đều O(n) — ArrayList vì memmove, LinkedList vì phải **đi tới** vị trí. LinkedList chỉ rẻ khi bạn đã có {{ListIterator}} nằm đúng chỗ đó (ví dụ vừa {{next()}} xong rồi {{remove()}}).
+
+### Bẫy làm số liệu sai
+| Bẫy | Chuyện gì xảy ra | Cách tránh |
+|---|---|---|
+| Thiếu warmup | đo interpreter/C1, kết luận sai về inlining và escape analysis | {{@Warmup}} đủ, {{@Fork(2)}} (chạy benchmark ở JVM tiến trình riêng, tránh ảnh hưởng chéo), kiểm tra score đã ổn định |
+| JIT xoá code vì kết quả không dùng | score ~0 ns, "benchmark nói list nhanh gấp 100 lần" | trả kết quả ra ngoài hoặc {{Blackhole.consume}} (Blackhole: API JMH "tiêu thụ" kết quả để JIT không được xoá code) |
+| Constant folding (JIT tính sẵn hằng), tự làm hỏng dữ liệu | {{@Setup}} tính sẵn kết quả; chèn/xoá tích luỹ khiến n đổi theo iteration | input đổi thật sự, {{@Param}}, {{@Setup(Level.Invocation)}} khi cần khôi phục trạng thái mỗi lần gọi |
+| So hai phép khác nhau | "add ở cuối" với "get theo index" | mỗi benchmark một thao tác, cùng dữ liệu, cùng n |
+| GC chen vào | điểm số mang cả chi phí dọn rác | {{-prof gc}}; allocation bằng nhau thì khác biệt nằm ở cache |
+| Máy có IDE đang chạy, CPU limit trong container | phương sai lớn, {{availableProcessors}} không phản ánh máy thật | nhiều fork, tắt việc nặng, khai báo CPU thật |
+
+### Trên production
+- JMH chạy như một job định kỳ (baseline rồi so sánh) khi đổi cấu trúc dữ liệu ở đường nóng, nhưng kết luận cuối vẫn phải đến từ profiling workload thật: async-profiler hoặc JFR event {{jdk.ObjectAllocationSample}}, flame graph chỉ vào {{ArrayList.contains}}.
+- Case hay gặp trong review: {{orders.contains(x)}} trong vòng lặp 100k lần — thủ phạm là Big-O chứ không phải cache locality, vẫn cùng bài học: đo rồi hãy sửa.
+- Khi nào đáng đo: đổi cấu trúc dữ liệu ở đường nóng, hoặc ai đó đề nghị {{LinkedList}}. Khi nào không: code chạy năm lần mỗi request.
+
+> Senior tip: khác biệt senior/lead ở câu này không phải thuộc con số, mà là khả năng **thiết kế phép đo**: vì sao cần {{@Fork}}, Blackhole, {{-prof gc}}, và vì sao số đo trên 100k phần tử có thể vô nghĩa với workload 50 phần tử. Câu chốt: "{{LinkedList}} sai gần như mọi lúc — và tôi chứng minh được bằng JMH trên dữ liệu thật của chính hệ thống này."`,
+  follow: [
+    'Blackhole tồn tại để chặn điều gì, và nếu bỏ nó thì JIT "gian lận" ra sao?',
+    '{{@Setup(Level.Invocation)}} làm benchmark sai theo hướng nào, và thay thế bằng gì?',
+    'Bạn viết thêm benchmark nào để chứng minh ArrayDeque thắng LinkedList khi làm queue?'
+  ],
+  tags: ['JMH', 'microbenchmark', 'cache locality', 'ArrayList', 'LinkedList', 'Blackhole'],
+  refs: [
+    { type: 'doc', title: 'JMH README (OpenJDK)', url: 'https://github.com/openjdk/jmh' }
+  ]
+}
+,
+{
+  id: 'modern-039',
+  topic: 'modern',
+  level: 'senior',
+  q: 'Virtual threads (Java 21) khi migrate tu platform thread: ThreadLocal nang, JDBC pool nut that, semaphore gioi han dong thoi.',
+  a: `**Tom tat:** virtual thread la thread nhe do JVM quan ly; migrate don gian vi API giong Thread, nhung ThreadLocal va pool JDBC tro thanh nut that moi, can semaphore/bound de gioi han dong thoi.
+
+### Khai niem
+- VT mount/unmount tren carrier thread; blocking IO tu unmount.
+- Tao re: hang trieu VT khong van de.
+
+### ThreadLocal nang
+- Moi VT co ban copy => memory lon.
+- Chuyen sang ScopedValue (preview) hoac truyen tham so.
+
+### JDBC pool nut that
+- VT cho phep hang ngan request dong thoi, nhung DB pool chi vai chuc connection.
+- Gioi han dong thoi bang semaphore (permits = pool size) hoac bulkhead.
+
+### Pinning
+- Carrier bi pin trong synchronized/native; Java 24 synchronized khong con pin.
+- Tranh: dung ReentrantLock.
+
+### Pitfall
+- VT khong nhanh hon CPU-bound.
+- ThreadLocal + VT = memory blowup.
+- Monitoring: JFR.
+
+> Senior tip: VT la cheap concurrency; nut that chuyen sang resource. Luon dat bound ro rang.`,
+  follow: ['ThreadLocal khac ScopedValue the nao?', 'Pinning xay ra khi nao?', 'Khi nao khong nen dung virtual thread?'],
+  tags: ['virtual threads', 'ThreadLocal', 'JDBC', 'semaphore', 'pinning'],
+  refs: [{ type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' }]
+},
+{
+  id: 'modern-040',
+  topic: 'modern',
+  level: 'lead',
+  q: 'Structured concurrency va ScopedValue (Java 21+): trang thai preview/final theo JDK, loi ich va cach dung dung.',
+  a: `**Tom tat:** StructuredTaskScope quan ly lifecycle subtask VT theo block; ScopedValue thay ThreadLocal cho du lieu bat bien theo scope. Ca hai preview o Java 21.
+
+### Trang thai version
+- Java 21: preview (can --enable-preview).
+- Java 22-24: van preview.
+- Java 25: ScopedValue final.
+
+### StructuredTaskScope
+~~~java
+try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
+    Subtask<User> u = scope.fork(() -> fetchUser(id));
+    Subtask<Order> o = scope.fork(() -> fetchOrder(id));
+    scope.join();
+    scope.throwIfFailed();
+    return new Result(u.get(), o.get());
+}
+~~~
+- Subtask la VT; scope dam bao cancel/join khi thoat.
+- ShutdownOnFailure: cancel con lai khi mot loi.
+- ShutdownOnSuccess: tra ket qua dau tien thanh cong.
+
+### ScopedValue
+~~~java
+private static final ScopedValue<User> CURRENT_USER = ScopedValue.newInstance();
+ScopedValue.where(CURRENT_USER, user).run(() -> { service.process(); });
+~~~
+- Bind gia tri cho scope va VT con; tu unbind.
+- Hieu qua hon ThreadLocal; chi cho gia tri bat bien.
+
+### Pitfall
+- Preview API thay doi giua version.
+- Khong dung ScopedValue cho mutable.
+- Timeout: joinUntil.
+
+> Senior tip: structured concurrency la structured programming cho concurrency.`,
+  follow: ['Vi sao ScopedValue hieu qua hon ThreadLocal?', 'ShutdownOnFailure khac ShutdownOnSuccess?', 'Khi nao van dung ExecutorService?'],
+  tags: ['structured concurrency', 'ScopedValue', 'StructuredTaskScope', 'preview'],
+  refs: [{ type: 'doc', title: 'JEP 453: Structured Concurrency', url: 'https://openjdk.org/jeps/453' }]
+},
+{
+  id: 'modern-041',
+  topic: 'modern',
+  level: 'senior',
+  q: 'Stream nang cao: tu viet Collector, gatherers (JDK 24) va vi sao parallel stream khong phai luc nao cung nhanh.',
+  a: `**Tom tat:** Collector tu viet can supplier/accumulator/combiner/finisher dung contract; gatherers (JDK 24) cho intermediate operation tuy bien; parallel stream cham khi split kem, blocking, hoac du lieu nho.
+
+### Collector tu viet
+- Collector.of(supplier, accumulator, combiner, finisher, characteristics).
+- supplier tao container rong; accumulator them phan tu; combiner gop; finisher chuyen sang ket qua.
+- Sai lam: accumulator dung state chia se; combiner khong merge.
+
+### Gatherers (JDK 24)
+- Stream.gather(Gatherer) cho intermediate operation tuy bien.
+- Co san: windowFixed, windowSliding, fold, scan, mapConcurrent.
+- mapConcurrent chay function song song voi bound concurrency.
+
+### Parallel stream
+- Dung chung ForkJoinPool.commonPool; blocking => starvation.
+- Chi phi split/merge lon; du lieu nho khong dang.
+- Nguon kho split: LinkedList, Iterator, Stream.iterate.
+- Quy tac: N*Q > 10000 moi dang; do bang JMH.
+
+> Senior tip: mac dinh stream tuan tu; chi bat parallel khi co benchmark.`,
+  follow: ['Combiner cua Collector can lam gi?', 'Gatherers.mapConcurrent khac parallel stream?', 'Lam sao do parallel stream?'],
+  tags: ['Stream', 'Collector', 'gatherers', 'parallel', 'JDK 24'],
+  refs: [{ type: 'doc', title: 'JEP 485: Stream Gatherers', url: 'https://openjdk.org/jeps/485' }]
+},
+{
+  id: 'modern-042',
+  topic: 'modern',
+  level: 'lead',
+  q: 'Text blocks, switch expression, var - pitfall khi review code.',
+  a: `**Tom tat:** text block giu indentation theo incidental whitespace; switch expression bat buoc exhaustive va case null; var chi local va kieu phai lo ro.
+
+### Text block pitfalls
+- Indentation: incidental whitespace = min indentation moi dong.
+- Newline cuoi: dau dong tren dong rieng => co newline.
+- SQL text block + concat du lieu => injection.
+
+### Switch expression pitfalls
+- Exhaustive: enum/String phai co default hoac phu het.
+- case null: switch pattern ném NPE neu khong co case null (Java 21).
+- Thu tu: pattern tong quat truoc => dominated.
+
+### var pitfalls
+- Chi local; field/param/return phai kieu tuong minh.
+- Khong co initializer hoac null => compile error.
+- var voi diamond: ArrayList<Object>.
+
+> Senior tip: dat convention: var chi khi ve phai noi ro kieu; text block chi cho chuoi tinh.`,
+  follow: ['Text block bo indentation theo quy tac nao?', 'Switch expression xu ly null the nao?', 'Khi nao var kho review?'],
+  tags: ['text block', 'switch expression', 'var', 'review', 'pitfall']
+},
+{
+  id: 'modern-043',
+  topic: 'modern',
+  level: 'senior',
+  q: 'Record: canonical/compact constructor, bat bien nong (shallow), equals/hashCode, DTO/JPA.',
+  a: `**Tom tat:** record tu sinh constructor/accessor/equals/hashCode/toString; compact constructor validate/chuan hoa; bat bien chi nong; DTO tot, JPA entity khong.
+
+### Canonical vs compact
+- Canonical nhan du component.
+- Compact khong co tham so, chay truoc khi gan field; co the reassign de chuan hoa.
+
+### Bat bien nong
+- Field final nhung component mutable van mutable.
+- Phai defensive copy: items = List.copyOf(items).
+- equals/hashCode dung tat ca component.
+
+### DTO
+- It boilerplate, bat bien, Jackson ho tro.
+
+### JPA entity
+- Khong nen: can no-arg, field mutable, proxy subclass.
+- Co the dung record lam projection.
+
+> Senior tip: record cho value object/DTO; compact constructor validate + copy.`,
+  follow: ['Vi sao Hibernate khong tao proxy cho record?', 'Compact khac canonical?', 'Record pattern (Java 21) giup gi?'],
+  tags: ['record', 'compact constructor', 'DTO', 'JPA', 'shallow immutability']
+},
+{
+  id: 'modern-044',
+  topic: 'modern',
+  level: 'lead',
+  q: 'Sealed + pattern matching switch: exhaustiveness, compiler kiem tra, loi ich khi them subtype moi.',
+  a: `**Tom tat:** sealed gioi han tap subclass; switch pattern kiem tra exhaustive tai compile-time neu hierarchy sealed; them subtype moi lam moi switch thieu case loi compile.
+
+### Sealed
+- Subclass phai final/sealed/non-sealed va cung module/package.
+
+### Exhaustiveness
+- Switch expression tren sealed type khong can default neu phu het subtype.
+- Compiler kiem tra coverage; thieu => loi compile.
+- Them subtype moi => moi switch thieu case loi compile.
+
+### non-sealed
+- Cho phep mo rong ngoai module => mat exhaustive check => can default.
+
+### Pitfall
+- null => NPE neu khong case null.
+- Thu tu: pattern tong quat truoc => dominated.
+
+> Senior tip: sealed + record + switch exhaustive thay the visitor pattern.`,
+  follow: ['Vi sao switch pattern tren sealed khong can default?', 'non-sealed anh huong exhaustiveness?', 'Switch pattern xu ly null khac switch String?'],
+  tags: ['sealed', 'pattern matching', 'switch', 'exhaustiveness', 'Java 21']
+},
+{
+  id: 'modern-045',
+  topic: 'modern',
+  level: 'senior',
+  q: 'Sealed class va pattern matching for switch (Java 21): exhaustiveness dam bao gi va pitfall khi migrate tu if-else/visitor.',
+  a: `**Tom tat:** sealed + switch pattern cho exhaustive compile-time check; migrate tu if-else/visitor can chu y null, thu tu case, version preview.
+
+### Loi ich
+- Exhaustive check tai compile-time.
+- Them subtype => compiler nhac moi switch.
+- Thay visitor pattern: it boilerplate, single dispatch.
+
+### Pitfall
+- null => NPE neu khong case null.
+- Thu tu case: cu the truoc tong quat.
+- non-sealed lam mat exhaustive.
+- Preview 17-20, final 21.
+
+> Senior tip: dung cho domain it thay doi; domain mo thi dung non-sealed/interface thuong.`,
+  follow: ['Vi sao visitor exhaustiveness la runtime?', 'Khi nao khong nen sealed?', 'Record pattern long giup gi?'],
+  tags: ['sealed', 'pattern matching', 'switch', 'visitor', 'Java 21']
+},
+{
+  id: 'modern-046',
+  topic: 'modern',
+  level: 'lead',
+  q: 'Tu Java 8 len 21: lo trinh migrate va tinh nang dang gia nhat.',
+  a: `**Tom tat:** migrate theo buoc 8->11->17->21; gia tri lon: GC/perf, record/sealed/pattern matching, virtual thread, strong encapsulation.
+
+### Tinh nang dang gia
+- 9: collection factory, module.
+- 10: var.
+- 11 LTS: String methods, HTTP client, G1/ZGC.
+- 14-16: switch expr, text block, record, instanceof pattern.
+- 17 LTS: sealed, strong encapsulation.
+- 21 LTS: virtual thread, pattern matching switch, record pattern, sequenced collection.
+
+### Lo trinh
+1. Baseline test/JMH/GC.
+2. 8->11: jdeps, thay API bo, TLS.
+3. 11->17: reflection/internal, Spring Boot 3.
+4. 17->21: pattern/record, VT o I/O-bound + do.
+5. CI song song JDK, staging smoke.
+6. Rollout blue-green, monitor.
+
+### Pitfall
+- Nhay thang 8->21 kho debug.
+- Reflection/bytecode instrumentation vo nhieu.
+- Unsafe deprecated for removal (Java 23+).
+- VT khong cho CPU-bound.
+
+> Senior tip: migrate la du an co ke hoach; chay test tren JDK moi truoc production.`,
+  follow: ['Vi sao di tung LTS?', 'Virtual thread giai quyet va khong giai quyet gi?', 'Strong encapsulation anh huong thu vien cu?'],
+  tags: ['Java 21', 'migration', 'LTS', 'virtual threads', 'lead']
 }
 );
