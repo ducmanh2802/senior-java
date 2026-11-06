@@ -2190,4 +2190,492 @@ Thêm một lưu ý: {{writeLock().tryLock(timeout)}} **không** cứu được 
   ],
   tags: ['readwritelock', 'lock-contention', 'writer-starvation', 'jstack', 'copy-on-write', 'aqs']
 },
+{
+  id: 'lab-thread-009',
+  category: 'thread',
+  title: 'Chuyển sang virtual thread nhưng API tra cứu vẫn nghẽn: pinning vì synchronized bọc JDBC',
+  level: 'senior',
+  scenario: `**Bối cảnh:** **FinOne Lookup** (Spring Boot 3.3, Java 21, PostgreSQL 15, HikariCP) là dịch vụ tra cứu hồ sơ khách hàng. Trước đây Tomcat dùng 200 platform thread (thread hệ điều hành — mỗi thread là một "công nhân" thật của OS, tốn ~1MB bộ nhớ stack và chi phí chuyển ngữ cảnh khi OS đổi qua đổi lại). Khi tải tăng, request phải xếp hàng chờ thread rảnh.
+
+**Thay đổi:** Team bật {{spring.threads.virtual.enabled=true}} để dùng **virtual thread** (thread ảo của JVM, rất nhẹ — vài KB, JVM tự lên lịch hàng triệu cái trên một số ít thread OS gọi là **carrier thread**). Kỳ vọng: khi một virtual thread chờ I/O (gọi DB, gọi HTTP) nó sẽ "nhường" carrier cho virtual thread khác chạy, nên throughput tăng mạnh.
+
+**Triệu chứng:** Sau deploy, throughput **không tăng**, thậm chí giảm nhẹ: trước 820 req/s, sau **790 req/s**; p99 từ 95ms lên **640ms**. CPU pod 2 vCPU chỉ ~40%. Không lỗi DB, không deadlock. Điều kỳ lạ: thread dump kiểu cũ gần như không thấy request nào đang chạy.
+
+**Dữ liệu thu thập:**
+- Chạy {{jcmd 1 Thread.dump_to_file -format=text /tmp/vt-dump.txt}} (định dạng text của JDK 21 liệt kê cả virtual thread, khác {{Thread.print}} thường chỉ thấy platform thread).
+- Bật {{-Djdk.tracePinnedThreads=full}} trên pod canary (tùy chọn JDK 21–23, in stack khi virtual thread bị **pin** — bị "ghim" vào carrier, không nhường được).
+- Số liệu Prometheus trước/sau deploy (cùng tải 800 req/s).`,
+  artifacts: [
+    {
+      name: 'metrics-before-after.txt',
+      lang: 'text',
+      content: `# Cùng tải đầu vào: 800 req/s, pod 2 vCPU, HikariCP maximumPoolSize=30
+# BEFORE (platform threads, Tomcat max 200)
+2026-10-28 09:00-09:10 window: rps=798, p50=42ms, p95=78ms, p99=95ms, cpu=62%, tomcat_busy=140/200
+HikariPool-1: active=22, idle=8, pending=0
+
+# AFTER (virtual threads enabled)
+2026-10-28 10:00-10:10 window: rps=790, p50=180ms, p95=510ms, p99=640ms, cpu=40%, hikari_pending_avg=0
+HikariPool-1: active=28, idle=2, pending=0
+
+# Ghi chú on-call: DB query trung bình 35ms (không đổi). Không có request nào chờ connection pool.
+# Carrier threads (ForkJoinPool common) đang chạy: 2 (xem vt-dump.txt worker-1/worker-2; mặc định pool là availableProcessors - 1, pinning khiến pool bù đắp thêm carrier).`
+    },
+    {
+      name: 'trace-pinned.log',
+      lang: 'text',
+      content: `2026-10-28T10:03:12.441+07:00  INFO 1 --- [lookup-vt] v.f.lookup.CustomerLookupService : lookup customerId=C-884102
+Thread[#812,VirtualThread[#812]/runnable@ForkJoinPool-1-worker-1,5,CarrierThreads]
+    java.base/java.lang.VirtualThread$VThreadContinuation.onPinned(VirtualThread.java:183)
+    java.base/jdk.internal.vm.Continuation.onPinned0(Continuation.java:393)
+    java.base/java.lang.VirtualThread.park(VirtualThread.java:621)
+    java.base/java.lang.System$2.parkVirtualThread(System.java:2652)
+    java.base/jdk.internal.misc.VirtualThreads.park(VirtualThreads.java:67)
+    java.base/java.util.concurrent.locks.LockSupport.park(LockSupport.java:369)
+    java.base/sun.nio.ch.Poller.poll(Poller.java:102)
+    java.base/sun.nio.ch.SocketChannelImpl.implRead(SocketChannelImpl.java:428)
+    java.base/sun.nio.ch.SocketChannelImpl.read(SocketChannelImpl.java:489)
+    java.base/org.postgresql.core.VisibleBufferedInputStream.readMore(VisibleBufferedInputStream.java:161)
+    java.base/org.postgresql.core.VisibleBufferedInputStream.ensureBytes(VisibleBufferedInputStream.java:128)
+    java.base/org.postgresql.core.VisibleBufferedInputStream.ensureBytes(VisibleBufferedInputStream.java:113)
+    java.base/org.postgresql.core.VisibleBufferedInputStream.read(VisibleBufferedInputStream.java:73)
+    java.base/org.postgresql.core.PGStream.receiveChar(PGStream.java:467)
+    java.base/org.postgresql.core.v3.QueryExecutorImpl.processResults(QueryExecutorImpl.java:2155)
+    java.base/org.postgresql.core.v3.QueryExecutorImpl.execute(QueryExecutorImpl.java:372)
+    java.base/org.postgresql.jdbc.PgStatement.executeInternal(PgStatement.java:498)
+    java.base/org.postgresql.jdbc.PgPreparedStatement.executeWithFlags(PgPreparedStatement.java:164)
+    java.base/org.postgresql.jdbc.PgPreparedStatement.executeQuery(PgPreparedStatement.java:114)
+    com.zaxxer.hikari.pool.ProxyPreparedStatement.executeQuery(ProxyPreparedStatement.java:52)
+    com.zaxxer.hikari.pool.HikariProxyPreparedStatement.executeQuery(HikariProxyPreparedStatement.java)
+    vn.finone.lookup.CustomerRepository.findById(CustomerRepository.java:37) <== monitors:1
+    vn.finone.lookup.CustomerLookupService.lookup(CustomerLookupService.java:29) <== monitors:1
+    java.base/java.lang.VirtualThread.run(VirtualThread.java:309)
+
+# jdk.tracePinnedThreads in stack khi virtual thread bị pin (mỗi sự kiện pin;
+# các request sau cùng stack thường không in lại).`
+    },
+    {
+      name: 'vt-dump.txt',
+      lang: 'text',
+      content: `# jcmd 1 Thread.dump_to_file -format=text /tmp/vt-dump.txt
+# 2026-10-28 10:03:18 +07:00  OpenJDK 64-Bit Server VM 21.0.4+7-LTS
+# Lược trích: 2 carrier (worker) + một phần virtual thread đang pin
+
+"ForkJoinPool-1-worker-1" #29 [0x3f] daemon prio=5 os_prio=0 cpu=183412.00ms elapsed=612.44s tid=0x00007f2c64002800 nid=0x3f runnable  [0x00007f2c5c6fd000]
+   java.lang.Thread.State: RUNNABLE
+   Carrying virtual thread #812
+        at java.base@21.0.4/sun.nio.ch.SocketChannelImpl.implRead(SocketChannelImpl.java:428)
+        at java.base@21.0.4/sun.nio.ch.SocketChannelImpl.read(SocketChannelImpl.java:489)
+        at org.postgresql.core.VisibleBufferedInputStream.readMore(VisibleBufferedInputStream.java:161)
+        at org.postgresql.core.PGStream.receiveChar(PGStream.java:467)
+        at org.postgresql.core.v3.QueryExecutorImpl.processResults(QueryExecutorImpl.java:2155)
+        at org.postgresql.core.v3.QueryExecutorImpl.execute(QueryExecutorImpl.java:372)
+        at org.postgresql.jdbc.PgPreparedStatement.executeQuery(PgPreparedStatement.java:114)
+        at com.zaxxer.hikari.pool.HikariProxyPreparedStatement.executeQuery(HikariProxyPreparedStatement.java)
+        at vn.finone.lookup.CustomerRepository.findById(CustomerRepository.java:37)
+        - locked <0x000000070f2a1c40> (a vn.finone.lookup.CustomerRepository)
+        at vn.finone.lookup.CustomerLookupService.lookup(CustomerLookupService.java:29)
+        - locked <0x000000070f2a4e10> (a vn.finone.lookup.CustomerLookupService)
+
+"ForkJoinPool-1-worker-2" #30 [0x40] daemon prio=5 os_prio=0 cpu=179880.55ms elapsed=612.44s tid=0x00007f2c64004c00 nid=0x40 runnable  [0x00007f2c5c5fc000]
+   java.lang.Thread.State: RUNNABLE
+   Carrying virtual thread #819
+        at java.base@21.0.4/sun.nio.ch.SocketChannelImpl.implRead(SocketChannelImpl.java:428)
+        at java.base@21.0.4/sun.nio.ch.SocketChannelImpl.read(SocketChannelImpl.java:489)
+        at org.postgresql.core.VisibleBufferedInputStream.readMore(VisibleBufferedInputStream.java:161)
+        at org.postgresql.core.PGStream.receiveChar(PGStream.java:467)
+        at org.postgresql.core.v3.QueryExecutorImpl.processResults(QueryExecutorImpl.java:2155)
+        at org.postgresql.jdbc.PgPreparedStatement.executeQuery(PgPreparedStatement.java:114)
+        at com.zaxxer.hikari.pool.HikariProxyPreparedStatement.executeQuery(HikariProxyPreparedStatement.java)
+        at vn.finone.lookup.CustomerRepository.findById(CustomerRepository.java:37)
+        - locked <0x000000070f2a1c90> (a vn.finone.lookup.CustomerRepository)
+        at vn.finone.lookup.CustomerLookupService.lookup(CustomerLookupService.java:29)
+        - locked <0x000000070f2a4e88> (a vn.finone.lookup.CustomerLookupService)
+
+# --- Virtual threads (không có carrier, đang chờ được mount) ---
+#417 "" virtual WAITING 2026-10-28T10:03:17.992
+      java.base/java.lang.VirtualThread.park(VirtualThread.java:592)
+      java.base/java.util.concurrent.locks.LockSupport.park(LockSupport.java:369)
+      vn.finone.lookup.CustomerRepository.findById(CustomerRepository.java:37)
+#418 "" virtual WAITING 2026-10-28T10:03:17.993
+      java.base/java.lang.VirtualThread.park(VirtualThread.java:592)
+      java.base/java.util.concurrent.locks.LockSupport.park(LockSupport.java:369)
+      vn.finone.lookup.CustomerLookupService.lookup(CustomerLookupService.java:29)
+#419 "" virtual WAITING 2026-10-28T10:03:17.994
+      java.base/java.lang.VirtualThread.park(VirtualThread.java:592)
+      java.base/java.util.concurrent.locks.LockSupport.park(LockSupport.java:369)
+      vn.finone.lookup.CustomerRepository.findById(CustomerRepository.java:37)
+# ... (lược bớt) ...
+# Tổng trong file: 214 virtual thread WAITING (chờ carrier/monitor), 2 virtual thread đang chạy (mỗi cái pin 1 carrier).`
+    }
+  ],
+  questions: [
+    'Vì sao bật virtual thread mà throughput không tăng, p99 còn tăng? Giải thích cơ chế "pinning" và dẫn chứng từ artifact.',
+    'Hai carrier thread đang làm gì và vì sao 214 virtual thread kia phải chờ? Phân biệt "chờ I/O bình thường" với "bị pin".',
+    'Bạn sẽ sửa thế nào (ngắn hạn và dài hạn)? Nêu cách phát hiện pinning trong CI/production.'
+  ],
+  hints: [
+    'Nhìn {{trace-pinned.log}}: dòng {{<== monitors:1}} nghĩa là gì? Khi virtual thread đang giữ monitor ({{synchronized}}) mà gặp thao tác blocking (đọc socket JDBC), nó có "nhường" carrier được không? Carrier thread là gì so với virtual thread?',
+    'Nhìn {{vt-dump.txt}}: {{worker-1}} đang {{Carrying virtual thread #812}} và đọc socket DB nhưng vẫn hiện {{RUNNABLE}} và giữ {{locked <0x000000070f2a1c40>}}. Trong khi đó #417/#418/#419 là {{virtual WAITING}}. Có bao nhiêu carrier cho 216 request đang xử lý?',
+    'So sánh 3 cách: bỏ {{synchronized}} đổi sang {{ReentrantLock}} (JDK 21+ không pin khi park trên {{ReentrantLock}}), thu hẹp vùng {{synchronized}} để không bao quanh JDBC, hoặc dùng semaphore giới hạn song song. Nhớ rằng pinning còn xảy ra trong native/foreign call — nhưng ở đây nguyên nhân là monitor.'
+  ],
+  answer: `**Tóm tắt:** Bật virtual thread không giúp vì code dùng {{synchronized}} bao quanh lời gọi JDBC (đọc dữ liệu từ PostgreSQL qua mạng). Khi virtual thread giữ monitor của {{synchronized}} rồi chờ I/O, nó bị **pin** (ghim) vào carrier thread — không nhường carrier cho thread khác. Chỉ có 2 carrier (2 vCPU) nên tối đa 2 request chạy thật sự cùng lúc, 214 request còn lại phải xếp hàng chờ monitor/carrier. Kết quả giống hệt 2 platform thread, nhưng tệ hơn vì overhead lên lịch virtual thread; vì vậy throughput ~790 req/s, p99 640ms, CPU chỉ 40%.
+
+### Thuật ngữ nền (đọc trước)
+
+- **Thread (luồng):** một "luồng thực thi" — chuỗi lệnh chạy nối tiếp. OS cho nhiều thread chạy xen kẽ.
+- **Platform thread:** thread truyền thống, ánh xạ 1-1 với thread của hệ điều hành. Nặng (~1MB stack), tạo/chuyển ngữ cảnh tốn kém. Ví dụ đời thường: mỗi công nhân là một người thật, thuê thêm người rất tốn.
+- **Virtual thread (Java 21):** thread ảo do JVM quản lý, rất nhẹ (vài KB). Hàng nghìn/một triệu virtual thread chạy trên một số ít **carrier thread** (thread OS thật, thường bằng số CPU). Khi virtual thread gặp thao tác chờ (I/O, sleep) nó *unmount* khỏi carrier để carrier chạy virtual thread khác — giống vài nhân viên thật luân phiên xử lý rất nhiều phiếu chờ.
+- **Carrier thread:** thread OS đang "cõng" (carry) một virtual thread. Trong dump hiện là {{ForkJoinPool-1-worker-1}} và {{worker-2}} (2 carrier = 2 vCPU).
+- **Monitor / synchronized:** {{synchronized}} lấy một "ổ khóa" (monitor) gắn với object. Chỉ một thread giữ monitor tại một thời điểm; thread khác phải chờ.
+- **Pinning (ghim):** trạng thái virtual thread **không thể unmount** khỏi carrier trong khi đang thực hiện thao tác blocking. Carrier bị chiếm giữ, không chạy được virtual thread khác. Nguyên nhân phổ biến: (1) đang giữ monitor của {{synchronized}} rồi park/block, (2) đang ở trong native/foreign function (JNI, Panama).
+- **JDBC:** API Java để chạy SQL qua kết nối mạng tới database (ở đây là PostgreSQL).
+
+### Cơ chế pinning — vì sao virtual thread không nhường carrier
+
+Khi mọi thứ thuận lợi, virtual thread gọi I/O (ví dụ đọc socket) → JVM gỡ nó khỏi carrier → carrier chạy thread khác → I/O xong thì mount lại. Nhưng nếu virtual thread **đang giữ monitor {{synchronized}}** ({{monitors:1}} trong trace) tại thời điểm đó, JVM **không dám** unmount: nếu nhường carrier, monitor vẫn bị giữ bởi virtual thread đang treo, và cơ chế {{synchronized}} (gắn với thread OS) sẽ rối loạn. Vì vậy JVM giữ nguyên virtual thread trên carrier — đó là **pinning**.
+
+~~~text
+Bình thường (không synchronized):           Khi pin (đang synchronized + I/O):
+  VT-A chờ DB  -> unmount                   VT-A chờ DB  -> BỊ GHIM trên carrier-1
+  carrier-1 chạy VT-B, VT-C...               carrier-1 đứng chờ socket (không làm gì khác)
+  DB trả về    -> mount VT-A lại             VT-B, VT-C... xếp hàng chờ carrier/monitor
+~~~
+
+### Dẫn chứng từ artifact
+
+**1) trace-pinned.log:** Stack cho thấy {{onPinned}} → {{park}} → {{SocketChannelImpl.implRead}} (đọc socket PostgreSQL). Hai dòng {{<== monitors:1}} tại {{CustomerRepository.findById}} (dòng 37) và {{CustomerLookupService.lookup}} (dòng 29) chứng minh virtual thread đang giữ 2 monitor {{synchronized}} đúng lúc chờ JDBC. Đây là bằng chứng trực tiếp của pinning.
+
+**2) vt-dump.txt (jcmd Thread.dump_to_file -format=text):** Hai carrier {{worker-1}} (nid 0x3f) và {{worker-2}} (nid 0x40) đều ở {{java.lang.Thread.State: RUNNABLE}} nhưng thực ra đang **chờ socket DB** ({{implRead}}). Mỗi carrier ghi rõ {{Carrying virtual thread #812/#819}} và giữ {{locked <0x000000070f2a1c40>}} / {{<0x000000070f2a1c90>}}. Pod có 2 vCPU → đúng 2 carrier → đúng 2 request chạy đồng thời, phần còn lại bất lực.
+
+**3) 214 virtual thread WAITING:** {{#417, #418, #419}} (và tổng 214) đều {{virtual WAITING}} tại {{VirtualThread.park}} từ {{CustomerRepository.findById}} / {{CustomerLookupService.lookup}}. Chúng không chờ DB — chúng chờ được mount lên carrier hoặc chờ monitor. Request đến liên tục nhưng không có carrier rảnh để chạy.
+
+**4) Số liệu:** Trước (200 platform thread) có thể có ~140 thread bận, mỗi thread tự chờ I/O của nó trên thread OS riêng → 798 req/s. Sau (virtual thread) chỉ 2 carrier thật sự chạy, DB vẫn 35ms/query → tối đa ~57 req/s trên lý thuyết mỗi carrier nếu tuần tự, thực tế xen kẽ chút đỉnh nhưng vẫn ~790 req/s tổng là trần thấp, p99 vọt vì xếp hàng. CPU 40% vì 2 core bận chờ I/O nhưng nhìn tổng (bao gồm thời gian idle scheduling) thấp; quan trọng là **không có carrier rảnh**.
+
+### Vì sao {{Thread.print}} thường không thấy gì?
+
+{{jcmd 1 Thread.print}} (định dạng truyền thống) chủ yếu liệt kê **platform thread**. Virtual thread chỉ hiện đầy đủ với {{Thread.dump_to_file -format=text}} (JDK 21+) hoặc {{-format=json}}. Đây là bẫy chẩn đoán: "dump trống" không có nghĩa là không có request đang kẹt.
+
+### So sánh: chờ I/O bình thường vs bị pin
+
+| Tình huống | Virtual thread | Carrier | Hậu quả |
+|---|---|---|---|
+| Chờ I/O, **không** giữ {{synchronized}} | unmount, park | chạy VT khác | Đúng mục đích virtual thread |
+| Chờ I/O, **đang giữ** {{synchronized}} (case này) | bị pin, park | đứng chờ I/O, không chạy VT khác | Carrier cạn kiệt, throughput sập |
+| Chờ trên {{ReentrantLock.lock()}} (JDK 21+) | unmount, park | chạy VT khác | Không pin ({{ReentrantLock}} dùng {{LockSupport.park}} tương thích VT) |
+
+### Cách sửa
+
+**Ngắn hạn (an toàn, làm ngay):**
+1. **Bỏ {{synchronized}} trên đường đi I/O**, thay bằng {{ReentrantLock}} hoặc thiết kế stateless để không cần khóa instance:
+~~~java
+public class CustomerRepository {
+    // TRƯỚC: synchronized bọc cả JDBC -> pin
+    public synchronized Customer findById(String id) { return jdbc.query(...); }
+}
+// SAU (chọn 1): bỏ synchronized nếu repository không giữ state chia sẻ cần bảo vệ
+public class CustomerRepository {
+    public Customer findById(String id) { return jdbc.query(...); } // JDBC + pool tự thread-safe
+}
+// SAU (chọn 2): nếu thực sự cần khóa, dùng ReentrantLock (không pin khi await/park)
+public class CustomerRepository {
+    private final ReentrantLock lock = new ReentrantLock();
+    public Customer findById(String id) {
+        lock.lock();
+        try { return jdbc.query(...); } finally { lock.unlock(); }
+    } // Lưu ý: vẫn giữ lock suốt I/O (chặn thread khác) nhưng KHÔNG pin carrier — khác biệt quan trọng
+}
+~~~
+Lưu ý: {{ReentrantLock}} tránh pin nhưng vẫn giữ khóa trong lúc chờ DB, nên các virtual thread khác vào cùng repository vẫn phải chờ nhau — tốt hơn pinning (carrier được giải phóng) nhưng chưa tối ưu. Tốt nhất là **không khóa bao quanh I/O**.
+
+2. **Thu hẹp vùng khóa:** nếu chỉ cần bảo vệ một đoạn cập nhật state nhỏ, khóa đúng đoạn đó, để JDBC nằm ngoài.
+3. **Tạm thời quay lại platform thread** cho endpoint này (hoặc tắt virtual thread toàn cục) nếu chưa kịp sửa, để khôi phục SLA.
+
+**Dài hạn:**
+- Dùng JDBC driver / thư viện đã kiểm chứng với virtual thread; cấu hình pool hợp lý (virtual thread nhiều nhưng connection DB vẫn là tài nguyên hữu hạn).
+- Quy ước code review: "đường đi có I/O không được nằm trong {{synchronized}}". Viết ArchUnit/kiểm tra tĩnh nếu có thể.
+- Với thao tác cần giới hạn đồng thời (thay vì khóa), dùng {{Semaphore}} ({{acquire}} cũng tương thích virtual thread khi dùng đúng API).
+
+### Phát hiện pinning trong CI/production
+
+- **JDK 21–23:** chạy test tải với {{-Djdk.tracePinnedThreads=full}} (hoặc {{short}}). Bất kỳ dòng {{onPinned}} nào cũng là cảnh báo cần xử lý.
+- **JDK 24+:** sự kiện JFR {{jdk.VirtualThreadPinned}} vẫn hữu ích; kết hợp {{jdk.VirtualThreadSubmitFailed}} và theo dõi độ dài hàng đợi carrier.
+- **Production:** bật JFR profile liên tục, dashboard đếm {{jdk.VirtualThreadPinned}} theo endpoint/stack; alert khi > 0 ở đường nóng.
+- **Unit/integration test:** chạy với {{-Djdk.tracePinnedThreads=full}} và fail test nếu stderr chứa {{onPinned}} (hoặc dùng JFR stream API).
+
+### Bẫy hay gặp
+
+- Nghĩ "bật virtual thread là xong" mà không rà {{synchronized}} trong code mình và thư viện (SDK cũ, driver cũ).
+- Nhầm {{ReentrantLock}}: nó tránh pin nhưng nếu giữ lock suốt I/O vẫn gây tranh chấp logic — không phải đũa thần.
+- Chỉ nhìn {{Thread.print}} thấy ít thread → kết luận "không có gì"; phải dùng {{Thread.dump_to_file -format=text}}.
+- Tăng số connection pool để "chữa" p99: pool không phải nút thắt ở đây ({{pending=0}}), nút thắt là carrier bị pin.
+
+> Senior tip: Virtual thread giải bài toán "ngàn tác vụ chờ I/O" (I/O-bound), không giải "khóa tranh chấp" hay "CPU-bound". Trước khi bật toàn cục, hãy chạy canary với {{-Djdk.tracePinnedThreads=full}} và JFR, soi cả dependency: một thư viện logging/metrics/SDK dùng {{synchronized}} quanh network call cũng đủ ghim carrier. Quy tắc vàng: {{synchronized}} chỉ bao quanh đoạn CPU thuần túy, rất ngắn; mọi thứ chạm I/O phải nằm ngoài monitor.`,
+  rubric: [
+    'Giải thích đúng cơ chế pinning: virtual thread giữ monitor {{synchronized}} (monitors:1) khi gặp blocking I/O JDBC thì không unmount khỏi carrier; carrier bị chiếm, 214 virtual thread xếp hàng. Dẫn chứng trace-pinned (onPinned, SocketChannelImpl.implRead, monitors:1 tại Repository:37/Service:29) và vt-dump (worker-1/2 Carrying #812/#819, locked 0x000000070f2a1c40/0x000000070f2a4e10).',
+    'Giải thích vì sao throughput không tăng: chỉ 2 carrier đang chạy (pod 2 vCPU) phục vụ tuần tự ~2 request cùng lúc trong lúc chờ DB 35ms; Hikari pending=0 nên nút thắt không phải pool. Phân biệt chờ I/O không pin vs bị pin.',
+    'Đề xuất sửa: bỏ/thu hẹp {{synchronized}} khỏi đường đi JDBC (ưu tiên), hoặc dùng {{ReentrantLock}} (tránh pin nhưng vẫn giữ lock logic), kèm lưu ý trade-off; cách phát hiện (tracePinnedThreads JDK21-23, JFR VirtualThreadPinned, dump dạng text).'
+  ],
+  tags: ['virtual-thread', 'pinning', 'synchronized', 'jdbc', 'jcmd', 'carrier-thread', 'java21']
+},
+{
+  id: 'lab-thread-010',
+  category: 'thread',
+  title: 'parallelStream và supplyAsync không truyền executor: commonPool bị I/O chặn, cả hệ thống ì ạch',
+  level: 'senior',
+  scenario: `**Bối cảnh:** **ShopCore Pricing** (Spring Boot 3.3, Java 17, pod 8 vCPU) tính giá khuyến mãi cho giỏ hàng. Mỗi request gọi:
+- {{CompletableFuture.supplyAsync(() -> taxClient.quote(...))}} để lấy thuế từ dịch vụ thuế (HTTP, ~300ms).
+- {{cart.getItems().parallelStream().map(p -> inventoryClient.stock(p))}} để lấy tồn kho từng sản phẩm (HTTP, ~200ms/call).
+
+Đội dev dùng {{supplyAsync}} và {{parallelStream}} vì "chạy song song cho nhanh" và không truyền {{Executor}} (dùng mặc định).
+
+**Triệu chứng:** Lúc bình thường (ít request) latency ổn. Khi traffic tăng gấp đôi lúc **14:05 ngày 03/11/2026**, p99 của {{/pricing/quote}} tăng từ 420ms lên **18s**, nhưng CPU pod chỉ **11%** (gần như rảnh). Dịch vụ thuế và tồn kho upstream vẫn khỏe (p99 upstream < 250ms). Heap bình thường, không GC căng. Hết đợt traffic p99 tự hồi phục.
+
+**Dữ liệu thu thập:** {{jstack <pid>}} lúc 14:08:30, số liệu latency/CPU, và log thread pool (không có pool tùy chỉnh nào được cấu hình).`,
+  artifacts: [
+    {
+      name: 'metrics-14h.txt',
+      lang: 'text',
+      content: `# Pricing pod (8 vCPU), 2026-11-03
+# 13:50-14:00 (baseline, ~120 req/s)
+  /pricing/quote p50=180ms p95=350ms p99=420ms
+  CPU avg=22%  loadavg=1.1  GC pause p99=12ms
+
+# 14:05-14:10 (traffic spike, ~260 req/s)
+  /pricing/quote p50=4200ms p95=14500ms p99=18000ms
+  CPU avg=11%  loadavg=0.4  GC pause p99=14ms
+  HikariPool active=3/20 pending=0   (DB gần như không dùng trong luồng pricing)
+
+# Upstream (cùng thời điểm 14:05-14:10)
+  tax-service      p99=210ms  2xx=99.9%
+  inventory-service p99=240ms  2xx=99.8%
+
+# JVM
+  java.version=17.0.11  availableProcessors=8
+  ForkJoinPool.commonPool() parallelism (mặc định) = availableProcessors - 1 = 7`
+    },
+    {
+      name: 'jstack-pricing.txt',
+      lang: 'text',
+      content: `2026-11-03 14:08:30
+Full thread dump OpenJDK 64-Bit Server VM (17.0.11+9 mixed mode, sharing):
+
+"ForkJoinPool.commonPool-worker-1" #22 daemon prio=5 os_prio=0 cpu=8450.12ms elapsed=18320.44s tid=0x00007f1a901f4800 nid=0x5e runnable  [0x00007f1a74cfd000]
+   java.lang.Thread.State: RUNNABLE
+        at sun.nio.ch.Net.poll(java.base@17.0.11/Native Method)
+        at sun.nio.ch.NioSocketImpl.park(java.base@17.0.11/NioSocketImpl.java:186)
+        at sun.nio.ch.NioSocketImpl.timedRead(java.base@17.0.11/NioSocketImpl.java:290)
+        at sun.nio.ch.NioSocketImpl.implRead(java.base@17.0.11/NioSocketImpl.java:314)
+        at sun.nio.ch.NioSocketImpl.read(java.base@17.0.11/NioSocketImpl.java:355)
+        at sun.nio.ch.NioSocketImpl$1.read(java.base@17.0.11/NioSocketImpl.java:808)
+        at java.net.Socket$SocketInputStream.read(java.base@17.0.11/Socket.java:966)
+        at java.io.BufferedInputStream.fill(java.base@17.0.11/BufferedInputStream.java:244)
+        at java.io.BufferedInputStream.read1(java.base@17.0.11/BufferedInputStream.java:284)
+        at java.io.BufferedInputStream.read(java.base@17.0.11/BufferedInputStream.java:343)
+        at sun.net.www.http.HttpClient.parseHTTPHeader(java.base@17.0.11/HttpClient.java:826)
+        at sun.net.www.http.HttpClient.parseHTTP(java.base@17.0.11/HttpClient.java:759)
+        at sun.net.www.protocol.http.HttpURLConnection.getInputStream0(java.base@17.0.11/HttpURLConnection.java:1705)
+        at sun.net.www.protocol.http.HttpURLConnection.getInputStream(java.base@17.0.11/HttpURLConnection.java:1614)
+        at vn.shopcore.pricing.InventoryClient.stock(InventoryClient.java:54)
+        at vn.shopcore.pricing.PricingService.lambda$quote$2(PricingService.java:71)
+        at java.util.stream.ReferencePipeline$3$1.accept(java.base@17.0.11/ReferencePipeline.java:197)
+        at java.util.ArrayList$ArrayListSpliterator.forEachRemaining(java.base@17.0.11/ArrayList.java:1625)
+        at java.util.stream.AbstractPipeline.copyInto(java.base@17.0.11/AbstractPipeline.java:509)
+        at java.util.stream.AbstractPipeline.wrapAndCopyInto(java.base@17.0.11/AbstractPipeline.java:499)
+        at java.util.stream.ReduceOps$ReduceTask.doLeaf(java.base@17.0.11/ReduceOps.java:960)
+        at java.util.stream.ReduceOps$ReduceTask.doLeaf(java.base@17.0.11/ReduceOps.java:934)
+        at java.util.stream.AbstractTask.compute(java.base@17.0.11/AbstractTask.java:327)
+        at java.util.concurrent.CountedCompleter.exec(java.base@17.0.11/CountedCompleter.java:754)
+        at java.util.concurrent.ForkJoinTask.doExec(java.base@17.0.11/ForkJoinTask.java:373)
+        at java.util.concurrent.ForkJoinPool$WorkQueue.topLevelExec(java.base@17.0.11/ForkJoinPool.java:1182)
+        at java.util.concurrent.ForkJoinPool.scan(java.base@17.0.11/ForkJoinPool.java:1655)
+        at java.util.concurrent.ForkJoinPool.runWorker(java.base@17.0.11/ForkJoinPool.java:1622)
+        at java.util.concurrent.ForkJoinWorkerThread.run(java.base@17.0.11/ForkJoinWorkerThread.java:165)
+
+"ForkJoinPool.commonPool-worker-2" #23 daemon prio=5 os_prio=0 cpu=8311.40ms elapsed=18320.44s tid=0x00007f1a901f6800 nid=0x5f runnable  [0x00007f1a74bfc000]
+   java.lang.Thread.State: RUNNABLE
+        at sun.nio.ch.Net.poll(java.base@17.0.11/Native Method)
+        at sun.nio.ch.NioSocketImpl.park(java.base@17.0.11/NioSocketImpl.java:186)
+        at sun.nio.ch.NioSocketImpl.implRead(java.base@17.0.11/NioSocketImpl.java:314)
+        at sun.nio.ch.NioSocketImpl.read(java.base@17.0.11/NioSocketImpl.java:355)
+        at java.net.Socket$SocketInputStream.read(java.base@17.0.11/Socket.java:966)
+        at sun.net.www.http.HttpClient.parseHTTP(java.base@17.0.11/HttpClient.java:759)
+        at sun.net.www.protocol.http.HttpURLConnection.getInputStream(java.base@17.0.11/HttpURLConnection.java:1614)
+        at vn.shopcore.pricing.TaxClient.quote(TaxClient.java:48)
+        at vn.shopcore.pricing.PricingService.lambda$quote$0(PricingService.java:58)
+        at java.util.concurrent.CompletableFuture$AsyncSupply.run(java.base@17.0.11/CompletableFuture.java:1768)
+        at java.util.concurrent.CompletableFuture$AsyncSupply.exec(java.base@17.0.11/CompletableFuture.java:1760)
+        at java.util.concurrent.ForkJoinTask.doExec(java.base@17.0.11/ForkJoinTask.java:373)
+        at java.util.concurrent.ForkJoinPool$WorkQueue.topLevelExec(java.base@17.0.11/ForkJoinPool.java:1182)
+        at java.util.concurrent.ForkJoinPool.scan(java.base@17.0.11/ForkJoinPool.java:1655)
+        at java.util.concurrent.ForkJoinPool.runWorker(java.base@17.0.11/ForkJoinPool.java:1622)
+        at java.util.concurrent.ForkJoinWorkerThread.run(java.base@17.0.11/ForkJoinWorkerThread.java:165)
+
+"ForkJoinPool.commonPool-worker-3" #24 daemon prio=5 os_prio=0 cpu=8299.01ms elapsed=18320.44s tid=0x00007f1a901f8800 nid=0x60 runnable  [0x00007f1a74afb000]
+   java.lang.Thread.State: RUNNABLE
+        at sun.nio.ch.Net.poll(java.base@17.0.11/Native Method)
+        at sun.nio.ch.NioSocketImpl.implRead(java.base@17.0.11/NioSocketImpl.java:314)
+        at java.net.Socket$SocketInputStream.read(java.base@17.0.11/Socket.java:966)
+        at sun.net.www.protocol.http.HttpURLConnection.getInputStream(java.base@17.0.11/HttpURLConnection.java:1614)
+        at vn.shopcore.pricing.InventoryClient.stock(InventoryClient.java:54)
+        at vn.shopcore.pricing.PricingService.lambda$quote$2(PricingService.java:71)
+        at java.util.stream.AbstractTask.compute(java.base@17.0.11/AbstractTask.java:327)
+        at java.util.concurrent.ForkJoinPool.runWorker(java.base@17.0.11/ForkJoinPool.java:1622)
+        at java.util.concurrent.ForkJoinWorkerThread.run(java.base@17.0.11/ForkJoinWorkerThread.java:165)
+
+# ... worker-4, worker-5, worker-6, worker-7 có stack tương tự (đều Net.poll/read socket
+# tới inventory-service:8080 hoặc tax-service:8080) ...
+# Tổng: 7 thread ForkJoinPool.commonPool-worker-* , TẤT CẢ đều RUNNABLE nhưng đang chờ socket read.
+# Không có worker nào rảnh. Tomcat request threads (http-nio-8080-exec-*) đang WAITING chờ future/stream hoàn thành.`
+    },
+    {
+      name: 'PricingService.java',
+      lang: 'text',
+      content: `@Service
+public class PricingService {
+    private final TaxClient taxClient;           // gọi HTTP tới tax-service
+    private final InventoryClient inventoryClient; // gọi HTTP tới inventory-service
+
+    public Quote quote(Cart cart) {
+        // (A) Không truyền executor -> chạy trên ForkJoinPool.commonPool()
+        CompletableFuture<Tax> taxFuture =
+            CompletableFuture.supplyAsync(() -> taxClient.quote(cart));
+
+        // (B) parallelStream() cũng dùng ForkJoinPool.commonPool()
+        List<Stock> stocks = cart.getItems().parallelStream()
+            .map(item -> inventoryClient.stock(item.getSku()))  // HTTP blocking ~200ms
+            .toList();
+
+        Tax tax = taxFuture.join();   // Tomcat thread chờ ở đây
+        return Quote.of(cart, stocks, tax);
+    }
+}`
+    }
+  ],
+  questions: [
+    'Vì sao CPU chỉ 11% mà latency p99 lại lên 18 giây? Giải thích ForkJoinPool.commonPool là gì, ai dùng chung nó, và cơ chế starvation (đói tài nguyên) ở đây.',
+    'Tại sao upstream khỏe (p99 < 250ms) nhưng Pricing vẫn chậm? Dựa vào số liệu 7 worker và ~260 req/s để ước lượng nút thắt.',
+    'Bạn sẽ sửa thế nào để cô lập I/O blocking khỏi commonPool? Nêu các cách và trade-off (thread pool riêng, virtual thread, bất đồng bộ thật sự).'
+  ],
+  hints: [
+    'Đọc {{PricingService.java}}: {{supplyAsync(...)}} không có tham số thứ 2 chạy ở đâu? {{parallelStream()}} chạy ở đâu? Hai chỗ đó có dùng **chung** một pool không? Trong jstack có bao nhiêu worker và tất cả đang làm gì?',
+    '{{ForkJoinPool.commonPool()}} mặc định có {{availableProcessors - 1}} thread = 7 (xem metrics). Mỗi worker đang {{RUNNABLE}} nhưng thực ra chờ {{Net.poll}} (đọc socket) — thread OS bị chiếm để đợi I/O, không tính toán. 7 "công nhân" đều đứng chờ mạng thì tác vụ mới (của request khác, hoặc thậm chí tác vụ khác trong JVM) xếp hàng ra sao?',
+    'So sánh: (1) truyền {{Executor}} riêng cho {{supplyAsync(supplier, ioExecutor)}} và thay {{parallelStream}} bằng submit lên pool I/O; (2) dùng virtual thread executor (Java 21) cho tác vụ I/O; (3) dùng HTTP client bất đồng bộ thật sự (WebClient/non-blocking). Chú ý: pool I/O phải giới hạn để không làm quá tải upstream.'
+  ],
+  answer: `**Tóm tắt:** {{parallelStream()}} và {{CompletableFuture.supplyAsync(...)}} (không truyền {{Executor}}) đều dùng chung **{{ForkJoinPool.commonPool()}}** — một thread pool toàn JVM. Pool này mặc định chỉ có {{số_CPU - 1 = 7}} worker. Code lại dùng pool đó để gọi HTTP blocking (chờ mạng 200–300ms), nên cả 7 worker đều bị kẹt ở {{Net.poll}} (đọc socket). Khi traffic tăng, mọi tác vụ mới (kể cả của request khác) phải xếp hàng chờ 7 worker rảnh → p99 18s dù CPU chỉ 11% (thread đang "chờ", không tính toán). Upstream vẫn nhanh; nút thắt nằm ở chính service Pricing vì tự cạn kiệt worker.
+
+### Thuật ngữ nền
+
+- **Thread pool (bể luồng):** một nhóm thread tạo sẵn, tái dùng để chạy nhiều tác vụ. Tránh chi phí tạo thread mới liên tục. Ví dụ đời thường: 7 nhân viên phục vụ dùng chung cho cả quán — nếu cả 7 đều đứng chờ bếp (I/O), khách mới không ai tiếp.
+- **{{ForkJoinPool.commonPool()}}:** thread pool dùng chung, chia sẻ **toàn bộ JVM**. Mặc định kích thước = {{Runtime.getRuntime().availableProcessors() - 1}} (ở đây 8 - 1 = 7). Bất kỳ ai trong process cũng có thể vô tình dùng nó.
+- **{{parallelStream()}}:** chạy các phần tử của stream song song bằng {{commonPool}}.
+- **{{CompletableFuture.supplyAsync(supplier)}}** (1 tham số): chạy {{supplier}} bất đồng bộ trên {{commonPool}}. Bản 2 tham số {{supplyAsync(supplier, executor)}} mới cho phép chọn pool.
+- **Blocking I/O:** thao tác chờ dữ liệu từ bên ngoài (mạng, đĩa). Thread gọi nó sẽ đứng yên chờ — thread OS bị chiếm nhưng CPU nhàn rỗi.
+- **Starvation (đói tài nguyên):** tác vụ không bao giờ/ rất lâu mới được chạy vì tài nguyên cần thiết (ở đây là worker thread) bị tác vụ khác giữ mãi.
+
+### Ai dùng chung commonPool? (cái bẫy lớn)
+
+~~~text
+ForkJoinPool.commonPool()  (7 worker, dùng chung TOÀN JVM)
+  +-- PricingService.lambda$quote$0  (supplyAsync -> TaxClient HTTP)      [từ request A]
+  +-- PricingService.lambda$quote$2  (parallelStream -> Inventory HTTP)   [từ request A, B, C...]
+  +-- (có thể) bất kỳ thư viện nào khác gọi parallelStream/supplyAsync
+Tất cả tranh nhau đúng 7 worker.
+~~~
+
+Mỗi request pricing tạo 1 future lấy thuế + N tác vụ lấy tồn kho (song song). Ở 260 req/s, với vài item mỗi giỏ, số tác vụ blocking I/O sinh ra **lớn hơn rất nhiều** so với 7 worker — hàng đợi phình ra, latency tăng theo hàng đợi.
+
+### Dẫn chứng từ artifact
+
+**1) {{PricingService.java}}:** dòng {{CompletableFuture.supplyAsync(() -> taxClient.quote(cart))}} không truyền executor → {{commonPool}}. Dòng {{cart.getItems().parallelStream()}} → {{commonPool}}. Cả hai đều gọi HTTP client blocking ({{HttpURLConnection.getInputStream}}).
+
+**2) {{jstack-pricing.txt}}:** Cả 7 {{ForkJoinPool.commonPool-worker-1}} đến {{worker-7}} đều {{java.lang.Thread.State: RUNNABLE}} nhưng stack dừng ở {{sun.nio.ch.Net.poll}} / {{NioSocketImpl.implRead}} / {{Socket$SocketInputStream.read}} — tức là **chờ mạng**. {{worker-2}} đang chạy {{CompletableFuture$AsyncSupply}} gọi {{TaxClient.quote}}; các worker khác chạy {{AbstractTask.compute}} (tác vụ của {{parallelStream}}) gọi {{InventoryClient.stock}}. **Không worker nào rảnh.** Tomcat thread ({{http-nio-8080-exec-*}}) thì {{WAITING}} chờ {{future.join()}} / stream hoàn thành.
+
+**3) {{metrics-14h.txt}}:** {{availableProcessors=8}} → commonPool parallelism = 7. CPU 11%, loadavg 0.4, upstream p99 < 250ms, DB pool pending=0: mọi thứ bên ngoài khỏe. Nút thắt chỉ có thể là 7 worker dùng chung bị giữ bởi blocking I/O.
+
+**4) Ước lượng nhanh:** 7 worker, mỗi lần chờ mạng ~200–250ms → tối đa ~28–35 tác vụ I/O hoàn thành/giây trên toàn pool (nếu mỗi tác vụ là một call). Nhưng 260 req/s * (1 call thuế + ~3 call tồn kho) = ~1000+ call/s cần worker. Thiếu worker hàng chục lần → hàng đợi tăng tuyến tính → p99 18s.
+
+### Vì sao {{RUNNABLE}} mà vẫn là "kẹt"?
+
+Trong Java, thread đang chờ I/O qua native poll/read thường vẫn báo {{RUNNABLE}} (nó đang thực thi native code chờ OS), không phải {{WAITING/TIMED_WAITING}} như chờ lock. Đừng nhầm "RUNNABLE = đang tính toán". Phải đọc stack: nếu thấy {{Net.poll}}, {{Socket.read}}, {{EPoll.wait}} thì đó là **I/O wait**.
+
+### Sơ đồ luồng
+
+~~~seq
+title: 7 worker commonPool bị I/O giữ, request xếp hàng
+actors: Client | Tomcat | CommonPool(7) | Tax/Inventory
+Client -> Tomcat: GET /pricing/quote (260 req/s)
+Tomcat -> CommonPool(7): supplyAsync(tax) + parallelStream(stock)
+CommonPool(7) -> Tax/Inventory: HTTP blocking (200-300ms)
+note CommonPool(7): 7/7 worker RUNNABLE @ Net.poll (chờ socket)
+Tomcat -> Tomcat: join() WAITING chờ future
+CommonPool(7) --> Tomcat: trả kết quả (rất trễ, do xếp hàng)
+Tomcat --> Client: response p99 18s
+~~~
+
+### Cách sửa
+
+**Nguyên tắc:** Tác vụ **blocking I/O** phải chạy trên executor dành riêng cho I/O (kích thước theo băng thông/upstream, có giới hạn), **không bao giờ** chiếm commonPool (commonPool dành cho tác vụ CPU-bound ngắn).
+
+**Cách 1 — Executor I/O riêng (Java 8+, khuyến nghị khi chưa lên 21):**
+~~~java
+@Configuration
+class ExecutorsConfig {
+    @Bean
+    ExecutorService ioExecutor() {
+        // Giới hạn để không bắn quá tải upstream; đặt theo capacity upstream
+        return new ThreadPoolExecutor(32, 64, 60, TimeUnit.SECONDS,
+            new LinkedBlockingQueue<>(500),
+            new ThreadPoolExecutor.CallerRunsPolicy()); // quá tải thì tự Tomcat thread làm (back-pressure)
+    }
+}
+
+@Service
+public class PricingService {
+    private final ExecutorService ioExecutor;
+    public Quote quote(Cart cart) {
+        CompletableFuture<Tax> taxFuture =
+            CompletableFuture.supplyAsync(() -> taxClient.quote(cart), ioExecutor); // truyền executor
+        // Thay parallelStream bằng submit từng item lên ioExecutor rồi gather
+        List<CompletableFuture<Stock>> fs = cart.getItems().stream()
+            .map(it -> CompletableFuture.supplyAsync(() -> inventoryClient.stock(it.getSku()), ioExecutor))
+            .toList();
+        List<Stock> stocks = fs.stream().map(CompletableFuture::join).toList();
+        Tax tax = taxFuture.join();
+        return Quote.of(cart, stocks, tax);
+    }
+}
+~~~
+
+**Cách 2 — Virtual thread cho I/O (Java 21+, hợp với Spring Boot 3.2+):**
+~~~java
+ExecutorService vt = Executors.newVirtualThreadPerTaskExecutor();
+CompletableFuture.supplyAsync(() -> taxClient.quote(cart), vt);
+~~~
+Virtual thread chờ I/O sẽ nhường carrier (miễn không bị pin — xem lab pinning), nên có thể scale số tác vụ I/O lớn. Vẫn phải **giới hạn đồng thời** tới upstream (dùng {{Semaphore}}) để tránh bắn sập dịch vụ thuế/tồn kho.
+
+**Cách 3 — HTTP client bất đồng bộ thật sự (WebClient/reactive):** không chiếm thread khi chờ mạng. Mạnh nhưng thay đổi mô hình lập trình lớn; chỉ chọn khi team đã quen reactive.
+
+| Cách | Ưu | Nhược | Khi nào |
+|---|---|---|---|
+| Thread pool I/O riêng | Đơn giản, kiểm soát concurrency rõ | Tốn thread OS, phải tune size/queue | Java 8–17, blocking client sẵn có |
+| Virtual thread executor | Code blocking nhưng scale I/O tốt | Cần Java 21; vẫn phải rate-limit; coi chừng pinning | Java 21+, đường đi I/O-bound |
+| Non-blocking (WebClient) | Ít thread, back-pressure tốt | Phức tạp, debug khó, lan ra cả stack | Hệ reactive, throughput cực cao |
+
+### Bẫy hay gặp
+
+- Dùng {{supplyAsync}} "cho nhanh" mà quên tham số {{executor}} — ngầm dùng commonPool.
+- Dùng {{parallelStream}} trên tác vụ I/O — {{parallelStream}} sinh ra cho CPU-bound chia nhỏ collection, không phải cho chờ mạng.
+- Tạo thread pool I/O **không giới hạn** ({{newCachedThreadPool}} / vô hạn virtual thread bắn upstream) → gây outage dây chuyền cho dịch vụ thuế/tồn kho.
+- Thấy {{RUNNABLE}} trong jstack liền cho rằng thread đang bận tính toán; phải đọc tiếp stack xem có {{Net.poll/read}} không.
+- Nghĩ "tăng CPU" sẽ cứu: CPU 11% chứng tỏ thêm core vô ích, nút thắt là số worker và I/O wait.
+
+> Senior tip: Quy tắc đội: {{commonPool}} chỉ cho tác vụ CPU-bound, hoàn thành nhanh, **không blocking I/O**. Mọi {{supplyAsync}} trong codebase phải có tham số {{executor}}; mọi {{parallelStream}} phải được review (mặc định đổi về {{stream()}} trừ khi đo được lợi ích CPU). Đặt metric cho kích thước hàng đợi và thời gian chờ của từng executor I/O — đó là chỉ báo sớm trước khi p99 nổ. Và nhớ commonPool là dùng chung: một module khác lạm dụng nó cũng làm Pricing chết theo.`,
+  rubric: [
+    'Xác định đúng commonPool bị dùng chung bởi {{supplyAsync}} (không executor) và {{parallelStream}} (PricingService.java), parallelism=7 worker; cả 7 worker RUNNABLE nhưng chờ {{Net.poll/Socket.read}} (blocking I/O tới tax/inventory) nên bị starvation khi 260 req/s sinh ~1000 call/s.',
+    'Giải thích vì sao CPU 11% nhưng p99 18s (I/O wait, không phải CPU-bound), upstream vẫn khỏe nên nút thắt nằm ở Pricing; phân biệt RUNNABLE đang poll I/O với đang tính toán.',
+    'Đề xuất cô lập I/O: truyền executor riêng cho supplyAsync và thay parallelStream bằng submit lên pool I/O có giới hạn/back-pressure, hoặc virtual thread executor (Java 21) + Semaphore rate-limit upstream; nêu trade-off và quy tắc không dùng commonPool cho blocking I/O.'
+  ],
+  tags: ['forkjoinpool', 'commonpool', 'parallelstream', 'completablefuture', 'starvation', 'blocking-io', 'jstack']
+},
 );
