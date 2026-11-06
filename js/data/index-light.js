@@ -1388,6 +1388,8 @@ window.DATA_INDEX = {
     {"id":"lesson-ai-002","track":"ai","order":2,"title":"Che dữ liệu cá nhân (PII) trước khi gửi LLM","level":"senior","minutes":35},
     {"id":"lesson-ai-003","track":"ai","order":3,"title":"RAG mini từ gốc","level":"senior","minutes":40},
     {"id":"lesson-ai-004","track":"ai","order":4,"title":"Đưa tính năng AI lên production an toàn","level":"lead","minutes":45},
+    {"id":"lesson-ai-005","track":"ai","order":5,"title":"RAG từ gốc: chunking có overlap, embedding, cosine similarity, top-k, re-ranking và trích nguồn","level":"senior","minutes":50},
+    {"id":"lesson-ai-006","track":"ai","order":6,"title":"Gọi LLM API trong production: ngân sách token, cắt lịch sử, timeout, retry, circuit breaker và fallback","level":"senior","minutes":50},
     {"id":"lesson-claude-001","track":"claude","order":1,"title":"Vòng lặp agent với tool use: tool_use, tool_result, stop_reason và giới hạn số bước","level":"senior","minutes":40},
     {"id":"lesson-claude-002","track":"claude","order":2,"title":"Retry đúng cách cho 429, 529 và 5xx: retry-after, exponential backoff và full jitter","level":"mid","minutes":30},
     {"id":"lesson-claude-003","track":"claude","order":3,"title":"Ngân sách context và prompt caching: cắt lịch sử an toàn, đặt cache_control và đọc usage","level":"senior","minutes":35},
