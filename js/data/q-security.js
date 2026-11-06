@@ -3028,7 +3028,6 @@ spring:
     'Nếu phải rotate root CA (thay đổi cả anchor tin cậy), bạn làm thế nào để không gián đoạn các service đang chạy?'
   ],
   refs: [
-    { type: 'doc', title: 'RFC 8446 - The Transport Layer Security (TLS) Protocol Version 1.3', url: 'https://www.rfc-editor.org/rfc/rfc8446' },
     { type: 'doc', title: 'Spring Boot - SSL', url: 'https://docs.spring.io/spring-boot/reference/features/ssl.html' }
   ],
   tags: ['TLS', 'mTLS', 'handshake', 'certificate chain', 'keyStore', 'trustStore', 'cert rotation'],
