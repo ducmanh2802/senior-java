@@ -5596,4 +5596,229 @@ SELECT * FROM pg_indexes WHERE tablename='t';
     tags: ['database', 'partition', 'performance']
   }
 
+,
+{
+  id: 'scenario-117',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'p99 latency của API tăng gấp 5 sau deploy mới, nhưng CPU và RAM của pod vẫn bình thường. Bạn điều tra từng bước thế nào?',
+  a: `**Tóm tắt:** Khi CPU và RAM vẫn bình thường mà {{p99 latency}} tăng mạnh sau deploy, nguyên nhân thường là chờ I/O (database, HTTP downstream), lock contention, GC pause, hoặc thay đổi serialization/config làm request đi theo đường chậm hơn. Cần điều tra theo thứ tự, không đoán mò.
+
+### Cái gì → tại sao cần điều tra
+- {{p99}} (percentile 99) phản ánh trải nghiệm của 1% request chậm nhất, rất nhạy với chờ đợi bên ngoài.
+- CPU/RAM bình thường cho thấy không phải "tính toán nhiều", mà có thể là "chờ nhiều".
+
+### Điều tra từng bước
+1. **Gắn timeline**: So sánh biểu đồ {{p99/p50/error rate}} theo phút trước/sau thời điểm deploy. Xác định thời điểm bắt đầu tăng chính xác.
+2. **Tìm span chậm nhất**: Dùng APM (Application Performance Monitoring) trace, so sánh trace trước và sau deploy. Xem span nào có thời gian tăng nhiều nhất (DB query, gọi HTTP, serialization, v.v.).
+3. **Kiểm tra I/O**: Xem thời gian chờ DB ({{DB wait time}}), trạng thái connection pool (pending/active/max), latency của service downstream.
+4. **Kiểm tra JVM**: Xem GC pause (đặc biệt {{p99 GC pause}}), {{safepoint}} và lock contention (thread dump/JFR).
+5. **Kiểm tra thay đổi**: Đối chiếu diff deploy (code, config: timeout/pool/batch, dependency, schema migration, feature flag).
+
+### Ví dụ thực tế
+- Thêm {{toString()}} chi tiết trên entity lớn khiến {{Jackson}} serialize chậm hơn đáng kể.
+- Thêm validation gọi DB cho mỗi request làm tăng số round-trip I/O dù CPU thấp.
+
+### Cách xử lý
+- **Nếu nghiêm trọng (vượt SLA)**: cân nhắc rollback trước khi debug sâu.
+- **Nếu có thể debug**: ưu tiên tối ưu đúng span chậm nhất thay vì "tối ưu tất cả". Thêm metric theo span để phát hiện sớm sau này.
+
+> Senior tip: Khi CPU/RAM bình thường mà p99 tăng, đừng bắt đầu từ heap - hãy bắt đầu từ trace và I/O wait.`,
+  follow: ['Làm sao phát hiện I/O wait trong JVM bằng công cụ gì?', 'Khi nào nên rollback thay vì tiếp tục debug?'],
+  tags: ['p99', 'latency', 'troubleshooting', 'APM']
+},
+{
+  id: 'scenario-118',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Một service downstream chậm kéo sập toàn hệ thống (cascading failure): dấu hiệu và cách cắt lan truyền thế nào?',
+  a: `**Tóm tắt:** {{Cascading failure}} (lan truyền lỗi/sự cố) xảy ra khi một dependency chậm khiến thread/connection bị giữ, làm pool cạn và ảnh hưởng service gọi tới nó. Cần ngăn lan truyền bằng {{timeout}}, {{circuit breaker}}, {{bulkhead}} và {{fallback}}.
+
+### Dấu hiệu
+- {{Thread pool}} active gần max, queue đầy, request bắt đầu chờ lâu.
+- Connection pool có nhiều pending, xuất hiện timeout kết nối/đọc.
+- Latency p99 tăng trên nhiều service, error rate tăng dù traffic không đổi đột ngột.
+
+### Cách cắt lan truyền
+1. **Timeout ngắn**: đặt {{connect timeout}} và {{read timeout}} hợp lý (không để vô hạn).
+2. **Circuit breaker**: dùng {{Resilience4j}} (hoặc tương đương). Mở khi tỷ lệ lỗi/timeout vượt ngưỡng, sau thời gian {{half-open}} thử lại.
+3. **Bulkhead**: giới hạn số request đồng thời tới từng dependency (tránh một dependency chiếm hết pool).
+4. **Fallback**: trả dữ liệu cache cũ ({{stale cache}}), giá trị mặc định an toàn, hoặc message "tạm thời không khả dụng" thay vì chờ vô hạn.
+5. **Retry có điều kiện**: chỉ retry lỗi có thể retry (network) với {{exponential backoff}} + {{jitter}}. KHÔNG retry lỗi nghiệp vụ.
+6. **Tránh gọi HTTP trong transaction**: giữ transaction ngắn, tránh giữ lock khi chờ dependency.
+
+> Senior tip: {{Timeout}} + {{circuit breaker}} phải được đặt từ ngày đầu. Nếu không có timeout, retry/backoff cũng vô nghĩa.`,
+  follow: ['Timeout bao nhiêu là hợp lý cho từng trường hợp?', 'Khi circuit breaker mở, traffic có vẫn được gửi không?'],
+  tags: ['cascading-failure', 'resilience', 'circuit-breaker', 'bulkhead']
+},
+{
+  id: 'scenario-119',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Dữ liệu bị ghi đè do hai người sửa cùng lúc (lost update) trên production: tìm và xử lý thế nào?',
+  a: `**Tóm tắt:** {{Lost update}} xảy ra khi hai transaction đọc cùng giá trị, tính toán độc lập, rồi cả hai ghi đè kết quả của nhau (read-modify-write không được tuần tự hóa). Cần ngăn bằng {{atomic update}} có điều kiện, {{optimistic locking}} hoặc {{pessimistic locking}}.
+
+### Điều tra
+- Tái hiện bằng load test với nhiều request đồng thời cùng khóa chính ({{PK}}).
+- Đọc code: tìm pattern {{read-then-write}} không dùng khóa/version.
+
+### Giải pháp
+1. **UPDATE nguyên tử có điều kiện (ưu tiên khi có thể)**:
+~~~sql
+UPDATE inventory SET qty = qty - :take, updated_at = now()
+WHERE sku = :sku AND qty >= :take
+RETURNING qty;
+~~~
+Nếu không có dòng bị ảnh hưởng (affected rows = 0) → không đủ tồn kho/hết hàng.
+
+2. **Optimistic locking**: thêm cột {{@Version}} (hoặc {{version}}). Khi commit, Hibernate so sánh version; nếu khác → ném {{OptimisticLockException}}, cần retry có giới hạn.
+3. **Pessimistic locking**: {{SELECT ... FOR UPDATE}} khóa hàng trước khi đọc-sửa. Chỉ dùng khi xung đột thực tế cao và không dễ retry, vì dễ gây lock wait/deadlock.
+
+### Pitfall cần tránh
+- Quên điều kiện {{qty >= :take}} → có thể dẫn đến số âm không mong muốn.
+- Dùng optimistic lock cho {{hot key}} cực nóng → nhiều retry, tốn CPU.
+- Dùng {{SELECT ... FOR UPDATE}} mà quên transaction/timeout → dễ block kéo dài.
+
+> Senior tip: Ưu tiên gom thành một câu SQL nguyên tử có điều kiện. Đó là cách đơn giản và hiệu quả nhất để loại bỏ lost update.`,
+  follow: ['Điều gì xảy ra bên trong DB engine với UPDATE nguyên tử?', 'Optimistic lock vs pessimistic lock: khi nào chọn cái nào?'],
+  tags: ['lost-update', 'race-condition', 'optimistic-lock', 'pessimistic-lock']
+},
+{
+  id: 'scenario-120',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Migration dữ liệu 500 triệu dòng không downtime: thiết kế thế nào?',
+  a: `**Tóm tắt:** Với bảng lớn, không được chạy {{ALTER TABLE}} kiểu "blocking" trực tiếp. Cần phân loại DDL, dùng online DDL/gh-ost, backfill theo batch có checkpoint, và luôn giới hạn thời gian lock bằng {{lock_timeout}}.
+
+### Nguyên tắc
+- **An toàn trước tốc độ**: Ưu tiên không block write. Nếu không thể tránh block ngắn, giới hạn thời gian và có retry.
+- **Chia nhỏ**: Thay vì một transaction lớn, làm batch nhỏ có thể dừng/tiếp tục.
+
+### Thiết kế cụ thể
+1. **Chuẩn bị**: Đặt {{lock_timeout}} ngắn (vd 2-3s), có script retry khi bị timeout.
+2. **Thay đổi schema**: 
+   - PostgreSQL: {{ADD COLUMN}} không default thường chỉ thay đổi metadata; {{CREATE INDEX CONCURRENTLY}} (không chạy trong transaction). Lưu ý index {{INVALID}} nếu bị hủy giữa chừng.
+   - MySQL 8: ưu tiên {{ALGORITHM=INSTANT}} khi có thể. Với thay đổi phức tạp, cân nhắc {{gh-ost}}/{{pt-online-schema-change}}.
+3. **Backfill**: Cập nhật theo batch (vd 1000-10000 dòng/batch) theo {{PK}} tăng dần, có {{checkpoint}} (lưu vị trí cuối cùng). Tránh {{UPDATE}} quét toàn bảng trong một câu.
+4. **Đồng bộ/hoàn tất**: Thêm trigger/tạo cột kép nếu cần đọc/ghi song song, sau khi đồng bộ xong chuyển traffic và dọn dẹp.
+
+### Pitfall cần lưu ý
+- {{CREATE INDEX CONCURRENTLY}} không được đặt trong {{BEGIN/COMMIT}}.
+- Backfill lớn tạo nhiều {{WAL}} (PostgreSQL) → cần theo dõi disk/WAL.
+- {{NOT NULL}} thêm sau khi cột đã có dữ liệu cần backfill đầy đủ và kiểm tra trước.
+
+> Senior tip: Trước mọi DDL trên bảng lớn, hãy hỏi: "Liệu lệnh này có block write không?" và "Có cách online không?" Đồng thời luôn có {{rollback plan}}.`,
+  follow: ['Làm sao thêm constraint NOT NULL an toàn trên PostgreSQL?', 'gh-ost hoạt động thế nào so với online DDL native?'],
+  tags: ['DDL', 'online-migration', 'postgresql', 'mysql']
+},
+{
+  id: 'scenario-121',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Kafka consumer lag tăng không ngừng vào giờ cao điểm: nguyên nhân và cách xử lý?',
+  a: `**Tóm tắt:** {{Consumer lag}} tăng khi tốc độ sản xuất ({{producer rate}}) lớn hơn tổng năng lực xử lý của consumer group. Cần tính toán năng lực, tìm nút thắt (DB/I/O), và chỉ scale đúng cách.
+
+### Điều tra
+1. **Tính năng lực**: Năng lực lý thuyết = {{số partition}} × (1 / {{thời gian xử lý trung bình mỗi message}}). So sánh với {{messages/second}} vào.
+2. **Tìm bottleneck**: Xem thời gian xử lý chủ yếu ở đâu (DB query, HTTP call, serialization). Nếu phần lớn là I/O → tối ưu I/O trước.
+3. **Kiểm tra phân bố**: Có {{partition skew}} không? Một vài partition có lag rất cao trong khi khác thấp?
+4. **Kiểm tra consumer**: Số consumer đang chạy < số partition? Consumer có bị dừng/rebalance liên tục không?
+
+### Cách xử lý (theo hiệu quả/cước)
+1. **Giảm thời gian xử lý**: Batch ({{@KafkaListener}} batch), giảm round-trip DB (bulk query), cache, tránh gọi đồng bộ không cần thiết.
+2. **Tăng song song trong giới hạn**: Xử lý song song cẩn thận nhưng phải tôn trọng thứ tự theo {{message key}} nếu nghiệp vụ cần.
+3. **Thêm partition + consumer**: Chỉ hiệu quả khi consumer < partition và bottleneck là xử lý. Thay đổi partition không tự "chia lại" dữ liệu cũ dễ dàng.
+4. **Backpressure/failover**: Có kế hoạch xử lý backlog (vd tăng tạm thời, sau giảm về sau giờ cao điểm).
+
+### Lưu ý giám sát
+- Ưu tiên cảnh báo theo **thời gian lag ước tính** ({{lag * avg_processing_time}}) thay vì chỉ "số message lag".
+
+> Senior tip: Trước khi nói "tăng pod", hãy trả lời được: "1 consumer xử lý bao nhiêu msg/s và tại sao?". Nếu bottleneck là DB, tăng consumer chỉ làm DB nghẽn nặng hơn.`,
+  follow: ['Làm sao xử lý partition skew?', 'Tăng số partition có ảnh hưởng gì khi đang chạy?'],
+  tags: ['kafka', 'consumer-lag', 'capacity-planning', 'scaling']
+},
+{
+  id: 'scenario-122',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Rò rỉ dữ liệu cá nhân qua log: phát hiện, xử lý, ngăn tái diễn thế nào?',
+  a: `**Tóm tắt:** Một khi {{secret}} (API key, token, password) hoặc {{PII}} (thông tin cá nhân) đã bị ghi log/commit, phải coi là "đã lộ". Ưu tiên {{rotate/revoke}} ngay, đánh giá ảnh hưởng, sau đó xử lý lịch sử và ngăn tái diễn.
+
+### 1) Phát hiện
+- Quét log gần thời điểm: tìm pattern {{Authorization}}, {{Bearer}}, {{password}}, {{email/phone/ID number}}.
+- Quét git history: {{gitleaks}}, {{git-secrets}}.
+- Kiểm tra access log/CloudTrail để xem credential có bị dùng bất thường không.
+
+### 2) Xử lý khẩn cấp
+1. **Rotate/Revoke ngay**: Vô hiệu hóa key/token/password bị lộ. Không chỉ "xóa khỏi log".
+2. **Kiểm tra sử dụng**: Tìm request/IP lạ dùng credential đó.
+3. **Đánh giá phạm vi**: Xem log nào bị expose, thời gian, người dùng bị ảnh hưởng.
+4. **Thông báo theo quy định**: Nếu có PII theo {{GDPR}}/{{Nghị định 13}} (Việt Nam) cần đánh giá nghĩa vụ thông báo.
+
+### 3) Dọn lịch sử và ngăn tái diễn
+- **Git**: Nếu secret đã commit, dùng {{git filter-repo}} (khuyến nghị) để xóa khỏi lịch sử. Sau đó {{force push}} và yêu cầu mọi người clone lại repo sạch.
+- **Log**: Xem có thể purge index/log cũ không. Nếu không purge được ngay, hạn chế truy cập và đánh giá rủi ro.
+- **Ngăn tái diễn**: Thêm {{pre-commit hook}} (gitleaks), quét CI, thiết kế {{logging schema}} không chứa PII, dùng {{masking/redaction}} ở logback/appender, áp dụng {{least privilege}} cho log access.
+
+### Pitfall
+- Chỉ xóa file trong commit mới → secret vẫn còn trong lịch sử git.
+- Chỉ "sửa log" mà không rotate credential.
+
+> Senior tip: Câu trả lời đúng luôn bắt đầu bằng "{{rotate/revoke ngay}}". Việc dọn lịch sử quan trọng, nhưng vô hiệu hóa credential là điều phải làm trong vài phút đầu.`,
+  follow: ['Làm sao phát hiện sớm secret bị commit?', 'Nên mask PII ở lớp nào trong ứng dụng?'],
+  tags: ['security-incident', 'pii', 'secrets', 'git', 'logging']
+},
+{
+  id: 'scenario-123',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'GC pause dài bất thường dưới tải: chẩn đoán và xử lý thế nào?',
+  a: `**Tóm tắt:** {{GC pause}} dài thường do heap gần đầy, {{Full GC}}, {{allocation rate}} cao, memory leak, hoặc {{CPU throttling}} trong container. Cần chẩn đoán bằng {{GC log}} và {{JFR/Flight Recorder}}, rồi xử lý theo nguyên nhân.
+
+### Chẩn đoán
+1. **Thu thập bằng chứng**: Bật GC log (vd {{-Xlog:gc*}}), hoặc JFR. Xem loại GC, {{pause time}}, {{heap before/after}}, tần suất.
+2. **Kiểm tra môi trường**: Trong Kubernetes, xem {{CPU throttling ratio}} (cgroups). Nếu bị throttle, GC thread chạy chậm → pause dài hơn.
+3. **Tìm pattern**: {{Old Gen}} gần đầy liên tục → dễ trigger Full GC. {{Allocation rate}} tăng đột ngột sau deploy.
+4. **Tìm leak**: Nếu heap không giảm sau GC nhiều chu kỳ → nghi ngờ leak, cần {{heap dump}} + phân tích (MAT/Eclipse Memory Analyzer).
+
+### Xử lý
+- **Sizing**: Đặt {{-Xmx}}/{{MaxRAMPercentage}} hợp lý (thường 60-75% memory limit của container). Đừng để heap quá sát limit gây OOM/GC căng.
+- **Chọn GC**: {{G1GC}} cân bằng tốt cho đa số web app. {{ZGC}}/{{Shenandoah}} phù hợp yêu cầu latency rất thấp (cần test).
+- **Container**: Nếu CPU bị throttle nghiêm trọng, cân nhắc tăng {{CPU request/limit}} hoặc bỏ limit không phù hợp.
+- **Code**: Giảm allocation, tránh cache vô hạn không có eviction, fix leak.
+
+### Pitfall
+- Chỉ tăng heap mà không nhìn CPU throttling.
+- Tối ưu GC trước khi xác nhận bottleneck thực tế.
+
+> Senior tip: Luôn kiểm tra {{throttled time}} cùng với GC pause. Rất nhiều trường hợp "GC chậm" thực chất là "GC bị giới hạn CPU".`,
+  follow: ['ZGC vs G1: khi nào chọn?', 'Làm sao đọc GC log hiệu quả cho người mới?'],
+  tags: ['gc', 'jvm', 'performance', 'kubernetes']
+},{
+  id: 'scenario-124',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Database deadlock tăng vọt giờ cao điểm: điều tra và khắc phục thế nào?',
+  a: `**Tóm tắt:** {{Deadlock}} xảy ra khi hai (hoặc nhiều) transaction giữ lock và chờ lock của nhau tạo thành vòng tròn. Cần tìm nguyên nhân từ {{deadlock log}}, sửa thứ tự truy cập, rút ngắn transaction, và cân nhắc đúng mức isolation.
+
+### Điều tra
+1. **Lấy deadlock graph**: PostgreSQL có {{log_lock_waits}}/log, MySQL có {{SHOW ENGINE INNODB STATUS}} (LATEST DETECTED DEADLOCK). Trích tên table, index, khóa (row/key), SQL gây ra.
+2. **Xem pattern**: Thường do truy cập bảng/row theo thứ tự khác nhau giữa các transaction.
+3. **Xem mức độ**: Có phải chỉ ở giờ cao điểm (tăng concurrency) hay có thay đổi code/deploy?
+
+### Khắc phục
+1. **Thống nhất thứ tự truy cập**: Luôn cập nhật các bảng/row theo cùng một thứ tự (vd theo {{PK}} tăng dần).
+2. **Rút ngắn transaction**: Giảm thời gian giữ lock - không gọi HTTP, không làm việc nặng bên trong transaction.
+3. **Tránh lock không cần thiết**: Chỉ lock đúng hàng cần sửa. Cân nhắc {{UPDATE}} nguyên tử nếu có thể.
+4. **Chọn isolation phù hợp**: {{READ COMMITTED}} đủ cho đa số, {{REPEATABLE READ}}/{{SERIALIZABLE}} tăng nguy cơ conflict/deadlock - chỉ dùng khi thật cần.
+5. **Retry**: Khi ứng dụng nhận {{deadlock detected}} (error), tự động retry transaction với giới hạn số lần (vì DB đã chọn 1 transaction để rollback).
+
+### Phân biệt
+- {{Lock wait timeout}}: chờ quá lâu nhưng chưa tạo vòng tròn (có thể timeout).
+- {{Deadlock}}: phát hiện vòng tròn → DB rollback ngay 1 transaction.
+
+> Senior tip: Không chỉ "retry". Nếu deadlock lặp lại theo cùng pattern, bắt buộc phải sửa thứ tự truy cập hoặc thiết kế transaction.`,
+  follow: ['Deadlock vs lock wait timeout khác nhau thế nào?', 'Khi nào có lý do dùng SERIALIZABLE?'],
+  tags: ['deadlock', 'locking', 'transaction', 'concurrency']
+},
 );
