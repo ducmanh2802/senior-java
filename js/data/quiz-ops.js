@@ -2063,5 +2063,505 @@ Continuous Integration là phần trước đó: mọi người merge vào nhán
 - Count thay đổi có thể add/remove instance, không nhất thiết recreate all.
 
 > Senior tip: dùng moved blocks/state mv để tránh recreate khi refactor; review plan trong CI.`
+},
+{
+  id: 'qz-devops-051', topic: 'devops',
+  q: "Trong Kubernetes (hệ thống điều phối container - chạy và quản lý nhiều container trên cụm máy chủ), bạn muốn chạy một job nhập dữ liệu chỉ chạy một lần rồi kết thúc. Dùng loại workload (tài nguyên mô tả cách chạy Pod) nào là phù hợp nhất?",
+  options: [
+    "Deployment: đảm bảo luôn có một số Pod chạy liên tục và tự khởi động lại khi Pod chết",
+    "DaemonSet: đảm bảo mỗi node (máy chủ trong cụm) chạy đúng một bản sao Pod",
+    "Job: tạo Pod chạy đến khi hoàn thành thành công rồi dừng, có thể thử lại nếu lỗi",
+    "StatefulSet: quản lý Pod có định danh ổn định, thường dùng cho cơ sở dữ liệu"
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** Job dành cho tác vụ chạy một lần rồi kết thúc (batch). Nó theo dõi Pod đến khi hoàn thành thành công; nếu Pod lỗi, Job có thể tạo Pod mới thử lại theo cấu hình.
+
+### Cái gì, vì sao, hoạt động thế nào
+- **Pod**: đơn vị nhỏ nhất trong Kubernetes, bọc một hoặc vài container.
+- **Deployment** (triển khai liên tục): dùng cho ứng dụng luôn chạy (web API). Nó giữ số replica (bản sao) ổn định; nếu Pod crash, Deployment tạo Pod mới để thay.
+- **Job**: dùng cho tác vụ có điểm kết thúc, ví dụ import dữ liệu, gửi báo cáo đêm. Job coi exit code 0 là thành công. Các tham số hay dùng: {{completions}} (cần bao nhiêu lần hoàn thành), {{parallelism}} (chạy song song bao nhiêu Pod), {{backoffLimit}} (số lần thử lại khi lỗi).
+- **CronJob**: chạy Job theo lịch (giống cron trên Linux).
+
+~~~yaml
+apiVersion: batch/v1
+kind: Job
+metadata: { name: import-data }
+spec:
+  backoffLimit: 3        # thử lại tối đa 3 lần nếu lỗi
+  template:
+    spec:
+      restartPolicy: Never  # Job tự quản lý việc thử lại
+      containers:
+        - name: importer
+          image: myapp:1.0
+          command: ["java","-jar","/app/import.jar"]
+~~~
+
+### Lỗi hay gặp
+- Dùng Deployment cho job một lần: khi job chạy xong thoát, Deployment nghĩ Pod chết và khởi động lại liên tục (CrashLoopBackOff hoặc vòng lặp vô hạn).
+- Đặt {{restartPolicy: Always}} trong Job: không hợp lệ; Job dùng {{Never}} hoặc {{OnFailure}}.
+
+### Trả lời phỏng vấn
+"Với tác vụ batch chạy một lần tôi dùng Job/CronJob; với service luôn chạy dùng Deployment; mỗi node một bản dùng DaemonSet; app có state/định danh ổn định dùng StatefulSet."
+
+> Senior tip: Job hoàn thành vẫn để lại Pod (để xem log). Đặt {{ttlSecondsAfterFinished}} để Kubernetes tự dọn Pod cũ, tránh rác tích tụ trong namespace.`
+},
+{
+  id: 'qz-devops-052', topic: 'devops', multi: true,
+  q: "Một Pod có 2 container: container {{app}} (ứng dụng Java) và container {{cloud-sql-proxy}} (proxy kết nối DB). App khởi động nhanh hơn proxy nên bị lỗi kết nối DB vài giây đầu. Hai cách nào giúp app chỉ chạy khi proxy sẵn sàng? (Chọn 2)",
+  options: [
+    "Dùng initContainer để chờ proxy/DB sẵn sàng trước khi container app chính bắt đầu",
+    "Dùng startupProbe hoặc readiness logic (hoặc native sidecar/init với restartPolicy Always trong K8s mới) để kiểm soát thứ tự sẵn sàng của sidecar",
+    "Tăng số replica của Deployment lên 10 để luôn có Pod sẵn sàng",
+    "Đặt livenessProbe của app kiểm tra DB để kubelet restart app khi DB chưa sẵn sàng",
+    "Chuyển app sang chạy bằng {{sleep 60}} trước khi khởi động"
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** Vấn đề là thứ tự khởi động giữa các container trong cùng Pod. Dùng initContainer để làm bước chuẩn bị tuần tự, hoặc dùng cơ chế sidecar/startupProbe để báo khi phụ thuộc sẵn sàng. Liveness restart vòng vòng không giải quyết gốc rễ.
+
+### Khái niệm
+- **initContainer**: container chạy **trước** các container chính, lần lượt, và phải hoàn thành (exit 0) thì container chính mới bắt đầu. Ví dụ: chờ cổng DB mở, chạy migration.
+- **sidecar**: container chạy **song song** cùng app trong một Pod (như proxy, log shipper).
+- **Probe** (thăm dò): kubelet gọi định kỳ để biết trạng thái container. {{startupProbe}} cho giai đoạn khởi động; {{readinessProbe}} quyết định có nhận traffic; {{livenessProbe}} quyết định có restart.
+
+~~~yaml
+spec:
+  initContainers:
+    - name: wait-db
+      image: busybox
+      command: ['sh','-c','until nc -z db 5432; do sleep 1; done']
+  containers:
+    - name: app
+      image: myapp:1.0
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Tăng replica**: không sửa thứ tự khởi động; mọi Pod mới vẫn lỗi vài giây đầu.
+- **livenessProbe kiểm tra DB**: DB/proxy chưa sẵn sàng không phải lỗi nội bộ của app; kubelet restart app liên tục gây restart storm, đúng lúc phụ thuộc đang yếu.
+- **sleep 60**: đoán mò thời gian, chậm không cần thiết khi proxy lên nhanh, và vẫn lỗi nếu proxy cần hơn 60 giây.
+
+> Senior tip: Với dependency ngoài (DB), liveness không nên check chúng; readiness có thể cân nhắc. Đừng dùng restart để che lỗi thứ tự khởi động.`
+},
+{
+  id: 'qz-devops-053', topic: 'devops',
+  q: "File {{/var/app/config.yml}} có permission hiển thị là {{-rw-r-----}} (owner {{app}}, group {{app}}). User {{deploy}} (không thuộc group {{app}}, không phải root) chạy lệnh đọc file này. Kết quả là gì?",
+  options: [
+    "Đọc được vì mọi user đều đọc được file có chữ {{r}}",
+    "Đọc được nếu {{deploy}} biết đường dẫn tuyệt đối",
+    "Bị từ chối (Permission denied) vì {{deploy}} không phải owner và không thuộc group {{app}}, nên rơi vào quyền \"others\" là {{---}}",
+    "Bị từ chối chỉ khi file nằm trong {{/root}}"
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** Linux (hệ điều hành) kiểm tra quyền theo 3 lớp: **owner** (chủ sở hữu), **group** (nhóm), **others** (người khác). {{deploy}} rơi vào others và others không có quyền đọc ({{---}}) nên bị Permission denied.
+
+### Giải thích từng phần
+Chuỗi {{-rw-r-----}} gồm 10 ký tự:
+~~~text
+-  rw-  r--  ---
+|  |    |    |
+|  |    |    +-- others: không đọc/ghi/chạy
+|  |    +------- group: đọc (r) thôi
+|  +------------ owner: đọc + ghi (rw)
++--------------- loại file (- = file thường, d = thư mục)
+~~~
+- {{r}} = read, {{w}} = write, {{x}} = execute (với thư mục: được vào/liệt kê).
+- Kernel kiểm tra **theo thứ tự**: nếu bạn là owner thì dùng quyền owner (kể cả owner chỉ {{---}}, không rơi xuống group).
+
+### Ví dụ đời thường
+Giống ổ khóa nhà: chủ nhà có chìa (owner), người trong gia đình có mã số (group), người lạ (others) không có gì.
+
+### Lỗi hay gặp
+- Chmod 777 cho nhanh: ai cũng đọc/ghi/chạy, rất nguy hiểm cho file chứa secret.
+- Quên quyền {{x}} trên thư mục: có {{r}} file nhưng không {{x}} thư mục cha thì vẫn không vào được.
+
+> Senior tip: Dùng {{ls -l}} xem quyền, {{namei -l /path}} kiểm tra quyền cả chuỗi thư mục cha. Trong container, chạy non-root và gán quyền tối thiểu (least privilege).`
+},
+{
+  id: 'qz-devops-054', topic: 'devops',
+  q: "Script deploy có dòng đầu {{#!/bin/bash}} và {{set -euo pipefail}}. Lệnh {{grep \"pattern\" missing.log | wc -l}} chạy trong khi {{missing.log}} không tồn tại. Với cấu hình này, script sẽ xử lý thế nào (bash mặc định, grep không tìm thấy file)?",
+  options: [
+    "Script bỏ qua lỗi và tiếp tục, vì {{wc -l}} vẫn chạy thành công",
+    "Script dừng ngay: {{-e}} (thoát khi lệnh lỗi) kết hợp {{pipefail}} (pipe lỗi nếu bất kỳ lệnh nào trong pipe lỗi) nên lỗi từ {{grep}} làm toàn bộ pipeline thất bại",
+    "Script chỉ dừng nếu thêm {{set -x}}",
+    "Script treo chờ file xuất hiện"
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** {{set -e}} làm script thoát khi một lệnh trả về mã lỗi khác 0; {{pipefail}} làm pipeline trả lỗi nếu **bất kỳ** lệnh nào trong pipe lỗi (không chỉ lệnh cuối). {{grep}} lỗi vì file không tồn tại nên pipeline lỗi và script dừng.
+
+### Giải thích từng tùy chọn
+- {{-e}} (errexit): lệnh lỗi → thoát. Giúp không chạy tiếp bước nguy hiểm (ví dụ deploy khi build lỗi).
+- {{-u}} (nounset): dùng biến chưa khai báo → lỗi. Tránh {{rm -rf $DIR/}} khi $DIR rỗng.
+- {{-o pipefail}}: mặc định {{cmd1 | cmd2}} lấy mã thoát của {{cmd2}}; với pipefail, nếu {{cmd1}} lỗi thì cả pipe lỗi.
+
+~~~bash
+#!/bin/bash
+set -euo pipefail
+grep "x" missing.log | wc -l   # grep lỗi -> pipe lỗi -> script dừng tại đây
+echo "khong chay toi dong nay"
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Bỏ qua vì wc chạy thành công**: đó là hành vi **không** có pipefail. Có pipefail thì lỗi của grep được giữ lại.
+- **Cần set -x**: {{-x}} chỉ in lệnh để debug, không ảnh hưởng thoát khi lỗi.
+- **Treo chờ file**: shell không tự chờ file; cần vòng lặp tự viết.
+
+> Senior tip: {{-e}} có bẫy (trong {{if}}, {{&&}}, {{||}}, hàm). Với lệnh được phép lỗi, dùng {{grep ... || true}} hoặc kiểm tra rõ ràng. Luôn test script với trường hợp file thiếu/biến rỗng.`
+},
+{
+  id: 'qz-devops-055', topic: 'devops', multi: true,
+  q: "Team đang chọn công cụ quản lý hạ tầng (infrastructure). Phát biểu nào đúng về Terraform và Ansible? (Chọn 2)",
+  options: [
+    "Terraform (công cụ IaC - hạ tầng như mã) thiên về khai báo tài nguyên hạ tầng (VM, VPC, DB) và dùng state để biết cái gì đã tạo, tính toán thay đổi (plan)",
+    "Ansible thiên về cấu hình/phần mềm trên máy chủ (cài package, sửa file cấu hình) theo playbook, thường chạy theo mô hình đẩy (push) qua SSH, agentless",
+    "Terraform và Ansible là một công cụ, chỉ khác tên",
+    "Ansible lưu state file bắt buộc giống Terraform để biết tài nguyên cloud đã tạo",
+    "Terraform thay thế hoàn toàn nhu cầu cấu hình hệ điều hành bên trong máy chủ trong mọi trường hợp"
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** Terraform mạnh về **tạo/quản lý hạ tầng** (provisioning) theo mô hình khai báo + state + plan. Ansible mạnh về **cấu hình máy** và tự động hóa tác vụ theo playbook, thường agentless qua SSH. Hai công cụ hay dùng bổ trợ nhau.
+
+### So sánh dễ hiểu
+- **Terraform**: bạn khai báo "tôi muốn 2 EC2, 1 RDS, 1 VPC". Terraform so sánh mong muốn với **state** (trạng thái đã biết) và hạ tầng thực tế, rồi đưa ra plan: tạo/sửa/xoá gì. Phù hợp tài nguyên cloud có vòng đời (create/update/destroy).
+- **Ansible**: bạn viết playbook "cài Java 21, copy file cấu hình, restart service" chạy lên các máy qua SSH. Ansible không cần cài agent trên máy đích (agentless). Nhiều module hướng tới trạng thái mong muốn (idempotent - chạy lại không gây hỏng).
+
+~~~text
+Terraform:  [code HCL] -> plan -> tạo VPC/EC2/RDS
+Ansible:    [playbook] -> SSH  -> cài Java, cấu hình app trên EC2
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Một công cụ khác tên**: hoàn toàn khác mục tiêu và cơ chế.
+- **Ansible lưu state bắt buộc giống Terraform**: Ansible không dùng state file kiểu Terraform để theo dõi tài nguyên cloud theo cùng cách.
+- **Terraform thay thế hoàn toàn cấu hình OS**: Terraform có thể gọi provisioner/user-data, nhưng cấu hình chi tiết trong OS thường dùng Ansible/cloud-init; dùng sai công cụ sẽ khó bảo trì.
+
+> Senior tip: Ranh giới hay gặp: dùng Terraform tạo EC2, dùng Ansible (hoặc image bake/Packer + user-data) cấu hình bên trong. Tránh nhồi logic cấu hình phức tạp vào Terraform provisioner.`
+},
+{
+  id: 'qz-devops-056', topic: 'devops',
+  q: "Service thanh toán xử lý giao dịch không idempotent (chạy lặp có thể trừ tiền hai lần). Team muốn phát hành bản mới với rủi ro thấp và có thể chuyển traffic dần. Chiến lược deploy (phát hành) nào phù hợp nhất?",
+  options: [
+    "Recreate: tắt hết bản cũ rồi bật bản mới, nhanh và đơn giản",
+    "Canary (chim mỏ than): chuyển một phần nhỏ traffic sang bản mới, theo dõi lỗi/metric, rồi tăng dần nếu ổn",
+    "Đẩy thẳng 100% traffic sang bản mới lúc nửa đêm để ít người dùng",
+    "Chỉ test trên máy developer là đủ, không cần chiến lược deploy"
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Canary phát hành bản mới cho một tỉ lệ nhỏ người dùng trước (ví dụ 5%), quan sát metric/lỗi/log, rồi tăng dần hoặc rollback. Với hệ thống nhạy cảm như thanh toán, cách này giảm blast radius (phạm vi ảnh hưởng).
+
+### Các chiến lược chính
+- **Recreate**: downtime, không chạy song song hai bản. Phù hợp khi không thể chạy hai version cùng lúc, nhưng rủi ro cao.
+- **Rolling update**: thay Pod dần, thường zero downtime, nhưng vẫn đưa bản mới ra diện rộng theo đợt; cần app tương thích chạy song song.
+- **Blue/Green**: có hai môi trường (cũ/mới), chuyển traffic một lần. Rollback nhanh, nhưng chuyển 100% vẫn là bước lớn và tốn tài nguyên gấp đôi tạm thời.
+- **Canary**: chuyển traffic theo tỉ lệ nhỏ → quan sát → tăng dần. Cần metric tốt (error rate, latency, business metric như tỉ lệ giao dịch lỗi).
+
+~~~text
+v1 v1 v1 v1 v1  (100%)
+v1 v1 v1 v1 v2  (20% canary) -> OK? -> 50% -> 100%
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Recreate**: downtime và rủi ro cả hệ thống.
+- **Đẩy 100% nửa đêm**: vẫn là big-bang; lỗi thanh toán có thể xảy ra với giao dịch thật.
+- **Chỉ test local**: môi trường prod khác local (dữ liệu, traffic, tích hợp).
+
+> Senior tip: Với thanh toán, canary phải theo dõi cả metric kỹ thuật lẫn metric nghiệp vụ (tỉ lệ trừ tiền trùng, thất bại). Đảm bảo thao tác idempotent (idempotency key) để deploy/rollback/retry an toàn hơn.`
+},
+{
+  id: 'qz-devops-057', topic: 'devops', multi: true,
+  q: "Bạn viết alert Prometheus (hệ thống giám sát: thu thập số liệu theo thời gian). Cần chọn đúng loại metric (kiểu số liệu). Phát biểu nào đúng? (Chọn 2)",
+  options: [
+    "Counter (bộ đếm) chỉ tăng (hoặc reset về 0 khi process restart); dùng {{rate()}} để tính tốc độ mỗi giây, ví dụ số request lỗi/giây",
+    "Gauge (đồng hồ đo) là giá trị có thể lên xuống tại thời điểm đo, ví dụ số kết nối đang mở hoặc dung lượng heap đang dùng",
+    "Histogram (biểu đồ phân bố) lưu giá trị hiện tại chính xác duy nhất và không dùng để tính p95/p99",
+    "Counter phù hợp nhất để lưu nhiệt độ CPU hiện tại vì nhiệt độ luôn tăng",
+    "Gauge nên dùng {{rate()}} giống Counter vì giá trị gauge luôn chỉ tăng"
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** Counter = chỉ tăng, đo "đã xảy ra bao nhiêu", thường dùng với {{rate()/increase()}}. Gauge = lên xuống, đo "hiện tại là bao nhiêu". Histogram/Summary dùng cho phân bố (latency) và tính phân vị p95/p99.
+
+### Bảng chọn nhanh
+| Loại | Đặc điểm | Ví dụ | Cách query hay dùng |
+|---|---|---|---|
+| Counter | Chỉ tăng (reset khi restart) | {{http_requests_total}}, {{errors_total}} | {{rate(errors_total[5m])}} |
+| Gauge | Lên/xuống | {{jvm_memory_used_bytes}}, {{connections_active}} | dùng trực tiếp, {{avg_over_time}} |
+| Histogram | Đếm vào bucket, có {{_sum}}, {{_count}} | {{http_request_duration_seconds_bucket}} | {{histogram_quantile(0.95, rate(...[5m]))}} |
+| Summary | Tính quantile ở client | latency quantile | cẩn thận khi aggregate nhiều instance |
+
+### Vì sao các phương án còn lại sai
+- **Histogram không dùng tính p95/p99**: ngược lại, histogram sinh bucket để tính {{histogram_quantile}} (p95/p99) ở server.
+- **Counter cho nhiệt độ CPU**: nhiệt độ lên xuống → phải dùng Gauge.
+- **Gauge dùng rate() vì luôn tăng**: gauge có thể giảm; dùng {{rate()}} trên gauge cho kết quả sai ý nghĩa.
+
+> Senior tip: Alert lỗi thường dựa trên {{rate(counter)}} hoặc tỉ lệ lỗi, không alert trực tiếp trên counter tăng dần. Với latency, chọn bucket histogram phù hợp SLO (ví dụ 0.1s, 0.3s, 1s).`
+},
+{
+  id: 'qz-devops-058', topic: 'devops',
+  q: "Một Service kiểu ClusterIP tên {{orders}} ở namespace {{shop}} chọn các Pod có label {{app: orders}} trên cổng 8080. Pod đang Ready, nhưng Service không route traffic tới Pod nào. Nguyên nhân cấu hình nào thường gặp nhất?",
+  options: [
+    "Service selector không khớp label của Pod (ví dụ selector {{app: order}} thiếu chữ s)",
+    "ClusterIP luôn chặn traffic nội bộ nên phải đổi sang LoadBalancer",
+    "Pod thiếu annotation {{prometheus.io/scrape}} nên Service không thấy Pod",
+    "Service chỉ hoạt động khi Pod chạy trên cùng node"
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Service dùng **label selector** để tìm Pod backend. Nếu selector không khớp label Pod, danh sách endpoints rỗng và không có traffic nào được chuyển tới Pod dù Pod đang chạy.
+
+### Cơ chế
+~~~text
+Service (selector: app=orders)
+        |  khớp label?
+        v
+Pod labels: app=orders  -> vào Endpoints -> nhận traffic
+Pod labels: app=order   -> KHÔNG khớp  -> bị bỏ qua
+~~~
+- Kubernetes tạo đối tượng Endpoints/EndpointSlice chứa IP các Pod khớp selector và đủ điều kiện (thường là Ready).
+- Kiểm tra: {{kubectl get svc orders -n shop}}, {{kubectl get endpoints orders -n shop}}, {{kubectl get pods -n shop --show-labels}}.
+
+~~~yaml
+apiVersion: v1
+kind: Service
+metadata: { name: orders, namespace: shop }
+spec:
+  selector:
+    app: orders      # phải khớp đúng label Pod
+  ports:
+    - port: 80
+      targetPort: 8080
+~~~
+
+### Vì sao các phương án còn lại sai
+- **ClusterIP chặn traffic nội bộ**: ClusterIP dùng để gọi nội bộ trong cluster; không phải nguyên nhân endpoints rỗng.
+- **Thiếu annotation Prometheus**: annotation phục vụ scrape metric, không ảnh hưởng Service routing.
+- **Chỉ hoạt động cùng node**: Service route qua kube-proxy/CNI trong toàn cluster, không giới hạn cùng node.
+
+> Senior tip: Lỗi lệch label rất hay gặp khi copy YAML. Ngoài selector, kiểm tra {{targetPort}} có đúng cổng container đang listen và Pod có Ready (readinessProbe) hay không.`
+},
+{
+  id: 'qz-aws-023', topic: 'aws',
+  q: "Bạn muốn {{api.example.com}} trỏ tới một Application Load Balancer (ALB - bộ cân bằng tải lớp ứng dụng) trên AWS. Dùng loại bản ghi Route 53 (dịch vụ DNS của AWS) nào là phù hợp nhất?",
+  options: [
+    "Bản ghi CNAME trỏ thẳng tới DNS name của ALB tại zone apex ({{example.com}})",
+    "Bản ghi A thường trỏ tới IP tĩnh của ALB",
+    "Bản ghi MX để định tuyến HTTP tới ALB",
+    "Bản ghi Alias kiểu A (hoặc AAAA) trỏ tới ALB; Alias là tính năng Route 53 cho phép trỏ tên miền tới tài nguyên AWS mà không cần IP cố định"
+  ],
+  answer: 3,
+  explain: `**Tóm tắt:** Dùng **Alias record** (kiểu A/AAAA) trỏ tới ALB. ALB không có IP tĩnh cố định và DNS name có thể thay đổi phía sau; Alias cho Route 53 tự theo dõi tài nguyên AWS đích, và có thể dùng ở zone apex.
+
+### Giải thích khái niệm
+- **DNS (hệ thống phân giải tên miền)**: đổi tên như {{api.example.com}} thành địa chỉ để máy kết nối.
+- **Route 53**: dịch vụ DNS của AWS.
+- **ALB**: cân bằng tải HTTP/HTTPS, IP có thể thay đổi khi scale/AZ thay đổi.
+- **CNAME**: bản ghi bí danh trỏ tên này sang tên khác. Chuẩn DNS **không cho** CNAME ở zone apex ({{example.com}}), chỉ dùng cho tên con ({{api.example.com}}) - và trỏ CNAME tới một số đích có thể phát sinh chi phí query/trade-off; với tài nguyên AWS, Alias thường tốt hơn.
+- **Alias** (Route 53 mở rộng): trỏ tới ALB, CloudFront, S3 website, API Gateway... Route 53 trả về IP hiện tại của tài nguyên AWS.
+
+~~~text
+api.example.com (Alias A) -> dualstack.my-alb-123.ap-southeast-1.elb.amazonaws.com
+Route 53 tự resolve sang IP ALB hiện tại
+~~~
+
+### Vì sao các phương án còn lại sai
+- **CNAME tại zone apex**: không hợp lệ theo chuẩn DNS; và nếu dùng cho tên con thì Alias vẫn là lựa chọn AWS-native tốt hơn cho ALB.
+- **Bản ghi A tới IP tĩnh của ALB**: ALB không đảm bảo IP tĩnh; tự gắn IP sẽ gãy khi AWS thay đổi.
+- **MX**: dùng cho mail exchange (email), không định tuyến HTTP.
+
+> Senior tip: Với CloudFront dùng Alias; nếu dùng CNAME ở apex sẽ bị chặn. Kiểm tra health check Route 53 khi cần failover giữa nhiều endpoint.`
+},
+{
+  id: 'qz-aws-024', topic: 'aws', multi: true,
+  q: "Ứng dụng Java trong private subnet (mạng con riêng, không có IP công cộng truy cập trực tiếp từ Internet) cần kết nối tới RDS (dịch vụ cơ sở dữ liệu quan hệ). Security Group (SG - tường lửa stateful gắn vào tài nguyên) đang chặn kết nối. Hai phát biểu nào đúng? (Chọn 2)",
+  options: [
+    "SG của RDS cần cho phép inbound (chiều vào) trên cổng DB (ví dụ 5432 PostgreSQL) từ SG của ứng dụng, thay vì mở 0.0.0.0/0",
+    "SG là stateful: nếu request outbound được phép đi ra, response chiều về thường được tự cho phép mà không cần rule inbound riêng cho response đó",
+    "NACL (Network ACL - tường lửa stateless ở mức subnet) tự động cho phép mọi traffic nếu SG đã cho phép",
+    "Muốn chặn một IP cụ thể đang tấn công, SG là nơi phù hợp nhất vì SG hỗ trợ deny rule chi tiết",
+    "SG của ứng dụng phải có inbound rule mở cổng 5432 từ Internet để nhận dữ liệu từ RDS"
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** Cho phép app → RDS bằng cách mở **inbound trên SG của RDS** từ **SG của app** (nguồn là security group ID). SG là stateful nên response được tự cho phép. NACL là lớp stateless riêng; SG không có deny rule.
+
+### Cơ chế
+~~~text
+[EC2/ECS app, SG-app]
+      | outbound (thường cho phép)
+      v  TCP 5432
+[RDS, SG-rds: inbound 5432 from SG-app]
+      |
+      v response tự quay về (stateful)
+~~~
+- **Stateful (SG)**: nhớ kết nối; chiều trả về được cho phép.
+- **Stateless (NACL)**: kiểm tra từng chiều độc lập; phải có rule outbound/inbound phù hợp cho cả request và response (ephemeral ports).
+- **SG** chỉ có allow rule, không có deny rule. Muốn deny IP cụ thể ở mức subnet, dùng NACL deny.
+
+### Vì sao các phương án còn lại sai
+- **NACL tự cho phép nếu SG cho phép**: NACL đánh giá độc lập; nếu NACL chặn thì traffic vẫn bị chặn dù SG cho.
+- **Dùng SG deny IP tấn công**: SG không hỗ trợ deny; dùng NACL, AWS WAF (lớp web), hoặc chặn ở tầng ứng dụng/CDN.
+- **SG app phải inbound 5432 từ Internet**: app là bên khởi tạo kết nối tới RDS; không cần mở 5432 từ Internet vào app.
+
+> Senior tip: Tham chiếu SG-to-SG (source là sg-id) an toàn hơn CIDR vì IP instance thay đổi. Kiểm tra cả SG, NACL, route table, DNS khi debug kết nối DB.`
+},
+{
+  id: 'qz-aws-025', topic: 'aws',
+  q: "Bạn cần sao chép object (file) từ bucket S3 (lưu trữ đối tượng) ở region A sang bucket ở region B để dự phòng. Điều kiện/bước nào là bắt buộc để S3 Replication hoạt động?",
+  options: [
+    "Chỉ cần hai bucket cùng tên là replication tự chạy",
+    "Bật Versioning (lưu nhiều phiên bản object) trên cả bucket nguồn và bucket đích, và cấu hình Replication rule cùng IAM role có quyền đọc/ghi phù hợp",
+    "Tắt mã hóa (encryption) trên cả hai bucket vì replication không hỗ trợ object mã hóa",
+    "Replication chỉ sao chép các object được upload trước khi bật rule, không cần cấu hình thêm"
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** S3 Replication (CRR/SRR) yêu cầu **Versioning bật ở cả nguồn và đích**, một replication rule (lọc prefix/tag nếu cần), và IAM role cho S3 thực hiện sao chép. Mặc định nó áp dụng cho object **mới** sau khi bật.
+
+### Hoạt động thế nào
+1. Bạn upload object mới vào bucket nguồn (versioning tạo version ID).
+2. S3 đọc replication rule: đích là bucket nào, có lọc theo prefix/tag không.
+3. S3 dùng IAM role để sao chép object (và có thể metadata, tag, ACL tùy cấu hình) sang bucket đích.
+4. Object đã tồn tại trước khi bật rule **không tự** được sao chép; cần S3 Batch Replication nếu muốn sao chép dữ liệu cũ.
+
+~~~text
+Bucket A (ap-southeast-1, versioning ON)
+   -- replication rule + IAM role -->
+Bucket B (us-east-1, versioning ON)
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Cùng tên bucket là tự chạy**: tên bucket S3 là toàn cục duy nhất, không thể trùng; replication phải cấu hình rõ ràng.
+- **Tắt mã hóa**: replication hỗ trợ object mã hóa (SSE-S3, SSE-KMS) nhưng cần cấu hình quyền KMS phù hợp.
+- **Chỉ sao chép object cũ**: mặc định là object mới; object cũ cần Batch Replication.
+
+> Senior tip: Bật "Delete marker replication" chỉ khi bạn hiểu rõ tác động. Kiểm tra quyền KMS nếu bucket dùng SSE-KMS. Replication là bất đồng bộ - có độ trễ, không dùng như cơ chế consistency tức thì.`
+},
+{
+  id: 'qz-aws-026', topic: 'aws', multi: true,
+  q: "Công ty cần kết nối mạng on-premises (trung tâm dữ liệu tại chỗ) với VPC trên AWS. So sánh Site-to-Site VPN và Direct Connect (DX), phát biểu nào đúng? (Chọn 2)",
+  options: [
+    "Site-to-Site VPN tạo kênh mã hóa qua Internet (thường qua Virtual Private Gateway/Transit Gateway), triển khai nhanh hơn nhưng băng thông/độ trễ phụ thuộc Internet",
+    "Direct Connect là kết nối mạng riêng vật lý tới AWS, thường ổn định và băng thông cao hơn, nhưng thời gian triển khai và chi phí thường lớn hơn VPN",
+    "Direct Connect tự động mã hóa toàn bộ dữ liệu mà không cần cấu hình thêm nên luôn thay thế VPN",
+    "Site-to-Site VPN không thể dùng cùng Transit Gateway",
+    "VPN luôn có độ trễ thấp và ổn định hơn Direct Connect vì dùng Internet toàn cầu"
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** **VPN**: mã hóa qua Internet, nhanh dựng, phù hợp bắt đầu/backup, chất lượng phụ thuộc Internet. **Direct Connect**: đường riêng vật lý, ổn định/băng thông lớn, triển khai lâu hơn. Nhiều hệ thống dùng DX chính + VPN dự phòng.
+
+### So sánh
+| Tiêu chí | Site-to-Site VPN | Direct Connect |
+|---|---|---|
+| Đường truyền | Qua Internet công cộng (IPsec mã hóa) | Kết nối riêng tới AWS |
+| Triển khai | Nhanh (phút/giờ) | Lâu hơn (đặt cổng, đối tác) |
+| Độ trễ/ổn định | Phụ thuộc Internet | Thường ổn định hơn |
+| Băng thông | Giới hạn theo tunnel/thiết bị | Có thể rất cao (Gbps+) |
+| Mã hóa | Có (IPsec) | Riêng DX thì không tự mã hóa; cần VPN over DX nếu muốn |
+
+~~~text
+On-prem --Internet(IPsec)--> VGW/TGW  (VPN)
+On-prem --đường riêng-----> DX location --> AWS  (Direct Connect)
+~~~
+
+### Vì sao các phương án còn lại sai
+- **DX tự mã hóa nên luôn thay thế VPN**: DX thuần không mã hóa; có thể chạy MACsec/VPN over DX nếu cần mã hóa.
+- **VPN không dùng với Transit Gateway**: hoàn toàn dùng được.
+- **VPN luôn trễ thấp/ổn định hơn DX**: ngược lại trong phần lớn trường hợp production lớn.
+
+> Senior tip: Chọn theo SLA, băng thông, độ nhạy dữ liệu và ngân sách. Thiết kế HA: 2 tunnel VPN, hoặc DX + VPN failover.`
+},
+{
+  id: 'qz-aws-027', topic: 'aws',
+  q: "Doanh nghiệp có 12 VPC (mạng ảo riêng) và một mạng on-premises. Hiện các VPC kết nối chằng chịt bằng VPC Peering (kết nối trực tiếp từng cặp VPC). Độ phức tạp tăng nhanh. Dịch vụ AWS nào giúp đơn giản hóa mô hình kết nối hub-and-spoke (trung tâm - vệ tinh)?",
+  options: [
+    "NAT Gateway: giúp subnet private ra Internet, không dùng để kết nối nhiều VPC với nhau",
+    "Internet Gateway: cổng ra/vào Internet cho VPC",
+    "AWS Transit Gateway: bộ định tuyến trung tâm để kết nối nhiều VPC và mạng on-premises theo mô hình hub-and-spoke",
+    "S3 Gateway Endpoint: kết nối riêng từ VPC tới S3, không định tuyến giữa các VPC"
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** **Transit Gateway (TGW)** hoạt động như hub trung tâm: các VPC và kết nối on-premises (VPN/DX) attach vào TGW. Thay vì N*(N-1)/2 đường peering, bạn quản lý route tập trung.
+
+### Vì sao cần
+- **VPC Peering**: kết nối 1-1 giữa hai VPC, không bắc cầu (non-transitive). 12 VPC full mesh cần 66 kết nối peering - khó quản lý route/security.
+- **Transit Gateway**: mỗi VPC attach vào TGW; route table của TGW quyết định VPC nào nói chuyện với VPC/on-prem nào.
+
+~~~text
+VPC-A --\\
+VPC-B --- TGW --- On-prem (VPN/DX)
+VPC-C --/
+~~~
+
+### Vì sao các phương án còn lại sai
+- **NAT Gateway**: cho phép instance trong private subnet gọi ra Internet (outbound), không phải kết nối liên-VPC/on-prem.
+- **Internet Gateway**: gắn vào VPC để truy cập Internet, không giải quyết mesh VPC.
+- **S3 Gateway Endpoint**: endpoint nội bộ cho S3/DynamoDB trong VPC, không phải router trung tâm.
+
+> Senior tip: TGW có chi phí theo attachment và data processed. Thiết kế route table TGW cẩn thận để cô lập môi trường (prod không route sang dev nếu không cần). Kết hợp RAM để chia sẻ TGW đa tài khoản.`
+},
+{
+  id: 'qz-aws-028', topic: 'aws',
+  q: "Một ứng dụng chạy trên nhiều EC2 instance (máy ảo) ở nhiều Availability Zone (AZ - trung tâm dữ liệu tách biệt trong region) cần đọc/ghi cùng một thư mục file chia sẻ theo giao thức NFS (giao thức chia sẻ file qua mạng). Dịch vụ lưu trữ AWS nào phù hợp nhất?",
+  options: [
+    "Amazon EBS gp3: ổ đĩa block gắn vào một EC2 tại một thời điểm/AZ (trừ trường hợp multi-attach đặc biệt), không phải file share NFS đa instance điển hình",
+    "Amazon S3: lưu trữ object qua API HTTP, không phải hệ thống file NFS mount trực tiếp như thư mục POSIX truyền thống",
+    "Instance Store: ổ tạm gắn vật lý, mất dữ liệu khi stop/terminate, không chia sẻ",
+    "Amazon EFS: hệ thống file NFS quản lý, có thể mount đồng thời từ nhiều EC2/đa AZ"
+  ],
+  answer: 3,
+  explain: `**Tóm tắt:** **Amazon EFS** (Elastic File System) cung cấp file system NFS có thể mount bởi nhiều EC2/container cùng lúc, phù hợp chia sẻ file đa instance/đa AZ. EBS là block storage thường gắn 1 instance; S3 là object storage.
+
+### Chọn dịch vụ lưu trữ
+| Nhu cầu | Dịch vụ | Ghi nhớ |
+|---|---|---|
+| Ổ đĩa cho OS/DB một instance | EBS | Block, gắn như ổ cứng, thường 1 EC2/AZ |
+| File chia sẻ NFS nhiều instance | EFS | File system, mount đồng thời |
+| File Windows/SMB | FSx for Windows | Giao thức SMB |
+| Lưu object (ảnh, backup, log) | S3 | API HTTP, không mount như NFS POSIX đầy đủ |
+| Cache/tạm, rất nhanh, mất khi stop | Instance Store | Ephemeral |
+
+~~~bash
+# Trên EC2 (Linux), mount EFS qua NFS
+sudo mount -t efs fs-12345678:/ /mnt/shared
+~~~
+
+### Vì sao các phương án còn lại sai
+- **EBS gp3**: block storage, độ trễ thấp cho một máy; không phải giải pháp NFS chia sẻ đa máy mặc định.
+- **S3**: truy cập bằng SDK/API (PutObject/GetObject), không tương đương thư mục NFS cho ứng dụng legacy cần POSIX file lock/semantics đầy đủ (trừ giải pháp đặc biệt).
+- **Instance Store**: dữ liệu tạm, mất khi instance dừng/hỏng host.
+
+> Senior tip: EFS tính phí theo dung lượng/throughput mode; cân nhắc EFS IA (Infrequent Access) cho file ít truy cập. Kiểm tra security group NFS (2049) và mount target trong từng AZ.`
+},
+{
+  id: 'qz-aws-029', topic: 'aws', multi: true,
+  q: "Worker Java đọc message từ Amazon SQS (hàng đợi thông điệp). Xử lý một message mất 90 giây, nhưng Visibility Timeout (thời gian tạm ẩn message sau khi có consumer nhận) đang đặt 30 giây. Hai vấn đề/cách xử lý nào đúng? (Chọn 2)",
+  options: [
+    "Message có thể hiện lại trên queue sau 30 giây và bị worker khác nhận lại, gây xử lý trùng nếu worker đầu chưa xong",
+    "Tăng Visibility Timeout (hoặc dùng ChangeMessageVisibility để gia hạn định kỳ trong lúc xử lý) để đủ thời gian xử lý",
+    "Visibility Timeout nên đặt thấp hơn thời gian xử lý để tăng tốc độ queue",
+    "SQS FIFO tự động loại bỏ mọi message trùng mà không cần ứng dụng xử lý idempotent",
+    "Khi worker xóa message trước khi xử lý xong, message sẽ tự quay lại an toàn nếu worker crash"
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** Khi consumer nhận message, SQS tạm ẩn nó trong **Visibility Timeout**. Nếu hết timeout mà message chưa bị xóa, nó hiện lại và consumer khác có thể nhận → xử lý trùng. Timeout phải **lớn hơn** thời gian xử lý (hoặc được gia hạn).
+
+### Cơ chế
+~~~text
+t=0s   Worker A nhận message (ReceiveMessage)
+       SQS ẩn message 30s
+t=30s  A vẫn đang xử lý (cần 90s) nhưng timeout hết
+       -> message hiện lại
+t=31s  Worker B nhận CÙNG message -> trùng xử lý
+~~~
+Cách đúng:
+- Đặt Visibility Timeout > thời gian xử lý tối đa (có buffer), hoặc
+- Worker A gọi {{ChangeMessageVisibility}} (gia hạn heartbeat) khi còn xử lý.
+
+~~~text
+Xử lý thành công -> DeleteMessage (xóa khỏi queue)
+Xử lý lỗi       -> để message hiện lại (hoặc gửi DLQ sau maxReceiveCount)
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Timeout thấp hơn thời gian xử lý để tăng tốc**: gây duplicate processing, rất nguy hiểm với nghiệp vụ trừ tiền/tạo đơn.
+- **SQS FIFO tự loại mọi trùng**: FIFO có cơ chế deduplication theo MessageDeduplicationId trong cửa sổ 5 phút và ordering, nhưng không thay thế thiết kế idempotent end-to-end của ứng dụng.
+- **Xóa trước khi xử lý xong thì crash vẫn an toàn**: ngược lại - xóa trước khi xong mà worker crash sẽ **mất** message.
+
+> Senior tip: Nguyên tắc an toàn: xử lý xong mới DeleteMessage; thiết kế consumer idempotent; dùng DLQ (Dead Letter Queue) với {{maxReceiveCount}} cho message lỗi lặp lại. Theo dõi {{ApproximateAgeOfOldestMessage}} và số message trong DLQ.`
 }
 );
