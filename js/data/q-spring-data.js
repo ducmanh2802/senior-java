@@ -6678,4 +6678,318 @@ Chuyển export sang hot standby để primary không bị tranh I/O. Bẫy: que
     { type: 'article', title: 'ZemIT: Export 5 triệu dòng mà không giết hệ thống', url: 'https://zemit.substack.com/p/export-5-trieu-dong-ma-khong-giet' }
   ]
 },
+{
+  id: 'jpa-030',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Batch insert 100k dong voi Hibernate: cau hinh hibernate.jdbc.batch_size, vi sao dung IDENTITY lam id strategy thi batching bi tat, va pooled optimizer giai quyet gi?',
+  a: `**Tom tat:** Bat {{hibernate.jdbc.batch_size=50}} + {{hibernate.order_inserts=true}}; dung sequence/table id voi {{allocationSize}} hoac pooled optimizer; IDENTITY strategy tat batching vi Hibernate phai INSERT ngay de lay id sinh o DB.
+
+### Vi sao can batch
+Moi persist + flush mac dinh sinh 1 INSERT + 1 round-trip. 100k dong = 100k network RTT. Batch gom nhieu INSERT vao 1 PreparedStatement.addBatch/executeBatch.
+
+### Cau hinh
+~~~yaml
+spring.jpa.properties.hibernate.jdbc.batch_size: 50
+spring.jpa.properties.hibernate.order_inserts: true
+spring.jpa.properties.hibernate.order_updates: true
+~~~
+{{order_inserts}} sap xep entity cung loai de gom batch.
+
+### Vi sao IDENTITY tat batching
+Voi {{@GeneratedValue(strategy = GenerationType.IDENTITY)}}, id sinh o DB. Hibernate phai thuc thi INSERT ngay de lay id tra ve, nen khong gom duoc.
+
+### Giai phap: sequence/table + pooled optimizer
+Dung sequence (PostgreSQL) hoac table generator, voi {{allocationSize}} (vi du 50). Hibernate cap phat truoc 50 id trong 1 lan nextval. Hibernate 6 ho tro pooled/pooled-lo optimizer: goi 1 lan lay block, giam RTT sequence.
+
+~~~java
+@Id
+@GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "seq")
+@SequenceGenerator(name = "seq", sequenceName = "user_seq", allocationSize = 50)
+private Long id;
+~~~
+
+### Pitfall
+- Batch size qua lon -> memory + transaction dai; 20-50 thuong hop ly.
+- Flush/clear giua lo lon de tranh persistence context phinh to (OOM).
+- @Version optimistic lock van hoat dong nhung check version moi statement.
+
+> Senior tip: do PreparedStatement batch count trong statistics; neu van 1 statement/entity thi kiem tra id strategy va order_inserts.`,
+  follow: ['Khi nao batching khong giup?', 'Lam sao do so round-trip thuc te?', 'Khac biet pooled va pooled-lo optimizer?'],
+  tags: ['jpa', 'batch', 'hibernate', 'IDENTITY', 'sequence', 'pooled optimizer'],
+},
+{
+  id: 'jpa-031',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Second-level cache va query cache trong Hibernate 6: khi nao bat, khi nao HAI, va invalidation hoat dong the nao?',
+  a: `**Tom tat:** L2 cache luu entity/region theo id; query cache luu ket qua query (chi id list) va phu thuoc region cua entity. Bat cho du lieu doc nhieu, ghi it; HAI khi ghi thuong xuyen, phan tan, hoac du lieu thay doi ngoai Hibernate.
+
+### Co che
+- L1 cache = persistence context (mac dinh, per transaction/session).
+- L2 cache = shared across sessions, provider (Caffeine, Redis, Infinispan).
+- Query cache: cache ket qua query duoi dang list id; khi doc lai, load entity tu L2 cache. Neu entity khong o L2, query cache vo dung.
+
+### Khi nao HAI
+- Du lieu ghi thuong xuyen -> invalidation lien tuc, overhead.
+- Cluster nhieu node -> cache coherence phuc tap, stale risk.
+- Thay doi du lieu bang SQL truc tiep/JDBC -> cache khong biet, stale.
+- Query cache voi tham so da dang -> cache miss, memory waste.
+
+### Invalidation
+Hibernate tu invalidate region khi entity update/delete qua persistence context. Bulk JPQL update/delete KHONG invalidate L2 cache (bay) -> phai clear() hoac evict region thu cong.
+
+### Cau hinh toi thieu
+~~~yaml
+spring.jpa.properties.hibernate.cache.use_second_level_cache: true
+spring.jpa.properties.hibernate.cache.region.factory_class: org.hibernate.cache.jcache.JCacheRegionFactory
+~~~
+Entity: {{@Cache(usage = CacheConcurrencyStrategy.READ_WRITE)}}.
+
+### Pitfall
+- READ_WRITE dung soft lock; NONSTRICT_READ_WRITE cho du lieu it ghi.
+- Query cache can {{@QueryHints(hint = "org.hibernate.cacheable", value = "true")}}.
+
+> Senior tip: do hit/miss ratio; neu < 70% thi tat query cache, chi giu L2 cho entity hot.`,
+  follow: ['So sanh Caffeine vs Redis cho L2 cache?', 'Lam sao evict region sau bulk update?', 'Cache stampede xu ly the nao?'],
+  tags: ['jpa', 'second-level cache', 'query cache', 'invalidation', 'Hibernate 6'],
+},
+{
+  id: 'jpa-032',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Bulk update/delete bang JPQL: vi sao bo qua persistence context, va rui ro stale data the nao?',
+  a: `**Tom tat:** {{UPDATE/DELETE}} JPQL thuc thi truc tiep o DB, khong load entity, khong goi @PreUpdate/@PreRemove, khong invalidate L1/L2 cache. Sau bulk op, persistence context con entity cu -> stale. Phai clear context hoac evict.
+
+### Co che
+JPQL bulk operation translate thanh 1 SQL UPDATE/DELETE. Hibernate khong iterate entity, nen:
+- Callback lifecycle (@PreUpdate, @PostUpdate) khong chay.
+- @Version optimistic lock khong check (tru khi tu them WHERE version).
+- L1 cache (persistence context) giu entity voi gia tri cu.
+- L2 cache khong invalidate tu dong.
+
+### Rui ro stale
+Trong cung transaction, sau bulk update, entity da load truoc do van mang gia tri cu. Neu flush sau, co the ghi de thay doi bulk (lost update).
+
+### Cach dung an toan
+1. Bulk op o dau transaction, truoc khi load entity lien quan.
+2. Hoac {{entityManager.clear()}} sau bulk op.
+3. Evict L2 region: {{sessionFactory.getCache().evictEntityData(Entity.class)}}.
+4. Neu can callback/lifecycle, load entity va update tung cai.
+
+### Vi du
+~~~java
+int updated = em.createQuery("UPDATE Order o SET o.status = :s WHERE o.createdAt < :c")
+  .setParameter("s", Status.EXPIRED)
+  .setParameter("c", cutoff)
+  .executeUpdate();
+em.clear();
+~~~
+
+### Pitfall
+- Bulk delete khong cascade (orphan removal khong chay) -> orphan rows.
+- @SqlRestriction/@Where filter van ap dung.
+
+> Senior tip: bulk op la cong cu hieu nang, nhung coi nhu raw SQL co type-safe; luon clear context va evict cache sau do.`,
+  follow: ['Khi nao nen dung @Modifying trong Spring Data?', 'Lam sao ket hop bulk op voi optimistic lock?', 'Cascade delete voi bulk op xu ly the nao?'],
+  tags: ['jpa', 'bulk update', 'bulk delete', 'persistence context', 'stale', 'Hibernate 6'],
+},
+{
+  id: 'jpa-033',
+  topic: 'jpa',
+  level: 'mid',
+  q: 'DTO projection trong Spring Data JPA: interface projection, record/constructor projection va Tuple khac nhau the nao, khi nao chon cai nao?',
+  a: `**Tom tat:** Interface projection (proxy) linh hoat, ho tro nested; constructor/record projection map truc tiep vao constructor, hieu nang tot hon; Tuple linh hoat nhung type-unsafe. Chon record/constructor cho hot path, interface cho view linh hoat.
+
+### 3 loai
+1. **Interface projection**: repository method tra interface co getter. Spring tao proxy, chi select cot can. Ho tro nested projection va SpEL ({{@Value}}).
+2. **Constructor/record projection**: JPQL {{SELECT new com.example.UserDto(u.id, u.name)}} hoac record. Map truc tiep constructor.
+3. **Tuple**: {{SELECT u.id, u.name}} tra {{Tuple}}, truy cap theo alias/index; type-unsafe.
+
+### So sanh
+| Tieu chi | Interface | Constructor/record | Tuple |
+|---|---|---|---|
+| Hieu nang | proxy overhead | tot | trung binh |
+| Type safety | tot | tot | kem |
+| Linh hoat | cao (nested, SpEL) | vua | cao |
+| De dung | de | phai khai bao constructor | phai alias |
+
+### Khi nao chon
+- Hot path/report: record/constructor (it overhead, de serialize).
+- View linh hoat, can nested: interface.
+- Ad-hoc/exploration: Tuple.
+
+### Vi du
+~~~java
+public interface UserView { Long getId(); String getName(); }
+List<UserView> findByActiveTrue();
+
+public record UserDto(Long id, String name) {}
+@Query("SELECT new com.example.UserDto(u.id, u.name) FROM User u WHERE u.active = true")
+List<UserDto> findActiveDtos();
+~~~
+
+### Pitfall
+- Interface projection voi @Value SpEL chay o client -> N+1 neu goi method nhieu.
+- Constructor projection yeu cau constructor khop thu tu select.
+- Open projection (interface co method derived) fetch toan entity -> mat loi ich.
+
+> Senior tip: mac dinh dung record projection cho API response; interface chi khi can dynamic view.`,
+  follow: ['Dynamic projection (Class<T> type) dung khi nao?', 'Projection vs @EntityGraph?', 'Lam sao tranh N+1 voi projection?'],
+  tags: ['jpa', 'projection', 'DTO', 'record', 'interface projection', 'Tuple'],
+},
+{
+  id: 'jpa-034',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Optimistic lock voi @Version trong JPA: retry an toan khi gap ObjectOptimisticLockingFailureException?',
+  a: `**Tom tat:** @Version them cot version; update chi thanh cong neu version khop. Khi conflict, nem ObjectOptimisticLockingFailureException. Retry phai reload entity + re-apply business change + retry transaction; khong retry mu trong vong lap vo han.
+
+### Co che
+Entity co field {{@Version private Long version}}. Khi update, SQL: {{UPDATE ... SET ..., version = version+1 WHERE id = ? AND version = ?}}. Neu 0 row affected -> conflict -> exception.
+
+### Retry an toan
+- Chi retry cho conflict (optimistic lock), khong retry cho validation error.
+- Reload entity moi nhat, re-apply thay doi dua tren input goc, retry trong gioi han (3-5 lan).
+- Dung @Retryable (Spring Retry) voi exception filter.
+- Idempotency: retry phai khong tao side-effect trung (payment, email).
+
+### Vi du
+~~~java
+@Retryable(retryFor = ObjectOptimisticLockingFailureException.class, maxAttempts = 3)
+@Transactional
+public void updateStatus(Long id, Status newStatus) {
+  Order o = repo.findById(id).orElseThrow();
+  o.setStatus(newStatus); // re-apply
+}
+~~~
+
+### Pitfall
+- Retry toan bo transaction (bao gom side effects) -> trung lap.
+- Reload nhung khong re-apply change -> mat update.
+- Version type: Long/Integer/Timestamp; Timestamp de gap clock skew.
+
+### Khi nao dung pessimistic lock
+Hot row contention cao (counter, balance) -> @Lock(LockModeType.PESSIMISTIC_WRITE) voi timeout ngan.
+
+> Senior tip: optimistic lock cho conflict thap; retry co gioi han va idempotent; neu conflict rate cao thi chuyen pessimistic hoac serialize qua queue.`,
+  follow: ['Lam sao do conflict rate?', 'Pessimistic lock timeout xu ly the nao?', 'Idempotency key thiet ke ra sao?'],
+  tags: ['jpa', 'optimistic lock', '@Version', 'retry', 'idempotency'],
+},
+{
+  id: 'jpa-035',
+  topic: 'jpa',
+  level: 'senior',
+  q: '@SoftDelete va filter cho soft delete trong Hibernate 6: cach thiet ke va pitfall?',
+  a: `**Tom tat:** Soft delete danh dau row bi xoa (deleted_at) thay vi xoa vat ly. Hibernate 6 ho tro @SoftDelete + @SQLRestriction de tu dong filter. Pitfall: unique constraint, FK, query report, va bulk delete.
+
+### Thiet ke
+- Them cot {{deleted_at TIMESTAMP NULL}} (hoac deleted BOOLEAN).
+- Entity: {{@SoftDelete(columnName = "deleted_at")}} (Hibernate 6.4+). Hibernate tu set timestamp khi remove() va filter query mac dinh.
+- Truoc Hibernate 6.4: dung @SQLDelete + @Where/@SQLRestriction.
+
+### Cach dung
+~~~java
+@Entity
+@SoftDelete(columnName = "deleted_at")
+public class User { ... }
+~~~
+remove() -> UPDATE set deleted_at = now(). Query mac dinh them {{deleted_at IS NULL}}.
+
+### Pitfall
+- Unique constraint: email unique phai la partial unique (WHERE deleted_at IS NULL) de cho phep tao lai sau soft delete.
+- FK: row con van tham chieu row cha soft-deleted -> inconsistent. Can cascade soft delete hoac restrict.
+- Bao cao/admin can xem deleted rows -> dung {{@Filter}} hoac native query bypass.
+- Bulk delete JPQL: @SoftDelete co duoc ap dung? Hibernate 6 convert delete thanh update deleted_at (neu dung remove); JPQL DELETE co the bypass -> dung voi chu y.
+- Index: them partial index de query nhanh.
+
+### Khi nao hard delete
+GDPR "right to be forgotten", du lieu lon, compliance -> hard delete + archive.
+
+> Senior tip: soft delete la default cho domain entity; hard delete cho PII/compliance; luon co partial unique index va test query admin bypass filter.`,
+  follow: ['Lam sao implement "undo delete" trong 30 ngay?', 'Soft delete vs event sourcing?', 'Index partial thiet ke the nao?'],
+  tags: ['jpa', 'soft delete', '@SoftDelete', '@SQLRestriction', 'Hibernate 6'],
+},
+{
+  id: 'jpa-036',
+  topic: 'jpa',
+  level: 'lead',
+  q: 'Multitenancy trong Hibernate: schema-per-tenant vs discriminator (column) - so sanh va khi nao chon?',
+  a: `**Tom tat:** Schema-per-tenant: moi tenant 1 schema rieng, isolation manh, migration phuc tap, connection pooling kho. Discriminator: 1 bang + tenant_id column, don gian, nhung moi query phai filter tenant, rui ro leak. Chon theo so tenant va yeu cau isolation/compliance.
+
+### Schema-per-tenant
+- Moi tenant schema rieng trong cung DB (hoac DB rieng).
+- Isolation manh: backup/restore per tenant, migration per schema.
+- Hibernate: CurrentTenantIdentifierResolver + MultiTenantConnectionProvider, set search_path.
+- Chi phi: nhieu schema, migration tool phai chay cho moi tenant, connection pool phai route.
+
+### Discriminator (column)
+- 1 bang, cot tenant_id, moi query filter tenant_id.
+- Don gian, migration 1 lan, pool chung.
+- Rui ro: quen filter -> data leak giua tenant. Hibernate @Filter hoac @TenantId (Hibernate 6) tu dong them condition.
+- Index phai co tenant_id o dau.
+
+### So sanh
+| Tieu chi | Schema-per-tenant | Discriminator |
+|---|---|---|
+| Isolation | manh | yeu (app-level) |
+| Migration | phuc tap (N schema) | 1 lan |
+| Pooling | kho | don gian |
+| Compliance (GDPR) | tot | trung binh |
+| So tenant lon (>1000) | khong hop ly | hop ly |
+
+### Quy tac chon
+- Tenant it, compliance cao, enterprise B2B: schema-per-tenant.
+- SaaS nhieu tenant nho, cost-sensitive: discriminator + @TenantId + index.
+- Tenant lon (enterprise) co the database-per-tenant.
+
+### Pitfall
+- Discriminator: query native bypass @TenantId -> leak. Kiem tra tat ca query.
+- Schema-per-tenant: migration failure 1 schema lam hong toan bo deploy -> can strategy.
+
+> Senior tip: bat dau voi discriminator + @TenantId + row-level security (Postgres RLS) de co defense-in-depth; chuyen schema-per-tenant khi isolation/compliance yeu cau.`,
+  follow: ['Hibernate @TenantId (6.x) hoat dong the nao?', 'Postgres RLS ket hop JPA?', 'Migration cho multi-tenant thiet ke ra sao?'],
+  tags: ['jpa', 'multitenancy', 'schema-per-tenant', 'discriminator', 'Hibernate 6', 'lead'],
+},
+{
+  id: 'jpa-037',
+  topic: 'jpa',
+  level: 'lead',
+  q: '(lead) Khi nao nen bo JPA/Hibernate dung jOOQ hoac JdbcTemplate? Tieu chi quyet dinh?',
+  a: `**Tom tat:** Giu JPA cho domain CRUD, entity graph, lifecycle; chuyen jOOQ/JdbcTemplate cho reporting, complex query, bulk op, va khi can control SQL. Khong phai all-or-nothing: ket hop trong cung app theo use case.
+
+### Khi JPA tot
+- Domain model phuc tap, entity graph, lifecycle callback.
+- CRUD co ban, transaction boundary ro.
+- Team quen Hibernate.
+
+### Khi nen bo/bo sung
+- Query phuc tap (window function, CTE, lateral join) ma JPQL kho bieu dat.
+- Reporting/aggregation lon, can control execution plan.
+- Bulk import/export, ETL.
+- Hieu nang critical, can avoid persistence context overhead.
+- Schema thay doi nhanh, code-gen tu DB (jOOQ).
+
+### jOOQ vs JdbcTemplate
+- jOOQ: type-safe SQL, code-gen tu schema, DSL, tot cho complex query; can license cho mot so DB (commercial).
+- JdbcTemplate: don gian, khong dependency, tu viet SQL; phu hop utility query.
+
+### Chien luoc ket hop
+- JPA cho write model + transaction domain.
+- jOOQ/JdbcTemplate cho read model (CQRS nhe) va reporting.
+- Khong map cung entity cho ca hai -> tranh state confusion.
+
+### Pitfall
+- Hai ORM trong cung transaction: cache inconsistency. Dung chung transaction manager (DataSourceTransactionManager) de nhat quan.
+- jOOQ transaction vs JPA transaction: can chia se connection/transaction.
+
+### Migration
+- Bat dau: thay cac query phuc tap (repository custom) bang jOOQ, giu JPA cho CRUD.
+- Do hieu nang truoc/sau.
+
+> Senior tip: JPA khong phai enemy; van de la dung no cho moi viec. Phan loai read vs write, dung tool dung cho tung loai.`,
+  follow: ['CQRS nhe trong Spring Boot thiet ke the nao?', 'jOOQ code-gen tich hop Maven?', 'Lam sao chia se transaction giua JPA va jOOQ?'],
+  tags: ['jpa', 'jOOQ', 'JdbcTemplate', 'architecture', 'lead', 'CQRS'],
+},
+
 );
