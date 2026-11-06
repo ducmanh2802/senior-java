@@ -3250,6 +3250,146 @@ ReentrantLock hỗ trợ tryLock(timeout), lockInterruptibly, fairness, và khô
 - **Primitive**: lock phải trên object.
 
 > Senior tip: chọn synchronized mặc định; nâng lên ReentrantLock khi cần timeout/backpressure.`
+},
+{
+  id: 'qz-core-028', topic: 'core',
+  q: `Đoạn code sau in ra gì?
+~~~java
+record Box(int v) {}
+Box a = new Box(1);
+Box b = new Box(1);
+System.out.println(a == b);
+System.out.println(a.equals(b));
+System.out.println(a.hashCode() == b.hashCode());
+~~~`,
+  options: [
+    `false true true`,
+    `true true true`,
+    `false false false`,
+    `true false false`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: false true true.**
+
+### Vì sao đúng
+record tự sinh equals/hashCode dựa trên các component (ở đây là v), nên hai Box(1) bằng nhau và cùng hash. Nhưng a và b là hai object riêng biệt trên heap, nên a == b là false.
+
+### Vì sao các phương án còn lại sai
+- **true true true**: record không tự intern, == vẫn là so tham chiếu.
+- **false false false**: equals/hashCode được sinh tự động, không phải identity.
+- **true false false**: sai cả hai chiều.
+
+> Senior tip: record là value object bất biến; dùng nó để tránh viết equals/hashCode thủ công và tránh lỗi contract.`
+},
+{
+  id: 'qz-collections-027', topic: 'collections',
+  q: `Đoạn code sau in ra gì?
+~~~java
+Map<String, Integer> m = new HashMap<>();
+m.put("a", 1);
+m.put("b", 2);
+m.merge("a", 10, Integer::sum);
+m.computeIfAbsent("c", k -> 3);
+System.out.println(m);
+~~~`,
+  options: [
+    `{a=11, b=2, c=3}`,
+    `{a=1, b=2, c=3}`,
+    `{a=10, b=2, c=3}`,
+    `Ném NullPointerException`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: {a=11, b=2, c=3}.**
+
+### Vì sao đúng
+- merge("a", 10, sum): key "a" đã có giá trị 1, remapping function sum(1,10)=11 → gán 11.
+- computeIfAbsent("c", ...): key "c" chưa có → gọi function trả 3 → gán 3.
+- "b" không bị chạm.
+
+### Vì sao các phương án còn lại sai
+- **{a=1,...}**: merge không bỏ qua key đã tồn tại; nó áp dụng function.
+- **{a=10,...}**: merge cộng dồn, không thay thế.
+- **NPE**: function không null và key không null, không ném.
+
+> Senior tip: merge/computeIfAbsent/computeIfPresent là cách thay thế pattern "get rồi put" trong concurrent map; chúng nguyên tử trên ConcurrentHashMap.`
+},
+{
+  id: 'qz-concurrency-028', topic: 'concurrency',
+  q: `Đoạn code sau có vấn đề gì?
+~~~java
+ExecutorService ex = Executors.newFixedThreadPool(2);
+CompletableFuture<Integer> f = CompletableFuture.supplyAsync(() -> {
+    if (true) throw new IllegalStateException("boom");
+    return 1;
+}, ex);
+f.thenApply(x -> x + 1).exceptionally(e -> -1);
+System.out.println(f.join());
+~~~`,
+  options: [
+    `In ra -1`,
+    `Ném CompletionException bọc IllegalStateException`,
+    `In ra 0`,
+    `Chương trình treo`
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: ném CompletionException bọc IllegalStateException.**
+
+### Vì sao đúng
+- f là CompletableFuture gốc, chứa exception. thenApply/exceptionally tạo ra một CompletableFuture **mới** (chained), không sửa f.
+- f.join() trả về kết quả của f gốc → ném CompletionException bọc exception gốc.
+- Để lấy -1 phải gọi join() trên future chained (f.exceptionally(...)).
+
+### Vì sao các phương án còn lại sai
+- **-1**: chỉ future chained mới có giá trị -1, không phải f.
+- **0/ treo**: join() không treo khi future đã hoàn thành (kể cả exceptional).
+
+> Senior tip: luôn lưu biến cho chained future nếu cần xử lý exception; hoặc dùng whenComplete/handle để vừa log vừa trả giá trị.`
+},
+{
+  id: 'qz-jvm-027', topic: 'jvm',
+  q: `G1 GC chọn region nào để thu hồi đầu tiên trong một chu kỳ?`,
+  options: [
+    `Region có garbage nhiều nhất (garbage-first)`,
+    `Region mới nhất (youngest)`,
+    `Region lớn nhất (humongous)`,
+    `Region theo thứ tự allocation`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: region có garbage nhiều nhất.**
+
+### Vì sao đúng
+G1 chia heap thành các region cùng kích thước. Nó ưu tiên thu hồi các region có tỷ lệ rác cao nhất (garbage-first) để đạt pause target, nên tên là Garbage-First.
+
+### Vì sao các phương án còn lại sai
+- **youngest**: young gen được thu hồi thường xuyên nhưng không phải tiêu chí chọn region đầu tiên.
+- **humongous**: humongous region xử lý riêng, không ưu tiên.
+- **allocation order**: không phải.
+
+> Senior tip: đặt -XX:MaxGCPauseMillis hợp lý; G1 sẽ trade-off throughput.`
+},
+{
+  id: 'qz-modern-030', topic: 'modern',
+  q: `Virtual thread bị pin khi nào? (Chọn 2)`,
+  options: [
+    `Khi chạy synchronized block`,
+    `Khi gọi Thread.sleep`,
+    `Khi thực hiện I/O blocking`,
+    `Khi gọi native method`,
+    `Khi tạo object mới`
+  ],
+  multi: true,
+  answer: [0, 3],
+  explain: `**Đáp án đúng: synchronized block và native method.**
+
+### Vì sao đúng
+Virtual thread bị pin (không thể unmount khỏi carrier thread) khi vào synchronized block/monitor hoặc native method. I/O blocking và sleep sẽ unmount bình thường.
+
+### Vì sao các phương án còn lại sai
+- **Thread.sleep**: unmount, không pin.
+- **I/O blocking**: unmount.
+- **tạo object**: không pin.
+
+> Senior tip: dùng ReentrantLock thay synchronized trong code chạy trên virtual thread để tránh pinning.`
 }
 );
 
