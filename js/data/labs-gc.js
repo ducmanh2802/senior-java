@@ -2359,4 +2359,138 @@ public double calculate(String formulaId, Bindings vars) {
   ],
   tags: ['metaspace', 'classloader-leak', 'oom', 'nashorn', 'scriptengine', 'gc-log', 'jcmd', 'jdk17']
 }
+,
+{
+  id: 'lab-gc-011',
+  category: 'gc',
+  title: 'Young GC 20 lan/giay: tao ObjectMapper moi request va noi chuoi log',
+  level: 'senior',
+  scenario: `Dich vu REST thanh toan chay Spring Boot 3 + JDK 17 tren container 4 vCPU / 4 GB heap. Sau khi traffic tang, GC log cho thay Young GC lien tuc ~20 lan/giay, CPU GC ~40%, p99 latency tang tu 80 ms len 600 ms. JFR allocation profiling chi ra hai hotspot: ObjectMapper duoc new cho moi request, va log message noi chuoi lon. Heap tong ~1.2 GB, young gen ~300 MB, allocation rate ~6 GB/s. Khong co Full GC, heap sau young GC ve ~200 MB.`,
+  artifacts: [
+    { name: 'gc.log', lang: 'text', content: `[2024-05-10T10:14:01.120+0000][info][gc] GC(1240) Pause Young (G1 Evacuation) 289M->212M(1024M) 4.2ms
+[2024-05-10T10:14:01.170+0000][info][gc] GC(1241) Pause Young (G1 Evacuation) 291M->214M(1024M) 4.0ms
+[2024-05-10T10:14:01.220+0000][info][gc] GC(1242) Pause Young (G1 Evacuation) 290M->213M(1024M) 4.1ms
+[2024-05-10T10:14:01.270+0000][info][gc] GC(1243) Pause Young (G1 Evacuation) 292M->215M(1024M) 4.3ms
+[2024-05-10T10:14:02.000+0000][info][gc,heap] GC(1260) Eden: 290M(300M)->0M(300M) Survivors: 12M->14M Heap: 290M(1024M)->212M(1024M)` },
+    { name: 'jfr-allocation.txt', lang: 'text', content: `jdk.ObjectAllocationInNewTLAB (allocation rate 5.9GB/s)
+  com.fasterxml.jackson.databind.ObjectMapper.<init> (38%)
+  com.example.payment.PaymentService.handle (22%)
+  java.lang.StringBuilder.append (18%)
+  org.slf4j.Logger.info (12%)
+  com.example.payment.DtoMapper.toDto (10%)` }
+  ],
+  questions: ['Nguyen nhan goc cua Young GC qua thuong xuyen la gi? Dan chung tu GC log va JFR.', 'Ban se sua the nao, ngan han va dai han, va do luong hieu qua ra sao?'],
+  hints: ['Doc GC log: tan suat 1 young GC moi 50 ms, Eden 300 MB day rat nhanh.', 'JFR chi ra ObjectMapper.<init> chiem 38% allocation.', 'Noi chuoi log lon tao StringBuilder/char[] tam.'],
+  answer: `**Tom tat:** Young GC 20 lan/giay vi allocation rate ~6 GB/s vuot xa toc do don; hai nguon chinh la ObjectMapper duoc new moi request (38% allocation) va log message noi chuoi lon. ObjectMapper thread-safe, tai su dung mot instance; log dung SLF4J parameterized message. Sau fix allocation rate giam manh.
+
+### 1) Co che: vi sao Young GC thuong xuyen
+
+GC generational chia heap thanh young va old. Object moi duoc cap trong Eden. Khi Eden day, JVM kich hoat Young GC. Chi phi nho (~4 ms) nhung 20 lan/giay tong CPU ~80 ms/s gay pause lien tuc.
+
+### 2) Dan chung JFR
+
+JFR ObjectAllocationInNewTLAB: ObjectMapper.<init> 38%. ObjectMapper nang (cache introspection). Tao moi request la anti-pattern. StringBuilder.append 18%, Logger.info 12%.
+
+### 3) Cach sua
+
+Ngan han: dung ObjectMapper singleton static final; thay log noi chuoi bang placeholder SLF4J; giam log DEBUG production.
+Dai han: Jackson Afterburner; tang young gen -Xmn; theo doi allocation rate bang JFR.
+
+### 4) Do luong
+
+Chay lai voi -Xlog:gc va so sanh young GC frequency, CPU GC %, p99.
+
+### 5) Pitfall
+
+ObjectMapper.configure sau khi share anh huong moi thread. Tang heap khong giai quyet goc re.
+
+> Senior tip: Khi thay Young GC thuong xuyen nhung khong Full GC, dung tang heap voi - hay mo JFR Allocation profiling. 80% truong hop la tao object khong can thiet.`,
+  rubric: [
+    'Nhan dien allocation rate cao tu GC log: young GC ~20/s, Eden 300 MB day moi ~50 ms.',
+    'Chi ra JFR hotspot: ObjectMapper.<init> 38%, StringBuilder.append 18%, Logger.info 12%.',
+    'Giai thich ObjectMapper thread-safe va khong nen tao moi request.',
+    'De xuat sua ngan han/dai han va do luong.',
+    'Pitfall: configure sau share, tang heap khong giai quyet goc re.'
+  ],
+  tags: ['gc', 'young-gc', 'allocation-rate', 'jfr', 'objectmapper', 'logging', 'g1']
+}
+
+,
+{
+  id: 'lab-gc-012',
+  category: 'gc',
+  title: 'OutOfMemoryError: Cannot reserve direct buffer memory (Netty/NIO)',
+  level: 'senior',
+  scenario: `Dich vu gateway dung Netty 4 + Reactor Netty tren JDK 17, container limit 2 GB (cgroup). Sau vai gio chay, ung dung nem OutOfMemoryError: Cannot reserve direct buffer memory roi container bi OOMKilled boi kubelet. jcmd VM.native_memory cho thay Direct (reserved/committed) ~1.8 GB, trong khi -XX:MaxDirectMemorySize=1g. Heap chi ~600 MB. Co evidence Netty khong release ByteBuf (reference count leak) trong handler custom.`,
+  artifacts: [
+    { name: 'error.log', lang: 'text', content: `java.lang.OutOfMemoryError: Cannot reserve direct buffer memory
+    at sun.nio.ch.DirectBuffer.<init>(DirectBuffer.java:...)
+    at java.nio.DirectByteBuffer.<init>(DirectByteBuffer.java:...)
+    at java.nio.ByteBuffer.allocateDirect(ByteBuffer.java:...)
+    at io.netty.buffer.PoolThreadCache.allocateNormal(PoolThreadCache.java:...)
+    at io.netty.buffer.PooledByteBufAllocator.newDirectBuffer(PooledByteBufAllocator.java:...)
+    at io.netty.channel.nio.AbstractNioByteChannel$NioByteUnsafe.read(AbstractNioByteChannel.java:...)` },
+    { name: 'nmt.txt', lang: 'text', content: `Native Memory Tracking:
+Total: reserved=2147483648, committed=2013265920
+- Java Heap: reserved=1073741824, committed=629145600
+- Class: reserved=268435456, committed=134217728
+- Thread: reserved=67108864, committed=33554432
+- Code: reserved=268435456, committed=134217728
+- GC: reserved=268435456, committed=134217728
+- Compiler: reserved=134217728, committed=67108864
+- Internal: reserved=134217728, committed=67108864
+- Symbol: reserved=16777216, committed=8388608
+- Native Memory Tracking: reserved=67108864, committed=33554432
+- Arena Chunk: reserved=33554432, committed=16777216
+- Direct: reserved=1932735283, committed=1932735283
+- Other: reserved=67108864, committed=33554432` },
+    { name: 'jcmd-vmflags.txt', lang: 'text', content: `-XX:MaxDirectMemorySize=1073741824
+-XX:NativeMemoryTracking=summary
+-Xmx1g
+-Xms1g
+-XX:+UseG1GC
+-XX:MaxGCPauseMillis=200
+-XX:+UseStringDeduplication
+-XX:MaxMetaspaceSize=268435456
+-XX:+HeapDumpOnOutOfMemoryError
+-XX:HeapDumpPath=/tmp/heap.hprof` }
+  ],
+  questions: ['Nguyen nhan goc cua OOM direct buffer la gi? Dan chung tu error log, NMT, flags.', 'Ban se sua the nao ngan han/dai han va phong ngua?'],
+  hints: ['Direct memory khong thuoc heap; NMT cho thay Direct committed ~1.8 GB > MaxDirectMemorySize 1 GB.', 'Netty dung reference counting; neu khong release ByteBuf se leak direct memory.', 'Container OOMKilled vi tong native memory vuot cgroup limit.'],
+  answer: `**Tom tat:** OOM "Cannot reserve direct buffer memory" xay ra khi direct (off-heap) memory vuot -XX:MaxDirectMemorySize (1 GB), do Netty ByteBuf leak (reference count khong release). Direct memory khong nam trong heap nen -Xmx khong giup. NMT cho thay Direct committed ~1.8 GB > 1 GB. Fix: release ByteBuf dung cach, gioi han direct memory theo container, theo doi NMT.
+
+### 1) Co che: direct memory va Netty
+
+ByteBuffer.allocateDirect cap bo nho native (off-heap) ngoai heap JVM. -XX:MaxDirectMemorySize gioi han tong direct memory. Khi vuot, JVM nem OOM.
+
+Netty quan ly ByteBuf voi reference counting: moi ByteBuf co refCnt; khi xu ly xong phai release().
+
+### 2) Dan chung
+
+error.log: stack trace qua Netty PooledByteBufAllocator. nmt.txt: Direct committed ~1.93 GB > MaxDirectMemorySize 1 GB. Heap chi 600 MB. Container 2 GB limit.
+
+### 3) Nguyen nhan goc
+
+Custom handler doc ByteBuf nhung khong release trong finally; exception path cung leak.
+
+### 4) Cach sua
+
+Ngan han: release ByteBuf trong finally; dung SimpleChannelInboundHandler; bat leak detector PARANOID; giam MaxDirectMemorySize.
+Dai han: audit handler, codec, filter; theo doi NMT periodic alert.
+
+### 5) Pitfall
+
+Tang -Xmx khong giup direct memory. Netty pooled allocator cache co the giu memory.
+
+> Senior tip: Khi gap OOM "Cannot reserve direct buffer memory", dung tang heap - chay jcmd VM.native_memory summary va so Direct committed voi MaxDirectMemorySize.`,
+  rubric: [
+    'Phan biet direct memory vs heap; NMT Direct committed ~1.93 GB > MaxDirectMemorySize 1 GB; heap chi 600 MB.',
+    'Chi ra Netty reference counting: ByteBuf chua release leak direct memory.',
+    'Lien he container OOMKilled: tong native memory vuot cgroup limit 2 GB.',
+    'De xuat sua: release trong finally, SimpleChannelInboundHandler, leak detector, gioi han direct memory.',
+    'Phong ngua: NMT periodic alert, dat container limit = Xmx + MaxDirect + margin.'
+  ],
+  tags: ['gc', 'oom', 'direct-memory', 'netty', 'nio', 'nmt', 'container', 'off-heap']
+}
+
 );
