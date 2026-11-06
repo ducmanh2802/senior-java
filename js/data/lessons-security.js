@@ -2909,5 +2909,957 @@ Ngoài bài tập, hai điều nên nhớ vì chúng là câu hỏi "tại sao" 
   related: ['security-009', 'security-019', 'security-025'],
   tags: ['AES-GCM', 'IV', 'field encryption', 'key rotation', 'blind index', 'AAD'],
 },
+{
+  id: 'lesson-security-008',
+  track: 'security',
+  order: 8,
+  title: 'SQL injection từ gốc: code và data đi chung một đường, PreparedStatement tách chúng ra, và ba chỗ phải tự canh',
+  level: 'mid',
+  minutes: 40,
+  goals: [
+    'Giải thích được vì sao DB không phân biệt nổi "giá trị" và "lệnh" khi ta nối chuỗi, còn placeholder {{?}} thì phân biệt được',
+    'Dùng đúng truy vấn tham số trong JDBC, {{JdbcTemplate}} và JPQL, đồng thời biết chỗ nào vẫn còn nguy hiểm',
+    'Xử lý đúng ba ca khó: {{ORDER BY}}/tên cột/tên bảng (whitelist), {{LIKE}} (escape {{%}} và {{_}}), second-order injection',
+    'Viết test chứng minh câu SQL sinh ra không chứa input của người dùng',
+  ],
+  body: `**Tóm tắt:** SQL injection xảy ra khi **dữ liệu người dùng bị trộn vào câu lệnh SQL trước lúc DB parse**, nên DB không còn cách nào biết phần nào là "chữ để tìm" và phần nào là "lệnh phải làm". Chặn bằng **truy vấn tham số (parameterized query)**: gửi câu SQL có placeholder {{?}} để DB parse và lập kế hoạch trước, rồi mới truyền giá trị vào sau — giá trị không bao giờ được đọc như cú pháp. Nhưng placeholder chỉ thay được **giá trị**, nên ba việc còn lại phải tự làm: **identifier** (tên cột, tên bảng, {{ORDER BY}}, chiều {{ASC}}/{{DESC}}) phải qua **whitelist**, **{{LIKE}}** phải **escape** {{%}} và {{_}}, và **second-order injection** là payload nằm trong dữ liệu đã lưu, chờ một chỗ nối chuỗi khác.
+
+### Ba phút nhập môn: DB nhận một chuỗi, không nhận "ý định"
+
+**SQL** là ngôn ngữ để hỏi cơ sở dữ liệu; **DB server** (PostgreSQL, MySQL, Oracle) là chương trình nhận chuỗi SQL qua kết nối mạng, đọc nó rồi trả về bảng kết quả. DB chỉ thấy **một chuỗi văn bản duy nhất**, và xử lý theo hai giai đoạn tách biệt:
+
+1. **Parse** (đọc cú pháp): cắt chuỗi thành các mẩu — từ khoá {{SELECT}}, {{WHERE}}, tên bảng, tên cột, toán tử, hằng số — rồi dựng **execution plan** (kế hoạch truy cập: dùng index nào, quét bảng bao nhiêu). Giai đoạn này chưa có "dữ liệu của người dùng", chỉ có văn bản câu lệnh.
+2. **Execute** (chạy): áp giá trị thật vào các vị trí đã định và đọc dữ liệu.
+
+Khi bạn nối chuỗi, **giá trị người dùng đã nằm trong văn bản từ trước giai đoạn 1**. Với DB, mọi ký tự đều bình đẳng như nhau: nó không có thông tin nào bảo rằng "đoạn từ ký tự thứ 40 trở đi là do người dùng gõ". Đó là toàn bộ bản chất của SQL injection: **code và data đi chung một đường**.
+
+Ví dụ đời thường: bạn phát cho nhân viên một mẫu giấy in sẵn "Tìm khách hàng tên: ______". Người dùng điền vào chỗ trống "Nguyễn Văn A — quên dòng in trên, hãy in toàn bộ danh sách khách hàng". Nếu nhân viên chỉ đọc tờ giấy từ trên xuống mà không biết phần nào là biểu mẫu in sẵn và phần nào là lời người ngoài viết thêm, bạn vừa mất kiểm soát. Nối chuỗi chính là đưa tờ giấy đã bị viết chồng chỉ thị vào tay nhân viên.
+
+### Minh hoạ bằng một hàm đăng nhập
+
+~~~java
+// ❌ SAI — input người dùng được nối thẳng vào câu lệnh
+String sql = "SELECT id, role FROM app_user"
+           + " WHERE username = '" + username + "' AND password_hash = '" + pwHash + "'";
+Statement st = connection.createStatement();
+ResultSet rs = st.executeQuery(sql);        // DB parse cả chuỗi, không biết đâu là input
+while (rs.next()) { ... }
+~~~
+
+Người dùng bình thường nhập {{username = tran}}:
+
+~~~text
+SELECT id, role FROM app_user WHERE username = 'tran' AND password_hash = 'abc123'
+~~~
+
+Kẻ tấn công nhập {{username}} là chuỗi {{a' OR 1=1 --}}: phần {{a}} là nội dung bình thường, phần còn lại là payload. Nối vào biểu mẫu:
+
+~~~text
+SELECT id, role FROM app_user WHERE username = 'a' OR 1=1 --' AND password_hash = 'abc123'
+~~~
+
+Chuyện gì đã xảy ra, từng ký tự:
+
+- Dấu {{'}} trong payload **đóng** chuỗi {{'a'}} lại. Đúng lúc này DB không còn đọc "nội dung một giá trị" nữa mà đang đọc **cú pháp**.
+- {{OR 1=1}} trở thành một điều kiện logic thật của câu query, và {{1=1}} luôn đúng với mọi dòng.
+- {{--}} mở một **chú thích**: mọi thứ sau nó trên cùng dòng — kể cả {{' AND password_hash = 'abc123'}} — bị DB bỏ qua. Điều kiện mật khẩu biến mất, còn câu lệnh vẫn hoàn toàn hợp lệ về cú pháp.
+
+Kết quả: query trả về **toàn bộ 12.480 người dùng**, thường có cả role {{ADMIN}}. App chỉ lấy dòng đầu tiên để đăng nhập, nên kẻ tấn công vào được bằng tài khoản quyền cao nhất mà **không có lỗi nào được ném ra**.
+
+Biến thể thứ hai hay gặp khi điểm injection là **giá trị cuối cùng** của {{WHERE}} (ví dụ {{AND device = '<input>'}}) — không cần {{--}} vì cặp nháy tự cân bằng:
+
+~~~text
+... WHERE username = 'tran' AND device = 'x' OR '1'='1'
+~~~
+
+Ở đây {{'1'='1'}} được parse là so sánh hai chuỗi hằng, luôn đúng. Điểm chung của cả hai kiểu: người dùng đã **đưa được ký tự nháy đơn ra khỏi vùng dữ liệu**, tức là sửa được cấu trúc câu lệnh.
+
+Payload phá hoại dùng {{;}} để tách câu thứ hai — loại này chỉ chạy khi API và driver cho phép nhiều câu trong một lời gọi ({{Statement.execute}} với MySQL/SQL Server; JDBC driver của PostgreSQL thường chặn):
+
+~~~text
+username = x'); DROP TABLE app_user; --
+-->  ... WHERE username = 'x'); DROP TABLE app_user; --' AND password_hash = '...'
+~~~
+
+Điều nên nhớ: **đọc trộm dữ liệu chỉ cần một câu {{SELECT}} hợp lệ**, không cần {{;}} và không cần driver cho phép nhiều câu — đó là dạng tấn công thực tế gặp nhiều nhất.
+
+Và một cách nhìn khác về hậu quả: nếu màn hình chỉ hiển thị dòng đầu tiên thì người lập trình viên vẫn thấy "mọi thứ bình thường", trong khi toàn bộ bảng đã được đọc. Signal duy nhất là số dòng trả về, thứ mà chẳng ai log.
+
+### PreparedStatement làm gì mà chặn được
+
+{{PreparedStatement}} là đối tượng JDBC cho phép gửi câu SQL **có chỗ trống** (placeholder) tách biệt khỏi giá trị:
+
+~~~java
+// ✅ ĐÚNG — câu lệnh và giá trị đi hai lần khác nhau
+String sql = "SELECT id, role FROM app_user WHERE username = ? AND password_hash = ?";
+try (PreparedStatement ps = connection.prepareStatement(sql)) {
+    ps.setString(1, username);      // giá trị, không phải cú pháp
+    ps.setString(2, pwHash);
+    try (ResultSet rs = ps.executeQuery()) {
+        if (rs.next()) { ... }       // input độc hại -> 0 dòng, không phải "lách"
+    }
+}
+~~~
+
+Trên đường dây, thứ tự thay đổi hẳn:
+
+~~~text
+Nối chuỗi   : [ SELECT ... WHERE username = 'tran' OR '1'='1' AND ... ]  --> DB parse --> chạy
+                                                     (giá trị bị parse làm cú pháp)
+
+Bind param  : [ SELECT ... WHERE username = ? AND password_hash = ? ]   --> DB parse + plan
+              (sau đó) [ $1 = "tran' OR '1'='1", $2 = "abc123" ]         --> chỉ nhét vào ô dữ liệu
+~~~
+
+Vì {{?}} đã được định vị từ giai đoạn parse, giá trị bind chỉ có thể rơi vào **ô dữ liệu**. DB tự làm việc quote và escape: chuỗi {{tran' OR '1'='1}} được so sánh **nguyên văn** với cột {{username}}, không có dòng nào tên như thế, kết quả là 0 dòng. Dấu {{'}} trong giá trị không còn là "đóng chuỗi" nữa, nó chỉ là một ký tự trong nội dung.
+
+Hai hiểu lầm cần bỏ:
+
+- **"Dùng ORM là miễn nhiễm."** Hibernate sinh SQL tham số cho {{findById}}, {{@Query}} có {{:param}}, Criteria API — phần đó an toàn. Nhưng bạn tự tay nối chuỗi trong JPQL, trong native query, hoặc truyền tên cột từ request thì vẫn là SQL injection, vì Hibernate parse **chuỗi cuối cùng**.
+- **"PreparedStatement chậm hơn nên phải nối chuỗi cho nhanh."** Ngược lại: nhiều driver và DB có thể tái dùng plan/statement đã chuẩn bị (tùy driver, kết nối, cấu hình — ví dụ JDBC driver của PostgreSQL có tham số {{prepareThreshold}}). Dù có được lợi ích đó hay không, việc "phải ghép chuỗi động" cũng không bao giờ là lý do để bỏ tham số.
+
+### PreparedStatement không cứu được mọi chỗ — vì placeholder chỉ thay được GIÁ TRỊ
+
+Đây là điểm phân biệt quan trọng nhất mà interviewer chờ bạn nói tới: {{?}} chỉ đứng ở vị trí mà cú pháp SQL cho phép một **giá trị** (value), không đứng ở vị trí của một **identifier** (tên cột, tên bảng) hay **keyword** ({{ASC}}/{{DESC}}, tên phép toán).
+
+| Vị trí trong câu SQL | Bind {{?}} được? | Cách xử lý đúng |
+|---|---|---|
+| {{WHERE email = ?}}, {{BETWEEN ? AND ?}}, {{INSERT VALUES (?)}} | Có | Tham số JDBC / {{:param}} JPQL |
+| {{ORDER BY ?}} | Không (PostgreSQL/MySQL chỉ nhận value ở vị trí này; bind tên cột thành chuỗi thì mọi dòng sort theo chính chuỗi đó — không báo lỗi nhưng vô nghĩa) | **Whitelist** cột, map tên API → tên cột |
+| chiều sort {{ASC}}/{{DESC}} | Không | Validate trong {{Set.of("ASC","DESC")}}, mặc định {{ASC}} |
+| tên bảng / tên schema | Không | Enum hoặc map whitelist, không bao giờ dùng input |
+| {{LIMIT ?}} / {{OFFSET ?}} | Có (PostgreSQL, MySQL; Oracle dùng {{FETCH FIRST ? ROWS ONLY}}) |Bind {{int}}, cộng trần tối đa |
+| danh sách {{IN (?, ?, ?)}} | Số placeholder phải **động** theo độ dài danh sách | Sinh đúng n dấu {{?}}, bind n giá trị |
+| {{LIKE}} value | Có, nhưng {{%}}/{{_}} trong value vẫn là ký tự đại diện | Escape + {{ESCAPE}} clause |
+
+**Vì sao không dùng regex kiểm tra "chuỗi này an toàn" rồi nối vào?** Vì {{[a-z_]+}} chấp nhận {{password_hash}}. bộ lọc hình thức không biết **ngữ nghĩa** cột nào được phép lộ; chỉ một bảng ánh xạ tường minh mới trả lời được. Chuẩn công nghiệp: **map từ điển** giữa tên API công khai và tên cột nội bộ.
+
+~~~java
+// whitelist cho phần ORDER BY: API không bao giờ được đưa thẳng tên cột
+private static final Map<String, String> SORTABLE = Map.of(   // key là tên API, value là cột thật
+    "time",   "created_at",
+    "amount", "amount_minor",
+    "id",     "id");
+private static final Set<String> DIRS = Set.of("ASC", "DESC");
+
+static String orderBy(String sortField, String dirRaw) {
+    String column = SORTABLE.get(sortField == null ? "" : sortField.toLowerCase(Locale.ROOT));
+    if (column == null) throw new IllegalArgumentException("sort field không được phép");  // 400, không suy đoán
+    String dir = (dirRaw == null ? "ASC" : dirRaw).toUpperCase(Locale.ROOT);               // Locale.ROOT: đổi hoa thường không phụ thuộc locale máy chủ
+    if (!DIRS.contains(dir)) dir = "ASC";
+    return " ORDER BY " + column + " " + dir;        // chuỗi này không chứa input thô
+}
+~~~
+
+### LIKE: ký tự người dùng gõ không phải ký tự đại diện
+
+{{LIKE}} so mẫu, trong đó {{%}} nghĩa là "bất kỳ bao nhiêu ký tự" và {{_}} là "đúng một ký tự". Nếu bạn bind nguyên input của người dùng vào {{LIKE}} thì:
+
+- input {{%}} khớp **mọi dòng** — một ô tìm kiếm trở thành công cụ xuất cả bảng, đồng thời buộc DB quét toàn bộ bảng (slow query, DoS mềm).
+- input {{100%}} (tìm sản phẩm "100% cotton") bị hiểu là "bắt đầu bằng 100 rồi gì cũng được" — kết quả sai mà không báo lỗi.
+- input {{ab_c}} bị hiểu là "ab" + một ký tự bất kỳ + "c".
+
+Fix: **escape các ký tự đặc biệt trong giá trị**, rồi chính bạn thêm {{%}} hai đầu (vì bạn mới là bên quyết định semantics "tìm chứa substring"):
+
+~~~java
+static String escapeLike(String raw) {
+    StringBuilder sb = new StringBuilder();
+    for (int i = 0; i < raw.length(); i++) {
+        char c = raw.charAt(i);
+        if (c == '\\\\' || c == '%' || c == '_') sb.append('\\\\');   // đặt escape char trước ký tự đặc biệt
+        sb.append(c);
+    }
+    return sb.toString();
+}
+
+// String SQL trong Java: "... AND name LIKE ? ESCAPE '\\\\'" — hai ký tự backslash trong source Java = một backslash trong SQL
+ps.setString(1, "%" + escapeLike(userQuery) + "%");
+~~~
+
+{{ESCAPE}} khai báo với DB ký tự nào là escape; hãy ghi tường minh thay vì dựa vào mặc định, vì mặc định khác nhau giữa DB và giữa các cấu hình (MySQL có {{NO_BACKSLASH_ESCAPES}}, PostgreSQL hành vi backslash phụ thuộc {{standard_conforming_strings}}). Escape **backslash trước**, rồi mới {{%}}/{{_}}, nếu không bạn escape chính ký tự escape vừa chèn vào.
+
+Nếu sản phẩm chủ đích cho người dùng viết ký tự đại diện (tìm nâng cao), hãy nói rõ trong UI và tài liệu, và vẫn escape backslash — hai semantics lẫn nhau là nguồn bug rất khó lần.
+
+### Second-order injection: payload ngủ trong database
+
+Input được bind an toàn khi **ghi**, nên payload được lưu nguyên vẹn vào DB: {{username}} của một người dùng là {{x' UNION SELECT ...}}. Ba tháng sau, module báo cáo viết:
+
+~~~java
+// ❌ vẫn sai, dù dữ liệu lấy từ DB chứ không phải từ request
+String sql = "SELECT * FROM audit_log WHERE username = '" + row.getUsername() + "'";
+~~~
+
+DB không phân biệt được chuỗi đến từ request hay từ bảng khác. Bài học: **mối nguy nằm ở chỗ nối chuỗi, không ở chỗ dữ liệu đến từ đâu**. Vì vậy không có khái niệm "escape sẵn rồi, lưu vào DB là an toàn" — chỉ có quy tắc "không nối chuỗi ở bất kỳ tầng nào". Trường hợp tương tự: cấu hình động (tên cột, tên bảng người dùng chọn) lưu trong DB rồi được ghép vào câu truy vấn.
+
+### Năm lớp phòng thủ (parameterize chỉ là lớp 2)
+
+1. **Validate input**: kiểu, độ dài, format (email là email, số là số), chặn {{null byte}}. Đây là lớp **giảm diện tích tấn công**, không phải lớp chống injection.
+2. **Tham số hoá mọi giá trị; whitelist mọi identifier.** Kể cả tên bảng/cột động, kể cả sinh SQL từ metadata.
+3. **Least privilege cho account DB**: app user không cần {{DROP}}, {{GRANT}}, {{FILE}}, không phải owner. Báo cáo đọc bằng read-only user. Lớp này giới hạn **hậu quả** khi lớp 2 có lỗ hổng.
+4. **Không lộ lỗi DB**: đưa {{SQLException.getMessage()}} vào response là tặng attacker bản đồ schema. Log ở server, trả về mã lỗi chung + request id.
+5. **Test + audit**: một unit test asserts câu SQL sinh ra **không chứa** input thô và không chứa dấu nháy đơn; integration test chạy payload kinh điển; static analysis (SpotBugs {{SQL_INJECTION_JDBC}}, Semgrep) quét chuỗi ghép.
+
+| Cách viết | An toàn injection? | Ghi chú |
+|---|---|---|
+| {{Statement}} + nối chuỗi | ❌ | Chỉ dùng cho câu lệnh tĩnh, không chứa input |
+| {{PreparedStatement}} + {{?}} | ✅ với value | Vẫn phải tự lo identifier và LIKE |
+| {{JdbcTemplate.query(sql, mapper, args)}} | ✅ | Bản parameterized, không phải overload nối chuỗi |
+| JPQL named parameter, Criteria API, QueryDSL | ✅ | Không sinh chuỗi từ input |
+| Native query nối chuỗi | ❌ | Hibernate parse chuỗi cuối cùng |
+| {{Sort.by(request.sort)}} với JPQL | ⚠️ | Hibernate kiểm property theo entity metamodel; native query thì không |
+
+> Senior tip: trong pentest, thứ tự kiểm tra SQL injection luôn là (1) tham số {{sort}}/{{order}}/{{column}} của endpoint list, (2) bộ lọc {{LIKE}}, (3) {{IN}} sinh từ danh sách id, (4) report/export nhận tên bảng-cột từ người dùng — vì đó là những nơi lập trình viên "phải ghép chuỗi" và quên whitelist. ORM không phải áo giáp; bốn điểm chết kinh điển là: {{@Query(nativeQuery = true)}} ghép chuỗi, {{Sort}} lấy thẳng từ request đẩy vào native query, tham số động được nhúng nguyên văn vào chuỗi JPQL, và dynamic {{ORDER BY}} trong file cấu hình MyBatis dùng dạng nội suy chuỗi thay vì dạng bind tham số.
+
+### Liên hệ phỏng vấn
+Câu mở: "Vì sao {{PreparedStatement}} an toàn?" — trả lời bằng **hai giai đoạn parse/execute và vị trí của giá trị**, không nói "vì nó escape". Câu đào sâu: "Tôi dùng {{ORDER BY}} theo cột người dùng chọn thì sao?" — trả lời bằng whitelist/map và lý do placeholder không thay được identifier. Câu tình huống: "Chỗ nào trong hệ thống của bạn còn ghép chuỗi SQL?" — nêu được LIKE, {{IN}}, báo cáo động và second-order injection là đủ để thể hiện kinh nghiệm thật. Làm bài tập dưới đây — tự viết {{QueryBuilder}} — là bạn có mã nguồn để dẫn chứng cho cả ba câu.`,
+  exercises: [
+    {
+      title: 'Viết QueryBuilder: sinh SQL với placeholder, whitelist cột và escape LIKE',
+      prompt: `Hoàn thiện {{QueryBuilder}} (chỉ dùng JDK 17). Mục tiêu: người gọi **không có cách nào** đưa input của mình vào văn bản câu SQL — giá trị đi vào {{params()}}, identifier phải có trong whitelist.
+
+**Constructor {{QueryBuilder(String table, Set<String> allowedColumns)}}**
+- {{table}} phải là identifier hợp lệ: ký tự đầu là chữ cái hoặc dấu gạch dưới, các ký tự sau là chữ số/chữ cái/gạch dưới, tối đa 30 ký tự. Không hợp lệ (kể cả null) → ném {{IllegalArgumentException}}.
+- {{allowedColumns}} là whitelist tên cột, mỗi tên cũng phải là identifier hợp lệ; null hoặc rỗng → ném {{IllegalArgumentException}}. Lưu bản so sánh **không phân biệt hoa thường**, nhưng SQL luôn dùng đúng tên cột như đã khai báo trong whitelist (không dùng chuỗi người gọi đưa vào).
+
+**{{eq(column, value)}}** — thêm {{column = ?}}; {{value}} null → ném {{IllegalArgumentException}} (điều kiện {{col = NULL}} trong SQL không bao giờ đúng; muốn lọc null phải có predicate riêng).
+**{{in(column, values)}}** — thêm {{column IN (?, ?, ...)}} với số dấu {{?}} đúng bằng {{values.size()}}; {{values}} null hoặc rỗng → ném {{IllegalArgumentException}}. Mọi phần tử được thêm vào {{params()}} theo thứ tự.
+**{{like(column, raw)}}** — thêm predicate {{column LIKE ? ESCAPE}} với escape char là **một** ký tự backslash (khi viết trong chuỗi Java thì nguồn là {{ESCAPE '\\\\'}}), và thêm vào {{params()}} giá trị {{"%" + escape(raw) + "%"}}; {{raw}} null → ném {{IllegalArgumentException}}. Hàm escape đặt một backslash trước mỗi ký tự {{\\}}, {{%}}, {{_}} — và phải xử lý backslash **trước** hai ký tự kia.
+**{{orderBy(column, direction)}}** — {{column}} phải ở trong whitelist (không → ném {{IllegalArgumentException}}); {{direction}} null/rỗng → {{ASC}}, ngược lại đổi sang hoa thường với {{Locale.ROOT}} và phải là {{ASC}} hoặc {{DESC}}, không → ném {{IllegalArgumentException}}. Chỉ giữ một ORDER BY: gọi nhiều lần thì lần sau ghi đè lần trước.
+**{{sql()}}** — {{SELECT * FROM <table>}}, nối các predicate bằng {{ AND }} sau {{ WHERE }} (không predicate nào thì bỏ hẳn {{ WHERE }}), rồi nối {{ ORDER BY <col> <DIR> }} nếu có. Không bao giờ chứa một ký tự nào của giá trị người dùng.
+**{{params()}}** — danh sách giá trị theo đúng thứ tự xuất hiện {{?}} trong {{sql()}}.
+
+Mọi method {{eq/in/like/orderBy}} trả về {{this}} để gọi nối nhau. Gợi ý cài đặt: giữ ba thứ — {{List<String> predicates}}, {{List<Object> params}}, {{String orderByClause}}.`,
+      starter: `final class QueryBuilder {
+    private String table;
+    private java.util.Map<String, String> columnWhitelist;   // key viết thường -> tên cột đúng như khai báo
+    private final java.util.List<String> predicates = new java.util.ArrayList<>();
+    private final java.util.List<Object> params = new java.util.ArrayList<>();
+    private String orderByClause;
+
+    QueryBuilder(String table, java.util.Set<String> allowedColumns) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    QueryBuilder eq(String column, Object value) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    QueryBuilder in(String column, java.util.List<?> values) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    QueryBuilder like(String column, String raw) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    QueryBuilder orderBy(String column, String direction) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    String sql() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    java.util.List<Object> params() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    // B la MOT ky tu backslash; dung no de ghep chu ky doi chuong ma khong phai viet nhieu lop escape
+    static final String B = "\\\\";
+    static int passed = 0, total = 0;
+    static final Set<String> COLS = Set.of("id", "email", "status", "role", "name", "created_at", "amount_minor");
+
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual, String msg) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError(msg + " | expected <" + expected + "> got <" + actual + ">");
+    }
+    static void mustReject(String what, Runnable r) {
+        try { r.run(); }
+        catch (IllegalArgumentException ok) { return; }
+        catch (Throwable t) { throw new AssertionError(what + ": can IllegalArgumentException, got " + t); }
+        throw new AssertionError(what + ": khong ném IllegalArgumentException");
+    }
+    static QueryBuilder qb(String table) { return new QueryBuilder(table, COLS); }
+
+    public static void main(String[] args) {
+        check("eq: value di vao params, khong len text cau lenh", () -> {
+            QueryBuilder q = qb("app_user").eq("email", "a@b.com' OR '1'='1");
+            eq("SELECT * FROM app_user WHERE email = ?", q.sql(), "sql");
+            eq(1, q.params().size(), "so params");
+            eq("a@b.com' OR '1'='1", q.params().get(0), "gia tri bind");
+            if (q.sql().contains("'")) throw new AssertionError("sql chua dau nhay don: " + q.sql());
+            if (q.sql().contains("OR")) throw new AssertionError("sql chua noi dung input: " + q.sql());
+        });
+        check("thu tu placeholder va params khop nhau khi dung 3 kieu predicate", () -> {
+            QueryBuilder q = qb("orders")
+                .eq("status", "PAID")
+                .in("role", List.of("ADMIN", "MANAGER"))
+                .like("name", "shoes")
+                .orderBy("created_at", "desc");
+            eq("SELECT * FROM orders WHERE status = ? AND role IN (?, ?) AND name LIKE ? ESCAPE '" + B + "' ORDER BY created_at DESC",
+               q.sql(), "sql");
+            eq(List.of("PAID", "ADMIN", "MANAGER", "%shoes%"), q.params(), "params");
+        });
+        check("LIKE: escape phan tram, gach duoi va backslash roi moi boc phan tram hai dau", () -> {
+            eq("%100" + B + "%%", qb("products").like("name", "100%").params().get(0), "input 100 percent");
+            eq("%a" + B + "_b%", qb("products").like("name", "a_b").params().get(0), "input a_b");
+            eq("%" + B + B + "%", qb("products").like("name", B).params().get(0), "input one backslash");
+            eq("%C:" + B + B + "x%", qb("products").like("name", "C:" + B + "x").params().get(0), "input C colon backslash x");
+            if (qb("products").like("name", "shoes").sql().contains("shoes")) throw new AssertionError("sql chua gia tri: " + qb("products").sql());
+            mustReject("like(null)", () -> qb("products").like("name", null));
+        });
+        check("ORDER BY: cot hop le trong whitelist duoc chap nhan, khong co WHERE khi khong co predicate", () -> {
+            QueryBuilder q = qb("orders").orderBy("amount_minor", "DESC");
+            eq("SELECT * FROM orders ORDER BY amount_minor DESC", q.sql(), "sql");
+            eq(0, q.params().size(), "ORDER BY khong tao params");
+        });
+        check("ORDER BY: cot la / input doc hai / chieu la bi tu choi", () -> {
+            mustReject("orderBy(password)", () -> qb("app_user").orderBy("password", "ASC"));
+            mustReject("orderBy injection", () -> qb("app_user").orderBy("id) DESC, (SELECT password FROM app_user", "ASC"));
+            mustReject("orderBy multi", () -> qb("app_user").orderBy("id, (SELECT 1)", "ASC"));
+            mustReject("orderBy bad dir", () -> qb("app_user").orderBy("created_at", "DROP"));
+            mustReject("orderBy null col", () -> qb("app_user").orderBy(null, "ASC"));
+        });
+        check("ORDER BY: chuan hoa hoa thuong va ghi de lan goi sau", () -> {
+            QueryBuilder q = qb("orders").orderBy("id", "asc");
+            eq("SELECT * FROM orders ORDER BY id ASC", q.sql(), "asc -> ASC");
+            q.orderBy("AMOUNT_MINOR", null);
+            eq("SELECT * FROM orders ORDER BY amount_minor ASC", q.sql(), "null dir -> ASC, hoa thuong khong phan biet");
+            if (q.sql().contains("AMOUNT_MINOR")) throw new AssertionError("sql phai dung ten cot tu whitelist: " + q.sql());
+        });
+        check("identifier khong hop le bi tu choi o constructor va o predicate", () -> {
+            mustReject("table injection", () -> qb("app_user; DROP TABLE x").eq("id", 1));
+            mustReject("table empty", () -> qb(""));
+            mustReject("table digit first", () -> qb("1user"));
+            mustReject("eq column injection", () -> qb("app_user").eq("email = 1 OR 1", 1));
+            mustReject("in column not whitelisted", () -> qb("app_user").in("password", List.of("x")));
+            mustReject("like column not whitelisted", () -> qb("app_user").like("password", "x"));
+            mustReject("empty allowedColumns", () -> new QueryBuilder("app_user", Set.of()));
+        });
+        check("IN: dung n placeholder, giu thu tu, tu choi danh sach rong", () -> {
+            QueryBuilder q = qb("orders").in("id", List.of(7, 3, 5));
+            eq("SELECT * FROM orders WHERE id IN (?, ?, ?)", q.sql(), "sql");
+            eq(List.of(7, 3, 5), q.params(), "params");
+            mustReject("in empty", () -> qb("orders").in("id", List.of()));
+            mustReject("in null", () -> qb("orders").in("id", null));
+        });
+        check("eq value null bi tu choi; khong co WHERE khi khong co predicate", () -> {
+            mustReject("eq null value", () -> qb("app_user").eq("email", null));
+            eq("SELECT * FROM app_user", qb("app_user").sql(), "sql khong co WHERE");
+            eq(0, qb("app_user").params().size(), "params rong");
+        });
+        check("payload trong IN cung chi nam trong params", () -> {
+            QueryBuilder q = qb("orders").in("status", List.of("PAID') OR ('1'='1"));
+            eq("SELECT * FROM orders WHERE status IN (?)", q.sql(), "sql");
+            eq(1, q.params().size(), "params");
+            if (q.sql().contains("PAID")) throw new AssertionError("sql chua gia tri: " + q.sql());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `final class QueryBuilder {
+    // identifier hop le: chu hoac _ dau, toi da 30 ky tu
+    private static final java.util.regex.Pattern IDENT =
+        java.util.regex.Pattern.compile("[A-Za-z_][A-Za-z0-9_]{0,29}");
+    private static final Set<String> DIRS = Set.of("ASC", "DESC");
+
+    private String table;
+    private java.util.Map<String, String> columnWhitelist;
+    private final java.util.List<String> predicates = new java.util.ArrayList<>();
+    private final java.util.List<Object> params = new java.util.ArrayList<>();
+    private String orderByClause;
+
+    QueryBuilder(String table, Set<String> allowedColumns) {
+        if (table == null || !IDENT.matcher(table).matches()) throw new IllegalArgumentException("bad table: " + table);
+        if (allowedColumns == null || allowedColumns.isEmpty()) throw new IllegalArgumentException("empty whitelist");
+        this.table = table;
+        this.columnWhitelist = new java.util.TreeMap<>();          // so sánh theo key viết thường
+        for (String c : allowedColumns) {
+            if (c == null || !IDENT.matcher(c).matches()) throw new IllegalArgumentException("bad column: " + c);
+            columnWhitelist.put(c.toLowerCase(Locale.ROOT), c);    // gia tri la dung ten cot da khai bao
+        }
+    }
+
+    private String resolve(String column) {                       // tra ve ten cot chuanhoa, khong phai input
+        if (column == null) throw new IllegalArgumentException("column null");
+        String real = columnWhitelist.get(column.toLowerCase(Locale.ROOT));
+        if (real == null) throw new IllegalArgumentException("column khong nam trong whitelist: " + column);
+        return real;
+    }
+
+    QueryBuilder eq(String column, Object value) {
+        if (value == null) throw new IllegalArgumentException("eq: value null, dung predicate IS NULL rieng");
+        predicates.add(resolve(column) + " = ?");
+        params.add(value);
+        return this;
+    }
+
+    QueryBuilder in(String column, List<?> values) {
+        if (values == null || values.isEmpty()) throw new IllegalArgumentException("in: danh sách rỗng");
+        StringBuilder sb = new StringBuilder(resolve(column)).append(" IN (");
+        for (int i = 0; i < values.size(); i++) sb.append(i == 0 ? "?" : ", ?");
+        predicates.add(sb.append(")").toString());
+        params.addAll(values);
+        return this;
+    }
+
+    QueryBuilder like(String column, String raw) {
+        if (raw == null) throw new IllegalArgumentException("like: raw null");
+        predicates.add(resolve(column) + " LIKE ? ESCAPE '\\\\'");
+        params.add("%" + escapeLike(raw) + "%");
+        return this;
+    }
+
+    QueryBuilder orderBy(String column, String direction) {
+        String real = resolve(column);
+        String dir = (direction == null || direction.isEmpty()) ? "ASC" : direction.toUpperCase(Locale.ROOT);
+        if (!DIRS.contains(dir)) throw new IllegalArgumentException("direction phai la ASC hoac DESC: " + direction);
+        orderByClause = " ORDER BY " + real + " " + dir;           // goi nhieu lan: lan sau ghi de
+        return this;
+    }
+
+    static String escapeLike(String raw) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < raw.length(); i++) {
+            char c = raw.charAt(i);
+            if (c == '\\\\' || c == '%' || c == '_') sb.append('\\\\');
+            sb.append(c);
+        }
+        return sb.toString();
+    }
+
+    String sql() {
+        StringBuilder sb = new StringBuilder("SELECT * FROM ").append(table);
+        sb.append(predicates.isEmpty() ? "" : " WHERE " + String.join(" AND ", predicates));
+        return sb.append(orderByClause == null ? "" : orderByClause).toString();
+    }
+
+    List<Object> params() { return new java.util.ArrayList<>(params); }
+}`,
+      hints: [
+        'Validator identifier bằng {{java.util.regex.Pattern}}: chữ cái hoặc gạch dưới ở đầu, sau đó chữ số/chữ cái/gạch dưới, tối đa 30 ký tự; gọi {{matcher.matches()}}. Giữ **tên cột đã khai báo** trong whitelist, đừng trả về đúng chuỗi người gọi đưa vào.',
+        'Với IN, đếm placeholder bằng vòng for chạy {{values.size()}} lần — không bao giờ {{String.join}} các giá trị vào câu lệnh.',
+        'LIKE: với mỗi ký tự trong input, nếu nó là backslash, dấu phần trăm hoặc gạch dưới thì ghi thêm một backslash trước nó (xử lý backslash trước nhất), rồi mới bọc giá trị bằng hai dấu phần trăm. Mệnh đề SQL sinh ra là LIKE ? ESCAPE theo sau một dấu nháy đơn chứa đúng MỘT ký tự backslash — khi viết trong source Java thì cần hai ký tự backslash bên trong nháy kép.',
+        '{{sql()}}: nếu {{predicates}} rỗng thì bỏ hẳn cụm WHERE; nối các predicate bằng {{ AND }} và đặt một khoảng trắng trước {{WHERE}}.',
+      ],
+      explain: `Ba quyết định thiết kế đáng nói trong phỏng vấn:
+
+- **Giá trị và identifier đi hai đường khác nhau.** {{eq/in/like}} chỉ thêm dấu {{?}} rồi đẩy giá trị vào {{params}}; chuỗi SQL vì vậy không thể chứa {{'}} hay nội dung input. Test đầu tiên assert đúng điều đó bằng cách kiểm {{sql()}} không chứa "OR" và không chứa dấu nháy đơn — kiểu assert này mạnh hơn nhiều so với "chạy thử xem có bug không".
+- **{{resolve(column)}} trả về tên cột từ whitelist, không phải từ input.** Nếu trả về đúng chuỗi người gọi đưa vào (chỉ khác hoa thường) thì {{orderBy("created_at; DROP TABLE x", ...)}} đã bị từ chối vì không có trong whitelist, nhưng kiểu viết "validate rồi dùng lại input" là chỗ hở kinh điển. Cùng logic với phần {{ORDER BY}}: tên cột được **chọn** từ bảng ánh xạ, không được **kiểm tra** rồi nối vào.
+- **{{ORDER BY}} ghi đè chứ không nối thêm**, vì SQL chỉ có một {{ORDER BY}}; nếu bạn {{+=}} hai lần thì câu lệnh sai cú pháp và kẻ gọi API chỉ cần gọi hai lần là làm app 500.
+
+Lỗi thường gặp: dùng {{String.format}} để "ghép cho sạch" rồi tự escape dấu nháy đơn thay vì placeholder (escape tay dễ sai ở charset và ở chính ký tự backslash), quên trường hợp danh sách rỗng, và để {{value}} null lọt vào {{eq}} tạo ra điều kiện {{col = NULL}} luôn cho kết quả rỗng. Trong Spring, bản thật của bài này chính là {{NamedParameterJdbcTemplate}} cộng một bảng whitelist cho phần sort, hoặc QueryDSL/jOOQ khi cần dựng câu truy vấn động.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Vì sao {{PreparedStatement}} chặn được SQL injection còn {{Statement}} + nối chuỗi thì không?',
+      options: [
+        'Vì PreparedStatement escape dấu nháy đơn hộ mình, còn Statement thì không',
+        'Vì DB parse và lập kế hoạch câu SQL có {{?}} **trước** khi nhận giá trị, nên giá trị chỉ được đặt vào ô dữ liệu và không bao giờ được đọc như cú pháp',
+        'Vì PreparedStatement chạy nhanh hơn nên attacker không kịp chèn lệnh',
+        'Vì Statement chỉ dùng được cho INSERT/UPDATE',
+      ],
+      answer: 1,
+      explain: 'Bản chất là **tách hai giai đoạn parse và bind**. Cách nói "nó escape hộ" là cách giải thích hay gặp nhưng sai trọng tâm: với một số driver thì giá trị được quote trên client, nhưng lý do an toàn là DB không bao giờ parse giá trị thành cú pháp. Tốc độ liên quan tới cache execution plan, không liên quan tới an toàn; Statement dùng được cho mọi câu lệnh.',
+    },
+    {
+      q: 'Endpoint danh sách nhận {{?sort=}} là tên cột người dùng chọn. Cách xử lý đúng là gì?',
+      options: [
+        'Bind tên cột vào placeholder: {{ORDER BY ?}} với giá trị là sort',
+        'Kiểm tra sort bằng regex {{[a-z_]+}} rồi nối vào câu SQL',
+        'Map sort qua whitelist tên cột (và validate ASC/DESC), từ chối mọi giá trị khác bằng 400',
+        'Đổi id tự tăng sang UUID thì hết lo',
+      ],
+      answer: 2,
+      explain: 'Placeholder chỉ thay được **giá trị**, không thay được identifier — {{ORDER BY ?}} sẽ sort theo chính chuỗi đó cho mọi dòng. Regex {{[a-z_]+}} vẫn cho qua mọi cột thật, kể cả {{password_hash}}: kiểm tra hình thức không trả lời được câu hỏi "cột nào được phép lộ". Chỉ bảng ánh xạ tường minh (kết hợp chặn chiều sort ngoài {{ASC}}/{{DESC}}) là đủ; đổi kiểu id không liên quan gì tới {{ORDER BY}}.',
+    },
+    {
+      q: 'Ô tìm kiếm chạy {{WHERE description LIKE ?}} và bind nguyên input người dùng. Rủi ro nào có thật?',
+      options: [
+        'Chỉ là lỗi giao diện, không có rủi ro gì',
+        'Input {{%}} khớp mọi dòng và buộc quét toàn bảng: lộ dữ liệu ngoài phạm vi được tìm, cộng slow query/DoS mềm; phải escape {{%}}, {{_}} và {{\\}} rồi tự thêm {{%}} hai đầu',
+        'Gây ra SQL injection, phải đổi sang {{Statement}}',
+        'Làm hỏng index duy nhất của bảng',
+      ],
+      answer: 1,
+      explain: '{{%}} và {{_}} là ký tự đại diện **của LIKE**, không phải của cú pháp SQL, nên bind tham số vẫn không vô hiệu hoá chúng — đây là chỗ PreparedStatement không tự lo. Input {{%}} biến một query có giới hạn thành toàn bảng (vừa rò rỉ thông tin vừa tốn tài nguyên). Vì vậy mới cần {{ESCAPE}} và quy tắc escape backslash trước. Câu này không phải injection nên đổi sang {{Statement}} là đi ngược hướng; index bị dùng kém đi chứ không bị hỏng.',
+    },
+  ],
+  related: ['security-002', 'security-001'],
+  tags: ['SQL injection', 'PreparedStatement', 'JdbcTemplate', 'ORDER BY', 'LIKE escape', 'second-order injection'],
+},
+{
+  id: 'lesson-security-009',
+  track: 'security',
+  order: 9,
+  title: 'SSRF: vì sao để server tự đi gọi một URL theo yêu cầu là nguy hiểm, và kiểm tra URL đúng cách ở tầng ứng dụng',
+  level: 'senior',
+  minutes: 45,
+  goals: [
+    'Giải thích SSRF bằng một feature rất đời thường (tải avatar theo URL) và liệt kê được attacker chạm vào những gì khi server gửi request thay họ',
+    'Đọc hiểu CIDR và biết vì sao phải chặn 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, 169.254.169.254',
+    'Liệt kê được các kiểu qua mặt: IP literal và dạng số thập phân/thập lục phân, DNS rebinding (TOCTOU), redirect, tên miền mã hoá IP',
+    'Viết được routine kiểm tra URL theo thứ tự: parse, scheme allowlist, định dạng hostname, domain allowlist, resolve rồi kiểm tra từng IP',
+  ],
+  body: `**Tóm tắt:** **SSRF** (Server-Side Request Forgery) là lỗi để người dùng đưa vào **một URL mà chính server sẽ đi gọi**. Server đứng ở vị trí đặc quyền: nằm trong VPC, gần Redis/Adminer/Elasticsearch nội bộ, và thường có **IAM role gắn trên instance** để gọi AWS mà không cần mang key. Nên thứ tưởng như vô hại — "dán link ảnh avatar vào" — biến thành: quét cổng nội bộ, đọc {{http://169.254.169.254/...}} để lấy credential, đánh sập service nội bộ. Cách chặn: **allowlist scheme**, **từ chối IP literal và mọi dạng số**, **allowlist tên miền**, **resolve rồi kiểm tra từng IP** xem có thuộc dải nội bộ/link-local không, và **không để HTTP client tự follow redirect**.
+
+### Feature nào mở cửa cho SSRF
+
+Những chỗ này gần như luôn tồn tại trong app và đều nguy hiểm như nhau:
+
+- "Tải ảnh đại diện từ URL" / image proxy / thumbnailer: app {{GET}} URL người dùng đưa, đọc response rồi trả về.
+- Webhook và "test connection" cho integration (Stripe-like, Zapier-like): người dùng nhập URL đích, server bấm nút **Test** gọi thử.
+- Nhập dữ liệu từ URL: import CSV/XML từ link, {{@Import(url)}}.
+- Trình render PDF/HTML từ template có {{<img src="http://169.254.169.254/..."}}> — headless Chrome đi theo link và gửi kết quả về cho attacker qua lỗi hiển thị.
+- Health check / crawler / preview link (hiện title và ảnh khi chia sẻ URL).
+
+Điểm chung: **server là bên kết nối**, nên mục tiêu mà nó chạm tới không phải internet mà là mạng nội bộ của bạn.
+
+### Vì sao nguy hiểm hơn một lỗi đọc dữ liệu thông thường
+
+Ở cloud, mỗi EC2/GCE instance có một **metadata service** — một web server chỉ nghe trên địa chỉ link-local {{169.254.169.254}}, dùng để kể cho chính instance đó biết nó là ai, và cấp **credential tạm**. Trên AWS:
+
+~~~text
+GET http://169.254.169.254/latest/meta-data/iam/security-credentials/<role-name>
+->  { "AccessKeyId": "ASIA...", "SecretAccessKey": "...", "Token": "...", "Expiration": "..." }
+~~~
+
+Nhiều application gán role rộng (S3 full, DynamoDB full) cho instance. SSRF đọc được JSON đó là attacker có **khoá hợp lệ**, thường còn hiệu lực vài giờ, và dùng được từ máy của họ. Đây là lý do một endpoint "tải ảnh" bị xếp vào nhóm nghiêm trọng nhất chứ không phải lỗi vặt.
+
+Kẻ tấn công cũng dùng SSRF như một **máy quét cổng nội bộ**: gọi {{http://127.0.0.1:6379/}} (Redis), {{:9200}} (Elasticsearch), {{:8500}} (Consul), {{:2375}} (Docker daemon), và phân biệt "cổng mở/cổng đóng" qua độ trễ hoặc qua thông báo lỗi {{Connection refused}} mà app trả về. Với Redis, một request dạng text đơn giản đủ để ghi file và leo thang — đó là lý do các protocol text-based nội bộ không bao giờ được expose cho URL do người dùng chọn.
+
+### CIDR trong 60 giây, và dải nào phải chặn
+
+{{10.0.0.0/8}} đọc là "mọi địa chỉ có 8 bit đầu cố định", tức mọi IP bắt đầu bằng {{10.}} — dải private lớn nhất của mạng nội bộ. Số sau dấu {{/}} là số bit cố định. Bảng các dải **không phải internet**, cần chặn khi validate IP ({{a.b.c.d}} là bốn số 0–255):
+
+| Dải | Ý nghĩa | Vì sao phải chặn |
+|---|---|---|
+| {{0.0.0.0/8}} | "địa chỉ này trên mạng này", {{0.0.0.0}} tự nó | Một số stack định tuyến về localhost; không phải địa chỉ công khai |
+| {{10.0.0.0/8}} | private | Mạng nội bộ, DB, service |
+| {{100.64.0.0/10}} | CGNAT (carrier-grade NAT) | dải hay bị quên nhất; overlay network và ISP đều dùng |
+| {{127.0.0.0/8}} | loopback | chính máy đang chạy app — admin ports |
+| {{169.254.0.0/16}} | link-local | **metadata cloud** ({{169.254.169.254}}) |
+| {{172.16.0.0/12}} | private | DB subnets |
+| {{192.0.0.0/24}}, {{192.0.2.0/24}} | IETF reserved / TEST-NET | không route được, chắc chắn không phải đích thật |
+| {{192.168.0.0/16}} | private | mạng nội bộ phổ biến |
+| {{198.18.0.0/15}} | benchmarking | không phải đích thật |
+| {{224.0.0.0/4}} trở lên | multicast + reserved | không phải unicast |
+
+> Lưu ý: **không có** dải {{192.168.0.0/16}} nào "an toàn để gọi" và cũng không có dải nào "chỉ để tham khảo". Chặn là chặn cả dải, không chặn từng địa chỉ hay gặp.
+
+### Những kiểu qua mặt mà bộ lọc naive bỏ sót
+
+Đây là phần interviewer thích đào sâu nhất. Giả sử code chỉ kiểm tra chuỗi URL có "{{localhost}}" hoặc "{{127.0.0.1}}" trong đó:
+
+~~~text
+http://127.1/                     rút gọn, vẫn là loopback
+http://2130706433/                cùng 127.0.0.1 nhưng viết ở dạng số thập phân
+http://0x7f000001/                dạng thập lục phân
+http://017700000001/              dạng bát phân
+http://0000:0000:0000:0000:0000:ffff:127.0.0.1/  IPv6 mapped IPv4
+http://[::1]/                     IPv6 loopback literal
+http://169.254.169.254.nip.io/    dịch vụ DNS công khai: tên miền chứa IP, trỏ về đúng IP đó
+http://sub.example.com/           tên miền bình thường, nhưng zone trỏ về 10.0.0.5
+~~~
+
+Bài học: **đừng cố parse mọi biến thể của địa chỉ**, dễ sai hơn là chặn. Hai quy tắc làm gọn hết danh sách trên:
+
+1. **Không chấp nhận IP literal và host dạng số.** Một hostname phải gồm các label chữ thường {{a-z0-9-}}, phân cách bằng dấu chấm, và **không được có mọi label toàn chữ số**. Mọi thứ như {{10.0.5.9}}, {{2130706433}}, {{017700000001}}, {{[::1]}} đều bị từ chối ngay — kể cả khi nó là IP công khai hợp lệ. Đây là lý do bài tập dưới đây trả về {{BAD_URL}} cho {{http://10.0.5.9/}} chứ không phải {{PRIVATE_IP}}. Tên một nhãn như {{localhost}} vẫn được đi tiếp, vì nó chỉ có nghĩa sau khi resolve — và chính bước resolve sẽ trả {{127.0.0.1}}.
+2. **Với tên miền, phải resolve rồi kiểm tra địa chỉ nhận được**, vì tên miền là thứ người dùng (hoặc DNS của họ) kiểm soát.
+
+{{0x7f000001}} là ví dụ hay: vì có chữ cái nên nó đi qua bước định dạng, nhưng resolver sẽ cho ra {{127.0.0.1}} và bị chặn ở bước kiểm IP — phòng thủ theo lớp, mỗi lớp bắt một phần.
+
+### Redirect và DNS rebinding: hai lần kiểm tra có thể cho hai kết quả khác nhau
+
+**Redirect**: bạn kiểm tra URL của người dùng là public, gửi request, server đích trả {{302}} với {{Location: http://169.254.169.254/...}}, và HTTP client **tự đi theo** — lần này không ai kiểm tra. {{java.net.http.HttpClient}} mặc định {{Redirect.NEVER}}, còn {{HttpURLConnection}} ({{URL.openConnection}}) tự follow trong cùng protocol theo mặc định. Cách xử lý: đặt {{followRedirects(NEVER)}}, tự đọc {{Location}}, và chạy **toàn bộ** routine kiểm tra cho mỗi bước nhảy, với số lần nhảy tối đa.
+
+**DNS rebinding** nguy hiểm hơn vì nó phá đúng giả định "đã kiểm tra xong là xong":
+
+~~~seq
+title: DNS rebinding - hai lần resolve cho hai kết quả
+actors: Attacker | App | DNS | Metadata
+Attacker -> App: tai anh tai http://evil.com/a.png
+App -> DNS: resolve evil.com
+DNS --> App: 1.2.3.4 (public, hop le)
+note App..DNS: TOCTOU: kiem tra xong, chua ket noi
+App -> DNS: resolve evil.com lan hai, luc connect
+DNS --> App: 169.254.169.254 (TTL = 0)
+App -> Metadata: GET /latest/meta-data/iam/security-credentials
+Metadata --> App: AccessKeyId, SecretAccessKey, Token
+App --> Attacker: 200 OK (va anh da nam trong log/response)
+~~~
+
+Zone {{evil.com}} có TTL 0 nên lần resolve thứ hai trả địa chỉ khác: bạn kiểm tra một IP công khai, rồi kết nối tới IP nội bộ. Đây là lỗi **TOCTOU** (time-of-check to time-of-use). Không đóng được bằng cách "chỉ resolve một lần" nếu client tự resolve lại khi connect. Ba cách đóng, xếp theo độ tin cậy:
+
+1. **Không cho app đi ra internet trực tiếp.** Routing/NetworkPolicy/egress proxy ở DMZ chỉ cho phép đúng một số đích. Đây là lớp duy nhất không phụ thuộc code.
+2. **Pin IP**: resolve lấy địa chỉ, kiểm tra, rồi bảo client kết nối **đúng địa chỉ đã kiểm** và tự gửi header {{Host}}. Làm được với Apache HttpClient ({{HttpClientBuilder.setDnsResolver}}) hoặc OkHttp ({{Dns}}); {{java.net.http.HttpClient}} thì không có chỗ cắm, nên hoặc đổi client hoặc chấp nhận lớp 1.
+3. **Allowlist tên miền chặt** ({{*.example.com}} do bạn quản lý zone) — khi đó attacker không có DNS của riêng họ để lật.
+
+> Senior tip: trên AWS, bật **IMDSv2** ({{MetadataOptions.HttpTokens = required}}) để token phải xin bằng {{PUT}} có phiên và bị chặn bởi **hop limit** — request đi từ một proxy/ container thường không còn tới được metadata, kể cả khi có SSRF. Đồng thời đặt {{MetadataOptions.HttpPutResponseHopLimit = 1}} và hop limit thấp ở level instance. Đây là "giảm hậu quả", không phải "vá lỗi SSRF": vẫn còn {{user-data}} để đọc và vẫn còn cả mạng nội bộ để quét.
+
+### Quy trình kiểm tra một URL, theo thứ tự
+
+Viết theo đúng thứ tự và trả về **mã lỗi riêng cho từng bước**, vì nó cũng là thứ tự bạn giải thích trong phỏng vấn:
+
+1. Parse bằng {{java.net.URI}}, bắt exception. Từ chối nếu không absolute, thiếu host, có {{userinfo}} ({{http://safe.com@evil.com/}} — phần trước {{@}} là userinfo, host thật là {{evil.com}}).
+2. **Scheme allowlist**: thường chỉ {{http}}, {{https}}. {{file}} đọc filesystem, {{gopher}}/{{dict}} nói chuyện với Redis/memcached, {{jar}}/{{netdoc}} là các handler xưa của Java.
+3. **Định dạng hostname**: chữ thường, label hợp lệ, không có label toàn chữ số, không IPv6 literal, không dấu cách/underscore/ký tự lạ.
+4. **Domain allowlist** (nếu có): so trên host đã chuẩn hoá; chỉ cho {{host == d}} hoặc {{host.endsWith("." + d)}}. Kiểm ở đây **trước** khi resolve, vì đây là filter rẻ nhất.
+5. **Resolve và kiểm tra từng địa chỉ**: không có bản ghi → fail; có bất kỳ địa chỉ nào rơi vào bảng dải ở trên → fail. Không chỉ kiểm IP đầu tiên.
+6. Khi gọi: timeout kết nối và timeout đọc, số redirect tối đa và kiểm lại mỗi redirect, giới hạn kích thước response, và **thông báo lỗi chung** cho người dùng ({{Connection refused to 10.0.0.5:5432}} trong response là một máy quét cổng miễn phí).
+
+| Cách kiểm tra | Chặn được gì | Lọt qua bởi |
+|---|---|---|
+| {{contains("localhost")}}, blacklist chuỗi | ít | mọi dạng IP, {{127.1}}, {{nip.io}}, {{.local}} |
+| Regex "trông có vẻ là URL" | vài | IP literal, redirect, rebinding |
+| Parse + scheme + hostname + resolve + kiểm IP | phần lớn | DNS rebinding (TOCTOU), redirect nếu client tự follow |
+| Ở trên + allowlist domain do bạn quản lý zone | nhiều hơn | domain nội bộ bị DNS trỏ sai, redirect ra ngoài allowlist |
+| Ở trên + egress kiểm soát ở network/proxy | **thật sự chặn** | không gì (đó là điểm mạnh) |
+
+> Senior tip: trong hệ thống nhiều tenant, cho mỗi tenant dùng URL riêng phải đi qua một **egress proxy tập trung** (hoặc một service nhỏ chỉ có trách nhiệm fetch): họ khai {{webhook_url}}, bạn chỉ ghi log "{{host}} duoc goi", không cho app khác ra ngoài. Vừa sửa SSRF một lần cho mọi feature, vừa có dữ liệu để audit ai gọi cái gì, và chặn được cả feature "test connection" bị dùng làm máy quét.
+
+### Liên hệ phỏng vấn
+Câu mở: "App của bạn có chỗ nào để người dùng nhập URL không? Vì sao nguy hiểm?" — trả lời bằng chính danh sách feature ở trên, không nói chung chung. Câu đào sâu: "Tôi chặn {{localhost}} và {{127.0.0.1}} rồi, còn thiếu gì?" — kể được IP dạng số, {{nip.io}}, redirect, rebinding, metadata. Câu thiết kế: "Làm sao cho phép webhook của khách mà vẫn an toàn?" — trả lời theo lớp: allowlist + resolve-and-check + không tự follow redirect + egress control + IMDSv2, và nói thẳng phần nào code không tự đóng được. Làm xong bài tập {{UrlGuard}} dưới đây là bạn có mã nguồn để chứng minh cho cả ba câu.`,
+  exercises: [
+    {
+      title: 'Viết UrlGuard: scheme allowlist, từ chối IP literal, domain allowlist và kiểm tra IP sau khi resolve',
+      prompt: `Hoàn thiện {{UrlGuard}} (chỉ dùng JDK 17, **không gọi mạng** — DNS được truyền vào qua {{Resolver}} để test xác định). Hai kiểu sau đã có sẵn trong file và bạn không cần sửa:
+
+~~~java
+enum Verdict { OK, BAD_URL, BAD_SCHEME, DOMAIN_NOT_ALLOWED, PRIVATE_IP, DNS_FAIL }
+interface Resolver { List<String> lookup(String host); }   // rỗng/null = không resolve được
+~~~
+
+**{{UrlGuard(Resolver resolver, Set<String> allowedSchemes, Set<String> allowedDomains)}}** lưu {{allowedSchemes}} và {{allowedDomains}} ở dạng chữ thường (so sánh không phân biệt hoa thường); {{allowedDomains}} null hoặc rỗng nghĩa là **không giới hạn tên miền**.
+
+**{{Verdict check(String url)}}** áp theo **đúng thứ tự** này:
+
+1. {{url}} null, chỉ có khoảng trắng, hoặc {{trim()}} của nó không parse được bằng {{new URI(...)}} → {{BAD_URL}}.
+2. URL không absolute (thiếu scheme), hoặc {{getHost()}} null/rỗng → {{BAD_URL}}.
+3. scheme (chữ thường) không có trong {{allowedSchemes}} → {{BAD_SCHEME}}.
+4. {{getUserInfo()}} khác null → {{BAD_URL}} (chặn {{http://safe.com@evil.com/}}).
+5. Kiểm **định dạng hostname**: đổi sang chữ thường với {{Locale.ROOT}}, bỏ **một** dấu chấm cuối nếu có. Sau đó:
+   - rỗng, hoặc bắt đầu bằng {{[}} (IPv6 literal) → {{BAD_URL}};
+   - tách theo dấu chấm, mỗi label phải dài 1–63 ký tự, chỉ gồm {{a-z}}, {{0-9}}, {{-}}, không bắt đầu và không kết thúc bằng {{-}}; có label rỗng → {{BAD_URL}};
+   - nếu **mọi** label chỉ gồm chữ số ({{10.0.5.9}}, {{2130706433}}, {{017700000001}}) → {{BAD_URL}}. Đây là quy tắc "không chấp nhận IP literal và host dạng số".
+6. Nếu {{allowedDomains}} không rỗng: host phải **bằng đúng** một domain trong danh sách hoặc **kết thúc** bằng dấu chấm cộng domain đó ({{cdn.example.com}} với {{example.com}} thì đạt; {{example.com.evil.net}} thì không). Không đạt → {{DOMAIN_NOT_ALLOWED}}.
+7. Gọi {{resolver.lookup(host)}} với host đã chuẩn hoá. Null hoặc rỗng → {{DNS_FAIL}}. Với **mỗi** địa chỉ trả về: phải là bốn label số, mỗi label 1–3 chữ số và giá trị 0–255; không đúng dạng → {{BAD_URL}}. Nếu địa chỉ **không phải** unicast công khai → {{PRIVATE_IP}}.
+8. Tất cả địa chỉ đều public → {{OK}}.
+
+**{{PRIVATE_IP}}** được hiểu là một trong các dải: {{0.0.0.0/8}}, {{10.0.0.0/8}}, {{100.64.0.0/10}}, {{127.0.0.0/8}}, {{169.254.0.0/16}}, {{172.16.0.0/12}}, {{192.0.0.0/24}}, {{192.0.2.0/24}}, {{192.168.0.0/16}}, {{198.18.0.0/15}}, và mọi địa chỉ có octet đầu {{>= 224}}. Chỉ cần **một** địa chỉ vi phạm là {{PRIVATE_IP}}.
+
+Gợi ý: tách thành ba hàm nhỏ — chuẩn hoá và kiểm hostname, kiểm {{allowedDomains}}, kiểm một địa chỉ IPv4 — để mỗi bước test được riêng.`,
+      starter: `final class UrlGuard {
+    enum Verdict { OK, BAD_URL, BAD_SCHEME, DOMAIN_NOT_ALLOWED, PRIVATE_IP, DNS_FAIL }
+
+    interface Resolver {
+        List<String> lookup(String host);
+    }
+
+    private UrlGuard.Resolver resolver;
+    private java.util.Set<String> schemes;
+    private java.util.Set<String> domains;
+
+    UrlGuard(Resolver resolver, java.util.Set<String> allowedSchemes, java.util.Set<String> allowedDomains) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    Verdict check(String url) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `import java.net.URI;
+
+public class Main {
+    static int passed = 0, total = 0;
+    static final Set<String> HTTP_HTTPS = Set.of("http", "https");
+
+    // DNS gia lap: khong goi mang, ket qua xac dinh
+    static class Dns implements UrlGuard.Resolver {
+        final Map<String, List<String>> table = new HashMap<>();
+        public List<String> lookup(String host) { return table.get(host); }
+        Dns put(String host, String... ips) { table.put(host, List.of(ips)); return this; }
+    }
+
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual, String msg) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError(msg + " | expected " + expected + " got " + actual);
+    }
+    static UrlGuard build(Dns dns, Set<String> domains) { return new UrlGuard(dns, HTTP_HTTPS, domains); }
+
+    public static void main(String[] args) {
+        Dns dns = new Dns()
+            .put("cdn.example.com", "93.184.216.34")
+            .put("example.com", "93.184.216.34")
+            .put("localhost", "127.0.0.1")
+            .put("internal-db.corp", "10.0.0.5")
+            .put("meta.internal", "169.254.169.254")
+            .put("cg.example.com", "100.64.5.6")
+            .put("dual.example.com", "93.184.216.34", "192.168.1.7")
+            .put("hex.example.com", "127.0.0.1")
+            .put("evil.net", "203.0.113.9")
+            .put("rubbish.example.com", "999.1.1.1");
+
+        check("URL public di qua duoc", () -> {
+            UrlGuard g = build(dns, Set.of());
+            eq(UrlGuard.Verdict.OK, g.check("http://cdn.example.com/img/avatar.png"), "http public");
+            eq(UrlGuard.Verdict.OK, g.check("https://cdn.example.com/x"), "https public");
+            eq(UrlGuard.Verdict.OK, g.check("http://cdn.example.com:8443/x"), "cong khong anh huong");
+        });
+        check("scheme chi duoc phep moi qua, file:// bi chan", () -> {
+            UrlGuard g = build(dns, Set.of());
+            eq(UrlGuard.Verdict.BAD_SCHEME, g.check("ftp://cdn.example.com/a"), "ftp");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("file:///etc/passwd"), "file khong co host -> BAD_URL");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("cdn.example.com/x"), "thieu scheme");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://"), "thieu host");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("not a url"), "chuoi ran");
+            eq(UrlGuard.Verdict.BAD_URL, g.check(null), "null");
+        });
+        check("IP literal va moi dang so bi tu choi thuong", () -> {
+            UrlGuard g = build(dns, Set.of());
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://10.0.5.9/admin"), "IPv4 literal");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://2130706433/"), "thap phan");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://169.254.169.254/latest/meta-data/"), "metadata dang so");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://[::1]/"), "IPv6 literal");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://017700000001/"), "bat phan");
+        });
+        check("dinh dang hostname kieu RFC: underscore, label rong, dau -, ipv6", () -> {
+            UrlGuard g = build(dns, Set.of());
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://exa_mple.com/x"), "underscore");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://a..b.com/x"), "label rong");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://-bad.example.com/x"), "label bat dau dau -");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://bad-.example.com/x"), "label ket thuc dau -");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://exa mple.com/x"), "dau cach trong host");
+        });
+        check("resolve ra IP noi bo thi chan, kiem tat ca cac dia chi", () -> {
+            UrlGuard g = build(dns, Set.of());
+            eq(UrlGuard.Verdict.PRIVATE_IP, g.check("http://localhost:8080/admin"), "loopback");
+            eq(UrlGuard.Verdict.PRIVATE_IP, g.check("http://internal-db.corp/x"), "10/8");
+            eq(UrlGuard.Verdict.PRIVATE_IP, g.check("http://meta.internal/latest/meta-data/"), "169.254 link-local");
+            eq(UrlGuard.Verdict.PRIVATE_IP, g.check("http://cg.example.com/x"), "100.64/10 CGNAT");
+            eq(UrlGuard.Verdict.PRIVATE_IP, g.check("http://dual.example.com/x"), "mot cong mot noi bo");
+            eq(UrlGuard.Verdict.PRIVATE_IP, g.check("http://hex.example.com/x"), "ten co chu van bi chan vi IP");
+        });
+        check("DNS khong co ket qua va data ran", () -> {
+            UrlGuard g = build(dns, Set.of());
+            eq(UrlGuard.Verdict.DNS_FAIL, g.check("http://missing.example.com/x"), "khong resolve duoc");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://rubbish.example.com/x"), "999.1.1.1 khong phai IP hop le");
+        });
+        check("domain allowlist: subdomain duoc, duoi-gian-ten-khong", () -> {
+            UrlGuard g = build(dns, Set.of("example.com"));
+            eq(UrlGuard.Verdict.OK, g.check("http://cdn.example.com/a"), "subdomain hop le");
+            eq(UrlGuard.Verdict.OK, g.check("http://example.com/a"), " chinh domain cung duoc");
+            eq(UrlGuard.Verdict.DOMAIN_NOT_ALLOWED, g.check("http://example.com.evil.net/a"), "vi duoi ten khong phai subdomain");
+            eq(UrlGuard.Verdict.DOMAIN_NOT_ALLOWED, g.check("http://notexample.com/a"), "chua phai duoi .example.com");
+            eq(UrlGuard.Verdict.DOMAIN_NOT_ALLOWED, g.check("http://evil.net/a"), "domain la");
+        });
+        check("userinfo bi tu choi truc tiep, ke ca khi host that ngoai allowlist", () -> {
+            UrlGuard g = build(dns, Set.of("example.com"));
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://admin:pass@cdn.example.com/a"), "co userinfo");
+            eq(UrlGuard.Verdict.BAD_URL, g.check("http://cdn.example.com@evil.net/a"), "host that la evil.net + co userinfo");
+            eq(UrlGuard.Verdict.DOMAIN_NOT_ALLOWED, g.check("http://evil.net/a"), "khong co userinfo thi bi chan boi allowlist");
+        });
+        check("thu tu uu tien: allowlist duoc kiem truoc khi resolve", () -> {
+            UrlGuard g = build(dns, Set.of("example.com"));
+            eq(UrlGuard.Verdict.DOMAIN_NOT_ALLOWED, g.check("http://internal-db.corp/x"), "khong mat cong resolve cho domain ngoai allowlist");
+        });
+        check("chuan hoa hoa thuong va dau cham cuoi", () -> {
+            UrlGuard g = build(dns, Set.of("example.com"));
+            eq(UrlGuard.Verdict.OK, g.check("HTTP://CDN.Example.COM./a"), "hoa thuong + dau cham cuoi");
+            eq(UrlGuard.Verdict.OK, g.check("  https://cdn.example.com/a  "), "khoang trang hai dau");
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.net.URI;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
+import java.util.TreeSet;
+
+final class UrlGuard {
+    enum Verdict { OK, BAD_URL, BAD_SCHEME, DOMAIN_NOT_ALLOWED, PRIVATE_IP, DNS_FAIL }
+
+    interface Resolver {
+        List<String> lookup(String host);
+    }
+
+    private final Resolver resolver;
+    private final Set<String> schemes;   // du lieu gia lap trong test, khong phai input nguoi dung
+    private final Set<String> domains;   // rong = khong gioi han ten mien
+
+    UrlGuard(Resolver resolver, Set<String> allowedSchemes, Set<String> allowedDomains) {
+        this.resolver = resolver;
+        this.schemes = lower(allowedSchemes);
+        this.domains = lower(allowedDomains);
+    }
+
+    private static Set<String> lower(Set<String> in) {
+        Set<String> out = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+        if (in != null) for (String s : in) if (s != null && !s.isBlank()) out.add(s.trim());
+        return out;
+    }
+
+    Verdict check(String url) {
+        if (url == null || url.trim().isEmpty()) return Verdict.BAD_URL;
+        URI uri;
+        try {
+            uri = new URI(url.trim());                     // neu chua ky tu dac biet thi ném exception
+        } catch (Exception e) {
+            return Verdict.BAD_URL;
+        }
+        String scheme = uri.getScheme();
+        if (scheme == null || !uri.isAbsolute()) return Verdict.BAD_URL;
+        String rawHost = uri.getHost();
+        if (rawHost == null || rawHost.isBlank()) return Verdict.BAD_URL;      // file:///... khong co host
+        if (!schemes.contains(scheme.toLowerCase(Locale.ROOT))) return Verdict.BAD_SCHEME;
+        if (uri.getUserInfo() != null) return Verdict.BAD_URL;
+        String host = normalizeHost(rawHost);
+        if (host == null) return Verdict.BAD_URL;
+        if (!domains.isEmpty() && !domainAllowed(host)) return Verdict.DOMAIN_NOT_ALLOWED;
+        return resolveAndCheck(host);
+    }
+
+    // tra ve null neu hostname khong dat chuan; nguoc lai la ban da chuan hoa
+    private static String normalizeHost(String raw) {
+        if (raw == null) return null;
+        String host = raw.toLowerCase(Locale.ROOT);
+        if (host.endsWith(".")) host = host.substring(0, host.length() - 1);
+        if (host.isEmpty() || host.startsWith("[")) return null;      // IPv6 literal
+        String[] labels = host.split("\\\\.", -1);
+        boolean allNumeric = true;
+        for (String label : labels) {
+            if (label.isEmpty() || label.length() > 63) return null;
+            if (label.startsWith("-") || label.endsWith("-")) return null;
+            boolean numeric = true;
+            for (int i = 0; i < label.length(); i++) {
+                char c = label.charAt(i);
+                boolean ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-';
+                if (!ok) return null;                                   // underscore, percent, unicode...
+                if (c < '0' || c > '9') numeric = false;
+            }
+            if (!numeric) allNumeric = false;
+        }
+        return allNumeric ? null : host;                                 // IP literal / dang so
+    }
+
+    private boolean domainAllowed(String host) {
+        for (String d : domains) {
+            if (host.equals(d) || host.endsWith("." + d)) return true;
+        }
+        return false;
+    }
+
+    private Verdict resolveAndCheck(String host) {
+        List<String> ips = resolver == null ? null : resolver.lookup(host);
+        if (ips == null || ips.isEmpty()) return Verdict.DNS_FAIL;
+        for (String ip : ips) {
+            int[] o = parseIpv4(ip);
+            if (o == null) return Verdict.BAD_URL;
+            if (!isGlobalUnicast(o)) return Verdict.PRIVATE_IP;
+        }
+        return Verdict.OK;
+    }
+
+    // dung tay thay vi InetAddress.getByName: no se goi DNS that
+    private static int[] parseIpv4(String ip) {
+        if (ip == null) return null;
+        String[] parts = ip.trim().split("\\\\.", -1);
+        if (parts.length != 4) return null;
+        int[] o = new int[4];
+        for (int i = 0; i < 4; i++) {
+            String p = parts[i];
+            if (p.isEmpty() || p.length() > 3) return null;
+            int v = 0;
+            for (int k = 0; k < p.length(); k++) {
+                char c = p.charAt(k);
+                if (c < '0' || c > '9') return null;
+                v = v * 10 + (c - '0');
+            }
+            if (v > 255) return null;
+            o[i] = v;
+        }
+        return o;
+    }
+
+    private static boolean isGlobalUnicast(int[] o) {
+        int a = o[0], b = o[1], c = o[2];
+        if (a == 0) return false;                                   // 0.0.0.0/8
+        if (a == 10) return false;                                  // 10.0.0.0/8
+        if (a == 100 && b >= 64 && b <= 127) return false;          // 100.64.0.0/10
+        if (a == 127) return false;                                 // loopback
+        if (a == 169 && b == 254) return false;                     // link-local (metadata)
+        if (a == 172 && b >= 16 && b <= 31) return false;           // 172.16.0.0/12
+        if (a == 192 && b == 0 && (c == 0 || c == 2)) return false; // IETF reserved + TEST-NET
+        if (a == 192 && b == 168) return false;
+        if (a == 198 && (b == 18 || b == 19)) return false;         // benchmarking
+        return a < 224;                                             // multicast va reserved
+    }
+}`,
+      hints: [
+        'Đừng dùng {{InetAddress.getByName}}: nó gọi DNS thật và có cache, làm test không còn xác định. Hãy gọi {{resolver.lookup(host)}} rồi tự parse bốn octet bằng tay.',
+        'Chuẩn hoá hostname một lần duy nhất (chữ thường với {{Locale.ROOT}}, cắt một dấu chấm cuối) rồi dùng bản đó cho cả allowlist lẫn DNS — nếu không thì {{EXAMPLE.COM.}} và {{example.com}} thành hai kết quả khác nhau.',
+        'Để từ chối IP literal, kiểm "mọi label chỉ gồm chữ số" sau khi tách dấu chấm; đừng cố nhận diện {{2130706433}} bằng cách sinh số rồi so dải.',
+        'Phần label: dùng {{split}} với giới hạn {{-1}} để label rỗng không bị mất, nếu không {{a..b.com}} trông như hợp lệ.',
+        'Cho {{0x7f000001}}: nó có chữ cái nên đi qua bước định dạng, rồi bị chặn ở bước kiểm IP — đó là ý của phòng thủ nhiều lớp.',
+      ],
+      explain: `Bốn điều nên nói được trong phỏng vấn sau khi viết xong {{UrlGuard}}:
+
+- **Thứ tự các bước là một phần của thiết kế.** Filter rẻ (định dạng, allowlist tên miền) đứng trước, việc đắt (resolve) đứng sau, và vì thế {{http://internal-db.corp}} với allowlist {{example.com}} trả về {{DOMAIN_NOT_ALLOWED}} chứ không phải {{PRIVATE_IP}}. Kiểm tra quyền/ordering sai là nguồn bug "test xanh, production đỏ".
+- **Từ chối IP literal là quyết định đúng chứ không phải lười.** Parse mọi biến thể của một địa chỉ ({{127.1}}, bát phân, IPv6-mapped) rất dễ sai; "không chấp nhận host dạng số" cắt hết danh sách bằng một dòng, và trong thực tế chẳng ai đưa IP literal vào webhook.
+- **Resolver phải là dependency.** Đây là điểm làm bài tập test được: cùng một hostname có thể trả về hai địa chỉ khác nhau theo thời gian, nên nếu gọi thẳng {{InetAddress}} thì test vừa chậm vừa không xác định. Trong app thật, cùng lý do đó dẫn tới một quyết định kiến trúc: cho phép **pin** địa chỉ đã kiểm tra (OkHttp {{Dns}}, Apache {{setDnsResolver}}).
+- **{{check}} trả mã lỗi, không trả exception về tay người dùng.** Message {{BAD_URL}} là để log/đo; còn response cho client nên là một lỗi chung ("URL không hợp lệ"), vì mỗi thông báo khác nhau tiết lộ một sự thật về hệ thống bên trong.
+
+Lỗi còn lại mà bài này **không** đóng được — và bạn nên nói rõ trong phỏng vấn: DNS rebinding (kiểm tra lúc {{t0}}, kết nối lúc {{t1}}), và redirect. Cái thứ nhất cần pin IP hoặc egress control ở tầng network; cái thứ hai cần {{followRedirects = NEVER}} rồi chạy lại toàn bộ {{check}} cho mỗi {{Location}}.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Endpoint {{POST /avatar}} nhận về một trường {{url}}, server tải ảnh ở URL đó rồi lưu vào S3. Vì sao đây là lỗ hổng nghiêm trọng dù chỉ là đọc một tấm ảnh?',
+      options: [
+        'Vì tải ảnh tốn băng thông',
+        'Vì server đứng trong mạng nội bộ và có vai trò IAM trên instance: nó có thể được dụ gọi các đích nội bộ như {{http://169.254.169.254/latest/meta-data/}} để lấy credential tạm',
+        'Vì ảnh có thể chứa virus',
+        'Vì {{HttpClient}} không hỗ trợ HTTPS',
+      ],
+      answer: 1,
+      explain: 'Bản chất là **server gửi request từ vị trí đặc quyền thay cho người dùng**. Network nội bộ, admin ports và metadata endpoint đều chỉ reachable từ bên trong, nên attacker dùng app làm bàn đạp. Tốn băng thông là hệ quả nhỏ; virus là một bài toán khác; HTTPS thì luôn ổn. Trên AWS còn bật IMDSv2 và hop limit để giảm hậu quả, nhưng vẫn phải sửa SSRF.',
+    },
+    {
+      q: 'Code hiện tại chặn nếu URL chứa chuỗi {{localhost}} hoặc {{127.0.0.1}}. Payload nào dưới đây **lọt** qua?',
+      options: [
+        'Chỉ {{http://localhost:8080}} mới lọt qua',
+        '{{http://2130706433/}} (số thập phân của 127.0.0.1), {{http://127.1/}}, {{http://[::1]/}} và {{http://abc.127.0.0.1.nip.io/}}',
+        'Không lọt được cái nào vì driver sẽ chuẩn hoá về {{127.0.0.1}} trước khi kết nối',
+        'Chỉ {{http://[::1]/}} lọt qua, vì IPv6 không liên quan tới loopback',
+      ],
+      answer: 1,
+      explain: 'Blacklist chuỗi chỉ chặn đúng hai dạng được viết ra. {{2130706433}}, {{0x7f000001}}, bát phân, {{127.1}}, IPv6 {{[::1]}} là cách viết khác của cùng một nơi, và {{nip.io}} là dịch vụ DNS công khai cho phép nhúng IP vào tên miền. Vì driver phân tích **sau** khi app đã quyết định cho qua, nên bộ lọc chuỗi không được chuẩn hoá hộ. Đúng là kiểm định dạng (không nhận host dạng số) rồi resolve và kiểm địa chỉ.',
+    },
+    {
+      q: 'Bạn resolve {{evil.com}}, thấy {{1.2.3.4}} là public rồi cho kết nối — nhưng server lại đọc được metadata. Đây là lỗi gì và cách sửa đáng tin nhất?',
+      options: [
+        'Không có lỗi, chắc là log bị sai',
+        'SQL injection trong truy vấn avatar',
+        'DNS rebinding (TOCTOU): zone có TTL cực ngắn nên lần resolve lúc kết nối trả 169.254.169.254; đáng tin nhất là kiểm soát đường ra ở tầng network/egress proxy, cộng với pin đúng địa chỉ đã kiểm tra',
+        'Lỗi nằm ở {{HttpClient}} và chỉ cần nâng cấp version mới nhất',
+      ],
+      answer: 2,
+      explain: 'Kiểm tra và sử dụng là **hai thời điểm**, giữa hai thời điểm đó attacker đổi bản ghi DNS, nên kết quả kiểm tra không còn áp dụng. Nâng cấp client không đổi được điều đó. Sửa được bằng cách kết nối **đúng địa chỉ đã kiểm** (OkHttp {{Dns}}, Apache {{setDnsResolver}}) hoặc không cho app ra internet tuỳ ý — lớp network không phụ thuộc code nên đáng tin hơn.',
+    },
+  ],
+  related: ['security-011', 'security-001'],
+  tags: ['SSRF', 'metadata endpoint', 'DNS rebinding', 'allowlist', 'egress control', 'IMDSv2'],
+},
 );
 
