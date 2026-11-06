@@ -2344,6 +2344,412 @@ LimitService --> App: thanh cong hoac tu choi "vuot han muc ngay"
     'So sánh trade-off giữa atomic DB update và Redis Lua cho bài toán này: ngưỡng nào thì chuyển giải pháp và bạn kiểm chứng ra sao?'
   ],
   tags: ['daily limit', 'concurrency', 'atomic', 'idempotency', 'Redis']
+},
+{
+  id: 'banking-031',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Số dư khả dụng (available balance) và số dư sổ sách (ledger balance) khác nhau thế nào, hold/authorization là gì và giải phóng hold ra sao?',
+  a: `**Tóm tắt:** Số dư sổ sách (ledger balance) là tổng tiền thực sự đã ghi vào sổ cái của tài khoản. Số dư khả dụng (available balance) là số tiền khách thực sự có thể dùng ngay, bằng số dư sổ sách trừ các khoản đang bị giữ (hold). Hold là số tiền bị khóa tạm thời — ví dụ khi thanh toán thẻ hoặc chuyển tiền chưa xong — để tránh chi tiêu hai lần. Giải phóng hold khi giao dịch hoàn tất (capture), hủy (void) hoặc hết hạn, tiền trả về khả dụng.
+
+### Số dư sổ sách là gì
+Số dư sổ sách là con số trên sổ cái (sổ chốt mọi biến động tiền) của tài khoản. Mỗi giao dịch thành công — nạp, rút, chuyển — sẽ cộng hoặc trừ một dòng trên sổ, và số dư sổ sách cập nhật theo ngay.
+Ví dụ: tài khoản khách A có 10.000.000 VND trên sổ sách. A rút 2.000.000 VND qua ATM -> sổ ghi trừ -> số dư sổ sách thành 8.000.000 VND. Đây là con số kế toán dùng để đối soát cuối ngày.
+Số dư sổ sách phản ánh "tiền thực sự đã đi hay còn lại", nhưng chưa nói rõ "tiền khách được dùng ngay bao nhiêu" nếu có khoản đang bị giữ.
+
+### Số dư khả dụng là gì
+Số dư khả dụng = số dư sổ sách - tổng các khoản đang bị hold - các giao dịch đang xử lý chưa chốt. Đây là số hệ thống phải kiểm tra trước khi cho phép khách rút hoặc chuyển tiền.
+Vì sao không dùng số dư sổ sách để quyết định cho chi tiêu? Vì có tiền trên sổ nhưng tiền đó đang được "đặt cọc" cho một giao dịch khác. Nếu cho dùng, khách sẽ chi tiêu hai lần cùng một khoản tiền.
+Ví dụ: tài khoản có 10.000.000 VND sổ sách. Khách dùng thẻ mua hàng 2.000.000 VND, ngân hàng đặt hold 2.000.000 VND. Số dư sổ sách vẫn là 10.000.000 (tiền chưa thực sự rời tài khoản), nhưng số dư khả dụng chỉ còn 8.000.000. Nếu khách cố rút 9.000.000, hệ thống phải từ chối vì khả dụng chỉ còn 8.000.000.
+
+| | Số dư sổ sách | Số dư khả dụng |
+|---|---|---|
+| Ý nghĩa | Tổng tiền thực sự ghi trên sổ cái | Tiền khách có thể dùng ngay |
+| Có tính hold không | Không | Có (trừ các khoản hold) |
+| Dùng để làm gì | Đối soát kế toán, báo cáo | Quyết định cho phép rút/chuyển tiền |
+
+### Hold / authorization là gì
+Hold (khóa tiền) là số tiền bị tạm khóa trên tài khoản, chưa được trừ thật vào sổ cái nhưng đã không thể dùng cho giao dịch khác. Nó xảy ra khi:
+- Thanh toán thẻ: ngân hàng khóa số tiền giao dịch để đảm bảo tiền còn đủ khi cửa hàng (merchant) gửi yêu cầu trừ tiền thật sau này.
+- Chuyển tiền chưa hoàn tất: tiền bị khóa cho đến khi đối tác xác nhận đã nhận.
+- Phí, tiền đặt cọc, tiền bảo lãnh.
+
+Mỗi hold thường có thời hạn (ví dụ 7 ngày đối với giao dịch thẻ). Nếu merchant không gửi yêu cầu trừ tiền trong thời hạn, hệ thống tự giải phóng hold và tiền trở lại khả dụng.
+
+~~~seq
+title: Hold khi thanh toán the
+actors: Khach | Merchant | Acquirer | Network | Issuer
+Khach -> Merchant: quet the, mua 2 trieu
+Merchant -> Acquirer: yeu cau authorization 2 trieu
+Acquirer -> Network: chuyen yeu cau den issuer
+Network -> Issuer: kiem tra the va han muc
+Issuer -> Issuer: hold 2 trieu tren han muc
+Issuer --> Network: chap thue, ma auth
+Network --> Acquirer: chap thue
+Acquirer --> Merchant: thanh cong, in hoa don
+~~~
+
+### Giải phóng hold ra sao
+1. Giao dịch hoàn tất (capture): merchant gửi yêu cầu capture, hold chuyển thành trừ tiền thật; số dư sổ sách và khả dụng đều giảm.
+2. Giao dịch hủy (void): hold được giải phóng, tiền trả về khả dụng, sổ sách không thay đổi.
+3. Hết hạn hold: hệ thống tự động giải phóng sau thời hạn, tiền trở lại khả dụng.
+
+### Lỗi hay gặp
+- Chỉ kiểm tra số dư sổ sách khi cho phép chi tiêu -> khách chi tiêu quá khả dụng, số dư có thể bị âm.
+- Hold không có thời hạn hết hạn -> tiền bị khóa vĩnh viễn, khách không thể dùng được tiền của mình.
+- Giải phóng hold nhưng không cập nhật khả dụng -> số dư hiển thị sai, khách phàn nàn.
+
+> Senior tip: Trong phỏng vấn, hãy nhấn mạnh available balance (không phải ledger balance) là nguồn chân lý để hệ thống quyết định cho phép chi tiêu hay không, và mọi hold phải có thời hạn rõ ràng kèm job giải phóng tự động. Ví dụ đính kèm: sổ sách 10 triệu, hold 2 triệu, khả dụng 8 triệu.
+
+> Cụm từ: Hold (khóa tiền) là số tiền bị tạm khóa trong tài khoản, chưa trừ thật nhưng không thể dùng. Authorization là bước ngân hàng đồng ý giữ số tiền cho một giao dịch thẻ chưa hoàn tất.
+  `,
+  follow: [
+    'Khi hold hết hạn mà merchant chưa capture, xử lý thế nào?',
+    'Tại sao available balance quan trọng hơn ledger balance khi cho phép chi tiêu?',
+    'Nếu hold và capture cùng lúc, làm sao tránh chi tiêu hai lần?'
+  ],
+  tags: ['available balance', 'ledger balance', 'hold', 'authorization']
+},
+{
+  id: 'banking-032',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Chống trừ tiền hai lần end-to-end từ mobile đến gateway đến core banking: các lớp bảo vệ và thứ tự xử lý như thế nào?',
+  a: `**Tóm tắt:** Để tránh trừ tiền hai lần, mỗi lớp (app mobile, API gateway, dịch vụ nghiệp vụ, core banking) phải có cơ chế bảo vệ riêng: mobile dùng nút tắt và khóa idempotency; gateway dùng giới hạn tốc độ và kiểm tra trùng; core dùng ràng buộc duy nhất (unique constraint) và giao dịch ACID. Thứ tự xử lý: kiểm tra khóa trước, xử lý sau, lưu kết quả, rồi trả về. Khóa idempotency phải do khách tạo và đi xuyên suốt từ mobile đến core.
+
+### End-to-end là gì
+Một giao dịch chuyển tiền không diễn ra ở một nơi, mà đi qua nhiều lớp: app mobile -> API gateway -> dịch vụ nghiệp vụ -> core banking -> cơ sở dữ liệu. Mỗi lớp có thể thử lại hoặc gửi lại yêu cầu. Nếu không có cơ chế bảo vệ, một yêu cầu bị lạc mạng có thể được gửi hai lần và tiền bị trừ hai lần.
+Ví dụ đời thường: khách nhấn "Chuyen 5 trieu", mạng giật, khách không thấy kết quả nên nhấn lại. Nếu hệ thống không kiểm tra, hai lệnh "chuyen 5 trieu" sẽ đi đến core và tiền bị trừ 10 trieu thay vì 5 trieu.
+
+### Các lớp bảo vệ
+1. Mobile: tat nut ngay sau khi khach nhan, tao khoa idempotency duy nhat (UUID), luu tren thiet bi de lan thu lai cung dung khoa cu.
+2. API gateway: gioi han so yeu cau cua moi khach (rate limit), kiem tra trung theo khoa idempotency trong bo nho dem ngan han; neu khoa da co, tra ket qua da luu khong chuyen tiep.
+3. Dich vu nghiep vu: kiem tra khoa trong co so du lieu; neu da xu ly, tra ket qua cu; neu chua, xu ly moi.
+4. Core banking: rang buoc duy nhat tren cot khoa idempotency, giao dich ACID, kiem tra so du truoc khi tru tien.
+
+### Thu tu xu ly (buoc chi tiet)
+1. Khach nhan chuyen tien tren mobile; app tao khoa K (ma duy nhat, vi dung UUID) va gui yeu cau kem K.
+2. Gateway kiem tra bo nho dem: neu K da co -> tra ket qua da luu, khong xu ly lai.
+3. Neu K chua co, gateway chuyen tiep yeu cau den dich vu nghiep vu.
+4. Dich vu kiem tra co so du lieu: neu K da duoc xu ly -> tra ket qua cu.
+5. Neu chua, dich vu goi core banking de tru tien.
+6. Core thuc hien trong mot giao dich ACID: kiem tra so du, tru tien, luu K cung ket qua.
+7. Ket qua chuyen nguc: dich vu -> gateway -> mobile.
+
+Vi du so lieu: khach chuyen 5.000.000 VND, khoa K = "a1b2-c3d4". Mat mang sau khi gui, khach nhan "Thu lai" cung khoa K. Gateway/dich vu tim thay K da xu ly -> tra ve "thanh cong" cu, khong tru them 5 trieu.
+
+### Loi hay gap
+- Mobile tao khoa moi moi lan thu lai -> khong chan duoc yeu cau trung, tien co the bi tru nhieu lan.
+- Bo nho dem gateway het han truoc khi core xu ly xong -> yeu cau duoc xu ly hai lan (trung).
+- Core khong co rang buoc duy nhat tren cot khoa -> hai yeu cau cung khoa deu duoc tru tien.
+- Khach tao yeu cau moi thay vi thu lai cung yeu cu cu -> sinh giao dich moi, khong lien quan den khoa cu.
+
+> Senior tip: Trong pho van, hay ve so do cac lac va chi rang moi lac bao ve o cap nao. Nhấn mạnh khoa idempotency phai do khach tao (khong phai server) va di xuan sut tu mobile den core. Doi voi tien, vie chan trung quan trong hon vie khong cho bo qua yeu cau.
+
+> Cụm từ: Idempotency key la ma duy nhat gan voi mot yeu cau, dung de phat hien yeu cau duoc gui lai (retry) va chi xu ly mot lan.
+  `,
+  follow: [
+    'Nếu mobile mất mạng sau khi gửi request, làm sao retry an toàn?',
+    'Gateway cache hết hạn trước core xử lý xong, xử lý thế nào?',
+    'Core banking dùng unique constraint ở cột nào?'
+  ],
+  tags: ['idempotency', 'end-to-end', 'mobile', 'gateway', 'core banking']
+},
+{
+  id: 'banking-033',
+  topic: 'banking',
+  level: 'lead',
+  q: 'Đối soát tự động: so khớp file, xử lý lệch, báo cáo và quy trình maker-checker như thế nào?',
+  a: `**Tóm tắt:** Đối soát tự động đọc file giao dịch từ đối tác (NAPAS, ngân hàng khác), so khớp từng dòng với sổ cái của mình, phát hiện lệch (thiếu đơn, thừa đơn, sai số tiền), sinh báo cáo, và yêu cầu người tra soát (maker) đề xuất điều chỉnh rồi người duyệt (checker) phê duyệt trước khi áp dụng. Quy trình: parse file -> so khớp -> phân loại lệch -> báo cáo -> điều chỉnh có phê duyệt.
+
+### So khớp file
+Mỗi ngày đối tác gửi file giao dịch (CSV/XML/JSON). Hệ thống:
+1. Đọc file, chuẩn hóa định dạng (mã giao dịch, số tiền, ngày, tài khoản).
+2. So khớp từng dòng với sổ cái theo mã giao dịch duy nhất (mã tham chiếu).
+3. Phân loại kết quả: khớp (matched); đối tác có mà mình không (missing in ours); mình có mà đối tác không (missing in theirs); cùng mã nhưng sai số tiền (amount mismatch).
+
+Ví dụ số lieu:
+~~~text
+So sach cua minh:   TX001 A->B 1.000.000 SUCCESS
+                    TX002 C->D   500.000 PENDING
+File Napas:         TX001 A->B 1.000.000 SUCCESS
+                    TX002 C->D   500.000 SUCCESS
+                    TX003 F->G   300.000 SUCCESS (minh khong co)
+Ket qua:            TX001 khop; TX002 lech trang thai -> tra cuu va cap nhat; TX003 co o doi tac, khong o minh -> tra sot
+~~~
+
+### Xu ly lech
+- Matched (khop): khong lam gi.
+- Missing in ours (doi tac co, minh khong): kiem tra nhat ky, neu doi tac da xu ly thanh cong thi cong tien vao tai khoan nhan (co phe duyet).
+- Missing in theirs (minh co, doi tac khong): kiem tra nhat ky, neu minh da gui thi tra sot hoan tien.
+- Amount mismatch (sai so tien): so sanh so tien, dieu chinh neu xac nhan loi (vi du phi khac, lam tron khac).
+
+### Bao cao va quy trinh maker-checker
+- He thong sinh bao cao lech theo ngay, theo doi tac.
+- Nhan vien tra sot (maker) xem tung lech va de xuat dieu chinh.
+- Quan ly/kiem soat (checker) duyet truoc khi ap dung vao so cai.
+- Moi dieu chinh duoc ghi vao nhat ky kiem toan (audit trail).
+
+### Loi hay gap
+- Doc sai dinh dang file -> bi lech gia.
+- Dieu chinh tu dong khong co phe duyet -> ru ro gian lan.
+- Khong luu ban goc file -> khong the tra sot sau nay.
+
+> Senior tip: Trong pho van, nhấn mạnh doi soat tu dong phai co quy trinh maker-checker va audit trail. Ve ống dan: file -> parse -> so khop -> bao cao -> duyet -> dieu chinh. Muc tieu khong chi la "khop tong so" ma la tim ra tung giao dich sai va biet sai o dau.
+
+> Cụm từ: Lech (discrepancy) la giao dich khong khop giua hai ben, vi du minh ghi 1.000.000 VND con doi tac ghi 950.000 VND thi lech 50.000 VND.
+  `,
+  follow: [
+    'Nếu file đối tác đến muộn 2 ngày, xử lý thế nào?',
+    'Làm sao phân biệt lệch thật và lệch do parse sai?',
+    'Ai có quyền duyệt điều chỉnh số dư?'
+  ],
+  tags: ['reconciliation', 'file matching', 'discrepancy', 'maker-checker']
+},
+{
+  id: 'banking-034',
+  topic: 'banking',
+  level: 'lead',
+  q: 'Kiến trúc core banking hiện đại vs mainframe: ledger bất biến, event-driven, batch EOD và trade-off như thế nào?',
+  a: `**Tóm tắt:** Core banking truyền thống thường chạy trên máy tính chính (mainframe) với xử lý batch cuối ngày và sổ cái có thể sửa trực tiếp. Core banking hiện đại dùng sổ cái bất biến (append-only), kiến trúc hướng sự kiện (event-driven), các dịch vụ độc lập (microservices); batch cuối ngày vẫn còn nhưng nhẹ hơn, chỉ dùng để tổng kết và đối soát. Trade-off: hiện đại linh hoạt và xử lý ngay hơn nhưng phức tạp hơn; mainframe ổn định và kiểm soát tốt nhưng khó thay đổi và kết nối với hệ thống mới.
+
+### Mainframe truyền thống
+- Chay tren may chu lon (vi du IBM z/OS), xu ly lon theo lo (batch) vao cuoi ngay.
+- So cai co the sua truc tiep (mutable), kiem tra lai khong de.
+- On dinh, xu ly nhieu giao dich (throughput cao), nhung khong ket noi duoc voi he thong moi.
+
+### He thong core banking hien dai
+- So cai bat bien: chi duoc them dong moi, khong sua/xoa dong cu; moi thay doi la mot su kien.
+- Huong su kien: moi giao dich phat ra mot su kien, cac he thong lien quan nhan va phan ung ngay (thuc thoi).
+- Microservices: tach core, thanh toan, kenh so thanh cac dich vu doc lap.
+- Batch cuoi ngay van con nhung nhe hon, chi tong ket so lieu va doi soat.
+
+| Tieu chi | Mainframe | Hien dai |
+|---|---|---|
+| Toc do thay doi | Cham | Nhanh |
+| Thuc thoi | Khong de | De |
+| Do phuc tap | Thap (tap trung) | Cao (phan tan) |
+| Kiem toan | Khong de | De (nhat ky su kien) |
+| Chi phi ban dau | Cao | Trung binh |
+| Ru ro van hanh | Thap | Cao hon |
+
+Vi du so lieu: mot ngan hang lon, on dinh, gan khong doi giao dich co the giu mainframe cho so cai; mot ngan hang so can phat hanh tinh nang moi lien tuc nen chon kien truc hien dai.
+
+### Loi hay gap
+- Chuyen sang hien dai nhung khong giu nhat ky kiem tra -> mat quyen kiem soat.
+- Huong su kien khong co co che chan trung -> xu ly giao dich hai lan.
+- Batch cuoi ngay van qua nang -> nghen vao buoi dem.
+
+> Senior tip: Trong pho van, nhấn mạnh khong phai "hien dai luon tot hon". Mainframe van phu hop ngan hang lon, on dinh, it thay doi; kien truc hien dai phu hop khi can tinh nang moi lien tuc va xu ly thuc thoi. Lua chon phu thuoc quy mo, ngan sach va doi ngu van hanh.
+
+> Cụm từ: Huong su kien (event-driven) la kien truc xu ly duoc su kien, cac thanh phan phan ung voi su kien thay goi truc tiep lan nhau.
+  `,
+  follow: [
+    'Khi nào nên giữ mainframe thay vì chuyển sang hiện đại?',
+    'Ledger bất biến giúp audit thế nào so với mutable?',
+    'Event-driven có những rủi ro gì trong ngân hàng?'
+  ],
+  tags: ['core banking', 'mainframe', 'event-driven', 'ledger', 'architecture']
+},
+{
+  id: 'banking-035',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Bảo mật và tuân thủ: PCI DSS, tokenization, HSM và audit log không sửa được trong hệ thống thẻ như thế nào?',
+  a: `**Tóm tắt:** PCI DSS là bộ quy tắc bảo mật cho mọi đơn vị lưu, xử lý hoặc truyền số thẻ thanh toán. Tokenization thay số thẻ thật (PAN) bằng mã giả (token). HSM (Hardware Security Module) là thiết bị phần cứng lưu khóa mã hóa, khóa không bao giờ xuất ra bên ngoài. Nhật ký kiểm tra không sửa được ghi mọi truy cập số thẻ. Dev cần áp dụng cả bốn để bảo vệ dữ liệu thẻ.
+
+### PCI DSS la gi
+PCI DSS (tieu chuan bao mat du lieu nganh the thanh toan) la bo quy tắc ma ngan hang, cua hang va cong ty cong nghe thanh toan phai tuan theo khi xu ly so the. Khong phai phap luat, nhung la yeu cau cua cac to chuc the (Visa, Mastercard...). Vi pham the co the bi phat hoac ngung dich vu the.
+Cac quy tac dev can biet:
+- Khong luu ma CVV (3 so bao mat sau the) sau khi xac nhan thanh toan.
+- Ma hoa so the khi luu va khi truyen.
+- Gioi han quyen truy cap, chi nguoi can thiet moi duoc xem.
+- Che so the khi ghi vao nhat ky.
+
+### Tokenization la gi
+Tokenization thay so the thiet (PAN - Primary Account Number, 16 so in tren the) boi ma ngau nhien (token) khong co gia tri toan hoc voi so the. Token duoc luu trong he thong thuong; PAN thiet duoc luu o he thong rip riet, bao mat rat cao (vault). Neu co so du lieu bi lot, ke xau chi co token, khong the doi thanh so the thiet neu khong co khoa cua vault.
+Vi du: so the 1234 5678 9012 3456 -> token "tok_abc123xyz". He thong luu token; khi can thanh toan, gui token den vault, vault thuc hien hoac tra PAN thiet.
+
+### HSM (Hardware Security Module)
+HSM la thiet bi phan cứng chuyen dung luu khoa ma hoa. Khoa khong the xuat ra ngoai thiet bi; moi viec ma hoa/giai ma dien ra trong HSM. Ngay cot quan tri vien he thong cung khong lay duoc khoa. Vi sau ke xau xam nhap may chu cung khong lay khoa ma hoa the tu HSM.
+
+### Nhat ky kiem tra khong sua duoc
+- Ghi moi truy cap so the: ai, khi nao, tu dau, lam gi.
+- Luu tren he thong chi duoc them, khong duoc sua hoac xoa (append-only).
+- Dung de dieu tra khi co nghi sot ro ri lieu the.
+
+### Loi hay gap
+- Luu CVV -> vi pham PCI DSS, neu bi lot ke xau co the mua hang online.
+- Luu so the thiet o dang van ban thoi -> neu bi lot, tat ca the bi danh cap.
+- Ghi so the day du vao nhat ky de gao loi -> ro ri so the.
+- Token khong duoc bao ve -> ke xau lay token va PAN.
+- Khong dung HSM -> khoa luu trong file cau hinh, de bi lot.
+- Nhat ky kiem tra co the sua -> mat bang chung khi co su co.
+
+> Senior tip: Trong pho van, nhấn mat bao ve nhieu lop (defense in depth): khong chi ma hoa, ma la giam thieu du lieu nhat cau he thong can luu; so the thiet chi can luu o mot noi (vault), he thong khac chi dung token.
+
+> Cụm từ: HSM la thiet bi phan cứng chuyen dung luu khoa ma hoa, khong cho xuat khoa ra ngoai. PAN la so tai khoan chinh, la 16 so in tren the, duoc PCI DSS bao ve.
+  `,
+  follow: [
+    'Tại sao HSM an toàn hơn lưu khóa trong file config?',
+    'Tokenization khác mã hóa (encryption) ở điểm nào?',
+    'Audit log không sửa được thực hiện thế nào ở mức DB?'
+  ],
+  tags: ['PCI DSS', 'tokenization', 'HSM', 'audit log', 'security']
+},
+{
+  id: 'banking-036',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Chuyển tiền liên ngân hàng NAPAS 247: trạng thái treo/timeout, tra soát và đối soát cuối ngày xử lý thế nào?',
+  a: `**Tóm tắt:** Khi giao dịch NAPAS 24/7 bị timeout, hệ thống đánh dấu "đang tra soát" (pending investigation), không tự động thử lại và không tự động hoàn tiền ngay. Tra soát bằng mã giao dịch duy nhất (transaction ID) để hỏi NAPAS xem đã xử lý chưa. Đối soát cuối ngày so khớp sổ cái của mình với file NAPAS để phát hiện lệch và điều chỉnh. Trạng thái treo được giải quyết bằng tra soát hoặc hoàn tiền.
+
+### Trang thai treo / timeout
+Timeout la gui yeu cau den NAPAS nhung khong nhan phan hoi trong thoi gian cho phep. Co ba kha nang:
+1. NAPAS chua nhan yeu cau -> tien chua duoc tru o ben kia.
+2. NAPAS da xu ly thanh cong (tien da den ngan hang nhan) nhung phan hoi bi mat tren duong ve.
+3. NAPAS dang xu ly (it xay ra, nhung he thong phai tinh den).
+
+Vi khong biet ket qua, tuyet doi khong coi timeout la that bai va khong cho khach gui lai yeu cau moi. Neu lam nhu vay, truong hop (2) se lam tien bi tru hoac cong hai lan.
+
+### May trang thai giao dich
+~~~text
+[DANG_GUI] -- nhan thanh cong --> [THANH_CONG]
+[DANG_GUI] -- nhan that bai --> [THAT_BAI]
+[DANG_GUI] -- het thoi gian cho / loi mang --> [CHO_TRA_SOT]
+[CHO_TRA_SOT] -- tra sot: thanh cong --> [THANH_CONG]
+[CHO_TRA_SOT] -- tra sot: that bai --> [THAT_BAI]
+[CHO_TRA_SOT] -- van khong xac dinh qua han --> [HOAN_TIEN] -- xac nhan --> [DA_HOAN_TIEN]
+~~~
+
+CHO_TRA_SOT la trang thai "dang treo, chua ket luan". Tien cua nguoi gui co the dang bi giu (hold) - chua tru het khoi so du kha dung cho giao dich khac, nhung cung chua tra lai.
+
+~~~seq
+title: Chuyen tien lien ngan hang bi timeout
+actors: AppKhach | DichVu | NAPAS | NhanHang
+AppKhach -> DichVu: chuyen 5 trieu cho B
+DichVu -> DichVu: tao ma giao dich duy nhat, tien duoc giu, trang thai DANG_GUI
+DichVu -> NAPAS: gui lenh chuyen (ma giao dich)
+NAPAS -> NhanHang: ghi tien cho B
+NhanHang --> NAPAS: thanh cong
+NAPAS --> DichVu: het thoi gian, khong nhan phan hoi
+DichVu -> DichVu: doi trang thai CHO_TRA_SOT
+DichVu --> AppKhach: Dang xu ly, vui long cho (khong bao loi)
+DichVu -> NAPAS: tra sot theo ma giao dich
+NAPAS --> DichVu: ket qua thanh cong
+DichVu -> DichVu: cap nhat THANH_CONG, chot tien da duoc tru
+DichVu --> AppKhach: thong bao thanh cong
+~~~
+
+### Tra sot
+- Dung ma giao dich duy nhat (transaction ID) de hoi NAPAS xem giao dich da xu ly chua.
+- Co gioi han so lan tra sot va thoi gian cho.
+- Neu sau N lan van khong xac dinh -> chuyen nhan vien xu ly tay.
+
+### Doi soat cuoi ngay
+- So khop so cai cua minh voi file giao dich cua NAPAS.
+- Phat hien giao dich lech (thieu, thua, sai so tien).
+- Dieu chinh theo quy trinh maker-checker.
+- Bao cao cho quan ly.
+
+### Loi hay gap
+- Thu lai tu dong khi timeout -> tien bi tru/cong nhieu lan.
+- Khong luu ma giao dich -> khong the tra sot.
+- Doi soat chi so tong tien -> bo sot cac lech nho.
+- Giao dich treo qua lau khong co cong viec quet -> tien khach bi giu mai.
+
+> Senior tip: Trong pho van, nhấn mat nguyen tac "gui toi da mot lan, chap nhan co the bi mat nhung khong duoc trung" (at-most-once) cho giao dich tien. Tha bao khach cho tra sot con hon hoan/ghi trung sai.
+
+> Cụm từ: At-most-once la che dao gui toi da mot lan, yeu cau co the bi mat nhung khong bi xu ly trung.
+  `,
+  follow: [
+    'Tại sao không tự động retry khi timeout?',
+    'Transaction ID giúp tra soát thế nào?',
+    'Giao dịch treo quá một tháng xử lý ra sao?'
+  ],
+  tags: ['NAPAS', 'timeout', 'tra sot', 'doi soat']
+},
+{
+  id: 'banking-037',
+  topic: 'banking',
+  level: 'lead',
+  q: 'Idempotency end-to-end từ mobile đến gateway đến core: thiết kế key, lưu trữ, và xử lý retry như thế nào ở cấp lead?',
+  a: `**Tóm tắt:** Chống trùng xử lý tiền từ đầu đến cuối (mobile -> gateway -> core) yêu cầu khóa idempotency do khách tạo, đi xuyên suốt mọi lớp, lưu với ràng buộc duy nhất (unique constraint), và xử lý thử lại an toàn. Ở cấp lead, cần cân nhắc thời gian hết hạn (TTL), sự trade-off giữa bộ nhớ đệm (nhanh) và cơ sở dữ liệu (bền), và hành động khi kho lưu khóa gặp sự cố (fail-closed hay fail-open).
+
+### Thiết kế khóa
+- Khách (app mobile) tạo mã UUID v4 khi người dùng nhấn nút, không phải server tạo.
+- Khóa phải giống nhau cho cùng một ý định (không tạo khóa mới khi khách thử lại).
+- Lưu khóa trên thiết bị để lần thử lại dùng chính khóa cũ.
+
+### Lưu trữ
+- API gateway: bộ nhớ đệm (ví dụ Redis) với thời gian hết hạn ngắn (ví dụ 5 phút) để kiểm tra trùng nhanh.
+- Dịch vụ nghiệp vụ / core: cơ sở dữ liệu với ràng buộc duy nhất, lưu khóa + kết quả + thời gian.
+- Thời gian hết hạn ở cơ sở dữ liệu dài hơn (ví dụ 24 giờ, hoặc vĩnh viễn cho giao dịch tiền).
+
+### Xử lý thử lại
+- Nếu yêu cầu trùng khóa và đã xử lý -> trả kết quả cũ (200 OK), không xử lý lại.
+- Nếu yêu cầu đang được xử lý (in-flight) -> trả 409 Conflict hoặc yêu cầu khách chờ.
+- Nếu khóa đã hết hạn -> xử lý như yêu cầu mới (có rủi ro trùng, nên để TTL đủ dài).
+
+### Hanh dong khi kho luu khoa gap su co (failure mode)
+- Neu he thong luu khoa (Redis/co so du lieu) gap loi: he thong tien nen tu choi yeu cau (fail-closed) de chan trung, khong phai cho phep (fail-open). Voi tien, luon chon fail-closed.
+
+### Loi hay gap
+- Khoa do server tao -> khach khong biet khoa khi thu lai.
+- Thoi gian het han bo nho dem qua ngan -> bi trung sau khi het han.
+- Khong xu ly yeu cau dang xu ly -> dieu kien tran chap (race condition).
+- Cho phep khi kho luu loi (fail-open) -> tien bi trung.
+
+> Senior tip: Trong pho van, hay nha mat chan trung la quy tac bat bien cua he thong tien: moi thao tac lien quan tien phai idempotent. Nhen can nhac trade-off giua bo nho dem (nhanh) va co so du lieu (ben) theo yeu cua do tre, va luon dinh nghia hanh dong khi kho luu khoa gap su co.
+
+> Cụm từ: Fail-closed la khi gap loi, he thong tu choi thao tac thay cho phep, de tran ru ro.
+  `,
+  follow: [
+    'TTL của idempotency key nên là bao nhiêu cho giao dịch tiền?',
+    'Nếu Redis (cache) lỗi, hệ thống tiền nên fail-closed hay fail-open?',
+    'Làm sao xử lý request trùng key đang in-flight?'
+  ],
+  tags: ['idempotency', 'end-to-end', 'TTL', 'fail-closed', 'lead']
+},
+{
+  id: 'banking-038',
+  topic: 'banking',
+  level: 'lead',
+  q: 'Bảo mật và tuân thủ nâng cao: mã hóa dữ liệu thẻ (tokenization, HSM), audit log bất biến và PCI DSS trong kiến trúc microservices như thế nào?',
+  a: `**Tóm tắt:** Trong kiến trúc các dịch vụ độc lập (microservices), bảo vệ dữ liệu thẻ đòi hỏi mã hóa giả (tokenization) ở ranh giới hệ thống, HSM lưu khóa, nhật ký kiểm tra bất biến tập trung, và phạm vi tuân thủ PCI DSS tối thiểu (chỉ dịch vụ vault nằm trong phạm vi). Các dịch vụ khác chỉ dùng token, không bao giờ chạm số thẻ thật (PAN).
+
+### Kien truc
+- Dich vu vault: dich vu duy rien chạm so the thiet (PAN), ma hoa va luu trong HSM, cung cap token cho cac dich vu khac.
+- Cac dich vu khac (thanh toan, don hang...) chi dung token, khong bao giu xem PAN.
+- Pham vi PCI DSS chi bao ham dich vu vault -> giam chi phi va cong viec tuan thu.
+
+### Luong ma hoa gia (tokenization)
+1. Khach gui so the thiet den dich vu vault (qua ket noi bao mat TLS).
+2. Dich vu vault ma hoa PAN bang HSM, luu PAN thiet, tra ve token.
+3. Cac dich vu khac dung token cho moi thao tac.
+4. Khi can thanh toan (charge), dich vu thanh toan gui token den vault; vault thuc hien thu tien qua cong thanh toan.
+
+### Nhat ky kiem tra bat bien
+- Moi truy cap token/PAN duoc ghi vao nhat ky kiem tra tap trung, chi duoc them (append-only).
+- Nhat ky luu luu tren luu tru khong duoc sua hoac xoa (WORM: ghi mot lan, doc nhieu lan).
+- Gui nhat ky theo quy dinh (vi du 7 nam).
+
+### Loi hay gap
+- Dich vu ngoai vault cung ghi so the vao nhat ky -> mo rong pham vi PCI DSS.
+- Token khong duoc bao ve -> ke xau lay token va so the thiet.
+- Nhat ky kiem tra co the sua -> mat bang chung khi co su co.
+- Khong dung HSM -> khoa ma hoa luu trong file cau hinh, de bi lot.
+
+> Senior tip: Trong pho van, hay nhen mat nguyen tac "tiet low it nhat" (least exposure): chi dich vu vault cham so the thiet, moi dich vu khac chi giu token. Day la cach giam pham vi PCI DSS va giam ru ro neu mot dich vu bi xam nhap.
+
+> Cụm từ: WORM (ghi mot lan doc nhieu lan) la luu tru chi cho phep ghi du lieu mot lan, doc duoc nhieu lan nhung khong duoc sua hoac xoa.
+  `,
+  follow: [
+    'Tại sao chỉ vault service nên trong PCI scope?',
+    'Token bị lộ thì rủi ro thế nào so với PAN bị lộ?',
+    'Audit log bất biến thực hiện thế nào ở cấp hạ tầng?'
+  ],
+  tags: ['PCI DSS', 'tokenization', 'HSM', 'microservices', 'audit log']
 }
 
 );
