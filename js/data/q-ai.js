@@ -1566,7 +1566,6 @@ Chạy image {{pgvector/pgvector:pg16}}, nạp 50–100 chunk với **vector đ�
   tags: ['testing', 'Spring AI', 'eval', 'Testcontainers', 'WireMock', 'LLM-as-judge'],
   refs: [
     { type: 'doc', title: 'Spring AI: Evaluation Testing', url: 'https://docs.spring.io/spring-ai/reference/api/testing.html' },
-    { type: 'doc', title: 'Testcontainers for Java: Postgres Module', url: 'https://java.testcontainers.org/modules/databases/postgres/' }
   ]
 },
 {
