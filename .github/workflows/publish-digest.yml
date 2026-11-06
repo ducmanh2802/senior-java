@@ -1,16 +1,17 @@
 name: Publish news digest
 
 # The daily routine (Claude, cloud) commits digests/YYYY-MM-DD.json to branch claude/digest.
-# This job validates and upserts every changed digest into Supabase news_digest, using repo secrets
+# It may also commit jobs/YYYY-MM-DD.json (job digest, docs/JOBS-DIGEST.md → table job_digest).
+# This job validates and upserts every changed digest into Supabase (news_digest / job_digest), using repo secrets
 # SUPABASE_URL and SUPABASE_SECRET_KEY, so the key never lives in the AI's environment.
 on:
   push:
     branches: [claude/digest]
-    paths: ['digests/*.json']
+    paths: ['digests/*.json', 'jobs/*.json']
   workflow_dispatch:
     inputs:
       file:
-        description: 'digests/YYYY-MM-DD.json to (re)publish'
+        description: 'digests/YYYY-MM-DD.json or jobs/YYYY-MM-DD.json to (re)publish'
         required: true
 
 permissions:
@@ -36,7 +37,7 @@ jobs:
           INPUT_FILE: ${{ github.event.inputs.file }}
         run: |
           if [ -n "$INPUT_FILE" ]; then files="$INPUT_FILE"
-          else files=$(git diff --name-only --diff-filter=AM HEAD~1 HEAD -- 'digests/*.json'); fi
+          else files=$(git diff --name-only --diff-filter=AM HEAD~1 HEAD -- 'digests/*.json' 'jobs/*.json'); fi
           [ -n "$files" ] || { echo "No digest changed"; exit 0; }
           [ -n "$SUPABASE_URL" ] || echo "::error::secret SUPABASE_URL is empty or missing"
           [ -n "$SUPABASE_SECRET_KEY" ] || echo "::error::secret SUPABASE_SECRET_KEY is empty or missing"

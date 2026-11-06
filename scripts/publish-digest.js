@@ -7,6 +7,9 @@
  * Credentials: SUPABASE_URL + SUPABASE_SECRET_KEY from the environment or a gitignored .env.local in the repo root.
  * The key is never printed. Workflow + editorial rules: docs/NEWS-DIGEST.md.
  *
+ * Job digest (docs/JOBS-DIGEST.md): a file under jobs/ (or --kind=jobs) goes to table public.job_digest with job items:
+ *   { title, company, url (https, the original posting), source, location, level: junior|mid|senior|lead, salary?, posted?: 'YYYY-MM-DD',
+ *     skills: ['Java', …], summary, prep, topics?: ['spring', …] (topic ids), tags? }
  * File schema:
  *   { date: 'YYYY-MM-DD', intro: 'markup', editor?: 'name',
  *     items: [{ title_vi, title, url (https), source, category, summary, why, interview_q,
@@ -22,7 +25,9 @@ const args = process.argv.slice(2);
 const file = args.find(a => !a.startsWith('--'));
 const dry = args.includes('--dry');
 const opt = (name, def) => { const a = args.find(x => x.startsWith('--' + name + '=')); return a ? Number(a.split('=')[1]) : def; };
-const MIN = opt('min', 5), MAX = opt('max', 10);
+const KIND = args.includes('--kind=jobs') || /(^|[\\/])jobs[\\/][^\\/]+\.json$/.test(file || '') ? 'jobs' : 'news';
+const TABLE = KIND === 'jobs' ? 'job_digest' : 'news_digest';
+const MIN = opt('min', KIND === 'jobs' ? 3 : 5), MAX = opt('max', KIND === 'jobs' ? 12 : 10);
 
 if (!file) {
   console.error('Cách dùng: node scripts/publish-digest.js <file.json> [--dry] [--min=N] [--max=N]');
@@ -32,6 +37,8 @@ if (!file) {
 const CATEGORIES = require(path.join(ROOT, 'api', '_feeds.js')).CATEGORIES;
 const LIMITS = { intro: 800, title_vi: 160, title: 300, source: 80, summary: 600, why: 500, interview_q: 300, tag: 30 };
 const TOP_KEYS = new Set(['date', 'intro', 'items', 'editor']);
+const JOB_KEYS = new Set(['title', 'company', 'url', 'source', 'location', 'level', 'salary', 'posted', 'skills', 'summary', 'prep', 'topics', 'tags']);
+const JOB_LEVELS = ['junior', 'mid', 'senior', 'lead'];
 const ITEM_KEYS = new Set(['title_vi', 'title', 'url', 'source', 'category', 'summary', 'why', 'interview_q', 'related', 'tags']);
 const VI = /[ăâđêôơưàáạảãằắặẳẵầấậẩẫèéẹẻẽềếệểễìíịỉĩòóọỏõồốộổỗờớợởỡùúụủũừứựửữỳýỵỷỹ]/i;
 const HTML = /<\/?[a-z][a-z0-9-]*(\s[^<>]*)?\/?>|<!--|&lt;|&#\d+;/i;
@@ -52,6 +59,34 @@ function questionIds() {
   return new Set((sandbox.window.QUESTIONS || []).map(q => q.id));
 }
 
+/** Topic ids from js/data/topics.js (window.TOPICS). */
+function topicIds() {
+  const sandbox = { window: {}, console }; sandbox.globalThis = sandbox; vm.createContext(sandbox);
+  vm.runInContext(fs.readFileSync(path.join(ROOT, 'js', 'data', 'topics.js'), 'utf8'), sandbox, { filename: 'topics.js' });
+  return new Set((sandbox.window.TOPICS || []).map(t => t.id));
+}
+
+function validateJob(it, w, topics) {
+  for (const k of Object.keys(it)) if (!JOB_KEYS.has(k)) err(w, `field lạ "${k}"`);
+  text(w + '.title', it.title, 160);
+  text(w + '.company', it.company, 120);
+  text(w + '.source', it.source, 80);
+  text(w + '.location', it.location, 120);
+  if (!JOB_LEVELS.includes(it.level)) err(w + '.level', 'phải là một trong: ' + JOB_LEVELS.join(', '));
+  if (it.salary != null) text(w + '.salary', it.salary, 80);
+  if (it.posted != null && !(/^\d{4}-\d{2}-\d{2}$/.test(it.posted) && !isNaN(Date.parse(it.posted)))) err(w + '.posted', 'phải là YYYY-MM-DD');
+  text(w + '.summary', it.summary, 600, { vi: true });
+  if (typeof it.summary === 'string' && it.summary.trim().length < 80) err(w + '.summary', 'quá ngắn (< 80 ký tự)');
+  text(w + '.prep', it.prep, 500, { vi: true });
+  if (!Array.isArray(it.skills) || !it.skills.length || it.skills.length > 12) err(w + '.skills', 'phải là mảng 1–12 kỹ năng');
+  else it.skills.forEach(x => { if (typeof x !== 'string' || !x.trim() || x.length > 40 || HTML.test(x)) err(w + '.skills', `kỹ năng không hợp lệ: ${JSON.stringify(x)}`); });
+  if (it.topics != null) {
+    if (!Array.isArray(it.topics) || it.topics.length > 6) err(w + '.topics', 'phải là mảng ≤ 6 topic id');
+    else it.topics.forEach(t => { if (!topics.has(t)) err(w + '.topics', `topic "${t}" không có trong js/data/topics.js`); });
+  }
+  if (it.tags != null && (!Array.isArray(it.tags) || it.tags.length > 6 || it.tags.some(t => typeof t !== 'string' || !t.trim() || t.length > LIMITS.tag))) err(w + '.tags', 'phải là mảng ≤ 6 tag ngắn');
+}
+
 function text(where, v, max, { vi = false, required = true } = {}) {
   if (v == null || v === '') { if (required) err(where, 'bắt buộc'); return; }
   if (typeof v !== 'string') { err(where, 'phải là chuỗi'); return; }
@@ -63,7 +98,7 @@ function text(where, v, max, { vi = false, required = true } = {}) {
   if (vi && !VI.test(s)) err(where, 'phải viết bằng tiếng Việt (không thấy dấu tiếng Việt)');
 }
 
-function validate(d, bank) {
+function validate(d, bank, topics) {
   if (!d || typeof d !== 'object' || Array.isArray(d)) { err('file', 'phải là một object JSON'); return; }
   for (const k of Object.keys(d)) if (!TOP_KEYS.has(k)) err('file', `field lạ "${k}" (chỉ có: ${[...TOP_KEYS].join(', ')})`);
 
@@ -80,6 +115,15 @@ function validate(d, bank) {
   d.items.forEach((it, i) => {
     const w = `items[${i}]`;
     if (!it || typeof it !== 'object' || Array.isArray(it)) { err(w, 'phải là object'); return; }
+    if (KIND === 'jobs') {
+      validateJob(it, w, topics);
+      let u = null;
+      try { u = new URL(it.url); } catch (e) { /* invalid */ }
+      if (!u || u.protocol !== 'https:' || !u.hostname.includes('.')) err(w + '.url', 'phải là URL https hợp lệ');
+      else if (urls.has(u.href)) err(w + '.url', 'trùng với tin khác');
+      else urls.add(u.href);
+      return;
+    }
     for (const k of Object.keys(it)) if (!ITEM_KEYS.has(k)) err(w, `field lạ "${k}"`);
     text(w + '.title_vi', it.title_vi, LIMITS.title_vi, { vi: true });
     text(w + '.title', it.title, LIMITS.title);
@@ -141,16 +185,16 @@ async function publish(d) {
     editor: (d.editor || 'claude').trim(),
     published_at: new Date().toISOString(),
   };
-  const r = await fetch(env.SUPABASE_URL.replace(/\/+$/, '') + '/rest/v1/news_digest?on_conflict=date', {
+  const r = await fetch(env.SUPABASE_URL.replace(/\/+$/, '') + '/rest/v1/' + TABLE + '?on_conflict=date', {
     method: 'POST', headers, body: JSON.stringify(row), signal: AbortSignal.timeout(15000),
   });
   const body = await r.text();
   if (!r.ok) {
     console.error(`Supabase trả về ${r.status}: ${body.slice(0, 400).split(key).join('***')}`);
-    if (/PGRST205|42P01/.test(body)) console.error('→ Chưa có bảng news_digest: chạy SQL trong docs/NEWS-DIGEST.md.');
+    if (/PGRST205|42P01/.test(body)) console.error(`→ Chưa có bảng ${TABLE}: chạy SQL trong docs/${KIND === 'jobs' ? 'JOBS' : 'NEWS'}-DIGEST.md.`);
     process.exit(1);
   }
-  console.log(`Đã đăng bản tin ${d.date} (${d.items.length} tin). Trang #/news sẽ thấy sau tối đa ~10 phút (cache CDN).`);
+  console.log(`Đã đăng ${KIND === 'jobs' ? 'bản tin việc làm' : 'bản tin'} ${d.date} (${d.items.length} mục). Trang #/${KIND} sẽ thấy sau tối đa ~10 phút (cache CDN).`);
 }
 
 (async () => {
@@ -158,7 +202,7 @@ async function publish(d) {
   try { d = JSON.parse(fs.readFileSync(path.resolve(file), 'utf8')); }
   catch (e) { console.error('Không đọc được JSON: ' + e.message); process.exit(1); }
   const bank = questionIds();
-  validate(d, bank);
+  validate(d, bank, KIND === 'jobs' ? topicIds() : null);
   if (errors.length) {
     console.error(`✘ ${errors.length} lỗi trong ${file}:`);
     errors.forEach(e => console.error('  - ' + e));

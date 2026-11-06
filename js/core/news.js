@@ -36,12 +36,13 @@
 
     /**
      * Daily curated digest ("Bản tin hôm nay"). date = 'YYYY-MM-DD' or null for the latest.
+     * kind = 'jobs' → the daily job digest ("Việc làm hôm nay", docs/JOBS-DIGEST.md), same shape with job items.
      * → { configured, digest: {date, intro, items[], published_at} | null, dates: [], setup? }
      */
-    async digest({ date = null } = {}) {
+    async digest({ date = null, kind = 'news' } = {}) {
       let res;
       try {
-        res = await fetch('/api/digest' + (date ? '?date=' + encodeURIComponent(date) : ''), { signal: AbortSignal.timeout(10000) });
+        res = await fetch('/api/digest?' + new URLSearchParams(Object.assign(kind === 'jobs' ? { kind: 'jobs' } : {}, date ? { date } : {})).toString(), { signal: AbortSignal.timeout(10000) });
       } catch (e) {
         throw new NewsError('Không kết nối được server (chạy qua file:// hoặc mạng lỗi)', 'no_server');
       }

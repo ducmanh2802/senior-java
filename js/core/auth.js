@@ -124,8 +124,8 @@
     }));
     out.daily = daily;
 
-    // user-authored lists (STAR stories, real interview log): union by id, the newer updatedAt wins
-    ['stories', 'interviewLog'].forEach(k => {
+    // user-authored lists (STAR stories, real interview log, followed jobs): union by id, the newer updatedAt wins
+    ['stories', 'interviewLog', 'jobs'].forEach(k => {
       const by = new Map();
       [].concat(b[k] || [], a[k] || []).forEach(x => {
         if (!x || !x.id) return;

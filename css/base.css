@@ -271,20 +271,7 @@ body::after {   /* the trail: dots climbing from the bottom-left to the summit *
 
 /* ---------- visual refresh (2026-11-04): layered on top, tokens only ---------- */
 body { background: var(--bg); min-height: 100vh; }
-/* fixed decorative background: soft colour mesh + dot grid fading out downwards (behind all content) */
-body::before, body::after { content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none; }
-body::before {
-  background:
-    radial-gradient(900px 520px at 8% -8%, var(--mesh-a), transparent 62%),
-    radial-gradient(760px 480px at 96% 2%, var(--mesh-b), transparent 60%),
-    radial-gradient(900px 600px at 70% 108%, var(--mesh-c), transparent 62%);
-}
-body::after {
-  background-image: radial-gradient(var(--grid-dot) 1px, transparent 1.4px);
-  background-size: 22px 22px;
-  -webkit-mask-image: linear-gradient(to bottom, #000 0, rgba(0, 0, 0, .55) 380px, transparent 820px);
-  mask-image: linear-gradient(to bottom, #000 0, rgba(0, 0, 0, .55) 380px, transparent 820px);
-}
+/* page backdrop: the mountain + dotted trail above (body::before / ::after) is kept; the 11-04 colour mesh was dropped */
 .topbar { background: color-mix(in srgb, var(--bg) 72%, transparent); backdrop-filter: blur(14px) saturate(1.4); -webkit-backdrop-filter: blur(14px) saturate(1.4); }
 .card { background: color-mix(in srgb, var(--surface) 92%, transparent); }
 h1, h2, h3 { letter-spacing: -.015em; font-weight: 700; }

@@ -130,7 +130,7 @@
 
   add({
     vi: {
-      'nav.main': 'Điều hướng chính', 'nav.dashboard': 'Tổng quan', 'nav.roadmap': 'Lộ trình', 'nav.news': '📰 Tin tức mỗi sáng',
+      'nav.main': 'Điều hướng chính', 'nav.dashboard': 'Tổng quan', 'nav.roadmap': 'Lộ trình', 'nav.news': '📰 Tin tức mỗi sáng', 'nav.jobs': '💼 Việc làm',
       'nav.study': 'Ôn tập', 'nav.path': '🗺️ Lộ trình học', 'nav.learn': '📖 Bài học', 'nav.bank': '📚 Câu hỏi',
       'nav.flash': '🃏 Flashcard', 'nav.quiz': '✅ Trắc nghiệm', 'nav.exam': '📝 Thi thử', 'nav.aws': '☁️ AWS Pro (SAP + DOP)', 'nav.practice': 'Luyện tập',
       'nav.algo': '🧠 Thuật toán', 'nav.labs': '🔧 Debug lab', 'nav.sd': '🏗️ Luyện System Design', 'nav.projects': '🛠️ Pet project', 'nav.sdlc': '🔄 Mô phỏng SDLC',
@@ -143,7 +143,7 @@
       'footer.terms': 'Điều khoản', 'footer.about': 'Giới thiệu',
     },
     en: {
-      'nav.main': 'Main navigation', 'nav.dashboard': 'Dashboard', 'nav.roadmap': 'Roadmap', 'nav.news': '📰 Morning news',
+      'nav.main': 'Main navigation', 'nav.dashboard': 'Dashboard', 'nav.roadmap': 'Roadmap', 'nav.news': '📰 Morning news', 'nav.jobs': '💼 Jobs',
       'nav.study': 'Study', 'nav.path': '🗺️ Learning path', 'nav.learn': '📖 Lessons', 'nav.bank': '📚 Questions',
       'nav.flash': '🃏 Flashcards', 'nav.quiz': '✅ Quiz', 'nav.exam': '📝 Mock exams', 'nav.aws': '☁️ AWS Pro (SAP + DOP)', 'nav.practice': 'Practice',
       'nav.algo': '🧠 Algorithms', 'nav.labs': '🔧 Debug lab', 'nav.sd': '🏗️ System design practice', 'nav.projects': '🛠️ Pet projects', 'nav.sdlc': '🔄 SDLC simulation',

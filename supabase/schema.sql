@@ -151,3 +151,20 @@ drop policy if exists "news_digest: public read" on public.news_digest;
 create policy "news_digest: public read" on public.news_digest
   for select using (true);
 -- no insert/update/delete policy for anon/authenticated: only the secret (service role) key writes
+
+-- ---------- job_digest: daily curated job postings ("Việc làm hôm nay", #/jobs), same shape as news_digest;
+-- written with scripts/publish-digest.js (files under jobs/); see docs/JOBS-DIGEST.md ----------
+create table if not exists public.job_digest (
+  date          date primary key,
+  items         jsonb not null check (jsonb_typeof(items) = 'array'),
+  intro         text,
+  published_at  timestamptz not null default now(),
+  editor        text
+);
+
+alter table public.job_digest enable row level security;
+
+drop policy if exists "job_digest: public read" on public.job_digest;
+create policy "job_digest: public read" on public.job_digest
+  for select using (true);
+-- no insert/update/delete policy for anon/authenticated: only the secret (service role) key writes

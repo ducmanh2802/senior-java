@@ -16,6 +16,7 @@
     theme: null,
     stories: [],
     interviewLog: [],
+    jobs: [],            // #/jobs: job postings the user follows (id, updatedAt, deleted: synced like stories)
     aiFlags: [],
   });
   const DAY = 86400000;
@@ -35,6 +36,7 @@
       if (!Array.isArray(d.aiFlags)) d.aiFlags = [];
       if (!Array.isArray(d.stories)) d.stories = [];
       if (!Array.isArray(d.interviewLog)) d.interviewLog = [];
+      if (!Array.isArray(d.jobs)) d.jobs = [];
       return d;
     } catch (e) {
       return DEFAULT_DATA();
