@@ -3390,6 +3390,265 @@ Virtual thread bị pin (không thể unmount khỏi carrier thread) khi vào sy
 - **tạo object**: không pin.
 
 > Senior tip: dùng ReentrantLock thay synchronized trong code chạy trên virtual thread để tránh pinning.`
+},
+{
+  id: 'qz-collections-028', topic: 'collections',
+  q: `HashMap resize khi nào và cơ chế treeify hoạt động thế nào?`,
+  options: ['Resize khi size > capacity*loadFactor; bin thành linked list khi collision', 'Resize khi size > capacity; treeify khi linked list > 8', 'Treeify khi bin size > 6 và untreeify khi <= 6', 'Resize luôn nhân đôi capacity và copy từng node'],
+  answer: 2,
+  explain: `**Tóm tắt:** HashMap resize khi size vượt threshold (capacity*loadFactor); bin chuyển từ linked list sang red-black tree khi độ dài >= 8 (và capacity >= 64), và ngược lại khi <= 6.
+
+### Vì sao đúng
+- Threshold = capacity * loadFactor (mặc định 0.75).
+- Khi một bin có >= TREEIFY_THRESHOLD (8) node và capacity >= MIN_TREEIFY_CAPACITY (64), bin trở thành tree (O(log n) thay vì O(n)).
+- UNTREEIFY_THRESHOLD = 6: khi resize làm bin nhỏ lại, tree chuyển về linked list.
+
+### Vì sao các phương án còn lại sai
+- **Resize khi size > capacity**: sai, dùng threshold.
+- **Treeify khi bin > 8**: ngưỡng là >= 8.
+- **Resize luôn nhân đôi**: đúng phần capacity, nhưng copy node là chi tiết; focus vào threshold.
+
+> Senior tip: collision attack (HashDoS) bị JDK 8+ giảm thiểu bằng treeify; nhưng nếu hashCode kém, vẫn O(log n) per op.`
+},
+{
+  id: 'qz-concurrency-029', topic: 'concurrency', multi: true,
+  q: `JMM happens-before: những cặp nào thiết lập happens-before? (Chọn 2)`,
+  options: ['Thread.start() trước run() của thread con', 'volatile write trước volatile read cùng biến', 'synchronized unlock trước lock cùng monitor', 'final field write trong constructor trước publication'],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** happens-before là quan hệ thứ tự bộ nhớ trong JMM đảm bảo visibility.
+
+### Vì sao đúng
+- Thread.start() happens-before mọi action trong thread con.
+- volatile write happens-before volatile read cùng biến (release/acquire semantics).
+
+### Vì sao các phương án còn lại sai
+- **unlock trước lock**: đúng là unlock happens-before lock, nhưng thứ tự trong option ngược (lock trước unlock là trong cùng thread, không cần HB).
+- **final field**: publication-safe cho final field đúng, nhưng option diễn đạt mơ hồ; không phải cặp HB trực tiếp như 2 cái trên.
+
+> Senior tip: thiếu happens-before → stale read; dùng volatile/synchronized/Atomic/CompletableFuture.`
+},
+{
+  id: 'qz-concurrency-030', topic: 'concurrency',
+  q: `volatile vs synchronized: khác biệt chính?`,
+  options: ['volatile chỉ đảm bảo visibility, không atomic compound; synchronized đảm bảo cả visibility và mutual exclusion', 'volatile nhanh hơn synchronized luôn', 'synchronized không đảm bảo visibility', 'volatile dùng cho object, synchronized cho primitive'],
+  answer: 0,
+  explain: `**Tóm tắt:** volatile = visibility + ordering cho single read/write; synchronized = mutual exclusion + visibility.
+
+### Vì sao đúng
+- volatile: write flushing to main memory, read from main memory; không atomic cho i++.
+- synchronized: lock monitor, mutual exclusion, happens-before.
+
+### Vì sao các phương án còn lại sai
+- **volatile nhanh hơn luôn**: không luôn; contention cao thì khác.
+- **synchronized không visibility**: sai, unlock happens-before lock.
+- **volatile cho object**: volatile áp dụng cho field (reference), không phải object.
+
+> Senior tip: dùng Atomic* cho counter; volatile cho flag stop.`
+},
+{
+  id: 'qz-concurrency-031', topic: 'concurrency',
+  q: `AQS (AbstractQueuedSynchronizer) dùng cơ chế gì?`,
+  options: ['CAS trên state + FIFO queue các thread chờ', 'synchronized monitor', 'volatile boolean', 'CountDownLatch'],
+  answer: 0,
+  explain: `**Tóm tắt:** AQS là nền tảng cho ReentrantLock, Semaphore, CountDownLatch: state (int) + CLH queue.
+
+### Vì sao đúng
+- State được cập nhật bằng CAS; thread chờ vào FIFO queue (CLH).
+- tryAcquire/tryRelease do subclass implement.
+
+### Vì sao các phương án còn lại sai
+- **synchronized monitor**: AQS không dùng monitor.
+- **volatile boolean**: state là int, không chỉ boolean.
+- **CountDownLatch**: là một ứng dụng của AQS, không phải cơ chế.
+
+> Senior tip: đọc source ReentrantLock.lock() để hiểu AQS.`
+},
+{
+  id: 'qz-concurrency-032', topic: 'concurrency',
+  q: `Virtual thread pinning xảy ra khi nào?`,
+  options: ['Khi vào synchronized block hoặc native method', 'Khi gọi Thread.sleep', 'Khi I/O blocking', 'Khi tạo object'],
+  answer: 0,
+  explain: `**Tóm tắt:** virtual thread bị pin khi vào synchronized hoặc native method; I/O blocking và sleep unmount bình thường.
+
+### Vì sao đúng
+- Pinning = không unmount khỏi carrier thread.
+
+### Vì sao các phương án còn lại sai
+- **Thread.sleep**: unmount.
+- **I/O blocking**: unmount.
+- **tạo object**: không pin.
+
+> Senior tip: dùng ReentrantLock thay synchronized trong code chạy virtual thread.`
+},
+{
+  id: 'qz-jvm-028', topic: 'jvm',
+  q: `Safepoint là gì?`,
+  options: ['Điểm mà JVM có thể tạm dừng thread để GC/JIT deopt', 'Điểm breakpoint', 'Điểm method entry', 'Điểm class init'],
+  answer: 0,
+  explain: `**Tóm tắt:** safepoint là thời điểm thread ở trạng thái an toàn để JVM thực hiện GC, deoptimization, biased lock revocation.
+
+### Vì sao đúng
+- Thread phải đến safepoint (method exit, loop back-edge) để pause.
+
+### Vì sao các phương án còn lại sai
+- **breakpoint**: debug concept.
+- **method entry**: không phải safepoint bắt buộc.
+- **class init**: không liên quan.
+
+> Senior tip: long-running loop không có safepoint (counted loop) có thể delay GC; dùng -XX:+UseCountedLoopSafepoints.`
+},
+{
+  id: 'qz-jvm-029', topic: 'jvm',
+  q: `JIT deoptimization xảy ra khi nào?`,
+  options: ['Khi giả định tối ưu (monomorphic call site) bị vi phạm', 'Khi method quá dài', 'Khi GC chạy', 'Khi thread yield'],
+  answer: 0,
+  explain: `**Tóm tắt:** JIT deopt khi giả định tối ưu bị vi phạm (ví dụ call site đa hình).
+
+### Vì sao đúng
+- JIT speculative optimize; deopt về interpreter khi assumption sai.
+
+### Vì sao các phương án còn lại sai
+- **method quá dài**: không deopt.
+- **GC**: không.
+- **thread yield**: không.
+
+> Senior tip: deopt thường thấy trong log -XX:+PrintCompilation.`
+},
+{
+  id: 'qz-jvm-030', topic: 'jvm',
+  q: `G1 vs ZGC: khác biệt chính?`,
+  options: ['G1 region-based generational; ZGC concurrent low-pause, colored pointers', 'ZGC generational only', 'G1 không có pause', 'ZGC throughput cao hơn G1'],
+  answer: 0,
+  explain: `**Tóm tắt:** G1 region-based generational GC; ZGC concurrent, pause < 1ms, dùng colored pointers.
+
+### Vì sao đúng
+- G1: region, generational, pause mục tiêu.
+- ZGC: concurrent marking/compaction, colored pointers, sub-ms pause.
+
+### Vì sao các phương án còn lại sai
+- **ZGC generational only**: ZGC có generational mode mới.
+- **G1 không pause**: có pause.
+- **ZGC throughput cao hơn**: thường throughput thấp hơn G1.
+
+> Senior tip: chọn theo latency requirement; đo với GC log.`
+},
+{
+  id: 'qz-jvm-031', topic: 'jvm',
+  q: `Escape analysis giúp JVM làm gì?`,
+  options: ['Stack allocation / scalar replacement / lock elision cho object không escape', 'GC nhanh hơn', 'JIT compile nhanh hơn', 'Class loading nhanh hơn'],
+  answer: 0,
+  explain: `**Tóm tắt:** escape analysis cho phép stack allocation, scalar replacement, lock elision khi object không escape method/thread.
+
+### Vì sao đúng
+- Object không escape → không cần heap allocation.
+
+### Vì sao các phương án còn lại sai
+- **GC nhanh hơn**: gián tiếp.
+- **JIT compile nhanh hơn**: không.
+- **class loading**: không.
+
+> Senior tip: -XX:+DoEscapeAnalysis (default on).`
+},
+{
+  id: 'qz-core-029', topic: 'core',
+  q: `Class initialization (static) thứ tự và thread-safety?`,
+  options: ['JVM đảm bảo class init occurs once per classloader, thread-safe via lock', 'Static block chạy mỗi lần new', 'Không thread-safe, cần synchronized', 'Chạy trước main luôn'],
+  answer: 0,
+  explain: `**Tóm tắt:** JVM đảm bảo class initialization xảy ra một lần per classloader, thread-safe (class init lock).
+
+### Vì sao đúng
+- <clinit> chạy một lần; JVM serializes.
+
+### Vì sao các phương án còn lại sai
+- **mỗi lần new**: sai.
+- **không thread-safe**: sai.
+- **trước main luôn**: không, lazy.
+
+> Senior tip: static init deadlock nếu circular class init.`
+},
+{
+  id: 'qz-jvm-032', topic: 'jvm',
+  q: `String deduplication (G1) làm gì?`,
+  options: ['G1 dedup các String có cùng char[] để tiết kiệm heap', 'Intern mọi String', 'Xoá String không dùng', 'Nén char[] thành byte[]'],
+  answer: 0,
+  explain: `**Tóm tắt:** G1 String deduplication: các String có cùng nội dung chia sẻ cùng char[]/byte[] backing array.
+
+### Vì sao đúng
+- -XX:+UseStringDeduplication (G1).
+
+### Vì sao các phương án còn lại sai
+- **intern mọi String**: không, chỉ dedup backing array.
+- **xoá không dùng**: GC làm.
+- **nén char[]**: Compact Strings (Java 9) làm, không phải dedup.
+
+> Senior tip: hữu ích cho heap nhiều String trùng.`
+},
+{
+  id: 'qz-concurrency-033', topic: 'concurrency', multi: true,
+  q: `Chọn 2 cách đúng để publication an toàn của object immutable? (Chọn 2)`,
+  options: ['Final field + constructor không leak this', 'Volatile reference', 'Static field init', 'Synchronized getter'],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** publication safety: final fields được JMM đảm bảo visible sau construction; volatile reference cũng.
+
+### Vì sao đúng
+- Final fields: freeze action happens-before publication (nếu không leak this).
+- Volatile reference: release/acquire.
+
+### Vì sao các phương án còn lại sai
+- **Static field init**: class init lock đảm bảo, nhưng không phải publication của instance.
+- **Synchronized getter**: không đủ nếu constructor leak this.
+
+> Senior tip: không leak this trong constructor (đăng ký listener, start thread).`
+},
+{
+  id: 'qz-collections-029', topic: 'collections',
+  q: `ConcurrentHashMap size() trả về gì?`,
+  options: ['Ước lượng (estimate), không chính xác tuyệt đối', 'Chính xác', 'Luôn 0', 'Ném exception'],
+  answer: 0,
+  explain: `**Tóm tắt:** ConcurrentHashMap.size() trả về ước lượng vì concurrent updates; mappingCount() trả về long.
+
+### Vì sao đúng
+- size() là estimate; mappingCount() long.
+
+### Vì sao các phương án còn lại sai
+- **chính xác**: không trong concurrent.
+- **0**: sai.
+- **exception**: không.
+
+> Senior tip: dùng mappingCount() cho số lớn.`
+},
+{
+  id: 'qz-jvm-033', topic: 'jvm',
+  q: `Compact Strings (Java 9) làm gì?`,
+  options: ['Lưu String Latin-1 trong byte[] thay vì char[] để tiết kiệm bộ nhớ', 'Nén gzip', 'Intern String', 'Dedup'],
+  answer: 0,
+  explain: `**Tóm tắt:** Compact Strings: nếu nội dung là Latin-1, lưu trong byte[] (1 byte/char) thay vì char[] (2 byte/char).
+
+### Vì sao đúng
+- Tiết kiệm ~50% heap cho text ASCII/Latin-1.
+
+### Vì sao các phương án còn lại sai
+- **gzip**: không.
+- **intern**: không.
+- **dedup**: tính năng khác.
+
+> Senior tip: -XX:-CompactStrings để tắt nếu cần.`
+},
+{
+  id: 'qz-core-030', topic: 'core',
+  q: `String.intern() pool nằm ở đâu?`,
+  options: ['Heap (từ Java 7), trước đó PermGen', 'Stack', 'Metaspace', 'Native memory'],
+  answer: 0,
+  explain: `**Tóm tắt:** String pool ở heap từ Java 7; trước Java 7 ở PermGen.
+
+### Vì sao đúng
+- Java 7 move intern pool to heap.
+
+### Vì sao các phương án còn lại sai
+- **Stack**: không.
+- **Metaspace**: class metadata.
+- **Native memory**: không.
+
+> Senior tip: intern() có thể gây OOM nếu lạm dụng; dùng cho constant.`
 }
 );
-
