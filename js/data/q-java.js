@@ -96,6 +96,16 @@ System.out.println(a == c);          // true
 - Nối chuỗi trong {{toString()}} của entity trong log nóng cũng tạo rác; cân nhắc log theo tham số.
 - {{intern()}} trên dữ liệu không lặp lại (ví dụ mỗi request một UUID) làm pool phình to; chỉ dùng khi biết chắc tập giá trị nhỏ và lặp nhiều.
 
+### Bên trong String pool: một hash table cố định số bucket
+String pool là một **hash table nội bộ của JVM** (StringTable), số bucket cố định lúc khởi động ({{-XX:StringTableSize}}, mặc định 65.536 từ Java 11). Mỗi lần {{intern()}} phải tính hash và duyệt chuỗi trong bucket. Đưa hàng triệu chuỗi khác nhau vào pool → mỗi bucket dài ra, {{intern()}} chậm dần, và GC phải quét bảng này. Đó là lý do {{intern()}} chỉ hợp với tập giá trị **nhỏ và lặp lại nhiều** (mã tiền tệ, mã quốc gia, tên trạng thái).
+**String Deduplication** của G1 là cách khác: GC tự phát hiện các String có mảng {{byte[]}} giống nhau và cho chúng **dùng chung mảng** (object String vẫn riêng), không cần sửa code, chạy nền.
+
+### Ví dụ đời thực
+Service tổng hợp giao dịch nạp 8 triệu bản ghi vào cache, mỗi bản có các trường {{currency}}, {{status}}, {{channel}} đọc từ JSON → mỗi lần parse tạo String mới dù chỉ có vài chục giá trị khác nhau. Heap dump (Eclipse MAT) cho thấy khoảng 1,4GB là các mảng byte trùng nội dung. Team map ba trường này sang **enum** khi parse (cách tốt nhất), còn trường {{merchantCategory}} (khoảng 600 giá trị) thì {{intern()}}. Heap sau GC giảm từ 4,1GB xuống 2,5GB, Full GC hằng giờ biến mất. Một team khác thử {{intern()}} cả {{transactionId}} (duy nhất mỗi bản ghi) → StringTable phình, thời gian parse tăng 30% — phải gỡ ra.
+
+### Trả lời mẫu khi phỏng vấn
+"String bất biến vì nhiều lý do. Nó được chia sẻ rộng rãi nên bất biến giúp thread-safe mà không cần khoá. hashCode được cache, nên String làm key HashMap an toàn. Về bảo mật, đường dẫn hay câu SQL đã kiểm tra rồi không thể bị đổi nội dung sau đó. Và nhờ bất biến mới có thể chia sẻ qua string pool. Class là final để không ai kế thừa phá tính bất biến. Từ Java 9, String lưu bằng mảng byte kèm coder, chuỗi Latin-1 chỉ tốn một byte mỗi ký tự. Literal được đưa vào pool, một hash table của JVM nằm trên heap; intern trả về instance chuẩn trong pool. Tôi chỉ dùng intern cho tập giá trị nhỏ lặp nhiều; còn khi heap có nhiều chuỗi trùng, tôi ưu tiên đổi sang enum hoặc bật String Deduplication của G1 thay vì intern tràn lan."
+
 > Senior tip: với service nhiều chuỗi trùng, bật {{-XX:+UseStringDeduplication}} (G1) và theo dõi {{-XX:+PrintStringTableStatistics}}; đừng gọi {{intern()}} tràn lan vì nó chạm một bảng có lock nội bộ.`,
   follow: [
     'Vì sao cộng chuỗi bằng {{+}} trong vòng lặp lại chậm hơn {{StringBuilder}}?',
@@ -142,6 +152,18 @@ System.out.println(x);                 // goc them
 ### Liên hệ với immutability
 - Vì reference được copy chứ không phải object, việc "truyền object vào method" không tạo bản sao. Đây là lý do các class như {{String}}, {{LocalDate}}, record nên bất biến: chia sẻ an toàn mà không cần copy.
 - Ngược lại, chia sẻ {{Date}}, {{ArrayList}} giữa các tầng dễ sinh bug "dữ liệu tự đổi" rất khó truy.
+
+### Bên trong: JVM truyền tham số thế nào
+Khi gọi method, JVM tạo **frame mới** trên stack của thread, và các tham số được **sao chép** vào mảng biến local của frame đó (bytecode {{aload}}/{{iload}} đọc từ đây). Với object, thứ được sao chép là **reference** — một con trỏ tới object trên heap (với compressed oops là 4 byte). Hai frame có hai biến khác nhau giữ cùng một con trỏ. Vì vậy:
+- {{param.setX()}} đi theo con trỏ tới object trên heap → caller thấy.
+- {{param = new X()}} chỉ ghi đè ô biến local trong frame mới → frame của caller không bị chạm tới.
+Đây là lý do Java không thể có {{swap(a, b)}} như C++ (truyền tham chiếu tới chính biến), và vì sao lambda chỉ được bắt biến **effectively final**: lambda nhận bản sao giá trị, nên nếu biến gốc đổi về sau, hai bên sẽ lệch nhau.
+
+### Ví dụ đời thực
+Một service tính khuyến mãi có hàm {{applyRules(List<Item> items)}} — một dev "lọc" bằng {{items.removeIf(...)}} ngay trong hàm vì nghĩ đang làm việc trên bản sao. Danh sách gốc của giỏ hàng (do controller giữ để tính tổng tiền sau đó) bị mất các món không được khuyến mãi → hoá đơn thiếu tiền ở khoảng 0,7% đơn trong một ngày trước khi đối soát phát hiện. Sửa: hàm nhận dữ liệu và trả về **danh sách mới** ({{items.stream().filter(...).toList()}}), các DTO giỏ hàng chuyển sang record với {{List.copyOf}} trong constructor. Code review thêm quy tắc: không sửa collection nhận từ tham số trừ khi tên hàm nói rõ điều đó.
+
+### Trả lời mẫu khi phỏng vấn
+"Java luôn truyền theo giá trị. Khi gọi method, JVM tạo một frame mới và sao chép giá trị tham số vào biến local của frame đó. Với kiểu nguyên thuỷ thì sao chép con số. Với object thì giá trị được sao chép là reference, tức con trỏ tới object trên heap. Nên nếu method gọi phương thức làm thay đổi object, như add vào list, thì caller thấy vì cả hai trỏ cùng một object. Nhưng nếu method gán tham số sang object khác, chỉ biến local thay đổi, biến của caller vẫn trỏ object cũ. Hệ quả thực tế là phải cẩn thận khi nhận collection hay object mutable: tôi không sửa collection của caller, và ở biên của class tôi dùng List.copyOf hoặc record bất biến để tránh lỗi dữ liệu tự đổi."
 
 > Senior tip: khi review code, thấy method public nhận {{List}} rồi lưu thẳng vào field là dấu hiệu cần {{List.copyOf}}; còn thấy {{param = ...}} trong method thì gần như chắc chắn là bug do hiểu sai pass-by-value.`,
   follow: [
@@ -194,6 +216,18 @@ public class NotFoundException extends BusinessException {
 - {{finally}} dùng để cleanup; với tài nguyên implements {{AutoCloseable}} hãy dùng try-with-resources để exception khi close được gắn vào {{getSuppressed()}} thay vì che lỗi chính.
 - Trong async/CompletableFuture, lỗi nằm trong future; phải {{exceptionally}}/{{handle}} hoặc log ở {{whenComplete}}, nếu không sẽ biến mất im lặng.
 
+### Bên trong: chi phí của exception
+Tạo exception tốn kém chủ yếu ở bước **{{fillInStackTrace()}}** — JVM duyệt toàn bộ stack (thường 100–200 frame trong ứng dụng Spring) để ghi lại vết. Ném và bắt thì rẻ hơn nhiều. Vì vậy:
+- Dùng exception cho luồng **bất thường**, không dùng làm điều khiển luồng chính (ví dụ ném {{NotFoundException}} cho mỗi lần cache miss trong vòng lặp nóng).
+- Với lỗi nghiệp vụ xảy ra với tần suất rất cao và không cần stack trace, có thể dùng constructor {{RuntimeException(msg, cause, enableSuppression, writableStackTrace=false)}} — nhưng chỉ khi đã đo và thật sự cần.
+- Spring {{@Transactional}} mặc định **rollback với unchecked**, **không rollback với checked** — một lý do thực tế để lỗi nghiệp vụ là unchecked, hoặc khai báo {{rollbackFor}} rõ ràng.
+
+### Ví dụ đời thực
+Một service đặt lịch trả về lỗi 500 "Internal Server Error" cho mọi trường hợp — kể cả "slot đã có người đặt" — vì {{SlotTakenException extends Exception}} (checked) bị bọc lại thành {{RuntimeException(e.getMessage())}} ở 4 tầng. Hậu quả: app mobile không phân biệt được lỗi để hiển thị, log mất stack gốc, và transaction không rollback ở một nhánh (checked exception) nên để lại bản ghi "giữ chỗ" mồ côi khoảng 300 bản/ngày. Thiết kế lại: {{BusinessException}} unchecked có {{code}}, một {{@RestControllerAdvice}} map sang 409/422 với ProblemDetail, log một lần ở advice kèm traceId. Lỗi 500 giảm 85% (phần còn lại là lỗi thật), bản ghi mồ côi về 0.
+
+### Trả lời mẫu khi phỏng vấn
+"Trong service Spring tôi dùng một base exception unchecked, ví dụ BusinessException mang một error code ổn định, cho lỗi nghiệp vụ như không tìm thấy hay xung đột. Lý do chọn unchecked là signature gọn, dùng được trong lambda, và Spring mặc định rollback transaction với unchecked. Lỗi hạ tầng như SQLException thì tôi wrap khi thêm được ngữ cảnh, luôn giữ cause. Toàn bộ việc map sang HTTP nằm ở một @RestControllerAdvice duy nhất, trả ProblemDetail với code, không lộ stack trace hay tên bảng. Để tránh nuốt lỗi, tôi cấm catch rỗng, chỉ log một lần ở biên kèm traceId thay vì log rồi ném lại ở mọi tầng, và với CompletableFuture thì luôn xử lý lỗi bằng handle hoặc exceptionally."
+
 > Senior tip: đặt {{errorCode}} ổn định trong enum/constant và đừng đổi nghĩa của code cũ; client/monitoring thường parse code này. Với lỗi 5xx, log kèm correlation id và đừng log toàn bộ payload nếu có dữ liệu cá nhân.`,
   follow: [
     'Vì sao lỗi {{InterruptedException}} phải gọi {{Thread.currentThread().interrupt()}} khi bắt?',
@@ -242,6 +276,16 @@ try (var in = Files.newInputStream(path);
     in.transferTo(out);                  // close tự động, kể cả khi lỗi
 }
 ~~~
+
+### Bên trong: vì sao finalize làm chậm GC
+Object có {{finalize()}} không tầm thường được JVM đăng ký ngay lúc **tạo** (một {{Finalizer}} reference). Khi object không còn ai tham chiếu, GC **không thu hồi ngay** mà đưa nó vào hàng đợi; một **thread finalizer duy nhất** gọi {{finalize()}} lần lượt; chỉ sau lần GC **tiếp theo** bộ nhớ mới được giải phóng. Hệ quả: object sống qua ít nhất hai chu kỳ GC, thường bị đẩy lên Old Gen; nếu {{finalize()}} chậm (đóng socket, ghi log) thì hàng đợi dài ra và heap đầy dần dù "không còn ai dùng".
+{{Cleaner}} dùng **PhantomReference**: object không thể bị "hồi sinh", action chạy trên thread của Cleaner và **không được** tham chiếu tới chính object (nếu không object không bao giờ trở nên unreachable).
+
+### Ví dụ đời thực
+Một service xử lý ảnh dùng thư viện cũ bọc bộ nhớ native, giải phóng trong {{finalize()}}. Dưới tải cao, RSS của container tăng đều tới khi bị OOMKilled sau khoảng 6 giờ, trong khi heap Java chỉ 40%. Heap dump cho thấy hơn 200.000 object nằm trong hàng đợi {{java.lang.ref.Finalizer}} — thread finalizer không theo kịp. Sửa: bọc tài nguyên bằng {{AutoCloseable}}, dùng try-with-resources ở mọi chỗ gọi, giữ {{Cleaner}} làm lưới an toàn và ghi cảnh báo nếu Cleaner phải chạy (nghĩa là có chỗ quên close). Bộ nhớ native ổn định, không còn OOMKilled; log cảnh báo chỉ ra thêm 2 chỗ quên close.
+
+### Trả lời mẫu khi phỏng vấn
+"final là modifier: biến chỉ gán một lần, method không override được, class không kế thừa được; field final còn có đảm bảo của memory model là thread khác thấy giá trị đúng sau constructor. finally là block luôn chạy khi thoát try, trừ khi JVM chết, và tuyệt đối không return trong finally vì nó che exception. finalize là hook của GC, đã deprecated for removal từ Java 18. Nó tệ vì không đảm bảo thời điểm chạy, chạy trên một thread finalizer duy nhất nên dễ nghẽn, object phải sống qua ít nhất hai chu kỳ GC, và còn có thể bị hồi sinh. Thay thế chuẩn là AutoCloseable với try-with-resources để đóng tài nguyên một cách xác định; Cleaner chỉ dùng làm lưới an toàn cho tài nguyên native, và tôi thường cho nó log cảnh báo để phát hiện chỗ quên close."
 
 > Senior tip: đừng bao giờ đặt logic nghiệp vụ quan trọng trong {{finalize}}. Nếu thấy {{finalize}} trong codebase cũ, hãy thay bằng {{AutoCloseable}} + try-with-resources trước, chỉ giữ {{Cleaner}} cho native resource.`,
   follow: [
@@ -298,6 +342,16 @@ void addInts(List<? super Integer> dst) {  // consumer: ghi được Integer
 - Không thể tạo mảng generic: {{new List<String>[10]}} sai; dùng {{List<List<String>>}} hoặc {{Array.newInstance}} + cast có kiểm soát.
 - {{List<Object>}} không nhận {{List<String>}}; {{List<?>}} thì nhận nhưng không add được.
 
+### Bên trong: compiler làm gì với generic
+Với {{List<String> list; String s = list.get(0);}}, bytecode thực chất là {{(String) list.get(0)}} — method {{get}} trả về {{Object}}, compiler chèn **checkcast**. Với class {{class Money implements Comparable<Money>}}, compiler sinh thêm **bridge method** {{compareTo(Object)}} gọi sang {{compareTo(Money)}} để đa hình vẫn đúng sau khi xoá kiểu. Thông tin generic **còn lại trong metadata** của khai báo (field, method, superclass) — đó là cách Jackson (một anonymous subclass của {{TypeReference<List<Order>>}}), Spring ({{ResolvableType}}) và Gson đọc được kiểu phần tử: anonymous subclass "chụp" lại kiểu generic vào superclass của nó.
+Vì sao Java chọn erasure: để code generic (Java 5) **chạy được cùng thư viện và JVM cũ** mà không đổi bytecode — đổi lại mất thông tin kiểu lúc runtime.
+
+### Ví dụ đời thực
+Một client HTTP nội bộ có hàm {{<T> T get(String url, Class<T> type)}}. Team gọi {{get(url, List.class)}} cho API trả danh sách đơn hàng; Jackson không biết kiểu phần tử nên tạo {{List<LinkedHashMap>}}, code chạy được đến khi ai đó gọi {{order.getAmount()}} → {{ClassCastException}} ở production, xa chỗ gây lỗi. Sửa: thêm overload nhận {{ParameterizedTypeReference<T>}} (Spring) và cấm raw type bằng cảnh báo compiler {{-Xlint:unchecked -Werror}} trong module đó. Build tìm ra thêm 11 chỗ dùng raw type cần sửa.
+
+### Trả lời mẫu khi phỏng vấn
+"Generic trong Java chỉ được kiểm tra lúc biên dịch rồi bị xoá khỏi bytecode: List of String và List of Integer đều là List khi chạy, compiler tự chèn cast khi đọc và sinh bridge method để giữ đa hình. Java chọn erasure để tương thích ngược với JVM và thư viện cũ. Hệ quả là không new T, không instanceof List of String, không tạo mảng generic, và dễ heap pollution qua raw type. Thông tin generic vẫn còn trong metadata của khai báo, nên Jackson dùng TypeReference để lấy kiểu phần tử. Generic là invariant, List of Integer không phải List of Number, nên cần wildcard theo quy tắc PECS: nguồn chỉ để đọc thì dùng extends, đích chỉ để ghi thì dùng super, như Collections.copy. Khi thiết kế API, tôi dùng wildcard ở tham số đầu vào để linh hoạt, còn kiểu trả về thì cụ thể."
+
 > Senior tip: khi thiết kế API thư viện, dùng wildcard ở **input** để người dùng truyền được nhiều loại hơn; đừng lạm dụng wildcard ở return vì làm caller phải xử lý {{?}} vô ích. Và nhớ rằng chi phí generic là 0 runtime — chỉ có bridge method và cast nhỏ.`,
   follow: [
     'Vì sao không thể {{new T[]}} hay {{new List<String>[10]}}?',
@@ -353,6 +407,15 @@ public final class Period {
 - Dùng {{List.of(...)}} với phần tử null sẽ ném NPE; kiểm tra dữ liệu đầu vào trước.
 - Class "gần bất biến" có field mutable lộ ra qua getter là nguyên nhân phổ biến của race condition khó tái hiện.
 
+### Bên trong: vì sao field final quan trọng với nhiều thread
+Java Memory Model có quy tắc đặc biệt cho field {{final}}: sau khi constructor kết thúc, mọi thread nhìn thấy reference tới object đều **thấy đúng giá trị** của các field final (và những gì chúng trỏ tới tại thời điểm đó), kể cả khi object được chia sẻ qua một biến không {{volatile}}. Không có {{final}}, JIT và CPU được phép sắp xếp lại lệnh, và thread khác có thể thấy object "nửa khởi tạo" (field còn null/0). Đó là lý do bất biến thật sự cần **cả** {{final}} lẫn không để {{this}} thoát ra trong constructor — nếu {{this}} bị publish trước khi constructor xong, đảm bảo trên mất hiệu lực.
+
+### Ví dụ đời thực
+Một service cấu hình phí giữ object {{FeeSchedule}} trong cache dùng chung; class có getter {{getTiers()}} trả thẳng {{ArrayList}} nội bộ. Một job báo cáo gọi {{getTiers().sort(...)}} để in theo thứ tự khác → thứ tự bậc phí trong cache bị đổi, API tính phí chọn sai bậc cho khoảng 2% giao dịch trong 40 phút cho tới khi cache được làm mới. Sửa: {{FeeSchedule}} thành record với compact constructor gọi {{List.copyOf}}, sắp xếp sẵn trong constructor; job báo cáo tự tạo bản sao khi cần thứ tự khác. Thêm test: gọi getter rồi thử {{add}} phải ném {{UnsupportedOperationException}}.
+
+### Trả lời mẫu khi phỏng vấn
+"Để thiết kế immutable class, tôi khai báo class final hoặc constructor private kèm factory, mọi field private final, không có setter. Trong constructor, tôi validate rồi defensive copy mọi tham số mutable, ví dụ List.copyOf, để caller giữ reference cũng không sửa được. Getter trả về giá trị đã bất biến, hoặc bản sao nếu field buộc phải mutable như Date. Tôi tránh để this thoát ra trong constructor, vì field final có đảm bảo của memory model là thread khác luôn thấy giá trị đã khởi tạo, nhưng đảm bảo đó mất nếu object bị publish sớm. Lưu ý unmodifiableList chỉ là view, list gốc đổi thì view đổi theo, còn copyOf là bản sao thật. Với record, tôi vẫn phải tự copy trong compact constructor vì record không tự làm việc đó."
+
 > Senior tip: với DTO/record nhận từ request, hãy copy ngay ở biên (controller/service) để phần còn lại của hệ thống làm việc với dữ liệu bất biến; đừng tin rằng caller không sửa.`,
   follow: [
     '{{Collections.unmodifiableList}} khác {{List.copyOf}} ở điểm nào?',
@@ -405,6 +468,15 @@ public class Service {
 - Khi object con thực sự là một phần vòng đời của outer và cần truy cập trạng thái private của outer, ví dụ {{Iterator}} của collection ({{ArrayList.Itr}} là inner, truy cập {{elementData}} và {{modCount}}).
 - Khi muốn API {{outer.new Inner()}} thể hiện quan hệ chặt. Còn lại, static nested rõ ràng và an toàn hơn.
 
+### Bên trong: compiler sinh ra gì cho inner class
+Với {{class Worker}} không static bên trong {{Service}}, javac sinh class {{Service$Worker}} có field {{final Service this$0}} và constructor ẩn nhận {{Service}} làm tham số đầu tiên; {{new Worker()}} bên trong Service thực chất là {{new Service$Worker(this)}}. Lambda thì khác: lambda **chỉ** bắt {{this}} khi thân lambda dùng tới field/method của instance — lambda không dùng gì của outer không giữ outer. Anonymous class thì **luôn** giữ outer nếu được tạo trong ngữ cảnh instance, kể cả khi không dùng tới (trước Java 18; từ JDK 18 javac bỏ được tham chiếu outer không dùng tới cho một số trường hợp, nhưng không nên dựa vào).
+
+### Ví dụ đời thực
+Một service xuất báo cáo tạo một anonymous {{TimerTask}} để dọn file tạm, đăng ký vào một {{Timer}} static dùng chung, nhưng không bao giờ cancel. Mỗi lần tạo báo cáo, một instance {{ReportJob}} (kèm buffer dữ liệu khoảng 15MB) bị giữ lại qua {{this$0}}. Sau khoảng 2 ngày, heap đầy và Full GC liên tục. Heap dump (MAT, "Path to GC Roots") cho thấy chuỗi {{Timer → TaskQueue → ReportJob$1 → this$0 → ReportJob → byte[]}}. Sửa: dùng {{ScheduledExecutorService}} dùng chung, task là static nested chỉ nhận đường dẫn file, và cancel khi job kết thúc. Heap ổn định ở mức 1,2GB.
+
+### Trả lời mẫu khi phỏng vấn
+"Static nested class không gắn với instance của outer, dùng như class top-level chỉ khác phạm vi tên. Inner class thì mỗi instance giữ ngầm một reference tới outer: compiler sinh field this$0 và constructor nhận outer. Vì vậy nếu inner object, anonymous class hay callback được đưa vào một nơi sống lâu như registry static, timer hay thread pool, thì cả object outer cùng mọi thứ nó giữ không được GC thu hồi. Lambda thì chỉ bắt this khi dùng tới thành viên của instance. Quy tắc của tôi là mặc định static nested, truyền dependency qua constructor, chỉ dùng inner khi thật sự cần trạng thái outer như Iterator của collection. Với listener, luôn unregister khi đóng. Khi nghi leak, tôi xem heap dump bằng MAT, đi theo đường tới GC root để tìm this$0 trỏ ngược."
+
 > Senior tip: trong code review, thấy {{private class X}} không dùng field/method outer là dấu hiệu nên đổi thành {{static}}; điều này cũng giảm 1 reference và giúp serialization gọn hơn.`,
   follow: [
     'Inner class được compiler sinh field gì, và field đó ảnh hưởng serialization thế nào?',
@@ -449,6 +521,15 @@ public class Service {
 - DTO record + Jackson/Protobuf rõ ràng schema, dễ version, an toàn hơn.
 - Với session, lưu JSON hoặc dùng token stateless (JWT) thay vì serialize object.
 - Với snapshot nội bộ, có thể dùng {{Externalizable}} nhưng vẫn cần kiểm soát nguồn.
+
+### Bên trong: vì sao deserialization chạy được code
+{{ObjectInputStream.readObject()}} đọc tên class từ luồng byte, **nạp class đó** từ classpath, tạo instance **không qua constructor**, gán field, rồi gọi các method "ma thuật" nếu class có định nghĩa: {{readObject}}, {{readResolve}}, và gián tiếp {{hashCode}}/{{equals}}/{{compareTo}} khi khôi phục {{HashMap}}, {{TreeMap}}, {{PriorityQueue}}. Kẻ tấn công không cần lỗi trong code của bạn: chỉ cần trên classpath có những class mà chuỗi lời gọi đó, với dữ liệu do họ chọn, dẫn tới {{Method.invoke}} hay {{Runtime.exec}} (**gadget chain** — công cụ như ysoserial có sẵn chuỗi cho nhiều thư viện phổ biến). Kiểm tra dữ liệu sau khi đọc xong là quá muộn.
+
+### Ví dụ đời thực
+Một hệ thống nội bộ lưu session của Spring Session vào Redis bằng serializer mặc định của JDK. Lần nâng cấp thư viện đổi cấu trúc một class trong session → toàn bộ người dùng bị đăng xuất cùng lúc vì {{InvalidClassException}}, khoảng 9.000 phiên mất trong 5 phút. Rà soát cũng phát hiện một endpoint cũ nhận {{application/x-java-serialized-object}} từ hệ thống đối tác — trên classpath có commons-collections bản cũ, đủ để tạo gadget chain. Xử lý: chuyển session sang {{GenericJackson2JsonRedisSerializer}} với danh sách kiểu cho phép, gỡ endpoint, thêm {{jdk.serialFilter}} toàn cục chỉ cho phép các package nội bộ và từ chối mặc định. Lần nâng cấp sau, session không bị mất.
+
+### Trả lời mẫu khi phỏng vấn
+"serialVersionUID là phiên bản của class khi dùng Java serialization; nếu không khai báo, JVM tự tính từ cấu trúc class, nên chỉ thêm một field là dữ liệu cũ không đọc được nữa. Vấn đề lớn hơn là bảo mật: readObject đọc tên class từ dữ liệu, nạp class, tạo object không qua constructor và gọi các method như readObject, hashCode khi dựng lại HashMap. Kẻ tấn công ghép những class sẵn có trên classpath thành gadget chain để chạy lệnh tuỳ ý, và việc validate sau khi đọc là quá muộn. Vì vậy tôi không bao giờ nhận Java serialization từ nguồn không tin cậy; tôi dùng JSON với Jackson, Protobuf hay Avro có schema rõ ràng. Hệ thống cũ bắt buộc dùng thì đặt ObjectInputFilter theo danh sách cho phép, giới hạn độ sâu và kích thước, rồi lên kế hoạch migrate, kể cả session hay cache trong Redis."
 
 > Senior tip: nếu hệ thống cũ còn dùng Java serialization trong Redis/session, hãy coi đó là **nợ bảo mật P1**; đặt filter trước, sau đó migrate sang JSON. Đừng chỉ tăng {{serialVersionUID}} rồi yên tâm — nó không liên quan gì đến an toàn.`,
   follow: [
@@ -497,6 +578,16 @@ public class Service {
 - Startup chậm do scan quá rộng; cân nhắc AOT, CDS, hoặc giới hạn package scan.
 - Với GraalVM native image, reflection cần khai báo cấu hình; thư viện dùng reflection động dễ fail.
 
+### Bên trong: Method.invoke từ Java 18
+Trước Java 18, {{Method.invoke}} ban đầu gọi qua JNI (chậm), sau khoảng 15 lần gọi thì JVM sinh một class bytecode "accessor" để gọi nhanh hơn ("inflation"). Từ Java 18 (JEP 416), core reflection được viết lại trên **{{MethodHandle}}**: nếu {{Method}} được giữ trong field {{static final}}, JIT có thể coi nó là hằng số và inline gần như lời gọi trực tiếp; nếu {{Method}} được tra cứu lại mỗi lần hoặc nằm trong biến thường, chi phí vẫn cao. Đó là lý do quy tắc "cache metadata, giữ trong final field" quan trọng hơn cả việc chọn reflection hay MethodHandle.
+Annotation processor chạy theo **vòng (round)**: mỗi vòng xử lý file nguồn mới sinh ra ở vòng trước, cho tới khi không còn file mới — nhờ vậy MapStruct có thể sinh mapper dùng code do processor khác sinh.
+
+### Ví dụ đời thực
+Một service tự viết "mapper tổng quát" dùng reflection: mỗi lần chuyển entity sang DTO lại gọi {{getDeclaredFields()}} và {{setAccessible(true)}}. Ở 3.000 request/giây, profiler (async-profiler) cho thấy 22% CPU nằm trong reflection và việc cấp phát mảng {{Field[]}} mới mỗi lần gọi (method này trả bản sao). Thay bằng MapStruct (sinh code lúc compile): CPU giảm 18%, p99 giảm từ 140ms xuống 95ms, và lỗi mapping (field đổi tên) chuyển từ lỗi runtime thành **lỗi biên dịch**. Khi nâng lên Java 17, mapper cũ còn gãy vì {{setAccessible}} vào class JDK bị strong encapsulation chặn — thêm một lý do để bỏ.
+
+### Trả lời mẫu khi phỏng vấn
+"Reflection cho phép xem và gọi class lúc runtime, Spring, Hibernate, Jackson đều dùng nó. Chi phí nằm ở việc tra cứu method hay field, kiểm tra quyền truy cập, boxing tham số, và khó cho JIT inline. Từ Java 18 reflection chạy trên MethodHandle, nên nếu Method được cache trong field static final thì JIT tối ưu khá tốt, còn tra cứu lại mỗi lần thì vẫn đắt; getDeclaredFields còn trả về mảng mới mỗi lần gọi. Annotation processing thì chạy lúc biên dịch và sinh code, như MapStruct hay Lombok, nên gần như không tốn chi phí runtime và lỗi lộ ra sớm lúc build. Pitfall tôi hay gặp: reflection trong đường nóng không cache, setAccessible vào nội bộ JDK gãy khi nâng Java 17, và reflection động làm khó native image. Tôi chỉ dùng reflection ở tầng hạ tầng, và đo bằng profiler trước khi tối ưu."
+
 > Senior tip: cache metadata reflection trong {{ConcurrentHashMap}} hoặc dùng {{MethodHandle}}; đo bằng JMH trước khi tối ưu. Và đừng dùng reflection cho logic nghiệp vụ thường ngày — chỉ dùng ở tầng hạ tầng/framework.`,
   follow: [
     'Vì sao {{Method.invoke}} chậm hơn lời gọi trực tiếp, và {{MethodHandle}} cải thiện gì?',
@@ -541,6 +632,15 @@ public class Service {
 ### Khi nào vẫn dùng clone
 - Copy mảng primitive/object nông trong hot path: {{int[] copy = arr.clone()}}.
 - Code cũ/thư viện bắt buộc; khi đó override {{clone()}} public, gọi {{super.clone()}}, rồi deep copy field mutable, và cân nhắc {{CloneNotSupportedException}}.
+
+### Bên trong: Object.clone làm gì
+{{Object.clone()}} là method native: nó kiểm tra class có implements {{Cloneable}} không (không thì ném {{CloneNotSupportedException}}), rồi cấp phát object mới **cùng class runtime** và **sao chép từng bit** của mọi field — không gọi constructor, không chạy field initializer. Với field là reference, chỉ con trỏ được sao chép (shallow). Vì không qua constructor, field {{final}} trỏ tới object mutable không thể gán lại bản sao sâu trong {{clone()}} của bạn — đây là lý do {{clone}} xung đột với thiết kế bất biến. Ngược lại, {{clone()}} của **mảng** được JVM tối ưu rất tốt và trả về đúng kiểu mảng (không cần cast từ Java 5) — đó là trường hợp dùng hợp lý nhất.
+
+### Ví dụ đời thực
+Một engine báo giá bảo hiểm sao chép "gói mẫu" cho từng khách bằng {{clone()}}; class {{Policy}} có field {{List<Rider> riders}}. Khi nhân viên thêm quyền lợi bổ sung cho một khách, quyền lợi đó xuất hiện ở **mọi** hợp đồng tạo từ cùng gói mẫu trong phiên làm việc — vì list được chia sẻ. 64 báo giá sai được gửi đi trước khi phát hiện. Sửa: bỏ {{Cloneable}}, viết copy constructor tạo list mới và copy từng {{Rider}}; thêm test khẳng định sửa bản sao không làm đổi bản gốc. Sau đó team chuyển {{Rider}} sang record bất biến để không cần copy sâu nữa.
+
+### Trả lời mẫu khi phỏng vấn
+"Object có equals, hashCode, toString, getClass, clone, finalize và wait, notify, notifyAll. Tôi tránh clone vì nhiều cạm bẫy. Object.clone là method native, kiểm tra Cloneable rồi sao chép từng field mà không gọi constructor, nên validation trong constructor bị bỏ qua, field final không gán lại được, và mặc định chỉ là shallow copy: list hay object con vẫn dùng chung với bản gốc. Cloneable là một marker interface kỳ lạ không có method, và kế thừa làm mọi thứ phức tạp hơn. Tôi dùng copy constructor hoặc static factory: rõ ràng, type-safe, tự quyết định copy sâu đến đâu, giữ được validation. Với record bất biến thì nhiều khi không cần copy. Trường hợp duy nhất tôi dùng clone là sao chép mảng, vì nó nhanh và đúng kiểu."
 
 > Senior tip: trong codebase mới, đừng implement {{Cloneable}}; dùng copy constructor hoặc record. Nếu buộc phải giữ {{clone()}} cho tương thích, hãy viết unit test khẳng định bản copy **không chia sẻ** collection/mảng với bản gốc — đây là chỗ bug thường ẩn.`,
   follow: [
