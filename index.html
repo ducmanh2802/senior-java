@@ -26,35 +26,45 @@
         <span class="brand-text">Senior Java <b>Prep</b></span>
       </a>
       <nav class="nav" aria-label="Điều hướng chính" data-i18n-aria="nav.main">
-        <a href="#/" data-route="dashboard" data-i18n="nav.dashboard">Tổng quan</a>
-        <a href="#/roadmap" data-route="roadmap" data-i18n="nav.roadmap">Lộ trình</a>
+        <a href="#/" data-route="dashboard"><span class="nav-home-i" aria-hidden="true">🏠</span><span class="nav-home-t" data-i18n="nav.dashboard">Tổng quan</span></a>
         <details class="nav-group">
-          <summary data-i18n="nav.study">Ôn tập</summary>
+          <summary data-i18n="nav.study">Học</summary>
           <div class="nav-menu">
-            <a href="#/path" data-route="path" data-i18n="nav.path">🗺️ Lộ trình học</a>
-            <a href="#/learn" data-route="learn" data-i18n="nav.learn">📖 Bài học</a>
-            <a href="#/bank" data-route="bank" data-i18n="nav.bank">📚 Câu hỏi</a>
-            <a href="#/flash" data-route="flash" data-i18n="nav.flash">🃏 Flashcard</a>
-            <a href="#/quiz" data-route="quiz" data-i18n="nav.quiz">✅ Trắc nghiệm</a>
-            <a href="#/exam" data-route="exam" data-i18n="nav.exam">📝 Thi thử</a>
-            <a href="#/aws" data-route="aws" data-i18n="nav.aws">☁️ AWS Pro (SAP + DOP)</a>
+            <a href="#/path" data-route="path"><span data-i18n="nav.path">🗺️ Lộ trình học</span><small data-i18n="navd.path">Thứ tự học từng bước, từ nền tảng tới Senior</small></a>
+            <a href="#/roadmap" data-route="roadmap"><span data-i18n="nav.roadmap">📅 Kế hoạch 26 tuần</span><small data-i18n="navd.roadmap">Lịch học theo tuần + nhật ký mỗi ngày</small></a>
+            <a href="#/learn" data-route="learn"><span data-i18n="nav.learn">📖 Bài học</span><small data-i18n="navd.learn">Bài giảng có ví dụ + bài tập Java tự chấm</small></a>
+            <a href="#/bank" data-route="bank"><span data-i18n="nav.bank">📚 Ngân hàng câu hỏi</span><small data-i18n="navd.bank">Câu hỏi phỏng vấn kèm đáp án mẫu chi tiết</small></a>
+            <a href="#/flash" data-route="flash"><span data-i18n="nav.flash">🃏 Flashcard</span><small data-i18n="navd.flash">Ôn nhanh các câu đến hạn (lặp lại ngắt quãng)</small></a>
+            <a href="#/aws" data-route="aws"><span data-i18n="nav.aws">☁️ AWS Pro (SAP + DOP)</span><small data-i18n="navd.aws">Ôn chứng chỉ AWS SAP-C02 và DOP-C02</small></a>
           </div>
         </details>
         <details class="nav-group">
-          <summary data-i18n="nav.practice">Luyện tập</summary>
+          <summary data-i18n="nav.practice">Luyện</summary>
           <div class="nav-menu">
-            <a href="#/algo" data-route="algo" data-i18n="nav.algo">🧠 Thuật toán</a>
-            <a href="#/labs" data-route="labs" data-i18n="nav.labs">🔧 Debug lab</a>
-            <a href="#/sd" data-route="sd" data-i18n="nav.sd">🏗️ Luyện System Design</a>
-            <a href="#/sdlc" data-route="sdlc" data-i18n="nav.sdlc">🔄 Mô phỏng SDLC</a>
-            <a href="#/projects" data-route="projects" data-i18n="nav.projects">🛠️ Pet project</a>
-            <a href="#/speak" data-route="speak" data-i18n="nav.speak">🗣️ Luyện nói tiếng Anh</a>
-            <a href="#/interview" data-route="interview" data-i18n="nav.interview">🎙️ Phỏng vấn AI (giọng nói)</a>
-            <a href="#/jobs" data-route="jobs" data-i18n="nav.jobs">💼 Việc làm</a>
-            <a href="#/career" data-route="career" data-i18n="nav.career">🧭 Sự nghiệp</a>
-            <a href="#/mock" data-route="mock" data-i18n="nav.mock">🎤 Phỏng vấn thử</a>
-            <a href="#/companies" data-route="companies" data-i18n="nav.companies">🏢 Theo công ty</a>
-            <a href="#/news" data-route="news" data-i18n="nav.news">📰 Tin tức mỗi sáng</a>
+            <a href="#/quiz" data-route="quiz"><span data-i18n="nav.quiz">✅ Trắc nghiệm</span><small data-i18n="navd.quiz">Câu nhiều lựa chọn, giải thích từng phương án</small></a>
+            <a href="#/exam" data-route="exam"><span data-i18n="nav.exam">📝 Thi thử</span><small data-i18n="navd.exam">Đề thi bấm giờ, chấm điểm theo từng mảng</small></a>
+            <a href="#/algo" data-route="algo"><span data-i18n="nav.algo">🧠 Thuật toán</span><small data-i18n="navd.algo">Đề, gợi ý từng bước, chạy và chấm code Java</small></a>
+            <a href="#/labs" data-route="labs"><span data-i18n="nav.labs">🔧 Debug lab</span><small data-i18n="navd.labs">Tìm nguyên nhân sự cố từ thread dump, GC log, EXPLAIN thật</small></a>
+            <a href="#/sd" data-route="sd"><span data-i18n="nav.sd">🏗️ System Design</span><small data-i18n="navd.sd">Thiết kế hệ thống từng bước, có đáp án tham khảo</small></a>
+            <a href="#/sdlc" data-route="sdlc"><span data-i18n="nav.sdlc">🔄 Mô phỏng SDLC</span><small data-i18n="navd.sdlc">Đi trọn một tính năng: yêu cầu → thiết kế → code → deploy → sửa lỗi</small></a>
+            <a href="#/projects" data-route="projects"><span data-i18n="nav.projects">🛠️ Pet project</span><small data-i18n="navd.projects">Ý tưởng dự án cá nhân để đưa vào CV</small></a>
+          </div>
+        </details>
+        <details class="nav-group">
+          <summary data-i18n="nav.interviewGroup">Phỏng vấn</summary>
+          <div class="nav-menu">
+            <a href="#/mock" data-route="mock"><span data-i18n="nav.mock">🎤 Phỏng vấn thử</span><small data-i18n="navd.mock">Phỏng vấn thử bấm giờ, tự chấm điểm 1–5</small></a>
+            <a href="#/interview" data-route="interview"><span data-i18n="nav.interview">🎙️ Phỏng vấn với AI</span><small data-i18n="navd.interview">AI đóng vai interviewer, hỏi đáp bằng giọng nói</small></a>
+            <a href="#/speak" data-route="speak"><span data-i18n="nav.speak">🗣️ Luyện nói tiếng Anh</span><small data-i18n="navd.speak">Trả lời câu hỏi phỏng vấn bằng tiếng Anh, AI chấm</small></a>
+            <a href="#/companies" data-route="companies"><span data-i18n="nav.companies">🏢 Theo công ty</span><small data-i18n="navd.companies">Bộ câu hỏi theo từng công ty tuyển dụng</small></a>
+          </div>
+        </details>
+        <details class="nav-group">
+          <summary data-i18n="nav.careerGroup">Sự nghiệp</summary>
+          <div class="nav-menu">
+            <a href="#/jobs" data-route="jobs"><span data-i18n="nav.jobs">💼 Việc làm</span><small data-i18n="navd.jobs">Tin tuyển dụng Java mỗi sáng + việc bạn đang ứng tuyển</small></a>
+            <a href="#/career" data-route="career"><span data-i18n="nav.career">🧭 STAR, CV, nhật ký</span><small data-i18n="navd.career">Câu chuyện STAR, AI review CV, ghi lại các vòng phỏng vấn</small></a>
+            <a href="#/news" data-route="news"><span data-i18n="nav.news">📰 Tin tức mỗi sáng</span><small data-i18n="navd.news">Bản tin Backend/DevOps/Cloud chọn lọc mỗi ngày</small></a>
           </div>
         </details>
       </nav>

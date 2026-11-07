@@ -107,7 +107,12 @@ h3 { font-size: 1.1rem; }
   display: grid; gap: 2px; background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius-sm); box-shadow: 0 8px 24px color-mix(in srgb, var(--text) 14%, transparent);
 }
-.nav-menu a { border-radius: var(--radius-sm); padding: 8px 12px; color: var(--text); }
+.nav-menu { width: 330px; max-width: calc(100vw - 24px); }
+.nav-menu a { border-radius: var(--radius-sm); padding: 7px 12px; color: var(--text); display: grid; gap: 1px; white-space: normal; }
+/* one-line description under each menu item, so people see what each section contains */
+.nav-menu small { color: var(--muted); font-size: 12px; font-weight: 400; line-height: 1.35; }
+.nav-menu a.active small { color: var(--accent); }
+.nav-home-i { display: none; }
 .nav-group:not([open]) .nav-menu { display: none; }
 .icon-btn { border: 1px solid var(--border); background: var(--surface); color: var(--text); width: 34px; height: 34px; border-radius: 50%; cursor: pointer; font-size: 16px; flex: none; }
 @media (max-width: 640px) {
@@ -115,9 +120,18 @@ h3 { font-size: 1.1rem; }
   .topbar-inner { flex-wrap: wrap; row-gap: 6px; }
   .nav { order: 3; flex-basis: 100%; justify-content: space-between; }
   .nav { gap: 0; font-size: 14px; }
-  .nav a, .nav summary { padding: 6px 7px; }
-  .nav summary::after { margin-left: 2px; }
-  .nav-group:last-child .nav-menu { left: auto; right: 0; }
+  .nav a, .nav summary { padding: 6px 6px; }
+  .nav summary::after { margin-left: 1px; }
+  .nav-home-i { display: inline; }
+  .nav-home-t { display: none; }
+  /* dropdowns span the bar width instead of hanging off the right edge */
+  .topbar-inner { position: relative; }
+  .nav-group { position: static; }
+  .nav-menu { left: 8px; right: 8px; top: 100%; width: auto; max-width: none; max-height: 75vh; overflow-y: auto; }
+}
+@media (max-width: 380px) {
+  .nav { font-size: 13px; }
+  .nav summary::after { content: none; }
 }
 
 /* ---------- buttons ---------- */
