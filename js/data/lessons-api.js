@@ -725,7 +725,7 @@ class IdempotencyStore {
         if (key == null || key.isBlank()) {
             throw new IllegalArgumentException("idempotency key is required");
         }
-        // computeIfAbsent chay mapping function dung MOT lan cho moi key,
+        // computeIfAbsent chạy mapping function dùng MỘT lần cho mỗi key,
         // ke ca khi nhieu thread goi cung luc.
         Entry entry = cache.computeIfAbsent(key, k -> new Entry(body, action.get()));
         if (!entry.fingerprint.equals(body)) {
@@ -1444,7 +1444,7 @@ class TokenBucket {
         return true;
     }
 
-    // Con bao nhieu giay thi co lai du 1 token? Day chinh la gia tri cho Retry-After.
+    // Còn bao nhiêu giây thì có lại đủ 1 token? Đây chính là giá trị cho Retry-After.
     synchronized long retryAfterSeconds() {
         double missing = Math.max(0, 1 - tokens);
         return (long) Math.ceil(missing / CAPACITY * 60);
@@ -1656,7 +1656,7 @@ class RetryClient {
         };
     }
     public static void main(String[] args) {
-        check("429 roi 200: chi retry dung 1 lan, cho trong khoang backoff", () -> {
+        check("429 rồi 200: chỉ retry đúng 1 lần, chờ trong khoảng backoff", () -> {
             FakeClock clock = new FakeClock(1_000_000L);
             Recorder rec = new Recorder();
             RetryPolicy p = new RetryPolicy(5, 100, 2000, 7L);
@@ -1668,7 +1668,7 @@ class RetryClient {
             eq(1, Integer.valueOf(g.size()));
             inRange(50, 100, g.get(0));
         });
-        check("retry-after giay duoc ton that tuyet doi, bang qua jitter", () -> {
+        check("retry-after giây được tôn trọng tuyệt đối, bất chấp jitter", () -> {
             FakeClock clock = new FakeClock(1_000_000L);
             Recorder rec = new Recorder();
             RetryClient c = new RetryClient(
@@ -1739,7 +1739,7 @@ class RetryClient {
             eq(1, Integer.valueOf(rec.calls()));
             eq(0L, clock.now());
         });
-        check("mau khong retry duoc (500, 403) tra ve ngay lap tuc", () -> {
+        check("mẫu không retry được (500, 403) trả về ngay lập tức", () -> {
             FakeClock clock = new FakeClock(77L);
             Recorder rec = new Recorder();
             RetryClient c = new RetryClient(script(clock, rec, new Response(500), new Response(200)), clock, new RetryPolicy(4, 100, 900, 8L));
@@ -1861,7 +1861,7 @@ class RetryClient {
         return d / 2 + rnd.nextLong(d / 2 + 1);           // "equal jitter": nua co dinh, nua ngau nhien
     }
 
-    // tra ve null neu header vang hoac khong parse duoc (coi nhu server khong noi gi)
+    // trả về null nếu header vắng hoặc không parse được (coi như server không nói gì)
     static Long retryAfterMillis(String value, long nowMillis) {
         if (value == null || value.isBlank()) return null;
         String v = value.trim();
@@ -1998,7 +1998,7 @@ class AccountView {
     public String id;
     public Money amount;
 
-    // 2) Enum: khai bao mot gia tri mac dinh de gia tri moi cua server khong lam do app
+    // 2) Enum: khai báo một giá trị mặc định để giá trị mới của server không làm đổ app
     @JsonEnumDefaultValue
     public enum Status { NEW, PAID, VOID, UNKNOWN }
 }
@@ -2135,7 +2135,7 @@ class CompatChecker {
             eq(List.of(), r.risky());
             eq(List.of(), r.safe());
         });
-        check("them field optional la safe, khong phai breaking", () -> {
+        check("thêm field optional là safe, không phải breaking", () -> {
             CompatReport r = CompatChecker.diff(s("id", new Field("string", true)),
                 s("id", new Field("string", true), "nickname", new Field("string", false)));
             eq(List.of(), r.breaking());
@@ -2153,7 +2153,7 @@ class CompatChecker {
                 s("id", new Field("string", true)));
             eq(List.of("removed:balance"), r.breaking());
         });
-        check("doi kieu khong tu nhien la breaking, doi enum sang string khong sinh nhan enum", () -> {
+        check("đổi kiểu không tự nhiên là breaking, đổi enum sang string không sinh nhận enum", () -> {
             CompatReport r = CompatChecker.diff(s("amount", new Field("string", true)),
                 s("amount", new Field("int", true)));
             eq(List.of("retyped:amount:string->int"), r.breaking());
@@ -2162,7 +2162,7 @@ class CompatChecker {
                 s("status", new Field("string", true, ev("NEW", "PAID"))));
             eq(List.of("retyped:status:enum->string"), e.breaking());
         });
-        check("noi rong kieu so: van parse duoc nhung quy vao nhom rui ro", () -> {
+        check("nới rộng kiểu số: vẫn parse được nhưng quy vào nhóm rủi ro", () -> {
             CompatReport r = CompatChecker.diff(
                 s("amount", new Field("int", true), "rate", new Field("float", false), "big", new Field("long", false)),
                 s("amount", new Field("long", true), "rate", new Field("double", false), "big", new Field("string", false)));
@@ -2184,7 +2184,7 @@ class CompatChecker {
             eq(List.of("enum-value-added:status:DISPUTED", "enum-value-added:status:REFUNDED"), r.risky());
             eq(List.of(), r.safe());
         });
-        check("nhieu thay doi: moi danh sach sap xep tang dan va phan loai dung", () -> {
+        check("nhiều thay đổi: mỗi danh sách sắp xếp tăng dần và phân loại đúng", () -> {
             Map<String, Field> before = s(
                 "id", new Field("string", true),
                 "age", new Field("int", false),
@@ -2201,7 +2201,7 @@ class CompatChecker {
             eq(List.of("enum-value-added:kind:C"), r.risky());
             eq(List.of("added-optional:channel"), r.safe());
         });
-        check("mot field vua doi kieu vua thanh bat buoc: emit ca hai nhan", () -> {
+        check("một field vừa đổi kiểu vừa thành bắt buộc: emit cả hai nhãn", () -> {
             CompatReport r = CompatChecker.diff(s("count", new Field("int", false)), s("count", new Field("long", true)));
             eq(List.of("now-required:count"), r.breaking());
             eq(List.of("widened:count:int->long"), r.risky());
@@ -2500,7 +2500,7 @@ class TokenBucket {
         if (v < lo || v > hi) throw new AssertionError("expected in [" + lo + "," + hi + "] got " + v);
     }
     public static void main(String[] args) {
-        check("sliding: duoi han muc va vuot han muc trong cung cua so", () -> {
+        check("sliding: dưới hạn mức và vượt hạn mức trong cùng cửa sổ", () -> {
             SlidingWindowCounter sw = new SlidingWindowCounter(3, 1000);
             eq(true, sw.tryAcquire(0));
             eq(true, sw.tryAcquire(100));
@@ -2508,27 +2508,27 @@ class TokenBucket {
             eq(false, sw.tryAcquire(300));
             eq(false, sw.tryAcquire(300));
         });
-        check("sliding: boundary burst bi chan boi cua so truoc", () -> {
+        check("sliding: boundary burst bị chặn bởi cửa sổ trước", () -> {
             SlidingWindowCounter sw = new SlidingWindowCounter(100, 1000);
             for (int i = 0; i < 100; i++) eq(true, sw.tryAcquire(990));
             eq(true, sw.tryAcquire(1006));
             eq(false, sw.tryAcquire(1006));
         });
-        check("sliding: cua so truoc troi dan va reset khi sang xa", () -> {
+        check("sliding: cửa sổ trước trôi dần và reset khi sang xa", () -> {
             SlidingWindowCounter sw = new SlidingWindowCounter(10, 1000);
             for (int i = 0; i < 10; i++) sw.tryAcquire(0);
             eq(false, sw.tryAcquire(0));
-            // tat ca req nam o cua so hien tai (prev=0, curr=10) nen phai sang qua ranh gioi
+            // tất cả req nằm ở cửa sổ hiện tại (prev=0, curr=10) nên phải sang qua ranh giới
             // tai 1001ms: prev tro thanh 10, weight gan 0 -> estimate ~9.99 < 10
             inRange(1001, 1100, sw.retryAfterMillis(0));
-            // van trong cua so 0: prev=0, curr=10 -> bi chan
+            // vẫn trong cửa sổ 0: prev=0, curr=10 -> bị chặn
             eq(false, sw.tryAcquire(500));
             SlidingWindowCounter sw2 = new SlidingWindowCounter(2, 1000);
             sw2.tryAcquire(0); sw2.tryAcquire(0);
             eq(false, sw2.tryAcquire(0));
             // sang cua so ke tiep (adjacent): prev van dem day du tai ranh gioi -> co the bi chan
             eq(false, sw2.tryAcquire(1000));
-            // nhay xa hon 1 cua so: du lieu cu duoc bo, duoc phep lai
+            // nhảy xa hơn 1 cửa sổ: dữ liệu cũ được bỏ, được phép lại
             eq(true, sw2.tryAcquire(2500));
         });
         check("token: day luc dau, burst hop le toi capacity roi can", () -> {
@@ -2885,7 +2885,7 @@ class ResourceStore {
             eq(404, s.get("none", null).status());
             eq(404, s.put("none", "x", "v1").status());
         });
-        check("put thieu If-Match tra 428 va khong doi du lieu", () -> {
+        check("put thiếu If-Match trả 428 và không đổi dữ liệu", () -> {
             ResourceStore s = new ResourceStore();
             s.seed("acc2", "A");
             StoreResponse r = s.put("acc2", "B", null);
@@ -2895,7 +2895,7 @@ class ResourceStore {
             eq("A", s.get("acc2", null).resource().body());
             eq("v1", s.get("acc2", null).resource().etag());
         });
-        check("put voi If-Match khop thi cap nhat va tang version", () -> {
+        check("put với If-Match khớp thì cập nhật và tăng version", () -> {
             ResourceStore s = new ResourceStore();
             s.seed("acc3", "A");
             StoreResponse r = s.put("acc3", "B", "v1");
@@ -2906,7 +2906,7 @@ class ResourceStore {
             eq(200, r2.status());
             eq("v3", r2.resource().etag());
         });
-        check("lost update bi chan: put voi etag cu tra 412, du lieu giu nguyen", () -> {
+        check("lost update bị chặn: put với etag cũ trả 412, dữ liệu giữ nguyên", () -> {
             ResourceStore s = new ResourceStore();
             s.seed("acc4", "balance=100");
             eq("v1", s.get("acc4", null).resource().etag());
@@ -2921,7 +2921,7 @@ class ResourceStore {
             eq("balance=80", s.get("acc4", null).resource().body());
             eq("v2", s.get("acc4", null).resource().etag());
         });
-        check("sau 412, client doc lai va put voi etag moi thi thanh cong", () -> {
+        check("sau 412, client đọc lại và put với etag mới thì thành công", () -> {
             ResourceStore s = new ResourceStore();
             s.seed("acc5", "v1data");
             eq(200, s.put("acc5", "v2data", "v1").status());
