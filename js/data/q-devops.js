@@ -10773,25 +10773,60 @@ Hệ thống đặt phòng chạy Galera 3 node, ứng dụng ghi round-robin v�
     topic: 'devops',
     level: 'senior',
     q: 'Redis Sentinel: quorum, failover và client (Lettuce/Redisson) tự phát hiện master mới?',
-    a: `**Tóm tắt:** Sentinel là hệ thống giám sát + failover cho Redis single-master: nhiều Sentinel vote, đạt quorum thì promote replica; client (Lettuce/Redisson)subscribe Sentinel để biết master mới.
+    a: `**Tóm tắt:** Redis Sentinel là nhóm tiến trình **giám sát + tự failover** cho mô hình một master nhiều replica. Mỗi Sentinel ping master; khi đủ **quorum** Sentinel cùng thấy master "chết" (ODOWN), các Sentinel **bầu một leader** bằng **đa số**, leader chọn replica tốt nhất, promote nó và cấu hình lại các replica khác. Client như Lettuce/Redisson **không giữ địa chỉ master cố định** mà hỏi Sentinel và nghe thông báo đổi master để tự kết nối lại.
 
-### Quorum
-- Sentinel không phải data node, chỉ monitor. Cần ≥3 Sentinel (số lẻ) để majority vote. Quorum cấu hình: {{sentinel monitor mymaster 127.0.0.1 6379 2}} → cần 2 Sentinel đồng ý master down.
+### Quorum và đa số — hai khái niệm khác nhau
+- **quorum** (trong {{sentinel monitor mymaster 10.0.0.1 6379 2}}): số Sentinel phải đồng ý master không phản hồi để chuyển từ SDOWN (một Sentinel nghĩ là chết) sang **ODOWN** (đã đủ số đồng ý).
+- **Đa số** (majority) của toàn bộ Sentinel: cần để **bầu leader** thực hiện failover. Với 3 Sentinel thì cần 2.
+Vì vậy dùng **ít nhất 3 Sentinel trên 3 máy/zone khác nhau**; 2 Sentinel mất một cái là không còn đa số để failover.
 
-### Failover
-- Sentinel phát hiện master down (subjective down → objective down khi quorum đồng ý). Bầu leader Sentinel (Raft-like). Leader chọn replica tốt nhất (replication offset cao nhất, priority thấp nhất) và {{REPLICAOF NO ONE}}. Các Sentinel khác reconfigure replica theo master mới. Thông báo qua pub/sub channel.
+### Failover từng bước
+1. Master không trả lời quá {{down-after-milliseconds}} (ví dụ 5000) → SDOWN trên từng Sentinel.
+2. Đủ quorum → ODOWN; các Sentinel bầu leader (theo epoch, kiểu Raft đơn giản).
+3. Leader chọn replica: loại replica mất kết nối lâu, ưu tiên {{replica-priority}} thấp, rồi replica có **offset replication lớn nhất** (ít mất dữ liệu nhất).
+4. Gửi {{REPLICAOF NO ONE}} cho replica được chọn; các replica khác trỏ sang master mới; công bố cấu hình mới (kênh {{+switch-master}}).
+5. Master cũ quay lại → bị biến thành replica của master mới.
+Thời gian thường khoảng {{down-after-milliseconds}} + vài giây.
 
-### Client
-- Lettuce/Redisson kết nối tới Sentinel list, query {{SENTINEL get-master-addr-by-name}} để lấy master hiện tại; subscribe để reconnect khi failover. Spring Data Redis: {{RedisSentinelConfiguration}}.
+### Client tự phát hiện master mới
+~~~yaml
+spring:
+  data:
+    redis:
+      sentinel:
+        master: mymaster
+        nodes: sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
+      timeout: 2s           # lệnh treo khi master chết sẽ lỗi nhanh thay vì chờ mãi
+~~~
+- **Lettuce** (mặc định trong Spring Boot): hỏi Sentinel địa chỉ master, theo dõi thay đổi và kết nối lại; có thể cấu hình đọc từ replica ({{ReadFrom.REPLICA_PREFERRED}}) khi chấp nhận dữ liệu hơi cũ.
+- **Redisson**: {{useSentinelServers()}} với danh sách Sentinel, tự cập nhật topology.
+- Trong lúc failover sẽ có vài giây lỗi → lệnh idempotent thì retry có backoff; lệnh không idempotent (INCR) cần cân nhắc.
 
-### Sentinel vs Redis Cluster
-- Sentinel: single master + replicas, data không sharding, đơn giản; phù hợp session/cache nhỏ. Cluster: sharding 16384 slot, multi-master, scale ngang; phức tạp hơn, client phải hỗ trợ MOVED/ASK redirect.
+### Mất dữ liệu khi failover
+Replication của Redis là **bất đồng bộ**: ghi đã trả OK trên master nhưng chưa tới replica sẽ mất khi failover. Giảm rủi ro bằng {{min-replicas-to-write 1}} và {{min-replicas-max-lag 10}} (master từ chối ghi khi không có replica theo kịp) — đổi lại có thể từ chối ghi khi replica gặp sự cố. Lệnh {{WAIT}} cho phép chờ ghi tới N replica với thao tác quan trọng.
 
-### Trên production
-- Sai lầm: Sentinel đặt cùng node với Redis → node chết = mất cả.
-- Kiểm tra: {{redis-cli -p 26379 SENTINEL master mymaster}}; {{SENTINEL ckquorum mymaster}}.
+### Sentinel hay Redis Cluster
+| | Sentinel | Redis Cluster |
+|---|---|---|
+| Dữ liệu | Toàn bộ trên một master | Chia 16.384 slot cho nhiều master |
+| Mở rộng ghi | Không | Có |
+| Failover | Do Sentinel | Do các master trong cluster bỏ phiếu |
+| Client | Hỏi Sentinel | Biết bản đồ slot, xử lý MOVED/ASK |
+| Hợp với | Dữ liệu vừa một máy, cần HA | Dữ liệu/lượng ghi lớn hơn một máy |
 
-> Senior tip: Sentinel failover thường 10-30s; app cần retry/idempotent; với cache, accept eventual consistency và fallback DB.`,
+### Ví dụ đời thực
+Một hệ thống session dùng 1 master + 1 replica + **2 Sentinel** đặt chung máy với Redis. Máy chứa master và một Sentinel chết: Sentinel còn lại không đủ đa số → **không failover**, đăng nhập lỗi 25 phút đến khi có người promote tay. Sửa: 3 Sentinel trên 3 zone, 2 replica, Lettuce cấu hình Sentinel với timeout 2s. Diễn tập tắt master: failover trong khoảng 7 giây, ứng dụng tự kết nối lại, chỉ khoảng 0,3% request lỗi trong lúc chuyển.
+
+### Pitfall
+- Hard-code IP master trong cấu hình ứng dụng.
+- Số Sentinel chẵn hoặc đặt cùng máy với master.
+- Không đặt timeout lệnh → thread treo khi master chết.
+- Dùng Redis làm nguồn dữ liệu duy nhất cho thứ không được mất (ví dụ số dư) mà quên replication bất đồng bộ.
+
+### Trả lời mẫu khi phỏng vấn
+"Redis Sentinel là nhóm tiến trình giám sát và tự failover cho mô hình một master nhiều replica. Có hai ngưỡng khác nhau: quorum là số Sentinel cần đồng ý master đã chết, còn đa số toàn bộ Sentinel là để bầu leader thực hiện failover. Vì thế tôi luôn dùng ít nhất ba Sentinel trên ba zone. Leader chọn replica có độ ưu tiên phù hợp và offset replication lớn nhất, promote nó, trỏ các replica khác sang và công bố master mới. Phía Java, Lettuce trong Spring Boot cấu hình danh sách Sentinel thay vì địa chỉ master, tự hỏi master và kết nối lại khi đổi; tôi đặt timeout lệnh khoảng hai giây và retry có backoff cho lệnh idempotent. Cần nhớ replication bất đồng bộ nên có thể mất vài ghi cuối khi failover; min-replicas-to-write giảm rủi ro đó. Nếu dữ liệu hoặc lượng ghi vượt một máy thì chuyển sang Redis Cluster."
+
+> Senior tip: diễn tập bằng {{SENTINEL FAILOVER mymaster}} trên staging và đo hai con số — thời gian ứng dụng có lỗi và số lệnh lỗi. Nếu chưa từng đo, cấu hình timeout/retry phía client gần như chắc chắn chưa đúng.`,
     follow: ['Redis Cluster failover thế nào?', 'Sentinel quorum vs cluster quorum?', 'Lettuce auto-reconnect config?'],
     tags: ['Redis', 'Sentinel', 'HA']
   }
@@ -10801,27 +10836,43 @@ Hệ thống đặt phòng chạy Galera 3 node, ứng dụng ghi round-robin v�
     topic: 'devops',
     level: 'senior',
     q: 'Kafka cluster HA: replication factor, min.insync.replicas, rack awareness, KRaft quorum?',
-    a: `**Tóm tắt:** Kafka HA dựa trên replication: mỗi partition có leader + replicas; RF=3 + min.insync.replicas=2 cho phép mất 1 broker vẫn ghi; rack awareness phân tán replica; KRaft thay ZooKeeper bằng controller quorum Raft.
+    a: `**Tóm tắt:** Kafka HA dựa trên **replication theo partition**: mỗi partition có một **leader** và các **follower**; tập follower theo kịp gọi là **ISR**. Cấu hình chuẩn cho dữ liệu quan trọng: **replication.factor = 3**, **min.insync.replicas = 2**, producer **acks=all** — mất 1 broker vẫn đọc ghi bình thường, không mất message đã xác nhận. **Rack awareness** đặt 3 bản sao ở 3 zone. **KRaft** (bắt buộc từ Kafka 4.0) thay ZooKeeper bằng một nhóm **controller** dùng giao thức đồng thuận Raft để giữ metadata.
 
-### Replication factor & min.insync.replicas
-- RF=3: mỗi partition có 3 bản copy trên 3 broker. Producer acks=all chờ tất cả ISR (in-sync replicas) ack.
-- min.insync.replicas=2: leader chỉ accept write khi ≥2 ISR sẵn sàng. Mất 1 broker → còn 2 ISR → vẫn ghi. Mất 2 broker → không đủ min.insync → producer lỗi (an toàn, tránh mất data).
-- ISR co giãn: broker chậm bị loại khỏi ISR; khi bắt kịp thì quay lại.
+### Replication, ISR và acks
+- Producer ghi vào leader; follower kéo dữ liệu từ leader. Follower tụt quá {{replica.lag.time.max.ms}} (mặc định 30 giây) bị loại khỏi ISR.
+- {{acks=all}}: leader chỉ trả OK khi **mọi replica trong ISR** đã có message. Kết hợp {{min.insync.replicas=2}}: nếu ISR còn dưới 2, leader **từ chối ghi** ({{NotEnoughReplicasException}}) thay vì nhận ghi chỉ một bản.
+- Từ Kafka 3.0, producer mặc định {{acks=all}} và {{enable.idempotence=true}} (chống trùng khi retry).
+
+| RF / min.insync | Mất 1 broker | Mất 2 broker |
+|---|---|---|
+| 3 / 2 | Đọc ghi bình thường | Ghi bị từ chối, đọc vẫn được (dữ liệu an toàn) |
+| 3 / 1 | Ghi bình thường | Vẫn ghi với 1 bản — mất broker đó là mất dữ liệu |
+| 2 / 2 | Ghi bị từ chối | — |
+
+### Unclean leader election
+{{unclean.leader.election.enable=false}} (mặc định): chỉ replica trong ISR mới được làm leader → không mất dữ liệu đã xác nhận, nhưng partition có thể **không khả dụng** nếu mọi ISR đều chết. Bật lên thì ưu tiên sẵn sàng hơn dữ liệu — chỉ hợp với log/metric chấp nhận mất.
 
 ### Rack awareness
-- Cấu hình {{broker.rack=rack1}}; Kafka đặt replica trên rack khác nhau → mất cả rack vẫn còn data.
+Đặt {{broker.rack=ap-southeast-1a}} cho từng broker → Kafka rải 3 bản sao của một partition lên 3 rack/zone khác nhau; mất cả một zone vẫn còn 2 bản. Consumer có thể đọc từ follower cùng zone ({{client.rack}} + {{replica.selector.class}}) để giảm chi phí mạng liên zone.
 
 ### KRaft
-- Kafka 3.x+ bỏ ZooKeeper, dùng KRaft: controller nodes (quorum Raft) quản lý metadata. Cần số controller lẻ (3 hoặc 5). Controller và broker có thể cùng process (combined) hoặc tách (dedicated).
+- Một nhóm controller (thường 3 hoặc 5) lưu metadata (topic, partition, ISR, cấu hình) trong một log nội bộ đồng thuận bằng Raft; một controller là leader.
+- Mất controller leader → bầu lại trong vài giây; cần đa số controller còn sống.
+- Lợi ích so với ZooKeeper: một hệ thống thay vì hai, failover metadata nhanh hơn, hỗ trợ số partition lớn hơn nhiều. Kafka 4.0 đã gỡ hẳn ZooKeeper.
 
-### Mất bao nhiêu broker vẫn ghi được
-- RF=3, min.insync=2: mất 1 broker vẫn ghi (2 ISR). Mất 2 broker: không ghi được (chỉ 1 ISR) nhưng đọc vẫn OK nếu còn replica.
+### Ví dụ đời thực
+Topic {{payment-events}} cấu hình RF=2, min.insync.replicas=1, producer acks=1 từ thời "làm nhanh". Khi nâng cấp rolling, một broker bị khởi động lại đúng lúc broker kia đang là leader với follower tụt hậu; unclean election không bật nhưng acks=1 khiến khoảng 1.900 message đã trả OK chỉ nằm trên leader cũ và mất khi nó hỏng đĩa. Đối soát thanh toán phát hiện lệch. Sửa: RF=3, min.insync.replicas=2, acks=all, rack awareness 3 zone, cảnh báo {{UnderReplicatedPartitions > 0}} và {{UnderMinIsrPartitionCount > 0}}. Các lần nâng cấp sau không mất message nào.
 
-### Trên production
-- Sai lầm: RF=3 nhưng min.insync=1 → mất 1 broker vẫn ghi nhưng có thể mất data nếu leader chết trước khi replicate.
-- Kiểm tra: {{kafka-topics.sh --describe}} (ISR list); {{kafka-metadata-quorum.sh --status}}.
+### Pitfall
+- RF=3 nhưng min.insync.replicas=1 → vẫn có lúc chỉ ghi một bản.
+- Đặt min.insync.replicas = RF → mất 1 broker là ngừng ghi.
+- Topic nội bộ ({{__consumer_offsets}}, topic của Kafka Streams/Connect) để RF thấp.
+- Không giám sát under-replicated partitions — chỉ biết khi đã mất dữ liệu.
 
-> Senior tip: HA Kafka = RF3 + min.insync2 + acks=all + rack awareness; test bằng kill broker và đo message loss.`,
+### Trả lời mẫu khi phỏng vấn
+"Kafka đạt HA bằng replication theo partition: mỗi partition có leader và follower, follower theo kịp nằm trong ISR. Với dữ liệu quan trọng tôi dùng replication factor 3, min.insync.replicas 2 và producer acks=all, từ Kafka 3 thì đây cũng là mặc định của producer cùng idempotence. Như vậy leader chỉ trả OK khi ít nhất hai bản đã có message; mất một broker vẫn ghi bình thường, mất hai thì Kafka từ chối ghi chứ không nhận ghi một bản. Tôi để unclean leader election tắt để không bao giờ chọn leader thiếu dữ liệu. Rack awareness đặt ba bản sao ở ba zone, nên mất cả zone vẫn còn hai bản. Metadata thì KRaft quản lý bằng một nhóm controller đồng thuận Raft, Kafka 4 đã bỏ ZooKeeper. Tôi luôn cảnh báo khi có under-replicated hoặc under-min-ISR partition."
+
+> Senior tip: kiểm tra định kỳ cấu hình thực tế của **mọi** topic ({{kafka-configs --describe}}) chứ không chỉ mặc định của broker. Topic được tạo tự động hoặc bởi framework thường mang RF và min.insync khác hẳn mặc định bạn tưởng.`,
     follow: ['ZooKeeper vs KRaft?', 'unclean.leader.election.enable làm gì?', 'Kafka replication lag alert?'],
     tags: ['Kafka', 'HA', 'KRaft']
   }
@@ -10831,25 +10882,41 @@ Hệ thống đặt phòng chạy Galera 3 node, ứng dụng ghi round-robin v�
     topic: 'devops',
     level: 'lead',
     q: 'Elasticsearch cluster HA: master-eligible node, quorum, shard + replica, split-brain?',
-    a: `**Tóm tắt:** ES cluster dùng Zen2 discovery: master-eligible nodes bầu master qua quorum (majority); data phân shard + replica; split-brain được ngăn bằng quorum và voting configuration.
+    a: `**Tóm tắt:** Elasticsearch HA có hai lớp. **Lớp điều phối**: các node **master-eligible** bầu một master quản lý trạng thái cluster (index, mapping, vị trí shard) bằng **đa số** trong **voting configuration** — từ 7.x cluster tự quản lý danh sách này nên split-brain kiểu cũ không còn xảy ra nếu cấu hình đúng. **Lớp dữ liệu**: mỗi index chia thành **primary shard**, mỗi primary có **replica** đặt trên node khác (và zone khác) — mất node vẫn đọc ghi được, replica được dựng lại tự động.
 
-### Master-eligible & quorum
-- Node có role master. Cần số master-eligible lẻ (3,5). Quorum = majority. ES 7+ tự tính quorum từ voting config.
-- Master quản lý cluster state, shard allocation. Mất master → bầu master mới từ các node còn lại (nếu còn quorum).
+### Master và quorum
+- Dùng **3 node master-eligible chuyên dụng** (không chứa dữ liệu, cấu hình nhỏ) ở 3 zone; mất 1 vẫn còn đa số 2/3.
+- Elasticsearch 7+ tự điều chỉnh voting configuration khi thêm/bớt master-eligible; chỉ cần {{cluster.initial_master_nodes}} **khi khởi tạo cluster lần đầu** (rồi xoá khỏi cấu hình).
+- Trước 7.x phải tự đặt {{discovery.zen.minimum_master_nodes}} = N/2 + 1; đặt sai là nguồn split-brain kinh điển — hai master, hai phiên bản dữ liệu.
+- Master bận (GC dài, quá nhiều shard) → cluster chậm toàn bộ dù data node khoẻ.
 
-### Shard + replica
-- Index chia thành N primary shard. Mỗi primary có R replica shard trên node khác. Mất node chứa primary → replica promote thành primary.
-- Replica count quyết định fault tolerance: replica=1 cho phép mất 1 node chứa shard đó.
+### Shard và replica
+- Primary shard cố định khi tạo index (đổi phải reindex/split/shrink); replica đổi lúc nào cũng được.
+- Replica không bao giờ nằm cùng node với primary của nó; với **shard allocation awareness** ({{node.attr.zone}} + {{cluster.routing.allocation.awareness.attributes: zone}}) thì không cùng zone.
+- Ghi: vào primary rồi đồng bộ sang replica đang hoạt động. Đọc: primary hoặc replica, nên replica cũng tăng khả năng phục vụ tìm kiếm.
+- **Kích thước shard** nên khoảng 10–50GB; quá nhiều shard nhỏ làm master và heap quá tải.
 
-### Split-brain
-- Mạng phân mảnh: hai nhóm node đều bầu master → hai cluster state khác nhau → data diverge. ES ngăn bằng quorum: nhóm < majority không bầu master → read-only/down.
-- Voting config: có thể thêm tie-breaker node (master-eligible nhưng không data) để giữ quorum với số node chẵn.
+### Trạng thái cluster
+| Màu | Nghĩa |
+|---|---|
+| green | Mọi primary và replica đã được gán |
+| yellow | Mọi primary có, thiếu một số replica (đang ở mức rủi ro) |
+| red | Có primary chưa gán → một phần dữ liệu không đọc/ghi được |
+Điều tra bằng {{GET _cluster/allocation/explain}} — cho biết vì sao shard chưa được gán (đĩa vượt watermark, quy tắc awareness, node thiếu).
 
-### Trên production
-- Sai lầm: 2 master-eligible node → tie → split-brain.
-- Kiểm tra: {{GET _cluster/health}}, {{GET _cat/nodes}}, {{GET _cat/shards}}; log "master node changed".
+### Ví dụ đời thực
+Cụm log 9 node, cả 9 đều master-eligible kiêm data, 4.800 shard (đa số dưới 1GB do index theo ngày cho từng service). Mỗi lần GC dài trên node đang là master, cluster mất master 20–40 giây, ghi log bị dồn. Thiết kế lại: 3 master chuyên dụng (4GB heap) ở 3 zone, data node riêng, chuyển sang index theo tuần với rollover theo kích thước 40GB qua ILM, số shard giảm còn khoảng 600. Sau đó không còn lần mất master nào trong 6 tháng; một zone mất điện 2 giờ, cluster chuyển yellow rồi tự về green sau khi dựng lại replica.
 
-> Senior tip: Luôn dùng 3 master-eligible dedicated node nhỏ + data node riêng; monitor cluster health và unassigned shards.`,
+### Pitfall
+- 2 node master-eligible: mất 1 là mất đa số, cluster ngừng.
+- Để mọi node đều master-eligible trong cụm lớn → master chia tài nguyên với truy vấn nặng.
+- Replica = 0 cho dữ liệu cần giữ "vì tiết kiệm" → mất node là red.
+- Đĩa vượt watermark (mặc định 85%/90%/95%) → không gán shard mới, rồi index chuyển read-only.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi nhìn Elasticsearch HA ở hai lớp. Lớp điều phối là các node master-eligible bầu master bằng đa số trong voting configuration. Tôi dùng ba node master chuyên dụng ở ba zone, cấu hình nhỏ và không chứa dữ liệu, để mất một vẫn còn đa số và master không bị truy vấn nặng làm chậm. Từ bản 7 cluster tự quản lý voting configuration, chỉ cần initial_master_nodes khi khởi tạo lần đầu, nên split-brain kiểu đặt sai minimum_master_nodes ngày trước không còn. Lớp dữ liệu là primary shard và replica, replica không bao giờ cùng node với primary, và với allocation awareness theo zone thì không cùng zone. Tôi giữ shard khoảng 10 đến 50GB, dùng ILM để rollover. Khi cluster yellow hoặc red, tôi dùng allocation explain để biết vì sao shard chưa được gán, thường do watermark đĩa hoặc quy tắc awareness."
+
+> Senior tip: theo dõi **tổng số shard trên mỗi node** và kích thước shard trung bình hằng tuần. Phần lớn sự cố master không ổn định ở các cụm log bắt nguồn từ "quá nhiều shard nhỏ", chứ không phải thiếu phần cứng.`,
     follow: ['Dedicated master node sizing?', 'Shard size khuyến nghị?', 'Cross-cluster replication?'],
     tags: ['Elasticsearch', 'HA', 'Shards']
   }
@@ -10859,28 +10926,51 @@ Hệ thống đặt phòng chạy Galera 3 node, ứng dụng ghi round-robin v�
     topic: 'devops',
     level: 'senior',
     q: 'MongoDB replica set HA: primary/secondary, election, write concern, fencing?',
-    a: `**Tóm tắt:** MongoDB replica set: một primary nhận write, secondary replicate qua oplog; primary chết → election bầu primary mới; write concern kiểm soát durability; fencing qua majority write concern.
+    a: `**Tóm tắt:** MongoDB replica set có **một primary** nhận ghi và các **secondary** sao chép bằng cách đọc **oplog** của primary. Primary mất liên lạc với đa số → các node bầu primary mới (giao thức dựa trên Raft) trong khoảng **10–12 giây**. **Write concern** quyết định một ghi được coi là xong khi nào: {{w: "majority"}} (mặc định từ MongoDB 5.0) đảm bảo ghi đã xác nhận **không bị rollback** khi failover. Primary cũ bị cô lập tự **step down** vì không còn thấy đa số — đó là cơ chế chống hai primary cùng nhận ghi.
 
-### Replication
-- Primary ghi vào oplog (capped collection). Secondary tail oplog và apply. Replication async mặc định; secondary có thể lag.
+### Replication và oplog
+- Mọi thay đổi trên primary ghi vào oplog (collection có kích thước giới hạn); secondary liên tục kéo và áp dụng.
+- **Oplog window** = khoảng thời gian oplog chứa được. Secondary tụt quá window phải đồng bộ lại từ đầu (initial sync) — đặt oplog đủ lớn cho bảo trì dài nhất.
 
 ### Election
-- Heartbeat giữa members. Primary không reachable → secondary có vote majority bầu primary mới. Cần số member lẻ (3,5,7) hoặc arbiter để majority.
-- Priority và votes: member có priority 0 không thể làm primary (dùng cho DR site).
+- Mỗi node gửi heartbeat 2 giây/lần; không thấy primary quá {{electionTimeoutMillis}} (mặc định 10 giây) → một secondary ứng cử, cần **phiếu đa số** các node có quyền bầu.
+- Node có {{priority}} cao hơn và dữ liệu mới hơn được ưu tiên; priority 0 không bao giờ làm primary (ví dụ node ở DC dự phòng).
+- **Arbiter**: chỉ bỏ phiếu, không có dữ liệu. Dùng khi chỉ đủ tiền cho 2 node dữ liệu, nhưng làm {{w: "majority"}} kém hiệu quả (P-S-A mất S thì majority ghi bị treo) → khuyến nghị 3 node dữ liệu.
 
-### Write concern
-- {{w: 1}}: primary ack (nhanh, có thể mất data nếu primary chết trước replicate).
-- {{w: "majority"}}: majority members ack (chậm hơn, durable). Kết hợp {{j: true}} để journal fsync.
-- Read concern: local/majority/linearizable cho read consistency.
+### Write concern và read concern
+| Thiết lập | Ý nghĩa | Rủi ro |
+|---|---|---|
+| w: 1 | Primary ghi xong là OK | Failover có thể rollback ghi chưa tới secondary |
+| w: "majority" | Đa số node đã ghi (kèm journal) | Chậm hơn vài ms; an toàn khi failover |
+| readConcern "majority" | Chỉ đọc dữ liệu đã được đa số xác nhận | Không đọc phải dữ liệu sẽ bị rollback |
+| readPreference secondary | Đọc từ secondary | Dữ liệu có thể cũ vài giây |
 
 ### Fencing
-- MongoDB dùng majority write concern + term (Raft-like) để tránh split-brain: primary cũ với term thấp bị step down khi thấy term cao hơn.
+Primary bị chia cắt khỏi đa số **tự hạ xuống secondary** sau khi không còn liên lạc được đa số, nên phía thiểu số không chấp nhận ghi majority. Có thể có một khoảng ngắn hai node cùng nghĩ mình là primary, nhưng ghi {{w: "majority"}} vào primary cũ sẽ không thể đạt đa số → không bao giờ được xác nhận. Đó là lý do quan trọng để dùng majority cho dữ liệu quan trọng.
 
-### Trên production
-- Sai lầm: w:1 + failover tự động → mất write chưa replicate.
-- Kiểm tra: {{rs.status()}}, {{rs.printReplicationInfo()}}; mongostat; oplog window.
+### Phía Java
+~~~java
+// Spring Data MongoDB / driver: retryable writes mặc định bật từ driver 3.6+
+MongoClientSettings settings = MongoClientSettings.builder()
+    .applyConnectionString(new ConnectionString(
+        "mongodb://m1,m2,m3/shop?replicaSet=rs0&w=majority&retryWrites=true"))
+    .readPreference(ReadPreference.primaryPreferred())
+    .build();   // driver tự phát hiện primary mới sau election và retry ghi một lần
+~~~
 
-> Senior tip: Production nên w:majority + j:true cho data quan trọng; monitor replication lag và oplog window.`,
+### Ví dụ đời thực
+Một app đặt lịch dùng MongoDB 3 node với {{w: 1}} do "cấu hình cũ". Một lần mạng chập chờn khiến primary bị cô lập 15 giây; trong lúc đó nó vẫn nhận khoảng 300 lượt đặt lịch, sau election các ghi này bị **rollback** (lưu vào thư mục rollback, không ai để ý) — khách hàng có tin nhắn xác nhận nhưng không có lịch. Chuyển sang {{w: "majority"}} với retryWrites, cảnh báo replication lag và theo dõi thư mục rollback. Latency ghi tăng khoảng 3ms; không còn lịch "biến mất".
+
+### Pitfall
+- Kiến trúc P-S-A (có arbiter) kèm write concern majority → treo ghi khi mất một node dữ liệu.
+- Đọc secondary cho luồng "vừa ghi xong đọc lại" → người dùng thấy dữ liệu cũ.
+- Oplog quá nhỏ → secondary bảo trì xong phải initial sync hàng giờ.
+- Chuỗi kết nối chỉ có một host → driver không tìm được primary mới.
+
+### Trả lời mẫu khi phỏng vấn
+"MongoDB replica set có một primary nhận ghi, các secondary kéo oplog của primary để sao chép. Nếu primary mất liên lạc với đa số quá khoảng 10 giây, các node bầu primary mới theo giao thức dựa trên Raft, ưu tiên node có priority cao và dữ liệu mới. Điều tôi quan tâm nhất là write concern: với dữ liệu quan trọng tôi dùng w majority, cũng là mặc định từ 5.0, để ghi đã xác nhận không bị rollback khi failover. Với w 1, primary bị cô lập vẫn nhận ghi và sau election những ghi đó bị rollback. Fencing ở đây là primary mất đa số tự step down, và ghi majority vào phía thiểu số không bao giờ được xác nhận. Tôi dùng ba node dữ liệu thay vì arbiter, chuỗi kết nối liệt kê đủ các host, bật retryWrites, và cân nhắc đọc secondary chỉ khi chấp nhận dữ liệu cũ vài giây."
+
+> Senior tip: kiểm tra ngay write concern thực tế ở chuỗi kết nối và ở mặc định của cluster ({{getDefaultRWConcern}}). Các hệ thống tạo trước MongoDB 5.0 thường vẫn chạy w 1 mà không ai biết.`,
     follow: ['Arbiter là gì, khi nào dùng?', 'Read preference primary/secondary?', 'Sharded cluster HA?'],
     tags: ['MongoDB', 'ReplicaSet', 'HA']
   }
@@ -10890,31 +10980,52 @@ Hệ thống đặt phòng chạy Galera 3 node, ứng dụng ghi round-robin v�
     topic: 'devops',
     level: 'mid',
     q: 'Thiết kế chung HA: số node lẻ, quorum, fencing và kiểm thử failover định kỳ?',
-    a: `**Tóm tắt:** HA đúng cần: số node lẻ để majority rõ, quorum để quyết định, fencing để tránh split-brain, và drill failover định kỳ để đo RPO/RTO thực tế.
+    a: `**Tóm tắt:** HA đúng nghĩa cần bốn thứ: **số node bỏ phiếu lẻ** để luôn có đa số rõ ràng, **quorum** để chỉ phía đa số được ra quyết định, **fencing** để chắc chắn node cũ thôi nhận ghi trước khi node mới thay thế, và **diễn tập failover định kỳ** để đo RTO/RPO thực tế. Thiếu bất kỳ cái nào, hệ thống "có dự phòng" vẫn có thể ngừng hoạt động hoặc tệ hơn — hỏng dữ liệu do split-brain.
 
-### Số node lẻ
-- Quorum majority = floor(N/2)+1. Node lẻ (3,5,7) tránh tie. 3 node chịu được 1 failure; 5 node chịu 2 failure. Chi phí tăng, chọn theo SLO.
+### Vì sao số node lẻ
+Quorum = floor(N/2) + 1.
+| Số node | Quorum | Chịu được mất |
+|---|---|---|
+| 2 | 2 | 0 |
+| 3 | 2 | 1 |
+| 4 | 3 | 1 |
+| 5 | 3 | 2 |
+Node thứ 4 không tăng khả năng chịu lỗi so với 3, chỉ thêm chi phí và thêm một bên cần đồng ý. Với 2 site, đặt node thứ ba (hoặc một **witness/arbiter** nhẹ) ở site thứ ba để tránh tình huống 50/50.
 
-### Quorum
-- Quorum là số tối thiểu node phải đồng ý để thực hiện thay đổi (bầu leader, commit write). Nhóm < quorum không acting → tránh split-brain.
+### Quorum giải quyết vấn đề gì
+Khi mạng chia cắt, mỗi bên không phân biệt được "bên kia chết" hay "đường truyền đứt". Quy tắc đơn giản: **chỉ phía thấy đa số được làm chính**; phía thiểu số tự dừng nhận ghi. Ví dụ etcd, Patroni, Kafka KRaft, MongoDB, Elasticsearch, Redis Sentinel đều theo quy tắc này.
 
-### Fencing (STONITH)
-- Khi mạng phân mảnh, node cũ có thể vẫn nghĩ mình primary. Fencing forcibly kill node cũ (power off, network block) trước khi promote node mới. Ví dụ: IPMI, cloud API terminate instance, pg_ctl promote + revoke VIP.
-- Soft fencing: revoke lease trong DCS; hard fencing: kill node.
+### Fencing
+Quorum quyết định ai được làm chính, nhưng node cũ có thể **chưa biết** mình đã mất vai (đang GC dài, mạng chậm) và vẫn ghi. Fencing chặn điều đó:
+- **STONITH** ("bắn vào đầu node kia"): tắt nguồn qua IPMI/API cloud trước khi chuyển vai.
+- **Thu hồi quyền truy cập tài nguyên**: gỡ volume, đổi quyền storage, chặn IP.
+- **Fencing token**: mỗi lần đổi chủ tăng một số thứ tự; storage từ chối ghi mang token cũ.
+- **Lease có hạn**: node chính phải gia hạn lock; hết hạn mà không gia hạn được thì tự dừng (watchdog).
 
-### Kiểm thử failover (chaos)
-- Drill định kỳ: kill primary, network partition, disk full. Đo thời gian service recover (RTO) và data loss (RPO).
-- Chaos engineering: Netflix Chaos Monkey; LitmusChaos trên K8s.
+### RTO và RPO
+- **RTO** (Recovery Time Objective): tối đa bao lâu được ngừng dịch vụ.
+- **RPO** (Recovery Point Objective): tối đa bao nhiêu dữ liệu được mất (tính theo thời gian).
+Replication đồng bộ → RPO ≈ 0 nhưng ghi chậm hơn và phụ thuộc replica; bất đồng bộ → nhanh hơn nhưng RPO bằng độ trễ replication.
 
-### RPO / RTO
-- RPO (Recovery Point Objective): mất tối đa bao nhiêu data (giây/phút). RTO (Recovery Time Objective): downtime tối đa.
-- HA sync replication → RPO≈0 nhưng latency cao; async → RPO>0 nhưng nhanh hơn.
+### Diễn tập failover
+- Lịch định kỳ (quý), bắt đầu ở staging rồi production giờ thấp điểm, có kịch bản và người quan sát.
+- Các kịch bản: tắt node chính, chia cắt mạng, làm chậm đĩa, tắt cả một zone.
+- Đo: thời gian phát hiện, thời gian chuyển, lỗi phía ứng dụng, dữ liệu mất; so với RTO/RPO cam kết.
+- Công cụ: Chaos Mesh, LitmusChaos (Kubernetes), AWS Fault Injection Service, Toxiproxy cho độ trễ mạng.
 
-### Trên production
-- Sai lầm: cấu hình HA nhưng không drill → failover fail khi cần.
-- Kiểm tra: runbook, alert, dashboard; quarterly DR drill.
+### Ví dụ đời thực
+Một hệ thống có cụm DB 2 node "active-standby" với script failover dựa trên ping, cam kết RTO 5 phút. Lần diễn tập đầu tiên (chặn mạng giữa 2 node): cả hai cùng nhận vai chính, ứng dụng ghi vào cả hai trong 4 phút → phải đối soát thủ công. Thiết kế lại: 3 node + Patroni/etcd, fencing bằng watchdog, ứng dụng kết nối qua proxy hỏi node chính. Diễn tập lại hằng quý: RTO đo được 14–20 giây, RPO 0 (một replica đồng bộ), không còn split-brain.
 
-> Senior tip: HA không phải config mà là capability được chứng minh bằng drill; viết runbook và đo RTO/RPO thực tế.`,
+### Pitfall
+- Hai node tự quyết bằng ping/heartbeat lẫn nhau.
+- Đặt cả ba node quorum trong cùng một zone/rack.
+- Có HA trên giấy nhưng chưa từng diễn tập.
+- Ứng dụng không có retry/timeout hợp lý → failover 15 giây thành sự cố 15 phút phía người dùng.
+
+### Trả lời mẫu khi phỏng vấn
+"Với tôi HA cần bốn thứ. Thứ nhất là số node bỏ phiếu lẻ, vì quorum là quá bán: ba node chịu được mất một, năm node chịu được mất hai, còn node thứ tư không tăng khả năng chịu lỗi. Hai site thì đặt thêm một witness ở site thứ ba. Thứ hai là quorum: khi mạng chia cắt, chỉ phía thấy đa số được làm chính, phía thiểu số tự dừng ghi. Thứ ba là fencing, vì node cũ có thể chưa biết mình mất vai, ví dụ đang GC dài, nên phải tắt nó, thu quyền ghi hoặc dùng fencing token và lease có hạn. Thứ tư là diễn tập định kỳ: tắt node chính, chia cắt mạng, tắt cả zone, và đo thời gian chuyển cùng lượng dữ liệu mất so với RTO, RPO cam kết. Tôi từng thấy lần diễn tập đầu tiên của một cụm hai node làm lộ split-brain, cả hai cùng nhận ghi trong bốn phút. Thiết kế lại với ba node và Patroni thì RTO đo được dưới 20 giây."
+
+> Senior tip: mỗi lần diễn tập, ghi kết quả vào một bảng cố định (ngày, kịch bản, RTO đo được, RPO đo được, lỗi phía ứng dụng). Bảng này là bằng chứng mạnh nhất khi kiểm toán hoặc khi khách hàng hỏi về cam kết sẵn sàng.`,
     follow: ['Chaos testing tool nào?', 'RPO vs RTO khác gì?', 'Multi-region HA?'],
     tags: ['HA', 'Quorum', 'Fencing', 'Chaos']
   }
@@ -10924,34 +11035,44 @@ Hệ thống đặt phòng chạy Galera 3 node, ứng dụng ghi round-robin v�
     topic: 'devops',
     level: 'lead',
     q: 'PostgreSQL vs MariaDB Galera vs MongoDB replica set: so sánh HA cho Java backend?',
-    a: `**Tóm tắt:** Postgres+Patroni (single-writer, sync/async replica) phù hợp OLTP mạnh; Galera (multi-master sync) phù hợp write phân tán nhưng conflict; Mongo (document, majority write concern) phù hợp flexible schema. Chọn theo workload và consistency.
+    a: `**Tóm tắt:** Cả ba đều cho HA nhưng với triết lý khác nhau. **PostgreSQL + Patroni**: một primary nhận ghi, replica đồng bộ hoặc bất đồng bộ, failover tự động — đơn giản để suy luận, transaction mạnh, hợp với OLTP như thanh toán, đơn hàng. **MariaDB Galera**: mọi node nhận ghi, đồng bộ gần như tức thời — đổi lại xung đột ghi khi nhiều node cùng sửa và mọi node chậm theo node chậm nhất. **MongoDB replica set**: một primary, failover tích hợp sẵn, write concern chọn theo từng thao tác — hợp với dữ liệu dạng document, schema thay đổi nhanh. Tôi chọn theo **mô hình dữ liệu và yêu cầu nhất quán**, sau đó mới đến HA.
 
-### Bảng so sánh
-| Tiêu chí | PostgreSQL+Patroni | MariaDB Galera | MongoDB Replica Set |
+### So sánh
+| Tiêu chí | PostgreSQL + Patroni | MariaDB Galera | MongoDB replica set |
 |---|---|---|---|
-| Mô hình | single primary + standby | multi-master sync | single primary + secondary |
-| Write | 1 node | bất kỳ node | 1 node (primary) |
-| Consistency | strong (sync) | strong (certification) | tunable (w/majority) |
-| Conflict | không (single writer) | certification failure | không (single writer) |
-| Failover | Patroni promote | cluster tự heal | election |
-| Scale read | replica | mọi node | secondary |
-| Schema | relational strict | relational | document flexible |
+| Mô hình ghi | Một primary | Nhiều primary | Một primary |
+| Replication | Streaming WAL, sync/async | Certification đồng bộ | Oplog, ghi xác nhận theo write concern |
+| Failover | Patroni + etcd, khoảng 10–30 giây | Không cần chuyển vai; node lỗi bị loại | Election tích hợp, khoảng 10–12 giây |
+| Mất dữ liệu khi failover | 0 với sync replica; vài giây với async | 0 với ghi đã commit | 0 với w: majority |
+| Xung đột ghi | Không (một chỗ ghi) | Certification failure khi ghi cùng dòng ở 2 node | Không (một chỗ ghi) |
+| Mở rộng ghi | Dọc, hoặc sharding (Citus) | Không thật sự (mọi node ghi mọi thứ) | Sharded cluster |
+| Hệ sinh thái Java | JPA/Hibernate, JDBC rất trưởng thành | JPA/JDBC | Spring Data MongoDB, driver |
 
 ### Khi nào chọn
-- OLTP transaction phức tạp, join, constraint → PostgreSQL.
-- Cần multi-master write ở nhiều site, conflict thấp → Galera.
-- Schema linh hoạt, document, horizontal scale → MongoDB.
+- **PostgreSQL**: dữ liệu quan hệ, ràng buộc, transaction nhiều bảng, báo cáo SQL — mặc định hợp lý cho đa số backend Java.
+- **Galera**: hệ thống sẵn có trên MySQL/MariaDB cần HA không phụ thuộc chuyển vai; vẫn nên **ghi vào một node** qua ProxySQL/MaxScale để tránh xung đột.
+- **MongoDB**: document lồng nhau, schema thay đổi thường xuyên, đọc ghi theo một aggregate; không hợp khi cần transaction phức tạp nhiều collection thường xuyên (có hỗ trợ nhưng tốn hơn).
+- Trên AWS: **Aurora PostgreSQL/MySQL** tách lưu trữ (6 bản sao trên 3 AZ) khỏi tính toán, failover thường dưới 30 giây — thường thay cho tự vận hành Patroni.
 
-### Java client
-- Postgres: JDBC + Hikari, targetServerType=primary.
-- MariaDB: JDBC Galera load balancing.
-- Mongo: Mongo Java Driver, read preference, write concern.
+### Phía ứng dụng Java — điều chung cho cả ba
+- **Kết nối qua endpoint ổn định**: HAProxy/PgBouncer theo primary, MaxScale/ProxySQL, chuỗi kết nối MongoDB liệt kê đủ host; JDBC PostgreSQL hỗ trợ nhiều host với {{targetServerType=primary}}.
+- **Pool phải loại kết nối chết nhanh**: Hikari {{maxLifetime}} ngắn hơn timeout của proxy/DB, {{connectionTimeout}} vài giây; không cache DNS quá lâu (JVM {{networkaddress.cache.ttl}}).
+- **Retry có kiểm soát** cho lỗi tạm thời trong lúc failover; chỉ retry thao tác idempotent hoặc cả transaction.
+- **Đọc từ replica** chỉ cho truy vấn chấp nhận dữ liệu cũ vài giây.
 
-### Trên production
-- Sai lầm: chọn Galera cho workload conflict cao → retry storm.
-- Kiểm tra: benchmark TPS, failover drill, replication lag.
+### Ví dụ đời thực
+Một nền tảng bán hàng dùng Galera 3 node, ghi round-robin; mỗi đợt khuyến mãi có 1–2% đơn lỗi "deadlock" do certification failure trên bảng tồn kho, và node có đĩa chậm kéo cả cụm chậm theo (flow control). Khi xây lại phần đơn hàng, team chọn **Aurora PostgreSQL** (một writer, hai reader): failover diễn tập đo được khoảng 25 giây, ứng dụng dùng JDBC driver AWS hỗ trợ failover nhanh. Phần catalog sản phẩm (thuộc tính khác nhau theo ngành hàng) chuyển sang MongoDB với w: majority. Đơn lỗi giờ cao điểm giảm xuống dưới 0,05%.
 
-> Senior tip: HA database là trade-off consistency/latency/complexity; bắt đầu managed (RDS/Aurora) nếu team nhỏ, tự host khi cần control.`,
+### Pitfall
+- Chọn DB theo "HA nghe xịn" thay vì theo mô hình dữ liệu.
+- Dùng Galera như multi-primary ghi tự do rồi ngạc nhiên vì lỗi deadlock.
+- MongoDB với w: 1 cho dữ liệu tiền.
+- Ứng dụng giữ kết nối tới primary cũ sau failover vì pool/DNS cache.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chọn DB trước hết theo mô hình dữ liệu và yêu cầu nhất quán, rồi mới đến HA. PostgreSQL với Patroni là một primary nhận ghi, replica đồng bộ hoặc bất đồng bộ, failover tự động qua etcd khoảng mười đến ba mươi giây; dễ suy luận, transaction mạnh, đó là lựa chọn mặc định của tôi cho OLTP như đơn hàng, thanh toán. Galera cho mọi node nhận ghi và đồng bộ gần như tức thời, nhưng ghi cùng dòng trên hai node sẽ lỗi certification, và node chậm kéo cả cụm chậm, nên thực tế tôi vẫn ghi vào một node. MongoDB replica set có election sẵn và write concern theo thao tác; dùng w majority thì không mất ghi đã xác nhận, hợp với dữ liệu dạng document. Trên AWS tôi thường dùng Aurora thay vì tự vận hành. Dù chọn gì, phía Java phải kết nối qua endpoint ổn định, pool loại kết nối chết nhanh và retry có kiểm soát lúc failover."
+
+> Senior tip: đo **thời gian ứng dụng phục hồi** sau failover, không chỉ thời gian DB failover. DB chuyển vai trong 20 giây nhưng pool giữ kết nối chết và DNS cache 60 giây có thể biến nó thành vài phút lỗi phía người dùng.`,
     follow: ['Aurora HA khác gì?', 'Multi-region DB strategy?', 'Connection pooling với HA DB?'],
     tags: ['PostgreSQL', 'MariaDB', 'MongoDB', 'HA', 'Comparison']
   }
