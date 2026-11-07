@@ -522,8 +522,7 @@
 
   // ---------- theme + footer ----------
   function applyTheme() {
-    if (data.theme) document.documentElement.setAttribute('data-theme', data.theme);
-    else document.documentElement.removeAttribute('data-theme');
+    document.documentElement.setAttribute('data-theme', data.theme || 'dark'); // default: dark
   }
 
   function initChrome() {
@@ -537,7 +536,7 @@
     applyTheme();
     const btn = document.getElementById('themeToggle');
     if (btn) btn.addEventListener('click', () => {
-      const dark = data.theme ? data.theme === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+      const dark = (data.theme || 'dark') === 'dark';
       data.theme = dark ? 'light' : 'dark';
       store.save(); applyTheme();
     });
