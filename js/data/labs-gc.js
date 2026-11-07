@@ -2363,9 +2363,9 @@ public double calculate(String formulaId, Bindings vars) {
 {
   id: 'lab-gc-011',
   category: 'gc',
-  title: 'Young GC 20 lan/giay: tao ObjectMapper moi request va noi chuoi log',
+  title: 'Young GC 20 lần/giây: tạo ObjectMapper mỗi request và nối chuỗi log',
   level: 'senior',
-  scenario: `Dich vu REST thanh toan chay Spring Boot 3 + JDK 17 tren container 4 vCPU / 4 GB heap. Sau khi traffic tang, GC log cho thay Young GC lien tuc ~20 lan/giay, CPU GC ~40%, p99 latency tang tu 80 ms len 600 ms. JFR allocation profiling chi ra hai hotspot: ObjectMapper duoc new cho moi request, va log message noi chuoi lon. Heap tong ~1.2 GB, young gen ~300 MB, allocation rate ~6 GB/s. Khong co Full GC, heap sau young GC ve ~200 MB.`,
+  scenario: `Dịch vụ REST thanh toán chạy Spring Boot 3 + JDK 17 trên container 4 vCPU / 4 GB heap. Sau khi traffic tăng, GC log cho thấy Young GC liên tục ~20 lần/giây, CPU GC ~40%, p99 latency tăng từ 80 ms lên 600 ms. JFR allocation profiling chỉ ra hai hotspot: ObjectMapper được new cho mỗi request, và log message nối chuỗi lớn. Heap tổng ~1.2 GB, young gen ~300 MB, allocation rate ~6 GB/s. Không có Full GC, heap sau young GC về ~200 MB.`,
   artifacts: [
     { name: 'gc.log', lang: 'text', content: `[2024-05-10T10:14:01.120+0000][info][gc] GC(1240) Pause Young (G1 Evacuation) 289M->212M(1024M) 4.2ms
 [2024-05-10T10:14:01.170+0000][info][gc] GC(1241) Pause Young (G1 Evacuation) 291M->214M(1024M) 4.0ms
@@ -2379,38 +2379,38 @@ public double calculate(String formulaId, Bindings vars) {
   org.slf4j.Logger.info (12%)
   com.example.payment.DtoMapper.toDto (10%)` }
   ],
-  questions: ['Nguyen nhan goc cua Young GC qua thuong xuyen la gi? Dan chung tu GC log va JFR.', 'Ban se sua the nao, ngan han va dai han, va do luong hieu qua ra sao?'],
-  hints: ['Doc GC log: tan suat 1 young GC moi 50 ms, Eden 300 MB day rat nhanh.', 'JFR chi ra ObjectMapper.<init> chiem 38% allocation.', 'Noi chuoi log lon tao StringBuilder/char[] tam.'],
-  answer: `**Tom tat:** Young GC 20 lan/giay vi allocation rate ~6 GB/s vuot xa toc do don; hai nguon chinh la ObjectMapper duoc new moi request (38% allocation) va log message noi chuoi lon. ObjectMapper thread-safe, tai su dung mot instance; log dung SLF4J parameterized message. Sau fix allocation rate giam manh.
+  questions: ['Nguyên nhân gốc của Young GC quá thường xuyên là gì? Dẫn chứng từ GC log và JFR.', 'Bạn sẽ sửa thế nào, ngắn hạn và dài hạn, và đo lường hiệu quả ra sao?'],
+  hints: ['Đọc GC log: tần suất 1 young GC mỗi 50 ms, Eden 300 MB đầy rất nhanh.', 'JFR chỉ ra ObjectMapper.<init> chiếm 38% allocation.', 'Nối chuỗi log lớn tạo StringBuilder/char[] tạm.'],
+  answer: `**Tóm tắt:** Young GC 20 lần/giây vì allocation rate ~6 GB/s vượt xa tốc độ dọn; hai nguồn chính là ObjectMapper được new mỗi request (38% allocation) và log message nối chuỗi lớn. ObjectMapper thread-safe, tái sử dụng một instance; log dùng SLF4J parameterized message. Sau fix allocation rate giảm mạnh.
 
-### 1) Co che: vi sao Young GC thuong xuyen
+### 1) Cơ chế: vì sao Young GC thường xuyên
 
-GC generational chia heap thanh young va old. Object moi duoc cap trong Eden. Khi Eden day, JVM kich hoat Young GC. Chi phi nho (~4 ms) nhung 20 lan/giay tong CPU ~80 ms/s gay pause lien tuc.
+GC generational chia heap thành young và old. Object mới được cấp trong Eden. Khi Eden đầy, JVM kích hoạt Young GC. Chi phí nhỏ (~4 ms) nhưng 20 lần/giây tổng CPU ~80 ms/s gây pause liên tục.
 
-### 2) Dan chung JFR
+### 2) Dẫn chứng JFR
 
-JFR ObjectAllocationInNewTLAB: ObjectMapper.<init> 38%. ObjectMapper nang (cache introspection). Tao moi request la anti-pattern. StringBuilder.append 18%, Logger.info 12%.
+JFR ObjectAllocationInNewTLAB: ObjectMapper.<init> 38%. ObjectMapper nặng (cache introspection). Tạo mỗi request là anti-pattern. StringBuilder.append 18%, Logger.info 12%.
 
-### 3) Cach sua
+### 3) Cách sửa
 
-Ngan han: dung ObjectMapper singleton static final; thay log noi chuoi bang placeholder SLF4J; giam log DEBUG production.
-Dai han: Jackson Afterburner; tang young gen -Xmn; theo doi allocation rate bang JFR.
+Ngắn hạn: dùng ObjectMapper singleton static final; thay log nối chuỗi bằng placeholder SLF4J; giảm log DEBUG production.
+Dài hạn: Jackson Afterburner; tăng young gen -Xmn; theo dõi allocation rate bằng JFR.
 
-### 4) Do luong
+### 4) Đo lường
 
-Chay lai voi -Xlog:gc va so sanh young GC frequency, CPU GC %, p99.
+Chạy lại với -Xlog:gc và so sánh young GC frequency, CPU GC %, p99.
 
 ### 5) Pitfall
 
-ObjectMapper.configure sau khi share anh huong moi thread. Tang heap khong giai quyet goc re.
+ObjectMapper.configure sau khi share ảnh hưởng mọi thread. Tăng heap không giải quyết gốc rễ.
 
-> Senior tip: Khi thay Young GC thuong xuyen nhung khong Full GC, dung tang heap voi - hay mo JFR Allocation profiling. 80% truong hop la tao object khong can thiet.`,
+> Senior tip: Khi thấy Young GC thường xuyên nhưng không Full GC, đừng tăng heap vội — hãy mở JFR Allocation profiling. 80% trường hợp là tạo object không cần thiết.`,
   rubric: [
-    'Nhan dien allocation rate cao tu GC log: young GC ~20/s, Eden 300 MB day moi ~50 ms.',
-    'Chi ra JFR hotspot: ObjectMapper.<init> 38%, StringBuilder.append 18%, Logger.info 12%.',
-    'Giai thich ObjectMapper thread-safe va khong nen tao moi request.',
-    'De xuat sua ngan han/dai han va do luong.',
-    'Pitfall: configure sau share, tang heap khong giai quyet goc re.'
+    'Nhận diện allocation rate cao từ GC log: young GC ~20/s, Eden 300 MB đầy mỗi ~50 ms.',
+    'Chỉ ra JFR hotspot: ObjectMapper.<init> 38%, StringBuilder.append 18%, Logger.info 12%.',
+    'Giải thích ObjectMapper thread-safe và không nên tạo mỗi request.',
+    'Đề xuất sửa ngắn hạn/dài hạn và đo lường.',
+    'Pitfall: configure sau share, tăng heap không giải quyết gốc rễ.'
   ],
   tags: ['gc', 'young-gc', 'allocation-rate', 'jfr', 'objectmapper', 'logging', 'g1']
 }
@@ -2421,7 +2421,7 @@ ObjectMapper.configure sau khi share anh huong moi thread. Tang heap khong giai 
   category: 'gc',
   title: 'OutOfMemoryError: Cannot reserve direct buffer memory (Netty/NIO)',
   level: 'senior',
-  scenario: `Dich vu gateway dung Netty 4 + Reactor Netty tren JDK 17, container limit 2 GB (cgroup). Sau vai gio chay, ung dung nem OutOfMemoryError: Cannot reserve direct buffer memory roi container bi OOMKilled boi kubelet. jcmd VM.native_memory cho thay Direct (reserved/committed) ~1.8 GB, trong khi -XX:MaxDirectMemorySize=1g. Heap chi ~600 MB. Co evidence Netty khong release ByteBuf (reference count leak) trong handler custom.`,
+  scenario: `Dịch vụ gateway dùng Netty 4 + Reactor Netty trên JDK 17, container limit 2 GB (cgroup). Sau vài giờ chạy, ứng dụng ném OutOfMemoryError: Cannot reserve direct buffer memory rồi container bị OOMKilled bởi kubelet. jcmd VM.native_memory cho thấy Direct (reserved/committed) ~1.8 GB, trong khi -XX:MaxDirectMemorySize=1g. Heap chỉ ~600 MB. Có bằng chứng Netty không release ByteBuf (reference count leak) trong handler custom.`,
   artifacts: [
     { name: 'error.log', lang: 'text', content: `java.lang.OutOfMemoryError: Cannot reserve direct buffer memory
     at sun.nio.ch.DirectBuffer.<init>(DirectBuffer.java:...)
@@ -2455,40 +2455,40 @@ Total: reserved=2147483648, committed=2013265920
 -XX:+HeapDumpOnOutOfMemoryError
 -XX:HeapDumpPath=/tmp/heap.hprof` }
   ],
-  questions: ['Nguyen nhan goc cua OOM direct buffer la gi? Dan chung tu error log, NMT, flags.', 'Ban se sua the nao ngan han/dai han va phong ngua?'],
-  hints: ['Direct memory khong thuoc heap; NMT cho thay Direct committed ~1.8 GB > MaxDirectMemorySize 1 GB.', 'Netty dung reference counting; neu khong release ByteBuf se leak direct memory.', 'Container OOMKilled vi tong native memory vuot cgroup limit.'],
-  answer: `**Tom tat:** OOM "Cannot reserve direct buffer memory" xay ra khi direct (off-heap) memory vuot -XX:MaxDirectMemorySize (1 GB), do Netty ByteBuf leak (reference count khong release). Direct memory khong nam trong heap nen -Xmx khong giup. NMT cho thay Direct committed ~1.8 GB > 1 GB. Fix: release ByteBuf dung cach, gioi han direct memory theo container, theo doi NMT.
+  questions: ['Nguyên nhân gốc của OOM direct buffer là gì? Dẫn chứng từ error log, NMT, flags.', 'Bạn sẽ sửa thế nào ngắn hạn/dài hạn và phòng ngừa?'],
+  hints: ['Direct memory không thuộc heap; NMT cho thấy Direct committed ~1.8 GB > MaxDirectMemorySize 1 GB.', 'Netty dùng reference counting; nếu không release ByteBuf sẽ leak direct memory.', 'Container bị OOMKilled vì tổng native memory vượt cgroup limit.'],
+  answer: `**Tóm tắt:** OOM "Cannot reserve direct buffer memory" xảy ra khi direct (off-heap) memory vượt -XX:MaxDirectMemorySize (1 GB), do Netty ByteBuf leak (reference count không release). Direct memory không nằm trong heap nên -Xmx không giúp. NMT cho thấy Direct committed ~1.8 GB > 1 GB. Fix: release ByteBuf đúng cách, giới hạn direct memory theo container, theo dõi NMT.
 
-### 1) Co che: direct memory va Netty
+### 1) Cơ chế: direct memory và Netty
 
-ByteBuffer.allocateDirect cap bo nho native (off-heap) ngoai heap JVM. -XX:MaxDirectMemorySize gioi han tong direct memory. Khi vuot, JVM nem OOM.
+ByteBuffer.allocateDirect cấp bộ nhớ native (off-heap) ngoài heap JVM. -XX:MaxDirectMemorySize giới hạn tổng direct memory. Khi vượt, JVM ném OOM.
 
-Netty quan ly ByteBuf voi reference counting: moi ByteBuf co refCnt; khi xu ly xong phai release().
+Netty quản lý ByteBuf với reference counting: mỗi ByteBuf có refCnt; khi xử lý xong phải release().
 
-### 2) Dan chung
+### 2) Dẫn chứng
 
-error.log: stack trace qua Netty PooledByteBufAllocator. nmt.txt: Direct committed ~1.93 GB > MaxDirectMemorySize 1 GB. Heap chi 600 MB. Container 2 GB limit.
+error.log: stack trace qua Netty PooledByteBufAllocator. nmt.txt: Direct committed ~1.93 GB > MaxDirectMemorySize 1 GB. Heap chỉ 600 MB. Container 2 GB limit.
 
-### 3) Nguyen nhan goc
+### 3) Nguyên nhân gốc
 
-Custom handler doc ByteBuf nhung khong release trong finally; exception path cung leak.
+Custom handler đọc ByteBuf nhưng không release trong finally; exception path cũng leak.
 
-### 4) Cach sua
+### 4) Cách sửa
 
-Ngan han: release ByteBuf trong finally; dung SimpleChannelInboundHandler; bat leak detector PARANOID; giam MaxDirectMemorySize.
-Dai han: audit handler, codec, filter; theo doi NMT periodic alert.
+Ngắn hạn: release ByteBuf trong finally; dùng SimpleChannelInboundHandler; bật leak detector PARANOID; giảm MaxDirectMemorySize.
+Dài hạn: audit handler, codec, filter; theo dõi NMT periodic alert.
 
 ### 5) Pitfall
 
-Tang -Xmx khong giup direct memory. Netty pooled allocator cache co the giu memory.
+Tăng -Xmx không giúp direct memory. Netty pooled allocator cache có thể giữ memory.
 
-> Senior tip: Khi gap OOM "Cannot reserve direct buffer memory", dung tang heap - chay jcmd VM.native_memory summary va so Direct committed voi MaxDirectMemorySize.`,
+> Senior tip: Khi gặp OOM "Cannot reserve direct buffer memory", đừng tăng heap — chạy jcmd VM.native_memory summary và so Direct committed với MaxDirectMemorySize.`,
   rubric: [
-    'Phan biet direct memory vs heap; NMT Direct committed ~1.93 GB > MaxDirectMemorySize 1 GB; heap chi 600 MB.',
-    'Chi ra Netty reference counting: ByteBuf chua release leak direct memory.',
-    'Lien he container OOMKilled: tong native memory vuot cgroup limit 2 GB.',
-    'De xuat sua: release trong finally, SimpleChannelInboundHandler, leak detector, gioi han direct memory.',
-    'Phong ngua: NMT periodic alert, dat container limit = Xmx + MaxDirect + margin.'
+    'Phân biệt direct memory vs heap; NMT Direct committed ~1.93 GB > MaxDirectMemorySize 1 GB; heap chỉ 600 MB.',
+    'Chỉ ra Netty reference counting: ByteBuf chưa release leak direct memory.',
+    'Liên hệ container OOMKilled: tổng native memory vượt cgroup limit 2 GB.',
+    'Đề xuất sửa: release trong finally, SimpleChannelInboundHandler, leak detector, giới hạn direct memory.',
+    'Phòng ngừa: NMT periodic alert, đặt container limit = Xmx + MaxDirect + margin.'
   ],
   tags: ['gc', 'oom', 'direct-memory', 'netty', 'nio', 'nmt', 'container', 'off-heap']
 }
