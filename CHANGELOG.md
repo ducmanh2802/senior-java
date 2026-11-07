@@ -3,6 +3,15 @@
 ## 2026-11-07
 
 ### Nội dung
+
+
+### Ứng dụng
+- Review: fact-check deep quiz (T860, T861) by Claude
+
+
+## 2026-11-07
+
+### Nội dung
 - T596 (auto-committed after kilo review + verify)
 - T862 (auto-committed after kilo review + verify)
 
